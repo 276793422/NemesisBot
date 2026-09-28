@@ -70,6 +70,9 @@ pub mod signature_status;
 pub mod skills;
 pub mod system;
 pub mod tasks;
+// 角色目录 WSAPI（2026-09-28 角色目录与分档供给）：roles.list——委派卡
+// 角色下拉数据源（目录全量 + tier 分档可见性，与 dispatch 闸同源裁决）。
+pub mod roles;
 pub mod tools;
 pub mod upload;
 #[cfg(feature = "voice")]
@@ -242,6 +245,8 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(outbox::OutboxHandler));
     // L6++ G4（2026-09-08）：项目注册表 WSAPI（bridge 未装配时诚实报错）。
     router.register(Arc::new(projects::ProjectsHandler));
+    // 角色目录（2026-09-28 角色目录与分档供给）：roles.list。
+    router.register(Arc::new(roles::RolesHandler));
     #[cfg(feature = "workflow")]
     {
         router.register(Arc::new(workflow::WorkflowHandler));
@@ -603,6 +608,9 @@ mod chat_todo_tests;
 // F1 (2026-09-05): chat.set_mode / chat.get_mode（plan/build 双模式）测试。
 #[cfg(test)]
 mod chat_mode_tests;
+// 角色目录与客户端委派（2026-09-28）：roles.list + chat.spawn 测试。
+#[cfg(test)]
+mod roles_spawn_tests;
 
 // AGT 覆盖率批次（2026-09-25）：workspace 文件三件套的确定性失败臂
 // （read 缺文件 / write 建目录失败）+ 原子写成功回读 + 绝对路径拒绝。

@@ -200,3 +200,69 @@ async fn pump_continuation_without_manager_warns_and_survives() {
     // 无管理器：无续行可处理，也无发布。
     assert!(orx.try_recv().is_err());
 }
+
+/// 泵 slash 改写回归（2026-09-28 真模型验证发现的接线缺失）：生产泵路径
+/// 必须在 gate 前完成四段解析链改写——内置深度模板（/security-review）
+/// 以模板展开形态进 LLM（含 $ARGUMENTS 注入），而不是原样透传斜杠文本。
+#[tokio::test]
+async fn pump_expands_builtin_template_before_gate() {
+    use std::sync::{Arc, Mutex};
+
+    struct CapturingProvider(Arc<Mutex<Vec<String>>>);
+
+    #[async_trait]
+    impl LlmProvider for CapturingProvider {
+        async fn chat(
+            &self,
+            _model: &str,
+            messages: Vec<LlmMessage>,
+            _options: Option<crate::types::ChatOptions>,
+            _tools: Vec<crate::types::ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
+            self.0
+                .lock()
+                .unwrap()
+                .extend(messages.iter().map(|m| m.content.clone()));
+            Ok(LlmResponse {
+                content: "cov-ok".to_string(),
+                tool_calls: Vec::new(),
+                finished: true,
+                reasoning_content: None,
+                usage: None,
+                raw_request_body: None,
+                raw_response_body: None,
+            })
+        }
+    }
+
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let mut al = AgentLoop::new(
+        Box::new(CapturingProvider(captured.clone())),
+        cov_config(),
+    );
+    let (otx, _orx) = tokio::sync::mpsc::channel(8);
+    al.outbound_tx = Some(otx);
+    let al = std::sync::Arc::new(al);
+
+    let (itx, irx) = tokio::sync::mpsc::channel(4);
+    let pump = tokio::spawn(al.clone().run_bus_arc(irx));
+    itx.send(inbound("/security-review eval_test.txt", "web", "covuser", "agent:main:session:covslash"))
+        .await
+        .unwrap();
+    drop(itx);
+    pump.await.unwrap();
+
+    let got = captured.lock().unwrap();
+    // LLM 收到的必须是展开后的模板正文（含安全评审纪律 + 参数注入），
+    // 不再是原始斜杠文本。
+    assert!(
+        got.iter().any(|c| c.contains("安全评审专家")),
+        "expanded template body expected in LLM messages: {:?}",
+        got.iter().map(|c| c.chars().take(60).collect::<String>()).collect::<Vec<_>>()
+    );
+    assert!(
+        got.iter().any(|c| c.contains("eval_test.txt") && !c.starts_with('/')),
+        "$ARGUMENTS must be substituted with the args: {:?}",
+        got.iter().map(|c| c.chars().take(60).collect::<String>()).collect::<Vec<_>>()
+    );
+}

@@ -211,6 +211,30 @@ async fn compact_llm_failure_keeps_history() {
     assert_eq!(store.get_history(&key).len(), 5);
 }
 
+// 2026-09-28 真模型验证发现：无可推进内容（tail 已最简/边界无法前移）此前
+// 误报「摘要生成失败（LLM 调用失败…）」——根本没发起调用。钉住三态区分：
+// 前两次真压缩耗尽 Mock 响应，第三次必须走「无需压缩」Ok 臂。
+#[tokio::test]
+async fn compact_already_minimal_reports_noop_not_llm_failure() {
+    let store = std::sync::Arc::new(crate::session::SessionStore::new_in_memory());
+    let mut al = AgentLoop::new(
+        Box::new(MockLlmProvider::new(vec![resp("S1"), resp("S2")])),
+        test_config(),
+    );
+    al.set_session_store(store.clone());
+    let key = unique_key("noop");
+    populate(&store, &key, 5);
+
+    let r1 = al.compact_session(&key).await.unwrap();
+    assert!(r1.contains("已压缩"), "got: {r1}");
+    let r2 = al.compact_session(&key).await.unwrap();
+    assert!(r2.contains("已压缩"), "got: {r2}");
+    // 第三次：covers 已全覆盖（tail→0），无可推进内容 → 诚实「无需压缩」。
+    let r3 = al.compact_session(&key).await.unwrap();
+    assert!(r3.contains("无需压缩"), "got: {r3}");
+    assert!(!r3.contains("失败"), "got: {r3}");
+}
+
 // ---------- clear_session ----------
 
 #[tokio::test]

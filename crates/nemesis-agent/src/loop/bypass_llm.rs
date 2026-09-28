@@ -14,9 +14,11 @@ use std::time::Duration;
 /// 标题生成的输出 token 上限（≤24 字标题，64 token 余量充足）。
 pub const AUX_TITLE_MAX_TOKENS: u32 = 64;
 
-/// 前情摘要的输出 token 上限（九段式结构化摘要，2048 token 足够且封顶
-/// 失控长输出）。
-pub const AUX_SUMMARY_MAX_TOKENS: u32 = 2048;
+/// 前情摘要的输出 token 上限（结构化摘要；2026-09-28 真模型验证从 2048 上调
+/// 至 8192：thinking 系模型（GLM anthropic 兼容端点默认开思考）会把思考 token
+/// 一并计入 max_tokens，2048 被思考烧完后 text 为空 → 摘要「无有效内容」静默
+/// 失败。8192 对非思考模型封顶失控长输出、对思考模型留足正文余量）。
+pub const AUX_SUMMARY_MAX_TOKENS: u32 = 8192;
 
 /// 标题生成墙钟上限（小模型短输出，60s 足够；超时 = 本轮放弃，下轮再试）。
 pub const AUX_TITLE_TIMEOUT: Duration = Duration::from_secs(60);

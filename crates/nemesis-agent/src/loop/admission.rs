@@ -1084,24 +1084,39 @@ impl AgentLoop {
         // 对话生成：轮结束清 workflow_edit 目标（同款配对）。
         *self.pending_workflow_edit.write() = None;
 
-        // I1 (U7) post-turn inbox handling:
-        //   - Unconsumed next-step (steer) messages ALWAYS transfer back to
-        //     the next-turn queue — both for cancelled turns AND for turns
-        //     that finished normally with a steer arriving too late for the
-        //     escape hatch (second-pass review fix: the cancelled-only
-        //     transfer left stale steers in next_step, which a LATER turn
-        //     would claim out of context). Transferred messages become the
-        //     next turn's input — nothing is lost, nothing arrives stale.
-        //   - Completed turn with queued next-turn messages: requeue the head
-        //     through the normal inbound path (fresh busy acquire),
-        //     serialized behind this turn because the session was already
-        //     released.
-        self.inbox.transfer_next_step_to_next_turn(&session_key);
+        // I1 (U7) post-turn inbox handling：单一真相源在
+        // `drain_next_turn_queue`（steer 转回 + 队首重注入 + 空队列清理）。
+        // 2026-09-28 真模型验证发现：此块此前只存在于本尾部，/compact
+        // /clear 与 /build 派发尾巴只释放会话不排空——维护期间排队的消息
+        // 永久滞留 next_turn。提取为共享方法供三处尾巴对称调用。
+        self.drain_next_turn_queue(&session_key).await;
+
+        match result {
+            Ok(response) => (agent_id, response, None),
+            Err(e) => (agent_id, String::new(), Some(e)),
+        }
+    }
+
+    /// 轮尾收件箱排空（I1/U7）：`process_admitted` / Maintenance（/compact
+    /// /clear）/ UserDispatch（/build）三类尾巴共用的单一真相源。
+    ///   - 未消费的 next-step（steer）消息一律转回 next-turn 队列——取消的
+    ///     轮与「逃逸舱没赶上」的正常轮同语义（second-pass review fix），
+    ///     转出即成为下一轮输入，不丢失、不陈旧。
+    ///   - 已完成轮若有排队 next-turn 消息：取队首经正常入站路径重注入
+    ///     （fresh busy acquire），会话此时已释放，天然串行于本轮之后。
+    ///
+    /// 2026-09-28 真模型验证发现：此前此块只存在于 process_admitted 尾部，
+    /// 分钟级维护（LLM 摘要）与远程派发（RPC ACK 等待）期间排队的消息在
+    /// 维护/派发尾巴 release_session 后永久滞留 next_turn——直到下一条
+    /// 新消息到来才被捎带排空（相对新消息顺序失真），无新消息则永不处理
+    /// （真实模型 /compact 观察中滞留 >20 分钟）。提取为共享方法三处接线。
+    pub(crate) async fn drain_next_turn_queue(&self, session_key: &str) {
+        self.inbox.transfer_next_step_to_next_turn(session_key);
         if matches!(
             self.concurrent_mode,
             ConcurrentMode::Queue | ConcurrentMode::Steer
         ) {
-            if let Some(head) = self.inbox.claim_next_turn_head(&session_key) {
+            if let Some(head) = self.inbox.claim_next_turn_head(session_key) {
                 info!(
                     "[AgentLoop] processing queued next-turn message: session_key={}, len={}",
                     session_key,
@@ -1170,7 +1185,7 @@ impl AgentLoop {
                                 message_type: String::new(),
                                 meta: nemesis_types::channel::OutboundMeta {
                                     model: None,
-                                    session_key: Some(session_key.clone()),
+                                    session_key: Some(session_key.to_string()),
                                     source_node: None,
                                 },
                             };
@@ -1180,14 +1195,9 @@ impl AgentLoop {
                 }
             }
             // Drop empty queues (housekeeping; keeps the map bounded).
-            if self.inbox.pending(&session_key) == (0, 0) {
-                self.inbox.clear(&session_key);
+            if self.inbox.pending(session_key) == (0, 0) {
+                self.inbox.clear(session_key);
             }
-        }
-
-        match result {
-            Ok(response) => (agent_id, response, None),
-            Err(e) => (agent_id, String::new(), Some(e)),
         }
     }
 

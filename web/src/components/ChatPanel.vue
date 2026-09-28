@@ -26,6 +26,8 @@ import { registerChatBridge, unregisterChatBridge } from '../skins/chatBridge'
 import TodoPanel from './chat/TodoPanel.vue'
 
 import ShareModal from './ShareModal.vue'
+// 角色目录与客户端委派（2026-09-28）：委派弹窗（roles.list + chat.spawn）。
+import DelegateDialog from './DelegateDialog.vue'
 // M1b (2026-09-05): 工具调用卡片（M1a AgentEvent 通道的实时渲染）。
 import ToolCallCard from './chat/ToolCallCard.vue'
 import type { ToolEvent } from '../stores/chat'
@@ -947,6 +949,8 @@ function onWatchdog() {
 const rewinding = ref(false)
 /** L4：会话分享弹窗开关（工具栏 🔗 按钮）。 */
 const showShare = ref(false)
+/** 角色目录与客户端委派（2026-09-28）：委派弹窗开关（工具栏按钮）。 */
+const showDelegate = ref(false)
 
 /** rewind/redo 后全量重同步：无条件以 chat_log 为真相源 replace 重建视图，
  *  并用响应 oldest_index 重建行号（与 watchdog 分支的区别：不依赖 streaming
@@ -2463,6 +2467,14 @@ onUnmounted(() => {
         🔗 分享
       </button>
       <button
+        v-if="isDefaultChat"
+        class="voice-btn delegate-btn"
+        title="委派任务给子代理（选角色 + 工具档位，完成后回复交回本会话）"
+        @click="showDelegate = true"
+      >
+        🤝 委派
+      </button>
+      <button
         v-if="steerEnabled"
         class="voice-btn steer-btn"
         title="一键插队：给输入加 ! 前缀，agent 忙碌时立即送达当前轮"
@@ -2711,6 +2723,12 @@ onUnmounted(() => {
       v-if="showShare && effectiveSid"
       :session-id="effectiveSid"
       @close="showShare = false"
+    />
+    <!-- 角色目录与客户端委派（2026-09-28）：委派弹窗 -->
+    <DelegateDialog
+      v-if="showDelegate && effectiveSid"
+      :session-id="effectiveSid"
+      @close="showDelegate = false"
     />
   </div>
 </template>

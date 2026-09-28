@@ -5262,9 +5262,11 @@ async fn test_summarize_prefix_reuse_true_keeps_g1_shape() {
     assert_eq!(msgs[1].role, "user");
     assert_eq!(msgs[1].content, "question one");
     assert_eq!(msgs[2].role, "assistant");
-    // ...trailing instruction as the final user message.
+    // ...trailing instruction as the final user message（P6 六节 schema
+    // 指令——merge 后 loop 侧摘要指令由 build_summary_instruction 单源构建）。
     assert_eq!(msgs.last().unwrap().role, "user");
-    assert!(msgs.last().unwrap().content.contains("用户消息全录"));
+    assert!(msgs.last().unwrap().content.contains("## Goal"));
+    assert!(msgs.last().unwrap().content.contains("Next Steps"));
 }
 
 /// prefix_reuse=false → OLD shape: exactly ONE bare user message whose
@@ -5305,7 +5307,7 @@ async fn test_summarize_prefix_reuse_false_uses_bare_shape() {
     assert!(c.contains("prior coverage"), "existing summary merged");
     assert!(c.contains("user: question one"), "flattened role lines");
     assert!(c.contains("assistant: answer one"), "flattened role lines");
-    assert!(c.contains("用户消息全录"), "instruction present");
+    assert!(c.contains("## Goal"), "instruction present");
     // No system message in the old shape.
     assert!(!msgs.iter().any(|m| m.role == "system"));
 }
@@ -8228,11 +8230,12 @@ async fn test_summarize_multipart_batch_is_prefix_subset() {
     assert!(p1.last().unwrap().content.contains("摘要"));
     assert_eq!(p2.last().unwrap().role, "user");
     // The merge call is a plain user message (no system) — merge has no
-    // prefix to reuse.
+    // prefix to reuse（P6 合并提示：两段编号 + 六节 schema 后缀）.
     let merge = &requests[2];
     assert_eq!(merge.len(), 1);
     assert_eq!(merge[0].role, "user");
-    assert!(merge[0].content.contains("摘要一"));
+    assert!(merge[0].content.contains("1: part summary"));
+    assert!(merge[0].content.contains("2: part summary"));
     // No bare-concatenation form anywhere.
     for req in requests.iter() {
         for m in req.iter() {

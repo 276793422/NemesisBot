@@ -202,6 +202,13 @@ fn subagent_roles_have_four_component_templates() {
         subagents::SubagentRole::SecurityReviewer,
         subagents::SubagentRole::TestEngineer,
         subagents::SubagentRole::Documenter,
+        subagents::SubagentRole::WebReader,
+        subagents::SubagentRole::Coordinator,
+        subagents::SubagentRole::WorkflowExecutor,
+        subagents::SubagentRole::MemoryExtractor,
+        subagents::SubagentRole::Qa,
+        subagents::SubagentRole::Fork,
+        subagents::SubagentRole::TestRunner,
     ];
     for role in roles {
         let t = role.template();
@@ -233,16 +240,56 @@ fn subagent_role_prompt_overlays_persona_with_separator() {
 fn subagent_slug_roundtrip_and_catalog_consistency() {
     // slug → 角色 → slug 恒等；目录条目与 slug 空间完全一致（新增角色
     // 必须同时补 slug 与目录，spawn schema 与解析才不会漂移）。
-    for (slug, _) in subagents::SubagentRole::catalog() {
+    for (slug, _, _) in subagents::SubagentRole::catalog() {
         let role = subagents::SubagentRole::from_slug(slug)
             .unwrap_or_else(|| panic!("目录 slug {slug} 应可解析"));
         assert_eq!(role.slug(), *slug, "slug 往返不一致：{slug}");
     }
-    assert_eq!(subagents::SubagentRole::catalog().len(), 10);
+    assert_eq!(subagents::SubagentRole::catalog().len(), 17);
     // 未知 slug 诚实返回 None（调用方拒绝而非猜测）。
     assert!(subagents::SubagentRole::from_slug("nope").is_none());
     // 观察者模板带稳态静默条款（参考业界 "expected steady state is silence"）。
     assert!(subagents::SubagentRole::Observer.template().contains("稳态是静默"));
+    // 分叉角色模板带「继承参考非处境」纪律（参考业界 fork worker 的
+    // "inherited reference, not your situation"）。
+    assert!(subagents::SubagentRole::Fork.template().contains("不是你的处境"));
+}
+
+#[test]
+fn subagent_catalog_min_tier_domain_and_visibility_sets() {
+    // min_tier 值域：只允许三档线格式（消费方按此映射 ModelTier）。
+    for (slug, _, min) in subagents::SubagentRole::catalog() {
+        assert!(
+            matches!(*min, "mini" | "normal" | "big"),
+            "{slug} min_tier 非法：{min}"
+        );
+    }
+    // 分档供给集合：目录全量 17，供给分档 5/13/17（目录完整性是硬指标，
+    // 供给分档与 tier_allowed_tools 同构）。
+    let mini = subagents::SubagentRole::roles_visible_to("mini");
+    let normal = subagents::SubagentRole::roles_visible_to("normal");
+    let big = subagents::SubagentRole::roles_visible_to("big");
+    assert_eq!(mini.len(), 5, "mini 档应见 5 角色：{mini:?}");
+    assert_eq!(normal.len(), 13, "normal 档应见 13 角色");
+    assert_eq!(big.len(), 17, "big 档全量");
+    // 单调：低档集合是高档集合的子集。
+    for s in &mini {
+        assert!(normal.contains(s), "mini 角色 {s} 应在 normal 可见");
+        assert!(big.contains(s), "mini 角色 {s} 应在 big 可见");
+    }
+    for s in &normal {
+        assert!(big.contains(s), "normal 角色 {s} 应在 big 可见");
+    }
+    // 抽样点检：qa 配小模型走 mini 档；编排/分叉/安全评审属强模型职责。
+    for s in ["explorer", "worker", "qa", "reviewer"] {
+        assert!(mini.contains(&s), "{s} 应在 mini 可见");
+    }
+    for s in ["security_reviewer", "coordinator", "fork", "workflow_executor"] {
+        assert!(!normal.contains(&s), "{s} 不应下放 normal");
+        assert!(big.contains(&s), "{s} 应在 big 可见");
+    }
+    // 未知 tier fail-open 到最宽档（分档是供给优化不是安全闸）。
+    assert_eq!(subagents::SubagentRole::roles_visible_to("whatver").len(), 17);
 }
 
 // ---------------------------------------------------------------------------

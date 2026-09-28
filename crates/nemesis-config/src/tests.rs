@@ -642,6 +642,7 @@ fn test_full_config_roundtrip() {
             subagent: SubagentConfig::default(),
             fs_watcher: FsWatcherConfig::default(),
             hidden_tools: Vec::new(),
+            roles: crate::RolesConfig::default(),
             small_model: None,
             doom_loop_approval: false,
             image_downscale: true,
@@ -688,6 +689,20 @@ fn test_full_config_roundtrip() {
     assert_eq!(parsed.channels.web.port, 9999);
     assert!(parsed.security.is_some());
     assert!(!parsed.security.unwrap().enabled);
+}
+
+#[test]
+fn test_agents_roles_config_roundtrip_and_defaults() {
+    // 缺省：缺 `agents.roles` 节 = 空 hidden（全部角色按目录供给）。
+    let bare: Config = serde_json::from_str("{}").unwrap();
+    assert!(bare.agents.roles.hidden.is_empty());
+
+    // 显式 hidden：往返保留；其余 AgentsConfig 字段不受影响。
+    let json = r#"{"agents":{"roles":{"hidden":["fork","coordinator"]}}}"#;
+    let cfg: Config = serde_json::from_str(json).unwrap();
+    assert_eq!(cfg.agents.roles.hidden, vec!["fork", "coordinator"]);
+    let out: Config = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+    assert_eq!(out.agents.roles.hidden, vec!["fork", "coordinator"]);
 }
 
 #[test]

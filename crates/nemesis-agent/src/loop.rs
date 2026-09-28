@@ -95,6 +95,11 @@ mod config_watch;
 pub use config_watch::*;
 #[allow(unused_imports)]
 pub(crate) use config_watch::*;
+mod client_spawn;
+#[allow(unused_imports)]
+pub use client_spawn::*;
+#[allow(unused_imports)]
+pub(crate) use client_spawn::*;
 mod fs_watch;
 #[allow(unused_imports)]
 pub use fs_watch::*;
@@ -611,6 +616,13 @@ pub struct AgentLoop {
     /// 刻意不消费本字段，维持主模型。工厂在 loop 构造后从 config 解析装配；
     /// 运行期改配置需重启 Agent（与 lsp_tool 等启动期装配项同一约定）。
     small_model: parking_lot::RwLock<Option<SmallModelSlot>>,
+    /// spawn 共享槽的 loop 侧镜像（2026-09-28 角色目录与分档供给）：与
+    /// SpawnTool 持有同一 `Arc<OnceLock<SpawnFn>>`（factory 组装后
+    /// `set_spawn_slot` 注入），供 `client_spawn`（WSAPI `chat.spawn`）绕过
+    /// 工具表直接驱动同一 detached 通道。`None` = standalone/未注入 →
+    /// client_spawn 诚实拒绝。
+    spawn_slot:
+        parking_lot::RwLock<Option<std::sync::Arc<std::sync::OnceLock<crate::loop_tools::SpawnFn>>>>,
 }
 
 impl AgentLoop {
@@ -713,6 +725,7 @@ impl AgentLoop {
             config_mtime: parking_lot::RwLock::new(None),
             warm_candidates: parking_lot::Mutex::new(HashMap::new()),
             small_model: parking_lot::RwLock::new(None),
+            spawn_slot: parking_lot::RwLock::new(None),
         }
     }
 
@@ -865,6 +878,11 @@ mod spawn_detached_tests;
 // F8 (devtool-upgrade 阶段 3)：hidden_tools 双闸（供给过滤 + dispatch 拦截）测试。
 #[cfg(test)]
 mod f8_hidden_tools_tests;
+// 角色目录与分档供给（2026-09-28）：`agents.roles.hidden` fresh-read /
+// visible_roles 单一裁决 / spawn role dispatch 闸 / fork inherit_context
+// dispatch 改写测试。
+#[cfg(test)]
+mod role_catalog_tests;
 // M5 (devtool-upgrade 阶段 3)：会话级 context 占用快照测试。
 #[cfg(test)]
 mod m5_context_status_tests;

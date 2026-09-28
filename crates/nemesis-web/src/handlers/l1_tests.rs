@@ -100,12 +100,13 @@ fn cmds_of<'a>(reg: &'a [(String, Vec<&'static str>)], module: &str) -> &'a [&'s
         .unwrap_or(&[])
 }
 
-/// 无 feature 闸的 25 个模块（register_all 的无条件注册段；L6++ G4 起
-/// 含 projects，P30（WS14）起含 canvas）。
+/// 无 feature 闸的 26 个模块（register_all 的无条件注册段；L6++ G4 起
+/// 含 projects，P30（WS14）起含 canvas，2026-09-28 起含 roles——角色目录
+/// WSAPI）。
 const UNCONDITIONAL_MODULES: &[&str] = &[
     "system", "estop", "approval", "question", "chat", "config", "models", "channels", "identity",
     "tools", "skills", "mcp", "tasks", "coding", "hooks", "commands", "fs", "plugins", "board",
-    "logs", "agent", "persona", "sessions", "projects", "canvas",
+    "logs", "agent", "persona", "sessions", "projects", "canvas", "roles",
 ];
 
 // ---------------------------------------------------------------------------
@@ -170,6 +171,9 @@ fn registry_anchor_commands_present() {
     assert!(cmds_of(&reg, "sessions").contains(&"redo"));
     assert!(cmds_of(&reg, "logs").contains(&"history_search"));
     assert!(cmds_of(&reg, "projects").contains(&"create"));
+    // 角色目录（2026-09-28）：roles.list + chat.spawn 锚点。
+    assert!(cmds_of(&reg, "roles").contains(&"list"));
+    assert!(cmds_of(&reg, "chat").contains(&"spawn"));
     // feature 门控模块锚点
     if cfg!(feature = "workflow") {
         let w = cmds_of(&reg, "workflow");
@@ -247,7 +251,7 @@ fn docs_generation_writes_wsapi_commands_md() {
         "> 由 `crates/nemesis-web/src/handlers/l1_tests.rs::\
 docs_generation_writes_wsapi_commands_md` 从 `ModuleHandler::commands()` \
 静态清单生成——**勿手改**。改任何 handler 的命令臂后重跑 \
-`cargo test -p nemesis-web l1_docs` 刷新本文件。\n\n",
+`cargo test -p nemesis-web docs_generation` 刷新本文件。\n\n",
     );
     md.push_str(&format!("共 {} 个模块 / {} 条命令。\n\n", reg.len(), total));
     md.push_str("| module | commands | count |\n|---|---|---|\n");

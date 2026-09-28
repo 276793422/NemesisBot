@@ -762,6 +762,12 @@ pub struct AgentsConfig {
     /// edits take effect from the next turn (fresh-read, no restart).
     #[serde(default)]
     pub hidden_tools: Vec<String>,
+    /// 角色目录分档供给配套（2026-09-28 角色目录与分档供给）：`hidden`
+    /// = 从 spawn schema 与 dispatch 双闸隐藏的角色 slug（镜像
+    /// hidden_tools 的 F8 双闸模型；通配语义不开放——角色目录是静态
+    /// 17 项，按名精确匹配）。运行时改键下一轮生效（fresh-read）。
+    #[serde(default)]
+    pub roles: RolesConfig,
     /// N2 (devtool-upgrade 阶段 4): 小模型专职杂务通道 — a model reference
     /// (alias from `model_list` or `vendor/model`) used for cheap chores.
     /// Sole consumer today: manual `/compact` summarization (E6) — auto
@@ -854,6 +860,15 @@ impl Default for CacheWarmerConfig {
 
 fn default_cache_warmer_cost_limit_usd() -> f64 {
     0.05
+}
+
+/// `agents.roles` 配置节（2026-09-28 角色目录与分档供给）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RolesConfig {
+    /// 隐藏的角色 slug 列表（spawn schema 枚举照旧全量、dispatch 拒绝——
+    /// F8 双闸；`roles_visible_to` 过滤后的子集再减本表）。
+    #[serde(default)]
+    pub hidden: Vec<String>,
 }
 
 /// I1 (devtool-upgrade 阶段 3): `agents.fs_watcher` config section —
@@ -3574,6 +3589,7 @@ pub fn default_config() -> Config {
             subagent: SubagentConfig::default(),
             fs_watcher: FsWatcherConfig::default(),
             hidden_tools: Vec::new(),
+            roles: RolesConfig::default(),
             small_model: None,
             doom_loop_approval: false,
             image_downscale: true,

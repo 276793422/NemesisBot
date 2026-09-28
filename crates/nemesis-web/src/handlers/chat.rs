@@ -36,6 +36,7 @@ impl ModuleHandler for ChatHandler {
             "get_mode",
             "sync",
             "queue_status",
+            "spawn",
         ]
     }
 
@@ -160,6 +161,45 @@ impl ModuleHandler for ChatHandler {
                 "capacity": s.capacity,
                 "busy": s.busy,
                 "mode": s.mode,
+            })));
+        }
+        // 客户端驱动委派（2026-09-28 角色目录与分档供给）：把任务派给指定
+        // 角色的子代理，同步等最终回复。角色合法性走 AgentLoop 的
+        // `check_client_role`（与 dispatch 闸同一 visible_roles 裁决）；
+        // 派发走 `client_spawn`（与模型 spawn 同一 SpawnFn detached 通道，
+        // 工具档位/角色模板/安全管线全同源）。
+        if cmd == "spawn" {
+            let d = data.as_ref().ok_or_else(|| "missing data".to_string())?;
+            let task = d
+                .get("task")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "missing task".to_string())?;
+            let role = d
+                .get("role")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .unwrap_or("");
+            let tools_profile = d
+                .get("tools_profile")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .unwrap_or("");
+            // 值域校验与 SpawnTool schema 同款（空 = readonly 缺省）。
+            if !tools_profile.is_empty() && tools_profile != "readonly" && tools_profile != "full" {
+                return Err(format!(
+                    "invalid tools_profile: {tools_profile:?} (expected \"readonly\" | \"full\")"
+                ));
+            }
+            agent_loop.check_client_role(role)?;
+            let result = agent_loop.client_spawn(task, role, tools_profile).await?;
+            return Ok(Some(serde_json::json!({
+                "session_id": session_id,
+                "session_key": session_key,
+                "role": role,
+                "tools_profile": if tools_profile.is_empty() { "readonly" } else { tools_profile },
+                "result": result,
             })));
         }
         let receipt = match cmd {

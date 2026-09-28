@@ -125,7 +125,12 @@ impl nemesis_security::guardian::LlmJudge for GatewayLlmJudge {
         ];
         let opts = nemesis_providers::types::ChatOptions {
             temperature: Some(0.0),
-            max_tokens: Some(256),
+            // 结论本身是极小 JSON，但思考型模型（GLM 系默认开思考）的思考
+            // token 与正文共享 max_tokens 预算——256 全被思考烧掉后正文为空，
+            // parse_verdict 报「no opening brace」（2026-09-28 真模型验证实证）。
+            // 与 bypass_llm::AUX_SUMMARY_MAX_TOKENS 2048→8192 同类修复：给足
+            // 思考余量，非思考模型不受影响（结论仍按宪法要求保持极小）。
+            max_tokens: Some(4096),
             top_p: None,
             stop: None,
             reasoning_effort: None,

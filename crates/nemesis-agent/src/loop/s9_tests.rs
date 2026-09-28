@@ -2520,3 +2520,191 @@ async fn cluster_continuation_wrapper_carries_source_node() {
     assert!(out.content.contains("node final"), "got: {}", out.content);
     assert_eq!(out.meta.source_node.as_deref(), Some("node-b"));
 }
+
+/// 阻塞第 `block_n` 次 chat 调用的脚本 provider：之前的调用立即返回脚本
+/// 响应，命中 block_n 的调用在 release 上挂起（摘要调用确定性慢速窗口）。
+struct BlockOnProvider {
+    started: std::sync::Arc<tokio::sync::Notify>,
+    release: std::sync::Arc<tokio::sync::Notify>,
+    responses: std::sync::Mutex<Vec<LlmResponse>>,
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    block_n: usize,
+}
+
+impl BlockOnProvider {
+    fn new(
+        responses: Vec<LlmResponse>,
+        block_n: usize,
+    ) -> (
+        Self,
+        std::sync::Arc<tokio::sync::Notify>,
+        std::sync::Arc<tokio::sync::Notify>,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let started = std::sync::Arc::new(tokio::sync::Notify::new());
+        let release = std::sync::Arc::new(tokio::sync::Notify::new());
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        (
+            Self {
+                started: started.clone(),
+                release: release.clone(),
+                responses: std::sync::Mutex::new(responses),
+                calls: calls.clone(),
+                block_n,
+            },
+            started,
+            release,
+            calls,
+        )
+    }
+}
+
+#[async_trait]
+impl LlmProvider for BlockOnProvider {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        self.started.notify_one();
+        let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if n == self.block_n {
+            self.release.notified().await;
+        }
+        let mut q = self.responses.lock().unwrap();
+        if q.is_empty() {
+            Ok(resp("blockon exhausted"))
+        } else {
+            Ok(q.remove(0))
+        }
+    }
+}
+
+/// 维护尾巴排队消息排空（2026-09-28 真模型验证回归）：/compact 的 LLM 摘要
+/// 可达分钟级，期间排队的消息此前在维护尾巴 release_session 后永久滞留
+/// next_turn（排空只存在于 process_admitted 尾部；真实环境观察滞留 >20
+/// 分钟）。修复后维护尾巴对称调用 drain_next_turn_queue——本测试用阻塞
+/// 第 1 次 chat 调用（摘要）制造确定性维护窗口，断言排队消息在 compact
+/// 完成后被重注入并完整过闸出第二个回合。
+///
+/// 注意：reinject_tx 与泵入站是同一 mpsc（生产同形），其存活让通道永不
+/// 关闭——泵不靠 close 收口，测尾只 stop() 不 await runner。
+#[tokio::test]
+async fn maintenance_compact_tail_drains_queued_next_turn_message() {
+    let _logs = capture_logs();
+    const WARM_TURNS: usize = 5; // 历史 10 条 > K_TARGET(6)，/compact 才有摘要段
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(32);
+    let (in_tx, in_rx) = tokio::sync::mpsc::channel(16);
+    // 脚本：call0..4=预热回复；call5=摘要（阻塞点）；call6=排队消息回复。
+    let mut script: Vec<LlmResponse> = (1..=WARM_TURNS)
+        .map(|i| resp(&format!("warm reply {i}")))
+        .collect();
+    script.push(resp("标题：测试\n要点：一"));
+    script.push(resp("queued reply"));
+    let (provider, _started, release, calls) = BlockOnProvider::new(script, WARM_TURNS);
+    let agent_loop = std::sync::Arc::new(AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        out_tx,
+        ConcurrentMode::Queue,
+        8,
+        0,
+    ));
+    // 重注入 = 泵入站通道本身（生产同形：drain claim 的队首回到正常消费）。
+    agent_loop.set_reinject_tx(in_tx.clone());
+    let runner = tokio::spawn({
+        let al = agent_loop.clone();
+        async move {
+            AgentLoop::run_bus_arc(al, in_rx).await;
+        }
+    });
+
+    // ① 预热 WARM_TURNS 轮：各轮立即返回，逐轮等完成（响应出站=会话已释放）。
+    let mut got: Vec<String> = Vec::new();
+    let mut deadline;
+    for i in 1..=WARM_TURNS {
+        in_tx.send(plain_msg(&format!("warm question {i}"))).await.unwrap();
+        deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            while let Ok(o) = out_rx.try_recv() {
+                got.push(o.content);
+            }
+            if got.iter().any(|c| c.contains(&format!("warm reply {i}"))) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "warm turn {i} never completed: {got:?}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    // ② /compact：gate 获取会话，摘要 call5 进入阻塞。
+    in_tx.send(plain_msg("/compact")).await.unwrap();
+    deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        while let Ok(o) = out_rx.try_recv() {
+            got.push(o.content);
+        }
+        if calls.load(std::sync::atomic::Ordering::SeqCst) >= 2 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "summary call never started: calls={}, got={got:?}",
+            calls.load(std::sync::atomic::Ordering::SeqCst)
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    // 越过 fetch_add→await 的微窗口（s9 同款 50ms 惯例）。
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // ③ 忙时第三条同会话 → next_turn 队列（排队回执出站确认）。
+    in_tx.send(plain_msg("queued question")).await.unwrap();
+    deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        while let Ok(o) = out_rx.try_recv() {
+            got.push(o.content);
+        }
+        if got.iter().any(|c| c.contains("排队")) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "queued receipt never arrived: {got:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    // ④ 放行摘要 → compact 完成 → 维护尾巴排空 → 重注入 → 第三回合。
+    release.notify_one();
+    deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        while let Ok(o) = out_rx.try_recv() {
+            got.push(o.content);
+        }
+        if got.iter().any(|c| c.contains("queued reply")) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "queued message never drained after compact tail: {got:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    // compact 成功回执与排队消息的回复都在场。
+    assert!(
+        got.iter().any(|c| c.contains("已压缩")),
+        "compact success receipt expected: {got:?}"
+    );
+    // 队列已清空（无滞留）。
+    let (busy, queued) = agent_loop.get_session_busy_state("web:chat1");
+    assert!(!busy && queued == 0, "session must be idle and drained");
+
+    // 收口：stop 置 running=false（泵 park 在存活的 recv() 上，不 await）。
+    agent_loop.stop();
+    drop(runner);
+}

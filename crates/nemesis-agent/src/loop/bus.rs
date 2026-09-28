@@ -205,6 +205,7 @@ impl AgentLoop {
             config_mtime: parking_lot::RwLock::new(None),
             warm_candidates: parking_lot::Mutex::new(HashMap::new()),
             small_model: parking_lot::RwLock::new(None),
+            spawn_slot: parking_lot::RwLock::new(None),
         }
     }
 
@@ -480,7 +481,15 @@ impl AgentLoop {
 
         while self.running.load(Ordering::Acquire) {
             match inbound_rx.recv().await {
-                Some(msg) => {
+                Some(mut msg) => {
+                    // slash 四段解析链（自定义命令 > 内置模板 > 技能回落）在
+                    // 生产泵路径的唯一接线点：改写必须在 gate 分类前完成，
+                    // 消息以最终形态参与 gate 判定（内置短路名 /compact 等
+                    // 在 rewrite 内部原样跳过；非 slash 消息早退零开销）。
+                    // 2026-09-28 真模型验证发现：此前的改写只接在 legacy
+                    // process_inbound_message（tests/inline 回退），泵直调
+                    // gate_inbound 导致四类 slash 在生产路径原样透传给 LLM。
+                    self.rewrite_custom_command(&mut msg).await;
                     match self.gate_inbound(&msg) {
                         GateOutcome::Continuation(task_id) => {
                             info!(
@@ -514,6 +523,11 @@ impl AgentLoop {
                                 this.finish_message(&m, receipt, None, false).await;
                                 let response = this.handle_maintenance(kind, &session_key).await;
                                 this.release_session(&session_key);
+                                // 排队消息排空（2026-09-28 真模型验证发现）：
+                                // 分钟级维护期间排队的消息此前在维护尾巴
+                                // 永久滞留 next_turn——与 admitted 尾部共用
+                                // drain_next_turn_queue 对称排空。
+                                this.drain_next_turn_queue(&session_key).await;
                                 this.finish_message(&m, response, None, false).await;
                             });
                         }

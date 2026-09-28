@@ -253,6 +253,52 @@ impl AgentLoop {
         .unwrap_or_default()
     }
 
+    /// 角色隐藏 fresh-read（2026-09-28 角色目录与分档供给；`current_hidden_tools`
+    /// 同款模式——读 `agents.roles.hidden`，无 config_path / 缺键 / 坏 JSON →
+    /// 空表）。目录是静态 17 项，通配语义不开放，按名精确匹配。
+    pub(crate) fn current_hidden_roles(&self) -> Vec<String> {
+        let path = match self.config_path.read().clone() {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+        let v = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+        v.and_then(|v| {
+            v.get("agents")
+                .and_then(|a| a.get("roles"))
+                .and_then(|r| r.get("hidden"))
+                .and_then(|h| h.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|e| e.as_str())
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<String>>()
+                })
+        })
+        .unwrap_or_default()
+    }
+
+    /// 角色供给的**单一裁决**：当前 tier 分档可见集 − 配置隐藏集（保持目录
+    /// 顺序）。dispatch 闸与 `roles.list` 消费同一函数——两处口径永不漂移。
+    /// tier → 线格式映射在本地（nemesis-prompts 零依赖不引 nemesis-types）；
+    /// Auto/未知档按最宽档（与 `resolve_active_tier` 缺省 big 同哲学）。
+    pub(crate) fn visible_roles(&self) -> Vec<&'static str> {
+        let tier_str = match *self.tier.read() {
+            nemesis_types::capability::ModelTier::Mini => "mini",
+            nemesis_types::capability::ModelTier::Normal => "normal",
+            nemesis_types::capability::ModelTier::Auto | nemesis_types::capability::ModelTier::Big => {
+                "big"
+            }
+        };
+        let hidden = self.current_hidden_roles();
+        nemesis_prompts::subagents::SubagentRole::roles_visible_to(tier_str)
+            .into_iter()
+            .filter(|slug| !hidden.iter().any(|h| h == slug))
+            .collect()
+    }
+
     /// Y1 (Phase4-a): semantic tool-documentation folding, applied AFTER the
     /// tier filter and ORTHOGONAL to tool supply — folded tools stay
     /// callable with their full parameter schema; only the description text

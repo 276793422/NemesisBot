@@ -507,7 +507,9 @@ impl AgentLoop {
     /// N2：`force_compression` 的参数化形态——`prefer_small=true` 时手动
     /// 入口（E6 `/compact`）优先用 `agents.small_model` 跑摘要；自动压缩
     /// 路径维持 `false`（主模型，质量敏感不降档）。
-    pub async fn force_compression_opts(&self, instance: &AgentInstance, prefer_small: bool) {
+    ///
+    /// 返回 `true` = 已发起摘要生成尝试；`false` = 无可推进内容（未触达 LLM）。
+    pub async fn force_compression_opts(&self, instance: &AgentInstance, prefer_small: bool) -> bool {
         let history = instance.get_history();
         let cache = instance.get_summary_cache();
         let current_c = cache
@@ -530,8 +532,12 @@ impl AgentLoop {
         // drop an orphan result that the summary can't capture).
         let new_c = tool_safe_boundary(&history, raw_c);
         // Must advance and have a non-empty prefix to summarize.
+        // 返回值区分两臂（2026-09-28 真模型验证发现）：false = 无可推进内容
+        // （tail 已到 SMALL_K_FORCE 或 tool_safe_boundary 无法再前移），
+        // true = 已进入摘要生成尝试。调用方（compact_session）据此把
+        // 「无需压缩」与「摘要失败」分开上报，不再统一误报 LLM 失败。
         if new_c <= current_c || new_c == 0 {
-            return;
+            return false;
         }
 
         let (provider, model) = self.resolve_summary_provider(prefer_small);
@@ -577,6 +583,7 @@ impl AgentLoop {
                 current_c
             );
         }
+        true
     }
 
     // -----------------------------------------------------------------------
@@ -587,9 +594,10 @@ impl AgentLoop {
     /// `force_compression` 推进摘要覆盖，再把新摘要持久化回 store（顺序同
     /// 回合末：先 summary+covers 后 history，见回合末块注释）。
     ///
-    /// 成功回执带覆盖数（摘要覆盖前 N 条，保留近 M 条）；摘要 LLM 失败或
-    /// 无可压缩内容时返回 Err（covers 不推进——2026-08-25 静默失忆修复的
-    /// 同一契约），历史保持不变。
+    /// 成功回执带覆盖数（摘要覆盖前 N 条，保留近 M 条）；摘要 LLM 失败时返回
+    /// Err（covers 不推进——2026-08-25 静默失忆修复的同一契约），历史保持不变。
+    /// 无可推进内容（tail 已最简 / 边界无法前移）返回 Ok 诚实回执——2026-09-28
+    /// 真模型验证发现此前该情形误报「LLM 调用失败」（根本没发起调用）。
     pub async fn compact_session(&self, session_key: &str) -> Result<String, String> {
         let instance = self.get_or_create_instance(session_key);
         let history_len = instance.get_history().len();
@@ -609,7 +617,7 @@ impl AgentLoop {
 
         // N2：手动 /compact 是 `agents.small_model` 的唯一消费点——摘要用小
         // 省钱；自动压缩路径（context_length_exceeded 等）维持主模型。
-        self.force_compression_opts(&instance, true).await;
+        let attempted = self.force_compression_opts(&instance, true).await;
 
         // 方言 PostCompact（观察型）：压缩尝试结束（成败皆触发），与 auto 路径对称。
         let bridge_post = self.cc_bridge.read().as_ref().cloned();
@@ -621,6 +629,11 @@ impl AgentLoop {
             .get_summary_cache()
             .filter(|c| c.covers_up_to > before && !c.text.is_empty())
         else {
+            if !attempted {
+                // 无可推进内容 = 健康态（tail 已最简），不是失败——诚实告知，
+                // 不冒充「LLM 调用失败」（2026-09-28 真模型验证发现的误报臂）。
+                return Ok("✓ 无需压缩：会话历史已处于最简状态".to_string());
+            }
             return Err("摘要生成失败（LLM 调用失败或无有效内容），历史保持不变".to_string());
         };
 
@@ -1177,7 +1190,16 @@ pub(crate) async fn summarize_batch_owned(
 
     match response {
         Some(Ok(resp)) if !resp.content.is_empty() => Some(resp.content),
-        Some(Ok(_)) => None,
+        Some(Ok(_)) => {
+            // 2026-09-28 真模型验证：此臂原为静默 None——thinking 系模型把
+            // AUX_SUMMARY_MAX_TOKENS 烧在思考上 → text 空 → 摘要失败不可见，
+            // 只剩 multipart abort 的一句间接 warn。响亮失败优于静默失忆。
+            warn!(
+                "[AgentLoop] summarize_batch_owned: LLM returned empty content (thinking-token exhaustion or refusal? budget={} tokens); summary NOT produced, history stays unfolded",
+                AUX_SUMMARY_MAX_TOKENS
+            );
+            None
+        }
         Some(Err(e)) => {
             warn!(
                 "[AgentLoop] summarize_batch_owned LLM call failed (summary NOT produced, history stays unfolded): {}",

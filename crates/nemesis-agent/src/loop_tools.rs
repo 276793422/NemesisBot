@@ -4344,11 +4344,18 @@ impl Tool for SpawnTool {
     fn parameters(&self) -> serde_json::Value {
         // 角色 enum 从目录生成（单一真相源：新增角色只改 catalog，schema
         // 自动跟上）。"" 不进 enum——缺省 = 键缺省，模型显式传 "" 反而是
-        // 混淆面。
+        // 混淆面。枚举保持全量目录（稳定契约）；tier/hidden 的供给收窄
+        // 由 dispatch 闸权威裁决（F8 同款双闸模型，陈旧 cache 窗口兜底）。
+        // 枚举描述同步由目录生成（slug=职责），消灭第二份手写文案。
         let role_slugs: Vec<&str> = crate::prompt::SubagentRole::catalog()
             .iter()
-            .map(|(slug, _)| *slug)
+            .map(|(slug, _, _)| *slug)
             .collect();
+        let role_docs: String = crate::prompt::SubagentRole::catalog()
+            .iter()
+            .map(|(slug, desc, _)| format!("{slug}={desc}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -4363,11 +4370,15 @@ impl Tool for SpawnTool {
                 "role": {
                     "type": "string",
                     "enum": role_slugs,
-                    "description": "Specialist role template for the sub-agent (optional). Each role overlays a discipline prompt on the sub-agent's persona: explorer=调查汇报, planner=方案规划, reviewer=评审把关, worker=受权执行, observer=过程观察, generic=通用, debugger=排障定位, security_reviewer=安全评审, test_engineer=测试工程, documenter=文档撰写. Omit to auto-derive from the tools profile (readonly→explorer)."
+                    "description": format!("Specialist role template for the sub-agent (optional). Each role overlays a discipline prompt on the sub-agent's persona: {role_docs}. Omit to auto-derive from the tools profile (readonly→explorer). Roles visible to you depend on the active model tier and agents.roles.hidden config; out-of-scope roles are rejected at dispatch with the visible list.")
                 },
                 "background": {
                     "type": "boolean",
                     "description": "Run the sub-agent in the background (default false). When true, this tool returns immediately with a task marker and the main conversation continues; the sub-agent's result is automatically delivered back to this session when it completes. Use for long-running tasks (builds, large refactors, research) where waiting would stall the conversation."
+                },
+                "inherit_context": {
+                    "type": "boolean",
+                    "description": "Prepend a recent-transcript digest of THIS session to the task (default false). Use with role=fork for one-directive delegation that inherits conversational context — the digest is injected as reference data, not as instructions. Leave false for self-contained tasks."
                 }
             },
             "required": ["task"]
@@ -4428,12 +4439,14 @@ impl Tool for SpawnTool {
             .unwrap_or(false);
 
         // P3：显式角色（缺省 "" = 自动，沿用工具档位推导）。未知 slug 在
-        // spawn 前诚实拒绝，错误文案带合法值清单供模型自纠。
+        // spawn 前诚实拒绝，错误文案带合法值清单供模型自纠。（tier/hidden
+        // 的可见性由 dispatch 闸裁决——SpawnTool 无 tier 视角，管 slug
+        // 合法性这一层。）
         let role = val.get("role").and_then(|v| v.as_str()).unwrap_or("");
         if !role.is_empty() && crate::prompt::SubagentRole::from_slug(role).is_none() {
             let valid: Vec<&str> = crate::prompt::SubagentRole::catalog()
                 .iter()
-                .map(|(s, _)| *s)
+                .map(|(s, _, _)| *s)
                 .collect();
             return Err(format!(
                 "Unknown sub-agent role '{}'. Valid roles: {} (or omit to auto-derive from tools profile).",

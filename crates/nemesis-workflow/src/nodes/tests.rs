@@ -3138,6 +3138,61 @@ async fn test_agent_node_executes() {
 }
 
 #[tokio::test]
+async fn test_agent_node_role_prepends_template() {
+    // role 字段：模板前置进 prompt（模板在前、节点指令在后），未知 slug
+    // 诚实节点失败并列合法清单；空/缺省 = 无模板（旧行为）。
+    let runner = Arc::new(StubAgentRunner::success("done", &[]));
+    let exec = AgentNodeExecutor::new(Arc::clone(&runner) as Arc<dyn AgentRunner>);
+
+    // 已知角色：prompt = 模板 + 分隔 + 原 prompt。
+    let mut cfg = agent_config("审计这次提交");
+    cfg.insert("role".to_string(), serde_json::json!("reviewer"));
+    let node = make_node("agent", "agent", cfg);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    let captured = runner.last_call.lock().unwrap().clone().unwrap();
+    assert!(
+        captured.prompt.starts_with("# 角色：评审员"),
+        "模板必须前置，实际开头: {:.40}",
+        captured.prompt
+    );
+    assert!(captured.prompt.contains("## 硬边界"));
+    assert!(
+        captured.prompt.ends_with("审计这次提交"),
+        "节点指令必须在模板之后"
+    );
+
+    // 未知角色：节点 Failed，错误信息列合法角色。
+    let mut bad = agent_config("x");
+    bad.insert("role".to_string(), serde_json::json!("nope"));
+    let node = make_node("agent", "agent", bad);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Failed);
+    let err = result.error.unwrap_or_default();
+    assert!(err.contains("未知角色 'nope'"), "实际: {err}");
+    assert!(err.contains("test_runner"), "错误应列合法清单，实际: {err}");
+    assert_eq!(runner.calls(), 1, "未知角色不得触达 runner");
+
+    // 空/缺省 role：prompt 原样（旧行为不回归）。
+    let mut blank = agent_config("原样任务");
+    blank.insert("role".to_string(), serde_json::json!(""));
+    let node = make_node("agent", "agent", blank);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    let captured = runner.last_call.lock().unwrap().clone().unwrap();
+    assert_eq!(captured.prompt, "原样任务");
+}
+
+#[tokio::test]
 async fn test_agent_node_respects_max_turns() {
     let runner = Arc::new(StubAgentRunner::success("ok", &[]));
     let exec = AgentNodeExecutor::new(Arc::clone(&runner) as Arc<dyn AgentRunner>);

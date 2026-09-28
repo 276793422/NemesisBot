@@ -3037,6 +3037,33 @@ impl NodeExecutor for AgentNodeExecutor {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty());
 
+        // 角色绑定（2026-09-28 角色目录与分档供给）：`role` = 子代理角色
+        // slug，模板（四组件：硬边界/输出契约/内容边界）前置进 prompt——
+        // run_direct 无独立 system prompt 通道，前置等价生效（模板在前，
+        // 节点指令在后）。未知 slug = 诚实节点失败并列合法清单（不静默
+        // 裸跑）。空/缺省 = 无模板（旧行为）。
+        let prompt = match node.config.get("role").and_then(|v| v.as_str()).map(str::trim) {
+            Some(r) if !r.is_empty() => {
+                let role = match nemesis_prompts::subagents::SubagentRole::from_slug(r) {
+                    Some(role) => role,
+                    None => {
+                        let valid = nemesis_prompts::subagents::SubagentRole::catalog()
+                            .iter()
+                            .map(|(slug, _, _)| *slug)
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        return Ok(failed_node_result(
+                            &node.id,
+                            started,
+                            &format!("未知角色 '{r}'（agent 节点 role 字段）。合法角色: {valid}"),
+                        ));
+                    }
+                };
+                format!("{}\n\n---\n\n{}", role.template(), prompt)
+            }
+            _ => prompt,
+        };
+
         match self
             .runner
             .run_direct(&prompt, &agent_id, max_turns, model)

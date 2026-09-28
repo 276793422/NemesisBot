@@ -223,6 +223,9 @@ impl AgentLoop {
                     .await;
                 }
                 self.release_session(session_key);
+                // ACK 出口同样排空排队消息（与 admitted/维护尾巴同源，
+                // 2026-09-28 真模型验证发现的滞留修复）。
+                self.drain_next_turn_queue(session_key).await;
                 return;
             }
             // 格式异常（段数不足）→ 落到下方按普通文本回复。
@@ -231,6 +234,8 @@ impl AgentLoop {
         // ⑤ 同步结果或错误：直接回复（handle_tool_call 把错误编码在返回串）。
         self.finish_message(msg, result, None, true).await;
         self.release_session(session_key);
+        // 排队消息排空（与 admitted/维护尾巴同源，2026-09-28 滞留修复）。
+        self.drain_next_turn_queue(session_key).await;
     }
 
     /// E6: 手动清空会话入口。chat_log 截断（jsonl-first，令 rebuild 路径

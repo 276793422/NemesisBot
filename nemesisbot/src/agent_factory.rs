@@ -1222,6 +1222,8 @@ fn inject_spawn_fn(
     use std::sync::atomic::{AtomicU64, Ordering};
     // 后台任务 id 计数器（同毫秒并发 spawn 防撞）。
     static BG_SPAWN_COUNTER: AtomicU64 = AtomicU64::new(0);
+    // loop 侧镜像共享槽（client_spawn / WSAPI chat.spawn 消费同一闭包）。
+    loop_arc.set_spawn_slot(spawn_slot.clone());
     let weak = Arc::downgrade(loop_arc);
     let bus = bus.clone();
     let _ = spawn_slot.set(Arc::new(
@@ -2512,6 +2514,8 @@ fn inject_project_spawn_fn(
     // 件2：SubagentStart/Stop 事件源（None = 无桥，不发事件）。
     cc_bridge: Option<std::sync::Arc<nemesis_agent::cc_hooks::CcHookBridge>>,
 ) {
+    // loop 侧镜像共享槽（client_spawn / WSAPI chat.spawn 消费同一闭包）。
+    loop_arc.set_spawn_slot(spawn_slot.clone());
     let weak = Arc::downgrade(loop_arc);
     let _ = spawn_slot.set(Arc::new(
         move |agent_id: &str,
