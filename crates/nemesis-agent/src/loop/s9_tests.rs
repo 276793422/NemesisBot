@@ -2625,7 +2625,10 @@ async fn maintenance_compact_tail_drains_queued_next_turn_message() {
     let mut got: Vec<String> = Vec::new();
     let mut deadline;
     for i in 1..=WARM_TURNS {
-        in_tx.send(plain_msg(&format!("warm question {i}"))).await.unwrap();
+        in_tx
+            .send(plain_msg(&format!("warm question {i}")))
+            .await
+            .unwrap();
         deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             while let Ok(o) = out_rx.try_recv() {

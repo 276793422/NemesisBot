@@ -70,7 +70,10 @@ fn spawn_call(args: &str) -> ToolCallInfo {
 
 /// 造一个带历史的 in-memory store（add_message 只追加已存在会话——先
 /// get_or_create 物化）。
-fn store_with_history(key: &str, msgs: &[(&str, &str)]) -> std::sync::Arc<crate::session::SessionStore> {
+fn store_with_history(
+    key: &str,
+    msgs: &[(&str, &str)],
+) -> std::sync::Arc<crate::session::SessionStore> {
     let store = std::sync::Arc::new(crate::session::SessionStore::new_in_memory());
     store.get_or_create(key);
     for (role, content) in msgs {
@@ -103,7 +106,10 @@ fn current_hidden_roles_defaults_and_parses() {
     assert!(agent_loop.current_hidden_roles().is_empty());
 
     // 合法键 → 解析 + trim + 跳过空项。
-    let cfg = write_config(&dir, r#"{"roles": {"hidden": ["fork", "  qa  ", "", "nope"]}}"#);
+    let cfg = write_config(
+        &dir,
+        r#"{"roles": {"hidden": ["fork", "  qa  ", "", "nope"]}}"#,
+    );
     agent_loop.set_config_path(cfg);
     assert_eq!(
         agent_loop.current_hidden_roles(),
@@ -123,7 +129,10 @@ fn visible_roles_tier_minus_hidden() {
 
     // 隐藏两个 → 15，且被隐藏者不在列。
     let dir = tempfile::tempdir().unwrap();
-    let cfg = write_config(&dir, r#"{"roles": {"hidden": ["fork", "security_reviewer"]}}"#);
+    let cfg = write_config(
+        &dir,
+        r#"{"roles": {"hidden": ["fork", "security_reviewer"]}}"#,
+    );
     agent_loop.set_config_path(cfg);
     let visible = agent_loop.visible_roles();
     assert_eq!(visible.len(), 15);
@@ -251,9 +260,7 @@ async fn inherit_context_rewrites_task_with_transcript_tail() {
     ));
 
     let ctx = RequestContext::new("web", "chat1", "sess_inherit", key);
-    let tc = spawn_call(
-        r#"{"role": "fork", "task": "检查校验逻辑", "inherit_context": true}"#,
-    );
+    let tc = spawn_call(r#"{"role": "fork", "task": "检查校验逻辑", "inherit_context": true}"#);
     let rewritten = agent_loop
         .apply_spawn_inherit_context(&tc, &ctx)
         .expect("真值必须产生改写");
@@ -308,7 +315,10 @@ async fn inherit_context_honest_empty_and_passthrough() {
     agent_loop.session_store = Some(store);
     let ctx = RequestContext::new("web", "chat1", "sess_empty", "web:sess_empty");
     let rewritten = agent_loop
-        .apply_spawn_inherit_context(&spawn_call(r#"{"task": "x", "inherit_context": true}"#), &ctx)
+        .apply_spawn_inherit_context(
+            &spawn_call(r#"{"task": "x", "inherit_context": true}"#),
+            &ctx,
+        )
         .expect("无历史也要改写（诚实空块）");
     let args: serde_json::Value = serde_json::from_str(&rewritten.arguments).unwrap();
     let task = args.get("task").and_then(|v| v.as_str()).unwrap();
@@ -318,14 +328,18 @@ async fn inherit_context_honest_empty_and_passthrough() {
     // 无 store → 同样诚实（未装配）。
     agent_loop.session_store = None;
     let rewritten = agent_loop
-        .apply_spawn_inherit_context(&spawn_call(r#"{"task": "x", "inherit_context": true}"#), &ctx)
+        .apply_spawn_inherit_context(
+            &spawn_call(r#"{"task": "x", "inherit_context": true}"#),
+            &ctx,
+        )
         .unwrap();
     let args: serde_json::Value = serde_json::from_str(&rewritten.arguments).unwrap();
-    assert!(args
-        .get("task")
-        .and_then(|v| v.as_str())
-        .unwrap()
-        .contains("上下文存储未装配"));
+    assert!(
+        args.get("task")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .contains("上下文存储未装配")
+    );
 
     // 非真值 / 缺键 / 坏 JSON → 原样透传（None）。
     assert!(

@@ -621,8 +621,9 @@ pub struct AgentLoop {
     /// `set_spawn_slot` 注入），供 `client_spawn`（WSAPI `chat.spawn`）绕过
     /// 工具表直接驱动同一 detached 通道。`None` = standalone/未注入 →
     /// client_spawn 诚实拒绝。
-    spawn_slot:
-        parking_lot::RwLock<Option<std::sync::Arc<std::sync::OnceLock<crate::loop_tools::SpawnFn>>>>,
+    spawn_slot: parking_lot::RwLock<
+        Option<std::sync::Arc<std::sync::OnceLock<crate::loop_tools::SpawnFn>>>,
+    >,
 }
 
 impl AgentLoop {

@@ -375,7 +375,10 @@ impl AgentLoop {
             return false;
         };
         msg.content = crate::prompt::slash::expand(template, args);
-        info!("[AgentLoop] /{name} resolved to builtin template ({} chars)", msg.content.len());
+        info!(
+            "[AgentLoop] /{name} resolved to builtin template ({} chars)",
+            msg.content.len()
+        );
         true
     }
 

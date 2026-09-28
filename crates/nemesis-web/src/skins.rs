@@ -66,10 +66,7 @@ fn valid_id(id: &str) -> bool {
 impl SkinHost {
     /// 打开 `.nbskin` 包 ZIP（load_css / load_structure 共用件）。任何
     /// 失败（id 非法/文件缺失/ZIP 损坏）一律 `None` → 上层 404。
-    fn open_zip(
-        &self,
-        id: &str,
-    ) -> Option<zip::ZipArchive<std::io::BufReader<std::fs::File>>> {
+    fn open_zip(&self, id: &str) -> Option<zip::ZipArchive<std::io::BufReader<std::fs::File>>> {
         if !valid_id(id) {
             return None;
         }
@@ -524,8 +521,10 @@ pub(crate) fn apply_crl_revocations(dir: &str, anchors: &[[u8; 32]], entries: &m
         let meta = nemesis_verify::revocation::revocation_meta(&bytes);
         if let Some(hit) = nemesis_verify::revocation::crl_match_meta(&crl, &meta) {
             e.signature = SkinSignature::Revoked;
-            e.sig_detail =
-                Some(format!("Revoked({:?}={}): {}", hit.dim, hit.value, hit.reason));
+            e.sig_detail = Some(format!(
+                "Revoked({:?}={}): {}",
+                hit.dim, hit.value, hit.reason
+            ));
         }
     }
 }
@@ -592,7 +591,11 @@ pub fn install_bytes(dir: &str, bytes: &[u8], overwrite: bool) -> Result<Install
     let (signature, sig_detail) = if anchors.is_empty() {
         (SkinSignature::Unverified, None)
     } else {
-        classify_signature(nemesis_verify::verify::verify_bytes(bytes, &anchors, now_unix()))
+        classify_signature(nemesis_verify::verify::verify_bytes(
+            bytes,
+            &anchors,
+            now_unix(),
+        ))
     };
     let dir_path = std::path::Path::new(dir);
     let path = dir_path.join(format!("{id}.nbskin"));
@@ -603,9 +606,7 @@ pub fn install_bytes(dir: &str, bytes: &[u8], overwrite: bool) -> Result<Install
     std::fs::create_dir_all(dir_path).map_err(|e| format!("创建皮肤目录失败: {e}"))?;
     let tmp = dir_path.join(format!(".{id}.nbskin.tmp{}", std::process::id()));
     std::fs::write(&tmp, bytes).map_err(|e| format!("写入临时文件失败: {e}"))?;
-    if overwritten
-        && let Err(e) = std::fs::remove_file(&path)
-    {
+    if overwritten && let Err(e) = std::fs::remove_file(&path) {
         let _ = std::fs::remove_file(&tmp);
         return Err(format!("移除旧包失败: {e}"));
     }

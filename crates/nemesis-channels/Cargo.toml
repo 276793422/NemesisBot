@@ -35,7 +35,7 @@ mattermost = []
 # 依赖随 feature 门控（默认构建零新增编译单元，选型评估见 nostr.rs 模块头）。
 nostr = ["dep:k256", "dep:aes", "dep:cbc"]
 # P28 mqtt：rumqttc 走 optional dep——feature 关闭时依赖整体不参与编译（IoT 裁剪纪律）
-mqtt = ["dep:rumqttc", "dep:rustls", "dep:rustls-pemfile"]
+mqtt = ["dep:rumqttc", "dep:rustls"]
 wechat = []
 
 [dependencies]
@@ -82,7 +82,6 @@ axum = { workspace = true, optional = true }
 # ring——与 workspace 现网一致，不引 use-rustls 默认链的 aws-lc-rs）。
 rumqttc = { version = "0.25", default-features = false, features = ["use-rustls-no-provider"], optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12"], optional = true }
-rustls-pemfile = { version = "2", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

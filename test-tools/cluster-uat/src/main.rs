@@ -460,7 +460,11 @@ async fn setup_node(ws: &TestWorkspace, bin: &Path, node: &NodeConfig) -> Result
     // into config.cluster.json at assembly time makes dead-peer detection
     // (~4-6s) always beat the switch decision. T20's runtime injection of
     // the same values stays as an idempotent no-op.
-    let cluster_cfg = ws.home().join("workspace").join("config").join("config.cluster.json");
+    let cluster_cfg = ws
+        .home()
+        .join("workspace")
+        .join("config")
+        .join("config.cluster.json");
     let raw = std::fs::read_to_string(&cluster_cfg)
         .with_context(|| format!("{}: read config.cluster.json failed", name))?;
     let mut cfg: Value = serde_json::from_str(&raw)

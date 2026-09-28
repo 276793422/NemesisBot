@@ -394,7 +394,11 @@ async fn contract_mock_broker_roundtrip() {
             // 出站恒带防回环信封（from="nemesisbot"），入站 Skip 兜底才真正生效
             let envelope: serde_json::Value =
                 serde_json::from_str(&text).expect("出站 payload 必须是 JSON 信封");
-            assert_eq!(envelope["from"], json!("nemesisbot"), "防回环标记缺失: {text}");
+            assert_eq!(
+                envelope["from"],
+                json!("nemesisbot"),
+                "防回环标记缺失: {text}"
+            );
             assert_eq!(envelope["content"], json!("bot reply content"));
         }
         other => panic!("期望出站 PUBLISH，收到 {other:?}"),

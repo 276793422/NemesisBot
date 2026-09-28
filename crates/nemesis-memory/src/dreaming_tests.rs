@@ -308,9 +308,13 @@ async fn record_recall_idempotent_same_turn() {
     let id = mgr.store_entry(entry("alpha beta gamma")).await.unwrap();
 
     // 同一 (session, turn) 两次记账 → 只计一次
-    let touched = mgr.record_recall(&[id.clone()], "sess-a", "turn-1").await;
+    let touched = mgr
+        .record_recall(std::slice::from_ref(&id), "sess-a", "turn-1")
+        .await;
     assert_eq!(touched, 1);
-    let touched = mgr.record_recall(&[id.clone()], "sess-a", "turn-1").await;
+    let touched = mgr
+        .record_recall(std::slice::from_ref(&id), "sess-a", "turn-1")
+        .await;
     assert_eq!(touched, 0);
 
     let e = mgr.get(&id).await.unwrap().unwrap();
@@ -323,9 +327,12 @@ async fn record_recall_counts_distinct_turns_and_sessions() {
     let mgr = mem_manager();
     let id = mgr.store_entry(entry("alpha beta gamma")).await.unwrap();
 
-    mgr.record_recall(&[id.clone()], "sess-a", "turn-1").await;
-    mgr.record_recall(&[id.clone()], "sess-a", "turn-2").await;
-    mgr.record_recall(&[id.clone()], "sess-b", "turn-1").await;
+    mgr.record_recall(std::slice::from_ref(&id), "sess-a", "turn-1")
+        .await;
+    mgr.record_recall(std::slice::from_ref(&id), "sess-a", "turn-2")
+        .await;
+    mgr.record_recall(std::slice::from_ref(&id), "sess-b", "turn-1")
+        .await;
 
     let e = mgr.get(&id).await.unwrap().unwrap();
     assert_eq!(e.metadata.get(META_RECALL_COUNT).unwrap(), "3");
@@ -334,7 +341,8 @@ async fn record_recall_counts_distinct_turns_and_sessions() {
     // 诚实边界：last_recall_turn 是单槽标记，只记住「最近一次」——更早轮次
     // 的重放若夹在其他轮次 touch 之后会再计一次。真实接线（每次检索独立
     // turn token / loop 同轮共享 token）不产生这种交错重放。）
-    mgr.record_recall(&[id.clone()], "sess-b", "turn-1").await;
+    mgr.record_recall(std::slice::from_ref(&id), "sess-b", "turn-1")
+        .await;
     let e = mgr.get(&id).await.unwrap().unwrap();
     assert_eq!(e.metadata.get(META_RECALL_COUNT).unwrap(), "3");
 }
@@ -346,8 +354,10 @@ async fn record_recall_persists_across_tfidf_reload() {
 
     let mgr = MemoryManager::new_with_jsonl(&cfg).await.unwrap();
     let id = mgr.store_entry(entry("persistent fact one")).await.unwrap();
-    mgr.record_recall(&[id.clone()], "s", "t1").await;
-    mgr.record_recall(&[id.clone()], "s", "t2").await;
+    mgr.record_recall(std::slice::from_ref(&id), "s", "t1")
+        .await;
+    mgr.record_recall(std::slice::from_ref(&id), "s", "t2")
+        .await;
     drop(mgr);
 
     // 重载后记账仍在（标记随条目持久化 → 崩溃重启后依旧幂等）
@@ -356,7 +366,9 @@ async fn record_recall_persists_across_tfidf_reload() {
     assert_eq!(e.metadata.get(META_RECALL_COUNT).unwrap(), "2");
 
     // 重载后同 turn 再记账不重复计数（幂等跨运行成立）
-    let touched = mgr2.record_recall(&[id.clone()], "s", "t2").await;
+    let touched = mgr2
+        .record_recall(std::slice::from_ref(&id), "s", "t2")
+        .await;
     assert_eq!(touched, 0);
     let e = mgr2.get(&id).await.unwrap().unwrap();
     assert_eq!(e.metadata.get(META_RECALL_COUNT).unwrap(), "2");

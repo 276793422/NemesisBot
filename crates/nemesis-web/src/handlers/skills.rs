@@ -437,11 +437,11 @@ impl SkillsHandler {
 
         // P11/P16 主配置消费：{home}/config.json 的 skills 段
         // （allow_unsigned / min_age_days / min_age_policy）。读不到按默认。
-        if let Some(home) = ctx.and_then(|c| c.home.clone()) {
-            if let Some(skills) = load_main_skills_config(&home) {
-                installer.set_allow_unsigned(skills.allow_unsigned);
-                installer.set_age_policy(skills.min_age_days, &skills.min_age_policy);
-            }
+        if let Some(home) = ctx.and_then(|c| c.home.clone())
+            && let Some(skills) = load_main_skills_config(&home)
+        {
+            installer.set_allow_unsigned(skills.allow_unsigned);
+            installer.set_age_policy(skills.min_age_days, &skills.min_age_policy);
         }
         // P13 审批门：gateway 注入槽（None = 无审批面，直装——headless/测试装配；
         // `skills.install_approval` 的消费点在 gateway 注入侧）。

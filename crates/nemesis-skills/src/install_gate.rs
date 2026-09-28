@@ -159,8 +159,7 @@ pub type SharedInstallGate = std::sync::Arc<dyn InstallGate>;
 
 /// 校验 plan 序列化 roundtrip（供测试与 WSAPI 下发保证）。
 pub fn plan_to_json(plan: &InstallPlan) -> Result<String> {
-    serde_json::to_string_pretty(plan)
-        .map_err(|e| nemesis_types::error::NemesisError::Serialization(e))
+    serde_json::to_string_pretty(plan).map_err(nemesis_types::error::NemesisError::Serialization)
 }
 
 #[cfg(test)]

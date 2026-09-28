@@ -106,6 +106,9 @@ fn truncate_returns_zero_when_tmp_unopenable() {
     delete_chat_log(&key);
     append_chat_log(&key, "user", "row");
     let tmp = log_path(&key).with_extension("jsonl.rewinding");
+    // 同上：中断遗留的同路径文件会让 create_dir_all 死循环，先消干净。
+    let _ = fs::remove_file(&tmp);
+    let _ = fs::remove_dir_all(&tmp);
     fs::create_dir_all(&tmp).unwrap();
 
     let rows = vec![serde_json::json!({"role":"user","content":"keep"})];
@@ -122,6 +125,9 @@ fn truncate_returns_zero_when_tmp_unopenable() {
 fn truncate_returns_zero_when_rename_target_is_dir() {
     let key = cov_key("trunc_rename");
     let path = log_path(&key);
+    // 预清理对文件/目录都生效：上次运行中断可能在同路径留下**文件**
+    // （remove_dir_all 对文件静默失败 → create_dir_all AlreadyExists 死循环）。
+    let _ = fs::remove_file(&path);
     let _ = fs::remove_dir_all(&path);
     fs::create_dir_all(&path).unwrap();
     fs::write(path.join("cov_guard"), b"x").unwrap();
@@ -314,12 +320,10 @@ fn flatten_skips_subdirs_target_conflicts_and_rename_failures() {
 }
 
 // ---------------------------------------------------------------------------
-// migrate_nested_session_logs 公开入口（幂等零操作形态）
+// migrate_nested_session_logs 公开入口
 // ---------------------------------------------------------------------------
-
-#[test]
-fn migrate_entry_point_is_idempotent() {
-    // 真实 home 的 sessions/boundary 目录已由启动平化过——二次调用零操作。
-    migrate_nested_session_logs();
-    migrate_nested_session_logs();
-}
+// 【不测公开入口】`migrate_nested_session_logs` 硬绑真实 home 的共享目录，
+// 且平化会删除空目录——与并行测试在同目录创建的占位目录（本文件多处
+// dir-squatter 形态）结构性互斥（实测：并行下吃掉别的测试的目录 → 4 个
+// 测试 ~50% 假红）。平化行为本身已由上面两个 tempdir 根的 flatten 测试
+// 覆盖；入口装配（gateway/acp/run/mcp_serve 调用）归各入口的集成测试。

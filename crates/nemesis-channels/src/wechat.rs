@@ -721,11 +721,13 @@ impl WeChatChannel {
         let running = self.running.clone();
         let listen_addr = self.config.callback_listen_addr_resolved();
 
-        let listener = tokio::net::TcpListener::bind(&listen_addr).await.map_err(|e| {
-            NemesisError::Channel(format!(
-                "[WeChatChannel] 回调监听绑定失败 {listen_addr}: {e}"
-            ))
-        })?;
+        let listener = tokio::net::TcpListener::bind(&listen_addr)
+            .await
+            .map_err(|e| {
+                NemesisError::Channel(format!(
+                    "[WeChatChannel] 回调监听绑定失败 {listen_addr}: {e}"
+                ))
+            })?;
 
         tokio::spawn(async move {
             info!("[WeChatChannel] callback server listening on {listen_addr}");

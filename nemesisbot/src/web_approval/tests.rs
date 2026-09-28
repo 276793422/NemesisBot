@@ -336,15 +336,18 @@ fn find_auto_allow_hits_written_rule() {
     assert_eq!(hit.pattern, "cargo publish *");
     // 精确 target 精确匹配：裸命令命中前缀 pattern，异前缀不命中。
     assert!(
-        mgr.find_auto_allow("process_exec", "cargo publish", "HIGH").is_some(),
+        mgr.find_auto_allow("process_exec", "cargo publish", "HIGH")
+            .is_some(),
         "裸命令也命中前缀 pattern"
     );
     assert!(
-        mgr.find_auto_allow("process_exec", "other publish --release", "HIGH").is_none(),
+        mgr.find_auto_allow("process_exec", "other publish --release", "HIGH")
+            .is_none(),
         "异命令前缀不得命中"
     );
     assert!(
-        mgr.find_auto_allow("skills.install", "github:acme/demo", "HIGH").is_none(),
+        mgr.find_auto_allow("skills.install", "github:acme/demo", "HIGH")
+            .is_none(),
         "异 op 不得命中"
     );
 }
@@ -352,7 +355,10 @@ fn find_auto_allow_hits_written_rule() {
 #[test]
 fn find_auto_allow_without_rules_path_returns_none() {
     let mgr = WebApprovalManager::new(None, None);
-    assert!(mgr.find_auto_allow("skills.install", "github:acme/demo", "HIGH").is_none());
+    assert!(
+        mgr.find_auto_allow("skills.install", "github:acme/demo", "HIGH")
+            .is_none()
+    );
 }
 
 #[test]
@@ -373,11 +379,13 @@ fn find_auto_allow_critical_nonexec_blocked_by_layer_gate() {
     let mgr = std::sync::Arc::new(WebApprovalManager::new(None, Some(path.clone())));
 
     assert!(
-        mgr.find_auto_allow("file_write", "/tmp/x", "CRITICAL").is_none(),
+        mgr.find_auto_allow("file_write", "/tmp/x", "CRITICAL")
+            .is_none(),
         "CRITICAL 非 exec op 必须恒人工（消费侧层级闸）"
     );
     assert!(
-        mgr.find_auto_allow("file_write", "/tmp/x", "HIGH").is_some(),
+        mgr.find_auto_allow("file_write", "/tmp/x", "HIGH")
+            .is_some(),
         "非 CRITICAL 同规则照常命中"
     );
     // 写入侧流程产物（exec 前缀规则）在 CRITICAL 下仍豁免命中（F4 语义）。
@@ -390,7 +398,8 @@ fn find_auto_allow_critical_nonexec_blocked_by_layer_gate() {
     mgr2.respond("req-m3c", true, true, None).unwrap();
     let _ = result_rx.recv_timeout(Duration::from_secs(2));
     assert!(
-        mgr2.find_auto_allow("process_exec", "cargo publish", "CRITICAL").is_some(),
+        mgr2.find_auto_allow("process_exec", "cargo publish", "CRITICAL")
+            .is_some(),
         "CRITICAL exec 是层级门唯一豁免，规则照常生效"
     );
 }
@@ -401,8 +410,6 @@ fn find_auto_allow_critical_nonexec_blocked_by_layer_gate() {
 async fn late_skills_gate_auto_allows_by_rule_without_card() {
     use super::LateWebSkillsGate;
     use nemesis_skills::install_gate::{InstallDecision, InstallGate, InstallPlan};
-    use nemesis_skills::trust::TrustState;
-    use nemesis_types::error::NemesisError;
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("approval_rules.json");

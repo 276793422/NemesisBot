@@ -197,7 +197,9 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
     // 热更新对下载路径同效。None（security 关/ssrf 层关）= 下载直通闸。
     #[cfg(all(feature = "skins", feature = "security"))]
     nemesis_web::handlers::skins::set_ssrf_guard(
-        security_plugin.as_ref().and_then(|p| p.ssrf_guard().cloned()),
+        security_plugin
+            .as_ref()
+            .and_then(|p| p.ssrf_guard().cloned()),
     );
     // web_server &mut 绑定恢复——推迟到本点：init_agent 以 &WebWiring 借读
     // 整体（board_event_hub），部分移动后不可再整体借用。

@@ -519,7 +519,7 @@ fn snapshot_meta_signed_raw() {
     let meta = revocation_meta(&signed);
     assert!(meta.key_fp.is_some(), "signed file must expose key_fp");
     let leaf_fp = crate::crypto::key_fp(&crate::crypto::public_key_bytes(
-        &h.h.leaf_sk.verifying_key(),
+        h.h.leaf_sk.verifying_key(),
     ));
     assert_eq!(meta.key_fp.as_deref(), Some(hex_encode(&leaf_fp).as_str()));
     assert!(meta.sig_hash.is_some());
@@ -535,7 +535,14 @@ fn snapshot_meta_signed_raw() {
 #[test]
 fn snapshot_meta_publisher_from_opus() {
     let h = V4Harness::new();
-    let signed = h.sign_raw_opus(b"pkg", fx_now(), &h.h.leaf_sk, &h.h.chain(), Some("Acme"), None);
+    let signed = h.sign_raw_opus(
+        b"pkg",
+        fx_now(),
+        &h.h.leaf_sk,
+        &h.h.chain(),
+        Some("Acme"),
+        None,
+    );
     let meta = revocation_meta(&signed);
     // Publisher 维度口径 = 签名者证书 subject CN（verify_bytes 记账同源），
     // opus programName 只是 view 展示——不进吊销维度。
@@ -551,7 +558,10 @@ fn snapshot_meta_unsigned_fallback() {
     assert_eq!(meta.sig_hash, None);
     assert_eq!(meta.publisher, None);
     let want = crate::verify::v4_content_digest(content).unwrap();
-    assert_eq!(meta.content_hash.as_deref(), Some(hex_encode(&want).as_str()));
+    assert_eq!(
+        meta.content_hash.as_deref(),
+        Some(hex_encode(&want).as_str())
+    );
 }
 
 /// crl_match_meta 四维各自可命中（与 check_revocation 同序，逐维独立构造）。
@@ -563,30 +573,51 @@ fn snapshot_match_four_dims() {
     let mk = |dim: RevDim, value: String| Crl {
         version: 1,
         valid_until: u64::MAX,
-        entries: vec![CrlEntry { dim, value, revoked_at: 1, reason: "t".into() }],
+        entries: vec![CrlEntry {
+            dim,
+            value,
+            revoked_at: 1,
+            reason: "t".into(),
+        }],
     };
     let key_fp = meta.key_fp.clone().unwrap();
     let sig_hash = meta.sig_hash.clone().unwrap();
     let content_hash = meta.content_hash.clone().unwrap();
     assert_eq!(
-        crl_match_meta(&mk(RevDim::KeyFp, key_fp), &meta).unwrap().dim,
+        crl_match_meta(&mk(RevDim::KeyFp, key_fp), &meta)
+            .unwrap()
+            .dim,
         RevDim::KeyFp
     );
     assert_eq!(
-        crl_match_meta(&mk(RevDim::SigHash, sig_hash), &meta).unwrap().dim,
+        crl_match_meta(&mk(RevDim::SigHash, sig_hash), &meta)
+            .unwrap()
+            .dim,
         RevDim::SigHash
     );
     assert_eq!(
-        crl_match_meta(&mk(RevDim::FileHash, content_hash), &meta).unwrap().dim,
+        crl_match_meta(&mk(RevDim::FileHash, content_hash), &meta)
+            .unwrap()
+            .dim,
         RevDim::FileHash
     );
     // Publisher：换 opus 签名取 CN
-    let signed2 = h.sign_raw_opus(b"dims2", fx_now(), &h.h.leaf_sk, &h.h.chain(), Some("Acme"), None);
+    let signed2 = h.sign_raw_opus(
+        b"dims2",
+        fx_now(),
+        &h.h.leaf_sk,
+        &h.h.chain(),
+        Some("Acme"),
+        None,
+    );
     let meta2 = revocation_meta(&signed2);
     assert_eq!(
-        crl_match_meta(&mk(RevDim::Publisher, crate::keygen::CN_LEAF.into()), &meta2)
-            .unwrap()
-            .dim,
+        crl_match_meta(
+            &mk(RevDim::Publisher, crate::keygen::CN_LEAF.into()),
+            &meta2
+        )
+        .unwrap()
+        .dim,
         RevDim::Publisher
     );
     // 无关条目 = 未命中

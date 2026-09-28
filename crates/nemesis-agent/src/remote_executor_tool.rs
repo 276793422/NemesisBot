@@ -717,5 +717,6 @@ mod tests;
 #[cfg(test)]
 mod s9_tests;
 // 覆盖率补充批次：stdio 成功回路 + stderr drain / userland 标记 / 超时 / 无响应退出。
-#[cfg(test)]
+// 假子进程是 .cmd 批处理（Windows spawn 语义），整文件 Windows 形态。
+#[cfg(all(test, windows))]
 mod cov_tests;

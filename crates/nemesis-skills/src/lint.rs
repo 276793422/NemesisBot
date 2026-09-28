@@ -552,24 +552,8 @@ impl Default for SkillLinter {
 /// - 脚本：POSIX shell / Windows 批处理与 PowerShell；
 /// - 解释型语言源码：装包自带的 `.py`/`.js` 等在技能工作流里常被直接执行。
 pub const SURFACE_FILE_EXTENSIONS: &[&str] = &[
-    "md",
-    "sh",
-    "bash",
-    "zsh",
-    "fish",
-    "bat",
-    "cmd",
-    "ps1",
-    "psm1",
-    "psd1",
-    "py",
-    "rb",
-    "pl",
-    "lua",
-    "php",
-    "js",
-    "mjs",
-    "cjs",
+    "md", "sh", "bash", "zsh", "fish", "bat", "cmd", "ps1", "psm1", "psd1", "py", "rb", "pl",
+    "lua", "php", "js", "mjs", "cjs",
 ];
 
 /// 单个可执行面文件的扫描大小上限。超过按数据转储对待，跳过并记 warn

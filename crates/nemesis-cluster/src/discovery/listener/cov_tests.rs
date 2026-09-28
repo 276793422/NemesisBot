@@ -132,10 +132,7 @@ fn encrypted_garbage_drops_and_valid_delivers() {
             assert_eq!(s.sources[0].addr, "127.0.0.1");
             break;
         }
-        assert!(
-            Instant::now() < deadline,
-            "tracker 未记录到丢弃帧：{s:?}"
-        );
+        assert!(Instant::now() < deadline, "tracker 未记录到丢弃帧：{s:?}");
         std::thread::sleep(Duration::from_millis(10));
     }
 
@@ -174,7 +171,10 @@ fn tracker_dedupes_same_source_and_evicts_oldest() {
     assert!(
         !s2.sources.iter().any(|e| e.addr == "10.0.0.1"),
         "最旧来源应被环形淘汰：{:?}",
-        s2.sources.iter().map(|e| e.addr.clone()).collect::<Vec<_>>()
+        s2.sources
+            .iter()
+            .map(|e| e.addr.clone())
+            .collect::<Vec<_>>()
     );
     assert_eq!(s2.total_drops, 19, "总量计数独立于环形淘汰");
     // 被淘汰源再出现 = 新条目（会再记一条首见 DEBUG，量级可控）。

@@ -87,9 +87,9 @@ mod dacl_hook_wiring {
         (dir, store.handle())
     }
 
-    fn channel_of((dir, handle): &(tempfile::TempDir, nemesis_config::ConfigHandle)) ->
-        std::sync::Arc<nemesis_agent::ExecutorChannel>
-    {
+    fn channel_of(
+        (dir, handle): &(tempfile::TempDir, nemesis_config::ConfigHandle),
+    ) -> std::sync::Arc<nemesis_agent::ExecutorChannel> {
         build_executor_channel(dir.path(), dir.path(), handle.clone())
             .expect("build_executor_channel")
             .expect("enabled=true → Some(channel)")
@@ -138,8 +138,8 @@ mod dacl_hook_wiring {
             r#"{ "executor": { "enabled": true } }"#,
         )
         .expect("seed config.json");
-        let store = nemesis_config::ConfigStore::load(&dir.path().join("config.json"))
-            .expect("load store");
+        let store =
+            nemesis_config::ConfigStore::load(&dir.path().join("config.json")).expect("load store");
         let channel = build_executor_channel(dir.path(), dir.path(), store.handle())
             .expect("build")
             .expect("some");
@@ -148,11 +148,7 @@ mod dacl_hook_wiring {
 
         store
             .update(|c| {
-                c.executor
-                    .as_mut()
-                    .expect("executor present")
-                    .acl
-                    .dacl = true;
+                c.executor.as_mut().expect("executor present").acl.dacl = true;
             })
             .expect("update store");
         // 真进程链全走：dacl 翻开 → availability 探针 → SID 派生 → 受限令牌
@@ -165,11 +161,7 @@ mod dacl_hook_wiring {
 
         store
             .update(|c| {
-                c.executor
-                    .as_mut()
-                    .expect("executor present")
-                    .acl
-                    .dacl = false;
+                c.executor.as_mut().expect("executor present").acl.dacl = false;
             })
             .expect("update store back");
         assert!(matches!(hook(), Ok(None)), "翻回 → None");

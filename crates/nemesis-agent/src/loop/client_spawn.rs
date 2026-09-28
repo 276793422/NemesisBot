@@ -56,9 +56,8 @@ impl AgentLoop {
         let tier_str = match *self.tier.read() {
             nemesis_types::capability::ModelTier::Mini => "mini",
             nemesis_types::capability::ModelTier::Normal => "normal",
-            nemesis_types::capability::ModelTier::Auto | nemesis_types::capability::ModelTier::Big => {
-                "big"
-            }
+            nemesis_types::capability::ModelTier::Auto
+            | nemesis_types::capability::ModelTier::Big => "big",
         };
         let visible = self.visible_roles();
         let hidden = self.current_hidden_roles();
@@ -92,10 +91,10 @@ impl AgentLoop {
         tools_profile: &str,
     ) -> Result<String, String> {
         let slot = self.spawn_slot.read().clone();
-        let spawn_fn = slot
-            .as_ref()
-            .and_then(|s| s.get())
-            .ok_or_else(|| "sub-agent spawning is not available on this loop (no spawn channel configured)".to_string())?;
+        let spawn_fn = slot.as_ref().and_then(|s| s.get()).ok_or_else(|| {
+            "sub-agent spawning is not available on this loop (no spawn channel configured)"
+                .to_string()
+        })?;
         spawn_fn(
             "client",
             task,

@@ -6003,9 +6003,7 @@ impl Tool for I2CTool {
         // 会整个跳过白名单，回显成功。
         if matches!(action, "read" | "write") {
             let addr = nemesis_tools::hardware::parse_i2c_address(&val)?;
-            if let Err(reason) = self.policy.validate_i2c_address(addr) {
-                return Err(reason);
-            }
+            self.policy.validate_i2c_address(addr)?;
         }
         match action {
             "detect" => Ok("[I2C] Detect: scanning for I2C buses...".to_string()),

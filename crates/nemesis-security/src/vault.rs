@@ -630,7 +630,9 @@ mod dpapi {
     }
 }
 
-#[cfg(test)]
+// 覆盖率补充批次整文件 Windows 形态（DPAPI 生命周期 + OpenOptionsExt 共享
+// 锁句柄），Linux 上编译期消失（2026-09-02 约定；nightly/coverage 均跑不跑）。
+#[cfg(all(test, windows))]
 mod cov_tests;
 #[cfg(test)]
 mod tests;

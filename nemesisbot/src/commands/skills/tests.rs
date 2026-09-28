@@ -2102,8 +2102,8 @@ mod wave_b {
             "poison-demo",
             false,
         )
-            .await
-            .expect_err("install 失败 → 毒化回退终结");
+        .await
+        .expect_err("install 失败 → 毒化回退终结");
         assert!(
             err.to_string().contains("invalid github repo"),
             "err: {err}"

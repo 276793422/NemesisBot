@@ -37,13 +37,23 @@ async fn close_session_unknown_key_returns_false() {
 }
 
 /// kill_tree 对**已退出**子进程：id() 为 None → 跳过 taskkill（610 收口
-/// false 臂 618）→ 兜底 kill 幂等不 panic。
+/// false 臂 618）→ 兜底 kill 幂等不 panic。spawn 按平台选 shell（本测要点
+/// 是「已收割句柄」而非具体子进程，跨平台等价）。
 #[tokio::test]
 async fn kill_tree_on_already_exited_child_is_noop() {
-    let mut child = tokio::process::Command::new("cmd")
-        .args(["/C", "exit", "0"])
-        .spawn()
-        .expect("spawn cmd");
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = tokio::process::Command::new("cmd");
+        c.args(["/C", "exit", "0"]);
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut c = tokio::process::Command::new("sh");
+        c.args(["-c", "exit 0"]);
+        c
+    };
+    let mut child = cmd.spawn().expect("spawn shell");
     let _ = child.wait().await; // 收割 → id() 归 None
     kill_tree(&mut child).await;
 }

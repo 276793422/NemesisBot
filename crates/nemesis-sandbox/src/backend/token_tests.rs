@@ -903,7 +903,10 @@ fn restricted_token_cmd_outside_redirect_observation() {
                 // 出来——缺这个 env 时子进程侧 `ws` 为空、obs 文件相对路径
                 // 解析到无 ACE 的 cwd，File::create 被静默拒（if let Ok 跳过）
                 // → 观测退化 inherit、cmd_stderr 恒空（2026-09-28 复查修复）。
-                (CHILD_ENV_WS.to_string(), ws.path().to_string_lossy().into_owned()),
+                (
+                    CHILD_ENV_WS.to_string(),
+                    ws.path().to_string_lossy().into_owned(),
+                ),
                 (CHILD_ENV_EXEC_OUTSIDE.to_string(), "1".to_string()),
                 (
                     CHILD_ENV_OUT.to_string(),
@@ -963,7 +966,7 @@ fn restricted_token_minimal_restricting_set_probe() {
         sids.iter().any(|s| s.starts_with("S-1-5-5-")),
         "logon sid 应在列: {sids:?}"
     );
-    assert!(sids.iter().any(|s| *s == sid), "ws_sid 应在列: {sids:?}");
+    assert!(sids.contains(&sid), "ws_sid 应在列: {sids:?}");
     for banned in [
         "S-1-1-0",
         "S-1-5-11",

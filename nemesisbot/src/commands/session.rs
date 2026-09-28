@@ -189,8 +189,11 @@ fn list_sessions(home: &Path) -> Result<()> {
 /// 对齐）——解析 small_model 槽位 → `prepare_branch_summary_with` → 同步
 /// run + 写新会话 meta。返回面向用户的输出行（各闸门的诚实注记，含跳过
 /// 原因）。绝不 panic、绝不阻塞分叉本体（任何失败都折算成注记文案）。
-fn generate_branch_summary_cli(home: &Path, info: &nemesis_agent::session_fork::ForkInfo) -> String {
-    use nemesis_agent::r#loop::{prepare_branch_summary_with, BRANCH_SUMMARY_MIN_TURNS};
+fn generate_branch_summary_cli(
+    home: &Path,
+    info: &nemesis_agent::session_fork::ForkInfo,
+) -> String {
+    use nemesis_agent::r#loop::{BRANCH_SUMMARY_MIN_TURNS, prepare_branch_summary_with};
 
     if info.dropped_user_turns < BRANCH_SUMMARY_MIN_TURNS {
         return format!(

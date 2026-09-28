@@ -25,8 +25,7 @@
 #![cfg(feature = "skins")]
 
 use crate::skins::{
-    SkinSignature, SkinStatus, SKIN_PACKAGE_MAX_BYTES, crl_snapshot_info, install_bytes,
-    scan_skins,
+    SKIN_PACKAGE_MAX_BYTES, SkinSignature, SkinStatus, crl_snapshot_info, install_bytes, scan_skins,
 };
 use crate::ws_router::{ModuleHandler, RequestContext};
 use axum::extract::State;
@@ -157,7 +156,10 @@ impl SkinsHandler {
             // v2 双载荷闸：entry（CSS 换色）∥ structure（结构骨架）任一
             // 在场即可激活；双无 = 无任何可服务载荷，拒绝。
             if entry.manifest.entry.is_none() && entry.manifest.structure.is_none() {
-                return Err("该皮肤包无任何载荷（skin/ CSS 或 structure 结构），无法设为默认观感".to_string());
+                return Err(
+                    "该皮肤包无任何载荷（skin/ CSS 或 structure 结构），无法设为默认观感"
+                        .to_string(),
+                );
             }
             // require_signed 后手开关（默认 false；闸在信任决策点，数据面不拦）。
             let require_signed = cfg
@@ -208,8 +210,10 @@ impl SkinsHandler {
             .and_then(|v| v.as_str())
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| "缺少 url 或 source（url=任意 https 地址 / source=\"release\"=官方发布）"
-                .to_string())?;
+            .ok_or_else(|| {
+                "缺少 url 或 source（url=任意 https 地址 / source=\"release\"=官方发布）"
+                    .to_string()
+            })?;
         let bytes = fetch_skin_bytes(url).await?;
         let outcome = install_bytes(&dir, &bytes, overwrite)?;
         Ok(Some(serde_json::to_value(outcome).unwrap_or(json!({}))))
@@ -275,7 +279,9 @@ async fn fetch_skin_bytes(url: &str) -> Result<Vec<u8>, String> {
             Some(g) => match g.resolve_and_validate_collect(current.as_str()) {
                 // Ok(空集) = 闸放行但未给出可钉 IP（allowlist 域名等）→ 共享池。
                 Ok(ips) if ips.is_empty() => base.clone(),
-                Ok(ips) => pinned_fetch_client(current.as_str(), &ips).unwrap_or_else(|| base.clone()),
+                Ok(ips) => {
+                    pinned_fetch_client(current.as_str(), &ips).unwrap_or_else(|| base.clone())
+                }
                 Err(e) => return Err(format!("SSRF 闸拦截：{e}")),
             },
             None => base.clone(),
@@ -434,11 +440,15 @@ async fn install_zip_entries(
 /// 导入 body 上限（25MB 有效载荷 + 1MB 余量，超限 axum 直接 413）。
 pub const SKIN_IMPORT_BODY_LIMIT_BYTES: usize = SKIN_PACKAGE_MAX_BYTES + 1024 * 1024;
 
-fn import_error(status: axum::http::StatusCode, code: &str, message: String) -> (
-    axum::http::StatusCode,
-    axum::response::Json<Value>,
-) {
-    (status, axum::response::Json(json!({ "error": code, "message": message })))
+fn import_error(
+    status: axum::http::StatusCode,
+    code: &str,
+    message: String,
+) -> (axum::http::StatusCode, axum::response::Json<Value>) {
+    (
+        status,
+        axum::response::Json(json!({ "error": code, "message": message })),
+    )
 }
 
 /// `POST /api/skins/import?overwrite=bool` — 本地 .nbskin 文件导入（raw
@@ -451,8 +461,7 @@ pub async fn handle_import_skin(
     headers: axum::http::HeaderMap,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
     body: axum::body::Bytes,
-) -> Result<axum::response::Json<Value>, (axum::http::StatusCode, axum::response::Json<Value>)>
-{
+) -> Result<axum::response::Json<Value>, (axum::http::StatusCode, axum::response::Json<Value>)> {
     // Dashboard 鉴权（与 upload 同约定）。
     let token = headers
         .get("X-Auth-Token")
@@ -469,16 +478,13 @@ pub async fn handle_import_skin(
         .get("overwrite")
         .map(|v| v == "true" || v == "1")
         .unwrap_or(false);
-    let dir = take_handle()
-        .ok()
-        .and_then(|h| h.dir)
-        .ok_or_else(|| {
-            import_error(
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                "not_wired",
-                "皮肤系统未装配".into(),
-            )
-        })?;
+    let dir = take_handle().ok().and_then(|h| h.dir).ok_or_else(|| {
+        import_error(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "not_wired",
+            "皮肤系统未装配".into(),
+        )
+    })?;
     match install_bytes(&dir, &body, overwrite) {
         Ok(outcome) => Ok(axum::response::Json(
             serde_json::to_value(outcome).unwrap_or_else(|_| json!({})),

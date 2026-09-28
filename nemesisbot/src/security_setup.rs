@@ -276,7 +276,9 @@ pub(crate) async fn build_security_plugin(
     }
     #[cfg(not(feature = "scanner"))]
     {
-        info!("[Security] scanner feature not compiled: virus scanning chain not initialized (layer 7 passes through)");
+        info!(
+            "[Security] scanner feature not compiled: virus scanning chain not initialized (layer 7 passes through)"
+        );
     }
 
     Some(plugin)

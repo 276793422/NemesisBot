@@ -326,7 +326,12 @@ impl MqttChannel {
             })?;
             Some((cert, key))
         };
-        let tls_config = Self::tls_client_config(&ca, client_auth.as_ref().map(|(c, k)| (c.as_slice(), k.as_slice())))?;
+        let tls_config = Self::tls_client_config(
+            &ca,
+            client_auth
+                .as_ref()
+                .map(|(c, k)| (c.as_slice(), k.as_slice())),
+        )?;
         Ok(rumqttc::Transport::tls_with_config(
             rumqttc::TlsConfiguration::Rustls(std::sync::Arc::new(tls_config)),
         ))
@@ -337,24 +342,23 @@ impl MqttChannel {
         ca_pem: &[u8],
         client_auth: Option<(&[u8], &[u8])>,
     ) -> Result<rustls::ClientConfig> {
-        use rustls::pki_types::CertificateDer;
         use rustls::RootCertStore;
+        use rustls::pki_types::pem::PemObject;
+        use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
         let mut roots = RootCertStore::empty();
-        let ca_certs: Vec<CertificateDer> = rustls_pemfile::certs(&mut std::io::BufReader::new(ca_pem))
+        let ca_certs: Vec<CertificateDer> = CertificateDer::pem_slice_iter(ca_pem)
             .collect::<std::result::Result<_, _>>()
-            .map_err(|e| {
-                NemesisError::Channel(format!("mqtt CA 证书 PEM 解析失败: {e}"))
-            })?;
+            .map_err(|e| NemesisError::Channel(format!("mqtt CA 证书 PEM 解析失败: {e}")))?;
         if ca_certs.is_empty() {
             return Err(NemesisError::Channel(
                 "mqtt CA 证书文件不含有效 PEM 证书".to_string(),
             ));
         }
         for cert in ca_certs {
-            roots.add(cert).map_err(|e| {
-                NemesisError::Channel(format!("mqtt CA 证书加入信任库失败: {e}"))
-            })?;
+            roots
+                .add(cert)
+                .map_err(|e| NemesisError::Channel(format!("mqtt CA 证书加入信任库失败: {e}")))?;
         }
 
         let provider = rustls::crypto::ring::default_provider();
@@ -363,22 +367,20 @@ impl MqttChannel {
             .map_err(|e| NemesisError::Channel(format!("mqtt TLS 协议版本装配失败: {e}")))?
             .with_root_certificates(roots);
         if let Some((cert_pem, key_pem)) = client_auth {
-            let certs: Vec<CertificateDer> =
-                rustls_pemfile::certs(&mut std::io::BufReader::new(cert_pem))
-                    .collect::<std::result::Result<_, _>>()
-                    .map_err(|e| {
-                        NemesisError::Channel(format!("mqtt 客户端证书 PEM 解析失败: {e}"))
-                    })?;
+            let certs: Vec<CertificateDer> = CertificateDer::pem_slice_iter(cert_pem)
+                .collect::<std::result::Result<_, _>>()
+                .map_err(|e| NemesisError::Channel(format!("mqtt 客户端证书 PEM 解析失败: {e}")))?;
             if certs.is_empty() {
                 return Err(NemesisError::Channel(
                     "mqtt 客户端证书文件不含有效 PEM 证书".to_string(),
                 ));
             }
-            let key = rustls_pemfile::private_key(&mut std::io::BufReader::new(key_pem))
-                .map_err(|e| NemesisError::Channel(format!("mqtt 客户端私钥解析失败: {e}")))?
+            let key: PrivateKeyDer = PrivateKeyDer::pem_slice_iter(key_pem)
+                .next()
                 .ok_or_else(|| {
                     NemesisError::Channel("mqtt 客户端私钥文件不含有效私钥".to_string())
-                })?;
+                })?
+                .map_err(|e| NemesisError::Channel(format!("mqtt 客户端私钥解析失败: {e}")))?;
             builder
                 .with_client_auth_cert(certs, key)
                 .map_err(|e| NemesisError::Channel(format!("mqtt mTLS 客户端证书装配失败: {e}")))

@@ -1535,6 +1535,9 @@ mod wave_b {
     /// BUG#35 回归：修复前首例 close 失败即在下一轮经 None 分支 return，
     /// 注释里承诺的 phase-2 remove_dir_all 兜底是结构性死代码 —— 盒子目录
     /// 在 %TEMP% 永久泄漏。本测钉住「外部句柄短暂持有 → 释放后兜底完成回收」。
+    /// Windows 形态（外部 powershell 持有者 + ERROR_SHARING_VIOLATION 语义），
+    /// Linux nightly 排除（2026-09-02 约定）。
+    #[cfg(windows)]
     #[test]
     fn wave_b_close_temp_phase2_fallback_recovers_after_external_release() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1592,6 +1595,8 @@ mod wave_b {
     /// 兜底耗尽契约：外部句柄贯穿全部防御轮次 → 打 loud WARN、树完整留存、
     /// 句柄释放后仍可手工回收（close 失败分支同样 mem::forget，Drop 不再兜底）。
     /// 执行 ~11-14s——本套件最慢单测，换来对修复前完全不可达臂的行为级钉住。
+    /// Windows 形态（同上，外部 powershell 持有者），Linux nightly 排除。
+    #[cfg(windows)]
     #[test]
     fn wave_b_close_temp_phase2_exhausts_loudly_and_survives_for_manual_recovery() {
         let tmp = tempfile::tempdir().unwrap();

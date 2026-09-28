@@ -274,7 +274,11 @@ const CROSS_NODE_EVENT_JSON: &str = r#"{"kind":4,"created_at":1735689600,"tags":
 fn test_nip04_cross_impl_nostr_tools_node_to_rust() {
     // 密钥推导与参考实现一致。
     let keys = NostrKeys::from_hex_secret(CROSS_SK).unwrap();
-    assert_eq!(keys.x_only_public_key(), CROSS_PUB, "ECDH 公钥推导须与 nostr-tools 一致");
+    assert_eq!(
+        keys.x_only_public_key(),
+        CROSS_PUB,
+        "ECDH 公钥推导须与 nostr-tools 一致"
+    );
 
     // 参考实现加密的载荷 → 本方解密出同一明文。
     let decrypted = decrypt_dm(&keys, CROSS_PUB, CROSS_NODE_ENCRYPTED).unwrap();
@@ -284,10 +288,19 @@ fn test_nip04_cross_impl_nostr_tools_node_to_rust() {
     let event: NostrEvent = serde_json::from_str(CROSS_NODE_EVENT_JSON).unwrap();
     assert_eq!(
         event.id,
-        event_id(&event.pubkey, event.created_at, event.kind, &event.tags, &event.content),
+        event_id(
+            &event.pubkey,
+            event.created_at,
+            event.kind,
+            &event.tags,
+            &event.content
+        ),
         "canonical 序列化须与 nostr-tools 的 id 计算一致"
     );
-    assert!(verify_event(&event), "nostr-tools 签署的事件必须通过本方 Schnorr 校验");
+    assert!(
+        verify_event(&event),
+        "nostr-tools 签署的事件必须通过本方 Schnorr 校验"
+    );
 }
 
 /// bech32 形态（nip19 `nsec1…`/`npub1…`，nostr-tools 对同一测试钥的真实

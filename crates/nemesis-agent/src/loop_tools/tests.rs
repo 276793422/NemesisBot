@@ -524,7 +524,7 @@ async fn test_spawn_tool_with_fn() {
          _t: &str,
          _d: usize,
          _bg: bool,
-            _r: &str| {
+         _r: &str| {
             let agent_id = agent_id.to_string();
             let task = task.to_string();
             let model = model.to_string();
@@ -1574,7 +1574,7 @@ async fn test_spawn_tool_allowlist_allowed() {
          _t: &str,
          _d: usize,
          _bg: bool,
-            _r: &str| {
+         _r: &str| {
             let agent_id = agent_id.to_string();
             let task = task.to_string();
             let model = model.to_string();
@@ -3072,7 +3072,7 @@ async fn test_spawn_tool_set_context() {
          _t: &str,
          _d: usize,
          _bg: bool,
-            _r: &str| {
+         _r: &str| {
             let ch = channel.to_string();
             let cid = chat_id.to_string();
             Box::pin(async move { Ok(format!("ch={}, cid={}", ch, cid)) })

@@ -32,8 +32,9 @@ pub use nemesis_prompts::aux::{
 pub use nemesis_prompts::board::{PrecedentEntry, ReviewTier, parse_review_tier};
 pub use nemesis_prompts::slash;
 pub use nemesis_prompts::subagents::SubagentRole;
-pub use nemesis_prompts::system::{Entrance, Layer, SOFT_BUDGET_BYTES, render_layer,
-    render_layer_for};
+pub use nemesis_prompts::system::{
+    Entrance, Layer, SOFT_BUDGET_BYTES, render_layer, render_layer_for,
+};
 pub use nemesis_prompts::tools::{DescLevel, description_for, first_sentence};
 
 // ---------------------------------------------------------------------------

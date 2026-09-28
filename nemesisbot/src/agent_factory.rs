@@ -1363,19 +1363,19 @@ fn inject_spawn_fn(
                                         allowed_tools,
                                         depth,
                                         // prompt-pack pro（M4）：readonly 档 → 侦察员角色。
-                                // P3：显式角色优先，缺省回落档位推导。
-                                role: explicit_role.or_else(|| {
-                                    nemesis_agent::loop_tools::detached_role_for_profile(
-                                        &info.tools_profile,
-                                    )
-                                }),
-                                ..Default::default()
-                            },
-                        )
-                        .await
-                }
-                None => Err("agent loop is gone (gateway shutting down)".to_string()),
-            };
+                                        // P3：显式角色优先，缺省回落档位推导。
+                                        role: explicit_role.or_else(|| {
+                                            nemesis_agent::loop_tools::detached_role_for_profile(
+                                                &info.tools_profile,
+                                            )
+                                        }),
+                                        ..Default::default()
+                                    },
+                                )
+                                .await
+                        }
+                        None => Err("agent loop is gone (gateway shutting down)".to_string()),
+                    };
                     // 件2：SubagentStop（观察型）——完成后、continuation 回灌
                     // bus 前。「cancelled」= 任务 spawn 后 loop 已亡（G4 路径
                     // 唯一取消形态，upgrade 失败）；「failed」= 其余 Err。
