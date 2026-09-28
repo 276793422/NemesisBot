@@ -170,8 +170,12 @@ jobs:
       # --fail-under-lines：行覆盖低于地板即红（防倒退）。首次合入时以此
       # CI 平台实测为准校准 env 数字（Windows 本机实测会略高——Windows
       # 形态测试在 Linux 不跑）。
+      # ulimit -n：workspace lib 套件（nemesis-web 二三千个 #[tokio::test]
+      # 同进程跑）fd 累积峰值超 Linux 默认 soft 1024 → EMFILE 级联假红
+      # （Failed building the Runtime: Too many open files）；Windows 无
+      # 此概念。提到 65535（远低于 runner hard 上限）。
       - name: Measure coverage and enforce floor
-        run: cargo llvm-cov --workspace --lib --exclude nemesis-config --exclude test-harness --exclude nemesis-build-config --summary-only --fail-under-lines "$COVERAGE_FLOOR_LINES"
+        run: ulimit -n 65535; cargo llvm-cov --workspace --lib --exclude nemesis-config --exclude test-harness --exclude nemesis-build-config --summary-only --fail-under-lines "$COVERAGE_FLOOR_LINES"
 
       # T7b（扩展计划 D6）：生产/测试行数比——CI 汇总打印，数值随仓库
       # 演进浮动，不设门槛（叙事指标非门禁）。

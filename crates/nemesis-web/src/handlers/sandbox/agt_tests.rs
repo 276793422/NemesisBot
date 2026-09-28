@@ -116,11 +116,11 @@ async fn agt_pending_enumerate_error_when_box_root_is_file() {
 }
 
 #[tokio::test]
-async fn agt_set_network_ini_rewrite_and_reload_spawn_failure_arms() {
+async fn agt_set_network_ini_rewrite_failure_arm() {
     let h = SandboxHandler::new();
     let data = serde_json::json!({ "enabled": true });
 
-    // ① ini 写失败：base 目录被文件占位 → create_dir_all 失败
+    // ① ini 写失败：base 目录被文件占位 → create_dir_all 失败（跨平台同型）。
     let dir = tempfile::tempdir().unwrap();
     let base = dir.path().join("workspace").join("tools").join("sandboxie");
     std::fs::create_dir_all(base.parent().unwrap()).unwrap();
@@ -128,10 +128,20 @@ async fn agt_set_network_ini_rewrite_and_reload_spawn_failure_arms() {
     agt_write_config_json(dir.path());
     let ctx = agt_make_ctx(&dir);
     let err = h
-        .handle_cmd("set_network", Some(data.clone()), &ctx)
+        .handle_cmd("set_network", Some(data), &ctx)
         .await
         .unwrap_err();
     assert!(err.contains("rewrite Sandboxie.ini"), "err: {err}");
+}
+
+// Start.exe /reload spawn 失败臂是 Sandboxie Windows 形态（Linux stub 路径
+// 无 spawn 步骤、诚实返回 Ok + restart_hint，Linux CI 实证假红），照
+// 2026-09-02 约定按平台门控。
+#[cfg(windows)] // Windows-form test（Sandboxie Start.exe /reload 语义，Linux nightly: excluded）
+#[tokio::test]
+async fn agt_set_network_reload_spawn_failure_arm() {
+    let h = SandboxHandler::new();
+    let data = serde_json::json!({ "enabled": true });
 
     // ② ini 写成功但 Start.exe 缺失 → /reload spawn 失败（无副作用：
     //    Command::new(不存在路径).spawn() 立即 Err）

@@ -324,6 +324,7 @@ fn temp_dir(tag: &str) -> std::path::PathBuf {
     dir
 }
 
+#[cfg(windows)] // Windows-form test（夹具写 clamd.exe，Linux 探测名是 clamd，2026-09-02 约定）
 #[test]
 fn detect_install_path_found_and_missing() {
     let engine = ClamAVEngine::new(ClamAVEngineConfig::default());
@@ -471,6 +472,8 @@ fn zip_bytes(entries: &[(&str, &[u8])]) -> Vec<u8> {
     w.finish().unwrap().into_inner()
 }
 
+#[cfg(windows)]
+// Windows-form test（zip 内容/探测目标都是 clamd.exe，Linux 探测名是 clamd，2026-09-02 约定）
 #[tokio::test]
 async fn download_success_extracts_and_detects_install_path() {
     let body = zip_bytes(&[("clamav/clamd.exe", b"fake clamd exe")]);

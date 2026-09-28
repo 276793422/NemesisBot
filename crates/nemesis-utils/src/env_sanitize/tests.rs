@@ -36,15 +36,20 @@ fn sanitize_command_strips_sensitive_and_keeps_whitelist() {
     let _g = FLAG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     set_child_env_sanitize_enabled(true);
 
+    // sanitize_command 枚举的是【本进程环境】（Command 上显式 env 附加的
+    // 键不参与剥除计数）——预置一个独名敏感变量，断言不再依赖机器环境
+    // 碰巧带了什么（此前靠环境里恰好有敏感变量才过，Linux CI 实证假红）。
+    // set/remove 成对且持 FLAG_LOCK，用后即撤。
+    unsafe { std::env::set_var("NMB_COV_TEST_SENSITIVE_KEY", "x") };
     let mut cmd = std::process::Command::new("cmd");
     cmd.env("ANTHROPIC_API_KEY", "sk-test")
         .env("PATH_OK", "keep");
     let stripped = sanitize_command(&mut cmd);
+    unsafe { std::env::remove_var("NMB_COV_TEST_SENSITIVE_KEY") };
 
-    // 本测试进程至少带出这一个敏感变量；白名单/普通变量不剥。
-    // PATH_OK 不含黑名单子串 → 不剥；ANTHROPIC_API_KEY → 剥。
-    // （CI 环境可能自带其他敏感变量，只断言下限与剥除生效。）
-    assert!(stripped >= 1, "至少剥掉显式设置的 ANTHROPIC_API_KEY");
+    // NMB_COV_TEST_SENSITIVE_KEY（含 KEY 子串）必被剥；环境可能自带其他
+    // 敏感变量，只断言下限与剥除生效。PATH_OK 不含黑名单子串 → 不剥。
+    assert!(stripped >= 1, "至少剥掉预置的 NMB_COV_TEST_SENSITIVE_KEY");
 }
 
 #[test]

@@ -4,6 +4,8 @@
 use super::*;
 
 /// real_path_for_box：user / drive / 无关前缀 / 非盒路径 四臂（30-56）。
+#[cfg(windows)]
+// Windows-form test（Sandboxie 盒镜像 backslash 布局，Linux nightly: excluded，2026-09-02 约定）
 #[test]
 fn real_path_for_box_maps_user_drive_and_rejects_others() {
     let box_root = std::path::PathBuf::from(r"C:\box");
@@ -32,6 +34,8 @@ fn real_path_for_box_maps_user_drive_and_rejects_others() {
 
 /// walk + enumerate：镜像 user/drive 的文件被枚举、盒元数据被排除；
 /// real_path / size 正确（58-116 主体）。
+#[cfg(windows)]
+// Windows-form test（Sandboxie 盒镜像 backslash 布局，Linux nightly: excluded，2026-09-02 约定）
 #[test]
 fn enumerate_box_walks_mirror_trees_and_skips_metadata() {
     let home = tempfile::tempdir().unwrap();
@@ -113,6 +117,8 @@ fn commit_file_copies_box_content_to_real_path() {
 }
 
 /// pending_workspace：只返回工作区子树的安全过滤（145-160）。
+#[cfg(windows)]
+// Windows-form test（Sandboxie 盒镜像 backslash 布局，Linux nightly: excluded，2026-09-02 约定）
 #[test]
 fn pending_workspace_filters_to_workspace_subtree() {
     let home = tempfile::tempdir().unwrap();
