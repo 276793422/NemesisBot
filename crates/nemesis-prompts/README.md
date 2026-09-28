@@ -96,8 +96,8 @@ tool_description(name, fallback, tier)
 2. `subagents.rs` 枚举加变体 + `template()`/`slug()`/`from_slug()`/`catalog()` 四处同步。
 3. spawn schema 的 role enum 从 `catalog()` 生成——补全目录即自动跟上；`tests.rs` 角色数组与目录计数同步。
 
-**故意不补的（治理边界，防「参考业界凑数」漂移）**：
-- **角色凑满业界数量**：业界 15 角色中约半数是其私有运行时/产品特性角色（无派发路径 = 死文本 + 小模型选型干扰）。本仓 spawn 角色只扩「有真实派发理由」的通用角色（当前 10 个）；产品特性型评审/分析角色已由结构化子系统提示词覆盖（board 四件、forge 两件、guardian、persona_gen 三件、workflow 两件——共 20+ 个角色化 LLM 提示词）。
+**故意不补的（治理边界，防「凑数量式攀比」漂移）**：
+- **角色凑满数量**：业界常见实现 15 角色中约半数是其私有运行时/产品特性角色（无派发路径 = 死文本 + 小模型选型干扰）。本仓 spawn 角色只扩「有真实派发理由」的通用角色（当前 10 个）；产品特性型评审/分析角色已由结构化子系统提示词覆盖（board 四件、forge 两件、guardian、persona_gen 三件、workflow 两件——共 20+ 个角色化 LLM 提示词）。
 - **入口三变体全量差异化**：Interactive 恒空是字节不变红线；变体只给运行语境真正不同的 headless/ACP。
 - **「批准不可代传」提示词版**：审批不可转移已由代码级审批卡保证（`WebApprovalManager` 超时即拒、`ChannelApprovalManager` 回源发起对话），提示词层再申明一次是冗余防线，不加。
 

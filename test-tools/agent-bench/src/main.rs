@@ -1,6 +1,6 @@
-//! NemesisBot 自建基准套件（agent-bench，补齐差距 🔴3「可靠性公开叙事」）。
+//! NemesisBot 自建基准套件（agent-bench，补齐「可靠性公开叙事」短板）。
 //!
-//! 业界（OpenClaw 等）公开页都有可复跑的 benchmark/可靠性指标；本套件提供
+//! 业界主流公开页都有可复跑的 benchmark/可靠性指标；本套件提供
 //! **可复现的自证基线**：确定性 TestAI 脚本模型做评分 oracle，全程走真实
 //! gateway WS 链路（chat.send → AgentLoop → LLM → 工具 → 回复），产出
 //! JSON + Markdown 记分卡，并支持 baseline 保存/对比（pass_rate 回退即

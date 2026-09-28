@@ -3313,7 +3313,7 @@ fn test_l7_mcp_extra_serialization_deterministic() {
 #[test]
 fn test_diagnostics_loop_missing_key_defaults() {
     // 缺键不炸（serde default fn 全覆盖）：诊断闭环默认**开**（P2 能力扩展
-    // WS3 翻转，对齐业界 内置无条件开启）、20 条、2000ms。
+    // WS3 翻转，对齐业界内置无条件开启）、20 条、2000ms。
     let parsed: crate::AgentDefaults = serde_json::from_str("{}").unwrap();
     assert!(parsed.diagnostics_loop.enabled);
     assert_eq!(parsed.diagnostics_loop.max_errors, 20);

@@ -1164,7 +1164,7 @@ pub struct AgentDefaults {
     #[serde(default = "default_rate_limit_retries")]
     pub rate_limit_retries: i64,
     /// P5（能力扩展 WS2 compaction）：自动压缩的逐字尾巴 token 预算
-    /// （默认 20000，对齐 业界 keepRecentTokens）。压缩边界从「保留近
+    /// （默认 20000，对齐业界通行 keepRecentTokens）。压缩边界从「保留近
     /// K_TARGET=6 条」改为「保留近 N token」（MODEL-FACING 投影估算），
     /// 预算边界再经 tool_safe_boundary 回退，保证永不切在 tool_call/result
     /// 对中间。**0 = 回退旧按条数行为**。loop 侧 fresh-read（每轮现读
@@ -4104,7 +4104,7 @@ fn default_rate_limit_retries() -> i64 {
 }
 
 /// P5（能力扩展 WS2 compaction）：逐字尾巴 token 预算缺省值（单一真相源：
-/// serde 缺省 / raw-JSON 解析 / Default impl 三方共用）。对齐 业界的
+/// serde 缺省 / raw-JSON 解析 / Default impl 三方共用）。对齐业界通行的
 /// keepRecentTokens=20000 口径。
 pub const DEFAULT_COMPACT_KEEP_RECENT_TOKENS: i64 = 20_000;
 

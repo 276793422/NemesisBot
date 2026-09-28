@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Extended lint rule table (P15 supply-chain widening). Categories align with legacy scanner; severity uses lint levels (critical blocks install). Rules are appended after the 27 hardcoded legacy patterns; ids use category prefixes (CRED/PERS/DNXL/SNST/ENVP/DYNE/SUPC).",
+  "description": "Extended lint rule table (P15 supply-chain widening). Categories align with the legacy scanner; severity uses lint levels (critical blocks install). Rules are appended after the 27 hardcoded legacy patterns; ids use category prefixes (CRED/PERS/DNXL/SNST/ENVP/DYNE/SUPC).",
   "rules": [
     {
       "id": "CRED-001",
