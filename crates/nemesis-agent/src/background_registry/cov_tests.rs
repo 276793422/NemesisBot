@@ -75,10 +75,23 @@ async fn output_reports_head_dropped_note() {
         .unwrap();
     let id = started["job_id"].as_u64().unwrap();
 
-    // 等 pump 排干 + 进程退出。
-    tokio::time::sleep(Duration::from_millis(400)).await;
-
-    let payload = reg.output(id, 0).await.unwrap();
+    // 等 pump 排干 + 进程退出：**有界轮询**而非固定睡眠——固定 400ms 在
+    // 全量并行负载下会读早（spawn/pump 未完成 → dropped_bytes=0 → 假红，
+    // 2026-09-28 全量跑实证一次；CLAUDE.md 记载的本模块计时敏感域同族）。
+    // 轮询退出条件是**双条件**：头丢注记已挂 **且** 进程已退出（终态平铺）。
+    // 只等 dropped_bytes 会在 pump 排干早于 reap 时提前跳出 → running 假
+    // true（同日二轮实证）；output(offset=0) 是钳制读，幂等可重入；上限
+    // 10s 是进程操作墙钟的宽裕兜底，到点按最后一次 payload 断言（诚实失败）。
+    let mut payload = serde_json::Value::Null;
+    for _ in 0..100 {
+        payload = reg.output(id, 0).await.unwrap();
+        if payload["dropped_bytes"].as_u64().unwrap_or(0) > 0
+            && payload["running"] == serde_json::json!(false)
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     assert!(
         payload["dropped_bytes"].as_u64().unwrap_or(0) > 0,
         "output exceeds cap: {payload}"

@@ -155,6 +155,11 @@ mod voice_extra_tests {
         assert!(r.is_object() || r.is_array());
     }
 
+    // 本测试经 cmd_devices 穿透真实音频设备枚举，需要 voice-capture feature
+    // （voice 不隐含它——IoT 可只留转写不带设备 IO）。未编译时 devices 命令
+    // 诚实报错，测试前提不成立 → 编译期移除（与 scanner 测试挂 scanner
+    // feature 同款门控纪律）；CI 虚拟音频栈防护闸保留在函数体内。
+    #[cfg(feature = "voice-capture")]
     #[tokio::test]
     async fn devices_returns_object() {
         // 【2026-09-02 CI nemesis-web 0xc0000005】本测试经 cmd_devices() 穿透

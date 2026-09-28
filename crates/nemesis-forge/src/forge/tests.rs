@@ -757,6 +757,41 @@ async fn test_reflection_cycle_writes_report() {
     }
 }
 
+/// 语义反思接入（2026-09-28）：run_reflection_cycle 带 LLM provider 时，
+/// 报告落盘「LLM Insights」节（活渲染链 = Reflector::format_report_markdown，
+/// 反思 insights 非空即渲染；注意不是 report.rs 里只有测试消费的
+/// format_report_from_report 的「LLM Deep Analysis」头）。
+#[tokio::test]
+async fn test_reflection_cycle_writes_llm_deep_analysis_section() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = create_integration_forge(dir.path());
+    forge.set_provider(std::sync::Arc::new(MockLLMCaller));
+
+    write_test_experiences(forge.forge_dir(), 5).await;
+    forge.run_reflection_cycle().await;
+
+    let reflections_dir = dir.path().join("forge").join("reflections");
+    // read_dir 顺序是平台实现细节（NTFS/ext4 不同）；本测试只取首个报告，
+    // 显式排序消除平台差（多报告场景下断言稳定）。
+    let mut reports: Vec<std::path::PathBuf> = std::fs::read_dir(&reflections_dir)
+        .expect("reflections dir must exist after cycle")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map(|ext| ext == "md").unwrap_or(false))
+        .map(|e| e.path())
+        .collect();
+    reports.sort();
+    assert!(!reports.is_empty(), "expected at least one report file");
+    let content = std::fs::read_to_string(&reports[0]).unwrap();
+    assert!(
+        content.contains("## LLM Insights"),
+        "report must carry the LLM Insights section; got:\n{content}"
+    );
+    assert!(
+        content.contains("mock"),
+        "insights body must be rendered into the report"
+    );
+}
+
 #[tokio::test]
 async fn test_reflection_cycle_empty_experiences() {
     let dir = tempfile::tempdir().unwrap();

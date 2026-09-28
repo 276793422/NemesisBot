@@ -165,8 +165,15 @@ impl OpenAICompatProvider {
         // We send the field whenever a tier is set; models/gateways that do
         // not support it decide on their side (per goal: no client-side
         // model gating).
+        //
+        // "off" 过滤（aux 杂务三层治理 2026-09-28）：`Some("off")` 是
+        // anthropic lane 的显式禁思考 wire 标记（thinking:{type:"disabled"}）；
+        // 本 lane 无禁思考 wire 字段，且 "off" 不是 OpenAI 合法枚举值——严格
+        // 端点会 400。此处不透传，由预算护栏 + 重试兜底（本 lane 的服务端
+        // 思考行为保持默认）。
         if let Some(ref effort) = options.reasoning_effort
             && !effort.is_empty()
+            && effort != "off"
         {
             body["reasoning_effort"] = serde_json::json!(effort);
         }

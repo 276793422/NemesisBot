@@ -46,12 +46,6 @@ pub const SEMANTIC_ANALYSIS_SYSTEM_PROMPT: &str = "你是智能系统分析员�
         聚焦可自动化、可改进或可沉淀为可复用组件的模式。\
         回复控制在 500 字以内。";
 
-/// 技能作者 system prompt（`factory::generate_skill_llm`）。
-pub const SKILL_AUTHOR_SYSTEM_PROMPT: &str = "你是智能代理系统的技能作者。生成一份结构良好的 SKILL.md 文档，描述一个可复用的技能。文档应包含 YAML frontmatter（以 --- 定界）、描述、用法说明、示例与注意事项。只回复技能内容本身，不要任何额外解说。";
-
-/// 脚本开发者 system prompt（`factory::generate_script_llm`）。
-pub const SCRIPT_AUTHOR_SYSTEM_PROMPT: &str = "你是智能代理系统的脚本开发者。生成一份结构良好的 bash 脚本，用于自动化常见任务。脚本应安全、注释充分、遵循最佳实践。只回复脚本内容本身，不要任何额外解说。";
-
 /// 技能定义生成器 system prompt（`learning_engine::generate_skill_draft`）。
 pub const SKILL_GENERATOR_SYSTEM_PROMPT: &str =
     "你是技能定义生成器。生成带 YAML frontmatter 的合法 SKILL.md 内容。";

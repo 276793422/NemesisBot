@@ -593,11 +593,15 @@ fn test_effort_anthropic_budget_mapping() {
         assert_eq!(b["thinking"]["type"], "enabled", "tier {tier}");
         assert_eq!(b["thinking"]["budget_tokens"], budget, "tier {tier}");
     }
-    // None / "off" / unknown → no thinking block.
-    for none_case in [mk(None), mk(Some("off")), mk(Some("banana"))] {
+    // "off"（aux 杂务通道显式禁思考标记，2026-09-28）→ 显式 disabled 块。
+    let off = mk(Some("off"));
+    assert_eq!(off["thinking"]["type"], "disabled");
+    assert!(off["thinking"].get("budget_tokens").is_none());
+    // None / unknown → no thinking block（服务端默认，不猜）。
+    for none_case in [mk(None), mk(Some("banana"))] {
         assert!(
             none_case.get("thinking").is_none(),
-            "no thinking block for unset/off/unknown"
+            "no thinking block for unset/unknown"
         );
     }
 }
@@ -705,6 +709,141 @@ async fn test_w4c_anth_chat_dead_port_maps_timeout() {
         .await
         .unwrap_err();
     assert!(matches!(err, FailoverError::Timeout { .. }));
+}
+
+// ===========================================================================
+// thinking 块 wire 兼容回退（2026-09-28 aux 杂务通道回归根修）：
+// adaptive-thinking-only 模型（新 Claude 系）拒绝一切显式 thinking 块
+// （enabled/disabled 皆 400）——aux 的 `thinking:{type:"disabled"}` 在这类
+// 端点上剥块重试一次回落服务端默认语义。
+// ===========================================================================
+
+#[test]
+fn test_thinking_block_rejected_predicate() {
+    // 三条件缺一不可。
+    assert!(thinking_block_rejected(
+        true,
+        400,
+        r#"{"error":"thinking is not supported"}"#
+    ));
+    // 无 thinking 块 → 不剥。
+    assert!(!thinking_block_rejected(false, 400, "thinking rejected"));
+    // 非 4xx → 不走剥块（5xx 本就可 failover）。
+    assert!(!thinking_block_rejected(true, 500, "thinking rejected"));
+    assert!(!thinking_block_rejected(true, 503, "thinking rejected"));
+    // 错误体不点名 thinking → 不误剥（无关 4xx）。
+    assert!(!thinking_block_rejected(
+        true,
+        400,
+        r#"{"error":"max_tokens too small"}"#
+    ));
+    // 大小写不敏感（Thinking / THINKING 皆认）。
+    assert!(thinking_block_rejected(
+        true,
+        400,
+        "THINKING disabled not allowed"
+    ));
+}
+
+#[tokio::test]
+async fn test_anth_chat_thinking_rejected_retries_without_block() {
+    let server = MockServer::start().await;
+    // 先挂带 thinking 块匹配的 mock（挂载序优先）：400 + 错误体点名 thinking。
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(body_partial_json(json!({"thinking": {"type": "disabled"}})))
+        .respond_with(ResponseTemplate::new(400).set_body_string(
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"thinking parameter is not supported by this model"}}"#,
+        ))
+        .mount(&server)
+        .await;
+    // 再挂无 body 匹配的 mock：剥块重试请求（无 thinking）→ 200。
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [{"type": "text", "text": "fallback-ok"}],
+            "stop_reason": "end_turn"
+        })))
+        .mount(&server)
+        .await;
+
+    let provider = AnthropicProvider::new(anth_config(&server.uri()));
+    let mut options = ChatOptions::default();
+    options.reasoning_effort = Some("off".to_string());
+    let resp = provider
+        .chat(&anth_messages(), &[], "m", &options)
+        .await
+        .unwrap();
+    assert_eq!(resp.content, "fallback-ok");
+
+    // 恰两次请求：首次带 disabled 块，重试已剥块。
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 2, "must retry exactly once after stripping");
+    let first_body: serde_json::Value =
+        serde_json::from_slice(&reqs[0].body).expect("first request body json");
+    let retry_body: serde_json::Value =
+        serde_json::from_slice(&reqs[1].body).expect("retry request body json");
+    assert_eq!(first_body["thinking"]["type"], "disabled");
+    assert!(
+        retry_body.get("thinking").is_none(),
+        "retry must strip the thinking block"
+    );
+}
+
+#[tokio::test]
+async fn test_anth_chat_non_thinking_4xx_does_not_retry() {
+    let server = MockServer::start().await;
+    // 错误体不点名 thinking（无关 4xx）→ 不剥块、不重试，错误照常上抛。
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(body_partial_json(json!({"thinking": {"type": "disabled"}})))
+        .respond_with(ResponseTemplate::new(400).set_body_string(
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens: exceeds model cap"}}"#,
+        ))
+        .mount(&server)
+        .await;
+
+    let provider = AnthropicProvider::new(anth_config(&server.uri()));
+    let mut options = ChatOptions::default();
+    options.reasoning_effort = Some("off".to_string());
+    let err = provider
+        .chat(&anth_messages(), &[], "m", &options)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, FailoverError::Unknown { .. }), "err: {err:?}");
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 1, "non-thinking 4xx must fail without retry");
+}
+
+#[tokio::test]
+async fn test_anth_chat_thinking_retry_also_fails_propagates_retry_error() {
+    let server = MockServer::start().await;
+    // 剥块重试仍 4xx → 上抛**重试**的错误（非首错）。
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(400).set_body_string(
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"thinking rejected again"}}"#,
+        ))
+        .mount(&server)
+        .await;
+
+    let provider = AnthropicProvider::new(anth_config(&server.uri()));
+    let mut options = ChatOptions::default();
+    options.reasoning_effort = Some("off".to_string());
+    let err = provider
+        .chat(&anth_messages(), &[], "m", &options)
+        .await
+        .unwrap_err();
+    let msg = match err {
+        FailoverError::Unknown { message, .. } => message,
+        other => panic!("expected Unknown, got {other:?}"),
+    };
+    assert!(
+        msg.contains("thinking rejected again"),
+        "must surface the RETRY error: {msg}"
+    );
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 2);
 }
 
 #[test]

@@ -26,8 +26,9 @@ use nemesis_types::capability::ModelTier;
 // ---------------------------------------------------------------------------
 
 pub use nemesis_prompts::aux::{
-    COMPACT_INSTRUCTION, COMPACT_MERGE_TEMPLATE, EXISTING_SUMMARY_PREFIX, render_compact_merge,
-    render_external_channel_section, render_paste_data_section, render_title_prompt,
+    FILE_LEDGER_HEADING, SUMMARY_SCHEMA_SECTIONS, render_external_channel_section,
+    render_paste_data_section, render_summary_instruction, render_summary_merge_prompt,
+    render_summary_schema_suffix, render_title_prompt,
 };
 pub use nemesis_prompts::board::{PrecedentEntry, ReviewTier, parse_review_tier};
 pub use nemesis_prompts::slash;

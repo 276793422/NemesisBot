@@ -20,28 +20,34 @@ pub(crate) const E7_TITLE_MAX_CHARS: usize = 24;
 /// 调用方诚实跳过，下轮回复再试）。提示文本单一真相源：
 /// `prompt::render_title_prompt`（格式约束 + 双向删减规则 + 数据非指令
 /// 防护）；清洗兜底仍由 [`sanitize_generated_title`] 负责。调用走杂务
-/// 旁路护栏（`bypass_llm`：限 token + 超时 + 空输出校验）。
+/// 旁路护栏（`bypass_llm`：限 token + 超时 + 空输出校验 + 重试版护栏
+/// ——空输出/瞬态失败同窗口重试一次，采样抖动兜底）。
 pub(crate) async fn generate_title_from_first_message(
     provider: &dyn LlmProvider,
     model: &str,
     first_user: &str,
 ) -> Option<String> {
     let prompt = crate::prompt::render_title_prompt(first_user, E7_TITLE_MAX_CHARS);
-    let call = provider.chat(
-        model,
-        vec![LlmMessage {
-            role: "user".to_string(),
-            content: prompt,
-            tool_calls: None,
-            tool_call_id: None,
-            reasoning_content: None,
-            images: Vec::new(),
-        }],
-        Some(aux_chat_options(AUX_TITLE_MAX_TOKENS)),
-        Vec::new(),
-    );
-    let content = guarded_llm_call("auto-title", AUX_TITLE_TIMEOUT, async {
-        call.await.map(|r| r.content)
+    let content = guarded_llm_call_retrying("auto-title", AUX_TITLE_TIMEOUT, || {
+        let prompt = prompt.clone();
+        async move {
+            provider
+                .chat(
+                    model,
+                    vec![LlmMessage {
+                        role: "user".to_string(),
+                        content: prompt,
+                        tool_calls: None,
+                        tool_call_id: None,
+                        reasoning_content: None,
+                        images: Vec::new(),
+                    }],
+                    Some(aux_chat_options(AUX_TITLE_MAX_TOKENS)),
+                    Vec::new(),
+                )
+                .await
+                .map(|r| r.content)
+        }
     })
     .await
     .ok()?;

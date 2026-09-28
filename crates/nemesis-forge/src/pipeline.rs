@@ -370,7 +370,16 @@ impl Pipeline {
                 let user_prompt =
                     crate::reflector_llm::quality_review_prompt(kind_str, name, None, content);
 
-                match caller.chat(system_prompt, &user_prompt, Some(2000)).await {
+                // 预算统一走 forge 侧常量（2026-09-28 从 2000 拉齐 8192：
+                // 单一真相源，对非 anthropic lane thinking 不受控留余量）。
+                match caller
+                    .chat(
+                        system_prompt,
+                        &user_prompt,
+                        Some(crate::reflector_llm::AUX_FORGE_MAX_TOKENS),
+                    )
+                    .await
+                {
                     Ok(response) => {
                         // Parse LLM response
                         match crate::reflector_llm::extract_json(&response) {

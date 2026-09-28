@@ -1,6 +1,6 @@
 //! NemesisBot - Forge Self-Learning Framework
 //!
-//! Collector + Reflector + Factory + Registry + Sanitizer + Pipeline + Learning.
+//! Collector + Reflector + Registry + Sanitizer + Pipeline + Learning.
 
 pub mod bridge;
 pub mod collector;
@@ -9,7 +9,6 @@ pub mod cycle_store;
 pub mod evaluator;
 pub mod experience_store;
 pub mod exporter;
-pub mod factory;
 pub mod forge;
 pub mod forge_tools;
 pub mod learning_engine;

@@ -285,23 +285,66 @@ impl AnthropicProvider {
         // `thinking: {type: "enabled", budget_tokens: N}`. Tier→budget is a
         // FIXED documented mapping (low=1024 / medium=4096 / high=16384) —
         // budgets must stay well under max_tokens, and these leave headroom
-        // under the 4096 default. "off"/empty sends nothing.
+        // under the 4096 default.
+        //
+        // "off" = aux 杂务通道的显式禁思考标记（bypass_llm::aux_chat_options
+        // 等组装点；aux_chat_options 的注释记载值空间专用化依据）→ 发
+        // `thinking: {type: "disabled"}`——不发块的旧语义留给服务端默认，
+        // 而 GLM 等兼容端点默认开思考，思考 token 计入 max_tokens 会烧穿
+        // 杂务预算（2026-09-28 真机 mt=64 5/5 空输出实证）。unknown 值
+        // 仍发空（不猜）。主循环 effort 只会是 low/medium/high/None。
         if let Some(ref effort) = options.reasoning_effort {
-            let budget = match effort.as_str() {
-                "low" => Some(1024usize),
-                "medium" => Some(4096usize),
-                "high" => Some(16384usize),
-                _ => None, // "off" or unknown → no thinking block
-            };
-            if let Some(b) = budget {
-                body["thinking"] = serde_json::json!({
-                    "type": "enabled",
-                    "budget_tokens": b
-                });
+            match effort.as_str() {
+                "low" => {
+                    body["thinking"] = serde_json::json!({
+                        "type": "enabled",
+                        "budget_tokens": 1024usize
+                    });
+                }
+                "medium" => {
+                    body["thinking"] = serde_json::json!({
+                        "type": "enabled",
+                        "budget_tokens": 4096usize
+                    });
+                }
+                "high" => {
+                    body["thinking"] = serde_json::json!({
+                        "type": "enabled",
+                        "budget_tokens": 16384usize
+                    });
+                }
+                "off" => {
+                    body["thinking"] = serde_json::json!({ "type": "disabled" });
+                }
+                _ => {} // unknown → no thinking block
             }
         }
 
         body
+    }
+
+    /// Anthropic Messages API 非流式 POST（headers 与流式路径同源：
+    /// x-api-key + anthropic-version 2023-06-01 + JSON）。send 失败
+    /// （连接/超时）→ Timeout（可 failover，J1 同族）。
+    async fn post_messages(
+        client: &reqwest::Client,
+        url: &str,
+        api_key: &str,
+        model: &str,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response, FailoverError> {
+        client
+            .post(url)
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("Content-Type", "application/json")
+            .json(body)
+            .send()
+            .await
+            .map_err(|_| FailoverError::Timeout {
+                provider: "anthropic".to_string(),
+                model: model.to_string(),
+            })
     }
 
     /// Anthropic Messages API 流式请求（B 根修 2026-09-17）。
@@ -317,6 +360,9 @@ impl AnthropicProvider {
     /// message_delta 的 output_tokens。EOF 无 message_stop 合成终态 chunk
     ///（对齐 HttpProvider 语义）；流读错误 → Timeout（可 failover，J1 同族）；
     /// error 事件 → Format（overloaded_error → Overloaded）。
+    /// 注：本流式路径**没有** thinking 块 wire 兼容回退（adaptive-only 端点
+    /// 加用户显式 effort 档仍会 400——既有行为，非杂务通道回归面；杂务全走
+    /// 非流式 [`chat`](Self::chat) 的回退）。
     pub fn chat_stream(
         &self,
         messages: &[Message],
@@ -895,6 +941,17 @@ fn parse_response(data: &serde_json::Value) -> LLMResponse {
     }
 }
 
+/// thinking 块 wire 兼容回退判定（2026-09-28 aux 杂务通道回归根修）：
+/// adaptive-thinking-only 模型（新 Claude 系，思考走服务端自适应）拒绝
+/// **一切**显式 thinking 块——enabled 与 disabled 皆 400。三条件缺一
+/// 不可：请求确实带了 thinking 块 + 4xx + 错误体点名 thinking 字段，
+/// 避免把无关 4xx 误剥块重试。限 4xx：5xx 本就可 failover，不走剥块。
+fn thinking_block_rejected(had_thinking: bool, status: u16, err_body: &str) -> bool {
+    had_thinking
+        && (400..500).contains(&status)
+        && err_body.to_ascii_lowercase().contains("thinking")
+}
+
 /// Normalize the Anthropic base URL (strip trailing `/v1`).
 pub fn normalize_base_url(url: &str) -> String {
     let base = url.trim().trim_end_matches('/');
@@ -929,19 +986,7 @@ impl LLMProvider for AnthropicProvider {
         let url = format!("{}/v1/messages", self.config.base_url.trim_end_matches('/'));
         let body = self.build_request_body(messages, tools, model, options);
 
-        let resp = self
-            .client
-            .post(&url)
-            .header("x-api-key", &api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|_| FailoverError::Timeout {
-                provider: "anthropic".to_string(),
-                model: model.to_string(),
-            })?;
+        let mut resp = Self::post_messages(&self.client, &url, &api_key, model, &body).await?;
 
         let status = resp.status().as_u16();
 
@@ -949,13 +994,46 @@ impl LLMProvider for AnthropicProvider {
             // 先取 Retry-After 头再消费 body（text() 按值拿走 resp）。
             let retry_after = crate::failover::retry_after_from_headers(resp.headers());
             let text = resp.text().await.unwrap_or_default();
-            return Err(FailoverError::from_status(
-                "anthropic",
-                model,
-                status,
-                &text,
-                retry_after,
-            ));
+            // thinking 块 wire 兼容回退（2026-09-28 复查二轮发现）：adaptive-only
+            // 模型（新 Claude 系）拒绝**一切**显式 thinking 块（400，enabled 与
+            // disabled 皆然）——aux 杂务的 `thinking:{type:"disabled"}` 在这类
+            // 模型上会从「服务端默认自适应思考」退化成两次 400 后诚实失败。
+            // 带 thinking 块 + 4xx + 错误体点名 thinking 字段 → 剥块重试一次
+            // （回落服务端默认语义，恢复旧行为）；GLM 等兼容端点 disabled 合法
+            // 不受影响，非 thinking 拒绝的 4xx 照常上抛。
+            if thinking_block_rejected(body.get("thinking").is_some(), status, &text) {
+                tracing::warn!(
+                    status,
+                    model,
+                    "anthropic lane: explicit thinking block rejected; retrying once without it (adaptive-thinking-only endpoint?)"
+                );
+                let mut retry_body = body.clone();
+                if let Some(obj) = retry_body.as_object_mut() {
+                    obj.remove("thinking");
+                }
+                resp =
+                    Self::post_messages(&self.client, &url, &api_key, model, &retry_body).await?;
+                let retry_status = resp.status().as_u16();
+                if retry_status >= 400 {
+                    let retry_after = crate::failover::retry_after_from_headers(resp.headers());
+                    let retry_text = resp.text().await.unwrap_or_default();
+                    return Err(FailoverError::from_status(
+                        "anthropic",
+                        model,
+                        retry_status,
+                        &retry_text,
+                        retry_after,
+                    ));
+                }
+            } else {
+                return Err(FailoverError::from_status(
+                    "anthropic",
+                    model,
+                    status,
+                    &text,
+                    retry_after,
+                ));
+            }
         }
 
         let data: serde_json::Value = resp.json().await.map_err(|e| FailoverError::Format {

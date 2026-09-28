@@ -338,21 +338,23 @@ async fn build_messages_with_memory_annotation_merges_sections() {
 
 #[tokio::test]
 async fn emit_observer_events_wraps_llm_call_both_ways() {
-    // None manager：直接透传调用结果。
+    // None manager：直接透传调用结果。（工厂闭包形态：空输出重试机制引入后
+    // emit 助手收 Fn 闭包而非 future。）
     let out =
-        emit_observer_events_around_llm(None, "s9label", "m", async { Ok(resp("raw ok")) }).await;
+        emit_observer_events_around_llm(None, "s9label", "m", || async { Ok(resp("raw ok")) })
+            .await;
     assert!(matches!(out, Some(Ok(r)) if r.content == "raw ok"));
 
     // Some(manager)：发 ConversationStart/End + LlmRequest/Response 事件。
     let mgr = std::sync::Arc::new(nemesis_observer::Manager::new());
-    let out = emit_observer_events_around_llm(Some(&mgr), "s9label2", "m", async {
+    let out = emit_observer_events_around_llm(Some(&mgr), "s9label2", "m", || async {
         Ok(resp("observed ok"))
     })
     .await;
     assert!(matches!(out, Some(Ok(r)) if r.content == "observed ok"));
 
-    // Err 路径同样透传。
-    let out = emit_observer_events_around_llm(Some(&mgr), "s9label3", "m", async {
+    // Err 路径同样透传（重试一次后仍失败 → 原样上抛）。
+    let out = emit_observer_events_around_llm(Some(&mgr), "s9label3", "m", || async {
         Err::<LlmResponse, _>("llm exploded".to_string())
     })
     .await;

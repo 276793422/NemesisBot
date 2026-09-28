@@ -25,8 +25,8 @@
 //!   exempt turns — cron/heartbeat, same gate as boundary events): replay
 //!   degrades EXPLICITLY to the role-subsequence anchor.
 //! - **Scope**: the MAIN request path only (the LlmRequest observer event that
-//!   feeds `NN.AI.Request.raw.json`). Summarizer sub-requests and compaction
-//!   calls have their own logging and are out of scope.
+//!   feeds `NN.AI.Request.raw.json`). Aux summary sub-requests (compaction /
+//!   branch summaries) have their own logging and are out of scope.
 //! - steer messages are persisted into the instance history when claimed (see
 //!   the claim site in `run_llm_loop`) — they are NOT transient, so they need
 //!   no ledger entry.

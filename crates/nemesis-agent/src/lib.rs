@@ -116,10 +116,7 @@ pub use remote_executor_tool::{
 pub use request_logger::RequestLogger;
 pub use request_logger_observer::RequestLoggerObserver;
 pub use ringbuffer::RingBuffer;
-pub use session::{
-    NullNotifier, Session, SessionManager, SessionStore, StoredMessage, StoredSession,
-    SummarizationNotifier, Summarizer,
-};
+pub use session::{Session, SessionManager, SessionStore, StoredMessage, StoredSession};
 pub use session::{
     estimate_tokens, estimate_tokens_for_turns, force_compress_turns, is_internal_channel,
 };
