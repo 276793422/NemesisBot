@@ -7,6 +7,8 @@
 
 use super::*;
 use std::fs;
+// Path 类型只被下方 Windows 句柄锁 helper 引用——Linux 下门控防未用导入。
+#[cfg(windows)]
 use std::path::Path;
 
 fn cov_key(tag: &str) -> String {
@@ -292,7 +294,8 @@ fn flatten_skips_subdirs_target_conflicts_and_rename_failures() {
     fs::write(child.join("dup.jsonl"), "x").unwrap();
     fs::write(root.join("nodeA_dup.jsonl"), "old").unwrap();
 
-    // ② rename 失败（句柄锁）→ migration_log 臂。
+    // ② rename 失败（句柄锁）→ migration_log 臂。锁只在 Windows 成立
+    // （POSIX rename 不受共享读锁阻挡 → Linux 下该文件照常平移）。
     let locked = child.join("locked.jsonl");
     fs::write(&locked, "x").unwrap();
 
@@ -308,9 +311,11 @@ fn flatten_skips_subdirs_target_conflicts_and_rename_failures() {
     drop(_handle);
 
     assert!(root.join("nodeA_ok.jsonl").exists(), "正常文件应已平移");
+    // 锁定文件留原地仅 Windows 成立（Linux 无共享锁语义，locked 已平移）。
+    #[cfg(windows)]
     assert!(child.join("locked.jsonl").exists(), "锁定的文件留在原地");
     assert!(child.join("sub").is_dir(), "子目录不追");
-    // 锁定文件还在 → 子目录非空 → 目录保留。
+    // 两平台下 sub 都在 → 子目录非空 → 目录保留。
     assert!(child.is_dir());
 
     #[cfg(windows)]

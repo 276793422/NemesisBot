@@ -3148,6 +3148,7 @@ mod w5b2 {
 // `model catalog update` 双臂（有缓存保留 / 无缓存诚实 bail）与
 // `model prices update` 离线 bail。
 // ---------------------------------------------------------------------------
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod wave6 {
     use super::super::{ModelAction, PricesAction};
     use super::s11b_temp_home_env;

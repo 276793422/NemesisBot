@@ -5930,6 +5930,7 @@ async fn init_post_agent_coordinator_shape_installs_board_hooks() {
 /// start_check()=Some 才执行）。持 GLOBAL_STATE_LOCK + EnvHomeGuard 隔离；
 /// 已被别的测试置过就跳过（OnceLock set-once 语义，内容不影响本批断言）。
 #[cfg(all(
+    windows, // Windows-form (EnvHomeGuard + GLOBAL_STATE_LOCK; Linux nightly: excluded, 2026-09-02 convention)
     feature = "board",
     feature = "cluster",
     feature = "forge",
@@ -5955,6 +5956,7 @@ fn prime_verify_start_snapshot() {
 /// 反复投 Shutdown 驱动 Step 23 返回 + Step 24 善后。返回 fixture + 安全
 /// 插件供调用方追加断言。
 #[cfg(all(
+    windows, // Windows-form (EnvHomeGuard + GLOBAL_STATE_LOCK; Linux nightly: excluded, 2026-09-02 convention)
     feature = "board",
     feature = "cluster",
     feature = "forge",
@@ -6096,6 +6098,7 @@ async fn run_runtime_pipeline(
 /// 默认形态（guardian off）：跑通 18–24 全链；guardian 不装配（other 臂），
 /// CRITICAL 工具也不进 LLM 审（judge 缺席的双保险语义）。
 #[cfg(all(
+    windows, // Windows-form (EnvHomeGuard + GLOBAL_STATE_LOCK; Linux nightly: excluded, 2026-09-02 convention)
     feature = "board",
     feature = "cluster",
     feature = "forge",
@@ -6117,6 +6120,7 @@ async fn run_runtime_full_cycle_guardian_off_covers_steps_18_to_24() {
 /// critical 形态：guardian judge 装配走「small_model 无法解析 → 回落主模型」
 /// 臂；装配后 CRITICAL 工具进 LLM 审、LOW 工具不进（单一决策点语义）。
 #[cfg(all(
+    windows, // Windows-form (EnvHomeGuard + GLOBAL_STATE_LOCK; Linux nightly: excluded, 2026-09-02 convention)
     feature = "board",
     feature = "cluster",
     feature = "forge",
@@ -7357,6 +7361,7 @@ async fn pa2_corrupt_asset_secret_disables_asset_serving_but_init_survives() {
 /// critical + small_model 可解析且 provider 构造成功（openai 协议推断 →
 /// HttpCompat）：judge 用 small model 通道装配。
 #[cfg(all(
+    windows, // Windows-form (EnvHomeGuard + GLOBAL_STATE_LOCK; Linux nightly: excluded, 2026-09-02 convention)
     feature = "board",
     feature = "cluster",
     feature = "forge",
@@ -7382,6 +7387,7 @@ async fn run_runtime_guardian_critical_small_model_provider_ok_arm() {
 /// critical + small_model 可解析但 protocol 未知 → create_provider Err →
 /// 回落主模型（warn 臂 + 主模型三元组）。
 #[cfg(all(
+    windows, // Windows-form (EnvHomeGuard + GLOBAL_STATE_LOCK; Linux nightly: excluded, 2026-09-02 convention)
     feature = "board",
     feature = "cluster",
     feature = "forge",
@@ -7407,6 +7413,7 @@ async fn run_runtime_guardian_critical_small_model_provider_create_err_arm() {
 /// high + small_model 未配置 → None 臂（info 提示 + 主模型三元组）。
 /// 高危形态裁决走破坏形态预筛：CRITICAL/HIGH 工具 + 破坏词表命中才进审。
 #[cfg(all(
+    windows, // Windows-form (EnvHomeGuard + GLOBAL_STATE_LOCK; Linux nightly: excluded, 2026-09-02 convention)
     feature = "board",
     feature = "cluster",
     feature = "forge",

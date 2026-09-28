@@ -248,6 +248,9 @@ impl TestClient {
 
     /// 宽预算版 recv：LLM 恢复环重试含退避（秒级），prompt 结局帧会晚于
     /// 默认 5s 到达（LoopDriver 生产装配用例用）。
+    // 唯一调用方在下方 Windows 形态测试里——Linux 下不加门会死代码告警，
+    // 撞 clippy -D warnings 门禁。
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     async fn recv_within(&mut self, budget: Duration) -> Value {
         let line = tokio::time::timeout(budget, self.lines.next_line())
             .await

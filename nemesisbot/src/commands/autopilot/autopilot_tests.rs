@@ -5,6 +5,9 @@
 //! `fire_autopilot`（cluster=None / CLI 语义）直接建单。env set_var 是
 //! 进程级 → 持 `crate::GLOBAL_STATE_LOCK` 串行 + Windows-form 惯例
 //! （CI Linux nightly 跳过，同 2026-09-02 sweep）。
+// 整文件 Windows 形态（全部分发臂走 env 重定向 + Windows 惯例）——文件级
+// 门控，Linux 下 `use super::*` 不产生未用导入告警。
+#![cfg(windows)]
 
 use super::*;
 

@@ -829,12 +829,15 @@ fn deps_with_workspace(
 }
 
 /// 脚本化主持人 LLM：按序弹出回复，耗尽后回落 `fallback`（形态同
-/// board_review::tests::ScriptedLlm）。
+/// board_review::tests::ScriptedLlm）。唯一消费方 attach_scripted_moderator
+/// 是 Windows 形态——Linux 下门控防 dead_code 撞 clippy 门禁。
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
 struct ScriptedModeratorLlm {
     script: std::sync::Mutex<std::collections::VecDeque<String>>,
     fallback: String,
 }
 
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
 #[async_trait::async_trait]
 impl nemesis_agent::r#loop::LlmProvider for ScriptedModeratorLlm {
     async fn chat(
