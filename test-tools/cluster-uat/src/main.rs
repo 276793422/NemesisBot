@@ -219,6 +219,38 @@ fn dump_log_tail(path: &Path, max_lines: usize) {
     }
 }
 
+/// 递归列残留项（相对路径，目录带 `/` 后缀，封顶 cap 项）——T-MRG-1 清扫
+/// 断言失败诊断用（GH runner 三连实证 2026-09-28：exec 目录非空但不知道
+/// 残留的是什么；下一轮失败直接带清单定位）。
+fn list_residual_entries(root: &Path, cap: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![(root.to_path_buf(), String::new())];
+    while let Some((dir, rel)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            if out.len() >= cap {
+                return out;
+            }
+            let name = e.file_name().to_string_lossy().to_string();
+            let child_rel = if rel.is_empty() {
+                name
+            } else {
+                format!("{rel}/{name}")
+            };
+            let p = e.path();
+            if p.is_dir() {
+                out.push(format!("{child_rel}/"));
+                stack.push((p, child_rel));
+            } else {
+                out.push(child_rel);
+            }
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Configuration helpers
 // ---------------------------------------------------------------------------
@@ -8146,15 +8178,38 @@ async fn main() {
                 }
 
                 // 7. B/C 工作副本已清扫（E3 生命周期闭环）。
+                // 轮询而非单点断言（GH runner 三连实证 2026-09-28）：done 到
+                // 断言之间生产侧尽力而为清扫已执行完但目录仍非空——AV/索引
+                // 器对新鲜字节的瞬时句柄是首要嫌疑，短窗重查给它归零机会；
+                // 真不归零则倾倒残留清单 + 节点 gateway.log 尾部（[FsUtil]
+                // 重试耗尽 WARN / [Exec] 终结轨迹都在那里），CI 日志直接带
+                // 证据，不再盲猜。
                 for (wsx, label) in [(&ws_b, "B"), (&ws_c, "C")] {
                     let exec_root = wsx.home().join("workspace").join("cluster").join("exec");
-                    if exec_root.exists()
-                        && std::fs::read_dir(&exec_root)
-                            .map(|it| it.flatten().count())
-                            .unwrap_or(0)
-                            > 0
-                    {
-                        anyhow::bail!("{label} 工作副本未清扫: {}", exec_root.display());
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                    loop {
+                        let residual = if exec_root.exists() {
+                            list_residual_entries(&exec_root, 40)
+                        } else {
+                            Vec::new()
+                        };
+                        if residual.is_empty() {
+                            break;
+                        }
+                        if std::time::Instant::now() >= deadline {
+                            println!(
+                                "  [T-MRG-1] {label} exec 残留 {} 项: {}",
+                                residual.len(),
+                                residual.join(" | ")
+                            );
+                            dump_log_tail(&wsx.path().join("gateway.log"), 150);
+                            anyhow::bail!(
+                                "{label} 工作副本未清扫: {}（残留 {} 项）",
+                                exec_root.display(),
+                                residual.len()
+                            );
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     }
                 }
 
