@@ -351,39 +351,49 @@ async fn agt_tts_playback_validation_channel_closed_and_queue() {
     assert_eq!(err, "text cannot be empty");
 
     // ② 全新 manager：config.toml 缺失 → spawn 的后台循环看到缺 config 即刻
-    //    return（rx 随之 drop，不碰网络/DLL）；首次 send 在循环尚未启动时入队成功
-    let r = h
+    //    return（rx 随之 drop，不碰网络/DLL）；首次 send 在循环尚未启动时入
+    //    队成功。入队与「循环缺 config 即退」是天然竞速（handler 无同步点，
+    //    高负载 runner 上循环可能先死 → Err("TTS playback channel closed")）
+    //    ——该 Err 与 ③ 轮询验证的是同一性质（循环已死、发送必闭），同为有
+    //    效观测；出现时记 closed=true 直接跳 ③ 的收尾断言。
+    let mut closed = false;
+    match h
         .handle_cmd(
             "tts_playback",
             Some(serde_json::json!({ "text": "你好", "speaker": 43, "speed": 1.2, "volume": 60 })),
             &ctx,
         )
         .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(r["queued"], true);
-    assert!(tts_playback_state().lock().await.is_some());
-
+    {
+        Err(e) if e == "TTS playback channel closed" => closed = true,
+        v => {
+            let r = v.unwrap().unwrap();
+            assert_eq!(r["queued"], true);
+            assert!(tts_playback_state().lock().await.is_some());
+        }
+    }
     // ③ 循环死后 rx 已 drop → 复用臂（mgr 已存在）send 失败 → channel closed。
-    //    轮询等待 spawn_blocking 真正跑完（config 缺失 → 立即 return），上限 2s。
-    let mut closed = false;
-    for _ in 0..40 {
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        match h
-            .handle_cmd(
-                "tts_playback",
-                Some(serde_json::json!({ "text": "第二句" })),
-                &ctx,
-            )
-            .await
-        {
-            Err(e) if e == "TTS playback channel closed" => {
-                closed = true;
-                break;
+    //    轮询等待 spawn_blocking 真正跑完（config 缺失 → 立即 return），上限 2s；
+    //    ② 已提前观测到 closed 时直接跳过。
+    if !closed {
+        for _ in 0..40 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            match h
+                .handle_cmd(
+                    "tts_playback",
+                    Some(serde_json::json!({ "text": "第二句" })),
+                    &ctx,
+                )
+                .await
+            {
+                Err(e) if e == "TTS playback channel closed" => {
+                    closed = true;
+                    break;
+                }
+                Ok(Some(_)) => continue, // 循环还没起来（入队成功），继续等
+                Ok(None) => continue,
+                Err(e) => panic!("unexpected err: {e}"),
             }
-            Ok(Some(_)) => continue, // 循环还没起来（入队成功），继续等
-            Ok(None) => continue,
-            Err(e) => panic!("unexpected err: {e}"),
         }
     }
     assert!(closed, "playback loop must exit on missing config.toml");
