@@ -185,9 +185,11 @@ async fn get_output_spawn_failure_maps_to_err() {
 }
 
 // ---------------------------------------------------------------------------
-// Windows 上 POSIX signal 不支持臂
+// Windows 上 POSIX signal 不支持臂（Linux 有真实 kill → 走「进程不存在」
+// 错误路径，unsupported 文案只在 Windows 存在）
 // ---------------------------------------------------------------------------
 
+#[cfg(windows)] // Windows-form test（signal unsupported 文案仅 Windows 存在，2026-09-02 约定）
 #[tokio::test]
 async fn signal_reports_unsupported_on_windows() {
     let mw = mw_with(allow_all_auditor(), PermissionPreset::Unrestricted, "");
@@ -197,8 +199,11 @@ async fn signal_reports_unsupported_on_windows() {
 
 // ---------------------------------------------------------------------------
 // i2c 成功臂：伪造 i2cget / i2cset 提前注入 PATH（单测内自含、结束还原）
+// Windows 形态：假工具是 .cmd 批处理、PATH 用 ';' 前插——Linux 下无 cmd
+// 且分隔符不同，照 2026-09-02 约定排除。
 // ---------------------------------------------------------------------------
 
+#[cfg(windows)] // Windows-form test（.cmd 假工具 + ';' PATH 前插，Linux nightly: excluded）
 #[tokio::test]
 async fn i2c_read_parses_hex_and_write_succeeds_with_fake_tools() {
     let fake = temp_ws("i2c");

@@ -1039,6 +1039,7 @@ fn w4a_new_with_config_empty_custom_falls_back_to_defaults() {
     );
 }
 
+#[cfg(windows)] // Windows-form CLI test（ping -n 是 Windows 旗标，Linux 是 -c，2026-09-02 约定）
 #[tokio::test]
 async fn w4a_set_timeout_enforced_by_execute() {
     // set_timeout changes the default timeout used when args carry no

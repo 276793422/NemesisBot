@@ -2,8 +2,15 @@ use super::*;
 use std::ffi::CString;
 use std::os::raw::c_char;
 
+/// WORKSPACE_DIR_PTR / CONFIG_DIR_PTR 两个 OnceLock 的 set 不是原子对——
+/// 并行测试各自 build_host_services 时可能交错（A 先占 WORKSPACE、B 先占
+/// CONFIG），读取侧拿到互相矛盾的基准（Linux CI 实证假红）。全文件
+/// build/getter 用例持本锁串行。
+static VTABLE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn build_sets_all_vtable_fields() {
+    let _v = VTABLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = std::env::temp_dir().join("hs_test_build");
     std::fs::create_dir_all(&dir).unwrap();
     let hs = build_host_services(&dir);
@@ -22,6 +29,7 @@ fn build_sets_all_vtable_fields() {
 
 #[test]
 fn log_null_inputs_and_all_levels_no_panic() {
+    let _v = VTABLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let hs = build_host_services(&std::env::temp_dir());
     let log = hs.log.unwrap();
     // null tag/msg → early return (no panic)
@@ -36,6 +44,7 @@ fn log_null_inputs_and_all_levels_no_panic() {
 
 #[test]
 fn get_workspace_dir_writes_path_to_buf() {
+    let _v = VTABLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let hs = build_host_services(&std::env::temp_dir());
     let mut buf = vec![0i8; 1024];
     let n = (hs.get_workspace_dir.unwrap())(buf.as_mut_ptr(), buf.len());
@@ -44,6 +53,7 @@ fn get_workspace_dir_writes_path_to_buf() {
 
 #[test]
 fn get_workspace_dir_small_buf_returns_negative() {
+    let _v = VTABLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let hs = build_host_services(&std::env::temp_dir());
     let mut buf = vec![0i8; 2];
     let n = (hs.get_workspace_dir.unwrap())(buf.as_mut_ptr(), buf.len());
@@ -52,6 +62,7 @@ fn get_workspace_dir_small_buf_returns_negative() {
 
 #[test]
 fn get_workspace_dir_null_buf_returns_negative() {
+    let _v = VTABLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let hs = build_host_services(&std::env::temp_dir());
     let n = (hs.get_workspace_dir.unwrap())(std::ptr::null_mut(), 0);
     assert!(n < 0);
@@ -59,6 +70,7 @@ fn get_workspace_dir_null_buf_returns_negative() {
 
 #[test]
 fn file_exists_and_size_roundtrip() {
+    let _v = VTABLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let hs = build_host_services(&std::env::temp_dir());
     let path = std::env::temp_dir().join("hs_test_file.txt");
     std::fs::write(&path, b"hello").unwrap();
@@ -79,6 +91,7 @@ fn file_exists_and_size_roundtrip() {
 
 #[test]
 fn get_plugin_data_dir_null_inputs_return_negative() {
+    let _v = VTABLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let hs = build_host_services(&std::env::temp_dir());
     let n = (hs.get_plugin_data_dir.unwrap())(std::ptr::null(), std::ptr::null_mut(), 0);
     assert!(n < 0);
@@ -86,6 +99,7 @@ fn get_plugin_data_dir_null_inputs_return_negative() {
 
 #[test]
 fn get_plugin_data_dir_valid_writes_path() {
+    let _v = VTABLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let hs = build_host_services(&std::env::temp_dir());
     let plugin = CString::new("test-plugin").unwrap();
     let mut buf = vec![0i8; 4096];
@@ -95,6 +109,7 @@ fn get_plugin_data_dir_valid_writes_path() {
 
 #[test]
 fn free_string_null_and_real_ptr_no_panic() {
+    let _v = VTABLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let hs = build_host_services(&std::env::temp_dir());
     let free = hs.free_string.unwrap();
     free(std::ptr::null_mut()); // null → noop
@@ -129,6 +144,7 @@ fn read_c_str(buf: &[i8], len: usize) -> String {
 
 #[test]
 fn get_plugin_config_dir_writes_workspace_config_plugins() {
+    let _v = VTABLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let hs = build_host_services(&std::env::temp_dir());
 
     // 基准：进程内实际生效的 workspace（OnceLock 先到先得）
@@ -148,6 +164,7 @@ fn get_plugin_config_dir_writes_workspace_config_plugins() {
 
 #[test]
 fn get_plugin_config_dir_bad_buf_returns_negative() {
+    let _v = VTABLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let hs = build_host_services(&std::env::temp_dir());
     // 缓冲区过小 → 返回 -(所需长度)
     let mut small = vec![0i8; 2];
@@ -161,6 +178,7 @@ fn get_plugin_config_dir_bad_buf_returns_negative() {
 #[test]
 fn get_plugin_data_dir_matches_workspace_join() {
     // 语义验证：data dir = <ws>/plugins/<name>（host 侧顺带保证目录存在）
+    let _v = VTABLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let hs = build_host_services(&std::env::temp_dir());
     let mut ws_buf = vec![0i8; 4096];
     let ws_n = (hs.get_workspace_dir.unwrap())(ws_buf.as_mut_ptr(), ws_buf.len());
@@ -211,6 +229,7 @@ fn dead_loopback_port() -> u16 {
 
 #[test]
 fn download_file_null_pointers_return_minus_1() {
+    let _v = VTABLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let hs = build_host_services(&std::env::temp_dir());
     let dl = hs.download_file.unwrap();
     let url = CString::new("http://127.0.0.1:1/x").unwrap();
@@ -222,6 +241,7 @@ fn download_file_null_pointers_return_minus_1() {
 #[test]
 fn download_file_unreachable_upstream_returns_minus_3() {
     // 连接拒绝（本地回环确定性失败）→ download_file Err → -3
+    let _v = VTABLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let hs = build_host_services(&std::env::temp_dir());
     let dl = hs.download_file.unwrap();
     let port = dead_loopback_port();
@@ -244,6 +264,7 @@ fn download_file_unreachable_upstream_returns_minus_3() {
 #[test]
 fn download_file_local_http_success_writes_dest() {
     // 本地回环一次性 HTTP 服务器 → 下载成功返回 0 且落盘内容一致
+    let _v = VTABLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let hs = build_host_services(&std::env::temp_dir());
     let dl = hs.download_file.unwrap();
     let port = spawn_one_shot_http_server("MODEL_BYTES_12345");

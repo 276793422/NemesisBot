@@ -35,13 +35,16 @@ fn agt_write_workspace_file_atomic_roundtrip_and_absolute_reject() {
     let back = read_workspace_file(&ws, "agt-dir/note.md").unwrap();
     assert_eq!(back, "第一行\n第二行");
 
-    // resolve_path 防线：绝对路径（盘符/正斜杠头）显式拒绝。
-    assert_eq!(
-        resolve_path(&ws, "C:/abs.txt").unwrap_err(),
-        "absolute paths not allowed"
-    );
+    // resolve_path 防线：绝对路径（正斜杠头）显式拒绝。
     assert_eq!(
         resolve_path(&ws, "/abs.txt").unwrap_err(),
+        "absolute paths not allowed"
+    );
+    // 盘符绝对路径是 Windows 形态——Linux 上 "C:/abs.txt" 是合法相对路径
+    // （无盘符概念，Linux CI 实证假红），照 2026-09-02 约定按平台门控。
+    #[cfg(windows)]
+    assert_eq!(
+        resolve_path(&ws, "C:/abs.txt").unwrap_err(),
         "absolute paths not allowed"
     );
 }

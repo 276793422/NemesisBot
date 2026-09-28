@@ -15,6 +15,10 @@ fn provider_with(command: &str) -> CodexCliProvider {
     })
 }
 
+// Windows 形态夹具（.cmd 批处理 + cmd 语法体）——Linux 无 cmd 且该文件
+// 无执行位，spawn 直接 Permission denied。消费方全在下方 Windows 形态
+// 用例 → Linux 下门控防死代码。（2026-09-02 约定）
+#[cfg(windows)]
 fn temp_dir(name: &str) -> PathBuf {
     let n = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -29,6 +33,7 @@ fn temp_dir(name: &str) -> PathBuf {
     dir
 }
 
+#[cfg(windows)]
 fn write_batch(name: &str, body: &str) -> PathBuf {
     let dir = temp_dir(name);
     let path = dir.join(format!("{name}.cmd"));
@@ -137,6 +142,7 @@ async fn chat_nonexistent_command_reports_spawn_failure() {
 }
 
 /// 成功退出但 stdout 为空 → 落终局 parse（332），返回空内容响应。
+#[cfg(windows)] // Windows-form CLI test（.cmd 批处理夹具，Linux nightly: excluded，2026-09-02 约定）
 #[tokio::test]
 async fn chat_empty_stdout_success_exit_falls_to_final_parse() {
     let bat = write_batch("empty-out", "exit /b 0\r\n");
@@ -150,6 +156,7 @@ async fn chat_empty_stdout_success_exit_falls_to_final_parse() {
 }
 
 /// .bat 假 CLI 全链路：JSONL 输出 → content + usage + stop。
+#[cfg(windows)] // Windows-form CLI test（.cmd 批处理夹具，Linux nightly: excluded，2026-09-02 约定）
 #[tokio::test]
 async fn chat_success_via_fake_batch() {
     let bat = write_batch(

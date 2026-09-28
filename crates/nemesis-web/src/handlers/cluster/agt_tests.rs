@@ -227,7 +227,16 @@ async fn agt_firewall_check_reports_structure_from_config_ports() {
         .unwrap();
     assert_eq!(out["udp_port"], 12000);
     assert_eq!(out["tcp_port"], 22000);
-    assert_eq!(out["platform"], "windows");
+    // platform 字段按编译目标如实报告（值平台相关；钉死 "windows" 在
+    // Linux CI 实证假红），断言跟随 cfg! 而非硬编码。
+    let expected_platform = if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        "other"
+    };
+    assert_eq!(out["platform"], expected_platform);
     let tests = out["tests"].as_array().unwrap();
     let names: Vec<&str> = tests.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert_eq!(
