@@ -14,6 +14,7 @@ pub mod continuation_store;
 pub mod diagnostics;
 pub mod envelope;
 pub mod exec_workspace;
+pub(crate) mod fsutil;
 pub mod logger;
 pub mod network;
 pub mod outbox;

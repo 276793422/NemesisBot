@@ -100,7 +100,9 @@ pub fn write_changeset(
         ));
     }
     let files_dir = dir.join(CHANGESET_FILES_DIR);
-    let _ = std::fs::remove_dir_all(dir);
+    // Windows 上刚写完的文件短暂句柄（Defender 扫描等）会让单发删除瞬时
+    // 失败——退避重试（fsutil 模块文档）。
+    crate::fsutil::remove_dir_all_resilient(dir);
     std::fs::create_dir_all(&files_dir).map_err(|e| format!("建变更集目录失败: {e}"))?;
     for (upsert, content) in manifest.upserts.iter().zip(contents.iter()) {
         if upsert.path != content.path {

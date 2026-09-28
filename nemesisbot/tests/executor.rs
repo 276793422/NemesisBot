@@ -417,16 +417,41 @@ async fn u11_userland_sandbox_write_outside_denied_inside_allowed() {
     // 并注明（降级路径本身由 exec_worker::plan 决策表单测覆盖）。
     #[cfg(feature = "sandbox")]
     {
-        use nemesis_sandbox::backend::{Availability, detect_backend};
+        use nemesis_sandbox::backend::{Availability, BackendForm, SandboxConf, detect_backend};
         // P1：探测跳过判据只关心「有没有后端」，网络要求取保守 false
         // （禁网选型对存在性无影响——两个后端任一可用即 Some）。
+        let detected = detect_backend(false);
         let unavailable = matches!(
-            detect_backend(false).map(|b| b.availability()),
+            detected.as_ref().map(|b| b.availability()),
             None | Some(Availability::Unavailable(_))
         );
         if unavailable {
             eprintln!("SKIP: no userland sandbox backend on this kernel");
             return;
+        }
+        // 「检测到」≠「能跑」（GitHub 24.04 runner 实证，2026-09-28）：禁网
+        // 要求 + bwrap 在场 → 选型落 WrapCommand（re-exec 进盒），但包装式
+        // 后端依赖内核 namespace 政策——bwrap 二进制在场而 userns 被
+        // AppArmor 策略拒绝时，盒内实例起不来、外层代理以 ReexecDone(非成功)
+        // 收场 bail 退出且无协议行，测试侧只见「exited without a response」
+        // （landlock SelfApply 无此死法：apply 失败诚实降级 warn 继续）。
+        // 用后端自身的 wrap_command 包装 trivial 命令实跑一次探针；跑不动 =
+        // 环境不满足，按本测试「环境不可用即跳过并注明」的既有契约处理。
+        if detected.as_ref().map(|b| b.form()) == Some(BackendForm::WrapCommand) {
+            let probe = detected
+                .unwrap()
+                .wrap_command(
+                    &SandboxConf::for_executor(std::path::Path::new("/tmp"), false),
+                    &std::process::Command::new("true"),
+                )
+                .and_then(|mut cmd| cmd.status().map_err(|e| e.to_string()));
+            match probe {
+                Ok(status) if status.success() => {}
+                other => {
+                    eprintln!("SKIP: wrap backend detected but cannot run here: {other:?}");
+                    return;
+                }
+            }
         }
     }
 

@@ -1261,8 +1261,14 @@ async fn spawn_blackhole_server() -> u16 {
     port
 }
 
-/// 下行背压：32 帧 × 64KB 灌黑洞 conn（内核缓冲 + 16 深度队列必然溢出）
+/// 下行背压：64 帧 × 256KB 灌黑洞 conn → 写任务卡死 + 16 深队列必然溢出
 /// → 诚实 ConnClose("backpressure") 收口整条 conn。
+///
+/// 载荷量的依据（GitHub runner 实证回归）：32×64KB=2MB 在现代内核的
+/// loopback autotune 缓冲（本端 sndbuf 最大 4MB + 对端 rcvbuf 最大 6MB）
+/// 里放不下才算背压、放得下就整包被内核吞掉——写任务不阻塞、队列不满、
+/// 只剩心跳帧可读 → 「100 帧内未等到匹配帧」。16MB 超出任何现实内核
+/// 缓冲组合，确定性触发 try_send 失败。
 #[tokio::test]
 #[allow(clippy::await_holding_lock)] // BRIDGE_IT_SER 序列化闸有意跨 await 持有
 async fn test_downstream_backpressure_closes_conn() {
@@ -1295,8 +1301,8 @@ async fn test_downstream_backpressure_closes_conn() {
         },
     )
     .await;
-    let chunk = base64::engine::general_purpose::STANDARD.encode(vec![0u8; 64 * 1024]);
-    for i in 0..32 {
+    let chunk = base64::engine::general_purpose::STANDARD.encode(vec![0u8; 256 * 1024]);
+    for i in 0..64 {
         send_frame(
             &mut ws,
             BridgeFrame::ConnData {
