@@ -9,7 +9,9 @@ use std::io::Write as _;
 
 /// PATH 注入用例的进程级互斥（tests.rs 的 PATH probe 与本文件 /
 /// cov_wave6b_tests 的 PATH 用例共用）：set_var 是进程全局副作用，
-/// 并行下必须串行，否则 `where` 解析互相污染。
+/// 并行下必须串行，否则 `where` 解析互相污染。消费方全在 Windows 形态
+/// 用例（7z.exe 是 Windows 可执行）——Linux 下门控防 dead_code。
+#[cfg(windows)]
 pub(crate) static PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// 用 zip crate（extract 的 unzip 同款依赖）造一个最小压缩包。

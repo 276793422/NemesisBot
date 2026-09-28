@@ -18,7 +18,9 @@
 
 use super::*;
 
-/// 子进程哨兵 env（值 = 子进程要执行的测试名尾段）。
+/// 子进程哨兵 env（值 = 子进程要执行的测试名尾段）。仅 Windows 子进程
+/// 路由用例消费——Linux 下门控防 dead_code 撞 clippy -D warnings 门禁。
+#[cfg(windows)]
 const CHILD_SENTINEL: &str = "NEMESIS_P24_CHILD";
 
 // ---------------------------------------------------------------------------

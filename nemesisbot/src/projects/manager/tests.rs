@@ -580,6 +580,8 @@ mod wave_a {
         assert!(!mgr.bridge_should_skip(&hist), "history 不得被项目路由劫持");
     }
 
+    /// display_label 三级回退（注册表名 → sidecar 尾段 → pid）。
+    #[cfg(windows)] // Windows-form（进程级单例重定向依赖 crate::tests 沙箱 home）
     #[tokio::test]
     async fn display_label_falls_back_registry_then_sidecar_tail_then_pid() {
         // bind_session 经 chat_log 全局单例烧 sidecar——必须重定向单例 home
@@ -890,6 +892,7 @@ mod w5r2 {
 
     /// ProjectsBridge trait 全委托②（chat_log 单例 home 形态）：bind_session /
     /// owner_of / forget_session 委托链 + sidecar 烧入/清除联动。
+    #[cfg(windows)] // Windows-form（进程级单例重定向依赖 crate::tests 沙箱 home）
     #[tokio::test]
     async fn w5_bridge_trait_bind_owner_forget_delegates() {
         let _serial = crate::GLOBAL_STATE_LOCK

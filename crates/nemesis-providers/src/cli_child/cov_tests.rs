@@ -1,4 +1,8 @@
 // cli_child.rs 覆盖率补充测试（无 piped stdin 的回落臂 28）。
+//
+// 整文件 Windows 形态（用例走 cmd /C；Linux 无 cmd，nightly 排除，
+// 2026-09-02 约定）——文件级门控，Linux 下 imports 不产生未用告警。
+#![cfg(windows)]
 
 use super::*;
 use std::process::Stdio;

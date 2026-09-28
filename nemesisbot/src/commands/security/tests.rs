@@ -2534,6 +2534,8 @@ mod op_rules_cov {
 mod w5r2 {
     use super::*;
 
+    // 消费方全在下方 Windows 形态用例——Linux 下门控防 dead_code。
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     fn w5_write_raw(path: &std::path::Path, body: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, body).unwrap();

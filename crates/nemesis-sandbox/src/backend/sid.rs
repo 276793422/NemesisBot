@@ -34,12 +34,17 @@ use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
+// 非 Windows 平台：lib 目标无消费方（D2/D3 接线都在 cfg(windows) 侧），
+// 但跨平台单测仍钉这三个纯函数的行为——诚实 allow（有单测证明活性），
+// 非 Windows 下防 dead_code 撞 clippy -D warnings 门禁。
+
 /// canonicalize 结果的规范化：剥 Windows verbatim 前缀 + lowercase。
 ///
 /// 输入应是 `canonicalize` 的产物（绝对、已解析链接）；对非 verbatim 输入
 /// 原样 lowercase 返回（Unix 路径永不命中前缀判定，单一代码路径跨平台）。
 /// 模块内可见 + 测试直测（`pub(crate)` 收窄——派生规则的 hash 输入形态是
 /// 内部约定，不进公共 API 面）。
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn normalize_canonical(canon: &Path) -> String {
     let s = canon.to_string_lossy();
     let stripped = if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
@@ -55,6 +60,7 @@ pub(crate) fn normalize_canonical(canon: &Path) -> String {
 /// 96 位截断：SHA-256 摘要前 12 字节按大端拆 3 个 u32 子授权，拼
 /// `S-1-5-21-a-b-c` 形态（纯函数，单测钉死与派生规则的字节序约定；
 /// `pub(crate)` 同 normalize_canonical——内部字节序契约不进公共 API）。
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn sid_from_digest(digest: &[u8; 32]) -> String {
     let be32 = |b: &[u8]| u32::from_be_bytes([b[0], b[1], b[2], b[3]]);
     format!(
@@ -70,6 +76,7 @@ pub(crate) fn sid_from_digest(digest: &[u8; 32]) -> String {
 /// 路径不存在/不可达 → Err（canonicalize 失败）——D2 的 standing ACE 打在
 /// 不存在的树上无意义，fail-closed 交给调用方（executor 装配点工作区必然
 /// 存在；测试路径用真实 tempdir）。
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn derive_workspace_sid(workspace: &Path) -> Result<String, String> {
     let canon = workspace.canonicalize().map_err(|e| {
         format!(

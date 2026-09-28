@@ -234,8 +234,10 @@ jobs:
       # 皮肤 vitest 断言读 skins/bot/skin/structure.html 等骨架文件——只显式
       # 拉 skins（不能用 submodules: recursive，会连 docs 私有仓库一起拉，
       # runner 的 GITHUB_TOKEN 无权限 → Repository not found，daily-release
-      # 2026-09-27 首跑实证）。
+      # 2026-09-27 首跑实证）。⚠️ 本 job 全局 working-directory: web，
+      # submodule 命令必须显式回仓库根，否则 pathspec 'skins' 不存在。
       - name: Checkout skins submodule
+        working-directory: ${{ github.workspace }}
         run: git submodule update --init --depth 1 skins
 
       - name: Setup Node.js
