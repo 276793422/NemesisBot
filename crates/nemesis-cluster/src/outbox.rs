@@ -371,7 +371,7 @@ impl TransferOutbox {
             ));
         };
         // payload 先落，entry.json 最后写（在场 = 完整）。
-        let _ = std::fs::remove_dir_all(&dir);
+        crate::fsutil::remove_dir_all_resilient(&dir);
         let payload = dir.join("payload");
         std::fs::create_dir_all(&dir).map_err(|e| format!("建发件箱目录失败: {e}"))?;
         copy_dir_recursive(&src, &payload)?;
@@ -586,7 +586,7 @@ impl TransferOutbox {
             match self.attempt_push(&entry).await {
                 Ok(PushOutcome::Delivered) | Ok(PushOutcome::NothingToSend) => {
                     // 双删：master 已落盘（或 dedup 已有）→ 删本地。
-                    let _ = std::fs::remove_dir_all(&dir);
+                    crate::fsutil::remove_dir_all_resilient(&dir);
                     tracing::info!(
                         task_id = %entry.task_id,
                         "[Transfer] 执行记录回传完成，本地发件箱清空"

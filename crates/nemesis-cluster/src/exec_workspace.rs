@@ -123,7 +123,7 @@ impl ExecReceiveHook {
             .join("inbox")
             .join(sanitize_transfer_id(task_id));
         let exec_dir = exec_dir_for(&self.workspace, task_id);
-        let _ = std::fs::remove_dir_all(&exec_dir);
+        crate::fsutil::remove_dir_all_resilient(&exec_dir);
         std::fs::create_dir_all(&exec_dir).map_err(|e| format!("建工作副本目录失败: {e}"))?;
 
         // 收件箱 landed 回执核对 kind（非基线档 = 不是本管线的，留着不动——
@@ -140,7 +140,7 @@ impl ExecReceiveHook {
             copy_dir_recursive(&files_root, &exec_dir)
                 .map_err(|e| format!("基线解包复制失败: {e}"))?;
             // 消费收件箱（传输闭环：档已入工作副本，收件目录不残留）。
-            let _ = std::fs::remove_dir_all(&inbox_dir);
+            crate::fsutil::remove_dir_all_resilient(&inbox_dir);
             manifest.files
         } else {
             // 空树基线（master NothingToSend）或收件箱已不在场——空清单开跑。
@@ -229,7 +229,7 @@ pub fn finish_task_exec(
         changeset::write_changeset(&cs_dir, &manifest, &contents)?;
         match outbox.enqueue_with_changeset(task_id, source_node, Some(&cs_dir)) {
             Ok(()) => {
-                let _ = std::fs::remove_dir_all(&cs_dir);
+                crate::fsutil::remove_dir_all_resilient(&cs_dir);
             }
             Err(e) => {
                 // 现场保留（exec + cs 都在）：启动清扫重试前调用方 WARN。
@@ -237,7 +237,7 @@ pub fn finish_task_exec(
             }
         }
     }
-    let _ = std::fs::remove_dir_all(&exec_dir);
+    crate::fsutil::remove_dir_all_resilient(&exec_dir);
     Ok(true)
 }
 

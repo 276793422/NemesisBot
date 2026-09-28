@@ -591,7 +591,7 @@ impl TransferSink {
         //    在落地根——不污染 inbox，核验过了才落地）。
         let out = st.join("out");
         let files_root = out.join("files");
-        let _ = std::fs::remove_dir_all(&out);
+        crate::fsutil::remove_dir_all_resilient(&out);
         std::fs::create_dir_all(&files_root).map_err(|e| format!("创建 out 失败: {e}"))?;
         let plan = plan_chunks(&begin.files, begin.chunk_size);
         // 空文件（size=0）不产块，直接创建空文件（plan_chunks 契约）。
@@ -670,7 +670,7 @@ impl TransferSink {
             if let Err(e2) = copy_dir_recursive(&out, &landed) {
                 return Err(format!("落地失败: rename {e} / copy {e2}"));
             }
-            let _ = std::fs::remove_dir_all(&out);
+            crate::fsutil::remove_dir_all_resilient(&out);
         }
         // 落地内容镜像 manifest + 回执（审计：谁、何时、何指纹）。
         write_staging_manifest(&landed, &begin);
@@ -707,7 +707,7 @@ impl TransferSink {
             file_count: Some(begin.files.len()),
             total_bytes: Some(begin.total_bytes),
         };
-        let _ = std::fs::remove_dir_all(&st);
+        let _ = crate::fsutil::remove_dir_all_resilient(&st);
         let done_dir = self.inbox_root.join(".done");
         let _ = std::fs::create_dir_all(&done_dir);
         if let Ok(json) = serde_json::to_string(&done_reply) {

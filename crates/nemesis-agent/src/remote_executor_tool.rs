@@ -448,15 +448,40 @@ impl ExecutorChannel {
         }
     }
 
-    /// Drain child stderr in the background (prevents a ~4KB pipe block).
-    fn drain_stderr(child: &mut tokio::process::Child) {
+    /// Drain child stderr in the background (prevents a ~4KB pipe block) and
+    /// retain the tail for failure diagnostics. 子进程静默死亡（panic/OOM/
+    /// 启动失败）时 stdout 直接 EOF，此前 stdio 路径的 no-response 错误不带
+    /// 任何 stderr 上下文，Linux CI 上无从定位——与 DACL 路径的 stderr_tail
+    /// 同款诊断面。返回的句柄只在失败臂消费；行仍照旧 debug! 全量落日志。
+    fn drain_stderr(child: &mut tokio::process::Child) -> std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>> {
+        let tail: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>> =
+            std::sync::Arc::default();
         if let Some(stderr) = child.stderr.take() {
+            let tail = tail.clone();
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     debug!("[executor stderr] {line}");
+                    let mut buf = tail.lock().unwrap_or_else(|e| e.into_inner());
+                    if buf.len() >= 20 {
+                        buf.pop_front();
+                    }
+                    buf.push_back(line);
                 }
             });
+        }
+        tail
+    }
+
+    /// 快照 stderr tail（单行拼接；空 = 子进程没写 stderr）。
+    fn stderr_snapshot(
+        tail: &std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
+    ) -> String {
+        let buf = tail.lock().unwrap_or_else(|e| e.into_inner());
+        if buf.is_empty() {
+            "<empty>".to_string()
+        } else {
+            buf.iter().cloned().collect::<Vec<_>>().join(" | ")
         }
     }
 
@@ -480,7 +505,7 @@ impl ExecutorChannel {
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("failed to spawn executor child: {e}"))?;
-        Self::drain_stderr(&mut child);
+        let stderr_tail = Self::drain_stderr(&mut child);
 
         // Write the single request line, then drop stdin to signal EOF.
         if let Some(mut stdin) = child.stdin.take() {
@@ -508,8 +533,14 @@ impl ExecutorChannel {
             }
             Ok(Ok(None)) => {
                 let _ = child.start_kill();
+                // 带退出状态 + stderr tail（静默死亡=panic/OOM/启动失败的
+                // 唯一诊断面；DACL 路径同款格式）。
+                let status = child.wait().await;
                 return Err(format!(
-                    "executor child exited without a response (tool={tool})"
+                    "executor child exited without a response (tool={tool}, \
+                     exit={:?}); stderr: {}",
+                    status.map(|s| s.to_string()),
+                    Self::stderr_snapshot(&stderr_tail)
                 ));
             }
             Ok(Ok(Some(line))) => line,

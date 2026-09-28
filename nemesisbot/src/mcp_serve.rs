@@ -404,6 +404,9 @@ pub fn search_memory_files(workspace: &Path, query: &str, limit: usize) -> Vec<M
     let needle = query.to_lowercase();
     let mut files: Vec<std::path::PathBuf> = Vec::new();
     collect_markdown_files(&workspace.join("memory"), 0, &mut files);
+    // 显式排序：read_dir 顺序平台相关（NTFS 近似字典序 / ext4 哈希序），不排
+    // 则命中顺序跨平台跨次运行不稳定（Linux CI 实证 sub.md 抢在 MEMORY.md 前）。
+    files.sort();
     for path in files {
         let Ok(content) = std::fs::read_to_string(&path) else {
             continue;
