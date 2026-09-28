@@ -8178,12 +8178,15 @@ async fn main() {
                 }
 
                 // 7. B/C 工作副本已清扫（E3 生命周期闭环）。
-                // 轮询而非单点断言（GH runner 三连实证 2026-09-28）：done 到
-                // 断言之间生产侧尽力而为清扫已执行完但目录仍非空——AV/索引
-                // 器对新鲜字节的瞬时句柄是首要嫌疑，短窗重查给它归零机会；
-                // 真不归零则倾倒残留清单 + 节点 gateway.log 尾部（[FsUtil]
-                // 重试耗尽 WARN / [Exec] 终结轨迹都在那里），CI 日志直接带
-                // 证据，不再盲猜。
+                // 断言口径 = 无「文件条目」残留（数据泄漏防的是变更集/工作
+                // 副本字节，不是目录壳本身）。GH runner 四轮实证 2026-09-28：
+                // 残留恰为 1 个全空任务目录、生产侧 remove_dir_all 全程零
+                // 失败日志（RUST_LOG=debug 下重试必留痕）——Windows 删除挂起
+                // 幻影：AV 以 FILE_SHARE_DELETE 持目录句柄，RemoveDirectory
+                // 已成功返回但名字在句柄关闭前仍出现在父目录枚举里；本地
+                // Defender 毫秒级放行从不可见，GH runner 扫描积压下可挂
+                // 10s+。先给 10s 轮询宽限让壳自然消散；真有文件残留才判
+                // 失败并倾倒清单 + 节点 gateway.log 尾部取证。
                 for (wsx, label) in [(&ws_b, "B"), (&ws_c, "C")] {
                     let exec_root = wsx.home().join("workspace").join("cluster").join("exec");
                     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -8196,6 +8199,15 @@ async fn main() {
                         if residual.is_empty() {
                             break;
                         }
+                        if residual.iter().all(|e| e.ends_with('/')) {
+                            // 纯目录壳（递归清单无任何文件条目）= 无数据泄漏。
+                            println!(
+                                "  [T-MRG-1] {label} exec 空目录壳残留 {} 项（删除挂起幻影，无数据泄漏，容忍）: {}",
+                                residual.len(),
+                                residual.join(" | ")
+                            );
+                            break;
+                        }
                         if std::time::Instant::now() >= deadline {
                             println!(
                                 "  [T-MRG-1] {label} exec 残留 {} 项: {}",
@@ -8204,7 +8216,7 @@ async fn main() {
                             );
                             dump_log_tail(&wsx.path().join("gateway.log"), 150);
                             anyhow::bail!(
-                                "{label} 工作副本未清扫: {}（残留 {} 项）",
+                                "{label} 工作副本未清扫（有文件残留）: {}（残留 {} 项）",
                                 exec_root.display(),
                                 residual.len()
                             );
