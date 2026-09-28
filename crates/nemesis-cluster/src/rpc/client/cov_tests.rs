@@ -101,18 +101,40 @@ fn rate_limiter_window_overflow_rejects() {
     );
 }
 
+/// 挂死桥出口：恒在线但 send 永不就绪（零超时用例的确定性驱动器）。
+struct HangingBridge;
+
+impl BridgeSend for HangingBridge {
+    fn bridge_online(&self, _peer_id: &str) -> bool {
+        true
+    }
+    fn send_over_bridge(
+        &self,
+        _peer_id: &str,
+        _request: WireMessage,
+        _timeout: Duration,
+    ) -> Pin<Box<dyn Future<Output = Result<WireMessage, RpcClientError>> + Send + '_>> {
+        Box::pin(std::future::pending())
+    }
+}
+
 /// 零超时：外层 timeout 立即到期 → 超时 error 日志臂 + Timeout 映射（592），
 /// 随后走失败 warn 臂（644）。
+/// 确定性设计：走异网段桥优先 + 挂死桥（内层首轮 poll 必 Pending）。不用
+/// 「对死端口直连」驱动——loopback 拒连在 Linux 可能在首轮 poll 内同步
+/// 失败，内层错误抢在零定时器前返回（平台竞态，CI Linux 实证假红）。
 #[tokio::test]
 async fn call_zero_timeout_maps_to_timeout_and_failed_log() {
+    // 接口表只含回环段（with_peer 默认）→ 对端 10.9.9.9 异网段 → 桥优先。
     let client = RpcClient::with_resolver(Arc::new(CovResolver::with_peer(
-        "p-dead",
-        vec!["127.0.0.1:1".into()],
+        "p-hang",
+        vec!["10.9.9.9:1".into()],
         1,
         true,
     )));
+    client.set_bridge_transport(Arc::new(HangingBridge));
     let err = client
-        .call_with_timeout("p-dead", ping_request(), Duration::ZERO)
+        .call_with_timeout("p-hang", ping_request(), Duration::ZERO)
         .await
         .unwrap_err();
     assert!(matches!(err, RpcClientError::Timeout), "{err}");

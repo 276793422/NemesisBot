@@ -28,6 +28,17 @@
 #   nemesisbot/src/commands/run.rs              一次性 CLI（run --model）
 #   nemesisbot/src/commands/model.rs            probe 一次性 CLI
 #   nemesisbot/src/projects/manager.rs          ProjectLoopManager::reload_providers 自热切
+#   crates/nemesis-providers/src/fallback_provider.rs  fallback 链单一装配单点
+#                                                       （机制本身非消费者，语义同
+#                                                       factory.rs；调用方在白名单
+#                                                       agent_factory，wrapper 语义
+#                                                       由调用方决定）
+#   nemesisbot/src/commands/session.rs          F5 CLI 分支摘要一次性通道
+#                                               （block_on 即跑即退，无长生命周期）
+#   nemesisbot/src/commands/gateway/dreaming_job.rs  记忆 dreaming per-sweep 一次性
+#                                               通道（cron 每轮重读盘上 config 再
+#                                               构造，配置变更自然跟随；同
+#                                               runtime.rs guardian 一次性先例）
 #   crates/nemesis-web/src/handlers/models.rs   唯一运行期热切写点（chokepoint）
 #
 # 测试文件（/tests 目录、*_tests.rs / tests.rs）不在纪律范围。
@@ -37,7 +48,7 @@ cd "$(dirname "$0")/.."
 hits=$(grep -rnE "create_provider(_or_null)?\s*\(" crates nemesisbot/src --include='*.rs' 2>/dev/null \
   | grep -v '/tests' \
   | grep -v '_tests\.rs' \
-  | grep -vE '^(crates/nemesis-providers/src/factory\.rs|nemesisbot/src/agent_factory\.rs|nemesisbot/src/commands/gateway/ctx\.rs|nemesisbot/src/commands/gateway/post_agent\.rs|nemesisbot/src/commands/gateway/runtime\.rs|nemesisbot/src/commands/run\.rs|nemesisbot/src/commands/model\.rs|nemesisbot/src/projects/manager\.rs|crates/nemesis-web/src/handlers/models\.rs):' \
+  | grep -vE '^(crates/nemesis-providers/src/factory\.rs|crates/nemesis-providers/src/fallback_provider\.rs|nemesisbot/src/agent_factory\.rs|nemesisbot/src/commands/gateway/ctx\.rs|nemesisbot/src/commands/gateway/post_agent\.rs|nemesisbot/src/commands/gateway/runtime\.rs|nemesisbot/src/commands/gateway/dreaming_job\.rs|nemesisbot/src/commands/run\.rs|nemesisbot/src/commands/model\.rs|nemesisbot/src/commands/session\.rs|nemesisbot/src/projects/manager\.rs|crates/nemesis-web/src/handlers/models\.rs):' \
   || true)
 
 if [ -n "$hits" ]; then
