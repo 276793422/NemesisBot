@@ -1,7 +1,7 @@
 //! P5（能力扩展 WS2 compaction）：`agents.defaults.compact_keep_recent_tokens`
 //! 配置面测试。
 //!
-//! - serde 缺省：缺键 = 20000（对齐 业界 keepRecentTokens）；
+//! - serde 缺省：缺键 = 20000（对齐业界通行 keepRecentTokens）；
 //! - typed roundtrip：显式值（含 0=旧按条数回退）序列化/反序列化不丢；
 //! - raw-JSON 解析（`resolve_compact_keep_recent_tokens`）：AgentLoop compact
 //!   域的 fresh-read 走这条路，键路径/缺省/负数钳 0 必须与 typed 字段单源。

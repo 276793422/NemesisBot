@@ -248,9 +248,9 @@ fn subagent_slug_roundtrip_and_catalog_consistency() {
     assert_eq!(subagents::SubagentRole::catalog().len(), 17);
     // 未知 slug 诚实返回 None（调用方拒绝而非猜测）。
     assert!(subagents::SubagentRole::from_slug("nope").is_none());
-    // 观察者模板带稳态静默条款（参考业界 "expected steady state is silence"）。
+    // 观察者模板带稳态静默条款（业界通行 "expected steady state is silence"）。
     assert!(subagents::SubagentRole::Observer.template().contains("稳态是静默"));
-    // 分叉角色模板带「继承参考非处境」纪律（参考业界 fork worker 的
+    // 分叉角色模板带「继承参考非处境」纪律（业界通行 fork worker 的
     // "inherited reference, not your situation"）。
     assert!(subagents::SubagentRole::Fork.template().contains("不是你的处境"));
 }

@@ -11,7 +11,7 @@ use tracing::warn;
 
 /// Category of a lint warning.
 ///
-/// 12 categories aligned with legacy scanner (P15 供应链扩面)：
+/// 12 categories aligned with the legacy scanner (P15 供应链扩面)：
 /// 既有 5 类语义并入（Destructive=危险执行 / Exfiltration=数据外传 /
 /// Privilege=提权 / Obfuscation=混淆编码 / Recon=网络扫描），新增 7 类
 /// 规则来自嵌入 JSON 规则表（`security_rules.json`，便于热更）。
