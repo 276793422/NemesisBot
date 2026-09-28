@@ -509,7 +509,11 @@ impl AgentLoop {
     /// 路径维持 `false`（主模型，质量敏感不降档）。
     ///
     /// 返回 `true` = 已发起摘要生成尝试；`false` = 无可推进内容（未触达 LLM）。
-    pub async fn force_compression_opts(&self, instance: &AgentInstance, prefer_small: bool) -> bool {
+    pub async fn force_compression_opts(
+        &self,
+        instance: &AgentInstance,
+        prefer_small: bool,
+    ) -> bool {
         let history = instance.get_history();
         let cache = instance.get_summary_cache();
         let current_c = cache
@@ -934,13 +938,14 @@ pub(crate) fn finalize_summary_text(reply: &str, ledger: &[FileOp], omitted: boo
             "\n[Note: Some oversized messages were omitted from this summary for efficiency.]",
         );
     }
-    if !ledger.is_empty() && !text.contains(FILE_LEDGER_HEADING) {
-        if let Some(section) = format_file_ledger_section(ledger) {
-            if !text.is_empty() {
-                text.push_str("\n\n");
-            }
-            text.push_str(&section);
+    if !ledger.is_empty()
+        && !text.contains(FILE_LEDGER_HEADING)
+        && let Some(section) = format_file_ledger_section(ledger)
+    {
+        if !text.is_empty() {
+            text.push_str("\n\n");
         }
+        text.push_str(&section);
     }
     text
 }

@@ -173,7 +173,7 @@ fn temp_home() -> tempfile::TempDir {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn assemble_missing_config_is_honest_err() {
     let tmp = tempfile::tempdir().unwrap();
-    let err = assemble(&tmp.path()).await.unwrap_err();
+    let err = assemble(tmp.path()).await.unwrap_err();
     assert!(err.contains("Configuration not found"), "{err}");
     assert!(err.contains("nemesisbot onboard default"), "{err}");
 }
@@ -181,7 +181,7 @@ async fn assemble_missing_config_is_honest_err() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn assemble_security_on_reports_pipeline_active() {
     let tmp = temp_home();
-    let asm = assemble(&tmp.path()).await.expect("装配应成功");
+    let asm = assemble(tmp.path()).await.expect("装配应成功");
     assert!(
         asm.security_active,
         "security.enabled 缺省 true → 安全 8 层管线必须真实在位"
@@ -198,7 +198,7 @@ async fn assemble_security_off_reports_pipeline_absent() {
     cfg["security"] = serde_json::json!({"enabled": false});
     std::fs::write(&cfg_path, cfg.to_string()).unwrap();
 
-    let asm = assemble(&tmp.path()).await.expect("装配应成功");
+    let asm = assemble(tmp.path()).await.expect("装配应成功");
     assert!(
         !asm.security_active,
         "security.enabled=false → security_active 必须为 false"
@@ -210,7 +210,7 @@ async fn assemble_security_off_reports_pipeline_absent() {
 async fn assemble_memory_flag_gates_executor() {
     // 关（缺省）：无执行器。
     let tmp = temp_home();
-    let asm = assemble(&tmp.path()).await.expect("装配应成功");
+    let asm = assemble(tmp.path()).await.expect("装配应成功");
     assert!(asm.memory_executor.is_none(), "memory.enabled 缺省关");
 
     // 开：执行器在位（gateway ctx.rs 同款构造；无 ONNX 插件自动降级 basic）。
@@ -219,7 +219,7 @@ async fn assemble_memory_flag_gates_executor() {
     let mut cfg = dead_provider_config();
     cfg["memory"] = serde_json::json!({"enabled": true});
     std::fs::write(&cfg_path, cfg.to_string()).unwrap();
-    let asm2 = assemble(&tmp2.path()).await.expect("装配应成功");
+    let asm2 = assemble(tmp2.path()).await.expect("装配应成功");
     assert!(
         asm2.memory_executor.is_some(),
         "memory.enabled=true → 执行器在位"

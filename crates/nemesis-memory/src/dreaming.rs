@@ -236,9 +236,7 @@ pub fn compute_relationship_signals(entries: &[Entry]) -> HashMap<String, RelSig
             }
             let dup = sim >= DUP_JACCARD;
             for a in [i, j] {
-                let slot = out
-                    .entry(sets[a].0.id.clone())
-                    .or_insert_with(RelSignals::default);
+                let slot = out.entry(sets[a].0.id.clone()).or_default();
                 if dup {
                     slot.duplicate_count += 1;
                 } else {
@@ -485,7 +483,7 @@ pub fn build_merged_content(sources: &[Entry]) -> String {
             }
             let norm = line.to_lowercase().split_whitespace().collect::<String>();
             let toks = token_set(line);
-            let dup = kept_norm.iter().any(|k| *k == norm)
+            let dup = kept_norm.contains(&norm)
                 || kept_tokens.iter().any(|k| jaccard(k, &toks) >= DUP_JACCARD);
             if dup {
                 continue;

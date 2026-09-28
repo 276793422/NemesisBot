@@ -6,7 +6,7 @@
 //! 错误——诚实失败，非静默空转。STT/TTS/VAD/标点/声纹（缓冲区与文件驱动，
 //! 不经过本模块）不受影响。
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 

@@ -264,7 +264,11 @@ pub fn revocation_meta(bytes: &[u8]) -> RevocationMeta {
         && let Ok(ps) = crate::envelope::parse_signed_data(&cms)
     {
         meta.sig_hash = Some(hex_encode(&sha2::Sha256::digest(&ps.signature)));
-        if let Some(signer) = ps.certs.iter().find(|c| crate::verify::signer_matches(c, &ps)) {
+        if let Some(signer) = ps
+            .certs
+            .iter()
+            .find(|c| crate::verify::signer_matches(c, &ps))
+        {
             if let Ok(vk) = signer.subject_public_key() {
                 meta.key_fp = Some(hex_encode(&crate::crypto::key_fp(
                     &crate::crypto::public_key_bytes(&vk),
@@ -280,7 +284,9 @@ pub fn revocation_meta(bytes: &[u8]) -> RevocationMeta {
     } else {
         match crate::envelope::extract_carrier_v4(bytes) {
             Ok(v) => Some(hex_encode(&v.content_digest)),
-            Err(_) => crate::verify::v4_content_digest(bytes).ok().map(|d| hex_encode(&d)),
+            Err(_) => crate::verify::v4_content_digest(bytes)
+                .ok()
+                .map(|d| hex_encode(&d)),
         }
     };
     meta
@@ -288,7 +294,8 @@ pub fn revocation_meta(bytes: &[u8]) -> RevocationMeta {
 
 /// 四维匹配（快照模式；顺序与 [`check_revocation`] 一致，首个命中即返回）。
 pub fn crl_match_meta<'a>(crl: &'a Crl, meta: &RevocationMeta) -> Option<&'a CrlEntry> {
-    let hit = |dim: RevDim, v: &Option<String>| v.as_deref().and_then(|val| crl_match(crl, dim, val));
+    let hit =
+        |dim: RevDim, v: &Option<String>| v.as_deref().and_then(|val| crl_match(crl, dim, val));
     hit(RevDim::KeyFp, &meta.key_fp)
         .or_else(|| hit(RevDim::SigHash, &meta.sig_hash))
         .or_else(|| hit(RevDim::FileHash, &meta.content_hash))

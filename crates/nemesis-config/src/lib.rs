@@ -192,7 +192,7 @@ pub struct Config {
 
 /// 皮肤子系统策略（`config.json` 的 `ui.skins` 段；`#[serde(default)]`
 /// 每字段全可省——老 config.json 零迁移）。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct SkinsPolicy {
     /// true = 「设为默认观感」（WSAPI `skins.set_active`）拒绝非 verified
@@ -200,14 +200,6 @@ pub struct SkinsPolicy {
     /// 签名仍是徽标而非加载闸（D1 定案），这里只约束「把哪个包设为默认」
     /// 这一个动作。默认 false（未签名皮肤照常可用）。
     pub require_signed: bool,
-}
-
-impl Default for SkinsPolicy {
-    fn default() -> Self {
-        Self {
-            require_signed: false,
-        }
-    }
 }
 
 /// Dashboard 前端表现配置（`config.json` 的 `ui` 段）。
@@ -618,13 +610,13 @@ pub struct ExecutorSeparationConfig {
     /// sandboxie，否则退 Windows 用户态 ACL 轻量档）/ `sandboxie`（显式钉
     /// Sandboxie）/ `acl`（显式钉 ACL 档）。未知值诚实拒绝（选型返回 None
     /// + warn，不静默改道）。非 Windows 平台无消费方（landlock/bwrap/
-    /// Seatbelt 选型不读此键）。
+    ///   Seatbelt 选型不读此键）。
     ///
     /// ⚠ 实验性标注：acl 档是**半档隔离**（强制完整性标签 No-Write-Up 围栏
     /// + DACL 原语），禁不了网、写围栏依赖令牌降级——详见
-    /// `crates/nemesis-sandbox/src/backend.rs` 的 P24 模块文档与诚实边界。
-    /// 兼容性：`#[serde(default)]`——老 config.json 缺键 = `"auto"`，行为与
-    /// 升级前完全一致（typed save 会把缺省值显式写回，语义不变）。
+    ///   `crates/nemesis-sandbox/src/backend.rs` 的 P24 模块文档与诚实边界。
+    ///   兼容性：`#[serde(default)]`——老 config.json 缺键 = `"auto"`，行为与
+    ///   升级前完全一致（typed save 会把缺省值显式写回，语义不变）。
     #[serde(default = "default_executor_backend")]
     pub backend: String,
     /// D4（2026-09-27）：DACL 定向档开关组（`executor.acl` 段，缺省全关

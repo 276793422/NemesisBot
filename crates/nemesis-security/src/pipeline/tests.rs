@@ -1753,7 +1753,12 @@ fn test_append_direct_audit_event_records_into_chain() {
     let plugin = SecurityPlugin::new(SecurityPluginConfig {
         enabled: true,
         audit_chain_enabled: true,
-        audit_chain_path: Some(dir.path().join("audit_chain.jsonl").to_string_lossy().to_string()),
+        audit_chain_path: Some(
+            dir.path()
+                .join("audit_chain.jsonl")
+                .to_string_lossy()
+                .to_string(),
+        ),
         default_action: "allow".to_string(),
         ..Default::default()
     });

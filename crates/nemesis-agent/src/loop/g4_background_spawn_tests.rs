@@ -130,8 +130,15 @@ fn g4_spawn_config() -> crate::loop_tools::SpawnConfig {
 fn bg_marker_spawn_fn(task_id: &str) -> crate::loop_tools::SpawnFn {
     let marker = format!("__BG_SPAWN__:{}", task_id);
     std::sync::Arc::new(
-        move |_a: &str, _t: &str, _m: &str, _c: &str, _ch: &str, _p: &str, _d: usize, _bg: bool,
-            _r: &str| {
+        move |_a: &str,
+              _t: &str,
+              _m: &str,
+              _c: &str,
+              _ch: &str,
+              _p: &str,
+              _d: usize,
+              _bg: bool,
+              _r: &str| {
             let marker = marker.clone();
             Box::pin(async move { Ok(marker.clone()) })
         },

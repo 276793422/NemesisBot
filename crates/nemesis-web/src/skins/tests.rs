@@ -49,7 +49,12 @@ fn app(dir: Option<&str>, active: &str) -> axum::Router {
 #[tokio::test]
 async fn active_css_serves_manifest_entry() {
     let tmp = tempdir();
-    write_skin(tmp.path(), "openlikebuddy", Some("skin/openlikebuddy.css"), None);
+    write_skin(
+        tmp.path(),
+        "openlikebuddy",
+        Some("skin/openlikebuddy.css"),
+        None,
+    );
     let res = app(Some(tmp.path().to_str().unwrap()), "openlikebuddy")
         .oneshot(
             Request::builder()
@@ -314,8 +319,7 @@ async fn structure_path_traversal_and_bad_manifest_rejected() {
 /// set_active 裁决回退 entry 有无——旧行为零迁移）。
 #[test]
 fn manifest_structure_defaults_to_none() {
-    let m: ManifestInfo =
-        serde_json::from_str(r#"{"id":"old","entry":"skin/x.css"}"#).unwrap();
+    let m: ManifestInfo = serde_json::from_str(r#"{"id":"old","entry":"skin/x.css"}"#).unwrap();
     assert_eq!(m.entry.as_deref(), Some("skin/x.css"));
     assert!(m.structure.is_none());
 }
@@ -383,8 +387,7 @@ pub(crate) fn theme_zip_bytes(id: &str) -> Vec<u8> {
     .unwrap();
     zip.start_file(
         "skin/main.css",
-        zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Stored),
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored),
     )
     .unwrap();
     write!(zip, "html {{ --accent: teal; }}").unwrap();
@@ -451,8 +454,8 @@ fn install_bytes_rejects_garbage_oversize_and_bad_id() {
     assert!(err.contains("manifest.id"), "{err}");
 
     // ④ id = "default"（保留字）→ 拒
-    let err = install_bytes(skins.to_str().unwrap(), &theme_zip_bytes("default"), false)
-        .unwrap_err();
+    let err =
+        install_bytes(skins.to_str().unwrap(), &theme_zip_bytes("default"), false).unwrap_err();
     assert!(err.contains("default"), "{err}");
 
     // 全程零落盘
@@ -494,8 +497,7 @@ fn install_bytes_duplicate_requires_explicit_overwrite() {
     install_bytes(skins.to_str().unwrap(), &theme_zip_bytes("alpha"), false)
         .expect("first install");
 
-    let err = install_bytes(skins.to_str().unwrap(), &theme_zip_bytes("alpha"), false)
-        .unwrap_err();
+    let err = install_bytes(skins.to_str().unwrap(), &theme_zip_bytes("alpha"), false).unwrap_err();
     assert!(err.contains("已存在") && err.contains("overwrite"), "{err}");
 
     let out = install_bytes(skins.to_str().unwrap(), &theme_zip_bytes("alpha"), true)
@@ -530,8 +532,7 @@ fn install_bytes_anchor_present_all_states_land() {
         .rposition(|w| w == b"teal")
         .expect("css content marker present");
     tampered[marker] ^= 0x20;
-    let out =
-        install_bytes(skins.to_str().unwrap(), &tampered, false).expect("tampered 也落盘");
+    let out = install_bytes(skins.to_str().unwrap(), &tampered, false).expect("tampered 也落盘");
     assert_eq!(out.signature, SkinSignature::Invalid);
     assert!(out.sig_detail.as_deref().unwrap().contains("Tampered"));
     assert!(skins.join("bad.nbskin").is_file(), "信任结论不拦落盘");
@@ -597,7 +598,10 @@ fn crl_snapshot_fifth_state_hit_and_recover() {
     let beta_content_hash = beta_meta
         .content_hash
         .expect("signed pkg exposes content_hash");
-    write_snap(&skins, &mk_crl(nemesis_verify::RevDim::FileHash, beta_content_hash, 1));
+    write_snap(
+        &skins,
+        &mk_crl(nemesis_verify::RevDim::FileHash, beta_content_hash, 1),
+    );
     let entries = scan_skins(skins.to_str().unwrap());
     let beta = entries.iter().find(|e| e.id == "beta").unwrap();
     assert_eq!(beta.signature, SkinSignature::Revoked, "命中 → 🚫");
@@ -612,7 +616,10 @@ fn crl_snapshot_fifth_state_hit_and_recover() {
 
     // ② key_fp 维吊销（钥级）：同一把 leaf 签的两包全 🚫
     let beta_key_fp = beta_meta.key_fp.expect("signed pkg exposes key_fp");
-    write_snap(&skins, &mk_crl(nemesis_verify::RevDim::KeyFp, beta_key_fp, 2));
+    write_snap(
+        &skins,
+        &mk_crl(nemesis_verify::RevDim::KeyFp, beta_key_fp, 2),
+    );
     let entries = scan_skins(skins.to_str().unwrap());
     assert!(
         entries
@@ -624,7 +631,11 @@ fn crl_snapshot_fifth_state_hit_and_recover() {
     // 删快照 → 回四态（离线诚实，不残留第五态）
     std::fs::remove_file(skins.join("crl.pem")).unwrap();
     let entries = scan_skins(skins.to_str().unwrap());
-    assert!(entries.iter().all(|e| e.signature == SkinSignature::Verified));
+    assert!(
+        entries
+            .iter()
+            .all(|e| e.signature == SkinSignature::Verified)
+    );
 }
 
 /// 快照验不过（换假根签）→ 诚实注记不应用；快照过期 → expired 注记，
@@ -663,10 +674,17 @@ fn crl_snapshot_unverifiable_or_expired_not_applied() {
     )
     .unwrap();
     let entries = scan_skins(skins.to_str().unwrap());
-    assert_eq!(entries[0].signature, SkinSignature::Verified, "假快照不应用");
+    assert_eq!(
+        entries[0].signature,
+        SkinSignature::Verified,
+        "假快照不应用"
+    );
     let info = crl_snapshot_info(skins.to_str().unwrap(), &resolve_anchors(), &entries);
     assert!(info.present && !info.verified);
-    assert!(info.note.as_deref().unwrap().contains("验签失败"), "{info:?}");
+    assert!(
+        info.note.as_deref().unwrap().contains("验签失败"),
+        "{info:?}"
+    );
 
     // ② 过期快照（真根签但 valid_until 已过）→ expired 注记，不应用
     let expired_crl = nemesis_verify::Crl {
@@ -680,11 +698,7 @@ fn crl_snapshot_unverifiable_or_expired_not_applied() {
         }],
     };
     let snap = nemesis_verify::sign_response(&expired_crl, &chain.0.root_sk).unwrap();
-    std::fs::write(
-        skins.join("crl.pem"),
-        serde_json::to_string(&snap).unwrap(),
-    )
-    .unwrap();
+    std::fs::write(skins.join("crl.pem"), serde_json::to_string(&snap).unwrap()).unwrap();
     let entries = scan_skins(skins.to_str().unwrap());
     assert_eq!(entries[0].signature, SkinSignature::Verified, "过期不应用");
     let info = crl_snapshot_info(skins.to_str().unwrap(), &resolve_anchors(), &entries);
@@ -711,17 +725,17 @@ fn crl_snapshot_without_verified_donor_is_inert() {
         entries: vec![],
     };
     let snap = nemesis_verify::sign_response(&crl, &chain.0.root_sk).unwrap();
-    std::fs::write(
-        skins.join("crl.pem"),
-        serde_json::to_string(&snap).unwrap(),
-    )
-    .unwrap();
+    std::fs::write(skins.join("crl.pem"), serde_json::to_string(&snap).unwrap()).unwrap();
 
     let entries = scan_skins(skins.to_str().unwrap());
     assert_eq!(entries[0].signature, SkinSignature::Unsigned);
     let info = crl_snapshot_info(skins.to_str().unwrap(), &resolve_anchors(), &entries);
     assert!(info.present && !info.verified);
-    assert!(info.note.as_deref().unwrap().contains("donor") || info.note.as_deref().unwrap().contains("公钥"), "{info:?}");
+    assert!(
+        info.note.as_deref().unwrap().contains("donor")
+            || info.note.as_deref().unwrap().contains("公钥"),
+        "{info:?}"
+    );
 }
 
 // --- CSS url() 外链消毒 ---
@@ -768,9 +782,7 @@ fn sanitize_css_urls_neuters_external_and_keeps_safe() {
         "a{background:url(about:blank)}"
     );
     // 相对/绝对路径放行（皮肤包内素材）
-    assert!(
-        sanitize_css_urls("a{background:url(skin/bg.png)}").contains("skin/bg.png")
-    );
+    assert!(sanitize_css_urls("a{background:url(skin/bg.png)}").contains("skin/bg.png"));
     assert!(sanitize_css_urls("a{background:url(./bg.png)}").contains("./bg.png"));
     // 畸形（token 未闭合）→ 剩余原样照抄，不 panic
     assert_eq!(
@@ -811,10 +823,7 @@ fn sanitize_css_urls_import_and_escape_bypasses_neutered() {
         "@import url(about:blank);"
     );
     // @importer 等普通标识符不误命中
-    assert_eq!(
-        sanitize_css_urls("a{--x:@importer}"),
-        "a{--x:@importer}"
-    );
+    assert_eq!(sanitize_css_urls("a{--x:@importer}"), "a{--x:@importer}");
 
     // CSS 转义 function 名：\75rl( 解码后 = url( → 拦
     assert_eq!(

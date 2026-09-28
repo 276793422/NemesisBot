@@ -2088,7 +2088,10 @@ fn p8_policy_out_of_range_rejects_with_actionable_reason() {
     // 0x80 是 8 位写地址误用（不是保留段）——普通越界文案，给放行办法
     let e1 = policy.validate_i2c_address(0x80).unwrap_err();
     assert!(e1.contains("不在允许范围"), "got: {e1}");
-    assert!(e1.contains("i2c_allow_ranges"), "应指向 config 放行办法: {e1}");
+    assert!(
+        e1.contains("i2c_allow_ranges"),
+        "应指向 config 放行办法: {e1}"
+    );
 }
 
 #[test]
@@ -2168,9 +2171,5 @@ async fn p8_i2c_builtin_blocks_reserved_on_real_read_path() {
         .read_device(&serde_json::json!({"bus": "1", "address": 0x00}))
         .await;
     assert!(r.is_error);
-    assert!(
-        r.for_llm.contains("保留段 0x00-0x07"),
-        "got: {}",
-        r.for_llm
-    );
+    assert!(r.for_llm.contains("保留段 0x00-0x07"), "got: {}", r.for_llm);
 }

@@ -10,7 +10,11 @@ fn all_templates_deep_with_arguments_slot() {
             tpl.contains("$ARGUMENTS"),
             "内置模板 {name} 缺 $ARGUMENTS 占位（参数注入是本机制的契约）"
         );
-        assert!(tpl.len() > 500, "深度模板 {name} 内容异常地短：{}B", tpl.len());
+        assert!(
+            tpl.len() > 500,
+            "深度模板 {name} 内容异常地短：{}B",
+            tpl.len()
+        );
         assert!(tpl.contains("# 纪律"), "深度模板 {name} 缺纪律段");
     }
 }

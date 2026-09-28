@@ -51,6 +51,25 @@ ignore = [
   # 攻击面不可达。移除条件：cms 上游把 builder 拆出 rsa，或 RustSec 出 patched
   # 版本。台账：docs/INFO/2026-08-31_dependency-rules.md（2026-09-12）
   { id = "RUSTSEC-2023-0071", reason = "rsa Marvin Attack; hard-bundled by cms builder feature, project is ECDSA-only (no RSA oracle), no upstream fix" },
+  # rustls-webpki 0.102 四联公告（RUSTSEC-2026-0049/0098/0099/0104，修复均在
+  # webpki ≥0.103.10-13，跨 minor）。钉死链：rumqttc 0.25 → rustls 0.23（依赖
+  # req webpki 0.102.x，0.23 系列无 0.103 重发布）→ 本项目 mqtt feature；升级
+  # 需等 rumqttc 发 rustls 0.24+ 版本，属上游节奏。暴露面评估：本项目是纯
+  # TLS 客户端（出站连 LLM API / MQTT broker，主流公共 CA）；0049/0104 是
+  # CRL 吊销检查缺陷——webpki 的 CRL 支持是 rustls opt-in API，项目从未启用；
+  # 0098/0104 是 name-constraint 缺陷——仅在被中间人 CA 误签 URI/wildcard
+  # SAN 证书时可达，主流公共 CA 场景不可达。移除条件：rumqttc 升级到
+  # rustls 0.24+ 后 cargo update -p rustls-webpki。台账：docs/INFO/2026-08-31_dependency-rules.md（2026-09-28）
+  { id = "RUSTSEC-2026-0049", reason = "rustls-webpki CRL matching flaw; fix in webpki >=0.103.10, pinned 0.102 via rustls 0.23 (rumqttc 0.25); CRL revocation never enabled by project" },
+  { id = "RUSTSEC-2026-0098", reason = "rustls-webpki URI name-constraint flaw; fix in webpki >=0.103.12, pinned 0.102 via rustls 0.23 (rumqttc 0.25); reachable only via misissuing CAs" },
+  { id = "RUSTSEC-2026-0099", reason = "rustls-webpki wildcard name-constraint flaw; fix in webpki >=0.103.12, pinned 0.102 via rustls 0.23 (rumqttc 0.25); reachable only via misissuing CAs" },
+  { id = "RUSTSEC-2026-0104", reason = "rustls-webpki reachable panic in CRL parsing; fix in webpki >=0.103.13, pinned 0.102 via rustls 0.23 (rumqttc 0.25); CRL revocation never enabled by project" },
+  # rustls-pemfile 2.2 unmaintained（RUSTSEC-2025-0134）。rumqttc 0.25.1（最新版，
+  # 无更新可用）自带 rustls-pemfile ^2.2 硬依赖。本项目直接使用已迁 pki-types
+  # PemObject（mqtt feature 三处，2026-09-28），crate 本体仍经 rumqttc 传递在图；
+  # 剩余暴露面 = rumqttc 内部 TLS 装配（用户自配证书解析，非不可信网络输入）。
+  # 移除条件：rumqttc 发布移除 rustls-pemfile 的新版本。台账：docs/INFO/2026-08-31_dependency-rules.md
+  { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile unmaintained; hard-pinned by rumqttc 0.25.1 (latest, no newer release); project's own usage migrated to pki-types PemObject, crate remains transitive via rumqttc" },
 ]
 
 [licenses]

@@ -289,11 +289,7 @@ mod userland {
     /// 该实质已满足；否则 dacl+strict 组合会被「无用户态后端」虚假全拒
     /// （用户视角围栏明明活着）。backend="acl" 显式选装的叠加层（SelfApply）
     /// 不受影响——那是另一条 arm，其 strict fail-closed 语义保留。
-    pub fn engage(
-        workspace: &str,
-        home: Option<&Path>,
-        spawn_fenced: bool,
-    ) -> Result<Outcome> {
+    pub fn engage(workspace: &str, home: Option<&Path>, spawn_fenced: bool) -> Result<Outcome> {
         let strict = home.map(backend::read_executor_strict).unwrap_or(false);
         // P1（2026-09-25）：先读网络要求再选后端——禁网 + bwrap 可用 → 选
         // bwrap（--unshare-net 真禁网）；landlock 仅在允许网络或无 bwrap 时
@@ -312,7 +308,6 @@ mod userland {
         #[cfg(all(target_os = "windows", feature = "sandbox"))]
         let detected = detected.or_else(|| {
             let choice = home
-                .as_deref()
                 .map(backend::read_executor_backend)
                 .unwrap_or(backend::ExecutorBackendChoice::Auto);
             if !matches!(choice, backend::ExecutorBackendChoice::Acl) {
@@ -566,7 +561,10 @@ async fn pipe_loop(
         });
         out.push('\n');
         let stream = reader.get_mut();
-        stream.write_all(out.as_bytes()).await.context("pipe write")?;
+        stream
+            .write_all(out.as_bytes())
+            .await
+            .context("pipe write")?;
         stream.flush().await.context("pipe flush")?;
     }
 }

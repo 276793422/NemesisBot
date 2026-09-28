@@ -106,8 +106,8 @@ impl CanvasScan {
 ///
 /// 围栏规则（CommonMark 简化版）：开启行 = 行首（≤3 空格缩进）≥3 个反引号
 /// + 信息串首 token 小写等于 `canvas`；关闭行 = 反引号数 ≥ 开启数且无信息
-/// 串。info 串非 canvas 的围栏只参与状态机（其内容不检出也不预检——嵌套
-/// 示例不误触发）。EOF 仍未闭合的 canvas 围栏记为块 + 未闭合问题。
+///   串。info 串非 canvas 的围栏只参与状态机（其内容不检出也不预检——嵌套
+///   示例不误触发）。EOF 仍未闭合的 canvas 围栏记为块 + 未闭合问题。
 pub fn scan_canvas_blocks(content: &str) -> CanvasScan {
     let mut blocks: Vec<CanvasBlock> = Vec::new();
     let mut issues: Vec<CanvasIssue> = Vec::new();
@@ -151,10 +151,8 @@ pub fn scan_canvas_blocks(content: &str) -> CanvasScan {
             }
             continue;
         }
-        if is_canvas {
-            if let Some((.., buf)) = fence.as_mut() {
-                buf.push(raw_line.to_string());
-            }
+        if is_canvas && let Some((.., buf)) = fence.as_mut() {
+            buf.push(raw_line.to_string());
         }
     }
 
@@ -625,10 +623,8 @@ fn finalize_word(word: &mut String, regex_allowed: &mut bool) {
     let w = std::mem::take(word);
     if w.chars().next().is_some_and(|c| c.is_ascii_digit()) {
         *regex_allowed = false;
-    } else if KEYWORDS_BEFORE_VALUE.contains(&w.as_str()) {
-        *regex_allowed = true;
     } else {
-        *regex_allowed = false;
+        *regex_allowed = KEYWORDS_BEFORE_VALUE.contains(&w.as_str());
     }
 }
 

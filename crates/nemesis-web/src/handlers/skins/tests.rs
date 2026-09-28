@@ -178,8 +178,11 @@ fn write_structure_skin(dir: &std::path::Path, file_stem: &str) {
         r#"{{"id":"{file_stem}","version":"1.0.0","type":"theme","structure":"skin/structure.html"}}"#
     )
     .unwrap();
-    zip.start_file("skin/structure.html", zip::write::SimpleFileOptions::default())
-        .unwrap();
+    zip.start_file(
+        "skin/structure.html",
+        zip::write::SimpleFileOptions::default(),
+    )
+    .unwrap();
     write!(
         zip,
         "<template data-nb-slot=\"titlebar\" data-nb-engine=\"1\"><b data-nb-bind=\"brand\"></b></template>"
@@ -652,10 +655,7 @@ async fn import_endpoint_contract() {
         Arc::new(parking_lot::RwLock::new("default".into())),
     );
     let app = axum::Router::new()
-        .route(
-            "/api/skins/import",
-            axum::routing::post(handle_import_skin),
-        )
+        .route("/api/skins/import", axum::routing::post(handle_import_skin))
         .with_state(make_state(tmp.path(), "secret-token"));
     let pkg = crate::skins::tests::theme_zip_bytes("imported");
 
@@ -681,13 +681,7 @@ async fn import_endpoint_contract() {
     let res = send(app.clone(), "/api/skins/import", None, pkg.clone()).await;
     assert_eq!(res.status(), 401);
     // 错 token → 401
-    let res = send(
-        app.clone(),
-        "/api/skins/import",
-        Some("wrong"),
-        pkg.clone(),
-    )
-    .await;
+    let res = send(app.clone(), "/api/skins/import", Some("wrong"), pkg.clone()).await;
     assert_eq!(res.status(), 401);
 
     // ② 垃圾 body（非 ZIP）→ 422 物理拒收（不是 200 落盘灰卡——渠道语义：
@@ -710,7 +704,9 @@ async fn import_endpoint_contract() {
     )
     .await;
     assert_eq!(res.status(), 200);
-    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let out: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(out["id"], json!("imported"));
     assert_eq!(out["file"], json!("imported.nbskin"));
@@ -738,7 +734,9 @@ async fn import_endpoint_contract() {
     )
     .await;
     assert_eq!(res.status(), 200);
-    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let out: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(out["overwritten"], json!(true));
 }

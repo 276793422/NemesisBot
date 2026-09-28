@@ -248,8 +248,7 @@ async fn ws9_branch_summary_injected_into_build_messages() {
     }]);
 
     // 显式 session_key（主循环 build_round_messages 的接线形态）：注入。
-    let (msgs, _) =
-        al.build_messages_with_memory_annotated_for(&instance, None, Some(&key), None);
+    let (msgs, _) = al.build_messages_with_memory_annotated_for(&instance, None, Some(&key), None);
     let joined = msgs.iter().map(|m| m.content.as_str()).collect::<String>();
     assert!(
         joined.contains("# Branch Context"),

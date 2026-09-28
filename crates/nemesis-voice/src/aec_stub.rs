@@ -5,7 +5,7 @@
 //! 在运行期诚实报「voice-capture 未编译」，`EchoCanceller` trait 原样导出
 //! （nemesis-web voice.rs 顶部 `use nemesis_voice::EchoCanceller` 零改动编译）。
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::path::Path;
 
 /// AEC 工作采样率（与 STT/VAD 目标率一致）。

@@ -111,7 +111,17 @@ fn role_agent_loop() -> Arc<nemesis_agent::r#loop::AgentLoop> {
 /// tools_profile, depth, background, role)。
 type CapturedSpawn = Arc<
     parking_lot::Mutex<
-        Vec<(String, String, String, String, String, String, usize, bool, String)>,
+        Vec<(
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            usize,
+            bool,
+            String,
+        )>,
     >,
 >;
 
@@ -201,11 +211,15 @@ async fn list_returns_full_catalog_with_visibility_fields() {
         .count();
     assert_eq!(out["visible_count"], visible);
     assert_eq!(visible, 17, "big 档全可见");
-    let slugs: Vec<&str> = roles
-        .iter()
-        .map(|r| r["slug"].as_str().unwrap())
-        .collect();
-    for expected in ["explorer", "qa", "coordinator", "web_reader", "test_runner", "fork"] {
+    let slugs: Vec<&str> = roles.iter().map(|r| r["slug"].as_str().unwrap()).collect();
+    for expected in [
+        "explorer",
+        "qa",
+        "coordinator",
+        "web_reader",
+        "test_runner",
+        "fork",
+    ] {
         assert!(
             slugs.contains(&expected),
             "目录必须含 {expected}，实际: {slugs:?}"

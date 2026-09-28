@@ -381,10 +381,10 @@ async fn steer_mid_serial_batch_skips_remaining_and_injects_next_round() {
         if m.role == "assistant" {
             break;
         }
-        if m.role == "tool" {
-            if let Some(ref id) = m.tool_call_id {
-                answered.push(id.clone());
-            }
+        if m.role == "tool"
+            && let Some(ref id) = m.tool_call_id
+        {
+            answered.push(id.clone());
         }
     }
     assert_eq!(

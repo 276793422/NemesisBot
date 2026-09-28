@@ -3822,7 +3822,6 @@ dependencies = [
  "reqwest",
  "rumqttc",
  "rustls",
- "rustls-pemfile",
  "serde",
  "serde_json",
  "sha1",

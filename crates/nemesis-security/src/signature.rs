@@ -1079,7 +1079,12 @@ impl SignatureVerifier {
     /// 字节串变体（skills 目录签名用——文件原始字节不保证 UTF-8）；判定
     /// 顺序与 [`Self::verify_signature`] 一致：信任检查 → Ed25519 → 哈希
     /// fallback（同一 SHA-256 公式，content 以字节进入）。
-    pub fn verify_signature_bytes(&self, content: &[u8], signature: &str, public_key: &str) -> bool {
+    pub fn verify_signature_bytes(
+        &self,
+        content: &[u8],
+        signature: &str,
+        public_key: &str,
+    ) -> bool {
         // Step 1: key must be trusted.
         if !self.trust_store.is_trusted(public_key).1 {
             return false;

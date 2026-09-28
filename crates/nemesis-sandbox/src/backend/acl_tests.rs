@@ -122,6 +122,7 @@ fn acl_deny_write_ace_blocks_and_revoke_restores() {
     // 新建被拒（目录上的 GENERIC_WRITE deny 覆盖 FILE_ADD_FILE）。
     let created = std::fs::OpenOptions::new()
         .create(true)
+        .truncate(true)
         .write(true)
         .open(dir.path().join("blocked.txt"));
     assert!(
@@ -668,7 +669,9 @@ fn ensure_grant_ace_tree_filters_stale_ace_shapes() {
     // deny 面 FILE_DELETE_CHILD 形态（加固档目录专属）在生产 ensure 下
     // 不应存在（单文件对象无从打起，顺带钉死）。
     assert!(
-        !aces.iter().any(|&(m, mask)| m == 3 && mask & FILE_DELETE_CHILD != 0),
+        !aces
+            .iter()
+            .any(|&(m, mask)| m == 3 && mask & FILE_DELETE_CHILD != 0),
         "不得有任何 deny 残留: {aces:?}"
     );
 
@@ -773,8 +776,7 @@ fn root_standing_ace_state_readonly_probe_states() {
     // 打标根目录：grant 达标（含 DELETE）、无 deny 面。
     let n = ensure_grant_ace_tree(dir.path(), &ws_sid, 100).expect("ensure");
     assert!(n >= 1);
-    let stamped =
-        super::root_standing_ace_state(dir.path(), &ws_sid).expect("probe stamped");
+    let stamped = super::root_standing_ace_state(dir.path(), &ws_sid).expect("probe stamped");
     assert_eq!(stamped, (true, false, true), "打标后探针读数: {stamped:?}");
 
     // 零副作用：探针不改变 DACL（grant 恰一条、无 deny）。

@@ -113,8 +113,8 @@ async fn poll_with(
     if !status.is_success() {
         return Err(format!("estop_status returned {status}: {body}"));
     }
-    let v: Value = serde_json::from_str(&body)
-        .map_err(|e| format!("estop_status body parse failed: {e}"))?;
+    let v: Value =
+        serde_json::from_str(&body).map_err(|e| format!("estop_status body parse failed: {e}"))?;
     Ok(v.get("engaged").and_then(|e| e.as_bool()))
 }
 

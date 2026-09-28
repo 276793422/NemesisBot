@@ -1272,15 +1272,14 @@ pub async fn handle_api_chat_session_fork(
     // 表，实例间等价——诚实边界记入实施报告）。
     if info.dropped_user_turns >= nemesis_agent::r#loop::BRANCH_SUMMARY_MIN_TURNS
         && let Some(agent_loop) = state.agent_loop.read().clone()
-    {
-        if let Some(prepared) = nemesis_agent::r#loop::prepare_branch_summary(
+        && let Some(prepared) = nemesis_agent::r#loop::prepare_branch_summary(
             &agent_loop,
             &info.new_key,
             &info.dropped_rows,
             info.dropped_user_turns,
-        ) {
-            prepared.spawn_write();
-        }
+        )
+    {
+        prepared.spawn_write();
     }
 
     Ok(Json(serde_json::json!({

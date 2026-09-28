@@ -139,7 +139,7 @@ impl McpClient {
         let keep = Arc::new(Mutex::new(String::new()));
         let keep2 = Arc::clone(&keep);
         std::thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().flatten() {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                 let mut buf = keep2.lock().expect("stderr buf lock");
                 if buf.len() < 64 * 1024 {
                     buf.push_str(&line);

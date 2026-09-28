@@ -95,10 +95,7 @@ pub fn parse_i2c_address(args: &serde_json::Value) -> Result<u8, String> {
         serde_json::Value::Number(n) => n.as_u64(),
         serde_json::Value::String(s) => {
             let t = s.trim();
-            let parsed = if let Some(hex) = t
-                .strip_prefix("0x")
-                .or_else(|| t.strip_prefix("0X"))
-            {
+            let parsed = if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
                 u64::from_str_radix(hex, 16).ok()
             } else {
                 t.parse::<u64>().ok()
@@ -119,8 +116,7 @@ pub fn parse_i2c_address(args: &serde_json::Value) -> Result<u8, String> {
 }
 
 /// 地址错误统一文案（7-bit 上限 + 可自纠示例）。
-const I2C_ADDRESS_ERR: &str =
-    "address is required (7-bit, e.g. 56 or \"0x38\", max 0x7f)";
+const I2C_ADDRESS_ERR: &str = "address is required (7-bit, e.g. 56 or \"0x38\", max 0x7f)";
 
 /// I2C 规范保留段用途说明（None = 非保留地址）。
 ///

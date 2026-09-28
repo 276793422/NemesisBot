@@ -249,10 +249,18 @@ fn subagent_slug_roundtrip_and_catalog_consistency() {
     // 未知 slug 诚实返回 None（调用方拒绝而非猜测）。
     assert!(subagents::SubagentRole::from_slug("nope").is_none());
     // 观察者模板带稳态静默条款（业界通行 "expected steady state is silence"）。
-    assert!(subagents::SubagentRole::Observer.template().contains("稳态是静默"));
+    assert!(
+        subagents::SubagentRole::Observer
+            .template()
+            .contains("稳态是静默")
+    );
     // 分叉角色模板带「继承参考非处境」纪律（业界通行 fork worker 的
     // "inherited reference, not your situation"）。
-    assert!(subagents::SubagentRole::Fork.template().contains("不是你的处境"));
+    assert!(
+        subagents::SubagentRole::Fork
+            .template()
+            .contains("不是你的处境")
+    );
 }
 
 #[test]
@@ -284,12 +292,20 @@ fn subagent_catalog_min_tier_domain_and_visibility_sets() {
     for s in ["explorer", "worker", "qa", "reviewer"] {
         assert!(mini.contains(&s), "{s} 应在 mini 可见");
     }
-    for s in ["security_reviewer", "coordinator", "fork", "workflow_executor"] {
+    for s in [
+        "security_reviewer",
+        "coordinator",
+        "fork",
+        "workflow_executor",
+    ] {
         assert!(!normal.contains(&s), "{s} 不应下放 normal");
         assert!(big.contains(&s), "{s} 应在 big 可见");
     }
     // 未知 tier fail-open 到最宽档（分档是供给优化不是安全闸）。
-    assert_eq!(subagents::SubagentRole::roles_visible_to("whatver").len(), 17);
+    assert_eq!(
+        subagents::SubagentRole::roles_visible_to("whatver").len(),
+        17
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -345,7 +361,10 @@ fn thorough_review_tier_is_byte_identical_and_parse_falls_back_safe() {
         board::parse_review_tier("thorough"),
         board::ReviewTier::Thorough
     );
-    assert_eq!(board::parse_review_tier("garbage"), board::ReviewTier::Thorough);
+    assert_eq!(
+        board::parse_review_tier("garbage"),
+        board::ReviewTier::Thorough
+    );
     assert_eq!(board::parse_review_tier(""), board::ReviewTier::Thorough);
     // Default = Thorough。
     assert_eq!(board::ReviewTier::default(), board::ReviewTier::Thorough);
@@ -355,7 +374,13 @@ fn thorough_review_tier_is_byte_identical_and_parse_falls_back_safe() {
 fn fast_review_tier_keeps_json_contract_and_injection_defense() {
     // 解析契约键两档齐备；注入防线（数据/指令分离）不得省略。
     let fast = board::render_review_system_prompt(board::ReviewTier::Fast);
-    for key in ["\"verdict\"", "\"reasons\"", "\"gap\"", "need_evidence", "experience"] {
+    for key in [
+        "\"verdict\"",
+        "\"reasons\"",
+        "\"gap\"",
+        "need_evidence",
+        "experience",
+    ] {
         assert!(fast.contains(key), "快速档缺 JSON 契约键 {key}");
     }
     assert!(fast.contains("数据与指令分离"), "快速档缺注入防线");

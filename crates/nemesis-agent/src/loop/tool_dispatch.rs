@@ -784,7 +784,11 @@ impl AgentLoop {
         context: &RequestContext,
     ) -> Option<ToolCallInfo> {
         let mut args = serde_json::from_str::<serde_json::Value>(&call.arguments).ok()?;
-        if !args.get("inherit_context").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if !args
+            .get("inherit_context")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             return None;
         }
         // 取消注释式摘除：改写产物不含该键（args_validator 本就忽略未知

@@ -267,17 +267,15 @@ mod token;
 
 #[cfg(all(target_os = "windows", feature = "acl"))]
 pub use acl_impl::{
-    AclBackend, GRANT_MASK, IntegrityLevel, add_deny_write_ace,
-    current_process_integrity, ensure_grant_ace_tree, get_integrity_label, label_tree,
-    lower_current_process_integrity, remove_integrity_label, revoke_ace, root_standing_ace_state,
-    set_integrity_label,
+    AclBackend, GRANT_MASK, IntegrityLevel, add_deny_write_ace, current_process_integrity,
+    ensure_grant_ace_tree, get_integrity_label, label_tree, lower_current_process_integrity,
+    remove_integrity_label, revoke_ace, root_standing_ace_state, set_integrity_label,
 };
 #[cfg(not(all(target_os = "windows", feature = "acl")))]
 pub use acl_stub::{
-    AclBackend, GRANT_MASK, IntegrityLevel, add_deny_write_ace,
-    current_process_integrity, ensure_grant_ace_tree, get_integrity_label, label_tree,
-    lower_current_process_integrity, remove_integrity_label, revoke_ace, root_standing_ace_state,
-    set_integrity_label,
+    AclBackend, GRANT_MASK, IntegrityLevel, add_deny_write_ace, current_process_integrity,
+    ensure_grant_ace_tree, get_integrity_label, label_tree, lower_current_process_integrity,
+    remove_integrity_label, revoke_ace, root_standing_ace_state, set_integrity_label,
 };
 // DACL 定向档 spawn 原语（真实现在 Windows + `acl` feature；availability 以
 // dacl_availability 别名导出——D4 状态面/选型消费）。

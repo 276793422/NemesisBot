@@ -4,7 +4,9 @@ use super::*;
 use std::process::Stdio;
 
 /// 未配置 piped stdin（child.stdin = None）→ 跳过 stdin 写入块直取输出
-/// （28 的回落路径）。
+/// （28 的回落路径）。Windows 形态用例（cmd /C）：Linux 无 cmd，nightly
+/// 排除（2026-09-02 约定）。
+#[cfg(windows)]
 #[tokio::test]
 async fn run_without_piped_stdin_still_collects_output() {
     let mut cmd = tokio::process::Command::new("cmd");

@@ -236,19 +236,21 @@ async fn pump_expands_builtin_template_before_gate() {
     }
 
     let captured = Arc::new(Mutex::new(Vec::new()));
-    let mut al = AgentLoop::new(
-        Box::new(CapturingProvider(captured.clone())),
-        cov_config(),
-    );
+    let mut al = AgentLoop::new(Box::new(CapturingProvider(captured.clone())), cov_config());
     let (otx, _orx) = tokio::sync::mpsc::channel(8);
     al.outbound_tx = Some(otx);
     let al = std::sync::Arc::new(al);
 
     let (itx, irx) = tokio::sync::mpsc::channel(4);
     let pump = tokio::spawn(al.clone().run_bus_arc(irx));
-    itx.send(inbound("/security-review eval_test.txt", "web", "covuser", "agent:main:session:covslash"))
-        .await
-        .unwrap();
+    itx.send(inbound(
+        "/security-review eval_test.txt",
+        "web",
+        "covuser",
+        "agent:main:session:covslash",
+    ))
+    .await
+    .unwrap();
     drop(itx);
     pump.await.unwrap();
 
@@ -258,11 +260,16 @@ async fn pump_expands_builtin_template_before_gate() {
     assert!(
         got.iter().any(|c| c.contains("安全评审专家")),
         "expanded template body expected in LLM messages: {:?}",
-        got.iter().map(|c| c.chars().take(60).collect::<String>()).collect::<Vec<_>>()
+        got.iter()
+            .map(|c| c.chars().take(60).collect::<String>())
+            .collect::<Vec<_>>()
     );
     assert!(
-        got.iter().any(|c| c.contains("eval_test.txt") && !c.starts_with('/')),
+        got.iter()
+            .any(|c| c.contains("eval_test.txt") && !c.starts_with('/')),
         "$ARGUMENTS must be substituted with the args: {:?}",
-        got.iter().map(|c| c.chars().take(60).collect::<String>()).collect::<Vec<_>>()
+        got.iter()
+            .map(|c| c.chars().take(60).collect::<String>())
+            .collect::<Vec<_>>()
     );
 }

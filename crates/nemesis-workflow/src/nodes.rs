@@ -3042,7 +3042,12 @@ impl NodeExecutor for AgentNodeExecutor {
         // run_direct 无独立 system prompt 通道，前置等价生效（模板在前，
         // 节点指令在后）。未知 slug = 诚实节点失败并列合法清单（不静默
         // 裸跑）。空/缺省 = 无模板（旧行为）。
-        let prompt = match node.config.get("role").and_then(|v| v.as_str()).map(str::trim) {
+        let prompt = match node
+            .config
+            .get("role")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+        {
             Some(r) if !r.is_empty() => {
                 let role = match nemesis_prompts::subagents::SubagentRole::from_slug(r) {
                     Some(role) => role,

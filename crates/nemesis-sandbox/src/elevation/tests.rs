@@ -22,13 +22,13 @@ fn net_session_success_implies_elevated() {
     // 单向蕴含：net session 成功 = 提权的充分证据；失败方向不做断言
     // （LanmanServer 停转 / net.exe 不可用的窗口里，TokenElevation 直查
     // 比旧 net session 探测更诚实——宁可多弹一次 UAC，不误判非管理员）。
-    if let Ok(s) = status {
-        if s.success() {
-            assert!(
-                is_elevated(),
-                "net session 成功（提权充分证据）⇒ TokenElevation 必须为 true"
-            );
-        }
+    if let Ok(s) = status
+        && s.success()
+    {
+        assert!(
+            is_elevated(),
+            "net session 成功（提权充分证据）⇒ TokenElevation 必须为 true"
+        );
     }
 }
 

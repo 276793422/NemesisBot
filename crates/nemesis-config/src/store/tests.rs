@@ -34,7 +34,10 @@ fn executor_acl_defaults_converge_across_serde_and_default_paths() {
     // 路径 1：结构体级 Default::default()（serde 嵌套补齐 / unwrap_or_default 走这条）。
     let d = ExecutorSeparationConfig::default();
     assert_eq!(d.backend, "auto", "derive Default 会给空串——选型拒绝值");
-    assert_eq!(d.acl.max_files, 20_000, "derive Default 会给 0——铺树预算耗尽");
+    assert_eq!(
+        d.acl.max_files, 20_000,
+        "derive Default 会给 0——铺树预算耗尽"
+    );
     assert!(!d.acl.dacl && !d.acl.strict);
 
     // 路径 2：serde 反序列化，executor 段存在但无 acl/backend 键。
@@ -49,7 +52,10 @@ fn executor_acl_defaults_converge_across_serde_and_default_paths() {
         serde_json::from_str(r#"{ "enabled": true, "acl": { "dacl": true } }"#)
             .expect("deserialize");
     assert!(e2.acl.dacl);
-    assert_eq!(e2.acl.max_files, 20_000, "显式 acl 对象缺 max_files → 字段级 default");
+    assert_eq!(
+        e2.acl.max_files, 20_000,
+        "显式 acl 对象缺 max_files → 字段级 default"
+    );
 }
 
 #[test]

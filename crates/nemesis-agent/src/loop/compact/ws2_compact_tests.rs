@@ -363,7 +363,7 @@ fn p6_build_summary_instruction_fresh_vs_update() {
 #[tokio::test]
 async fn p6_iterative_update_carries_existing_summary() {
     let provider = CaptureProvider::new(&schema_reply());
-    let turns = vec![
+    let turns = [
         turn("system", "SYS"),
         turn("user", "older question"),
         turn("assistant", "older answer"),
@@ -398,7 +398,7 @@ async fn p6_iterative_update_carries_existing_summary() {
 #[tokio::test]
 async fn p6_schema_failure_falls_back_to_free_text() {
     let provider = CaptureProvider::new("plain free-form summary");
-    let turns = vec![turn("user", "q"), turn("assistant", "a")];
+    let turns = [turn("user", "q"), turn("assistant", "a")];
     let refs: Vec<&crate::types::ConversationTurn> = turns.iter().collect();
 
     let out = summarize_prefix_owned(&refs, "", 0, 32_000, true, &provider, "m", None)
@@ -475,7 +475,7 @@ fn p7_ledger_tool_mappings_and_dedup() {
     );
 
     // 去重：同 path 后声明 kind 覆盖，首次出现顺序保留。
-    let dedup = vec![
+    let dedup = [
         assistant_tool_call("write_file", r#"{"path":"/x"}"#),
         assistant_tool_call("edit_file", r#"{"path":"/x"}"#),
         assistant_tool_call("edit_file", r#"{"path":"/y"}"#),
@@ -502,7 +502,7 @@ fn p7_ledger_tool_mappings_and_dedup() {
 #[tokio::test]
 async fn p7_summary_contains_ledger_section() {
     let provider = CaptureProvider::new("plain summary");
-    let msgs = vec![
+    let msgs = [
         turn("system", "SYS"),
         turn("user", "fix the bug"),
         assistant_tool_call("write_file", r#"{"path":"/a.rs"}"#),
@@ -530,7 +530,7 @@ async fn p7_ledger_accumulates_across_iterations() {
     let new_op = assistant_tool_call("write_file", r#"{"path":"/new.rs"}"#);
 
     // 第一次压缩：只覆盖旧段。
-    let first = vec![turn("system", "SYS"), old_op.clone(), turn("user", "u1")];
+    let first = [turn("system", "SYS"), old_op.clone(), turn("user", "u1")];
     let frefs: Vec<&crate::types::ConversationTurn> = first.iter().collect();
     let out1 = summarize_prefix_owned(&frefs, "", 0, 32_000, true, &provider, "m", None)
         .await
@@ -539,7 +539,7 @@ async fn p7_ledger_accumulates_across_iterations() {
     assert!(!out1.contains("/new.rs"));
 
     // 第二次压缩（UPDATE）：前缀 = 旧段 + 新段，台账同时含两段操作。
-    let second = vec![
+    let second = [
         turn("system", "SYS"),
         old_op,
         turn("user", "u1"),

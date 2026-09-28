@@ -74,6 +74,10 @@ mod common;
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod conflict_resolver;
 mod embedded;
+/// 跨进程 estop 跟随器：独立装配入口（mcp-serve / acp）镜像 gateway 的
+/// 急停态（/api/internal estop_status 轮询，gateway 唯一权威源）——堵住
+/// 「gateway 急停对独立进程不可达」的安全旁路缺口。
+mod estop_follower;
 /// eval 结果评估器（规则驱动三分类；纯函数读报告，无 Windows API——
 /// rules 管理命令在所有平台可用）。
 #[cfg(feature = "eval")]
@@ -84,10 +88,6 @@ mod exec_worker;
 /// U10 统一执行世界：executor 通道装配单一真相源 + workflow 引擎的
 /// ExecutionWorld 桥（world 部分 `sandbox` feature 门控）。
 mod exec_world;
-/// 跨进程 estop 跟随器：独立装配入口（mcp-serve / acp）镜像 gateway 的
-/// 急停态（/api/internal estop_status 轮询，gateway 唯一权威源）——堵住
-/// 「gateway 急停对独立进程不可达」的安全旁路缺口。
-mod estop_follower;
 /// P23（能力扩展 WS10）：stdio MCP server——NemesisBot 能力经 MCP 协议
 /// 暴露给 Claude Code / Cursor 等客户端；K1 式装配与 gateway 同源
 /// （安全 8 层全量生效，MCP 出口不是安全旁路）。

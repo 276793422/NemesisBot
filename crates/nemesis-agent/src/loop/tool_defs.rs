@@ -288,9 +288,8 @@ impl AgentLoop {
         let tier_str = match *self.tier.read() {
             nemesis_types::capability::ModelTier::Mini => "mini",
             nemesis_types::capability::ModelTier::Normal => "normal",
-            nemesis_types::capability::ModelTier::Auto | nemesis_types::capability::ModelTier::Big => {
-                "big"
-            }
+            nemesis_types::capability::ModelTier::Auto
+            | nemesis_types::capability::ModelTier::Big => "big",
         };
         let hidden = self.current_hidden_roles();
         nemesis_prompts::subagents::SubagentRole::roles_visible_to(tier_str)

@@ -169,14 +169,14 @@ impl AgentLoop {
         model: String,
     ) {
         let mut map = self.warm_candidates.lock();
-        if map.len() >= MAX_WARM_CANDIDATES && !map.contains_key(session_key) {
-            if let Some(oldest) = map
+        if map.len() >= MAX_WARM_CANDIDATES
+            && !map.contains_key(session_key)
+            && let Some(oldest) = map
                 .iter()
                 .min_by_key(|(_, c)| c.anchor)
                 .map(|(k, _)| k.clone())
-            {
-                map.remove(&oldest);
-            }
+        {
+            map.remove(&oldest);
         }
         map.insert(
             session_key.to_string(),

@@ -550,8 +550,7 @@ impl NostrChannel {
             info!(relay = %relay_url, "[NostrChannel] relay 已连接");
 
             // 订阅帧按本次连接时刻重建（since = 现在）。
-            let req_frame =
-                build_req_frame(&x_only_pub, chrono::Utc::now().timestamp());
+            let req_frame = build_req_frame(&x_only_pub, chrono::Utc::now().timestamp());
 
             let (mut sink, mut stream) = ws.split();
             let (out_tx, mut out_rx) = mpsc::channel::<String>(64);

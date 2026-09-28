@@ -167,7 +167,9 @@ pub fn build_executor_channel(
         // 令牌缓存：OnceLock 语义 = 只铸一次（成功与失败都定格）；错误串
         // 克隆返回，后续调用不重复铸造。
         let token_cell: Arc<
-            std::sync::OnceLock<Result<Arc<nemesis_sandbox::backend::WriteRestrictedToken>, String>>,
+            std::sync::OnceLock<
+                Result<Arc<nemesis_sandbox::backend::WriteRestrictedToken>, String>,
+            >,
         > = Arc::new(std::sync::OnceLock::new());
         Some(Arc::new(move || {
             let dacl_on = hook_handle
@@ -200,8 +202,7 @@ pub fn build_executor_channel(
             // 尽力而为不阻塞装配。
             let exec_out = ws_root.join(".exec_out");
             if let Ok(rd) = std::fs::read_dir(&exec_out) {
-                let cutoff =
-                    std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+                let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
                 for e in rd.flatten() {
                     let stale = e
                         .metadata()

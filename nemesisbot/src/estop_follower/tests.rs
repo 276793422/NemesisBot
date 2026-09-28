@@ -51,7 +51,10 @@ fn mirror_applies_only_on_change() {
 #[test]
 fn discover_missing_everything_is_none() {
     let tmp = tempfile::tempdir().unwrap();
-    assert!(discover(&tmp.path()).is_none(), "无 config 无 state = 不跟随");
+    assert!(
+        discover(tmp.path()).is_none(),
+        "无 config 无 state = 不跟随"
+    );
 }
 
 #[test]
@@ -99,10 +102,7 @@ fn discover_full_shape_resolves_url_and_token() {
 #[tokio::test]
 async fn poll_once_parses_engaged_and_mirror_engages_local() {
     let captured = Arc::new(Mutex::new(None::<String>));
-    let port = spawn_one_shot_http(
-        Arc::clone(&captured),
-        r#"{"status":"ok","engaged":true}"#,
-    );
+    let port = spawn_one_shot_http(Arc::clone(&captured), r#"{"status":"ok","engaged":true}"#);
     let target = FollowerTarget {
         base_url: format!("http://127.0.0.1:{port}"),
         auth_token: "sekrit".into(),
@@ -117,7 +117,10 @@ async fn poll_once_parses_engaged_and_mirror_engages_local() {
 
     let req = captured.lock().unwrap().clone().expect("request captured");
     assert!(req.contains("POST /api/internal"), "request line: {req}");
-    assert!(req.contains("x-auth-token: sekrit") || req.contains("X-Auth-Token: sekrit"), "token header: {req}");
+    assert!(
+        req.contains("x-auth-token: sekrit") || req.contains("X-Auth-Token: sekrit"),
+        "token header: {req}"
+    );
     assert!(req.contains("estop_status"), "cmd payload: {req}");
 
     // 镜像落地：本地 state 进入急停。
@@ -135,7 +138,9 @@ async fn poll_once_non_2xx_is_err() {
         if let Ok((mut stream, _)) = listener.accept() {
             let mut buf = [0u8; 2048];
             let _ = stream.read(&mut buf);
-            let _ = stream.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            let _ = stream.write_all(
+                b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
         }
     });
     let target = FollowerTarget {

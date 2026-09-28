@@ -565,11 +565,11 @@ async fn cmd_install(
     // 2026-09-26 复查修复：此前读 workspace.join("config.json")——主配置
     // 现行布局在 home 根，CLI 装技能永远读不到用户 skills 安全策略，静默
     // 回落默认放行。
-    if let Ok(cfg) = nemesis_config::load_config(main_cfg) {
-        if let Some(skills) = cfg.skills {
-            installer.set_allow_unsigned(skills.allow_unsigned);
-            installer.set_age_policy(skills.min_age_days, &skills.min_age_policy);
-        }
+    if let Ok(cfg) = nemesis_config::load_config(main_cfg)
+        && let Some(skills) = cfg.skills
+    {
+        installer.set_allow_unsigned(skills.allow_unsigned);
+        installer.set_age_policy(skills.min_age_days, &skills.min_age_policy);
     }
     // P13 CLI 通路：交互审批卡（--yes 跳过）。
     installer.set_install_gate(std::sync::Arc::new(CliInstallGate { yes }));
