@@ -1318,7 +1318,7 @@ async fn test_reflect_with_llm_ok_provider_sets_insights() {
         make_collected("file_read", "b.txt", false, 150),
     ];
     let report = reflector
-        .reflect_with_llm(&experiences, &[], None, "today", "all")
+        .reflect_with_llm(&experiences, &[], None, "today", "all", None)
         .await;
 
     let insights = report.llm_insights.expect("insights must be set on Ok");
@@ -1333,7 +1333,7 @@ async fn test_reflect_with_llm_error_provider_keeps_none() {
 
     let experiences = vec![make_collected("exec", "ls", true, 20)];
     let report = reflector
-        .reflect_with_llm(&experiences, &[], None, "today", "all")
+        .reflect_with_llm(&experiences, &[], None, "today", "all", None)
         .await;
 
     assert!(
@@ -1350,7 +1350,7 @@ async fn test_reflect_with_llm_no_provider_none() {
 
     let experiences = vec![make_collected("grep", "pattern", true, 10)];
     let report = reflector
-        .reflect_with_llm(&experiences, &[], None, "today", "all")
+        .reflect_with_llm(&experiences, &[], None, "today", "all", None)
         .await;
 
     assert!(report.llm_insights.is_none());
@@ -1377,9 +1377,47 @@ async fn test_s8_reflect_with_llm_ok_evaluates_tracing_fields() {
     reflector.set_provider(std::sync::Arc::new(ReflectorOkLLM));
     let experiences = vec![make_collected("file_read", "a.txt", true, 50)];
     let report = reflector
-        .reflect_with_llm(&experiences, &[], None, "today", "all")
+        .reflect_with_llm(&experiences, &[], None, "today", "all", None)
         .await;
     assert!(report.llm_insights.is_some());
+}
+
+/// max_tokens 透传断言（aux 治理 2026-09-28）：reflect_with_llm 的预算参数
+/// 原样抵达 LLMCaller（生产调用方传 AUX_FORGE_MAX_TOKENS，思考系模型防烧穿）。
+#[tokio::test]
+async fn test_reflect_with_llm_passes_max_tokens_to_caller() {
+    struct CaptureLLM(std::sync::Mutex<Option<Option<i64>>>);
+    #[async_trait::async_trait]
+    impl crate::reflector_llm::LLMCaller for CaptureLLM {
+        async fn chat(
+            &self,
+            _system_prompt: &str,
+            _user_prompt: &str,
+            max_tokens: Option<i64>,
+        ) -> Result<String, String> {
+            *self.0.lock().unwrap() = Some(max_tokens);
+            Ok("- ok".to_string())
+        }
+    }
+    let capture = std::sync::Arc::new(CaptureLLM(std::sync::Mutex::new(None)));
+    let reflector = Reflector::new();
+    reflector.set_provider(capture.clone());
+    let experiences = vec![make_collected("exec", "ls", true, 20)];
+    let report = reflector
+        .reflect_with_llm(
+            &experiences,
+            &[],
+            None,
+            "today",
+            "all",
+            Some(crate::reflector_llm::AUX_FORGE_MAX_TOKENS),
+        )
+        .await;
+    assert!(report.llm_insights.is_some());
+    assert_eq!(
+        *capture.0.lock().unwrap(),
+        Some(Some(crate::reflector_llm::AUX_FORGE_MAX_TOKENS))
+    );
 }
 
 #[test]

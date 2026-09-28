@@ -4,32 +4,92 @@
 //! （`loop::bypass_llm` 的限 token/超时/空输出校验）；本模块只提供文本
 //! 与纯字符串拼装。
 
-/// 前情摘要指令（九段式结构化）：`loop::compact` 的 G1 前缀复用路径与
-/// `session::Summarizer` 的批式路径共用的同一份文本。首句用「本次提供的
-/// 对话片段」位置中性指代——两种形态（消息在前 / 指令在前）都成立。
-pub const COMPACT_INSTRUCTION: &str = include_str!("internals/compact.md");
+// ---------------------------------------------------------------------------
+// 结构化摘要（P6/P7，能力扩展 WS2）：compact 压缩摘要 / multipart 合并 /
+// 分支摘要三处 aux LLM 调用共用的文本真相。
+//
+// 历史注记：本节曾存七节中文 COMPACT_INSTRUCTION（session::Summarizer 批式
+// 路径）；2026-09-28 真源归一时随 Summarizer 一并退役——loop::compact 的
+// 六节 schema 是唯一活跃摘要体系，本节即其文本真相。
+// ---------------------------------------------------------------------------
 
-/// 两份摘要合并模板（两个 `{}` 占位：摘要一、摘要二）。`format!` 不接受
-/// 非字面量模板，消费方一律走 [`render_compact_merge`]。
-pub const COMPACT_MERGE_TEMPLATE: &str = include_str!("internals/compact_merge.md");
+/// P6：结构化摘要六节 schema（pi 对齐：Goal / Constraints / Progress /
+/// Decisions / Files / Next Steps）。标题即协议——agent 侧响应解析按行首
+/// Markdown 标题精确匹配这六个词，任一缺失即视为 schema 解析失败（调用方
+/// 回退自由文本，绝不炸）。文本与解析锚点共用同一份列表，杜绝漂移。
+pub const SUMMARY_SCHEMA_SECTIONS: [&str; 6] = [
+    "Goal",
+    "Constraints",
+    "Progress",
+    "Decisions",
+    "Files",
+    "Next Steps",
+];
 
-/// 渲染两份摘要的合并提示：按模板中两个 `{}` 占位切分拼装（顺序 = 摘要一、
-/// 摘要二）。模板缺占位 / 占位错位在此处 loud panic（编译期嵌入文件的结构
-/// 契约，坏在发布前而非运行时静默错位）。
-pub fn render_compact_merge(summary_one: &str, summary_two: &str) -> String {
-    let (head, rest) = COMPACT_MERGE_TEMPLATE
-        .split_once("{}")
-        .expect("compact_merge 模板缺第一个占位");
-    let (mid, tail) = rest
-        .split_once("{}")
-        .expect("compact_merge 模板缺第二个占位");
-    format!("{head}{summary_one}{mid}{summary_two}{tail}")
+/// P7：文件操作台账节标题。摘要注入守卫与重复守卫共用（agent 侧 finalize
+/// 只在摘要未含该标题时宿主追加，模型照抄 prompt 不致重复）。字节级契约：
+/// agent 侧按完整标题行匹配，勿改一字。
+pub const FILE_LEDGER_HEADING: &str = "## 本会话已修改文件";
+
+/// 六节 schema 输出格式后缀。compact 尾部指令 / multipart 合并提示 / 分支
+/// 摘要三处共用——此前三份内联拷贝曾发生措辞漂移（合并变体丢失「内容
+/// 简明扼要」），收拢后单源。
+pub fn render_summary_schema_suffix() -> String {
+    let mut s = String::from(
+        "\n\n输出格式：严格按以下六节 Markdown schema 输出（标题原样保留，内容简明扼要；某节无内容写「（无）」）：",
+    );
+    for sec in SUMMARY_SCHEMA_SECTIONS {
+        s.push_str(&format!("\n## {sec}"));
+    }
+    s
 }
 
-/// 已有摘要上下文前缀：请求模型把旧摘要中仍然有效的信息合并进新摘要，
-/// 不得丢失。两条摘要路径共用。
-pub const EXISTING_SUMMARY_PREFIX: &str =
-    "以下是更早对话的已有摘要；请把其中仍然有效的信息合并进新摘要，不要丢失上下文：\n\n";
+/// 渲染摘要请求的尾部指令（G1 前缀复用形态：请求消息体 = system + 原样
+/// 覆盖段 + 本指令尾部；指令恒为最后一条消息，不在 warm 前缀内）。
+///
+/// - `existing`：`None` = 首次全量摘要；`Some(prev)` = UPDATE 迭代修订，
+///   `new_segment_turns` 为旧摘要未覆盖的新增消息轮数。
+/// - `ledger_lines`：宿主文件操作台账行（已渲染为 `- [kind] path` 形态；
+///   空 = 覆盖段无文件操作，不渲染台账块）。
+pub fn render_summary_instruction(
+    existing: Option<&str>,
+    new_segment_turns: usize,
+    ledger_lines: &[String],
+) -> String {
+    let mut ins = String::new();
+    match existing {
+        None => ins.push_str(
+            "请对以上对话生成结构化简明摘要，保留核心上下文与关键要点，供后续对话作为前情提要使用。",
+        ),
+        Some(prev) => ins.push_str(&format!(
+            "这是一次迭代式摘要更新（UPDATE）：以上对话前缀末尾约 {new_segment_turns} 条消息（含工具往返）是上一版摘要尚未覆盖的新增内容。请在下方上一版摘要的基础上修订产出新版简明摘要——合并新增进展、更新已变化的状态、删除已失效条目，保留仍然有效的旧信息；不要从零重写，不要丢失仍然有效的上下文。\n\n上一版摘要：\n{prev}"
+        )),
+    }
+    if !ledger_lines.is_empty() {
+        // 台账块直接以 FILE_LEDGER_HEADING 开头：模型可原样照抄该节结构；
+        // agent 侧 finalize 的「摘要已含标题则不重复追加」守卫与之配套
+        // （照抄了就不再宿主追加，没照抄才兜底）。
+        ins.push_str(&format!(
+            "\n\n{}（宿主记录的客观台账，Files 节必须如实包含以下文件操作）：",
+            FILE_LEDGER_HEADING
+        ));
+        for line in ledger_lines {
+            ins.push_str(&format!("\n{line}"));
+        }
+    }
+    ins.push_str(&render_summary_schema_suffix());
+    ins
+}
+
+/// 渲染两段结构化摘要的合并提示（multipart 压缩路径）：两段各占一号位
+/// （顺序 = 摘要一、摘要二），合并产出必须仍是六节结构化摘要，故 schema
+/// 后缀与单段指令同源。
+pub fn render_summary_merge_prompt(part_one: &str, part_two: &str) -> String {
+    format!(
+        "Merge these two conversation summaries into one cohesive summary:\n\n1: {part_one}\n\n2: {part_two}{}",
+        render_summary_schema_suffix()
+    )
+}
 
 /// 会话标题生成提示（E7 自动标题路径的单一真相源）：格式约束 + 双向删减
 /// 规则（过长压缩概括、信息不足宁概括不空洞）+ 数据非指令防护句。

@@ -719,22 +719,10 @@ impl AgentLoop {
 // 自由函数归位（P1-c 自 loop.rs 根搬迁；仅增 pub(crate) 可见性标注）
 // ---------------------------------------------------------------------------
 
-/// P6（能力扩展 WS2）：结构化摘要六节 schema（pi 对齐：Goal / Constraints /
-/// Progress / Decisions / Files / Next Steps）。标题即协议——
-/// [`parse_structured_summary`] 按行首 Markdown 标题精确匹配这六个词，
-/// 任一缺失即视为 schema 解析失败（调用方回退自由文本，绝不炸）。
-pub(crate) const SUMMARY_SCHEMA_SECTIONS: [&str; 6] = [
-    "Goal",
-    "Constraints",
-    "Progress",
-    "Decisions",
-    "Files",
-    "Next Steps",
-];
-
-/// P7（能力扩展 WS2）：文件操作台账节标题。摘要注入与重复守卫共用
-/// （finalize 只在摘要未含该标题时宿主追加，模型照抄 prompt 不致重复）。
-pub(crate) const FILE_LEDGER_HEADING: &str = "## 本会话已修改文件";
+// P6/P7 文本真相已上收 nemesis-prompts（aux 模块，2026-09-28 真源归一）：
+// 六节 schema 与文件台账标题在此 re-export——本 crate 内既有 `super::*`
+// 消费方（branch_summary、ws2 测试）路径不变。
+pub(crate) use crate::prompt::{FILE_LEDGER_HEADING, SUMMARY_SCHEMA_SECTIONS};
 
 /// P7：台账条目上限。长会话的文件操作无界膨胀会反噬摘要本身；超限保
 /// 首次出现顺序截断，并聚合一行诚实注记。
@@ -769,34 +757,20 @@ pub(crate) struct SummaryUpdate<'a> {
 /// P6：构建摘要请求的尾部指令（batch / bare-concat / multipart 合并共用
 /// 的单一真相源——三种请求形态的摘要语义必须一致）。
 pub(crate) fn build_summary_instruction(update: &SummaryUpdate<'_>) -> String {
-    let mut ins = String::new();
-    if update.existing.is_empty() {
-        ins.push_str(
-            "请对以上对话生成结构化简明摘要，保留核心上下文与关键要点，供后续对话作为前情提要使用。",
-        );
-    } else {
-        ins.push_str(&format!(
-            "这是一次迭代式摘要更新（UPDATE）：以上对话前缀末尾约 {} 条消息（含工具往返）是上一版摘要尚未覆盖的新增内容。请在下方上一版摘要的基础上修订产出新版简明摘要——合并新增进展、更新已变化的状态、删除已失效条目，保留仍然有效的旧信息；不要从零重写，不要丢失仍然有效的上下文。\n\n上一版摘要：\n{}",
-            update.new_segment_turns, update.existing
-        ));
-    }
-    if !update.ledger.is_empty() {
-        // 台账块直接以 FILE_LEDGER_HEADING 开头：模型可原样照抄该节结构；
-        // finalize 的「摘要已含标题则不重复追加」守卫与之配套（照抄了就不
-        // 再宿主追加，没照抄才兜底）。
-        ins.push_str(&format!(
-            "\n\n{}（宿主记录的客观台账，Files 节必须如实包含以下文件操作）：",
-            FILE_LEDGER_HEADING
-        ));
-        for op in update.ledger {
-            ins.push_str(&format!("\n- [{}] {}", op.kind, op.path));
-        }
-    }
-    ins.push_str("\n\n输出格式：严格按以下六节 Markdown schema 输出（标题原样保留，内容简明扼要；某节无内容写「（无）」）：");
-    for s in SUMMARY_SCHEMA_SECTIONS {
-        ins.push_str(&format!("\n## {s}"));
-    }
-    ins
+    let ledger_lines: Vec<String> = update
+        .ledger
+        .iter()
+        .map(|op| format!("- [{}] {}", op.kind, op.path))
+        .collect();
+    crate::prompt::render_summary_instruction(
+        if update.existing.is_empty() {
+            None
+        } else {
+            Some(update.existing)
+        },
+        update.new_segment_turns,
+        &ledger_lines,
+    )
 }
 
 /// P6：schema 解析。六节标题齐 → `Some(归一化文本)`（从首个 schema 节
@@ -996,12 +970,19 @@ pub(crate) async fn summarize_bare_concat_owned(
         observer_manager.as_ref(),
         "summarize-bare-concat",
         model,
-        provider.chat(
-            model,
-            llm_messages,
-            Some(aux_chat_options(AUX_SUMMARY_MAX_TOKENS)),
-            vec![],
-        ),
+        || {
+            let llm_messages = llm_messages.clone();
+            async move {
+                provider
+                    .chat(
+                        model,
+                        llm_messages,
+                        Some(aux_chat_options(AUX_SUMMARY_MAX_TOKENS)),
+                        vec![],
+                    )
+                    .await
+            }
+        },
     )
     .await;
 
@@ -1089,18 +1070,8 @@ pub(crate) async fn summarize_multipart_owned(
     };
 
     // Merge via LLM. P6：合并指令同样要求六节 schema 输出（合并的是两段
-    // 结构化摘要，产出必须仍是结构化的）。
-    let merge_prompt = format!(
-        "Merge these two conversation summaries into one cohesive summary:\n\n1: {}\n\n2: {}",
-        s1, s2
-    );
-    let merge_prompt = format!(
-        "{merge_prompt}\n\n输出格式：严格按以下六节 Markdown schema 输出（标题原样保留；某节无内容写「（无）」）：{}",
-        SUMMARY_SCHEMA_SECTIONS
-            .iter()
-            .map(|s| format!("\n## {s}"))
-            .collect::<String>()
-    );
+    // 结构化摘要，产出必须仍是结构化的）。文本真相在 nemesis-prompts（aux）。
+    let merge_prompt = crate::prompt::render_summary_merge_prompt(&s1, &s2);
 
     let llm_messages = vec![LlmMessage {
         role: "user".to_string(),
@@ -1115,12 +1086,19 @@ pub(crate) async fn summarize_multipart_owned(
         observer_manager.as_ref(),
         "summarize-multipart-merge",
         model,
-        provider.chat(
-            model,
-            llm_messages,
-            Some(aux_chat_options(AUX_SUMMARY_MAX_TOKENS)),
-            vec![],
-        ),
+        || {
+            let llm_messages = llm_messages.clone();
+            async move {
+                provider
+                    .chat(
+                        model,
+                        llm_messages,
+                        Some(aux_chat_options(AUX_SUMMARY_MAX_TOKENS)),
+                        vec![],
+                    )
+                    .await
+            }
+        },
     )
     .await;
 
@@ -1184,12 +1162,19 @@ pub(crate) async fn summarize_batch_owned(
         observer_manager.as_ref(),
         "summarize-batch",
         model,
-        provider.chat(
-            model,
-            messages,
-            Some(aux_chat_options(AUX_SUMMARY_MAX_TOKENS)),
-            vec![],
-        ),
+        || {
+            let messages = messages.clone();
+            async move {
+                provider
+                    .chat(
+                        model,
+                        messages,
+                        Some(aux_chat_options(AUX_SUMMARY_MAX_TOKENS)),
+                        vec![],
+                    )
+                    .await
+            }
+        },
     )
     .await;
 
@@ -1218,13 +1203,18 @@ pub(crate) async fn summarize_batch_owned(
 
 /// Emit observer events (ConversationStart, LlmRequest, LlmResponse, ConversationEnd)
 /// around a synchronous LLM call closure. Used by standalone summarization functions.
-pub(crate) async fn emit_observer_events_around_llm<Fut>(
+///
+/// `make_call` 是工厂闭包（每次调用产出一个新请求 future）：空输出/瞬态失败
+/// 由 [`with_one_retry`] 在同一超时窗口内重建请求重试一次（采样抖动兜底；
+/// 总墙钟预算不随重试翻倍）。
+pub(crate) async fn emit_observer_events_around_llm<F, Fut>(
     observer_manager: Option<&Arc<nemesis_observer::Manager>>,
     label: &str,
     model: &str,
-    llm_call: Fut,
+    make_call: F,
 ) -> Option<Result<LlmResponse, String>>
 where
+    F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<LlmResponse, String>>,
 {
     use crate::loop_executor::ObserverEvent;
@@ -1268,8 +1258,26 @@ where
     // Execute the LLM call (async, no block_on). 墙钟上限走杂务旁路护栏
     // （bypass_llm::AUX_SUMMARY_TIMEOUT）——慢模型/挂死连接不拖住压缩任务；
     // 超时折叠为 Err，走既有失败语义（摘要不产出、历史保持不折叠）。
+    // 空输出/瞬态失败在同一超时窗口内重试一次。**空→Err 归一必须在重试
+    // 内层**：with_one_retry 只对 Err 重试，LlmResponse 携带空 content 是
+    // 合法 Ok——归一放外层的话，thinking 系模型烧穿预算的空输出（主要失败
+    // 形态）永远不触发重试（2026-09-28 复查修正；与 bypass_llm::
+    // guarded_llm_call_retrying 同构）。工厂闭包重建请求；总墙钟预算不随
+    // 重试翻倍。
     let start = std::time::Instant::now();
-    let mut response = tokio::time::timeout(AUX_SUMMARY_TIMEOUT, llm_call)
+    let attempt = || {
+        let r = make_call();
+        async move {
+            match r.await {
+                Ok(resp) if resp.content.trim().is_empty() => {
+                    warn!("[bypass:{label}] 模型返回空输出，按失败处理");
+                    Err(format!("[bypass:{label}] 空输出，按失败处理"))
+                }
+                other => other,
+            }
+        }
+    };
+    let mut response = tokio::time::timeout(AUX_SUMMARY_TIMEOUT, with_one_retry(label, attempt))
         .await
         .unwrap_or_else(|_| {
             Err(format!(

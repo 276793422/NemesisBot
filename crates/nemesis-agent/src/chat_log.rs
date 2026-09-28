@@ -1256,3 +1256,6 @@ mod cov_tests;
 // sidecar 写失败 + 平化迁移各分支）。
 #[cfg(test)]
 mod cov2_tests;
+
+// cov 系文件型测试的共享串行锁（2026-09-28 复查新增）：目录型夹具（rewind
+// tmp 目录 / rename 目标目录 / legacy 嵌套目录 / boundary sidecar 目录）与

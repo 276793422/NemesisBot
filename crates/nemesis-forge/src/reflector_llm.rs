@@ -8,6 +8,13 @@ use async_trait::async_trait;
 use crate::reflector::{ReflectionStats, TraceStats};
 use crate::types::{Artifact, ExperienceStats};
 
+/// Forge 侧杂务 LLM 输出预算的统一真相源（aux 杂务三层治理 2026-09-28，
+/// 用户裁决统一 8192：预算是防失控上限不是支出；thinking 系模型把思考
+/// token 一并计入 max_tokens，旧值 500 已实证间歇烧穿——GLM 真机 cycle1
+/// 两稿全空）。四处消费：SKILL_GENERATOR / SKILL_FIXER（learning_engine）、
+/// QUALITY_REVIEWER（pipeline）、语义反思（reflector::reflect_with_llm）。
+pub const AUX_FORGE_MAX_TOKENS: i64 = 8192;
+
 /// Trait for making LLM calls within the forge module.
 ///
 /// This avoids a direct dependency on nemesis-providers. The integration

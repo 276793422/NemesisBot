@@ -523,6 +523,10 @@ impl Reflector {
     /// This mirrors Go's `Reflector.Reflect()` which calls `semanticAnalysis()`
     /// when a provider is available. The synchronous stages (1-3) run first,
     /// then LLM is invoked asynchronously for semantic insights.
+    ///
+    /// `max_tokens`：语义分析请求的输出预算（思考系模型思考 token 计入
+    /// max_tokens，None=provider 默认会间歇烧穿——生产调用方传
+    /// [`crate::reflector_llm::AUX_FORGE_MAX_TOKENS`]；测试可传 None）。
     pub async fn reflect_with_llm(
         &self,
         experiences: &[CollectedExperience],
@@ -530,6 +534,7 @@ impl Reflector {
         learning_cycle: Option<&nemesis_types::forge::LearningCycle>,
         period: &str,
         focus: &str,
+        max_tokens: Option<i64>,
     ) -> ReflectionReport {
         let mut report = self.reflect(experiences, learning_cycle, period, focus);
 
@@ -544,7 +549,7 @@ impl Reflector {
                 artifacts,
                 report.trace_stats.as_ref(),
                 report.learning_cycle.as_ref(),
-                None,
+                max_tokens,
             )
             .await
             {

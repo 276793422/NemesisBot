@@ -5,8 +5,24 @@ use super::*;
 use crate::r#loop::FileChangeKind;
 
 /// 本文件的会话键前缀（唯一 + 测试后清理，遵循既有 tests.rs 惯例）。
+///
+/// 进程级唯一后缀（2026-09-28 脆性修复）：静态前缀跨运行复用同一路径，
+/// 上轮失败残留目录若处于 Windows「删除挂起」态，下轮夹具 create_dir_all
+/// 撞 os error 183 → panic → 清理不执行 → 残留自我延续。pid + 启动纳秒
+/// 后缀保证跨运行路径永不复用（同运行内 tag 互异性不变）。
 fn cov_key(tag: &str) -> String {
-    format!("test:cov_chatlog:{tag}")
+    static RUN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let run = RUN.get_or_init(|| {
+        format!(
+            "{:x}{:x}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        )
+    });
+    format!("test:cov_chatlog:{run}:{tag}")
 }
 
 /// 全字段 ChatLogMeta：cron 标记 / images / file_changes / checkpoint_turn

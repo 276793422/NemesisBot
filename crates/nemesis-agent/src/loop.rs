@@ -991,3 +991,9 @@ mod p20_tests;
 // （small_model 通道 / 无小模型诚实跳过 / build_messages 注入）编排测试。
 #[cfg(test)]
 mod ws9_lineage_tests;
+
+// bypass_llm.rs 覆盖率补充（aux 杂务三层治理 2026-09-28）：重试原语 +
+// 重试版护栏（空输出触发重试 / 两次全败诚实上抛 / 超时包住全部尝试）+
+// aux options 显式禁思考标记。
+#[cfg(test)]
+mod bypass_llm_tests;

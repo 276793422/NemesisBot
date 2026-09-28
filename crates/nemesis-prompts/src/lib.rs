@@ -31,7 +31,9 @@
 //!
 //! ## 文件形态约定
 //!
-//! - 大段纯静态模板：`*.md` 文件 + `include_str!`（段落池/描述/角色/compact）。
+//! - 大段纯静态模板：`*.md` 文件 + `include_str!`（段落池/描述/角色）。
+//!   （原 `internals/compact.md` 七节摘要模板已随 Summarizer 真源归一退役，
+//!   结构化摘要文本现以 Rust 常量/渲染函数存于 [`aux`]。）
 //! - 带转义续行或精确字节要求的常量：Rust 字符串常量原样存放
 //!   （guardian/board/workflow/spawn/forge），逐字节平移自原消费方。
 

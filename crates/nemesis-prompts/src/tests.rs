@@ -158,21 +158,87 @@ fn description_for_serves_level_appropriate_text() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn compact_merge_template_has_exactly_two_placeholders() {
-    // render_compact_merge 对占位数量有硬契约（两个）；三个及以上会把
-    // 第三段原文带进 prompt。这里钉死模板形态。
-    let t = aux::COMPACT_MERGE_TEMPLATE;
-    assert!(t.contains("{}"));
-    let (_, rest) = t.split_once("{}").unwrap();
-    assert!(rest.contains("{}"));
-    let (_, rest2) = rest.split_once("{}").unwrap();
-    assert!(!rest2.contains("{}"), "合并模板不得有多余占位");
+fn summary_schema_sections_and_ledger_heading_are_protocol_stable() {
+    // 六节 schema 是「提示词承诺 + 响应解析锚点」双面契约：agent 侧解析按
+    // 行首标题精确匹配，这里钉死节数、顺序与标题原文。
+    let sections = aux::SUMMARY_SCHEMA_SECTIONS;
+    assert_eq!(sections.len(), 6);
+    assert_eq!(
+        sections,
+        [
+            "Goal",
+            "Constraints",
+            "Progress",
+            "Decisions",
+            "Files",
+            "Next Steps"
+        ]
+    );
+    // 文件台账标题字节级契约（agent 侧 finalize 按 contains 去重守卫）。
+    assert_eq!(aux::FILE_LEDGER_HEADING, "## 本会话已修改文件");
+}
 
-    // 渲染产物按序包含两份输入。
-    let rendered = aux::render_compact_merge("AAA", "BBB");
-    let a = rendered.find("AAA").expect("摘要一应在渲染产物中");
-    let b = rendered.find("BBB").expect("摘要二应在渲染产物中");
+#[test]
+fn summary_schema_suffix_lists_all_sections() {
+    let s = aux::render_summary_schema_suffix();
+    assert!(
+        s.starts_with("\n\n输出格式："),
+        "后缀以空行 + 输出格式句开头"
+    );
+    for sec in aux::SUMMARY_SCHEMA_SECTIONS {
+        assert!(s.contains(&format!("\n## {sec}")), "缺节：{sec}");
+    }
+    assert!(s.contains("（无）"), "空节占位规则应在场");
+}
+
+#[test]
+fn summary_instruction_fresh_and_update_arms() {
+    // 首次全量：无 UPDATE 字样，含首次指令句 + schema 后缀。
+    let fresh = aux::render_summary_instruction(None, 0, &[]);
+    assert!(!fresh.contains("UPDATE"), "首次摘要不得携带迭代语义");
+    assert!(fresh.contains("前情提要"), "首次指令句应在场");
+    assert!(fresh.contains("\n## Goal"), "schema 后缀应在场");
+
+    // UPDATE 迭代：携带新增轮数 + 上一版摘要全文 + schema 后缀。
+    let update = aux::render_summary_instruction(Some("旧摘要内容"), 7, &[]);
+    assert!(update.contains("UPDATE"), "迭代语义应在场");
+    assert!(update.contains("约 7 条消息"), "新增轮数应注入");
+    assert!(
+        update.contains("上一版摘要：\n旧摘要内容"),
+        "旧摘要应原样内嵌"
+    );
+    assert!(update.contains("\n## Next Steps"), "schema 后缀应在场");
+    assert!(update.find("UPDATE").unwrap() < update.find("旧摘要内容").unwrap());
+}
+
+#[test]
+fn summary_instruction_carries_ledger_lines() {
+    let ledger = vec!["- [write] /a.rs".to_string(), "- [edit] /b.ts".to_string()];
+    let with = aux::render_summary_instruction(None, 0, &ledger);
+    assert!(with.contains(aux::FILE_LEDGER_HEADING), "台账标题应在场");
+    assert!(with.contains("- [write] /a.rs"));
+    assert!(with.contains("- [edit] /b.ts"));
+    // 无台账：不得出现台账标题（finalize 靠「模型照抄了就不重复追加」守卫，
+    // 指令层先注入标题是唯一来源）。
+    let without = aux::render_summary_instruction(None, 0, &[]);
+    assert!(!without.contains(aux::FILE_LEDGER_HEADING));
+}
+
+#[test]
+fn summary_merge_prompt_orders_parts_and_appends_schema() {
+    let m = aux::render_summary_merge_prompt("AAA", "BBB");
+    let a = m.find("1: AAA").expect("摘要一号位");
+    let b = m.find("2: BBB").expect("摘要二号位");
     assert!(a < b, "摘要一必须先于摘要二");
+    assert!(
+        m.contains("Merge these two conversation summaries"),
+        "合并引导句"
+    );
+    assert!(m.contains("\n## Goal"), "合并产出仍须六节结构化");
+    assert!(
+        m.contains("内容简明扼要"),
+        "与单段指令共用的输出格式句（漂移归一）"
+    );
 }
 
 #[test]
@@ -440,9 +506,8 @@ fn all_migrated_prompt_constants_are_nonempty() {
     assert!(spawn::SPAWN_SUBAGENT_SYSTEM_PROMPT.contains("You are a subagent"));
     assert!(spawn::SUBAGENT_TOOL_SYSTEM_PROMPT.contains("You are a subagent"));
 
-    // 补收（漏网扫描第二轮）：forge 生成/修复四 prompt
-    assert!(forge::SKILL_AUTHOR_SYSTEM_PROMPT.contains("技能作者"));
-    assert!(forge::SCRIPT_AUTHOR_SYSTEM_PROMPT.contains("脚本开发者"));
+    // 补收（漏网扫描第二轮）：forge 生成/修复 prompt（SKILL_AUTHOR/
+    // SCRIPT_AUTHOR 已随死接线 factory 模块删除，2026-09-28）。
     assert!(forge::SKILL_GENERATOR_SYSTEM_PROMPT.contains("技能定义生成器"));
     assert!(forge::SKILL_FIXER_SYSTEM_PROMPT.contains("技能定义生成器"));
 

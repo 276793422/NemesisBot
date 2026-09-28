@@ -42,12 +42,12 @@
 
 | 形态 | 目录 | 说明 |
 |------|------|------|
-| `.md` + `include_str!` | `src/segments/*.md`（17 个 pro 分层段）、`src/tools/*.md`（lean/full 双档，`X.lean.md` + `X.md`）、`src/internals/*.md`（压缩指令/合并模板） | 大段中文文本；编辑器友好，diff 清晰 |
+| `.md` + `include_str!` | `src/segments/*.md`（17 个 pro 分层段）、`src/tools/*.md`（lean/full 双档，`X.lean.md` + `X.md`） | 大段中文文本；编辑器友好，diff 清晰 |
 | Rust 常量 | 各 `.rs` 模块内 | 小段文本或含复杂转义的原文（如 guardian 的 JSON 字面量、spawn 的英文单行）逐字节平移进 `const`，配 `r#"..."#` raw string |
 
 ### 占位符约定
 
-- `aux::render_compact_merge`：恰好两个 `{}` 占位（旧摘要 + 新纪要），缺失时 loud panic（编译期不可查，测试钉死）。
+- `aux::render_summary_merge_prompt`：两段摘要各占一号/二号位（顺序固定），schema 后缀与单段指令同源（`render_summary_schema_suffix`，测试钉死六节齐全）。
 - `workflow::{CLASSIFIER,EXTRACTOR}`：命名占位 `{classes}`/`{parameters}`，消费方 `.replace()` 注入。
 - `subagents::render_system_prompt`：`Option<&str>` 自定义职责段注入角色模板。
 

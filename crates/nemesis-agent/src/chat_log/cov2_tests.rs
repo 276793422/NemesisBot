@@ -11,8 +11,22 @@ use std::fs;
 #[cfg(windows)]
 use std::path::Path;
 
+/// 进程级唯一键前缀（2026-09-28 脆性修复，机制见 cov_tests.rs 同名 helper
+/// 注释）：静态前缀跨运行复用同一路径，Windows 删除挂起残留会让下轮夹具
+/// create_dir_all 撞 os error 183 自我延续红。pid + 启动纳秒后缀根治。
 fn cov_key(tag: &str) -> String {
-    format!("test:covw6b:{tag}")
+    static RUN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let run = RUN.get_or_init(|| {
+        format!(
+            "{:x}{:x}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        )
+    });
+    format!("test:covw6b:{run}:{tag}")
 }
 
 /// 以 share_mode(0)（拒绝一切共享）打开句柄——阻塞他人 File::open。

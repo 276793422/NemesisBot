@@ -1,6 +1,6 @@
 //! Forge - main orchestrator for the self-learning framework.
 //!
-//! Coordinates the Collector, Reflector, Factory, Registry, Syncer, and
+//! Coordinates the Collector, Reflector, Registry, Syncer, and
 //! LearningEngine subsystems. This is the top-level entry point.
 
 use std::path::PathBuf;
@@ -237,25 +237,40 @@ impl Forge {
             "[Forge] Running reflection cycle"
         );
 
-        // Step 1: Reflect (statistical analysis)
-        let report = if let Some(ref reflector) = self.reflector {
-            reflector.reflect(&experiences, None, "today", "all")
-        } else {
+        let Some(ref reflector) = self.reflector else {
             return;
         };
 
-        // Step 2: Learning cycle (pattern detection + skill generation)
+        // Step 1: Learning cycle first（语义反思接入 2026-09-28 时序修正）：
+        // 先跑学习闭环（模式检出 + 技能生成），本轮 LearningCycle 产出后
+        // 再做语义反思——报告首次携带**本轮**闭环状态（旧序传 None，语义
+        // 分析看到的永远是上一轮的闭环，时序错位）。
+        let mut learning_cycle = None;
         if let Some(ref learning_engine) = self.learning_engine
             && self.is_learning_enabled()
         {
             let cycle = learning_engine.run_cycle(&experiences).await;
             tracing::info!(cycle_id = %cycle.id, patterns = cycle.patterns_found, actions = cycle.actions_taken, "[Forge] learning cycle completed");
+            learning_cycle = Some(cycle);
         }
 
+        // Step 2: Reflect（统计 + LLM 语义分析）。语义反思带：全量 artifacts
+        // （旧调用面只传统计不传产物——LLM 看不到已部署技能会重复提名）、
+        // 本轮 learning_cycle、统一杂务预算（thinking 系防烧穿）。桥接护栏
+        // 空输出 → Err → warn+skip，报告无 insights 节，诚实降级不炸循环。
+        let report = reflector
+            .reflect_with_llm(
+                &experiences,
+                &self.registry().list(None, None),
+                learning_cycle.as_ref(),
+                "today",
+                "all",
+                Some(crate::reflector_llm::AUX_FORGE_MAX_TOKENS),
+            )
+            .await;
+
         // Step 3: Write report
-        if let Some(ref reflector) = self.reflector
-            && let Ok(path) = reflector.write_report(&report)
-        {
+        if let Ok(path) = reflector.write_report(&report) {
             tracing::info!(path = %path.display(), "[Forge] reflection report written");
 
             // Step 4: Cluster share

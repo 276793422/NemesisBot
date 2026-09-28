@@ -267,21 +267,35 @@ impl nemesis_forge::reflector_llm::LLMCaller for ForgeProviderBridge {
             max_tokens,
             top_p: None,
             stop: None,
-            reasoning_effort: None,
+            // 显式禁思考（aux 杂务三层治理 2026-09-28）：forge 草稿/评审/
+            // 修复/语义反思都是杂务短输出，思考 token 计入 max_tokens 只会
+            // 烧穿预算（真机 mt=500 间歇烧穿实证）。anthropic lane 映射为
+            // thinking:{type:"disabled"}；openai-compat lane 过滤不透传。
+            reasoning_effort: Some("off".to_string()),
             extra: HashMap::new(),
         };
 
-        // 杂务旁路护栏（nemesis_agent::loop::bypass_llm）：墙钟超时 + 空输出
-        // 校验——Forge 评审/反思/草稿是千 token 级短输出，挂死连接不拖住
-        // 后台学习循环；空文本不再当成功结果透传（下游本就把空串当无效）。
-        let call = self.provider.chat(&messages, &[], &self.model, &options);
-        nemesis_agent::r#loop::guarded_llm_call(
+        // 杂务旁路护栏（nemesis_agent::loop::bypass_llm，重试版）：墙钟超时
+        // + 空输出校验 + 空输出/瞬态失败同窗口重试一次——Forge 评审/反思/
+        // 草稿是千 token 级短输出，挂死连接不拖住后台学习循环；空文本不再
+        // 当成功结果透传（下游本就把空串当无效），采样抖动由重试兜底。
+        let model = self.model.clone();
+        let provider = self.provider.clone();
+        nemesis_agent::r#loop::guarded_llm_call_retrying(
             "forge-llm",
             nemesis_agent::r#loop::AUX_FORGE_TIMEOUT,
-            async move {
-                call.await
-                    .map_err(|e| format!("{:?}", e))
-                    .map(|r| r.content)
+            move || {
+                let messages = messages.clone();
+                let options = options.clone();
+                let provider = provider.clone();
+                let model = model.clone();
+                async move {
+                    provider
+                        .chat(&messages, &[], &model, &options)
+                        .await
+                        .map_err(|e| format!("{:?}", e))
+                        .map(|r| r.content)
+                }
             },
         )
         .await

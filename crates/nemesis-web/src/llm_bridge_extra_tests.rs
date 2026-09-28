@@ -81,11 +81,15 @@ impl LLMProvider for MockProvider {
         *self.last_message_count.lock().unwrap() = Some(messages.len());
         *self.last_tool_count.lock().unwrap() = Some(tools.len());
         *self.last_effort.lock().unwrap() = _options.reasoning_effort.clone();
-        if let Some(err) = self.error.lock().unwrap().take() {
-            return Err(err);
+        // 预置内容持久（clone 不 take）：真实 provider 的错误/空输出是持续
+        // 形态，杂务桥的重试语义（guarded_llm_call_retrying）要求第二次调用
+        // 仍见同样结果；一次性消耗会把重试伪装成「重试后拿到 default 成功」，
+        // 断言前提失真（2026-09-28 forge 桥接入重试后三例假红根因）。
+        if let Some(err) = self.error.lock().unwrap().as_ref() {
+            return Err(err.clone());
         }
-        if let Some(resp) = self.response.lock().unwrap().take() {
-            return Ok(resp);
+        if let Some(resp) = self.response.lock().unwrap().as_ref() {
+            return Ok(resp.clone());
         }
         Ok(ProviderResponse {
             content: "default".to_string(),
@@ -407,13 +411,15 @@ async fn adapter_filters_tool_calls_without_function() {
 async fn forge_bridge_returns_content_on_success() {
     let mock = Arc::new(MockProvider::new("m", "p"));
     mock.set_response(text_response("reflection result"));
-    let bridge = ForgeProviderBridge::new(mock, "m".to_string());
+    let bridge = ForgeProviderBridge::new(mock.clone(), "m".to_string());
 
     let out = bridge
         .chat("system prompt", "user prompt", Some(100))
         .await
         .unwrap();
     assert_eq!(out, "reflection result");
+    // 成功不触发重试（单次调用收口）。
+    assert_eq!(mock.calls(), 1);
 }
 
 #[tokio::test]
@@ -429,11 +435,13 @@ async fn forge_bridge_empty_content_and_no_tools_is_error() {
         raw_request_body: None,
         raw_response_body: None,
     });
-    let bridge = ForgeProviderBridge::new(mock, "m".to_string());
+    let bridge = ForgeProviderBridge::new(mock.clone(), "m".to_string());
 
     let err = bridge.chat("s", "u", None).await.unwrap_err();
-    // 杂务旁路护栏（bypass_llm）统一空输出语义：错误消息带 bypass 标签。
+    // 杂务旁路护栏（bypass_llm）统一空输出语义：错误消息带 bypass 标签；
+    // 重试原语对空输出也生效（空→Err 归一在重试内层）→ 恰好两次调用。
     assert_eq!(err, "[bypass:forge-llm] 空输出，按失败处理");
+    assert_eq!(mock.calls(), 2);
 }
 
 #[tokio::test]
@@ -453,11 +461,13 @@ async fn forge_bridge_provider_error_propagates() {
         provider: "p".to_string(),
         message: "down".to_string(),
     });
-    let bridge = ForgeProviderBridge::new(mock, "m".to_string());
+    let bridge = ForgeProviderBridge::new(mock.clone(), "m".to_string());
 
     let err = bridge.chat("s", "u", None).await.unwrap_err();
-    // Error formatted via {:?} — should contain the message
+    // Error formatted via {:?} — should contain the message; 重试一次仍失败
+    // 才上抛（恰好两次调用）。
     assert!(err.contains("down"));
+    assert_eq!(mock.calls(), 2);
 }
 
 #[tokio::test]
@@ -480,10 +490,11 @@ async fn forge_bridge_empty_content_with_tools_is_error() {
     // 真相源，不因 tool_calls 分叉）。
     let mock = Arc::new(MockProvider::new("m", "p"));
     mock.set_response(tool_call_response()); // content empty, tools non-empty
-    let bridge = ForgeProviderBridge::new(mock, "m".to_string());
+    let bridge = ForgeProviderBridge::new(mock.clone(), "m".to_string());
 
     let err = bridge.chat("s", "u", None).await.unwrap_err();
     assert_eq!(err, "[bypass:forge-llm] 空输出，按失败处理");
+    assert_eq!(mock.calls(), 2);
 }
 
 // ---------------------------------------------------------------------------

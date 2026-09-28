@@ -102,24 +102,42 @@ pub struct PreparedBranchSummary {
 
 impl PreparedBranchSummary {
     pub async fn run(self) -> Option<String> {
-        let resp = self
-            .provider
-            .chat(
-                &self.model,
-                vec![LlmMessage {
-                    role: "user".to_string(),
-                    content: self.prompt,
-                    tool_calls: None,
-                    tool_call_id: None,
-                    reasoning_content: None,
-                    images: Vec::new(),
-                }],
-                None,
-                Vec::new(),
-            )
-            .await
-            .ok()?;
-        let text = resp.content.trim().to_string();
+        // 杂务旁路护栏（重试版）：aux 预算 + 显式禁思考 + 墙钟超时 + 空输出
+        // 单次重试——与 E7 标题/compact 摘要同一治理面（此前本调用点是裸调
+        // provider.chat 的漏网之鱼）。失败/超时/空输出 → None（调用方诚实
+        // 跳过，绝不阻塞主流程）。
+        let text = crate::r#loop::guarded_llm_call_retrying(
+            "branch-summary",
+            crate::r#loop::AUX_SUMMARY_TIMEOUT,
+            || {
+                let prompt = self.prompt.clone();
+                let model = self.model.clone();
+                let provider = self.provider.clone();
+                async move {
+                    provider
+                        .chat(
+                            &model,
+                            vec![LlmMessage {
+                                role: "user".to_string(),
+                                content: prompt,
+                                tool_calls: None,
+                                tool_call_id: None,
+                                reasoning_content: None,
+                                images: Vec::new(),
+                            }],
+                            Some(crate::r#loop::aux_chat_options(
+                                crate::r#loop::AUX_SUMMARY_MAX_TOKENS,
+                            )),
+                            Vec::new(),
+                        )
+                        .await
+                        .map(|r| r.content)
+                }
+            },
+        )
+        .await
+        .ok()?;
+        let text = text.trim().to_string();
         if text.is_empty() {
             return None;
         }
@@ -187,16 +205,14 @@ fn build_transcript(rows: &[Value]) -> String {
 }
 
 /// 分支摘要请求的 prompt（六节 schema 与 compaction 摘要同源——标题列表
-/// 直接引用 [`super::SUMMARY_SCHEMA_SECTIONS`]，防两处漂移）。
+/// 直接引用 [`super::SUMMARY_SCHEMA_SECTIONS`]（文本真相在 nemesis-prompts
+/// aux 模块），防两处漂移）。
 fn build_branch_summary_prompt(transcript: &str) -> String {
     let mut p = String::from(
         "以下是一次会话被分叉/回退时被遗弃的后缀对话记录（这些内容不在新分支的上下文里）。\
 请为它们生成一份结构化「分支前情提要」，供新分支的后续对话快速了解：被遗弃部分做了什么、得出了什么结论、留下了哪些未完成事项。",
     );
-    p.push_str("\n\n输出格式：严格按以下六节 Markdown schema 输出（标题原样保留，内容简明扼要；某节无内容写「（无）」）：");
-    for s in super::SUMMARY_SCHEMA_SECTIONS {
-        p.push_str(&format!("\n## {s}"));
-    }
+    p.push_str(&crate::prompt::render_summary_schema_suffix());
     p.push_str("\n\n被遗弃对话记录：\n");
     p.push_str(transcript);
     p

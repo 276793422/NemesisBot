@@ -17,7 +17,7 @@ pub enum FailoverReason {
 use serde::{Deserialize, Serialize};
 
 /// Failover error with context.
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum FailoverError {
     #[error("auth failure for provider {provider}/{model}: status {status}")]
     Auth {

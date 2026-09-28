@@ -2744,8 +2744,11 @@ async fn test_force_compression_short_history() {
     // A history whose only conversation content summarizes to an empty result
     // (empty LLM response) → cache stays None (no-op). History unchanged.
     // (MockLlmProvider returns "No more responses" when exhausted, which is
-    // non-empty, so use an explicit empty response to exercise the None path.)
-    let provider = MockLlmProvider::new(vec![llm_text("")]);
+    // non-empty, so use explicit empty responses to exercise the None path.)
+    // 2026-09-28 重试版护栏：空输出按失败归一进重试内层 → 两个空响应分别
+    // 承载首次尝试与重试；两次全空 → 诚实 None（mock 耗尽回落的
+    // "No more responses" 非空，绝不能让它被当摘要收编）。
+    let provider = MockLlmProvider::new(vec![llm_text(""), llm_text("")]);
     let agent_loop = AgentLoop::new(Box::new(provider), test_config());
 
     let instance = AgentInstance::new(test_config());
@@ -2810,14 +2813,18 @@ impl LlmProvider for OutcomeMockProvider {
 /// prompt, the merge model answered with a "you didn't paste the summaries"
 /// complaint, and that complaint was stored as the summary (covers advanced,
 /// prefix context silently lost). New contract: None, merge never called.
+///
+/// （2026-09-28 重试版护栏接入：失败臂计入「重试一次」——part1 成功后
+/// part2 两次尝试全败（重试由 OutcomeMockProvider 的第二条 Err 承载），
+/// 合同不变：None + merge 零调用，总调用数 3。）
 #[tokio::test]
 async fn test_summarize_multipart_part_failure_returns_none() {
-    // 6 pairs = 12 valid messages → multipart. Part 1 Ok, part 2 Err.
-    // The third programmed outcome (merge reply) must NEVER be consumed.
+    // 6 pairs = 12 valid messages → multipart. Part 1 Ok, part 2 Err ×2
+    // (attempt + one retry). The merge path must NEVER be reached.
     let provider = OutcomeMockProvider::new(vec![
         Ok(llm_text("part one summary")),
         Err("network down".to_string()),
-        Ok(llm_text("merged summary")),
+        Err("network down again".to_string()),
     ]);
     let history = g1_history(6);
     let prefix_refs: Vec<&crate::types::ConversationTurn> = history.iter().collect();
@@ -2827,23 +2834,32 @@ async fn test_summarize_multipart_part_failure_returns_none() {
     assert!(out.is_none(), "part failure must yield None, got {out:?}");
     assert_eq!(
         provider.call_count(),
-        2,
-        "merge call must not happen when a part failed"
+        3,
+        "merge call must not happen when a part failed (part2 = attempt + retry)"
     );
 }
 
-/// Both parts fail → None after exactly 2 calls (merge skipped).
+/// Both parts fail → None (merge skipped). With the retrying guard each part
+/// burns attempt + retry: 2 parts × 2 calls = 4 total.
 #[tokio::test]
 async fn test_summarize_multipart_both_parts_fail_returns_none() {
-    let provider =
-        OutcomeMockProvider::new(vec![Err("timeout".to_string()), Err("timeout".to_string())]);
+    let provider = OutcomeMockProvider::new(vec![
+        Err("timeout".to_string()),
+        Err("timeout".to_string()),
+        Err("timeout".to_string()),
+        Err("timeout".to_string()),
+    ]);
     let history = g1_history(6);
     let prefix_refs: Vec<&crate::types::ConversationTurn> = history.iter().collect();
 
     let out = summarize_prefix_owned(&prefix_refs, "", 0, 32_000, true, &provider, "m", None).await;
 
     assert!(out.is_none());
-    assert_eq!(provider.call_count(), 2, "merge call must not happen");
+    assert_eq!(
+        provider.call_count(),
+        4,
+        "merge call must not happen (each part = attempt + retry)"
+    );
 }
 
 /// Both parts succeed but the MERGE call fails → degrade to concatenating the
@@ -2881,6 +2897,43 @@ async fn test_summarize_batch_failure_returns_none() {
 
     let out = summarize_prefix_owned(&refs, "", 0, 32_000, true, &provider, "m", None).await;
     assert!(out.is_none());
+}
+
+/// 空输出重试回归（2026-09-28 复查修正）：thinking 系模型烧穿预算的主要
+/// 失败形态是 200-OK 空正文——空→Err 归一必须在重试内层，否则 compact
+/// 路径对空输出永不重试。首次空 → 重试拿到真摘要 → 成功收口，恰好两次
+/// 调用。
+#[tokio::test]
+async fn test_summarize_empty_output_retries_then_succeeds() {
+    let provider = OutcomeMockProvider::new(vec![
+        Ok(llm_text("")), // attempt 1: 200-OK empty body (thinking burned the budget)
+        Ok(llm_text("recovered summary")), // retry: real content
+    ]);
+    let history = g1_history(3); // 6 messages → bare-concat path
+    let prefix_refs: Vec<&crate::types::ConversationTurn> = history.iter().collect();
+
+    let out = summarize_prefix_owned(&prefix_refs, "", 0, 32_000, true, &provider, "m", None).await;
+
+    assert_eq!(
+        out.as_deref(),
+        Some("recovered summary"),
+        "retry after empty output must recover the summary"
+    );
+    assert_eq!(provider.call_count(), 2, "exactly attempt + one retry");
+}
+
+/// 两次全空 → 诚实 None（摘要不产出、历史保持不折叠），恰好两次调用；
+/// mock 耗尽回落串绝不进摘要。
+#[tokio::test]
+async fn test_summarize_both_empty_outputs_return_none() {
+    let provider = OutcomeMockProvider::new(vec![Ok(llm_text("")), Ok(llm_text(""))]);
+    let history = g1_history(3);
+    let prefix_refs: Vec<&crate::types::ConversationTurn> = history.iter().collect();
+
+    let out = summarize_prefix_owned(&prefix_refs, "", 0, 32_000, true, &provider, "m", None).await;
+
+    assert!(out.is_none(), "both attempts empty → honest None");
+    assert_eq!(provider.call_count(), 2);
 }
 
 /// prefix_reuse=false (bare-concat shape): failure → None as well.

@@ -14,8 +14,8 @@
 //!   指向普通文件）。
 //! - 959-960/964/986：cleanup 过期文件删除失败 warn（readonly，探针门控）
 //!   + 删除完成 info 字段行。
-//! - 1548：force_compress_turns 的 info 字段行。
-//! - 1512：force_compress_turns 的 conversation 空判——len>4 时切片恒非空，
+//! - 1159-1163：force_compress_turns 的 info 字段行。
+//! - 1124：force_compress_turns 的 conversation 空判——len>4 时切片恒非空，
 //!   结构性不可达（见报告豁免组）。
 
 use super::*;
@@ -262,7 +262,7 @@ fn cleanup_old_sessions_deletes_expired_and_warns_on_readonly() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// force_compress_turns：info 字段行（1545-1549）+ 压缩语义。
+/// force_compress_turns：info 字段行（1159-1163）+ 压缩语义。
 #[test]
 fn force_compress_turns_logs_and_drops_half() {
     let _logs = capture_logs();

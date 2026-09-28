@@ -883,7 +883,9 @@ impl LearningEngine {
             action.rationale.as_deref().unwrap_or("无")
         );
 
-        let budget = 500u32; // default LLM budget
+        // 预算统一走 forge 侧常量（reflector_llm::AUX_FORGE_MAX_TOKENS，
+        // 2026-09-28 从 500 上调：旧值被 thinking 系模型烧穿，真机两稿全空）。
+        let budget = crate::reflector_llm::AUX_FORGE_MAX_TOKENS as u32;
         Self::call_llm_sync(
             provider,
             // 文本单一真相源在 `nemesis-prompts`（M7 集中化）。
@@ -913,7 +915,7 @@ impl LearningEngine {
             draft_name, action.description, previous_content, diagnosis
         );
 
-        let budget = 500u32;
+        let budget = crate::reflector_llm::AUX_FORGE_MAX_TOKENS as u32;
         Self::call_llm_sync(
             provider,
             // 文本单一真相源在 `nemesis-prompts`（M7 集中化）。
