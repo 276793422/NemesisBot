@@ -512,6 +512,7 @@ impl ModelScopeRegistry {
             registry_name: "modelscope".to_string(),
             author: skill.source_developer.clone(),
             downloads: skill.download_count,
+            published_at: None,
         })
     }
 

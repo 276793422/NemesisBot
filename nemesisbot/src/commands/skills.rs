@@ -16,10 +16,19 @@ pub enum SkillsAction {
         #[arg(long, default_value_t = 50)]
         limit: usize,
     },
-    /// Install a skill from registry or GitHub
+    /// Install a skill from registry or GitHub（WS4 漏斗：验签→pin→扫描→
+    /// 版本龄→审批卡→lockfile 记账）
     Install {
-        /// Skill reference (registry/slug or user/repo)
+        /// Skill reference (registry/slug or user/repo[@ref])
         skill: String,
+        /// Skip the install approval prompt (non-interactive / scripts)
+        #[arg(long)]
+        yes: bool,
+    },
+    /// WS4 P14：lockfile 漂移检测（缺省全量；name 查单条）
+    Verify {
+        /// Skill name (omit for all)
+        name: Option<String>,
     },
     /// Remove an installed skill
     Remove {
@@ -537,8 +546,48 @@ async fn cmd_search(skills_cfg: &std::path::Path, query: &str, limit: usize) -> 
 async fn cmd_install(
     skills_dir: &std::path::Path,
     skills_cfg: &std::path::Path,
+    main_cfg: &std::path::Path,
     skill_ref: &str,
+    yes: bool,
 ) -> Result<()> {
+    // WS4：安装统一走 SkillInstaller 漏斗（验签 P11 → pin P12 → 扫描 P15 →
+    // 版本龄 P16 → 审批卡 P13 → lockfile P14）。registry 解析失败的 GitHub
+    // 回退也走漏斗（旧裸 raw 下载路径废弃——绕过供应链检查面）。
+    let workspace = skills_dir
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| skills_dir.to_path_buf());
+    let mut installer =
+        nemesis_skills::installer::SkillInstaller::new(&workspace.to_string_lossy());
+
+    // P11/P16 主配置消费：主配置 config.json（home 根，common::config_path）
+    // 的 skills 段。读不到按默认（allow_unsigned=true、龄闸关）。
+    // 2026-09-26 复查修复：此前读 workspace.join("config.json")——主配置
+    // 现行布局在 home 根，CLI 装技能永远读不到用户 skills 安全策略，静默
+    // 回落默认放行。
+    if let Ok(cfg) = nemesis_config::load_config(main_cfg) {
+        if let Some(skills) = cfg.skills {
+            installer.set_allow_unsigned(skills.allow_unsigned);
+            installer.set_age_policy(skills.min_age_days, &skills.min_age_policy);
+        }
+    }
+    // P13 CLI 通路：交互审批卡（--yes 跳过）。
+    installer.set_install_gate(std::sync::Arc::new(CliInstallGate { yes }));
+
+    let config = load_registry_config(skills_cfg);
+    installer.set_registry_manager(nemesis_skills::registry::RegistryManager::from_config(
+        config,
+    ));
+
+    // GitHub 直连形态：URL / git@ / owner/repo@ref。
+    let looks_github = skill_ref.starts_with("https://github.com/")
+        || skill_ref.starts_with("http://github.com/")
+        || skill_ref.starts_with("git@github.com:")
+        || skill_ref.contains('@');
+    if looks_github {
+        return install_via_github_funnel(&mut installer, skill_ref).await;
+    }
+
     // Parse registry/slug format
     let (registry_name, slug) = if skill_ref.contains('/') {
         let parts: Vec<&str> = skill_ref.splitn(2, '/').collect();
@@ -546,99 +595,185 @@ async fn cmd_install(
     } else {
         // Try to find in any registry
         println!("No registry specified. Searching for '{}'...", skill_ref);
-        let config = load_registry_config(skills_cfg);
-        let manager = nemesis_skills::registry::RegistryManager::from_config(config);
-
-        match manager.search(skill_ref, 1).await {
-            Ok(results) if !results.is_empty() => {
-                let found = &results[0];
-                println!("  Found: {} in {}", found.slug, found.registry_name);
-                (found.registry_name.clone(), found.slug.clone())
-            }
-            _ => {
-                println!("  Skill '{}' not found in any registry.", skill_ref);
-                println!("  Trying GitHub fallback...");
-                // Fallback: try as GitHub repo
-                return cmd_install_github(skills_dir, skill_ref).await;
-            }
+        let grouped = installer
+            .search_registries(skill_ref, 1)
+            .await
+            .unwrap_or_default();
+        let flat = nemesis_skills::installer::SkillInstaller::flatten_search_results(&grouped);
+        if let Some(found) = flat.first() {
+            println!("  Found: {} in {}", found.slug, found.registry_name);
+            (found.registry_name.clone(), found.slug.clone())
+        } else {
+            println!("  Skill '{}' not found in any registry.", skill_ref);
+            println!("  Trying GitHub fallback...");
+            return install_via_github_funnel(&mut installer, skill_ref).await;
         }
     };
 
-    println!("📥 Installing skill: {}/{}", registry_name, slug);
-    let config = load_registry_config(skills_cfg);
-    let manager = nemesis_skills::registry::RegistryManager::from_config(config);
+    if !installer.has_registry(&registry_name) {
+        // 不是已配置 registry 名——按 GitHub owner/repo 直装（漏斗内）。
+        println!("  '{}' 不是已配置源，按 GitHub 仓库处理...", registry_name);
+        return install_via_github_funnel(&mut installer, skill_ref).await;
+    }
 
-    let target_dir = skills_dir.join(&slug).to_string_lossy().to_string();
+    println!("📥 Installing skill: {}/{}", registry_name, slug);
     let _ = std::fs::create_dir_all(skills_dir);
 
-    match manager.install(&registry_name, &slug, &target_dir).await {
-        Ok(version) => {
-            println!("  ✅ Installed: {} v{}", slug, version);
-            println!("  Location: {}", target_dir);
+    match installer.install(&registry_name, &slug, "latest").await {
+        Ok(result) => {
+            println!("  ✅ Installed: {} v{}", slug, result.version);
+            println!(
+                "  Location: {}",
+                workspace.join("skills").join(&slug).display()
+            );
+            if result.is_suspicious {
+                println!("  ⚠ 内容有可疑特征（未拦截，已记录安全检查）");
+            }
         }
         Err(e) => {
             println!("  Install from registry failed: {}", e);
-            // Fallback to GitHub
             println!("  Trying GitHub fallback...");
             let full_ref = format!("{}/{}", registry_name, slug);
-            return cmd_install_github(skills_dir, &full_ref).await;
+            install_via_github_funnel(&mut installer, &full_ref).await?;
         }
     }
     Ok(())
 }
 
-/// Install a skill directly from a GitHub repository.
-async fn cmd_install_github(skills_dir: &std::path::Path, repo_path: &str) -> Result<()> {
-    let (owner, repo) = parse_github_url(repo_path)?;
-    let skill_name = repo.clone();
+/// GitHub 直装（统一经漏斗：pin+sha256/验签/扫描/审批/lockfile）。
+async fn install_via_github_funnel(
+    installer: &mut nemesis_skills::installer::SkillInstaller,
+    repo_ref: &str,
+) -> Result<()> {
+    let repo_ref = normalize_repo_ref(repo_ref);
+    let outcome = installer
+        .install_github(&repo_ref)
+        .await
+        .map_err(|e| anyhow::anyhow!("安装失败: {e}"))?;
+    println!("  ✅ Installed: {}", outcome.slug);
+    println!("  Source: {}", outcome.source);
+    if !outcome.commit.is_empty() {
+        println!(
+            "  Pinned commit: {}",
+            &outcome.commit[..outcome.commit.len().min(12)]
+        );
+    }
+    println!("  Trust: {}", outcome.trust);
+    println!("  Files: {}", outcome.files_installed);
+    Ok(())
+}
 
-    println!("  Downloading from GitHub: {}/{}", owner, repo);
+/// `owner/repo`、完整 URL、自带 `@ref` 形态统一归一为 `owner/repo[@ref]`。
+fn normalize_repo_ref(repo: &str) -> String {
+    let repo = repo.trim();
+    if repo.contains('@') {
+        return repo.to_string();
+    }
+    match parse_github_url(repo) {
+        Ok((owner, name)) => format!("{owner}/{name}"),
+        Err(_) => repo.to_string(),
+    }
+}
 
-    // Try to download SKILL.md from common locations
-    let branches = ["main", "master"];
-    let paths = [
-        format!("skills/{}/SKILL.md", skill_name),
-        format!("skills/{}/{}/SKILL.md", owner, skill_name),
-        format!("{}/SKILL.md", skill_name),
-        "SKILL.md".to_string(),
-    ];
+/// WS4 P13 CLI 通路审批门：打印审批卡 → 交互确认；`--yes` 跳过；非交互
+/// stdin 无 `--yes` = 拒绝（脚本/CI 必须显式确认，诚实不猜）。
+struct CliInstallGate {
+    yes: bool,
+}
 
-    for branch in &branches {
-        for path in &paths {
-            let url = format!(
-                "https://raw.githubusercontent.com/{}/{}/{}/{}",
-                owner, repo, branch, path
-            );
-            if let Ok(resp) = reqwest::Client::new()
-                .get(&url)
-                .header("User-Agent", "nemesisbot")
-                .timeout(std::time::Duration::from_secs(30))
-                .send()
-                .await
-                && resp.status().is_success()
-                && let Ok(content) = resp.text().await
-            {
-                let target = skills_dir.join(&skill_name);
-                let _ = std::fs::create_dir_all(&target);
-                std::fs::write(target.join("SKILL.md"), &content)?;
-                println!("  Installed: {} (from GitHub)", skill_name);
-                println!("  Location: {}", target.display());
-                return Ok(());
+#[async_trait::async_trait]
+impl nemesis_skills::install_gate::InstallGate for CliInstallGate {
+    async fn decide(
+        &self,
+        plan: &nemesis_skills::install_gate::InstallPlan,
+    ) -> nemesis_skills::install_gate::InstallDecision {
+        use nemesis_skills::install_gate::InstallDecision;
+
+        println!("{}", "─".repeat(60));
+        println!("{}", plan.summary());
+        println!("{}", "─".repeat(60));
+
+        if self.yes {
+            println!("--yes：跳过确认，继续安装");
+            return InstallDecision::Approve;
+        }
+
+        use std::io::IsTerminal as _;
+        if !std::io::stdin().is_terminal() {
+            return InstallDecision::Deny {
+                reason: "非交互环境需要 --yes 显式确认".to_string(),
+            };
+        }
+
+        print!("允许安装？[y/N] ");
+        use std::io::Write as _;
+        let _ = std::io::stdout().flush();
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line).is_ok() {
+            let answer = line.trim().to_ascii_lowercase();
+            if answer == "y" || answer == "yes" {
+                return InstallDecision::Approve;
             }
         }
+        InstallDecision::Deny {
+            reason: "用户拒绝了安装".to_string(),
+        }
     }
 
-    println!("  Failed to download skill from GitHub: {}/{}", owner, repo);
+    fn name(&self) -> &str {
+        "cli"
+    }
+}
+
+/// WS4 P14：lockfile 漂移检测（缺省全量；name 查单条）。
+fn cmd_verify(workspace: &std::path::Path, name: Option<&str>) -> Result<()> {
+    let installer = nemesis_skills::installer::SkillInstaller::new(&workspace.to_string_lossy());
+    match name {
+        Some(name) => {
+            let report = installer
+                .verify_skill_drift(name)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            if report.clean {
+                println!("✅ Skill '{name}' 无漂移（与 skills.lock.json 记账一致）");
+            } else {
+                println!("{}", report.summary());
+            }
+        }
+        None => {
+            let all = installer.verify_all_drift();
+            if all.is_empty() {
+                println!("skills.lock.json 无记账（通过 skills install 安装后自动记账）");
+                return Ok(());
+            }
+            let clean = all.iter().filter(|r| r.clean).count();
+            for r in &all {
+                if r.clean {
+                    println!("  ✅ {}", r.slug);
+                } else {
+                    println!("  {}", r.summary());
+                }
+            }
+            println!();
+            println!(
+                "共 {} 个技能，{} 干净，{} 有漂移",
+                all.len(),
+                clean,
+                all.len() - clean
+            );
+        }
+    }
     Ok(())
 }
 
-fn cmd_remove(skills_dir: &std::path::Path, name: &str) -> Result<()> {
-    let skill_path = skills_dir.join(name);
-    if skill_path.exists() {
-        std::fs::remove_dir_all(&skill_path)?;
-        println!("🗑️ Skill removed: {}", name);
-    } else {
-        println!("Skill not found: {}", name);
+/// Remove a skill（WS4 P14：走 SkillInstaller——路径围栏 + lockfile 记账同步移除）。
+fn cmd_remove(workspace: &std::path::Path, name: &str) -> Result<()> {
+    let installer = nemesis_skills::installer::SkillInstaller::new(&workspace.to_string_lossy());
+    match installer.uninstall(name) {
+        Ok(()) => println!("🗑️ Skill removed: {}", name),
+        Err(nemesis_types::error::NemesisError::NotFound(_)) => {
+            println!("Skill not found: {}", name);
+        }
+        Err(e) => anyhow::bail!("{e}"),
     }
     Ok(())
 }
@@ -1014,10 +1149,19 @@ fn cmd_validate(path: &str) -> Result<()> {
             println!("  Has description: {}", has_description);
             println!("  Has steps: {}", has_steps);
 
-            // Run security check
+            // Run security check（M5：path 为目录时 lint 整个可执行面，
+            // 辅助 .md / 脚本里的危险载荷也进诊断结论）
             let skill_name = skill_path.file_name().unwrap_or_default().to_string_lossy();
-            let check =
-                nemesis_skills::security_check::check_skill_security(&content, &skill_name, "");
+            let check = if skill_path.is_dir() {
+                nemesis_skills::security_check::check_skill_security_dir(
+                    skill_path,
+                    &content,
+                    &skill_name,
+                    "",
+                )
+            } else {
+                nemesis_skills::security_check::check_skill_security(&content, &skill_name, "")
+            };
             if check.blocked {
                 println!("  Security: BLOCKED ({})", check.block_reason);
             } else if !check.lint_result.warnings.is_empty() {
@@ -1153,7 +1297,8 @@ async fn cmd_install_clawhub(
 
 pub fn run(action: SkillsAction, local: bool) -> Result<()> {
     let home = common::resolve_home(local);
-    let skills_dir = common::workspace_path(&home).join("skills");
+    let workspace = common::workspace_path(&home);
+    let skills_dir = workspace.join("skills");
     let skills_cfg = common::skills_config_path(&home);
 
     match action {
@@ -1164,16 +1309,19 @@ pub fn run(action: SkillsAction, local: bool) -> Result<()> {
                 tokio::runtime::Handle::current().block_on(cmd_search(&skills_cfg, q, limit))
             })?;
         }
-        SkillsAction::Install { skill } => {
+        SkillsAction::Install { skill, yes } => {
             tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(cmd_install(
                     &skills_dir,
                     &skills_cfg,
+                    &common::config_path(&home),
                     &skill,
+                    yes,
                 ))
             })?;
         }
-        SkillsAction::Remove { name } => cmd_remove(&skills_dir, &name)?,
+        SkillsAction::Verify { name } => cmd_verify(&workspace, name.as_deref())?,
+        SkillsAction::Remove { name } => cmd_remove(&workspace, &name)?,
         SkillsAction::Source { action } => match action {
             SourceAction::List => cmd_source_list(&skills_cfg)?,
             // (BUG #27 同类横向, quality-hardening goal 冲刺 S11e) add 已 async

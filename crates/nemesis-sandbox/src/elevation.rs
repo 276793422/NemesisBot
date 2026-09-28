@@ -75,15 +75,43 @@ mod win {
         Ok(())
     }
 
-    /// `net session` exits 0 only when the process has admin rights.
+    /// `GetTokenInformation(TokenElevation)` 直查（替代旧 `net session` 探测：
+    /// 不依赖 net.exe 在 PATH、不受 LanmanServer 服务停转影响、无子进程开销）。
+    /// 查询失败按非管理员处理（保守——宁可多弹一次 UAC，不误跳过提权）。
     pub fn is_elevated() -> bool {
-        std::process::Command::new("net")
-            .arg("session")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+        #[link(name = "advapi32")]
+        unsafe extern "system" {
+            fn GetCurrentProcess() -> isize;
+            fn OpenProcessToken(process: isize, desired_access: u32, token: *mut isize) -> i32;
+            fn GetTokenInformation(
+                token: isize,
+                info_class: i32,
+                info: *mut u8,
+                info_len: u32,
+                return_len: *mut u32,
+            ) -> i32;
+            fn CloseHandle(handle: isize) -> i32;
+        }
+        const TOKEN_QUERY: u32 = 0x0008;
+        const TOKEN_ELEVATION: i32 = 20; // TOKEN_INFORMATION_CLASS::TokenElevation
+        unsafe {
+            let mut token: isize = 0;
+            if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+                return false;
+            }
+            // TOKEN_ELEVATION 结构体就是单个 DWORD（TokenIsElevated）。
+            let mut elevated: u32 = 0;
+            let mut return_len: u32 = 0;
+            let ok = GetTokenInformation(
+                token,
+                TOKEN_ELEVATION,
+                std::ptr::addr_of_mut!(elevated).cast(),
+                std::mem::size_of::<u32>() as u32,
+                &mut return_len,
+            );
+            CloseHandle(token);
+            ok != 0 && elevated != 0
+        }
     }
 }
 

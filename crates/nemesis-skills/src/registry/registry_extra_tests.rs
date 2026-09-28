@@ -93,6 +93,7 @@ impl SkillRegistry for CountingRegistry {
             registry_name: self.name.clone(),
             author: String::new(),
             downloads: 0,
+            published_at: None,
         })
     }
     async fn download_and_install(
@@ -168,6 +169,7 @@ impl SkillRegistry for DefaultOnlyRegistry {
             registry_name: "default-only".to_string(),
             author: String::new(),
             downloads: 0,
+            published_at: None,
         })
     }
     async fn download_and_install(

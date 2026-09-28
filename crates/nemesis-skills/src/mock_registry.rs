@@ -72,6 +72,7 @@ impl MockRegistry {
             registry_name: self.name.clone(),
             author: String::new(),
             downloads: 0,
+            published_at: None,
         })
     }
 

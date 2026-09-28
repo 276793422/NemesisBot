@@ -9,6 +9,7 @@ pub mod manager;
 pub mod rpc_channel;
 pub mod web;
 pub mod webhook_inbound;
+#[cfg(feature = "websocket")]
 pub mod websocket;
 
 // Platform channels (optional, enabled via Cargo features)
@@ -56,7 +57,28 @@ pub mod bluesky;
 #[cfg(feature = "onebot")]
 pub mod onebot;
 
+// Wave 3（P25-P29）：五新通道——feature 默认关，mod 声明先行开桩
+//（实现按工作流填充各自文件/目录，共享注册面不再并行改动）。
+#[cfg(feature = "wecom")]
+pub mod wecom;
+
+#[cfg(feature = "mattermost")]
+pub mod mattermost;
+
+#[cfg(feature = "nostr")]
+pub mod nostr;
+
+#[cfg(feature = "mqtt")]
+pub mod mqtt;
+
+#[cfg(feature = "wechat")]
+pub mod wechat;
+
+#[cfg(feature = "external")]
 pub mod external;
+
+#[cfg(feature = "maixcam")]
 pub mod maixcam;
 
+#[cfg(feature = "line")]
 pub mod line;

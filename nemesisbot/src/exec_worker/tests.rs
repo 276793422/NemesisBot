@@ -87,7 +87,7 @@ mod engage_strict {
     #[test]
     fn strict_refuses_when_no_backend() {
         let home = seed_home(Some(true));
-        let err = engage("/ws", Some(home.path())).expect_err("strict must refuse");
+        let err = engage("/ws", Some(home.path()), false).expect_err("strict must refuse");
         assert!(err.to_string().contains("strict mode"), "err: {err}");
         assert!(
             err.to_string().contains("refusing to run unsandboxed"),
@@ -100,7 +100,7 @@ mod engage_strict {
         // 缺 strict 键（= 默认 false）：无后端 → warn + Continue（现状字节不变）
         let home = seed_home(None);
         assert!(matches!(
-            engage("/ws", Some(home.path())),
+            engage("/ws", Some(home.path()), false),
             Ok(Outcome::Continue)
         ));
     }
@@ -109,7 +109,7 @@ mod engage_strict {
     fn strict_false_keeps_fail_open() {
         let home = seed_home(Some(false));
         assert!(matches!(
-            engage("/ws", Some(home.path())),
+            engage("/ws", Some(home.path()), false),
             Ok(Outcome::Continue)
         ));
     }
@@ -117,7 +117,20 @@ mod engage_strict {
     #[test]
     fn no_home_defaults_fail_open() {
         // home=None（测试/裸构造）→ strict 读不到 → false → fail-open
-        assert!(matches!(engage("/ws", None), Ok(Outcome::Continue)));
+        assert!(matches!(engage("/ws", None, false), Ok(Outcome::Continue)));
+    }
+
+    #[test]
+    fn spawn_fenced_satisfies_strict_even_without_userland_backend() {
+        // 三轮复查根修回归钉：workspace-dacl 受限令牌在 spawn 时已把内核写
+        // 围栏装上——Plain 臂（无用户态后端可选）不得再触发 strict 拒绝。
+        // 此前 dacl+strict+sandbox=false 组合会被「no userland sandbox
+        // backend」虚假全拒（围栏明明活着）。
+        let home = seed_home(Some(true));
+        assert!(matches!(
+            engage("/ws", Some(home.path()), true),
+            Ok(Outcome::Continue)
+        ));
     }
 }
 
@@ -529,7 +542,166 @@ mod wave_b {
 }
 
 // =========================================================================
-// wave_r10（95% 覆盖率 goal 第七波）：stdio_loop 循环体经【真实子进程】走通。
+// P21（2026-09-25）：沙盒拒绝台账钩子（sandbox_denial 模块）。
+// - active_backend_label：无沙盒 None / PIPE 单独存在不算标签 / env→后端名
+// - on_tool_error：无沙盒不改写不记账；非拒绝错误透传；拒绝错误 → 可自纠
+//   文案 + 台账一行合法 JSON（workspace 取自 env）
+// 全程零子进程；env 操作走进程级 GLOBAL_STATE_LOCK 串行。
+// =========================================================================
+#[cfg(feature = "sandbox")]
+mod sandbox_denial_hooks {
+    use crate::exec_worker::sandbox_denial;
+
+    /// env RAII：清掉三个干扰键，Drop 时恢复原状（持 GLOBAL_STATE_LOCK 使用）。
+    struct DenialEnvGuard {
+        saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+    impl DenialEnvGuard {
+        fn fresh() -> Self {
+            let keys = [
+                "NEMESISBOT_EXECUTOR_PIPE",
+                "NEMESISBOT_SANDBOX_BACKEND",
+                "NEMESISBOT_EXECUTOR_WORKSPACE",
+            ];
+            let mut saved = Vec::new();
+            for k in keys {
+                saved.push((k, std::env::var_os(k)));
+                unsafe { std::env::remove_var(k) };
+            }
+            Self { saved }
+        }
+    }
+    impl Drop for DenialEnvGuard {
+        fn drop(&mut self) {
+            for (k, v) in self.saved.drain(..) {
+                unsafe {
+                    if let Some(v) = v {
+                        std::env::set_var(k, v);
+                    } else {
+                        std::env::remove_var(k);
+                    }
+                }
+            }
+        }
+    }
+
+    fn with_lock<T>(f: impl FnOnce() -> T) -> T {
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        f()
+    }
+
+    /// ENGAGED_BACKEND 是进程级 OnceLock（glue 用例在 Linux 上 engage 成功会
+    /// 全局占坑且不可重置）——占坑后 label 恒 Some，env 路径断言无法隔离，
+    /// 诚实跳过（Windows 上 OnceLock 恒空，断言完整生效）。
+    fn oncelock_already_engaged() -> bool {
+        let _env = DenialEnvGuard::fresh();
+        sandbox_denial::active_backend_label().is_some()
+    }
+
+    #[test]
+    fn label_is_none_without_sandbox_env() {
+        with_lock(|| {
+            if oncelock_already_engaged() {
+                eprintln!("skip: ENGAGED_BACKEND OnceLock occupied by earlier test");
+                return;
+            }
+            let _env = DenialEnvGuard::fresh();
+            assert!(sandbox_denial::active_backend_label().is_none());
+        });
+    }
+
+    #[test]
+    fn label_reads_backend_env_pipe_alone_is_not_a_label() {
+        with_lock(|| {
+            if oncelock_already_engaged() {
+                eprintln!("skip: ENGAGED_BACKEND OnceLock occupied by earlier test");
+                return;
+            }
+            let _env = DenialEnvGuard::fresh();
+            // PIPE 单独存在 = 无沙盒（冒标修复：PIPE 只是传输通道，无盒
+            // PIPE 传输不得推断出 "sandboxie"——真盒由 gateway 注入 backend
+            // env 才算 engaged）。
+            unsafe { std::env::set_var("NEMESISBOT_EXECUTOR_PIPE", r"\\.\pipe\NemesisBox_1") };
+            assert!(sandbox_denial::active_backend_label().is_none());
+            // 真盒（gateway wrap 注入 backend env）→ sandboxie 标签生效。
+            unsafe { std::env::set_var("NEMESISBOT_SANDBOX_BACKEND", "sandboxie") };
+            assert_eq!(
+                sandbox_denial::active_backend_label().as_deref(),
+                Some("sandboxie"),
+                "env 注入的后端名（真盒 wrap / bwrap 盒内实例路径）"
+            );
+            unsafe { std::env::remove_var("NEMESISBOT_EXECUTOR_PIPE") };
+            unsafe { std::env::set_var("NEMESISBOT_SANDBOX_BACKEND", "landlock") };
+            assert_eq!(
+                sandbox_denial::active_backend_label().as_deref(),
+                Some("landlock"),
+                "env 注入的后端名（bwrap 盒内实例路径）"
+            );
+            // "none" 视作未 engaged（不记账）
+            unsafe { std::env::set_var("NEMESISBOT_SANDBOX_BACKEND", "none") };
+            assert!(sandbox_denial::active_backend_label().is_none());
+        });
+    }
+
+    #[test]
+    fn on_tool_error_passthrough_without_backend_or_denial_shape() {
+        with_lock(|| {
+            let _env = DenialEnvGuard::fresh();
+            // 无后端：错误原样透传（普通工具错误与沙盒无关）。Linux 上
+            // OnceLock 被 glue 用例占坑时 label 恒 Some，但该错误不像拒绝
+            // （os error 2 不在拒绝形态表），透传断言依旧成立。
+            assert_eq!(
+                sandbox_denial::on_tool_error("write_file", "{}", "file not found (os error 2)"),
+                "file not found (os error 2)"
+            );
+            // 有后端但错误不像沙盒拒绝：同样透传、不建台账
+            let engaged = oncelock_already_engaged();
+            if !engaged {
+                unsafe { std::env::set_var("NEMESISBOT_SANDBOX_BACKEND", "landlock") };
+            }
+            let ws = tempfile::tempdir().unwrap();
+            unsafe { std::env::set_var("NEMESISBOT_EXECUTOR_WORKSPACE", ws.path()) };
+            assert_eq!(
+                sandbox_denial::on_tool_error("write_file", "{}", "invalid utf-8"),
+                "invalid utf-8"
+            );
+            assert!(!ws.path().join("logs").exists(), "非拒绝错误不建台账");
+        });
+    }
+
+    #[test]
+    fn on_tool_error_denial_rewrites_text_and_appends_ledger() {
+        with_lock(|| {
+            let _env = DenialEnvGuard::fresh();
+            if !oncelock_already_engaged() {
+                unsafe { std::env::set_var("NEMESISBOT_SANDBOX_BACKEND", "landlock") };
+            }
+            let ws = tempfile::tempdir().unwrap();
+            unsafe { std::env::set_var("NEMESISBOT_EXECUTOR_WORKSPACE", ws.path()) };
+
+            let args = r#"{"path":"/etc/hosts","content":"x"}"#;
+            let out = sandbox_denial::on_tool_error("write_file", args, "os error 13 (EACCES)");
+            // 可自纠文案：点名后端 + 工作区出口 + 保留原因
+            assert!(out.contains("[沙盒拦截]"), "{out}");
+            assert!(out.contains("write_file"), "{out}");
+            assert!(out.contains("os error 13"), "{out}");
+            // 台账一行合法 JSON，model_visible=true
+            let ledger = ws.path().join("logs").join("sandbox_denials.jsonl");
+            let raw = std::fs::read_to_string(&ledger).expect("ledger written");
+            let v: serde_json::Value =
+                serde_json::from_str(raw.trim()).expect("exactly one legal JSON line");
+            assert_eq!(v["op"], "write_file");
+            assert_eq!(v["model_visible"], true);
+            assert!(
+                v["target"].as_str().unwrap().contains("/etc/hosts"),
+                "target = args preview: {}",
+                v["target"]
+            );
+        });
+    }
+}
 //
 // dispatch 协议四臂已由上方 dispatch_protocol 单测逐行钉死；本批补的是
 // stdio_loop 本体的 读一行→dispatch→序列化→write_all→flush→再读 循环

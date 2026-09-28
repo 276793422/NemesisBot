@@ -104,6 +104,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         internal_cmd_tx: None,
         estop: None,
         signature_verify: None,
+        skills_install_gate: None,
         cron: None,
         board: None,
     });
@@ -432,7 +433,9 @@ async fn unknown_sandbox_command_rejected() {
 #[tokio::test]
 async fn self_test_without_userland_backend_reports_unsupported() {
     use nemesis_sandbox::backend::detect_backend;
-    if detect_backend().is_some() {
+    // P1：detect_backend 带网络选型入参；本测试只关心「有没有后端」，
+    // 两态等价（Windows 恒 None）。
+    if detect_backend(false).is_some() {
         eprintln!("skip self_test unsupported: userland backend unexpectedly present");
         return;
     }

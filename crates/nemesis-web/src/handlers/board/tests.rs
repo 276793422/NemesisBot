@@ -64,6 +64,7 @@ fn make_ctx_with_service(
         internal_cmd_tx: None,
         estop: None,
         signature_verify: None,
+        skills_install_gate: None,
         cron: None,
         board: Some(service),
     });
@@ -4864,6 +4865,7 @@ fn agt_make_ctx_ex(
         internal_cmd_tx: None,
         estop: None,
         signature_verify: None,
+        skills_install_gate: None,
         cron,
         board: Some(service),
     });
@@ -5204,6 +5206,7 @@ async fn agt_board_config_get_set_all_keys_and_rejections() {
         ("unlimited_mode", serde_json::json!(false)),
         ("conflict_auto_resolve", serde_json::json!(true)),
         ("dispatch_fallback", serde_json::json!(true)),
+        ("fingerprint_weighting", serde_json::json!(true)),
         ("worker_max_inflight", serde_json::json!(3)),
         ("dispatch_fallback_target", serde_json::json!("node-fix")),
         ("dispatch_fallback_target", serde_json::json!(null)),

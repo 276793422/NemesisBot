@@ -18,6 +18,9 @@ use crate::api_handlers::AppState;
 use crate::events::EventHub;
 use crate::session::SessionManager;
 use crate::skins::{SkinSignature, SkinStatus, classify_signature, scan_skins};
+// ModuleHandler 不在文件级导入：两个用例各自函数内 `as _` 精确引入（trait
+// 方法 `commands()` 只在那两处用）；文件级导入在 workspace 统一 feature 面
+// 下是 unused_imports 警告。
 use crate::ws_router::RequestContext;
 use std::io::Write as _;
 use std::sync::Arc;
@@ -105,6 +108,7 @@ fn make_state(home: &std::path::Path, auth_token: &str) -> Arc<AppState> {
         signature_verify: None,
         cron: None,
         board: None,
+        skills_install_gate: None,
     })
 }
 

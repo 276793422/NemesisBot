@@ -65,6 +65,97 @@ pub(crate) fn sanitize_generated_title(raw: &str) -> Option<String> {
     Some(cleaned.chars().take(E7_TITLE_MAX_CHARS).collect())
 }
 
+/// P3（能力扩展 WS3）：会话级已采集文档登记——诊断跨文件聚合 + stale
+/// 过滤的状态面。键 = session_key（会话隔离：不同会话互不可见，杜绝跨
+/// 会话/跨请求泄漏）；值 = 有序 (path → 诊断采集时的 mtime 锚点)，插入
+/// 序 = 首次采集序（重采集移到尾部，cap 淘汰最旧）。纯内存不落盘，
+/// 生命周期 = 所属 AgentLoop 实例（实例销毁随之消失，无跨实例共享）。
+#[derive(Default)]
+pub(crate) struct DiagnosticsTouchRegistry {
+    sessions: std::collections::HashMap<String, Vec<(std::path::PathBuf, std::time::SystemTime)>>,
+}
+
+impl DiagnosticsTouchRegistry {
+    /// 单会话登记上限（长会话无界写文件防护；超限淘汰最旧登记）。
+    const MAX_FILES_PER_SESSION: usize = 64;
+    /// 会话数上限（长寿 loop 跨多会话累积防护；超限淘汰一个旧会话条目）。
+    const MAX_SESSIONS: usize = 16;
+
+    /// 某会话的登记快照（保序克隆；未登记会话 = 空表）。
+    pub(crate) fn snapshot_session(
+        &self,
+        session_key: &str,
+    ) -> Vec<(std::path::PathBuf, std::time::SystemTime)> {
+        self.sessions.get(session_key).cloned().unwrap_or_default()
+    }
+
+    /// 回写本轮采集锚点（upsert：已登记文件刷新锚点并移到尾部 = 最近
+    /// 采集序；未登记文件追加）。双 cap 收口。
+    pub(crate) fn record_anchors(
+        &mut self,
+        session_key: &str,
+        anchors: &[(std::path::PathBuf, std::time::SystemTime)],
+    ) {
+        if anchors.is_empty() {
+            return;
+        }
+        if !self.sessions.contains_key(session_key)
+            && self.sessions.len() >= Self::MAX_SESSIONS
+            && let Some(k) = self.sessions.keys().next().cloned()
+        {
+            self.sessions.remove(&k);
+        }
+        let entry = self.sessions.entry(session_key.to_string()).or_default();
+        for (path, mtime) in anchors {
+            entry.retain(|(p, _)| p != path);
+            entry.push((path.clone(), *mtime));
+        }
+        let overflow = entry.len().saturating_sub(Self::MAX_FILES_PER_SESSION);
+        if overflow > 0 {
+            entry.drain(0..overflow);
+        }
+    }
+}
+
+/// P3：stale 判定——文件当前 mtime 与诊断采集时的登记锚点不一致（或
+/// stat 失败）= 诊断早于最后一次写入 → 丢弃。mtime 粒度极粗的文件系统
+/// （FAT 2s）理论上存在同 tick 假新鲜窗口——best-effort 竞速防护，取
+/// 计划首选 mtime 路线（内容 hash 需整文件读，热路径上不划算）。
+fn diag_is_fresh(path: &std::path::Path, collected_at: std::time::SystemTime) -> bool {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .map(|t| t == collected_at)
+        .unwrap_or(false)
+}
+
+/// P2：从工具 args 提取诊断回灌目标路径（保序去重）。
+/// - `multiedit`：`edits[].path`（同文件多条编辑去重，保首次出现序）。
+/// - 其余（write_file/edit_file/append_file）：顶层 `path` 单文件。
+/// path 缺失/形态不符 → 空表（调用方诚实跳过回灌）。纯函数，不碰 IO。
+pub(crate) fn extract_diag_feedback_paths(
+    tool_name: &str,
+    args: &serde_json::Value,
+) -> Vec<String> {
+    if tool_name == "multiedit" {
+        let mut out: Vec<String> = Vec::new();
+        if let Some(arr) = args.get("edits").and_then(|v| v.as_array()) {
+            for e in arr {
+                if let Some(p) = e.get("path").and_then(|v| v.as_str())
+                    && !out.iter().any(|x| x == p)
+                {
+                    out.push(p.to_string());
+                }
+            }
+        }
+        out
+    } else {
+        args.get("path")
+            .and_then(|v| v.as_str())
+            .map(|p| vec![p.to_string()])
+            .unwrap_or_default()
+    }
+}
+
 impl AgentLoop {
     /// Switch the active model by alias (resolved via `config.models`) or literal
     /// model id. Returns the resolved model id. Unknown aliases are used as-is
@@ -354,9 +445,20 @@ impl AgentLoop {
         *self.lsp_manager.write() = Some(mgr);
     }
 
+    /// P2（能力扩展 WS3）：诊断回灌触发写工具枚举表（单一真相源）——
+    /// dispatch 侧门（tool_batch 器官 8c）与核心闸
+    /// （[`Self::apply_diagnostics_feedback`]）同源消费。计划 §冲突面登记
+    /// 钦定放 config_watch.rs，规避 loop.rs 主体的同文件冲突（Wave 2 的
+    /// P19/P33）。multiedit 的 args 形态是 `edits[].path`（非顶层 path），
+    /// 路径提取见 [`extract_diag_feedback_paths`]。
+    pub(crate) const DIAGNOSTICS_WRITE_TOOLS: &'static [&'static str] =
+        &["write_file", "edit_file", "append_file", "multiedit"];
+
     /// C3：读 `agents.defaults.diagnostics_loop`（config.json 每次新鲜读，
     /// 同 [`Self::current_tool_doc_folding`] 模式——dashboard/CLI 可在网关
-    /// 运行中翻转开关）。缺段 / standalone → 全默认（enabled=false）。
+    /// 运行中翻转开关）。缺段 / standalone → 全默认（P2 能力扩展 WS3 起
+    /// 默认 `enabled=true`；standalone 无 manager 注入时反馈链路自幂等
+    /// 跳过，不受默认翻转影响）。
     pub(crate) fn current_diagnostics_loop(&self) -> nemesis_config::DiagnosticsLoopConfig {
         let path = match self.config_path.read().clone() {
             Some(p) => p,
@@ -381,86 +483,197 @@ impl AgentLoop {
     /// please fix」）。调用点在工具结果
     /// 进 spill/gate 管线**之前**——反馈与工具结果同走一条模型可见管线。
     ///
-    /// 全部失败/未命中路径**静默原样返回**（开关关 / 非 write|edit / 无
+    /// 全部失败/未命中路径**静默原样返回**（开关关 / 非触发写工具 / 无
     /// manager / 语言无服务器 / 同步失败 / 无 ERROR）——诊断永不拖垮工具
-    /// 调用。ERROR 级取 ≤`max_errors` 条追加：
-    /// `"\n\n[LSP] {n} error(s) detected in {path}, please fix:"` + 每条
-    /// `"- L{line}:{col} {message} ({source})"`（1-based 显示，LSP 0-based
-    /// 内部转换）。
+    /// 调用。ERROR 级取 ≤`max_errors` 条追加（P3 起 `max_errors` 为**跨
+    /// 文件聚合后的总量上限**）。
+    ///
+    /// P2（能力扩展 WS3）：触发写工具扩到 4 个（枚举表
+    /// [`Self::DIAGNOSTICS_WRITE_TOOLS`] 单一真相源）；`paths` 支持多路径
+    /// （multiedit = `edits[].path` 去重集）。
+    ///
+    /// P3（能力扩展 WS3）：
+    /// - **跨文件聚合**——不只查本次编辑文件：`prev_touched`（会话级登记，
+    ///   见 [`DiagnosticsTouchRegistry`]）里 mtime 仍与登记锚点一致的文档
+    ///   一并被动读诊断（drain 等待窗口顺带收割全部已 open uri 的推送，
+    ///   其余文档零额外等待）。聚合序 = 编辑文件在前（保调用序），其余
+    ///   touched 文档按登记序垫后。
+    /// - **stale 过滤（版本感知竞速）**——其他 touched 文档回灌前比对
+    ///   当前 mtime 与登记锚点（采集时的 mtime）：不一致 = 诊断早于最后
+    ///   一次写入（本会话经 exec 改的 / 外部改的）→ 丢弃，宁缺勿假。
+    ///   编辑文件本身是本轮 touch 后现采的，天然新鲜。
+    /// - 返回值第二元 = 本轮**成功采集**文档的 (path, 采集时 mtime) 锚点，
+    ///   调用方（[`Self::diagnostics_feedback`]）回写会话登记——0 错误的
+    ///   干净文档也登记（后续别的文件写入触发聚合时它才有据可查）。
     ///
     /// 文档同步用 [`nemesis_lsp::LspManager::touch_file`]（读盘下发）而非
     /// `notify_change`：edit_file 的最终内容无法从 args 重建，磁盘是唯一
-    /// 真相源；write_file 读盘等价（execute 返回即写完）。
+    /// 真相源；write_file 读盘等价（execute 返回即写完）。同步策略：
+    /// **先全量 touch、再单轮 drain**（等首个编辑文件）——`drain_pushes`
+    /// 收割的是 session 全部 uri 的推送，逐文件串行等会让干净文件各吃满
+    /// `wait_max_ms`（multiedit 多文件时等待税线性放大）。
     pub(crate) async fn apply_diagnostics_feedback(
         mgr: Option<&nemesis_lsp::LspManager>,
         cfg: nemesis_config::DiagnosticsLoopConfig,
         tool_name: &str,
-        path: &str,
+        paths: &[&str],
+        prev_touched: &[(std::path::PathBuf, std::time::SystemTime)],
         result: &str,
-    ) -> String {
-        if !cfg.enabled || !matches!(tool_name, "write_file" | "edit_file") {
-            return result.to_string();
+    ) -> (String, Vec<(std::path::PathBuf, std::time::SystemTime)>) {
+        let unchanged = (result.to_string(), Vec::new());
+        if !cfg.enabled || !Self::DIAGNOSTICS_WRITE_TOOLS.contains(&tool_name) {
+            return unchanged;
         }
         let Some(mgr) = mgr else {
-            return result.to_string();
+            return unchanged;
         };
-        let p = std::path::Path::new(path);
-        // 未注册语言 / 该语言无已安装服务器 → 原样（探测是纯 PATH 查找，
-        // 不 spawn 进程）。
-        let Some(lang) = nemesis_lsp::registry::lang_for_path(p) else {
-            return result.to_string();
-        };
-        if !nemesis_lsp::registry::server_available(lang) {
-            return result.to_string();
+        // 编辑集：保序去重 + 注册语言 + 该语言有已安装服务器（探测是纯
+        // PATH 查找，不 spawn 进程）。
+        let mut edited: Vec<&str> = Vec::new();
+        for &p in paths {
+            if edited.iter().any(|e| *e == p) {
+                continue;
+            }
+            let Some(lang) = nemesis_lsp::registry::lang_for_path(std::path::Path::new(p)) else {
+                continue;
+            };
+            if !nemesis_lsp::registry::server_available(lang) {
+                continue;
+            }
+            edited.push(p);
         }
-        // 服务器同步失败 → 原样（best-effort）。
-        if mgr.touch_file(p).await.is_err() {
-            return result.to_string();
+        if edited.is_empty() {
+            return unchanged;
         }
-        let diags = mgr.wait_for_diagnostics(p, 150, cfg.wait_max_ms).await;
-        let errors: Vec<_> = diags
-            .iter()
-            .filter(|d| d.severity == 1)
-            .take(cfg.max_errors)
-            .collect();
-        if errors.is_empty() {
-            return result.to_string();
+        // 逐文件同步（读盘下发 didOpen/didChange）；失败者剔除（best-effort）。
+        let mut synced: Vec<&str> = Vec::new();
+        for &p in &edited {
+            if mgr.touch_file(std::path::Path::new(p)).await.is_ok() {
+                synced.push(p);
+            }
         }
-        let mut out = String::with_capacity(result.len() + 96 * errors.len());
+        if synced.is_empty() {
+            return unchanged;
+        }
+        // 单轮 drain：等首个编辑文件的推送，窗口内顺带收割 session 全部
+        // uri 的推送（跨文件聚合的数据来源）。
+        let _ = mgr
+            .wait_for_diagnostics(std::path::Path::new(synced[0]), 150, cfg.wait_max_ms)
+            .await;
+        // 编辑文件诊断（首者 drain 已收割，其余被动读缓存）+ 采集锚点。
+        let mut collected: Vec<(String, Vec<nemesis_lsp::proto::Diagnostic>)> = Vec::new();
+        let mut anchors: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+        for &p in &synced {
+            let path = std::path::Path::new(p);
+            let diags = mgr.diagnostics_for(path).await;
+            collected.push((p.to_string(), diags));
+            // 锚点 = 采集时 mtime（后续 stale 判定基准）；stat 失败不登记。
+            if let Ok(m) = std::fs::metadata(path).and_then(|m| m.modified()) {
+                anchors.push((path.to_path_buf(), m));
+            }
+        }
+        // 其他已登记文档：stale 过滤后被动读（无额外等待）。编辑集已覆盖
+        // 的跳过（本轮现采的新鲜结果优先，避免重复条目）。
+        for (p, at) in prev_touched {
+            if synced.iter().any(|s| std::path::Path::new(*s) == p) {
+                continue;
+            }
+            if !diag_is_fresh(p, *at) {
+                continue;
+            }
+            let diags = mgr.diagnostics_for(p).await;
+            if !diags.is_empty() {
+                collected.push((p.display().to_string(), diags));
+            }
+        }
+        // 聚合 error-only + cap（跨文件总量，编辑文件优先占预算）。
+        let mut used = 0usize;
+        for (_, ds) in collected.iter_mut() {
+            ds.retain(|d| d.severity == 1);
+            let keep = cfg.max_errors.saturating_sub(used).min(ds.len());
+            ds.truncate(keep);
+            used += keep;
+        }
+        collected.retain(|(_, ds)| !ds.is_empty());
+        if collected.is_empty() {
+            return (result.to_string(), anchors);
+        }
+        // 格式化：单文件保持旧字节兼容形态；多文件每条带 path 前缀。
+        let n: usize = collected.iter().map(|(_, ds)| ds.len()).sum();
+        let mut out = String::with_capacity(result.len() + 96 * n);
         out.push_str(result);
-        out.push_str(&format!(
-            "\n\n[LSP] {} error(s) detected in {}, please fix:",
-            errors.len(),
-            path
-        ));
-        for d in errors {
+        if collected.len() == 1 {
+            let (path, ds) = &collected[0];
             out.push_str(&format!(
-                "\n- L{}:{} {} ({})",
-                d.range_start.0 + 1,
-                d.range_start.1 + 1,
-                d.message,
-                d.source.as_deref().unwrap_or("lsp")
+                "\n\n[LSP] {} error(s) detected in {}, please fix:",
+                ds.len(),
+                path
             ));
+            for d in ds {
+                out.push_str(&format!(
+                    "\n- L{}:{} {} ({})",
+                    d.range_start.0 + 1,
+                    d.range_start.1 + 1,
+                    d.message,
+                    d.source.as_deref().unwrap_or("lsp")
+                ));
+            }
+        } else {
+            out.push_str(&format!(
+                "\n\n[LSP] {} error(s) detected in {} files, please fix:",
+                n,
+                collected.len()
+            ));
+            for (path, ds) in &collected {
+                for d in ds {
+                    out.push_str(&format!(
+                        "\n- {}:L{}:{} {} ({})",
+                        path,
+                        d.range_start.0 + 1,
+                        d.range_start.1 + 1,
+                        d.message,
+                        d.source.as_deref().unwrap_or("lsp")
+                    ));
+                }
+            }
         }
-        out
+        (out, anchors)
     }
 
-    /// C3：dispatch 现场包装——读共享 manager + 新鲜 config 后委托核心。
+    /// C3：dispatch 现场包装——读共享 manager + 新鲜 config + 会话级
+    /// touched 登记（P3）后委托核心。锁纪律：parking_lot guard 绝不跨
+    /// await——登记快照先短锁取出，采集完成后短锁回写锚点。
     pub(crate) async fn diagnostics_feedback(
         &self,
+        session_key: &str,
         tool_name: &str,
-        path: &str,
+        paths: &[String],
         result: &str,
     ) -> String {
+        if !Self::DIAGNOSTICS_WRITE_TOOLS.contains(&tool_name) {
+            return result.to_string();
+        }
+        let cfg = self.current_diagnostics_loop();
+        if !cfg.enabled {
+            return result.to_string();
+        }
         let mgr = self.lsp_manager.read().clone();
-        Self::apply_diagnostics_feedback(
-            mgr.as_deref(),
-            self.current_diagnostics_loop(),
-            tool_name,
-            path,
-            result,
-        )
-        .await
+        let Some(mgr) = mgr.as_deref() else {
+            return result.to_string();
+        };
+        let refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
+        let prev = self
+            .diagnostics_touched
+            .lock()
+            .snapshot_session(session_key);
+        let (out, anchors) =
+            Self::apply_diagnostics_feedback(Some(mgr), cfg, tool_name, &refs, &prev, result).await;
+        if !anchors.is_empty() {
+            self.diagnostics_touched
+                .lock()
+                .record_anchors(session_key, &anchors);
+        }
+        out
     }
 
     /// 内置 slash 命令名（与 [`Self::handle_command_with_context`] 的 match 臂

@@ -81,6 +81,7 @@ impl crate::registry::SkillRegistry for FileWritingRegistry {
             registry_name: "filewriter".to_string(),
             author: String::new(),
             downloads: 0,
+            published_at: None,
         })
     }
 
@@ -563,6 +564,7 @@ async fn test_list_available_skills_from_registry_maps_fields() {
             registry_name: "searchstub".to_string(),
             author: String::new(),
             downloads: 0,
+            published_at: None,
         }
     }
 

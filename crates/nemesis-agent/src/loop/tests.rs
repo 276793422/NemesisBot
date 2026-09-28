@@ -1230,6 +1230,25 @@ fn doom_config_file(flag: bool, suffix: &str) -> std::path::PathBuf {
     path
 }
 
+/// WS2（P5）：写一个只含 `agents.defaults.compact_keep_recent_tokens` 的临时
+/// config.json，返回路径（调用方负责删除）。`maybe_update_summary` 对该键是
+/// fresh-read（config.json 唯一真相源）——测试要控制逐字尾巴的 token 预算
+/// 就必须落盘这个键；缺省 20000 会吞掉测试里的小 history（边界=0）。
+fn keep_tokens_config_file(budget: i64, suffix: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "nemesis_test_ws2_keep_{}_{}.json",
+        std::process::id(),
+        suffix
+    ));
+    std::fs::write(
+        &path,
+        serde_json::json!({"agents": {"defaults": {"compact_keep_recent_tokens": budget}}})
+            .to_string(),
+    )
+    .unwrap();
+    path
+}
+
 fn failing_exec_response(id: &str) -> LlmResponse {
     LlmResponse {
         content: String::new(),
@@ -2803,7 +2822,7 @@ async fn test_summarize_multipart_part_failure_returns_none() {
     let history = g1_history(6);
     let prefix_refs: Vec<&crate::types::ConversationTurn> = history.iter().collect();
 
-    let out = summarize_prefix_owned(&prefix_refs, "", 32_000, true, &provider, "m", None).await;
+    let out = summarize_prefix_owned(&prefix_refs, "", 0, 32_000, true, &provider, "m", None).await;
 
     assert!(out.is_none(), "part failure must yield None, got {out:?}");
     assert_eq!(
@@ -2821,7 +2840,7 @@ async fn test_summarize_multipart_both_parts_fail_returns_none() {
     let history = g1_history(6);
     let prefix_refs: Vec<&crate::types::ConversationTurn> = history.iter().collect();
 
-    let out = summarize_prefix_owned(&prefix_refs, "", 32_000, true, &provider, "m", None).await;
+    let out = summarize_prefix_owned(&prefix_refs, "", 0, 32_000, true, &provider, "m", None).await;
 
     assert!(out.is_none());
     assert_eq!(provider.call_count(), 2, "merge call must not happen");
@@ -2839,7 +2858,7 @@ async fn test_summarize_multipart_merge_failure_falls_back_to_concat() {
     let history = g1_history(6);
     let prefix_refs: Vec<&crate::types::ConversationTurn> = history.iter().collect();
 
-    let out = summarize_prefix_owned(&prefix_refs, "", 32_000, true, &provider, "m", None).await;
+    let out = summarize_prefix_owned(&prefix_refs, "", 0, 32_000, true, &provider, "m", None).await;
 
     let summary = out.expect("both parts valid → concat fallback, not None");
     assert!(
@@ -2860,7 +2879,7 @@ async fn test_summarize_batch_failure_returns_none() {
     ];
     let refs: Vec<&crate::types::ConversationTurn> = turns.iter().collect();
 
-    let out = summarize_prefix_owned(&refs, "", 32_000, true, &provider, "m", None).await;
+    let out = summarize_prefix_owned(&refs, "", 0, 32_000, true, &provider, "m", None).await;
     assert!(out.is_none());
 }
 
@@ -2871,7 +2890,7 @@ async fn test_summarize_bare_concat_failure_returns_none() {
     let turns = [summary_turn("user", "q"), summary_turn("assistant", "a")];
     let refs: Vec<&crate::types::ConversationTurn> = turns.iter().collect();
 
-    let out = summarize_prefix_owned(&refs, "", 32_000, false, &provider, "m", None).await;
+    let out = summarize_prefix_owned(&refs, "", 0, 32_000, false, &provider, "m", None).await;
     assert!(out.is_none());
 }
 
@@ -4863,8 +4882,9 @@ async fn test_maybe_summarize_already_summarizing() {
 #[tokio::test]
 async fn test_maybe_update_summary_advances_cache_when_tail_over_threshold() {
     // Small context window → 75% threshold is low, so a handful of messages
-    // crosses it. Verifies the cache advances to len-K_TARGET and stores the
-    // summary text.
+    // crosses it. P5 起尾巴边界按 token 预算（compact_keep_recent_tokens）算：
+    // 这里落盘一个很小的预算（缺省 20000 会吞掉整个小 history、边界=0 不推进），
+    // 验证 cache 推进到「预算内尾巴的起点」并存储摘要文本。
     let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
     let provider = MockLlmProvider::new(vec![llm_text("SUMMARY")]);
     let agent_loop = AgentLoop::new_bus(
@@ -4875,6 +4895,8 @@ async fn test_maybe_update_summary_advances_cache_when_tail_over_threshold() {
         8,
         0,
     );
+    let cfg_path = keep_tokens_config_file(10, "advance");
+    agent_loop.set_config_path(cfg_path.clone());
     let mut instance = AgentInstance::new(test_config());
     instance.set_context_window(100); // threshold = 75 tokens
     for i in 0..5 {
@@ -4885,14 +4907,19 @@ async fn test_maybe_update_summary_advances_cache_when_tail_over_threshold() {
             None,
         );
     }
-    // history = [sys, 5u, 5a] = 11. tail tokens > 75; tail_len = 11 > K_TARGET.
+    // history = [sys, 5u, 5a] = 11；尾巴 tokens 150 ≥ 75。预算 10 只装得下
+    // 最后 1 条（首条无条件保留）→ token_budget_boundary = 10。
     agent_loop
         .maybe_update_summary(&instance, "s", "web", "c")
         .await;
 
     let cache = instance.get_summary_cache().expect("cache should be set");
-    assert_eq!(cache.covers_up_to, 11 - K_TARGET);
+    assert_eq!(
+        cache.covers_up_to, 10,
+        "token 预算尾巴：预算只够最后 1 条，covers 推进到 len-1"
+    );
     assert_eq!(cache.text, "SUMMARY");
+    let _ = std::fs::remove_file(&cfg_path);
 }
 
 #[tokio::test]
@@ -4924,11 +4951,14 @@ async fn test_maybe_update_summary_no_trigger_below_threshold() {
 #[tokio::test]
 async fn test_maybe_update_summary_no_stuck_when_tail_short_but_over_threshold() {
     // Regression (found via S7 实跑): a few HUGE messages put tail_tokens over
-    // the threshold while tail_len <= K_TARGET (too short to summarize yet).
-    // The stuck counter must NOT tick in this state — the old logic ticked it
-    // on `tail_tokens >= threshold` regardless of tail_len, so a big system
+    // the threshold while the tail is too short to summarize yet. The stuck
+    // counter must NOT tick in this state — the old logic ticked it on
+    // `tail_tokens >= threshold` regardless of tail length, so a big system
     // prompt / early oversized tool result paused summarization before it ever
     // ran. Verify summarize still fires once the tail grows long enough.
+    // P5：用 `compact_keep_recent_tokens=0` 走旧按条数（K_TARGET）回退路径，
+    // 让「尾巴太短」的语义保持原测试的精确形态（默认 token 预算路径下边界
+    // 由预算定，「短尾巴」由预算边界=长度自然封死，等价但少了条数维度）。
     let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
     let provider = MockLlmProvider::new(vec![llm_text("SUMMARY")]);
     let agent_loop = AgentLoop::new_bus(
@@ -4939,6 +4969,8 @@ async fn test_maybe_update_summary_no_stuck_when_tail_short_but_over_threshold()
         8,
         0,
     );
+    let cfg_path = keep_tokens_config_file(0, "stuck");
+    agent_loop.set_config_path(cfg_path.clone());
     let mut instance = AgentInstance::new(test_config());
     instance.set_context_window(100); // threshold = 75 tokens
     // 3 huge messages: tail_tokens way over 75, but tail_len = 3 <= K_TARGET(6).
@@ -4967,6 +4999,7 @@ async fn test_maybe_update_summary_no_stuck_when_tail_short_but_over_threshold()
     instance
         .get_summary_cache()
         .expect("summarize must run once the tail is long enough (stuck did not pause it)");
+    let _ = std::fs::remove_file(&cfg_path);
 }
 
 #[test]
@@ -5024,8 +5057,11 @@ fn test_tool_safe_boundary_backs_past_leading_tool() {
 #[tokio::test]
 async fn test_maybe_update_summary_boundary_is_tool_pair_safe() {
     // Integration: maybe_update_summary must set a tool-safe covers_up_to when
-    // the naive boundary (len - K_TARGET) lands on a tool result. Regression
-    // for the boundary-splits-tool-pair info loss found in second-pass review.
+    // the naive boundary lands on a tool result. Regression for the
+    // boundary-splits-tool-pair info loss found in second-pass review.
+    // P5：naive 边界现在来自 token 预算（落盘 budget=250）。从尾部回退装下
+    // u5..u3+res(160tok) 后到 235，再加 parent "go"(25tok) 会超 250 → raw=4
+    // 恰好落在 tool 结果上 → tool_safe_boundary 退到 3。
     let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
     let provider = MockLlmProvider::new(vec![llm_text("SUMMARY")]);
     let agent_loop = AgentLoop::new_bus(
@@ -5036,6 +5072,8 @@ async fn test_maybe_update_summary_boundary_is_tool_pair_safe() {
         8,
         0,
     );
+    let cfg_path = keep_tokens_config_file(250, "tool_safe");
+    agent_loop.set_config_path(cfg_path.clone());
     let mut instance = AgentInstance::new(test_config());
     instance.set_context_window(100); // threshold = 75 tokens
     let tc = |id: &str| crate::types::ToolCallInfo {
@@ -5057,19 +5095,20 @@ async fn test_maybe_update_summary_boundary_is_tool_pair_safe() {
         tool_result_projection: None,
         image_refs: Vec::new(),
     };
+    let pad = |tag: &str| format!("{tag} {}", "x".repeat(60));
     instance.set_history(vec![
-        turn("system", "sys", vec![], None), // 0
-        turn("user", &format!("u1 {}", "x".repeat(60)), vec![], None), // 1
-        turn("user", &format!("u2 {}", "x".repeat(60)), vec![], None), // 2
-        turn("assistant", "go", vec![tc("c1")], None), // 3 parent
-        turn("tool", "res", vec![], Some("c1")), // 4 naive new_c lands here
-        turn("user", &format!("u3 {}", "x".repeat(60)), vec![], None), // 5
-        turn("assistant", "a2", vec![], None), // 6
-        turn("user", &format!("u4 {}", "x".repeat(60)), vec![], None), // 7
-        turn("assistant", "a3", vec![], None), // 8
-        turn("user", &format!("u5 {}", "x".repeat(60)), vec![], None), // 9
+        turn("system", "sys", vec![], None),                 // 0
+        turn("user", &pad("u1"), vec![], None),              // 1 (~25 tok)
+        turn("user", &pad("u2"), vec![], None),              // 2
+        turn("assistant", &pad("go"), vec![tc("c1")], None), // 3 parent (~25 tok)
+        turn("tool", &"x".repeat(400), vec![], Some("c1")),  // 4 (~160 tok) raw new_c lands here
+        turn("user", &pad("u3"), vec![], None),              // 5
+        turn("assistant", "a2", vec![], None),               // 6
+        turn("user", &pad("u4"), vec![], None),              // 7
+        turn("assistant", "a3", vec![], None),               // 8
+        turn("user", &pad("u5"), vec![], None),              // 9
     ]);
-    // len=10, naive new_c = 10 - K_TARGET(6) = 4 → tool_safe_boundary backs to 3.
+    // raw new_c = 4（预算边界卡在 parent 与 res 之间）→ tool_safe backs to 3.
     agent_loop
         .maybe_update_summary(&instance, "s", "web", "c")
         .await;
@@ -5078,6 +5117,10 @@ async fn test_maybe_update_summary_boundary_is_tool_pair_safe() {
         cache.covers_up_to, 3,
         "boundary must back up past the tool result to its parent assistant"
     );
+    // 尾巴绝不能以孤儿 tool 结果开头（repair 会把它连同交互一起丢掉）。
+    let history = instance.get_history();
+    assert_ne!(history[cache.covers_up_to].role, "tool");
+    let _ = std::fs::remove_file(&cfg_path);
 }
 
 #[tokio::test]
@@ -5099,6 +5142,11 @@ async fn test_e2e_summarize_persist_reload_inject() {
         8,
         0,
     );
+    // P5：缺省预算 20000 会吞掉这个小 history（边界=0 不推进），落盘预算 90
+    // 让 covers=11（覆盖段 user/assistant 恰 10 条 → batch 单次 LLM 调用，
+    // 与 only-one-response 的 mock 匹配），注入断言不变。
+    let cfg_path = keep_tokens_config_file(90, "e2e");
+    agent_loop.set_config_path(cfg_path.clone());
     let store = std::sync::Arc::new(crate::session::SessionStore::new_in_memory());
     agent_loop.set_session_store(store.clone());
     store.get_or_create("e2e:k");
@@ -5150,6 +5198,7 @@ async fn test_e2e_summarize_persist_reload_inject() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(joined.contains("assistant reply 7"));
+    let _ = std::fs::remove_file(&cfg_path);
 }
 
 #[tokio::test]
@@ -5166,6 +5215,7 @@ async fn test_summarize_prefix_owned_returns_summary() {
     let result = summarize_prefix_owned(
         &refs,
         "existing context",
+        0,
         32000,
         true,
         &provider,
@@ -5198,7 +5248,8 @@ async fn test_summarize_prefix_reuse_true_keeps_g1_shape() {
         summary_turn("user", "question two"),
     ];
     let refs: Vec<&crate::types::ConversationTurn> = turns.iter().collect();
-    let out = summarize_prefix_owned(&refs, "", 32000, true, &provider, "test-model", None).await;
+    let out =
+        summarize_prefix_owned(&refs, "", 0, 32000, true, &provider, "test-model", None).await;
     assert!(out.is_some());
 
     let seen = provider.captured.lock().unwrap();
@@ -5235,6 +5286,7 @@ async fn test_summarize_prefix_reuse_false_uses_bare_shape() {
     let out = summarize_prefix_owned(
         &refs,
         "prior coverage",
+        0,
         32000,
         false,
         &provider,
@@ -8098,6 +8150,7 @@ async fn test_summarize_request_reuses_conversation_prefix() {
     let out = summarize_prefix_owned(
         &prefix_refs,
         "old summary",
+        0,
         32_000,
         true,
         &provider,
@@ -8152,7 +8205,7 @@ async fn test_summarize_multipart_batch_is_prefix_subset() {
     let history = g1_history(6);
     let prefix_refs: Vec<&crate::types::ConversationTurn> = history.iter().collect();
 
-    let out = summarize_prefix_owned(&prefix_refs, "", 32_000, true, &provider, "m", None).await;
+    let out = summarize_prefix_owned(&prefix_refs, "", 0, 32_000, true, &provider, "m", None).await;
 
     assert!(out.is_some());
     let requests = provider.captured.lock().unwrap();

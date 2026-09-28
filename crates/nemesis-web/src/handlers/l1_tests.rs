@@ -71,6 +71,7 @@ fn make_ctx(dir: &tempfile::TempDir, with_config: bool) -> RequestContext {
         internal_cmd_tx: None,
         estop: None,
         signature_verify: None,
+        skills_install_gate: None,
         cron: None,
         board: None,
     });
@@ -99,12 +100,12 @@ fn cmds_of<'a>(reg: &'a [(String, Vec<&'static str>)], module: &str) -> &'a [&'s
         .unwrap_or(&[])
 }
 
-/// 无 feature 闸的 24 个模块（register_all 的无条件注册段；L6++ G4 起
-/// 含 projects）。
+/// 无 feature 闸的 25 个模块（register_all 的无条件注册段；L6++ G4 起
+/// 含 projects，P30（WS14）起含 canvas）。
 const UNCONDITIONAL_MODULES: &[&str] = &[
     "system", "estop", "approval", "question", "chat", "config", "models", "channels", "identity",
     "tools", "skills", "mcp", "tasks", "coding", "hooks", "commands", "fs", "plugins", "board",
-    "logs", "agent", "persona", "sessions", "projects",
+    "logs", "agent", "persona", "sessions", "projects", "canvas",
 ];
 
 // ---------------------------------------------------------------------------
@@ -160,7 +161,11 @@ fn registry_anchor_commands_present() {
     let reg = build_registry();
     assert!(cmds_of(&reg, "system").contains(&"commands"));
     assert!(cmds_of(&reg, "system").contains(&"version"));
+    // WS9/P22：租约状态探针（无副作用命令，安全子集 dispatch 冒烟覆盖）。
+    assert!(cmds_of(&reg, "system").contains(&"lease_status"));
     assert!(cmds_of(&reg, "estop").contains(&"trigger"));
+    // P30（WS14）：canvas 关闭回执锚点。
+    assert!(cmds_of(&reg, "canvas").contains(&"close"));
     assert!(cmds_of(&reg, "sessions").contains(&"rewind_to_message"));
     assert!(cmds_of(&reg, "sessions").contains(&"redo"));
     assert!(cmds_of(&reg, "logs").contains(&"history_search"));
@@ -259,7 +264,7 @@ docs_generation_writes_wsapi_commands_md` 从 `ModuleHandler::commands()` \
     let path = docs.join("wsapi-commands.md");
     std::fs::write(&path, &md).unwrap();
     let written = std::fs::read_to_string(&path).unwrap();
-    assert!(written.contains("| system | version, status, commands |"));
+    assert!(written.contains("| system | version, status, commands, lease_status |"));
     assert!(written.contains(&format!("{} 条命令", total)));
 }
 
@@ -285,6 +290,9 @@ async fn dispatch_safe_readonly_subset_ok() {
     ok_cmd!(super::system::SystemHandler, "version");
     ok_cmd!(super::system::SystemHandler, "status");
     ok_cmd!(super::system::SystemHandler, "commands");
+    // WS9/P22：租约探针（make_ctx 的 workspace=临时目录 → supported=true，
+    // 无持有者 → held=false）。
+    ok_cmd!(super::system::SystemHandler, "lease_status");
     ok_cmd!(super::estop::EstopHandler, "status");
     ok_cmd!(super::channels::ChannelsHandler::new(), "list");
     ok_cmd!(super::models::ModelsHandler::new(), "list");

@@ -1396,7 +1396,12 @@ async fn summarize_bare_concat_owned_error_arm() {
     let _logs = capture_logs();
     let t1 = turn("user", "hello world");
     let t2 = turn("assistant", "hi there");
-    let out = summarize_bare_concat_owned(&[&t1, &t2], "existing", &ErrProvider, "m", None).await;
+    let update = crate::r#loop::compact::SummaryUpdate {
+        existing: "existing",
+        new_segment_turns: 0,
+        ledger: &[],
+    };
+    let out = summarize_bare_concat_owned(&[&t1, &t2], &update, &ErrProvider, "m", None).await;
     assert!(out.is_none(), "failed summary must yield None");
 }
 

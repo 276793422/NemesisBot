@@ -63,6 +63,7 @@ fn agt_make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         internal_cmd_tx: None,
         estop: None,
         signature_verify: None,
+        skills_install_gate: None,
         cron: None,
         board: None,
     });
@@ -194,8 +195,9 @@ fn w5_current_executor_missing_config_defaults_to_all_false() {
 #[tokio::test]
 async fn w5_selftest_reports_unsupported_without_userland_backend() {
     // 若机器装了 landlock/bwrap 等价物（Windows 上没有）则本测试前提失效，
-    // 诚实跳过；正常 Windows 机 detect_backend() == None。
-    if nemesis_sandbox::backend::detect_backend().is_some() {
+    // 诚实跳过；正常 Windows 机 detect_backend(false) == None（P1 后带
+    // 网络选型入参，Windows 两态恒 None）。
+    if nemesis_sandbox::backend::detect_backend(false).is_some() {
         eprintln!("skip: userland backend present, unsupported arm unreachable");
         return;
     }

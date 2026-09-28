@@ -78,6 +78,7 @@ fn make_ctx_with_agent(svc: Arc<dyn AgentLoopService>) -> RequestContext {
         internal_cmd_tx: None,
         estop: None,
         signature_verify: None,
+        skills_install_gate: None,
         cron: None,
         board: None,
     });
@@ -266,6 +267,7 @@ fn make_ctx_from_loop(al: Arc<AgentLoop>, workspace: Option<String>) -> RequestC
         internal_cmd_tx: None,
         estop: None,
         signature_verify: None,
+        skills_install_gate: None,
         cron: None,
         board: None,
     });

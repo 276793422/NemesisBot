@@ -182,6 +182,9 @@ impl AgentLoop {
             prompt_system: parking_lot::RwLock::new(crate::prompt::PromptSystem::Classic),
             pricing_store: parking_lot::RwLock::new(None),
             lsp_manager: parking_lot::RwLock::new(None),
+            diagnostics_touched: parking_lot::Mutex::new(
+                config_watch::DiagnosticsTouchRegistry::default(),
+            ),
             commands_hot: parking_lot::RwLock::new(None),
             cc_bridge: parking_lot::RwLock::new(None),
             spill_root: parking_lot::RwLock::new(None),
@@ -200,6 +203,7 @@ impl AgentLoop {
             #[cfg(feature = "workflow")]
             workflow_engine: parking_lot::RwLock::new(None),
             config_mtime: parking_lot::RwLock::new(None),
+            warm_candidates: parking_lot::Mutex::new(HashMap::new()),
             small_model: parking_lot::RwLock::new(None),
         }
     }
@@ -468,6 +472,11 @@ impl AgentLoop {
     ) {
         self.running.store(true, Ordering::Release);
         info!("[AgentLoop] Bus consumption loop started");
+
+        // P32（cache-warmer）：默认关（agents.cache_warmer.enabled=false）→
+        // 一次新鲜读后直接返回，无定时器、无任务对象（零副作用）。开 →
+        // 周期扫描任务（TTL/经济闸/锁纪律见 cache_warmer.rs 模块注释）。
+        self.spawn_cache_warmer_if_enabled();
 
         while self.running.load(Ordering::Acquire) {
             match inbound_rx.recv().await {

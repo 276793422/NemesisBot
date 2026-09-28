@@ -379,6 +379,36 @@ impl ContinuationStore {
                         );
                     }
 
+                    // P33（2026-09-25 能力扩展）：中断安全重放——恢复时检测
+                    // 挂起 tool_use（有 tool call 无对应 tool result），合成
+                    // 显式 interrupted 结果回灌（前缀对齐
+                    // merge_real_tool_result 的占位识别——真实结果到达时按
+                    // 既有纪律**替换**折算）。恢复本身不自动续行 LLM：续行
+                    // 仍由回调/恢复轮询驱动；真实结果不可达时快照带上诚实
+                    // interrupted 注记，等下一条用户消息自然继续。工具本身
+                    // 永不静默重放。
+                    let (messages, interrupted_ids) =
+                        crate::interrupt_replay::synthesize_interrupted_results(messages);
+                    if !interrupted_ids.is_empty() {
+                        warn!(
+                            task_id = %task_id,
+                            pending = ?interrupted_ids,
+                            "[Continuation] 快照恢复：{} 个未完成工具调用已折算为 interrupted（存在未完成工具，恢复态不自动续行，待回调/用户消息确认继续）",
+                            interrupted_ids.len()
+                        );
+                        // 折算写回盘上快照（best-effort）——重启/再恢复读到
+                        // 的都是折算后真相。元数据不变，messages 原地换血。
+                        if let Ok(json) = serde_json::to_string(&messages) {
+                            let mut healed = snapshot.clone();
+                            healed.messages = json;
+                            if let Err(e) = self.save(&healed) {
+                                warn!(
+                                    "[Continuation] interrupted 折算写回失败（内存态已折算，盘上留旧快照）: {e}"
+                                );
+                            }
+                        }
+                    }
+
                     // Create ready continuation data (loaded from disk, so already complete)
                     let ready = Arc::new(Notify::new());
                     let ready_flag = Arc::new(AtomicBool::new(true));
@@ -397,6 +427,12 @@ impl ContinuationStore {
                     });
 
                     manager.insert_continuation_sync(task_id.clone(), cont_data);
+                    // P33：相位机——恢复完成 → Restored（非法转移 loud 拒绝；
+                    // 失败只 warn 不回滚恢复——折算已注入，相位在确认续行时
+                    // 还有一道闸兜底）。
+                    if let Err(e) = manager.mark_restored(task_id) {
+                        warn!(task_id = %task_id, "[Continuation] 相位机标记 Restored 失败: {e}");
+                    }
                     recovered += 1;
                     info!(
                         "[Continuation] Recovered continuation snapshot from disk: task_id={}",
@@ -490,6 +526,11 @@ pub struct ContinuationManager {
     /// 回复持久化后，崩溃后 [`ContinuationStore::recover_to_manager`]
     /// 仍可从盘上恢复。
     handling: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// P33（2026-09-25 能力扩展）：快照恢复相位机
+    /// `checkpoint→restored→confirmed`（非法转移 loud 拒绝，见
+    /// [`crate::interrupt_replay::validate_restore_transition`]）。键缺省 =
+    /// Checkpoint（存活快照的出厂相位）。进程内存态，随快照回收清理。
+    restore_phases: std::sync::Mutex<HashMap<String, crate::interrupt_replay::RestorePhase>>,
 }
 
 impl ContinuationManager {
@@ -500,6 +541,7 @@ impl ContinuationManager {
             disk_store: None,
             barrier_timeout: Duration::from_secs(5),
             handling: std::sync::Mutex::new(std::collections::HashSet::new()),
+            restore_phases: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -515,6 +557,7 @@ impl ContinuationManager {
             disk_store: Some(disk_store),
             barrier_timeout: Duration::from_secs(5),
             handling: std::sync::Mutex::new(std::collections::HashSet::new()),
+            restore_phases: std::sync::Mutex::new(HashMap::new()),
         };
         // Recover any pending snapshots from disk
         if let Some(ref store) = manager.disk_store {
@@ -812,6 +855,8 @@ impl ContinuationManager {
         if let Some(ref store) = self.disk_store {
             store.delete(task_id);
         }
+        // P33：内存条目没了 → 相位记录同步清理（防陈旧相位挡后续生命周期）。
+        self.clear_phase(task_id);
     }
 
     /// 单飞闸·认领（发现 F 2026-09-11 真机根修）：认领该任务的续行处理权。
@@ -842,6 +887,53 @@ impl ContinuationManager {
     pub async fn finish_handling(&self, task_id: &str) {
         self.release_handling(task_id).await;
         self.remove_continuation(task_id).await;
+        // P33：快照已回收 → 相位记录一并清理（同 task_id 复用极罕见，但
+        // 留着旧相位会让下一次生命周期撞上「Confirmed → *」非法转移）。
+        self.clear_phase(task_id);
+    }
+
+    // -----------------------------------------------------------------------
+    // P33（2026-09-25 能力扩展）：快照恢复相位机
+    // -----------------------------------------------------------------------
+
+    /// 相位转移（严格校验）。键缺省 = Checkpoint（存活快照出厂相位）；
+    /// 非法转移 loud `Err`，调用方诚实停车不静默续行。
+    fn advance_phase(
+        &self,
+        task_id: &str,
+        to: crate::interrupt_replay::RestorePhase,
+    ) -> Result<(), String> {
+        let mut phases = self
+            .restore_phases
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let from = phases
+            .get(task_id)
+            .copied()
+            .unwrap_or(crate::interrupt_replay::RestorePhase::Checkpoint);
+        crate::interrupt_replay::validate_restore_transition(from, to)?;
+        phases.insert(task_id.to_string(), to);
+        Ok(())
+    }
+
+    /// P33：标记快照已从中断中恢复（recover_to_manager 回载成功后调用）。
+    pub fn mark_restored(&self, task_id: &str) -> Result<(), String> {
+        self.advance_phase(task_id, crate::interrupt_replay::RestorePhase::Restored)
+    }
+
+    /// P33：确认续行（handle_cluster_continuation 的第三道闸——单飞闸/
+    /// final_persisted 之后的相位校验；非法转移 loud 拒绝）。
+    pub fn confirm_continuation(&self, task_id: &str) -> Result<(), String> {
+        self.advance_phase(task_id, crate::interrupt_replay::RestorePhase::Confirmed)
+    }
+
+    /// P33：清除相位记录（快照回收时）。
+    fn clear_phase(&self, task_id: &str) {
+        let mut phases = self
+            .restore_phases
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        phases.remove(task_id);
     }
 
     /// Check whether a continuation exists in memory.
@@ -1115,6 +1207,16 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
             return;
         }
     };
+
+    // 1b. P33（2026-09-25 能力扩展）：相位严格校验——快照恢复状态机
+    // checkpoint→restored→confirmed。键缺省 = Checkpoint（存活快照直达
+    // 续行合法）；已 Confirmed 的重复续行（理论上被 step 0 单飞闸 + 0b
+    // final_persisted 闸拦截）在此第三道 loud 拒绝，绝不静默续行。
+    if let Err(e) = manager.confirm_continuation(task_id) {
+        warn!(task_id = %task_id, "[Continuation] 相位机拒绝续行: {e}");
+        manager.release_handling(task_id).await;
+        return;
+    }
 
     // 2. Build tool result content from task response.
     let tool_result_content = if task_failed {

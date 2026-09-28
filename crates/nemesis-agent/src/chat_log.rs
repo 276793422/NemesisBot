@@ -842,8 +842,66 @@ pub fn write_session_parent(session_key: &str, parent: &str, forked_at_turn: usi
     });
 }
 
+/// 分支摘要落盘的硬上限（chars，非 bytes；`write_session_branch_summary`
+/// 截断用）。WS9/P18 生成侧同用此常量，双保险单一真相源。
+pub const BRANCH_SUMMARY_MAX_CHARS: usize = 4000;
+
+/// WS9/P17：记录分叉缘由（fork_session 侧「为什么分出去」的一段话）。
+/// Upsert——已有 title/血缘/项目归属等字段全部保留；空串不写（无意义的
+/// 缘由不落盘，保持 meta 精简）。
+pub fn write_session_fork_reason(session_key: &str, reason: &str) {
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return;
+    }
+    upsert_meta(session_key, |m| {
+        m.fork_reason = Some(reason.to_string());
+    });
+}
+
+/// WS9/P17：记录一次消息级回退（rewind 也是谱系事件——本会话在此丢掉了
+/// 哪些行/轮）。Upsert；只保留**最近一次**（`last_rewind` 语义，完整历史
+/// 在 undo 栈/审计里，不重复记账）。
+pub fn write_session_rewind(
+    session_key: &str,
+    at_index: usize,
+    dropped_rows: usize,
+    dropped_turns: usize,
+) {
+    upsert_meta(session_key, |m| {
+        m.last_rewind = Some(RewindLineage {
+            at_index,
+            dropped_rows,
+            dropped_turns,
+            ts: Local::now().to_rfc3339(),
+        });
+    });
+}
+
+/// WS9/P18：把分支摘要落盘（fork/rewind 丢弃后缀 ≥3 turn 时由小模型通道
+/// 生成；这里 trim + 空跳过 + 硬上限截断兜底——生成侧已按预算裁剪，此处
+/// 防御性二次钳制，两边共用 [`BRANCH_SUMMARY_MAX_CHARS`]）。
+pub fn write_session_branch_summary(session_key: &str, summary: &str) {
+    let summary = summary.trim();
+    if summary.is_empty() {
+        return;
+    }
+    let clipped: String = summary.chars().take(BRANCH_SUMMARY_MAX_CHARS).collect();
+    upsert_meta(session_key, |m| {
+        m.branch_summary = Some(clipped);
+    });
+}
+
 /// Shared read-modify-write for the sidecar meta (single fs read + write).
+///
+/// 进程级互斥（2026-09-26 复查 F3）：read-modify-write 期间持锁——并发
+/// upsert（如 outbound 路径 `mark_undelivered_reply` × 标题写入）各自读到
+/// 同一基线会互相覆盖丢更新。临界区 = 单个小文件读写，阻塞锁可接受；
+/// 跨进程一致性不在此担保（sidecar 是单 gateway 进程私有）。
+static META_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
 fn upsert_meta(session_key: &str, f: impl FnOnce(&mut SessionMeta)) {
+    let _guard = META_LOCK.lock();
     let path = meta_path(session_key);
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
@@ -875,6 +933,9 @@ pub fn write_session_project(session_key: &str, project_id: &str, project_path: 
 ///
 /// 返回是否实际摘除了归属。
 pub fn clear_session_project(session_key: &str) -> bool {
+    // 与 upsert_meta 同锁（check-then-write 原子性：并发写入不得插在
+    // 判定与落盘之间）。
+    let _guard = META_LOCK.lock();
     let Some(mut meta) = read_meta_full(session_key) else {
         return false;
     };
@@ -911,6 +972,8 @@ pub fn mark_undelivered_reply(session_key: &str) {
 
 /// P2：前端拉取会话历史后清零未读标记。返回是否确实清掉了非零计数。
 pub fn clear_undelivered_replies(session_key: &str) -> bool {
+    // 与 upsert_meta 同锁（同 clear_session_project 的原子性理由）。
+    let _guard = META_LOCK.lock();
     let Some(mut meta) = read_meta_full(session_key) else {
         return false;
     };
@@ -971,6 +1034,43 @@ pub struct SessionMeta {
     /// `sessions.mark_delivered` 清零。0 不落盘，兼容旧文件形态。
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub undelivered: u32,
+    /// WS9/P17：分叉缘由（fork_session 时的一段说明文字；None = 旧分叉无
+    /// 记录，谱系视图回退显示「fork」）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_reason: Option<String>,
+    /// WS9/P17：最近一次消息级回退的谱系记录（回退也是谱系事件；只记最近
+    /// 一次）。None = 本会话从未回退过。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_rewind: Option<RewindLineage>,
+    /// WS9/P18：分支摘要（fork/rewind 丢弃后缀 ≥3 turn 时由小模型生成的
+    /// 六节结构化前情提要；新会话首轮 build_messages 注入）。None = 无摘要
+    /// （未达阈值 / 小模型未配置——诚实跳过）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_summary: Option<String>,
+}
+
+/// WS9/P17：一次消息级回退的谱系记录（`last_rewind` 的载荷）。
+/// `dropped_rows == 0`（末尾 no-op 回退）不落盘——回退未发生时没有谱系
+/// 事实可记（rewind 侧 no-op 路径本就不调用写入）。
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct RewindLineage {
+    /// 回退锚定的行 index（`rewind_to_message` 的入参）。
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub at_index: usize,
+    /// 被截掉的 jsonl 行数。
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub dropped_rows: usize,
+    /// 被截掉的完整 user 轮数（rows → turn 换算后）。
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub dropped_turns: usize,
+    /// 回退发生时间（RFC3339 本地时区，与 chat_log 行时间戳同形）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ts: String,
+}
+
+/// WS9/P17：`skip_serializing_if` 助手（0 不落盘，兼容旧文件形态）。
+fn is_zero_usize(v: &usize) -> bool {
+    *v == 0
 }
 
 /// P2: `skip_serializing_if` 助手（0 不落盘）。

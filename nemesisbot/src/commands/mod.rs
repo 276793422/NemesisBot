@@ -28,6 +28,8 @@ pub mod history;
 pub mod issue;
 pub mod log;
 pub mod mcp;
+/// P23（能力扩展 WS10）：stdIO MCP server 入口（`nemesisbot mcp-serve`）。
+pub mod mcp_serve;
 #[cfg(feature = "memory")]
 pub mod memory;
 #[cfg(feature = "migrate")]
@@ -42,7 +44,8 @@ pub mod persona;
 pub mod run;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
-#[cfg(feature = "security")]
+// 病毒扫描 CLI（scanner feature 从 security 拆出；implies security）。
+#[cfg(feature = "scanner")]
 pub mod scanner;
 #[cfg(feature = "security")]
 pub mod security;

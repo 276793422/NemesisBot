@@ -792,10 +792,16 @@ impl SessionFactory for RealSessionFactory {
                 // 入口形态（gap ⑤）：ACP 编辑器接入——面向编辑器协作的
                 // 语境说明随身份基座注入（pro 体系；classic 忽略）。
                 entrance: nemesis_agent::prompt::Entrance::Acp,
+                // 急停态：进程级共享 EstopState（每会话装配各自 new 会变孤岛；
+                // gateway 急停经 estop_follower 镜像到共享态——ACP 出口与
+                // mcp-serve 同样不是急停旁路）。
+                estop: crate::estop_follower::shared_estop(),
                 ..Default::default()
             });
             let agent_loop = crate::agent_factory::build_agent_loop(&shared)
                 .map_err(|e| format!("failed to build agent loop: {e}"))?;
+            // 急停跟随任务进程级一次性 spawn（幂等，每会话装配都调也不泄漏）。
+            crate::estop_follower::ensure_spawned(self.home.clone());
             // M7 审批桥：ACP 进程无 dashboard，编辑器即唯一审批面。
             // security feature 关闭时槽是 () 占位，审批整层不存在。
             #[cfg(feature = "security")]

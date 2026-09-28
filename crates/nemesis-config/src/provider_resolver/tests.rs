@@ -360,10 +360,15 @@ fn test_get_default_api_base_all_providers() {
         "https://api.deepseek.com/v1"
     );
     assert_eq!(get_default_api_base("mistral"), "https://api.mistral.ai/v1");
-    assert_eq!(get_default_api_base("cohere"), "https://api.cohere.ai/v2");
+    // Cohere 走官方 OpenAI 兼容端点（api.cohere.ai/v2 是原生 v2 API）。
+    assert_eq!(
+        get_default_api_base("cohere"),
+        "https://api.cohere.com/compatibility/v1"
+    );
+    // Perplexity 官方 base_url 无 /v1 后缀（SDK 自拼 /chat/completions）。
     assert_eq!(
         get_default_api_base("perplexity"),
-        "https://api.perplexity.ai/v1"
+        "https://api.perplexity.ai"
     );
     assert_eq!(
         get_default_api_base("together"),
@@ -385,7 +390,10 @@ fn test_get_default_api_base_all_providers() {
         get_default_api_base("shengsuanyun"),
         "https://router.shengsuanyun.com/api/v1"
     );
-    assert_eq!(get_default_api_base("github_copilot"), "localhost:4321");
+    assert_eq!(
+        get_default_api_base("github_copilot"),
+        "http://localhost:4321"
+    );
     assert_eq!(get_default_api_base("unknown"), "");
 }
 
@@ -737,5 +745,174 @@ fn test_resolve_timeout_non_numeric_ignored() {
         };
         let res = resolve_model_config(&cfg, "t").unwrap();
         assert_eq!(res.timeout_secs, 0);
+    }
+}
+
+// ============================================================================
+// Provider preset table integrity（P9 预设表完整性，能力扩展 WS5）
+// ============================================================================
+
+/// 轻量 URL 校验（测试内联，避免引入 url crate）：`http(s)://authority[path]`。
+fn is_valid_preset_url(url: &str) -> bool {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return false;
+    };
+    if scheme != "http" && scheme != "https" {
+        return false;
+    }
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    !authority.is_empty() && !authority.contains(char::is_whitespace)
+}
+
+#[test]
+fn test_preset_table_integrity() {
+    // 表规模护栏：防止意外整表丢失（有意扩充时随之上调）。
+    assert!(
+        PROVIDER_PRESETS.len() >= 70,
+        "preset table should hold >= 70 families, got {}",
+        PROVIDER_PRESETS.len()
+    );
+
+    let mut seen_names: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for p in PROVIDER_PRESETS {
+        // id 非空。
+        assert!(!p.id.is_empty(), "empty id in preset table");
+        // api_base 合法 http(s) URL（github_copilot 已修正为带 scheme 的本机地址）。
+        assert!(
+            is_valid_preset_url(p.api_base),
+            "{}: invalid api_base {:?}",
+            p.id,
+            p.api_base
+        );
+        // protocol 枚举合法（与 nemesis-types::capability 单一真相源对齐）。
+        assert!(
+            matches!(p.protocol, "openai" | "anthropic" | "responses"),
+            "{}: illegal protocol {:?}",
+            p.id,
+            p.protocol
+        );
+        assert!(
+            nemesis_types::capability::normalize_model_protocol(p.protocol).is_ok(),
+            "{}: protocol {:?} rejected by normalize_model_protocol",
+            p.id,
+            p.protocol
+        );
+        // default_model 非空；豁免：shengsuanyun（平台按租户下发型号，无公开固定默认型号，
+        // get_default_api_base 行为保留）。
+        if p.default_model.is_empty() {
+            assert_eq!(
+                p.id, "shengsuanyun",
+                "only shengsuanyun may omit default_model, {} also empty",
+                p.id
+            );
+        }
+        // 展示名非空。
+        assert!(!p.display_name.is_empty(), "{}: empty display_name", p.id);
+        // id 与全部别名全局唯一（任何两个家族不得共享 id/alias 命名空间）。
+        assert!(
+            seen_names.insert(p.id),
+            "{}: id conflicts with earlier id/alias",
+            p.id
+        );
+        for a in p.aliases {
+            assert!(!a.is_empty(), "{}: empty alias", p.id);
+            assert!(
+                seen_names.insert(a),
+                "{}: alias {a:?} conflicts with earlier id/alias",
+                p.id
+            );
+        }
+    }
+}
+
+#[test]
+fn test_find_provider_preset_id_alias_case_trim() {
+    // id 精确命中。
+    let by_id = find_provider_preset("deepseek").expect("deepseek preset");
+    assert_eq!(by_id.id, "deepseek");
+    // 别名命中（kimi → moonshot）。
+    let by_alias = find_provider_preset("kimi").expect("kimi alias");
+    assert_eq!(by_alias.id, "moonshot");
+    // 大小写不敏感 + 去空白（CLI 传参友好）。
+    assert_eq!(find_provider_preset("  Kimi ").unwrap().id, "moonshot");
+    assert_eq!(find_provider_preset("DeepSeek").unwrap().id, "deepseek");
+    // 空串与未知家族。
+    assert!(find_provider_preset("").is_none());
+    assert!(find_provider_preset("   ").is_none());
+    assert!(find_provider_preset("no-such-family").is_none());
+}
+
+#[test]
+fn test_legacy_lookup_entries_still_resolve() {
+    // 历史入口名（重构前 19 臂 match 的既有键）全部仍可解析——回归锁。
+    for legacy in [
+        "anthropic",
+        "claude",
+        "openai",
+        "gpt",
+        "openrouter",
+        "groq",
+        "zhipu",
+        "glm",
+        "gemini",
+        "google",
+        "nvidia",
+        "ollama",
+        "moonshot",
+        "kimi",
+        "deepseek",
+        "mistral",
+        "cohere",
+        "perplexity",
+        "together",
+        "fireworks",
+        "cerebras",
+        "sambanova",
+        "shengsuanyun",
+        "github_copilot",
+    ] {
+        assert!(
+            find_provider_preset(legacy).is_some(),
+            "legacy entry {legacy:?} no longer resolves"
+        );
+    }
+}
+
+#[test]
+fn test_preset_lookup_drives_public_helpers() {
+    // get_default_api_base / infer_default_model 必须与表数据严格一致（查表语义）。
+    for p in PROVIDER_PRESETS {
+        assert_eq!(
+            get_default_api_base(p.id),
+            p.api_base,
+            "get_default_api_base({}) diverged from table",
+            p.id
+        );
+        assert_eq!(
+            infer_default_model(p.id),
+            p.default_model,
+            "infer_default_model({}) diverged from table",
+            p.id
+        );
+        if let Some(alias) = p.aliases.first() {
+            assert_eq!(get_default_api_base(alias), p.api_base);
+            assert_eq!(infer_default_model(alias), p.default_model);
+        }
+    }
+    // 未知家族维持旧行为：返回空串。
+    assert_eq!(get_default_api_base("unknown"), "");
+    assert_eq!(infer_default_model("unknown"), "");
+}
+
+#[test]
+fn test_preset_ids_helper_sorted_unique_and_complete() {
+    let ids = provider_preset_ids();
+    assert_eq!(ids.len(), PROVIDER_PRESETS.len());
+    let mut sorted = ids.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(ids, sorted, "provider_preset_ids must be sorted and unique");
+    for p in PROVIDER_PRESETS {
+        assert!(ids.contains(&p.id), "provider_preset_ids missing {}", p.id);
     }
 }

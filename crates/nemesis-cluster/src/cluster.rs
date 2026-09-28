@@ -631,6 +631,18 @@ impl Cluster {
         );
         discovery_config.announce_expiry_secs = app_cfg.announce_expiry_secs;
 
+        // L3 语义矩阵（2026-09-27）：enabled + token = 加密广播（主路径）；
+        // enabled + token 空 = **明文广播运行**（局域网内任何人都可侦听/伪造
+        // announce）——这是既有的向后兼容行为，不拒绝启动，但必须一次性
+        // WARN 讲清楚，避免"配了 cluster.enabled 就以为有加密"的误解。
+        if secret.is_empty() {
+            tracing::warn!(
+                "[Cluster] 未配置 discovery token —— UDP 发现以**明文**模式运行 \
+                （announce 可被局域网内任意主机侦听/伪造）。生产部署建议在 \
+                 config.cluster.json 配置 token（CLI: `nemesisbot cluster token set`）。"
+            );
+        }
+
         match crate::discovery::DiscoveryService::new(arc_self, discovery_config) {
             Ok(discovery) => {
                 match discovery.start() {
@@ -656,6 +668,15 @@ impl Cluster {
                 tracing::error!(error = %e, "[Cluster] Failed to create discovery service");
             }
         }
+    }
+
+    /// 解密失败丢弃摘要（token 失配来源账本；discovery 未启动 = None）。
+    ///
+    /// L2（2026-09-27）：异 token 来源互不发现是预期安全行为，日常零日志；
+    /// 诊断走此处——`cluster.status` WSAPI 的 `discovery_drops` 字段。
+    pub fn discovery_decrypt_drops(&self) -> Option<crate::discovery::DecryptDropSummary> {
+        let guard = self.discovery.lock();
+        guard.as_ref().map(|d| d.decrypt_drop_summary())
     }
 
     /// Load the discovery encryption secret from `workspace/config/config.cluster.json`.

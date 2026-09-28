@@ -76,11 +76,19 @@ impl AgentLoop {
     /// 标记（本 turn begin 序号随 admission 穿针写入）；无标记的旧行退化为
     /// 「只截断对话不回滚文件」。
     ///
-    /// 返回回执 JSON（kept/removed 计数 + 恢复文件清单 + redoable）。
+    /// P20（2026-09-25 能力扩展）冲突预检：文件恢复锚存在时，先对各 turn
+    /// 封印的「变更后指纹」与现盘内容比对——有冲突且 `force == false` 时
+    /// **零副作用拒绝**（返回 `blocked: true` + 结构化冲突清单 path/期望
+    /// 指纹/当前指纹，前端可展示）；`force == true` 强过，回执与日志留痕
+    /// （`forced: true`）。
+    ///
+    /// 返回回执 JSON（kept/removed 计数 + 恢复文件清单 + redoable；被拒时
+    /// 为 blocked 结构）。
     pub async fn rewind_to_message(
         &self,
         session_key: &str,
         message_index: usize,
+        force: bool,
     ) -> Result<serde_json::Value, String> {
         if self.is_session_busy(session_key) {
             return Err("会话正在处理消息，请等当前回合完成后再回退".to_string());
@@ -114,6 +122,38 @@ impl AgentLoop {
                 .map(|v| v as usize)
         });
         let removed: Vec<serde_json::Value> = rows[cut..].to_vec();
+
+        // P20（2026-09-25 能力扩展）：冲突预检——restore 锚之后各 turn 封印
+        // 的「变更后指纹」vs 现盘内容。只读不突变（零副作用），冲突且未
+        // force = 拒绝并列结构化清单；force = 强过（审计留痕）。
+        let mut report = crate::checkpoint::CheckpointConflictReport::default();
+        if let Some(t) = restore_turn
+            && let Some(cp) = self.attached_checkpoint()
+        {
+            report = cp.conflict_scan(t);
+            if !report.conflicts.is_empty() && !force {
+                warn!(
+                    "[AgentLoop] rewind 冲突预检拒绝：session={session_key} turn>={t} 检出 {} 个文件在 checkpoint 后被外部修改（force 可强过）",
+                    report.conflicts.len()
+                );
+                return Ok(serde_json::json!({
+                    "blocked": true,
+                    "reason": "conflict",
+                    "session_key": session_key,
+                    "message_index": message_index,
+                    "restore_turn": t,
+                    "conflicts": report.conflicts,
+                    "unchecked_paths": report.unchecked_paths,
+                }));
+            }
+        }
+        let forced = force && !report.conflicts.is_empty();
+        if forced {
+            warn!(
+                "[AgentLoop] rewind 冲突被 force 强过（审计留痕）：session={session_key} restore_turn={restore_turn:?} 覆盖 {} 个外部修改冲突",
+                report.conflicts.len()
+            );
+        }
 
         // undo 依据在任何突变前采集（truncate_from 会清掉 turn ≥ restore 的
         // 索引，tree 值要趁索引还在时读）。
@@ -168,10 +208,57 @@ impl AgentLoop {
             return Err("会话日志写回失败，回退未生效（原会话完好）".to_string());
         }
 
+        // F8（2026-09-27）：force 强过的强恢复动作落审计链台账——跳过冲突
+        // 预检覆盖外部修改是高影响操作，warn! 日志轮转即失，Merkle
+        // append-only 审计链才是「留痕」的诚实形态。截断成功后记账（文件
+        // 恢复 + 截断都已生效，不为未发生的恢复记账）；审计链未启用（默认
+        // 关）= None，保留上方 warn 兜底可见性。
+        if forced {
+            #[cfg(feature = "security")]
+            if let Some(plugin) = self.security.security_plugin.as_ref() {
+                let recorded = plugin.append_direct_audit_event(
+                    "session.rewind",
+                    "rewind_to_message",
+                    "user",
+                    "wsapi",
+                    &format!("{session_key}#idx={message_index}"),
+                    "forced",
+                    &format!(
+                        "rewind force 覆盖 {} 个外部修改冲突（restore_turn={restore_turn:?}）",
+                        report.conflicts.len()
+                    ),
+                );
+                if recorded.is_none() {
+                    warn!("[AgentLoop] rewind force 审计链未启用，仅日志留痕");
+                }
+            }
+        }
+
         // 3) SessionStore 丢缓存（jsonl 是单一真相源，下次 get_or_create
         // 从截断后的 jsonl 自愈重建——sessions.delete/clear 同款纪律）。
         if let Some(store) = self.session_store() {
             store.clear_session(session_key);
+        }
+
+        // WS9/P17：回退谱系落盘（last_rewind）——截断成功后记录本会话丢
+        // 掉了哪些行/轮（meta sidecar upsert；no-op 回退无谱系事实，不写）。
+        // WS9/P18：遗弃后缀 ≥3 轮且 small_model 已配置 → 后台生成分支
+        // 摘要写回**本会话** sidecar meta（回退后继续用的就是本会话；未
+        // 达阈值/small_model 缺席 = 诚实跳过，不阻塞回退本体）。两步都在
+        // 压 undo 栈前做——`removed` 下方要被 move 进栈条目。
+        if !removed.is_empty() {
+            let dropped_turns = crate::session_fork::row_user_turn_count(&removed);
+            crate::chat_log::write_session_rewind(
+                session_key,
+                message_index,
+                rows.len() - cut,
+                dropped_turns,
+            );
+            if let Some(prepared) =
+                super::prepare_branch_summary(self, session_key, &removed, dropped_turns)
+            {
+                prepared.spawn_write();
+            }
         }
 
         // 4) 压 undo 栈（截断成功后才压——失败路径不留脏条目）。
@@ -201,6 +288,8 @@ impl AgentLoop {
             "file_restore_note": file_note,
             "restored_files": { "written": written, "deleted": deleted },
             "redoable": redoable,
+            "forced": forced,
+            "unchecked_paths": report.unchecked_paths,
         }))
     }
 

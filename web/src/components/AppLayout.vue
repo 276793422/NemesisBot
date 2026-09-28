@@ -7,8 +7,10 @@ import SkinSlot from './SkinSlot.vue'
 import ToastContainer from './ToastContainer.vue'
 import ApprovalCard from './ApprovalCard.vue'
 import QuestionCard from './QuestionCard.vue'
+import CanvasPanel from './CanvasPanel.vue'
 import { useApprovals } from '../composables/useApprovals'
 import { useQuestions } from '../composables/useQuestions'
+import { useCanvas } from '../composables/useCanvas'
 import { useEditorMode } from '../composables/useEditorMode'
 // 皮肤结构皮肤（v2）：槽位由引擎渲染（skinHasSlot 判定在场，CSS-only
 // 包全部回落原生）；投影 + 动作白名单在此装配一次（模块单例）。
@@ -20,6 +22,8 @@ const appStore = useAppStore()
 const { initApprovals } = useApprovals()
 // F7：提问卡单例订阅（SSE question-asked + pending 补拉）。
 const { initQuestions } = useQuestions()
+// P30（WS14）：Canvas 面板单例订阅（SSE canvas.open）。
+const { initCanvas } = useCanvas()
 // Full Access 放行开关单例订阅（SSE editor-mode + editor.get seed 对齐）。
 const { initEditorMode } = useEditorMode()
 
@@ -33,6 +37,7 @@ const pageSlotName = computed(() => 'page:' + router.currentRoute.value.path)
 onMounted(() => {
   initApprovals()
   initQuestions()
+  initCanvas()
   initEditorMode()
   if (skinHasSlot('sidebar') || skinHasSlot('statusbar')) ensureSkinMeta()
 })
@@ -74,5 +79,7 @@ onMounted(() => {
     <ApprovalCard />
     <!-- F7：结构化提问卡（模态，任意页面可见） -->
     <QuestionCard />
+    <!-- P30（WS14）：Canvas 面板（浮窗，任意页面可见；无画布时不渲染） -->
+    <CanvasPanel />
   </div>
 </template>

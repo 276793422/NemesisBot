@@ -296,6 +296,7 @@ fn test_parse_security_rules_missing_fields() {
 // -------------------------------------------------------------------------
 
 #[test]
+#[cfg(feature = "scanner")]
 fn test_load_scanner_full_config_missing_file() {
     let result = crate::security_setup::load_scanner_full_config(std::path::Path::new(
         "/nonexistent/config.json",
@@ -304,6 +305,7 @@ fn test_load_scanner_full_config_missing_file() {
 }
 
 #[test]
+#[cfg(feature = "scanner")]
 fn test_load_scanner_full_config_valid() {
     let tmp = tempfile::TempDir::new().unwrap();
     let path = tmp.path().join("config.scanner.json");
@@ -323,6 +325,7 @@ fn test_load_scanner_full_config_valid() {
 }
 
 #[test]
+#[cfg(feature = "scanner")]
 fn test_load_scanner_full_config_empty_engines() {
     let tmp = tempfile::TempDir::new().unwrap();
     let path = tmp.path().join("config.scanner.json");
@@ -336,6 +339,7 @@ fn test_load_scanner_full_config_empty_engines() {
 }
 
 #[test]
+#[cfg(feature = "scanner")]
 fn test_load_scanner_full_config_invalid_json() {
     let tmp = tempfile::TempDir::new().unwrap();
     let path = tmp.path().join("config.scanner.json");
@@ -6052,6 +6056,7 @@ async fn run_runtime_pipeline(
         security_plugin: Some(plugin.clone()),
         health_server: health,
         cluster_adapter: pa.cluster_adapter.clone(),
+        skills_install_gate: None,
     };
 
     run_runtime(

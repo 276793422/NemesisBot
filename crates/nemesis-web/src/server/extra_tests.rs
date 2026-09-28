@@ -1299,6 +1299,7 @@ async fn test_handle_health_includes_running_and_sessions_reflects_state() {
         internal_cmd_tx: None,
         estop: None,
         signature_verify: None,
+        skills_install_gate: None,
         cron: None,
         board: None,
     });

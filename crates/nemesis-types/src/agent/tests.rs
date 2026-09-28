@@ -644,3 +644,37 @@ fn test_agent_event_question_serde_shape() {
     };
     assert_eq!(req.timeout_secs, 60);
 }
+
+/// P30（WS14）：CanvasOpen 的 serde 形状 + accessors。带会话上下文
+/// （chat_id / session_key 都有——web pump 据末段注入 session_id）。
+#[test]
+fn test_agent_event_canvas_open_serde_shape() {
+    use super::AgentEvent;
+    let ev = AgentEvent::CanvasOpen {
+        session_key: "web:s-9".to_string(),
+        chat_id: "web:s-9".to_string(),
+        html: "<html><body><p>chart</p></body></html>".to_string(),
+        index: 2,
+    };
+    let v = serde_json::to_value(&ev).unwrap();
+    assert_eq!(v["kind"], "CanvasOpen");
+    assert_eq!(v["data"]["index"], 2);
+    assert_eq!(v["data"]["html"], "<html><body><p>chart</p></body></html>");
+    match serde_json::from_value::<AgentEvent>(v).unwrap() {
+        AgentEvent::CanvasOpen {
+            session_key,
+            chat_id,
+            html,
+            index,
+        } => {
+            assert_eq!(session_key, "web:s-9");
+            assert_eq!(chat_id, "web:s-9");
+            assert_eq!(html, "<html><body><p>chart</p></body></html>");
+            assert_eq!(index, 2);
+        }
+        other => panic!("wrong variant: {:?}", other),
+    }
+    assert_eq!(ev.chat_id(), "web:s-9");
+    assert_eq!(ev.kind(), "CanvasOpen");
+    assert_eq!(ev.session_key(), Some("web:s-9"));
+}

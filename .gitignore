@@ -79,3 +79,4 @@ __pycache__/
 /test-tools/android-shell/keystore.properties
 /test-tools/android-shell/*.jks
 /web/.cdp-profile
+test-tools/mcp/server/mcp-test-server.exe

@@ -28,6 +28,17 @@ pub trait MemoryStore: Send + Sync {
     /// Retrieve a single entry by ID.
     async fn get(&self, id: &str) -> Result<Option<Entry>, String>;
 
+    /// Upsert：按 id 整体替换（不存在则插入）。P31 记忆 dreaming / 召回记账
+    /// 的更新通路（touch 只改 metadata，不改正文）。默认实现 = delete + store
+    ///（对 Vec/Map 型后端语义等价）；后端可覆盖出更高效/更干净的路径
+    ///（如 TfIdfLocalStore 必须覆盖——默认路径会误触 delete 的归档 sidecar）。
+    async fn update(&self, entry: Entry) -> Result<(), String> {
+        let id = entry.id.clone();
+        self.delete(&id).await?;
+        self.store(entry).await?;
+        Ok(())
+    }
+
     /// Delete an entry by ID. Returns `true` if an entry was removed.
     async fn delete(&self, id: &str) -> Result<bool, String>;
 
@@ -154,6 +165,18 @@ impl MemoryStore for LocalStore {
     async fn get(&self, id: &str) -> Result<Option<Entry>, String> {
         let guard = self.entries.read();
         Ok(guard.iter().find(|e| e.id == id).cloned())
+    }
+
+    // 覆盖默认实现：Vec 内按 id 原位替换（不存在则追加），不走 delete+store
+    //（等价但多一次全表扫描）。
+    async fn update(&self, entry: Entry) -> Result<(), String> {
+        let id = entry.id.clone();
+        let mut guard = self.entries.write();
+        match guard.iter_mut().find(|e| e.id == id) {
+            Some(slot) => *slot = entry,
+            None => guard.push(entry),
+        }
+        Ok(())
     }
 
     async fn delete(&self, id: &str) -> Result<bool, String> {

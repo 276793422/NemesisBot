@@ -30,9 +30,10 @@ pub use store::{ConfigHandle, ConfigStore, global, load_live, save_live, set_glo
 
 // Re-export provider_resolver types and functions for backward compatibility
 pub use provider_resolver::{
-    ModelResolution, ProviderResolution, ProviderResolver, find_model_by_name,
-    get_default_api_base, get_effective_llm, get_model_by_name, infer_default_model,
-    infer_provider_from_model, resolve_model_config, resolve_model_resolution,
+    ModelResolution, PROVIDER_PRESETS, ProviderPreset, ProviderResolution, ProviderResolver,
+    find_model_by_name, find_provider_preset, get_default_api_base, get_effective_llm,
+    get_model_by_name, infer_default_model, infer_provider_from_model, provider_preset_ids,
+    resolve_model_config, resolve_model_resolution,
 };
 
 #[derive(Error, Debug)]
@@ -403,6 +404,12 @@ pub struct BoardFlagConfig {
     /// 重派循环套既有预算保险丝打满转人工。开关只控制冲突处置策略，不改
     /// 变影响域（冻结始终限本项目，不株连其他项目）。
     pub conflict_auto_resolve: bool,
+    /// 重派决策量化（能力扩展 P34；默认 false = D3 换节点重派维持匹配器
+    /// 决策表现状行为字节等价）。true：换节点候选在匹配器排序之上叠加
+    /// worker × 任务类型历史成功率指纹三档权重（prefer 提前 / avoid 靠后，
+    /// 非绝对排除；样本 <3 一律 neutral），重派换节点评论带档位留痕。
+    /// 记账与开关解耦（评审定案照常入账，灰度期攒数据，开闸即有历史）。
+    pub fingerprint_weighting: bool,
 }
 
 impl Default for BoardFlagConfig {
@@ -426,6 +433,7 @@ impl Default for BoardFlagConfig {
             budget: BoardBudgetConfig::default(),
             archive: BoardArchiveConfig::default(),
             conflict_auto_resolve: false,
+            fingerprint_weighting: false,
         }
     }
 }
@@ -595,7 +603,7 @@ impl Default for BoardBackupConfig {
 ///   有能力缺口，如 landlock 不覆盖网络）**不算不可用**——严格模式放行并
 ///   在日志/状态里如实标注缺口。默认 false = 现状字节不变。开关经
 ///   ConfigStore 翻转后对后续工具调用实时生效（与 `sandbox` 同链路）。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutorSeparationConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -605,6 +613,85 @@ pub struct ExecutorSeparationConfig {
     pub allow_network: bool,
     #[serde(default)]
     pub strict: bool,
+    /// P24（2026-09-25 能力扩展 WS1）：沙盒后端选择（`executor.backend`，
+    /// 缺省 `"auto"`）。值域：`auto`（默认——Windows 上 Sandboxie 就绪则
+    /// sandboxie，否则退 Windows 用户态 ACL 轻量档）/ `sandboxie`（显式钉
+    /// Sandboxie）/ `acl`（显式钉 ACL 档）。未知值诚实拒绝（选型返回 None
+    /// + warn，不静默改道）。非 Windows 平台无消费方（landlock/bwrap/
+    /// Seatbelt 选型不读此键）。
+    ///
+    /// ⚠ 实验性标注：acl 档是**半档隔离**（强制完整性标签 No-Write-Up 围栏
+    /// + DACL 原语），禁不了网、写围栏依赖令牌降级——详见
+    /// `crates/nemesis-sandbox/src/backend.rs` 的 P24 模块文档与诚实边界。
+    /// 兼容性：`#[serde(default)]`——老 config.json 缺键 = `"auto"`，行为与
+    /// 升级前完全一致（typed save 会把缺省值显式写回，语义不变）。
+    #[serde(default = "default_executor_backend")]
+    pub backend: String,
+    /// D4（2026-09-27）：DACL 定向档开关组（`executor.acl` 段，缺省全关
+    /// = 现状字节不变）。见 [`ExecutorAclConfig`]。
+    #[serde(default)]
+    pub acl: ExecutorAclConfig,
+}
+
+/// `executor.acl` 段：DACL 定向档（write-restricted 受限令牌 + workspace
+/// SID GRANT ACE 树，D1-D3 原语）的细粒度开关。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutorAclConfig {
+    /// DACL 定向档总开关（默认 false = opt-in；开 = executor 子进程经
+    /// `CreateProcessAsUserW` + 受限令牌 spawn——内核强制写围栏，与子进程
+    /// 自装完整性标签两层叠加）。关/装配失败（宽松模式）→ 回退现状路径。
+    #[serde(default)]
+    pub dacl: bool,
+    /// 本档自己的 fail-closed 闸（与全局 `executor.strict` 独立——那条只认
+    /// Sandboxie）：true 时 DACL 装配失败 = **拒绝执行**（不降级）。
+    #[serde(default)]
+    pub strict: bool,
+    /// 树遍历预算（GRANT ACE 打标的文件数上限，同 `label_tree` 既有语义）。
+    #[serde(default = "default_acl_max_files")]
+    pub max_files: u32,
+}
+
+impl Default for ExecutorAclConfig {
+    /// 手写而非 derive（serde 双路径陷阱，hook_flips 真进程测试抓出）：
+    /// executor 段**无 acl 键**时 serde 走**结构体级** `Default::default()`
+    /// ——字段级 `#[serde(default = "...")]` 不经过，derive 的 `u32` 默认
+    /// 是 0，会让 hook 的铺树预算直接耗尽（写操作全死）。手写让两条构造
+    /// 路径收敛到同一组默认值。
+    fn default() -> Self {
+        Self {
+            dacl: false,
+            strict: false,
+            max_files: default_acl_max_files(),
+        }
+    }
+}
+
+/// `executor.acl.max_files` 缺省值（设计稿 §3.4：20000）。
+fn default_acl_max_files() -> u32 {
+    20_000
+}
+
+/// `executor.backend` 的 serde 缺省值（`"auto"`）。独立函数而非 `String::default`
+/// ——空字符串不是合法选择（选型按未知值诚实拒绝），缺键必须落成 `"auto"`。
+fn default_executor_backend() -> String {
+    "auto".to_string()
+}
+
+impl Default for ExecutorSeparationConfig {
+    /// 手写而非 derive（与 [`ExecutorAclConfig`] 同款 serde 双路径陷阱）：
+    /// `backend` 的 derive 默认是空串，而空串不是合法选型值（诚实拒绝）——
+    /// `unwrap_or_default()`（sandbox handler 对缺失 executor 段的补齐路径）
+    /// 必须落成 `"auto"` 而不是 `""`。
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            sandbox: false,
+            allow_network: false,
+            strict: false,
+            backend: default_executor_backend(),
+            acl: ExecutorAclConfig::default(),
+        }
+    }
 }
 
 // ============================================================================
@@ -698,6 +785,13 @@ pub struct AgentsConfig {
     /// 运行时改键下一轮生效。
     #[serde(default = "default_true")]
     pub image_downscale: bool,
+    /// WS9/P22：workspace 写租约开关。默认**开**——主 loop / 项目 loop /
+    /// executor 子进程的写类工具经 workspace 级文件锁互斥（宽限 30s 超时
+    /// 诚实拒绝；持有进程死亡 OS 自动释放）。**装配期消费**（gateway/
+    /// exec_worker 启动时按本键构造租约并包装写类工具）——改键需重启
+    /// 生效（与 executor 段同语义，非 loop 侧 fresh-read）。
+    #[serde(default = "default_true")]
+    pub lease_enabled: bool,
     /// 件4（2026-09-24 HOOK 三合一收口 §6）：纪律闭环总开关。默认
     /// **false**（D5 灰度）——关 = 闸/证伪钩子不注册、`/discipline` 提示
     /// 未启用、任务 marker 不生效。开 = 任务描述含 `[discipline:bugfix]`
@@ -714,6 +808,12 @@ pub struct AgentsConfig {
     /// （fail-safe 到已知旧行为）。解析在 nemesis-agent::prompt。
     #[serde(default = "default_prompt_system")]
     pub prompt_system: String,
+    /// P32（cache-warmer）配置节（默认关；语义见 [`CacheWarmerConfig`]）。
+    /// typed 字段化以保证 save_config 往返不丢键（vision extra 键回归的
+    /// 同类预防——AgentsConfig 无 flatten extra，未声明键会被 typed 保存
+    /// 静默抹掉）。
+    #[serde(default)]
+    pub cache_warmer: CacheWarmerConfig,
 }
 
 /// `agents.discipline` 配置节。
@@ -722,6 +822,38 @@ pub struct DisciplineConfig {
     /// 总开关，默认 false（D5）。
     #[serde(default)]
     pub enabled: bool,
+}
+
+/// P32（cache-warmer）`agents.cache_warmer` 配置节。消费方在
+/// `nemesis-agent` loop/cache_warmer.rs（fresh-read，运行中改键热关生效；
+/// 启动后才开需重启——诚实不对称见该模块注释）。类型在此单一真相源，
+/// agent 侧经 serde 反序列化消费同一份默认值。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheWarmerConfig {
+    /// 总开关，默认 **false**（D-4 成本敏感 opt-in）——关 = gateway 启动
+    /// 不 spawn 任何定时任务（零副作用）。开 = idle 会话在 prompt cache
+    /// TTL×90% 时用 1-token 重放刷新缓存（TTL 需模型条目显式声明
+    /// `cache_ttl_secs`，未知不 warm）。
+    #[serde(default)]
+    pub enabled: bool,
+    /// 单次 warm 重放的成本上限（USD）。按价目表保守估算（全价 input +
+    /// 1 output token，不假设 cache read 折扣）；估算超限或价目表未命中
+    /// → 跳过。默认 0.05。
+    #[serde(default = "default_cache_warmer_cost_limit_usd")]
+    pub cost_limit_usd: f64,
+}
+
+impl Default for CacheWarmerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            cost_limit_usd: default_cache_warmer_cost_limit_usd(),
+        }
+    }
+}
+
+fn default_cache_warmer_cost_limit_usd() -> f64 {
+    0.05
 }
 
 /// I1 (devtool-upgrade 阶段 3): `agents.fs_watcher` config section —
@@ -847,15 +979,20 @@ pub struct LspToolConfig {
 }
 
 /// C4 (2026-09-04 devtool-upgrade 阶段 1): `agents.diagnostics_loop` config
-/// section. 编辑→诊断回灌闭环（阶段 2 C1-C3 消费）的独立开关——config 键先行，
-/// dashboard 可在闭环落地前先配置。**与 `agents.lsp_tool.enabled` 解耦**：
-/// 诊断闭环开而 lsp 工具关是合法组合（闭环自身按需起服务器）。
+/// section. 编辑→诊断回灌闭环（阶段 2 C1-C3 消费）的独立开关。**与
+/// `agents.lsp_tool.enabled` 解耦**：诊断闭环开而 lsp 工具关是合法组合
+/// （闭环自身按需起服务器）。
+///
+/// P2（2026-09-25 能力扩展 WS3）：`enabled` 默认翻转为 **true**（对齐
+/// 业界通行的「内置无条件开启」）——缺键/缺段按开处理；用户显式写
+/// `false` 的配置不受影响（serde 显式值优先于 default fn）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiagnosticsLoopConfig {
-    /// Enable the edit→diagnostics feedback loop (default false).
-    #[serde(default)]
+    /// Enable the edit→diagnostics feedback loop (default true since P2).
+    #[serde(default = "default_diagnostics_enabled")]
     pub enabled: bool,
-    /// Max diagnostics fed back per edit (default 20).
+    /// Max diagnostics fed back per edit round (default 20; P3 起为跨文件
+    /// 聚合后的总量上限).
     #[serde(default = "default_diagnostics_max_errors")]
     pub max_errors: usize,
     /// Max wall-clock wait for diagnostics after an edit, in ms (default 2000).
@@ -863,18 +1000,24 @@ pub struct DiagnosticsLoopConfig {
     pub wait_max_ms: u64,
 }
 
-// 手写 Default（不 derive）：字段级 `#[serde(default)]` 在 **整个
+// 手写 Default（不 derive）：字段级 serde default fn 在 **整个
 // `diagnostics_loop` 键缺席**时用的是类型的 Default impl（derive 会给零值
 // 20/2000 的本意就落空了——首测抓出）。手写保证「全键缺席」与「部分键
 // 缺席」（内部字段的 serde default fn 管）两条路都落在同一组默认值上。
 impl Default for DiagnosticsLoopConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: default_diagnostics_enabled(),
             max_errors: default_diagnostics_max_errors(),
             wait_max_ms: default_diagnostics_wait_max_ms(),
         }
     }
+}
+
+/// P2（能力扩展 WS3）：诊断回灌默认开（同源供 serde 缺键路径与手写
+/// Default impl 消费——两路必须落同一值）。
+fn default_diagnostics_enabled() -> bool {
+    true
 }
 
 fn default_diagnostics_max_errors() -> usize {
@@ -1005,6 +1148,14 @@ pub struct AgentDefaults {
     /// max(上游要求, 阶梯值)。0 = 关闭重试（一次失败即终局，旧行为）。
     #[serde(default = "default_rate_limit_retries")]
     pub rate_limit_retries: i64,
+    /// P5（能力扩展 WS2 compaction）：自动压缩的逐字尾巴 token 预算
+    /// （默认 20000，对齐 业界 keepRecentTokens）。压缩边界从「保留近
+    /// K_TARGET=6 条」改为「保留近 N token」（MODEL-FACING 投影估算），
+    /// 预算边界再经 tool_safe_boundary 回退，保证永不切在 tool_call/result
+    /// 对中间。**0 = 回退旧按条数行为**。loop 侧 fresh-read（每轮现读
+    /// config.json），运行中改键下一轮生效。
+    #[serde(default = "default_compact_keep_recent_tokens")]
+    pub compact_keep_recent_tokens: i64,
 }
 
 impl Default for AgentDefaults {
@@ -1027,6 +1178,7 @@ impl Default for AgentDefaults {
             diagnostics_loop: DiagnosticsLoopConfig::default(),
             format_on_save: FormatOnSaveConfig::default(),
             rate_limit_retries: default_rate_limit_retries(),
+            compact_keep_recent_tokens: default_compact_keep_recent_tokens(),
         }
     }
 }
@@ -1181,6 +1333,29 @@ pub struct ChannelsConfig {
     pub websocket: WebSocketChannelConfig,
     #[serde(default)]
     pub external: ExternalConfig,
+    // Wave 3（WS12 gateway 集成面）：存量 feature-gated 通道补缺 + 五新通道。
+    // 字段对照 nemesis-channels 侧各通道 Config（真相源在各通道 mod 顶部），
+    // gateway web_init 逐字段转换到 ChannelInitConfig。
+    #[serde(default)]
+    pub matrix: MatrixConfig,
+    #[serde(default)]
+    pub irc: IrcConfig,
+    #[serde(default)]
+    pub signal: SignalConfig,
+    #[serde(default)]
+    pub mastodon: MastodonConfig,
+    #[serde(default)]
+    pub bluesky: BlueskyConfig,
+    #[serde(default)]
+    pub wecom: WeComConfig,
+    #[serde(default)]
+    pub mattermost: MattermostConfig,
+    #[serde(default)]
+    pub nostr: NostrConfig,
+    #[serde(default)]
+    pub mqtt: MqttConfig,
+    #[serde(default)]
+    pub wechat: WeChatConfig,
 }
 
 // Channel configuration structs follow below.
@@ -1191,6 +1366,10 @@ pub struct WhatsAppConfig {
     pub enabled: bool,
     #[serde(default)]
     pub bridge_url: String,
+    /// 桥 API key（出站鉴权凭据；WS12 补齐——通道侧 `api_key: Option<String>`
+    /// 此前无 config 出口，装配点空串 → None）。支持 vault/env/yaml 引用。
+    #[serde(default)]
+    pub api_key: String,
     #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
     pub allow_from: Vec<String>,
     #[serde(default)]
@@ -1446,6 +1625,398 @@ pub struct ExternalConfig {
     pub web_session_id: String,
 }
 
+// ---------------------------------------------------------------------------
+// feature-gated 通道 config（Wave 3 WS12 集成面补齐）
+//
+// 与 nemesis-channels 侧各通道 Config 字段一一对应（真相源在各通道 mod 顶部
+// 的 `pub struct XConfig`）；`enabled` / `sync_to` 是宿主侧路由字段（通道侧
+// 无此二字段——enabled 由 gateway init 臂消费，sync_to 由 setup_sync_targets
+// 消费）。秘密字段在 config.json 里只存 `vault:` / `env:` / `yaml:` 引用，
+// gateway 装配点统一经 resolve_secret_or_empty / resolve_auth_token_or_random
+// 解析（见 web_init.rs 各转换臂）。
+// ---------------------------------------------------------------------------
+
+/// Matrix 通道配置（对应 `nemesis_channels::matrix::MatrixConfig`）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MatrixConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Homeserver URL（如 `https://matrix.org`）。
+    #[serde(default)]
+    pub homeserver: String,
+    /// Bot 用户 ID（如 `@bot:matrix.org`）。
+    #[serde(default)]
+    pub user_id: String,
+    /// Access token（出站 API 凭据；支持 vault/env/yaml 引用）。
+    #[serde(default)]
+    pub access_token: String,
+    /// 默认房间 ID；空 = 未设（通道侧 `room_id: Option<String>`，装配点
+    /// 空串 → None）。
+    #[serde(default)]
+    pub room_id: String,
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
+    pub allow_from: Vec<String>,
+    #[serde(default)]
+    pub sync_to: Vec<String>,
+}
+
+/// IRC 通道配置（对应 `nemesis_channels::irc::IRCConfig`）。
+/// Default 对齐通道侧（use_tls=true、退避 5/300）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IrcConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// 服务器地址（如 `irc.libera.chat:6697`）。
+    #[serde(default)]
+    pub server: String,
+    /// 是否走 TLS（通道侧默认 true）。
+    #[serde(default)]
+    pub use_tls: bool,
+    /// 昵称。
+    #[serde(default)]
+    pub nick: String,
+    /// 服务器密码（出站鉴权凭据；空 = 无，通道侧 `password: Option<String>`）。
+    #[serde(default)]
+    pub password: String,
+    /// 加入的频道（如 `#nemesisbot`）。
+    #[serde(default)]
+    pub channel: String,
+    /// 重连退避基数秒（通道侧默认 5）。
+    #[serde(default)]
+    pub reconnect_backoff_secs: i64,
+    /// 重连退避上限秒（通道侧默认 300）。
+    #[serde(default)]
+    pub max_reconnect_backoff_secs: i64,
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
+    pub allow_from: Vec<String>,
+    #[serde(default)]
+    pub sync_to: Vec<String>,
+}
+
+impl Default for IrcConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            server: String::new(),
+            use_tls: true,
+            nick: String::new(),
+            password: String::new(),
+            channel: String::new(),
+            reconnect_backoff_secs: 5,
+            max_reconnect_backoff_secs: 300,
+            allow_from: vec![],
+            sync_to: vec![],
+        }
+    }
+}
+
+/// Signal 通道配置（对应 `nemesis_channels::signal::SignalConfig`，
+/// signal-cli-rest-api 桥接形态）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SignalConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// signal-cli-rest-api 基地址。
+    #[serde(default)]
+    pub api_url: String,
+    /// 本机电话号码（带国家码）。
+    #[serde(default)]
+    pub phone_number: String,
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
+    pub allow_from: Vec<String>,
+    #[serde(default)]
+    pub sync_to: Vec<String>,
+}
+
+/// Mastodon 通道配置（对应 `nemesis_channels::mastodon::MastodonConfig`）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MastodonConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// 实例地址（如 `https://mastodon.social`）。
+    #[serde(default)]
+    pub server: String,
+    /// OAuth access token（出站 API 凭据；支持 vault/env/yaml 引用）。
+    #[serde(default)]
+    pub access_token: String,
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
+    pub allow_from: Vec<String>,
+    #[serde(default)]
+    pub sync_to: Vec<String>,
+}
+
+/// Bluesky 通道配置（对应 `nemesis_channels::bluesky::BlueskyConfig`）。
+/// Default 对齐通道侧（poll_interval=10）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BlueskyConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// 服务器地址（如 `https://bsky.social`）。
+    #[serde(default)]
+    pub server: String,
+    /// 账号 handle（如 `nemesisbot.bsky.social`）。
+    #[serde(default)]
+    pub handle: String,
+    /// App password（出站登录凭据；支持 vault/env/yaml 引用）。
+    #[serde(default)]
+    pub password: String,
+    /// DID；空 = 未设（通道侧自动解析，装配点空串 → None）。
+    #[serde(default)]
+    pub did: String,
+    /// 通知轮询间隔秒（通道侧默认 10）。
+    #[serde(default)]
+    pub poll_interval: i64,
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
+    pub allow_from: Vec<String>,
+    #[serde(default)]
+    pub sync_to: Vec<String>,
+}
+
+impl Default for BlueskyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            server: String::new(),
+            handle: String::new(),
+            password: String::new(),
+            did: String::new(),
+            poll_interval: 10,
+            allow_from: vec![],
+            sync_to: vec![],
+        }
+    }
+}
+
+/// WeCom（企业微信）通道配置（P25，对应 `nemesis_channels::wecom::WeComConfig`）。
+/// 字段默认全空——通道侧 new() 对 listen_addr/callback_path 有空值归一。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WeComConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// 群机器人 webhook 地址（出站默认目标；支持 vault/env/yaml 引用）。
+    #[serde(default)]
+    pub webhook_url: String,
+    /// chat_id → 群机器人 webhook 路由表（多群出站；chat_id 命中优先于默认）。
+    #[serde(default)]
+    pub webhooks: std::collections::HashMap<String, String>,
+    /// 回调验签 token（企业微信后台配置；鉴权验证类，支持引用）。
+    #[serde(default)]
+    pub token: String,
+    /// 回调消息加密密钥 EncodingAESKey（43 字符；鉴权验证类，支持引用）。
+    #[serde(default)]
+    pub encoding_aes_key: String,
+    /// 企业微信 corp_id（解密 receiveid 强校验用；空 = 不校验）。
+    #[serde(default)]
+    pub corp_id: String,
+    /// 回调 HTTP 监听地址（空 = 通道侧默认 0.0.0.0:9898）。
+    #[serde(default)]
+    pub listen_addr: String,
+    /// 回调路径（空 = 通道侧默认 /wecom/callback）。
+    #[serde(default)]
+    pub callback_path: String,
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
+    pub allow_from: Vec<String>,
+    #[serde(default)]
+    pub sync_to: Vec<String>,
+}
+
+/// Mattermost 通道配置（P26，对应 `nemesis_channels::mattermost::MattermostConfig`）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MattermostConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// 服务器基地址（如 `https://mattermost.example.com`，http/https）。
+    #[serde(default)]
+    pub base_url: String,
+    /// Bot token（WS 网关鉴权 + REST 出站鉴权共用；vault/env/yaml 解析走
+    /// 出站凭据语义 `resolve_secret_or_empty`——缺失不阻断启动，鉴权失败在
+    /// users/me / WS challenge 处暴露）。
+    #[serde(default)]
+    pub bot_token: String,
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
+    pub allow_from: Vec<String>,
+    /// 监听的频道 ID / 名称列表（空 = bot 所在全部频道）。
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
+    pub channels: Vec<String>,
+    #[serde(default)]
+    pub sync_to: Vec<String>,
+}
+
+/// nostr 通道配置（P27，对应 `nemesis_channels::nostr::NostrConfig`）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct NostrConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// relay WebSocket 地址列表（`wss://` / `ws://`），至少一条。
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
+    pub relays: Vec<String>,
+    /// 本机私钥（64-hex）。config.json 只存 `vault:`/`env:`/`yaml:` 引用，
+    /// 装配点解析后传明文（nostr.rs 模块头"密钥管理"约定；
+    /// 通道侧对未解析引用前缀响亮拒绝）。
+    #[serde(default)]
+    pub private_key: String,
+    /// 发件人 x-only 公钥白名单（64-hex；空 = 放行所有）。
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
+    pub allow_from: Vec<String>,
+    /// 断线重连间隔秒（通道侧"0 视作缺省"= 默认 5）。
+    #[serde(default)]
+    pub reconnect_secs: i64,
+    #[serde(default)]
+    pub sync_to: Vec<String>,
+}
+
+/// MQTT 订阅 topic filter → 回包 topic 映射条目（对应
+/// `nemesis_channels::mqtt::MqttTopicMapping`）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MqttTopicMapping {
+    /// 订阅的 topic filter（支持 `+`/`#` 通配）。
+    #[serde(default)]
+    pub topic: String,
+    /// 出站回包 topic；空 = 此映射不承接回包。
+    #[serde(default)]
+    pub reply_topic: String,
+}
+
+/// MQTT 通道配置（P28，对应 `nemesis_channels::mqtt::MqttChannelConfig`）。
+/// Default 对齐通道侧文档默认值（broker 127.0.0.1:1883、keep-alive 30、
+/// clean_session=true、退避 5、QoS 1）——通道侧对 broker_host 空值响亮报错、
+/// 端口/keep-alive 原样透传 rumqttc，缺省值必须在 config 层给足。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MqttConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// broker 地址（默认 127.0.0.1）。
+    #[serde(default)]
+    pub broker_host: String,
+    /// broker 端口（默认 1883）。
+    #[serde(default)]
+    pub broker_port: i64,
+    /// MQTT client id；空 = 通道侧自动生成 `nemesisbot-<pid>`。
+    #[serde(default)]
+    pub client_id: String,
+    /// 用户名；空 = 匿名连接（支持 vault/env/yaml 引用）。
+    #[serde(default)]
+    pub username: String,
+    /// 密码；空 = 无（支持 vault/env/yaml 引用）。
+    #[serde(default)]
+    pub password: String,
+    /// keep-alive 秒数（默认 30；0 = 关闭保活）。
+    #[serde(default)]
+    pub keep_alive_secs: i64,
+    /// clean session（默认 true）。
+    #[serde(default)]
+    pub clean_session: bool,
+    /// 断线重连退避秒数（默认 5，通道侧下限 1）。
+    #[serde(default)]
+    pub reconnect_delay_secs: i64,
+    /// 订阅与出站统一 QoS（默认 1；0/1/2，>2 通道侧构造期拒绝）。
+    #[serde(default)]
+    pub qos: i64,
+    /// 订阅 + 回包映射表。
+    #[serde(default)]
+    pub topics: Vec<MqttTopicMapping>,
+    /// 全局默认回包 topic；空 = 无默认（映射/学习都缺位时出站报错）。
+    #[serde(default)]
+    pub default_reply_topic: String,
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
+    pub allow_from: Vec<String>,
+    /// 启用 TLS（默认 false = 纯 TCP）。true 时通道侧走 rustls（ring provider）。
+    #[serde(default)]
+    pub use_tls: bool,
+    /// CA 证书 PEM 路径（use_tls=true 必填；自签/私有 PKI 场景）。
+    #[serde(default)]
+    pub ca_cert_path: String,
+    /// 客户端证书 PEM 路径（mTLS；与 client_key_path 成对出现）。
+    #[serde(default)]
+    pub client_cert_path: String,
+    /// 客户端私钥 PEM 路径（mTLS；与 client_cert_path 成对出现）。
+    #[serde(default)]
+    pub client_key_path: String,
+    #[serde(default)]
+    pub sync_to: Vec<String>,
+}
+
+impl Default for MqttConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            broker_host: "127.0.0.1".to_string(),
+            broker_port: 1883,
+            client_id: String::new(),
+            username: String::new(),
+            password: String::new(),
+            keep_alive_secs: 30,
+            clean_session: true,
+            reconnect_delay_secs: 5,
+            qos: 1,
+            topics: vec![],
+            default_reply_topic: String::new(),
+            allow_from: vec![],
+            use_tls: false,
+            ca_cert_path: String::new(),
+            client_cert_path: String::new(),
+            client_key_path: String::new(),
+            sync_to: vec![],
+        }
+    }
+}
+
+/// 微信个人微信通道配置（P29，iLink Bot API，对应
+/// `nemesis_channels::wechat::WeChatConfig`）。Default 对齐通道侧
+/// （base_url/send_path/回调监听/签名方案均为通道侧常量——协议形态为
+/// 实现假设，真机校准只需要改 config）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WeChatConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// 出站 REST 基址（通道侧默认 `https://ilink.bot.weixin.qq.com`，假设值）。
+    #[serde(default)]
+    pub base_url: String,
+    /// 回调鉴权 token（鉴权验证类；必填，通道侧空值拒绝启动；支持引用）。
+    #[serde(default)]
+    pub token: String,
+    /// 出站消息接口路径（通道侧默认 /v1/message/send，假设值）。
+    #[serde(default)]
+    pub send_path: String,
+    /// 回调监听地址（通道侧默认 0.0.0.0:9541）。
+    #[serde(default)]
+    pub callback_listen_addr: String,
+    /// 回调路径（通道侧默认 /wechat/callback）。
+    #[serde(default)]
+    pub callback_path: String,
+    /// 签名方案：`hmac-sha256`（默认）/ `sha1` / `none`（未知值通道侧 loud 拒绝）。
+    #[serde(default)]
+    pub signature_scheme: String,
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
+    pub allow_from: Vec<String>,
+    /// 联系人映射：user_id → 备注别名（命中时写入 metadata `contact_alias`）。
+    #[serde(default)]
+    pub contacts: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub sync_to: Vec<String>,
+}
+
+impl Default for WeChatConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base_url: "https://ilink.bot.weixin.qq.com".to_string(),
+            token: String::new(),
+            send_path: "/v1/message/send".to_string(),
+            callback_listen_addr: "0.0.0.0:9541".to_string(),
+            callback_path: "/wechat/callback".to_string(),
+            signature_scheme: "hmac-sha256".to_string(),
+            allow_from: vec![],
+            contacts: std::collections::HashMap::new(),
+            sync_to: vec![],
+        }
+    }
+}
+
 // ============================================================================
 // Model Config
 // ============================================================================
@@ -1580,6 +2151,20 @@ pub struct ToolsConfig {
     pub cron: CronToolsConfig,
     #[serde(default)]
     pub exec: ExecConfig,
+    #[serde(default)]
+    pub hardware: HardwareToolsConfig,
+}
+
+/// P8 GPIO 白名单：I2C 地址访问策略（`tools.hardware` 段）。
+/// 空段列表 = 内置默认（可自由寻址空间 0x08-0x77）；deny 优先于 allow。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HardwareToolsConfig {
+    /// 允许的 7 位地址段 `[[lo, hi], ...]`（闭区间）；空 = 内置默认 0x08-0x77。
+    #[serde(default)]
+    pub i2c_allow_ranges: Vec<(u8, u8)>,
+    /// 拒绝的地址段（在 allow 之上再排除，用于屏蔽已知有风险的设备地址）。
+    #[serde(default)]
+    pub i2c_deny_ranges: Vec<(u8, u8)>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1702,15 +2287,120 @@ pub struct ClusterFlagConfig {
 pub struct MemoryFlagConfig {
     #[serde(default)]
     pub enabled: bool,
+    /// P31 记忆 dreaming（三段式记忆巩固；None = 全默认——enabled=false 关）。
+    #[serde(default)]
+    pub dreaming: Option<DreamingConfig>,
 }
 
+/// `memory.dreaming` 配置节（P31 记忆巩固）。
+///
+/// sweep 挂载于 gateway 启动同步（job 名 `memory-dreaming:sweep`）；LLM 决策
+/// 走 `agents.small_model` 通道（未配则回落主模型）。默认全关——dreaming 是
+/// 自主改写记忆的行为，opt-in。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DreamingConfig {
+    /// 总开关，默认 false（opt-in）。
+    #[serde(default)]
+    pub enabled: bool,
+    /// sweep cron 表达式（5/6 字段，本地时间），默认每日 03:30。
+    #[serde(default = "default_dreaming_cron")]
+    pub cron: String,
+    /// 每次 sweep 送 LLM 决策的候选条目上限（按 6 信号加权分取 topK）。
+    #[serde(default = "default_dreaming_top_k")]
+    pub top_k: usize,
+    /// 6 信号权重逐项覆盖（None = 内置默认；未给的项用默认值）。
+    #[serde(default)]
+    pub weights: Option<DreamingWeightsConfig>,
+}
+
+impl Default for DreamingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            cron: default_dreaming_cron(),
+            top_k: default_dreaming_top_k(),
+            weights: None,
+        }
+    }
+}
+
+/// 6 信号权重覆盖节（P31）。全部 Option——只覆盖用户显式给出的项。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DreamingWeightsConfig {
+    /// 召回次数权重。
+    #[serde(default)]
+    pub recall: Option<f64>,
+    /// 时间衰减（久未召回）权重。
+    #[serde(default)]
+    pub decay: Option<f64>,
+    /// 条目冲突权重。
+    #[serde(default)]
+    pub conflict: Option<f64>,
+    /// 冗余度权重。
+    #[serde(default)]
+    pub redundancy: Option<f64>,
+    /// 年龄权重。
+    #[serde(default)]
+    pub age: Option<f64>,
+    /// 来源可靠性（不可靠→更需审查）权重。
+    #[serde(default)]
+    pub source: Option<f64>,
+}
+
+fn default_dreaming_cron() -> String {
+    "30 3 * * *".to_string()
+}
+
+fn default_dreaming_top_k() -> usize {
+    8
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillsConfig {
     #[serde(default)]
     pub enabled: bool,
     /// Whether `skill_manage` writes require interactive approval (default false).
     #[serde(default)]
     pub manage_approval: bool,
+    /// P11 验签：无签名技能是否放行（默认 true 兼容存量；false = strict，拒绝无签名）。
+    #[serde(default = "default_skills_allow_unsigned")]
+    pub allow_unsigned: bool,
+    /// P13 装前审批：安装走审批卡（默认 true；CLI 可 --yes 跳过，WSAPI 走审批基建）。
+    #[serde(default = "default_skills_install_approval")]
+    pub install_approval: bool,
+    /// P16 版本龄下限（天；默认 0 = 关）。
+    #[serde(default)]
+    pub min_age_days: i64,
+    /// P16 版本龄策略："warn"（默认）| "block"。
+    #[serde(default = "default_skills_min_age_policy")]
+    pub min_age_policy: String,
+}
+
+// Default 手工实现与 serde 缺省函数同源（derive 会把 allow_unsigned 落成
+// false，与「默认 true 兼容存量」语义相反）。
+impl Default for SkillsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            manage_approval: false,
+            allow_unsigned: default_skills_allow_unsigned(),
+            install_approval: default_skills_install_approval(),
+            min_age_days: 0,
+            min_age_policy: default_skills_min_age_policy(),
+        }
+    }
+}
+
+fn default_skills_allow_unsigned() -> bool {
+    true
+}
+
+fn default_skills_install_approval() -> bool {
+    true
+}
+
+fn default_skills_min_age_policy() -> String {
+    "warn".to_string()
 }
 
 /// MCP 主配置（config.mcp.json 顶层）。**单一真相源**（2026-08-31 收敛）：
@@ -2876,6 +3566,7 @@ pub fn default_config() -> Config {
         agents: AgentsConfig {
             discipline: DisciplineConfig::default(),
             prompt_system: default_prompt_system(),
+            cache_warmer: CacheWarmerConfig::default(),
             claude_code_tool: ClaudeCodeToolConfig::default(),
             codex_tool: CodexToolConfig::default(),
             lsp_tool: LspToolConfig::default(),
@@ -2886,6 +3577,7 @@ pub fn default_config() -> Config {
             small_model: None,
             doom_loop_approval: false,
             image_downscale: true,
+            lease_enabled: true,
             defaults: AgentDefaults {
                 workspace: ws,
                 restrict_to_workspace: true,
@@ -2947,6 +3639,7 @@ pub fn default_config() -> Config {
             port: 18790,
         },
         tools: ToolsConfig {
+            hardware: HardwareToolsConfig::default(),
             web: WebToolsConfig {
                 duckduckgo: DuckDuckGoConfig {
                     enabled: true,
@@ -3393,6 +4086,33 @@ fn default_spill_retention_days() -> i64 {
 fn default_rate_limit_retries() -> i64 {
     10
 }
+
+/// P5（能力扩展 WS2 compaction）：逐字尾巴 token 预算缺省值（单一真相源：
+/// serde 缺省 / raw-JSON 解析 / Default impl 三方共用）。对齐 业界的
+/// keepRecentTokens=20000 口径。
+pub const DEFAULT_COMPACT_KEEP_RECENT_TOKENS: i64 = 20_000;
+
+/// [`DEFAULT_COMPACT_KEEP_RECENT_TOKENS`] 的 serde 缺省函数形态。
+fn default_compact_keep_recent_tokens() -> i64 {
+    DEFAULT_COMPACT_KEEP_RECENT_TOKENS
+}
+
+/// P5：raw config JSON 读取 `agents.defaults.compact_keep_recent_tokens`。
+///
+/// AgentLoop 的 compact 域走 fresh-read raw JSON（同 `current_max_tokens`
+/// 模式，运行中改键下一轮生效），不经过 typed `Config`——键路径与缺省值
+/// 必须和 typed 字段单源，这里就是那个单源。缺键/非数 → 缺省 20000；
+/// 负数视为 0（回退旧按条数路径，语义见 compact 域）。
+pub fn resolve_compact_keep_recent_tokens(cfg: Option<&serde_json::Value>) -> usize {
+    cfg.and_then(|v| {
+        v.get("agents")?
+            .get("defaults")?
+            .get("compact_keep_recent_tokens")?
+            .as_i64()
+    })
+    .map(|n| n.max(0) as usize)
+    .unwrap_or(DEFAULT_COMPACT_KEEP_RECENT_TOKENS as usize)
+}
 fn default_gateway_host() -> String {
     "0.0.0.0".to_string()
 }
@@ -3590,6 +4310,11 @@ mod extra_tests;
 
 #[cfg(test)]
 mod mcp_serde_tests;
+
+// P5（能力扩展 WS2）：compact_keep_recent_tokens 配置面（serde 缺省 /
+// roundtrip / raw-JSON 解析）测试。
+#[cfg(test)]
+mod ws2_compact_config_tests;
 
 // Single shared process-global-state lock for ALL tests in this crate that touch
 // `std::env::set_var` / `set_current_dir` / load config (which reads env). These

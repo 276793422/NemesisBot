@@ -34,6 +34,7 @@ impl ModuleHandler for SkillsHandler {
             "uninstall",
             "search",
             "install",
+            "verify",
             "config.get",
             "config.save",
             "config.update",
@@ -80,8 +81,9 @@ impl ModuleHandler for SkillsHandler {
             }
             "install" => {
                 let data = data.ok_or("missing data")?;
-                self.install(&data, workspace).await
+                self.install_with_ctx(&data, workspace, Some(ctx)).await
             }
+            "verify" => self.verify(workspace, data.as_ref()),
             "config.get" => self.config_get(workspace),
             "config.save" => {
                 let data = data.ok_or("missing data")?;
@@ -212,6 +214,33 @@ fn save_config(workspace: &str, cfg: &nemesis_config::SkillsFullConfig) -> Resul
         .map_err(|e| format!("failed to save skills config: {}", e))
 }
 
+/// 主配置 `{home}/config.json` 的 skills 段（WS4 P11/P16 消费）。
+/// 优先 live 缓存（与 Dashboard config 面同源），回退磁盘读取；
+/// 两路都不可得 = None（调用方按 installer 默认走）。
+fn load_main_skills_config(home: &str) -> Option<nemesis_config::SkillsConfig> {
+    if let Some(cfg) = nemesis_config::load_live() {
+        return cfg.skills;
+    }
+    let path = PathBuf::from(home).join("config.json");
+    nemesis_config::load_config(&path)
+        .ok()
+        .and_then(|c| c.skills)
+}
+
+/// GitHub 安装目标归一化：接受 `owner/repo`、完整 URL（parse_github_url 同款）、
+/// 自带 `@ref` 的形态；显式 `ref` 字段优先级低于输入串内嵌 `@ref`。
+fn normalize_repo_ref(repo: &str, ref_field: Option<&str>) -> Result<String, String> {
+    if repo.contains('@') {
+        return Ok(repo.trim().to_string());
+    }
+    let (owner, name) = parse_github_url(repo)?;
+    let base = format!("{}/{}", owner, name);
+    match ref_field {
+        Some(r) if !r.trim().is_empty() => Ok(format!("{}@{}", base, r.trim())),
+        _ => Ok(base),
+    }
+}
+
 impl SkillsHandler {
     fn installed(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
         let skills_dir = PathBuf::from(workspace).join("skills");
@@ -286,11 +315,10 @@ impl SkillsHandler {
     }
 
     fn uninstall(&self, workspace: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
-        let skill_dir = crate::handlers::resolve_path(workspace, &format!("skills/{}", name))?;
-        if !skill_dir.exists() {
-            return Err(format!("skill '{}' not found", name));
-        }
-        std::fs::remove_dir_all(&skill_dir)
+        // WS4 P14：卸载走 SkillInstaller（skills.lock.json 记账同步移除）。
+        let installer = nemesis_skills::installer::SkillInstaller::new(workspace);
+        installer
+            .uninstall(name)
             .map_err(|e| format!("failed to remove skill '{}': {}", name, e))?;
         Ok(Some(
             serde_json::json!({ "uninstalled": true, "name": name }),
@@ -361,14 +389,38 @@ impl SkillsHandler {
         })))
     }
 
+    /// 兼容入口（旧签名，仅测试直调面）：无 ctx = 不接审批门、不读主配置
+    /// skills 段（= installer 默认：allow_unsigned=true、龄闸关；测试装配面）。
+    #[cfg(test)]
     async fn install(
         &self,
         data: &serde_json::Value,
         workspace: &str,
     ) -> Result<Option<serde_json::Value>, String> {
-        let registry = crate::handlers::get_str(data, "registry")?;
+        self.install_with_ctx(data, workspace, None).await
+    }
+
+    /// WS4 漏斗统一入口：registry 与 GitHub 两路都走 SkillInstaller
+    /// （验签 P11 → pin+完整性 P12 → 安全扫描 P15 → 版本龄 P16 →
+    /// 审批卡 P13 → lockfile 记账 P14）。
+    async fn install_with_ctx(
+        &self,
+        data: &serde_json::Value,
+        workspace: &str,
+        ctx: Option<&RequestContext>,
+    ) -> Result<Option<serde_json::Value>, String> {
         let slug = crate::handlers::get_str(data, "slug")?;
         let force = data.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+        // registry 路径必填校验（保持旧文案 "missing field: registry"；
+        // repo（GitHub 直装）存在时 registry 可省）。
+        let repo = data.get("repo").and_then(|v| v.as_str());
+        let registry: Option<String> = if repo.is_none() {
+            Some(crate::handlers::get_str(data, "registry")?)
+        } else {
+            data.get("registry")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        };
 
         let skills_dir = PathBuf::from(workspace).join("skills");
         let target_dir = skills_dir.join(&slug);
@@ -381,19 +433,57 @@ impl SkillsHandler {
             })));
         }
 
+        let mut installer = nemesis_skills::installer::SkillInstaller::new(workspace);
+
+        // P11/P16 主配置消费：{home}/config.json 的 skills 段
+        // （allow_unsigned / min_age_days / min_age_policy）。读不到按默认。
+        if let Some(home) = ctx.and_then(|c| c.home.clone()) {
+            if let Some(skills) = load_main_skills_config(&home) {
+                installer.set_allow_unsigned(skills.allow_unsigned);
+                installer.set_age_policy(skills.min_age_days, &skills.min_age_policy);
+            }
+        }
+        // P13 审批门：gateway 注入槽（None = 无审批面，直装——headless/测试装配；
+        // `skills.install_approval` 的消费点在 gateway 注入侧）。
+        if let Some(gate) = ctx.and_then(|c| c.state.skills_install_gate.clone()) {
+            installer.set_install_gate(gate);
+        }
+
+        if force {
+            // force = 先卸旧目录（含 lockfile 记账清理）；未装过则忽略 NotFound。
+            let _ = installer.uninstall(&slug);
+        }
+
+        if let Some(repo) = repo {
+            let repo_ref = normalize_repo_ref(repo, data.get("ref").and_then(|v| v.as_str()))?;
+            let outcome = installer
+                .install_github(&repo_ref)
+                .await
+                .map_err(|e| format!("安装失败: {}", e))?;
+            return Ok(Some(serde_json::json!({
+                "installed": true,
+                "slug": outcome.slug,
+                "source": outcome.source,
+                "commit": outcome.commit,
+                "trust": outcome.trust.as_str(),
+                "files_installed": outcome.files_installed,
+            })));
+        }
+
+        let registry = registry
+            .as_deref()
+            .expect("validated above when repo is none");
         let config_path = skills_config_path(workspace);
         let config = load_registry_config(&config_path);
-        let manager = nemesis_skills::registry::RegistryManager::from_config(config);
+        installer.set_registry_manager(nemesis_skills::registry::RegistryManager::from_config(
+            config,
+        ));
+        if !installer.has_registry(registry) {
+            return Err(format!("源 '{}' 不存在", registry));
+        }
 
-        let reg = manager
-            .get_registry(&registry)
-            .ok_or_else(|| format!("源 '{}' 不存在", registry))?;
-
-        let _ = std::fs::create_dir_all(&skills_dir);
-        let target_str = target_dir.to_string_lossy().to_string();
-
-        let result = reg
-            .download_and_install(&slug, "latest", &target_str)
+        let result = installer
+            .install(registry, &slug, "latest")
             .await
             .map_err(|e| format!("安装失败: {}", e))?;
 
@@ -405,6 +495,36 @@ impl SkillsHandler {
             "is_suspicious": result.is_suspicious,
             "summary": result.summary,
         })))
+    }
+
+    /// P14 漂移检测：`{slug}` 查单条（未记账报错），无 slug 全量扫描 lockfile。
+    fn verify(
+        &self,
+        workspace: &str,
+        data: Option<&serde_json::Value>,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let installer = nemesis_skills::installer::SkillInstaller::new(workspace);
+        let slug = data.and_then(|d| d.get("slug")).and_then(|v| v.as_str());
+        match slug {
+            Some(slug) => {
+                let report = installer
+                    .verify_skill_drift(slug)
+                    .map_err(|e| format!("漂移检测失败: {}", e))?;
+                let json = serde_json::to_value(&report)
+                    .map_err(|e| format!("failed to serialize: {}", e))?;
+                Ok(Some(json))
+            }
+            None => {
+                let reports = installer.verify_all_drift();
+                let clean = reports.iter().filter(|r| r.clean).count();
+                let json = serde_json::json!({
+                    "skills": reports,
+                    "total": reports.len(),
+                    "clean": clean,
+                });
+                Ok(Some(json))
+            }
+        }
     }
 
     async fn shop_detail(

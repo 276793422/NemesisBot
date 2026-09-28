@@ -49,6 +49,9 @@ pub(crate) struct TurnState {
     /// K2 (U14)：turn-end 钩子（Stop 方言）续命预算；耗尽 → 仍停
     /// （fail-open，与 MAX_LLM_HOOK_RETRIES 同纪律）。
     pub(crate) turn_end_continues: u32,
+    /// P30（WS14）：canvas 语法预检回灌预算（本 turn 内计数；[`crate::canvas::MAX_SYNTAX_RETRIES`]
+    /// 封顶，耗尽后诚实放行——canvas 块按普通代码块留在正文，不发 CanvasOpen）。
+    pub(crate) canvas_retries: u32,
     /// I3 (U9)：turn 边界标记开关（heartbeat/cron/内部通道豁免）。
     pub(crate) log_boundaries: bool,
     /// 本 turn 的 LLM 调用选项（max_tokens/temperature/reasoning_effort）。
@@ -108,6 +111,7 @@ impl AgentLoop {
             steer_escape_used: false,
             terminal_reason: None,
             turn_end_continues: 0,
+            canvas_retries: 0,
             log_boundaries,
             chat_opts: crate::types::ChatOptions {
                 // max_tokens: per-model `max_output_tokens` from config if
@@ -158,6 +162,15 @@ impl AgentLoop {
             // 器官 4（§4.2）：LLM 调用 + 上下文/429/transient 三恢复环 +
             // post-hooks——P2-1 搬入 loop/recovery.rs。终局出口经 Err 返回
             // 事件（§4.3 约定），骨架在此统一 push + break。
+            // P32（cache-warmer）：开关开启时快照本轮请求（消息 + 工具 defs
+            // 字节级副本）——warm 重放 = 同一请求 max_tokens=1，快照是「前缀
+            // 字节不变」的唯一真相源（G1 纪律同源）。默认关 = 仅一次新鲜读，
+            // 无克隆；多轮 turn 后写覆盖 → 天然收敛到最后一轮请求。
+            let warm_snapshot = if self.cache_warmer_capture_enabled() {
+                Some((messages.clone(), tool_defs.clone()))
+            } else {
+                None
+            };
             let mut response = match self
                 .call_llm_with_recovery(
                     instance,
@@ -174,7 +187,17 @@ impl AgentLoop {
                 )
                 .await
             {
-                Ok(resp) => resp,
+                Ok(resp) => {
+                    if let Some((msgs, tds)) = warm_snapshot {
+                        self.store_warm_candidate(
+                            &context.session_key,
+                            msgs,
+                            tds,
+                            active_model.clone(),
+                        );
+                    }
+                    resp
+                }
                 Err(ev) => {
                     events.push(ev);
                     break;
@@ -368,6 +391,34 @@ impl AgentLoop {
                         Vec::new(),
                         response.reasoning_content.clone(),
                     );
+                    // P30（WS14）：canvas 块检出 + JS 语法预检。有问题且回灌
+                    // 预算未尽 → 反馈落 user 消息续一轮（模型整条重发自纠，
+                    // 与 length-continuation / turn-end hook 同一持久回灌
+                    // 形态）；预算耗尽 → 诚实放行（canvas 块按普通代码块
+                    // 留在正文，不发 CanvasOpen）。
+                    let canvas_scan = crate::canvas::scan_canvas_blocks(&content);
+                    if !canvas_scan.is_ok() {
+                        if st.canvas_retries < crate::canvas::MAX_SYNTAX_RETRIES {
+                            st.canvas_retries += 1;
+                            let feedback = canvas_scan.feedback_text(
+                                st.canvas_retries,
+                                crate::canvas::MAX_SYNTAX_RETRIES,
+                            );
+                            warn!(
+                                "[AgentLoop] canvas 预检失败（{} 处问题），回灌自纠 ({}/{})",
+                                canvas_scan.issues.len(),
+                                st.canvas_retries,
+                                crate::canvas::MAX_SYNTAX_RETRIES
+                            );
+                            instance.add_user_message(&feedback);
+                            return Some(TurnFlow::Continue);
+                        }
+                        warn!(
+                            "[AgentLoop] canvas 预检回灌预算耗尽（{} 轮），\
+                             canvas 块按普通代码块放行",
+                            st.canvas_retries
+                        );
+                    }
                     // I1 (U7) turn escape hatch: the model is about to
                     // finish, but an unclaimed steer message arrived in
                     // the last moments — hand it to the model for one
@@ -429,6 +480,20 @@ impl AgentLoop {
                                     context.session_key
                                 );
                             }
+                        }
+                    }
+                    // P30（WS14）：终答合法且含 canvas 块 → 逐块发布
+                    // CanvasOpen（index 0 起递增）。放在 steer-escape /
+                    // turn-end hook 判定**之后**：只有真正 Done 时才发布，
+                    // 续轮重答时按新终答重新扫描，不产生双重 emit。
+                    if canvas_scan.is_ok() {
+                        for (index, block) in canvas_scan.blocks.iter().enumerate() {
+                            self.emit_canvas_open(
+                                &context.session_key,
+                                &context.chat_id,
+                                &block.html,
+                                index,
+                            );
                         }
                     }
                     let formatted = context.format_rpc_message(&content);
@@ -749,9 +814,14 @@ impl AgentLoop {
         // form this round's projection ledger — everything a later
         // byte-exact replay needs beyond the session store (the
         // transient injections are never persisted). See `crate::replay`.
-        let (mut messages, build_annotation) = self.build_messages_with_memory_annotated(
+        // WS9/P18：传会话 key——分支前情提要（Branch Context）节按会话
+        // sidecar meta 注入（无摘要/非 fork 会话 = 字节不变）。
+        // prompt-pack pro（M4）：同时传来源通道——Pro 体系外部通道触发
+        // 来源降权节（Classic 体系该参数字节不变）。
+        let (mut messages, build_annotation) = self.build_messages_with_memory_annotated_for(
             instance,
             memory_hits.as_deref(),
+            Some(&context.session_key),
             Some(&context.channel),
         );
         let mut replay_injections: Vec<crate::replay::InjectionRecord> = Vec::new();

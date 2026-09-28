@@ -25,6 +25,8 @@ pub mod config;
 // editor.get/set。security 闸：EditorAccessState 在 nemesis-security。
 #[cfg(feature = "security")]
 pub mod editor;
+// P30（WS14）：canvas.close 关闭回执（打开是 SSE 单向推送，无 WSAPI 开命令）。
+pub mod canvas;
 pub mod estop;
 #[cfg(feature = "forge")]
 pub mod forge;
@@ -52,7 +54,8 @@ pub mod projects;
 pub mod question;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
-#[cfg(feature = "security")]
+// 病毒扫描管理面（scanner feature 从 security 拆出；implies security）。
+#[cfg(feature = "scanner")]
 pub mod scanner;
 #[cfg(feature = "security")]
 pub mod security;
@@ -159,6 +162,8 @@ pub fn commands_registry() -> &'static [(String, Vec<&'static str>)] {
 pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(system::SystemHandler));
     router.register(Arc::new(estop::EstopHandler));
+    // P30（WS14）：canvas 关闭回执。
+    router.register(Arc::new(canvas::CanvasHandler));
     // M7：审批响应端点（dashboard 审批卡 → WebApprovalManager）。
     router.register(Arc::new(approval::ApprovalHandler));
     // F7：提问响应端点（dashboard 提问卡 → WebQuestionBroker）。
@@ -169,7 +174,7 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(channels::ChannelsHandler::new()));
     router.register(Arc::new(identity::IdentityHandler));
     router.register(Arc::new(tools::ToolsHandler));
-    #[cfg(feature = "security")]
+    #[cfg(feature = "scanner")]
     {
         router.register(Arc::new(scanner::ScannerHandler::new()));
     }
@@ -614,14 +619,18 @@ mod memory_extra_tests;
 mod persona_extra_tests;
 #[cfg(all(test, feature = "workflow"))]
 mod persona_more_tests;
-#[cfg(all(test, feature = "security"))]
+#[cfg(all(test, feature = "scanner"))]
 mod scanner_extra_tests;
-#[cfg(all(test, feature = "security"))]
+#[cfg(all(test, feature = "scanner"))]
 mod scanner_more_tests;
 #[cfg(all(test, feature = "workflow"))]
 mod skills_extra_tests;
 #[cfg(all(test, feature = "workflow"))]
 mod skills_more_tests;
+// WS4 供应链工作流（2026-09-25）：skills.install 漏斗记账/gate 拒绝/
+// uninstall 联动/verify 漂移检测的 WSAPI 面。
+#[cfg(all(test, feature = "workflow"))]
+mod skills_ws4_tests;
 #[cfg(all(test, feature = "voice"))]
 mod voice_extra_tests;
 // 凭据回显脱敏批次（2026-09-25；vault 方案 0.4.7 遗留收尾）：WSAPI 回显面

@@ -37,6 +37,7 @@ fn make_ctx(estop: Option<Arc<nemesis_agent::estop::EstopState>>) -> RequestCont
         cron: None,
         board: None,
         signature_verify: None,
+        skills_install_gate: None,
     });
     RequestContext {
         session_id: "s".to_string(),

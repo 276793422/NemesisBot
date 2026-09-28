@@ -35,6 +35,29 @@ export interface SessionEntry {
   /** P2（2026-09-11）：未送达 assistant 回复数（推送失败时后端打点；
    *  拉取历史经 mark_delivered 清零）。0/缺省 = 无未读。 */
   undelivered?: number
+  /** WS9/P17（2026-09-26）：谱系组合视图（sidecar meta 平面字段经
+   *  logs.rs 后处理投影——祖先链沿 parent 上溯、帽 8、防环；无 parent
+   *  的条目不带此字段）。祖先序 = 最近父 → 根。 */
+  lineage?: {
+    parent_session_id: string
+    fork_point_seq?: number
+    reason: string
+    ancestors: Array<{ id: string; title: string }>
+  }
+  /** WS9/P17：分叉缘由（fork 端点 reason 入参落 meta 的 fork_reason；
+   *  缺省不写）。 */
+  forkReason?: string
+  /** WS9/P17：最近一次回退记录（meta.last_rewind；no-op 回退不写）。
+   *  后端 serde 无 rename——键保持 snake_case。 */
+  lastRewind?: {
+    at_index: number
+    dropped_rows: number
+    dropped_turns: number
+    ts: string
+  }
+  /** WS9/P18：分支摘要预览（meta.branch_summary 前 160 字符截断——
+   *  全文真相源在 agent 侧 meta，注入走 # Branch Context）。 */
+  branchSummaryPreview?: string
 }
 
 /** L6++（2026-09-08）：项目分组条目（镜像 handlers/projects.rs 的

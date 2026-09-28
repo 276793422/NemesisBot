@@ -180,6 +180,7 @@ impl GitHubRegistry {
                         registry_name: self.name().to_string(),
                         author: skill.author.clone().unwrap_or_default(),
                         downloads: 0,
+                        published_at: None,
                     });
                 }
             }
@@ -198,6 +199,7 @@ impl GitHubRegistry {
             registry_name: self.name().to_string(),
             author: String::new(),
             downloads: 0,
+            published_at: None,
         })
     }
 
@@ -225,6 +227,7 @@ impl GitHubRegistry {
                 registry_name: self.name().to_string(),
                 author: String::new(),
                 downloads: 0,
+                published_at: None,
             });
 
         let install_version = if version.is_empty() {

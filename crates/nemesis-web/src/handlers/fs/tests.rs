@@ -170,6 +170,7 @@ fn build_state(ws: &str) -> AppState {
         internal_cmd_tx: None,
         estop: None,
         signature_verify: None,
+        skills_install_gate: None,
         cron: None,
         board: None,
     }

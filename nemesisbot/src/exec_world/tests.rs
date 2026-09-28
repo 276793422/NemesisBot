@@ -71,6 +71,111 @@ mod strict_channel_refusal {
     }
 }
 
+/// D4（DACL 定向档，2026-09-27）：hook 接线矩阵——关=Ok(None)、开=Some(fn)、
+/// live 翻转热生效。fail-closed 分支（acl.strict + 后端不可用 → Err）无法在
+/// 单测里自然触发（dacl_availability 探针在本机恒 Full，Vista+ 令牌 API 无
+/// 法注入失败），语义由降级链代码路径 + 真进程验收覆盖。
+#[cfg(all(feature = "sandbox", windows))]
+mod dacl_hook_wiring {
+    use crate::exec_world::build_executor_channel;
+
+    fn seed(config: &str) -> (tempfile::TempDir, nemesis_config::ConfigHandle) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("config.json"), config).expect("seed config.json");
+        let store = nemesis_config::ConfigStore::load(&dir.path().join("config.json"))
+            .expect("load config store");
+        (dir, store.handle())
+    }
+
+    fn channel_of((dir, handle): &(tempfile::TempDir, nemesis_config::ConfigHandle)) ->
+        std::sync::Arc<nemesis_agent::ExecutorChannel>
+    {
+        build_executor_channel(dir.path(), dir.path(), handle.clone())
+            .expect("build_executor_channel")
+            .expect("enabled=true → Some(channel)")
+    }
+
+    #[test]
+    fn hook_returns_none_when_dacl_off() {
+        let seeded = seed(r#"{ "executor": { "enabled": true } }"#);
+        let channel = channel_of(&seeded);
+        let hook = channel
+            .dacl_spawn
+            .as_ref()
+            .expect("windows+sandbox 构建必挂 hook");
+        assert!(
+            matches!(hook(), Ok(None)),
+            "acl.dacl=false → Ok(None)（现状路径）"
+        );
+    }
+
+    #[test]
+    fn hook_returns_spawn_fn_when_dacl_on() {
+        use nemesis_sandbox::backend::Availability;
+        assert!(
+            !matches!(
+                nemesis_sandbox::backend::dacl_availability(),
+                Availability::Unavailable(_)
+            ),
+            "本机探针应可用（与 token 套件同判据），否则本用例无意义"
+        );
+        let seeded = seed(r#"{ "executor": { "enabled": true, "acl": { "dacl": true } } }"#);
+        let channel = channel_of(&seeded);
+        let hook = channel.dacl_spawn.as_ref().expect("hook attached");
+        let first = hook().expect("Ok").expect("dacl=true → Some(spawn_fn)");
+        // spawn_fn 可重复获取（OnceLock 令牌缓存——不重复铸造）。
+        assert!(hook().expect("Ok").is_some(), "二次咨询仍 Some");
+        drop(first);
+    }
+
+    #[test]
+    fn hook_flips_live_via_store_update() {
+        // update() 在 ConfigStore 上（ConfigHandle 只有 read）；句柄必须与
+        // store 同源（strict_gate_flips_live_via_store_update 同款约束）。
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{ "executor": { "enabled": true } }"#,
+        )
+        .expect("seed config.json");
+        let store = nemesis_config::ConfigStore::load(&dir.path().join("config.json"))
+            .expect("load store");
+        let channel = build_executor_channel(dir.path(), dir.path(), store.handle())
+            .expect("build")
+            .expect("some");
+        let hook = channel.dacl_spawn.as_ref().expect("hook attached");
+        assert!(matches!(hook(), Ok(None)), "初始关 → None");
+
+        store
+            .update(|c| {
+                c.executor
+                    .as_mut()
+                    .expect("executor present")
+                    .acl
+                    .dacl = true;
+            })
+            .expect("update store");
+        // 真进程链全走：dacl 翻开 → availability 探针 → SID 派生 → 受限令牌
+        // 铸造 → standing ACE 树铺设（tempdir 根 + config.json = 2 对象）→
+        // Some(spawn_fn)。此前的假红根因（serde 双路径陷阱）已修：executor
+        // 段无 acl 键时结构体级 Default::default() 不经字段级 serde default，
+        // derive 的 max_files=0 让铺树预算直接耗尽——ExecutorAclConfig 手写
+        // Default 后两条构造路径收敛（nemesis-config 同提交）。
+        assert!(hook().expect("Ok").is_some(), "翻转后热生效 → Some");
+
+        store
+            .update(|c| {
+                c.executor
+                    .as_mut()
+                    .expect("executor present")
+                    .acl
+                    .dacl = false;
+            })
+            .expect("update store back");
+        assert!(matches!(hook(), Ok(None)), "翻回 → None");
+    }
+}
+
 /// world 装配描述符（M2 补测，2026-08-25）：enabled → Some + stdio 语义 +
 /// 写守卫根 + Spawn 车道 cwd 守卫（拒在 spawn 之前）。Tool 车道归一化不在此
 /// 测——spawn_and_call 会 spawn current_exe（测试 harness 二进制会重跑整套
@@ -208,6 +313,10 @@ mod layer0_and_live_probe {
                     sandbox: true,
                     allow_network: false,
                     strict: false,
+                    // P24 新字段；本用例与 backend 选型无关，取缺省语义。
+                    backend: "auto".to_string(),
+                    // D4 新段；本用例与 DACL 定向档无关，取缺省（全关）。
+                    acl: Default::default(),
                 })
             })
             .expect("update store");

@@ -562,6 +562,7 @@ async fn test_handle_health_endpoint() {
         internal_cmd_tx: None,
         estop: None,
         signature_verify: None,
+        skills_install_gate: None,
         cron: None,
         board: None,
     });
@@ -606,6 +607,7 @@ async fn test_handle_health_not_running() {
         internal_cmd_tx: None,
         estop: None,
         signature_verify: None,
+        skills_install_gate: None,
         cron: None,
         board: None,
     });
@@ -1144,6 +1146,7 @@ async fn test_handle_health_with_model_state() {
         internal_cmd_tx: None,
         estop: None,
         signature_verify: None,
+        skills_install_gate: None,
         cron: None,
         board: None,
     });

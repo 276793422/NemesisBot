@@ -5,15 +5,17 @@ license.workspace = true
 edition.workspace = true
 
 # Class C 子系统 feature（默认开 = 现状；可通过 `--no-default-features` 关闭）。
-# `security` 含整个安全中间件（8 层 pipeline + auditor/middleware/injection/...）
-# + 病毒扫描（scanner + clamav）。`signature`（Ed25519 签名）在本 crate 内不 gate，
+# `security` 含整个安全中间件（8 层 pipeline + auditor/middleware/injection/...）。
+# `signature`（Ed25519 签名）在本 crate 内不 gate，
 # 但 nemesis-skills 的 `signer`（唯一引用者）gate 在 nemesis-skills/security 上，
 # 所以关 security 时 nemesis-skills/signer 不编译 → 本 crate 无任何启用路径 → **整包真排除**（cargo tree = 0）。
 # 见 docs/PLAN/2026-07-01_feature-trimming-and-build-configurator.md Phase 5。
-# scanner 子 feature（security 开 + scanner 关）留作未来增强；当前 scanner 与 security 绑定。
+# `scanner`（病毒扫描，第 7 层）已从 security 拆出：clamav + zip 依赖随它进出；
+# scanner 关时第 7 层诚实短路（构造时 WARN 注记，非静默），第 8 层审计链照常。
 [features]
-default = ["security"]
-security = ["dep:zip"]
+default = ["security", "scanner"]
+security = []
+scanner = ["security", "dep:zip"]
 
 [dependencies]
 nemesis-types = { workspace = true }

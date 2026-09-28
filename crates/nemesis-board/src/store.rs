@@ -1747,6 +1747,100 @@ impl BoardStore {
         Ok(map)
     }
 
+    // -------------------------------------------------------------------
+    // worker × 任务类型指纹记账（能力扩展 P34；纯逻辑在 fingerprint.rs）
+    // -------------------------------------------------------------------
+
+    /// 记一次 (worker, task_type) 成败（评审定案唯一调用点；PASS=成功 /
+    /// FAIL=失败，UNSURE 不记）。幂等键 = `task_id`（一派发轮一条：评审
+    /// 重放 / estop 复评同轮重评不重复计数）。返回 true = 本次真记账，
+    /// false = 该 task_id 已记过（幂等跳过）。台账与计数同事务，不脱节。
+    pub fn record_fingerprint_outcome(
+        &self,
+        worker: &str,
+        task_type: &str,
+        task_id: &str,
+        success: bool,
+    ) -> Result<bool, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let counted = tx
+            .execute(
+                "INSERT OR IGNORE INTO fingerprint_counted (task_id, worker, outcome, counted_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    task_id,
+                    worker,
+                    if success { "success" } else { "fail" },
+                    Self::now()
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        if counted == 0 {
+            // 已记过：tx drop 回滚（台账 INSERT OR IGNORE 本就是 no-op）。
+            return Ok(false);
+        }
+        tx.execute(
+            "INSERT INTO worker_fingerprint (worker, task_type, success, total, updated_at)
+             VALUES (?1, ?2, ?3, 1, ?4)
+             ON CONFLICT(worker, task_type)
+             DO UPDATE SET success = success + ?3, total = total + 1, updated_at = ?4",
+            params![worker, task_type, i64::from(success), Self::now()],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(true)
+    }
+
+    /// 某任务类型下全部 worker 指纹（worker → (成功, 总数)；加权排序的
+    /// 输入）。负数防御性钳 0（计数表只应非负，脏数据不放大成 panic）。
+    pub fn worker_fingerprints(
+        &self,
+        task_type: &str,
+    ) -> Result<std::collections::HashMap<String, (u64, u64)>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT worker, success, total FROM worker_fingerprint WHERE task_type = ?1")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![task_type], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?.max(0) as u64,
+                    r.get::<_, i64>(2)?.max(0) as u64,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut map = std::collections::HashMap::new();
+        for row in rows {
+            let (worker, success, total) = row.map_err(|e| e.to_string())?;
+            map.insert(worker, (success, total));
+        }
+        Ok(map)
+    }
+
+    /// 单 worker 指纹（重派换节点评论的档位注记输入；无行 = None）。
+    pub fn worker_fingerprint(
+        &self,
+        worker: &str,
+        task_type: &str,
+    ) -> Result<Option<(u64, u64)>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT success, total FROM worker_fingerprint
+             WHERE worker = ?1 AND task_type = ?2",
+            params![worker, task_type],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?.max(0) as u64,
+                    r.get::<_, i64>(1)?.max(0) as u64,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
     /// 终结派发：`done` / `failed`（P4 扩展 cancelled/timeout）。
     /// `dispatched` / `running` 态可终结（D0b：已开跑的单回报同样要能落账
     /// ——只认 dispatched 会让 running 回调写回假跳过、issue 卡死

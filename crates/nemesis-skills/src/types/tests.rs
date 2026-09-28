@@ -242,6 +242,7 @@ fn test_skill_meta_serialization() {
         registry_name: "clawhub".to_string(),
         author: "testauthor".to_string(),
         downloads: 42,
+        published_at: None,
     };
     let json = serde_json::to_string(&meta).unwrap();
     let parsed: SkillMeta = serde_json::from_str(&json).unwrap();

@@ -94,6 +94,23 @@ impl WebApprovalManager {
         Ok(())
     }
 
+    /// M3（2026-09-27）：「总是允许」规则的**消费侧**——命中且层级安全门
+    /// （CRITICAL 仅 process_exec 豁免）放行则返回命中规则，调用方自动放行。
+    /// 此前只有写入通道（respond always）没有消费通道，规则是死账。
+    /// 每次从磁盘现读：安装是低频动作，免热载器也天然拿到手工编辑/CLI
+    /// 清理的即时生效（与 auditor 侧 `HotReloader::check()` 同观感）。
+    pub fn find_auto_allow(
+        &self,
+        operation: &str,
+        target: &str,
+        risk: &str,
+    ) -> Option<nemesis_security::approval_rules::ApprovalRule> {
+        use nemesis_security::approval_rules as rules;
+        let path = self.rules_path.as_ref()?;
+        let stored = rules::load_rules(path);
+        rules::find_auto_allow_rule(&stored, operation, target, risk).cloned()
+    }
+
     /// 广播审批请求事件（无订阅者/通道关闭都是良性——审批等待不依赖广播）。
     fn broadcast_requested(&self, entry: &PendingEntry, request_id: &str) {
         if let Some(tx) = self.agent_event_tx.as_ref() {
@@ -276,6 +293,110 @@ impl ApprovalResponder for WebApprovalManager {
             Ok(map) => map.iter().map(|(id, e)| Self::entry_json(id, e)).collect(),
             Err(_) => Vec::new(),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WS4（P13）：技能装前审批门（gateway 中央接线）
+// ---------------------------------------------------------------------------
+
+/// 装配顺序适配器：`nemesis_skills::InstallGate` ← `WebApprovalManager`。
+///
+/// WebServer 的 AppState 在 init_services（B6）即构建，而审批真身
+/// `WebApprovalManager` 在 run_runtime（B7 审批接线块）才存在——用
+/// `OnceLock` 晚绑：gateway.rs 主流程把本类型注入 `web_server`（AppState
+/// 快照捕获），run_runtime 审批块 `bind()` 真身。技能安装卡与 auditor
+/// 审批共用**同一 manager 实例**，`approval.respond`（responder 槽）才能
+/// 命中。未 bind 前收到安装请求 = fail-closed（启动窗口亚秒级，诚实拒绝）。
+pub struct LateWebSkillsGate {
+    inner: std::sync::OnceLock<std::sync::Arc<WebApprovalManager>>,
+    timeout_secs: u64,
+}
+
+impl LateWebSkillsGate {
+    /// `timeout_secs`：卡片等待用户裁决的时长（超时自动拒绝）。
+    pub fn new(timeout_secs: u64) -> Self {
+        Self {
+            inner: std::sync::OnceLock::new(),
+            timeout_secs,
+        }
+    }
+
+    /// run_runtime 审批接线块调用：绑定审批真身（幂等失败 = 重复 bind，
+    /// 静默忽略——首个真身胜出）。
+    pub fn bind(&self, manager: std::sync::Arc<WebApprovalManager>) {
+        let _ = self.inner.set(manager);
+    }
+}
+
+#[async_trait::async_trait]
+impl nemesis_skills::install_gate::InstallGate for LateWebSkillsGate {
+    async fn decide(
+        &self,
+        plan: &nemesis_skills::install_gate::InstallPlan,
+    ) -> nemesis_skills::install_gate::InstallDecision {
+        use nemesis_skills::install_gate::InstallDecision;
+
+        let Some(manager) = self.inner.get() else {
+            return InstallDecision::Deny {
+                reason: "审批门未就绪（gateway 审批装配未完成），请稍后重试".to_string(),
+            };
+        };
+
+        // M3（2026-09-27）：先查「总是允许」规则表——批准时「总是允许」
+        // 的承诺必须兑现（同 (op=skills.install, target=source) 命中即自动
+        // 放行，与 exec always-allow 同语义；CRITICAL 层级门在
+        // find_auto_allow 内一致生效）。小文件读，不进 spawn_blocking。
+        if let Some(rule) = manager.find_auto_allow("skills.install", &plan.source, "HIGH") {
+            tracing::info!(
+                op = %rule.op,
+                pattern = %rule.pattern,
+                slug = %plan.slug,
+                "[SkillsGate] auto-allowed by approval rule"
+            );
+            return InstallDecision::Approve;
+        }
+
+        // request_approval_sync 是阻塞等待（内部 block_in_place / 直接
+        // recv）；decide 本身已在 async 上下文，再套一层 spawn_blocking
+        // 避免占用当前 worker（block_in_place 非多线程 runtime 会 panic，
+        // WSAPI 装配的 runtime 形态不可假设）。
+        let manager = manager.clone();
+        let timeout_secs = self.timeout_secs;
+        let plan = plan.clone();
+        let wait = tokio::task::spawn_blocking(move || {
+            use nemesis_security::auditor::ApprovalManager as _;
+            let request_id = format!("skills-install-{}", uuid::Uuid::new_v4());
+            manager.request_approval_sync(
+                &request_id,
+                "skills.install",
+                &plan.source,
+                "HIGH",
+                &plan.summary(),
+                timeout_secs,
+            )
+        })
+        .await;
+
+        match wait {
+            Ok(Ok(verdict)) if verdict.approved => InstallDecision::Approve,
+            Ok(Ok(verdict)) => InstallDecision::Deny {
+                reason: verdict
+                    .note
+                    .filter(|n| !n.trim().is_empty())
+                    .unwrap_or_else(|| "用户拒绝了安装".to_string()),
+            },
+            Ok(Err(e)) => InstallDecision::Deny {
+                reason: format!("审批请求失败: {e}"),
+            },
+            Err(e) => InstallDecision::Deny {
+                reason: format!("审批任务失败: {e}"),
+            },
+        }
+    }
+
+    fn name(&self) -> &str {
+        "web-approval"
     }
 }
 

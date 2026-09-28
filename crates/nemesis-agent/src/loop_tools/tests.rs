@@ -2186,7 +2186,7 @@ fn test_setup_cluster_rpc_channel_with_continuation() {
 
 #[tokio::test]
 async fn test_i2c_tool_non_linux() {
-    let tool = I2CTool;
+    let tool = I2CTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool.execute(r#"{"action":"detect"}"#, &ctx).await;
     if cfg!(target_os = "linux") {
@@ -2199,10 +2199,43 @@ async fn test_i2c_tool_non_linux() {
 
 #[tokio::test]
 async fn test_i2c_tool_invalid_json() {
-    let tool = I2CTool;
+    let tool = I2CTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool.execute("not json", &ctx).await;
     assert!(result.is_err());
+}
+
+/// 桩路径地址校验 fail-closed（2026-09-26 复查修复回归锁）：read/write 缺
+/// 地址或垃圾地址必须报错（此前静默回显 0）；hex 字符串形态过白名单
+/// （"0x05" 保留段拒绝、"0x38" 放行回显）。纯函数面跨平台覆盖见
+/// nemesis-tools hardware::tests::test_i2c_parse_address_string_forms；
+/// 本用例验 execute() 接线（execute 首行是平台闸，故 Linux 门控）。
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn test_i2c_stub_address_validation_fail_closed() {
+    let tool = I2CTool::default();
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    // 缺地址 → 报错而非回显 0
+    let r = tool.execute(r#"{"action":"read"}"#, &ctx).await;
+    assert!(r.is_err());
+    assert!(r.unwrap_err().contains("address is required"));
+    // 垃圾地址 → 报错
+    let r = tool
+        .execute(r#"{"action":"read","address":"xyz"}"#, &ctx)
+        .await;
+    assert!(r.is_err());
+    // hex 字符串形态：保留段拒绝（策略校验真正跑到字符串形态上）
+    let r = tool
+        .execute(r#"{"action":"read","address":"0x05"}"#, &ctx)
+        .await;
+    assert!(r.is_err());
+    assert!(r.unwrap_err().contains("rejected"));
+    // 白名单内 hex 字符串 → 放行且回显解析后的地址
+    let r = tool
+        .execute(r#"{"action":"read","address":"0x38"}"#, &ctx)
+        .await;
+    assert!(r.is_ok());
+    assert!(r.unwrap().contains("0x38"));
 }
 
 #[tokio::test]

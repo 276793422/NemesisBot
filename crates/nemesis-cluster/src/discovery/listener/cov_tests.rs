@@ -83,8 +83,9 @@ fn plaintext_unicast_delivers_and_broadcast_sends() {
     let _ = tag;
 }
 
-/// 加密链路：密钥不匹配的垃圾报文被解密闸丢弃（128 warn），密钥一致的
-/// 合法报文正常送达 handler（152 / 237-250 加密单播）。
+/// 加密链路：密钥不匹配的报文被解密闸**静默丢弃**（不进 handler、日常零
+/// WARN——token 失配=安全边界正常工作，账本走 tracker），密钥一致的合法
+/// 报文正常送达 handler；tracker 摘要按来源归并计数。
 #[test]
 fn encrypted_garbage_drops_and_valid_delivers() {
     let inbox: Inbox = Arc::new(StdMutex::new(Vec::new()));
@@ -96,8 +97,9 @@ fn encrypted_garbage_drops_and_valid_delivers() {
     a.start().unwrap();
     let target = format!("127.0.0.1:{}", c.port());
 
-    // 垃圾字节：解密必败 → warn + continue。
+    // 垃圾字节：解密必败 → 记入 tracker 静默丢弃。
     let garbage = [0xABu8; 64];
+    a.socket.send_to(&garbage, &target).unwrap();
     a.socket.send_to(&garbage, &target).unwrap();
 
     // 合法加密单播：正常解密 → 解析 → handler。
@@ -113,8 +115,73 @@ fn encrypted_garbage_drops_and_valid_delivers() {
         "垃圾报文不得进入 handler"
     );
 
+    // tracker 账本：两帧垃圾同源（同 IP），归并成一个来源、drops=2，
+    // 且合法报文不计入丢弃。
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let s = c.decrypt_drop_summary();
+        if s.total_drops >= 2 {
+            assert_eq!(s.total_drops, 2, "只统计解密失败帧");
+            assert_eq!(
+                s.sources.len(),
+                1,
+                "同 IP 来源必须归并（按 IP 而非 addr，避免端口漂移重复首见）：{:?}",
+                s.sources
+            );
+            assert_eq!(s.sources[0].drops, 2);
+            assert_eq!(s.sources[0].addr, "127.0.0.1");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "tracker 未记录到丢弃帧：{s:?}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
     c.stop().unwrap();
     a.stop().unwrap();
+}
+
+/// tracker 单元语义：同源静默累积（不重复首见）、异源分开计条、
+/// cap 16 淘汰最旧来源。
+#[test]
+fn tracker_dedupes_same_source_and_evicts_oldest() {
+    let t = DecryptDropTracker::default();
+    let a = Ipv4Addr::new(10, 0, 0, 1);
+    let b = Ipv4Addr::new(10, 0, 0, 2);
+
+    t.record(a);
+    t.record(a);
+    t.record(b);
+    let s = t.summary();
+    assert_eq!(s.total_drops, 3);
+    assert_eq!(s.sources.len(), 2);
+    let sa = s.sources.iter().find(|e| e.addr == "10.0.0.1").unwrap();
+    let sb = s.sources.iter().find(|e| e.addr == "10.0.0.2").unwrap();
+    assert_eq!(sa.drops, 2);
+    assert_eq!(sb.drops, 1);
+    // 按首见时间升序：a 先见排前。
+    assert!(s.sources[0].addr == "10.0.0.1");
+
+    // cap 淘汰：灌满 16 + 1 个源，最旧（10.0.0.1）被淘汰，总量计数保留。
+    for i in 0..16u32 {
+        let ip = Ipv4Addr::new(10, 1, (i >> 8) as u8, (i & 0xff) as u8);
+        t.record(ip);
+    }
+    let s2 = t.summary();
+    assert_eq!(s2.sources.len(), DecryptDropTracker::MAX_SOURCES);
+    assert!(
+        !s2.sources.iter().any(|e| e.addr == "10.0.0.1"),
+        "最旧来源应被环形淘汰：{:?}",
+        s2.sources.iter().map(|e| e.addr.clone()).collect::<Vec<_>>()
+    );
+    assert_eq!(s2.total_drops, 19, "总量计数独立于环形淘汰");
+    // 被淘汰源再出现 = 新条目（会再记一条首见 DEBUG，量级可控）。
+    t.record(a);
+    let s3 = t.summary();
+    assert!(s3.sources.iter().any(|e| e.addr == "10.0.0.1"));
+    assert_eq!(s3.sources.len(), DecryptDropTracker::MAX_SOURCES);
 }
 
 /// 本地地址枚举：广播地址列表与本机 IP 列表非空（279-291 + compute_broadcast

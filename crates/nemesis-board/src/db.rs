@@ -4,7 +4,7 @@
 use rusqlite::Connection;
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 15;
+const SCHEMA_VERSION: i32 = 16;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS board_meta (
@@ -339,6 +339,31 @@ const SCHEMA_V15: &str = r#"
 ALTER TABLE autopilot ADD COLUMN acceptance_criteria TEXT NOT NULL DEFAULT '';
 "#;
 
+/// v16（能力扩展 P34 重派决策量化）：worker × 任务类型指纹记账两表。
+/// - `worker_fingerprint`：(worker, task_type) → 成功/总数计数（评审定案
+///   upsert 累加；三档 prefer/avoid/neutral 判定的数据源）。
+/// - `fingerprint_counted`：记账幂等台账（task_id 主键——同一派发轮的
+///   评审重放 / estop 复评不重复计数）。
+/// 记账与 `board.fingerprint_weighting` 开关解耦（开关只闸决策消费，
+/// 灰度期照常攒数据，开闸即有历史可用）。
+const SCHEMA_V16: &str = r#"
+CREATE TABLE IF NOT EXISTS worker_fingerprint (
+    worker     TEXT    NOT NULL,
+    task_type  TEXT    NOT NULL,
+    success    INTEGER NOT NULL DEFAULT 0,
+    total      INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (worker, task_type)
+);
+
+CREATE TABLE IF NOT EXISTS fingerprint_counted (
+    task_id    TEXT PRIMARY KEY,
+    worker     TEXT NOT NULL,
+    outcome    TEXT NOT NULL,
+    counted_at INTEGER NOT NULL
+);
+"#;
+
 /// Open (or create) the board database at `db_path` and run pending migrations.
 pub fn init_db(db_path: &Path) -> Result<Connection, String> {
     if let Some(parent) = db_path.parent() {
@@ -475,6 +500,14 @@ pub fn init_db(db_path: &Path) -> Result<Connection, String> {
         tracing::info!(
             version = 15,
             "[BoardStore] Database migrated to v15 (UAT U5 F-U5-1: autopilot.acceptance_criteria)"
+        );
+    }
+    if current_version < 16 {
+        conn.execute_batch(SCHEMA_V16)
+            .map_err(|e| format!("Board schema v16 migration failed: {e}"))?;
+        tracing::info!(
+            version = 16,
+            "[BoardStore] Database migrated to v16 (P34: worker_fingerprint + fingerprint_counted)"
         );
     }
     set_version(&conn, SCHEMA_VERSION)?;

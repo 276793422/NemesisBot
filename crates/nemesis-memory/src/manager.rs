@@ -28,6 +28,16 @@ use crate::vector::{StoreConfig, VectorStore};
 /// on this value via `search_auto_inject`.
 pub const AUTO_INJECT_MIN_SCORE: f64 = 0.35;
 
+// -- P31 召回记账 metadata 键（Entry.metadata 内的保留键）-------------------
+// 值形态：recall_count = 十进制计数；last_recall / last_recall_turn = 字符串。
+
+/// 累计召回次数（十进制字符串）。
+pub const META_RECALL_COUNT: &str = "recall_count";
+/// 最近一次召回时间（RFC3339）。
+pub const META_LAST_RECALL: &str = "last_recall";
+/// 最近一次召回的幂等标记（`session_key \u{1} turn_marker`）。
+pub const META_RECALL_TURN: &str = "last_recall_turn";
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -736,6 +746,160 @@ impl MemoryManager {
             return Ok(Vec::new());
         }
         self.store.list(memory_type, limit, offset).await
+    }
+
+    // -- P31 召回记账 / dreaming 更新通路 ----------------------------------
+
+    /// Upsert 一条记忆（keyword store 整体替换 + vector 镜像字段级 patch）。
+    /// P31 dreaming 的宿主产出通路（touch/promote/expire 都不改正文，因此
+    /// vector 侧无需重嵌入；merge 走 [`Self::store_entry`] 新建条目）。
+    pub async fn update_entry(&self, entry: Entry) -> Result<(), String> {
+        if !self.is_enabled() {
+            return Ok(());
+        }
+        self.store.update(entry.clone()).await?;
+        self.patch_vector_entry(&entry);
+        Ok(())
+    }
+
+    /// vector 镜像的字段级 patch（metadata/tags/type/updated_at），不重嵌入。
+    /// vector 未启用时静默跳过（keyword store 是本次运行内存内的权威副本）。
+    fn patch_vector_entry(&self, entry: &Entry) {
+        if !*self.vector_enabled.read() {
+            return;
+        }
+        let vs_guard = self.vector_store.read();
+        if let Some(ref vs) = *vs_guard {
+            let typ = entry.typ.to_string();
+            let updated = entry.updated_at.to_rfc3339();
+            let hit = vs.patch_entry_fields(
+                &entry.id,
+                &entry.metadata,
+                &entry.tags,
+                Some(typ.as_str()),
+                Some(updated.as_str()),
+            );
+            if !hit {
+                // keyword store 有、vector 镜像缺（如本运行新建后 vector 暂时
+                // 不可用）——诚实 debug，不静默伪装成功。
+                tracing::debug!(
+                    "[Memory] vector patch missed id={} (mirror absent)",
+                    entry.id
+                );
+            }
+        }
+    }
+
+    /// 全量记忆条目（P31 sweep 输入）：keyword store 全量 + vector 持久层
+    /// 全量按 id 归并，vector 版本优先（跨运行持久化的权威副本；keyword 的
+    /// in-memory LocalStore 只含本运行写入）。
+    pub async fn list_all_entries(&self) -> Result<Vec<Entry>, String> {
+        if !self.is_enabled() {
+            return Ok(Vec::new());
+        }
+        // usize::MAX 一次取尽；keyword store 侧 list 的 limit>0 语义 = 取尽。
+        let mut merged: HashMap<String, Entry> = HashMap::new();
+        for e in self.store.list(None, usize::MAX, 0).await? {
+            merged.insert(e.id.clone(), e);
+        }
+        if *self.vector_enabled.read() {
+            let vs_guard = self.vector_store.read();
+            if let Some(ref vs) = *vs_guard {
+                for ve in vs.list_entries(&[], 0, usize::MAX).entries {
+                    merged.insert(
+                        ve.id.clone(),
+                        Entry {
+                            id: ve.id,
+                            typ: parse_memory_type_from_str(&ve.entry_type),
+                            content: ve.content,
+                            metadata: ve.metadata,
+                            tags: ve.tags,
+                            score: Some(ve.score),
+                            created_at: chrono::DateTime::parse_from_rfc3339(&ve.created_at)
+                                .map(|dt| dt.with_timezone(&chrono::Local))
+                                .unwrap_or_else(|_| chrono::Local::now()),
+                            updated_at: chrono::DateTime::parse_from_rfc3339(&ve.updated_at)
+                                .map(|dt| dt.with_timezone(&chrono::Local))
+                                .unwrap_or_else(|_| chrono::Local::now()),
+                        },
+                    );
+                }
+            }
+        }
+        Ok(merged.into_values().collect())
+    }
+
+    /// 召回记账（P31 ①）：对一次检索命中的条目做标记式幂等 touch——
+    /// `recall_count` +1、`last_recall` 时间戳刷新。幂等键 =
+    /// `session_key \u{1} turn_marker`：条目 metadata 里的 `last_recall_turn`
+    /// 与之相同 = 同一轮已计数，诚实跳过（崩溃重启后依然幂等——标记随条目
+    /// 持久化）。返回实际 touch 的条目数。
+    /// 诚实边界：`last_recall_turn` 是单槽标记（只记「最近一次」）——真实
+    /// 接线形态（每次检索独立 token / loop 同轮共享 token）不产生更早轮次的
+    /// 交错重放，不做多槽标记集换 metadata 膨胀。
+    pub async fn record_recall(
+        &self,
+        entry_ids: &[String],
+        session_key: &str,
+        turn_marker: &str,
+    ) -> usize {
+        if !self.is_enabled() || entry_ids.is_empty() {
+            return 0;
+        }
+        let full_marker = format!("{}\u{1}{}", session_key, turn_marker);
+        let now = chrono::Local::now();
+        let mut touched = 0usize;
+        for id in entry_ids {
+            // keyword store 优先、vector 回落——与 get() 同一解析序。
+            let Ok(Some(mut entry)) = self.get(id).await else {
+                continue;
+            };
+            if entry
+                .metadata
+                .get(META_RECALL_TURN)
+                .map(|m| m == &full_marker)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let count = entry
+                .metadata
+                .get(META_RECALL_COUNT)
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
+            entry
+                .metadata
+                .insert(META_RECALL_COUNT.to_string(), (count + 1).to_string());
+            entry
+                .metadata
+                .insert(META_LAST_RECALL.to_string(), now.to_rfc3339());
+            entry
+                .metadata
+                .insert(META_RECALL_TURN.to_string(), full_marker.clone());
+            entry.updated_at = now;
+            if self.update_entry(entry).await.is_ok() {
+                touched += 1;
+            }
+        }
+        touched
+    }
+
+    /// 检索 + 召回记账一步走（P31 ①的接线入口）：search 结果逐条 touch。
+    /// loop 侧（auto-inject prefetch）拿得到会话上下文时应改用本方法传
+    /// `session_key`/`turn_marker`；memory_search 工具层拿不到会话上下文，
+    /// 以每轮执行独立 turn token 接线（见 memory_tools::execute_search）。
+    pub async fn search_with_recall(
+        &self,
+        query: &str,
+        memory_type: Option<MemoryType>,
+        limit: usize,
+        session_key: &str,
+        turn_marker: &str,
+    ) -> Result<SearchResult, String> {
+        let result = self.search(query, memory_type, limit).await?;
+        let ids: Vec<String> = result.entries.iter().map(|s| s.entry.id.clone()).collect();
+        self.record_recall(&ids, session_key, turn_marker).await;
+        Ok(result)
     }
 
     // -- Convenience helpers -----------------------------------------------

@@ -16,6 +16,10 @@ feishu = []
 dingtalk = []
 onebot = []
 tencent = []
+websocket = []
+external = []
+maixcam = []
+line = []
 email = []
 matrix = []
 irc = []
@@ -23,6 +27,16 @@ signal = []
 mastodon = []
 bluesky = []
 whatsapp = []
+# Wave 3（P25-P29）：五新通道，默认关。
+# P25 wecom：aes 复用 nostr 引入的 optional 依赖；axum 为回调自托管端点。
+wecom = ["dep:axum", "dep:aes"]
+mattermost = []
+# P27 nostr：NIP-01 Schnorr 签名（k256）+ NIP-04 ECDH + AES-256-CBC（aes/cbc），
+# 依赖随 feature 门控（默认构建零新增编译单元，选型评估见 nostr.rs 模块头）。
+nostr = ["dep:k256", "dep:aes", "dep:cbc"]
+# P28 mqtt：rumqttc 走 optional dep——feature 关闭时依赖整体不参与编译（IoT 裁剪纪律）
+mqtt = ["dep:rumqttc", "dep:rustls", "dep:rustls-pemfile"]
+wechat = []
 
 [dependencies]
 nemesis-types = { workspace = true }
@@ -41,6 +55,7 @@ parking_lot = { workspace = true }
 # Additional deps needed by channel implementations
 reqwest = { workspace = true }
 sha2 = { workspace = true }
+sha1 = "0.10"
 hmac = "0.12"
 hex = "0.4"
 base64 = "0.22"
@@ -50,6 +65,24 @@ rand = { workspace = true }
 tokio-tungstenite = { workspace = true }
 futures = { workspace = true }
 http = "1"
+
+# P27 nostr（optional，随 nostr feature 启用）：
+# k256 与树内 p256 0.13 同族（RustCrypto elliptic-curve 0.13），共享 sha2/signature；
+# aes 0.8 已被 aes-gcm 拉进工作区依赖树；cbc 为唯一全新编译单元。
+# 刻意不引 nostr-sdk：见 nostr.rs 模块头的依赖评估结论。
+k256 = { version = "0.13", features = ["ecdh", "schnorr"], optional = true }
+aes = { version = "0.8", optional = true }
+cbc = { version = "0.1", features = ["alloc"], optional = true }
+
+# P25 wecom（optional，随 wecom feature 启用）：智能机器人回调自托管 HTTP 端点
+axum = { workspace = true, optional = true }
+
+# P28 mqtt（optional，随 mqtt feature 启用）：MQTT 3.1.1 客户端。
+# use-rustls-no-provider = TLS 支持但 CryptoProvider 由本 crate 自装（rustls
+# ring——与 workspace 现网一致，不引 use-rustls 默认链的 aws-lc-rs）。
+rumqttc = { version = "0.25", default-features = false, features = ["use-rustls-no-provider"], optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12"], optional = true }
+rustls-pemfile = { version = "2", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

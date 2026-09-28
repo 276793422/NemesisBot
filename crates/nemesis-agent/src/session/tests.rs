@@ -1126,12 +1126,15 @@ fn test_save_path_order_keeps_covers_coherent_after_trim() {
     // AgentLoop save path must set the cache BEFORE set_history. Replicates
     // that ordering and verifies a long history (>MAX_STORED_MESSAGES) trims
     // coherently — covers_up_to is decremented to match the dropped oldest
-    // messages, so the verbatim tail (last K_TARGET) survives. The OLD order
-    // (history then cache) overwrote the trim's adjustment, leaving covers too
-    // large and dropping the verbatim tail.
+    // messages, so the verbatim tail survives. The OLD order (history then
+    // cache) overwrote the trim's adjustment, leaving covers too large and
+    // dropping the verbatim tail.
+    // P5 注：这里模拟的是 store 层的纯 trim 数学——`instance_covers` 是任意
+    // 模拟值（6 只是个示意尾巴长度），真实边界由 compact 域按 token 预算
+    // （compact_keep_recent_tokens，缺省 20000）算出，与本测试无关。
     let store = SessionStore::new_in_memory();
     store.get_or_create("long:k");
-    let instance_covers = 1050 - 6; // tail = last 6 messages (K_TARGET)
+    let instance_covers = 1050 - 6; // 模拟任意 covers（尾巴 6 条）
     // Save-path order: cache first, then history.
     store.set_summary("long:k", "summary text");
     store.set_summary_covers_up_to("long:k", Some(instance_covers));
@@ -1144,7 +1147,7 @@ fn test_save_path_order_keeps_covers_coherent_after_trim() {
     assert_eq!(final_len, SessionStore::MAX_STORED_MESSAGES); // trimmed to 1000
     // covers decremented by the 50 dropped oldest: 1044 -> 994.
     assert_eq!(final_covers, instance_covers - 50);
-    // Verbatim tail (last K_TARGET=6 messages) survives: len - covers == 6.
+    // Verbatim tail (simulated 6-message tail) survives: len - covers == 6.
     assert_eq!(
         final_len - final_covers,
         6,

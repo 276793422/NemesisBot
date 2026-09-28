@@ -7,7 +7,7 @@ use nemesis_types::error::{NemesisError, Result};
 use regex::Regex;
 use tracing::{debug, warn};
 
-use crate::lint::{LintResult, SkillLinter};
+use crate::lint::SkillLinter;
 use crate::types::SkillInfo;
 
 const MAX_NAME_LENGTH: usize = 64;
@@ -184,8 +184,11 @@ impl SkillsLoader {
     /// Run security scanning on a skill's content.
     ///
     /// If security scanning is not enabled or no linter is configured,
-    /// this is a no-op. Otherwise, it reads the skill file and updates
-    /// the `SkillInfo` with the lint score and warning status.
+    /// this is a no-op. Otherwise it lints the skill's executable surface
+    /// (M5: SKILL.md + all auxiliary .md + script forms under the skill
+    /// directory) and updates the `SkillInfo` with the lint score and
+    /// warning status. Falls back to single-file scanning when the path has
+    /// no usable parent directory.
     ///
     /// Mirrors the Go `scanSkillSecurity()` method.
     pub fn scan_skill_security(&self, info: &mut SkillInfo, skill_file: &Path) {
@@ -195,11 +198,22 @@ impl SkillsLoader {
         let Some(ref linter) = self.linter else {
             return;
         };
-        if let Ok(content) = std::fs::read_to_string(skill_file) {
-            let lint_result: LintResult = linter.lint(&content);
-            info.lint_score = Some(lint_result.score);
-            info.has_warnings = !lint_result.warnings.is_empty();
-        }
+        let lint_result = match skill_file
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty() && p.is_dir())
+        {
+            Some(dir) => linter.lint_dir(dir, &info.name),
+            None => {
+                // 裸单文件路径（无目录上下文）：回落单文件扫描；读失败
+                // 保持历史语义（不评分，lint_score 留 None）。
+                match std::fs::read_to_string(skill_file) {
+                    Ok(content) => linter.lint(&content),
+                    Err(_) => return,
+                }
+            }
+        };
+        info.lint_score = Some(lint_result.score);
+        info.has_warnings = !lint_result.warnings.is_empty();
     }
 
     /// List all skills from workspace, global, and builtin directories.
@@ -416,15 +430,9 @@ impl SkillsLoader {
             // Override source
             info.source = source.to_string();
 
-            // Run security scan if enabled
-            if self.enable_security
-                && let Some(ref linter) = self.linter
-                && let Ok(content) = std::fs::read_to_string(&skill_md)
-            {
-                let lint_result: LintResult = linter.lint(&content);
-                info.lint_score = Some(lint_result.score);
-                info.has_warnings = !lint_result.warnings.is_empty();
-            }
+            // Run security scan if enabled（M5：走 scan_skill_security 的
+            // 目录可执行面实现，此处不再内联单文件逻辑）.
+            self.scan_skill_security(&mut info, &skill_md);
 
             debug!(
                 "Loaded skill: {} from {} ({})",

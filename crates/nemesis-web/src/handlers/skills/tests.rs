@@ -114,6 +114,7 @@ fn learn_ctx(
         internal_cmd_tx: None,
         estop: None,
         signature_verify: None,
+        skills_install_gate: None,
         cron: None,
         board: None,
     });
@@ -558,7 +559,8 @@ async fn install_ok_downloads_zip_and_extracts() {
                 "resolvedSlug": ""
             }))),
         )
-        .expect(1)
+        // WS4 起安装走 SkillInstaller 漏斗：getBySlug 会被下载与 published_at
+        // 元数据两路各取一次，不钉精确次数。
         .mount(&server)
         .await;
 
@@ -572,7 +574,6 @@ async fn install_ok_downloads_zip_and_extracts() {
                 .insert_header("Content-Type", "application/zip")
                 .set_body_bytes(zip),
         )
-        .expect(1)
         .mount(&server)
         .await;
 

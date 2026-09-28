@@ -516,6 +516,9 @@ pub struct ChannelInitConfig {
     /// Slack channel configuration.
     #[cfg(feature = "slack")]
     pub slack: Option<crate::slack::SlackConfig>,
+    /// Mattermost channel configuration.
+    #[cfg(feature = "mattermost")]
+    pub mattermost: Option<crate::mattermost::MattermostConfig>,
     /// WhatsApp channel configuration.
     #[cfg(feature = "whatsapp")]
     pub whatsapp: Option<crate::whatsapp::WhatsAppConfig>,
@@ -525,6 +528,12 @@ pub struct ChannelInitConfig {
     /// DingTalk channel configuration.
     #[cfg(feature = "dingtalk")]
     pub dingtalk: Option<crate::dingtalk::DingTalkConfig>,
+    /// WeCom（企业微信）channel configuration.
+    #[cfg(feature = "wecom")]
+    pub wecom: Option<crate::wecom::WeComConfig>,
+    /// 微信个人微信通道配置（P29，iLink Bot API）。
+    #[cfg(feature = "wechat")]
+    pub wechat: Option<crate::wechat::WeChatConfig>,
     /// QQ channel configuration.
     #[cfg(feature = "tencent")]
     pub qq: Option<crate::qq::QQConfig>,
@@ -546,21 +555,31 @@ pub struct ChannelInitConfig {
     /// Bluesky channel configuration.
     #[cfg(feature = "bluesky")]
     pub bluesky: Option<crate::bluesky::BlueskyConfig>,
+    /// nostr channel configuration (P27, NIP-04 加密 DM).
+    #[cfg(feature = "nostr")]
+    pub nostr: Option<crate::nostr::NostrConfig>,
     /// OneBot channel configuration.
     #[cfg(feature = "onebot")]
     pub onebot: Option<crate::onebot::OneBotConfig>,
     /// LINE channel configuration.
+    #[cfg(feature = "line")]
     pub line: Option<crate::line::LineConfig>,
     /// External channel configuration.
+    #[cfg(feature = "external")]
     pub external: Option<crate::external::ExternalConfig>,
     /// MaixCam channel configuration.
+    #[cfg(feature = "maixcam")]
     pub maixcam: Option<crate::maixcam::MaixCamConfig>,
     /// Web channel configuration.
     pub web: Option<crate::web::WebChannelConfig>,
     /// WebServerOps for injecting into the WebChannel (outbound delivery).
     pub web_server_ops: Option<std::sync::Arc<dyn crate::web::WebServerOps>>,
     /// WebSocket channel configuration.
+    #[cfg(feature = "websocket")]
     pub websocket: Option<crate::websocket::WebSocketChannelConfig>,
+    /// MQTT channel configuration（Wave 3 P28，feature=mqtt；IoT 传感器通道）。
+    #[cfg(feature = "mqtt")]
+    pub mqtt: Option<crate::mqtt::MqttChannelConfig>,
 }
 
 impl std::fmt::Debug for ChannelInitConfig {
@@ -591,6 +610,10 @@ impl ChannelManager {
         bus_sender: broadcast::Sender<InboundMessage>,
     ) -> Result<()> {
         info!("[ChannelManager] initializing channel manager");
+
+        // bus_sender 的全部消费者都在 feature 门控的装配块里；通道全关时无消费者
+        //（default = web/webhook/rpc 三通道均不收 bus_sender），抑制 unused 告警。
+        let _ = &bus_sender;
 
         // Telegram
         #[cfg(feature = "telegram")]
@@ -643,6 +666,23 @@ impl ChannelManager {
             }
         }
 
+        // Mattermost
+        #[cfg(feature = "mattermost")]
+        {
+            if let Some(ref cfg) = config.mattermost {
+                info!("[ChannelManager] attempting to initialize Mattermost channel");
+                match crate::mattermost::MattermostChannel::new(cfg.clone(), bus_sender.clone()) {
+                    Ok(ch) => {
+                        self.register_or_replace(Arc::new(ch)).await;
+                        info!("[ChannelManager] Mattermost channel enabled successfully");
+                    }
+                    Err(e) => {
+                        error!(error = %e, "[ChannelManager] failed to initialize Mattermost channel");
+                    }
+                }
+            }
+        }
+
         // WhatsApp
         #[cfg(feature = "whatsapp")]
         {
@@ -689,6 +729,40 @@ impl ChannelManager {
                     }
                     Err(e) => {
                         error!(error = %e, "[ChannelManager] failed to initialize DingTalk channel");
+                    }
+                }
+            }
+        }
+
+        // WeCom（企业微信，P25）
+        #[cfg(feature = "wecom")]
+        {
+            if let Some(ref cfg) = config.wecom {
+                info!("[ChannelManager] attempting to initialize WeCom channel");
+                match crate::wecom::WeComChannel::new(cfg.clone(), bus_sender.clone()) {
+                    Ok(ch) => {
+                        self.register_or_replace(Arc::new(ch)).await;
+                        info!("[ChannelManager] WeCom channel enabled successfully");
+                    }
+                    Err(e) => {
+                        error!(error = %e, "[ChannelManager] failed to initialize WeCom channel");
+                    }
+                }
+            }
+        }
+
+        // 微信个人微信（P29，iLink Bot API）
+        #[cfg(feature = "wechat")]
+        {
+            if let Some(ref cfg) = config.wechat {
+                info!("[ChannelManager] attempting to initialize WeChat channel");
+                match crate::wechat::WeChatChannel::new(cfg.clone(), bus_sender.clone()) {
+                    Ok(ch) => {
+                        self.register_or_replace(Arc::new(ch)).await;
+                        info!("[ChannelManager] WeChat channel enabled successfully");
+                    }
+                    Err(e) => {
+                        error!(error = %e, "[ChannelManager] failed to initialize WeChat channel");
                     }
                 }
             }
@@ -813,6 +887,23 @@ impl ChannelManager {
             }
         }
 
+        // nostr (P27)
+        #[cfg(feature = "nostr")]
+        {
+            if let Some(ref cfg) = config.nostr {
+                info!("[ChannelManager] attempting to initialize nostr channel");
+                match crate::nostr::NostrChannel::new(cfg.clone(), bus_sender.clone()) {
+                    Ok(ch) => {
+                        self.register_or_replace(Arc::new(ch)).await;
+                        info!("[ChannelManager] nostr channel enabled successfully");
+                    }
+                    Err(e) => {
+                        error!(error = %e, "[ChannelManager] failed to initialize nostr channel");
+                    }
+                }
+            }
+        }
+
         // OneBot
         #[cfg(feature = "onebot")]
         {
@@ -831,6 +922,7 @@ impl ChannelManager {
         }
 
         // LINE
+        #[cfg(feature = "line")]
         {
             if let Some(ref cfg) = config.line {
                 info!("[ChannelManager] attempting to initialize LINE channel");
@@ -847,6 +939,7 @@ impl ChannelManager {
         }
 
         // External
+        #[cfg(feature = "external")]
         {
             if let Some(ref cfg) = config.external {
                 info!("[ChannelManager] attempting to initialize External channel");
@@ -863,6 +956,7 @@ impl ChannelManager {
         }
 
         // MaixCam
+        #[cfg(feature = "maixcam")]
         {
             if let Some(ref cfg) = config.maixcam {
                 info!("[ChannelManager] attempting to initialize MaixCam channel");
@@ -892,12 +986,31 @@ impl ChannelManager {
         }
 
         // WebSocket
+        #[cfg(feature = "websocket")]
         {
             if let Some(ref cfg) = config.websocket {
                 info!("[ChannelManager] attempting to initialize WebSocket channel");
                 let ch = crate::websocket::WebSocketChannel::new(cfg.clone(), bus_sender.clone());
                 self.register_or_replace(Arc::new(ch)).await;
                 info!("[ChannelManager] WebSocket channel enabled successfully");
+            }
+        }
+
+        // MQTT（Wave 3 P28：rumqttc 客户端，topic 订阅→inbound / outbound→publish，
+        // QoS 1 默认；IoT 叙事，feature=mqtt 门控）
+        #[cfg(feature = "mqtt")]
+        {
+            if let Some(ref cfg) = config.mqtt {
+                info!("[ChannelManager] attempting to initialize MQTT channel");
+                match crate::mqtt::MqttChannel::new(cfg.clone(), bus_sender.clone()) {
+                    Ok(ch) => {
+                        self.register_or_replace(Arc::new(ch)).await;
+                        info!("[ChannelManager] MQTT channel enabled successfully");
+                    }
+                    Err(e) => {
+                        error!(error = %e, "[ChannelManager] failed to initialize MQTT channel");
+                    }
+                }
             }
         }
 

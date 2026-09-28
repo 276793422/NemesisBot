@@ -15,11 +15,19 @@
 //!
 //! U11 userland backends (Linux landlock/bwrap, macOS Seatbelt) live in
 //! [`backend`] — cross-platform trait layer with cfg'd platform impls; Windows
-//! registers no userland backend by design (Sandboxie owns it).
+//! registers no userland backend in `detect_backend` by design (Sandboxie
+//! owns the default path). P24（2026-09-25 能力扩展 WS1）adds an **opt-in
+//! experimental Windows userland ACL backend** ([`backend::AclBackend`],
+//! feature `acl`): mandatory-integrity-label No-Write-Up fence, half-tier
+//! isolation, always `Partial` — engaged via `executor.backend` **explicit
+//! `acl` only** (auto never falls back to it, P24 contract), on the
+//! box-missing stdio channel; wired in exec_worker engage + gateway
+//! selection hook (2026-09-26 contract alignment).
 
 use std::path::{Path, PathBuf};
 
 pub mod backend;
+pub mod denial;
 pub mod download;
 pub mod elevation;
 pub mod exec_world;
@@ -138,6 +146,10 @@ impl SandboxPaths {
 
 #[cfg(test)]
 mod tests;
+
+// P21（2026-09-25）：沙盒拒绝台账测试（独立测试文件，全平台编译）。
+#[cfg(test)]
+mod denial_tests;
 
 #[cfg(test)]
 pub(crate) mod test_util;

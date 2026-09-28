@@ -63,6 +63,7 @@ fn agt_ctx(
             internal_cmd_tx: None,
             estop: None,
             signature_verify: sig,
+            skills_install_gate: None,
             cron: None,
             board: None,
         }),

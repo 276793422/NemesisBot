@@ -17,6 +17,7 @@ pub mod asset_token;
 pub mod assignment;
 pub mod backup;
 pub mod db;
+pub mod fingerprint;
 pub mod git_repo;
 pub mod matcher;
 pub mod models;
@@ -54,6 +55,10 @@ pub use asset_token::{
     sha256_bytes, sha256_file, sign_asset_token, verify_asset_token,
 };
 pub use assignment::{Actor, AssignmentType};
+pub use fingerprint::{
+    FINGERPRINT_MIN_SAMPLES, FingerprintTier, TASK_TYPE_BUCKETS, apply_fingerprint_weights,
+    classify_tier, task_type_of, tier_note,
+};
 pub use git_repo::{
     ChangesetFile, ConflictFile, MergeInput, MergeOutcome, commit_blob_text, commit_changed_files,
     commit_resolution, commit_worktree, ensure_repo, export_head_tree, head_commit_hex,

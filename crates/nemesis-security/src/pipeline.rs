@@ -16,6 +16,9 @@ use crate::credential::Scanner as CredentialScanner;
 use crate::dlp::{DlpConfidence, DlpConfig, DlpEngine};
 use crate::injection::{Detector as InjectionDetector, InjectionConfig};
 use crate::integrity::{AuditChain, AuditChainConfig};
+// 第 7 层（病毒扫描）随 `scanner` feature 进出；关 = 该层诚实短路（构造时
+// WARN 注记），第 8 层审计链照常。
+#[cfg(feature = "scanner")]
 use crate::scanner::{ScanChain, ScanChainConfig, SharedScanChain, StubScanner};
 use crate::ssrf::Guard as SsrfGuard;
 use crate::types::*;
@@ -133,6 +136,7 @@ pub struct SecurityPlugin {
     credential_scanner: Option<CredentialScanner>,
     dlp_engine: Option<DlpEngine>,
     ssrf_guard: Option<SsrfGuard>,
+    #[cfg(feature = "scanner")]
     scan_chain: SharedScanChain,
     audit_chain: Option<AuditChain>,
     audit_logger: RwLock<Option<AuditLogger>>,
@@ -255,8 +259,20 @@ impl SecurityPlugin {
         let enabled = config.enabled;
 
         // Initialize scan chain with stub scanner by default.
-        let mut scan_chain = ScanChain::new(ScanChainConfig::default());
-        scan_chain.add_engine(Box::new(StubScanner));
+        #[cfg(feature = "scanner")]
+        let scan_chain = {
+            let mut scan_chain = ScanChain::new(ScanChainConfig::default());
+            scan_chain.add_engine(Box::new(StubScanner));
+            scan_chain
+        };
+        #[cfg(not(feature = "scanner"))]
+        {
+            // 诚实短路注记（非静默）：第 7 层病毒扫描随 scanner feature 裁掉，
+            // 本层放行一切；第 8 层审计链照常记录。
+            tracing::warn!(
+                "[Security] scanner feature not compiled: virus scanning (layer 7) is OFF, all file/content scans pass through; audit chain (layer 8) still records"
+            );
+        }
 
         let plugin = Self {
             config,
@@ -266,6 +282,7 @@ impl SecurityPlugin {
             credential_scanner,
             dlp_engine,
             ssrf_guard,
+            #[cfg(feature = "scanner")]
             scan_chain: Arc::new(tokio::sync::RwLock::new(scan_chain)),
             audit_chain,
             audit_logger: RwLock::new(audit_logger),
@@ -828,6 +845,10 @@ impl SecurityPlugin {
         //
         // Use block_in_place to avoid panicking when called from a tokio async context.
         // This yields the current tokio worker thread so blocking is safe.
+        //
+        // `scanner` feature 关 = 本层整块裁掉（诚实短路）：放行一切，无扫描；
+        // 语义注记在构造函数的 WARN（非静默），第 8 层审计链照常记录。
+        #[cfg(feature = "scanner")]
         {
             let scan_chain = self.scan_chain.clone();
             let tool_name = invocation.tool_name.clone();
@@ -1071,13 +1092,36 @@ impl SecurityPlugin {
         self.audit_chain.as_ref()
     }
 
+    /// F8（2026-09-27）：非工具管线的直接审计记账入口——rewind force 等
+    /// 强恢复动作不经 `execute()` 八层管线（没有 ToolInvocation），但需要
+    /// 落审计链台账（Merkle append-only，不可篡改；tracing 日志轮转即失，
+    /// 不算「留痕」）。返回 `None` = 审计链未启用（默认）/已关闭，调用方
+    /// 保留 tracing warn 作为兜底可见性。
+    pub fn append_direct_audit_event(
+        &self,
+        operation: &str,
+        tool_name: &str,
+        user: &str,
+        source: &str,
+        target: &str,
+        decision: &str,
+        reason: &str,
+    ) -> Option<crate::integrity::AuditEvent> {
+        self.audit_chain
+            .as_ref()?
+            .append(operation, tool_name, user, source, target, decision, reason)
+            .ok()
+    }
+
     /// Get the shared scan chain.
+    #[cfg(feature = "scanner")]
     pub fn scan_chain(&self) -> SharedScanChain {
         Arc::clone(&self.scan_chain)
     }
 
     /// Stop all scanner engines (kills clamd via Manager → Daemon → child.kill).
     /// Call on gateway shutdown so the clamd child doesn't orphan.
+    #[cfg(feature = "scanner")]
     pub async fn stop_scanner(&self) {
         let chain = self.scan_chain.read().await;
         chain.stop().await;
@@ -1086,6 +1130,7 @@ impl SecurityPlugin {
     /// Initialize the scan chain with a real scanner engine.
     ///
     /// Equivalent to Go's `initScannerChain()`.
+    #[cfg(feature = "scanner")]
     pub fn init_scanner_chain(&self, enabled: bool) {
         let chain = self.scan_chain.blocking_write();
         chain.set_enabled(enabled);
@@ -1101,6 +1146,7 @@ impl SecurityPlugin {
     ///
     /// This clears any stub engines, loads engines from the config,
     /// starts them (which launches clamd daemon via Manager), and enables the chain.
+    #[cfg(feature = "scanner")]
     pub async fn init_scanner_from_config(&self, full_config: &crate::scanner::ScannerFullConfig) {
         let mut chain = self.scan_chain.write().await;
 
@@ -1130,6 +1176,7 @@ impl SecurityPlugin {
     /// Async scan a tool invocation for threats using the scan chain.
     ///
     /// Returns true if a threat was detected.
+    #[cfg(feature = "scanner")]
     pub async fn scan_invocation(&self, tool_name: &str, args: &str) -> bool {
         let chain = self.scan_chain.read().await;
         let args_value: serde_json::Value = serde_json::from_str(args).unwrap_or_default();
@@ -1160,7 +1207,7 @@ impl SecurityPlugin {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "scanner"))]
 mod cov_tests;
 #[cfg(test)]
 mod tests;

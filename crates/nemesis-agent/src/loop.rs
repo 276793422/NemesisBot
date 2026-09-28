@@ -63,11 +63,23 @@ mod bus;
 pub use bus::*;
 #[allow(unused_imports)]
 pub(crate) use bus::*;
+mod branch_summary;
+#[allow(unused_imports)]
+pub use branch_summary::*;
+#[allow(unused_imports)]
+pub(crate) use branch_summary::*;
 mod bypass_llm;
 #[allow(unused_imports)]
 pub use bypass_llm::*;
 #[allow(unused_imports)]
 pub(crate) use bypass_llm::*;
+// P32（cache-warmer）：idle 会话 prompt cache 保活（TTL×90% 触发 1-token
+// 重放 + 价目表经济闸；默认关零副作用，语义见 cache_warmer.rs 模块注释）。
+mod cache_warmer;
+#[allow(unused_imports)]
+pub use cache_warmer::*;
+#[allow(unused_imports)]
+pub(crate) use cache_warmer::*;
 mod commands;
 #[allow(unused_imports)]
 pub use commands::*;
@@ -497,6 +509,11 @@ pub struct AgentLoop {
     /// 闭环）用它同步文档 + 等诊断。`None`（未注入 / standalone）→ 反馈
     /// 静默跳过。Set via `set_lsp_manager` by the agent factory.
     lsp_manager: parking_lot::RwLock<Option<Arc<nemesis_lsp::LspManager>>>,
+    /// P3（能力扩展 WS3）：会话级诊断采集登记（跨文件聚合 + stale 过滤
+    /// 状态面）。语义与生命周期见 `config_watch::DiagnosticsTouchRegistry`
+    /// ——仅声明/初始化挂靠于此（结构体字段），逻辑全在 config_watch.rs
+    /// （计划 §冲突面登记：诊断域改动不进 loop.rs 主体）。
+    diagnostics_touched: parking_lot::Mutex<config_watch::DiagnosticsTouchRegistry>,
     /// 自定义 slash 命令表路径（`config.commands.json`；主 agent 专用，集群
     /// agent 不接——命令不该跨节点复制，同 hooks 挂账决策）。
     /// 自定义命令表热重载器（HotReloader 统一收编，2026-08-29：原
@@ -583,6 +600,11 @@ pub struct AgentLoop {
     /// Last-seen mtime of config.json; `check_config_reload` compares against
     /// this each round to detect on-disk changes without re-reading every turn.
     config_mtime: parking_lot::RwLock<Option<std::time::SystemTime>>,
+    /// P32（cache-warmer）：会话 → 最近一次成功 LLM 请求的字节级快照（warm
+    /// 重放候选）。仅 `agents.cache_warmer.enabled=true` 时被写入（默认关 =
+    /// 永空）；逻辑全在 cache_warmer.rs（计划 §冲突面登记：warmer 域改动
+    /// 不进 loop.rs 主体）。
+    warm_candidates: parking_lot::Mutex<HashMap<String, cache_warmer::WarmCandidate>>,
     /// N2 (devtool-upgrade 阶段 4)：小模型专职杂务通道（`agents.small_model`）。
     /// 手动 compact（E6 `/compact`）的摘要调用优先走它（省 token——摘要不需
     /// 要旗舰档智力）；未配置 = `None`，诚实回退主模型。自动压缩（质量敏感）
@@ -668,6 +690,9 @@ impl AgentLoop {
             prompt_system: parking_lot::RwLock::new(crate::prompt::PromptSystem::Classic),
             pricing_store: parking_lot::RwLock::new(None),
             lsp_manager: parking_lot::RwLock::new(None),
+            diagnostics_touched: parking_lot::Mutex::new(
+                config_watch::DiagnosticsTouchRegistry::default(),
+            ),
             commands_hot: parking_lot::RwLock::new(None),
             cc_bridge: parking_lot::RwLock::new(None),
             spill_root: parking_lot::RwLock::new(None),
@@ -686,6 +711,7 @@ impl AgentLoop {
             #[cfg(feature = "workflow")]
             workflow_engine: parking_lot::RwLock::new(None),
             config_mtime: parking_lot::RwLock::new(None),
+            warm_candidates: parking_lot::Mutex::new(HashMap::new()),
             small_model: parking_lot::RwLock::new(None),
         }
     }
@@ -724,6 +750,22 @@ impl AgentLoop {
         }
     }
 
+    /// P30（WS14）：canvas 打开事件发布（[`nemesis_types::agent::AgentEvent::CanvasOpen`]）。
+    /// 终答里检出**全部合法**的 ```canvas 块后逐块发布；web pump 转 SSE
+    /// `canvas.open`（内层 data 展平 + session_id 注入），前端 CanvasPanel
+    /// 渲染。`html` 载荷完整不截断（面板需要全量文档）；agent_event_tx 未
+    /// 装配（CLI / B 端 worker）为 no-op——canvas 块以普通代码块留在正文。
+    fn emit_canvas_open(&self, session_key: &str, chat_id: &str, html: &str, index: usize) {
+        if let Some(tx) = self.agent_event_tx.read().as_ref() {
+            // 无订阅者（CLI / 无人在线）= 观察者通道空转，静默忽略。
+            let _ = tx.send(nemesis_types::agent::AgentEvent::CanvasOpen {
+                session_key: session_key.to_string(),
+                chat_id: chat_id.to_string(),
+                html: html.to_string(),
+                index,
+            });
+        }
+    }
     /// SB：user 行落盘的标准前置——返回落盘前 jsonl 是否已存在（调用方在
     /// append 后据 false 发布 SessionCreated）。
     fn session_log_exists_before_append(session_key: &str) -> bool {
@@ -789,6 +831,9 @@ mod inbox_tests;
 // 自定义 slash 命令改写（2026-08-29）：rewrite_custom_command 决策表测试。
 #[cfg(test)]
 mod commands_tests;
+// P32（cache-warmer）：TTL 解析 / 90% 触发 / 经济闸 / 快照淘汰 / 热关退出测试。
+#[cfg(test)]
+mod cache_warmer_tests;
 // N1 (devtool-upgrade 阶段 1)：三级 context_window 解析链测试。
 #[cfg(test)]
 mod context_window_tests;
@@ -811,6 +856,9 @@ mod e6_maintenance_tests;
 // C3 (devtool-upgrade 阶段 2)：编辑后诊断回灌测试（fake LSP server）。
 #[cfg(test)]
 mod diagnostics_feedback_tests;
+// P2/P3 (能力扩展 WS3)：诊断回灌触发臂扩展 + 跨文件聚合 + stale 过滤测试。
+#[cfg(test)]
+mod diagnostics_session_tests;
 // G0 (devtool-upgrade 阶段 3)：SpawnTool 生产化 + run_detached 测试。
 #[cfg(test)]
 mod spawn_detached_tests;
@@ -877,6 +925,9 @@ mod recovery_classifier_tests;
 // 中间轮逐条发布 + 观察者通道与 chat 事件 Vec 隔离 + 空正文轮不发）。
 #[cfg(test)]
 mod round_text_tests;
+// P30（WS14）：canvas 终答检出/回灌自纠/预算放行 轮级测试。
+#[cfg(test)]
+mod canvas_turn_tests;
 // P2-0（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §7 T1/T2）：
 // characterization + golden transcript harness（基线在 loop/testdata/golden/）。
 #[cfg(test)]
@@ -911,3 +962,13 @@ mod llm_types_cov_tests;
 // guardian 升级与故障姿态矩阵）。
 #[cfg(test)]
 mod tool_dispatch_sec_cov_tests;
+
+// P20 (2026-09-25 能力扩展 WS7): rewind 冲突预检（外部修改拒绝 + force 强
+// 过 + redo 往返）编排测试。
+#[cfg(test)]
+mod p20_tests;
+
+// WS9（能力扩展 P17+P18）：rewind 谱系落盘（last_rewind）+ 分支摘要生成
+// （small_model 通道 / 无小模型诚实跳过 / build_messages 注入）编排测试。
+#[cfg(test)]
+mod ws9_lineage_tests;

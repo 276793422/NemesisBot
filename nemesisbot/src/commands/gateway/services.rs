@@ -335,6 +335,13 @@ pub(crate) async fn init_services(
         }
     }
 
+    // P31: 记忆 dreaming sweep 的启动同步——config.json `memory.dreaming` 节
+    // 为真相源（补登记/patch 跟随/关闭删 job，幂等；同样必须在 cron.start 之前）。
+    #[cfg(feature = "memory")]
+    {
+        super::dreaming_job::sync_dreaming_job(&cron_service, &cfg);
+    }
+
     // Start cron scheduler (after on_job handler is wired).
     // Mirrors Go's bot_service.go:571-579 cronSvc.Start().
     // 提取为嵌套 fn：await_holding_lock 是数据流型 lint，只认函数级 allow，

@@ -185,3 +185,148 @@ fn inbox_status_reflects_mode_and_busy() {
     assert!(al.inbox_status(key).busy);
     al.release_session(key);
 }
+
+// ---------------------------------------------------------------------------
+// F2（2026-09-27）：空闲态 `!` steer 信号剥除（Steer 模式专属，第三条
+// 时序补齐——busy 态 claim/transfer 两条已由 inbox 单一规则覆盖）。
+// ---------------------------------------------------------------------------
+
+/// 捕获每次 LLM 请求最后一条 user 消息内容的 provider（模型所见断言面）。
+struct F2CapturingProvider {
+    seen: std::sync::Arc<parking_lot::Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl LlmProvider for F2CapturingProvider {
+    async fn chat(
+        &self,
+        _model: &str,
+        messages: Vec<LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        if let Some(m) = messages.iter().rev().find(|m| m.role == "user") {
+            self.seen.lock().push(m.content.clone());
+        }
+        Ok(LlmResponse {
+            content: "ok".to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+}
+
+fn f2_msg(content: &str, key: &str) -> nemesis_types::channel::InboundMessage {
+    nemesis_types::channel::InboundMessage {
+        channel: "web".to_string(),
+        sender_id: "f2user".to_string(),
+        chat_id: "f2chat".to_string(),
+        content: content.to_string(),
+        media: vec![],
+        session_key: key.to_string(),
+        correlation_id: String::new(),
+        metadata: std::collections::HashMap::new(),
+        voice_playback: None,
+    }
+}
+
+/// 断言辅助：跑一条空闲直进消息，返回（模型所见 user 内容, jsonl user 行
+/// 内容）。chat_log 走唯一键 + 结尾清理（ws9_lineage_tests 同款纪律）。
+async fn f2_run_and_observe(
+    al: &AgentLoop,
+    seen: &std::sync::Arc<parking_lot::Mutex<Vec<String>>>,
+    content: &str,
+    key: &str,
+) -> (String, serde_json::Value) {
+    use crate::chat_log::{delete_chat_log, read_chat_log};
+    delete_chat_log(key);
+    let (_, resp, err) = al.process_inbound_message(&f2_msg(content, key)).await;
+    assert!(err.is_none(), "turn must succeed: resp={resp}");
+    let seen_content = seen
+        .lock()
+        .last()
+        .cloned()
+        .expect("LLM must see exactly one user message");
+    let (rows, _, _, _) = read_chat_log(key, 100, None);
+    let user_row = rows
+        .iter()
+        .rev()
+        .find(|r| r["role"] == "user")
+        .expect("user row persisted (B1 early persist)")
+        .clone();
+    delete_chat_log(key);
+    (seen_content, user_row)
+}
+
+/// Steer 模式空闲：`! 前缀` 剥除后才进模型与 B1 早落盘（与 busy 态同形
+/// ——标记是路由信号不是内容，模型/历史/上下文三面一致）。
+#[tokio::test]
+async fn f2_steer_mode_idle_admission_strips_marker() {
+    let seen: std::sync::Arc<parking_lot::Mutex<Vec<String>>> = Default::default();
+    let mut al = AgentLoop::new(
+        Box::new(F2CapturingProvider { seen: seen.clone() }),
+        test_config(),
+    );
+    al.concurrent_mode = ConcurrentMode::Steer;
+    let (model_saw, user_row) = f2_run_and_observe(
+        &al,
+        &seen,
+        "! 紧急：先跑测试",
+        "agent:main:session:f2steer1",
+    )
+    .await;
+    assert_eq!(
+        model_saw, "紧急：先跑测试",
+        "模型所见必须无标记（与 busy claim 剥除同形）"
+    );
+    assert_eq!(
+        user_row["content"], "紧急：先跑测试",
+        "B1 早落盘的 user 行同为无标记（剥除在落盘之前）"
+    );
+}
+
+/// `!!` 转义：剥一位 → 字面 `!` 进模型（shell 惯例；与 busy 态 claim 的
+/// 单剥规则同源，转义在两条时序下行为一致）。
+#[tokio::test]
+async fn f2_steer_mode_idle_double_bang_escapes_to_literal() {
+    let seen: std::sync::Arc<parking_lot::Mutex<Vec<String>>> = Default::default();
+    let mut al = AgentLoop::new(
+        Box::new(F2CapturingProvider { seen: seen.clone() }),
+        test_config(),
+    );
+    al.concurrent_mode = ConcurrentMode::Steer;
+    let (model_saw, user_row) = f2_run_and_observe(
+        &al,
+        &seen,
+        "!! 字面感叹号开头的内容",
+        "agent:main:session:f2steer2",
+    )
+    .await;
+    assert_eq!(model_saw, "! 字面感叹号开头的内容");
+    assert_eq!(user_row["content"], "! 字面感叹号开头的内容");
+}
+
+/// Queue 模式空闲：`!` 从来不是信号（busy 时也不剥），保持字面量——
+/// mode-aware 剥除的另一面（语义随模式走，不随到达时机走）。
+#[tokio::test]
+async fn f2_queue_mode_idle_keeps_marker_literal() {
+    let seen: std::sync::Arc<parking_lot::Mutex<Vec<String>>> = Default::default();
+    let mut al = AgentLoop::new(
+        Box::new(F2CapturingProvider { seen: seen.clone() }),
+        test_config(),
+    );
+    al.concurrent_mode = ConcurrentMode::Queue;
+    let (model_saw, user_row) = f2_run_and_observe(
+        &al,
+        &seen,
+        "! Queue 模式下保持原样",
+        "agent:main:session:f2queue1",
+    )
+    .await;
+    assert_eq!(model_saw, "! Queue 模式下保持原样");
+    assert_eq!(user_row["content"], "! Queue 模式下保持原样");
+}

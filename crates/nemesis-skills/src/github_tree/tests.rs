@@ -308,7 +308,8 @@ fn test_decode_tree_blob_paths_with_slash_prefix() {
 
 #[test]
 fn test_decode_tree_blob_paths_empty_prefix() {
-    // Empty prefix becomes "/" which nothing starts with
+    // 空前缀 = 仓库根安装（P12）：匹配全部 blob（旧行为是强加 "/" 后匹配不到任何路径，
+    // 导致根级仓库装不出文件——已随 WS4 root 安装需求修正）。
     let json = r#"{
         "tree": [
             {"path": "skills/pdf/SKILL.md", "type": "blob"},
@@ -316,8 +317,7 @@ fn test_decode_tree_blob_paths_empty_prefix() {
         ]
     }"#;
     let result = decode_tree_blob_paths(json.as_bytes(), "").unwrap();
-    // Empty prefix becomes "/" which no path starts with
-    assert_eq!(result.len(), 0);
+    assert_eq!(result.len(), 2);
 }
 
 #[test]

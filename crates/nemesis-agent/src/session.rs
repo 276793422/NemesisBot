@@ -1066,6 +1066,15 @@ fn sanitize_filename(key: &str) -> String {
 ///
 /// Uses a heuristic of approximately 2.5 characters per token,
 /// which accounts for CJK characters and other overheads.
+///
+/// # 已知边界：CJK 仍然低估（M6，2026-09-27 注记）
+///
+/// 0.4 token/char 是**英文为主**文本的经验值。真实分词器对 CJK 大约
+/// 1 token/char（中文常见 1~1.5），即 CJK 为主的会话真实消耗约是本估算的
+/// **2.5 倍**——压缩闸（按本估算校准）会**晚触发**，极端时可能撞 provider
+/// 上限。刻意不改估算器：调系数会全局移动所有压缩阈值并影响 prompt cache
+/// 预热判定，牵连面大于收益；中文重度用户如遇撞限，调小上下文相关 config
+/// 阈值即可提前压缩。
 pub fn estimate_tokens(text: &str) -> usize {
     let char_count = text.chars().count();
     char_count * 2 / 5

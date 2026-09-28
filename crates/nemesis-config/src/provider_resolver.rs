@@ -307,58 +307,657 @@ pub fn infer_provider_from_model(model: &str) -> String {
     String::new()
 }
 
+// ============================================================================
+// Provider preset table（P9，能力扩展 WS5，2026-09-25）
+// ============================================================================
+
+/// 一个内置 provider 家族预设。
+///
+/// 单一真相源：`get_default_api_base` / `infer_default_model` / CLI
+/// `model add --provider` / Dashboard 家族分组全部查这张表（前端镜像
+/// `web/src/utils/providerFamilies.ts`，只镜像 id/aliases/display_name 三字段）。
+pub struct ProviderPreset {
+    /// 规范家族 id（`vendor/` 前缀与 `--provider` 取值）。
+    pub id: &'static str,
+    /// 等价拼写（查表兼容旧入口名；全表内不得与任何 id/alias 冲突）。
+    pub aliases: &'static [&'static str],
+    /// 默认 API base（各家公开文档的 OpenAI 兼容端点；本地推理服务器为
+    /// 本机默认端口）。
+    pub api_base: &'static str,
+    /// wire 协议：`anthropic` | `openai` | `responses`（与
+    /// `nemesis_types::capability::normalize_model_protocol` 值域一致）。
+    pub protocol: &'static str,
+    /// 只给 `--provider` 不给 `--model` 时自动采用的默认型号。
+    /// 空串 = 该家族无公开固定默认型号（须显式 `--model`）。
+    pub default_model: &'static str,
+    /// 展示名（Dashboard 分组头）。
+    pub display_name: &'static str,
+}
+
+/// 内置 provider 家族预设表（70 家）。
+///
+/// 数据来源：各家公开文档的 OpenAI 兼容端点 + 内置 LiteLLM 价目表的
+/// provider 维度交叉核对。表数据完整性（URL/协议枚举/别名唯一/默认型号）
+/// 由 `provider_resolver/tests.rs` 的预设完整性测试钉住；错一家修一家，
+/// 不影响查表结构。
+///
+/// 分区顺序：前沿实验室 → 中国厂商 → 国际厂商 → 聚合/GPU 云 → 本地推理
+/// 服务器 → 特例（历史遗留入口）。
+pub static PROVIDER_PRESETS: &[ProviderPreset] = &[
+    // ---- 前沿实验室 ----
+    ProviderPreset {
+        id: "openai",
+        aliases: &["gpt"],
+        api_base: "https://api.openai.com/v1",
+        protocol: "openai",
+        default_model: "gpt-4o",
+        display_name: "OpenAI",
+    },
+    ProviderPreset {
+        id: "anthropic",
+        aliases: &["claude"],
+        api_base: "https://api.anthropic.com/v1",
+        protocol: "anthropic",
+        default_model: "claude-sonnet-4-20250514",
+        display_name: "Anthropic",
+    },
+    ProviderPreset {
+        id: "gemini",
+        aliases: &["google"],
+        api_base: "https://generativelanguage.googleapis.com/v1beta",
+        protocol: "openai",
+        default_model: "gemini-2.0-flash-exp",
+        display_name: "Google Gemini",
+    },
+    ProviderPreset {
+        id: "xai",
+        aliases: &["grok"],
+        api_base: "https://api.x.ai/v1",
+        protocol: "openai",
+        default_model: "grok-3",
+        display_name: "xAI",
+    },
+    // ---- 中国厂商 ----
+    ProviderPreset {
+        id: "zhipu",
+        aliases: &["glm", "bigmodel"],
+        api_base: "https://open.bigmodel.cn/api/paas/v4",
+        protocol: "openai",
+        default_model: "glm-4.7-flash",
+        display_name: "智谱 AI",
+    },
+    ProviderPreset {
+        id: "zai",
+        aliases: &[],
+        api_base: "https://api.z.ai/api/paas/v4",
+        protocol: "openai",
+        default_model: "glm-4.6",
+        display_name: "Z.ai（智谱国际）",
+    },
+    ProviderPreset {
+        id: "deepseek",
+        aliases: &[],
+        api_base: "https://api.deepseek.com/v1",
+        protocol: "openai",
+        default_model: "deepseek-chat",
+        display_name: "DeepSeek",
+    },
+    ProviderPreset {
+        id: "moonshot",
+        aliases: &["kimi"],
+        api_base: "https://api.moonshot.cn/v1",
+        protocol: "openai",
+        default_model: "moonshot-v1-8k",
+        display_name: "Moonshot AI（月之暗面）",
+    },
+    ProviderPreset {
+        id: "dashscope",
+        aliases: &["qwen", "bailian"],
+        api_base: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        protocol: "openai",
+        default_model: "qwen-max",
+        display_name: "阿里云百炼（通义千问）",
+    },
+    ProviderPreset {
+        id: "doubao",
+        aliases: &["ark", "volcengine"],
+        api_base: "https://ark.cn-beijing.volces.com/api/v3",
+        protocol: "openai",
+        default_model: "doubao-seed-1-6-flash-250615",
+        display_name: "火山方舟（豆包）",
+    },
+    ProviderPreset {
+        id: "hunyuan",
+        aliases: &["tencent"],
+        api_base: "https://api.hunyuan.cloud.tencent.com/v1",
+        protocol: "openai",
+        default_model: "hunyuan-turbos-latest",
+        display_name: "腾讯混元",
+    },
+    ProviderPreset {
+        id: "minimax",
+        aliases: &["minimaxi"],
+        api_base: "https://api.minimaxi.com/v1",
+        protocol: "openai",
+        default_model: "MiniMax-Text-01",
+        display_name: "MiniMax",
+    },
+    ProviderPreset {
+        id: "baichuan",
+        aliases: &[],
+        api_base: "https://api.baichuan-ai.com/v1",
+        protocol: "openai",
+        default_model: "Baichuan4-Air",
+        display_name: "百川智能",
+    },
+    ProviderPreset {
+        id: "stepfun",
+        aliases: &[],
+        api_base: "https://api.stepfun.com/v1",
+        protocol: "openai",
+        default_model: "step-2-16k",
+        display_name: "阶跃星辰",
+    },
+    ProviderPreset {
+        id: "yi",
+        aliases: &["01ai", "lingyi"],
+        api_base: "https://api.lingyiwanwu.com/v1",
+        protocol: "openai",
+        default_model: "yi-large",
+        display_name: "零一万物（01.AI）",
+    },
+    ProviderPreset {
+        id: "siliconflow",
+        aliases: &["silicon"],
+        api_base: "https://api.siliconflow.cn/v1",
+        protocol: "openai",
+        default_model: "deepseek-ai/DeepSeek-V3",
+        display_name: "硅基流动",
+    },
+    ProviderPreset {
+        id: "modelscope",
+        aliases: &[],
+        api_base: "https://api-inference.modelscope.cn/v1",
+        protocol: "openai",
+        default_model: "Qwen/Qwen2.5-72B-Instruct",
+        display_name: "魔搭社区",
+    },
+    ProviderPreset {
+        id: "sensenova",
+        aliases: &["sensetime"],
+        api_base: "https://api.sensenova.cn/compatible-mode/v1",
+        protocol: "openai",
+        default_model: "SenseChat-5",
+        display_name: "商汤日日新",
+    },
+    ProviderPreset {
+        id: "ai360",
+        aliases: &["360", "qihoo"],
+        api_base: "https://api.360.cn/v1",
+        protocol: "openai",
+        default_model: "360gpt2-pro",
+        display_name: "360 智脑",
+    },
+    ProviderPreset {
+        id: "spark",
+        aliases: &["xfyun", "iflytek"],
+        api_base: "https://spark-api-open.xf-yun.com/v1",
+        protocol: "openai",
+        default_model: "generalv3.5",
+        display_name: "讯飞星火",
+    },
+    ProviderPreset {
+        id: "baidu",
+        aliases: &["qianfan", "ernie"],
+        api_base: "https://qianfan.baidubce.com/v2",
+        protocol: "openai",
+        default_model: "ernie-4.0-8k-latest",
+        display_name: "百度千帆",
+    },
+    ProviderPreset {
+        id: "gitee_ai",
+        aliases: &["gitee"],
+        api_base: "https://ai.gitee.com/v1",
+        protocol: "openai",
+        default_model: "DeepSeek-V3",
+        display_name: "Gitee AI",
+    },
+    // ---- 国际厂商 ----
+    ProviderPreset {
+        id: "mistral",
+        aliases: &[],
+        api_base: "https://api.mistral.ai/v1",
+        protocol: "openai",
+        default_model: "mistral-large-latest",
+        display_name: "Mistral AI",
+    },
+    ProviderPreset {
+        id: "codestral",
+        aliases: &[],
+        api_base: "https://codestral.mistral.ai/v1",
+        protocol: "openai",
+        default_model: "codestral-latest",
+        display_name: "Codestral（Mistral 代码端点）",
+    },
+    ProviderPreset {
+        id: "cohere",
+        aliases: &[],
+        // Cohere 官方 OpenAI 兼容端点（旧值 api.cohere.ai/v2 是原生 v2 API）。
+        api_base: "https://api.cohere.com/compatibility/v1",
+        protocol: "openai",
+        default_model: "command-r-plus",
+        display_name: "Cohere",
+    },
+    ProviderPreset {
+        id: "perplexity",
+        aliases: &["pplx"],
+        // 官方文档 base_url 无 /v1 后缀（SDK 自动拼 /chat/completions）。
+        api_base: "https://api.perplexity.ai",
+        protocol: "openai",
+        default_model: "sonar",
+        display_name: "Perplexity",
+    },
+    ProviderPreset {
+        id: "ai21",
+        aliases: &["jamba"],
+        api_base: "https://api.ai21.com/studio/v1",
+        protocol: "openai",
+        default_model: "jamba-large-1.6",
+        display_name: "AI21 Labs",
+    },
+    ProviderPreset {
+        id: "writer",
+        aliases: &[],
+        api_base: "https://api.writer.com/v1",
+        protocol: "openai",
+        default_model: "palmyra-x5",
+        display_name: "Writer",
+    },
+    ProviderPreset {
+        id: "reka",
+        aliases: &[],
+        api_base: "https://api.reka.ai/v1",
+        protocol: "openai",
+        default_model: "reka-core",
+        display_name: "Reka AI",
+    },
+    ProviderPreset {
+        id: "upstage",
+        aliases: &["solar"],
+        api_base: "https://api.upstage.ai/v1/solar",
+        protocol: "openai",
+        default_model: "solar-pro",
+        display_name: "Upstage",
+    },
+    ProviderPreset {
+        id: "gigachat",
+        aliases: &[],
+        api_base: "https://gigachat.devices.sberbank.ru/api/v1",
+        protocol: "openai",
+        default_model: "GigaChat",
+        display_name: "GigaChat（Sber）",
+    },
+    ProviderPreset {
+        id: "yandex",
+        aliases: &[],
+        api_base: "https://llm.api.cloud.yandex.net/v1",
+        protocol: "openai",
+        default_model: "yandexgpt",
+        display_name: "Yandex Cloud",
+    },
+    ProviderPreset {
+        id: "sarvam",
+        aliases: &[],
+        api_base: "https://api.sarvam.ai/v1",
+        protocol: "openai",
+        default_model: "sarvam-m",
+        display_name: "Sarvam AI",
+    },
+    ProviderPreset {
+        id: "llama_api",
+        aliases: &["meta"],
+        api_base: "https://api.llama.com/compat/v1",
+        protocol: "openai",
+        default_model: "Llama-4-Maverick-17B-128E-Instruct-FP8",
+        display_name: "Meta Llama API",
+    },
+    // ---- 聚合 / GPU 云 ----
+    ProviderPreset {
+        id: "openrouter",
+        aliases: &[],
+        api_base: "https://openrouter.ai/api/v1",
+        protocol: "openai",
+        default_model: "openai/gpt-4o",
+        display_name: "OpenRouter",
+    },
+    ProviderPreset {
+        id: "groq",
+        aliases: &[],
+        api_base: "https://api.groq.com/openai/v1",
+        protocol: "openai",
+        default_model: "llama-3.3-70b-versatile",
+        display_name: "Groq",
+    },
+    ProviderPreset {
+        id: "together",
+        aliases: &["together_ai"],
+        api_base: "https://api.together.xyz/v1",
+        protocol: "openai",
+        default_model: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        display_name: "Together AI",
+    },
+    ProviderPreset {
+        id: "fireworks",
+        aliases: &["fireworks_ai"],
+        api_base: "https://api.fireworks.ai/inference/v1",
+        protocol: "openai",
+        default_model: "accounts/fireworks/models/llama-v3p3-70b-instruct",
+        display_name: "Fireworks AI",
+    },
+    ProviderPreset {
+        id: "cerebras",
+        aliases: &[],
+        api_base: "https://api.cerebras.ai/v1",
+        protocol: "openai",
+        default_model: "llama-3.3-70b",
+        display_name: "Cerebras",
+    },
+    ProviderPreset {
+        id: "sambanova",
+        aliases: &[],
+        api_base: "https://api.sambanova.ai/v1",
+        protocol: "openai",
+        default_model: "Meta-Llama-3.3-70B-Instruct",
+        display_name: "SambaNova",
+    },
+    ProviderPreset {
+        id: "nvidia",
+        aliases: &["nim"],
+        api_base: "https://integrate.api.nvidia.com/v1",
+        protocol: "openai",
+        default_model: "nvidia/llama-3.1-nemotron-70b-instruct",
+        display_name: "NVIDIA NIM",
+    },
+    ProviderPreset {
+        id: "deepinfra",
+        aliases: &[],
+        api_base: "https://api.deepinfra.com/v1/openai",
+        protocol: "openai",
+        default_model: "meta-llama/Meta-Llama-3.3-70B-Instruct",
+        display_name: "DeepInfra",
+    },
+    ProviderPreset {
+        id: "novita",
+        aliases: &["novita_ai"],
+        api_base: "https://api.novita.ai/v3/openai",
+        protocol: "openai",
+        default_model: "deepseek/deepseek-v3",
+        display_name: "Novita AI",
+    },
+    ProviderPreset {
+        id: "hyperbolic",
+        aliases: &[],
+        api_base: "https://api.hyperbolic.xyz/v1",
+        protocol: "openai",
+        default_model: "meta-llama/Meta-Llama-3.3-70B-Instruct",
+        display_name: "Hyperbolic",
+    },
+    ProviderPreset {
+        id: "nebius",
+        aliases: &[],
+        api_base: "https://api.studio.nebius.ai/v1",
+        protocol: "openai",
+        default_model: "deepseek-ai/DeepSeek-V3",
+        display_name: "Nebius AI Studio",
+    },
+    ProviderPreset {
+        id: "lambda",
+        aliases: &["lambdalabs"],
+        api_base: "https://api.lambda.ai/v1",
+        protocol: "openai",
+        default_model: "llama3.3-70b-instruct-fp8",
+        display_name: "Lambda",
+    },
+    ProviderPreset {
+        id: "friendliai",
+        aliases: &[],
+        api_base: "https://api.friendliai.com/v1",
+        protocol: "openai",
+        default_model: "meta-llama/Meta-Llama-3.1-70B-Instruct",
+        display_name: "FriendliAI",
+    },
+    ProviderPreset {
+        id: "baseten",
+        aliases: &[],
+        api_base: "https://inference.baseten.co/v1",
+        protocol: "openai",
+        default_model: "meta-llama/Meta-Llama-3.1-8B-Instruct",
+        display_name: "Baseten",
+    },
+    ProviderPreset {
+        id: "kluster",
+        aliases: &[],
+        api_base: "https://api.kluster.ai/v1",
+        protocol: "openai",
+        default_model: "klusterai/Meta-Llama-3.3-70B-Instruct-Turbo",
+        display_name: "Kluster AI",
+    },
+    ProviderPreset {
+        id: "ovhcloud",
+        aliases: &["ovh"],
+        api_base: "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1",
+        protocol: "openai",
+        default_model: "Meta-Llama-3.3-70B-Instruct",
+        display_name: "OVHcloud AI Endpoints",
+    },
+    ProviderPreset {
+        id: "scaleway",
+        aliases: &[],
+        api_base: "https://api.scaleway.ai/v1",
+        protocol: "openai",
+        default_model: "llama-3.3-70b-instruct",
+        display_name: "Scaleway",
+    },
+    ProviderPreset {
+        id: "gmi",
+        aliases: &[],
+        api_base: "https://api.gmi.ai/v1",
+        protocol: "openai",
+        default_model: "meta-llama/Llama-3.3-70B-Instruct",
+        display_name: "GMI Cloud",
+    },
+    ProviderPreset {
+        id: "nscale",
+        aliases: &[],
+        api_base: "https://inference.api.nscale.com/v1",
+        protocol: "openai",
+        default_model: "deepseek-ai/DeepSeek-V3",
+        display_name: "Nscale",
+    },
+    ProviderPreset {
+        id: "replicate",
+        aliases: &[],
+        api_base: "https://api.replicate.com/v1",
+        protocol: "openai",
+        default_model: "meta/meta-llama-3.3-70b-instruct",
+        display_name: "Replicate",
+    },
+    ProviderPreset {
+        id: "huggingface",
+        aliases: &["hf"],
+        api_base: "https://router.huggingface.co/v1",
+        protocol: "openai",
+        default_model: "meta-llama/Llama-3.3-70B-Instruct",
+        display_name: "Hugging Face Router",
+    },
+    ProviderPreset {
+        id: "github_models",
+        aliases: &["github", "ghmodels"],
+        api_base: "https://models.github.ai/inference",
+        protocol: "openai",
+        default_model: "openai/gpt-4o-mini",
+        display_name: "GitHub Models",
+    },
+    ProviderPreset {
+        id: "vercel",
+        aliases: &["vercel_gateway"],
+        api_base: "https://ai-gateway.vercel.sh/v1",
+        protocol: "openai",
+        default_model: "openai/gpt-4o",
+        display_name: "Vercel AI Gateway",
+    },
+    ProviderPreset {
+        id: "featherless",
+        aliases: &[],
+        api_base: "https://api.featherless.ai/v1",
+        protocol: "openai",
+        default_model: "meta-llama/Meta-Llama-3.1-8B-Instruct",
+        display_name: "Featherless AI",
+    },
+    ProviderPreset {
+        id: "ionet",
+        aliases: &[],
+        api_base: "https://api.intelligence.io.solutions/api/v1",
+        protocol: "openai",
+        default_model: "meta-llama/Llama-3.3-70B-Instruct",
+        display_name: "IO.NET Intelligence",
+    },
+    ProviderPreset {
+        id: "ppinfra",
+        aliases: &["ppio"],
+        api_base: "https://api.ppinfra.com/v3/openai",
+        protocol: "openai",
+        default_model: "deepseek/deepseek-r1",
+        display_name: "PPIO 派欧云",
+    },
+    ProviderPreset {
+        id: "byteplus",
+        aliases: &[],
+        api_base: "https://ark.ap-southeast.bytepluses.com/api/v3",
+        protocol: "openai",
+        default_model: "doubao-seed-1-6-flash-250615",
+        display_name: "BytePlus Model Ark",
+    },
+    ProviderPreset {
+        id: "aihubmix",
+        aliases: &["hubmix"],
+        api_base: "https://aihubmix.com/v1",
+        protocol: "openai",
+        default_model: "gpt-4o",
+        display_name: "AiHubMix",
+    },
+    // ---- 本地推理服务器 ----
+    ProviderPreset {
+        id: "ollama",
+        aliases: &[],
+        api_base: "http://localhost:11434/v1",
+        protocol: "openai",
+        default_model: "llama3.3",
+        display_name: "Ollama（本机）",
+    },
+    ProviderPreset {
+        id: "lmstudio",
+        aliases: &["lm_studio"],
+        api_base: "http://localhost:1234/v1",
+        protocol: "openai",
+        default_model: "qwen2.5-7b-instruct",
+        display_name: "LM Studio（本机）",
+    },
+    ProviderPreset {
+        id: "vllm",
+        aliases: &[],
+        api_base: "http://localhost:8000/v1",
+        protocol: "openai",
+        default_model: "Qwen/Qwen2.5-7B-Instruct",
+        display_name: "vLLM（本机）",
+    },
+    ProviderPreset {
+        id: "sglang",
+        aliases: &[],
+        api_base: "http://localhost:30000/v1",
+        protocol: "openai",
+        default_model: "meta-llama/Llama-3.1-8B-Instruct",
+        display_name: "SGLang（本机）",
+    },
+    // llama-server 忽略 model 字段（服务已加载的 GGUF），"local-model" 是
+    // 官方文档示例的占位约定。
+    ProviderPreset {
+        id: "llama_cpp",
+        aliases: &["llamacpp"],
+        api_base: "http://localhost:8080/v1",
+        protocol: "openai",
+        default_model: "local-model",
+        display_name: "llama.cpp（本机）",
+    },
+    // Jan 本地服务器同 llama.cpp：model 字段取已下载模型的 id，官方示例
+    // 允许任意值，"local-model" 为占位约定。
+    ProviderPreset {
+        id: "jan",
+        aliases: &[],
+        api_base: "http://127.0.0.1:1337/v1",
+        protocol: "openai",
+        default_model: "local-model",
+        display_name: "Jan（本机）",
+    },
+    // ---- 特例（历史遗留入口）----
+    // GitHub Copilot 本地代理（LiteLLM 同款默认端口）。
+    ProviderPreset {
+        id: "github_copilot",
+        aliases: &["copilot"],
+        api_base: "http://localhost:4321",
+        protocol: "openai",
+        default_model: "gpt-4o",
+        display_name: "GitHub Copilot（本地代理）",
+    },
+    // 声通云路由：平台按租户下发型号，无公开固定默认型号——default_model
+    // 留空（`--provider` 须显式 `--model`；完整性测试按此豁免）。
+    ProviderPreset {
+        id: "shengsuanyun",
+        aliases: &[],
+        api_base: "https://router.shengsuanyun.com/api/v1",
+        protocol: "openai",
+        default_model: "",
+        display_name: "声通云路由",
+    },
+];
+
+/// Look up a provider preset by id or alias (trimmed, ASCII case-insensitive).
+pub fn find_provider_preset(name: &str) -> Option<&'static ProviderPreset> {
+    let needle = name.trim().to_ascii_lowercase();
+    if needle.is_empty() {
+        return None;
+    }
+    PROVIDER_PRESETS
+        .iter()
+        .find(|p| p.id == needle || p.aliases.contains(&needle.as_str()))
+}
+
+/// Sorted list of all preset family ids (error-message / completion helper).
+pub fn provider_preset_ids() -> Vec<&'static str> {
+    let mut ids: Vec<&'static str> = PROVIDER_PRESETS.iter().map(|p| p.id).collect();
+    ids.sort_unstable();
+    ids
+}
+
 /// Get the default API base URL for a provider.
 ///
-/// Mirrors Go `getDefaultAPIBase`.
+/// 查 [`PROVIDER_PRESETS`] 预设表（id 或别名命中）。未知家族返回空串。
+/// Mirrors Go `getDefaultAPIBase`（表化后语义不变）。
 pub fn get_default_api_base(provider: &str) -> String {
-    match provider {
-        "anthropic" | "claude" => "https://api.anthropic.com/v1".to_string(),
-        "openai" | "gpt" => "https://api.openai.com/v1".to_string(),
-        "openrouter" => "https://openrouter.ai/api/v1".to_string(),
-        "groq" => "https://api.groq.com/openai/v1".to_string(),
-        "zhipu" | "glm" => "https://open.bigmodel.cn/api/paas/v4".to_string(),
-        "gemini" | "google" => "https://generativelanguage.googleapis.com/v1beta".to_string(),
-        "nvidia" => "https://integrate.api.nvidia.com/v1".to_string(),
-        "ollama" => "http://localhost:11434/v1".to_string(),
-        "moonshot" | "kimi" => "https://api.moonshot.cn/v1".to_string(),
-        "deepseek" => "https://api.deepseek.com/v1".to_string(),
-        "mistral" => "https://api.mistral.ai/v1".to_string(),
-        "cohere" => "https://api.cohere.ai/v2".to_string(),
-        "perplexity" => "https://api.perplexity.ai/v1".to_string(),
-        "together" => "https://api.together.xyz/v1".to_string(),
-        "fireworks" => "https://api.fireworks.ai/inference/v1".to_string(),
-        "cerebras" => "https://api.cerebras.ai/v1".to_string(),
-        "sambanova" => "https://api.sambanova.ai/v1".to_string(),
-        "shengsuanyun" => "https://router.shengsuanyun.com/api/v1".to_string(),
-        "github_copilot" => "localhost:4321".to_string(),
-        _ => String::new(),
-    }
+    find_provider_preset(provider)
+        .map(|p| p.api_base.to_string())
+        .unwrap_or_default()
 }
 
 /// Return the default model for a given provider name.
 ///
 /// When a provider is known but no specific model is configured, this provides
-/// a reasonable default. Mirrors Go `inferDefaultModel`.
+/// a reasonable default（查 [`PROVIDER_PRESETS`]；家族 default_model 为空或
+/// 家族未知返回空串）。Mirrors Go `inferDefaultModel`（表化后语义不变）。
 pub fn infer_default_model(provider: &str) -> String {
-    match provider {
-        "anthropic" | "claude" => "claude-sonnet-4-20250514".to_string(),
-        "openai" | "gpt" => "gpt-4o".to_string(),
-        "zhipu" | "glm" => "glm-4.7-flash".to_string(),
-        "groq" => "llama-3.3-70b-versatile".to_string(),
-        "ollama" => "llama3.3".to_string(),
-        "gemini" | "google" => "gemini-2.0-flash-exp".to_string(),
-        "nvidia" => "nvidia/llama-3.1-nemotron-70b-instruct".to_string(),
-        "moonshot" | "kimi" => "moonshot-v1-8k".to_string(),
-        "deepseek" => "deepseek-chat".to_string(),
-        "mistral" => "mistral-large-latest".to_string(),
-        "cohere" => "command-r-plus".to_string(),
-        "perplexity" => "sonar".to_string(),
-        "together" => "meta-llama/Llama-3.3-70B-Instruct-Turbo".to_string(),
-        "fireworks" => "accounts/fireworks/models/llama-v3p3-70b-instruct".to_string(),
-        "cerebras" => "llama-3.3-70b".to_string(),
-        "sambanova" => "Meta-Llama-3.3-70B-Instruct".to_string(),
-        _ => String::new(),
-    }
+    find_provider_preset(provider)
+        .map(|p| p.default_model.to_string())
+        .unwrap_or_default()
 }
 
 /// Find a model configuration by name with round-robin load balancing.

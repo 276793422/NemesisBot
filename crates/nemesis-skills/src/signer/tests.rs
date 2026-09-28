@@ -297,12 +297,77 @@ fn test_build_manifest_with_subdirectory() {
     let signer = SkillSigner::new();
     let manifest = signer.build_manifest(&skill_dir).unwrap();
     assert_eq!(manifest.files.len(), 2);
-    // Files are sorted by path, and paths use OS-specific separators
+    // 相对路径规范化：分隔符恒为 `/`（平台无关，跨平台签验一致）。
     let paths: Vec<&str> = manifest.files.iter().map(|f| f.path.as_str()).collect();
     assert!(paths.iter().any(|p| p.contains("SKILL.md")));
     assert!(paths.iter().any(|p| p.contains("guide.md")));
-    assert!(manifest.content.contains("SKILL.md"));
-    assert!(manifest.content.contains("Guide"));
+    assert!(
+        paths.iter().all(|p| !p.contains('\\')),
+        "分隔符不得进载荷: {paths:?}"
+    );
+    let content = String::from_utf8_lossy(&manifest.content);
+    assert!(content.contains("SKILL.md"));
+    assert!(content.contains("Guide"));
+}
+
+/// 签名载荷确定性（2026-09-26 复查修复回归锁）：此前拼接跟随 read_dir
+/// 枚举顺序（排序只作用于 files 列表、不作用于被签名的 combined）——
+/// 枚举序漂移 = 同目录两次构建载荷不同 = 签验失败/漏检。现在先排序后
+/// 拼接，重复构建必须字节一致。
+#[test]
+fn test_build_manifest_deterministic_across_builds() {
+    let dir = tempfile::tempdir().unwrap();
+    let skill_dir = dir.path().join("skill");
+    let sub = skill_dir.join("a/b");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(skill_dir.join("z.md"), "zeta").unwrap();
+    std::fs::write(skill_dir.join("m.md"), "mu").unwrap();
+    std::fs::write(sub.join("k.md"), "kappa").unwrap();
+
+    let signer = SkillSigner::new();
+    let m1 = signer.build_manifest(&skill_dir).unwrap();
+    let m2 = signer.build_manifest(&skill_dir).unwrap();
+    assert_eq!(m1.content, m2.content, "同目录重复构建载荷必须一致");
+    assert_eq!(
+        m1.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
+        m2.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>()
+    );
+}
+
+/// 非 UTF-8 文件（二进制资产）不再令签名/验证失败（2026-09-26 复查修复
+/// 回归锁：此前 read_to_string 遇非 UTF-8 直接 Err）。
+#[test]
+fn test_sign_and_verify_with_binary_asset() {
+    let dir = tempfile::tempdir().unwrap();
+    let skill_dir = dir.path().join("binary-skill");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(skill_dir.join("SKILL.md"), "# Binary asset skill").unwrap();
+    std::fs::write(skill_dir.join("logo.bin"), [0xFF, 0xFE, 0x00, 0x80, 0xC3]).unwrap();
+
+    let key_dir = dir.path().join("keys");
+    SkillSigner::generate_key_pair(&key_dir.to_string_lossy()).unwrap();
+
+    let signer = SkillSigner::new();
+    let public_key = std::fs::read_to_string(key_dir.join("skill_sign.pub")).unwrap();
+    signer
+        .trust_store()
+        .add_key(&public_key, "test", TrustLevel::Verified);
+
+    signer
+        .sign_skill(
+            &skill_dir.to_string_lossy(),
+            &key_dir.join("skill_sign.key").to_string_lossy(),
+        )
+        .expect("含二进制资产的技能必须可签");
+
+    let verification = signer.verify_skill(&skill_dir.to_string_lossy()).unwrap();
+    assert!(verification.valid, "{:?}", verification.error);
+    assert!(verification.trusted);
+
+    // 二进制资产被篡改也要验出
+    std::fs::write(skill_dir.join("logo.bin"), [0xFF, 0xFE, 0x00, 0x81, 0xC3]).unwrap();
+    let verification = signer.verify_skill(&skill_dir.to_string_lossy()).unwrap();
+    assert!(!verification.valid, "二进制资产篡改必须验出");
 }
 
 #[test]

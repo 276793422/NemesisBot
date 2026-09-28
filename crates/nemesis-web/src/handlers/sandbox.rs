@@ -225,6 +225,7 @@ impl ModuleHandler for SandboxHandler {
             "set_network",
             "set_config",
             "self_test",
+            "denials.list",
         ]
     }
 
@@ -332,8 +333,12 @@ impl ModuleHandler for SandboxHandler {
                             })
                         })
                         .collect();
+                    // P1（2026-09-25）：selected 按 config 的 allow_network
+                    // 选型（禁网 + bwrap 可用 → bwrap；与 exec_worker::engage
+                    // 同一张决策表）。
                     let selected =
-                        nemesis_sandbox::backend::detect_backend().map(|b| b.name().to_string());
+                        nemesis_sandbox::backend::detect_backend(current_allow_network(&home))
+                            .map(|b| b.name().to_string());
                     (
                         serde_json::json!({
                             "kind": "userland",
@@ -343,6 +348,47 @@ impl ModuleHandler for SandboxHandler {
                         selected.is_some(),
                     )
                 };
+                // D4 状态面（DACL 定向档 2026-09-27）：Windows + `acl` feature
+                // 下附 DACL 探针；其余平台/形态 = null（前端据型判空隐藏）。
+                // engaged 是**代理语义**：dacl 配置开 && 探针可用 ⇒ 下一次
+                // executor spawn 走 workspace-dacl 受限令牌路径（与 exec_world
+                // 装配点 hook 的 Ok(Some) 判据同源——不窥探 channel 内部令牌
+                // 缓存；铸令牌失败那次会按 strict 降级，属于瞬时态）。
+                // root_ace 是 standing 树铺设状态的**只读**观测（根达标 =
+                // 至少完整铺过一次；状态查询绝不触发打标——零副作用）。
+                #[cfg(target_os = "windows")]
+                let dacl_probe: serde_json::Value = {
+                    use nemesis_sandbox::backend::Availability;
+                    let executor_ws = home.join("workspace");
+                    let (availability, reason) = match nemesis_sandbox::backend::dacl_availability()
+                    {
+                        Availability::Full => ("full", None),
+                        Availability::Partial(gaps) => ("partial", Some(gaps.join("; "))),
+                        Availability::Unavailable(r) => ("unavailable", Some(r)),
+                    };
+                    let sid = nemesis_sandbox::backend::derive_workspace_sid(&executor_ws).ok();
+                    let root_ace = sid.as_deref().and_then(|s| {
+                        nemesis_sandbox::backend::root_standing_ace_state(&executor_ws, s)
+                            .ok()
+                            .map(|(grant, deny_child, is_dir)| {
+                                serde_json::json!({
+                                    "grant": grant,
+                                    "deny_child": deny_child,
+                                    "is_dir": is_dir,
+                                })
+                            })
+                    });
+                    serde_json::json!({
+                        "engaged": executor.acl.dacl && availability != "unavailable",
+                        "availability": availability,
+                        "availability_reason": reason,
+                        "workspace": executor_ws.to_string_lossy(),
+                        "workspace_sid": sid,
+                        "root_ace": root_ace,
+                    })
+                };
+                #[cfg(not(target_os = "windows"))]
+                let dacl_probe: serde_json::Value = serde_json::Value::Null;
                 Ok(Some(serde_json::json!({
                     "platform": platform,
                     "executor": {
@@ -350,7 +396,13 @@ impl ModuleHandler for SandboxHandler {
                         "sandbox": executor.sandbox,
                         "allow_network": executor.allow_network,
                         "strict": executor.strict,
+                        "acl": {
+                            "dacl": executor.acl.dacl,
+                            "strict": executor.acl.strict,
+                            "max_files": executor.acl.max_files,
+                        },
                     },
+                    "dacl": dacl_probe,
                     "backend_probe": backend_probe,
                     "ready": ready,
                 })))
@@ -576,15 +628,65 @@ impl ModuleHandler for SandboxHandler {
                         "sandbox": now.sandbox,
                         "allow_network": now.allow_network,
                         "strict": now.strict,
+                        "acl": {
+                            "dacl": now.acl.dacl,
+                            "strict": now.acl.strict,
+                            "max_files": now.acl.max_files,
+                        },
                     },
                     // enabled 决定装配期是否建通道（agent 重启才生效）；sandbox
-                    // /strict 是 live probe，下一次工具调用即生效。
-                    "restart_hint": "executor.enabled 变更需重启 Agent；sandbox/strict 对后续工具调用实时生效",
+                    // /strict 是 live probe，下一次工具调用即生效。acl.dacl 同为
+                    // live（hook 每次调用时读 config）。
+                    "restart_hint": "executor.enabled 变更需重启 Agent；sandbox/strict/acl.dacl 对后续工具调用实时生效",
                 })))
             }
             // G7 (D2)：用户态沙盒自检（一次性子进程探针；Windows / 无后端
             // → supported:false，不 spawn）。
             "self_test" => self.self_test(&home).await,
+            // P21（2026-09-25）：沙盒拒绝台账查询。台账是沙盒层自有观测面
+            // （<workspace>/logs/sandbox_denials.jsonl，executor 子进程侧经
+            // nemesis_sandbox::denial 写入），这里只读：limit 缺省 50、上限
+            // 500（防一次拖全量），最新在前。不接安全审计链（Merkle 链照旧）。
+            "denials.list" => {
+                let limit = data
+                    .as_ref()
+                    .and_then(|d| d.get("limit"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(50)
+                    .clamp(1, 500) as usize;
+                // F9（2026-09-26 复查）：工作区取 ctx.workspace（gateway 装配
+                // 时注入的真实工作区——executor 子进程的台账也写在那份工作区
+                // 的 logs/ 下），仅在其缺省时回落 `home/workspace` 约定（旧
+                // 形态/未装配 ctx）。此前硬编码 join 使 NEMESISBOT_HOME 指向
+                // 非默认布局时台账永远查空。
+                let workspace = ctx
+                    .workspace
+                    .clone()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| home.join("workspace"));
+                let mut denials: Vec<serde_json::Value> =
+                    nemesis_sandbox::denial::read_denials(&workspace, limit)
+                        .into_iter()
+                        .map(|r| {
+                            serde_json::json!({
+                                "ts": r.ts,
+                                "backend": r.backend,
+                                "op": r.op,
+                                "target": r.target,
+                                "reason": r.reason,
+                                "model_visible": r.model_visible,
+                            })
+                        })
+                        .collect();
+                // 文件序 = 时间序 → 反转为「最新在前」展示。
+                denials.reverse();
+                Ok(Some(serde_json::json!({
+                    "denials": denials,
+                    "count": denials.len(),
+                    "limit": limit,
+                    "ledger": nemesis_sandbox::denial::ledger_path(&workspace).to_string_lossy(),
+                })))
+            }
             other => Err(format!("unknown sandbox command: {other}")),
         }
     }
@@ -609,7 +711,10 @@ impl SandboxHandler {
         std::fs::create_dir_all(&workspace)
             .map_err(|e| format!("create workspace for selftest: {e}"))?;
 
-        let Some(backend) = detect_backend() else {
+        // P1（2026-09-25）：先读网络要求再选后端（禁网 + bwrap 可用 → 自检
+        // 走 bwrap，测的才是真实强制链）。
+        let allow_network = current_allow_network(home);
+        let Some(backend) = detect_backend(allow_network) else {
             return Ok(Some(serde_json::json!({
                 "supported": false,
                 "backend": serde_json::Value::Null,
@@ -622,7 +727,6 @@ impl SandboxHandler {
             })));
         };
 
-        let allow_network = current_allow_network(home);
         let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
         let mut cmd = std::process::Command::new(&exe);
         cmd.arg("sandbox").arg("selftest-child");
@@ -740,3 +844,8 @@ mod s10b_tests;
 // spawn 失败臂。run_cli_subcmd/真下载/真开窗臂豁免（见 agt_tests 文件头注）。
 #[cfg(test)]
 mod agt_tests;
+
+// P21（2026-09-25）：sandbox.denials.list 查询面（空账 / 种子账 / limit 截断
+// 与上限 / 最新在前）。
+#[cfg(test)]
+mod denials_tests;

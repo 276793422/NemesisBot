@@ -332,6 +332,15 @@ pub struct DiscoveryConfig {
 
 impl DiscoveryConfig {
     /// Create a config with an encryption key derived from the given token.
+    ///
+    /// # 开关语义矩阵（L3，2026-09-27）
+    ///
+    /// | `cluster.enabled` | token | 行为 |
+    /// |---|---|---|
+    /// | true | 非空 | AES-256-GCM 加密广播（主路径）；token 失配的入站帧静默丢弃并计入来源账本（见 [`super::DecryptDropSummary`]） |
+    /// | true | 空 | **明文广播运行**（向后兼容行为）：announce 可被局域网内任意主机侦听/伪造，`Cluster::start_discovery` 启动时一次性 WARN 声明 |
+    /// | true | 引用解析失败 | **fail-closed 不启动**（P0：拒绝无加密运行，见 `Cluster::start_discovery`） |
+    /// | false | 任意 | discovery 不启动 |
     pub fn with_encryption(port: u16, interval: Duration, token: &str) -> Self {
         let enc_key = if token.is_empty() {
             None
@@ -674,6 +683,11 @@ impl DiscoveryService {
     /// Get the port the listener is bound to.
     pub fn port(&self) -> u16 {
         self.listener.port()
+    }
+
+    /// 解密失败丢弃摘要（token 失配来源账本，透传自底层 listener）。
+    pub fn decrypt_drop_summary(&self) -> crate::discovery::DecryptDropSummary {
+        self.listener.decrypt_drop_summary()
     }
 
     /// Send an announce broadcast.

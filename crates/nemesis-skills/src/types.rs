@@ -130,6 +130,10 @@ pub struct SkillMeta {
     /// Download count. 0 when unavailable.
     #[serde(default)]
     pub downloads: i64,
+    /// Publish time (unix seconds) when the registry provides it (P16 版本龄);
+    /// None = unknown (e.g. clawhub convex metadata has no such field).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<i64>,
 }
 
 /// Result from a DownloadAndInstall operation.

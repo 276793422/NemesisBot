@@ -270,6 +270,8 @@ pub struct WebServer {
     /// 签名验证启动自验状态（接入计划 §4；gateway 从 verify_policy 快照映射
     /// 注入，flows into AppState for security.signature_verify_status）。
     signature_verify: Option<Arc<crate::handlers::signature_status::SignatureVerifyStatus>>,
+    /// WS4 技能装前审批门（P13；gateway 注入，flows into AppState）。
+    skills_install_gate: Option<nemesis_skills::install_gate::SharedInstallGate>,
     /// Runtime cron service (set by gateway; flows into AppState for tasks.cron.*).
     cron: Option<Arc<std::sync::Mutex<nemesis_cron::CronService>>>,
     /// Managed-agent board service (set by gateway when the `board` feature is on;
@@ -362,6 +364,7 @@ impl WebServer {
             internal_cmd_tx: None,
             estop: None,
             signature_verify: None,
+            skills_install_gate: None,
             cron: None,
             board: None,
             conv_router: None,
@@ -533,6 +536,15 @@ impl WebServer {
         self.signature_verify = Some(status);
     }
 
+    /// Set the skills install approval gate (WS4 P13；gateway 注入
+    /// WebApprovalManager 适配器，`skills.install` 经它出审批卡)。
+    pub fn set_skills_install_gate(
+        &mut self,
+        gate: nemesis_skills::install_gate::SharedInstallGate,
+    ) {
+        self.skills_install_gate = Some(gate);
+    }
+
     /// Set the runtime cron service for `tasks.cron.*` handlers.
     pub fn set_cron(&mut self, cron: Arc<std::sync::Mutex<nemesis_cron::CronService>>) {
         self.cron = Some(cron);
@@ -669,6 +681,7 @@ impl WebServer {
             internal_cmd_tx: self.internal_cmd_tx.clone(),
             estop: self.estop.clone(),
             signature_verify: self.signature_verify.clone(),
+            skills_install_gate: self.skills_install_gate.clone(),
             cron: self.cron.clone(),
             board: self.board.clone(),
         };
@@ -2014,6 +2027,26 @@ pub async fn pump_agent_events(
                         "session.created",
                         serde_json::json!({ "session_id": session_id }),
                     );
+                    continue;
+                }
+                // P30（WS14）：canvas 打开 → SSE `canvas.open`（内层 data 展平
+                // + session_id 注入，approval/session.created 同款单发形态）。
+                // 刻意不走默认 tool_event 路径：HTML 载荷大（整个 canvas 文档），
+                // 不入 chat_event_log 环（重连/切页不重发——面板状态在前端本地
+                // 单例，断线窗口内的 canvas 只能靠终答正文里的原代码块回看，
+                // v1 诚实边界）；也不发 WS push（SSE 单通道即达）。
+                if let nemesis_types::agent::AgentEvent::CanvasOpen {
+                    session_key,
+                    html,
+                    index,
+                    ..
+                } = &event
+                {
+                    let mut payload = serde_json::json!({ "html": html, "index": index });
+                    if let Some(sid) = session_key.rsplit(':').next() {
+                        payload["session_id"] = serde_json::Value::String(sid.to_string());
+                    }
+                    event_hub.publish("canvas.open", payload);
                     continue;
                 }
                 // BUG-A（2026-09-20）：帧内层注入 web 会话 id。chat_id 是

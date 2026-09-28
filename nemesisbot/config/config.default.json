@@ -72,6 +72,18 @@
       "allow_from": [],
       "sync_to": []
     },
+    "wecom": {
+      "enabled": false,
+      "webhook_url": "",
+      "webhooks": {},
+      "token": "",
+      "encoding_aes_key": "",
+      "corp_id": "",
+      "listen_addr": "0.0.0.0:9898",
+      "callback_path": "/wecom/callback",
+      "allow_from": [],
+      "sync_to": []
+    },
     "slack": {
       "enabled": false,
       "bot_token": "",
@@ -187,7 +199,12 @@
     "enabled": false
   },
   "memory": {
-    "enabled": false
+    "enabled": false,
+    "dreaming": {
+      "enabled": false,
+      "cron": "30 3 * * *",
+      "top_k": 8
+    }
   },
   "mcp": {
     "enabled": true

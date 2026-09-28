@@ -24,6 +24,34 @@ fn exec_cfg(enabled: bool, sandbox: bool) -> ExecutorSeparationConfig {
     }
 }
 
+/// D4（DACL 定向档）：serde 双路径陷阱回归钉——executor 段无 acl 键 /
+/// executor 段整个缺失时，两条构造路径都必须收敛到同一组默认值
+/// （max_files=20000 而非 derive 的 0；backend="auto" 而非 derive 的 ""）。
+/// 假红史：hook_flips 真进程测试抓出 max_files=0 → 铺树预算耗尽 →
+/// DACL 档静默降级（2026-09-27，手写 Default 修复）。
+#[test]
+fn executor_acl_defaults_converge_across_serde_and_default_paths() {
+    // 路径 1：结构体级 Default::default()（serde 嵌套补齐 / unwrap_or_default 走这条）。
+    let d = ExecutorSeparationConfig::default();
+    assert_eq!(d.backend, "auto", "derive Default 会给空串——选型拒绝值");
+    assert_eq!(d.acl.max_files, 20_000, "derive Default 会给 0——铺树预算耗尽");
+    assert!(!d.acl.dacl && !d.acl.strict);
+
+    // 路径 2：serde 反序列化，executor 段存在但无 acl/backend 键。
+    let e: ExecutorSeparationConfig =
+        serde_json::from_str(r#"{ "enabled": true }"#).expect("deserialize");
+    assert_eq!(e.backend, "auto");
+    assert_eq!(e.acl.max_files, 20_000);
+    assert!(!e.acl.dacl);
+
+    // 路径 3：显式 acl 键覆盖仍正常（字段级 serde default 在显式嵌套对象内生效）。
+    let e2: ExecutorSeparationConfig =
+        serde_json::from_str(r#"{ "enabled": true, "acl": { "dacl": true } }"#)
+            .expect("deserialize");
+    assert!(e2.acl.dacl);
+    assert_eq!(e2.acl.max_files, 20_000, "显式 acl 对象缺 max_files → 字段级 default");
+}
+
 #[test]
 fn handle_sees_update_live() {
     let (_dir, store) = tmp_store();
@@ -126,4 +154,55 @@ fn global_singleton_set_get_load_live_save_live() {
     // Persisted: a fresh load off the same file sees the write.
     let reloaded = crate::load_config(&path).unwrap();
     assert_eq!(reloaded.gateway.port, 12345);
+}
+
+// ---------------------------------------------------------------------------
+// P24（2026-09-25 能力扩展 WS1）：executor.backend 往返与兼容
+// ---------------------------------------------------------------------------
+
+/// typed save round-trip：`executor.backend` 显式值经 store.update 落盘后，
+/// 全新 load 读回不丢（同款回归锁先例：per-model untyped 键 round-trip）。
+#[test]
+fn executor_backend_roundtrip_preserves_explicit_value() {
+    let (dir, store) = tmp_store();
+    store
+        .update(|c| {
+            c.executor = Some(ExecutorSeparationConfig {
+                backend: "acl".to_string(),
+                ..Default::default()
+            })
+        })
+        .unwrap();
+
+    let store2 = ConfigStore::load(&dir.path().join("config.json")).unwrap();
+    let e = store2.handle().read().executor.clone().unwrap();
+    assert_eq!(e.backend, "acl", "显式 backend=acl 落盘后读回不丢");
+}
+
+/// 缺键兼容：老 config.json（无 `executor.backend` 键）→ 反序列化 = "auto"，
+/// 且 typed save 把缺省值**显式写回**（不新增非法形态，语义与升级前一致）。
+#[test]
+fn executor_backend_defaults_to_auto_for_legacy_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    std::fs::write(&path, r#"{ "executor": { "enabled": true } }"#).unwrap();
+
+    let store = ConfigStore::load(&path).unwrap();
+    let e = store.handle().read().executor.clone().unwrap();
+    assert_eq!(e.backend, "auto", "缺键 = auto（serde default fn）");
+    assert!(e.enabled);
+
+    // typed save（store.update 触发持久化）写回后仍可加载、值稳定。
+    store
+        .update(|c| {
+            c.executor.as_mut().unwrap().sandbox = true;
+        })
+        .unwrap();
+    let raw = std::fs::read_to_string(&path).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(
+        v["executor"]["backend"].as_str(),
+        Some("auto"),
+        "typed save 显式写回 backend 键"
+    );
 }

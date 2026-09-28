@@ -472,6 +472,7 @@ impl SkillRegistry for StubRegistryProvider {
             registry_name: "stub".to_string(),
             author: String::new(),
             downloads: 0,
+            published_at: None,
         })
     }
 

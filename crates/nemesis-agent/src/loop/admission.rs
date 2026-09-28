@@ -20,7 +20,10 @@ pub enum ConcurrentMode {
     /// Queue messages when session is busy — processed after the current turn.
     Queue,
     /// Queue + steer: `!`-prefixed messages are injected into the RUNNING
-    /// turn before its next LLM call (I1 / U7).
+    /// turn before its next LLM call (I1 / U7). The prefix is a routing
+    /// signal on every timing: busy → claim/transfer strips it; idle →
+    /// `process_admitted` strips it pre-persist (F2). `!!` escapes to a
+    /// literal `!` (single-strip rule, shell convention).
     Steer,
 }
 
@@ -902,6 +905,27 @@ impl AgentLoop {
             cp_turn,
         } = admission;
 
+        // F2（2026-09-27）：空闲态 steer 信号剥除——`!`/`！` 前缀是路由信
+        // 号不是内容，busy 态的两条消费路径（回合内 claim / 迟到 transfer）
+        // 都已剥标记，唯独空闲直进 turn 的第三条时序把 `!` 字面量随内容送
+        // 进模型：同一条消息因到达时机不同模型看到两个形态。这里 mode-aware
+        // 补齐（仅 Steer 模式——Queue/Reject 下 `!` 从来不是信号，busy 时
+        // 同样不剥，两边一致保持字面量）；剥除走单一真相源
+        // strip_steer_marker（剥一位：`!!x` → `!x` 即字面 `!` 转义，与
+        // shell 惯例同构）。剥除在 B1 早落盘之前：jsonl user 行与模型所见
+        // 同为无标记形态，不产生「历史带 `!`、上下文没有」的漂移。
+        let raw = msg;
+        let msg: std::borrow::Cow<'_, nemesis_types::channel::InboundMessage>;
+        if self.concurrent_mode == ConcurrentMode::Steer
+            && crate::inbox::is_steer_message(&raw.content)
+        {
+            let mut stripped = raw.clone();
+            stripped.content = crate::inbox::strip_steer_marker(&stripped.content).to_string();
+            msg = std::borrow::Cow::Owned(stripped);
+        } else {
+            msg = std::borrow::Cow::Borrowed(raw);
+        }
+
         let voice_playback = msg.voice_playback.unwrap_or(false);
 
         // B1（2026-09-22 聊天切会话竞态）：user 行落盘从 run_agent_loop_internal
@@ -1044,6 +1068,17 @@ impl AgentLoop {
         // Clean up cancellation token and release session.
         self.remove_cancel_token(&session_key);
         self.release_session(&session_key);
+        // P20（2026-09-25 能力扩展）：turn 收尾封印——本 turn 声明过的每个
+        // 变更路径读现盘内容哈希，作为「变更后指纹」记进该 turn 的
+        // checkpoint（rewind 冲突预检的比对基线）。无 store / 无 turn
+        // （cp_turn None）= no-op；幂等。放 release 之后：封印只读盘 + 写
+        // 自己的 JSON 索引，不参与会话 busy 语义。bus 泵与 inline 两条路径
+        // 都经 process_admitted，一处封印全覆盖。
+        if let Some(turn) = cp_turn
+            && let Some(cp) = self.security.checkpoint_store.read().as_ref()
+        {
+            cp.seal_turn(turn);
+        }
         // I5：轮结束清打开文件状态（与上方 set 词法配对，防跨轮陈旧泄漏）。
         self.pending_open_files.write().clear();
         // 对话生成：轮结束清 workflow_edit 目标（同款配对）。
@@ -1240,6 +1275,14 @@ impl AgentLoop {
                 ConcurrentMode::Steer => "steer",
             },
         }
+    }
+
+    /// P4（能力扩展 WS8）测试支撑：共享 inbox 句柄——跨 crate（nemesis-web）
+    /// 测试播种队列条目用（crate 内测试直引私有字段即可，无需此访问器）。
+    /// doc-hidden：非公开 API 承诺，仅供测试生态使用，运行时路径不得依赖。
+    #[doc(hidden)]
+    pub fn inbox_handle(&self) -> crate::inbox::SharedInbox {
+        self.inbox.clone()
     }
 
     // -----------------------------------------------------------------------

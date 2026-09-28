@@ -1,0 +1,153 @@
+{
+  "version": 1,
+  "description": "Extended lint rule table (P15 supply-chain widening). Categories align with legacy scanner; severity uses lint levels (critical blocks install). Rules are appended after the 27 hardcoded legacy patterns; ids use category prefixes (CRED/PERS/DNXL/SNST/ENVP/DYNE/SUPC).",
+  "rules": [
+    {
+      "id": "CRED-001",
+      "category": "credential_theft",
+      "pattern": "(?i)(?:cat|type|Get-Content|cp|Copy-Item|read)\\s+[^\\n;|]{0,40}(?:\\.ssh/(?:id_rsa|id_ed25519|id_ecdsa)|\\.aws[/\\\\]credentials|\\.kube[/\\\\]config)",
+      "severity": "critical",
+      "message": "Read access to SSH/cloud credential files detected"
+    },
+    {
+      "id": "CRED-002",
+      "category": "credential_theft",
+      "pattern": "(?i)security\\s+find-(?:generic|internet)-password|cmdkey\\s+/list|Get-StoredCredential|[Cc]redential[mM]anager",
+      "severity": "high",
+      "message": "OS keychain / credential manager access detected"
+    },
+    {
+      "id": "CRED-003",
+      "category": "credential_theft",
+      "pattern": "(?i)(?:cat|type|Get-Content|read)\\s+[^\\n;|]{0,40}(?:\\.git-credentials|\\.netrc|\\.npmrc)",
+      "severity": "high",
+      "message": "Read access to packaged credential files detected"
+    },
+    {
+      "id": "PERS-001",
+      "category": "persistence",
+      "pattern": "(?i)crontab\\s+(?:-[elr]|<<)|/etc/cron\\.(?:d|daily|hourly)|schtasks\\s+/create",
+      "severity": "high",
+      "message": "Scheduled task creation detected (persistence mechanism)"
+    },
+    {
+      "id": "PERS-002",
+      "category": "persistence",
+      "pattern": "(?i)CurrentVersion\\\\Run\\b|shell:startup|Start Menu\\\\Programs\\\\Startup|(?:>>|>)\\s*~?/\\.bashrc|(?:>>|>)\\s*~?/\\.zshrc",
+      "severity": "high",
+      "message": "Startup / shell profile persistence detected"
+    },
+    {
+      "id": "PERS-003",
+      "category": "persistence",
+      "pattern": "(?i)launchctl\\s+(?:load|submit)|systemctl\\s+(?:enable|link)|/etc/systemd/system|LaunchAgents?/",
+      "severity": "high",
+      "message": "Service / launch daemon registration detected (persistence mechanism)"
+    },
+    {
+      "id": "DNXL-001",
+      "category": "download_execute_chain",
+      "pattern": "(?i)(?:curl|wget|iwr|irm|Invoke-WebRequest|Invoke-RestMethod)[^\\n|;&]{0,200}\\|\\s*(?:sudo\\s+)?(?:ba|z|da)?sh\\b|[^\\n]{0,60}\\|\\s*(?:iex|Invoke-Expression)\\b",
+      "severity": "critical",
+      "message": "Download piped directly into shell/interpreter (download-execute chain)"
+    },
+    {
+      "id": "DNXL-002",
+      "category": "download_execute_chain",
+      "pattern": "(?i)(?:curl|wget|Invoke-WebRequest|irm)\\s+[^|;\\n]{0,200}-o\\s+[^\\n]{0,100}\\.(?:sh|ps1|bat|cmd|exe|vbs|js|jar)\\b",
+      "severity": "high",
+      "message": "Executable file downloaded to disk (download-execute preparation)"
+    },
+    {
+      "id": "DNXL-003",
+      "category": "download_execute_chain",
+      "pattern": "(?i)bitsadmin\\s+/transfer|certutil\\s+-urlcache|mshta\\s+https?://|rundll32\\s+https?://",
+      "severity": "high",
+      "message": "LOLBins download/execute technique detected"
+    },
+    {
+      "id": "SNST-001",
+      "category": "sensitive_path_access",
+      "pattern": "(?i)(?:cat|type|Get-Content|rm|del|Remove-Item|copy)\\s+[^\\n;|]{0,40}(?:/etc/sudoers|/etc/shadow\\b|System32\\\\config\\\\SAM\\b)",
+      "severity": "high",
+      "message": "Access to security-sensitive system path detected"
+    },
+    {
+      "id": "SNST-002",
+      "category": "sensitive_path_access",
+      "pattern": "(?i)AppData[^\\n]{0,40}(?:Chrome|Firefox|Edge)[^\\n]{0,40}(?:Cookies|Login Data|Local State)|keychain\\.(?:db|plist)",
+      "severity": "high",
+      "message": "Browser credential store / keychain access detected"
+    },
+    {
+      "id": "SNST-003",
+      "category": "sensitive_path_access",
+      "pattern": "(?i)(?:ls|dir|Get-ChildItem)\\s+[/\\\"']?[/\\\\]?root\\b|find\\s+/root\\b",
+      "severity": "medium",
+      "message": "Directory listing over privileged user path detected"
+    },
+    {
+      "id": "ENVP-001",
+      "category": "environment_probing",
+      "pattern": "(?i)(?:printenv|echo|printf|Get-ItemProperty|Write-Output|cat)\\s+\\S{0,10}(?:AWS_SECRET|AWS_ACCESS|GITHUB_TOKEN|GITLAB_TOKEN|NPM_TOKEN|PYPI_TOKEN|API_KEY|SECRET_KEY|ACCESS_TOKEN|PRIVATE_KEY)",
+      "severity": "high",
+      "message": "Targeted secret environment variable access detected"
+    },
+    {
+      "id": "ENVP-002",
+      "category": "environment_probing",
+      "pattern": "(?i)Get-ChildItem\\s+env:|env\\s*\\|\\s*(?:grep|sort|findstr|Select-String)|set\\s*\\|\\s*findstr",
+      "severity": "medium",
+      "message": "Environment variable enumeration detected"
+    },
+    {
+      "id": "ENVP-003",
+      "category": "environment_probing",
+      "pattern": "(?i)reg\\s+query[^\\n]{0,80}Environment|HKLM\\\\SYSTEM\\\\CurrentControlSet\\\\Control\\\\Session Manager\\\\Environment",
+      "severity": "medium",
+      "message": "Registry environment probing detected"
+    },
+    {
+      "id": "DYNE-001",
+      "category": "dynamic_construction_exec",
+      "pattern": "(?i)(?:echo|printf|Write-Output)\\s+[\\\"'][^\\n]{0,200}[\\\"']\\s*\\|\\s*(?:bash|sh|zsh|powershell|pwsh|iex)\\b",
+      "severity": "high",
+      "message": "Statically constructed command piped into shell (dynamic execution)"
+    },
+    {
+      "id": "DYNE-002",
+      "category": "dynamic_construction_exec",
+      "pattern": "(?i)new\\s+Function\\s*\\(|Function\\s*\\(\\s*[\\\"']|exec\\s*\\(\\s*[`\\\"']|setTimeout\\s*\\(\\s*[\\\"']|eval\\s*\\(\\s*atob",
+      "severity": "high",
+      "message": "Dynamic code construction from strings detected"
+    },
+    {
+      "id": "DYNE-003",
+      "category": "dynamic_construction_exec",
+      "pattern": "(?i)\\bpython[0-9.]{0,3}\\s+-c\\s+[\\\"']|\\bperl\\s+-e\\s+[\\\"']|\\bruby\\s+-e\\s+[\\\"']|\\bnode(?:js)?\\s+-e\\s+[\\\"']",
+      "severity": "medium",
+      "message": "Interpreter invoked with inline code string (-c/-e)"
+    },
+    {
+      "id": "SUPC-001",
+      "category": "supply_chain_trace",
+      "pattern": "(?i)(?:curl|wget|iwr|Invoke-WebRequest)[^\\n]{0,80}(?:install\\.sh|setup\\.sh|bootstrap\\.sh|get\\.(?:pip|docker|nvm|rust)|\\.ps1)\\b",
+      "severity": "medium",
+      "message": "Remote installer script reference detected (supply-chain trace)"
+    },
+    {
+      "id": "SUPC-002",
+      "category": "supply_chain_trace",
+      "pattern": "(?i)[\\\"'](?:pre|post)install[\\\"']\\s*:|pip\\s+install[^\\n]{0,80}(?:--index-url|--extra-index-url|http://)|npm\\s+(?:install|ci)[^\\n]{0,60}--registry",
+      "severity": "medium",
+      "message": "Package install hook / non-default registry usage detected"
+    },
+    {
+      "id": "SUPC-003",
+      "category": "supply_chain_trace",
+      "pattern": "(?i)git\\s+config\\s+--global\\s+(?:core\\.sshCommand|alias\\.|core\\.hooksPath)",
+      "severity": "high",
+      "message": "Global git config hijack detected (supply-chain persistence)"
+    }
+  ]
+}

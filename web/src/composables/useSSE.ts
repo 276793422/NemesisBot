@@ -3,7 +3,7 @@ import { apiUrl } from '../lib/appBase'
 
 type EventHandler = (data: any) => void
 
-let eventSource: EventSource | null = null
+let eventSource: EventSource | null = null;
 const eventHandlers: Record<string, EventHandler[]> = {}
 
 // L2（devtool-upgrade 阶段 6）：'resync' = 服务端提示缺口已滑出重放窗口
@@ -13,7 +13,9 @@ const eventHandlers: Record<string, EventHandler[]> = {}
 // P8（2026-09-21）：'chat.activity' = 某会话 chat_event_log 落了新帧
 //（chat 行或工具事件），全局广播 {session_id, seq}——其他标签/端据此
 // 感知落后并全量刷新（本端 WS 实时帧先行，seq 游标短路零开销）。
-const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'question-asked', 'question-resolved', 'board.plan_ready', 'board.plan_failed', 'resync', 'session.created', 'editor-mode', 'chat.activity']
+// P30（WS14）：'canvas.open' = agent 终答检出合法 ```canvas 块（Canvas
+// 面板渲染，iframe sandbox + 严格 CSP，v1 无网络）。
+const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'question-asked', 'question-resolved', 'board.plan_ready', 'board.plan_failed', 'resync', 'session.created', 'editor-mode', 'chat.activity', 'canvas.open']
 
 function dispatch(eventType: string, data: any) {
   const handlers = eventHandlers[eventType] || []

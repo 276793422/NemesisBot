@@ -418,8 +418,10 @@ async fn u11_userland_sandbox_write_outside_denied_inside_allowed() {
     #[cfg(feature = "sandbox")]
     {
         use nemesis_sandbox::backend::{Availability, detect_backend};
+        // P1：探测跳过判据只关心「有没有后端」，网络要求取保守 false
+        // （禁网选型对存在性无影响——两个后端任一可用即 Some）。
         let unavailable = matches!(
-            detect_backend().map(|b| b.availability()),
+            detect_backend(false).map(|b| b.availability()),
             None | Some(Availability::Unavailable(_))
         );
         if unavailable {

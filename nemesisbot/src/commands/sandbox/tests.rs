@@ -671,6 +671,10 @@ mod wave_a_selftest {
     }
 
     fn selftest_env() -> SelftestEnv {
+        // set_var/remove_var 是进程级操作，Drop 也会污染并发测试 → 必须持
+        // crate::GLOBAL_STATE_LOCK（2026-09-28：原私有 SELFTEST_ENV_LOCK 与
+        // GLOBAL_STATE_LOCK 不互斥，wave_a 的 env 改动与 wave_b 的 env 夹具
+        // 并发交错，造成 wave_b_commit_failed... 假红）。
         let guard = crate::GLOBAL_STATE_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());

@@ -119,7 +119,7 @@ fn e3_append(key: &str, role: &str, content: &str, turn: Option<usize>) {
 async fn e3_rewind_truncates_turn_aligned_and_restores_files() {
     let (al, key, _dir) = stage_two_turns("rew").await;
 
-    let out = al.rewind_to_message(&key, 0).await.unwrap();
+    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
     assert_eq!(out["kept_count"], 2, "turn 1 整 turn 保留: {out}");
     assert_eq!(out["removed_count"], 2);
     assert_eq!(out["restore_turn"], 2);
@@ -151,7 +151,7 @@ async fn e3_redo_restores_rows_and_honestly_skips_files() {
     let (al, key, _dir) = stage_two_turns("redo").await;
     let (before, _, _, _) = read_chat_log(&key, 100, None);
 
-    al.rewind_to_message(&key, 0).await.unwrap();
+    al.rewind_to_message(&key, 0, false).await.unwrap();
     let out = al.redo_rewind(&key).await.unwrap();
     assert_eq!(out["restored_count"], 2, "{out}");
     assert_eq!(out["file_restore"], "skipped", "JSON 形态无影子 tree");
@@ -176,7 +176,7 @@ async fn e3_redo_restores_rows_and_honestly_skips_files() {
 async fn e3_redo_rejects_after_new_activity() {
     let (al, key, _dir) = stage_two_turns("guard").await;
 
-    al.rewind_to_message(&key, 0).await.unwrap();
+    al.rewind_to_message(&key, 0, false).await.unwrap();
     append_chat_log(&key, "user", "new message after rewind");
 
     let err = al.redo_rewind(&key).await.unwrap_err();
@@ -198,15 +198,18 @@ async fn e3_edge_cases_empty_out_of_range_and_noop() {
     // 空会话。
     let empty_key = e3_uniq_key("edge-empty");
     delete_chat_log(&empty_key);
-    let err = al.rewind_to_message(&empty_key, 0).await.unwrap_err();
+    let err = al
+        .rewind_to_message(&empty_key, 0, false)
+        .await
+        .unwrap_err();
     assert!(err.contains("没有可回退"), "{err}");
 
     // 越界。
-    let err = al.rewind_to_message(&key, 99).await.unwrap_err();
+    let err = al.rewind_to_message(&key, 99, false).await.unwrap_err();
     assert!(err.contains("超出范围"), "{err}");
 
     // 末尾消息（最后一 turn 的 assistant 行）：nothing after → no-op。
-    let out = al.rewind_to_message(&key, 3).await.unwrap();
+    let out = al.rewind_to_message(&key, 3, false).await.unwrap();
     assert_eq!(out["removed_count"], 0, "{out}");
     assert_eq!(out["redoable"], false);
     let (_, total, _, _) = read_chat_log(&key, 100, None);
@@ -267,7 +270,7 @@ async fn e3_git_redo_restores_to_live_tree_including_last_turn() {
     let file = dir.path().join("ws").join("code.txt");
 
     // rewind 到 turn 1：文件回 v2（turn 2 begin 树 = turn 1 完成态）。
-    let out = al.rewind_to_message(&key, 0).await.unwrap();
+    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
     assert_eq!(out["file_restore"], "applied", "{out}");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "v2");
 
@@ -295,7 +298,7 @@ async fn e3_git_rewind_redo_covers_undeclared_shell_side_effects() {
     // turn 2 期间 shell 副作用产物（无 preview 声明）。
     std::fs::write(ws.join("side_effect.txt"), "boom").unwrap();
 
-    let out = al.rewind_to_message(&key, 0).await.unwrap();
+    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
     assert_eq!(out["file_restore"], "applied", "{out}");
     assert!(
         !ws.join("side_effect.txt").exists(),

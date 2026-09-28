@@ -154,10 +154,13 @@ fn trait_default_methods_reject_unsupported_forms() {
 }
 
 /// Windows 设计契约：不注册任何用户态后端（Sandboxie 承担，U11「Windows 不动」）。
+/// P1 后 detect_backend 带 allow_network 入参；Windows 两态都 None（选型决策
+/// 表的全平台断言在 selection_tests.rs）。
 #[cfg(target_os = "windows")]
 #[test]
 fn detect_backend_none_on_windows() {
-    assert!(detect_backend().is_none());
+    assert!(detect_backend(false).is_none());
+    assert!(detect_backend(true).is_none());
 }
 
 // ---------------------------------------------------------------------------
@@ -187,13 +190,22 @@ fn read_executor_strict_defaults_false_and_reads_true() {
     assert!(!read_executor_strict(dir.path()));
 }
 
-/// 逐后端探测：Windows 空（Sandboxie 承担）；Linux/macOS 至少列出本平台后端
-/// 且名字唯一。结构断言不依赖机器能力（缺 bwrap 的内核也合法返回 Unavailable）。
+/// 逐后端探测：P24 起 Windows 列 acl 档（feature 裁掉时如实 Unavailable，
+/// 条目仍在）；Linux/macOS 至少列出本平台后端且名字唯一。结构断言不依赖
+/// 机器能力（缺 bwrap 的内核也合法返回 Unavailable）。
 #[test]
 fn probe_userland_backends_shape_per_platform() {
     let probes = probe_userland_backends();
     if cfg!(target_os = "windows") {
-        assert!(probes.is_empty(), "Windows 不注册用户态后端: {probes:?}");
+        if cfg!(feature = "acl") {
+            assert_eq!(probes.len(), 1, "Windows 应只列 acl 用户态档: {probes:?}");
+            assert_eq!(probes[0].name, "acl", "Windows 用户态档名固定 acl");
+        } else {
+            assert!(
+                probes.is_empty(),
+                "acl feature 被裁掉时 Windows 探测面为空: {probes:?}"
+            );
+        }
         return;
     }
     assert!(!probes.is_empty(), "Linux/macOS 至少一个用户态后端");
@@ -205,6 +217,54 @@ fn probe_userland_backends_shape_per_platform() {
     for p in &probes {
         assert!(!p.name.is_empty());
     }
+}
+
+// ---------------------------------------------------------------------------
+// P24：read_executor_backend（executor.backend 原始 JSON 读取器）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn read_executor_backend_value_table() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // 无 config.json → Auto
+    assert_eq!(
+        read_executor_backend(dir.path()),
+        ExecutorBackendChoice::Auto
+    );
+    // 缺 executor 段 / 缺 backend 键 / 空串 → Auto
+    write_home_config(dir.path(), r#"{ "executor": { "sandbox": true } }"#);
+    assert_eq!(
+        read_executor_backend(dir.path()),
+        ExecutorBackendChoice::Auto
+    );
+    write_home_config(dir.path(), r#"{ "executor": { "backend": "" } }"#);
+    assert_eq!(
+        read_executor_backend(dir.path()),
+        ExecutorBackendChoice::Auto
+    );
+    // 显式值（大小写不敏感）
+    write_home_config(dir.path(), r#"{ "executor": { "backend": "acl" } }"#);
+    assert_eq!(
+        read_executor_backend(dir.path()),
+        ExecutorBackendChoice::Acl
+    );
+    write_home_config(dir.path(), r#"{ "executor": { "backend": "Sandboxie" } }"#);
+    assert_eq!(
+        read_executor_backend(dir.path()),
+        ExecutorBackendChoice::Sandboxie
+    );
+    // 未知值 → Other(小写原文)——调用方 warn，选型恒 None
+    write_home_config(dir.path(), r#"{ "executor": { "backend": "docker" } }"#);
+    assert_eq!(
+        read_executor_backend(dir.path()),
+        ExecutorBackendChoice::Other("docker".to_string())
+    );
+    // 损坏 JSON → Auto（不 panic）
+    write_home_config(dir.path(), "{ not json");
+    assert_eq!(
+        read_executor_backend(dir.path()),
+        ExecutorBackendChoice::Auto
+    );
 }
 
 // ---------------------------------------------------------------------------

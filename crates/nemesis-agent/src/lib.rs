@@ -25,6 +25,8 @@ pub mod capture_sink;
 pub mod cc_hooks;
 pub mod chat_log;
 pub mod checkpoint;
+// P30（WS14）Canvas widget：```canvas 块检出 + JS 语法预检（终答判定处消费）。
+pub mod canvas;
 pub mod context;
 pub mod discipline;
 pub mod estop;
@@ -40,6 +42,7 @@ pub mod image_downscale;
 pub mod image_path_detector;
 pub mod inbox;
 pub mod instance;
+pub mod interrupt_replay;
 pub mod r#loop;
 pub mod loop_continuation;
 pub mod loop_executor;
@@ -69,9 +72,15 @@ pub mod tool_receipts;
 pub mod turn_guard;
 pub mod types;
 pub mod workspace_instructions;
+/// WS9/P22：workspace 级写租约（文件锁 + 持有者 sidecar；写类工具包装）。
+pub mod workspace_lease;
 
 #[cfg(test)]
 mod history_tests;
+
+#[cfg(test)]
+/// WS9/P22：租约互斥/宽限/死进程释放/开关旁路测试（独立测试文件）。
+mod workspace_lease_tests;
 
 // S9 (quality-hardening goal 冲刺 S9): 测试共享 helper（thread-local tracing
 // subscriber），声明式挂载指向独立文件，无内联测试。
@@ -100,7 +109,10 @@ pub use loop_tools::register_shared_tools;
 pub use loop_tools::setup_cluster_rpc_channel;
 pub use memory::ConversationMemory;
 pub use registry::AgentRegistry;
-pub use remote_executor_tool::{ExecutorChannel, MOVE_TOOLS, RemoteExecutorTool, StrictGate};
+pub use remote_executor_tool::{
+    DaclSpawnFn, DaclSpawnHook, DaclSpawnOutcome, DaclSpawnRequest, ExecutorChannel, MOVE_TOOLS,
+    RemoteExecutorTool, StrictGate, UserlandFallback,
+};
 pub use request_logger::RequestLogger;
 pub use request_logger_observer::RequestLoggerObserver;
 pub use ringbuffer::RingBuffer;
@@ -113,3 +125,4 @@ pub use session::{
 };
 pub use todo_closeout::TodoCloseoutHook;
 pub use types::*;
+pub use workspace_lease::{LEASE_WRITE_TOOLS, LeaseGuardTool, WorkspaceLease};

@@ -133,10 +133,30 @@ function toggleService(path: string, current: boolean) {
   saveField(path, !current)
 }
 
+// --- WS9/P22（2026-09-26）：工作区写租约现状（Gateway 页签卡片）---
+// `system.lease_status` 探针无副作用（试取锁立即释放 + 读持有者 sidecar）。
+// 展示语义：supported=false = 未装配（headless/未知 workspace）；held =
+// 当前持有者；free 但有 sidecar = 陈旧记录（后端 note 已诚实标注）。
+const leaseStatus = ref<any>(null)
+
+async function loadLease() {
+  try {
+    leaseStatus.value = await request('system', 'lease_status')
+  } catch {
+    leaseStatus.value = null
+  }
+}
+
+function fmtLeaseTime(ts?: string): string {
+  if (!ts) return ''
+  const d = new Date(ts)
+  return isNaN(d.getTime()) ? ts : d.toLocaleString('zh-CN', { hour12: false })
+}
+
 // Hooks 功能已于 2026-08-29 迁移至独立页面 views/HookView.vue（管理分组）。
 
 onMounted(async () => {
-  await Promise.all([loadConfig(), loadCors()])
+  await Promise.all([loadConfig(), loadCors(), loadLease()])
 })
 </script>
 
@@ -192,6 +212,20 @@ onMounted(async () => {
             <div class="form-group">
               <label class="form-label">端口</label>
               <input class="form-input" :value="config.gateway?.port || 49000" disabled style="max-width: 200px;">
+            </div>
+            <!-- WS9/P22：工作区写租约现状（只读探针 + 手动刷新） -->
+            <div class="form-group">
+              <label class="form-label">工作区写租约</label>
+              <div class="lease-line">
+                <template v-if="leaseStatus?.supported">
+                  <span v-if="leaseStatus.held" class="lease-held">🔒 被占用：{{ leaseStatus.holder || '未知持有者' }}<template v-if="leaseStatus.acquired_at">（自 {{ fmtLeaseTime(leaseStatus.acquired_at) }}）</template></span>
+                  <span v-else class="lease-free">🔓 空闲</span>
+                </template>
+                <span v-else class="lease-free">{{ leaseStatus ? '租约未装配（' + (leaseStatus.note || 'workspace 未知') + '）' : '状态未知' }}</span>
+                <button class="lease-refresh" @click="loadLease" title="重新探测">刷新</button>
+              </div>
+              <div v-if="leaseStatus?.supported && leaseStatus.note" class="form-hint">{{ leaseStatus.note }}</div>
+              <div class="form-hint">写类工具执行前需获取工作区写租约；持有进程退出后由 OS 自动释放。</div>
             </div>
           </div>
         </div>
@@ -373,4 +407,30 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+/* WS9/P22：租约状态行（Gateway 页签） */
+.lease-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  font-size: var(--text-sm, 13px);
+}
+.lease-held {
+  color: var(--warning, #e5a00d);
+}
+.lease-free {
+  color: var(--text-secondary, #888);
+}
+.lease-refresh {
+  padding: 2px 10px;
+  font-size: 12px;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary, #888);
+  cursor: pointer;
+}
+.lease-refresh:hover {
+  color: var(--text);
+  background: var(--bg-primary, #f5f5f5);
+}
 </style>

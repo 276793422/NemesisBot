@@ -1,4 +1,4 @@
-// elevation.rs 覆盖率补充（wave 5）：is_elevated 只读探测（net session /
+// elevation.rs 覆盖率补充（wave 5）：is_elevated 只读探测（TokenElevation 直查 /
 // Unix 等价实现）——不断言具体布尔值（取决于测试进程是否提权），只锁
 // 「调用安全 + 返回一致」。
 

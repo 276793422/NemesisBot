@@ -9,9 +9,16 @@ use std::path::Path;
 pub enum ModelAction {
     /// Add a new model configuration
     Add {
-        /// Model name in vendor/model format (e.g., zhipu/glm-4.7)
+        /// Model name in vendor/model format (e.g., zhipu/glm-4.7).
+        /// Optional when --provider is given: the default model of the preset
+        /// family is used automatically.
         #[arg(long)]
-        model: String,
+        model: Option<String>,
+        /// Built-in provider family (P9 preset table, e.g. zhipu / groq /
+        /// deepseek / ollama). Auto-fills api_base / protocol / default model;
+        /// explicit --model/--base/--protocol flags take precedence.
+        #[arg(long)]
+        provider: Option<String>,
         /// API key for the model
         #[arg(long)]
         key: Option<String>,
@@ -146,6 +153,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
     match action {
         ModelAction::Add {
             model,
+            provider,
             key,
             base,
             proxy,
@@ -156,6 +164,47 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             if !cfg_path.exists() {
                 anyhow::bail!("Configuration not found. Run 'nemesisbot onboard default' first.");
             }
+
+            // P9（能力扩展 WS5）：--provider 家族预设——查内置表自动补
+            // api_base / protocol / 默认型号；显式 --model / --base /
+            // --protocol 恒优先。未知家族 loud 报错并列出全部可用家族。
+            let preset = match provider.as_deref() {
+                Some(name) => {
+                    Some(nemesis_config::find_provider_preset(name).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Unknown provider family '{}'. Available families:\n  {}",
+                            name,
+                            nemesis_config::provider_preset_ids().join(", ")
+                        )
+                    })?)
+                }
+                None => None,
+            };
+            let model = match (&model, preset) {
+                (Some(m), _) => m.clone(),
+                (None, Some(p)) => {
+                    if p.default_model.is_empty() {
+                        anyhow::bail!(
+                            "Provider family '{}' has no built-in default model. \
+                             Pass --model explicitly (vendor/model format).",
+                            p.id
+                        );
+                    }
+                    let auto = format!("{}/{}", p.id, p.default_model);
+                    println!(
+                        "  Provider preset '{}': model auto-filled as {}",
+                        p.id, auto
+                    );
+                    auto
+                }
+                (None, None) => anyhow::bail!(
+                    "Either --model or --provider is required.\n\
+                     Example: nemesisbot model add --model zhipu/glm-4.7 --key KEY\n\
+                     Or:      nemesisbot model add --provider zhipu --key KEY\n\
+                     Families: {}",
+                    nemesis_config::provider_preset_ids().join(", ")
+                ),
+            };
 
             let data = std::fs::read_to_string(&cfg_path)?;
             let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
@@ -198,6 +247,9 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             }
             if let Some(b) = &base {
                 entry["api_base"] = serde_json::Value::String(b.clone());
+            } else if let Some(p) = preset {
+                // 未给 --base：家族预设端点自动补上（显式 flag 恒优先）。
+                entry["api_base"] = serde_json::Value::String(p.api_base.to_string());
             }
             if let Some(p) = &proxy {
                 entry["proxy"] = serde_json::Value::String(p.clone());
@@ -211,6 +263,9 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 let normalized = nemesis_types::capability::normalize_model_protocol(p)
                     .map_err(anyhow::Error::msg)?;
                 entry["protocol"] = serde_json::Value::String(normalized);
+            } else if let Some(p) = preset {
+                // 表内协议均为归一值（完整性测试钉住），直接写盘即可。
+                entry["protocol"] = serde_json::Value::String(p.protocol.to_string());
             }
 
             // Phase 4a (small-model-tool-robustness): tag with an auto-detect

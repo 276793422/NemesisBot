@@ -150,6 +150,9 @@ impl ConversationMemory {
 /// matching Go's `utf8.RuneCountInString(m.Content) * 2 / 5` formula.
 /// This correctly handles CJK and other multi-byte text, unlike byte-based
 /// division which overestimates by 3x for CJK content.
+///
+/// 已知边界（M6）：相对真实分词器（CJK ≈ 1 token/char）仍**低估 ~2.5 倍**，
+/// 详见 `session.rs::estimate_tokens` 的注记（不改估算器的理由同源）。
 fn estimate_tokens(text: &str) -> usize {
     text.chars().count() * 2 / 5
 }

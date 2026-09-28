@@ -39,8 +39,9 @@ pub async fn download_skill_tree_from_github(
     max_file_size: u64,
 ) -> Result<()> {
     // Ensure trailing slash for consistent prefix matching.
+    // 空前缀 = 仓库根安装：不加斜缀（否则 "/" 匹配不到任何顶层 blob）。
     let mut dir_prefix = dir_prefix.to_string();
-    if !dir_prefix.ends_with('/') {
+    if !dir_prefix.is_empty() && !dir_prefix.ends_with('/') {
         dir_prefix.push('/');
     }
 
@@ -154,8 +155,9 @@ pub async fn download_skill_tree_from_github(
 /// Returns a vector of paths matching the directory prefix filter.
 pub fn decode_tree_blob_paths(body: &[u8], dir_prefix: &str) -> Result<Vec<String>> {
     // Ensure trailing slash for consistent prefix matching.
+    // 空前缀 = 仓库根：不加斜缀（与 download_skill_tree_from_github 同口径）。
     let mut dir_prefix = dir_prefix.to_string();
-    if !dir_prefix.ends_with('/') {
+    if !dir_prefix.is_empty() && !dir_prefix.ends_with('/') {
         dir_prefix.push('/');
     }
 

@@ -91,7 +91,12 @@ fn executor_main() -> Result<()> {
     if sandbox_marker && !already_boxed {
         #[cfg(feature = "sandbox")]
         {
-            match userland::engage(&workspace, home.as_deref()) {
+            // D4（三轮复查根修）：workspace-dacl 受限令牌 spawn 时 fence 已由
+            // 内核强制——engage 的 Plain 臂不再因「无用户态后端」触发 strict
+            // 拒绝或「unsandboxed」warn（engage 内见 spawn_fenced 注释）。
+            let spawn_fenced =
+                std::env::var("NEMESISBOT_SANDBOX_BACKEND").as_deref() == Ok("workspace-dacl");
+            match userland::engage(&workspace, home.as_deref(), spawn_fenced) {
                 Ok(userland::Outcome::Continue) => {}
                 // 盒内实例已完成整个会话（本进程只是 stdio 代理）：按其退出码收尾。
                 Ok(userland::Outcome::ReexecDone(status)) => {
@@ -121,6 +126,25 @@ fn executor_main() -> Result<()> {
                  into this build — running unsandboxed"
             );
         }
+    }
+
+    // D4（DACL 定向档，2026-09-27）：受限令牌树下 console 分配面治理。
+    // gateway 经 workspace-dacl hook 注入的 env 标记在本进程可见 → 先尽力
+    // **附着**父进程 console（附着=打开既有 condrv 非写类，白名单下放行；
+    // 新分配才会死，见 nemesis-sandbox token.rs 实证）。附着成功 = 本树内
+    // 默认 flags spawn 继承 console，第三方链式工具链（cargo→rustc 类）可
+    // 用；失败（gateway console-less，服务化启动）= 全链 DETACHED 降级。
+    // 结果钉进进程 env（NEMESISBOT_CONSOLE=1/0）供 exec 工具选 creation
+    // flags——本线程此刻在 tokio runtime 构建前，进程内无并发 env 读者。
+    #[cfg(all(target_os = "windows", feature = "sandbox"))]
+    if std::env::var("NEMESISBOT_SANDBOX_BACKEND").as_deref() == Ok("workspace-dacl") {
+        let attached = nemesis_sandbox::backend::attach_parent_console();
+        // SAFETY: 单一 executor 线程、runtime 未建、主线程阻塞在 join——
+        // 进程内无并发 env 访问者。
+        unsafe {
+            std::env::set_var("NEMESISBOT_CONSOLE", if attached { "1" } else { "0" });
+        }
+        tracing::info!("[executor] workspace-dacl console attach: {attached}");
     }
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -170,6 +194,19 @@ async fn run_loop(workspace: &str) -> Result<()> {
                 restrict: true,
             },
         )),
+        // WS9/P22：executor 侧租约——gateway 在 spawn 前经
+        // `NEMESISBOT_LEASE=1` 透传「主进程开了租约」（executor 子进程不
+        // 读用户 config，装配语义由父进程钉死）。持有者名带本子进程 PID。
+        workspace_lease: if std::env::var("NEMESISBOT_LEASE").as_deref() == Ok("1") {
+            Some(std::sync::Arc::new(
+                nemesis_agent::workspace_lease::WorkspaceLease::new(
+                    std::path::Path::new(workspace),
+                    &format!("executor:pid:{}", std::process::id()),
+                ),
+            ))
+        } else {
+            None
+        },
         ..Default::default()
     };
     let tools: HashMap<String, Box<dyn Tool>> = register_shared_tools(&cfg);
@@ -198,6 +235,10 @@ mod userland {
 
     use anyhow::{Context, Result};
     use nemesis_sandbox::backend::{self, BackendForm, Enforcement, SandboxBackend, SandboxConf};
+
+    // P21（2026-09-25）：拒绝台账钩子是 exec_worker 顶层的兄弟模块，这里
+    // 引入后在 engage / reexec 各失败臂直接记账。
+    use crate::exec_worker::sandbox_denial;
 
     /// engage() 的结果。`Debug`：测试里 `expect_err` 需要 Ok 侧 Debug。
     #[derive(Debug)]
@@ -239,19 +280,81 @@ mod userland {
     ///    注意 **Partial 强制不算失败**（规则已装、有能力缺口如 landlock 不
     ///    覆盖网络）——严格模式保证「有盒」，不保证「盒无能力缺口」，缺口
     ///    照旧 warn + 状态页如实展示。
-    pub fn engage(workspace: &str, home: Option<&Path>) -> Result<Outcome> {
+    ///
+    /// `spawn_fenced`（三轮复查根修）：`NEMESISBOT_SANDBOX_BACKEND=workspace-
+    /// dacl` 时为 true——gateway 已以 write-restricted 受限令牌 spawn 本进程，
+    /// 内核写围栏在 spawn 时即成立（nemesis-sandbox token.rs）。此时
+    /// Plan::Plain（无用户态后端可选，auto 不回落实验档）**不再触发 strict
+    /// 拒绝也不报「unsandboxed」**：strict 要的是「不在无盒状态跑命令」，
+    /// 该实质已满足；否则 dacl+strict 组合会被「无用户态后端」虚假全拒
+    /// （用户视角围栏明明活着）。backend="acl" 显式选装的叠加层（SelfApply）
+    /// 不受影响——那是另一条 arm，其 strict fail-closed 语义保留。
+    pub fn engage(
+        workspace: &str,
+        home: Option<&Path>,
+        spawn_fenced: bool,
+    ) -> Result<Outcome> {
         let strict = home.map(backend::read_executor_strict).unwrap_or(false);
-        let detected = backend::detect_backend();
+        // P1（2026-09-25）：先读网络要求再选后端——禁网 + bwrap 可用 → 选
+        // bwrap（--unshare-net 真禁网）；landlock 仅在允许网络或无 bwrap 时
+        // 上岗（降级时 apply_to_self 的 gaps 仍诚实标注网络缺口）。
+        let allow_network = home
+            .map(backend::read_executor_allow_network)
+            .unwrap_or(false);
+        let detected = backend::detect_backend(allow_network);
+        // P24（2026-09-26）：Windows 无平台默认后端（Sandboxie 盒路径不经
+        // userland engage）——**显式 `executor.backend = "acl"`** 且本机可用
+        // 时 AclBackend（用户态完整性围栏，恒 Partial）opt-in 上岗。auto/
+        // sandboxie/未知一律维持 None：auto 档不回落用户态实验档（默认行为
+        // 字节不变——2026-09-26 全量回归实证 auto 回落会让既有 executor
+        // 子进程测试的「无盒 warn」静默变成「真实装围栏」，strict 语义也被
+        // 改写），显式钉 acl 才启用。
+        #[cfg(all(target_os = "windows", feature = "sandbox"))]
+        let detected = detected.or_else(|| {
+            let choice = home
+                .as_deref()
+                .map(backend::read_executor_backend)
+                .unwrap_or(backend::ExecutorBackendChoice::Auto);
+            if !matches!(choice, backend::ExecutorBackendChoice::Acl) {
+                return None;
+            }
+            let acl = backend::AclBackend::new();
+            match acl.availability() {
+                backend::Availability::Unavailable(_) => None,
+                _ => Some(Arc::new(acl) as Arc<dyn SandboxBackend>),
+            }
+        });
         let form = detected
             .as_ref()
             .map(|b: &Arc<dyn SandboxBackend>| b.form());
         match plan(true, false, form) {
             Plan::Plain => {
+                if spawn_fenced {
+                    // workspace-dacl：write-restricted 令牌在 spawn 时已把内核
+                    // 写围栏装上（gateway 铸造 + CreateProcessAsUserW，本进程
+                    // 无法自证但 env 标签由可信父进程注入）——不是
+                    // 「unsandboxed」。用户态层未选装不构成 strict 拒绝理由，
+                    // 也不再打「running unsandboxed」误导 warn。
+                    tracing::info!(
+                        "[executor] spawn-time workspace-dacl fence active (write-restricted \
+                         token); no userland layer selected — continuing"
+                    );
+                    return Ok(Outcome::Continue);
+                }
                 if strict {
+                    let reason = "no userland sandbox backend is available on this system";
+                    sandbox_denial::record(
+                        "none",
+                        "sandbox_engage_refused",
+                        workspace,
+                        reason,
+                        true,
+                        workspace,
+                    );
                     anyhow::bail!(
-                        "strict mode (fail-closed): executor.sandbox is on but no \
-                         userland sandbox backend is available on this system — \
-                         refusing to run unsandboxed"
+                        "strict mode (fail-closed): executor.sandbox is on but {} — \
+                         refusing to run unsandboxed",
+                        reason
                     );
                 }
                 tracing::warn!(
@@ -262,22 +365,36 @@ mod userland {
             }
             Plan::SelfApply => {
                 let backend = detected.expect("form Some implies backend Some");
-                let allow_network = home.map(backend::read_executor_allow_network);
-                let conf =
-                    SandboxConf::for_executor(Path::new(workspace), allow_network.unwrap_or(false));
+                let conf = SandboxConf::for_executor(Path::new(workspace), allow_network);
                 match backend.apply_to_self(&conf) {
-                    Ok(Enforcement::Full) => tracing::info!(
-                        "[executor] userland sandbox '{}' fully enforced (writable: {})",
-                        backend.name(),
-                        workspace
-                    ),
-                    Ok(Enforcement::Partial(gaps)) => tracing::warn!(
-                        "[executor] userland sandbox '{}' PARTIAL (rules applied with \
-                         gaps): {gaps:?}",
-                        backend.name()
-                    ),
+                    Ok(Enforcement::Full) => {
+                        sandbox_denial::mark_backend_engaged(backend.name());
+                        tracing::info!(
+                            "[executor] userland sandbox '{}' fully enforced (writable: {})",
+                            backend.name(),
+                            workspace
+                        )
+                    }
+                    Ok(Enforcement::Partial(gaps)) => {
+                        // Partial = 规则已装上（缺口如禁网不可强制）——沙盒
+                        // engaged，dispatch 侧拒绝分类照常记台账。
+                        sandbox_denial::mark_backend_engaged(backend.name());
+                        tracing::warn!(
+                            "[executor] userland sandbox '{}' PARTIAL (rules applied with \
+                             gaps): {gaps:?}",
+                            backend.name()
+                        )
+                    }
                     Err(err) => {
                         if strict {
+                            sandbox_denial::record(
+                                backend.name(),
+                                "sandbox_engage_refused",
+                                workspace,
+                                &err,
+                                true,
+                                workspace,
+                            );
                             anyhow::bail!(
                                 "strict mode (fail-closed): userland sandbox '{}' apply \
                                  failed: {err} — refusing to run unsandboxed",
@@ -295,22 +412,26 @@ mod userland {
             }
             Plan::WrapReexec => {
                 let backend = detected.expect("form Some implies backend Some");
-                let allow_network = home.map(backend::read_executor_allow_network);
-                let conf =
-                    SandboxConf::for_executor(Path::new(workspace), allow_network.unwrap_or(false));
-                reexec_wrapped(backend, conf)
+                let conf = SandboxConf::for_executor(Path::new(workspace), allow_network);
+                reexec_wrapped(backend, conf, workspace)
             }
         }
     }
 
     /// re-exec 自身进盒（bwrap / sandbox-exec）：外层进程退化为 stdio 代理，
     /// 工具全在盒内实例里跑。gateway 的 stdio 协议原样透传。
-    fn reexec_wrapped(backend: Arc<dyn SandboxBackend>, conf: SandboxConf) -> Result<Outcome> {
+    fn reexec_wrapped(
+        backend: Arc<dyn SandboxBackend>,
+        conf: SandboxConf,
+        workspace: &str,
+    ) -> Result<Outcome> {
         let exe = std::env::current_exe().context("resolve current exe for re-exec")?;
         let mut inner = std::process::Command::new(&exe);
         // env 继承自本进程（gateway 给的 ROLE/WORKSPACE/SANDBOX 都在）；
-        // REEXEC 防环（盒内实例见到它就跳过沙盒介入）。
+        // REEXEC 防环（盒内实例见到它就跳过沙盒介入）。P21：盒内实例的
+        // dispatch 靠这个键知道「自己在哪个后端里」（台账 backend 字段）。
         inner.env("NEMESISBOT_EXECUTOR_REEXEC", "1");
+        inner.env("NEMESISBOT_SANDBOX_BACKEND", backend.name());
         let mut wrapped = backend
             .wrap_command(&conf, &inner)
             .map_err(|e| anyhow::anyhow!("wrap executor with {}: {e}", backend.name()))?;
@@ -339,36 +460,113 @@ mod userland {
         let _ = t_in.join();
         let status = child.wait().context("wait wrapped executor")?;
         let _ = t_out.join();
+        if !status.success() {
+            // P21：盒内实例非零退出（bwrap 包装层拒绝/失败）记台账。此时本
+            // 进程只是 stdio 代理、无法把结构化错误回注 gateway → 模型不可见。
+            sandbox_denial::record(
+                backend.name(),
+                "executor_reexec_failed",
+                workspace,
+                &format!("wrapped executor exit: {status}"),
+                false,
+                workspace,
+            );
+        }
         Ok(Outcome::ReexecDone(status))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// P21（2026-09-25）：沙盒拒绝台账钩子（sandbox feature 门控——trim 构建无
+// 沙盒 → 无台账面）。核心语义见 nemesis_sandbox::denial 模块文档。
+// ---------------------------------------------------------------------------
+#[cfg(feature = "sandbox")]
+mod sandbox_denial {
+    use nemesis_sandbox::denial;
+
+    /// engage 成功装上后端时标记（SelfApply 同进程路径专用；盒内实例一律走
+    /// env 注入后端名——bwrap reexec / Windows 真盒都是，见
+    /// [`active_backend_label`]）。
+    static ENGAGED_BACKEND: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+    pub(super) fn mark_backend_engaged(name: &str) {
+        let _ = ENGAGED_BACKEND.set(name.to_string());
+    }
+
+    /// 当前沙盒后端标签（engaged 才有）：landlock 自装 = engage 标记；盒内
+    /// 实例 = env 注入的后端名（bwrap reexec / Windows 真盒 Start.exe wrap
+    /// 时由 gateway 注入 `sandboxie`——标签证据化，见 remote_executor_tool
+    /// 的 spawn_and_call_pipe）。**不再从 `NEMESISBOT_EXECUTOR_PIPE` 推断**：
+    /// PIPE 只是传输通道选择，无盒 PIPE 传输（transport test / 降级装配）下
+    /// 推断出的 "sandboxie" 是冒标——会把普通错误误记进沙盒拒绝台账。
+    /// None = 无沙盒 → 工具错误与沙盒无关，不记台账不改写文案。
+    pub(crate) fn active_backend_label() -> Option<String> {
+        if let Some(b) = ENGAGED_BACKEND.get() {
+            return Some(b.clone());
+        }
+        std::env::var("NEMESISBOT_SANDBOX_BACKEND")
+            .ok()
+            .filter(|s| !s.is_empty() && s != "none")
+    }
+
+    /// 记一条到台账（append 失败 = warn 放行，永不阻断工具执行/退出路径）。
+    pub(super) fn record(
+        backend: &str,
+        op: &str,
+        target: &str,
+        reason: &str,
+        model_visible: bool,
+        workspace: &str,
+    ) {
+        let rec = denial::new_record(backend, op, target, reason, model_visible);
+        if let Err(e) = denial::append_denial(std::path::Path::new(workspace), &rec) {
+            tracing::warn!("[executor] sandbox denial ledger append failed (ignored): {e}");
+        }
+    }
+
+    /// 工具错误出口（dispatch Err 臂调用）：沙盒 engaged 且错误长得像沙盒
+    /// 拒绝 → 记台账 + 改写为面向模型的可自纠文案；否则原样返回（普通
+    /// 工具错误不记台账、不换文案）。
+    pub(crate) fn on_tool_error(tool: &str, args: &str, error: &str) -> String {
+        let Some(backend) = active_backend_label() else {
+            return error.to_string();
+        };
+        if !denial::looks_like_denial(error) {
+            return error.to_string();
+        }
+        let workspace = std::env::var("NEMESISBOT_EXECUTOR_WORKSPACE").unwrap_or_default();
+        let target = denial::preview_target(args);
+        record(&backend, tool, &target, error, true, &workspace);
+        denial::model_facing_text(&backend, tool, &target, error, &workspace)
     }
 }
 
 /// Named-pipe transport loop (sandbox mode).
 #[cfg(windows)]
 async fn pipe_loop(
-    mut stream: nemesis_agent::executor_pipe::NamedPipeClient,
+    stream: nemesis_agent::executor_pipe::NamedPipeClient,
     tools: &HashMap<String, Box<dyn Tool>>,
 ) -> Result<()> {
+    // BufReader 必须活过整个循环：内部缓冲跨请求保留（每请求新建 reader 会
+    // 把缓冲里已收到的后续请求字节随旧 reader 一起丢弃——多行一次到达时
+    // 请求被吞）。读走 read_line（AsyncBufReadExt，共享同一缓冲），写经
+    // get_mut 穿透借用同一 stream。
+    let mut reader = BufReader::new(stream);
     loop {
-        // Read one request line (block scopes the BufReader borrow so the write
-        // below can borrow `stream` after).
-        let line = {
-            let mut reader = BufReader::new(&mut stream).lines();
-            match reader.next_line().await {
-                Ok(Some(l)) => l,
-                Ok(None) => return Ok(()), // gateway closed → exit cleanly
-                Err(e) => return Err(anyhow::anyhow!("pipe read: {e}")),
-            }
+        let mut line = String::new();
+        match reader.read_line(&mut line).await {
+            Ok(0) => return Ok(()), // gateway closed → exit cleanly
+            Ok(_) => {}
+            Err(e) => return Err(anyhow::anyhow!("pipe read: {e}")),
         };
-        let resp = dispatch(tools, &line).await;
+        let line = line.trim_end_matches(['\n', '\r']);
+        let resp = dispatch(tools, line).await;
         let mut out = serde_json::to_string(&resp).unwrap_or_else(|_| {
             r#"{"ok":false,"result":"","error":"response serialize failed"}"#.to_string()
         });
         out.push('\n');
-        stream
-            .write_all(out.as_bytes())
-            .await
-            .context("pipe write")?;
+        let stream = reader.get_mut();
+        stream.write_all(out.as_bytes()).await.context("pipe write")?;
         stream.flush().await.context("pipe flush")?;
     }
 }
@@ -433,11 +631,18 @@ async fn dispatch(tools: &HashMap<String, Box<dyn Tool>>, line: &str) -> Executo
             result,
             error: String::new(),
         },
-        Err(error) => ExecutorResponse {
-            ok: false,
-            result: String::new(),
-            error,
-        },
+        Err(error) => {
+            // P21（2026-09-25）：沙盒 engaged 且错误长得像沙盒拒绝 → 记台账 +
+            // 改写为面向模型的可自纠文案；普通错误原样透传（trim 构建无沙盒
+            // → 无台账面，feature 门控）。
+            #[cfg(feature = "sandbox")]
+            let error = sandbox_denial::on_tool_error(&req.tool, &req.args, &error);
+            ExecutorResponse {
+                ok: false,
+                result: String::new(),
+                error,
+            }
+        }
     }
 }
 
