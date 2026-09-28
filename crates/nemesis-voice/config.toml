@@ -22,6 +22,20 @@ lang_remedy = true
 use_itn = true
 num_threads = 1
 
+# ── 流式 STT（realtime P1）────────────────────────────────────────
+# 边说边出 partial 的流式识别（streaming zipformer transducer）。
+# 本段整体可缺省（缺省 = 下方默认值，旧 config.toml 零迁移）。
+# 模型文件名约定固定：encoder.onnx / decoder.onnx / joiner.onnx / tokens.txt
+# （由 sources 条目的 local 字段落地同名；模型管理页按 category=stt_stream 安装）。
+# 是否启用由 config.json 的 chat.realtime.stream_stt 开关控制，这里只管模型与端点参数。
+[stt_stream]
+model_name = "streaming-zipformer-bilingual-zh-en"
+# sherpa 内建端点 rule1：话中停顿尾静音窗（秒）
+rule1_min_trailing_silence = 2.4
+# sherpa 内建端点 rule2：话后尾静音窗（秒）
+rule2_min_trailing_silence = 1.2
+num_threads = 1
+
 [vad]
 model_name = "silero_vad"
 threshold = 0.5
@@ -80,6 +94,19 @@ category = "stt"
 repo = "csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"
 files = [
     { local = "model.onnx", remote = "model.int8.onnx" },
+    { local = "tokens.txt", remote = "tokens.txt" },
+]
+
+[[models.sources]]
+# 流式识别（realtime P1）：streaming zipformer transducer 中英双语（Apache-2.0）
+# int8 三件套落地为约定文件名，供 StreamSttEngine 直接装载
+name = "streaming-zipformer-bilingual-zh-en"
+category = "stt_stream"
+repo = "csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20"
+files = [
+    { local = "encoder.onnx", remote = "encoder-epoch-99-avg-1.int8.onnx" },
+    { local = "decoder.onnx", remote = "decoder-epoch-99-avg-1.int8.onnx" },
+    { local = "joiner.onnx", remote = "joiner-epoch-99-avg-1.int8.onnx" },
     { local = "tokens.txt", remote = "tokens.txt" },
 ]
 

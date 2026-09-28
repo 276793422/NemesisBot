@@ -99,6 +99,74 @@ pub fn ensure_stt_model(cfg: &AppConfig) -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// Ensure streaming STT model is ready (realtime P1 W1). Returns the model directory.
+pub fn ensure_stt_stream_model(cfg: &AppConfig) -> Result<PathBuf> {
+    let model_name = &cfg.stt_stream.model_name;
+    let dir = cfg.model_dir().join("stt_stream").join(model_name);
+
+    let source = cfg.find_model_source(model_name);
+    let files: Vec<(&str, &str)> = source
+        .map(|s| {
+            s.files
+                .iter()
+                .map(|f| (f.local.as_str(), f.remote.as_str()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if !files.is_empty() && check_model_files(&dir, &files) {
+        tracing::info!(
+            "[STT-STREAM] Model '{}' found at {}",
+            model_name,
+            dir.display()
+        );
+        return Ok(dir);
+    }
+
+    if !cfg.models.auto_download {
+        anyhow::bail!(
+            "Streaming STT model '{}' not found at {} and auto_download is disabled",
+            model_name,
+            dir.display()
+        );
+    }
+
+    let source = source.context(format!(
+        "Streaming STT model '{}' not found in config [models.sources]. Add it to config.toml.",
+        model_name
+    ))?;
+
+    download_model_files(
+        &cfg.models.mirror.base,
+        &source.name,
+        &source.repo,
+        &source.files,
+        &dir,
+        &cfg.models.proxy.url,
+    )?;
+
+    Ok(dir)
+}
+
+/// 只探测不下载：流式 STT 模型四件套齐才返回目录（realtime P1 管线启动用）。
+/// 缺件 = None——管线侧 warn 降级为仅离线识别，**绝不在这里触发下载**
+/// （60s 级下载阻塞采集线程；安装走 install_model 的显式入口）。
+pub fn probe_stt_stream_model(cfg: &AppConfig) -> Option<PathBuf> {
+    let dir = cfg
+        .model_dir()
+        .join("stt_stream")
+        .join(&cfg.stt_stream.model_name);
+    let ready = [
+        crate::stt_stream::STREAM_ENCODER_FILE,
+        crate::stt_stream::STREAM_DECODER_FILE,
+        crate::stt_stream::STREAM_JOINER_FILE,
+        crate::stt_stream::STREAM_TOKENS_FILE,
+    ]
+    .iter()
+    .all(|f| dir.join(f).exists());
+    ready.then_some(dir)
+}
+
 /// Ensure VAD model is ready. Returns the model file path (not directory).
 pub fn ensure_vad_model(cfg: &AppConfig) -> Result<PathBuf> {
     let model_name = &cfg.vad.model_name;

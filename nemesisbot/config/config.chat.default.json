@@ -2,5 +2,14 @@
   "toolbar_collapsed": false,
   "dictation_enabled": false,
   "dialogue_enabled": false,
-  "playback_enabled": false
+  "playback_enabled": false,
+  "realtime": {
+    "enabled": false,
+    "stream_stt": false,
+    "two_pass": true,
+    "tts_relay": false,
+    "barge_in": false,
+    "spoken_form": false,
+    "voice_prompt": false
+  }
 }

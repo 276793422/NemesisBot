@@ -206,6 +206,7 @@ impl AgentLoop {
             warm_candidates: parking_lot::Mutex::new(HashMap::new()),
             small_model: parking_lot::RwLock::new(None),
             spawn_slot: parking_lot::RwLock::new(None),
+            voice_prompt: parking_lot::RwLock::new(None),
         }
     }
 

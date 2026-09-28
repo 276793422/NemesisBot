@@ -1886,6 +1886,13 @@ pub async fn send_to_session(
     if let Some(node) = source_node {
         data["source_node"] = serde_json::Value::String(node.to_string());
     }
+    // 语音 relay（realtime P1 G3）：语音对话进行中且热态开时，assistant 回复
+    // 由后端接力 TTS。帧标 voice_relayed=true 让发起端跳过自身 tts_playback
+    // （防双播）；广播成功后清洗入队播放。热态关/未注册 = false = 零改动。
+    let voice_relay = crate::voice_relay::relay_should_take_over(session_key, role, content);
+    if voice_relay {
+        data["voice_relayed"] = serde_json::Value::Bool(true);
+    }
     // L2（devtool-upgrade 阶段 6）：chat 帧盖会话内单调 seq 并进 per-session
     // 环形缓冲——`chat.sync {session_id, after_seq}` 断线补拉的数据源。
     // 记录键优先会话键（跨连接稳定），无元数据才退连接 id。
@@ -1901,6 +1908,11 @@ pub async fn send_to_session(
         .broadcast(session_id, &data)
         .await
         .map_err(|e| format!("failed to broadcast: {}", e))?;
+
+    // 接力入队放在广播成功后：帧先落 UI，TTS 随后出声（顺序可感知）。
+    if voice_relay {
+        crate::voice_relay::relay_dispatch(content).await;
+    }
 
     tracing::info!(
         session_id = %session_id,

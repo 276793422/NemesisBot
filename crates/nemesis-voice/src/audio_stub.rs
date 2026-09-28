@@ -66,6 +66,20 @@ impl AudioPlayback {
 
     /// 无实例可构造（`new` 恒 Err），本体不可达；仅为签名兼容保留。
     pub fn stop(&self) {}
+
+    /// 无实例可构造（`new` 恒 Err），本体不可达；仅为签名兼容保留
+    /// （真实现见 audio::StopHandle — barge-in 跨线程停止句柄）。
+    pub fn stop_handle(&self) -> StopHandle {
+        StopHandle {}
+    }
+}
+
+/// 跨线程停止句柄 stub（无播放设备，stop 为 no-op）。
+#[derive(Clone)]
+pub struct StopHandle {}
+
+impl StopHandle {
+    pub fn stop(&self) {}
 }
 
 pub struct Resampler {

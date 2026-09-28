@@ -37,13 +37,12 @@ const KOKORO_SPEAKERS: &[(&str, &str, u32)] = &[
 #[cfg(target_os = "windows")]
 const VOICE_CONFIG_FILENAME: &str = "config.voice.json";
 #[cfg(target_os = "windows")]
-const CHAT_CONFIG_FILENAME: &str = "config.chat.json";
-#[cfg(target_os = "windows")]
 const DEFAULT_VOICE_CONFIG: &str =
     include_str!("../../../../nemesisbot/config/config.voice.default.json");
+// chat 配置文件名 + 默认模板由 voice_relay 模块提供（gateway 启动装配与
+// handler 共用单一来源，避免双 include 漂移）。
 #[cfg(target_os = "windows")]
-const DEFAULT_CHAT_CONFIG: &str =
-    include_str!("../../../../nemesisbot/config/config.chat.default.json");
+use crate::voice_relay::{CHAT_CONFIG_FILENAME, DEFAULT_CHAT_CONFIG};
 
 // Global setup cancellation token
 #[cfg(target_os = "windows")]
@@ -65,6 +64,7 @@ fn install_locks() -> &'static std::sync::Mutex<std::collections::HashSet<String
 fn model_label(model: &str) -> &str {
     match model {
         "stt" => "STT",
+        "stt_stream" => "流式STT",
         "vad" => "VAD",
         "tts" => "TTS",
         "punct" => "标点",
@@ -207,6 +207,54 @@ const VOICEPRINT_CONFIG_FILENAME: &str = "config.voice.print.json";
 const DEFAULT_SPEAKER_THRESHOLD: f32 = 0.65;
 
 // ---------------------------------------------------------------------------
+// Realtime 共享态（barge-in 需要 tts_playback_loop 与 STT 管线跨任务共享
+// 播放进度；tts_relay 入队需要可复用的播放通道）
+// ---------------------------------------------------------------------------
+
+/// 当前播放的停止句柄（barge-in 跨线程切播放用；播放间隙为 None）。
+/// AudioPlayback 本体因 cpal Stream 是 !Send——播放循环线程持本体，
+/// STT 管线线程经 StopHandle（Send+Sync，只触队列）打断。
+#[cfg(target_os = "windows")]
+fn active_playback() -> &'static std::sync::Mutex<Option<nemesis_voice::StopHandle>> {
+    static INSTANCE: OnceLock<std::sync::Mutex<Option<nemesis_voice::StopHandle>>> =
+        OnceLock::new();
+    INSTANCE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// 播放中旗（tts_playback_loop 置位/清位；barge-in 播放窗口判定读）。
+#[cfg(target_os = "windows")]
+fn tts_playing() -> &'static std::sync::atomic::AtomicBool {
+    static INSTANCE: OnceLock<std::sync::atomic::AtomicBool> = OnceLock::new();
+    INSTANCE.get_or_init(|| std::sync::atomic::AtomicBool::new(false))
+}
+
+/// 最近一次播放结束时刻（barge-in 尾窗 300ms 允许抢最后一句话）。
+#[cfg(target_os = "windows")]
+fn tts_last_play_end() -> &'static std::sync::Mutex<Option<std::time::Instant>> {
+    static INSTANCE: OnceLock<std::sync::Mutex<Option<std::time::Instant>>> = OnceLock::new();
+    INSTANCE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// barge-in 判定常量（G4）：最短持续防咳嗽/桌响误触发；尾窗允许抢最后一句话。
+#[cfg(target_os = "windows")]
+const BARGE_MIN_SUSTAIN: std::time::Duration = std::time::Duration::from_millis(250);
+#[cfg(target_os = "windows")]
+const BARGE_TAIL: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// realtime 管线参数（对话模式由 cmd_stt_dialogue_start 装配；听写/输入盒
+/// 路径传 None = 逐字节旧行为）。
+#[cfg(target_os = "windows")]
+struct RealtimePipelineParams {
+    stream_stt: bool,
+    /// true = partial 实时 + VAD 段尾离线精识（默认）；false = final 直接用流式结果。
+    two_pass: bool,
+    barge_in: bool,
+    /// 接力注册快照（barge-in 取消当前轮用；tts_relay 的入队在出站路径，
+    /// 不经管线）。
+    registration: Option<Arc<crate::voice_relay::RelayRegistration>>,
+}
+
+// ---------------------------------------------------------------------------
 // STT output interface (Phase 3)
 // ---------------------------------------------------------------------------
 
@@ -214,6 +262,13 @@ const DEFAULT_SPEAKER_THRESHOLD: f32 = 0.65;
 #[cfg(target_os = "windows")]
 trait SttOutput: Send {
     fn send_text(&self, text: &str);
+
+    /// 流式 partial 草稿（realtime stream_stt；默认实现 = no-op，听写/
+    /// 输入盒路径不受影响）。
+    fn send_partial(&self, _text: &str) {}
+
+    /// barge-in 已触发通知（前端给对应气泡打「已打断」badge）。
+    fn notify_barge_in(&self) {}
 }
 
 /// Default implementation: push via WebSocket to the originating session.
@@ -282,6 +337,19 @@ impl SttOutput for DialogueSttOutput {
         // Push accumulated text to frontend (replaces input box content)
         (self.push_fn)(&format!("accumulate:{}", accumulated));
     }
+
+    fn send_partial(&self, text: &str) {
+        if text.trim().is_empty() {
+            return;
+        }
+        // partial 是草稿：只上屏（前端灰字预览），不进累积缓冲——
+        // 缓冲仍只收 VAD 段尾 final。
+        (self.push_fn)(&format!("partial:{}", text));
+    }
+
+    fn notify_barge_in(&self) {
+        (self.push_fn)("barge_in:1");
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -315,6 +383,14 @@ struct DialogueSttOutputWrapper {
 impl SttOutput for DialogueSttOutputWrapper {
     fn send_text(&self, text: &str) {
         self.inner.send_text(text);
+    }
+
+    fn send_partial(&self, text: &str) {
+        self.inner.send_partial(text);
+    }
+
+    fn notify_barge_in(&self) {
+        self.inner.notify_barge_in();
     }
 }
 
@@ -463,7 +539,7 @@ impl ModuleHandler for VoiceHandler {
                 "stt_stop" => self.cmd_stt_stop().await,
                 "speakers" => self.cmd_speakers(),
                 "devices" => self.cmd_devices(),
-                "engine_status" => self.cmd_engine_status().await,
+                "engine_status" => self.cmd_engine_status(&voice_dir).await,
                 "chat_config_get" => self.cmd_chat_config_get(&config_dir),
                 "chat_config_set" => {
                     let d = data.ok_or("missing data")?;
@@ -509,7 +585,20 @@ impl ModuleHandler for VoiceHandler {
                         .and_then(|d| d.get("silence_timeout"))
                         .and_then(|v| v.as_f64())
                         .unwrap_or(3.0);
-                    self.cmd_stt_dialogue_start(&voice_dir, ctx, timeout).await
+                    // realtime 接力寻址（G6）：会话 id 由前端随启动请求带上
+                    let dialogue_session = data
+                        .as_ref()
+                        .and_then(|d| d.get("session_id"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string);
+                    self.cmd_stt_dialogue_start(
+                        &voice_dir,
+                        &config_dir,
+                        ctx,
+                        timeout,
+                        dialogue_session,
+                    )
+                    .await
                 }
                 "stt_dialogue_stop" => self.cmd_stt_dialogue_stop().await,
                 "stt_dialogue_reset" => self.cmd_stt_dialogue_reset().await,
@@ -1170,6 +1259,10 @@ impl VoiceHandler {
 
             let result = match model_type.as_str() {
                 "stt" => nemesis_voice::model::ensure_stt_model(&cfg).map_err(|e| e.to_string()),
+                // 流式 STT（realtime stream_stt）：zipformer 在线转写四件套
+                "stt_stream" => {
+                    nemesis_voice::model::ensure_stt_stream_model(&cfg).map_err(|e| e.to_string())
+                }
                 "vad" => nemesis_voice::model::ensure_vad_model(&cfg).map_err(|e| e.to_string()),
                 "tts" => nemesis_voice::model::ensure_tts_model(&cfg).map_err(|e| e.to_string()),
                 "punct" => {
@@ -1470,12 +1563,21 @@ impl VoiceHandler {
         });
 
         tokio::task::spawn_blocking(move || {
+            let mut source = match nemesis_voice::MicSource::new(&capture_device, target_sr) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("[STT Pipeline] Audio capture failed: {}", e);
+                    output.send_text(&format!("[错误] 麦克风初始化失败: {}", e));
+                    return;
+                }
+            };
             run_stt_pipeline(
-                &capture_device,
+                &mut source,
                 target_sr,
                 &cfg_for_detector,
                 &cancel,
                 output.as_ref(),
+                None,
             );
         });
 
@@ -1530,12 +1632,19 @@ impl VoiceHandler {
         })))
     }
 
-    async fn cmd_engine_status(&self) -> Result<Option<serde_json::Value>, String> {
+    async fn cmd_engine_status(
+        &self,
+        voice_dir: &std::path::Path,
+    ) -> Result<Option<serde_json::Value>, String> {
         #[cfg(target_os = "windows")]
         {
             let stt_ready = stt_engine_state().lock().unwrap().is_some();
             let tts_ready = tts_engine_state().lock().unwrap().is_some();
             let speaker_ready = speaker_engine_state().lock().unwrap().is_some();
+            // 流式 STT 模型在位探测（realtime stream_stt 开关可用性；只探测不下载）
+            let config_path = voice_dir.join("config.toml");
+            let cfg = nemesis_voice::AppConfig::load_or_default(&config_path);
+            let stt_stream_model = nemesis_voice::model::probe_stt_stream_model(&cfg).is_some();
             let stt_dialogue_active = {
                 let state = stt_state().lock().await;
                 state.as_ref().is_some_and(|s| s.dialogue_output.is_some())
@@ -1544,15 +1653,18 @@ impl VoiceHandler {
                 "stt_ready": stt_ready,
                 "tts_ready": tts_ready,
                 "speaker_ready": speaker_ready,
+                "stt_stream_model": stt_stream_model,
                 "stt_dialogue_active": stt_dialogue_active,
             })))
         }
         #[cfg(not(target_os = "windows"))]
         {
+            let _ = voice_dir;
             Ok(Some(serde_json::json!({
                 "stt_ready": false,
                 "tts_ready": false,
                 "speaker_ready": false,
+                "stt_stream_model": false,
             })))
         }
     }
@@ -1575,6 +1687,11 @@ impl VoiceHandler {
         // REL-002：统一原子写入（chat config）。
         nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600)
             .map_err(|e| format!("failed to write chat config: {}", e))?;
+        // realtime 热态同步（G6）：写盘成功即 apply（缺 realtime 键 = no-op，
+        // 不动现有热态）。管线循环/出站广播读 AtomicBool，下一拍生效。
+        if let Some(rt) = data.get("realtime") {
+            crate::voice_relay::apply_realtime_config(rt);
+        }
         Ok(Some(serde_json::json!({ "success": true })))
     }
 
@@ -2509,12 +2626,21 @@ impl VoiceHandler {
         });
 
         tokio::task::spawn_blocking(move || {
+            let mut source = match nemesis_voice::MicSource::new(&capture_device, target_sr) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("[STT Pipeline] Audio capture failed: {}", e);
+                    output.send_text(&format!("[错误] 麦克风初始化失败: {}", e));
+                    return;
+                }
+            };
             run_stt_pipeline(
-                &capture_device,
+                &mut source,
                 target_sr,
                 &cfg_for_detector,
                 &cancel,
                 output.as_ref(),
+                None,
             );
         });
 
@@ -2591,12 +2717,21 @@ impl VoiceHandler {
         let output: Box<dyn SttOutput> = Box::new(InputBoxSttOutput { push_fn });
 
         tokio::task::spawn_blocking(move || {
+            let mut source = match nemesis_voice::MicSource::new(&capture_device, target_sr) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("[STT Pipeline] Audio capture failed: {}", e);
+                    output.send_text(&format!("[错误] 麦克风初始化失败: {}", e));
+                    return;
+                }
+            };
             run_stt_pipeline(
-                &capture_device,
+                &mut source,
                 target_sr,
                 &cfg_for_detector,
                 &cancel,
                 output.as_ref(),
+                None,
             );
         });
 
@@ -2608,6 +2743,9 @@ impl VoiceHandler {
         match state.take() {
             Some(session) => {
                 session.cancel.cancel();
+                // 防御性清 relay 注册（听写与对话共用 stt_state 槽，API 直调
+                // stt_to_input 时避免遗留过期注册）。
+                crate::voice_relay::set_relay_registration(None);
                 Ok(Some(serde_json::json!({ "stopped": true })))
             }
             None => Err("STT dictation not running".to_string()),
@@ -2621,8 +2759,10 @@ impl VoiceHandler {
     async fn cmd_stt_dialogue_start(
         &self,
         voice_dir: &std::path::Path,
+        config_dir: &std::path::Path,
         ctx: &RequestContext,
         silence_timeout: f64,
+        dialogue_session: Option<String>,
     ) -> Result<Option<serde_json::Value>, String> {
         // Ensure no existing pipeline
         {
@@ -2648,6 +2788,57 @@ impl VoiceHandler {
         let target_sr = cfg.audio.target_sample_rate;
         let cfg_for_detector = cfg.clone();
 
+        // realtime 装配（G6）：热态开 + 前端给了会话 id → 注册接力 + 管线
+        // 参数。resolve 失败（项目会话目录消失等）= 降级为 agent_loop:None
+        // （barge-in 只停播不取消轮，管线照常跑）。
+        let hot = crate::voice_relay::realtime_hot_state();
+        let mut registration: Option<Arc<crate::voice_relay::RelayRegistration>> = None;
+        let mut rt_params: Option<RealtimePipelineParams> = None;
+        if hot.enabled.load(std::sync::atomic::Ordering::Relaxed) {
+            match dialogue_session.as_deref().map(|sid| {
+                // 与入站 chokepoint（server.rs send_to_session）同构：sid 过
+                // sanitize 再拼 session_key——relay 靠精确匹配，两处构造必须
+                // 共享同一变换（UUID 下 sanitize 恒等，但形态一变两边就漂移，
+                // 症状是接力静默不接管）。
+                format!(
+                    "agent:main:session:{}",
+                    nemesis_agent::session::SessionStore::sanitize_session_id(sid)
+                )
+            }) {
+                Some(session_key) => {
+                    let agent_loop =
+                        match crate::handlers::projects::resolve_session_loop(ctx, &session_key) {
+                            Ok(al) => Some(al),
+                            Err(e) => {
+                                tracing::warn!(
+                                    "[Voice] realtime 接力注册无 loop（打断只停播不取消轮）: {}",
+                                    e
+                                );
+                                None
+                            }
+                        };
+                    registration = Some(Arc::new(crate::voice_relay::RelayRegistration {
+                        session_key,
+                        voice_dir: voice_dir.to_path_buf(),
+                        config_dir: config_dir.to_path_buf(),
+                        agent_loop,
+                    }));
+                    rt_params = Some(RealtimePipelineParams {
+                        stream_stt: hot.stream_stt.load(std::sync::atomic::Ordering::Relaxed),
+                        two_pass: hot.two_pass.load(std::sync::atomic::Ordering::Relaxed),
+                        barge_in: hot.barge_in.load(std::sync::atomic::Ordering::Relaxed),
+                        registration: registration.clone(),
+                    });
+                }
+                None => {
+                    tracing::warn!(
+                        "[Voice] realtime 开但请求未带 session_id，本轮无接力/打断（旧前端？）"
+                    );
+                }
+            }
+        }
+        crate::voice_relay::set_relay_registration(registration);
+
         let cancel = CancellationToken::new();
         let session_id = ctx.session_id.clone();
         let session_mgr = ctx.state.session_manager.clone();
@@ -2657,6 +2848,10 @@ impl VoiceHandler {
         let push_fn: Box<dyn Fn(&str) + Send + Sync> = Box::new(move |text: &str| {
             if let Some(rest) = text.strip_prefix("accumulate:") {
                 push_stt_dialogue(&sid_clone, smgr_clone.clone(), "stt_accumulate", rest);
+            } else if let Some(rest) = text.strip_prefix("partial:") {
+                push_stt_dialogue(&sid_clone, smgr_clone.clone(), "stt_partial", rest);
+            } else if text == "barge_in:1" {
+                push_stt_dialogue(&sid_clone, smgr_clone.clone(), "barge_in_triggered", "1");
             } else {
                 push_stt_dialogue(&sid_clone, smgr_clone.clone(), "stt_dialogue_text", text);
             }
@@ -2750,13 +2945,25 @@ impl VoiceHandler {
             }
         });
 
+        // 采集源（W7 注入面）在管线线程内构造：cpal Stream 是 !Send，源从不过
+        // 线程边界；失败经 output.send_text 上报（对话模式吞 [ 前缀状态消息 =
+        // 与旧管线内失败同表现）。
         tokio::task::spawn_blocking(move || {
+            let mut source = match nemesis_voice::MicSource::new(&capture_device, target_sr) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("[STT Pipeline] Audio capture failed: {}", e);
+                    output.send_text(&format!("[错误] 麦克风初始化失败: {}", e));
+                    return;
+                }
+            };
             run_stt_pipeline(
-                &capture_device,
+                &mut source,
                 target_sr,
                 &cfg_for_detector,
                 &cancel,
                 output.as_ref(),
+                rt_params.as_ref(),
             );
         });
 
@@ -2772,6 +2979,21 @@ impl VoiceHandler {
                     let _ = output.flush();
                 }
                 session.cancel.cancel();
+                // 清 relay 注册（G3）：出站广播即刻回前端自播；迟到的 dispatch
+                // 因注册槽空而丢弃。
+                crate::voice_relay::set_relay_registration(None);
+                // 接力播放一并停（关=立刻安静）：清注册只挡住后续入队，已入
+                // 队未播的句子会继续合成播完——「关了还在说话」。停播语义与
+                // barge-in 一致（当前音频清队列即刻静音 + 撤整个播放会话）。
+                // 本函数是 async 上下文：撤队列用 lock().await（trigger_barge_in
+                // 在 spawn_blocking 音频线程才用 blocking_lock，两处不同）。
+                if let Some(p) = active_playback().lock().unwrap().as_ref() {
+                    p.stop();
+                }
+                let mut mgr = tts_playback_state().lock().await;
+                if let Some(m) = mgr.take() {
+                    m.cancel.cancel();
+                }
                 // Clear dialogue state
                 let mut ds = dialogue_state().lock().await;
                 *ds = None;
@@ -2837,32 +3059,7 @@ impl VoiceHandler {
             .and_then(|v| v.as_u64())
             .unwrap_or(default_volume);
 
-        // Ensure playback manager is running
-        let mut mgr = tts_playback_state().lock().await;
-        if mgr.is_none() {
-            let (tx, rx) = std::sync::mpsc::channel::<TtsPlaybackItem>();
-            let cancel = CancellationToken::new();
-            let cancel_clone = cancel.clone();
-            let dir = voice_dir.to_path_buf();
-
-            // Spawn background playback task
-            tokio::task::spawn_blocking(move || {
-                tts_playback_loop(&dir, rx, &cancel_clone);
-            });
-
-            *mgr = Some(TtsPlaybackManager { tx, cancel });
-        }
-
-        let mgr_ref = mgr.as_ref().unwrap();
-        mgr_ref
-            .tx
-            .send(TtsPlaybackItem {
-                text,
-                speaker_id,
-                speed,
-                volume,
-            })
-            .map_err(|_| "TTS playback channel closed".to_string())?;
+        tts_enqueue_item(voice_dir, text, speaker_id, speed, volume).await?;
 
         Ok(Some(serde_json::json!({ "queued": true })))
     }
@@ -2879,6 +3076,164 @@ impl VoiceHandler {
                 serde_json::json!({ "stopped": true, "was_running": false }),
             )),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TTS enqueue（前端 tts_playback 与 realtime tts_relay 共用）
+// ---------------------------------------------------------------------------
+
+/// 入队一条 TTS 播放（懒建播放通道：首次调用 spawn 播放循环，之后复用）。
+#[cfg(target_os = "windows")]
+async fn tts_enqueue_item(
+    voice_dir: &std::path::Path,
+    text: String,
+    speaker_id: u32,
+    speed: f32,
+    volume: u64,
+) -> Result<(), String> {
+    let mut mgr = tts_playback_state().lock().await;
+    if mgr.is_none() {
+        let (tx, rx) = std::sync::mpsc::channel::<TtsPlaybackItem>();
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+        let dir = voice_dir.to_path_buf();
+
+        // Spawn background playback task
+        tokio::task::spawn_blocking(move || {
+            tts_playback_loop(&dir, rx, &cancel_clone);
+        });
+
+        *mgr = Some(TtsPlaybackManager { tx, cancel });
+    }
+
+    mgr.as_ref()
+        .unwrap()
+        .tx
+        .send(TtsPlaybackItem {
+            text,
+            speaker_id,
+            speed,
+            volume,
+        })
+        .map_err(|_| "TTS playback channel closed".to_string())
+}
+
+/// TTS 接力入队（voice_relay::relay_dispatch 落点，G3）：assistant 回复
+/// 清洗 → 切句 → 播放队列。spoken_form 开 = 口播话术转换；关 = 仅长句软
+/// 切分。注册槽空 = no-op（竞态安全：stop 清注册后迟到的 dispatch 丢弃）。
+#[cfg(target_os = "windows")]
+pub async fn relay_enqueue(content: &str) {
+    let Some(reg) = crate::voice_relay::relay_registration() else {
+        return;
+    };
+    let spoken_form_on = crate::voice_relay::realtime_hot_state()
+        .spoken_form
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let pieces = if spoken_form_on {
+        nemesis_voice::spoken_pieces(content)
+    } else {
+        nemesis_voice::sentence::split_for_tts(
+            content,
+            nemesis_voice::spoken_form::MAX_SENTENCE_CHARS,
+        )
+    };
+    if pieces.is_empty() {
+        return;
+    }
+
+    // 播放参数沿用 config.voice.json 默认（与 cmd_tts_playback 同源）
+    let voice_cfg = read_voice_config(&reg.config_dir);
+    let speaker = voice_cfg
+        .get("speaker_id")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(45) as u32;
+    let speed = voice_cfg
+        .get("speed")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(1.0) as f32;
+    let volume = voice_cfg
+        .get("volume")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(50);
+
+    for piece in pieces {
+        if piece.trim().is_empty() {
+            continue;
+        }
+        if tts_enqueue_item(&reg.voice_dir, piece, speaker, speed, volume)
+            .await
+            .is_err()
+        {
+            break; // 播放通道没了，剩余条目丢弃
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Barge-in（G4）：停当前播放 + 撤播放队列 + 取消 agent 当前轮 + 前端标注
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "windows")]
+fn trigger_barge_in(
+    output: &dyn SttOutput,
+    registration: Option<&crate::voice_relay::RelayRegistration>,
+) {
+    tracing::info!("[STT Pipeline] barge-in: 用户打断 TTS 播放");
+    // 1) 切当前音频（清播放队列，cpal 回调即刻出静音）
+    if let Some(p) = active_playback().lock().unwrap().as_ref() {
+        p.stop();
+    }
+    // 2) 撤整个播放会话（未播条目全部丢弃；通道由下次入队懒建重建）。
+    //    blocking_lock 而非 try_lock：本函数跑在音频管线 spawn_blocking 线程
+    //    （非 runtime worker），持锁方（tts_enqueue_item）临界区无 await 点、
+    //    微秒级必释放——等待无死锁风险；try_lock 撞上入队瞬间会跳过撤队列，
+    //    症状是「当前句停了，队列下一句又响」（打断不彻底且难复现）。
+    let mut mgr = tts_playback_state().blocking_lock();
+    if let Some(m) = mgr.take() {
+        m.cancel.cancel();
+    }
+    // 3) 取消 agent 当前轮（窄化版急停：只杀进行中的回复，不动会话状态）
+    if let Some(reg) = registration
+        && let Some(ref al) = reg.agent_loop
+    {
+        let cancelled = al.cancel_session(&reg.session_key);
+        tracing::info!(
+            "[STT Pipeline] barge-in cancel_session({})={}",
+            reg.session_key,
+            cancelled
+        );
+    }
+    // 4) 前端标注（对应气泡打「已打断」badge；不伪造 chat_log 条目）
+    output.notify_barge_in();
+}
+
+/// barge-in 声纹门：speaker_enabled 时对 onset 起累积音频做 owner 校验
+/// （防旁人说话/电视声误打断）。音频不足 0.5s 不校验直接拒绝（宁可不打断，
+/// 也不在短音上误放行非 owner）。引擎未装载 = 校验不可用，放行（与 VAD 段
+/// 路径同语义；AEC 装载是另一道前置闸）。
+#[cfg(target_os = "windows")]
+fn barge_speaker_ok(audio: &[f32], target_sr: u32) -> bool {
+    if !*speaker_enabled_state().lock().unwrap() {
+        return true;
+    }
+    if audio.len() < target_sr as usize / 2 {
+        return false;
+    }
+    let engine_guard = speaker_engine_state().lock().unwrap();
+    let manager_guard = speaker_manager_state().lock().unwrap();
+    match (&*engine_guard, &*manager_guard) {
+        (Some(engine), Some(manager)) => {
+            let threshold = *speaker_threshold_state().lock().unwrap();
+            match engine.embed(audio, target_sr) {
+                Ok(emb) => manager.verify("owner", &emb, threshold),
+                Err(e) => {
+                    tracing::warn!("[STT Pipeline] barge-in speaker embed error: {}", e);
+                    false
+                }
+            }
+        }
+        _ => true,
     }
 }
 
@@ -2971,7 +3326,16 @@ fn tts_playback_loop(
             }
         };
 
-        if let Err(e) = playback.play_blocking(&samples, sample_rate) {
+        // barge-in 共享态：播放中挂停止句柄（STT 管线线程 stop() 切音频用），
+        // 结束记尾窗锚点（300ms 内仍可抢断下一句开播前）。
+        let stop_handle = playback.stop_handle();
+        *active_playback().lock().unwrap() = Some(stop_handle);
+        tts_playing().store(true, std::sync::atomic::Ordering::Relaxed);
+        let play_result = playback.play_blocking(&samples, sample_rate);
+        tts_playing().store(false, std::sync::atomic::Ordering::Relaxed);
+        *tts_last_play_end().lock().unwrap() = Some(std::time::Instant::now());
+        *active_playback().lock().unwrap() = None;
+        if let Err(e) = play_result {
             tracing::warn!("[TTS Playback] Playback error: {}", e);
         }
     }
@@ -3140,11 +3504,12 @@ fn run_stt_loop(
 
 #[cfg(target_os = "windows")]
 fn run_stt_pipeline(
-    capture_device: &str,
+    source: &mut dyn nemesis_voice::AudioChunkSource,
     target_sr: u32,
     cfg: &nemesis_voice::AppConfig,
     cancel: &CancellationToken,
     output: &dyn SttOutput,
+    realtime: Option<&RealtimePipelineParams>,
 ) {
     {
         let guard = stt_engine_state().lock().unwrap();
@@ -3157,118 +3522,202 @@ fn run_stt_pipeline(
 
     let mut detector = nemesis_voice::create_detector(cfg);
 
-    let capture = match nemesis_voice::AudioCapture::new(capture_device) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!("[STT Pipeline] Audio capture failed: {}", e);
-            output.send_text(&format!("[错误] 麦克风初始化失败: {}", e));
-            return;
+    // 流式引擎懒建（W2）：模型缺 = warn + 本轮降级仅离线（不阻塞下载，
+    // 安装走 install_model model=stt_stream）。
+    let mut stream_engine: Option<nemesis_voice::StreamSttEngine> = None;
+    if let Some(rt) = realtime
+        && rt.stream_stt
+    {
+        match nemesis_voice::model::probe_stt_stream_model(cfg) {
+            Some(dir) => match nemesis_voice::StreamSttEngine::new_default(
+                &dir,
+                cfg.stt_stream.num_threads,
+                cfg.stt_stream.rule1_min_trailing_silence,
+                cfg.stt_stream.rule2_min_trailing_silence,
+            ) {
+                Ok(e) => stream_engine = Some(e),
+                Err(e) => {
+                    tracing::warn!("[STT Pipeline] 流式引擎创建失败，本轮降级仅离线: {}", e)
+                }
+            },
+            None => {
+                tracing::warn!(
+                    "[STT Pipeline] 流式 STT 模型未安装，本轮降级仅离线（安装：语音页 install_model model=stt_stream）"
+                );
+            }
         }
-    };
+    }
 
-    let mut resampler = match nemesis_voice::Resampler::new(capture.sample_rate, target_sr) {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[STT Pipeline] Resampler init failed: {}", e);
-            output.send_text(&format!("[错误] 重采样器初始化失败: {}", e));
-            return;
-        }
-    };
+    // barge-in 状态机 + onset 起累积音频（声纹校验样本）
+    let mut barge_watch = nemesis_voice::barge_in::BargeInWatch::new(BARGE_MIN_SUSTAIN);
+    let mut barge_audio: Vec<f32> = Vec::new();
 
     // Far-end 重采样器：播放设备率 → target_sr（采集与播放可能是不同设备、不同采样率，
     // 不能复用 near-end 的 resampler）。AEC 关闭时不使用，但廉价，预先建好。
     let mut far_resampler =
         nemesis_voice::Resampler::new(nemesis_voice::far_end_sample_rate(), target_sr).ok();
 
-    tracing::info!("[STT Pipeline] Started (detector={})", detector.name());
+    tracing::info!(
+        "[STT Pipeline] Started (detector={}, realtime={})",
+        detector.name(),
+        realtime.is_some()
+    );
 
     let mut chunk_count: u64 = 0;
     let mut speech_count: u64 = 0;
+    let mut last_partial = String::new();
 
     while !cancel.is_cancelled() {
-        match capture.try_receive() {
-            Some(chunk) => {
-                chunk_count += 1;
-                let resampled = resampler.resample(&chunk);
+        let Some(chunk) = source.try_chunk() else {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            continue;
+        };
+        chunk_count += 1;
+        let resampled = chunk;
 
-                // AEC：用 TTS 播放（far-end）抵消麦克风（near-end）里的回声，使 VAD/STT
-                // 只听到用户。未启用/未装载时直通 resampled，无额外开销。
-                let cleaned: Vec<f32> = {
-                    let mut guard = aec_state().lock().unwrap();
-                    match guard.as_mut() {
-                        Some(aec) => {
-                            // 排空 far-end 参考（设备率）并重采样到 target_sr
-                            let far_dev: Vec<f32> = nemesis_voice::far_end_buffer()
-                                .lock()
-                                .unwrap()
-                                .drain(..)
-                                .collect();
-                            let far_16k = match far_resampler.as_mut() {
-                                Some(r) => r.resample(&far_dev),
-                                None => far_dev,
-                            };
-                            aec.process(&resampled, &far_16k)
+        // AEC：用 TTS 播放（far-end）抵消麦克风（near-end）里的回声，使 VAD/STT
+        // 只听到用户。未启用/未装载时直通 resampled，无额外开销。
+        let cleaned: Vec<f32> = {
+            let mut guard = aec_state().lock().unwrap();
+            match guard.as_mut() {
+                Some(aec) => {
+                    // 排空 far-end 参考（设备率）并重采样到 target_sr
+                    let far_dev: Vec<f32> = nemesis_voice::far_end_buffer()
+                        .lock()
+                        .unwrap()
+                        .drain(..)
+                        .collect();
+                    let far_16k = match far_resampler.as_mut() {
+                        Some(r) => r.resample(&far_dev),
+                        None => far_dev,
+                    };
+                    aec.process(&resampled, &far_16k)
+                }
+                None => resampled,
+            }
+        };
+
+        // realtime 流式分支（W2）：喂流式引擎 + partial 草稿上屏（变化才发，
+        // 省带宽；早于段尾 final 数秒可见）。
+        if let Some(ref se) = stream_engine {
+            se.accept_waveform(&cleaned, target_sr);
+            se.decode();
+            let p = se.partial();
+            if !p.is_empty() && p != last_partial {
+                last_partial = p;
+                output.send_partial(&last_partial);
+            }
+        }
+
+        // barge-in 判定（G4）：is_speaking 在本块 process 之前读（状态滞后
+        // 一块 ~100ms；BARGE_MIN_SUSTAIN 250ms 守卫覆盖该滞后，行为无碍）。
+        // 前置闸 = AEC 已装载（无 AEC 时 TTS 回声会被 VAD 听成用户说话，
+        // 必自打断）；窗口 = 播放中或尾窗 300ms；声纹开 = onset 起音频 owner 校验。
+        if let Some(rt) = realtime
+            && rt.barge_in
+        {
+            let speaking_now = detector.is_speaking();
+            if barge_watch.onset(speaking_now) {
+                barge_audio.clear();
+            }
+            if speaking_now {
+                barge_audio.extend_from_slice(&cleaned);
+                // 滑窗上限：sustained 已满足但播放窗口未开时（bot 没在播
+                // 报、用户连续说话），上面两处 clear 都不触发——累积无界
+                // 增长（64KB/s）。cap 在最近 30s：声纹校验只用最近音频，
+                // 丢旧无损。
+                const BARGE_AUDIO_CAP: usize = 30 * 16000; // 30s @16kHz f32
+                if barge_audio.len() > BARGE_AUDIO_CAP {
+                    let overflow = barge_audio.len() - BARGE_AUDIO_CAP;
+                    barge_audio.drain(..overflow);
+                }
+            }
+            if barge_watch.sustained() {
+                let playing = tts_playing().load(std::sync::atomic::Ordering::Relaxed);
+                let since_end = *tts_last_play_end().lock().unwrap();
+                let aec_loaded = aec_state().lock().unwrap().is_some();
+                if aec_loaded
+                    && nemesis_voice::barge_in::BargeInWatch::playback_window_open(
+                        playing, since_end, BARGE_TAIL,
+                    )
+                    && barge_speaker_ok(&barge_audio, target_sr)
+                {
+                    trigger_barge_in(output, rt.registration.as_deref());
+                    barge_watch.reset();
+                    barge_audio.clear();
+                }
+            }
+        }
+
+        let speech_segment = detector.process(&cleaned, target_sr);
+        if let Some(speech) = speech_segment {
+            speech_count += 1;
+            if !speech.is_empty() {
+                // Speaker verification: if enabled, verify before STT
+                if *speaker_enabled_state().lock().unwrap() {
+                    let engine_guard = speaker_engine_state().lock().unwrap();
+                    let manager_guard = speaker_manager_state().lock().unwrap();
+                    match (&*engine_guard, &*manager_guard) {
+                        (Some(engine), Some(manager)) => {
+                            let threshold = *speaker_threshold_state().lock().unwrap();
+                            match engine.embed(&speech, target_sr) {
+                                Ok(embedding) => {
+                                    if !manager.verify("owner", &embedding, threshold) {
+                                        tracing::info!(
+                                            "[STT Pipeline] Speaker rejected (segment #{})",
+                                            speech_count
+                                        );
+                                        continue;
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!("[STT Pipeline] Speaker embedding error: {}", e);
+                                    continue;
+                                }
+                            }
                         }
-                        None => resampled,
+                        _ => {
+                            // Engine or manager not loaded — skip verification, proceed to STT
+                        }
                     }
-                };
+                }
 
-                if let Some(speech) = detector.process(&cleaned, target_sr) {
-                    speech_count += 1;
-                    if !speech.is_empty() {
-                        // Speaker verification: if enabled, verify before STT
-                        if *speaker_enabled_state().lock().unwrap() {
-                            let engine_guard = speaker_engine_state().lock().unwrap();
-                            let manager_guard = speaker_manager_state().lock().unwrap();
-                            match (&*engine_guard, &*manager_guard) {
-                                (Some(engine), Some(manager)) => {
-                                    let threshold = *speaker_threshold_state().lock().unwrap();
-                                    match engine.embed(&speech, target_sr) {
-                                        Ok(embedding) => {
-                                            if !manager.verify("owner", &embedding, threshold) {
-                                                tracing::info!(
-                                                    "[STT Pipeline] Speaker rejected (segment #{})",
-                                                    speech_count
-                                                );
-                                                continue;
-                                            }
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                "[STT Pipeline] Speaker embedding error: {}",
-                                                e
-                                            );
-                                            continue;
-                                        }
-                                    }
-                                }
-                                _ => {
-                                    // Engine or manager not loaded — skip verification, proceed to STT
-                                }
-                            }
-                        }
+                // 段尾 final 来源（W2）：two_pass 开（或无流式引擎）= 离线整段
+                // 精识（原路径，准确）；关 = 流式 partial 直接作 final（省一次
+                // 精识，延迟更低）。两种来源都把流式流复位对齐下一段。
+                let stream_final = stream_engine.as_ref().map(|se| {
+                    let t = se.partial();
+                    se.reset();
+                    t
+                });
+                last_partial.clear();
+                let two_pass = realtime.map(|rt| rt.two_pass).unwrap_or(true);
 
-                        let guard = stt_engine_state().lock().unwrap();
-                        if let Some(ref engine) = *guard {
-                            match engine.recognize(&speech, target_sr) {
-                                Ok(text) => {
-                                    let trimmed = text.trim();
-                                    if !trimmed.is_empty() {
-                                        output.send_text(&punctuate_if_loaded(trimmed));
-                                    }
-                                }
-                                Err(e) => tracing::warn!("[STT Pipeline] Recognition error: {}", e),
+                let final_text: Option<String> = if two_pass || stream_final.is_none() {
+                    let guard = stt_engine_state().lock().unwrap();
+                    match guard.as_ref() {
+                        Some(engine) => match engine.recognize(&speech, target_sr) {
+                            Ok(text) => Some(text.trim().to_string()),
+                            Err(e) => {
+                                tracing::warn!("[STT Pipeline] Recognition error: {}", e);
+                                None
                             }
-                        } else {
+                        },
+                        None => {
                             tracing::error!("[STT Pipeline] Engine released during pipeline");
                             output.send_text("[错误] STT引擎已释放");
                             return;
                         }
                     }
+                } else {
+                    stream_final
+                };
+
+                if let Some(text) = final_text
+                    && !text.is_empty()
+                {
+                    output.send_text(&punctuate_if_loaded(&text));
                 }
-            }
-            None => {
-                std::thread::sleep(std::time::Duration::from_millis(10));
             }
         }
     }

@@ -137,7 +137,8 @@ fn diag_is_fresh(path: &std::path::Path, collected_at: std::time::SystemTime) ->
 /// P2：从工具 args 提取诊断回灌目标路径（保序去重）。
 /// - `multiedit`：`edits[].path`（同文件多条编辑去重，保首次出现序）。
 /// - 其余（write_file/edit_file/append_file）：顶层 `path` 单文件。
-///   path 缺失/形态不符 → 空表（调用方诚实跳过回灌）。纯函数，不碰 IO。
+///
+/// path 缺失/形态不符 → 空表（调用方诚实跳过回灌）。纯函数，不碰 IO。
 pub(crate) fn extract_diag_feedback_paths(
     tool_name: &str,
     args: &serde_json::Value,

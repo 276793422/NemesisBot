@@ -624,6 +624,12 @@ pub struct AgentLoop {
     spawn_slot: parking_lot::RwLock<
         Option<std::sync::Arc<std::sync::OnceLock<crate::loop_tools::SpawnFn>>>,
     >,
+    /// 语音 realtime P1（W4 L2）：语音对话模式提示词注入开关。gateway 侧把
+    /// `chat.realtime.voice_prompt` 热态经 `set_voice_prompt` 接线（仿 estop
+    /// late-binding 模式）；`build_messages` 每轮读取，`true` 且 tier≠mini 才
+    /// 渲染 L2 section（关 = 无 section = prompt 字节不变，cache 不动）。
+    /// `None`（standalone / 未装配）= 永不注入。
+    voice_prompt: parking_lot::RwLock<Option<Arc<std::sync::atomic::AtomicBool>>>,
 }
 
 impl AgentLoop {
@@ -727,7 +733,15 @@ impl AgentLoop {
             warm_candidates: parking_lot::Mutex::new(HashMap::new()),
             small_model: parking_lot::RwLock::new(None),
             spawn_slot: parking_lot::RwLock::new(None),
+            voice_prompt: parking_lot::RwLock::new(None),
         }
+    }
+
+    /// 语音对话提示词开关 late-binding（gateway 装配；仿 estop 模式）。
+    /// 传 `Arc<AtomicBool>` 共享热态——`chat_config_set` 改内存热态，这里
+    /// 无需重绑即被下一轮 build_messages 读到。
+    pub fn set_voice_prompt(&self, flag: Arc<std::sync::atomic::AtomicBool>) {
+        *self.voice_prompt.write() = Some(flag);
     }
 
     /// R1（2026-09-21）：中间轮正文发布（[`nemesis_types::agent::AgentEvent::RoundText`]）。

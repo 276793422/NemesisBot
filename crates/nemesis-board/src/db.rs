@@ -344,8 +344,9 @@ ALTER TABLE autopilot ADD COLUMN acceptance_criteria TEXT NOT NULL DEFAULT '';
 ///   upsert 累加；三档 prefer/avoid/neutral 判定的数据源）。
 /// - `fingerprint_counted`：记账幂等台账（task_id 主键——同一派发轮的
 ///   评审重放 / estop 复评不重复计数）。
-///   记账与 `board.fingerprint_weighting` 开关解耦（开关只闸决策消费，
-///   灰度期照常攒数据，开闸即有历史可用）。
+///
+/// 记账与 `board.fingerprint_weighting` 开关解耦（开关只闸决策消费，
+/// 灰度期照常攒数据，开闸即有历史可用）。
 const SCHEMA_V16: &str = r#"
 CREATE TABLE IF NOT EXISTS worker_fingerprint (
     worker     TEXT    NOT NULL,

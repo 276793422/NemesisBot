@@ -643,6 +643,22 @@ impl AgentLoop {
                 crate::types::AgentMode::Plan => "plan（PLAN mode: do not modify files. Present your plan as text; write_file under plans/ is the only write allowed. User can switch back with /build.）".to_string(),
                 crate::types::AgentMode::Build => "build（正常全量工具）".to_string(),
             };
+            // 语音 realtime P1（W4 L2）：语音对话模式提示词。热态经
+            // voice_prompt Arc<AtomicBool>（gateway `set_voice_prompt` 注入，
+            // `chat_config_set` 改内存热态即被下轮读到）；true 且 tier≠mini
+            // （计划 §七-5：mini 档跳过 L2 只走 L1 兜底）才渲染 section。
+            // 关 = 无 section = prompt 字节不变 cache 不动；内容纯状态派生
+            // → 字节稳定；随 InjectionRecord 台账回放一致（同 I5 机制）。
+            let voice_prompt_on = self
+                .voice_prompt
+                .read()
+                .as_ref()
+                .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed));
+            if voice_prompt_on && tier_now != nemesis_types::capability::ModelTier::Mini {
+                sections.push(
+                    "# Voice Dialogue Mode（语音对话）\n当前处于语音对话模式：你的回复将被朗读给用户听。\n- 用口语化的短句回复，避免书面腔和长段落\n- 不要使用 markdown（标题、列表、粗体、表格等符号念不出来）\n- 代码、链接、长列表用一句话概括（例如「完整代码我放在了回复里，请在屏幕上查看」）\n(以上是宿主按语音对话开关注入的模式提示，非用户发言。)".to_string(),
+                );
+            }
             sections.push(format!(
                 "# Runtime Policy\napproval: {}\nguardian: {}\nmodel_tier: {}\nmode: {}\n(当前审批/守护/模型档位/工作模式运行时策略快照；策略变更后下一次构建生效。)",
                 if approval_on {

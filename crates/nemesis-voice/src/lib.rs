@@ -10,6 +10,14 @@ pub mod transcriber;
 // --- Config (cross-platform, pure data types) ---
 pub mod config;
 
+// --- 语音化输出纯函数层（cross-platform；realtime P1 W4 L1 / W2 句切分） ---
+pub mod sentence;
+pub mod spoken_form;
+
+// --- realtime P1 跨平台纯件：barge-in 决策状态机 + WAV 编解码 ---
+pub mod barge_in;
+pub mod wav;
+
 // --- Local voice pipeline (Windows only) ---
 // 设备 IO 三件套（audio/aec/loopback）随 `voice-capture` feature 进出：开启 =
 // cpal/wasapi 真实现；关闭 = 同名 stub 模块（`#[path]` 重映射保持消费方路径
@@ -28,6 +36,11 @@ pub mod audio;
 pub mod bootstrap;
 #[cfg(target_os = "windows")]
 pub mod channel_bridge;
+// 音频采集源抽象（realtime P1 W7）：生产 = 麦克风，测试 = WavSource 注入。
+// 随 Windows 进出；无 voice-capture 构建下 MicSource::new / WavSource 读文件
+// 经 audio_stub 诚实报「未编译」（trait 本体可用）。
+#[cfg(target_os = "windows")]
+pub mod chunk_source;
 #[cfg(target_os = "windows")]
 pub mod lang_restriction;
 #[cfg(all(target_os = "windows", feature = "voice-capture"))]
@@ -46,6 +59,8 @@ pub mod speaker;
 #[cfg(target_os = "windows")]
 pub mod stt;
 #[cfg(target_os = "windows")]
+pub mod stt_stream;
+#[cfg(target_os = "windows")]
 pub mod tts;
 #[cfg(target_os = "windows")]
 pub mod vad;
@@ -58,6 +73,7 @@ mod test_util;
 
 // --- Cloud transcription (cross-platform) ---
 pub use config::AppConfig;
+pub use spoken_form::spoken_pieces;
 pub use transcriber::{AudioFormat, Transcriber, TranscriptionResponse};
 
 // --- Local pipeline re-exports (Windows only) ---
@@ -66,9 +82,13 @@ pub use aec::{
     AEC_SAMPLE_RATE, DEFAULT_FILTER_LENGTH, DEFAULT_FRAME_SIZE, EchoCanceller, SpeexAec,
 };
 #[cfg(target_os = "windows")]
-pub use audio::{AudioCapture, AudioPlayback, Resampler, far_end_buffer, far_end_sample_rate};
+pub use audio::{
+    AudioCapture, AudioPlayback, Resampler, StopHandle, far_end_buffer, far_end_sample_rate,
+};
 #[cfg(target_os = "windows")]
 pub use bootstrap::{download_aec_lib, init_sherpa, run_in_dir as bootstrap_run_in_dir};
+#[cfg(target_os = "windows")]
+pub use chunk_source::{AudioChunkSource, MicSource, WavSource};
 #[cfg(target_os = "windows")]
 pub use loopback::{start_loopback, stop_loopback};
 #[cfg(target_os = "windows")]
@@ -81,6 +101,8 @@ pub use speaker::cosine_similarity;
 pub use speaker::{SpeakerEngine, SpeakerManager};
 #[cfg(target_os = "windows")]
 pub use stt::SttEngine;
+#[cfg(target_os = "windows")]
+pub use stt_stream::StreamSttEngine;
 #[cfg(target_os = "windows")]
 pub use tts::TtsEngine;
 #[cfg(target_os = "windows")]
