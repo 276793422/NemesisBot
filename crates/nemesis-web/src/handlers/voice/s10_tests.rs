@@ -32,6 +32,13 @@ pub(super) fn voice_state_lock() -> &'static std::sync::Mutex<()> {
     LOCK.get_or_init(|| std::sync::Mutex::new(()))
 }
 
+/// 持共享锁（毒化自愈，与 agt_tests 的 agt_lock 同款）：任一测试 panic 持锁
+/// 后，其余测试照常串行取锁，失败只归真正的首发，不再级联 PoisonError
+/// （Windows CI 实证：首发 1 例 → 裸 unwrap 级联 18 例）。
+pub(super) fn voice_state_lock_guard() -> std::sync::MutexGuard<'static, ()> {
+    voice_state_lock().lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
     let state = Arc::new(AppState {
@@ -200,7 +207,7 @@ async fn dispatch_unknown_command_and_missing_workspace() {
 
 #[tokio::test]
 async fn stop_setup_with_and_without_token() {
-    let _guard = voice_state_lock().lock().unwrap();
+    let _guard = voice_state_lock_guard();
     clear_session_states().await;
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
@@ -382,7 +389,7 @@ async fn chat_config_get_creates_default_and_set_roundtrips() {
 
 #[tokio::test]
 async fn engine_status_all_idle_and_dialogue_flag_false() {
-    let _guard = voice_state_lock().lock().unwrap();
+    let _guard = voice_state_lock_guard();
     clear_session_states().await;
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
@@ -453,7 +460,7 @@ async fn devices_tolerant_of_host_audio_stack() {
 
 #[tokio::test]
 async fn stt_start_already_running_then_engine_load_fails_fast() {
-    let _guard = voice_state_lock().lock().unwrap();
+    let _guard = voice_state_lock_guard();
     clear_session_states().await;
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
@@ -478,7 +485,7 @@ async fn stt_start_already_running_then_engine_load_fails_fast() {
 
 #[tokio::test]
 async fn stt_stop_both_arms() {
-    let _guard = voice_state_lock().lock().unwrap();
+    let _guard = voice_state_lock_guard();
     clear_session_states().await;
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
@@ -538,7 +545,7 @@ async fn engine_start_dispatch_all_four_arms() {
 
 #[tokio::test]
 async fn engine_stop_all_four_arms() {
-    let _guard = voice_state_lock().lock().unwrap();
+    let _guard = voice_state_lock_guard();
     clear_session_states().await;
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
@@ -605,7 +612,7 @@ async fn engine_stop_all_four_arms() {
 
 #[tokio::test]
 async fn pipeline_start_unsupported_model_and_engine_not_loaded() {
-    let _guard = voice_state_lock().lock().unwrap();
+    let _guard = voice_state_lock_guard();
     clear_session_states().await;
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
@@ -637,7 +644,7 @@ async fn pipeline_start_unsupported_model_and_engine_not_loaded() {
 
 #[tokio::test]
 async fn pipeline_stop_all_three_arms() {
-    let _guard = voice_state_lock().lock().unwrap();
+    let _guard = voice_state_lock_guard();
     clear_session_states().await;
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
@@ -688,7 +695,7 @@ async fn pipeline_stop_all_three_arms() {
 
 #[tokio::test]
 async fn stt_to_input_start_prechecks_and_stop_arms() {
-    let _guard = voice_state_lock().lock().unwrap();
+    let _guard = voice_state_lock_guard();
     clear_session_states().await;
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
@@ -741,7 +748,7 @@ async fn stt_to_input_start_prechecks_and_stop_arms() {
 
 #[tokio::test]
 async fn stt_dialogue_start_prechecks_and_timeout_extraction() {
-    let _guard = voice_state_lock().lock().unwrap();
+    let _guard = voice_state_lock_guard();
     clear_session_states().await;
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
@@ -782,7 +789,7 @@ async fn stt_dialogue_start_prechecks_and_timeout_extraction() {
 
 #[tokio::test]
 async fn stt_dialogue_stop_flushes_and_clears_state() {
-    let _guard = voice_state_lock().lock().unwrap();
+    let _guard = voice_state_lock_guard();
     clear_session_states().await;
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
@@ -822,7 +829,7 @@ async fn stt_dialogue_stop_flushes_and_clears_state() {
 
 #[tokio::test]
 async fn stt_dialogue_reset_both_arms() {
-    let _guard = voice_state_lock().lock().unwrap();
+    let _guard = voice_state_lock_guard();
     clear_session_states().await;
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
@@ -851,7 +858,7 @@ async fn stt_dialogue_reset_both_arms() {
 
 #[tokio::test]
 async fn tts_playback_stop_both_arms() {
-    let _guard = voice_state_lock().lock().unwrap();
+    let _guard = voice_state_lock_guard();
     clear_session_states().await;
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
@@ -917,7 +924,7 @@ async fn speaker_register_start_requires_engine_and_default_name() {
 
 #[tokio::test]
 async fn speaker_register_stop_error_ladder() {
-    let _guard = voice_state_lock().lock().unwrap();
+    let _guard = voice_state_lock_guard();
     clear_session_states().await;
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
@@ -966,7 +973,7 @@ async fn speaker_register_stop_error_ladder() {
 
 #[tokio::test]
 async fn speaker_register_cancel_with_and_without_session() {
-    let _guard = voice_state_lock().lock().unwrap();
+    let _guard = voice_state_lock_guard();
     clear_session_states().await;
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
@@ -994,7 +1001,7 @@ async fn speaker_register_cancel_with_and_without_session() {
 
 #[tokio::test]
 async fn speaker_test_stop_three_paths() {
-    let _guard = voice_state_lock().lock().unwrap();
+    let _guard = voice_state_lock_guard();
     clear_session_states().await;
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
@@ -1033,7 +1040,7 @@ async fn speaker_test_stop_three_paths() {
 
 #[tokio::test]
 async fn speaker_remove_and_threshold_via_dispatch() {
-    let _guard = voice_state_lock().lock().unwrap();
+    let _guard = voice_state_lock_guard();
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
     let h = VoiceHandler::new();
@@ -1090,7 +1097,7 @@ async fn speaker_remove_and_threshold_via_dispatch() {
 
 #[tokio::test]
 async fn voice_shutdown_cancels_injected_sessions_and_clears_state() {
-    let _guard = voice_state_lock().lock().unwrap();
+    let _guard = voice_state_lock_guard();
     clear_session_states().await;
 
     let out = make_dialogue_output();

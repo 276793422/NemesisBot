@@ -452,7 +452,7 @@ fn cmd_speaker_list_reads_seeded_voiceprint() {
 async fn voice_shutdown_idle_is_safe() {
     // 拿 S10a 引入的 crate 级测试锁：voice_shutdown 会 take() 全部全局会话状态，
     // 与 s10_tests 的注入类测试并发会互相偷状态（env-test-race-lock-pattern）。
-    let _guard = super::s10_tests::voice_state_lock().lock().unwrap();
+    let _guard = super::s10_tests::voice_state_lock_guard();
     // 无任何活跃会话时 shutdown 不 panic、状态保持空。
     voice_shutdown().await;
     assert!(stt_state().lock().await.is_none());

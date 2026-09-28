@@ -3,6 +3,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Atomically write data to a file: unique same-dir temp file → write →
 /// flush → `sync_all` → (unix) rename over target → (unix) parent-dir sync.
@@ -10,7 +11,9 @@ use std::path::Path;
 /// REL-002（2026-09-23）关键配置/状态写入的唯一权威 helper——所有配置修改
 /// 入口都调这里，不在各模块重复自制 tmp+rename。
 ///
-/// - **唯一临时名** `.tmp-{pid}-{nanos}`：并发写同一目标不互踩。
+/// - **唯一临时名** `.tmp-{pid}-{seq}-{nanos}`（seq=进程级单调序数）：
+///   并发写同一目标不互踩——时间戳单打独斗在 Windows 粗时钟粒度下会同 tick
+///   重复，序数补上进程内绝对唯一。
 /// - **`sync_all` 先于 rename**：断电/崩溃后目标要么是完整新内容要么是旧
 ///   文件，绝不出现半截 JSON/TOML。
 /// - **unix 权限在临时文件创建时即挂**（`mode(perm)`）：不存在先宽后收的
@@ -20,7 +23,7 @@ use std::path::Path;
 ///   目标被外部占用（AV 扫描/打开句柄）时 rename 失败属预期，由调用方决定
 ///   重试或上报。
 /// - **不做跨进程锁**：配置写入低频，同配置多进程同写场景当前不存在
-///   （诚实边界；唯一临时名已消除进程内并发互踩）。
+///   （诚实边界；pid+序数临时名已消除进程内并发互踩）。
 pub fn write_file_atomic(path: &str, data: &[u8], perm: u32) -> Result<(), String> {
     #[cfg(not(unix))]
     let _ = perm; // Windows：POSIX 权限不存在，ACL 不处理（诚实边界）
@@ -28,9 +31,15 @@ pub fn write_file_atomic(path: &str, data: &[u8], perm: u32) -> Result<(), Strin
     let parent = p.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent).map_err(|e| format!("atomic write {}: mkdir: {e}", p.display()))?;
 
+    // 进程内唯一性不能只靠时间戳：Windows SystemTime 刷新粒度粗（毫秒级），
+    // 同 tick 内多线程并发出拿相同 nanos → create_new 撞 ERROR_FILE_EXISTS
+    // （Windows CI 实证）。叠加进程级单调序数保证同进程内绝对唯一；跨进程
+    // 唯一性仍由 pid 承担（低频配置写场景，见上方诚实边界）。
+    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
     let tmp_path = parent.join(format!(
-        ".tmp-{}-{}",
+        ".tmp-{}-{}-{}",
         std::process::id(),
+        TMP_SEQ.fetch_add(1, Ordering::Relaxed),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
