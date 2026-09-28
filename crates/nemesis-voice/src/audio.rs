@@ -280,6 +280,29 @@ impl AudioPlayback {
     pub fn stop(&self) {
         self.queue.lock().unwrap().clear();
     }
+
+    /// 跨线程停止句柄（barge-in，realtime P1 G4）：只持播放队列 Arc（Send+Sync）。
+    /// AudioPlayback 本体因 cpal Stream 是 !Send——播放循环线程持有本体，
+    /// STT 管线线程经本句柄打断（stop() 清队列即刻出静音，play_blocking 等待
+    /// 循环见空队列即返回）。
+    pub fn stop_handle(&self) -> StopHandle {
+        StopHandle {
+            queue: self.queue.clone(),
+        }
+    }
+}
+
+/// [`AudioPlayback`] 的 Send+Sync 停止句柄（只触队列，不持 cpal Stream）。
+#[derive(Clone)]
+pub struct StopHandle {
+    queue: Arc<Mutex<VecDeque<f32>>>,
+}
+
+impl StopHandle {
+    /// Clear the sample queue — identical semantics to `AudioPlayback::stop`.
+    pub fn stop(&self) {
+        self.queue.lock().unwrap().clear();
+    }
 }
 
 // =============================================================================

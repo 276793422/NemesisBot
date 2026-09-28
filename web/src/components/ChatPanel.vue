@@ -318,8 +318,22 @@ const ttsReady = ref(false)
 const voiceDictation = ref(false)
 const voiceDialogue = ref(false)
 const voicePlayback = ref(false)
+// 实时语音主开关（realtime P1 G6）：热态经 chat_config_set 即时生效，无 pipeline
+// 态（不随刷新重置）；子开关（流式/接力/打断/口播清洗…）在语音通道页。
+const voiceRealtime = ref(false)
 const toolbarCollapsed = ref(false)
 const silenceTimeout = ref(3.0)
+// 流式 partial 的拼接锚（stt_accumulate 设置，auto_send 清空）。
+let lastAccumulated = ''
+// partial 草稿过期定时器：3s 无后续 partial/accumulate/auto_send 跟进即撤
+// 草稿（说话人被段尾声纹拒判时草稿无人覆盖，不能一直挂在输入框）。
+let partialExpiryTimer: ReturnType<typeof setTimeout> | null = null
+function clearPartialExpiry() {
+  if (partialExpiryTimer) {
+    clearTimeout(partialExpiryTimer)
+    partialExpiryTimer = null
+  }
+}
 
 const chatMessages = ref<HTMLDivElement | null>(null)
 const chatInput = ref<HTMLTextAreaElement | null>(null)
@@ -573,7 +587,9 @@ function handleWSMessage(data: any) {
         }
 
         // TTS playback: if enabled, send AI response to backend for synthesis
-        if (voicePlayback.value && ttsReady.value && data.data.role !== 'user' && data.data.content) {
+        // realtime 接力帧（voice_relayed）已由后端合成播放，前端跳过自身播放
+        //（否则同一句话播两遍）。
+        if (voicePlayback.value && ttsReady.value && data.data.role !== 'user' && data.data.content && !data.data.voice_relayed) {
           request('voice', 'tts_playback', { text: data.data.content }).catch(() => {})
         }
       } else if (data.cmd === 'history_response') {
@@ -607,10 +623,36 @@ function handleWSMessage(data: any) {
     if (data.cmd === 'stt_to_input' && data.data?.text) {
       chatStore.input += data.data.text
     } else if (data.cmd === 'stt_accumulate' && data.data?.text) {
+      // realtime 流式草稿的拼接锚：partial 只覆盖当前段，累积缓冲在此。
+      lastAccumulated = data.data.text
       chatStore.input = data.data.text
+      clearPartialExpiry()
+    } else if (data.cmd === 'stt_partial' && data.data?.text) {
+      // 流式 partial 草稿（realtime stream_stt）：灰字预览语义——拼在累积
+      // 缓冲后上屏；段尾 final 的 accumulate 帧会覆盖回来。partial 先于段
+      // 尾声纹校验上屏，被拒说话人的草稿无人覆盖——3s 无后续跟进即过期
+      // 撤掉（恢复到累积锚，owner 已确认的文本不动）。
+      chatStore.input = lastAccumulated
+        ? `${lastAccumulated} ${data.data.text}`
+        : data.data.text
+      clearPartialExpiry()
+      partialExpiryTimer = setTimeout(() => {
+        partialExpiryTimer = null
+        if (chatStore.input !== lastAccumulated) chatStore.input = lastAccumulated
+      }, 3000)
     } else if (data.cmd === 'stt_auto_send' && data.data?.text) {
+      clearPartialExpiry()
+      lastAccumulated = ''
       chatStore.input = data.data.text
       sendMessage()
+    } else if (data.cmd === 'barge_in_triggered') {
+      // 打断标注（P1 决策：前端 badge，不伪造 assistant chat_log 条目）——
+      // 本地系统注记，不进历史、不进轮次上下文。
+      chatStore.addMessage({
+        role: 'error',
+        content: '⛔ 已打断',
+        timestamp: new Date().toISOString(),
+      })
     } else if (data.cmd === 'engine_fault') {
       if (data.data?.engine === 'stt') {
         sttReady.value = false
@@ -1781,7 +1823,12 @@ async function toggleDialogue() {
       voiceDictation.value = false
     }
     try {
-      await request('voice', 'stt_dialogue_start', { silence_timeout: silenceTimeout.value })
+      await request('voice', 'stt_dialogue_start', {
+        silence_timeout: silenceTimeout.value,
+        // realtime 接力寻址（G6）：后端据此注册 session_key → TTS 接力/打断
+        // 只作用于本会话。
+        session_id: effectiveSid.value,
+      })
       voiceDialogue.value = true
     } catch {}
   }
@@ -1806,13 +1853,45 @@ function toggleToolbar() {
 
 async function saveVoiceConfig() {
   try {
-    await request('voice', 'chat_config_set', {
+    // read-merge-write：chat_config_set 是整文件替换语义——只写 4 个键会把
+    // realtime 块（实时语音开关/语音通道页子开关）静默抹掉。先读后并再写。
+    // 读不到全文就中止：以空 base 写回会把其余键全部丢掉（get 失败时 set
+    // 仍可能成功——如读超时后连接恢复）。
+    const cur = await request('voice', 'chat_config_get').catch(() => null)
+    if (!cur) return
+    const merged = {
+      ...((cur as Record<string, unknown>) ?? {}),
       toolbar_collapsed: toolbarCollapsed.value,
       dictation_enabled: voiceDictation.value,
       dialogue_enabled: voiceDialogue.value,
       playback_enabled: voicePlayback.value,
-    })
+    }
+    await request('voice', 'chat_config_set', merged)
   } catch {}
+}
+
+async function toggleRealtime() {
+  voiceRealtime.value = !voiceRealtime.value
+  try {
+    // read-merge-write realtime 块：后端写盘成功即 apply 热态（出站广播/
+    // 管线下一拍生效，无需重启）。读不到全文就中止（空 base 写回丢键）；
+    // 任何失败回滚本地态。
+    const cur = await request('voice', 'chat_config_get').catch(() => null)
+    if (!cur) {
+      voiceRealtime.value = !voiceRealtime.value
+      return
+    }
+    const base = (cur as Record<string, unknown>) as Record<string, unknown>
+    await request('voice', 'chat_config_set', {
+      ...base,
+      realtime: {
+        ...((base.realtime as Record<string, unknown>) ?? {}),
+        enabled: voiceRealtime.value,
+      },
+    })
+  } catch {
+    voiceRealtime.value = !voiceRealtime.value
+  }
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -1997,6 +2076,9 @@ async function initVoiceState() {
       voiceDictation.value = false
       voiceDialogue.value = false
       voicePlayback.value = false
+      // 实时语音是纯配置态（无 pipeline），恢复显示；后端热态在 gateway
+      // 启动时从同一文件装载，两边同源。
+      voiceRealtime.value = (config.realtime as { enabled?: boolean } | undefined)?.enabled ?? false
     }
     if (engines) {
       sttReady.value = engines.stt_ready ?? false
@@ -2208,6 +2290,7 @@ onUnmounted(() => {
   }
   // BUG 2026-09-21 ③：卸载清自动重试定时器（残留会在下个实例外开火）。
   clearHistoryRetryTimer()
+  clearPartialExpiry()
   if (activityDebounce !== null) {
     clearTimeout(activityDebounce)
     activityDebounce = null
@@ -2524,6 +2607,18 @@ onUnmounted(() => {
           <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
         </svg>
         语音播放
+      </button>
+      <button
+        v-if="isDefaultChat"
+        class="voice-btn"
+        :class="{ active: voiceRealtime }"
+        title="实时语音：语音对话中后端接力播放回复（TTS）、说话即打断（需 AEC）。流式识别/口播清洗等子开关见语音通道页「实时语音」小节，热生效无需重启"
+        @click="toggleRealtime"
+      >
+        <svg class="voice-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>
+        </svg>
+        实时语音
       </button>
     </div>
 

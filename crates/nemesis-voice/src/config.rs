@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Deserialize, Clone)]
 pub struct AppConfig {
     pub stt: SttConfig,
+    #[serde(default)]
+    pub stt_stream: SttStreamConfig,
     pub vad: VadConfig,
     pub tts: TtsConfig,
     #[serde(default)]
@@ -44,6 +46,48 @@ pub struct SttConfig {
     pub lang_remedy: bool,
     pub use_itn: bool,
     pub num_threads: u32,
+}
+
+/// 流式 STT（realtime P1 W1）：模型名 + sherpa 内建端点参数。
+/// 模型文件名约定固定（encoder.onnx/decoder.onnx/joiner.onnx/tokens.txt，由
+/// config.toml sources 条目的 local 字段落地同名），不进本配置。
+/// `#[serde(default)]` 于 AppConfig：旧 config.toml 缺本段 = 默认值，零迁移。
+#[derive(Debug, Deserialize, Clone)]
+pub struct SttStreamConfig {
+    #[serde(default = "default_stt_stream_model")]
+    pub model_name: String,
+    /// sherpa 端点 rule1：话中停顿尾静音窗（秒），超过即判端点（支持句中停顿）
+    #[serde(default = "default_stt_stream_rule1")]
+    pub rule1_min_trailing_silence: f32,
+    /// sherpa 端点 rule2：话后尾静音窗（秒）
+    #[serde(default = "default_stt_stream_rule2")]
+    pub rule2_min_trailing_silence: f32,
+    #[serde(default = "default_stt_stream_threads")]
+    pub num_threads: u32,
+}
+
+fn default_stt_stream_model() -> String {
+    "streaming-zipformer-bilingual-zh-en".into()
+}
+fn default_stt_stream_rule1() -> f32 {
+    2.4
+}
+fn default_stt_stream_rule2() -> f32 {
+    1.2
+}
+fn default_stt_stream_threads() -> u32 {
+    1
+}
+
+impl Default for SttStreamConfig {
+    fn default() -> Self {
+        Self {
+            model_name: default_stt_stream_model(),
+            rule1_min_trailing_silence: default_stt_stream_rule1(),
+            rule2_min_trailing_silence: default_stt_stream_rule2(),
+            num_threads: default_stt_stream_threads(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -208,6 +252,7 @@ impl Default for AppConfig {
                 use_itn: false,
                 num_threads: 1,
             },
+            stt_stream: SttStreamConfig::default(),
             vad: VadConfig {
                 model_name: "silero_vad".into(),
                 threshold: 0.5,

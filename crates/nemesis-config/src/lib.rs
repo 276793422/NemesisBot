@@ -608,15 +608,15 @@ pub struct ExecutorSeparationConfig {
     /// P24（2026-09-25 能力扩展 WS1）：沙盒后端选择（`executor.backend`，
     /// 缺省 `"auto"`）。值域：`auto`（默认——Windows 上 Sandboxie 就绪则
     /// sandboxie，否则退 Windows 用户态 ACL 轻量档）/ `sandboxie`（显式钉
-    /// Sandboxie）/ `acl`（显式钉 ACL 档）。未知值诚实拒绝（选型返回 None
-    /// + warn，不静默改道）。非 Windows 平台无消费方（landlock/bwrap/
-    ///   Seatbelt 选型不读此键）。
+    /// Sandboxie）/ `acl`（显式钉 ACL 档）。未知值诚实拒绝（选型返回
+    /// None + warn，不静默改道）。非 Windows 平台无消费方（landlock/bwrap/
+    /// Seatbelt 选型不读此键）。
     ///
-    /// ⚠ 实验性标注：acl 档是**半档隔离**（强制完整性标签 No-Write-Up 围栏
-    /// + DACL 原语），禁不了网、写围栏依赖令牌降级——详见
-    ///   `crates/nemesis-sandbox/src/backend.rs` 的 P24 模块文档与诚实边界。
-    ///   兼容性：`#[serde(default)]`——老 config.json 缺键 = `"auto"`，行为与
-    ///   升级前完全一致（typed save 会把缺省值显式写回，语义不变）。
+    /// ⚠ 实验性标注：acl 档是**半档隔离**（强制完整性标签 No-Write-Up
+    /// 围栏 + DACL 原语），禁不了网、写围栏依赖令牌降级——详见
+    /// `crates/nemesis-sandbox/src/backend.rs` 的 P24 模块文档与诚实边界。
+    /// 兼容性：`#[serde(default)]`——老 config.json 缺键 = `"auto"`，行为与
+    /// 升级前完全一致（typed save 会把缺省值显式写回，语义不变）。
     #[serde(default = "default_executor_backend")]
     pub backend: String,
     /// D4（2026-09-27）：DACL 定向档开关组（`executor.acl` 段，缺省全关

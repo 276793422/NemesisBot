@@ -669,6 +669,10 @@ pub fn build_agent_loop(
     // 绑定全局急停状态（每次重建都重新绑到 SharedResources 上的同一个 Arc，
     // 所以急停状态在 agent stop/start 后自动保持）。
     agent_loop.set_estop(shared.estop.clone());
+    // 语音 realtime（G6）：热态装载（幂等，重建即从 config.chat.json 重刷）
+    // + voice_prompt 旗注入（Arc<AtomicBool> 镜像，apply_realtime_config 同步刷）。
+    nemesis_web::voice_relay::init_realtime_hot(&shared.workspace_dir().join("config"));
+    agent_loop.set_voice_prompt(nemesis_web::voice_relay::voice_prompt_flag());
     // 件4（2026-09-24 三合一收口 §6）：纪律闭环——D5 总开关（默认 false =
     // 全链路惰性：钩子不注册、/discipline 提示未启用）。开 = 注入共享态 +
     // 注册闸/证伪钩子；闸在 user pre hooks **首位**（先于方言桥；metrics/
@@ -2273,6 +2277,11 @@ pub fn build_project_agent_loop(
     agent_loop.set_snapshot_role(&cfg.agents.defaults.snapshot_role);
     // 急停：绑同一个 Arc——estop 触发连项目 loop 一起冻结（G2 手验项）。
     agent_loop.set_estop(shared.estop.clone());
+    // 语音 realtime（G6）：项目会话同样可发起语音对话（接力注册经
+    // resolve_session_loop 路由到项目 loop）；热态装载幂等，voice_prompt
+    // 旗与主 loop 共享同一 Arc 镜像。
+    nemesis_web::voice_relay::init_realtime_hot(&shared.workspace_dir().join("config"));
+    agent_loop.set_voice_prompt(nemesis_web::voice_relay::voice_prompt_flag());
     // 件4（2026-09-24 三合一收口 §6）：纪律闭环——项目 loop 同款（workspace
     // 锚项目目录：声明/证伪产物随项目变更集，评审可见）。
     if cfg.agents.discipline.enabled {

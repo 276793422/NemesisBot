@@ -207,6 +207,7 @@ impl WorkspaceLease {
         }
         std::fs::OpenOptions::new()
             .create(true)
+            // 锁载体：打开或创建、永不截断（truncate 会抹掉其他持有者的 sidecar 痕迹）。
             .truncate(false)
             .read(true)
             .write(true)

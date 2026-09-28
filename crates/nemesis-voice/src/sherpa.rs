@@ -264,6 +264,103 @@ pub struct SherpaOnnxOfflineRecognizerResult {
 }
 
 // =============================================================================
+// Online (streaming) Recognizer structs (STT) — v1.13.2 exact match
+// 语音 realtime P1（2026-09-28）：流式识别边说边出 partial。结构体布局对照
+// sherpa-onnx v1.13.2 c-api.h 逐字段核对（与 Offline 同版本纪律）。
+// =============================================================================
+
+#[repr(C)]
+pub struct SherpaOnnxOnlineTransducerModelConfig {
+    pub encoder: *const libc::c_char,
+    pub decoder: *const libc::c_char,
+    pub joiner: *const libc::c_char,
+}
+
+#[repr(C)]
+pub struct SherpaOnnxOnlineParaformerModelConfig {
+    pub encoder: *const libc::c_char,
+    pub decoder: *const libc::c_char,
+}
+
+#[repr(C)]
+pub struct SherpaOnnxOnlineZipformer2CtcModelConfig {
+    pub model: *const libc::c_char,
+}
+
+#[repr(C)]
+pub struct SherpaOnnxOnlineNemoCtcModelConfig {
+    pub model: *const libc::c_char,
+}
+
+#[repr(C)]
+pub struct SherpaOnnxOnlineToneCtcModelConfig {
+    pub model: *const libc::c_char,
+}
+
+// v1.13.2: OnlineModelConfig — full field list
+#[repr(C)]
+pub struct SherpaOnnxOnlineModelConfig {
+    pub transducer: SherpaOnnxOnlineTransducerModelConfig,
+    pub paraformer: SherpaOnnxOnlineParaformerModelConfig,
+    pub zipformer2_ctc: SherpaOnnxOnlineZipformer2CtcModelConfig,
+    pub tokens: *const libc::c_char,
+    pub num_threads: libc::c_int,
+    pub provider: *const libc::c_char,
+    pub debug: libc::c_int,
+    pub model_type: *const libc::c_char,
+    pub modeling_unit: *const libc::c_char,
+    pub bpe_vocab: *const libc::c_char,
+    pub tokens_buf: *const libc::c_char,
+    pub tokens_buf_size: libc::c_int,
+    pub nemo_ctc: SherpaOnnxOnlineNemoCtcModelConfig,
+    pub t_one_ctc: SherpaOnnxOnlineToneCtcModelConfig,
+}
+
+#[repr(C)]
+pub struct SherpaOnnxOnlineCtcFstDecoderConfig {
+    pub graph: *const libc::c_char,
+    pub max_active: libc::c_int,
+}
+
+// v1.13.2: OnlineRecognizerConfig — full field list
+#[repr(C)]
+pub struct SherpaOnnxOnlineRecognizerConfig {
+    pub feat_config: SherpaOnnxFeatureConfig,
+    pub model_config: SherpaOnnxOnlineModelConfig,
+    pub decoding_method: *const libc::c_char,
+    pub max_active_paths: libc::c_int,
+    pub enable_endpoint: libc::c_int,
+    pub rule1_min_trailing_silence: f32,
+    pub rule2_min_trailing_silence: f32,
+    pub rule3_min_utterance_length: f32,
+    pub hotwords_file: *const libc::c_char,
+    pub hotwords_score: f32,
+    pub ctc_fst_decoder_config: SherpaOnnxOnlineCtcFstDecoderConfig,
+    pub rule_fsts: *const libc::c_char,
+    pub rule_fars: *const libc::c_char,
+    pub blank_penalty: f32,
+    pub hotwords_buf: *const libc::c_char,
+    pub hotwords_buf_size: libc::c_int,
+    pub hr: SherpaOnnxHomophoneReplacerConfig,
+}
+
+// v1.13.2: OnlineRecognizerResult — full field list
+#[repr(C)]
+pub struct SherpaOnnxOnlineRecognizerResult {
+    pub text: *const libc::c_char,
+    pub tokens: *const libc::c_char,
+    pub tokens_arr: *const *const libc::c_char,
+    pub timestamps: *mut f32,
+    pub count: libc::c_int,
+    pub json: *const libc::c_char,
+}
+
+#[repr(C)]
+pub struct SherpaOnnxOnlineRecognizer {
+    _private: [u8; 0],
+}
+
+// =============================================================================
 // VAD structs — v1.13.2
 // =============================================================================
 
@@ -500,14 +597,35 @@ static SHERPA_LIB: OnceLock<Library> = OnceLock::new();
 /// directory, not from the system PATH.  Without this flag Windows would
 /// load whatever onnxruntime.dll it finds first (e.g. from Python, Edge,
 /// Office …), which is often too old for the Kokoro TTS model.
+///
+/// ⚠ 该 flag 只保护 `sherpa-onnx-c-api.dll` 自身这一次 LoadLibraryEx——它
+/// **内部**再 `LoadLibrary("onnxruntime.dll")` 时走默认搜索序（应用目录 →
+/// System32 → …），DLL_LOAD_DIR 不参与。实测（2026-09-28，Win11）：System32
+/// 内置 onnxruntime 1.17.1（WebView2/Edge 组件）抢先命中，sherpa-onnx
+/// v1.13.2 请求 ORT API 24 被旧 ORT 拒绝，sherpa 不检查空指针 → 进程
+/// ACCESS_VIOLATION（离线 STT 同崩）。故加载前先 `SetDllDirectory(dll 目录)`
+/// 把自带运行库目录插进进程搜索序（应用目录 → SetDllDirectory 目录 →
+/// System32），加载完恢复默认——DLL 已驻进程，后续同名解析命中已加载
+/// 模块，恢复无副作用。
 pub fn init(dll_path: &Path) -> anyhow::Result<()> {
     #[cfg(target_os = "windows")]
     {
         // 0x100 = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
         // 0x1000 = LOAD_LIBRARY_SEARCH_DEFAULT_DIRS
         const FLAGS: u32 = 0x100 | 0x1000;
-        let lib = unsafe { win_lib::Library::load_with_flags(dll_path, FLAGS) }
-            .map_err(|e| anyhow::anyhow!("Failed to load {}: {}", dll_path.display(), e))?;
+
+        // 反劫持窗口：SetDllDirectory(dll 目录) → 加载 → SetDllDirectory(null)。
+        // 窗口内其他线程的 DLL 解析也会带上本目录；目录内容仅 3 个语音运行库，
+        // 无同名冲突面，可接受（MSDN 对依赖目录注入的标准做法）。
+        unsafe {
+            set_dll_directory(dll_path.parent());
+        }
+        let result = unsafe { win_lib::Library::load_with_flags(dll_path, FLAGS) };
+        unsafe {
+            set_dll_directory(None);
+        }
+        let lib =
+            result.map_err(|e| anyhow::anyhow!("Failed to load {}: {}", dll_path.display(), e))?;
         SHERPA_LIB
             .set(lib.into())
             .map_err(|_| anyhow::anyhow!("sherpa-onnx already initialized"))?;
@@ -526,6 +644,32 @@ pub fn init(dll_path: &Path) -> anyhow::Result<()> {
 /// Check if sherpa-onnx has been initialized.
 pub fn is_initialized() -> bool {
     SHERPA_LIB.get().is_some()
+}
+
+/// `SetDllDirectoryW` 薄封装（见 [`init`] 反劫持注释）：`Some(dir)` 注入目录、
+/// `None` 恢复默认搜索序。
+#[cfg(target_os = "windows")]
+unsafe fn set_dll_directory(path: Option<&Path>) {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn SetDllDirectoryW(lp_path_name: *const u16);
+    }
+    let wide: Vec<u16> = match path {
+        Some(p) => {
+            use std::os::windows::ffi::OsStrExt;
+            p.as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect()
+        }
+        None => Vec::new(),
+    };
+    let ptr = if wide.is_empty() {
+        std::ptr::null()
+    } else {
+        wide.as_ptr()
+    };
+    unsafe { SetDllDirectoryW(ptr) };
 }
 
 /// Get a function pointer from the loaded library.
@@ -611,6 +755,20 @@ sherpa_fn!(SherpaOnnxAcceptWaveformOffline(stream: *const SherpaOnnxOfflineStrea
 sherpa_fn!(SherpaOnnxDecodeOfflineStream(recognizer: *const SherpaOnnxOfflineRecognizer, stream: *const SherpaOnnxOfflineStream));
 sherpa_fn!(SherpaOnnxGetOfflineStreamResult(stream: *const SherpaOnnxOfflineStream) -> *const SherpaOnnxOfflineRecognizerResult);
 sherpa_fn!(SherpaOnnxDestroyOfflineRecognizerResult(result: *const SherpaOnnxOfflineRecognizerResult));
+
+// ---- Online (streaming) Recognizer (STT) ----
+// AcceptWaveform / DestroyOnlineStream / InputFinished 与声纹段共用同名 C 符号
+// （同签名，已在下方 Speaker Embedding 段绑定），此处不重复绑定。
+
+sherpa_fn!(SherpaOnnxCreateOnlineRecognizer(config: *const SherpaOnnxOnlineRecognizerConfig) -> *const SherpaOnnxOnlineRecognizer);
+sherpa_fn!(SherpaOnnxDestroyOnlineRecognizer(recognizer: *const SherpaOnnxOnlineRecognizer));
+sherpa_fn!(SherpaOnnxCreateOnlineStream(recognizer: *const SherpaOnnxOnlineRecognizer) -> *const SherpaOnnxOnlineStream);
+sherpa_fn!(SherpaOnnxIsOnlineStreamReady(recognizer: *const SherpaOnnxOnlineRecognizer, stream: *const SherpaOnnxOnlineStream) -> libc::c_int);
+sherpa_fn!(SherpaOnnxDecodeOnlineStream(recognizer: *const SherpaOnnxOnlineRecognizer, stream: *const SherpaOnnxOnlineStream));
+sherpa_fn!(SherpaOnnxGetOnlineStreamResult(recognizer: *const SherpaOnnxOnlineRecognizer, stream: *const SherpaOnnxOnlineStream) -> *const SherpaOnnxOnlineRecognizerResult);
+sherpa_fn!(SherpaOnnxDestroyOnlineRecognizerResult(result: *const SherpaOnnxOnlineRecognizerResult));
+sherpa_fn!(SherpaOnnxOnlineStreamIsEndpoint(recognizer: *const SherpaOnnxOnlineRecognizer, stream: *const SherpaOnnxOnlineStream) -> libc::c_int);
+sherpa_fn!(SherpaOnnxOnlineStreamReset(recognizer: *const SherpaOnnxOnlineRecognizer, stream: *const SherpaOnnxOnlineStream));
 
 // ---- VAD ----
 

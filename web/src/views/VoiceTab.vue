@@ -26,6 +26,18 @@ const sttEnabled = ref(false)
 const ttsEnabled = ref(false)
 const punctEnabled = ref(false)
 const aecEnabled = ref(false)
+
+// 实时语音（realtime P1 G6）：config.chat.json 的 realtime 段，热生效。
+// enabled 是主开关（ChatPanel 工具条同款）；子开关只在总开下有意义。
+const rtEnabled = ref(false)
+const rtStreamStt = ref(false)
+const rtTwoPass = ref(true)
+const rtTtsRelay = ref(false)
+const rtBargeIn = ref(false)
+const rtSpokenForm = ref(false)
+const rtVoicePrompt = ref(false)
+// 流式 STT 模型在位（engine_status 探测；只探测不下载）
+const sttStreamReady = ref(false)
 // AEC 进阶参数：房间预设映射到 filter_length（16kHz 下的采样数）。改后重启 STT 生效。
 const aecAdvancedOpen = ref(false)
 const aecFilterLength = ref(8192) // 与后端 DEFAULT_FILTER_LENGTH 对齐
@@ -189,6 +201,10 @@ async function installModel(model: string, label: string) {
     toast.success(`${label}模型安装完成`)
     setupProgress.value = ''
     await loadStatus()
+    if (model === 'stt_stream') {
+      const engines = await request('voice', 'engine_status').catch(() => null)
+      sttStreamReady.value = !!engines?.stt_stream_model
+    }
   } catch (e: any) {
     toast.error(`${label}模型安装失败: ` + e)
     setupProgress.value = ''
@@ -363,6 +379,71 @@ function saveVoiceConfigDebounced() {
   }, 500)
 }
 
+// --- Realtime（实时语音）config persistence（config.chat.json realtime 段）---
+
+async function loadRealtimeConfig() {
+  // load 赋值会触发 realtime watch → 防抖保存把刚读到的值原样写回（幂等
+  // 但多余，且有旧值覆盖竞态）——照 _skipEngineWatch 先例跳过。
+  _skipRealtimeWatch.value = true
+  try {
+    // 模型在位探测（engine_status 顺带返回 stt_stream_model）
+    const engines = await request('voice', 'engine_status').catch(() => null)
+    sttStreamReady.value = !!engines?.stt_stream_model
+    const data = await request('voice', 'chat_config_get')
+    const rt = (data as any)?.realtime
+    if (rt) {
+      rtEnabled.value = rt.enabled ?? false
+      rtStreamStt.value = rt.stream_stt ?? false
+      rtTwoPass.value = rt.two_pass ?? true
+      rtTtsRelay.value = rt.tts_relay ?? false
+      rtBargeIn.value = rt.barge_in ?? false
+      rtSpokenForm.value = rt.spoken_form ?? false
+      rtVoicePrompt.value = rt.voice_prompt ?? false
+    }
+  } catch (_e) {
+    // Use defaults
+  } finally {
+    _skipRealtimeWatch.value = false
+  }
+}
+
+let _rtTimer: ReturnType<typeof setTimeout> | null = null
+
+function saveRealtimeDebounced() {
+  if (_rtTimer) clearTimeout(_rtTimer)
+  _rtTimer = setTimeout(async () => {
+    try {
+      // read-merge-write：chat_config_set 整文件替换，只写 realtime 会把
+      // ChatPanel 管理的 4 键抹掉。读不到全文就中止——以空 base 写回会把
+      // 其余键全部丢掉。
+      const cur = await request('voice', 'chat_config_get').catch(() => null)
+      if (!cur) return
+      await request('voice', 'chat_config_set', {
+        ...(cur as Record<string, unknown>),
+        realtime: {
+          enabled: rtEnabled.value,
+          stream_stt: rtStreamStt.value,
+          two_pass: rtTwoPass.value,
+          tts_relay: rtTtsRelay.value,
+          barge_in: rtBargeIn.value,
+          spoken_form: rtSpokenForm.value,
+          voice_prompt: rtVoicePrompt.value,
+        },
+      })
+    } catch (_e) {
+      // Silent fail
+    }
+  }, 400)
+}
+
+// loadRealtimeConfig 批量赋值期间跳过 realtime watch（照 _skipEngineWatch 先例）
+const _skipRealtimeWatch = ref(false)
+
+watch([rtEnabled, rtStreamStt, rtTwoPass, rtTtsRelay, rtBargeIn, rtSpokenForm, rtVoicePrompt], () => {
+  if (_skipRealtimeWatch.value) return
+  saveRealtimeDebounced()
+})
+
 // Engine state initialization flag — prevent engine commands during initial load
 const _engineInitialized = ref(false)
 const _skipEngineWatch = ref(false)
@@ -523,6 +604,7 @@ onMounted(async () => {
   await loadAll()
   await loadVoiceConfig()
   await loadSpeakerStatus()
+  await loadRealtimeConfig()
   _engineInitialized.value = true
 })
 
@@ -530,6 +612,7 @@ onUnmounted(() => {
   if (_onSetupProgress) sseOff('voice-setup', _onSetupProgress)
   if (_wsHandler) removeMessageHandler(_wsHandler)
   if (_saveTimer) clearTimeout(_saveTimer)
+  if (_rtTimer) clearTimeout(_rtTimer)
 })
 </script>
 
@@ -588,6 +671,14 @@ onUnmounted(() => {
                 <span>STT 模型</span>
               </span>
               <button class="btn btn-sm" @click="installModel('stt', 'STT')" :disabled="!!setupProgress || models.stt?.ready">安装</button>
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center;" title="实时语音的流式识别小模型（可选；未安装则实时模式下退化为整段离线识别）">
+              <span style="display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm);">
+                <span :style="{ color: sttStreamReady ? 'var(--success)' : 'var(--text-secondary)' }">{{ sttStreamReady ? '●' : '○' }}</span>
+                <span>流式 STT 模型</span>
+                <span style="color: var(--text-secondary); font-size: 11px;">（实时语音可选）</span>
+              </span>
+              <button class="btn btn-sm" @click="installModel('stt_stream', '流式STT')" :disabled="!!setupProgress || sttStreamReady">安装</button>
             </div>
             <div style="display: flex; justify-content: space-between; align-items: center;">
               <span style="display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm);">
@@ -766,6 +857,81 @@ onUnmounted(() => {
     </div>
 
     </div><!-- End Row 1 -->
+
+    <!-- Section 2.5: Realtime（实时语音；config.chat.json realtime 段，全部热生效） -->
+    <div class="card">
+      <div class="card-header"><h3 style="margin: 0;">实时语音</h3></div>
+      <div class="card-body">
+        <div style="font-size: var(--text-sm); color: var(--text-secondary); margin-bottom: var(--space-3); line-height: 1.6;">
+          流式语音对话：边说边识别、回复语音接力播报、说话即打断。与聊天页工具栏的「实时语音」开关是同一总开关；以下子开关均可独立调节，<strong>保存即热生效，无需重启</strong>。
+        </div>
+        <div class="settings-grid">
+          <!-- 总开关 -->
+          <span class="settings-key">实时语音总开关</span>
+          <label class="toggle-switch">
+            <input type="checkbox" v-model="rtEnabled" />
+            <span class="toggle-slider"></span>
+            <span class="toggle-label">{{ rtEnabled ? '启用' : '停用' }}</span>
+          </label>
+
+          <!-- 流式识别 -->
+          <span class="settings-key" title="边说边出字（部分结果实时上屏）；未安装流式 STT 模型时自动退化为整段识别，不影响使用">流式识别</span>
+          <label class="toggle-switch">
+            <input type="checkbox" v-model="rtStreamStt" :disabled="!rtEnabled || !sttStreamReady" />
+            <span class="toggle-slider"></span>
+            <span class="toggle-label">{{ !sttStreamReady ? '需装流式模型' : (rtStreamStt ? '启用' : '停用') }}</span>
+          </label>
+
+          <!-- 两遍识别 -->
+          <span class="settings-key" title="说话过程用流式模型快速出字，句尾再用高精度模型整段精识一次，准确率更高（推荐开启）">两遍识别（推荐）</span>
+          <label class="toggle-switch">
+            <input type="checkbox" v-model="rtTwoPass" :disabled="!rtEnabled" />
+            <span class="toggle-slider"></span>
+            <span class="toggle-label">{{ rtTwoPass ? '启用' : '停用' }}</span>
+          </label>
+
+          <!-- TTS 接力 -->
+          <span class="settings-key" title="AI 文字回复自动转语音播报，无需手动点击播放">回复语音接力</span>
+          <label class="toggle-switch">
+            <input type="checkbox" v-model="rtTtsRelay" :disabled="!rtEnabled" />
+            <span class="toggle-slider"></span>
+            <span class="toggle-label">{{ rtTtsRelay ? '启用' : '停用' }}</span>
+          </label>
+
+          <!-- 打断 -->
+          <span class="settings-key" :title="aecEnabled ? 'AI 播报时你开口说话即暂停播报、停止生成（需要回声消除避免误触发）' : '需要先在「语音配置」中启用回声消除（AEC），否则播报声会被误识别为自己的说话'">
+            语音打断
+          </span>
+          <div style="display: flex; align-items: center; gap: var(--space-3);">
+            <label class="toggle-switch">
+              <input type="checkbox" v-model="rtBargeIn" :disabled="!rtEnabled || !aecEnabled" />
+              <span class="toggle-slider"></span>
+              <span class="toggle-label">{{ !aecEnabled ? '需回声消除' : (rtBargeIn ? '启用' : '停用') }}</span>
+            </label>
+            <span v-if="rtBargeIn && !aecEnabled" style="font-size: 11px; color: var(--warning, #f59e0b);">未启用回声消除，打断不会生效</span>
+          </div>
+
+          <!-- 语音化 -->
+          <span class="settings-key" title="播报前把文字改写为更适合口播的形式（如「→」读作「到」、URL 读作链接）；关闭则按原文播报">播报口语化</span>
+          <label class="toggle-switch">
+            <input type="checkbox" v-model="rtSpokenForm" :disabled="!rtEnabled" />
+            <span class="toggle-slider"></span>
+            <span class="toggle-label">{{ rtSpokenForm ? '启用' : '停用' }}</span>
+          </label>
+
+          <!-- 语音提示词 -->
+          <span class="settings-key" title="语音模式下让 AI 用更短、更口语化的方式回复（关闭则按普通文字风格回复）">回复口语化</span>
+          <label class="toggle-switch">
+            <input type="checkbox" v-model="rtVoicePrompt" :disabled="!rtEnabled" />
+            <span class="toggle-slider"></span>
+            <span class="toggle-label">{{ rtVoicePrompt ? '启用' : '停用' }}</span>
+          </label>
+        </div>
+        <div v-if="!rtEnabled" style="font-size: var(--text-sm); color: var(--text-secondary); margin-top: var(--space-2);">
+          总开关关闭时，语音对话与现状完全一致（逐段识别、手动播放），任何子开关都不参与。
+        </div>
+      </div>
+    </div>
 
     <!-- Row 2: Speaker + Voice Test -->
     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4);">

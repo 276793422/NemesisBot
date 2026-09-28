@@ -38,6 +38,8 @@ pub mod share;
 #[cfg(feature = "skins")]
 pub mod skins;
 pub mod sse_chat;
+// 语音 realtime 热态 + TTS 接力注册（无条件编译；真实现挂 voice feature）。
+pub mod voice_relay;
 pub mod websocket_handler;
 #[cfg(feature = "workflow")]
 pub mod workflow_chat;
