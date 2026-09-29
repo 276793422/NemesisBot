@@ -1,0 +1,20 @@
+# nextest 配置（2026-09-29 CI 提速 P3 配套）。
+#
+# 背景：CI Windows 全量测试换用 cargo nextest（每 test 独立进程、天然
+# no-fail-fast）。真 gateway live 批（nemesisbot bin 的 tests_r9_live /
+# tests_scenario）依赖固定端口（AI 8080 / Web 49000 / 健康 18790），其
+# live_gate() 互斥闸是进程内锁——nextest 每 test 一进程，进程内锁不再
+# 串行化这两个批，并发跑会撞固定端口。用 test-group 钉死单并发。
+#
+# 其余测试不受影响：独立进程反而消除了进程内全局态互踩面
+# （如 nemesis-web 的 PathManager 单例家族，本就要求 per-test 隔离）。
+
+[test-groups.live-gateway]
+max-threads = 1
+
+[[profile.default.overrides]]
+# 模块真名：commands::gateway::{r9_live_tests,scenario_tests}（nemesisbot/src/
+# commands/gateway.rs:122/129，Windows-only cfg(test)）。用子串谓词（0.9.146
+# 实证 test(<string>) 为子串匹配；正则 =~// 形式该版本不认，勿回退）。
+filter = 'package(nemesisbot) and (test(r9_live_tests) or test(scenario_tests))'
+test-group = 'live-gateway'
