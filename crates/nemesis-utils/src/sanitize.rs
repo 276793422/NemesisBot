@@ -12,10 +12,12 @@
 /// Whitelist: ASCII alphanumerics, `-`, `_`, and `.` only when it directly
 /// follows an alphanumeric (so `..`, `a..`, `.x` collapse to `_`).
 /// Everything else — `/`, `\`, `:`, spaces, control chars — becomes `_`.
-/// A result that sanitizes to empty (or a bare dot-form) becomes `_`; the
+/// A result that sanitizes to empty (or a bare dot-form) becomes `_`. The
 /// result is capped at 80 chars so a hostile long id cannot blow path
-/// limits. Trailing `.` is trimmed (Windows strips trailing dots in
-/// filenames), whether it survived the guard or the cap.
+/// limits — over-limit ids keep a deterministic hash suffix instead of a
+/// bare truncation, which would collide (see fn doc). Trailing `.` is
+/// trimmed (Windows strips trailing dots in filenames), whether it survived
+/// the guard or the cap.
 ///
 /// Compatibility: for the chat_log id families actually produced at runtime
 /// (`agent:main:session:*`, `chan:chat`, `task_*`, `bg_*`, node ids,
@@ -40,11 +42,32 @@ pub fn sanitize_path_segment(raw: &str) -> String {
     if out.is_empty() || out == "." || out == ".." {
         out.push('_');
     }
-    // Cap length: a hostile very-long id should not blow path limits.
-    // Trailing dots are trimmed in the same pass (Windows strips trailing
-    // dots in filenames; a bare "a." would be mangled on re-read).
-    let capped: String = out.chars().take(80).collect();
-    capped.trim_end_matches('.').to_string()
+    // Cap length: a hostile very-long id should not blow path limits. BUT
+    // pure truncation collides（2026-09-29 UAT 实证：cluster 会话键
+    // `cluster_rpc:{57 字符 node_id}/board:NB-10` 与 `…NB-11` 全长 81 字
+    // 符，take(80) 双双截成 `…board_NB-1`，get_or_create 的磁盘 fallback
+    // 由此跨会话读到别人的历史——职能后缀进 system prompt 后回显串台才
+    // 暴露）。超限键改保区分度：头 60 字符 + `__` + FNV-1a64 hex16（纯
+    // std、跨版本确定性），总长 78 ≤ 80；读写两侧同源同函数，形态自洽。
+    // ≤80 的输入逐字节不变（存量文件名不受影响）；超限旧文件本就是碰撞
+    // 脏数据，失联由 chat_log 重建 / TTL 自愈兜底。尾 `.` 修剪同趟进行
+    // （Windows 剥尾点；hash 后缀是 hex，永不触点）。
+    let char_count = out.chars().count();
+    if char_count <= 80 {
+        return out.trim_end_matches('.').to_string();
+    }
+    let head: String = out.chars().take(60).collect();
+    format!("{head}__{:016x}", fnv1a64(out.as_bytes()))
+}
+
+/// FNV-1a 64-bit（零依赖确定性哈希，仅供超长段的区分后缀）。
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
 }
 
 #[cfg(test)]

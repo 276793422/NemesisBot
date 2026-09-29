@@ -115,6 +115,8 @@ fn test_register_and_list_nodes() {
         capabilities: vec!["llm".into()],
         tags: Vec::new(),
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     };
     cluster.register_node(remote);
@@ -351,6 +353,8 @@ fn test_get_capabilities() {
         capabilities: vec!["llm".into(), "tools".into()],
         tags: Vec::new(),
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -720,6 +724,8 @@ fn test_cluster_peer_resolver_returns_peer_info() {
         capabilities: vec!["llm".into()],
         tags: Vec::new(),
         addresses: vec!["192.168.1.100".into(), "10.0.0.5".into()],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -764,6 +770,8 @@ fn test_cluster_peer_resolver_offline_peer() {
         capabilities: vec![],
         tags: Vec::new(),
         addresses: vec!["10.0.0.1".into()],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -1346,6 +1354,8 @@ fn test_find_peers_by_capability() {
         capabilities: vec!["llm".into(), "tools".into()],
         tags: Vec::new(),
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -1583,6 +1593,8 @@ fn test_sync_to_disk_includes_discovered_nodes() {
         capabilities: vec!["llm".into()],
         tags: Vec::new(),
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -1610,6 +1622,8 @@ fn test_register_node_updates_existing() {
         capabilities: vec![],
         tags: Vec::new(),
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -1627,6 +1641,8 @@ fn test_register_node_updates_existing() {
         capabilities: vec!["tools".into()],
         tags: Vec::new(),
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -1658,6 +1674,8 @@ fn test_get_online_peers_includes_online_nodes() {
         capabilities: vec![],
         tags: Vec::new(),
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -1674,6 +1692,8 @@ fn test_get_online_peers_includes_online_nodes() {
         capabilities: vec![],
         tags: Vec::new(),
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -1703,6 +1723,8 @@ fn test_get_capabilities_dedup() {
         capabilities: vec!["llm".into(), "tools".into()],
         tags: Vec::new(),
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -1719,6 +1741,8 @@ fn test_get_capabilities_dedup() {
         capabilities: vec!["llm".into(), "forge".into()],
         tags: Vec::new(),
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -1915,6 +1939,8 @@ fn test_find_peers_by_capability_offline_excluded() {
         capabilities: vec!["llm".into()],
         tags: Vec::new(),
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -2674,6 +2700,8 @@ fn test_cluster_peer_resolver_empty_addresses() {
         capabilities: vec![],
         tags: Vec::new(),
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -2709,6 +2737,8 @@ fn test_cluster_peer_resolver_empty_primary_address() {
         capabilities: vec![],
         tags: Vec::new(),
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -2998,6 +3028,8 @@ fn test_get_peer_after_register() {
         capabilities: vec!["llm".into()],
         tags: Vec::new(),
         addresses: vec!["10.0.0.10".into()],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -3107,6 +3139,8 @@ fn test_cluster_peer_resolver_with_empty_primary_address() {
         capabilities: vec![],
         tags: Vec::new(),
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -3139,6 +3173,8 @@ fn test_cluster_peer_resolver_uses_stored_addresses() {
         capabilities: vec![],
         tags: Vec::new(),
         addresses: vec!["192.168.1.1".into(), "10.0.0.1".into()],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -3512,6 +3548,8 @@ fn test_sync_to_disk_with_connecting_status() {
         capabilities: vec!["llm".into()],
         tags: Vec::new(),
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -4108,6 +4146,8 @@ fn test_cluster_peer_resolver_fallback_scan_by_name() {
         capabilities: vec!["llm".into()],
         tags: Vec::new(),
         addresses: vec!["192.168.1.50".into()],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -4153,6 +4193,8 @@ fn test_cluster_peer_resolver_offline_peer_is_online_false() {
         capabilities: vec![],
         tags: Vec::new(),
         addresses: vec!["10.0.0.1".into()],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -4310,6 +4352,8 @@ fn make_real_node_info(id: &str, name: &str, addr: &str) -> RealNodeInfo {
         category: "development".into(),
         capabilities: vec!["llm".into()],
         tags: Vec::new(),
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     }
 }
@@ -4366,6 +4410,8 @@ fn test_merge_real_node_info_updates_existing_entry_with_real_id() {
         category: "new_cat".into(),
         capabilities: vec!["new_cap".into()],
         tags: Vec::new(),
+        professions: Vec::new(),
+        tier: None,
         node_type: "new_type".into(),
     });
 
@@ -4415,6 +4461,8 @@ fn test_merge_real_node_info_keeps_static_peer_address() {
         category: "development".into(),
         capabilities: vec!["exec".into()],
         tags: Vec::new(),
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -4458,6 +4506,8 @@ fn test_merge_real_node_info_updates_address_for_dynamic_peer() {
         category: "general".into(),
         capabilities: Vec::new(),
         tags: Vec::new(),
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -4486,6 +4536,8 @@ fn test_merge_real_node_info_upgrades_placeholder_by_address() {
         capabilities: Vec::new(),
         tags: Vec::new(),
         addresses: Vec::new(),
+        professions: Vec::new(),
+        tier: None,
         node_type: String::new(),
     });
 
@@ -4602,6 +4654,8 @@ fn test_merge_placeholder_upgrade_matches_secondary_address() {
         capabilities: Vec::new(),
         tags: Vec::new(),
         addresses: Vec::new(),
+        professions: Vec::new(),
+        tier: None,
         node_type: String::new(),
     });
 
@@ -4638,6 +4692,8 @@ fn test_handle_discovered_node_placeholder_upgrade_matches_secondary_address() {
         capabilities: Vec::new(),
         tags: Vec::new(),
         addresses: Vec::new(),
+        professions: Vec::new(),
+        tier: None,
         node_type: String::new(),
     });
 
@@ -4694,6 +4750,8 @@ fn test_merge_real_node_info_upgrades_placeholder_in_toml() {
         capabilities: Vec::new(),
         tags: Vec::new(),
         addresses: Vec::new(),
+        professions: Vec::new(),
+        tier: None,
         node_type: String::new(),
     });
 
@@ -4741,6 +4799,8 @@ fn test_handle_discovered_node_upgrades_placeholder_via_udp() {
         capabilities: Vec::new(),
         tags: Vec::new(),
         addresses: Vec::new(),
+        professions: Vec::new(),
+        tier: None,
         node_type: String::new(),
     });
     assert!(cluster.get_peer("ManualPeer").is_some());
@@ -4790,6 +4850,8 @@ fn test_mark_peer_online_for_refresh_flips_offline_to_online() {
         capabilities: Vec::new(),
         tags: Vec::new(),
         addresses: Vec::new(),
+        professions: Vec::new(),
+        tier: None,
         node_type: String::new(),
     });
 
@@ -4824,6 +4886,8 @@ fn test_set_peer_status_restores_offline() {
         capabilities: Vec::new(),
         tags: Vec::new(),
         addresses: Vec::new(),
+        professions: Vec::new(),
+        tier: None,
         node_type: String::new(),
     });
 
@@ -5015,6 +5079,8 @@ fn make_w3b_node(id: &str, name: &str, address: &str, status: NodeStatus) -> Ext
         capabilities: vec![],
         tags: Vec::new(),
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     }
 }
@@ -5405,6 +5471,8 @@ fn test_upgrade_peer_in_peers_toml_same_sanitized_key_writes_real_id() {
             category: "test".into(),
             capabilities: vec![],
             tags: Vec::new(),
+            professions: Vec::new(),
+            tier: None,
             node_type: "agent".into(),
         },
     );
@@ -5438,6 +5506,8 @@ fn test_upgrade_peer_in_peers_toml_read_error_skips() {
             category: "test".into(),
             capabilities: vec![],
             tags: Vec::new(),
+            professions: Vec::new(),
+            tier: None,
             node_type: "agent".into(),
         },
     );
@@ -5471,6 +5541,8 @@ fn test_upgrade_peer_in_peers_toml_without_peers_table_persists_directly() {
             category: "test".into(),
             capabilities: vec![],
             tags: Vec::new(),
+            professions: Vec::new(),
+            tier: None,
             node_type: "agent".into(),
         },
     );
@@ -5511,6 +5583,8 @@ fn test_upgrade_peer_in_peers_toml_write_error_after_removal() {
             category: "test".into(),
             capabilities: vec![],
             tags: Vec::new(),
+            professions: Vec::new(),
+            tier: None,
             node_type: "agent".into(),
         },
     );
@@ -5541,6 +5615,8 @@ fn test_merge_real_node_info_master_role_with_write_error() {
         category: "prod".into(),
         capabilities: vec!["llm".into()],
         tags: Vec::new(),
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
     assert_eq!(merged, "master-1");
@@ -5703,6 +5779,7 @@ async fn test_set_cluster_task_queue_routes_callback_to_work_queue() {
         waiting_for_task_id: None,
         waiting_tool_call_id: None,
         callback_result: None,
+        required_profession: None,
     });
     tl.save_async_state(
         "parent-1",
@@ -5771,6 +5848,7 @@ async fn test_callback_routing_with_full_work_queue_logs_error() {
         waiting_for_task_id: None,
         waiting_tool_call_id: None,
         callback_result: None,
+        required_profession: None,
     });
     tl.save_async_state(
         "parent-2",
@@ -6384,6 +6462,8 @@ fn test_upgrade_peer_in_peers_toml_no_file_and_missing_key() {
         category: "test".into(),
         capabilities: vec![],
         tags: Vec::new(),
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     };
 
@@ -6424,6 +6504,8 @@ fn test_upgrade_peer_in_peers_toml_no_file_and_missing_key() {
         category: "test".into(),
         capabilities: vec![],
         tags: Vec::new(),
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     };
     cluster2.upgrade_peer_in_peers_toml("ph-b", "real-b", &info_b);
@@ -7083,6 +7165,8 @@ fn test_peer_config(id: &str, address: &str) -> PeerConfig {
         role: "worker".into(),
         category: "development".into(),
         tags: vec!["python".into()],
+        professions: Vec::new(),
+        tier: None,
         priority: 1,
         enabled: true,
         status: PeerStatus::default(),
@@ -7134,6 +7218,8 @@ fn restore_skips_self_banned_existing_and_unusable() {
         capabilities: vec![],
         tags: vec![],
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
     // 预置一个黑名单节点。
@@ -7190,6 +7276,8 @@ fn restore_skips_address_shadow_of_existing_entry() {
         capabilities: vec![],
         tags: vec![],
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
     // state.toml 里留着占位名条目（升级前形态）：id=名字、同地址。
@@ -7238,6 +7326,8 @@ fn restore_skips_name_shadow_of_existing_entry() {
         capabilities: vec![],
         tags: vec![],
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
     // id=占位名、地址不同（对端换了地址），但名字相同 → 同节点，不种。
@@ -7302,6 +7392,8 @@ async fn health_probe_loop_probes_offline_every_fifth_tick() {
         capabilities: vec![],
         tags: vec![],
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
     // 探针循环要求 RPC client 已初始化（None 直接 return）。
@@ -7348,6 +7440,8 @@ fn mark_peer_healthy_recovery_fires_node_discovered() {
         capabilities: vec![],
         tags: vec![],
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -7409,6 +7503,8 @@ fn canonical_peer_id_resolves_name_and_id() {
         capabilities: vec![],
         tags: vec!["python".into()],
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 

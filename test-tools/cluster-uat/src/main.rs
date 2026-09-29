@@ -832,12 +832,24 @@ async fn issue_status_of(ws: &mut WsStream, id: i64) -> Result<String, anyhow::E
 
 /// T21/T22 共用：建父单 → `issue.plan` 一段（异步 planner）→ SSE 等
 /// `board.plan_ready` → confirm 二段。返回（父单 id, 批内顺序子单 id 列表,
-/// confirm 响应原文）。
+/// confirm 响应原文）。固定 3 子任务（既有 Swarm 形态）。
 async fn swarm_plan_and_confirm(
     ws: &mut WsStream,
     port: u16,
     marker: &str,
     ready_timeout_secs: u64,
+) -> Result<(i64, Vec<i64>, Value), String> {
+    swarm_plan_and_confirm_n(ws, port, marker, ready_timeout_secs, 3).await
+}
+
+/// 同 [`swarm_plan_and_confirm`]，子任务数由调用方给定（职能框架 U 系列：
+/// `<PLAN_PROF>` 5 链 / 单子任务计划 expected=1）。
+async fn swarm_plan_and_confirm_n(
+    ws: &mut WsStream,
+    port: u16,
+    marker: &str,
+    ready_timeout_secs: u64,
+    expected: usize,
 ) -> Result<(i64, Vec<i64>, Value), String> {
     // 1. 建父单（letters-only marker —— 数字串会触发 DLP credit_card 误报，
     //    见 T14 注释）。
@@ -913,8 +925,8 @@ async fn swarm_plan_and_confirm(
         .and_then(|v| v.as_array())
         .map(|a| a.iter().filter_map(|x| x.as_i64()).collect())
         .unwrap_or_default();
-    if children.len() != 3 {
-        return Err(format!("confirm 应创建 3 个子任务: {confirmed}"));
+    if children.len() != expected {
+        return Err(format!("confirm 应创建 {expected} 个子任务: {confirmed}"));
     }
     Ok((parent_id, children, confirmed))
 }
@@ -1430,7 +1442,190 @@ fn verify_landed_manifest(exec_dir: &Path) -> Result<(u64, u64, u64, usize), Str
 // Test runner
 // ---------------------------------------------------------------------------
 
-/// Execute a single named test and print the outcome.
+// ---------------------------------------------------------------------------
+// 职能框架 U 系列（U-Prep / U1-U8）辅助
+// ---------------------------------------------------------------------------
+
+/// 轮询 A 端 `cluster.nodes.list` 直到目标节点的身份投影到位（announce
+/// 传播：广播间隔 3s + 处理延迟）。want_tier=None 断言 tier 键为 null
+/// （fail-open 态）；want_online=false 用于 B 下线等待（G2 探针判死）。
+/// 返回命中时的节点行（供 further 断言）。
+/// 等待节点身份（professions/tier/online）到位。
+///
+/// `exact=false`（Contains）：want ⊆ actual 即过——加入/上线等待用。
+/// `exact=true`：actual 与 want 逐项一致（顺序不敏感）——**摘除等待必须
+/// 用它**：Contains 对「移除」是 no-op（旧清单天然包含新清单，等待瞬时
+/// 假绿，strip announce 未落地就开始发车，run3 实证 U3 摘除失效）。
+async fn wait_node_identity(
+    ws: &mut WsStream,
+    node: &str,
+    want_profs: &[&str],
+    want_tier: Option<&str>,
+    want_online: bool,
+    timeout_secs: u64,
+    exact: bool,
+) -> anyhow::Result<Value> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+    let mut last: Option<Value> = None;
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!(
+                "{timeout_secs}s 内节点 {node} 身份未到位（want profs={want_profs:?} tier={want_tier:?} online={want_online}）；last={:?}",
+                last.map(|v| v.to_string()).unwrap_or_default()
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let got = ws_api_request(ws, "cluster", "nodes.list", json!({}), 10).await?;
+        let hit = got
+            .pointer("/nodes")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| {
+                arr.iter()
+                    .find(|n| n.get("name").and_then(|i| i.as_str()) == Some(node))
+                    .cloned()
+            });
+        let Some(n) = hit else {
+            continue;
+        };
+        last = Some(n.clone());
+        let online = n.get("online").and_then(|o| o.as_bool()).unwrap_or(false);
+        let tier = n.get("tier").and_then(|t| t.as_str()).map(str::to_string);
+        let profs: Vec<String> = n
+            .get("professions")
+            .and_then(|p| p.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|p| p.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let profs_ok = if exact {
+            want_profs.len() == profs.len()
+                && want_profs
+                    .iter()
+                    .all(|w| profs.iter().any(|p| p.eq_ignore_ascii_case(w)))
+        } else {
+            want_profs
+                .iter()
+                .all(|w| profs.iter().any(|p| p.eq_ignore_ascii_case(w)))
+        };
+        let tier_ok = match want_tier {
+            Some(t) => tier.as_deref() == Some(t),
+            None => tier.is_none(),
+        };
+        if online == want_online && profs_ok && tier_ok {
+            return Ok(n);
+        }
+    }
+}
+
+/// issue 全部评论正文拼接（comment.list；职能交付回显 / 停车评论 /
+/// 降级评论断言用）。
+async fn u_comments_text(ws: &mut WsStream, issue_id: i64) -> String {
+    ws_api_request(
+        ws,
+        "board",
+        "comment.list",
+        json!({ "issue_id": issue_id }),
+        10,
+    )
+    .await
+    .ok()
+    .and_then(|v| v.get("comments").and_then(|c| c.as_array()).cloned())
+    .map(|arr| {
+        arr.iter()
+            .filter_map(|c| c.get("content").and_then(|v| v.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n---\n")
+    })
+    .unwrap_or_default()
+}
+
+/// 单 issue 派发记录数（直读 A 端 board.db 权威证据；T30 同款读法）。
+fn u_dispatch_count(db_path: &Path, issue_id: i64) -> usize {
+    nemesis_board::BoardStore::open(db_path, "NB")
+        .ok()
+        .and_then(|s| s.list_dispatches(issue_id).ok().map(|v| v.len()))
+        .unwrap_or(0)
+}
+
+/// 等待单据离开 backlog（被派发）——U3 fallback 派发 / U2 恢复派发的
+/// 到位信号（状态轮询，3s 步进）。
+async fn wait_issue_left_backlog(
+    ws: &mut WsStream,
+    id: i64,
+    timeout_secs: u64,
+) -> anyhow::Result<String> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!("issue {id} 在 {timeout_secs}s 内未离开 backlog");
+        }
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let st = issue_status_of(ws, id).await.unwrap_or_default();
+        if st != "backlog" {
+            return Ok(st);
+        }
+    }
+}
+
+/// U 系列共用重启节点（切模型后）——T30 同款流：杀 → 起 → 健康等待。
+/// 返回新 GatewayProcess（调用方回写外层变量）。
+async fn u_restart_gateway(
+    name: &'static str,
+    gateway_bin: &Path,
+    ws: &TestWorkspace,
+    node: &NodeConfig,
+) -> Result<GatewayProcess, String> {
+    start_gateway_and_wait(name, gateway_bin, ws.path(), node).await
+}
+
+/// U 系列 A 端 board 开关基线（幂等；每项独立容错——单项失败累积报错）。
+async fn u_set_board_config(ws: &mut WsStream, kv: &[(&str, Value)]) -> Result<(), String> {
+    let mut errs = Vec::new();
+    for (key, value) in kv {
+        if let Err(e) = ws_api_request(
+            ws,
+            "board",
+            "config.set",
+            json!({ "key": key, "value": value }),
+            10,
+        )
+        .await
+        {
+            errs.push(format!("{key}: {e}"));
+        }
+    }
+    if errs.is_empty() {
+        Ok(())
+    } else {
+        Err(errs.join("; "))
+    }
+}
+
+/// 职能框架 U 系列 B 端首批六职能宣告（plan §4：样板期单 worker 兼任多职能）。
+const U_B_PROFESSIONS: [&str; 6] = [
+    "dev:cpp",
+    "product",
+    "architecture",
+    "ui-design",
+    "test-whitebox",
+    "test-blackbox",
+];
+
+/// U7 起 B 端宣告基线 = 六内置 + myfamily:myspec（plan §4 U7「此后常驻」）。
+/// U3 摘除/恢复与 U4/U8 自愈必须回到这个全集：只回 U_B_PROFESSIONS 会把
+/// myfamily:myspec 一并摘掉，U8 重启后宣告断言必红（run3 实证）。
+const U_B_PROFESSIONS_POST_U7: [&str; 7] = [
+    "dev:cpp",
+    "product",
+    "architecture",
+    "ui-design",
+    "test-whitebox",
+    "test-blackbox",
+    "myfamily:myspec",
+];
+
 async fn run_test<F, Fut>(name: &'static str, f: F) -> TestResult
 where
     F: FnOnce() -> Fut,
@@ -8874,6 +9069,785 @@ async fn main() {
                 Ok(msg) => pass("T-MRG-7", msg),
                 Err(e) => fail("T-MRG-7", format!("{e}")),
             }
+        })
+        .await,
+    );
+
+    // ==================================================================
+    // 职能框架 U 系列（M7 §4）：U-Prep → U2 → U1 → U7 → U3 → U8 → U4 → U6 → U5
+    //
+    // 场景次序按「B 端职能/模型状态变更最小化」排布：
+    //   U2 先钉 tier=mini（全场唯一 tier 闸场景）再恢复；U1 六职能全链；
+    //   U7 追加 myfamily:myspec（此后常驻）；U3 临时摘除 test-whitebox +
+    //   fallback 开关（测完恢复）；U8 唯一需要 B 下线的场景（C 老形态
+    //   单 worker）；U4 纯 planner 侧；U6 必须先于 U5（B 无图像模型的
+    //   默认态断言）；U5 压轴（B 加图像模型重启）。
+    // 所有派发断言走 matcher 自动波（planner confirm 波 / 停车场 sweep
+    // / 落定重估波）——手动 issue.dispatch 需要显式 target，绕过匹配器，
+    // 不在本系列使用。
+    // ==================================================================
+
+    // ---- U-Prep：模型/开关/职能宣告基线（不依赖 T30 残留态）----
+    all_results.push(
+        run_test(
+            "U-Prep: 四节点切组合桩 + 六职能宣告基线",
+            || async {
+                // A/B/C/D 全部显式切 testai-board-1.0（planner/review/master 组合
+                // 桩）。C/D 不能留在 T-MRG-6 残留的 board-edit 桩上（回显任务全
+                // 文、无职能回显机）：U3 的 ③松弛兜底对空标签 worker 三平局，
+                // name 字典序 tie-break（7a31… < b11d… < d7c4…）必选 C/D——
+                // 无回显机则职能锚点恒假红（run2 定性）。
+                for (side, gw_name, ws_side, gw, node) in [
+                    ("A", "Gateway-A", &ws_a, &mut gw_a, &NODES[0]),
+                    ("B", "Gateway-B", &ws_b, &mut gw_b, &NODES[1]),
+                    ("C", "Gateway-C", &ws_c, &mut gw_c, &NODES[2]),
+                    ("D", "Gateway-D", &ws_d, &mut gw_d, &NODES[3]),
+                ] {
+                    let out = ws_side
+                        .run_cli(
+                            &gateway_bin,
+                            &[
+                                "model",
+                                "add",
+                                "--model",
+                                "test/testai-board-1.0",
+                                "--base",
+                                &format!("http://127.0.0.1:{}/v1", ai_server_port()),
+                                "--key",
+                                "test-key",
+                                "--default",
+                            ],
+                        )
+                        .await;
+                    if !out.success() {
+                        return fail(
+                            "U-Prep",
+                            format!("{side} board model add failed: {}", out.stderr),
+                        );
+                    }
+                    // T 系同款重启纪律：start_gateway_and_wait 只 spawn 不杀
+                    // （"kill is the caller's job"）——不先杀旧进程则旧节点仍持
+                    // 端口，新进程绑定失败，健康/RPC 探测打到旧进程假绿，随后
+                    // 旧句柄被覆盖触发 Drop::start_kill → 节点全灭（首轮实跑
+                    // 教训：全 U 系列一律 WS connect to A failed）。
+                    gw.kill().await;
+                    match start_gateway_and_wait(gw_name, &gateway_bin, ws_side.path(), node).await
+                    {
+                        Ok(g) => *gw = g,
+                        Err(e) => return fail("U-Prep", format!("{side} restart failed: {e}")),
+                    }
+                }
+                let Ok(mut ws) = ws_connect_gateway(NODES[0].web_port).await else {
+                    return fail("U-Prep", "WS connect to A failed");
+                };
+                // board 开关基线（T-MRG 系可能改过 budget/conflict，显式复位）。
+                if let Err(e) = u_set_board_config(
+                    &mut ws,
+                    &[
+                        ("conflict_auto_resolve", json!(false)),
+                        ("auto_accept", json!(true)),
+                        ("auto_close_parent", json!(true)),
+                        ("plan.auto_confirm", json!(false)),
+                        ("unlimited_mode", json!(false)),
+                        ("dispatch_fallback", json!(false)),
+                        ("budget.max_total_redispatch", json!(0)),
+                    ],
+                )
+                .await
+                {
+                    return fail("U-Prep", format!("config.set failed: {e}"));
+                }
+                // B 宣告六职能 + tier 清空（fail-open 基线）。update_identity
+                // 热改写 + peers.toml 持久化（后续 B 重启保真）。
+                let Ok(mut wsb) = ws_connect_gateway(NODES[1].web_port).await else {
+                    return fail("U-Prep", "WS connect to B failed");
+                };
+                if let Err(e) = ws_api_request(
+                    &mut wsb,
+                    "cluster",
+                    "node.update_identity",
+                    json!({ "professions": U_B_PROFESSIONS, "tier": null }),
+                    10,
+                )
+                .await
+                {
+                    return fail("U-Prep", format!("B update_identity failed: {e}"));
+                }
+                // A 端可见性：announce 传播到位（后续场景的匹配数据源）。
+                match wait_node_identity(&mut ws, "Node-B", &U_B_PROFESSIONS, None, true, 60, false)
+                    .await
+                {
+                    Ok(_) => pass("U-Prep", "B 六职能宣告 + tier=null 已在 A 端可见"),
+                    Err(e) => fail("U-Prep", format!("{e}")),
+                }
+            },
+        )
+        .await,
+    );
+
+    // ---- U2：tier 闸 + 恢复重派（硬条件 4 不参与松弛；tier 未知 fail-open）----
+    all_results.push(
+        run_test(
+            "U2: tier 闸（mini 档职能子单诚实停车）+ 恢复后 sweep 重派全链",
+            || async {
+                let Ok(mut ws) = ws_connect_gateway(NODES[0].web_port).await else {
+                    return fail("U2", "WS connect to A failed");
+                };
+                let Ok(mut wsb) = ws_connect_gateway(NODES[1].web_port).await else {
+                    return fail("U2", "WS connect to B failed");
+                };
+                let db_path = ws_a.home().join("workspace").join("board").join("board.db");
+                // 1. B 钉 tier=mini（内置六职能 min_tier 全部 ≥normal → 全被闸）。
+                if let Err(e) = ws_api_request(
+                    &mut wsb,
+                    "cluster",
+                    "node.update_identity",
+                    json!({ "tier": "mini" }),
+                    10,
+                )
+                .await
+                {
+                    return fail("U2", format!("B set tier=mini failed: {e}"));
+                }
+                if let Err(e) = wait_node_identity(
+                    &mut ws,
+                    "Node-B",
+                    &U_B_PROFESSIONS,
+                    Some("mini"),
+                    true,
+                    60,
+                    false,
+                )
+                .await
+                {
+                    return fail("U2", format!("tier=mini 传播失败: {e}"));
+                }
+                // 2. <PLAN_PROF> 五链：confirm 波首单即撞 tier 闸 → 停车。
+                let (parent_id, children, _c) = match swarm_plan_and_confirm_n(
+                    &mut ws,
+                    NODES[0].web_port,
+                    "<PLAN_PROF>",
+                    60,
+                    5,
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => return fail("U2", format!("plan/confirm failed: {e}")),
+                };
+                // 3. 停车断言：首单留 backlog + ⏸ 评论 + 零派发记录（15s 等波落地）。
+                tokio::time::sleep(Duration::from_secs(15)).await;
+                let st = issue_status_of(&mut ws, children[0])
+                    .await
+                    .unwrap_or_default();
+                if st != "backlog" {
+                    return fail(
+                        "U2",
+                        format!(
+                            "tier=mini 下首单应留 backlog，实际 '{st}'（派错节点=硬条件 4 失守）"
+                        ),
+                    );
+                }
+                let comments = u_comments_text(&mut ws, children[0]).await;
+                if !comments.contains("自动派发暂缓") {
+                    return fail("U2", format!("首单缺 ⏸ 停车评论：{comments}"));
+                }
+                let dc = u_dispatch_count(&db_path, children[0]);
+                if dc != 0 {
+                    return fail("U2", format!("tier 闸下单不应有派发记录，实际 {dc} 条"));
+                }
+                // 4. 恢复 tier=null → announce 边沿/30s sweep 重估 → 全链跑完。
+                if let Err(e) = ws_api_request(
+                    &mut wsb,
+                    "cluster",
+                    "node.update_identity",
+                    json!({ "tier": null }),
+                    10,
+                )
+                .await
+                {
+                    return fail("U2", format!("B restore tier failed: {e}"));
+                }
+                if let Err(e) =
+                    wait_node_identity(&mut ws, "Node-B", &U_B_PROFESSIONS, None, true, 60, false)
+                        .await
+                {
+                    return fail("U2", format!("tier 恢复传播失败: {e}"));
+                }
+                for (i, cid) in children.iter().enumerate() {
+                    if let Err(e) =
+                        wait_issue_done(&mut ws, *cid, &format!("U2-子{}", i + 1), 600).await
+                    {
+                        return fail("U2", format!("恢复后子单 {i} 未完成: {e}"));
+                    }
+                }
+                if let Err(e) = wait_issue_done(&mut ws, parent_id, "U2-父", 120).await {
+                    return fail("U2", format!("恢复后父单未收口: {e}"));
+                }
+                let dc = u_dispatch_count(&db_path, children[0]);
+                if dc == 0 {
+                    return fail("U2", "恢复后首单应有派发记录（sweep 重派未发生）");
+                }
+                pass(
+                    "U2",
+                    "tier=mini 五链全停车（零派发+⏸评论）→ 恢复后 sweep 重派全链 done + 父单收口",
+                )
+            },
+        )
+        .await,
+    );
+
+    // ---- U1：全流水线（六职能宣告 → planner 五链 → 逐单派发执行验收收口）----
+    all_results.push(
+        run_test("U1: 全流水线（<PLAN_PROF> 五职能链逐单派发 + 契约回显 + 全链收口）", || async {
+            let Ok(mut ws) = ws_connect_gateway(NODES[0].web_port).await else {
+                return fail("U1", "WS connect to A failed");
+            };
+            let (parent_id, children, _c) =
+                match swarm_plan_and_confirm_n(&mut ws, NODES[0].web_port, "<PLAN_PROF>", 60, 5).await {
+                    Ok(v) => v,
+                    Err(e) => return fail("U1", format!("plan/confirm failed: {e}")),
+                };
+            let profs = ["product", "architecture", "dev:cpp", "test-whitebox", "test-blackbox"];
+            for (i, cid) in children.iter().enumerate() {
+                if let Err(e) = wait_issue_done(&mut ws, *cid, &format!("U1-子{}", i + 1), 600).await {
+                    return fail("U1", format!("子单 {i}（{}）未完成: {e}", profs[i]));
+                }
+                // 计划面：required_profession 落库。
+                let got = ws_api_request(&mut ws, "board", "issue.get", json!({ "id": cid }), 10)
+                    .await
+                    .unwrap_or(Value::Null);
+                let prof = got.pointer("/issue/required_profession").and_then(|v| v.as_str()).unwrap_or("");
+                if prof != profs[i] {
+                    return fail("U1", format!("子单 {i} required_profession='{prof}'，want '{}'", profs[i]));
+                }
+                // 执行面：B 端交付回显职能名（契约确实进了 B 端 system prompt
+                // ——worker 桩只在输入含「执行职能：…（slug）」时回显）。
+                let comments = u_comments_text(&mut ws, *cid).await;
+                if !comments.contains(&format!("职能={}", profs[i])) {
+                    return fail("U1", format!("子单 {i} 交付/评论缺职能回显 职能={}：{}", profs[i], trunc(&comments, 400)));
+                }
+            }
+            if let Err(e) = wait_issue_done(&mut ws, parent_id, "U1-父", 120).await {
+                return fail("U1", format!("父单未收口: {e}"));
+            }
+            pass("U1", "五职能链逐单派发（PM→架构→dev:cpp→白盒→黑盒），每单契约回显在交付正流，全链 done + 父单收口")
+        })
+        .await,
+    );
+
+    // ---- U7：用户自定义职能（B 磁盘档案 → announce → 匹配 → 本节点渲染）----
+    all_results.push(
+        run_test("U7: 用户自定义职能 myfamily:myspec（磁盘档案渲染 + 契约回显）", || async {
+            let Ok(mut ws) = ws_connect_gateway(NODES[0].web_port).await else {
+                return fail("U7", "WS connect to A failed");
+            };
+            let Ok(mut wsb) = ws_connect_gateway(NODES[1].web_port).await else {
+                return fail("U7", "WS connect to B failed");
+            };
+            // 1. B 工作区用户档案（两级目录、文件名无冒号；内容即契约正文
+            //    ——渲染原样拼接，首行必须是可回显的「执行职能：…（slug）」形态）。
+            let prof_dir = ws_b
+                .home()
+                .join("workspace")
+                .join("cluster")
+                .join("professions")
+                .join("myfamily");
+            if let Err(e) = std::fs::create_dir_all(&prof_dir) {
+                return fail("U7", format!("mkdir prof_dir failed: {e}"));
+            }
+            let prof_file = prof_dir.join("myspec.md");
+            if let Err(e) = std::fs::write(
+                &prof_file,
+                "# 执行职能：我的专业（myfamily:myspec）\n\n\
+                 本档案为 cluster-uat U7 用户自定义职能契约（B 端磁盘渲染验证）。\n\
+                 按任务描述与验收标准交付；交付汇报声明「用户档案已加载」。\n",
+            ) {
+                return fail("U7", format!("write myspec.md failed: {e}"));
+            }
+            // 2. 宣告追加（六内置 + myfamily:myspec）→ A 端可见。
+            let mut want: Vec<&str> = U_B_PROFESSIONS.to_vec();
+            want.push("myfamily:myspec");
+            if let Err(e) = ws_api_request(
+                &mut wsb,
+                "cluster",
+                "node.update_identity",
+                json!({ "professions": want }),
+                10,
+            )
+            .await
+            {
+                return fail("U7", format!("B update_identity failed: {e}"));
+            }
+            if let Err(e) = wait_node_identity(&mut ws, "Node-B", &["myfamily:myspec"], None, true, 60, false).await {
+                return fail("U7", format!("myfamily:myspec 传播失败: {e}"));
+            }
+            // 3. 单子任务计划 → 匹配命中 → B 从本节点磁盘渲染 → 回显。
+            let (_pid, children, _c) =
+                match swarm_plan_and_confirm_n(&mut ws, NODES[0].web_port, "<PLAN_PROF_USER>", 60, 1).await {
+                    Ok(v) => v,
+                    Err(e) => return fail("U7", format!("plan/confirm failed: {e}")),
+                };
+            if let Err(e) = wait_issue_done(&mut ws, children[0], "U7-子", 300).await {
+                return fail("U7", format!("子单未完成: {e}"));
+            }
+            let comments = u_comments_text(&mut ws, children[0]).await;
+            if !comments.contains("职能=myfamily:myspec") {
+                return fail("U7", format!("交付缺用户职能回显（档案未进 system prompt？）：{}", trunc(&comments, 400)));
+            }
+            pass("U7", "announce 携带 myfamily:myspec → 匹配命中 → B 端磁盘档案渲染（回显在交付正流）→ done")
+        })
+        .await,
+    );
+
+    // ---- U3：松弛阶梯强制 fallback（评论留痕松弛维度；无人硬条件失守）----
+    all_results.push(
+        run_test("U3: 松弛阶梯 fallback（摘除 test-whitebox → ③丢职能兜底派发 + 评论留痕）", || async {
+            let Ok(mut ws) = ws_connect_gateway(NODES[0].web_port).await else {
+                return fail("U3", "WS connect to A failed");
+            };
+            let Ok(mut wsb) = ws_connect_gateway(NODES[1].web_port).await else {
+                return fail("U3", "WS connect to B failed");
+            };
+            // 1. B 摘除 test-whitebox（其余职能保留，myfamily:myspec 常驻）。
+            let reduced: Vec<&str> = U_B_PROFESSIONS_POST_U7
+                .iter()
+                .copied()
+                .filter(|p| *p != "test-whitebox")
+                .collect();
+            if let Err(e) = ws_api_request(
+                &mut wsb,
+                "cluster",
+                "node.update_identity",
+                json!({ "professions": reduced }),
+                10,
+            )
+            .await
+            {
+                return fail("U3", format!("B 摘除职能失败: {e}"));
+            }
+            // 摘除等待必须 Exact：Contains 对「移除」是 no-op（旧清单天然
+            // 包含新清单，瞬时假绿——strip announce 未落地就发车，sub4 仍
+            // 严格命中 B，兜底路径根本没被走到，run3 实证）。
+            if let Err(e) = wait_node_identity(&mut ws, "Node-B", &reduced, None, true, 60, true).await {
+                return fail("U3", format!("摘除传播失败: {e}"));
+            }
+            // 2. 开兜底。
+            if let Err(e) = u_set_board_config(&mut ws, &[("dispatch_fallback", json!(true))]).await {
+                return fail("U3", format!("dispatch_fallback 开启失败: {e}"));
+            }
+            // 3. 五链：4 号单（test-whitebox）严格匹配失败 → ③丢职能兜底。
+            let (_pid, children, _c) =
+                match swarm_plan_and_confirm_n(&mut ws, NODES[0].web_port, "<PLAN_PROF>", 60, 5).await {
+                    Ok(v) => v,
+                    Err(e) => return fail("U3", format!("plan/confirm failed: {e}")),
+                };
+            let sub4 = children[3];
+            match wait_issue_left_backlog(&mut ws, sub4, 300).await {
+                Ok(_) => {}
+                Err(e) => return fail("U3", format!("test-whitebox 子单未派发（兜底未生效）: {e}")),
+            }
+            let comments = u_comments_text(&mut ws, sub4).await;
+            if !comments.contains("兜底策略派给") || !comments.contains("松弛职能兜底") {
+                return fail("U3", format!("兜底评论缺松弛维度留痕：{}", trunc(&comments, 500)));
+            }
+            // 4. 恢复（先摘兜底开关再补职能——sub5 在 sub4 之后派发，必须
+            //    严格匹配，不能吃兜底）。
+            if let Err(e) = u_set_board_config(&mut ws, &[("dispatch_fallback", json!(false))]).await {
+                return fail("U3", format!("dispatch_fallback 关闭失败: {e}"));
+            }
+            let Ok(mut wsb2) = ws_connect_gateway(NODES[1].web_port).await else {
+                return fail("U3", "WS reconnect to B failed");
+            };
+            if let Err(e) = ws_api_request(
+                &mut wsb2,
+                "cluster",
+                "node.update_identity",
+                json!({ "professions": U_B_PROFESSIONS_POST_U7 }),
+                10,
+            )
+            .await
+            {
+                return fail("U3", format!("B 恢复职能失败: {e}"));
+            }
+            if let Err(e) =
+                wait_node_identity(&mut ws, "Node-B", &U_B_PROFESSIONS_POST_U7, None, true, 60, true)
+                    .await
+            {
+                return fail("U3", format!("职能恢复传播失败: {e}"));
+            }
+            for (i, cid) in children.iter().enumerate() {
+                if let Err(e) = wait_issue_done(&mut ws, *cid, &format!("U3-子{}", i + 1), 600).await {
+                    return fail("U3", format!("子单 {i} 未完成: {e}"));
+                }
+            }
+            // 派发权威证据：4 号单兜底派发落账。
+            let db_path = ws_a.home().join("workspace").join("board").join("board.db");
+            if u_dispatch_count(&db_path, sub4) == 0 {
+                return fail("U3", "兜底派发应有派发记录");
+            }
+            pass("U3", "test-whitebox 无主 → ③松弛职能兜底派发（评论留痕松弛维度 + 派发落账）→ 全链 done")
+        })
+        .await,
+    );
+
+    // ---- U8：老形态 worker 兼容（C 无 professions 字段：职能单停车、普通单照常）----
+    all_results.push(
+        run_test("U8: 老形态 worker 兼容（C 无职能宣告：职能子单停车 + 普通子单照常）", || async {
+            let Ok(mut ws) = ws_connect_gateway(NODES[0].web_port).await else {
+                return fail("U8", "WS connect to A failed");
+            };
+            // 幂等自愈：U3 早退（断言失败 return 在其恢复段之前）会留下两
+            // 处残留——① dispatch_fallback=true：兜底开着职能单会被松弛派
+            // 给 C 老形态节点，「停车」断言必假红；② B 职能停在摘除态
+            // （myfamily:myspec 一并被摘）：本场景末段「B 重启后宣告保真」
+            // 断言要求 myfamily:myspec 在场。显式复位（U3 成功时全 no-op）。
+            if let Err(e) = u_set_board_config(&mut ws, &[("dispatch_fallback", json!(false))]).await {
+                return fail("U8", format!("dispatch_fallback 复位失败: {e}"));
+            }
+            let Ok(mut wsb0) = ws_connect_gateway(NODES[1].web_port).await else {
+                return fail("U8", "WS connect to B failed");
+            };
+            if let Err(e) = ws_api_request(
+                &mut wsb0,
+                "cluster",
+                "node.update_identity",
+                json!({ "professions": U_B_PROFESSIONS_POST_U7 }),
+                10,
+            )
+            .await
+            {
+                return fail("U8", format!("B 职能基线复位失败: {e}"));
+            }
+            drop(wsb0);
+            // 1. B 下线 → C（老形态）成为唯一在线 worker。G2 主动健康探针
+            //    按 failure_threshold 连败判死，给足 120s 窗口。
+            gw_b.kill().await;
+            if let Err(e) = wait_node_identity(&mut ws, "Node-B", &[], None, false, 120, false).await {
+                return fail("U8", format!("B 未在下线窗口内判死: {e}"));
+            }
+            let db_path = ws_a.home().join("workspace").join("board").join("board.db");
+            // 2. 职能子单：无人宣告 → 诚实停车。
+            let (_p1, c1, _c) =
+                match swarm_plan_and_confirm_n(&mut ws, NODES[0].web_port, "<PLAN_PROF_USER>", 60, 1).await {
+                    Ok(v) => v,
+                    Err(e) => return fail("U8", format!("职能单 plan/confirm failed: {e}")),
+                };
+            tokio::time::sleep(Duration::from_secs(15)).await;
+            let st = issue_status_of(&mut ws, c1[0]).await.unwrap_or_default();
+            if st != "backlog" {
+                return fail("U8", format!("老形态 worker 下职能单应留 backlog，实际 '{st}'"));
+            }
+            let comments = u_comments_text(&mut ws, c1[0]).await;
+            if !comments.contains("自动派发暂缓") {
+                return fail("U8", format!("职能单缺 ⏸ 停车评论：{comments}"));
+            }
+            if u_dispatch_count(&db_path, c1[0]) != 0 {
+                return fail("U8", "职能单不应有派发记录（派给老形态节点=硬条件 3 失守）");
+            }
+            // 3. 普通子单（默认计划、无职能）：照常派发执行验收。
+            let (_p2, c2, _c) =
+                match swarm_plan_and_confirm_n(&mut ws, NODES[0].web_port, "U8N", 60, 3).await {
+                    Ok(v) => v,
+                    Err(e) => return fail("U8", format!("普通单 plan/confirm failed: {e}")),
+                };
+            for (i, cid) in c2.iter().enumerate() {
+                if let Err(e) = wait_issue_done(&mut ws, *cid, &format!("U8-普通{}", i + 1), 600).await {
+                    return fail("U8", format!("普通子单 {i} 未完成: {e}"));
+                }
+                if u_dispatch_count(&db_path, *cid) == 0 {
+                    return fail("U8", format!("普通子单 {i} 应有派发记录"));
+                }
+            }
+            // 4. B 回归（peers.toml 持久的职能/档位随 announce 重播）。
+            gw_b = match u_restart_gateway("Gateway-B", &gateway_bin, &ws_b, &NODES[1]).await {
+                Ok(g) => g,
+                Err(e) => return fail("U8", format!("B restart failed: {e}")),
+            };
+            if let Err(e) = wait_node_identity(&mut ws, "Node-B", &["myfamily:myspec"], None, true, 90, false).await {
+                return fail("U8", format!("B 重启后职能宣告未恢复: {e}"));
+            }
+            pass("U8", "C 老形态：职能单诚实停车（零派发+⏸）、普通单三连派发执行 done；B 重启后宣告保真")
+        })
+        .await,
+    );
+
+    // ---- U4：非法枚举（<PLAN_PROF_BAD> 回灌自愈 / <PLAN_PROF_BAD_STUBBORN> 末轮宽和）----
+    all_results.push(
+        run_test(
+            "U4: 非法枚举 dev;cpp（回灌自愈 + 坚持非法末轮宽和降级留痕）",
+            || async {
+                let Ok(mut ws) = ws_connect_gateway(NODES[0].web_port).await else {
+                    return fail("U4", "WS connect to A failed");
+                };
+                // 幂等自愈（U3 早退毒化防线，成功时全 no-op）：
+                // ① fallback 复位——残留 true 会把 dev:cpp 子单兜底派给
+                //    无契约节点，回显断言假红（run2 实证）；
+                // ② B 职能基线补齐——U3 摘除 test-whitebox 后早退则 B 缺
+                //    职能，恢复完整宣告再发车。
+                if let Err(e) =
+                    u_set_board_config(&mut ws, &[("dispatch_fallback", json!(false))]).await
+                {
+                    return fail("U4", format!("dispatch_fallback 复位失败: {e}"));
+                }
+                let Ok(mut wsb) = ws_connect_gateway(NODES[1].web_port).await else {
+                    return fail("U4", "WS connect to B failed");
+                };
+                if let Err(e) = ws_api_request(
+                    &mut wsb,
+                    "cluster",
+                    "node.update_identity",
+                    json!({ "professions": U_B_PROFESSIONS_POST_U7 }),
+                    10,
+                )
+                .await
+                {
+                    return fail("U4", format!("B 职能基线恢复失败: {e}"));
+                }
+                if let Err(e) = wait_node_identity(
+                    &mut ws,
+                    "Node-B",
+                    &U_B_PROFESSIONS_POST_U7,
+                    None,
+                    true,
+                    60,
+                    true,
+                )
+                .await
+                {
+                    return fail("U4", format!("B 职能基线传播失败: {e}"));
+                }
+                // ① 回灌自愈：首轮 dev;cpp 非法 → 重试轮自愈 dev:cpp → 全链照常。
+                let (_p1, c1, _c) = match swarm_plan_and_confirm_n(
+                    &mut ws,
+                    NODES[0].web_port,
+                    "<PLAN_PROF_BAD>",
+                    90,
+                    3,
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => return fail("U4", format!("① plan/confirm failed: {e}")),
+                };
+                let got = ws_api_request(&mut ws, "board", "issue.get", json!({ "id": c1[1] }), 10)
+                    .await
+                    .unwrap_or(Value::Null);
+                let prof = got
+                    .pointer("/issue/required_profession")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if prof != "dev:cpp" {
+                    return fail(
+                        "U4",
+                        format!("① 自愈后子任务2 required_profession='{prof}'，want 'dev:cpp'"),
+                    );
+                }
+                for (i, cid) in c1.iter().enumerate() {
+                    if let Err(e) =
+                        wait_issue_done(&mut ws, *cid, &format!("U4①-子{}", i + 1), 600).await
+                    {
+                        return fail("U4", format!("① 子单 {i} 未完成: {e}"));
+                    }
+                }
+                let comments1 = u_comments_text(&mut ws, c1[1]).await;
+                if !comments1.contains("职能=dev:cpp") {
+                    return fail(
+                        "U4",
+                        format!(
+                            "① 子任务2 交付缺 dev:cpp 契约回显：{}",
+                            trunc(&comments1, 400)
+                        ),
+                    );
+                }
+                // ② 坚持非法：3 轮耗尽 → 末轮宽和（单子单降级 + 评论留痕 + 其余照常）。
+                let (p2, c2, _c) = match swarm_plan_and_confirm_n(
+                    &mut ws,
+                    NODES[0].web_port,
+                    "<PLAN_PROF_BAD_STUBBORN>",
+                    90,
+                    3,
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => return fail("U4", format!("② plan/confirm failed: {e}")),
+                };
+                let got = ws_api_request(&mut ws, "board", "issue.get", json!({ "id": c2[1] }), 10)
+                    .await
+                    .unwrap_or(Value::Null);
+                let prof2 = got
+                    .pointer("/issue/required_profession")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if !prof2.is_empty() {
+                    return fail(
+                        "U4",
+                        format!(
+                            "② 宽和后子任务2 required_profession='{prof2}'，应为空（降级无职能）"
+                        ),
+                    );
+                }
+                let comments2 = u_comments_text(&mut ws, c2[1]).await;
+                if !comments2.contains("非法，已降级无职能") {
+                    return fail(
+                        "U4",
+                        format!("② 子任务2 缺降级留痕评论：{}", trunc(&comments2, 400)),
+                    );
+                }
+                for (i, cid) in c2.iter().enumerate() {
+                    if let Err(e) =
+                        wait_issue_done(&mut ws, *cid, &format!("U4②-子{}", i + 1), 600).await
+                    {
+                        return fail(
+                            "U4",
+                            format!("② 子单 {i} 未完成（其余子单应照常派发）: {e}"),
+                        );
+                    }
+                }
+                if let Err(e) = wait_issue_done(&mut ws, p2, "U4②-父", 120).await {
+                    return fail("U4", format!("② 父单未收口: {e}"));
+                }
+                pass(
+                    "U4",
+                    "① 回灌自愈 dev:cpp（契约回显在交付）② 末轮宽和降级留痕 + 其余子单照常全 done",
+                )
+            },
+        )
+        .await,
+    );
+
+    // ---- U6：图像降级默认态（无图像模型 → generate_image 不注册 → 文本线完整验收）----
+    all_results.push(
+        run_test(
+            "U6: 图像降级（B 无图像模型：generate_image 未注册 + UI 子单文本线 done）",
+            || async {
+                let Ok(mut ws) = ws_connect_gateway(NODES[0].web_port).await else {
+                    return fail("U6", "WS connect to A failed");
+                };
+                // 注册闸默认态：B 启动日志必有「未注册」行（agent_factory 装配期）。
+                let log = std::fs::read_to_string(&gw_b.log_path).unwrap_or_default();
+                if !log.contains("generate_image 未注册") {
+                    return fail(
+                        "U6",
+                        format!(
+                            "B 日志缺 generate_image 未注册 行：{}",
+                            gw_b.log_path.display()
+                        ),
+                    );
+                }
+                let (_pid, children, _c) = match swarm_plan_and_confirm_n(
+                    &mut ws,
+                    NODES[0].web_port,
+                    "<PLAN_PROF_UI_TEXT>",
+                    60,
+                    1,
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => return fail("U6", format!("plan/confirm failed: {e}")),
+                };
+                if let Err(e) = wait_issue_done(&mut ws, children[0], "U6-子", 300).await {
+                    return fail("U6", format!("UI 文本线子单未完成: {e}"));
+                }
+                let comments = u_comments_text(&mut ws, children[0]).await;
+                if !comments.contains("UI图已交付") {
+                    return fail(
+                        "U6",
+                        format!("交付缺 UI图已交付：{}", trunc(&comments, 400)),
+                    );
+                }
+                pass(
+                    "U6",
+                    "默认态（无图像模型）：generate_image 未注册 + UI 子单文本线完整验收 done",
+                )
+            },
+        )
+        .await,
+    );
+
+    // ---- U5：图像全链（B 配图像模型 → generate_image → board_asset publish →
+    //          A 端资产取回 → vision 评审 → done；sha256 同源字节断言）----
+    all_results.push(
+        run_test("U5: 图像全链（generate_image 落盘 → 资产取回 → vision 评审 done + 字节同源）", || async {
+            let Ok(mut ws) = ws_connect_gateway(NODES[0].web_port).await else {
+                return fail("U5", "WS connect to A failed");
+            };
+            // 1. B 加图像模型（images-openai 协议；不设默认——不影响对话/评审 lane）。
+            let out = ws_b
+                .run_cli(
+                    &gateway_bin,
+                    &[
+                        "model",
+                        "add",
+                        "--model",
+                        "test/image-m",
+                        "--protocol",
+                        "images-openai",
+                        "--base",
+                        &format!("http://127.0.0.1:{}/v1", ai_server_port()),
+                        "--key",
+                        "test-key",
+                    ],
+                )
+                .await;
+            if !out.success() {
+                return fail("U5", format!("B image model add failed: {}", out.stderr));
+            }
+            gw_b.kill().await;
+            gw_b = match u_restart_gateway("Gateway-B", &gateway_bin, &ws_b, &NODES[1]).await {
+                Ok(g) => g,
+                Err(e) => return fail("U5", format!("B restart failed: {e}")),
+            };
+            let log = std::fs::read_to_string(&gw_b.log_path).unwrap_or_default();
+            if !log.contains("generate_image tool registered (model=") {
+                return fail("U5", "B 重启后日志缺 generate_image tool registered 行（注册闸未放行）");
+            }
+            // 2. UI 图像子单全链。
+            let Ok(mut wsb) = ws_connect_gateway(NODES[1].web_port).await else {
+                return fail("U5", "WS connect to B failed");
+            };
+            if let Err(e) = wait_node_identity(&mut wsb, "Node-B", &["ui-design"], None, true, 60, false).await {
+                return fail("U5", format!("B 重启后身份未恢复: {e}"));
+            }
+            drop(wsb);
+            let (_pid, children, _c) =
+                match swarm_plan_and_confirm_n(&mut ws, NODES[0].web_port, "<PLAN_PROF_UI_IMG>", 60, 1).await {
+                    Ok(v) => v,
+                    Err(e) => return fail("U5", format!("plan/confirm failed: {e}")),
+                };
+            if let Err(e) = wait_issue_done(&mut ws, children[0], "U5-子", 600).await {
+                return fail("U5", format!("UI 图像子单未完成: {e}"));
+            }
+            // 3. 字节同源：B 工作区产物 vs A 端取回资产。
+            let b_png = ws_b
+                .home()
+                .join("workspace")
+                .join("images")
+                .join("board_uat")
+                .join("ui.png");
+            let a_png = ws_a
+                .home()
+                .join("workspace")
+                .join("board")
+                .join("assets")
+                .join("ui.png");
+            let b_bytes = match std::fs::read(&b_png) {
+                Ok(b) => b,
+                Err(e) => return fail("U5", format!("B 产物缺失 {}: {e}", b_png.display())),
+            };
+            let a_bytes = match std::fs::read(&a_png) {
+                Ok(b) => b,
+                Err(e) => return fail("U5", format!("A 取回资产缺失 {}: {e}", a_png.display())),
+            };
+            if b_bytes.len() < 8 || b_bytes[0] != 0x89 || b_bytes[1..4] != *b"PNG" {
+                return fail("U5", format!("B 产物非 PNG（{} bytes）", b_bytes.len()));
+            }
+            if a_bytes != b_bytes {
+                return fail("U5", format!("字节不同源：B={} bytes A={} bytes", b_bytes.len(), a_bytes.len()));
+            }
+            pass("U5", format!("图像全链：generate_image 落盘（PNG {} bytes）→ publish → A 端资产取回字节同源 → vision 评审 done", b_bytes.len()))
         })
         .await,
     );

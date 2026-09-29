@@ -531,6 +531,8 @@ impl ClusterHandler {
                     "category": n.base.category,
                     "tags": n.tags,
                     "capabilities": n.capabilities,
+                    "professions": n.professions,
+                    "tier": n.tier,
                     "online": n.is_online(),
                     "lastSeen": n.base.last_seen,
                     "taskCount": task_count,
@@ -648,6 +650,8 @@ impl ClusterHandler {
                 capabilities: Vec::new(),
                 tags: Vec::new(),
                 addresses: Vec::new(),
+                professions: Vec::new(),
+                tier: None,
                 node_type: String::new(),
             };
             cluster.register_node(info);
@@ -707,6 +711,8 @@ impl ClusterHandler {
                 capabilities: Vec::new(),
                 tags: Vec::new(),
                 addresses: outcome.addresses.clone(),
+                professions: Vec::new(),
+                tier: None,
                 node_type: String::new(),
             };
             cluster.register_node(info);
@@ -823,6 +829,17 @@ impl ClusterHandler {
             })
             .unwrap_or_default();
         let node_type = resp["node_type"].as_str().unwrap_or("").to_string();
+        // 职能框架 M2：自报 professions/tier 进注册表（旧节点 get_info 无
+        // 这两个键 → 空列表/None = 未宣告，与 announce 缺字段同语义）。
+        let professions: Vec<String> = resp["professions"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let tier = resp["tier"].as_str().map(String::from);
 
         let primary_address = if !addresses.is_empty() && rpc_port > 0 {
             format!("{}:{}", addresses[0], rpc_port)
@@ -846,6 +863,8 @@ impl ClusterHandler {
             category,
             capabilities,
             tags,
+            professions,
+            tier,
             node_type,
         };
         let canonical_id = cluster.merge_real_node_info(&info);
@@ -953,6 +972,43 @@ impl ClusterHandler {
             cluster.set_tags(tag_list.clone());
             updated["tags"] = serde_json::json!(tag_list);
         }
+        // 职能框架 M6：professions（slug 数组，规范化 + loud 校验——写进去
+        // = 派发匹配数据源，非法 slug 永不命中）+ tier（mini/normal/big，
+        // null = 清除回落 auto 推断）。运行时热改写（下一 announce 拍生效）
+        // + peers.toml [node] 段持久化（重启保真）。
+        let prof_opt = data
+            .get("professions")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(nemesis_prompts::professions::meta::normalize_slug)
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+            });
+        if let Some(profs) = &prof_opt {
+            for slug in profs {
+                if let Err(e) = nemesis_prompts::professions::meta::validate_slug(slug) {
+                    return Err(format!("invalid profession slug '{slug}': {e}"));
+                }
+            }
+            cluster.set_professions(profs.clone());
+            updated["professions"] = serde_json::json!(profs);
+        }
+        let mut tier_parsed: Option<Option<String>> = None;
+        if let Some(v) = data.get("tier") {
+            let t = v.as_str().map(str::trim).unwrap_or("").to_ascii_lowercase();
+            let parsed = if t.is_empty() {
+                None
+            } else if matches!(t.as_str(), "mini" | "normal" | "big") {
+                Some(t)
+            } else {
+                return Err("tier must be 'mini'/'normal'/'big' or null (auto)".to_string());
+            };
+            cluster.set_tier(parsed.clone());
+            updated["tier"] = serde_json::json!(parsed);
+            tier_parsed = Some(parsed);
+        }
 
         // Persist to peers.toml [node] section
         if let Ok(workspace) = require_workspace(ctx) {
@@ -981,6 +1037,12 @@ impl ClusterHandler {
                     .filter(|s| !s.is_empty())
                     .collect();
             }
+            if let Some(profs) = &prof_opt {
+                config.node.professions = profs.clone();
+            }
+            if let Some(t) = &tier_parsed {
+                config.node.tier = t.clone();
+            }
             if let Some(parent) = ppath.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
@@ -996,6 +1058,8 @@ impl ClusterHandler {
         updated["current_node_type"] = serde_json::json!(cluster.node_type());
         let caps = cluster.get_capabilities();
         updated["current_capabilities"] = serde_json::json!(caps);
+        updated["current_professions"] = serde_json::json!(cluster.professions());
+        updated["current_tier"] = serde_json::json!(cluster.tier());
 
         Ok(Some(updated))
     }

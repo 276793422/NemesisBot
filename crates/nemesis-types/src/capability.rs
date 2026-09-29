@@ -620,6 +620,9 @@ pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
 /// - `anthropic`（用户可写别名 `claude`）：Claude 消息协议（POST /v1/messages + x-api-key）
 /// - `openai`（别名 `chat-completions`）：OpenAI 兼容（POST /chat/completions + Bearer）
 /// - `responses`：OpenAI Responses API
+/// - `images-openai`（集群专业职能框架 M4）：图像生成（POST /v1/images/generations，
+///   b64_json）。**不是对话协议**——factory/默认模型槽/probe 对它 loud 拒绝；
+///   唯一消费点 = `generate_image` 工具（`tools.image_gen` 配置）。
 ///
 /// 空输入 = 清除（按 provider 前缀/模型名自动推断，现状行为）；未知值 loud 拒绝。
 pub fn normalize_model_protocol(input: &str) -> Result<String, String> {
@@ -628,10 +631,17 @@ pub fn normalize_model_protocol(input: &str) -> Result<String, String> {
         "anthropic" | "claude" => Ok("anthropic".to_string()),
         "openai" | "chat-completions" => Ok("openai".to_string()),
         "responses" => Ok("responses".to_string()),
+        "images-openai" => Ok("images-openai".to_string()),
         other => Err(format!(
-            "unknown protocol '{other}'. Supported: anthropic | openai | responses"
+            "unknown protocol '{other}'. Supported: anthropic | openai | responses | images-openai"
         )),
     }
+}
+
+/// 图像协议判定（M4 单一谓词）：四道守卫与 generate_image 消费点共用，
+/// 防「图像条目混进对话模型槽」各处散写 `== "images-openai"`。
+pub fn is_image_protocol(protocol: &str) -> bool {
+    protocol.trim().eq_ignore_ascii_case("images-openai")
 }
 
 #[cfg(test)]

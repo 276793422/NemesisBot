@@ -50,6 +50,16 @@ pub trait ClusterCallbacks: Send + Sync {
     fn node_type(&self) -> String {
         "agent".into()
     }
+    /// 自报职能清单（集群专业职能框架 M2；`family[:spec]` slug，announce
+    /// 携带）。默认空 = 未宣告。
+    fn professions(&self) -> Vec<String> {
+        Vec::new()
+    }
+    /// 节点档位（role_tier 口径：mini/normal/big）。默认 `None` = 未宣告
+    /// （matcher tier 闸 fail-open）。
+    fn tier(&self) -> Option<String> {
+        None
+    }
     /// Handle a newly discovered or updated node.
     /// Returns `true` if the peer was added or its content actually changed.
     fn handle_discovered_node(
@@ -64,6 +74,37 @@ pub trait ClusterCallbacks: Send + Sync {
         capabilities: &[String],
         node_type: &str,
     ) -> bool;
+    /// 扩展形态 [`Self::handle_discovered_node`]：带对端自报职能与档位
+    /// （profession framework M2）。默认实现丢弃职能信息委托旧形态——
+    /// 不关心职能的实现零改动对齐旧行为；生产 UDP 发现路径（announce
+    /// 接收）走本方法。
+    fn handle_discovered_node_ex(
+        &self,
+        node_id: &str,
+        name: &str,
+        addresses: &[String],
+        rpc_port: u16,
+        role: &str,
+        category: &str,
+        tags: &[String],
+        capabilities: &[String],
+        node_type: &str,
+        professions: &[String],
+        tier: Option<&str>,
+    ) -> bool {
+        let _ = (professions, tier);
+        self.handle_discovered_node(
+            node_id,
+            name,
+            addresses,
+            rpc_port,
+            role,
+            category,
+            tags,
+            capabilities,
+            node_type,
+        )
+    }
     /// Handle a node going offline.
     fn handle_node_offline(&self, node_id: &str, reason: &str);
     /// Persist the current peer list to disk.
@@ -278,6 +319,8 @@ impl ClusterCallbacks for RegistryCallbacks {
             capabilities: capabilities.to_vec(),
             tags: tags.to_vec(),
             addresses: addresses.to_vec(),
+            professions: Vec::new(),
+            tier: None,
             node_type: node_type.to_string(),
         };
         self.registry.upsert_if_changed(info)
@@ -555,7 +598,7 @@ impl DiscoveryService {
                             "[Discovery] Announce timestamp drift detected (peer clock not synced?)"
                         );
                     }
-                    let changed = cluster.handle_discovered_node(
+                    let changed = cluster.handle_discovered_node_ex(
                         &msg.node_id,
                         &msg.name,
                         &msg.addresses,
@@ -565,6 +608,8 @@ impl DiscoveryService {
                         &msg.tags,
                         &msg.capabilities,
                         &msg.node_type,
+                        &msg.professions,
+                        msg.tier.as_deref(),
                     );
                     if changed {
                         tracing::info!(node_id = %msg.node_id, "[Discovery] Node info updated, syncing to disk");
@@ -714,7 +759,8 @@ fn send_announce_direct(listener: &UdpListener, cluster: &dyn ClusterCallbacks) 
         cluster.tags(),
         cluster.capabilities(),
         cluster.node_type(),
-    );
+    )
+    .with_professions(cluster.professions(), cluster.tier());
 
     if let Err(e) = listener.broadcast(&msg) {
         tracing::error!(error = %e, "[Discovery] Failed to send announce");
@@ -753,7 +799,8 @@ fn send_announce_with(
         cluster.tags(),
         cluster.capabilities(),
         cluster.node_type(),
-    );
+    )
+    .with_professions(cluster.professions(), cluster.tier());
 
     let data = match msg.to_bytes() {
         Ok(d) => d,

@@ -2160,6 +2160,34 @@ pub struct ToolsConfig {
     pub exec: ExecConfig,
     #[serde(default)]
     pub hardware: HardwareToolsConfig,
+    /// 集群专业职能框架（M4）：图像生成（`generate_image` 工具）。
+    #[serde(default)]
+    pub image_gen: ImageGenConfig,
+}
+
+/// 图像生成配置（`tools.image_gen` 段，M4）。模型解析：`model` 显式别名
+/// 优先；缺省取 model_list 中**唯一** protocol=images-openai 条目（缺失/
+/// 歧义在注册期诚实报错，工具不注册）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ImageGenConfig {
+    /// 图像模型别名（model_list 条目的 model_name）。None = 唯一 images-openai
+    /// 条目自动解析。
+    #[serde(default)]
+    pub model: Option<String>,
+    /// 单次图像生成墙钟超时（秒）。0/缺省 = 120。
+    #[serde(default)]
+    pub timeout_secs: u64,
+}
+
+impl ImageGenConfig {
+    /// 生效超时（0/缺省 → 120s）。
+    pub fn effective_timeout_secs(&self) -> u64 {
+        if self.timeout_secs == 0 {
+            120
+        } else {
+            self.timeout_secs
+        }
+    }
 }
 
 /// P8 GPIO 白名单：I2C 地址访问策略（`tools.hardware` 段）。
@@ -3669,6 +3697,7 @@ pub fn default_config() -> Config {
                 enable_deny_patterns: true,
                 ..Default::default()
             },
+            image_gen: ImageGenConfig::default(),
         },
         heartbeat: HeartbeatConfig {
             enabled: true,

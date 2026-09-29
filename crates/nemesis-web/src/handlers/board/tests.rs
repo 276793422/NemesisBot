@@ -1468,6 +1468,7 @@ fn seed_plan(plan_id: &str, issue_id: i64, subs: Vec<nemesis_board::PlannedSubIs
         super::PlanPreview {
             issue_id,
             subs,
+            downgrades: Vec::new(),
             created_at: Instant::now(),
         },
     );
@@ -1480,6 +1481,7 @@ fn sub(title: &str, deps: Vec<usize>) -> nemesis_board::PlannedSubIssue {
         description: format!("{title} 的说明"),
         required_role: String::new(),
         required_tags: Vec::new(),
+        required_profession: String::new(),
         acceptance_criteria: format!("- [ ] {title} 验收"),
         depends_on: deps,
     }
@@ -2459,10 +2461,12 @@ async fn test_confirm_plan_subs_inherit_parent_project_id() {
             description: String::new(),
             required_role: String::new(),
             required_tags: Vec::new(),
+            required_profession: String::new(),
             acceptance_criteria: String::new(),
             depends_on: Vec::new(),
         }],
         &nemesis_board::Actor::system("board"),
+        &[],
     )
     .unwrap();
     // 按 project 过滤 + 标题查询定位子单（同时验证项目过滤视图含子单）。
@@ -2905,6 +2909,8 @@ async fn sweep_redispatches_when_matching_tags_peer_appears() {
         category: "development".into(),
         capabilities: vec![],
         tags: vec!["python".into()],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -2991,6 +2997,8 @@ async fn periodic_sweep_notify_parks_with_notice_then_revives() {
         category: "development".into(),
         capabilities: vec![],
         tags: vec!["rust".into()],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
     let (cands, dispatched, failed) =
@@ -3210,6 +3218,8 @@ async fn cancel_parent_cascades_children_via_parent_edge() {
         category: "development".into(),
         capabilities: vec![],
         tags: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
     super::dispatch_subissue_auto_with_config(
@@ -3544,6 +3554,8 @@ async fn fallback_dispatches_to_relaxed_online_peer() {
         category: "development".into(),
         capabilities: vec![],
         tags: vec!["rust".into()],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -3598,6 +3610,8 @@ async fn fallback_pinned_target_name_match_and_offline_honesty() {
         category: "development".into(),
         capabilities: vec![],
         tags: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -3660,6 +3674,8 @@ async fn fallback_role_relaxed_ordering() {
         category: "development".into(),
         capabilities: vec![],
         tags: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -3730,6 +3746,8 @@ async fn fallback_sweep_revives_parked_issue() {
         category: "general".into(),
         capabilities: vec![],
         tags: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
     let (cands, dispatched, failed) = super::sweep_parked_dispatches_with_config(
@@ -4135,6 +4153,8 @@ async fn inflight_gate_hits_canonical_worker_id_for_named_assignee() {
         capabilities: vec![],
         tags: vec![],
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -4240,6 +4260,8 @@ async fn mutex_deferred_single_dispatches_after_conflict_settles() {
         category: "development".into(),
         capabilities: vec![],
         tags: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
 
@@ -4294,6 +4316,8 @@ fn cand(id: &str, role: &str, tags: &[&str]) -> nemesis_board::PeerCandidate {
         role: role.into(),
         tags: tags.iter().map(|s| s.to_string()).collect(),
         capabilities: vec![],
+        professions: vec![],
+        tier: None,
     }
 }
 
@@ -4319,6 +4343,7 @@ fn bare_issue(role: Option<&str>, tags: &[&str]) -> nemesis_board::Issue {
         origin: None,
         required_role: role.map(str::to_string),
         required_tags: tags.iter().map(|s| s.to_string()).collect(),
+        required_profession: None,
         created_at: 0,
         updated_at: 0,
     }
@@ -4423,6 +4448,8 @@ async fn project_resume_no_match_carries_b1_detail() {
         category: "development".into(),
         capabilities: vec![],
         tags: vec!["rust".into()],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
     let out = super::project_resume(&store, &cluster, None, project.id, true, &actor)
@@ -5679,11 +5706,13 @@ async fn agt_run_planner_surrender_llm_fail_and_success() {
         Box::new(AgtGoodPlannerProvider),
         AgentConfig::default(),
     ));
-    let subs = super::run_planner(&al_ok, &parent, vec!["过往经验: 先补测试".into()], None)
-        .await
-        .unwrap();
+    let (subs, downgrades) =
+        super::run_planner(&al_ok, &parent, vec!["过往经验: 先补测试".into()], None)
+            .await
+            .unwrap();
     assert_eq!(subs.len(), 2);
     assert_eq!(subs[1].depends_on, vec![0]);
+    assert!(downgrades.is_empty(), "严格可过的计划零降级");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -6568,6 +6597,8 @@ fn w5_online_peer(
         category: "development".to_string(),
         capabilities: caps.iter().map(|s| (*s).to_string()).collect(),
         tags: tags.iter().map(|s| (*s).to_string()).collect(),
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".to_string(),
     });
 }
@@ -6659,10 +6690,11 @@ async fn w5_confirm_plan_empty_title_err_and_dispatch_wave() {
         description: String::new(),
         required_role: String::new(),
         required_tags: Vec::new(),
+        required_profession: String::new(),
         acceptance_criteria: String::new(),
         depends_on: Vec::new(),
     };
-    let err = super::confirm_plan(&store, None, &parent, vec![bad], &actor).unwrap_err();
+    let err = super::confirm_plan(&store, None, &parent, vec![bad], &actor, &[]).unwrap_err();
     assert!(err.contains("title must not be empty"), "{err}");
 
     let cluster = offline_cluster(&dir, "w5-coord");
@@ -6674,6 +6706,7 @@ async fn w5_confirm_plan_empty_title_err_and_dispatch_wave() {
         &parent,
         vec![sub("子甲", vec![]), sub("子乙", vec![0])],
         &actor,
+        &[],
     )
     .unwrap();
     assert_eq!(out["dispatched"], serde_json::json!(1), "{out}");
@@ -7532,6 +7565,77 @@ fn w5_render_assets_section_with_signing_context() {
         super::render_dispatch_assets_section(&store, issue.id).unwrap(),
         None,
         "注入后无资产 → Ok(None)"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// 集群专业职能框架 M2：confirm_plan 降级评论 + required_profession 落库
+// ---------------------------------------------------------------------------
+
+/// D9 末轮宽和降级：downgrades 明细逐条落被降级子单的系统评论；合法职能
+/// 原样落库。
+#[cfg(feature = "cluster")]
+#[test]
+fn confirm_plan_writes_downgrade_comments_and_keeps_valid_professions() {
+    let dir = unique_dir("confirm-downgrade-comments");
+    let ctx = make_ctx_with_board(&dir);
+    let store = ctx.state.board.as_ref().unwrap().store().clone();
+    let parent = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "降级父单".to_string(),
+            creator: nemesis_board::Actor::system("board"),
+            ..nemesis_board::NewIssue::default()
+        })
+        .unwrap();
+    let subs = vec![
+        nemesis_board::PlannedSubIssue {
+            title: "被降级子单".to_string(),
+            required_profession: "BAD SLUG".to_string(),
+            ..nemesis_board::PlannedSubIssue::default()
+        },
+        nemesis_board::PlannedSubIssue {
+            title: "合法职能子单".to_string(),
+            required_profession: "dev:cpp".to_string(),
+            ..nemesis_board::PlannedSubIssue::default()
+        },
+    ];
+    let downgrades = vec![(0usize, "BAD SLUG".to_string())];
+    let out = super::confirm_plan(
+        &store,
+        None, // 集群未装配 → 派发诚实降级（不撞本断言关注点）
+        &parent,
+        subs,
+        &nemesis_board::Actor::system("board"),
+        &downgrades,
+    )
+    .unwrap();
+    let created: Vec<i64> = out["created"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap())
+        .collect();
+
+    // 子 0：职能置空落库 + 系统评论留痕。
+    let sub0 = store.get_issue(created[0]).unwrap();
+    assert_eq!(sub0.required_profession, None, "降级子单职能 = 不限");
+    let comments0 = store.list_comments(created[0]).unwrap();
+    assert!(
+        comments0
+            .iter()
+            .any(|c| c.content.contains("required_profession=`BAD SLUG`")
+                && c.content.contains("已降级无职能")),
+        "降级评论必须落在被降级子单上: {comments0:?}"
+    );
+
+    // 子 1：合法职能原样落库、无降级评论。
+    let sub1 = store.get_issue(created[1]).unwrap();
+    assert_eq!(sub1.required_profession.as_deref(), Some("dev:cpp"));
+    let comments1 = store.list_comments(created[1]).unwrap();
+    assert!(
+        !comments1.iter().any(|c| c.content.contains("已降级无职能")),
+        "合法子单不应有降级评论: {comments1:?}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

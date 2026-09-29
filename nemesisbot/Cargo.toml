@@ -183,6 +183,8 @@ sha2 = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+# generate_image 工具落盘链路假端点（集群专业职能框架 M4）。
+wiremock = "0.6"
 # R9：子进程级测试（REPL 管道 stdin / eval 探测式真链路 / main 短路退码断言）
 # 需要 resolve_nemesisbot_bin + run_cli_with_stdin + MockAiServer（scripted
 # OpenAI 兼容回环服务器——TestAIServer 回复内容钉死，测不了工具选择/精确文本）。

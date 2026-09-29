@@ -93,6 +93,13 @@ pub struct DiscoveryMessage {
     /// Node type: "agent" (full with LLM) or "node" (lightweight, no LLM).
     #[serde(default)]
     pub node_type: String,
+    /// 自报职能清单（集群专业职能框架 M2；`family[:spec]` slug）。旧节点 /
+    /// Go 节点的 announce 无此字段 → serde default 空 = 未宣告（wire 兼容）。
+    #[serde(default)]
+    pub professions: Vec<String>,
+    /// 节点自报档位（role_tier 口径：mini/normal/big；None = 未宣告）。
+    #[serde(default)]
+    pub tier: Option<String>,
     /// Unix timestamp (seconds since epoch).
     pub timestamp: i64,
 }
@@ -126,8 +133,19 @@ impl DiscoveryMessage {
             tags,
             capabilities,
             node_type: node_type.into(),
+            professions: Vec::new(),
+            tier: None,
             timestamp: now_unix(),
         }
+    }
+
+    /// 附自报职能与档位（profession framework M2；生产 announce 构造点
+    /// 链式调用。保持 [`Self::new_announce`] 既有签名不变——避免波及
+    /// 数十个既有测试构造点）。
+    pub fn with_professions(mut self, professions: Vec<String>, tier: Option<String>) -> Self {
+        self.professions = professions;
+        self.tier = tier;
+        self
     }
 
     /// Create a new bye message, mirroring Go's `NewByeMessage`.
@@ -144,6 +162,8 @@ impl DiscoveryMessage {
             tags: Vec::new(),
             capabilities: Vec::new(),
             node_type: String::new(),
+            professions: Vec::new(),
+            tier: None,
             timestamp: now_unix(),
         }
     }

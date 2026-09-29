@@ -79,6 +79,8 @@ fn node(id: &str, name: &str, addr: &str, status: NodeStatus) -> ExtendedNodeInf
         capabilities: Vec::new(),
         tags: Vec::new(),
         addresses: Vec::new(),
+        professions: Vec::new(),
+        tier: None,
         node_type: "gateway".into(),
     }
 }
@@ -146,6 +148,8 @@ fn start_restores_discovered_entries_with_fallbacks() {
         role: "worker".into(),
         category: "development".into(),
         tags: Vec::new(),
+        professions: Vec::new(),
+        tier: None,
         priority: 0,
         enabled: true,
         status: PeerStatus {
@@ -311,6 +315,8 @@ fn merge_real_node_matches_full_address_candidates() {
         category: "development".into(),
         capabilities: Vec::new(),
         tags: Vec::new(),
+        professions: Vec::new(),
+        tier: None,
         node_type: "gateway".into(),
     });
     assert_eq!(got, "real-b");
@@ -358,6 +364,8 @@ fn upgrade_removes_legacy_sanitized_key() {
         category: "general".into(),
         capabilities: Vec::new(),
         tags: Vec::new(),
+        professions: Vec::new(),
+        tier: None,
         node_type: "gateway".into(),
     });
     assert_eq!(got, "real-dot");

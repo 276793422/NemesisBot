@@ -230,6 +230,35 @@ fn system_prompt_declares_anchor_topology_discipline() {
     }
 }
 
+/// 职能框架（M1）同步钉：完整形态 `planner_system_prompt()`（基础契约 +
+/// 拆解方法论段）必须 (a) 在 schema 里声明 `required_profession` 字段，
+/// (b) 值域清单逐 slug 覆盖 nemesis-prompts 内置目录 CATALOG——prompt 是
+/// 字面文本（const 不能插值），目录增删时本测试红出来强制同步。
+#[test]
+fn planner_prompt_declares_profession_field_and_full_slug_catalog() {
+    let p = super::super::planner_system_prompt();
+    assert!(
+        p.contains("required_profession"),
+        "完整 planner prompt 必须声明 required_profession 字段"
+    );
+    assert!(
+        p.contains("无职能需求填空串"),
+        "required_profession 的空值语义必须声明"
+    );
+    for m in nemesis_prompts::professions::meta::CATALOG {
+        assert!(
+            p.contains(&format!("`{}`", m.slug)),
+            "planner prompt 值域清单缺内置职能 `{}`（与 CATALOG 同步）",
+            m.slug
+        );
+    }
+    // 精确匹配纪律（无继承）必须传达到 planner。
+    assert!(
+        p.contains("精确匹配"),
+        "职能匹配语义（精确匹配无继承）必须出现在 planner 方法论段"
+    );
+}
+
 /// R-10（goal P4）：集群画像注入——有画像时渲染专用段+约束语，无则不渲染。
 #[test]
 fn planner_user_prompt_renders_cluster_profile() {
@@ -358,4 +387,88 @@ fn system_prompt_declares_shared_file_discipline() {
     let p = PLANNER_SYSTEM_PROMPT;
     assert!(p.contains("共享文件纪律"), "prompt 须含共享文件规则: ");
     assert!(p.contains("锁文件"), "prompt 须含锁文件独立成单: ");
+}
+
+// -----------------------------------------------------------------------
+// required_profession（集群专业职能框架 M2，D9 三臂）
+// -----------------------------------------------------------------------
+
+use crate::planner::{parse_plan, parse_plan_lenient};
+
+/// 臂 1（严格常规路径）：职能格式非法 → PlanParseError 回灌（不产计划）。
+#[test]
+fn profession_format_invalid_rejected_in_strict_parse() {
+    // 缺冒号形态错（大写）。
+    let raw = r#"[{"title":"子甲","required_profession":"Dev:CPP"}]"#;
+    let err = parse_plan(raw).unwrap_err();
+    assert!(err.message.contains("required_profession"), "{err}");
+    assert!(err.message.contains("格式非法"), "{err}");
+    // 非法字符（空格）。
+    let err = parse_plan(r#"[{"title":"子甲","required_profession":"dev cpp"}]"#).unwrap_err();
+    assert!(err.message.contains("格式非法"), "{err}");
+    // 冒号双段非法。
+    let err = parse_plan(r#"[{"title":"子甲","required_profession":"dev:cpp:win"}]"#).unwrap_err();
+    assert!(err.message.contains("格式非法"), "{err}");
+}
+
+/// 臂 1 补充：合法 slug（含目录外合法形态）→ 保留派发（匹配端诚实找
+/// 不到；D9 明文不拦用户自定义职能）。
+#[test]
+fn profession_legal_but_unknown_slug_preserved() {
+    let plan = parse_plan(r#"[{"title":"子甲","required_profession":"dev:cuda"}]"#).unwrap();
+    assert_eq!(plan[0].required_profession, "dev:cuda");
+    let plan = parse_plan(r#"[{"title":"子甲","required_profession":"dev:cpp"}]"#).unwrap();
+    assert_eq!(plan[0].required_profession, "dev:cpp");
+}
+
+/// 臂 1 补充：缺字段 / 空串 / 空白 = 无职能需求（serde default 零迁移）。
+#[test]
+fn profession_absent_or_blank_means_none() {
+    let plan = parse_plan(r#"[{"title":"子甲"}]"#).unwrap();
+    assert_eq!(plan[0].required_profession, "");
+    let plan = parse_plan(r#"[{"title":"子甲","required_profession":"  "}]"#).unwrap();
+    assert_eq!(plan[0].required_profession, "  ");
+}
+
+/// 臂 2（末轮宽和）：格式非法 → 置空收进计划 + 降级明细返回；其余校验
+/// 照常严校（title 空、依赖越界仍报错）。
+#[test]
+fn lenient_final_round_downgrades_invalid_profession() {
+    let raw = r#"[
+        {"title":"子甲","required_profession":"BAD SLUG"},
+        {"title":"子乙","required_profession":"dev:cpp"},
+        {"title":"子丙"}
+    ]"#;
+    let lp = parse_plan_lenient(raw).unwrap();
+    assert_eq!(lp.plan.len(), 3);
+    assert_eq!(lp.plan[0].required_profession, "", "非法职能置空");
+    assert_eq!(lp.plan[1].required_profession, "dev:cpp", "合法项原样保留");
+    assert_eq!(lp.plan[2].required_profession, "");
+    assert_eq!(
+        lp.downgraded,
+        vec![(0, "BAD SLUG".to_string())],
+        "降级明细 = (序号, 原始值)"
+    );
+
+    // 宽和臂不放宽其他校验。
+    let err = parse_plan_lenient(r#"[{"title":"","required_profession":"BAD"}]"#).unwrap_err();
+    assert!(err.message.contains("title 为空"), "{err}");
+    let err = parse_plan_lenient(r#"[{"title":"子甲","depends_on":[5]}]"#).unwrap_err();
+    assert!(err.message.contains("depends_on"), "{err}");
+    // 宽和臂对整体非 JSON 的失败面与严格版一致。
+    assert!(parse_plan_lenient("not json").is_err());
+}
+
+/// 严格可过的计划在宽和臂下零降级原样通过（宽和 = 严格超集，末轮直用
+/// 宽和版对成功路径无差）。
+#[test]
+fn lenient_is_superset_of_strict() {
+    let raw = r#"[
+        {"title":"子甲","required_profession":"architecture","acceptance_criteria":"[CHECK] file:docs/prd.md exists:## 验收标准"},
+        {"title":"子乙","required_profession":"dev","depends_on":[0]}
+    ]"#;
+    let strict = parse_plan(raw).unwrap();
+    let lenient = parse_plan_lenient(raw).unwrap();
+    assert_eq!(strict, lenient.plan);
+    assert!(lenient.downgraded.is_empty());
 }

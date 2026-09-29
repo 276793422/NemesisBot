@@ -81,6 +81,8 @@ fn test_static_config_roundtrip() {
             role: "worker".into(),
             category: "development".into(),
             tags: vec!["test".into()],
+            professions: Vec::new(),
+            tier: None,
         },
     };
 
@@ -960,6 +962,8 @@ rpc_port = 29422
             role: "worker".into(),
             category: "qa".into(),
             tags: vec!["u1".into()],
+            professions: Vec::new(),
+            tier: None,
         },
     };
     save_static_config(&path, &updated).unwrap();
@@ -995,4 +999,39 @@ fn test_save_static_config_invalid_existing_file_overwrites() {
     save_static_config(&path, &config).unwrap();
     let loaded = load_static_config(&path).unwrap();
     assert_eq!(loaded.node.id, "node-1");
+}
+
+/// 职能字段（M2）随 [[discovered]] / [peers.X] 表往返保留；旧 state.toml
+/// 缺字段时 serde default 兜底（空职能 + None 档位）。
+#[test]
+fn peer_config_professions_roundtrip_and_legacy_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.toml");
+    let mut state = DynamicState::default();
+    let mut pc = PeerConfig::default();
+    pc.id = "peer-prof".into();
+    pc.name = "ProfPeer".into();
+    pc.address = "10.0.0.5:9000".into();
+    pc.professions = vec!["dev:cpp".into(), "test-blackbox".into()];
+    pc.tier = Some("big".into());
+    state.discovered.push(pc);
+    save_dynamic_state(&path, &state).unwrap();
+
+    let loaded = load_dynamic_state(&path).unwrap();
+    let peer = loaded
+        .discovered
+        .iter()
+        .find(|p| p.id == "peer-prof")
+        .unwrap();
+    assert_eq!(peer.professions, vec!["dev:cpp", "test-blackbox"]);
+    assert_eq!(peer.tier.as_deref(), Some("big"));
+
+    // 旧 state.toml（手写，无 professions/tier 键）→ default 兜底
+    let legacy = "[[discovered]]\nid = \"old\"\nname = \"Old\"\naddress = \"10.0.0.6:9000\"\n";
+    let legacy_path = dir.path().join("legacy_state.toml");
+    std::fs::write(&legacy_path, legacy).unwrap();
+    let loaded = load_dynamic_state(&legacy_path).unwrap();
+    let old = loaded.discovered.iter().find(|p| p.id == "old").unwrap();
+    assert!(old.professions.is_empty());
+    assert_eq!(old.tier, None);
 }

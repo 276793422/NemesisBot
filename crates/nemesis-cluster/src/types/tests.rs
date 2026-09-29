@@ -20,6 +20,8 @@ fn make_test_node(
         capabilities: capabilities.into_iter().map(String::from).collect(),
         tags: Vec::new(),
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     }
 }
@@ -47,6 +49,8 @@ fn test_extended_node_info_serialization() {
         capabilities: vec!["llm".into(), "tools".into()],
         tags: Vec::new(),
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     };
     let json = serde_json::to_string(&node).unwrap();
@@ -81,6 +85,8 @@ fn test_extended_node_info_get_uptime() {
         capabilities: vec!["llm".into()],
         tags: Vec::new(),
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     };
     let uptime = node.get_uptime();
@@ -157,6 +163,8 @@ fn test_to_peer_config() {
         capabilities: vec!["llm".into()],
         tags: Vec::new(),
         addresses: vec!["10.0.0.1".into(), "192.168.1.1".into()],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     };
     let config = node.to_peer_config();
@@ -200,6 +208,8 @@ fn test_addresses_field_preserved() {
         capabilities: vec![],
         tags: Vec::new(),
         addresses: vec!["10.0.0.1".into(), "192.168.1.1".into()],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     };
     let json = serde_json::to_string(&node).unwrap();
@@ -258,6 +268,8 @@ fn test_extended_node_info_getters() {
         capabilities: vec!["llm".into(), "tools".into()],
         tags: Vec::new(),
         addresses: vec!["10.0.0.1".into()],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     };
     assert_eq!(node.get_id(), "node-42");
@@ -281,6 +293,8 @@ fn test_to_peer_config_coordinator_role() {
         capabilities: vec!["llm".into()],
         tags: Vec::new(),
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     };
     let config = node.to_peer_config();
@@ -400,6 +414,8 @@ fn test_content_eq_different_addresses() {
         capabilities: vec![],
         tags: Vec::new(),
         addresses: vec!["10.0.0.1".into()],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     };
     let b = ExtendedNodeInfo {
@@ -415,6 +431,8 @@ fn test_content_eq_different_addresses() {
         capabilities: vec![],
         tags: Vec::new(),
         addresses: vec!["10.0.0.1".into(), "192.168.1.1".into()],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     };
     assert!(!a.content_eq(&b));
@@ -469,4 +487,65 @@ fn test_content_eq_different_node_type() {
     let mut b = make_test_node("node-1", NodeStatus::Online, vec![], "");
     b.node_type = "node".into();
     assert!(!a.content_eq(&b));
+}
+
+/// 职能/档位是稳定内容字段：content_eq 必须把它们纳入比较，否则周期
+/// 广播携带的职能变化会被注册表当冗余 upsert 跳过（M2）。
+#[test]
+fn content_eq_distinguishes_professions_and_tier() {
+    let base = ExtendedNodeInfo {
+        base: crate::types::NodeInfo {
+            id: "n1".into(),
+            name: "N1".into(),
+            role: crate::types::NodeRole::Worker,
+            address: "10.0.0.1:9000".into(),
+            category: "development".into(),
+            last_seen: "2026-01-01T00:00:00Z".into(),
+        },
+        status: super::NodeStatus::Online,
+        capabilities: vec![],
+        tags: vec![],
+        professions: vec!["dev".into()],
+        tier: Some("big".into()),
+        addresses: vec![],
+        node_type: "agent".into(),
+    };
+    let mut other = base.clone();
+    assert!(base.content_eq(&other));
+
+    other.professions = vec!["dev".into(), "dev:cpp".into()];
+    assert!(!base.content_eq(&other));
+
+    let mut other = base.clone();
+    other.tier = Some("normal".into());
+    assert!(!base.content_eq(&other));
+}
+
+/// to_peer_config 保留职能/档位（state.toml 持久化链路）。
+#[test]
+fn to_peer_config_preserves_professions_and_tier() {
+    let mut info = ExtendedNodeInfo {
+        base: crate::types::NodeInfo {
+            id: "n2".into(),
+            name: "N2".into(),
+            role: crate::types::NodeRole::Worker,
+            address: "10.0.0.2:9000".into(),
+            category: "testing".into(),
+            last_seen: String::new(),
+        },
+        status: super::NodeStatus::Online,
+        capabilities: vec![],
+        tags: vec![],
+        professions: vec!["test-whitebox".into()],
+        tier: Some("normal".into()),
+        addresses: vec![],
+        node_type: "agent".into(),
+    };
+    let pc = info.to_peer_config();
+    assert_eq!(pc.professions, vec!["test-whitebox"]);
+    assert_eq!(pc.tier.as_deref(), Some("normal"));
+
+    info.set_status(super::NodeStatus::Offline);
+    let pc = info.to_peer_config();
+    assert_eq!(pc.professions, vec!["test-whitebox"]);
 }

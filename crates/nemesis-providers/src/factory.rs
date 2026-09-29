@@ -157,6 +157,15 @@ pub fn resolve_provider_selection(cfg: &FactoryConfig) -> Result<ProviderSelecti
                     sel.api_base = "https://chatgpt.com/backend-api/codex".to_string();
                 }
             }
+            // 图像协议不是对话协议（集群专业职能框架 M4）：chat Provider
+            // 形状完全不符（无流式无工具调用），构造路径 loud 拒绝——深度
+            // 防误配（唯一消费点 = generate_image 工具，直连 images 模块）。
+            "images-openai" => {
+                return Err("protocol 'images-openai' 是图像生成协议，不能作为对话模型\
+                     （generate_image 工具经 tools.image_gen 配置消费，不占用 \
+                     agent 默认模型槽）"
+                    .to_string());
+            }
             _ => unreachable!("normalize_model_protocol only returns the canonical set"),
         }
         return Ok(sel);

@@ -143,6 +143,8 @@ mod wave5 {
                 category: None,
                 tags: None,
                 address: None,
+                professions: None,
+                tier: None,
             },
             false,
         )

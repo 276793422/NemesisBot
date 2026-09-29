@@ -3272,3 +3272,31 @@ fn test_reopen_rejected_while_upstream_cancelled() {
     );
     cleanup(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// 集群专业职能框架（M2）：required_profession 落库 round-trip
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_required_profession_roundtrip_and_blank_to_none() {
+    let (store, dir) = temp_store("profession-roundtrip");
+    let mut ni = new_issue("职能子单");
+    ni.required_profession = Some("dev:cpp".into());
+    let issue = store.create_issue(ni).unwrap();
+    let back = store.get_issue(issue.id).unwrap();
+    assert_eq!(back.required_profession.as_deref(), Some("dev:cpp"));
+
+    // 空白 → NULL（不限职能），与 required_role 同款归一。
+    let mut ni = new_issue("空白职能");
+    ni.required_profession = Some("   ".into());
+    let issue = store.create_issue(ni).unwrap();
+    let back = store.get_issue(issue.id).unwrap();
+    assert_eq!(back.required_profession, None);
+
+    // 未带职能的 issue 读回 None（v17 迁移存量行同形态）。
+    let plain = store.create_issue(new_issue("无职能")).unwrap();
+    let back = store.get_issue(plain.id).unwrap();
+    assert_eq!(back.required_profession, None);
+
+    cleanup(&dir);
+}

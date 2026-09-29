@@ -1866,3 +1866,28 @@ async fn test_p2a_fail_class_field_wire_contract() {
 
     server.stop().unwrap();
 }
+
+// -- required_profession_from_payload（集群专业职能框架 M3）---------------
+
+#[test]
+fn required_profession_from_payload_arms() {
+    use super::required_profession_from_payload;
+    // 顶层 slug → 归一小写。
+    assert_eq!(
+        required_profession_from_payload(&serde_json::json!({"required_profession": "Dev:CPP"})),
+        Some("dev:cpp".to_string())
+    );
+    // 缺键 / 空白 / 非字符串 → None（旧 A 端优雅降级）。
+    assert_eq!(
+        required_profession_from_payload(&serde_json::json!({})),
+        None
+    );
+    assert_eq!(
+        required_profession_from_payload(&serde_json::json!({"required_profession": "   "})),
+        None
+    );
+    assert_eq!(
+        required_profession_from_payload(&serde_json::json!({"required_profession": 42})),
+        None
+    );
+}

@@ -96,10 +96,10 @@ impl DiscussionInbox {
 ///
 /// **`config` vs `agent_loop`'s config**: these serve different purposes.
 /// - `agent_loop`'s config: controls the LLM loop behavior (max_turns, provider, model).
-/// - `config` parameter: used to create each `AgentInstance`, controlling per-task identity
-///   (system_prompt, etc.). Currently system_prompt is None (placeholder), but will be
-///   customized per task when "identity switching" is implemented (e.g., different prompts
-///   for different source nodes).
+/// - `config` parameter: 稳定前缀模板——system_prompt 由 agent_factory 装配
+///   （IDENTITY/SOUL/EXPERTISE/worker 契约/Workspace 行，跨任务字节不变）；
+///   每个任务经 [`task_system_prompt`] 在其上追加任务职能后缀
+///   （集群专业职能框架 M3）后构造 per-task `AgentInstance`。
 #[allow(clippy::too_many_arguments)]
 pub async fn cluster_agent_loop(
     agent_loop: Arc<AgentLoop>,
@@ -321,10 +321,9 @@ async fn execute_new_task(
     nemesis_cluster::logger::log_task("exec_start", &task.task_id, &content_preview);
     let context = build_context(agent_loop, task);
     let trace_id = format!("cluster-{}", &task.task_id);
-    // Per-task AgentInstance. The config controls this instance's identity (system_prompt, model).
-    // Currently uses the shared cluster agent config, but will be customized per task
-    // when "identity switching" is implemented (e.g., per-source-node system prompt).
-    let instance = AgentInstance::new(config.clone());
+    // Per-task AgentInstance：稳定前缀（装配期 system_prompt）+ 任务职能
+    // 后缀（M3）。职能文本从不跨 RPC——slug 随任务走，契约本节点本地渲染。
+    let instance = AgentInstance::new(task_system_prompt(config, agent_loop, task));
 
     // Restore history from SessionStore (same pattern as main AgentLoop).
     // Without this, every peer_chat starts with empty context, so "give me the
@@ -505,8 +504,9 @@ async fn resume_task(
     self_node_id: &str,
 ) -> Result<(), String> {
     nemesis_cluster::logger::log_task("exec_resume", &task.task_id, "");
-    // Per-task AgentInstance. Same rationale as execute_new_task — see its comment.
-    let instance = AgentInstance::new(config.clone());
+    // Per-task AgentInstance：与 execute_new_task 同源渲染（稳定前缀 + 任务
+    // 职能后缀）——续行恢复不丢职能身份（M3：ClusterTask 带着职能字段走）。
+    let instance = AgentInstance::new(task_system_prompt(config, agent_loop, task));
 
     // Restore conversation history.
     let conversation_json = task
@@ -669,6 +669,123 @@ async fn resume_task(
         &format!("events={}", events.len()),
     );
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 职能渲染（集群专业职能框架 M3：per-task system prompt = 稳定前缀 + 职能后缀）
+// ---------------------------------------------------------------------------
+
+/// 本节点宣告的职能清单（peers.toml `[node].professions`，身份编辑热改写；
+/// 经 loop 持有的 cluster 引用读取）。cluster 引用缺席（测试/降级装配）=
+/// 空清单——一切带职能任务按 fallback 注记诚实处理。
+fn self_declared_professions(agent_loop: &AgentLoop) -> Vec<String> {
+    agent_loop
+        .get_cluster()
+        .and_then(|c| c.downcast_ref::<nemesis_cluster::cluster::Cluster>())
+        .map(nemesis_cluster::cluster::Cluster::professions)
+        .unwrap_or_default()
+}
+
+/// 职能资产解析：内置目录优先（契约+专业方法论编译期内嵌），用户工作区
+/// 扩展兜底（`<workspace>/cluster/professions/<family>/<spec>.md` 单文件，
+/// 正文即契约+方法论）。内置命中时用户同名档案 WARN 忽略（内置赢）。
+///
+/// 安全闸：slug 先过 `validate_slug`（`^[a-z0-9_-]+(:[a-z0-9_-]+)?$`），
+/// 非法（含 `..`/路径分隔符）一律落未知臂——绝不拼路径。裸 family 用户
+/// 扩展不存在（只能来自内置目录）→ 无 spec = 未知臂。
+/// 返回 (契约, 方法论)；契约 None = 未知 slug（渲染端诚实注记）。
+fn load_profession_assets(
+    workspace: Option<&std::path::Path>,
+    slug: &str,
+) -> (Option<String>, Option<String>) {
+    use nemesis_prompts::professions::meta::split_slug;
+    use nemesis_prompts::professions::meta::validate_slug;
+    if validate_slug(slug).is_err() {
+        return (None, None);
+    }
+    if let Some(meta) = nemesis_prompts::professions::meta::find_builtin(slug) {
+        if let (Some(ws), Some(spec)) = (workspace, meta.spec) {
+            let user_file = ws
+                .join("cluster")
+                .join("professions")
+                .join(meta.family)
+                .join(format!("{spec}.md"));
+            if user_file.exists() {
+                tracing::warn!(
+                    slug,
+                    file = %user_file.display(),
+                    "[ClusterAgent] 用户职能档案与内置职能同名，内置赢（用户档案忽略）"
+                );
+            }
+        }
+        return (
+            Some(meta.contract.to_string()),
+            nemesis_prompts::professions::render::builtin_method(slug).map(str::to_string),
+        );
+    }
+    let Some(ws) = workspace else {
+        return (None, None);
+    };
+    let Some((family, Some(spec))) = split_slug(slug) else {
+        return (None, None);
+    };
+    let user_file = ws
+        .join("cluster")
+        .join("professions")
+        .join(family)
+        .join(format!("{spec}.md"));
+    match std::fs::read_to_string(&user_file) {
+        Ok(content) if !content.trim().is_empty() => (Some(content), None),
+        _ => (None, None),
+    }
+}
+
+/// per-task system prompt：稳定前缀（`config.system_prompt`，装配期字节
+/// 不变）+ 任务职能后缀（M3）。无职能子单原样克隆 config（现状兼容，
+/// 零成本路径）。
+///
+/// 渲染臂（诚实注记三臂，见 professions::render）：内置/用户契约 → 契约
+/// 正文（未宣告节点加 fallback 注记）；未知 slug → 契约缺席 + 通用纪律，
+/// 绝不空串。
+fn task_system_prompt(
+    config: &AgentConfig,
+    agent_loop: &AgentLoop,
+    task: &nemesis_cluster::cluster_task::ClusterTask,
+) -> AgentConfig {
+    let Some(raw) = task
+        .required_profession
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return config.clone();
+    };
+    let slug = nemesis_prompts::professions::meta::normalize_slug(raw);
+    let (contract, method) = load_profession_assets(agent_loop.workspace_root().as_deref(), &slug);
+    let declared = self_declared_professions(agent_loop)
+        .iter()
+        .any(|p| nemesis_prompts::professions::meta::normalize_slug(p) == slug);
+    tracing::info!(
+        task_id = %task.task_id,
+        slug = %slug,
+        builtin = contract.is_some() && nemesis_prompts::professions::meta::find_builtin(&slug).is_some(),
+        declared,
+        "[ClusterAgent] Rendering profession suffix"
+    );
+    let suffix = nemesis_prompts::professions::render::render_profession_suffix(
+        nemesis_prompts::professions::render::SuffixRender {
+            slug: &slug,
+            contract: contract.as_deref(),
+            method: method.as_deref(),
+            declared,
+        },
+    );
+    let mut cfg = config.clone();
+    cfg.system_prompt = Some(match config.system_prompt.as_deref() {
+        Some(prefix) if !prefix.trim().is_empty() => format!("{prefix}\n\n---\n\n{suffix}"),
+        _ => suffix,
+    });
+    cfg
 }
 
 // ---------------------------------------------------------------------------

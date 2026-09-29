@@ -801,6 +801,88 @@ async fn review_issue(
             warn!("[BoardReview] issue {issue_id} 锚点 PASS 评论落库失败：{e}");
         }
     }
+    // 锚点全过的摘要注入提升到 LLM 评审分支之前：vision 路径（M5）与文本
+    // 路径共用同一 prompt 基线（此前只在文本分支注入，vision 提前取 prompt
+    // 会缺这段上下文）。锚点失败短路分支不消费 prompt，多注入无副作用。
+    if !anchor_results.is_empty() && nemesis_board::all_passed(&anchor_results) {
+        prompt.push_str(&format!(
+            "\n## 客观锚点检查（已通过）\n以下客观验收锚点已由系统核验通过，无需重复核验，请专注评审其余语义项：\n{}",
+            nemesis_board::render_anchor_summary(&anchor_results)
+        ));
+    }
+    // 评审分层（gap ②）：config `board.review.tier` → 档位（无法识别安全
+    // 回落 Thorough）。提升到 LLM 评审分支之前（vision 与文本两路共用同一
+    // system prompt）。先例注入只走 Thorough——fast 档追求精简，参考性
+    // 历史数据不进 prompt。
+    let review_tier = nemesis_prompts::board::parse_review_tier(&cfg.review.tier);
+    // ---- M5 vision 路径：交付/线程评论带图像资产引用束 → 程序化取回 →
+    // base64 image part 进评审裸调用（单跑不走多检查员 panel——panel v1
+    // 保持纯文本；计划 §2.7）。无图 = 零改动走既有文本路径；锚点已 FAIL
+    // 时短路优先，vision 不取图不烧 token。无默认模型槽 / 视觉调用硬失败
+    // = prompt 注记（图已取回 master 本地，人工可看）按次回落文本评审。
+    let anchors_failed = !anchor_results.is_empty() && !nemesis_board::all_passed(&anchor_results);
+    let vision_output = if anchors_failed {
+        None
+    } else {
+        let review_images = crate::board_review_assets::collect_review_images(
+            &deps.workspace,
+            &deps.cluster,
+            &comments,
+        )
+        .await;
+        if review_images.is_empty() {
+            None
+        } else {
+            let paths_note = review_images
+                .iter()
+                .map(|i| i.path.display().to_string())
+                .collect::<Vec<_>>()
+                .join("；");
+            match nemesis_providers::default_slot::current() {
+                Some((provider, model, _)) => {
+                    let mut vision_prompt = prompt.clone();
+                    match crate::board_review_assets::run_review_llm_vision(
+                        provider,
+                        &model,
+                        nemesis_prompts::board::render_review_system_prompt(review_tier),
+                        &mut vision_prompt,
+                        &review_images,
+                    )
+                    .await
+                    {
+                        Ok(out) => {
+                            info!(
+                                "[BoardReview] issue {issue_id} vision 评审出结论（{} 张附图）",
+                                review_images.len()
+                            );
+                            Some(out)
+                        }
+                        Err(e) => {
+                            warn!(
+                                "[BoardReview] issue {issue_id} vision 评审失败 → 回落文本评审：{e}"
+                            );
+                            prompt.push_str(&format!(
+                                "\n## 交付图像（视觉评审不可用）\n{} 张交付图像已取回 master 本地：{paths_note}。自动视觉评审本次不可用（{e}），请按文本证据评审；图像请转人工查看。\n",
+                                review_images.len()
+                            ));
+                            None
+                        }
+                    }
+                }
+                None => {
+                    warn!(
+                        "[BoardReview] issue {issue_id} 检测到 {} 张交付图像但无默认模型槽 → 文本评审 + 人工看图注记",
+                        review_images.len()
+                    );
+                    prompt.push_str(&format!(
+                        "\n## 交付图像（无视觉评审通道）\n{} 张交付图像已取回 master 本地：{paths_note}。当前无可用视觉模型，请按文本证据评审；图像请转人工查看。\n",
+                        review_images.len()
+                    ));
+                    None
+                }
+            }
+        }
+    };
     let output = if !anchor_results.is_empty() && !nemesis_board::all_passed(&anchor_results) {
         warn!("[BoardReview] issue {issue_id} 客观锚点检查失败 → 短路 FAIL（跳过 LLM 语义评审）");
         nemesis_board::ReviewOutput {
@@ -818,13 +900,9 @@ async fn review_issue(
             need_evidence: None,
             evidence_request: None,
         }
+    } else if let Some(out) = vision_output {
+        out
     } else {
-        if !anchor_results.is_empty() {
-            prompt.push_str(&format!(
-                "\n## 客观锚点检查（已通过）\n以下客观验收锚点已由系统核验通过，无需重复核验，请专注评审其余语义项：\n{}",
-                nemesis_board::render_anchor_summary(&anchor_results)
-            ));
-        }
         // 色审议需要评审 agent 在场——只有真正要跑 LLM 的路径才要求 loop
         // 就绪（锚点短路 FAIL 是确定性判定，loop 未就绪也成立，人工兜底
         // 照常能看见明细评论）。
@@ -841,10 +919,8 @@ async fn review_issue(
             deps.cluster.node_id(),
             cfg.review.max_turns,
         );
-        // 评审分层（gap ②）：config `board.review.tier` → 档位（无法识别
-        // 安全回落 Thorough）。先例注入只走 Thorough——fast 档追求精简，
-        // 参考性历史数据不进 prompt。
-        let review_tier = nemesis_prompts::board::parse_review_tier(&cfg.review.tier);
+        // 先例注入只走 Thorough——fast 档追求精简，参考性历史数据不进
+        // prompt（review_tier 已提升到评审分支之前，vision/文本共用）。
         if review_tier == nemesis_prompts::board::ReviewTier::Thorough {
             // 判例沉淀（gap ②）：历史「自动决策被人工回滚」记录作**参考
             // 数据**注入（渲染块自带数据非指令护栏）。空记录/查询失败 =

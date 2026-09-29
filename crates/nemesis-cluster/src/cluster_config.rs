@@ -42,6 +42,15 @@ pub struct NodeInfo {
     pub category: String,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// 自报职能清单（集群专业职能框架 M2；`family[:spec]` slug，精确匹配
+    /// 无继承）。经 announce 广播；缺省空 = 未宣告（本节点不参与职能匹配）。
+    #[serde(default)]
+    pub professions: Vec<String>,
+    /// 节点档位（role_tier 口径：mini/normal/big）。**手工声明**——不从
+    /// 活跃模型 tier 自动推导（announce 与模型配置解耦）；缺省 None =
+    /// matcher tier 闸 fail-open。
+    #[serde(default)]
+    pub tier: Option<String>,
 }
 
 impl Default for NodeInfo {
@@ -53,6 +62,8 @@ impl Default for NodeInfo {
             role: default_role(),
             category: default_category(),
             tags: Vec::new(),
+            professions: Vec::new(),
+            tier: None,
         }
     }
 }
@@ -89,6 +100,13 @@ pub struct PeerConfig {
     pub category: String,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// 自报职能（state.toml 持久化 discovered 条目用；静态 peers.toml
+    /// `[peers.X]` 手工声明一个远端节点的职能也走这里）。
+    #[serde(default)]
+    pub professions: Vec<String>,
+    /// 节点档位（role_tier 口径；None = 未宣告）。
+    #[serde(default)]
+    pub tier: Option<String>,
     #[serde(default = "default_priority")]
     pub priority: u32,
     #[serde(default = "default_enabled")]
@@ -108,6 +126,8 @@ impl Default for PeerConfig {
             role: String::new(),
             category: String::new(),
             tags: Vec::new(),
+            professions: Vec::new(),
+            tier: None,
             priority: default_priority(),
             enabled: default_enabled(),
             status: PeerStatus::default(),
@@ -297,6 +317,8 @@ pub fn create_static_config(node_id: &str, node_name: &str, address: &str) -> St
             role: "worker".into(),
             category: "general".into(),
             tags: Vec::new(),
+            professions: Vec::new(),
+            tier: None,
         },
     }
 }

@@ -125,3 +125,97 @@ func TestBoardIssueMarkerEdgeCases(t *testing.T) {
 		t.Fatalf("无数字单号应返回空串，实际 %q", got)
 	}
 }
+
+// TestBoardProfessionEcho 职能框架 M7：职能契约回显机单测——
+// 输入含「执行职能：<label>（<slug>）」→ 回显「职能=<slug>」；无标记零扰动。
+func TestBoardProfessionEcho(t *testing.T) {
+	m := NewTestAIBoard()
+	cases := []struct {
+		system string
+		want   string
+	}{
+		{"# 执行职能：产品经理（product）\n\n契约正文", "职能=product"},
+		{"# 执行职能：C/C++ 开发（dev:cpp）\n\n契约正文\n\n# 专业方法论\nC++", "职能=dev:cpp"},
+		{"# 执行职能：黑盒测试（test-blackbox）", "职能=test-blackbox"},
+		{"\n# 执行职能：自研专项（myfamily:myspec）\n\n用户档案", "职能=myfamily:myspec"},
+		{"# 执行职能：孤儿档（ui-design）（契约缺席）", "职能=ui-design"},
+		{"普通 master 对话，无职能标记", boardAckText},
+	}
+	for _, tc := range cases {
+		got := m.Process([]Message{
+			{Role: "system", Content: tc.system},
+			{Role: "user", Content: "请执行任务并交付。"},
+		})
+		if !strings.Contains(got, tc.want) {
+			t.Fatalf("system=%q: want reply containing %q, got %q", tc.system, tc.want, got)
+		}
+	}
+	// fallback 注记形态（declared=false）照常回显——标记来自契约标题行。
+	got := m.Process([]Message{
+		{Role: "system", Content: "# 执行职能：UI 设计（ui-design）\n\n> ⚠ 职能匹配降级：本任务要求 `ui-design`"},
+		{Role: "user", Content: "任务"},
+	})
+	if !strings.Contains(got, "职能=ui-design") {
+		t.Fatalf("fallback-note system must still echo, got %q", got)
+	}
+}
+
+// TestBoardUatUiImgMachine 职能框架 M7 U5：图像对话机三轮形态钉死
+// （generate_image → board_asset publish → 交付文本内嵌 bundle）。
+func TestBoardUatUiImgMachine(t *testing.T) {
+	m := NewTestAIBoard()
+	sys := "你是 worker。# 执行职能：UI 设计（ui-design）\n\n契约"
+
+	// 轮1：user 带 <UAT_UI_IMG> → generate_image 调用（职能回显不抢跑）。
+	r1 := m.Process([]Message{
+		{Role: "system", Content: sys},
+		{Role: "user", Content: "<UAT_UI_IMG> 请产出登录页视觉稿并交付。"},
+	})
+	if !strings.Contains(r1, "generate_image") || !strings.Contains(r1, "board_uat/ui.png") {
+		t.Fatalf("round1 must call generate_image with output board_uat/ui.png, got %s", r1)
+	}
+
+	// 轮2：tool 结果含 ui.png path → board_asset publish。
+	r2 := m.Process([]Message{
+		{Role: "system", Content: sys},
+		{Role: "user", Content: "<UAT_UI_IMG> 请产出登录页视觉稿并交付。"},
+		{Role: "tool", Content: `{"path":"C:\ws\images\board_uat\ui.png","bytes":69,"model":"test/image-m","size":"endpoint-default"}`},
+	})
+	if !strings.Contains(r2, "board_asset") || !strings.Contains(r2, "publish") {
+		t.Fatalf("round2 must call board_asset publish, got %s", r2)
+	}
+
+	// 轮3：publish 结果（含 published + bundle JSON）→ 交付文本原样内嵌。
+	pub := "Asset `ui.png` published (69 bytes, sha256 abc).\nReference bundle (valid 3600s):\n{\"asset_ref\":\"ui.png\"}"
+	r3 := m.Process([]Message{
+		{Role: "system", Content: sys},
+		{Role: "user", Content: "<UAT_UI_IMG> 请产出登录页视觉稿并交付。"},
+		{Role: "tool", Content: `{"path":"C:\ws\images\board_uat\ui.png","bytes":69}`},
+		{Role: "tool", Content: pub},
+	})
+	if !strings.Contains(r3, "UI图已交付") || !strings.Contains(r3, "asset_ref") {
+		t.Fatalf("round3 must deliver text embedding the bundle, got %s", r3)
+	}
+
+	// 降级臂：轮2 工具失败（结果无 path 锚点）→ 诚实文本交付（无 bundle）。
+	rd := m.Process([]Message{
+		{Role: "system", Content: sys},
+		{Role: "user", Content: "<UAT_UI_IMG> 任务"},
+		{Role: "tool", Content: "Error: generate_image 未注册"},
+	})
+	if !strings.Contains(rd, "UI图已交付") || strings.Contains(rd, "asset_ref") {
+		t.Fatalf("degraded arm must deliver text without bundle, got %s", rd)
+	}
+}
+
+// TestBoardUatUiTextArm 职能框架 M7 U6：文本线交付臂。
+func TestBoardUatUiTextArm(t *testing.T) {
+	m := NewTestAIBoard()
+	got := m.Process([]Message{
+		{Role: "system", Content: "# 执行职能：UI 设计（ui-design）"},
+		{Role: "user", Content: "<UAT_UI_TEXT> 请产出登录页方案并交付。"},
+	})
+	if !strings.Contains(got, "UI图已交付") {
+		t.Fatalf("text arm must deliver anchor text, got %s", got)
+	}
+}

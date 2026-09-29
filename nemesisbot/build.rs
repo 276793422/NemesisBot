@@ -106,6 +106,15 @@ fn main() {
     // Re-run build script if git HEAD changes
     println!("cargo:rerun-if-changed=.git/HEAD");
 
+    // Windows 主线程栈保留默认仅 1MB。debug 构建下 clap derive 为全部子命令
+    // 展开的 augment_args 巨帧（无内联、无移动省略）逼近并溢出该默认值——
+    // 溢出点随 ASLR 漂移（`--version` 也炸、每次死在不同 marker 之后）。
+    // 类 Unix 平台主线程默认 8MB 无此问题（Linux nightly 全量从未红过）。
+    // 显式把保留提到 8MB：栈按需提交不占实存，release 链接同样受益无害。
+    if std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() == "windows" {
+        println!("cargo:rustc-link-arg-bins=/STACK:8388608");
+    }
+
     // Embed icon on Windows
     if std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() == "windows" {
         let mut res = winresource::WindowsResource::new();

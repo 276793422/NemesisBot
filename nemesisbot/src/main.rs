@@ -50,6 +50,11 @@ mod board_issue_tool;
 /// write_back in_review 路径，评审 LLM 走主 loop 后置装配桥）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod board_review;
+/// 集群专业职能框架 M5：验收链图像工件取回 + vision 评审（从交付/线程
+/// 评论提取图像引用束 → 程序化取回 → base64 image part 进评审裸调用；
+/// provider 走 default_slot 与主 loop 同源，降级按次回落文本评审）。
+#[cfg(all(feature = "board", feature = "cluster"))]
+mod board_review_assets;
 /// 反向桥客户端（goal：节点显示名 + 反向桥与多设备汇聚，一期批次二）：
 /// 出站连远端中继、hello 握手、退避重连、conn 泵（本机 web server 字节流
 /// 搬运）、access_check 比对。旁路——任何失败不影响本机 dashboard。
@@ -88,6 +93,9 @@ mod exec_worker;
 /// U10 统一执行世界：executor 通道装配单一真相源 + workflow 引擎的
 /// ExecutionWorld 桥（world 部分 `sandbox` feature 门控）。
 mod exec_world;
+/// 集群专业职能框架 M4：generate_image 工具（images-openai lane 唯一消费
+/// 点；prompt→b64→落盘 workspace/images/，路径 sanitization 钉死输出根）。
+mod image_gen_tool;
 /// P23（能力扩展 WS10）：stdio MCP server——NemesisBot 能力经 MCP 协议
 /// 暴露给 Claude Code / Cursor 等客户端；K1 式装配与 gateway 同源
 /// （安全 8 层全量生效，MCP 出口不是安全旁路）。

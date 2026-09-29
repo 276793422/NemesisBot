@@ -41,6 +41,18 @@ fn test_tool_to_operation_git_grep_classified() {
     assert_eq!(tool_to_operation("grep"), Some(OperationType::FileRead));
 }
 
+/// 集群专业职能框架 M4：generate_image 分类为 NetworkRequest（MEDIUM）——
+/// 注入检测/凭据扫描/DLP/审计链全跑；审计 target = output 相对路径。
+#[test]
+fn test_tool_to_operation_generate_image_classified() {
+    assert_eq!(
+        tool_to_operation("generate_image"),
+        Some(OperationType::NetworkRequest)
+    );
+    let args = serde_json::json!({"prompt": "一只猫", "output": "mockups/login.png"});
+    assert_eq!(extract_target("generate_image", &args), "mockups/login.png");
+}
+
 #[test]
 fn test_extract_target() {
     let args = serde_json::json!({"path": "/tmp/test.txt"});

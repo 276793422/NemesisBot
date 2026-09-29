@@ -267,6 +267,18 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 // 表内协议均为归一值（完整性测试钉住），直接写盘即可。
                 entry["protocol"] = serde_json::Value::String(p.protocol.to_string());
             }
+            // 集群专业职能框架 M4：图像协议条目唯一消费点 = generate_image 工具
+            // （经 tools.image_gen / 唯一 images-openai 条目解析），不能坐上
+            // agent 默认对话模型槽。--default 显式请求 = loud 拒绝（守卫①）；
+            // 仅一条模型时的自动默认（守卫①b）也跳过图像条目，诚实打印说明。
+            let entry_protocol = entry.get("protocol").and_then(|v| v.as_str()).unwrap_or("");
+            let is_image_entry = nemesis_types::capability::is_image_protocol(entry_protocol);
+            if default && is_image_entry {
+                anyhow::bail!(
+                    "protocol 'images-openai' 是图像生成协议，不能设为默认对话模型；\
+                     请去掉 --default 重新添加（generate_image 工具会自动解析该条目）"
+                );
+            }
 
             // Phase 4a (small-model-tool-robustness): tag with an auto-detect
             // tier. Resolved at runtime from the model name (and any real_name /
@@ -401,28 +413,37 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 if model_count == 1 && current_default.is_empty() {
-                    // Auto-set as default
-                    let alias = model.split('/').next_back().unwrap_or(&model).to_string();
-                    if let Some(obj) = cfg.as_object_mut() {
-                        let agents = obj.entry("agents").or_insert_with(|| serde_json::json!({}));
-                        if let Some(agents_obj) = agents.as_object_mut() {
-                            let defaults = agents_obj
-                                .entry("defaults")
-                                .or_insert_with(|| serde_json::json!({}));
-                            if let Some(defaults_obj) = defaults.as_object_mut() {
-                                defaults_obj.insert(
-                                    "llm".to_string(),
-                                    serde_json::Value::String(alias.clone()),
-                                );
+                    if is_image_entry {
+                        // 守卫①b：图像协议条目不自动坐默认对话模型槽（唯一消费点
+                        // = generate_image 工具），诚实打印而非悄悄写 agents.defaults.llm。
+                        println!(
+                            "  Note: 'images-openai' 协议条目不自动设为默认对话模型（仅供 generate_image 工具消费）"
+                        );
+                    } else {
+                        // Auto-set as default
+                        let alias = model.split('/').next_back().unwrap_or(&model).to_string();
+                        if let Some(obj) = cfg.as_object_mut() {
+                            let agents =
+                                obj.entry("agents").or_insert_with(|| serde_json::json!({}));
+                            if let Some(agents_obj) = agents.as_object_mut() {
+                                let defaults = agents_obj
+                                    .entry("defaults")
+                                    .or_insert_with(|| serde_json::json!({}));
+                                if let Some(defaults_obj) = defaults.as_object_mut() {
+                                    defaults_obj.insert(
+                                        "llm".to_string(),
+                                        serde_json::Value::String(alias.clone()),
+                                    );
+                                }
                             }
+                            // REL-002：统一原子写入。
+                            write_config_atomic(&cfg_path, &cfg)?;
                         }
-                        // REL-002：统一原子写入。
-                        write_config_atomic(&cfg_path, &cfg)?;
+                        println!(
+                            "Auto-set as default model (only model configured): {}",
+                            alias
+                        );
                     }
-                    println!(
-                        "Auto-set as default model (only model configured): {}",
-                        alias
-                    );
                 }
             }
         }
@@ -756,6 +777,30 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
         ModelAction::Probe { name } => {
             if !cfg_path.exists() {
                 anyhow::bail!("Configuration not found. Run 'nemesisbot onboard default' first.");
+            }
+            // 集群专业职能框架 M4 守卫③：探针走对话/工具调用链路，图像协议
+            // 条目没有这些形状——诚实拒绝，不烧 8 次注定失败的 LLM 调用。
+            {
+                let cfg: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&cfg_path)?)
+                        .unwrap_or(serde_json::Value::Null);
+                let proto = cfg
+                    .get("model_list")
+                    .and_then(|v| v.as_array())
+                    .and_then(|arr| {
+                        arr.iter().find(|m| {
+                            m.get("model_name").and_then(|v| v.as_str()) == Some(name.as_str())
+                        })
+                    })
+                    .and_then(|m| m.get("protocol"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if nemesis_types::capability::is_image_protocol(proto) {
+                    anyhow::bail!(
+                        "'{name}' 是 images-openai 图像协议条目，不支持能力探针\
+                         （无对话/工具调用形状；仅供 generate_image 工具消费）"
+                    );
+                }
             }
             println!(
                 "正在对 '{}' 运行能力探针（8 个任务：7 工具 + 1 视觉，约 8 次 LLM 调用，请稍候）...",

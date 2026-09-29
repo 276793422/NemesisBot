@@ -244,6 +244,7 @@ async function loadAttachments() {
 interface PlannedSub {
   title: string
   description: string
+  required_profession?: string
   required_role: string
   required_tags: string[]
   acceptance_criteria: string
@@ -540,6 +541,7 @@ async function downloadAttachment(a: AttachmentRow) {
         <div class="detail-meta">
           <span class="badge" :class="STATUS_BADGE[detail.status]">{{ statusLabel(detail.status) }}</span>
           <span class="badge" :class="PRIORITY_BADGE[detail.priority] || 'badge-neutral'">P{{ detail.priority }} {{ PRIORITY_LABEL[detail.priority] || '' }}</span>
+          <span v-if="detail.required_profession" class="badge badge-info" title="职能派发：仅匹配声明该职能的节点">🛠 {{ detail.required_profession }}</span>
           <span class="muted">指派：{{ assigneeLabel(detail) }}</span>
           <span class="muted">创建者：{{ detail.creator.kind }}/{{ detail.creator.id }}</span>
           <span class="muted" v-if="detail.origin">来源：{{ detail.origin.origin_type }}/{{ detail.origin.origin_id }}</span>
@@ -658,6 +660,7 @@ async function downloadAttachment(a: AttachmentRow) {
               <div v-for="(s, i) in planSubs" :key="i" class="plan-node">
                 <div class="plan-node-head">
                   <strong>{{ i + 1 }}. {{ s.title }}</strong>
+                  <span v-if="s.required_profession" class="badge badge-info" title="该子单指派给声明此职能的节点">🛠 {{ s.required_profession }}</span>
                   <span v-if="s.required_role" class="badge badge-neutral">角色:{{ s.required_role }}</span>
                   <span v-for="t in s.required_tags" :key="t" class="badge badge-neutral">#{{ t }}</span>
                 </div>

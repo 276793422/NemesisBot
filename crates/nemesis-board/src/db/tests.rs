@@ -356,3 +356,73 @@ fn unique_dir(name: &str) -> std::path::PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     dir
 }
+
+/// v17（职能框架 M2）：v16 旧库迁移补 `issue.required_profession` 列；
+/// 存量行 NULL（= 不限职能），新列可写可读（迁移 round-trip）。
+#[test]
+fn test_migration_v16_to_v17_adds_required_profession() {
+    let dir = unique_dir("migrate-v16-v17");
+    let path = dir.join("board.db");
+    std::fs::create_dir_all(&dir).unwrap();
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        // 手工把库钉在 v16（跑全部中间迁移再回写版本，模拟真实存量库）。
+        conn.execute_batch(SCHEMA_V2).unwrap();
+        conn.execute_batch(SCHEMA_V3).unwrap();
+        conn.execute_batch(SCHEMA_V4).unwrap();
+        conn.execute_batch(SCHEMA_V5).unwrap();
+        conn.execute_batch(SCHEMA_V6).unwrap();
+        conn.execute_batch(SCHEMA_V7).unwrap();
+        conn.execute_batch(SCHEMA_V8).unwrap();
+        conn.execute_batch(SCHEMA_V9).unwrap();
+        conn.execute_batch(SCHEMA_V10).unwrap();
+        conn.execute_batch(SCHEMA_V11).unwrap();
+        conn.execute_batch(SCHEMA_V12).unwrap();
+        conn.execute_batch(SCHEMA_V13).unwrap();
+        conn.execute_batch(SCHEMA_V14).unwrap();
+        conn.execute_batch(SCHEMA_V15).unwrap();
+        conn.execute_batch(SCHEMA_V16).unwrap();
+        conn.pragma_update(None, "user_version", 16).unwrap();
+        conn.execute(
+            "INSERT INTO board_meta(key, value) VALUES('number_prefix', 'NB')",
+            [],
+        )
+        .unwrap();
+    }
+    let conn = init_db(&path).unwrap();
+    let v: i32 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, SCHEMA_VERSION, "迁移到 v17");
+    // 存量行：新列读出 NULL。
+    conn.execute(
+        "INSERT INTO issue (number, title, creator_type, creator_id, position, created_at, updated_at)
+         VALUES ('NB-1', 'legacy', 'admin', 'admin', 1, 1, 1)",
+        [],
+    )
+    .unwrap();
+    let legacy: Option<String> = conn
+        .query_row(
+            "SELECT required_profession FROM issue WHERE number='NB-1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(legacy, None, "存量行新列 = NULL（不限职能）");
+    // 新列可写可读。
+    conn.execute(
+        "UPDATE issue SET required_profession='dev:cpp' WHERE number='NB-1'",
+        [],
+    )
+    .unwrap();
+    let set: String = conn
+        .query_row(
+            "SELECT required_profession FROM issue WHERE number='NB-1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(set, "dev:cpp");
+    let _ = std::fs::remove_dir_all(&dir);
+}

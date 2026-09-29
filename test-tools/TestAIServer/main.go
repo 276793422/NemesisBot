@@ -117,6 +117,7 @@ func main() {
 		v1.GET("/models", handler.ListModels)
 		v1.GET("/help", handler.Help)
 		v1.POST("/chat/completions", handler.ChatCompletions)
+		v1.POST("/images/generations", handler.ImageGenerations) // 职能框架 M7：图像生成假端点（固定 1×1 PNG b64）
 	}
 
 	// 健康检查端点（供测试工具 wait_for_http 探测）

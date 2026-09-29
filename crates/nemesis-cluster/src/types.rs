@@ -53,6 +53,14 @@ pub struct ExtendedNodeInfo {
     /// serde default 兼容缺字段的旧 state.toml。
     #[serde(default)]
     pub tags: Vec<String>,
+    /// 自报职能清单（集群专业职能框架 M2；`family[:spec]` slug，精确匹配
+    /// 无继承）。announce 携带；serde default 兼容旧 state.toml / 旧 announce。
+    #[serde(default)]
+    pub professions: Vec<String>,
+    /// 节点自报档位（role_tier 口径：mini/normal/big；`None` = 未宣告，
+    /// matcher tier 闸 fail-open 放行）。
+    #[serde(default)]
+    pub tier: Option<String>,
     /// All known addresses for this node (for multi-address failover).
     /// The primary address is stored in `base.address`.
     #[serde(default)]
@@ -125,6 +133,8 @@ impl ExtendedNodeInfo {
             role: self.base.role.as_role_str().into(),
             category: self.base.category.clone(),
             tags: self.tags.clone(),
+            professions: self.professions.clone(),
+            tier: self.tier.clone(),
             priority: 1,
             enabled: true,
             status: PeerStatus {
@@ -160,6 +170,8 @@ impl ExtendedNodeInfo {
             && self.status == other.status
             && self.capabilities == other.capabilities
             && self.tags == other.tags
+            && self.professions == other.professions
+            && self.tier == other.tier
             && self.addresses == other.addresses
             && self.node_type == other.node_type
     }

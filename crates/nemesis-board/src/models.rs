@@ -190,6 +190,10 @@ pub struct Issue {
     /// Swarm M1：派发需求标签（匹配器硬条件；空=不限）。
     #[serde(default)]
     pub required_tags: Vec<String>,
+    /// 集群专业职能框架（M2）：派发需求职能 slug（`family[:spec]`，精确
+    /// 匹配无继承；None/空 = 不限职能）。
+    #[serde(default)]
+    pub required_profession: Option<String>,
     /// 取消单「永久收起」标记（P1/A2b 清理出口）：任何前端表面都不再出现，
     /// 即使「显示已取消」开关打开。board.db 仍保留行（审计链完整）。
     #[serde(default)]
@@ -454,6 +458,8 @@ pub struct NewIssue {
     /// Swarm M1（planner 拆解）：派发需求角色/标签（None/空 = 不限）。
     pub required_role: Option<String>,
     pub required_tags: Vec<String>,
+    /// 集群专业职能框架（M2）：派发需求职能 slug（None/空 = 不限）。
+    pub required_profession: Option<String>,
 }
 
 impl Default for NewIssue {
@@ -472,6 +478,7 @@ impl Default for NewIssue {
             origin: None,
             required_role: None,
             required_tags: Vec::new(),
+            required_profession: None,
         }
     }
 }

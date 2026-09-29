@@ -442,6 +442,20 @@ impl ModelsHandler {
             .iter()
             .position(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name))
             .ok_or_else(|| format!("model '{}' not found", name))?;
+        // 集群专业职能框架 M4 守卫②：图像协议条目唯一消费点 = generate_image
+        // 工具，不能坐上 agent 默认对话模型槽（写盘前 loud 拒绝，不产生半状态）。
+        {
+            let proto = list[idx]
+                .get("protocol")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if nemesis_types::capability::is_image_protocol(proto) {
+                return Err(format!(
+                    "'{name}' 是 images-openai 图像协议条目，不能设为默认对话模型\
+                     （仅供 generate_image 工具消费）"
+                ));
+            }
+        }
         let entry = list.remove(idx);
         list.insert(0, entry.clone());
         // 同步 agents.defaults.llm：启动时 get_effective_llm 只读这个字段、不看
