@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // 设置页「皮肤」tab 面板测试（P1）。后端行为由
 // crates/nemesis-web/src/handlers/skins/tests.rs 钉住（后端唯一真相源）；
-// 这里钉 dispatch 语义与徽标/按钮态呈现。
+// 这里钉 dispatch 语义与徽标/按钮态呈现。P2a：脚本总闸/同意卡/脚本徽标。
 
 const requestMock = vi.fn()
 vi.mock('../../../composables/useWSAPI', () => ({
@@ -12,10 +12,23 @@ vi.mock('../../../composables/useWSAPI', () => ({
 }))
 
 const refreshMock = vi.fn()
-vi.mock('../../../composables/useSkin', () => ({
-  applySkinRefresh: (...args: any[]) => refreshMock(...args),
-  applySkinBoot: vi.fn(),
-}))
+const needsReloadMock = vi.fn(() => false)
+const consentMock = vi.fn()
+// skinState 必须在工厂内创建（vi.mock 提升：工厂运行早于本文件 body 的
+// const 初始化；箭头闭包引用 body 变量没关系——惰性解引用）。测试体直接
+// import 工厂产物拿同一个 reactive 实例。
+vi.mock('../../../composables/useSkin', async () => {
+  const { reactive } = await import('vue')
+  const state = reactive({ id: '', meta: null, slots: [] as string[], structRev: 0, scriptPending: '' })
+  return {
+    applySkinRefresh: (...args: any[]) => refreshMock(...args),
+    applySkinBoot: vi.fn(),
+    skinState: state,
+    resolveScriptConsent: (...args: any[]) => consentMock(...args),
+    skinScriptNeedsReload: (...args: any[]) => needsReloadMock(),
+    discardScriptPending: () => { state.scriptPending = '' }, // 与真实实现同语义
+  }
+})
 
 const toastMock = { success: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() }
 vi.mock('../../../composables/useToast', () => ({
@@ -28,6 +41,7 @@ vi.mock('../../../lib/authFetch', () => ({
 }))
 
 import SkinsPanel from '../SkinsPanel.vue'
+import { skinState as skinStateMock } from '../../../composables/useSkin'
 
 function skin(over: Record<string, unknown> = {}) {
   return {
@@ -37,6 +51,7 @@ function skin(over: Record<string, unknown> = {}) {
     status_detail: null,
     signature: 'unsigned',
     sig_detail: null,
+    has_script: false,
     manifest: {
       id: 'alpha',
       name: 'Alpha Skin',
@@ -64,9 +79,14 @@ function mountPanel() {
 beforeEach(() => {
   requestMock.mockReset()
   refreshMock.mockReset()
+  needsReloadMock.mockReset()
+  needsReloadMock.mockReturnValue(false)
+  consentMock.mockReset()
   authedFetchMock.mockReset()
   toastMock.success.mockClear()
   toastMock.error.mockClear()
+  skinStateMock.id = ''
+  skinStateMock.scriptPending = ''
   localStorage.clear()
 })
 
@@ -317,5 +337,191 @@ describe('SkinsPanel', () => {
     await flushPromises()
     expect(w2.find('.crl-line').exists()).toBe(false)
     w2.unmount()
+  })
+
+  // ===== P2a 脚本能力：徽标 / 总闸 / 同意卡（2026-09-29）=====
+
+  it('has_script entry shows 「脚本」 badge; script-only package still activatable', async () => {
+    requestMock.mockResolvedValue(listResp([
+      skin({ id: 'full', has_script: true }),
+      skin({
+        id: 'scriptonly',
+        has_script: true,
+        manifest: { id: 'scriptonly', name: 'ScriptOnly', version: '1.0.0', author: '', description: '', type: 'theme', variants: [], entry: null, script: 'skin/main.js' },
+      }),
+    ]))
+    const w = mountPanel()
+    await flushPromises()
+
+    const cards = w.findAll('.skin-card')
+    expect(cards[1].find('.skin-script-tag').exists()).toBe(true)
+    expect(cards[1].text()).toContain('脚本')
+    // script-only（无 CSS entry）= canActivate 走 script 载荷分支
+    const so = cards[2]
+    expect(so.find('.skin-script-tag').exists()).toBe(true)
+    expect(so.find('button.btn-primary').exists()).toBe(true)
+    w.unmount()
+  })
+
+  it('script switch on dispatches config.set_field then progressive refresh', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string, data?: any) => {
+      if (cmd === 'list') return Promise.resolve(listResp([]))
+      if (cmd === 'get') {
+        expect(data).toBeUndefined()
+        return Promise.resolve({ ui: { skins: { allow_scripts: false } } })
+      }
+      if (cmd === 'set_field') {
+        expect(data).toEqual({ path: 'ui.skins.allow_scripts', value: true })
+        return Promise.resolve({ ok: true })
+      }
+      return Promise.reject(new Error(`unexpected ${cmd}`))
+    })
+    refreshMock.mockResolvedValue(undefined)
+    const w = mountPanel()
+    await flushPromises()
+    expect((w.find('[data-test="script-switch"] input').element as HTMLInputElement).checked).toBe(false)
+
+    await w.find('[data-test="script-switch"] input').setValue(true)
+    await flushPromises()
+
+    expect(requestMock).toHaveBeenCalledWith('config', 'set_field', { path: 'ui.skins.allow_scripts', value: true })
+    expect(refreshMock).toHaveBeenCalledTimes(1) // 开闸 = 渐进注入
+    expect(toastMock.success).toHaveBeenCalled()
+    w.unmount()
+  })
+
+  it('set_field failure surfaces error toast; switch state follows config truth', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'list') return Promise.resolve(listResp([]))
+      if (cmd === 'get') return Promise.resolve({ ui: { skins: { allow_scripts: false } } })
+      if (cmd === 'set_field') return Promise.reject(new Error('config 写入失败'))
+      return Promise.reject(new Error(`unexpected ${cmd}`))
+    })
+    const w = mountPanel()
+    await flushPromises()
+
+    await w.find('[data-test="script-switch"] input').setValue(true)
+    await flushPromises()
+
+    // 失败=未生效：错误浮出 + 不做渐进刷新（闸仍关，无脚本可注入）
+    expect(toastMock.error).toHaveBeenCalledWith(expect.stringContaining('开关保存失败'))
+    expect(refreshMock).not.toHaveBeenCalled()
+    w.unmount()
+
+    // 保存失败后开关态跟随 config 真相源（fresh mount 重读）
+    const w2 = mountPanel()
+    await flushPromises()
+    expect((w2.find('[data-test="script-switch"] input').element as HTMLInputElement).checked).toBe(false)
+    w2.unmount()
+  })
+
+  it('consent card appears on scriptPending and dispatches allow/deny', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'list') {
+        return Promise.resolve(listResp([
+          skin({ id: 'scripty', has_script: true, signature: 'verified' }),
+        ]))
+      }
+      if (cmd === 'get') return Promise.resolve({})
+      return Promise.reject(new Error(`unexpected ${cmd}`))
+    })
+    const w = mountPanel()
+    await flushPromises()
+    expect(w.find('[data-test="script-consent"]').exists()).toBe(false)
+
+    skinStateMock.scriptPending = 'scripty'
+    await flushPromises()
+    const card = w.find('[data-test="script-consent"]')
+    expect(card.exists()).toBe(true)
+    expect(card.text()).toContain('Alpha Skin') // displayName 来自列表行
+    expect(card.text()).toContain('✅ 已验证') // 签名如实展示（不拦截）
+    expect(card.text()).toContain('abababab') // shortSha(整包 sha)
+
+    await card.find('[data-test="script-allow"]').trigger('click')
+    expect(consentMock).toHaveBeenLastCalledWith(true)
+    await card.find('[data-test="script-deny"]').trigger('click')
+    expect(consentMock).toHaveBeenLastCalledWith(false)
+    w.unmount()
+  })
+
+  it('缺陷 #9：switch off discards pending consent card（闸关 = JS 不执行，卡不留）', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string, data?: any) => {
+      if (cmd === 'list') return Promise.resolve(listResp([skin({ id: 'scripty', has_script: true })]))
+      if (cmd === 'get') return Promise.resolve({ ui: { skins: { allow_scripts: true } } })
+      if (cmd === 'set_field') {
+        expect(data).toEqual({ path: 'ui.skins.allow_scripts', value: false })
+        return Promise.resolve({ ok: true })
+      }
+      return Promise.reject(new Error(`unexpected ${cmd}`))
+    })
+    const w = mountPanel()
+    await flushPromises()
+    skinStateMock.scriptPending = 'scripty'
+    await flushPromises()
+    expect(w.find('[data-test="script-consent"]').exists()).toBe(true)
+
+    await w.find('[data-test="script-switch"] input').setValue(false)
+    await flushPromises()
+
+    // pending 废弃（卡消失）——卡上 bytes-in-hand 不得在闸关后仍可被同意注入
+    expect(skinStateMock.scriptPending).toBe('')
+    expect(w.find('[data-test="script-consent"]').exists()).toBe(false)
+    expect(refreshMock).not.toHaveBeenCalled() // 无 live 脚本 → 无需整页刷新
+    w.unmount()
+  })
+
+  // 以下测试替换 window.location（jsdom [LegacyUnforgeable]，仅 defineProperty
+  // 可换；替换后不可恢复）——保持文件内最后执行。
+  it('switch off with live script running → config saved then whole-page reload', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string, data?: any) => {
+      if (cmd === 'list') return Promise.resolve(listResp([]))
+      if (cmd === 'get') return Promise.resolve({ ui: { skins: { allow_scripts: true } } })
+      if (cmd === 'set_field') {
+        expect(data).toEqual({ path: 'ui.skins.allow_scripts', value: false })
+        return Promise.resolve({ ok: true })
+      }
+      return Promise.reject(new Error(`unexpected ${cmd}`))
+    })
+    needsReloadMock.mockReturnValue(true) // live 脚本在场
+    const reloadMock = vi.fn()
+    Object.defineProperty(window, 'location', {
+      value: { href: 'http://localhost/', reload: reloadMock },
+      writable: true,
+    })
+    const w = mountPanel()
+    await flushPromises()
+
+    await w.find('[data-test="script-switch"] input').setValue(false)
+    await flushPromises()
+
+    expect(requestMock).toHaveBeenCalledWith('config', 'set_field', { path: 'ui.skins.allow_scripts', value: false })
+    expect(reloadMock).toHaveBeenCalledTimes(1) // 裁定 2：关闸必刷新卸载 JS
+    expect(refreshMock).not.toHaveBeenCalled()
+    w.unmount()
+  })
+
+  it('set_active with live script running → reload instead of hot refresh', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'list') return Promise.resolve(listResp([skin()]))
+      if (cmd === 'set_active') return Promise.resolve({ active: 'alpha' })
+      return Promise.reject(new Error(`unexpected ${cmd}`))
+    })
+    needsReloadMock.mockReturnValue(true)
+    const reloadMock = vi.fn()
+    Object.defineProperty(window, 'location', {
+      value: { href: 'http://localhost/', reload: reloadMock },
+      writable: true,
+    })
+    const w = mountPanel()
+    await flushPromises()
+
+    const card = w.findAll('.skin-card')[1]
+    await card.find('button.btn-primary').trigger('click')
+    await flushPromises()
+
+    expect(requestMock).toHaveBeenCalledWith('skins', 'set_active', { id: 'alpha' })
+    expect(reloadMock).toHaveBeenCalledTimes(1) // 裁定 2：切向任何目的地都刷新
+    expect(refreshMock).not.toHaveBeenCalled()
+    w.unmount()
   })
 })

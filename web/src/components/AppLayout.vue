@@ -44,19 +44,20 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="app-layout" :class="{ 'focus-mode': appStore.focusMode }">
+  <div class="app-layout" data-nb-shell="root" :class="{ 'focus-mode': appStore.focusMode }">
     <!-- 皮肤槽位：顶栏（品牌 + 连接状态；结构皮肤才在场） -->
     <SkinSlot v-if="skinHasSlot('titlebar')" name="titlebar" />
 
-    <!-- Mobile Overlay -->
-    <div class="mobile-overlay" :class="{ show: appStore.showMobileSidebar }" @click="appStore.toggleMobileSidebar()"></div>
+    <!-- Mobile Overlay（data-nb-shell 标记 = 皮肤壳 CSS 唯一合法锚点，
+         contract.spec 守护） -->
+    <div class="mobile-overlay" data-nb-shell="mobile-overlay" :class="{ show: appStore.showMobileSidebar }" @click="appStore.toggleMobileSidebar()"></div>
 
     <!-- 皮肤槽位：左侧栏（新建对话+导航+会话历史+E-Stop），结构皮肤时
          替换主导航；CSS-only 包 / 无皮肤回落原生 Sidebar -->
     <SkinSlot v-if="skinHasSlot('sidebar')" name="sidebar" />
     <Sidebar v-else />
 
-    <main class="main-content">
+    <main class="main-content" data-nb-shell="main">
       <!-- Mobile Header -->
       <div class="mobile-header">
         <button class="hamburger-btn" @click="appStore.toggleMobileSidebar()">

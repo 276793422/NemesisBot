@@ -42,6 +42,17 @@ fn app(dir: Option<&str>, active: &str) -> axum::Router {
     super::skin_router(
         dir.map(str::to_string),
         std::sync::Arc::new(parking_lot::RwLock::new(active.to_string())),
+        None,
+    )
+    .unwrap()
+}
+
+/// 带 home 的路由（脚本闸用例；home 指向预写 config.json 的临时目录）。
+fn app_home(dir: Option<&str>, active: &str, home: &str) -> axum::Router {
+    super::skin_router(
+        dir.map(str::to_string),
+        std::sync::Arc::new(parking_lot::RwLock::new(active.to_string())),
+        Some(home.to_string()),
     )
     .unwrap()
 }
@@ -161,7 +172,8 @@ async fn no_dir_no_routes() {
     assert!(
         super::skin_router(
             None,
-            std::sync::Arc::new(parking_lot::RwLock::new("openlikebuddy".into()))
+            std::sync::Arc::new(parking_lot::RwLock::new("openlikebuddy".into())),
+            None
         )
         .is_none()
     );
@@ -315,13 +327,225 @@ async fn structure_path_traversal_and_bad_manifest_rejected() {
     assert_eq!(res.status(), 404);
 }
 
-/// 旧包 manifest 无 structure 字段 → serde 缺省 None（管理面序列化不炸，
-/// set_active 裁决回退 entry 有无——旧行为零迁移）。
+/// 旧包 manifest 无 structure / script 字段 → serde 缺省 None（管理面
+/// 序列化不炸，set_active 裁决回退 entry 有无——旧行为零迁移）。
 #[test]
 fn manifest_structure_defaults_to_none() {
     let m: ManifestInfo = serde_json::from_str(r#"{"id":"old","entry":"skin/x.css"}"#).unwrap();
     assert_eq!(m.entry.as_deref(), Some("skin/x.css"));
     assert!(m.structure.is_none());
+    assert!(m.script.is_none());
+}
+
+// --- 脚本载荷（P2a 数据面；裁决序 ① 404 无脚本 → ② 403 闸关 → ③ 200）---
+
+/// 内存构建 script 形态 .nbskin（theme 载荷 + 可选 script 载荷）。
+fn write_script_skin(dir: &std::path::Path, id: &str, script: Option<&str>) {
+    use std::io::Write;
+    let path = dir.join(format!("{id}.nbskin"));
+    let file = std::fs::File::create(path).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    let mut manifest = format!(r#"{{"id":"{id}","version":"1.0.0","entry":"skin/x.css""#);
+    if let Some(s) = script {
+        manifest.push_str(&format!(r#","script":"{s}""#));
+    }
+    manifest.push('}');
+    zip.start_file("manifest.json", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    write!(zip, "{manifest}").unwrap();
+    zip.start_file("skin/x.css", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    write!(zip, "html {{ --x: 1; }}").unwrap();
+    if let Some(s) = script {
+        zip.start_file(s, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        write!(
+            zip,
+            "document.documentElement.dataset.nbScriptSkin = '{id}';"
+        )
+        .unwrap();
+    }
+    zip.finish().unwrap();
+}
+
+/// 预写 config.json 的 ui.skins.allow_scripts（脚本闸用例；disk-only，
+/// 不触全局 store——nemesis-web 测试进程无人装 ConfigStore）。
+fn seed_allow_scripts(home: &std::path::Path, allow: bool) {
+    let mut cfg = nemesis_config::Config::default();
+    cfg.ui = Some(nemesis_config::UiConfig {
+        skin: "default".into(),
+        skins: nemesis_config::SkinsPolicy {
+            require_signed: false,
+            allow_scripts: allow,
+        },
+    });
+    nemesis_config::save_config(&home.join("config.json"), &mut cfg).expect("seed config");
+}
+
+/// 裁决序矩阵：① 无 script 字段 → 404（闸开也 404）；② script 在场 +
+/// 闸关 → 403；③ script 在场 + 闸开 → 200 text/javascript + X-Skin-Id。
+/// ③ 用未签包（测试进程无锚 → Unverified）钉死裁定 1：开关 + 同意是
+/// 唯一授权，签名状态不构成加载闸。
+#[tokio::test]
+async fn script_endpoint_ruling_order_404_403_200() {
+    let tmp = tempdir();
+    let skins = tmp.path().join("skins");
+    std::fs::create_dir(&skins).unwrap();
+    write_script_skin(&skins, "plain", None); // 无脚本
+    write_script_skin(&skins, "scripty", Some("skin/main.js")); // 带脚本
+    let home = tempdir();
+    let home_str = home.path().to_str().unwrap();
+    let skins_str = skins.to_str().unwrap();
+
+    // ① 无脚本 + 闸开 → 404（不是 200/403——无载荷无执行面）
+    seed_allow_scripts(home.path(), true);
+    let a = app_home(Some(skins_str), "plain", home_str);
+    let res = a
+        .oneshot(
+            Request::builder()
+                .uri("/skins/active/script")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404, "无 script 字段必须 404（闸开也一样）");
+
+    // ② 带脚本 + 闸关 → 403（≠ 404：包确实带脚本，是授权面拒绝）
+    seed_allow_scripts(home.path(), false);
+    let a = app_home(Some(skins_str), "scripty", home_str);
+    let res = a
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/skins/active/script")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403, "闸关必须 403");
+
+    // ③ 带脚本 + 闸开 → 200 text/javascript + X-Skin-Id（未签包照发）
+    seed_allow_scripts(home.path(), true);
+    let res = a
+        .oneshot(
+            Request::builder()
+                .uri("/skins/active/script")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "裁定 1：开关在场即放行（签名只是徽标）");
+    assert_eq!(
+        res.headers().get(header::CONTENT_TYPE).unwrap(),
+        "text/javascript; charset=utf-8"
+    );
+    assert_eq!(res.headers().get("x-skin-id").unwrap(), "scripty");
+    assert_eq!(
+        res.headers().get(header::CACHE_CONTROL).unwrap(),
+        "no-cache"
+    );
+    // X-Skin-Sha256 = 整包摘要（内容身份，前端同意缓存盖章材料；与
+    // 管理面 SkinEntry.sha256 同源——64 hex）。
+    let sha_hdr = res
+        .headers()
+        .get("x-skin-sha256")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_eq!(sha_hdr.len(), 64, "sha256 header = 64 hex");
+    let want_sha: [u8; 32] =
+        Sha256::digest(std::fs::read(skins.join("scripty.nbskin")).unwrap()).into();
+    assert_eq!(sha_hdr, hex32(&want_sha), "与整包字节摘要同源");
+    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let text = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(text.contains("nbScriptSkin"), "脚本字节原样分发");
+}
+
+/// 显式 id 路径（`?skin=` 预览同源）同裁决序 + 缺包 404 + 穿越 script
+/// 路径 404；home 未装配（None）= fail-closed 403（闸不可判 ≠ 闸开）。
+#[tokio::test]
+async fn script_explicit_id_gated_and_fail_closed() {
+    let tmp = tempdir();
+    let skins = tmp.path().join("skins");
+    std::fs::create_dir(&skins).unwrap();
+    write_script_skin(&skins, "scripty", Some("skin/main.js"));
+    write_script_skin(&skins, "evil", Some("../outside/main.js"));
+    let home = tempdir();
+    seed_allow_scripts(home.path(), true);
+    let home_str = home.path().to_str().unwrap();
+    let skins_str = skins.to_str().unwrap();
+
+    let a = app_home(Some(skins_str), "scripty", home_str);
+    // 显式 id + 闸开 → 200（预览路径同源放行）
+    let res = a
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/skins/scripty/script")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    // 穿越路径（manifest.script 带 ..）→ load 拒绝 → 404
+    let res = a
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/skins/evil/script")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404);
+    // 缺包 → 404
+    let res = a
+        .oneshot(
+            Request::builder()
+                .uri("/skins/ghost/script")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404);
+
+    // 带脚本 + 闸开 config 但 home 未装配 → fail-closed 403
+    let no_home = app(Some(skins_str), "scripty");
+    let res = no_home
+        .oneshot(
+            Request::builder()
+                .uri("/skins/scripty/script")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403, "home 缺失 = 闸不可判 = fail-closed 403");
+}
+
+/// 管理面呈现：has_script 跟随 manifest.script（在场 true / 缺省 false），
+/// 与签名状态正交。
+#[test]
+fn scan_skins_has_script_flag_follows_manifest() {
+    let tmp = tempdir();
+    write_script_skin(tmp.path(), "plain", None);
+    write_script_skin(tmp.path(), "scripty", Some("skin/main.js"));
+    let entries = scan_skins(tmp.path().to_str().unwrap());
+    assert_eq!(entries.len(), 2);
+    let plain = entries.iter().find(|e| e.id == "plain").unwrap();
+    assert!(!plain.has_script);
+    assert!(plain.manifest.script.is_none());
+    let scripty = entries.iter().find(|e| e.id == "scripty").unwrap();
+    assert!(scripty.has_script);
+    assert_eq!(scripty.manifest.script.as_deref(), Some("skin/main.js"));
 }
 
 // --- helpers ---

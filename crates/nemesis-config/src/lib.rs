@@ -200,6 +200,12 @@ pub struct SkinsPolicy {
     /// 签名仍是徽标而非加载闸（D1 定案），这里只约束「把哪个包设为默认」
     /// 这一个动作。默认 false（未签名皮肤照常可用）。
     pub require_signed: bool,
+    /// true = 皮肤脚本载荷（manifest `script`）可经 `/skins/active/script`
+    /// 分发。**脚本能力总闸**（默认 false）：关 = 端点 403，脚本不进前端。
+    /// 开 ≠ 免许可——每个带脚本包首次激活仍需用户逐包同意（consent 卡，
+    /// `skins.script_consent` 记账）。签名状态照旧只是徽标（同意卡展示
+    /// ⚠/🚫 但不拦截）。
+    pub allow_scripts: bool,
 }
 
 /// Dashboard 前端表现配置（`config.json` 的 `ui` 段）。

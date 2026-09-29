@@ -4,14 +4,19 @@
 //! v4 footer（`NMBSIG\x04\x00` magic，摘要覆盖 `[0, L)`，zip crate 按 spec
 //! 从文件尾反向扫 EOCD，尾部附加数据天然容忍）。
 //!
-//! **载荷两形态（v2 起，声明式结构引擎）**：
+//! **载荷三形态（v2 起声明式结构引擎，P2a 起脚本载荷）**：
 //! - CSS 载荷（manifest `entry`）——换色，经 `/skins/active.css` 与
 //!   `/skins/{id}` 分发，前端注入当前页 `<style>`；
 //! - 结构载荷（manifest `structure`）——换骨架，皮肤包自带 UI 结构
 //!   （`skin/structure.html`，声明式 `data-nb-*` 原语标注），经
 //!   `/skins/active/structure` 与 `/skins/{id}/structure` 分发，前端
-//!   结构引擎清洗后渲染。**包内绝不执行任意代码**（清洗/白名单全在
-//!   前端引擎，服务端只管原样分发）。
+//!   结构引擎清洗后渲染；
+//! - 脚本载荷（manifest `script`，P2a）——行为扩展，经
+//!   `/skins/active/script` 与 `/skins/{id}/script` 分发，前端注入
+//!   `<script>` 执行。**脚本不清洗也不可清洗**（代码 ≠ 样式）——授权
+//!   模型是两级闸：`ui.skins.allow_scripts` 全局开关（关 = 403）+ 前端
+//!   逐包同意（consent 卡，`skins.script_consent` 记账）。签名状态照旧
+//!   只是徽标（D1：开关在场即用户自主，同意卡如实展示 ⚠/🚫 但不拦截）。
 //!
 //! 皮肤的语义 = **给当前应用（Dashboard）原地换观感**：CSS 皮肤 = 换色
 //! （原生 Vue 布局），结构皮肤 = 换骨架 + 换色；同一 URL、同一应用，
@@ -19,9 +24,9 @@
 //! （早期 app 形态已裁定违背皮肤语义，整体移除。）
 //!
 //! 服务端职责：**分发 + 管理面来源验证**（`scan_skins`，list/reload/
-//! set_active 时现扫现验）。数据面（CSS/structure）**不验签**——签名是
-//! 来源徽标而非加载闸（D1 定案：目录内所有 .nbskin 一律可加载可用，
-//! 目标用户的皮肤可能就是没签名的）。解析/清洗/注入全在前端。
+//! set_active 时现扫现验）。数据面（CSS/structure/script）**不验签**——
+//! 签名是来源徽标而非加载闸（D1 定案：目录内所有 .nbskin 一律可加载
+//! 可用，目标用户的皮肤可能就是没签名的）。解析/清洗/注入全在前端。
 //!
 //! 激活 id 来自 `config.json` 的 `ui.skin`（`"default"`/空 = 无皮肤，
 //! active.css 与 active/structure 都 404，前端回落原生 UI 并清缓存）。
@@ -41,7 +46,8 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// 皮肤宿主：skins 目录 + 激活 id（共享锁，热切地基）。
+/// 皮肤宿主：skins 目录 + 激活 id（共享锁，热切地基）+ home（脚本闸
+/// config 现读现判用；None = 无法判闸 → 脚本端点诚实 403）。
 #[derive(Clone)]
 pub struct SkinHost {
     /// exe 同级 `skins/` 目录（None = 无法定位 exe 目录，皮肤面整体关闭）。
@@ -49,6 +55,10 @@ pub struct SkinHost {
     /// 激活皮肤 id（config `ui.skin`）。共享锁：WSAPI `skins.set_active`
     /// 免重启翻锁，下一请求即生效。
     active_id: Arc<RwLock<String>>,
+    /// NEMESISBOT home（config.json 所在目录）。脚本闸
+    /// `ui.skins.allow_scripts` 每请求现读（load_live 优先，scan-per-call
+    /// 无缓存先例）；None = home 未装配，脚本端点一律 403。
+    home: Option<String>,
 }
 
 /// id 合法性：非空、非 "default"、无路径穿越成分。
@@ -75,9 +85,11 @@ impl SkinHost {
         zip::ZipArchive::new(std::io::BufReader::new(file)).ok()
     }
 
-    /// 读 manifest.json 的字符串字段（拒 `..` 穿越）。
-    fn manifest_str(
-        zip: &mut zip::ZipArchive<std::io::BufReader<std::fs::File>>,
+    /// 读 manifest.json 的字符串字段（拒 `..` 穿越）。泛型后端：
+    /// load_css/structure 走 `BufReader<File>`，load_script_with_sha 走
+    /// `Cursor<Vec<u8>>`（sha256 需整包字节在手）。
+    fn manifest_str<R: std::io::Read + std::io::Seek>(
+        zip: &mut zip::ZipArchive<R>,
         field: &str,
     ) -> Option<String> {
         let mut manifest = String::new();
@@ -114,6 +126,40 @@ impl SkinHost {
         let mut html = String::new();
         zip.by_name(&entry).ok()?.read_to_string(&mut html).ok()?;
         Some(html)
+    }
+
+    /// 从包读取脚本载荷 + 整包 SHA-256（P2a；`load_structure` 镜像）。
+    /// 缺 `script` 字段 → `None` → 上层 404。sha256 出 `X-Skin-Sha256`
+    /// 头——**内容身份而非信任结论**（前端同意缓存 `按包内容重确认`
+    /// 的盖章材料；整包摘要与 SkinEntry.sha256 同源）。**脚本不做任何
+    /// 清洗**（代码 ≠ 样式，CSS 外链消毒语义不适用）——授权模型 =
+    /// `allow_scripts` 开关（script 端点 403 闸）+ 前端逐包同意；
+    /// `manifest_str` 既有 `..` 拒绝复用。
+    fn load_script_with_sha(&self, id: &str) -> Option<(String, String)> {
+        if !valid_id(id) {
+            return None;
+        }
+        let path = self.dir.as_ref()?.join(format!("{id}.nbskin"));
+        let bytes = std::fs::read(path).ok()?;
+        let sha = sha256_hex(&bytes);
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).ok()?;
+        let entry = Self::manifest_str(&mut zip, "script")?;
+        let mut js = String::new();
+        zip.by_name(&entry).ok()?.read_to_string(&mut js).ok()?;
+        Some((js, sha))
+    }
+
+    /// 脚本能力总闸现读现判（`ui.skins.allow_scripts`）。home 未装配 /
+    /// config 不可读 = 闸关（fail-closed：fail-open 会在 config 损坏时
+    /// 静默放行脚本）。
+    fn scripts_allowed(&self) -> bool {
+        let Some(home) = self.home.as_deref() else {
+            return false;
+        };
+        crate::handlers::config::load_config(home)
+            .ok()
+            .and_then(|cfg| cfg.ui.map(|u| u.skins.allow_scripts))
+            .unwrap_or(false)
     }
 }
 
@@ -221,21 +267,91 @@ async fn handle_skin_structure(
     structure_response(host.load_structure(&id))
 }
 
+/// `GET /skins/active/script` — 激活皮肤的脚本载荷（P2a）。**裁决序**
+///（裁定 1）：① manifest.script 不在场 → 404；② `allow_scripts=false`
+/// → 403（纯 CSS 模式，前端静默）；③ 通过 → 200 `text/javascript` +
+/// `X-Skin-Id` + `X-Skin-Sha256`（整包摘要 = 同意缓存内容戳，内容身份
+/// 而非信任结论；同锁快照防头/体分裂）。**不带签名头**（数据面 D1 不
+/// 验签，每请求 ECDSA 违背定案；签名徽标走管理面 skins.list/detail）。
+async fn handle_active_script(State(host): State<SkinHost>) -> impl IntoResponse {
+    // 锁快照一次：load 与响应头用同一 id（热翻竞态下不会头/体分裂）。
+    let active_id = host.active_id.read().clone();
+    match host.load_script_with_sha(&active_id) {
+        Some((js, sha)) if host.scripts_allowed() => {
+            let mut headers = header::HeaderMap::new();
+            headers.insert(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static("text/javascript; charset=utf-8"),
+            );
+            headers.insert(
+                header::CACHE_CONTROL,
+                header::HeaderValue::from_static("no-cache"),
+            );
+            if let Ok(v) = header::HeaderValue::from_str(&active_id) {
+                headers.insert(header::HeaderName::from_static("x-skin-id"), v);
+            }
+            if let Ok(v) = header::HeaderValue::from_str(&sha) {
+                headers.insert(header::HeaderName::from_static("x-skin-sha256"), v);
+            }
+            (StatusCode::OK, headers, js).into_response()
+        }
+        // 脚本在场但闸关 → 403（≠ 404：包确实带脚本，是授权面拒绝）
+        Some(_) => StatusCode::FORBIDDEN.into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// `GET /skins/{id}/script` — 显式 id 的脚本载荷（前端 `?skin=` 预览
+/// 路径）。裁决序同 active/script；**预览路径同样过闸**（`?skin=` 不是
+/// 授权旁路——脚本执行面只看开关与用户同意）。
+async fn handle_skin_script(
+    State(host): State<SkinHost>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match host.load_script_with_sha(&id) {
+        Some((js, sha)) if host.scripts_allowed() => {
+            let mut headers = header::HeaderMap::new();
+            headers.insert(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static("text/javascript; charset=utf-8"),
+            );
+            headers.insert(
+                header::CACHE_CONTROL,
+                header::HeaderValue::from_static("no-cache"),
+            );
+            if let Ok(v) = header::HeaderValue::from_str(&sha) {
+                headers.insert(header::HeaderName::from_static("x-skin-sha256"), v);
+            }
+            (StatusCode::OK, headers, js).into_response()
+        }
+        Some(_) => StatusCode::FORBIDDEN.into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 /// 构建皮肤路由（挂在主 router 之外、鉴权层之外）。`dir = None`（exe
 /// 路径不可定位）→ 不挂任何路由。`active_id` 是共享锁句柄（与 WSAPI
-/// `skins.set_active` 同一把锁，热切语义的地基）。
-pub fn skin_router(dir: Option<String>, active_id: Arc<RwLock<String>>) -> Option<Router> {
+/// `skins.set_active` 同一把锁，热切语义的地基）。`home` 供脚本闸
+/// config 现读现判（None = 闸恒关，脚本端点 403）。
+pub fn skin_router(
+    dir: Option<String>,
+    active_id: Arc<RwLock<String>>,
+    home: Option<String>,
+) -> Option<Router> {
     let dir = dir?;
     let host = SkinHost {
         dir: Some(PathBuf::from(dir)),
         active_id,
+        home,
     };
     Some(
         Router::new()
             .route("/skins/active.css", get(handle_active_css))
             .route("/skins/active/structure", get(handle_active_structure))
+            .route("/skins/active/script", get(handle_active_script))
             .route("/skins/{id}", get(handle_skin_css))
             .route("/skins/{id}/structure", get(handle_skin_structure))
+            .route("/skins/{id}/script", get(handle_skin_script))
             .with_state(host),
     )
 }
@@ -310,6 +426,11 @@ pub struct ManifestInfo {
     /// 原生 UI 布局）。set_active 裁决 = entry ∥ structure 任一在场。
     #[serde(default)]
     pub structure: Option<String>,
+    /// 脚本载荷路径（P2a；缺省 = 无行为扩展）。分发经 `/skins/*/script`
+    /// 双闸（`allow_scripts` 开关 + 前端逐包同意）；set_active 裁决 =
+    /// entry ∥ structure ∥ script 任一在场。
+    #[serde(default)]
+    pub script: Option<String>,
     /// 格式版本（缺省 = v1 隐含；在场且 ≠1 → broken）
     #[serde(default)]
     pub format_version: Option<u32>,
@@ -339,6 +460,10 @@ pub struct SkinEntry {
     pub sha256: String,
     /// manifest.id ≠ 文件名 stem 的注记（不拒服务，只降级元数据可信度）
     pub id_mismatch: bool,
+    /// 包带脚本载荷（manifest.script 在场）。管理面展示用——皮肤列表
+    /// 徽标位「带脚本」+ 同意卡「本包将执行脚本」判据；数据面裁决仍以
+    /// manifest.script 现读为准。
+    pub has_script: bool,
 }
 
 /// 信任锚解析：编译期 `NEMESIS_BUILD_ROOT_ANCHOR` 优先，运行时
@@ -473,6 +598,7 @@ pub fn scan_skins(dir: &str) -> Vec<SkinEntry> {
         let id_mismatch = manifest
             .as_ref()
             .is_some_and(|m| !m.id.is_empty() && m.id != stem);
+        let has_script = manifest.as_ref().is_some_and(|m| m.script.is_some());
         entries.push(SkinEntry {
             id: stem.to_string(),
             file: file_name.to_string(),
@@ -483,6 +609,7 @@ pub fn scan_skins(dir: &str) -> Vec<SkinEntry> {
             manifest: manifest.unwrap_or_default(),
             sha256,
             id_mismatch,
+            has_script,
         });
     }
     // P3 吊销第五态：CRL 快照在场（且可验）时，对 Verified 包做四维复核

@@ -4,17 +4,21 @@
  *
  * 卡片列表（含 broken 灰卡——D6 灰卡展示而非隐藏）+ 签名徽标五态（P3 起
  * +🚫 revoked）+ 设为默认观感（WSAPI skins.set_active → useSkin
- * .applySkinRefresh 免刷新换肤）+ 重新加载 + 下载皮肤（P2 verify-before-
+ * .applySkinRefresh 免刷新换肤；**live 脚本在场时切换 = 整页刷新**——JS
+ * 状态不可干净卸载，裁定 2）+ 重新加载 + 下载皮肤（P2 verify-before-
  * install 三入口：官方 Release / 任意 https URL / 本地文件导入，共用
  * 「验签 → 徽标 → 落盘」管线——所有信任结论都落盘，仅物理损坏拒收）+
- * CRL 快照状态行（P3 吊销第五态的管理面诚实呈现）。管理面按需现扫
+ * CRL 快照状态行（P3 吊销第五态的管理面诚实呈现）+ 脚本能力（P2a）：
+ * 「允许皮肤携带脚本」全局开关（config `ui.skins.allow_scripts`，关 =
+ * 服务端 403 静默纯 CSS）+ 脚本同意卡（live 前置裁决；签名状态如实展示
+ * 含 ⚠/🚫 但不拦截——开关 + 同意是唯一授权，裁定 1）。管理面按需现扫
  *（stateless scan-per-call），reload = 语义锚点命令。皮肤只有一种语义：
  * 给当前应用换观感（无任何「打开独立应用」入口——app 形态已裁定移除）。
  */
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useWSAPI } from '../../composables/useWSAPI'
 import { useToast } from '../../composables/useToast'
-import { applySkinRefresh } from '../../composables/useSkin'
+import { applySkinRefresh, skinState, resolveScriptConsent, skinScriptNeedsReload, discardScriptPending } from '../../composables/useSkin'
 import { authedFetch } from '../../lib/authFetch'
 
 interface SkinManifest {
@@ -28,6 +32,8 @@ interface SkinManifest {
   entry?: string | null
   /** 结构载荷（v2 声明式结构引擎；在场 = 结构皮肤） */
   structure?: string | null
+  /** 脚本载荷（P2a；在场 = 带脚本包，授权 = 开关 + 逐包同意） */
+  script?: string | null
 }
 interface SkinEntry {
   id: string
@@ -39,6 +45,8 @@ interface SkinEntry {
   manifest: SkinManifest
   sha256: string
   id_mismatch: boolean
+  /** 包带脚本载荷（管理面展示徽标；授权面见同意卡 + 全局开关） */
+  has_script: boolean
 }
 /** CRL 快照管理面状态（P3；不在场 = 全默认，面板不渲染该行） */
 interface CrlInfo {
@@ -108,9 +116,9 @@ function sigBadge(e: SkinEntry) {
   return sigBadgeInfo(e.signature, e.sig_detail)
 }
 
-/** 可激活 = 包体健康且至少带一种载荷（CSS 换色 ∥ structure 结构）。 */
+/** 可激活 = 包体健康且至少带一种载荷（CSS 换色 ∥ structure 结构 ∥ script 脚本）。 */
 function canActivate(e: SkinEntry): boolean {
-  return e.status === 'ok' && (!!e.manifest.entry || !!e.manifest.structure)
+  return e.status === 'ok' && (!!e.manifest.entry || !!e.manifest.structure || !!e.manifest.script)
 }
 
 function applyList(data: ListResp | null) {
@@ -147,6 +155,12 @@ async function setActive(id: string) {
   busy.value = true
   try {
     await request('skins', 'set_active', { id })
+    // 裁定 2 刷新边界：live 脚本在场时任何切向 = 整页刷新（JS 状态不可
+    // 干净卸载；config 已写好，reload 后 boot 链按新激活 id 装载）。
+    if (skinScriptNeedsReload()) {
+      location.reload()
+      return
+    }
     await applySkinRefresh()
     activeId.value = localStorage.getItem('nemesisbot_skin') || id
     toast.success(id === 'default' ? '已关闭皮肤，回到默认观感' : `已切换到「${displayName(skins.value.find((s) => s.id === id))}」`)
@@ -163,6 +177,63 @@ function displayName(e?: SkinEntry): string {
 
 function shortSha(sha: string): string {
   return sha ? sha.slice(0, 12) : ''
+}
+
+// ---------------------------------------------------------------------------
+// 脚本能力（P2a）：全局开关 + 逐包同意卡
+// ---------------------------------------------------------------------------
+
+/** 「允许皮肤携带脚本」全局开关（config `ui.skins.allow_scripts`；默认
+ * 关——关 = 服务端 script 端点 403，前端静默纯 CSS）。 */
+const allowScripts = ref(false)
+const scriptSwitchBusy = ref(false)
+
+/** 待同意卡数据（watch skinState.scriptPending 的投影；entry 取自本
+ * 面板已加载的 skins 列表——签名徽标如实展示，含 ⚠/🚫，不拦截）。 */
+const pendingId = computed(() => skinState.scriptPending)
+const pendingEntry = computed(() => skins.value.find((s) => s.id === pendingId.value) || null)
+
+async function loadAllowScripts() {
+  try {
+    const cfg = (await request('config', 'get')) as {
+      ui?: { skins?: { allow_scripts?: boolean } }
+    }
+    allowScripts.value = !!cfg?.ui?.skins?.allow_scripts
+  } catch {
+    // config 不可读 = 闸状态未知 → 保持 false（与服务端 fail-closed 同侧）
+  }
+}
+
+async function toggleAllowScripts(on: boolean) {
+  if (scriptSwitchBusy.value) return
+  scriptSwitchBusy.value = true
+  try {
+    await request('config', 'set_field', { path: 'ui.skins.allow_scripts', value: on })
+    allowScripts.value = on
+    if (!on) {
+      // 裁定 2 规则表「开关关 = JS 不执行」：未裁决的 pending 卡一并废弃
+      // ——卡上 bytes-in-hand 不得在闸关后仍可被同意注入。
+      discardScriptPending()
+      if (skinScriptNeedsReload()) {
+        // 裁定 2：运行中关开关且 live 脚本在场 → 整页刷新（JS 不可逆卸载）
+        location.reload()
+        return
+      }
+    }
+    if (on) {
+      // 开闸 = 渐进注入（当前无 live 脚本）：重应用当前皮肤拉脚本
+      await applySkinRefresh()
+    }
+    toast.success(on ? '已允许皮肤携带脚本（逐包仍需同意）' : '已禁止皮肤脚本（纯 CSS 模式）')
+  } catch (e: any) {
+    toast.error('开关保存失败: ' + e)
+    allowScripts.value = !on // 回滚 UI
+  }
+  scriptSwitchBusy.value = false
+}
+
+function decideConsent(allow: boolean) {
+  return resolveScriptConsent(allow)
 }
 
 // ---------------------------------------------------------------------------
@@ -233,7 +304,10 @@ async function onFilePicked(ev: Event) {
   })
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  loadAllowScripts()
+})
 </script>
 
 <template>
@@ -261,6 +335,37 @@ onMounted(load)
       <template v-if="crl.verified && !crl.expired">· 已验签生效</template>
       <template v-else-if="crl.expired">· 已过期未应用</template>
       <template v-else>· 验签失败未应用</template>
+    </div>
+
+    <!-- 脚本能力开关（P2a）：总闸关 = 服务端 403，前端纯 CSS 静默 -->
+    <label class="script-switch" data-test="script-switch">
+      <input
+        type="checkbox"
+        :checked="allowScripts"
+        :disabled="scriptSwitchBusy"
+        @change="toggleAllowScripts(($event.target as HTMLInputElement).checked)"
+      />
+      允许皮肤携带脚本
+      <span class="script-switch-hint">总闸（默认关）；开闸后每个带脚本包首次运行仍需逐包同意</span>
+    </label>
+
+    <!-- 脚本同意卡（P2a）：watch skinState.scriptPending；签名状态如实
+         展示（含 ⚠/🚫）但不拦截——开关 + 同意是唯一授权 -->
+    <div v-if="pendingId" class="card consent-card" data-test="script-consent">
+      <div class="consent-head">
+        <b>⚠ 皮肤「{{ displayName(pendingEntry || undefined) || pendingId }}」携带可执行脚本</b>
+      </div>
+      <p class="consent-body">
+        允许后该脚本将随当前页面执行（对页面有完全访问能力）。签名状态：
+        <span :class="['sig-badge', sigBadgeInfo(pendingEntry?.signature ?? 'unverified', pendingEntry?.sig_detail).cls]">
+          {{ sigBadgeInfo(pendingEntry?.signature ?? 'unverified', pendingEntry?.sig_detail).label }}
+        </span>
+        <span v-if="pendingEntry" class="dl-hint"> · 包 <code>{{ shortSha(pendingEntry.sha256) }}</code>（包更新后需重新同意）</span>
+      </p>
+      <div class="consent-actions">
+        <button class="btn btn-primary" data-test="script-allow" @click="decideConsent(true)">允许并运行</button>
+        <button class="btn" data-test="script-deny" @click="decideConsent(false)">仅用样式，不运行</button>
+      </div>
     </div>
 
     <!-- 下载面板：三入口共用一条验签落盘管线 -->
@@ -358,6 +463,11 @@ onMounted(load)
             title="自带声明式 UI 结构（结构皮肤）：换骨架 + 换色"
           >结构</span>
           <span
+            v-if="s.has_script"
+            class="skin-variant skin-script-tag"
+            title="携带脚本载荷：运行需全局开关 + 逐包同意（签名状态只是徽标）"
+          >脚本</span>
+          <span
             v-for="v in s.manifest.variants || []"
             :key="v"
             class="skin-variant"
@@ -385,7 +495,10 @@ onMounted(load)
       未签名 / 签名无效的皮肤包同样可加载使用（签名只是来源徽标）；「设为默认观感」
       是信任决策，受 <code>ui.skins.require_signed</code> 策略约束（默认关）。
       带「结构」标的皮肤自带声明式 UI 结构（包内不执行任何代码，宿主引擎
-      清洗后渲染）= 换骨架 + 换色；纯 CSS 皮肤 = 原生布局换色。
+      清洗后渲染）= 换骨架 + 换色；纯 CSS 皮肤 = 原生布局换色。带「脚本」
+      标的皮肤携带可执行脚本：需「允许皮肤携带脚本」总闸 + 逐包同意卡
+      双授权（签名状态在同意卡如实展示但不拦截），运行中关闭总闸或切换
+      皮肤会整页刷新以卸载脚本。
     </p>
   </div>
 </template>
@@ -422,6 +535,45 @@ onMounted(load)
   font-size: var(--text-xs);
   color: var(--text-muted);
   margin-bottom: var(--space-3);
+}
+/* 脚本开关 + 同意卡（P2a） */
+.script-switch {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  margin-bottom: var(--space-3);
+  cursor: pointer;
+  user-select: none;
+}
+.script-switch-hint {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.consent-card {
+  padding: var(--space-4);
+  margin-bottom: var(--space-4);
+  border-color: var(--warning);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.consent-body {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.consent-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+.skin-script-tag {
+  color: var(--warning);
+  border-color: var(--warning);
 }
 .skins-empty {
   color: var(--text-muted);
