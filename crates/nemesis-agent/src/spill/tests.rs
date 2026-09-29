@@ -159,8 +159,15 @@ fn test_sanitize_segment() {
     assert_eq!(sanitize_segment("."), "_");
     assert_eq!(sanitize_segment(""), "_");
     assert_eq!(sanitize_segment("a/b\\c:d"), "a_b_c_d");
+    // 超限段契约（与 sanitize_path_segment 单一真相源同步）：头 60 + `__` +
+    // FNV-1a64 hex16 = 78 字符；两个不同超限输入不得截断碰撞。
     let long = "a".repeat(500);
-    assert_eq!(sanitize_segment(&long).chars().count(), 80);
+    let capped = sanitize_segment(&long);
+    assert_eq!(capped.chars().count(), 78, "60 头 + 2 分隔 + 16 hex");
+    assert!(capped.starts_with(&"a".repeat(60)));
+    assert!(capped.contains("__"));
+    let other = sanitize_segment(&format!("{}b", "a".repeat(500)));
+    assert_ne!(capped, other);
 }
 
 // ---------------------------------------------------------------------------

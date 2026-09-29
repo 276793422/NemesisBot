@@ -151,7 +151,7 @@ describe('ModelsView 图像协议条目（职能框架 M6）', () => {
     const addBtn = w.findAll('button').find((b) => b.text().includes('添加模型'))
     if (addBtn) await addBtn.trigger('click')
     await flushPromises()
-    const options = w.findAll('select option').map((o) => o.element.value)
+    const options = w.findAll('select option').map((o) => (o.element as HTMLOptionElement).value)
     expect(options).toContain('images-openai')
     w.unmount()
   })
