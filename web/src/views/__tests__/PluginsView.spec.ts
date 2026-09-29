@@ -121,9 +121,13 @@ describe('PluginsView 插件状态总览（phase 1 只读）', () => {
       if (cmd === 'set_metrics_enabled') return Promise.resolve({ name: 'metrics-pipeline', enabled: false })
       return Promise.resolve({})
     })
-    const boxes = w.findAll('input[type="checkbox"]')
-    expect(boxes.length).toBe(1)
-    await boxes[0]!.setValue(false)
+    // W6 起 WASM 分节（模板前段）自带安装表单 checkbox——全页计数会随分节漂移，
+    // 本测试只针对管线开关：按卡片头文本定位「管线插件」卡，取卡内开关。
+    const pipelineCard = w.findAll('.card').find(c => c.text().includes('管线插件'))
+    expect(pipelineCard).toBeTruthy()
+    const box = pipelineCard!.find('input[type="checkbox"]')
+    expect(box.exists()).toBe(true)
+    await box.setValue(false)
     await flushPromises()
     expect(requestMock).toHaveBeenCalledWith('plugins', 'set_metrics_enabled', { enabled: false })
     expect(useToast().toasts.some(t => t.message.includes('已停用'))).toBe(true)
