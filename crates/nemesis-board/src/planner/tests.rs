@@ -230,6 +230,18 @@ fn system_prompt_declares_anchor_topology_discipline() {
     }
 }
 
+/// F5（件②）父单锚点下放纪律防误删快照：父任务 AC 含锚点时必须由子任务
+/// 继承——删掉这段 planner 拆解会丢父任务锚点（父单收口评审锚点必败）。
+#[test]
+fn system_prompt_declares_anchor_downgrade_discipline() {
+    for marker in ["父单锚点下放", "至少被一个子任务", "永远无法通过核验"] {
+        assert!(
+            PLANNER_SYSTEM_PROMPT.contains(marker),
+            "system prompt 必须含父单锚点下放纪律标记 {marker}"
+        );
+    }
+}
+
 /// 职能框架（M1）同步钉：完整形态 `planner_system_prompt()`（基础契约 +
 /// 拆解方法论段）必须 (a) 在 schema 里声明 `required_profession` 字段，
 /// (b) 值域清单逐 slug 覆盖 nemesis-prompts 内置目录 CATALOG——prompt 是

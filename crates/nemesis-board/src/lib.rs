@@ -35,8 +35,8 @@ pub mod watcher;
 
 pub use anchor::{
     ANCHOR_PREFIX, AnchorCheck, AnchorKind, AnchorResult, RejectedAnchor, all_passed,
-    parse_anchors, render_anchor_failures, render_anchor_summary, run_anchors,
-    validate_anchor_path_shape,
+    has_content_regex_anchor, parse_anchors, render_anchor_failures, render_anchor_summary,
+    run_anchors, validate_anchor_path_shape,
 };
 pub use arbitrator::{
     NodeCandidate, SkipRecord, WakeInput, WakePlan, has_mentions, mentions_node,

@@ -27,6 +27,55 @@ use tracing::{info, warn};
 #[cfg(feature = "security")]
 use crate::common;
 
+/// `config.security.json` 缺失自愈（2026-09-30 F3，真机 Linux 事故根修）：
+/// 文件缺失时从编译期内嵌平台模板落一份到 `<home>/config/`（只在不存在时
+/// 落，**绝不覆盖已有文件**），返回配置路径。
+///
+/// 根因链：文件缺失 → `load_security_rules` 只打 info 静默返回 → ABAC
+/// 规则空 + default_action 未设 → 审计器全拒——节点侧不可见，master 侧
+/// 只见派发失败。自愈后 fresh onboard/手工解包的节点开箱即有可用安全配置。
+///
+/// 诚实边界：eval_worker 的观测型 plugin（`enabled=false`，不读配置文件）
+/// 无此失败面，不共用本函数——两者语义不同构，强行抽公共函数是错误抽象。
+#[cfg(feature = "security")]
+pub(crate) fn ensure_security_config(home: &std::path::Path) -> std::path::PathBuf {
+    let path = common::security_config_path(home);
+    if path.exists() {
+        return path;
+    }
+    let template: &str = if cfg!(target_os = "windows") {
+        crate::CONFIG_SECURITY_WINDOWS
+    } else if cfg!(target_os = "macos") {
+        crate::CONFIG_SECURITY_DARWIN
+    } else if cfg!(target_os = "linux") {
+        crate::CONFIG_SECURITY_LINUX
+    } else {
+        crate::CONFIG_SECURITY_OTHER
+    };
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        warn!(
+            "[Security] 配置缺失自愈失败：无法创建 {}: {}（按缺失继续，安全规则为空）",
+            parent.display(),
+            e
+        );
+        return path;
+    }
+    match std::fs::write(&path, template) {
+        Ok(()) => warn!(
+            "[Security] {} 不存在：已从内嵌平台模板自动生成（F3 缺失自愈；如需自定义请编辑该文件）",
+            path.display()
+        ),
+        Err(e) => warn!(
+            "[Security] 配置缺失自愈失败：写入 {}: {}（按缺失继续，安全规则为空）",
+            path.display(),
+            e
+        ),
+    }
+    path
+}
+
 /// Build the SecurityPlugin exactly as the gateway's Step 9b + 9c: layer
 /// switches + DLP config from `config.security.json`, ABAC rules, audit log
 /// file, scanner chain from `config.scanner.json`.
@@ -48,7 +97,9 @@ pub(crate) async fn build_security_plugin(
     // we read it once more here to avoid reordering init (the SecurityPlugin
     // must be constructed before rules can be loaded onto it).
     let mut security_config = nemesis_security::pipeline::SecurityPluginConfig::default();
-    let sec_config_path = common::security_config_path(home);
+    // F3 缺失自愈：不存在则先落平台模板（绝不覆盖已有文件），后续读取/
+    // 规则加载拿到的都是同一份刚落盘的配置。
+    let sec_config_path = ensure_security_config(home);
     // Read config.security.json once; pull both audit_chain and the DLP
     // layer config from it. Previously the plugin was built from default()
     // and the DLP layer config (`layers.dlp`) was never read anywhere — so
@@ -362,8 +413,10 @@ pub(crate) fn load_security_rules(
     use nemesis_security::types::{OperationType, SecurityRule};
 
     if !config_path.exists() {
-        info!(
-            "[Security] config file not found: {}, using defaults",
+        // F3 之后此处只在 ensure_security_config 自愈写入失败时可达——
+        // 那是必须让人看见的异常（ABAC 规则空 + 全拒风险），不能 info 悄过。
+        warn!(
+            "[Security] config file not found and self-heal did not produce it: {}, using defaults (ABAC rules empty)",
             config_path.display()
         );
         return;

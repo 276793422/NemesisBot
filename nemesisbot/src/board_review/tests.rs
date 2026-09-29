@@ -170,6 +170,29 @@ fn settle_deps_with_store(
         node_name: String::new(),
     }));
     cluster.set_rpc_client(Arc::new(nemesis_cluster::rpc::client::RpcClient::new()));
+    // F1（2026-09-30 派发目标校验前置）：dispatch_issue_core 现在在解析
+    // 失败处显式拒绝（「未知节点」），注册表为空会让派发/重派折戟。脚手架
+    // 注册测试常用的 worker 节点（保持原测试意图：测派发决策链，不是测
+    // 未注册目标容忍度）。
+    for id in ["node-b", "node-c", "node-d"] {
+        // 地址必须逐节点独立：merge_real_node_info 的占位升级语义会把
+        // 「同地址旧条目」当占位符移除（真注册表不变式），共用地址会让
+        // 先注册的节点被后注册的依次顶掉。
+        cluster.merge_real_node_info(&nemesis_cluster::cluster::RealNodeInfo {
+            id: id.to_string(),
+            name: format!("{id}-name"),
+            address: format!("127.0.0.1:199{}", id.chars().last().unwrap()),
+            rpc_port: 0,
+            addresses: Vec::new(),
+            role: nemesis_cluster::types::NodeRole::Worker,
+            category: "development".to_string(),
+            capabilities: Vec::new(),
+            tags: Vec::new(),
+            professions: Vec::new(),
+            tier: None,
+            node_type: "agent".to_string(),
+        });
+    }
 
     let creator = Actor::agent("node-a");
     let parent = store
@@ -289,6 +312,12 @@ async fn auto_accept_settle_spares_unrelated_sub() {
 /// max_redispatch=2、auto_accept=false、unlimited=false），workspace
 /// 目录独立（锚点路径安全边界），Cluster 注入空 RpcClient 让重派发车。
 fn review_deps(name: &str) -> (BoardReviewDeps, std::path::PathBuf) {
+    review_deps_ex(name, true)
+}
+
+/// `seed_worker_nodes=false` = 注册表留空（d3 无候选回落等测试的前提就是
+/// 「在线无他人」；其余测试默认 true 保持派发决策链可走通）。
+fn review_deps_ex(name: &str, seed_worker_nodes: bool) -> (BoardReviewDeps, std::path::PathBuf) {
     use nemesis_cluster::cluster::Cluster;
     use nemesis_cluster::types::ClusterConfig;
 
@@ -310,6 +339,42 @@ fn review_deps(name: &str) -> (BoardReviewDeps, std::path::PathBuf) {
         node_name: String::new(),
     }));
     cluster.set_rpc_client(Arc::new(nemesis_cluster::rpc::client::RpcClient::new()));
+    // F1（2026-09-30 派发目标校验前置）：dispatch_issue_core 现在在解析
+    // 失败处显式拒绝（「未知节点」），注册表为空会让派发/重派折戟。脚手架
+    // 注册测试常用的 worker 节点（保持原测试意图：测派发决策链，不是测
+    // 未注册目标容忍度）。
+    if !seed_worker_nodes {
+        let deps = BoardReviewDeps {
+            store,
+            workspace: workspace.clone(),
+            home: dir,
+            moderator_loop: Arc::new(std::sync::OnceLock::new()),
+            cluster,
+            estop: Arc::new(nemesis_agent::estop::EstopState::new()),
+            estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
+            selfcheck: SelfcheckRegistry::new(),
+        };
+        return (deps, workspace);
+    }
+    for id in ["node-b", "node-c", "node-d"] {
+        // 地址必须逐节点独立：merge_real_node_info 的占位升级语义会把
+        // 「同地址旧条目」当占位符移除（真注册表不变式），共用地址会让
+        // 先注册的节点被后注册的依次顶掉。
+        cluster.merge_real_node_info(&nemesis_cluster::cluster::RealNodeInfo {
+            id: id.to_string(),
+            name: format!("{id}-name"),
+            address: format!("127.0.0.1:199{}", id.chars().last().unwrap()),
+            rpc_port: 0,
+            addresses: Vec::new(),
+            role: nemesis_cluster::types::NodeRole::Worker,
+            category: "development".to_string(),
+            capabilities: Vec::new(),
+            tags: Vec::new(),
+            professions: Vec::new(),
+            tier: None,
+            node_type: "agent".to_string(),
+        });
+    }
 
     let deps = BoardReviewDeps {
         store,
@@ -777,7 +842,7 @@ async fn d3_two_consecutive_same_switches_to_unused_ranked_peer() {
 
 #[tokio::test]
 async fn d3_two_consecutive_same_without_candidates_falls_back() {
-    let (deps, _ws) = review_deps("d3-fallback");
+    let (deps, _ws) = review_deps_ex("d3-fallback", false);
     // 不注入任何在线节点：历史 worker 已是唯一选择 → 回落 Same（WARN 留痕，
     // 不阻塞流程）。
     let issue = issue_in_review(&deps.store, "连败无候选", "", "交付");
@@ -4331,6 +4396,68 @@ async fn llm_need_evidence_selfcheck_dispatch_failure_falls_back() {
         !deps.selfcheck.has_inflight(issue.id),
         "派发失败不得注册在途自检"
     );
+}
+
+// F6（2026-09-30）：AC 含 re: 交付文本锚点的单按需强制自检——全局
+// board.review.selfcheck 关（默认）也触发；无锚点单维持默认关。
+#[tokio::test]
+async fn anchor_ac_forces_selfcheck_even_when_global_switch_off() {
+    use nemesis_board::IssueStatus;
+    let (deps, _ws) = review_deps("f6-anchor-forced");
+    // 不写 board config：review.selfcheck 默认关。
+    // AC 带 [CHECK] re: 锚点，delivery 文本含 42 → 锚点过，进语义评审。
+    let full = issue_in_review(
+        &deps.store,
+        "锚点单强制自检",
+        "算式验证\n[CHECK] re:42",
+        "## 结论\n交付完成：结果是 42",
+    );
+    seed_dispatch(&deps.store, "t-f6-anchor-1", full.id, "node-b");
+    attach_loop(
+        &deps,
+        Arc::new(CapturingLlm {
+            prompts: std::sync::Mutex::new(Vec::new()),
+            reply: r#"{"verdict":"PASS","reasons":["锚点已过且结论明确"]}"#.to_string(),
+        }),
+    );
+
+    let reviewed = review_issue(&deps, full.id, ReviewCtx::first_stage())
+        .await
+        .expect("F6 强制臂闭环");
+    assert!(reviewed);
+    let comments = deps.store.list_comments(full.id).unwrap();
+    assert!(
+        comments.iter().any(|c| c.content.contains("取证派发失败")),
+        "全局开关关时 re: 锚点单仍必须尝试自检取证（F6 强制臂）: {:?}",
+        comments.iter().map(|c| &c.content).collect::<Vec<_>>()
+    );
+    // 取证派发失败兜底：Err 臂落「⛔ 取证派发失败」后按原 verdict 处置
+    // （PASS + auto_accept 未开 → 停在 in_review 等人工，不悬挂）。
+    assert_eq!(
+        deps.store.get_issue(full.id).unwrap().status,
+        IssueStatus::InReview
+    );
+    assert!(
+        !deps.selfcheck.has_inflight(full.id),
+        "派发失败不得注册在途自检"
+    );
+
+    // 对照：无 re: 锚点的 PASS 单，全局开关关 → 不尝试取证，PASS 正常处置。
+    let plain = delivered_issue(&deps.store, "无锚点对照", "t-f6-plain-1");
+    let reviewed2 = review_issue(&deps, plain.id, ReviewCtx::first_stage())
+        .await
+        .expect("对照单闭环");
+    assert!(reviewed2);
+    let plain_comments = deps.store.list_comments(plain.id).unwrap();
+    assert!(
+        !plain_comments.iter().any(|c| c.content.contains("取证")),
+        "无锚点 + 全局关不得触发自检: {:?}",
+        plain_comments
+            .iter()
+            .map(|c| &c.content)
+            .collect::<Vec<_>>()
+    );
+    assert!(!deps.selfcheck.has_inflight(plain.id));
 }
 
 #[tokio::test]

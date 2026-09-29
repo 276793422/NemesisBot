@@ -2242,6 +2242,20 @@ impl Cluster {
             .into_iter()
             .find(|p| p.base.id == target || p.base.name == target)
             .map(|p| p.base.id)
+            .or_else(|| {
+                // 大小写不敏感回落（2026-09-30 F1：派发目标校验前置——人读
+                // 名手工输入大小写失配是常态，文档承诺「大小写不敏感」；
+                // 精确未命中再扫一轮 ASCII 折叠，歧义（两节点仅大小写异）
+                // 取先匹配，实际拓扑不存在。
+                self.registry
+                    .list_peers()
+                    .into_iter()
+                    .find(|p| {
+                        p.base.id.eq_ignore_ascii_case(target)
+                            || p.base.name.eq_ignore_ascii_case(target)
+                    })
+                    .map(|p| p.base.id)
+            })
     }
 
     /// RPC 学到的未知对端登记（真实节点 id 首次出现、UDP announce 尚未

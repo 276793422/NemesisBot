@@ -7522,6 +7522,47 @@ fn canonical_peer_id_resolves_name_and_id() {
     assert_eq!(cluster.canonical_peer_id("ghost"), None);
 }
 
+// F1（2026-09-30 派发目标校验前置）：大小写失配回落——人读名手工输入
+// 大小写异是常态，文档承诺「大小写不敏感」。
+#[test]
+fn canonical_peer_id_case_insensitive_fallback() {
+    let cluster = Cluster::new(make_config());
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "node-alex-uuid".into(),
+            name: "Alex".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "10.0.0.2:9000".into(),
+            category: "development".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status: NodeStatus::Online,
+        capabilities: vec![],
+        tags: vec!["python".into()],
+        addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
+        node_type: "agent".into(),
+    });
+
+    // 名字大小写失配 → 回落命中（此前精确匹配直接 None → 派发放行原名
+    // 撞 RPC 层 peer not found，行为分裂）。
+    assert_eq!(
+        cluster.canonical_peer_id("alex"),
+        Some("node-alex-uuid".into())
+    );
+    assert_eq!(
+        cluster.canonical_peer_id("ALEX"),
+        Some("node-alex-uuid".into())
+    );
+    assert_eq!(
+        cluster.canonical_peer_id("NODE-ALEX-UUID"),
+        Some("node-alex-uuid".into())
+    );
+    // 真·未知（无任何大小写变体）→ 仍 None（上游拒绝派发）。
+    assert_eq!(cluster.canonical_peer_id("ALEX2"), None);
+}
+
 // -- peer_udp_endpoints（U1-5 根修 2026-09-15：异端口拓扑定向单播）--
 
 #[test]

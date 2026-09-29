@@ -223,6 +223,8 @@ async function submitCreate() {
     }
     const r = await request('board', 'issue.create', payload)
     toast.success(`已创建 ${r?.issue?.number || ''}`)
+    // F5 件①：后端锚点警示（AC 含 [CHECK] re: 锚点时拆解须下放）透传 toast。
+    if (r?.warning) toast.warn(r.warning)
     // 指派 ≠ 派发（W2.5）：指派给 worker 只是元数据，任务要到 worker 手里
     // 还需一步派发——创建成功即引导，别让单子静默躺在 backlog。
     if (createForm.value.assigneeType === 'worker') {

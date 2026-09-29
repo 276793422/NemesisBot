@@ -364,6 +364,37 @@ fn test_load_security_rules_missing_file() {
     );
 }
 
+/// F3 缺失自愈（2026-09-30）：配置不存在 → 按平台模板落盘且内容合法；
+/// 已存在（用户改过）→ 绝不覆盖。
+#[test]
+fn test_ensure_security_config_self_heals_and_never_overwrites() {
+    let dir = std::env::temp_dir().join(format!(
+        "nb-ensure-sec-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let home = dir.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+
+    // ① 缺失 → 落盘且是合法 JSON（平台模板健康）。
+    let path = crate::security_setup::ensure_security_config(&home);
+    assert!(path.exists(), "缺失自愈必须落盘：{}", path.display());
+    let first = std::fs::read_to_string(&path).unwrap();
+    serde_json::from_str::<serde_json::Value>(&first).expect("自愈落盘的模板必须是合法 JSON");
+
+    // ② 已存在（用户改过的）→ 不覆盖。
+    std::fs::write(&path, r#"{"default_action":"deny"}"#).unwrap();
+    let path2 = crate::security_setup::ensure_security_config(&home);
+    assert_eq!(path2, path);
+    let second = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(second, r#"{"default_action":"deny"}"#, "已有文件绝不被覆盖");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn test_load_security_rules_valid_config() {
     let plugin = Arc::new(nemesis_security::pipeline::SecurityPlugin::new(
