@@ -362,6 +362,12 @@ enum Commands {
         #[command(subcommand)]
         action: commands::autopilot::AutopilotAction,
     },
+    /// Export a self-contained task dossier (issue tree / project records)
+    #[cfg(feature = "board")]
+    Dossier {
+        #[command(subcommand)]
+        action: commands::dossier::DossierAction,
+    },
     /// Manage DAG workflows
     #[cfg(feature = "workflow")]
     Workflow {
@@ -845,6 +851,10 @@ async fn run_command(cli: Cli) -> Result<()> {
         Commands::Autopilot { action } => {
             common::ensure_default_logger();
             commands::autopilot::run(action, cli.local)?;
+        }
+        #[cfg(feature = "board")]
+        Commands::Dossier { action } => {
+            commands::dossier::run(action, cli.local)?;
         }
         #[cfg(feature = "workflow")]
         Commands::Workflow { action } => {

@@ -837,7 +837,7 @@ describe('BoardConfigPanel（配置 全自动流转 P1/A4）', () => {
     return w
   }
 
-  it('渲染 9 个自动化开关 + 参数默认值', async () => {
+  it('渲染 9 个自动化开关 + 兜底档位下拉 + 参数默认值', async () => {
     const w = await mountPanel({})
     expect(w.text()).toContain('拆解自动发车')
     expect(w.text()).toContain('自动验收')
@@ -847,24 +847,52 @@ describe('BoardConfigPanel（配置 全自动流转 P1/A4）', () => {
     expect(w.text()).toContain('项目自动收口')
     expect(w.text()).toContain('合并冲突 AI 自动解决')
     expect(w.text()).toContain('无限模式')
+    expect(w.text()).toContain('收口自动导出任务档案')
     expect(w.text()).toContain('无人匹配兜底派发')
     expect(w.text()).toContain('验收 FAIL 重派上限')
     expect(w.text()).toContain('预算护栏')
     expect(w.text()).toContain('任务墙钟时限')
+    // 2026-09-29 兜底档位三档化：dispatch_fallback 从 checkbox 列表移出为
+    // 独立 select；2026-09-29 任务档案：新增 dossier.auto_on_complete（第 9 个）。
     const checked = w.findAll('input[type="checkbox"]')
     expect(checked.length).toBe(9)
-    // fullFlags：auto_review=true 开，其余关（toggles 顺序：[0]=plan.auto_confirm、[1]=auto_review、[6]=conflict_auto_resolve、[7]=unlimited_mode、[8]=dispatch_fallback）。
+    // fullFlags：auto_review=true 开，其余关（toggles 顺序：[0]=plan.auto_confirm、[1]=auto_review、[6]=conflict_auto_resolve、[7]=unlimited_mode、[8]=dossier.auto_on_complete）。
     expect((checked[0].element as HTMLInputElement).checked).toBe(false)
     expect((checked[1].element as HTMLInputElement).checked).toBe(true)
     expect((checked[6].element as HTMLInputElement).checked).toBe(false)
-    expect((checked[8].element as HTMLInputElement).checked).toBe(false)
+    expect((checked[7].element as HTMLInputElement).checked).toBe(false)
+    // dossier 缺省 = 开（config 未下发该键时前端默认 true，与服务端默认一致）。
+    expect((checked[8].element as HTMLInputElement).checked).toBe(true)
   })
 
-  it('兜底开关关 → 兜底客户端输入框不渲染；开 → 渲染并可保存目标', async () => {
-    const w = await mountPanel({})
+  it('兜底档位下拉：默认 off、切档保存字符串、off 隐藏钉住输入框', async () => {
+    // config.set 模拟服务端持久化（setFlag 成功后 load() 回读拿到已存档位）。
+    const saved: Record<string, unknown> = {}
+    requestMock.mockImplementation((_m: string, cmd: string, data?: any) => {
+      if (cmd === 'config.get') return Promise.resolve({ ...fullFlags, ...saved })
+      if (cmd === 'config.set') {
+        Object.assign(saved, { [data.key]: data.value })
+        return Promise.resolve({ updated: true })
+      }
+      return Promise.resolve({ updated: true })
+    })
+    const w = mount(BoardConfigPanel)
+    await flushPromises()
+    const sel = w.find('select')
+    expect((sel.element as HTMLSelectElement).value).toBe('off')
+    // off → 兜底客户端输入框不渲染。
     expect(w.find('input[placeholder="留空 = 自动选在线节点"]').exists()).toBe(false)
+    // 切到 role → 保存字符串档位 + 输入框出现。
+    await sel.setValue('role')
+    await sel.trigger('change')
+    await flushPromises()
+    const call = requestMock.mock.calls.find((c) => c[2]?.key === 'dispatch_fallback')!
+    expect(call[2]).toEqual({ key: 'dispatch_fallback', value: 'role' })
+    expect(w.find('input[placeholder="留空 = 自动选在线节点"]').exists()).toBe(true)
+  })
 
-    const w2 = await mountPanel({ dispatch_fallback: true })
+  it('兜底客户端输入框：钉住保存 + 清空解除', async () => {
+    const w2 = await mountPanel({ dispatch_fallback: 'role' })
     const target = w2.find('input[placeholder="留空 = 自动选在线节点"]')
     expect(target.exists()).toBe(true)
     await target.setValue('Alex')

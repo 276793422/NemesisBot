@@ -335,6 +335,78 @@ impl Default for UsageConfig {
     }
 }
 
+/// 停车场兜底派发档位（`board.dispatch_fallback`；用户裁决 2026-09-29：
+/// 角色缺失是集群常态，默认不停车但仍保角色纪律）。三档语义：
+/// - `Off` = 无人匹配即诚实停车等节点（旧 false）。
+/// - `Role`（默认）= 松弛阶梯走到「丢职能」为止（D13 ②保职能丢标签 →
+///   ③丢职能保角色标签）：职能与随行的 tier 门槛放开，但 worker/coordinator
+///   **角色纪律保留**（架构单可降级给开发，不可降级给 coordinator）。
+/// - `Full` = 阶梯全开 ②③④，角色也放开（旧 true）。
+///
+/// serde 兼容：旧配置布尔 false→`Off`、true→`Full`；字符串 `off`/`role`/
+/// `full` 大小写不敏感；序列化恒为小写字符串。缺省键 = `Role`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DispatchFallbackMode {
+    Off,
+    #[default]
+    Role,
+    Full,
+}
+
+impl Serialize for DispatchFallbackMode {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        let s = match self {
+            Self::Off => "off",
+            Self::Role => "role",
+            Self::Full => "full",
+        };
+        serializer.serialize_str(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for DispatchFallbackMode {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
+            type Value = DispatchFallbackMode;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("\"off\"|\"role\"|\"full\" 或旧布尔 false/true")
+            }
+            fn visit_bool<E: serde::de::Error>(
+                self,
+                v: bool,
+            ) -> std::result::Result<Self::Value, E> {
+                // 旧布尔兼容：false=停车、true=全松弛（旧行为字节保真）。
+                Ok(if v {
+                    DispatchFallbackMode::Full
+                } else {
+                    DispatchFallbackMode::Off
+                })
+            }
+            fn visit_str<E: serde::de::Error>(
+                self,
+                v: &str,
+            ) -> std::result::Result<Self::Value, E> {
+                match v.trim().to_ascii_lowercase().as_str() {
+                    "off" | "false" => Ok(DispatchFallbackMode::Off),
+                    "role" => Ok(DispatchFallbackMode::Role),
+                    "full" | "true" => Ok(DispatchFallbackMode::Full),
+                    other => Err(E::invalid_value(
+                        serde::de::Unexpected::Str(other),
+                        &"off | role | full",
+                    )),
+                }
+            }
+        }
+        deserializer.deserialize_any(V)
+    }
+}
+
 /// 看板系统旗标（`config.json` 的 `board` 段；`#[serde(default)]` 每字段全可省）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -355,6 +427,8 @@ pub struct BoardFlagConfig {
     pub backup: BoardBackupConfig,
     /// 任务拆解配置（`board.plan`；Swarm M1）。
     pub plan: BoardPlanConfig,
+    /// 任务档案导出配置（`board.dossier`；2026-09-29）。
+    pub dossier: BoardDossierConfig,
     /// in_review 自动触发验收 agent（Swarm M3+；默认 true）。删除本键即回
     /// 「纯人工验收」。
     pub auto_review: bool,
@@ -373,12 +447,13 @@ pub struct BoardFlagConfig {
     /// 介入。estop 急停不受影响（保险丝非护栏）。停滞仍可观测：连续重派且
     /// 差距无变化时 WARN 告警（只告警不停）。
     pub unlimited_mode: bool,
-    /// 停车场兜底派发（集群完备性加固 2026-09-11；默认 false = 无人匹配
-    /// 即停车等节点）。true：自动派发匹配不到（角色/标签）节点时，为了
-    /// 任务做下去兜底派给在线节点（两级松弛：先保角色去标签，再全放开；
-    /// 同分按负载↑确定性兜底），派发前落 ⚠ 系统评论留痕。无任何在线节点
-    /// 时仍诚实停车（兜底造不出客户端）。estop 急停同样冻结兜底派发。
-    pub dispatch_fallback: bool,
+    /// 停车场兜底派发档位（集群完备性加固 2026-09-11 引入；2026-09-29 三档化，
+    /// 默认 `Role` = 角色缺失是常态：职能/tier 门槛随职能放开，但角色纪律
+    /// 保留，不停车）。`Off` = 无人匹配即停车等节点；`Full` = 全松弛（角色
+    /// 也放开）。所有档位：派发前落 ⚠ 系统评论留痕（松弛级说明）；无任何
+    /// 在线节点时仍诚实停车（兜底造不出客户端）；estop 急停冻结兜底派发；
+    /// 钉住目标（`dispatch_fallback_target`）不在线 = 停车不悄悄换人。
+    pub dispatch_fallback: DispatchFallbackMode,
     /// 兜底客户端钉住（`dispatch_fallback` 开时生效；按节点 name 或 id 匹配，
     /// 大小写不敏感）。Some 且该节点不在线 = 诚实停车**不悄悄换人**（钉住
     /// 即点名）；None = 在线节点里松弛排序自动选。
@@ -419,12 +494,13 @@ impl Default for BoardFlagConfig {
             discussion: BoardDiscussionConfig::default(),
             backup: BoardBackupConfig::default(),
             plan: BoardPlanConfig::default(),
+            dossier: BoardDossierConfig::default(),
             auto_review: true,
             auto_accept: false,
             max_redispatch: 2,
             auto_close_parent: false,
             unlimited_mode: false,
-            dispatch_fallback: false,
+            dispatch_fallback: DispatchFallbackMode::default(),
             dispatch_fallback_target: None,
             worker_max_inflight: 1,
             review: BoardReviewConfig::default(),
@@ -517,6 +593,26 @@ impl Default for BoardArchiveConfig {
     fn default() -> Self {
         Self {
             max_transfer_bytes: 2 * 1024 * 1024 * 1024, // 2 GiB
+        }
+    }
+}
+
+/// 任务档案导出配置（`board.dossier` 段；2026-09-29）。导出本体见
+/// `nemesis_board::dossier`（单任务树/整项目两入口；WSAPI `dossier.export`
+/// 与 CLI `nemesisbot dossier export`）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BoardDossierConfig {
+    /// 项目收口（completed，自动 PASS / 人工 project.update 两条路径）
+    /// 后自动生成项目任务档案到 `<workspace>/logs/dossiers/`（默认 true；
+    /// 失败只 WARN + 父单评论留痕，不阻塞收口）。
+    pub auto_on_complete: bool,
+}
+
+impl Default for BoardDossierConfig {
+    fn default() -> Self {
+        Self {
+            auto_on_complete: true,
         }
     }
 }
@@ -4358,6 +4454,11 @@ mod mcp_serde_tests;
 // roundtrip / raw-JSON 解析）测试。
 #[cfg(test)]
 mod ws2_compact_config_tests;
+
+// dispatch_fallback 三档化（2026-09-29）：旧布尔保真 + 字符串档位 serde
+// 兼容测试。
+#[cfg(test)]
+mod dispatch_fallback_mode_tests;
 
 // Single shared process-global-state lock for ALL tests in this crate that touch
 // `std::env::set_var` / `set_current_dir` / load config (which reads env). These

@@ -291,6 +291,9 @@ pub(crate) async fn init_post_agent(
                         return;
                     }
                     crate::board_review::spawn_project_summary((*sum_deps).clone(), project_id);
+                    // 任务档案自动导出（2026-09-29 goal）：人工收口路径同源
+                    // 触发（自动 PASS 路径在 apply_project_review_outcome）。
+                    crate::board_review::spawn_project_dossier((*sum_deps).clone(), project_id);
                 }),
             ) {
                 warn!("[Gateway] Board project summary hook register failed: {e}");
