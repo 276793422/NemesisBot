@@ -178,6 +178,10 @@ pub fn build_new_issue(data: &serde_json::Value, actor: Actor) -> Result<NewIssu
         ni.assignee = Some(at);
         ni.assignee_id = Some(aid);
     }
+    // M2：职能 slug 直建单面（planner 之外的手工入口；空串/空白 = 不限）。
+    if let Some(p) = get_opt_str(data, "required_profession") {
+        ni.required_profession = (!p.trim().is_empty()).then_some(p);
+    }
     if let Some(o) = get_opt_str(data, "origin_type") {
         ni.origin = Some(nemesis_board::models::TaskOrigin {
             origin_type: o,
@@ -675,13 +679,16 @@ pub fn dispatch_issue_core(
         "channel": "board",
         "chat_id": chat_id,
     });
-    let task_id = cluster.submit_peer_chat(
-        &target,
-        "peer_chat",
-        serde_json::json!({ "content": prompt, "_source": source_payload }),
-        "board",
-        &chat_id,
-    )?;
+    // M2：职能 slug 随派发载荷下行（顶层键；旧 B 端忽略未知键 = 优雅
+    // 降级）。A 端只传 slug，契约文本由 B 端本地渲染（跨 RPC 不传文本）。
+    let mut chat_payload = serde_json::json!({ "content": prompt, "_source": source_payload });
+    if let Some(p) = issue.required_profession.as_deref().map(str::trim)
+        && !p.is_empty()
+    {
+        chat_payload["required_profession"] = serde_json::json!(p);
+    }
+    let task_id =
+        cluster.submit_peer_chat(&target, "peer_chat", chat_payload, "board", &chat_id)?;
 
     // M4.5：注入计数只认实际发车的派发（提交失败不计 use_count）。
     if !experience_ids.is_empty()
@@ -789,6 +796,14 @@ pub fn dispatch_issue_core(
     if let Some(commit) = &baseline_commit {
         payload["_baseline_commit"] = serde_json::json!(commit);
     }
+    if let Some(p) = issue
+        .required_profession
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        payload["required_profession"] = serde_json::json!(p);
+    }
     let request = nemesis_cluster::rpc_types::RPCRequest {
         id: task_id.clone(),
         action: nemesis_cluster::rpc_types::ActionType::Known(
@@ -860,6 +875,9 @@ async fn issue_dispatch(
 struct PlanPreview {
     issue_id: i64,
     subs: Vec<nemesis_board::PlannedSubIssue>,
+    /// D9 末轮宽和降级明细：`(子单序号, 原始非法值)`——人工确认发车时
+    /// 随 confirm_plan 落系统评论（auto_confirm 直发路径同源）。
+    downgrades: Vec<(usize, String)>,
     created_at: std::time::Instant,
 }
 
@@ -1309,7 +1327,10 @@ const PLAN_TTL: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// planner LLM 编排（一段）：裸提示词 detached 调用（max_turns=1 单轮出
 /// JSON）→ `parse_plan` 失败带 [`nemesis_board::build_retry_prompt`] 回灌
-/// 重试 ≤2 次（首跑 + 2 次自纠）。纯编排：提示词/解析/校验真相源在
+/// 重试 ≤2 次（首跑 + 2 次自纠）。D9 三臂：前两轮严格解析（职能格式非法
+/// → 回灌自纠）；**末轮换 [`nemesis_board::parse_plan_lenient`] 宽和臂**
+/// ——职能格式非法的子单置空收进计划，降级明细随 Ok 返回（调用方落
+/// 系统评论 + WARN），不废整个计划。纯编排：提示词/解析/校验真相源在
 /// nemesis-board::planner。`team_experience`（M4.5）是 meta 级经验注入
 /// （调用方检索渲染后传入，空 = 不注入）。
 ///
@@ -1321,7 +1342,7 @@ pub async fn run_planner(
     parent: &nemesis_board::Issue,
     team_experience: Vec<String>,
     cluster_profile: Option<String>,
-) -> Result<Vec<nemesis_board::PlannedSubIssue>, String> {
+) -> Result<(Vec<nemesis_board::PlannedSubIssue>, Vec<(usize, String)>), String> {
     let mut prompt = nemesis_board::build_planner_user_prompt(
         &parent.title,
         &parent.description,
@@ -1330,12 +1351,12 @@ pub async fn run_planner(
         cluster_profile.as_deref(),
     );
     let mut last_err = String::new();
-    for _ in 0..=2 {
+    for round in 0..=2 {
         let raw = match agent_loop
             .run_detached(
                 &prompt,
                 nemesis_agent::r#loop::DetachedOpts {
-                    system_prompt: Some(nemesis_board::PLANNER_SYSTEM_PROMPT),
+                    system_prompt: Some(nemesis_board::planner_system_prompt()),
                     no_tools: true,
                     max_turns: 1,
                     label: Some("board-planner"),
@@ -1349,8 +1370,29 @@ pub async fn run_planner(
             // 与「解析失败 3 轮」分开归类，下游评论不再误报轮数。
             Err(e) => return Err(format!("planner LLM 调用失败：{e}")),
         };
+        // D9 末轮宽和臂：宽和解析是严格解析的放宽超集（唯一差别 = 职能
+        // 格式非法降级置空），末轮直接用宽和版——严格可过的计划在宽和版
+        // 下零降级原样通过，行为对成功路径无差。
+        if round == 2 {
+            return match nemesis_board::parse_plan_lenient(&raw) {
+                Ok(lp) => {
+                    if !lp.downgraded.is_empty() {
+                        tracing::warn!(
+                            "[Board] planner 末轮宽和降级（职能格式非法→置空）issue={} downgrades={:?}",
+                            parent.id,
+                            lp.downgraded
+                        );
+                    }
+                    Ok((lp.plan, lp.downgraded))
+                }
+                Err(e) => {
+                    let msg = e.message;
+                    Err(format!("planner 输出连续 3 轮无法解析：{msg}"))
+                }
+            };
+        }
         match nemesis_board::parse_plan(&raw) {
-            Ok(subs) => return Ok(subs),
+            Ok(subs) => return Ok((subs, Vec::new())),
             Err(e) => {
                 prompt = nemesis_board::build_retry_prompt(&raw, &e);
                 // 重试不丢集群画像约束（R-10：拆解必须与可执行者对齐）。
@@ -1432,19 +1474,20 @@ pub async fn execute_plan_chain(
             .collect();
         (!lines.is_empty()).then(|| lines.join("\n"))
     });
-    let subs = match run_planner(&agent_loop, &issue, team_experience, cluster_profile).await {
-        Ok(subs) => subs,
-        Err(e) => {
-            tracing::warn!("[Board] planner failed issue={}: {e}", issue.id);
-            if let Some(hub) = hub {
-                hub.publish(
-                    "board.plan_failed",
-                    serde_json::json!({ "issue_id": issue.id, "error": e.clone() }),
-                );
+    let (subs, downgrades) =
+        match run_planner(&agent_loop, &issue, team_experience, cluster_profile).await {
+            Ok((subs, downgrades)) => (subs, downgrades),
+            Err(e) => {
+                tracing::warn!("[Board] planner failed issue={}: {e}", issue.id);
+                if let Some(hub) = hub {
+                    hub.publish(
+                        "board.plan_failed",
+                        serde_json::json!({ "issue_id": issue.id, "error": e.clone() }),
+                    );
+                }
+                return Err(e);
             }
-            return Err(e);
-        }
-    };
+        };
     let count = subs.len();
     {
         let mut cache = PLAN_CACHE.lock();
@@ -1454,6 +1497,7 @@ pub async fn execute_plan_chain(
             PlanPreview {
                 issue_id: issue.id,
                 subs: subs.clone(),
+                downgrades: downgrades.clone(),
                 created_at: std::time::Instant::now(),
             },
         );
@@ -1493,7 +1537,7 @@ pub async fn execute_plan_chain(
             "note": "已生成拆解预览，等待人工确认发车（board.plan.auto_confirm 未开启）",
         }));
     }
-    match confirm_plan(store, cluster.as_ref(), &issue, subs, &actor) {
+    match confirm_plan(store, cluster.as_ref(), &issue, subs, &actor, &downgrades) {
         Ok(mut out) => {
             PLAN_CACHE.lock().remove(plan_id);
             let _ = store.add_comment(NewComment {
@@ -1594,7 +1638,14 @@ async fn issue_plan(
             }
         };
         let cluster = ctx.state.cluster.clone();
-        let out = confirm_plan(store, cluster.as_ref(), &issue, preview.subs, &actor)?;
+        let out = confirm_plan(
+            store,
+            cluster.as_ref(),
+            &issue,
+            preview.subs,
+            &actor,
+            &preview.downgrades,
+        )?;
         Ok(Some(out))
     } else {
         // ---- 一段：异步拆解（重复点按钮 = 重复 LLM 消耗，新 plan_id
@@ -1668,12 +1719,23 @@ pub fn confirm_plan(
     parent: &nemesis_board::Issue,
     subs: Vec<nemesis_board::PlannedSubIssue>,
     actor: &Actor,
+    downgrades: &[(usize, String)],
 ) -> Result<serde_json::Value, String> {
-    // 1) 落库（保持批内顺序；id_by_idx 供依赖映射）。
+    // 1) 落库（保持批内顺序；id_by_idx 供依赖映射）。required_profession
+    //    随拆解落库（M2）；D9 末轮宽和降级明细逐条落被降级子单的系统评论
+    //    「required_profession=`…` 非法，已降级无职能」（审计可回查）。
+    //    降级子单**强制置空职能**再落库（防御性单一真相源：清空语义在
+    //    confirm_plan 定案，不依赖上游 parse_plan_lenient 是否已剥）。
     let mut id_by_idx: Vec<i64> = Vec::with_capacity(subs.len());
-    for sub in &subs {
+    for (idx, sub) in subs.iter().enumerate() {
         let ac = sub.acceptance_criteria.trim();
         let role = sub.required_role.trim();
+        let downgraded = downgrades.iter().any(|(di, _)| *di == idx);
+        let prof = if downgraded {
+            ""
+        } else {
+            sub.required_profession.trim()
+        };
         let created = store.create_issue(nemesis_board::NewIssue {
             title: sub.title.clone(),
             description: sub.description.clone(),
@@ -1681,6 +1743,7 @@ pub fn confirm_plan(
             parent_issue_id: Some(parent.id),
             required_role: (!role.is_empty()).then(|| role.to_string()),
             required_tags: sub.required_tags.clone(),
+            required_profession: (!prof.is_empty()).then(|| prof.to_string()),
             // 子单归属父单所在项目（F2 首派联动读子单的 project_id 推进
             // 项目 active→in_progress；缺继承则联动早退、项目永远 active）。
             project_id: parent.project_id,
@@ -1691,6 +1754,17 @@ pub fn confirm_plan(
             creator: actor.clone(),
             ..nemesis_board::NewIssue::default()
         })?;
+        if downgraded && let Some((_, original)) = downgrades.iter().find(|(di, _)| *di == idx) {
+            let _ = store.add_comment(nemesis_board::NewComment {
+                issue_id: created.id,
+                author: nemesis_board::Actor::system("board"),
+                content: format!(
+                    "⚠ required_profession=`{original}` 非法，已降级无职能（planner 末轮宽和）"
+                ),
+                parent_id: None,
+                ctype: nemesis_board::CommentType::System,
+            });
+        }
         id_by_idx.push(created.id);
     }
 
@@ -2212,6 +2286,7 @@ pub async fn rebalance_queued_to_worker(
         let input = nemesis_board::MatchInput {
             required_role,
             required_tags: &required_tags,
+            required_profession: issue.required_profession.as_deref(),
             description: &issue.description,
         };
         // 新 worker 需满足要求（rank 命中才挪——重平衡不是无脑搬运）。
@@ -2299,6 +2374,10 @@ fn project_dispatch_candidates(
                 t
             },
             capabilities: p.capabilities.clone(),
+            // M2：announce/静态 peers 携带的职能与档位已落注册表——同
+            // tags 先例投影进 matcher（tier None = 闸 fail-open）。
+            professions: p.professions.clone(),
+            tier: p.tier.clone(),
         })
         .collect()
 }
@@ -2329,6 +2408,7 @@ pub fn rank_dispatch_candidates(
     let input = nemesis_board::MatchInput {
         required_role,
         required_tags: &required_tags,
+        required_profession: issue.required_profession.as_deref(),
         description: &issue.description,
     };
     // E（goal P2/P5）：候选 tags 合并 master 授予标签（granted_tags 台账）。
@@ -2389,8 +2469,10 @@ fn pick_fallback_target(
             .map(|p| (p.base.id.clone(), "指定兜底节点"));
     }
 
-    // 2. 松弛排序。角色保留与否沿用严格匹配的归一（词表外角色词已在
-    //    严格匹配里转 tags，这里只需认 worker/coordinator）。
+    // 2. 松弛排序（D13 阶梯 = matcher::pick_relaxed：②保职能丢标签 →
+    //    ③丢职能（保角色/标签）→ ④全松弛；无职能子单 ② 蜕化为旧「保
+    //    角色丢标签」，行为不变）。角色归一沿用严格匹配（词表外角色词
+    //    已在严格匹配里转 tags，这里只需认 worker/coordinator）。
     let candidates = merge_granted_tags(store, project_dispatch_candidates(cluster));
     let load = store.count_active_dispatch_by_worker().unwrap_or_default();
     let role = issue
@@ -2398,25 +2480,13 @@ fn pick_fallback_target(
         .as_deref()
         .map(str::trim)
         .filter(|r| !r.is_empty() && (*r == "worker" || *r == "coordinator"));
-    let empty: Vec<String> = Vec::new();
-    let rank = |required_role: Option<&str>| {
-        let input = nemesis_board::MatchInput {
-            required_role,
-            required_tags: &empty,
-            description: &issue.description,
-        };
-        nemesis_board::rank_peers(&input, &candidates, &load)
-            .into_iter()
-            .next()
-            .map(|(id, _)| id)
+    let base = nemesis_board::MatchInput {
+        required_role: role,
+        required_tags: &issue.required_tags,
+        required_profession: issue.required_profession.as_deref(),
+        description: &issue.description,
     };
-    // ①保角色去标签 ②全放开。
-    if let Some(r) = role
-        && let Some(id) = rank(Some(r))
-    {
-        return Some((id, "无标签匹配节点，保角色松弛兜底"));
-    }
-    rank(None).map(|id| (id, "无匹配节点，全松弛兜底（角色/标签均放开）"))
+    nemesis_board::pick_relaxed(&base, &candidates, &load)
 }
 
 /// E（goal P2/P5）：候选投影合并 master 授予标签（tags ∪ granted_tags）。
@@ -2463,6 +2533,17 @@ fn match_failure_detail(
     if candidates.is_empty() {
         return "无在线候选节点".to_string();
     }
+    // 职能需求（M2）：精确匹配语义 + tier 闸差值都要在停车评论里可见。
+    let prof_need = issue
+        .required_profession
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(nemesis_prompts::professions::meta::normalize_slug);
+    let prof_min_tier = prof_need
+        .as_deref()
+        .and_then(nemesis_prompts::professions::meta::find_builtin)
+        .map(|m| m.min_tier);
     let mut lines = Vec::new();
     for c in candidates {
         let mut missing = Vec::new();
@@ -2477,17 +2558,39 @@ fn match_failure_detail(
                 missing.push(format!("缺标签 {t}"));
             }
         }
+        if let Some(need) = &prof_need {
+            let hit = c
+                .professions
+                .iter()
+                .any(|p| nemesis_prompts::professions::meta::normalize_slug(p) == *need);
+            if !hit {
+                missing.push(format!("未宣告职能 {need}"));
+            }
+        }
+        // tier 未知（None）= fail-open，不算缺口。
+        if let Some(min_tier) = prof_min_tier
+            && let Some(tier) = &c.tier
+            && !nemesis_prompts::professions::meta::tier_allows(Some(tier), min_tier)
+        {
+            missing.push(format!("档位 {tier} 低于门槛 {min_tier}"));
+        }
         let tag_str = if c.tags.is_empty() {
             "—".to_string()
         } else {
             c.tags.join("/")
         };
+        let prof_str = if c.professions.is_empty() {
+            "—".to_string()
+        } else {
+            c.professions.join("/")
+        };
         lines.push(format!(
-            "{} {}[role={},tags={}]{}",
+            "{} {}[role={},tags={},prof={}]{}",
             if missing.is_empty() { "✓" } else { "✗" },
             c.name,
             c.role,
             tag_str,
+            prof_str,
             if missing.is_empty() {
                 String::new()
             } else {

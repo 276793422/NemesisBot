@@ -46,6 +46,7 @@ fn plan_milestone_writes_docs_plan_md_with_dependencies() {
     let (_pid, issue, root) = fixture(&store, "planproj");
     let subs = vec![
         PlannedSubIssue {
+            required_profession: String::new(),
             title: "子任务零".into(),
             description: "第一步".into(),
             required_role: String::new(),
@@ -54,6 +55,7 @@ fn plan_milestone_writes_docs_plan_md_with_dependencies() {
             depends_on: vec![],
         },
         PlannedSubIssue {
+            required_profession: String::new(),
             title: "子任务一".into(),
             description: String::new(),
             required_role: "coder".into(),

@@ -22,5 +22,7 @@ pub mod error_classifier;
 pub mod factory;
 pub mod fallback_provider;
 pub mod github_copilot;
+/// 图像生成独立 lane（images-openai；集群专业职能框架 M4）。
+pub mod images;
 pub mod model_ref;
 pub mod tool_call_extract;

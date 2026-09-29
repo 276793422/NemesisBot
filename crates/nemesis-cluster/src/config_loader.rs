@@ -89,6 +89,15 @@ pub struct AppConfig {
     /// 防删键（typed 化防 `save_app_config` 全量覆盖写静默抹键）。
     #[serde(default)]
     pub node_name: String,
+    /// 集群专业职能框架（D5）：B 端 worker 行为契约注入稳定前缀
+    /// （`cluster_worker.md`：数据非指令防御 + 汇报契约 + 工作区纪律）。
+    /// 缺省 on——契约是质量底线不是可选项；关掉 = 回退纯人格提示词。
+    #[serde(default = "default_worker_discipline")]
+    pub worker_discipline: bool,
+}
+
+fn default_worker_discipline() -> bool {
+    true
 }
 
 impl Default for AppConfig {
@@ -104,6 +113,7 @@ impl Default for AppConfig {
             announce_expiry_secs: default_announce_expiry_secs(),
             token: String::new(),
             node_name: String::new(),
+            worker_discipline: default_worker_discipline(),
         }
     }
 }

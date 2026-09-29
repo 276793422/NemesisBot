@@ -14,6 +14,7 @@ fn make_task(task_id: &str, status: TaskStatus) -> ClusterTask {
         waiting_for_task_id: None,
         waiting_tool_call_id: None,
         callback_result: None,
+        required_profession: None,
     }
 }
 

@@ -44,7 +44,14 @@ const PROTOCOL_OPTIONS = [
   { value: 'anthropic', label: 'Claude（Anthropic 消息协议）' },
   { value: 'openai', label: 'OpenAI 兼容（chat/completions）' },
   { value: 'responses', label: 'OpenAI Responses' },
+  // 职能框架 M4/M6：图像生成 lane——仅供 generate_image 工具消费，
+  // 后端四处守卫（CLI add --default / probe / set_default / factory）拒绝其作对话模型。
+  { value: 'images-openai', label: '图像生成（OpenAI images）·仅供 generate_image 工具' },
 ]
+// 图像协议条目判定（卡片徽标 + 设为默认禁用）。
+function isImageModel(m: { protocol?: string | null }): boolean {
+  return m.protocol === 'images-openai'
+}
 const testing = ref<string | null>(null)
 const switching = ref<string | null>(null)
 
@@ -454,6 +461,7 @@ onMounted(() => {
             <h3>{{ m.model_name }}</h3>
             <div style="display: flex; gap: var(--space-2); align-items: center;">
               <span v-if="m.is_default" class="badge badge-success">&#10003; 默认</span>
+              <span v-if="isImageModel(m)" class="badge badge-warning" title="图像生成条目：仅供 generate_image 工具消费，不能作对话模型/默认模型">🖼 图像</span>
               <span v-if="m.model" class="badge badge-info">{{ m.model }}</span>
             </div>
           </div>
@@ -470,7 +478,7 @@ onMounted(() => {
               <span class="settings-key">代理</span>
               <span class="settings-value">{{ m.proxy || '--' }}</span>
               <span class="settings-key">协议</span>
-              <span class="settings-value">{{ m.protocol || '自动识别' }}</span>
+              <span class="settings-value">{{ isImageModel(m) ? '图像生成（generate_image 专用）' : (m.protocol || '自动识别') }}</span>
               <span class="settings-key">能力档</span>
               <span class="settings-value">{{ m.model_tier || 'auto（自动检测）' }}</span>
               <span class="settings-key">工具健康<template v-if="toolHealthDays"> · 近{{ toolHealthDays }}天</template></span>
@@ -566,7 +574,8 @@ onMounted(() => {
               v-if="!m.is_default"
               class="btn btn-sm btn-primary"
               @click="setDefault(m.model_name)"
-              :disabled="switching !== null"
+              :disabled="switching !== null || isImageModel(m)"
+              :title="isImageModel(m) ? '图像生成条目不能设为默认对话模型（仅供 generate_image 工具）' : ''"
             >
               <span v-if="switching === m.model_name" class="spinner" style="width:14px;height:14px;"></span>
               {{ switching === m.model_name ? '切换中...' : '设为默认' }}

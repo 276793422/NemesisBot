@@ -22,8 +22,13 @@ pub const MAX_SUBISSUES: usize = 20;
 /// 既有公开路径不变。
 pub use nemesis_prompts::board::PLANNER_SYSTEM_PROMPT;
 
+/// planner 系统提示词完整形态（基础契约 + 职能化拆解方法论；`&'static str`
+/// 驻留缓存）。派发消费方（nemesis-web issue.plan）用本函数——直接用
+/// [`PLANNER_SYSTEM_PROMPT`] 常量会缺职能方法论段。
+pub use nemesis_prompts::board::planner_system_prompt;
+
 /// planner 输出的单个子单（§3.1 schema；serde 宽容：缺字段用默认值）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PlannedSubIssue {
     pub title: String,
     #[serde(default)]
@@ -32,6 +37,10 @@ pub struct PlannedSubIssue {
     pub required_role: String,
     #[serde(default)]
     pub required_tags: Vec<String>,
+    /// 集群专业职能框架（M2）：执行所需职能 slug（`family[:spec]`）；
+    /// 空串 = 无职能需求。格式校验见 [`parse_plan`]（D9 三臂）。
+    #[serde(default)]
+    pub required_profession: String,
     #[serde(default)]
     pub acceptance_criteria: String,
     #[serde(default)]
@@ -85,6 +94,9 @@ pub fn parse_plan(raw: &str) -> Result<Vec<PlannedSubIssue>, PlanParseError> {
                 message: format!("第 {i} 个子任务的 title 为空。每个子任务都必须有非空标题。"),
             });
         }
+        if let Some(err) = profession_format_error(i, &sub.required_profession) {
+            return Err(err);
+        }
         for &dep in &sub.depends_on {
             if dep >= plan.len() {
                 return Err(PlanParseError {
@@ -108,6 +120,96 @@ pub fn parse_plan(raw: &str) -> Result<Vec<PlannedSubIssue>, PlanParseError> {
     analyze_shared_touch(&plan)?;
 
     Ok(plan)
+}
+
+/// D9 校验臂内核：`required_profession` 非空时格式必须合法（slug 语法
+/// `^[a-z0-9_-]+(:[a-z0-9_-]+)?$`）。返回 `Some(PlanParseError)` = 格式
+/// 非法（挂进既有回灌重试）；格式合法但目录未知（用户自定义职能）=
+/// `None` 保留派发（匹配端诚实找不到）。空串/空白 = 无职能需求。
+fn profession_format_error(index: usize, raw: &str) -> Option<PlanParseError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    nemesis_prompts::professions::meta::validate_slug(trimmed).err().map(|e| PlanParseError {
+        message: format!(
+            "第 {index} 个子任务的 required_profession=\"{trimmed}\" 格式非法：{e}。职能 slug 形如 dev、dev:cpp（小写字母/数字/连字符/下划线，至多一个冒号分段）；无职能需求填空串。"
+        ),
+    })
+}
+
+/// 宽和解析结果（[`parse_plan_lenient`] 专用）：计划 + 降级清单。
+#[derive(Debug, Clone, PartialEq)]
+pub struct LenientPlan {
+    pub plan: Vec<PlannedSubIssue>,
+    /// 降级明细：`(子单序号, 原始非法值)`。落库层逐条写 issue 系统评论
+    /// 「required_profession=`…` 非法，已降级无职能」+ WARN（D9）。
+    pub downgraded: Vec<(usize, String)>,
+}
+
+/// D9 末轮宽和臂：与 [`parse_plan`] 同一解析与全部校验，唯一差别 =
+/// `required_profession` 格式非法**不报错**——该子单职能置空照常收进
+/// 计划，降级明细随结果返回。仅供回灌预算（首跑+≤2）耗尽的最后一轮
+/// 使用；严格版 [`parse_plan`] 是常规路径。
+pub fn parse_plan_lenient(raw: &str) -> Result<LenientPlan, PlanParseError> {
+    let json_text = extract_json_array(raw).ok_or_else(|| PlanParseError {
+        message: "输出中找不到 JSON 数组（应以 '[' 开头、']' 结尾）。请只输出 JSON 数组本身。"
+            .to_string(),
+    })?;
+
+    let mut plan: Vec<PlannedSubIssue> =
+        serde_json::from_str(&json_text).map_err(|e| PlanParseError {
+            message: format!("JSON 解析失败：{e}。请检查引号/逗号/字段类型，只输出 JSON 数组。"),
+        })?;
+
+    if plan.is_empty() {
+        return Err(PlanParseError {
+            message: "拆解结果为空数组。请至少拆解出 1 个子任务。".to_string(),
+        });
+    }
+    if plan.len() > MAX_SUBISSUES {
+        return Err(PlanParseError {
+            message: format!(
+                "子任务数量 {} 超过上限 {MAX_SUBISSUES}。请合并粒度、减少数量后重新输出。",
+                plan.len()
+            ),
+        });
+    }
+
+    let mut downgraded: Vec<(usize, String)> = Vec::new();
+    let sub_count = plan.len();
+    for (i, sub) in plan.iter_mut().enumerate() {
+        if sub.title.trim().is_empty() {
+            return Err(PlanParseError {
+                message: format!("第 {i} 个子任务的 title 为空。每个子任务都必须有非空标题。"),
+            });
+        }
+        // 宽和臂唯一放宽点：职能格式非法 → 置空 + 记降级（其余字段照常严校）。
+        if profession_format_error(i, &sub.required_profession).is_some() {
+            downgraded.push((i, std::mem::take(&mut sub.required_profession)));
+        }
+        for &dep in &sub.depends_on {
+            if dep >= sub_count {
+                return Err(PlanParseError {
+                    message: format!(
+                        "第 {i} 个子任务的 depends_on 引用了序号 {dep}，但本批只有 {sub_count} 个子任务（序号 0-{}）。",
+                        sub_count - 1
+                    ),
+                });
+            }
+            if dep == i {
+                return Err(PlanParseError {
+                    message: format!(
+                        "第 {i} 个子任务的 depends_on 包含自身（{dep}），不允许自引用。"
+                    ),
+                });
+            }
+        }
+    }
+    detect_cycle(&plan)?;
+    analyze_shared_touch(&plan)?;
+
+    Ok(LenientPlan { plan, downgraded })
 }
 
 /// E6 共享文件分析（看板项目档案 goal，拆解期第 1 层冲突防线）：

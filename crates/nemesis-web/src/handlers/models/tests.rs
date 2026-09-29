@@ -511,6 +511,29 @@ fn set_default_reorders_and_preserves_extras() {
     assert_eq!(list[1]["custom_note"], "keep-me");
 }
 
+/// 集群专业职能框架 M4 守卫②：images-openai 条目不能被设为默认对话模型
+/// ——写盘前 loud 拒绝，config 保持原状（不产生半状态）。
+#[test]
+fn set_default_rejects_image_protocol_entry() {
+    let seed = r#"{
+        "model_list": [
+            {"model_name": "chat", "model": "glm-5", "api_base": "http://a", "api_key": "k"},
+            {"model_name": "img", "model": "dall-e", "api_base": "http://b/v1", "api_key": "k", "protocol": "images-openai"}
+        ]
+    }"#;
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), seed);
+    let ctx = make_ctx(&dir);
+    let h = ModelsHandler::new();
+
+    let err = h.set_default(&home_str(&dir), "img", &ctx).unwrap_err();
+    assert!(err.contains("images-openai"), "{err}");
+    // config 未动：顺序与 agents.defaults.llm 均保持原状。
+    let cfg = read_config_raw(dir.path());
+    assert_eq!(cfg["model_list"][0]["model_name"], "chat");
+    assert_eq!(cfg["agents"]["defaults"]["llm"], serde_json::Value::Null);
+}
+
 /// 概览页同步（BUG 2026-09-21）：set_default 写 config 成功后必须同步
 /// AppState 的 model/model_base/model_has_key 快照——否则 /api/status 与
 /// 概览页永远显示网关启动时的老模型（agent 实际已热换新模型）。

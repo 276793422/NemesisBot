@@ -341,6 +341,12 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         // workflow/drafts/（写文件语义）；workflow_capabilities 是纯静态表
         // 查询，不映射（未知名放行分支，与 cli_reference 同类）。
         "workflow_create" => Some(OperationType::FileWrite),
+        // 图像生成（集群专业职能框架 M4）：出站请求发往装配期解析的固定
+        // 端点（prompt 为载荷）+ 结果落工作区 images/（工具内构造性钉死，
+        // 拒 `..`/绝对路径）。归 NetworkRequest（MEDIUM）让注入检测/凭据
+        // 扫描/DLP/审计链全跑；不做 executor 隔离（不出 MOVE_TOOLS——
+        // 沙盒断网反而打不通端点）。
+        "generate_image" => Some(OperationType::NetworkRequest),
         _ => None,
     }
 }
@@ -384,6 +390,13 @@ pub fn extract_target(tool_name: &str, args: &serde_json::Value) -> String {
         "screen_capture" => args
             .get("save_path")
             .or_else(|| args.get("path"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        // 图像生成（M4）：审计 target = 输出相对路径（prompt 是自由文本，
+        // 注入检测/凭据扫描层已全文过筛，不重复进 target 字段）。
+        "generate_image" => args
+            .get("output")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),

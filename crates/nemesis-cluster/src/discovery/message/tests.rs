@@ -564,3 +564,103 @@ fn test_error_display_messages() {
 fn test_protocol_version_value() {
     assert_eq!(PROTOCOL_VERSION, "1.0");
 }
+
+// -----------------------------------------------------------------------
+// professions / tier wire compat（集群专业职能框架 M2）
+// -----------------------------------------------------------------------
+
+#[test]
+fn announce_defaults_professions_and_tier_empty() {
+    let msg = DiscoveryMessage::new_announce(
+        "node-1",
+        "MyNode",
+        vec!["10.0.0.1".into()],
+        9000,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+    );
+    assert!(msg.professions.is_empty());
+    assert_eq!(msg.tier, None);
+}
+
+#[test]
+fn with_professions_builder_sets_both_fields() {
+    let msg = DiscoveryMessage::new_announce(
+        "node-1",
+        "MyNode",
+        vec!["10.0.0.1".into()],
+        9000,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+    )
+    .with_professions(
+        vec!["dev".into(), "dev:cpp".into()],
+        Some("big".to_string()),
+    );
+    assert_eq!(msg.professions, vec!["dev", "dev:cpp"]);
+    assert_eq!(msg.tier.as_deref(), Some("big"));
+}
+
+/// 旧节点（无 professions/tier 字段）的 announce 必须能被新节点解析：
+/// serde default 兜底，不炸、不丢基础字段。
+#[test]
+fn deserialize_old_announce_without_professions_fields() {
+    let old = serde_json::json!({
+        "version": PROTOCOL_VERSION,
+        "type": "announce",
+        "node_id": "legacy-1",
+        "name": "Legacy",
+        "addresses": ["10.0.0.9"],
+        "rpc_port": 9000,
+        "role": "worker",
+        "category": "development",
+        "tags": [],
+        "capabilities": [],
+        "timestamp": 1_700_000_000i64,
+        "node_type": "agent",
+    });
+    let msg: DiscoveryMessage = serde_json::from_value(old).expect("old announce must parse");
+    assert_eq!(msg.node_id, "legacy-1");
+    assert!(msg.professions.is_empty());
+    assert_eq!(msg.tier, None);
+}
+
+/// 新节点带 professions 的 announce 序列化后，字段必须往返保留
+/// （UDP 帧走 to_bytes/from_bytes，与 JSON 同一 serde 面）。
+#[test]
+fn announce_professions_roundtrip_preserved() {
+    let msg = DiscoveryMessage::new_announce(
+        "node-2",
+        "ProfNode",
+        vec!["10.0.0.2".into()],
+        9001,
+        "worker",
+        "development",
+        vec!["cpp".into()],
+        vec!["llm".into()],
+        "agent",
+    )
+    .with_professions(vec!["test-whitebox".into()], Some("normal".to_string()));
+
+    let bytes = msg.to_bytes().expect("serialize");
+    let parsed = DiscoveryMessage::from_bytes(&bytes).expect("deserialize");
+    assert_eq!(parsed.professions, vec!["test-whitebox"]);
+    assert_eq!(parsed.tier.as_deref(), Some("normal"));
+    assert_eq!(parsed.tags, vec!["cpp"]);
+}
+
+/// bye 消息不带职能（缺席即走 serde default），序列化不炸。
+#[test]
+fn bye_message_defaults_professions() {
+    let msg = DiscoveryMessage::new_bye("node-3");
+    let bytes = msg.to_bytes().expect("serialize");
+    let parsed = DiscoveryMessage::from_bytes(&bytes).expect("deserialize");
+    assert!(parsed.professions.is_empty());
+    assert_eq!(parsed.tier, None);
+}

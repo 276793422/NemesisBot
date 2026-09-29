@@ -539,3 +539,24 @@ fn protocol_normalization_unknown_loud() {
     assert!(err.contains("grpc"));
     assert!(err.contains("anthropic | openai | responses"));
 }
+
+/// 集群专业职能框架 M4：images-openai 进归一值集（不在 factory 的对话
+/// Provider 集内——构造路径 loud 拒绝），is_image_protocol 单一谓词。
+#[test]
+fn protocol_images_openai_and_predicate() {
+    assert_eq!(
+        normalize_model_protocol("images-openai").unwrap(),
+        "images-openai"
+    );
+    assert_eq!(
+        normalize_model_protocol(" Images-OpenAI ").unwrap(),
+        "images-openai",
+        "trim + 大小写不敏感"
+    );
+    assert!(is_image_protocol("images-openai"));
+    assert!(is_image_protocol(" IMAGES-OPENAI "));
+    assert!(!is_image_protocol(""));
+    assert!(!is_image_protocol("openai"));
+    assert!(!is_image_protocol("anthropic"));
+    assert!(!is_image_protocol("responses"));
+}

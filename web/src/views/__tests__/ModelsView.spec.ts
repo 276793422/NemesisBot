@@ -118,3 +118,41 @@ describe('ModelsView 家族分组（P10）', () => {
     w.unmount()
   })
 })
+
+// ---------------------------------------------------------------------------
+// 职能框架 M4/M6：images-openai 图像协议条目的展示与守卫
+// （协议下拉新增项；卡片 🖼 徽标；「设为默认」对图像条目禁用——后端
+// set_default 本身也拒绝，前端禁用只是防呆）。
+describe('ModelsView 图像协议条目（职能框架 M6）', () => {
+  it('图像条目：🖼 徽标 + 协议文案 + 设为默认禁用带提示', async () => {
+    const w = await mountView([
+      modelRow({ model_name: 'dalle', model: 'zhipu/dall-e-3', protocol: 'images-openai' }),
+      modelRow({ model_name: 'glm', model: 'zhipu/glm-4.7' }),
+    ])
+    const cards = w.findAll('.model-card')
+    expect(cards).toHaveLength(2)
+    const img = cards[0]
+    expect(img.text()).toContain('🖼 图像')
+    expect(img.text()).toContain('图像生成（generate_image 专用）')
+    const btn = img.findAll('button').find((b) => b.text().includes('设为默认'))!
+    expect(btn.attributes('disabled')).toBeDefined()
+    expect(btn.attributes('title')).toContain('generate_image')
+    // 普通条目不受影响。
+    const plain = cards[1]
+    expect(plain.text()).not.toContain('🖼 图像')
+    const plainBtn = plain.findAll('button').find((b) => b.text().includes('设为默认'))!
+    expect(plainBtn.attributes('disabled')).toBeUndefined()
+    w.unmount()
+  })
+
+  it('新建表单协议下拉含 images-openai 项', async () => {
+    const w = await mountView([modelRow({ model_name: 'glm', model: 'zhipu/glm-4.7' })])
+    // 打开新建表单。
+    const addBtn = w.findAll('button').find((b) => b.text().includes('添加模型'))
+    if (addBtn) await addBtn.trigger('click')
+    await flushPromises()
+    const options = w.findAll('select option').map((o) => o.element.value)
+    expect(options).toContain('images-openai')
+    w.unmount()
+  })
+})

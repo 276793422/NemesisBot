@@ -73,6 +73,11 @@ pub struct Cluster {
     role: parking_lot::RwLock<String>,
     category: parking_lot::RwLock<String>,
     tags: parking_lot::RwLock<Vec<String>>,
+    /// 自报职能清单（集群专业职能框架 M2；peers.toml `[node].professions`
+    /// 种入，announce 携带；M6 起经身份编辑热改）。
+    professions: parking_lot::RwLock<Vec<String>>,
+    /// 节点档位（role_tier 口径；peers.toml `[node].tier` 种入，手工声明）。
+    tier: parking_lot::RwLock<Option<String>>,
     /// Dynamic capabilities reported by the AgentLoop (tool names).
     /// Set via `set_capabilities()` after the agent is built.
     /// Wrapped in Arc for sharing with RPC handler closures (real-time reads).
@@ -176,6 +181,8 @@ impl Cluster {
             role: parking_lot::RwLock::new("worker".into()),
             category: parking_lot::RwLock::new("general".into()),
             tags: parking_lot::RwLock::new(Vec::new()),
+            professions: parking_lot::RwLock::new(Vec::new()),
+            tier: parking_lot::RwLock::new(None),
             capabilities: Arc::new(std::sync::Mutex::new(Vec::new())),
             workspace: workspace.clone(),
             static_config_path: cluster_dir_path.join("peers.toml"),
@@ -269,6 +276,13 @@ impl Cluster {
             .map(|s| s.node.category.clone())
             .unwrap_or_else(|| "general".into());
         let tags_default = sc.as_ref().map(|s| s.node.tags.clone()).unwrap_or_default();
+        // 职能框架 M2：peers.toml [node] 声明种入（announce 携带 + matcher
+        // 数据源；身份编辑热改走 setter，M6 接线）。
+        let professions_default = sc
+            .as_ref()
+            .map(|s| s.node.professions.clone())
+            .unwrap_or_default();
+        let tier_default = sc.as_ref().and_then(|s| s.node.tier.clone());
 
         Self {
             node_id: node_id.clone(),
@@ -279,6 +293,8 @@ impl Cluster {
             role: parking_lot::RwLock::new(role_default),
             category: parking_lot::RwLock::new(category_default),
             tags: parking_lot::RwLock::new(tags_default),
+            professions: parking_lot::RwLock::new(professions_default),
+            tier: parking_lot::RwLock::new(tier_default),
             capabilities: Arc::new(std::sync::Mutex::new(Vec::new())),
             workspace: workspace.clone(),
             static_config_path: nemesis_path::resolve_cluster_peers_path_in_workspace(&workspace),
@@ -368,6 +384,8 @@ impl Cluster {
             capabilities: local_caps.clone(),
             tags: self.tags.read().clone(),
             addresses: vec![],
+            professions: self.professions.read().clone(),
+            tier: self.tier.read().clone(),
             node_type: self.node_type.clone(),
         };
         self.registry.upsert(local_node);
@@ -519,6 +537,8 @@ impl Cluster {
                 capabilities: Vec::new(),
                 tags: pc.tags.clone(),
                 addresses: pc.addresses.clone(),
+                professions: pc.professions.clone(),
+                tier: pc.tier.clone(),
                 node_type: String::new(),
             });
             seeded += 1;
@@ -1102,6 +1122,69 @@ impl Cluster {
         capabilities: Vec<String>,
         node_type: &str,
     ) -> bool {
+        self.handle_discovered_node_impl(
+            node_id,
+            name,
+            addresses,
+            rpc_port,
+            role,
+            category,
+            tags,
+            capabilities,
+            node_type,
+            Vec::new(),
+            None,
+        )
+    }
+
+    /// [`Self::handle_discovered_node`] 扩展形态：带对端自报职能与档位
+    /// （集群专业职能框架 M2）。生产 UDP 发现路径（announce 接收）走本
+    /// 方法；其余路径（桥接/静态）无职能数据，走旧签名。
+    #[allow(clippy::too_many_arguments)]
+    pub fn handle_discovered_node_ex(
+        &self,
+        node_id: &str,
+        name: &str,
+        addresses: Vec<String>,
+        rpc_port: u16,
+        role: &str,
+        category: &str,
+        tags: Vec<String>,
+        capabilities: Vec<String>,
+        node_type: &str,
+        professions: Vec<String>,
+        tier: Option<String>,
+    ) -> bool {
+        self.handle_discovered_node_impl(
+            node_id,
+            name,
+            addresses,
+            rpc_port,
+            role,
+            category,
+            tags,
+            capabilities,
+            node_type,
+            professions,
+            tier,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn handle_discovered_node_impl(
+        &self,
+        node_id: &str,
+        name: &str,
+        addresses: Vec<String>,
+        rpc_port: u16,
+        role: &str,
+        category: &str,
+        tags: Vec<String>,
+        capabilities: Vec<String>,
+        node_type: &str,
+        professions: Vec<String>,
+        tier: Option<String>,
+    ) -> bool {
         // Skip blacklisted nodes
         if self.removed_peers.read().contains(node_id) {
             return false;
@@ -1172,6 +1255,9 @@ impl Cluster {
             // Preserve all addresses for multi-address failover。clone：closure
             // （占位全量比对）与下方 RealNodeInfo 升级构造仍要用 addresses。
             addresses: addresses.clone(),
+            // clone：下方占位升级块（RealNodeInfo）仍要用 professions/tier。
+            professions: professions.clone(),
+            tier: tier.clone(),
             node_type: node_type.to_string(),
         };
         let changed = self.registry.upsert_if_changed(node);
@@ -1302,6 +1388,8 @@ impl Cluster {
                         category: category.into(),
                         capabilities: Vec::new(),
                         tags: tags.to_vec(),
+                        professions: professions.clone(),
+                        tier: tier.clone(),
                         node_type: node_type.into(),
                     },
                 );
@@ -1505,6 +1593,8 @@ impl Cluster {
             capabilities: info.capabilities.clone(),
             tags: info.tags.clone(),
             addresses: info.addresses.clone(),
+            professions: info.professions.clone(),
+            tier: info.tier.clone(),
             node_type: info.node_type.clone(),
         };
         self.registry.upsert(node);
@@ -2055,6 +2145,29 @@ impl Cluster {
         self.tags.read().clone()
     }
 
+    /// 自报职能清单（集群专业职能框架 M2；真相源 peers.toml
+    /// `[node].professions`，身份编辑热改写此处）。
+    pub fn professions(&self) -> Vec<String> {
+        self.professions.read().clone()
+    }
+
+    /// Set 自报职能清单（身份编辑；下一 announce 拍生效）。
+    pub fn set_professions(&self, professions: Vec<String>) {
+        *self.professions.write() = professions;
+        self.sync_local_node_to_registry();
+    }
+
+    /// 节点档位（role_tier 口径；真相源 peers.toml `[node].tier`）。
+    pub fn tier(&self) -> Option<String> {
+        self.tier.read().clone()
+    }
+
+    /// Set 节点档位（身份编辑）。
+    pub fn set_tier(&self, tier: Option<String>) {
+        *self.tier.write() = tier;
+        self.sync_local_node_to_registry();
+    }
+
     /// Get the workspace path.
     pub fn workspace(&self) -> &PathBuf {
         &self.workspace
@@ -2483,6 +2596,8 @@ impl Cluster {
             capabilities: caps,
             tags: self.tags.read().clone(),
             addresses: vec![],
+            professions: self.professions.read().clone(),
+            tier: self.tier.read().clone(),
             node_type: self.node_type.clone(),
         };
         self.registry.upsert(info);
@@ -2505,6 +2620,8 @@ impl Cluster {
                 role: String::new(),
                 category: node.base.category.clone(),
                 tags: node.tags.clone(),
+                professions: node.professions.clone(),
+                tier: node.tier.clone(),
                 priority: 1,
                 enabled: true,
                 status: PeerStatus {
@@ -2746,6 +2863,8 @@ impl Cluster {
         let role = self.role.read().clone();
         let category = self.category.read().clone();
         let tags = self.tags.read().clone();
+        let professions = self.professions.read().clone();
+        let tier = self.tier.read().clone();
         let node_type = self.node_type.clone();
         let rpc_port = self.rpc_port;
         // Dynamic fields (real-time):
@@ -2765,6 +2884,9 @@ impl Cluster {
                     "category": category,
                     "tags": tags,
                     "capabilities": capabilities,
+                    // 职能框架 M2：自报职能/档位（旧对端不读未知键，兼容）。
+                    "professions": professions,
+                    "tier": tier,
                     "node_type": node_type,
                     "status": "online",
                 }))
@@ -3661,6 +3783,14 @@ impl ClusterCallbacks for Cluster {
         self.node_type.clone()
     }
 
+    fn professions(&self) -> Vec<String> {
+        self.professions.read().clone()
+    }
+
+    fn tier(&self) -> Option<String> {
+        self.tier.read().clone()
+    }
+
     fn handle_discovered_node(
         &self,
         node_id: &str,
@@ -3683,6 +3813,35 @@ impl ClusterCallbacks for Cluster {
             tags.to_vec(),
             capabilities.to_vec(),
             node_type,
+        )
+    }
+
+    fn handle_discovered_node_ex(
+        &self,
+        node_id: &str,
+        name: &str,
+        addresses: &[String],
+        rpc_port: u16,
+        role: &str,
+        category: &str,
+        tags: &[String],
+        capabilities: &[String],
+        node_type: &str,
+        professions: &[String],
+        tier: Option<&str>,
+    ) -> bool {
+        self.handle_discovered_node_ex(
+            node_id,
+            name,
+            addresses.to_vec(),
+            rpc_port,
+            role,
+            category,
+            tags.to_vec(),
+            capabilities.to_vec(),
+            node_type,
+            professions.to_vec(),
+            tier.map(|s| s.to_string()),
         )
     }
 
@@ -3881,6 +4040,10 @@ pub struct RealNodeInfo {
     pub category: String,
     pub capabilities: Vec<String>,
     pub tags: Vec<String>,
+    /// 对端自报职能（集群专业职能框架 M2；get_info/announce 携带）。
+    pub professions: Vec<String>,
+    /// 对端自报档位（role_tier 口径；None = 未宣告）。
+    pub tier: Option<String>,
     pub node_type: String,
 }
 

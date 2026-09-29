@@ -176,6 +176,7 @@ fn make_build_context_task(task_id: &str) -> ClusterTask {
         waiting_for_task_id: None,
         waiting_tool_call_id: None,
         callback_result: None,
+        required_profession: None,
     }
 }
 
@@ -544,6 +545,7 @@ mod loop_e2e {
             waiting_for_task_id: None,
             waiting_tool_call_id: None,
             callback_result: None,
+            required_profession: None,
         }
     }
 
@@ -1225,6 +1227,7 @@ mod wave_b {
             waiting_for_task_id: None,
             waiting_tool_call_id: None,
             callback_result: None,
+            required_profession: None,
         }
     }
 
@@ -1987,6 +1990,7 @@ mod wave_d {
             waiting_for_task_id: None,
             waiting_tool_call_id: None,
             callback_result: None,
+            required_profession: None,
         }
     }
 
@@ -2683,4 +2687,174 @@ mod wave_d {
             Some("llm_rate_limit")
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 职能渲染（集群专业职能框架 M3：task_system_prompt / load_profession_assets）
+// ---------------------------------------------------------------------------
+
+fn prof_task(slug: Option<&str>) -> ClusterTask {
+    ClusterTask {
+        task_id: "t-prof".into(),
+        source: TaskSource {
+            node_id: "node-a".into(),
+            rpc_address: "127.0.0.1:21949".into(),
+            session_key: "cluster_rpc:node-a/chat-1".into(),
+        },
+        status: TaskStatus::Pending,
+        content: "do work".into(),
+        conversation: None,
+        waiting_for_task_id: None,
+        waiting_tool_call_id: None,
+        callback_result: None,
+        required_profession: slug.map(str::to_string),
+    }
+}
+
+#[test]
+fn task_prompt_no_profession_keeps_prefix_unchanged() {
+    let agent_loop = make_loop_without_session_store();
+    let cfg = super::task_system_prompt(&make_test_config(), &agent_loop, &prof_task(None));
+    assert_eq!(cfg.system_prompt.as_deref(), Some("test"));
+    // 空白 slug 同样走零成本路径（派发端理论不产生，防御臂）。
+    let cfg = super::task_system_prompt(&make_test_config(), &agent_loop, &prof_task(Some("  ")));
+    assert_eq!(cfg.system_prompt.as_deref(), Some("test"));
+}
+
+#[test]
+fn task_prompt_builtin_appends_contract_and_prefix_stays_stable() {
+    let agent_loop = make_loop_without_session_store();
+    let cfg = super::task_system_prompt(
+        &make_test_config(),
+        &agent_loop,
+        &prof_task(Some("dev:cpp")),
+    );
+    let prompt = cfg.system_prompt.as_deref().expect("Some");
+    // 稳定前缀字节不变（prompt cache 断言），后缀以分隔符追加。
+    assert!(prompt.starts_with("test\n\n---\n\n"), "{prompt}");
+    // dev 契约 + dev:cpp 专业方法论都在。
+    assert!(prompt.contains("# 执行职能：开发工程师"), "{prompt}");
+    assert!(prompt.contains("专业方法论：C/C++"), "{prompt}");
+    // 本节点未宣告（无 cluster 引用）→ fallback 诚实注记。
+    assert!(prompt.contains("职能匹配降级"), "{prompt}");
+    // 大小写归一：派发端手滑大写也命中内置目录。
+    let cfg2 = super::task_system_prompt(
+        &make_test_config(),
+        &agent_loop,
+        &prof_task(Some("DEV:CPP")),
+    );
+    assert!(
+        cfg2.system_prompt
+            .as_deref()
+            .unwrap_or("")
+            .contains("# 执行职能：开发工程师")
+    );
+}
+
+#[test]
+fn task_prompt_unknown_slug_gets_honest_block_never_empty() {
+    let agent_loop = make_loop_without_session_store();
+    let cfg = super::task_system_prompt(
+        &make_test_config(),
+        &agent_loop,
+        &prof_task(Some("ghost:team")),
+    );
+    let prompt = cfg.system_prompt.as_deref().expect("Some");
+    assert!(prompt.starts_with("test\n\n---\n\n"), "{prompt}");
+    assert!(prompt.contains("契约缺席"), "{prompt}");
+    assert!(prompt.contains("通用执行纪律"), "{prompt}");
+}
+
+#[test]
+fn task_prompt_declared_profession_suppresses_fallback_note() {
+    let cluster = std::sync::Arc::new(nemesis_cluster::cluster::Cluster::new(
+        nemesis_cluster::types::ClusterConfig {
+            node_id: "self-node".into(),
+            bind_address: "127.0.0.1:0".into(),
+            peers: vec![],
+            node_name: String::new(),
+        },
+    ));
+    cluster.set_professions(vec!["dev:cpp".into()]);
+    let mut agent_loop = make_loop_without_session_store();
+    agent_loop.set_cluster(cluster as std::sync::Arc<dyn std::any::Any + Send + Sync>);
+
+    let cfg = super::task_system_prompt(
+        &make_test_config(),
+        &agent_loop,
+        &prof_task(Some("dev:cpp")),
+    );
+    let prompt = cfg.system_prompt.as_deref().expect("Some");
+    assert!(prompt.contains("# 执行职能：开发工程师"), "{prompt}");
+    assert!(
+        !prompt.contains("职能匹配降级"),
+        "已宣告节点不该有 fallback 注记：{prompt}"
+    );
+}
+
+#[test]
+fn task_prompt_user_workspace_extension_loaded() {
+    let tmp = tempfile::tempdir().unwrap();
+    let prof_dir = tmp.path().join("cluster").join("professions").join("myfam");
+    std::fs::create_dir_all(&prof_dir).unwrap();
+    std::fs::write(
+        prof_dir.join("myspec.md"),
+        "USER-CONTRACT-BODY 我方自研职能",
+    )
+    .unwrap();
+
+    let agent_loop = make_loop_without_session_store();
+    agent_loop.set_workspace_root(tmp.path().to_path_buf());
+
+    let cfg = super::task_system_prompt(
+        &make_test_config(),
+        &agent_loop,
+        &prof_task(Some("myfam:myspec")),
+    );
+    let prompt = cfg.system_prompt.as_deref().expect("Some");
+    assert!(
+        prompt.contains("USER-CONTRACT-BODY 我方自研职能"),
+        "{prompt}"
+    );
+    // 未宣告 → fallback 注记照常在。
+    assert!(prompt.contains("职能匹配降级"), "{prompt}");
+
+    // 用户文件缺失/空白 → 未知臂（诚实注记，绝不空串）。
+    let cfg2 = super::task_system_prompt(
+        &make_test_config(),
+        &agent_loop,
+        &prof_task(Some("myfam:nofile")),
+    );
+    assert!(
+        cfg2.system_prompt
+            .as_deref()
+            .unwrap_or("")
+            .contains("契约缺席")
+    );
+}
+
+#[test]
+fn load_profession_assets_builtin_wins_over_user_override() {
+    let tmp = tempfile::tempdir().unwrap();
+    let prof_dir = tmp.path().join("cluster").join("professions").join("dev");
+    std::fs::create_dir_all(&prof_dir).unwrap();
+    std::fs::write(prof_dir.join("cpp.md"), "USER-OVERRIDE-SHOULD-LOSE").unwrap();
+
+    let (contract, method) = super::load_profession_assets(Some(tmp.path()), "dev:cpp");
+    let contract = contract.unwrap_or_default();
+    assert!(contract.contains("# 执行职能：开发工程师"));
+    assert!(!contract.contains("USER-OVERRIDE-SHOULD-LOSE"));
+    assert!(method.unwrap_or_default().contains("专业方法论：C/C++"));
+}
+
+#[test]
+fn load_profession_assets_invalid_slug_never_touches_disk() {
+    let tmp = tempfile::tempdir().unwrap();
+    // 路径穿越形态：validate_slug 先拒，不拼路径不读盘。
+    let (contract, method) = super::load_profession_assets(Some(tmp.path()), "../evil:pat");
+    assert!(contract.is_none());
+    assert!(method.is_none());
+    // 大写/空格同样落非法臂。
+    let (contract, _) = super::load_profession_assets(Some(tmp.path()), "My Fam");
+    assert!(contract.is_none());
 }

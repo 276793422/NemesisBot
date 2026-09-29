@@ -1438,6 +1438,90 @@ fn inject_spawn_fn(
     ));
 }
 
+/// M4 图像模型解析（generate_image 注册闸的单一裁决点）。
+///
+/// `tools.image_gen.model` 别名优先（别名可命中 model_name 或 wire model
+/// 名，且必须是 images-openai 条目——工具只说 images/generations wire）；
+/// 未指定时取**唯一** images-openai 条目，多于一个 = 歧义诚实报错。
+/// 返回 (api_base, api_key, wire model 名)。
+pub(crate) fn resolve_image_model(
+    config: &nemesis_config::Config,
+) -> Result<(String, String, String), String> {
+    let alias = config
+        .tools
+        .image_gen
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let entries: Vec<&nemesis_config::ModelConfig> = match alias {
+        Some(a) => {
+            let hits: Vec<_> = config
+                .model_list
+                .iter()
+                .filter(|m| m.model_name == a || m.model == a)
+                .collect();
+            match hits.len() {
+                0 => {
+                    return Err(format!(
+                        "tools.image_gen.model '{a}' 在 model_list 中不存在"
+                    ));
+                }
+                1 => hits,
+                n => {
+                    return Err(format!(
+                        "tools.image_gen.model '{a}' 命中 {n} 个条目，请在 model_list 去重"
+                    ));
+                }
+            }
+        }
+        None => {
+            let hits: Vec<_> = config
+                .model_list
+                .iter()
+                .filter(|m| nemesis_types::capability::is_image_protocol(&m.protocol))
+                .collect();
+            match hits.len() {
+                0 => {
+                    return Err(
+                        "未配置图像模型（model_list 无 images-openai 条目；先用 model add \
+                         --protocol images-openai 添加，或以 tools.image_gen.model 指定别名）"
+                            .to_string(),
+                    );
+                }
+                1 => hits,
+                n => {
+                    return Err(format!(
+                        "images-openai 条目有 {n} 个（歧义），请在 tools.image_gen.model 指定别名"
+                    ));
+                }
+            }
+        }
+    };
+    let m = entries[0];
+    if !nemesis_types::capability::is_image_protocol(&m.protocol) {
+        return Err(format!(
+            "图像模型条目 '{}' 的 protocol 不是 images-openai（generate_image 只说 images/generations wire）",
+            if m.model_name.is_empty() {
+                &m.model
+            } else {
+                &m.model_name
+            }
+        ));
+    }
+    if m.api_base.trim().is_empty() {
+        return Err(format!(
+            "图像模型条目 '{}' 未配置 api_base",
+            if m.model_name.is_empty() {
+                &m.model
+            } else {
+                &m.model_name
+            }
+        ));
+    }
+    Ok((m.api_base.clone(), m.api_key.clone(), m.model.clone()))
+}
+
 /// Register all tools and enable MCP on the given AgentLoop.
 ///
 /// Shared between main agent and cluster agent. The caller is responsible for
@@ -1473,6 +1557,35 @@ fn register_tools_and_mcp(
     let tool_count = all_tools.len();
     for (name, tool) in all_tools {
         agent_loop.register_tool(name, tool);
+    }
+
+    // 集群专业职能框架 M4：generate_image 工具（三 loop 统一注册面：主/
+    // 项目/集群）。注册闸 = 图像模型可解析——未配置/歧义/缺 api_base =
+    // 不注册 + info 诚实缺省（图像是可选能力，不炸装配）；解析失败的
+    // 具体原因打在日志里，模型管理页可照单补配。
+    {
+        let cfg_handle = shared.config_store.handle();
+        let cfg_guard = cfg_handle.read();
+        match resolve_image_model(&cfg_guard) {
+            Ok((api_base, api_key, model)) => {
+                let timeout = cfg_guard.tools.image_gen.effective_timeout_secs();
+                let output_dir = shared.workspace_dir().join("images");
+                agent_loop.register_tool(
+                    crate::image_gen_tool::TOOL_NAME.to_string(),
+                    Box::new(crate::image_gen_tool::GenerateImageTool::new(
+                        api_base,
+                        api_key,
+                        model.clone(),
+                        timeout,
+                        output_dir,
+                    )),
+                );
+                info!("[AgentFactory] generate_image tool registered (model={model})");
+            }
+            Err(e) => {
+                info!("[AgentFactory] generate_image 未注册: {e}");
+            }
+        }
     }
 
     if shared.mcp_enabled {
@@ -1592,8 +1705,11 @@ pub fn build_cluster_agent_loop(
             &factory_cfg.llm_ref,
         );
 
-    // 3. Load cluster system prompt from workspace/cluster/IDENTITY.md + SOUL.md.
-    let system_prompt = load_cluster_system_prompt(&shared.home);
+    // 3. Load cluster system prompt from workspace/cluster identity files
+    //    （M3 稳定前缀：IDENTITY → SOUL → EXPERTISE（D4）→ worker 契约
+    //    （D5，worker_discipline 闸，读 config.cluster.json）→ Workspace 行）。
+    let cluster_app = nemesis_cluster::config_loader::load_app_config(&shared.workspace_dir());
+    let system_prompt = load_cluster_system_prompt(&shared.home, cluster_app.worker_discipline);
 
     // 4. Create AgentConfig + AgentLoop (standalone mode, no bus).
     let config = nemesis_agent::types::AgentConfig {
@@ -2042,7 +2158,15 @@ pub fn build_cluster_agent_loop(
 /// 解析（exe 直启形态读不到）。主 loop 的 identity 段已有
 /// `**Workspace**: {}`（context.rs build_identity），此处对齐。
 #[cfg(feature = "cluster")]
-fn load_cluster_system_prompt(home: &std::path::Path) -> Option<String> {
+/// 集群 agent 稳定前缀装配（集群专业职能框架 M3 / D4+D5）：
+/// `workspace/cluster/IDENTITY.md` → `SOUL.md` → `EXPERTISE.md`（D4 断线
+/// 修复：有则注入，无条件）→ worker 行为契约段（D5，`worker_discipline`
+/// 闸，缺省 on）→ **Workspace 行收尾**。全部段落在任务级职能后缀**之前**
+/// （后缀由 cluster_agent 每任务追加）——稳定前缀字节跨任务不变，
+/// prompt cache 跨任务命中。
+///
+/// 返回 None = 没有任何身份文件且契约关闭（裸跑，与现状兼容）。
+fn load_cluster_system_prompt(home: &std::path::Path, worker_discipline: bool) -> Option<String> {
     let cluster_dir = home.join("workspace").join("cluster");
     let mut parts = Vec::new();
 
@@ -2056,12 +2180,27 @@ fn load_cluster_system_prompt(home: &std::path::Path) -> Option<String> {
     {
         parts.push(content);
     }
+    // D4（集群专业职能框架）：EXPERTISE.md 断线修复——档案曾经存在但装配
+    // 从不读取。有则注入，无开关（职能方法论载体，稳定前缀组成部分）。
+    if let Ok(content) = std::fs::read_to_string(cluster_dir.join("EXPERTISE.md"))
+        && !content.trim().is_empty()
+    {
+        parts.push(content);
+    }
+    // D5：worker 行为契约（数据非指令防御 + 汇报契约 + 工作区纪律），
+    // `worker_discipline` 闸（config.cluster.json，缺省 on）。内置常量，
+    // 无磁盘 IO；关掉 = 回退纯人格提示词。
+    if worker_discipline {
+        parts.push(nemesis_prompts::professions::CLUSTER_WORKER_CONTRACT.to_string());
+    }
 
     if parts.is_empty() {
         info!("[AgentFactory] No cluster identity files found, running without system prompt");
         None
     } else {
         // 工作区根 = <home>/workspace（与装配处 set_workspace_root 同源）。
+        // Workspace 行收在稳定前缀末尾（任务级职能后缀追加在其后——若放
+        // 整条提示词末尾会被可变后缀隔断 cache 前缀）。
         let workspace = home.join("workspace");
         parts.push(format!(
             "**Workspace**: {}\nYour workspace is located at: {}。read_file/list_dir 等文件工具的相对路径以此为根。",

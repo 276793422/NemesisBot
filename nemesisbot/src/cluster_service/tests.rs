@@ -138,6 +138,7 @@ fn make_pending_task(task_id: &str) -> ClusterTask {
         waiting_for_task_id: None,
         waiting_tool_call_id: None,
         callback_result: None,
+        required_profession: None,
     }
 }
 
@@ -608,6 +609,8 @@ fn cd4_cluster() -> Arc<nemesis_cluster::cluster::Cluster> {
         capabilities: vec![],
         tags: Vec::new(),
         addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".into(),
     });
     cluster

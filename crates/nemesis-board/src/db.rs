@@ -4,7 +4,7 @@
 use rusqlite::Connection;
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 16;
+const SCHEMA_VERSION: i32 = 17;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS board_meta (
@@ -365,6 +365,12 @@ CREATE TABLE IF NOT EXISTS fingerprint_counted (
 );
 "#;
 
+/// v17（集群专业职能框架 M2）：issue 加派发需求职能列（slug TEXT，NULL =
+/// 不限职能）。沿 v5 派发需求两列的 ALTER 既有模式。
+const SCHEMA_V17: &str = r#"
+ALTER TABLE issue ADD COLUMN required_profession TEXT;
+"#;
+
 /// Open (or create) the board database at `db_path` and run pending migrations.
 pub fn init_db(db_path: &Path) -> Result<Connection, String> {
     if let Some(parent) = db_path.parent() {
@@ -509,6 +515,14 @@ pub fn init_db(db_path: &Path) -> Result<Connection, String> {
         tracing::info!(
             version = 16,
             "[BoardStore] Database migrated to v16 (P34: worker_fingerprint + fingerprint_counted)"
+        );
+    }
+    if current_version < 17 {
+        conn.execute_batch(SCHEMA_V17)
+            .map_err(|e| format!("Board schema v17 migration failed: {e}"))?;
+        tracing::info!(
+            version = 17,
+            "[BoardStore] Database migrated to v17 (profession framework M2: issue.required_profession)"
         );
     }
     set_version(&conn, SCHEMA_VERSION)?;

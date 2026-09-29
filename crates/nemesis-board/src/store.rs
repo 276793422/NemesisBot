@@ -139,8 +139,8 @@ impl BoardStore {
                 assignee_type, assignee_id, creator_type, creator_id,
                 parent_issue_id, project_id, due_date, position,
                 acceptance_criteria, origin_type, origin_id,
-                required_role, required_tags, created_at, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?19)",
+                required_role, required_tags, required_profession, created_at, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?20)",
             params![
                 number,
                 new.title,
@@ -162,6 +162,9 @@ impl BoardStore {
                     .as_deref()
                     .filter(|s| !s.trim().is_empty()),
                 required_tags_json,
+                new.required_profession
+                    .as_deref()
+                    .filter(|s| !s.trim().is_empty()),
                 now,
             ],
         )
@@ -3544,6 +3547,9 @@ fn row_to_issue(row: &rusqlite::Row<'_>) -> rusqlite::Result<Issue> {
             .get::<_, Option<String>>("required_role")?
             .filter(|s| !s.trim().is_empty()),
         required_tags,
+        required_profession: row
+            .get::<_, Option<String>>("required_profession")?
+            .filter(|s| !s.trim().is_empty()),
         hidden: row.get::<_, i64>("hidden")? != 0,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,

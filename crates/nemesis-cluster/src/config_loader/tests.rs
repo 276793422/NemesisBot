@@ -66,6 +66,7 @@ fn test_app_config_roundtrip() {
         announce_expiry_secs: 180,
         token: "cfg09-secret".to_string(),
         node_name: "batch4-name".to_string(),
+        worker_discipline: true,
     };
 
     save_app_config(workspace, &config).unwrap();
@@ -155,6 +156,7 @@ fn test_app_config_serialization_roundtrip() {
         announce_expiry_secs: 0,
         token: "tok-xyz".to_string(),
         node_name: String::new(),
+        worker_discipline: true,
     };
     let json = serde_json::to_string_pretty(&config).unwrap();
     let parsed: AppConfig = serde_json::from_str(&json).unwrap();
@@ -327,4 +329,17 @@ fn test_load_app_config_valid_json_round_trips() {
     assert_eq!(app.rpc_port, 23000);
     assert_eq!(app.broadcast_interval, 15);
     assert_eq!(app.llm_timeout_secs, 0, "0=不限语义透传到读取层");
+}
+
+#[test]
+fn worker_discipline_defaults_on_and_roundtrips() {
+    // D5：缺键 = 缺省 on（serde default）。
+    let cfg: AppConfig = serde_json::from_str("{}").unwrap();
+    assert!(cfg.worker_discipline);
+    // 显式 off 保真 round-trip（typed 保存不抹键）。
+    let cfg: AppConfig = serde_json::from_str(r#"{"worker_discipline": false}"#).unwrap();
+    assert!(!cfg.worker_discipline);
+    let json = serde_json::to_string(&cfg).unwrap();
+    let back: AppConfig = serde_json::from_str(&json).unwrap();
+    assert!(!back.worker_discipline);
 }

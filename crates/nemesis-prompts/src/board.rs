@@ -21,6 +21,7 @@ pub const PLANNER_SYSTEM_PROMPT: &str = r#"你是 NemesisBot 看板的任务拆�
     "description": "给执行者的完整说明：背景、目标、边界（明确不要做什么）、相关文件或位置线索",
     "required_role": "执行所需节点角色，如 worker；不确定填 worker",
     "required_tags": ["执行所需节点标签，如 rust、backend；没有就空数组"],
+    "required_profession": "执行所需职能 slug，如 dev:cpp、product（值域见下方「职能化拆解方法论」的职能目录）；无职能需求填空串",
     "acceptance_criteria": "可客观检验的验收标准",
     "depends_on": [0]
   }
@@ -50,6 +51,27 @@ pub const PLANNER_SYSTEM_PROMPT: &str = r#"你是 NemesisBot 看板的任务拆�
 
 # 资源声明（[TOUCH] 行，强烈建议）
 每个子任务的 acceptance_criteria 里用 `[TOUCH] <工作区相对路径>` 行声明本任务**会写**的文件/目录（每行一条，可与 [CHECK] 行混写）。调度系统据此避免把会写同一路径的两个子任务并发派发（防互相覆盖）；只读参考的文件不用声明。示例：`[TOUCH] client/game.js`。"#;
+
+/// planner 系统提示词完整渲染：基础契约 + 职能化拆解方法论段
+/// （[`crate::professions::PLANNER_METHOD`]，D10 流水线模式）。
+///
+/// 返回 `&'static str`：消费方经 `DetachedOpts.system_prompt`（`Option<&a str>`
+/// 借用形态）注入，没有 owned 通道——用 `OnceLock` 首调拼装后进程内驻留
+/// （拼装结果恒定，驻留一次即可；不触碰 nemesis-agent 的字段形态）。
+/// 同步测试在 nemesis-board planner/tests.rs（值域清单与
+/// [`crate::professions::meta::CATALOG`] 逐 slug 钉住）。
+pub fn planner_system_prompt() -> &'static str {
+    static PLANNER_PROMPT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PLANNER_PROMPT.get_or_init(|| {
+        let mut s = String::with_capacity(
+            PLANNER_SYSTEM_PROMPT.len() + crate::professions::PLANNER_METHOD.len() + 1,
+        );
+        s.push_str(PLANNER_SYSTEM_PROMPT);
+        s.push('\n');
+        s.push_str(crate::professions::PLANNER_METHOD);
+        s
+    })
+}
 
 /// 验收系统提示词（裸提示词模式的 system 段；经 `DetachedOpts.system_prompt`
 /// 注入，与主 agent 人格完全隔离）。

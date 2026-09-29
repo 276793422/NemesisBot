@@ -569,6 +569,22 @@ fn test_explicit_protocol_unknown_errors_loud() {
     assert!(err.contains("anthropic | openai | responses"));
 }
 
+/// 集群专业职能框架 M4 守卫④：图像协议条目不能构造对话 Provider——
+/// chat 形状完全不符（无流式无工具调用），构造路径 loud 拒绝。
+#[test]
+fn test_explicit_protocol_images_openai_rejected_as_chat_model() {
+    let cfg = FactoryConfig {
+        proxy: String::new(),
+        llm_ref: "zhipu/dall-e-3".to_string(),
+        api_key: "k".to_string(),
+        protocol: "images-openai".to_string(),
+        ..Default::default()
+    };
+    let err = resolve_provider_selection(&cfg).unwrap_err();
+    assert!(err.contains("images-openai"), "got: {err}");
+    assert!(err.contains("generate_image"), "got: {err}");
+}
+
 #[test]
 fn test_explicit_protocol_does_not_override_cli_providers() {
     // CLI 型是本地进程不是 wire 协议——protocol 对它们无意义，前缀优先。

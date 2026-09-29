@@ -1,6 +1,7 @@
 package models
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"time"
@@ -35,16 +36,35 @@ import (
 //     路径 shared/a.txt）、2 独立（[TOUCH] solo/c.txt）。供 T-sched-1 /
 //     T-res-2 的 D0 准入 + R-9 touch_paths 互斥多 worker 联验：互斥对不
 //     并发、独立对可分散两机
+//   - <PLAN_PROF>：5 子任务职能链（0→1→2→3→4），required_profession 依
+//     次为 product/architecture/dev:cpp/test-whitebox/test-blackbox（职能
+//     框架 M7 U1：逐单派发给宣告职能的节点 + B 端契约渲染）
+//   - <PLAN_PROF_BAD>：子任务2 带 required_profession "dev;cpp"（分号，
+//     slug 语法非法）→ 首轮解析失败；输入含回灌锚点「你上一次的输出无法
+//     通过校验」时自愈为 "dev:cpp"（验证回灌重试自愈，U4 前半）
+//   - <PLAN_PROF_BAD_STUBBORN>：同 <PLAN_PROF_BAD> 但自愈轮仍输出非法值
+//     → 3 轮耗尽走末轮宽和：单子单降级（职能清空）+ 评论留痕 + 其余子单
+//     照常派发（U4 后半）
+//   - <PLAN_PROF_USER>：1 子任务，required_profession=myfamily:myspec
+//     （用户自定义职能，U7：announce 携带 + B 端从本节点磁盘渲染档案）
+//   - <PLAN_PROF_UI_TEXT>：1 子任务 ui-design，描述带 <UAT_UI_TEXT>
+//     （U6 图像降级：B 无图像模型，文本线交付）
+//   - <PLAN_PROF_UI_IMG>：1 子任务 ui-design，描述带 <UAT_UI_IMG>
+//     （U5 图像全链：generate_image → board_asset publish → 资产取回
+//     vision 评审）
 //
 // 确定性输出，零随机、零延迟。
 type TestAIPlanner struct{}
 
-// plannerSub 拆解子任务结构（json.Marshal 保证输出恒为合法 JSON）。
+// plannerSub 拆解子任务结构（json.Marshal 保证输出恒为合法 JSON 数组）。
+// RequiredProfession omitempty：既有形态（无职能）不发射该键，与职能
+// 框架 M2 之前的响应字节保持一致（serde default 侧兼容，双保险）。
 type plannerSub struct {
 	Title              string   `json:"title"`
 	Description        string   `json:"description"`
 	RequiredRole       string   `json:"required_role"`
 	RequiredTags       []string `json:"required_tags"`
+	RequiredProfession string   `json:"required_profession,omitempty"`
 	AcceptanceCriteria string   `json:"acceptance_criteria"`
 	DependsOn          []int    `json:"depends_on"`
 }
@@ -106,6 +126,34 @@ func (m *TestAIPlanner) Process(messages []Message) string {
 		return plannerMarshal(plannerParallelPlan(title))
 	case strings.Contains(input, "<PLAN_TAGS>"):
 		return plannerMarshal(plannerTagsPlan(title))
+	case strings.Contains(input, "<PLAN_PROF_BAD_STUBBORN>"):
+		// 坚持非法：回灌轮输入只带 prev（不带原始任务文本），所以内嵌
+		// marker 必须是完整激活标记 <PLAN_PROF_BAD_STUBBORN>——否则回灌
+		// 轮落入 BAD 分支被误自愈。3 轮恒命中 → 走末轮宽和（降级+评论）。
+		return plannerMarshal(plannerProfPlan(title, "dev;cpp", "<PLAN_PROF_BAD_STUBBORN>"))
+	case strings.Contains(input, "<PLAN_PROF_BAD>"):
+		// 回灌重试轮（锚点 = board build_retry_prompt 首句；marker 经
+		// prev 输出回流——build_retry_prompt 不携带原始任务文本）自愈为
+		// 合法 dev:cpp；首轮输出非法 dev;cpp 并把 marker 内嵌进 prev
+		// （子任务2 描述），保证回灌轮分支可达。
+		if strings.Contains(input, "你上一次的输出无法通过校验") {
+			return plannerMarshal(plannerProfPlan(title, "dev:cpp", ""))
+		}
+		return plannerMarshal(plannerProfPlan(title, "dev;cpp", "<PLAN_PROF_BAD>"))
+	case strings.Contains(input, "<PLAN_PROF>"):
+		return plannerMarshal(plannerProfChainPlan(title))
+	case strings.Contains(input, "<PLAN_PROF_USER>"):
+		return plannerMarshal(plannerProfSinglePlan(title, "myfamily:myspec",
+			"U7 用户自定义职能子单：按本节点职能档案交付。",
+			"回复包含：职能=myfamily:myspec"))
+	case strings.Contains(input, "<PLAN_PROF_UI_TEXT>"):
+		return plannerMarshal(plannerProfSinglePlan(title, "ui-design",
+			"UI 交付子单（文本线）。<UAT_UI_TEXT>",
+			"回复包含：UI图已交付"))
+	case strings.Contains(input, "<PLAN_PROF_UI_IMG>"):
+		return plannerMarshal(plannerProfSinglePlan(title, "ui-design",
+			"UI 交付子单（图像线）。<UAT_UI_IMG>",
+			"回复包含：UI图已交付"))
 	case strings.Contains(input, "<PLAN_ANCHOR_EVIL>"):
 		return plannerMarshal(plannerAnchorPlan(title, "evil"))
 	case strings.Contains(input, "<PLAN_ANCHOR_MIXED>"):
@@ -219,14 +267,18 @@ func plannerParallelPlan(parentTitle string) []plannerSub {
 	}
 }
 
-// plannerMarshal 序列化计划（json.Marshal 保证恒为合法 JSON 数组文本）。
+// plannerMarshal 序列化计划（恒为合法 JSON 数组文本）。SetEscapeHTML(false)：
+// 默认转义会把 < > 写成 < >——U4 依赖 marker 字面量随 prev 输出
+// 回流（回灌轮 Contains 探测），必须保持原字符。其余计划不含 <>&，字节不变。
 func plannerMarshal(subs []plannerSub) string {
-	data, err := json.Marshal(subs)
-	if err != nil {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(subs); err != nil {
 		// 结构体序列化不会失败；防御性兜底仍返回可被 parse_plan 拒绝的文本。
 		return "plan 序列化失败"
 	}
-	return string(data)
+	return strings.TrimRight(buf.String(), "\n")
 }
 
 // plannerAnchorPlan P2 锚点系列计划（T2 组 UAT）：3 子任务链 0→1→2，
@@ -333,6 +385,98 @@ func plannerTagsPlan(parentTitle string) []plannerSub {
 			RequiredRole:       "worker",
 			RequiredTags:       []string{"ghost-e2e"},
 			AcceptanceCriteria: "回复包含：E3完成",
+			DependsOn:          []int{},
+		},
+	}
+}
+
+// plannerProfChainPlan 职能框架 U1 全流水线计划（<PLAN_PROF>）：5 子任务
+// 依赖链 0→1→2→3→4，required_profession 覆盖首批六职能中的五个（PM →
+// 架构 → dev:cpp → 白盒 → 黑盒）。每单验收锚点 = 交付文本正则（re: 型，
+// 跨节点安全）+ 职能名回显——评审既验交付又验「B 端确实收到了职能契约」
+// （worker 汇报含职能名 = system prompt 注入成功的客观旁证）。
+func plannerProfChainPlan(parentTitle string) []plannerSub {
+	profs := []string{"product", "architecture", "dev:cpp", "test-whitebox", "test-blackbox"}
+	tasks := []struct{ brief, deliver string }{
+		{"需求分析", "回复：产品需求要点已产出，职能=product"},
+		{"技术架构", "回复：架构方案已产出，职能=architecture"},
+		{"核心实现", "回复：核心实现已落地，职能=dev:cpp"},
+		{"白盒验证", "回复：白盒检查已通过，职能=test-whitebox"},
+		{"黑盒验收", "回复：黑盒验收已通过，职能=test-blackbox"},
+	}
+	subs := make([]plannerSub, len(profs))
+	for i := range profs {
+		deps := []int{}
+		if i > 0 {
+			deps = []int{i - 1}
+		}
+		subs[i] = plannerSub{
+			Title:              parentTitle + " · 子任务" + string(rune('1'+i)) + "：" + tasks[i].brief,
+			Description:        "职能测试子任务：" + tasks[i].brief + "。",
+			RequiredRole:       "worker",
+			RequiredTags:       []string{},
+			RequiredProfession: profs[i],
+			AcceptanceCriteria: "回复包含：职能=" + profs[i] + "\n[CHECK] re:职能=" + profs[i],
+			DependsOn:          deps,
+		}
+	}
+	return subs
+}
+
+// plannerProfSinglePlan 单子任务职能计划（U7/U6/U5）：1 子任务、无依赖、
+// required_profession=prof、描述/验收标准由调用方给定（UAT 标记随描述
+// 进 worker 任务提示词）。confirm 波即派——依赖闸无前序。
+func plannerProfSinglePlan(parentTitle, prof, desc, ac string) []plannerSub {
+	return []plannerSub{
+		{
+			Title:              parentTitle + " · 子任务1：职能交付",
+			Description:        desc,
+			RequiredRole:       "worker",
+			RequiredTags:       []string{},
+			RequiredProfession: prof,
+			AcceptanceCriteria: ac,
+			DependsOn:          []int{},
+		},
+	}
+}
+
+// plannerProfPlan 职能非法枚举计划（<PLAN_PROF_BAD> / <PLAN_PROF_BAD_STUBBORN>）：
+// 3 子任务链 0→1→2，子任务2 required_profession = prof 参数（合法值 =
+// 自愈轮输出；"dev;cpp" = 非法，slug 语法非法 → 解析期拒绝）。
+// marker 非空时把该标记（完整激活标记，含 STUBBORN 形态）内嵌进子任务2
+// 描述——build_retry_prompt 只回携带上一次输出（不带原始任务文本），
+// 回灌轮分支探测的是 prev 里的内嵌标记，必须与激活标记同形。自愈轮
+// marker 为空（合法计划无需回流标记）。
+func plannerProfPlan(parentTitle string, prof string, marker string) []plannerSub {
+	desc2 := "回复：P2完成"
+	if marker != "" {
+		desc2 = "回复：P2完成 " + marker
+	}
+	return []plannerSub{
+		{
+			Title:              parentTitle + " · 子任务1：合法职能单",
+			Description:        "回复：P1完成",
+			RequiredRole:       "worker",
+			RequiredTags:       []string{},
+			RequiredProfession: "product",
+			AcceptanceCriteria: "回复包含：P1完成",
+			DependsOn:          []int{},
+		},
+		{
+			Title:              parentTitle + " · 子任务2：职能单",
+			Description:        desc2,
+			RequiredRole:       "worker",
+			RequiredTags:       []string{},
+			RequiredProfession: prof,
+			AcceptanceCriteria: "回复包含：P2完成",
+			DependsOn:          []int{},
+		},
+		{
+			Title:              parentTitle + " · 子任务3：普通单",
+			Description:        "回复：P3完成",
+			RequiredRole:       "worker",
+			RequiredTags:       []string{},
+			AcceptanceCriteria: "回复包含：P3完成",
 			DependsOn:          []int{},
 		},
 	}

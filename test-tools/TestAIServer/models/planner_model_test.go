@@ -2,6 +2,7 @@ package models
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -305,5 +306,136 @@ func TestPlannerAnchorMarkers(t *testing.T) {
 		if tc.marker == "<PLAN_ANCHOR_MIXED>" && !strings.Contains(ac0, "[CHECK] file: exists") {
 			t.Fatalf("mixed anchor missing empty-target bad line: %s", ac0)
 		}
+	}
+}
+
+// TestPlannerProfMarkers 职能框架 M7 计划形态钉死：
+// <PLAN_PROF>（5 子任务职能链）/ <PLAN_PROF_BAD>（首轮非法 + 回灌自愈）/
+// <PLAN_PROF_BAD_STUBBORN>（坚持非法 → 末轮宽和路径）。
+func TestPlannerProfMarkers(t *testing.T) {
+	m := NewTestAIPlanner()
+
+	// <PLAN_PROF>：5 子任务链 0→1→2→3→4，职能覆盖首批五枚，验收锚点带
+	// 职能回显（re: 型）。
+	raw := m.Process([]Message{{Role: "user", Content: "<PLAN_PROF>" + plannerPromptFixture("职能链任务")}})
+	subs := plannerMirrorValidate(t, raw)
+	if len(subs) != 5 {
+		t.Fatalf("<PLAN_PROF> plan must have 5 subs, got %d", len(subs))
+	}
+	wantProfs := []string{"product", "architecture", "dev:cpp", "test-whitebox", "test-blackbox"}
+	for i, wp := range wantProfs {
+		got, _ := subs[i]["required_profession"].(string)
+		if got != wp {
+			t.Fatalf("sub %d required_profession = %q, want %q", i, got, wp)
+		}
+		ac, _ := subs[i]["acceptance_criteria"].(string)
+		if !strings.Contains(ac, "re:职能="+wp) {
+			t.Fatalf("sub %d acceptance must echo profession via re: anchor: %s", i, ac)
+		}
+	}
+
+	// <PLAN_PROF_BAD>：首轮子任务2 = dev;cpp（非法）；回灌轮自愈 dev:cpp。
+	// 回灌输入严格仿 board build_retry_prompt：错误 + 上一次输出（不含
+	// 原始任务文本）——marker 必须经 prev 里的内嵌回流，分支才可达。
+	badRaw := m.Process([]Message{{Role: "user", Content: "<PLAN_PROF_BAD>" + plannerPromptFixture("坏职能任务")}})
+	if !strings.Contains(badRaw, "<PLAN_PROF_BAD>") {
+		t.Fatalf("first-round output must embed the literal marker (SetEscapeHTML off), got %s", badRaw)
+	}
+	badSubs := plannerParseJSON(t, badRaw, "<PLAN_PROF_BAD> first round")
+	if got, _ := badSubs[1]["required_profession"].(string); got != "dev;cpp" {
+		t.Fatalf("first round sub2 profession = %q, want dev;cpp", got)
+	}
+	retryBad := retryPromptFixture("required_profession \"dev;cpp\" 不符合 slug 语法。", badRaw)
+	healSubs := plannerParseJSON(t, m.Process([]Message{{Role: "user", Content: retryBad}}), "healed round")
+	if got, _ := healSubs[1]["required_profession"].(string); got != "dev:cpp" {
+		t.Fatalf("healed sub2 profession = %q, want dev:cpp", got)
+	}
+	if got, _ := healSubs[1]["description"].(string); strings.Contains(got, "<PLAN_PROF_BAD>") {
+		t.Fatalf("healed plan must not re-embed marker, desc = %s", got)
+	}
+
+	// <PLAN_PROF_BAD_STUBBORN>：回灌输入同样只有 prev（内嵌完整激活标记
+	// <PLAN_PROF_BAD_STUBBORN>）→ 3 轮恒命中坚持分支（不会误落 BAD 自愈）。
+	stub1 := m.Process([]Message{{Role: "user", Content: "<PLAN_PROF_BAD_STUBBORN>" + plannerPromptFixture("倔职能任务")}})
+	if !strings.Contains(stub1, "<PLAN_PROF_BAD_STUBBORN>") {
+		t.Fatalf("stubborn round1 must embed full STUBBORN marker, got %s", stub1)
+	}
+	stubSubs1 := plannerParseJSON(t, stub1, "stubborn round 1")
+	if got, _ := stubSubs1[1]["required_profession"].(string); got != "dev;cpp" {
+		t.Fatalf("stubborn round1 sub2 profession = %q, want dev;cpp", got)
+	}
+	prev := stub1
+	for round := 2; round <= 3; round++ {
+		out := m.Process([]Message{{Role: "user", Content: retryPromptFixture("required_profession \"dev;cpp\" 不符合 slug 语法。", prev)}})
+		subs := plannerParseJSON(t, out, fmt.Sprintf("stubborn round %d", round))
+		if got, _ := subs[1]["required_profession"].(string); got != "dev;cpp" {
+			t.Fatalf("stubborn round %d sub2 profession = %q, want dev;cpp (must persist)", round, got)
+		}
+		prev = out
+	}
+}
+
+// plannerParseJSON 解析桩输出为计划数组（输出恒为纯 JSON，防御性取
+// [ 到 ] 段）。
+func plannerParseJSON(t *testing.T, raw, tag string) []map[string]interface{} {
+	t.Helper()
+	if i := strings.Index(raw, "["); i >= 0 {
+		raw = raw[i:]
+	}
+	if j := strings.LastIndex(raw, "]"); j >= 0 {
+		raw = raw[:j+1]
+	}
+	var subs []map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &subs); err != nil {
+		t.Fatalf("%s output not JSON: %v\n%s", tag, err, raw)
+	}
+	return subs
+}
+
+// retryPromptFixture 仿 nemesis-board build_retry_prompt：错误 + prev 输出，
+// 不含原始任务文本。
+func retryPromptFixture(errText, prev string) string {
+	return "你上一次的输出无法通过校验：" + errText + "\n\n上一次输出：\n" + prev + "\n\n请修正后重新输出：只输出符合格式的 JSON 数组，不要任何其他文字或解释。"
+}
+
+func TestPlannerProfSingleMarkers(t *testing.T) {
+	m := NewTestAIPlanner()
+	cases := []struct {
+		marker   string
+		prof     string
+		descNeed string
+		acNeed   string
+	}{
+		{"<PLAN_PROF_USER>", "myfamily:myspec", "U7", "职能=myfamily:myspec"},
+		{"<PLAN_PROF_UI_TEXT>", "ui-design", "<UAT_UI_TEXT>", "UI图已交付"},
+		{"<PLAN_PROF_UI_IMG>", "ui-design", "<UAT_UI_IMG>", "UI图已交付"},
+	}
+	for _, tc := range cases {
+		raw := m.Process([]Message{{Role: "user", Content: tc.marker + plannerPromptFixture("单职能任务")}})
+		subs := plannerParseJSON(t, raw, tc.marker)
+		if len(subs) != 1 {
+			t.Fatalf("%s plan must have 1 sub, got %d", tc.marker, len(subs))
+		}
+		if got, _ := subs[0]["required_profession"].(string); got != tc.prof {
+			t.Fatalf("%s sub profession = %q, want %q", tc.marker, got, tc.prof)
+		}
+		desc, _ := subs[0]["description"].(string)
+		if !strings.Contains(desc, tc.descNeed) {
+			t.Fatalf("%s sub desc must carry UAT marker %q, got %s", tc.marker, tc.descNeed, desc)
+		}
+		ac, _ := subs[0]["acceptance_criteria"].(string)
+		if !strings.Contains(ac, tc.acNeed) {
+			t.Fatalf("%s sub ac must contain %q, got %s", tc.marker, tc.acNeed, ac)
+		}
+	}
+}
+
+// TestPlannerDefaultPlanOmitsProfessionKey 防回归：无职能形态不发射
+// required_profession 键（omitempty）——既有 UAT 响应字节保持稳定。
+func TestPlannerDefaultPlanOmitsProfessionKey(t *testing.T) {
+	m := NewTestAIPlanner()
+	raw := m.Process([]Message{{Role: "user", Content: plannerPromptFixture("无职能任务")}})
+	if strings.Contains(raw, "required_profession") {
+		t.Fatalf("default plan must not emit required_profession key, got %s", raw)
 	}
 }

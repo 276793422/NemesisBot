@@ -17,6 +17,27 @@ const nodeCategory = ref('')
 const nodeType = ref('')
 const tags = ref<string[]>([])
 const capabilities = ref<string[]>([])
+// 职能框架 M6：自报职能（看板派发匹配的硬条件数据源）+ 节点档位。
+const professions = ref<string[]>([])
+const nodeTier = ref('')
+
+// 内置职能目录（与后端 nemesis-prompts::professions::meta::CATALOG 一致；
+// min_tier 标注派发闸要求——声明 architecture/dev:cpp 的节点需要 big 档）。
+const PROFESSION_CATALOG = [
+  { slug: 'product', label: '产品经理', minTier: 'normal' },
+  { slug: 'ui-design', label: 'UI 设计', minTier: 'normal' },
+  { slug: 'architecture', label: '架构师', minTier: 'big' },
+  { slug: 'dev', label: '开发工程师', minTier: 'normal' },
+  { slug: 'dev:cpp', label: '开发（C/C++）', minTier: 'big' },
+  { slug: 'test-whitebox', label: '白盒测试开发', minTier: 'normal' },
+  { slug: 'test-blackbox', label: '黑盒测试', minTier: 'normal' },
+]
+
+function toggleProfession(slug: string) {
+  const i = professions.value.indexOf(slug)
+  if (i >= 0) professions.value.splice(i, 1)
+  else professions.value.push(slug)
+}
 
 // Tag input
 const tagInput = ref('')
@@ -34,6 +55,15 @@ async function loadIdentity() {
       capabilities.value = config.capabilities ?? []
     }
   } catch { /* ignore */ }
+  // 职能/档位：nodes.list 的本机行（行带 professions/tier，职能框架 M6）。
+  try {
+    const r = await request('cluster', 'nodes.list', {})
+    const me = (r?.nodes || []).find((n: any) => n.isLocal)
+    if (me) {
+      professions.value = me.professions ?? []
+      nodeTier.value = me.tier ?? ''
+    }
+  } catch { /* ignore */ }
 }
 
 async function saveIdentity() {
@@ -44,6 +74,8 @@ async function saveIdentity() {
       role: nodeRole.value,
       category: nodeCategory.value,
       tags: tags.value,
+      professions: professions.value,
+      tier: nodeTier.value || null,
     })
     toast.success('节点身份已更新')
   } catch (e: any) {
@@ -135,6 +167,39 @@ onMounted(async () => {
             </span>
           </div>
           <input class="form-input" type="text" v-model="tagInput" style="width:240px;margin-top:var(--space-2)" placeholder="输入标签后按 Enter 添加" @keydown="onTagKeydown" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">
+            职能
+            <span class="form-hint" title="自报职能清单：看板派发的硬匹配条件——planner 标注 required_profession 的子单只派给声明该职能的节点。architecture/dev:cpp 要求 big 档。下一轮 announce 生效并持久化。">ⓘ</span>
+          </label>
+          <div style="display:flex;flex-wrap:wrap;gap:var(--space-2)">
+            <button
+              v-for="p in PROFESSION_CATALOG"
+              :key="p.slug"
+              type="button"
+              class="btn btn-sm"
+              :class="{ 'btn-primary': professions.includes(p.slug) }"
+              :title="'最低档位要求：' + p.minTier"
+              @click="toggleProfession(p.slug)"
+            >{{ professions.includes(p.slug) ? '✓ ' : '' }}{{ p.label }}（{{ p.slug }}）</button>
+          </div>
+          <div v-if="professions.length" style="margin-top:var(--space-2);display:flex;flex-wrap:wrap;gap:var(--space-2);align-items:center">
+            <span class="muted" style="font-size:var(--text-xs)">当前声明：</span>
+            <span v-for="s in professions" :key="s" class="badge badge-info">🛠 {{ s }}</span>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">
+            节点档位
+            <span class="form-hint" title="看板派发的 tier 闸：requirement 最低档位高于本节点档位时不派。留空 = 按声明职能自动推断（catalog min_tier 最大值）。">ⓘ</span>
+          </label>
+          <select class="form-input" v-model="nodeTier" style="width:240px">
+            <option value="">auto（按声明职能自动推断）</option>
+            <option value="mini">mini（小模型档）</option>
+            <option value="normal">normal（中模型档）</option>
+            <option value="big">big（大模型档）</option>
+          </select>
         </div>
         <div class="form-group" v-if="capabilities.length">
           <label class="form-label">能力</label>

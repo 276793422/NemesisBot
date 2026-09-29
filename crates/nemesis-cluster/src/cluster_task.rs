@@ -84,6 +84,11 @@ pub struct ClusterTask {
     pub waiting_tool_call_id: Option<String>,
     /// Callback result injected when the child task completes.
     pub callback_result: Option<String>,
+    /// 集群专业职能框架（M3）：本任务要求的执行职能 slug（`family[:spec]`，
+    /// 已由派发端归一小写）。None = 无职能需求（B 端仅渲染稳定前缀）。
+    /// 职能文本从不跨越 RPC：A 端只传 slug，B 端从本节点磁盘/内置目录渲染。
+    #[serde(default)]
+    pub required_profession: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

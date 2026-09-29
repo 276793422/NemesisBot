@@ -78,6 +78,12 @@ pub enum ClusterAction {
         /// Node address
         #[arg(short, long)]
         address: Option<String>,
+        /// 职能清单（逗号分隔 slug，如 `dev,dev:cpp,test-blackbox`；写入 peers.toml [node] 段供看板派发匹配）
+        #[arg(long)]
+        professions: Option<String>,
+        /// 节点档位（mini/normal/big；写 peers.toml [node] 段，看板派发 tier 闸数据源）
+        #[arg(long)]
+        tier: Option<String>,
     },
     /// Enable cluster
     Enable,
@@ -791,6 +797,8 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             category,
             tags,
             address,
+            professions,
+            tier,
         } => {
             println!("Initializing cluster configuration...");
             let cfg_path = common::cluster_config_path(&home);
@@ -856,6 +864,34 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                         .collect()
                 })
                 .unwrap_or_default();
+            // 职能 slug 规范化（小写+trim）；非法 slug loud 拒绝（写进去=派发匹配永不命中）。
+            let professions_vec: Vec<String> = professions
+                .map(|p| {
+                    p.split(',')
+                        .map(nemesis_prompts::professions::meta::normalize_slug)
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            for slug in &professions_vec {
+                if let Err(e) = nemesis_prompts::professions::meta::validate_slug(slug) {
+                    eprintln!("  Invalid profession slug '{slug}': {e}");
+                    std::process::exit(1);
+                }
+            }
+            let tier_value = tier
+                .map(|t| {
+                    let v = t.trim().to_ascii_lowercase();
+                    if !matches!(v.as_str(), "mini" | "normal" | "big") {
+                        eprintln!("  Invalid tier '{v}' (expected mini/normal/big).");
+                        std::process::exit(1);
+                    }
+                    v
+                })
+                .or_else(|| {
+                    // 未显式指定时按声明的职能推断（catalog min_tier 最大值）。
+                    nemesis_prompts::professions::meta::min_tier_for_set(&professions_vec)
+                });
             let sc = nemesis_cluster::cluster_config::StaticConfig {
                 node: nemesis_cluster::cluster_config::NodeInfo {
                     id: node_id.clone(),
@@ -864,6 +900,8 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     role: role.unwrap_or_else(|| "worker".to_string()),
                     category: category.unwrap_or_else(|| "development".to_string()),
                     tags: tags_vec,
+                    professions: professions_vec,
+                    tier: tier_value,
                 },
             };
             if let Err(e) = nemesis_cluster::cluster_config::save_static_config(&peers_path, &sc) {

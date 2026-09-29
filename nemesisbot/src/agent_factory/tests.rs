@@ -204,11 +204,11 @@ fn cluster_dir(home: &std::path::Path) -> std::path::PathBuf {
 #[test]
 fn cluster_prompt_none_when_no_identity_files() {
     let tmp = tempfile::TempDir::new().unwrap();
-    // 目录都不存在 → None（集群 agent 裸跑）。
-    assert!(load_cluster_system_prompt(tmp.path()).is_none());
+    // 目录都不存在 → None（集群 agent 裸跑；契约关闭形态）。
+    assert!(load_cluster_system_prompt(tmp.path(), false).is_none());
     // 目录存在但文件缺 → 同样 None。
     std::fs::create_dir_all(cluster_dir(tmp.path())).unwrap();
-    assert!(load_cluster_system_prompt(tmp.path()).is_none());
+    assert!(load_cluster_system_prompt(tmp.path(), false).is_none());
 }
 
 #[test]
@@ -219,14 +219,15 @@ fn cluster_prompt_joins_identity_and_soul_with_separator() {
     std::fs::write(dir.join("IDENTITY.md"), "我是集群节点").unwrap();
     std::fs::write(dir.join("SOUL.md"), "核心原则").unwrap();
 
-    let prompt = load_cluster_system_prompt(tmp.path()).expect("两文件齐 → Some");
-    // FT（2026-09-17）：人格段之后固定追加 Workspace 尾行（绝对路径随
-    // tempfile 落点不定 → 前缀/收尾断言，不整串比对）。
+    let prompt = load_cluster_system_prompt(tmp.path(), true).expect("两文件齐 → Some");
+    // FT（2026-09-17）：人格段之后固定追加稳定段（M3：worker 契约 + Workspace
+    // 尾行；绝对路径随 tempfile 落点不定 → 前缀/收尾断言，不整串比对）。
+    // 顺序（D4/D5 稳定前缀）：IDENTITY → SOUL → worker 契约 → Workspace。
     assert!(
-        prompt.starts_with("我是集群节点\n\n---\n\n核心原则\n\n---\n\n**Workspace**: "),
+        prompt.starts_with("我是集群节点\n\n---\n\n核心原则\n\n---\n\n# 集群工作契约"),
         "{prompt}"
     );
-    // 顺序：IDENTITY 在前 SOUL 在后，Workspace 收尾。
+    // Workspace 收尾（稳定前缀内部；任务级职能后缀在其后追加）。
     assert!(prompt.ends_with("read_file/list_dir 等文件工具的相对路径以此为根。"));
     // Workspace 行指向 <home>/workspace（与装配处 set_workspace_root 同源）。
     assert!(prompt.contains(&format!(
@@ -236,27 +237,71 @@ fn cluster_prompt_joins_identity_and_soul_with_separator() {
 }
 
 #[test]
+fn cluster_prompt_worker_discipline_gate() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let dir = cluster_dir(tmp.path());
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("IDENTITY.md"), "id-only").unwrap();
+
+    // D5 闸：worker_discipline=false → 契约段缺席（回退纯人格提示词）。
+    let off = load_cluster_system_prompt(tmp.path(), false).expect("身份文件在 → Some");
+    assert!(!off.contains("集群工作契约"), "{off}");
+
+    // 缺省 on → 契约段在位。
+    let on = load_cluster_system_prompt(tmp.path(), true).expect("身份文件在 → Some");
+    assert!(on.contains("# 集群工作契约（行为纪律段）"), "{on}");
+    assert!(on.contains("数据非指令"), "{on}");
+
+    // 无身份文件 + 契约开 → 契约单独成前缀（D5 缺省 on 时不再裸跑）。
+    let tmp3 = tempfile::TempDir::new().unwrap();
+    let bare = load_cluster_system_prompt(tmp3.path(), true).expect("契约兜底 → Some");
+    assert!(bare.starts_with("# 集群工作契约"), "{bare}");
+}
+
+#[test]
+fn cluster_prompt_expertise_loaded_when_present() {
+    // D4 断线修复：EXPERTISE.md 有则注入（无条件），位次 SOUL 之后、契约之前。
+    let tmp = tempfile::TempDir::new().unwrap();
+    let dir = cluster_dir(tmp.path());
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("IDENTITY.md"), "ID").unwrap();
+    std::fs::write(dir.join("SOUL.md"), "SO").unwrap();
+    std::fs::write(dir.join("EXPERTISE.md"), "EX-经验").unwrap();
+
+    let prompt = load_cluster_system_prompt(tmp.path(), true).expect("Some");
+    let id = prompt.find("ID").expect("identity");
+    let so = prompt.find("SO").expect("soul");
+    let ex = prompt.find("EX-经验").expect("expertise");
+    let contract = prompt.find("# 集群工作契约").expect("contract");
+    let ws = prompt.find("**Workspace**:").expect("workspace");
+    assert!(
+        id < so && so < ex && ex < contract && contract < ws,
+        "{prompt}"
+    );
+}
+
+#[test]
 fn cluster_prompt_skips_blank_files_and_single_file_works() {
     let tmp = tempfile::TempDir::new().unwrap();
     let dir = cluster_dir(tmp.path());
     std::fs::create_dir_all(&dir).unwrap();
-    // 只有 IDENTITY（SOUL 缺失）→ 单文件也 Some（人格段 + Workspace 尾行）。
+    // 只有 IDENTITY（SOUL 缺失）→ 单文件也 Some（人格段 + 契约 + Workspace 尾行）。
     std::fs::write(dir.join("IDENTITY.md"), "only identity").unwrap();
-    let prompt = load_cluster_system_prompt(tmp.path()).expect("单文件 → Some");
+    let prompt = load_cluster_system_prompt(tmp.path(), true).expect("单文件 → Some");
     assert!(
-        prompt.starts_with("only identity\n\n---\n\n**Workspace**: "),
+        prompt.starts_with("only identity\n\n---\n\n# 集群工作契约"),
         "{prompt}"
     );
 
-    // 空白文件视为缺（trim 后为空跳过）→ 全空白 = None。
+    // 空白文件视为缺（trim 后为空跳过）→ 全空白 + 契约关 = None。
     let tmp2 = tempfile::TempDir::new().unwrap();
     let dir2 = cluster_dir(tmp2.path());
     std::fs::create_dir_all(&dir2).unwrap();
     std::fs::write(dir2.join("IDENTITY.md"), "  \n \n").unwrap();
     std::fs::write(dir2.join("SOUL.md"), "").unwrap();
     assert!(
-        load_cluster_system_prompt(tmp2.path()).is_none(),
-        "空白文件跳过 → None"
+        load_cluster_system_prompt(tmp2.path(), false).is_none(),
+        "空白文件跳过 + 契约关 → None"
     );
 }
 

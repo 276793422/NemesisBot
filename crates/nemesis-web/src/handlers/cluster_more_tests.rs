@@ -1733,6 +1733,8 @@ fn sample_node(id: &str, name: &str, role: NodeRole, online: bool) -> ExtendedNo
         capabilities: vec!["cluster".to_string()],
         tags: Vec::new(),
         addresses: vec!["10.0.0.1".to_string()],
+        professions: Vec::new(),
+        tier: None,
         node_type: "agent".to_string(),
     }
 }

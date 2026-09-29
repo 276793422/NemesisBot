@@ -555,6 +555,8 @@ fn message_to_node_info(msg: &DiscoveryMessage) -> ExtendedNodeInfo {
         capabilities: msg.capabilities.clone(),
         tags: msg.tags.clone(),
         addresses: msg.addresses.clone(),
+        professions: msg.professions.clone(),
+        tier: msg.tier.clone(),
         node_type: msg.node_type.clone(),
     }
 }

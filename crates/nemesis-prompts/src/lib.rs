@@ -28,6 +28,7 @@
 //! | [`workflow`] | 工作流分类/抽取节点提示词 | nemesis-workflow |
 //! | [`spawn`] | 旧版子代理单句 system prompt（字节保留） | nemesis-tools |
 //! | [`persona_gen`] | 集群人格生成三阶段（extract/author/audit） | nemesis-web |
+//! | [`professions`] | 集群专业职能：六职能契约/专业方法论/planner 拆解方法论/B 端行为契约 | nemesis-board / nemesisbot |
 //!
 //! ## 文件形态约定
 //!
@@ -46,6 +47,7 @@ pub mod board;
 pub mod forge;
 pub mod guardian;
 pub mod persona_gen;
+pub mod professions;
 pub mod slash;
 pub mod spawn;
 pub mod subagents;

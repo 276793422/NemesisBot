@@ -340,6 +340,8 @@ impl PeerChatHandler {
                 None => req.content.clone(),
             };
             // Create a cluster task and enqueue to the work queue.
+            // 集群专业职能框架（M3）：派发载荷顶层 `required_profession`
+            // （board 派发端写入；旧 A 端不带该键 → None，优雅降级）。
             let cluster_task = ClusterTask {
                 task_id: task_id.clone(),
                 source: TaskSource {
@@ -353,6 +355,7 @@ impl PeerChatHandler {
                 waiting_for_task_id: None,
                 waiting_tool_call_id: None,
                 callback_result: None,
+                required_profession: required_profession_from_payload(&payload),
             };
             task_list.create_task(cluster_task);
             if let Err(e) = work_queue.submit(task_id.clone()) {
@@ -465,6 +468,18 @@ impl PeerChatHandler {
 #[derive(Debug, Clone)]
 pub struct RpcMeta {
     pub from: Option<String>,
+}
+
+/// 集群专业职能框架（M3）：读派发载荷顶层 `required_profession`（slug，
+/// trim + 归一小写；空白/缺失/非字符串 = None）。旧 A 端 payload 不带该键
+/// → None = B 端仅渲染稳定前缀（优雅降级，零协议负担）。
+pub fn required_profession_from_payload(payload: &serde_json::Value) -> Option<String> {
+    payload
+        .get("required_profession")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(nemesis_prompts::professions::meta::normalize_slug)
 }
 
 // ---------------------------------------------------------------------------

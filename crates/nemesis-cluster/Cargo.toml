@@ -7,6 +7,8 @@ edition.workspace = true
 [dependencies]
 nemesis-config = { workspace = true }
 nemesis-types = { workspace = true }
+# 集群专业职能框架（M3）：peer_chat 载荷 slug 归一（零依赖提示词资产层）。
+nemesis-prompts = { workspace = true }
 # 集群路径（peers.toml/state.toml/rpc_cache/config.cluster.json）唯一真相源在
 # nemesis-path，cluster.rs / config_loader.rs 经它取路径，禁止各自 join。
 nemesis-path = { workspace = true }

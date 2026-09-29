@@ -2270,6 +2270,8 @@ async fn test_run_init_fresh_home() {
             category: Some("testing".into()),
             tags: Some("t1,t2".into()),
             address: Some("127.0.0.1:21949".into()),
+            professions: None,
+            tier: None,
         },
         false,
     )
@@ -2306,6 +2308,8 @@ async fn test_run_init_defaults_and_reinit_nontty() {
             category: None,
             tags: None,
             address: None,
+            professions: None,
+            tier: None,
         },
         false,
     )
@@ -2323,6 +2327,8 @@ async fn test_run_init_defaults_and_reinit_nontty() {
             category: None,
             tags: None,
             address: None,
+            professions: None,
+            tier: None,
         },
         false,
     )
@@ -2935,6 +2941,8 @@ mod wave_b {
                 category: None,
                 tags: None,
                 address: None,
+                professions: None,
+                tier: None,
             },
             false,
         )

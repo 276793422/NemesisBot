@@ -224,7 +224,10 @@ impl BoardAssetTool {
     /// fetch：SSRF 闸（如启用）→ HTTP 直连下载 → 连接级失败时集群 RPC
     /// 分块兜底 → sha256 校验 → 原子改名落定。任何失败都清掉 part 文件，
     /// 不留半截内容。
-    async fn do_fetch(
+    /// 取资产（HTTP 直连 → 连接级失败走集群 RPC 分块兜底）。
+    /// crate 内第二消费点：board_review_assets（M5 验收链取图，非工具路径
+    /// ——评审代码程序化调用，与 agent 工具共用同一取回/校验实现）。
+    pub(crate) async fn do_fetch(
         &self,
         node_url: &str,
         asset_ref: &str,

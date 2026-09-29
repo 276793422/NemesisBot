@@ -64,7 +64,7 @@ pub use git_repo::{
     commit_resolution, commit_worktree, ensure_repo, export_head_tree, head_commit_hex,
     looks_binary, merge_changeset,
 };
-pub use matcher::{MatchInput, PeerCandidate, rank_peers};
+pub use matcher::{MatchInput, PeerCandidate, pick_relaxed, rank_peers};
 pub use models::{
     ActivityLog, Attachment, Autopilot, AutopilotPatch, BoardAsset, Channel, ChannelMember,
     ChannelMessage, Comment, CommentType, Issue, IssueFilter, IssuePatch, IssueStatus, NewAsset,
@@ -73,7 +73,8 @@ pub use models::{
 };
 pub use planner::{
     MAX_SUBISSUES, PLANNER_SYSTEM_PROMPT, PlanParseError, PlannedSubIssue,
-    build_planner_user_prompt, build_retry_prompt, parse_plan, parse_touch_paths,
+    build_planner_user_prompt, build_retry_prompt, parse_plan, parse_plan_lenient,
+    parse_touch_paths, planner_system_prompt,
 };
 pub use report::{DeliveryReport, REPORT_FORMAT_SECTION, TASK_CARD_HEADER, parse_delivery_report};
 pub use review::{

@@ -110,6 +110,9 @@ pub fn write_plan_milestone(store: &BoardStore, parent: &Issue, subs: &[PlannedS
                 sub.required_tags
             ));
         }
+        if !sub.required_profession.trim().is_empty() {
+            body.push_str(&format!("- 执行职能：{}\n", sub.required_profession.trim()));
+        }
         if !sub.depends_on.is_empty() {
             body.push_str(&format!(
                 "- 依赖：子{}\n",

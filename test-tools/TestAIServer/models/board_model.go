@@ -1,6 +1,7 @@
 package models
 
 import (
+	"regexp"
 	"strings"
 	"time"
 )
@@ -67,17 +68,49 @@ func (m *TestAIBoard) Process(messages []Message) string {
 // marker 仅供人读，实际路由凭 SelfcheckRegistry）→ 回固定取证文本，逐项
 // 回报并附带 <SELFCHK_EVIDENCE_OK> 完成标记（命中 review 桩二段 PASS 分支）。
 //
+// 职能框架 M7 追加两台对话机（都要求整个输入含对应标记才激活，既有
+// 流程零扰动）：
+//   - <UAT_UI_IMG>（U5）：轮1 user 带 marker → generate_image 工具调用；
+//     轮2 tool 结果含 ui.png（path 锚点）→ board_asset publish；轮3 tool
+//     结果含 published → 交付文本「UI图已交付」+ 原样内嵌 publish 结果
+//     （含 AssetTokenBundle JSON——A 端 M5 评审取图链路的输入）。
+//   - <UAT_UI_TEXT>（U6）：user 带 marker → 固定文本交付「UI图已交付」
+//     （D7 默认态：无图像模型时文本线完整验收）。
+//
+// 职能契约回显（U1/U2/U3/U7）：输入含职能后缀稳定标记「执行职能：…（slug）」
+// （render_profession_suffix 产物首行）→ 交付文本回显「职能=<slug>」。
+// A 端验收 re: 锚点据此客观断言「契约真的进了 B 端 system prompt」——
+// 证据走交付正流，不走日志旁路。仅在以上对话机都不命中时兜底生效。
+//
 // 锚点文本与 nemesisbot/src/board_issue_tool.rs 的产出严格对应：
 // create 确认「已建单 {number}：」；plan 结果为 execute_plan_chain 的
 // JSON（含 plan_id）。流程异常（空 moderator / planner 失败）落到
 // BOARD_ISSUE_TOOL_UNEXPECTED，由测试侧断言失败暴露。
 func (m *TestAIBoard) masterProcess(messages []Message) string {
+	var buf strings.Builder
+	for _, msg := range messages {
+		buf.WriteString(msg.Content)
+		buf.WriteString("\n")
+	}
+	input := buf.String()
+
 	if len(messages) > 0 {
 		last := messages[len(messages)-1]
 		switch {
 		case last.Role == "user":
 			if strings.Contains(last.Content, "[取证请求 board_selfcheck:") {
 				return boardSelfcheckEvidence
+			}
+			// 职能框架 M7 U5：UI 子单图像对话机（轮1）。
+			if strings.Contains(input, "<UAT_UI_IMG>") {
+				return buildSingleToolCall("generate_image", map[string]interface{}{
+					"prompt": "登录页高保真线框：顶部品牌区、中部表单、底部主按钮",
+					"output": "board_uat/ui.png",
+				})
+			}
+			// 职能框架 M7 U6：文本线交付（D7 默认态）。
+			if strings.Contains(input, "<UAT_UI_TEXT>") {
+				return "UI图已交付（文本线）：登录页布局=顶部品牌区/中部表单/底部主按钮，配色=主色蓝灰，组件=输入框×2+按钮×1。"
 			}
 			if title, ok := extractBoardIssueTitle(last.Content); ok {
 				return buildSingleToolCall("board_issue", map[string]interface{}{
@@ -96,10 +129,55 @@ func (m *TestAIBoard) masterProcess(messages []Message) string {
 			if strings.Contains(last.Content, "plan_id") {
 				return "BOARD_ISSUE_FLOW_DONE"
 			}
+			// 职能框架 M7 U5：图像对话机（轮2/轮3）。锚点用 ui.png 文件名
+			// （generate_image 结果 path 是绝对路径，Windows 下反斜杠——
+			// 文件名本身平台无关）；publish 结果含 "published"。
+			if strings.Contains(input, "<UAT_UI_IMG>") {
+				if strings.Contains(last.Content, "ui.png") && strings.Contains(last.Content, "\"path\"") {
+					return buildSingleToolCall("board_asset", map[string]interface{}{
+						"action": "publish",
+						"path":   "images/board_uat/ui.png",
+					})
+				}
+				if strings.Contains(last.Content, "published") {
+					return "UI图已交付（图像线）。\n" + last.Content
+				}
+				// 图像链路中断（工具未注册/端点失败）：诚实文本交付，
+				// 不带 bundle——评审走纯文本锚点，UAT 断言按失败暴露。
+				return "UI图已交付（图像线降级文本）：工具链路未走通。"
+			}
 			return "BOARD_ISSUE_TOOL_UNEXPECTED"
 		}
 	}
+	// 职能契约回显（兜底位——以上对话机都不命中才生效；A 端 master 对话
+	// 无职能后缀，恒走 boardAckText，零行为变化）。
+	if slug := extractProfessionSlug(input); slug != "" {
+		return "收到。职能=" + slug + "。" + boardAckText
+	}
 	return boardAckText
+}
+
+// extractProfessionSlug 从提示词全文抠职能后缀标记「执行职能：<label>（<slug>）」
+// 里的 slug（render_profession_suffix 契约首行/未知 slug 块首行同构）。
+// 多处命中取首个（契约段先于方法论段）。无命中返回空串（不回显）。
+func extractProfessionSlug(input string) string {
+	const marker = "执行职能："
+	re := regexp.MustCompile(`[（(]([a-z0-9_-]+(?::[a-z0-9_-]+)?)[）)]`)
+	rest := input
+	for {
+		i := strings.Index(rest, marker)
+		if i < 0 {
+			return ""
+		}
+		line := rest[i+len(marker):]
+		if j := strings.IndexAny(line, "\n"); j >= 0 {
+			line = line[:j]
+		}
+		if m := re.FindStringSubmatch(line); m != nil {
+			return m[1]
+		}
+		rest = rest[i+len(marker):]
+	}
 }
 
 // boardAckText — 无标记场景的固定普通回复（主持人讨论；保持原样）。
