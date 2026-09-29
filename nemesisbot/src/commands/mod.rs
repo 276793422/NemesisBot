@@ -51,6 +51,9 @@ pub mod scanner;
 pub mod security;
 pub mod session;
 pub mod shutdown;
+// WASM 插件 CLI（plugins-wasm feature 从 security 派生；implies security）。
+#[cfg(feature = "plugins-wasm")]
+pub mod plugin;
 pub mod skills;
 pub mod status;
 #[cfg(feature = "desktop")]

@@ -228,7 +228,13 @@ impl nemesis_security::auditor::ApprovalManager for WebApprovalManager {
                 );
                 // F6: 超时自动拒绝也是一次裁决——广播出去让所有前端摘卡。
                 self.broadcast_resolved(request_id, "timeout");
-                Ok(nemesis_security::auditor::ApprovalVerdict::denied())
+                Ok(nemesis_security::auditor::ApprovalVerdict {
+                    approved: false,
+                    // 4.1（2026-09-29 交付审查）：超时拒绝带注记，与用户
+                    // 显式拒绝区分——上游消费 verdict.note 的面（技能/插件
+                    // 安装卡的拒绝原因）不再把超时误报成「用户拒绝了」。
+                    note: Some("审批超时自动拒绝".to_string()),
+                })
             }
         }
     }

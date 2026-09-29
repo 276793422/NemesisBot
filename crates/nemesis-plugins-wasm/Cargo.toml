@@ -1,0 +1,38 @@
+[package]
+name = "nemesis-plugins-wasm"
+version.workspace = true
+edition.workspace = true
+
+description = "NemesisBot WASM 插件框架宿主运行时（wasmtime 组件装配 + 资源管控 + 装配准入）"
+license = "AGPL-3.0-only"
+
+[dependencies]
+# 宿主运行时
+wasmtime.workspace = true
+wasmtime-wasi.workspace = true
+
+# 内部层（types 事件源 / security 签名+扫描+操作注册表 / utils 原子写）
+nemesis-types = { workspace = true }
+nemesis-security = { workspace = true, features = ["scanner"] }
+nemesis-utils = { workspace = true }
+
+# 基础
+tokio.workspace = true
+futures.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml_edit.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+sha2.workspace = true
+hex = "0.4"
+reqwest.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

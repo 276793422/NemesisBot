@@ -20,7 +20,7 @@ default = [
     "channels-websocket", "channels-external", "channels-maixcam", "channels-line",
     "migrate", "devices", "desktop", "health", "heartbeat", "auth", "voice", "voice-capture", "cluster",
     "forge", "memory", "workflow", "security", "scanner", "sandbox", "eval", "usage", "board",
-    "terminal", "skins",
+    "terminal", "skins", "plugins-wasm",
 ]
 
 # Optional subsystems (on by default = current full build; drop with --no-default-features)
@@ -71,6 +71,12 @@ skins = ["nemesis-web/skins"]
 # 据此把 enforce 烧死（config 任意值被忽略）。cargo feature 指纹原生跟踪，
 # 同 target 先消费后锁定无 stale（option_env! 方案的同 target 缓存复用坑）。
 verify-enforce-lock = []
+
+# WASM 插件框架（`plugin` CLI + Dashboard 插件页 + agent 工具桥；guest 侧
+# wasmtime 运行时随它进出）。关 = 无 WASM 插件子系统，`plugin.*` 工具与
+# `plugins.wasm.*` WSAPI 整体消失。implies security：信任验签/审计链/
+# 病毒扫描机制依赖 nemesis-security（nemesis-plugins-wasm 本身硬依赖）。
+plugins-wasm = ["security", "dep:nemesis-plugins-wasm", "nemesis-web/plugins-wasm"]
 
 # Channel backends (forwarded to nemesis-channels)
 channels-web = ["nemesis-channels/web"]
@@ -144,6 +150,9 @@ nemesis-path = { workspace = true }
 nemesis-http-pool = { workspace = true }
 # 签名验证接入（P0）：启动自验走 lib 直接验签（不走 DLL）。
 nemesis-verify = { workspace = true }
+# WASM 插件框架宿主运行时（plugins-wasm feature 门控；implies security，
+# 并转发 nemesis-web 同名 feature 装配 plugins.wasm.* WSAPI 管理面）。
+nemesis-plugins-wasm = { workspace = true, optional = true }
 nemesis-sandbox = { workspace = true, optional = true }
 nemesis-injector = { workspace = true, optional = true }
 nemesis-eval-proxy = { workspace = true, optional = true }
@@ -160,6 +169,8 @@ anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
+# 插件 manifest 签名（plugin sign）：与 trust.rs strip/回填同引擎保证字节一致
+toml_edit = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 dirs = "5"

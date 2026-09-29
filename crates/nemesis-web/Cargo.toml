@@ -31,6 +31,9 @@ nemesis-data = { workspace = true }
 # 与 CLI catalog.rs 共用——nemesis-web 不能依赖 binary crate）。
 nemesis-path = { workspace = true }
 nemesis-agent = { workspace = true }
+# WASM 插件管理面（handlers/plugins_wasm.rs；`plugins-wasm` feature 门控，
+# nemesisbot feature 转发）。
+nemesis-plugins-wasm = { workspace = true, optional = true }
 nemesis-workflow = { workspace = true, optional = true }
 nemesis-utils = { workspace = true }
 # 提示词资产单一真相源（M7）：cluster_persona_gen（人格生成三阶段）消费；
@@ -87,6 +90,8 @@ security = ["dep:nemesis-security", "nemesis-security/security"]
 # implies security（第 7 层在 pipeline 内），并穿透 nemesis-security/scanner。
 scanner = ["security", "nemesis-security/scanner"]
 sandbox = ["dep:nemesis-sandbox"]
+# WASM 插件管理面（plugins.wasm.* WSAPI；宿主运行时整槽注入）。
+plugins-wasm = ["dep:nemesis-plugins-wasm"]
 terminal = ["dep:portable-pty"]
 # 皮肤包加载/签名验证/WSAPI 管理面（skins.rs + handlers/skins.rs + 路由
 # 挂载点）。zip 与 nemesis-verify 是本功能的实现依赖，随 skins 进出。

@@ -154,14 +154,17 @@ async fn normal_failure_path_unchanged() {
 #[tokio::test]
 async fn large_output_pipe_not_deadlocked() {
     // B2 设计点回归：并发排干管道——输出超 ~64KB 管道缓冲时子进程不能被
-    // 阻塞成假超时（只 wait 不读的老毛病）。
+    // 墙钟顶破成假超时（只 wait 不读的老毛病）。120s：本测试区分的是
+    // 「死锁（永不完成→超时）」与「完成（tail 到达）」，墙钟只兜死锁；
+    // PowerShell 启动 + 2 万行在满载机（多套件并发/AV 扫描）可破 60s，
+    // 按 CLAUDE.md 环境敏感纪律给超限值，不压负载 flake。
     #[cfg(windows)]
     let cmd = "powershell -NoProfile -Command \"1..20000 | ForEach-Object { \\\"line-{0:00000}\\\" -f $_ }\"";
     #[cfg(not(windows))]
     let cmd = "seq 1 20000 | sed 's/^/line-/'";
     let out = tool()
         .execute(
-            &serde_json::json!({"command": cmd, "timeout": 60}).to_string(),
+            &serde_json::json!({"command": cmd, "timeout": 120}).to_string(),
             &ctx(),
         )
         .await

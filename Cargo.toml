@@ -33,6 +33,8 @@ members = [
     "crates/nemesis-migrate",
     "crates/nemesis-path",
     "crates/nemesis-plugin",
+    "crates/nemesis-plugins-wasm",
+    "crates/nemesis-plugin-sdk",
     "crates/nemesis-routing",
     "crates/nemesis-session",
     "crates/nemesis-state",
@@ -108,6 +110,14 @@ serde_yaml = "0.9"
 base64 = "0.22"
 toml = "0.8"
 
+# WASM 插件框架（宿主运行时 + guest 绑定生成；wasmtime 48 / wit-bindgen 0.61
+# 同代组合——wasmtime 49 需 rustc 1.96，与 rust-toolchain.toml 钉死的 1.95
+# 不兼容，故钉 48 系；升级时两处同步动）
+wasmtime = { version = "48", features = ["cache"] }
+wasmtime-wasi = "48"
+wit-bindgen = "0.61"
+toml_edit = { version = "0.22", features = ["serde"] }
+
 # Error handling
 thiserror = "2"
 anyhow = "1"
@@ -147,6 +157,7 @@ git2 = { version = "0.21", default-features = false }
 # Crypto
 # oid feature：cms builder 要求 Digest 的 AssociatedOid（S0-6 坑位 5b）
 sha2 = { version = "0.10", features = ["oid"] }
+hex = "0.4"
 hmac = "0.12"
 ed25519-dalek = { version = "2", features = ["serde", "rand_core"] }
 # v4 签名体系（Authenticode 对齐）：ECDSA P-256 + RFC 6979 确定式签名
@@ -220,6 +231,8 @@ nemesis-eval-proxy = { path = "crates/nemesis-eval-proxy" }
 nemesis-voice = { path = "crates/nemesis-voice" }
 nemesis-ui = { path = "crates/nemesis-ui" }
 nemesis-board = { path = "crates/nemesis-board" }
+nemesis-plugins-wasm = { path = "crates/nemesis-plugins-wasm" }
+nemesis-plugin-sdk = { path = "crates/nemesis-plugin-sdk" }
 
 # L8 PTY 内嵌终端（dashboard 终端 tab；`terminal` feature 门控，IoT 裁剪可关）
 portable-pty = "0.9"

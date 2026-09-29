@@ -177,10 +177,32 @@ impl AgentLoop {
         // 白付 judge/scanner 成本（F8 同理由）。唯一写放行 = write_file
         // 且路径落在 `<workspace>/plans/`（计划产物落盘）。C7：lsp 的
         // rename op 是跨文件改内容——同受 Plan 拦截（其余 lsp op 只读）。
+        // W5-3（WASM 插件框架 §5.6）：声明驱动第三析取——动态注册工具
+        // （`plugin.*` / MCP 等）不在 PLAN_MODE_WRITE_TOOLS 白名单里，按
+        // 操作声明表裁决：声明为写/删/进程/注册表类操作即拦（对既有
+        // 白名单 / lsp 两臂纯增量；read/network 声明与未声明工具不受影响；
+        // 白名单工具排除在此外——它们的 plans/ 放行例外由第一臂承载）。
+        #[cfg(feature = "security")]
+        let declared_write = !Self::PLAN_MODE_WRITE_TOOLS.contains(&tool_call.name.as_str())
+            && matches!(
+                nemesis_security::types::tool_to_operation(&tool_call.name),
+                Some(
+                    nemesis_security::types::OperationType::FileWrite
+                        | nemesis_security::types::OperationType::FileDelete
+                        | nemesis_security::types::OperationType::DirCreate
+                        | nemesis_security::types::OperationType::DirDelete
+                        | nemesis_security::types::OperationType::ProcessExec
+                        | nemesis_security::types::OperationType::ProcessSpawn
+                        | nemesis_security::types::OperationType::RegistryWrite
+                ),
+            );
+        #[cfg(not(feature = "security"))]
+        let declared_write = false;
         if *self.mode.read() == crate::types::AgentMode::Plan
             && ((Self::PLAN_MODE_WRITE_TOOLS.contains(&tool_call.name.as_str())
                 && !self.plan_mode_write_allowed(&tool_call.name, &tool_call.arguments))
-                || Self::is_lsp_write_call(&tool_call.name, &tool_call.arguments))
+                || Self::is_lsp_write_call(&tool_call.name, &tool_call.arguments)
+                || declared_write)
         {
             warn!(
                 "[AgentLoop] Plan mode: write-class tool {} refused.",

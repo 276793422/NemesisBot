@@ -315,13 +315,35 @@ impl SecurityPlugin {
         *self.judge.write() = Some(judge);
     }
 
+    /// 未知名工具的有效操作类型（fail-closed 单点）。
+    ///
+    /// 修复前：`None => return (true, None)`（fail-open 盲点——不在表内的
+    /// 工具名整体跳过 8 层，连注入检测都不跑）。修复后：内置表全量补齐 +
+    /// 动态注册面（MCP/插件桥）进程级 declare（lookup-first），未知名只
+    /// 可能是绕过注册面的调用 → 按最紧档 ProcessExec（CRITICAL）过全管线
+    /// + warn 留痕。
+    fn effective_tool_operation(&self, tool_name: &str) -> OperationType {
+        match tool_to_operation(tool_name) {
+            Some(op) => op,
+            None => {
+                tracing::warn!(
+                    tool = %tool_name,
+                    "[Security] 未注册操作类型的工具按 CRITICAL 过管线（fail-closed）"
+                );
+                OperationType::ProcessExec
+            }
+        }
+    }
+
     /// Returns true if the tool maps to a CRITICAL operation, so the agent loop
     /// can route it through the guardian judge. Uses Display output to avoid
-    /// depending on the `RiskLevel` enum's visibility.
+    /// depending on the `RiskLevel` enum's visibility. 未知名 fail-closed =
+    /// true（与 [`Self::effective_tool_operation`] 同口径——未知名按
+    /// CRITICAL 过管线，guardian 覆盖就位）。
     pub fn is_critical_tool(&self, tool_name: &str) -> bool {
         match tool_to_operation(tool_name) {
             Some(op) => get_danger_level(op).to_string() == "CRITICAL",
-            None => false,
+            None => true,
         }
     }
 
@@ -596,10 +618,7 @@ impl SecurityPlugin {
             return (true, None);
         }
 
-        let op_type = match tool_to_operation(&invocation.tool_name) {
-            Some(op) => op,
-            None => return (true, None), // Unknown tool, allow
-        };
+        let op_type = self.effective_tool_operation(&invocation.tool_name);
 
         let target = extract_target(&invocation.tool_name, &invocation.args);
 
@@ -1030,14 +1049,12 @@ impl SecurityPlugin {
         }
     }
 
-    /// Tool 的管线危级标签（"LOW"/"MEDIUM"/"HIGH"/"CRITICAL"；未映射工具
-    /// 返回 "unknown"）。喂给 JudgeRequest.risk_level——LLM 只拿命令 +
-    /// 危级元数据，无任何任务上下文。
+    /// Tool 的管线危级标签（"LOW"/"MEDIUM"/"HIGH"/"CRITICAL"；未知名工具
+    /// fail-closed 返回 "CRITICAL"——与 [`Self::effective_tool_operation`]
+    /// 同口径）。喂给 JudgeRequest.risk_level——LLM 只拿命令 + 危级元数据，
+    /// 无任何任务上下文。
     pub fn tool_danger_level(&self, tool_name: &str) -> String {
-        match tool_to_operation(tool_name) {
-            Some(op) => get_danger_level(op).to_string(),
-            None => "unknown".to_string(),
-        }
+        get_danger_level(self.effective_tool_operation(tool_name)).to_string()
     }
 
     /// Guardian 审计覆盖裁决（2026-09-16 单一决策点）：该工具调用是否应
