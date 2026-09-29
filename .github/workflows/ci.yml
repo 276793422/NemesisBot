@@ -49,8 +49,12 @@ jobs:
       - name: Install Rust toolchain (rust-toolchain.toml 钉 stable)
         uses: dtolnay/rust-toolchain@stable
 
+      # cache-on-failure（2026-09-29 提速 P2）：红轮也保存编译缓存——否则连续修红
+      # 时每轮全量重建（2026-09-29 三连红三烧全量的实证教训）。
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Setup Node.js (Vue 前端构建)
         uses: actions/setup-node@v5
@@ -136,11 +140,18 @@ jobs:
         with:
           components: llvm-tools-preview
 
+      # cache-on-failure（2026-09-29 提速 P2，同 rust-check job 注释）
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
-      - name: Install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov --locked
+      # prebuilt 二进制直装（秒级）；cargo install 源码编译每轮白烧 3-5min
+      # （2026-09-29 提速 P4）
+      - name: Install cargo-llvm-cov (prebuilt)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
 
       - name: Setup Node.js (Vue 前端构建，include_dir! 前置)
         uses: actions/setup-node@v5
@@ -195,8 +206,23 @@ jobs:
       - name: Install Rust toolchain (rust-toolchain.toml 钉 stable)
         uses: dtolnay/rust-toolchain@stable
 
+      # cache-on-failure（2026-09-29 提速 P2，同 rust-check job 注释）
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      # Defender 实时扫描排除 target 目录（2026-09-29 提速 P4）：编译期海量
+      # 临时文件逐个过扫描典型拖慢 5-15%；runner 是一次性机器，无安全顾虑
+      - name: Exclude target dir from Defender scan
+        shell: powershell
+        run: Set-MpPreference -ExclusionPath "${{ github.workspace }}\target"
+
+      # nextest prebuilt 直装（秒级，2026-09-29 提速 P3）
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
 
       - name: Setup Node.js (Vue 前端构建)
         uses: actions/setup-node@v5
@@ -221,8 +247,21 @@ jobs:
       # CI=true 双保险 SKIP 闸（凡触碰 cpal 的测试：voice 8 个 + web 穿透 2 个，
       # 设 NEMESISBOT_VOICE_HW_TESTS=1 可在 CI opt-in）。
       # ⚠️ 新增触碰 cpal/音频设备的测试必须挂同款闸，否则 CI 必崩。
-      - name: cargo test --workspace
-        run: cargo test --workspace
+      #
+      # nextest（2026-09-29 提速 P3）：① 测试二进制并行执行；② .config/nextest.toml
+      # 把真 gateway live 批（commands::gateway::{r9_live_tests,scenario_tests}，
+      # 固定端口 8080/49000/18790，原 live_gate() 互斥闸只在单进程内生效）钉进
+      # max-threads=1 组保串行。两个行为差异（本地验证实证，勿回退）：
+      #   a. nextest 只构建测试二进制、不构建常规 bin 目标——live 批夹具要 spawn
+      #      target/debug/nemesisbot.exe，前一步必须先 cargo build -p nemesisbot；
+      #   b. nextest ≥0.9.1xx 默认 fail-fast（一处红取消剩余），与本 job 全量
+      #      体检语义相反——必须显式 --no-fail-fast。
+      # nextest 不跑 doctests（本仓库无实质 doctest 断言，无覆盖损失）。
+      - name: Build nemesisbot bin (live 批 spawn 依赖)
+        run: cargo build -p nemesisbot
+
+      - name: cargo nextest run --workspace
+        run: cargo nextest run --workspace --no-fail-fast
 
   frontend:
     name: Frontend typecheck + vitest + build (Linux)

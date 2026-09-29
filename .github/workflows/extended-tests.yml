@@ -46,6 +46,8 @@ jobs:
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
@@ -115,11 +117,13 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # cache-on-failure（2026-09-29 提速 P2，见 ci.yml 同名注释）；三档 feature
+      # 集差异大，分开缓存 key 避免互相踢
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
-          # 三档 feature 集差异大，分开缓存 key 避免互相踢
           prefix-key: feature-matrix-${{ matrix.name }}
+          cache-on-failure: true
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
@@ -151,8 +155,16 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # cache-on-failure（2026-09-29 提速 P2，见 ci.yml 同名注释）
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      # Defender 实时扫描排除 target 目录（2026-09-29 提速 P4，见 ci.yml 同名注释）
+      - name: Exclude target dir from Defender scan
+        shell: powershell
+        run: Set-MpPreference -ExclusionPath "${{ github.workspace }}\target"
 
       - name: Setup Go (TestAIServer)
         uses: actions/setup-go@v5
