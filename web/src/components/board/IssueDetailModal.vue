@@ -476,6 +476,25 @@ async function dispatchIssue() {
   }
 }
 
+// 任务档案（2026-09-29 goal）：本单 + 全部后代记录导出为自包含目录。
+async function exportDossier() {
+  if (!detail.value || busy.value) return
+  busy.value = true
+  try {
+    const r = await request('board', 'dossier.export', { number: detail.value.number })
+    const notes = (r?.notes || []) as string[]
+    if (notes.length) {
+      toast.info(`档案已导出 ${r.root}（${notes.length} 条缺口注记已写入 README）`)
+    } else {
+      toast.success(`档案已导出：${r.root}`)
+    }
+  } catch (e: any) {
+    toast.error('档案导出失败: ' + e)
+  } finally {
+    busy.value = false
+  }
+}
+
 // --- 附件（W2 P3）---
 function onFilePick(ev: Event) {
   const input = ev.target as HTMLInputElement
@@ -630,6 +649,20 @@ async function downloadAttachment(a: AttachmentRow) {
               @click="dispatchIssue"
             >派发 →</button>
             <span class="muted">派发后 issue 转进行中；worker 回报 → 自动写结果评论并转评审中</span>
+          </div>
+        </div>
+
+        <!-- 任务档案（2026-09-29 goal：整合本单全部记录为自包含目录） -->
+        <div class="form-group">
+          <label class="form-label">任务档案</label>
+          <div class="assign-row">
+            <button
+              class="btn btn-sm"
+              :disabled="busy"
+              title="把本单及全部子单的活动/评论/派发/执行档案/token 用量整合导出到 workspace/logs/dossiers/ 下的自包含目录"
+              @click="exportDossier"
+            >📁 导出档案</button>
+            <span class="muted">整合活动/评论/派发/执行档案/用量为自包含目录（logs/dossiers/）</span>
           </div>
         </div>
 

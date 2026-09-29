@@ -6,6 +6,8 @@ use crate::events::EventHub;
 use crate::session::SessionManager;
 use crate::ws_router::{ModuleHandler, RequestContext};
 use nemesis_board::models::priority;
+#[allow(unused_imports)]
+use nemesis_config::DispatchFallbackMode;
 use nemesis_types::cluster::NodeRole;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
@@ -3223,7 +3225,7 @@ async fn cancel_parent_cascades_children_via_parent_edge() {
         node_type: "agent".into(),
     });
     super::dispatch_subissue_auto_with_config(
-        Some(&fallback_cfg(true, None)),
+        Some(&fallback_cfg(DispatchFallbackMode::Full, None)),
         &store,
         Some(&cluster),
         c2.id,
@@ -3292,7 +3294,7 @@ async fn dispatch_skips_children_of_cancelled_parent() {
         .unwrap();
 
     let out = super::dispatch_subissue_auto_with_config(
-        Some(&fallback_cfg(true, None)),
+        Some(&fallback_cfg(DispatchFallbackMode::Full, None)),
         &store,
         Some(&cluster),
         child.id,
@@ -3438,11 +3440,14 @@ async fn sync_parent_status_bumps_blocked_parent_before_review() {
 // dispatch_fallback_target。无人匹配时任务必须能推进（用户裁决）。
 // ------------------------------------------------------------------
 
-/// 构造兜底开关配置（显式入参，测试不碰进程级全局 live config）。
+/// 构造兜底档位配置（显式入参，测试不碰进程级全局 live config）。
 #[cfg(feature = "cluster")]
-fn fallback_cfg(on: bool, target: Option<&str>) -> nemesis_config::BoardFlagConfig {
+fn fallback_cfg(
+    mode: DispatchFallbackMode,
+    target: Option<&str>,
+) -> nemesis_config::BoardFlagConfig {
     nemesis_config::BoardFlagConfig {
-        dispatch_fallback: on,
+        dispatch_fallback: mode,
         dispatch_fallback_target: target.map(str::to_string),
         ..Default::default()
     }
@@ -3477,7 +3482,7 @@ async fn fallback_off_parks_as_before() {
     let a = planner_child(&store, parent, "子A", vec!["python".to_string()]);
 
     let out = super::dispatch_subissue_auto_with_config(
-        Some(&fallback_cfg(false, None)),
+        Some(&fallback_cfg(DispatchFallbackMode::Off, None)),
         &store,
         Some(&cluster),
         a.id,
@@ -3511,7 +3516,7 @@ async fn fallback_on_but_no_peers_still_parks() {
     let a = planner_child(&store, parent, "子A", vec!["python".to_string()]);
 
     let out = super::dispatch_subissue_auto_with_config(
-        Some(&fallback_cfg(true, None)),
+        Some(&fallback_cfg(DispatchFallbackMode::Full, None)),
         &store,
         Some(&cluster),
         a.id,
@@ -3521,6 +3526,76 @@ async fn fallback_on_but_no_peers_still_parks() {
     .unwrap();
     assert!(out.is_none(), "无在线节点不得凭空派发");
     assert_eq!(store.get_issue(a.id).unwrap().status, IssueStatus::Backlog);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Role 档（新默认）角色纪律保留：coordinator 单只有 worker 在线——④全
+/// 松弛才能救的局诚实停车；Full 档同场景才兜底派出（2026-09-29 三档化
+/// 回归锚：默认不越 worker/coordinator 纪律）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn fallback_role_depth_keeps_role_discipline() {
+    let dir = unique_dir("fallback-role-depth");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("test-session");
+    let cluster = offline_cluster(&dir, "coord-fb-rd");
+    let parent = no_parent(&store);
+    // coordinator 单：只有④（角色放开）能救。
+    let c = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "协调子单".into(),
+            parent_issue_id: Some(parent),
+            required_role: Some("coordinator".to_string()),
+            origin: Some(nemesis_board::TaskOrigin {
+                origin_type: "planner".to_string(),
+                origin_id: "NB-1".to_string(),
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+
+    // 上线一个 worker 节点（无任何标签/职能——只有④可达）。
+    cluster.set_rpc_client(Arc::new(nemesis_cluster::rpc::client::RpcClient::new()));
+    cluster.merge_real_node_info(&nemesis_cluster::cluster::RealNodeInfo {
+        id: "node-w".into(),
+        name: "W1".into(),
+        address: "127.0.0.1:19997".into(),
+        rpc_port: 0,
+        addresses: Vec::new(),
+        role: NodeRole::Worker,
+        category: "development".into(),
+        capabilities: vec![],
+        tags: vec![],
+        professions: Vec::new(),
+        tier: None,
+        node_type: "agent".into(),
+    });
+
+    // Role 档（新默认）：不越角色纪律 → 诚实停车 + ⏸ 评论。
+    let out = super::dispatch_subissue_auto_with_config(
+        Some(&fallback_cfg(DispatchFallbackMode::Role, None)),
+        &store,
+        Some(&cluster),
+        c.id,
+        &actor,
+        true,
+    )
+    .unwrap();
+    assert!(out.is_none(), "Role 档不得把 coordinator 单兜给 worker");
+    assert_eq!(store.get_issue(c.id).unwrap().status, IssueStatus::Backlog);
+
+    // Full 档：角色放开 → 兜底派出。
+    let out = super::dispatch_subissue_auto_with_config(
+        Some(&fallback_cfg(DispatchFallbackMode::Full, None)),
+        &store,
+        Some(&cluster),
+        c.id,
+        &actor,
+        true,
+    )
+    .unwrap();
+    assert!(out.is_some(), "Full 档应全松弛兜底派出");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3560,7 +3635,7 @@ async fn fallback_dispatches_to_relaxed_online_peer() {
     });
 
     let out = super::dispatch_subissue_auto_with_config(
-        Some(&fallback_cfg(true, None)),
+        Some(&fallback_cfg(DispatchFallbackMode::Full, None)),
         &store,
         Some(&cluster),
         a.id,
@@ -3619,7 +3694,7 @@ async fn fallback_pinned_target_name_match_and_offline_honesty() {
     let parent = no_parent(&store);
     let a = planner_child(&store, parent, "子A", vec!["python".to_string()]);
     let out = super::dispatch_subissue_auto_with_config(
-        Some(&fallback_cfg(true, Some("alex"))),
+        Some(&fallback_cfg(DispatchFallbackMode::Full, Some("alex"))),
         &store,
         Some(&cluster),
         a.id,
@@ -3639,7 +3714,7 @@ async fn fallback_pinned_target_name_match_and_offline_honesty() {
     // 钉住的节点不在线（另一节点在线也不换人）→ 停车。
     let b = planner_child(&store, parent, "子B", vec!["python".to_string()]);
     let out = super::dispatch_subissue_auto_with_config(
-        Some(&fallback_cfg(true, Some("Ghost"))),
+        Some(&fallback_cfg(DispatchFallbackMode::Full, Some("Ghost"))),
         &store,
         Some(&cluster),
         b.id,
@@ -3693,7 +3768,7 @@ async fn fallback_role_relaxed_ordering() {
         })
         .unwrap();
     let out = super::dispatch_subissue_auto_with_config(
-        Some(&fallback_cfg(true, None)),
+        Some(&fallback_cfg(DispatchFallbackMode::Full, None)),
         &store,
         Some(&cluster),
         a.id,
@@ -3724,7 +3799,7 @@ async fn fallback_sweep_revives_parked_issue() {
     let parent = no_parent(&store);
     let a = planner_child(&store, parent, "子A", vec!["python".to_string()]);
     super::dispatch_subissue_auto_with_config(
-        Some(&fallback_cfg(false, None)),
+        Some(&fallback_cfg(DispatchFallbackMode::Off, None)),
         &store,
         Some(&cluster),
         a.id,
@@ -3751,7 +3826,7 @@ async fn fallback_sweep_revives_parked_issue() {
         node_type: "agent".into(),
     });
     let (cands, dispatched, failed) = super::sweep_parked_dispatches_with_config(
-        Some(&fallback_cfg(true, None)),
+        Some(&fallback_cfg(DispatchFallbackMode::Full, None)),
         &store,
         &cluster,
         &actor,
@@ -5233,6 +5308,9 @@ async fn agt_board_config_get_set_all_keys_and_rejections() {
         ("unlimited_mode", serde_json::json!(false)),
         ("conflict_auto_resolve", serde_json::json!(true)),
         ("dispatch_fallback", serde_json::json!(true)),
+        // 2026-09-29 三档化：字符串档位 round-trip（旧布尔上一行保真）。
+        ("dispatch_fallback", serde_json::json!("off")),
+        ("dispatch_fallback", serde_json::json!("role")),
         ("fingerprint_weighting", serde_json::json!(true)),
         ("worker_max_inflight", serde_json::json!(3)),
         ("dispatch_fallback_target", serde_json::json!("node-fix")),
@@ -5279,6 +5357,11 @@ async fn agt_board_config_get_set_all_keys_and_rejections() {
             "字符串或 null",
         ),
         ("plan.model", serde_json::json!(true), "字符串或 null"),
+        (
+            "dispatch_fallback",
+            serde_json::json!("wrong"),
+            "\"off\"|\"role\"|\"full\"",
+        ),
         ("max_redispatch", serde_json::json!(-2), "非负整数"),
         ("review.max_turns", serde_json::json!(1.5), "非负整数"),
         ("review.checkers", serde_json::json!(9), "1..=5"),

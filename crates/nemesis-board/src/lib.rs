@@ -17,6 +17,7 @@ pub mod asset_token;
 pub mod assignment;
 pub mod backup;
 pub mod db;
+pub mod dossier;
 pub mod fingerprint;
 pub mod git_repo;
 pub mod matcher;
@@ -64,7 +65,7 @@ pub use git_repo::{
     commit_resolution, commit_worktree, ensure_repo, export_head_tree, head_commit_hex,
     looks_binary, merge_changeset,
 };
-pub use matcher::{MatchInput, PeerCandidate, pick_relaxed, rank_peers};
+pub use matcher::{MatchInput, PeerCandidate, RelaxDepth, pick_relaxed, rank_peers};
 pub use models::{
     ActivityLog, Attachment, Autopilot, AutopilotPatch, BoardAsset, Channel, ChannelMember,
     ChannelMessage, Comment, CommentType, Issue, IssueFilter, IssuePatch, IssueStatus, NewAsset,

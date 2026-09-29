@@ -630,7 +630,7 @@ pub async fn test_board_p4_config_surface(ws: &TestWorkspace, bin: &Path) -> Vec
                 ("/budget/max_subissues_per_parent", json!(10)),
                 ("/budget/max_total_redispatch", json!(5)),
                 ("/budget/wall_clock_budget_secs", json!(3600)),
-                ("/dispatch_fallback", json!(true)),
+                ("/dispatch_fallback", json!("full")), // 旧布尔 true 兼容写入 → 归一 "full"（2026-09-29 三档化）
                 ("/dispatch_fallback_target", json!("Alex")),
             ];
             for (pointer, want) in checks {
@@ -680,7 +680,7 @@ pub async fn test_board_p4_config_surface(ws: &TestWorkspace, bin: &Path) -> Vec
         ("budget.max_subissues_per_parent", json!(20)),
         ("budget.max_total_redispatch", json!(0)),
         ("budget.wall_clock_budget_secs", json!(0)),
-        ("dispatch_fallback", json!(false)),
+        ("dispatch_fallback", json!("role")), // 三档化默认档（2026-09-29）
         ("dispatch_fallback_target", serde_json::Value::Null),
     ];
     let mut restore_ok = true;

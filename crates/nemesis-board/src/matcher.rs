@@ -153,6 +153,10 @@ pub fn pick_peer(
 /// 弛（职能/角色/标签均放开）。返回 `(节点 id, 松弛级说明)`，说明字符串
 /// 供调用方评论留痕。
 ///
+/// `depth` 截断阶梯（2026-09-29 三档化）：[`RelaxDepth::Role`] 走到 ③ 为
+/// 止（角色纪律保留——架构单可降级给开发，不可降级给 coordinator）；
+/// [`RelaxDepth::Full`] 走满 ②③④。
+///
 /// tier 门槛**不参与松弛**（D13）：门槛是 required_profession 的函数，
 /// 有职能的松弛级照常带门槛，职能被丢掉后门槛自然随行——不存在「保留
 /// 门槛要求但放开职能」的中间态。
@@ -163,6 +167,7 @@ pub fn pick_relaxed<'a>(
     base: &MatchInput<'a>,
     peers: &[PeerCandidate],
     load: &HashMap<String, usize>,
+    depth: RelaxDepth,
 ) -> Option<(String, &'static str)> {
     let prof = base
         .required_profession
@@ -205,9 +210,23 @@ pub fn pick_relaxed<'a>(
     {
         return Some((id, "松弛职能兜底（角色/标签保留）"));
     }
-    // ④ 全松弛（职能/角色/标签均放开；与旧末级 rank(None) 等价）。
-    pick_peer(&make(base, None, None, &empty_tags), peers, load)
-        .map(|id| (id, "无匹配节点，全松弛兜底（职能/角色/标签均放开）"))
+    // ④ 全松弛（职能/角色/标签均放开；与旧末级 rank(None) 等价）——
+    // Role 档到此为止（角色纪律保留）。
+    if depth == RelaxDepth::Full {
+        return pick_peer(&make(base, None, None, &empty_tags), peers, load)
+            .map(|id| (id, "无匹配节点，全松弛兜底（职能/角色/标签均放开）"));
+    }
+    None
+}
+
+/// 松弛阶梯深度档（`pick_relaxed` 的截断点；2026-09-29 三档化的内核侧
+/// 投影——`Off` 不进入本函数，由调用方在 fallback 入口处诚实停车）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelaxDepth {
+    /// 走到 ③ 丢职能为止：角色纪律保留（worker/coordinator 不交叉）。
+    Role,
+    /// 阶梯全开 ②③④：角色也放开（旧 full 行为）。
+    Full,
 }
 
 #[cfg(test)]

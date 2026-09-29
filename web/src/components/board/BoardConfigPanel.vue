@@ -18,7 +18,10 @@ interface BoardFlags {
   auto_close_parent: boolean
   unlimited_mode: boolean
   conflict_auto_resolve: boolean
-  dispatch_fallback: boolean
+  /** 项目收口自动导出任务档案（logs/dossiers/ 自包含目录） */
+  dossier_auto_on_complete: boolean
+  /** 兜底派发档位：off=停车 / role=丢职能保角色（默认） / full=全松弛 */
+  dispatch_fallback: 'off' | 'role' | 'full'
   dispatch_fallback_target: string | null
   max_redispatch: number
   dispatch_timeout_secs: number
@@ -51,7 +54,8 @@ async function load() {
       auto_close_parent: !!r?.auto_close_parent,
       unlimited_mode: !!r?.unlimited_mode,
       conflict_auto_resolve: !!r?.conflict_auto_resolve,
-      dispatch_fallback: !!r?.dispatch_fallback,
+      dossier_auto_on_complete: r?.dossier?.auto_on_complete !== false,
+      dispatch_fallback: normalizeFallbackMode(r?.dispatch_fallback),
       dispatch_fallback_target: r?.dispatch_fallback_target ?? null,
       max_redispatch: r?.max_redispatch ?? 2,
       dispatch_timeout_secs: r?.dispatch_timeout_secs ?? 3600,
@@ -139,14 +143,21 @@ const toggles = computed(() =>
           value: flags.value.unlimited_mode,
         },
         {
-          key: 'dispatch_fallback',
-          label: '无人匹配兜底派发',
-          desc: '自动派发匹配不到（角色/标签）节点时，为了任务做下去兜底派给在线节点（下方可钉住指定客户端；钉住的不在线则继续等）。派发前会留 ⚠ 评论说明',
-          value: flags.value.dispatch_fallback,
+          key: 'dossier.auto_on_complete',
+          label: '收口自动导出任务档案',
+          desc: '项目收口后自动把全部任务记录（活动/评论/派发/执行档案/用量）整合到 workspace/logs/dossiers/ 自包含目录，离线可读',
+          value: flags.value.dossier_auto_on_complete,
         },
       ]
     : [],
 )
+
+/** 服务端档位归一：off/role/full 字符串；防御旧布尔（false→off、true→full）。 */
+function normalizeFallbackMode(v: any): 'off' | 'role' | 'full' {
+  if (v === 'off' || v === 'role' || v === 'full') return v
+  if (v === true) return 'full'
+  return 'off'
+}
 
 async function setFlag(key: string, value: boolean | number | string | null) {
   try {
@@ -178,6 +189,11 @@ function onNumber(key: string, ev: Event) {
 function onModel(ev: Event) {
   const raw = (ev.target as HTMLInputElement).value.trim()
   void setFlag('plan.model', raw === '' ? null : raw)
+}
+
+function onFallbackMode(ev: Event) {
+  const v = (ev.target as HTMLSelectElement).value
+  if (v === 'off' || v === 'role' || v === 'full') void setFlag('dispatch_fallback', v)
 }
 
 function onFallbackTarget(ev: Event) {
@@ -216,8 +232,23 @@ onMounted(load)
         </label>
       </div>
 
-      <!-- 兜底客户端钉住（dispatch_fallback 开时生效） -->
-      <div v-if="flags.dispatch_fallback" class="param-list" style="margin-top: calc(var(--space-2) * -1);">
+      <!-- 无人匹配兜底派发档位（2026-09-29 三档化） -->
+      <div class="param-list">
+        <div class="param-row">
+          <div class="flag-text">
+            <div class="flag-label">无人匹配兜底派发</div>
+            <div class="flag-desc">自动派发匹配不到节点时是否降级推进：诚实停车（等节点上线）/ 保角色降级（默认：职能与门槛放开，worker/coordinator 角色纪律保留）/ 全松弛（角色也放开）。降级派发前会留 ⚠ 评论说明；无任何在线节点时始终诚实停车</div>
+          </div>
+          <select class="form-input param-input" :value="flags.dispatch_fallback" @change="onFallbackMode($event)">
+            <option value="off">诚实停车（off）</option>
+            <option value="role">保角色降级（role，默认）</option>
+            <option value="full">全松弛（full）</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- 兜底客户端钉住（dispatch_fallback 非 off 时生效） -->
+      <div v-if="flags.dispatch_fallback !== 'off'" class="param-list" style="margin-top: calc(var(--space-2) * -1);">
         <div class="param-row">
           <div class="flag-text">
             <div class="flag-label">兜底客户端</div>

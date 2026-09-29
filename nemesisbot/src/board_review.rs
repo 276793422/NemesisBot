@@ -2640,6 +2640,9 @@ fn apply_project_review_outcome(
             // F9 收口总结（P6）：completed 落定后异步生成档案 summary.md
             //（失败诚实留痕，不影响已落定的收口状态）。
             crate::board_review::spawn_project_summary(deps.clone(), project.id);
+            // 任务档案自动导出（2026-09-29 goal）：同源触发，内部自守门
+            //（auto_on_complete 旗标默认开；失败父单评论留痕不阻塞收口）。
+            crate::board_review::spawn_project_dossier(deps.clone(), project.id);
         }
         verdict @ (nemesis_board::ReviewVerdict::Fail | nemesis_board::ReviewVerdict::Unsure) => {
             // completed → in_progress 回滚（合法转移）；in_progress 保持；
@@ -3064,6 +3067,96 @@ pub(crate) fn spawn_project_summary(deps: BoardReviewDeps, project_id: i64) {
             summarize_fail_note(&deps, project_id, &e);
         }
     });
+}
+
+/// 任务档案自动导出（2026-09-29 goal）：项目收口后把全项目任务记录整合
+/// 成自包含目录（`<workspace>/logs/dossiers/`）。与 spawn_project_summary
+/// 同源双路径触发（自动 PASS / 人工 project.update → completed 两处调用
+/// 点）。纯本机整合（board.db + 项目档案 + 收件箱 + 账本），LLM 零参与
+/// ——不受 estop/tier 闸（档案是保留证据，不是 agent 活动）；
+/// `board.dossier.auto_on_complete`（默认开）关掉即静默跳过。失败 WARN +
+/// 顶层父单系统评论留痕，不阻塞收口。
+pub(crate) fn spawn_project_dossier(deps: BoardReviewDeps, project_id: i64) {
+    tokio::spawn(async move {
+        let flags = match load_board_flags(&deps.home) {
+            Ok(f) => f,
+            Err(e) => {
+                warn!("[BoardReview] 项目 {project_id} 档案导出旗标读取失败（跳过）: {e}");
+                return;
+            }
+        };
+        if !flags.dossier.auto_on_complete {
+            return;
+        }
+        if let Err(e) = export_project_dossier(&deps, project_id) {
+            warn!("[BoardReview] 项目 {project_id} 档案自动导出失败（不阻塞收口）: {e}");
+            dossier_fail_note(&deps, project_id, &e);
+        } else {
+            info!(
+                "[BoardReview] 项目 {project_id} 任务档案已自动导出到 {}/logs/dossiers/",
+                deps.workspace.display()
+            );
+        }
+    });
+}
+
+/// dossier 导出主体：DataStore 从 moderator_loop 后置解（未装配 = 无账，
+/// usage.csv 缺行诚实），导出核心与 WSAPI/CLI 同源（nemesis-board dossier）。
+fn export_project_dossier(
+    deps: &BoardReviewDeps,
+    project_id: i64,
+) -> Result<nemesis_board::dossier::DossierOutcome, String> {
+    let ds = deps.moderator_loop.get().and_then(|l| l.data_store());
+    let usage_of = move |task_id: &str| {
+        let ds = ds.as_ref()?;
+        ds.aggregate_session_usage_by_task(task_id).ok().map(|agg| {
+            nemesis_board::dossier::DossierUsage {
+                input_tokens: agg.input_tokens,
+                output_tokens: agg.output_tokens,
+            }
+        })
+    };
+    let out_root = deps.workspace.join("logs").join("dossiers");
+    nemesis_board::dossier::export_project(
+        deps.store.as_ref(),
+        project_id,
+        &deps.workspace,
+        &out_root,
+        &usage_of,
+    )
+}
+
+/// dossier 失败留痕：档案 timeline 能写则写 + 顶层父单系统评论（同
+/// summarize_fail_note 的「能写哪个写哪个」姿态）。
+fn dossier_fail_note(deps: &BoardReviewDeps, project_id: i64, err: &str) {
+    if let Ok(project) = deps.store.get_project(project_id) {
+        if let Ok(root) = project_archive_root(project.directory.as_deref()) {
+            let _ = nemesis_board::archive::append_timeline(
+                &root,
+                "dossier",
+                None,
+                "board",
+                &format!("任务档案自动导出失败：{err}"),
+            );
+        }
+        if let Ok(issues) = deps.store.list_issues(&nemesis_board::models::IssueFilter {
+            project_id: Some(project_id),
+            ..Default::default()
+        }) {
+            let comment = format!(
+                "📁 任务档案自动导出失败（不阻塞收口，可 `nemesisbot dossier export --project-id {project_id}` 手动补导）：{err}"
+            );
+            for p in issues.iter().filter(|i| i.parent_issue_id.is_none()) {
+                let _ = deps.store.add_comment(NewComment {
+                    issue_id: p.id,
+                    author: Actor::agent(deps.cluster.node_id()),
+                    content: comment.clone(),
+                    parent_id: None,
+                    ctype: CommentType::System,
+                });
+            }
+        }
+    }
 }
 
 /// 失败留痕：顶层父单评论 + 档案 timeline（能写哪个写哪个，都失败只 log）。

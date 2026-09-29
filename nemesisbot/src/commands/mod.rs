@@ -14,6 +14,8 @@ pub mod cors;
 pub mod credentials;
 pub mod cron;
 pub mod dashboard;
+#[cfg(feature = "board")]
+pub mod dossier;
 pub mod estop;
 #[cfg(feature = "eval")]
 pub mod eval;

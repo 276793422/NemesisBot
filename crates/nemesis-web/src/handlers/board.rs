@@ -2431,16 +2431,17 @@ fn pick_target_by_matcher(
         .next()
 }
 
-/// 停车场兜底目标（集群完备性加固 2026-09-11）：自动派发匹配不到节点时，
-/// 为了任务做下去由「一个客户端」推进。返回 `(节点 id, 兜底说明)`；
-/// None = 不兜底（调用方走原停车路径）。
+/// 停车场兜底目标（集群完备性加固 2026-09-11；2026-09-29 三档化）。自动
+/// 派发匹配不到节点时，为了任务做下去由「一个客户端」推进。返回
+/// `(节点 id, 兜底说明)`；None = 不兜底（调用方走原停车路径）。
 ///
-/// 语义（用户裁决 2026-09-11）：
-/// - 开关关 / 无在线节点 → None（兜底造不出客户端，诚实停车）。
+/// 语义（用户裁决 2026-09-11 钉住规则 / 2026-09-29 三档默认 Role）：
+/// - `Off` / 无在线节点 → None（兜底造不出客户端，诚实停车）。
 /// - `dispatch_fallback_target` 钉住目标：按 name 或 id 精确匹配在线节点
 ///   （大小写不敏感）；**钉住的不在线 = None，不悄悄换人**（钉住即点名）。
-/// - 未钉住：两级松弛排序——①保留 worker/coordinator 角色要求、去 tags；
-///   ②角色也放开全量排序。rank_peers 同分按负载↑、id 字典序，确定性。
+/// - 未钉住：按档位走 D13 松弛阶梯——`Role` 档 ②保职能丢标签 → ③丢职能
+///   保角色标签（worker/coordinator 纪律保留）；`Full` 档阶梯全开 ②③④。
+///   rank_peers 同分按负载↑、id 字典序，确定性。
 #[cfg(feature = "cluster")]
 fn pick_fallback_target(
     board_cfg: Option<&nemesis_config::BoardFlagConfig>,
@@ -2448,10 +2449,13 @@ fn pick_fallback_target(
     cluster: &nemesis_cluster::cluster::Cluster,
     issue: &nemesis_board::Issue,
 ) -> Option<(String, &'static str)> {
+    use nemesis_config::DispatchFallbackMode;
     let cfg = board_cfg?;
-    if !cfg.dispatch_fallback {
-        return None;
-    }
+    let depth = match cfg.dispatch_fallback {
+        DispatchFallbackMode::Off => return None,
+        DispatchFallbackMode::Role => nemesis_board::RelaxDepth::Role,
+        DispatchFallbackMode::Full => nemesis_board::RelaxDepth::Full,
+    };
     let peers = cluster.get_online_peers_excluding_self();
     if peers.is_empty() {
         return None;
@@ -2486,7 +2490,7 @@ fn pick_fallback_target(
         required_profession: issue.required_profession.as_deref(),
         description: &issue.description,
     };
-    nemesis_board::pick_relaxed(&base, &candidates, &load)
+    nemesis_board::pick_relaxed(&base, &candidates, &load, depth)
 }
 
 /// E（goal P2/P5）：候选投影合并 master 授予标签（tags ∪ granted_tags）。
@@ -3546,6 +3550,7 @@ impl ModuleHandler for BoardHandler {
             "audit.retry_merge",
             "config.get",
             "config.set",
+            "dossier.export",
         ]
     }
 
@@ -4375,6 +4380,51 @@ impl ModuleHandler for BoardHandler {
                 let value = data.get("value").ok_or("missing field: value")?;
                 board_config_set(ctx, &key, value)
             }
+            // --- 任务档案导出（2026-09-29 goal：统一整合任务全部记录）---
+            "dossier.export" => {
+                let data = data.ok_or("missing data")?;
+                let store = require_board(ctx)?;
+                let workspace = require_workspace(ctx)?;
+                let out_root = std::path::Path::new(workspace)
+                    .join("logs")
+                    .join("dossiers");
+                // 用量闭包：DataStore 在（gateway 常态）→ per-task 聚合；
+                // 不在 → 全部 None（usage.csv 缺行诚实，README 总量按有账计）。
+                let ds = ctx.state.data_store.clone();
+                let usage_of = |task_id: &str| {
+                    let ds = ds.as_ref()?;
+                    ds.aggregate_session_usage_by_task(task_id).ok().map(|agg| {
+                        nemesis_board::dossier::DossierUsage {
+                            input_tokens: agg.input_tokens,
+                            output_tokens: agg.output_tokens,
+                        }
+                    })
+                };
+                let outcome = if let Ok(number) = get_str(&data, "number") {
+                    nemesis_board::dossier::export_issue_tree(
+                        &store,
+                        &number,
+                        std::path::Path::new(workspace),
+                        &out_root,
+                        &usage_of,
+                    )?
+                } else if let Some(pid) = data.get("project_id").and_then(|v| v.as_i64()) {
+                    nemesis_board::dossier::export_project(
+                        &store,
+                        pid,
+                        std::path::Path::new(workspace),
+                        &out_root,
+                        &usage_of,
+                    )?
+                } else {
+                    return Err("dossier.export 需要 number（NB-N）或 project_id 之一".into());
+                };
+                Ok(Some(serde_json::json!({
+                    "root": outcome.root.display().to_string(),
+                    "issues": outcome.issue_numbers,
+                    "notes": outcome.notes,
+                })))
+            }
             _ => Err(format!("unknown command: board.{}", cmd)),
         }
     }
@@ -4415,7 +4465,13 @@ fn board_config_set(
         // P34 重派决策量化（灰度默认关；true = D3 换节点重派叠加
         // worker × 任务类型成功率指纹三档权重）。
         "fingerprint_weighting" => board.fingerprint_weighting = need_bool(value)?,
-        "dispatch_fallback" => board.dispatch_fallback = need_bool(value)?,
+        // 2026-09-29 三档化：off/role/full（默认 role=丢职能保角色）；
+        // 旧布尔 false/true 兼容接收（→off/full），写盘统一为字符串档位。
+        "dispatch_fallback" => {
+            board.dispatch_fallback = serde_json::from_value(value.clone()).map_err(|e| {
+                format!("dispatch_fallback 需要 \"off\"|\"role\"|\"full\"（或旧布尔）: {e}")
+            })?;
+        }
         // D0（goal P2）派发准入：单 worker 在途派发上限（非负整数；0=不限）。
         "worker_max_inflight" => {
             board.worker_max_inflight = value
@@ -4439,6 +4495,8 @@ fn board_config_set(
         "review.selfcheck" => board.review.selfcheck = need_bool(value)?,
         "review.auto_close_project" => board.review.auto_close_project = need_bool(value)?,
         "plan.auto_confirm" => board.plan.auto_confirm = need_bool(value)?,
+        // 任务档案（2026-09-29）：项目收口自动导出（默认开）。
+        "dossier.auto_on_complete" => board.dossier.auto_on_complete = need_bool(value)?,
         "plan.model" => {
             board.plan.model = if value.is_null() {
                 None

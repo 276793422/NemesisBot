@@ -422,7 +422,7 @@ fn relaxed_ladder_rung2_keeps_profession_drops_tags() {
     // 严格匹配落空（windrv 标签与节点 rust 无交集；tags 硬条件是交集
     // 非空语义）→ ②保职能丢标签命中同一人。
     assert!(rank_peers(&base, &peers, &load(&[])).is_empty());
-    let (id, label) = pick_relaxed(&base, &peers, &load(&[])).expect("②级应命中");
+    let (id, label) = pick_relaxed(&base, &peers, &load(&[]), RelaxDepth::Role).expect("②级应命中");
     assert_eq!(id, "prof");
     assert_eq!(label, "保职能松弛标签兜底");
 }
@@ -445,7 +445,7 @@ fn relaxed_ladder_rung3_drops_profession_keeps_role_tags() {
         description: "",
     };
     // 严格（职能未宣告）与②（②也需要职能命中）都落空 → ③丢职能保角色/标签。
-    let (id, label) = pick_relaxed(&base, &peers, &load(&[])).expect("③级应命中");
+    let (id, label) = pick_relaxed(&base, &peers, &load(&[]), RelaxDepth::Role).expect("③级应命中");
     assert_eq!(id, "generic");
     assert_eq!(label, "松弛职能兜底（角色/标签保留）");
 }
@@ -460,7 +460,12 @@ fn relaxed_ladder_rung4_full_relaxation() {
         required_profession: Some("dev:cpp"),
         description: "",
     };
-    let (id, label) = pick_relaxed(&base, &peers, &load(&[])).expect("④级应命中");
+    // Role 档（2026-09-29 三档化）④不可达：只有④能救的局诚实返回 None。
+    assert!(
+        pick_relaxed(&base, &peers, &load(&[]), RelaxDepth::Role).is_none(),
+        "Role 档不得走到④全松弛（角色纪律保留）"
+    );
+    let (id, label) = pick_relaxed(&base, &peers, &load(&[]), RelaxDepth::Full).expect("④级应命中");
     assert_eq!(id, "anyone");
     assert_eq!(label, "无匹配节点，全松弛兜底（职能/角色/标签均放开）");
 }
@@ -476,7 +481,8 @@ fn relaxed_ladder_without_profession_preserves_old_behavior() {
         description: "",
     };
     // 无职能：②蜕化为旧「保角色丢标签」一级，③ 跳过。
-    let (id, label) = pick_relaxed(&base, &peers, &load(&[])).expect("旧①级应命中");
+    let (id, label) =
+        pick_relaxed(&base, &peers, &load(&[]), RelaxDepth::Role).expect("旧①级应命中");
     assert_eq!(id, "w");
     assert_eq!(label, "无标签匹配节点，保角色松弛兜底");
 }
@@ -499,7 +505,8 @@ fn relaxed_ladder_never_relaxes_profession_via_tier() {
         required_profession: Some("architecture"),
         description: "",
     };
-    let (id, label) = pick_relaxed(&base, &peers, &load(&[])).expect("松弛阶梯应命中");
+    let (id, label) =
+        pick_relaxed(&base, &peers, &load(&[]), RelaxDepth::Full).expect("松弛阶梯应命中");
     assert_eq!(id, "small");
     assert_ne!(
         label, "保职能松弛标签兜底",
@@ -515,5 +522,5 @@ fn relaxed_ladder_returns_none_when_nothing_matches() {
         required_profession: None,
         description: "",
     };
-    assert!(pick_relaxed(&base, &[], &load(&[])).is_none());
+    assert!(pick_relaxed(&base, &[], &load(&[]), RelaxDepth::Full).is_none());
 }
