@@ -1,0 +1,14 @@
+# translate 安装清单模板——用 devkit 打包工具自动生成（手工流程见 README）：
+#   cargo run -p pack            # 编译 + 算哈希 + 从本模板产出 dist/translate/
+# 模板规则：wasm-sha256 行由 pack 整行替换为真实哈希；根键必须位于任何
+# table 段之前（TOML 语义）。
+wasm-sha256 = "<sha256(plugin.wasm)>"
+api-version = 1
+slug = "translate"
+kind = "tool"
+name = "Translate"
+version = "0.1.0"
+description = "示例工具：echo 回显与宿主能力面自检（mode 切换行为——宿主调用/出站探测/燃料炸弹/trap/密钥探测/围栏读/内存炸弹/帧预算洪水）"
+
+[permissions]
+# 本示例的 egress_probe 行为演示的就是 deny-by-default 拒绝路径，无需声明出站

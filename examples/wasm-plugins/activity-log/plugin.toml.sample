@@ -1,0 +1,14 @@
+# activity-log 安装清单模板——用 devkit 打包工具自动生成（手工流程见 README）：
+#   cargo run -p pack            # 编译 + 算哈希 + 从本模板产出 dist/activity-log/
+# 模板规则：wasm-sha256 行由 pack 整行替换为真实哈希；根键必须位于任何
+# table 段之前（TOML 语义）。
+wasm-sha256 = "<sha256(plugin.wasm)>"
+api-version = 1
+slug = "activity-log"
+kind = "observer"
+name = "ActivityLog"
+version = "0.1.0"
+description = "观察者示例插件：把每条事件投影追加进数据目录 events.log（演示 log / data 目录两个合法能力通道）"
+
+[permissions]
+# 观察者只写宿主 per-plugin 数据目录（preopen，无需声明）：空 permissions = 默认零权限

@@ -91,7 +91,9 @@ security = ["dep:nemesis-security", "nemesis-security/security"]
 scanner = ["security", "nemesis-security/scanner"]
 sandbox = ["dep:nemesis-sandbox"]
 # WASM 插件管理面（plugins.wasm.* WSAPI；宿主运行时整槽注入）。
-plugins-wasm = ["dep:nemesis-plugins-wasm"]
+# dep:zip = wasm.devkit_download 的解包（与 skins 共享同一 crate 同一
+# feature 集；skins 关、plugins-wasm 开的构建也能解包）。
+plugins-wasm = ["dep:nemesis-plugins-wasm", "dep:zip"]
 terminal = ["dep:portable-pty"]
 # 皮肤包加载/签名验证/WSAPI 管理面（skins.rs + handlers/skins.rs + 路由
 # 挂载点）。zip 与 nemesis-verify 是本功能的实现依赖，随 skins 进出。

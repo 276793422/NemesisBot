@@ -195,11 +195,12 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
     // W5-3：插件安装审批晚绑槽（run_runtime 审批块 bind 真身）。
     #[cfg(feature = "plugins-wasm")]
     let plugin_gate = agent_wiring.plugin_gate.clone();
-    // 皮肤渠道下载的 SSRF 闸回填（P2）：init_web（skins WSAPI 装配）早于
-    // 本点，故走 handlers::skins 静态槽——Guard Clone 共享 inner，闸配置
-    // 热更新对下载路径同效。None（security 关/ssrf 层关）= 下载直通闸。
-    #[cfg(all(feature = "skins", feature = "security"))]
-    nemesis_web::handlers::skins::set_ssrf_guard(
+    // 渠道下载的 SSRF 闸回填（P2；skins 与 wasm-devkit 下载共用
+    // handlers::release_fetch 单一管线）：init_web 早于本点，故走静态槽——
+    // Guard Clone 共享 inner，闸配置热更新对下载路径同效。None（security
+    // 关/ssrf 层关）= 下载直通闸。cfg 覆盖两个消费方任一在场的构建。
+    #[cfg(all(feature = "security", any(feature = "skins", feature = "plugins-wasm")))]
+    nemesis_web::handlers::release_fetch::set_ssrf_guard(
         security_plugin
             .as_ref()
             .and_then(|p| p.ssrf_guard().cloned()),

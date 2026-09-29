@@ -22,6 +22,12 @@ static EMBEDDED_STATIC: Dir = include_dir!("$CARGO_MANIFEST_DIR/../crates/nemesi
 /// built-in skills, scripts, memory template, etc.
 static EMBEDDED_WORKSPACE: Dir = include_dir!("$CARGO_MANIFEST_DIR/workspace");
 
+/// 构建形态清单（system.features WSAPI 数据源）：build.rs 从
+/// scripts/customize/features.toml（feature 清单单一真相源）解析生成，
+/// `enabled` 按本构建的 CARGO_FEATURE_* env 判定 = 真实编译态。
+/// 清单缺失时 build.rs 落 `[]` 兜底。
+pub const FEATURES_MANIFEST_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/features.json"));
+
 // ---------------------------------------------------------------------------
 // In-memory static file serving
 // ---------------------------------------------------------------------------

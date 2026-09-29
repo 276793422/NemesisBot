@@ -1,0 +1,11 @@
+[package]
+name = "pack"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "NemesisBot WASM 插件开发包（devkit）一键打包工具：编译示例 → 算 SHA-256 → 填清单 → 产出可安装 staging 目录"
+
+[dependencies]
+sha2 = "0.10"
+
+[workspace]

@@ -106,6 +106,16 @@ fn main() {
     // Re-run build script if git HEAD changes
     println!("cargo:rerun-if-changed=.git/HEAD");
 
+    // ------------------------------------------------------------------
+    // 构建形态清单（system.features WSAPI 数据源）：解析
+    // scripts/customize/features.toml（feature 清单单一真相源，49 条），
+    // 逐条以 CARGO_FEATURE_<ID 大写下划线> env（cargo 为本包每个启用的
+    // feature 设置）判定**本构建的真实编译态**，写 OUT_DIR/features.json
+    // 供 embedded.rs include_str! 嵌入。清单缺失（罕见： customize 目录
+    // 被裁）= 空数组，不阻塞构建。
+    // ------------------------------------------------------------------
+    emit_features_manifest(&manifest_dir);
+
     // Embed icon on Windows
     if std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() == "windows" {
         let mut res = winresource::WindowsResource::new();
@@ -127,4 +137,104 @@ fn main() {
         };
         println!("cargo:rustc-link-arg-bins={stack_arg}");
     }
+}
+
+/// 解析 scripts/customize/features.toml 生成构建形态清单 JSON 到 OUT_DIR。
+///
+/// 输出形态：`[{"id","label","desc","category","default","enabled"},…]`
+///（build-profile 特殊条目跳过——它选 profile 不是 feature）。`enabled`
+/// 取 CARGO_FEATURE_* env（cargo 语义 = 本构建实际编译态，非 customize
+/// 默认值）。写入失败（OUT_DIR 不可写等）panic——构建期环境问题应显式炸
+/// 而非静默产出空清单。
+fn emit_features_manifest(manifest_dir: &str) {
+    use std::fmt::Write as _;
+
+    println!("cargo:rerun-if-changed=../scripts/customize/features.toml");
+    let toml_path = Path::new(manifest_dir).join("../scripts/customize/features.toml");
+    let Ok(raw) = std::fs::read_to_string(&toml_path) else {
+        // 清单缺失：嵌入空清单（system.features 返回空数组），不阻塞构建。
+        let out_dir = std::env::var("OUT_DIR").unwrap_or_default();
+        let _ = std::fs::write(Path::new(&out_dir).join("features.json"), "[]");
+        return;
+    };
+
+    #[derive(serde::Deserialize)]
+    struct FeatureEntry {
+        id: String,
+        #[serde(default)]
+        label: String,
+        #[serde(default)]
+        desc: String,
+        #[serde(default)]
+        category: String,
+        // build-profile 条目的 default 是字符串（"release"/"iotsmall"），
+        // feature 条目才是 bool——用 Option<toml::Value> 收敛，取值时 as_bool。
+        #[serde(default)]
+        default: Option<toml::Value>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Manifest {
+        #[serde(default)]
+        feature: Vec<FeatureEntry>,
+    }
+
+    let parsed: Manifest = match toml::from_str(&raw) {
+        Ok(m) => m,
+        Err(e) => panic!("features.toml 解析失败（{}）：{e}", toml_path.display()),
+    };
+
+    let mut items = Vec::with_capacity(parsed.feature.len());
+    for f in &parsed.feature {
+        // build-profile 条目（category="build"）选 cargo profile 不是
+        // feature，没有对应 CARGO_FEATURE_* env——跳过，不进形态清单。
+        if f.category == "build" {
+            continue;
+        }
+        // id → CARGO_FEATURE_ 大写下划线（channels-web → CARGO_FEATURE_CHANNELS_WEB）
+        let env_key = format!("CARGO_FEATURE_{}", f.id.replace('-', "_").to_uppercase());
+        let enabled = std::env::var(&env_key).is_ok();
+        let mut obj = String::new();
+        let _ = write!(
+            obj,
+            "{{\"id\":{},\"label\":{},\"desc\":{},\"category\":{},\"default\":{},\"enabled\":{}}}",
+            serde_json_string(&f.id),
+            serde_json_string(&f.label),
+            serde_json_string(&f.desc),
+            serde_json_string(&f.category),
+            f.default
+                .as_ref()
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            enabled,
+        );
+        items.push(obj);
+    }
+    let json = format!("[{}]", items.join(","));
+
+    let out_dir = std::env::var("OUT_DIR").unwrap_or_default();
+    std::fs::write(Path::new(&out_dir).join("features.json"), json)
+        .expect("写 OUT_DIR/features.json 失败");
+}
+
+/// 极简 JSON 字符串字面量转义（build.rs 不依赖 serde_json——控制字符在
+/// features.toml 文案里不出现，兜底按 \u 序列转义）。
+fn serde_json_string(s: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }

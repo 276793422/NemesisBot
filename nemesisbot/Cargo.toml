@@ -191,6 +191,11 @@ chrono = { workspace = true }
 winresource = "0.1"
 # 锚注入（build.rs 三级优先级第 2 级：certs/root_cert.der 现算 SHA-256）
 sha2 = { workspace = true }
+# features.toml 解析 → 编译期嵌入「构建形态」清单（system.features WSAPI；
+# 仅构建期消费，不进运行时依赖图）
+toml = { workspace = true }
+# emit_features_manifest 的 Deserialize derive
+serde = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

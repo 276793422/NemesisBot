@@ -174,6 +174,11 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
         web_server.set_signature_verify(status);
     }
 
+    // 构建形态清单注入（system.features WSAPI 数据源）：build.rs 从
+    // features.toml 解析 + CARGO_FEATURE_* env 判定真实编译态，编译期
+    // include_str! 嵌入——'static 字符串直接存静态槽，无需 AppState 字段。
+    nemesis_web::handlers::system::set_features_manifest(crate::embedded::FEATURES_MANIFEST_JSON);
+
     // P8（2026-09-21）：chat_event_log 装配 EventHub——record/record_tool 落
     // 环时同步广播 SSE `chat.activity {session_id, seq}`，让**其他**浏览器
     // 标签/端感知到本会话有新帧（本端走 WS 实时 push，天然领先；落后端

@@ -1,0 +1,6 @@
+# devkit 根 workspace：只收 pack 工具（examples/ 与 sdk/ 各自独立 workspace，
+# 有自己的 [workspace] 空表声明，不进这棵树）。用途 = 让「cargo run -p pack」
+# 从 devkit 根可用；各示例的编译仍由 pack 在其目录内独立驱动。
+[workspace]
+members = ["pack"]
+resolver = "2"
