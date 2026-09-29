@@ -141,6 +141,12 @@ async function doResume() {
 
 const activeProjects = computed(() => projects.value.filter((p) => p.status !== 'archived'))
 const archivedProjects = computed(() => projects.value.filter((p) => p.status === 'archived'))
+// F5 件①：AC 含 [CHECK] re: 锚点的实时黄条（与后端 parse_anchors 同构：
+// 行 trim 后 [CHECK] 前缀 + re: 形态）。
+const RE_ANCHOR_LINE = /^\s*\[CHECK\]\s*re:/
+const createFormAcHasRegexAnchor = computed(() =>
+  (createForm.value.acceptance_criteria || '').split('\n').some((l) => RE_ANCHOR_LINE.test(l)),
+)
 
 // P5/F3：冻结原因卡里的待补合并单数（project.list 全量序列化带上队列）。
 const frozenPendingCount = computed(() => resumeTarget.value?.pending_merges?.length ?? 0)
@@ -195,6 +201,8 @@ async function submitCreate() {
     const started = r?.auto_start?.issue_number
     const dirNote = r?.directory ? `\n档案目录：${r.directory}` : ''
     toast.success(started ? `已创建项目并自动启动父单 ${started}${dirNote}` : `已创建项目${dirNote}`)
+    // F5 件①：后端锚点警示（warning 字段）透传 toast。
+    if (r?.warning) toast.warn(r.warning)
     showCreate.value = false
     createForm.value = { name: '', description: '', icon: '', acceptance_criteria: '', auto_start: false, directory: '' }
     await load()
@@ -371,6 +379,11 @@ useBoardChanged(() => load(true))
           </div>
           <div class="form-group">
             <label class="form-label">验收标准（可选）</label>
+            <!-- F5 件①：项目层没有交付文本，AC 写 [CHECK] re: 锚点在项目
+                 收口时无法核验——填写时实时黄条提醒下放到任务单。 -->
+            <div v-if="createFormAcHasRegexAnchor" class="anchor-warn-bar">
+              ⚠ [CHECK] re: 锚点依赖交付文本核验，项目层没有交付文本——请把锚点要求写到具体任务单的验收标准里。
+            </div>
             <textarea class="form-textarea" v-model="createForm.acceptance_criteria" style="min-height: 60px;" placeholder="验收标准（一行一条；AI 拆解与完成判定会参考）"></textarea>
           </div>
           <div class="form-group">
@@ -465,6 +478,16 @@ useBoardChanged(() => load(true))
 .muted {
   color: var(--text-muted);
   font-size: var(--text-sm);
+}
+/* F5 件①：锚点下放警示黄条（创建表单 AC 实时提示；与 IssueDetailModal 同名同款） */
+.anchor-warn-bar {
+  background: var(--warning-bg, rgba(255, 193, 7, 0.12));
+  border: 1px solid var(--warning-border, rgba(255, 193, 7, 0.45));
+  border-radius: var(--radius-sm, 6px);
+  color: var(--warning-text, #8a6d00);
+  font-size: var(--text-sm);
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-2);
 }
 .panel-toolbar {
   display: flex;

@@ -644,9 +644,13 @@ pub fn dispatch_issue_core(
     // ——人工指派/兜底可能给 peer 名（"Alex"），不归一化则 task.started /
     // delivery.files 的 worker 校验永远失配。matcher 产出已是节点 id，此
     // 步幂等。
+    // F1（2026-09-30 派发目标校验前置）：解析失败 = 注册表无此节点，直接
+    // 拒绝——旧行为放行原名去 RPC 撞墙，API 层却返回 dispatched=true（行为
+    // 分裂，真机幽灵 target 实证）。归一化（含大小写回落）见
+    // Cluster::canonical_peer_id。
     let target = cluster
         .canonical_peer_id(target)
-        .unwrap_or_else(|| target.to_string());
+        .ok_or_else(|| format!("未知节点：{target}（不在集群注册表中，请核对节点名或 id）"))?;
 
     // P1 拓扑硬闸（模型无关）：远端目标 + file: 锚点 = 拒绝（软防线是
     // planner 提示词拓扑纪律；手动派发/重派/autopilot 都过这道闸）。
@@ -743,6 +747,12 @@ pub fn dispatch_issue_core(
     //    转移失败（人工同刻挪状态 / 竞态余波）→ 回滚本次 claim 的 dispatch
     //    行（置 failed）+ 取消 task——行生命周期与派发决策同生共死，不留
     //    幽灵 dispatched（R5-BUG-2 对称彻底）。
+    //    F2（2026-09-30）：派发前快照（状态+指派）随 RPC 闭包下行——送达
+    //    失败（任务从未开始）时把推进出的 in_progress 回退到派发前状态、
+    //    指派恢复派发前值（rollback_dispatch_failure 守卫竞态）。
+    let dispatch_prev_status = issue.status;
+    let dispatch_prev_assignee = issue.assignee;
+    let dispatch_prev_assignee_id = issue.assignee_id.clone();
     let issue = if issue.status != IssueStatus::InProgress {
         match store.transition_issue(issue.id, IssueStatus::InProgress, actor) {
             Ok(i) => i,
@@ -816,6 +826,9 @@ pub fn dispatch_issue_core(
     let store_for_rpc = store.clone();
     let task_id_for_rpc = task_id.clone();
     let target_for_rpc = target.to_string();
+    let prev_status_for_rpc = dispatch_prev_status;
+    let prev_assignee_for_rpc = dispatch_prev_assignee;
+    let prev_assignee_id_for_rpc = dispatch_prev_assignee_id.clone();
     tokio::spawn(async move {
         let timeout = std::time::Duration::from_secs(30);
         match rpc_client
@@ -831,10 +844,30 @@ pub fn dispatch_issue_core(
                     &task_id_for_rpc,
                     nemesis_board::models::dispatch_state::FAILED,
                 );
+                // F2（2026-09-30）：送达失败 = 任务从未开始 → 状态回退到
+                // 派发前值 + 指派恢复（守卫内部自含：人工同刻挪过状态就让
+                // 位）。失败仅留日志（⛔ 评论与审计已在下面/rollback 内落）。
+                match store_for_rpc.rollback_dispatch_failure(
+                    issue_id,
+                    prev_status_for_rpc,
+                    prev_assignee_for_rpc,
+                    prev_assignee_id_for_rpc,
+                    &nemesis_board::Actor::system("board"),
+                ) {
+                    Ok(true) => tracing::info!(
+                        "[Board] 送达失败回退完成（issue={issue_id} → {}）",
+                        prev_status_for_rpc
+                    ),
+                    Ok(false) => {}
+                    Err(re) => tracing::warn!("[Board] 送达失败回退未执行（让位或异常）：{re}"),
+                }
                 let _ = store_for_rpc.add_comment(nemesis_board::models::NewComment {
                     issue_id,
                     author: nemesis_board::Actor::system("board"),
-                    content: format!("⛔ 派发失败：RPC 送达失败（{e}）"),
+                    content: format!(
+                        "⛔ 派发失败：[{}] RPC 送达失败（{e}）",
+                        e.failure_category()
+                    ),
                     parent_id: None,
                     ctype: nemesis_board::CommentType::System,
                 });
@@ -1806,6 +1839,27 @@ pub fn confirm_plan(
 
     // 4) 父单联动（首派 → in_progress 已在 dispatch_subissue_auto 内处理）。
     let _ = sync_parent_status(store, parent.id, actor);
+
+    // 5) F5 件③：父单锚点下放防御性后置检查——提示词纪律（件②）LLM
+    //    不保证遵守：父单 AC 含 `[CHECK] re:` 锚点但没有任何子单继承 →
+    //    系统评论提醒人工补（不阻塞发车；评论就是持久记录，详情弹窗可见）。
+    if nemesis_board::has_content_regex_anchor(parent.acceptance_criteria.as_deref().unwrap_or(""))
+        && !subs
+            .iter()
+            .any(|s| nemesis_board::has_content_regex_anchor(&s.acceptance_criteria))
+    {
+        let _ = store.add_comment(nemesis_board::NewComment {
+            issue_id: parent.id,
+            author: nemesis_board::Actor::system("board"),
+            content: "⚠ 锚点下放检查：父单验收标准含 [CHECK] re: 锚点，但拆解出的子单均未继承任何 re: 锚点——父单收口时这些锚点没有交付文本可核验，验收将失败。请给至少一个子单补上可独立核验的锚点行，或修正父单验收标准。".to_string(),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::System,
+        });
+        tracing::warn!(
+            "[Board] 父单 {} AC 含 re: 锚点但子单均未继承（已落评论提醒人工）",
+            parent.id
+        );
+    }
 
     Ok(serde_json::json!({
         "created": id_by_idx,
@@ -3601,9 +3655,19 @@ impl ModuleHandler for BoardHandler {
             "issue.create" => {
                 let data = data.ok_or("missing data")?;
                 let issue = store.create_issue(build_new_issue(&data, actor)?)?;
-                Ok(Some(
-                    serde_json::json!({ "created": true, "issue": issue_to_view(&store, &issue)? }),
-                ))
+                let mut out =
+                    serde_json::json!({ "created": true, "issue": issue_to_view(&store, &issue)? });
+                // F5 件①：建单警示——验收标准含 `[CHECK] re:` 锚点时提醒
+                // 锚点下放纪律（叶子单直接执行不受影响；本单日后被 AI 拆解
+                // 成父单则父层无交付文本，锚点必须由子单继承才可核验）。
+                if nemesis_board::has_content_regex_anchor(
+                    issue.acceptance_criteria.as_deref().unwrap_or(""),
+                ) {
+                    out["warning"] = serde_json::json!(
+                        "验收标准含 [CHECK] re: 锚点：本单若后续被 AI 拆解为父单，父单层没有交付文本可核验该锚点（验收必败）——拆解时请确保至少一个子单继承该锚点。直接执行（不拆解）的单不受影响。"
+                    );
+                }
+                Ok(Some(out))
             }
             "issue.update" => {
                 let data = data.ok_or("missing data")?;
@@ -4056,6 +4120,16 @@ impl ModuleHandler for BoardHandler {
                     "project": project,
                     "directory": dir_path.to_string_lossy(),
                 });
+                // F5 件①：建项目警示——项目层永远没有交付文本（收口评审
+                // 的锚点核验对象是汇总摘要），AC 写 `[CHECK] re:` 锚点在
+                // 项目层不可自动核验；应下放到具体任务单。
+                if nemesis_board::has_content_regex_anchor(
+                    acceptance_criteria.as_deref().unwrap_or(""),
+                ) {
+                    out["warning"] = serde_json::json!(
+                        "项目验收标准含 [CHECK] re: 锚点：项目层没有交付文本可核验（项目收口时该锚点必然失败）——请把锚点要求写到具体任务单的验收标准里，而不是项目上。"
+                    );
+                }
                 if auto_start {
                     // F-U4-5：自动开工链终点是拆解发车（plan 链 A1 波），
                     // 急停中拒绝整段。项目照建已是事实——响应体照常返回，

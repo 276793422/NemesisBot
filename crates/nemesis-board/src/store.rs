@@ -605,6 +605,59 @@ impl BoardStore {
     /// reopen 时解除 hidden（hidden 只属于取消单清理语义，单子已复活就
     /// 必须重新可见）；追加系统审计评论（谁/何时/从何状态）。WSAPI
     /// `issue.reopen` 与 CLI `issue reopen` 共用本单一后端。
+    /// 派发送达失败回退（F2，2026-09-30）：任务从未开始（RPC 送达失败），
+    /// 把派发推进出的 in_progress 回退到派发前状态，并把派发回填的指派
+    /// 恢复为派发前的值——字段与事实重新对齐（⛔ 派发失败评论已由调用方
+    /// 落，本方法补状态/指派/审计三件）。
+    ///
+    /// 专用系统路径，不走 [`crate::state_machine`]：InProgress→Backlog/Todo
+    /// 的通用放行会稀释状态机语义（人工 issue.status 不应能把在跑任务拉
+    /// 回待办）；此处守卫「当前必须仍是 in_progress 且派发前不是」——
+    /// 人工同刻挪过状态就让位（返回 Ok(false) 不报错，竞态让位语义）。
+    pub fn rollback_dispatch_failure(
+        &self,
+        id: i64,
+        prev_status: IssueStatus,
+        prev_assignee: Option<AssignmentType>,
+        prev_assignee_id: Option<String>,
+        actor: &Actor,
+    ) -> Result<bool, String> {
+        let old = self.get_issue(id)?;
+        if old.status != IssueStatus::InProgress || prev_status == IssueStatus::InProgress {
+            return Ok(false);
+        }
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let now = Self::now();
+        tx.execute(
+            "UPDATE issue SET status = ?1, assignee_type = ?2, assignee_id = ?3, updated_at = ?4
+             WHERE id = ?5 AND status = 'in_progress'",
+            params![
+                prev_status.as_str(),
+                prev_assignee.map(|a| a.as_str()),
+                prev_assignee_id,
+                now,
+                id,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        insert_activity(
+            &tx,
+            id,
+            actor,
+            "dispatch_rolled_back",
+            Some(&format!(
+                "送达失败回退：in_progress → {}（指派恢复为 {}）",
+                prev_status,
+                prev_assignee_id.as_deref().unwrap_or("（无）"),
+            )),
+            now,
+        )?;
+        tx.commit().map_err(|e| e.to_string())?;
+        drop(conn); // 释放锁再 get_issue（防持锁重入死锁）
+        Ok(true)
+    }
+
     pub fn reopen_issue(&self, id: i64, actor: &Actor) -> Result<Issue, String> {
         let old = self.get_issue(id)?;
         if old.status != IssueStatus::Cancelled {

@@ -1033,9 +1033,26 @@ async fn review_issue(
     // ---- B2b 取证挂起（P4）：评审需要更多证据 → 向执行 worker 发一轮自检。
     // 挂起在经验落库之前（评审未定案不蒸馏）；锚点短路输出无 need_evidence
     // 槽位，天然不进本分支。二段评审 ctx.allow_selfcheck=false，只带一程。
+    // F6（2026-09-30）：AC 含 re: 交付文本锚点的单**按需强制**自检——re:
+    // 锚点核对的是 delivery 文本本体，可被「把标记字符串抄进交付」欺骗
+    // （真机 NB-13：语义二审识破但已烧 2 轮重派预算）。锚点已过 + 语义评审
+    // 阶段仍挂一轮取证（要求实际执行并回报证据）是对投机的结构性抑制；
+    // 无派发记录（无取证对象）不强制；全局 board.review.selfcheck 只管
+    // LLM 主动要证据的常规路径，强制臂绕过它。LLM 未要证据时合成固定请求。
+    let anchor_forced = !dispatches.is_empty()
+        && nemesis_board::has_content_regex_anchor(
+            issue.acceptance_criteria.as_deref().unwrap_or(""),
+        );
     if ctx.allow_selfcheck
-        && cfg.review.selfcheck
-        && let Some(request) = nemesis_board::selfcheck_request_text(&output)
+        && (cfg.review.selfcheck || anchor_forced)
+        && let Some(request) = nemesis_board::selfcheck_request_text(&output).or_else(|| {
+            anchor_forced.then(|| {
+                format!(
+                    "本单验收标准包含 {} 交付文本锚点（存在引用欺骗风险）：请实际执行相关验证并回报可核验证据（真实命令输出、产物文件内容片段），不得引用任务卡原文来满足锚点。",
+                    nemesis_board::ANCHOR_PREFIX
+                )
+            })
+        })
     {
         if deps.selfcheck.has_inflight(issue_id) {
             warn!("[BoardReview] issue {issue_id} 已有在途自检取证，跳过重复挂起，按现有结论处置");

@@ -81,6 +81,15 @@ pub struct RejectedAnchor {
     pub reason: String,
 }
 
+/// AC 是否含 `re:`（交付文本正则）锚点（2026-09-30 F6）：这类锚点核对的
+/// 是 worker delivery 文本本体，可被「把标记字符串抄进交付文本」欺骗
+/// （真机 NB-13 实证）；file: 类锚点核的是真实文件，不在本判定内。调用方
+/// （评审）据此按需启用自检取证。
+pub fn has_content_regex_anchor(acceptance_criteria: &str) -> bool {
+    let (anchors, _, _) = parse_anchors(acceptance_criteria);
+    anchors.iter().any(|a| a.kind == AnchorKind::ContentRegex)
+}
+
 /// 解析验收标准：`[CHECK]` 行 → 锚点，其余行（含无法解析的 `[CHECK]` 行）
 /// → 语义项回落。非法正则同样回落语义项（诚实降级，不拒绝整段验收标准）。
 /// 路径形态不安全的锚点行进入第三元组 `Vec<RejectedAnchor>`（同样回落语

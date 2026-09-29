@@ -265,6 +265,18 @@ function dismissPlan() {
   planError.value = ''
 }
 
+// F5 件①前端：AC 含 `[CHECK] re:` 锚点的黄条提示——本单日后被 AI 拆解
+// 成父单时，父层没有交付文本可核验该锚点（必须由子单继承）。行判定与后端
+// nemesis_board::parse_anchors 同构（行 trim 后 [CHECK] 前缀 + re: 形态）。
+const RE_ANCHOR_LINE = /^\s*\[CHECK\]\s*re:/
+const hasRegexAnchorLine = (ac: string | null | undefined) =>
+  !!(ac || '').split('\n').some((l) => RE_ANCHOR_LINE.test(l))
+const acHasRegexAnchor = computed(() => hasRegexAnchorLine(detail.value?.acceptance_criteria))
+// 拆解预览（确认发车前）的最后一道人眼闸：父单锚点没有被任何子单继承。
+const planAnchorGap = computed(
+  () => planState.value === 'ready' && acHasRegexAnchor.value && !planSubs.value.some((s) => hasRegexAnchorLine(s.acceptance_criteria)),
+)
+
 async function startPlan() {
   if (!detail.value || planBusy.value) return
   planBusy.value = true
@@ -690,6 +702,9 @@ async function downloadAttachment(a: AttachmentRow) {
             </div>
           </div>
           <template v-else>
+            <div v-if="planAnchorGap" class="anchor-warn-bar">
+              ⚠ 锚点下放检查：本单验收标准含 [CHECK] re: 锚点，但下方子单均未继承——确认发车后父单收口时该锚点将无法核验。
+            </div>
             <div class="plan-tree">
               <div v-for="(s, i) in planSubs" :key="i" class="plan-node">
                 <div class="plan-node-head">
@@ -721,6 +736,9 @@ async function downloadAttachment(a: AttachmentRow) {
         </div>
         <div class="form-group" v-if="detail.acceptance_criteria">
           <label class="form-label">验收标准</label>
+          <div v-if="acHasRegexAnchor" class="anchor-warn-bar">
+            ⚠ 含 [CHECK] re: 锚点：本单若后续被 AI 拆解为父单，父层没有交付文本可核验该锚点——拆解时请确保至少一个子单继承它。
+          </div>
           <pre class="detail-pre">{{ detail.acceptance_criteria }}</pre>
         </div>
 
@@ -891,6 +909,16 @@ async function downloadAttachment(a: AttachmentRow) {
   color: var(--danger, #d33);
   font-size: var(--text-sm);
   margin: 0 0 var(--space-2);
+}
+/* F5 件①：锚点下放警示黄条（验收标准块 + 拆解预览共用） */
+.anchor-warn-bar {
+  background: var(--warning-bg, rgba(255, 193, 7, 0.12));
+  border: 1px solid var(--warning-border, rgba(255, 193, 7, 0.45));
+  border-radius: var(--radius-sm, 6px);
+  color: var(--warning-text, #8a6d00);
+  font-size: var(--text-sm);
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-2);
 }
 .plan-tree {
   display: flex;

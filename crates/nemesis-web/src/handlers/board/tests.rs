@@ -149,6 +149,186 @@ async fn test_issue_create_list_get_flow() {
 }
 
 #[tokio::test]
+async fn test_issue_create_anchor_warning_field() {
+    // F5 件①：建单 AC 含 `[CHECK] re:` 锚点 → 响应带 warning（锚点下放
+    // 纪律提醒）；file: 锚点/无锚点 → 无 warning（父单层 file: 可实核）。
+    let dir = unique_dir("create-anchor-warn");
+    let ctx = make_ctx_with_board(&dir);
+
+    let out = dispatch(
+        &ctx,
+        "issue.create",
+        serde_json::json!({
+            "title": "含锚点单",
+            "acceptance_criteria": "功能可用\n[CHECK] re:交付完成",
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        out["warning"].as_str().unwrap().contains("re: 锚点"),
+        "含 re: 锚点建单必须带 warning: {out}"
+    );
+
+    let out = dispatch(
+        &ctx,
+        "issue.create",
+        serde_json::json!({
+            "title": "file 锚点单",
+            "acceptance_criteria": "[CHECK] file:docs/a.md exists",
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        out.get("warning").is_none(),
+        "file: 锚点不在警示范围: {out}"
+    );
+
+    let out = dispatch(
+        &ctx,
+        "issue.create",
+        serde_json::json!({ "title": "无锚点单" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        out.get("warning").is_none(),
+        "无锚点建单不带 warning: {out}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn test_project_create_anchor_warning_field() {
+    // F5 件①：项目 AC 含 re: 锚点 → 响应带 warning（项目层无交付文本，
+    // 锚点在项目收口评审时必然失败）；无锚点 → 无 warning。
+    let dir = unique_dir("project-anchor-warn");
+    let ctx = make_ctx_with_board(&dir);
+
+    let out = dispatch(
+        &ctx,
+        "project.create",
+        serde_json::json!({
+            "name": "锚点项目",
+            "acceptance_criteria": "整体可用\n[CHECK] re:全部交付",
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        out["warning"].as_str().unwrap().contains("项目"),
+        "含 re: 锚点建项目必须带 warning: {out}"
+    );
+
+    let out = dispatch(
+        &ctx,
+        "project.create",
+        serde_json::json!({ "name": "干净项目" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        out.get("warning").is_none(),
+        "无锚点项目不带 warning: {out}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn test_confirm_plan_anchor_downgrade_check_three_states() {
+    // F5 件③：父单 AC 含 re: 锚点但子单均未继承 → 父单系统评论提醒人工
+    //（不阻塞发车）；子单已继承 / 父单无锚点 → 不评论。三态钉死。
+    let dir = unique_dir("confirm-anchor-check");
+    let ctx = make_ctx_with_board(&dir);
+    let store = ctx.state.board.as_ref().unwrap().store().clone();
+    let actor = nemesis_board::Actor::system("board");
+    let mk_parent = |title: &str, ac: &str| {
+        store
+            .create_issue(nemesis_board::NewIssue {
+                title: title.to_string(),
+                acceptance_criteria: (!ac.is_empty()).then(|| ac.to_string()),
+                creator: actor.clone(),
+                ..nemesis_board::NewIssue::default()
+            })
+            .unwrap()
+    };
+    let sub = |title: &str, ac: &str| nemesis_board::PlannedSubIssue {
+        title: title.to_string(),
+        acceptance_criteria: ac.to_string(),
+        ..nemesis_board::PlannedSubIssue::default()
+    };
+    let has_check_comment = |id: i64| -> bool {
+        store
+            .list_comments(id)
+            .unwrap()
+            .iter()
+            .any(|c| c.content.contains("锚点下放检查"))
+    };
+
+    // ① 继承：父含 re: 锚点 + 一个子单继承 → 不提醒。
+    let p1 = mk_parent("父甲", "整体可用\n[CHECK] re:全部交付");
+    confirm_plan(
+        &store,
+        None, // 集群未装配 → 子单派发诚实降级（不撞本断言关注点）
+        &p1,
+        vec![
+            sub("子甲1", "普通标准"),
+            sub("子甲2", "[CHECK] re:子项交付"),
+        ],
+        &actor,
+        &[],
+    )
+    .unwrap();
+    assert!(!has_check_comment(p1.id), "子单已继承不应提醒: {p1:?}");
+
+    // ② 未继承：父含 re: 锚点 + 子单全无 re: → 评论提醒且不阻塞发车
+    //（file: 锚点不算继承——核验对象不同）。
+    let p2 = mk_parent("父乙", "整体可用\n[CHECK] re:全部交付");
+    let out = confirm_plan(
+        &store,
+        None,
+        &p2,
+        vec![
+            sub("子乙1", "普通标准"),
+            sub("子乙2", "[CHECK] file:docs/x.md exists"),
+        ],
+        &actor,
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        out["created"].as_array().unwrap().len(),
+        2,
+        "锚点检查绝不阻塞发车: {out}"
+    );
+    assert!(has_check_comment(p2.id), "子单未继承必须落提醒评论");
+
+    // ③ 无锚点：父单 AC 无 re: 锚点 → 不评论。
+    let p3 = mk_parent("父丙", "普通验收标准");
+    confirm_plan(
+        &store,
+        None,
+        &p3,
+        vec![sub("子丙1", "普通标准")],
+        &actor,
+        &[],
+    )
+    .unwrap();
+    assert!(!has_check_comment(p3.id), "父单无锚点不应提醒");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn test_issue_status_transition_and_illegal() {
     let dir = unique_dir("status");
     let ctx = make_ctx_with_board(&dir);
@@ -4593,6 +4773,41 @@ async fn test_dispatch_issue_core_rejects_frozen_project() {
 // 派发即指派回填（2026-09-17）：dispatch_issue_core 单一入口回填 assignee
 // ---------------------------------------------------------------------------
 
+// F1（2026-09-30 派发目标校验前置）：幽灵 target 在 API 层直接拒绝——
+// 旧行为照单全收（dispatched=true）去 RPC 撞墙（真机行为分裂实证）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn test_dispatch_rejects_unknown_target_upfront() {
+    let dir = unique_dir("dispatch-ghost-target");
+    let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
+    let cluster = Arc::new(nemesis_cluster::cluster::Cluster::new(
+        nemesis_cluster::types::ClusterConfig::default(),
+    ));
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "幽灵目标单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let err = super::dispatch_issue_core(
+        &store,
+        Some(&cluster),
+        issue.id,
+        "Ghost-Node-XYZ",
+        &Actor::admin("t"),
+        None,
+    )
+    .unwrap_err();
+    assert!(err.contains("未知节点"), "{err}");
+    let after = store.get_issue(issue.id).unwrap();
+    assert_eq!(after.status, IssueStatus::Backlog, "不得被推进 in_progress");
+    assert_eq!(after.assignee, None, "不得回填指派");
+    assert!(
+        store.list_dispatches(issue.id).unwrap().is_empty(),
+        "不得留下派发行"
+    );
+}
+
 /// 派发回填 assignee=worker/目标节点；换目标重派时同点位改指。用纯内存
 /// `Cluster::new`（无 RPC client）——派发在 rpc_client_arc 诚实返回 Err，
 /// 但此刻 claim/状态转移/指派回填均已落库，正好钉住回填位置：状态转移
@@ -4605,6 +4820,43 @@ async fn test_dispatch_backfills_assignee() {
     let cluster = Arc::new(nemesis_cluster::cluster::Cluster::new(
         nemesis_cluster::types::ClusterConfig::default(),
     ));
+    // F1 派发目标校验前置（2026-09-30）：未知 target 在归一化处即被拒绝，
+    // 本测试意图是回填点位（状态转移后、RPC 前）——target 必须是注册表
+    // 已知节点才能走到 RPC client 缺失臂。
+    cluster.register_node(nemesis_cluster::types::ExtendedNodeInfo {
+        base: nemesis_cluster::types::NodeInfo {
+            id: "node-b".into(),
+            name: "Node-B".into(),
+            role: nemesis_cluster::types::NodeRole::Worker,
+            address: "10.0.0.2:9000".into(),
+            category: "development".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status: nemesis_cluster::types::NodeStatus::Online,
+        capabilities: vec![],
+        tags: vec![],
+        addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
+        node_type: "agent".into(),
+    });
+    cluster.register_node(nemesis_cluster::types::ExtendedNodeInfo {
+        base: nemesis_cluster::types::NodeInfo {
+            id: "node-c".into(),
+            name: "Node-C".into(),
+            role: nemesis_cluster::types::NodeRole::Worker,
+            address: "10.0.0.3:9000".into(),
+            category: "development".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status: nemesis_cluster::types::NodeStatus::Online,
+        capabilities: vec![],
+        tags: vec![],
+        addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
+        node_type: "agent".into(),
+    });
 
     // 未指派 → 派发给 node-b：走到 RPC client 缺失诚实失败，回填已发生。
     let issue = store
@@ -5986,6 +6238,43 @@ async fn agt_dispatch_gates_matrix() {
     let cluster = Arc::new(nemesis_cluster::cluster::Cluster::new(
         nemesis_cluster::types::ClusterConfig::default(),
     ));
+    // F1 派发目标校验前置（2026-09-30）：本矩阵测状态/重复/冻结等闸，
+    // target 须是注册表已知节点才能走到 RPC client 缺失臂。
+    cluster.register_node(nemesis_cluster::types::ExtendedNodeInfo {
+        base: nemesis_cluster::types::NodeInfo {
+            id: "node-b".into(),
+            name: "Node-B".into(),
+            role: nemesis_cluster::types::NodeRole::Worker,
+            address: "10.0.0.2:9000".into(),
+            category: "development".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status: nemesis_cluster::types::NodeStatus::Online,
+        capabilities: vec![],
+        tags: vec![],
+        addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
+        node_type: "agent".into(),
+    });
+    // 拓扑硬闸臂的 far-node-9 同理须是已知节点（F1 归一化拒绝先于拓扑闸）。
+    cluster.register_node(nemesis_cluster::types::ExtendedNodeInfo {
+        base: nemesis_cluster::types::NodeInfo {
+            id: "far-node-9".into(),
+            name: "Far-Node-9".into(),
+            role: nemesis_cluster::types::NodeRole::Worker,
+            address: "10.0.0.9:9000".into(),
+            category: "development".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status: nemesis_cluster::types::NodeStatus::Online,
+        capabilities: vec![],
+        tags: vec![],
+        addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
+        node_type: "agent".into(),
+    });
     let ctx = agt_make_ctx_ex(
         &dir,
         nemesis_board::BoardService::new(store.clone(), NodeRole::Coordinator),
@@ -6614,6 +6903,25 @@ async fn agt_push_dispatch_baseline_paths() {
     //    缺失（基线不是派发终点，也不吞后续错误）；途中 claim + 状态推进
     //    已落定。
     let cluster = offline_cluster(&dir, "node-a");
+    // F1 派发目标校验前置：node-b 须在注册表（否则归一化处被拒，走不到
+    // RPC client 缺失臂）。
+    cluster.register_node(nemesis_cluster::types::ExtendedNodeInfo {
+        base: nemesis_cluster::types::NodeInfo {
+            id: "node-b".into(),
+            name: "Node-B".into(),
+            role: nemesis_cluster::types::NodeRole::Worker,
+            address: "10.0.0.2:9000".into(),
+            category: "development".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status: nemesis_cluster::types::NodeStatus::Online,
+        capabilities: vec![],
+        tags: vec![],
+        addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
+        node_type: "agent".into(),
+    });
     mode.store(0, std::sync::atomic::Ordering::SeqCst);
     let err =
         super::dispatch_issue_core(&store, Some(&cluster), with_proj.id, "node-b", &actor, None)
@@ -7060,6 +7368,36 @@ async fn w5_issue_dispatch_success_via_handler() {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     assert!(saw_fail, "RPC spawn 体失败终结应落 ⛔ 评论");
+    // F3 失败分类：不可达对端 → 评论带 [节点不可达] 标签。
+    let fail_comment = store
+        .list_comments(issue.id)
+        .unwrap()
+        .into_iter()
+        .find(|c| c.content.contains("⛔ 派发失败"))
+        .map(|c| c.content)
+        .unwrap_or_default();
+    assert!(
+        fail_comment.contains("[节点不可达]"),
+        "失败评论必须带分类标签：{fail_comment}"
+    );
+    // F2（2026-09-30）：送达失败 = 任务从未开始 → 状态回退派发前值 +
+    // 指派恢复 + dispatch_rolled_back 审计（rollback 在 ⛔ 评论之前执行，
+    // 评论已现即回退已落定，无需再轮询）。
+    let rolled = store.get_issue(issue.id).unwrap();
+    assert_eq!(
+        rolled.status,
+        IssueStatus::Backlog,
+        "送达失败应回退到派发前状态"
+    );
+    assert_eq!(rolled.assignee_id, None, "指派应恢复派发前值（无指派）");
+    assert!(
+        store
+            .list_activity(issue.id)
+            .unwrap()
+            .iter()
+            .any(|a| a.action == "dispatch_rolled_back"),
+        "回退必须落 dispatch_rolled_back 审计"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

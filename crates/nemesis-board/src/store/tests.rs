@@ -387,6 +387,107 @@ fn test_reopen_missing_issue_errors() {
     cleanup(&dir);
 }
 
+// F2（2026-09-30）：派发送达失败状态回退（rollback_dispatch_failure）。
+#[test]
+fn test_rollback_dispatch_failure_restores_prev_state() {
+    let (store, dir) = temp_store("rollback-dispatch");
+    let a = store.create_issue(new_issue("送达失败回退")).unwrap();
+    // 模拟派发推进：Backlog → InProgress + 指派回填。
+    store
+        .transition_issue(a.id, IssueStatus::InProgress, &admin())
+        .unwrap();
+    store
+        .assign_issue(
+            a.id,
+            Some(AssignmentType::Worker),
+            Some("node-x".into()),
+            &admin(),
+        )
+        .unwrap();
+
+    // 正常回退：当前 InProgress 且派发前是 Backlog → 状态/指派恢复 + 审计。
+    let rolled = store
+        .rollback_dispatch_failure(a.id, IssueStatus::Backlog, None, None, &admin())
+        .unwrap();
+    assert!(rolled, "守卫应放行正常回退");
+    let after = store.get_issue(a.id).unwrap();
+    assert_eq!(after.status, IssueStatus::Backlog);
+    assert_eq!(after.assignee, None);
+    assert_eq!(after.assignee_id, None);
+    let act = store.list_activity(a.id).unwrap();
+    let rb = act
+        .iter()
+        .find(|x| x.action == "dispatch_rolled_back")
+        .expect("回退审计缺失");
+    assert!(rb.details.as_deref().unwrap_or("").contains("in_progress"));
+
+    // 指派恢复带值：prev 指派非空时原样恢复。
+    store
+        .transition_issue(a.id, IssueStatus::InProgress, &admin())
+        .unwrap();
+    let rolled2 = store
+        .rollback_dispatch_failure(
+            a.id,
+            IssueStatus::Todo,
+            Some(AssignmentType::Worker),
+            Some("node-old".into()),
+            &admin(),
+        )
+        .unwrap();
+    assert!(rolled2);
+    let after2 = store.get_issue(a.id).unwrap();
+    assert_eq!(after2.status, IssueStatus::Todo);
+    assert_eq!(after2.assignee_id.as_deref(), Some("node-old"));
+    cleanup(&dir);
+}
+
+#[test]
+fn test_rollback_dispatch_failure_guard_yields() {
+    let (store, dir) = temp_store("rollback-guard");
+    let a = store.create_issue(new_issue("回退守卫")).unwrap();
+
+    // 守卫①：当前不是 in_progress（从未推进/已被人工挪走）→ 让位。
+    let r1 = store
+        .rollback_dispatch_failure(a.id, IssueStatus::Backlog, None, None, &admin())
+        .unwrap();
+    assert!(!r1, "非 in_progress 不得回退");
+    assert_eq!(store.get_issue(a.id).unwrap().status, IssueStatus::Backlog);
+
+    // 守卫②：派发前已是 in_progress（重派/二次派发场景）→ 不回退。
+    store
+        .transition_issue(a.id, IssueStatus::InProgress, &admin())
+        .unwrap();
+    let r2 = store
+        .rollback_dispatch_failure(a.id, IssueStatus::InProgress, None, None, &admin())
+        .unwrap();
+    assert!(!r2, "派发前即 in_progress 不得回退");
+    assert_eq!(
+        store.get_issue(a.id).unwrap().status,
+        IssueStatus::InProgress
+    );
+
+    // 守卫③（让位竞态）：回退与人工转移竞速——人工先取消后，守卫看到
+    // 非 in_progress → Ok(false)，人工取消不被覆盖（回退绝不复活取消单）。
+    store
+        .transition_issue(a.id, IssueStatus::Cancelled, &admin())
+        .unwrap();
+    let r3 = store
+        .rollback_dispatch_failure(a.id, IssueStatus::Backlog, None, None, &admin())
+        .unwrap();
+    assert!(!r3);
+    assert_eq!(
+        store.get_issue(a.id).unwrap().status,
+        IssueStatus::Cancelled
+    );
+
+    // 不存在的单：诚实报错（与 reopen 同形态）。
+    let err = store
+        .rollback_dispatch_failure(999_999, IssueStatus::Backlog, None, None, &admin())
+        .unwrap_err();
+    assert!(err.contains("not found"), "{err}");
+    cleanup(&dir);
+}
+
 // ---------------------------------------------------------------------------
 // 指派
 // ---------------------------------------------------------------------------

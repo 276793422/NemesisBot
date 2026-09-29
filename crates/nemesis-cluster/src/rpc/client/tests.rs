@@ -6,6 +6,34 @@ fn test_default_timeout() {
     assert_eq!(client.timeout(), Duration::from_secs(3600));
 }
 
+/// F3 失败分类（2026-09-30）：连接/网络面 → 节点不可达；对端拒绝/协议
+/// 失配 → 节点配置异常（看板 ⛔ 评论的可读标签，口径单一真相源）。
+#[test]
+fn test_failure_category_labels() {
+    use RpcClientError as E;
+    assert_eq!(
+        E::Connection("refused".into()).failure_category(),
+        "节点不可达"
+    );
+    assert_eq!(E::Timeout.failure_category(), "节点不可达");
+    assert_eq!(
+        E::Io(std::io::Error::other("reset")).failure_category(),
+        "节点不可达"
+    );
+    assert_eq!(
+        E::RateLimited("burst".into()).failure_category(),
+        "节点不可达"
+    );
+    assert_eq!(
+        E::RemoteError("peer not found".into()).failure_category(),
+        "节点配置异常"
+    );
+    assert_eq!(
+        E::Serialization("bad json".into()).failure_category(),
+        "节点配置异常"
+    );
+}
+
 #[test]
 fn test_custom_timeout() {
     let client = RpcClient::with_timeout(Duration::from_secs(120));

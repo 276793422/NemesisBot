@@ -42,6 +42,24 @@ pub enum RpcClientError {
     Io(#[from] std::io::Error),
 }
 
+impl RpcClientError {
+    /// 派发失败分类（2026-09-30 F3，看板 ⛔ 评论可读性）：连接/网络面失败
+    /// →「节点不可达」（对端下线/网络断/超时/过载，重试有意义）；对端明确
+    /// 拒绝或协议失配 →「节点配置异常」（鉴权失败/版本不兼容，重试无意义，
+    /// 要查配置）。序列化失败是我方请求构造问题，也归配置异常（协议不匹配
+    /// 表现一致）。放类型所有者处 = 分类口径单一真相源。
+    pub fn failure_category(&self) -> &'static str {
+        match self {
+            RpcClientError::Connection(_)
+            | RpcClientError::Io(_)
+            | RpcClientError::Timeout
+            | RpcClientError::RateLimited(_)
+            | RpcClientError::Cancelled => "节点不可达",
+            RpcClientError::RemoteError(_) | RpcClientError::Serialization(_) => "节点配置异常",
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Rate limiter (mirrors Go's RateLimiter)
 // ---------------------------------------------------------------------------
