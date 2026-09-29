@@ -153,11 +153,15 @@ impl SkinsHandler {
                 let reason = entry.status_detail.unwrap_or_else(|| "未知原因".into());
                 return Err(format!("皮肤包损坏，无法启用（{reason}）"));
             }
-            // v2 双载荷闸：entry（CSS 换色）∥ structure（结构骨架）任一
-            // 在场即可激活；双无 = 无任何可服务载荷，拒绝。
-            if entry.manifest.entry.is_none() && entry.manifest.structure.is_none() {
+            // v2 双载荷闸 → P2a 三载荷闸：entry（CSS 换色）∥ structure
+            //（结构骨架）∥ script（行为扩展）任一在场即可激活；全无 =
+            // 无任何可服务载荷，拒绝。
+            if entry.manifest.entry.is_none()
+                && entry.manifest.structure.is_none()
+                && entry.manifest.script.is_none()
+            {
                 return Err(
-                    "该皮肤包无任何载荷（skin/ CSS 或 structure 结构），无法设为默认观感"
+                    "该皮肤包无任何载荷（skin/ CSS、structure 结构或 script 脚本），无法设为默认观感"
                         .to_string(),
                 );
             }
@@ -217,6 +221,82 @@ impl SkinsHandler {
         let bytes = fetch_skin_bytes(url).await?;
         let outcome = install_bytes(&dir, &bytes, overwrite)?;
         Ok(Some(serde_json::to_value(outcome).unwrap_or(json!({}))))
+    }
+
+    /// `skins.script_consent`（P2a）：脚本同意卡动作的审计漏斗。
+    /// `{id, decision}`（decision = "allow" | "deny"）。逐包现扫取 sha256
+    /// 与签名徽标，JSONL 追加 `<workspace>/logs/skin_scripts.log` +
+    /// tracing。**记账不改变任何运行时状态**——脚本执行授权在前端
+    ///（同意缓存 + `allow_scripts` 开关闸），这里只留防篡改痕迹
+    ///（谁在何时允许了哪个包执行脚本）。
+    fn script_consent(
+        &self,
+        data: Option<Value>,
+        ctx: &RequestContext,
+    ) -> Result<Option<Value>, String> {
+        let h = take_handle()?;
+        let dir = h
+            .dir
+            .as_deref()
+            .ok_or_else(|| "皮肤系统未装配".to_string())?;
+        let obj = data.as_ref().ok_or_else(|| "缺少 data".to_string())?;
+        let id = obj
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| "缺少 id".to_string())?;
+        let decision = obj
+            .get("decision")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
+        if decision != "allow" && decision != "deny" {
+            return Err("decision 必须是 \"allow\" 或 \"deny\"".to_string());
+        }
+        // 逐包现扫：sha256（整包摘要 = 同意对象的内容戳）+ 签名徽标如实
+        // 入账（allow 一个 🚫 包也会在审计里留下完整现场）。
+        let entry = scan_skins(dir)
+            .into_iter()
+            .find(|e| e.id == id)
+            .ok_or_else(|| format!("皮肤不存在：{id}"))?;
+        let workspace = ctx
+            .workspace
+            .clone()
+            .ok_or_else(|| "workspace not configured".to_string())?;
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let line = json!({
+            "ts": ts,
+            "id": id,
+            "sha256": entry.sha256,
+            "decision": decision,
+            "signature": entry.signature,
+            "has_script": entry.has_script,
+        });
+        let logs_dir = std::path::Path::new(&workspace).join("logs");
+        std::fs::create_dir_all(&logs_dir).map_err(|e| format!("创建日志目录失败: {e}"))?;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(logs_dir.join("skin_scripts.log"))
+            .map_err(|e| format!("打开脚本同意审计日志失败: {e}"))?;
+        use std::io::Write as _;
+        writeln!(f, "{line}").map_err(|e| format!("写入审计日志失败: {e}"))?;
+        tracing::info!(
+            target: "security",
+            skin = %id,
+            %decision,
+            sha256 = %entry.sha256,
+            signature = ?entry.signature,
+            "skin script consent"
+        );
+        Ok(Some(
+            json!({ "logged": true, "id": id, "decision": decision }),
+        ))
     }
 }
 
@@ -504,7 +584,14 @@ impl ModuleHandler for SkinsHandler {
     }
 
     fn commands(&self) -> &'static [&'static str] {
-        &["list", "detail", "reload", "set_active", "install"]
+        &[
+            "list",
+            "detail",
+            "reload",
+            "set_active",
+            "install",
+            "script_consent",
+        ]
     }
 
     async fn handle_cmd(
@@ -518,6 +605,7 @@ impl ModuleHandler for SkinsHandler {
             "detail" => self.detail(data),
             "set_active" => self.set_active(data, ctx),
             "install" => self.install(data).await,
+            "script_consent" => self.script_consent(data, ctx),
             _ => Err(format!("unknown command: skins.{cmd}")),
         }
     }

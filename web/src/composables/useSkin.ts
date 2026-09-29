@@ -1,5 +1,5 @@
 /**
- * 皮肤装载（.nbskin → CSS 端点 + structure 端点 → 注入）。
+ * 皮肤装载（.nbskin → CSS 端点 + structure 端点 + script 端点 → 注入）。
  *
  * 冷启动同步注入在 index.html 内联脚本（防 FOUC）：localStorage 缓存的
  * CSS 先行 + 结构缓存回放为 inert `<template data-nb-structure-cache>`
@@ -10,7 +10,20 @@
  *   - 结构：同 id 的 `/skins/active/structure`（或 `/skins/<id>/structure`）
  *     → 清洗 → 与已挂内容比对 → 变化才原子重建（structRev++）；404 /
  *     版本不符 / 清洗掏空 → 摘结构回落原生布局（CSS 照常 = 纯换色包）；
+ *   - 脚本（P2a）：同 id 的 `/skins/active/script`（或 `/skins/<id>/script`）
+ *     → 404/403 静默（无脚本 / 闸关 = 纯 CSS 模式）→ 200 查同意缓存
+ *     （`nemesisbot_skin_script_ok`，按整包 sha256 前 16 位盖章 = 包一
+ *     更新即需重新同意）→ 已同意注入执行 / 未同意挂 `scriptPending`
+ *     （CSS 先生效不阻塞，等设置页同意卡裁决）；
  *   - 全部失败 → 摘属性清缓存，回落内置观感。
+ *
+ * **预览模式（`?skin=<id>`）永不注入脚本**——预览只看观感；脚本只在
+ * 真实激活（`?skin=` 缺省的 active 路径）后注入。
+ *
+ * **刷新边界（裁定 2）**：live 注入的 JS 状态不可被 CSS 热切干净卸载——
+ * `scriptLiveId` 非空时任何出口（切向任何目的地 / 运行中关开关）由调用方
+ * `location.reload()`（`skinScriptNeedsReload()` 判据）；从无脚本状态进入
+ * 脚本皮肤 = 渐进注入免刷新。
  *
  * `?skin=<id>` 查询参数 = 临时预览覆盖；`?skin=default` 强制回落内置
  * （CSS 与结构缓存一并清）。`applySkinRefresh()` = 运行中重应用（设置页
@@ -40,14 +53,25 @@ export interface SkinMeta {
 }
 
 const STRUCTURE_CACHE_KEY = 'nemesisbot_skin_structure'
+/** 脚本同意缓存：`{ [skinId]: <整包 sha256 前 16 位> }`——按包内容重确认
+ * （包一更新即失配 → 重新走同意卡）。 */
+const SCRIPT_OK_KEY = 'nemesisbot_skin_script_ok'
 
 /** 皮肤装载响应式状态（模块级单例；applySkin* 系列读写）。
- * slots = 当前包提供的槽位名；structRev 递增驱动 SkinSlot 原子重建。 */
-export const skinState = reactive<{ id: string; meta: SkinMeta | null; slots: string[]; structRev: number }>({
+ * slots = 当前包提供的槽位名；structRev 递增驱动 SkinSlot 原子重建；
+ * scriptPending = 待同意脚本的皮肤 id（'' = 无；设置页同意卡 watch 用）。 */
+export const skinState = reactive<{
+  id: string
+  meta: SkinMeta | null
+  slots: string[]
+  structRev: number
+  scriptPending: string
+}>({
   id: '',
   meta: null,
   slots: [],
   structRev: 0,
+  scriptPending: '',
 })
 
 // ---- 结构引擎单例 ----
@@ -119,6 +143,113 @@ export function consumeStructureCache(): void {
   const html = t.innerHTML
   t.remove()
   adoptStructure(html)
+}
+
+// ---- 脚本载荷（P2a：闸在服务端 403；同意在前端，审计走 skins.script_consent）----
+
+/** 待同意脚本现场（id/js/sha）；`skinState.scriptPending` 是其响应式投影。 */
+let pendingScript: { id: string; js: string; sha: string } | null = null
+
+/** live 注入脚本的皮肤 id（'' = 无脚本在跑）。**不可逆状态**——非空时
+ * 任何皮肤切换/开关关闭都必须整页刷新（JS 无法干净卸载）。 */
+let scriptLiveId = ''
+
+/** live 脚本在场判据（裁定 2 刷新边界的唯一判据；设置页切换/开关用）。 */
+export function skinScriptNeedsReload(): boolean {
+  return scriptLiveId !== ''
+}
+
+function readConsentMap(): Record<string, string> {
+  try {
+    return JSON.parse(localStorage.getItem(SCRIPT_OK_KEY) || '{}') as Record<string, string>
+  } catch {
+    return {}
+  }
+}
+
+/** 已同意且包未变（sha 前 16 位盖章一致）→ 免卡直接注入。 */
+function hasScriptConsent(id: string, sha: string): boolean {
+  return readConsentMap()[id] === sha.slice(0, 16)
+}
+
+/** 注入执行（内联 textContent 免二次下载；先摘旧防重复注入）。 */
+function injectSkinScript(id: string, js: string): void {
+  document.head
+    .querySelectorAll('script[data-nb-skin-script]')
+    .forEach((el) => el.remove())
+  const el = document.createElement('script')
+  el.setAttribute('data-nb-skin-script', id)
+  el.textContent = js
+  document.head.appendChild(el)
+  scriptLiveId = id
+}
+
+/**
+ * 脚本载荷并行拉取（CSS/结构链并行；**预览路径不调用**——`?skin=` 永不
+ * 注入脚本）。裁决：404 = 无脚本结束；403 = 闸关（纯 CSS 模式，静默）；
+ * 200 = 查同意缓存 → 已同意注入 / 未同意挂 pending（CSS 先生效不阻塞）。
+ */
+async function loadScriptFor(id: string, cssUrl: string): Promise<void> {
+  const scriptUrl = `${cssUrl.replace(/\.css$/, '')}/script`
+  try {
+    const res = await fetch(scriptUrl, { cache: 'no-store' })
+    if (!res.ok) return // 404 无脚本 / 403 闸关 / 其他：一律纯 CSS 继续
+    const js = await res.text()
+    const sha = res.headers.get('X-Skin-Sha256') || ''
+    if (skinState.id !== id || !js || !sha) return // 拉取期间已切走 / 现场不全
+    if (hasScriptConsent(id, sha)) {
+      injectSkinScript(id, js)
+    } else {
+      pendingScript = { id, js, sha }
+      skinState.scriptPending = id
+    }
+  } catch {
+    // 网络失败：CSS 已生效，脚本静默放弃（下次刷新重试）
+  }
+}
+
+/** 废弃未裁决的 pending 脚本（总闸关闭时调用——裁定 2 规则表「开关关 =
+ * JS 不执行」：卡上 bytes-in-hand 不得在闸关后仍可被同意注入）。 */
+export function discardScriptPending(): void {
+  pendingScript = null
+  skinState.scriptPending = ''
+}
+
+/**
+ * 同意卡裁决（设置页调用；allow=true 注入并写同意缓存，false 仅清除
+ * pending）。审计走 WSAPI `skins.script_consent`（失败不阻塞本地决定
+ * ——授权在用户，审计尽力而为）。allow 后**注入前服务端再验闸**：卡上
+ * 字节是闸开时抓的（bytes-in-hand 绕过服务端 403 权威闸），同意期间总闸
+ * 可能已被关（再验 403）或包可能已被换（sha 失配）——再验不过 = 环境
+ * 已变，不注入（同意缓存与审计已记用户授权；下次激活走正常链重判）。
+ * 注入仍要求当前激活皮肤仍是该包且无 live 脚本（防串台/重复注入）。
+ */
+export async function resolveScriptConsent(allow: boolean): Promise<void> {
+  const p = pendingScript
+  if (!p) return
+  pendingScript = null
+  skinState.scriptPending = ''
+  try {
+    await useWSAPI().request('skins', 'script_consent', {
+      id: p.id,
+      decision: allow ? 'allow' : 'deny',
+    })
+  } catch {
+    // 审计命令失败（WS 断开/模块裁剪）不推翻用户决定
+  }
+  if (!allow) return
+  const map = readConsentMap()
+  map[p.id] = p.sha.slice(0, 16)
+  localStorage.setItem(SCRIPT_OK_KEY, JSON.stringify(map))
+  try {
+    const res = await fetch(`/skins/${p.id}/script`, { cache: 'no-store' })
+    const sha = res.ok ? res.headers.get('X-Skin-Sha256') || '' : ''
+    if (!res.ok || sha !== p.sha) return // 闸关（403）/ 包被换（sha 失配）：不注入
+    const js = await res.text()
+    if (skinState.id === p.id && !scriptLiveId) injectSkinScript(p.id, js)
+  } catch {
+    // 再验网络失败：不注入（fail-closed；下次激活重判）
+  }
 }
 
 // ---- 元数据 ----
@@ -215,15 +346,27 @@ async function applyFromUrl(url: string, forcedId: string): Promise<void> {
     localStorage.setItem('nemesisbot_skin_css', css)
 
     skinState.id = id
+    // pending 卡只能指向当前皮肤：切到别的皮肤时废弃旧 pending（同 id
+    // 重应用保留——loadScriptFor 会重判覆盖）。
+    if (pendingScript && pendingScript.id !== id) discardScriptPending()
     void refreshSkinMeta(id)
     // 结构链与 CSS 校准并行（CSS-only 包 → 404 → 原生布局回落）
     void loadStructureFor(id, url)
+    // 脚本链并行（P2a）——**预览路径（forcedId 非空）永不注入**：预览只
+    // 看观感；脚本只在真实激活（active 路径）后注入。
+    if (!forcedId) void loadScriptFor(id, url)
   } catch {
     // 服务端无皮肤可用（未配置 / 包缺失 / 404）→ 回落内置皮肤
     root.removeAttribute('data-skin')
     localStorage.removeItem('nemesisbot_skin')
     localStorage.removeItem('nemesisbot_skin_css')
     document.head.querySelector('style[data-skin-sheet]')?.remove()
+    document.head
+      .querySelectorAll('script[data-nb-skin-script]')
+      .forEach((el) => el.remove())
+    scriptLiveId = ''
+    pendingScript = null
+    skinState.scriptPending = ''
     clearSkinStructure()
     skinState.id = ''
     skinState.meta = null
@@ -233,13 +376,19 @@ async function applyFromUrl(url: string, forcedId: string): Promise<void> {
 export async function applySkinBoot(): Promise<void> {
   const q = new URLSearchParams(location.search).get('skin')
 
-  // 显式退出皮肤：摘属性清缓存（含结构），不再请求
+  // 显式退出皮肤：摘属性清缓存（含结构与脚本现场），不再请求
   if (q === 'default') {
     const root = document.documentElement
     root.removeAttribute('data-skin')
     localStorage.removeItem('nemesisbot_skin')
     localStorage.removeItem('nemesisbot_skin_css')
     document.head.querySelector('style[data-skin-sheet]')?.remove()
+    document.head
+      .querySelectorAll('script[data-nb-skin-script]')
+      .forEach((el) => el.remove())
+    scriptLiveId = ''
+    pendingScript = null
+    skinState.scriptPending = ''
     clearSkinStructure()
     return
   }

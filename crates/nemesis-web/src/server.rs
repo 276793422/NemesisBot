@@ -1106,11 +1106,15 @@ impl WebServer {
         // 无敏感面，与 index.html 等静态资源同信任级）。`--relay` 纯中继
         // 不挂（dashboard 面整体不存在）；`set_skins` 未注入也不挂。
         // 解析/注入在前端，服务端只做包内 CSS 分发。`skins` feature 关
-        // 时整段不编译（IoT 裁剪面）。
+        // 时整段不编译（IoT 裁剪面）。home 传给脚本闸
+        //（`ui.skins.allow_scripts` 每请求现读，fail-closed）。
         #[cfg(feature = "skins")]
         if !self.relay_only
-            && let Some(skins) =
-                crate::skins::skin_router(self.skins_dir.clone(), self.skin_id_handle())
+            && let Some(skins) = crate::skins::skin_router(
+                self.skins_dir.clone(),
+                self.skin_id_handle(),
+                self.config.home.clone(),
+            )
         {
             router = router.merge(skins);
         }

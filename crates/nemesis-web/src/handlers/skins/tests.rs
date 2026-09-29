@@ -29,7 +29,7 @@ use std::time::Instant;
 
 static SLOT_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
-/// L1 注册表契约：module 名 + commands() 五命令单一真相源。
+/// L1 注册表契约：module 名 + commands() 六命令单一真相源。
 #[test]
 fn commands_registry_shape() {
     use crate::ws_router::ModuleHandler as _;
@@ -37,7 +37,14 @@ fn commands_registry_shape() {
     assert_eq!(h.module_name(), "skins");
     assert_eq!(
         h.commands(),
-        &["list", "detail", "reload", "set_active", "install"]
+        &[
+            "list",
+            "detail",
+            "reload",
+            "set_active",
+            "install",
+            "script_consent"
+        ]
     );
 }
 
@@ -196,7 +203,10 @@ fn seed_config(home: &std::path::Path, require_signed: bool) {
     let mut cfg = nemesis_config::Config::default();
     cfg.ui = Some(nemesis_config::UiConfig {
         skin: "default".into(),
-        skins: nemesis_config::SkinsPolicy { require_signed },
+        skins: nemesis_config::SkinsPolicy {
+            require_signed,
+            allow_scripts: false,
+        },
     });
     nemesis_config::save_config(&home.join("config.json"), &mut cfg).expect("seed config");
 }
@@ -558,6 +568,7 @@ fn hot_flip_lock_reflected_in_router() {
     let app = crate::skins::skin_router(
         Some(tmp.path().to_string_lossy().to_string()),
         Arc::clone(&active),
+        None,
     )
     .unwrap();
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -588,6 +599,7 @@ fn hot_flip_lock_reflected_in_router() {
     let app2 = crate::skins::skin_router(
         Some(tmp.path().to_string_lossy().to_string()),
         Arc::clone(&active),
+        None,
     )
     .unwrap();
     rt.block_on(async {
@@ -739,4 +751,124 @@ async fn import_endpoint_contract() {
         .unwrap();
     let out: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(out["overwritten"], json!(true));
+}
+
+// ===== P2a 脚本载荷：三载荷闸 + script_consent 审计 =====
+
+/// 写一个 script-only 包（P2a：无 entry 也无 structure，只有 script——
+/// 三载荷闸下可激活，前端 CSS 走原生基线 + 脚本授权后注入）。
+fn write_script_only_skin(dir: &std::path::Path, file_stem: &str) {
+    let path = dir.join(format!("{file_stem}.nbskin"));
+    let file = std::fs::File::create(path).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    zip.start_file("manifest.json", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    write!(
+        zip,
+        r#"{{"id":"{file_stem}","version":"1.0.0","type":"theme","script":"skin/main.js"}}"#
+    )
+    .unwrap();
+    zip.start_file("skin/main.js", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    write!(zip, "document.title = '{file_stem}';").unwrap();
+    zip.finish().unwrap();
+}
+
+/// 三载荷闸：script-only 包可激活；激活后 list 行带 has_script=true。
+#[test]
+fn set_active_accepts_script_only_package() {
+    let _guard = SLOT_LOCK.lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let skins = tmp.path().join("skins");
+    std::fs::create_dir(&skins).unwrap();
+    write_script_only_skin(&skins, "scripty");
+    seed_config(tmp.path(), false);
+    let active = Arc::new(parking_lot::RwLock::new("default".to_string()));
+    set_handle(
+        Some(skins.to_string_lossy().to_string()),
+        Arc::clone(&active),
+    );
+    let ctx = make_ctx(tmp.path());
+
+    let res = SkinsHandler::new()
+        .set_active(Some(json!({ "id": "scripty" })), &ctx)
+        .expect("script-only 可激活")
+        .expect("payload");
+    assert_eq!(res["active"], json!("scripty"));
+    assert_eq!(*active.read(), "scripty");
+
+    let listed = SkinsHandler::new()
+        .list()
+        .expect("list ok")
+        .expect("payload");
+    let row = listed["skins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == "scripty")
+        .unwrap();
+    assert_eq!(row["has_script"], json!(true));
+    assert_eq!(row["manifest"]["script"], json!("skin/main.js"));
+}
+
+/// script_consent 审计漏斗：allow/deny 落 JSONL（字段形态钉死）；decision
+/// 非法值与未知 id 拒绝；记账不动运行时状态（锁与 config 均不翻）。
+#[test]
+fn script_consent_appends_audit_and_validates() {
+    let _guard = SLOT_LOCK.lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let skins = tmp.path().join("skins");
+    std::fs::create_dir(&skins).unwrap();
+    write_script_only_skin(&skins, "scripty");
+    seed_config(tmp.path(), false);
+    let active = Arc::new(parking_lot::RwLock::new("default".to_string()));
+    set_handle(
+        Some(skins.to_string_lossy().to_string()),
+        Arc::clone(&active),
+    );
+    let ctx = make_ctx(tmp.path());
+    let h = SkinsHandler::new();
+
+    // 非法 decision 拒绝
+    let err = h
+        .script_consent(Some(json!({ "id": "scripty", "decision": "maybe" })), &ctx)
+        .unwrap_err();
+    assert!(err.contains("allow") && err.contains("deny"), "{err}");
+    // 未知 id 拒绝
+    let err = h
+        .script_consent(Some(json!({ "id": "ghost", "decision": "allow" })), &ctx)
+        .unwrap_err();
+    assert!(err.contains("皮肤不存在"), "{err}");
+    // 缺 data / 缺 id 拒绝
+    assert!(h.script_consent(None, &ctx).is_err());
+    assert!(
+        h.script_consent(Some(json!({ "decision": "allow" })), &ctx)
+            .is_err()
+    );
+
+    // allow + deny 各落一行
+    h.script_consent(Some(json!({ "id": "scripty", "decision": "allow" })), &ctx)
+        .expect("allow logged");
+    h.script_consent(Some(json!({ "id": "scripty", "decision": "deny" })), &ctx)
+        .expect("deny logged");
+
+    let log = std::fs::read_to_string(tmp.path().join("logs").join("skin_scripts.log"))
+        .expect("audit log exists");
+    let lines: Vec<serde_json::Value> = log
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("jsonl line"))
+        .collect();
+    assert_eq!(lines.len(), 2, "两行审计");
+    assert_eq!(lines[0]["id"], json!("scripty"));
+    assert_eq!(lines[0]["decision"], json!("allow"));
+    assert_eq!(lines[1]["decision"], json!("deny"));
+    assert_eq!(lines[0]["sha256"].as_str().unwrap().len(), 64);
+    assert_eq!(lines[0]["has_script"], json!(true));
+    assert!(lines[0]["ts"].as_u64().unwrap() > 0);
+    // 签名徽标值合法即可（测试进程锚在场与否随环境漂移）
+    assert!(lines[0]["signature"].is_string());
+
+    // 记账不动运行时状态
+    assert_eq!(*active.read(), "default");
+    assert_eq!(read_config_skin(tmp.path()), "default");
 }
