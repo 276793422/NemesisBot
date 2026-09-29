@@ -53,6 +53,7 @@ interface Issue {
   due_date: number | null
   position: number
   acceptance_criteria: string | null
+  required_profession?: string
   origin: { origin_type: string; origin_id: string } | null
   created_at: number
   updated_at: number
