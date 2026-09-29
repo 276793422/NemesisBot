@@ -28,7 +28,10 @@ pub fn install(home: &Path) {
 
 /// `vault:<alias>` → secret。错误带补救指引（vault_ref 约定：fail loud，
 /// 绝不静默降级）。
-fn resolve_alias(path: &Path, alias: &str) -> Result<String, String> {
+///
+/// pub 供同 crate 内非 `vault:` 标准形态的别名消费方复用（WASM 插件桥
+/// 的 x-secret 解析——到达时已剥 `vault:` 前缀）。
+pub fn resolve_alias_at(path: &Path, alias: &str) -> Result<String, String> {
     let store = open_unlocked(path)?;
     store.get(alias).map_err(|e| {
         format!(
@@ -36,6 +39,11 @@ fn resolve_alias(path: &Path, alias: &str) -> Result<String, String> {
              argon2 模式需 NEMESISBOT_VAULT_PASSPHRASE"
         )
     })
+}
+
+/// 全局解析器闭包入口（`vault:<alias>` 全前缀形态）。
+fn resolve_alias(path: &Path, alias: &str) -> Result<String, String> {
+    resolve_alias_at(path, alias.strip_prefix("vault:").unwrap_or(alias))
 }
 
 /// 打开并解锁 vault（每次解析现开）。文件不存在是常见态（还没人 set 过），

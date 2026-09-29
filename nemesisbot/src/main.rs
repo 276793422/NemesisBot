@@ -100,6 +100,11 @@ mod image_gen_tool;
 /// 暴露给 Claude Code / Cursor 等客户端；K1 式装配与 gateway 同源
 /// （安全 8 层全量生效，MCP 出口不是安全旁路）。
 mod mcp_serve;
+/// WASM 插件框架 ↔ gateway 桥（W5-3）：agent 工具桥 / 宿主调用面 / vault
+/// 凭据解析 / 安装审批晚绑 / estop 联动。随 `plugins-wasm` feature 门控
+/// （该 feature implies security——信任/审计/扫描机制依赖 nemesis-security）。
+#[cfg(feature = "plugins-wasm")]
+mod plugin_bridge;
 /// L6++（2026-09-08）：项目注册表（config/projects.json）+ 项目常驻
 /// AgentLoop 管理（对话/项目双分组；注册不拥有——删项目只解除分组）。
 /// M1 中间态：registry API 尚无二进制消费方（M2 manager / G4 WSAPI 接线），
@@ -368,6 +373,12 @@ enum Commands {
     Scanner {
         #[command(subcommand)]
         action: commands::scanner::ScannerAction,
+    },
+    /// Manage WASM plugins (install / enable / sign / trust)
+    #[cfg(feature = "plugins-wasm")]
+    Plugin {
+        #[command(subcommand)]
+        action: commands::plugin::PluginAction,
     },
     /// Sandboxie sandbox management (install / uninstall / status)
     #[cfg(feature = "sandbox")]
@@ -844,6 +855,11 @@ async fn run_command(cli: Cli) -> Result<()> {
         Commands::Scanner { action } => {
             common::ensure_default_logger();
             commands::scanner::run(action, cli.local).await?;
+        }
+        #[cfg(feature = "plugins-wasm")]
+        Commands::Plugin { action } => {
+            common::ensure_default_logger();
+            commands::plugin::run(cli.local, action).await?;
         }
         #[cfg(feature = "sandbox")]
         Commands::Sandbox { action } => {

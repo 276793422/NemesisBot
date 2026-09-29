@@ -120,7 +120,26 @@ impl ModuleHandler for PluginsHandler {
     }
 
     fn commands(&self) -> &'static [&'static str] {
-        &["list", "set_metrics_enabled"]
+        &[
+            "list",
+            "set_metrics_enabled",
+            #[cfg(feature = "plugins-wasm")]
+            "wasm.list",
+            #[cfg(feature = "plugins-wasm")]
+            "wasm.install",
+            #[cfg(feature = "plugins-wasm")]
+            "wasm.enable",
+            #[cfg(feature = "plugins-wasm")]
+            "wasm.disable",
+            #[cfg(feature = "plugins-wasm")]
+            "wasm.uninstall",
+            #[cfg(feature = "plugins-wasm")]
+            "wasm.config.get",
+            #[cfg(feature = "plugins-wasm")]
+            "wasm.config.set",
+            #[cfg(feature = "plugins-wasm")]
+            "wasm.logs",
+        ]
     }
 
     async fn handle_cmd(
@@ -129,6 +148,22 @@ impl ModuleHandler for PluginsHandler {
         data: Option<serde_json::Value>,
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
+        // W6：`plugins.wasm.*` 命令代理到 plugins_wasm.rs（宿主运行时整槽
+        // 注入；槽空/未编译均诚实报错）。
+        if let Some(bare) = cmd.strip_prefix("wasm.") {
+            #[cfg(feature = "plugins-wasm")]
+            {
+                crate::handlers::require_workspace(ctx)?;
+                return crate::handlers::plugins_wasm::handle(bare, data).await;
+            }
+            #[cfg(not(feature = "plugins-wasm"))]
+            {
+                let _ = (bare, &data);
+                return Err(format!(
+                    "WASM 插件子系统未编译（plugins-wasm feature 关）：plugins.{cmd}"
+                ));
+            }
+        }
         let workspace = self.workspace(ctx)?;
         // 路由按 module_name 分发后 cmd 是裸名——不要带模块前缀
         // （commands.list 事故：臂写全名导致 100% unknown command）。

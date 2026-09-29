@@ -163,6 +163,17 @@ impl AgentLoop {
         } else {
             base
         };
+        // W5 盲点修复配套：MCP 动态工具注册期声明操作类型（进程级 declare
+        // 表，管线 lookup-first）。MCP ToolDefinition 尚无 annotations 面
+        // （readOnlyHint 等），基线取 FileRead（LOW）——修复前这些工具走
+        // 「未知名放行」整跳 8 层；声明后全管线照跑（注入检测/凭据扫描/
+        // DLP/审计链），默认配置下不产生新审批摩擦。annotations 透传是
+        // 远期项（届时按 hint 精确分档）。
+        #[cfg(feature = "security")]
+        nemesis_security::types::declare_tool_operation(
+            &name,
+            nemesis_security::types::OperationType::FileRead,
+        );
         tools.insert(
             name,
             Arc::from(Box::new(crate::mcp_bridge::McpToolBridge::new(tool)) as Box<dyn Tool>),
@@ -176,10 +187,51 @@ impl AgentLoop {
     /// Returns true if the tool was found and removed.
     pub fn remove_tool_shared(&mut self, name: &str) -> bool {
         if self.tools.write().remove(name).is_some() {
+            // W5 配套：注销时同步撤销操作类型声明（重注册 = 重声明，不残留旧档）。
+            #[cfg(feature = "security")]
+            nemesis_security::types::undeclare_tool_operation(name);
             debug!("[AgentLoop] Removed shared tool: {}", name);
             true
         } else {
             debug!("[AgentLoop] Tool '{}' not found, nothing to remove", name);
+            false
+        }
+    }
+
+    /// W7（WASM 插件框架）：注册插件工具桥（gateway 装配期 + 热装回调共用；
+    /// `&self` + 内部写锁，与 [`Self::register_mcp_tool`] 同模式）。撞名时
+    /// 诚实改名 `_2/_3…`（返回实际注册名）。操作类型声明由调用方按 guest
+    /// `operation_type` 声明（[`Self::register_mcp_tool`] 的 FileRead 基线
+    /// 不适用——插件有精确声明）。
+    pub fn register_plugin_tool(&self, name: String, tool: Arc<dyn Tool>) -> String {
+        let mut tools = self.tools.write();
+        let name = if tools.contains_key(&name) {
+            let mut n = 2;
+            while tools.contains_key(&format!("{name}_{n}")) {
+                n += 1;
+            }
+            let renamed = format!("{name}_{n}");
+            warn!(
+                "[AgentLoop] plugin tool name collision: '{}' already registered; \
+                 duplicate registered as '{renamed}'",
+                name
+            );
+            renamed
+        } else {
+            name
+        };
+        debug!("[AgentLoop] Registered plugin tool: {}", name);
+        tools.insert(name.clone(), tool);
+        name
+    }
+
+    /// W7：注销插件工具（热卸载/禁用回调；返回是否确实在册）。
+    pub fn remove_plugin_tool(&self, name: &str) -> bool {
+        if self.tools.write().remove(name).is_some() {
+            debug!("[AgentLoop] Removed plugin tool: {}", name);
+            true
+        } else {
+            debug!("[AgentLoop] Plugin tool '{}' not in registry", name);
             false
         }
     }

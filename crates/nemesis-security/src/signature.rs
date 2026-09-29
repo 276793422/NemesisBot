@@ -134,7 +134,14 @@ impl TrustStore {
             fingerprint,
         };
         self.keys.write().insert(public_key.to_string(), entry);
-        let _ = self.save();
+        // 信任库持久化失败不能静默吞掉：内存态信任与盘上真相分叉，重启后
+        // 该公钥退回不受信（签名验签面判定翻转）——loud 留痕。
+        if let Err(e) = self.save() {
+            tracing::error!(
+                error = %e,
+                "[TrustStore] 信任库持久化失败：公钥 {public_key} 仅存内存（重启即丢）"
+            );
+        }
     }
 
     /// Remove a key by signer name. Returns true if a key was removed.
@@ -147,7 +154,12 @@ impl TrustStore {
         if let Some(b64) = b64 {
             keys.remove(&b64);
             drop(keys);
-            let _ = self.save();
+            if let Err(e) = self.save() {
+                tracing::error!(
+                    error = %e,
+                    "[TrustStore] 信任库持久化失败：{b64} 的移除未落盘（重启后复现）"
+                );
+            }
             return true;
         }
         false
@@ -158,8 +170,12 @@ impl TrustStore {
         let mut keys = self.keys.write();
         let removed = keys.remove(public_key).is_some();
         drop(keys);
-        if removed {
-            let _ = self.save();
+        // 信任库持久化失败不能静默吞掉（重启后移除项复现）——loud 留痕。
+        if removed && let Err(e) = self.save() {
+            tracing::error!(
+                error = %e,
+                "[TrustStore] 信任库持久化失败：{public_key} 的移除未落盘（重启后复现）"
+            );
         }
         removed
     }
@@ -891,6 +907,17 @@ pub fn sign_content_hex(content: &str, private_key_hex: &str) -> Result<String, 
     let signing_key = SigningKey::from_bytes(&pk_bytes);
     let signature = signing_key.sign(content.as_bytes());
     Ok(hex_encode(signature.to_bytes().as_ref()))
+}
+
+/// Derive the hex-encoded public key from a hex-encoded private key seed.
+///
+/// Signing flows that must publish the matching `public-key` field alongside
+/// the signature (e.g. plugin manifests) use this instead of round-tripping
+/// through base64 helpers.
+pub fn derive_public_key_hex(private_key_hex: &str) -> Result<String, String> {
+    let pk_bytes = hex_decode_32(private_key_hex)?;
+    let signing_key = SigningKey::from_bytes(&pk_bytes);
+    Ok(hex_encode(signing_key.verifying_key().to_bytes().as_ref()))
 }
 
 /// Verify a signature against content and a public key (hex-encoded).

@@ -157,6 +157,17 @@ pub struct SharedResources {
     /// 经 SharedToolConfig 注入三件套工具（background_start/output/kill）。
     pub background_registry: Arc<nemesis_agent::BackgroundProcessRegistry>,
 
+    /// W5-3（WASM 插件框架）：插件注册表单例。gateway init_agent 建一次
+    /// （config `plugins.wasm.enabled=false` = None 整面子系统缺席）；跨
+    /// agent 重启存活——每次 build_agent_loop 重建时桥工具重新注册 + invoker
+    /// 重新挂接（Weak 指旧 loop，重启后 upgrade 失败）。estop watcher 是
+    /// manager 级任务，init_agent spawn 一次不随重启泄。
+    #[cfg(feature = "plugins-wasm")]
+    pub plugin_manager: Option<Arc<nemesis_plugins_wasm::PluginManager>>,
+    #[cfg(not(feature = "plugins-wasm"))]
+    #[allow(dead_code)]
+    pub plugin_manager: Option<()>,
+
     /// 入口形态变体（gap ⑤）：gateway/eval 等既有装配点用缺省 Interactive
     /// （pro system prompt 渲染字节不变）；headless `run` 显式 Headless、
     /// ACP 显式 Acp——各自入口的语境说明段随身份基座注入。
@@ -228,6 +239,7 @@ impl Default for SharedResources {
             lsp_manager: Arc::new(nemesis_lsp::LspManager::new(None, None)),
             agent_event_tx: None,
             background_registry: Arc::new(nemesis_agent::BackgroundProcessRegistry::new()),
+            plugin_manager: None,
             entrance: nemesis_agent::prompt::Entrance::Interactive,
             #[cfg(all(feature = "board", feature = "cluster"))]
             board_store: None,
@@ -943,6 +955,19 @@ pub fn build_agent_loop(
         info!("[AgentFactory] board_issue tool registered (master main agent)");
     }
 
+    // 8c. W5-3（WASM 插件框架）：插件工具桥注册（主 agent 专属——项目 loop
+    // 工具子集不带、cluster worker agent 不装：远端节点不跑本地插件）。
+    // manager 未装配（plugins.wasm.enabled=false / feature 裁掉 / 构建失败）
+    // = 不注册，零影响。逐已注册 tool 插件 register_tool（plugin.<slug>.<base>
+    // 全名）+ declare 操作类型（声明式 ABAC——声明后安全 8 层照跑）。
+    #[cfg(feature = "plugins-wasm")]
+    if let Some(ref pm) = shared.plugin_manager {
+        let n = crate::plugin_bridge::register_plugin_tools(&mut agent_loop, pm);
+        if n > 0 {
+            info!("[AgentFactory] {} wasm plugin tool(s) registered", n);
+        }
+    }
+
     // 9. Continuation manager (disk-persisted — new instance).
     {
         let cont_mgr = Arc::new(nemesis_agent::ContinuationManager::with_disk_store(
@@ -1022,6 +1047,15 @@ pub fn build_agent_loop(
     // G4: 闭包持有 bus 引用（后台任务完成回灌经 subagent_continuation 发布）。
     let agent_loop = Arc::new(agent_loop);
     inject_spawn_fn(&agent_loop, &spawn_slot, &shared.bus, cc_bridge.clone());
+    // W5-3：插件 invoker 重挂（每次重建都要——Weak 指旧 loop，重启后
+    // upgrade 失败 = guest tool-invoke 全哑）。estop watch 联动在 init_agent
+    // spawn 一次（watcher 是 manager 级任务，不随 loop 重建泄）。
+    #[cfg(feature = "plugins-wasm")]
+    if let Some(ref pm) = shared.plugin_manager {
+        pm.set_invoker(Arc::new(crate::plugin_bridge::GatewayHostInvoker::new(
+            &agent_loop,
+        )));
+    }
     // I1 (devtool-upgrade 阶段 3)：workspace fs watcher——外部编辑下一轮
     // 以 <external_changes> 注记浮出（指令链文件走 digest 失效锚点）。句柄
     // 活在 AgentLoop 内、随其销毁；启动失败 warn 一次后禁用，不阻断装配。

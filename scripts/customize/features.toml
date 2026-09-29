@@ -370,6 +370,18 @@ desc = "编译期烧死 enforce：启动自验失败即拒启（exit 86），con
 category = "subsystems"
 default = false
 
+# NOTE: `plugins-wasm` 可裁剪（WASM 组件插件框架，2026-09-29）。wasmtime 运行时
+# 体积可观；iotsmall panic=abort 相容性未验证（预设显式关）。关闭后
+# nemesis-plugins-wasm / nemesis-plugin-sdk 整包不编译，plugin.<slug> 工具、
+# plugins.wasm.* WSAPI、`nemesisbot plugin` CLI、Dashboard 插件页 WASM 分节随之
+# 消失（诚实报未编译）。
+[[feature]]
+id = "plugins-wasm"
+label = "WASM 组件插件（沙盒化）"
+desc = "wasmtime 组件插件（plugin.<slug> 工具/观察者，fuel/内存/墙钟三重限制 + egress deny-by-default，`nemesisbot plugin` + Dashboard 插件页 WASM 分节）。IoT/低资源建议关；裁后整包不编译"
+category = "subsystems"
+default = true
+
 # ── Frontend-only gate (no Rust code; exists in nemesisbot/Cargo.toml [features]
 #    only so `nemesis-config check` passes) ────────────────────────────────
 

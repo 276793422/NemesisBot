@@ -59,6 +59,12 @@ pub(crate) struct RuntimeHandoff {
     pub skills_install_gate: Option<Arc<crate::web_approval::LateWebSkillsGate>>,
     #[cfg(not(feature = "security"))]
     pub skills_install_gate: (),
+    /// W5-3：插件安装审批门（LateInstallApprover 槽；init_agent 建、installer
+    /// 持有；run_runtime 审批块 bind 真身）。@not 臂空桩同上。
+    #[cfg(feature = "plugins-wasm")]
+    pub plugin_install_gate: Option<Arc<crate::plugin_bridge::LateInstallApprover>>,
+    #[cfg(not(feature = "plugins-wasm"))]
+    pub plugin_install_gate: (),
 }
 
 /// Step 18–24 运行期与关停（计划 §4.2 B7）。
@@ -294,6 +300,14 @@ pub(crate) async fn run_runtime(
                 gate.bind(web_mgr.clone());
                 info!("[Gateway] skills install approval gate bound (WS4 P13)");
             }
+            // W5-3：插件安装审批门 bind 真身——installer（init_agent 建）里的
+            // LateInstallApprover 挂上同一 web_mgr，插件安装卡与 auditor 审批
+            // 共用 respond 通路。
+            #[cfg(feature = "plugins-wasm")]
+            if let Some(gate) = runtime_handoff.plugin_install_gate.as_ref() {
+                gate.bind(web_mgr.clone());
+                info!("[Gateway] plugin install approval gate bound (W5-3)");
+            }
             // X2 (U8 refinement): reflect interactive-approval reachability
             // in the merged context snapshot's `# Runtime Policy` section.
             agent_loop.set_interactive_approval(true);
@@ -401,6 +415,67 @@ pub(crate) async fn run_runtime(
                 }
             }
         }
+    }
+
+    // W7：插件工具面热装 hook——WSAPI wasm.install/uninstall/enable/disable
+    // 成功后经此把工具同步进**当前** AgentLoop 注册表（启动装载走
+    // agent_factory 8c 的 register_plugin_tools，两路共用同一桥类型与操作
+    // 类型映射）。捕获 loop 持有器（与 AppState 同一 Arc，agent 重启自动
+    // 跟进）而非裸 Weak；None = 停机窗口，重启路径会从注册表重新拉起，
+    // 事件丢弃是诚实降级。同步一律按 `plugin.<slug>.` 前缀整面摘除再按需
+    // 注册（2026-09-29 交付审查 1.3：upgrade 换名时只摘同名会留旧名僵尸
+    // 工具 + declare 泄漏）。放在 security 装配块之外：hook 注入不依赖
+    // 审批 manager，security.enabled=false 只是跳过审批装配，工具面热
+    // 同步必须照常工作（2026-09-29 交付审查 3.1）；plugins-wasm feature
+    // implies security，nemesis_security 引用编译期恒可用。
+    #[cfg(feature = "plugins-wasm")]
+    if let Some(ref pm) = shared_resources.plugin_manager {
+        let loop_ref = agent_adapter.loop_ref_handle();
+        let pm_for_hook = pm.clone();
+        nemesis_web::handlers::plugins_wasm::set_tool_sync_hook(Arc::new(
+            move |ev: nemesis_web::handlers::plugins_wasm::ToolSyncEvent| {
+                let Some(loop_arc) = loop_ref.read().clone() else {
+                    tracing::debug!("[WasmPlugin] tool sync skipped (loop stopped)");
+                    return;
+                };
+                let prefix = format!("plugin.{}.", ev.slug);
+                let stale: Vec<String> = loop_arc
+                    .tool_names()
+                    .into_iter()
+                    .filter(|n| n.starts_with(&prefix))
+                    .collect();
+                for name in &stale {
+                    loop_arc.remove_plugin_tool(name);
+                    nemesis_security::types::undeclare_tool_operation(name);
+                }
+                if !ev.add {
+                    if !stale.is_empty() {
+                        info!(
+                            "[WasmPlugin] tools hot-unregistered ({}): {:?}",
+                            stale.len(),
+                            stale
+                        );
+                    }
+                    return;
+                }
+                let Some(meta) = pm_for_hook
+                    .get(&ev.slug)
+                    .and_then(|reg| reg.tool_meta.clone())
+                else {
+                    return;
+                };
+                let bridge = Arc::new(crate::plugin_bridge::PluginToolBridge::new(
+                    meta,
+                    pm_for_hook.clone(),
+                ));
+                let actual = loop_arc.register_plugin_tool(ev.tool_name.clone(), bridge);
+                nemesis_security::types::declare_tool_operation(
+                    &actual,
+                    crate::plugin_bridge::PluginToolBridge::map_operation(&ev.operation_type),
+                );
+                info!("[WasmPlugin] tool hot-registered: {actual}");
+            },
+        ));
     }
 
     // F7（devtool-upgrade 阶段 5）：question 工具的 Dashboard 提问 broker。

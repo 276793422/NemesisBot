@@ -17,7 +17,9 @@
 //! 安全：`background_start` 语义等同 `exec`（起进程）→ 8 层管线按
 //! ProcessExec 审查命令本体；`background_output` / `background_kill` 只操作
 //! 本注册表内的自有任务（命令已在 start 时过闸，读缓冲/杀自属子进程不构成
-//! 新的攻击面）→ 不映射 operation（走未知名放行分支）。
+//! 新的攻击面）→ 显式映射 `Internal`（LOW）。W5 盲点修复后管线未知名 =
+//! CRITICAL fail-closed，不再有「未知名放行」分支可搭（types.rs 表内
+//! 显式条目，例外语义保留但不再依赖兜底行为）。
 //!
 //! 输出上限：每任务 [`DEFAULT_MAX_OUTPUT_BYTES`] 字节环形语义——超限丢头部
 //! 保尾部，`dropped_bytes` 如实上报（offset 分页坐标按 `produced` 单调计）。

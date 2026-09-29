@@ -43,6 +43,11 @@ pub(crate) struct AgentWiring {
     pub security_plugin: Option<Arc<nemesis_security::pipeline::SecurityPlugin>>,
     #[cfg(not(feature = "security"))]
     pub security_plugin: Option<()>,
+    /// W5-3：插件安装审批晚绑槽（run_runtime 审批块 bind 真身）。
+    #[cfg(feature = "plugins-wasm")]
+    pub plugin_gate: Option<Arc<crate::plugin_bridge::LateInstallApprover>>,
+    #[cfg(not(feature = "plugins-wasm"))]
+    pub plugin_gate: Option<()>,
     pub initial_tool_count: usize,
 }
 
@@ -137,6 +142,36 @@ pub(crate) async fn init_agent(
 
     // Note: Forge injection into agent_loop is now handled at creation time above.
 
+    // W5-3（WASM 插件框架）：插件栈装配。config `plugins.wasm.enabled=false`
+    // = None 整面子系统缺席（SharedResources 槽空、工具不注册、WSAPI/CLI
+    // 诚实报「未启用」）。审批 gate 先建（installer 持有），run_runtime 审批
+    // 块 bind 真身 WebApprovalManager（晚绑槽模式，skills gate 同款）；
+    // 启动装载走 installer.load_all（无审批/无扫描——安装期已裁决）。
+    #[cfg(feature = "plugins-wasm")]
+    let (plugin_manager, plugin_gate) = {
+        let gate = Arc::new(crate::plugin_bridge::LateInstallApprover::new(300));
+        match crate::plugin_bridge::build_plugin_stack(
+            &home,
+            security_plugin.as_ref(),
+            gate.clone(),
+        ) {
+            Some((manager, installer)) => {
+                let loaded = installer.load_all().await;
+                if loaded > 0 {
+                    info!("[WasmPlugin] {} plugin(s) loaded at startup", loaded);
+                }
+                // W6：整槽注入 web 管理面（plugins.wasm.* 命令的 install /
+                // uninstall / enable 均消费同一 installer——审批/扫描/验签
+                // 单一真相源，handler 零旁路）。
+                nemesis_web::handlers::plugins_wasm::set_installer(Arc::new(installer));
+                (Some(manager), Some(gate))
+            }
+            None => (None, None),
+        }
+    };
+    #[cfg(not(feature = "plugins-wasm"))]
+    let (plugin_manager, plugin_gate): (Option<()>, Option<()>) = (None, None);
+
     // Build SharedResources and use the factory to create the AgentLoop.
     // （estop 句柄已在集群装配块前创建——board 评审依赖集共用同一 Arc。）
     // C5 (2026-09-04): ONE LspManager for the whole gateway — the LspTool
@@ -216,6 +251,7 @@ pub(crate) async fn init_agent(
         lsp_manager,
         agent_event_tx: Some(agent_event_tx),
         background_registry,
+        plugin_manager,
         // 全自动流转 P3/D1：board_issue 工具依赖（注册点在 build_agent_loop
         // 主 agent；store=None 时工具不注册）。moderator 槽此刻还空，agent
         // 建成后 :board_moderator_loop.set 填充——工具调用时读槽即得。
@@ -250,6 +286,13 @@ pub(crate) async fn init_agent(
         "[Gateway] AgentLoop built via factory ({} tools)",
         initial_tool_count
     );
+
+    // W5-3：插件 estop 联动 watcher——init_agent 一次性 spawn（manager 级
+    // 任务，不随 agent 重启泄；invoker 挂接在 build_agent_loop 每次重建时）。
+    #[cfg(feature = "plugins-wasm")]
+    if let Some(ref pm) = shared_resources.plugin_manager {
+        crate::plugin_bridge::spawn_estop_watcher(pm, &shared_resources.estop);
+    }
 
     // Bridge the agent's tools into the workflow engine's tool registry so the
     // workflow `tool` node can invoke them. The registry was created empty
@@ -306,6 +349,7 @@ pub(crate) async fn init_agent(
         agent_loop,
         agent_event_rx,
         security_plugin,
+        plugin_gate,
         initial_tool_count,
     })
 }

@@ -5790,6 +5790,8 @@ fn make_agent_wiring(ctx: &GatewayCtx) -> AgentWiring {
         agent_loop: Arc::new(agent_loop),
         agent_event_rx,
         security_plugin: None,
+        #[cfg(feature = "plugins-wasm")]
+        plugin_gate: None,
         initial_tool_count: 0,
     }
 }
@@ -6059,6 +6061,7 @@ async fn run_runtime_pipeline(
         health_server: health,
         cluster_adapter: pa.cluster_adapter.clone(),
         skills_install_gate: None,
+        plugin_install_gate: None,
     };
 
     run_runtime(
@@ -6142,7 +6145,7 @@ async fn run_runtime_guardian_critical_falls_back_to_main_model() {
         "guardian critical：CRITICAL 工具必须进 LLM 审"
     );
     assert!(
-        !plugin.guardian_should_review("file_read", r#"{"path":"x"}"#),
+        !plugin.guardian_should_review("read_file", r#"{"path":"x"}"#),
         "LOW 工具不进 LLM 审"
     );
     // 审计链文件仍持久（装配期 append 之后的停机路径不删链）。

@@ -1,0 +1,20 @@
+[package]
+name = "nemesis-plugin-sdk"
+version.workspace = true
+edition.workspace = true
+
+description = "NemesisBot WASM 插件三方开发 SDK（guest 侧：宿主能力面封装 + 导出宏）"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+wit-bindgen.workspace = true
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+
+[features]
+default = ["json"]
+# JSON 助手（事件解析 / args 解析）。关闭后 SDK 只提供零依赖薄封装。
+json = ["dep:serde", "dep:serde_json"]
+
+[lints]
+workspace = true

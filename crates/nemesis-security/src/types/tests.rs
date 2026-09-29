@@ -53,6 +53,111 @@ fn test_tool_to_operation_generate_image_classified() {
     assert_eq!(extract_target("generate_image", &args), "mockups/login.png");
 }
 
+/// W5 盲点修复回归钉：内置表补齐后，此前搭「未知名放行」便车的工具全部
+/// 有具名档——multiedit/run_checks 与 exec 同族，background_* 例外语义
+/// 显式保留（Internal=LOW），纯编排面（message/sleep/question/subagent/
+/// workflow_run/mcp_list 等）落 Internal 而非误挂执行档。
+#[test]
+fn test_tool_to_operation_inventory_complete() {
+    // 补齐的执行/写族。
+    assert_eq!(
+        tool_to_operation("multiedit"),
+        Some(OperationType::FileWrite)
+    );
+    assert_eq!(
+        tool_to_operation("run_checks"),
+        Some(OperationType::ProcessExec)
+    );
+    assert_eq!(
+        tool_to_operation("claude_code"),
+        Some(OperationType::ProcessExec)
+    );
+    assert_eq!(
+        tool_to_operation("codex_delegate"),
+        Some(OperationType::ProcessExec)
+    );
+    assert_eq!(
+        tool_to_operation("complete_bootstrap"),
+        Some(OperationType::FileDelete)
+    );
+    assert_eq!(
+        tool_to_operation("memory_store"),
+        Some(OperationType::FileWrite)
+    );
+    assert_eq!(
+        tool_to_operation("memory_forget"),
+        Some(OperationType::FileDelete)
+    );
+    assert_eq!(
+        tool_to_operation("skill_manage"),
+        Some(OperationType::FileWrite)
+    );
+    assert_eq!(
+        tool_to_operation("board_issue"),
+        Some(OperationType::FileWrite)
+    );
+    // B4 例外语义显式化（不再靠未知名兜底）。
+    assert_eq!(
+        tool_to_operation("background_start"),
+        Some(OperationType::ProcessExec)
+    );
+    assert_eq!(
+        tool_to_operation("background_output"),
+        Some(OperationType::Internal)
+    );
+    assert_eq!(
+        tool_to_operation("background_kill"),
+        Some(OperationType::Internal)
+    );
+    // 纯编排/查询/交互面 → Internal（LOW）。
+    for name in [
+        "message",
+        "sleep",
+        "question",
+        "subagent",
+        "skills_list",
+        "skills_info",
+        "cli_reference",
+        "history_search",
+        "mcp_list",
+        "workflow_run",
+        "workflow_capabilities",
+        "memory_search",
+        "memory_list",
+    ] {
+        assert_eq!(
+            tool_to_operation(name),
+            Some(OperationType::Internal),
+            "tool '{name}' must map to Internal"
+        );
+    }
+    assert_eq!(get_danger_level(OperationType::Internal), DangerLevel::Low);
+}
+
+/// W5 盲点修复回归钉：进程级声明表 lookup-first（动态注册面：MCP 桥/
+/// 插件桥注册期 declare）——声明覆盖内置表、undeclare 恢复内置表、
+/// 未声明名走内置表 None。
+#[test]
+fn test_declared_tool_operation_lookup_first() {
+    let probe = "zz_w5_declare_probe";
+    // 未声明：内置表无此名。
+    assert_eq!(tool_to_operation(probe), None);
+    // 声明后命中（声明优先）。
+    declare_tool_operation(probe, OperationType::NetworkRequest);
+    assert_eq!(
+        tool_to_operation(probe),
+        Some(OperationType::NetworkRequest)
+    );
+    // 覆盖声明（重注册语义）。
+    declare_tool_operation(probe, OperationType::FileWrite);
+    assert_eq!(tool_to_operation(probe), Some(OperationType::FileWrite));
+    // 前缀批量撤销（MCP server 重载场景）。
+    undeclare_tool_operations_with_prefix("zz_w5_");
+    assert_eq!(tool_to_operation(probe), None);
+    // 单名撤销对未声明名是 no-op（不 panic）。
+    undeclare_tool_operation(probe);
+}
+
 #[test]
 fn test_extract_target() {
     let args = serde_json::json!({"path": "/tmp/test.txt"});

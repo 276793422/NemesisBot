@@ -1,0 +1,22 @@
+# textstat 安装清单模板——拷为 plugin.toml 与 plugin.wasm 同放一个目录后安装：
+#   1. cargo build --target wasm32-wasip2 --release
+#   2. sha256sum target/wasm32-wasip2/release/textstat_plugin.wasm
+#   3. 把哈希填进下方 wasm-sha256（必须位于文件头，TOML 根键须在任何 table 段之前）
+#   4. nemesisbot plugin install <该目录> --yes --allow-unsigned
+#      （或 Dashboard 插件页安装——带审批卡；签名发布流程见三方开发指南 §7）
+wasm-sha256 = "<sha256(plugin.wasm)>"
+api-version = 1
+slug = "textstat"
+kind = "tool"
+name = "TextStat"
+version = "0.1.0"
+description = "文本统计示例插件（SDK dogfood）：字符/词数/行数统计，配置热生效 + 数据目录持久化"
+
+[permissions]
+# 本插件零出站、零凭据：空 permissions = 默认零权限
+
+[config-schema]
+include_spaces = "统计字数时是否计入空格（'true'/'false'，缺省 true）"
+
+# [limits] 可选——在宿主全局上限内收紧，例如：
+# fuel = 20_000_000

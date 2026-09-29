@@ -38,6 +38,11 @@ pub enum OperationType {
     RegistryRead,
     RegistryWrite,
     RegistryDelete,
+    // 进程内编排/查询/交互（无外部副作用或副作用经自闸二次过滤）：
+    // 定时器、会话内问答卡、静态表查询、子代理/工作流触发（其内部工具
+    // 调用各自过闸）。W5 盲点修复配套：给「纯内置编排面」一个诚实的
+    // LOW 档家，避免它们误挂 ProcessExec/Network* 名实不符的档位。
+    Internal,
 }
 
 impl fmt::Display for OperationType {
@@ -67,6 +72,7 @@ impl fmt::Display for OperationType {
             Self::RegistryRead => "registry_read",
             Self::RegistryWrite => "registry_write",
             Self::RegistryDelete => "registry_delete",
+            Self::Internal => "internal",
         };
         write!(f, "{}", s)
     }
@@ -95,7 +101,9 @@ impl fmt::Display for DangerLevel {
 /// Get danger level for an operation type.
 pub fn get_danger_level(op: OperationType) -> DangerLevel {
     match op {
-        OperationType::FileRead | OperationType::DirRead => DangerLevel::Low,
+        OperationType::FileRead | OperationType::DirRead | OperationType::Internal => {
+            DangerLevel::Low
+        }
         OperationType::NetworkDownload | OperationType::NetworkRequest => DangerLevel::Medium,
         OperationType::FileWrite
         | OperationType::FileDelete
@@ -297,29 +305,89 @@ pub fn matches_pattern(target: &str, pattern: &str) -> bool {
     crate::matcher::match_pattern(pattern, target)
 }
 
+// ---------------------------------------------------------------------------
+// 进程级工具操作类型声明表（W5 盲点修复配套）
+// ---------------------------------------------------------------------------
+// 动态注册面（MCP 桥 / WASM 插件桥）在工具注册期声明操作类型；管线查表
+// lookup-first（声明优先于内置表）。修复前的盲点：内置表 `_ => None` +
+// 管线 `None => allow`（fail-open），任何不在表内的工具名整体跳过 8 层
+// （连注入检测都不跑）。修复后：动态工具注册即声明，未知名在管线层按
+// CRITICAL fail-closed（见 pipeline::effective_tool_operation）。
+
+use std::sync::OnceLock;
+use std::sync::RwLock;
+
+static DECLARED_TOOL_OPERATIONS: OnceLock<RwLock<HashMap<String, OperationType>>> = OnceLock::new();
+
+fn declared_operations() -> &'static RwLock<HashMap<String, OperationType>> {
+    DECLARED_TOOL_OPERATIONS.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// 声明（或覆盖）一个工具名的操作类型（动态注册面在注册期调用；
+/// 升级/重注册语义 = 覆盖）。
+pub fn declare_tool_operation(tool_name: &str, op: OperationType) {
+    let mut map = declared_operations()
+        .write()
+        .unwrap_or_else(|p| p.into_inner());
+    map.insert(tool_name.to_string(), op);
+}
+
+/// 撤销声明（工具注销时调用；未声明过 = no-op）。
+pub fn undeclare_tool_operation(tool_name: &str) {
+    let mut map = declared_operations()
+        .write()
+        .unwrap_or_else(|p| p.into_inner());
+    map.remove(tool_name);
+}
+
+/// 按前缀批量撤销（MCP server 重载 / 插件卸载场景）。
+pub fn undeclare_tool_operations_with_prefix(prefix: &str) {
+    let mut map = declared_operations()
+        .write()
+        .unwrap_or_else(|p| p.into_inner());
+    map.retain(|name, _| !name.starts_with(prefix));
+}
+
+/// 读声明（管线内部用；外部走 [`tool_to_operation`]）。
+fn declared_tool_operation(tool_name: &str) -> Option<OperationType> {
+    declared_operations()
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(tool_name)
+        .copied()
+}
+
 /// Map tool name to operation type.
+///
+/// 查表顺序：进程级声明（动态注册面）→ 内置表。`None` 的消费方（管线）
+/// 按 fail-closed 处理；本函数保持 `Option` 返回以兼容既有调用点
+/// （`is_critical_tool` / `tool_danger_level` 等各自决定未知名姿态）。
 pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
+    if let Some(op) = declared_tool_operation(tool_name) {
+        return Some(op);
+    }
     match tool_name {
-        "read_file" => Some(OperationType::FileRead),
-        "write_file" | "edit_file" | "append_file" => Some(OperationType::FileWrite),
+        "read_file" | "file_exists" => Some(OperationType::FileRead),
+        "write_file" | "edit_file" | "append_file" | "multiedit" => {
+            Some(OperationType::FileWrite)
+        }
         "delete_file" => Some(OperationType::FileDelete),
         "list_directory" | "list_dir" => Some(OperationType::DirRead),
         "create_directory" | "create_dir" => Some(OperationType::DirCreate),
         "delete_directory" | "delete_dir" => Some(OperationType::DirDelete),
         // B4（2026-09-05）：background_start 语义等同 exec（起进程）→ 同档
         // ProcessExec，命令本体照常过 8 层管线。background_output /
-        // background_kill 不映射：只操作本注册表内的自有任务（命令已在
-        // start 时过闸，读自有缓冲/杀自属子进程不构成新攻击面），走未知名
-        // 放行分支。
-        "exec" | "execute_command" | "shell" | "exec_async" | "background_start" | "cron" => {
-            Some(OperationType::ProcessExec)
-        }
-        // U10 统一执行世界：`run_script` 是 workflow script 节点 + agent 的
-        // 脚本执行入口（MOVE_TOOLS 成员，与 `exec` 同路由到 executor 子进程/
-        // Sandboxie 盒）。此前不在表内 → 8 层管线全跳直接放行（未知名放行
-        // 分支），是统一路由链上唯一未分类的执行类工具。与 `exec` 同档
-        // ProcessExec。
-        "run_script" => Some(OperationType::ProcessExec),
+        // background_kill 只操作本注册表内的自有任务（命令已在 start 时过
+        // 闸，读自有缓冲/杀自属子进程不构成新攻击面）——W5 盲点修复前走
+        // 「未知名放行」分支，修复后未知名 = CRITICAL fail-closed，这里
+        // 显式映射 Internal（LOW）保留原例外语义，不靠未知名兜底。
+        "exec" | "execute_command" | "shell" | "exec_async" | "background_start" | "cron"
+        | "run_script"
+        // C8：构建/测试 runner（MOVE_TOOLS 成员，写 target/；plan 模式
+        // 同源派生拦截）。
+        | "run_checks"
+        // U13：外部 CLI 委派（claude/codex 子进程跑任务）。
+        | "claude_code" | "codex_delegate" => Some(OperationType::ProcessExec),
         // F3（2026-09-22 审计修复）：`git`/`grep` 同为 MOVE_TOOLS 但此前未
         // 分类 → 管线 None 放行（fail-open），U10 注释承诺的 declared_
         // operation_type 机制未落地，这里直接补表。FileRead=LOW 让 8 层
@@ -327,19 +395,25 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         // 白名单收口（只暴露 add/commit 等 D1 安全写），危险写走 exec。
         "git" | "grep" => Some(OperationType::FileRead),
         "spawn" => Some(OperationType::ProcessSpawn),
+        // 桌面自动化：控制其他应用窗口/键鼠（效果面 ≈ 操纵 GUI 程序）→
+        // ProcessSpawn（HIGH）。不上 CRITICAL：日常自动化工具，CRITICAL
+        // 会挂 guardian LLM 二审常开。
+        "desktop" => Some(OperationType::ProcessSpawn),
         "kill" | "kill_process" => Some(OperationType::ProcessKill),
         "download" | "install_skill" => Some(OperationType::NetworkDownload),
         "upload" => Some(OperationType::NetworkUpload),
         "http_request" | "web_request" | "web_fetch" | "web_search" | "cluster_rpc"
         | "find_skills" => Some(OperationType::NetworkRequest),
+        // 浏览器自动化 = 网络面向能力；MCP 发现会拉起配置的 MCP server
+        // 进程（stdio）/HTTP 连接——工具本身只列举，不给 exec 档。
+        "browser" | "mcp_discover" => Some(OperationType::NetworkRequest),
         "screen_capture" => Some(OperationType::FileWrite),
         // H1（2026-09-05）：todowrite 本质是 workspace 内写文件（sessions/
         // todo_*.json），归 FileWrite 走同类审查（空 target 不匹配任何
         // ABAC 规则 → default action 兜底，默认配置放行）。
         "todowrite" => Some(OperationType::FileWrite),
         // 对话生成（2026-09-22）：workflow_create 落草稿 YAML 到 workspace
-        // workflow/drafts/（写文件语义）；workflow_capabilities 是纯静态表
-        // 查询，不映射（未知名放行分支，与 cli_reference 同类）。
+        // workflow/drafts/（写文件语义）。
         "workflow_create" => Some(OperationType::FileWrite),
         // 图像生成（集群专业职能框架 M4）：出站请求发往装配期解析的固定
         // 端点（prompt 为载荷）+ 结果落工作区 images/（工具内构造性钉死，
@@ -347,6 +421,29 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         // 扫描/DLP/审计链全跑；不做 executor 隔离（不出 MOVE_TOOLS——
         // 沙盒断网反而打不通端点）。
         "generate_image" => Some(OperationType::NetworkRequest),
+        // 只读语义代码查询（L1/U19）。
+        "lsp" => Some(OperationType::FileRead),
+        // 硬件具名档（此前未映射 → 旧未知名放行；补齐后走具名类型）。
+        "i2c" => Some(OperationType::HardwareI2C),
+        "spi" => Some(OperationType::HardwareSPI),
+        // 看板数据面（workspace 内 SQLite 建单/流转/评论 + 拆解派发）。
+        "board_issue" => Some(OperationType::FileWrite),
+        // 技能文件写（agent 自写 procedural memory）。
+        "skill_manage" => Some(OperationType::FileWrite),
+        "complete_bootstrap" => Some(OperationType::FileDelete),
+        // 增强记忆：store 落记忆文件/向量库（写），forget 删条目（删），
+        // search/list 纯查询。
+        "memory_store" => Some(OperationType::FileWrite),
+        "memory_forget" => Some(OperationType::FileDelete),
+        // 进程内编排/查询/交互面（LOW）：纯会话机制（发消息/睡眠/问答卡/
+        // 子代理编排——其内部工具调用各自过闸）、静态表查询、B4 自有任务
+        // 读写、工作流触发（节点各自过闸）。这些工具没有外部副作用面，
+        // 挂 exec/network 档名实不符；Internal = LOW 且全 8 层照跑
+        // （注入检测/凭据扫描/DLP/审计链不再像修复前那样整体跳过）。
+        "message" | "sleep" | "question" | "subagent" | "skills_list" | "skills_info"
+        | "cli_reference" | "history_search" | "mcp_list" | "workflow_run"
+        | "workflow_capabilities" | "memory_search" | "memory_list" | "background_output"
+        | "background_kill" => Some(OperationType::Internal),
         _ => None,
     }
 }

@@ -44,6 +44,10 @@ pub mod models;
 pub mod outbox;
 pub mod persona;
 pub mod plugins;
+// W6（2026-09-29）：WASM 插件管理面（`plugins.wasm.*` 命令实现在此，由
+// plugins 模块代理分发；宿主运行时整槽静态注入，槽空诚实报错）。
+#[cfg(feature = "plugins-wasm")]
+pub mod plugins_wasm;
 // L6++ G4（2026-09-08）：项目注册表 WSAPI（projects.list/create/remove/
 // rename）+ resolve_session_loop 会话归属解析。无 feature 闸——bridge 槽
 // 未装配时 handler 诚实报「未装配」。
@@ -219,6 +223,9 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     // 2026-08-29: 插件状态总览（只读）— PluginsView 数据源。No feature gate
     // （探测逻辑无条件编译；onnx 能力状态节内含 memory cfg 门控）。
     router.register(Arc::new(plugins::PluginsHandler));
+    // W6（2026-09-29）：WASM 插件管理面命令（`plugins.wasm.*`）同挂在上方
+    // plugins 模块下（实现在 plugins_wasm.rs；无需独立注册——宿主运行时
+    // 整槽静态注入，槽空诚实报错）。
     // W2 P1 (2026-08-31): managed-agent 看板。No feature gate — nemesis-board
     // 是 nemesis-web 无条件依赖（cron 先例）；store 未注入时命令统一报
     // "board service not available"（gateway 仅在 board feature 开启时注入）。
