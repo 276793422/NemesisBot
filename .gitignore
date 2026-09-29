@@ -80,3 +80,9 @@ __pycache__/
 /test-tools/android-shell/*.jks
 /web/.cdp-profile
 test-tools/mcp/server/mcp-test-server.exe
+
+# WASM 插件开发包（devkit）本地打包产物（CI 产的 zip 同理不入库，
+# 经 GitHub Release 分发；见 REPORT 2026-09-29_wasm插件页三tab重构与插件开发包devkit）
+/staging-wasm-devkit/
+/nightly-wasm-devkit.zip
+/nightly-wasm-devkit.tar.gz

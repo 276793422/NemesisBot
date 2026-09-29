@@ -3,11 +3,12 @@ import { ref, computed, onMounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 
-// 插件状态总览页（2026-08-29 phase 1，只读）：枚举已知插件库
-// （探测 exe 旁 plugins/）与当前构建的子系统 feature 状态。
-// 数据源 = plugins.list WSAPI（handlers/plugins.rs）。
-// W6（2026-09-29）：新增「WASM 插件」分节（plugins.wasm.* WSAPI）——
-// 沙盒化组件插件的管理面（安装走九步装配漏斗 + 审批卡，启停热生效）。
+// 插件页（2026-09-29 三 Tab 重构）：异质插件体系各自成 Tab，不再单页混装。
+// - WASM 插件（默认 Tab，主角）：沙盒化组件插件管理面 + 「是什么/怎么做」
+//   引导 + 开发包（devkit）一键下载——guide 原则：告诉用户是什么、怎么做。
+// - 本地插件库：C-ABI 动态库（plugin_onnx/plugin_ui），只读探测总览。
+// - 管线插件：T2 三段化（pre/around/post）进程内插件，启停即时生效。
+// 编译期子系统 feature 状态已迁「关于」页「构建形态」tab（system.features）。
 
 interface PluginEntry {
   id: string
@@ -18,12 +19,6 @@ interface PluginEntry {
   path?: string
   capabilities?: string[]
   detail?: any
-}
-
-interface FeatureEntry {
-  id: string
-  label: string
-  enabled: boolean
 }
 
 interface PipelinePlugin {
@@ -63,11 +58,23 @@ interface WasmLogLine {
   message: string
 }
 
+interface DevkitInfo {
+  path: string
+  dir: string
+  size: number
+  files: number
+}
+
 const { request } = useWSAPI()
 const toast = useToast()
 
+// 前端同步裁剪（customize 流程）：VITE_FEATURE_PLUGINS_WASM=false 时整个
+// WASM Tab 隐藏（构建期 tree-shake 由路由级门控承担；页内 Tab 用运行时常量）。
+const wasmFeatureEnabled = import.meta.env.VITE_FEATURE_PLUGINS_WASM !== 'false'
+
+const activeTab = ref(wasmFeatureEnabled ? 'wasm' : 'native')
+
 const plugins = ref<PluginEntry[]>([])
-const features = ref<FeatureEntry[]>([])
 const pipelinePlugins = ref<PipelinePlugin[]>([])
 const loading = ref(true)
 
@@ -82,18 +89,28 @@ const wasmConfig = ref<WasmConfigData | null>(null)
 const wasmLogs = ref<WasmLogLine[]>([])
 const wasmLogDropped = ref(0)
 
-const enabledFeatureCount = computed(() => features.value.filter(f => f.enabled).length)
+// devkit 下载（wasm.devkit_download）：zip 落 workspace/wasm-plugin-devkit/，
+// 解包 devkit/；已存在默认拒绝，勾「覆盖」重下。
+const devkitBusy = ref(false)
+const devkitInfo = ref<DevkitInfo | null>(null)
+const devkitOverwrite = ref(false)
 
-// 前端同步裁剪（customize 流程）：VITE_FEATURE_PLUGINS_WASM=false 时整节
-// 隐藏（构建期 tree-shake 由路由级门控承担；页内节用运行时常量）。
-const wasmFeatureEnabled = import.meta.env.VITE_FEATURE_PLUGINS_WASM !== 'false'
+const tabs = computed(() => {
+  const t = [{ id: 'native', label: '本地插件库' }, { id: 'pipeline', label: '管线插件' }]
+  return wasmFeatureEnabled ? [{ id: 'wasm', label: 'WASM 插件' }, ...t] : t
+})
+
+function humanSize(n: number): string {
+  if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB'
+  if (n >= 1024) return (n / 1024).toFixed(1) + ' KB'
+  return n + ' B'
+}
 
 async function loadPlugins() {
   loading.value = true
   try {
     const data = await request('plugins', 'list')
     plugins.value = data?.plugins || []
-    features.value = data?.features || []
     pipelinePlugins.value = data?.pipeline_plugins || []
   } catch (e: any) {
     toast.error('加载插件状态失败: ' + e)
@@ -116,9 +133,22 @@ async function loadWasm() {
     const data = await request('plugins', 'wasm.list')
     wasmPlugins.value = data?.plugins || []
     wasmAvailable.value = true
-  } catch (e: any) {
+  } catch {
     wasmAvailable.value = false
   }
+}
+
+async function downloadDevkit() {
+  devkitBusy.value = true
+  try {
+    const data = await request('plugins', 'wasm.devkit_download', { overwrite: devkitOverwrite.value })
+    devkitInfo.value = data
+    devkitOverwrite.value = false
+    toast.success('开发包已下载并解包，按引导三步即可编译出可安装插件')
+  } catch (e: any) {
+    toast.error('开发包下载失败: ' + e)
+  }
+  devkitBusy.value = false
 }
 
 async function wasmInstall() {
@@ -218,7 +248,7 @@ function wasmTrustClass(trust: string): string {
 
 onMounted(() => {
   loadPlugins()
-  loadWasm()
+  if (wasmFeatureEnabled) loadWasm()
 })
 </script>
 
@@ -229,75 +259,88 @@ onMounted(() => {
       <button class="btn btn-sm" @click="loadPlugins" :disabled="loading">重载</button>
     </div>
     <div class="page-body">
+      <div class="tabs">
+        <button
+          v-for="tab in tabs"
+          :key="tab.id"
+          class="tab"
+          :class="{ active: activeTab === tab.id }"
+          @click="activeTab = tab.id"
+        >{{ tab.label }}</button>
+      </div>
+
       <div v-if="loading" style="text-align: center; padding: var(--space-8);">
         <div class="spinner spinner-lg" style="margin: 0 auto;"></div>
       </div>
 
-      <div v-else>
-        <p style="font-size: var(--text-sm); color: var(--text-secondary); margin: 0 0 var(--space-4);">
-          插件库位于运行目录旁的 <code>plugins/</code> 子目录，为宿主提供可选能力
-          （嵌入推理、WebView UI 等）。页面为只读总览；插件文件放对位置后点「重载」即可识别。
-        </p>
+      <!-- ═══ Tab: WASM 插件（主角）═══ -->
+      <div v-else-if="activeTab === 'wasm'" style="margin-top: var(--space-4);">
+        <div v-if="wasmAvailable === false" class="card">
+          <div class="card-body" style="color: var(--text-muted); font-size: var(--text-sm);">
+            WASM 插件子系统未装配（未启用 plugins.wasm 或当前构建裁掉了 plugins-wasm feature）。
+          </div>
+        </div>
+        <template v-else>
+          <!-- 是什么 -->
+          <div class="card" style="margin-bottom: var(--space-4);">
+            <div class="card-header"><h3>WASM 插件是什么</h3></div>
+            <div class="card-body" style="font-size: var(--text-sm); color: var(--text-secondary); line-height: 1.8;">
+              <p style="margin: 0 0 var(--space-2);">
+                用 Rust 写成、编译为<strong>单个 <code>.wasm</code> 文件</strong>的沙盒化插件——Windows / Linux / macOS
+                三平台通用，无需按平台重新编译。运行在独立隔离环境里：默认<strong>零权限</strong>，能做什么完全由清单声明、宿主逐项授予。
+              </p>
+              <p style="margin: 0 0 var(--space-2);">安全边界（宿主强制，插件无法自行突破）：</p>
+              <ul style="margin: 0 0 var(--space-2); padding-left: var(--space-5);">
+                <li>出站网络 deny-by-default：只允许清单声明的域名（如 <code>api.example.com</code>）</li>
+                <li>凭据经 vault 注入：插件拿到的是解锁后的值，原文不落 guest 日志、配置页不回显</li>
+                <li>燃料 / 内存 / 墙钟三重限制：失控计算会被强制中断</li>
+                <li>调用宿主能力（读写文件、发请求）一律过安全 8 层管线与审计链</li>
+              </ul>
+              <p style="margin: 0;">
+                两种插件类型：<strong>Tool</strong>（给 agent 增加一个可调用的新工具）和
+                <strong>Observer</strong>（订阅 agent 事件流，如记录活动、统计）。安装走九步装配漏斗
+                （清单校验 → 信任验签 → 哈希对账 → 病毒扫描 → 审批卡确认），弹出审批卡后请在聊天面板确认。
+              </p>
+            </div>
+          </div>
 
-        <!-- 插件卡片 -->
-        <div class="card" style="margin-bottom: var(--space-4);">
-          <div class="card-header"><h3>插件库（{{ plugins.filter(p => p.found).length }}/{{ plugins.length }} 已就绪）</h3></div>
-          <div class="card-body">
-            <div v-for="p in plugins" :key="p.id" class="plugin-card">
-              <div style="display: flex; justify-content: space-between; align-items: center;">
-                <div style="display: flex; align-items: center; gap: var(--space-2);">
-                  <span :style="{ color: p.found ? 'var(--success)' : 'var(--text-muted)' }" style="font-size: 18px;">{{ p.found ? '●' : '○' }}</span>
-                  <span style="font-weight: 600; font-family: var(--font-mono);">{{ p.id }}</span>
-                  <span class="plugin-badge" :class="p.found ? 'plugin-badge--ok' : 'plugin-badge--off'">
-                    {{ p.found ? '已就绪' : '未找到' }}
-                  </span>
-                </div>
-                <span class="plugin-filename">{{ p.filename }}</span>
+          <!-- 怎么做 + 开发包下载 -->
+          <div class="card" style="margin-bottom: var(--space-4);">
+            <div class="card-header"><h3>怎么开发一个插件</h3></div>
+            <div class="card-body">
+              <ol style="margin: 0 0 var(--space-4); padding-left: var(--space-5); font-size: var(--text-sm); color: var(--text-secondary); line-height: 2;">
+                <li>点击下方按钮下载<strong>插件开发包</strong>（解压后即是可独立编译的最小 Rust 工程示例：打包工具 + 插件 SDK + 三个示例插件，与主程序仓库无依赖）</li>
+                <li>在解压目录内执行 <code>cargo run -p pack</code>——自动编译全部示例插件、计算签名哈希、生成 <code>dist/&lt;插件名&gt;/</code> 安装目录</li>
+                <li>把 <code>dist/&lt;插件名&gt;</code> 目录路径填到下方「安装」表单（或 CLI <code>nemesisbot plugin install &lt;目录&gt;</code>），审批通过即装即用</li>
+              </ol>
+              <div style="display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;">
+                <button class="btn btn-primary" :disabled="devkitBusy" @click="downloadDevkit">
+                  {{ devkitBusy ? '下载中…' : '📦 下载插件开发包' }}
+                </button>
+                <label style="display: flex; align-items: center; gap: 4px; font-size: var(--text-xs); color: var(--text-secondary);">
+                  <input v-model="devkitOverwrite" type="checkbox" :disabled="devkitBusy" />
+                  已存在时覆盖重下
+                </label>
               </div>
-              <div style="margin-top: var(--space-1); color: var(--text-secondary); font-size: var(--text-sm);">
-                {{ p.label }} —— 服务于{{ p.used_by }}
-              </div>
-              <div v-if="p.path" style="color: var(--text-muted); font-size: var(--text-xs); margin-top: 2px; word-break: break-all;">{{ p.path }}</div>
-              <div v-if="p.capabilities?.length" style="margin-top: var(--space-2); display: flex; gap: var(--space-1); flex-wrap: wrap;">
-                <span v-for="cap in p.capabilities" :key="cap" class="plugin-badge">{{ cap }}</span>
-              </div>
-              <div v-if="p.detail" style="margin-top: var(--space-2); font-size: var(--text-xs); color: var(--text-secondary);">
-                <template v-if="p.detail.note">{{ p.detail.note }}</template>
-                <template v-else>
-                  强化记忆：{{ p.detail.enhanced_memory_enabled ? '已启用' : '未启用' }}
-                  · 当前档 {{ p.detail.active_tier }}
-                  · 模型 {{ p.detail.active_model || '?' }}
-                  ·
-                  <span :style="{ color: p.detail.model_ready ? 'var(--success)' : 'var(--danger)' }">
-                    {{ p.detail.model_ready ? '模型就绪' : '模型未安装' }}
-                  </span>
-                  （可在「记忆」页环境准备卡安装）
-                </template>
+              <div v-if="devkitInfo" style="margin-top: var(--space-3); padding: var(--space-3); border: 1px solid var(--border-light); border-radius: var(--radius-md); background: var(--bg-secondary); font-size: var(--text-xs); line-height: 1.9;">
+                <div>✅ 已就绪（{{ devkitInfo.files }} 个文件，{{ humanSize(devkitInfo.size) }}）——在终端里进入下方目录执行 <code>cargo run -p pack</code>：</div>
+                <div style="font-family: var(--font-mono); word-break: break-all; color: var(--text-primary);">{{ devkitInfo.dir }}</div>
+                <div style="color: var(--text-muted);">压缩包留存于 {{ devkitInfo.path }}</div>
               </div>
             </div>
           </div>
-        </div>
 
-        <!-- WASM 插件（沙盒化组件插件；plugins.wasm.* WSAPI；前端裁剪门控） -->
-        <div v-if="wasmFeatureEnabled" class="card" style="margin-bottom: var(--space-4);">
-          <div class="card-header"><h3>WASM 插件（沙盒化，{{ wasmPlugins.length }}）</h3></div>
-          <div class="card-body">
-            <div v-if="wasmAvailable === false" style="color: var(--text-muted); font-size: var(--text-sm);">
-              WASM 插件子系统未装配（未启用 plugins.wasm 或当前构建裁掉了 plugins-wasm feature）。
-            </div>
-            <template v-else>
-              <p style="font-size: var(--text-xs); color: var(--text-muted); margin: 0 0 var(--space-2);">
-                WebAssembly 组件插件：guest 侧能力受 fuel/内存/墙钟三重限制，出站网络 deny-by-default，
-                凭据走 vault 注入（原文不进 guest 日志）。安装走九步装配漏斗（验签 → 病毒扫描 → 审批卡），
-                弹出审批卡后请在聊天面板确认。
-              </p>
+          <!-- 安装 + 已装列表 -->
+          <div class="card">
+            <div class="card-header"><h3>已安装（{{ wasmPlugins.length }}）</h3></div>
+            <div class="card-body">
               <!-- 安装表单 -->
               <div style="display: flex; gap: var(--space-2); align-items: center; margin-bottom: var(--space-3); flex-wrap: wrap;">
                 <input
                   v-model="wasmInstallDir"
                   class="form-input"
                   style="flex: 1; min-width: 260px;"
-                  placeholder="插件源目录绝对路径（含 plugin.toml + wasm 载荷）"
+                  placeholder="插件源目录绝对路径（含 plugin.toml + wasm 载荷，如 devkit 的 dist/translate）"
                   :disabled="wasmInstalling"
                   @keyup.enter="wasmInstall"
                 />
@@ -310,7 +353,7 @@ onMounted(() => {
                 </button>
               </div>
               <!-- 插件行 -->
-              <div v-if="!wasmPlugins.length" style="color: var(--text-muted); font-size: var(--text-sm);">尚未安装任何 WASM 插件</div>
+              <div v-if="!wasmPlugins.length" style="color: var(--text-muted); font-size: var(--text-sm);">尚未安装任何 WASM 插件——按上方三步下载开发包即可开始</div>
               <div v-for="p in wasmPlugins" :key="p.slug" class="plugin-card">
                 <div style="display: flex; justify-content: space-between; align-items: center; gap: var(--space-2);">
                   <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">
@@ -381,12 +424,59 @@ onMounted(() => {
                   </template>
                 </div>
               </div>
-            </template>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- ═══ Tab: 本地插件库（C-ABI，只读）═══ -->
+      <div v-else-if="activeTab === 'native'" style="margin-top: var(--space-4);">
+        <div class="card">
+          <div class="card-header"><h3>本地插件库（{{ plugins.filter(p => p.found).length }}/{{ plugins.length }} 已就绪）</h3></div>
+          <div class="card-body">
+            <p style="font-size: var(--text-xs); color: var(--text-muted); margin: 0 0 var(--space-2);">
+              原生动态库（.dll / .so），位于运行目录旁的 <code>plugins/</code> 子目录，与主程序同步分发。
+              页面为只读总览；插件文件放对位置后点「重载」即可识别。新扩展请优先使用 WASM 插件（沙盒隔离 + 跨平台）。
+            </p>
+            <div v-for="p in plugins" :key="p.id" class="plugin-card">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div style="display: flex; align-items: center; gap: var(--space-2);">
+                  <span :style="{ color: p.found ? 'var(--success)' : 'var(--text-muted)' }" style="font-size: 18px;">{{ p.found ? '●' : '○' }}</span>
+                  <span style="font-weight: 600; font-family: var(--font-mono);">{{ p.id }}</span>
+                  <span class="plugin-badge" :class="p.found ? 'plugin-badge--ok' : 'plugin-badge--off'">
+                    {{ p.found ? '已就绪' : '未找到' }}
+                  </span>
+                </div>
+                <span class="plugin-filename">{{ p.filename }}</span>
+              </div>
+              <div style="margin-top: var(--space-1); color: var(--text-secondary); font-size: var(--text-sm);">
+                {{ p.label }} —— 服务于{{ p.used_by }}
+              </div>
+              <div v-if="p.path" style="color: var(--text-muted); font-size: var(--text-xs); margin-top: 2px; word-break: break-all;">{{ p.path }}</div>
+              <div v-if="p.capabilities?.length" style="margin-top: var(--space-2); display: flex; gap: var(--space-1); flex-wrap: wrap;">
+                <span v-for="cap in p.capabilities" :key="cap" class="plugin-badge">{{ cap }}</span>
+              </div>
+              <div v-if="p.detail" style="margin-top: var(--space-2); font-size: var(--text-xs); color: var(--text-secondary);">
+                <template v-if="p.detail.note">{{ p.detail.note }}</template>
+                <template v-else>
+                  强化记忆：{{ p.detail.enhanced_memory_enabled ? '已启用' : '未启用' }}
+                  · 当前档 {{ p.detail.active_tier }}
+                  · 模型 {{ p.detail.active_model || '?' }}
+                  ·
+                  <span :style="{ color: p.detail.model_ready ? 'var(--success)' : 'var(--danger)' }">
+                    {{ p.detail.model_ready ? '模型就绪' : '模型未安装' }}
+                  </span>
+                  （可在「记忆」页环境准备卡安装）
+                </template>
+              </div>
+            </div>
           </div>
         </div>
+      </div>
 
-        <!-- 管线插件（T2 三段化的进程内插件，可启停） -->
-        <div class="card" style="margin-bottom: var(--space-4);">
+      <!-- ═══ Tab: 管线插件 ═══ -->
+      <div v-else style="margin-top: var(--space-4);">
+        <div class="card">
           <div class="card-header"><h3>管线插件</h3></div>
           <div class="card-body">
             <p style="font-size: var(--text-xs); color: var(--text-muted); margin: 0 0 var(--space-2);">
@@ -402,21 +492,6 @@ onMounted(() => {
                 <input type="checkbox" :checked="p.enabled" @change="togglePipeline(p)" />
                 <span class="toggle-slider"></span>
               </label>
-            </div>
-          </div>
-        </div>
-
-        <!-- 编译期 feature 状态 -->
-        <div class="card">
-          <div class="card-header"><h3>子系统 feature（编译期，{{ enabledFeatureCount }}/{{ features.length }} 开启）</h3></div>
-          <div class="card-body">
-            <p style="font-size: var(--text-xs); color: var(--text-muted); margin: 0 0 var(--space-2);">
-              由构建时的 cargo feature 决定（customize / menuconfig 裁剪），变更需重新构建。
-            </p>
-            <div style="display: flex; gap: var(--space-2); flex-wrap: wrap;">
-              <span v-for="f in features" :key="f.id" class="plugin-badge" :class="f.enabled ? 'plugin-badge--ok' : 'plugin-badge--off'">
-                {{ f.label }} · {{ f.enabled ? '开' : '关' }}
-              </span>
             </div>
           </div>
         </div>

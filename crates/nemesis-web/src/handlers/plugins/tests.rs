@@ -84,12 +84,12 @@ fn plugins_list_reports_both_known_plugins_without_error() {
         assert_eq!(p["found"], false, "test env has no plugins dir: {p}");
     }
 
-    // feature 状态数组：7 项子系统和每项 enabled 为 bool。
-    let features = r["features"].as_array().unwrap();
-    assert_eq!(features.len(), 7);
-    for f in features {
-        assert!(f["enabled"].is_boolean(), "{f}");
-    }
+    // feature 状态数组已迁出（system.features / About 页构建形态 tab 消费）——
+    // 这里钉「不再返回」，防止旧字段悄悄回潮。
+    assert!(
+        r.get("features").is_none(),
+        "plugins.list 不再携带 features（迁至 system.features）：{r}"
+    );
 }
 
 #[test]

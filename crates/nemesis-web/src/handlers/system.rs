@@ -4,6 +4,16 @@ use crate::ws_router::{ModuleHandler, RequestContext};
 
 pub struct SystemHandler;
 
+/// 构建形态清单槽：gateway 注入 nemesisbot build.rs 生成的 features.json
+///（include_str! 嵌入的 `'static` 字符串直接存引用）。测试装配不注入 →
+/// `system.features` 回空数组（诚实：无清单=无形态数据）。
+static FEATURES_MANIFEST: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// gateway 装配点：注入构建形态清单 JSON 文本。
+pub fn set_features_manifest(json: &'static str) {
+    let _ = FEATURES_MANIFEST.set(json);
+}
+
 #[async_trait::async_trait]
 impl ModuleHandler for SystemHandler {
     fn module_name(&self) -> &str {
@@ -11,7 +21,7 @@ impl ModuleHandler for SystemHandler {
     }
 
     fn commands(&self) -> &'static [&'static str] {
-        &["version", "status", "commands", "lease_status"]
+        &["version", "status", "commands", "lease_status", "features"]
     }
 
     async fn handle_cmd(
@@ -28,6 +38,17 @@ impl ModuleHandler for SystemHandler {
             "lease_status" => Ok(Some(nemesis_agent::workspace_lease::WorkspaceLease::probe(
                 ctx.workspace.as_deref(),
             ))),
+            // 构建形态清单（feature 裁剪体系）：gateway 注入的 features.json
+            //（单一真相源 scripts/customize/features.toml + 本构建 CARGO_FEATURE_*
+            // 真实编译态）。未注入（测试装配）= 空数组。
+            "features" => {
+                let features = FEATURES_MANIFEST
+                    .get()
+                    .copied()
+                    .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+                    .unwrap_or_else(|| serde_json::Value::Array(vec![]));
+                Ok(Some(serde_json::json!({ "features": features })))
+            }
             // L1（devtool-upgrade 阶段 6）：全量 WSAPI 命令注册表——
             // register_all 发布的 OnceLock 快照（module → 静态清单）。
             "commands" => {

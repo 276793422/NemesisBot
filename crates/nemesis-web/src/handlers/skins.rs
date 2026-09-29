@@ -19,8 +19,9 @@
 //!
 //! 装配：web_init 注入 {skins 目录, 激活 id 共享锁句柄} 到模块级槽位
 //!（PROJECTS_BRIDGE 同款模式）；未注入 = 全部命令诚实报「未装配」。SSRF
-//! 闸经 `set_ssrf_guard` 静态槽回填（init_web 早于 init_agent 的安全插件
-//! 构建，顺序解耦；None = 直通）。
+//! 闸与下载管线公共化在 `handlers::release_fetch`（devkit 下载共用单一
+//! 来源；`set_ssrf_guard` 由 gateway 注入，init_web 早于 init_agent 的
+//! 安全插件构建，顺序解耦；None = 直通）。
 
 #![cfg(feature = "skins")]
 
@@ -33,17 +34,9 @@ use parking_lot::RwLock;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-/// 渠道下载 SSRF 闸槽（P2）：`SecurityPlugin::ssrf_guard()` 的克隆（Guard
-/// Clone 共享 inner 状态）。gateway 在 init_agent 后注入；None = 直通
-///（security feature 关 / security.enabled=false / ssrf 层关）。
-#[cfg(feature = "security")]
-static SSRF_GUARD_SLOT: RwLock<Option<nemesis_security::ssrf::Guard>> = RwLock::new(None);
-
-/// gateway 装配点：注入 SSRF 闸（与 set_handle 顺序无关）。
-#[cfg(feature = "security")]
-pub fn set_ssrf_guard(guard: Option<nemesis_security::ssrf::Guard>) {
-    *SSRF_GUARD_SLOT.write() = guard;
-}
+// 渠道下载 SSRF 闸槽与下载链已公共化至 [`crate::handlers::release_fetch`]
+//（devkit 下载共用单一来源；`set_ssrf_guard` 装配点同址迁移——gateway
+// 现直接注入 release_fetch，cfg 覆盖两个消费方任一在场的构建）。
 
 /// 模块级装配槽：{skins 目录, 激活 id 共享锁}。
 static SKINS_SLOT: RwLock<Option<SkinsHandle>> = RwLock::new(None);
@@ -218,7 +211,8 @@ impl SkinsHandler {
                 "缺少 url 或 source（url=任意 https 地址 / source=\"release\"=官方发布）"
                     .to_string()
             })?;
-        let bytes = fetch_skin_bytes(url).await?;
+        let bytes =
+            crate::handlers::release_fetch::fetch_bytes(url, SKIN_PACKAGE_MAX_BYTES).await?;
         let outcome = install_bytes(&dir, &bytes, overwrite)?;
         Ok(Some(serde_json::to_value(outcome).unwrap_or(json!({}))))
     }
@@ -303,162 +297,25 @@ impl SkinsHandler {
 // ---------------------------------------------------------------------------
 // 渠道下载机制（fetch + release 解包）
 // ---------------------------------------------------------------------------
+//
+// 下载链（SSRF 逐跳闸 / 手动重定向循环 / 流式上限）公共化在
+// [`crate::handlers::release_fetch`]——WASM 插件开发包（devkit）下载共用
+// 单一来源；本模块只保留 skins 语义的资产名与解包安装。
 
-/// 重定向跳数上限（GitHub release 资产 → S3 一跳即可，5 跳宽裕）。
-const FETCH_MAX_HOPS: usize = 5;
-const FETCH_UA: &str = "nemesisbot-skins";
-const FETCH_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-const FETCH_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
-
-/// 不跟随重定向的下载 client（Policy::none：SSRF 闸只校验发出去的那一跳，
-/// 自动跟跳 = `302 → 内网` 绕闸——image_attach A1 同判例，循环在调用方）。
-fn fetch_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(FETCH_CONNECT_TIMEOUT)
-        .timeout(FETCH_TOTAL_TIMEOUT)
-        .user_agent(FETCH_UA)
-        .build()
-        .unwrap_or_default()
-}
-
-/// 按 SSRF 闸验证过的 IP 集钉死 DNS 的下载 client（防 rebinding TOCTOU——
-/// 闸解析过 ≠ reqwest 连接用的 IP；TLS SNI/证书校验仍按原 host）。
-#[cfg(feature = "security")]
-fn pinned_fetch_client(url: &str, ips: &[std::net::IpAddr]) -> Option<reqwest::Client> {
-    let parsed = reqwest::Url::parse(url).ok()?;
-    let host = parsed.host_str()?.to_string();
-    let port = parsed
-        .port_or_known_default()
-        .unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
-    let mut builder = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(FETCH_CONNECT_TIMEOUT)
-        .timeout(FETCH_TOTAL_TIMEOUT)
-        .user_agent(FETCH_UA);
-    for ip in ips {
-        builder = builder.resolve(&host, std::net::SocketAddr::new(*ip, port));
-    }
-    builder.build().ok()
-}
-
-/// 渠道下载：https-only + 每跳独立过 SSRF 闸（拦 = 诚实失败）+ 手动重定向
-/// 循环（≤[`FETCH_MAX_HOPS`] 跳，相对 Location 走 `Url::join`；重定向降级
-/// 到非 https 拒绝）+ 流式 25MB 上限。
-async fn fetch_skin_bytes(url: &str) -> Result<Vec<u8>, String> {
-    if !url.starts_with("https://") {
-        return Err("仅支持 https:// 地址".to_string());
-    }
-    #[cfg(feature = "security")]
-    let guard = SSRF_GUARD_SLOT.read().clone();
-    let base = fetch_client();
-    let mut current = reqwest::Url::parse(url).map_err(|e| format!("URL 解析失败：{e}"))?;
-    for _hop in 0..=FETCH_MAX_HOPS {
-        #[cfg(feature = "security")]
-        let client = match &guard {
-            Some(g) => match g.resolve_and_validate_collect(current.as_str()) {
-                // Ok(空集) = 闸放行但未给出可钉 IP（allowlist 域名等）→ 共享池。
-                Ok(ips) if ips.is_empty() => base.clone(),
-                Ok(ips) => {
-                    pinned_fetch_client(current.as_str(), &ips).unwrap_or_else(|| base.clone())
-                }
-                Err(e) => return Err(format!("SSRF 闸拦截：{e}")),
-            },
-            None => base.clone(),
-        };
-        #[cfg(not(feature = "security"))]
-        let client = &base;
-
-        let resp = client
-            .get(current.clone())
-            .send()
-            .await
-            .map_err(|e| format!("下载失败：{e}"))?;
-        let status = resp.status();
-        if status.is_redirection() {
-            let loc = resp
-                .headers()
-                .get(reqwest::header::LOCATION)
-                .and_then(|v| v.to_str().ok())
-                .ok_or_else(|| format!("重定向 {status} 缺少 Location 头"))?;
-            let next = current
-                .join(loc)
-                .map_err(|e| format!("Location 解析失败：{e}"))?;
-            if next.scheme() != "https" {
-                return Err("重定向降级到非 https，已拒绝".to_string());
-            }
-            current = next;
-            continue;
-        }
-        if !status.is_success() {
-            return Err(format!("下载失败：HTTP {status}"));
-        }
-        return read_capped(resp).await;
-    }
-    Err(format!("重定向超过 {FETCH_MAX_HOPS} 跳，已放弃"))
-}
-
-/// 流式读响应体（Content-Length 预检 + chunk 累计双闸；25MB 对齐包上限）。
-async fn read_capped(resp: reqwest::Response) -> Result<Vec<u8>, String> {
-    if let Some(len) = resp.content_length()
-        && len as usize > SKIN_PACKAGE_MAX_BYTES
-    {
-        return Err(format!(
-            "包体 {len} 字节超过 {}MB 上限，已拒收",
-            SKIN_PACKAGE_MAX_BYTES / (1024 * 1024)
-        ));
-    }
-    use futures::StreamExt as _;
-    let mut out = Vec::new();
-    let mut stream = resp.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("下载中断：{e}"))?;
-        if out.len() + chunk.len() > SKIN_PACKAGE_MAX_BYTES {
-            return Err(format!(
-                "包体超过 {}MB 上限，下载已中止",
-                SKIN_PACKAGE_MAX_BYTES / (1024 * 1024)
-            ));
-        }
-        out.extend_from_slice(&chunk);
-    }
-    Ok(out)
-}
-
-/// 官方发布源 Release 的 nightly-skins.zip 附件名与仓库 API 址——
-/// CI 打包链的固定产物（plan §2 P0）。枚举用列表 API 而非
-/// `releases/latest`：nightly-build 是 prerelease，latest 语义不认
-/// prerelease（实测 HTTP 404），列表第一条才是真实的最新发布。
+/// 官方发布源 Release 的 nightly-skins.zip 附件名——CI 打包链的固定产物
+///（plan §2 P0）。列表 API 与查找在 [`crate::handlers::release_fetch`]。
 const RELEASE_ZIP_NAME: &str = "nightly-skins.zip";
-const RELEASE_LIST_API: &str =
-    "https://api.github.com/repos/276793422/NemesisBot_Rust/releases?per_page=10";
 
 /// 官方 Release 安装：GitHub API 近期 Release 列表 → 首个含 nightly-skins.zip
 /// 资产的 Release → 内存解包 → 逐 `.nbskin` 走同一条 [`install_bytes`] 管线
 ///（signatures.json / certs/ 目录条目跳过）。单包失败不拦其余（errors 逐条
 /// 回报，语义 = 每包独立徽标）。
 async fn install_from_release(dir: &str, overwrite: bool) -> Result<Option<Value>, String> {
-    let api_bytes = fetch_skin_bytes(RELEASE_LIST_API).await?;
-    let api: Value = serde_json::from_slice(&api_bytes)
-        .map_err(|e| format!("Release API 响应不是合法 JSON：{e}"))?;
-    let releases = api
-        .as_array()
-        .ok_or_else(|| "Release API 响应不是列表（仓库不存在或 API 限流）".to_string())?;
-    let zip_url = releases
-        .iter()
-        .filter_map(|r| r.get("assets").and_then(|v| v.as_array()))
-        .find_map(|assets| {
-            assets.iter().find_map(|a| {
-                let name = a.get("name").and_then(|v| v.as_str())?;
-                (name == RELEASE_ZIP_NAME)
-                    .then(|| a.get("browser_download_url").and_then(|v| v.as_str()))
-                    .flatten()
-            })
-        })
-        .ok_or_else(|| {
-            format!("近期 Release 均未找到 {RELEASE_ZIP_NAME} 附件（CI 尚未产出皮肤包）")
-        })?
-        .to_string();
-    let zip_bytes = fetch_skin_bytes(&zip_url).await?;
+    let zip_bytes = crate::handlers::release_fetch::fetch_release_asset(
+        RELEASE_ZIP_NAME,
+        SKIN_PACKAGE_MAX_BYTES,
+    )
+    .await?;
     install_zip_entries(dir, &zip_bytes, overwrite)
         .await
         .map_err(|e| format!("{RELEASE_ZIP_NAME} 安装失败：{e}"))

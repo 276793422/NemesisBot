@@ -162,6 +162,17 @@ jobs:
           echo "=== staging-skins 内容 ==="
           ls -la staging-skins/
 
+      # WASM 插件开发包（devkit）：最小可编译集合源码 zip，平台无关，只
+      # Linux 出包（与 .nbskin 同理，两平台各出一份会撞 upload-artifact 同名）。
+      # --verify 是质量门：解压实编全部已入库示例（wasm32-wasip2），编不过 =
+      # 构建红 → 不上 release。示例名单 = git ls-files 已入库者，本地与 CI
+      # 产物一致。verify 临时目录在仓库外 → 用 runner 默认 stable 工具链
+      # （rustup target add 由脚本在 verify 目录内自跑）。
+      - name: Build wasm devkit (verify)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: bash scripts/pack-wasm-devkit.sh --verify
+
       # CI v4 签名集成（P1.2①）：锚注入——消费版与锁定版构建都吃到这个 env。
       # certs/root_cert.der 是信任根的公开证书（换它 = 换根，git 历史可追溯）。
       # 不注入 → 消费版 warn 态出生即降级 off（接入计划矩阵），锁定构建同步跳过。
@@ -415,6 +426,14 @@ jobs:
         with:
           name: nightly-skins.zip
           path: nightly-skins.zip
+          retention-days: 7
+
+      - name: Upload wasm devkit artifact
+        if: matrix.platform == 'linux' && hashFiles('nightly-wasm-devkit.zip') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-wasm-devkit.zip
+          path: nightly-wasm-devkit.zip
           retention-days: 7
 
   # ============================================================
@@ -682,7 +701,7 @@ jobs:
           for f in nightly-linux-plugins.tar.gz nightly-windows-plugins.zip \
                    nightly-signserver-linux.tar.gz nightly-signserver-windows.zip \
                    nightly-sign-tools-linux.tar.gz nightly-sign-tools-windows.zip \
-                   nightly-locked-full.zip nightly-skins.zip; do
+                   nightly-locked-full.zip nightly-skins.zip nightly-wasm-devkit.zip; do
             [ -f "$f" ] && sha256sum "$f" >> SHA256SUMS.txt
           done
           VERSION=$(git describe --tags --always 2>/dev/null || echo "untagged")
@@ -724,6 +743,7 @@ jobs:
             artifacts/nightly-sign-tools-windows.zip
             artifacts/nightly-locked-full.zip
             artifacts/nightly-skins.zip
+            artifacts/nightly-wasm-devkit.zip
             artifacts/MANIFEST.txt
             artifacts/SHA256SUMS.txt
           body: |
@@ -746,6 +766,7 @@ jobs:
             - **Linux 插件包**: `nightly-linux-plugins.tar.gz`（包内扁平放插件 .so）
             - **锁定版全家桶**: `nightly-locked-full.zip`（签名验证强制（enforce）的锁定版 Windows/Linux 客户端 + Android APK + 全部插件 + signserver + sign-tools 一站式；启动日志/侧栏带 🔒 标识；信任根未配置时本包缺席）
             - **皮肤包**: `nightly-skins.zip`（全部 `.nbskin` 皮肤 + v4 签名（与主程序同一信任根）+ `signatures.json` 清单 + `certs/root_cert.der`；解压后把 `.nbskin` 放到 exe 同级 `skins/` 目录即可，Dashboard 设置页「皮肤」tab 管理与热切换；未配置 `NMB_ISSUING_*` Secrets 时包内皮肤无签名但照常可用）
+            - **插件开发包**: `nightly-wasm-devkit.zip`（WASM 插件最小可编译集合源码包：三方 SDK + 打包工具 + 全部示例，平台无关；解压后 `cargo run -p pack` 一键编译打包示例——配套 Dashboard「插件」页「下载插件开发包」一键取用）
             - **验签工具**: `nightly-sign-tools-windows.zip` / `nightly-sign-tools-linux.tar.gz`（exe-sign-tool + VERIFY.md——下载后逐文件验证包内二进制，零私钥）
             - **签发吊销服务**: `nightly-signserver-windows.zip` / `nightly-signserver-linux.tar.gz`（owner 运维包，零私钥，配合离线 keys.json 运行）
 

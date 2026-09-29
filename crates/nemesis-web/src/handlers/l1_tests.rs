@@ -268,7 +268,7 @@ docs_generation_writes_wsapi_commands_md` 从 `ModuleHandler::commands()` \
     let path = docs.join("wsapi-commands.md");
     std::fs::write(&path, &md).unwrap();
     let written = std::fs::read_to_string(&path).unwrap();
-    assert!(written.contains("| system | version, status, commands, lease_status |"));
+    assert!(written.contains("| system | version, status, commands, lease_status, features |"));
     assert!(written.contains(&format!("{} 条命令", total)));
 }
 

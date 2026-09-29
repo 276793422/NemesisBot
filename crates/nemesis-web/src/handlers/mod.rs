@@ -56,6 +56,10 @@ pub mod projects;
 // question.pending）。无 feature 闸——responder 槽在 nemesis-types，未装配时
 // handler 诚实报「未装配」。
 pub mod question;
+// GitHub Release 资产下载管线（skins 与 WASM 插件开发包 devkit 下载共用的
+// 单一来源）。闸随消费方：两者全关 = 无消费点，整模块不编译。
+#[cfg(any(feature = "skins", feature = "plugins-wasm"))]
+pub mod release_fetch;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
 // 病毒扫描管理面（scanner feature 从 security 拆出；implies security）。
