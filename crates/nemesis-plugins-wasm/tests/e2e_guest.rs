@@ -306,7 +306,9 @@ async fn disable_blocks_then_reenable_restores() {
     let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
     installer.install(&src, true).await.expect("install");
 
-    mgr.set_enabled_plugin("translate", false).expect("disable");
+    mgr.set_enabled_plugin("translate", false)
+        .await
+        .expect("disable");
     let err = mgr
         .execute_tool(
             "plugin.translate.translate",
@@ -317,7 +319,9 @@ async fn disable_blocks_then_reenable_restores() {
         .expect_err("disabled must fail");
     assert!(matches!(err, PluginError::NotAvailable(_)), "got: {err:?}");
 
-    mgr.set_enabled_plugin("translate", true).expect("enable");
+    mgr.set_enabled_plugin("translate", true)
+        .await
+        .expect("enable");
     mgr.execute_tool(
         "plugin.translate.translate",
         r#"{"mode":"echo","text":"x"}"#.into(),

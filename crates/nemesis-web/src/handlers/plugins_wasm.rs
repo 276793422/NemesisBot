@@ -16,8 +16,8 @@
 //! `wasm.devkit_download`（plugins.rs 自处理分支，不依赖本模块宿主槽）。
 //!
 //! 安全面：install 是九步装配漏斗唯一运行期入口（验签→扫描→审批→编译
-//! →落位→lockfile 全走 nemesis-plugins-wasm::install 单一真相源，本模块
-//! 零旁路）；config.get 按 manifest x-secret 脱敏（值不回传 Dashboard）。
+//! →lockfile→落位→注册全走 nemesis-plugins-wasm::install 单一真相源，本
+//! 模块零旁路）；config.get 按 manifest x-secret 脱敏（值不回传 Dashboard）。
 
 use std::path::Path;
 use std::sync::Arc;
@@ -140,6 +140,7 @@ pub async fn cmd_install(data: Option<serde_json::Value>) -> Result<serde_json::
         .get("source_dir")
         .and_then(|v| v.as_str())
         .ok_or("source_dir (string) is required")?;
+    validate_source_dir(source_dir)?;
     let allow_unsigned = data
         .get("allow_unsigned")
         .and_then(|v| v.as_bool())
@@ -148,25 +149,68 @@ pub async fn cmd_install(data: Option<serde_json::Value>) -> Result<serde_json::
         .install(Path::new(source_dir), allow_unsigned)
         .await
         .map_err(|e| e.to_string())?;
-    // W7：工具型插件热注册进 agent 工具面（观察者无工具面，不触发）。
-    // enabled=false（升级了一个已禁用的插件）不发 add——hook 的 add=false
-    // 路径按 `plugin.<slug>.` 前缀整面摘除，顺带清掉 loop 里可能残留的旧
-    // 版工具（CLI disable 只改盘不改 loop 的场景，2026-09-29 交付审查 1.2）。
-    if *reg.manifest.kind == nemesis_plugins_wasm::manifest::PluginKind::Tool
-        && let Some(meta) = reg.tool_meta.as_ref()
-    {
-        let enabled = reg.enabled.load(std::sync::atomic::Ordering::SeqCst);
-        notify_tool_sync(ToolSyncEvent {
-            add: enabled,
-            slug: reg.manifest.slug.clone(),
-            tool_name: meta.name.clone(),
-            operation_type: meta.operation_type.clone(),
-        });
-    }
+    // W7：工具面热同步事件**恒发**（方向由 install_sync_event 决策）——
+    // tool 型 + 启用 = 注册；observer 化升级 / 缺 meta / 禁用升级 = 前缀
+    // 摘除，顺带清掉 loop 里可能残留的旧版工具（旧逻辑只在 kind==Tool &&
+    // meta 在场时发事件，tool→observer 升级不发任何事件，旧工具成 LLM
+    // 可见僵尸——2026-09-29 交付审查 1.2 + 2026-09-30 复查 #4）。
+    let enabled = reg.enabled.load(std::sync::atomic::Ordering::SeqCst);
+    notify_tool_sync(install_sync_event(
+        reg.manifest.kind.as_str(),
+        &reg.manifest.slug,
+        reg.tool_meta
+            .as_ref()
+            .map(|m| (m.name.as_str(), m.operation_type.as_str())),
+        enabled,
+    ));
     Ok(serde_json::json!({
         "installed": true,
         "plugin": row_of(reg.as_ref()),
     }))
+}
+
+/// source_dir 入参校验（WSAPI 层；CLI 保持宽容——2026-09-30 复查 #10）。
+/// 拒绝：空串 / 相对路径（install 漏斗 canonicalize 会把它钉到 gateway
+/// 进程 cwd，与操作员直觉不符）/ UNC 前缀（`\\`、`//` 开头——网络盘/
+/// 设备路径面，扫描与落位语义未定义）。绝对路径判定交给
+/// [`std::path::Path::is_absolute`]（Windows 盘符形态覆盖）。
+fn validate_source_dir(raw: &str) -> Result<(), String> {
+    if raw.trim().is_empty() {
+        return Err("source_dir 不能为空".to_string());
+    }
+    if !Path::new(raw).is_absolute() {
+        return Err(format!("source_dir 必须为绝对路径: {raw}"));
+    }
+    if raw.starts_with("\\\\") || raw.starts_with("//") {
+        return Err(format!("source_dir 不接受 UNC/网络路径: {raw}"));
+    }
+    Ok(())
+}
+
+/// 安装完成后的工具面同步事件决策（纯函数，独立可测；2026-09-30 复查 #4）。
+/// `tool + 有 meta + 启用` → add=true 注册；其余一律 add=false——observer
+/// 化升级 / 缺 meta / 禁用升级都走前缀摘除路径，把 loop 里残留的旧版工具
+/// 清掉（hook 的 remove 按 `plugin.<slug>.` 前缀整面摘除，tool_name 不用）。
+fn install_sync_event(
+    kind: &str,
+    slug: &str,
+    tool: Option<(&str, &str)>,
+    enabled: bool,
+) -> ToolSyncEvent {
+    match (kind, tool, enabled) {
+        ("tool", Some((name, op)), true) => ToolSyncEvent {
+            add: true,
+            slug: slug.to_string(),
+            tool_name: name.to_string(),
+            operation_type: op.to_string(),
+        },
+        _ => ToolSyncEvent {
+            add: false,
+            slug: slug.to_string(),
+            tool_name: String::new(),
+            operation_type: String::new(),
+        },
+    }
 }
 
 fn require_slug(data: Option<&serde_json::Value>) -> Result<String, String> {
@@ -177,11 +221,12 @@ fn require_slug(data: Option<&serde_json::Value>) -> Result<String, String> {
 }
 
 /// `wasm.enable` / `wasm.disable`（内存 + 实例配置落盘，热生效）。
-pub fn cmd_set_enabled(slug: &str, on: bool) -> Result<serde_json::Value, String> {
+pub async fn cmd_set_enabled(slug: &str, on: bool) -> Result<serde_json::Value, String> {
     let installer = require_installer()?;
     installer
         .manager
         .set_enabled_plugin(slug, on)
+        .await
         .map_err(|e| e.to_string())?;
     // W7：禁用 = 工具面注销（LLM 不再可见），启用 = 重注册（仍在册时）。
     sync_tool_face(&installer.manager, slug, on);
@@ -320,11 +365,11 @@ pub async fn handle(
         "install" => cmd_install(data).await.map(Some),
         "enable" => {
             let slug = require_slug(data.as_ref())?;
-            cmd_set_enabled(&slug, true).map(Some)
+            cmd_set_enabled(&slug, true).await.map(Some)
         }
         "disable" => {
             let slug = require_slug(data.as_ref())?;
-            cmd_set_enabled(&slug, false).map(Some)
+            cmd_set_enabled(&slug, false).await.map(Some)
         }
         "uninstall" => {
             let slug = require_slug(data.as_ref())?;

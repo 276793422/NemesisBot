@@ -5,7 +5,12 @@
 //! → ③ wasm sha256 重算比对 + 64MiB 上限 → ④ 病毒扫描（ScanChain；无引擎
 //! 时跳过并注记——第 7 层缺席不降低其余闸）→ ⑤ 审批卡（InstallApprover，
 //! 启动装载跳过——安装期已裁决）→ ⑥ 编译 + get-metadata 对账（observer 跳
-//! 过对账）→ ⑦ 落位 plugins/<slug>/ + 数据目录 → ⑧ 注册 → ⑨ lockfile。
+//! 过对账）→ ⑦ lockfile → ⑧ 落位 plugins/<slug>/ + 数据目录 → ⑨ 注册。
+//!
+//! lockfile 在落位之前写（lockfile-first，与 uninstall 的 remove-lockfile
+//! 先行对称，2026-09-30 复查 #5）：lockfile 失败 = 零突变干净中止（优于
+//! 「报失败但新载荷已生效」的谎报）；落位/注册失败 = lockfile 元数据超前
+//! （诚实失败，重装自愈——load_one 的 sha 自洽比对不读 lockfile，不破装载）。
 //!
 //! `allow_unsigned` 只豁免「无签名」（ReviewRequired），不豁免「签名无效」。
 
@@ -23,10 +28,15 @@ use crate::trust::{PluginTrustState, VerificationOutcome, trust_state_for, verif
 /// wasm 载荷字节上限（64MiB；wasm 二进制正常在几百 KB~几 MB）。
 pub const WASM_MAX_BYTES: u64 = 64 * 1024 * 1024;
 
-/// 同进程装配漏斗互斥（Dashboard 双击 / WSAPI 并发 install/uninstall 同
-/// slug 时，载荷目录重建与 lockfile 读-改-写会竞争出错配/丢条目——2026-09-29
-/// 交付审查 3.3/L2。跨进程 CLI vs gateway 不在此闸内，见交付报告已知边界）。
-static FUNNEL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// 同进程装配漏斗互斥（Dashboard 双击 / WSAPI 并发 install/uninstall/
+/// enable/disable 同 slug 时，载荷目录重建、lockfile/实例配置读-改-写与
+/// 内存启用位翻转会竞争出错配/丢条目/「写盘失败但内存已翻转」假成功
+/// ——2026-09-29 交付审查 3.3/L2 + 2026-09-30 复查 #7：set_enabled_plugin
+/// 也走此闸，先写盘成功再翻内存位）。跨进程 CLI vs gateway 不在此闸内，
+/// 后果：不同 slug 并发 → lockfile 读-改-写丢条目（CLI 管理面不自愈）；
+/// 同 slug 并发 → 载荷与 lockfile 混版本（load_one 的 sha 自洽比对拒载，
+/// 诚实失败不装错代码）。
+pub(crate) static FUNNEL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// lockfile 形态（`plugins/lockfile.json`）。
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -76,6 +86,10 @@ pub struct InstallReview {
     pub x_secret: Vec<String>,
     /// wasm 字节数。
     pub wasm_bytes: u64,
+    /// wasm sha256（hex64，第③步重算值——审批卡上的人比对照锚点，与
+    /// manifest/lockfile 记账同源。2026-09-30 复查 #12：装的是哪个载荷，
+    /// 审批者有权知道）。
+    pub wasm_sha256: String,
     /// manifest limits 被忽略的放宽请求。
     pub limits_ignored: Vec<String>,
     /// 来源目录。
@@ -188,6 +202,7 @@ impl PluginInstaller {
             egress: manifest.permissions.egress.clone(),
             x_secret: manifest.permissions.x_secret.clone(),
             wasm_bytes: wasm_bytes.len() as u64,
+            wasm_sha256: actual_hash,
             limits_ignored: self.manager.limits().tighten_with(&manifest.limits).1,
             source_dir: source_dir.display().to_string(),
         };
@@ -214,7 +229,13 @@ impl PluginInstaller {
             .probe_and_reconcile(&manifest, &component, trust_state)
             .await?;
 
-        // ⑦ 落位（升级路径：先清旧载荷；数据目录保留不动）。删除重试耗尽
+        // ⑦ lockfile（lockfile-first：落位之前写——失败 = 零突变干净中止，
+        // 优于「报失败但新载荷已生效」的谎报；与 uninstall 的 remove-lockfile
+        // 先行对称。load_one 不读 lockfile（sha 自洽比对），此处失败留下的
+        // 元数据超前不破本进程装载，重装自愈。2026-09-30 复查 #5）
+        self.update_lockfile(&manifest, trust_state, &outcome)?;
+
+        // ⑧ 落位（升级路径：先清旧载荷；数据目录保留不动）。删除重试耗尽
         // 必须中止——继续落位会新旧载荷文件混布（2026-09-29 交付审查 L3）。
         let target = self.manager.plugin_dir(&manifest.slug);
         match resilient_remove_dir_all(&target) {
@@ -235,15 +256,11 @@ impl PluginInstaller {
         std::fs::write(target.join(&manifest.wasm), &wasm_bytes)
             .map_err(|e| PluginError::Io(format!("write wasm: {e}")))?;
 
-        // ⑧ 注册（替换旧注册；启用位沿用实例配置文件）
+        // ⑨ 注册（替换旧注册；启用位沿用实例配置文件）
         let reg = self
             .manager
             .register(manifest.clone(), trust_state, component, tool_meta)?;
         self.manager.apply_enabled_from_file(&manifest.slug, &reg);
-
-        // ⑨ lockfile（失败 = 安装失败上抛——lockfile 缺条目时重启后插件
-        // 失踪，是真实故障不再静默；2026-09-29 交付审查 L2/3.4）。
-        self.update_lockfile(&manifest, trust_state, &outcome)?;
         if let Some(note) = scan_note {
             tracing::info!(slug = %manifest.slug, "[WasmPlugin] {note}");
         }

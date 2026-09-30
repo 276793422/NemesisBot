@@ -404,10 +404,12 @@ fn find_auto_allow_critical_nonexec_blocked_by_layer_gate() {
     );
 }
 
-/// skills 安装门消费通道端到端：LateWebSkillsGate.decide 在规则命中时
-/// **不弹卡直接 Approve**（bind 前/未命中时维持原 fail-closed/弹卡语义）。
+/// skills 安装门：安装类操作**永不自动放行**（2026-09-30 复查 #12——原
+/// M3 语义「规则命中不弹卡直接 Approve」已废除：source 目录/URL 记忆 ≠
+/// 载荷记忆，同一路径明天可以装不同内容的技能包）。手写规则（历史遗留/
+/// 绕开写入面）也是死信；无人裁决 = 弹卡超时 Deny（fail-closed 不变）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn late_skills_gate_auto_allows_by_rule_without_card() {
+async fn late_skills_gate_ignores_install_rules_always_card() {
     use super::LateWebSkillsGate;
     use nemesis_skills::install_gate::{InstallDecision, InstallGate, InstallPlan};
 
@@ -415,7 +417,8 @@ async fn late_skills_gate_auto_allows_by_rule_without_card() {
     let path = dir.path().join("approval_rules.json");
     let mgr = std::sync::Arc::new(WebApprovalManager::new(None, Some(path.clone())));
 
-    // 先写一条 skills.install 规则（模拟用户此前批准时勾选「总是允许」）。
+    // 手写一条 skills.install 规则（写入侧 rule_permitted_for 现已拒绝
+    // 新增——这里直测消费侧纵深：规则在场也必须弹卡）。
     let rules = vec![nemesis_security::approval_rules::ApprovalRule {
         op: "skills.install".to_string(),
         pattern: "github:acme/demo".to_string(),
@@ -444,19 +447,10 @@ async fn late_skills_gate_auto_allows_by_rule_without_card() {
     };
 
     match gate.decide(&plan).await {
-        InstallDecision::Approve => {}
-        InstallDecision::Deny { reason } => panic!("规则命中必须自动放行，却 Deny: {reason}"),
-    }
-
-    // 未命中 source 不放行 → 走弹卡 → 无人裁决 1s 超时 Deny。
-    let plan2 = InstallPlan {
-        source: "github:other/repo".to_string(),
-        slug: "other".to_string(),
-        ..plan.clone()
-    };
-    match gate.decide(&plan2).await {
+        InstallDecision::Approve => {
+            panic!("skills.install 规则在也必须弹卡（安装类永不自动放行）")
+        }
         InstallDecision::Deny { .. } => {}
-        InstallDecision::Approve => panic!("未命中规则必须弹卡（无人裁决超时 Deny）"),
     }
 }
 
