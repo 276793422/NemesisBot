@@ -205,30 +205,28 @@ impl nemesis_agent::r#loop::Tool for BoardIssueTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
+        // 拍平平铺 schema（2026-09-30 压测 D 场景）：此前是 `oneOf` 分支形态
+        // （顶层无 properties、`subcommand: {const}` 藏在分支里），glm-5.3-flash
+        // 实测连续 4 轮构造不出 `subcommand`（错误回灌也无法自纠），agent 只能
+        // 改走 CLI 兜底。平铺后顶层直接声明全部字段，required 只留 subcommand，
+        // 分支专属 required（title/issue）由 parse_board_issue_args 语义守兜底
+        // ——两分支字段集不相交，平铺无歧义，所有档位模型可直读。
         serde_json::json!({
             "type": "object",
-            "oneOf": [
-                {
-                    "type": "object",
-                    "properties": {
-                        "subcommand": { "const": "create" },
-                        "title": { "type": "string", "description": "Issue title (concise imperative)." },
-                        "description": { "type": "string", "description": "Background / context for the task." },
-                        "acceptance_criteria": { "type": "string", "description": "Optional acceptance criteria (one per line)." },
-                        "priority": { "type": "integer", "enum": [0, 1, 2, 3], "description": "0=low 1=medium (default) 2=high 3=urgent." },
-                        "project_id": { "type": "integer", "description": "Optional project to attach the issue to." }
-                    },
-                    "required": ["subcommand", "title"]
+            "properties": {
+                "subcommand": {
+                    "type": "string",
+                    "enum": ["create", "plan"],
+                    "description": "\"create\" = file a new issue; \"plan\" = decompose an existing issue with the planner."
                 },
-                {
-                    "type": "object",
-                    "properties": {
-                        "subcommand": { "const": "plan" },
-                        "issue": { "type": "string", "description": "Parent issue reference: numeric id or NB-<n> number." }
-                    },
-                    "required": ["subcommand", "issue"]
-                }
-            ]
+                "title": { "type": "string", "description": "create: issue title (concise imperative). Required for create." },
+                "description": { "type": "string", "description": "create: background / context for the task." },
+                "acceptance_criteria": { "type": "string", "description": "create: optional acceptance criteria (one per line)." },
+                "priority": { "type": "integer", "enum": [0, 1, 2, 3], "description": "create: 0=low 1=medium (default) 2=high 3=urgent." },
+                "project_id": { "type": "integer", "description": "create: optional project to attach the issue to." },
+                "issue": { "type": "string", "description": "plan: parent issue reference, numeric id or NB-<n> number. Required for plan." }
+            },
+            "required": ["subcommand"]
         })
     }
 

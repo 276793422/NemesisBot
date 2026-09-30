@@ -227,9 +227,12 @@ async fn test_work_queue_returns_none_on_close() {
     drop(tx);
 
     let (dummy_tx, _) = tokio::sync::mpsc::channel::<String>(1);
+    let (dummy_prio_tx, dummy_prio_rx) = tokio::sync::mpsc::channel::<String>(1);
     let queue = ClusterWorkQueue {
         tx: dummy_tx,
         rx: Mutex::new(rx),
+        prio_tx: dummy_prio_tx,
+        prio_rx: Mutex::new(dummy_prio_rx),
     };
 
     assert_eq!(queue.next().await.unwrap(), "last");
@@ -240,6 +243,78 @@ async fn test_work_queue_returns_none_on_close() {
         result.unwrap().is_none(),
         "Expected None when all senders are dropped"
     );
+}
+
+// 压测②（2026-09-30 三设备）：取证优先通道语义。
+#[tokio::test]
+async fn test_work_queue_priority_lane_jumps_fifo() {
+    let queue = ClusterWorkQueue::new(10);
+
+    // 先灌普通任务，再提交取证优先任务 → 下一轮取号取证绝对插队。
+    queue.submit("normal-1".to_string()).unwrap();
+    queue.submit("normal-2".to_string()).unwrap();
+    queue
+        .submit_priority(format!(
+            "{}NB-9]",
+            crate::cluster_task::SELFCHECK_PROMPT_MARKER
+        ))
+        .unwrap();
+
+    assert_eq!(
+        queue.next().await.unwrap(),
+        "[取证请求 board_selfcheck:NB-9]"
+    );
+    assert_eq!(queue.next().await.unwrap(), "normal-1");
+    assert_eq!(queue.next().await.unwrap(), "normal-2");
+}
+
+#[tokio::test]
+async fn test_work_queue_priority_lane_drains_before_normal() {
+    let queue = ClusterWorkQueue::new(10);
+
+    queue.submit_priority("prio-1".to_string()).unwrap();
+    queue.submit_priority("prio-2".to_string()).unwrap();
+    queue.submit("normal-1".to_string()).unwrap();
+
+    // 已在优先通道排队的项保持 FIFO，全部先于普通通道。
+    assert_eq!(queue.next().await.unwrap(), "prio-1");
+    assert_eq!(queue.next().await.unwrap(), "prio-2");
+    assert_eq!(queue.next().await.unwrap(), "normal-1");
+}
+
+#[tokio::test]
+async fn test_work_queue_priority_empty_keeps_fifo() {
+    use std::time::Duration;
+
+    // 优先通道为空时普通通道语义逐字节不变（不受 select 双等影响）。
+    let queue = ClusterWorkQueue::new(10);
+    queue.submit("n1".to_string()).unwrap();
+    queue.submit("n2".to_string()).unwrap();
+    assert_eq!(queue.next().await.unwrap(), "n1");
+    assert_eq!(queue.next().await.unwrap(), "n2");
+
+    // 优先通道满载时 submit_priority 诚实报错（与 submit 同形态）。
+    let tiny = ClusterWorkQueue::new(1);
+    tiny.submit_priority("occupant".to_string()).unwrap();
+    let err = tiny.submit_priority("nope".to_string()).unwrap_err();
+    assert!(err.contains("work queue full"), "unexpected error: {}", err);
+
+    // 双通道全关 → None 快速返回（不悬挂）。
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(1);
+    drop(tx);
+    let (ptx, prx) = tokio::sync::mpsc::channel::<String>(1);
+    drop(ptx);
+    let closed = ClusterWorkQueue {
+        // 字段 sender 与被关闭的通道无关（无人读的哑发送端）；
+        // 两个 receiver（rx/prx）才是真正被关闭的一方。
+        tx: tokio::sync::mpsc::channel(1).0,
+        rx: Mutex::new(rx),
+        prio_tx: tokio::sync::mpsc::channel(1).0,
+        prio_rx: Mutex::new(prx),
+    };
+    let result = tokio::time::timeout(Duration::from_secs(2), closed.next()).await;
+    assert!(result.is_ok(), "next() should return quickly, not hang");
+    assert!(result.unwrap().is_none());
 }
 
 #[test]

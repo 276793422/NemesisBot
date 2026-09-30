@@ -12,6 +12,7 @@ import {
   TRANSITIONS,
   fmtTime,
   statusLabel,
+  statusTitle,
 } from './boardMeta'
 
 // Issue 详情弹窗（W2 P3）：从 IssueListView 抽出为共享组件——看板（BoardKanban）
@@ -571,7 +572,7 @@ async function downloadAttachment(a: AttachmentRow) {
       <div class="modal-body">
         <!-- 元信息 -->
         <div class="detail-meta">
-          <span class="badge" :class="STATUS_BADGE[detail.status]">{{ statusLabel(detail.status) }}</span>
+          <span class="badge" :class="STATUS_BADGE[detail.status]" :title="statusTitle(detail.status)">{{ statusLabel(detail.status) }}</span>
           <span class="badge" :class="PRIORITY_BADGE[detail.priority] || 'badge-neutral'">P{{ detail.priority }} {{ PRIORITY_LABEL[detail.priority] || '' }}</span>
           <span v-if="detail.required_profession" class="badge badge-info" title="职能派发：仅匹配声明该职能的节点">🛠 {{ detail.required_profession }}</span>
           <span class="muted">指派：{{ assigneeLabel(detail) }}</span>

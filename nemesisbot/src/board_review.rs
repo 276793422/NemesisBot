@@ -1395,6 +1395,12 @@ async fn review_issue(
 /// `run_detached` 的 Err 在首轮立即返回——不消耗解析重试轮，与本函数内
 /// **解析**失败的「连续 3 轮」是两类故障。返回值文本分别带前缀区分，
 /// 下游评论不再把调用失败误报成「连续 3 次无法解析」。
+///
+/// 防污染（压测①b，2026-09-30）：`raw` 是 agent 引擎的系统终态文本
+/// （急停/取消/轮次预算暂停）时不重试——系统文本解析必败，回灌只会让
+/// 下一轮模型围绕「上一轮为何暂停」作答（NB-54 实证：理由=「上一轮输出
+/// 为定时任务预算暂停的系统提示文本」→ UNSURE 转人工，污染评审记录）。
+/// 直接 Err 诚实转人工，不烧重试轮。
 async fn run_review_llm(
     agent_loop: &Arc<nemesis_agent::r#loop::AgentLoop>,
     prompt: &mut String,
@@ -1427,6 +1433,11 @@ async fn run_review_llm(
             Ok(raw) => raw,
             Err(e) => return Err(format!("LLM 调用失败：{e}")),
         };
+        if is_system_terminal_text(&raw) {
+            return Err(format!(
+                "评审输出为系统终态文本（非评审结论，不重试防污染）：{raw}"
+            ));
+        }
         match nemesis_board::parse_review(&raw) {
             Ok(out) => return Ok(out),
             Err(e) => {
@@ -1438,6 +1449,25 @@ async fn run_review_llm(
         }
     }
     Err(format!("评审输出连续 3 轮无法解析：{last_err}"))
+}
+
+/// agent 引擎系统终态文本判定（run_loop.rs / recovery.rs / tool_batch.rs /
+/// turn_guard.rs 的 Done 文本）：急停 / 取消 / 轮次预算暂停 / LLM hook 拦截 /
+/// 退化输出放弃。评审链拿这类文本当模型输出是污染源（压测①），回灌重试
+/// 只会放大——检测到直接诚实失败。特征串均为引擎独有措辞，评审 JSON 正常
+/// 内容不可能逐字命中；「已取消」引擎产出恒为整串，用整串比对避免理由段
+/// 偶含同词的误伤。
+fn is_system_terminal_text(raw: &str) -> bool {
+    if raw.trim() == "已取消" {
+        return true;
+    }
+    const MARKERS: [&str; 4] = [
+        "(E-STOP)",                             // 急停三形态（任务/LLM 调用/工具调用）
+        "轮工具调用后暂停，已完成的工作已保存", // max_turns 暂停（预算/非预算两分支）
+        "HOOK BLOCKED",                         // LLM hook 拦截终局
+        "模型多次未给出有效答复",               // turn_guard 退化输出 GiveUp
+    ];
+    MARKERS.iter().any(|m| raw.contains(m))
 }
 
 /// 多检查员面板并发上限（P5/B3：N 路评审同时最多 4 路在飞，多余排队）。
@@ -2298,11 +2328,14 @@ pub(crate) fn spawn_selfcheck_second_stage(
 }
 
 /// B2b 自检取证提示词：给执行 worker 的指令——只收集证据如实回报，不下
-/// 验收结论、不改已交付内容。marker 仅供人读（路由凭 SelfcheckRegistry）。
+/// 验收结论、不改已交付内容。marker 头（共享常量
+/// [`nemesis_cluster::SELFCHECK_PROMPT_MARKER`]）同时是人读标记与 worker 侧
+/// 队列优先通道的路由判据（压测②：取证插队不被正式任务串行堵住）。
 fn build_selfcheck_prompt(issue: &nemesis_board::Issue, request: &str) -> String {
     format!(
-        "[取证请求 board_selfcheck:{number}] 验收方对照验收标准评审你的交付后，需要以下证据才能定案。\
+        "{marker}{number}] 验收方对照验收标准评审你的交付后，需要以下证据才能定案。\
 请在本机完成取证并如实回报证据内容（逐项说明，含关键输出原文），不要下验收结论、不要修改已交付内容：\n\n{request}\n\n## 验收标准（取证对照）\n{ac}\n",
+        marker = nemesis_cluster::SELFCHECK_PROMPT_MARKER,
         number = issue.number,
         request = request,
         ac = issue

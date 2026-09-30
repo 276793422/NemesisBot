@@ -677,7 +677,13 @@ impl AgentLoop {
                 .all(|tc| self.tool_is_parallel_safe(&tc.name))
         {
             let pc = self
-                .precompute_parallel_batch(&tool_calls, context, instance.detached_depth())
+                .precompute_parallel_batch(
+                    &tool_calls,
+                    context,
+                    instance.detached_depth(),
+                    instance.detached_no_tools(),
+                    instance.detached_allowed_tools(),
+                )
                 .await;
             Some(pc)
         } else {
@@ -759,36 +765,54 @@ impl AgentLoop {
                 }
                 (p.result.clone(), p.duration_ms)
             } else {
-                let r = match self.check_tool_args(tc) {
-                    crate::args_validator::Outcome::Valid => {
-                        st.validation_failures = 0;
-                        self.record_tool_validation_stats(false);
-                        // G2: dispatch at this instance's sub-agent depth so
-                        // depth-aware tools (spawn) enforce max_depth.
-                        self.handle_tool_call_at_depth(tc, context, instance.detached_depth())
-                            .await
-                    }
-                    crate::args_validator::Outcome::Fixed(fixed_args) => {
-                        st.validation_failures = 0;
-                        self.record_tool_validation_stats(false);
-                        info!(
-                            "[AgentLoop] Auto-fixed args for tool '{}' (id={})",
-                            tc.name, tc.id
-                        );
-                        let mut fixed = tc.clone();
-                        fixed.arguments = fixed_args;
-                        self.handle_tool_call_at_depth(&fixed, context, instance.detached_depth())
-                            .await
-                    }
-                    crate::args_validator::Outcome::Invalid { message, class } => {
-                        st.validation_failures += 1;
-                        self.record_tool_validation_stats(true);
+                let r = match super::tool_dispatch::detached_tool_refusal(instance, &tc.name) {
+                    // 压测①a（2026-09-30）：detached 工具闸——no_tools/白名单外
+                    // 在派发现场权威拒绝（供给层只管 defs 可见性，上游端点
+                    // 注入的调用不经供给层）。拒绝串回灌当工具结果，下游
+                    // observer/turn_guard/spill 守卫照常按序跑。
+                    Some(refusal) => {
                         warn!(
-                            "[AgentLoop] Arg validation failed for tool '{}' (id={}, class={}): {}",
-                            tc.name, tc.id, class, message
+                            "[AgentLoop] Detached tool gate refused '{}': {}",
+                            tc.name,
+                            refusal.trim_start_matches("Error: ")
                         );
-                        format!("Tool error: {}", message)
+                        refusal
                     }
+                    None => match self.check_tool_args(tc) {
+                        crate::args_validator::Outcome::Valid => {
+                            st.validation_failures = 0;
+                            self.record_tool_validation_stats(false);
+                            // G2: dispatch at this instance's sub-agent depth so
+                            // depth-aware tools (spawn) enforce max_depth.
+                            self.handle_tool_call_at_depth(tc, context, instance.detached_depth())
+                                .await
+                        }
+                        crate::args_validator::Outcome::Fixed(fixed_args) => {
+                            st.validation_failures = 0;
+                            self.record_tool_validation_stats(false);
+                            info!(
+                                "[AgentLoop] Auto-fixed args for tool '{}' (id={})",
+                                tc.name, tc.id
+                            );
+                            let mut fixed = tc.clone();
+                            fixed.arguments = fixed_args;
+                            self.handle_tool_call_at_depth(
+                                &fixed,
+                                context,
+                                instance.detached_depth(),
+                            )
+                            .await
+                        }
+                        crate::args_validator::Outcome::Invalid { message, class } => {
+                            st.validation_failures += 1;
+                            self.record_tool_validation_stats(true);
+                            warn!(
+                                "[AgentLoop] Arg validation failed for tool '{}' (id={}, class={}): {}",
+                                tc.name, tc.id, class, message
+                            );
+                            format!("Tool error: {}", message)
+                        }
+                    },
                 };
                 (r, tool_start.elapsed().as_millis() as u64)
             };

@@ -1390,6 +1390,51 @@ async fn test_w3b_handle_cluster_queue_enqueues_to_work_queue() {
     assert_eq!(next, "w3b-ct-1");
 }
 
+// 压测②（2026-09-30 三设备）：带取证 marker 的任务路由进优先通道——
+// handler 级验证（队列级插队语义见 cluster_task/tests.rs；marker 常量
+// 与 master 侧 build_selfcheck_prompt 同源）。
+#[tokio::test]
+async fn test_selfcheck_marker_routes_to_priority_lane() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut handler = PeerChatHandler::new("node-b".into());
+    let tl = Arc::new(ClusterTaskList::new(tmp.path().join("tasks")));
+    let wq = Arc::new(ClusterWorkQueue::new(8));
+    handler.set_cluster_queue(tl.clone(), wq.clone());
+    handler.set_result_persister(Arc::new(recording_persister_w3b()));
+
+    // 正式任务先到，取证任务后到 → 取证下一轮取号绝对插队。
+    let ack_normal = handler.handle(
+        serde_json::json!({"content": "long running work", "task_id": "sc-normal-1"}),
+        Some(RpcMeta {
+            from: Some("origin-node".into()),
+        }),
+    );
+    assert_eq!(ack_normal.status, "accepted");
+
+    let marker_content = format!(
+        "{}NB-9] 请取证并如实回报证据内容",
+        crate::cluster_task::SELFCHECK_PROMPT_MARKER
+    );
+    let ack_sc = handler.handle(
+        serde_json::json!({"content": marker_content, "task_id": "sc-prio-1"}),
+        Some(RpcMeta {
+            from: Some("origin-node".into()),
+        }),
+    );
+    assert_eq!(ack_sc.status, "accepted");
+
+    let next = tokio::time::timeout(Duration::from_secs(2), wq.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(next, "sc-prio-1", "取证任务必须先于先到的正式任务出队");
+    let next2 = tokio::time::timeout(Duration::from_secs(2), wq.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(next2, "sc-normal-1");
+}
+
 #[tokio::test]
 async fn test_w3b_handle_cluster_queue_full_returns_error_ack() {
     let tmp = tempfile::tempdir().unwrap();

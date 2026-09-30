@@ -55,6 +55,13 @@ export function statusLabel(s: string): string {
   return STATUS_LABEL[s] || s
 }
 
+/** 压测⑥（2026-09-30 三设备）语义消歧：in_progress =「已派发至 worker」，
+ *  worker 内部串行队列排队中的单子同样显示 in_progress（非 CPU 执行中）——
+ *  徽标悬浮提示说明真实语义，空串 = 无提示。 */
+export function statusTitle(s: string): string {
+  return s === 'in_progress' ? '已派发至 worker；worker 串行队列排队中的任务同样显示此状态（非立即执行）' : ''
+}
+
 export function fmtTime(sec: number | null | undefined): string {
   if (!sec) return '—'
   try {

@@ -5941,3 +5941,43 @@ mod w5r2parent {
         );
     }
 }
+
+// ---------- is_system_terminal_text（压测①b：重试防污染） ----------
+
+#[test]
+fn system_terminal_text_matches_engine_done_forms() {
+    // 与引擎 Done 构造点逐一对应（run_loop/recovery/tool_batch/turn_guard）。
+    assert!(super::is_system_terminal_text(
+        "已在定时任务预算 1 轮工具调用后暂停，已完成的工作已保存。定时任务未被删除，下次触发时会重新获得预算。"
+    ));
+    assert!(super::is_system_terminal_text(
+        "已在 20 轮工具调用后暂停，已完成的工作已保存。发送下一条消息可继续，或调大 max_tool_iterations（设为 0 表示不限）。"
+    ));
+    assert!(super::is_system_terminal_text("已取消"));
+    assert!(super::is_system_terminal_text(
+        "⛔ 已急停 (E-STOP) — 已停止当前任务。发送 `nemesisbot estop --release` 恢复。"
+    ));
+    assert!(super::is_system_terminal_text(
+        "⛔ 已急停 (E-STOP) — LLM 调用已中断。发送 `nemesisbot estop --release` 恢复。"
+    ));
+    assert!(super::is_system_terminal_text(
+        "⛔ HOOK BLOCKED [layer:hook|policy:llm_hook] x — denied."
+    ));
+    assert!(super::is_system_terminal_text(
+        "（模型多次未给出有效答复，已停止重试。请重试或换一种问法。）"
+    ));
+}
+
+#[test]
+fn system_terminal_text_does_not_flag_legit_review_output() {
+    // 评审 JSON 正常内容（含偶现同词）不得误伤——否则真评审结论被当污染丢弃。
+    let legit =
+        r#"{"verdict":"pass","reasons":["交付齐全，其中已取消的旧任务不要求覆盖"],"gap":""}"#;
+    assert!(!super::is_system_terminal_text(legit));
+    assert!(!super::is_system_terminal_text(
+        "{\"verdict\":\"fail\",\"reasons\":[],\"gap\":\"estop 按钮文案缺失\"}"
+    ));
+    // 空串/纯空白不是系统文本（交给 parse_review 走正常失败路径）。
+    assert!(!super::is_system_terminal_text(""));
+    assert!(!super::is_system_terminal_text("   \n"));
+}
