@@ -1,8 +1,8 @@
 // NemesisBot WASM 插件框架 WIT 合同 v0（package nemesis:plugin@0.1.0）。
 //
-// 本文件是**权威源**（单一真相源）；宿主副本在
-// crates/nemesis-plugins-wasm/wit/，guest 副本在 crates/nemesis-plugin-sdk/wit/，
-// 两侧与权威源字节相等（drift 测试钉死）。
+// 本文件是**权威源**（单一真相源），住在宿主 crate 内（合同由宿主定义，
+// SDK/示例/三方插件都是消费者）。SDK 绑定直接引用本目录；已入库示例的
+// 随包副本与权威源字节相等（drift 测试钉死）。
 //
 // 版本纪律：package 版本 = 合同代际。v0 冻结后破口径改动必须升 0.2.0；
 // 兼容新增（新可选宿主函数 / 新事件型）可在 minor 内演进。v0 文件不带

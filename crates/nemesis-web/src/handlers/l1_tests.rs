@@ -209,6 +209,27 @@ fn registry_anchor_commands_present() {
     if cfg!(feature = "memory") {
         assert!(cmds_of(&reg, "memory").contains(&"entries.search"));
     }
+    // WASM 插件（2026-09-30 插件体系复查 #12）：plugins 模块的 wasm.* 命令
+    // 锚点——命令面随 feature 编译，清单漂移在这里红。
+    if cfg!(feature = "plugins-wasm") {
+        let p = cmds_of(&reg, "plugins");
+        for anchor in [
+            "wasm.list",
+            "wasm.install",
+            "wasm.enable",
+            "wasm.disable",
+            "wasm.uninstall",
+            "wasm.config.get",
+            "wasm.config.set",
+            "wasm.logs",
+            "wasm.devkit_download",
+        ] {
+            assert!(
+                p.contains(&anchor),
+                "plugins module missing wasm anchor command {anchor}"
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -244,14 +265,40 @@ async fn system_commands_returns_registry_via_dispatch() {
 #[test]
 fn docs_generation_writes_wsapi_commands_md() {
     let reg = build_registry();
+    // 生成前置闸（2026-09-30 插件体系复查教训）：feature 不全的构建里
+    // registry 缺 feature 门控模块，无条件重写会把完整文档冲成残表（真实
+    // 发生：只带 plugins-wasm 跑本测试，37 模块被冲成 26）。缺任一已知
+    // 门控模块（或 plugins 行缺 wasm 命令）= 诚实 SKIP 并注明，不写盘。
+    const GATED_DOC_MODULES: &[&str] = &[
+        "cluster", "outbox", "voice", "workflow", "memory", "security", "scanner", "sandbox",
+        "forge", "skins",
+    ];
+    let missing_module = GATED_DOC_MODULES
+        .iter()
+        .find(|m| cmds_of(&reg, m).is_empty());
+    let wasm_missing = !cmds_of(&reg, "plugins").contains(&"wasm.list");
+    if let Some(missing) = missing_module
+        .copied()
+        .or(wasm_missing.then_some("plugins(wasm.*)"))
+    {
+        eprintln!(
+            "SKIP docs_generation: 编译缺 feature 门控模块 `{missing}`——重写会把 \
+             docs/INFO/wsapi-commands.md 冲成残表。带全 feature 重跑：cargo test -p \
+             nemesis-web --features \"cluster,workflow,memory,security,scanner,forge,voice,\
+             voice-capture,sandbox,skins,plugins-wasm\" docs_generation"
+        );
+        return;
+    }
     let total: usize = reg.iter().map(|(_, c)| c.len()).sum();
     let mut md = String::new();
     md.push_str("# WSAPI 命令注册表（自动生成）\n\n");
     md.push_str(
         "> 由 `crates/nemesis-web/src/handlers/l1_tests.rs::\
 docs_generation_writes_wsapi_commands_md` 从 `ModuleHandler::commands()` \
-静态清单生成——**勿手改**。改任何 handler 的命令臂后重跑 \
-`cargo test -p nemesis-web docs_generation` 刷新本文件。\n\n",
+静态清单生成——**勿手改**。改任何 handler 的命令臂后**带全 feature** 重跑 \
+`cargo test -p nemesis-web --features \"cluster,workflow,memory,security,scanner,\
+forge,voice,voice-capture,sandbox,skins,plugins-wasm\" docs_generation` 刷新本文件\
+（feature 不全时本测试诚实 SKIP 不写盘，防止把完整文档冲成残表）。\n\n",
     );
     md.push_str(&format!("共 {} 个模块 / {} 条命令。\n\n", reg.len(), total));
     md.push_str("| module | commands | count |\n|---|---|---|\n");

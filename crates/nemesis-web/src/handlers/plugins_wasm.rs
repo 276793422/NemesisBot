@@ -12,7 +12,8 @@
 //!
 //! 命令（module=`plugins`，cmd 带 `wasm.` 前缀，由 plugins.rs 代理）：
 //! `wasm.list` / `wasm.install` / `wasm.enable` / `wasm.disable` /
-//! `wasm.uninstall` / `wasm.config.get` / `wasm.config.set` / `wasm.logs`。
+//! `wasm.uninstall` / `wasm.config.get` / `wasm.config.set` / `wasm.logs` /
+//! `wasm.devkit_download`（plugins.rs 自处理分支，不依赖本模块宿主槽）。
 //!
 //! 安全面：install 是九步装配漏斗唯一运行期入口（验签→扫描→审批→编译
 //! →落位→lockfile 全走 nemesis-plugins-wasm::install 单一真相源，本模块

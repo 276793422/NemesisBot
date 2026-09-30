@@ -1,7 +1,7 @@
 //! W7 SDK dogfood e2e：三方 SDK（[`nemesis_plugin_sdk::export_tool!`]）产物
 //! 走宿主正式 admit 漏斗实测执行。
 //!
-//! fixture = `examples/wasm-plugins/textstat`（三方起点示例：serde_json 正经
+//! fixture = `plugins/wasm/textstat`（三方起点示例：serde_json 正经
 //! 解析 + config-schema 消费 + /data 持久化）。产物缺席时测试内按需构建
 //! （crate 自有 workspace → 独立 target-dir）；构建失败 = 环境不满足，诚实
 //! SKIP。与 translate（原始 wit-bindgen 写法）互补：本文件验证的是 **SDK
@@ -43,8 +43,7 @@ fn cargo_bin() -> PathBuf {
 fn fixture_wasm() -> Option<PathBuf> {
     static OUT: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     OUT.get_or_init(|| {
-        let crate_dir =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/wasm-plugins/textstat");
+        let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/wasm/textstat");
         let out = crate_dir.join("target/wasm32-wasip2/release/textstat_plugin.wasm");
         if !out.exists() {
             let status = std::process::Command::new(cargo_bin())

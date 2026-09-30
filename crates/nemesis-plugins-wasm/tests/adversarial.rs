@@ -1,7 +1,7 @@
 //! W7 对抗套件（A2 全案例 + A9 observer 对抗）。
 //!
 //! 方法论（内部专项）：fixtures = 真实 cdylib 组件 crate
-//! （`examples/wasm-plugins/{translate,activity-log}`），产物缺席时在测试内
+//! （`plugins/wasm/{translate,activity-log}`），产物缺席时在测试内
 //! 按需 `cargo build --target wasm32-wasip2 --release`（fixture crate 自有
 //! workspace，target 目录独立于宿主）；构建失败 = 环境不满足，诚实 SKIP。
 //! 所有用例走 [`PluginInstaller`] 正式 admit 漏斗（manifest 校验→验签→
@@ -71,7 +71,7 @@ fn fixture_wasm(slug_dir: &'static str, artifact: &'static str) -> Option<PathBu
 /// 先找既有产物；没有就现场构建（fixture 自有 workspace → 独立 target-dir）。
 fn build_fixture(slug_dir: &str, artifact: &str) -> Option<PathBuf> {
     let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/wasm-plugins")
+        .join("../../plugins/wasm")
         .join(slug_dir);
     let out = crate_dir
         .join("target/wasm32-wasip2/release")

@@ -893,6 +893,10 @@ mod spawn_detached_tests;
 // F8 (devtool-upgrade 阶段 3)：hidden_tools 双闸（供给过滤 + dispatch 拦截）测试。
 #[cfg(test)]
 mod f8_hidden_tools_tests;
+// WASM 插件 min-tier 双闸（2026-09-30 插件体系复查 #2：秩刻度 + 供给绕白名单
+// 按秩过滤 + dispatch 拦截）测试。
+#[cfg(test)]
+mod min_tier_tests;
 // 角色目录与分档供给（2026-09-28）：`agents.roles.hidden` fresh-read /
 // visible_roles 单一裁决 / spawn role dispatch 闸 / fork inherit_context
 // dispatch 改写测试。

@@ -10,8 +10,9 @@
 //! - [`manifest`] / [`trust`]：manifest 解析校验 + 签名信任四态
 //! - [`engine`]：wasmtime Engine 单例（fuel+epoch+编译缓存）
 //!
-//! 合同（WIT）权威源在仓库根 `wit/v0/plugin.wit`；本 crate `wit/` 为宿主
-//! bindgen 副本，字节相等由 drift 测试钉死。
+//! 合同（WIT）权威源在本 crate `wit/plugin.wit`（合同由宿主定义）；SDK 绑定
+//! 直接引用该目录，已入库示例的随包副本字节相等由 drift 测试钉死；合同
+//! 变更经 build.rs rerun-if-changed 自动触发重编。
 
 pub mod bindings;
 pub mod egress;

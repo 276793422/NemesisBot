@@ -1,12 +1,12 @@
 //! W1 spike e2e：真 guest 组件经宿主装配漏斗 + fresh-store 链路全跑通。
 //!
-//! fixture = `examples/wasm-plugins/{translate,activity-log}` 编译产物
+//! fixture = `plugins/wasm/{translate,activity-log}` 编译产物
 //! （wasm32-wasip2 release）。fixture 缺席时诚实 SKIP（打印原因后返回）——
 //! 完整跑法见文件尾注释：
 //!
 //! ```text
-//! cd examples/wasm-plugins/translate && cargo build --target wasm32-wasip2 --release
-//! cd examples/wasm-plugins/activity-log && cargo build --target wasm32-wasip2 --release
+//! cd plugins/wasm/translate && cargo build --target wasm32-wasip2 --release
+//! cd plugins/wasm/activity-log && cargo build --target wasm32-wasip2 --release
 //! cargo test -p nemesis-plugins-wasm --test e2e_guest
 //! ```
 
@@ -58,15 +58,15 @@ fn audit_body(audit_dir: &Path) -> String {
 /// fixture wasm 路径（不存在 = None → 诚实 SKIP）。
 fn fixture_wasm(slug_dir: &str, artifact: &str) -> Option<PathBuf> {
     let p = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
-        "../../examples/wasm-plugins/{slug_dir}/target/wasm32-wasip2/release/{artifact}.wasm"
+        "../../plugins/wasm/{slug_dir}/target/wasm32-wasip2/release/{artifact}.wasm"
     ));
     p.exists().then_some(p)
 }
 
 fn skip_reason(slug_dir: &str) -> String {
     format!(
-        "SKIP e2e_guest：fixture 缺席（examples/wasm-plugins/{slug_dir} 未编译）。\
-完整跑法：cd examples/wasm-plugins/{slug_dir} && cargo build --target wasm32-wasip2 --release，\
+        "SKIP e2e_guest：fixture 缺席（plugins/wasm/{slug_dir} 未编译）。\
+完整跑法：cd plugins/wasm/{slug_dir} && cargo build --target wasm32-wasip2 --release，\
 再 cargo test -p nemesis-plugins-wasm --test e2e_guest"
     )
 }

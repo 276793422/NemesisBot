@@ -180,6 +180,30 @@ impl AgentLoop {
             }
         }
 
+        // WASM 插件 min-tier dispatch 闸（2026-09-30 插件体系复查 #2）：
+        // 供给侧（build_tool_defs 按档位秩过滤）之外的第二道闸，F8 双闸
+        // 同模型——陈旧 prompt cache / 子代理 defs 快照可能带出已过档的
+        // 插件工具。位置在 hidden 闸之后、security 之前：档位拒绝不付
+        // judge/scanner 成本。同刻度见 `plugin_min_tier_rank`/`active_tier_rank`。
+        {
+            let tools_guard = self.tools.read();
+            let gate = tools_guard
+                .get(&tool_call.name)
+                .and_then(|t| t.min_tier().map(|min| (min, plugin_min_tier_rank(min))));
+            if let Some((min, min_rank)) = gate
+                && active_tier_rank(*self.tier.read()) < min_rank
+            {
+                warn!(
+                    "[AgentLoop] Plugin tool {} refused (min-tier {min}).",
+                    tool_call.name
+                );
+                return format!(
+                    "Error: Tool '{}' requires model tier '{}' or above; the active model's tier is lower. Inform the user; they can switch models via /model.",
+                    tool_call.name, min
+                );
+            }
+        }
+
         // 角色目录闸（2026-09-28 角色目录与分档供给）：spawn `role` 的
         // dispatch 端权威检查——schema 枚举恒全量（稳定契约，F8 双闸同模
         // 型），出界（未知 / tier 分档外 / `agents.roles.hidden` 隐藏）在这

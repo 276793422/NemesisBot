@@ -51,33 +51,28 @@ pub fn project_event(event: &AgentEvent) -> Option<String> {
 
 /// 事件泵任务：订阅广播，投影后 enqueue 进注册表（观察者 worker 消费）。
 ///
-/// 返回的 JoinHandle 常驻；关停走 `shutdown` watch（gateway estop/退出链）。
+/// 返回的 JoinHandle 常驻；退出 = 广播 sender 全部 drop（gateway 收尾
+/// SharedResources 释放时发生）→ `recv()` 返回 Closed → 泵结束。不接
+/// estop：急停冻结由 [`crate::registry::PluginManager::set_enabled`]
+/// （estop watcher 联动）承担——enqueue 变 no-op，泵照常空转；release
+/// 后泵还活着，观察面无缝恢复（泵若自己接了 estop 退出，watch 无 reset
+/// 生产者会死透不复活）。
 pub fn spawn_pump(
     manager: std::sync::Arc<crate::registry::PluginManager>,
     mut events: tokio::sync::broadcast::Receiver<AgentEvent>,
-    mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
-            tokio::select! {
-                _ = shutdown.changed() => {
-                    if *shutdown.borrow() {
-                        break;
+            match events.recv().await {
+                Ok(event) => {
+                    if let Some(json) = project_event(&event) {
+                        manager.enqueue_observer_event(json);
                     }
                 }
-                ev = events.recv() => {
-                    match ev {
-                        Ok(event) => {
-                            if let Some(json) = project_event(&event) {
-                                manager.enqueue_observer_event(json);
-                            }
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            tracing::warn!("[WasmPlugin] 事件广播落后 {n} 条（观察者侧丢弃）");
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!("[WasmPlugin] 事件广播落后 {n} 条（观察者侧丢弃）");
                 }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
         tracing::info!("[WasmPlugin] 观察者事件泵已退出");
