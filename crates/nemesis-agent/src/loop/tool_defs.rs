@@ -189,7 +189,17 @@ impl AgentLoop {
         names.sort();
         names
             .into_iter()
-            .filter(|name| allowed.is_empty() || allowed.contains(&name.as_str()))
+            .filter(|name| {
+                // WASM 插件 min-tier 供给闸（2026-09-30 插件体系复查 #2）：
+                // 声明了最低档的工具绕过 tier 白名单、按档位秩比较
+                // （active ≥ min 才供给）——mini/normal 白名单本就不含
+                // `plugin.*` 名，逐名收录不可扩展，秩比较是唯一可行语义。
+                // 无档位声明的工具走原白名单路径，行为不变。
+                match tools_guard.get(name.as_str()).and_then(|t| t.min_tier()) {
+                    Some(min) => active_tier_rank(*self.tier.read()) >= plugin_min_tier_rank(min),
+                    None => allowed.is_empty() || allowed.contains(&name.as_str()),
+                }
+            })
             .filter(|name| !tool_name_matches_hidden(&hidden, name))
             .filter(|name| {
                 !plan_mode
@@ -478,4 +488,27 @@ pub(crate) fn tool_name_matches_hidden(entries: &[String], name: &str) -> bool {
             entry == name
         }
     })
+}
+
+/// WASM 插件 min-tier 秩（2026-09-30 插件体系复查 #2）：mini=0 / normal=1 /
+/// big=2。未知/空串按 big（=2，最严——不给声明走样的插件开白名单口子；
+/// manifest 校验本就拦非法值，此分支纯合成数据兜底）。
+pub(crate) fn plugin_min_tier_rank(tier: &str) -> u8 {
+    match tier {
+        "mini" => 0,
+        "normal" => 1,
+        _ => 2,
+    }
+}
+
+/// 活跃模型档位秩（与 [`plugin_min_tier_rank`] 同一标尺；Auto 防御性按
+/// big——loop 内 tier 启动时已 resolve，此分支纯兜底，语义与「缺省 big
+/// 不饿着强模型」一致）。
+pub(crate) fn active_tier_rank(tier: nemesis_types::capability::ModelTier) -> u8 {
+    use nemesis_types::capability::ModelTier;
+    match tier {
+        ModelTier::Mini => 0,
+        ModelTier::Normal => 1,
+        ModelTier::Big | ModelTier::Auto => 2,
+    }
 }

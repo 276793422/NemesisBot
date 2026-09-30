@@ -120,18 +120,24 @@ nemesis_plugin_sdk::export_tool!(Hello);
 | `api-version` | ✓ | 当前 1 |
 | `slug` | ✓ | 插件标识（目录名/数据目录/工具前缀） |
 | `kind` | ✓ | `tool` 或 `observer`（一 manifest 一 kind） |
-| `name` / `version` / `description` | ✓ | 展示信息 |
-| `[permissions]` | | `egress`（域名 allowlist）/ `x-secret`（凭据名）；空 = 零权限 |
+| `name` / `version` | ✓ | 展示信息 |
+| `description` | | 展示信息（可选） |
+| `wasm` | | 载荷文件名（缺省 `plugin.wasm`） |
+| `min-tier` | | 最低调用档 mini\|normal\|big（缺省 big，最保守；见「安全与限额」） |
+| `[permissions]` | | `egress`（域名精确匹配 allowlist）/ `allow-private`（私网放行，缺省 false）/ `x-secret`（凭据名）；空 = 零权限 |
 | `[config-schema]` | | 配置键说明（插件页配置表单据此渲染） |
-| `[limits]` | | 可选，在宿主全局上限内收紧（fuel/内存/表/实例/墙钟） |
+| `[limits]` | | 可选，在宿主全局上限内收紧；只认四键 `fuel` / `timeout-ms` / `host-call-budget` / `memory-bytes`（其余键忽略并在安装时提示） |
 
 ### 安全与限额（写插件前值得知道）
 
-- **出站网络 deny-by-default**：manifest `[permissions] egress` 显式列域名才放行；
+- **出站网络 deny-by-default**：manifest `[permissions] egress` 显式列域名（精确
+  匹配）才放行；私网/回环目标还需 `allow-private = true`；
 - **fuel / 内存 / 墙钟**：死循环、内存炸弹会被硬闸（`BudgetExceeded` / trap），
   manifest `[limits]` 只能收紧不能放宽；
-- **插件工具默认只对 big 档模型供给**（`min-tier`，manifest 可收紧不可放宽）：
-  装了工具但 agent 看不到？先确认当前模型档位（`model set-tier`）；
+- **插件工具按 `min-tier` 档位供给**（缺省 `big`，最保守）：声明 `mini`/`normal`
+  可把工具供给降到对应档（声明即目标档，无「不可放宽」一说）；模型档位低于
+  声明档时工具不进 LLM 工具清单、漏网调用在 dispatch 被拒。装了工具但 agent
+  看不到？先确认当前模型档位（`model set-tier` / `model probe`）；
 - observe 帧内 `tool_invoke` / `secret_get` 恒 `Unavailable`（观察者是脱敏投影，
   不给反查通道）。
 

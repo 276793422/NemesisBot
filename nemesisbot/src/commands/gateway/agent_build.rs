@@ -287,11 +287,19 @@ pub(crate) async fn init_agent(
         initial_tool_count
     );
 
-    // W5-3：插件 estop 联动 watcher——init_agent 一次性 spawn（manager 级
-    // 任务，不随 agent 重启泄；invoker 挂接在 build_agent_loop 每次重建时）。
+    // W5-3：插件 estop 联动 watcher + 观察者事件泵——init_agent 一次性
+    // spawn（manager 级任务，不随 agent 重启泄；invoker 挂接在
+    // build_agent_loop 每次重建时）。泵退出 = 广播 sender 全部 drop
+    // （gateway 收尾 SharedResources 释放）→ recv() Closed；estop 冻结由
+    // estop watcher（set_enabled → enqueue no-op）承担，泵不接 estop
+    // ——release 后泵还活着，观察面无缝恢复（2026-09-30 插件体系复查
+    // #1：此前泵从未接线，观察者插件在生产 gateway 收不到任何事件）。
     #[cfg(feature = "plugins-wasm")]
     if let Some(ref pm) = shared_resources.plugin_manager {
         crate::plugin_bridge::spawn_estop_watcher(pm, &shared_resources.estop);
+        if let Some(ref tx) = shared_resources.agent_event_tx {
+            nemesis_plugins_wasm::observer::spawn_pump(pm.clone(), tx.subscribe());
+        }
     }
 
     // Bridge the agent's tools into the workflow engine's tool registry so the

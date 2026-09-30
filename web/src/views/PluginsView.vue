@@ -352,6 +352,10 @@ onMounted(() => {
                   {{ wasmInstalling ? '安装中…' : '安装' }}
                 </button>
               </div>
+              <!-- #11（2026-09-30 插件体系复查）：升级语义说明——重装同 slug 即升级 -->
+              <div style="color: var(--text-muted); font-size: var(--text-xs); margin-bottom: var(--space-3);">
+                重新安装同 slug 的插件目录即为升级：漏斗重跑（验签/审批/装载），版本与载荷替换，<strong>插件数据目录保留</strong>；无需先卸载。
+              </div>
               <!-- 插件行 -->
               <div v-if="!wasmPlugins.length" style="color: var(--text-muted); font-size: var(--text-sm);">尚未安装任何 WASM 插件——按上方三步下载开发包即可开始</div>
               <div v-for="p in wasmPlugins" :key="p.slug" class="plugin-card">

@@ -122,6 +122,16 @@ pub trait Tool: Send + Sync {
     fn limit_categories(&self) -> &[&str] {
         &[]
     }
+
+    /// WASM 插件 min-tier（2026-09-30 插件体系复查 #2）：声明本工具的最低
+    /// 调用档（"mini"/"normal"/"big"；None = 无档位声明）。声明了档位的
+    /// 工具在供给面绕过 tier 白名单（mini/normal 白名单本就不含 `plugin.*`
+    /// 名，逐名收录不可扩展）、按档位秩比较供给/分发（active ≥ min 才
+    /// 供给可调）——双闸同 hidden_tools 模型。内置工具默认 None（走
+    /// `tier_allowed_tools` 白名单，行为不变）。
+    fn min_tier(&self) -> Option<&str> {
+        None
+    }
 }
 
 impl AgentLoop {

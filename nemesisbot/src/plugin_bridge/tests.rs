@@ -70,25 +70,25 @@ fn operation_mapping_covers_wordlist() {
     use nemesis_security::types::OperationType;
     assert_eq!(
         PluginToolBridge::map_operation("read"),
-        OperationType::FileRead
-    );
-    assert_eq!(
-        PluginToolBridge::map_operation(""),
-        OperationType::FileRead,
-        "未声明 = FileRead 基线"
+        Some(OperationType::FileRead)
     );
     assert_eq!(
         PluginToolBridge::map_operation("write"),
-        OperationType::FileWrite
+        Some(OperationType::FileWrite)
     );
     assert_eq!(
         PluginToolBridge::map_operation("exec"),
-        OperationType::ProcessExec
+        Some(OperationType::ProcessExec)
     );
     assert_eq!(
         PluginToolBridge::map_operation("network"),
-        OperationType::NetworkRequest
+        Some(OperationType::NetworkRequest)
     );
+    // 未声明（空串）/未知 = None：不声明 → dispatch 未注册名 fail-closed
+    // CRITICAL（WIT 合同口径，2026-09-30 #3 从紧）。大小写敏感不猜。
+    assert_eq!(PluginToolBridge::map_operation(""), None);
+    assert_eq!(PluginToolBridge::map_operation("filesystem"), None);
+    assert_eq!(PluginToolBridge::map_operation("Read"), None);
 }
 
 #[test]
@@ -125,6 +125,25 @@ fn bridge_is_read_only_follows_declaration() {
     assert!(ro.is_read_only());
     assert!(!rw.is_read_only());
     assert!(!undeclared.is_read_only(), "未声明不作只读（从紧）");
+}
+
+#[test]
+fn bridge_min_tier_follows_manifest_snapshot() {
+    // min-tier 接线（2026-09-30 #2）：桥按安装期对账快照声明最低档，
+    // 数据随 meta 走（无边车表无漂移）。
+    let (_dir, home) = temp_home();
+    let manager = Arc::new(
+        PluginManager::new(
+            &common::workspace_path(&home),
+            PluginLimits::default(),
+            Arc::new(VaultPluginSecrets::for_home(&home)),
+        )
+        .expect("manager"),
+    );
+    let mut m = meta("plugin.x.a", "read", "{}");
+    m.min_tier = "normal".to_string();
+    let bridge = PluginToolBridge::new(m, manager);
+    assert_eq!(bridge.min_tier(), Some("normal"));
 }
 
 #[tokio::test]

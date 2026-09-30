@@ -469,10 +469,13 @@ pub(crate) async fn run_runtime(
                     pm_for_hook.clone(),
                 ));
                 let actual = loop_arc.register_plugin_tool(ev.tool_name.clone(), bridge);
-                nemesis_security::types::declare_tool_operation(
-                    &actual,
-                    crate::plugin_bridge::PluginToolBridge::map_operation(&ev.operation_type),
-                );
+                // 空/未知 operation-type → None = 不声明（dispatch 时未注册
+                // 名 fail-closed CRITICAL，与启动装载同一映射同一语义）。
+                if let Some(op) =
+                    crate::plugin_bridge::PluginToolBridge::map_operation(&ev.operation_type)
+                {
+                    nemesis_security::types::declare_tool_operation(&actual, op);
+                }
                 info!("[WasmPlugin] tool hot-registered: {actual}");
             },
         ));

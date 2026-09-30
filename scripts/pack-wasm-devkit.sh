@@ -25,7 +25,7 @@ set -euo pipefail
 
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SRC_SDK="$REPO_ROOT/crates/nemesis-plugin-sdk"
-SRC_EXAMPLES="$REPO_ROOT/examples/wasm-plugins"
+SRC_EXAMPLES="$REPO_ROOT/plugins/wasm"
 ASSETS="$REPO_ROOT/scripts/wasm-devkit"
 STAGE="$REPO_ROOT/staging-wasm-devkit"
 PKG="$STAGE/wasm-plugin-devkit"
@@ -48,9 +48,10 @@ COMMIT=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo "unknown
 VER_SEMVER=$(printf '%s' "$VERSION" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
 VER_SEMVER=${VER_SEMVER:-"0.0.0"}
 
-# ---- 示例名单：git 已入库的 examples/wasm-plugins/<dir>（含 Cargo.toml 者）--
-# 注意 git ls-files 输出仓库相对路径（与 pathspec 形态无关），strip 用相对前缀
-EX_REL="examples/wasm-plugins"
+# ---- 示例名单：git 已入库的 plugins/wasm/<dir>（含 Cargo.toml 者）----------
+# 注意 git ls-files 输出仓库相对路径（与 pathspec 形态无关），strip 用相对前缀；
+# wsinsight 未入库，被名单过滤自然排除。
+EX_REL="plugins/wasm"
 mapfile -t EXAMPLES < <(git -C "$REPO_ROOT" ls-files "$EX_REL" \
   | sed "s|^$EX_REL/||" | cut -d/ -f1 | sort -u \
   | while read -r d; do
@@ -58,7 +59,7 @@ mapfile -t EXAMPLES < <(git -C "$REPO_ROOT" ls-files "$EX_REL" \
         "$EX_REL/$d/Cargo.toml" >/dev/null 2>&1 && echo "$d"
     done)
 if [ "${#EXAMPLES[@]}" -eq 0 ]; then
-  echo "❌ examples/wasm-plugins 下没有任何已入库示例"; exit 1
+  echo "❌ plugins/wasm 下没有任何已入库示例"; exit 1
 fi
 echo "=== devkit 示例名单: ${EXAMPLES[*]}"
 
@@ -91,9 +92,15 @@ cp "$ASSETS/root-Cargo.toml" "$PKG/Cargo.toml"
 sed -e "s|@DEVKIT_VERSION@|$VERSION|g" -e "s|@DEVKIT_COMMIT@|$COMMIT|g" \
   "$ASSETS/README.md" > "$PKG/README.md"
 
-# 2. sdk standalone：src + wit 原样拷，Cargo.toml 生成（workspace 继承全部写死）
+# 2. sdk standalone：src 原样拷 + wit 从宿主 crate 权威合同目录拷（SDK 无
+# 本地副本，devkit 自包含要求包内自带——来源单一化后不存在拷错版本）。
+# host.rs 的 bindgen path 在仓库内指向宿主 crate（crate 外），devkit 内无
+# 该目录——改写回 crate 内 /wit（wit 已拷至 sdk/wit）。
 tar_copy "$SRC_SDK/src" "$PKG/sdk/src"
-tar_copy "$SRC_SDK/wit" "$PKG/sdk/wit"
+tar_copy "$REPO_ROOT/crates/nemesis-plugins-wasm/wit" "$PKG/sdk/wit"
+sed -i 's|"/\.\./nemesis-plugins-wasm/wit"|"/wit"|' "$PKG/sdk/src/host.rs"
+grep -q '"/\.\./nemesis-plugins-wasm/wit"' "$PKG/sdk/src/host.rs" \
+  && { echo "❌ devkit sdk host.rs 残留仓库内 wit 路径引用"; exit 1; }
 cat > "$PKG/sdk/Cargo.toml" <<EOF
 [package]
 name = "nemesis-plugin-sdk"
@@ -129,7 +136,7 @@ for name in "${EXAMPLES[@]}"; do
   else
     echo "⚠️ 示例 $name 无 Cargo.lock（跳过——依赖解析交由用户构建时）"
   fi
-  grep -q 'path = "\.\./sdk"' "$PKG/examples/$name/Cargo.toml" \
+  grep -q 'path = "\.\./\.\./sdk"' "$PKG/examples/$name/Cargo.toml" \
     || echo "（$name：原始写法示例，直连 wit-bindgen，无需 sdk）"
 done
 

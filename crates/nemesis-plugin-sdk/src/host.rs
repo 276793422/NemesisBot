@@ -6,9 +6,10 @@
 //! 正确写法见 crate 根文档示例：`use nemesis::plugin::host;`。
 //!
 //! 本模块的定位：SDK 自身绑定的独立组件场景（只调宿主、无导出的辅助
-//! 组件）与 SDK 内部测试；底层绑定由 SDK crate 内的 bindgen 生成（组件级
-//! 同名导入合并，与插件 crate 自身生成的导入互不冲突）；本模块提供稳定
-//! 签名 + 文档。原始形态在 `crate::__host_wire`（`nemesis::plugin::host`）。
+//! 组件）与 SDK 内部测试；底层绑定由 SDK crate 内的 bindgen 生成（WIT 来源
+//! = 宿主 crate 的权威合同目录 `nemesis-plugins-wasm/wit/`，无本地副本；
+//! 组件级同名导入合并，与插件 crate 自身生成的导入互不冲突）；本模块提供
+//! 稳定签名 + 文档。原始形态在 `crate::__host_wire`（`nemesis::plugin::host`）。
 
 #![allow(clippy::module_name_repetitions)]
 
@@ -18,7 +19,7 @@
 #[allow(missing_docs)]
 mod wire {
     wit_bindgen::generate!({
-        path: concat!(env!("CARGO_MANIFEST_DIR"), "/wit"),
+        path: concat!(env!("CARGO_MANIFEST_DIR"), "/../nemesis-plugins-wasm/wit"),
         world: "plugin-tool",
     });
     pub use nemesis::plugin::host as raw;

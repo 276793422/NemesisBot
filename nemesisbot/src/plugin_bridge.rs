@@ -18,8 +18,10 @@
 //    bind 真身 WebApprovalManager；未 bind = fail-closed 诚实拒绝。
 // 5. [`register_plugin_tools`] / [`spawn_estop_watcher`]——装配入口：桥注册 +
 //    操作类型声明（声明式 ABAC：read→FileRead / write→FileWrite /
-//    exec→ProcessExec / network→NetworkRequest）+ estop watch 联动（急停
-//    冻结子系统，释放恢复；invoker 挂接在 build_agent_loop 每次重建时执行）。
+//    exec→ProcessExec / network→NetworkRequest；空串/未知 = 不声明，
+//    dispatch 未注册名 fail-closed CRITICAL——WIT 合同口径）+ estop watch
+//    联动（急停冻结子系统，释放恢复；invoker 挂接在 build_agent_loop
+//    每次重建时执行）。
 //
 // 模块随 `plugins-wasm` feature 门控（该 feature implies security——信任/
 // 审计/扫描机制依赖 nemesis-security）。
@@ -54,17 +56,23 @@ impl PluginToolBridge {
         }
     }
 
-    /// 声明式 ABAC 映射（guest operation-type → 宿主 OperationType；空串 =
-    /// 基线 FileRead，与 MCP 工具基线同惯例——声明后全管线照跑）。
+    /// 声明式 ABAC 映射（guest operation-type → 宿主 OperationType）。
+    /// 四个合法值显式映射；空串/未知 → `None` = **不声明**——dispatch 时
+    /// 走 `effective_tool_operation` 未注册名 fail-closed（ProcessExec /
+    /// CRITICAL 过全管线），对齐 WIT 合同「未按惯例注册的操作类型按未注
+    /// 册名默认 CRITICAL」承诺（2026-09-30 插件体系复查 #3 从紧：此前空
+    /// 串/未知落 FileRead 基线，比 WIT 承诺宽；已入库示例全部显式声明，
+    /// 零兼容影响）。
     /// `pub(crate)`：热装 hook（run_runtime 注入闭包）与启动装载共用同一映射。
-    pub(crate) fn map_operation(op: &str) -> nemesis_security::types::OperationType {
+    pub(crate) fn map_operation(op: &str) -> Option<nemesis_security::types::OperationType> {
         use nemesis_security::types::OperationType;
         match op {
-            "write" => OperationType::FileWrite,
-            "exec" => OperationType::ProcessExec,
-            "network" => OperationType::NetworkRequest,
-            // "read" 与未声明（空串）都落 FileRead 基线。
-            _ => OperationType::FileRead,
+            "read" => Some(OperationType::FileRead),
+            "write" => Some(OperationType::FileWrite),
+            "exec" => Some(OperationType::ProcessExec),
+            "network" => Some(OperationType::NetworkRequest),
+            // 未声明（空串）/未知值 = 不猜、不声明 → fail-closed。
+            _ => None,
         }
     }
 
@@ -157,6 +165,12 @@ impl nemesis_agent::r#loop::Tool for PluginToolBridge {
 
     fn is_read_only(&self) -> bool {
         self.meta.operation_type == "read"
+    }
+
+    fn min_tier(&self) -> Option<&str> {
+        // manifest 校验保证非空且 ∈ {mini,normal,big}（registry 对账快照
+        // 随桥走，无边车表无漂移）；合成测试外的空串经 rank 兜底 = big。
+        Some(&self.meta.min_tier)
     }
 }
 
@@ -377,10 +391,9 @@ pub fn register_plugin_tools(
             continue;
         };
         #[cfg(feature = "security")]
-        nemesis_security::types::declare_tool_operation(
-            &meta.name,
-            PluginToolBridge::map_operation(&meta.operation_type),
-        );
+        if let Some(op) = PluginToolBridge::map_operation(&meta.operation_type) {
+            nemesis_security::types::declare_tool_operation(&meta.name, op);
+        }
         agent_loop.register_tool(
             meta.name.clone(),
             Box::new(PluginToolBridge::new(meta, manager.clone())),

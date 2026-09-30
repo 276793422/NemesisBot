@@ -71,6 +71,26 @@ pub enum PluginAction {
         #[arg(long, default_value = "community")]
         level: String,
     },
+    /// 列出插件信任库全部公钥（name/指纹/级别/加入时间）
+    TrustList,
+    /// 吊销信任库公钥（级别置 revoked，条目保留留痕；--key 或 --name）
+    TrustRevoke {
+        /// Ed25519 公钥（hex64）
+        #[arg(long)]
+        key: Option<String>,
+        /// 签名者名称
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// 从信任库移除公钥（整条删除，之后可重新 trust；--key 或 --name）
+    TrustRemove {
+        /// Ed25519 公钥（hex64）
+        #[arg(long)]
+        key: Option<String>,
+        /// 签名者名称
+        #[arg(long)]
+        name: Option<String>,
+    },
 }
 
 fn err_msg(e: nemesis_plugins_wasm::PluginError) -> anyhow::Error {
@@ -81,6 +101,41 @@ fn trust_path(home: &std::path::Path) -> std::path::PathBuf {
     common::workspace_path(home)
         .join("config")
         .join("plugin_trust.json")
+}
+
+/// 信任吊销面（2026-09-30 插件体系复查 #10）：--key/--name 解析为库内条目。
+/// 恰给其一；都给则校验同指一条（防错改同名异钥条目）。
+fn resolve_trust_entry(
+    store: &nemesis_security::signature::TrustStore,
+    key: &Option<String>,
+    name: &Option<String>,
+) -> Result<nemesis_security::signature::TrustedKey> {
+    let not_found = |what: &str| anyhow::anyhow!("{what} 不在信任库（plugin trust list 查看现库）");
+    match (key, name) {
+        (Some(k), None) => {
+            if k.len() != 64 || !k.chars().all(|c| c.is_ascii_hexdigit()) {
+                anyhow::bail!("公钥应为 hex64（64 个十六进制字符）");
+            }
+            store.get_key(k).ok_or_else(|| not_found("公钥"))
+        }
+        (None, Some(n)) => store.get_key_by_name(n).ok_or_else(|| not_found("签名者")),
+        (Some(k), Some(n)) => {
+            let entry = store.get_key(k).ok_or_else(|| not_found("公钥"))?;
+            if entry.name != *n {
+                anyhow::bail!(
+                    "--key 与 --name 不指向同一条目：库内该公钥的签名者是「{}」",
+                    entry.name
+                );
+            }
+            Ok(entry)
+        }
+        (None, None) => anyhow::bail!("--key 与 --name 必须提供其一"),
+    }
+}
+
+/// 变更后盘上真相回读（与 Trust 同模式）：重开信任库文件确认落盘。
+fn persisted_trust_store(home: &std::path::Path) -> nemesis_security::signature::TrustStore {
+    nemesis_security::signature::TrustStore::new(Some(trust_path(home)))
 }
 
 /// CLI 独立 PluginManager 构造（install/upgrade 与 Info 共用；不构造引擎）。
@@ -375,6 +430,89 @@ pub async fn run(local: bool, action: PluginAction) -> Result<()> {
             } else {
                 anyhow::bail!(
                     "信任库持久化失败：{name} 未能写入 {}（检查文件权限/磁盘）",
+                    trust_path(&home).display()
+                );
+            }
+        }
+        PluginAction::TrustList => {
+            let mut keys = persisted_trust_store(&home).list_keys();
+            if keys.is_empty() {
+                println!("信任库为空（plugin trust --key <hex64> --name <名> 添加）");
+                println!("  信任库文件 : {}", trust_path(&home).display());
+                return Ok(());
+            }
+            // read_dir 纪律同款：HashMap 无序输出显式排序（跨平台稳定展示）。
+            keys.sort_by(|a, b| a.name.cmp(&b.name).then(a.public_key.cmp(&b.public_key)));
+            println!(
+                "{:<24} {:<18} {:<12} ADDED_AT             PUBLIC_KEY",
+                "NAME", "FINGERPRINT", "LEVEL"
+            );
+            for k in &keys {
+                let fp: String = k.fingerprint.chars().take(16).collect();
+                let pk: String = k.public_key.chars().take(16).collect();
+                println!(
+                    "{:<24} {:<18} {:<12} {:<20} {}…",
+                    k.name,
+                    format!("{fp}…"),
+                    k.level,
+                    k.added_at,
+                    pk
+                );
+            }
+            println!("共 {} 条（{}）", keys.len(), trust_path(&home).display());
+        }
+        PluginAction::TrustRevoke { key, name } => {
+            let verifier =
+                nemesis_security::signature::SignatureVerifier::with_persistence(trust_path(&home));
+            let entry = resolve_trust_entry(verifier.trust_store_ref(), &key, &name)?;
+            verifier
+                .trust_store_ref()
+                .revoke_key_by_public_key(&entry.public_key)
+                .map_err(|e| anyhow::anyhow!("吊销失败: {e}"))?;
+            // 盘上真相回读：级别必须已是 revoked（持久化失败不得报成功）。
+            match persisted_trust_store(&home)
+                .get_key(&entry.public_key)
+                .map(|k| k.level)
+            {
+                Some(nemesis_security::signature::TrustLevel::Revoked) => {
+                    println!("已吊销：{}（指纹 {}）", entry.name, entry.fingerprint);
+                    println!(
+                        "  效果        : 级别置 revoked、条目保留留痕；该公钥签名的插件装回即拒（blocked）。"
+                    );
+                    println!(
+                        "  恢复        : 重新 `plugin trust --key <hex64> --name <名>` 写入即可（覆盖级别）。"
+                    );
+                }
+                _ => anyhow::bail!(
+                    "信任库持久化失败：{} 的吊销未落盘 {}（检查文件权限/磁盘）",
+                    entry.name,
+                    trust_path(&home).display()
+                ),
+            }
+        }
+        PluginAction::TrustRemove { key, name } => {
+            let verifier =
+                nemesis_security::signature::SignatureVerifier::with_persistence(trust_path(&home));
+            let entry = resolve_trust_entry(verifier.trust_store_ref(), &key, &name)?;
+            let removed = verifier
+                .trust_store_ref()
+                .remove_key_by_public_key(&entry.public_key);
+            if removed
+                && persisted_trust_store(&home)
+                    .get_key(&entry.public_key)
+                    .is_none()
+            {
+                println!(
+                    "已移除：{}（指纹 {}）——条目整条删除",
+                    entry.name, entry.fingerprint
+                );
+                println!(
+                    "  注意        : 该公钥签名的已装插件不受影响；重新信任用 `plugin trust` 写入。"
+                );
+            } else {
+                anyhow::bail!(
+                    "信任库持久化失败：{} 的移除未落盘 {}（检查文件权限/磁盘）",
+                    entry.name,
                     trust_path(&home).display()
                 );
             }
