@@ -595,3 +595,60 @@ fn test_send_unicast_encrypted_roundtrip() {
     let parsed = DiscoveryMessage::from_bytes(&decrypted).unwrap();
     assert_eq!(parsed.node_id, "enc-node");
 }
+
+// -- Windows WSAECONNRESET 韧性（T40 UAT 实证回归锁，2026-09-30）--
+
+// Windows 形态测试标记约定（2026-09-02）：ICMP 回压→recv_from 报 ConnectionReset
+// 是 Windows UDP 特有行为（Unix 非连接 socket 不上报 ICMP 错误，该测试在 Linux
+// 上编译期消失）。
+//
+// 复现链：listener 自身 socket 单播到一个已关闭的 loopback 端口 → 对端 ICMP
+// Port Unreachable → 下一次 recv_from 返回 WSAECONNRESET。修复前 receive 线程
+// 在 `Err(_) => break` 处静默死亡，随后到达的合法 announce 永远不被处理；
+// 修复后 reset 被消费、继续接收。
+#[cfg(windows)]
+#[test]
+fn test_udp_listener_survives_connreset_after_send_to_closed_port() {
+    // 造一个确定已关闭的 UDP 端口：bind 拿端口后立即 drop
+    let closed = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let closed_port = closed.local_addr().unwrap().port();
+    drop(closed);
+
+    let listener = UdpListener::new(0, None).unwrap();
+    let port = listener.port();
+
+    let received = Arc::new(parking_lot::Mutex::new(Vec::<String>::new()));
+    let received_clone = Arc::clone(&received);
+    listener.set_message_handler(Box::new(move |msg, _addr| {
+        received_clone.lock().push(msg.node_id.clone());
+    }));
+
+    listener.start().unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+
+    // 用 listener 自身 socket 单播到已关闭端口（reset 落在接收 socket 上）
+    let msg = make_announce("reset-trigger", &["127.0.0.1"], 21000);
+    listener.send_unicast(&format!("127.0.0.1:{closed_port}"), &msg);
+
+    // 等 ICMP 回压排队（loopback 上即时，留裕量）
+    std::thread::sleep(Duration::from_millis(300));
+
+    // 随后到达的合法 announce 必须被处理——修复前 receive 线程已死、收不到
+    let sender = UdpSocket::bind("0.0.0.0:0").unwrap();
+    let after = make_announce("after-reset-node", &["10.0.0.9"], 9000);
+    sender
+        .send_to(
+            &after.to_bytes().unwrap(),
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, port),
+        )
+        .unwrap();
+
+    std::thread::sleep(Duration::from_millis(500));
+    listener.stop().unwrap();
+
+    let msgs = received.lock();
+    assert!(
+        msgs.iter().any(|id| id == "after-reset-node"),
+        "listener must survive WSAECONNRESET and still receive the next announce; got {msgs:?}"
+    );
+}

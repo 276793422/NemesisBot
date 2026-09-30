@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 test-harness = { path = "../test-harness" }
 nemesis-board = { path = "../../crates/nemesis-board" }
+nemesis-cluster = { path = "../../crates/nemesis-cluster" }
 nemesis-data = { path = "../../crates/nemesis-data" }
 nemesis-path = { path = "../../crates/nemesis-path" }
 git2 = { workspace = true }

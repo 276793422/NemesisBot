@@ -219,6 +219,60 @@ fn dump_log_tail(path: &Path, max_lines: usize) {
     }
 }
 
+/// Print log lines containing `needle`（T41 发现层诊断：只看 [Discovery] 行，
+/// tail-30 会被健康探针 RPC 流刷掉）。同时输出总行数对比。
+fn dump_log_grep(path: &Path, needle: &str, max_lines: usize) {
+    println!("--- gateway log grep[{needle}]: {} ---", path.display());
+    match std::fs::read_to_string(path) {
+        Ok(content) => {
+            let hits: Vec<&str> = content.lines().filter(|l| l.contains(needle)).collect();
+            println!(
+                "  ({} total lines, {} matching)",
+                content.lines().count(),
+                hits.len()
+            );
+            let skip = hits.len().saturating_sub(max_lines);
+            if skip > 0 {
+                println!("  (... {} earlier matches omitted ...)", skip);
+            }
+            for line in &hits[skip..] {
+                println!("  {}", line);
+            }
+        }
+        Err(e) => println!("  (cannot read log: {})", e),
+    }
+}
+
+/// 递归打印目录树（深度受限，目录带 `/` 后缀）——T42 失败诊断用：
+/// cluster_logs 没找到 marker 时，需要知道目录到底长什么样（有没有
+/// device 目录/会话目录/件套叫什么名）。
+fn dump_dir_tree(root: &Path, max_depth: usize) {
+    fn walk(dir: &Path, depth: usize, max_depth: usize) {
+        if depth > max_depth {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            if is_dir {
+                println!("  {}/", e.path().display());
+                walk(&e.path(), depth + 1, max_depth);
+            } else {
+                println!("  {}", e.path().display());
+            }
+            let _ = name;
+        }
+    }
+    if !root.exists() {
+        println!("  ({} 不存在)", root.display());
+        return;
+    }
+    walk(root, 0, max_depth);
+}
+
 /// 递归列残留项（相对路径，目录带 `/` 后缀，封顶 cap 项）——T-MRG-1 清扫
 /// 断言失败诊断用（GH runner 三连实证 2026-09-28：exec 目录非空但不知道
 /// 残留的是什么；下一轮失败直接带清单定位）。
@@ -9070,6 +9124,773 @@ async fn main() {
                 Err(e) => fail("T-MRG-7", format!("{e}")),
             }
         })
+        .await,
+    );
+
+    // ==================================================================
+    // T38-T42: 组网安全负例 + 运行时管理面（测试场景库 §5.2-9~13 补齐）
+    //
+    // 这五个场景补的是「机制有单测、场景级零覆盖」的缺口：
+    //   T38 removed_peers 黑名单拦截重发现 + 重启解禁重入网 cycle
+    //   T39 announce 过期丢弃（G3 接收侧：伪造 stale 报文 → 限频 WARN + 不入表）
+    //   T40 token 失配负例（异 token 节点互不发现 + discovery_drops 账本）
+    //   T41 node.update_identity 运行时身份编辑（热改传播 + loud 拒绝）
+    //   T42 集群请求日志产物面（cluster_logs 目录形态 + 件套契约）
+    // ==================================================================
+
+    // T38: 节点移除 → 黑名单拦截重发现 → 重启解禁 → announce 重入网
+    all_results.push(
+        run_test(
+            "T38: 节点移除黑名单 + 重启解禁重入网 cycle（removed_peers）",
+            || async {
+                let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                    Ok(s) => s,
+                    Err(e) => return fail("T38", format!("WS connect to A failed: {e}")),
+                };
+                // 基线：C 在 A 的注册表（拿运行时 id——黑名单按 id 键控）
+                let c_id = match node_runtime_id(&mut ws, "Node-C").await {
+                    Ok(id) => id,
+                    Err(e) => return fail("T38", format!("基线：Node-C 不在 A 注册表: {e}")),
+                };
+                // 1. 移除：registry 删 + removed_peers 黑名单 + peers.toml 同步删除
+                match ws_api_request(
+                    &mut ws,
+                    "cluster",
+                    "nodes.remove",
+                    json!({ "node_id": c_id }),
+                    10,
+                )
+                .await
+                {
+                    Ok(v) => {
+                        if v.get("removed").and_then(|r| r.as_bool()) != Some(true) {
+                            return fail("T38", format!("nodes.remove 未确认移除: {v}"));
+                        }
+                    }
+                    Err(e) => return fail("T38", format!("nodes.remove 失败: {e}")),
+                }
+                // 2. 黑名单生效：≥2 个广播周期，C 的 announce 不得重新入表
+                tokio::time::sleep(Duration::from_secs(12)).await;
+                match ws_api_request(&mut ws, "cluster", "nodes.list", json!({}), 10).await {
+                    Ok(v) => {
+                        let reappeared = v
+                            .pointer("/nodes")
+                            .and_then(|n| n.as_array())
+                            .map(|arr| {
+                                arr.iter().any(|n| {
+                                    n.get("id").and_then(|i| i.as_str()) == Some(c_id.as_str())
+                                        || n.get("name").and_then(|i| i.as_str()) == Some("Node-C")
+                                })
+                            })
+                            .unwrap_or(false);
+                        if reappeared {
+                            return fail(
+                                "T38",
+                                "移除后 12s 内 Node-C 重新入表（黑名单未拦截重新发现）",
+                            );
+                        }
+                    }
+                    Err(e) => return fail("T38", format!("nodes.list 失败: {e}")),
+                }
+                // 3. 解禁 = 重启 A（removed_peers 是内存态，重启清空——黑名单唯一
+                //    解除入口；产品语义「移除阻止重新发现直到重启」）。
+                drop(ws);
+                gw_a.kill().await;
+                gw_a =
+                    match start_gateway_and_wait("Gateway-A", &gateway_bin, ws_a.path(), &NODES[0])
+                        .await
+                    {
+                        Ok(g) => g,
+                        Err(e) => return fail("T38", format!("A 重启失败: {e}")),
+                    };
+                let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                    Ok(s) => s,
+                    Err(e) => return fail("T38", format!("WS reconnect to A failed: {e}")),
+                };
+                // 4. C 侧静态 peers 仍指向 A → announce 周期到达 → 重新发现 → Online
+                match wait_node_identity(&mut ws, "Node-C", &[], None, true, 60, false).await {
+                    Ok(_) => pass(
+                        "T38",
+                        "移除→黑名单拦截 12s→重启解禁→Node-C announce 重入网 Online",
+                    ),
+                    Err(e) => fail("T38", format!("重启后 Node-C 未在 60s 内重新 Online: {e}")),
+                }
+            },
+        )
+        .await,
+    );
+
+    // T39: 伪造过期 announce → G3 接收侧丢弃 + 限频 WARN + 注册表无污染
+    all_results.push(
+        run_test(
+            "T39: announce 过期丢弃（G3 接收侧：stale 报文 WARN + 不入注册表）",
+            || async {
+                // 单机共享时钟制造不了真实漂移节点；用公开 codec（nemesis_cluster::discovery）
+                // 构造一条时间戳落后 200s（> 默认阈值 120s）的合法密文 announce，
+                // 直击接收侧过期判定 + 限频 WARN + 丢弃路径。
+                let mut msg = nemesis_cluster::discovery::DiscoveryMessage::new_announce(
+                    "uat-stale-ghost",
+                    "uat-stale-ghost",
+                    vec!["127.0.0.1".to_string()],
+                    21999,
+                    "worker",
+                    "development",
+                    vec![],
+                    vec![],
+                    "agent",
+                );
+                msg.timestamp = chrono::Utc::now().timestamp() - 200;
+                let key = nemesis_cluster::discovery::derive_key(SHARED_CLUSTER_TOKEN);
+                let plain = match msg.to_bytes() {
+                    Ok(b) => b,
+                    Err(e) => return fail("T39", format!("stale announce 序列化失败: {e}")),
+                };
+                let payload = match nemesis_cluster::discovery::encrypt_data(&key, &plain) {
+                    Ok(p) => p,
+                    Err(_) => return fail("T39", "stale announce 加密失败"),
+                };
+                let sock = match std::net::UdpSocket::bind("0.0.0.0:0") {
+                    Ok(s) => s,
+                    Err(e) => return fail("T39", format!("UDP bind 失败: {e}")),
+                };
+                if let Err(e) = sock.send_to(&payload, format!("127.0.0.1:{}", NODES[0].udp_port)) {
+                    return fail("T39", format!("stale announce 发送失败: {e}"));
+                }
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                // 断言 1：A 日志出现限频 WARN（同源首见必 admitted）
+                let log = std::fs::read_to_string(&gw_a.log_path).unwrap_or_default();
+                if !log.contains("Dropping expired discovery message") {
+                    return fail(
+                        "T39",
+                        "A gateway.log 未出现过期丢弃 WARN（G3 接收侧链路未触发）",
+                    );
+                }
+                // 断言 2：丢弃 = 未入注册表
+                let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                    Ok(s) => s,
+                    Err(e) => return fail("T39", format!("WS connect to A failed: {e}")),
+                };
+                match ws_api_request(&mut ws, "cluster", "nodes.list", json!({}), 10).await {
+                    Ok(v) => {
+                        let ghost = v
+                            .pointer("/nodes")
+                            .and_then(|n| n.as_array())
+                            .map(|arr| {
+                                arr.iter().any(|n| {
+                                    n.get("name").and_then(|i| i.as_str())
+                                        == Some("uat-stale-ghost")
+                                })
+                            })
+                            .unwrap_or(false);
+                        if ghost {
+                            return fail("T39", "过期 announce 仍被注册（丢弃未生效）");
+                        }
+                    }
+                    Err(e) => return fail("T39", format!("nodes.list 失败: {e}")),
+                }
+                pass(
+                    "T39",
+                    "stale announce（ts=-200s）：限频 WARN 落日志 + 未污染注册表",
+                )
+            },
+        )
+        .await,
+    );
+
+    // T40: 错 token 节点入网负例（AEAD 诚实失败 + 丢弃账本 + 互不发现）
+    all_results.push(
+        run_test("T40: token 失配负例（异 token 节点互不发现 + discovery_drops 账本可见）", || async {
+            async fn drops_of(ws: &mut WsStream) -> Result<(u64, Vec<String>), String> {
+                let v = ws_api_request(ws, "cluster", "runtime.status", json!({}), 10)
+                    .await
+                    .map_err(|e| format!("runtime.status 失败: {e}"))?;
+                let total = v
+                    .pointer("/discovery_drops/total_drops")
+                    .and_then(|t| t.as_u64())
+                    .unwrap_or(0);
+                let addrs = v
+                    .pointer("/discovery_drops/sources")
+                    .and_then(|s| s.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|s| s.get("addr").and_then(|a| a.as_str()).map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Ok((total, addrs))
+            }
+
+            // 1. 搭第 5 节点 E：完整装配但 token 故意与集群不同
+            let ws_e = match TestWorkspace::new() {
+                Ok(w) => w,
+                Err(e) => return fail("T40", format!("workspace E 创建失败: {e}")),
+            };
+            let e_node = NodeConfig {
+                name: "Node-E",
+                role: "worker",
+                web_port: 49007,
+                health_port: 18795,
+                udp_port: 11953,
+                rpc_port: 21953,
+                model: "test/testai-3.1",
+            };
+            let out = ws_e.run_cli(&gateway_bin, &["onboard", "default"]).await;
+            if !out.success() {
+                return fail("T40", format!("E onboard 失败: {}", out.stderr));
+            }
+            if let Err(e) = configure_ports(&ws_e.home(), e_node.web_port, e_node.health_port) {
+                return fail("T40", format!("E configure_ports 失败: {e}"));
+            }
+            let out = ws_e
+                .run_cli(
+                    &gateway_bin,
+                    &[
+                        "model",
+                        "add",
+                        "--model",
+                        e_node.model,
+                        "--base",
+                        &format!("http://127.0.0.1:{}/v1", ai_server_port()),
+                        "--key",
+                        "test-key",
+                        "--default",
+                    ],
+                )
+                .await;
+            if !out.success() {
+                return fail("T40", format!("E model add 失败: {}", out.stderr));
+            }
+            let out = ws_e
+                .run_cli(
+                    &gateway_bin,
+                    &["cluster", "init", "--name", "Node-E", "--role", "worker", "--category", "development"],
+                )
+                .await;
+            if !out.success() {
+                return fail("T40", format!("E cluster init 失败: {}", out.stderr));
+            }
+            // 关键差异：token 故意设错（不是 SHARED_CLUSTER_TOKEN）
+            let out = ws_e
+                .run_cli(&gateway_bin, &["cluster", "token", "set", "uat-mismatch-token-node-e-0123456789abcdef"])
+                .await;
+            if !out.success() {
+                return fail("T40", format!("E token set 失败: {}", out.stderr));
+            }
+            let out = ws_e
+                .run_cli(
+                    &gateway_bin,
+                    &["cluster", "config", "--udp-port", "11953", "--rpc-port", "21953", "--broadcast-interval", "3"],
+                )
+                .await;
+            if !out.success() {
+                return fail("T40", format!("E cluster config 失败: {}", out.stderr));
+            }
+            // 只宣告静态 peer=A（announce 单播目标；A 不知道 E）
+            let out = ws_e
+                .run_cli(
+                    &gateway_bin,
+                    &[
+                        "cluster",
+                        "peers",
+                        "add",
+                        "--id",
+                        "Node-A",
+                        "--name",
+                        "Node-A",
+                        "--address",
+                        &format!("127.0.0.1:{}", NODES[0].udp_port),
+                        "--role",
+                        "coordinator",
+                    ],
+                )
+                .await;
+            if !out.success() {
+                return fail("T40", format!("E peers add 失败: {}", out.stderr));
+            }
+            let out = ws_e.run_cli(&gateway_bin, &["cluster", "enable"]).await;
+            if !out.success() {
+                return fail("T40", format!("E cluster enable 失败: {}", out.stderr));
+            }
+
+            // 2. 起 E
+            let mut gw_e = match start_gateway_and_wait("Gateway-E", &gateway_bin, ws_e.path(), &e_node)
+                .await
+            {
+                Ok(g) => g,
+                Err(e) => return fail("T40", format!("E 启动失败: {e}")),
+            };
+
+            // 3. E 的运行时身份（供确定性帧与注册表断言）
+            let mut ws_e_ws = match ws_connect_gateway(e_node.web_port).await {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = gw_e.kill().await;
+                    return fail("T40", format!("WS connect to E failed: {e}"));
+                }
+            };
+            let e_id = match node_runtime_id(&mut ws_e_ws, "Node-E").await {
+                Ok(id) => id,
+                Err(_) => "Node-E".to_string(),
+            };
+            drop(ws_e_ws);
+
+            // 4. 基线 → 确定性交付 → 账本必须增长且来源可见。
+            //    E 的真实 announce 循环发送时机环境相关（NIC 枚举/冷启动抖动，
+            //    实测 ~30% 轮次长时间不发）——账本断言改用**按 E 的真实错
+            //    token 构造的同源帧**（derive_key(E_token) + E 的身份 + 同一
+            //    codec，即 E 的发现循环在线上会发出的那份字节），单播到 A 的
+            //    UDP 端口，环境无关地命中解密失败路径。E 本体仍在场：它的
+            //    RPC pair 持续被拒，注册表不得出现它（真实隔离面）。
+            let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = gw_e.kill().await;
+                    return fail("T40", format!("WS connect to A failed: {e}"));
+                }
+            };
+            let (before, _) = match drops_of(&mut ws).await {
+                Ok(v) => v,
+                Err(e) => {
+                    let _ = gw_e.kill().await;
+                    return fail("T40", e);
+                }
+            };
+            let mut e_announce = nemesis_cluster::discovery::DiscoveryMessage::new_announce(
+                e_id.clone(),
+                "Node-E",
+                vec!["127.0.0.1".to_string()],
+                e_node.rpc_port,
+                "worker",
+                "development",
+                vec![],
+                vec![],
+                "agent",
+            );
+            e_announce.timestamp = chrono::Utc::now().timestamp();
+            let e_key = nemesis_cluster::discovery::derive_key("uat-mismatch-token-node-e-0123456789abcdef");
+            let e_payload = match e_announce.to_bytes().map_err(|e| e.to_string()).and_then(|b| {
+                nemesis_cluster::discovery::encrypt_data(&e_key, &b).map_err(|_| "encrypt".to_string())
+            }) {
+                Ok(p) => p,
+                Err(e) => {
+                    let _ = gw_e.kill().await;
+                    return fail("T40", format!("E-identity 帧构造失败: {e}"));
+                }
+            };
+            let sock = match std::net::UdpSocket::bind("0.0.0.0:0") {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = gw_e.kill().await;
+                    return fail("T40", format!("UDP bind 失败: {e}"));
+                }
+            };
+            if let Err(e) = sock.send_to(&e_payload, format!("127.0.0.1:{}", NODES[0].udp_port)) {
+                let _ = gw_e.kill().await;
+                return fail("T40", format!("E-identity 帧发送失败: {e}"));
+            }
+            // 轮询账本 ≤20s（确定性交付 + receive 线程即时记账）
+            let mut after = before;
+            let mut addrs: Vec<String> = Vec::new();
+            let drops_deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+            while tokio::time::Instant::now() < drops_deadline {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                match drops_of(&mut ws).await {
+                    Ok((total, srcs)) => {
+                        after = total;
+                        addrs = srcs;
+                        if after > before {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = gw_e.kill().await;
+                        return fail("T40", e);
+                    }
+                }
+            }
+            let mut problems: Vec<String> = Vec::new();
+            if after <= before {
+                problems.push(format!(
+                    "discovery_drops 未增长（{before}→{after}）：异 token announce 未被诚实记账"
+                ));
+                // 失败自带现场：E 的发现循环是否在跑 / 单播发到哪了
+                dump_log_tail(&gw_e.log_path, 40);
+            }
+            // addr 是纯 IP（按 IP 归并，非 ip:port）——兼容两种形态比较
+            if !addrs
+                .iter()
+                .any(|a| a.split(':').next() == Some("127.0.0.1"))
+            {
+                problems.push(format!("来源账本无 127.0.0.1 条目: {addrs:?}"));
+            }
+            // 4. A 注册表不得出现 Node-E（互不发现 = 预期安全行为，非假成功）
+            match ws_api_request(&mut ws, "cluster", "nodes.list", json!({}), 10).await {
+                Ok(v) => {
+                    let leaked = v
+                        .pointer("/nodes")
+                        .and_then(|n| n.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .any(|n| n.get("name").and_then(|i| i.as_str()) == Some("Node-E"))
+                        })
+                        .unwrap_or(false);
+                    if leaked {
+                        problems.push("Node-E 出现在 A 注册表（token 失配节点被发现 = 假成功）".into());
+                    }
+                }
+                Err(e) => problems.push(format!("nodes.list 失败: {e}")),
+            }
+            let _ = gw_e.kill().await;
+            if problems.is_empty() {
+                pass(
+                    "T40",
+                    format!("错 token 节点互不发现：drops {before}→{after}，来源 127.0.0.1 可见，注册表无 Node-E"),
+                )
+            } else {
+                fail("T40", problems.join("; "))
+            }
+        })
+        .await,
+    );
+
+    // T41: node.update_identity 运行时身份编辑（热改传播 + loud 拒绝）
+    all_results.push(
+        run_test(
+            "T41: node.update_identity 运行时编辑（B 热改 tags → A 感知 + 非法 tier 拒绝）",
+            || async {
+                let mut ws_b_ws = match ws_connect_gateway(NODES[1].web_port).await {
+                    Ok(s) => s,
+                    Err(e) => return fail("T41", format!("WS connect to B failed: {e}")),
+                };
+                let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                    Ok(s) => s,
+                    Err(e) => return fail("T41", format!("WS connect to A failed: {e}")),
+                };
+                // 0.5 发现就绪前置：等 B 的真实 announce 到达 A（占位条目
+                // Offline → announce 到达才 Online）。没有这一步，「发现层
+                // 接收死了」（共存进程劫持 UDP 端口/ghost socket）会被误报
+                // 成「热改未传播」——30s 等待失败时错误信息必须把排查方向
+                // 指向环境（netstat UDP 端口占用），而不是身份热改链路。
+                let mut b_online = false;
+                for _ in 0..20 {
+                    if let Ok(v) =
+                        ws_api_request(&mut ws, "cluster", "nodes.list", json!({}), 10).await
+                    {
+                        let online = v
+                            .pointer("/nodes")
+                            .and_then(|n| n.as_array())
+                            .and_then(|arr| {
+                                arr.iter().find(|n| {
+                                    n.get("name").and_then(|i| i.as_str()) == Some("Node-B")
+                                })
+                            })
+                            .and_then(|n| n.get("online"))
+                            .and_then(|o| o.as_bool())
+                            .unwrap_or(false);
+                        if online {
+                            b_online = true;
+                            break;
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                }
+                if !b_online {
+                    return fail(
+                        "T41",
+                        "30s 内 B 的 announce 从未到达 A（Node-B 恒 Offline）——发现层接收不可用，\
+                         先查环境：netstat UDP 1194x 端口占用/共存 nemesisbot 实例劫持（SO_REUSEADDR 双绑），\
+                         非身份热改链路问题",
+                    );
+                }
+                // 0. 基线 tags（U 系列 matcher 依赖 tags 交集——测完精确恢复）
+                let baseline_tags: Vec<String> =
+                    match ws_api_request(&mut ws, "cluster", "nodes.list", json!({}), 10).await {
+                        Ok(v) => v
+                            .pointer("/nodes")
+                            .and_then(|n| n.as_array())
+                            .and_then(|arr| {
+                                arr.iter()
+                                    .find(|n| {
+                                        n.get("name").and_then(|i| i.as_str()) == Some("Node-B")
+                                    })
+                                    .cloned()
+                            })
+                            .and_then(|n| {
+                                n.get("tags").and_then(|t| t.as_array()).map(|a| {
+                                    a.iter()
+                                        .filter_map(|x| x.as_str().map(String::from))
+                                        .collect::<Vec<_>>()
+                                })
+                            })
+                            .unwrap_or_default(),
+                        Err(e) => return fail("T41", format!("读 B 基线 tags 失败: {e}")),
+                    };
+                // 1. 非法 tier → loud 拒绝（错误信息必须说明原因）
+                match ws_api_request(
+                    &mut ws_b_ws,
+                    "cluster",
+                    "node.update_identity",
+                    json!({ "tier": "huge" }),
+                    10,
+                )
+                .await
+                {
+                    Ok(_) => return fail("T41", "非法 tier 'huge' 未被拒绝（loud 校验失效）"),
+                    Err(e) => {
+                        let msg = format!("{e}");
+                        if !msg.contains("tier") {
+                            return fail("T41", format!("非法 tier 拒绝信息未说明原因: {msg}"));
+                        }
+                    }
+                }
+                // 2. 合法热改：tags = 基线 + 标记 tag
+                let mut new_tags = baseline_tags.clone();
+                new_tags.push("uat-t41".to_string());
+                if let Err(e) = ws_api_request(
+                    &mut ws_b_ws,
+                    "cluster",
+                    "node.update_identity",
+                    json!({ "tags": new_tags }),
+                    10,
+                )
+                .await
+                {
+                    return fail("T41", format!("合法 tags 编辑被拒: {e}"));
+                }
+                // 3. A 端 ≤ 若干广播周期内看到新 tags（announce 热改传播）
+                let mut seen = false;
+                for _ in 0..20 {
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                    if let Ok(v) =
+                        ws_api_request(&mut ws, "cluster", "nodes.list", json!({}), 10).await
+                    {
+                        let hit = v
+                            .pointer("/nodes")
+                            .and_then(|n| n.as_array())
+                            .and_then(|arr| {
+                                arr.iter()
+                                    .find(|n| {
+                                        n.get("name").and_then(|i| i.as_str()) == Some("Node-B")
+                                    })
+                                    .cloned()
+                            })
+                            .map(|n| {
+                                n.get("tags")
+                                    .and_then(|t| t.as_array())
+                                    .map(|a| {
+                                        a.iter().filter_map(|x| x.as_str()).any(|s| s == "uat-t41")
+                                    })
+                                    .unwrap_or(false)
+                            })
+                            .unwrap_or(false);
+                        if hit {
+                            seen = true;
+                            break;
+                        }
+                    }
+                }
+                if !seen {
+                    // 失败现场：A 的全量节点表 + B 的 peers.toml + 双方日志尾
+                    if let Ok(v) =
+                        ws_api_request(&mut ws, "cluster", "nodes.list", json!({}), 10).await
+                    {
+                        println!("[T41] A 的 nodes.list 全量现场: {v}");
+                    }
+                    let b_peers = ws_b
+                        .home()
+                        .join("workspace")
+                        .join("cluster")
+                        .join("peers.toml");
+                    match std::fs::read_to_string(&b_peers) {
+                        Ok(c) => println!("[T41] B 的 peers.toml:\n{c}"),
+                        Err(e) => println!("[T41] B 的 peers.toml 不可读: {e}"),
+                    }
+                    dump_log_grep(&ws_b.path().join("gateway.log"), "Discovery", 40);
+                    dump_log_grep(&ws_a.path().join("gateway.log"), "Discovery", 40);
+                    let _ = ws_api_request(
+                        &mut ws_b_ws,
+                        "cluster",
+                        "node.update_identity",
+                        json!({ "tags": baseline_tags }),
+                        10,
+                    )
+                    .await;
+                    return fail(
+                        "T41",
+                        "30s 内 A 端未看到 B 的新 tags（announce 热改未传播）",
+                    );
+                }
+                // 4. 恢复基线 tags（下一拍生效；U 系列基线不受污染）
+                if let Err(e) = ws_api_request(
+                    &mut ws_b_ws,
+                    "cluster",
+                    "node.update_identity",
+                    json!({ "tags": baseline_tags }),
+                    10,
+                )
+                .await
+                {
+                    return fail("T41", format!("恢复基线 tags 失败: {e}"));
+                }
+                pass(
+                    "T41",
+                    "非法 tier loud 拒绝；tags 热改 B→announce→A 可见；基线已恢复",
+                )
+            },
+        )
+        .await,
+    );
+
+    // T42: 集群请求日志产物面（device_id/task_id 分目录 + 件套 + JSON 可解析）
+    all_results.push(
+        run_test(
+            "T42: 集群请求日志产物面（B 端 cluster_logs 目录形态 + 件套契约）",
+            || async {
+                // 1. 驱动一次 1-hop peer_chat（B 端 cluster agent 落 cluster_logs）
+                let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                    Ok(s) => s,
+                    Err(e) => return fail("T42", format!("WS connect to A failed: {e}")),
+                };
+                let marker = "T42REQLOG-NB";
+                // ⚠ 必须 </PEER_CHAT> 闭合：TestAIServer 的解析按闭合标签识别，
+                // 不闭合 = 模型把整段当普通文本原样回显（A 自己的响应就含
+                // marker）——断言会假匹配、B 侧零 RPC、cluster_logs 永远为空
+                //（2026-09-30 T42 首败根因，Node-A.log tool_call_count=0 实证）。
+                let msg = format!(
+                    r#"<PEER_CHAT>{{"peer_id":"Node-B","content":"{marker} 请原样回显本句"}}</PEER_CHAT>"#
+                );
+                if let Err(e) =
+                    ws_send_recv_until(&mut ws, &msg, 180, |resp| resp.contains(marker)).await
+                {
+                    return fail("T42", format!("180s 内未收到 B 的 peer_chat 响应: {e}"));
+                }
+                // 2. 扫 B 的 cluster_logs：找到含 marker 的请求日志会话目录
+                //    （结构 workspace/logs/cluster_logs/{device_id}/{ts_ms}_{task_id}/）
+                let base = ws_b
+                    .home()
+                    .join("workspace")
+                    .join("logs")
+                    .join("cluster_logs");
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+                let mut session_dir: Option<std::path::PathBuf> = None;
+                while tokio::time::Instant::now() < deadline {
+                    'scan: {
+                        if let Ok(devices) = std::fs::read_dir(&base) {
+                            for dev in devices.flatten() {
+                                let Ok(sessions) = std::fs::read_dir(dev.path()) else {
+                                    continue;
+                                };
+                                for ses in sessions.flatten() {
+                                    let Ok(files) = std::fs::read_dir(ses.path()) else {
+                                        continue;
+                                    };
+                                    for f in files.flatten() {
+                                        let name = f.file_name().to_string_lossy().to_string();
+                                        if name.ends_with(".request.md")
+                                            && std::fs::read_to_string(f.path())
+                                                .map(|c| c.contains(marker))
+                                                .unwrap_or(false)
+                                        {
+                                            session_dir = Some(ses.path());
+                                            break 'scan;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if session_dir.is_some() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                }
+                let dir = match session_dir {
+                    Some(d) => d,
+                    None => {
+                        // 失败现场：cluster_logs 目录树 + 任务事件日志 +
+                        // 全链路 grep（PeerChat 入队 / ClusterAgent 执行 /
+                        // RequestLogger 写盘失败三类各一针）。
+                        println!("  [T42 diag] base exists: {}, tree:", base.exists());
+                        dump_dir_tree(&base, 3);
+                        dump_log_grep(
+                            &ws_b.path().join("gateway.log"),
+                            "ClusterRequestLoggerObserver",
+                            5,
+                        );
+                        dump_log_grep(&ws_b.path().join("gateway.log"), "[PeerChat]", 10);
+                        dump_log_grep(&ws_b.path().join("gateway.log"), "[ClusterAgent]", 10);
+                        dump_log_grep(&ws_b.path().join("gateway.log"), "RequestLogger", 10);
+                        let event_log = base.join("cluster_2026-09-30.log");
+                        dump_log_grep(&event_log, "exec", 10);
+                        return fail(
+                            "T42",
+                            format!("{} 下未找到含 {marker} 的请求日志会话目录", base.display()),
+                        );
+                    }
+                };
+                // 3. 件套契约（save_raw=true 恒开，factory 钉死）：
+                //    - {n}.AI.Request.raw.json 可解析（LLM 请求 envelope）
+                //    - {n}.AI.Response.raw.json 可解析（LLM 响应 envelope；
+                //      ⚠ raw 模式不写 {n}.AI.Response.md——那只在 markdown
+                //      模式存在，首版断言写错文件名白跑一轮）
+                //    - {n}.response.md 非空（conversation_end 的最终交付）
+                //    （写盘是同步 observer，但响应回流有窗口——留 15s）
+                let mut req_json_ok = false;
+                let mut resp_json_ok = false;
+                let mut final_md_ok = false;
+                let check_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+                while tokio::time::Instant::now() < check_deadline {
+                    req_json_ok = false;
+                    resp_json_ok = false;
+                    final_md_ok = false;
+                    if let Ok(files) = std::fs::read_dir(&dir) {
+                        for f in files.flatten() {
+                            let name = f.file_name().to_string_lossy().to_string();
+                            let parse_ok = |p: &std::path::Path| {
+                                std::fs::read_to_string(p)
+                                    .map(|c| serde_json::from_str::<serde_json::Value>(&c).is_ok())
+                                    .unwrap_or(false)
+                            };
+                            if name.ends_with(".AI.Request.raw.json") && parse_ok(&f.path()) {
+                                req_json_ok = true;
+                            }
+                            if name.ends_with(".AI.Response.raw.json") && parse_ok(&f.path()) {
+                                resp_json_ok = true;
+                            }
+                            if name.ends_with(".response.md")
+                                && std::fs::metadata(f.path())
+                                    .map(|m| m.len() > 0)
+                                    .unwrap_or(false)
+                            {
+                                final_md_ok = true;
+                            }
+                        }
+                    }
+                    if req_json_ok && resp_json_ok && final_md_ok {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                }
+                let mut problems: Vec<String> = Vec::new();
+                if !req_json_ok {
+                    problems.push("无可解析的 *.AI.Request.raw.json".into());
+                }
+                if !resp_json_ok {
+                    problems.push("无可解析的 *.AI.Response.raw.json".into());
+                }
+                if !final_md_ok {
+                    problems.push("无非空 *.response.md".into());
+                }
+                if problems.is_empty() {
+                    pass(
+                        "T42",
+                        format!("cluster_logs 件套契约 OK（会话目录 {}）", dir.display()),
+                    )
+                } else {
+                    fail("T42", problems.join("; "))
+                }
+            },
+        )
         .await,
     );
 
