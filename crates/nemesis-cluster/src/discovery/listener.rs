@@ -248,9 +248,15 @@ impl UdpListener {
                                 match decrypt_data(&key, raw_data) {
                                     Ok(decrypted) => decrypted,
                                     // Token 失配 = 安全边界正常工作（多集群共存互不
-                                    // 发现是预期行为），不刷 WARN；首见记一条 DEBUG，
-                                    // 累计账走 tracker 供 status 摘要查询。
+                                    // 发现是预期行为），不刷 WARN；每条记 DEBUG
+                                    //（announce 3s 一拍，量级无害），累计账走
+                                    // tracker 供 status 摘要查询。
                                     Err(_) => {
+                                        tracing::debug!(
+                                            from = %addr,
+                                            bytes = n,
+                                            "[Discovery] datagram decrypt failed (token mismatch?)"
+                                        );
                                         if let std::net::IpAddr::V4(v4) = addr.ip() {
                                             drops.record(v4);
                                         }
@@ -264,11 +270,24 @@ impl UdpListener {
                             // Parse message
                             let msg = match DiscoveryMessage::from_bytes(&msg_data) {
                                 Ok(m) => m,
-                                Err(_) => continue,
+                                Err(e) => {
+                                    tracing::debug!(
+                                        from = %addr,
+                                        error = %e,
+                                        "[Discovery] datagram parse failed"
+                                    );
+                                    continue;
+                                }
                             };
 
                             // Validate message
-                            if msg.validate().is_err() {
+                            if let Err(e) = msg.validate() {
+                                tracing::debug!(
+                                    from = %addr,
+                                    node_id = %msg.node_id,
+                                    error = %e,
+                                    "[Discovery] datagram validation failed"
+                                );
                                 continue;
                             }
 
@@ -290,8 +309,30 @@ impl UdpListener {
                             // Timeout is expected, continue checking running flag
                             continue;
                         }
-                        Err(_) => {
-                            // Socket closed or other fatal error
+                        // Windows: announce 单播到尚未 bind 的对端 UDP 端口（启动竞态）
+                        // 或已死亡对端时，ICMP Port Unreachable 会让下一次 recv_from
+                        // 返回 WSAECONNRESET（ConnectionReset）。这是「一次旧发送对应
+                        // 一次回报」的瞬时错误——消费掉即可恢复接收，绝不能当致命错误
+                        // 退出，否则发现层接收线程静默死亡、后续所有帧被无视（T40 UAT
+                        // 实证：解密失败账本冻结、节点永不入表）。等价于 win32 的
+                        // SIO_UDP_CONNRESET=0 语义，但无需平台 ioctl，Unix 无此错误形态、
+                        // 该分支恒不命中。
+                        Err(ref e) if e.kind() == io::ErrorKind::ConnectionReset => {
+                            tracing::debug!(
+                                "discovery listener: transient WSAECONNRESET consumed, continuing"
+                            );
+                            continue;
+                        }
+                        Err(e) => {
+                            // Socket closed or other fatal error——绝不能静默：
+                            // 线程 break 后接收面假死（socket 仍绑定、send 面
+                            // 照常），症状是「对端在发、本端永收不到」，无此
+                            // 日志就无法与帧未到达区分（T41 UAT 排障实证）。
+                            tracing::error!(
+                                error = %e,
+                                kind = ?e.kind(),
+                                "[Discovery] receive loop terminated by fatal error"
+                            );
                             break;
                         }
                     }
