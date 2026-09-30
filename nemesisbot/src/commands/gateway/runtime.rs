@@ -432,10 +432,25 @@ pub(crate) async fn run_runtime(
     if let Some(ref pm) = shared_resources.plugin_manager {
         let loop_ref = agent_adapter.loop_ref_handle();
         let pm_for_hook = pm.clone();
+        // 摘旧-插新不是原子序列（tool_names → remove ×N → register），notify
+        // 是同步调用、并发 WSAPI 任务可同时进 hook——交错时 register 后的
+        // 另一线程 remove 会把新工具摘掉（或双注册同名），`_2` 僵尸后缀
+        // 由此而来（2026-09-30 复查 #5）。hook 体无 await，std Mutex 串行
+        // 足够；poison 容忍（持锁线程 panic 后锁仍要用，into_inner 放行）。
+        let hook_serial = Arc::new(std::sync::Mutex::<()>::new(()));
+        let serial_for_hook = hook_serial.clone();
         nemesis_web::handlers::plugins_wasm::set_tool_sync_hook(Arc::new(
             move |ev: nemesis_web::handlers::plugins_wasm::ToolSyncEvent| {
+                let _serial = serial_for_hook
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 let Some(loop_arc) = loop_ref.read().clone() else {
-                    tracing::debug!("[WasmPlugin] tool sync skipped (loop stopped)");
+                    // 停机窗口：事件丢弃是设计语义（重启路径从注册表拉起），
+                    // 但要可见——有人在此窗口装了插件却没看到工具时得有线索。
+                    tracing::warn!(
+                        "[WasmPlugin] tool sync skipped (loop stopped): slug={}",
+                        ev.slug
+                    );
                     return;
                 };
                 let prefix = format!("plugin.{}.", ev.slug);
@@ -462,6 +477,14 @@ pub(crate) async fn run_runtime(
                     .get(&ev.slug)
                     .and_then(|reg| reg.tool_meta.clone())
                 else {
+                    // 决策面判了 add=true（tool+meta 在场）这里却拿不到
+                    // meta = 等待/调度窗口内注册表被动了（uninstall 或升级
+                    // 中间态）——静默 return 会留下「说装了但没有」的悬案，
+                    // warn 留痕（前缀摘除已在上面完成，不会留僵尸）。
+                    tracing::warn!(
+                        "[WasmPlugin] tool sync: meta gone for slug={} (uninstalled mid-flight?)",
+                        ev.slug
+                    );
                     return;
                 };
                 let bridge = Arc::new(crate::plugin_bridge::PluginToolBridge::new(
