@@ -12,6 +12,7 @@ import {
   TRANSITIONS,
   fmtTime,
   statusLabel,
+  statusTitle,
   type IssueRow,
 } from './boardMeta'
 
@@ -162,7 +163,7 @@ useBoardChanged(() => load(true))
         @drop.prevent="onDropColumn(col.key, $event)"
       >
         <div class="kanban-col-head">
-          <span class="badge" :class="STATUS_BADGE[col.key]">{{ col.label }}</span>
+          <span class="badge" :class="STATUS_BADGE[col.key]" :title="statusTitle(col.key)">{{ col.label }}</span>
           <span class="muted">{{ col.issues.length }}</span>
         </div>
         <div

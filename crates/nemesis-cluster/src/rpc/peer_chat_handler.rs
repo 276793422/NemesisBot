@@ -342,6 +342,10 @@ impl PeerChatHandler {
             // Create a cluster task and enqueue to the work queue.
             // 集群专业职能框架（M3）：派发载荷顶层 `required_profession`
             // （board 派发端写入；旧 A 端不带该键 → None，优雅降级）。
+            // 压测②（2026-09-30 三设备）：取证任务（board 评审链的
+            // board_selfcheck 取证请求）走优先通道插队——评审在 master
+            // 侧挂起等待，被正式任务串行队列堵住会把评审链拖长数十分钟。
+            let is_selfcheck = content.contains(crate::cluster_task::SELFCHECK_PROMPT_MARKER);
             let cluster_task = ClusterTask {
                 task_id: task_id.clone(),
                 source: TaskSource {
@@ -358,7 +362,15 @@ impl PeerChatHandler {
                 required_profession: required_profession_from_payload(&payload),
             };
             task_list.create_task(cluster_task);
-            if let Err(e) = work_queue.submit(task_id.clone()) {
+            // 压测②（2026-09-30 三设备）：取证任务（board 评审链的
+            // board_selfcheck 取证请求）走优先通道插队——评审在 master
+            // 侧挂起等待，被正式任务串行队列堵住会把评审链拖长数十分钟。
+            let submit_result = if is_selfcheck {
+                work_queue.submit_priority(task_id.clone())
+            } else {
+                work_queue.submit(task_id.clone())
+            };
+            if let Err(e) = submit_result {
                 tracing::error!(
                     task_id = %task_id,
                     error = %e,
@@ -372,6 +384,7 @@ impl PeerChatHandler {
             tracing::info!(
                 task_id = %task_id,
                 source_node = %source_node_id,
+                priority = %is_selfcheck,
                 "[PeerChat] Task enqueued to cluster agent work queue"
             );
         } else {

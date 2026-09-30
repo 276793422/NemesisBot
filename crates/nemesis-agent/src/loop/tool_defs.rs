@@ -64,14 +64,53 @@ impl AgentLoop {
         tool_calls: &[ToolCallInfo],
         context: &RequestContext,
         depth: usize,
+        // 压测①a（2026-09-30）：detached 工具闸随行（串行路径同款裁决，见
+        // [`super::tool_dispatch::detached_tool_refusal`]）——并行安全批
+        // （list_dir 等只读工具）同样不得绕过 no_tools / allowed_tools。
+        no_tools: bool,
+        allowed_tools: Option<Vec<String>>,
     ) -> Vec<PrecomputedTool> {
         let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
         let futs = tool_calls.iter().map(|tc| {
             let sem = sem.clone();
             let tc = tc.clone();
+            let allowed_tools = allowed_tools.clone();
             async move {
                 let _permit = sem.acquire().await.ok();
                 let start = std::time::Instant::now();
+                // detached 闸先行（与串行路径同位：校验/执行前的现场裁决）。
+                if no_tools {
+                    warn!(
+                        "[AgentLoop] Detached no_tools gate refused tool '{}' (parallel batch)",
+                        tc.name
+                    );
+                    return PrecomputedTool {
+                        result: format!(
+                            "Error: tool '{}' is refused — this run was started with tools disabled. Produce your final answer as plain text now. Do NOT call tools again.",
+                            tc.name
+                        ),
+                        validation_failed: false,
+                        duration_ms: start.elapsed().as_millis() as u64,
+                    };
+                }
+                if let Some(allowed) = &allowed_tools
+                    && !allowed.is_empty()
+                    && !allowed.iter().any(|a| a == &tc.name)
+                {
+                    warn!(
+                        "[AgentLoop] Detached allowed_tools gate refused tool '{}' (parallel batch)",
+                        tc.name
+                    );
+                    return PrecomputedTool {
+                        result: format!(
+                            "Error: tool '{}' is outside the allowed tool set for this run (allowed: {}). Use only the allowed tools, or answer in plain text. Do NOT retry this tool.",
+                            tc.name,
+                            allowed.join(", ")
+                        ),
+                        validation_failed: false,
+                        duration_ms: start.elapsed().as_millis() as u64,
+                    };
+                }
                 let (result, validation_failed) = match self.check_tool_args(&tc) {
                     crate::args_validator::Outcome::Valid => (
                         self.handle_tool_call_at_depth(&tc, context, depth).await,

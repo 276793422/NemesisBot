@@ -754,8 +754,113 @@ async fn readonly_profile_hides_writer_and_feeds_unknown_tool_back() {
 
     let messages = state.second_messages.lock().unwrap().join("\n");
     assert!(
-        messages.contains("Unknown tool 'write_file'"),
-        "硬调 write_file 必须被 dispatch 回灌 unknown tool 错误，实际消息:\n{messages}"
+        // 压测①a（2026-09-30 三设备）dispatch 闸接线后：白名单外硬调在
+        // unknown tool 判定之前就被 detached 白名单闸拒绝回灌（比
+        // unknown tool 更精确的拒绝面——工具存在但本轮不允许）。
+        messages.contains("outside the allowed tool set"),
+        "硬调 write_file 必须被 dispatch 白名单闸拒绝回灌，实际消息:\n{messages}"
+    );
+}
+
+/// 压测①a NoTools 臂（2026-09-30 三设备）端到端：评审形态的 detached run
+/// （no_tools=true，供给层 0 defs）收到上游端点注入的工具调用（NB-54 实锤
+/// 形态）时，dispatch 闸现场拒绝回灌——run 不炸、拒绝串进消息历史。与
+/// readonly 白名单臂测试（上）互补，合成 ①a 双闸的完整覆盖。
+#[tokio::test]
+async fn notools_run_refuses_injected_tool_call_at_dispatch() {
+    // 两段式 provider：第 1 轮记 defs 并返回「注入的」exec 工具调用；
+    // 第 2 轮记全部消息并收尾。
+    struct PhaseState {
+        calls: std::sync::atomic::AtomicUsize,
+        first_defs: std::sync::Mutex<Vec<String>>,
+        second_messages: std::sync::Mutex<Vec<String>>,
+    }
+    struct InjectingProvider {
+        state: Arc<PhaseState>,
+    }
+    #[async_trait]
+    impl LlmProvider for InjectingProvider {
+        async fn chat(
+            &self,
+            _model: &str,
+            messages: Vec<LlmMessage>,
+            _options: Option<crate::types::ChatOptions>,
+            tools: Vec<crate::types::ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
+            let n = self
+                .state
+                .calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n == 0 {
+                *self.state.first_defs.lock().unwrap() =
+                    tools.iter().map(|d| d.function.name.clone()).collect();
+                return Ok(LlmResponse {
+                    content: String::new(),
+                    tool_calls: vec![ToolCallInfo {
+                        id: "tc_inj".to_string(),
+                        name: "exec".to_string(),
+                        arguments: r#"{"command":"echo pwned"}"#.to_string(),
+                    }],
+                    finished: false,
+                    reasoning_content: None,
+                    usage: None,
+                    raw_request_body: None,
+                    raw_response_body: None,
+                });
+            }
+            *self.state.second_messages.lock().unwrap() = messages
+                .iter()
+                .map(|m| format!("[{}] {}", m.role, m.content))
+                .collect();
+            Ok(LlmResponse {
+                content: "review conclusion".to_string(),
+                tool_calls: Vec::new(),
+                finished: true,
+                reasoning_content: None,
+                usage: None,
+                raw_request_body: None,
+                raw_response_body: None,
+            })
+        }
+    }
+
+    let state = Arc::new(PhaseState {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        first_defs: std::sync::Mutex::new(Vec::new()),
+        second_messages: std::sync::Mutex::new(Vec::new()),
+    });
+    let agent_loop = AgentLoop::new(
+        Box::new(InjectingProvider {
+            state: state.clone(),
+        }),
+        test_config(),
+    );
+    // 不注册任何工具——评审 run 的现实形态（供给层 0 defs，exec 也从未注册：
+    // 若闸失效会走 unknown tool 分支而非本闸断言的拒绝串，测试仍能区分）。
+    agent_loop
+        .run_detached(
+            "review only",
+            DetachedOpts {
+                no_tools: true,
+                max_turns: 2,
+                label: Some("board-review-sim"),
+                ..DetachedOpts::default()
+            },
+        )
+        .await
+        .expect("no_tools 轮次应成功收尾");
+
+    let defs = state.first_defs.lock().unwrap().clone();
+    assert!(defs.is_empty(), "no_tools run 供给必须为空: {defs:?}");
+
+    let messages = state.second_messages.lock().unwrap().join(
+        "
+",
+    );
+    assert!(
+        messages.contains("started with tools disabled"),
+        "注入的 exec 调用必须被 no_tools 闸拒绝回灌，实际消息:
+{messages}"
     );
 }
 

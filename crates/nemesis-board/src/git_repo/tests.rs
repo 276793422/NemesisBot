@@ -407,6 +407,83 @@ fn merge_against_stale_baseline_still_works() {
 // 路径自防御
 // ---------------------------------------------------------------------------
 
+/// NB-54 复原（压测⑤）：变更集带工作区前缀 `board-projects/<项目名>/…` 时
+/// 合并落点必须是项目根相对（剥前缀），不得双重嵌套。
+#[test]
+fn merge_strips_workspace_prefix_from_changeset_paths() {
+    // 档案目录名与真实布局同形：<tmp>/board-projects/压测C1-周报模板。
+    let projects_root = temp_dir("wsproj");
+    let root = projects_root
+        .join(crate::archive::BOARD_PROJECTS_DIR)
+        .join("压测C1-周报模板");
+    std::fs::create_dir_all(&root).unwrap();
+    write(&root, "docs/plan.md", "# plan\n");
+    ensure_repo(&root).unwrap();
+    let baseline = head(&root);
+
+    // worker 误按 master 工作区视角申报路径（双重嵌套现场）。
+    let outcome = merge_changeset(
+        &root,
+        &MergeInput {
+            baseline_commit: baseline,
+            upserts: vec![ChangesetFile {
+                path: "board-projects/压测C1-周报模板/周报模板.md".into(),
+                content: "# 周报\n".as_bytes().to_vec(),
+                executable: false,
+            }],
+            deletions: vec![],
+        },
+    )
+    .unwrap();
+    assert!(
+        matches!(outcome, MergeOutcome::Merged { .. }),
+        "实得 {outcome:?}"
+    );
+    // 正确落点 = 项目根下；双重嵌套路径不得存在。
+    assert_eq!(read(&root, "周报模板.md"), "# 周报\n");
+    assert!(
+        !root.join("board-projects").exists(),
+        "不得双重嵌套 board-projects/"
+    );
+}
+
+/// 归一化纯函数矩阵：只剥 `board-projects/<档案目录名>/` 完整前缀，
+/// 其余路径（正确的项目相对 / 同名子目录深路径 / 目录名自身）逐字节不动。
+#[test]
+fn normalize_repo_path_matrix() {
+    let root = Path::new("/ws/board-projects/demo");
+    let strip = |p: &str| normalize_repo_path(root, p);
+    assert_eq!(strip("board-projects/demo/周报模板.md"), "周报模板.md");
+    assert_eq!(strip("board-projects/demo/docs/plan.md"), "docs/plan.md");
+    // 正确项目相对路径不动（NB-62 对照组）。
+    assert_eq!(strip("docs/plan.md"), "docs/plan.md");
+    // 同首段但项目名不同（别的项目的路径）不动——宁嵌套不误剥。
+    assert_eq!(
+        strip("board-projects/other/file.md"),
+        "board-projects/other/file.md"
+    );
+    // 项目档案目录名自身（无后段）不动。
+    assert_eq!(strip("board-projects/demo"), "board-projects/demo");
+    // 深层同名嵌套（前缀已剥过一次的幂等性）只剥一层。
+    assert_eq!(
+        strip("board-projects/demo/board-projects/demo/x.md"),
+        "board-projects/demo/x.md"
+    );
+    // 规则是纯词法的（首两段 == board-projects + 档案目录名）：root 在
+    // board-projects 之外时同形前缀照剥——worker LLM 幻觉标准布局写的
+    // 路径，剥回项目根相对仍是正确恢复。
+    let ext = Path::new("/data/myproj");
+    assert_eq!(
+        normalize_repo_path(ext, "board-projects/myproj/a.md"),
+        "a.md"
+    );
+    // 但第二段不等档案目录名（别的项目路径）不剥。
+    assert_eq!(
+        normalize_repo_path(ext, "board-projects/other/a.md"),
+        "board-projects/other/a.md"
+    );
+}
+
 #[test]
 fn merge_rejects_malformed_paths() {
     let (root, baseline) = baseline_of("malformed", "x\n");

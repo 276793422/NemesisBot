@@ -242,6 +242,25 @@ fn system_prompt_declares_anchor_downgrade_discipline() {
     }
 }
 
+/// 压测③/⑦（2026-09-30 三设备）防误删快照：需求保真对照拆解（漏项/外卡
+/// 双向闸）+ 拆解自检段（输出前逐项核对，锚点下放第 3 次强化）——删段则
+/// 保真度回归无提示词闸（场景 A 漏 2 章/场景 B 7 张外卡的教训固化）。
+#[test]
+fn system_prompt_declares_requirement_fidelity_and_self_check() {
+    for marker in [
+        "需求保真",
+        "清单之外的内容不得拆出子任务",
+        "拆解自检",
+        "漏项即拆解不合格",
+        "外卡即拆解不合格",
+    ] {
+        assert!(
+            PLANNER_SYSTEM_PROMPT.contains(marker),
+            "system prompt 必须含需求保真/自检标记 {marker}（压测③⑦固化）"
+        );
+    }
+}
+
 /// 职能框架（M1）同步钉：完整形态 `planner_system_prompt()`（基础契约 +
 /// 拆解方法论段）必须 (a) 在 schema 里声明 `required_profession` 字段，
 /// (b) 值域清单逐 slug 覆盖 nemesis-prompts 内置目录 CATALOG——prompt 是

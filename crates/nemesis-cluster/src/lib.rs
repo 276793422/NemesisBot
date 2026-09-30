@@ -33,6 +33,7 @@ pub mod transport;
 
 // Re-export commonly used types
 pub use cluster_task::{
-    CancelOutcome, ClusterTask, ClusterTaskList, ClusterWorkQueue, TaskSource, TaskStatus,
+    CancelOutcome, ClusterTask, ClusterTaskList, ClusterWorkQueue, SELFCHECK_PROMPT_MARKER,
+    TaskSource, TaskStatus,
 };
 pub use task_manager::{InMemoryTaskStore, TaskManager, TaskStore};

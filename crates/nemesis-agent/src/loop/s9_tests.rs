@@ -398,7 +398,9 @@ async fn precompute_parallel_batch_validation_arms() {
             arguments: r#"{"other":1}"#.to_string(),
         },
     ];
-    let out = agent_loop.precompute_parallel_batch(&calls, &ctx, 0).await;
+    let out = agent_loop
+        .precompute_parallel_batch(&calls, &ctx, 0, false, None)
+        .await;
     assert_eq!(out.len(), 3, "one PrecomputedTool per call");
     assert!(out[0].result.contains("echo:"), "valid arm executes");
     assert!(out[1].result.contains("strict ok"), "fixed arm executes");

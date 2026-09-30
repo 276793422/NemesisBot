@@ -90,6 +90,30 @@ fn component_is_short_name(comp: &str) -> bool {
     false
 }
 
+/// 变更集路径归一化：剥误带的项目档案目录自身前缀。
+///
+/// worker 变更集路径契约是「项目档案根相对」（exec 工作副本镜像档案树），
+/// 但 worker LLM 偶尔按 master 工作区视角写文件——`board-projects/<项目名>/…`
+/// 整段落进工作副本，合并后双重嵌套 `<项目>/board-projects/<项目>/…`
+/// （2026-09-30 三设备压测 C1/NB-54 实证；`docs/…` 等正确项目相对路径不受
+/// 影响）。仅当首两段精确等于 [`crate::archive::BOARD_PROJECTS_DIR`] +
+/// 档案目录名（root 的文件名）且后段非空时剥除，其余逐字节不动；别的项目
+/// 前缀（第二段不等档案目录名）不剥——宁嵌套不误剥。
+fn normalize_repo_path(root: &Path, path: &str) -> String {
+    let Some(project_dir) = root.file_name().and_then(|n| n.to_str()) else {
+        return path.to_string();
+    };
+    let mut segs = path.split('/');
+    if segs.next() != Some(crate::archive::BOARD_PROJECTS_DIR) || segs.next() != Some(project_dir) {
+        return path.to_string();
+    }
+    let rest = segs.collect::<Vec<_>>().join("/");
+    if rest.is_empty() {
+        return path.to_string();
+    }
+    rest
+}
+
 /// 变更集路径形状校验：`/` 分隔、非空、无 `.`/`..`/空组件、无反斜杠/盘符、
 /// 无 8.3 短名（archive.rs 同款教训：canonicalize 前先词法拦截）。
 fn validate_rel_path(rel: &str) -> Result<PathBuf, String> {
@@ -364,17 +388,22 @@ fn empty_tree(repo: &Repository) -> Result<Tree<'_>, String> {
 
 /// E4 三方合并（调用方保证串行）。冲突 = 仓库零改动原样返回明细。
 ///
+/// 入口先做路径归一化（[`normalize_repo_path`]：剥误带的工作区前缀），
+/// 再全量过闸（任何一条畸形 = 拒绝整个变更集，不合入）。
+///
 /// 流程：ancestor = worker 声明的基线 commit（E8：是否属于活跃 dispatch
 /// 轮次由调用方先裁决，本函数只管 git 语义）→ theirs = 基线树 + 变更集
 /// （内存 index 组装，不触碰盘上 index/workdir）→ `merge_trees` → 干净 =
 /// commit + hard reset 同步工作区；冲突 = 收集逐文件明细（内容级二进制判定）。
 pub fn merge_changeset(root: &Path, input: &MergeInput) -> Result<MergeOutcome, String> {
+    // 路径归一化（压测⑤）：剥误带的 `board-projects/<项目名>/` 工作区前缀。
+    let norm = |p: &str| normalize_repo_path(root, p);
     // 变更集路径先全量过闸（任何一条畸形 = 拒绝整个变更集，不合入）。
     for f in &input.upserts {
-        validate_rel_path(&f.path)?;
+        validate_rel_path(&norm(&f.path))?;
     }
     for d in &input.deletions {
-        validate_rel_path(d)?;
+        validate_rel_path(&norm(d))?;
     }
 
     let repo =
@@ -414,14 +443,14 @@ pub fn merge_changeset(root: &Path, input: &MergeInput) -> Result<MergeOutcome, 
             id: Oid::ZERO_SHA1,
             flags: 0,
             flags_extended: 0,
-            path: f.path.as_bytes().to_vec(),
+            path: norm(&f.path).into_bytes(),
         };
         theirs_index
             .add_frombuffer(&entry, &f.content)
             .map_err(|e| format!("变更集 upsert {} 进 index 失败: {e}", f.path))?;
     }
     for d in &input.deletions {
-        let p = validate_rel_path(d)?;
+        let p = validate_rel_path(&norm(d))?;
         theirs_index
             .remove(&p, 0)
             .map_err(|e| format!("变更集删除 {d} 不在基线树中: {e}"))?;

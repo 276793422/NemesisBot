@@ -95,27 +95,53 @@ pub struct ClusterTask {
 // ClusterWorkQueue
 // ---------------------------------------------------------------------------
 
+/// 取证请求 marker（压测②单一真相源，2026-09-30）：master 评审链
+/// （nemesisbot `board_review::build_selfcheck_prompt`）构造取证 prompt 的
+/// 头部形态；worker 侧 PeerChatHandler 据此判定取证任务走优先通道
+/// （[`ClusterWorkQueue::submit_priority`]）。改文案两处同源。
+pub const SELFCHECK_PROMPT_MARKER: &str = "[取证请求 board_selfcheck:";
+
 /// FIFO work queue backed by an mpsc channel.
 ///
 /// Producers (PeerChatHandler, callback handler) submit task IDs;
 /// the cluster agent loop consumes them one at a time.
+///
+/// 压测②（2026-09-30 三设备）：在普通 FIFO 之外带一条**取证优先通道**——
+/// 评审链的 取证→回报→二段评审 与正式任务共用本队列时会被串行排队拖长
+/// （C1/NB-54 实测 50+ 分钟）。取证任务短平快且评审挂起等待时效敏感，
+/// 消费侧绝对插队；正式任务不饿死（取证量是每单个位数的短任务）。
 pub struct ClusterWorkQueue {
     tx: mpsc::Sender<String>,
     rx: Mutex<mpsc::Receiver<String>>,
+    /// 取证优先通道（`submit_priority` 入口；`next` 先清空再 select）。
+    prio_tx: mpsc::Sender<String>,
+    prio_rx: Mutex<mpsc::Receiver<String>>,
 }
 
 impl ClusterWorkQueue {
     pub fn new(capacity: usize) -> Self {
         let (tx, rx) = mpsc::channel(capacity);
+        let (prio_tx, prio_rx) = mpsc::channel(capacity);
         Self {
             tx,
             rx: Mutex::new(rx),
+            prio_tx,
+            prio_rx: Mutex::new(prio_rx),
         }
     }
 
     /// Submit a task ID to the queue (non-blocking).
     pub fn submit(&self, task_id: String) -> Result<(), String> {
         self.tx
+            .try_send(task_id)
+            .map_err(|e| format!("work queue full: {}", e))
+    }
+
+    /// Submit an evidence (board_selfcheck) task ID to the **priority**
+    /// lane (non-blocking). 消费侧先清空优先通道再与普通通道 select——
+    /// 正式任务执行期间到达的取证任务在下一轮取号时绝对插队。
+    pub fn submit_priority(&self, task_id: String) -> Result<(), String> {
+        self.prio_tx
             .try_send(task_id)
             .map_err(|e| format!("work queue full: {}", e))
     }
@@ -130,8 +156,22 @@ impl ClusterWorkQueue {
     /// Returns `None` if the sender side is dropped (all producers gone).
     /// The caller should handle `None` appropriately (e.g., break the event loop).
     pub async fn next(&self) -> Option<String> {
-        let mut guard = self.rx.lock().await;
-        guard.recv().await
+        // 优先通道先非阻塞清空（绝对插队）；剩余竞态窗口由下方 select 兜。
+        {
+            let mut prio = self.prio_rx.lock().await;
+            if let Ok(id) = prio.try_recv() {
+                return Some(id);
+            }
+        }
+        // guard 必须绑定到 let 才能活得过语句（recv() future 借用它）。
+        let mut prio_guard = self.prio_rx.lock().await;
+        let prio_fut = prio_guard.recv();
+        let mut normal_guard = self.rx.lock().await;
+        let normal_fut = normal_guard.recv();
+        tokio::select! {
+            r = prio_fut => r,
+            r = normal_fut => r,
+        }
     }
 }
 

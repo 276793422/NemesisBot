@@ -21,6 +21,31 @@ pub(crate) fn tail_char_safe(s: &str, budget: usize) -> &str {
     &s[start..]
 }
 
+/// 压测①a（2026-09-30 三设备）：dispatch 层 detached 工具闸。供给层
+/// （`effective_tool_defs`）只决定工具 defs 可见性——上游端点注入工具调用
+/// 时（NB-54 实证：请求 0 tools、响应却带 2 个 tool call），模型照样带出
+/// 供给面之外的调用并真实执行（exec 越白名单同证）。本闸在派发现场读
+/// instance 的 detached 旗标权威裁决：no_tools 拒绝一切工具调用；
+/// allowed_tools 拒白名单外。非 detached 实例两旗标恒空 = 恒 `None`
+/// （主链路零行为变化）。拒绝文案回灌当工具结果，模型可改答纯文本。
+pub(crate) fn detached_tool_refusal(instance: &AgentInstance, tool: &str) -> Option<String> {
+    if instance.detached_no_tools() {
+        return Some(format!(
+            "Error: tool '{tool}' is refused — this run was started with tools disabled. Produce your final answer as plain text now. Do NOT call tools again."
+        ));
+    }
+    if let Some(allowed) = instance.detached_allowed_tools()
+        && !allowed.is_empty()
+        && !allowed.iter().any(|a| a == tool)
+    {
+        return Some(format!(
+            "Error: tool '{tool}' is outside the allowed tool set for this run (allowed: {}). Use only the allowed tools, or answer in plain text. Do NOT retry this tool.",
+            allowed.join(", ")
+        ));
+    }
+    None
+}
+
 impl AgentLoop {
     /// J5：doom-loop 审批卡。经 [`Self::question_asker`]（F7 同源 broker 的
     /// ask 端）发结构化提问「继续吗？」，阻塞等用户作答。

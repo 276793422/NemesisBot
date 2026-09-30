@@ -11,6 +11,7 @@ import {
   STATUSES,
   fmtTime,
   statusLabel,
+  statusTitle,
   type IssueRow,
 } from '../components/board/boardMeta'
 
@@ -342,7 +343,7 @@ onMounted(refresh)
           <tr v-for="issue in issues" :key="issue.id" class="issue-row" @click="openDetail(issue)">
             <td><code>{{ issue.number }}</code></td>
             <td style="font-weight: 500;">{{ issue.title }}</td>
-            <td><span class="badge" :class="STATUS_BADGE[issue.status]">{{ statusLabel(issue.status) }}</span></td>
+            <td><span class="badge" :class="STATUS_BADGE[issue.status]" :title="statusTitle(issue.status)">{{ statusLabel(issue.status) }}</span></td>
             <td><span class="badge" :class="PRIORITY_BADGE[issue.priority] || 'badge-neutral'">P{{ issue.priority }} {{ PRIORITY_LABEL[issue.priority] || '' }}</span></td>
             <td style="font-size: var(--text-sm);">
               {{ !issue.assignee ? '未指派' : issue.assignee === 'manager_self' ? 'manager（本机）' : `worker: ${issue.assignee_id}` }}
