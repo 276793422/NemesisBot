@@ -43,11 +43,23 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        # wasm32-wasip2：nemesis-plugins-wasm 的对抗/e2e/sdk 测试在运行时真
+        # 构建示例 wasm 组件做 fixture——无此 target = 诚实 SKIP 空转（同
+        # ci.yml Windows 全量 job，2026-09-30 插件体系复查）。
+        with:
+          targets: wasm32-wasip2
 
+      # workspaces 收编三个示例插件（嵌套独立 workspace）：fixture 构建产物
+      # 落在各自 target/，不收编则每轮冷构建多花 3-6 分钟。
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          workspaces: |
+            .
+            plugins/wasm/translate
+            plugins/wasm/activity-log
+            plugins/wasm/textstat
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
