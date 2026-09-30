@@ -969,6 +969,7 @@ dependencies = [
  "futures",
  "git2",
  "nemesis-board",
+ "nemesis-cluster",
  "nemesis-data",
  "nemesis-path",
  "reqwest",
