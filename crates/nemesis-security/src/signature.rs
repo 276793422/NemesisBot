@@ -184,6 +184,7 @@ impl TrustStore {
     ///
     /// Returns `(trust_level, true)` if trusted, or `(TrustLevel::Unknown, false)` otherwise.
     pub fn is_trusted(&self, public_key: &str) -> (TrustLevel, bool) {
+        self.refresh();
         self.keys
             .read()
             .get(public_key)
@@ -199,6 +200,7 @@ impl TrustStore {
 
     /// Get trust level for a key.
     pub fn trust_level(&self, public_key: &str) -> TrustLevel {
+        self.refresh();
         self.keys
             .read()
             .get(public_key)
@@ -259,6 +261,21 @@ impl TrustStore {
     /// File path of the persistence file, or None if in-memory.
     pub fn file_path(&self) -> Option<&std::path::Path> {
         self.path.as_deref()
+    }
+
+    /// 信任决策前的磁盘真相重读（跨进程信任写入的可见性）。
+    ///
+    /// 信任库文件是单一真相源：CLI（独立进程）的 trust/revoke/remove 只写盘，
+    /// 常驻进程若只在构造期 load 一次就会拿陈旧缓存做信任判定——新增信任
+    /// 不可见（先信后装的热信任流断链），吊销不可见（已撤密钥仍按 trusted
+    /// 放行，安全语义反向恶化）。load 是 merge 语义（按 public_key 覆盖），
+    /// 读前重读即让盘上真相即时生效；信任判定只发生在安装/验签时刻，非热
+    /// 路径，小文件重读代价可忽略。文件损坏时 load 失败保持现有缓存（最后
+    /// 好状态，原子写防撕裂）。
+    fn refresh(&self) {
+        if self.path.is_some() {
+            let _ = self.load();
+        }
     }
 
     /// Persist the trust store to disk. Caller does NOT need to hold the lock;

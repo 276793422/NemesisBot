@@ -94,23 +94,6 @@ impl WebApprovalManager {
         Ok(())
     }
 
-    /// M3（2026-09-27）：「总是允许」规则的**消费侧**——命中且层级安全门
-    /// （CRITICAL 仅 process_exec 豁免）放行则返回命中规则，调用方自动放行。
-    /// 此前只有写入通道（respond always）没有消费通道，规则是死账。
-    /// 每次从磁盘现读：安装是低频动作，免热载器也天然拿到手工编辑/CLI
-    /// 清理的即时生效（与 auditor 侧 `HotReloader::check()` 同观感）。
-    pub fn find_auto_allow(
-        &self,
-        operation: &str,
-        target: &str,
-        risk: &str,
-    ) -> Option<nemesis_security::approval_rules::ApprovalRule> {
-        use nemesis_security::approval_rules as rules;
-        let path = self.rules_path.as_ref()?;
-        let stored = rules::load_rules(path);
-        rules::find_auto_allow_rule(&stored, operation, target, risk).cloned()
-    }
-
     /// 广播审批请求事件（无订阅者/通道关闭都是良性——审批等待不依赖广播）。
     fn broadcast_requested(&self, entry: &PendingEntry, request_id: &str) {
         if let Some(tx) = self.agent_event_tx.as_ref() {
