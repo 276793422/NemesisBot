@@ -205,12 +205,24 @@ jobs:
 
       - name: Install Rust toolchain (rust-toolchain.toml 钉 stable)
         uses: dtolnay/rust-toolchain@stable
+        # wasm32-wasip2：nemesis-plugins-wasm 的对抗/e2e/sdk 测试在运行时真
+        # 构建示例 wasm 组件做 fixture——无此 target = fixture 构建失败 =
+        # 诚实 SKIP = 16 个安全测试在 CI 空转（2026-09-30 插件体系复查）。
+        with:
+          targets: wasm32-wasip2
 
       # cache-on-failure（2026-09-29 提速 P2，同 rust-check job 注释）
+      # workspaces 收编三个示例插件（嵌套独立 workspace）：fixture 构建产物
+      # 落在各自 target/，不收编则每轮冷构建多花 3-6 分钟。
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          workspaces: |
+            .
+            plugins/wasm/translate
+            plugins/wasm/activity-log
+            plugins/wasm/textstat
 
       # Defender 实时扫描排除 target 目录（2026-09-29 提速 P4）：编译期海量
       # 临时文件逐个过扫描典型拖慢 5-15%；runner 是一次性机器，无安全顾虑
