@@ -304,3 +304,33 @@ fn render_summary_and_failures_are_per_anchor_readable() {
     );
     assert!(!all_passed(&results));
 }
+
+// ---------- 拓扑约束谓词（2026-10-08 NB-4/NB-5/NB-6 根修回归锁）----------
+
+#[test]
+fn has_file_anchor_and_content_regex_predicate_matrix() {
+    // 纯 file:（三种形态任一）→ true。
+    assert!(has_file_anchor("[CHECK] file:src/lib.rs exists"));
+    assert!(has_file_anchor("[CHECK] file:docs/api.md contains:鉴权"));
+    assert!(has_file_anchor("[CHECK] file:src/main.rs re:^fn main"));
+    // 纯 re:（交付文本锚点，远端可核）→ false。
+    assert!(!has_file_anchor("[CHECK] re:交付完成"));
+    assert!(has_content_regex_anchor("[CHECK] re:交付完成"));
+    // 混合：任一 file: 锚点即整单拓扑受限。
+    assert!(has_file_anchor(
+        "[CHECK] re:交付完成\n[CHECK] file:out/plan.md exists"
+    ));
+    assert!(has_content_regex_anchor(
+        "[CHECK] re:交付完成\n[CHECK] file:out/plan.md exists"
+    ));
+    // 无锚点 / 空串 → false（零回归面：无锚点的单完全走旧路径）。
+    assert!(!has_file_anchor("普通验收标准，无锚点行"));
+    assert!(!has_file_anchor(""));
+    // 非法正则的 re: 行回落语义项 → 不算锚点。
+    assert!(!has_file_anchor("[CHECK] re:[非法正则"));
+    // 路径不安全的 file: 行被解析期拒绝（回落语义项 + 告警）→ 不算锚点，
+    // 不产生拓扑约束（T2-3 语义：不安全锚点是标准自身的毛病，重派惩罚
+    // 不到执行者；若将来这类行成为生效锚点，本断言会红并要求重新评估）。
+    assert!(!has_file_anchor("[CHECK] file:../evil.txt exists"));
+    assert!(!has_file_anchor("[CHECK] file:C:\\evil.txt exists"));
+}
