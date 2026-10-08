@@ -199,6 +199,13 @@ jobs:
     name: Rust full workspace tests (Windows)
     runs-on: windows-latest
     timeout-minutes: 90
+    env:
+      # 2026-10-08：wasmtime 家族升级后 dev 编译内存膨胀（nemesisbot debug
+      # PDB ~1GB 量级），4 路并行 rustc + link.exe 峰值把 16GB hosted runner
+      # 压死（同签名 "hosted runner lost communication" 两 run 四连，挂点
+      # 52-55min 可复现）。降并发换稳定；配合根 Cargo.toml 的
+      # profile.dev debug=line-tables-only（PDB 减半）双杠杆。
+      CARGO_BUILD_JOBS: 3
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
