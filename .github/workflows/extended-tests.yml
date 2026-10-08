@@ -161,10 +161,12 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 120
     env:
-      # 2026-10-08：同 ci.yml rust-test——dev 编译内存峰值压死 16GB runner
-      # （死点实证在本 job 的 Build nemesisbot (debug) 编译步内），降并发
-      # +profile.dev line-tables-only 双杠杆。
-      CARGO_BUILD_JOBS: 3
+      # 2026-10-08 编译期 runner 压死三杠杆（同 ci.yml rust-test，见那边完整注释）：
+      # 首轮双杠杆（line-tables-only + JOBS:3）后仍两连死（51/54min 恒定挂点），
+      # 升级为 JOBS:2 + CARGO_INCREMENTAL=0 + 编译步换 build-with-watchdog.ps1
+      # 包装（每 15s 流式打资源曲线，跌破地板软着陆退 2 而非 runner 硬死失联）。
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -208,9 +210,11 @@ jobs:
         shell: bash
         run: cd test-tools/TestAIServer && go build -o testaiserver.exe
 
-      # test-harness 解析 target/debug/nemesisbot.exe（Windows 形态，debug 即可）
-      - name: Build nemesisbot (debug)
-        run: cargo build -p nemesisbot
+      # test-harness 解析 target/debug/nemesisbot.exe（Windows 形态，debug 即可）。
+      # 看门狗包装：runner 已在此步六连死（无日志失联），改软着陆 + 资源曲线留证。
+      - name: Build nemesisbot (debug, watchdog)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag etbuild -MaxMinutes 85 -BuildCommand "cargo build -p nemesisbot"
 
       # 纯 bin runner：cargo run（不是 cargo test——见文件头注释）
       - name: Run integration-test (492 assertions, 22 commands)
