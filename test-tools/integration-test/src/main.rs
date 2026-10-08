@@ -358,6 +358,12 @@ async fn main() -> Result<()> {
     // Kill any existing processes on our ports
     println!("\n[1/5] Cleaning up old processes...");
     cleanup_ports(&[ai_server_port(), WEB_PORT, HEALTH_PORT]);
+    // Fail-fast 端口预检（T41 劫持教训闭环）：清理后仍被占 = 他人实例或 ghost，
+    // 当场报端口+PID+进程名，不再变成 bind 劫持式神秘失败。
+    if let Err(report) = precheck_ports(&[ai_server_port(), WEB_PORT, HEALTH_PORT]) {
+        eprintln!("\nERROR: {report}");
+        std::process::exit(1);
+    }
 
     // ---- Phase 1: CLI tests (no gateway needed) ----
     println!("\n[Phase 1] Running comprehensive CLI tests (all commands)...");
@@ -609,9 +615,9 @@ async fn main() -> Result<()> {
                 }
             ],
             "channels": {
-                "web": {"enabled": true, "host": "127.0.0.1", "port": 49000, "auth_token": "276793422"},
+                "web": {"enabled": true, "host": "127.0.0.1", "port": 37300, "auth_token": "276793422"},
                 // Standalone websocket channel stays OFF: runtime tests all go
-                // through the web channel's /ws (port 49000, same token). With
+                // through the web channel's /ws (port 37300, same token). With
                 // `enabled: true` and no host/token here, the channel bound
                 // 0.0.0.0:49001 with NO auth on every run — SEC-001 now
                 // honestly refuses that boot (loopback + real-token or off).

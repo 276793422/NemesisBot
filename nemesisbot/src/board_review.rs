@@ -3001,11 +3001,34 @@ pub(crate) fn replay_stuck_reviews(deps: &BoardReviewDeps, skip: &[(ParkedKind, 
                     if parked_awake(ParkedKind::Issue, issue.id) {
                         continue;
                     }
-                    // 叶子单：仅 writeback 交付过的（有 Delivery）才重放。
-                    let delivered = store
-                        .list_comments(issue.id)
-                        .map(|cs| cs.iter().any(|c| c.ctype == CommentType::Delivery))
+                    // 叶子单：writeback 已落定即重放。判据 = 派发行终态
+                    //（done/failed）**或** Delivery 评论（兜底人工/旧数据形态）。
+                    // 只认 Delivery 是 4a 修复前的缺口：write_back 的评论有
+                    // 三形态（结构化=Delivery / 无格式降级 ✅=Comment /
+                    // worker 失败 ⛔=Comment），降级与失败形态的单同样转
+                    // in_review 进验收决策链（board_dispatch.rs 写回注释），
+                    // 重启后却因无 Delivery 被重放漏掉——单据永久卡死无自愈
+                    //（2026-09-30 17 场景观察点⑥）。dispatch 终态是更可靠的
+                    // 单一判据：write_back 先 finish_dispatch 再 add_comment，
+                    // 评论可能失败丢失，终态必落盘；人工改 in_review（无
+                    // dispatch 行）仍由 Delivery 分支兜底语义（有交付才算）。
+                    let dispatch_settled = store
+                        .list_dispatches(issue.id)
+                        .map(|ds| {
+                            ds.iter().any(|d| {
+                                matches!(
+                                    d.state.as_str(),
+                                    nemesis_board::models::dispatch_state::DONE
+                                        | nemesis_board::models::dispatch_state::FAILED
+                                )
+                            })
+                        })
                         .unwrap_or(false);
+                    let delivered = dispatch_settled
+                        || store
+                            .list_comments(issue.id)
+                            .map(|cs| cs.iter().any(|c| c.ctype == CommentType::Delivery))
+                            .unwrap_or(false);
                     if !delivered {
                         continue;
                     }

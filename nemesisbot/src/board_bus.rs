@@ -143,13 +143,34 @@ fn handle_task_started(deps: &MasterBusDeps, env: &Envelope, from_node: &str) ->
                 "[nb_bus] task started (dispatch → running)");
             EnvelopeResponse::success(env, serde_json::json!({ "running": true }))
         }
-        Ok(false) => EnvelopeResponse::failure(
-            env,
-            EnvelopeError::new(
-                envelope::error_code::VALIDATION,
-                format!("task {task_id} 不在 dispatched 态或 worker 不匹配"),
-            ),
-        ),
+        Ok(false) => {
+            // claim 竞速（T43 实证）：dispatch_issue_core 的派发行在
+            // submit ACK 之后才落库（board.rs try_claim_dispatch 在
+            // submit_peer_chat 之后），而 worker 空闲即取即跑——started
+            // 上报可跑赢插行，此刻任务**正在执行**。行不存在 = 可重试
+            // （UNAVAILABLE，worker 退避重报）；行已存在但状态/worker
+            // 不符才是真 VALIDATION（终态/重复上报/伪造，不重试）。
+            match deps.store.get_dispatch(&task_id) {
+                Ok(None) => EnvelopeResponse::failure(
+                    env,
+                    EnvelopeError::new(
+                        envelope::error_code::UNAVAILABLE,
+                        format!("task {task_id} 的派发行尚未落库（claim 竞速），请重试"),
+                    ),
+                ),
+                Ok(Some(_)) => EnvelopeResponse::failure(
+                    env,
+                    EnvelopeError::new(
+                        envelope::error_code::VALIDATION,
+                        format!("task {task_id} 不在 dispatched 态或 worker 不匹配"),
+                    ),
+                ),
+                Err(e) => EnvelopeResponse::failure(
+                    env,
+                    EnvelopeError::new(envelope::error_code::INTERNAL, e),
+                ),
+            }
+        }
         Err(e) => {
             EnvelopeResponse::failure(env, EnvelopeError::new(envelope::error_code::INTERNAL, e))
         }

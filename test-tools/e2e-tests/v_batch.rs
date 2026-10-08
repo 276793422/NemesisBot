@@ -53,27 +53,27 @@ use test_harness::{
 use tokio_tungstenite::tungstenite::Message;
 
 const AI_PORT: u16 = 18090;
-const WEB_PORT: u16 = 49010;
+const WEB_PORT: u16 = 37310;
 const WS_CHANNEL_PORT: u16 = 49011;
 const HEALTH_PORT: u16 = 18791;
 
 const V2_AI_PORT: u16 = 18091;
-const V2_WEB_PORT: u16 = 49012;
+const V2_WEB_PORT: u16 = 37312;
 const V2_WS_CHANNEL_PORT: u16 = 49013;
 const V2_HEALTH_PORT: u16 = 18792;
 
 const V3_AI_PORT: u16 = 18092;
-const V3_WEB_PORT: u16 = 49014;
+const V3_WEB_PORT: u16 = 37314;
 const V3_WS_CHANNEL_PORT: u16 = 49015;
 const V3_HEALTH_PORT: u16 = 18793;
 
 const V4_AI_PORT: u16 = 18093;
-const V4_WEB_PORT: u16 = 49016;
+const V4_WEB_PORT: u16 = 37316;
 const V4_WS_CHANNEL_PORT: u16 = 49017;
 const V4_HEALTH_PORT: u16 = 18794;
 
 const V5_AI_PORT: u16 = 18094;
-const V5_WEB_PORT: u16 = 49018;
+const V5_WEB_PORT: u16 = 37318;
 const V5_WS_CHANNEL_PORT: u16 = 49019;
 const V5_HEALTH_PORT: u16 = 18795;
 
@@ -82,7 +82,7 @@ const V5_HEALTH_PORT: u16 = 18795;
 // group — sharing one group let them kill each other's gateway (a flake
 // that surfaced once the batch grew past 6 tests).
 const V5S_AI_PORT: u16 = 18095;
-const V5S_WEB_PORT: u16 = 49023;
+const V5S_WEB_PORT: u16 = 37323;
 const V5S_WS_CHANNEL_PORT: u16 = 49024;
 const V5S_HEALTH_PORT: u16 = 18796;
 
@@ -1297,7 +1297,7 @@ async fn run_v5b(
 // T3/T4；源会话 post-fork 请求含 T1-T4、不含 FORK。
 
 const Z1_AI_PORT: u16 = 18100;
-const Z1_WEB_PORT: u16 = 49020;
+const Z1_WEB_PORT: u16 = 37320;
 const Z1_WS_CHANNEL_PORT: u16 = 49021;
 const Z1_HEALTH_PORT: u16 = 49022;
 
@@ -1514,7 +1514,7 @@ async fn run_z1(ws: &TestWorkspace, cfg: &serde_json::Value) -> Result<()> {
 // ===========================================================================
 
 const V6_AI_PORT: u16 = 18096;
-const V6_WEB_PORT: u16 = 49025;
+const V6_WEB_PORT: u16 = 37325;
 const V6_WS_CHANNEL_PORT: u16 = 49026;
 const V6_HEALTH_PORT: u16 = 18797;
 
@@ -1522,7 +1522,7 @@ const V6_HEALTH_PORT: u16 = 18797;
 // 跑（cargo test -- --ignored 多线程），同端口 bind 冲突 → 先启动方成功、
 // 后启动方 gateway 起不来 → 假失败排障半天。V6N 用独立段（18097/4903x/18798）。
 const V6N_AI_PORT: u16 = 18097;
-const V6N_WEB_PORT: u16 = 49035;
+const V6N_WEB_PORT: u16 = 37335;
 const V6N_WS_CHANNEL_PORT: u16 = 49036;
 const V6N_HEALTH_PORT: u16 = 18798;
 
