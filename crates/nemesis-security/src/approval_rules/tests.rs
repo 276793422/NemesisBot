@@ -139,6 +139,14 @@ fn rule_permitted_critical_only_exec() {
 }
 
 #[test]
+fn rule_permitted_install_ops_never() {
+    // 2026-09-30 复查 #12：安装类永不入规则（任何风险级）——目录记忆 ≠
+    // 载荷记忆，装代码的每次裁决都保持人工。
+    assert!(!rule_permitted_for("plugins.install", "HIGH"));
+    assert!(!rule_permitted_for("skills.install", "MEDIUM"));
+}
+
+#[test]
 fn find_auto_allow_rule_hits_exec_prefix() {
     let rules = vec![ApprovalRule {
         op: "process_exec".to_string(),

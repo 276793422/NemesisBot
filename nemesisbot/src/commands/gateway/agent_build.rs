@@ -279,6 +279,17 @@ pub(crate) async fn init_agent(
     };
 
     let shared_resources = Arc::new(shared_resources);
+
+    // W5-3：插件 estop 联动 watcher——**先于 build_agent_loop** spawn：
+    // 订阅（watch）先于装载期任何 estop 置位窗口（原位置在 loop 建成后，
+    // 留一条启动窗口理论缝隙；前移无条件关窗——先订阅后读初值的时序
+    // 纪律见 spawn_estop_watcher 内注释。2026-09-30 复查 #9）。manager 级
+    // 一次性任务，不随 agent 重启泄；观察者事件泵仍在 loop 建成后挂。
+    #[cfg(feature = "plugins-wasm")]
+    if let Some(ref pm) = shared_resources.plugin_manager {
+        crate::plugin_bridge::spawn_estop_watcher(pm, &shared_resources.estop);
+    }
+
     let agent_loop = crate::agent_factory::build_agent_loop(&shared_resources)
         .map_err(|e| anyhow::anyhow!("Failed to build agent loop: {}", e))?;
     let initial_tool_count = agent_loop.tool_count();
@@ -287,19 +298,18 @@ pub(crate) async fn init_agent(
         initial_tool_count
     );
 
-    // W5-3：插件 estop 联动 watcher + 观察者事件泵——init_agent 一次性
-    // spawn（manager 级任务，不随 agent 重启泄；invoker 挂接在
-    // build_agent_loop 每次重建时）。泵退出 = 广播 sender 全部 drop
-    // （gateway 收尾 SharedResources 释放）→ recv() Closed；estop 冻结由
-    // estop watcher（set_enabled → enqueue no-op）承担，泵不接 estop
-    // ——release 后泵还活着，观察面无缝恢复（2026-09-30 插件体系复查
+    // W5-3：观察者事件泵——init_agent 一次性 spawn（manager 级任务，不随
+    // agent 重启泄；invoker 挂接在 build_agent_loop 每次重建时）。estop
+    // watcher 已在 loop 建成前挂（订阅先于装载，见上方）。泵退出 = 广播
+    // sender 全部 drop（gateway 收尾 SharedResources 释放）→ recv() Closed；
+    // estop 冻结由 estop watcher（set_enabled → enqueue no-op）承担，泵不接
+    // estop——release 后泵还活着，观察面无缝恢复（2026-09-30 插件体系复查
     // #1：此前泵从未接线，观察者插件在生产 gateway 收不到任何事件）。
     #[cfg(feature = "plugins-wasm")]
-    if let Some(ref pm) = shared_resources.plugin_manager {
-        crate::plugin_bridge::spawn_estop_watcher(pm, &shared_resources.estop);
-        if let Some(ref tx) = shared_resources.agent_event_tx {
-            nemesis_plugins_wasm::observer::spawn_pump(pm.clone(), tx.subscribe());
-        }
+    if let Some(ref pm) = shared_resources.plugin_manager
+        && let Some(ref tx) = shared_resources.agent_event_tx
+    {
+        nemesis_plugins_wasm::observer::spawn_pump(pm.clone(), tx.subscribe());
     }
 
     // Bridge the agent's tools into the workflow engine's tool registry so the

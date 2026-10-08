@@ -79,6 +79,12 @@ impl PluginToolBridge {
     /// W5⑤：工具输出出站凭据复扫——guest 返回文本命中凭据模式即脱敏
     /// （`[REDACTED_CREDENTIAL]`）+ 审计。防 x-secret 原文经工具结果
     /// 泄漏进会话历史/审计面。
+    ///
+    /// Scanner 恒开（`true`，无视 security.credential 开关）是故意的：
+    /// 这不是常规凭据检测层，而是 x-secret 注入面的收口——宿主把 vault
+    /// 原文交给了 guest，无论操作员是否启用通用凭据扫描，插件输出都不
+    /// 应把原文带出宿主（2026-09-30 复查 #3）。Scanner 构造廉价
+    /// （pattern 集 OnceLock 缓存），无需缓存实例。
     fn rescan_output_credentials(&self, content: &str, session_key: &str) -> String {
         let scanner = nemesis_security::credential::Scanner::new(true, "block");
         let result = scanner.scan_content(content);
@@ -120,25 +126,29 @@ impl nemesis_agent::r#loop::Tool for PluginToolBridge {
             Ok(output) => {
                 if output.is_error {
                     // guest 业务失败 → Err（dispatch 包 "Tool error: {err}"
-                    // + post-failure hooks，与内置工具失败同语义）。
-                    return Err(output.content);
+                    // + post-failure hooks，与内置工具失败同语义）。错误文本
+                    // 同样走出站凭据复扫——失败信息可能回显 guest 刚读到的
+                    // 凭据（2026-09-30 复查 #1：此前仅成功路径扫描）。
+                    return Err(
+                        self.rescan_output_credentials(&output.content, &context.session_key)
+                    );
                 }
                 Ok(self.rescan_output_credentials(&output.content, &context.session_key))
             }
             Err(e) => {
                 // PluginError（trap/超时/预算/禁用）→ 错误文本回灌；不带
-                // "Tool error: " 前缀（dispatch 统一包）。截断防大错误
-                // 撑爆会话（同宿主面 truncate_err 口径）；切点收字符边界
-                // （多字节 UTF-8 截中间会 panic）。
-                let msg = e.to_string();
-                let mut cut = 300.min(msg.len());
-                while cut > 0 && !msg.is_char_boundary(cut) {
+                // "Tool error: " 前缀（dispatch 统一包）。顺序必须是先复扫
+                // 全文再截断——先截断可能把凭据切成两半各自漏检（2026-09-30
+                // 复查 #1：错误路径此前完全不过复扫）。
+                let scanned = self.rescan_output_credentials(&e.to_string(), &context.session_key);
+                let mut cut = 300.min(scanned.len());
+                while cut > 0 && !scanned.is_char_boundary(cut) {
                     cut -= 1;
                 }
-                Err(if msg.len() > 300 {
-                    format!("{}…", &msg[..cut])
+                Err(if scanned.len() > 300 {
+                    format!("{}…", &scanned[..cut])
                 } else {
-                    msg
+                    scanned
                 })
             }
         }
@@ -315,24 +325,17 @@ impl InstallApprover for LateInstallApprover {
                         .to_string(),
                 );
             };
-            // 先查「总是允许」规则表（M3 同款——批准时承诺必须兑现）。
-            if let Some(rule) =
-                manager.find_auto_allow("plugins.install", &review.source_dir, "HIGH")
-            {
-                tracing::info!(
-                    op = %rule.op,
-                    pattern = %rule.pattern,
-                    slug = %review.slug,
-                    "[WasmPlugin] install auto-allowed by approval rule"
-                );
-                return Ok(true);
-            }
+            // 安装类操作不走「总是允许」规则（2026-09-30 复查 #12）：规则
+            // 记的是 source_dir，同一目录明天可以放进不同 sha 的载荷——目录
+            // 记忆对「装任意代码」天然不安全，每次安装保持人工裁决。规则
+            // 写入侧（respond always）由 rule_permitted_for 的 is_install_op
+            // 子句拒绝，历史遗留的 install 规则在此成为死信。
             // 审批卡阻塞等待（spawn_blocking 防占用当前 worker——block_in_place
             // 非多线程 runtime 会 panic，同 skills gate 理由）。
             let manager = manager.clone();
             let timeout_secs = self.timeout_secs;
             let summary = format!(
-                "WASM 插件安装：{} v{}（kind={}，信任={}，出站 {} 项，凭据 {} 项，{} 字节）",
+                "WASM 插件安装：{} v{}（kind={}，信任={}，sha256={}…，出站 {} 项，凭据 {} 项，{} 字节）\n来源：{}",
                 review.slug,
                 review.version,
                 review.kind,
@@ -341,9 +344,13 @@ impl InstallApprover for LateInstallApprover {
                 } else {
                     &review.trust_state
                 },
+                // sha 前缀 16 hex 给人比对锚点（完整 sha 在 install 漏斗第③步
+                // 已与 lockfile/manifest 对账；卡片上给全文反而不可读）。
+                &review.wasm_sha256[..16.min(review.wasm_sha256.len())],
                 review.egress.len(),
                 review.x_secret.len(),
                 review.wasm_bytes,
+                review.source_dir,
             );
             let target = review.source_dir.clone();
             let wait = tokio::task::spawn_blocking(move || {

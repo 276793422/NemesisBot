@@ -120,3 +120,41 @@ fn verify_skill_length_arm_then_full_hash_flow_with_signature_files() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// 信任库磁盘真相的跨进程可见性（2026-09-30 插件链路测试实锤的缓存陈旧
+/// 缺口）：常驻进程在构造 TrustStore 之后，CLI（独立进程）直接写盘新增
+/// 信任 / 吊销——读入口（is_trusted/trust_level）必须重读磁盘让两个方向
+/// 都即时生效：新增不可见则「先信后装」热信任流断链；吊销不可见则已撤
+/// 密钥仍按 trusted 放行，安全语义反向恶化。
+#[test]
+fn trust_store_refreshes_from_disk_for_running_reader() {
+    let dir = temp_dir("refresh");
+    let store_path = dir.join("trust.json");
+
+    // 读者进程：先于写入者构造（模拟 gateway 启动时信任库尚不存在）。
+    let reader = TrustStore::new(Some(&store_path));
+    assert!(
+        !reader.is_trusted(VALID_PUBKEY_B64).1,
+        "构造期无文件 → 不受信"
+    );
+
+    // 写入者进程：独立实例新增信任（= CLI plugin trust）。
+    let writer = TrustStore::new(Some(&store_path));
+    writer.add_key(VALID_PUBKEY_B64, "cli-ca", TrustLevel::Verified);
+
+    // 读者不重启：新增信任必须可见。
+    let (level, trusted) = reader.is_trusted(VALID_PUBKEY_B64);
+    assert!(trusted, "CLI 新增信任对运行中读者不可见（缓存陈旧）");
+    assert_eq!(level, TrustLevel::Verified);
+    assert_eq!(reader.trust_level(VALID_PUBKEY_B64), TrustLevel::Verified);
+
+    // 写入者进程吊销（= CLI plugin trust-revoke）——吊销必须同样即时可见。
+    writer.revoke_key("cli-ca").unwrap();
+    assert!(
+        !reader.is_trusted(VALID_PUBKEY_B64).1,
+        "CLI 吊销对运行中读者不可见（缓存陈旧，安全语义反向恶化）"
+    );
+    assert_eq!(reader.trust_level(VALID_PUBKEY_B64), TrustLevel::Revoked);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
