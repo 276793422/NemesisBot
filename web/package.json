@@ -30,7 +30,7 @@
     "marked": "^15.0.7",
     "pinia": "^3.0.1",
     "thememirror": "^2.0.1",
-    "vue": "^3.5.13",
+    "vue": "^3.5.43",
     "vue-echarts": "^8.0.1",
     "vue-router": "^4.5.0"
   },
