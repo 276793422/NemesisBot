@@ -414,6 +414,14 @@ impl PluginManager {
             }
             let q = self.observers.lock().get(&reg.manifest.slug).cloned();
             let Some(q) = q else {
+                // 队列缺位只发生在 register 的摘旧插新窗口（L301 remove →
+                // insert 之间 enqueue 见 reg 在 map、队列还没有）。静默丢弃
+                // 是设计（fire-and-forget），但 Observer 类要补计数——否则
+                // 「事件去哪了」不可观测（2026-09-30 复查 #8）。tool 类本无
+                // 队列，计数会误导，不补。
+                if *reg.manifest.kind == PluginKind::Observer {
+                    reg.dropped_events.fetch_add(1, Ordering::Relaxed);
+                }
                 continue;
             };
             if q.try_send(event_json.clone()).is_err() {
@@ -564,17 +572,28 @@ impl PluginManager {
     }
 
     /// enable/disable（内存 + 落盘）。
-    pub fn set_enabled_plugin(&self, slug: &str, on: bool) -> Result<(), PluginError> {
+    ///
+    /// 顺序（2026-09-30 复查 #7）：先写盘、成功后才翻内存位——旧顺序先翻
+    /// 内存再写盘，写盘失败时 execute_tool 看内存位已关、重启后 load_all
+    /// 又按盘上 enabled=true 装回，同一操作两种结局且调用方拿到的是
+    /// Err。持 install::FUNNEL_LOCK 串行化（与 install/uninstall 同闸——
+    /// 并发 enable/disable vs install 同 slug 时，落位重建与实例配置
+    /// 读-改-写会竞争）。锁后重 get：等待窗口内插件可能被 uninstall。
+    pub async fn set_enabled_plugin(&self, slug: &str, on: bool) -> Result<(), PluginError> {
+        let _funnel = crate::install::FUNNEL_LOCK.lock().await;
         let Some(reg) = self.get(slug) else {
             return Err(PluginError::NotAvailable(format!(
                 "plugin not registered: {slug}"
             )));
         };
+        {
+            let _guard = self.config_io.lock();
+            let mut cfg = self.read_instance_config(slug);
+            cfg.enabled = on;
+            self.write_instance_config(slug, &cfg)?;
+        }
         reg.enabled.store(on, Ordering::SeqCst);
-        let _guard = self.config_io.lock();
-        let mut cfg = self.read_instance_config(slug);
-        cfg.enabled = on;
-        self.write_instance_config(slug, &cfg)
+        Ok(())
     }
 
     /// 磁盘形态 enable/disable（CLI 专用：CLI 进程不装载注册表，只操作盘上

@@ -160,11 +160,55 @@ async fn install_approver_unbound_is_fail_closed() {
         egress: vec![],
         x_secret: vec![],
         wasm_bytes: 1,
+        wasm_sha256: "ab".repeat(32),
         limits_ignored: vec![],
         source_dir: "C:\\tmp".into(),
     };
     let verdict = gate.approve(&review).await;
     assert!(verdict.is_err(), "未 bind = 诚实拒绝而非放行");
+}
+
+#[test]
+fn rescan_output_redacts_credentials_on_success_text() {
+    // 2026-09-30 复查 #1/#3：出站复扫单点行为钉死——命中即脱敏，
+    // 审计只进 summary（此处只验文本面）。
+    let (_dir, home) = temp_home();
+    let manager = Arc::new(
+        PluginManager::new(
+            &common::workspace_path(&home),
+            PluginLimits::default(),
+            Arc::new(VaultPluginSecrets::for_home(&home)),
+        )
+        .expect("manager"),
+    );
+    let bridge = PluginToolBridge::new(meta("plugin.x.a", "read", "{}"), manager);
+    let secret_text = "key is AKIAIOSFODNN7EXAMPLE end";
+    let out = bridge.rescan_output_credentials(secret_text, "session-1");
+    assert!(
+        out.contains("[REDACTED_CREDENTIAL]"),
+        "命中凭据必须脱敏: {out}"
+    );
+    assert!(!out.contains("AKIAIOSFODNN7EXAMPLE"), "原文不得残留: {out}");
+}
+
+#[test]
+fn rescan_output_passthrough_without_matches() {
+    let (_dir, home) = temp_home();
+    let manager = Arc::new(
+        PluginManager::new(
+            &common::workspace_path(&home),
+            PluginLimits::default(),
+            Arc::new(VaultPluginSecrets::for_home(&home)),
+        )
+        .expect("manager"),
+    );
+    let bridge = PluginToolBridge::new(meta("plugin.x.a", "read", "{}"), manager);
+    let plain = "普通输出，无凭据。";
+    assert_eq!(
+        bridge.rescan_output_credentials(plain, "session-1"),
+        plain,
+        "无命中原样返回（零扰动）"
+    );
 }
 
 #[test]
