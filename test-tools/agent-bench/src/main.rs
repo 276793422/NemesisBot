@@ -216,7 +216,7 @@ fn write_bench_config(ws: &TestWorkspace, prompt_system: &str) -> Result<()> {
             model("testai-vision-1.0"),
         ],
         "channels": {
-            "web": {"enabled": true, "host": "127.0.0.1", "port": 49000, "auth_token": AUTH_TOKEN},
+            "web": {"enabled": true, "host": "127.0.0.1", "port": 37300, "auth_token": AUTH_TOKEN},
             // 独立 websocket 通道保持关（同 integration-test：SEC-001 拒裸绑定）。
             "websocket": {"enabled": false}
         },
@@ -330,6 +330,10 @@ async fn main() -> Result<()> {
 
     // ---- 环境清理 + 装配 ----
     cleanup_ports(&[ai_server_port(), WS_PORT, HEALTH_PORT]);
+    // Fail-fast 端口预检（T41 劫持教训闭环）
+    if let Err(report) = precheck_ports(&[ai_server_port(), WS_PORT, HEALTH_PORT]) {
+        bail!("端口预检失败: {report}");
+    }
 
     println!("\n[1/4] Onboard（提取 workspace 模板）...");
     let onboard = ws.run_cli(&cfg.gateway_bin, &["onboard", "default"]).await;

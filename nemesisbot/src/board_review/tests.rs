@@ -4842,6 +4842,76 @@ async fn replay_stuck_reviews_skips_concluded_and_undelivered() {
     );
 }
 
+/// 4a（2026-09-30 17 场景观察点⑥根修）回归锁：writeback 评论三形态中，
+/// 降级 ✅ Comment（parse_delivery_report 不中的无格式写回）与失败 ⛔
+/// Comment（error 回调）形态的 in_review 单同样必须被重放——修复前
+/// delivered 闸只认 Delivery，这两类单重启后永久卡死无自愈。
+#[tokio::test]
+async fn replay_stuck_reviews_covers_degraded_and_failed_writebacks() {
+    use nemesis_board::{Actor, CommentType, NewComment};
+    let (deps, _ws) = review_deps("replay-degraded-failed");
+
+    // 降级形态：dispatch done + ✅ Comment（无 Delivery——write_back 对
+    // 无结构化格式汇报的诚实降级写回形态）。
+    let degraded = issue_in_review_as(&deps.store, "降级写回叶子", Actor::agent("node-a"));
+    seed_dispatch(&deps.store, "t-replay-degraded", degraded.id, "node-b");
+    deps.store
+        .add_comment(NewComment {
+            issue_id: degraded.id,
+            author: Actor::agent("node-b"),
+            content: "✅ worker 汇报完成：\n\n文本无结构化格式".to_string(),
+            parent_id: None,
+            ctype: CommentType::Comment,
+        })
+        .unwrap();
+
+    // 失败形态：dispatch failed + ⛔ Comment（error 回调同样转 in_review
+    // 进验收决策链——board_dispatch.rs 写回注释明示）。
+    let failed = issue_in_review_as(&deps.store, "失败写回叶子", Actor::agent("node-a"));
+    deps.store
+        .insert_dispatch(
+            "t-replay-failed",
+            failed.id,
+            "node-b",
+            &Actor::agent("node-a"),
+        )
+        .unwrap();
+    deps.store
+        .finish_dispatch(
+            "t-replay-failed",
+            nemesis_board::models::dispatch_state::FAILED,
+        )
+        .unwrap();
+    deps.store
+        .add_comment(NewComment {
+            issue_id: failed.id,
+            author: Actor::agent("node-b"),
+            content: "⛔ worker 汇报失败：\n\nboom".to_string(),
+            parent_id: None,
+            ctype: CommentType::Comment,
+        })
+        .unwrap();
+
+    deps.estop.trigger();
+    replay_stuck_reviews(&deps, &[]);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if deps.estop_parked.lock().unwrap().len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let parked = deps.estop_parked.lock().unwrap().clone();
+    assert!(
+        parked.contains(&(ParkedKind::Issue, degraded.id)),
+        "降级写回叶子（dispatch done + ✅ Comment 无 Delivery）必须重放: {parked:?}"
+    );
+    assert!(
+        parked.contains(&(ParkedKind::Issue, failed.id)),
+        "失败写回叶子（dispatch failed + ⛔ Comment）必须重放: {parked:?}"
+    );
+}
+
 // ===== spawn_selfcheck_second_stage：error 回报诚实转人工 =====
 
 #[tokio::test]

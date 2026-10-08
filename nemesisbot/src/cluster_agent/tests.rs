@@ -2858,3 +2858,50 @@ fn load_profession_assets_invalid_slug_never_touches_disk() {
     let (contract, _) = super::load_profession_assets(Some(tmp.path()), "My Fam");
     assert!(contract.is_none());
 }
+
+// claim 竞速重试判定（T43 实证的 D0b 竞态）：master 派发行未落库时回
+// UNAVAILABLE —— worker 据此退避重报；VALIDATION/成功/空 result 都不重试。
+#[test]
+fn started_reply_retryable_only_for_unavailable() {
+    use nemesis_cluster::rpc_types::RPCResponse;
+
+    let unavailable = RPCResponse {
+        id: "r1".into(),
+        result: Some(serde_json::json!({
+            "v": 1, "ns": "task", "op": "started", "ok": false,
+            "error": {"code": "unavailable", "message": "派发行尚未落库"}
+        })),
+        error: None,
+    };
+    assert!(super::started_reply_retryable(&unavailable));
+
+    let validation = RPCResponse {
+        id: "r2".into(),
+        result: Some(serde_json::json!({
+            "v": 1, "ns": "task", "op": "started", "ok": false,
+            "error": {"code": "validation", "message": "不在 dispatched 态"}
+        })),
+        error: None,
+    };
+    assert!(
+        !super::started_reply_retryable(&validation),
+        "终态/伪造拒绝是永久的"
+    );
+
+    let success = RPCResponse {
+        id: "r3".into(),
+        result: Some(serde_json::json!({
+            "v": 1, "ns": "task", "op": "started", "ok": true,
+            "body": {"running": true}
+        })),
+        error: None,
+    };
+    assert!(!super::started_reply_retryable(&success));
+
+    let no_result = RPCResponse {
+        id: "r4".into(),
+        result: None,
+        error: Some("transport lost".into()),
+    };
+    assert!(!super::started_reply_retryable(&no_result));
+}

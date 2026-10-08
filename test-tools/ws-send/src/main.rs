@@ -4,9 +4,9 @@
 //! format, waits for the bot response, prints it, and exits.
 //!
 //! Usage:
-//!   ws-send --url ws://127.0.0.1:49000/ws --token 12345 --msg "hello"
-//!   ws-send --url ws://127.0.0.1:49000/ws --token 12345 --file message.txt
-//!   ws-send --timeout 30 --url ws://127.0.0.1:49000/ws --token 12345 --file eicar.txt
+//!   ws-send --url ws://127.0.0.1:37300/ws --token 12345 --msg "hello"
+//!   ws-send --url ws://127.0.0.1:37300/ws --token 12345 --file message.txt
+//!   ws-send --timeout 30 --url ws://127.0.0.1:37300/ws --token 12345 --file eicar.txt
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -22,7 +22,7 @@ use tokio_tungstenite::tungstenite::Message;
     about = "One-shot WebSocket message sender for NemesisBot E2E testing"
 )]
 struct Args {
-    /// WebSocket URL (e.g. ws://127.0.0.1:49000/ws)
+    /// WebSocket URL (e.g. ws://127.0.0.1:37300/ws)
     #[arg(short, long)]
     url: String,
 

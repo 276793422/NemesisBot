@@ -10,6 +10,7 @@
 //! 忙碌时排队天然成立（诚实定位「任务间隙参与讨论」）。
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use nemesis_agent::context::RequestContext;
 use nemesis_agent::instance::AgentInstance;
@@ -279,6 +280,12 @@ pub async fn cluster_agent_loop(
 /// D0b（goal P2）：出队开跑上报（nb_bus ns="task" op="started"，目标=
 /// 任务来源 master）。master 据此把 dispatch 标 running——重平衡只挪
 /// queued 单。fire-and-forget：RPC 失败只 debug（重平衡保守方向=不挪）。
+///
+/// claim 竞速重试（T43 实证）：master 的派发行在 submit ACK 之后才落库
+/// （board.rs try_claim_dispatch 在 submit_peer_chat 之后），空闲 worker
+/// 取即跑，started 上报可跑赢插行 → master 回 UNAVAILABLE。此时任务正在
+/// 执行，退避 500ms 重报（上限 2 次重试；正常首试即中，最坏 +1s）；其余
+/// 失败（transport / VALIDATION）维持 fire-and-forget 语义不重试。
 async fn notify_task_started(
     rpc_client: Option<&RpcClient>,
     task: &nemesis_cluster::cluster_task::ClusterTask,
@@ -287,24 +294,46 @@ async fn notify_task_started(
     let Some(rpc) = rpc_client else {
         return;
     };
-    let payload = serde_json::json!({
-        "v": nemesis_cluster::envelope::ENVELOPE_VERSION,
-        "ns": "task",
-        "op": "started",
-        "corr_id": uuid::Uuid::new_v4().to_string(),
-        "body": { "task_id": task.task_id },
-    });
-    let request = RPCRequest {
-        id: uuid::Uuid::new_v4().to_string(),
-        action: ActionType::Custom(nemesis_cluster::envelope::NB_BUS_ACTION.to_string()),
-        payload,
-        source: self_node_id.to_string(),
-        target: Some(task.source.node_id.clone()),
-    };
-    if let Err(e) = rpc.call(&task.source.node_id, request).await {
-        tracing::debug!(task_id = %task.task_id, error = %e,
-            "[ClusterAgent] task.started notify skipped");
+    for attempt in 0..=2u32 {
+        let payload = serde_json::json!({
+            "v": nemesis_cluster::envelope::ENVELOPE_VERSION,
+            "ns": "task",
+            "op": "started",
+            "corr_id": uuid::Uuid::new_v4().to_string(),
+            "body": { "task_id": task.task_id },
+        });
+        let request = RPCRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            action: ActionType::Custom(nemesis_cluster::envelope::NB_BUS_ACTION.to_string()),
+            payload,
+            source: self_node_id.to_string(),
+            target: Some(task.source.node_id.clone()),
+        };
+        match rpc.call(&task.source.node_id, request).await {
+            Ok(resp) if started_reply_retryable(&resp) => {
+                tracing::debug!(task_id = %task.task_id, attempt,
+                    "[ClusterAgent] task.started 撞上 claim 竞速（UNAVAILABLE），退避重报");
+            }
+            Ok(_) => return,
+            Err(e) => {
+                tracing::debug!(task_id = %task.task_id, error = %e,
+                    "[ClusterAgent] task.started notify skipped");
+                return;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
+    tracing::debug!(task_id = %task.task_id,
+        "[ClusterAgent] task.started 重试耗尽（claim 竞速未解，放弃上报）");
+}
+
+/// master 对 started 上报的 UNAVAILABLE 回复（派发行未落库，可重试）。
+fn started_reply_retryable(resp: &nemesis_cluster::rpc_types::RPCResponse) -> bool {
+    resp.result.as_ref().map(|v| {
+        v.get("ok").and_then(|b| b.as_bool()) == Some(false)
+            && v.pointer("/error/code").and_then(|c| c.as_str())
+                == Some(nemesis_cluster::envelope::error_code::UNAVAILABLE)
+    }) == Some(true)
 }
 
 async fn execute_new_task(

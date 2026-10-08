@@ -755,8 +755,15 @@ pub async fn send_callback(
             target: Some(source_node_id.into()),
         };
 
+        // must-reach：回调是任务结果的唯一交付路径，走拨号穿透
+        // （require_online=false）——registry 的 Offline 判定可能滞后于
+        // 实际网络恢复（ heal 后 announce/探针节奏内的窗口），门禁瞬断会
+        // 让三次重试在 15s 内全部空转耗尽、已完成的任务结果丢失（T44C
+        // 真机 iptables 注入 run2 实证：重派任务执行成功但回调全被
+        // 「peer is offline」拒发，master 侧只能 sweep ⛔）。直连拨号本身
+        // 就是可达性的真值判定：连上=交付，连不上=与门禁版同等失败。
         match client
-            .call_with_timeout(source_node_id, request, timeout)
+            .call_probe_with_timeout(source_node_id, request, timeout)
             .await
         {
             Ok(_) => {

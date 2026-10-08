@@ -60,7 +60,7 @@ pub async fn test_cli_cluster_init(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
         let _ = std::fs::create_dir_all(cluster_cfg.parent().unwrap());
         let config = serde_json::json!({
             "enabled": false,
-            "port": 11949, "rpc_port": 21949, "token": "test-token-123"
+            "port": 38449, "rpc_port": 48449, "token": "test-token-123"
         });
         let _ = std::fs::write(&cluster_cfg, serde_json::to_string_pretty(&config).unwrap());
         results.push(pass(
@@ -120,9 +120,9 @@ pub async fn test_cli_cluster_config(ws: &TestWorkspace, bin: &Path) -> Vec<Test
                 "cluster",
                 "config",
                 "--udp-port",
-                "11949",
+                "38449",
                 "--rpc-port",
-                "21949",
+                "48449",
             ],
         )
         .await;
@@ -250,7 +250,7 @@ pub async fn test_cli_cluster_peers(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
                 "--name",
                 "test-peer",
                 "--address",
-                "127.0.0.1:11950",
+                "127.0.0.1:38450",
                 "--role",
                 "worker",
             ],
