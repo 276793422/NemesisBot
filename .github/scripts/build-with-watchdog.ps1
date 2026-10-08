@@ -36,6 +36,13 @@ $p = Start-Process -FilePath $env:ComSpec -ArgumentList '/c', $BuildCommand `
 # 不先触碰 .Handle 的话 .ExitCode 退出后仍是 null（PS 经典坑，exit 0 假绿）
 $null = $p.Handle
 "[$Tag] started pid=$($p.Id) cmd=$BuildCommand"
+# 中止/退出后都要打印输出尾部——否则被杀时无法知道命令当时进行到哪
+function Show-Tails {
+    "[$Tag] ---- stderr tail ----"
+    Get-Content $err -Tail $TailErr | ForEach-Object { "[$Tag][err] $_" }
+    "[$Tag] ---- stdout tail ----"
+    Get-Content $out -Tail $TailOut | ForEach-Object { "[$Tag] $_" }
+}
 while (-not $p.HasExited) {
     Start-Sleep -Seconds $PollSecs
     $os = Get-CimInstance Win32_OperatingSystem
@@ -49,17 +56,16 @@ while (-not $p.HasExited) {
     if ($el -ge $MaxMinutes) {
         taskkill /T /F /PID $p.Id | Out-Null
         "[$Tag] ABORT max-time ${MaxMinutes}min exceeded"
+        Show-Tails
         exit 1
     }
     if ($freeCommitMb -lt $FreeCommitFloorMb -or $freeRamMb -lt $FreeRamFloorMb -or $freeDiskMb -lt $FreeDiskFloorMb) {
         taskkill /T /F /PID $p.Id | Out-Null
         "[$Tag] ABORT resource floor breach: free_commit=${freeCommitMb}MB free_ram=${freeRamMb}MB free_disk=${freeDiskMb}MB (floors ${FreeCommitFloorMb}/${FreeRamFloorMb}/${FreeDiskFloorMb}MB)"
+        Show-Tails
         exit 2
     }
 }
 "[$Tag] exited code=$($p.ExitCode) after $([int]$sw.Elapsed.TotalMinutes)min"
-"[$Tag] ---- stderr tail ----"
-Get-Content $err -Tail $TailErr | ForEach-Object { "[$Tag][err] $_" }
-"[$Tag] ---- stdout tail ----"
-Get-Content $out -Tail $TailOut | ForEach-Object { "[$Tag] $_" }
+Show-Tails
 exit $p.ExitCode
