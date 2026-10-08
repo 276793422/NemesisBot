@@ -733,6 +733,74 @@ fn test_task_started_marks_dispatch_running() {
     assert!(!ok3, "来源与派发 worker 不匹配应被拒");
 }
 
+// claim 竞速（T43 实证）：dispatch_issue_core 的派发行在 submit ACK 之后
+// 才落库，空闲 worker 的 started 上报可跑赢插行——此刻任务正在执行，
+// 必须回 UNAVAILABLE（worker 退避重报）而不是 VALIDATION（永久拒绝）。
+// 行已存在但状态/worker 不符才维持 VALIDATION。
+#[test]
+fn test_task_started_row_missing_is_unavailable_not_validation() {
+    let (store, _dir) = temp_store("task-started-race");
+    let deps = make_deps(store.clone(), quota(8));
+    let actor = Actor::admin("test");
+
+    // 行不存在（claim 竞速窗口）→ UNAVAILABLE，可重试。
+    let payload = serde_json::json!({
+        "v": 1, "ns": "task", "op": "started", "corr_id": "r1",
+        "_rpc": { "from": "node-b" },
+        "body": { "task_id": "tk-not-yet-claimed" }
+    });
+    let (ok, code, _) = parse_reply(handle_nb_bus(&deps, payload));
+    assert!(!ok, "行未落库时 started 不应成功");
+    assert_eq!(
+        code.as_deref(),
+        Some("unavailable"),
+        "claim 竞速必须回 UNAVAILABLE（worker 据此重报）"
+    );
+
+    // 竞速窗口闭合（行落库）→ 同一 task_id 重报成功（worker 重试路径）。
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "race".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .insert_dispatch("tk-not-yet-claimed", issue.id, "node-b", &actor)
+        .unwrap();
+    let payload_retry = serde_json::json!({
+        "v": 1, "ns": "task", "op": "started", "corr_id": "r2",
+        "_rpc": { "from": "node-b" },
+        "body": { "task_id": "tk-not-yet-claimed" }
+    });
+    let (ok2, code2, _) = parse_reply(handle_nb_bus(&deps, payload_retry));
+    assert!(ok2, "行落库后的重报应成功（竞速自愈）");
+    assert_eq!(code2, None);
+
+    // 行已存在但已终态（done）→ VALIDATION（永久拒绝，不可重试）。
+    let issue3 = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "done".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .insert_dispatch("tk-done", issue3.id, "node-b", &actor)
+        .unwrap();
+    store.finish_dispatch("tk-done", "done").unwrap();
+    let payload_done = serde_json::json!({
+        "v": 1, "ns": "task", "op": "started", "corr_id": "r3",
+        "_rpc": { "from": "node-b" },
+        "body": { "task_id": "tk-done" }
+    });
+    let (ok3, code3, _) = parse_reply(handle_nb_bus(&deps, payload_done));
+    assert!(!ok3, "终态单的 started 应被拒");
+    assert_eq!(
+        code3.as_deref(),
+        Some("validation"),
+        "终态拒绝是永久的，必须不是 UNAVAILABLE"
+    );
+}
+
 // ===========================================================================
 // Coverage 追加（2026-09-24）：master handler 入口/校验臂、delivery.files
 // 全链（校验矩阵 + 落盘 + INTERNAL 臂）、额度拒绝映射、wake 计划投影与

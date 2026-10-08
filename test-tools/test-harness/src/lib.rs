@@ -27,16 +27,19 @@ use tokio_tungstenite::tungstenite::Message;
 // ---------------------------------------------------------------------------
 
 /// TestAIServer 监听端口（runner 启动参数与被测 gateway 的 model base_url
-/// 共用此值，三方保持一致）。默认 8080；测试机该端口被外部程序占用时用
+/// 共用此值，三方保持一致）。默认 37105（2026-09-30 端口隔离迁移：<49152 避开
+/// Windows 动态端口范围与他人 8080 TestAIServer 的碰撞面）；被外部程序占用时用
 /// TESTAI_PORT 环境变量整体改道（如 `TESTAI_PORT=18081 cargo run -p integration-test`）。
 pub fn ai_server_port() -> u16 {
     std::env::var("TESTAI_PORT")
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
-        .unwrap_or(8080)
+        .unwrap_or(37105)
 }
-pub const WEB_PORT: u16 = 49000;
-pub const WS_PORT: u16 = 49000;
+/// 37xxx 隔离段（<49152，动态端口范围外）：脱离他人 49000/49001 实例与
+/// ghost socket 集（49001/18790）。
+pub const WEB_PORT: u16 = 37300;
+pub const WS_PORT: u16 = 37300;
 /// Gateway/health port for spawned gateways. NOT 18790 — that value is the
 /// production gateway default (GatewayConfig.port) and this dev machine has a
 /// ghost socket orphaned on it (kernel LISTEN with no owning PID; TCP connect
@@ -44,6 +47,117 @@ pub const WS_PORT: u16 = 49000;
 /// 18799 verified free (18791-18796 belong to e2e-tests).
 pub const HEALTH_PORT: u16 = 18799;
 pub const AUTH_TOKEN: &str = "276793422";
+
+// ---------------------------------------------------------------------------
+// Port pre-flight（fail-fast，T41 劫持教训的永久闭环）
+// ---------------------------------------------------------------------------
+
+/// 单个端口占用条目（netstat -ano 解析所得）。
+#[derive(Debug, Clone)]
+pub struct PortOccupant {
+    pub port: u16,
+    pub proto: String,
+    pub state: String,
+    pub pid: String,
+}
+
+/// 解析 `netstat -ano`，返回目标端口在 TCP+UDP 上的全部占用行。
+///
+/// UDP 双绑在 Windows 上是**劫持**不是共享（T41 实证：SO_REUSEADDR 下 datagram
+/// 只投一个 socket）——任何占用行都算数，不区分 LISTEN/ESTABLISHED。
+/// 中文系统的 netstat 输出是 GBK：表头乱码不影响解析（按空白切列，
+/// 协议/地址/PID 列均为 ASCII/数字）。
+pub fn scan_port_occupants(ports: &[u16]) -> Vec<PortOccupant> {
+    let Ok(output) = std::process::Command::new("netstat")
+        .args(["-ano"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut found = Vec::new();
+    for line in text.lines() {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        // 形态：TCP/UDP <local> <remote> [state] <pid>（UDP 无 state 列）
+        if cols.len() < 3 {
+            continue;
+        }
+        let (proto, local, pid) = (cols[0], cols[1], cols[cols.len() - 1]);
+        if proto != "TCP" && proto != "UDP" {
+            continue;
+        }
+        let Some((_ip, port_str)) = local.rsplit_once(':') else {
+            continue;
+        };
+        let Ok(port) = port_str.parse::<u16>() else {
+            continue;
+        };
+        if !ports.contains(&port) || pid.parse::<u32>().is_err() {
+            continue;
+        }
+        let state = if cols.len() >= 5 {
+            cols[cols.len() - 2].to_string()
+        } else {
+            "-".to_string()
+        };
+        found.push(PortOccupant {
+            port,
+            proto: proto.to_string(),
+            state,
+            pid: pid.to_string(),
+        });
+    }
+    found
+}
+
+/// 占用明细的人类可读报告：PID → 进程名尽力解析；tasklist 查无此 PID = ghost。
+fn pid_process_name(pid: &str) -> Option<String> {
+    let output = std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let first = text.lines().find(|l| l.trim_start().starts_with('"'))?;
+    first
+        .split(',')
+        .next()
+        .map(|s| s.trim_matches('"').to_string())
+}
+
+/// 占用条目 → 多行报告（进程名 / ghost 标注），供 fail-fast 消息与日志用。
+pub fn port_occupant_report(occ: &[PortOccupant]) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for o in occ {
+        let name = match pid_process_name(&o.pid) {
+            Some(n) => format!("proc={n}"),
+            None => "proc=<GHOST — owning PID gone, 需重启或换端口>".to_string(),
+        };
+        lines.push(format!(
+            "  {} :{} {} {} [{}]",
+            o.proto, o.port, o.state, name, o.pid
+        ));
+    }
+    lines.join("\n")
+}
+
+/// fail-fast 端口预检：清理后仍有占用 → Err(明细)（调用方退出非 0）。
+///
+/// 放在 `cleanup_ports` 之后调用：自家残留已被清掉，剩余占用者即是
+/// 他人实例或 ghost——当场报「端口 ← PID ← 进程名」供协调，不再让它
+/// 变成 bind 劫持 / 握手悬挂式的神秘失败。
+pub fn precheck_ports(ports: &[u16]) -> Result<(), String> {
+    let occ = scan_port_occupants(ports);
+    if occ.is_empty() {
+        return Ok(());
+    }
+    let mut ports_sorted: Vec<u16> = occ.iter().map(|o| o.port).collect();
+    ports_sorted.sort_unstable();
+    ports_sorted.dedup();
+    Err(format!(
+        "端口预检失败——以下端口清理后仍被占用（协调占用者或换端口；GHOST 需重启）:\n{}",
+        port_occupant_report(&occ)
+    ))
+}
 
 // ---------------------------------------------------------------------------
 // Process management
