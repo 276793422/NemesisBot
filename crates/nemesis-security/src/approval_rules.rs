@@ -42,6 +42,13 @@ fn is_command_op(op: &str) -> bool {
     op == "process_exec" || op == "process_spawn"
 }
 
+/// 安装类操作（装代码进系统）：target 是来源目录/URL，不是载荷内容——
+/// 同一 target 明天可以放进不同 sha 的载荷，「目录记忆」对装任意代码
+/// 天然不安全（2026-09-30 复查 #12）。
+fn is_install_op(op: &str) -> bool {
+    op == "plugins.install" || op == "skills.install"
+}
+
 /// 由操作 + target 生成规则 pattern（单一真相源：写入侧与展示侧都用它）。
 ///
 /// exec 类 → B5 归约前缀且**恒带 ` *`**（`cargo test --release` →
@@ -74,9 +81,14 @@ pub fn pattern_for(op: &str, target: &str) -> String {
 /// 层级安全门：该 (op, risk) 组合是否允许规则自动放行/写规则。
 ///
 /// 非 CRITICAL 一律允许；CRITICAL 只有 `process_exec` 豁免（前缀 pattern
-/// 自带作用域）。`risk` 是 `DangerLevel` 的字符串形态（`CRITICAL` 等），
-/// 与审批卡/pending 条目里的字符串同源。
+/// 自带作用域）；**安装类永不入规则**（消费侧 find_auto_allow 已对
+/// plugins.install/skills.install 摘除，本门再拒绝写入侧——双向夹死，
+/// 历史遗留 install 规则成为死信）。`risk` 是 `DangerLevel` 的字符串形态
+/// （`CRITICAL` 等），与审批卡/pending 条目里的字符串同源。
 pub fn rule_permitted_for(op: &str, risk: &str) -> bool {
+    if is_install_op(op) {
+        return false;
+    }
     risk != "CRITICAL" || is_command_op(op)
 }
 

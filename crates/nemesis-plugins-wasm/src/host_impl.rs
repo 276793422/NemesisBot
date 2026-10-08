@@ -277,20 +277,28 @@ impl CallCaps {
     }
 
     fn log_line(&self, level: &str, message: &str) {
+        // 凭据脱敏先于截断（2026-09-30 复查 #3）：先截断可能把凭据切成两半
+        // 各自漏检——顺序必须是先脱敏后截断。secret-get 有「observe 帧内
+        // 拒答」的帧纪律，但 tool 帧里 guest 完全可以把拿到的原文 log 出来
+        // ——环形缓冲经 WSAPI wasm.logs 直达 Dashboard，同属出站面。脱敏
+        // 不写审计链：log 频度 guest 可控，刷审计链本身就是 DoS 面；工具
+        // 输出的出站凭据复扫在 bridge 侧承担审计（plugin_bridge
+        // ::rescan_output_credentials）。
+        let redacted = credential_scanner().redact_content(message);
         let truncated: String = {
             let max = self.limits.log_line_max_bytes;
-            if message.len() > max {
+            if redacted.len() > max {
                 // 预算按字节、切点必须落在字符边界——字节判据命中而字符数
                 // 不足时，裸字节切点会切进多字节 UTF-8 序列中间 panic
                 //（2026-09-29 交付审查 M2，guest 可控输入直达）。
                 let keep = max / 4 * 3;
-                let mut cut = keep.min(message.len());
-                while cut > 0 && !message.is_char_boundary(cut) {
+                let mut cut = keep.min(redacted.len());
+                while cut > 0 && !redacted.is_char_boundary(cut) {
                     cut -= 1;
                 }
-                format!("{}…[截断]", &message[..cut])
+                format!("{}…[截断]", &redacted[..cut])
             } else {
-                message.to_string()
+                redacted
             }
         };
         self.logs.push(PluginLogLine {
@@ -299,6 +307,15 @@ impl CallCaps {
             message: truncated,
         });
     }
+}
+
+/// 凭据脱敏 Scanner 单例（log_line 专用；pattern 集内部已有 OnceLock 缓存，
+/// 这里省的是结构体构造——log 每行都走，别做重复功）。恒开无视
+/// credential 开关：与 bridge 出站复扫同一口径，这是宿主自保不是常规检测层。
+fn credential_scanner() -> &'static nemesis_security::credential::Scanner {
+    static SCANNER: std::sync::OnceLock<nemesis_security::credential::Scanner> =
+        std::sync::OnceLock::new();
+    SCANNER.get_or_init(|| nemesis_security::credential::Scanner::new(true, "block"))
 }
 
 // ---------------------------------------------------------------------------
