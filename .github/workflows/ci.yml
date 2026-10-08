@@ -210,26 +210,18 @@ jobs:
     # 给冷构建留够预算（120 是 ET 同款 job 的既有额度）。
     timeout-minutes: 120
     env:
-      # 2026-10-08 编译期 runner 压死战役：wasmtime 家族升级后 nemesisbot debug
-      # 编译把 16GB runner 压死，同签名 "hosted runner lost communication" 六连
-      # （挂点恒定 51-55min，与本步 Build nemesisbot bin 及 nextest 的测试目标
-      # 编译同源）。首轮双杠杆（profile.dev line-tables-only + JOBS:3）无效后
-      # 升级三杠杆：
-      #   1. CARGO_BUILD_JOBS=2 —— 峰值并发编译内存再砍 1/3；
-      #   2. CARGO_INCREMENTAL=0 —— CI 无增量复用收益，白付 rustc 增量数据结构
-      #      的大头内存+磁盘（CI 惯例就是关）；
-      #   3. 重编译步全部换 .github/scripts/build-with-watchdog.ps1 包装 —— 每
-      #      15s 流式打 free RAM/commit/磁盘曲线到步骤日志，跌破地板树杀软着陆
-      #      （退 2）而非 runner 硬死失联：要么绿，要么留下资源曲线数据。
-      #   4. CARGO_PROFILE_DEV_DEBUG=0（第四轮 2026-10-08）：三轮后本地实测
-      #      line-tables-only 下 rustc 峰值 ~3GB / link.exe 仅 ~1.6GB，16GB
-      #      runner 正常余量充足仍失联，且同镜像同命令两 job 一死一活——
-      #      判定为宿主机劣化（邻居挤压）随机撞上编译峰值；把峰值再压一档
-      #      （rustc ~2GB / link ~0.8GB，无 PDB）让劣化宿主也撞不到线。
-      #      代价：CI 丢 backtrace 的 file:line（本地 line-tables-only 不变）。
-      CARGO_BUILD_JOBS: 2
+      # 2026-10-08~09 编译期 runner 失联战役（十连死全记录见 docs 报告 §六~§十）：
+      # 冷编 nemesisbot bin 步内 runner 硬死（"hosted runner lost communication"，
+      # 46-55min 恒定窗口，日志 BlobNotFound）。十轮排除法已证与下列全部无关：
+      # debuginfo 三档 / JOBS 4-3-2 / 增量开关 / win25+win22 双镜像 / Cargo.lock
+      # 铡锁对照（wasmtime 48.0.5↔48.0.3 同死，R5）。矛头指向车队侧慢性失联
+      # （官方口径即重试）。剩余可用杠杆 = 墙钟压缩滑出死亡窗口：
+      #   - JOBS 回默认 4（内存理论已死，压并发只拖慢编译、拉长暴露时间）；
+      #   - 保 CARGO_INCREMENTAL=0（CI 惯例）；debuginfo 走根 Cargo.toml 的
+      #     line-tables-only；
+      #   - bin 构建拆两段（库段 → bin 段）看门狗包装：单步墙钟减半，仍失联时
+      #     两段时间线直接点名触发面（库段 vs 最终链接）。
       CARGO_INCREMENTAL: 0
-      CARGO_PROFILE_DEV_DEBUG: 0
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -300,9 +292,15 @@ jobs:
       #   b. nextest ≥0.9.1xx 默认 fail-fast（一处红取消剩余），与本 job 全量
       #      体检语义相反——必须显式 --no-fail-fast。
       # nextest 不跑 doctests（本仓库无实质 doctest 断言，无覆盖损失）。
+      # 构建拆两段（2026-10-09 第六轮，见 env 块注释）：库段编 workspace 其余
+      # 全部（顺带 integration-test 等工具 bin），bin 段只链最终 exe。
+      - name: Build workspace libs (watchdog)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag cibuild1 -MaxMinutes 60 -BuildCommand "cargo build --workspace --exclude nemesisbot"
+
       - name: Build nemesisbot bin (live 批 spawn 依赖, watchdog)
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag cibuild -MaxMinutes 60 -BuildCommand "cargo build -p nemesisbot"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag cibuild2 -MaxMinutes 30 -BuildCommand "cargo build -p nemesisbot"
 
       - name: cargo nextest run --workspace (watchdog)
         # nextest 步前半段同样是全量测试目标编译（六连死的同源风险面），
