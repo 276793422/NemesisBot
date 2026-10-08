@@ -883,6 +883,43 @@ async fn d3_switch_skips_historically_used_workers() {
     assert_eq!(choice, RedispatchTargetChoice::Switch("node-c".to_string()));
 }
 
+/// file: 锚点单的换节点死锁回归锁（2026-10-08 NB-4 实证）：即使有匹配的
+/// 在线远端 worker，连续 ≥2 次同 worker 也必须回落 Same（拓扑约束——远端
+/// 候选全被 rank_dispatch_candidates 过滤，Switch 产物必被派发拓扑闸拒绝
+/// 成死锁停车），且不得误伤无锚点单的换节点面。
+#[tokio::test]
+async fn d3_file_anchor_issue_stays_same_despite_online_peers() {
+    let (deps, _ws) = review_deps("d3-file-anchor");
+    // 在线 worker 存在（旧代码此时会 Switch 出非法远端目标 → 死锁）。
+    deps.cluster.handle_discovered_node(
+        "node-b",
+        "Node-B",
+        vec!["127.0.0.1".to_string()],
+        19004,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "standard",
+    );
+    let issue = issue_in_review(
+        &deps.store,
+        "拓扑受限单",
+        "[CHECK] file:deliverables/spec.md exists",
+        "交付",
+    );
+    seed_dispatch(&deps.store, "t-d3-9", issue.id, "node-c");
+    seed_dispatch(&deps.store, "t-d3-10", issue.id, "node-c");
+    let dispatches = deps.store.list_dispatches(issue.id).unwrap();
+    let choice = pick_redispatch_target(&deps, &issue, &dispatches).unwrap();
+    assert_eq!(
+        choice,
+        RedispatchTargetChoice::Same("node-c".to_string()),
+        "file: 锚点单必须维持本节点重派，不得 Switch 远端"
+    );
+    assert!(!choice.is_switch());
+}
+
 // ---------- P34：重派决策量化（worker × 任务类型指纹三档）----------
 //
 // 纯逻辑（分桶/三档边界/稳定分区）与记账幂等在 nemesis-board
@@ -4458,6 +4495,84 @@ async fn anchor_ac_forces_selfcheck_even_when_global_switch_off() {
             .collect::<Vec<_>>()
     );
     assert!(!deps.selfcheck.has_inflight(plain.id));
+}
+
+// ===== 降级交付游标不得被验收流程评论抢走（2026-10-08 NB-21 子单 22）=====
+// worker 非结构化交付走 write_back 降级臂落 Comment 形态；F6 自检挂起评论
+//（author=评审节点，同为 agent+Comment 形态）晚于交付写入时，二段验收的
+// worker_report 游标曾被它抢走 → 锚点对「⏳ 验收暂缓…」文本判定必 FAIL，
+// 重派/换节点均不可自愈（三连败转人工）。修复：fallback 限定作者 = 最新
+// 派发行 worker_id（write_back 落库与派发行逐字同源）。
+#[tokio::test]
+async fn degraded_delivery_cursor_survives_review_meta_comments() {
+    use nemesis_board::{Actor, CommentType, IssueStatus, NewComment, NewIssue};
+
+    let (deps, _ws) = review_deps("degraded-cursor-meta");
+    let issue = deps
+        .store
+        .create_issue(NewIssue {
+            title: "降级交付游标回归".to_string(),
+            description: String::new(),
+            priority: 2,
+            acceptance_criteria: Some("算式验证\n[CHECK] re:42".to_string()),
+            creator: Actor::agent("node-a"),
+            ..Default::default()
+        })
+        .unwrap();
+    let reviewer = Actor::agent("node-a");
+    deps.store
+        .transition_issue(issue.id, IssueStatus::InProgress, &reviewer)
+        .unwrap();
+    deps.store
+        .transition_issue(issue.id, IssueStatus::InReview, &reviewer)
+        .unwrap();
+    // 降级交付：write_back 无格式臂形态（ctype=Comment + 汇报前缀），
+    // 作者 = 派发执行者 node-b（与派发行 worker_id 逐字同源）。
+    deps.store
+        .add_comment(NewComment {
+            issue_id: issue.id,
+            author: Actor::agent("node-b"),
+            content: "✅ worker 汇报完成：\n\n结果是 42".to_string(),
+            parent_id: None,
+            ctype: CommentType::Comment,
+        })
+        .unwrap();
+    seed_dispatch(&deps.store, "t-degraded-cursor-1", issue.id, "node-b");
+    // 验收流程评论晚于交付写入（= F6 挂起后的二段验收现场），走真实出口。
+    post_review_comment(
+        &deps.store,
+        issue.id,
+        &deps.cluster,
+        "⏳ 验收暂缓（board.review.selfcheck）：评审 agent 需要更多证据（测试模拟 NB-21 现场文本）",
+    )
+    .unwrap();
+    attach_loop(
+        &deps,
+        Arc::new(CapturingLlm {
+            prompts: std::sync::Mutex::new(Vec::new()),
+            reply: r#"{"verdict":"PASS","reasons":["锚点已过且结论明确"]}"#.to_string(),
+        }),
+    );
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("二段评审闭环");
+    assert!(reviewed);
+    let comments = deps.store.list_comments(issue.id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("客观锚点检查通过")),
+        "worker_report 游标必须保持 worker 交付（锚点对「结果是 42」判定）: {:?}",
+        comments.iter().map(|c| &c.content).collect::<Vec<_>>()
+    );
+    assert!(
+        !comments
+            .iter()
+            .any(|c| c.content.contains("客观锚点检查失败")),
+        "验收流程评论不得冒充 worker 汇报抢游标: {:?}",
+        comments.iter().map(|c| &c.content).collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test]

@@ -233,6 +233,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             let self_node_id = cluster.node_id().to_string();
             let sweep_cluster_slot = sweep_cluster_slot.clone();
             let sweep_last = sweep_last.clone();
+            let home_for_rebalance = home.clone();
             // 真机缺陷（2026-09-11 双端双平台复现）：本闭包在 std 线程
             // discovery-udp-listen 上触发——该线程无 tokio reactor，闭包内
             // 直接 tokio::spawn 会 panic 并炸死监听线程 → announce 接收全哑
@@ -262,6 +263,9 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                         let store = store_for_hook.clone();
                         let cluster = sweep_cluster_slot.get().unwrap().clone();
                         let node_id = node_id.to_string();
+                        // 外层闭包是 Fn（每次 announce 都调用），async move
+                        // 块须自持 home 副本（PathBuf 非 Copy，不能搬闭包捕获）。
+                        let home_for_rebalance = home_for_rebalance.clone();
                         discovery_rt.spawn(async move {
                             if let Some(store) = store.as_ref() {
                                 let actor = nemesis_board::Actor::system("board");
@@ -274,13 +278,20 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                                     );
                                 }
                                 // D0b（goal P2）重平衡：announce 节点有空闲 slot
-                                // 时，从超载 worker（在途 > 上限）偷排队单转派
-                                // 过来——新设备上线即有活接（准入控制留量的
-                                // 承接半环）。
+                                // 时，从超载 worker（活跃 = 在途+排队 > cap）偷
+                                // 排队单转派过来——新设备上线即有活接（准入控制
+                                // 留量的承接半环）。board_cfg 每次 announce 现读
+                                // config.json（2026-10-08 根修⑤：此前传 None →
+                                // cap 恒按缺省 1 判定，worker_max_inflight 配置
+                                // 在重平衡面失效；现读同时让热改即时生效）。读
+                                // 失败按无配置处理（cap 回落 1，与旧行为一致）。
+                                let board_flags =
+                                    crate::board_review::load_board_flags(&home_for_rebalance)
+                                        .ok();
                                 let moved = nemesis_web::handlers::board::rebalance_queued_to_worker(
                                     store,
                                     &cluster,
-                                    None,
+                                    board_flags.as_ref(),
                                     &node_id,
                                     &actor,
                                 )

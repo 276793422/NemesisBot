@@ -8060,3 +8060,206 @@ fn confirm_plan_writes_downgrade_comments_and_keeps_valid_professions() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ===========================================================================
+// file: 锚点拓扑约束回归锁（2026-10-08 NB-4/NB-5/NB-6 根修）。谓词矩阵在
+// nemesis-board anchor/tests.rs；此处钉三个决策面的行为：重平衡不偷拓扑受
+// 限单 / 重派失败补偿评论 / 匹配器与兜底对 file: 锚点单返回空候选。
+// ===========================================================================
+
+/// 重平衡偷单过滤：超载源两条排队单，file: 锚点的必须原地保留（转派远端
+/// 必被拓扑闸拒绝且 cancel 先行不可逆），无锚点的照常搬走——过滤必须是
+/// 选择性的，不是一刀切。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn w5_rebalance_skips_file_anchor_queued_but_moves_plain() {
+    let dir = unique_dir("w5-rb-file");
+    let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
+    let actor = Actor::admin("w5");
+    let cluster = offline_cluster(&dir, "w5-rbf-c");
+    w5_inject_rpc(&cluster);
+    w5_online_peer(&cluster, "node-tgt", &[], &[]);
+    let cfg = nemesis_config::BoardFlagConfig {
+        worker_max_inflight: 1,
+        ..Default::default()
+    };
+
+    let mk = |t: &str, ac: Option<&str>| {
+        store
+            .create_issue(nemesis_board::NewIssue {
+                title: t.into(),
+                acceptance_criteria: ac.map(str::to_string),
+                ..Default::default()
+            })
+            .unwrap()
+    };
+    // 甲：file: 锚点（拓扑受限）；乙：无锚点（可转派）。同挂超载源。
+    let file_anchored = mk(
+        "拓扑受限甲",
+        Some("[CHECK] file:deliverables/plan.md exists"),
+    );
+    let plain = mk("普通乙", None);
+    store
+        .insert_dispatch("w5-rbf-x", file_anchored.id, "node-src", &actor)
+        .unwrap();
+    store
+        .insert_dispatch("w5-rbf-y", plain.id, "node-src", &actor)
+        .unwrap();
+
+    let moved =
+        super::rebalance_queued_to_worker(&store, &cluster, Some(&cfg), "node-tgt", &actor).await;
+    assert_eq!(
+        moved, 1,
+        "file: 锚点单跳过、无锚点单搬走（free=1 只搬一单）"
+    );
+
+    // 甲：排队派发原地保留（仍活跃、未被 cancel、无补偿评论——它根本没
+    // 进偷单流程）。
+    assert!(
+        store.has_active_dispatch(file_anchored.id).unwrap(),
+        "file: 锚点排队单必须原地保留"
+    );
+    let kept = store.list_dispatches(file_anchored.id).unwrap();
+    assert!(
+        kept.iter().any(|d| d.task_id == "w5-rbf-x"),
+        "原派发不得被取消: {kept:?}"
+    );
+    assert!(
+        !store
+            .list_comments(file_anchored.id)
+            .unwrap()
+            .iter()
+            .any(|c| c.content.contains("重平衡")),
+        "拓扑跳过不是异常，不得落补偿评论"
+    );
+
+    // 乙：正常重平衡（新派发挂 node-tgt + ↳ 评论）。
+    assert!(store.has_active_dispatch(plain.id).unwrap());
+    assert!(
+        store
+            .list_comments(plain.id)
+            .unwrap()
+            .iter()
+            .any(|c| c.content.contains("转派至 node-tgt")),
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 重派失败补偿（NB-5/NB-6 事故面的最小重演）：排队单被 cancel 后重派因
+/// 状态闸失败（issue 已 Blocked）→ moved=0 + ⛔ 系统评论诚实留痕 + issue
+/// 无活跃派发——「无声死透」必须变成「可见停车」。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn w5_rebalance_failure_leaves_compensation_comment() {
+    let dir = unique_dir("w5-rb-comp");
+    let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
+    let actor = Actor::admin("w5");
+    let cluster = offline_cluster(&dir, "w5-rbc-c");
+    w5_inject_rpc(&cluster);
+    w5_online_peer(&cluster, "node-tgt", &[], &[]);
+    let cfg = nemesis_config::BoardFlagConfig {
+        worker_max_inflight: 1,
+        ..Default::default()
+    };
+
+    // 垫行：file: 锚点排队单把 node-src 推成超载（load 2 > cap 1）且自身
+    // 被拓扑过滤跳过（不消耗 free）——补偿测试只需关注 Blocked 单。
+    let shim = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "垫行（拓扑受限）".into(),
+            acceptance_criteria: Some("[CHECK] file:deliverables/plan.md exists".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .insert_dispatch("w5-rbc-shim", shim.id, "node-src", &actor)
+        .unwrap();
+
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "补偿面".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .insert_dispatch("w5-rbc-x", issue.id, "node-src", &actor)
+        .unwrap();
+    // Backlog → Blocked 合法转移：制造「排队单在、issue 不可派」的组合
+    // （真机形态：cancel 落库后重派被状态闸拒绝）。
+    store
+        .transition_issue(issue.id, IssueStatus::Blocked, &actor)
+        .unwrap();
+
+    let moved =
+        super::rebalance_queued_to_worker(&store, &cluster, Some(&cfg), "node-tgt", &actor).await;
+    assert_eq!(moved, 0, "重派失败不得计入 moved");
+
+    // 原排队派发已被 cancel（不可逆），issue 无活跃派发。
+    let dispatches = store.list_dispatches(issue.id).unwrap();
+    assert!(
+        dispatches.iter().all(|d| d.task_id != "w5-rbc-x"
+            || d.state == nemesis_board::models::dispatch_state::CANCELLED),
+        "原排队派发必须已终态: {dispatches:?}"
+    );
+    assert!(!store.has_active_dispatch(issue.id).unwrap());
+
+    // 补偿评论：失败原因 + 现状 + 可重派指引。
+    let comments = store.list_comments(issue.id).unwrap();
+    let comp = comments
+        .iter()
+        .find(|c| c.content.contains("D0b 重平衡转派失败"))
+        .expect("必须有 ⛔ 补偿评论");
+    assert!(
+        comp.content.contains("node-src"),
+        "评论须带原 worker: {comp:?}"
+    );
+    assert!(
+        comp.content.contains("已被取消且无法自动恢复"),
+        "评论须诚实说明不可逆: {comp:?}"
+    );
+    // 垫行：拓扑跳过、原地保留、无补偿评论。
+    assert!(store.has_active_dispatch(shim.id).unwrap());
+    assert!(
+        !store
+            .list_comments(shim.id)
+            .unwrap()
+            .iter()
+            .any(|c| c.content.contains("重平衡"))
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 匹配器与兜底两个决策面对 file: 锚点单必须返回空（远端候选注定被拓扑
+/// 闸拒绝，不得产出非法目标）；无锚点对照臂照常产出候选。
+#[cfg(feature = "cluster")]
+#[test]
+fn w5_rank_and_fallback_return_empty_for_file_anchor_issue() {
+    let dir = unique_dir("w5-rank-file");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let cluster = offline_cluster(&dir, "w5-rf-c");
+    w5_inject_rpc(&cluster);
+    w5_online_peer(&cluster, "node-qa", &["qa"], &[]);
+
+    let file_anchored = bare_issue(Some("qa"), &[]);
+    let mut anchored = file_anchored.clone();
+    anchored.acceptance_criteria = Some("[CHECK] file:deliverables/spec.md exists".to_string());
+
+    // rank_dispatch_candidates：file: 锚点 → 空候选（即使匹配节点在线）。
+    assert!(
+        super::rank_dispatch_candidates(&store, &cluster, &anchored).is_empty(),
+        "file: 锚点单必须返回空候选"
+    );
+    // 对照：同单去掉锚点 → 候选恢复（过滤是锚点驱动的，不是别的什么）。
+    assert_eq!(
+        super::rank_dispatch_candidates(&store, &cluster, &file_anchored),
+        vec!["node-qa".to_string()]
+    );
+
+    // pick_fallback_target：file: 锚点 → None（兜底产物全是远端节点）。
+    let cfg = nemesis_config::BoardFlagConfig::default();
+    assert!(super::pick_fallback_target(Some(&cfg), &store, &cluster, &anchored).is_none());
+    // 对照：无锚点单兜底照常（在线节点存在 → Some）。
+    assert!(super::pick_fallback_target(Some(&cfg), &store, &cluster, &file_anchored).is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}

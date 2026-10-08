@@ -226,8 +226,18 @@ pub(crate) fn pick_redispatch_target(
             Ok(RedispatchTargetChoice::Switch(next))
         }
         None => {
+            // 候选为空的两因区分（2026-10-08 NB-4 根修的可观测面）：file:
+            // 锚点单是拓扑约束过滤（永远如此，不是瞬态），其余是候选确实
+            // 不在线（瞬态，节点上线后换节点面恢复）。
+            let why = if nemesis_board::anchor::has_file_anchor(
+                issue.acceptance_criteria.as_deref().unwrap_or(""),
+            ) {
+                "file: 锚点单只能本节点执行（拓扑约束，远端候选已过滤）"
+            } else {
+                "在线无其他候选节点"
+            };
             warn!(
-                "[BoardReview] issue {} 连续 {consecutive} 次同 worker {last} 且在线无其他候选节点，维持原目标重派",
+                "[BoardReview] issue {} 连续 {consecutive} 次同 worker {last}，{why}，维持原目标重派",
                 issue.id
             );
             Ok(RedispatchTargetChoice::Same(last))
@@ -600,12 +610,10 @@ async fn review_issue(
 
     // ---- 组装评审输入：worker 汇报 + 线程争议点 ----
     let comments = store.list_comments(issue_id)?;
+    let dispatches = store.list_dispatches(issue_id)?;
     // worker 汇报 = **最新**一次交付（重派轮次取新汇报，不拿首轮旧账）；
-    // 无结构化汇报时退最近的 agent 文本评论（诚实降级路径），再没有就
-    // 空串（评审 agent 见「未提供」自判）。
-    // worker 汇报 = **最新**一次交付（重派轮次取新汇报，不拿首轮旧账）；
-    // 无结构化汇报时退最近的 agent 文本评论（诚实降级路径），再没有就
-    // 空串（评审 agent 见「未提供」自判）。
+    // 无结构化汇报时退「最新派发执行者」的最近 agent 文本评论（诚实降级
+    // 路径），再没有就空串（评审 agent 见「未提供」自判）。
     // 任务卡回显不是交付（2026-09-12 UAT T30 双层实证）：回显模型把派发
     // 任务卡原样抄回当回复，文本里带着验收标准与上轮失败明细引文——锚点
     // 行原文可剥离（anchor.rs 自指防御），但引文散文里的裸词仍会二阶自
@@ -618,13 +626,22 @@ async fn review_issue(
         .rev()
         .find(|c| c.ctype == CommentType::Delivery && !is_card_echo(c))
         .cloned();
-    // worker 汇报 = 交付线程首评；无结构化汇报时退最近的 agent 文本评论
-    // （诚实降级路径），再没有就空串（评审 agent 见「未提供」自判）。
+    // 降级交付的作者必须 = 最新派发行的 worker_id（write_back 落库即用
+    // Actor::agent(&disp.worker_id)，逐字同源）：验收流程评论（挂起/FAIL/
+    // 换节点/转人工，author=评审节点）不得冒充 worker 汇报——2026-10-08
+    // NB-21 子单 22 三连败实证：F6 自检挂起评论晚于交付写入，二段验收的
+    // 游标被它抢走，锚点对「⏳ 验收暂缓…」文本判定必 FAIL，重派/换节点
+    // 均不可自愈。无派发记录（手工单）保留宽松回退——挂起取证需派发行，
+    // 该场景挂不起自检，流程评论不产生于评审输入组装之前。
+    let last_worker_id = dispatches.last().map(|d| d.worker_id.clone());
     let (delivery_id, worker_report) = match &delivery {
         Some(c) => (Some(c.id), c.content.clone()),
         None => {
             let latest = comments.iter().rev().find(|c| {
-                c.author.kind == "agent" && c.ctype == CommentType::Comment && !is_card_echo(c)
+                c.author.kind == "agent"
+                    && c.ctype == CommentType::Comment
+                    && !is_card_echo(c)
+                    && last_worker_id.as_deref().is_none_or(|w| c.author.id == w)
             });
             match latest {
                 Some(c) => (Some(c.id), c.content.clone()),
@@ -647,7 +664,6 @@ async fn review_issue(
         })
         .collect();
 
-    let dispatches = store.list_dispatches(issue_id)?;
     let round = dispatches.len().saturating_sub(1) as u64;
 
     // 转人工评论的 @人对象 = 创建者是人（admin）时 @ 创建者（impl-plan
