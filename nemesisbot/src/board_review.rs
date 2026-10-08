@@ -626,14 +626,18 @@ async fn review_issue(
         .rev()
         .find(|c| c.ctype == CommentType::Delivery && !is_card_echo(c))
         .cloned();
-    // 降级交付的作者必须 = 最新派发行的 worker_id（write_back 落库即用
-    // Actor::agent(&disp.worker_id)，逐字同源）：验收流程评论（挂起/FAIL/
-    // 换节点/转人工，author=评审节点）不得冒充 worker 汇报——2026-10-08
-    // NB-21 子单 22 三连败实证：F6 自检挂起评论晚于交付写入，二段验收的
-    // 游标被它抢走，锚点对「⏳ 验收暂缓…」文本判定必 FAIL，重派/换节点
-    // 均不可自愈。无派发记录（手工单）保留宽松回退——挂起取证需派发行，
-    // 该场景挂不起自检，流程评论不产生于评审输入组装之前。
+    // 降级交付的作者判定（2026-10-09 合并合流：两路独立根修取交集语义）
+    // ——验收流程评论（挂起/FAIL/换节点/转人工，author=评审节点）不得冒
+    // 充 worker 汇报抢交付槽：
+    // 1) 有派发记录：作者必须 = 最新派发行 worker_id（write_back 落库即
+    //    Actor::agent(&disp.worker_id)，逐字同源）——评审者暂缓/FAIL 意见
+    //    （NB-21 子单 22 三连败 + T30/T-MRG in_review 停车，同根）被身份
+    //    闸排除；本机单 worker==本节点 id 也天然正确（dispatch 到本节点
+    //    是合法形态，重平衡事故面 NB-4/5/6 全是本机单）。
+    // 2) 无派发记录（手工单）：宽松回退但排除评审者自身署名（无派发行
+    //    可依时只能靠身份排除；评审者 ⏳/FAIL 意见同样不是 worker 汇报）。
     let last_worker_id = dispatches.last().map(|d| d.worker_id.clone());
+    let self_node_id = deps.cluster.node_id();
     let (delivery_id, worker_report) = match &delivery {
         Some(c) => (Some(c.id), c.content.clone()),
         None => {
@@ -641,7 +645,10 @@ async fn review_issue(
                 c.author.kind == "agent"
                     && c.ctype == CommentType::Comment
                     && !is_card_echo(c)
-                    && last_worker_id.as_deref().is_none_or(|w| c.author.id == w)
+                    && match last_worker_id.as_deref() {
+                        Some(w) => c.author.id == w,
+                        None => c.author.id != self_node_id,
+                    }
             });
             match latest {
                 Some(c) => (Some(c.id), c.content.clone()),

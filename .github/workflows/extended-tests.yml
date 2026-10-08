@@ -160,6 +160,11 @@ jobs:
     name: Integration + cluster UAT (Windows)
     runs-on: windows-latest
     timeout-minutes: 120
+    env:
+      # 2026-10-08：同 ci.yml rust-test——dev 编译内存峰值压死 16GB runner
+      # （死点实证在本 job 的 Build nemesisbot (debug) 编译步内），降并发
+      # +profile.dev line-tables-only 双杠杆。
+      CARGO_BUILD_JOBS: 3
     steps:
       - name: Checkout code
         uses: actions/checkout@v5

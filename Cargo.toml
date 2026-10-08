@@ -252,6 +252,15 @@ lto = "thin"
 strip = "symbols"
 codegen-units = 16
 
+# dev/test: line-tables-only 调试信息（2026-10-08）。全量 debuginfo 下
+# nemesisbot 的 debug PDB 单文件 ~1GB，Windows link.exe 需在内存中撑起
+# 同量级 PDB 生成状态，叠加并行 rustc 把 16GB 的 CI hosted runner 压死
+# （wasmtime 家族升级后 debuginfo 膨胀，两 run 四次 job 均于编译期失联）。
+# line-tables-only 保留 backtrace 的 file:line，PDB/target 体积缩一个
+# 数量级（本地 target/debug 88GB 的历史包袱同源）。
+[profile.dev]
+debug = "line-tables-only"
+
 # iotsmall: aggressive size optimization for low-resource / IoT targets.
 # panic=abort drops unwind tables (~5%) — acceptable there because such
 # targets have no system tray. Opt-in via: cargo build --profile iotsmall
