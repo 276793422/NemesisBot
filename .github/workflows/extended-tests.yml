@@ -158,7 +158,10 @@ jobs:
 
   integration-windows:
     name: Integration + cluster UAT (Windows)
-    runs-on: windows-latest
+    # pin windows-2022：同 ci.yml rust-test——win25 20261004 镜像波次后编译期
+    # runner 六连死失联，与全部资源缓解措施无关；win22 无该波次嫌疑变更
+    # （WSL 停 2.x、OS 代际不同），作单变量对照实验。
+    runs-on: windows-2022
     timeout-minutes: 120
     env:
       # 2026-10-08 编译期 runner 压死三杠杆（同 ci.yml rust-test，见那边完整注释）：
