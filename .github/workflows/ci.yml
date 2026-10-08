@@ -198,14 +198,25 @@ jobs:
   rust-test:
     name: Rust full workspace tests (Windows)
     runs-on: windows-latest
-    timeout-minutes: 90
+    # 90→120（2026-10-08）：编译三杠杆（JOBS:2 + 无增量）换内存余量，编译变慢，
+    # 给冷构建留够预算（120 是 ET 同款 job 的既有额度）。
+    timeout-minutes: 120
     env:
-      # 2026-10-08：wasmtime 家族升级后 dev 编译内存膨胀（nemesisbot debug
-      # PDB ~1GB 量级），4 路并行 rustc + link.exe 峰值把 16GB hosted runner
-      # 压死（同签名 "hosted runner lost communication" 两 run 四连，挂点
-      # 52-55min 可复现）。降并发换稳定；配合根 Cargo.toml 的
-      # profile.dev debug=line-tables-only（PDB 减半）双杠杆。
-      CARGO_BUILD_JOBS: 3
+      # 2026-10-08 编译期 runner 压死战役：wasmtime 家族升级后 nemesisbot debug
+      # 编译把 16GB runner 压死，同签名 "hosted runner lost communication" 六连
+      # （挂点恒定 51-55min，与本步 Build nemesisbot bin 及 nextest 的测试目标
+      # 编译同源）。首轮双杠杆（profile.dev line-tables-only + JOBS:3）无效后
+      # 升级三杠杆：
+      #   1. CARGO_BUILD_JOBS=2 —— 峰值并发编译内存再砍 1/3；
+      #   2. CARGO_INCREMENTAL=0 —— CI 无增量复用收益，白付 rustc 增量数据结构
+      #      的大头内存+磁盘（CI 惯例就是关）；
+      #   3. 重编译步全部换 .github/scripts/build-with-watchdog.ps1 包装 —— 每
+      #      15s 流式打 free RAM/commit/磁盘曲线到步骤日志，跌破地板树杀软着陆
+      #      （退 2）而非 runner 硬死失联：要么绿，要么留下资源曲线数据。
+      # 若仍失联，下一档 = CARGO_PROFILE_DEV_DEBUG=0（彻底去 PDB，CI 丢 backtrace
+      # file:line，本地 line-tables-only 不受影响）。
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -276,11 +287,15 @@ jobs:
       #   b. nextest ≥0.9.1xx 默认 fail-fast（一处红取消剩余），与本 job 全量
       #      体检语义相反——必须显式 --no-fail-fast。
       # nextest 不跑 doctests（本仓库无实质 doctest 断言，无覆盖损失）。
-      - name: Build nemesisbot bin (live 批 spawn 依赖)
-        run: cargo build -p nemesisbot
+      - name: Build nemesisbot bin (live 批 spawn 依赖, watchdog)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag cibuild -MaxMinutes 60 -BuildCommand "cargo build -p nemesisbot"
 
-      - name: cargo nextest run --workspace
-        run: cargo nextest run --workspace --no-fail-fast
+      - name: cargo nextest run --workspace (watchdog)
+        # nextest 步前半段同样是全量测试目标编译（六连死的同源风险面），
+        # 同款看门狗包装；尾部行数放大——失败摘要必须在 tail 里可见。
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag nextest -MaxMinutes 75 -TailOut 200 -TailErr 100 -BuildCommand "cargo nextest run --workspace --no-fail-fast"
 
   frontend:
     name: Frontend typecheck + vitest + build (Linux)
