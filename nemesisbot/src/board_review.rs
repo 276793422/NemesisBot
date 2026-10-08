@@ -603,9 +603,6 @@ async fn review_issue(
     // worker 汇报 = **最新**一次交付（重派轮次取新汇报，不拿首轮旧账）；
     // 无结构化汇报时退最近的 agent 文本评论（诚实降级路径），再没有就
     // 空串（评审 agent 见「未提供」自判）。
-    // worker 汇报 = **最新**一次交付（重派轮次取新汇报，不拿首轮旧账）；
-    // 无结构化汇报时退最近的 agent 文本评论（诚实降级路径），再没有就
-    // 空串（评审 agent 见「未提供」自判）。
     // 任务卡回显不是交付（2026-09-12 UAT T30 双层实证）：回显模型把派发
     // 任务卡原样抄回当回复，文本里带着验收标准与上轮失败明细引文——锚点
     // 行原文可剥离（anchor.rs 自指防御），但引文散文里的裸词仍会二阶自
@@ -620,11 +617,21 @@ async fn review_issue(
         .cloned();
     // worker 汇报 = 交付线程首评；无结构化汇报时退最近的 agent 文本评论
     // （诚实降级路径），再没有就空串（评审 agent 见「未提供」自判）。
+    // 回退排除**评审者自己**署名的评论（2026-10-08 UAT T30/T-MRG in_review
+    // 停车根因）：F6 锚点强制自检先挂「⏳ 验收暂缓」评论（评审者 agent
+    // 署名）再进二段评审，回退比它旧但取的是最新——抓到评审者自己的暂
+    // 缓/FAIL 意见当 worker 汇报 → re: 交付文本锚点必假红 → FAIL → 重派
+    // 循环 → 预算耗尽转人工。worker 汇报恒为远端 worker 节点 id 署名
+    // （dispatch_issue_core 只派远端 peer_chat），评审者身份永不与之重叠。
+    let self_node_id = deps.cluster.node_id();
     let (delivery_id, worker_report) = match &delivery {
         Some(c) => (Some(c.id), c.content.clone()),
         None => {
             let latest = comments.iter().rev().find(|c| {
-                c.author.kind == "agent" && c.ctype == CommentType::Comment && !is_card_echo(c)
+                c.author.kind == "agent"
+                    && c.author.id != self_node_id
+                    && c.ctype == CommentType::Comment
+                    && !is_card_echo(c)
             });
             match latest {
                 Some(c) => (Some(c.id), c.content.clone()),

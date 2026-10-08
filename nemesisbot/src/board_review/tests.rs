@@ -4877,6 +4877,107 @@ async fn selfcheck_second_stage_error_escalates_honestly() {
     assert_eq!(deps.store.list_dispatches(issue.id).unwrap().len(), 1);
 }
 
+#[tokio::test]
+async fn selfcheck_suspension_comment_never_serves_as_worker_report() {
+    use nemesis_board::{CommentType, IssueStatus};
+    // 2026-10-08 Extended Tests T30/T-MRG in_review 停车根因回归锁：F6 锚
+    // 点强制自检在二段评审前挂「⏳ 验收暂缓」（评审者自己 agent 署名），
+    // 二段的交付回退（无结构化 Delivery → 最近 agent 评论）此前抓到这张
+    // 比 worker 汇报更新的自述评论 → re: 交付文本锚点必假红 → FAIL → 重
+    // 派循环 → 预算耗尽转人工。回退必须排除评审者自己，落在真实 worker
+    // 汇报上。
+    let (deps, _ws) = review_deps("selfcheck-poison");
+    let reviewer = nemesis_board::Actor::agent("node-a"); // = deps.cluster.node_id()
+    let issue = deps
+        .store
+        .create_issue(nemesis_board::NewIssue {
+            title: "自检暂缓评论不充作 worker 汇报".into(),
+            priority: 2,
+            acceptance_criteria: Some("[CHECK] re:FILE_EDIT_DONE".into()),
+            creator: reviewer.clone(),
+            ..Default::default()
+        })
+        .unwrap();
+    deps.store
+        .transition_issue(issue.id, IssueStatus::InProgress, &reviewer)
+        .unwrap();
+    deps.store
+        .transition_issue(issue.id, IssueStatus::InReview, &reviewer)
+        .unwrap();
+    // 事故现场：worker 非结构化汇报 = 诚实降级的普通评论（不走 Delivery
+    // 主通道，才进回退路径）。
+    deps.store
+        .add_comment(nemesis_board::NewComment {
+            issue_id: issue.id,
+            author: nemesis_board::Actor::agent("node-b"),
+            content: "FILE_EDIT_DONE 已按任务要求完成文件编辑".into(),
+            parent_id: None,
+            ctype: CommentType::Comment,
+        })
+        .unwrap();
+    // 复现生产时序：自检派发成功后、二段评审前，评审者先挂暂缓评论
+    // （review_issue 原文形态，agent 署名=评审者自己，比 worker 汇报新）。
+    deps.store
+        .add_comment(nemesis_board::NewComment {
+            issue_id: issue.id,
+            author: reviewer,
+            content: "⏳ 验收暂缓（board.review.selfcheck）：评审 agent 需要更多证据，已向执行 worker 发起取证（task t-poison-1）。\n\n取证请求：请回报证据\n\nworker 回报后自动进行二段验收。".into(),
+            parent_id: None,
+            ctype: CommentType::Comment,
+        })
+        .unwrap();
+    // 一条已完结派发：锚点强制臂要求非空 dispatches；终态免重复派发闸。
+    seed_dispatch(&deps.store, "t-poison-1", issue.id, "node-b");
+
+    let provider = Arc::new(CapturingLlm {
+        prompts: std::sync::Mutex::new(Vec::new()),
+        reply: review_json("PASS", ""),
+    });
+    attach_loop(&deps, provider.clone());
+    write_board_config(&deps.home, r#"{"auto_accept":true}"#);
+
+    // 二段评审（取证回报 ok + 证据注入；与 cluster_init 自检回调同参形态）。
+    spawn_selfcheck_second_stage(
+        deps.clone(),
+        issue.id,
+        "ok".to_string(),
+        "取证回报：文件已实际写入".to_string(),
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if deps.store.get_issue(issue.id).unwrap().status == IssueStatus::Done
+            || std::time::Instant::now() > deadline
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        deps.store.get_issue(issue.id).unwrap().status,
+        IssueStatus::Done,
+        "worker 汇报命中 re: 锚点 + PASS + auto_accept → done（回退抓错评论则 FAIL 停车）"
+    );
+    let prompts = provider.prompts.lock().unwrap().join("\n");
+    // 暂缓评论合法保留在讨论线程段（上一轮评审意见在场是设计语义）——
+    // 负断言只对「worker 汇报」槽，不对全 prompt。
+    let report_slot = prompts
+        .split("## worker 汇报")
+        .nth(1)
+        .expect("prompt 必含 worker 汇报段")
+        .split("\n## ")
+        .next()
+        .expect("报告段非空")
+        .to_string();
+    assert!(
+        report_slot.contains("FILE_EDIT_DONE 已按任务要求完成文件编辑"),
+        "二段评审的报告槽必须是 worker 汇报: {report_slot}"
+    );
+    assert!(
+        !report_slot.contains("验收暂缓"),
+        "评审者自己的暂缓评论不得充作报告槽: {report_slot}"
+    );
+}
+
 // ===== run_project_summary 成功路径（AI 生成件落盘） =====
 
 #[tokio::test]

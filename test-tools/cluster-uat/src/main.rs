@@ -1902,6 +1902,49 @@ async fn main() {
         }
     }
 
+    // planner 能力探针（二进制在场 ≠ 可用；2026-10-08 本地陈旧
+    // testaiserver.exe 缺职能框架的 <PLAN_PROF> 分支 → U 家族 8 测试以
+    // 「confirm 应创建 5 个子任务」级联假红，现场极难看穿）。以工具自身
+    // 实跑 trivial 探针：带 <PLAN_PROF> 标记打 testai-planner-1.0，必须
+    // 回 5 子任务职能链；不符=诚实快败并指路重编。
+    {
+        let probe_len = async {
+            let client = reqwest::Client::new();
+            let resp = client
+                .post(format!(
+                    "http://127.0.0.1:{}/v1/chat/completions",
+                    ai_server_port()
+                ))
+                .json(&json!({
+                    "model": "testai-planner-1.0",
+                    "messages": [{"role": "user", "content": "<PLAN_PROF> startup probe"}],
+                }))
+                .timeout(Duration::from_secs(10))
+                .send()
+                .await
+                .ok()?;
+            let v: Value = resp.json().await.ok()?;
+            let content = v["choices"][0]["message"]["content"].as_str()?;
+            let plan: Value = serde_json::from_str(content).ok()?;
+            plan.as_array().map(|a| a.len())
+        }
+        .await;
+        match probe_len {
+            Some(5) => println!("  planner probe: <PLAN_PROF> -> 5 subtasks ok"),
+            other => {
+                eprintln!(
+                    "ERROR: TestAIServer planner 探针不符（<PLAN_PROF> 期望 5 子任务，实际 {other:?}）"
+                );
+                eprintln!(
+                    "       testaiserver.exe 二进制陈旧（缺 <PLAN_PROF> 5 子任务分支），请重编后重跑："
+                );
+                eprintln!("       cd test-tools/TestAIServer && go build -o testaiserver.exe .");
+                ai_server.kill().await;
+                std::process::exit(1);
+            }
+        }
+    }
+
     // ------------------------------------------------------------------
     // Phase 6: Start gateway processes
     // ------------------------------------------------------------------
