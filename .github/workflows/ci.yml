@@ -221,10 +221,15 @@ jobs:
       #   3. 重编译步全部换 .github/scripts/build-with-watchdog.ps1 包装 —— 每
       #      15s 流式打 free RAM/commit/磁盘曲线到步骤日志，跌破地板树杀软着陆
       #      （退 2）而非 runner 硬死失联：要么绿，要么留下资源曲线数据。
-      # 若仍失联，下一档 = CARGO_PROFILE_DEV_DEBUG=0（彻底去 PDB，CI 丢 backtrace
-      # file:line，本地 line-tables-only 不受影响）。
+      #   4. CARGO_PROFILE_DEV_DEBUG=0（第四轮 2026-10-08）：三轮后本地实测
+      #      line-tables-only 下 rustc 峰值 ~3GB / link.exe 仅 ~1.6GB，16GB
+      #      runner 正常余量充足仍失联，且同镜像同命令两 job 一死一活——
+      #      判定为宿主机劣化（邻居挤压）随机撞上编译峰值；把峰值再压一档
+      #      （rustc ~2GB / link ~0.8GB，无 PDB）让劣化宿主也撞不到线。
+      #      代价：CI 丢 backtrace 的 file:line（本地 line-tables-only 不变）。
       CARGO_BUILD_JOBS: 2
       CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -302,8 +307,11 @@ jobs:
       - name: cargo nextest run --workspace (watchdog)
         # nextest 步前半段同样是全量测试目标编译（六连死的同源风险面），
         # 同款看门狗包装；尾部行数放大——失败摘要必须在 tail 里可见。
+        # MaxMinutes 85（第四轮 75→85）：JOBS:2 + 冷缓存下测试目标编译 ~25-30min
+        # + 全量 21k 测试执行，75min 实测被自己的上限树杀（win22 首轮败因，
+        # 非 runner 失联——资源曲线全程平稳即证据）。
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag nextest -MaxMinutes 75 -TailOut 200 -TailErr 100 -BuildCommand "cargo nextest run --workspace --no-fail-fast"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag nextest -MaxMinutes 85 -TailOut 200 -TailErr 100 -BuildCommand "cargo nextest run --workspace --no-fail-fast"
 
   frontend:
     name: Frontend typecheck + vitest + build (Linux)

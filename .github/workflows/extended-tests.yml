@@ -164,12 +164,15 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 120
     env:
-      # 2026-10-08 编译期 runner 压死三杠杆（同 ci.yml rust-test，见那边完整注释）：
-      # 首轮双杠杆（line-tables-only + JOBS:3）后仍两连死（51/54min 恒定挂点），
-      # 升级为 JOBS:2 + CARGO_INCREMENTAL=0 + 编译步换 build-with-watchdog.ps1
-      # 包装（每 15s 流式打资源曲线，跌破地板软着陆退 2 而非 runner 硬死失联）。
+      # 2026-10-08 编译期 runner 压死四杠杆（同 ci.yml rust-test，见那边完整注释）：
+      # JOBS:2 + CARGO_INCREMENTAL=0 + 看门狗包装之外，第四轮加
+      # CARGO_PROFILE_DEV_DEBUG=0——本地实测 link.exe 峰值仅 ~1.6GB 仍失联，
+      # 且同镜像同命令两 job 一死一活，判定为宿主劣化随机撞峰值；去 PDB 把
+      # 峰值再压一档（rustc ~2GB / link ~0.8GB），代价是 CI 丢 backtrace
+      # file:line（本地 line-tables-only 不变）。
       CARGO_BUILD_JOBS: 2
       CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
