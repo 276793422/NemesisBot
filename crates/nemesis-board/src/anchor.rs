@@ -90,6 +90,22 @@ pub fn has_content_regex_anchor(acceptance_criteria: &str) -> bool {
     anchors.iter().any(|a| a.kind == AnchorKind::ContentRegex)
 }
 
+/// AC 是否含 file: 类锚点（`file:` 存在/包含/正则——非 `re:` 交付文本锚点
+/// 的全部形态）。**拓扑约束谓词（单一真相源）**：file: 锚点在派发端（看板
+/// 权威端）workspace 解析实核，而远端节点的交付文件不在派发端 workspace
+/// ——含 file: 锚点的单只能派给本节点执行。消费方（全部必须走本谓词，
+/// 不许各自内联解析）：`reject_remote_file_anchors` 拓扑硬闸 /
+/// `rank_dispatch_candidates` 候选过滤（换节点/兜底/匹配器决策面）/
+/// `rebalance_queued_to_worker` 重平衡偷单过滤。真机 NB-4/NB-5/NB-6
+/// 实证（2026-10-08）：决策面不感知本谓词 → 产出非法远端目标 → 拓扑闸
+/// 拦下 → 死锁或取消后无补偿。
+pub fn has_file_anchor(acceptance_criteria: &str) -> bool {
+    let (anchors, _, _) = parse_anchors(acceptance_criteria);
+    anchors
+        .iter()
+        .any(|a| !matches!(a.kind, AnchorKind::ContentRegex))
+}
+
 /// 解析验收标准：`[CHECK]` 行 → 锚点，其余行（含无法解析的 `[CHECK]` 行）
 /// → 语义项回落。非法正则同样回落语义项（诚实降级，不拒绝整段验收标准）。
 /// 路径形态不安全的锚点行进入第三元组 `Vec<RejectedAnchor>`（同样回落语

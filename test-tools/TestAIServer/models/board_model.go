@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"regexp"
 	"strings"
 	"time"
@@ -68,6 +69,15 @@ func (m *TestAIBoard) Process(messages []Message) string {
 // marker 仅供人读，实际路由凭 SelfcheckRegistry）→ 回固定取证文本，逐项
 // 回报并附带 <SELFCHK_EVIDENCE_OK> 完成标记（命中 review 桩二段 PASS 分支）。
 //
+// peer_chat 对话机（campaign 48h soak 追加，与上述 marker 互斥）：
+//   - 轮1 最后一条 user 消息带 <PEER_CHAT>{"peer_id":..,"content":..}</PEER_CHAT>
+//     → cluster_rpc 工具调用（契约与 testai-3.0 一致：target/message 对齐
+//     工具 schema）。
+//   - 轮2（续行）输入含 <PEER_CHAT>（历史 user 消息保留标记）且末条是
+//     tool 结果 → 固定前缀「对端回复：」+ 原文转述（前缀即驱动断言锚点）。
+//     排在 board_issue tool 分支之前——建单锚点与 peer_chat 互斥，前置
+//     只为防误入 BOARD_ISSUE_TOOL_UNEXPECTED 兜底。
+//
 // 职能框架 M7 追加两台对话机（都要求整个输入含对应标记才激活，既有
 // 流程零扰动）：
 //   - <UAT_UI_IMG>（U5）：轮1 user 带 marker → generate_image 工具调用；
@@ -101,6 +111,13 @@ func (m *TestAIBoard) masterProcess(messages []Message) string {
 			if strings.Contains(last.Content, "[取证请求 board_selfcheck:") {
 				return boardSelfcheckEvidence
 			}
+			// soak peer_chat 对话机（轮1）：<PEER_CHAT> 标记 → cluster_rpc。
+			if args, ok := extractPeerChatArgs(last.Content); ok {
+				return buildSingleToolCall("cluster_rpc", map[string]interface{}{
+					"target":  args.PeerID,
+					"message": args.Content,
+				})
+			}
 			// 职能框架 M7 U5：UI 子单图像对话机（轮1）。
 			if strings.Contains(input, "<UAT_UI_IMG>") {
 				return buildSingleToolCall("generate_image", map[string]interface{}{
@@ -120,6 +137,11 @@ func (m *TestAIBoard) masterProcess(messages []Message) string {
 				})
 			}
 		case last.Role == "tool":
+			// soak peer_chat 续行（轮2）：历史含 <PEER_CHAT> 且末条是 tool
+			// 结果 → 固定前缀转述对端回复（防落入 BOARD_ISSUE 兜底）。
+			if strings.Contains(input, "<PEER_CHAT>") {
+				return "对端回复：" + last.Content
+			}
 			if n := extractCreatedIssueNumber(last.Content); n != "" {
 				return buildSingleToolCall("board_issue", map[string]interface{}{
 					"subcommand": "plan",
@@ -209,6 +231,32 @@ func extractBoardIssueTitle(content string) (string, bool) {
 		title = "自动流转测试单"
 	}
 	return title, true
+}
+
+// peerChatReq <PEER_CHAT> 标记内嵌 JSON 的形状（与 testai-3.0 契约一致）。
+type peerChatReq struct {
+	PeerID  string `json:"peer_id"`
+	Content string `json:"content"`
+}
+
+// extractPeerChatArgs 从 user 消息抠 <PEER_CHAT>{...}</PEER_CHAT> 标记并解析。
+// 无标记 / 缺闭合标签 / JSON 非法 → ok=false（落回普通文本分支）。
+func extractPeerChatArgs(content string) (peerChatReq, bool) {
+	const open, close = "<PEER_CHAT>", "</PEER_CHAT>"
+	i := strings.Index(content, open)
+	if i < 0 {
+		return peerChatReq{}, false
+	}
+	rest := content[i+len(open):]
+	j := strings.Index(rest, close)
+	if j < 0 {
+		return peerChatReq{}, false
+	}
+	var req peerChatReq
+	if err := json.Unmarshal([]byte(strings.TrimSpace(rest[:j])), &req); err != nil {
+		return peerChatReq{}, false
+	}
+	return req, true
 }
 
 // extractCreatedIssueNumber 从 board_issue create 工具结果抠「已建单

@@ -2272,11 +2272,15 @@ pub fn sweep_parked_dispatches_with_config(
 
 /// D0b（goal P2）重平衡：节点 announce（上线/刷新）时，把其他 worker 手里
 /// 「已派未开跑」（dispatched 且未 running）的排队单，按空闲 slot 挪给本
-/// 节点——只从超载者（在途 > cap）偷队首；running 单不可迁移。新 worker
-/// 需满足该单角色/标签要求（同匹配器语义）。竞态诚实边界：task_cancel
-/// 下行到达前旧 worker 已出队开跑 → 任务照跑、其回写因 dispatch 已取消被
-/// 写回幂等早退丢弃、重派新 task_id 正常执行（旧 worker 白跑一轮，结果
-/// 仍单份）。返回挪动单数。
+/// 节点——只从超载者（活跃 = 在途+排队 > cap，排队单存在即满载证据）偷
+/// 队首；running 单不可迁移。新 worker 需满足该单角色/标签要求（同匹配器
+/// 语义）。**file: 锚点单不偷**（[`nemesis_board::anchor::has_file_anchor`]，
+/// 拓扑约束：转派远端必被派发拓扑闸拒绝——真机 NB-5/NB-6 实证取消后无法
+/// 重派）。转派失败补偿：原排队派发已被取消，系统评论诚实留痕（issue 保
+/// 留可重派状态，人工/autopilot 一发即活），不无声死透。竞态诚实边界：
+/// task_cancel 下行到达前旧 worker 已出队开跑 → 任务照跑、其回写因
+/// dispatch 已取消被写回幂等早退丢弃、重派新 task_id 正常执行（旧 worker
+/// 白跑一轮，结果仍单份）。返回挪动单数。
 #[cfg(feature = "cluster")]
 pub async fn rebalance_queued_to_worker(
     store: &Arc<BoardStore>,
@@ -2323,11 +2327,20 @@ pub async fn rebalance_queued_to_worker(
         }
         let from_load = load.get(&d.worker_id).copied().unwrap_or(0);
         if from_load <= cap as usize {
-            continue; // 只从超载者（在途 > cap）偷；普通欠载的排队单不动。
+            continue; // 只从超载者（活跃 = 在途+排队 > cap，见函数注释）偷；普通欠载的排队单不动。
         }
         let Ok(issue) = store.get_issue(d.issue_id) else {
             continue;
         };
+        // 拓扑约束（2026-10-08 NB-5/NB-6 根修①）：file: 锚点单只能在派发端
+        // workspace 实核，转派远端必被 dispatch_issue_core 拓扑闸拒绝——
+        // 而本函数 cancel 先行、失败不可逆。跳过不偷（留在原队列，原节点
+        // 空闲后自然出队），谓词单一真相源 = has_file_anchor。
+        if nemesis_board::anchor::has_file_anchor(
+            issue.acceptance_criteria.as_deref().unwrap_or(""),
+        ) {
+            continue;
+        }
         let (required_role, required_tags) = match issue.required_role.as_deref().map(str::trim) {
             Some(r) if !r.is_empty() && r != "worker" && r != "coordinator" => {
                 let mut tags = issue.required_tags.clone();
@@ -2391,6 +2404,23 @@ pub async fn rebalance_queued_to_worker(
             }
             Err(e) => {
                 tracing::warn!("[Board] D0b 重平衡重派 issue {} 失败：{e}", d.issue_id);
+                // 补偿（2026-10-08 NB-5/NB-6 根修②）：取消已落库且不可逆，
+                // issue 此时无活跃派发——系统评论诚实留痕，把「无声死透」
+                // 变成「可见停车」。状态机 in_progress → todo 非法（不走
+                // 回退）；issue 保留 in_progress 可被 dispatch_issue_core
+                // 直接重派（人工/autopilot 一发即活）。评论失败不影响主流程
+                // （数据已破坏，能留多少痕留多少痕）。
+                let _ = store.add_comment(nemesis_board::NewComment {
+                    issue_id: d.issue_id,
+                    author: nemesis_board::Actor::system("board"),
+                    content: format!(
+                        "⛔ D0b 重平衡转派失败：{e}\n原排队派发（{worker}）已被取消且无法自动恢复，issue 无活跃派发。\
+可重新派发（issue 当前状态允许直派）；若因验收锚点形态导致，请调整锚点后重试。",
+                        worker = d.worker_id
+                    ),
+                    parent_id: None,
+                    ctype: nemesis_board::CommentType::System,
+                });
             }
         }
     }
@@ -2440,7 +2470,8 @@ fn project_dispatch_candidates(
 /// 的单一真相源）：在线节点（不含本机）→ 投影 →
 /// [`nemesis_board::rank_peers`] 匹配度降序全量返回。节点角色词表只有
 /// worker/coordinator，planner 给的其他角色词（如 "qa"）转标签语义与
-/// tags/category 匹配。
+/// tags/category 匹配。**file: 锚点单返回空候选**（拓扑约束，见函数内
+/// 注释）——消费方按各自语义回落（Same 重派/停车）。
 #[cfg(feature = "cluster")]
 pub fn rank_dispatch_candidates(
     store: &BoardStore,
@@ -2459,6 +2490,14 @@ pub fn rank_dispatch_candidates(
     };
 
     let load = store.count_active_dispatch_by_worker().unwrap_or_default();
+    // 拓扑约束（2026-10-08 NB-4/NB-5/NB-6 根修③）：file: 锚点单只能本节点
+    // 执行，而候选投影全是远端节点（excluding_self）——返回空候选，让
+    // 消费方走各自的「无候选」路径（换节点决策回落 Same(本节点) / 匹配器
+    // 停车 / 冲突解决同节点重派），不产出注定被拓扑闸拒绝的非法目标。
+    // 谓词单一真相源 = has_file_anchor。
+    if nemesis_board::anchor::has_file_anchor(issue.acceptance_criteria.as_deref().unwrap_or("")) {
+        return Vec::new();
+    }
     let input = nemesis_board::MatchInput {
         required_role,
         required_tags: &required_tags,
@@ -2504,6 +2543,12 @@ fn pick_fallback_target(
     issue: &nemesis_board::Issue,
 ) -> Option<(String, &'static str)> {
     use nemesis_config::DispatchFallbackMode;
+    // 拓扑约束（2026-10-08 根修④）：file: 锚点单只能本节点执行，兜底候选
+    // 全是远端节点——兜底产物必被拓扑闸拒绝，直接 None 走停车路径（与
+    // 匹配器无候选同语义）。谓词单一真相源 = has_file_anchor。
+    if nemesis_board::anchor::has_file_anchor(issue.acceptance_criteria.as_deref().unwrap_or("")) {
+        return None;
+    }
     let cfg = board_cfg?;
     let depth = match cfg.dispatch_fallback {
         DispatchFallbackMode::Off => return None,
