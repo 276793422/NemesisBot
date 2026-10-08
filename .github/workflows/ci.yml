@@ -197,7 +197,15 @@ jobs:
 
   rust-test:
     name: Rust full workspace tests (Windows)
-    runs-on: windows-latest
+    # 2026-10-08 pin windows-2022：win25（windows-latest 当前指向）20261004 镜像
+    # （10-07 发布滚动铺开）落地后本 job 编译期 runner 六连死失联（挂点恒定
+    # 51-55min，与并发/调试信息/增量全部缓解措施无关，看门狗也未能软着陆）——
+    # 资源压力解释不了时间恒定性，矛头指向镜像波次自身。该波次 OS build 未变
+    # （26100.33438 两版一致），但应用层含 WSL 2.7→3.0 大版本跳跃等系统级变更。
+    # win22（20261004.326，10-05 波次）无 WSL 升级且 OS 代际不同（20348），作
+    # 单变量对照：绿=坐实 win25 20261004 镜像问题（等上游修复再评估回迁），
+    # 红=排除镜像、回头排查 Cargo.lock（wasmtime 家族升级）。
+    runs-on: windows-2022
     # 90→120（2026-10-08）：编译三杠杆（JOBS:2 + 无增量）换内存余量，编译变慢，
     # 给冷构建留够预算（120 是 ET 同款 job 的既有额度）。
     timeout-minutes: 120
