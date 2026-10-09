@@ -1357,6 +1357,11 @@ fn test_resolve_nemesisbot_home_override_takes_priority_over_env() {
 
 #[test]
 fn test_resolve_openclaw_home_with_tilde() {
+    // 持锁读 env：~ 展开间接走 dirs_home()，不持锁会与 userprofile_fallback
+    // 的「移除 HOME → 设 USERPROFILE」两步窗口并发（Linux 上 USERPROFILE
+    // 预先不存在 → 窗口内双变量全空 → dirs_home Err）。2026-10-09 Linux
+    // CI 实证（returns_ok 同族竞态先红）。
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let result = resolve_openclaw_home("~/openclaw");
     assert!(result.is_ok());
     let p = result.unwrap();
@@ -1365,6 +1370,7 @@ fn test_resolve_openclaw_home_with_tilde() {
 
 #[test]
 fn test_resolve_nemesisbot_home_with_tilde() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let result = resolve_nemesisbot_home("~/nemesisbot");
     assert!(result.is_ok());
     let p = result.unwrap();
@@ -1373,6 +1379,7 @@ fn test_resolve_nemesisbot_home_with_tilde() {
 
 #[test]
 fn test_dirs_home_returns_ok() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let result = dirs_home();
     assert!(result.is_ok());
     assert!(!result.unwrap().is_empty());
