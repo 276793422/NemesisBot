@@ -237,15 +237,21 @@ jobs:
       # cache-on-failure（2026-09-29 提速 P2，同 rust-check job 注释）
       # workspaces 收编三个示例插件（嵌套独立 workspace）：fixture 构建产物
       # 落在各自 target/，不收编则每轮冷构建多花 3-6 分钟。
-      # key: r7（2026-10-09 第七轮）：R3 时代的缓存是在 nextest 被看门狗树杀后
-      # 打包的——半写状态的目标目录进缓存 = 毒缓存，R6 实证 bin 步挂 45min 不进展
-      # （ET 冷路径同命令 4.5min 跑完）。换命名空间强制冷构建，走 ET 已验证路径；
-      # 后续轮次以此干净缓存为基础。
+      # shared-key win-x64-r10（2026-10-09 第十轮，取代 R7 的 key: r7）：
+      # r7 命名空间从未成功保存过——runner 失联时 Post 步骤不执行，CI 十轮
+      # 全冷；而冷构建的 bin 步（最终链接）是全流程内存峰值，R9 实证 libs
+      # 6.6min 健康跑完、bin 段 44min 后整机 paging 冻僵（看门狗 30min 上限
+      # 都没触发），runner 在 job 龄 52min 被回收。ET integration-windows 用
+      # 自家热缓存时同命令 2.8min（exe 已在缓存里，链接根本不执行）。本 job
+      # 与 ET 同为 windows-2022 + 同一 Cargo.lock + 同 CARGO_INCREMENTAL=0，
+      # shared-key 让两 job 共享同一缓存命名空间：ET 构建成功即存（cache-
+      # on-failure 失败轮也存），CI 恢复后 bin 步变 no-op，结构性绕开冷链接
+      # 死亡面。首次引导需一轮冷（先 ET 存、CI rerun 后吃热）。
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-          key: r7
+          shared-key: win-x64-r10
           workspaces: |
             .
             plugins/wasm/translate
