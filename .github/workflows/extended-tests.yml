@@ -23,7 +23,12 @@ on:
   schedule:
     # 每天 UTC 1:00（北京时间 9:00）。成功后经 workflow_run 触发 daily-release。
     - cron: '0 1 * * *'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      seed_cache:
+        description: 只构建并落共享缓存（win-x64-r10 引导用）；测试全跳过，run 故意红以拦 nightly
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -35,6 +40,8 @@ concurrency:
 jobs:
   workspace-tests-linux:
     name: Full workspace tests (Linux)
+    # seed_cache 引导轮只构建落缓存，测试 job 全跳过（省 VM 时长）
+    if: ${{ inputs.seed_cache != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -107,6 +114,7 @@ jobs:
 
   feature-matrix:
     name: Feature trimming matrix (Linux)
+    if: ${{ inputs.seed_cache != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -230,7 +238,20 @@ jobs:
 
       # 纯 bin runner：cargo run（不是 cargo test——见文件头注释）
       - name: Run integration-test (492 assertions, 22 commands)
+        if: ${{ inputs.seed_cache != true }}
         run: cargo run -p integration-test
 
       - name: Run cluster-uat (T1-T18 E2E)
+        if: ${{ inputs.seed_cache != true }}
         run: cargo run -p cluster-uat
+
+      # seed_cache 引导轮终点：构建步全部完成后到这里故意红。cache-on-failure
+      # 会在 Post 步骤照常落共享缓存（引导目的达成）；run 结论=失败则
+      # daily-release 的 workflow_run 闸（只放行 success）不会误发未经验证的
+      # nightly——红是诚实信号：本 run 没跑任何测试，不配放行发布。
+      - name: Seed-run marker（故意失败拦 nightly，见注释）
+        if: ${{ inputs.seed_cache == true }}
+        run: |
+          echo "seed_cache=true：本 run 只构建并落共享缓存 win-x64-r10，测试全部跳过。"
+          echo "故意失败：拦住 daily-release（success 才放行），也如实告知本 run 未验证。"
+          exit 1
