@@ -237,10 +237,15 @@ jobs:
       # cache-on-failure（2026-09-29 提速 P2，同 rust-check job 注释）
       # workspaces 收编三个示例插件（嵌套独立 workspace）：fixture 构建产物
       # 落在各自 target/，不收编则每轮冷构建多花 3-6 分钟。
+      # key: r7（2026-10-09 第七轮）：R3 时代的缓存是在 nextest 被看门狗树杀后
+      # 打包的——半写状态的目标目录进缓存 = 毒缓存，R6 实证 bin 步挂 45min 不进展
+      # （ET 冷路径同命令 4.5min 跑完）。换命名空间强制冷构建，走 ET 已验证路径；
+      # 后续轮次以此干净缓存为基础。
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          key: r7
           workspaces: |
             .
             plugins/wasm/translate
