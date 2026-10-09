@@ -208,7 +208,10 @@ jobs:
     runs-on: windows-2022
     # 90→120（2026-10-08）：编译三杠杆（JOBS:2 + 无增量）换内存余量，编译变慢，
     # 给冷构建留够预算（120 是 ET 同款 job 的既有额度）。
-    timeout-minutes: 120
+    # 120→180（2026-10-10 第十五轮）：nextest 上限 85→115 后，慢机族总墙钟
+    # （libs 10 + bin 5 + nextest ~100 + 缓存保存 ~5）可达 ~120min——job 级
+    # timeout 必须盖过步级上限之和，否则 job timeout 先杀、软着陆缓存保存白费。
+    timeout-minutes: 180
     env:
       # 2026-10-08~09 编译期 runner 失联战役（十连死全记录见 docs 报告 §六~§十）：
       # 冷编 nemesisbot bin 步内 runner 硬死（"hosted runner lost communication"，
@@ -319,8 +322,13 @@ jobs:
         # MaxMinutes 85（第四轮 75→85）：JOBS:2 + 冷缓存下测试目标编译 ~25-30min
         # + 全量 21k 测试执行，75min 实测被自己的上限树杀（win22 首轮败因，
         # 非 runner 失联——资源曲线全程平稳即证据）。
+        # MaxMinutes 115（2026-10-10 第十五轮 85→115）：慢机族实测三连杀（a6/a7/a8
+        # 全在 RUN83min 撞 85 上限软着陆，套件全程有进展、VM 全程响应——不是
+        # 失联，是我们自己的上限比慢机套件墙钟短）。看门狗的天职是软着陆保缓存，
+        # 不是掐死合法慢跑；115 给慢机 ~30min 余量（套件慢机墙钟 ~90-100min），
+        # 健康机 30-40min 完成不受影响。job timeout 同步 120→180 兜底。
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag nextest -MaxMinutes 85 -TailOut 200 -TailErr 100 -BuildCommand "cargo nextest run --workspace --no-fail-fast"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag nextest -MaxMinutes 115 -TailOut 200 -TailErr 100 -BuildCommand "cargo nextest run --workspace --no-fail-fast"
 
   frontend:
     name: Frontend typecheck + vitest + build (Linux)
