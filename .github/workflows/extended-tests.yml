@@ -204,6 +204,12 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: 'stable'
+          # 显式声明模块缓存（v5 默认会开，这里写死防上游行为变化）。R12 实录：
+          # 一台 VM 上 go build 拉 gin 依赖树（~30 包）楔死 40min（proxy.golang.org
+          # 网络劣化抽签），同 SHA 另一台 VM 几十秒过——缓存命中后 go build 离线
+          # 可完成，对下载网络免疫。
+          cache: true
+          cache-dependency-path: test-tools/TestAIServer/go.sum
 
       - name: Setup Node.js
         uses: actions/setup-node@v5

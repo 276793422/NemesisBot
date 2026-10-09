@@ -1,0 +1,16 @@
+# Windows MSVC 目标换 rust-lld 链接器（lld-link 形态）。
+#
+# 缘由：2026-10 编译期 runner 失联战役（docs/REPORT/2026-10-08_extended-tests评审回退自食与依赖升级修复.md
+# §六~§十六）：GitHub Windows 车队 16GB VM 在 link.exe 链接段（PDB 生成内存
+# 峰值主导）高概率整机冻僵——冷链接 5/5 楔死到 runner 回收，热链接也会在
+# rust-cache 保存清理丢掉增量物件后复发（R12 attempt-3，同一步 274s 与 40min+
+# 冻死并存）。lld-link 峰值内存低一个量级、墙钟快数倍，把链接段从死亡面变成
+# 无害段——比「缓存绕开」更结构：缓存会失效（7 天驱逐/10GB 挤兑/清理丢物件），
+# 链接器快了就再也不怕。
+#
+# 本地与 CI 同款工具链（rust-toolchain.toml 钉 1.95.0，rust-lld 随 toolchain
+# 分发于 lib/rustlib/<target>/bin，rustc 自动解析），本地链接验证即可代表 CI。
+# 本文件同时是本地/CI 行为一致的单一真相源——勿改回 link.exe 除非战役正式
+# 关账且有数轮全绿实证。
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"
