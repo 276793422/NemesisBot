@@ -175,11 +175,17 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      # cache-on-failure（2026-09-29 提速 P2，见 ci.yml 同名注释）
+      # cache-on-failure（2026-09-29 提速 P2，见 ci.yml 同名注释）。
+      # shared-key win-x64-r10（2026-10-09 第十轮，与 ci.yml rust-test 共享）：
+      # 本 job 的构建产物（含 nemesisbot.exe）由 ET 构建成功落缓存，CI 恢复
+      # 后 bin 步变 no-op——CI 冷构建的链接段是 runner 失联战役十轮的死亡面
+      # （见 ci.yml rust-test 缓存步注释），共享命名空间结构性绕开。同镜像
+      # windows-2022 + 同一 Cargo.lock + 同 CARGO_INCREMENTAL=0，缓存互通。
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          shared-key: win-x64-r10
 
       # Defender 实时扫描排除 target 目录（2026-09-29 提速 P4，见 ci.yml 同名注释）
       - name: Exclude target dir from Defender scan
