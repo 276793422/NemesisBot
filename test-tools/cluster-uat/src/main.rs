@@ -8761,6 +8761,36 @@ async fn main() {
     all_results.push(
         run_test("T-MRG-4: 硬解失败重派原 worker（3 轮恒败→conflict_redispatch→ANCHOR2 干净合并）", || async {
             let outcome: Result<String, anyhow::Error> = async {
+                // 0. 桩自持（2026-10-10 mrg-b 四连红定性）：A 切 conflict-solver
+                //    组合桩（硬解恒败机 + 评审委托）、B/C 切编辑桩，各自重启使
+                //    CLI 落盘的默认模型生效（provider 构造时消费）。此前这套前
+                //    置长在 T-MRG-1 体内——切段（--filter T-MRG --exclude
+                //    T-MRG-1..3）后它从未执行，worker 停在装配基座模型上回
+                //    boardAckText → 交付锚点 FILE_EDIT_DONE 恒假红。全量跑与
+                //    T-MRG-1 同值切换幂等，只多付三次重启墙钟；T-MRG-5/6/7 的
+                //    B/C 桩态与 A solver 态经此建立（T-MRG-5 只补切 D）。
+                b_switch_model(&ws_a, &gateway_bin, "test/testai-conflict-solver-1.0")
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                gw_a.kill().await;
+                gw_a = start_gateway_and_wait("Gateway-A", &gateway_bin, ws_a.path(), &NODES[0])
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                b_switch_model(&ws_b, &gateway_bin, "test/testai-board-edit-1.0")
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                gw_b.kill().await;
+                gw_b = start_gateway_and_wait("Gateway-B", &gateway_bin, ws_b.path(), &NODES[1])
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                b_switch_model(&ws_c, &gateway_bin, "test/testai-board-edit-1.0")
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                gw_c.kill().await;
+                gw_c = start_gateway_and_wait("Gateway-C", &gateway_bin, ws_c.path(), &NODES[2])
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+
                 let mut ws = ws_connect_gateway(NODES[0].web_port).await?;
                 for (key, value) in [
                     ("conflict_auto_resolve", json!(true)),
