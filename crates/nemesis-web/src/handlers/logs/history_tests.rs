@@ -2,15 +2,16 @@
 //! WSAPI commands. NOT security-gated: these commands depend only on
 //! nemesis-agent (non-optional dep).
 //!
-//! Isolation note (same discipline as nemesis-agent's history_search tests):
-//! `history_search` resolves session_logs through the GLOBAL default path
-//! manager — not this handler's `workspace` param — so the e2e test runs
-//! against the real global session_logs dir with nanos-unique session keys
-//! and cleans up after itself. A module-level lock serializes the tests in
-//! this binary; cross-process concurrency with nemesis-agent's own test
-//! binary is absorbed by the retry loop (a transient SQLITE_BUSY makes the
-//! silent reindex miss rows; re-appending changes mtime so the retry's
-//! reindex picks the file up again).
+//! Isolation note: the STATEFUL e2e (append → search → assert hit) moved to
+//! the dedicated integration binary `tests/history_search_e2e.rs` — the lib
+//! binary's ~3000 sibling tests bake the `default_path_manager()` singleton
+//! home before any redirect could land, and under nextest (per-test process)
+//! the in-process IDX_LOCK / HOME_RACE_LOCK below are void, so the e2e was
+//! contending cross-process on the real global history_index.db (2026-10-10
+//! flake). What remains here either fails before path access (input
+//! validation) or can't fail on contention (reindex count is a number
+//! regardless of BUSY). Do not move the e2e back — same contract as
+//! nemesis-agent/tests/history_search_fts.rs.
 
 use super::*;
 use crate::api_handlers::AppState;
@@ -85,17 +86,6 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     }
 }
 
-fn unique_marker(prefix: &str) -> String {
-    format!(
-        "zzq{}{}",
-        prefix,
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    )
-}
-
 #[tokio::test]
 async fn test_history_search_rejects_missing_or_empty_query() {
     let dir = tempfile::tempdir().unwrap();
@@ -144,107 +134,4 @@ async fn test_history_reindex_returns_session_count() {
             .is_some(),
         "missing reindexed_sessions: {v}"
     );
-}
-
-/// End-to-end through the real global session_logs dir: append via
-/// chat_log, search through the WSAPI handler, assert the hit carries the
-/// file-stem session_key that `logs.session_detail` expects.
-#[tokio::test]
-async fn test_history_search_finds_appended_message_e2e() {
-    let _lock = IDX_LOCK.lock();
-    let _home = crate::test_home::lock_home();
-    let dir = tempfile::tempdir().unwrap();
-    let ctx = make_ctx(&dir);
-    let h = LogsHandler;
-
-    let marker = unique_marker("marker");
-    let key = format!("test:hsearch:{}", marker);
-    nemesis_agent::chat_log::delete_chat_log(&key);
-    nemesis_agent::chat_log::append_chat_log(&key, "user", &format!("please locate {marker} now"));
-
-    // The handler reindexes (mtime-incremental) before searching, so the
-    // freshly appended line is findable on the first call. Retry absorbs
-    // transient cross-process SQLITE_BUSY on the shared index db: a failed
-    // reindex doesn't record mtime; re-appending bumps it so the retry's
-    // reindex revisits the file.
-    let stem = key.replace(':', "_");
-    let mut hits: Vec<serde_json::Value> = Vec::new();
-    for _ in 0..3 {
-        nemesis_agent::chat_log::append_chat_log(&key, "user", &format!("retry probe {marker}"));
-        let out = h
-            .handle_cmd(
-                "history_search",
-                Some(serde_json::json!({"query": marker, "limit": 20})),
-                &ctx,
-            )
-            .await
-            .unwrap()
-            .expect("search returns a payload");
-        let found = out
-            .get("hits")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-        if found
-            .iter()
-            .any(|hit| hit.get("session_key").and_then(|s| s.as_str()) == Some(stem.as_str()))
-        {
-            hits = found;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    }
-    assert!(
-        !hits.is_empty(),
-        "marker {marker} must be findable via logs.history_search"
-    );
-
-    // Hit shape: stem session_key (== what session_detail expects), role,
-    // snippet around the match, plus envelope fields.
-    let hit = hits
-        .iter()
-        .find(|hit| hit.get("session_key").and_then(|s| s.as_str()) == Some(stem.as_str()))
-        .unwrap();
-    assert_eq!(
-        hit.get("role").and_then(|r| r.as_str()),
-        Some("user"),
-        "hit role: {hit}"
-    );
-    let snippet = hit.get("snippet").and_then(|s| s.as_str()).unwrap_or("");
-    assert!(snippet.contains(&marker), "snippet: {snippet}");
-    // No cross-session leak: every hit's session_key must be our stem or at
-    // least contain the unique marker (unique per run, so only ours).
-    for other in &hits {
-        let sk = other
-            .get("session_key")
-            .and_then(|s| s.as_str())
-            .unwrap_or("");
-        assert!(
-            sk.contains(&marker),
-            "foreign session leaked in: {sk} (marker {marker})"
-        );
-    }
-
-    // limit=1 caps the result count.
-    let out = h
-        .handle_cmd(
-            "history_search",
-            Some(serde_json::json!({"query": marker, "limit": 1})),
-            &ctx,
-        )
-        .await
-        .unwrap()
-        .expect("search returns a payload");
-    let capped = out.get("hits").and_then(|v| v.as_array()).map(|a| a.len());
-    assert_eq!(capped, Some(1), "limit=1 must cap hits: {out}");
-    assert_eq!(
-        out.get("query").and_then(|q| q.as_str()),
-        Some(marker.as_str())
-    );
-
-    // Unknown subcommand still errors.
-    let err = h.handle_cmd("history_nope", None, &ctx).await.unwrap_err();
-    assert!(err.contains("unknown command"), "got: {err}");
-
-    nemesis_agent::chat_log::delete_chat_log(&key);
 }

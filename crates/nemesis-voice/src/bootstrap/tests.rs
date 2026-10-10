@@ -353,16 +353,21 @@ mod download_paths {
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    /// 共享临时下载目录（%TEMP%/nemesis-voice-setup、nemesis-voice-aec-setup）
-    /// 是全局路径——并行测试互相踩，必须串行 + 前后清理。
+    /// 暂存目录按进程 ID 派生（nextest 纪律，CLAUDE.md「测试命令」节）：nextest
+    /// 每个测试独立进程，进程内 DOWNLOAD_TMP_LOCK 管不了跨进程互踩——固定共享
+    /// 目录会被并行测试写花（实录 2026-10-10：本地全量 nextest
+    /// try_download_and_extract_bad_archive_bails_and_cleans_up 假红，单测必绿；
+    /// cargo test 单进程全绿掩盖至今）。生产调用方传 canonical 路径
+    /// （bootstrap::sherpa_staging_dir），测试传 pid 派生目录，跨进程各走各的；
+    /// 同进程（cargo test 线程并行）pid 相同，DOWNLOAD_TMP_LOCK 继续承担串行。
     static DOWNLOAD_TMP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn voice_setup_tmp() -> std::path::PathBuf {
-        std::env::temp_dir().join("nemesis-voice-setup")
+        std::env::temp_dir().join(format!("nemesis-voice-setup-p{}", std::process::id()))
     }
 
     fn aec_setup_tmp() -> std::path::PathBuf {
-        std::env::temp_dir().join("nemesis-voice-aec-setup")
+        std::env::temp_dir().join(format!("nemesis-voice-aec-setup-p{}", std::process::id()))
     }
 
     fn clean_all_setup_tmps() {
@@ -413,11 +418,14 @@ mod download_paths {
 
     #[test]
     fn download_runtime_libs_unreachable_proxy_bails_with_sources_failed() {
+        let _g = DOWNLOAD_TMP_LOCK.lock().unwrap();
+        clean_all_setup_tmps();
         let tmp = tempfile::tempdir().unwrap();
         // 127.0.0.1:9（discard 端口，连接拒绝，立即失败不超时）
         let err = format!(
             "{:#}",
-            download_runtime_libs(tmp.path(), "http://127.0.0.1:9").unwrap_err()
+            download_runtime_libs(tmp.path(), "http://127.0.0.1:9", &voice_setup_tmp())
+                .unwrap_err()
         );
         assert!(err.contains("All download sources failed"), "{err}");
         // 提示文案带必需库清单
@@ -480,7 +488,9 @@ mod download_paths {
                 .await;
             let url = format!("{}/{}", server.uri(), AEC_WIN_ARTIFACT);
 
-            let got = try_download_aec(&url, dst.path(), "").await.unwrap();
+            let got = try_download_aec(&url, dst.path(), "", &aec_setup_tmp())
+                .await
+                .unwrap();
             assert_eq!(got, dst.path().join(AEC_LIB_FILENAME));
             assert_eq!(std::fs::read(&got).unwrap(), b"dummy-aec-bytes");
         });
@@ -513,9 +523,10 @@ mod download_paths {
         let dst = tempfile::tempdir().unwrap();
         block_on(async {
             // URL 指向不存在的服务器也没关系——走缓存臂根本不会发请求
-            let got = try_download_aec("http://127.0.0.1:9/x.zip", dst.path(), "")
-                .await
-                .unwrap();
+            let got =
+                try_download_aec("http://127.0.0.1:9/x.zip", dst.path(), "", &aec_setup_tmp())
+                    .await
+                    .unwrap();
             assert_eq!(got, dst.path().join(AEC_LIB_FILENAME));
             assert_eq!(std::fs::read(&got).unwrap(), b"cached-aec-bytes");
         });
@@ -542,7 +553,9 @@ mod download_paths {
             let url = format!("{}/{}.zip", server.uri(), AEC_WIN_ARTIFACT);
             let err = format!(
                 "{:#}",
-                try_download_aec(&url, dst.path(), "").await.unwrap_err()
+                try_download_aec(&url, dst.path(), "", &aec_setup_tmp())
+                    .await
+                    .unwrap_err()
             );
             assert!(err.contains("HTTP 404"), "{err}");
             // 失败后归档不该被改名成最终名（还在 .part 或不存在）
@@ -603,7 +616,7 @@ mod download_paths {
                 .await;
             let url = format!("{}/{}.tar.bz2", server.uri(), SHERPA_RELEASE_NAME);
 
-            try_download_and_extract(&url, exe_dir.path(), "")
+            try_download_and_extract(&url, exe_dir.path(), "", &voice_setup_tmp())
                 .await
                 .unwrap();
             for lib in REQUIRED_LIBS {
@@ -647,9 +660,14 @@ mod download_paths {
         let exe_dir = tempfile::tempdir().unwrap();
         // URL 指向不可达端口——走缓存臂不会发请求
         block_on(async {
-            try_download_and_extract("http://127.0.0.1:9/x.tar.bz2", exe_dir.path(), "")
-                .await
-                .unwrap();
+            try_download_and_extract(
+                "http://127.0.0.1:9/x.tar.bz2",
+                exe_dir.path(),
+                "",
+                &voice_setup_tmp(),
+            )
+            .await
+            .unwrap();
             assert!(exe_dir.path().join(REQUIRED_LIBS[0]).exists());
         });
 
@@ -679,7 +697,7 @@ mod download_paths {
             let url = format!("{}/{}.tar.bz2", server.uri(), SHERPA_RELEASE_NAME);
             let err = format!(
                 "{:#}",
-                try_download_and_extract(&url, exe_dir.path(), "")
+                try_download_and_extract(&url, exe_dir.path(), "", &voice_setup_tmp())
                     .await
                     .unwrap_err()
             );
@@ -714,7 +732,7 @@ mod download_paths {
             let url = format!("{}/{}.tar.bz2", server.uri(), SHERPA_RELEASE_NAME);
             let err = format!(
                 "{:#}",
-                try_download_and_extract(&url, exe_dir.path(), "")
+                try_download_and_extract(&url, exe_dir.path(), "", &voice_setup_tmp())
                     .await
                     .unwrap_err()
             );
