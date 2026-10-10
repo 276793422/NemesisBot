@@ -196,7 +196,7 @@ jobs:
           cat target/test-ratio.txt
 
   rust-test:
-    name: Rust full workspace tests (Windows)
+    name: Rust full workspace tests (Windows, shard ${{ matrix.shard }})
     # 2026-10-08 pin windows-2022：win25（windows-latest 当前指向）20261004 镜像
     # （10-07 发布滚动铺开）落地后本 job 编译期 runner 六连死失联（挂点恒定
     # 51-55min，与并发/调试信息/增量全部缓解措施无关，看门狗也未能软着陆）——
@@ -205,6 +205,17 @@ jobs:
     # win22（20261004.326，10-05 波次）无 WSL 升级且 OS 代际不同（20348），作
     # 单变量对照：绿=坐实 win25 20261004 镜像问题（等上游修复再评估回迁），
     # 红=排除镜像、回头排查 Cargo.lock（wasmtime 家族升级）。
+    #
+    # 分片（2026-10-10 第十六轮）：战役 R14 实证 Windows 全量套件执行在慢机族
+    # 上 80-150min 且从未自然完赛（cap 83×3 / 冻死 111,150 / job timeout）——
+    # 单段 150min 本身就是暴露面（撞自 cap、撞 ~50min 冻死窗口、撞 job timeout
+    # 三头堵）。nextest hash 分片把套件稳定对半拆（--partition hash:N/2，按测试
+    # 指纹哈希，两片并集=全集），单片墙钟减半滑出全部死亡窗口。两片各自过看门
+    # 狗与 timeout；fail-fast=false 保一片红时另一片照跑（要全量体检报告）。
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     runs-on: windows-2022
     # 90→120（2026-10-08）：编译三杠杆（JOBS:2 + 无增量）换内存余量，编译变慢，
     # 给冷构建留够预算（120 是 ET 同款 job 的既有额度）。
@@ -316,7 +327,7 @@ jobs:
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag cibuild2 -MaxMinutes 30 -BuildCommand "cargo build -p nemesisbot"
 
-      - name: cargo nextest run --workspace (watchdog)
+      - name: cargo nextest run --workspace (watchdog, shard ${{ matrix.shard }})
         # nextest 步前半段同样是全量测试目标编译（六连死的同源风险面），
         # 同款看门狗包装；尾部行数放大——失败摘要必须在 tail 里可见。
         # MaxMinutes 85（第四轮 75→85）：JOBS:2 + 冷缓存下测试目标编译 ~25-30min
@@ -327,8 +338,11 @@ jobs:
         # 失联，是我们自己的上限比慢机套件墙钟短）。看门狗的天职是软着陆保缓存，
         # 不是掐死合法慢跑；115 给慢机 ~30min 余量（套件慢机墙钟 ~90-100min），
         # 健康机 30-40min 完成不受影响。job timeout 同步 120→180 兜底。
+        # --partition hash:N/2（2026-10-10 第十六轮）：整段拆半——单片=半集测试，
+        # 编译共享（同缓存恢复）执行减半，慢机族 80-150min 的未完赛段从此
+        # ~40-75min 收口。job 级 timeout 维持 180（两片并行，总墙钟不变）。
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag nextest -MaxMinutes 115 -TailOut 200 -TailErr 100 -BuildCommand "cargo nextest run --workspace --no-fail-fast"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag "nextest-s${{ matrix.shard }}" -MaxMinutes 115 -TailOut 200 -TailErr 100 -BuildCommand "cargo nextest run --workspace --no-fail-fast --partition hash:${{ matrix.shard }}/2"
 
   frontend:
     name: Frontend typecheck + vitest + build (Linux)

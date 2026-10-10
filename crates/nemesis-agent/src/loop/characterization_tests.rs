@@ -23,8 +23,9 @@
 //      updated_at（时间戳、耗时、Instant 序列化残留）。
 //   2. trace_id 由 harness 固定传入（"trace-golden"，不经 run() 的
 //      nanos 生成），全程确定性。
-//   3. 会话键固定（golden_* 前缀 + GOLDEN_LOCK 进程内串行），无随机
-//      后缀；文件用后即清。
+//   3. 会话键按进程 ID 派生（golden_scenario_p{pid}，见 session_key）：
+//      同进程内仍走 GOLDEN_LOCK 串行，跨进程（nextest 每测试独立进程）
+//      文件互不相干；文件用后即清。
 //   4. K3 shell 注入的时间/环境快照：`# Current Time / Environment
 //      snapshot` 段内的 `YYYY-MM-DD HH:MM (Weekday)` 行整行替换为
 //      `<TIME_SNAPSHOT>`（随钟逐分漂移的已知波动面；段内其余内容钉死）。
@@ -48,8 +49,9 @@
 //                            ★golden_rate_limit_retry ★golden_transient_retry
 //                             ★golden_context_error_retry
 //
-// 刻意设计：本文件测试用进程级串行锁（GOLDEN_LOCK）保护固定会话键的
-// chat_log/boundary 文件读写，guard 跨 async 测试体的 await 持有；
+// 刻意设计：本文件测试的落盘文件按进程 ID 隔离（session_key），同进程内
+// （cargo test 线程并行）由进程级串行锁（GOLDEN_LOCK）保护、guard 跨 async
+// 测试体的 await 持有；nextest 每测试独立进程，pid 派生键天然互不相干。
 // #[tokio::test] 每个测试独立 current_thread runtime，持锁方在自己线程上
 // 恢复运行，不会死锁。测试域统一豁免（逐处 allow 不现实）。
 #![allow(clippy::await_holding_lock)]
@@ -364,18 +366,25 @@ fn golden_config() -> AgentConfig {
     }
 }
 
-/// 固定会话键（golden_* 无冒号 → sanitize 恒等映射，无嵌套目录）。
-const SESSION_KEY: &str = "golden_scenario";
+/// 会话键：按进程 ID 派生（nextest 纪律，CLAUDE.md 测试命令节）。nextest 每个
+/// 测试独立进程，进程内 GOLDEN_LOCK 管不了跨进程互踩——13 个 golden 场景共用
+/// 固定键会把同一对 chat_log/boundary 文件写花（实录 2026-10-10：本地全量
+/// nextest 10 失败全是本族；cargo test 单进程全绿，掩盖至今）。pid 派生后
+/// 跨进程各走各的文件；同进程内（cargo test 线程并行）键相同，GOLDEN_LOCK
+/// 继续承担串行。基线不含键（grep 实证），golden 文件字节不动。
+fn session_key() -> String {
+    format!("golden_scenario_p{}", std::process::id())
+}
 
 fn chat_log_path() -> std::path::PathBuf {
-    let safe = nemesis_utils::sanitize::sanitize_path_segment(SESSION_KEY);
+    let safe = nemesis_utils::sanitize::sanitize_path_segment(&session_key());
     nemesis_path::default_path_manager()
         .sessions_log_dir()
         .join(format!("{safe}.jsonl"))
 }
 
 fn boundary_log_path() -> std::path::PathBuf {
-    let safe = nemesis_utils::sanitize::sanitize_path_segment(SESSION_KEY);
+    let safe = nemesis_utils::sanitize::sanitize_path_segment(&session_key());
     nemesis_path::default_path_manager()
         .boundary_events_dir()
         .join(format!("{safe}.jsonl"))
@@ -433,7 +442,7 @@ async fn drive_with_capture_provider(
     }));
     wire(&mut agent_loop);
     let instance = AgentInstance::new(config);
-    let context = RequestContext::new("web", "chat1", "user1", SESSION_KEY);
+    let context = RequestContext::new("web", "chat1", "user1", &session_key());
     let token = tokio_util::sync::CancellationToken::new();
     let events = agent_loop
         .run_with_trace(
@@ -780,7 +789,7 @@ async fn golden_estop_mid_llm() {
     wire(&mut agent_loop);
     let agent_loop = Arc::new(agent_loop);
     let instance = AgentInstance::new(golden_config());
-    let context = RequestContext::new("web", "chat1", "user1", SESSION_KEY);
+    let context = RequestContext::new("web", "chat1", "user1", &session_key());
     let token = tokio_util::sync::CancellationToken::new();
     let entered_for_task = entered.clone();
     let task = tokio::spawn(async move {
@@ -877,7 +886,7 @@ async fn golden_cancel_top() {
         sink.lock().unwrap().push((event.to_string(), data.clone()));
     }));
     let instance = AgentInstance::new(golden_config());
-    let context = RequestContext::new("web", "chat1", "user1", SESSION_KEY);
+    let context = RequestContext::new("web", "chat1", "user1", &session_key());
     let token = tokio_util::sync::CancellationToken::new();
     token.cancel();
     let events = agent_loop

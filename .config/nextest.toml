@@ -8,8 +8,26 @@
 #
 # 其余测试不受影响：独立进程反而消除了进程内全局态互踩面
 # （如 nemesis-web 的 PathManager 单例家族，本就要求 per-test 隔离）。
+#
+# 2026-10-10 增补两组（本地全量 nextest 实录假红后收口，同款「进程内锁
+# 在 nextest 下失效」家族）：
+# - legacy-chat-log：nemesis-agent loop 的两个 history 测试共用生产回退键
+#   `agent:main:session:legacy` 的**真实全局** jsonl 文件，且都在开头
+#   delete——跨进程并发时一方 delete 掉另一方刚写入的行 → 计数断言假红。
+#   键是生产常量（受测对象就是回退路径），无法 pid 派生，只能组内串行。
+# - memory-plugin-detect：nemesisbot memory 的 r7 族往
+#   `{exe_dir}/plugins/`（**全 workspace 测试进程共享**的目录）写哑 DLL，
+#   另两个测试断言「插件必不在场」——跨进程并发撞进哑 DLL 存活窗口即假红
+#   （测试注释里 2026-09-02 就实录过一次，当时用 GLOBAL_STATE_LOCK 修，
+#   nextest 下该锁失效）。
 
 [test-groups.live-gateway]
+max-threads = 1
+
+[test-groups.legacy-chat-log]
+max-threads = 1
+
+[test-groups.memory-plugin-detect]
 max-threads = 1
 
 [[profile.default.overrides]]
@@ -18,3 +36,14 @@ max-threads = 1
 # 实证 test(<string>) 为子串匹配；正则 =~// 形式该版本不认，勿回退）。
 filter = 'package(nemesisbot) and (test(r9_live_tests) or test(scenario_tests))'
 test-group = 'live-gateway'
+
+[[profile.default.overrides]]
+filter = 'package(nemesis-agent) and (test(test_history_returns_all_messages) or test(test_history_e2e_via_bus_arc))'
+test-group = 'legacy-chat-log'
+
+[[profile.default.overrides]]
+# 哑 DLL 写者 = r7_enable_success_chain 全模块；「不在场」断言者 =
+# cmd_enable_bails_without_plugin + run_enable_without_plugin_errors_via_env_home；
+# run_status_and_disable_dispatch_via_env_home 宽容但同契约顺带入组。
+filter = 'package(nemesisbot) and (test(r7_enable_success_chain) or test(cmd_enable_bails_without_plugin) or test(_via_env_home))'
+test-group = 'memory-plugin-detect'
