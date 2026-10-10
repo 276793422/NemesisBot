@@ -1628,6 +1628,17 @@ const U_B_PROFESSIONS_POST_U7: [&str; 7] = [
     "myfamily:myspec",
 ];
 
+/// 段级墙钟预算起算点：首个未被过滤的测试开始执行时起算（Phase 1-6 的
+/// setup 都是步骤级有界操作，不占测试预算）。
+static SEGMENT_BUDGET_START: std::sync::OnceLock<tokio::time::Instant> = std::sync::OnceLock::new();
+
+/// 段级预算（秒）：CI 绿轮最长的 core 段测试墙钟 ~16min，1800s 覆盖 2x 慢机。
+const SEGMENT_BUDGET_SECS: u64 = 1800;
+
+/// 单测试预算（秒）：绿轮最重单测试 ~5min（T-MRG-4 三网关重启+合并链），
+/// 600s 覆盖 2x 慢机；触线即诚实 fail。
+const PER_TEST_BUDGET_SECS: u64 = 600;
+
 async fn run_test<F, Fut>(name: &'static str, f: F) -> TestResult
 where
     F: FnOnce() -> Fut,
@@ -1645,7 +1656,34 @@ where
             message: "SKIP: filtered out (--filter/--exclude)".to_string(),
         };
     }
-    let result = f().await;
+    // 墙钟双预算（2026-10-10 mrg-b 两连 54.0min runner 暴死、日志 BlobNotFound
+    // 的结构性回应——ci.yml rust-test env 注释的失联战役同源：整机在 ~45-55min
+    // 窗口被车队回收，唯一自保 = 不留任何无界等待，把慢速轮转化为带完整
+    // stdout 证据的诚实终局，而不是赌 runner 活到自然结束）：
+    // - 段级 SEGMENT_BUDGET_SECS：到线后未开跑的测试 SKIP（passed=true——
+    //   min_pass 地板只防切段参数 typo 退化成 0 测试假绿，降级完赛的 SKIP
+    //   不许把整段打成红；输出自带降级证据可查）。
+    // - 单测试 PER_TEST_BUDGET_SECS：超时 fail（单个测试 10 分钟不返回是
+    //   真异常，值得一个红 + 后续测试照常跑完的完整现场）。
+    let budget_start = *SEGMENT_BUDGET_START.get_or_init(tokio::time::Instant::now);
+    if budget_start.elapsed() >= Duration::from_secs(SEGMENT_BUDGET_SECS) {
+        println!("SEGMENT-BUDGET-SKIP");
+        return skip(
+            name,
+            format!(
+                "段级预算 {SEGMENT_BUDGET_SECS}s 已耗尽（前置测试极端慢速，降级完赛优于 runner 暴死零日志），本测试未执行"
+            ),
+        );
+    }
+    let result = match tokio::time::timeout(Duration::from_secs(PER_TEST_BUDGET_SECS), f()).await {
+        Ok(r) => r,
+        Err(_) => fail(
+            name,
+            format!(
+                "墙钟超单测试预算 {PER_TEST_BUDGET_SECS}s 未返回（楔死/极端慢速嫌疑；诚实失败：后续测试照常执行，收尾倾倒 gateway 日志尾部）"
+            ),
+        ),
+    };
     let status = if result.message.starts_with("SKIP:") {
         "SKIP"
     } else if result.passed {
@@ -10004,6 +10042,17 @@ async fn main() {
             .unwrap_or_else(|_| log_output_dir.clone())
             .display()
     );
+
+    // 失败轮证据直落 stdout（2026-10-10 mrg-b 暴死教训：cluster-uat-logs/
+    // 归集依赖进程活到收尾 + workflow artifact 上传，两者都可能缺席——
+    // stdout 才是 CI 第一现场。有任何 FAIL 时把四节点 gateway 日志尾部
+    // 直接打进 stdout，失败轮自带「当时哪条链路在刷什么」的直接证据。
+    if all_results.iter().any(|r| !r.passed) {
+        println!("\n--- 失败轮 gateway 日志尾部（诊断现场）---");
+        for gw in [&gw_a, &gw_b, &gw_c, &gw_d] {
+            dump_log_tail(&gw.log_path, 200);
+        }
+    }
 
     // Final port cleanup
     cleanup_ports(&all_ports);

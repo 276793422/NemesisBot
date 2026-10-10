@@ -212,10 +212,16 @@ jobs:
     # 三头堵）。nextest hash 分片把套件稳定对半拆（--partition hash:N/2，按测试
     # 指纹哈希，两片并集=全集），单片墙钟减半滑出全部死亡窗口。两片各自过看门
     # 狗与 timeout；fail-fast=false 保一片红时另一片照跑（要全量体检报告）。
+    #
+    # 2→3 片（2026-10-10 深夜）：对半拆后单片仍偶发整机失联（实录 shard1 两连
+    # 死，死亡时刻在构建步——VM 抽签劣化后处处爬行，谁在 45min 线上谁死，
+    # 与步骤无关；shard2 同构建 25min 全绿）。三片把单片测试量再减半，
+    # 典型总墙钟 ~20-22min，深滑出失联窗；构建步的 VM 抽签劣化无法结构性
+    # 消除（rerun-failed-jobs 仍是对策，官方口径同）。三片并集=全集不变。
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3]
     runs-on: windows-2022
     # 90→120（2026-10-08）：编译三杠杆（JOBS:2 + 无增量）换内存余量，编译变慢，
     # 给冷构建留够预算（120 是 ET 同款 job 的既有额度）。
@@ -341,8 +347,11 @@ jobs:
         # --partition hash:N/2（2026-10-10 第十六轮）：整段拆半——单片=半集测试，
         # 编译共享（同缓存恢复）执行减半，慢机族 80-150min 的未完赛段从此
         # ~40-75min 收口。job 级 timeout 维持 180（两片并行，总墙钟不变）。
+        # hash:N/3（2026-10-10 深夜 2→3 片）：对半拆后单片仍偶发失联（shard1
+        # 两连死，死在构建步=VM 抽签劣化与步骤无关），三片把单片测试再减半，
+        # 典型总墙钟 ~20-22min 深滑出失联窗。三片并集=全集。
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag "nextest-s${{ matrix.shard }}" -MaxMinutes 115 -TailOut 200 -TailErr 100 -BuildCommand "cargo nextest run --workspace --no-fail-fast --partition hash:${{ matrix.shard }}/2"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag "nextest-s${{ matrix.shard }}" -MaxMinutes 115 -TailOut 200 -TailErr 100 -BuildCommand "cargo nextest run --workspace --no-fail-fast --partition hash:${{ matrix.shard }}/3"
 
   frontend:
     name: Frontend typecheck + vitest + build (Linux)

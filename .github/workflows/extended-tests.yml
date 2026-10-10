@@ -32,6 +32,8 @@ on:
 
 permissions:
   contents: read
+  # upload-artifact@v4（失败轮证据归档，2026-10-10）需要 actions:write。
+  actions: write
 
 concurrency:
   group: extended-tests
@@ -182,6 +184,13 @@ jobs:
     # 测试挂死，而是 T-MRG 族本体是 sweep/重派等待主导（本地 10.5min，
     # CI 26min+ 仍未完 ≈2.5x 墙钟缩放），7 测试总时长 47-51min 必然横跨
     # 回收线。切 3+4 后每段测试墙钟减半，总时长 32-39min 滑出死亡线。
+    #
+    # mrg-b 再切两段（2026-10-10 深夜）：切 3+4 后 mrg-b 仍两连精确
+    # 54.0min 整机失联（BlobNotFound），同轮 mrg-a/xfer 全绿——段内爬行
+    # （慢速轮单测试链路 600s 级超时逐个烧）+ 回收线叠加，4 测试段仍
+    # 太长。切 b1(T-MRG-4,5)/b2(T-MRG-6,7) 后每段 2 测试；配合 cluster-uat
+    # 双墙钟预算（段级 1800s SKIP + 单测 600s 诚实 fail，2026-10-10），
+    # 段总墙钟上界 ≈ build 8 + setup 2 + 2x10 = 30min，回收线不可达。
     strategy:
       fail-fast: false
       matrix:
@@ -195,9 +204,12 @@ jobs:
           - name: mrg-a
             uat_args: "--filter T-MRG --exclude T-MRG-4 --exclude T-MRG-5 --exclude T-MRG-6 --exclude T-MRG-7"
             min_pass: 3
-          - name: mrg-b
-            uat_args: "--filter T-MRG --exclude T-MRG-1 --exclude T-MRG-2 --exclude T-MRG-3"
-            min_pass: 4
+          - name: mrg-b1
+            uat_args: "--filter T-MRG --exclude T-MRG-1 --exclude T-MRG-2 --exclude T-MRG-3 --exclude T-MRG-6 --exclude T-MRG-7"
+            min_pass: 2
+          - name: mrg-b2
+            uat_args: "--filter T-MRG --exclude T-MRG-1 --exclude T-MRG-2 --exclude T-MRG-3 --exclude T-MRG-4 --exclude T-MRG-5"
+            min_pass: 2
     # pin windows-2022：同 ci.yml rust-test——win25 20261004 镜像波次后编译期
     # runner 六连死失联，与全部资源缓解措施无关；win22 无该波次嫌疑变更
     # （WSL 停 2.x、OS 代际不同），作单变量对照实验。
@@ -293,6 +305,22 @@ jobs:
             echo "::error::cluster-uat ${{ matrix.segment.name }} passed ${n:-0} < floor ${{ matrix.segment.min_pass }}（切段参数 typo 或套件未跑完，不许假绿）"
             exit 1
           fi
+
+      # 失败轮证据归档（2026-10-10 mrg-b 双 54min 暴死、日志 BlobNotFound 的
+      # 教训收尾）：cluster-uat-logs/（四节点 gateway 日志 + cluster 状态）与
+      # tee 的逐测试输出都是 runner 回收后唯一能回查的现场。正常轮不上传
+      # （省存储）；runner 暴死轮两者皆失（无法救）——真正的第一现场已由
+      # cluster-uat 双墙钟预算保证提前落 stdout（预算触线 = 诚实终局）。
+      - name: Upload cluster-uat evidence (failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cluster-uat-evidence-${{ matrix.segment.name }}
+          path: |
+            cluster-uat-logs/
+            uat-${{ matrix.segment.name }}.log
+          if-no-files-found: ignore
+          retention-days: 7
 
       # seed_cache 引导轮终点：构建步全部完成后到这里故意红。cache-on-failure
       # 会在 Post 步骤照常落共享缓存（引导目的达成）；run 结论=失败则
