@@ -57,6 +57,8 @@ pub mod pipeline;
 pub mod resolver;
 #[cfg(feature = "scanner")]
 pub mod scanner;
+#[cfg(feature = "security")]
+pub mod shell_bleed;
 pub mod signature;
 #[cfg(feature = "security")]
 pub mod ssrf;

@@ -872,6 +872,13 @@ pub mod limits;
 // P0 vault（C3）：注入机制测试（纯函数 + loop 级四表面防泄漏）。
 #[cfg(test)]
 mod credential_injection_tests;
+// S2②（2026-10-09 高优差距批次一）：主线工具输出凭据/DLP 复扫（脱敏式；
+// 8 层管线只看入参，出侧此前零检查）。
+#[cfg(feature = "security")]
+mod output_rescan;
+// S2②：复扫测试（凭据/DLP 双路 + 组合 + 观测档不改写）。
+#[cfg(all(test, feature = "security"))]
+mod output_rescan_tests;
 // S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;
