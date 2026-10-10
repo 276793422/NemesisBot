@@ -1,0 +1,16 @@
+[package]
+name = "wsinsight-plugin"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# 三方 SDK：export_tool! 一键导出（运行时钩子由 SDK 再导出，无需直接依赖 wit-bindgen）。
+nemesis-plugin-sdk = { path = "../../../crates/nemesis-plugin-sdk" }
+serde = { version = "1", default-features = false, features = ["derive"] }
+serde_json = "1"
+
+[workspace]

@@ -1,0 +1,177 @@
+// NemesisBot WASM 插件框架 WIT 合同 v0（package nemesis:plugin@0.1.0）。
+//
+// 本文件是**权威源**（单一真相源），住在宿主 crate 内（合同由宿主定义，
+// SDK/示例/三方插件都是消费者）。SDK 绑定直接引用本目录；已入库示例的
+// 随包副本与权威源字节相等（drift 测试钉死）。
+//
+// 版本纪律：package 版本 = 合同代际。v0 冻结后破口径改动必须升 0.2.0；
+// 兼容新增（新可选宿主函数 / 新事件型）可在 minor 内演进。v0 文件不带
+// @unstable 注解（冻结时再补注解层级）。
+package nemesis:plugin@0.1.0;
+
+/// 共享类型别名。
+interface types {
+    /// JSON 文本（对象/数组/标量的序列化形态）。
+    type json-string = string;
+}
+
+/// 宿主能力面（工具与观察者共用）。
+///
+/// 全部调用受每帧宿主调用预算（默认 1000 次/帧）与资源限制管控；
+/// observe 帧内 tool-invoke / secret-get 恒返回 unavailable（防递归放大、
+/// 防事件路径取密），egress / workspace-read 照 manifest 授予照常可用。
+interface host {
+    use types.{json-string};
+
+    /// 日志级别。
+    enum log-level {
+        trace,
+        debug,
+        info,
+        warn,
+        error,
+    }
+
+    /// 出站 HTTP 请求（宿主代理执行：重定向禁用、DNS 钉地址、按 manifest
+    /// allowlist 精确域名放行、allow-private 默认 false）。
+    record http-request {
+        method: string,
+        url: string,
+        headers: list<tuple<string, string>>,
+        body: option<list<u8>>,
+    }
+
+    /// 出站 HTTP 响应（响应体超限被宿主截断丢弃时 status 照常回传）。
+    record http-response {
+        status: u16,
+        headers: list<tuple<string, string>>,
+        body: list<u8>,
+    }
+
+    /// 宿主错误闭合词表（guest 据此穷尽分支；新语义进新值需升合同代际）。
+    variant host-error {
+        /// manifest 未授予该能力（如 egress 无 allowlist）。
+        no-permission,
+        /// 策略拒绝（x-secret 键走 config-get、目标不在 allowlist、路径越界等）。
+        policy-denied(string),
+        /// 资源不存在（配置键未设置、secret 名未声明、文件不存在等）。
+        not-found(string),
+        /// 预算耗尽（fuel / 每帧宿主调用预算 / 响应体上限等）。
+        budget-exceeded(string),
+        /// 能力在场但当前不可用（observe 帧内禁用通道、宿主子系统缺席等）。
+        unavailable(string),
+    }
+
+    /// 结构化日志（宿主背压：队列满丢弃并计数，永不反压 guest）。
+    log: func(level: log-level, message: string);
+
+    /// 当前 Unix 毫秒时间。
+    now-millis: func() -> u64;
+
+    /// 实例配置读取（manifest config-schema 声明的普通键；x-secret 键不在
+    /// 此通道，返回 policy-denied——配置面与凭据面分离）。
+    config-get: func(key: string) -> result<option<string>, host-error>;
+
+    /// 凭据读取（仅 manifest x-secret 声明过的名字；宿主经
+    /// vault:plugin/<slug>/<name> 别名取值，组件永不持凭据原文以外的存储权）。
+    secret-get: func(name: string) -> result<string, host-error>;
+
+    /// 工作区只读（相对路径锚定工作区根，越界/绝对路径/8.3 短名拒绝；
+    /// 字节上限由宿主限制决定）。
+    workspace-read: func(rel-path: string) -> result<list<u8>, host-error>;
+
+    /// 插件私有数据目录的 WASI 挂载点（宿主 per-plugin preopen，仅本插件
+    /// 可读写，其他 fs/socket 全 deny）。持久化写这里。
+    data-dir-path: func() -> result<string, host-error>;
+
+    /// 出站 HTTP（deny-by-default：manifest egress 无 allowlist 即
+    /// no-permission；响应体超 1MB 截断）。
+    http-send: func(req: http-request) -> result<http-response, host-error>;
+
+    /// 调用其它宿主工具（深度 1：`plugin.` 前缀目标拒绝——插件不可互相
+    /// 调用，防递归放大与信任链混淆）。
+    tool-invoke: func(tool: string, args-json: json-string) -> result<json-string, host-error>;
+}
+
+/// 工具型插件出口（world plugin-tool）。
+interface tool {
+    use types.{json-string};
+    use host.{host-error};
+
+    /// 工具元数据（安装期对账 + 宿主注册的唯一事实源）。
+    record tool-metadata {
+        /// 工具基础名（`[a-z0-9-]`；宿主注册时加 `plugin.<slug>.` 前缀）。
+        name: string,
+        /// 人读标题。
+        title: string,
+        /// LLM 可见描述。
+        description: string,
+        /// 参数 JSON Schema（顶层 object 形态）。
+        parameters-json: json-string,
+        /// 操作类型声明：`read` / `write` / `exec` / `network` / 空（宿主
+        /// 对空声明从紧处置：按未注册名默认 CRITICAL 走全闸）。
+        operation-type: string,
+    }
+
+    /// 执行上下文（宿主注入，guest 只读）。
+    record tool-context {
+        /// 当前工作区根（绝对路径）。
+        workspace-root: string,
+        /// 发起会话键（无会话上下文时为空串）。
+        session-key: string,
+        /// 本次调用 ID（审计对账用）。
+        call-id: string,
+    }
+
+    /// 执行入参。
+    record tool-input {
+        /// LLM 给出的参数 JSON。
+        args-json: json-string,
+        /// 执行上下文。
+        context: tool-context,
+    }
+
+    /// 执行结果。
+    record tool-output {
+        /// 回给 LLM 的文本。
+        content: string,
+        /// true = 工具侧认定的业务失败（回灌 LLM 自纠，非 trap）。
+        is-error: bool,
+    }
+
+    /// 元数据自报（安装期编译对账 + 运行期注册）。
+    get-metadata: func() -> result<tool-metadata, host-error>;
+
+    /// 执行一次工具调用。
+    execute: func(input: tool-input) -> result<tool-output, host-error>;
+}
+
+/// 观察者插件出口（world plugin-observer）。
+///
+/// 单入口 `observe` 抗事件类型演进：事件种类增减不改 WIT 形状，只改事件
+/// JSON 的 `type` 字段值域。投递语义（宿主侧）：fire-and-forget per-plugin
+/// 有界队列，满则丢弃+计数，永不反压 agent 事件路径；载荷=宿主脱敏投影
+/// （v1 一律结构化元数据，不含内容体）。
+interface observer {
+    use types.{json-string};
+    use host.{host-error};
+
+    /// 接收一条事件投影。
+    ///
+    /// v1 事件型：`tool_start` / `tool_end`（对齐 agent 事件广播；形状见
+    /// 《三方开发指南》）。`turn` / `final` / `error` 三型为 schema 预留，
+    /// v1 不投递（宿主无对应广播承载形态，挂 v2）。
+    observe: func(event: json-string) -> result<_, host-error>;
+}
+
+/// 工具插件世界（一 manifest 一 kind 不混装）。
+world plugin-tool {
+    import host;
+    export tool;
+}
+
+/// 观察者插件世界。
+world plugin-observer {
+    import host;
+    export observer;
+}
