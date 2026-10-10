@@ -158,8 +158,12 @@ async fn missing_workspace_is_honest_error() {
 async fn set_list_roundtrip_value_never_in_responses() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
-    let resp = with_passphrase(PW, async {
-        VaultHandler
+    // 口令守卫包住**全链**（set/list/status/reopen）：list、status 的
+    // unlocked 断言同样依赖 handler 在 poll 时读到场口令——只包 set 的
+    // 残留版在 Linux（argon2id）下 unlocked=false 假红（CI coverage
+    // 实录 2026-10-10，line 186）。
+    with_passphrase(PW, async {
+        let resp = VaultHandler
             .handle_cmd(
                 "set",
                 Some(serde_json::json!({
@@ -170,58 +174,58 @@ async fn set_list_roundtrip_value_never_in_responses() {
             )
             .await
             .expect("set creates vault on demand")
+            .expect("payload");
+        assert_eq!(resp["alias"], ALIAS);
+        assert_eq!(resp["rotated"], false, "首写不是轮换");
+
+        // list：元数据齐全；完整响应 JSON 不含明文值。
+        let ls = VaultHandler
+            .handle_cmd("list", None, &ctx)
+            .await
+            .expect("list")
+            .expect("payload");
+        assert_eq!(ls["exists"], true);
+        assert_eq!(ls["unlocked"], true, "口令在场应能解锁");
+        let entries = ls["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["alias"], ALIAS);
+        assert_eq!(entries[0]["domain"], "openai");
+        assert_eq!(entries[0]["description"], "S3c 测试条目");
+        assert!(
+            entries[0]["created_at"].as_str().is_some(),
+            "created_at 缺失"
+        );
+        assert_eq!(
+            entries[0]["rotated_at"],
+            serde_json::Value::Null,
+            "首写不该有 rotated_at"
+        );
+        let dumped = serde_json::to_string(&ls).unwrap();
+        assert!(!dumped.contains(SECRET), "list 响应泄漏明文值: {dumped}");
+
+        // status：计数与解锁态。
+        let st = VaultHandler
+            .handle_cmd("status", None, &ctx)
+            .await
+            .expect("status")
+            .expect("payload");
+        assert_eq!(st["alias_count"], 1);
+        assert_eq!(st["unlocked"], true);
+        assert_eq!(
+            st["mode"].as_str().unwrap(),
+            VaultStore::default_mode().to_string()
+        );
+        let dumped = serde_json::to_string(&st).unwrap();
+        assert!(!dumped.contains(SECRET), "status 响应泄漏明文值: {dumped}");
+
+        // 落盘完整性：现开 fixture 取值 == 原值（复制语义链路真通）。
+        let mut store = VaultStore::open(&vault_file(&dir)).expect("reopen");
+        if store.mode() == VaultMode::Argon2id {
+            store.unlock(PW).expect("unlock fixture");
+        }
+        assert_eq!(store.get(ALIAS).expect("get"), SECRET);
     })
-    .await
-    .expect("payload");
-    assert_eq!(resp["alias"], ALIAS);
-    assert_eq!(resp["rotated"], false, "首写不是轮换");
-
-    // list：元数据齐全；完整响应 JSON 不含明文值。
-    let ls = VaultHandler
-        .handle_cmd("list", None, &ctx)
-        .await
-        .expect("list")
-        .expect("payload");
-    assert_eq!(ls["exists"], true);
-    assert_eq!(ls["unlocked"], true, "口令在场应能解锁");
-    let entries = ls["entries"].as_array().unwrap();
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0]["alias"], ALIAS);
-    assert_eq!(entries[0]["domain"], "openai");
-    assert_eq!(entries[0]["description"], "S3c 测试条目");
-    assert!(
-        entries[0]["created_at"].as_str().is_some(),
-        "created_at 缺失"
-    );
-    assert_eq!(
-        entries[0]["rotated_at"],
-        serde_json::Value::Null,
-        "首写不该有 rotated_at"
-    );
-    let dumped = serde_json::to_string(&ls).unwrap();
-    assert!(!dumped.contains(SECRET), "list 响应泄漏明文值: {dumped}");
-
-    // status：计数与解锁态。
-    let st = VaultHandler
-        .handle_cmd("status", None, &ctx)
-        .await
-        .expect("status")
-        .expect("payload");
-    assert_eq!(st["alias_count"], 1);
-    assert_eq!(st["unlocked"], true);
-    assert_eq!(
-        st["mode"].as_str().unwrap(),
-        VaultStore::default_mode().to_string()
-    );
-    let dumped = serde_json::to_string(&st).unwrap();
-    assert!(!dumped.contains(SECRET), "status 响应泄漏明文值: {dumped}");
-
-    // 落盘完整性：现开 fixture 取值 == 原值（复制语义链路真通）。
-    let mut store = VaultStore::open(&vault_file(&dir)).expect("reopen");
-    if store.mode() == VaultMode::Argon2id {
-        store.unlock(PW).expect("unlock fixture");
-    }
-    assert_eq!(store.get(ALIAS).expect("get"), SECRET);
+    .await;
 }
 
 /// 覆盖（轮换）纪律：不带 force 拒绝；force:true 才轮换并保留 created_at。

@@ -300,20 +300,38 @@ async fn token_mismatch_rejected_401() {
 
 /// estop 触发 → 会话被 kill、socket 被服务端关闭（安全红线测试）。
 ///
-/// 取证史（CI windows-2022 连续三轮挂死）：round1 进程挂死 100min+（reap
+/// 取证史（CI windows-2022 连续挂死）：round1 进程挂死 100min+（reap
 /// 阻塞 runtime drop，已根修为裸线程）；round2/round3 nextest 120s 硬杀
-/// TIMEOUT——但 nextest 对 TIMEOUT 不回显捕获输出，eprintln 阶段标记在
-/// 却看不见，挂点无法定位。本轮结构修：fn 本体包 100s 看门狗（< 120s
-/// scoped 硬杀），超时 panic 报「最后到达的标记号」——TIMEOUT 静默变
-/// FAIL 喧哗（FAIL 有捕获输出），下一轮红即得挂点；标记随根因定位后移除。
-/// 逐标记更新 MARKER 原子量；有界化剩余无界段：连接 15s / 关闭等待 10s。
+/// TIMEOUT——nextest 对 TIMEOUT 不回显捕获输出；round3 加的 fn 内 100s
+/// tokio 看门狗**从未触发**（实录 TIMEOUT@120.019s 而非 FAIL@100s）——
+/// runtime 全员陷在同步代码里连 timer 都转不动，tokio 看门狗死于楔死
+/// 本体。本轮结构修：**裸 OS 线程**看门狗（110s，夹在 fn 内 100s 与
+/// nextest 120s 之间），不依赖 runtime——楔死时仍能 `abort()`（nextest
+/// 对 crash 记 FAIL 并回显捕获输出，含最后标记号）；正常路径经 DONE
+/// 解除（panic 路径同样先解除——别在 unwind 中段补刀砸掉 FAIL 报告）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn estop_engage_kills_session() {
     static MARKER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     let mark = |n: u64, what: &str| {
         MARKER.store(n as usize, std::sync::atomic::Ordering::SeqCst);
         eprintln!("[estop-test] {n} {what}");
     };
+
+    // 裸线程看门狗：spawn 在 TEST_LOCK 之前（楔死可能发生在等锁）。
+    std::thread::spawn(|| {
+        for _ in 0..110 {
+            if DONE.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            std::thread::sleep(Duration::from_secs(1));
+        }
+        let last = MARKER.load(std::sync::atomic::Ordering::SeqCst);
+        eprintln!(
+            "[estop-test] 裸线程看门狗 110s 触发：runtime 楔死（fn 内 tokio 看门狗未生效），最后标记 {last}"
+        );
+        std::process::abort();
+    });
 
     let _g = TEST_LOCK.lock().await;
     mark(1, "TEST_LOCK 已持，装夹具");
@@ -358,14 +376,17 @@ async fn estop_engage_kills_session() {
 
     // 100s 看门狗：< nextest scoped 120s 硬杀；Elapsed = fn 卡在 MARKER 之后
     // 的无界段（装夹具/server/trigger 同步路径），panic 让 nextest 记 FAIL
-    // 并回显捕获输出（含最后标记）。
+    // 并回显捕获输出（含最后标记）。panic 前先解除裸线程看门狗——别在
+    // unwind 中段被 abort 补刀砸掉 FAIL 报告。
     if tokio::time::timeout(Duration::from_secs(100), body)
         .await
         .is_err()
     {
         let last = MARKER.load(std::sync::atomic::Ordering::SeqCst);
+        DONE.store(true, std::sync::atomic::Ordering::SeqCst);
         panic!(
             "[estop-test] fn 本体 100s 未完成（nextest 120s 硬杀前自曝）——挂点在标记 {last} 之后的同步段（0=装夹具/server 前，4=estop.trigger 同步路径嫌疑最大）"
         );
     }
+    DONE.store(true, std::sync::atomic::Ordering::SeqCst);
 }
