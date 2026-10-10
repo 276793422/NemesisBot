@@ -300,44 +300,72 @@ async fn token_mismatch_rejected_401() {
 
 /// estop 触发 → 会话被 kill、socket 被服务端关闭（安全红线测试）。
 ///
-/// 全程 eprintln 阶段标记：CI windows-2022 实录本测试两轮挂死（round1
-/// 100min+、round2 nextest 120s 硬杀超时），本机不复现，挂点未知——nextest
-/// 对 timeout 测试会回显捕获输出，下一轮红时最后一个标记即挂点（挂死若在
-/// runtime drop / 进程退出，则全部标记可见）。标记随根因定位后移除。
+/// 取证史（CI windows-2022 连续三轮挂死）：round1 进程挂死 100min+（reap
+/// 阻塞 runtime drop，已根修为裸线程）；round2/round3 nextest 120s 硬杀
+/// TIMEOUT——但 nextest 对 TIMEOUT 不回显捕获输出，eprintln 阶段标记在
+/// 却看不见，挂点无法定位。本轮结构修：fn 本体包 100s 看门狗（< 120s
+/// scoped 硬杀），超时 panic 报「最后到达的标记号」——TIMEOUT 静默变
+/// FAIL 喧哗（FAIL 有捕获输出），下一轮红即得挂点；标记随根因定位后移除。
+/// 逐标记更新 MARKER 原子量；有界化剩余无界段：连接 15s / 关闭等待 10s。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn estop_engage_kills_session() {
+    static MARKER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let mark = |n: u64, what: &str| {
+        MARKER.store(n as usize, std::sync::atomic::Ordering::SeqCst);
+        eprintln!("[estop-test] {n} {what}");
+    };
+
     let _g = TEST_LOCK.lock().await;
-    eprintln!("[estop-test] 1 TEST_LOCK 已持，装夹具");
-    install_terminal_override();
-    ensure_test_manager();
+    mark(1, "TEST_LOCK 已持，装夹具");
 
-    let estop = Arc::new(nemesis_agent::estop::EstopState::new());
-    let addr = start_server(make_state("", Some(estop.clone()))).await;
-    eprintln!("[estop-test] 2 server 就绪 {addr}，连 WS");
-    let mut ws = tokio::time::timeout(Duration::from_secs(15), connect_pty(addr, "?token="))
-        .await
-        .expect("ws connect 在 15s 内应完成（超时=挂点在握手）");
-    eprintln!("[estop-test] 3 WS 已连，500ms 后触发急停");
+    let body = async {
+        install_terminal_override();
+        ensure_test_manager();
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    estop.trigger();
-    eprintln!("[estop-test] 4 急停已触发，等会话关闭（≤10s）");
+        let estop = Arc::new(nemesis_agent::estop::EstopState::new());
+        let addr = start_server(make_state("", Some(estop.clone()))).await;
+        mark(2, "server 就绪，连 WS（≤15s）");
+        let mut ws = tokio::time::timeout(Duration::from_secs(15), connect_pty(addr, "?token="))
+            .await
+            .expect("ws connect 在 15s 内应完成（超时=挂点在握手）");
+        mark(3, "WS 已连，500ms 后触发急停");
 
-    // 服务端 kill 会话后关 socket：期待 Close 帧或流结束（10s 内）。
-    let closed = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            match ws.next().await {
-                None => return,
-                Some(Ok(WsMessage::Close(_))) => return,
-                Some(Ok(_)) => continue, // shell 输出帧（提示语等）忽略
-                Some(Err(_)) => return,
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        estop.trigger();
+        mark(4, "急停已触发，等会话关闭（≤10s）");
+
+        // 服务端 kill 会话后关 socket：期待 Close 帧或流结束（10s 内）。
+        let closed = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match ws.next().await {
+                    None => return,
+                    Some(Ok(WsMessage::Close(_))) => return,
+                    Some(Ok(_)) => continue, // shell 输出帧（提示语等）忽略
+                    Some(Err(_)) => return,
+                }
             }
-        }
-    })
-    .await;
-    eprintln!(
-        "[estop-test] 5 close-wait 结束 closed={}（test fn 完，runtime drop 开始）",
-        closed.as_ref().map(|_| "Ok").unwrap_or("Timeout")
-    );
-    assert!(closed.is_ok(), "session must be killed after estop");
+        })
+        .await;
+        mark(
+            5,
+            &format!(
+                "close-wait 结束 closed={}（test fn 完，runtime drop 开始）",
+                closed.as_ref().map(|_| "Ok").unwrap_or("Timeout")
+            ),
+        );
+        assert!(closed.is_ok(), "session must be killed after estop");
+    };
+
+    // 100s 看门狗：< nextest scoped 120s 硬杀；Elapsed = fn 卡在 MARKER 之后
+    // 的无界段（装夹具/server/trigger 同步路径），panic 让 nextest 记 FAIL
+    // 并回显捕获输出（含最后标记）。
+    if tokio::time::timeout(Duration::from_secs(100), body)
+        .await
+        .is_err()
+    {
+        let last = MARKER.load(std::sync::atomic::Ordering::SeqCst);
+        panic!(
+            "[estop-test] fn 本体 100s 未完成（nextest 120s 硬杀前自曝）——挂点在标记 {last} 之后的同步段（0=装夹具/server 前，4=estop.trigger 同步路径嫌疑最大）"
+        );
+    }
 }
