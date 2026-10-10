@@ -7839,3 +7839,140 @@ fn test_start_discovery_broken_reference_fails_closed() {
     arc.stop();
     nemesis_config::clear_global_vault_resolver();
 }
+
+// ---------------------------------------------------------------------------
+// 探针身份回传（TCP fallback，2026-10-10）：UDP 静默拓扑里身份传播唯一
+// 可靠通道——ping 响应携带自报 announce，探针成功方 apply 入册。
+// ---------------------------------------------------------------------------
+
+/// ping 响应携带自报身份（announce additive 字段）：TCP 探针身份回传的
+/// B 端半边。响应字段集与 UDP announce 同构（build_announce_from_callbacks
+/// 单一真相源），且身份热改（set_professions/set_tier）后下一次 ping 即
+/// 反映——活读而非构造期快照。
+#[test]
+fn test_ping_response_carries_live_announce_identity() {
+    let cluster = Arc::new(make_cluster_with_rpc_server());
+    cluster.install_self_weak();
+    cluster
+        .register_basic_handlers()
+        .expect("register_basic_handlers should succeed");
+    let rpc_server = cluster.rpc_server.as_ref().unwrap();
+
+    let resp = rpc_server
+        .handle_request_sync("ping", serde_json::json!({}))
+        .expect("ping should succeed");
+    assert_eq!(resp["status"], "pong");
+    let ann = resp
+        .get("announce")
+        .expect("self_weak 已安装，ping 响应必须携带 announce");
+    assert_eq!(ann["node_id"], cluster.node_id());
+    assert_eq!(ann["name"], cluster.name());
+    assert_eq!(ann["rpc_port"], cluster.rpc_port());
+
+    // 热改身份 → 下一次 ping 活读反映。
+    cluster.set_professions(vec!["coder".into(), "reviewer".into()]);
+    cluster.set_tier(Some("normal".into()));
+    let resp2 = rpc_server
+        .handle_request_sync("ping", serde_json::json!({}))
+        .unwrap();
+    let ann2 = resp2.get("announce").unwrap();
+    let profs: Vec<&str> = ann2["professions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert!(profs.contains(&"coder") && profs.contains(&"reviewer"));
+    assert_eq!(ann2["tier"], "normal");
+}
+
+/// 裸构造（未 install_self_weak，老调用方/部分单测形态）→ ping 优雅
+/// 降级为裸 pong，无 announce 字段——向后兼容红线。
+#[test]
+fn test_ping_without_self_weak_is_bare_pong() {
+    let cluster = make_cluster_with_rpc_server();
+    cluster
+        .register_basic_handlers()
+        .expect("register_basic_handlers should succeed");
+    let rpc_server = cluster.rpc_server.as_ref().unwrap();
+    let resp = rpc_server
+        .handle_request_sync("ping", serde_json::json!({}))
+        .unwrap();
+    assert_eq!(resp["status"], "pong");
+    assert!(
+        resp.get("announce").is_none(),
+        "未安装 self_weak 时不得携带 announce"
+    );
+}
+
+/// apply_probe_announce（A 端半边）：探针响应携带的对端身份走
+/// handle_discovered_node_ex 单一漏斗落册（professions/tier 进注册表）；
+/// 坏载荷与自身 node_id 诚实忽略、不炸不误伤既有条目。
+///
+/// 隔离必须用 with_workspace + tempdir：apply 命中变更会 sync_to_disk，
+/// 裸构造（空工作区）落到 CWD=包根的 cluster/state.toml——后续测试的
+/// start() 回读它就把本测试的 fixture 当幽灵节点种回注册表（实录：
+/// 五个生命周期计数测试连坐 +1 节点）。
+#[test]
+fn test_apply_probe_announce_lands_identity_in_registry() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+    let ann = serde_json::json!({
+        "version": "1.0",
+        "type": "announce",
+        "node_id": "peer-node-77",
+        "name": "Peer77",
+        "addresses": ["192.168.1.77"],
+        "rpc_port": 17777,
+        "role": "worker",
+        "category": "development",
+        "tags": ["rust"],
+        "capabilities": ["exec"],
+        "node_type": "standard",
+        "professions": ["coder"],
+        "tier": "mini",
+        "timestamp": 0,
+    });
+    cluster.apply_probe_announce(&ann);
+
+    let peers = cluster.registry.list_peers();
+    let peer = peers
+        .iter()
+        .find(|p| p.base.id == "peer-node-77")
+        .expect("对端身份应已入册");
+    assert_eq!(peer.base.name, "Peer77");
+    assert!(peer.professions.iter().any(|p| p == "coder"));
+    assert_eq!(peer.tier.as_deref(), Some("mini"));
+
+    // 坏载荷（缺必填 version/timestamp）：反序列化失败 → 忽略，不落册。
+    let before = cluster.registry.list_peers().len();
+    cluster.apply_probe_announce(&serde_json::json!({"type": "announce"}));
+    assert_eq!(cluster.registry.list_peers().len(), before);
+
+    // 空 node_id：忽略。
+    cluster.apply_probe_announce(&serde_json::json!({
+        "version": "1.0", "type": "announce", "node_id": "",
+        "timestamp": 0,
+    }));
+    assert_eq!(cluster.registry.list_peers().len(), before);
+
+    // 自身 node_id：忽略（自 ping 回环不自报）。
+    cluster.apply_probe_announce(&serde_json::json!({
+        "version": "1.0",
+        "type": "announce",
+        "node_id": cluster.node_id(),
+        "name": "self-echo",
+        "addresses": ["127.0.0.1"],
+        "rpc_port": 1,
+        "role": "worker",
+        "category": "development",
+        "tags": [],
+        "capabilities": [],
+        "node_type": "standard",
+        "timestamp": 0,
+    }));
+    assert_eq!(cluster.registry.list_peers().len(), before);
+    cluster.stop();
+    nemesis_config::clear_global_vault_resolver();
+}
