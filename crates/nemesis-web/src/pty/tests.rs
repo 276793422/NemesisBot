@@ -299,18 +299,29 @@ async fn token_mismatch_rejected_401() {
 }
 
 /// estop 触发 → 会话被 kill、socket 被服务端关闭（安全红线测试）。
+///
+/// 全程 eprintln 阶段标记：CI windows-2022 实录本测试两轮挂死（round1
+/// 100min+、round2 nextest 120s 硬杀超时），本机不复现，挂点未知——nextest
+/// 对 timeout 测试会回显捕获输出，下一轮红时最后一个标记即挂点（挂死若在
+/// runtime drop / 进程退出，则全部标记可见）。标记随根因定位后移除。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn estop_engage_kills_session() {
     let _g = TEST_LOCK.lock().await;
+    eprintln!("[estop-test] 1 TEST_LOCK 已持，装夹具");
     install_terminal_override();
     ensure_test_manager();
 
     let estop = Arc::new(nemesis_agent::estop::EstopState::new());
     let addr = start_server(make_state("", Some(estop.clone()))).await;
-    let mut ws = connect_pty(addr, "?token=").await;
+    eprintln!("[estop-test] 2 server 就绪 {addr}，连 WS");
+    let mut ws = tokio::time::timeout(Duration::from_secs(15), connect_pty(addr, "?token="))
+        .await
+        .expect("ws connect 在 15s 内应完成（超时=挂点在握手）");
+    eprintln!("[estop-test] 3 WS 已连，500ms 后触发急停");
 
     tokio::time::sleep(Duration::from_millis(500)).await;
     estop.trigger();
+    eprintln!("[estop-test] 4 急停已触发，等会话关闭（≤10s）");
 
     // 服务端 kill 会话后关 socket：期待 Close 帧或流结束（10s 内）。
     let closed = tokio::time::timeout(Duration::from_secs(10), async {
@@ -324,5 +335,9 @@ async fn estop_engage_kills_session() {
         }
     })
     .await;
+    eprintln!(
+        "[estop-test] 5 close-wait 结束 closed={}（test fn 完，runtime drop 开始）",
+        closed.as_ref().map(|_| "Ok").unwrap_or("Timeout")
+    );
     assert!(closed.is_ok(), "session must be killed after estop");
 }

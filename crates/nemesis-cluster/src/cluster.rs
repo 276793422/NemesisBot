@@ -97,6 +97,11 @@ pub struct Cluster {
     rpc_client: Mutex<Option<Arc<RpcClient>>>,
     /// RPC server instance.
     rpc_server: Option<Arc<crate::rpc::server::RpcServer>>,
+    /// Arc 自根槽（弱引用；gateway 装配在 `Arc::new(cluster)` 后经
+    /// [`Cluster::install_self_weak`] 安装一次）。RPC handler 闭包与后台
+    /// 循环经它活读自身身份——构造期只有 `&self`（无 Arc），安装先后无关
+    /// （闭包捕获的是共享槽 Arc，后装也能看到）。
+    self_weak: Arc<Mutex<Option<std::sync::Weak<Cluster>>>>,
     /// RPC channel for LLM communication (set by AgentLoop).
     rpc_channel: RwLock<Option<Arc<dyn crate::rpc::RpcChannel>>>,
 
@@ -193,6 +198,7 @@ impl Cluster {
             result_store: Arc::new(TaskResultStore::new(1000)),
             rpc_client: Mutex::new(None),
             rpc_server: None,
+            self_weak: Arc::new(Mutex::new(None)),
             rpc_channel: RwLock::new(None),
             udp_port: DEFAULT_UDP_PORT,
             rpc_port: DEFAULT_RPC_PORT,
@@ -313,6 +319,7 @@ impl Cluster {
             )),
             rpc_client: Mutex::new(None),
             rpc_server: None,
+            self_weak: Arc::new(Mutex::new(None)),
             rpc_channel: RwLock::new(None),
             udp_port: DEFAULT_UDP_PORT,
             rpc_port: DEFAULT_RPC_PORT,
@@ -871,6 +878,8 @@ impl Cluster {
         let local_node_id = self.node_id.clone();
         // Arc 克隆进任务：探针复活时活读回调槽（gateway 组装晚于 start() 也能读到）
         let on_discovered = self.on_node_discovered.clone();
+        // 自根弱引用槽：探针成功时把响应携带的 announce 身份落册（TCP fallback）
+        let self_weak_slot = self.self_weak.clone();
 
         handle.spawn(async move {
             // 错过 tick 用 Delay 追赶语义（不补帧），避免卡顿后连发风暴
@@ -935,6 +944,18 @@ impl Cluster {
                                                 "[Cluster] Health probe response timestamp drift (peer clock not synced?)"
                                             );
                                         }
+                                    }
+                                    // 身份回传（TCP fallback，2026-10-10）：ping 响应携带
+                                    // announce（与 UDP announce 同构的 additive 字段）时，
+                                    // 经 apply_probe_announce 走 handle_discovered_node_ex
+                                    // 同一入册漏斗。UDP 静默拓扑（CI ghost 进程占端口、
+                                    // AP 隔离、跨网段多宿主）里这是身份传播的唯一可靠
+                                    // 通道——否则静态 peers.toml 入册的条目会带着创建期
+                                    // 的空身份冻结到永远（U 家族 9 连红根因）。
+                                    if let Some(ann) = resp.result.as_ref().and_then(|r| r.get("announce"))
+                                        && let Some(c) = self_weak_slot.lock().clone().and_then(|w| w.upgrade())
+                                    {
+                                        c.apply_probe_announce(ann);
                                     }
                                     if registry.record_probe_success(&node_id) {
                                         tracing::info!(
@@ -2845,16 +2866,31 @@ impl Cluster {
 
         // ping
         let node_id = self.node_id.clone();
+        // 共享槽 Arc：注册可能早于 install_self_weak（gateway 装配顺序），
+        // 捕获槽本身而非快照——后装也能被升级到。
+        let self_weak_slot = self.self_weak.clone();
         self.register_rpc_handler(
             "ping",
             Box::new(move |_payload| {
-                Ok(serde_json::json!({
+                let mut resp = serde_json::json!({
                     "status": "pong",
                     "node_id": node_id,
                     // G2: 供主动探针交叉校验对端时钟漂移（additive 字段，
                     // 旧客户端忽略）。
                     "timestamp": chrono::Utc::now().timestamp(),
-                }))
+                });
+                // 探针身份回传（additive 字段，旧客户端忽略）：自报身份与
+                // UDP announce 同构（DiscoveryMessage），对端探针成功时经
+                // apply_probe_announce 走同一入册漏斗——UDP 隔离拓扑里这是
+                // 身份传播的唯一可靠通道。
+                let upgraded = self_weak_slot.lock().clone().and_then(|w| w.upgrade());
+                if let Some(c) = upgraded {
+                    match serde_json::to_value(crate::discovery::build_announce_from_callbacks(c.as_ref())) {
+                        Ok(ann) => resp["announce"] = ann,
+                        Err(e) => tracing::debug!(error = %e, "[Cluster] announce payload serialize failed"),
+                    }
+                }
+                Ok(resp)
             }),
         )?;
 
@@ -3378,6 +3414,60 @@ impl Cluster {
     /// Set the RPC server instance.
     pub fn set_rpc_server(&mut self, server: Arc<crate::rpc::server::RpcServer>) {
         self.rpc_server = Some(server);
+    }
+
+    /// 安装 Arc 自根弱引用（gateway 装配在 `Arc::new(cluster)` 之后调用一次）。
+    ///
+    /// 消费方：`ping` RPC handler（探针响应回传自报身份）与 G2 健康探针
+    /// 循环（探针成功时应用对端身份）——两者都在只有 `&self` 的上下文里
+    /// 注册/启动，经本槽活读自身。未安装（裸构造的单测）时全部优雅降级：
+    /// ping 回裸 pong、探针只记活不应用身份。
+    pub fn install_self_weak(self: &Arc<Self>) {
+        *self.self_weak.lock() = Some(Arc::downgrade(self));
+    }
+
+    /// 探针身份应用：把探针响应里携带的对端自报身份（announce 同构载荷）
+    /// 走 [`Self::handle_discovered_node_ex`] 单一漏斗入册。
+    ///
+    /// 背景（2026-10-10 ET U 系九连红根因）：身份（professions/tier）唯一
+    /// 载体是 UDP announce；广播被隔离/UDP 端口被幽灵进程劫持的部署形态
+    /// （CI 虚拟机实录：静态 peer + TCP 全通、announce 十九分钟零到达）里
+    /// 身份永远不落地，而 TCP 探针全程健康。本方法让可靠 TCP 探针成为
+    /// 身份传播的兜底通道。旧对端（响应无 announce 字段）静默跳过。
+    pub(crate) fn apply_probe_announce(&self, ann: &serde_json::Value) {
+        let msg: crate::discovery::DiscoveryMessage = match serde_json::from_value(ann.clone()) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::debug!(error = %e, "[Cluster] Probe announce payload malformed, skipped");
+                return;
+            }
+        };
+        // 自报来源守卫：空 id / 自身 id（announce 同款 self-check 语义）。
+        if msg.node_id.is_empty() || msg.node_id == self.node_id {
+            return;
+        }
+        let changed = self.handle_discovered_node_ex(
+            &msg.node_id,
+            &msg.name,
+            msg.addresses,
+            msg.rpc_port,
+            &msg.role,
+            &msg.category,
+            msg.tags,
+            msg.capabilities,
+            &msg.node_type,
+            msg.professions,
+            msg.tier,
+        );
+        if changed {
+            tracing::info!(
+                node_id = %msg.node_id,
+                "[Cluster] Probe carried identity update (UDP-isolated topology fallback)"
+            );
+            if let Err(e) = self.sync_to_disk() {
+                tracing::error!(error = %e, "[Cluster] Failed to sync config after probe identity apply");
+            }
+        }
     }
 
     /// Get a reference to the RPC server (if initialized).

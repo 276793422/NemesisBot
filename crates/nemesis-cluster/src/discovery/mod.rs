@@ -6,6 +6,7 @@ mod listener;
 mod message;
 
 pub use crypto::{CryptoService, decrypt_data, derive_key, encrypt_data};
+pub(crate) use discovery::build_announce_from_callbacks;
 pub use discovery::{
     AnnounceWarnGate, ClusterCallbacks, DRIFT_WARN_THRESHOLD_SECS, DiscoveryConfig, DiscoveryError,
     DiscoveryService,
