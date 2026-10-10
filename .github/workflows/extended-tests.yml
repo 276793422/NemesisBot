@@ -165,7 +165,29 @@ jobs:
         run: cargo check -p nemesisbot ${{ matrix.flags }}
 
   integration-windows:
-    name: Integration + cluster UAT (Windows)
+    name: Integration + cluster UAT (Windows, ${{ matrix.segment.name }})
+    # 切三段独立 job（2026-10-10）：单 job 整套 cluster-uat（T1-T37 +
+    # T-XFER×6 + T-MRG×7，成功轮 32min）连续两轮在 ~45:40±1s 处 runner
+    # 暴死（GitHub 注解 = hosted runner lost communication；integration-test
+    # 两轮都 ~50s 证明 VM 速度没退化，套件是卡在某个测试上+runner 暴死的
+    # 叠加事件；日志随 runner 蒸发 BlobNotFound 无法定位死点）。切段后每段
+    # VM 暴露 ≤ 半小时远短于 45min 死亡线；段死不连坐（rerun-failed-jobs
+    # 只重跑死段）；卡死在段内 = 120min job 超时而非 runner 暴死 = 日志
+    # 正常上传，悬案变带日志的红。Passed 行数 floor 守卫防切段参数 typo
+    # 退化成 0 测试假绿。
+    strategy:
+      fail-fast: false
+      matrix:
+        segment:
+          - name: core
+            uat_args: "--exclude T-XFER --exclude T-MRG"
+            min_pass: 37
+          - name: xfer
+            uat_args: "--filter T-XFER"
+            min_pass: 6
+          - name: mrg
+            uat_args: "--filter T-MRG"
+            min_pass: 7
     # pin windows-2022：同 ci.yml rust-test——win25 20261004 镜像波次后编译期
     # runner 六连死失联，与全部资源缓解措施无关；win22 无该波次嫌疑变更
     # （WSL 停 2.x、OS 代际不同），作单变量对照实验。
@@ -242,14 +264,25 @@ jobs:
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag etbuild2 -MaxMinutes 30 -BuildCommand "cargo build -p nemesisbot"
 
-      # 纯 bin runner：cargo run（不是 cargo test——见文件头注释）
+      # 纯 bin runner：cargo run（不是 cargo test——见文件头注释）。
+      # tee 留全量输出进 step 日志；Passed floor 守卫防切段参数 typo 退化
+      # 成 0 测试假绿（--filter/--exclude 都是子串匹配，拼错=全 SKIP）。
       - name: Run integration-test (492 assertions, 22 commands)
         if: ${{ inputs.seed_cache != true }}
         run: cargo run -p integration-test
 
-      - name: Run cluster-uat (T1-T18 E2E)
+      - name: Run cluster-uat (${{ matrix.segment.name }})
         if: ${{ inputs.seed_cache != true }}
-        run: cargo run -p cluster-uat
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo run -p cluster-uat -- ${{ matrix.segment.uat_args }} | tee uat-${{ matrix.segment.name }}.log
+          n=$(grep -oE 'Passed: [0-9]+' uat-${{ matrix.segment.name }}.log | grep -oE '[0-9]+' | tail -1)
+          echo "cluster-uat ${RUNNER_NAME:-} executed-passed: ${n:-0} (floor ${{ matrix.segment.min_pass }})"
+          if [ -z "$n" ] || [ "$n" -lt ${{ matrix.segment.min_pass }} ]; then
+            echo "::error::cluster-uat ${{ matrix.segment.name }} passed ${n:-0} < floor ${{ matrix.segment.min_pass }}（切段参数 typo 或套件未跑完，不许假绿）"
+            exit 1
+          fi
 
       # seed_cache 引导轮终点：构建步全部完成后到这里故意红。cache-on-failure
       # 会在 Post 步骤照常落共享缓存（引导目的达成）；run 结论=失败则

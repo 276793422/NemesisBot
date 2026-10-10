@@ -12,6 +12,8 @@
 //! Usage:
 //!   cargo run -p cluster-uat                    # Run all tests
 //!   cargo run -p cluster-uat -- --skip-long     # Skip long-running tests
+//!   cargo run -p cluster-uat -- --filter T-XFER             # 名字含串者执行
+//!   cargo run -p cluster-uat -- --exclude T-XFER --exclude T-MRG  # 含串者跳过
 
 use std::path::Path;
 use std::process::Stdio;
@@ -1632,14 +1634,15 @@ where
     Fut: std::future::Future<Output = TestResult>,
 {
     print!("\n  [TEST] {} ... ", name);
-    if let Some(Some(filt)) = TEST_FILTER.get()
-        && !name.contains(filt.as_str())
+    if let Some((filt, excludes)) = TEST_SELECT.get()
+        && (filt.as_ref().is_some_and(|f| !name.contains(f.as_str()))
+            || excludes.iter().any(|e| name.contains(e.as_str())))
     {
         println!("SKIP");
         return TestResult {
             name: name.to_string(),
             passed: true,
-            message: "SKIP: filtered out (--filter)".to_string(),
+            message: "SKIP: filtered out (--filter/--exclude)".to_string(),
         };
     }
     let result = f().await;
@@ -1678,12 +1681,14 @@ fn trunc(s: &str, max: usize) -> String {
 struct Args {
     _skip_long: bool,
     filter: Option<String>,
+    excludes: Vec<String>,
 }
 
 fn parse_args() -> Args {
     let args: Vec<String> = std::env::args().collect();
     let mut skip_long = false;
     let mut filter = None;
+    let mut excludes = Vec::new();
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -1694,6 +1699,14 @@ fn parse_args() -> Args {
                     filter = Some(args[i].clone());
                 }
             }
+            // 可重复；名字含任一 exclude 串的测试直接 SKIP（CI 切段用：
+            // core 段跑 T1-T37 需排除 T-XFER / T-MRG 两族）。
+            "--exclude" => {
+                i += 1;
+                if i < args.len() {
+                    excludes.push(args[i].clone());
+                }
+            }
             _ => {}
         }
         i += 1;
@@ -1701,12 +1714,14 @@ fn parse_args() -> Args {
     Args {
         _skip_long: skip_long,
         filter,
+        excludes,
     }
 }
 
-/// --filter 接线（2026-09-18 T26 排查）：单测试定点复跑。设置后仅执行
-/// 名字含过滤串的测试，其余直接 SKIP（setup/节点装配不受影响）。
-static TEST_FILTER: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+/// --filter / --exclude 接线（--filter 2026-09-18 T26 排查；--exclude
+/// 2026-10-10 CI 切段）：设置后仅执行名字含 filter 串且不含任一 exclude
+/// 串的测试，其余直接 SKIP（setup/节点装配不受影响）。
+static TEST_SELECT: std::sync::OnceLock<(Option<String>, Vec<String>)> = std::sync::OnceLock::new();
 
 // ---------------------------------------------------------------------------
 // Main
@@ -1715,7 +1730,7 @@ static TEST_FILTER: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::n
 #[tokio::main]
 async fn main() {
     let args = parse_args();
-    let _ = TEST_FILTER.set(args.filter);
+    let _ = TEST_SELECT.set((args.filter, args.excludes));
 
     println!("========================================");
     println!("  NemesisBot Cluster UAT Test Suite");

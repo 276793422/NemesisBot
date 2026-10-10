@@ -47,3 +47,11 @@ test-group = 'legacy-chat-log'
 # run_status_and_disable_dispatch_via_env_home 宽容但同契约顺带入组。
 filter = 'package(nemesisbot) and (test(r7_enable_success_chain) or test(cmd_enable_bails_without_plugin) or test(_via_env_home))'
 test-group = 'memory-plugin-detect'
+
+[[profile.default.overrides]]
+# PTY estop 会话测试的进程级挂死保险（2026-10-10 CI shard1 实录：kill 未
+# 真正终止 ConPTY 子进程时 reap 阻塞任务卡住 runtime drop，测试进程挂死
+# 100min+ 直到看门狗烧满整段；根修 = pty.rs reap 改裸线程，此条兜同家族
+# 未来未知挂法——120s 硬杀把挂死变快速红）。本地全程秒级，120s = 12x 余量。
+filter = 'package(nemesis-web) and test(estop_engage_kills_session)'
+slow-timeout = { period = '60s', terminate-after = 2 }
