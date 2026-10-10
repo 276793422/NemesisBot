@@ -166,7 +166,7 @@ jobs:
 
   integration-windows:
     name: Integration + cluster UAT (Windows, ${{ matrix.segment.name }})
-    # 切三段独立 job（2026-10-10）：单 job 整套 cluster-uat（T1-T37 +
+    # 切段独立 job（2026-10-10）：单 job 整套 cluster-uat（T1-T37 +
     # T-XFER×6 + T-MRG×7，成功轮 32min）连续两轮在 ~45:40±1s 处 runner
     # 暴死（GitHub 注解 = hosted runner lost communication；integration-test
     # 两轮都 ~50s 证明 VM 速度没退化，套件是卡在某个测试上+runner 暴死的
@@ -175,6 +175,13 @@ jobs:
     # 只重跑死段）；卡死在段内 = 120min job 超时而非 runner 暴死 = 日志
     # 正常上传，悬案变带日志的红。Passed 行数 floor 守卫防切段参数 typo
     # 退化成 0 测试假绿。
+    #
+    # mrg 再切两段（2026-10-10 晚）：mrg 段三连死于 runner 回收线
+    # （45:40 级/53min/48min，全 BlobNotFound 零次跑完），同构建链的 core
+    # 段（37 测试）rerun 34min 绿、xfer 两连绿——定位不是构建也不是个别
+    # 测试挂死，而是 T-MRG 族本体是 sweep/重派等待主导（本地 10.5min，
+    # CI 26min+ 仍未完 ≈2.5x 墙钟缩放），7 测试总时长 47-51min 必然横跨
+    # 回收线。切 3+4 后每段测试墙钟减半，总时长 32-39min 滑出死亡线。
     strategy:
       fail-fast: false
       matrix:
@@ -185,9 +192,12 @@ jobs:
           - name: xfer
             uat_args: "--filter T-XFER"
             min_pass: 6
-          - name: mrg
-            uat_args: "--filter T-MRG"
-            min_pass: 7
+          - name: mrg-a
+            uat_args: "--filter T-MRG --exclude T-MRG-4 --exclude T-MRG-5 --exclude T-MRG-6 --exclude T-MRG-7"
+            min_pass: 3
+          - name: mrg-b
+            uat_args: "--filter T-MRG --exclude T-MRG-1 --exclude T-MRG-2 --exclude T-MRG-3"
+            min_pass: 4
     # pin windows-2022：同 ci.yml rust-test——win25 20261004 镜像波次后编译期
     # runner 六连死失联，与全部资源缓解措施无关；win22 无该波次嫌疑变更
     # （WSL 停 2.x、OS 代际不同），作单变量对照实验。
