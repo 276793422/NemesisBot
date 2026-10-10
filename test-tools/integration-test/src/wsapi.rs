@@ -167,6 +167,15 @@ pub async fn chat_round_collect_tools(
                         Some("user") => continue, // 发送回声帧
                         Some("assistant") => {
                             let content = v["data"]["content"].as_str().unwrap_or("").to_string();
+                            // admission 的排队/插话回执（GateOutcome::Immediate）
+                            // 是忙时「当轮立即回执」而非本轮最终回复——慢机上
+                            // 并发轮次撞 busy 时先到，必须继续等（queue 模式
+                            // 保证排队消息在下一轮边界处理并回真回复）。实录：
+                            // CI 慢机 gateway/concurrent 5 会话共享主 loop，
+                            // 通知被当最终回复 → 无 marker 假红（4/5）。
+                            if content.starts_with("⏳") || content.starts_with("⚡") {
+                                continue;
+                            }
                             let _ = stream.close(None).await;
                             return Ok((content, events));
                         }
