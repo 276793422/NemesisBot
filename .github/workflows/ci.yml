@@ -314,6 +314,13 @@ jobs:
       # 设 NEMESISBOT_VOICE_HW_TESTS=1 可在 CI opt-in）。
       # ⚠️ 新增触碰 cpal/音频设备的测试必须挂同款闸，否则 CI 必崩。
       #
+      # 同族警示（2026-10-10）：estop→ConPTY kill 路径在 hosted windows
+      # runner 上四连楔死（100min+ 挂死/120s TIMEOUT×2/110s 看门狗 abort，
+      # 本机不复现；优雅 close 的 roundtrip/401 不受影响）——
+      # pty::tests::estop_engage_kills_session 挂同款 CI 闸（Windows CI
+      # 默认 SKIP，NEMESISBOT_PTY_ESTOP_TESTS=1 opt-in；Linux CI 照跑）。
+      # 新增走 ConPTY kill 的测试须挂同款闸。
+      #
       # nextest（2026-09-29 提速 P3）：① 测试二进制并行执行；② .config/nextest.toml
       # 把真 gateway live 批（commands::gateway::{r9_live_tests,scenario_tests}，
       # 固定端口 8080/49000/18790，原 live_gate() 互斥闸只在单进程内生效）钉进
