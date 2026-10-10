@@ -4,6 +4,12 @@
 //! [`TEST_LOCK`] 串行（PathRestore 先例）。Windows 默认 dpapi（open 即解
 //! 锁，口令不参与）；Linux 默认 argon2id——fixture 创建与解锁显式带口令，
 //! 两个平台同一套用例（锁定态用例在 dpapi 平台诚实跳过——dpapi 无锁态）。
+//!
+//! env 守卫必须包住**整个 poll**：helper 按值收 future（不是构造闭包）。
+//! 首版闭包形态 `with_passphrase(PW, || async{..}).await` 只在锁内构造
+//! future，真正 .await 发生在摘除口令之后——Linux（argon2id）下 handler
+//! 读 env 恒空，四个 set/remove 用例全红（2026-10-10 ET Linux + CI
+//! coverage 双 job 实录）；Windows dpapi 不需要口令，恒绿掩盖了它。
 
 use super::VaultHandler;
 use crate::api_handlers::AppState;
@@ -11,13 +17,14 @@ use crate::events::EventHub;
 use crate::session::SessionManager;
 use crate::ws_router::{ModuleHandler, RequestContext};
 use nemesis_security::vault::{VaultMode, VaultStore};
-use parking_lot::Mutex as PlMutex;
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-/// 触及进程 env 的用例互斥（env 是进程全局）。
-static TEST_LOCK: PlMutex<()> = PlMutex::new(());
+/// 触及进程 env 的用例互斥（env 是进程全局）。tokio Mutex——守卫要持锁
+/// 跨 await（env 置位必须包住整个 poll），跨 await 锁一律 tokio Mutex 的家规。
+static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 const SECRET: &str = "sk-s3c-ROUNDTRIP-SECRET-do-not-echo";
 const ALIAS: &str = "openai/prod-key";
@@ -77,21 +84,22 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     }
 }
 
-/// 在 `NEMESISBOT_VAULT_PASSPHRASE=<pw>` 在场的环境下跑 `f`，结束后摘除。
+/// 在 `NEMESISBOT_VAULT_PASSPHRASE=<pw>` 在场的环境下 poll `f`，结束后摘除。
+/// `f` 按值收 future（不是构造闭包）——set_var 必须包住整个 poll（见模块注释）。
 /// SAFETY：进程 env 全局——全部触及该变量的用例都持 TEST_LOCK 串行。
-fn with_passphrase<T>(pw: &str, f: impl FnOnce() -> T) -> T {
-    let _g = TEST_LOCK.lock();
+async fn with_passphrase<T>(pw: &str, f: impl Future<Output = T>) -> T {
+    let _g = TEST_LOCK.lock().await;
     unsafe { std::env::set_var("NEMESISBOT_VAULT_PASSPHRASE", pw) };
-    let out = f();
+    let out = f.await;
     unsafe { std::env::remove_var("NEMESISBOT_VAULT_PASSPHRASE") };
     out
 }
 
-/// 无口令环境下跑 `f`（锁定态用例）。
-fn without_passphrase<T>(f: impl FnOnce() -> T) -> T {
-    let _g = TEST_LOCK.lock();
+/// 无口令环境下 poll `f`（锁定态用例）。按值收 future，同 [`with_passphrase`]。
+async fn without_passphrase<T>(f: impl Future<Output = T>) -> T {
+    let _g = TEST_LOCK.lock().await;
     unsafe { std::env::remove_var("NEMESISBOT_VAULT_PASSPHRASE") };
-    f()
+    f.await
 }
 
 /// 建一个与平台默认模式一致的空 vault fixture（argon2id 带测试口令）。
@@ -150,7 +158,7 @@ async fn missing_workspace_is_honest_error() {
 async fn set_list_roundtrip_value_never_in_responses() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
-    let resp = with_passphrase(PW, || async {
+    let resp = with_passphrase(PW, async {
         VaultHandler
             .handle_cmd(
                 "set",
@@ -221,7 +229,7 @@ async fn set_list_roundtrip_value_never_in_responses() {
 async fn set_overwrite_requires_force_and_rotates() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
-    with_passphrase(PW, || async {
+    with_passphrase(PW, async {
         let set_args = |v: &str| serde_json::json!({ "alias": ALIAS, "value": v, "domain": "d" });
         VaultHandler
             .handle_cmd("set", Some(set_args(SECRET)), &ctx)
@@ -268,7 +276,7 @@ async fn set_overwrite_requires_force_and_rotates() {
 async fn set_empty_value_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
-    let err = with_passphrase(PW, || async {
+    let err = with_passphrase(PW, async {
         VaultHandler
             .handle_cmd(
                 "set",
@@ -287,7 +295,7 @@ async fn set_empty_value_rejected() {
 async fn set_invalid_alias_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
-    let err = with_passphrase(PW, || async {
+    let err = with_passphrase(PW, async {
         VaultHandler
             .handle_cmd(
                 "set",
@@ -317,7 +325,7 @@ async fn remove_flows() {
         .expect_err("remove on missing vault must error");
     assert!(err.contains("vault 文件不存在"), "{err}");
 
-    with_passphrase(PW, || async {
+    with_passphrase(PW, async {
         VaultHandler
             .handle_cmd(
                 "set",
@@ -369,7 +377,7 @@ async fn locked_vault_reports_unlocked_false_and_set_fails_loud() {
     create_fixture(&dir);
 
     // 无口令环境：list 照常列（元数据明文）但 unlocked=false；set 诚实失败。
-    without_passphrase(|| async {
+    without_passphrase(async {
         let ls = VaultHandler
             .handle_cmd("list", None, &ctx)
             .await
