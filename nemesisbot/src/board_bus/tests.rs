@@ -2040,9 +2040,10 @@ mod w5r2 {
     /// delivery.files：目录已存在但目标名被同名**目录**占用 →
     /// create_dir_all Ok、fs::write 必败 → INTERNAL「写入失败」（区别于
     /// 目录自建失败臂）。stored_name = `{Utc 毫秒}_a.txt`——写入发生在
-    /// 布阵**之后**，漂移单向为正：单侧深窗 [t0-100, t0+8000] 覆盖
-    /// 「布阵耗时 ≤8s」的全部落点（±300ms 双侧窗会被布阵自身耗时漂出，
-    /// 已实测偶发漏接）。
+    /// 布阵**之后**，漂移单向为正，所以窗口锚定**布阵结束时刻**（自校
+    /// 准循环：布阵本身超预算就把窗再向前推 8s），不是 t0 时刻的定宽窗
+    /// ——CI 慢机上 8101 次 create_dir 自身超 8s（实录 20.4s），定宽窗
+    /// 全部漏接假红（2026-10-10 CI shard1 三连红根因）。
     #[test]
     fn w5_delivery_files_write_fail_readonly_dir() {
         use base64::Engine as _;
@@ -2060,7 +2061,7 @@ mod w5r2 {
             .insert_dispatch("w5-dl-1", issue.id, "node-b", &Actor::admin("test"))
             .unwrap();
 
-        // 预建落盘目录 + 目标名同名目录阵（时间戳碰撞注入，单侧深窗）。
+        // 预建落盘目录 + 目标名同名目录阵（时间戳碰撞注入，自校准单侧窗）。
         let files_dir = ws
             .path()
             .join("board")
@@ -2068,8 +2069,19 @@ mod w5r2 {
             .join(format!("issue_{}", issue.id));
         std::fs::create_dir_all(&files_dir).unwrap();
         let t0 = chrono::Utc::now().timestamp_millis();
-        for ms in t0 - 100..=t0 + 8000 {
-            std::fs::create_dir(files_dir.join(format!("{ms}_a.txt"))).unwrap();
+        let mut end = t0 + 8000;
+        let mut planted_end = t0 - 101;
+        loop {
+            for ms in planted_end + 1..=end {
+                let _ = std::fs::create_dir(files_dir.join(format!("{ms}_a.txt")));
+            }
+            planted_end = end;
+            let now = chrono::Utc::now().timestamp_millis();
+            if now <= end {
+                break;
+            }
+            // 布阵已越过窗沿（慢机）——窗锚前推到「现在+8s」补种再验。
+            end = now + 8000;
         }
 
         let (ok, code, _) = parse_reply(handle_nb_bus(

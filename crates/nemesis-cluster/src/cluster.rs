@@ -1681,8 +1681,11 @@ impl Cluster {
     ///
     /// If both keys sanitize to the same value (i.e. the user already added the
     /// peer with the real ID), this is a no-op aside from a content refresh via
-    /// `persist_real_peer_to_toml`. Otherwise the placeholder is deleted and the
-    /// real ID is written.
+    /// `persist_real_peer_to_toml`. Otherwise the placeholder is stripped AND
+    /// the real entry inserted into the same in-memory doc, then persisted with
+    /// **one** atomic write（T2 TOCTOU 根修：两段写之间的「两头皆无」窗口是
+    /// 并发读盘方假红的根因——见函数尾注）。条目形态走
+    /// [`crate::cluster_config::build_peer_entry_table`] 与追加路径同源。
     fn upgrade_peer_in_peers_toml(&self, placeholder: &str, real_id: &str, info: &RealNodeInfo) {
         let path = &self.static_config_path;
         // Same key after sanitization → just write the real_id content.
@@ -1743,7 +1746,22 @@ impl Cluster {
             );
         }
 
-        // Atomic write back the modified doc.
+        // T2 TOCTOU 根修（2026-10-10）：真实条目**并入同一份 doc 后单次原子
+        // 写**。旧两段式（先删占位写一次，再追加真实条目又写一次）在两次写
+        // 之间留出「既无占位也无真实条目」的窗口——G2 探针身份化（probe-identity
+        // 改造）后升级路径触发频率大增，并发读盘的 T2 检查恰好落窗即假红。
+        peers_table.insert(
+            real_id.to_string(),
+            toml::Value::Table(crate::cluster_config::build_peer_entry_table(
+                &Self::rpc_to_udp_address(&info.address),
+                info.role.as_role_str(),
+                &info.category,
+                Some(&info.name),
+                info.rpc_port,
+            )),
+        );
+
+        // Single atomic write of placeholder-strip + real-entry insert.
         let toml_str = match toml::to_string_pretty(&doc) {
             Ok(s) => s,
             Err(e) => {
@@ -1754,9 +1772,6 @@ impl Cluster {
         if let Err(e) = write_atomic(path, toml_str.as_bytes()) {
             tracing::warn!(error = %e, "[Cluster] Failed to write peers.toml after upgrade");
         }
-
-        // Append real_id entry (atomic).
-        self.persist_real_peer_to_toml(real_id, info);
     }
 
     // -- Task management ------------------------------------------------------
