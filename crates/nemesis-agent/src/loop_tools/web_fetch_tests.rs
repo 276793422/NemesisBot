@@ -392,3 +392,136 @@ async fn j2b_html_oversize_extracts_then_spills_clean_text() {
         "script must stay out of spill"
     );
 }
+
+// ---------------------------------------------------------------------------
+// S3a：headers 参数（首跳限定 + 校验）
+// ---------------------------------------------------------------------------
+
+/// S3a：headers 只上首跳。逐跳记录每请求是否带 Authorization：/a（首跳）
+/// = true，302 → /b（尾跳）= false——自定义头跟随重定向会把凭据泄漏给
+/// 302 指向的第三方目标，必须首跳限定。
+#[tokio::test]
+async fn s3a_headers_sent_on_first_hop_only() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    let handle = std::thread::spawn(move || {
+        let mut seen: Vec<(String, bool)> = Vec::new();
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut buf = [0u8; 8192];
+            let mut got = 0;
+            loop {
+                match stream.read(&mut buf[got..]) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        got += n;
+                        if buf[..got].windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                        if got == buf.len() {
+                            break;
+                        }
+                    }
+                }
+            }
+            let req = String::from_utf8_lossy(&buf[..got]);
+            let auth = req.to_ascii_lowercase().contains("authorization:");
+            let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
+            seen.push((path.clone(), auth));
+            let resp = if path == "/a" {
+                "HTTP/1.1 302 Found\r\nLocation: /b\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    .to_string()
+            } else {
+                let body = format!("HOP={}", auth);
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+            };
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+            if path != "/a" {
+                break;
+            }
+        }
+        seen
+    });
+
+    let tool = WebFetchTool::new(50000);
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let args = serde_json::json!({
+        "url": format!("http://127.0.0.1:{}/a", port),
+        "headers": {"Authorization": "Bearer s3a-secret", "X-Custom": "s3a"}
+    })
+    .to_string();
+    let out = tool.execute(&args, &ctx).await.expect("redirect fetch");
+
+    // 尾跳响应体证明：header 未随重定向转发（HOP=false）。
+    assert!(out.contains("HOP=false"), "尾跳不得收到自定义头: {out}");
+    // 服务端逐跳记录：首跳带、尾跳不带。
+    let seen = handle.join().expect("server thread");
+    assert_eq!(
+        seen,
+        vec![("/a".to_string(), true), ("/b".to_string(), false)],
+        "首跳必须带 headers，尾跳必须不带: {seen:?}"
+    );
+}
+
+#[test]
+fn s3a_extract_headers_validation_matrix() {
+    // 合法：解析为 (name, value) 对（名字归一小写）。
+    let out = super::extract_headers(r#"{"headers":{"X-A":"1","Authorization":"Bearer t"}}"#)
+        .expect("valid headers");
+    assert_eq!(out.len(), 2);
+    assert!(out.contains(&("x-a".to_string(), "1".to_string())));
+
+    // 无 headers 键 / 非 JSON / headers 非对象 = 空（向后兼容）。
+    assert!(
+        super::extract_headers(r#"{"url":"http://x"}"#)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(super::extract_headers("not-json").unwrap().is_empty());
+    assert!(
+        super::extract_headers(r#"{"headers":"str"}"#)
+            .unwrap()
+            .is_empty()
+    );
+
+    // 值非字符串：诚实拒绝。
+    let err = super::extract_headers(r#"{"headers":{"X-A":42}}"#).unwrap_err();
+    assert!(err.contains("must be a string"), "{err}");
+
+    // 逐跳协议头 denylist。
+    for banned in ["Host", "Content-Length", "Connection", "Transfer-Encoding"] {
+        let args = serde_json::json!({"headers": {banned: "x"}}).to_string();
+        let err = super::extract_headers(&args).unwrap_err();
+        assert!(
+            err.contains("managed by the transport layer"),
+            "{banned}: {err}"
+        );
+    }
+
+    // 非法头名（空格）：诚实拒绝（reqwest 层会 panic，必须前置拦截）。
+    let err = super::extract_headers(r#"{"headers":{"Bad Header":"x"}}"#).unwrap_err();
+    assert!(err.contains("invalid header name"), "{err}");
+
+    // 单值超 4KB。
+    let err = super::extract_headers(
+        &serde_json::json!({
+            "headers": {"X-Big": "v".repeat(4097)}
+        })
+        .to_string(),
+    )
+    .unwrap_err();
+    assert!(err.contains("too large"), "{err}");
+
+    // 超过 16 个头。
+    let mut obj = serde_json::Map::new();
+    for i in 0..17 {
+        obj.insert(format!("X-H{i}",), serde_json::json!("v"));
+    }
+    let err = super::extract_headers(&serde_json::json!({"headers": obj}).to_string()).unwrap_err();
+    assert!(err.contains("too many headers"), "{err}");
+}

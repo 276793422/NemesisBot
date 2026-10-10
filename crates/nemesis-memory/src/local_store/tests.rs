@@ -442,3 +442,189 @@ async fn tfidf_flush_fails_when_parent_is_a_file() {
         "got: {err}"
     );
 }
+
+// ---- MemoryStore 契约套件（S6）：TfIdfLocalStore 端挂接 ----
+// 契约驱动本体在 crate::contract_tests（双后端共享），此处只做实例化。
+// 每个契约用独立 tempdir + 独立 store，杜绝用例间状态串扰。
+
+macro_rules! contract_on_tfidf {
+    ($fn_name:ident, $contract:path) => {
+        #[tokio::test]
+        async fn $fn_name() {
+            let dir = tempfile::tempdir().unwrap();
+            let store = TfIdfLocalStore::new(dir.path().join("contract.jsonl"))
+                .await
+                .unwrap();
+            $contract(&store).await;
+        }
+    };
+}
+
+contract_on_tfidf!(
+    contract_tfidf_store_get_roundtrip,
+    crate::contract_tests::contract_store_get_roundtrip
+);
+contract_on_tfidf!(
+    contract_tfidf_get_missing_is_none,
+    crate::contract_tests::contract_get_missing_is_none
+);
+contract_on_tfidf!(
+    contract_tfidf_delete_true_then_false,
+    crate::contract_tests::contract_delete_true_then_false
+);
+contract_on_tfidf!(
+    contract_tfidf_query_match_and_miss,
+    crate::contract_tests::contract_query_match_and_miss
+);
+contract_on_tfidf!(
+    contract_tfidf_query_type_filter,
+    crate::contract_tests::contract_query_type_filter
+);
+contract_on_tfidf!(
+    contract_tfidf_query_limit_respected_total_kept,
+    crate::contract_tests::contract_query_limit_respected_total_kept
+);
+contract_on_tfidf!(
+    contract_tfidf_query_ranks_full_overlap_first,
+    crate::contract_tests::contract_query_ranks_full_overlap_first
+);
+contract_on_tfidf!(
+    contract_tfidf_query_tags_searchable,
+    crate::contract_tests::contract_query_tags_searchable
+);
+contract_on_tfidf!(
+    contract_tfidf_update_replaces_in_place,
+    crate::contract_tests::contract_update_replaces_in_place
+);
+contract_on_tfidf!(
+    contract_tfidf_update_missing_inserts,
+    crate::contract_tests::contract_update_missing_inserts
+);
+contract_on_tfidf!(
+    contract_tfidf_list_type_filter_and_pagination,
+    crate::contract_tests::contract_list_type_filter_and_pagination
+);
+contract_on_tfidf!(
+    contract_tfidf_list_empty_store,
+    crate::contract_tests::contract_list_empty_store
+);
+contract_on_tfidf!(
+    contract_tfidf_close_ok,
+    crate::contract_tests::contract_close_ok
+);
+
+// ---- TfIdfLocalStore 本地语义锁（契约边界之外，见 contract_tests 模块头）----
+
+#[tokio::test]
+async fn tfidf_update_does_not_archive() {
+    // 关键分歧锁（本契约套件的立项动因）：update 是「原地维护」语义，
+    // 必须走覆盖路径——若未来改回默认 delete+store 实现，delete 的
+    // archive-on-forget sidecar 会把活跃条目误写进归档文件，此测试即红。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store.jsonl");
+    let store = TfIdfLocalStore::new(&path).await.unwrap();
+
+    let mut e = make_entry(MemoryType::LongTerm, "active living entry");
+    e.id = "live-1".to_string();
+    store.store(e).await.unwrap();
+
+    let mut updated = make_entry(MemoryType::LongTerm, "active refreshed entry");
+    updated.id = "live-1".to_string();
+    store.update(updated).await.unwrap();
+
+    assert!(
+        !dir.path().join("store.archive.jsonl").exists(),
+        "update 不得触碰归档 sidecar（活跃条目不是被遗忘的条目）"
+    );
+    assert!(store.get("live-1").await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn tfidf_store_duplicate_id_replaces() {
+    // 本地语义：store 对同 id 是替换（Map 语义）——与 LocalStore 的 Vec
+    // 追加语义相反；更新必须走 update（原位替换且不触归档）。
+    let dir = tempfile::tempdir().unwrap();
+    let store = TfIdfLocalStore::new(dir.path().join("store.jsonl"))
+        .await
+        .unwrap();
+
+    let mut first = make_entry(MemoryType::LongTerm, "first");
+    first.id = "dup-1".to_string();
+    store.store(first).await.unwrap();
+    let mut second = make_entry(MemoryType::LongTerm, "second");
+    second.id = "dup-1".to_string();
+    store.store(second).await.unwrap();
+
+    let all = store.list(None, 100, 0).await.unwrap();
+    assert_eq!(all.len(), 1, "同 id store 替换不追加");
+    let got = store.get("dup-1").await.unwrap().unwrap();
+    assert_eq!(got.content, "second");
+}
+
+#[tokio::test]
+async fn tfidf_query_limit_zero_uses_default_ten() {
+    // 本地语义：query limit=0 视为默认档 10（LocalStore 是 take(0)——两族相反）。
+    let dir = tempfile::tempdir().unwrap();
+    let store = TfIdfLocalStore::new(dir.path().join("store.jsonl"))
+        .await
+        .unwrap();
+    for _i in 0..3 {
+        store
+            .store(make_entry(MemoryType::LongTerm, "tolpa seed"))
+            .await
+            .unwrap();
+    }
+    let res = store.query("tolpa", None, 0).await.unwrap();
+    assert_eq!(res.total, 3);
+    assert_eq!(res.entries.len(), 3, "limit=0 走默认档，不全空");
+}
+
+#[tokio::test]
+async fn tfidf_list_limit_zero_is_unlimited() {
+    // 本地语义：list limit=0 = 不限（LocalStore 是 take(0)——两族相反）。
+    let dir = tempfile::tempdir().unwrap();
+    let store = TfIdfLocalStore::new(dir.path().join("store.jsonl"))
+        .await
+        .unwrap();
+    for i in 0..3 {
+        store
+            .store(make_entry(MemoryType::LongTerm, &format!("entry {i}")))
+            .await
+            .unwrap();
+    }
+    assert_eq!(store.list(None, 0, 0).await.unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn tfidf_list_orders_by_created_at_desc() {
+    // 本地语义：list 按 created_at 倒序（LocalStore 保持插入序）。
+    // 同毫秒创建的条目时间戳可能相同，用显式 created_at 拉开。
+    use chrono::Local;
+    let dir = tempfile::tempdir().unwrap();
+    let store = TfIdfLocalStore::new(dir.path().join("store.jsonl"))
+        .await
+        .unwrap();
+
+    let mut oldest = make_entry(MemoryType::LongTerm, "oldest");
+    oldest.id = "ord-1".to_string();
+    oldest.created_at = Local::now() - chrono::Duration::hours(2);
+    let mut middle = make_entry(MemoryType::LongTerm, "middle");
+    middle.id = "ord-2".to_string();
+    middle.created_at = Local::now() - chrono::Duration::hours(1);
+    let mut newest = make_entry(MemoryType::LongTerm, "newest");
+    newest.id = "ord-3".to_string();
+
+    // 插入顺序故意与时间序相反，证明排序来自 created_at 而非插入序。
+    store.store(oldest).await.unwrap();
+    store.store(newest).await.unwrap();
+    store.store(middle).await.unwrap();
+
+    let ids: Vec<String> = store
+        .list(None, 100, 0)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|e| e.id)
+        .collect();
+    assert_eq!(ids, vec!["ord-3", "ord-2", "ord-1"]);
+}

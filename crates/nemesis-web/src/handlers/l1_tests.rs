@@ -1,7 +1,8 @@
 //! L1（devtool-upgrade 阶段 6）— WSAPI 命令注册表测试。
 //!
 //! 三件事：
-//! 1. 结构不变量——31 个注册模块（含 feature 门控的 8 个，按 cfg 断言）
+//! 1. 结构不变量——注册模块清单（含 feature 门控模块，按 cfg 计入下限；
+//!    security 门控带 scanner/editor/vault 三个附加模块）
 //!    清单非空、模块内无重复、锚点命令在位；
 //! 2. `system.commands` dispatch 链路（OnceLock 快照 → handler → JSON）；
 //! 3. 文档生成——`docs/INFO/wsapi-commands.md`（docs/ 已 gitignore，测试
@@ -130,9 +131,10 @@ fn registry_all_modules_nonempty_no_dupes() {
     ];
     let expected_floor = UNCONDITIONAL_MODULES.len()
         + gated_on.iter().filter(|b| **b).count()
-        // security 门控附加两模块:scanner + editor(Full Access 放行开关,
-        // 2026-09-20)——security 模块本体已由 gated_on 的 security 项计入。
-        + if cfg!(feature = "security") { 2 } else { 0 };
+        // security 门控附加三模块:scanner + editor(Full Access 放行开关,
+        // 2026-09-20) + vault(凭据 vault 管理面, 2026-10-09)——security 模块
+        // 本体已由 gated_on 的 security 项计入。
+        + if cfg!(feature = "security") { 3 } else { 0 };
     assert!(
         reg.len() >= expected_floor,
         "registry modules {} < floor {expected_floor}: {:?}",
@@ -199,6 +201,9 @@ fn registry_anchor_commands_present() {
         // Full Access 编辑器放行开关(2026-09-20)。
         assert!(cmds_of(&reg, "editor").contains(&"get"));
         assert!(cmds_of(&reg, "editor").contains(&"set"));
+        // S3c（2026-10-09）：凭据 vault 管理面锚点。
+        assert!(cmds_of(&reg, "vault").contains(&"list"));
+        assert!(cmds_of(&reg, "vault").contains(&"set"));
     }
     if cfg!(feature = "sandbox") {
         assert!(cmds_of(&reg, "sandbox").contains(&"commit"));

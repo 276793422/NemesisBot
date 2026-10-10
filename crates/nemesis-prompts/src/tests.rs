@@ -181,14 +181,50 @@ fn summary_schema_sections_and_ledger_heading_are_protocol_stable() {
 #[test]
 fn summary_schema_suffix_lists_all_sections() {
     let s = aux::render_summary_schema_suffix();
+    // S4 起：后缀以「标识符保全」硬性规则开头，输出格式句在其后。
     assert!(
-        s.starts_with("\n\n输出格式："),
-        "后缀以空行 + 输出格式句开头"
+        s.starts_with("\n\n标识符保全"),
+        "后缀以空行 + 标识符保全规则开头"
+    );
+    let rule = s.find("输出格式：").expect("输出格式句在场");
+    assert!(
+        s.find("标识符保全").unwrap() < rule,
+        "标识符规则先于输出格式句"
     );
     for sec in aux::SUMMARY_SCHEMA_SECTIONS {
         assert!(s.contains(&format!("\n## {sec}")), "缺节：{sec}");
     }
     assert!(s.contains("（无）"), "空节占位规则应在场");
+}
+
+#[test]
+fn summary_identifier_preservation_rule_reaches_all_summary_paths() {
+    // S4 契约：标识符保全规则必须经由共享后缀抵达全部三路摘要调用
+    //（首次全量 / UPDATE 迭代 / multipart 合并）——分支摘要走
+    // render_summary_schema_suffix 本体，由上一用例覆盖。
+    let marker = "逐字保留";
+    for (name, text) in [
+        (
+            "fresh",
+            aux::render_summary_instruction(None, 0, &[]).into_boxed_str(),
+        ),
+        (
+            "update",
+            aux::render_summary_instruction(Some("旧摘要"), 3, &[]).into_boxed_str(),
+        ),
+        (
+            "merge",
+            aux::render_summary_merge_prompt("一", "二").into_boxed_str(),
+        ),
+    ] {
+        assert!(text.contains(marker), "{name} 路径缺标识符保全规则");
+    }
+    // 规则必须点名最高频漂移类（路径/主机名/编号），防止措辞弱化成泛泛
+    // 「保留细节」。
+    let suffix = aux::render_summary_schema_suffix();
+    for cls in ["文件路径", "主机名", "UUID", "issue/ticket"] {
+        assert!(suffix.contains(cls), "标识符规则缺类别：{cls}");
+    }
 }
 
 #[test]

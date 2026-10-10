@@ -843,18 +843,27 @@ fn w5_fixture_resolvers_are_consistent() {
 #[test]
 fn w5_fixture_shared_embed_func_honest_without_plugin() {
     let dll = crate::vector::test_fixture::resolve_plugin_dll();
+    let cfg_dir = crate::vector::test_fixture::resolve_config_dir();
     let mut err_text = String::new();
     let mut got_ok = false;
     match crate::vector::test_fixture::shared_embed_func() {
         Err(e) => err_text = e,
         Ok(_) => got_ok = true,
     };
-    if dll.is_none() {
-        assert!(!got_ok, "无 DLL 必须报错");
-        assert!(err_text.contains("plugin_onnx.dll"), "{err_text}");
+    // 环境齐备 = DLL + config/模型两半都在：只看 DLL 会把「有 DLL 但缺
+    // 模型文件」的机器误判成全备（该分支曾在此类机器上假红）。
+    let env_ready = dll.is_some() && cfg_dir.is_some();
+    if !env_ready {
+        assert!(!got_ok, "环境不齐备必须报错");
+        let missing_dll = dll.is_none();
+        assert!(
+            err_text.contains("plugin_onnx.dll")
+                || (!missing_dll && err_text.contains("Config dir")),
+            "错误信息必须点名缺失的那一半: {err_text}"
+        );
     } else {
         // 环境齐备：函数必须成功给出可调用 embed（不实际触发推理）。
-        assert!(got_ok, "有 DLL 时 shared_embed_func 应成功");
+        assert!(got_ok, "环境齐备时 shared_embed_func 应成功: {err_text}");
     }
     // OnceLock 缓存：第二次调用拿到同样结论且不重新初始化。
     let again_err = crate::vector::test_fixture::shared_embed_func().is_err();
