@@ -3653,11 +3653,29 @@ impl Tool for WebFetchTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({"type":"object","properties":{"url":{"type":"string","description":"URL to fetch"}},"required":["url"]})
+        serde_json::json!({
+            "type":"object",
+            "properties":{
+                "url":{"type":"string","description":"URL to fetch"},
+                "headers":{
+                    "type":"object",
+                    "description":"Optional HTTP headers sent with the FIRST request only (never forwarded on redirects). Values must be strings; use vault:<alias> references for credentials so the raw value never enters context or history.",
+                    "additionalProperties":{"type":"string"}
+                }
+            },
+            "required":["url"]
+        })
+    }
+
+    // P0 vault（C1/S3a）：headers 槽位承载凭据别名（模型传 `vault:<alias>`，
+    // dispatch 最内层改写真值——历史/预览只见别名）。
+    fn credential_arg_keys(&self) -> &[&str] {
+        &["headers"]
     }
 
     async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
         let start_url = extract_url(args)?;
+        let headers = extract_headers(args)?;
 
         // J2a（2026-09-04）：手动重定向循环替代 reqwest 默认自动跟随——
         // 旧实现用默认 client（≤10 跳自动跟随），SSRF 闸只查首跳 URL，
@@ -3671,10 +3689,19 @@ impl Tool for WebFetchTool {
 
         let mut current = start_url;
         let mut hops: usize = 0;
+        // S3a：自定义 headers 只上**首跳**——Authorization 等跟随重定向会
+        // 泄漏给 302 指向的第三方目标（凭据外泄面）。
+        let mut first_hop = true;
         loop {
             let client = self.hop_client(&current, &plain_client)?;
-            let resp = client
-                .get(&current)
+            let mut req = client.get(&current);
+            if first_hop && !headers.is_empty() {
+                for (k, v) in &headers {
+                    req = req.header(k, v);
+                }
+            }
+            first_hop = false;
+            let resp = req
                 .send()
                 .await
                 .map_err(|e| expand_error("request failed", &e))?;
@@ -3755,6 +3782,76 @@ fn extract_url(args: &str) -> Result<String, String> {
         return Ok(url.to_string());
     }
     Ok(args.trim().to_string())
+}
+
+/// S3a：解析 + 校验 `headers` 参数（首跳自定义头）。诚实拒绝面：
+/// - 非 JSON / 无 headers 键 = 空表（向后兼容旧调用形态）；
+/// - 值非字符串 / 头名或值非法（reqwest 层会 panic，必须前置校验）；
+/// - 逐跳协议头 denylist（host/content-length/connection/transfer-encoding
+///   ——由传输层自管，手工注入属请求走私面）；
+/// - 数量 >16 或单值 >4KB（滥用面钳制）。
+fn extract_headers(args: &str) -> Result<Vec<(String, String)>, String> {
+    let val = match serde_json::from_str::<serde_json::Value>(args) {
+        Ok(v) => v,
+        Err(_) => return Ok(Vec::new()),
+    };
+    let Some(obj) = val.get("headers").and_then(|h| h.as_object()) else {
+        return Ok(Vec::new());
+    };
+    if obj.len() > 16 {
+        return Err(format!(
+            "too many headers ({} > 16): the headers parameter is for a handful of auth/routing headers, not bulk injection",
+            obj.len()
+        ));
+    }
+    let mut out = Vec::with_capacity(obj.len());
+    for (k, v) in obj {
+        let name = reqwest::header::HeaderName::try_from(k.as_str())
+            .map_err(|e| format!("invalid header name '{k}': {e}"))?;
+        // 逐跳协议头 denylist（小写归一后比对；HeaderName 本就小写化）。
+        if matches!(
+            name.as_str(),
+            "host" | "content-length" | "connection" | "transfer-encoding"
+        ) {
+            return Err(format!(
+                "header '{k}' is managed by the transport layer and cannot be overridden"
+            ));
+        }
+        let Some(value) = v.as_str() else {
+            return Err(format!(
+                "header '{k}' must be a string value (got {})",
+                v_type_name(v)
+            ));
+        };
+        if value.len() > 4096 {
+            return Err(format!(
+                "header '{k}' value too large ({} > 4096 bytes)",
+                value.len()
+            ));
+        }
+        if !value.is_ascii() {
+            return Err(format!(
+                "header '{k}' value must be visible ASCII (HTTP/1.1 header constraint)"
+            ));
+        }
+        // ASCII 校验后 try_from 实际不可达失败——保留错误链防御未来改动。
+        reqwest::header::HeaderValue::try_from(value.to_string())
+            .map_err(|e| format!("invalid header value for '{k}': {e}"))?;
+        out.push((name.to_string(), value.to_string()));
+    }
+    Ok(out)
+}
+
+/// S3a：headers 值类型的人读名（错误文案用）。
+fn v_type_name(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+        serde_json::Value::String(_) => "string",
+    }
 }
 
 // ===========================================================================

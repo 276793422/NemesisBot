@@ -34,9 +34,14 @@ pub const FILE_LEDGER_HEADING: &str = "## 本会话已修改文件";
 /// 六节 schema 输出格式后缀。compact 尾部指令 / multipart 合并提示 / 分支
 /// 摘要三处共用——此前三份内联拷贝曾发生措辞漂移（合并变体丢失「内容
 /// 简明扼要」），收拢后单源。
+///
+/// 含「标识符保全」硬性规则（S4）：小模型摘要器把 `host-abc-12` 改写成
+/// 「某服务器」会导致后续工具调用全部落空——摘要里的 UUID / 路径 / 主机名 /
+/// ticket 号等必须逐字保留。规则放后缀（三路摘要共用）而非单一指令变体，
+/// 保证 merge / 分支摘要路径同样受约束。
 pub fn render_summary_schema_suffix() -> String {
     let mut s = String::from(
-        "\n\n输出格式：严格按以下六节 Markdown schema 输出（标题原样保留，内容简明扼要；某节无内容写「（无）」）：",
+        "\n\n标识符保全（硬性规则）：摘要中出现的标识符——UUID、哈希值、文件路径、主机名、域名、URL、端口号、issue/ticket 编号（如 NB-37）、版本号、分支名、代码标识符（函数/类/变量/命令名）——必须逐字保留，禁止改写、缩写、意译或概括；不确定如何转述时原样照抄。\n\n输出格式：严格按以下六节 Markdown schema 输出（标题原样保留，内容简明扼要；某节无内容写「（无）」）：",
     );
     for sec in SUMMARY_SCHEMA_SECTIONS {
         s.push_str(&format!("\n## {sec}"));

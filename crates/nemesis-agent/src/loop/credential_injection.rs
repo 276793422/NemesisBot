@@ -14,6 +14,11 @@
 //! 同链路，见 nemesis_config::vault_ref）；非 vault 值（模型传的字面量）
 //! 原样通过（向后兼容，工具自行决定语义）。解析失败 → 返回模型可读的
 //! 错误串（fail loud，带补救指引），工具不执行。
+//!
+//! S3a 扩展：声明槽位为**对象**时递归改写其字符串叶子（string→string
+//! 结构，如 web_fetch 的 `headers`）——顶层键是业务分组、凭据活在叶值里。
+//! 深度恒 1 层（声明键 → 对象 → 字符串叶），不做任意深度递归：声明的
+//! 是「这个槽承载凭据」，更深的嵌套声明不出来，宁缺毋滥。
 
 use crate::r#loop::Tool;
 
@@ -36,22 +41,42 @@ pub fn inject_credential_aliases(tool: &dyn Tool, args: &str) -> Result<String, 
         return Ok(args.to_string());
     };
     for key in keys {
-        let Some(serde_json::Value::String(slot)) = map.get_mut(*key) else {
-            // 槽位缺席/非字符串：工具的 schema 校验域，注入层不代管。
+        let Some(slot) = map.get_mut(*key) else {
+            // 槽位缺席：工具的 schema 校验域，注入层不代管。
             continue;
         };
-        if let Some(resolved) = nemesis_config::resolve_vault_reference(slot) {
-            match resolved {
-                Ok(secret) => *slot = secret,
-                Err(e) => {
-                    return Err(format!(
-                        "⛔ CREDENTIAL REFERENCE FAILED [layer:credential|field:{key}] {e}。\
-                         工具未执行。不要重试同一别名；若别名正确，请让用户运行 \
-                         `nemesisbot vault set <alias>` 写入后再试。"
-                    ));
+        match slot {
+            serde_json::Value::String(s) => {
+                resolve_slot_value(key, s)?;
+            }
+            serde_json::Value::Object(inner) => {
+                for (leaf_key, leaf) in inner.iter_mut() {
+                    if let serde_json::Value::String(s) = leaf {
+                        resolve_slot_value(&format!("{key}.{leaf_key}"), s)?;
+                    }
                 }
             }
+            // 非字符串/对象槽位：工具的 schema 校验域，注入层不代管。
+            _ => continue,
         }
     }
     serde_json::to_string(&val).map_err(|e| format!("凭据注入序列化失败: {e}"))
+}
+
+/// 单个字符串槽位的 vault 引用改写（`vault:` 前缀判定 + 现查 + 原位覆写）。
+/// `field` 只用于错误文案（顶层键或 `键.叶键` 形态）。
+fn resolve_slot_value(field: &str, slot: &mut String) -> Result<(), String> {
+    if let Some(resolved) = nemesis_config::resolve_vault_reference(slot) {
+        match resolved {
+            Ok(secret) => *slot = secret,
+            Err(e) => {
+                return Err(format!(
+                    "⛔ CREDENTIAL REFERENCE FAILED [layer:credential|field:{field}] {e}。\
+                     工具未执行。不要重试同一别名；若别名正确，请让用户运行 \
+                     `nemesisbot vault set <alias>` 写入后再试。"
+                ));
+            }
+        }
+    }
+    Ok(())
 }

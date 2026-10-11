@@ -443,3 +443,137 @@ fn test_local_store_default() {
     let store = LocalStore::default();
     assert!(store.entries.read().is_empty());
 }
+
+// ---- MemoryStore 契约套件（S6）：LocalStore 端挂接 ----
+// 契约驱动本体在 crate::contract_tests（双后端共享），此处只做实例化。
+// 每个契约用独立 store 实例，杜绝用例间状态串扰。
+
+macro_rules! contract_on_local {
+    ($fn_name:ident, $contract:path) => {
+        #[tokio::test]
+        async fn $fn_name() {
+            let store = LocalStore::new();
+            $contract(&store).await;
+        }
+    };
+}
+
+contract_on_local!(
+    contract_local_store_get_roundtrip,
+    crate::contract_tests::contract_store_get_roundtrip
+);
+contract_on_local!(
+    contract_local_get_missing_is_none,
+    crate::contract_tests::contract_get_missing_is_none
+);
+contract_on_local!(
+    contract_local_delete_true_then_false,
+    crate::contract_tests::contract_delete_true_then_false
+);
+contract_on_local!(
+    contract_local_query_match_and_miss,
+    crate::contract_tests::contract_query_match_and_miss
+);
+contract_on_local!(
+    contract_local_query_type_filter,
+    crate::contract_tests::contract_query_type_filter
+);
+contract_on_local!(
+    contract_local_query_limit_respected_total_kept,
+    crate::contract_tests::contract_query_limit_respected_total_kept
+);
+contract_on_local!(
+    contract_local_query_ranks_full_overlap_first,
+    crate::contract_tests::contract_query_ranks_full_overlap_first
+);
+contract_on_local!(
+    contract_local_query_tags_searchable,
+    crate::contract_tests::contract_query_tags_searchable
+);
+contract_on_local!(
+    contract_local_update_replaces_in_place,
+    crate::contract_tests::contract_update_replaces_in_place
+);
+contract_on_local!(
+    contract_local_update_missing_inserts,
+    crate::contract_tests::contract_update_missing_inserts
+);
+contract_on_local!(
+    contract_local_list_type_filter_and_pagination,
+    crate::contract_tests::contract_list_type_filter_and_pagination
+);
+contract_on_local!(
+    contract_local_list_empty_store,
+    crate::contract_tests::contract_list_empty_store
+);
+contract_on_local!(
+    contract_local_close_ok,
+    crate::contract_tests::contract_close_ok
+);
+
+// ---- LocalStore 本地语义锁（契约边界之外，见 contract_tests 模块头）----
+
+#[tokio::test]
+async fn local_store_query_limit_zero_returns_empty_entries() {
+    // 本地语义：limit=0 = take(0)，entries 空但 total 保留全量命中数
+    //（TfIdfLocalStore 把 0 视为默认档 10——两族相反，勿混同）。
+    let store = LocalStore::new();
+    for _i in 0..3 {
+        store
+            .store(make_entry(MemoryType::LongTerm, "lopaa seed"))
+            .await
+            .unwrap();
+    }
+    let res = store.query("lopaa", None, 0).await.unwrap();
+    assert_eq!(res.total, 3, "total 仍是全量命中数");
+    assert!(res.entries.is_empty(), "limit=0 = take(0)");
+}
+
+#[tokio::test]
+async fn local_store_store_duplicate_id_appends() {
+    // 本地语义：store 对同 id 是追加（Vec 语义，出现双条目）——与
+    // TfIdfLocalStore 的 Map 替换语义相反；更新必须走 update。
+    let store = LocalStore::new();
+    store
+        .store(entry_with_id("dup-1", MemoryType::LongTerm, "first"))
+        .await
+        .unwrap();
+    store
+        .store(entry_with_id("dup-1", MemoryType::LongTerm, "second"))
+        .await
+        .unwrap();
+    let all = store.list(None, 100, 0).await.unwrap();
+    assert_eq!(all.len(), 2, "同 id store 追加不替换");
+}
+
+#[tokio::test]
+async fn local_store_list_limit_zero_returns_empty() {
+    // 本地语义：list limit=0 = take(0)（TfIdf 视 0 为不限——两族相反）。
+    let store = LocalStore::new();
+    store
+        .store(make_entry(MemoryType::LongTerm, "solo"))
+        .await
+        .unwrap();
+    assert!(store.list(None, 0, 0).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn local_store_list_preserves_insertion_order() {
+    // 本地语义：list 不排序，保持 Vec 插入序（TfIdf 按 created_at 倒序）。
+    let store = LocalStore::new();
+    for name in ["aa-first", "bb-second", "cc-third"] {
+        store
+            .store(entry_with_id(name, MemoryType::LongTerm, name))
+            .await
+            .unwrap();
+    }
+    let all = store.list(None, 100, 0).await.unwrap();
+    let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
+    assert_eq!(ids, vec!["aa-first", "bb-second", "cc-third"]);
+}
+
+fn entry_with_id(id: &str, typ: MemoryType, content: &str) -> Entry {
+    let mut e = make_entry(typ, content);
+    e.id = id.to_string();
+    e
+}

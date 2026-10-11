@@ -21,6 +21,9 @@ pub mod vector;
 #[cfg(test)]
 mod dreaming_tests;
 
+#[cfg(test)]
+mod contract_tests;
+
 #[cfg(any(test, feature = "test-fixture"))]
 #[doc(hidden)]
 pub mod __test_fixture {

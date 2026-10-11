@@ -25,6 +25,8 @@ pub mod history;
 pub mod history_filter;
 pub mod internal;
 pub mod llm_bridge;
+// S5（2026-10-09）：入站 OpenAI 兼容端点（POST /v1/chat/completions）。
+pub mod openai_compat;
 pub mod pricing_sync;
 pub mod protocol;
 #[cfg(feature = "terminal")]

@@ -78,7 +78,9 @@ fn extract_success_with_real_7z() {
     let out = ws.path().join("out");
     std::fs::create_dir_all(&out).unwrap();
 
-    extract(&installer, &out, &seven_zip).expect("7z extracts a plain zip");
+    // 同类 spawn 瞬态（coverage fork EAGAIN 家族）重试——见 tests.rs helper。
+    super::tests::extract_retrying_spawn_flake(|| extract(&installer, &out, &seven_zip))
+        .expect("7z extracts a plain zip");
     let extracted = out.join("payload").join("hello.txt");
     assert!(extracted.is_file(), "extracted file missing: {extracted:?}");
     assert_eq!(
@@ -101,7 +103,8 @@ fn extract_failure_bails_with_status_context() {
     let out = ws.path().join("out");
     std::fs::create_dir_all(&out).unwrap();
 
-    let err = extract(&junk, &out, &seven_zip).expect_err("non-archive must fail");
+    let err = super::tests::extract_retrying_spawn_flake(|| extract(&junk, &out, &seven_zip))
+        .expect_err("non-archive must fail");
     assert!(
         err.to_string().contains("7z extraction failed"),
         "status-failure context missing: {err}"

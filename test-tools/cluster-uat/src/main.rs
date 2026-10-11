@@ -12,6 +12,8 @@
 //! Usage:
 //!   cargo run -p cluster-uat                    # Run all tests
 //!   cargo run -p cluster-uat -- --skip-long     # Skip long-running tests
+//!   cargo run -p cluster-uat -- --filter T-XFER             # 名字含串者执行
+//!   cargo run -p cluster-uat -- --exclude T-XFER --exclude T-MRG  # 含串者跳过
 
 use std::path::Path;
 use std::process::Stdio;
@@ -1744,23 +1746,62 @@ const U_B_PROFESSIONS_POST_U7: [&str; 7] = [
     "myfamily:myspec",
 ];
 
+/// 段级墙钟预算起算点：首个未被过滤的测试开始执行时起算（Phase 1-6 的
+/// setup 都是步骤级有界操作，不占测试预算）。
+static SEGMENT_BUDGET_START: std::sync::OnceLock<tokio::time::Instant> = std::sync::OnceLock::new();
+
+/// 段级预算（秒）：CI 绿轮最长的 core 段测试墙钟 ~16min，1800s 覆盖 2x 慢机。
+const SEGMENT_BUDGET_SECS: u64 = 1800;
+
+/// 单测试预算（秒）：绿轮最重单测试 ~5min（T-MRG-4 三网关重启+合并链），
+/// 600s 覆盖 2x 慢机；触线即诚实 fail。
+const PER_TEST_BUDGET_SECS: u64 = 600;
+
 async fn run_test<F, Fut>(name: &'static str, f: F) -> TestResult
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = TestResult>,
 {
     print!("\n  [TEST] {} ... ", name);
-    if let Some(Some(filt)) = TEST_FILTER.get()
-        && !name.contains(filt.as_str())
+    if let Some((filt, excludes)) = TEST_SELECT.get()
+        && (filt.as_ref().is_some_and(|f| !name.contains(f.as_str()))
+            || excludes.iter().any(|e| name.contains(e.as_str())))
     {
         println!("SKIP");
         return TestResult {
             name: name.to_string(),
             passed: true,
-            message: "SKIP: filtered out (--filter)".to_string(),
+            message: "SKIP: filtered out (--filter/--exclude)".to_string(),
         };
     }
-    let result = f().await;
+    // 墙钟双预算（2026-10-10 mrg-b 两连 54.0min runner 暴死、日志 BlobNotFound
+    // 的结构性回应——ci.yml rust-test env 注释的失联战役同源：整机在 ~45-55min
+    // 窗口被车队回收，唯一自保 = 不留任何无界等待，把慢速轮转化为带完整
+    // stdout 证据的诚实终局，而不是赌 runner 活到自然结束）：
+    // - 段级 SEGMENT_BUDGET_SECS：到线后未开跑的测试 SKIP（passed=true——
+    //   min_pass 地板只防切段参数 typo 退化成 0 测试假绿，降级完赛的 SKIP
+    //   不许把整段打成红；输出自带降级证据可查）。
+    // - 单测试 PER_TEST_BUDGET_SECS：超时 fail（单个测试 10 分钟不返回是
+    //   真异常，值得一个红 + 后续测试照常跑完的完整现场）。
+    let budget_start = *SEGMENT_BUDGET_START.get_or_init(tokio::time::Instant::now);
+    if budget_start.elapsed() >= Duration::from_secs(SEGMENT_BUDGET_SECS) {
+        println!("SEGMENT-BUDGET-SKIP");
+        return skip(
+            name,
+            format!(
+                "段级预算 {SEGMENT_BUDGET_SECS}s 已耗尽（前置测试极端慢速，降级完赛优于 runner 暴死零日志），本测试未执行"
+            ),
+        );
+    }
+    let result = match tokio::time::timeout(Duration::from_secs(PER_TEST_BUDGET_SECS), f()).await {
+        Ok(r) => r,
+        Err(_) => fail(
+            name,
+            format!(
+                "墙钟超单测试预算 {PER_TEST_BUDGET_SECS}s 未返回（楔死/极端慢速嫌疑；诚实失败：后续测试照常执行，收尾倾倒 gateway 日志尾部）"
+            ),
+        ),
+    };
     let status = if result.message.starts_with("SKIP:") {
         "SKIP"
     } else if result.passed {
@@ -1796,12 +1837,14 @@ fn trunc(s: &str, max: usize) -> String {
 struct Args {
     _skip_long: bool,
     filter: Option<String>,
+    excludes: Vec<String>,
 }
 
 fn parse_args() -> Args {
     let args: Vec<String> = std::env::args().collect();
     let mut skip_long = false;
     let mut filter = None;
+    let mut excludes = Vec::new();
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -1812,6 +1855,14 @@ fn parse_args() -> Args {
                     filter = Some(args[i].clone());
                 }
             }
+            // 可重复；名字含任一 exclude 串的测试直接 SKIP（CI 切段用：
+            // core 段跑 T1-T37 需排除 T-XFER / T-MRG 两族）。
+            "--exclude" => {
+                i += 1;
+                if i < args.len() {
+                    excludes.push(args[i].clone());
+                }
+            }
             _ => {}
         }
         i += 1;
@@ -1819,12 +1870,14 @@ fn parse_args() -> Args {
     Args {
         _skip_long: skip_long,
         filter,
+        excludes,
     }
 }
 
-/// --filter 接线（2026-09-18 T26 排查）：单测试定点复跑。设置后仅执行
-/// 名字含过滤串的测试，其余直接 SKIP（setup/节点装配不受影响）。
-static TEST_FILTER: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+/// --filter / --exclude 接线（--filter 2026-09-18 T26 排查；--exclude
+/// 2026-10-10 CI 切段）：设置后仅执行名字含 filter 串且不含任一 exclude
+/// 串的测试，其余直接 SKIP（setup/节点装配不受影响）。
+static TEST_SELECT: std::sync::OnceLock<(Option<String>, Vec<String>)> = std::sync::OnceLock::new();
 
 // ---------------------------------------------------------------------------
 // Main
@@ -1833,7 +1886,7 @@ static TEST_FILTER: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::n
 #[tokio::main]
 async fn main() {
     let args = parse_args();
-    let _ = TEST_FILTER.set(args.filter);
+    let _ = TEST_SELECT.set((args.filter, args.excludes));
 
     println!("========================================");
     println!("  NemesisBot Cluster UAT Test Suite");
@@ -8998,6 +9051,36 @@ async fn main() {
     all_results.push(
         run_test("T-MRG-4: 硬解失败重派原 worker（3 轮恒败→conflict_redispatch→ANCHOR2 干净合并）", || async {
             let outcome: Result<String, anyhow::Error> = async {
+                // 0. 桩自持（2026-10-10 mrg-b 四连红定性）：A 切 conflict-solver
+                //    组合桩（硬解恒败机 + 评审委托）、B/C 切编辑桩，各自重启使
+                //    CLI 落盘的默认模型生效（provider 构造时消费）。此前这套前
+                //    置长在 T-MRG-1 体内——切段（--filter T-MRG --exclude
+                //    T-MRG-1..3）后它从未执行，worker 停在装配基座模型上回
+                //    boardAckText → 交付锚点 FILE_EDIT_DONE 恒假红。全量跑与
+                //    T-MRG-1 同值切换幂等，只多付三次重启墙钟；T-MRG-5/6/7 的
+                //    B/C 桩态与 A solver 态经此建立（T-MRG-5 只补切 D）。
+                b_switch_model(&ws_a, &gateway_bin, "test/testai-conflict-solver-1.0")
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                gw_a.kill().await;
+                gw_a = start_gateway_and_wait("Gateway-A", &gateway_bin, ws_a.path(), &NODES[0])
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                b_switch_model(&ws_b, &gateway_bin, "test/testai-board-edit-1.0")
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                gw_b.kill().await;
+                gw_b = start_gateway_and_wait("Gateway-B", &gateway_bin, ws_b.path(), &NODES[1])
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                b_switch_model(&ws_c, &gateway_bin, "test/testai-board-edit-1.0")
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                gw_c.kill().await;
+                gw_c = start_gateway_and_wait("Gateway-C", &gateway_bin, ws_c.path(), &NODES[2])
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+
                 let mut ws = ws_connect_gateway(NODES[0].web_port).await?;
                 for (key, value) in [
                     ("conflict_auto_resolve", json!(true)),
@@ -9092,7 +9175,35 @@ async fn main() {
     all_results.push(
         run_test("T-MRG-5: 原 worker 离线三轮接触换人（kill B/C→probe 全败→conflict_switch_worker→Node-D 接手）", || async {
             let outcome: Result<String, anyhow::Error> = async {
-                // 0. D 预切编辑桩 + 重启（接手节点）。
+                // 0. 桩自持（2026-10-11 单测试段切分配套，同 a60cc868/34926dc9
+                //    的 T-MRG-4/6 修法）：mrg-b 切四个单测试段后本测试独立成
+                //    段，原经 T-MRG-4 建立的 A solver / B/C 编辑桩态在本段
+                //    独立进程里从未建立——worker 停在装配基座模型上回
+                //    boardAckText，交付锚点恒假红。同值切换幂等，全量跑只
+                //    多付三次重启墙钟。
+                b_switch_model(&ws_a, &gateway_bin, "test/testai-conflict-solver-1.0")
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                gw_a.kill().await;
+                gw_a = start_gateway_and_wait("Gateway-A", &gateway_bin, ws_a.path(), &NODES[0])
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                b_switch_model(&ws_b, &gateway_bin, "test/testai-board-edit-1.0")
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                gw_b.kill().await;
+                gw_b = start_gateway_and_wait("Gateway-B", &gateway_bin, ws_b.path(), &NODES[1])
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                b_switch_model(&ws_c, &gateway_bin, "test/testai-board-edit-1.0")
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                gw_c.kill().await;
+                gw_c = start_gateway_and_wait("Gateway-C", &gateway_bin, ws_c.path(), &NODES[2])
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+
+                // 0b. D 预切编辑桩 + 重启（接手节点）。
                 b_switch_model(&ws_d, &gateway_bin, "test/testai-board-edit-1.0")
                     .await
                     .map_err(anyhow::Error::msg)?;
@@ -9198,6 +9309,36 @@ async fn main() {
     all_results.push(
         run_test("T-MRG-6: 二进制择边+锁文件理由（add/add logo.bin theirs + Cargo.lock merge 缝合）", || async {
             let outcome: Result<String, anyhow::Error> = async {
+                // 0. 桩自持（2026-10-11 b2 段首轮红定性，同 a60cc868 的 T-MRG-4
+                //    修法）：mrg-b 切 b1/b2 两段后本测试成为 b2 段首测试，原经
+                //    T-MRG-4 建立的 A solver / B/C 编辑桩态在 b2 独立进程里
+                //    从未建立——worker 停在装配基座模型上回 boardAckText →
+                //    交付锚点 FILE_EDIT_DONE 恒假红（T-MRG-6 交付文本实录为
+                //    ack 文案），T-MRG-7 连冲突漏斗都进不去（无真交付可冲突）。
+                //    同值切换幂等，全量跑只多付三次重启墙钟；T-MRG-7 经本块
+                //    与 T-MRG-6 同进程共享桩态。
+                b_switch_model(&ws_a, &gateway_bin, "test/testai-conflict-solver-1.0")
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                gw_a.kill().await;
+                gw_a = start_gateway_and_wait("Gateway-A", &gateway_bin, ws_a.path(), &NODES[0])
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                b_switch_model(&ws_b, &gateway_bin, "test/testai-board-edit-1.0")
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                gw_b.kill().await;
+                gw_b = start_gateway_and_wait("Gateway-B", &gateway_bin, ws_b.path(), &NODES[1])
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                b_switch_model(&ws_c, &gateway_bin, "test/testai-board-edit-1.0")
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                gw_c.kill().await;
+                gw_c = start_gateway_and_wait("Gateway-C", &gateway_bin, ws_c.path(), &NODES[2])
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+
                 let mut ws = ws_connect_gateway(NODES[0].web_port).await?;
                 for (key, value) in [
                     ("conflict_auto_resolve", json!(true)),
@@ -9275,12 +9416,15 @@ async fn main() {
     all_results.push(
         run_test("T-MRG-7: 预算打满回落 human 档（父链派发数超限→fallback_freeze 冻结停车）", || async {
             let outcome: Result<String, anyhow::Error> = async {
-                // 0. 前置自足（评审/编辑桩不依赖 T-MRG-1 先行）：A 切 conflict-solver
-                //    组合桩——冲突单带 [CHECK] AC，评审必须出 verdict JSON
-                //    （--filter 单跑时 T-MRG-1 不执行，基座模型上评审 3 轮解析
-                //    不出 → 假红）；全量跑下与 T-MRG-1/T-MRG-3 同值切换幂等。
-                //    留下的 conflict-solver 态 = 套件后半程基线（T42/U 系列/
-                //    T43/T45 各自或显式前置或直接依赖）。
+                // 0. 桩自持 + 前置自足（2026-10-11 单测试段切分配套，同
+                //    a60cc868/34926dc9 的 T-MRG-4/6 修法）：mrg-b 切四个单
+                //    测试段后本测试独立成段，评审/编辑桩不依赖 T-MRG-1 先行
+                //    ——A 切 conflict-solver 组合桩（冲突单带 [CHECK] AC，
+                //    评审必须出 verdict JSON，--filter 单跑/切段独立进程里
+                //    桩态从未建立，基座模型评审 3 轮解析不出 → 假红）；同值
+                //    切换幂等，全量跑只多付重启墙钟，留下的 conflict-solver
+                //    态 = 套件后半程基线（T42/U 系列/T43/T45 各自或显式前置
+                //    或直接依赖）。
                 b_switch_model(&ws_a, &gateway_bin, "test/testai-conflict-solver-1.0")
                     .await
                     .map_err(anyhow::Error::msg)?;
@@ -12557,6 +12701,17 @@ async fn main() {
             .unwrap_or_else(|_| log_output_dir.clone())
             .display()
     );
+
+    // 失败轮证据直落 stdout（2026-10-10 mrg-b 暴死教训：cluster-uat-logs/
+    // 归集依赖进程活到收尾 + workflow artifact 上传，两者都可能缺席——
+    // stdout 才是 CI 第一现场。有任何 FAIL 时把四节点 gateway 日志尾部
+    // 直接打进 stdout，失败轮自带「当时哪条链路在刷什么」的直接证据。
+    if all_results.iter().any(|r| !r.passed) {
+        println!("\n--- 失败轮 gateway 日志尾部（诊断现场）---");
+        for gw in [&gw_a, &gw_b, &gw_c, &gw_d] {
+            dump_log_tail(&gw.log_path, 200);
+        }
+    }
 
     // Final port cleanup
     cleanup_ports(&all_ports);

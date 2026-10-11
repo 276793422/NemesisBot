@@ -492,9 +492,15 @@ async fn handle_pty_socket(
         }
     }
 
-    // 清理：摘牌（guard Drop）+ kill + reap（阻塞 wait 放 blocking 任务）。
+    // 清理：摘牌（guard Drop）+ kill + reap。reap 用裸线程而非 tokio
+    // blocking 池：Runtime drop 会等 in-flight blocking task——若 kill 在
+    // 某些平台上未真正终止 ConPTY 子进程（CI windows-2022 镜像实录，
+    // 本机不复现），wait() 永不返回，测试进程随 runtime drop 一起挂死
+    // （2026-10-10 CI shard1 estop_engage_kills_session 100min+ SLOW 的
+    // 根因；断言本身 10s 有界，挂的是进程退出）。裸线程不阻塞 runtime
+    // drop，进程照常退出；wait 结果本就无人消费，纯 reap。
     let _ = child.kill();
-    tokio::task::spawn_blocking(move || {
+    std::thread::spawn(move || {
         let _ = child.wait();
     });
     tracing::info!("[Pty] session {conn_id} closed");
