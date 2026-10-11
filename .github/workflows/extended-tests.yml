@@ -50,6 +50,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
+      # 平台环境指纹（2026-10-12 设备归因纪律，所有测试 job 前置；十个检测域
+      # 与探针设计详见 ci.yml rust-check 同名步骤注释；脚本
+      # .github/scripts/dump-env.{ps1,sh}）
+      - name: Environment fingerprint
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/dump-env.sh"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         # wasm32-wasip2：nemesis-plugins-wasm 的对抗/e2e/sdk 测试在运行时真
@@ -135,6 +142,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+
+      # 环境指纹（设备归因，见 workspace-tests-linux 同名步骤注释）
+      - name: Environment fingerprint (feature ${{ matrix.name }})
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/dump-env.sh"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -234,6 +246,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
+      # 环境指纹（设备归因，见 workspace-tests-linux 同名步骤注释）——本 job
+      # 是冻结/失联主战场，七个切段每段一份完整指纹
+      - name: Environment fingerprint (segment ${{ matrix.segment.name }})
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\dump-env.ps1"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -299,6 +317,13 @@ jobs:
       # 纯 bin runner：cargo run（不是 cargo test——见文件头注释）。
       # tee 留全量输出进 step 日志；Passed floor 守卫防切段参数 typo 退化
       # 成 0 测试假绿（--filter/--exclude 都是子串匹配，拼错=全 SKIP）。
+      # 测试执行前压力快照（brief 模式，见 ci.yml rust-check 环境指纹注释）：
+      # 构建刚跑完，此时余内存/commit/CPU 负载是测试的真实起点——慢机/冻结归因
+      # 的第二采样点（cluster-uat 段起步基线）
+      - name: Pre-test pressure snapshot (segment ${{ matrix.segment.name }})
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\dump-env.ps1" brief
+
       - name: Run integration-test (492 assertions, 22 commands)
         if: ${{ inputs.seed_cache != true }}
         run: cargo run -p integration-test
