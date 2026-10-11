@@ -738,6 +738,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 cluster: cluster.clone(),
                 moderator_loop: board_moderator_loop.clone(),
                 workspace: home.join("workspace"),
+                now_ms: Arc::new(|| chrono::Utc::now().timestamp_millis()),
             };
             match cluster.register_rpc_handler(
                 nemesis_cluster::envelope::NB_BUS_ACTION,

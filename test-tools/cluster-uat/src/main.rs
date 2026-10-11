@@ -8923,7 +8923,35 @@ async fn main() {
     all_results.push(
         run_test("T-MRG-5: 原 worker 离线三轮接触换人（kill B/C→probe 全败→conflict_switch_worker→Node-D 接手）", || async {
             let outcome: Result<String, anyhow::Error> = async {
-                // 0. D 预切编辑桩 + 重启（接手节点）。
+                // 0. 桩自持（2026-10-11 单测试段切分配套，同 a60cc868/34926dc9
+                //    的 T-MRG-4/6 修法）：mrg-b 切四个单测试段后本测试独立成
+                //    段，原经 T-MRG-4 建立的 A solver / B/C 编辑桩态在本段
+                //    独立进程里从未建立——worker 停在装配基座模型上回
+                //    boardAckText，交付锚点恒假红。同值切换幂等，全量跑只
+                //    多付三次重启墙钟。
+                b_switch_model(&ws_a, &gateway_bin, "test/testai-conflict-solver-1.0")
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                gw_a.kill().await;
+                gw_a = start_gateway_and_wait("Gateway-A", &gateway_bin, ws_a.path(), &NODES[0])
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                b_switch_model(&ws_b, &gateway_bin, "test/testai-board-edit-1.0")
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                gw_b.kill().await;
+                gw_b = start_gateway_and_wait("Gateway-B", &gateway_bin, ws_b.path(), &NODES[1])
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                b_switch_model(&ws_c, &gateway_bin, "test/testai-board-edit-1.0")
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                gw_c.kill().await;
+                gw_c = start_gateway_and_wait("Gateway-C", &gateway_bin, ws_c.path(), &NODES[2])
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+
+                // 0b. D 预切编辑桩 + 重启（接手节点）。
                 b_switch_model(&ws_d, &gateway_bin, "test/testai-board-edit-1.0")
                     .await
                     .map_err(anyhow::Error::msg)?;
@@ -9136,6 +9164,33 @@ async fn main() {
     all_results.push(
         run_test("T-MRG-7: 预算打满回落 human 档（父链派发数超限→fallback_freeze 冻结停车）", || async {
             let outcome: Result<String, anyhow::Error> = async {
+                // 0. 桩自持（2026-10-11 单测试段切分配套，同 a60cc868/34926dc9
+                //    的 T-MRG-4/6 修法）：mrg-b 切四个单测试段后本测试独立成
+                //    段，不再与 T-MRG-6 同进程共享桩态——A solver / B/C 编辑
+                //    桩在本段独立进程里从未建立，胜者子单无法真交付。同值
+                //    切换幂等，全量跑只多付三次重启墙钟。
+                b_switch_model(&ws_a, &gateway_bin, "test/testai-conflict-solver-1.0")
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                gw_a.kill().await;
+                gw_a = start_gateway_and_wait("Gateway-A", &gateway_bin, ws_a.path(), &NODES[0])
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                b_switch_model(&ws_b, &gateway_bin, "test/testai-board-edit-1.0")
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                gw_b.kill().await;
+                gw_b = start_gateway_and_wait("Gateway-B", &gateway_bin, ws_b.path(), &NODES[1])
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                b_switch_model(&ws_c, &gateway_bin, "test/testai-board-edit-1.0")
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                gw_c.kill().await;
+                gw_c = start_gateway_and_wait("Gateway-C", &gateway_bin, ws_c.path(), &NODES[2])
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+
                 let mut ws = ws_connect_gateway(NODES[0].web_port).await?;
                 for (key, value) in [
                     ("conflict_auto_resolve", json!(true)),
