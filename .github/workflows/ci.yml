@@ -49,6 +49,20 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
+      # 平台环境指纹（2026-10-12 设备归因纪律，所有测试 job 前置）：把分配到的
+      # VM 完整身份落日志 + step summary，十个域：runner 身份+镜像波次
+      # (ImageVersion)/OS build(UBR)/虚拟化+磁盘/CPU(型号/核数/基频/缓存)+算力
+      # 探针/内存(总量/余量/commit/DIMM频率/页面文件)/磁盘(容量/余量)+顺序写探针
+      # /网络(NIC+github.com RTT)/限额+负载/安全软件(Defender)+电源计划/工具链
+      # 基线版本。探针（CPU 算力环、磁盘写、ping）同方法跨 VM 可比——「慢机族」
+      # 归因从猜变查。此后慢机/冻结/失联一律先看本步记录再下结论；冻结收割
+      # 毁日志时 summary 同灭（BlobNotFound 家族），带日志的轮全部可回查。
+      # 脚本 .github/scripts/dump-env.{ps1,sh}（Windows 战场 job 测试步前另有
+      # brief 压力快照二次采样）。
+      - name: Environment fingerprint
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/dump-env.sh"
+
       - name: Install Rust toolchain (rust-toolchain.toml 钉 stable)
         uses: dtolnay/rust-toolchain@stable
 
@@ -137,6 +151,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+
+      # 环境指纹（设备归因，见 rust-check 同名步骤注释）
+      - name: Environment fingerprint
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/dump-env.sh"
 
       - name: Install Rust toolchain + llvm-tools (coverage 采集前置)
         uses: dtolnay/rust-toolchain@stable
@@ -249,6 +268,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
+      # 环境指纹（设备归因，见 rust-check 同名步骤注释）——Windows 分片版
+      - name: Environment fingerprint (Windows shard ${{ matrix.shard }})
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\dump-env.ps1"
+
       - name: Install Rust toolchain (rust-toolchain.toml 钉 stable)
         uses: dtolnay/rust-toolchain@stable
         # wasm32-wasip2：nemesis-plugins-wasm 的对抗/e2e/sdk 测试在运行时真
@@ -343,6 +367,12 @@ jobs:
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag cibuild2 -MaxMinutes 30 -BuildCommand "cargo build -p nemesisbot"
 
+      # 测试执行前压力快照（brief 模式，见 rust-check 环境指纹注释）：构建刚跑完，
+      # 此时余内存/commit/CPU 负载是 nextest 的真实起点——慢机/冻结归因的第二采样点
+      - name: Pre-test pressure snapshot (shard ${{ matrix.shard }})
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\dump-env.ps1" brief
+
       - name: cargo nextest run --workspace (watchdog, shard ${{ matrix.shard }})
         # nextest 步前半段同样是全量测试目标编译（六连死的同源风险面），
         # 同款看门狗包装；尾部行数放大——失败摘要必须在 tail 里可见。
@@ -382,6 +412,13 @@ jobs:
       - name: Checkout skins submodule
         working-directory: ${{ github.workspace }}
         run: git submodule update --init --depth 1 skins
+
+      # 环境指纹（设备归因，见 rust-check 同名步骤注释）；
+      # 本 job defaults.run.working-directory=web，此步显式回仓库根
+      - name: Environment fingerprint
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/dump-env.sh"
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
