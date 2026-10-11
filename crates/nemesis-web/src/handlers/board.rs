@@ -1395,6 +1395,37 @@ static PLAN_CACHE: std::sync::LazyLock<
 #[cfg(feature = "cluster")]
 const PLAN_TTL: std::time::Duration = std::time::Duration::from_secs(600);
 
+/// 拆解运行期观测面（2026-10-11「停着」第二次事故）：PLAN_CACHE 只在拆解
+/// 完成后写入，planner 运行期（GLM 实测 4~7 分钟）查询返回空、SSE 无事件、
+/// 父单无评论——编排者无法区分「拆解中」与「链路死亡」，同一表象连续两次
+/// 误判。RUNNING_PLANS 记录 in-flight 拆解，`plan.list/get` 与 ready 条目
+/// 并列输出（status 区分）；`board.plan_started` SSE + 父单「已开始拆解」
+/// 评论补齐实时与持久两个通道。
+#[cfg(feature = "cluster")]
+struct RunningPlan {
+    pub(super) issue_id: i64,
+    pub(super) started_at: std::time::Instant,
+}
+
+#[cfg(feature = "cluster")]
+static RUNNING_PLANS: std::sync::LazyLock<
+    parking_lot::Mutex<std::collections::HashMap<String, RunningPlan>>,
+> = std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+
+/// RUNNING_PLANS 摘除 guard：Drop 语义保证正常返回 / 错误返回 / panic 展开
+/// 三种退出路径都摘条目（watched 壳管留痕，guard 管注册表清洁，各管各的）。
+#[cfg(feature = "cluster")]
+struct RunningPlanGuard {
+    pub(super) plan_id: String,
+}
+
+#[cfg(feature = "cluster")]
+impl Drop for RunningPlanGuard {
+    fn drop(&mut self) {
+        RUNNING_PLANS.lock().remove(&self.plan_id);
+    }
+}
+
 /// P11 观测面（2026-10-10）：plan 预览查询。PLAN_CACHE 此前只进不出且无
 /// 查询面（SSE board.plan_ready/plan_failed 只在线可见，错过即盲），编排
 /// 者只能盯日志——`board.plan.list/get` 给 Dashboard/编排者列存活预览与
@@ -1414,9 +1445,23 @@ fn plan_list(
         .filter(|(_, p)| issue_id.is_none_or(|id| p.issue_id == id))
         .map(|(plan_id, p)| plan_preview_json(plan_id, p, now))
         .collect();
+    drop(cache);
+    // running 条目（拆解中）与 ready 并列：PLAN_CACHE 完成后才写入，缺此
+    // 查询「正在跑」返回空——编排者无法区分拆解中与没跑（「停着」事故）。
+    // created_ms 置 0 → 排序自然垫底（ready 等确认的在前）。
+    for (plan_id, r) in RUNNING_PLANS.lock().iter() {
+        if issue_id.is_none_or(|id| r.issue_id == id) {
+            plans.push(serde_json::json!({
+                "plan_id": plan_id,
+                "issue_id": r.issue_id,
+                "status": "running",
+                "created_ms": 0u64,
+                "elapsed_secs": now.duration_since(r.started_at).as_secs(),
+            }));
+        }
+    }
     // 新拆解在前（编排者关注的是"刚出的计划等确认"）。
     plans.sort_by_key(|v| std::cmp::Reverse(v["created_ms"].as_u64().unwrap_or(0)));
-    drop(cache);
     // issue_number 附属（issue 可能已被删，best-effort 不炸列表）。
     for v in &mut plans {
         if let Some(id) = v["issue_id"].as_i64()
@@ -1435,6 +1480,16 @@ fn plan_get(data: Option<serde_json::Value>) -> Result<Option<serde_json::Value>
     let data = data.ok_or("missing data")?;
     let plan_id = get_str(&data, "plan_id")?;
     let now = std::time::Instant::now();
+    // running 优先：拆解中查询得到（status=running + 已等待秒数），不再是
+    // 「查不到=死了」的歧义形态。
+    if let Some(r) = RUNNING_PLANS.lock().get(plan_id.as_str()) {
+        return Ok(Some(serde_json::json!({
+            "plan_id": plan_id,
+            "issue_id": r.issue_id,
+            "status": "running",
+            "elapsed_secs": now.duration_since(r.started_at).as_secs(),
+        })));
+    }
     let mut cache = PLAN_CACHE.lock();
     let alive = cache
         .get(plan_id.as_str())
@@ -1460,6 +1515,9 @@ fn plan_preview_json(plan_id: &str, p: &PlanPreview, now: std::time::Instant) ->
     serde_json::json!({
         "plan_id": plan_id,
         "issue_id": p.issue_id,
+        // status 区分 ready（已完成待确认）与 running（plan.list 并列输出
+        // 的 in-flight 条目）——查询方不再需要靠字段缺省猜状态。
+        "status": "ready",
         "sub_count": p.subs.len(),
         "subs": p.subs
             .iter()
@@ -1645,6 +1703,37 @@ pub async fn execute_plan_chain(
     hub: Option<&crate::events::EventHub>,
 ) -> Result<serde_json::Value, String> {
     let started = std::time::Instant::now();
+    // 拆解运行期可观测（2026-10-11「停着」事故）：running 条目（guard 摘除）
+    // + `board.plan_started` SSE + 父单「已开始拆解」评论。planner 单次
+    // 4~7 分钟且此前全程零反馈，用户体感=「停着」。
+    RUNNING_PLANS.lock().insert(
+        plan_id.to_string(),
+        RunningPlan {
+            issue_id: issue.id,
+            started_at: started,
+        },
+    );
+    let _running_guard = RunningPlanGuard {
+        plan_id: plan_id.to_string(),
+    };
+    if let Some(hub) = hub {
+        hub.publish(
+            "board.plan_started",
+            serde_json::json!({
+                "plan_id": plan_id,
+                "issue_id": issue.id,
+                "issue_number": issue.number,
+            }),
+        );
+    }
+    let _ = store.add_comment(NewComment {
+        issue_id: issue.id,
+        author: Actor::system("board"),
+        content: "🧩 已开始自动拆解（planner 运行中，通常 3~8 分钟；完成后按 auto_confirm 自动发车或转人工确认）"
+            .to_string(),
+        parent_id: None,
+        ctype: CommentType::System,
+    });
     // M4.5：planner 的 meta 级经验注入——同步检索渲染（发起点定格，避免长
     // LLM 调用期间的经验变更串进本次拆解）。meta 注入不计 use_count（计数
     // 只认面向 worker 的派发注入）。
@@ -4402,6 +4491,15 @@ impl ModuleHandler for BoardHandler {
                 // + `ensure_scaffold`（绑定不可变，此后无修改入口）。
                 let workspace = require_workspace(ctx)?;
                 let name = get_str(&data, "name")?;
+                // 同名预检（2026-10-11 用户实测）：项目名有 UNIQUE 约束，
+                // 重名此前透传裸 `UNIQUE constraint failed: project.name`
+                // ——用户看不懂也无处查。中文提示 + 现状指引；UNIQUE 约束
+                // 仍在兜底并发窗口。
+                if store.list_projects()?.iter().any(|p| p.name == name) {
+                    return Err(format!(
+                        "已存在同名项目「{name}」：项目名需唯一。请在项目列表先处理旧项目（归档或改名）再重试，或换一个项目名。"
+                    ));
+                }
                 let requested_dir = get_opt_str(&data, "directory");
                 let existing_dirs: Vec<std::path::PathBuf> = store
                     .list_projects()?
