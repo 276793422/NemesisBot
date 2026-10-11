@@ -114,6 +114,11 @@ foreach ($a in @(Get-NetAdapter | Where-Object { $_.NetEnabled })) {
 }
 $pg = (ping.exe -n 1 github.com 2>&1 | Select-String -Pattern 'Reply|timed out|could not find').Line
 Add-Line "Ping github.com: $pg"
+# ICMP is filtered on hosted runners (ping loss is the norm there, not a fault
+# signal) - the TCP connect probe is the real network canary. curl.exe explicit
+# (PowerShell aliases curl to Invoke-WebRequest).
+$tc = & curl.exe -o NUL -s -w "connect=%{time_connect}s total=%{time_total}s" https://github.com 2>&1
+Add-Line "TcpConnect github.com: $tc"
 
 Add-Line "=== LIMITS / PRESSURE ==="
 Add-Line "Processes=$((Get-Process).Count)"
