@@ -516,6 +516,13 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             Option<std::sync::Arc<nemesis_cluster::outbox::TransferOutbox>>,
         ) = match rpc_client.clone() {
             Some(rc) => {
+                // M1（2026-10-10 机制加固）注记：本根与锚点主根同源
+                //（workspace canonical 布局）。init_cluster 先于
+                // shared_resources 构造（gateway.rs Phase B2），拿不到
+                // workspace_dir()——gateway 恒 canonical（agent_build 显式
+                // 写出），本表达式与 SharedResources::workspace_dir() 字节
+                // 等价；改 workspace 解析语义时必须同改（契约测试
+                // anchor_root_contract_single_source 钉死三者一致）。
                 let ws_dir = home.join("workspace");
                 let limit0 = cfg
                     .board
@@ -690,6 +697,13 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 let seen = Arc::new(tokio::sync::Mutex::new(
                     std::collections::HashSet::<String>::new(),
                 ));
+                // M1（2026-10-10 机制加固）注记：本根与锚点主根同源
+                //（workspace canonical 布局）。init_cluster 先于
+                // shared_resources 构造（gateway.rs Phase B2），拿不到
+                // workspace_dir()——gateway 恒 canonical（agent_build 显式
+                // 写出），本表达式与 SharedResources::workspace_dir() 字节
+                // 等价；改 workspace 解析语义时必须同改（契约测试
+                // anchor_root_contract_single_source 钉死三者一致）。
                 let ws_dir = home.join("workspace");
                 tokio::spawn(async move {
                     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
@@ -915,6 +929,13 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 let store_for_sweep = board_store.clone();
                 let cluster_for_sweep = cluster.clone();
                 let home_for_sweep = home.clone();
+                // M5-2（2026-10-10 机制加固）：清扫失败的 issue 回流验收
+                // 决策链——评审依赖集在此快照（与派发写回回调同一构造）。
+                let sweep_moderator = board_moderator_loop.clone();
+                let sweep_estop = estop.clone();
+                let sweep_estop_parked = board_estop_parked.clone();
+                let sweep_selfcheck = board_selfcheck_registry.clone();
+                let sweep_workspace = home.join("workspace");
                 tokio::spawn(async move {
                     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
                         sweep_cfg.dispatch_sweep_interval_secs.max(1),
@@ -956,7 +977,25 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                         if timeout_secs == 0 {
                             continue;
                         }
-                        sweep_dispatch_timeouts(store, &cluster_for_sweep, timeout_secs);
+                        // M5-2：清扫失败 → in_review 回流 + spawn 评审 agent
+                        //（视同验收 FAIL 走重派/预算/熔断漏斗）。
+                        for review_issue_id in
+                            sweep_dispatch_timeouts(store, &cluster_for_sweep, timeout_secs)
+                        {
+                            crate::board_review::spawn_board_review(
+                                crate::board_review::BoardReviewDeps {
+                                    store: store.clone(),
+                                    workspace: sweep_workspace.clone(),
+                                    home: home_for_sweep.clone(),
+                                    moderator_loop: sweep_moderator.clone(),
+                                    cluster: cluster_for_sweep.clone(),
+                                    estop: sweep_estop.clone(),
+                                    estop_parked: sweep_estop_parked.clone(),
+                                    selfcheck: sweep_selfcheck.clone(),
+                                },
+                                review_issue_id,
+                            );
+                        }
                     }
                 });
                 info!(

@@ -64,6 +64,9 @@ pub mod session_fork;
 pub mod skills_digest;
 pub mod spill;
 pub mod todo_closeout;
+/// P8（集群无人值守硬化 A2）：会话 token 预算闸——marker 文案单一真相源 +
+/// per-session 累计账本（loop 侧接线在 `r#loop::token_budget`）。
+pub mod token_budget;
 pub mod tool_adapter;
 pub mod tool_doc_folding;
 pub mod tool_event_hook;
@@ -77,6 +80,11 @@ pub mod workspace_lease;
 
 #[cfg(test)]
 mod history_tests;
+
+#[cfg(test)]
+/// P8（集群无人值守硬化 A2）：token 预算账本（seed 防双计/增量/隔离/软闩/
+/// 容量上限/文案 marker）测试（独立测试文件）。
+mod token_budget_tests;
 
 #[cfg(test)]
 /// WS9/P22：租约互斥/宽限/死进程释放/开关旁路测试（独立测试文件）。

@@ -1826,3 +1826,76 @@ async fn cluster_factory_provider_create_warn_and_approval_gate_wired() {
     let (_loop, _config, _observer) =
         build_cluster_agent_loop(&shared, cluster).expect("bogus protocol → NullProvider 降级装配");
 }
+
+/// M1（2026-10-10 机制加固）锚点根单一真相源契约：同一部署形态下
+/// 锚点主根（resolve_anchor_root）== SharedResources 解析根（装配点
+/// post_agent.rs 的填充来源）== canonical 布局（nemesis_path::workspace_dir，
+/// PathManager / cluster_init 合并收件箱同源）== 合并收件箱父目录，
+/// 四者字节一致。显式覆盖形态（K1 headless --workspace）下 workspace_dir()
+/// 跟随覆盖——这正是「禁止各消费点从 home 手拼」的根据：手拼根在覆盖
+/// 形态下与真实工作区脱钩（A10 假红的结构性根源）。
+#[test]
+fn anchor_root_contract_single_source() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+
+    // gateway 装配形态（agent_build.rs：canonical 显式写出）。
+    let shared = base_shared(&home);
+    let deps = crate::board_review::BoardReviewDeps {
+        store: Arc::new(
+            nemesis_board::BoardStore::open(&tmp.path().join("board.db"), "NB").unwrap(),
+        ),
+        // 装配点契约：post_agent.rs 用 workspace_dir() 填 BoardReviewDeps。
+        workspace: shared.workspace_dir(),
+        home: home.clone(),
+        moderator_loop: Arc::new(std::sync::OnceLock::new()),
+        cluster: Arc::new(nemesis_cluster::cluster::Cluster::new(ClusterConfig {
+            node_id: "n1".to_string(),
+            bind_address: "127.0.0.1:0".to_string(),
+            peers: Vec::new(),
+            node_name: String::new(),
+        })),
+        estop: Arc::new(nemesis_agent::estop::EstopState::new()),
+        estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
+        selfcheck: crate::board_review::SelfcheckRegistry::new(),
+    };
+
+    // ① 锚点主根 == SharedResources 解析根。
+    assert_eq!(
+        crate::board_review::resolve_anchor_root(&deps),
+        shared.workspace_dir(),
+        "锚点主根必须与装配点解析根字节一致"
+    );
+    // ② canonical 布局（PathManager / cluster_init 合并收件箱同源）== 同一根。
+    assert_eq!(
+        nemesis_path::workspace_dir(&home),
+        shared.workspace_dir(),
+        "canonical 布局必须与解析根字节一致（gateway 恒 canonical）"
+    );
+    // ③ 合并收件箱（<ws>/cluster/inbox）父目录 == 同一根。
+    assert_eq!(
+        nemesis_path::cluster_dir_in_workspace(&shared.workspace_dir())
+            .parent()
+            .unwrap(),
+        shared.workspace_dir(),
+        "合并收件箱必须挂在同一工作区根下"
+    );
+
+    // ④ 显式覆盖形态：workspace_dir() 跟随覆盖——canonical 手拼不跟随，
+    //    这就是 M1 禁手拼的根据。
+    let overridden = SharedResources {
+        home: home.clone(),
+        workspace: tmp.path().join("custom-ws"),
+        ..base_shared(&home)
+    };
+    assert_eq!(
+        overridden.workspace_dir(),
+        tmp.path().join("custom-ws"),
+        "显式覆盖必须优先于 canonical 回退"
+    );
+    assert_ne!(
+        overridden.workspace_dir(),
+        nemesis_path::workspace_dir(&home),
+        "覆盖形态下手拼 canonical 根与真实工作区脱钩（A10 根因）"
+    );
+}

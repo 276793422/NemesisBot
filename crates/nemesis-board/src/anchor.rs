@@ -12,11 +12,28 @@
 //! [CHECK] file:src/main.rs re:^fn main      — 文件内容正则匹配
 //! ```
 //!
-//! 刻意不执行任何命令（保持零攻击面；「命令退出码」类检查归 P4 B2）。
-//! 文件类锚点只读 `std::fs`，路径经 [`resolve_anchor_path`] 单点收紧：
-//! 仅限 workspace 子树内相对路径，拒绝绝对路径 / `..` 穿越 / 8.3 短名 /
+//! **exec: 锚点（M7，config 闸门默认关）**：`[CHECK] exec:<命令>` 在锚点
+//! 根目录（项目目录在场优先，否则 workspace 根）以子进程执行命令，退出码
+//! 0 = 过、非 0 = 不过。服务「表现层零可执行验证手段」（21 个 JS 文件全
+//! 靠人眼的教训）。护栏三件：[`ExecAnchorPolicy`]（默认
+//! [`ExecAnchorPolicy::Disabled`]，须 `board.review.exec_anchors_enabled`
+//! 显式开启）+ 单条执行超时（默认 120s，超时 = 不过）+ 输出截断（防大输
+//! 出撑爆评论/planner prompt）。关闭时 exec 锚点**诚实跳过并注记**
+//! （[`run_anchors_dual_ext`] 的第二返回值），不做 PASS 也不做 FAIL——
+//! 跳过项进提示/评论，不进失败集（否则会触发重派，重蹈假红病灶）。planner
+//! 不自动产出此类型，仅编排者/需求书显式写入。
+//!
+//! 其余文件类锚点只读 `std::fs`，路径经 [`resolve_anchor_path`] 单点收紧：
+//! 仅限根子树内相对路径，拒绝绝对路径 / `..` 穿越 / 8.3 短名 /
 //! 符号链接越界（canonicalize 后前缀校验）。无法解析的 `[CHECK]` 行不
 //! 拒绝——回落语义项，诚实降级不炸验收。
+//!
+//! **双根核验（[`run_anchors_dual`]，2026-10-09 web-FPS NB-22 锚点全败根修）**：
+//! 档案管线把 worker 变更集合并在**项目目录**（`board-projects/<项目名>/`，
+//! `git_repo::merge_changeset` 的唯一落点，设计上不进主 workspace），而非
+//! 档案管线的首跑件直写主 workspace 根——两种交付形态并存时，单根核验
+//! 必然误杀其一。文件类锚点因此支持**主根 + 项目目录 fallback 的双根 OR**：
+//! 任一根满足谓词即通过；`re:` 交付文本锚点与 FS 无关，不受 fallback 影响。
 
 use regex::Regex;
 use std::path::{Path, PathBuf};
@@ -24,8 +41,24 @@ use std::path::{Path, PathBuf};
 /// 锚点检查上限（超过按失败处理，诚实降级；防锚点检查本身变成内存攻击面）。
 const MAX_ANCHOR_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
+/// exec: 锚点单条执行超时缺省值（秒；超时 = 不过 + kill）。config 显式
+/// 配置 `board.review.exec_anchor_timeout_secs` 时可覆盖。
+pub const EXEC_ANCHOR_DEFAULT_TIMEOUT_SECS: u64 = 120;
+
+/// exec: 锚点输出保留上限（字符，取尾部）——防大输出撑爆评论与 prompt。
+const EXEC_OUTPUT_TAIL_CHARS: usize = 1024;
+
 /// 锚点行前缀（trim 后判定；planner 指令段使用同一标记）。
 pub const ANCHOR_PREFIX: &str = "[CHECK]";
+
+/// exec: 锚点的执行策略（M7 护栏闸）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExecAnchorPolicy {
+    /// 不执行（默认）：exec 锚点诚实跳过并注记，不进失败集。
+    Disabled,
+    /// 执行：`timeout_secs` 为单条超时（超时 = 不过）。
+    Enabled { timeout_secs: u64 },
+}
 
 /// 锚点种类。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +71,9 @@ pub enum AnchorKind {
     FileContains,
     /// `re:<正则>` — 对 worker delivery 文本（验收输入）正则匹配。
     ContentRegex,
+    /// `exec:<命令>` — 在锚点根目录执行命令，退出码 0 = 过（M7；
+    /// 受 [`ExecAnchorPolicy`] 闸门，默认不执行）。
+    Exec,
 }
 
 impl AnchorKind {
@@ -48,6 +84,7 @@ impl AnchorKind {
             AnchorKind::FileRegex => "文件正则",
             AnchorKind::FileContains => "文件包含",
             AnchorKind::ContentRegex => "交付文本正则",
+            AnchorKind::Exec => "命令执行",
         }
     }
 }
@@ -194,7 +231,52 @@ fn parse_anchor_line(rest: &str) -> Result<Option<AnchorCheck>, String> {
             pattern: Some(pattern.to_string()),
         }));
     }
+    if let Some(command) = rest.strip_prefix("exec:") {
+        let command = command.trim();
+        if command.is_empty() {
+            return Ok(None);
+        }
+        return Ok(Some(AnchorCheck {
+            raw,
+            kind: AnchorKind::Exec,
+            target: command.to_string(),
+            pattern: None,
+        }));
+    }
     Ok(None)
+}
+
+/// M2 决策链三态分流：锚点执行前先验根有效性。主根与 fallback 根**都不
+/// 可达**（canonicalize 失败）= 基础设施故障（`Err`），调用方必须转人工 +
+/// WARN，**不得**照常执行锚点（那会产出逐锚点 FAIL → 触发重派——机器上
+/// 没人能修好「根不存在」，重派循环烧预算还惩罚不到任何人）；至少一根可
+/// 达、或锚点组全部与 FS 无关（`re:` 交付文本锚点 / 空组）= `Ok(())`，
+/// 照常执行。根可达但文件未命中 = 真 FAIL（质量面），不在此判定内。
+pub fn validate_anchor_roots(
+    anchors: &[AnchorCheck],
+    workspace_root: &Path,
+    project_root: Option<&Path>,
+) -> Result<(), String> {
+    let fs_needed = anchors
+        .iter()
+        .any(|a| !matches!(a.kind, AnchorKind::ContentRegex));
+    if !fs_needed {
+        return Ok(());
+    }
+    match workspace_root.canonicalize() {
+        Ok(_) => Ok(()),
+        Err(ws_err) => match project_root {
+            Some(dir) => match dir.canonicalize() {
+                Ok(_) => Ok(()),
+                Err(proj_err) => Err(format!(
+                    "锚点主根与项目目录均不可达：workspace（{ws_err}）；project（{proj_err}）"
+                )),
+            },
+            None => Err(format!(
+                "锚点主根不可达且无项目目录 fallback：workspace（{ws_err}）"
+            )),
+        },
+    }
 }
 
 /// 执行锚点组：文件类只读 `std::fs`，正则走 regex crate（线性时间，无
@@ -205,20 +287,213 @@ pub fn run_anchors(
     workspace_root: &Path,
     delivery_text: &str,
 ) -> Vec<AnchorResult> {
-    anchors
-        .iter()
-        .map(|anchor| {
-            let (passed, detail) = run_one(anchor, workspace_root, delivery_text);
-            AnchorResult {
+    run_anchors_dual(anchors, workspace_root, None, delivery_text)
+}
+
+/// 双根版 [`run_anchors`]：`project_root` 在场（issue 挂了看板项目且项目
+/// 目录已分配）时，文件类锚点在主根未命中后再核项目目录——档案管线合并
+/// 产物落在项目目录、非档案管线首跑件落在主 workspace 根，双根 OR 兼容
+/// 两种交付形态（NB-22 锚点全败事故根修；见模块文档）。`project_root`
+/// 传 `None` 时与 [`run_anchors`] 行为一致。exec: 锚点按
+/// [`ExecAnchorPolicy::Disabled`] 处理（跳过注记被丢弃）——需要消费跳过
+/// 注记的调用方走 [`run_anchors_dual_ext`]。
+pub fn run_anchors_dual(
+    anchors: &[AnchorCheck],
+    workspace_root: &Path,
+    project_root: Option<&Path>,
+    delivery_text: &str,
+) -> Vec<AnchorResult> {
+    run_anchors_dual_ext(
+        anchors,
+        workspace_root,
+        project_root,
+        delivery_text,
+        &ExecAnchorPolicy::Disabled,
+    )
+    .0
+}
+
+/// 双根 + exec 策略版 [`run_anchors_dual`]（M7）：返回 `(结果组, 跳过注记)`。
+/// 关闭策略下的 exec 锚点**不进结果组**（做 PASS 会假放行、做 FAIL 会触发
+/// 重派——跳过是第三态），只进跳过注记，由调用方落提示/评论。
+pub fn run_anchors_dual_ext(
+    anchors: &[AnchorCheck],
+    workspace_root: &Path,
+    project_root: Option<&Path>,
+    delivery_text: &str,
+    exec_policy: &ExecAnchorPolicy,
+) -> (Vec<AnchorResult>, Vec<String>) {
+    let mut results = Vec::new();
+    let mut skipped = Vec::new();
+    for anchor in anchors {
+        if matches!(anchor.kind, AnchorKind::Exec) {
+            let ExecAnchorPolicy::Enabled { timeout_secs } = exec_policy else {
+                skipped.push(format!(
+                    "⏭ exec 锚点未执行（board.review.exec_anchors_enabled 未开启）：{}",
+                    anchor.raw
+                ));
+                continue;
+            };
+            // exec 的执行根：项目目录在场优先（档案管线合并产物的主落点），
+            // 否则 workspace 根。
+            let root = project_root.unwrap_or(workspace_root);
+            let (passed, detail) = run_exec_anchor(anchor, root, *timeout_secs);
+            results.push(AnchorResult {
                 anchor: anchor.clone(),
                 passed,
                 detail,
-            }
-        })
-        .collect()
+            });
+            continue;
+        }
+        let (passed, detail) = run_one(anchor, workspace_root, project_root, delivery_text);
+        results.push(AnchorResult {
+            anchor: anchor.clone(),
+            passed,
+            detail,
+        });
+    }
+    (results, skipped)
 }
 
-fn run_one(anchor: &AnchorCheck, workspace_root: &Path, delivery_text: &str) -> (bool, String) {
+/// exec: 锚点单条执行（std::process，nemesis-board 无 tokio 依赖）：退出码
+/// 0 = 过；启动失败 / 超时 / 非 0 退出 = 不过，明细带诚实原因与输出尾部。
+fn run_exec_anchor(anchor: &AnchorCheck, root: &Path, timeout_secs: u64) -> (bool, String) {
+    let command = anchor.target.trim();
+    if command.is_empty() {
+        return (false, "exec 锚点命令为空".to_string());
+    }
+    if !root.is_dir() {
+        return (
+            false,
+            format!("exec 锚点执行根不存在（{}）", root.display()),
+        );
+    }
+    let mut cmd = if cfg!(windows) {
+        let mut c = std::process::Command::new("cmd");
+        c.arg("/C").arg(command);
+        c
+    } else {
+        let mut c = std::process::Command::new("sh");
+        c.arg("-c").arg(command);
+        c
+    };
+    cmd.current_dir(root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    {
+        // 后台网关进程不弹控制台窗口（CREATE_NO_WINDOW，仓库纪律）。
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return (false, format!("exec 锚点进程启动失败：{e}")),
+    };
+    // 管道读取放独立线程（避免孙进程继承句柄导致 exit 后 read 阻塞死锁），
+    // 主线程 try_wait 轮询到超时上限。
+    let out_rx = spawn_pipe_reader(child.stdout.take().map(|p| Box::new(p) as PipeReader));
+    let err_rx = spawn_pipe_reader(child.stderr.take().map(|p| Box::new(p) as PipeReader));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs.max(1));
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break Some(st),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                return (false, format!("exec 锚点执行失败：{e}"));
+            }
+        }
+    };
+    let Some(status) = status else {
+        return (
+            false,
+            format!("exec 锚点执行超时（>{timeout_secs}s），进程已终止"),
+        );
+    };
+    // 收输出尾部（2s 宽限；孙进程占住管道时诚实放弃，不阻塞评审）。
+    let out = out_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap_or_default();
+    let err = err_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap_or_default();
+    let mut detail = if status.success() {
+        "命令退出码 0".to_string()
+    } else {
+        format!(
+            "命令退出码 {}",
+            status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "被信号终止".to_string())
+        )
+    };
+    let tail = truncate_tail(&out, &err);
+    if !tail.is_empty() {
+        detail.push_str(&format!("\n输出尾部：\n{tail}"));
+    }
+    (status.success(), detail)
+}
+
+type PipeReader = Box<dyn std::io::Read + Send>;
+
+/// 管道→字符串读取线程（exit 后由 [`run_exec_anchor`] 带超时回收）。
+fn spawn_pipe_reader(pipe: Option<PipeReader>) -> std::sync::mpsc::Receiver<String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = String::new();
+        if let Some(mut p) = pipe {
+            use std::io::Read;
+            let _ = p.read_to_string(&mut buf);
+        }
+        let _ = tx.send(buf);
+    });
+    rx
+}
+
+/// stdout+stderr 合并取尾（[`EXEC_OUTPUT_TAIL_CHARS`] 字符；二进制输出
+/// lossy 容忍）。
+fn truncate_tail(stdout: &str, stderr: &str) -> String {
+    let mut combined = String::new();
+    if !stdout.trim().is_empty() {
+        combined.push_str(stdout);
+    }
+    if !stderr.trim().is_empty() {
+        if !combined.is_empty() && !combined.ends_with('\n') {
+            combined.push('\n');
+        }
+        combined.push_str("[stderr] ");
+        combined.push_str(stderr);
+    }
+    let total = combined.chars().count();
+    if total <= EXEC_OUTPUT_TAIL_CHARS {
+        return combined.trim_end().to_string();
+    }
+    let skipped = total - EXEC_OUTPUT_TAIL_CHARS;
+    format!(
+        "…（前 {skipped} 字符截断）{}",
+        combined.chars().skip(skipped).collect::<String>()
+    )
+    .trim_end()
+    .to_string()
+}
+
+fn run_one(
+    anchor: &AnchorCheck,
+    workspace_root: &Path,
+    project_root: Option<&Path>,
+    delivery_text: &str,
+) -> (bool, String) {
     match &anchor.kind {
         AnchorKind::ContentRegex => {
             let Some(pattern) = &anchor.pattern else {
@@ -241,50 +516,80 @@ fn run_one(anchor: &AnchorCheck, workspace_root: &Path, delivery_text: &str) -> 
                 Err(e) => (false, format!("正则编译失败（{e}）")),
             }
         }
-        AnchorKind::FileExists => match resolve_anchor_path(workspace_root, &anchor.target) {
-            // resolve 内部 canonicalize 成功 = 存在。
-            Ok(path) => (true, format!("文件存在（{}）", path.display())),
-            Err(e) => (false, e),
-        },
-        AnchorKind::FileRegex | AnchorKind::FileContains => {
-            // 文件内容类：先解析路径（安全闸），再读内容按谓词判定。
-            let path = match resolve_anchor_path(workspace_root, &anchor.target) {
-                Ok(p) => p,
-                Err(e) => return (false, e),
-            };
-            let content = match read_limited(&path) {
-                Ok(c) => c,
-                Err(e) => return (false, e),
-            };
-            match &anchor.kind {
-                AnchorKind::FileRegex => {
-                    let Some(pattern) = &anchor.pattern else {
-                        return (false, "锚点缺少正则模式".to_string());
-                    };
-                    match Regex::new(pattern) {
-                        Ok(re) => {
-                            if re.is_match(&content) {
-                                (true, format!("文件命中 /{pattern}/"))
-                            } else {
-                                (false, format!("文件未命中 /{pattern}/"))
-                            }
-                        }
-                        Err(e) => (false, format!("正则编译失败（{e}）")),
-                    }
-                }
-                AnchorKind::FileContains => {
-                    let Some(keyword) = &anchor.pattern else {
-                        return (false, "锚点缺少关键词".to_string());
-                    };
-                    if content.contains(keyword.as_str()) {
-                        (true, format!("文件包含「{keyword}」"))
-                    } else {
-                        (false, format!("文件不包含「{keyword}」"))
-                    }
-                }
-                _ => unreachable!("上方 match 已收窄到文件内容类"),
+        AnchorKind::FileExists => {
+            match resolve_anchor_path(workspace_root, &anchor.target) {
+                // resolve 内部 canonicalize 成功 = 存在。
+                Ok(path) => (true, format!("文件存在（{}）", path.display())),
+                Err(primary_err) => match project_root {
+                    // 主根缺席 → 项目目录 fallback（档案管线合并产物）。
+                    Some(dir) => match resolve_anchor_path(dir, &anchor.target) {
+                        Ok(path) => (true, format!("文件存在（{}，项目目录）", path.display())),
+                        Err(_) => (false, primary_err),
+                    },
+                    None => (false, primary_err),
+                },
             }
         }
+        AnchorKind::FileRegex | AnchorKind::FileContains => {
+            // 文件内容类：先解析路径（安全闸），再读内容按谓词判定。
+            // 主根判定不过（路径缺席/读取失败/谓词未命中）→ 项目目录
+            // fallback 再判一次，任一根满足即过（双根 OR）。
+            let primary = read_and_match(anchor, workspace_root);
+            if primary.0 {
+                return primary;
+            }
+            if let Some(dir) = project_root {
+                let alt = read_and_match(anchor, dir);
+                if alt.0 {
+                    return (true, format!("{}（项目目录）", alt.1));
+                }
+            }
+            primary
+        }
+        // exec 锚点由 [`run_anchors_dual_ext`] 统一分派（策略闸 + 执行根
+        // 选择在那里），不经本函数。
+        AnchorKind::Exec => unreachable!("exec 锚点由 run_anchors_dual_ext 分派"),
+    }
+}
+
+/// 文件内容类锚点的单根判定（resolve 安全闸 → 限量读 → 谓词）。
+/// 返回 `(通过, 明细)`——失败明细如实携带失败环节（主根失败时原样上抛）。
+fn read_and_match(anchor: &AnchorCheck, root: &Path) -> (bool, String) {
+    let path = match resolve_anchor_path(root, &anchor.target) {
+        Ok(p) => p,
+        Err(e) => return (false, e),
+    };
+    let content = match read_limited(&path) {
+        Ok(c) => c,
+        Err(e) => return (false, e),
+    };
+    match &anchor.kind {
+        AnchorKind::FileRegex => {
+            let Some(pattern) = &anchor.pattern else {
+                return (false, "锚点缺少正则模式".to_string());
+            };
+            match Regex::new(pattern) {
+                Ok(re) => {
+                    if re.is_match(&content) {
+                        (true, format!("文件命中 /{pattern}/"))
+                    } else {
+                        (false, format!("文件未命中 /{pattern}/"))
+                    }
+                }
+                Err(e) => (false, format!("正则编译失败（{e}）")),
+            }
+        }
+        AnchorKind::FileContains => {
+            let Some(keyword) = &anchor.pattern else {
+                return (false, "锚点缺少关键词".to_string());
+            };
+            if content.contains(keyword.as_str()) {
+                (true, format!("文件包含「{keyword}」"))
+            } else {
+                (false, format!("文件不包含「{keyword}」"))
+            }
+        }
+        _ => unreachable!("read_and_match 只被文件内容类调用"),
     }
 }
 

@@ -30,6 +30,11 @@ pub(crate) struct TurnState {
     pub(crate) validation_failures: u32,
     /// max_tokens 截断续写预算（organ 6；[`MAX_LENGTH_CONTINUATIONS`] 封顶）。
     pub(crate) length_continuations: u32,
+    /// M4-B（A13）：**空内容**撞 max_tokens cap 的独立计数——空产出撞 cap
+    /// 不是「大文件被截断」，继续喂 continue 提示只会每轮烧一次全量 prefill
+    /// 而产出为零。连续 ≥[`MAX_EMPTY_LENGTH_CONTINUATIONS`] 提前停轮（诚实
+    /// 报错），不再烧剩余续写预算。内容非空即清零。
+    pub(crate) empty_length_continuations: u32,
     /// ② grace-round 闩：工具轮预算耗尽后的一次终稿机会（organ 1 授予，
     /// organ 3 注入 [`GRACE_ROUND_NUDGE`]）；二次命中可恢复停轮。
     pub(crate) grace_round: bool,
@@ -61,6 +66,11 @@ pub(crate) struct TurnState {
 /// max_tokens 截断续写预算上限（organ 6）——真超限的大文件要给出清晰
 /// 报错，而不是无限续写。
 const MAX_LENGTH_CONTINUATIONS: u32 = 5;
+
+/// M4-B（A13）：空内容撞 cap 的续写容忍上限——第 1 次按截断续写（偶发
+/// 瞬态），连续第 2 次提前停轮（诚实报错），不再烧剩余 length-continuation
+/// 预算。
+const MAX_EMPTY_LENGTH_CONTINUATIONS: u32 = 2;
 
 impl AgentLoop {
     /// Core LLM loop shared by `run_with_trace()` and `resume_execution()`.
@@ -104,6 +114,7 @@ impl AgentLoop {
             turns_used: 0,
             validation_failures: 0,
             length_continuations: 0,
+            empty_length_continuations: 0,
             grace_round: false,
             turn_guard: crate::turn_guard::TurnGuard::new(),
             degenerate_nudge_pending: None,
@@ -137,6 +148,17 @@ impl AgentLoop {
                 if let Some(r) = reason {
                     st.terminal_reason = Some(r);
                 }
+                events.push(ev);
+                break;
+            }
+
+            // P8（集群无人值守硬化 A2）：会话 token 预算顶检。hard ≥100% =
+            // 终局 Error（文案以 SESSION_TOKEN_BUDGET_MARKER 开头——worker
+            // classify_terminal_failure 识别为 fail_class=token_budget，走
+            // 既有 error 回调链回 master）；soft ≥75% = 一次性提示 + 压缩，
+            // 继续本轮。budget=0（关，默认）时器官零开销直通。
+            if let Some(ev) = self.check_session_budget(instance, context).await {
+                st.terminal_reason = Some("token_budget");
                 events.push(ev);
                 break;
             }
@@ -317,6 +339,38 @@ impl AgentLoop {
             .map(|u| (u.completion_tokens as u64) >= token_cap)
             .unwrap_or(false);
         if hit_cap {
+            // M4-B（A13）：空内容撞 cap ≠ 大文件被截断——零产出继续喂
+            // continue 提示只会每轮烧一次全量 prefill。第 1 次按截断续写
+            // （偶发瞬态），连续第 2 次提前停轮（诚实报错）。
+            if response.content.trim().is_empty() {
+                st.empty_length_continuations += 1;
+                if st.empty_length_continuations >= MAX_EMPTY_LENGTH_CONTINUATIONS {
+                    warn!(
+                        "[AgentLoop] empty content at token cap {} consecutive round(s); \
+                         stopping early to save prefill budget",
+                        st.empty_length_continuations
+                    );
+                    let notice = format!(
+                        "模型连续 {} 轮空输出且撞 max_tokens 上限（{}），已提前停止续写\
+                         以节省预算。请检查模型健康度或调整参数。",
+                        st.empty_length_continuations, token_cap
+                    );
+                    instance.add_assistant_message(&notice, Vec::new(), None);
+                    return Some(TurnFlow::Stop(AgentEvent::Error(
+                        context.format_rpc_message(&notice),
+                    )));
+                }
+                warn!(
+                    "[AgentLoop] empty content at token cap ({}); continue-generation {}/{} \
+                     (empty-output guard: {})",
+                    token_cap,
+                    st.length_continuations,
+                    MAX_LENGTH_CONTINUATIONS,
+                    st.empty_length_continuations
+                );
+            } else {
+                st.empty_length_continuations = 0;
+            }
             if st.length_continuations < MAX_LENGTH_CONTINUATIONS {
                 st.length_continuations += 1;
                 warn!(
@@ -353,6 +407,7 @@ impl AgentLoop {
         }
         // Complete (non-truncated) response — reset the counter.
         st.length_continuations = 0;
+        st.empty_length_continuations = 0;
         None
     }
 
@@ -613,7 +668,15 @@ impl AgentLoop {
         // this turn. On the first hit we grant one grace round (with
         // GRACE_ROUND_NUDGE injected below) so the model can finalize from
         // completed work; a second hit stops resumably — no work is lost.
-        let effective_max_turns = turn_budget.unwrap_or(self.config.max_turns);
+        // M6-1（2026-10-10 机制加固）：全局预算每轮新鲜读 config.json
+        // （`current_max_tool_iterations`；fallback 启动值）——dashboard/
+        // CLI 改 `agents.defaults.max_tool_iterations` 即时生效，不等
+        // mtime 翻转（同 tier 的热读纪律；turn_budget 仍最高优先）。
+        let effective_max_turns = turn_budget.unwrap_or(
+            self.current_max_tool_iterations()
+                .map(|n| if n <= 0 { 0 } else { n as u32 })
+                .unwrap_or(self.config.max_turns),
+        );
         if effective_max_turns > 0 && turns_used >= effective_max_turns {
             if !*grace_round {
                 *grace_round = true;
@@ -1031,3 +1094,8 @@ impl AgentLoop {
     // Tool handling
     // -----------------------------------------------------------------------
 }
+
+// M4-B（A13）：空内容撞 max_tokens cap 提前停轮守卫测试。
+#[cfg(test)]
+#[path = "m4b_empty_cap_tests.rs"]
+mod m4b_empty_cap_tests;

@@ -179,6 +179,24 @@ fn retry_prompt_truncates_long_prev_output() {
     assert!(prompt.contains("已截断"));
 }
 
+/// 回归锁（2026-10-11 真机实证）：裸字节切片 `&prev_output[..4000]` 在
+/// 中文输出上第 4000 字节落在多字节字符内部 → panic → 整个规划 tokio
+/// 任务无声死亡、看板零留痕（用户项目两次「建了不动」的根因）。截断
+/// 必须走 rune 边界安全版。
+#[test]
+fn retry_prompt_truncates_long_cjk_output_at_char_boundary() {
+    let long = "中".repeat(3000); // 9000 字节 > 4000，且字节 4000 恰在「中」内部
+    let err = PlanParseError {
+        message: "e".to_string(),
+    };
+    let prompt = build_retry_prompt(&long, &err); // 修复前此处 panic
+    assert!(prompt.contains("（已截断）"));
+    assert!(prompt.contains('中'));
+    // 截断头部必须完整落在字符边界上（按 rune 边界回退，不得撕裂「中」）
+    let idx = prompt.find("…（已截断）").expect("截断注记在 prompt 中");
+    let _head = &prompt[..idx]; // 非边界则此处 panic
+}
+
 // ---------------------------------------------------------------------------
 // system prompt 静态自检（提示词与解析器契约一致：改一处必须同步另一处）
 // ---------------------------------------------------------------------------
@@ -217,6 +235,26 @@ fn system_prompt_declares_check_anchor_instructions() {
     }
 }
 
+/// PR1（2026-10-10 机制加固）防误删快照：exec 锚点产出禁令（planner 不得
+/// 自动产出 exec 锚点，只有编排者/需求书显式写入才可继承）+ 输入/输出
+/// 资源声明纪律（[READ]/[TOUCH] 与 depends_on 互相印证）。删段则 exec
+/// 产出闸与输入清单声明回归无提示词闸。
+#[test]
+fn system_prompt_declares_exec_gate_and_resource_declarations() {
+    for marker in [
+        "planner 不得自动产出",
+        "编排者/需求书在父任务验收标准里显式写入",
+        "[READ]",
+        "输入/输出文件清单",
+        "互相印证",
+    ] {
+        assert!(
+            PLANNER_SYSTEM_PROMPT.contains(marker),
+            "system prompt 必须含 exec 产出禁令/资源声明标记 {marker}"
+        );
+    }
+}
+
 /// P1 拓扑纪律防误删快照（2026-09-12 双端真机 S2 根修）：planner prompt
 /// 必须声明「远端任务禁止 file: 锚点」——删掉这段 planner 会继续给远端
 /// 子任务配 file: 锚点（硬闸会拦，但每次派发都炸成诚实错误，规划面劣化）。
@@ -238,6 +276,25 @@ fn system_prompt_declares_anchor_downgrade_discipline() {
         assert!(
             PLANNER_SYSTEM_PROMPT.contains(marker),
             "system prompt 必须含父单锚点下放纪律标记 {marker}"
+        );
+    }
+}
+
+/// 编排者数量优先级防缩编快照（2026-10-09 web-FPS 拆解三连跑偏固化）：
+/// planner 默认数量档（3-7 为佳/宁少勿滥）不得压过父任务显式数量指定——
+/// 真机实证：glm-5.3-flash 对硬性「恰好 8-10 单」的父单三次按默认档缩编
+/// （subs=4/1/5），模型把系统默认当硬约束、冲突时取保守端。删掉优先级
+/// 声明则缩编回归无提示词闸。
+#[test]
+fn system_prompt_declares_parent_count_precedence() {
+    for marker in [
+        "以父任务的指定为准",
+        "不得自行缩编",
+        "只适用于父任务未指定数量",
+    ] {
+        assert!(
+            PLANNER_SYSTEM_PROMPT.contains(marker),
+            "system prompt 必须含父任务数量优先级声明 {marker}（拆解缩编三连跑偏固化）"
         );
     }
 }

@@ -1945,6 +1945,101 @@ fn test_classify_empty_result_and_fallback() {
     );
 }
 
+/// P8（集群无人值守硬化 A2）：会话 token 预算耗尽（loop 硬停与入口拒接
+/// 两类文案同前缀）→ token_budget。
+#[test]
+fn test_classify_token_budget() {
+    let hard = nemesis_agent::token_budget::hard_stop_notice(1500, 1000);
+    let reject = nemesis_agent::token_budget::entry_reject_notice(1500, 1000);
+    assert_eq!(
+        super::classify_terminal_failure("error", "", &hard),
+        Some("token_budget")
+    );
+    assert_eq!(
+        super::classify_terminal_failure("error", "", &reject),
+        Some("token_budget")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// P8（集群无人值守硬化 A2）：D3 重派入口拒接判定（session_budget_rejection）
+// ---------------------------------------------------------------------------
+
+/// 预算写入 config.json（session_token_budget 键；与 loop 侧 fresh-read
+/// 同一真相源路径 `<home>/config.json`）。
+fn write_budget_config(dir: &std::path::Path, budget: u64) {
+    std::fs::write(
+        dir.join("config.json"),
+        format!(r#"{{"agents":{{"defaults":{{"session_token_budget":{budget}}}}}}}"#),
+    )
+    .unwrap();
+}
+
+/// 带用量的 RequestLog 行（口径 = input 含 cache_read + output）。
+fn budget_usage_row(session_key: &str, input: i64, output: i64) -> nemesis_data::RequestLog {
+    nemesis_data::RequestLog {
+        id: 0,
+        trace_id: format!("t-{session_key}-{input}-{output}"),
+        model: "test-model".to_string(),
+        provider_type: String::new(),
+        input_tokens: input,
+        output_tokens: output,
+        cache_creation_tokens: 0,
+        cache_read_tokens: 0,
+        total_cost_usd: 0.0,
+        latency_ms: 1,
+        status_code: 200,
+        error_message: None,
+        is_streaming: false,
+        created_at: 0,
+        pricing_model: String::new(),
+        input_cost_usd: 0.0,
+        output_cost_usd: 0.0,
+        cache_creation_cost_usd: 0.0,
+        cache_read_cost_usd: 0.0,
+        first_token_ms: None,
+        session_key: session_key.to_string(),
+    }
+}
+
+/// 预算关闭（0，默认）→ 恒放行，哪怕账面已爆表（不改现网行为）。
+#[test]
+fn test_budget_rejection_disabled_by_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent_loop = AgentLoop::new(Box::new(NullLlmProvider), make_test_config());
+    write_budget_config(dir.path(), 0);
+    agent_loop.set_config_path(dir.path().join("config.json"));
+    let ds =
+        std::sync::Arc::new(nemesis_data::DataStore::open(&dir.path().join("usage0.db")).unwrap());
+    ds.insert_request_log(&budget_usage_row("sess-x", 999_999, 999_999))
+        .unwrap();
+    agent_loop.set_data_store(ds);
+    assert_eq!(super::session_budget_rejection(&agent_loop, "sess-x"), None);
+}
+
+/// 超限 → Some（文案带 marker，classify 契约）；未超限 / 无 data store
+/// → None（放行）。
+#[test]
+fn test_budget_rejection_trips_over_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent_loop = AgentLoop::new(Box::new(NullLlmProvider), make_test_config());
+    write_budget_config(dir.path(), 100);
+    agent_loop.set_config_path(dir.path().join("config.json"));
+    let ds =
+        std::sync::Arc::new(nemesis_data::DataStore::open(&dir.path().join("usage.db")).unwrap());
+    ds.insert_request_log(&budget_usage_row("sess-b1", 80, 30))
+        .unwrap();
+    agent_loop.set_data_store(ds);
+    let notice =
+        super::session_budget_rejection(&agent_loop, "sess-b1").expect("110/100 must reject");
+    assert!(notice.starts_with(nemesis_agent::token_budget::SESSION_TOKEN_BUDGET_MARKER));
+    // 未超限 → 放行。
+    assert_eq!(
+        super::session_budget_rejection(&agent_loop, "sess-b2"),
+        None
+    );
+}
+
 // =========================================================================
 // wave_d：剩余缺口收口。覆盖 DiscussionInbox 失联臂、讨论通道关闭禁用臂、
 // 出队取消、执行中取消（新任务 + 续行）、升级硬停与空交付（新任务 + 续行）、
@@ -2904,4 +2999,64 @@ fn started_reply_retryable_only_for_unavailable() {
         error: Some("transport lost".into()),
     };
     assert!(!super::started_reply_retryable(&no_result));
+}
+
+// -- M5-3：issue_number_from_cluster_chat_id ------------------------------
+
+/// board 派发会话键（worker 侧真实形态，peer_chat_handler 原样拼接
+/// `cluster_rpc:{source}/{chat_id}`，chat_id = `board:{number}`）→ 单号。
+/// 回归背景：首版只认 `board:NB-` 前缀（测试写了幻想形态），生产形态
+/// `board:21` 全部静默解析失败——ask 注记/远程审批单号关联双双断链。
+#[test]
+fn issue_number_parsed_from_cluster_rpc_board_session() {
+    // 生产形态（board.rs / board_review.rs 派发点同源产出）。
+    assert_eq!(
+        super::issue_number_from_cluster_chat_id("cluster_rpc:node-master-x/board:21"),
+        Some(21)
+    );
+    // 裸形态（防御性兼容）：直接 chat_id=board:n。
+    assert_eq!(super::issue_number_from_cluster_chat_id("board:3"), Some(3));
+    // 多段 source（节点 id 含斜杠不现实，但 rsplit 语义保证取最后一段）。
+    assert_eq!(
+        super::issue_number_from_cluster_chat_id("cluster_rpc:a/b/board:107"),
+        Some(107)
+    );
+}
+
+/// `board:NB-{n}` 形态无生产产出方，容忍兼容不信任其存在（历史测试
+/// 幻想形态；防外部脚本手工构造该形态时解析退化）。
+#[test]
+fn issue_number_tolerates_legacy_nb_prefixed_form() {
+    assert_eq!(
+        super::issue_number_from_cluster_chat_id("cluster_rpc:node-x/board:NB-21"),
+        Some(21)
+    );
+    assert_eq!(
+        super::issue_number_from_cluster_chat_id("board:NB-3"),
+        Some(3)
+    );
+}
+
+/// 非看板会话 / 非法单号 → None（调用方静默跳过，不投注记）。
+#[test]
+fn issue_number_rejects_non_board_or_malformed() {
+    assert_eq!(
+        super::issue_number_from_cluster_chat_id("cluster_rpc:node-x/web:abc123"),
+        None,
+        "dashboard peer_chat 会话不是看板单"
+    );
+    assert_eq!(
+        super::issue_number_from_cluster_chat_id("cluster_rpc:node-x/board:notanumber"),
+        None
+    );
+    assert_eq!(
+        super::issue_number_from_cluster_chat_id("cluster_rpc:node-x/board:0"),
+        None,
+        "单号从 1 起，0 视为非法"
+    );
+    assert_eq!(
+        super::issue_number_from_cluster_chat_id("cluster_rpc:node-x/board:-5"),
+        None
+    );
+    assert_eq!(super::issue_number_from_cluster_chat_id(""), None);
 }

@@ -3997,7 +3997,15 @@ pub(crate) fn resolve_auto_node_name(
     if let Some(h) = hostname {
         return (h, false);
     }
-    (format!("Bot {}", &node_id[..8.min(node_id.len())]), false)
+    // node_id 可能含多字节文本（中文主机名等），裸字节截断会 panic
+    // （2026-10-11 横扫修复），走边界安全版。
+    (
+        format!(
+            "Bot {}",
+            nemesis_utils::string_utils::truncate_bytes_at_boundary(node_id, 8)
+        ),
+        false,
+    )
 }
 
 /// 批次四：解析链的 env 薄包装——生产路径（`new` / `with_workspace`）

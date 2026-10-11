@@ -33,7 +33,25 @@ export interface ApprovalRequest {
   expiresAt: number
 }
 
+/** M5（2026-10-10 集群无人值守硬化）：远程审批卡（worker 节点的 ask 经
+ * master 注册表代理）。裁决经 WSAPI `approval.remote_respond` RPC 下发
+ * worker 本地 pending（always 恒不可用——后端钉死 false）。 */
+export interface RemoteApprovalRequest {
+  request_id: string
+  /** 展示/回传短号（master 注册表键，8 位起冲突加长）。 */
+  short_id: string
+  worker: string
+  operation: string
+  target: string
+  risk_level: string
+  reason: string
+  issue_number?: number
+  timeout_secs: number
+  expiresAt: number
+}
+
 const pendingApprovals = reactive<ApprovalRequest[]>([])
+const pendingRemoteApprovals = reactive<RemoteApprovalRequest[]>([])
 /** 每秒跳动的当前时刻，驱动卡片倒计时显示。 */
 const now = ref(Date.now())
 let initialized = false
@@ -78,6 +96,11 @@ function pruneExpired() {
       pendingApprovals.splice(i, 1)
     }
   }
+  for (let i = pendingRemoteApprovals.length - 1; i >= 0; i--) {
+    if (pendingRemoteApprovals[i].expiresAt <= now.value) {
+      pendingRemoteApprovals.splice(i, 1)
+    }
+  }
 }
 
 async function seedPending() {
@@ -88,6 +111,49 @@ async function seedPending() {
     list.forEach(upsertFromPayload)
   } catch {
     // 未装配 / WS 未就绪 — 静默（未装配实例永远不会有事件推送）。
+  }
+}
+
+function upsertRemoteFromPayload(data: any) {
+  if (!data || typeof data.request_id !== 'string' || typeof data.short_id !== 'string') return
+  const existing = pendingRemoteApprovals.findIndex(a => a.request_id === data.request_id)
+  const age = typeof data.age_secs === 'number' ? data.age_secs : 0
+  const timeout = typeof data.timeout_secs === 'number' ? data.timeout_secs : 300
+  const entry: RemoteApprovalRequest = {
+    request_id: data.request_id,
+    short_id: data.short_id,
+    worker: String(data.worker ?? ''),
+    operation: String(data.operation ?? ''),
+    target: String(data.target ?? ''),
+    risk_level: String(data.risk_level ?? 'MEDIUM'),
+    reason: String(data.reason ?? ''),
+    issue_number: typeof data.issue_number === 'number' ? data.issue_number : undefined,
+    timeout_secs: timeout,
+    expiresAt: Date.now() + Math.max(0, timeout - age) * 1000,
+  }
+  if (existing === -1) {
+    pendingRemoteApprovals.push(entry)
+  } else {
+    // SSE 重复推送同一请求（重连重放等）— 保留原到期时刻，避免倒计时重置。
+    entry.expiresAt = pendingRemoteApprovals[existing].expiresAt
+    pendingRemoteApprovals.splice(existing, 1, entry)
+  }
+}
+
+function removeRemoteLocal(requestId: string) {
+  const idx = pendingRemoteApprovals.findIndex(a => a.request_id === requestId)
+  if (idx !== -1) pendingRemoteApprovals.splice(idx, 1)
+}
+
+/** 远程审批兜底补拉（断线期间错过 ask_register 事件）。 */
+async function seedRemotePending() {
+  const { request } = useWSAPI()
+  try {
+    const res = await request('approval', 'remote_list', {}, 5000)
+    const list: any[] = res?.pending ?? []
+    list.forEach(upsertRemoteFromPayload)
+  } catch {
+    // 无集群 / WS 未就绪 — 静默。
   }
 }
 
@@ -109,8 +175,19 @@ export function useApprovals() {
         removeLocal(data.request_id)
       }
     })
+    // M5：远程审批（worker ask 经 master 注册表代理）——SSE 事件 + 断线
+    // 补拉。resolved 载荷带 request_id，摘卡语义与本地一致。
+    on('approval-remote-requested', (data: any) => {
+      upsertRemoteFromPayload(data)
+    })
+    on('approval-remote-resolved', (data: any) => {
+      if (data && typeof data.request_id === 'string') {
+        removeRemoteLocal(data.request_id)
+      }
+    })
     // 断线期间错过的事件：连上后拉一次 pending 补齐。
     seedPending()
+    seedRemotePending()
     ticker = setInterval(pruneExpired, 1000)
   }
 
@@ -142,12 +219,37 @@ export function useApprovals() {
     }
   }
 
-  return { pendingApprovals, now, initApprovals, respondTo }
+  /** M5：远程批复（WSAPI `approval.remote_respond` → RPC 下发 worker）。
+   * 无「总是允许」（后端 always 钉死 false）；`note` = 拒绝备注（随裁决
+   * 送达 worker 回灌模型，与本地卡 F6 同语义）。裁决送达失败 = 卡保留可
+   * 重发（unknown = 已超时/已裁决，摘卡同步）。 */
+  async function respondRemoteTo(requestId: string, approved: boolean, note?: string) {
+    const { request } = useWSAPI()
+    try {
+      await request('approval', 'remote_respond', {
+        request_id: requestId,
+        approved,
+        ...(note ? { note } : {}),
+      })
+      removeRemoteLocal(requestId)
+      toast.success(approved ? '已转发批准至节点' : '已转发拒绝至节点')
+    } catch (err: any) {
+      const msg = String(err ?? '')
+      if (msg.includes('unknown') || msg.includes('not registered')) {
+        // worker 已超时/已裁决，或注册表条目已过期 — 卡片同步摘除。
+        removeRemoteLocal(requestId)
+      }
+      toast.error(`远程批复失败: ${msg}`)
+    }
+  }
+
+  return { pendingApprovals, pendingRemoteApprovals, now, initApprovals, respondTo, respondRemoteTo }
 }
 
 /** 测试辅助：重置模块级单例状态（生产代码勿用）。 */
 export function _resetApprovalsForTest() {
   pendingApprovals.splice(0, pendingApprovals.length)
+  pendingRemoteApprovals.splice(0, pendingRemoteApprovals.length)
   if (ticker !== null) {
     clearInterval(ticker)
     ticker = null

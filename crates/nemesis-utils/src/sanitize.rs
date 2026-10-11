@@ -44,14 +44,17 @@ pub fn sanitize_path_segment(raw: &str) -> String {
     }
     // Cap length: a hostile very-long id should not blow path limits. BUT
     // pure truncation collides（2026-09-29 UAT 实证：cluster 会话键
-    // `cluster_rpc:{57 字符 node_id}/board:NB-10` 与 `…NB-11` 全长 81 字
-    // 符，take(80) 双双截成 `…board_NB-1`，get_or_create 的磁盘 fallback
-    // 由此跨会话读到别人的历史——职能后缀进 system prompt 后回显串台才
-    // 暴露）。超限键改保区分度：头 60 字符 + `__` + FNV-1a64 hex16（纯
-    // std、跨版本确定性），总长 78 ≤ 80；读写两侧同源同函数，形态自洽。
-    // ≤80 的输入逐字节不变（存量文件名不受影响）；超限旧文件本就是碰撞
-    // 脏数据，失联由 chat_log 重建 / TTL 自愈兜底。尾 `.` 修剪同趟进行
-    // （Windows 剥尾点；hash 后缀是 hex，永不触点）。
+    // `cluster_rpc:{node_id}/board:{n}`——派发 chat 形态自 34a0650a 起恒为
+    // 裸数字单号，`board:NB-` 从未被任何已提交代码产出，当年事故注记把
+    // issue key 的 NB- 前缀误写进会话键分解式；节点 id 随主机名变长，
+    // 两位数单号即可把全长推过 81 字符）——take(80) 使仅末字符不同的相
+    // 邻单号双双截成同名，get_or_create 的磁盘 fallback 由此跨会话读到
+    // 别人的历史——职能后缀进 system prompt 后回显串台才暴露。超限键改
+    // 保区分度：头 60 字符 + `__` + FNV-1a64 hex16（纯 std、跨版本确定
+    // 性），总长 78 ≤ 80；读写两侧同源同函数，形态自洽。≤80 的输入逐字
+    // 节不变（存量文件名不受影响）；超限旧文件本就是碰撞脏数据，失联由
+    // chat_log 重建 / TTL 自愈兜底。尾 `.` 修剪同趟进行（Windows 剥尾
+    // 点；hash 后缀是 hex，永不触点）。
     let char_count = out.chars().count();
     if char_count <= 80 {
         return out.trim_end_matches('.').to_string();

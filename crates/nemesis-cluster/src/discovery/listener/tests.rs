@@ -652,3 +652,17 @@ fn test_udp_listener_survives_connreset_after_send_to_closed_port() {
         "listener must survive WSAECONNRESET and still receive the next announce; got {msgs:?}"
     );
 }
+
+/// 空 name 走 `node-<id 前 8 字节>` 显示名路径；中文 node_id 裸字节截断
+/// 曾 panic（2026-10-11 横扫修复）——wire 数据可能是多字节文本。
+#[test]
+fn message_to_node_info_cjk_node_id_display_does_not_panic() {
+    let mut msg = make_announce("中中中中中中中中", &["10.0.0.9"], 9001);
+    msg.name = String::new();
+    let info = message_to_node_info(&msg);
+    assert!(
+        info.base.name.starts_with("node-中中"),
+        "got {}",
+        info.base.name
+    );
+}

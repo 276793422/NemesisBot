@@ -283,12 +283,12 @@ onMounted(load)
         <div class="param-row">
           <div class="flag-text">
             <div class="flag-label">验收取证轮数</div>
-            <div class="flag-desc">验收 agent 用只读工具（读文件/搜索等）就地核实的最大轮数；1 = 纯文本验收不开工具（执行节点是本机时才生效）</div>
+            <div class="flag-desc">验收 agent 用只读工具（读文件/搜索等）就地核实的最大轮数；1 = 纯文本验收不开工具（执行节点是本机时才生效）；0 = 不限轮数（取证到能下结论为止，doom-loop/急停守卫仍在）</div>
           </div>
           <input
             class="form-input param-input"
             type="number"
-            min="1"
+            min="0"
             :value="flags.review.max_turns"
             @change="onNumber('review.max_turns', $event)"
           />
