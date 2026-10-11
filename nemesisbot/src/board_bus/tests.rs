@@ -23,6 +23,7 @@ fn make_deps(store: Arc<nemesis_board::BoardStore>, quota: Arc<QuotaLedger>) -> 
         quota,
         cluster: Arc::new(cluster),
         moderator_loop: Arc::new(OnceLock::new()),
+        now_ms: Arc::new(|| chrono::Utc::now().timestamp_millis()),
     }
 }
 
@@ -895,6 +896,7 @@ fn deps_with_workspace(
         quota: q,
         cluster: Arc::new(cluster),
         moderator_loop: Arc::new(OnceLock::new()),
+        now_ms: Arc::new(|| chrono::Utc::now().timestamp_millis()),
     }
 }
 
@@ -2108,9 +2110,10 @@ mod w5r2 {
     /// delivery.files：目录已存在但目标名被同名**目录**占用 →
     /// create_dir_all Ok、fs::write 必败 → INTERNAL「写入失败」（区别于
     /// 目录自建失败臂）。stored_name = `{Utc 毫秒}_a.txt`——写入发生在
-    /// 布阵**之后**，漂移单向为正：单侧深窗 [t0-100, t0+8000] 覆盖
-    /// 「布阵耗时 ≤8s」的全部落点（±300ms 双侧窗会被布阵自身耗时漂出，
-    /// 已实测偶发漏接）。
+    /// 布阵**之后**，漂移单向为正，所以窗口锚定**布阵结束时刻**（自校
+    /// 准循环：布阵本身超预算就把窗再向前推 8s），不是 t0 时刻的定宽窗
+    /// ——CI 慢机上 8101 次 create_dir 自身超 8s（实录 20.4s），定宽窗
+    /// 全部漏接假红（2026-10-10 CI shard1 三连红根因）。
     #[test]
     fn w5_delivery_files_write_fail_readonly_dir() {
         use base64::Engine as _;
@@ -2128,17 +2131,30 @@ mod w5r2 {
             .insert_dispatch("w5-dl-1", issue.id, "node-b", &Actor::admin("test"))
             .unwrap();
 
-        // 预建落盘目录 + 目标名同名目录阵（时间戳碰撞注入，单侧深窗）。
+        // 时间戳注入（2026-10-11 根治，2026-10-10 CI run170 s1 假红）：
+        // 旧实现预埋 8s 静态目录阵赌处理器取点落窗内——慢机上布阵+前置
+        // 开销吃穿窗沿（实录该测试墙钟 20.4s，处理器取到窗外时间戳 →
+        // 无碰撞 → 写成功 → 断言假红）；布阵线程又追不上爬行时钟，一切
+        // 铺窗策略治不了这个类。改为 deps.now_ms 注入固定值：处理器取点
+        // 确定，预埋单个同名目录必命中，快慢机零竞态。
+        let fixed_ms: i64 = 1_700_000_001_234;
+        let deps = MasterBusDeps {
+            store: deps.store.clone(),
+            quota: deps.quota.clone(),
+            cluster: deps.cluster.clone(),
+            moderator_loop: deps.moderator_loop.clone(),
+            workspace: deps.workspace.clone(),
+            now_ms: Arc::new(move || fixed_ms),
+        };
+
+        // 预埋处理器将取的那个时间戳的同名目录（fs::write 撞目录必失败）。
         let files_dir = ws
             .path()
             .join("board")
             .join("files")
             .join(format!("issue_{}", issue.id));
         std::fs::create_dir_all(&files_dir).unwrap();
-        let t0 = chrono::Utc::now().timestamp_millis();
-        for ms in t0 - 100..=t0 + 8000 {
-            std::fs::create_dir(files_dir.join(format!("{ms}_a.txt"))).unwrap();
-        }
+        std::fs::create_dir(files_dir.join(format!("{fixed_ms}_a.txt"))).unwrap();
 
         let (ok, code, _) = parse_reply(handle_nb_bus(
             &deps,

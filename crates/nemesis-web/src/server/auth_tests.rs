@@ -37,6 +37,9 @@ fn test_auth_exempt_path_truth_table() {
     assert!(!auth_exempt_path("/api/status"));
     assert!(!auth_exempt_path("/api/config"));
     assert!(!auth_exempt_path("/api/chat/stream"));
+    // S5（2026-10-09）：OpenAI 兼容端点触发 agent 执行——与 dashboard
+    // 同一信任边界，绝不进豁免清单（Bearer 头本就被中间件接受）。
+    assert!(!auth_exempt_path("/v1/chat/completions"));
     assert!(!auth_exempt_path("/"));
     assert!(!auth_exempt_path("/dashboard/overview"));
 }

@@ -156,6 +156,79 @@ fn malformed_json_passthrough() {
 }
 
 // ---------------------------------------------------------------------------
+// S3a：对象槽递归（string→string 结构的字符串叶子改写，如 web_fetch headers）
+// ---------------------------------------------------------------------------
+
+/// 对象槽的 vault: 叶子改写为真值；非 vault 叶子与同层其它键不动。
+#[test]
+fn object_slot_leaves_rewritten() {
+    let _g = VAULT_SLOT_LOCK.lock();
+    nemesis_config::set_global_vault_resolver(std::sync::Arc::new(|alias| {
+        if alias == "known" {
+            Ok("REAL-SECRET".to_string())
+        } else {
+            Err(format!("别名不存在: {alias}"))
+        }
+    }));
+    let tool = SlotTool::new(vec!["headers"]);
+    let out = inject_credential_aliases(
+        &tool,
+        r#"{"url":"http://x","headers":{"Authorization":"vault:known","X-Trace":"plain-val"}}"#,
+    )
+    .unwrap();
+    nemesis_config::clear_global_vault_resolver();
+    assert!(
+        out.contains(r#""Authorization":"REAL-SECRET""#),
+        "vault: 叶子应改写: {out}"
+    );
+    assert!(
+        out.contains(r#""X-Trace":"plain-val""#),
+        "非 vault 叶子不动: {out}"
+    );
+    assert!(out.contains(r#""url":"http://x""#), "槽外键不动: {out}");
+}
+
+/// 对象槽未知别名：fail loud，错误 field 带 `键.叶键` 定位。
+#[test]
+fn object_slot_unknown_leaf_fails_loud() {
+    let _g = VAULT_SLOT_LOCK.lock();
+    nemesis_config::set_global_vault_resolver(std::sync::Arc::new(|alias| {
+        Err(format!("别名不存在: {alias}"))
+    }));
+    let tool = SlotTool::new(vec!["headers"]);
+    let err = inject_credential_aliases(&tool, r#"{"headers":{"Authorization":"vault:ghost"}}"#)
+        .unwrap_err();
+    nemesis_config::clear_global_vault_resolver();
+    assert!(err.contains("CREDENTIAL REFERENCE FAILED"), "{err}");
+    assert!(
+        err.contains("headers.Authorization"),
+        "field 应带叶键定位: {err}"
+    );
+}
+
+/// 生产声明端到端：WebFetchTool 自身声明 headers 槽——注入机制直接认。
+#[test]
+fn web_fetch_declares_headers_slot() {
+    let _g = VAULT_SLOT_LOCK.lock();
+    nemesis_config::set_global_vault_resolver(std::sync::Arc::new(|alias| {
+        if alias == "known" {
+            Ok("REAL-SECRET".to_string())
+        } else {
+            Err(format!("别名不存在: {alias}"))
+        }
+    }));
+    let tool = crate::loop_tools::WebFetchTool::new(1024);
+    assert_eq!(tool.credential_arg_keys(), &["headers"]);
+    let out = inject_credential_aliases(
+        &tool,
+        r#"{"url":"http://x","headers":{"Authorization":"vault:known"}}"#,
+    )
+    .unwrap();
+    nemesis_config::clear_global_vault_resolver();
+    assert!(out.contains("REAL-SECRET"), "生产工具声明应生效: {out}");
+}
+
+// ---------------------------------------------------------------------------
 // loop 级：四表面防泄漏（真值只到 execute，事件流只见别名）
 // ---------------------------------------------------------------------------
 

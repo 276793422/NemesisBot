@@ -741,6 +741,27 @@ impl DiscoveryService {
     }
 }
 
+/// 从 ClusterCallbacks 构造 announce 消息（单一真相源）。
+///
+/// 广播（`send_announce_direct`/`send_announce_with`）与 ping 探针响应的
+/// `announce` 字段（cluster.rs，TCP 身份回传 fallback）共用同一构造——
+/// 两通道的载荷字段集必须恒等，否则 UDP 隔离拓扑里两条通道落地身份会
+/// 出现形状分叉。空地址守卫留在发送点（构造期不做 IO 判断）。
+pub(crate) fn build_announce_from_callbacks(cluster: &dyn ClusterCallbacks) -> DiscoveryMessage {
+    DiscoveryMessage::new_announce(
+        cluster.node_id(),
+        cluster.name(),
+        cluster.all_local_ips(),
+        cluster.rpc_port(),
+        cluster.role(),
+        cluster.category(),
+        cluster.tags(),
+        cluster.capabilities(),
+        cluster.node_type(),
+    )
+    .with_professions(cluster.professions(), cluster.tier())
+}
+
 /// Send an announce message using the listener's broadcast method.
 fn send_announce_direct(listener: &UdpListener, cluster: &dyn ClusterCallbacks) {
     let addresses = cluster.all_local_ips();
@@ -749,18 +770,7 @@ fn send_announce_direct(listener: &UdpListener, cluster: &dyn ClusterCallbacks) 
         return;
     }
 
-    let msg = DiscoveryMessage::new_announce(
-        cluster.node_id(),
-        cluster.name(),
-        addresses,
-        cluster.rpc_port(),
-        cluster.role(),
-        cluster.category(),
-        cluster.tags(),
-        cluster.capabilities(),
-        cluster.node_type(),
-    )
-    .with_professions(cluster.professions(), cluster.tier());
+    let msg = build_announce_from_callbacks(cluster);
 
     if let Err(e) = listener.broadcast(&msg) {
         tracing::error!(error = %e, "[Discovery] Failed to send announce");
@@ -789,18 +799,7 @@ fn send_announce_with(
         return;
     }
 
-    let msg = DiscoveryMessage::new_announce(
-        cluster.node_id(),
-        cluster.name(),
-        addresses,
-        cluster.rpc_port(),
-        cluster.role(),
-        cluster.category(),
-        cluster.tags(),
-        cluster.capabilities(),
-        cluster.node_type(),
-    )
-    .with_professions(cluster.professions(), cluster.tier());
+    let msg = build_announce_from_callbacks(cluster);
 
     let data = match msg.to_bytes() {
         Ok(d) => d,

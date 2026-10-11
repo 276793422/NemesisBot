@@ -45,6 +45,12 @@ pub struct MasterBusDeps {
     /// G（goal P3）：master workspace 根——交付回传文件的落盘父目录
     /// （`board/files/issue_<id>/`，与附件通道同目录约定）。
     pub workspace: std::path::PathBuf,
+    /// 交付落盘时间戳源（`{ms}_{safe_name}` 命名前缀）。缺省墙钟；测试
+    /// 注入固定值使「预埋同名目录→写必失败」成为确定性事件。2026-10-10
+    /// run170 s1 假红根治：旧的静态 8s 时间窗赌处理器取点落窗内，慢机上
+    /// 布阵+前置开销吃穿窗沿（实录该测试墙钟 20.4s）；布阵线程又追不上
+    /// 爬行时钟——一切铺窗策略治不了这个类，时间可注入才能根治。
+    pub now_ms: Arc<dyn Fn() -> i64 + Send + Sync>,
 }
 
 /// 线程上下文随 wake 包下发的条数（impl-plan §5.2②：默认 20）。
@@ -412,7 +418,7 @@ fn handle_delivery_files(
                 EnvelopeError::new(envelope::error_code::INTERNAL, format!("落盘失败: {e}")),
             );
         }
-        let stored_name = format!("{}_{}", chrono::Utc::now().timestamp_millis(), safe_name);
+        let stored_name = format!("{}_{}", (deps.now_ms)(), safe_name);
         if let Err(e) = std::fs::write(dir.join(&stored_name), &bytes) {
             return EnvelopeResponse::failure(
                 env,

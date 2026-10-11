@@ -196,16 +196,52 @@ jobs:
           cat target/test-ratio.txt
 
   rust-test:
-    name: Rust full workspace tests (Windows)
-    runs-on: windows-latest
-    timeout-minutes: 90
+    name: Rust full workspace tests (Windows, shard ${{ matrix.shard }})
+    # 2026-10-08 pin windows-2022：win25（windows-latest 当前指向）20261004 镜像
+    # （10-07 发布滚动铺开）落地后本 job 编译期 runner 六连死失联（挂点恒定
+    # 51-55min，与并发/调试信息/增量全部缓解措施无关，看门狗也未能软着陆）——
+    # 资源压力解释不了时间恒定性，矛头指向镜像波次自身。该波次 OS build 未变
+    # （26100.33438 两版一致），但应用层含 WSL 2.7→3.0 大版本跳跃等系统级变更。
+    # win22（20261004.326，10-05 波次）无 WSL 升级且 OS 代际不同（20348），作
+    # 单变量对照：绿=坐实 win25 20261004 镜像问题（等上游修复再评估回迁），
+    # 红=排除镜像、回头排查 Cargo.lock（wasmtime 家族升级）。
+    #
+    # 分片（2026-10-10 第十六轮）：战役 R14 实证 Windows 全量套件执行在慢机族
+    # 上 80-150min 且从未自然完赛（cap 83×3 / 冻死 111,150 / job timeout）——
+    # 单段 150min 本身就是暴露面（撞自 cap、撞 ~50min 冻死窗口、撞 job timeout
+    # 三头堵）。nextest hash 分片把套件稳定对半拆（--partition hash:N/2，按测试
+    # 指纹哈希，两片并集=全集），单片墙钟减半滑出全部死亡窗口。两片各自过看门
+    # 狗与 timeout；fail-fast=false 保一片红时另一片照跑（要全量体检报告）。
+    #
+    # 2→3 片（2026-10-10 深夜）：对半拆后单片仍偶发整机失联（实录 shard1 两连
+    # 死，死亡时刻在构建步——VM 抽签劣化后处处爬行，谁在 45min 线上谁死，
+    # 与步骤无关；shard2 同构建 25min 全绿）。三片把单片测试量再减半，
+    # 典型总墙钟 ~20-22min，深滑出失联窗；构建步的 VM 抽签劣化无法结构性
+    # 消除（rerun-failed-jobs 仍是对策，官方口径同）。三片并集=全集不变。
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    runs-on: windows-2022
+    # 90→120（2026-10-08）：编译三杠杆（JOBS:2 + 无增量）换内存余量，编译变慢，
+    # 给冷构建留够预算（120 是 ET 同款 job 的既有额度）。
+    # 120→180（2026-10-10 第十五轮）：nextest 上限 85→115 后，慢机族总墙钟
+    # （libs 10 + bin 5 + nextest ~100 + 缓存保存 ~5）可达 ~120min——job 级
+    # timeout 必须盖过步级上限之和，否则 job timeout 先杀、软着陆缓存保存白费。
+    timeout-minutes: 180
     env:
-      # 2026-10-08：wasmtime 家族升级后 dev 编译内存膨胀（nemesisbot debug
-      # PDB ~1GB 量级），4 路并行 rustc + link.exe 峰值把 16GB hosted runner
-      # 压死（同签名 "hosted runner lost communication" 两 run 四连，挂点
-      # 52-55min 可复现）。降并发换稳定；配合根 Cargo.toml 的
-      # profile.dev debug=line-tables-only（PDB 减半）双杠杆。
-      CARGO_BUILD_JOBS: 3
+      # 2026-10-08~09 编译期 runner 失联战役（十连死全记录见 docs 报告 §六~§十）：
+      # 冷编 nemesisbot bin 步内 runner 硬死（"hosted runner lost communication"，
+      # 46-55min 恒定窗口，日志 BlobNotFound）。十轮排除法已证与下列全部无关：
+      # debuginfo 三档 / JOBS 4-3-2 / 增量开关 / win25+win22 双镜像 / Cargo.lock
+      # 铡锁对照（wasmtime 48.0.5↔48.0.3 同死，R5）。矛头指向车队侧慢性失联
+      # （官方口径即重试）。剩余可用杠杆 = 墙钟压缩滑出死亡窗口：
+      #   - JOBS 回默认 4（内存理论已死，压并发只拖慢编译、拉长暴露时间）；
+      #   - 保 CARGO_INCREMENTAL=0（CI 惯例）；debuginfo 走根 Cargo.toml 的
+      #     line-tables-only；
+      #   - bin 构建拆两段（库段 → bin 段）看门狗包装：单步墙钟减半，仍失联时
+      #     两段时间线直接点名触发面（库段 vs 最终链接）。
+      CARGO_INCREMENTAL: 0
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -221,10 +257,21 @@ jobs:
       # cache-on-failure（2026-09-29 提速 P2，同 rust-check job 注释）
       # workspaces 收编三个示例插件（嵌套独立 workspace）：fixture 构建产物
       # 落在各自 target/，不收编则每轮冷构建多花 3-6 分钟。
+      # shared-key win-x64-r10（2026-10-09 第十轮，取代 R7 的 key: r7）：
+      # r7 命名空间从未成功保存过——runner 失联时 Post 步骤不执行，CI 十轮
+      # 全冷；而冷构建的 bin 步（最终链接）是全流程内存峰值，R9 实证 libs
+      # 6.6min 健康跑完、bin 段 44min 后整机 paging 冻僵（看门狗 30min 上限
+      # 都没触发），runner 在 job 龄 52min 被回收。ET integration-windows 用
+      # 自家热缓存时同命令 2.8min（exe 已在缓存里，链接根本不执行）。本 job
+      # 与 ET 同为 windows-2022 + 同一 Cargo.lock + 同 CARGO_INCREMENTAL=0，
+      # shared-key 让两 job 共享同一缓存命名空间：ET 构建成功即存（cache-
+      # on-failure 失败轮也存），CI 恢复后 bin 步变 no-op，结构性绕开冷链接
+      # 死亡面。首次引导需一轮冷（先 ET 存、CI rerun 后吃热）。
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          shared-key: win-x64-r10
           workspaces: |
             .
             plugins/wasm/translate
@@ -267,6 +314,13 @@ jobs:
       # 设 NEMESISBOT_VOICE_HW_TESTS=1 可在 CI opt-in）。
       # ⚠️ 新增触碰 cpal/音频设备的测试必须挂同款闸，否则 CI 必崩。
       #
+      # 同族警示（2026-10-10）：estop→ConPTY kill 路径在 hosted windows
+      # runner 上四连楔死（100min+ 挂死/120s TIMEOUT×2/110s 看门狗 abort，
+      # 本机不复现；优雅 close 的 roundtrip/401 不受影响）——
+      # pty::tests::estop_engage_kills_session 挂同款 CI 闸（Windows CI
+      # 默认 SKIP，NEMESISBOT_PTY_ESTOP_TESTS=1 opt-in；Linux CI 照跑）。
+      # 新增走 ConPTY kill 的测试须挂同款闸。
+      #
       # nextest（2026-09-29 提速 P3）：① 测试二进制并行执行；② .config/nextest.toml
       # 把真 gateway live 批（commands::gateway::{r9_live_tests,scenario_tests}，
       # 固定端口 8080/49000/18790，原 live_gate() 互斥闸只在单进程内生效）钉进
@@ -276,11 +330,35 @@ jobs:
       #   b. nextest ≥0.9.1xx 默认 fail-fast（一处红取消剩余），与本 job 全量
       #      体检语义相反——必须显式 --no-fail-fast。
       # nextest 不跑 doctests（本仓库无实质 doctest 断言，无覆盖损失）。
-      - name: Build nemesisbot bin (live 批 spawn 依赖)
-        run: cargo build -p nemesisbot
+      # 构建拆两段（2026-10-09 第六轮，见 env 块注释）：库段编 workspace 其余
+      # 全部（顺带 integration-test 等工具 bin），bin 段只链最终 exe。
+      - name: Build workspace libs (watchdog)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag cibuild1 -MaxMinutes 60 -BuildCommand "cargo build --workspace --exclude nemesisbot"
 
-      - name: cargo nextest run --workspace
-        run: cargo nextest run --workspace --no-fail-fast
+      - name: Build nemesisbot bin (live 批 spawn 依赖, watchdog)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag cibuild2 -MaxMinutes 30 -BuildCommand "cargo build -p nemesisbot"
+
+      - name: cargo nextest run --workspace (watchdog, shard ${{ matrix.shard }})
+        # nextest 步前半段同样是全量测试目标编译（六连死的同源风险面），
+        # 同款看门狗包装；尾部行数放大——失败摘要必须在 tail 里可见。
+        # MaxMinutes 85（第四轮 75→85）：JOBS:2 + 冷缓存下测试目标编译 ~25-30min
+        # + 全量 21k 测试执行，75min 实测被自己的上限树杀（win22 首轮败因，
+        # 非 runner 失联——资源曲线全程平稳即证据）。
+        # MaxMinutes 115（2026-10-10 第十五轮 85→115）：慢机族实测三连杀（a6/a7/a8
+        # 全在 RUN83min 撞 85 上限软着陆，套件全程有进展、VM 全程响应——不是
+        # 失联，是我们自己的上限比慢机套件墙钟短）。看门狗的天职是软着陆保缓存，
+        # 不是掐死合法慢跑；115 给慢机 ~30min 余量（套件慢机墙钟 ~90-100min），
+        # 健康机 30-40min 完成不受影响。job timeout 同步 120→180 兜底。
+        # --partition hash:N/2（2026-10-10 第十六轮）：整段拆半——单片=半集测试，
+        # 编译共享（同缓存恢复）执行减半，慢机族 80-150min 的未完赛段从此
+        # ~40-75min 收口。job 级 timeout 维持 180（两片并行，总墙钟不变）。
+        # hash:N/3（2026-10-10 深夜 2→3 片）：对半拆后单片仍偶发失联（shard1
+        # 两连死，死在构建步=VM 抽签劣化与步骤无关），三片把单片测试再减半，
+        # 典型总墙钟 ~20-22min 深滑出失联窗。三片并集=全集。
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag "nextest-s${{ matrix.shard }}" -MaxMinutes 115 -TailOut 200 -TailErr 100 -BuildCommand "cargo nextest run --workspace --no-fail-fast --partition hash:${{ matrix.shard }}/3"
 
   frontend:
     name: Frontend typecheck + vitest + build (Linux)

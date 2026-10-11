@@ -6,7 +6,7 @@
 //! ① 全部已入库示例的随包副本与真相源字节相等（2026-09-30 插件体系复查
 //!    #13：示例副本此前无漂移保护——合同升级忘同步示例 = 三方按旧合同
 //!    开发，装新宿主即实例化失败）。名单静态维护，只收 git 已入库示例
-//!    （与 devkit 打包名单同口径；wsinsight 未入库不入测）。
+//!    （与 devkit 打包名单同口径）。
 //! ② wit 文件里的 package 版本 ↔ 宿主 [`nemesis_plugins_wasm::CONTRACT_API_VERSION`]
 //!    机械对齐（合同代际 = package semver 的 minor：0.N.0 ↔ N）。bump 合同
 //!    忘改常量（或反之）在此处红，不再靠人工对齐。
@@ -22,6 +22,7 @@ const EXAMPLE_WIT_COPIES: &[&str] = &[
     "plugins/wasm/translate/wit/plugin.wit",
     "plugins/wasm/activity-log/wit/plugin.wit",
     "plugins/wasm/textstat/wit/plugin.wit",
+    "plugins/wasm/wsinsight/wit/plugin.wit",
 ];
 
 fn read(p: &Path) -> String {

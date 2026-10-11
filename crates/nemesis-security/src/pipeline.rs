@@ -1099,6 +1099,33 @@ impl SecurityPlugin {
         self.dlp_engine.as_ref()
     }
 
+    /// S2①（2026-10-09 高优差距批次一）：exec/exec_async/background_start
+    /// 执行前脚本内容扫描。8 层管线只看入参，磁盘上预先存在的脚本（用户
+    /// 创建 / web_fetch 下载 / git clone）被 exec 执行时内容零检查——本入口
+    /// 补上该盲区（详见 `shell_bleed` 模块头）。`args_json` = 工具调用完整
+    /// 参数（取 `command` 与基目录字段：`cwd`，exec_async 用
+    /// `working_dir`，后者作缺位回退）；无 command = `None`。
+    pub fn pre_exec_script_scan(
+        &self,
+        args_json: &str,
+    ) -> Option<crate::shell_bleed::ScriptScanOutcome> {
+        let args: serde_json::Value = serde_json::from_str(args_json).ok()?;
+        let command = args.get("command")?.as_str()?;
+        let base = args
+            .get("cwd")
+            .or_else(|| args.get("working_dir"))
+            .and_then(|c| c.as_str())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+            });
+        Some(crate::shell_bleed::scan_scripts_for_exec(
+            command,
+            &base,
+            self.credential_scanner(),
+        ))
+    }
+
     /// Get the SSRF guard (for testing).
     pub fn ssrf_guard(&self) -> Option<&SsrfGuard> {
         self.ssrf_guard.as_ref()

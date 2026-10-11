@@ -23,10 +23,17 @@ on:
   schedule:
     # 每天 UTC 1:00（北京时间 9:00）。成功后经 workflow_run 触发 daily-release。
     - cron: '0 1 * * *'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      seed_cache:
+        description: 只构建并落共享缓存（win-x64-r10 引导用）；测试全跳过，run 故意红以拦 nightly
+        type: boolean
+        default: false
 
 permissions:
   contents: read
+  # upload-artifact@v4（失败轮证据归档，2026-10-10）需要 actions:write。
+  actions: write
 
 concurrency:
   group: extended-tests
@@ -35,6 +42,8 @@ concurrency:
 jobs:
   workspace-tests-linux:
     name: Full workspace tests (Linux)
+    # seed_cache 引导轮只构建落缓存，测试 job 全跳过（省 VM 时长）
+    if: ${{ inputs.seed_cache != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -107,6 +116,7 @@ jobs:
 
   feature-matrix:
     name: Feature trimming matrix (Linux)
+    if: ${{ inputs.seed_cache != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -157,14 +167,67 @@ jobs:
         run: cargo check -p nemesisbot ${{ matrix.flags }}
 
   integration-windows:
-    name: Integration + cluster UAT (Windows)
-    runs-on: windows-latest
+    name: Integration + cluster UAT (Windows, ${{ matrix.segment.name }})
+    # 切段独立 job（2026-10-10）：单 job 整套 cluster-uat（T1-T37 +
+    # T-XFER×6 + T-MRG×7，成功轮 32min）连续两轮在 ~45:40±1s 处 runner
+    # 暴死（GitHub 注解 = hosted runner lost communication；integration-test
+    # 两轮都 ~50s 证明 VM 速度没退化，套件是卡在某个测试上+runner 暴死的
+    # 叠加事件；日志随 runner 蒸发 BlobNotFound 无法定位死点）。切段后每段
+    # VM 暴露 ≤ 半小时远短于 45min 死亡线；段死不连坐（rerun-failed-jobs
+    # 只重跑死段）；卡死在段内 = 120min job 超时而非 runner 暴死 = 日志
+    # 正常上传，悬案变带日志的红。Passed 行数 floor 守卫防切段参数 typo
+    # 退化成 0 测试假绿。
+    #
+    # mrg 再切两段（2026-10-10 晚）：mrg 段三连死于 runner 回收线
+    # （45:40 级/53min/48min，全 BlobNotFound 零次跑完），同构建链的 core
+    # 段（37 测试）rerun 34min 绿、xfer 两连绿——定位不是构建也不是个别
+    # 测试挂死，而是 T-MRG 族本体是 sweep/重派等待主导（本地 10.5min，
+    # CI 26min+ 仍未完 ≈2.5x 墙钟缩放），7 测试总时长 47-51min 必然横跨
+    # 回收线。切 3+4 后每段测试墙钟减半，总时长 32-39min 滑出死亡线。
+    #
+    # mrg-b 切四个单测试段（2026-10-11）：b1(T-MRG-4,5)/b2(T-MRG-6,7) 两段
+    # 式连续两轮四连死在 52-54min 整机失联（BlobNotFound），同轮 core/xfer/
+    # mrg-a 全绿——两测试段的段期望墙钟（build 8 + 桩切换重启 3 + 2x测试
+    # 墙钟 ≈ 26min CI 缩放）落在失联窗内，VM 稍劣化就爬过回收线；段期望
+    # 时长=暴露面。切四后每段 ≈ build 3-8 + 桩 3 + 单测试 ≤10 ≈ 16-21min，
+    # 深滑出死亡窗（绿轮 ≤34min 铁律，约 25 样本）。配套：T-MRG-5/7 补桩
+    # 自持块（原经 T-MRG-4/6 同进程共享的桩态在单测试段独立进程里不再
+    # 存在；同值切换幂等）。min_pass=1 防切段参数 typo 退化 0 测试假绿。
+    strategy:
+      fail-fast: false
+      matrix:
+        segment:
+          - name: core
+            uat_args: "--exclude T-XFER --exclude T-MRG"
+            min_pass: 37
+          - name: xfer
+            uat_args: "--filter T-XFER"
+            min_pass: 6
+          - name: mrg-a
+            uat_args: "--filter T-MRG --exclude T-MRG-4 --exclude T-MRG-5 --exclude T-MRG-6 --exclude T-MRG-7"
+            min_pass: 3
+          - name: mrg-b1
+            uat_args: "--filter T-MRG --exclude T-MRG-1 --exclude T-MRG-2 --exclude T-MRG-3 --exclude T-MRG-5 --exclude T-MRG-6 --exclude T-MRG-7"
+            min_pass: 1
+          - name: mrg-b2
+            uat_args: "--filter T-MRG --exclude T-MRG-1 --exclude T-MRG-2 --exclude T-MRG-3 --exclude T-MRG-4 --exclude T-MRG-6 --exclude T-MRG-7"
+            min_pass: 1
+          - name: mrg-b3
+            uat_args: "--filter T-MRG --exclude T-MRG-1 --exclude T-MRG-2 --exclude T-MRG-3 --exclude T-MRG-4 --exclude T-MRG-5 --exclude T-MRG-7"
+            min_pass: 1
+          - name: mrg-b4
+            uat_args: "--filter T-MRG --exclude T-MRG-1 --exclude T-MRG-2 --exclude T-MRG-3 --exclude T-MRG-4 --exclude T-MRG-5 --exclude T-MRG-6"
+            min_pass: 1
+    # pin windows-2022：同 ci.yml rust-test——win25 20261004 镜像波次后编译期
+    # runner 六连死失联，与全部资源缓解措施无关；win22 无该波次嫌疑变更
+    # （WSL 停 2.x、OS 代际不同），作单变量对照实验。
+    runs-on: windows-2022
     timeout-minutes: 120
     env:
-      # 2026-10-08：同 ci.yml rust-test——dev 编译内存峰值压死 16GB runner
-      # （死点实证在本 job 的 Build nemesisbot (debug) 编译步内），降并发
-      # +profile.dev line-tables-only 双杠杆。
-      CARGO_BUILD_JOBS: 3
+      # 编译期 runner 失联战役（同 ci.yml rust-test 完整注释，docs 报告 §六~§十）：
+      # 十连死排除法后仅剩墙钟压缩可用——JOBS 回默认 4，保 CARGO_INCREMENTAL=0，
+      # 构建拆两段（库段 → bin 段）看门狗包装。
+      CARGO_INCREMENTAL: 0
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -172,11 +235,17 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      # cache-on-failure（2026-09-29 提速 P2，见 ci.yml 同名注释）
+      # cache-on-failure（2026-09-29 提速 P2，见 ci.yml 同名注释）。
+      # shared-key win-x64-r10（2026-10-09 第十轮，与 ci.yml rust-test 共享）：
+      # 本 job 的构建产物（含 nemesisbot.exe）由 ET 构建成功落缓存，CI 恢复
+      # 后 bin 步变 no-op——CI 冷构建的链接段是 runner 失联战役十轮的死亡面
+      # （见 ci.yml rust-test 缓存步注释），共享命名空间结构性绕开。同镜像
+      # windows-2022 + 同一 Cargo.lock + 同 CARGO_INCREMENTAL=0，缓存互通。
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          shared-key: win-x64-r10
 
       # Defender 实时扫描排除 target 目录（2026-09-29 提速 P4，见 ci.yml 同名注释）
       - name: Exclude target dir from Defender scan
@@ -187,6 +256,12 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: 'stable'
+          # 显式声明模块缓存（v5 默认会开，这里写死防上游行为变化）。R12 实录：
+          # 一台 VM 上 go build 拉 gin 依赖树（~30 包）楔死 40min（proxy.golang.org
+          # 网络劣化抽签），同 SHA 另一台 VM 几十秒过——缓存命中后 go build 离线
+          # 可完成，对下载网络免疫。
+          cache: true
+          cache-dependency-path: test-tools/TestAIServer/go.sum
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
@@ -208,13 +283,60 @@ jobs:
         shell: bash
         run: cd test-tools/TestAIServer && go build -o testaiserver.exe
 
-      # test-harness 解析 target/debug/nemesisbot.exe（Windows 形态，debug 即可）
-      - name: Build nemesisbot (debug)
-        run: cargo build -p nemesisbot
+      # test-harness 解析 target/debug/nemesisbot.exe（Windows 形态，debug 即可）。
+      # 构建拆两段（同 ci.yml，2026-10-09 第六轮）：库段 → bin 段，单步墙钟减半
+      # 滑出死亡窗口 + 仍失联时两段时间线点名触发面。
+      - name: Build workspace libs (watchdog)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag etbuild1 -MaxMinutes 60 -BuildCommand "cargo build --workspace --exclude nemesisbot"
 
-      # 纯 bin runner：cargo run（不是 cargo test——见文件头注释）
+      - name: Build nemesisbot (debug, watchdog)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag etbuild2 -MaxMinutes 30 -BuildCommand "cargo build -p nemesisbot"
+
+      # 纯 bin runner：cargo run（不是 cargo test——见文件头注释）。
+      # tee 留全量输出进 step 日志；Passed floor 守卫防切段参数 typo 退化
+      # 成 0 测试假绿（--filter/--exclude 都是子串匹配，拼错=全 SKIP）。
       - name: Run integration-test (492 assertions, 22 commands)
+        if: ${{ inputs.seed_cache != true }}
         run: cargo run -p integration-test
 
-      - name: Run cluster-uat (T1-T18 E2E)
-        run: cargo run -p cluster-uat
+      - name: Run cluster-uat (${{ matrix.segment.name }})
+        if: ${{ inputs.seed_cache != true }}
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo run -p cluster-uat -- ${{ matrix.segment.uat_args }} | tee uat-${{ matrix.segment.name }}.log
+          n=$(grep -oE 'Passed: [0-9]+' uat-${{ matrix.segment.name }}.log | grep -oE '[0-9]+' | tail -1)
+          echo "cluster-uat ${RUNNER_NAME:-} executed-passed: ${n:-0} (floor ${{ matrix.segment.min_pass }})"
+          if [ -z "$n" ] || [ "$n" -lt ${{ matrix.segment.min_pass }} ]; then
+            echo "::error::cluster-uat ${{ matrix.segment.name }} passed ${n:-0} < floor ${{ matrix.segment.min_pass }}（切段参数 typo 或套件未跑完，不许假绿）"
+            exit 1
+          fi
+
+      # 失败轮证据归档（2026-10-10 mrg-b 双 54min 暴死、日志 BlobNotFound 的
+      # 教训收尾）：cluster-uat-logs/（四节点 gateway 日志 + cluster 状态）与
+      # tee 的逐测试输出都是 runner 回收后唯一能回查的现场。正常轮不上传
+      # （省存储）；runner 暴死轮两者皆失（无法救）——真正的第一现场已由
+      # cluster-uat 双墙钟预算保证提前落 stdout（预算触线 = 诚实终局）。
+      - name: Upload cluster-uat evidence (failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cluster-uat-evidence-${{ matrix.segment.name }}
+          path: |
+            cluster-uat-logs/
+            uat-${{ matrix.segment.name }}.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # seed_cache 引导轮终点：构建步全部完成后到这里故意红。cache-on-failure
+      # 会在 Post 步骤照常落共享缓存（引导目的达成）；run 结论=失败则
+      # daily-release 的 workflow_run 闸（只放行 success）不会误发未经验证的
+      # nightly——红是诚实信号：本 run 没跑任何测试，不配放行发布。
+      - name: Seed-run marker（故意失败拦 nightly，见注释）
+        if: ${{ inputs.seed_cache == true }}
+        run: |
+          echo "seed_cache=true：本 run 只构建并落共享缓存 win-x64-r10，测试全部跳过。"
+          echo "故意失败：拦住 daily-release（success 才放行），也如实告知本 run 未验证。"
+          exit 1
