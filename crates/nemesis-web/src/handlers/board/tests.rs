@@ -8738,6 +8738,10 @@ async fn planner_chain_success_comment_trace() {
         nemesis_agent::AgentConfig::default(),
     ));
     let hub = crate::events::EventHub::new();
+    let mut rx = hub.subscribe();
+    // 拆解运行期可观测（2026-10-11「停着」事故）回归：链开头应注册 running
+    // 条目（in-flight 可查）——execute_plan_chain 同步 await 无法在运行中
+    // 抽查，改为断言结束后条目已摘除（guard Drop 三退出路径中的正常路径）。
     let out = super::execute_plan_chain(
         &store,
         None, // 集群未装配 → 拆解照常，发车面不进本断言
@@ -8775,6 +8779,44 @@ async fn planner_chain_success_comment_trace() {
     assert!(
         matches!(trace.ctype, nemesis_board::models::CommentType::System),
         "留痕应为系统评论"
+    );
+    // 开始评论（运行期持久通道）：与完成评论成对。
+    let comments = store.list_comments(issue.id).unwrap();
+    let started = comments
+        .iter()
+        .find(|c| c.content.contains("已开始自动拆解"))
+        .expect("应有「已开始自动拆解」系统评论");
+    assert!(
+        started.content.contains("3~8 分钟"),
+        "开始评论应带预期时长: {:?}",
+        started.content
+    );
+    // board.plan_started 事件（运行期实时通道）+ issue_number 附属。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let got_started = loop {
+        match rx.try_recv() {
+            Ok(evt) => {
+                assert_eq!(evt.event_type, "board.plan_started", "{:?}", evt.event_type);
+                assert_eq!(evt.data["issue_id"], issue.id);
+                assert_eq!(evt.data["plan_id"], "pl-a3-chain-ok");
+                assert_eq!(evt.data["issue_number"], issue.number);
+                break true;
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "board.plan_started 事件未在 5s 内到达"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            Err(e) => panic!("事件通道异常: {e}"),
+        }
+    };
+    let _ = got_started;
+    // 正常结束后 running 条目必须摘除（guard Drop）。
+    assert!(
+        super::RUNNING_PLANS.lock().get("pl-a3-chain-ok").is_none(),
+        "链结束后 running 条目应被摘除"
     );
 
     super::PLAN_CACHE.lock().remove("pl-a3-chain-ok");
@@ -8897,5 +8939,113 @@ async fn plan_chain_panic_leaves_issue_comment_and_event() {
         }
     };
     let _ = got;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// plan.list running 态回归（2026-10-11「停着」事故）：in-flight 拆解必须
+/// 可查（status=running + elapsed_secs），与 ready 条目并列——此前 PLAN_CACHE
+/// 完成才写入，查询「正在跑」返回空，编排者无法区分拆解中与没跑。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn plan_list_includes_running_entries() {
+    let dir = unique_dir("plan-list-running");
+    let ctx = make_ctx_with_board(&dir);
+    super::RUNNING_PLANS.lock().insert(
+        "pl-running-1".to_string(),
+        super::RunningPlan {
+            issue_id: 42,
+            started_at: std::time::Instant::now() - std::time::Duration::from_secs(65),
+        },
+    );
+    let out = dispatch(&ctx, "plan.list", serde_json::json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    let plans = out["plans"].as_array().unwrap();
+    let running: Vec<_> = plans.iter().filter(|p| p["status"] == "running").collect();
+    assert_eq!(running.len(), 1, "running 条目应出现在列表: {plans:?}");
+    assert_eq!(running[0]["plan_id"], "pl-running-1");
+    assert_eq!(running[0]["issue_id"], 42);
+    assert!(
+        running[0]["elapsed_secs"].as_u64().unwrap() >= 64,
+        "应带已等待秒数: {:?}",
+        running[0]
+    );
+    // issue_id 过滤同样命中。
+    let out = dispatch(&ctx, "plan.list", serde_json::json!({ "issue_id": 42 }))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["plans"].as_array().unwrap().len(), 1);
+    let out = dispatch(&ctx, "plan.list", serde_json::json!({ "issue_id": 43 }))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["plans"].as_array().unwrap().len(), 0);
+    // plan.get 对 running 条目返回 running 投影（不再是「不存在」歧义）。
+    let out = dispatch(
+        &ctx,
+        "plan.get",
+        serde_json::json!({ "plan_id": "pl-running-1" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["status"], "running");
+    assert_eq!(out["issue_id"], 42);
+    super::RUNNING_PLANS.lock().remove("pl-running-1");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// project.create 同名友好错误回归（2026-10-11 用户实测）：项目名 UNIQUE
+/// 约束此前透传裸 `UNIQUE constraint failed: project.name`——用户看不懂。
+/// 预检后应为中文提示（含项目名 + 处理指引）。
+#[tokio::test]
+async fn project_create_duplicate_name_friendly_error() {
+    let dir = unique_dir("project-dup-name");
+    let ctx = make_ctx_with_board(&dir);
+    let first = dispatch(
+        &ctx,
+        "project.create",
+        serde_json::json!({ "name": "重名探针项目" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(first["created"], true, "{first}");
+    let err = dispatch(
+        &ctx,
+        "project.create",
+        serde_json::json!({ "name": "重名探针项目" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("已存在同名项目"), "{err}");
+    assert!(err.contains("重名探针项目"), "错误应带项目名: {err}");
+    assert!(
+        err.contains("唯一"),
+        "错误应说明原因（项目名需唯一）: {err}"
+    );
+    // 归档后的同名项目同样占名（UNIQUE 不看 status），提示保持一致。
+    let pid = first["project"]["id"].as_i64().unwrap();
+    dispatch(
+        &ctx,
+        "project.update",
+        serde_json::json!({ "id": pid, "status": "archived" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let err = dispatch(
+        &ctx,
+        "project.create",
+        serde_json::json!({ "name": "重名探针项目" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        err.contains("已存在同名项目"),
+        "归档同名也应被预检拦截: {err}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

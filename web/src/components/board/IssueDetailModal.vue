@@ -312,11 +312,24 @@ function onPlanFailed(data: any) {
   planState.value = 'failed'
 }
 
+// 拆解运行期可观测（2026-10-11「停着」事故）：他处触发的拆解（auto_start /
+// autopilot / agent 工具）开始时，模态内同步进 planning 态（此前只有
+// plan_ready/failed 会落状态，拆解中 4~7 分钟模态看起来无动于衷）。
+function onPlanStarted(data: any) {
+  if (!detail.value || data?.issue_id !== detail.value.id) return
+  if (planState.value === 'idle') {
+    planId.value = data?.plan_id || planId.value
+    planState.value = 'planning'
+  }
+}
+
 on('board.plan_ready', onPlanReady)
 on('board.plan_failed', onPlanFailed)
+on('board.plan_started', onPlanStarted)
 onUnmounted(() => {
   off('board.plan_ready', onPlanReady)
   off('board.plan_failed', onPlanFailed)
+  off('board.plan_started', onPlanStarted)
 })
 
 async function confirmPlan() {
