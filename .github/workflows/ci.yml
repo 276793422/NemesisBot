@@ -28,6 +28,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # 手动触发入口（Actions 页 "Run workflow" 按钮，2026-10-11 补装）。此前只有
+  # push/PR 两个触发器——没有 dispatch 就没有手动点燃按钮。push/PR 行为不变。
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
