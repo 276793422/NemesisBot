@@ -70,7 +70,10 @@ tmp="$(mktemp)"
     s=$(cat "/sys/class/net/$n/speed" 2>/dev/null)
     echo "NIC=$n speed=${s:-?}Mbps"
   done
+  # ICMP is filtered on hosted runners (ping loss is the norm there, not a
+  # fault signal) — the TCP connect probe below is the real network canary.
   echo "Ping github.com: $(ping -c 1 -W 2 github.com 2>&1 | grep -E 'time=|100% packet|unknown host|Name or service' | head -1)"
+  echo "TcpConnect github.com: $(curl -o /dev/null -s -w 'connect=%{time_connect}s total=%{time_total}s' https://github.com 2>/dev/null)"
   echo "=== LIMITS / PRESSURE ==="
   echo "ulimit_n_soft=$(ulimit -Sn) hard=$(ulimit -Hn)"
   echo "processes=$(ls -d /proc/[0-9]* 2>/dev/null | wc -l)"
