@@ -7839,3 +7839,16 @@ fn test_start_discovery_broken_reference_fails_closed() {
     arc.stop();
     nemesis_config::clear_global_vault_resolver();
 }
+
+// -------------------------------------------------------------------------
+// resolve_auto_node_name：CJK node_id 显示名截断（2026-10-11 横扫修复）
+// -------------------------------------------------------------------------
+
+/// 裸 `&node_id[..8.min(len)]` 在中文 node_id（中文主机名等）上会 panic。
+/// 修复后走字节边界安全版：8 字节预算回退到 6 字节 = 2 个汉字。
+#[test]
+fn auto_node_name_cjk_node_id_truncates_at_char_boundary() {
+    let (name, from_config) = resolve_auto_node_name("", None, "中中中中中");
+    assert!(!from_config);
+    assert_eq!(name, "Bot 中中");
+}

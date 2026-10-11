@@ -101,3 +101,30 @@ func TestBoardEditTwoStepInReusedSession(t *testing.T) {
 		t.Fatalf("复用会话下两步第二步仍应发锚点编辑，实际 name=%s args=%s", name, args)
 	}
 }
+
+func TestBoardEditSlowVariant(t *testing.T) {
+	m := NewTestAIBoardEditSlow()
+	if m.Name() != "testai-board-edit-slow-1.0" {
+		t.Fatalf("Name 应为慢速桩专属名，实际 %s", m.Name())
+	}
+	if m.Delay() != 4*1e9 {
+		t.Fatalf("Delay 应为 4s（running 窗口 ≥2 轮×4s，轮询必中），实际 %v", m.Delay())
+	}
+	// 行为与基座桩一致：轮 1 同样 emit 真实 edit_file（embed 复用 Process）。
+	r1 := m.Process([]Message{
+		{Role: "user", Content: "## Working Directory\n位于：\n`C:\\exec\\slow`\n<EDIT_ANCHOR>#define MODE 0|||#define MODE 1</EDIT_ANCHOR>"},
+	})
+	name, args := mustToolCall(t, r1)
+	if name != "edit_file" || !strings.Contains(args, "#define MODE 0") || !strings.Contains(args, "#define MODE 1") {
+		t.Fatalf("慢速变体轮1 应与基座一致 emit edit_file，实际 name=%s args=%s", name, args)
+	}
+	// 轮 2 同样按 "File edited" 锚收尾。
+	r2 := m.Process([]Message{
+		{Role: "user", Content: "## Working Directory\n位于：\n`C:\\exec\\slow`\n<EDIT_ANCHOR>a|||b</EDIT_ANCHOR>"},
+		{Role: "assistant", Content: ""},
+		{Role: "tool", Content: "File edited: common.h"},
+	})
+	if !strings.Contains(r2, "FILE_EDIT_DONE") {
+		t.Fatalf("慢速变体轮2 应与基座一致交付 FILE_EDIT_DONE，实际 %s", r2)
+	}
+}

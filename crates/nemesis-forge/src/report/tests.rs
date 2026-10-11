@@ -452,3 +452,16 @@ fn test_format_report_from_report_with_learning_cycle() {
     assert!(output.contains("lc-test"));
     assert!(output.contains("Patterns found: 7"));
 }
+
+#[test]
+fn test_truncate_cjk_at_char_boundary() {
+    // 中文建议/链名（LLM 反思产物）裸字节截断曾 panic（2026-10-11 横扫
+    // 修复）：截断点必须落在字符边界上。
+    let long = "中".repeat(30); // 90 字节 > 20
+    let out = truncate(&long, 20);
+    assert!(out.ends_with("..."));
+    // 20-3=17 字节预算回退到 15 字节 = 5 个汉字。
+    assert_eq!(out, "中中中中中...");
+    // 短文本原样返回（不追加省略号）。
+    assert_eq!(truncate("中文", 20), "中文");
+}

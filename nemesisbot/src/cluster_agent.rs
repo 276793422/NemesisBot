@@ -336,6 +336,29 @@ fn started_reply_retryable(resp: &nemesis_cluster::rpc_types::RPCResponse) -> bo
     }) == Some(true)
 }
 
+/// P8（集群无人值守硬化 A2）：会话 token 预算拒接判定（D3 重派入口）。
+/// `agents.defaults.session_token_budget`（0 = 关，默认）读法经 loop 侧
+/// `current_session_token_budget`（config.json 单一真相源 fresh-read）；
+/// 用量取 `aggregate_session_usage` absolute（口径 = input 含 cache_read +
+/// output，与 loop 侧累计器同账本同公式）。`None` = 关/无账/未超限（放行）。
+fn session_budget_rejection(agent_loop: &AgentLoop, session_key: &str) -> Option<String> {
+    let budget = agent_loop.current_session_token_budget();
+    if budget == 0 {
+        return None;
+    }
+    let ds = agent_loop.data_store()?;
+    let agg = ds.aggregate_session_usage(session_key).ok()?;
+    let used = u64::try_from(agg.input_tokens.max(0))
+        .unwrap_or(u64::MAX)
+        .saturating_add(u64::try_from(agg.output_tokens.max(0)).unwrap_or(u64::MAX));
+    if used < budget {
+        return None;
+    }
+    Some(nemesis_agent::token_budget::entry_reject_notice(
+        used, budget,
+    ))
+}
+
 async fn execute_new_task(
     agent_loop: &AgentLoop,
     config: &AgentConfig,
@@ -353,6 +376,32 @@ async fn execute_new_task(
     // Per-task AgentInstance：稳定前缀（装配期 system_prompt）+ 任务职能
     // 后缀（M3）。职能文本从不跨 RPC——slug 随任务走，契约本节点本地渲染。
     let instance = AgentInstance::new(task_system_prompt(config, agent_loop, task));
+
+    // P8（集群无人值守硬化 A2）：会话 token 预算入口拒接（NB-17 根因的正解
+    // 位——不进 loop 就不烧）。重派收敛到同一会话且带全量旧历史重入，预算
+    // 耗尽后放进来每轮 prefill 都是纯消耗；此处早退 error 回调（classify
+    // 识别 token_budget）→ master board_review 转人工不自动重派。
+    if let Some(notice) = session_budget_rejection(agent_loop, &task.source.session_key) {
+        tracing::info!(
+            task_id = %task.task_id,
+            session_key = %task.source.session_key,
+            "[ClusterAgent] session token budget exhausted; task rejected at entry"
+        );
+        nemesis_cluster::logger::log_task("exec_budget_blocked", &task.task_id, &notice);
+        send_task_callback(
+            rpc_client,
+            result_persister,
+            task,
+            self_node_id,
+            "error",
+            "",
+            &notice,
+            None,
+        )
+        .await;
+        task_list.complete_task(&task.task_id);
+        return Ok(());
+    }
 
     // Restore history from SessionStore (same pattern as main AgentLoop).
     // Without this, every peer_chat starts with empty context, so "give me the
@@ -1213,6 +1262,10 @@ async fn deliver_files_back(
 ///   （loop.rs 重试环终局文案含「rate limited」），评审重派决策据此避免
 ///   同 worker 同模型盲重派
 /// - `empty_result`：turn 正常结束但无交付文本
+/// - `token_budget`（P8 集群无人值守硬化 A2）：会话 token 预算耗尽——
+///   loop 硬停与入口拒接两类文案同前缀
+///   [`nemesis_agent::token_budget::SESSION_TOKEN_BUDGET_MARKER`]；master
+///   board_review 识别后转人工不重派
 /// - `exec_failed`：其它失败（兜底）。success 回调返回 None（不落字段）。
 fn classify_terminal_failure(status: &str, response: &str, error: &str) -> Option<&'static str> {
     if status != "error" {
@@ -1223,6 +1276,8 @@ fn classify_terminal_failure(status: &str, response: &str, error: &str) -> Optio
         Some("validation_budget")
     } else if text.starts_with(nemesis_agent::turn_guard::ESCALATION_MARKER) {
         Some("escalation")
+    } else if text.starts_with(nemesis_agent::token_budget::SESSION_TOKEN_BUDGET_MARKER) {
+        Some("token_budget")
     } else if text.starts_with("worker 返回空结果") {
         Some("empty_result")
     } else if text.starts_with("Error:") {
@@ -1535,6 +1590,129 @@ pub(crate) async fn send_nb_bus(
         .await
         .map_err(|e| format!("nb_bus rpc to {target}: {e}"))?;
     Ok(resp.result.unwrap_or(serde_json::Value::Null))
+}
+
+// ---------------------------------------------------------------------------
+// M5-3（2026-10-10 机制加固）：cluster ask 看板可见化——审批等待不再无声
+// ---------------------------------------------------------------------------
+
+/// 从审批 ask 的 chat_id 提取看板单号。worker 侧 cluster 会话键形态
+/// `cluster_rpc:{source_node}/board:{n}`（peer_chat_handler 原样拼接；
+/// board 派发 chat_id = `board:{number}`，board.rs / board_review.rs 两个
+/// 派发点同源）；`board:NB-{n}` 形态无生产产出方，容忍兼容不信任其存在。
+/// 非看板会话（dashboard peer_chat 等）/单号非法 → None（调用方静默跳过）。
+pub(crate) fn issue_number_from_cluster_chat_id(chat_id: &str) -> Option<i64> {
+    let board = chat_id.rsplit("/").next()?.trim();
+    let n = board.strip_prefix("board:")?;
+    let n = n.strip_prefix("NB-").unwrap_or(n);
+    n.parse::<i64>().ok().filter(|v| *v > 0)
+}
+
+/// M5-3 主入口：cluster ask 触发时向 master 权威看板 issue 线程投递系统
+/// 注记（审批等待可见化半步）。非看板会话静默跳过；投递单次尝试，失败
+/// WARN 不重试（同 `post_discussion_reply` 语义——审批等待不依赖注记到达）。
+/// 同步入口（Composite 观察者在审批等待的同步上下文里触发）：有 tokio
+/// runtime 则 spawn 后台投递，无 runtime（纯同步测试环境）诚实记日志跳过。
+pub(crate) fn spawn_board_ask_notice(
+    cluster: Arc<nemesis_cluster::cluster::Cluster>,
+    chat_id: &str,
+    request_id: &str,
+    operation: &str,
+    target: &str,
+    risk_level: &str,
+    reason: &str,
+    timeout_secs: u64,
+) {
+    let Some(issue_number) = issue_number_from_cluster_chat_id(chat_id) else {
+        return; // 非看板 cluster 会话（无 issue 可注记），静默。
+    };
+    let self_node_id = cluster.node_id().to_string();
+    let request_id = request_id.to_string();
+    let operation = operation.to_string();
+    let target = target.to_string();
+    let risk_level = risk_level.to_string();
+    let reason = reason.to_string();
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        tracing::info!(
+            "[BoardAsk] request {request_id}（{operation} → {target}）无可投递 runtime，注记跳过"
+        );
+        return;
+    };
+    handle.spawn(async move {
+        if let Err(e) = post_board_ask_notice(
+            cluster,
+            &self_node_id,
+            issue_number,
+            &request_id,
+            &operation,
+            &target,
+            &risk_level,
+            &reason,
+            timeout_secs,
+        )
+        .await
+        {
+            tracing::warn!("[BoardAsk] issue NB-{issue_number} 审批注记投递失败（不重试）：{e}");
+        }
+    });
+}
+
+/// 注记投递本体：找在线 coordinator（≠本节点）→ board.comment.post 信封
+/// → nb_bus RPC。master 额度三闸拒绝 / RPC 失败都算投递失败（诚实 Err）。
+async fn post_board_ask_notice(
+    cluster: Arc<nemesis_cluster::cluster::Cluster>,
+    self_node_id: &str,
+    issue_number: i64,
+    request_id: &str,
+    operation: &str,
+    target: &str,
+    risk_level: &str,
+    reason: &str,
+    timeout_secs: u64,
+) -> Result<(), String> {
+    let coordinator = cluster
+        .list_nodes()
+        .into_iter()
+        .find(|n| {
+            n.base.role == nemesis_types::cluster::NodeRole::Coordinator
+                && n.base.id != self_node_id
+                && n.is_online()
+        })
+        .map(|n| n.base.id)
+        .ok_or_else(|| "no online coordinator known（注记无投递目标）".to_string())?;
+    let rpc = cluster
+        .rpc_client_arc()
+        .ok_or_else(|| "rpc client unavailable（cluster 未启动）".to_string())?;
+    let short_id: String = request_id.chars().take(8).collect();
+    // 策略理由截断（防长策略刷屏；120 字符足够定位是哪条规则）。
+    let reason_short: String = reason.chars().take(120).collect();
+    let content = format!(
+        "⚠ [审批等待] 执行中遇到需人工放行的操作（审批单 {short_id}，风险 {risk_level}）\n\
+         - 操作：{operation} → {target}\n\
+         - 策略理由：{reason_short}\n\
+         - {timeout_secs}s 内未裁决将自动拒绝，任务可能因此失败/重派\n\
+         - 处理入口：节点 {self_node_id} 的 Dashboard 审批卡（或其 approval_rules 预放行）"
+    );
+    let event = DiscussionEvent {
+        thread_kind: "issue".to_string(),
+        thread_id: issue_number,
+        ..DiscussionEvent::default()
+    };
+    let payload = build_comment_post_envelope(self_node_id, &event, &content);
+    let body = send_nb_bus(&rpc, self_node_id, &coordinator, payload).await?;
+    if body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        tracing::info!(
+            "[BoardAsk] issue NB-{issue_number} 审批注记已投递（request {short_id}，{operation}）"
+        );
+        Ok(())
+    } else {
+        Err(format!(
+            "master 拒绝注记（额度/校验）：{}",
+            body.get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+        ))
+    }
 }
 
 #[cfg(test)]

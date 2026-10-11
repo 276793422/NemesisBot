@@ -207,6 +207,7 @@ impl AgentLoop {
             small_model: parking_lot::RwLock::new(None),
             spawn_slot: parking_lot::RwLock::new(None),
             voice_prompt: parking_lot::RwLock::new(None),
+            token_budget: crate::token_budget::SessionTokenBudgetLedger::default(),
         }
     }
 

@@ -39,6 +39,10 @@ function fireApproval(data: Record<string, unknown>) {
   sseHandlers.get('approval-requested')!(data)
 }
 
+function fireRemote(data: Record<string, unknown>) {
+  sseHandlers.get('approval-remote-requested')!(data)
+}
+
 function makePayload(requestId: string, overrides: Record<string, unknown> = {}) {
   return {
     request_id: requestId,
@@ -91,12 +95,13 @@ describe('useApprovals', () => {
     expect(pendingApprovals[0].expiresAt - Date.now()).toBe(50_000)
   })
 
-  it('initApprovals 幂等：重复调用不重复订阅/补拉', () => {
+  it('initApprovals 幂等：重复调用不重复订阅/补拉（本地+远程各一次）', () => {
     const { initApprovals } = useApprovals()
     initApprovals()
     initApprovals()
-    expect(wsapiRequest).toHaveBeenCalledTimes(1)
+    expect(wsapiRequest).toHaveBeenCalledTimes(2)
     expect(wsapiRequest).toHaveBeenCalledWith('approval', 'pending', {}, 5000)
+    expect(wsapiRequest).toHaveBeenCalledWith('approval', 'remote_list', {}, 5000)
   })
 
   it('补拉 pending 列表入列（断线漏事件恢复）', async () => {
@@ -220,5 +225,132 @@ describe('useApprovals', () => {
     expect(pendingApprovals).toHaveLength(1)
     vi.advanceTimersByTime(1100)
     expect(pendingApprovals).toHaveLength(0)
+  })
+
+  // ---- M5（2026-10-10 集群无人值守硬化：远程审批列表）----
+
+  function makeRemotePayload(requestId: string, overrides: Record<string, unknown> = {}) {
+    return {
+      request_id: requestId,
+      short_id: requestId.slice(0, 8),
+      worker: 'node-b',
+      operation: 'process_exec',
+      target: 'rm -rf build/',
+      risk_level: 'CRITICAL',
+      reason: '看板 #7',
+      timeout_secs: 300,
+      age_secs: 0,
+      ...overrides,
+    }
+  }
+
+  it('M5: approval-remote-requested → pendingRemoteApprovals 入列；缺 short_id 忽略', () => {
+    const { pendingRemoteApprovals, initApprovals } = useApprovals()
+    initApprovals()
+
+    fireRemote(makeRemotePayload('m5-1'))
+    expect(pendingRemoteApprovals).toHaveLength(1)
+    expect(pendingRemoteApprovals[0].short_id).toBe('m5-1')
+    expect(pendingRemoteApprovals[0].worker).toBe('node-b')
+    // 缺 short_id（非法 payload）不入列。
+    sseHandlers.get('approval-remote-requested')!({ request_id: 'm5-bad' })
+    expect(pendingRemoteApprovals).toHaveLength(1)
+  })
+
+  it('M5: 远程列表与本地列表隔离；expiresAt 同公式', () => {
+    const { pendingApprovals, pendingRemoteApprovals, initApprovals } = useApprovals()
+    initApprovals()
+
+    vi.setSystemTime(new Date('2026-09-06T08:00:00'))
+    fireApproval(makePayload('local-x'))
+    fireRemote(makeRemotePayload('remote-x', { timeout_secs: 300, age_secs: 60 }))
+    expect(pendingApprovals).toHaveLength(1)
+    expect(pendingRemoteApprovals).toHaveLength(1)
+    expect(pendingRemoteApprovals[0].expiresAt - Date.now()).toBe(240_000)
+  })
+
+  it('M5: approval-remote-resolved → 远程卡移除（本地卡不受影响）', () => {
+    const { pendingApprovals, pendingRemoteApprovals, initApprovals } = useApprovals()
+    initApprovals()
+    fireApproval(makePayload('local-keep'))
+    fireRemote(makeRemotePayload('remote-gone'))
+    expect(pendingRemoteApprovals).toHaveLength(1)
+
+    sseHandlers.get('approval-remote-resolved')!({
+      request_id: 'remote-gone',
+      decision: 'approved',
+      source: 'worker',
+    })
+    expect(pendingRemoteApprovals).toHaveLength(0)
+    expect(pendingApprovals.map(a => a.request_id)).toEqual(['local-keep'])
+  })
+
+  it('M5: remote_list 兜底补拉入列（断线漏事件恢复）', async () => {
+    wsapiRequest.mockImplementation((_mod: string, cmd: string) =>
+      cmd === 'remote_list'
+        ? Promise.resolve({ pending: [makeRemotePayload('m5-seed')] })
+        : Promise.resolve({}),
+    )
+    const { pendingRemoteApprovals, initApprovals } = useApprovals()
+    initApprovals()
+    await vi.waitFor(() => expect(pendingRemoteApprovals).toHaveLength(1))
+    expect(pendingRemoteApprovals[0].request_id).toBe('m5-seed')
+  })
+
+  it('M5: respondRemoteTo 成功 → 远程卡移除 + 成功 toast；unknown → 也移除', async () => {
+    // 按 cmd+request_id 定向打桩（seed pending/remote_list 也在消费 mock，
+    // Once 队列会被它们吃掉）。
+    wsapiRequest.mockImplementation((mod: string, cmd: string, data: any) =>
+      mod === 'approval' && cmd === 'remote_respond' && data?.request_id === 'm5-gone'
+        ? Promise.reject('unknown remote approval: m5-gone')
+        : Promise.resolve({ delivered: true }),
+    )
+    const { pendingRemoteApprovals, respondRemoteTo, initApprovals } = useApprovals()
+    initApprovals()
+    fireRemote(makeRemotePayload('m5-ok'))
+    fireRemote(makeRemotePayload('m5-gone'))
+    expect(pendingRemoteApprovals).toHaveLength(2)
+
+    await respondRemoteTo('m5-ok', true)
+    expect(wsapiRequest).toHaveBeenCalledWith('approval', 'remote_respond', {
+      request_id: 'm5-ok',
+      approved: true,
+    })
+    expect(pendingRemoteApprovals.map(a => a.request_id)).toEqual(['m5-gone'])
+    expect(toasts.some(t => t.type === 'success')).toBe(true)
+
+    // unknown = worker 已超时/已裁决 → 卡片同步摘除 + 错误 toast。
+    await respondRemoteTo('m5-gone', false)
+    expect(pendingRemoteApprovals).toHaveLength(0)
+    expect(toasts.some(t => t.type === 'error')).toBe(true)
+  })
+
+  it('M5: respondRemoteTo 传输失败 → 卡保留（可重发）；note 只在有值时进 payload', async () => {
+    // 首次（带 note 的拒绝）传输失败 → 卡保留；重发（批准）成功 → 摘除。
+    wsapiRequest.mockImplementation((mod: string, cmd: string, data: any) =>
+      mod === 'approval' && cmd === 'remote_respond' && data?.note === '先别删'
+        ? Promise.reject('RPC call to node-b failed: timeout')
+        : Promise.resolve({ delivered: true }),
+    )
+    const { pendingRemoteApprovals, respondRemoteTo, initApprovals } = useApprovals()
+    initApprovals()
+    fireRemote(makeRemotePayload('m5-retry'))
+    expect(pendingRemoteApprovals).toHaveLength(1)
+
+    await respondRemoteTo('m5-retry', false, '先别删')
+    expect(wsapiRequest).toHaveBeenLastCalledWith('approval', 'remote_respond', {
+      request_id: 'm5-retry',
+      approved: false,
+      note: '先别删',
+    })
+    expect(pendingRemoteApprovals).toHaveLength(1)
+    expect(toasts.some(t => t.type === 'error')).toBe(true)
+
+    await respondRemoteTo('m5-retry', true)
+    expect(wsapiRequest).toHaveBeenLastCalledWith('approval', 'remote_respond', {
+      request_id: 'm5-retry',
+      approved: true,
+    })
+    expect(pendingRemoteApprovals).toHaveLength(0)
   })
 })

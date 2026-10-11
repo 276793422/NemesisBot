@@ -41,6 +41,10 @@ mod board_bus;
 /// agent；信封/RPC 复用 cluster_agent 共用件）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod board_discuss_tool;
+/// M3（2026-10-10 机制加固）：同因失败签名熔断账本（连续同签名失败 ≥3
+/// 停止自动重派转人工，优先于 unlimited_mode；随 workspace 持久化）。
+#[cfg(all(feature = "board", feature = "cluster"))]
+mod board_fail_streak;
 /// 全自动流转 P3/D1：board_issue 工具（仅注册进主 agent——「对 master 说
 /// 一句话建单」入口；create 复用 WSAPI issue.create 解析，plan 复用
 /// execute_plan_chain 四入口单一真相源）。
@@ -137,6 +141,12 @@ mod web_approval;
 /// web_approval 同门（依赖 nemesis_security::auditor trait）。
 #[cfg(feature = "security")]
 mod channel_approval;
+
+/// M5（2026-10-10 集群无人值守硬化）：跨节点批复桥 worker 侧（ask 上行
+/// 登记/摘除上行 + Dashboard responder 装饰器）。双门：消费方全在
+/// gateway 的 security cfg 装配块（web_mgr 在手处）+ 依赖 cluster。
+#[cfg(all(feature = "cluster", feature = "security"))]
+mod remote_approval;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

@@ -23,6 +23,11 @@ use anyhow::Result;
 use nemesis_services::LifecycleService;
 use tracing::{info, warn};
 
+// M5（2026-10-10 集群无人值守硬化）：RPC 下行 handler 闭包内直调 trait 方法
+// （approval.respond/pending 捕获 web_mgr）。
+#[cfg(all(feature = "cluster", feature = "security"))]
+use nemesis_types::agent::ApprovalResponder;
+
 use super::GatewayCtx;
 #[cfg(feature = "security")]
 use super::GatewayLlmJudge;
@@ -274,11 +279,103 @@ pub(crate) async fn run_runtime(
             // 存在回执丢失窗口——窗口内的 /approve 被 broadcast 静默丢弃，
             // 用户批复等满超时被误拒（2026-09-08 全量实证根因）。
             channel_mgr.spawn_watcher();
-            let adapter: Arc<dyn nemesis_security::auditor::ApprovalManager> =
-                Arc::new(crate::channel_approval::CompositeApprovalManager::new(
-                    web_mgr.clone(),
-                    channel_mgr,
+            let composite = crate::channel_approval::CompositeApprovalManager::new(
+                web_mgr.clone(),
+                channel_mgr,
+            );
+            // M5-3（2026-10-10 机制加固）：cluster 通道 ask 看板注记——
+            // worker 执行看板任务的审批等待向 master 权威 issue 线程投系统
+            // 评论（路由侧已在 Composite 内改走默认管理器=本节点 Dashboard
+            // SSE 卡）。无集群 / adapter 缺席 = 不装（路由修复仍生效）。
+            #[cfg(feature = "cluster")]
+            if let Some(ref ca) = cluster_adapter {
+                let ask_cluster = ca.cluster().clone();
+                composite.set_board_notifier(std::sync::Arc::new(
+                    move |notice: &crate::channel_approval::BoardAskNotice| {
+                        crate::cluster_agent::spawn_board_ask_notice(
+                            ask_cluster.clone(),
+                            &notice.chat_id,
+                            &notice.request_id,
+                            &notice.operation,
+                            &notice.target,
+                            &notice.risk_level,
+                            &notice.reason,
+                            notice.timeout_secs,
+                        );
+                        // M5（2026-10-10 集群无人值守硬化）：跨节点批复桥——
+                        // ask 上行登记 master（远程批复入口的数据源）。
+                        crate::remote_approval::spawn_remote_ask_register(
+                            ask_cluster.clone(),
+                            notice,
+                        );
+                    },
                 ));
+                info!("[Gateway] Board ask notifier armed (cluster approval visibility)");
+            }
+            let adapter: Arc<dyn nemesis_security::auditor::ApprovalManager> = Arc::new(composite);
+            // M5（2026-10-10 集群无人值守硬化）：跨节点批复桥 worker 侧装配
+            // ——注册 RPC 下行 handler（master 转发的批复直达本节点 pending，
+            // always 兜底钉死 false：规则记忆只允许本地 Dashboard 显式落盘）
+            // + Dashboard 卡通路换装饰器（本节点裁决生效后上行 ask_closed
+            // 同步 master 关卡）。无集群 / adapter 缺席 = 不装（本地 Dashboard
+            // 批复不受影响）。
+            #[cfg(feature = "cluster")]
+            let responder: Arc<dyn nemesis_types::agent::ApprovalResponder> = if let Some(ref ca) =
+                cluster_adapter
+            {
+                let ask_cluster = ca.cluster().clone();
+                let respond_mgr = web_mgr.clone();
+                match ask_cluster.register_rpc_handler(
+                    nemesis_web::remote_approval::ACTION_APPROVAL_RESPOND,
+                    Box::new(move |payload| {
+                        let request_id = payload
+                            .get("request_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if request_id.is_empty() {
+                            return Err("missing request_id".to_string());
+                        }
+                        let approved = payload
+                            .get("approved")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        let note = payload
+                            .get("note")
+                            .and_then(|v| v.as_str())
+                            .map(String::from);
+                        let delivered = respond_mgr.respond(&request_id, approved, false, note)?;
+                        Ok(serde_json::json!({
+                            "delivered": true,
+                            "approved": delivered,
+                        }))
+                    }),
+                ) {
+                    Ok(()) => {
+                        info!("[Gateway] approval.respond handler armed (remote verdict downlink)")
+                    }
+                    Err(e) => warn!("[Gateway] approval.respond handler note: {e}"),
+                }
+                let pending_mgr = web_mgr.clone();
+                match ask_cluster.register_rpc_handler(
+                    nemesis_web::remote_approval::ACTION_APPROVAL_PENDING,
+                    Box::new(move |_payload| {
+                        Ok(serde_json::json!({ "pending": pending_mgr.pending() }))
+                    }),
+                ) {
+                    Ok(()) => {
+                        info!("[Gateway] approval.pending handler armed (remote surface)")
+                    }
+                    Err(e) => warn!("[Gateway] approval.pending handler note: {e}"),
+                }
+                Arc::new(crate::remote_approval::RemoteNotifyResponder::new(
+                    web_mgr.clone(),
+                    ask_cluster,
+                ))
+            } else {
+                web_mgr.clone()
+            };
+            #[cfg(not(feature = "cluster"))]
             let responder: Arc<dyn nemesis_types::agent::ApprovalResponder> = web_mgr.clone();
             auditor.set_approval_manager(adapter.clone());
             // Bridge the same approval manager to `skill_manage` write approval.

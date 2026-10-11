@@ -2273,3 +2273,216 @@ mod w5r2 {
         assert_eq!(state.watermark(), 50);
     }
 }
+
+/// M5（2026-10-10 集群无人值守硬化）：ns="approval" 路由（ask 上行登记/摘除）
+/// 与看板评论回源 relay。注册表是进程全局——用例用独立 request_id + 结尾
+/// 摘除防串扰；SSE EventHub 未安装 = 发布静默跳过（不炸）。
+mod m5_approval {
+    use super::*;
+
+    fn approval_payload(op: &str, body: serde_json::Value, from: &str) -> serde_json::Value {
+        let mut v = serde_json::json!({
+            "v": 1, "ns": "approval", "op": op, "corr_id": "c-m5",
+            "body": body,
+        });
+        if !from.is_empty() {
+            v["_rpc"] = serde_json::json!({ "from": from });
+        }
+        v
+    }
+
+    #[tokio::test]
+    async fn ask_register_routes_into_registry() {
+        let (store, dir) = temp_store("m5-register");
+        let deps = make_deps(store.clone(), quota(5));
+        let rid = "m5-reg-request-0001";
+        let (ok, code, v) = parse_reply(handle_nb_bus(
+            &deps,
+            approval_payload(
+                "ask_register",
+                serde_json::json!({
+                    "request_id": rid,
+                    "operation": "process_exec",
+                    "target": "cargo build",
+                    "risk_level": "HIGH",
+                    "reason": "m5 test",
+                    "timeout_secs": 300,
+                    "worker": "node-b",
+                    "issue_number": 9,
+                }),
+                "node-b",
+            ),
+        ));
+        assert!(ok, "register must succeed: {code:?}");
+        let short = v
+            .pointer("/body/short_id")
+            .and_then(|x| x.as_str())
+            .unwrap()
+            .to_string();
+        assert_eq!(short, "m5-reg-r");
+        // 注册表真实入表（短号与完整 id 双形态解析）。
+        let entry = nemesis_web::remote_approval::registry()
+            .resolve(&short)
+            .expect("entry");
+        assert_eq!(entry.worker_node, "node-b");
+        assert_eq!(entry.issue_number, Some(9));
+        assert_eq!(
+            nemesis_web::remote_approval::registry()
+                .resolve(rid)
+                .unwrap()
+                .operation,
+            "process_exec"
+        );
+        nemesis_web::remote_approval::registry().remove_by_request_id(rid);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn ask_register_requires_rpc_from() {
+        let (store, dir) = temp_store("m5-nofrom");
+        let deps = make_deps(store, quota(5));
+        let (ok, code, _) = parse_reply(handle_nb_bus(
+            &deps,
+            approval_payload(
+                "ask_register",
+                serde_json::json!({ "request_id": "x-1" }),
+                "",
+            ),
+        ));
+        assert!(!ok);
+        assert_eq!(
+            code.as_deref(),
+            Some(nemesis_cluster::envelope::error_code::VALIDATION)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn ask_closed_is_idempotent() {
+        let (store, dir) = temp_store("m5-closed");
+        let deps = make_deps(store, quota(5));
+        let rid = "m5-closed-request-01";
+        let (ok, _, _) = parse_reply(handle_nb_bus(
+            &deps,
+            approval_payload(
+                "ask_register",
+                serde_json::json!({ "request_id": rid }),
+                "node-b",
+            ),
+        ));
+        assert!(ok);
+        let (ok, _, v) = parse_reply(handle_nb_bus(
+            &deps,
+            approval_payload(
+                "ask_closed",
+                serde_json::json!({ "request_id": rid, "approved": true }),
+                "node-b",
+            ),
+        ));
+        assert!(ok);
+        assert_eq!(
+            v.pointer("/body/closed").and_then(|x| x.as_bool()),
+            Some(true)
+        );
+        // 重复摘除 = 幂等 success {closed:false}。
+        let (ok, _, v) = parse_reply(handle_nb_bus(
+            &deps,
+            approval_payload(
+                "ask_closed",
+                serde_json::json!({ "request_id": rid }),
+                "node-b",
+            ),
+        ));
+        assert!(ok);
+        assert_eq!(
+            v.pointer("/body/closed").and_then(|x| x.as_bool()),
+            Some(false)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn approval_unknown_op_fails() {
+        let (store, dir) = temp_store("m5-unknown-op");
+        let deps = make_deps(store, quota(5));
+        let (ok, code, _) = parse_reply(handle_nb_bus(
+            &deps,
+            approval_payload("bogus", serde_json::json!({}), "node-b"),
+        ));
+        assert!(!ok);
+        assert_eq!(
+            code.as_deref(),
+            Some(nemesis_cluster::envelope::error_code::UNKNOWN_OP)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 看板评论回源 relay：issue 线程 `/approve <短号>` 评论经
+    /// post_discussion_core 落库后异步转发远程审批——裸 Cluster 无 RPC
+    /// 客户端 → 诚实失败留痕（❌ 系统评论）；杂散同形评论（短号未登记）
+    /// 零影响。旁路 spawn 无 join → 轮询等待留痕。
+    #[tokio::test]
+    async fn board_comment_reply_relays_remote_approval() {
+        let (store, dir) = temp_store("m5-relay");
+        let deps = make_deps(store.clone(), quota(5));
+        let issue = store
+            .create_issue(nemesis_board::NewIssue {
+                title: "m5 relay".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let rid = "m5-relay-request-001";
+        let short = &rid[..8];
+        nemesis_web::remote_approval::registry().register(
+            nemesis_web::remote_approval::RemoteAskEntry {
+                request_id: rid.into(),
+                worker_node: "node-b".into(),
+                operation: "process_exec".into(),
+                target: "t".into(),
+                risk_level: "HIGH".into(),
+                reason: String::new(),
+                issue_number: Some(issue.id),
+                timeout_secs: 300,
+                created_at: std::time::Instant::now(),
+            },
+        );
+        let (ok, code, _) = parse_reply(handle_nb_bus(
+            &deps,
+            post_payload("m5-msg-1", "issue", issue.id, &format!("/approve {short}")),
+        ));
+        assert!(ok, "comment must post: {code:?}");
+        let mut receipt = None;
+        for _ in 0..40 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            if let Ok(comments) = store.list_comments(issue.id)
+                && let Some(c) = comments.iter().find(|c| c.content.contains("批复转发失败"))
+            {
+                receipt = Some(c.content.clone());
+                break;
+            }
+        }
+        let receipt = receipt.expect("failure receipt comment must appear");
+        assert!(receipt.contains("node-b"));
+        // 杂散同形评论（短号未登记）零影响——不产生新的回执系统评论
+        //（worker 发言本身照常落库，计数必须按回执文案过滤）。
+        let receipt_count = || {
+            store
+                .list_comments(issue.id)
+                .unwrap()
+                .iter()
+                .filter(|c| c.content.contains("批复已转发") || c.content.contains("批复转发失败"))
+                .count()
+        };
+        let before = receipt_count();
+        assert_eq!(before, 1);
+        let (ok, _, _) = parse_reply(handle_nb_bus(
+            &deps,
+            post_payload("m5-msg-2", "issue", issue.id, "/approve nosuch1"),
+        ));
+        assert!(ok);
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(receipt_count(), before, "unknown short id must be a no-op");
+        nemesis_web::remote_approval::registry().remove_by_request_id(rid);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

@@ -88,6 +88,24 @@ fn handle_nb_bus(
         return Ok(reply.to_json());
     }
 
+    // M5（2026-10-10 集群无人值守硬化）：ns="approval"——worker ask 上行
+    // 登记/摘除（跨节点批复桥的 master 侧数据源；注册表与 SSE 发布在
+    // nemesis_web::remote_approval，board_bus 只做信封路由）。
+    if env.ns == nemesis_web::remote_approval::NS_APPROVAL {
+        let reply = match env.op.as_str() {
+            "ask_register" => handle_approval_ask_register(&env, rpc_from_node(&payload)),
+            "ask_closed" => handle_approval_ask_closed(&env),
+            other => EnvelopeResponse::failure(
+                &env,
+                EnvelopeError::new(
+                    envelope::error_code::UNKNOWN_OP,
+                    format!("unknown op: {other}"),
+                ),
+            ),
+        };
+        return Ok(reply.to_json());
+    }
+
     if env.ns != "board" {
         return Ok(EnvelopeResponse::failure(
             &env,
@@ -111,6 +129,112 @@ fn handle_nb_bus(
         ),
     };
     Ok(reply.to_json())
+}
+
+/// 提取 body 字符串字段（缺键/非串 = 空串——展示字段容忍缺省）。
+fn str_field(body: &serde_json::Value, key: &str) -> String {
+    body.get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// M5：worker ask 上行登记（ns="approval" op="ask_register"）。`_rpc.from`
+/// 即 worker 身份（RPC server 注入，防伪造）；登记进远程审批注册表并广播
+/// SSE `approval-remote-requested`（master Dashboard 卡片数据源）。同
+/// request_id 重登 = 覆盖（防御性幂等——裁决真相源仍在 worker 的 pending
+/// 表，先到先得）。
+fn handle_approval_ask_register(env: &Envelope, from_node: &str) -> EnvelopeResponse {
+    if from_node.is_empty() {
+        return EnvelopeResponse::failure(
+            env,
+            EnvelopeError::new(envelope::error_code::VALIDATION, "missing _rpc.from"),
+        );
+    }
+    let Some(request_id) = env
+        .body
+        .get("request_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+    else {
+        return EnvelopeResponse::failure(
+            env,
+            EnvelopeError::new(envelope::error_code::VALIDATION, "missing request_id"),
+        );
+    };
+    let entry = nemesis_web::remote_approval::RemoteAskEntry {
+        request_id: request_id.clone(),
+        worker_node: from_node.to_string(),
+        operation: str_field(&env.body, "operation"),
+        target: str_field(&env.body, "target"),
+        risk_level: str_field(&env.body, "risk_level"),
+        reason: str_field(&env.body, "reason"),
+        issue_number: env.body.get("issue_number").and_then(|v| v.as_i64()),
+        timeout_secs: env
+            .body
+            .get("timeout_secs")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(300),
+        created_at: std::time::Instant::now(),
+    };
+    let short_id = nemesis_web::remote_approval::registry().register(entry.clone());
+    tracing::info!(
+        target: "board_bus",
+        worker = %from_node,
+        request_id = %request_id,
+        short_id = %short_id,
+        "[nb_bus] remote approval registered"
+    );
+    nemesis_web::remote_approval::publish_requested(nemesis_web::remote_approval::entry_json(
+        &short_id, &entry,
+    ));
+    EnvelopeResponse::success(
+        env,
+        serde_json::json!({ "registered": true, "short_id": short_id }),
+    )
+}
+
+/// M5：worker ask 摘除上行（ns="approval" op="ask_closed"）——本节点裁决
+/// 生效（本地 Dashboard 批复）后通知 master 同步关卡。幂等：条目不存在 =
+/// success {closed:false}（重复上行不报错；超时自动拒在 worker 侧不产生
+/// 本上行——注册表 TTL 到期自然过期）。
+fn handle_approval_ask_closed(env: &Envelope) -> EnvelopeResponse {
+    let Some(request_id) = env
+        .body
+        .get("request_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+    else {
+        return EnvelopeResponse::failure(
+            env,
+            EnvelopeError::new(envelope::error_code::VALIDATION, "missing request_id"),
+        );
+    };
+    let approved = env
+        .body
+        .get("approved")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let removed = nemesis_web::remote_approval::registry().remove_by_request_id(&request_id);
+    let closed = removed.is_some();
+    tracing::info!(
+        target: "board_bus",
+        request_id = %request_id,
+        approved,
+        closed,
+        "[nb_bus] remote approval closed"
+    );
+    if let Some(short_id) = removed {
+        nemesis_web::remote_approval::publish_resolved(serde_json::json!({
+            "request_id": request_id,
+            "short_id": short_id,
+            "decision": if approved { "approved" } else { "denied" },
+            "source": "worker",
+        }));
+    }
+    EnvelopeResponse::success(env, serde_json::json!({ "closed": closed }))
 }
 
 /// D0b：worker 出队开跑上报（ns="task" op="started"）。`_rpc.from` 必须与
@@ -602,9 +726,55 @@ fn post_discussion_core(
     };
     // 首响附 wake 摘要（F3）——在 spawn 前（plan 被 move 进异步任务）。
     let wake_summary = wake_summary_json(&plan);
-    tokio::spawn(async move {
+    // panic 留痕（2026-10-11 planner 事故固化）：裁决投递链 panic 不再
+    // 无声——ERROR 日志 + issue 线程系统评论（讨论线程无单可挂，只记日志）。
+    // 取消（关机/estop）= 正常流不留痕。
+    let handle = tokio::spawn(async move {
         deliver_wakeups(deps_for_task, ctx, plan, nodes).await;
     });
+    {
+        let watch_store = deps.store.clone();
+        let is_issue_thread = thread_kind == thread_kind::ISSUE;
+        tokio::spawn(async move {
+            if let Err(je) = handle.await {
+                if !je.is_panic() {
+                    return; // 任务被取消（关机/estop）= 正常流
+                }
+                let msg = nemesis_utils::string_utils::panic_message(je.into_panic());
+                let short: String = msg.chars().take(300).collect();
+                tracing::error!("[BoardBus] wake 投递/裁决链 panic thread={thread_id}: {short}");
+                if is_issue_thread {
+                    let _ = watch_store.add_comment(nemesis_board::NewComment {
+                        issue_id: thread_id,
+                        author: Actor::system("board"),
+                        content: format!(
+                            "❌ 讨论投递链后台任务异常终止（内部错误 panic）：{short}——本轮 wake 未完成投递，请重发或人工处置"
+                        ),
+                        parent_id: None,
+                        ctype: nemesis_board::CommentType::System,
+                    });
+                }
+            }
+        });
+    }
+
+    // M5（2026-10-10 集群无人值守硬化）：看板评论回源——issue 线程的
+    // `/approve|/deny <短号>` 评论转发远程审批（短号在注册表才动作，杂散
+    // 同形文本零影响；失败留痕为系统评论）。与 deliver_wakeups 并行的旁路
+    // spawn，不阻塞首响。
+    if thread_kind == thread_kind::ISSUE
+        && nemesis_web::remote_approval::looks_like_approval_reply(content)
+    {
+        let store = deps.store.clone();
+        let cluster = deps.cluster.clone();
+        let content = content.to_string();
+        tokio::spawn(async move {
+            nemesis_web::remote_approval::try_remote_approval_reply(
+                &store, &cluster, thread_id, &content,
+            )
+            .await;
+        });
+    }
 
     let mut response = posted.response;
     if let Some(obj) = response.as_object_mut() {

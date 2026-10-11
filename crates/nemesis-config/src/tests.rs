@@ -1883,6 +1883,41 @@ fn test_apply_env_overrides_max_tool_iterations() {
     }
 }
 
+/// P8（2026-10-10 集群无人值守硬化 A2）：session_token_budget 默认 pin。
+/// **0 = 关**（与 max_tool_iterations 的 0=不限惯例相反）；typed round-trip
+/// 保值（AgentDefaults 无 flatten extra，typed 字段是防 save_config 抹键的
+/// 唯一防线）；内嵌 config.default.json 恒 0（默认不改现网行为）。
+#[test]
+fn test_session_token_budget_default_pin_and_roundtrip() {
+    // ① typed 默认 = 0（关）。
+    assert_eq!(
+        AgentDefaults::default().session_token_budget,
+        0,
+        "0 = 关（默认不改现网行为）"
+    );
+    // ② serde round-trip：非零值经序列化→反序列化保值（抹键 = 预算静默失效）。
+    let json = r#"{"session_token_budget": 250000}"#;
+    let parsed: AgentDefaults = serde_json::from_str(json).unwrap();
+    assert_eq!(parsed.session_token_budget, 250_000);
+    let roundtrip: AgentDefaults =
+        serde_json::from_str(&serde_json::to_string(&parsed).unwrap()).unwrap();
+    assert_eq!(roundtrip.session_token_budget, 250_000);
+    // ③ 键缺失 = serde default 0（关），不是报错。
+    let bare: AgentDefaults = serde_json::from_str("{}").unwrap();
+    assert_eq!(bare.session_token_budget, 0);
+    // ④ 内嵌默认模板恒 0（onboard 出来的新工作空间默认关）。
+    let default_json = include_str!("../../../nemesisbot/config/config.default.json");
+    let v: serde_json::Value = serde_json::from_str(default_json).unwrap();
+    assert_eq!(
+        v.get("agents")
+            .and_then(|a| a.get("defaults"))
+            .and_then(|d| d.get("session_token_budget"))
+            .and_then(|n| n.as_u64()),
+        Some(0),
+        "config.default.json 的 session_token_budget 必须 pin 在 0（关）"
+    );
+}
+
 #[test]
 fn test_apply_env_overrides_concurrent_request_mode() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
@@ -3072,12 +3107,14 @@ fn test_board_flag_config_auto_dispatch_roundtrip() {
 
 #[test]
 fn test_board_review_budget_defaults_conservative() {
-    // P4 新段默认必须保守：执行型取证轮数=1（与历史行为字节等价）、自检/
-    // 项目收口关（自动 agent 活动显式 opt-in）、预算三维全关（0=不设限，
-    // 存量行为不变）。缺段 / 空段 / 段内缺字段三形态一致。
+    // P4 新段默认必须保守：取证轮数 0=不限（M6-3，2026-10-10 C1 预算耗尽
+    // 根修——1 轮经常不够下结论 → 假 UNSURE/假 FAIL；doom-loop/estop 守卫
+    // 仍在，0 语义安全）、自检/项目收口关（自动 agent 活动显式 opt-in）、
+    // 预算三维全关（0=不设限，存量行为不变）。缺段 / 空段 / 段内缺字段
+    // 三形态一致。
     let empty: Config = serde_json::from_str("{}").unwrap();
     let b = empty.board.unwrap_or_default();
-    assert_eq!(b.review.max_turns, 1);
+    assert_eq!(b.review.max_turns, 0, "M6-3：默认 0=不限取证轮数");
     assert!(!b.review.selfcheck);
     assert!(!b.review.auto_close_project);
     assert_eq!(b.budget.max_subissues_per_parent, 20);

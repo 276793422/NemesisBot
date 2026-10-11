@@ -75,6 +75,16 @@ pub fn install_event_hub(hub: Arc<EventHub>) {
     let _ = EVENT_HUB.set(hub);
 }
 
+/// M5（2026-10-10 集群无人值守硬化）：跨 crate 全局事件发布口——不经
+/// AppState（模块级 EVENT_HUB 槽），nemesisbot 侧（board_bus 远程审批
+/// 登记/摘除路由）与 crate 内（remote_approval 回源 relay）共用。未安装时
+/// 静默跳过（单测/无 SSE 场景零开销，`publish_activity` 同款语义）。
+pub fn publish_global_event(event_type: &str, data: serde_json::Value) {
+    if let Some(hub) = EVENT_HUB.get() {
+        hub.publish(event_type, data);
+    }
+}
+
 /// record 成功后广播多端感知信号：`chat.activity {session_id, seq, kind}`
 /// （SSE 全局）。`record_key` 是会话键（`agent:main:session:{sid}`）——信号里
 /// 还原裸 sid 与前端 currentId 同域比对；还原不了（连接级键 `web:...`）原样

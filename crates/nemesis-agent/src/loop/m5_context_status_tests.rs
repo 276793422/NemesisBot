@@ -159,3 +159,18 @@ fn covers_clamped_into_history_bounds() {
     assert_eq!(st["used_tokens"], 0, "尾部为空 → 占用 0");
     assert_eq!(st["pct"], 0);
 }
+
+/// P8（2026-10-10 集群无人值守硬化 A2）：`session_tokens_used` 观测字段。
+/// 预算关闭（无 config_path）也能查——账目直读累计器；未记账会话 = 0。
+#[test]
+fn session_tokens_used_reports_budget_ledger() {
+    let (al, _store) = m5_loop();
+    let key = "agent:main:session:tokens";
+    al.record_session_tokens(key, 1234);
+    al.record_session_tokens(key, 11);
+    let st = al.session_context_status(key);
+    assert_eq!(st["session_tokens_used"], 1245, "累计器增量叠加");
+    // 未记账会话（无底账）= 0，不是缺失/错误。
+    let st2 = al.session_context_status("agent:main:session:no-tokens");
+    assert_eq!(st2["session_tokens_used"], 0);
+}

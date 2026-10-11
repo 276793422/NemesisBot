@@ -160,6 +160,11 @@ mod tool_dispatch;
 pub use tool_dispatch::*;
 #[allow(unused_imports)]
 pub(crate) use tool_dispatch::*;
+// P8（集群无人值守硬化 A2）：会话 token 预算闸 loop 侧接线（顶检器官/
+// 记账/观测；纯类型+账本在顶层 crate::token_budget）。
+mod token_budget;
+#[allow(unused_imports)]
+pub(crate) use token_budget::*;
 mod tools_trait;
 #[allow(unused_imports)]
 pub use tools_trait::*;
@@ -630,6 +635,11 @@ pub struct AgentLoop {
     /// 渲染 L2 section（关 = 无 section = prompt 字节不变，cache 不动）。
     /// `None`（standalone / 未装配）= 永不注入。
     voice_prompt: parking_lot::RwLock<Option<Arc<std::sync::atomic::AtomicBool>>>,
+    /// P8（集群无人值守硬化 A2）：per-session token 预算账本（累计 + soft
+    /// 一次性闩）。类型与 seed 防双计语义见 [`crate::token_budget`]；接线
+    /// 全在 loop/token_budget.rs（计划 §冲突面登记：预算域改动不进
+    /// loop.rs 主体）。
+    token_budget: crate::token_budget::SessionTokenBudgetLedger,
 }
 
 impl AgentLoop {
@@ -734,6 +744,7 @@ impl AgentLoop {
             small_model: parking_lot::RwLock::new(None),
             spawn_slot: parking_lot::RwLock::new(None),
             voice_prompt: parking_lot::RwLock::new(None),
+            token_budget: crate::token_budget::SessionTokenBudgetLedger::default(),
         }
     }
 

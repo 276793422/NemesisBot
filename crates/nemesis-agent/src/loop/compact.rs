@@ -699,7 +699,7 @@ impl AgentLoop {
             .min(history.len());
         let used = estimate_tokens_for_turns_projected(&history[covers..]);
         let pct = (used * 100).checked_div(window).unwrap_or(0).min(100);
-        serde_json::json!({
+        let json = serde_json::json!({
             "session_key": session_key,
             "used_tokens": used,
             "window": window,
@@ -707,7 +707,12 @@ impl AgentLoop {
             "history_len": history.len(),
             "covers_up_to": covers,
             "summarized": cache.is_some(),
-        })
+            // P8（集群无人值守硬化 A2）：会话累计 token（口径 = input 含
+            // cache_read + output，与 session_token_budget 同源）。预算关闭
+            // 时也可观测——账目缺失路径从底账种入，与预算闸独立。
+            "session_tokens_used": self.session_tokens_used(session_key),
+        });
+        json
     }
 
     // -----------------------------------------------------------------------
