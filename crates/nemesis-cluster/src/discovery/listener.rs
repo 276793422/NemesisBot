@@ -572,7 +572,12 @@ fn message_to_node_info(msg: &DiscoveryMessage) -> ExtendedNodeInfo {
     let address = msg.addresses.first().cloned().unwrap_or_default();
 
     let display_name = if msg.name.is_empty() {
-        format!("node-{}", &msg.node_id[..8.min(msg.node_id.len())])
+        // node_id 来自对端 announce 的 wire 数据，可能是多字节文本——
+        // 裸字节截断会 panic（2026-10-11 横扫修复），走边界安全版。
+        format!(
+            "node-{}",
+            nemesis_utils::string_utils::truncate_bytes_at_boundary(&msg.node_id, 8)
+        )
     } else {
         msg.name.clone()
     };

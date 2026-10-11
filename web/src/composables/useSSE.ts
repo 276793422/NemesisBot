@@ -15,7 +15,7 @@ const eventHandlers: Record<string, EventHandler[]> = {}
 // 感知落后并全量刷新（本端 WS 实时帧先行，seq 游标短路零开销）。
 // P30（WS14）：'canvas.open' = agent 终答检出合法 ```canvas 块（Canvas
 // 面板渲染，iframe sandbox + 严格 CSP，v1 无网络）。
-const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'question-asked', 'question-resolved', 'board.plan_ready', 'board.plan_failed', 'resync', 'session.created', 'editor-mode', 'chat.activity', 'canvas.open']
+const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'approval-remote-requested', 'approval-remote-resolved', 'question-asked', 'question-resolved', 'board.plan_ready', 'board.plan_failed', 'resync', 'session.created', 'editor-mode', 'chat.activity', 'canvas.open']
 
 function dispatch(eventType: string, data: any) {
   const handlers = eventHandlers[eventType] || []

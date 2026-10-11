@@ -334,3 +334,327 @@ fn has_file_anchor_and_content_regex_predicate_matrix() {
     assert!(!has_file_anchor("[CHECK] file:../evil.txt exists"));
     assert!(!has_file_anchor("[CHECK] file:C:\\evil.txt exists"));
 }
+
+// ---------- run_anchors_dual：项目目录 fallback（2026-10-09 NB-22 根修）----------
+// 档案管线把 worker 变更集合并在项目目录（不进主 workspace），非档案管线
+// 首跑件直写主 workspace 根——文件类锚点双根 OR 兼容两种交付形态。
+
+/// 主根缺席 + 项目目录命中：FileExists 过，明细注明「项目目录」。
+#[test]
+fn dual_root_fallback_exists_passes_with_note() {
+    let ws = temp_workspace("dual-ws");
+    let proj = temp_workspace("dual-proj");
+    write_file(
+        &proj,
+        "fps-game/src/weapons.js",
+        "export const WEAPONS = 1;",
+    );
+    let (anchors, _, _) = parse_anchors("[CHECK] file:fps-game/src/weapons.js exists");
+    let results = run_anchors_dual(&anchors, &ws, Some(&proj), "");
+    assert!(results[0].passed, "{}", results[0].detail);
+    assert!(
+        results[0].detail.contains("项目目录"),
+        "fallback 命中明细必须注明来源: {}",
+        results[0].detail
+    );
+}
+
+/// 主根命中 → 不查 fallback（优先语义：明细无「项目目录」字样）。
+#[test]
+fn dual_root_primary_hit_skips_fallback() {
+    let ws = temp_workspace("dual-ws-p");
+    let proj = temp_workspace("dual-proj-p");
+    write_file(&ws, "src/a.js", "primary");
+    write_file(&proj, "src/a.js", "fallback");
+    let (anchors, _, _) = parse_anchors("[CHECK] file:src/a.js exists");
+    let results = run_anchors_dual(&anchors, &ws, Some(&proj), "");
+    assert!(results[0].passed, "{}", results[0].detail);
+    assert!(
+        !results[0].detail.contains("项目目录"),
+        "主根命中不得标注 fallback: {}",
+        results[0].detail
+    );
+}
+
+/// 两根都缺席 → 失败，明细为主根侧错误（不泄露 fallback 探测噪声）。
+#[test]
+fn dual_root_both_miss_fails_with_primary_detail() {
+    let ws = temp_workspace("dual-ws-m");
+    let proj = temp_workspace("dual-proj-m");
+    let (anchors, _, _) = parse_anchors("[CHECK] file:src/missing.js exists");
+    let results = run_anchors_dual(&anchors, &ws, Some(&proj), "");
+    assert!(!results[0].passed, "{}", results[0].detail);
+    let legacy = run_anchors(&anchors, &ws, "");
+    assert_eq!(results[0].detail, legacy[0].detail, "失败明细 = 主根侧");
+}
+
+/// FileContains：主根文件在但不含关键词、项目目录文件含 → 过（内容类
+/// 谓词同样双根 OR——主根旧版本不拖累 fallback 新版本）。
+#[test]
+fn dual_root_contains_fallback_content_hit() {
+    let ws = temp_workspace("dual-ws-c");
+    let proj = temp_workspace("dual-proj-c");
+    write_file(&ws, "src/w.js", "old version without keyword");
+    write_file(&proj, "src/w.js", "export const WEAPON_DEFS = [];");
+    let (anchors, _, _) = parse_anchors("[CHECK] file:src/w.js contains:WEAPON_DEFS");
+    let results = run_anchors_dual(&anchors, &ws, Some(&proj), "");
+    assert!(results[0].passed, "{}", results[0].detail);
+    assert!(
+        results[0].detail.contains("项目目录"),
+        "{}",
+        results[0].detail
+    );
+}
+
+/// FileRegex 同型：主根谓词未命中、fallback 命中 → 过。
+#[test]
+fn dual_root_regex_fallback_content_hit() {
+    let ws = temp_workspace("dual-ws-r");
+    let proj = temp_workspace("dual-proj-r");
+    write_file(&ws, "src/p.js", "const x = 1;");
+    write_file(&proj, "src/p.js", "function tick(dt) {}");
+    let (anchors, _, _) = parse_anchors("[CHECK] file:src/p.js re:^function tick");
+    let results = run_anchors_dual(&anchors, &ws, Some(&proj), "");
+    assert!(results[0].passed, "{}", results[0].detail);
+}
+
+/// fallback=None → 与 run_anchors 行为一致（缺席仍失败，零回归面）。
+#[test]
+fn dual_root_none_fallback_equals_legacy() {
+    let ws = temp_workspace("dual-ws-n");
+    write_file(&ws, "src/ok.js", "const ok = true;");
+    let (anchors, _, _) =
+        parse_anchors("[CHECK] file:src/ok.js exists\n[CHECK] file:src/nope.js exists");
+    let legacy = run_anchors(&anchors, &ws, "");
+    let dual = run_anchors_dual(&anchors, &ws, None, "");
+    assert_eq!(
+        legacy.iter().map(|r| r.passed).collect::<Vec<_>>(),
+        dual.iter().map(|r| r.passed).collect::<Vec<_>>()
+    );
+}
+
+/// re: 交付文本锚点与 FS 无关，fallback 不影响其语义。
+#[test]
+fn dual_root_content_regex_unaffected() {
+    let ws = temp_workspace("dual-ws-t");
+    let proj = temp_workspace("dual-proj-t");
+    let (anchors, _, _) = parse_anchors("[CHECK] re:交付完成");
+    let miss = run_anchors_dual(&anchors, &ws, Some(&proj), "还没完成");
+    assert!(!miss[0].passed);
+    let hit = run_anchors_dual(
+        &anchors,
+        &ws,
+        Some(&proj),
+        "## 结论\n交付完成，全部验收项达标",
+    );
+    assert!(hit[0].passed, "{}", hit[0].detail);
+}
+
+// ---------- exec: 锚点（M7：策略闸 / 超时 / 输出截断 / 跳过注记）----------
+
+fn exec_anchor(command: &str) -> Vec<AnchorCheck> {
+    let (anchors, _, _) = parse_anchors(&format!("[CHECK] exec:{command}"));
+    assert_eq!(anchors.len(), 1, "exec 行必须可解析: {anchors:?}");
+    assert_eq!(anchors[0].kind, AnchorKind::Exec);
+    anchors
+}
+
+#[test]
+fn parse_exec_anchor_forms() {
+    let (anchors, semantic, rejected) =
+        parse_anchors("[CHECK] exec:node --version\n[CHECK] exec:\n[CHECK] exec:   ");
+    assert_eq!(anchors.len(), 1, "非空 exec 行解析为锚点: {anchors:?}");
+    assert_eq!(anchors[0].kind, AnchorKind::Exec);
+    assert_eq!(anchors[0].target, "node --version");
+    assert_eq!(anchors[0].pattern, None);
+    assert_eq!(semantic.len(), 2, "空命令回落语义项: {semantic:?}");
+    assert!(rejected.is_empty());
+    // 谓词短名进渲染面。
+    assert_eq!(AnchorKind::Exec.as_str(), "命令执行");
+}
+
+/// exit 0 = 过 / exit 非 0 = 不过（命令文本跨平台可复现）。
+#[test]
+fn exec_anchor_exit_code_semantics() {
+    let ws = temp_workspace("exec-pass");
+    let pass = exec_anchor("exit 0");
+    let results = run_anchors_dual_ext(
+        &pass,
+        &ws,
+        None,
+        "",
+        &ExecAnchorPolicy::Enabled {
+            timeout_secs: EXEC_ANCHOR_DEFAULT_TIMEOUT_SECS,
+        },
+    )
+    .0;
+    assert!(results[0].passed, "{}", results[0].detail);
+    assert!(
+        results[0].detail.contains("退出码 0"),
+        "{}",
+        results[0].detail
+    );
+
+    let fail = exec_anchor("exit 3");
+    let results = run_anchors_dual_ext(
+        &fail,
+        &ws,
+        None,
+        "",
+        &ExecAnchorPolicy::Enabled { timeout_secs: 30 },
+    )
+    .0;
+    assert!(!results[0].passed, "{}", results[0].detail);
+    assert!(
+        results[0].detail.contains('3'),
+        "失败明细须带真实退出码: {}",
+        results[0].detail
+    );
+}
+
+/// 退出码非 0 时输出尾部进明细（可读诊断，e2e 失败现场纪律）。
+#[test]
+fn exec_anchor_failure_detail_carries_output_tail() {
+    let ws = temp_workspace("exec-echo");
+    // stdout + stderr 双通道都写（cmd /C 与 sh -c 语法差异按平台分流）。
+    let command = if cfg!(windows) {
+        "echo OUT_NEEDLE_XYZ & echo ERR_NEEDLE_UVW >&2 & exit 4"
+    } else {
+        "echo OUT_NEEDLE_XYZ; echo ERR_NEEDLE_UVW >&2; exit 4"
+    };
+    let results = run_anchors_dual_ext(
+        &exec_anchor(command),
+        &ws,
+        None,
+        "",
+        &ExecAnchorPolicy::Enabled { timeout_secs: 30 },
+    )
+    .0;
+    assert!(!results[0].passed, "{}", results[0].detail);
+    assert!(
+        results[0].detail.contains("OUT_NEEDLE_XYZ")
+            && results[0].detail.contains("ERR_NEEDLE_UVW"),
+        "明细须含 stdout/stderr 尾部: {}",
+        results[0].detail
+    );
+}
+
+/// 超时 = 不过 + 进程终止（短超时 + 平台 sleep 命令，~1s 完成）。
+#[test]
+fn exec_anchor_timeout_fails_and_terminates() {
+    let ws = temp_workspace("exec-timeout");
+    let command = if cfg!(windows) {
+        "ping -n 5 127.0.0.1 >nul"
+    } else {
+        "sleep 5"
+    };
+    let results = run_anchors_dual_ext(
+        &exec_anchor(command),
+        &ws,
+        None,
+        "",
+        &ExecAnchorPolicy::Enabled { timeout_secs: 1 },
+    )
+    .0;
+    assert!(!results[0].passed, "{}", results[0].detail);
+    assert!(
+        results[0].detail.contains("超时"),
+        "明细须诚实注明超时: {}",
+        results[0].detail
+    );
+}
+
+/// 默认策略（Disabled）= 诚实跳过：不进失败集、不假 PASS，只出注记。
+#[test]
+fn exec_anchor_disabled_skips_with_note_never_fails() {
+    let ws = temp_workspace("exec-disabled");
+    let anchors = exec_anchor("exit 1"); // 假如执行必败
+    let (results, skipped) =
+        run_anchors_dual_ext(&anchors, &ws, None, "", &ExecAnchorPolicy::Disabled);
+    assert!(results.is_empty(), "跳过项不得进结果组: {results:?}");
+    assert!(all_passed(&results), "跳过态不得触发重派（失败集为空）");
+    assert_eq!(skipped.len(), 1, "须有诚实注记: {skipped:?}");
+    assert!(
+        skipped[0].contains("exec_anchors_enabled") && skipped[0].contains("[CHECK] exec:exit 1"),
+        "注记须带开关名与锚点原文: {}",
+        skipped[0]
+    );
+    // run_anchors_dual 兼容壳 = Disabled 语义（老调用方零回归）。
+    let legacy = run_anchors_dual(&anchors, &ws, None, "");
+    assert!(legacy.is_empty(), "兼容壳同样跳过 exec: {legacy:?}");
+}
+
+/// exec 执行根：项目目录在场优先（档案管线合并产物的主落点）。
+#[test]
+fn exec_anchor_runs_in_project_root_when_present() {
+    let ws = temp_workspace("exec-ws-root");
+    let proj = temp_workspace("exec-proj-root");
+    // 探针命令把 cwd 写进临时文件（cmd /C 与 sh -c 语法分流）。
+    let probe = if cfg!(windows) {
+        "cd > cwd.txt"
+    } else {
+        "pwd > cwd.txt"
+    };
+    let (anchors, _, _) = parse_anchors("[CHECK] file:cwd.txt exists");
+    // 先在主根放一个 cwd.txt 占位（确认 exec 没有写到主根）。
+    write_file(&ws, "cwd.txt", "workspace-placeholder");
+    let results = run_anchors_dual_ext(
+        &exec_anchor(probe),
+        &ws,
+        Some(&proj),
+        "",
+        &ExecAnchorPolicy::Enabled { timeout_secs: 30 },
+    )
+    .0;
+    assert!(results[0].passed, "探针命令应成功: {}", results[0].detail);
+    // cwd.txt 必须落在项目目录，主根占位未被覆盖。
+    assert_eq!(
+        std::fs::read_to_string(ws.join("cwd.txt")).expect("ws cwd.txt"),
+        "workspace-placeholder",
+        "exec 不得写主根（执行根 = 项目目录在场优先）"
+    );
+    // 项目目录里的 cwd.txt 内容指向项目目录路径。
+    let cwd_content = std::fs::read_to_string(proj.join("cwd.txt")).expect("proj cwd.txt");
+    assert!(
+        cwd_content.contains("exec-proj-root"),
+        "cwd 须为项目目录: {cwd_content}"
+    );
+    // file: 锚点对项目目录里的产物双根可核（同型回归）。
+    let file_results = run_anchors_dual(&anchors, &ws, Some(&proj), "");
+    assert!(file_results[0].passed, "{}", file_results[0].detail);
+}
+
+/// exec 锚点计入拓扑约束谓词（FS 依赖，只能派本节点执行）。
+#[test]
+fn exec_anchor_counts_as_fs_dependent_for_topology() {
+    assert!(has_file_anchor("[CHECK] exec:node --test"));
+    assert!(has_file_anchor(
+        "[CHECK] re:交付完成\n[CHECK] exec:node --test"
+    ));
+}
+
+/// 空命令 exec 行回落语义项后不算 FS 依赖（与既有谓词语义一致）。
+#[test]
+fn validate_anchor_roots_triage_matrix() {
+    let ws = temp_workspace("var-ws");
+    let proj = temp_workspace("var-proj");
+    let ws_missing = std::env::temp_dir().join("nemesis-anchor-missing-root-definitely-absent");
+    let _ = std::fs::remove_dir_all(&ws_missing);
+
+    // 根可达 → Ok。
+    let (anchors, _, _) = parse_anchors("[CHECK] file:src/a.js exists");
+    assert!(validate_anchor_roots(&anchors, &ws, None).is_ok());
+    // 主根缺席 + 项目目录可达 → Ok（fallback 根可用）。
+    assert!(validate_anchor_roots(&anchors, &ws_missing, Some(&proj)).is_ok());
+    // 两根都缺席 → Err（基础设施故障，调用方转人工不产出锚点 FAIL）。
+    let err = validate_anchor_roots(&anchors, &ws_missing, None).unwrap_err();
+    assert!(err.contains("不可达"), "{err}");
+    // 锚点组全 re:（FS 无关）→ 根缺席也 Ok。
+    let (re_only, _, _) = parse_anchors("[CHECK] re:交付完成");
+    assert!(validate_anchor_roots(&re_only, &ws_missing, None).is_ok());
+    // 空锚点组 → Ok（零回归面）。
+    assert!(validate_anchor_roots(&[], &ws_missing, None).is_ok());
+    // exec 锚点也是 FS 依赖 → 受根校验约束。
+    let (exec_anchors, _, _) = parse_anchors("[CHECK] exec:node --version");
+    assert!(validate_anchor_roots(&exec_anchors, &ws_missing, None).is_err());
+}

@@ -21,10 +21,16 @@ use nemesis_types::forge::{Artifact, LearningCycle};
 fn truncate(s: &str, max_len: usize) -> String {
     let escaped = s.replace('|', "\\|");
     if escaped.len() <= max_len {
-        escaped
-    } else {
-        format!("{}...", &escaped[..max_len.saturating_sub(3)])
+        return escaped;
     }
+    // 截断点回退到字符边界：裸 `&escaped[..max_len-3]` 在多字节文本
+    // （LLM 生成的中文建议/链名）上会 panic，砸掉整份反思报告
+    // （2026-10-11 横扫修复，与 planner/review 截断事故同族）。
+    let mut cut = max_len.saturating_sub(3);
+    while cut > 0 && !escaped.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}...", &escaped[..cut])
 }
 
 // ---------------------------------------------------------------------------

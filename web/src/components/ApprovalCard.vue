@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { computed, reactive } from 'vue'
-import { useApprovals, type ApprovalRequest } from '../composables/useApprovals'
+import {
+  useApprovals,
+  type ApprovalRequest,
+  type RemoteApprovalRequest,
+} from '../composables/useApprovals'
 
 /**
  * M7（devtool-upgrade 阶段 5）：安全审批卡（模态）。
@@ -15,13 +19,24 @@ import { useApprovals, type ApprovalRequest } from '../composables/useApprovals'
  * 给模型，帮它下一轮纠正）；裁决广播 `approval-resolved` 到达时 composable
  * 统一摘卡（竞速败方窗口无感关闭）。
  * 挂载于 AppLayout 根层 —— 任意页面都能响应，与 ToastContainer 同层。
+ *
+ * M5（2026-10-10 集群无人值守硬化）：远程审批分区——worker 节点的 ABAC
+ * ask 经 master 注册表代理出现在同一模态（SSE `approval-remote-*` +
+ * `approval.remote_list` 兜底）。裁决经 `approval.remote_respond` RPC 下发
+ * worker 本地 pending；**无「总是允许」**（后端 always 钉死 false——规则
+ * 记忆只允许 worker 本地 Dashboard 显式批准落盘）。卡片带「节点」徽标，
+ * 复用本地卡样式。
  */
 
-const { pendingApprovals, now, respondTo } = useApprovals()
+const { pendingApprovals, pendingRemoteApprovals, now, respondTo, respondRemoteTo } =
+  useApprovals()
 
-const visible = computed(() => pendingApprovals.length > 0)
+const visible = computed(
+  () => pendingApprovals.length > 0 || pendingRemoteApprovals.length > 0,
+)
 
-/** F6: 每张卡的拒绝备注草稿（request_id → 输入内容；批准路径忽略）。 */
+/** F6: 每张卡的拒绝备注草稿（request_id → 输入内容；批准路径忽略）。
+ * 本地/远程共用一张表（request_id 全局唯一）。 */
 const noteDrafts = reactive<Record<string, string>>({})
 
 function deny(req: ApprovalRequest) {
@@ -30,8 +45,15 @@ function deny(req: ApprovalRequest) {
   delete noteDrafts[req.request_id]
 }
 
-function remaining(req: ApprovalRequest): number {
-  return Math.max(0, Math.ceil((req.expiresAt - now.value) / 1000))
+/** M5：远程拒绝（备注随裁决 RPC 下发 worker）。 */
+function denyRemote(req: RemoteApprovalRequest) {
+  const note = (noteDrafts[req.request_id] ?? '').trim()
+  respondRemoteTo(req.request_id, false, note || undefined)
+  delete noteDrafts[req.request_id]
+}
+
+function remaining(expiresAt: number): number {
+  return Math.max(0, Math.ceil((expiresAt - now.value) / 1000))
 }
 
 const RISK_LABELS: Record<string, string> = {
@@ -110,7 +132,7 @@ function canAlways(req: ApprovalRequest): boolean {
         </div>
 
         <div class="approval-footer">
-          <span class="approval-countdown">⏱ {{ remaining(req) }}s 后自动拒绝</span>
+          <span class="approval-countdown">⏱ {{ remaining(req.expiresAt) }}s 后自动拒绝</span>
           <div class="approval-actions">
             <button class="btn btn-danger" @click="deny(req)">拒绝</button>
             <button
@@ -122,6 +144,70 @@ function canAlways(req: ApprovalRequest): boolean {
               总是允许
             </button>
             <button class="btn btn-success" @click="respondTo(req.request_id, true)">批准</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- M5：远程审批分区（worker ask 经 master 代理）——无「总是允许」，
+         拒绝备注随裁决下发；「节点」徽标区分来源。 -->
+    <div
+      v-for="req in pendingRemoteApprovals"
+      :key="req.request_id"
+      class="modal approval-modal"
+    >
+      <div class="approval-card remote" :class="req.risk_level.toLowerCase()">
+        <div class="approval-header">
+          <h3 style="margin: 0;">
+            🌐 远程审批
+            <span class="approval-remote-node" :title="`ask 发起节点：${req.worker}`">
+              节点：{{ req.worker }}
+            </span>
+          </h3>
+          <span :class="riskBadgeClass(req.risk_level)">{{ riskLabel(req.risk_level) }}</span>
+        </div>
+
+        <div class="approval-body">
+          <div class="approval-row">
+            <span class="approval-label">操作</span>
+            <code class="approval-value">{{ req.operation }}</code>
+          </div>
+          <div class="approval-row">
+            <span class="approval-label">目标</span>
+            <code class="approval-value approval-target">{{ req.target }}</code>
+          </div>
+          <div v-if="req.reason" class="approval-row">
+            <span class="approval-label">理由</span>
+            <span class="approval-value">{{ req.reason }}</span>
+          </div>
+          <div class="approval-row">
+            <span class="approval-label">编号</span>
+            <code class="approval-value">{{ req.short_id }}</code>
+            <span v-if="req.issue_number" class="approval-remote-issue">
+              （看板 #{{ req.issue_number }}）
+            </span>
+          </div>
+          <input
+            v-model="noteDrafts[req.request_id]"
+            class="input approval-note-input"
+            type="text"
+            maxlength="500"
+            placeholder="拒绝备注（可选，将告知该节点模型原因）"
+            @keydown.enter.prevent="denyRemote(req)"
+          />
+        </div>
+
+        <div class="approval-footer">
+          <span class="approval-countdown">⏱ {{ remaining(req.expiresAt) }}s 后自动拒绝</span>
+          <div class="approval-actions">
+            <button class="btn btn-danger" @click="denyRemote(req)">拒绝</button>
+            <button
+              class="btn btn-success"
+              title="批准并经 RPC 下发该节点（远程批复不记忆规则）"
+              @click="respondRemoteTo(req.request_id, true)"
+            >
+              批准
+            </button>
           </div>
         </div>
       </div>
@@ -198,6 +284,24 @@ function canAlways(req: ApprovalRequest): boolean {
 }
 
 .approval-countdown {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+/* M5：远程审批卡——节点徽标（区分 ask 来源）+ 关联看板单号。 */
+.approval-remote-node {
+  margin-left: var(--space-2);
+  padding: 2px 8px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-secondary);
+  vertical-align: middle;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.approval-remote-issue {
   font-size: var(--text-xs);
   color: var(--text-muted);
 }

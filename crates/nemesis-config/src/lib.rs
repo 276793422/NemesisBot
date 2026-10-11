@@ -538,16 +538,29 @@ pub struct BoardReviewConfig {
     /// （保留注入防线与三态 JSON 契约，关闭取证/经验）。无法识别的值安全
     /// 回落 thorough（宁可全量也不放水）。
     pub tier: String,
+    /// exec: 锚点执行开关（M7；默认 false = exec 锚点诚实跳过并注记，
+    /// 不进失败集）。开启后 `[CHECK] exec:<命令>` 在锚点根目录以子进程
+    /// 执行，退出码 0 = 过。planner 不自动产出此类型，仅编排者/需求书
+    /// 显式写入。
+    pub exec_anchors_enabled: bool,
+    /// exec: 锚点单条执行超时秒数（默认 120；超时 = 不过 + kill）。
+    pub exec_anchor_timeout_secs: u64,
 }
 
 impl Default for BoardReviewConfig {
     fn default() -> Self {
         Self {
-            max_turns: 1,
+            // M6-3（2026-10-10）：默认 1 → 0（0 = 不限，取证到能下结论为
+            // 止）。max_turns=1 时评审 agent 单轮取证经常不够下结论 → UNSURE
+            // 转人工或假 FAIL；doom-loop / estop 守卫仍在，0 语义安全（T17
+            // 已对齐 UI min=0）。
+            max_turns: 0,
             selfcheck: false,
             auto_close_project: false,
             checkers: 1,
             tier: "thorough".to_string(),
+            exec_anchors_enabled: false,
+            exec_anchor_timeout_secs: 120,
         }
     }
 }
@@ -1265,6 +1278,17 @@ pub struct AgentDefaults {
     /// config.json），运行中改键下一轮生效。
     #[serde(default = "default_compact_keep_recent_tokens")]
     pub compact_keep_recent_tokens: i64,
+    /// P8（2026-10-10 集群无人值守硬化 A2）：会话 token 预算——单会话累计
+    /// 用量（input+cache_read+output，与 aggregate_session_usage 账本同
+    /// 口径）上限。**0 = 关（默认）**，注意与 `max_tool_iterations` 的
+    /// 0=不限惯例相反。消费点 = loop 侧轮顶检（硬停 ≥100% / 软提示 ≥75%）、
+    /// cluster_agent 重派入口拒接、board_review 转人工；读法统一
+    /// `agents_defaults_u64("session_token_budget", 0)` fresh-read
+    /// （config.json 单一真相源，运行中改键下一轮生效）。typed 字段的
+    /// 意义 = 防 typed save_config round-trip 静默抹键（vision 键
+    /// 2026-09-03 同类回归；AgentDefaults 无 flatten extra）。
+    #[serde(default)]
+    pub session_token_budget: u64,
 }
 
 impl Default for AgentDefaults {
@@ -1288,6 +1312,7 @@ impl Default for AgentDefaults {
             format_on_save: FormatOnSaveConfig::default(),
             rate_limit_retries: default_rate_limit_retries(),
             compact_keep_recent_tokens: default_compact_keep_recent_tokens(),
+            session_token_budget: 0,
         }
     }
 }

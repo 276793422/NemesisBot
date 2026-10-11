@@ -34,9 +34,10 @@ pub mod team_memory;
 pub mod watcher;
 
 pub use anchor::{
-    ANCHOR_PREFIX, AnchorCheck, AnchorKind, AnchorResult, RejectedAnchor, all_passed,
-    has_content_regex_anchor, parse_anchors, render_anchor_failures, render_anchor_summary,
-    run_anchors, validate_anchor_path_shape,
+    ANCHOR_PREFIX, AnchorCheck, AnchorKind, AnchorResult, EXEC_ANCHOR_DEFAULT_TIMEOUT_SECS,
+    ExecAnchorPolicy, RejectedAnchor, all_passed, has_content_regex_anchor, parse_anchors,
+    render_anchor_failures, render_anchor_summary, run_anchors, run_anchors_dual,
+    run_anchors_dual_ext, validate_anchor_path_shape, validate_anchor_roots,
 };
 pub use arbitrator::{
     NodeCandidate, SkipRecord, WakeInput, WakePlan, has_mentions, mentions_node,

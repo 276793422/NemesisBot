@@ -1746,10 +1746,17 @@ pub fn build_cluster_agent_loop(
     let system_prompt = load_cluster_system_prompt(&shared.home, cluster_app.worker_discipline);
 
     // 4. Create AgentConfig + AgentLoop (standalone mode, no bus).
+    // max_turns 跟随 agents.defaults.max_tool_iterations（2026-10-09 根修：
+    // 此前硬编码 60——config 改值/重启装配都不生效，编码单 60 轮必撞暂停墙；
+    // 0=不限与主 loop/project loop 同语义）。
     let config = nemesis_agent::types::AgentConfig {
         model: model_name.clone(),
         system_prompt,
-        max_turns: 60,
+        max_turns: if cfg.agents.defaults.max_tool_iterations <= 0 {
+            0
+        } else {
+            cfg.agents.defaults.max_tool_iterations as u32
+        },
         ..Default::default()
     };
     let adapter = ProviderAdapter::new(provider_arc, model_name.clone());

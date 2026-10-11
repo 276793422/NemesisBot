@@ -555,8 +555,10 @@ fn format_event(entry: &ClusterLogEvent) -> Option<FormattedEvent> {
 }
 
 /// Truncate an ID to 8 characters for display.
+/// id 源自磁盘日志/对端数据，可能含多字节文本——裸字节截断会 panic
+/// （2026-10-11 横扫修复），走边界安全版。
 fn short_id(id: &str) -> &str {
-    if id.len() > 8 { &id[..8] } else { id }
+    nemesis_utils::string_utils::truncate_bytes_at_boundary(id, 8)
 }
 
 #[cfg(test)]

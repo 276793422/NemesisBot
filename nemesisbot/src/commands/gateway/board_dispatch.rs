@@ -92,7 +92,21 @@ pub(crate) fn write_back_board_dispatch(
         };
     }
 
-    let terminal = if status == "error" {
+    // M4-A 交付守卫（2026-10-10）：status 成功但「汇报」是系统终态文本
+    // （急停/取消/轮次暂停/hook 拦截/退化放弃）或空串——这不是 worker 的
+    // 任务汇报，不得当交付收货推 in_review（A11 实证：急停文本进了交付
+    // 线程，评审拿它当 worker 自述）。按任务失败处置（FAILED + ⛔ 评论，
+    // 诚实失败可重派），走既有失败漏斗。
+    let delivery_guard_tripped = status != "error"
+        && (crate::board_review::is_system_terminal_text(response) || response.trim().is_empty());
+    if delivery_guard_tripped {
+        warn!(
+            "[Gateway] board dispatch {task_id} 汇报为系统终态文本/空串 → 交付守卫拦截，按任务失败处置"
+        );
+    }
+    let reported_error = status == "error" || delivery_guard_tripped;
+
+    let terminal = if reported_error {
         dispatch_state::FAILED
     } else {
         dispatch_state::DONE
@@ -100,14 +114,22 @@ pub(crate) fn write_back_board_dispatch(
     match bstore.finish_dispatch(task_id, terminal) {
         Ok(true) => {
             let worker_actor = nemesis_board::Actor::agent(&disp.worker_id);
-            let (ctype, content) = if status == "error" {
+            let (ctype, content) = if reported_error {
                 // 失败汇报不做格式判定——错误输出原样留痕。P2A（2026-09-12
                 // NB-15）：worker 结构化失败分类（如有）落结构化标记行，
                 // review_issue 读线程后据此避免同 worker 同模型盲重派
                 //（能力类失败重派必复现）；人看也是一眼可读的分类。
-                let mut c = format!("⛔ worker 汇报失败：\n\n{response}");
+                let mut c = if delivery_guard_tripped {
+                    format!(
+                        "⛔ 交付守卫拦截：worker 回传为系统终态文本/空串（急停/取消/轮次暂停/拦截类输出），不是有效任务汇报，按任务失败处置。\n\n原文：{response}"
+                    )
+                } else {
+                    format!("⛔ worker 汇报失败：\n\n{response}")
+                };
                 if !fail_class.is_empty() {
                     c.push_str(&format!("\n\nfail_class: {fail_class}"));
+                } else if delivery_guard_tripped {
+                    c.push_str("\n\nfail_class: delivery_guard_terminal_text");
                 }
                 (nemesis_board::CommentType::Comment, c)
             } else if nemesis_board::parse_delivery_report(response).is_some() {
@@ -198,7 +220,7 @@ pub(crate) fn write_back_board_dispatch(
                     bstore,
                     &issue,
                     &disp.worker_id,
-                    status != "error",
+                    !reported_error,
                     response,
                 );
             }

@@ -14,6 +14,35 @@ pub fn truncate(s: &str, max_len: usize) -> String {
     format!("{}...", truncated)
 }
 
+/// 字节预算截断的 rune 边界安全版：返回不超过 `max` 字节的最大前缀，
+/// 截断点回退到最近的字符边界。裸 `&s[..N]` 在中文等多字节文本上第 N
+/// 字节会落在字符内部直接 panic（2026-10-11 planner 真机事故：回灌
+/// 提示词裸截断 panic 杀死整个规划任务、看板零留痕）——所有「按字节
+/// 预算截断动态文本」的调用点必须走本函数。
+pub fn truncate_bytes_at_boundary(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut cut = max;
+    while cut > 0 && !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    &s[..cut]
+}
+
+/// 从 panic 载荷提取人类可读消息（`Box<dyn Any + Send>` → String）。
+/// 单一真相源：所有「监视 JoinHandle → panic 留痕」的调用点共用，
+/// downcast 规则一致（`&'static str` / `String`，其余 = 非文本载荷占位）。
+pub fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "非文本 panic 载荷".to_string()
+    }
+}
+
 /// Generate a random hex ID (16 hex chars from 8 random bytes).
 pub fn random_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};

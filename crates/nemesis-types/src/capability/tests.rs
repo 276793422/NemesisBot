@@ -560,3 +560,30 @@ fn protocol_images_openai_and_predicate() {
     assert!(!is_image_protocol("anthropic"));
     assert!(!is_image_protocol("responses"));
 }
+
+/// M6-1：`agents.defaults.max_tool_iterations` 解析——三态（在值/键缺席/
+/// 0=不限透传）。
+#[test]
+fn resolve_max_tool_iterations_tri_state() {
+    let with_key: serde_json::Value = serde_json::json!({
+        "agents": {"defaults": {"max_tool_iterations": 42}}
+    });
+    assert_eq!(resolve_max_tool_iterations(&with_key), Some(42));
+
+    let zero: serde_json::Value = serde_json::json!({
+        "agents": {"defaults": {"max_tool_iterations": 0}}
+    });
+    assert_eq!(resolve_max_tool_iterations(&zero), Some(0), "0=不限照透传");
+
+    let no_key: serde_json::Value = serde_json::json!({"model_list": []});
+    assert_eq!(resolve_max_tool_iterations(&no_key), None);
+
+    let no_section: serde_json::Value = serde_json::json!({});
+    assert_eq!(resolve_max_tool_iterations(&no_section), None);
+
+    // 负值照透传——消费侧（run_loop organ 1）<=0 统一映射不限。
+    let negative: serde_json::Value = serde_json::json!({
+        "agents": {"defaults": {"max_tool_iterations": -1}}
+    });
+    assert_eq!(resolve_max_tool_iterations(&negative), Some(-1));
+}

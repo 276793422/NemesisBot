@@ -281,4 +281,128 @@ describe('ApprovalCard', () => {
     expect(w.find('.approval-backdrop').exists()).toBe(false)
     w.unmount()
   })
+
+  // ---- M5（2026-10-10 集群无人值守硬化：远程审批分区）----
+
+  function fireRemoteApproval(data: Record<string, unknown>) {
+    sseHandlers.get('approval-remote-requested')!(data)
+  }
+
+  function makeRemotePayload(requestId: string, overrides: Record<string, unknown> = {}) {
+    return {
+      request_id: requestId,
+      short_id: requestId.slice(0, 8),
+      worker: 'node-b',
+      operation: 'process_exec',
+      target: 'rm -rf build/',
+      risk_level: 'CRITICAL',
+      reason: '看板 #7 子任务执行',
+      issue_number: 7,
+      timeout_secs: 300,
+      age_secs: 0,
+      ...overrides,
+    }
+  }
+
+  it('M5: SSE approval-remote-requested → 远程卡渲染（节点徽标/短号/单号），无「总是允许」', async () => {
+    const w = await mounted()
+    fireRemoteApproval(makeRemotePayload('11111111-aaaa-bbbb-cccc-dddddddddddd'))
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(w.find('.approval-backdrop').exists()).toBe(true)
+    expect(w.find('.approval-card.remote').exists()).toBe(true)
+    expect(w.text()).toContain('远程审批')
+    expect(w.text()).toContain('节点：node-b')
+    expect(w.text()).toContain('11111111')
+    expect(w.text()).toContain('看板 #7')
+    expect(w.text()).toContain('rm -rf build/')
+    expect(w.find('.badge-error').exists()).toBe(true)
+    // 远程批复永远不记忆规则：无 pattern 回显、无「总是允许」按钮。
+    expect(w.find('.approval-always-scope').exists()).toBe(false)
+    expect(
+      w.findAll('button').find(b => b.text() === '总是允许'),
+    ).toBeUndefined()
+    w.unmount()
+  })
+
+  it('M5: 点批准 → WSAPI approval.remote_respond approved=true → 卡片消失', async () => {
+    const w = await mounted()
+    fireRemoteApproval(makeRemotePayload('22222222-aaaa-bbbb-cccc-dddddddddddd'))
+    await vi.advanceTimersByTimeAsync(0)
+
+    const approve = w.findAll('button').find(b => b.text() === '批准')!
+    await approve.trigger('click')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(wsapiRequest).toHaveBeenCalledWith('approval', 'remote_respond', {
+      request_id: '22222222-aaaa-bbbb-cccc-dddddddddddd',
+      approved: true,
+    })
+    expect(w.find('.approval-backdrop').exists()).toBe(false)
+    w.unmount()
+  })
+
+  it('M5: 远程拒绝带备注 → remote_respond 携带 note', async () => {
+    const w = await mounted()
+    fireRemoteApproval(makeRemotePayload('33333333-aaaa-bbbb-cccc-dddddddddddd'))
+    await vi.advanceTimersByTimeAsync(0)
+
+    await w.find('.approval-note-input').setValue('目标路径不对，先确认')
+    const deny = w.findAll('button').find(b => b.text() === '拒绝')!
+    await deny.trigger('click')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(wsapiRequest).toHaveBeenCalledWith('approval', 'remote_respond', {
+      request_id: '33333333-aaaa-bbbb-cccc-dddddddddddd',
+      approved: false,
+      note: '目标路径不对，先确认',
+    })
+    w.unmount()
+  })
+
+  it('M5: approval-remote-resolved 广播 → 远程卡静默摘除', async () => {
+    const w = await mounted()
+    fireRemoteApproval(makeRemotePayload('44444444-aaaa-bbbb-cccc-dddddddddddd'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(w.find('.approval-backdrop').exists()).toBe(true)
+
+    sseHandlers.get('approval-remote-resolved')!({
+      request_id: '44444444-aaaa-bbbb-cccc-dddddddddddd',
+      decision: 'approved',
+      source: 'board_comment',
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(w.find('.approval-backdrop').exists()).toBe(false)
+    w.unmount()
+  })
+
+  it('M5: initApprovals 拉 approval.remote_list 兜底补齐断线漏掉的卡', async () => {
+    wsapiRequest.mockImplementation((_mod: string, cmd: string) =>
+      cmd === 'remote_list'
+        ? Promise.resolve({
+            pending: [makeRemotePayload('55555555-aaaa-bbbb-cccc-dddddddddddd')],
+          })
+        : Promise.resolve({}),
+    )
+    const w = await mounted()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(wsapiRequest).toHaveBeenCalledWith('approval', 'remote_list', {}, 5000)
+    expect(w.find('.approval-card.remote').exists()).toBe(true)
+    expect(w.text()).toContain('55555555')
+    w.unmount()
+  })
+
+  it('M5: 本地卡与远程卡并存（同一模态两张卡）', async () => {
+    const w = await mounted()
+    fireApproval(makePayload('local-1', { pattern: 'cargo publish *' }))
+    fireRemoteApproval(makeRemotePayload('66666666-aaaa-bbbb-cccc-dddddddddddd'))
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(w.findAll('.approval-card').length).toBe(2)
+    expect(w.find('.approval-card.remote').exists()).toBe(true)
+    // 本地卡有「总是允许」资格、远程卡没有——按钮只出现在本地卡。
+    expect(
+      w.findAll('button').filter(b => b.text() === '总是允许').length,
+    ).toBe(1)
+    w.unmount()
+  })
 })

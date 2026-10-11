@@ -203,6 +203,19 @@ pub fn resolve_max_output_tokens(cfg: &serde_json::Value, active_alias: &str) ->
         .and_then(|v| v.as_i64())
 }
 
+/// M6-1（2026-10-10 机制加固）：resolve `agents.defaults.max_tool_iterations`
+/// from config.json. Mirrors the fresh-read resolver family
+/// ([`resolve_max_output_tokens`] et al.): None = key absent / config not a
+/// JSON object — caller falls back to the startup value. Negative values are
+/// passed through unmolested; the consumer (run_loop organ 1) already maps
+/// <=0 to "unlimited".
+pub fn resolve_max_tool_iterations(cfg: &serde_json::Value) -> Option<i64> {
+    cfg.get("agents")
+        .and_then(|v| v.get("defaults"))
+        .and_then(|v| v.get("max_tool_iterations"))
+        .and_then(|v| v.as_i64())
+}
+
 /// H4 (U16 half): resolve the per-model `reasoning_effort` tier for the
 /// active model alias. Mirrors [`resolve_max_output_tokens`]: finds the
 /// matching `model_list[]` entry and returns its `reasoning_effort` string

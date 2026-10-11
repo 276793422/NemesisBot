@@ -2885,7 +2885,9 @@ async fn test_board_config_review_budget_keys_roundtrip() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(out["review"]["max_turns"], 1);
+    // M6-3（2026-10-10）：评审取证轮数默认 0=不限（C1 预算耗尽根修；
+    // doom-loop/estop 守卫仍在，0 语义安全）。
+    assert_eq!(out["review"]["max_turns"], 0);
     assert_eq!(out["review"]["selfcheck"], false);
     assert_eq!(out["review"]["auto_close_project"], false);
     assert_eq!(out["budget"]["max_subissues_per_parent"], 20);
@@ -5305,6 +5307,7 @@ fn agt_dispatch_prompt_renders_all_optional_sections() {
         Some("## 任务资产\nASSET-SECTION"),
         Some("上轮差距：缺测试"),
         Some("## 团队经验\nEXP-SECTION"),
+        None,
     );
     assert!(p.contains("（未提供）"), "{p}");
     assert!(p.contains("完成判据以背景描述为准"), "{p}");
@@ -5320,9 +5323,40 @@ fn agt_dispatch_prompt_renders_all_optional_sections() {
             ..Default::default()
         })
         .unwrap();
-    let p2 = build_dispatch_prompt(&issue2, None, None, None);
+    let p2 = build_dispatch_prompt(&issue2, None, None, None, None);
     assert!(p2.contains("必须包含回归测试"), "{p2}");
     assert!(!p2.contains("上轮验收意见"), "{p2}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------- PR5：重派轮次段 + 循环升级契约 ----------
+
+#[test]
+fn dispatch_prompt_renders_redispatch_round_and_loop_marker_contract() {
+    let dir = std::env::temp_dir().join(format!("nmb-web-bd-pr5-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let store =
+        std::sync::Arc::new(nemesis_board::BoardStore::open(&dir.join("b.db"), "NB").unwrap());
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "提示词装配单PR5".into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    // 首派（attempt=None）：不渲染重派段（prompt 字节与历史一致）。
+    let first = build_dispatch_prompt(&issue, None, None, None, None);
+    assert!(!first.contains("重派轮次"), "{first}");
+    assert!(!first.contains("REDISPATCH_LOOP"), "{first}");
+
+    // 第 3 次派发（第 2 次重派）：渲染轮次段 + 循环升级契约。
+    let third = build_dispatch_prompt(&issue, None, None, None, Some(3));
+    assert!(third.contains("重派轮次（第 3 次派发）"), "{third}");
+    assert!(third.contains("此前已被派发 2 次"), "{third}");
+    assert!(third.contains("REDISPATCH_LOOP:"), "{third}");
+    assert!(third.contains("升级通道"), "{third}");
+    assert!(third.contains("已尝试方案清单"), "{third}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -5768,6 +5802,105 @@ async fn agt_audit_list_offset_action_rollback_and_retry_merge() {
     .unwrap()
     .unwrap();
     assert_eq!(out4["retried"], serde_json::json!(issue.id));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --- 附录一：M5-1 评审重触发（review.retrigger，2026-10-10 机制加固）---
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn agt_review_retrigger_gate_hook_and_trace() {
+    let dir = unique_dir("agt-retrig");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("agt");
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "重触发单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    // backlog → in_progress → in_review（合法阶梯）。
+    store
+        .transition_issue(issue.id, IssueStatus::InProgress, &actor)
+        .unwrap();
+    store
+        .transition_issue(issue.id, IssueStatus::InReview, &actor)
+        .unwrap();
+
+    // ① 非 in_review 诚实拒绝（钩子装不装都不该走到）。
+    store
+        .transition_issue(issue.id, IssueStatus::InProgress, &actor)
+        .unwrap();
+    let err = dispatch(
+        &ctx,
+        "review.retrigger",
+        serde_json::json!({ "id": issue.id }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("in_review"), "{err}");
+    store
+        .transition_issue(issue.id, IssueStatus::InReview, &actor)
+        .unwrap();
+
+    // ② 缺 number/id → 参数错误。
+    assert!(
+        dispatch(&ctx, "review.retrigger", serde_json::json!({}))
+            .await
+            .is_err()
+    );
+
+    // ③ 钩子未安装 → 诚实报错（本测试是 REVIEW_RETRIGGER_HOOK 唯一安装
+    //    点，安装前 get() 恒 None；number 寻址顺带覆盖）。
+    let err = dispatch(
+        &ctx,
+        "review.retrigger",
+        serde_json::json!({ "number": issue.number }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("钩子未安装"), "{err}");
+
+    // ④ 安装钩子 → number 寻址命中、按 issue.id 触发、留痕评论、响应形态。
+    let fired = std::sync::Arc::new(std::sync::Mutex::new(Vec::<i64>::new()));
+    let fired2 = fired.clone();
+    let _ = set_review_retrigger_hook(std::sync::Arc::new(move |issue_id: i64| {
+        fired2.lock().unwrap().push(issue_id);
+    }));
+    let out = dispatch(
+        &ctx,
+        "review.retrigger",
+        serde_json::json!({ "number": issue.number }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["retriggered"], serde_json::json!(true));
+    assert_eq!(out["issue"], serde_json::json!(issue.number));
+    assert_eq!(
+        fired.lock().unwrap().as_slice(),
+        &[issue.id],
+        "钩子按 issue.id 触发"
+    );
+    let comments = store.list_comments(issue.id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("人工触发重新验收评审")),
+        "必须留系统评论：{:?}",
+        comments.iter().map(|c| &c.content).collect::<Vec<_>>()
+    );
+
+    // ⑤ number 不存在 → 诚实报错（不 panic 不静默）。
+    let err = dispatch(
+        &ctx,
+        "review.retrigger",
+        serde_json::json!({ "number": "NB-99999" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(!err.is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -7017,6 +7150,7 @@ fn w5_estop_slot_install_and_prompt_description_arm() {
         None,
         Some("评审意见：补边界用例"),
         Some("经验：先写测试"),
+        None,
     );
     assert!(
         prompt.contains("## 背景") && prompt.contains("先跑回归再改实现"),
@@ -8261,5 +8395,507 @@ fn w5_rank_and_fallback_return_empty_for_file_anchor_issue() {
     assert!(super::pick_fallback_target(Some(&cfg), &store, &cluster, &anchored).is_none());
     // 对照：无锚点单兜底照常（在线节点存在 → Some）。
     assert!(super::pick_fallback_target(Some(&cfg), &store, &cluster, &file_anchored).is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// M6-2（2026-10-10 机制加固，P5 clobber 根修）：rebase_board_onto_disk——
+// 磁盘为底只嫁接 board 段；窗口期外部写者的非 board 改动不得被回滚。
+#[test]
+fn test_rebase_board_onto_disk_preserves_external_writes() {
+    let dir = unique_dir("config-rebase");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.json");
+    // 磁盘 v1：外部写者写入的 model_list（m1）。
+    std::fs::write(
+        &path,
+        r#"{"model_list":[{"model_name":"m1","model":"prov/m1","api_key":"sk-1"}]}"#,
+    )
+    .unwrap();
+    // 陈旧快照（live cache 形态）：快照里还是 m1。
+    let stale: nemesis_config::Config =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    // 窗口期：外部写者把磁盘改到 v2（m1 → m2，模拟 CLI model add 换键）。
+    std::fs::write(
+        &path,
+        r#"{"model_list":[{"model_name":"m2","model":"prov/m2","api_key":"sk-2"}]}"#,
+    )
+    .unwrap();
+    // 本次 board.config.set 的产物 = 陈旧快照 + 新 board 值。
+    let mut mutated = stale.clone();
+    let board = mutated.board.get_or_insert_with(Default::default);
+    board.unlimited_mode = true;
+
+    let merged = super::rebase_board_onto_disk(mutated, &path).unwrap();
+    let raw: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&merged).unwrap()).unwrap();
+    assert_eq!(
+        raw["model_list"][0]["model_name"], "m2",
+        "窗口期外部写者的非 board 改动不得被整份回写回滚（P5 clobber 根修）"
+    );
+    assert_eq!(
+        raw["board"]["unlimited_mode"], true,
+        "本次 board 段新值必须保留"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// M7（2026-10-10）：exec 锚点开关/超时进 config.set 白名单；get 序列化
+// typed board 段自动透出。
+#[tokio::test]
+async fn test_board_config_set_exec_anchor_keys() {
+    let dir = unique_dir("config-exec-anchor");
+    let ctx = make_ctx_with_board(&dir);
+
+    let out = dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "review.exec_anchors_enabled", "value": true }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["updated"], true);
+    let out = dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "review.exec_anchor_timeout_secs", "value": 60 }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["updated"], true);
+
+    let out = dispatch(&ctx, "config.get", serde_json::json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["review"]["exec_anchors_enabled"], true);
+    assert_eq!(out["review"]["exec_anchor_timeout_secs"], 60);
+
+    // 盘上真实落盘（rebase 后 board 段照常落）。
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+    assert_eq!(raw["board"]["review"]["exec_anchors_enabled"], true);
+    assert_eq!(raw["board"]["review"]["exec_anchor_timeout_secs"], 60);
+
+    // 超时键非负整数闸。
+    let err = dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "review.exec_anchor_timeout_secs", "value": "soon" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("非负整数"), "实际报错：{err}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// P11 观测面（2026-10-10）：plan 预览查询（plan.list/plan.get）+ planner
+// 结果评论留痕（execute_plan_chain 三发布点）
+// ---------------------------------------------------------------------------
+
+/// planner 链测试用迷你 provider（同 nemesis-agent spawn_detached 形状）：
+/// `content=Some` 输出固定文本（放合法 plan JSON 走成功链），`None` 恒 Err
+///（走 LLM 调用失败臂）。
+#[cfg(feature = "cluster")]
+struct PlanChainMockProvider {
+    content: Option<String>,
+}
+
+#[cfg(feature = "cluster")]
+#[async_trait::async_trait]
+impl nemesis_agent::r#loop::LlmProvider for PlanChainMockProvider {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<nemesis_agent::r#loop::LlmMessage>,
+        _options: Option<nemesis_agent::types::ChatOptions>,
+        _tools: Vec<nemesis_agent::types::ToolDefinition>,
+    ) -> Result<nemesis_agent::r#loop::LlmResponse, String> {
+        match &self.content {
+            Some(c) => Ok(nemesis_agent::r#loop::LlmResponse {
+                content: c.clone(),
+                tool_calls: Vec::new(),
+                finished: true,
+                reasoning_content: None,
+                usage: None,
+                raw_request_body: None,
+                raw_response_body: None,
+            }),
+            None => Err("provider exploded".to_string()),
+        }
+    }
+}
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn plan_query_list_and_get_full_fields() {
+    let dir = unique_dir("plan-query-full");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "P11 观测父单".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+    let mut subs = vec![sub("子单甲", vec![]), sub("子单乙", vec![0])];
+    subs[0].required_role = "developer".to_string();
+    subs[1].required_profession = "dev:cpp".to_string();
+    super::PLAN_CACHE.lock().remove("pl-a3-full"); // 防御性清场（static 进程级共享）
+    super::PLAN_CACHE.lock().insert(
+        "pl-a3-full".to_string(),
+        super::PlanPreview {
+            issue_id: issue.id,
+            subs: subs.clone(),
+            downgrades: vec![(1, "dev:cpp:坏的".to_string())],
+            created_at: Instant::now(),
+        },
+    );
+
+    // list（按 issue 过滤）全字段投影。
+    let out = dispatch(
+        &ctx,
+        "plan.list",
+        serde_json::json!({ "issue_id": issue.id }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let mine: Vec<_> = out["plans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["plan_id"] == "pl-a3-full")
+        .collect();
+    assert_eq!(mine.len(), 1, "该 issue 恰一条: {out}");
+    let p = mine[0];
+    assert_eq!(p["issue_id"], issue.id);
+    assert_eq!(p["issue_number"], issue.number, "issue_number 应附属投影");
+    assert_eq!(p["sub_count"], 2);
+    assert_eq!(p["subs"][0]["title"], "子单甲");
+    assert_eq!(p["subs"][0]["required_role"], "developer");
+    assert_eq!(p["subs"][1]["required_profession"], "dev:cpp");
+    assert_eq!(p["subs"][1]["depends_on"], serde_json::json!([0]));
+    assert_eq!(
+        p["downgrades"],
+        serde_json::json!([[1, "dev:cpp:坏的"]]),
+        "降级明细应随预览带出"
+    );
+    let ttl = p["ttl_remaining_secs"].as_u64().unwrap();
+    assert!(ttl > 590 && ttl <= 600, "ttl 应贴近 600 上限: {ttl}");
+    assert!(
+        p["created_ms"].as_u64().unwrap() < 5_000,
+        "刚种入的条目 elapsed 应极小"
+    );
+
+    // get 单查同投影。
+    let out = dispatch(
+        &ctx,
+        "plan.get",
+        serde_json::json!({ "plan_id": "pl-a3-full" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["plan_id"], "pl-a3-full");
+    assert_eq!(out["sub_count"], 2);
+    assert_eq!(out["ttl_remaining_secs"], p["ttl_remaining_secs"]);
+
+    // list 无过滤含本条；别的 issue 过滤不串台。
+    let out = dispatch(&ctx, "plan.list", serde_json::json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        out["plans"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["plan_id"] == "pl-a3-full")
+    );
+    let out = dispatch(
+        &ctx,
+        "plan.list",
+        serde_json::json!({ "issue_id": issue.id + 999 }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        !out["plans"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["plan_id"] == "pl-a3-full")
+    );
+
+    super::PLAN_CACHE.lock().remove("pl-a3-full");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn plan_query_missing_and_expired_states() {
+    let dir = unique_dir("plan-query-states");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "P11 状态父单".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    // ① 不存在 → 诚实报错（不静默空对象）。
+    let err = dispatch(
+        &ctx,
+        "plan.get",
+        serde_json::json!({ "plan_id": "pl-a3-nope" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("不存在、已过期或已消费"), "{err}");
+
+    // ② 过期 → 报错 + 缓存条目顺带摘除；list 只留存活（TTL 惰性过滤）。
+    // 回拨 created_at 需 Instant 纪元余量；刚启动系统回拨不了 → 环境边界
+    // 诚实跳过（探针纪律：依赖外部环境的前提不满足不硬跑）。
+    let Some(stale) = Instant::now().checked_sub(std::time::Duration::from_secs(700)) else {
+        eprintln!("SKIP 过期态断言：系统刚启动，Instant 纪元余量不足 700s");
+        return;
+    };
+    super::PLAN_CACHE.lock().insert(
+        "pl-a3-stale".to_string(),
+        super::PlanPreview {
+            issue_id: issue.id,
+            subs: vec![sub("过期子单", vec![])],
+            downgrades: Vec::new(),
+            created_at: stale,
+        },
+    );
+    seed_plan("pl-a3-fresh", issue.id, vec![sub("新鲜子单", vec![])]);
+    let err = dispatch(
+        &ctx,
+        "plan.get",
+        serde_json::json!({ "plan_id": "pl-a3-stale" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("过期"), "应指明过期: {err}");
+    assert!(
+        super::PLAN_CACHE.lock().get("pl-a3-stale").is_none(),
+        "过期条目应被 get 顺带摘除"
+    );
+
+    let out = dispatch(
+        &ctx,
+        "plan.list",
+        serde_json::json!({ "issue_id": issue.id }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let ids: Vec<&str> = out["plans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["plan_id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"pl-a3-fresh"), "存活条目应返回: {ids:?}");
+    assert!(!ids.contains(&"pl-a3-stale"), "过期条目应被过滤: {ids:?}");
+    assert!(
+        super::PLAN_CACHE.lock().get("pl-a3-fresh").is_some(),
+        "list 不得误删存活条目"
+    );
+
+    super::PLAN_CACHE.lock().remove("pl-a3-fresh");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn planner_chain_success_comment_trace() {
+    // 一段拆解成功（mock provider 输出合法 plan JSON，home 无 config.json →
+    // auto_confirm fail-closed 关）→ 预览在缓存 + 完成系统评论带 plan_id/
+    // 子单数/TTL 提示。
+    let dir = unique_dir("planner-success-comment");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "链路成功父单".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+    let plan_json =
+        r#"[{"title":"子单甲","depends_on":[]},{"title":"子单乙","depends_on":[0]}]"#.to_string();
+    let agent_loop = Arc::new(nemesis_agent::r#loop::AgentLoop::new(
+        Box::new(PlanChainMockProvider {
+            content: Some(plan_json),
+        }),
+        nemesis_agent::AgentConfig::default(),
+    ));
+    let hub = crate::events::EventHub::new();
+    let out = super::execute_plan_chain(
+        &store,
+        None, // 集群未装配 → 拆解照常，发车面不进本断言
+        agent_loop,
+        issue.clone(),
+        nemesis_board::Actor::admin("tester"),
+        "pl-a3-chain-ok",
+        Some(&dir),
+        Some(&hub),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["status"], "planned", "{out}");
+    assert_eq!(out["plan_id"], "pl-a3-chain-ok");
+    assert!(
+        super::PLAN_CACHE.lock().get("pl-a3-chain-ok").is_some(),
+        "成功拆解应留预览待确认"
+    );
+    let comments = store.list_comments(issue.id).unwrap();
+    let trace = comments
+        .iter()
+        .find(|c| c.content.contains("🧩 planner 拆解完成"))
+        .expect("应有完成系统评论");
+    assert!(
+        trace.content.contains("pl-a3-chain-ok"),
+        "{:?}",
+        trace.content
+    );
+    assert!(trace.content.contains("2 个子单"), "{:?}", trace.content);
+    assert!(
+        trace.content.contains("600s 内确认派发"),
+        "人工确认模式应带 TTL 提示: {:?}",
+        trace.content
+    );
+    assert!(
+        matches!(trace.ctype, nemesis_board::models::CommentType::System),
+        "留痕应为系统评论"
+    );
+
+    super::PLAN_CACHE.lock().remove("pl-a3-chain-ok");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn planner_chain_failure_comment_trace() {
+    // LLM 调用失败（mock 恒 Err）→ 失败系统评论带原因，缓存不残留。
+    let dir = unique_dir("planner-fail-comment");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "链路失败父单".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+    let agent_loop = Arc::new(nemesis_agent::r#loop::AgentLoop::new(
+        Box::new(PlanChainMockProvider { content: None }),
+        nemesis_agent::AgentConfig::default(),
+    ));
+    let err = super::execute_plan_chain(
+        &store,
+        None,
+        agent_loop,
+        issue.clone(),
+        nemesis_board::Actor::admin("tester"),
+        "pl-a3-chain-bad",
+        Some(&dir),
+        None, // hub=None：评论/落库链路照常（cron 路径同形态）
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("planner LLM 调用失败"), "{err}");
+    let comments = store.list_comments(issue.id).unwrap();
+    let trace = comments
+        .iter()
+        .find(|c| c.content.contains("❌ planner 拆解失败"))
+        .expect("应有失败系统评论");
+    assert!(
+        trace.content.contains("provider exploded"),
+        "失败原因应留痕: {:?}",
+        trace.content
+    );
+    assert!(
+        super::PLAN_CACHE.lock().get("pl-a3-chain-bad").is_none(),
+        "失败不得留缓存条目"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// panic 留痕闭环回归锁（2026-10-11 planner 截断 panic 事故）：后台 plan
+/// 链任务 panic 时，监视壳必须往 issue 落系统评论 + 发 `board.plan_failed`
+/// 事件——无声死亡（用户体感「建了不动」）不得再发生。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plan_chain_panic_leaves_issue_comment_and_event() {
+    let dir = unique_dir("plan-chain-panic-watch");
+    std::fs::create_dir_all(&dir).unwrap();
+    let ctx = make_ctx_with_board(&dir);
+    let store = ctx.state.board.as_ref().unwrap().store().clone();
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "panic 留痕回归锁".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let hub = ctx.state.event_hub.clone();
+    let mut rx = hub.subscribe();
+
+    super::spawn_plan_chain_watched(
+        store.clone(),
+        Some(hub.clone()),
+        issue.id,
+        "plan-watch-test".to_string(),
+        async {
+            panic!("截断中文 panic 靶点");
+        },
+    );
+
+    // 轮询等监视任务落评论（任务 spawn 链两跳，不等固定时长）。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let comments = store.list_comments(issue.id).unwrap();
+        if comments
+            .iter()
+            .any(|c| c.content.contains("异常终止") && c.content.contains("panic 靶点"))
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "panic 评论未在 5s 内落盘"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    // board.plan_failed 事件同发（监视壳在评论之后 publish，同样轮询防竞速）。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let got = loop {
+        match rx.try_recv() {
+            Ok(evt) => {
+                assert_eq!(evt.event_type, "board.plan_failed");
+                assert_eq!(evt.data["issue_id"], issue.id);
+                assert!(
+                    evt.data["error"].as_str().unwrap().contains("panic"),
+                    "error 应带 panic 摘要: {:?}",
+                    evt.data["error"]
+                );
+                break true;
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "board.plan_failed 事件未在 5s 内到达"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            Err(e) => panic!("事件通道异常: {e}"),
+        }
+    };
+    let _ = got;
     let _ = std::fs::remove_dir_all(&dir);
 }

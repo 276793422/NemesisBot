@@ -222,3 +222,66 @@ fn sweep_within_timeout_leaves_dispatch_untouched() {
     assert!(rec.completed_at.is_none(), "未超时不得写完结时间");
     assert_eq!(store.list_active_dispatches().unwrap().len(), 1);
 }
+
+/// M5-2（2026-10-10 机制加固）：清扫失败回流验收决策链——in_progress 单
+/// 转移 in_review 且 issue_id 进返回列表（调用方据此 spawn 评审）。
+#[cfg(all(feature = "board", feature = "cluster"))]
+#[test]
+fn sweep_failure_flows_back_to_review_chain() {
+    let (tmp, store) = temp_store();
+    let issue_id = cov_issue(&store);
+    store
+        .transition_issue(
+            issue_id,
+            nemesis_board::IssueStatus::InProgress,
+            &nemesis_board::Actor::system("cov"),
+        )
+        .unwrap();
+    store
+        .insert_dispatch(
+            "cov-task-m52",
+            issue_id,
+            "worker-ghost",
+            &nemesis_board::Actor::system("cov"),
+        )
+        .unwrap();
+    let cluster = offline_cluster(tmp.path());
+    let for_review = sweep_dispatch_timeouts(&store, &cluster, 0);
+
+    assert_eq!(for_review, vec![issue_id], "超时失败单必须回流评审链");
+    let issue = store.get_issue(issue_id).unwrap();
+    assert_eq!(issue.status, nemesis_board::IssueStatus::InReview);
+    let rec = store
+        .get_dispatch("cov-task-m52")
+        .unwrap()
+        .expect("记录仍在");
+    assert_eq!(rec.state, nemesis_board::models::dispatch_state::FAILED);
+}
+
+/// M5-2 对照：非 in_progress 单（人工已动/已关闭）不回流——让位人工。
+#[cfg(all(feature = "board", feature = "cluster"))]
+#[test]
+fn sweep_failure_skips_non_inprogress_issue() {
+    let (tmp, store) = temp_store();
+    let issue_id = cov_issue(&store); // 默认 backlog，不推 in_progress
+    store
+        .insert_dispatch(
+            "cov-task-m52b",
+            issue_id,
+            "worker-ghost",
+            &nemesis_board::Actor::system("cov"),
+        )
+        .unwrap();
+    let cluster = offline_cluster(tmp.path());
+    let for_review = sweep_dispatch_timeouts(&store, &cluster, 0);
+
+    assert!(
+        for_review.is_empty(),
+        "非 in_progress 单不得回流：{for_review:?}"
+    );
+    assert_eq!(
+        store.get_issue(issue_id).unwrap().status,
+        nemesis_board::IssueStatus::Backlog,
+        "单据状态不得被 sweep 动"
+    );
+}

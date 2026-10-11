@@ -148,7 +148,10 @@ pub(crate) async fn init_post_agent(
         {
             let deps = crate::board_review::BoardReviewDeps {
                 store,
-                workspace: home.join("workspace"),
+                // M1（2026-10-10 机制加固）：锚点根单一真相源——经
+                // workspace_dir() 解析（显式覆盖跟随，canonical 回退），
+                // 禁止从 home 手拼（A10：部署形态漂移 → 九锚点全 os error 2 假红）。
+                workspace: shared_resources.workspace_dir(),
                 home: home.clone(),
                 moderator_loop: board_moderator_loop.clone(),
                 cluster: cluster.clone(),
@@ -232,7 +235,8 @@ pub(crate) async fn init_post_agent(
                 store: board_store
                     .clone()
                     .expect("cluster_ok arm guarantees board store present"),
-                workspace: home.join("workspace"),
+                // M1：同上——锚点根单一真相源，禁止 home 手拼。
+                workspace: shared_resources.workspace_dir(),
                 home: home.clone(),
                 moderator_loop: board_moderator_loop.clone(),
                 cluster: cluster.clone(),
@@ -299,6 +303,28 @@ pub(crate) async fn init_post_agent(
                 warn!("[Gateway] Board project summary hook register failed: {e}");
             } else {
                 info!("[Gateway] Board project summary hook armed (archive summary.md)");
+            }
+
+            // M5-1（2026-10-10 机制加固）：评审重触发钩子——WSAPI
+            // `review.retrigger` 经此回调 spawn 评审（卡 in_review 单子的
+            // 人工一键重入）。master 判定同父单钩子（非 master 的 board
+            // store 是只读镜像，不跑评审）。
+            let retrig_deps = replay_sweep_deps.clone();
+            let retrig_cluster = cluster.clone();
+            if let Err(e) = nemesis_web::handlers::board::set_review_retrigger_hook(
+                std::sync::Arc::new(move |issue_id: i64| {
+                    if !matches!(
+                        retrig_cluster.role().as_str(),
+                        "coordinator" | "master" | "manager"
+                    ) {
+                        return;
+                    }
+                    crate::board_review::spawn_board_review((*retrig_deps).clone(), issue_id);
+                }),
+            ) {
+                warn!("[Gateway] Board review retrigger hook register failed: {e}");
+            } else {
+                info!("[Gateway] Board review retrigger hook armed (review.retrigger)");
             }
 
             // 启动重放（R4-BUG-2 根修）：评审 spawn 纯内存、master 重启即

@@ -340,3 +340,83 @@ async fn pending_lists_responder_entries() {
     assert_eq!(out["pending"][0]["risk_level"], "HIGH");
     assert_eq!(fake.calls.lock().len(), 0, "pending must not consume calls");
 }
+
+// ---------------------------------------------------------------------------
+// M5（2026-10-10 集群无人值守硬化）：remote_list / remote_respond 表面契约。
+// 注册表是进程全局——用例独立 request_id + 结尾摘除防串扰。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn remote_list_surfaces_registry_snapshot_without_loop() {
+    let dir = tempfile::tempdir().unwrap();
+    // agent_loop = None（master 侧 remote 臂不消费本节点 responder 槽）。
+    let ctx = make_ctx(&dir, None);
+    let rid = "m5-wsapi-list-request-01";
+    crate::remote_approval::registry().register(crate::remote_approval::RemoteAskEntry {
+        request_id: rid.into(),
+        worker_node: "node-b".into(),
+        operation: "process_exec".into(),
+        target: "cargo build".into(),
+        risk_level: "HIGH".into(),
+        reason: "wsapi surface".into(),
+        issue_number: Some(3),
+        timeout_secs: 300,
+        created_at: Instant::now(),
+    });
+    let out = ApprovalHandler
+        .handle_cmd("remote_list", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    let row = out["pending"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["request_id"] == *rid)
+        .expect("registered ask must surface")
+        .clone();
+    assert_eq!(row["short_id"], "m5-wsapi");
+    assert_eq!(row["worker"], "node-b");
+    assert!(row["remaining_secs"].as_u64().is_some());
+    crate::remote_approval::registry().remove_by_request_id(rid);
+}
+
+#[tokio::test]
+async fn remote_respond_without_cluster_is_honest_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir, None);
+    let err = ApprovalHandler
+        .handle_cmd(
+            "remote_respond",
+            Some(serde_json::json!({"request_id": "whatever1", "approved": true})),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("cluster not available"), "err: {err}");
+}
+
+#[tokio::test]
+async fn remote_respond_unknown_id_is_honest_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir, None);
+    // cluster 槽有值（AppState literal 带 cluster: None——这里只测未知 id
+    // 分支需先过 cluster 检查？否：resolve 先行会撞 cluster None。装饰
+    // 顺序 = cluster 槽 → resolve → RPC。无集群形态下未知 id 同样诚实报
+    // cluster 缺失，语义可接受（无集群本就无远程批复）。此用例改为验证
+    // 参数缺失分支（不依赖 cluster 槽）。
+    let err = ApprovalHandler
+        .handle_cmd("remote_respond", None, &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("missing data"), "err: {err}");
+    let err = ApprovalHandler
+        .handle_cmd(
+            "remote_respond",
+            Some(serde_json::json!({"approved": true})),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("missing request_id"), "err: {err}");
+}

@@ -179,7 +179,7 @@ impl crate::rpc::peer_chat_handler::TaskReceiveHook for ExecReceiveHook {
 /// 系统行为对齐，不再需要模型自行推断。
 fn render_workdir_section(exec_dir: &Path, baseline_commit: &str, file_count: usize) -> String {
     format!(
-        "\n\n# Working Directory（项目档案管线）\n本任务的工作副本已预置项目基线快照（基线 commit `{baseline_commit}`，{file_count} 个文件），位于：\n`{}`\n\n所有文件读写必须在该目录内进行。write_file/edit_file/read_file 等文件工具的相对路径、以及 exec 的缺省工作目录均已指向本目录（也可直接用上面的绝对路径）。任务结束后系统会自动扫描该目录生成变更集回传主控端，无需你手动提交、打包或汇报文件清单。",
+        "\n\n# Working Directory（项目档案管线）\n本任务的工作副本已预置项目基线快照（基线 commit `{baseline_commit}`，{file_count} 个文件），位于：\n`{}`\n\n所有文件读写必须在该目录内进行。write_file/edit_file/read_file 等文件工具的相对路径、以及 exec 的缺省工作目录均已指向本目录（也可直接用上面的绝对路径）。任务结束后系统会自动扫描该目录生成变更集回传主控端，无需你手动提交、打包或汇报文件清单。\n\n# 交付机制（重要）\n- **最终回复是唯一交付通道**：任务完成的判定与验收评审只看你的最终回复文本（worker 汇报回传主控端）。用 board_issue 等工具在本地看板上写状态/评论**不算交付**——那只是本节点仪表盘视图，主控端验收流程看不到；工具汇报照常可用，但不能替代最终回复里的交付汇报。\n- 交付汇报必须自包含：做了什么、关键变更点、如何验证（命令+结果摘要）。主控端验收员看不到你的中间过程，只看得到最终回复。\n- 调试过程（临时脚本、探针输出、实验性改动）一律放工作副本的 `_debug/` 目录——该目录**不进变更集**（不会合入项目），也不会污染交付；正式交付物必须放在 `_debug/` 之外。",
         exec_dir.display()
     )
 }
@@ -245,6 +245,13 @@ pub fn finish_task_exec(
 /// 删除清单）——三者按 upsert 排序一一对应。
 /// executability 跨平台不可靠（Windows 无位），恒 false（master merge 以
 /// 100644 入 index；可执行位语义 v1 不保真——诚实边界）。
+/// PR3（2026-10-10 机制加固）：`_debug/` 前缀 = 调试产物，双向排除——
+/// 工作副本里的调试脚本/探针输出不进变更集（不合入项目），基线里残留的
+/// 历史调试产物缺失也不报删除（调试产物双向都不是交付物）。
+fn is_debug_artifact(path: &str) -> bool {
+    path == "_debug" || path.starts_with("_debug/")
+}
+
 fn diff_tree(
     exec_dir: &Path,
     baseline_files: &[TransferFileEntry],
@@ -252,6 +259,7 @@ fn diff_tree(
     let mut current: Vec<TransferFileEntry> = collect_dir_files(exec_dir)?
         .into_iter()
         .filter(|f| f.path != BASELINE_SIDECAR_NAME)
+        .filter(|f| !is_debug_artifact(&f.path))
         .collect();
     // collect 已按 path 字典序；显式再排一次防上游语义变化（变更集声明序 =
     // contents 序的契约依据）。
@@ -259,6 +267,7 @@ fn diff_tree(
 
     let baseline: std::collections::HashMap<&str, &TransferFileEntry> = baseline_files
         .iter()
+        .filter(|f| !is_debug_artifact(&f.path))
         .map(|f| (f.path.as_str(), f))
         .collect();
     let current_paths: std::collections::HashSet<&str> =
@@ -289,6 +298,7 @@ fn diff_tree(
     }
     let deletions: Vec<String> = baseline_files
         .iter()
+        .filter(|b| !is_debug_artifact(&b.path))
         .filter(|b| !current_paths.contains(b.path.as_str()))
         .map(|b| b.path.clone())
         .collect();
