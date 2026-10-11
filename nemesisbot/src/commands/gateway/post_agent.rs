@@ -623,6 +623,7 @@ pub(crate) async fn init_post_agent(
                         cluster: discussion_cluster,
                         moderator_loop: board_moderator_loop.clone(),
                         workspace: home.join("workspace"),
+                        now_ms: Arc::new(|| chrono::Utc::now().timestamp_millis()),
                     },
                 }));
             info!(
