@@ -23,6 +23,7 @@ fn make_deps(store: Arc<nemesis_board::BoardStore>, quota: Arc<QuotaLedger>) -> 
         quota,
         cluster: Arc::new(cluster),
         moderator_loop: Arc::new(OnceLock::new()),
+        now_ms: Arc::new(|| chrono::Utc::now().timestamp_millis()),
     }
 }
 
@@ -827,6 +828,7 @@ fn deps_with_workspace(
         quota: q,
         cluster: Arc::new(cluster),
         moderator_loop: Arc::new(OnceLock::new()),
+        now_ms: Arc::new(|| chrono::Utc::now().timestamp_millis()),
     }
 }
 
@@ -2061,28 +2063,30 @@ mod w5r2 {
             .insert_dispatch("w5-dl-1", issue.id, "node-b", &Actor::admin("test"))
             .unwrap();
 
-        // 预建落盘目录 + 目标名同名目录阵（时间戳碰撞注入，自校准单侧窗）。
+        // 时间戳注入（2026-10-11 根治，2026-10-10 CI run170 s1 假红）：
+        // 旧实现预埋 8s 静态目录阵赌处理器取点落窗内——慢机上布阵+前置
+        // 开销吃穿窗沿（实录该测试墙钟 20.4s，处理器取到窗外时间戳 →
+        // 无碰撞 → 写成功 → 断言假红）；布阵线程又追不上爬行时钟，一切
+        // 铺窗策略治不了这个类。改为 deps.now_ms 注入固定值：处理器取点
+        // 确定，预埋单个同名目录必命中，快慢机零竞态。
+        let fixed_ms: i64 = 1_700_000_001_234;
+        let deps = MasterBusDeps {
+            store: deps.store.clone(),
+            quota: deps.quota.clone(),
+            cluster: deps.cluster.clone(),
+            moderator_loop: deps.moderator_loop.clone(),
+            workspace: deps.workspace.clone(),
+            now_ms: Arc::new(move || fixed_ms),
+        };
+
+        // 预埋处理器将取的那个时间戳的同名目录（fs::write 撞目录必失败）。
         let files_dir = ws
             .path()
             .join("board")
             .join("files")
             .join(format!("issue_{}", issue.id));
         std::fs::create_dir_all(&files_dir).unwrap();
-        let t0 = chrono::Utc::now().timestamp_millis();
-        let mut end = t0 + 8000;
-        let mut planted_end = t0 - 101;
-        loop {
-            for ms in planted_end + 1..=end {
-                let _ = std::fs::create_dir(files_dir.join(format!("{ms}_a.txt")));
-            }
-            planted_end = end;
-            let now = chrono::Utc::now().timestamp_millis();
-            if now <= end {
-                break;
-            }
-            // 布阵已越过窗沿（慢机）——窗锚前推到「现在+8s」补种再验。
-            end = now + 8000;
-        }
+        std::fs::create_dir(files_dir.join(format!("{fixed_ms}_a.txt"))).unwrap();
 
         let (ok, code, _) = parse_reply(handle_nb_bus(
             &deps,

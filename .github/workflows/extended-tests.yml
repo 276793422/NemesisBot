@@ -185,12 +185,14 @@ jobs:
     # CI 26min+ 仍未完 ≈2.5x 墙钟缩放），7 测试总时长 47-51min 必然横跨
     # 回收线。切 3+4 后每段测试墙钟减半，总时长 32-39min 滑出死亡线。
     #
-    # mrg-b 再切两段（2026-10-10 深夜）：切 3+4 后 mrg-b 仍两连精确
-    # 54.0min 整机失联（BlobNotFound），同轮 mrg-a/xfer 全绿——段内爬行
-    # （慢速轮单测试链路 600s 级超时逐个烧）+ 回收线叠加，4 测试段仍
-    # 太长。切 b1(T-MRG-4,5)/b2(T-MRG-6,7) 后每段 2 测试；配合 cluster-uat
-    # 双墙钟预算（段级 1800s SKIP + 单测 600s 诚实 fail，2026-10-10），
-    # 段总墙钟上界 ≈ build 8 + setup 2 + 2x10 = 30min，回收线不可达。
+    # mrg-b 切四个单测试段（2026-10-11）：b1(T-MRG-4,5)/b2(T-MRG-6,7) 两段
+    # 式连续两轮四连死在 52-54min 整机失联（BlobNotFound），同轮 core/xfer/
+    # mrg-a 全绿——两测试段的段期望墙钟（build 8 + 桩切换重启 3 + 2x测试
+    # 墙钟 ≈ 26min CI 缩放）落在失联窗内，VM 稍劣化就爬过回收线；段期望
+    # 时长=暴露面。切四后每段 ≈ build 3-8 + 桩 3 + 单测试 ≤10 ≈ 16-21min，
+    # 深滑出死亡窗（绿轮 ≤34min 铁律，约 25 样本）。配套：T-MRG-5/7 补桩
+    # 自持块（原经 T-MRG-4/6 同进程共享的桩态在单测试段独立进程里不再
+    # 存在；同值切换幂等）。min_pass=1 防切段参数 typo 退化 0 测试假绿。
     strategy:
       fail-fast: false
       matrix:
@@ -205,11 +207,17 @@ jobs:
             uat_args: "--filter T-MRG --exclude T-MRG-4 --exclude T-MRG-5 --exclude T-MRG-6 --exclude T-MRG-7"
             min_pass: 3
           - name: mrg-b1
-            uat_args: "--filter T-MRG --exclude T-MRG-1 --exclude T-MRG-2 --exclude T-MRG-3 --exclude T-MRG-6 --exclude T-MRG-7"
-            min_pass: 2
+            uat_args: "--filter T-MRG --exclude T-MRG-1 --exclude T-MRG-2 --exclude T-MRG-3 --exclude T-MRG-5 --exclude T-MRG-6 --exclude T-MRG-7"
+            min_pass: 1
           - name: mrg-b2
-            uat_args: "--filter T-MRG --exclude T-MRG-1 --exclude T-MRG-2 --exclude T-MRG-3 --exclude T-MRG-4 --exclude T-MRG-5"
-            min_pass: 2
+            uat_args: "--filter T-MRG --exclude T-MRG-1 --exclude T-MRG-2 --exclude T-MRG-3 --exclude T-MRG-4 --exclude T-MRG-6 --exclude T-MRG-7"
+            min_pass: 1
+          - name: mrg-b3
+            uat_args: "--filter T-MRG --exclude T-MRG-1 --exclude T-MRG-2 --exclude T-MRG-3 --exclude T-MRG-4 --exclude T-MRG-5 --exclude T-MRG-7"
+            min_pass: 1
+          - name: mrg-b4
+            uat_args: "--filter T-MRG --exclude T-MRG-1 --exclude T-MRG-2 --exclude T-MRG-3 --exclude T-MRG-4 --exclude T-MRG-5 --exclude T-MRG-6"
+            min_pass: 1
     # pin windows-2022：同 ci.yml rust-test——win25 20261004 镜像波次后编译期
     # runner 六连死失联，与全部资源缓解措施无关；win22 无该波次嫌疑变更
     # （WSL 停 2.x、OS 代际不同），作单变量对照实验。
