@@ -262,6 +262,15 @@ impl AgentLoop {
         }
 
         // Pre-execution security check (mirrors Go's PluginableTool.Execute → PluginManager → SecurityPlugin).
+        // S2①（2026-10-09 高优差距批次一）：exec/background_start 执行前
+        // 脚本内容扫描的结果（敏感环境变量引用的放行提示）在这里声明——
+        // 扫描/拦停发生在下方 security 块内，提示在工具执行后追加（见
+        // rescan 位点）。字面凭据命中 = 执行前拦截（执行只会放大泄漏面）；
+        // 环境变量引用 = 正当供给模式，放行 + 事后提示。
+        #[cfg(feature = "security")]
+        let mut script_advisory: Option<String> = None;
+        #[cfg(not(feature = "security"))]
+        let script_advisory: Option<String> = None;
         #[cfg(feature = "security")]
         {
             if let Some(ref security) = self.security.security_plugin {
@@ -375,6 +384,28 @@ impl AgentLoop {
                         "⛔ SECURITY BLOCKED [layer:{}|policy:{}] {}\nDo NOT retry the same call unchanged. Inform the user that the operation was rejected.{}",
                         info.layer, info.policy, info.summary, suggestion_line
                     );
+                }
+                // S2①：执行前脚本内容扫描（声明在外层，提示执行后追加）。
+                // exec_async 与 exec 同语义（command 跑磁盘脚本），同闸；
+                // run_script 的 script 是内联内容（过第④层入参扫描，无磁盘
+                // 盲区），不入本闸。
+                if matches!(
+                    tool_call.name.as_str(),
+                    "exec" | "exec_async" | "background_start"
+                ) && let Some(outcome) = security.pre_exec_script_scan(&tool_call.arguments)
+                {
+                    if outcome.has_literals() {
+                        warn!(
+                            "[AgentLoop] Script scan blocked {}: {}",
+                            tool_call.name,
+                            outcome.literal_summary()
+                        );
+                        return format!(
+                            "⛔ SECURITY BLOCKED [layer:script_scan|policy:credential_in_script] {}\nDo NOT retry the same call unchanged. Inform the user that the operation was rejected.\n建议：脚本文件内含明文凭据，请改用环境变量或凭据 vault 引用后重试。",
+                            outcome.literal_summary()
+                        );
+                    }
+                    script_advisory = outcome.advisory_note();
                 }
                 // P5: guardian (LLM safety judge) semantic review. Runs only
                 // after the rule layers allow; coverage is governed by
@@ -756,6 +787,25 @@ impl AgentLoop {
         }
         let hook_call_owned = hook_call.clone();
         let result = chain(hook_call_owned).await;
+        // S2②（2026-10-09 高优差距批次一）：出侧复扫。8 层管线只看工具
+        // 入参，输出侧此前零检查（eval 沙盒 worker 除外）——read_file 读
+        // 到明文 key / exec 回显秘钥会原文进上下文与历史。脱敏式：命中即
+        // 遮蔽 + 尾注告知模型（工具已执行，拦停无意义）；详见
+        // loop/output_rescan.rs 模块头。在 Forge 记录之前执行，经验台账
+        // 记到的同样是脱敏后文本。
+        #[cfg(feature = "security")]
+        let result = output_rescan::rescan_tool_output(
+            self.security.security_plugin.as_deref(),
+            &tool_call.name,
+            result,
+        );
+        // S2①：敏感环境变量引用的事后提示（放行语义，见上文 scan 位点）——
+        // 追加在复扫之后、Forge 记录之前，台账同样带提示。非 security
+        // 编译时 script_advisory 恒 None，此 match 直通零成本。
+        let result = match script_advisory {
+            Some(note) => format!("{result}\n{note}"),
+            None => result,
+        };
 
         // Record experience for Forge self-learning (non-blocking).
         #[cfg(feature = "forge")]

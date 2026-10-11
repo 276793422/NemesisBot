@@ -382,6 +382,37 @@ pub fn resolve_peer_rpc_port(peer_entry: &toml::Value, udp_port: u16) -> u16 {
         .unwrap_or_else(|| if udp_port > 0 { udp_port + 10000 } else { 0 })
 }
 
+/// 构造 `[peers.X]` 条目子表（条目形态单一真相源：`append_peer_to_file_with_name`
+/// 与占位升级的**单次原子写**路径共用——两处形态漂移会让静态装载行为分叉）。
+pub(crate) fn build_peer_entry_table(
+    address: &str,
+    role: &str,
+    category: &str,
+    name: Option<&str>,
+    rpc_port: u16,
+) -> toml::value::Table {
+    let mut peer_entry = toml::value::Table::new();
+    peer_entry.insert(
+        "address".to_string(),
+        toml::Value::String(address.to_string()),
+    );
+    if let Some(n) = name {
+        peer_entry.insert("name".to_string(), toml::Value::String(n.to_string()));
+    }
+    peer_entry.insert("role".to_string(), toml::Value::String(role.to_string()));
+    peer_entry.insert(
+        "category".to_string(),
+        toml::Value::String(category.to_string()),
+    );
+    if rpc_port > 0 {
+        peer_entry.insert(
+            "rpc_port".to_string(),
+            toml::Value::Integer(rpc_port as i64),
+        );
+    }
+    peer_entry
+}
+
 /// Like [`append_peer_to_file`] but also persists a `name` field. Used when
 /// upgrading a placeholder peer to its real node_id — the human-readable name
 /// (e.g. "Node-A") must be written so that after a reload the static loader
@@ -458,26 +489,12 @@ pub fn append_peer_to_file_with_name(
         );
     }
 
-    let mut peer_entry = toml::value::Table::new();
-    peer_entry.insert(
-        "address".to_string(),
-        toml::Value::String(address.to_string()),
+    peers_table.insert(
+        key,
+        toml::Value::Table(build_peer_entry_table(
+            address, role, category, name, rpc_port,
+        )),
     );
-    if let Some(n) = name {
-        peer_entry.insert("name".to_string(), toml::Value::String(n.to_string()));
-    }
-    peer_entry.insert("role".to_string(), toml::Value::String(role.to_string()));
-    peer_entry.insert(
-        "category".to_string(),
-        toml::Value::String(category.to_string()),
-    );
-    if rpc_port > 0 {
-        peer_entry.insert(
-            "rpc_port".to_string(),
-            toml::Value::Integer(rpc_port as i64),
-        );
-    }
-    peers_table.insert(key, toml::Value::Table(peer_entry));
 
     // Serialize and atomic write
     let toml_str = toml::to_string_pretty(&doc).map_err(|e| {

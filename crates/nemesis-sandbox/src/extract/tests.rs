@@ -103,7 +103,7 @@ fn extract_success_returns_ok_and_passes_flags() {
     let out_dir = tmp.path().join("runtime");
     std::fs::create_dir_all(&out_dir).unwrap();
 
-    extract(&installer, &out_dir, &seven_zip).unwrap();
+    extract_retrying_spawn_flake(|| extract(&installer, &out_dir, &seven_zip)).unwrap();
     let args = std::fs::read_to_string(tmp.path().join("7z_args.txt")).unwrap();
     let norm = args.replace('\\', "/");
     assert!(norm.contains("x "), "解压动词：{norm}");
@@ -118,13 +118,33 @@ fn extract_failure_bails_with_stderr() {
     let seven_zip = fake_7z(tmp.path(), false);
     let installer = tmp.path().join("Sandboxie.exe");
     std::fs::write(&installer, b"installer").unwrap();
-    let err = extract(&installer, tmp.path(), &seven_zip).unwrap_err();
+    let err =
+        extract_retrying_spawn_flake(|| extract(&installer, tmp.path(), &seven_zip)).unwrap_err();
     let msg = format!("{err:#}");
     assert!(msg.contains("7z extraction failed"), "{msg}");
     assert!(
         msg.contains("seven-zip-stderr-noise"),
         "stderr 必须带回：{msg}"
     );
+}
+
+/// spawn 层瞬态错有界重试。coverage job（cargo-llvm-cov 全 workspace --lib
+/// 单进程 160+ 测试线程 + LLVM 插桩内存膨胀）高负载下 fork/posix_spawn 偶发
+/// EAGAIN——实录 2026-10-10 CI Linux coverage：缓存命中 + 脚本 exit 3 的
+/// 确定性路径拿到 spawn 层 Err，断言假红。只对 `spawn` 前缀错误（extract
+/// 的 with_context 层）重试 3 次；extract 层的确定性失败（脚本退出码 →
+/// 「7z extraction failed」）第一次就原样返回，绝不重试掩盖真契约失败。
+pub(super) fn extract_retrying_spawn_flake<F: Fn() -> Result<()>>(op: F) -> Result<()> {
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        match op() {
+            Err(e) if attempts < 3 && format!("{e:#}").starts_with("spawn") => {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            other => return other,
+        }
+    }
 }
 
 #[test]
@@ -193,8 +213,20 @@ async fn extract_release_with_cached_7z_propagates_extraction_error() {
     let installer = tmp.path().join("Sandboxie-Classic-fake.exe");
     std::fs::write(&installer, b"fake-installer").unwrap();
 
-    let err = extract_release(&installer, tmp.path()).await.unwrap_err();
-    assert!(format!("{err:#}").contains("7z extraction failed"));
+    // spawn 层瞬态错（coverage 单进程高并发 fork EAGAIN 家族，见
+    // extract_retrying_spawn_flake 注释）有界重试；其余错误立即采纳。
+    let mut attempts = 0;
+    let err = loop {
+        attempts += 1;
+        match extract_release(&installer, tmp.path()).await {
+            Err(e) if attempts < 3 && format!("{e:#}").starts_with("spawn 7z at ") => {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+            other => break other.unwrap_err(),
+        }
+    };
+    let msg = format!("{err:#}");
+    assert!(msg.contains("7z extraction failed"), "actual err: {msg}");
 }
 
 // ---------------------------------------------------------------------------

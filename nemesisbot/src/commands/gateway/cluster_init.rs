@@ -654,6 +654,9 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
         }
 
         let cluster = Arc::new(cluster);
+        // 自根弱引用安装（ping 探针响应回传自报身份 / 探针成功应用对端身份，
+        // UDP 隔离拓扑的身份传播 fallback——见 Cluster::install_self_weak）
+        cluster.install_self_weak();
 
         // 二期批次五：cluster 句柄回填槽（桥身份 sink 注入 / hello 身份快照
         // 构造，均在块外 relay/web 装配段消费）。
@@ -760,6 +763,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 cluster: cluster.clone(),
                 moderator_loop: board_moderator_loop.clone(),
                 workspace: home.join("workspace"),
+                now_ms: Arc::new(|| chrono::Utc::now().timestamp_millis()),
             };
             match cluster.register_rpc_handler(
                 nemesis_cluster::envelope::NB_BUS_ACTION,

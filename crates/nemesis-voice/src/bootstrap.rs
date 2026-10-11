@@ -129,7 +129,7 @@ pub fn run_in_dir(config_path: &Path, lib_dir: &Path) -> Result<bool> {
             "[setup] Downloading sherpa-onnx v{} runtime ...",
             SHERPA_VERSION
         );
-        download_runtime_libs(lib_dir, &proxy_url)?;
+        download_runtime_libs(lib_dir, &proxy_url, &sherpa_staging_dir())?;
         tracing::info!("[setup] Runtime libraries ready.");
     }
 
@@ -152,10 +152,25 @@ pub fn run_in_dir(_config_path: &Path, _lib_dir: &Path) -> Result<bool> {
 // calling thread, exhausting the default 2 MB stack).
 // ---------------------------------------------------------------------------
 
+/// sherpa 运行时下载暂存目录（归档/.part/解压中间态）。固定全局路径是刻意的：
+/// 归档跨进程启动缓存复用。参数化（staging_dir）只服务测试注入——nextest 每测试
+/// 独立进程，固定目录会被并行测试互踩（见 bootstrap/tests.rs 的 pid 派生说明）。
 #[cfg(all(target_os = "windows", feature = "download"))]
-fn download_runtime_libs(exe_dir: &Path, proxy_url: &str) -> Result<()> {
+fn sherpa_staging_dir() -> PathBuf {
+    std::env::temp_dir().join("nemesis-voice-setup")
+}
+
+/// AEC 归档下载暂存目录（独立于 sherpa，同为跨启动缓存复用的固定路径）。
+#[cfg(all(target_os = "windows", feature = "download"))]
+fn aec_staging_dir() -> PathBuf {
+    std::env::temp_dir().join("nemesis-voice-aec-setup")
+}
+
+#[cfg(all(target_os = "windows", feature = "download"))]
+fn download_runtime_libs(exe_dir: &Path, proxy_url: &str, staging_dir: &Path) -> Result<()> {
     let exe_dir = exe_dir.to_path_buf();
     let proxy_url = proxy_url.to_string();
+    let staging_dir = staging_dir.to_path_buf();
     // Spawn a standalone thread to avoid "Cannot start a runtime from within a runtime"
     // (the caller may already be inside a tokio runtime) and to avoid reqwest::blocking
     // stack overflow (async reqwest + our own runtime is much lighter on stack).
@@ -180,7 +195,12 @@ fn download_runtime_libs(exe_dir: &Path, proxy_url: &str) -> Result<()> {
         let mut last_error = None;
         for url in &urls {
             tracing::info!("Trying: {}", url);
-            match rt.block_on(try_download_and_extract(url, &exe_dir, &proxy_url)) {
+            match rt.block_on(try_download_and_extract(
+                url,
+                &exe_dir,
+                &proxy_url,
+                &staging_dir,
+            )) {
                 Ok(()) => return Ok(()),
                 Err(e) => {
                     tracing::warn!("Failed: {}", e);
@@ -224,8 +244,13 @@ fn format_speed(bytes_per_sec: f64) -> String {
 }
 
 #[cfg(all(target_os = "windows", feature = "download"))]
-async fn try_download_and_extract(url: &str, exe_dir: &Path, proxy_url: &str) -> Result<()> {
-    let temp_dir = std::env::temp_dir().join("nemesis-voice-setup");
+async fn try_download_and_extract(
+    url: &str,
+    exe_dir: &Path,
+    proxy_url: &str,
+    staging_dir: &Path,
+) -> Result<()> {
+    let temp_dir = staging_dir.to_path_buf();
     fs::create_dir_all(&temp_dir)?;
 
     let archive_name = format!("{}.tar.bz2", SHERPA_RELEASE_NAME);
@@ -431,7 +456,12 @@ pub fn download_aec_lib(dst_dir: &Path, proxy_url: &str) -> Result<PathBuf> {
         let mut last_error = None;
         for url in &urls {
             tracing::info!("[aec] Trying: {}", url);
-            match rt.block_on(try_download_aec(url, &dst_dir, &proxy_url)) {
+            match rt.block_on(try_download_aec(
+                url,
+                &dst_dir,
+                &proxy_url,
+                &aec_staging_dir(),
+            )) {
                 Ok(p) => return Ok(p),
                 Err(e) => {
                     tracing::warn!("[aec] Failed: {}", e);
@@ -464,8 +494,13 @@ pub fn download_aec_lib(_dst_dir: &Path, _proxy_url: &str) -> Result<PathBuf> {
 }
 
 #[cfg(all(target_os = "windows", feature = "download"))]
-async fn try_download_aec(url: &str, dst_dir: &Path, proxy_url: &str) -> Result<PathBuf> {
-    let temp_dir = std::env::temp_dir().join("nemesis-voice-aec-setup");
+async fn try_download_aec(
+    url: &str,
+    dst_dir: &Path,
+    proxy_url: &str,
+    staging_dir: &Path,
+) -> Result<PathBuf> {
+    let temp_dir = staging_dir.to_path_buf();
     fs::create_dir_all(&temp_dir)?;
 
     let archive_path = temp_dir.join(AEC_WIN_ARTIFACT);

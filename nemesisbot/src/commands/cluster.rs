@@ -1519,6 +1519,8 @@ async fn run_node(
 
     // Start UDP Discovery (managed by Cluster)
     let cluster_arc: Arc<nemesis_cluster::cluster::Cluster> = Arc::new(cluster);
+    // 自根弱引用安装（ping 探针身份回传链路，同 gateway 装配点）
+    cluster_arc.install_self_weak();
     cluster_arc.start_discovery(cluster_arc.clone());
     info!("[Node] UDP discovery started on port {}", udp_port);
     println!("  UDP discovery started on port {}", udp_port);

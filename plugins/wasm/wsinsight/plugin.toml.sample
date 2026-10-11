@@ -1,0 +1,22 @@
+# wsinsight 安装清单模板——拷为 plugin.toml 与 plugin.wasm 同放一个目录后安装：
+#   1. cargo build --target wasm32-wasip2 --release
+#   2. sha256sum target/wasm32-wasip2/release/wsinsight_plugin.wasm
+#   3. 把哈希填进下方 wasm-sha256（必须位于文件头，TOML 根键须在任何 table 段之前）
+#   4. nemesisbot plugin install <该目录> --yes --allow-unsigned
+#      （或 Dashboard 插件页安装——带审批卡；签名发布流程见三方开发指南 §7）
+wasm-sha256 = "<sha256(plugin.wasm)>"
+api-version = 1
+slug = "wsinsight"
+kind = "tool"
+name = "WsInsight"
+version = "0.1.0"
+description = "工作区文件洞察示例插件：给定工作区相对路径返回字节/行数/UTF-8 合法性/可选预览（演示 workspace-read 宿主面）"
+
+[permissions]
+# 本插件零出站、零凭据；仅经 workspace-read 宿主面读工作区（宿主围栏拦截越界路径）
+
+[config-schema]
+max_preview_default = "预览字符缺省值（'0'-'4096'，缺省 0 = 不预览；单次调用可用 max_preview 覆盖）"
+
+# [limits] 可选——在宿主全局上限内收紧，例如：
+# fuel = 20_000_000

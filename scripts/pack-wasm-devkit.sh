@@ -50,7 +50,7 @@ VER_SEMVER=${VER_SEMVER:-"0.0.0"}
 
 # ---- 示例名单：git 已入库的 plugins/wasm/<dir>（含 Cargo.toml 者）----------
 # 注意 git ls-files 输出仓库相对路径（与 pathspec 形态无关），strip 用相对前缀；
-# wsinsight 未入库，被名单过滤自然排除。
+# 新示例入库即自动进名单，无需改本脚本。
 EX_REL="plugins/wasm"
 mapfile -t EXAMPLES < <(git -C "$REPO_ROOT" ls-files "$EX_REL" \
   | sed "s|^$EX_REL/||" | cut -d/ -f1 | sort -u \

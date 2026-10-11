@@ -83,6 +83,11 @@ pub mod tasks;
 pub mod roles;
 pub mod tools;
 pub mod upload;
+// Vault（凭据 vault）管理面（S3c，2026-10-09）：vault.list/set/remove/
+// status。security 闸——VaultStore 在 nemesis-security（vault 模块）。
+// 永不显示值：list/status 只含别名与元数据，secret 只经 set 单向写入。
+#[cfg(feature = "security")]
+pub mod vault;
 #[cfg(feature = "voice")]
 pub mod voice;
 #[cfg(feature = "workflow")]
@@ -201,6 +206,8 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
         // Full Access 编辑器放行开关（2026-09-20 用户裁决）——槽未装配时
         // handler 诚实报错，注册本身无副作用。
         router.register(Arc::new(editor::EditorHandler));
+        // S3c（2026-10-09）：凭据 vault 管理面（list/set/remove/status）。
+        router.register(Arc::new(vault::VaultHandler));
     }
     #[cfg(feature = "sandbox")]
     {

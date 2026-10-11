@@ -31,6 +31,12 @@ fn mgr_with_events() -> (
 }
 
 /// 在独立线程发起审批请求（模拟 auditor 的同步调用上下文）。
+///
+/// timeout 一律传 300：这是「不被超时打断」的安全边际而非被测值——
+/// 真实墙钟超时在慢机/高负载 CI 上会被调度延迟击穿（实录 ET Linux
+/// 2727 测试并行时 10s 竞态红，timeout 先于 respond 触发 → pending
+/// 被清 → respond 诚实报 unknown → unwrap 假红）。只有显式测超时
+/// 行为本身的用例才传小值（1s）。
 fn request_async(
     mgr: std::sync::Arc<WebApprovalManager>,
     request_id: &str,
@@ -70,7 +76,7 @@ fn wait_pending(mgr: &WebApprovalManager, want: usize) {
 #[test]
 fn approve_flow_resolves_true_and_clears_pending() {
     let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
-    let result_rx = request_async(mgr.clone(), "req-a", 10);
+    let result_rx = request_async(mgr.clone(), "req-a", 300);
     // 请求线程需要一点时间进入 pending。
     wait_pending(&mgr, 1);
     assert!(mgr.respond("req-a", true, false, None).unwrap());
@@ -86,7 +92,7 @@ fn approve_flow_resolves_true_and_clears_pending() {
 #[test]
 fn deny_flow_resolves_false() {
     let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
-    let result_rx = request_async(mgr.clone(), "req-d", 10);
+    let result_rx = request_async(mgr.clone(), "req-d", 300);
     wait_pending(&mgr, 1);
     assert!(!mgr.respond("req-d", false, false, None).unwrap());
     let v = result_rx
@@ -113,7 +119,7 @@ fn timeout_denies_and_removes_pending() {
 #[test]
 fn double_respond_is_first_wins() {
     let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
-    let result_rx = request_async(mgr.clone(), "req-r", 10);
+    let result_rx = request_async(mgr.clone(), "req-r", 300);
     wait_pending(&mgr, 1);
     assert!(
         mgr.respond("req-r", true, false, None).is_ok(),
@@ -133,7 +139,7 @@ fn double_respond_is_first_wins() {
 #[test]
 fn pending_lists_request_metadata() {
     let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
-    let result_rx = request_async(mgr.clone(), "req-p", 10);
+    let result_rx = request_async(mgr.clone(), "req-p", 300);
     wait_pending(&mgr, 1);
     let list = mgr.pending();
     assert_eq!(list.len(), 1);
@@ -141,7 +147,7 @@ fn pending_lists_request_metadata() {
     assert_eq!(list[0]["operation"], "process_exec");
     assert_eq!(list[0]["target"], "cargo publish");
     assert_eq!(list[0]["risk_level"], "HIGH");
-    assert_eq!(list[0]["timeout_secs"], 10);
+    assert_eq!(list[0]["timeout_secs"], 300);
     // F3:「总是允许」pattern 随 pending 下发（B5 归约：cargo publish *）。
     assert_eq!(list[0]["pattern"], "cargo publish *");
     assert!(mgr.respond("req-p", true, false, None).unwrap());
@@ -156,8 +162,14 @@ async fn broadcast_carries_full_request_payload() {
         let (tx, rx) = mpsc::channel();
         let m = mgr.clone();
         std::thread::spawn(move || {
-            let r =
-                m.request_approval_sync("req-b", "file_write", "/tmp/x", "CRITICAL", "rule: w", 10);
+            let r = m.request_approval_sync(
+                "req-b",
+                "file_write",
+                "/tmp/x",
+                "CRITICAL",
+                "rule: w",
+                300,
+            );
             let _ = tx.send(r);
         });
         rx
@@ -168,7 +180,7 @@ async fn broadcast_carries_full_request_payload() {
     assert_eq!(payload["data"]["operation"], "file_write");
     assert_eq!(payload["data"]["risk_level"], "CRITICAL");
     assert_eq!(payload["data"]["reason"], "rule: w");
-    assert_eq!(payload["data"]["timeout_secs"], 10);
+    assert_eq!(payload["data"]["timeout_secs"], 300);
     // F3: pattern 随事件下发。
     assert_eq!(payload["data"]["pattern"], "/tmp/x");
     assert!(mgr.respond("req-b", true, false, None).unwrap());
@@ -189,7 +201,7 @@ async fn request_in_tokio_context_uses_block_in_place_and_still_resolves() {
     let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
     let m2 = mgr.clone();
     let waiter = tokio::spawn(async move {
-        m2.request_approval_sync("req-bip", "process_exec", "x", "HIGH", "r", 10)
+        m2.request_approval_sync("req-bip", "process_exec", "x", "HIGH", "r", 300)
     });
     // 等待者进入 pending 后再 respond。
     for _ in 0..100 {
@@ -211,7 +223,7 @@ fn respond_always_approved_writes_exec_prefix_rule() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("approval_rules.json");
     let mgr = std::sync::Arc::new(WebApprovalManager::new(None, Some(path.clone())));
-    let result_rx = request_async(mgr.clone(), "req-always", 10);
+    let result_rx = request_async(mgr.clone(), "req-always", 300);
     wait_pending(&mgr, 1);
 
     mgr.respond("req-always", true, true, None).unwrap();
@@ -231,7 +243,7 @@ fn respond_always_false_writes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("approval_rules.json");
     let mgr = std::sync::Arc::new(WebApprovalManager::new(None, Some(path.clone())));
-    let result_rx = request_async(mgr.clone(), "req-once", 10);
+    let result_rx = request_async(mgr.clone(), "req-once", 300);
     wait_pending(&mgr, 1);
     mgr.respond("req-once", true, false, None).unwrap();
     assert!(!path.exists(), "plain approve must not create rules file");
@@ -243,7 +255,7 @@ fn respond_always_denied_writes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("approval_rules.json");
     let mgr = std::sync::Arc::new(WebApprovalManager::new(None, Some(path.clone())));
-    let result_rx = request_async(mgr.clone(), "req-deny", 10);
+    let result_rx = request_async(mgr.clone(), "req-deny", 300);
     wait_pending(&mgr, 1);
     mgr.respond("req-deny", false, true, None).unwrap();
     assert!(!path.exists(), "deny must not create rules file");
@@ -266,7 +278,7 @@ fn respond_always_on_critical_nonexec_op_is_ignored() {
             "/tmp/x",
             "CRITICAL",
             "rule: w",
-            10,
+            300,
         );
         let _ = tx.send(r);
     });
@@ -284,7 +296,7 @@ fn respond_always_on_critical_nonexec_op_is_ignored() {
 #[test]
 fn respond_always_without_rules_path_is_honest_error() {
     let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
-    let result_rx = request_async(mgr.clone(), "req-nopath", 10);
+    let result_rx = request_async(mgr.clone(), "req-nopath", 300);
     wait_pending(&mgr, 1);
     let err = mgr.respond("req-nopath", true, true, None).unwrap_err();
     assert!(
@@ -303,7 +315,7 @@ fn always_rule_upsert_is_idempotent() {
     let mgr = std::sync::Arc::new(WebApprovalManager::new(None, Some(path.clone())));
 
     for rid in ["req-u1", "req-u2"] {
-        let result_rx = request_async(mgr.clone(), rid, 10);
+        let result_rx = request_async(mgr.clone(), rid, 300);
         wait_pending(&mgr, 1);
         mgr.respond(rid, true, true, None).unwrap();
         let _ = result_rx.recv_timeout(Duration::from_secs(2));
@@ -372,7 +384,7 @@ async fn late_skills_gate_ignores_install_rules_always_card() {
 fn deny_note_flows_to_waiter_verdict() {
     // 备注只在 denied 时随 verdict 送达；auditor 侧拼进拒绝消息回灌模型。
     let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
-    let result_rx = request_async(mgr.clone(), "req-note", 10);
+    let result_rx = request_async(mgr.clone(), "req-note", 300);
     wait_pending(&mgr, 1);
     assert!(
         !mgr.respond("req-note", false, false, Some("这是生产库，别动".into()))
@@ -390,7 +402,7 @@ fn deny_note_flows_to_waiter_verdict() {
 fn deny_blank_note_is_normalized_to_none() {
     // 空串/纯空白备注视同无备注（auditor 侧消息不带冒号尾巴）。
     let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
-    let result_rx = request_async(mgr.clone(), "req-blank", 10);
+    let result_rx = request_async(mgr.clone(), "req-blank", 300);
     wait_pending(&mgr, 1);
     mgr.respond("req-blank", false, false, Some("   ".into()))
         .unwrap();
@@ -406,7 +418,7 @@ fn deny_blank_note_is_normalized_to_none() {
 fn approve_ignores_note() {
     // approved=true 时备注被忽略（trait 契约：note 仅拒绝语义）。
     let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
-    let result_rx = request_async(mgr.clone(), "req-appr", 10);
+    let result_rx = request_async(mgr.clone(), "req-appr", 300);
     wait_pending(&mgr, 1);
     assert!(
         mgr.respond("req-appr", true, false, Some("随手批的".into()))
@@ -430,7 +442,7 @@ async fn resolved_broadcast_fires_on_respond_and_timeout() {
     // 竞速败方窗口据此摘卡。
     let (mgr, mut events) = mgr_with_events();
     let mgr = std::sync::Arc::new(mgr);
-    let result_rx = request_async(mgr.clone(), "req-res1", 10);
+    let result_rx = request_async(mgr.clone(), "req-res1", 300);
     // 首个事件是 ApprovalRequested。
     let req_ev = recv_scoped(&mut events).await;
     assert_eq!(req_ev["kind"], "ApprovalRequested");
