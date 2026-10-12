@@ -19,7 +19,8 @@ use anyhow::{Context, Result, bail};
 
 /// Where we fetch 7z.zip (7z.exe + 7z.dll + LICENSE.txt, LGPL) when no local
 /// 7-Zip is found. Hosted in the project repo so it's under our control.
-const SEVEN_ZIP_ZIP_URL: &str = "https://raw.githubusercontent.com/276793422/NemesisBot_Rust/refs/heads/main/test-tools/bins/7z.zip";
+const SEVEN_ZIP_ZIP_URL: &str =
+    "https://raw.githubusercontent.com/276793422/NemesisBot/refs/heads/main/test-tools/bins/7z.zip";
 
 /// Resolve a usable 7z.exe: (1) a previously-downloaded copy in
 /// `runtime/7z/7z.exe`, (2) a system 7-Zip in PATH / common install dirs,
