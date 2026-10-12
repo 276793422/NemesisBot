@@ -1,0 +1,118 @@
+name: Auto rerun
+
+# 冻结收敛自动化（2026-10-12）：win22 hosted runner 的平台冻结是批次级彩票
+# （冻结与负载/时长/设备配置无关——mrg-b2 曾冻在开机后 3 秒的环境指纹脚本里，
+# 同 commit 13 绿 vs 7 冻并存，重抽换机立绿；取证详见
+# docs/REPORT/2026-10-08_extended-tests评审回退自食与依赖升级修复.md 与
+# 2026-10-11/12 的指纹基建）。本工作流把此前人工/API 的 rerun-failed-jobs
+# 收敛循环无人化：完全跑在 GitHub 云端，本地机器零参与。
+#
+# 判定链（三重防误抽）：
+#   1. 只认 CI / Extended Tests 两族失败 run（workflow_run 按 name 精确匹配；
+#      监听器自身完成不自触发，无风暴）；
+#   2. 冻结签名 = 失败 job 的 step 仍有 in_progress（runner 死在步中）或日志
+#      被平台收割（logs API 404）。真红（测试断言失败）所有 step 终态 + 日志
+#      可拉 → 不重抽，留红等人修（重抽也白烧一个 attempt）；
+#   3. run_attempt 封顶 5：连续 5 次纯冻结才放弃（绿段每次保留，只重抽死段；
+#      公开仓库 Actions 免费，重灾窗 ~55% 冻结率下单段连冻 5 次概率 ~5%）。
+#
+# 与 nightly 闸的联动：ET 重抽转绿后 workflow_run 正常放行 daily-release；
+# seed 引导轮的故意红在 Seed-run marker 步（step 终态 + 日志可拉 = 真红签名）
+# → 监听器不重抽，与引导轮设计天然无冲突。
+#
+# 为什么不用 GitHub 原生重试：hosted runner 没有原生自动重试（最高档是手动
+# Re-run failed jobs 按钮）；VM 级死亡必须换新 VM = job 级 rerun，步级 retry
+# 救不了死 VM。
+
+on:
+  workflow_run:
+    workflows: ["CI", "Extended Tests"]
+    types: [completed]
+
+permissions:
+  actions: write
+
+concurrency:
+  group: auto-rerun
+  cancel-in-progress: false   # CI/ET 同时刻失败时排队逐个处理，不互掐
+
+jobs:
+  rerun-frozen:
+    # 只处理失败 run，且尝试次数未达上限（attempt 5 封顶：1-4 次重抽机会）
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.run_attempt < 5
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Classify failure (freeze vs real red), rerun pure freezes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_NAME: ${{ github.event.workflow_run.name }}
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          api() { curl -sS -H "Authorization: Bearer $GH_TOKEN" \
+                       -H "Accept: application/vnd.github+json" "$@"; }
+
+          echo "run=$RUN_NAME id=$RUN_ID attempt=$ATTEMPT"
+
+          # 等日志后端落稳（真红日志偶发短暂 404 的窗口期；纯冻结 404 恒定）
+          sleep 15
+
+          jobs_json="$(api "https://api.github.com/repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100")"
+          mapfile -t failed < <(echo "$jobs_json" \
+            | jq -r '.jobs[] | select(.conclusion=="failure") | "\(.id)\t\(.name)"')
+
+          if [ "${#failed[@]}" -eq 0 ]; then
+            echo "no failed jobs — nothing to do"
+            exit 0
+          fi
+          echo "failed jobs: ${#failed[@]}"
+
+          frozen=(); real=()
+          for row in "${failed[@]}"; do
+            jid="${row%%$'\t'*}"; jname="${row#*$'\t'}"
+            # 冻结签名①：runner 死在步中——failed job 仍有 step 未终态
+            open_steps="$(echo "$jobs_json" | jq -r --argjson id "$jid" \
+              '[.jobs[] | select(.id==$id) | .steps[]?
+               | select(.conclusion==null or .conclusion=="in_progress")] | length')"
+            # 冻结签名②：日志被平台收割（logs API 404）
+            log_code="$(curl -sS -o /dev/null -w '%{http_code}' -L \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/actions/jobs/$jid/logs")"
+            echo "job $jid ($jname): open_steps=$open_steps logs_http=$log_code"
+            if [ "$open_steps" -gt 0 ] || [ "$log_code" = "404" ]; then
+              frozen+=("$jid")
+            else
+              real+=("$jid")
+            fi
+          done
+
+          {
+            echo "### Auto rerun decision"
+            echo "- run: $RUN_NAME #$RUN_ID attempt $ATTEMPT"
+            echo "- failed jobs: ${#failed[@]}"
+            echo "- frozen (no-logs / step-in-progress): ${#frozen[@]}"
+            echo "- real red (retrievable logs): ${#real[@]}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${#real[@]}" -gt 0 ]; then
+            msg="real red detected (${real[*]}) — not rerunning, needs a human"
+            echo "$msg"
+            echo "- decision: NO rerun — $msg" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # 全部失败 job 都是冻结家族 → 换新 VM 重抽死段（绿段保留）
+          http="$(curl -sS -o /tmp/rr.out -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/actions/runs/$RUN_ID/rerun-failed-jobs")"
+          echo "rerun-failed-jobs http=$http body=$(cat /tmp/rr.out)"
+          echo "- decision: rerun-failed-jobs fired (http=$http)" >> "$GITHUB_STEP_SUMMARY"
+          exit 0
