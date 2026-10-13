@@ -1006,6 +1006,124 @@ fn add_without_protocol_stays_empty_and_invalid_rejected() {
     );
 }
 
+// --- per-model 流式开关（2026-10-13 stream 键）：add / update_field 契约 ---
+
+#[test]
+fn add_persists_stream_and_rejects_invalid() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), SEED);
+    let h = ModelsHandler::new();
+
+    // true 别名归一为 yes 落盘。
+    h.add(
+        &home_str(&dir),
+        &serde_json::json!({
+            "name": "s1", "model": "test/testai-1.1", "key": "k", "stream": "true"
+        }),
+    )
+    .unwrap()
+    .unwrap();
+    let new = read_config_raw(dir.path())["model_list"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["model_name"] == "s1")
+        .unwrap()
+        .clone();
+    assert_eq!(new["stream"], "yes", "true 别名必须归一为 yes");
+
+    // 缺省不写 stream 键（= auto，与 CLI 不传 --stream 同形）。
+    assert!(
+        read_config_raw(dir.path())["model_list"][0]
+            .get("stream")
+            .is_none(),
+        "兄弟条目不得被塞 stream 键"
+    );
+
+    // 非法值 loud 拒绝，不落盘。
+    let err = h
+        .add(
+            &home_str(&dir),
+            &serde_json::json!({ "name": "bad", "model": "x/y", "key": "k", "stream": "maybe" }),
+        )
+        .unwrap_err();
+    assert!(err.contains("Invalid stream"), "got: {err}");
+    assert!(
+        read_config_raw(dir.path())["model_list"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["model_name"] != "bad")
+    );
+}
+
+#[test]
+fn update_field_stream_normalization_and_reset() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), SEED);
+    let h = ModelsHandler::new();
+    let home = home_str(&dir);
+
+    // 大写 YES 归一为 yes；no 直写。
+    h.update_field(
+        &home,
+        &serde_json::json!({ "name": "m1", "field": "stream", "value": "YES" }),
+        &make_ctx(&dir),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        read_config_raw(dir.path())["model_list"][0]["stream"],
+        "yes"
+    );
+
+    h.update_field(
+        &home,
+        &serde_json::json!({ "name": "m1", "field": "stream", "value": "no" }),
+        &make_ctx(&dir),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(read_config_raw(dir.path())["model_list"][0]["stream"], "no");
+
+    // auto / 空串 = 清除（写空串 = 跟随 lane 默认）。
+    for reset in ["auto", ""] {
+        h.update_field(
+            &home,
+            &serde_json::json!({ "name": "m1", "field": "stream", "value": reset }),
+            &make_ctx(&dir),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            read_config_raw(dir.path())["model_list"][0]["stream"],
+            "",
+            "reset value '{reset}' 必须落空串"
+        );
+    }
+
+    // 非法值 loud 拒绝，文件保持原值。
+    let err = h
+        .update_field(
+            &home,
+            &serde_json::json!({ "name": "m1", "field": "stream", "value": "sometimes" }),
+            &make_ctx(&dir),
+        )
+        .unwrap_err();
+    assert!(err.contains("Invalid stream"), "got: {err}");
+    assert_eq!(read_config_raw(dir.path())["model_list"][0]["stream"], "");
+
+    // list 透传：stream 以 raw extra 形态回读（空串原样，非 null）。
+    let out = h.list(&home).unwrap().unwrap();
+    let m1 = out["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["model_name"] == "m1")
+        .unwrap();
+    assert_eq!(m1["stream"], "", "list 必须透传 stream extra");
+}
+
 #[test]
 fn update_field_protocol_set_clear_alias_and_reject() {
     let dir = tempfile::tempdir().unwrap();
