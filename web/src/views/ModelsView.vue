@@ -230,8 +230,8 @@ const FIELD_EFFECT: Record<string, string> = {
   model_size_b: 'auto 档下即时生效（参与能力自动检测）',
   real_name: 'auto 档下即时生效（别名识别真名）',
   context_window: '保存后生效（上下文预算依据）',
-  protocol: '重新设为默认时生效；或重启后生效',
-  stream: '重新设为默认时生效；或重启后生效',
+  protocol: '改默认模型立即生效（自动热切）；其他模型设为默认时生效；或重启后生效',
+  stream: '改默认模型立即生效（自动热切）；其他模型设为默认时生效；或重启后生效',
 }
 
 /** P3-2: 保存属性 — 逐字段走后端 raw-JSON RMW（保留 config.json 其余键）。 */
