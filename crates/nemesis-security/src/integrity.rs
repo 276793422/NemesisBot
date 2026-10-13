@@ -69,6 +69,12 @@ pub struct AuditChain {
     total_events: std::sync::atomic::AtomicU64,
     /// Whether the chain has been closed.
     closed: std::sync::atomic::AtomicBool,
+    /// append 全程串行锁（横扫九期补网，2026-10-14）：链不变量是
+    /// 「行 i.prev == 行 i-1.hash」——last_hash 的读与写原是两次独立取锁，
+    /// 中间算 hash 的窗口无锁，并发 append 各读到同一 prev ⇒ 链分叉
+    /// （verify 的 prev_hash != 前一行 hash 必 FAIL）。本锁罩「读 prev →
+    /// 算 hash → 写 last → 落盘 → rotation」全程。
+    append_lock: parking_lot::Mutex<()>,
 }
 
 impl AuditChain {
@@ -83,6 +89,7 @@ impl AuditChain {
             segment_count: std::sync::atomic::AtomicU64::new(1),
             total_events: std::sync::atomic::AtomicU64::new(0),
             closed: std::sync::atomic::AtomicBool::new(false),
+            append_lock: parking_lot::Mutex::new(()),
         }
     }
 
@@ -121,6 +128,9 @@ impl AuditChain {
         if self.is_closed() {
             return Err("audit chain is closed".to_string());
         }
+        // 全程临界区（横扫九期）：prev 读取与 last 写入之间不得插入第二个
+        // append，否则链分叉（结构体注释）。
+        let _chain = self.append_lock.lock();
         let mut hasher = Sha256::new();
         let timestamp = chrono::Local::now().to_rfc3339();
         let id = uuid::Uuid::new_v4().to_string();
