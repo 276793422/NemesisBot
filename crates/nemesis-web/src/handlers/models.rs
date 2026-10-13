@@ -192,6 +192,8 @@ impl ModelsHandler {
                     // Raw extras (absent in file → null; frontend treats null as unset).
                     "model_tier": raw.get("model_tier").cloned().unwrap_or(serde_json::Value::Null),
                     "reasoning_effort": raw.get("reasoning_effort").cloned().unwrap_or(serde_json::Value::Null),
+                    // per-model 流式开关（2026-10-13 stream 键；缺省/空 = auto）。
+                    "stream": raw.get("stream").cloned().unwrap_or(serde_json::Value::Null),
                     "model_size_b": raw.get("model_size_b").cloned().unwrap_or(serde_json::Value::Null),
                     "real_name": raw.get("real_name").cloned().unwrap_or(serde_json::Value::Null),
                     "context_window": raw.get("context_window").cloned().unwrap_or(serde_json::Value::Null),
@@ -287,6 +289,21 @@ impl ModelsHandler {
         let protocol = nemesis_types::capability::normalize_model_protocol(
             &crate::handlers::get_opt_str(data, "protocol").unwrap_or_default(),
         )?;
+        // per-model 流式开关（2026-10-13 stream 键）：可选，缺省不写键 = auto。
+        // 归一走单一真相源 normalize_stream_value（与 CLI --stream / 配置解析
+        // 同源），非法值 loud 拒绝（显式提交是当次意志，不做静默纠偏）。
+        let stream_raw = crate::handlers::get_opt_str(data, "stream").unwrap_or_default();
+        let stream = if stream_raw.is_empty() {
+            String::new()
+        } else {
+            nemesis_config::normalize_stream_value(&serde_json::json!(stream_raw)).ok_or_else(
+                || {
+                    format!(
+                        "Invalid stream value '{stream_raw}'. Use yes | no (aliases: true | false)."
+                    )
+                },
+            )?
+        };
 
         // Raw RMW via the transaction entry (NOT typed save): preserves the
         // tier/size/real_name/context_window extras other entries may carry —
@@ -320,6 +337,11 @@ impl ModelsHandler {
                 // CLI `model add` parity: tag auto-detect tier explicitly.
                 "model_tier": "auto",
             });
+            // 流式开关非缺省时写盘（空串不写键 = auto，与 CLI 不传 flag 同形）。
+            if !stream.is_empty() {
+                entry["stream"] = serde_json::Value::String(stream);
+            }
+
             // U16 parity: auto-fill context_window / max_output_tokens from the
             // models.dev catalog cache on an exact-key hit (silent no-op without
             // a cache — `model catalog-update` / the dashboard button fills it).
@@ -730,6 +752,25 @@ impl ModelsHandler {
                 let normalized = nemesis_types::capability::normalize_model_protocol(s)?;
                 serde_json::Value::String(normalized)
             }
+            "stream" => {
+                // per-model 流式开关（2026-10-13 stream 键）：空串/auto =
+                // 清除（跟随 lane 默认）；yes/no（别名 true/false）归一写盘；
+                // 未知值 loud 拒绝——归一走单一真相源 normalize_stream_value
+                // （与 CLI --stream / 配置解析同源）。构造期消费：改默认模型
+                // 需 set_default 热切或重启生效（前端标注同口径）。
+                let s = value.as_str().ok_or("stream must be a string")?.trim();
+                if s.is_empty() || s.eq_ignore_ascii_case("auto") {
+                    serde_json::Value::String(String::new())
+                } else {
+                    let normalized = nemesis_config::normalize_stream_value(&serde_json::json!(s))
+                        .ok_or_else(|| {
+                            format!(
+                                "Invalid stream value '{s}'. Use yes | no (aliases: true | false), or empty to reset to auto."
+                            )
+                        })?;
+                    serde_json::Value::String(normalized)
+                }
+            }
             "proxy" => {
                 // 代理设置页（2026-09-17）：空串 = 清除（直连）；非空做
                 // 前缀校验（reqwest Proxy::all 支持的形态），彻底校验留给
@@ -750,7 +791,7 @@ impl ModelsHandler {
             }
             _ => {
                 return Err(format!(
-                    "unknown field '{field}'. Supported: model_tier | reasoning_effort | model_size_b | real_name | context_window | protocol | proxy"
+                    "unknown field '{field}'. Supported: model_tier | reasoning_effort | model_size_b | real_name | context_window | protocol | proxy | stream"
                 ));
             }
         };

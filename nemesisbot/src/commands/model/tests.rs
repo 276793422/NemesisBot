@@ -1895,6 +1895,85 @@ async fn test_s11b_run_setrealname_matrix() {
 
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
+async fn test_s11b_run_setstream_matrix() {
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let th = s11b_temp_home_env();
+    s11b_write_cfg(
+        &th.home,
+        serde_json::json!({"model_list": [{"model": "x/m1", "model_name": "m1"}]}),
+    );
+    // yes → 归一落盘 "yes"。
+    super::run(
+        super::ModelAction::SetStream {
+            name: "m1".into(),
+            stream: "yes".into(),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(s11b_read_cfg(&th.home)["model_list"][0]["stream"], "yes");
+    // 别名 true/false → yes/no（与 normalize_stream_value 同源）。
+    super::run(
+        super::ModelAction::SetStream {
+            name: "m1".into(),
+            stream: "TRUE".into(),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(s11b_read_cfg(&th.home)["model_list"][0]["stream"], "yes");
+    super::run(
+        super::ModelAction::SetStream {
+            name: "m1".into(),
+            stream: "false".into(),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(s11b_read_cfg(&th.home)["model_list"][0]["stream"], "no");
+    // auto → 清除（写空串 = 跟随 lane 默认）。
+    super::run(
+        super::ModelAction::SetStream {
+            name: "m1".into(),
+            stream: "auto".into(),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(s11b_read_cfg(&th.home)["model_list"][0]["stream"], "");
+    // 未知值 loud 拒绝，盘上保持上次值（auto 空串）。
+    let err = super::run(
+        super::ModelAction::SetStream {
+            name: "m1".into(),
+            stream: "sometimes".into(),
+        },
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("Invalid stream value"));
+    assert_eq!(s11b_read_cfg(&th.home)["model_list"][0]["stream"], "");
+    // 模型不存在诚实报错。
+    let err = super::run(
+        super::ModelAction::SetStream {
+            name: "nope".into(),
+            stream: "yes".into(),
+        },
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("Model not found"));
+}
+
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[tokio::test]
 async fn test_s11b_run_probe_no_config_bails() {
     let _guard = crate::GLOBAL_STATE_LOCK
         .lock()

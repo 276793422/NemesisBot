@@ -89,12 +89,12 @@ fn legacy_cli_array_migrates_to_canonical_jobs() {
     let job = &parsed.jobs[0];
     assert_eq!(job.id, "abc12345");
     assert_eq!(job.name, "old-cli-job");
-    assert_eq!(job.enabled, false, "旧条目的 enabled 必须保留");
+    assert!(!job.enabled, "旧条目的 enabled 必须保留");
     assert_eq!(job.schedule.kind, "every", "旧 kind=interval 映射为 every");
     assert_eq!(job.schedule.every_ms, Some(60000));
     assert_eq!(job.payload.kind, "agent_turn");
     assert_eq!(job.payload.message, "do the thing");
-    assert_eq!(job.payload.deliver, true);
+    assert!(job.payload.deliver);
     assert_eq!(job.payload.to.as_deref(), Some("user1"));
     assert_eq!(job.payload.channel.as_deref(), Some("web"));
     assert!(job.state.history.is_empty(), "迁移条目从零历史开始");

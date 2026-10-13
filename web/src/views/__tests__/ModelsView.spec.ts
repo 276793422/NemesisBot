@@ -156,3 +156,46 @@ describe('ModelsView 图像协议条目（职能框架 M6）', () => {
     w.unmount()
   })
 })
+
+// ---------------------------------------------------------------------------
+// per-model 流式开关（2026-10-13 stream 键）：add 表单与属性编辑器的三档
+// 下拉（''=auto / yes / no），值集与后端 normalize_stream_value 一致；
+// 属性编辑器 seed 自条目 stream 值并带构造期生效标注。
+describe('ModelsView 流式开关（stream 键 UI）', () => {
+  it('新建表单流式开关下拉含三档，默认 auto', async () => {
+    const w = await mountView([modelRow({ model_name: 'glm', model: 'zhipu/glm-4.7' })])
+    const addBtn = w.findAll('button').find((b) => b.text().includes('添加模型'))
+    if (addBtn) await addBtn.trigger('click')
+    await flushPromises()
+    const group = w.findAll('.form-group').find((g) => g.find('.form-label').text() === '流式开关')
+    expect(group).toBeDefined()
+    const sel = group!.find('select')
+    expect(sel.exists()).toBe(true)
+    const values = sel.findAll('option').map((o) => (o.element as HTMLOptionElement).value)
+    expect(values).toEqual(['', 'yes', 'no'])
+    expect((sel.element as HTMLSelectElement).value).toBe('')
+    w.unmount()
+  })
+
+  it('属性编辑器流式开关下拉：seed 自条目 stream 值 + 生效标注', async () => {
+    const w = await mountView([
+      modelRow({ model_name: 'glm', model: 'zhipu/glm-4.7', stream: 'yes' }),
+    ])
+    const attrBtn = w.findAll('button').find((b) => b.text() === '属性')
+    expect(attrBtn).toBeDefined()
+    await attrBtn!.trigger('click')
+    await flushPromises()
+    const editor = w.find('.attr-editor')
+    expect(editor.exists()).toBe(true)
+    const field = editor
+      .findAll('.attr-field')
+      .find((f) => f.find('.form-label').text() === '流式开关')
+    expect(field).toBeDefined()
+    const sel = field!.find('select')
+    const values = sel.findAll('option').map((o) => (o.element as HTMLOptionElement).value)
+    expect(values).toEqual(['', 'yes', 'no'])
+    expect((sel.element as HTMLSelectElement).value).toBe('yes')
+    expect(field!.find('.attr-effect').text()).toContain('重新设为默认时生效')
+    w.unmount()
+  })
+})

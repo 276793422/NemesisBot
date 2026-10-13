@@ -24,6 +24,8 @@ interface Model {
   protocol?: string | null
   model_tier?: string | null
   reasoning_effort?: string | null
+  // per-model 流式开关（2026-10-13 stream 键；null/缺省 = auto）。
+  stream?: string | null
   model_size_b?: number | string | null
   real_name?: string | null
   context_window?: number | string | null
@@ -35,9 +37,9 @@ interface Model {
 const models = ref<Model[]>([])
 const loading = ref(true)
 const showAdd = ref(false)
-// Backend add expects: name, model, key, base_url?, proxy?, protocol?
+// Backend add expects: name, model, key, base_url?, proxy?, protocol?, stream?
 // protocol = LLM 协议选择器：新建条目默认 Claude（anthropic）。
-const addForm = ref({ name: '', model: '', key: '', base_url: '', proxy: '', protocol: 'anthropic' })
+const addForm = ref({ name: '', model: '', key: '', base_url: '', proxy: '', protocol: 'anthropic', stream: '' })
 
 // 协议类型下拉选项（值集与后端 normalize_model_protocol 一致）。
 const PROTOCOL_OPTIONS = [
@@ -47,6 +49,12 @@ const PROTOCOL_OPTIONS = [
   // 职能框架 M4/M6：图像生成 lane——仅供 generate_image 工具消费，
   // 后端四处守卫（CLI add --default / probe / set_default / factory）拒绝其作对话模型。
   { value: 'images-openai', label: '图像生成（OpenAI images）·仅供 generate_image 工具' },
+]
+// 流式开关下拉选项（值集与后端 normalize_stream_value 一致；'' = auto）。
+const STREAM_OPTIONS = [
+  { value: '', label: 'auto（跟随 lane 默认）' },
+  { value: 'yes', label: '强制流式' },
+  { value: 'no', label: '强制非流式' },
 ]
 // 图像协议条目判定（卡片徽标 + 设为默认禁用）。
 function isImageModel(m: { protocol?: string | null }): boolean {
@@ -64,6 +72,7 @@ interface AttrDraft {
   realName: string
   ctx: string
   protocol: string // '' = 自动识别（按名称前缀）
+  stream: string // '' = auto（跟随 lane 默认）
 }
 const attrDrafts = ref<Record<string, AttrDraft>>({})
 
@@ -189,6 +198,7 @@ function toggleAttrs(m: Model) {
       realName: m.real_name || '',
       ctx: m.context_window != null ? String(m.context_window) : '',
       protocol: m.protocol || '',
+      stream: m.stream || '',
     }
   }
   expandedAttrs.value = s
@@ -207,6 +217,7 @@ function dirtyFields(m: Model): string[] {
   const ctxStr = m.context_window != null ? String(m.context_window) : ''
   if (ctxStr !== d.ctx.trim()) out.push('context_window')
   if ((m.protocol || '') !== d.protocol) out.push('protocol')
+  if ((m.stream || '') !== d.stream) out.push('stream')
   return out
 }
 
@@ -220,6 +231,7 @@ const FIELD_EFFECT: Record<string, string> = {
   real_name: 'auto 档下即时生效（别名识别真名）',
   context_window: '保存后生效（上下文预算依据）',
   protocol: '重新设为默认时生效；或重启后生效',
+  stream: '重新设为默认时生效；或重启后生效',
 }
 
 /** P3-2: 保存属性 — 逐字段走后端 raw-JSON RMW（保留 config.json 其余键）。 */
@@ -239,6 +251,7 @@ async function saveAttrs(m: Model) {
     real_name: d.realName.trim(),
     context_window: d.ctx.trim() === '' ? null : Number(d.ctx.trim()),
     protocol: d.protocol, // 空串 = 自动识别（后端接受空串清除，非 null）
+    stream: d.stream, // 空串 = auto（后端接受空串清除，非 null）
   }
   // v1 不支持写 null：清空场景跳过该字段，保存名单只含真正落盘的字段，
   // toast 如实反映（不能宣称保存了实际没写的字段）。
@@ -269,6 +282,7 @@ async function saveAttrs(m: Model) {
       realName: fresh.real_name || '',
       ctx: fresh.context_window != null ? String(fresh.context_window) : '',
       protocol: fresh.protocol || '',
+      stream: fresh.stream || '',
     }
   }
 }
@@ -294,10 +308,11 @@ async function addModel() {
     if (addForm.value.base_url) payload.base_url = addForm.value.base_url
     if (addForm.value.proxy) payload.proxy = addForm.value.proxy
     payload.protocol = addForm.value.protocol
+    if (addForm.value.stream) payload.stream = addForm.value.stream // 缺省不传 = auto
     await request('models', 'add', payload)
     toast.success('模型已添加')
     showAdd.value = false
-    addForm.value = { name: '', model: '', key: '', base_url: '', proxy: '', protocol: 'anthropic' }
+    addForm.value = { name: '', model: '', key: '', base_url: '', proxy: '', protocol: 'anthropic', stream: '' }
     await loadModels()
   } catch (e: any) {
     toast.error('添加失败: ' + e)
@@ -418,6 +433,12 @@ onMounted(() => {
                 <option v-for="p in PROTOCOL_OPTIONS" :key="p.value" :value="p.value">{{ p.label }}</option>
               </select>
             </div>
+            <div class="form-group">
+              <label class="form-label">流式开关</label>
+              <select class="form-input" v-model="addForm.stream">
+                <option v-for="s in STREAM_OPTIONS" :key="s.value" :value="s.value">{{ s.label }}</option>
+              </select>
+            </div>
           </div>
           <div class="form-group" style="margin-top: var(--space-3);">
             <label class="form-label">代理</label>
@@ -500,7 +521,7 @@ onMounted(() => {
               💡 {{ healthByName[m.model_name].hint }}
             </p>
           </div>
-          <!-- P3-2: 属性编辑展开区（tier / effort / 参数量 / 真名 / context_window / protocol） -->
+          <!-- P3-2: 属性编辑展开区（tier / effort / 参数量 / 真名 / context_window / protocol / stream） -->
           <div v-if="expandedAttrs.has(m.model_name) && attrDrafts[m.model_name]" class="attr-editor">
             <div class="attr-grid">
               <div class="attr-field">
@@ -510,6 +531,13 @@ onMounted(() => {
                   <option v-for="p in PROTOCOL_OPTIONS" :key="p.value" :value="p.value">{{ p.label }}</option>
                 </select>
                 <span class="attr-effect">{{ FIELD_EFFECT['protocol'] }}</span>
+              </div>
+              <div class="attr-field">
+                <label class="form-label">流式开关</label>
+                <select class="form-input" v-model="attrDrafts[m.model_name].stream">
+                  <option v-for="s in STREAM_OPTIONS" :key="s.value" :value="s.value">{{ s.label }}</option>
+                </select>
+                <span class="attr-effect">{{ FIELD_EFFECT['stream'] }}</span>
               </div>
               <div class="attr-field">
                 <label class="form-label">能力档 tier</label>

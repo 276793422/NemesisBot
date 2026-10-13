@@ -3287,6 +3287,7 @@ fn test_discovered_node_empty_addresses_known_peer_identity_merge_preserves_addr
         "agent",
         Vec::new(),
         Some("big".into()),
+        None, // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
     );
     assert!(
         changed,
@@ -3326,6 +3327,7 @@ fn test_discovered_node_empty_addresses_unknown_peer_still_registered_bridge_sem
         "agent",
         Vec::new(),
         None,
+        None, // 桥接成员登记：无 source_addr
     );
     assert!(changed, "bridge member with empty addresses must register");
     let node = cluster.registry.get("ghost-peer").expect("registered");
