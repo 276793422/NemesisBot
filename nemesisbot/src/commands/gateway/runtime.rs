@@ -710,42 +710,53 @@ pub(crate) async fn run_runtime(
                 let home_for_start = home.clone();
                 let ca_start = ca.clone();
                 tray.set_on_cluster_start(Box::new(move || {
-                    // Write config.json cluster.enabled = true
-                    let cfg_path = home_for_start.join("config.json");
-                    if let Ok(content) = std::fs::read_to_string(&cfg_path)
-                        && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
+                    // 写串行锁罩两个 config RMW（同类横扫四期，2026-10-13）：
+                    // 本回调与 Dashboard 任意 config 写臂（update_config/
+                    // update_raw_config/update_json_file 同族）互斥——裸 RMW
+                    // 的整份快照写回会冲掉并发写臂的字段，反之亦然。锁块只
+                    // 罩文件写段，cluster start() 在锁外（不得长时间占锁）。
                     {
-                        if cfg.get("cluster").is_none() {
-                            cfg["cluster"] = serde_json::json!({});
+                        let _cfg_serial = nemesis_config::config_write_lock();
+                        // Write config.json cluster.enabled = true
+                        let cfg_path = home_for_start.join("config.json");
+                        if let Ok(content) = std::fs::read_to_string(&cfg_path)
+                            && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
+                        {
+                            if cfg.get("cluster").is_none() {
+                                cfg["cluster"] = serde_json::json!({});
+                            }
+                            if let Some(obj) =
+                                cfg.get_mut("cluster").and_then(|c| c.as_object_mut())
+                            {
+                                obj.insert("enabled".to_string(), serde_json::json!(true));
+                                if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
+                                    // REL-002：统一原子写入（cluster enable 开关写主配置）。
+                                    let _ = nemesis_utils::write_file_atomic(
+                                        &cfg_path.to_string_lossy(),
+                                        updated.as_bytes(),
+                                        0o600,
+                                    );
+                                }
+                            }
                         }
-                        if let Some(obj) = cfg.get_mut("cluster").and_then(|c| c.as_object_mut()) {
+                        // Write config.cluster.json enabled = true
+                        let cluster_cfg_path =
+                            nemesis_path::resolve_cluster_config_path_in_workspace(
+                                &common::workspace_path(&home_for_start),
+                            );
+                        if let Ok(content) = std::fs::read_to_string(&cluster_cfg_path)
+                            && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
+                            && let Some(obj) = cfg.as_object_mut()
+                        {
                             obj.insert("enabled".to_string(), serde_json::json!(true));
                             if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
-                                // REL-002：统一原子写入（cluster enable 开关写主配置）。
+                                // REL-002：统一原子写入（config.cluster.json 含 token）。
                                 let _ = nemesis_utils::write_file_atomic(
-                                    &cfg_path.to_string_lossy(),
+                                    &cluster_cfg_path.to_string_lossy(),
                                     updated.as_bytes(),
                                     0o600,
                                 );
                             }
-                        }
-                    }
-                    // Write config.cluster.json enabled = true
-                    let cluster_cfg_path = nemesis_path::resolve_cluster_config_path_in_workspace(
-                        &common::workspace_path(&home_for_start),
-                    );
-                    if let Ok(content) = std::fs::read_to_string(&cluster_cfg_path)
-                        && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
-                        && let Some(obj) = cfg.as_object_mut()
-                    {
-                        obj.insert("enabled".to_string(), serde_json::json!(true));
-                        if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
-                            // REL-002：统一原子写入（config.cluster.json 含 token）。
-                            let _ = nemesis_utils::write_file_atomic(
-                                &cluster_cfg_path.to_string_lossy(),
-                                updated.as_bytes(),
-                                0o600,
-                            );
                         }
                     }
                     if let Err(e) = ca_start.start() {
@@ -759,38 +770,44 @@ pub(crate) async fn run_runtime(
                     if let Err(e) = ca_stop.stop() {
                         tracing::warn!("[Gateway] Tray: failed to stop cluster: {}", e);
                     }
-                    // Write config.cluster.json enabled = false
-                    let cluster_cfg_path = nemesis_path::resolve_cluster_config_path_in_workspace(
-                        &common::workspace_path(&home_for_stop),
-                    );
-                    if let Ok(content) = std::fs::read_to_string(&cluster_cfg_path)
-                        && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
-                        && let Some(obj) = cfg.as_object_mut()
+                    // 写串行锁罩两个 config RMW（同 start 回调，2026-10-13）。
                     {
-                        obj.insert("enabled".to_string(), serde_json::json!(false));
-                        if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
-                            // REL-002：统一原子写入（config.cluster.json 含 token）。
-                            let _ = nemesis_utils::write_file_atomic(
-                                &cluster_cfg_path.to_string_lossy(),
-                                updated.as_bytes(),
-                                0o600,
+                        let _cfg_serial = nemesis_config::config_write_lock();
+                        // Write config.cluster.json enabled = false
+                        let cluster_cfg_path =
+                            nemesis_path::resolve_cluster_config_path_in_workspace(
+                                &common::workspace_path(&home_for_stop),
                             );
+                        if let Ok(content) = std::fs::read_to_string(&cluster_cfg_path)
+                            && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
+                            && let Some(obj) = cfg.as_object_mut()
+                        {
+                            obj.insert("enabled".to_string(), serde_json::json!(false));
+                            if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
+                                // REL-002：统一原子写入（config.cluster.json 含 token）。
+                                let _ = nemesis_utils::write_file_atomic(
+                                    &cluster_cfg_path.to_string_lossy(),
+                                    updated.as_bytes(),
+                                    0o600,
+                                );
+                            }
                         }
-                    }
-                    // Write config.json cluster.enabled = false
-                    let cfg_path = home_for_stop.join("config.json");
-                    if let Ok(content) = std::fs::read_to_string(&cfg_path)
-                        && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
-                        && let Some(obj) = cfg.get_mut("cluster").and_then(|c| c.as_object_mut())
-                    {
-                        obj.insert("enabled".to_string(), serde_json::json!(false));
-                        if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
-                            // REL-002：统一原子写入。
-                            let _ = nemesis_utils::write_file_atomic(
-                                &cfg_path.to_string_lossy(),
-                                updated.as_bytes(),
-                                0o600,
-                            );
+                        // Write config.json cluster.enabled = false
+                        let cfg_path = home_for_stop.join("config.json");
+                        if let Ok(content) = std::fs::read_to_string(&cfg_path)
+                            && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
+                            && let Some(obj) =
+                                cfg.get_mut("cluster").and_then(|c| c.as_object_mut())
+                        {
+                            obj.insert("enabled".to_string(), serde_json::json!(false));
+                            if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
+                                // REL-002：统一原子写入。
+                                let _ = nemesis_utils::write_file_atomic(
+                                    &cfg_path.to_string_lossy(),
+                                    updated.as_bytes(),
+                                    0o600,
+                                );
+                            }
                         }
                     }
                 }));
