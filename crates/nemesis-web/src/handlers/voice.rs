@@ -1368,6 +1368,8 @@ impl VoiceHandler {
         config_dir: &std::path::Path,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
+        // 写串行锁：read→合并 11 字段→写回 = RMW（同类横扫 2026-10-13）。
+        let _cfg_serial = nemesis_config::config_write_lock();
         let path = ensure_voice_config(config_dir);
         let mut current = read_voice_config(config_dir);
 
@@ -2192,7 +2194,10 @@ impl VoiceHandler {
             manager.remove(&name); // Remove existing if re-registering
             manager.register(&name, &embedding);
 
-            // Persist to config.voice.print.json
+            // Persist to config.voice.print.json（写串行锁：读→改→写 = RMW，
+            // 与 speaker_remove/set_threshold 等写臂互斥；此时持有 speaker
+            // 状态锁，锁序恒为 speaker→config，无反向路径无死锁）
+            let _cfg_serial = nemesis_config::config_write_lock();
             let mut vp_cfg = read_voiceprint_config(config_dir);
             if vp_cfg.get("speakers").is_none() {
                 vp_cfg["speakers"] = serde_json::json!({});
@@ -2248,6 +2253,8 @@ impl VoiceHandler {
                 manager.remove(name);
             }
         }
+        // 写串行锁：读→删→写 = RMW（同类横扫 2026-10-13）。
+        let _cfg_serial = nemesis_config::config_write_lock();
         let mut vp_cfg = read_voiceprint_config(config_dir);
         if let Some(speakers) = vp_cfg.get_mut("speakers").and_then(|v| v.as_object_mut()) {
             speakers.remove(name);
@@ -2287,6 +2294,8 @@ impl VoiceHandler {
             return Err("Threshold must be between 0.0 and 1.0".to_string());
         }
         *speaker_threshold_state().lock().unwrap() = threshold;
+        // 写串行锁：读→改→写 = RMW（同类横扫 2026-10-13）。
+        let _cfg_serial = nemesis_config::config_write_lock();
         let mut vp_cfg = read_voiceprint_config(config_dir);
         vp_cfg["threshold"] = serde_json::json!(threshold);
         write_voiceprint_config(config_dir, &vp_cfg)?;

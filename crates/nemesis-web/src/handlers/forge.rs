@@ -449,6 +449,10 @@ impl ForgeHandler {
             .and_then(|v| v.as_str())
             .ok_or("missing 'status' field")?;
 
+        // registry.json 是 load→改→写 RMW（并发 registry_update 后写覆盖先写
+        // 丢状态翻转），与 config 同族文件共用写串行锁（2026-10-13）。
+        let _cfg_serial = nemesis_config::config_write_lock();
+
         let registry_file = forge_dir(workspace).join("registry.json");
         if !registry_file.exists() {
             return Err("registry not found".to_string());
@@ -597,6 +601,7 @@ impl ForgeHandler {
             .and_then(|v| v.as_bool())
             .ok_or("missing or invalid 'enabled' field")?;
 
+        let _cfg_serial = nemesis_config::config_write_lock();
         let mut config = load_config(home)?;
         let forge = config.forge.get_or_insert_with(Default::default);
         let was_enabled = forge.enabled;
@@ -671,6 +676,10 @@ impl ForgeHandler {
             .get("enabled")
             .and_then(|v| v.as_bool())
             .ok_or("missing 'enabled' field")?;
+
+        // 锁覆盖 config.forge.json 的 RMW（load→改 learning.enabled→写回），
+        // 与 config_save 等写臂互斥（同族配置写串行锁，2026-10-13）。
+        let _cfg_serial = nemesis_config::config_write_lock();
 
         // Ensure config.forge.json exists — auto-create from defaults if missing.
         let forge_config_path =
