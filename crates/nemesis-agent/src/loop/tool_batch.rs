@@ -906,10 +906,11 @@ impl AgentLoop {
         }
 
         // N2（机会项）：present_plan verdict 消费（批次边界，单一消费点）。
+        // 按 session_key 取走本会话的裁决（跨会话 turn 并发不串台）。
         // 驳回/超时 = 本轮结构性终止（模型不再获得下一轮，工具结果文本已落
         // 历史，下条用户消息可见）；批准 = 模式已在工具内翻转，落回正常轮。
         if let Some(handle) = self.plan_present.read().clone()
-            && let Some(verdict) = handle.verdict.lock().take()
+            && let Some(verdict) = handle.verdicts.lock().remove(&context.session_key)
         {
             match verdict {
                 crate::loop_tools::PlanPresentVerdict::Approved => {}

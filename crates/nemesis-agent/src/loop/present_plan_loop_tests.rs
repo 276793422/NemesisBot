@@ -126,7 +126,7 @@ async fn pp_harness(broker_outcome: QuestionOutcome, after: Vec<LlmResponse>) ->
             as StdArc<dyn QuestionAsker>))),
         mode: al.mode_arc(),
         agent_event_tx: Some(etx),
-        verdict: StdArc::new(parking_lot::Mutex::new(None)),
+        verdicts: StdArc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
     });
     al.set_plan_present_handle(shared.clone());
     al.register_tool(
@@ -196,8 +196,14 @@ async fn approve_continues_loop_and_flips_build() {
     );
     // mode 已翻 build。
     assert_eq!(h.loop_handle.mode(), crate::types::AgentMode::Build);
-    // verdict 已被批次尾消费（take 清空）。
-    assert_eq!(*h.shared.verdict.lock(), None);
+    // verdict 已被批次尾消费（remove 清空）。
+    assert!(
+        h.shared
+            .verdicts
+            .lock()
+            .get("agent:main:session:pp")
+            .is_none()
+    );
     // ModeChanged 广播（build）。
     let mut saw_build = false;
     while let Ok(ev) = h.events.try_recv() {
@@ -229,7 +235,13 @@ async fn reject_stops_turn_structurally() {
     // mode 不动（仍 plan）。
     assert_eq!(h.loop_handle.mode(), crate::types::AgentMode::Plan);
     // verdict 消费后清空（不留跨轮脏态）。
-    assert_eq!(*h.shared.verdict.lock(), None);
+    assert!(
+        h.shared
+            .verdicts
+            .lock()
+            .get("agent:main:session:pp")
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -245,7 +257,13 @@ async fn timeout_stops_turn_like_reject() {
     let done = done_text(&events).expect("停轮必须有 Done");
     assert!(done.contains("⏱") && done.contains("超时"), "done: {done}");
     assert_eq!(h.loop_handle.mode(), crate::types::AgentMode::Plan);
-    assert_eq!(*h.shared.verdict.lock(), None);
+    assert!(
+        h.shared
+            .verdicts
+            .lock()
+            .get("agent:main:session:pp")
+            .is_none()
+    );
 }
 
 // ---------------------------------------------------------------------------
