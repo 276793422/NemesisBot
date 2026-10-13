@@ -40,6 +40,16 @@ fn broker_with_events() -> (
 }
 
 /// 在独立线程发起提问（模拟工具 spawn_blocking 上下文）。
+///
+/// §2 免打扰短路测试会置换进程级 APPROVAL_AUTO 槽（nemesis-web 全局态）
+/// ——所有 ask 路径统一在 crate 级 APPROVAL_AUTO_SLOT_LOCK 下跑（board_bus
+/// 置换测试同锁），避免与置换窗口交叠 flake。
+fn slot_lock() -> std::sync::MutexGuard<'static, ()> {
+    crate::APPROVAL_AUTO_SLOT_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
 fn ask_async(
     broker: std::sync::Arc<WebQuestionBroker>,
     id: &str,
@@ -52,6 +62,7 @@ fn ask_async(
         r
     };
     std::thread::spawn(move || {
+        let _serial = slot_lock();
         let _ = tx.send(broker.ask(req));
     });
     rx
@@ -68,8 +79,20 @@ fn wait_pending(broker: &WebQuestionBroker, want: usize) {
     panic!("pending did not reach {} in time", want);
 }
 
+/// 有界等待广播事件（正常毫秒级到达）。超时即 panic 带定性提示，而不是让
+/// 整条 libtest 永久挂起——run3 实证：APPROVAL_AUTO enabled 态外借窗口把
+/// 并行 ask 短路成 Timeout（不广播），无界 recv 就把全套件拖死（dump 级
+/// 定案，2026-10-13）；挂死远比断言红难排查。
 async fn recv_scoped<T>(rx: &mut tokio::sync::mpsc::Receiver<T>) -> T {
-    rx.recv().await.unwrap()
+    tokio::time::timeout(Duration::from_secs(15), rx.recv())
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "广播事件 15s 未到达：疑 APPROVAL_AUTO enabled 槽被并行置换窗口外借，\
+                 ask 被短路成 Timeout 不广播（置换纪律见 auto_approve_on 注释）"
+            )
+        })
+        .unwrap()
 }
 
 #[test]
@@ -95,6 +118,7 @@ fn multi_select_flow_delivers_all_selections() {
     let (tx, rx) = mpsc::channel();
     let b = broker.clone();
     std::thread::spawn(move || {
+        let _serial = slot_lock();
         let _ = tx.send(b.ask(make_req("q-multi", true)));
     });
     wait_pending(&broker, 1);
@@ -233,7 +257,10 @@ async fn broadcast_carries_ask_payload_and_resolved_on_answer_and_timeout() {
 async fn ask_in_tokio_context_uses_block_in_place_and_still_resolves() {
     let broker = std::sync::Arc::new(WebQuestionBroker::new(None));
     let b2 = broker.clone();
-    let waiter = tokio::spawn(async move { b2.ask(make_req("q-bip", false)) });
+    let waiter = tokio::spawn(async move {
+        let _serial = slot_lock();
+        b2.ask(make_req("q-bip", false))
+    });
     for _ in 0..100 {
         if !broker.pending().is_empty() {
             break;
@@ -245,4 +272,65 @@ async fn ask_in_tokio_context_uses_block_in_place_and_still_resolves() {
         QuestionOutcome::Answered(sel) => assert_eq!(sel, vec!["pnpm".to_string()]),
         QuestionOutcome::Timeout => panic!("answered flow must not yield Timeout"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// §2 免打扰（2026-10-11 无人值守计划 Part 2）：开关开 = 提问短路超时语义
+// ---------------------------------------------------------------------------
+
+/// 置换窗口守卫：装 enabled 态，Drop 时恢复 Some(disabled)——对一切生产
+/// 消费方行为等价未装配（都查 enabled()）。守卫是必需的而非装饰：窗口内
+/// panic 若把进程级槽留在 enabled，会毒化后续所有 ask 路径测试（run2 实证
+/// ——1 测窗口内 panic → 5 测失败 + broadcast_carries 永久挂起）。
+struct AutoApproveSwapGuard;
+
+impl AutoApproveSwapGuard {
+    fn install() -> Self {
+        nemesis_web::handlers::security::install_auto_approve(std::sync::Arc::new(
+            nemesis_security::approval_auto::ApprovalAutoApproveState::new(true),
+        ));
+        AutoApproveSwapGuard
+    }
+}
+
+impl Drop for AutoApproveSwapGuard {
+    fn drop(&mut self) {
+        nemesis_web::handlers::security::install_auto_approve(std::sync::Arc::new(
+            nemesis_security::approval_auto::ApprovalAutoApproveState::new(false),
+        ));
+    }
+}
+
+#[test]
+fn auto_approve_on_short_circuits_ask_to_timeout_without_pending() {
+    let _serial = slot_lock();
+    let _swapped = AutoApproveSwapGuard::install();
+    // 直连 broadcast 接收端（try_recv 同步可用）——不走 broker_with_events
+    // 的 tokio::spawn forwarder（同步 #[test] 无运行时上下文，spawn 必
+    // panic，且 panic 点在 restore 之前会泄漏 enabled 槽）。
+    let (btx, mut brx) = tokio::sync::broadcast::channel::<AgentEvent>(16);
+    let broker = std::sync::Arc::new(WebQuestionBroker::new(Some(btx)));
+
+    let outcome = broker
+        .ask(make_req("q-auto", false))
+        .expect("short-circuit must not error");
+    // 锁必须持到函数结束：局部变量逆序 drop 保证 `_swapped`（enabled 态
+    // 守卫）先恢复、`_serial` 后释放，置换窗口全程被锁覆盖。提前 drop 锁
+    // 会留下「锁已空闲但 enabled 仍在装」的窗口，并行 ask 路径测试撞进短
+    // 路分支（不广播不登记）→ broadcast_carries 挂死（run3 实证，dump 级
+    // 定案 2026-10-13）。
+
+    assert_eq!(
+        outcome,
+        QuestionOutcome::Timeout,
+        "免打扰开：提问必须短路成超时语义（模型按最佳判断继续）"
+    );
+    assert!(
+        broker.pending().is_empty(),
+        "短路路径不得进 pending（无人值守不欠人一张卡）"
+    );
+    // 不广播提问事件（无 SSE 卡片数据源）。
+    assert!(brx.try_recv().is_err(), "短路路径不得广播 QuestionAsked");
+    // 迟到 respond 诚实报 unknown（请求从未登记）。
+    assert!(broker.respond("q-auto", vec!["pnpm".into()]).is_err());
 }

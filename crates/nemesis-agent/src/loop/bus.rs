@@ -151,6 +151,8 @@ impl AgentLoop {
                 approval_responder: parking_lot::RwLock::new(None),
                 question_responder: parking_lot::RwLock::new(None),
                 question_asker: parking_lot::RwLock::new(None),
+                #[cfg(feature = "security")]
+                approval_auto: parking_lot::RwLock::new(None),
             },
             mcp_manager: None,
             mcp_tool_snapshot: Arc::new(parking_lot::RwLock::new(Vec::new())),
@@ -212,6 +214,8 @@ impl AgentLoop {
             small_model: parking_lot::RwLock::new(None),
             spawn_slot: parking_lot::RwLock::new(None),
             voice_prompt: parking_lot::RwLock::new(None),
+            token_budget: crate::token_budget::SessionTokenBudgetLedger::default(),
+            escalated_floors: parking_lot::Mutex::new(HashMap::new()),
             turn_wal: parking_lot::RwLock::new(None),
         }
     }

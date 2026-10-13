@@ -199,6 +199,58 @@ pub fn extract_http_status(msg: &str) -> Option<u16> {
     None
 }
 
+/// 错误 source 链全文拼接（"top: source1: source2: …"）。给 failover 层
+/// 包装错误时用——reqwest 顶层 Display 只有 "error sending request for url
+/// (…)"，连接拒绝/不可达的判定词（"connection refused" / "os error 10061"
+/// 等，见 [`is_connect_error`] 词表）在 source 链深处，必须整链保留封存
+/// 判定才可见。
+pub fn error_chain_msg(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut msg = e.to_string();
+    let mut src = std::error::Error::source(e);
+    while let Some(s) = src {
+        msg.push_str(": ");
+        msg.push_str(&s.to_string());
+        src = s.source();
+    }
+    msg
+}
+
+/// 连接建立类失败判定（U-B 2026-10-12 端点不可用封存专用；**不进**
+/// [`LlmErrorClass`]——failover 语义里连接失败≈Timeout 可重试，但封存判定
+/// 必须区分「连接建立失败」与「慢模型跑满超时」：前者=端点死了值得封存，
+/// 后者=端点活着只是慢，计入会误封存）。
+///
+/// 纯文本启发式：reqwest 错误 Display 自带一层 source（"error sending
+/// request for url (...): tcp connect error"），连接建立失败的词表在此层
+/// 可见。裸 "error sending request" **不收录**——超时错误同形，会误判。
+/// tests 用真实 reqwest 连接失败钉住 Display 形态。
+pub fn is_connect_error(msg: &str) -> bool {
+    let msg = msg.to_lowercase();
+    const PATTERNS: &[&str] = &[
+        // reqwest/hyper 连接建立层
+        "error trying to connect",
+        "tcp connect error",
+        "connect error",
+        // OS 连接拒绝/不可达（Windows WSA + Linux errno，Display 常态保留）
+        "connection refused",
+        "os error 10061", // WSAECONNREFUSED
+        "os error 111",   // ECONNREFUSED
+        "os error 10060", // WSAETIMEDOUT（连接尝试失败——主机不可达形态，非慢响应）
+        "os error 113",   // EHOSTUNREACH
+        "host unreachable",
+        "network unreachable",
+        "no route to host",
+        // DNS 解析失败
+        "dns error",
+        "failed to lookup",
+        "name or service not known",
+        "temporary failure in name resolution",
+        "no address associated with hostname",
+        "failed to resolve",
+    ];
+    PATTERNS.iter().any(|p| msg.contains(p))
+}
+
 fn contains_any(msg: &str, patterns: &[&str]) -> bool {
     patterns.iter().any(|p| msg.contains(p))
 }

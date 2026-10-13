@@ -219,3 +219,43 @@ func TestBoardUatUiTextArm(t *testing.T) {
 		t.Fatalf("text arm must deliver anchor text, got %s", got)
 	}
 }
+
+// TestBoardPeerChatMachine soak peer_chat 对话机（campaign 48h soak）：
+// 轮1 <PEER_CHAT> 标记 → cluster_rpc 工具调用（target/message 对齐 schema）；
+// 轮2 tool 结果 + 历史含标记 → 固定前缀转述；标记缺失/JSON 非法不劫持既有分支。
+func TestBoardPeerChatMachine(t *testing.T) {
+	m := NewTestAIBoard()
+
+	// 轮1：标记 → cluster_rpc 调用。
+	r1 := m.Process([]Message{
+		{Role: "system", Content: "你是节点助手。"},
+		{Role: "user", Content: "请向对端节点发起一次集群对话。<PEER_CHAT>{\"peer_id\":\"Worker-Linux\",\"content\":\"SOAK-PC 1 请报告节点名\"}</PEER_CHAT> 把对方回复原文转述给我。"},
+	})
+	if !strings.Contains(r1, "cluster_rpc") || !strings.Contains(r1, "Worker-Linux") || !strings.Contains(r1, "SOAK-PC 1") {
+		t.Fatalf("round1 must call cluster_rpc with target+message, got %s", r1)
+	}
+
+	// 轮2：续行（历史含标记 + 末条 tool 结果）→ 固定前缀转述。
+	r2 := m.Process([]Message{
+		{Role: "system", Content: "你是节点助手。"},
+		{Role: "user", Content: "请向对端节点发起一次集群对话。<PEER_CHAT>{\"peer_id\":\"Worker-Linux\",\"content\":\"SOAK-PC 1\"}</PEER_CHAT> 转述。"},
+		{Role: "tool", Content: "收到。当前集群协作状态正常，如需推进任务请继续。"},
+	})
+	if !strings.HasPrefix(r2, "对端回复：") || !strings.Contains(r2, "集群协作状态正常") {
+		t.Fatalf("round2 must relay with fixed prefix, got %s", r2)
+	}
+
+	// 负例：坏 JSON 标记不劫持（落回 <BOARD_ISSUE> 建单分支而非误触发）。
+	r3 := m.Process([]Message{
+		{Role: "user", Content: "<PEER_CHAT>not-json</PEER_CHAT> <BOARD_ISSUE>建单测试</BOARD_ISSUE>"},
+	})
+	if !strings.Contains(r3, "board_issue") || !strings.Contains(r3, "create") {
+		t.Fatalf("bad JSON must not hijack, should fall to board_issue create, got %s", r3)
+	}
+
+	// 负例：无标记的普通对话不受影响（boardAckText）。
+	r4 := m.Process([]Message{{Role: "user", Content: "集群状态如何？"}})
+	if !strings.Contains(r4, boardAckText) {
+		t.Fatalf("plain chat must stay boardAckText, got %s", r4)
+	}
+}

@@ -53,3 +53,146 @@ fn extract_interpreter_payloads_drives_wrapper_scan() {
     // 无旗标解释器调用（脚本文件形态）→ 空。
     assert!(extract_interpreter_payloads(&normalize_exec_command("python script.py")).is_empty());
 }
+
+/// bin_key 取 basename（2026-10-13 复检批）：绝对路径解释器必须命中 WRAPPERS 表，
+/// 否则 `C:\...\cmd.exe /c <恶意载荷>` 会因 key 带目录而漏扫。
+#[test]
+fn extract_interpreter_payloads_full_path_interpreter_hits_wrappers() {
+    // Windows 绝对路径 cmd.exe（normalize 后正斜杠）→ 载荷拆出
+    let win = normalize_exec_command("c:/windows/system32/cmd.exe /c del /q c:/x");
+    assert_eq!(
+        extract_interpreter_payloads(&win),
+        vec!["del /q c:/x"],
+        "全路径 cmd.exe 必须按 basename 命中 WRAPPERS"
+    );
+
+    // POSIX 绝对路径 sh -c → 载荷拆出
+    let sh = normalize_exec_command("/bin/sh -c rm -rf tmp");
+    assert_eq!(
+        extract_interpreter_payloads(&sh),
+        vec!["rm -rf tmp"],
+        "全路径 /bin/sh 必须按 basename 命中 WRAPPERS"
+    );
+
+    // 相对形态含目录（./cmd.exe）同样按 basename 命中
+    let rel = normalize_exec_command("./cmd.exe /c echo hi");
+    assert_eq!(extract_interpreter_payloads(&rel), vec!["echo hi"]);
+}
+
+// ---------------------------------------------------------------------------
+// exec_rule_segments / exec_rule_bucket_match（闭环批 2026-10-13 上移的
+// 单一真相源——auditor 执行管线与 security.rs CLI 预览共用，桶语义在此
+// 钉死：deny=任一段/整串兜底、allow=全段、空段显式不命中、env 逃生堵死）
+// ---------------------------------------------------------------------------
+
+fn deny_match(pattern: &str, target: &str) -> bool {
+    let segs = exec_rule_segments(target);
+    exec_rule_bucket_match("deny", pattern, &normalize_exec_command(target), &segs)
+}
+
+fn allow_match(pattern: &str, target: &str) -> bool {
+    let segs = exec_rule_segments(target);
+    exec_rule_bucket_match("allow", pattern, &normalize_exec_command(target), &segs)
+}
+
+/// deny：任一段命中即拦 + 显式 env 头不构成逃生（整串锚定兜底也剥 env）。
+#[test]
+fn exec_bucket_deny_any_segment_and_env_escape_blocked() {
+    // 基线：非首段命中
+    assert!(deny_match("rm -rf *", "echo hi && rm -rf y"));
+    // env 前缀段：`FOO=1 rm -rf y` 的段剥 env 后命中 `rm -rf *`
+    assert!(
+        deny_match("rm -rf *", "echo hi && FOO=1 rm -rf y"),
+        "env 头不得把段从 deny 眼皮下带走"
+    );
+    // 纯 env 无命令：段剥 env 为空串，`*` 规则（`.*` 匹配空）照拦；
+    // 非 `*` 规则对空段/空串都打不中（deny 不误伤、也不凭空造拦截面）
+    assert!(deny_match("*", "FOO=1"), "空命令仍被 `*` 拦");
+    assert!(!deny_match("cargo *", "FOO=1"), "非 `*` 规则不打空命令");
+}
+
+/// 显式 env 形 deny 规则命中本尊形态（未剥整串臂）：pattern 侧剥 env 的
+/// 只有 target，带 env 头的 pattern 只能靠未剥整串命中其字面输入——§九
+/// D1 F4 声称的三臂联合在上移单一真相源时曾丢失（多角度审计批 D5 抓回、
+/// D8 独立收敛），此锁钉死不丢第二次。
+#[test]
+fn exec_bucket_deny_env_form_pattern_matches_literal_target() {
+    assert!(
+        deny_match(
+            "http_proxy=proxy.corp curl *",
+            "HTTP_PROXY=proxy.corp curl http://evil",
+        ),
+        "显式 env 形 deny 规则必须命中其字面输入形态"
+    );
+    // 未剥臂只朝 pattern 作者写下的字面形态增长拦截面：非 env pattern
+    // 的既有拦截面（剥 env 段/剥 env 整串）不变，纯 env 空命令不误拦。
+    assert!(deny_match("cargo *", "FOO=1 cargo build"));
+    assert!(!deny_match("cargo *", "FOO=1"));
+    assert!(deny_match("*", "FOO=1"));
+}
+
+/// allow：全部段命中才放——任一段不命中即不放；空段集显式不放。
+#[test]
+fn exec_bucket_allow_requires_all_segments() {
+    // 镜像洞基线：`echo hi && cargo publish` 不得被 `cargo *` 整体放行
+    assert!(!allow_match("cargo *", "echo hi && cargo publish"));
+    // 全段命中才放
+    assert!(allow_match("cargo *", "cargo build && cargo test"));
+    // env 头段剥后照常命中（allow 与 deny 同一剥 env 语义）
+    assert!(
+        allow_match("cargo *", "RUSTFLAGS=-g cargo build"),
+        "env 头不得打断合法 allow"
+    );
+    // 空段集（纯操作符）显式不放
+    let segs = exec_rule_segments("&&");
+    assert!(segs.is_empty());
+    assert!(!allow_match("*", "&&"), "空命令不得自动放行");
+}
+
+/// CLI 预览与 auditor 的输入契约：segment 输入须 trim 过——空白段原样
+/// 透传（strip_env_assignments 契约），桶匹配前段已由 command_segments
+/// trim，预览侧不存在空白段输入。
+#[test]
+fn exec_rule_segments_trims_via_command_segments() {
+    let segs = exec_rule_segments("  cargo build  &&  rm x  ");
+    assert_eq!(segs, vec!["cargo build", "rm x"]);
+}
+
+/// D12-2 回归锁：pattern 侧与 target 侧同管道归一化——手写 shell 拟形
+/// deny 规则（引号包裹/多余空白）曾只做小写不剥引号不并空白，对归一化
+/// 后的 target 永不命中 = 静默死规则 fail-open，且安装期零告警。
+#[test]
+fn exec_bucket_pattern_side_normalized_same_pipeline_as_target() {
+    // 引号被 target 侧剥掉：pattern 侧的引号拟形必须照样命中
+    assert!(
+        deny_match("rm \"-rf\" *", "rm -rf /tmp/x"),
+        "引号形 deny 规则不得是死规则"
+    );
+    // 多余空白被 target 侧合并：pattern 侧的多空白形态必须照样命中
+    assert!(
+        deny_match("rm  -rf  *", "rm -rf /tmp/x"),
+        "多空白形 deny 规则不得是死规则"
+    );
+    // allow 同管道：归一化不放宽 allow（引号形 allow 对未带引号命令放行
+    // 是本修复带来的合法对称——规则作者写什么 shell 拟形都等价）
+    assert!(allow_match("cargo   build *", "cargo build --release"));
+}
+
+/// D12-1 回归锁：路径通配转义完备——字面 `.` 曾被当正则任意字符
+/// （`*.key` 命中无点号文件 `testXkey`），`?` 曾被当可选量词。
+#[test]
+fn wildcard_path_pattern_escapes_literal_dot_and_question() {
+    // `.` 字面：`*.key` 不得命中无点号目标
+    assert!(match_pattern("D:/123/*.key", "D:/123/test.key"));
+    assert!(
+        !match_pattern("D:/123/*.key", "D:/123/testXkey"),
+        "字面点号不得当正则任意字符"
+    );
+    // `*` 不跨 `/` 语义保持
+    assert!(!match_pattern("D:/123/*.key", "D:/123/sub/test.key"));
+    // `?` 字面：不再当可选量词漂移匹配集合
+    assert!(
+        !match_pattern("file?.log", "fil.log"),
+        "`?` 不得当可选量词（glob 契约只认 * 与 **）"
+    );
+}

@@ -368,3 +368,89 @@ fn transfer_kinds_stable() {
     assert_eq!(TRANSFER_KIND_EXECUTION_RECORDS, "execution_records");
     assert_eq!(TRANSFER_KIND_PROJECT_BASELINE, "project_baseline");
 }
+
+// ---------------------------------------------------------------------------
+// PR3（2026-10-10 机制加固）：`_debug/` 调试产物双向排除
+// ---------------------------------------------------------------------------
+
+/// `is_debug_artifact` 边界：根级 `_debug` 与 `_debug/` 前缀算；形近名
+/// （`debug`、`_debugger`）与子目录内的 `_debug`（`src/_debug/x`）不算——
+/// 语义钉死为「工作副本根级 `_debug/` 目录」。
+#[test]
+fn is_debug_artifact_boundary() {
+    assert!(super::is_debug_artifact("_debug"));
+    assert!(super::is_debug_artifact("_debug/probe.txt"));
+    assert!(super::is_debug_artifact("_debug/a/b/c.txt"));
+    assert!(!super::is_debug_artifact("debug"));
+    assert!(!super::is_debug_artifact("debug/x"));
+    assert!(!super::is_debug_artifact("_debugger"), "形近名不算");
+    assert!(
+        !super::is_debug_artifact("src/_debug/x"),
+        "子目录内的 _debug 不在根级语义内"
+    );
+}
+
+/// diff_tree 双向排除：工作副本 `_debug/probe.txt` 不进 upserts；基线残留
+/// `_debug/old.txt` 缺失不进 deletions；普通文件改动照常进变更集。
+#[test]
+fn diff_tree_excludes_debug_artifacts_both_ways() {
+    let ws = Ws::new("debugdiff");
+    let exec = exec_dir_for(&ws.root, "t-dbg-1");
+    std::fs::create_dir_all(exec.join("_debug")).unwrap();
+    std::fs::write(exec.join("_debug/probe.txt"), b"probe output\n").unwrap();
+    std::fs::create_dir_all(exec.join("src")).unwrap();
+    std::fs::write(exec.join("src/a.h"), b"alpha-v2\n").unwrap();
+
+    let baseline = vec![
+        TransferFileEntry {
+            path: "src/a.h".into(),
+            size: 8,
+            sha256: sha256_hex(b"alpha-v1"),
+        },
+        // 基线里残留的历史调试产物，工作副本已不存在——不报删除。
+        TransferFileEntry {
+            path: "_debug/old.txt".into(),
+            size: 4,
+            sha256: sha256_hex(b"oldd"),
+        },
+    ];
+    let (upserts, contents, deletions) = super::diff_tree(&exec, &baseline).unwrap();
+    let paths: Vec<&str> = upserts.iter().map(|u| u.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        vec!["src/a.h"],
+        "调试产物不得进 upserts，普通改动照常: {paths:?}"
+    );
+    assert_eq!(contents.len(), 1);
+    assert_eq!(contents[0].path, "src/a.h");
+    assert!(
+        deletions.is_empty(),
+        "基线残留调试产物缺失不得报删除: {deletions:?}"
+    );
+}
+
+/// PR3 端到端钉死：只写 `_debug/` 的工作副本 = 零差异交付（纯记录，不产
+/// 变更集）——过滤在 finish 生产路径生效，不只是孤立函数。
+#[test]
+fn finish_debug_only_tree_is_zero_diff() {
+    let ws = Ws::new("finish-dbgonly");
+    let task = "t-fdb-1";
+    ws.seed_logs(task);
+    let exec = exec_dir_for(&ws.root, task);
+    std::fs::create_dir_all(exec.join("_debug")).unwrap();
+    std::fs::write(exec.join("_debug/probe.txt"), b"probe\n").unwrap();
+    write_sidecar(
+        &exec,
+        &BaselineSidecar {
+            baseline_commit: "b".into(),
+            files: vec![],
+        },
+    )
+    .unwrap();
+
+    let ob = ws.outbox();
+    assert!(finish_task_exec(&ws.root, &ob, task, "node-a").unwrap());
+    let payload = ob.outbox_root().join(task).join("payload");
+    assert!(payload.join("log.md").exists());
+    assert!(read_changeset(&payload).is_none(), "纯调试产物不得产变更集");
+}

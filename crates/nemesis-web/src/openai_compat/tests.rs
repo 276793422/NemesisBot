@@ -124,6 +124,8 @@ impl LlmProvider for ScriptProvider {
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "No more responses".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
@@ -163,6 +165,8 @@ impl nemesis_agent::r#loop::Tool for EchoTool {
 
 fn done_reply(text: &str) -> LlmResponse {
     LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: text.to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -175,6 +179,8 @@ fn done_reply(text: &str) -> LlmResponse {
 
 fn tool_call_reply(name: &str, args: &str) -> LlmResponse {
     LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: String::new(),
         tool_calls: vec![ToolCallInfo {
             id: "tc_1".to_string(),

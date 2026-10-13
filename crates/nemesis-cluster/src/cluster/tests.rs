@@ -716,14 +716,14 @@ fn test_cluster_peer_resolver_returns_peer_info() {
             id: "peer-abc".into(),
             name: "test-peer".into(),
             role: nemesis_types::cluster::NodeRole::Worker,
-            address: "192.168.1.100:21949".into(),
+            address: "203.0.113.10:21949".into(),
             category: "test".into(),
             last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
         tags: Vec::new(),
-        addresses: vec!["192.168.1.100".into(), "10.0.0.5".into()],
+        addresses: vec!["203.0.113.10".into(), "203.0.113.11".into()],
         professions: Vec::new(),
         tier: None,
         node_type: "agent".into(),
@@ -732,12 +732,13 @@ fn test_cluster_peer_resolver_returns_peer_info() {
     let resolver = ClusterPeerResolver {
         registry: cluster.registry.clone(),
         node_id: cluster.node_id.clone(),
+        rpc_port: cluster.rpc_port,
     };
 
     let (addresses, port, is_online) = resolver.get_peer_info("peer-abc").unwrap();
     assert_eq!(addresses.len(), 2);
-    assert!(addresses.contains(&"192.168.1.100".to_string()));
-    assert!(addresses.contains(&"10.0.0.5".to_string()));
+    assert!(addresses.contains(&"203.0.113.10".to_string()));
+    assert!(addresses.contains(&"203.0.113.11".to_string()));
     assert_eq!(port, 21949);
     assert!(is_online);
 }
@@ -748,6 +749,7 @@ fn test_cluster_peer_resolver_unknown_peer() {
     let resolver = ClusterPeerResolver {
         registry: cluster.registry.clone(),
         node_id: cluster.node_id.clone(),
+        rpc_port: cluster.rpc_port,
     };
     assert!(resolver.get_peer_info("unknown-peer").is_none());
 }
@@ -778,6 +780,7 @@ fn test_cluster_peer_resolver_offline_peer() {
     let resolver = ClusterPeerResolver {
         registry: cluster.registry.clone(),
         node_id: cluster.node_id.clone(),
+        rpc_port: cluster.rpc_port,
     };
 
     let (_, _, is_online) = resolver.get_peer_info("offline-peer").unwrap();
@@ -1395,6 +1398,7 @@ fn test_cluster_peer_resolver_node_id() {
     let resolver = ClusterPeerResolver {
         registry: cluster.registry.clone(),
         node_id: cluster.node_id.clone(),
+        rpc_port: cluster.rpc_port,
     };
     assert_eq!(resolver.get_node_id(), "local-node-001");
 }
@@ -1405,6 +1409,7 @@ fn test_cluster_peer_resolver_local_interfaces() {
     let resolver = ClusterPeerResolver {
         registry: cluster.registry.clone(),
         node_id: cluster.node_id.clone(),
+        rpc_port: cluster.rpc_port,
     };
     // Should return the local node's addresses as interfaces
     let interfaces = resolver.get_local_interfaces();
@@ -2403,6 +2408,87 @@ async fn test_poll_recovered_delivery_cb_none_keeps_legacy_confirm() {
     );
 }
 
+// -- N3c（2026-10-12）：not_found 分支走交付回调 ------------------------------
+//
+// worker 重启丢内存任务表 → query_task_result 应答 not_found = 确定性判死
+// 信号。board 派发任务的交付回调（write_back FAILED + in_review + spawn
+// 评审）必须立即触发，不等 dispatch_timeout sweep（否则派发行悬 dispatched
+// 最长 3600s）。worker 端已无副本：不发 confirm。
+
+#[tokio::test]
+async fn test_poll_not_found_invokes_delivery_cb_without_confirm() {
+    let tm = Arc::new(TaskManager::new());
+    let old_time = (chrono::Local::now() - chrono::Duration::minutes(5)).to_rfc3339();
+    tm.submit(Task {
+        id: "nf-cb".to_string(),
+        status: TaskStatus::Pending,
+        action: "peer_chat".to_string(),
+        peer_id: "remote-1".to_string(),
+        payload: serde_json::json!({}),
+        result: None,
+        original_channel: "rpc".to_string(),
+        original_chat_id: "ch".to_string(),
+        created_at: old_time,
+        completed_at: None,
+    })
+    .unwrap();
+
+    let confirm_calls: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let calls_clone = confirm_calls.clone();
+    let call_fn: Option<
+        Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>,
+    > = Some(Arc::new(move |_peer, action, _payload| {
+        if action == "confirm_task_delivery" {
+            calls_clone.lock().push(action.to_string());
+        }
+        let resp = serde_json::json!({"status": "not_found", "task_id": "nf-cb"});
+        Ok(serde_json::to_vec(&resp).unwrap())
+    }));
+
+    let cb_args: Arc<Mutex<Vec<(String, String, String, Option<String>)>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let args_clone = cb_args.clone();
+    let delivery_cb: Arc<dyn Fn(&str, &str, &str, Option<&str>) -> bool + Send + Sync> =
+        Arc::new(move |task_id, status, response, error| {
+            args_clone.lock().push((
+                task_id.to_string(),
+                status.to_string(),
+                response.to_string(),
+                error.map(String::from),
+            ));
+            true
+        });
+
+    poll_stale_pending_tasks(
+        &tm,
+        &call_fn,
+        None,
+        poll_defaults(),
+        None,
+        false,
+        Some(&delivery_cb),
+    )
+    .await;
+
+    // 交付回调必须被调用，形态 = error + not_found 文案（board 写回据此
+    // 走 FAILED + ⛔ 评论 + in_review + spawn 评审链）。
+    let args = cb_args.lock();
+    assert_eq!(args.len(), 1, "not_found 必须触发交付回调（不等 sweep）");
+    assert_eq!(args[0].0, "nf-cb");
+    assert_eq!(args[0].1, "error");
+    assert_eq!(args[0].2, "");
+    assert_eq!(args[0].3.as_deref(), Some("remote task not found"));
+    drop(args);
+
+    // worker 端已无副本：不发 confirm。
+    assert!(
+        confirm_calls.lock().is_empty(),
+        "not_found 无 worker 副本，禁止发 confirm_task_delivery"
+    );
+    // 任务本地判死（与交付回调解耦，对齐 done 分支语义）。
+    assert_eq!(tm.get_task("nf-cb").unwrap().status, TaskStatus::Failed);
+}
+
 #[tokio::test]
 async fn test_poll_stale_pending_tasks_stale_with_running_response() {
     let tm = Arc::new(TaskManager::new());
@@ -2708,6 +2794,7 @@ fn test_cluster_peer_resolver_empty_addresses() {
     let resolver = ClusterPeerResolver {
         registry: cluster.registry.clone(),
         node_id: cluster.node_id.clone(),
+        rpc_port: cluster.rpc_port,
     };
 
     // Should fall back to parsing primary address
@@ -2745,10 +2832,15 @@ fn test_cluster_peer_resolver_empty_primary_address() {
     let resolver = ClusterPeerResolver {
         registry: cluster.registry.clone(),
         node_id: cluster.node_id.clone(),
+        rpc_port: cluster.rpc_port,
     };
 
-    let (addresses, _, _) = resolver.get_peer_info("empty-addr").unwrap();
-    assert!(addresses.is_empty());
+    // 零候选 → None（闭环批 2026-10-13：Some(空池) 会让拨号方对 "" 空拨
+    // 一次、错误文案误导为连接问题；registry 在册但地址全缺 = 诚实不可解析）。
+    assert!(
+        resolver.get_peer_info("empty-addr").is_none(),
+        "peer in registry with zero addresses → None (no dial candidates)"
+    );
 }
 
 #[test]
@@ -3147,12 +3239,12 @@ fn test_cluster_peer_resolver_with_empty_primary_address() {
     let resolver = ClusterPeerResolver {
         registry: cluster.registry.clone(),
         node_id: cluster.node_id.clone(),
+        rpc_port: cluster.rpc_port,
     };
 
-    // Should return Some but with empty addresses and default port
-    let (addresses, port, _) = resolver.get_peer_info("empty-addr").unwrap();
-    assert!(addresses.is_empty());
-    assert_eq!(port, DEFAULT_RPC_PORT);
+    // 零候选 → None（闭环批 2026-10-13）：在册但地址全缺的 peer 对拨号方
+    // 是诚实不可解析，不再回 Some(空池, DEFAULT_RPC_PORT) 让其对 "" 空拨。
+    assert!(resolver.get_peer_info("empty-addr").is_none());
 }
 
 // G14 同族（2026-10-13 本机实录）：announce/探针身份载荷 addresses 为空时，
@@ -3251,14 +3343,14 @@ fn test_cluster_peer_resolver_uses_stored_addresses() {
             id: "multi-addr".into(),
             name: "multi-addr".into(),
             role: nemesis_types::cluster::NodeRole::Worker,
-            address: "10.0.0.1:21949".into(),
+            address: "203.0.113.20:21949".into(),
             category: "test".into(),
             last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Online,
         capabilities: vec![],
         tags: Vec::new(),
-        addresses: vec!["192.168.1.1".into(), "10.0.0.1".into()],
+        addresses: vec!["203.0.113.21".into(), "203.0.113.20".into()],
         professions: Vec::new(),
         tier: None,
         node_type: "agent".into(),
@@ -3267,12 +3359,13 @@ fn test_cluster_peer_resolver_uses_stored_addresses() {
     let resolver = ClusterPeerResolver {
         registry: cluster.registry.clone(),
         node_id: cluster.node_id.clone(),
+        rpc_port: cluster.rpc_port,
     };
 
     let (addresses, port, is_online) = resolver.get_peer_info("multi-addr").unwrap();
     // Should use stored addresses, not parse primary address
     assert_eq!(addresses.len(), 2);
-    assert!(addresses.contains(&"192.168.1.1".to_string()));
+    assert!(addresses.contains(&"203.0.113.21".to_string()));
     assert_eq!(port, 21949);
     assert!(is_online);
 }
@@ -4224,14 +4317,14 @@ fn test_cluster_peer_resolver_fallback_scan_by_name() {
             id: "node-123".into(),
             name: "MyNode".into(),
             role: nemesis_types::cluster::NodeRole::Worker,
-            address: "192.168.1.50:21949".into(),
+            address: "203.0.113.30:21949".into(),
             category: "dev".into(),
             last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
         tags: Vec::new(),
-        addresses: vec!["192.168.1.50".into()],
+        addresses: vec!["203.0.113.30".into()],
         professions: Vec::new(),
         tier: None,
         node_type: "agent".into(),
@@ -4240,6 +4333,7 @@ fn test_cluster_peer_resolver_fallback_scan_by_name() {
     let resolver = ClusterPeerResolver {
         registry: cluster.registry.clone(),
         node_id: cluster.node_id.clone(),
+        rpc_port: cluster.rpc_port,
     };
 
     // Resolve by name (fallback scan)
@@ -4249,7 +4343,7 @@ fn test_cluster_peer_resolver_fallback_scan_by_name() {
         "Should find peer by name via fallback scan"
     );
     let (addresses, port, is_online) = result.unwrap();
-    assert!(addresses.contains(&"192.168.1.50".to_string()));
+    assert!(addresses.contains(&"203.0.113.30".to_string()));
     assert_eq!(port, 21949);
     assert!(is_online);
 
@@ -4271,14 +4365,14 @@ fn test_cluster_peer_resolver_offline_peer_is_online_false() {
             id: "offline-peer-20".into(),
             name: "OfflinePeer".into(),
             role: nemesis_types::cluster::NodeRole::Worker,
-            address: "10.0.0.1:21949".into(),
+            address: "203.0.113.40:21949".into(),
             category: "test".into(),
             last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Offline,
         capabilities: vec![],
         tags: Vec::new(),
-        addresses: vec!["10.0.0.1".into()],
+        addresses: vec!["203.0.113.40".into()],
         professions: Vec::new(),
         tier: None,
         node_type: "agent".into(),
@@ -4287,6 +4381,7 @@ fn test_cluster_peer_resolver_offline_peer_is_online_false() {
     let resolver = ClusterPeerResolver {
         registry: cluster.registry.clone(),
         node_id: cluster.node_id.clone(),
+        rpc_port: cluster.rpc_port,
     };
 
     let (_, _, is_online) = resolver.get_peer_info("offline-peer-20").unwrap();
@@ -5341,6 +5436,7 @@ async fn test_load_rpc_auth_token_roundtrip_encrypted_rejects_plaintext() {
     let plain = Arc::new(RpcClient::with_resolver(Arc::new(ClusterPeerResolver {
         registry: cluster.registry.clone(),
         node_id: cluster.node_id.clone(),
+        rpc_port: cluster.rpc_port,
     })));
     let req = crate::rpc_types::RPCRequest {
         id: "plain-1".into(),
@@ -6093,6 +6189,7 @@ fn test_set_rpc_client_external() {
     let resolver = Arc::new(ClusterPeerResolver {
         registry: cluster.registry.clone(),
         node_id: cluster.node_id.clone(),
+        rpc_port: cluster.rpc_port,
     });
     cluster.set_rpc_client(Arc::new(RpcClient::with_resolver(resolver)));
     assert!(cluster.rpc_client_arc().is_some());
@@ -6259,7 +6356,8 @@ fn test_cluster_peer_resolver_fallback_by_name_with_empty_address() {
     let cluster = Cluster::new(make_config());
     cluster.start();
     // Peer matched by NAME with an empty primary address and no address list
-    // → fallback scan yields an empty address vec.
+    // → 零候选 → None（闭环批 2026-10-13：名字命中救不了「无任何可拨地址」，
+    // Some(空池) 的 "" 空拨已废）。
     let mut peer = make_w3b_node("x1", "MyNode", "", NodeStatus::Online);
     peer.addresses = vec![];
     cluster.register_node(peer);
@@ -6267,10 +6365,9 @@ fn test_cluster_peer_resolver_fallback_by_name_with_empty_address() {
     let resolver = ClusterPeerResolver {
         registry: cluster.registry.clone(),
         node_id: cluster.node_id.clone(),
+        rpc_port: cluster.rpc_port,
     };
-    let (addresses, _port, online) = resolver.get_peer_info("MyNode").unwrap();
-    assert!(addresses.is_empty());
-    assert!(online);
+    assert!(resolver.get_peer_info("MyNode").is_none());
     cluster.stop();
 }
 
@@ -6734,6 +6831,7 @@ fn test_set_rpc_client_logs_timeout_field() {
     let resolver = ClusterPeerResolver {
         registry: cluster.registry.clone(),
         node_id: cluster.node_id.clone(),
+        rpc_port: cluster.rpc_port,
     };
     cluster.set_rpc_client(Arc::new(RpcClient::with_resolver(Arc::new(resolver))));
     assert!(cluster.rpc_client.lock().is_some());
@@ -6960,6 +7058,7 @@ fn test_cluster_peer_resolver_fallback_host_from_primary_address() {
     let resolver = ClusterPeerResolver {
         registry: cluster.registry.clone(),
         node_id: cluster.node_id.clone(),
+        rpc_port: cluster.rpc_port,
     };
     let (addresses, port, online) = resolver.get_peer_info("HostOnlyNode").unwrap();
     assert_eq!(addresses, vec!["127.0.0.1".to_string()]);
@@ -7926,6 +8025,18 @@ fn test_start_discovery_broken_reference_fails_closed() {
     nemesis_config::clear_global_vault_resolver();
 }
 
+// -------------------------------------------------------------------------
+// resolve_auto_node_name：CJK node_id 显示名截断（2026-10-11 横扫修复）
+// -------------------------------------------------------------------------
+
+/// 裸 `&node_id[..8.min(len)]` 在中文 node_id（中文主机名等）上会 panic。
+/// 修复后走字节边界安全版：8 字节预算回退到 6 字节 = 2 个汉字。
+#[test]
+fn auto_node_name_cjk_node_id_truncates_at_char_boundary() {
+    let (name, from_config) = resolve_auto_node_name("", None, "中中中中中");
+    assert!(!from_config);
+    assert_eq!(name, "Bot 中中");
+}
 // ---------------------------------------------------------------------------
 // 探针身份回传（TCP fallback，2026-10-10）：UDP 静默拓扑里身份传播唯一
 // 可靠通道——ping 响应携带自报 announce，探针成功方 apply 入册。
@@ -8061,4 +8172,421 @@ fn test_apply_probe_announce_lands_identity_in_registry() {
     assert_eq!(cluster.registry.list_peers().len(), before);
     cluster.stop();
     nemesis_config::clear_global_vault_resolver();
+}
+
+// ===========================================================================
+// Win↔Win 集群地址缺陷链回归锁（R2 pin 合并 / R3 拨号兜底 / R4 自投递防护 /
+// R5 源地址收割）。计划：docs/PLAN/2026-10-13_four-observation-bugs-fix-plan.md P1。
+// 合成 IP 一律走 TEST-NET-3（203.0.113.0/24，永不分配给真实主机），杜绝
+// R4 过滤器对测试机真实网卡的意外命中。
+// ===========================================================================
+
+/// 构造注册表条目（默认 base.address = host:21949）。
+fn make_addr_chain_peer(
+    id: &str,
+    host: &str,
+    addresses: Vec<String>,
+    status: NodeStatus,
+) -> ExtendedNodeInfo {
+    ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: id.into(),
+            name: id.into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: format!("{}:21949", host),
+            category: "test".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status,
+        capabilities: vec![],
+        tags: Vec::new(),
+        addresses,
+        professions: Vec::new(),
+        tier: None,
+        node_type: "agent".into(),
+    }
+}
+
+/// R2：announce 刷新不逐出静态 peers.toml pin（地址池并入 + base.address 保 pin）。
+#[test]
+fn test_announce_refresh_preserves_static_pin_addresses() {
+    let cluster = Cluster::new(make_config());
+    // 静态装载：pin 203.0.113.10（操作员手写的可达地址）
+    cluster.handle_discovered_node(
+        "worker-1",
+        "worker-1",
+        vec!["203.0.113.10".into()],
+        21949,
+        "worker",
+        "test",
+        vec![],
+        vec![],
+        "agent",
+    );
+    cluster.mark_peer_static("worker-1");
+
+    // announce 到达：自报地址不含 pin（对端多网卡枚举序/枚举缺口）
+    let changed = cluster.handle_discovered_node_ex(
+        "worker-1",
+        "worker-1",
+        vec!["203.0.113.50".into(), "203.0.113.51".into()],
+        21949,
+        "worker",
+        "test",
+        vec![],
+        vec![],
+        "agent",
+        vec![],
+        None,
+        None,
+    );
+    assert!(changed);
+    let info = cluster.registry.get("worker-1").unwrap();
+    assert!(info.addresses.contains(&"203.0.113.50".to_string()));
+    assert!(info.addresses.contains(&"203.0.113.51".to_string()));
+    assert!(
+        info.addresses.contains(&"203.0.113.10".to_string()),
+        "静态 pin 被 announce 池刷新逐出（R2 回归）"
+    );
+    // base.address 保持操作员 pin（静态语义锁用户显式配置，与
+    // merge_real_node_info 的保护同源）
+    assert!(
+        info.base.address.starts_with("203.0.113.10:"),
+        "静态对端 base.address 被 announce primary 覆盖（R2 回归）"
+    );
+
+    // 第二拍 announce（同载荷）：pin 已在池 → 内容收敛 → changed=false
+    // （无限刷盘回归锁：合并是幂等的，不是每拍都算「变化」）
+    let changed2 = cluster.handle_discovered_node_ex(
+        "worker-1",
+        "worker-1",
+        vec!["203.0.113.50".into(), "203.0.113.51".into()],
+        21949,
+        "worker",
+        "test",
+        vec![],
+        vec![],
+        "agent",
+        vec![],
+        None,
+        None,
+    );
+    assert!(
+        !changed2,
+        "pin 合并必须幂等，否则 announce 每拍都触发 sync_to_disk"
+    );
+}
+
+/// R2 对照：非静态对端保持旧行为——自报数组整组替换（发现①语义不变）。
+#[test]
+fn test_announce_refresh_replaces_addresses_for_dynamic_peer() {
+    let cluster = Cluster::new(make_config());
+    cluster.handle_discovered_node(
+        "dyn-1",
+        "dyn-1",
+        vec!["203.0.113.60".into()],
+        21949,
+        "worker",
+        "test",
+        vec![],
+        vec![],
+        "agent",
+    );
+    let changed = cluster.handle_discovered_node_ex(
+        "dyn-1",
+        "dyn-1",
+        vec!["203.0.113.61".into()],
+        21949,
+        "worker",
+        "test",
+        vec![],
+        vec![],
+        "agent",
+        vec![],
+        None,
+        None,
+    );
+    assert!(changed);
+    let info = cluster.registry.get("dyn-1").unwrap();
+    assert_eq!(info.addresses, vec!["203.0.113.61".to_string()]);
+    assert!(info.base.address.starts_with("203.0.113.61:"));
+}
+
+/// R2：merge_real_node_info（TCP 探针/get_info 身份回传路径）对静态对端
+/// 候选池走合并而非整组替换。
+#[test]
+fn test_merge_real_node_info_merges_addresses_for_static_peer() {
+    let cluster = Cluster::new(make_config());
+    cluster.handle_discovered_node(
+        "stat-1",
+        "stat-1",
+        vec!["203.0.113.70".into()],
+        21949,
+        "worker",
+        "test",
+        vec![],
+        vec![],
+        "agent",
+    );
+    cluster.mark_peer_static("stat-1");
+
+    cluster.merge_real_node_info(&crate::cluster::RealNodeInfo {
+        id: "stat-1".into(),
+        name: "stat-1".into(),
+        address: "203.0.113.71:21949".into(),
+        rpc_port: 21949,
+        addresses: vec!["203.0.113.71".into()],
+        role: nemesis_types::cluster::NodeRole::Worker,
+        category: "test".into(),
+        capabilities: vec![],
+        tags: vec![],
+        professions: vec![],
+        tier: None,
+        node_type: "agent".into(),
+    });
+
+    let info = cluster.registry.get("stat-1").unwrap();
+    assert!(
+        info.addresses.contains(&"203.0.113.70".to_string()),
+        "merge 路径整组替换逐出了静态 pin（R2 回归）"
+    );
+    assert!(info.addresses.contains(&"203.0.113.71".to_string()));
+    // base.address 静态保护（既有行为，回归 pin）
+    assert!(info.base.address.starts_with("203.0.113.70:"));
+}
+
+/// R3：池非空时 base.address host 仍追加池尾参与拨号（静态 pin 被 announce
+/// 挤出主序后依旧可达——兜底语义）。
+#[test]
+fn test_get_peer_info_appends_base_address_host_to_nonempty_pool() {
+    let cluster = Cluster::new(make_config());
+    cluster.register_node(make_addr_chain_peer(
+        "p1",
+        "203.0.113.80",
+        vec!["203.0.113.81".into(), "203.0.113.82".into()],
+        NodeStatus::Online,
+    ));
+    let resolver = ClusterPeerResolver {
+        registry: cluster.registry.clone(),
+        node_id: cluster.node_id.clone(),
+        rpc_port: cluster.rpc_port,
+    };
+    let (addresses, port, online) = resolver.get_peer_info("p1").unwrap();
+    assert_eq!(
+        addresses,
+        vec![
+            "203.0.113.81".to_string(),
+            "203.0.113.82".to_string(),
+            "203.0.113.80".to_string()
+        ]
+    );
+    assert_eq!(port, 21949);
+    assert!(online);
+}
+
+/// R4 纯函数矩阵：端口不匹配不误杀 / 回环+同端口命中 / 本机 IP+同端口命中。
+#[test]
+fn test_is_self_endpoint_matrix() {
+    let own = vec!["10.103.0.5".to_string(), "192.168.137.1".to_string()];
+    // 端口不同 → 永不命中（同机多节点靠端口区分，不按裸 IP 误杀）
+    assert!(!is_self_endpoint("127.0.0.1", 21950, 21949, &own));
+    assert!(!is_self_endpoint("10.103.0.5", 21950, 21949, &own));
+    // 回环 + 同端口 → 命中
+    assert!(is_self_endpoint("127.0.0.1", 21949, 21949, &own));
+    assert!(is_self_endpoint("127.0.0.1:21949", 21949, 21949, &own));
+    // 本机 IP + 同端口 → 命中
+    assert!(is_self_endpoint("10.103.0.5", 21949, 21949, &own));
+    assert!(is_self_endpoint("192.168.137.1", 21949, 21949, &own));
+    // 非本机 host + 同端口 → 不命中
+    assert!(!is_self_endpoint("other-host", 21949, 21949, &own));
+}
+
+/// R4：同机双节点（同 IP 不同端口）互不误杀——对端候选含本机 IP 但端口
+/// 不同 = 合法同机对端，必须原样保留。
+#[test]
+fn test_same_host_different_port_peer_not_filtered() {
+    let cluster = Cluster::new(make_config());
+    cluster.register_node(make_addr_chain_peer(
+        "sibling",
+        "127.0.0.1",
+        vec!["127.0.0.1".into()],
+        NodeStatus::Online,
+    ));
+    // 把对端 base.address 端口改成非本节点端口（同机第二实例）
+    let mut info = cluster.registry.get("sibling").unwrap();
+    info.base.address = "127.0.0.1:31949".into();
+    cluster.registry.upsert(info);
+
+    let resolver = ClusterPeerResolver {
+        registry: cluster.registry.clone(),
+        node_id: cluster.node_id.clone(),
+        rpc_port: cluster.rpc_port, // 21949
+    };
+    let (addresses, port, _) = resolver.get_peer_info("sibling").unwrap();
+    assert_eq!(addresses, vec!["127.0.0.1".to_string()]);
+    assert_eq!(port, 31949);
+}
+
+/// R4：对端候选池被本节点历史地址污染（同端口布局）→ 自端点候选剔除；
+/// 全池自碰撞 → None（诚实失败，拒拨自己）。
+#[test]
+fn test_self_endpoint_pollution_filtered_and_full_collision_none() {
+    let cluster = Cluster::new(make_config());
+    // 污染池：本机回环候选（端口 = 本节点 rpc_port）+ 一个干净候选
+    cluster.register_node(make_addr_chain_peer(
+        "poisoned",
+        "127.0.0.1",
+        vec!["127.0.0.1".into(), "203.0.113.90".into()],
+        NodeStatus::Online,
+    ));
+    let resolver = ClusterPeerResolver {
+        registry: cluster.registry.clone(),
+        node_id: cluster.node_id.clone(),
+        rpc_port: cluster.rpc_port,
+    };
+    let (addresses, _, _) = resolver.get_peer_info("poisoned").unwrap();
+    assert_eq!(
+        addresses,
+        vec!["203.0.113.90".to_string()],
+        "自端点候选必须被剔除，干净候选保留"
+    );
+
+    // 全池自碰撞 → None（dispatch 拿到 "peer unresolvable"，不静默本投）
+    cluster.register_node(make_addr_chain_peer(
+        "all-self",
+        "127.0.0.1",
+        vec!["127.0.0.1".into()],
+        NodeStatus::Online,
+    ));
+    assert!(
+        resolver.get_peer_info("all-self").is_none(),
+        "全池自碰撞必须返回 None（拒拨自身）"
+    );
+}
+
+/// R5：announce UDP 源地址作为最低优先级候选入池；与载荷地址去重。
+#[test]
+fn test_announce_source_addr_appended_lowest_priority() {
+    let cluster = Cluster::new(make_config());
+    let changed = cluster.handle_discovered_node_ex(
+        "src-1",
+        "src-1",
+        vec!["203.0.113.95".into()],
+        21949,
+        "worker",
+        "test",
+        vec![],
+        vec![],
+        "agent",
+        vec![],
+        None,
+        Some("203.0.113.99"),
+    );
+    assert!(changed);
+    let info = cluster.registry.get("src-1").unwrap();
+    // 载荷在前、源地址末位（载荷 > 源地址；R2 pin 若在则居中）
+    assert_eq!(
+        info.addresses,
+        vec!["203.0.113.95".to_string(), "203.0.113.99".to_string()]
+    );
+
+    // 源地址与载荷重复 → 不重复入池
+    cluster.handle_discovered_node_ex(
+        "src-2",
+        "src-2",
+        vec!["203.0.113.96".into()],
+        21949,
+        "worker",
+        "test",
+        vec![],
+        vec![],
+        "agent",
+        vec![],
+        None,
+        Some("203.0.113.96"),
+    );
+    let info = cluster.registry.get("src-2").unwrap();
+    assert_eq!(info.addresses, vec!["203.0.113.96".to_string()]);
+}
+
+/// 低-4（闭环批 2026-10-13 补全）：池空 + base.host 自碰撞、连候选都没有
+/// ——两种形态此前返回 Some 空池（客户端拿 "" 拨号一次才失败，错误文案
+/// 误导为连接问题），统一 None 诚实失败。
+#[test]
+fn test_resolver_empty_pool_self_host_and_no_candidates_none() {
+    let cluster = Cluster::new(make_config());
+    let resolver = ClusterPeerResolver {
+        registry: cluster.registry.clone(),
+        node_id: cluster.node_id.clone(),
+        rpc_port: cluster.rpc_port,
+    };
+
+    // 池空、唯一候选 base.host = 自端点（回环）→ None（自碰撞 WARN）
+    cluster.register_node(make_addr_chain_peer(
+        "empty-pool-self",
+        "127.0.0.1",
+        vec![],
+        NodeStatus::Online,
+    ));
+    assert!(
+        resolver.get_peer_info("empty-pool-self").is_none(),
+        "空池 + 自 host 必须返回 None，不得返回 Some 空池"
+    );
+
+    // 连候选都没有（base.address 空 + 池空）→ None（无候选 WARN）
+    cluster.register_node(make_addr_chain_peer(
+        "nothing-at-all",
+        "",
+        vec![],
+        NodeStatus::Online,
+    ));
+    assert!(
+        resolver.get_peer_info("nothing-at-all").is_none(),
+        "零候选必须返回 None，不得返回 Some 空池"
+    );
+}
+
+/// R5 池序综合：静态 pin → 载荷 → 源地址（三来源同场时顺序钉死）。
+/// pin 前置（多角度审计批中-2）：拨号预算 = best + 3 fallback，载荷 ≥4 个
+/// 且无一同网段时 pin 排尾永远轮不到；「用户显式配置优先」要求 pin 排头。
+#[test]
+fn test_pool_order_pin_then_payload_then_source() {
+    let cluster = Cluster::new(make_config());
+    cluster.handle_discovered_node(
+        "order-1",
+        "order-1",
+        vec!["203.0.113.20".into()],
+        21949,
+        "worker",
+        "test",
+        vec![],
+        vec![],
+        "agent",
+    );
+    cluster.mark_peer_static("order-1");
+
+    cluster.handle_discovered_node_ex(
+        "order-1",
+        "order-1",
+        vec!["203.0.113.21".into()],
+        21949,
+        "worker",
+        "test",
+        vec![],
+        vec![],
+        "agent",
+        vec![],
+        None,
+        Some("203.0.113.29"),
+    );
+    let info = cluster.registry.get("order-1").unwrap();
+    assert_eq!(
+        info.addresses,
+        vec![
+            "203.0.113.20".to_string(),
+            "203.0.113.21".to_string(),
+            "203.0.113.29".to_string()
+        ],
+        "池序必须为 pin → 载荷 → 源地址"
+    );
 }

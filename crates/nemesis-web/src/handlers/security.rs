@@ -3,6 +3,53 @@
 use crate::handlers::require_workspace;
 use crate::ws_router::{ModuleHandler, RequestContext};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+/// §2 免打扰运行时态槽（无人值守计划 Part 2，editor.rs 同款依赖方向：
+/// `ApprovalAutoApproveState` 本体在 nemesis-security，gateway 装配处
+/// `install_auto_approve` 注入，本 handler `approvals.status` 读 +
+/// `config.save` 热翻——单一真相源 Arc；config.json 是持久真相源）。
+static APPROVAL_AUTO: std::sync::RwLock<
+    Option<Arc<nemesis_security::approval_auto::ApprovalAutoApproveState>>,
+> = std::sync::RwLock::new(None);
+
+/// gateway 装配处（security_setup.rs）调用；未注入 = headless/降级形态，
+/// `approvals.status` 返回 `injected: false`（前端展示「未装配」不误判）。
+pub fn install_auto_approve(state: Arc<nemesis_security::approval_auto::ApprovalAutoApproveState>) {
+    *APPROVAL_AUTO
+        .write()
+        .expect("approval auto state lock poisoned") = Some(state);
+}
+
+/// 全局槽只读访问（question broker 等 nemesisbot 侧消费方复用同一 Arc；
+/// editor.rs 依赖方向同款）。未注入 = `None`。
+pub fn approval_auto_state()
+-> Option<Arc<nemesis_security::approval_auto::ApprovalAutoApproveState>> {
+    APPROVAL_AUTO
+        .read()
+        .expect("approval auto state lock poisoned")
+        .clone()
+}
+
+/// 槽置换口（仅测试，editor.rs `set_editor_access_for_test` 同款）：
+/// None = 恢复未装配形态。
+#[cfg(test)]
+pub(crate) fn set_approval_auto_for_test(
+    state: Option<Arc<nemesis_security::approval_auto::ApprovalAutoApproveState>>,
+) {
+    *APPROVAL_AUTO
+        .write()
+        .expect("approval auto state lock poisoned") = state;
+}
+
+/// 槽触碰类测试的共享串行锁（editor.rs EDITOR_TEST_LOCK 同款纪律——
+/// 进程级槽是共享态，并行测试互相置换会 flake）。
+#[cfg(test)]
+pub(crate) static APPROVAL_AUTO_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+fn approval_auto() -> Option<Arc<nemesis_security::approval_auto::ApprovalAutoApproveState>> {
+    approval_auto_state()
+}
 
 pub struct SecurityHandler {
     _priv: (),
@@ -34,6 +81,7 @@ impl ModuleHandler for SecurityHandler {
             "stats",
             "approvals.list",
             "approvals.clear",
+            "approvals.status",
             "signature_verify_status",
         ]
     }
@@ -70,6 +118,9 @@ impl ModuleHandler for SecurityHandler {
             // 感知 clear）。
             "approvals.list" => self.approvals_list(workspace),
             "approvals.clear" => self.approvals_clear(workspace),
+            // §2: 免打扰开关状态（运行期投影透传；config.get 的 approvals
+            // 段是持久真相源，enabled 可能已被 config.save 热翻）。
+            "approvals.status" => Ok(Some(Self::approvals_status())),
             // 签名验证状态（只读；无 set 命令——开关只走 config 且只读于
             // 启动，不开运行时写入口，少一个可篡改面）。
             "signature_verify_status" => Ok(Some(self.signature_verify_status(ctx))),
@@ -186,11 +237,31 @@ impl SecurityHandler {
         let config: nemesis_config::SecurityConfig = serde_json::from_value(data.clone())
             .map_err(|e| format!("invalid security config: {}", e))?;
         // 锁在 update_security_config 内（整档回存与 config.json 编辑臂同基准）。
+        // §2 热翻所需布尔先捕获（闭包按值拿走 config）。
+        let auto_approve = config.approvals.auto_approve;
         update_security_config(workspace, |cfg| {
             *cfg = config;
             Ok(())
         })?;
+        // §2: 免打扰热翻（运行期投影即时生效；config 是持久真相源，这里
+        // 只翻投影——auditor 下一次 require_approval 即读新值）。
+        if let Some(state) = approval_auto() {
+            state.set_enabled(auto_approve);
+        }
         Ok(Some(serde_json::json!({ "saved": true })))
+    }
+
+    /// §2: 免打扰状态（未注入 = 开发/降级形态，返回 `injected: false` 让
+    /// 前端展示「未装配」而非误判成关）。
+    fn approvals_status() -> serde_json::Value {
+        match approval_auto() {
+            Some(state) => serde_json::json!({
+                "injected": true,
+                "enabled": state.enabled(),
+                "auto_approved_count": state.count(),
+            }),
+            None => serde_json::json!({ "injected": false }),
+        }
     }
 
     fn audit(
@@ -336,3 +407,8 @@ mod f3_tests;
 // approvals.clear 无文件 removed=0 + config 目录创建失败上抛。
 #[cfg(test)]
 mod agt_tests;
+
+// §2 免打扰（2026-10-11 无人值守计划 Part 2）：approvals.status 双臂 +
+// config.save 热翻投影。
+#[cfg(test)]
+mod approval_auto_tests;

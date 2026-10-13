@@ -31,6 +31,8 @@ impl LlmProvider for MockLlmProvider {
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "No more responses".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
@@ -261,6 +263,8 @@ const ALIAS_REF: &str = "vault:leak-test-alias";
 
 fn tool_call_response(name: &str, args: &str) -> LlmResponse {
     LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: String::new(),
         tool_calls: vec![ToolCallInfo {
             id: "tc_vault".to_string(),
@@ -300,6 +304,8 @@ async fn loop_injects_truth_but_events_carry_alias_only() {
             r#"{"target":"http://hook.example","credential":"vault:leak-test-alias"}"#,
         ),
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "done".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -371,6 +377,8 @@ async fn loop_unknown_alias_blocks_execution() {
     let provider = MockLlmProvider::new(vec![
         tool_call_response("credtool", r#"{"credential":"vault:ghost"}"#),
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "done".to_string(),
             tool_calls: Vec::new(),
             finished: true,

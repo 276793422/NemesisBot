@@ -138,6 +138,8 @@ impl LlmHook for ReplaceLlmHook {
 
 fn empty_response(content: &str) -> LlmResponse {
     LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: content.to_string(),
         tool_calls: Vec::new(),
         finished: true,

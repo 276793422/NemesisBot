@@ -47,7 +47,18 @@ impl GatewayMemoryGate {
     /// Request interactive approval. Returns true only if explicitly approved.
     /// Runs the blocking `request_approval_sync` on a spawn_blocking thread (it
     /// spawns a popup child process and waits for the user).
+    ///
+    /// §2 免打扰（无人值守计划 Part 2）：开关开 = 无人值守下 memory 写/删
+    /// 卡 30s 即 deny 的真实卡点消除——直接放行（memory 非安装类，走「所有
+    /// 审批 ask 自动批准」语义；审计留痕在 approve 时 INFO 一条）。
     async fn request(&self, operation: &str, preview: &str) -> bool {
+        if nemesis_web::handlers::security::approval_auto_state().is_some_and(|s| s.enabled()) {
+            tracing::info!(
+                "[MemoryGate] auto-approve on: {} auto-approved (unattended mode)",
+                operation
+            );
+            return true;
+        }
         let am = self.approval.clone();
         let operation = operation.to_string();
         let preview = preview.to_string();

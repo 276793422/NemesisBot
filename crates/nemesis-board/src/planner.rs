@@ -359,11 +359,10 @@ pub fn build_planner_user_prompt(
 
 /// 解析失败后的回灌重试提示词（把错误与原输出喂回，要求自纠）。
 pub fn build_retry_prompt(prev_output: &str, error: &PlanParseError) -> String {
-    let prev = if prev_output.len() > 4000 {
-        format!("{}…（已截断）", &prev_output[..4000])
-    } else {
-        prev_output.to_string()
-    };
+    // 截断必须走 rune 边界安全版（与 review 同源）：裸 `&prev_output[..4000]`
+    // 在中文输出上会因字节下标落在多字节字符内部 panic（2026-10-11 真机实证，
+    // panic 顺带杀死整个规划 tokio 任务，看板零留痕）。
+    let prev = crate::review::truncate_bytes(prev_output, 4000);
     format!(
         "你上一次的输出无法通过校验：{}\n\n上一次输出：\n{prev}\n\n请修正后重新输出：只输出符合格式的 JSON 数组，不要任何其他文字或解释。",
         error.message

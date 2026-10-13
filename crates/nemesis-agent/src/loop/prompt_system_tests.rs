@@ -26,6 +26,8 @@ impl LlmProvider for QuietProvider {
         _tools: Vec<crate::types::ToolDefinition>,
     ) -> Result<LlmResponse, String> {
         Ok(LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "ok".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -168,6 +170,8 @@ impl LlmProvider for SystemCaptureProvider {
             *self.0.lock().unwrap() = Some(sys.content.clone());
         }
         Ok(LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "done".to_string(),
             tool_calls: Vec::new(),
             finished: true,

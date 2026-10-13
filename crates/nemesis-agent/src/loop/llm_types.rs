@@ -72,6 +72,14 @@ pub struct LlmResponse {
     pub finished: bool,
     /// Reasoning content from thinking-mode models.
     pub reasoning_content: Option<String>,
+    /// §6.2（2026-10-12 无人值守）：provider 归一化的停止原因
+    /// （"stop"/"length"/...，anthropic/openai lane 均已归一）。翻倍阶梯
+    /// （[`super::length_escalation`]）的判定输入；None = 适配器未提供。
+    pub finish_reason: Option<String>,
+    /// §6.2：翻倍阶梯实际生效的最后一次 max_tokens（仅当本调用发生过翻倍
+    /// 重试才 Some）——`handle_length_continuation` 的 token_cap 判定与触顶
+    /// 文案用它取代 st.chat_opts 的陈旧配置值。
+    pub escalated_to: Option<u64>,
     /// Token usage from the provider response.
     pub usage: Option<crate::loop_executor::ObserverUsageInfo>,
     /// Raw HTTP request body (for raw logging mode).

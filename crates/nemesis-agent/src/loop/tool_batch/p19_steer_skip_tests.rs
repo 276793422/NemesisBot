@@ -52,6 +52,8 @@ impl LlmProvider for CapturingProvider {
         let mut scripted = self.scripted.lock().unwrap();
         if scripted.is_empty() {
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "final answer".to_string(),
                 tool_calls: vec![],
                 finished: true,
@@ -179,6 +181,8 @@ fn tool_call(id: &str, name: &str) -> crate::types::ToolCallInfo {
 
 fn scripted_tool_resp(calls: Vec<crate::types::ToolCallInfo>) -> LlmResponse {
     LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: String::new(),
         tool_calls: calls,
         finished: false,

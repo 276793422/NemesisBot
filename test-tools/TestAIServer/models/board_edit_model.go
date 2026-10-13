@@ -165,6 +165,22 @@ func contentAfterLastUser(messages []Message) string {
 
 func (m *TestAIBoardEdit) Delay() time.Duration { return 0 }
 
+// TestAIBoardEditSlow — T-MRG-7 确定性错峰专用慢速变体：行为与
+// TestAIBoardEdit 完全一致（embed 复用 Process），仅拉长每轮 LLM 延迟。
+// 用途：并行同行编辑单的冲突漏斗要求两笔变更执行时段重叠——先派 worker
+// 用慢速桩后，其 running 窗口（≥2 轮 × 4s）可被 board.db 轮询可靠捕捉
+// （快桩 Delay=0 本地全链 <1s，轮询首查前已 done，T-MRG-7 Run 3 实证），
+// 错峰派发的第二单必然在先派单合并前检出基线 → 同轴冲突恒形成。
+type TestAIBoardEditSlow struct{ TestAIBoardEdit }
+
+func NewTestAIBoardEditSlow() *TestAIBoardEditSlow { return &TestAIBoardEditSlow{} }
+
+func (m *TestAIBoardEditSlow) Name() string { return "testai-board-edit-slow-1.0" }
+
+// Delay=4s 与 conflict-solver 同值：窗口足够宽（轮询 800ms 必中）且不炸
+// 墙钟（败者重派 + 3 轮硬解总计 ~20s，300s 冻结断言内富余）。
+func (m *TestAIBoardEditSlow) Delay() time.Duration { return 4 * time.Second }
+
 // extractWorkdirPath 从任务 content 抠档案管线 Working Directory 附加段的
 // 工作副本绝对路径（render_workdir_section 契约：「位于：」下一行反引号
 // 包裹）。无附加段（非档案管线/降级形态）返回空串。

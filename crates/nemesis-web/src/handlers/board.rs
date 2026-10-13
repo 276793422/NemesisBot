@@ -15,6 +15,9 @@ use crate::handlers::{get_opt_str, get_str, require_workspace};
 use crate::ws_router::{ModuleHandler, RequestContext};
 use base64::Engine;
 use nemesis_board::BoardStore;
+// ⏸ 暂缓评论去重标记（闭环批 2026-10-13 从本文件上移）：停车判定 SQL
+// 与 sweep 落评论共用单一真相源，消灭跨 crate 字面量漂移面。
+use nemesis_board::PARK_NOTICE_MARK;
 use nemesis_board::assignment::{Actor, AssignmentType};
 use nemesis_board::models::{
     CommentType, IssueFilter, IssuePatch, IssueStatus, NewComment, NewIssue, ProjectPatch,
@@ -209,11 +212,16 @@ use nemesis_board::report::REPORT_FORMAT_SECTION;
 /// 骰子（§6.1 检视 2）。首派传 `None`。
 /// `experience_section`（Swarm M4.5）：团队过往经验注入段（注入端已渲染），
 /// 无匹配传 `None`——不塞空段，保持提示词字节与无经验时一致。
+/// `attempt`（PR5，2026-10-10 机制加固）：本次派发序号（1 起；首派 `None`
+/// 不渲染，prompt 字节与历史一致）。重派任务卡告知轮次 + 循环升级契约：
+/// worker 不知道自己是第几回挨打，就无法判断「同一问题反复重派无解」，
+/// 只会静默再写一轮（C1 无限重写循环的 worker 侧根因）。
 fn build_dispatch_prompt(
     issue: &nemesis_board::Issue,
     assets_section: Option<&str>,
     review_feedback: Option<&str>,
     experience_section: Option<&str>,
+    attempt: Option<u32>,
 ) -> String {
     let mut p = format!(
         "{} {}\n\n## 标题\n{}\n",
@@ -243,6 +251,14 @@ fn build_dispatch_prompt(
         p.push_str(&format!(
             "\n## 上轮验收意见（本次重派原因，必须针对性整改）\n{}\n",
             feedback.trim()
+        ));
+    }
+    // PR5（2026-10-10 机制加固）：重派轮次 + 循环升级通道（worker 侧编码）。
+    // 只在重派时渲染（首派 prompt 字节与历史一致）。
+    if let Some(n) = attempt {
+        p.push_str(&format!(
+            "\n## 重派轮次（第 {n} 次派发）\n本单此前已被派发 {} 次、验收未通过。若你判断同一问题按已有方法继续整改仍无法通过验收（连续多轮重派无解），不要再静默重写一轮：在最终回复正文里**单独一行**写行首标记 `REDISPATCH_LOOP:` 加一句话说明卡点，并在汇报的「偏差与疑点」节列出已尝试方案清单（每项一行：试了什么、结果如何）。主控端识别该标记后会停止自动重派、转人工裁决——这是升级通道，不是失败污点；诚实升级好过无限重写。\n",
+            n - 1
         ));
     }
     // Swarm M3（§5.4 层 1）：issue 名下资产随包走（引用+签名 token；
@@ -322,6 +338,13 @@ async fn issue_dispatch(
 
     let cluster = ctx.state.cluster.clone();
     let out = dispatch_issue_core(store, cluster.as_ref(), id, &target, &actor, None)?;
+    // §6.4D：手动重派 = 人类明确意图 → 失败账清零（M3「人工处理后计数作废」
+    // 在手动路径成真；熔断停车后 reopen 重派不再因存量 count 秒熔断）。与评
+    // 审链同源同一 JSON（nemesis-board fail_streak 单一真相源）；清账失败不
+    // 阻断派发结果（护栏非主路径）。workspace 未注入 = 跳过（测试形态）。
+    if let Some(ws) = ctx.state.workspace.as_deref() {
+        nemesis_board::fail_streak::FailStreakLedger::load(std::path::Path::new(ws)).clear(id);
+    }
     Ok(Some(out))
 }
 
@@ -394,13 +417,11 @@ fn reject_remote_file_anchors(
     local_node_id: &str,
     local_node_name: &str,
 ) -> Option<String> {
-    use nemesis_board::anchor::AnchorKind;
-
     let ac = acceptance_criteria?;
     let (anchors, _semantic, _rejected) = nemesis_board::anchor::parse_anchors(ac);
     let file_anchors: Vec<&str> = anchors
         .iter()
-        .filter(|a| !matches!(a.kind, AnchorKind::ContentRegex))
+        .filter(|a| a.kind.is_file_anchor())
         .map(|a| a.raw.as_str())
         .collect();
     if file_anchors.is_empty() {
@@ -476,6 +497,59 @@ pub fn install_board_estop(estop: Arc<nemesis_agent::estop::EstopState>) -> bool
 #[cfg(feature = "cluster")]
 fn board_estop_engaged() -> bool {
     estop_dispatch_frozen(BOARD_ESTOP.get().map(|e| e.as_ref()))
+}
+
+// ---------------------------------------------------------------------------
+// U-A（2026-10-12 停车现场工程）：派发/拆解侧停车档案的工作区根。
+// handoff 落盘需要 `<workspace>/board/handoffs/`，而派发/拆解族全是
+// store+cluster 纯函数（AppState 字面量测试点太多，加参数是断点级改动）
+// ——同 BASELINE_PUSHER/BOARD_ESTOP 理由走模块级 OnceLock 注入，gateway
+// 装配时注册；未装配（单测/极简装配）= 停车档案缺席但评论照常（诚实降级）。
+// ---------------------------------------------------------------------------
+
+static HANDOFF_WORKSPACE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// 装配停车档案工作区根（gateway 启动期调用一次；重复装配保留首份）。
+pub fn install_handoff_workspace(ws: std::path::PathBuf) -> bool {
+    HANDOFF_WORKSPACE.set(ws).is_ok()
+}
+
+/// 工作区根访问器（U-B 中断档案 `<workspace>/board/interruptions/` 与
+/// handoffs 同根复用；未装配 = None——中断档案静默缺席）。
+pub fn handoff_workspace_root() -> Option<&'static std::path::PathBuf> {
+    HANDOFF_WORKSPACE.get()
+}
+
+/// 派发/拆解侧停车档案落盘（board_review::park_with_handoff 的 web 侧
+/// 简化形态：无 deps/评论拼接职责，只写档案；失败 WARN 不阻塞停车流）。
+/// 调用方全在 cluster-gated 函数内——default-feature 单独编译时放行死代码。
+#[cfg_attr(not(feature = "cluster"), allow(dead_code))]
+fn write_side_handoff(
+    store: &BoardStore,
+    issue: &nemesis_board::Issue,
+    stop_kind: &'static str,
+    suggested_action: &'static str,
+    hint: String,
+    resume_entry: &str,
+    environment: serde_json::Value,
+    attempted: Vec<serde_json::Value>,
+) {
+    let Some(ws) = HANDOFF_WORKSPACE.get() else {
+        return; // 未装配（单测/极简装配）：档案缺席，评论照常
+    };
+    let spec = nemesis_board::handoff::HandoffSpec {
+        stop_kind,
+        suggested_action,
+        hint,
+        resume_entry: resume_entry.to_string(),
+        environment,
+        attempted,
+    };
+    let chain = nemesis_board::handoff::verdict_chain_from(store, issue.id);
+    if let Err(e) = nemesis_board::handoff::write_handoff(ws, &issue.number, issue.id, &spec, chain)
+    {
+        tracing::warn!("[Board] {} 停车档案写失败（评论照发）：{e}", issue.number);
+    }
 }
 
 /// estop 闸判定可测内核（BOARD_ESTOP 是进程级 OnceLock——engaged 态若在
@@ -666,11 +740,19 @@ pub fn dispatch_issue_core(
     // M4.5：经验注入段在 prompt 组装前检索（命中计数待发车成功后落）。
     let (experience_section, experience_ids) = render_issue_experience_section(store, &issue);
 
+    // PR5（2026-10-10 机制加固）：重派轮次 = 历史（已完结）派发行数 + 1。
+    // 首派 0 行 → None（不渲染重派段）；重派 → Some(N) 渲染轮次 + 循环
+    // 升级契约。行数口径含失败派发——worker 需要的是「这是第几回」的完整
+    // 感知，UNAVAILABLE 等未跑完的尝试同样计入挨打次数。
+    let attempt_count = store.list_dispatches(issue.id)?.len() as u32;
+    let attempt = (attempt_count > 0).then_some(attempt_count + 1);
+
     let prompt = build_dispatch_prompt(
         &issue,
         render_dispatch_assets_section(store, issue.id)?.as_deref(),
         review_feedback,
         experience_section.as_deref(),
+        attempt,
     );
 
     // 1. 登记本地 task（与 dashboard peer_chat 同契约），拿 task_id。
@@ -865,7 +947,10 @@ pub fn dispatch_issue_core(
                     issue_id,
                     author: nemesis_board::Actor::system("board"),
                     content: format!(
-                        "⛔ 派发失败：[{}] RPC 送达失败（{e}）",
+                        // F2：前缀走单一真相源常量（sweep 重试候选按前缀识别，
+                        // 字面量漂移 = 重试静默失效）。
+                        "{}: [{}] RPC 送达失败（{e}）",
+                        nemesis_board::SEND_FAILURE_MARK,
                         e.failure_category()
                     ),
                     parent_id: None,
@@ -961,6 +1046,22 @@ pub fn set_project_summary_hook(
     PROJECT_SUMMARY_HOOK
         .set(hook)
         .map_err(|_| "project summary hook already set".to_string())
+}
+
+/// M5-1（2026-10-10 机制加固）：评审重触发钩子——卡 in_review 的单子人工
+/// 一键重入验收评审（WSAPI `review.retrigger`，替代 estop-pulse hack）。
+/// gateway 装配时注册（spawn_board_review + master 角色闸在闭包内）；
+/// 未安装时 WSAPI 诚实报错。
+static REVIEW_RETRIGGER_HOOK: std::sync::OnceLock<std::sync::Arc<dyn Fn(i64) + Send + Sync>> =
+    std::sync::OnceLock::new();
+
+/// 注册评审重触发钩子（gateway 启动装配调用一次；重复注册拒绝）。
+pub fn set_review_retrigger_hook(
+    hook: std::sync::Arc<dyn Fn(i64) + Send + Sync>,
+) -> Result<(), String> {
+    REVIEW_RETRIGGER_HOOK
+        .set(hook)
+        .map_err(|_| "review retrigger hook already set".to_string())
 }
 
 /// F3 项目收口触发的聚合前置检查（纯 store 查询；单测直测）：项目存在、
@@ -1358,6 +1459,178 @@ static PLAN_CACHE: std::sync::LazyLock<
 #[cfg(feature = "cluster")]
 const PLAN_TTL: std::time::Duration = std::time::Duration::from_secs(600);
 
+/// 拆解运行期观测面（2026-10-11「停着」第二次事故）：PLAN_CACHE 只在拆解
+/// 完成后写入，planner 运行期（GLM 实测 4~7 分钟）查询返回空、SSE 无事件、
+/// 父单无评论——编排者无法区分「拆解中」与「链路死亡」，同一表象连续两次
+/// 误判。RUNNING_PLANS 记录 in-flight 拆解，`plan.list/get` 与 ready 条目
+/// 并列输出（status 区分）；`board.plan_started` SSE + 父单「已开始拆解」
+/// 评论补齐实时与持久两个通道。
+#[cfg(feature = "cluster")]
+struct RunningPlan {
+    pub(super) issue_id: i64,
+    pub(super) started_at: std::time::Instant,
+    /// 第几次尝试（1 起）。超时重拆链（§1.1）每次 +1；列表投影/横幅
+    /// 「第 N 次尝试」文案数据源。
+    pub(super) attempt: u32,
+}
+
+#[cfg(feature = "cluster")]
+static RUNNING_PLANS: std::sync::LazyLock<
+    parking_lot::Mutex<std::collections::HashMap<String, RunningPlan>>,
+> = std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+
+/// 在途拆解快照（U-B trip 边沿逐一写中断档案用；也供探针 resume 前的
+/// 在途双保险查询）：`[(plan_id, issue_id, attempt)]`。
+#[cfg(feature = "cluster")]
+pub(crate) fn running_plans_snapshot() -> Vec<(String, i64, u32)> {
+    RUNNING_PLANS
+        .lock()
+        .iter()
+        .map(|(plan_id, r)| (plan_id.clone(), r.issue_id, r.attempt))
+        .collect()
+}
+
+/// RUNNING_PLANS 摘除 guard：Drop 语义保证正常返回 / 错误返回 / panic 展开
+/// 三种退出路径都摘条目（watched 壳管留痕，guard 管注册表清洁，各管各的）。
+#[cfg(feature = "cluster")]
+struct RunningPlanGuard {
+    pub(super) plan_id: String,
+}
+
+#[cfg(feature = "cluster")]
+impl Drop for RunningPlanGuard {
+    fn drop(&mut self) {
+        RUNNING_PLANS.lock().remove(&self.plan_id);
+    }
+}
+
+/// P11 观测面（2026-10-10）：plan 预览查询。PLAN_CACHE 此前只进不出且无
+/// 查询面（SSE board.plan_ready/plan_failed 只在线可见，错过即盲），编排
+/// 者只能盯日志——`board.plan.list/get` 给 Dashboard/编排者列存活预览与
+/// 单查能力。TTL 惰性过滤与插入点同判据（过期条目顺带清除）。
+#[cfg(feature = "cluster")]
+fn plan_list(
+    store: &Arc<BoardStore>,
+    data: Option<serde_json::Value>,
+) -> Result<Option<serde_json::Value>, String> {
+    let data = data.unwrap_or(serde_json::json!({}));
+    let issue_id = data.get("issue_id").and_then(|v| v.as_i64());
+    let now = std::time::Instant::now();
+    let mut cache = PLAN_CACHE.lock();
+    cache.retain(|_, p| now.duration_since(p.created_at) <= PLAN_TTL);
+    let mut plans: Vec<serde_json::Value> = cache
+        .iter()
+        .filter(|(_, p)| issue_id.is_none_or(|id| p.issue_id == id))
+        .map(|(plan_id, p)| plan_preview_json(plan_id, p, now))
+        .collect();
+    drop(cache);
+    // running 条目（拆解中）与 ready 并列：PLAN_CACHE 完成后才写入，缺此
+    // 查询「正在跑」返回空——编排者无法区分拆解中与没跑（「停着」事故）。
+    // created_ms 置 0 → 排序自然垫底（ready 等确认的在前）。
+    for (plan_id, r) in RUNNING_PLANS.lock().iter() {
+        if issue_id.is_none_or(|id| r.issue_id == id) {
+            plans.push(serde_json::json!({
+                "plan_id": plan_id,
+                "issue_id": r.issue_id,
+                "status": "running",
+                "attempt": r.attempt,
+                "created_ms": 0u64,
+                "elapsed_secs": now.duration_since(r.started_at).as_secs(),
+            }));
+        }
+    }
+    // 新拆解在前（编排者关注的是"刚出的计划等确认"）。
+    plans.sort_by_key(|v| std::cmp::Reverse(v["created_ms"].as_u64().unwrap_or(0)));
+    // issue_number 附属（issue 可能已被删，best-effort 不炸列表）。
+    for v in &mut plans {
+        if let Some(id) = v["issue_id"].as_i64()
+            && let Ok(issue) = store.get_issue(id)
+        {
+            v["issue_number"] = serde_json::json!(issue.number);
+        }
+    }
+    Ok(Some(serde_json::json!({ "plans": plans })))
+}
+
+/// P11 观测面：单查预览。不存在/已消费/已过期 = 诚实报错（消费路径
+/// confirm 成功即 remove，缓存里没有就是没有了——语义与缓存一致）。
+#[cfg(feature = "cluster")]
+fn plan_get(data: Option<serde_json::Value>) -> Result<Option<serde_json::Value>, String> {
+    let data = data.ok_or("missing data")?;
+    let plan_id = get_str(&data, "plan_id")?;
+    let now = std::time::Instant::now();
+    // running 优先：拆解中查询得到（status=running + 已等待秒数），不再是
+    // 「查不到=死了」的歧义形态。
+    if let Some(r) = RUNNING_PLANS.lock().get(plan_id.as_str()) {
+        return Ok(Some(serde_json::json!({
+            "plan_id": plan_id,
+            "issue_id": r.issue_id,
+            "status": "running",
+            "attempt": r.attempt,
+            "elapsed_secs": now.duration_since(r.started_at).as_secs(),
+        })));
+    }
+    let mut cache = PLAN_CACHE.lock();
+    let alive = cache
+        .get(plan_id.as_str())
+        .filter(|p| now.duration_since(p.created_at) <= PLAN_TTL)
+        .map(|p| plan_preview_json(&plan_id, p, now));
+    if alive.is_none() {
+        // 过期条目顺带摘除；不存在的 remove 是 no-op。
+        cache.remove(plan_id.as_str());
+    }
+    match alive {
+        Some(v) => Ok(Some(v)),
+        None => Err(format!(
+            "plan {plan_id} 不存在、已过期或已消费（预览有效期 {}s，过期请重拆）",
+            PLAN_TTL.as_secs()
+        )),
+    }
+}
+
+/// PlanPreview → 查询视图投影（plan.list / plan.get 共用）。
+#[cfg(feature = "cluster")]
+fn plan_preview_json(plan_id: &str, p: &PlanPreview, now: std::time::Instant) -> serde_json::Value {
+    let elapsed_ms = now.duration_since(p.created_at).as_millis() as u64;
+    serde_json::json!({
+        "plan_id": plan_id,
+        "issue_id": p.issue_id,
+        // status 区分 ready（已完成待确认）与 running（plan.list 并列输出
+        // 的 in-flight 条目）——查询方不再需要靠字段缺省猜状态。
+        "status": "ready",
+        "sub_count": p.subs.len(),
+        "subs": p.subs
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "title": s.title,
+                    "required_role": s.required_role,
+                    "required_profession": s.required_profession,
+                    "depends_on": s.depends_on,
+                })
+            })
+            .collect::<Vec<_>>(),
+        "downgrades": p.downgrades,
+        "created_ms": elapsed_ms,
+        "ttl_remaining_secs": PLAN_TTL.as_secs().saturating_sub(elapsed_ms / 1000),
+    })
+}
+
+/// `board.plan.list`（未编译 cluster）：预览缓存与 planner 链同属集群面。
+#[cfg(not(feature = "cluster"))]
+fn plan_list(
+    _store: &Arc<BoardStore>,
+    _data: Option<serde_json::Value>,
+) -> Result<Option<serde_json::Value>, String> {
+    Err("board.plan.list 需要集群支持（cluster feature 未编译）".to_string())
+}
+
+/// `board.plan.get`（未编译 cluster）：同上。
+#[cfg(not(feature = "cluster"))]
+fn plan_get(_data: Option<serde_json::Value>) -> Result<Option<serde_json::Value>, String> {
+    Err("board.plan.get 需要集群支持（cluster feature 未编译）".to_string())
+}
+
 /// planner LLM 编排（一段）：裸提示词 detached 调用（max_turns=1 单轮出
 /// JSON）→ `parse_plan` 失败带 [`nemesis_board::build_retry_prompt`] 回灌
 /// 重试 ≤2 次（首跑 + 2 次自纠）。D9 三臂：前两轮严格解析（职能格式非法
@@ -1452,9 +1725,393 @@ pub async fn run_planner(
 /// / agent 手里确认发车的凭据）。错误契约：**所有**失败路径的 SSE
 /// `board.plan_failed` 发布在链内完成，调用方只记日志 / 透传错误。
 ///
+/// plan 链后台任务的统一观察壳（panic 留痕闭环）：`execute_plan_chain`
+/// 的三个 fire-and-forget 入口共用。任务 panic（JoinError）不再无声——
+/// ERROR 日志 + issue 系统评论 + `board.plan_failed` 事件（载荷与链内
+/// 失败发布同形）；任务被取消（关机/estop）= 正常流不留痕。2026-10-11
+/// 事故固化：planner 截断 panic 杀死规划任务、看板零留痕，用户体感
+/// 「建了不动」——无人值守链路的后台任务死亡必须看板可见（日志只有
+/// 翻日志的人看得到）。
+#[cfg(feature = "cluster")]
+fn spawn_plan_chain_watched(
+    store: Arc<BoardStore>,
+    hub: Option<Arc<crate::events::EventHub>>,
+    issue_id: i64,
+    plan_id: String,
+    fut: impl std::future::Future<Output = ()> + Send + 'static,
+) {
+    let handle = tokio::spawn(fut);
+    tokio::spawn(async move {
+        if let Err(je) = handle.await {
+            if !je.is_panic() {
+                return; // 任务被取消（关机/estop）= 正常流
+            }
+            let msg = nemesis_utils::string_utils::panic_message(je.into_panic());
+            let short: String = msg.chars().take(300).collect();
+            tracing::error!("[Board] plan chain PANIC issue={issue_id} plan={plan_id}: {short}");
+            let _ = store.add_comment(NewComment {
+                issue_id,
+                author: Actor::system("board"),
+                content: format!(
+                    "❌ 拆解链后台任务异常终止（内部错误 panic）：{short}——该单未完成自动流转，请重试拆解或人工处置"
+                ),
+                parent_id: None,
+                ctype: CommentType::System,
+            });
+            if let Some(hub) = hub {
+                hub.publish(
+                    "board.plan_failed",
+                    serde_json::json!({ "plan_id": plan_id, "issue_id": issue_id, "error": format!("后台任务异常终止（panic）：{short}") }),
+                );
+            }
+        }
+    });
+}
+
+/// plan 链环境快照（fire-and-forget 三入口 + N1 重启恢复共用）：一次克隆
+/// 进 `Arc`，超时重拆监视直接用同一份环境发起新链（递归走
+/// [`spawn_plan_chain`]，panic 留痕与超时监视对新链自动续上）。
+#[cfg(feature = "cluster")]
+struct PlanChainEnv {
+    store: Arc<BoardStore>,
+    cluster: Option<Arc<nemesis_cluster::cluster::Cluster>>,
+    agent_loop: Arc<nemesis_agent::r#loop::AgentLoop>,
+    issue: nemesis_board::Issue,
+    actor: Actor,
+    /// config.json 读取根（超时阈值/attempt 上限/重启恢复开关现读；None =
+    /// 全部走缺省值）。与 auto_confirm 同链路：改配置对下一链即时生效。
+    home: Option<std::path::PathBuf>,
+    hub: Option<Arc<crate::events::EventHub>>,
+}
+
+/// `board.plan` 段现读（home 缺失/读取失败 = 缺省值；不 fail-closed——
+/// 超时/重试上限走缺省是安全方向，与 auto_confirm 的 fail-closed 语义
+/// 不同：发车是副作用，超时监视只是兜底）。
+#[cfg(feature = "cluster")]
+fn plan_chain_cfg(home: Option<&std::path::Path>) -> nemesis_config::BoardPlanConfig {
+    home.and_then(|h| {
+        nemesis_config::load_config(&std::path::Path::new(h).join("config.json")).ok()
+    })
+    .map(|c| c.board.unwrap_or_default().plan)
+    .unwrap_or_default()
+}
+
+/// 拆解链 spawn 单点（超时重拆 §1.1 / §5#1 配置化）：= panic 留痕监视壳
+///（[`spawn_plan_chain_watched`]）+ 超时重拆监视。attempt 从 1 起；重拆
+/// attempt+1 新 plan_id；attempt 耗尽停车（评论 + `board.plan_failed` +
+/// RUNNING_PLANS 摘除）——停车而非无限烧 LLM。
+///
+/// 设计注记（四入口覆盖面）：fire-and-forget 三入口（WSAPI `issue.plan` /
+/// autopilot `auto_plan` / 项目 `auto_start`）+ N1 重启恢复走本函数；
+/// agent 工具 `board_issue plan` 是同步 await 形态（agent 自盯结果，LLM
+/// 调用受 provider 600s 超时 + parse 3 轮上限约束），不挂后台监视。
+#[cfg(feature = "cluster")]
+fn spawn_plan_chain(
+    env: Arc<PlanChainEnv>,
+    plan_id: String,
+    attempt: u32,
+    cfg: nemesis_config::BoardPlanConfig,
+) {
+    let chain_plan_id = plan_id.clone();
+    let fut_env = env.clone();
+    let fut = async move {
+        if let Err(e) = execute_plan_chain(
+            &fut_env.store,
+            fut_env.cluster.clone(),
+            fut_env.agent_loop.clone(),
+            fut_env.issue.clone(),
+            fut_env.actor.clone(),
+            &chain_plan_id,
+            fut_env.home.as_deref(),
+            fut_env.hub.as_deref(),
+            attempt,
+        )
+        .await
+        {
+            tracing::warn!(
+                "[Board] plan chain failed issue={} plan={chain_plan_id}: {e}",
+                fut_env.issue.id
+            );
+        }
+    };
+    spawn_plan_chain_watched(
+        env.store.clone(),
+        env.hub.clone(),
+        env.issue.id,
+        plan_id.clone(),
+        fut,
+    );
+    spawn_plan_timeout_watch(env, plan_id, attempt, cfg);
+}
+
+/// 超时重拆监视（§1.1 D）：`timeout_secs`（0=不限，不监视）后醒来检查
+/// RUNNING_PLANS——条目仍在 = 超时（正常完成 / panic / 错误路径的 guard
+/// 都已摘条目）。处置：摘除本 plan_id（旧链 LLM 返回后 superseded 自检
+/// 静默放弃——tokio 任务不可取消，双闸防双发车）→ 评论 → 重拆或停车。
+/// `cfg` 由调用方注入（生产读 config，测试传秒级短值——§5#1 裁决）。
+#[cfg(feature = "cluster")]
+fn spawn_plan_timeout_watch(
+    env: Arc<PlanChainEnv>,
+    plan_id: String,
+    attempt: u32,
+    cfg: nemesis_config::BoardPlanConfig,
+) {
+    if cfg.timeout_secs == 0 {
+        return; // 0 = 不限：不挂监视
+    }
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(cfg.timeout_secs)).await;
+        {
+            let mut reg = RUNNING_PLANS.lock();
+            match reg.get(&plan_id) {
+                Some(rp) if rp.issue_id == env.issue.id => {
+                    reg.remove(&plan_id);
+                }
+                _ => return, // 已完成/已失败/已被其它链取代 = 未超时
+            }
+        }
+        tracing::warn!(
+            "[Board] plan chain timeout issue={} plan={plan_id} attempt={attempt} ({}s)",
+            env.issue.id,
+            cfg.timeout_secs
+        );
+        let minutes = cfg.timeout_secs / 60;
+        let can_retry =
+            cfg.timeout_reattempt && (cfg.max_attempts == 0 || attempt < cfg.max_attempts);
+        if !can_retry {
+            // 停车：不重拆（reattempt 关 或 attempt 耗尽），等人工。
+            let why = if !cfg.timeout_reattempt {
+                "自动重拆未开启（board.plan.timeout_reattempt=false）".to_string()
+            } else {
+                format!(
+                    "已连续超时 {} 次（board.plan.max_attempts={}），已停止自动重试",
+                    attempt, cfg.max_attempts
+                )
+            };
+            tracing::warn!("[Board] plan chain 停车 issue={}：{why}", env.issue.id);
+            // U-A：拆解停车档案（手动重拆 = issue.plan 入口）。
+            write_side_handoff(
+                &env.store,
+                &env.issue,
+                "plan_exhausted",
+                "retry",
+                format!("拆解超时 {why}：核查模型端点后手动重拆（issue.plan），或人工直接创建子单"),
+                "issue.plan（number=NB-x）手动重拆；或人工拆解",
+                serde_json::json!({
+                    "attempt": attempt,
+                    "max_attempts": cfg.max_attempts,
+                    "timeout_secs": cfg.timeout_secs,
+                }),
+                vec![serde_json::json!({
+                    "action": "plan_chain",
+                    "result": format!("第 {attempt} 次拆解超时（{} 分钟）", minutes),
+                })],
+            );
+            let _ = env.store.add_comment(NewComment {
+                issue_id: env.issue.id,
+                author: Actor::system("board"),
+                content: format!(
+                    "❌ 拆解超时（{} 分钟），{why}，请人工处理（可手动重拆）",
+                    minutes
+                ),
+                parent_id: None,
+                ctype: CommentType::System,
+            });
+            if let Some(hub) = env.hub.as_deref() {
+                hub.publish(
+                    "board.plan_failed",
+                    serde_json::json!({
+                        "plan_id": plan_id,
+                        "issue_id": env.issue.id,
+                        "error": format!("拆解超时（{} 分钟），{why}", minutes),
+                    }),
+                );
+            }
+            return;
+        }
+        let next = attempt + 1;
+        let _ = env.store.add_comment(NewComment {
+            issue_id: env.issue.id,
+            author: Actor::system("board"),
+            content: format!(
+                "⏰ 拆解超时（{} 分钟），自动重试（第 {} 次）",
+                minutes, next
+            ),
+            parent_id: None,
+            ctype: CommentType::System,
+        });
+        // 新链配置现读（热生效：改阈值/上限对重拆链即时生效）。
+        let new_cfg = plan_chain_cfg(env.home.as_deref());
+        let new_plan_id = format!("plan-{}", uuid::Uuid::new_v4());
+        tracing::info!(
+            "[Board] plan chain 重新拆解 issue={} new_plan={new_plan_id} attempt={next}",
+            env.issue.id
+        );
+        spawn_plan_chain(env, new_plan_id, next, new_cfg);
+    });
+}
+
+/// N1 gateway 重启拆解恢复（§1.3 / §7.2 N1，无人值守闭环）：RUNNING_PLANS
+/// 是内存态、重启杀拆解任务——旧行为 = 父单停留「已开始自动拆解」评论态
+/// 等手动重拆（无人值守语义下 = 流程中断）。启动恢复扫描：状态仍
+/// backlog/todo + 最新系统评论为拆解中形态 + 无子单 + 不在 RUNNING_PLANS
+/// 的单子 = 中断残留 → 自动重新发起拆解（走 [`spawn_plan_chain`] 同一
+/// 超时重拆链，attempt 重计）。手动 cancel 的单子状态非 backlog/todo 天然
+/// 排除；恢复拆解同受 `board.plan.max_attempts` 闸。
+///
+/// 调用点 = gateway 装配期（评审重放扫描同阶段，moderator 槽已装配）。
+/// 守卫链：`board.plan.restart_recover`（默认开，关=关回旧行为）→ estop
+/// 挂起跳过（急停意志优先，恢复不抢跑；estop release 不自动补拆——用户
+/// 释放后可手动重拆或重启）→ 非 master 节点跳过（worker 本地 board.db 是
+/// 只读镜像，拆解/派发链跑在 master）。返回恢复发起数。
+#[cfg(feature = "cluster")]
+pub fn recover_interrupted_plans(
+    store: &Arc<BoardStore>,
+    cluster: Option<Arc<nemesis_cluster::cluster::Cluster>>,
+    agent_loop: Arc<nemesis_agent::r#loop::AgentLoop>,
+    home: Option<std::path::PathBuf>,
+    hub: Option<Arc<crate::events::EventHub>>,
+    estop: Option<&nemesis_agent::estop::EstopState>,
+) -> usize {
+    let cfg = plan_chain_cfg(home.as_deref());
+    if !cfg.restart_recover {
+        tracing::info!("[Board] 拆解恢复扫描跳过：board.plan.restart_recover=false");
+        return 0;
+    }
+    if let Some(estop) = estop
+        && estop.is_engaged()
+    {
+        tracing::warn!("[Board] 拆解恢复扫描跳过：estop 挂起（释放后请手动重拆或重启再试）");
+        return 0;
+    }
+    if let Some(c) = &cluster
+        && !matches!(c.role().as_str(), "coordinator" | "master" | "manager")
+    {
+        return 0; // worker 镜像不跑拆解链（与评审钩子同款角色闸）
+    }
+    let mut recovered = 0usize;
+    for status in [IssueStatus::Backlog, IssueStatus::Todo] {
+        let issues = match store.list_issues(&nemesis_board::models::IssueFilter {
+            status: Some(status),
+            ..Default::default()
+        }) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("[Board] 拆解恢复扫描 {status:?} 单据失败：{e}");
+                continue;
+            }
+        };
+        for issue in issues {
+            // 拆解中形态 = 最新系统评论是「已开始自动拆解」（完成/失败/超时
+            // 评论都在其后顶掉它；用户手动评论是普通类型不影响系统序列）。
+            let interrupted = store
+                .list_comments(issue.id)
+                .map(|cs| {
+                    cs.iter()
+                        .rev()
+                        .find(|c| c.ctype == CommentType::System)
+                        .is_some_and(|c| c.content.starts_with("🧩 已开始自动拆解"))
+                })
+                .unwrap_or(false);
+            if !interrupted {
+                continue;
+            }
+            // 双保险：已有子单（拆解实际发过车）/ 已有在途链（扫描期间用户
+            // 手动触发）→ 让位。
+            if store
+                .list_children(issue.id)
+                .map(|c| !c.is_empty())
+                .unwrap_or(true)
+            {
+                continue;
+            }
+            if RUNNING_PLANS
+                .lock()
+                .values()
+                .any(|r| r.issue_id == issue.id)
+            {
+                continue;
+            }
+            tracing::info!(
+                "[Board] 拆解恢复：issue {}（{}）重启中断残留 → 自动重新发起拆解",
+                issue.number,
+                issue.title
+            );
+            let _ = store.add_comment(NewComment {
+                issue_id: issue.id,
+                author: Actor::system("board"),
+                content: "🔄 检测到上次拆解因重启中断，自动重新发起拆解".to_string(),
+                parent_id: None,
+                ctype: CommentType::System,
+            });
+            let env = Arc::new(PlanChainEnv {
+                store: store.clone(),
+                cluster: cluster.clone(),
+                agent_loop: agent_loop.clone(),
+                issue,
+                actor: Actor::system("board"),
+                home: home.clone(),
+                hub: hub.clone(),
+            });
+            let plan_id = format!("plan-{}", uuid::Uuid::new_v4());
+            spawn_plan_chain(env, plan_id, 1, cfg.clone());
+            recovered += 1;
+        }
+    }
+    if recovered > 0 {
+        tracing::info!("[Board] 拆解恢复扫描完成：恢复 {recovered} 个中断拆解");
+    }
+    recovered
+}
+
+/// U-B（§9.2）中断续拆：探针解封后对 `pending=plan` 中断档案重建拆解链
+/// （与 N1 恢复同链——走 [`spawn_plan_chain`] 超时重拆链，attempt 重计 1）。
+/// 在途双保险：该单已有在途链 = 让位（扫描/探针/手动三方竞态防双发车）。
+/// 返回是否实际发车。
+#[cfg(feature = "cluster")]
+pub fn respawn_plan_chain(
+    store: &Arc<BoardStore>,
+    cluster: Option<Arc<nemesis_cluster::cluster::Cluster>>,
+    agent_loop: Arc<nemesis_agent::r#loop::AgentLoop>,
+    issue: nemesis_board::Issue,
+    home: Option<std::path::PathBuf>,
+    hub: Option<Arc<crate::events::EventHub>>,
+) -> bool {
+    if RUNNING_PLANS
+        .lock()
+        .values()
+        .any(|r| r.issue_id == issue.id)
+    {
+        tracing::info!("[Board] 中断续拆让位：issue {} 已有在途拆解链", issue.id);
+        return false;
+    }
+    let _ = store.add_comment(NewComment {
+        issue_id: issue.id,
+        author: Actor::system("board"),
+        content: "🔄 LLM 端点已恢复，中断的拆解自动续做".to_string(),
+        parent_id: None,
+        ctype: CommentType::System,
+    });
+    let env = Arc::new(PlanChainEnv {
+        store: store.clone(),
+        cluster,
+        agent_loop,
+        issue,
+        actor: Actor::system("board"),
+        home,
+        hub,
+    });
+    let plan_id = format!("plan-{}", uuid::Uuid::new_v4());
+    let cfg = plan_chain_cfg(env.home.as_deref());
+    spawn_plan_chain(env, plan_id, 1, cfg);
+    true
+}
+
 /// `home` 供 A1 旗标现读（config.json 热改即时生效；None = 视为关闭，
 /// fail-closed 回人工确认）。`hub` 供 SSE 事件（cron 路径 None——诚实降级：
-/// 无实时推送，评论/落库/发车链路完整）。
+/// 无实时推送，评论/落库/发车链路完整）。`attempt` = 第几次尝试（1 起；
+/// 超时重拆链每次 +1，随 [`RunningPlan`] 注册与 `board.plan_started`
+/// 载荷透出——前端横幅「第 N 次尝试」数据源）。
 #[cfg(feature = "cluster")]
 pub async fn execute_plan_chain(
     store: &Arc<BoardStore>,
@@ -1465,8 +2122,66 @@ pub async fn execute_plan_chain(
     plan_id: &str,
     home: Option<&std::path::Path>,
     hub: Option<&crate::events::EventHub>,
+    attempt: u32,
 ) -> Result<serde_json::Value, String> {
     let started = std::time::Instant::now();
+    // U-B（§9.2）：LLM 端点不可用封存闸——拆解发起短路。自动/手动同闸：
+    // 手动得到诚实挂起说明 + 中断档案（意图不丢，恢复后探针自动续做），
+    // 不是静默吞掉。
+    if super::board_unavailable::frozen_now() {
+        if let Some(ws) = handoff_workspace_root().map(|p| p.as_path()) {
+            super::board_unavailable::write_interruption(
+                ws,
+                store,
+                &issue,
+                "plan",
+                format!("拆解发起时 LLM 端点不可用封存中（attempt {attempt}）：恢复后探针自动续拆"),
+                serde_json::json!({ "plan_id": plan_id, "attempt": attempt }),
+            );
+        }
+        tracing::warn!(
+            "[Board] plan chain 挂起 issue={}：LLM 端点不可用封存中（恢复后自动续做）",
+            issue.id
+        );
+        return Err(
+            "⏸ LLM 端点不可用（封存中）：拆解已挂起，端点恢复后自动续做；也可稍后手动重拆（issue.plan）"
+                .to_string(),
+        );
+    }
+    let ub_cfg = super::board_unavailable::unavailable_cfg(home);
+    // 拆解运行期可观测（2026-10-11「停着」事故）：running 条目（guard 摘除）
+    // + `board.plan_started` SSE + 父单「已开始拆解」评论。planner 单次
+    // 4~7 分钟且此前全程零反馈，用户体感=「停着」。
+    RUNNING_PLANS.lock().insert(
+        plan_id.to_string(),
+        RunningPlan {
+            issue_id: issue.id,
+            started_at: started,
+            attempt,
+        },
+    );
+    let _running_guard = RunningPlanGuard {
+        plan_id: plan_id.to_string(),
+    };
+    if let Some(hub) = hub {
+        hub.publish(
+            "board.plan_started",
+            serde_json::json!({
+                "plan_id": plan_id,
+                "issue_id": issue.id,
+                "issue_number": issue.number,
+                "attempt": attempt,
+            }),
+        );
+    }
+    let _ = store.add_comment(NewComment {
+        issue_id: issue.id,
+        author: Actor::system("board"),
+        content: "🧩 已开始自动拆解（planner 运行中，通常 3~8 分钟；完成后按 auto_confirm 自动发车或转人工确认）"
+            .to_string(),
+        parent_id: None,
+        ctype: CommentType::System,
+    });
     // M4.5：planner 的 meta 级经验注入——同步检索渲染（发起点定格，避免长
     // LLM 调用期间的经验变更串进本次拆解）。meta 注入不计 use_count（计数
     // 只认面向 worker 的派发注入）。
@@ -1507,20 +2222,104 @@ pub async fn execute_plan_chain(
             .collect();
         (!lines.is_empty()).then(|| lines.join("\n"))
     });
-    let (subs, downgrades) =
-        match run_planner(&agent_loop, &issue, team_experience, cluster_profile).await {
-            Ok((subs, downgrades)) => (subs, downgrades),
-            Err(e) => {
-                tracing::warn!("[Board] planner failed issue={}: {e}", issue.id);
-                if let Some(hub) = hub {
-                    hub.publish(
-                        "board.plan_failed",
-                        serde_json::json!({ "issue_id": issue.id, "error": e.clone() }),
-                    );
-                }
-                return Err(e);
+    let (subs, downgrades) = match run_planner(
+        &agent_loop,
+        &issue,
+        team_experience,
+        cluster_profile,
+    )
+    .await
+    {
+        Ok((subs, downgrades)) => {
+            // U-B：planner 成功 = 端点活证据（连击清零/封存解除——生产里
+            // 封存期到不了这里：入口闸已拦）。
+            super::board_unavailable::record_llm_success(&ub_cfg);
+            (subs, downgrades)
+        }
+        Err(e) => {
+            // U-B：planner 失败喂封存判定；恰好触发封存 = 全部在途工作写
+            // 中断档案（本单 + 其它在途拆解链）。
+            let tripped = super::board_unavailable::record_llm_failure(&ub_cfg, &e);
+            if tripped {
+                super::board_unavailable::write_trip_interruptions(
+                    handoff_workspace_root().map(|p| p.as_path()),
+                    store,
+                    Some((
+                        &issue,
+                        "plan",
+                        format!(
+                            "拆解在途（attempt {attempt}）时 LLM 端点不可用封存：恢复后自动续拆"
+                        ),
+                        serde_json::json!({ "plan_id": plan_id, "attempt": attempt }),
+                    )),
+                    &e,
+                );
             }
-        };
+            // superseded 优先于失败面（§1.1 双闸）：被超时重拆取代的旧链
+            // 静默放弃——不发失败评论、不发 plan_failed（旧链迟到的失败
+            // 事件会撤掉新链横幅），不消费解析结果。
+            if !RUNNING_PLANS.lock().contains_key(plan_id) {
+                tracing::info!(
+                    "[Board] plan chain superseded（已被超时重拆取代）issue={} plan={plan_id}，旧链静默放弃",
+                    issue.id
+                );
+                return Ok(serde_json::json!({
+                    "status": "superseded",
+                    "plan_id": plan_id,
+                    "issue_id": issue.id,
+                }));
+            }
+            tracing::warn!("[Board] planner failed issue={}: {e}", issue.id);
+            // P11 观测面：失败评论留痕（SSE 只在线可见，评论持久可回查；
+            // 截断 200 字符防异常长报错刷屏单据）。U-A：链内重试已耗尽的
+            // 最终失败 = 停车，落现场档案。
+            let err_short: String = e.chars().take(200).collect();
+            write_side_handoff(
+                store,
+                &issue,
+                "plan_exhausted",
+                "retry",
+                format!(
+                    "planner 拆解失败（链内重试已耗尽）：核查模型端点后手动重拆（issue.plan），或人工直接创建子单。原因：{err_short}"
+                ),
+                "issue.plan（number=NB-x）手动重拆；或人工拆解",
+                serde_json::json!({ "plan_id": plan_id }),
+                vec![serde_json::json!({
+                    "action": "run_planner",
+                    "result": err_short,
+                })],
+            );
+            let _ = store.add_comment(NewComment {
+                issue_id: issue.id,
+                author: Actor::system("board"),
+                content: format!("❌ planner 拆解失败：{err_short}"),
+                parent_id: None,
+                ctype: CommentType::System,
+            });
+            if let Some(hub) = hub {
+                hub.publish(
+                        "board.plan_failed",
+                        serde_json::json!({ "plan_id": plan_id, "issue_id": issue.id, "error": e.clone() }),
+                    );
+            }
+            return Err(e);
+        }
+    };
+    // superseded 自检（§1.1 双闸之一，成功路径）：超时重拆监视在超时点摘除
+    // 本 plan_id 并发起新链——本链的 LLM future 不可取消仍在飞，返回后第一
+    // 检查点验证自己仍在 RUNNING_PLANS；不在 = 已被取代 → 静默放弃：不发
+    // plan_ready、不落缓存、不评论、不 confirm（防「双计划双发车」）。
+    if !RUNNING_PLANS.lock().contains_key(plan_id) {
+        tracing::info!(
+            "[Board] plan chain superseded（已被超时重拆取代）issue={} plan={plan_id}，旧链静默放弃",
+            issue.id
+        );
+        return Ok(serde_json::json!({
+            "status": "superseded",
+            "plan_id": plan_id,
+            "issue_id": issue.id,
+        }));
+    }
     let count = subs.len();
     {
         let mut cache = PLAN_CACHE.lock();
@@ -1561,6 +2360,22 @@ pub async fn execute_plan_chain(
         })
         .map(|c| c.board.unwrap_or_default().plan.auto_confirm)
         .unwrap_or(false);
+    // P11 观测面：拆解成功评论留痕（含 plan_id；措辞按发车模式分支——
+    // 人工模式附 TTL 提示，自动发车臂随后另有发车评论，不重复诱导确认）。
+    let _ = store.add_comment(NewComment {
+        issue_id: issue.id,
+        author: Actor::system("board"),
+        content: if auto_confirm {
+            format!("🧩 planner 拆解完成：{plan_id}，{count} 个子单（自动发车模式）")
+        } else {
+            format!(
+                "🧩 planner 拆解完成：{plan_id}，{count} 个子单，请在 {}s 内确认派发",
+                PLAN_TTL.as_secs()
+            )
+        },
+        parent_id: None,
+        ctype: CommentType::System,
+    });
     if !auto_confirm {
         return Ok(serde_json::json!({
             "status": "planned",
@@ -1614,10 +2429,22 @@ pub async fn execute_plan_chain(
                 "[Board] auto_confirm 发车失败 issue={}：{e}（保留预览，转人工确认）",
                 issue.id
             );
+            // P11 观测面：发车失败评论留痕（预览保留转人工，评论给入口指引）。
+            let err_short: String = e.chars().take(200).collect();
+            let _ = store.add_comment(NewComment {
+                issue_id: issue.id,
+                author: Actor::system("board"),
+                content: format!(
+                    "⚠️ 拆解完成但自动发车失败：{err_short}（预览已保留，可人工确认派发）"
+                ),
+                parent_id: None,
+                ctype: CommentType::System,
+            });
             if let Some(hub) = hub {
                 hub.publish(
                     "board.plan_failed",
                     serde_json::json!({
+                        "plan_id": plan_id,
                         "issue_id": issue.id,
                         "error": format!("auto_confirm 发车失败：{e}"),
                     }),
@@ -1696,30 +2523,17 @@ async fn issue_plan(
         // 事件的发布在链内完成，不重复发）。
         let plan_id = format!("plan-{}", uuid::Uuid::new_v4());
         let hub = ctx.state.event_hub.clone();
-        let plan_id_for_task = plan_id.clone();
-        let store_for_chain = store.clone();
-        let cluster_for_chain = ctx.state.cluster.clone();
-        let home_for_chain = ctx.home.clone();
-        let actor_for_chain = actor.clone();
-        let issue_for_chain = issue.clone();
-        let loop_for_chain = agent_loop.clone();
-        tokio::spawn(async move {
-            if let Err(e) = execute_plan_chain(
-                &store_for_chain,
-                cluster_for_chain,
-                loop_for_chain,
-                issue_for_chain,
-                actor_for_chain,
-                &plan_id_for_task,
-                // ctx.home 是 Option<String>（workspace 覆盖或 None）。
-                home_for_chain.as_deref().map(std::path::Path::new),
-                Some(&hub),
-            )
-            .await
-            {
-                tracing::warn!("[Board] plan chain failed issue={}: {e}", issue.id);
-            }
+        let env = std::sync::Arc::new(PlanChainEnv {
+            store: store.clone(),
+            cluster: ctx.state.cluster.clone(),
+            agent_loop,
+            issue: issue.clone(),
+            actor: actor.clone(),
+            home: ctx.home.clone().map(std::path::PathBuf::from),
+            hub: Some(hub),
         });
+        let cfg = plan_chain_cfg(env.home.as_deref());
+        spawn_plan_chain(env, plan_id.clone(), 1, cfg);
         Ok(Some(
             serde_json::json!({ "status": "planning", "plan_id": plan_id }),
         ))
@@ -1904,16 +2718,14 @@ fn link_project_on_dispatch(store: &Arc<BoardStore>, project_id: Option<i64>) {
     }
 }
 
-/// ⏸ 暂缓评论的去重标记：单上最后一条 system 评论含此串 = 停车状态已
-/// 留痕，不再重复落同文案评论（B4 防堆叠）。
-#[cfg_attr(not(feature = "cluster"), allow(dead_code))]
-const PARK_NOTICE_MARK: &str = "自动派发暂缓";
-
 /// 三路 sweep 触发源（announce 回调 / 派发落定重估波 / 周期兜底 ticker，
 /// F-U3-4）的进程级串行锁：sweep 体是 check-then-dispatch 序列，两个
 /// wave 并发时可同时通过 `has_active_dispatch` 闸对同一单双派。同步锁
-/// 即可——sweep 体全同步（SQLite + fire-and-forget RPC spawn），持锁
-/// 毫秒级；poison 恢复沿用 `unwrap_or_else(into_inner)` 惯例。
+/// 即可——sweep 体全同步（SQLite + fire-and-forget RPC spawn），常态
+/// 持锁毫秒级；**例外**：档案基线转移（write_side_handoff 内 block_in_place
+/// 打包）可在持锁下跑秒级~分钟级，此窗口内其余触发源排队等待（正确性
+/// 优先，档案导出另有独立线程，不放大此锁）；poison 恢复沿用
+/// `unwrap_or_else(into_inner)` 惯例。
 #[cfg(feature = "cluster")]
 static PARK_SWEEP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// D0 准入停车评论标记（与 PARK_NOTICE_MARK 分开：原因不同、去重不互斥）。
@@ -2075,11 +2887,32 @@ pub fn dispatch_subissue_auto_with_config(
                                     issue_id: issue.id,
                                     author: nemesis_board::Actor::system("board"),
                                     content: format!(
-                                        "⏸ 自动派发暂缓：当前在线节点无可匹配（角色/标签）节点；节点上线或要求调整后系统会自动重试，也可手动指派节点后派发。匹配明细：{detail}"
+                                        "⏸ {PARK_NOTICE_MARK}：当前在线节点无可匹配（角色/标签）节点；节点上线或要求调整后系统会自动重试，也可手动指派节点后派发。匹配明细：{detail}"
                                     ),
                                     parent_id: None,
                                     ctype: nemesis_board::CommentType::System,
                                 })?;
+                                // U-A：首次停车落现场档案（去重闸同款——只
+                                // 首次写，sweep 重扫不覆写）。
+                                write_side_handoff(
+                                    store,
+                                    &issue,
+                                    "no_match",
+                                    "retry",
+                                    format!(
+                                        "无在线节点满足角色/标签要求：上线合格节点后停车场 sweep 自动重派，或手动指派节点后派发。匹配明细：{detail}"
+                                    ),
+                                    "issue.dispatch（number=NB-x，可带 target 手动指派）；或等 sweep 自动重试",
+                                    serde_json::json!({
+                                        "required_role": issue.required_role,
+                                        "required_tags": issue.required_tags,
+                                        "required_profession": issue.required_profession,
+                                    }),
+                                    vec![serde_json::json!({
+                                        "action": "match",
+                                        "result": detail,
+                                    })],
+                                );
                             }
                             // B5 可见性：整条链都在等节点 → 父单转 blocked 显形。
                             mark_parent_blocked_if_stalled(store, &issue, actor);
@@ -2241,6 +3074,13 @@ pub fn sweep_parked_dispatches_with_config(
     if board_estop_engaged() {
         return (0, 0, 0);
     }
+    // U-B（§9.2）：LLM 端点不可用封存中——派发重试 sweep 短路（worker 与
+    // master 共享端点，发车必然烧在不可用端点上；恢复后 sweep 自然续跑，
+    // 停车候选语义不变）。
+    if super::board_unavailable::frozen_now() {
+        tracing::debug!("[Board] 停车场 sweep 短路：LLM 端点不可用封存中");
+        return (0, 0, 0);
+    }
     let candidates = match store.list_dispatch_park_candidates() {
         Ok(c) => c,
         Err(e) => {
@@ -2267,16 +3107,319 @@ pub fn sweep_parked_dispatches_with_config(
             }
         }
     }
-    (candidates.len(), dispatched, failed)
+    // F2（2026-10-13）：送达失败自动重试——待派态或 in_review 且最后一条
+    // system 评论是 ⛔ 送达失败标记且最新派发行 state=failed 的单进入重试
+    // 池（评论 + 派发行账本双闸，gateway 重启不丢退避进度）。池含 in_review：
+    // 评审 FAIL 自动重派绕过 backlog/todo 状态闸，issue 带 in_review 直进
+    // dispatch_issue_core，送达失败回滚也回 in_review——只捞 backlog/todo
+    // 会漏掉该形态（复检批补：NB-24 原始事故形状）。账本闸（多角度审计批）：
+    // 成功交付只写 Delivery/Comment 评论不写 system 评论——无账本闸则旧 ⛔
+    // 标记仍是最后一条 system 评论，交付后 in_review 立即重新入池，评审进行
+    // 中被重派（乒乓循环）。
+    // 闸序：重试预算（board.budget.max_send_retries 默认 5；超限 → 🛑 转人工
+    // 评论，落盘即出池）→ 退避（1m→2m→4m…封顶 30m，从末次失败时刻起算）→
+    // 执行器按状态分流：backlog/todo 走 dispatch_subissue_auto（完整松弛
+    // 阶梯+停车路径）；in_review 走 dispatch_issue_core 直派（重派目标=末次
+    // worker 在线则原地重试，否则在线候选首选；无可用节点——file: 锚点拓扑
+    // 死锁 ⏸ 出池转人工，全员离线 debug 留池）。上一轮 park 候选已先跑完
+    // （顺序执行）：派出的单已 in_progress，不会在本池重复出现。
+    let mut considered = candidates.len();
+    match store.list_send_failure_candidates(nemesis_board::SEND_FAILURE_MARK) {
+        Ok(send_fails) => {
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            // 重试预算（多角度审计批 2026-10-13，替换旧 E1 max_total_redispatch
+            // 挪用）：专用键 board.budget.max_send_retries，默认 5，按本单
+            // ⛔ 标记评论计数；0 = 关闭保险丝；unlimited_mode = true 视为 0
+            //（操作者显式放弃护栏）。与父单全链派发行口径（max_total_redispatch）
+            // 互不掺和——两种计数语义之前混在一个闸里，🛑 文案与审计口径双失真。
+            let cfg = board_cfg.cloned().unwrap_or_default();
+            let cap = if cfg.unlimited_mode || cfg.budget.max_send_retries == 0 {
+                0
+            } else {
+                cfg.budget.max_send_retries
+            };
+            for (id, attempts, last_fail, _snapshot_status) in send_fails {
+                considered += 1;
+                // 快照复核（并发审计批 2026-10-13）：池 SELECT 与本臂执行间
+                // 可隔基线转移等秒级窗口——单子可能已被并发链收口（done/
+                // cancelled）或改道（评审回 todo 等）。终态单不派发也不落
+                // 评论（⏸/🛑 落在收口单上是对事实撒谎）；分流一律用新鲜
+                // 状态（快照 status 弃用），直派臂不再凭快照绕过 todo 的
+                // 依赖闸。
+                let fresh = match store.get_issue(id) {
+                    Ok(i) => i,
+                    Err(_) => continue,
+                };
+                if matches!(fresh.status, IssueStatus::Done | IssueStatus::Cancelled) {
+                    tracing::debug!("[Board] 送达失败重试 issue={id} 已收口，跳过");
+                    continue;
+                }
+                let status = fresh.status.as_str().to_string();
+                // 重试预算闸：超限 → 🛑 转人工。🛑 评论落盘 = 最后一条
+                // system 评论不再是 ⛔ 标记 → 出池。
+                if cap > 0 && attempts > cap {
+                    tracing::info!(
+                        "[Board] 送达失败重试超预算（issue={id} {attempts}>{cap}）→ 转人工"
+                    );
+                    // 🛑 评论是熔断出池的载体（落盘 = 最后一条 system 评论
+                    // 不再是 ⛔）——写入失败必须可见，静默吞掉 = 熔断永不
+                    // 落盘 + 每 tick 静默重写（并发审计批 2026-10-13）。
+                    if let Err(e) = store.add_comment(nemesis_board::models::NewComment {
+                        issue_id: id,
+                        author: actor.clone(),
+                        content: format!(
+                            "🛑 送达失败自动重试已达预算上限（本单 {attempts} 次 > \
+                             board.budget.max_send_retries={cap}）：转人工处理。\
+                             可人工指派节点后重新派发，或调大预算后重新派发恢复自动重试。"
+                        ),
+                        parent_id: None,
+                        ctype: nemesis_board::CommentType::System,
+                    }) {
+                        tracing::warn!(
+                            "[Board] 🛑 熔断评论写入失败（issue={id}，下 tick 重写）：{e}"
+                        );
+                    }
+                    continue;
+                }
+                // 退避闸：未到重试时刻 → 本 tick 跳过。
+                if now_secs
+                    < last_fail.unsigned_abs() + nemesis_board::send_failure_backoff_secs(attempts)
+                {
+                    continue;
+                }
+                let dispatched_ok = if status == "in_review" {
+                    // 评审 FAIL 重派回流形态：直派单点（不做松弛阶梯——
+                    // 评审已经认可原目标的能力面，先原地重试）。差距意见
+                    // 从评论找回随包重发（worker 必须知道为什么被打回，
+                    // 否则重派就是掷骰子——§6.1 检视 2 同源纪律）。
+                    // D0 在途闸（闭环批 2026-10-13 补齐：backlog 臂经
+                    // dispatch_subissue_auto_with_config 自带此闸，本直派
+                    // 臂此前绕过——目标 worker 在途满载仍硬塞，D0 的
+                    // 「同波多就绪单不挤单 worker」语义对重试臂失效）。
+                    // **只 debug 延后，不落任何 system 评论**——F2 候选的
+                    // 身份锚 = 最后一条 system 评论是 ⛔ 标记，此处写评论
+                    // 会把单子自己旋出重试池（自败）。
+                    let target = pick_send_failure_redispatch_target(store, cluster, id);
+                    match target {
+                        Some(target) => {
+                            let target = cluster.canonical_peer_id(&target).unwrap_or(target);
+                            // 拓扑预检（并发审计批 2026-10-13）：file: 锚点 +
+                            // 远端目标 = 确定性拓扑死锁，dispatch_issue_core
+                            // 的拓扑闸必拒——先于派发尝试落 ⏸（成因精确）。
+                            // 此前在 Err 臂事后判形态，冲突冻结/基线中止等
+                            // 先序闸的瞬态 Err 也会被误诊成拓扑死锁而停车
+                            // 出池（自动重试永久丢失）。
+                            if let Some(reason) = reject_remote_file_anchors(
+                                fresh.acceptance_criteria.as_deref(),
+                                &target,
+                                cluster.node_id(),
+                                &cluster.node_name(),
+                            ) {
+                                tracing::info!(
+                                    "[Board] 送达失败重试 issue={id} 含 file: 锚点（远端重派拓扑不可行）→ ⏸ 暂停转人工"
+                                );
+                                if let Err(e) =
+                                    store.add_comment(nemesis_board::models::NewComment {
+                                        issue_id: id,
+                                        author: actor.clone(),
+                                        content: format!(
+                                            "⏸ 送达失败自动重试暂停：{reason}。\
+                                         请将 file: 锚点改为 re: 型，或人工将任务派给本节点后恢复。"
+                                        ),
+                                        parent_id: None,
+                                        ctype: nemesis_board::CommentType::System,
+                                    })
+                                {
+                                    tracing::warn!(
+                                        "[Board] ⏸ 出池评论写入失败（issue={id}，下 tick 重写）：{e}"
+                                    );
+                                }
+                                continue;
+                            }
+                            let cap = board_cfg.map(|c| c.worker_max_inflight).unwrap_or(1);
+                            let load = store.count_active_dispatch_by_worker().unwrap_or_default();
+                            if inflight_full(&load, &target, cap) {
+                                tracing::debug!(
+                                    "[Board] 送达失败重试 issue={id} 目标 {target} 在途满载\
+                                    （{}/{}），本 tick 延后",
+                                    load.get(&target).copied().unwrap_or(0),
+                                    cap
+                                );
+                                Ok(None)
+                            } else {
+                                let feedback = recover_review_feedback(store, id);
+                                dispatch_issue_core(
+                                    store,
+                                    Some(cluster),
+                                    id,
+                                    &target,
+                                    actor,
+                                    feedback.as_deref(),
+                                )
+                                .map(|_| Some(()))
+                            }
+                        }
+                        None => {
+                            // 无可用目标分两类（多角度审计批 2026-10-13）：
+                            // file: 锚点单 = 拓扑死锁（只能本节点执行，而送达
+                            // 失败的目标是远端）——自动重试永不可能成功，⏸
+                            // 出池转人工；其余（全员离线等）= 瞬态，debug 留池
+                            // 等节点回来（此前 INFO 每 tick 刷屏）。
+                            let file_anchor = store
+                                .get_issue(id)
+                                .ok()
+                                .map(|i| {
+                                    nemesis_board::anchor::has_file_anchor(
+                                        i.acceptance_criteria.as_deref().unwrap_or(""),
+                                    )
+                                })
+                                .unwrap_or(false);
+                            if file_anchor {
+                                tracing::info!(
+                                    "[Board] 送达失败重试 issue={id} 含 file: 锚点（远端重派拓扑不可行）→ ⏸ 暂停转人工"
+                                );
+                                if let Err(e) =
+                                    store.add_comment(nemesis_board::models::NewComment {
+                                        issue_id: id,
+                                        author: actor.clone(),
+                                        content: "⏸ 送达失败自动重试暂停：本单验收标准含 file: 锚点，\
+                                                  只能在派发端节点实核，而末次送达失败的派发目标是远端节点——\
+                                                  自动重派在拓扑上不可行。请将 file: 锚点改为 re: 型，\
+                                                  或人工将任务派给本节点后恢复。"
+                                            .to_string(),
+                                        parent_id: None,
+                                        ctype: nemesis_board::CommentType::System,
+                                    })
+                                {
+                                    tracing::warn!(
+                                        "[Board] ⏸ 出池评论写入失败（issue={id}，下 tick 重写）：{e}"
+                                    );
+                                }
+                            } else {
+                                tracing::debug!(
+                                    "[Board] 送达失败重试 issue={id}（in_review）暂无在线可用节点，留池"
+                                );
+                            }
+                            Ok(None)
+                        }
+                    }
+                } else {
+                    dispatch_subissue_auto_with_config(
+                        board_cfg,
+                        store,
+                        Some(cluster),
+                        id,
+                        actor,
+                        notify_park,
+                    )
+                    .map(|opt| opt.map(|_| ()))
+                };
+                match dispatched_ok {
+                    Ok(Some(_)) => {
+                        dispatched += 1;
+                        tracing::info!(
+                            "[Board] 送达失败重试发车（issue={id} 第 {} 次）",
+                            attempts + 1
+                        );
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        failed += 1;
+                        // estop 中途拉闸 → 尊重冻结留池（release 后自然续跑），
+                        // 不落评论——冻结期对全部候选写 ⏸ 是纯噪声。
+                        if board_estop_engaged() {
+                            tracing::debug!(
+                                "[Board] 送达失败重试 issue={id} 派发受阻（estop 生效，留池）：{e}"
+                            );
+                            continue;
+                        }
+                        // 已有新派发在途（并发触发源抢到 claim）→ 账本闸自然
+                        // 出池，不落评论污染交付线程。
+                        if store.has_active_dispatch(id).unwrap_or(false) {
+                            tracing::debug!(
+                                "[Board] 送达失败重试 issue={id} 已有在途派发接管，让位"
+                            );
+                            continue;
+                        }
+                        // 其余 Err（RPC 提交瞬断 / 项目冲突冻结 / 基线中止 /
+                        // 状态竞态等）：留池按退避重试（1m→30m 限频，不是每
+                        // tick），冻结类由 project.resume 自愈后自然续跑。
+                        // 拓扑死锁已在派发前预检出池——此处不再事后判 file:
+                        // 形态（并发审计批 2026-10-13 修：冻结等先序闸的瞬态
+                        // Err 曾被误诊成拓扑死锁而永久停车）。
+                        tracing::warn!(
+                            "[Board] 送达失败重试派发 issue {id} 失败（留池按退避重试）：{e}"
+                        );
+                    }
+                }
+            }
+        }
+        Err(e) => tracing::warn!("[Board] 送达失败重试候选查询失败：{e}"),
+    }
+    (considered, dispatched, failed)
+}
+
+/// F2 送达失败重试的 in_review 重派目标：末次派发 worker 在线则原地重试
+/// （送达失败 = 可达性本身是失败项，与 D3 评审重派的 Same(last) 不同——
+/// 那里 worker 刚交付过、可达性成立）；末次 worker 离线/无派发记录 →
+/// 在线候选首选（[`rank_dispatch_candidates`] 匹配序）。无在线可用节点
+/// 返回 None（调用方本 tick 跳过留池，退避闸继续生效）。
+#[cfg(feature = "cluster")]
+fn pick_send_failure_redispatch_target(
+    store: &Arc<BoardStore>,
+    cluster: &Arc<nemesis_cluster::cluster::Cluster>,
+    issue_id: i64,
+) -> Option<String> {
+    if let Ok(dispatches) = store.list_dispatches(issue_id)
+        && let Some(last) = dispatches.last()
+        && let Some(peer) = cluster.get_peer(&last.worker_id)
+        && peer.is_online()
+    {
+        return Some(last.worker_id.clone());
+    }
+    let issue = store.get_issue(issue_id).ok()?;
+    rank_dispatch_candidates(store, cluster, &issue)
+        .into_iter()
+        .find(|name| cluster.get_peer(name).is_some_and(|p| p.is_online()))
+}
+
+/// F2 送达失败重试（in_review）的验收差距找回：评审 FAIL 臂把差距以
+/// 「❌ agent 验收未通过（第 N/M 次重派）## 差距…」用户评论落库
+/// （board_review.rs 唯一写入方），取最后一条以「❌ agent 验收未通过」
+/// **开头**的用户评论**整段原文**作 review_feedback——不解析差距/reasons
+/// 边界，整段随「上轮验收意见」段重发（信息只多不少）。前缀锚定而非
+/// contains（多角度审计批 2026-10-13）：人工评审意见若引用「## 差距」
+/// 字样（引用 worker 自述/粘贴旧意见），contains 会把人工评论误当自动
+/// 重派差距重发。无此类评论（人工 in_review 直派送达失败等形态）返回
+/// None——不造空意见。
+#[cfg(feature = "cluster")]
+fn recover_review_feedback(store: &Arc<BoardStore>, issue_id: i64) -> Option<String> {
+    store
+        .list_comments(issue_id)
+        .ok()?
+        .into_iter()
+        .rev()
+        .find(|c| {
+            c.ctype == nemesis_board::CommentType::Comment
+                && c.content.starts_with("❌ agent 验收未通过")
+        })
+        .map(|c| c.content)
 }
 
 /// D0b（goal P2）重平衡：节点 announce（上线/刷新）时，把其他 worker 手里
 /// 「已派未开跑」（dispatched 且未 running）的排队单，按空闲 slot 挪给本
-/// 节点——只从超载者（在途 > cap）偷队首；running 单不可迁移。新 worker
-/// 需满足该单角色/标签要求（同匹配器语义）。竞态诚实边界：task_cancel
-/// 下行到达前旧 worker 已出队开跑 → 任务照跑、其回写因 dispatch 已取消被
-/// 写回幂等早退丢弃、重派新 task_id 正常执行（旧 worker 白跑一轮，结果
-/// 仍单份）。返回挪动单数。
+/// 节点——只从超载者（活跃 = 在途+排队 > cap，排队单存在即满载证据）偷
+/// 队首；running 单不可迁移。新 worker 需满足该单角色/标签要求（同匹配器
+/// 语义）。**file: 锚点单不偷**（[`nemesis_board::anchor::has_file_anchor`]，
+/// 拓扑约束：转派远端必被派发拓扑闸拒绝——真机 NB-5/NB-6 实证取消后无法
+/// 重派）。转派失败补偿：原排队派发已被取消，系统评论诚实留痕（issue 保
+/// 留可重派状态，人工/autopilot 一发即活），不无声死透。竞态诚实边界：
+/// task_cancel 下行到达前旧 worker 已出队开跑 → 任务照跑、其回写因
+/// dispatch 已取消被写回幂等早退丢弃、重派新 task_id 正常执行（旧 worker
+/// 白跑一轮，结果仍单份）。返回挪动单数。
 #[cfg(feature = "cluster")]
 pub async fn rebalance_queued_to_worker(
     store: &Arc<BoardStore>,
@@ -2323,11 +3466,20 @@ pub async fn rebalance_queued_to_worker(
         }
         let from_load = load.get(&d.worker_id).copied().unwrap_or(0);
         if from_load <= cap as usize {
-            continue; // 只从超载者（在途 > cap）偷；普通欠载的排队单不动。
+            continue; // 只从超载者（活跃 = 在途+排队 > cap，见函数注释）偷；普通欠载的排队单不动。
         }
         let Ok(issue) = store.get_issue(d.issue_id) else {
             continue;
         };
+        // 拓扑约束（2026-10-08 NB-5/NB-6 根修①）：file: 锚点单只能在派发端
+        // workspace 实核，转派远端必被 dispatch_issue_core 拓扑闸拒绝——
+        // 而本函数 cancel 先行、失败不可逆。跳过不偷（留在原队列，原节点
+        // 空闲后自然出队），谓词单一真相源 = has_file_anchor。
+        if nemesis_board::anchor::has_file_anchor(
+            issue.acceptance_criteria.as_deref().unwrap_or(""),
+        ) {
+            continue;
+        }
         let (required_role, required_tags) = match issue.required_role.as_deref().map(str::trim) {
             Some(r) if !r.is_empty() && r != "worker" && r != "coordinator" => {
                 let mut tags = issue.required_tags.clone();
@@ -2391,6 +3543,23 @@ pub async fn rebalance_queued_to_worker(
             }
             Err(e) => {
                 tracing::warn!("[Board] D0b 重平衡重派 issue {} 失败：{e}", d.issue_id);
+                // 补偿（2026-10-08 NB-5/NB-6 根修②）：取消已落库且不可逆，
+                // issue 此时无活跃派发——系统评论诚实留痕，把「无声死透」
+                // 变成「可见停车」。状态机 in_progress → todo 非法（不走
+                // 回退）；issue 保留 in_progress 可被 dispatch_issue_core
+                // 直接重派（人工/autopilot 一发即活）。评论失败不影响主流程
+                // （数据已破坏，能留多少痕留多少痕）。
+                let _ = store.add_comment(nemesis_board::NewComment {
+                    issue_id: d.issue_id,
+                    author: nemesis_board::Actor::system("board"),
+                    content: format!(
+                        "⛔ D0b 重平衡转派失败：{e}\n原排队派发（{worker}）已被取消且无法自动恢复，issue 无活跃派发。\
+可重新派发（issue 当前状态允许直派）；若因验收锚点形态导致，请调整锚点后重试。",
+                        worker = d.worker_id
+                    ),
+                    parent_id: None,
+                    ctype: nemesis_board::CommentType::System,
+                });
             }
         }
     }
@@ -2440,7 +3609,8 @@ fn project_dispatch_candidates(
 /// 的单一真相源）：在线节点（不含本机）→ 投影 →
 /// [`nemesis_board::rank_peers`] 匹配度降序全量返回。节点角色词表只有
 /// worker/coordinator，planner 给的其他角色词（如 "qa"）转标签语义与
-/// tags/category 匹配。
+/// tags/category 匹配。**file: 锚点单返回空候选**（拓扑约束，见函数内
+/// 注释）——消费方按各自语义回落（Same 重派/停车）。
 #[cfg(feature = "cluster")]
 pub fn rank_dispatch_candidates(
     store: &BoardStore,
@@ -2459,6 +3629,14 @@ pub fn rank_dispatch_candidates(
     };
 
     let load = store.count_active_dispatch_by_worker().unwrap_or_default();
+    // 拓扑约束（2026-10-08 NB-4/NB-5/NB-6 根修③）：file: 锚点单只能本节点
+    // 执行，而候选投影全是远端节点（excluding_self）——返回空候选，让
+    // 消费方走各自的「无候选」路径（换节点决策回落 Same(本节点) / 匹配器
+    // 停车 / 冲突解决同节点重派），不产出注定被拓扑闸拒绝的非法目标。
+    // 谓词单一真相源 = has_file_anchor。
+    if nemesis_board::anchor::has_file_anchor(issue.acceptance_criteria.as_deref().unwrap_or("")) {
+        return Vec::new();
+    }
     let input = nemesis_board::MatchInput {
         required_role,
         required_tags: &required_tags,
@@ -2504,6 +3682,12 @@ fn pick_fallback_target(
     issue: &nemesis_board::Issue,
 ) -> Option<(String, &'static str)> {
     use nemesis_config::DispatchFallbackMode;
+    // 拓扑约束（2026-10-08 根修④）：file: 锚点单只能本节点执行，兜底候选
+    // 全是远端节点——兜底产物必被拓扑闸拒绝，直接 None 走停车路径（与
+    // 匹配器无候选同语义）。谓词单一真相源 = has_file_anchor。
+    if nemesis_board::anchor::has_file_anchor(issue.acceptance_criteria.as_deref().unwrap_or("")) {
+        return None;
+    }
     let cfg = board_cfg?;
     let depth = match cfg.dispatch_fallback {
         DispatchFallbackMode::Off => return None,
@@ -3282,29 +4466,17 @@ fn spawn_project_auto_start(
         }
     };
     let plan_id = format!("plan-{}", uuid::Uuid::new_v4());
-    let store_for_chain = store.clone();
-    let cluster_for_chain = ctx.state.cluster.clone();
-    let home_for_chain = ctx.home.clone().map(std::path::PathBuf::from);
-    let actor_for_chain = actor.clone();
-    let issue_for_chain = issue.clone();
-    let hub_for_chain = ctx.state.event_hub.clone();
-    let plan_id_for_chain = plan_id.clone();
-    tokio::spawn(async move {
-        if let Err(e) = execute_plan_chain(
-            &store_for_chain,
-            cluster_for_chain,
-            agent_loop,
-            issue_for_chain,
-            actor_for_chain,
-            &plan_id_for_chain,
-            home_for_chain.as_deref(),
-            Some(&hub_for_chain),
-        )
-        .await
-        {
-            tracing::warn!("[Board] 项目自动启动 plan chain failed: {e}");
-        }
+    let env = std::sync::Arc::new(PlanChainEnv {
+        store: store.clone(),
+        cluster: ctx.state.cluster.clone(),
+        agent_loop,
+        issue: issue.clone(),
+        actor: actor.clone(),
+        home: ctx.home.clone().map(std::path::PathBuf::from),
+        hub: Some(ctx.state.event_hub.clone()),
     });
+    let cfg = plan_chain_cfg(env.home.as_deref());
+    spawn_plan_chain(env, plan_id, 1, cfg);
     Ok(issue)
 }
 
@@ -3343,7 +4515,6 @@ fn fire_autopilot_plan_chain(
         });
     };
     let plan_id = format!("plan-{}", uuid::Uuid::new_v4());
-    let store_for_chain = store.clone();
     let issue_for_chain = match store.get_issue(issue_id) {
         Ok(i) => i,
         Err(e) => {
@@ -3351,27 +4522,17 @@ fn fire_autopilot_plan_chain(
             return serde_json::json!({ "status": "failed", "reason": e });
         }
     };
-    let actor_for_chain = actor.clone();
-    let home_for_chain = ap_ctx.home.clone();
-    let hub_for_chain = ap_ctx.hub.clone();
-    let cluster_for_chain = ap_ctx.cluster.clone();
-    let plan_id_for_chain = plan_id.clone();
-    tokio::spawn(async move {
-        if let Err(e) = execute_plan_chain(
-            &store_for_chain,
-            cluster_for_chain, // 匹配器选节点靠它；None=派发诚实降级
-            agent_loop,
-            issue_for_chain,
-            actor_for_chain,
-            &plan_id_for_chain,
-            Some(&home_for_chain),
-            hub_for_chain.as_deref(),
-        )
-        .await
-        {
-            tracing::warn!("[Board] autopilot auto_plan plan chain issue={issue_id} failed: {e}");
-        }
+    let env = std::sync::Arc::new(PlanChainEnv {
+        store: store.clone(),
+        cluster: ap_ctx.cluster.clone(), // 匹配器选节点靠它；None=派发诚实降级
+        agent_loop,
+        issue: issue_for_chain,
+        actor: actor.clone(),
+        home: Some(ap_ctx.home.clone()),
+        hub: ap_ctx.hub.clone(),
     });
+    let cfg = plan_chain_cfg(env.home.as_deref());
+    spawn_plan_chain(env, plan_id.clone(), 1, cfg);
     serde_json::json!({ "status": "planning", "plan_id": plan_id })
 }
 
@@ -3485,11 +4646,15 @@ fn arm_autopilot_job_with(
 fn disarm_autopilot_job(ctx: &RequestContext, ap: &nemesis_board::Autopilot) {
     if let (Some(cron), Some(job_id)) = (ctx.state.cron.as_ref(), ap.cron_job_id.as_deref()) {
         match cron.lock() {
-            Ok(svc) => {
-                if !svc.remove_job(job_id) {
+            Ok(svc) => match svc.remove_job(job_id) {
+                Ok(true) => {}
+                Ok(false) => {
                     tracing::warn!("[Board] autopilot cron job not found: {job_id}");
                 }
-            }
+                Err(e) => {
+                    tracing::warn!("[Board] autopilot cron job {job_id} remove failed: {e}");
+                }
+            },
             Err(_) => tracing::warn!(
                 "[Board] cron service lock poisoned; autopilot job {job_id} left behind"
             ),
@@ -3528,7 +4693,11 @@ pub fn sync_autopilot_jobs(
                     job.id,
                     job.name
                 );
-                svc.remove_job(&job.id);
+                svc.remove_job(&job.id)
+                    .map_err(|e| {
+                        tracing::warn!("[Board] orphan cron job {} remove failed: {e}", job.id)
+                    })
+                    .ok();
             }
         }
     }
@@ -3562,6 +4731,7 @@ impl ModuleHandler for BoardHandler {
         &[
             "issue.list",
             "issue.get",
+            "issue.timeline",
             "issue.create",
             "issue.update",
             "issue.assign",
@@ -3571,6 +4741,8 @@ impl ModuleHandler for BoardHandler {
             "issue.cancel",
             "issue.reopen",
             "issue.plan",
+            "plan.list",
+            "plan.get",
             "issue.bulk_archive",
             "autopilot.list",
             "autopilot.create",
@@ -3602,6 +4774,9 @@ impl ModuleHandler for BoardHandler {
             "audit.list",
             "audit.rollback",
             "audit.retry_merge",
+            "review.retrigger",
+            "unavailable.status",
+            "unavailable.release",
             "config.get",
             "config.set",
             "dossier.export",
@@ -3627,6 +4802,24 @@ impl ModuleHandler for BoardHandler {
                 let total = issues.len();
                 // goal P1/C2：逐单附环节（issue_stage 单一真相源）——前端
                 // 子单行环节徽标数据源；加法变更，旧前端兼容。
+                // §1.1 拆解运行期投影（cluster 编译时）：命中 RUNNING_PLANS
+                // 的单附 `planning: {elapsed_secs, attempt}`（纯展示叠加，
+                // 不改 issue 状态机——backlog 语义不变）。前端列表徽标/
+                // 项目卡片行「🧩 拆解中」数据源。
+                #[cfg(feature = "cluster")]
+                let planning_now: std::collections::HashMap<i64, (u64, u32)> = {
+                    let now = std::time::Instant::now();
+                    RUNNING_PLANS
+                        .lock()
+                        .values()
+                        .map(|r| {
+                            (
+                                r.issue_id,
+                                (now.duration_since(r.started_at).as_secs(), r.attempt),
+                            )
+                        })
+                        .collect()
+                };
                 let mut rows = Vec::with_capacity(issues.len());
                 for issue in &issues {
                     let mut v =
@@ -3636,6 +4829,16 @@ impl ModuleHandler for BoardHandler {
                             "stage".to_string(),
                             serde_json::json!(issue_stage(&store, issue)?),
                         );
+                        #[cfg(feature = "cluster")]
+                        if let Some((elapsed, attempt)) = planning_now.get(&issue.id) {
+                            obj.insert(
+                                "planning".to_string(),
+                                serde_json::json!({
+                                    "elapsed_secs": elapsed,
+                                    "attempt": attempt,
+                                }),
+                            );
+                        }
                     }
                     rows.push(v);
                 }
@@ -3651,6 +4854,62 @@ impl ModuleHandler for BoardHandler {
                 Ok(Some(
                     serde_json::json!({ "issue": issue_to_view(&store, &issue)? }),
                 ))
+            }
+            // U-C（2026-10-12 §9.3）：单子全链路时间线（可追溯查询面——终结
+            // 「人查 4 个库」）。聚合入口与 dossier timeline.md 同源
+            // （nemesis-board::timeline）；集群侧事件（任务结果 / 续行快照
+            // 在场）在此注入。按 (ts, source_rank) 升序。
+            "issue.timeline" => {
+                let data = data.ok_or("missing data")?;
+                let issue = if let Ok(id) = data.get("id").and_then(|v| v.as_i64()).ok_or(()) {
+                    store.get_issue(id)?
+                } else {
+                    store.get_issue_by_number(&get_str(&data, "number")?)?
+                };
+                #[allow(unused_mut)] // 非 cluster 编译：extra 恒空仍照常传聚合入口
+                let mut extra: Vec<nemesis_board::timeline::TimelineEvent> = Vec::new();
+                #[cfg(feature = "cluster")]
+                if let Some(cluster) = ctx.state.cluster.as_ref() {
+                    for d in store.list_dispatches(issue.id)? {
+                        // 已终结任务：结果存储在案（success/failure + stored_at）。
+                        if let Some(r) = cluster.result_store().get(&d.task_id) {
+                            extra.push(nemesis_board::timeline::TimelineEvent {
+                                ts: nemesis_board::timeline::parse_ts_to_epoch(&r.stored_at),
+                                source: "cluster_task",
+                                kind: if r.success { "success" } else { "failure" }.into(),
+                                actor: d.worker_id.clone(),
+                                summary: format!(
+                                    "任务结果（{}）：{}",
+                                    r.action,
+                                    if r.success { "成功" } else { "失败" }
+                                ),
+                                detail: r.result.as_str().map(|s| s.to_string()).or_else(|| {
+                                    r.result
+                                        .get("error")
+                                        .and_then(|e| e.as_str())
+                                        .map(String::from)
+                                }),
+                            });
+                        } else if cluster.continuation_store().contains(&d.task_id) {
+                            // 在途：续行快照在场（任务未终结）。
+                            extra.push(nemesis_board::timeline::TimelineEvent {
+                                ts: d.dispatched_at,
+                                source: "continuation",
+                                kind: "pending".into(),
+                                actor: d.worker_id.clone(),
+                                summary: format!("任务 {} 在途（续行快照在场）", d.task_id),
+                                detail: Some(d.task_id),
+                            });
+                        }
+                    }
+                }
+                let events =
+                    nemesis_board::timeline::collect_issue_timeline(&store, issue.id, extra);
+                Ok(Some(serde_json::json!({
+                    "issue": issue.number,
+                    "issue_id": issue.id,
+                    "events": events,
+                })))
             }
             "issue.create" => {
                 let data = data.ok_or("missing data")?;
@@ -3776,6 +5035,10 @@ impl ModuleHandler for BoardHandler {
             // plan_id，结果经 board.plan_ready/failed push）；confirm:true =
             // 按 plan_id 落库 + 依赖闸派发波 + 父单联动。
             "issue.plan" => issue_plan(&store, actor, ctx, data).await,
+            // P11 观测面：plan 预览查询（list 全量存活按 issue_id 可选过滤 /
+            // get 单查；TTL 惰性过滤与插入点同判据）。
+            "plan.list" => plan_list(&store, data),
+            "plan.get" => plan_get(data),
             // 取消单清理（P1/A2b）：批量给已取消单打 hidden 标记（永久收起，
             // 列表面无放行口）。只认 status=cancelled——混入非取消单整体拒绝
             //（不是跳过，语义诚实）；前端二次确认后调用；逐单写
@@ -3949,16 +5212,34 @@ impl ModuleHandler for BoardHandler {
             // --- comment / activity ---
             "comment.add" => {
                 let data = data.ok_or("missing data")?;
+                let issue_id = data
+                    .get("issue_id")
+                    .and_then(|v| v.as_i64())
+                    .ok_or("missing field: issue_id")?;
+                let content = get_str(&data, "content")?;
                 let comment = store.add_comment(NewComment {
-                    issue_id: data
-                        .get("issue_id")
-                        .and_then(|v| v.as_i64())
-                        .ok_or("missing field: issue_id")?,
+                    issue_id,
                     author: actor,
-                    content: get_str(&data, "content")?,
+                    content: content.clone(),
                     parent_id: data.get("parent_id").and_then(|v| v.as_i64()),
                     ctype: CommentType::Comment,
                 })?;
+                // M5（2026-10-10 集群无人值守硬化）：审批回执回源——
+                // `/approve|/deny <短号>` 评论转发远程审批（短号在注册表才
+                // 动作；失败留痕为系统评论）。异步旁路，不阻塞本响应。
+                #[cfg(feature = "cluster")]
+                if crate::remote_approval::looks_like_approval_reply(&content)
+                    && let Some(cluster) = ctx.state.cluster.as_ref()
+                {
+                    let store = store.clone();
+                    let cluster = cluster.clone();
+                    tokio::spawn(async move {
+                        crate::remote_approval::try_remote_approval_reply(
+                            &store, &cluster, issue_id, &content,
+                        )
+                        .await;
+                    });
+                }
                 Ok(Some(
                     serde_json::json!({ "added": true, "comment": comment }),
                 ))
@@ -4087,6 +5368,15 @@ impl ModuleHandler for BoardHandler {
                 // + `ensure_scaffold`（绑定不可变，此后无修改入口）。
                 let workspace = require_workspace(ctx)?;
                 let name = get_str(&data, "name")?;
+                // 同名预检（2026-10-11 用户实测）：项目名有 UNIQUE 约束，
+                // 重名此前透传裸 `UNIQUE constraint failed: project.name`
+                // ——用户看不懂也无处查。中文提示 + 现状指引；UNIQUE 约束
+                // 仍在兜底并发窗口。
+                if store.list_projects()?.iter().any(|p| p.name == name) {
+                    return Err(format!(
+                        "已存在同名项目「{name}」：项目名需唯一。请在项目列表先处理旧项目（归档或改名）再重试，或换一个项目名。"
+                    ));
+                }
                 let requested_dir = get_opt_str(&data, "directory");
                 let existing_dirs: Vec<std::path::PathBuf> = store
                     .list_projects()?
@@ -4437,6 +5727,76 @@ impl ModuleHandler for BoardHandler {
                 );
                 Ok(Some(result))
             }
+            // M5-1（2026-10-10 机制加固）：评审重触发——卡 in_review 的单子
+            // 人工一键重入验收评审。number（NB-N）优先、id 兜底；非
+            // in_review 诚实拒绝（评审链内有竞态守卫，这里是入口闸）。
+            "review.retrigger" => {
+                let data = data.ok_or("missing data")?;
+                let issue = if let Ok(number) = get_str(&data, "number") {
+                    store.get_issue_by_number(&number)?
+                } else if let Some(id) = data.get("id").and_then(|v| v.as_i64()) {
+                    store.get_issue(id)?
+                } else {
+                    return Err("review.retrigger 需要 number（NB-N）或 id 之一".into());
+                };
+                if issue.status != IssueStatus::InReview {
+                    return Err(format!(
+                        "issue {} 当前状态为 {}，仅 in_review 单子可重触发评审",
+                        issue.number,
+                        issue.status.as_str()
+                    ));
+                }
+                let hook = REVIEW_RETRIGGER_HOOK.get().ok_or(
+                    "评审重触发钩子未安装（gateway 未装配 board 评审依赖或非 master 节点）",
+                )?;
+                hook(issue.id);
+                // 留痕：人工触发记录进单据（决策流/审计可见）。
+                tracing::info!(
+                    "[Board] review.retrigger issue={} by {}/{}",
+                    issue.number,
+                    actor.kind,
+                    actor.id
+                );
+                let _ = store.add_comment(NewComment {
+                    issue_id: issue.id,
+                    author: actor,
+                    content: "🔁 人工触发重新验收评审（review.retrigger）".to_string(),
+                    parent_id: None,
+                    ctype: CommentType::System,
+                });
+                Ok(Some(
+                    serde_json::json!({ "retriggered": true, "issue": issue.number }),
+                ))
+            }
+            // U-B（2026-10-12 无人值守）：端点不可用封存观测 + 手动放行。
+            // status = 状态机快照 + 待续做中断档案清单（不 load 内容）。
+            "unavailable.status" => {
+                let mut snap = super::board_unavailable::snapshot_json();
+                if let Some(ws) = handoff_workspace_root().map(|p| p.as_path()) {
+                    let pending: Vec<String> =
+                        super::board_unavailable::read_pending_interruptions(ws)
+                            .iter()
+                            .filter_map(|d| {
+                                d.get("issue")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string())
+                            })
+                            .collect();
+                    snap["pending_interruptions"] = serde_json::json!(pending);
+                }
+                Ok(Some(snap))
+            }
+            "unavailable.release" => {
+                let was = super::board_unavailable::manual_release();
+                tracing::info!(
+                    "[Board] board.unavailable.release by {}/{} (was_frozen={was})",
+                    actor.kind,
+                    actor.id
+                );
+                Ok(Some(
+                    serde_json::json!({ "released": true, "was_frozen": was }),
+                ))
+            }
             // --- config（全自动流转 P1/A4：配置 TAB 读写 board 段旗标）---
             "config.get" => {
                 let home = ctx.home.as_deref().ok_or("home 未解析")?;
@@ -4562,6 +5922,14 @@ fn board_config_set(
                 };
             }
             "review.selfcheck" => board.review.selfcheck = need_bool(value)?,
+            // M7（2026-10-10）：exec 锚点开关 + 超时（默认关=诚实 skipped 注记，
+            // 不进结果组；开=锚点命令在项目根执行，exit 0=过）。
+            "review.exec_anchors_enabled" => board.review.exec_anchors_enabled = need_bool(value)?,
+            "review.exec_anchor_timeout_secs" => {
+                board.review.exec_anchor_timeout_secs = value
+                    .as_u64()
+                    .ok_or("review.exec_anchor_timeout_secs 需要非负整数")?;
+            }
             "review.auto_close_project" => board.review.auto_close_project = need_bool(value)?,
             "plan.auto_confirm" => board.plan.auto_confirm = need_bool(value)?,
             // 任务档案（2026-09-29）：项目收口自动导出（默认开）。
@@ -4610,6 +5978,16 @@ fn board_config_set(
                     value
                         .as_u64()
                         .ok_or("budget.max_total_redispatch 需要非负整数")?,
+                )
+                .map_err(|_| "超出 u32 范围")?;
+            }
+            // F2（2026-10-12）：送达失败自动重试熔断上限（0=关=无限重试；
+            // unlimited_mode 视为 0；按本单 ⛔ 标记评论终身累计计数）。
+            "budget.max_send_retries" => {
+                board.budget.max_send_retries = u32::try_from(
+                    value
+                        .as_u64()
+                        .ok_or("budget.max_send_retries 需要非负整数")?,
                 )
                 .map_err(|_| "超出 u32 范围")?;
             }
@@ -4662,8 +6040,10 @@ fn board_config_set(
                  dispatch_fallback_target / fingerprint_weighting / \
                  max_redispatch / dispatch_timeout_secs / worker_max_inflight / \
                  plan.auto_confirm / plan.model / review.max_turns / review.selfcheck / \
+                 review.exec_anchors_enabled / review.exec_anchor_timeout_secs / \
                  review.auto_close_project / review.checkers / budget.max_subissues_per_parent / \
-                 budget.max_total_redispatch / budget.wall_clock_budget_secs /                  budget.max_tokens_per_parent / discussion.*）"
+                 budget.max_total_redispatch / budget.max_send_retries / budget.wall_clock_budget_secs / \
+                 budget.max_tokens_per_parent / discussion.*）"
                 ));
             }
         }
@@ -4701,10 +6081,31 @@ fn board_config_set(
             }
             _ => {}
         }
+
+        // M6-2 rebase（P5 clobber 根修）：update_config 的进程级写锁只串行
+        // 进程内写者，跨进程写者（CLI model add、手工编辑）不在其列——落盘
+        // 前以磁盘最新内容为底、只保留本闭包改过的 board 段；磁盘读失败 =
+        // Err 不落盘（fail-closed，绝不拿陈旧快照重建磁盘）。
+        let path = super::config::config_path(home);
+        *config = rebase_board_onto_disk(config.clone(), &path)?;
+
         Ok(())
     })?;
     tracing::info!("[Board] board.config.set key={key}");
     Ok(Some(serde_json::json!({ "updated": true, "key": key })))
+}
+
+/// M6-2 rebase（P5 clobber 根修）：以磁盘最新 config.json 为底、只保留
+/// `mutated` 的 board 段，返回合并结果。磁盘读失败 = Err（调用方不落盘，
+/// fail-closed——绝不拿陈旧快照重建磁盘）。
+fn rebase_board_onto_disk(
+    mutated: nemesis_config::Config,
+    path: &std::path::Path,
+) -> Result<nemesis_config::Config, String> {
+    let mut disk_fresh = nemesis_config::load_config(path)
+        .map_err(|e| format!("config.json 重读失败（rebase 放弃，磁盘未写）：{e}"))?;
+    disk_fresh.board = mutated.board;
+    Ok(disk_fresh)
 }
 
 #[cfg(test)]

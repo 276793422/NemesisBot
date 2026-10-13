@@ -3059,6 +3059,8 @@ mod gateway_agent_runner_tests {
 
     fn ok_response(content: &str) -> Result<LlmResponse, String> {
         Ok(LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: content.to_string(),
             tool_calls: Vec::new(),
             finished: true,

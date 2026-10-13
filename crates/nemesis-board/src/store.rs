@@ -31,6 +31,33 @@ pub struct BoardStore {
     asset_signing: std::sync::OnceLock<crate::asset_token::AssetSignContext>,
 }
 
+/// 送达失败标记（F2，2026-10-13）——评论即账本的单一真相源：RPC 送达
+/// 失败路径写 `⛔ 派发失败：[类别] ...` 系统评论，sweep 候选查询按本
+/// 前缀识别（`instr(content, ?) = 1` = 前缀匹配）。写入侧（nemesis-web
+/// issue_dispatch）与查询侧共用本常量，字面量漂移 = 重试静默失效。
+pub const SEND_FAILURE_MARK: &str = "⛔ 派发失败";
+
+/// 自动派发暂缓标记（闭环批 2026-10-13 从 nemesis-web 上移）：停车判定
+/// （`list_dispatch_park_candidates`）与 sweep 落评论去重共用单一真相源，
+/// 消灭跨 crate 字面量漂移面。SQL 侧经参数绑定消费（同文件 dispatch_state
+/// 常量同款惯例）。
+pub const PARK_NOTICE_MARK: &str = "自动派发暂缓";
+
+/// 送达失败重试退避阶梯（F2）：第 n 次失败后等 `min(1800, 60 * 2^(n-1))`
+/// 秒再重试——1m→2m→4m→8m→16m→30m 封顶。0 次失败 = 0（尚未失败立即可试）。
+/// 纯函数单测钉死；调用方（sweep）拿 DB 派生的失败次数喂入。
+pub fn send_failure_backoff_secs(attempts: u32) -> u64 {
+    match attempts {
+        0 => 0,
+        1 => 60,
+        2 => 120,
+        3 => 240,
+        4 => 480,
+        5 => 960,
+        _ => 1800,
+    }
+}
+
 /// 后代可达的展开形态（SAN-08 单一真相源，2026-09-16 横扫加固）：一个
 /// BFS 引擎（`BoardStore::descendants`）、两种命名边集。此前三处手搓遍历
 /// 各用一种边集（级联 BFS = 依赖∪父子、`sync_parent_status`/收口缺口闸 =
@@ -614,6 +641,10 @@ impl BoardStore {
     /// 的通用放行会稀释状态机语义（人工 issue.status 不应能把在跑任务拉
     /// 回待办）；此处守卫「当前必须仍是 in_progress 且派发前不是」——
     /// 人工同刻挪过状态就让位（返回 Ok(false) 不报错，竞态让位语义）。
+    /// **在途派发守卫**（多角度审计批 2026-10-13）：本单已有新派发在途
+    /// （dispatched/running——并发触发源在 finish_dispatch(failed) 与本
+    /// 回退之间抢到 claim）同样让位——把状态回退会谎报在跑任务的状态位，
+    /// 停车场 sweep 还可能把回退出的单再派一遍。
     pub fn rollback_dispatch_failure(
         &self,
         id: i64,
@@ -629,18 +660,29 @@ impl BoardStore {
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         let now = Self::now();
-        tx.execute(
-            "UPDATE issue SET status = ?1, assignee_type = ?2, assignee_id = ?3, updated_at = ?4
-             WHERE id = ?5 AND status = 'in_progress'",
-            params![
-                prev_status.as_str(),
-                prev_assignee.map(|a| a.as_str()),
-                prev_assignee_id,
-                now,
-                id,
-            ],
-        )
-        .map_err(|e| e.to_string())?;
+        let n = tx
+            .execute(
+                "UPDATE issue SET status = ?1, assignee_type = ?2, assignee_id = ?3, updated_at = ?4
+                 WHERE id = ?5 AND status = ?6
+                   AND NOT EXISTS (SELECT 1 FROM issue_dispatch
+                                   WHERE issue_id = ?5 AND state IN (?7, ?8))",
+                params![
+                    prev_status.as_str(),
+                    prev_assignee.map(|a| a.as_str()),
+                    prev_assignee_id,
+                    now,
+                    id,
+                    IssueStatus::InProgress.as_str(),
+                    dispatch_state::DISPATCHED,
+                    dispatch_state::RUNNING,
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            // 竞态让位：状态已被挪走，或有新派发在途——不回退不留审计
+            // （tx 随返回丢弃，半截写入自动回滚）。
+            return Ok(false);
+        }
         insert_activity(
             &tx,
             id,
@@ -935,16 +977,117 @@ impl BoardStore {
         let mut stmt = conn
             .prepare(
                 "SELECT DISTINCT i.id FROM issue i
-                 WHERE i.status IN ('backlog', 'todo')
+                 WHERE i.status IN (?1, ?2)
                    AND (i.origin_type = 'planner'
                         OR EXISTS (SELECT 1 FROM comment c
                                    WHERE c.issue_id = i.id AND c.ctype = 'system'
-                                     AND instr(c.content, '自动派发暂缓') > 0))
+                                     AND instr(c.content, ?3) > 0))
                  ORDER BY i.id",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([], |r| r.get::<_, i64>(0))
+            .query_map(
+                params![
+                    IssueStatus::Backlog.as_str(),
+                    IssueStatus::Todo.as_str(),
+                    PARK_NOTICE_MARK,
+                ],
+                |r| r.get::<_, i64>(0),
+            )
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
+    /// 送达失败重试候选（F2，2026-10-13；复检批扩 in_review + 多角度审计
+    /// 批补账本闸）：待派态（backlog/todo）或 **in_review** 且**最后一条
+    /// system 评论是送达失败标记**且**最新一条派发行 state=failed** 的单。
+    /// 返回 `(issue_id, 失败次数, 末次失败 unix_secs, 状态)`——失败次数 =
+    /// 标记评论条数（退避阶梯与重试预算的输入），末次失败时刻 = 退避计时
+    /// 基点，状态供 sweep 分流执行器（backlog/todo → 自动派发匹配器；
+    /// in_review → 重派语义：原节点在线优先，离线换榜首在线候选）。
+    /// **in_review 必须在池**（复检批缺口根修）：评审 FAIL→自动重派直接走
+    /// `dispatch_issue_core`（in_review 合法派发态），送达失败回滚回
+    /// in_review——只捞 backlog/todo 会漏掉 NB-24 原始事故形态（验收实机
+    /// in_review 滞留 16 分钟待人工）。
+    /// **账本闸**（多角度审计批，2026-10-13）：成功交付只写 Delivery/Comment
+    /// 评论 + status_changed 审计活动，**不写 system 评论**——只看评论的话，
+    /// 旧 ⛔ 标记仍是最后一条 system 评论，交付后 in_review 立即重新入池，
+    /// 评审进行中就被重派（乒乓循环）。派发行账本是送达失败的权威事实源：
+    /// 成功交付 finish_dispatch(done) / 重派 claim(dispatched) 都会顶掉
+    /// failed 尾行，自然出池；再次送达失败 finish_dispatch(failed) 重新
+    /// 入池。全部事实派生自 DB：gateway 重启不丢退避进度，不新增存储。
+    /// `🛑` 转人工评论落盘后，「最后一条」不再是送达失败标记 → 出池。
+    /// **标记时序闸**（闭环批 2026-10-13）：⛔ 必须**不早于**最新派发行
+    /// completed_at——标记必须属于最近一次派发尝试。第三种 failed 终态：
+    /// worker 汇报失败 / 交付守卫拦截 / 评审转人工（EscalateHuman）都只写
+    /// **Comment 型**评论 + finish_dispatch(failed)，无任何 system 评论落盘
+    /// ——旧 ⛔ 滞留 last-system 位时，前两闸全过、单子假阳性入池：settled
+    /// 波 / 30s tick 盲重派（不带差距、与评审抢跑），且 ⛔ 计数冻结 →
+    /// max_send_retries 熔断永不触发，auto_review=false 配置下是无界重派
+    /// 循环。`>=`（非 `>`）：送达失败路径 finish_dispatch 与 ⛔ 落库常在同
+    /// 一秒内，严格大于会把真送达失败也请出池。**粒度边界**：时间戳是
+    /// unix 秒，同秒内两轮不可分辨；这依赖生产时序分离兜底——后续派发轮
+    /// 的 completed_at 必然晚于 ⛔ 所在秒（自动重试必过 ≥60s 退避，人工
+    /// 重派是秒级以上操作），同秒碰撞生产不可达。
+    pub fn list_send_failure_candidates(
+        &self,
+        mark: &str,
+    ) -> Result<Vec<(i64, u32, i64, String)>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT i.id,
+                        (SELECT COUNT(*) FROM comment c
+                         WHERE c.issue_id = i.id AND c.ctype = 'system'
+                           AND instr(c.content, ?1) = 1),
+                        (SELECT c.created_at FROM comment c
+                         WHERE c.issue_id = i.id AND c.ctype = 'system'
+                           AND instr(c.content, ?1) = 1
+                         ORDER BY c.id DESC LIMIT 1),
+                        i.status
+                 FROM issue i
+                 WHERE i.status IN (?2, ?3, ?4)
+                   AND EXISTS (
+                     SELECT 1 FROM comment c
+                     WHERE c.issue_id = i.id AND c.ctype = 'system'
+                       AND c.id = (SELECT MAX(c2.id) FROM comment c2
+                                   WHERE c2.issue_id = i.id AND c2.ctype = 'system')
+                       AND instr(c.content, ?1) = 1)
+                   AND EXISTS (
+                     SELECT 1 FROM issue_dispatch d
+                     WHERE d.issue_id = i.id
+                       AND d.rowid = (SELECT MAX(d2.rowid) FROM issue_dispatch d2
+                                      WHERE d2.issue_id = i.id)
+                       AND d.state = ?5)
+                   AND (SELECT c3.created_at FROM comment c3
+                        WHERE c3.issue_id = i.id AND c3.ctype = 'system'
+                          AND instr(c3.content, ?1) = 1
+                        ORDER BY c3.id DESC LIMIT 1)
+                       >= (SELECT d3.completed_at FROM issue_dispatch d3
+                           WHERE d3.issue_id = i.id
+                           ORDER BY d3.rowid DESC LIMIT 1)
+                 ORDER BY i.id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(
+                params![
+                    mark,
+                    IssueStatus::Backlog.as_str(),
+                    IssueStatus::Todo.as_str(),
+                    IssueStatus::InReview.as_str(),
+                    dispatch_state::FAILED,
+                ],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, i64>(1)? as u32,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, String>(3)?,
+                    ))
+                },
+            )
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())
@@ -2031,9 +2174,20 @@ impl BoardStore {
         tags: &[String],
     ) -> Result<Vec<String>, String> {
         const KEY: &str = "granted_tags";
-        let existing = self.get_meta(KEY)?.unwrap_or_else(|| "{}".to_string());
+        // 单临界区 RMW（D10-2）：曾拆成 get_meta/set_meta 两次独立加锁——
+        // 落定波与 sweep 波并发授予同一节点时后写者覆盖前写者，丢一次授予
+        //（下次授予自愈，但该次匹配滑进松弛阶梯 + 一条误导性降级评论）。
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT value FROM board_meta WHERE key = ?1",
+                params![KEY],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| format!("get_meta: {e}"))?;
         let mut map: std::collections::HashMap<String, Vec<String>> =
-            serde_json::from_str(&existing).unwrap_or_default();
+            serde_json::from_str(&existing.unwrap_or_else(|| "{}".to_string())).unwrap_or_default();
         let entry = map.entry(node_id.to_string()).or_default();
         let mut granted_new = Vec::new();
         for t in tags {
@@ -2047,10 +2201,14 @@ impl BoardStore {
             }
         }
         if !granted_new.is_empty() {
-            self.set_meta(
-                KEY,
-                &serde_json::to_string(&map).map_err(|e| format!("序列化 granted_tags: {e}"))?,
-            )?;
+            let value =
+                serde_json::to_string(&map).map_err(|e| format!("序列化 granted_tags: {e}"))?;
+            conn.execute(
+                "INSERT INTO board_meta(key, value) VALUES(?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = ?2",
+                params![KEY, value],
+            )
+            .map_err(|e| format!("set_meta: {e}"))?;
         }
         Ok(granted_new)
     }

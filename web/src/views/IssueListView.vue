@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 import { useBoardChanged } from '../composables/useBoardChanged'
+import { usePlanning, fmtElapsed, ABNORMAL_SECS } from '../composables/usePlanning'
 import IssueDetailModal from '../components/board/IssueDetailModal.vue'
 import {
   PRIORITY_BADGE,
@@ -52,6 +53,35 @@ interface ClusterNode {
   online: boolean
 }
 const workerNodes = ref<ClusterNode[]>([])
+
+// 拆解在途徽标（§1.2A，2026-10-11 Part 1 配套前端）：状态列「Backlog」被
+// 「🧩 拆解中 m:ss」替换（在途期间用户最关心的信号）。live 条目（usePlanning
+// 单例，SSE + 投影回填）优先自计时；静态行 planning 投影兜底（无心跳，分钟
+// 粒度）。终态（done/cancelled）恒显示原状态徽章——在途标记不遮真实结局。
+const { list: planningList, elapsed, reconcile } = usePlanning()
+const planningById = computed(() => new Map(planningList.value.map((e) => [e.issueId, e])))
+
+function planningSecs(issue: IssueRow): number {
+  if (planningById.value.has(issue.id)) return elapsed(issue.id)
+  return Number(issue.planning?.elapsed_secs ?? 0)
+}
+
+function planningAttempt(issue: IssueRow): number {
+  const live = planningById.value.get(issue.id)
+  if (live) return live.attempt
+  return Number(issue.planning?.attempt ?? 1) || 1
+}
+
+function planningBadge(issue: IssueRow): string {
+  if (issue.status === 'done' || issue.status === 'cancelled') return ''
+  const secs = planningSecs(issue)
+  if (!issue.planning && !planningById.value.has(issue.id)) return ''
+  return fmtElapsed(secs)
+}
+
+function planningAbnormal(issue: IssueRow): boolean {
+  return planningSecs(issue) > ABNORMAL_SECS
+}
 
 async function loadWorkerNodes() {
   try {
@@ -107,6 +137,8 @@ async function loadIssues(silent = false) {
     const r = await request('board', 'issue.list', data)
     issues.value = r?.issues || []
     total.value = r?.total || 0
+    // 拆解在途表校正（回填/撤下兜底；只触碰本页出现的行——过滤视图安全）。
+    reconcile(issues.value)
   } catch (e: any) {
     if (silent) console.warn('[IssueList] silent refresh failed:', e)
     else toast.error('加载 issue 失败: ' + e)
@@ -343,7 +375,15 @@ onMounted(refresh)
           <tr v-for="issue in issues" :key="issue.id" class="issue-row" @click="openDetail(issue)">
             <td><code>{{ issue.number }}</code></td>
             <td style="font-weight: 500;">{{ issue.title }}</td>
-            <td><span class="badge" :class="STATUS_BADGE[issue.status]" :title="statusTitle(issue.status)">{{ statusLabel(issue.status) }}</span></td>
+            <td>
+              <span
+                v-if="planningBadge(issue)"
+                class="badge planning-badge"
+                :class="planningAbnormal(issue) ? 'badge-warning' : 'badge-info'"
+                title="AI 正在拆解该单为子任务（通常 3~8 分钟，完成后自动发车）；结束或失败会自动恢复原状态徽章"
+              >🧩 拆解中 {{ planningBadge(issue) }}<template v-if="planningAttempt(issue) > 1"> · 重试 {{ planningAttempt(issue) }}</template></span>
+              <span v-else class="badge" :class="STATUS_BADGE[issue.status]" :title="statusTitle(issue.status)">{{ statusLabel(issue.status) }}</span>
+            </td>
             <td><span class="badge" :class="PRIORITY_BADGE[issue.priority] || 'badge-neutral'">P{{ issue.priority }} {{ PRIORITY_LABEL[issue.priority] || '' }}</span></td>
             <td style="font-size: var(--text-sm);">
               {{ !issue.assignee ? '未指派' : issue.assignee === 'manager_self' ? 'manager（本机）' : `worker: ${issue.assignee_id}` }}
@@ -489,6 +529,10 @@ onMounted(refresh)
 }
 .issue-row {
   cursor: pointer;
+}
+/* 拆解在途徽标（§1.2A）：自计时动态徽标。 */
+.planning-badge {
+  font-variant-numeric: tabular-nums;
 }
 .assign-row {
   display: flex;
