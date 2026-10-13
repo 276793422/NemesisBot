@@ -113,6 +113,11 @@ impl McpManager {
 
     /// Add a new server. Returns Err if a server with the same name exists.
     pub fn add_server(&mut self, config: ServerConfig) -> Result<(), String> {
+        // 写串行锁：config.mcp.json 的生产写者（web handlers::mcp 的
+        // update_mcp_config）持同把 config_write_lock——本 CRUD 虽当前无
+        // 生产接线（横扫六期记档的死码地雷），锁取在函数内使任何未来
+        // 接线者结构性安全（横扫六期，2026-10-13）。
+        let _cfg_serial = nemesis_config::config_write_lock();
         if self.config.servers.iter().any(|s| s.name == config.name) {
             return Err(format!("Server '{}' already exists", config.name));
         }
@@ -124,6 +129,8 @@ impl McpManager {
 
     /// Remove a server by name. Returns true if a server was removed.
     pub fn remove_server(&mut self, name: &str) -> Result<bool, String> {
+        // 同 add_server：与 web 写家族同锁（横扫六期，2026-10-13）。
+        let _cfg_serial = nemesis_config::config_write_lock();
         let before = self.config.servers.len();
         self.config.servers.retain(|s| s.name != name);
         let removed = self.config.servers.len() < before;
