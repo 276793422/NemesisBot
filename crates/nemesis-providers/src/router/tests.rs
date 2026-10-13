@@ -1013,6 +1013,7 @@ async fn test_w4c_router_chat_retriable_all_fail_returns_last_error() {
         "m1",
         vec![Err(FailoverError::Overloaded {
             provider: "p2".into(),
+            status: 502,
         })],
     );
     router.register_provider("p1", primary);

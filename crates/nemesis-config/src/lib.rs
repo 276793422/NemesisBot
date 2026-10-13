@@ -35,7 +35,7 @@ pub use provider_resolver::{
     ModelResolution, PROVIDER_PRESETS, ProviderPreset, ProviderResolution, ProviderResolver,
     ensure_conversation_role, find_model_by_name, find_provider_preset, get_default_api_base,
     get_effective_llm, get_model_by_name, infer_default_model, infer_provider_from_model,
-    provider_preset_ids, resolve_model_config, resolve_model_resolution,
+    normalize_stream_value, provider_preset_ids, resolve_model_config, resolve_model_resolution,
 };
 
 #[derive(Error, Debug)]
