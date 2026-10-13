@@ -629,16 +629,21 @@ fn cmd_rules_test(
 
     // CMD-01 对齐：与运行时 auditor 相同的 deny→ask→allow 三遍扫 +
     // 匹配语义（process 类走命令归一化 + 锚定命令匹配；其余走路径
-    // 通配匹配）。无命中落 default_action。
+    // 通配匹配）。无命中落 default_action。CMD-12 同款：复合命令按
+    // 顶层段任一命中即算命中（与 auditor 段切分语义一致）。
     let is_command_op = rule_type == "process";
-    let match_target = if is_command_op {
-        nemesis_security::matcher::normalize_exec_command(target)
-    } else {
-        target.to_string()
-    };
     let pattern_matches = |pattern: &str| -> bool {
         if is_command_op {
-            nemesis_security::matcher::match_command_pattern(&pattern.to_lowercase(), &match_target)
+            // 段在原文上切（引号感知），逐段归一化后锚定匹配；单段命令
+            // 归一化结果与旧整串匹配等价。
+            nemesis_security::command_arity::command_segments(target)
+                .iter()
+                .any(|seg| {
+                    nemesis_security::matcher::match_command_pattern(
+                        &pattern.to_lowercase(),
+                        &nemesis_security::matcher::normalize_exec_command(seg),
+                    )
+                })
         } else {
             match_pattern(pattern, target)
         }

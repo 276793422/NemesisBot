@@ -4097,8 +4097,10 @@ fn auto_accept_and_settle(
 
 /// estop 保险丝（全自动流转 P1/T1-6）：急停挂起 = true 并把 issue 停车
 /// （release 后 [`spawn_estop_resume_watcher`] 复评恢复）。评论失败只
-/// warn——冻结本身不依赖落库。重复停车按 issue_id 去重（防多检查点重复
-/// 入队/刷评论）。
+/// warn——冻结本身不依赖落库。重复停车按 **(kind, issue_id)** 去重（防多
+/// 检查点重复入队/刷评论；BUG-6 根修 2026-10-13：旧键只看 issue_id，同一
+/// 单先走评审停车（kind=Issue）、后走父单/项目收口停车（kind=Parent/
+/// Project）会被吞号——后者永不复评）。
 fn estop_fuse_engaged(deps: &BoardReviewDeps, issue_id: i64, kind: ParkedKind) -> bool {
     if !deps.estop.is_engaged() {
         return false;
@@ -4108,7 +4110,7 @@ fn estop_fuse_engaged(deps: &BoardReviewDeps, issue_id: i64, kind: ParkedKind) -
             .estop_parked
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !q.iter().any(|&(_, id)| id == issue_id) {
+        if !q.iter().any(|&(k, id)| k == kind && id == issue_id) {
             q.push((kind, issue_id));
         }
     }

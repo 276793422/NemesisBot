@@ -78,6 +78,9 @@ pub trait ClusterCallbacks: Send + Sync {
     /// （profession framework M2）。默认实现丢弃职能信息委托旧形态——
     /// 不关心职能的实现零改动对齐旧行为；生产 UDP 发现路径（announce
     /// 接收）走本方法。
+    ///
+    /// `source_addr`：R5 源地址收割——announce UDP 包的源 IP（发现层亲眼
+    /// 可见的可达性证据），最低优先级拨号候选；非 UDP 路径传 `None`。
     fn handle_discovered_node_ex(
         &self,
         node_id: &str,
@@ -91,8 +94,9 @@ pub trait ClusterCallbacks: Send + Sync {
         node_type: &str,
         professions: &[String],
         tier: Option<&str>,
+        source_addr: Option<&str>,
     ) -> bool {
-        let _ = (professions, tier);
+        let _ = (professions, tier, source_addr);
         self.handle_discovered_node(
             node_id,
             name,
@@ -559,7 +563,7 @@ impl DiscoveryService {
         let expiry_secs = self.config.announce_expiry_secs;
         let expiry_gate = AnnounceWarnGate::new();
         let drift_gate = AnnounceWarnGate::new();
-        self.listener.set_message_handler(Box::new(move |msg, _addr| {
+        self.listener.set_message_handler(Box::new(move |msg, addr| {
             // Ignore messages from self
             if msg.node_id == cluster.node_id() {
                 return;
@@ -598,6 +602,8 @@ impl DiscoveryService {
                             "[Discovery] Announce timestamp drift detected (peer clock not synced?)"
                         );
                     }
+                    // R5 源地址收割：包源 IP 入池作最低优先级拨号候选。
+                    let source_ip = addr.ip().to_string();
                     let changed = cluster.handle_discovered_node_ex(
                         &msg.node_id,
                         &msg.name,
@@ -610,6 +616,7 @@ impl DiscoveryService {
                         &msg.node_type,
                         &msg.professions,
                         msg.tier.as_deref(),
+                        Some(source_ip.as_str()),
                     );
                     if changed {
                         tracing::info!(node_id = %msg.node_id, "[Discovery] Node info updated, syncing to disk");

@@ -121,6 +121,7 @@ fn net_client(cluster: &Cluster) -> Arc<RpcClient> {
     Arc::new(RpcClient::with_resolver(Arc::new(ClusterPeerResolver {
         registry: cluster.registry.clone(),
         node_id: cluster.node_id().to_string(),
+        rpc_port: cluster.rpc_port(),
     })))
 }
 

@@ -599,7 +599,7 @@ async fn setup_node(ws: &TestWorkspace, bin: &Path, node: &NodeConfig) -> Result
     // gateway.rs convention: the `address` field holds the UDP host:port,
     // and the RPC port is derived as `udp_port + 10000` (e.g., 38450→48450).
     // Passing the RPC port here would cause gateway to derive rpc_port=rpc+10000
-    // and cluster_rpc connections would fail with "peer not found".
+    // and cluster_rpc connections would fail with "peer unresolvable".
     for peer in NODES.iter() {
         if peer.name == node.name {
             continue;

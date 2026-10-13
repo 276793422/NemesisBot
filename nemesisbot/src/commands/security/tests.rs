@@ -529,6 +529,9 @@ fn test_cmd_rules_test_process_exec_normalization() {
     // 引号旗标变体与多余空白都应命中 deny 规则
     cmd_rules_test(&path, "process", "exec", "rm \"-rf\" build/").unwrap();
     cmd_rules_test(&path, "process", "exec", "rm  -rf    build/").unwrap();
+
+    // CMD-12：复合命令非首段命中（预演与运行时 auditor 段切分语义一致）
+    cmd_rules_test(&path, "process", "exec", "echo hi && rm -rf build/").unwrap();
 }
 
 // -------------------------------------------------------------------------
