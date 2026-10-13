@@ -217,6 +217,7 @@ mod auditor_extra {
             approver: None,
             approved_at: None,
             denied_reason: None,
+            force_approval: None,
         };
         assert_eq!(req.op_type, OperationType::FileRead);
         assert_eq!(req.target, "/tmp/test.txt");
@@ -1327,6 +1328,7 @@ mod pipeline_extra {
             hardware_rules: vec![],
             registry_rules: vec![],
             process_rules: vec![],
+            preexec_scan_enabled: true,
         };
         assert!(!config.enabled);
         assert_eq!(config.dlp_action, "warn");

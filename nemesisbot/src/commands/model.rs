@@ -138,6 +138,11 @@ pub enum PricesAction {
         /// 显示名（可选，缺省用模型名）。
         #[arg(long)]
         display: Option<String>,
+        /// Prompt-length 阶梯价（L3，可重复）：`<min_prompt_tokens>:<input>:<output>`
+        /// （USD / 百万 token；input_tokens ≥ min 时该档生效，多条命中取
+        /// 阈值最大档；缓存价继承基础价——需精细控制走 Dashboard 属性编辑器）。
+        #[arg(long = "price-tier")]
+        price_tiers: Vec<String>,
     },
     /// 删除自定义条目（只影响自定义层；下载/内置层不动）。
     Remove {
@@ -890,6 +895,51 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
     Ok(())
 }
 
+/// 解析 `--price-tier <min>:<input>:<output>` 重复参数（L3）。解析失败
+/// 响亮报错（带条目序号与原文），空列表 = 无阶梯（None）。
+fn parse_price_tiers(specs: &[String]) -> Result<Option<Vec<nemesis_data::PriceTier>>> {
+    if specs.is_empty() {
+        return Ok(None);
+    }
+    let mut tiers = Vec::with_capacity(specs.len());
+    for (i, spec) in specs.iter().enumerate() {
+        let parts: Vec<&str> = spec.split(':').map(str::trim).collect();
+        if parts.len() != 3 {
+            anyhow::bail!(
+                "第 {} 条阶梯价格式错误（{spec:?}）：应为 <min_prompt_tokens>:<input>:<output>",
+                i + 1
+            );
+        }
+        let min_prompt_tokens: i64 = parts[0].parse().map_err(|_| {
+            anyhow::anyhow!(
+                "第 {} 条阶梯价阈值非法（{}）：须为非负整数",
+                i + 1,
+                parts[0]
+            )
+        })?;
+        if min_prompt_tokens < 0 {
+            anyhow::bail!("第 {} 条阶梯价阈值不能为负（{}）", i + 1, parts[0]);
+        }
+        let input_cost_per_million: f64 = parts[1]
+            .parse()
+            .map_err(|_| anyhow::anyhow!("第 {} 条阶梯输入价非法（{}）", i + 1, parts[1]))?;
+        let output_cost_per_million: f64 = parts[2]
+            .parse()
+            .map_err(|_| anyhow::anyhow!("第 {} 条阶梯输出价非法（{}）", i + 1, parts[2]))?;
+        if !(input_cost_per_million.is_finite() && output_cost_per_million.is_finite()) {
+            anyhow::bail!("第 {} 条阶梯价须为有限数值", i + 1);
+        }
+        tiers.push(nemesis_data::PriceTier {
+            min_prompt_tokens,
+            input_cost_per_million: Some(input_cost_per_million),
+            output_cost_per_million: Some(output_cost_per_million),
+            cache_read_cost_per_million: None,
+            cache_creation_cost_per_million: None,
+        });
+    }
+    Ok(Some(tiers))
+}
+
 /// A2（2026-08-31）：`model prices` 子命令实现。CLI 直开 DataStore（与
 /// gateway 同一路径真相源 `workspace_data_dir`），计价/价目管理复用
 /// nemesis-data + nemesis-web 的同步实现，不重复造轮子。
@@ -932,13 +982,30 @@ async fn run_prices(action: PricesAction, home: &Path) -> Result<()> {
             if !custom.is_empty() {
                 println!("自定义条目：");
                 for p in &custom {
+                    let tiers = match &p.price_tiers {
+                        Some(t) if !t.is_empty() => {
+                            let mut parts = Vec::new();
+                            for t in t {
+                                parts.push(format!(
+                                    "≥{}:in={:.4} out={:.4}",
+                                    t.min_prompt_tokens,
+                                    t.input_cost_per_million.unwrap_or(p.input_cost_per_million),
+                                    t.output_cost_per_million
+                                        .unwrap_or(p.output_cost_per_million)
+                                ));
+                            }
+                            format!("  阶梯：{}", parts.join(" | "))
+                        }
+                        _ => String::new(),
+                    };
                     println!(
-                        "  {:<32} in={:.4} out={:.4} cache_read={:.4} cache_creation={:.4} $/Mtok",
+                        "  {:<32} in={:.4} out={:.4} cache_read={:.4} cache_creation={:.4} $/Mtok{}",
                         p.model_id,
                         p.input_cost_per_million,
                         p.output_cost_per_million,
                         p.cache_read_cost_per_million,
-                        p.cache_creation_cost_per_million
+                        p.cache_creation_cost_per_million,
+                        tiers
                     );
                 }
             }
@@ -991,11 +1058,18 @@ async fn run_prices(action: PricesAction, home: &Path) -> Result<()> {
             cache_read,
             cache_creation,
             display,
+            price_tiers,
         } => {
             let name = model.trim().to_string();
             if name.is_empty() {
                 anyhow::bail!("模型名不能为空");
             }
+            let tiers = parse_price_tiers(&price_tiers)?;
+            let tier_note = if tiers.is_some() {
+                "（含阶梯价）"
+            } else {
+                ""
+            };
             pricing
                 .upsert_custom(nemesis_data::ModelPricing {
                     model_id: name.clone(),
@@ -1007,9 +1081,12 @@ async fn run_prices(action: PricesAction, home: &Path) -> Result<()> {
                     max_input_tokens: None,
                     max_output_tokens: None,
                     aliases: Vec::new(),
+                    price_tiers: tiers,
                 })
                 .map_err(|e| anyhow::anyhow!("写入自定义条目失败：{e}"))?;
-            println!("自定义条目已保存：{name}（in={input} out={output} $/Mtok，最高查表优先级）");
+            println!(
+                "自定义条目已保存：{name}（in={input} out={output} $/Mtok，最高查表优先级）{tier_note}"
+            );
         }
         PricesAction::Remove { model } => {
             let removed = pricing

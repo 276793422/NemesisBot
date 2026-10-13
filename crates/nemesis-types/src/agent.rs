@@ -225,6 +225,28 @@ pub enum AgentEvent {
         /// 同一回复内的块序号（0 起）——前端按 (session_id, index) 幂等 upsert。
         index: usize,
     },
+    /// L10（2026-10-13 内部专项 T3）provider 流式输出事件。主 turn 的 LLM
+    /// 调用经流式 lane（provider 支持 `chat_stream` 且 `agents.provider_
+    /// stream_events` 开启）时按增量发布；web pump 转 SSE `provider_stream_
+    /// event` + WS push——**易逝事件**（EventHub `publish_ephemeral`：不盖
+    /// seq、不入补拉环——断线重放半截流无意义且会冲刷 1000 帧环）。载荷
+    /// **零内容体**原则上不成立（本事件即内容流），但出站前照常过出站凭据
+    /// 复扫；`phase`：`start`（首增量前）/ `delta`（增量合并窗）/ `end`
+    /// （调用收尾）/ `error`（调用失败，`text`=诊断）。
+    ProviderStream {
+        session_key: String,
+        chat_id: String,
+        /// 事件序号（单次 LLM 调用流内 0 起单调；重试产生新流时从新流
+        /// 起点重开——前端以 `start` 帧重置本地缓冲）。
+        seq: u64,
+        phase: String,
+        /// 增量文本（合并窗聚合）或 end/error 阶段的诊断文本。
+        text: String,
+        /// 发起调用的模型别名。
+        model: String,
+        /// 自流开始的墙钟（毫秒）——end/error 阶段携带。
+        elapsed_ms: Option<u64>,
+    },
 }
 
 /// H1（devtool-upgrade 阶段 2）：单条 todo（todowrite 全量提交语义）。
@@ -257,7 +279,9 @@ impl AgentEvent {
             // F7: 提问有会话上下文（工具从 RequestContext 取），随事件透传。
             | AgentEvent::QuestionAsked { chat_id, .. } => chat_id,
             // P30：canvas 事件带发起会话的 chat_id。
-            AgentEvent::CanvasOpen { chat_id, .. } => chat_id,
+            // L10：provider 流事件同样绑定发起会话。
+            AgentEvent::CanvasOpen { chat_id, .. }
+            | AgentEvent::ProviderStream { chat_id, .. } => chat_id,
             // 审批不属单一会话（auditor 无 session 上下文，同 ApprovalRequested）。
             // 提问了结事件同理只带 id（全局广播）。
             AgentEvent::ApprovalResolved { .. }
@@ -282,7 +306,8 @@ impl AgentEvent {
             | AgentEvent::ApprovalRequested { session_key, .. }
             | AgentEvent::QuestionAsked { session_key, .. }
             | AgentEvent::SessionCreated { session_key, .. }
-            | AgentEvent::CanvasOpen { session_key, .. } => Some(session_key),
+            | AgentEvent::CanvasOpen { session_key, .. }
+            | AgentEvent::ProviderStream { session_key, .. } => Some(session_key),
             AgentEvent::ApprovalResolved { .. } | AgentEvent::QuestionResolved { .. } => None,
         }
     }
@@ -301,6 +326,7 @@ impl AgentEvent {
             AgentEvent::QuestionResolved { .. } => "QuestionResolved",
             AgentEvent::SessionCreated { .. } => "SessionCreated",
             AgentEvent::CanvasOpen { .. } => "CanvasOpen",
+            AgentEvent::ProviderStream { .. } => "ProviderStream",
         }
     }
 }

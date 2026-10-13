@@ -18,6 +18,7 @@ pub mod log;
 pub mod mcp;
 pub mod misc;
 pub mod model;
+pub mod prices;
 pub mod scanner;
 pub mod security;
 pub mod skills;
@@ -33,6 +34,7 @@ pub use model::test_cli_model_add;
 pub use model::test_cli_model_default;
 pub use model::test_cli_model_list;
 pub use model::test_cli_model_remove;
+pub use prices::test_cli_model_prices;
 
 pub use channel::test_cli_channel_enable_disable;
 pub use channel::test_cli_channel_external;

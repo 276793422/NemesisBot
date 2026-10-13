@@ -36,6 +36,9 @@ pub mod sdk_embed;
 pub mod server;
 pub mod session;
 pub mod session_bindings;
+// L9 版本自切换通道（selfupdate feature 门控 apply 编排；journal/check/boot
+// 收口不门控——任何构建都要能清残留现场）。
+pub mod selfupdate;
 pub mod share;
 #[cfg(feature = "skins")]
 pub mod skins;

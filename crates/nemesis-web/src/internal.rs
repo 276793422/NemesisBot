@@ -12,4 +12,10 @@ pub enum InternalCommand {
     /// Step 23 `wait_for_shutdown` releases → Step 24 teardown). This is the
     /// backend of the CLI `nemesisbot shutdown` Method-3 HTTP fallback.
     Shutdown,
+    /// L9 selfupdate：CLI `nemesisbot selfupdate apply` 经 /api/internal 触发
+    /// gateway 侧九步 apply（审批卡/estop/验签全在 gateway 侧同源执行；
+    /// apply 完成后 gateway 自行走优雅停机——新进程已在等本进程退场）。
+    SelfUpdateApply {
+        allow_downgrade: bool,
+    },
 }

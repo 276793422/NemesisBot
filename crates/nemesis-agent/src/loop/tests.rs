@@ -3726,6 +3726,7 @@ async fn test_handle_tool_call_with_security_block() {
         default_action: "deny".to_string(),
         approval_timeout_secs: 300,
         log_all_operations: true,
+        preexec_scan_enabled: false,
         file_rules: vec![SecurityRule {
             pattern: ".*".to_string(),
             action: "deny".to_string(),

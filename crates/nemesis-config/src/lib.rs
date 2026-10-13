@@ -850,6 +850,21 @@ pub struct AgentsConfig {
     /// I1 (devtool-upgrade 阶段 3): workspace fs-watcher settings.
     #[serde(default)]
     pub fs_watcher: FsWatcherConfig,
+    /// T2（L1 codemode）: `code_run` 脚本工具开关与资源限制（默认关）。
+    #[serde(default)]
+    pub codemode: CodeModeConfig,
+    /// L8（内部专项总计划重评估）：工具调用三态 WAL——工具
+    /// admit/start/finish 每态一行 JSONL 落 `<workspace>/logs/turn_wal/`，
+    /// 进程被强杀（taskkill /F）后重启扫描补 interrupted 并自动续轮。
+    /// 默认开；关闭后完全不落盘。诚实边界：纯 flush 无 fsync，断电不保。
+    #[serde(default = "default_true")]
+    pub turn_wal: bool,
+    /// L10（内部专项总计划重评估）：provider 流式输出观测面——主 turn
+    /// LLM 调用经流式 lane（provider 支持则真实增量，否则聚合后合成）发
+    /// `provider_stream_event` 易逝帧（SSE + WS push，不入补拉环）。默认
+    /// 开；关闭后零事件零开销。运行时改键下一轮生效（每轮新鲜读）。
+    #[serde(default = "default_true")]
+    pub provider_stream_events: bool,
     /// F8 (devtool-upgrade 阶段 3): tool names hidden from the model's
     /// tool_defs AND rejected at dispatch (double gate). Entries may carry a
     /// trailing `*` wildcard (e.g. `mcp_*` hides every MCP tool). Runtime
@@ -1031,6 +1046,45 @@ impl Default for SubagentConfig {
 
 fn default_subagent_max_depth() -> usize {
     1
+}
+
+/// T2（内部专项总计划 L1 codemode，2026-10-13）: `agents.codemode` config
+/// section — `code_run` 脚本工具（QuickJS 沙箱）的运行开关与资源限制。
+/// 编译闸是 `codemode` cargo feature；这里管运行态：`enabled` 默认关
+/// （不注册即供给不可见），注册发生在 AgentLoop 装配期（改键需 loop 重建
+/// ——切模型/人格重启自动带上，与插件工具同语义）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeModeConfig {
+    /// Enable the `code_run` tool registration (default false).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Per-call wall-clock budget in seconds; the QuickJS interrupt handler
+    /// checks it (default 30). Infinite JS loops are cut at the deadline and
+    /// the error is returned to the model as tool result text.
+    #[serde(default = "default_codemode_timeout_secs")]
+    pub timeout_secs: u64,
+    /// QuickJS memory cap in MB via `set_memory_limit` (default 64). A
+    /// larger allocation fails as a JS OOM error inside the sandbox.
+    #[serde(default = "default_codemode_memory_limit_mb")]
+    pub memory_limit_mb: u64,
+}
+
+fn default_codemode_timeout_secs() -> u64 {
+    30
+}
+
+fn default_codemode_memory_limit_mb() -> u64 {
+    64
+}
+
+impl Default for CodeModeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            timeout_secs: default_codemode_timeout_secs(),
+            memory_limit_mb: default_codemode_memory_limit_mb(),
+        }
+    }
 }
 
 /// Y1 (Phase4-a): `agents.tool_doc_folding` config section. When enabled,
@@ -3005,6 +3059,12 @@ pub struct SecurityConfig {
     // 统一查询。
     #[serde(default = "default_true")]
     pub sanitize_child_env: bool,
+    // L6（2026-10-12 T1）：pre-exec 脚本内容扫描开关（默认开）。runtime 侧
+    // security_setup.rs 构造期按裸 JSON 键读取注入 SecurityPluginConfig；
+    // typed 字段的存在只为 Dashboard typed round-trip 不丢键（CFG-01 同族
+    // 删键 bug 防线）。
+    #[serde(default = "default_true")]
+    pub preexec_scan_enabled: bool,
     #[serde(default)]
     pub file_rules: Option<FileSecurityRules>,
     // CFG-01（2026-09-16 横扫存量加固）：磁盘/出厂模板真相源键名是
@@ -3098,6 +3158,7 @@ impl Default for SecurityConfig {
             synchronous_mode: false,
             audit_chain_enabled: false,
             sanitize_child_env: true,
+            preexec_scan_enabled: true,
             file_rules: None,
             directory_rules: None,
             process_rules: None,
@@ -3716,6 +3777,9 @@ pub fn default_config() -> Config {
             doom_loop_approval: false,
             image_downscale: true,
             lease_enabled: true,
+            codemode: CodeModeConfig::default(),
+            turn_wal: true,
+            provider_stream_events: true,
             defaults: AgentDefaults {
                 workspace: ws,
                 restrict_to_workspace: true,

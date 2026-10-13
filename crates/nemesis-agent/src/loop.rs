@@ -125,6 +125,11 @@ mod observer;
 pub use observer::*;
 #[allow(unused_imports)]
 pub(crate) use observer::*;
+mod provider_stream;
+#[allow(unused_imports)]
+pub use provider_stream::*;
+#[allow(unused_imports)]
+pub(crate) use provider_stream::*;
 mod rate_limit;
 #[allow(unused_imports)]
 pub use rate_limit::*;
@@ -630,6 +635,11 @@ pub struct AgentLoop {
     /// 渲染 L2 section（关 = 无 section = prompt 字节不变，cache 不动）。
     /// `None`（standalone / 未装配）= 永不注入。
     voice_prompt: parking_lot::RwLock<Option<Arc<std::sync::atomic::AtomicBool>>>,
+    /// L8（内部专项总计划重评估）：工具调用三态 WAL。`None`（standalone /
+    /// 未装配 / `agents.turn_wal=false`）= 不落盘；gateway 装配期经
+    /// `set_turn_wal` 注入（仿 estop late-binding 模式），dispatch 三态
+    /// 写入 + 启动恢复扫描消费。
+    turn_wal: parking_lot::RwLock<Option<Arc<crate::turn_wal::TurnWal>>>,
 }
 
 impl AgentLoop {
@@ -734,6 +744,7 @@ impl AgentLoop {
             small_model: parking_lot::RwLock::new(None),
             spawn_slot: parking_lot::RwLock::new(None),
             voice_prompt: parking_lot::RwLock::new(None),
+            turn_wal: parking_lot::RwLock::new(None),
         }
     }
 
@@ -742,6 +753,17 @@ impl AgentLoop {
     /// 无需重绑即被下一轮 build_messages 读到。
     pub fn set_voice_prompt(&self, flag: Arc<std::sync::atomic::AtomicBool>) {
         *self.voice_prompt.write() = Some(flag);
+    }
+
+    /// L8 turn WAL late-binding（gateway 装配；仿 estop 模式）。装配后
+    /// dispatch 三态写入生效；启动恢复扫描见 run_bus_impl 的恢复循环。
+    pub fn set_turn_wal(&self, wal: Arc<crate::turn_wal::TurnWal>) {
+        *self.turn_wal.write() = Some(wal);
+    }
+
+    /// 读当前 WAL（dispatch 写入点用）；`None` = 关闭 / 未装配，零落盘。
+    pub(crate) fn turn_wal(&self) -> Option<Arc<crate::turn_wal::TurnWal>> {
+        self.turn_wal.read().clone()
     }
 
     /// R1（2026-09-21）：中间轮正文发布（[`nemesis_types::agent::AgentEvent::RoundText`]）。
@@ -879,6 +901,18 @@ mod output_rescan;
 // S2②：复扫测试（凭据/DLP 双路 + 组合 + 观测档不改写）。
 #[cfg(all(test, feature = "security"))]
 mod output_rescan_tests;
+// L5（2026-10-12 内部专项 T0）：续行回灌路径复扫测试（cluster/子代理两条
+// 路 × inline/spawned 两臂 + 无插件明文直通）。
+#[cfg(all(test, feature = "security"))]
+mod l5_continuation_rescan_tests;
+// L2（2026-10-12 内部专项 T0）：压缩失败诚实报错回归锁（context 重试环
+// 有界耗尽 → 响亮 Err + history 落账 + covers 不推进；第 1 轮恢复臂）。
+#[cfg(test)]
+mod l2_compaction_fail_tests;
+// L8（2026-10-13 内部专项 T3）：turn WAL 循环级测试（dispatch 三态落盘 /
+// 开关关闭零落盘 / 总线级断头续轮）。WAL 文件级生命周期归 turn_wal/tests.rs。
+#[cfg(test)]
+mod turn_wal_loop_tests;
 // S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;
@@ -1006,6 +1040,10 @@ mod llm_types_cov_tests;
 // guardian 升级与故障姿态矩阵）。
 #[cfg(test)]
 mod tool_dispatch_sec_cov_tests;
+// L10（2026-10-13）provider 流式输出 lane 覆盖：sink 合并窗/相位序列、
+// 空流零帧、error 截断终态、包装器合成增量与真实流两臂。
+#[cfg(test)]
+mod provider_stream_tests;
 
 // P20 (2026-09-25 能力扩展 WS7): rewind 冲突预检（外部修改拒绝 + force 强
 // 过 + redo 往返）编排测试。

@@ -70,6 +70,7 @@ fn pricing_entry(id: &str, max_input: Option<i64>) -> nemesis_data::ModelPricing
         max_input_tokens: max_input,
         max_output_tokens: None,
         aliases: Vec::new(),
+        price_tiers: None,
     }
 }
 
