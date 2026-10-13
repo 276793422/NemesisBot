@@ -3759,6 +3759,23 @@ async fn poll_stale_pending_tasks(
                     "[Cluster] Stale task not found on remote peer",
                 );
                 task_manager.complete_callback(&task.id, "error", "", "remote task not found");
+                // N3c（2026-10-12）：not_found = worker 明确说「没这任务」
+                //（典型：worker 重启丢内存任务表）——确定性判死信号，board
+                // 派发必须立即走交付回调（write_back FAILED + ⛔ 评论 +
+                // in_review + spawn 评审），不等 dispatch_timeout sweep
+                //（否则任务已死、派发行悬 dispatched、评审链最长空转 3600s）。
+                // worker 端已无副本，无需 confirm；回调失败（写回竞态）时
+                // 派发行仍 dispatched，sweep 照常兜底，宁留勿丢语义不变。
+                if let Some(cb) = delivery_cb {
+                    let ok = cb(&task.id, "error", "", Some("remote task not found"));
+                    if !ok {
+                        tracing::warn!(
+                            task_id = %task.id,
+                            "[Cluster] recovered delivery callback reported failure \
+                             (not_found); dispatch row stays for sweep fallback"
+                        );
+                    }
+                }
                 // G5: not_found 同样要唤醒 agent（带 error metadata），
                 // 否则续行快照永远悬着直到安全网清理。
                 if let Some(bus) = bus {

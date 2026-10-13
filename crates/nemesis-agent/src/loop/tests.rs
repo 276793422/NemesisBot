@@ -31,6 +31,8 @@ impl LlmProvider for MockLlmProvider {
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "No more responses".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
@@ -169,6 +171,8 @@ fn test_config() -> AgentConfig {
 #[tokio::test]
 async fn simple_text_response() {
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Hello!".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -218,6 +222,8 @@ fn cap_usage() -> Option<crate::loop_executor::ObserverUsageInfo> {
 async fn length_truncation_triggers_continue_generation() {
     let provider = MockLlmProvider::new(vec![
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "partial preamble that got cut".to_string(),
             tool_calls: Vec::new(),
             finished: false,
@@ -227,6 +233,8 @@ async fn length_truncation_triggers_continue_generation() {
             raw_response_body: None,
         },
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "completed after continuing".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -264,6 +272,8 @@ async fn length_truncation_triggers_continue_generation() {
 #[tokio::test]
 async fn length_truncation_budget_exhausts_with_clear_error() {
     let truncated = || LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "x".to_string(),
         tool_calls: Vec::new(),
         finished: false,
@@ -311,6 +321,8 @@ async fn estop_engaged_stops_loop_before_llm() {
     // 所以 mock provider 的回复绝不被消费，用户拿到「已急停」Done 事件。
     use std::sync::Arc;
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "MUST NOT BE RETURNED".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -361,6 +373,8 @@ async fn estop_disengaged_lets_loop_run_normally() {
     // 证明 checkpoint 在未触发时是纯短路（零行为变化）。
     use std::sync::Arc;
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Hello!".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -553,6 +567,8 @@ async fn estop_blocks_remaining_tools_in_batch() {
     let estop = Arc::new(crate::estop::EstopState::new());
     let tracker_called = Arc::new(AtomicBool::new(false));
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: String::new(),
         tool_calls: vec![
             ToolCallInfo {
@@ -615,6 +631,8 @@ async fn tool_call_and_response() {
     let provider = MockLlmProvider::new(vec![
         // First call: LLM wants to call a tool.
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: String::new(),
             tool_calls: vec![ToolCallInfo {
                 id: "tc_1".to_string(),
@@ -629,6 +647,8 @@ async fn tool_call_and_response() {
         },
         // Second call: LLM returns final text.
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "The answer is 4.".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -669,6 +689,8 @@ async fn tool_call_and_response() {
 #[tokio::test]
 async fn rpc_correlation_id_formatting() {
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Pong".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -697,6 +719,8 @@ async fn rpc_correlation_id_formatting() {
 async fn unknown_tool_returns_error() {
     let provider = MockLlmProvider::new(vec![
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: String::new(),
             tool_calls: vec![ToolCallInfo {
                 id: "tc_1".to_string(),
@@ -710,6 +734,8 @@ async fn unknown_tool_returns_error() {
             raw_response_body: None,
         },
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "I couldn't find that tool.".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -741,6 +767,8 @@ async fn unknown_tool_returns_error() {
 async fn max_turns_limit() {
     // Create responses that always request a tool call (infinite loop scenario).
     let infinite_response = LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: String::new(),
         tool_calls: vec![ToolCallInfo {
             id: "tc_loop".to_string(),
@@ -790,6 +818,8 @@ async fn grace_round_finalizes_when_model_cooperates() {
     // finalize nudge). If the model cooperates and returns a plain answer on
     // that grace round, the loop ends normally — NOT with the paused Done.
     let tool_resp = LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: String::new(),
         tool_calls: vec![ToolCallInfo {
             id: "tc".to_string(),
@@ -803,6 +833,8 @@ async fn grace_round_finalizes_when_model_cooperates() {
         raw_response_body: None,
     };
     let final_resp = LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "done summarizing".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -852,6 +884,8 @@ async fn grace_round_finalizes_when_model_cooperates() {
 
 fn tool_loop_response() -> LlmResponse {
     LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: String::new(),
         tool_calls: vec![ToolCallInfo {
             id: "tc_budget".to_string(),
@@ -1072,6 +1106,8 @@ async fn transient_error_retry_succeeds() {
                 Err("connection reset by peer".to_string())
             } else {
                 Ok(LlmResponse {
+                    finish_reason: None,
+                    escalated_to: None,
                     content: "Recovered!".to_string(),
                     tool_calls: Vec::new(),
                     finished: true,
@@ -1115,6 +1151,8 @@ async fn escalation_fires_on_repeated_failing_builds() {
     // guards never fire. Verify ⑥ escalation hard-stops at failure 6 (well
     // under max_turns=100).
     let fail_resp = LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: String::new(),
         tool_calls: vec![ToolCallInfo {
             id: "tc_fail".to_string(),
@@ -1251,6 +1289,8 @@ fn keep_tokens_config_file(budget: i64, suffix: &str) -> std::path::PathBuf {
 
 fn failing_exec_response(id: &str) -> LlmResponse {
     LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: String::new(),
         tool_calls: vec![ToolCallInfo {
             id: id.to_string(),
@@ -1272,6 +1312,8 @@ async fn doom_loop_approval_approved_clears_and_continues() {
     // 12 次失败（两次撞顶各批准一次）后第 13 轮模型给出正常完成。
     let fail_resp = failing_exec_response("tc_fail");
     let ok_resp = LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "approved continuation finished".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -1502,6 +1544,8 @@ async fn validation_budget_actually_stops_turn() {
     // bad args would push an Error event every round until max_turns. With the
     // force_stop latch, exhaustion produces exactly ONE Error and ends the turn.
     let bad_resp = LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: String::new(),
         tool_calls: vec![ToolCallInfo {
             id: "tc_bad".to_string(),
@@ -1556,6 +1600,8 @@ async fn resume_execution_grace_round_on_max_turns() {
     // "Max iterations reached" Error. Deterministic — no two-node deployment
     // needed to check this specific edge.
     let infinite_response = LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: String::new(),
         tool_calls: vec![ToolCallInfo {
             id: "tc".to_string(),
@@ -1601,6 +1647,8 @@ async fn degenerate_final_answer_retries_then_real_answer() {
     // ⑦ Two empty final answers are retried with a nudge; the third response
     // (a real answer) is accepted and returned as Done.
     let empty = LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: String::new(),
         tool_calls: Vec::new(),
         finished: true,
@@ -1610,6 +1658,8 @@ async fn degenerate_final_answer_retries_then_real_answer() {
         raw_response_body: None,
     };
     let real = LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "here is the real answer".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -2156,6 +2206,8 @@ fn test_new_bus_creates_registry() {
 #[test]
 fn test_process_direct() {
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Direct response".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -2176,6 +2228,8 @@ fn test_process_direct() {
 #[test]
 fn test_process_heartbeat() {
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Heartbeat OK".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -2235,6 +2289,8 @@ fn test_llm_message_no_tool_calls() {
 #[test]
 fn test_llm_response_clone() {
     let resp = LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Hello".to_string(),
         tool_calls: vec![ToolCallInfo {
             id: "tc_1".to_string(),
@@ -2394,6 +2450,8 @@ async fn test_run_with_context_error_and_retry_success() {
                 Err("context_length_exceeded: token limit".to_string())
             } else {
                 Ok(LlmResponse {
+                    finish_reason: None,
+                    escalated_to: None,
                     content: "Recovered!".to_string(),
                     tool_calls: Vec::new(),
                     finished: true,
@@ -2563,6 +2621,8 @@ async fn test_tool_execution_error() {
 
     let provider = MockLlmProvider::new(vec![
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: String::new(),
             tool_calls: vec![ToolCallInfo {
                 id: "tc_1".to_string(),
@@ -2576,6 +2636,8 @@ async fn test_tool_execution_error() {
             raw_response_body: None,
         },
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "I see the error.".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -3229,6 +3291,8 @@ fn test_session_busy_tracker_multiple_sessions() {
 #[test]
 fn test_process_direct_with_channel() {
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Response with channel".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -3261,6 +3325,8 @@ fn test_get_startup_info_no_tools() {
 async fn test_multiple_tool_calls_in_single_response() {
     let provider = MockLlmProvider::new(vec![
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: String::new(),
             tool_calls: vec![
                 ToolCallInfo {
@@ -3281,6 +3347,8 @@ async fn test_multiple_tool_calls_in_single_response() {
             raw_response_body: None,
         },
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "Both results: 4 and 6.".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -3459,6 +3527,8 @@ fn test_handle_command_show_session() {
 async fn test_finished_flag_stops_loop() {
     // LLM returns finished=true with tool calls - should still stop
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Here is the answer.".to_string(),
         tool_calls: vec![ToolCallInfo {
             id: "tc_1".to_string(),
@@ -3644,6 +3714,8 @@ fn test_set_observer_callback() {
 #[tokio::test]
 async fn test_run_with_empty_response() {
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: String::new(),
         tool_calls: Vec::new(),
         finished: true,
@@ -4038,6 +4110,8 @@ fn test_process_message_regular_message() {
 #[test]
 fn test_process_heartbeat_with_response() {
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "heartbeat ok".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -4134,6 +4208,8 @@ fn make_inbound(
 async fn test_process_inbound_message_system_internal_channel() {
     let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel(16);
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Processed subagent result".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -4211,6 +4287,8 @@ async fn test_process_inbound_message_history_request() {
 async fn test_process_inbound_message_session_busy() {
     let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Mock response".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -4257,6 +4335,8 @@ async fn test_process_inbound_message_session_busy() {
 async fn test_process_inbound_message_route_resolver() {
     let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Routed response".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -4286,6 +4366,8 @@ async fn test_process_inbound_message_route_resolver() {
 async fn test_process_inbound_message_route_with_agent_scoped_key() {
     let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Agent scoped".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -4323,6 +4405,8 @@ async fn test_process_inbound_message_route_with_agent_scoped_key() {
 #[tokio::test]
 async fn test_process_inbound_message_no_resolver_fallback() {
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Fallback response".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -4347,6 +4431,8 @@ async fn test_run_bus_owned_sends_outbound() {
     let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(16);
 
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Bus response".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -4400,6 +4486,8 @@ async fn test_assistant_outbound_carries_model_badge() {
     let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel(16);
     let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(16);
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "badge test response".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -4466,6 +4554,8 @@ async fn test_run_bus_owned_rpc_correlation_prefix() {
     let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(16);
 
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "RPC response".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -4519,6 +4609,8 @@ fn test_sent_in_round_tracker_mark_and_check() {
 async fn test_process_system_message_with_result_extraction() {
     let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "System processed".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -4555,6 +4647,8 @@ async fn test_process_system_message_with_result_extraction() {
 async fn test_process_system_message_without_result_prefix() {
     let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Direct content".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -4720,6 +4814,8 @@ fn test_extract_parent_peer_empty_metadata() {
 #[tokio::test]
 async fn test_process_heartbeat_empty_response() {
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: String::new(),
         tool_calls: Vec::new(),
         finished: true,
@@ -4741,6 +4837,8 @@ async fn test_process_heartbeat_no_done_event() {
     // When LLM returns tool calls without finishing, run() may produce
     // ToolCall events but not a Done event. process_heartbeat then returns the fallback.
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Heartbeat response".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -4893,6 +4991,8 @@ async fn test_maybe_summarize_no_session_store() {
 async fn test_maybe_summarize_already_summarizing() {
     let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Summary".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -5510,6 +5610,8 @@ async fn test_run_with_tool_call_and_rpc_context() {
     // Tool call in RPC channel should be handled properly
     let provider = MockLlmProvider::new(vec![
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: String::new(),
             tool_calls: vec![ToolCallInfo {
                 id: "tc_1".to_string(),
@@ -5523,6 +5625,8 @@ async fn test_run_with_tool_call_and_rpc_context() {
             raw_response_body: None,
         },
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "The answer is 2.".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -5593,6 +5697,8 @@ fn test_handle_command_switch_unknown() {
 async fn test_run_multiple_iterations_with_different_tools() {
     let provider = MockLlmProvider::new(vec![
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: String::new(),
             tool_calls: vec![ToolCallInfo {
                 id: "tc_1".to_string(),
@@ -5606,6 +5712,8 @@ async fn test_run_multiple_iterations_with_different_tools() {
             raw_response_body: None,
         },
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: String::new(),
             tool_calls: vec![ToolCallInfo {
                 id: "tc_2".to_string(),
@@ -5619,6 +5727,8 @@ async fn test_run_multiple_iterations_with_different_tools() {
             raw_response_body: None,
         },
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "Combined result: found and calculated.".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -5672,6 +5782,8 @@ async fn test_run_multiple_iterations_with_different_tools() {
 async fn test_run_with_empty_response_then_final() {
     // LLM returns empty content first, then final answer on second call
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -5711,6 +5823,8 @@ async fn test_run_with_tool_error_continues() {
 
     let provider = MockLlmProvider::new(vec![
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: String::new(),
             tool_calls: vec![ToolCallInfo {
                 id: "tc_1".to_string(),
@@ -5724,6 +5838,8 @@ async fn test_run_with_tool_error_continues() {
             raw_response_body: None,
         },
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "I see the tool failed, let me explain.".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -5823,6 +5939,8 @@ async fn test_run_bus_owned_multiple_messages() {
 
     let provider = MockLlmProvider::new(vec![
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "Response 1".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -5832,6 +5950,8 @@ async fn test_run_bus_owned_multiple_messages() {
             raw_response_body: None,
         },
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "Response 2".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -6112,6 +6232,8 @@ fn unique_suffix() -> u128 {
 async fn test_process_inbound_message_with_route_resolver_configured() {
     let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Routed!".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -6276,6 +6398,8 @@ fn test_session_busy_tracker_acquire_release_cycle() {
 async fn test_process_direct_with_tool_calls() {
     let provider = MockLlmProvider::new(vec![
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: String::new(),
             tool_calls: vec![ToolCallInfo {
                 id: "tc_1".to_string(),
@@ -6289,6 +6413,8 @@ async fn test_process_direct_with_tool_calls() {
             raw_response_body: None,
         },
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "The answer is 21".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -6822,6 +6948,8 @@ async fn test_history_e2e_via_bus_arc() {
 #[tokio::test]
 async fn test_run_with_reasoning_content() {
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Final answer".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -6941,6 +7069,8 @@ async fn test_run_with_provider_error_no_retry() {
 async fn test_run_with_empty_content_then_response() {
     let provider = MockLlmProvider::new(vec![
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: String::new(),
             tool_calls: vec![ToolCallInfo {
                 id: "tc_1".to_string(),
@@ -6954,6 +7084,8 @@ async fn test_run_with_empty_content_then_response() {
             raw_response_body: None,
         },
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "The answer is 2.".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -7033,6 +7165,8 @@ async fn test_process_heartbeat_returns_default_on_empty_response() {
             _tools: Vec<crate::types::ToolDefinition>,
         ) -> Result<LlmResponse, String> {
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: String::new(),
                 tool_calls: Vec::new(),
                 finished: true,
@@ -7187,6 +7321,8 @@ fn test_route_input_output_types_v2() {
 async fn test_run_with_multiple_tool_iterations() {
     let provider = MockLlmProvider::new(vec![
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: String::new(),
             tool_calls: vec![ToolCallInfo {
                 id: "tc_1".to_string(),
@@ -7200,6 +7336,8 @@ async fn test_run_with_multiple_tool_iterations() {
             raw_response_body: None,
         },
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: String::new(),
             tool_calls: vec![ToolCallInfo {
                 id: "tc_2".to_string(),
@@ -7213,6 +7351,8 @@ async fn test_run_with_multiple_tool_iterations() {
             raw_response_body: None,
         },
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "Final response after 2 tool calls".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -7296,6 +7436,8 @@ fn test_agent_loop_stop_when_not_running() {
 #[tokio::test]
 async fn test_process_direct_with_channel_custom() {
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Custom channel response".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -7628,6 +7770,8 @@ async fn test_forge_records_successful_tool_experience() {
     let (forge, _dir) = create_test_forge();
     let provider = MockLlmProvider::new(vec![
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: String::new(),
             tool_calls: vec![ToolCallInfo {
                 id: "tc_1".to_string(),
@@ -7641,6 +7785,8 @@ async fn test_forge_records_successful_tool_experience() {
             raw_response_body: None,
         },
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "The answer is 4.".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -7696,6 +7842,8 @@ async fn test_forge_records_tool_error_experience() {
 
     let provider = MockLlmProvider::new(vec![
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: String::new(),
             tool_calls: vec![ToolCallInfo {
                 id: "tc_err".to_string(),
@@ -7709,6 +7857,8 @@ async fn test_forge_records_tool_error_experience() {
             raw_response_body: None,
         },
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "Tool failed.".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -7743,6 +7893,8 @@ async fn test_forge_records_tool_error_experience() {
 async fn test_forge_no_experience_without_forge() {
     let provider = MockLlmProvider::new(vec![
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: String::new(),
             tool_calls: vec![ToolCallInfo {
                 id: "tc_1".to_string(),
@@ -7756,6 +7908,8 @@ async fn test_forge_no_experience_without_forge() {
             raw_response_body: None,
         },
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "Done".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -7789,6 +7943,8 @@ async fn test_forge_no_experience_without_forge() {
 
 fn llm_text(content: &str) -> LlmResponse {
     LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: content.to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -7810,6 +7966,8 @@ fn llm_tool_calls(names: &[&str]) -> LlmResponse {
         })
         .collect();
     LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: String::new(),
         tool_calls,
         finished: false,
@@ -8168,6 +8326,8 @@ impl LlmProvider for CapturingMockProvider {
     ) -> Result<LlmResponse, String> {
         self.captured.lock().unwrap().push(messages);
         Ok(LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: self.reply.clone(),
             tool_calls: Vec::new(),
             finished: true,
@@ -8438,6 +8598,8 @@ fn test_gate_admits_when_free_and_mints_token() {
 async fn test_run_bus_queue_mode_spawns_and_finishes_turn() {
     let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel(16);
     let provider = MockLlmProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "queued-turn-reply".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -8484,6 +8646,8 @@ async fn test_process_admitted_drains_parked_next_turn() {
     let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel(16);
     let provider = MockLlmProvider::new(vec![
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "turn-reply".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -8493,6 +8657,8 @@ async fn test_process_admitted_drains_parked_next_turn() {
             raw_response_body: None,
         },
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "drained-reply".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -9667,6 +9833,8 @@ async fn one_turn_appends_exactly_user_and_assistant_rows() {
 
     let provider = MockLlmProvider::new(vec![
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "hd reply".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -9676,6 +9844,8 @@ async fn one_turn_appends_exactly_user_and_assistant_rows() {
             raw_response_body: None,
         },
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "hd reply 2".to_string(),
             tool_calls: Vec::new(),
             finished: true,

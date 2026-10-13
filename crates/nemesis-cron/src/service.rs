@@ -119,12 +119,9 @@ pub struct CronJob {
     pub delete_after_run: bool,
 }
 
-/// Cron store persistence.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CronStoreData {
-    version: i32,
-    jobs: Vec<CronJob>,
-}
+/// Cron store persistence（单一真相源在 [`crate::store`]——CLI 与 gateway
+/// 共用同一 loader/saver，禁止任何一方自行拼存储 JSON）。
+use crate::store::CronStoreData;
 
 /// Job handler callback type. Mirrors Go's `JobHandler func(job *CronJob) (string, error)`.
 #[allow(dead_code)]
@@ -438,19 +435,43 @@ impl CronService {
         Ok(job)
     }
 
-    /// Remove a job.
-    pub fn remove_job(&self, job_id: &str) -> bool {
-        info!("[Cron] Job removed: id={}", job_id);
-        let removed = {
-            let mut store = self.store.lock();
-            let before = store.jobs.len();
-            store.jobs.retain(|j| j.id != job_id);
-            store.jobs.len() < before
-        };
-        if removed {
-            let _ = self.save_store();
+    /// Remove a job. `Ok(false)` = 不存在；`Err` = 落盘失败（内存已回滚，
+    /// 与 [`Self::add_job_ext`] / [`Self::enable_job`] 同一 BUG #16 纪律：
+    /// Err 必须意味着"没删成"——吞掉保存错误会造成内存/磁盘分叉，调用方
+    /// 以为删了而盘上任务照常触发）。
+    pub fn remove_job(&self, job_id: &str) -> Result<bool, String> {
+        info!("[Cron] Job remove requested: id={}", job_id);
+        enum Outcome {
+            Missing,
+            Removed { idx: usize, job: CronJob },
         }
-        removed
+        let outcome = {
+            let mut store = self.store.lock();
+            match store.jobs.iter().position(|j| j.id == job_id) {
+                Some(idx) => Outcome::Removed {
+                    idx,
+                    job: store.jobs.remove(idx),
+                },
+                None => Outcome::Missing,
+            }
+        };
+        match outcome {
+            Outcome::Missing => Ok(false),
+            Outcome::Removed { idx, job } => {
+                let save_err = {
+                    let store = self.store.lock();
+                    crate::store::save(std::path::Path::new(&self.store_path), &store).err()
+                };
+                if let Some(e) = save_err {
+                    // 回滚：按原下标插回（save 失败 ⇒ 盘上内容未动，内存必须一致）。
+                    let mut store = self.store.lock();
+                    let idx = idx.min(store.jobs.len());
+                    store.jobs.insert(idx, job);
+                    return Err(e);
+                }
+                Ok(true)
+            }
+        }
     }
 
     /// List jobs.
@@ -799,22 +820,14 @@ impl CronService {
     }
 
     fn load_store(&self) -> Result<(), String> {
-        if !std::path::Path::new(&self.store_path).exists() {
-            return Ok(());
-        }
-        let data = std::fs::read_to_string(&self.store_path).map_err(|e| format!("read: {}", e))?;
-        let store: CronStoreData =
-            serde_json::from_str(&data).map_err(|e| format!("parse: {}", e))?;
+        let store = crate::store::load(std::path::Path::new(&self.store_path))?;
         *self.store.lock() = store;
         Ok(())
     }
 
     fn save_store(&self) -> Result<(), String> {
-        if let Some(parent) = std::path::Path::new(&self.store_path).parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {}", e))?;
-        }
         let s = self.store.lock();
-        save_store_to_path(&self.store_path, &s)
+        crate::store::save(std::path::Path::new(&self.store_path), &s)
     }
 
     fn recompute_next_runs(&self) {
@@ -851,11 +864,7 @@ impl CronService {
 
 /// Save store data to a file path. Used by both the service method and the spawn loop.
 fn save_store_to_path(path: &str, data: &CronStoreData) -> Result<(), String> {
-    if let Some(parent) = std::path::Path::new(path).parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {}", e))?;
-    }
-    let json = serde_json::to_string_pretty(data).map_err(|e| format!("ser: {}", e))?;
-    std::fs::write(path, json).map_err(|e| format!("write: {}", e))
+    crate::store::save(std::path::Path::new(path), data)
 }
 
 pub fn compute_next_run(schedule: &CronSchedule, now_ms: i64) -> Option<i64> {

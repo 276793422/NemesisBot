@@ -235,22 +235,27 @@ fn system_prompt_declares_check_anchor_instructions() {
     }
 }
 
-/// PR1（2026-10-10 机制加固）防误删快照：exec 锚点产出禁令（planner 不得
-/// 自动产出 exec 锚点，只有编排者/需求书显式写入才可继承）+ 输入/输出
-/// 资源声明纪律（[READ]/[TOUCH] 与 depends_on 互相印证）。删段则 exec
-/// 产出闸与输入清单声明回归无提示词闸。
+/// §6.1（2026-10-12 exec 锚点激活）防误删快照：exec 锚点产出指令（对可运行
+/// 时验证的子任务**应**产出，按交付物技术栈选命令）+ 命令纪律（只读/测试类，
+/// 黑名单拒绝破坏性形态）+ 跨节点安全说明 + 环境依赖缺失诚实跳过语义；
+/// 叠加输入/输出资源声明纪律（[READ]/[TOUCH] 与 depends_on 互相印证）。
+/// 删段则 exec 产出激励与输入清单声明回归无提示词闸。
 #[test]
 fn system_prompt_declares_exec_gate_and_resource_declarations() {
     for marker in [
-        "planner 不得自动产出",
-        "编排者/需求书在父任务验收标准里显式写入",
+        "应优先为本形态选一条命令",
+        "按交付物技术栈选",
+        "只读/测试类",
+        "黑名单",
+        "跨节点安全",
+        "诚实跳过（不计失败）",
         "[READ]",
         "输入/输出文件清单",
         "互相印证",
     ] {
         assert!(
             PLANNER_SYSTEM_PROMPT.contains(marker),
-            "system prompt 必须含 exec 产出禁令/资源声明标记 {marker}"
+            "system prompt 必须含 exec 产出指令/资源声明标记 {marker}"
         );
     }
 }

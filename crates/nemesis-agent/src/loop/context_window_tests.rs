@@ -204,6 +204,8 @@ async fn l3_guess_too_big_recovers_via_emergency_compression() {
                 )
             } else {
                 Ok(LlmResponse {
+                    finish_reason: None,
+                    escalated_to: None,
                     content: "Recovered after compression!".to_string(),
                     tool_calls: Vec::new(),
                     finished: true,

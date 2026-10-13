@@ -926,6 +926,8 @@ impl nemesis_agent::r#loop::LlmProvider for ScriptedModeratorLlm {
             .pop_front()
             .unwrap_or_else(|| self.fallback.clone());
         Ok(nemesis_agent::r#loop::LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: raw,
             tool_calls: Vec::new(),
             finished: true,
@@ -2296,6 +2298,14 @@ mod w5r2 {
 mod m5_approval {
     use super::*;
 
+    /// §2 免打扰短路测试会置换进程级 APPROVAL_AUTO 槽——登记路径的断言
+    /// 依赖「开关关」基线，统一在 crate 级锁下跑（question_broker 同锁）。
+    fn slot_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::APPROVAL_AUTO_SLOT_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
     fn approval_payload(op: &str, body: serde_json::Value, from: &str) -> serde_json::Value {
         let mut v = serde_json::json!({
             "v": 1, "ns": "approval", "op": op, "corr_id": "c-m5",
@@ -2309,6 +2319,7 @@ mod m5_approval {
 
     #[tokio::test]
     async fn ask_register_routes_into_registry() {
+        let _serial = slot_lock();
         let (store, dir) = temp_store("m5-register");
         let deps = make_deps(store.clone(), quota(5));
         let rid = "m5-reg-request-0001";
@@ -2355,6 +2366,7 @@ mod m5_approval {
 
     #[tokio::test]
     async fn ask_register_requires_rpc_from() {
+        let _serial = slot_lock();
         let (store, dir) = temp_store("m5-nofrom");
         let deps = make_deps(store, quota(5));
         let (ok, code, _) = parse_reply(handle_nb_bus(
@@ -2375,6 +2387,7 @@ mod m5_approval {
 
     #[tokio::test]
     async fn ask_closed_is_idempotent() {
+        let _serial = slot_lock();
         let (store, dir) = temp_store("m5-closed");
         let deps = make_deps(store, quota(5));
         let rid = "m5-closed-request-01";
@@ -2499,6 +2512,77 @@ mod m5_approval {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         assert_eq!(receipt_count(), before, "unknown short id must be a no-op");
         nemesis_web::remote_approval::registry().remove_by_request_id(rid);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 置换窗口守卫（question_broker 同款，Drop 恢复 Some(disabled)）：
+    /// 窗口内 panic 若把进程级槽留在 enabled 会毒化后续全部 ask 路径测试。
+    struct AutoApproveSwapGuard;
+
+    impl AutoApproveSwapGuard {
+        fn install() -> Self {
+            nemesis_web::handlers::security::install_auto_approve(std::sync::Arc::new(
+                nemesis_security::approval_auto::ApprovalAutoApproveState::new(true),
+            ));
+            AutoApproveSwapGuard
+        }
+    }
+
+    impl Drop for AutoApproveSwapGuard {
+        fn drop(&mut self) {
+            nemesis_web::handlers::security::install_auto_approve(std::sync::Arc::new(
+                nemesis_security::approval_auto::ApprovalAutoApproveState::new(false),
+            ));
+        }
+    }
+
+    /// §2 免打扰（无人值守计划 Part 2）：开关开 = ask_register 不登记不广播，
+    /// 直接应答 `auto_approved: true`（worker 侧放行继续）；裁决下发由
+    /// spawn 的 send_verdict 负责（裸 Cluster 无 RPC 客户端 → 后台诚实失败
+    /// ——不 join，断言不依赖它）。
+    #[tokio::test]
+    async fn ask_register_auto_approve_short_circuits_registration() {
+        let _serial = slot_lock();
+        let _swapped = AutoApproveSwapGuard::install();
+        let (store, dir) = temp_store("m5-auto");
+        let deps = make_deps(store, quota(5));
+        let rid = "m5-auto-request-001";
+        let (ok, code, v) = parse_reply(handle_nb_bus(
+            &deps,
+            approval_payload(
+                "ask_register",
+                serde_json::json!({
+                    "request_id": rid,
+                    "operation": "process_exec",
+                    "target": "cargo build",
+                    "risk_level": "HIGH",
+                }),
+                "node-b",
+            ),
+        ));
+        // 锁必须持到函数结束（question_broker 同纪律）：逆序 drop 保证
+        // `_swapped` 先恢复、`_serial` 后释放，置换窗口全程被锁覆盖；提前
+        // drop 锁 = 「锁空闲但 enabled 仍在装」窗口，毒化并行 ask 测试
+        //（run3 挂死实证，2026-10-13）。
+
+        assert!(ok, "short-circuit reply must succeed: {code:?}");
+        assert_eq!(
+            v.pointer("/body/registered").and_then(|x| x.as_bool()),
+            Some(false),
+            "免打扰开：不登记进注册表"
+        );
+        assert_eq!(
+            v.pointer("/body/auto_approved").and_then(|x| x.as_bool()),
+            Some(true),
+            "应答须带 auto_approved 旗标"
+        );
+        assert!(v.pointer("/body/short_id").is_none(), "短路路径不产生短号");
+        assert!(
+            nemesis_web::remote_approval::registry()
+                .resolve(rid)
+                .is_none(),
+            "注册表不得出现该请求"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

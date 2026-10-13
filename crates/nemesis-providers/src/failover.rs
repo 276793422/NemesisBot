@@ -33,8 +33,18 @@ pub enum FailoverError {
     },
     #[error("billing issue with provider {provider}")]
     Billing { provider: String },
-    #[error("timeout calling provider {provider}/{model}")]
-    Timeout { provider: String, model: String },
+    #[error("timeout calling provider {provider}/{model}{cause}")]
+    Timeout {
+        provider: String,
+        model: String,
+        /// 底层错误链全文（`error_chain_msg`，含 reqwest source 链）。
+        /// 空串 = 无底层错误（分类器从文本归类路径）。**必须保留**——
+        /// 连接建立失败的判定词（"connection refused"/"os error 10061"）
+        /// 只在链内可见，丢弃它端点封存判定（is_connect_error）永远失明
+        ///（E2E-9 验收实证：anthropic lane `map_err(|_|)` 吞掉后死端点
+        /// 三连失败零计数的根因）。
+        cause: String,
+    },
     #[error("format error from provider {provider}: {message}")]
     Format { provider: String, message: String },
     #[error("provider {provider} is overloaded")]

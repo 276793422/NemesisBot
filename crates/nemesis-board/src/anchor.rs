@@ -21,7 +21,11 @@
 //! 出撑爆评论/planner prompt）。关闭时 exec 锚点**诚实跳过并注记**
 //! （[`run_anchors_dual_ext`] 的第二返回值），不做 PASS 也不做 FAIL——
 //! 跳过项进提示/评论，不进失败集（否则会触发重派，重蹈假红病灶）。planner
-//! 不自动产出此类型，仅编排者/需求书显式写入。
+//! 对可运行时验证的子单**应**产出此形态（§6.1 改动二翻转；按交付物技术栈
+//! 选命令）。两道闸护航：解析期危险命令黑名单（[`validate_exec_anchor_command`]
+//! ：删除/网络外联/任意代码执行形态直接拒绝）+ 环境依赖探针（
+//! [`run_exec_anchor`]：命令解释器/关键工具缺失 = 诚实 SKIP 不计失败不进
+//! 失败签名集——master 环境缺失不得冤枉重派，NB-8 同型冤案防线）。
 //!
 //! 其余文件类锚点只读 `std::fs`，路径经 [`resolve_anchor_path`] 单点收紧：
 //! 仅限根子树内相对路径，拒绝绝对路径 / `..` 穿越 / 8.3 短名 /
@@ -87,6 +91,17 @@ impl AnchorKind {
             AnchorKind::Exec => "命令执行",
         }
     }
+
+    /// 是否 file: 类锚点（存在/正则/包含——锚点根解析产物路径的三种形态）。
+    /// 拓扑分类单一真相源：file: 锚点在派发端 workspace 实核 → 只能派本节点；
+    /// `re:`（对交付文本核对）与 `exec:`（worker 自证 + master 重放，环境
+    /// 缺失诚实 SKIP）跨节点安全，不计入拓扑约束。
+    pub fn is_file_anchor(&self) -> bool {
+        matches!(
+            self,
+            AnchorKind::FileExists | AnchorKind::FileRegex | AnchorKind::FileContains
+        )
+    }
 }
 
 /// 一条解析后的锚点（`raw` = 原始行，明细评论里回显）。
@@ -127,20 +142,20 @@ pub fn has_content_regex_anchor(acceptance_criteria: &str) -> bool {
     anchors.iter().any(|a| a.kind == AnchorKind::ContentRegex)
 }
 
-/// AC 是否含 file: 类锚点（`file:` 存在/包含/正则——非 `re:` 交付文本锚点
-/// 的全部形态）。**拓扑约束谓词（单一真相源）**：file: 锚点在派发端（看板
-/// 权威端）workspace 解析实核，而远端节点的交付文件不在派发端 workspace
-/// ——含 file: 锚点的单只能派给本节点执行。消费方（全部必须走本谓词，
+/// AC 是否含 file: 类锚点（`file:` 存在/正则/包含三种形态）。**拓扑约束
+/// 谓词（单一真相源）**：file: 锚点在派发端（看板权威端）workspace 解析
+/// 实核，而远端节点的交付文件不在派发端 workspace——含 file: 锚点的单只能
+/// 派给本节点执行。`re:`（交付文本）与 `exec:`（worker 自证 + master 重放，
+/// 见 §6.1）锚点跨节点安全，**不**计入本谓词。消费方（全部必须走本谓词，
 /// 不许各自内联解析）：`reject_remote_file_anchors` 拓扑硬闸 /
 /// `rank_dispatch_candidates` 候选过滤（换节点/兜底/匹配器决策面）/
 /// `rebalance_queued_to_worker` 重平衡偷单过滤。真机 NB-4/NB-5/NB-6
 /// 实证（2026-10-08）：决策面不感知本谓词 → 产出非法远端目标 → 拓扑闸
-/// 拦下 → 死锁或取消后无补偿。
+/// 拦下 → 死锁或取消后无补偿。E2E-1 验收实证（2026-10-12）：exec 锚点
+/// 误计入本谓词 → 纯 exec/re 锚点单全体停车。
 pub fn has_file_anchor(acceptance_criteria: &str) -> bool {
     let (anchors, _, _) = parse_anchors(acceptance_criteria);
-    anchors
-        .iter()
-        .any(|a| !matches!(a.kind, AnchorKind::ContentRegex))
+    anchors.iter().any(|a| a.kind.is_file_anchor())
 }
 
 /// 解析验收标准：`[CHECK]` 行 → 锚点，其余行（含无法解析的 `[CHECK]` 行）
@@ -236,6 +251,10 @@ fn parse_anchor_line(rest: &str) -> Result<Option<AnchorCheck>, String> {
         if command.is_empty() {
             return Ok(None);
         }
+        // 危险命令黑名单（§6.1 改动二配套）：验证锚点只允许只读/测试类
+        // 命令；删除/网络外联/任意代码执行形态解析期即拒绝（与路径形态
+        // 不安全同通道：回落语义项 + RejectedAnchor 告警）。
+        validate_exec_anchor_command(command)?;
         return Ok(Some(AnchorCheck {
             raw,
             kind: AnchorKind::Exec,
@@ -246,12 +265,112 @@ fn parse_anchor_line(rest: &str) -> Result<Option<AnchorCheck>, String> {
     Ok(None)
 }
 
+/// exec: 锚点危险命令黑名单（token 级精确匹配——`npm` 含子串 `rm` 不误伤，
+/// 词法边界由分词保证）。黑名单取「验证命令永远不需要」的破坏性形态：
+/// 删除 / 移动 / 磁盘格式化 / 网络外联 / 远程任意代码 / 进程与系统控制。
+/// 拒绝 = 锚点不生效（回落语义评审）+ 告警评论，验收不炸、执行者不被惩罚。
+const EXEC_ANCHOR_BLOCKED_TOKENS: &[&str] = &[
+    // 删除/破坏类
+    "rm",
+    "rmdir",
+    "del",
+    "erase",
+    "rd",
+    "remove-item",
+    "ri",
+    "unlink",
+    "shred",
+    "format",
+    "mkfs",
+    "dd",
+    "diskpart",
+    "clear-content",
+    "truncate",
+    // 移动/越目录写类
+    "mv",
+    "move",
+    "robocopy",
+    "xcopy",
+    // 网络外联类
+    "curl",
+    "wget",
+    "nc",
+    "ncat",
+    "netcat",
+    "ssh",
+    "scp",
+    "sftp",
+    "ftp",
+    "telnet",
+    "invoke-webrequest",
+    "iwr",
+    "invoke-restmethod",
+    "irm",
+    "certutil",
+    "bitsadmin",
+    // 任意代码执行/注入类
+    "iex",
+    "invoke-expression",
+    // 进程/系统控制类
+    "taskkill",
+    "kill",
+    "pkill",
+    "stop-process",
+    "stop-service",
+    "shutdown",
+    "reboot",
+    "reg",
+    "regedit",
+    "bcdedit",
+    "net",
+    "sc",
+];
+
+/// exec: 锚点命令分词：按空白与 shell 结构符切开、去引号、小写化——token
+/// 级精确匹配黑名单（子串不误伤：`npm`/`del.js`/`format.js` 均放行）。
+fn exec_command_tokens(command: &str) -> Vec<String> {
+    command
+        .split(|c: char| {
+            c.is_whitespace() || matches!(c, '|' | ';' | '&' | '(' | ')' | '<' | '>' | '`')
+        })
+        .map(|t| {
+            t.trim_matches(|c| c == '"' || c == '\'')
+                .to_ascii_lowercase()
+        })
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
+/// 危险命令形态闸（解析期，FS/平台无关）：命中黑名单 = `Err(reason)`
+/// （调用方按 RejectedAnchor 通道处置）。环境变量前缀（`FOO=bar`）与
+/// 路径形态首 token（`./scripts/run.sh`）不参与黑名单匹配。
+pub fn validate_exec_anchor_command(command: &str) -> Result<(), String> {
+    for tok in exec_command_tokens(command) {
+        if tok.contains('=') || tok.contains('/') || tok.contains('\\') {
+            continue; // 环境变量赋值 / 带路径的脚本调用不按裸词匹配
+        }
+        if EXEC_ANCHOR_BLOCKED_TOKENS.contains(&tok.as_str()) {
+            return Err(format!(
+                "exec 锚点拒绝危险命令形态（命中黑名单词「{tok}」）：验证锚点只允许只读/测试类命令"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// M2 决策链三态分流：锚点执行前先验根有效性。主根与 fallback 根**都不
 /// 可达**（canonicalize 失败）= 基础设施故障（`Err`），调用方必须转人工 +
 /// WARN，**不得**照常执行锚点（那会产出逐锚点 FAIL → 触发重派——机器上
 /// 没人能修好「根不存在」，重派循环烧预算还惩罚不到任何人）；至少一根可
 /// 达、或锚点组全部与 FS 无关（`re:` 交付文本锚点 / 空组）= `Ok(())`，
 /// 照常执行。根可达但文件未命中 = 真 FAIL（质量面），不在此判定内。
+///
+/// 注意与拓扑谓词 [`has_file_anchor`] 的分工：本函数判定「**评审机器**上
+/// 锚点执行是否需要可达根」——exec: 锚点执行 cwd = 锚点根，需要根可达，
+/// 故计入（`!ContentRegex` 口径在此正确）；拓扑谓词判定「**派发**能否去
+/// 远端」——exec 走 worker 自证 + master 重放，跨节点安全，不计入。两套
+/// 口径不同是刻意的，勿互相「统一」（E2E-1 实证 2026-10-12：拓扑口径
+/// 误纳 exec → 派发全体停车）。
 pub fn validate_anchor_roots(
     anchors: &[AnchorCheck],
     workspace_root: &Path,
@@ -335,14 +454,17 @@ pub fn run_anchors_dual_ext(
                 continue;
             };
             // exec 的执行根：项目目录在场优先（档案管线合并产物的主落点），
-            // 否则 workspace 根。
+            // 否则 workspace 根。cwd 语义与文件锚点的项目目录优先 fallback
+            // 同构（§6.1 改动四核实结论：项目目录在场优先已是现状，测试钉住）。
             let root = project_root.unwrap_or(workspace_root);
-            let (passed, detail) = run_exec_anchor(anchor, root, *timeout_secs);
-            results.push(AnchorResult {
-                anchor: anchor.clone(),
-                passed,
-                detail,
-            });
+            match run_exec_anchor(anchor, root, *timeout_secs) {
+                ExecAnchorOutcome::Ran(passed, detail) => results.push(AnchorResult {
+                    anchor: anchor.clone(),
+                    passed,
+                    detail,
+                }),
+                ExecAnchorOutcome::EnvSkip(note) => skipped.push(note),
+            }
             continue;
         }
         let (passed, detail) = run_one(anchor, workspace_root, project_root, delivery_text);
@@ -355,22 +477,59 @@ pub fn run_anchors_dual_ext(
     (results, skipped)
 }
 
-/// exec: 锚点单条执行（std::process，nemesis-board 无 tokio 依赖）：退出码
-/// 0 = 过；启动失败 / 超时 / 非 0 退出 = 不过，明细带诚实原因与输出尾部。
-fn run_exec_anchor(anchor: &AnchorCheck, root: &Path, timeout_secs: u64) -> (bool, String) {
+/// exec: 锚点单条执行结局。
+enum ExecAnchorOutcome {
+    /// 实跑完成：(通过, 明细)。
+    Ran(bool, String),
+    /// 环境依赖缺失——诚实跳过（不计失败、不进失败签名集），注记进跳过
+    /// 通道（调用方落提示/评论）。
+    EnvSkip(String),
+}
+
+/// exec: 锚点单条执行（std::process，nemesis-board 无 tokio 依赖）：先跑
+/// 环境依赖探针（缺工具 = [`ExecAnchorOutcome::EnvSkip`] 诚实跳过），再实
+/// 跑命令——退出码 0 = 过；启动失败 / 超时 / 非 0 退出 = 不过，明细带诚实
+/// 原因与输出尾部。
+fn run_exec_anchor(anchor: &AnchorCheck, root: &Path, timeout_secs: u64) -> ExecAnchorOutcome {
     let command = anchor.target.trim();
     if command.is_empty() {
-        return (false, "exec 锚点命令为空".to_string());
+        return ExecAnchorOutcome::Ran(false, "exec 锚点命令为空".to_string());
     }
     if !root.is_dir() {
-        return (
+        return ExecAnchorOutcome::Ran(
             false,
             format!("exec 锚点执行根不存在（{}）", root.display()),
         );
     }
+    // 环境依赖探针（§6.1 master 侧执行环境保障；仓库纪律「二进制在场 ≠
+    // 可用，用前实跑 trivial 探针」）：实跑前先以 where/command -v 实探
+    // 首 token 工具是否在场——缺失 = EnvSkip 不计失败（master 缺环境不得
+    // 变成 FAIL 冤枉重派，NB-8 同型冤案）。shell 内建（cd/echo/set…解释器
+    // 在场即成立）与路径形态首 token（相对脚本缺失属交付缺陷，走真 FAIL）
+    // 不探。
+    if let Some(tool) = probe_target_token(command)
+        && !probe_tool_present(&tool, root)
+    {
+        return ExecAnchorOutcome::EnvSkip(format!(
+            "⏭ exec 锚点环境依赖缺失（{tool} 不在本机 PATH），诚实跳过（不计失败、不进失败签名集；请在评审端预装该工具链）：{}",
+            anchor.raw
+        ));
+    }
     let mut cmd = if cfg!(windows) {
+        // raw_arg/creation_flags 同源于 CommandExt（Windows）。
+        #[cfg(windows)]
+        use std::os::windows::process::CommandExt;
         let mut c = std::process::Command::new("cmd");
-        c.arg("/C").arg(command);
+        c.arg("/C");
+        // raw_arg：命令串**原样**进命令行（与 cc_hooks.rs 同型修复）。
+        // 默认 argv 转义把内嵌引号变 `\"`（MSVCRT 规则），cmd 不认 `\"
+        // `——`findstr /C:"..."` 形态的验证命令被打挂（退出码 1 假 FAIL，
+        // NB-22 实证：文件在场且内容精确仍三连失败）。raw_arg 让 cmd 按
+        // 原生语法解析，与真 shell 收到的一致。
+        #[cfg(windows)]
+        c.raw_arg(command);
+        #[cfg(not(windows))]
+        c.arg(command);
         c
     } else {
         let mut c = std::process::Command::new("sh");
@@ -390,7 +549,9 @@ fn run_exec_anchor(anchor: &AnchorCheck, root: &Path, timeout_secs: u64) -> (boo
     }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
-        Err(e) => return (false, format!("exec 锚点进程启动失败：{e}")),
+        Err(e) => {
+            return ExecAnchorOutcome::Ran(false, format!("exec 锚点进程启动失败：{e}"));
+        }
     };
     // 管道读取放独立线程（避免孙进程继承句柄导致 exit 后 read 阻塞死锁），
     // 主线程 try_wait 轮询到超时上限。
@@ -410,12 +571,12 @@ fn run_exec_anchor(anchor: &AnchorCheck, root: &Path, timeout_secs: u64) -> (boo
             }
             Err(e) => {
                 let _ = child.kill();
-                return (false, format!("exec 锚点执行失败：{e}"));
+                return ExecAnchorOutcome::Ran(false, format!("exec 锚点执行失败：{e}"));
             }
         }
     };
     let Some(status) = status else {
-        return (
+        return ExecAnchorOutcome::Ran(
             false,
             format!("exec 锚点执行超时（>{timeout_secs}s），进程已终止"),
         );
@@ -442,7 +603,68 @@ fn run_exec_anchor(anchor: &AnchorCheck, root: &Path, timeout_secs: u64) -> (boo
     if !tail.is_empty() {
         detail.push_str(&format!("\n输出尾部：\n{tail}"));
     }
-    (status.success(), detail)
+    ExecAnchorOutcome::Ran(status.success(), detail)
+}
+
+/// 环境探针目标 token 提取：首 token 为裸词（非 env 赋值 / 非路径形态）且
+/// 不是 shell 内建（内建随解释器在场成立）时返回，供 [`probe_tool_present`]。
+fn probe_target_token(command: &str) -> Option<String> {
+    let tok = exec_command_tokens(command).into_iter().next()?;
+    if tok.contains('=') || tok.contains('/') || tok.contains('\\') {
+        return None;
+    }
+    const SHELL_BUILTINS: &[&str] = &[
+        "cd", "echo", "set", "exit", "if", "for", "while", "dir", "type", "call", "rem", "goto",
+        "shift", "ver", "cls",
+    ];
+    if SHELL_BUILTINS.contains(&tok.as_str()) {
+        return None;
+    }
+    Some(tok)
+}
+
+/// 工具在场探针（trivial 实跑）：Windows `where <tool>` / Unix
+/// `command -v <tool>`，退出码 0 = 在场。10s 探针超时（工具解析毫秒级，
+/// 慢盘/杀软扫描兜底）；探针自身起不来 = 视为不在场（保守跳过）。
+fn probe_tool_present(tool: &str, root: &Path) -> bool {
+    let mut cmd = if cfg!(windows) {
+        let mut c = std::process::Command::new("cmd");
+        c.arg("/C").arg(format!("where {tool}"));
+        c
+    } else {
+        let mut c = std::process::Command::new("sh");
+        c.arg("-c")
+            .arg(format!("command -v {tool} >/dev/null 2>&1"));
+        c
+    };
+    cmd.current_dir(root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let Ok(mut child) = cmd.spawn() else {
+        return false;
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match child.try_wait() {
+            Ok(Some(st)) => return st.success(),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return false;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(_) => return false,
+        }
+    }
 }
 
 type PipeReader = Box<dyn std::io::Read + Send>;

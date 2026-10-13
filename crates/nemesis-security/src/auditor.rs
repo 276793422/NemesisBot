@@ -311,6 +311,12 @@ pub struct SecurityAuditor {
     /// default_action 全部绕过）；None = 未装配（旧行为）。运行时态不持久化，
     /// gateway 装配处注入（与 web editor handler 共享同一 Arc——单一真相源）。
     editor_access: RwLock<Option<Arc<crate::editor_access::EditorAccessState>>>,
+    /// §2 免打扰运行时态（2026-10-11 无人值守计划 Part 2）：Some =
+    /// request_permission RequireApproval 臂在其短路自动放行（审计标
+    /// auto_by_config + 集群来源落持久规则）；None = 未装配（旧行为）。
+    /// gateway 装配处注入（与 web security handler 共享同一 Arc——单一
+    /// 真相源；config 是持久真相源，本态是运行期投影）。
+    approval_auto: RwLock<Option<Arc<crate::approval_auto::ApprovalAutoApproveState>>>,
     /// JSONL 结构化审计通道的运行时接线(None = 未接线 → 回落 `config` 的
     /// `audit_log_file_enabled`/`audit_log_dir` 既有语义,即默认不写)。
     /// 生产此前两条通道都拿不到 policy_rule:文本通道 policy 段恒 "pipeline",
@@ -340,6 +346,7 @@ impl SecurityAuditor {
             protected_paths: RwLock::new(Vec::new()),
             self_destruct_exempt: RwLock::new(String::new()),
             editor_access: RwLock::new(None),
+            approval_auto: RwLock::new(None),
             audit_jsonl: RwLock::new(None),
         }
     }
@@ -785,6 +792,24 @@ impl SecurityAuditor {
         *self.editor_access.write() = Some(state);
     }
 
+    /// §2 免打扰运行时态注入（无人值守计划 Part 2，gateway 装配处调用；
+    /// 同一 Arc 同时交给 web security handler 读写——单一真相源，editor_access
+    /// 同款双注入）。
+    pub fn set_approval_auto_approve(
+        &self,
+        state: Arc<crate::approval_auto::ApprovalAutoApproveState>,
+    ) {
+        *self.approval_auto.write() = Some(state);
+    }
+
+    /// 免打扰是否生效（未装配或开关关 = false，行为与旧路径一致）。
+    fn approval_auto_enabled(&self) -> bool {
+        self.approval_auto
+            .read()
+            .as_ref()
+            .is_some_and(|s| s.enabled())
+    }
+
     /// 接线 JSONL 结构化审计通道(每条判定含 `policy_rule`,审计页
     /// security.audit 的数据源)。装配期调用一次;`enabled=false` = 显式
     /// 禁用(优先于 `config` 既有字段)。
@@ -862,6 +887,74 @@ impl SecurityAuditor {
                 self.log_audit_event(&event);
                 return (true, None, req.id.clone());
             }
+        }
+
+        // §2 免打扰开关（无人值守计划 Part 2）：RequireApproval 且开关开 =
+        // 自动放行（不弹卡）。优先级低于 pattern 记忆（上块先命中先走，本块
+        // 轮不到）；guardian 二审/approval 弹窗/doom-loop 卡都在 manager 之后
+        // 或另行直调，不经本块（保持人工，计划 §2.4 不动清单）。集群来源
+        // （worker auditor ask，channel=="cluster"）把该 (op,target,risk)
+        // 落成持久 pattern 规则——同一节点后续同类操作命中规则即放行，
+        // 无需每次经本开关；对话来源不落（用户只对当次操作点头）。
+        if decision == SecurityDecision::RequireApproval && self.approval_auto_enabled() {
+            self.allowed_count.fetch_add(1, Ordering::SeqCst);
+            let auto = self.approval_auto.read().clone();
+            if let Some(auto) = auto {
+                auto.bump();
+            }
+            // 持久化（仅集群来源；层级门不过/写盘失败都只 warn 不影响放行
+            // ——放行裁决在前，落盘是尽力而为的加速）。
+            if ctx.is_some_and(|c| c.channel == "cluster")
+                && let Some(hot) = self.approval_rules.read().clone()
+            {
+                let rules_path = hot.path().to_path_buf();
+                let op = req.op_type.to_string();
+                let risk = req.danger_level.to_string();
+                let target = req.target.clone();
+                match crate::approval_rules::persist_auto_allow_rule(
+                    &rules_path,
+                    &op,
+                    &target,
+                    &risk,
+                ) {
+                    Ok(Some(pattern)) => {
+                        tracing::info!(
+                            "[ApprovalAuto] cluster ask auto-approved + persisted rule: {} {}",
+                            op,
+                            pattern
+                        );
+                    }
+                    Ok(None) => {
+                        tracing::warn!(
+                            "[ApprovalAuto] cluster ask auto-approved; rule not persisted \
+                             (layer gate: {op}/{risk})"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "[ApprovalAuto] cluster ask auto-approved; rule persist failed: {e}"
+                        );
+                    }
+                }
+            }
+            let event = AuditEvent {
+                event_id: uuid::Uuid::new_v4().to_string(),
+                request: req.clone(),
+                decision: "allowed".to_string(),
+                reason: "auto approved by security.approvals.auto_approve (unattended mode)"
+                    .to_string(),
+                timestamp: chrono::Local::now().to_rfc3339(),
+                policy_rule: "auto_by_config".to_string(),
+            };
+            self.log_audit_event(&event);
+            tracing::info!(
+                "[ApprovalAuto] auto-approved {} {} (risk {}) from channel {:?}",
+                req.op_type,
+                req.target,
+                req.danger_level,
+                ctx.map(|c| c.channel.as_str()).unwrap_or("<none>")
+            );
+            return (true, None, req.id.clone());
         }
 
         let decision_str = match decision {

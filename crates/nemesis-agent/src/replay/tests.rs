@@ -113,6 +113,8 @@ impl LlmProvider for CapturingProvider {
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "No more responses".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
@@ -580,6 +582,8 @@ async fn test_full_turn_replay_byte_exact() {
     let capturing = Arc::new(CapturingProvider {
         responses: Mutex::new(vec![
             LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: String::new(),
                 tool_calls: vec![ToolCallInfo {
                     id: "tc_1".to_string(),
@@ -593,6 +597,8 @@ async fn test_full_turn_replay_byte_exact() {
                 raw_response_body: None,
             },
             LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "The answer is 4.".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
@@ -722,6 +728,8 @@ async fn test_x1_pruned_tool_result_replay_byte_exact() {
     let capturing = Arc::new(CapturingProvider {
         responses: Mutex::new(vec![
             LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: String::new(),
                 tool_calls: vec![ToolCallInfo {
                     id: "tc_big".to_string(),
@@ -735,6 +743,8 @@ async fn test_x1_pruned_tool_result_replay_byte_exact() {
                 raw_response_body: None,
             },
             LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "Done with the big output.".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,

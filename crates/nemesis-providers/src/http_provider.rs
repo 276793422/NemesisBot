@@ -295,11 +295,12 @@ impl HttpProvider {
 
             let resp = match req.json(&body).send().await {
                 Ok(r) => r,
-                Err(_) => {
+                Err(e) => {
                     let _ = tx
                         .send(Err(FailoverError::Timeout {
                             provider: provider_name,
                             model: model.clone(),
+                            cause: nemesis_utils::llm_error_class::error_chain_msg(&e),
                         }))
                         .await;
                     return;
@@ -438,6 +439,7 @@ impl HttpProvider {
                             .send(Err(FailoverError::Timeout {
                                 provider: provider_name.clone(),
                                 model: model.clone(),
+                                cause: nemesis_utils::llm_error_class::error_chain_msg(&e),
                             }))
                             .await;
                         return;
@@ -693,9 +695,10 @@ impl LLMProvider for HttpProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|_e| FailoverError::Timeout {
+            .map_err(|e| FailoverError::Timeout {
                 provider: self.config.name.clone(),
                 model: model.to_string(),
+                cause: nemesis_utils::llm_error_class::error_chain_msg(&e),
             })?;
 
         let status = resp.status().as_u16();

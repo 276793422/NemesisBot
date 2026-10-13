@@ -203,6 +203,39 @@ pub fn save_rules(path: &Path, rules: &[ApprovalRule]) -> Result<(), String> {
         .map_err(|e| format!("write rules {}: {e}", path.display()))
 }
 
+/// 规则落盘进程级串行闸（M7「总是允许」写入与 §2 免打扰集群来源持久化
+/// 双写者共用——防 read-modify-write 交错 last-write-wins 丢规则）。
+static RULES_WRITE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+/// 层级安全门 + pattern 生成 + upsert + save **单一收口**（M7「总是允许」
+/// 与 §2 免打扰集群来源持久化共用——写入语义单点，web_approval 的
+/// save_always_rule 与 auditor auto-approve 都走这里）。
+///
+/// 返回 `Some(pattern)` = 已落盘；`Ok(None)` = 层级门不过（CRITICAL 仅
+/// process_exec 豁免 + 安装类永不入规则），调用方 warn 忽略；`Err` = 写盘
+/// 失败（调用方裁决是否影响主流程——M7 主流程批准已生效不回滚，§2 同）。
+pub fn persist_auto_allow_rule(
+    path: &Path,
+    operation: &str,
+    target: &str,
+    risk_level: &str,
+) -> Result<Option<String>, String> {
+    if !rule_permitted_for(operation, risk_level) {
+        return Ok(None);
+    }
+    let pattern = pattern_for(operation, target);
+    if pattern.is_empty() {
+        return Err(format!(
+            "cannot derive approval pattern from {operation} target"
+        ));
+    }
+    let _w = RULES_WRITE_LOCK.lock();
+    let mut stored = load_rules(path);
+    upsert_rule(&mut stored, operation, &pattern);
+    save_rules(path, &stored)?;
+    Ok(Some(pattern))
+}
+
 #[cfg(test)]
 mod cov_tests;
 #[cfg(test)]

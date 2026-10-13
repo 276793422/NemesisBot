@@ -59,6 +59,8 @@ fn below_cap_usage() -> Option<ObserverUsageInfo> {
 
 fn empty_at_cap() -> LlmResponse {
     LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: String::new(),
         tool_calls: Vec::new(),
         finished: true,
@@ -71,6 +73,8 @@ fn empty_at_cap() -> LlmResponse {
 
 fn text_at_cap(text: &str) -> LlmResponse {
     LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: text.to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -83,6 +87,8 @@ fn text_at_cap(text: &str) -> LlmResponse {
 
 fn text_below_cap(text: &str) -> LlmResponse {
     LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: text.to_string(),
         tool_calls: Vec::new(),
         finished: true,

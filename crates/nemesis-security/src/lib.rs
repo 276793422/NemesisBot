@@ -20,6 +20,8 @@
 #[cfg(feature = "security")]
 pub mod approval;
 #[cfg(feature = "security")]
+pub mod approval_auto;
+#[cfg(feature = "security")]
 pub mod approval_rules;
 #[cfg(feature = "security")]
 pub mod audit_log;

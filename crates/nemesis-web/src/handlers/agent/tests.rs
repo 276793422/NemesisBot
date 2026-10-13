@@ -213,6 +213,8 @@ impl LlmProvider for WebMockProvider {
         _: Vec<nemesis_agent::types::ToolDefinition>,
     ) -> Result<LlmResponse, String> {
         Ok(LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: String::new(),
             tool_calls: Vec::new(),
             finished: true,

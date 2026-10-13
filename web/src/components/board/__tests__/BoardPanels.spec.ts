@@ -1433,3 +1433,86 @@ describe('AuditPanel（决策流 全自动流转 P5/E2）', () => {
     expect(w.text()).not.toContain('没有可回滚的决策')
   })
 })
+
+// --- U-C（2026-10-12 §9.3）：详情弹窗「时间线」页签 ---
+describe('IssueDetailModal 时间线页签（U-C）', () => {
+  function timelineIssue() {
+    return { ...issue(), comments: [], activity: [], subscribers: [] }
+  }
+
+  function mountWithTimeline(events: any[]) {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'issue.get') return Promise.resolve({ issue: timelineIssue() })
+      if (cmd === 'attachment.list') return Promise.resolve({ attachments: [] })
+      if (cmd === 'nodes.list') return Promise.resolve({ nodes: [] })
+      if (cmd === 'issue.timeline') return Promise.resolve({ issue: 'NB-1', events })
+      return Promise.resolve({})
+    })
+    return mount(IssueDetailModal, { props: { issueId: 1 } })
+  }
+
+  it('默认详情页（原布局不破）；点时间线 → 请求 issue.timeline 并渲染统一投影', async () => {
+    const w = mountWithTimeline([
+      { ts: 1700000000, source: 'activity', kind: 'auto_decide', actor: 'agent/master', summary: 'auto_decide', detail: '{"verdict":"PASS"}' },
+      { ts: 1700000060, source: 'comment', kind: 'delivery', actor: 'worker/node-b', summary: '交付首行', detail: '交付首行\n全文' },
+      { ts: 1700000120, source: 'dispatch', kind: 'dispatched', actor: 'node-b', summary: '派发 → node-b（task abc，状态 dispatched）', detail: 'abc' },
+      { ts: 1700000180, source: 'cluster_task', kind: 'success', actor: 'node-b', summary: '任务结果（peer_chat）：成功' },
+    ])
+    await flushPromises()
+    // 默认详情页：时间线未请求、列表不存在。
+    expect(w.text()).toContain('详情')
+    expect(requestMock.mock.calls.some((c) => c[1] === 'issue.timeline')).toBe(false)
+    // 切时间线页签 → 请求 + 渲染。
+    await w.findAll('button').find((b) => b.text().includes('时间线'))!.trigger('click')
+    await flushPromises()
+    const call = requestMock.mock.calls.find((c) => c[1] === 'issue.timeline')!
+    expect(call[2]).toEqual({ id: 1 })
+    // 活动行正文优先 details（action 词只在徽标后缀缺席时兜底，此处 detail 在场）。
+    expect(w.text()).toContain('verdict')
+    expect(w.text()).toContain('交付首行')
+    expect(w.text()).toContain('派发 → node-b')
+    expect(w.text()).toContain('任务结果（peer_chat）：成功')
+    // 源徽标齐备。
+    const badges = w.findAll('.timeline-row .badge').map((b) => b.text())
+    expect(badges.some((t) => t.includes('活动'))).toBe(true)
+    expect(badges.some((t) => t.includes('评论·delivery'))).toBe(true)
+    expect(badges.some((t) => t.includes('派发·dispatched'))).toBe(true)
+    expect(badges.some((t) => t.includes('任务'))).toBe(true)
+  })
+
+  it('活动行正文展示 details 而非重复 action 词；空时间线 → 暂无记录', async () => {
+    const w = mountWithTimeline([
+      { ts: 1700000000, source: 'activity', kind: 'status_changed', actor: 'admin/alice', summary: 'status_changed', detail: 'todo→in_review' },
+    ])
+    await flushPromises()
+    await w.findAll('button').find((b) => b.text().includes('时间线'))!.trigger('click')
+    await flushPromises()
+    expect(w.text()).toContain('todo→in_review')
+    // 详情不重复出现在 detail 尾注（正文已含）。
+    const rows = w.findAll('.timeline-row')
+    expect(rows.length).toBe(1)
+    expect(rows[0].text()).not.toContain('status_changed status_changed')
+
+    const w2 = mountWithTimeline([])
+    await flushPromises()
+    await w2.findAll('button').find((b) => b.text().includes('时间线'))!.trigger('click')
+    await flushPromises()
+    expect(w2.text()).toContain('暂无记录')
+  })
+
+  it('换单回落详情页并清空旧时间线数据', async () => {
+    const w = mountWithTimeline([
+      { ts: 1700000000, source: 'activity', kind: 'created', actor: 'admin/alice', summary: 'created' },
+    ])
+    await flushPromises()
+    await w.findAll('button').find((b) => b.text().includes('时间线'))!.trigger('click')
+    await flushPromises()
+    expect(w.findAll('.timeline-row').length).toBe(1)
+    // issueId 置空再赋值（换单）→ 回详情页，时间线数据清空。
+    await w.setProps({ issueId: null })
+    await w.setProps({ issueId: 2 })
+    await flushPromises()
+    expect(w.findAll('.timeline-row').length).toBe(0)
+    expect(requestMock.mock.calls.some((c) => c[1] === 'issue.timeline' && c[2].id === 2)).toBe(false)
+  })
+})

@@ -35,6 +35,8 @@ impl LlmProvider for AgtNoopProvider {
         _: Vec<nemesis_agent::types::ToolDefinition>,
     ) -> Result<LlmResponse, String> {
         Ok(LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "ok".to_string(),
             tool_calls: vec![],
             finished: true,
