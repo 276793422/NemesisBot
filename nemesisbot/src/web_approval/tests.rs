@@ -467,3 +467,81 @@ async fn resolved_broadcast_fires_on_respond_and_timeout() {
         .unwrap();
     assert!(!v.approved, "timeout must deny");
 }
+
+// ---------------------------------------------------------------------------
+// approval_rules.json 写串行锁并发回归钉（2026-10-13 横扫四期）：该文件的
+// 两个写者——本管理器的 save_always_rule（rules_write 叠加 config_write_lock）
+// 与 security.approvals.clear（config_write_lock）——必须互斥。本钉用「外部
+// 持 config_write_lock 手写规则文件」模拟 clear 臂，验证 save_always_rule
+// 的 RMW 与 config 家族锁互斥（修复前 save_always_rule 只认自身
+// rules_write，外部写者落在其读写窗口内会被冲掉/把它冲掉）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn save_always_rule_is_exclusive_with_config_family_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules_path = dir.path().join("config/approval_rules.json");
+    std::fs::create_dir_all(rules_path.parent().unwrap()).unwrap();
+
+    let mgr = WebApprovalManager::new(None, Some(rules_path.clone()));
+
+    // 外部写者持 config 家族锁整写文件（模拟 approvals.clear 的读→写）
+    // 与 save_always_rule 并发跑。save 5 次同一规则（upsert 幂等收敛 1 条）。
+    let writer_path = rules_path.clone();
+    std::thread::scope(|s| {
+        let sa = s.spawn(|| {
+            for _ in 0..5 {
+                mgr.save_always_rule("process_exec", "cmd-0")
+                    .expect("save rule ok");
+            }
+        });
+        let sb = s.spawn(move || {
+            for _ in 0..5 {
+                let _g = nemesis_config::config_write_lock();
+                // clear 臂形态：持锁读→整写（这里写保留性内容，语义为
+                // 「外部写者与 RMW 串行」，不销毁断言前置）。
+                let mut v: serde_json::Value = std::fs::read_to_string(&writer_path)
+                    .ok()
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .unwrap_or(serde_json::json!([]));
+                if let Some(a) = v.as_array_mut() {
+                    // 必须是合法完整 ApprovalRule（四字段齐）：load_rules 对
+                    // 解析失败的文件整表按空处理，缺字段条目会被 save 的
+                    // typed 全写抹掉——那是内容形态问题不是锁问题。
+                    a.push(serde_json::json!({
+                        "op": "marker",
+                        "pattern": "clear-arm *",
+                        "action": "allow",
+                        "created_at": "2026-10-13T00:00:00+08:00"
+                    }));
+                }
+                std::fs::write(&writer_path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+            }
+        });
+        sa.join().unwrap();
+        sb.join().unwrap();
+    });
+
+    // 串行后两条线程的效果都必须存活：1 条 always 规则 + 5 个 marker 条目。
+    let stored: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&rules_path).unwrap()).unwrap();
+    let rule_hits = stored
+        .iter()
+        .filter(|r| {
+            r["op"] == "process_exec"
+                && r["pattern"]
+                    .as_str()
+                    .map(|p| p.starts_with("cmd-0"))
+                    .unwrap_or(false)
+        })
+        .count();
+    let markers = stored.iter().filter(|r| r["op"] == "marker").count();
+    assert_eq!(
+        rule_hits, 1,
+        "upsert 幂等：5 次保存收敛为 1 条（实际 {rule_hits}）"
+    );
+    assert_eq!(
+        markers, 5,
+        "外部写者的 5 条 marker 不得被 RMW 写回冲掉（实际 {markers}）"
+    );
+}
