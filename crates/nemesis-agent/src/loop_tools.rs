@@ -2814,8 +2814,9 @@ impl Tool for CronTool {
                     return Err("Missing 'id' argument".to_string());
                 }
                 match svc.remove_job(id) {
-                    true => Ok(format!("Deleted cron job: {}", id)),
-                    false => Err(format!("Job not found: {}", id)),
+                    Ok(true) => Ok(format!("Deleted cron job: {}", id)),
+                    Ok(false) => Err(format!("Job not found: {}", id)),
+                    Err(e) => Err(format!("Failed to delete cron job {}: {}", id, e)),
                 }
             }
             _ => Err(format!(

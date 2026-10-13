@@ -99,7 +99,7 @@ fn handle_nb_bus(
     // nemesis_web::remote_approval，board_bus 只做信封路由）。
     if env.ns == nemesis_web::remote_approval::NS_APPROVAL {
         let reply = match env.op.as_str() {
-            "ask_register" => handle_approval_ask_register(&env, rpc_from_node(&payload)),
+            "ask_register" => handle_approval_ask_register(deps, &env, rpc_from_node(&payload)),
             "ask_closed" => handle_approval_ask_closed(&env),
             other => EnvelopeResponse::failure(
                 &env,
@@ -150,7 +150,15 @@ fn str_field(body: &serde_json::Value, key: &str) -> String {
 /// SSE `approval-remote-requested`（master Dashboard 卡片数据源）。同
 /// request_id 重登 = 覆盖（防御性幂等——裁决真相源仍在 worker 的 pending
 /// 表，先到先得）。
-fn handle_approval_ask_register(env: &Envelope, from_node: &str) -> EnvelopeResponse {
+///
+/// §2 免打扰（无人值守计划 Part 2）：开关开 = 不登记不广播不弹卡，直接
+/// spawn 下发 `approved=true` 给 worker（send_verdict 失败只 warn——worker
+/// 侧照常按 300s 超时拒绝，无人值守语义退化为「暂缓」而非卡死 master）。
+fn handle_approval_ask_register(
+    deps: &MasterBusDeps,
+    env: &Envelope,
+    from_node: &str,
+) -> EnvelopeResponse {
     if from_node.is_empty() {
         return EnvelopeResponse::failure(
             env,
@@ -169,6 +177,33 @@ fn handle_approval_ask_register(env: &Envelope, from_node: &str) -> EnvelopeResp
             EnvelopeError::new(envelope::error_code::VALIDATION, "missing request_id"),
         );
     };
+    if nemesis_web::handlers::security::approval_auto_state().is_some_and(|s| s.enabled()) {
+        tracing::info!(
+            target: "board_bus",
+            worker = %from_node,
+            request_id = %request_id,
+            "[nb_bus] remote approval auto-approved (unattended mode), forwarding verdict"
+        );
+        let cluster = deps.cluster.clone();
+        let worker = from_node.to_string();
+        let rid = request_id.clone();
+        // nb_bus handler 跑在 RPC 派发的阻塞线程里——不在 runtime 上下文时
+        // 跳过 spawn（worker 超时兜底；与 send_ask_envelope 同款守卫）。
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                match nemesis_web::remote_approval::send_verdict(&cluster, &worker, &rid, true, None).await {
+                    Ok(()) => tracing::info!(target: "board_bus", request_id = %rid,
+                        worker = %worker, "[nb_bus] auto-approve verdict forwarded"),
+                    Err(e) => tracing::warn!(target: "board_bus", request_id = %rid,
+                        worker = %worker, "[nb_bus] auto-approve verdict forward failed: {e} (worker resolves by timeout)"),
+                }
+            });
+        }
+        return EnvelopeResponse::success(
+            env,
+            serde_json::json!({ "registered": false, "auto_approved": true }),
+        );
+    }
     let entry = nemesis_web::remote_approval::RemoteAskEntry {
         request_id: request_id.clone(),
         worker_node: from_node.to_string(),

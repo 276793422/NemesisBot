@@ -26,6 +26,68 @@ function configResult() {
   }
 }
 
+// §2 免打扰（2026-10-11 无人值守计划 Part 2）审批自动批准开关。
+describe('SecurityView 免打扰开关（§2）', () => {
+  async function mountWith(cfg: any, status: any) {
+    requestMock.mockImplementation((_m: string, cmd: string, _d: any) => {
+      if (cmd === 'config.get') return Promise.resolve(cfg)
+      if (cmd === 'approvals.status') return Promise.resolve(status)
+      if (cmd === 'config.save') return Promise.resolve({ saved: true })
+      if (cmd === 'audit') return Promise.resolve({ entries: [], total: 0 })
+      if (cmd === 'stats') return Promise.resolve({ total_events: 0, by_level: {} })
+      return Promise.resolve({})
+    })
+    const w = mount(SecurityView)
+    await flushPromises()
+    return w
+  }
+
+  it('老配置缺 approvals 段 → 开关不勾选；状态未装配显示诚实提示', async () => {
+    const w = await mountWith(configResult(), { injected: false })
+    const toggle = w.find('[data-test="auto-approve-toggle"]')
+    expect(toggle.exists()).toBe(true)
+    expect((toggle.element as HTMLInputElement).checked).toBe(false)
+    expect(w.text()).toContain('未装配')
+    w.unmount()
+  })
+
+  it('approvals.auto_approve=true + status enabled → 勾选 + 计数行显示', async () => {
+    const cfg = { ...configResult(), approvals: { auto_approve: true } }
+    const w = await mountWith(cfg, { injected: true, enabled: true, auto_approved_count: 7 })
+    expect((w.find('[data-test="auto-approve-toggle"]').element as HTMLInputElement).checked).toBe(true)
+    expect(w.find('[data-test="auto-approve-status"]').text()).toContain('自动批准 7 条')
+    w.unmount()
+  })
+
+  it('勾选切换 → config.save 载荷带 approvals.auto_approve（其余字段原样）+ 状态刷新', async () => {
+    const w = await mountWith(configResult(), { injected: true, enabled: false, auto_approved_count: 0 })
+    requestMock.mockClear()
+    await w.find('[data-test="auto-approve-toggle"]').setValue(true)
+    await flushPromises()
+    const saveCalls = requestMock.mock.calls.filter((c) => c[1] === 'config.save')
+    expect(saveCalls.length).toBe(1)
+    expect(saveCalls[0][2].approvals).toEqual({ auto_approve: true })
+    expect(saveCalls[0][2].default_action).toBe('allow')
+    expect(requestMock.mock.calls.some((c) => c[1] === 'approvals.status')).toBe(true)
+    expect(useToast().toasts.some((t) => t.type === 'success')).toBe(true)
+    w.unmount()
+  })
+
+  it('保存失败 → checkbox 回滚 + error toast，配置回退', async () => {
+    const w = await mountWith(configResult(), { injected: true, enabled: false, auto_approved_count: 0 })
+    requestMock.mockImplementation((_m: string, cmd: string, _d: any) => {
+      if (cmd === 'config.save') return Promise.reject(new Error('ws down'))
+      if (cmd === 'config.get') return Promise.resolve(configResult())
+      return Promise.resolve({})
+    })
+    await w.find('[data-test="auto-approve-toggle"]').setValue(true)
+    await flushPromises()
+    expect((w.find('[data-test="auto-approve-toggle"]').element as HTMLInputElement).checked).toBe(false)
+    expect(useToast().toasts.some((t) => t.type === 'error')).toBe(true)
+    w.unmount()
+  })
+})
+
 beforeEach(() => {
   requestMock.mockReset()
   useToast().toasts.splice(0)

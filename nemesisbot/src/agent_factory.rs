@@ -993,6 +993,11 @@ pub fn build_agent_loop(
         if let Some(ref plugin) = shared.security_plugin {
             agent_loop.set_security_plugin(plugin.clone());
         }
+        // §2：免打扰运行时态挂主 loop（doom-loop escalation 自动批准臂）；
+        // 槽本体在 security_setup 全局安装，未装配 = None = 现行为。
+        if let Some(state) = nemesis_web::handlers::security::approval_auto_state() {
+            agent_loop.set_approval_auto_approve(state);
+        }
     }
     // Checkpoint store (edit safety net): snapshots writer-tool file changes so
     // a rewind can restore them. One per agent loop under
@@ -1814,6 +1819,12 @@ pub fn build_cluster_agent_loop(
         agent_loop.set_security_plugin(plugin.clone());
         info!("[AgentFactory] cluster loop security 8-layer pipeline attached (ASM-01)");
     }
+    // §2：免打扰运行时态挂集群 loop（无人值守主战场——worker 执行 board
+    // 任务时 doom-loop escalation 不停车等人）。槽未装配 = None = 现行为。
+    #[cfg(feature = "security")]
+    if let Some(state) = nemesis_web::handlers::security::approval_auto_state() {
+        agent_loop.set_approval_auto_approve(state);
+    }
 
     // ASM-02（2026-09-16 横扫存量加固）：memory 审批闸接集群 loop——此前闸
     // 只在 gateway 后处理接给主 loop（commands/gateway.rs approval 装配段），
@@ -2488,6 +2499,11 @@ pub fn build_project_agent_loop(
     {
         if let Some(ref plugin) = shared.security_plugin {
             agent_loop.set_security_plugin(plugin.clone());
+        }
+        // §2：免打扰运行时态挂项目 loop（同主 loop——项目会话不是安全旁路，
+        // 免打扰也不旁路）。槽未装配 = None = 现行为。
+        if let Some(state) = nemesis_web::handlers::security::approval_auto_state() {
+            agent_loop.set_approval_auto_approve(state);
         }
     }
     // N2：small_model 杂务通道与主 loop 同配置。

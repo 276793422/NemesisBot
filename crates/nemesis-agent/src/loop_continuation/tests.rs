@@ -764,6 +764,8 @@ async fn test_handle_cluster_continuation_simple_response() {
 
     // Provider returns a simple text response (no tool calls)
     let provider = MockContinuationProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Continuation result".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -817,6 +819,8 @@ async fn test_handle_cluster_continuation_failed_task() {
         .await;
 
     let provider = MockContinuationProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Error handled".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -869,6 +873,8 @@ async fn test_handle_cluster_continuation_with_tool_calls() {
     // First response has tool call, second response is final
     let provider = MockContinuationProvider::new(vec![
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: String::new(),
             tool_calls: vec![ToolCallInfo {
                 id: "tc_cont_1".to_string(),
@@ -882,6 +888,8 @@ async fn test_handle_cluster_continuation_with_tool_calls() {
             raw_response_body: None,
         },
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "Tool executed".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -987,6 +995,8 @@ async fn test_handle_cluster_continuation_unknown_tool() {
 
     let provider = MockContinuationProvider::new(vec![
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: String::new(),
             tool_calls: vec![ToolCallInfo {
                 id: "tc_unk".to_string(),
@@ -1000,6 +1010,8 @@ async fn test_handle_cluster_continuation_unknown_tool() {
             raw_response_body: None,
         },
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "Handled unknown tool".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -1161,6 +1173,8 @@ impl crate::r#loop::LlmProvider for MockContinuationProvider {
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "No more responses".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
@@ -1312,6 +1326,8 @@ async fn test_handle_cluster_continuation_failed_task_no_error_msg() {
         .await;
 
     let provider = MockContinuationProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Error handled".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -1391,6 +1407,8 @@ async fn test_handle_cluster_continuation_writes_session_log() {
         .await;
 
     let provider = MockContinuationProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Cluster reply persisted to log".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -1467,6 +1485,8 @@ async fn test_handle_cluster_continuation_writes_session_store_when_provided() {
         .await;
 
     let provider = MockContinuationProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Mirrored into session_store".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -1535,6 +1555,8 @@ async fn test_handle_cluster_continuation_skips_log_when_session_key_empty() {
         .await;
 
     let provider = MockContinuationProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Should not be logged".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -1686,6 +1708,8 @@ async fn test_disk_recovery_preserves_session_key_for_handle() {
 
     let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel(16);
     let provider = MockContinuationProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Recovered reply after crash".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -1798,6 +1822,8 @@ async fn test_handle_cluster_continuation_emits_observer_events() {
     // First response carries a tool call (exercises ToolCall emit); second is final.
     let provider = MockContinuationProvider::new(vec![
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: String::new(),
             tool_calls: vec![ToolCallInfo {
                 id: "tc_o1".to_string(),
@@ -1811,6 +1837,8 @@ async fn test_handle_cluster_continuation_emits_observer_events() {
             raw_response_body: None,
         },
         LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "Observer-covered final".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -1875,6 +1903,8 @@ async fn test_handle_cluster_continuation_persists_to_session_store() {
         .await;
 
     let provider = MockContinuationProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "Persisted reply".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -2475,6 +2505,8 @@ async fn final_outbound_send_error_warns_no_panic() {
         .await;
 
     let provider = MockContinuationProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "done".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -2531,6 +2563,8 @@ async fn handle_continuation_with_observer_manager_persists_and_sends() {
         .await;
 
     let provider = MockContinuationProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "observed final".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -3093,6 +3127,8 @@ async fn ff_handler_projects_images_when_vision_unsupported() {
     // vision=no：provider 收到的消息必须零图片。
     let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel(16);
     let provider_no_vision = MockContinuationProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "done".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -3145,6 +3181,8 @@ async fn ff_handler_projects_images_when_vision_unsupported() {
         )
         .await;
     let provider_vision = MockContinuationProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "done".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -3453,6 +3491,8 @@ async fn test_cluster_continuation_source_node_flows_to_outbound_meta() {
         .await;
 
     let provider = MockContinuationProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "worker did the work".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -3506,6 +3546,8 @@ async fn test_cluster_continuation_no_source_node_meta_absent() {
         .await;
 
     let provider = MockContinuationProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "plain reply".to_string(),
         tool_calls: Vec::new(),
         finished: true,

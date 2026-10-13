@@ -989,7 +989,9 @@ async fn test_chat_connection_error() {
         .await;
     assert!(result.is_err());
     match result {
-        Err(FailoverError::Timeout { provider, model }) => {
+        Err(FailoverError::Timeout {
+            provider, model, ..
+        }) => {
             assert_eq!(provider, "test");
             assert_eq!(model, "gpt-4");
         }
@@ -1062,7 +1064,9 @@ async fn test_chat_empty_model_uses_default() {
         .await;
     assert!(result.is_err());
     match result {
-        Err(FailoverError::Timeout { provider: _, model }) => {
+        Err(FailoverError::Timeout {
+            provider: _, model, ..
+        }) => {
             // Should use default model in error info
             assert_eq!(model, "gpt-4o");
         }
@@ -1078,7 +1082,11 @@ async fn test_chat_stream_connection_error() {
         base_url: "http://127.0.0.1:1".to_string(),
         api_key: "test-key".to_string(),
         default_model: "gpt-4".to_string(),
-        timeout_secs: 1,
+        // 10s：本机死端口 connect 失败实测 ~2s 才返回（SYN 被 2 秒后判死），
+        // 客户端总超时必须大于 connect 失败窗口，否则先触发的是 operation
+        // timed out（超时类），底层连接错误永远到不了 cause——生产 lane
+        // 预算是 600s，同样远大于 connect 窗口，此处对齐生产量级。
+        timeout_secs: 10,
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
@@ -1104,9 +1112,26 @@ async fn test_chat_stream_connection_error() {
         Ok(Some(Err(e))) => {
             // Expected: connection error
             match e {
-                FailoverError::Timeout { provider, model } => {
+                FailoverError::Timeout {
+                    provider,
+                    model,
+                    cause,
+                } => {
                     assert_eq!(provider, "test");
                     assert_eq!(model, "gpt-4");
+                    // 回归锁（E2E-9 验收）：连接失败必须携带底层链全文，
+                    // 否则端点封存判定（is_connect_error）对词表失明。
+                    // 打印实际链文本供 CI 日志核对；断言按
+                    // is_connect_error 词表的连接类关键词钉死。
+                    eprintln!("Timeout.cause 链全文: {cause}");
+                    let lower = cause.to_lowercase();
+                    assert!(
+                        lower.contains("connect")
+                            || lower.contains("refused")
+                            || lower.contains("os error 10061")
+                            || lower.contains("os error 10060"),
+                        "Timeout.cause 应含连接链文本，实得: {cause:?}"
+                    );
                 }
                 _ => { /* other network errors acceptable */ }
             }

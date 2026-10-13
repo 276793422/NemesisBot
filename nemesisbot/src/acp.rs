@@ -946,15 +946,26 @@ impl PromptDriver for LoopDriver {
 
 /// `nemesisbot acp`：stdio 上跑 ACP server 直到 EOF。日志全走 stderr
 /// （main 侧 `ensure_default_logger` 为 stderr 形态；stdout 是协议帧专用
-/// 通道，任何打印都会污染协议流）。
-pub async fn run_server(home: PathBuf) -> Result<(), String> {
+/// 通道，任何打印都会污染协议流）。生产 transport 在 [`Self::commands`] 层
+/// `run()` 接线（stdin/stdout）；本函数即 transport 注入版单一入口。
+///
+/// 测试纪律：测试不得借用本函数的默认 stdio 形态——宿主给 cargo test 一条
+/// 「打开、无数据、永不 EOF」的管道时，serve 的 blocking 读会永久占住
+/// stdin 锁并拖死整个测试进程
+/// （docs/REPORT/2026-10-13_stdin-eof-assumption-test-deadlock-fix.md），
+/// 测试一律走 `commands::acp::run_with_io` 喂 duplex。
+pub async fn run_server_with_io(
+    home: PathBuf,
+    reader: impl AsyncRead + Unpin,
+    writer: impl AsyncWrite + Unpin + Send + 'static,
+) -> Result<(), String> {
     // D-3（复核 2026-09-16）：会话日志平化迁移（SAN-01/D4）与 gateway 同源
     // （幂等 best-effort）——ACP 每会话 K1 式装配会读写 session_logs，
     // 旧嵌套目录历史先平化再服务。
     nemesis_agent::chat_log::migrate_nested_session_logs();
     let factory = Arc::new(RealSessionFactory { home });
     let version = crate::common::format_version();
-    serve(tokio::io::stdin(), tokio::io::stdout(), factory, version).await
+    serve(reader, writer, factory, version).await
 }
 
 #[cfg(test)]

@@ -42,6 +42,7 @@ fn test_retriable_timeout() {
     let err = FailoverError::Timeout {
         provider: "openai".to_string(),
         model: "gpt-4".to_string(),
+        cause: String::new(),
     };
     assert!(err.is_retriable());
     assert_eq!(err.reason(), FailoverReason::Timeout);
@@ -176,7 +177,8 @@ fn test_reason_all_variants() {
     assert_eq!(
         FailoverError::Timeout {
             provider: "p".to_string(),
-            model: "m".to_string()
+            model: "m".to_string(),
+            cause: String::new()
         }
         .reason(),
         FailoverReason::Timeout
@@ -282,6 +284,7 @@ fn test_retry_after_hint_accessor() {
     let timeout = FailoverError::Timeout {
         provider: "p".to_string(),
         model: "m".to_string(),
+        cause: String::new(),
     };
     assert_eq!(timeout.retry_after_hint(), None);
 }

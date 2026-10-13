@@ -975,6 +975,7 @@ async fn test_w4c_router_chat_retriable_error_falls_back_to_alt() {
         vec![Err(FailoverError::Timeout {
             provider: "p1".into(),
             model: "m1".into(),
+            cause: String::new(),
         })],
     );
     let alt = ScriptedProvider::new("p2", "m1", vec![Ok(ok_response("from-alt", 10))]);

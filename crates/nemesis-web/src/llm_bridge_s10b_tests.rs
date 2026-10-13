@@ -85,6 +85,7 @@ impl LLMProvider for FailingMock {
         Err(FailoverError::Timeout {
             provider: "failing-mock".to_string(),
             model: "m".to_string(),
+            cause: String::new(),
         })
     }
 

@@ -445,6 +445,11 @@ impl SkillsHandler {
         }
         // P13 审批门：gateway 注入槽（None = 无审批面，直装——headless/测试装配；
         // `skills.install_approval` 的消费点在 gateway 注入侧）。
+        // §2 免打扰边界注记（无人值守计划 Part 2）：本闸当前唯一发起方 =
+        // Dashboard 登录用户（RequestContext 无 channel 字段，无集群发起
+        // 路径可判；生产 agent 的 install_skill 走 RegistryManager 不经本
+        // WSAPI 面）。远期若出现集群发起路径，先给 RequestContext 加身份
+        // 字段再在此分叉跳闸——不预设不可判定的放行。
         if let Some(gate) = ctx.and_then(|c| c.state.skills_install_gate.clone()) {
             installer.set_install_gate(gate);
         }

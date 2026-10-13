@@ -35,6 +35,8 @@ impl LlmProvider for CapturingProvider {
         let mut scripted = self.scripted.lock().unwrap();
         if scripted.is_empty() {
             Ok(super::LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "final answer".to_string(),
                 tool_calls: vec![],
                 finished: true,
@@ -145,6 +147,8 @@ async fn test_inbox_steer_mode_interjects_next_step() {
     // Script: first call returns a tool call (keeps the turn alive), second
     // is the final answer.
     let tool_call_resp = super::LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: String::new(),
         tool_calls: vec![crate::types::ToolCallInfo {
             id: "call_1".to_string(),

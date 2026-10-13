@@ -64,6 +64,8 @@ impl LlmProvider for ScriptedProvider {
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
             return Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "fallback final".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
@@ -94,6 +96,8 @@ fn canvas_config() -> AgentConfig {
 
 fn resp(content: &str) -> LlmResponse {
     LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: content.to_string(),
         tool_calls: Vec::new(),
         finished: true,

@@ -105,6 +105,9 @@ mod fs_watch;
 pub use fs_watch::*;
 #[allow(unused_imports)]
 pub(crate) use fs_watch::*;
+/// §6.2（2026-10-12 无人值守）：撞顶翻倍阶梯——空输出 `length` 烧穿时
+/// max_tokens 翻倍重发（32K 地板 / config 封顶）+ per-model 学习缓存。
+mod length_escalation;
 mod llm_types;
 #[allow(unused_imports)]
 pub use llm_types::*;
@@ -295,6 +298,14 @@ pub(crate) struct SecurityState {
     /// 未装配 = `None` = 审批通路缺失，escalation 直接走现行为（停轮）。
     pub(crate) question_asker:
         parking_lot::RwLock<Option<Arc<dyn nemesis_types::agent::QuestionAsker>>>,
+    /// §2 免打扰运行时态（无人值守计划 Part 2，security feature）：gateway
+    /// 注入与 auditor / web security handler 同一 Arc（editor_access 单一
+    /// 真相源同款双注入）。`check_escalation` 的 doom-loop 臂读它——开关
+    /// 开 = 不发卡，清签名继续（无人值守下循环守卫不停车等人）。未装配
+    /// = `None` = 恒 false（现行为）。
+    #[cfg(feature = "security")]
+    pub(crate) approval_auto:
+        parking_lot::RwLock<Option<Arc<nemesis_security::approval_auto::ApprovalAutoApproveState>>>,
 }
 
 impl SecurityState {
@@ -640,6 +651,11 @@ pub struct AgentLoop {
     /// 全在 loop/token_budget.rs（计划 §冲突面登记：预算域改动不进
     /// loop.rs 主体）。
     token_budget: crate::token_budget::SessionTokenBudgetLedger,
+    /// §6.2（2026-10-12 无人值守）：per-model 翻倍阶梯学习缓存——撞顶后
+    /// 记录该模型实际需要的 max_tokens，后续轮次/后续 turn 直接从 floor
+    /// 起步不再烧撞顶轮。config.json mtime 变化清空（用户显式改配置 =
+    /// 重置学习）。语义与接线见 loop/length_escalation.rs。
+    escalated_floors: parking_lot::Mutex<HashMap<String, u64>>,
 }
 
 impl AgentLoop {
@@ -688,6 +704,8 @@ impl AgentLoop {
                 approval_responder: parking_lot::RwLock::new(None),
                 question_responder: parking_lot::RwLock::new(None),
                 question_asker: parking_lot::RwLock::new(None),
+                #[cfg(feature = "security")]
+                approval_auto: parking_lot::RwLock::new(None),
             },
             mcp_manager: None,
             mcp_tool_snapshot: Arc::new(parking_lot::RwLock::new(Vec::new())),
@@ -745,6 +763,7 @@ impl AgentLoop {
             spawn_slot: parking_lot::RwLock::new(None),
             voice_prompt: parking_lot::RwLock::new(None),
             token_budget: crate::token_budget::SessionTokenBudgetLedger::default(),
+            escalated_floors: parking_lot::Mutex::new(HashMap::new()),
         }
     }
 
@@ -983,6 +1002,10 @@ mod round_text_tests;
 // P30（WS14）：canvas 终答检出/回灌自纠/预算放行 轮级测试。
 #[cfg(test)]
 mod canvas_turn_tests;
+// §2 免打扰（2026-10-11 无人值守计划 Part 2）：wiring 注入/判定回环 +
+// check_escalation 自动批准臂（清签名继续 / 关闭态停轮 / 配置闸 AND 极性）。
+#[cfg(all(test, feature = "security"))]
+mod approval_auto_tests;
 // P2-0（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §7 T1/T2）：
 // characterization + golden transcript harness（基线在 loop/testdata/golden/）。
 #[cfg(test)]
@@ -1013,6 +1036,10 @@ mod tools_trait_cov_tests;
 // estop 翻转唤醒）。
 #[cfg(test)]
 mod llm_types_cov_tests;
+// §6.2 翻倍阶梯（length_escalation）行为测试：烧穿判定/阶梯跳变/封顶收口/
+// 学习缓存。
+#[cfg(test)]
+mod length_escalation_tests;
 // tool_dispatch.rs 安全管线后续层覆盖（limits 审批直通车三分支 /
 // guardian 升级与故障姿态矩阵）。
 #[cfg(test)]

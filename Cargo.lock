@@ -4274,6 +4274,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "croner",
+ "nemesis-utils",
  "parking_lot",
  "rand 0.8.6",
  "serde",

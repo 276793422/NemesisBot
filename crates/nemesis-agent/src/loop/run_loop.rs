@@ -332,7 +332,13 @@ impl AgentLoop {
         // always sets Some(8192) when building chat_opts. If that ever
         // becomes None (provider's own default cap), gate on is_some():
         // the 8192 fallback could false-positive against a higher cap.
-        let token_cap = st.chat_opts.max_tokens.unwrap_or(8192) as u64;
+        // §6.2：翻倍阶梯发生过时优先用 escalated_to（事实值）——否则
+        // config 8192 + learned floor 32768 时，完整响应 usage 10000 ≥ 8192
+        // 会对未截断响应误触发 continue-generation。
+        let token_cap = response
+            .escalated_to
+            .or(st.chat_opts.max_tokens.map(|t| t as u64))
+            .unwrap_or(8192);
         let hit_cap = response
             .usage
             .as_ref()
@@ -350,11 +356,23 @@ impl AgentLoop {
                          stopping early to save prefill budget",
                         st.empty_length_continuations
                     );
-                    let notice = format!(
-                        "模型连续 {} 轮空输出且撞 max_tokens 上限（{}），已提前停止续写\
-                         以节省预算。请检查模型健康度或调整参数。",
-                        st.empty_length_continuations, token_cap
-                    );
+                    // §6.2：翻倍阶梯发生过的形态（思考烧穿）与非翻倍形态
+                    // （配置上限太小）文案分开——前者给动作指引，不再误导
+                    // 「上限太小没配置」。
+                    let notice = match response.escalated_to {
+                        Some(v) => format!(
+                            "模型连续 {} 轮空输出且撞 max_tokens 上限：翻倍重试至 {} 仍为空\
+                             （思考烧穿形态——思考 token 计入 max_tokens 把正文挤空）。\
+                             请调大该模型条目的 max_output_tokens 或 agents.defaults.\
+                             max_output_ceiling（当前封顶）后重试，或检查模型健康度。",
+                            st.empty_length_continuations, v
+                        ),
+                        None => format!(
+                            "模型连续 {} 轮空输出且撞 max_tokens 上限（{}），已提前停止续写\
+                             以节省预算。请检查模型健康度或调整参数。",
+                            st.empty_length_continuations, token_cap
+                        ),
+                    };
                     instance.add_assistant_message(&notice, Vec::new(), None);
                     return Some(TurnFlow::Stop(AgentEvent::Error(
                         context.format_rpc_message(&notice),

@@ -216,6 +216,23 @@ pub fn resolve_max_tool_iterations(cfg: &serde_json::Value) -> Option<i64> {
         .and_then(|v| v.as_i64())
 }
 
+/// §6.2（2026-10-12 无人值守）：`agents.defaults.max_output_ceiling` 缺席
+/// 时的默认封顶（256K——覆盖主流思考型模型单轮烧穿量级的稳妥上限）。
+pub const MAX_OUTPUT_CEILING_DEFAULT: u64 = 262_144;
+
+/// §6.2：翻倍阶梯封顶解析（nemesis-agent loop 翻倍阶梯的单一真相源）。
+/// `agents.defaults.max_output_ceiling`，0 / 缺席 / 非法（负数、非数字）→
+/// 默认 [`MAX_OUTPUT_CEILING_DEFAULT`]（0 不表示「不限」——翻倍阶梯没有
+/// 不限形态，封顶失守 = 成本无界，惯例与 `max_tool_iterations` 0=不限 相反）。
+pub fn resolve_max_output_ceiling(cfg: &serde_json::Value) -> u64 {
+    cfg.get("agents")
+        .and_then(|v| v.get("defaults"))
+        .and_then(|v| v.get("max_output_ceiling"))
+        .and_then(|v| v.as_u64())
+        .filter(|n| *n > 0)
+        .unwrap_or(MAX_OUTPUT_CEILING_DEFAULT)
+}
+
 /// H4 (U16 half): resolve the per-model `reasoning_effort` tier for the
 /// active model alias. Mirrors [`resolve_max_output_tokens`]: finds the
 /// matching `model_list[]` entry and returns its `reasoning_effort` string

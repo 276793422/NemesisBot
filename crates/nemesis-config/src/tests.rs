@@ -250,6 +250,39 @@ fn test_save_and_load_security_config() {
 }
 
 #[test]
+fn test_security_config_approvals_auto_approve_default_off_and_roundtrip() {
+    // §2 免打扰（无人值守计划 Part 2）：approvals.auto_approve 缺省关
+    // （现行为零变化——弹卡照旧），显式 true 落盘 + 回读保真。
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+    assert!(
+        !SecurityConfig::default().approvals.auto_approve,
+        "默认必须关（现行为 pin）"
+    );
+    // 缺省序列化时 approvals 段整个 skip（老配置文件缺键不炸）。
+    let default_json = serde_json::to_string(&SecurityConfig::default()).unwrap();
+    assert!(
+        !default_json.contains("auto_approve"),
+        "缺省 approvals 段应 skip 序列化: {default_json}"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.security.json");
+    let cfg = SecurityConfig {
+        approvals: crate::ApprovalsConfig { auto_approve: true },
+        ..Default::default()
+    };
+    save_security_config(&path, &cfg).unwrap();
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(raw.contains("auto_approve"), "true 须落盘: {raw}");
+    let loaded = load_security_config(&path).unwrap();
+    assert!(loaded.approvals.auto_approve, "回读保真");
+    // 老配置文件（无 approvals 键）容忍缺省。
+    let legacy: SecurityConfig =
+        serde_json::from_str(r#"{"enabled": true, "default_action": "deny"}"#).unwrap();
+    assert!(!legacy.approvals.auto_approve, "缺键 = 关");
+}
+
+#[test]
 fn test_load_scanner_config_default() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();

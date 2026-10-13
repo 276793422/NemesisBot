@@ -49,7 +49,7 @@ impl AgentLoop {
         // 仍然可打断超时等待，语义只增不减）。
         let first_call_timeout = self.current_provider_call_timeout_secs();
         let chat_result = tokio::select! {
-            result = Self::chat_call_bounded(
+            result = self.chat_call_escalating(
                 first_call_timeout,
                 &active_provider,
                 active_model,
@@ -356,15 +356,16 @@ impl AgentLoop {
 
             // ②A：压缩重试环内调用同样包超时（挂死连接有限
             // 重试后终局，不无限挂）。
-            match Self::chat_call_bounded(
-                self.current_provider_call_timeout_secs(),
-                active_provider,
-                active_model,
-                compressed_messages,
-                Some(chat_opts.clone()),
-                retry_tool_defs,
-            )
-            .await
+            match self
+                .chat_call_escalating(
+                    self.current_provider_call_timeout_secs(),
+                    active_provider,
+                    active_model,
+                    compressed_messages,
+                    Some(chat_opts.clone()),
+                    retry_tool_defs,
+                )
+                .await
             {
                 Ok(resp) => {
                     got_response = Some(resp);
@@ -559,15 +560,16 @@ impl AgentLoop {
             // （不回响应体）时不再无限等待（实测挂死 27
             // 分钟）；超时按该次重试失败计，走既有环
             // （次数/预算双重有界）。
-            let call_result = Self::chat_call_bounded(
-                call_timeout,
-                active_provider,
-                active_model,
-                r_msgs,
-                Some(chat_opts.clone()),
-                r_tools,
-            )
-            .await;
+            let call_result = self
+                .chat_call_escalating(
+                    call_timeout,
+                    active_provider,
+                    active_model,
+                    r_msgs,
+                    Some(chat_opts.clone()),
+                    r_tools,
+                )
+                .await;
             match call_result {
                 Ok(resp) => {
                     maybe_resp = Some(resp);
@@ -655,15 +657,16 @@ impl AgentLoop {
             let r_msgs = self.build_messages(instance);
             let r_tools = self.rebuild_full_tool_defs();
             let attempt_start = std::time::Instant::now();
-            match Self::chat_call_bounded(
-                call_timeout,
-                active_provider,
-                active_model,
-                r_msgs,
-                Some(chat_opts.clone()),
-                r_tools,
-            )
-            .await
+            match self
+                .chat_call_escalating(
+                    call_timeout,
+                    active_provider,
+                    active_model,
+                    r_msgs,
+                    Some(chat_opts.clone()),
+                    r_tools,
+                )
+                .await
             {
                 Ok(resp) => {
                     maybe_resp = Some(resp);
@@ -788,7 +791,7 @@ impl AgentLoop {
                         // ②A：hook 重呼同样包超时（cancel/estop 臂不
                         // 变，仍可打断超时等待）。
                         let r = tokio::select! {
-                            res = Self::chat_call_bounded(
+                            res = self.chat_call_escalating(
                                 self.current_provider_call_timeout_secs(),
                                 active_provider,
                                 active_model,

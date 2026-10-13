@@ -788,6 +788,22 @@ impl AgentLoop {
             .and_then(|v| nemesis_types::capability::resolve_max_tool_iterations(&v))
     }
 
+    /// §6.2（2026-10-12 无人值守）：`agents.defaults.max_output_ceiling`
+    /// 翻倍阶梯封顶的每轮新鲜读（同 [`Self::current_max_tool_iterations`]
+    /// 模式）。config 不可用（standalone）或键缺席/非法 → 默认 262144
+    /// （resolver 单一真相源 [`nemesis_types::capability::resolve_max_output_ceiling`]）。
+    pub(crate) fn current_max_output_ceiling(&self) -> u64 {
+        let path = match self.config_path.read().clone() {
+            Some(p) => p,
+            None => return nemesis_types::capability::MAX_OUTPUT_CEILING_DEFAULT,
+        };
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .map(|v| nemesis_types::capability::resolve_max_output_ceiling(&v))
+            .unwrap_or(nemesis_types::capability::MAX_OUTPUT_CEILING_DEFAULT)
+    }
+
     /// U16 (sixth batch) + N1 (devtool-upgrade 阶段 1)：active 模型的
     /// context_window（input token capacity）**三级解析链**：
     /// L1 config.json 显式 `context_window`（用户最大）→ L2 价目表
@@ -873,5 +889,8 @@ impl AgentLoop {
         }
         debug!("[AgentLoop] config.json mtime changed; re-resolving capability tier");
         self.refresh_active_tier();
+        // §6.2：用户显式改 config = 重置翻倍阶梯学习（下次撞顶重新起步，
+        // 不让陈旧学习覆盖用户刚改的 max_output_tokens）。
+        self.clear_escalated_floors();
     }
 }

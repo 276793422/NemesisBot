@@ -11,7 +11,9 @@ fn status_codes_in_message_dispatch_by_status() {
     // 408 → Timeout。
     let e = classify_error("request failed: status: 408 after 30s", "prov-a", "model-a").unwrap();
     match e {
-        FailoverError::Timeout { provider, model } => {
+        FailoverError::Timeout {
+            provider, model, ..
+        } => {
             assert_eq!(provider, "prov-a");
             assert_eq!(model, "model-a");
         }

@@ -20,10 +20,28 @@ mod wave5 {
     use super::*;
     use crate::tests::{EnvHomeGuard, singleton_test_home};
 
-    /// REPL 非 TTY 才安全（交互终端下 rustyline 会等真输入）。
-    fn skip_if_interactive() -> bool {
-        use std::io::IsTerminal as _;
-        std::io::stdin().is_terminal()
+    /// REPL 测试的 stdin 前置守卫：交互终端（rustyline 会等真输入）直接
+    /// 跳过；「打开但永不 EOF」的宿主管道（编排器后台 shell）同样必须跳过
+    /// ——rustyline 首次 readline 永久阻塞，会从单测挂死升级成整个测试
+    /// 进程死锁（docs/REPORT/2026-10-13_stdin-eof-assumption-test-deadlock-
+    /// fix.md）。只有确认 EOF 可达（读得 0 字节）才真正执行。读出数据或
+    /// 出错同样保守跳过（数据读完若无 EOF 仍会阻塞）。探针线程在永不 EOF
+    /// 的宿主里会泄漏一条阻塞读（持有 stdin 锁）——同宿主后续探针因此
+    /// 超时走 skip，泄漏上界 = 本守卫的调用数，可接受。
+    fn stdin_reaches_eof_or_skip() -> bool {
+        use std::io::{IsTerminal as _, Read as _};
+        if std::io::stdin().is_terminal() {
+            return false;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 1];
+            let _ = tx.send(std::io::stdin().read(&mut buf));
+        });
+        matches!(
+            rx.recv_timeout(std::time::Duration::from_secs(2)),
+            Ok(Ok(0))
+        )
     }
 
     fn seed_config(home: &std::path::Path, logging_llm_enabled: bool) {
@@ -41,7 +59,7 @@ mod wave5 {
     #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn w5_repl_eof_exits_cleanly_without_logging_and_observer_none_arm() {
-        if skip_if_interactive() {
+        if !stdin_reaches_eof_or_skip() {
             return;
         }
         let lock = crate::GLOBAL_STATE_LOCK
@@ -73,7 +91,7 @@ mod wave5 {
     #[allow(clippy::await_holding_lock)] // 理由同上：测试串行化锁，非死锁面
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn w5_repl_with_skills_registry_and_request_logger_loads_history_then_eof() {
-        if skip_if_interactive() {
+        if !stdin_reaches_eof_or_skip() {
             return;
         }
         let lock = crate::GLOBAL_STATE_LOCK

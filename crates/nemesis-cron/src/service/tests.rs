@@ -47,7 +47,7 @@ fn test_remove_job() {
             None,
         )
         .unwrap();
-    assert!(svc.remove_job(&job.id));
+    assert!(svc.remove_job(&job.id).unwrap());
 }
 
 #[test]
@@ -1021,7 +1021,7 @@ fn test_remove_job_not_found() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    assert!(!svc.remove_job("nonexistent"));
+    assert!(!svc.remove_job("nonexistent").unwrap());
 }
 
 #[test]

@@ -10,6 +10,10 @@ pub mod agent;
 // handler 诚实报「未装配」。
 pub mod approval;
 pub mod board;
+// U-B（2026-10-12 无人值守）：LLM 端点不可用本地封存——检测/封存/中断档案
+// 数据面 + WSAPI status/release（恢复探针在 nemesisbot 侧，见
+// nemesisbot/src/board_unavailable.rs）。
+pub mod board_unavailable;
 // Swarm M3（§5.4/D6）：看板资产下载端点（HTTP，非 WSAPI；token 即凭据）。
 pub mod board_asset;
 pub mod channels;

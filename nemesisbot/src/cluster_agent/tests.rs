@@ -237,6 +237,8 @@ impl LlmProvider for NullLlmProvider {
         _tools: Vec<nemesis_agent::types::ToolDefinition>,
     ) -> Result<LlmResponse, String> {
         Ok(LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "null".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -483,6 +485,8 @@ mod loop_e2e {
             let n = self.calls.fetch_add(1, Ordering::SeqCst);
             if n == 0 && self.first_tool_call.is_some() {
                 return Ok(LlmResponse {
+                    finish_reason: None,
+                    escalated_to: None,
                     content: String::new(),
                     tool_calls: vec![self.first_tool_call.clone().unwrap()],
                     finished: false,
@@ -493,6 +497,8 @@ mod loop_e2e {
                 });
             }
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: self.final_text.clone(),
                 tool_calls: Vec::new(),
                 finished: true,
@@ -1162,6 +1168,8 @@ mod wave_b {
             let n = self.calls.fetch_add(1, Ordering::SeqCst);
             if n == 0 && self.first_tool_call.is_some() {
                 return Ok(LlmResponse {
+                    finish_reason: None,
+                    escalated_to: None,
                     content: String::new(),
                     tool_calls: vec![self.first_tool_call.clone().unwrap()],
                     finished: false,
@@ -1172,6 +1180,8 @@ mod wave_b {
                 });
             }
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: self.final_text.clone(),
                 tool_calls: Vec::new(),
                 finished: true,
@@ -1622,6 +1632,8 @@ mod swarm_g4 {
                 .join("\n");
             *self.obs.last_prompt.lock().unwrap() = joined;
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: self.final_text.clone(),
                 tool_calls: Vec::new(),
                 finished: true,
@@ -2159,6 +2171,8 @@ mod wave_d {
             }
             if n == 0 && self.first_tool_call.is_some() {
                 return Ok(LlmResponse {
+                    finish_reason: None,
+                    escalated_to: None,
                     content: String::new(),
                     tool_calls: vec![self.first_tool_call.clone().unwrap()],
                     finished: false,
@@ -2169,6 +2183,8 @@ mod wave_d {
                 });
             }
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: self.final_text.clone(),
                 tool_calls: Vec::new(),
                 finished: true,

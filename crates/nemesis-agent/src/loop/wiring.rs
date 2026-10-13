@@ -71,6 +71,27 @@ impl AgentLoop {
         self.security.question_asker.read().clone()
     }
 
+    /// §2：装配免打扰运行时态（无人值守计划 Part 2，gateway 与 auditor /
+    /// web security handler 同一 Arc）。`check_escalation` 的 doom-loop 臂
+    /// 消费——开关开 = 不发卡清签名继续；未装配 = 恒 false（现行为）。
+    #[cfg(feature = "security")]
+    pub fn set_approval_auto_approve(
+        &self,
+        state: Arc<nemesis_security::approval_auto::ApprovalAutoApproveState>,
+    ) {
+        *self.security.approval_auto.write() = Some(state);
+    }
+
+    /// §2：免打扰是否生效（doom-loop 臂判定；未装配/开关关 = false）。
+    #[cfg(feature = "security")]
+    pub(crate) fn approval_auto_enabled(&self) -> bool {
+        self.security
+            .approval_auto
+            .read()
+            .as_ref()
+            .is_some_and(|s| s.enabled())
+    }
+
     /// K1a (U14): 注册一个用户工具钩子。pre 在固定 security 闸之后、工具
     /// 执行之前运行；post 在执行之后、Forge 记录之前运行（详见
     /// `crate::hooks` 模块文档）。RwLock 注册——运行中随时可挂。

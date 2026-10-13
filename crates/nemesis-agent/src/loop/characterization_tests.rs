@@ -178,6 +178,8 @@ impl LlmProvider for GoldenCaptureProvider {
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "No more responses".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
@@ -196,6 +198,8 @@ impl LlmProvider for GoldenCaptureProvider {
 
 fn assistant(content: &str) -> LlmResponse {
     LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: content.to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -208,6 +212,8 @@ fn assistant(content: &str) -> LlmResponse {
 
 fn tool_call_response(content: &str, calls: Vec<ToolCallInfo>) -> LlmResponse {
     LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: content.to_string(),
         tool_calls: calls,
         finished: false,
@@ -232,6 +238,8 @@ fn cap_usage() -> Option<crate::loop_executor::ObserverUsageInfo> {
 
 fn truncated(content: &str) -> LlmResponse {
     LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: content.to_string(),
         tool_calls: Vec::new(),
         finished: false,

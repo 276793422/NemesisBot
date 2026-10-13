@@ -15,12 +15,25 @@ vi.mock('../../composables/useWSAPI', () => ({
 }))
 
 // useSSE 打桩（连接层不在本测试范围）；plan_started 经注册的 handler 驱动。
-const sseHandlers = new Map<string, (data: any) => void>()
+// 注意：真实 useSSE 的 on 是「同类型多 handler 数组」（BoardView 的 toast 与
+// usePlanning 单例并存）——打桩必须同语义，Map 单槽会让后注册者覆盖先注册
+// 者（2026-10-12 横幅接入后实证）。
+const sseHandlers = new Map<string, ((data: any) => void)[]>()
 vi.mock('../../composables/useSSE', () => ({
-  on: (ev: string, fn: (data: any) => void) => sseHandlers.set(ev, fn),
-  off: (ev: string) => sseHandlers.delete(ev),
-  useSSE: () => ({ on: sseHandlers.get, off: sseHandlers.delete }),
+  on: (ev: string, fn: (data: any) => void) => {
+    const arr = sseHandlers.get(ev) || []
+    arr.push(fn)
+    sseHandlers.set(ev, arr)
+  },
+  off: (ev: string, fn?: (data: any) => void) => {
+    if (!fn) sseHandlers.delete(ev)
+    else sseHandlers.set(ev, (sseHandlers.get(ev) || []).filter((h) => h !== fn))
+  },
 }))
+
+function dispatchPlanStarted(data: any) {
+  for (const h of sseHandlers.get('board.plan_started') || []) h(data)
+}
 
 import BoardView from '../BoardView.vue'
 
@@ -34,9 +47,8 @@ describe('BoardView 拆解开始 toast（2026-10-11 观测面）', () => {
   it('board.plan_started → info toast 带 issue_number 与预期时长', async () => {
     const w = mount(BoardView)
     await flushPromises()
-    const h = sseHandlers.get('board.plan_started')
-    expect(h).toBeTruthy()
-    h!({ issue_id: 7, issue_number: 'NB-7', plan_id: 'pl-1' })
+    expect(sseHandlers.has('board.plan_started')).toBe(true)
+    dispatchPlanStarted({ issue_id: 7, issue_number: 'NB-7', plan_id: 'pl-1' })
     await flushPromises()
     const hit = useToast().toasts.some(
       (t) => t.type === 'info' && t.message.includes('NB-7') && t.message.includes('3~8 分钟'),
@@ -48,7 +60,7 @@ describe('BoardView 拆解开始 toast（2026-10-11 观测面）', () => {
   it('issue_number 缺失 → 回退 #issue_id', async () => {
     const w = mount(BoardView)
     await flushPromises()
-    sseHandlers.get('board.plan_started')!({ issue_id: 9 })
+    dispatchPlanStarted({ issue_id: 9 })
     await flushPromises()
     expect(
       useToast().toasts.some((t) => t.type === 'info' && t.message.includes('#9')),
@@ -56,11 +68,19 @@ describe('BoardView 拆解开始 toast（2026-10-11 观测面）', () => {
     w.unmount()
   })
 
-  it('卸载后注销订阅（off 被调用）', async () => {
+  it('卸载后注销组件级订阅；usePlanning 单例 handler 常驻（真实语义）', async () => {
     const w = mount(BoardView)
     await flushPromises()
+    useToast().toasts.splice(0)
     expect(sseHandlers.has('board.plan_started')).toBe(true)
     w.unmount()
-    expect(sseHandlers.has('board.plan_started')).toBe(false)
+    // 组件级 toast handler 已随卸载注销：再派发不产生新 toast。
+    // （usePlanning 单例的 handler 仍留在数组里——模块级常驻是设计语义，
+    // 真实 useSSE on() 是数组推送，二者并存。）
+    dispatchPlanStarted({ issue_id: 11, issue_number: 'NB-11', plan_id: 'pl-11' })
+    await flushPromises()
+    expect(
+      useToast().toasts.some((t) => t.type === 'info' && t.message.includes('NB-11')),
+    ).toBe(false)
   })
 })

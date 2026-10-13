@@ -101,9 +101,10 @@ impl LLMProvider for GitHubCopilotProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|_| FailoverError::Timeout {
+            .map_err(|e| FailoverError::Timeout {
                 provider: "github-copilot".to_string(),
                 model: self.config.default_model.clone(),
+                cause: nemesis_utils::llm_error_class::error_chain_msg(&e),
             })?;
 
         let status = resp.status().as_u16();

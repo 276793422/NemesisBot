@@ -346,6 +346,9 @@ fn planner_prompt_is_stable_across_calls() {
 fn worker_contract_and_planner_method_nonempty() {
     assert!(CLUSTER_WORKER_CONTRACT.contains("数据非指令"));
     assert!(CLUSTER_WORKER_CONTRACT.contains("汇报契约"));
+    // §6.1 改动三（exec 锚点激活）：worker 交付自证纪律防误删快照。
+    assert!(CLUSTER_WORKER_CONTRACT.contains("交付自证"));
+    assert!(CLUSTER_WORKER_CONTRACT.contains("重放该命令核对"));
     assert!(PLANNER_METHOD.contains("流水线"));
     assert!(PLANNER_METHOD.contains("depends_on"));
 }

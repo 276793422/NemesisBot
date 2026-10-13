@@ -2403,6 +2403,87 @@ async fn test_poll_recovered_delivery_cb_none_keeps_legacy_confirm() {
     );
 }
 
+// -- N3c（2026-10-12）：not_found 分支走交付回调 ------------------------------
+//
+// worker 重启丢内存任务表 → query_task_result 应答 not_found = 确定性判死
+// 信号。board 派发任务的交付回调（write_back FAILED + in_review + spawn
+// 评审）必须立即触发，不等 dispatch_timeout sweep（否则派发行悬 dispatched
+// 最长 3600s）。worker 端已无副本：不发 confirm。
+
+#[tokio::test]
+async fn test_poll_not_found_invokes_delivery_cb_without_confirm() {
+    let tm = Arc::new(TaskManager::new());
+    let old_time = (chrono::Local::now() - chrono::Duration::minutes(5)).to_rfc3339();
+    tm.submit(Task {
+        id: "nf-cb".to_string(),
+        status: TaskStatus::Pending,
+        action: "peer_chat".to_string(),
+        peer_id: "remote-1".to_string(),
+        payload: serde_json::json!({}),
+        result: None,
+        original_channel: "rpc".to_string(),
+        original_chat_id: "ch".to_string(),
+        created_at: old_time,
+        completed_at: None,
+    })
+    .unwrap();
+
+    let confirm_calls: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let calls_clone = confirm_calls.clone();
+    let call_fn: Option<
+        Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>,
+    > = Some(Arc::new(move |_peer, action, _payload| {
+        if action == "confirm_task_delivery" {
+            calls_clone.lock().push(action.to_string());
+        }
+        let resp = serde_json::json!({"status": "not_found", "task_id": "nf-cb"});
+        Ok(serde_json::to_vec(&resp).unwrap())
+    }));
+
+    let cb_args: Arc<Mutex<Vec<(String, String, String, Option<String>)>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let args_clone = cb_args.clone();
+    let delivery_cb: Arc<dyn Fn(&str, &str, &str, Option<&str>) -> bool + Send + Sync> =
+        Arc::new(move |task_id, status, response, error| {
+            args_clone.lock().push((
+                task_id.to_string(),
+                status.to_string(),
+                response.to_string(),
+                error.map(String::from),
+            ));
+            true
+        });
+
+    poll_stale_pending_tasks(
+        &tm,
+        &call_fn,
+        None,
+        poll_defaults(),
+        None,
+        false,
+        Some(&delivery_cb),
+    )
+    .await;
+
+    // 交付回调必须被调用，形态 = error + not_found 文案（board 写回据此
+    // 走 FAILED + ⛔ 评论 + in_review + spawn 评审链）。
+    let args = cb_args.lock();
+    assert_eq!(args.len(), 1, "not_found 必须触发交付回调（不等 sweep）");
+    assert_eq!(args[0].0, "nf-cb");
+    assert_eq!(args[0].1, "error");
+    assert_eq!(args[0].2, "");
+    assert_eq!(args[0].3.as_deref(), Some("remote task not found"));
+    drop(args);
+
+    // worker 端已无副本：不发 confirm。
+    assert!(
+        confirm_calls.lock().is_empty(),
+        "not_found 无 worker 副本，禁止发 confirm_task_delivery"
+    );
+    // 任务本地判死（与交付回调解耦，对齐 done 分支语义）。
+    assert_eq!(tm.get_task("nf-cb").unwrap().status, TaskStatus::Failed);
+}
+
 #[tokio::test]
 async fn test_poll_stale_pending_tasks_stale_with_running_response() {
     let tm = Arc::new(TaskManager::new());
