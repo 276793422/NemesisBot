@@ -274,6 +274,11 @@ impl SecurityHandler {
     /// F3: 清空「总是允许」规则表（写回空表；文件保留 = 运行中 gateway 的
     /// HotReloader 照常经 mtime 感知）。
     fn approvals_clear(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+        // 写串行锁：approval_rules.json 与 WebApprovalManager::save_always_rule
+        // 是同一文件的两个写者——「总是允许」RMW 已持 config_write_lock（叠加
+        // 自身 rules_write），本清空臂同锁互斥，防并发清空被复活/规则被丢
+        //（同类横扫四期，2026-10-13）。
+        let _cfg_serial = nemesis_config::config_write_lock();
         let path = approval_rules_path(workspace);
         let removed = if path.exists() {
             let raw = std::fs::read_to_string(&path).unwrap_or_default();

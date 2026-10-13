@@ -83,6 +83,10 @@ impl WebApprovalManager {
             .rules_write
             .lock()
             .map_err(|e| format!("rules lock poisoned: {}", e))?;
+        // 叠加 config 家族写串行锁：approval_rules.json 的另一写者
+        // （security.approvals.clear）持同锁——两写者互斥（同类横扫四期，
+        // 2026-10-13）。锁序单向 rules_write → config_write_lock，无环。
+        let _cfg_serial = nemesis_config::config_write_lock();
         let mut stored = rules::load_rules(path);
         rules::upsert_rule(&mut stored, operation, &pattern);
         rules::save_rules(path, &stored)?;

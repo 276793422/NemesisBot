@@ -266,3 +266,87 @@ async fn test_http_share_live_view_whitelisted_then_revoke_404() {
 
     nemesis_agent::chat_log::delete_chat_log(&key);
 }
+
+// ---------------------------------------------------------------------------
+// 写串行锁并发回归钉（2026-10-13 横扫四期）：SHARE_LOCK 罩 load→改→save，
+// create∥create 并发互不丢记录（锁缺席时各持旧快照互写覆盖，N 里只剩 1）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_concurrent_creates_all_survive() {
+    let _g = crate::test_home::lock_home();
+    let ws = temp_workspace();
+    let p = ws.path().to_str().unwrap();
+
+    std::thread::scope(|s| {
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let p = p.to_string();
+                let sid = format!("{}c{i}", nanos_sid());
+                s.spawn(move || create_share(&p, &sid).map(|e| e.token))
+            })
+            .collect();
+        let mut tokens = Vec::new();
+        for h in handles {
+            tokens.push(h.join().unwrap().expect("create ok"));
+        }
+        // 8 个并发 create 的 token 全部存活（丢更新形态下会互相冲掉）。
+        let shares = load_shares(p);
+        for t in &tokens {
+            assert!(
+                shares.iter().any(|s| &s.token == t),
+                "并发 create 丢失 token {t}"
+            );
+        }
+        assert_eq!(shares.len(), 8);
+    });
+}
+
+#[test]
+fn test_concurrent_create_and_revoke_no_loss() {
+    let _g = crate::test_home::lock_home();
+    let ws = temp_workspace();
+    let p = ws.path().to_str().unwrap();
+
+    // 种 2 条（将被并发撤销）；并发臂再 create 2 个**全新 sid**——绕开
+    // create 对已撤销会话「不复用、重建新 token」的幂等分支（那条路径
+    // 与 revoke 的先后次序不定，终态总数不可精确断言）。全新 sid 无
+    // 复用歧义：无锁时 revoke 写回旧快照会抹掉并发新建，create 写回
+    // 旧快照会抹掉撤销标记。
+    let revoke_sids: Vec<String> = (0..2).map(|_| nanos_sid()).collect();
+    let create_sids: Vec<String> = (0..2).map(|_| nanos_sid()).collect();
+    let revoke_tokens: Vec<String> = revoke_sids
+        .iter()
+        .map(|sid| create_share(p, sid).unwrap().token)
+        .collect();
+
+    std::thread::scope(|s| {
+        for t in &revoke_tokens {
+            let p = p.to_string();
+            let t = t.clone();
+            s.spawn(move || revoke_share(&p, &t).unwrap());
+        }
+        for sid in &create_sids {
+            let p = p.to_string();
+            let sid = sid.clone();
+            s.spawn(move || create_share(&p, &sid).unwrap());
+        }
+    });
+
+    let shares = load_shares(p);
+    assert_eq!(
+        shares.len(),
+        4,
+        "并发 revoke ∥ create 后 4 条全在（实际 {}）",
+        shares.len()
+    );
+    let revoked = shares.iter().filter(|s| s.revoked).count();
+    assert_eq!(revoked, 2, "两条撤销标记保留（实际 {revoked}）");
+    // 两条新建（未撤销、sid 匹配）都存活。
+    for sid in &create_sids {
+        assert!(
+            shares.iter().any(|s| !s.revoked && &s.session_id == sid),
+            "并发 revoke 写回不得抹掉新建分享（sid={sid}）"
+        );
+    }
+}
