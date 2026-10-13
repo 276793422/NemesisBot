@@ -27,6 +27,12 @@ use crate::types::{AvailableSkill, InstallResult, SecurityCheckResult, SkillOrig
 /// 浏览器 UA（GitHub API 要求 User-Agent，测试服务器无所谓）。
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
+/// skills.lock.json 写串行锁（2026-10-13 同类横扫）：[`Installer::record_lockfile_entry`]
+/// 与 uninstall 的记账移除都是 load→改→save 的 RMW，并发安装/卸载时后写者以
+/// 旧快照整体覆盖先写者丢记账；只串行写者——读路径（verify/drift）吃 save
+/// 的原子性，无需入锁（对齐 learned::MANIFEST_WRITE_LOCK 先例）。
+static LOCKFILE_WRITE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
 /// GitHub 安装结果（P12 pinned 路径）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstallOutcome {
@@ -561,6 +567,7 @@ impl SkillInstaller {
 
     /// P14：写一条 lockfile 记账（load→record→save；失败只 warn——记账面非执行面）。
     fn record_lockfile_entry(&self, entry: &LockedSkill) {
+        let _serial = LOCKFILE_WRITE_LOCK.lock();
         let mut lock = SkillsLockfile::load(&self.workspace);
         lock.record(entry.clone());
         if let Err(e) = lock.save(&self.workspace) {
@@ -994,6 +1001,7 @@ impl SkillInstaller {
         std::fs::remove_dir_all(&skill_dir).map_err(NemesisError::Io)?;
 
         // P14：lockfile 同步移除（失败只 warn——目录已删，记账滞后可被 verify 检出）。
+        let _serial = LOCKFILE_WRITE_LOCK.lock();
         let mut lock = SkillsLockfile::load(&self.workspace);
         if lock.remove(skill_name)
             && let Err(e) = lock.save(&self.workspace)

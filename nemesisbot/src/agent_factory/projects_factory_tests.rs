@@ -62,6 +62,7 @@ fn entry_for(id: &str, dir: &Path) -> ProjectEntry {
         name: "测试项目".to_string(),
         path: dir.to_path_buf(),
         created_at: "2026-09-08T00:00:00Z".to_string(),
+        instructions_trusted: true,
     }
 }
 
@@ -486,4 +487,55 @@ async fn project_factory_pricing_store_open_failure_degrades() {
         build_project_agent_loop(&shared, &entry_for("p_price1", &project_dir), session_store)
             .expect("pricing store open failure must degrade, not abort build");
     assert!(project_loop.tool_count() > 0);
+}
+
+// ---------------------------------------------------------------------------
+// N7（2026-10-13）：项目 loop 指令信任档装配解析——注册表条目 × 全局策略。
+// ---------------------------------------------------------------------------
+
+/// 受信条目（缺省）= Trusted（主循环行为）；未受信 + 策略 "" = Annotate；
+/// 未受信 + 策略 isolated = Isolated。
+#[tokio::test]
+async fn project_factory_resolves_instruction_trust_from_entry_and_policy() {
+    let home = unique_home("n7trust");
+    write_mini_model_config_extra(
+        &home,
+        serde_json::json!({"projects": {"instruction_trust": "isolated"}}),
+    );
+    let project_dir = home.join("proj");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    let shared = shared_for(&home);
+    let main_loop = build_agent_loop(&shared).expect("main loop builds");
+    let session_store = main_loop.session_store().cloned().unwrap();
+
+    // 受信条目：全局策略 isolated 不降级它（逐项目显式信任优先）。
+    let trusted_loop = build_project_agent_loop(
+        &shared,
+        &entry_for("p_n7trust001", &project_dir),
+        session_store.clone(),
+    )
+    .expect("trusted loop builds");
+    assert_eq!(
+        trusted_loop.instruction_trust(),
+        nemesis_agent::workspace_instructions::InstructionTrust::Trusted
+    );
+
+    // 未受信 + isolated 策略 → Isolated。
+    let mut untrusted = entry_for("p_n7trust002", &project_dir);
+    untrusted.instructions_trusted = false;
+    let isolated_loop = build_project_agent_loop(&shared, &untrusted, session_store.clone())
+        .expect("isolated loop builds");
+    assert_eq!(
+        isolated_loop.instruction_trust(),
+        nemesis_agent::workspace_instructions::InstructionTrust::Isolated
+    );
+
+    // 未受信 + 策略缺省（""）→ Annotate。
+    write_mini_model_config(&home);
+    let annotate_loop =
+        build_project_agent_loop(&shared, &untrusted, session_store).expect("annotate loop builds");
+    assert_eq!(
+        annotate_loop.instruction_trust(),
+        nemesis_agent::workspace_instructions::InstructionTrust::Annotate
+    );
 }

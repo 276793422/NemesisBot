@@ -975,7 +975,6 @@ async fn test_w4c_router_chat_retriable_error_falls_back_to_alt() {
         vec![Err(FailoverError::Timeout {
             provider: "p1".into(),
             model: "m1".into(),
-            cause: String::new(),
         })],
     );
     let alt = ScriptedProvider::new("p2", "m1", vec![Ok(ok_response("from-alt", 10))]);
@@ -1014,6 +1013,7 @@ async fn test_w4c_router_chat_retriable_all_fail_returns_last_error() {
         "m1",
         vec![Err(FailoverError::Overloaded {
             provider: "p2".into(),
+            status: 502,
         })],
     );
     router.register_provider("p1", primary);

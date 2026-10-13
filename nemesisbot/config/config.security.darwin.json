@@ -4,6 +4,7 @@
   "guardian_failure_policy": "ask",
   "guardian_mode": "off",
   "log_all_operations": true,
+  "preexec_scan_enabled": true,
   "layers": {
     "dlp": {
       "enabled": true,

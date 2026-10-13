@@ -16,6 +16,18 @@ path = "integration_pipeline.rs"
 name = "v_batch"
 path = "v_batch.rs"
 
+[[test]]
+name = "wal_crash"
+path = "wal_crash.rs"
+
+[[test]]
+name = "provider_stream"
+path = "provider_stream.rs"
+
+[[test]]
+name = "preexec_scan"
+path = "preexec_scan.rs"
+
 [dependencies]
 test-harness = { path = "../test-harness" }
 reqwest = { workspace = true }

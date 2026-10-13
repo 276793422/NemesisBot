@@ -161,6 +161,7 @@ impl AgentLoop {
                 cron_job_name: None,
                 images: &[],
                 file_changes: &[],
+                deliverables: &[],
                 checkpoint_turn: None,
             },
         );

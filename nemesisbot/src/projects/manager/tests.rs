@@ -188,6 +188,7 @@ async fn manager_spawn_stop_lifecycle() {
         name: "ghost".to_string(),
         path: home.join("no_such_dir"),
         created_at: "2026-09-08T00:00:00Z".to_string(),
+        instructions_trusted: true,
     };
     assert!(mgr.spawn_project(&ghost).is_err());
     assert!(mgr.running_pids().is_empty());
@@ -198,6 +199,7 @@ async fn manager_spawn_stop_lifecycle() {
         name: "lifecycle".to_string(),
         path: project_dir.clone(),
         created_at: "2026-09-08T00:00:00Z".to_string(),
+        instructions_trusted: true,
     };
     mgr.spawn_project(&entry).expect("spawn succeeds");
     assert_eq!(mgr.running_pids(), vec!["p_life0001".to_string()]);
@@ -416,6 +418,7 @@ async fn reload_providers_swaps_running_project_loop_model() {
         name: "reload".to_string(),
         path: project_dir.clone(),
         created_at: "2026-09-21T00:00:00Z".to_string(),
+        instructions_trusted: true,
     };
     mgr.spawn_project(&entry).expect("spawn succeeds");
     let pid = entry.id.clone();
@@ -936,4 +939,69 @@ mod w5r2 {
         // 二次 forget：索引已空（bool false）但 trait 委托照常走。
         bridge.forget_session(sk);
     }
+}
+
+// ---------------------------------------------------------------------------
+// N7（2026-10-13）：set_trust——注册表 RMW + 在跑 loop 热更新（下一轮
+// build_messages 生效；策略读盘上 config）。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn bridge_set_trust_persists_and_hot_applies_to_live_loop() {
+    let home = unique_home("n7trust");
+    write_mini_model_config(&home);
+    // 盘上策略 = isolated（未受信条目热更新应采它）。
+    let mut cfg: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.join("config.json")).unwrap()).unwrap();
+    cfg["projects"] = serde_json::json!({"instruction_trust": "isolated"});
+    std::fs::write(
+        home.join("config.json"),
+        serde_json::to_string_pretty(&cfg).unwrap(),
+    )
+    .unwrap();
+
+    // 项目目录必须在主 workspace 之外（create_project 重叠校验）。
+    let main_ws = home.join("workspace");
+    std::fs::create_dir_all(&main_ws).unwrap();
+    let project_dir = home.join("proj");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    let mgr = manager_for(&home);
+    // 经注册表创建（set_trust 是 RMW——注册表先要有条目；spawn_project
+    // 直塞 entry 不落盘）。
+    let entry = registry::create_project(
+        mgr.registry_path(),
+        &main_ws,
+        "trust",
+        project_dir.to_str().unwrap(),
+        4,
+    )
+    .expect("create project");
+    assert!(entry.instructions_trusted, "新条目缺省受信");
+    mgr.spawn_project(&entry).expect("spawn succeeds");
+    let reg = mgr.registry_path().to_path_buf();
+    let bridge: std::sync::Arc<dyn nemesis_web::handlers::projects::ProjectsBridge> =
+        std::sync::Arc::new(mgr);
+
+    // 翻转为 false：返回值 + 盘上 + 在跑 loop 三面一致（loop 采 isolated 策略）。
+    let info = bridge.set_trust(&entry.id, false).expect("set_trust ok");
+    assert!(!info.instructions_trusted);
+    assert!(
+        !registry::find_project(&reg, &entry.id)
+            .unwrap()
+            .instructions_trusted
+    );
+    let loop_arc = bridge.loop_for_session(&entry.id).expect("loop running");
+    assert_eq!(
+        loop_arc.instruction_trust(),
+        nemesis_agent::workspace_instructions::InstructionTrust::Isolated,
+        "热更新按盘上 config 策略（isolated）生效"
+    );
+
+    // 翻回 true：loop 回 Trusted。
+    let info = bridge.set_trust(&entry.id, true).expect("set_trust ok");
+    assert!(info.instructions_trusted);
+    assert_eq!(
+        loop_arc.instruction_trust(),
+        nemesis_agent::workspace_instructions::InstructionTrust::Trusted
+    );
 }

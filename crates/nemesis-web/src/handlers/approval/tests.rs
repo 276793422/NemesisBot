@@ -385,6 +385,10 @@ async fn remote_list_surfaces_registry_snapshot_without_loop() {
     crate::remote_approval::registry().remove_by_request_id(rid);
 }
 
+// remote_respond 命令臂在 handler 是 cluster 门（上方 remote_list 同款纪律：
+// 无 feature 编译期消失）——本用例实际验证的是「cluster 已编译、AppState
+// 槽为 None」的诚实错误，门不同挂会在默认特性单包跑撞 unknown command。
+#[cfg(feature = "cluster")]
 #[tokio::test]
 async fn remote_respond_without_cluster_is_honest_error() {
     let dir = tempfile::tempdir().unwrap();
@@ -400,6 +404,8 @@ async fn remote_respond_without_cluster_is_honest_error() {
     assert!(err.contains("cluster not available"), "err: {err}");
 }
 
+// 同上：命令臂 cluster 门，本用例引用该命令（缺 data / 缺 request_id 分支）。
+#[cfg(feature = "cluster")]
 #[tokio::test]
 async fn remote_respond_unknown_id_is_honest_error() {
     let dir = tempfile::tempdir().unwrap();

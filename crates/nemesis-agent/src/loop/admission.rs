@@ -554,6 +554,7 @@ impl AgentLoop {
                 cron_job_name,
                 images: &[],
                 file_changes: &[],
+                deliverables: &[],
                 checkpoint_turn: None, // 回绝消息不开始 turn，无 checkpoint 标记
             },
         );
@@ -567,6 +568,7 @@ impl AgentLoop {
                 cron_job_name,
                 images: &[],
                 file_changes: &[],
+                deliverables: &[],
                 checkpoint_turn: None,
             },
         );
@@ -962,6 +964,7 @@ impl AgentLoop {
                     cron_job_name,
                     images: &[],
                     file_changes: &[],
+                    deliverables: &[],
                     checkpoint_turn: cp_turn,
                 },
             );

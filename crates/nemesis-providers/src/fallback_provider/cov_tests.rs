@@ -26,7 +26,6 @@ impl LLMProvider for TimeoutStub {
         Err(FailoverError::Timeout {
             provider: self.name.clone(),
             model: "stub-model".to_string(),
-            cause: String::new(),
         })
     }
 

@@ -73,6 +73,18 @@ impl AgentLoop {
         self.workspace_root.read().clone()
     }
 
+    /// N7（2026-10-13）：注入工作区指令信任档（项目 loop 装配时解析注入；
+    /// `projects.trust` WSAPI 对运行中 loop 热更新——下一轮 build_messages
+    /// 即生效，区块逐 build 重渲染无残留）。
+    pub fn set_instruction_trust(&self, trust: crate::workspace_instructions::InstructionTrust) {
+        *self.instruction_trust.write() = trust;
+    }
+
+    /// 当前信任档（诊断/测试缝）。
+    pub fn instruction_trust(&self) -> crate::workspace_instructions::InstructionTrust {
+        *self.instruction_trust.read()
+    }
+
     /// I1 (devtool-upgrade 阶段 3): start the workspace fs watcher. Call
     /// AFTER the `Arc<AgentLoop>` is finalized — the watcher handle is
     /// stored INSIDE the loop, so its callbacks hold a `Weak<AgentLoop>`

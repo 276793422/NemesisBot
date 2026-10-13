@@ -592,6 +592,28 @@ impl AgentLoop {
             }
         }
 
+        // L8（三方学习总计划重评估）turn WAL：admitted 态——全部闸门
+        // （estop/hidden/min-tier/role/Plan/security/pre-hooks）已过，调用
+        // 即将真实执行。wal_call 提升作用域供 started/finished 复用；
+        // WAL 未装配（agents.turn_wal=false / standalone）= 全部零成本跳过。
+        let wal = self.turn_wal();
+        let wal_call = wal.as_ref().map(|_| crate::turn_wal::WalCall {
+            session_key: context.session_key.clone(),
+            channel: context.channel.clone(),
+            chat_id: context.chat_id.clone(),
+            user: context.user.clone(),
+            call_id: crate::turn_wal::call_id_for(&tool_call.id, &tool_call.name),
+            tool: tool_call.name.clone(),
+        });
+        if let (Some(w), Some(wc)) = (wal.as_deref(), wal_call.as_ref()) {
+            w.log(
+                wc,
+                crate::turn_wal::STATE_ADMITTED,
+                &tool_call.arguments,
+                None,
+            );
+        }
+
         // Inject channel/chat_id into context-aware tools before execution.
         // Mirrors loop_executor.rs:1634 which calls set_context for AgentLoopExecutor.
         // G2: also inject the invocation depth for depth-aware tools (spawn) —
@@ -786,6 +808,16 @@ impl AgentLoop {
             }) as NextExec;
         }
         let hook_call_owned = hook_call.clone();
+        // L8 turn WAL：started 态——真实执行前最后一笔。进程若在此后、
+        // finished 前被强杀，恢复扫描会据此补 interrupted 并续轮。
+        if let (Some(w), Some(wc)) = (wal.as_deref(), wal_call.as_ref()) {
+            w.log(
+                wc,
+                crate::turn_wal::STATE_STARTED,
+                &tool_call.arguments,
+                None,
+            );
+        }
         let result = chain(hook_call_owned).await;
         // S2②（2026-10-09 高优差距批次一）：出侧复扫。8 层管线只看工具
         // 入参，输出侧此前零检查（eval 沙盒 worker 除外）——read_file 读
@@ -806,6 +838,21 @@ impl AgentLoop {
             Some(note) => format!("{result}\n{note}"),
             None => result,
         };
+        // L8 turn WAL：finished 态——result 已是最终形态（复扫/提示注记
+        // 之后）。ok 判定与 turn_guard 同刻度：⛔ 前缀（estop/hook 拦截）
+        // 或 tool_result_indicates_error 都算失败。
+        {
+            let wal_ok = !result.starts_with('⛔')
+                && !crate::turn_guard::tool_result_indicates_error(&result);
+            if let (Some(w), Some(wc)) = (wal.as_deref(), wal_call.as_ref()) {
+                w.log(
+                    wc,
+                    crate::turn_wal::STATE_FINISHED,
+                    &tool_call.arguments,
+                    Some(wal_ok),
+                );
+            }
+        }
 
         // Record experience for Forge self-learning (non-blocking).
         #[cfg(feature = "forge")]

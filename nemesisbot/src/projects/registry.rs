@@ -13,10 +13,18 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use nemesis_path::paths::canonicalize_for_compare;
 use nemesis_path::resolve_projects_registry_path_in_workspace;
+
+/// 注册表写串行锁（进程级）：create/remove/rename/set_trust 都是
+/// load→改→save 的 RMW，WSAPI 各命令臂（trust 翻转 / create / rename /
+/// remove）可在 dashboard 并发到达，无锁时后写者会以自己的快照整体覆盖
+/// 先写者的更新（save 虽原子，丢的是先者的条目/信任位——trust 被冲回
+/// true = 指令信任闸静默失效）。只串行写者——读路径吃 rename 原子性。
+static REGISTRY_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 /// id 前缀（`p-{8hex}`）。
 const ID_PREFIX: &str = "p-";
@@ -25,8 +33,15 @@ const ID_HEX_LEN: usize = 8;
 /// 项目名称最大长度（防滥用；超限拒绝）。
 const NAME_MAX: usize = 100;
 
+/// `#[serde(default = "default_true")]` 的默认值函数（老条目零迁移——缺键
+/// 反序列化为 true，保持主循环同款行为）。
+fn default_true() -> bool {
+    true
+}
+
 /// 单条项目注册。创建时烧入：`path` 不可改（改路径 = 移除后重建，Phase 1
-/// 语义）；`name` 可改（rename）。
+/// 语义）；`name` 可改（rename）；`instructions_trusted` 可改
+/// （`projects.trust` WSAPI）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProjectEntry {
     pub id: String,
@@ -35,6 +50,12 @@ pub struct ProjectEntry {
     pub path: PathBuf,
     /// RFC3339 创建时间。
     pub created_at: String,
+    /// N7（2026-10-13）：项目工作区指令（AGENTS.md/CLAUDE.md）是否受信。
+    /// 缺省 true——注册即信任行为（与主循环一致，老条目零迁移）；false 时
+    /// 该项目 loop 按 config `projects.instruction_trust` 全局策略降级
+    /// （annotate=注入但加不可信来源横幅 / isolated=整段跳过）。
+    #[serde(default = "default_true")]
+    pub instructions_trusted: bool,
 }
 
 /// projects.json 根结构。
@@ -180,10 +201,13 @@ pub fn build_new_entry(
         name,
         path,
         created_at: chrono::Local::now().to_rfc3339(),
+        instructions_trusted: true,
     })
 }
 
 /// 创建项目（读-校验-写；损坏文件 loud 拒绝）。返回新条目（调用方 spawn loop）。
+///
+/// 写侧全程持有 [`REGISTRY_WRITE_LOCK`]——RMW 与并发写者互斥（见锁注释）。
 pub fn create_project(
     path: &Path,
     main_workspace: &Path,
@@ -191,6 +215,7 @@ pub fn create_project(
     raw_path: &str,
     max: usize,
 ) -> Result<ProjectEntry> {
+    let _serial = REGISTRY_WRITE_LOCK.lock();
     let mut file = try_load_projects(path)?.unwrap_or_default();
     let entry = build_new_entry(&file, main_workspace, name, raw_path, max)?;
     file.projects.push(entry.clone());
@@ -200,7 +225,10 @@ pub fn create_project(
 
 /// 移除项目（只解除分组——不删会话/文件；不存在报错）。返回被移除条目
 /// （调用方负责 stop loop + 路由摘除）。
+///
+/// 写侧全程持有 [`REGISTRY_WRITE_LOCK`]（同 [`create_project`]）。
 pub fn remove_project(path: &Path, id: &str) -> Result<ProjectEntry> {
+    let _serial = REGISTRY_WRITE_LOCK.lock();
     let mut file = try_load_projects(path)?.unwrap_or_default();
     let idx = file
         .projects
@@ -213,7 +241,10 @@ pub fn remove_project(path: &Path, id: &str) -> Result<ProjectEntry> {
 }
 
 /// 重命名（`path` 不可改——Phase 1：改路径 = 移除后重建）。返回更新后条目。
+///
+/// 写侧全程持有 [`REGISTRY_WRITE_LOCK`]（同 [`create_project`]）。
 pub fn rename_project(path: &Path, id: &str, new_name: &str) -> Result<ProjectEntry> {
+    let _serial = REGISTRY_WRITE_LOCK.lock();
     let new_name = validate_name(new_name)?;
     let mut file = try_load_projects(path)?.unwrap_or_default();
     let entry = file
@@ -222,6 +253,24 @@ pub fn rename_project(path: &Path, id: &str, new_name: &str) -> Result<ProjectEn
         .find(|p| p.id == id)
         .ok_or_else(|| anyhow!("项目不存在: {id}"))?;
     entry.name = new_name;
+    let updated = entry.clone();
+    save_projects(path, &file)?;
+    Ok(updated)
+}
+
+/// 翻转项目指令信任位（N7；读-改-写，损坏文件 loud 拒绝）。返回更新后条目。
+///
+/// 写侧全程持有 [`REGISTRY_WRITE_LOCK`]——trust 翻转与 create/rename/remove
+/// 并发时若不互斥，翻转会被对方快照整体覆盖回 true（指令信任闸静默失效）。
+pub fn set_project_trust(path: &Path, id: &str, trusted: bool) -> Result<ProjectEntry> {
+    let _serial = REGISTRY_WRITE_LOCK.lock();
+    let mut file = try_load_projects(path)?.unwrap_or_default();
+    let entry = file
+        .projects
+        .iter_mut()
+        .find(|p| p.id == id)
+        .ok_or_else(|| anyhow!("项目不存在: {id}"))?;
+    entry.instructions_trusted = trusted;
     let updated = entry.clone();
     save_projects(path, &file)?;
     Ok(updated)

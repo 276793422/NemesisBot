@@ -749,6 +749,7 @@ fn test_load_security_rules_directory_rules_legacy_alias() {
         approver: None,
         approved_at: None,
         denied_reason: None,
+        force_approval: None,
     };
     // 白名单放行（证明规则真的装进了 DirDelete，而非整段失明落 default deny）。
     let (allowed_tmp, err, _) = plugin.auditor().request_permission(&mk("/workspace/tmp/a"));
@@ -5460,6 +5461,7 @@ fn gateway_ctx_fixture(cfg_json: &str) -> GatewayCtxFixture {
                 headers: std::collections::HashMap::new(),
                 timeout_secs: 0,
                 proxy: String::new(),
+                stream_mode: String::new(),
             },
         )
         .0;

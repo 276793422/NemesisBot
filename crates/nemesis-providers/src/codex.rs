@@ -1,6 +1,6 @@
 //! Codex/OpenAI provider (Responses API streaming).
 
-use crate::failover::FailoverError;
+use crate::failover::{FailoverError, transport_error};
 use crate::router::LLMProvider;
 use crate::types::*;
 use async_trait::async_trait;
@@ -30,6 +30,11 @@ pub struct CodexConfig {
     /// 直连（与 HttpProvider/Anthropic 同策略）。
     #[serde(default)]
     pub proxy: Option<String>,
+    /// per-model 流式开关（2026-10-13 stream 键）：空（auto）= 流式（默认，
+    /// 墙钟根因修复的形态）；"no" = 逃生门强制非流式（body 不带 stream 字段，
+    /// 等完整响应）。经 FactoryConfig.stream_mode 透传，构造期消费。
+    #[serde(default)]
+    pub stream_mode: String,
 }
 
 fn default_true() -> bool {
@@ -74,6 +79,7 @@ impl Default for CodexConfig {
             enable_web_search: true,
             timeout_secs: 600,
             proxy: None,
+            stream_mode: String::new(),
         }
     }
 }
@@ -207,6 +213,19 @@ impl CodexProvider {
             "instructions": effective_instructions,
             "store": false,
         });
+
+        // 流式线缆（2026-10-13 根因修复）：非流式请求要等模型补全完才回响应
+        // 头，推理型模型 + 大上下文（工作流对话生成实测 ~150s）必撞中转链路
+        // 的 ~120s 墙钟超时 → 连接被掐 → 上游 502 "error sending request"，
+        // bot 侧归为 Overloaded 进限流环，重试恒撞同一堵墙永不自愈。Codex
+        // 官方客户端恒走流式，号池只伺候流式形态。SSE 首包秒回、事件持续
+        // 流出，不受该超时约束。服务端忽略 stream 回整包 JSON 时按
+        // content-type 在 chat() 走既有解析路径（字节兼容）。
+        // per-model `stream` 键（同日）：默认（auto/空）流式；"no" = 逃生门
+        // 强制非流式形态（body 不带 stream 字段，resp.json() 等完整响应）。
+        if self.config.stream_mode != "no" {
+            body["stream"] = serde_json::json!(true);
+        }
 
         if let Some(max_tokens) = options.max_tokens {
             body["max_output_tokens"] = serde_json::json!(max_tokens);
@@ -443,6 +462,116 @@ fn parse_codex_response(data: &serde_json::Value) -> LLMResponse {
     }
 }
 
+/// SSE 单事件块的处理结果。
+#[derive(Debug, Clone, PartialEq)]
+enum SseOutcome {
+    /// `response.completed` / `response.incomplete`——携带最终 response 对象
+    /// （与非流式响应体同构，可直送 `parse_codex_response`）。
+    Finished(serde_json::Value),
+    /// `response.failed` / `error`——上游显式失败，带可读原因。
+    Failed(String),
+    /// 中间事件（response.created / in_progress / output_text.delta 等）继续收。
+    Continue,
+}
+
+/// 拼接单个 SSE 事件块内的全部 `data:` 行（`event:`/`id:` 行忽略，CRLF 容错），
+/// JSON 解析失败或空块返回 None（心跳注释行等静默跳过）。
+fn parse_sse_block(block: &str) -> Option<serde_json::Value> {
+    let mut data = String::new();
+    for line in block.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("data:") {
+            data.push_str(rest.trim_start());
+        }
+    }
+    if data.is_empty() {
+        return None;
+    }
+    serde_json::from_str(&data).ok()
+}
+
+/// 按事件 type 分派（单事件语义抽出便于单测）。
+fn handle_sse_event(ev: &serde_json::Value) -> SseOutcome {
+    match ev.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+        "response.completed" | "response.incomplete" => SseOutcome::Finished(
+            ev.get("response")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+        ),
+        "response.failed" => {
+            let msg = ev
+                .pointer("/response/error/message")
+                .or_else(|| ev.pointer("/response/status"))
+                .and_then(|m| m.as_str())
+                .unwrap_or("upstream reported response.failed");
+            SseOutcome::Failed(msg.to_string())
+        }
+        "error" => {
+            let msg = ev
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("upstream SSE error event");
+            SseOutcome::Failed(msg.to_string())
+        }
+        _ => SseOutcome::Continue,
+    }
+}
+
+/// 解析完整 SSE 文本流（聚合模式：找终态事件出结果）。
+/// 流自然结束仍无终态事件（中途断流）= 补全不完整，按 Timeout 计——
+/// 诚实不可交付，且重试环可安全重抽。
+fn parse_sse_text(text: &str, model: &str) -> Result<crate::types::LLMResponse, FailoverError> {
+    // 事件分隔符按协议是空行；同时容忍 \n\n 与 \r\n\r\n 两种形态。
+    let mut rest = text;
+    while !rest.is_empty() {
+        let (block, next): (&str, &str) = match (rest.find("\n\n"), rest.find("\r\n\r\n")) {
+            (Some(a), Some(b)) => {
+                if a <= b {
+                    (&rest[..a], &rest[a + 2..])
+                } else {
+                    (&rest[..b], &rest[b + 4..])
+                }
+            }
+            (Some(a), None) => (&rest[..a], &rest[a + 2..]),
+            (None, Some(b)) => (&rest[..b], &rest[b + 4..]),
+            (None, None) => (rest, ""),
+        };
+        rest = next;
+        let Some(ev) = parse_sse_block(block) else {
+            continue;
+        };
+        match handle_sse_event(&ev) {
+            SseOutcome::Finished(response) => return Ok(parse_codex_response(&response)),
+            SseOutcome::Failed(msg) => {
+                return Err(FailoverError::Unknown {
+                    provider: "codex".to_string(),
+                    message: msg,
+                });
+            }
+            SseOutcome::Continue => {}
+        }
+    }
+    Err(FailoverError::Timeout {
+        provider: "codex".to_string(),
+        model: model.to_string(),
+    })
+}
+
+/// SSE 聚合解析入口：读完整事件流文本后走 `parse_sse_text`。
+/// 本接口（`chat()`）本就等完整补全才返回，增量处理无收益；关键在请求侧
+/// `stream: true` 让响应头/事件块持续到达，绕开中转链路的墙钟超时。
+async fn parse_sse_response(
+    resp: reqwest::Response,
+    model: &str,
+) -> Result<crate::types::LLMResponse, FailoverError> {
+    // 中途断流：客户端超时→Timeout；其余读错误诚实携带根因链（同 send 臂）。
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| transport_error("codex", model, &e))?;
+    parse_sse_text(&text, model)
+}
+
 #[async_trait]
 impl LLMProvider for CodexProvider {
     async fn chat(
@@ -488,11 +617,10 @@ impl LLMProvider for CodexProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| FailoverError::Timeout {
-                provider: "codex".to_string(),
-                model: resolved_model.clone(),
-                cause: nemesis_utils::llm_error_class::error_chain_msg(&e),
-            })?;
+            // 诚实化（2026-10-13）：真超时→Timeout；DNS/连接拒绝/SYN 黑洞等
+            // 传输错误→Unknown + "connect error: <根因链>"（此前一律伪装
+            // Timeout——21s 恒定超时误导排查两天）。
+            .map_err(|e| transport_error("codex", &resolved_model, &e))?;
 
         let status = resp.status().as_u16();
         if status >= 400 {
@@ -506,6 +634,18 @@ impl LLMProvider for CodexProvider {
                 &text,
                 retry_after,
             ));
+        }
+
+        // Content-type 分派（流式线缆 2026-10-13）：SSE 走聚合解析；
+        // application/json（服务端忽略 stream 回整包）走既有 json 路径。
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if content_type.contains("text/event-stream") {
+            return parse_sse_response(resp, &resolved_model).await;
         }
 
         let data: serde_json::Value = resp.json().await.map_err(|e| FailoverError::Format {

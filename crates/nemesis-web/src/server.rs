@@ -1652,6 +1652,15 @@ pub async fn handle_events_stream(
         loop {
             match receiver.recv().await {
                 Ok(event) => {
+                    // L10：ephemeral 事件（seq==0，publish_ephemeral）——无 id、
+                    // 不推进 last_sent 游标、不参与重放去重；只投递在线订阅者
+                    // （缺省去重分支 `0 <= last_sent` 恒真会把它整类丢掉，故
+                    // 前置专发）。
+                    if event.seq == 0 {
+                        let data = serde_json::to_string(&event.data).unwrap_or_default();
+                        yield Ok(SseEvent::default().event(&event.event_type).data(data));
+                        continue;
+                    }
                     // 重放桥接期已送达的 seq 跳过（订阅先于重放快照所致重叠）
                     if event.seq <= last_sent {
                         continue;
@@ -2070,6 +2079,92 @@ pub async fn pump_agent_events(
                         payload["session_id"] = serde_json::Value::String(sid.to_string());
                     }
                     event_hub.publish("canvas.open", payload);
+                    continue;
+                }
+                // L10（2026-10-13）：provider 流式输出 → SSE `provider_stream_
+                // event`（**ephemeral**：publish_ephemeral 不盖章不入补拉环——
+                // 流式增量是易逝观测，断线重放半截流无意义，且高频 delta 会
+                // 冲刷 1000 帧环挤掉真正需要补拉的事件）+ WS push（**恒可丢**
+                // broadcast_droppable：delta 洪泛源，事件泵绝不被慢客户端队列
+                // 阻塞）。不入 chat_event_log 环（同 canvas 的前端本地态语义，
+                // 断线窗口内的流只能靠终答回看）。载荷 = 内层 data 展平 +
+                // session_id 注入（canvas 同款形态）。
+                if let nemesis_types::agent::AgentEvent::ProviderStream {
+                    session_key,
+                    chat_id,
+                    seq,
+                    phase,
+                    text,
+                    model,
+                    elapsed_ms,
+                } = &event
+                {
+                    let mut payload = serde_json::json!({
+                        "seq": seq,
+                        "phase": phase,
+                        "text": text,
+                        "model": model,
+                    });
+                    if let Some(ms) = elapsed_ms {
+                        payload["elapsed_ms"] = serde_json::Value::from(*ms);
+                    }
+                    if let Some(sid) = session_key.rsplit(':').next() {
+                        payload["session_id"] = serde_json::Value::String(sid.to_string());
+                    }
+                    event_hub.publish_ephemeral("provider_stream_event", payload.clone());
+                    if let Some(session_id) = chat_id.strip_prefix("web:") {
+                        let frame = crate::protocol::ProtocolMessage::new(
+                            "push",
+                            "chat",
+                            "provider_stream_event",
+                            Some(payload),
+                        );
+                        if let Ok(bytes) = frame.to_json() {
+                            let _ = session_manager.broadcast_droppable(session_id, &bytes);
+                        }
+                    }
+                    continue;
+                }
+                // N5（2026-10-13 机会项）：交付物登记 → SSE `deliverables` +
+                // WS push `deliverables`。不入 chat_event_log 环——交付物已
+                // 随 assistant 行持久化在 chat_log（历史映射是权威恢复源，
+                // 重连/重载走 loadHistory 即恢复），环内重放只会让前端重复
+                // 挂卡；不落环 → 无 seq → 低频事件走必达通道（非洪泛源）。
+                if let nemesis_types::agent::AgentEvent::DeliverablesRegistered {
+                    session_key,
+                    files,
+                    ..
+                } = &event
+                {
+                    let mut payload = serde_json::json!({ "files": files });
+                    if let Some(sid) = session_key.rsplit(':').next() {
+                        payload["session_id"] = serde_json::Value::String(sid.to_string());
+                    }
+                    event_hub.publish("deliverables", payload.clone());
+                    let chat_id = event.chat_id().to_string();
+                    if let Some(session_id) = chat_id.strip_prefix("web:") {
+                        let frame = crate::protocol::ProtocolMessage::new(
+                            "push",
+                            "chat",
+                            "deliverables",
+                            Some(payload),
+                        );
+                        match frame.to_json() {
+                            Ok(bytes) => {
+                                if let Err(e) = session_manager.broadcast(session_id, &bytes).await
+                                {
+                                    tracing::debug!(
+                                        session_id = %session_id,
+                                        error = %e,
+                                        "[AgentEventPump] session broadcast failed (session gone?)"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "[AgentEventPump] deliverables frame marshal failed; dropped");
+                            }
+                        }
+                    }
                     continue;
                 }
                 // BUG-A（2026-09-20）：帧内层注入 web 会话 id。chat_id 是

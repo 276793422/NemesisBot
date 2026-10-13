@@ -1447,6 +1447,7 @@ fn project_entry(dir: &std::path::Path) -> ProjectEntry {
         name: "CovProject".to_string(),
         path: dir.to_path_buf(),
         created_at: "2026-09-25T00:00:00Z".to_string(),
+        instructions_trusted: true,
     }
 }
 

@@ -45,6 +45,22 @@ fn six_classes_representative_samples() {
 }
 
 #[test]
+fn transport_connect_error_prefix_wins_over_later_patterns() {
+    // 2026-10-13 诚实化配套：transport_error 盖章的 "connect error" 前缀
+    // 必须先于 auth/format 判定——错误链里的 URL/系统文案可能含孤立三位
+    // 数字（端口号 :401/、"os error 10061"），不能被 \b401\b 误归 Auth。
+    let chained = "unknown error from provider codex/gpt-5.6-sol: connect error: \
+                   error sending request for url (http://127.0.0.1:401/v1/responses): \
+                   error trying to connect: tcp connect error: os error 10061";
+    assert_eq!(classify_llm_error(chained), Some(LlmErrorClass::Timeout));
+    // 无数字干扰的朴素形态同样归 Timeout（瞬态可重试）。
+    assert_eq!(
+        classify_llm_error("connect error: connection refused"),
+        Some(LlmErrorClass::Timeout)
+    );
+}
+
+#[test]
 fn overloaded_wording_follows_rate_limit_convention() {
     // 文案形态按限流对待（既有约定）；状态码形态归 Overloaded。
     assert_eq!(

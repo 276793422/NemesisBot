@@ -1,8 +1,9 @@
 //! Anthropic/Claude provider (Anthropic Messages API).
 
-use crate::failover::FailoverError;
+use crate::failover::{FailoverError, transport_error};
 use crate::http_provider::StreamChunk;
 use crate::router::LLMProvider;
+use crate::stream_util::collect_stream_response;
 use crate::types::*;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -27,6 +28,13 @@ pub struct AnthropicConfig {
     /// 策略——启动不能被一个坏代理 URL 杀死）。
     #[serde(default)]
     pub proxy: Option<String>,
+    /// per-model 流式开关（2026-10-13 stream 键）：空（auto）= 维持非流式
+    /// （现状）；"yes" = `chat()` 内部走流式（聚合固有 `chat_stream`，对外
+    /// 签名不变）——非流式请求等完整补全才回响应头，推理型模型 + 大上下文
+    /// 会撞中转链路 ~120s 墙钟（gpt-5.6-sol 风暴根因，anthropic lane 同墙）。
+    /// 经 FactoryConfig.stream_mode 透传，构造期消费。
+    #[serde(default)]
+    pub stream_mode: String,
 }
 
 // P3A 超时对齐（2026-09-12）：120s 曾与 openai 兼容 lane 的 600s 口径分裂
@@ -45,6 +53,7 @@ impl Default for AnthropicConfig {
             default_model: DEFAULT_MODEL.to_string(),
             timeout_secs: 600,
             proxy: None,
+            stream_mode: String::new(),
         }
     }
 }
@@ -324,8 +333,9 @@ impl AnthropicProvider {
     }
 
     /// Anthropic Messages API 非流式 POST（headers 与流式路径同源：
-    /// x-api-key + anthropic-version 2023-06-01 + JSON）。send 失败
-    /// （连接/超时）→ Timeout（可 failover，J1 同族）。
+    /// x-api-key + anthropic-version 2023-06-01 + JSON）。send 失败诚实
+    /// 映射（2026-10-13）：真超时→Timeout；DNS/连接拒绝等传输错误→
+    /// Unknown + "connect error: <根因链>"（可 failover，J1 同族）。
     async fn post_messages(
         client: &reqwest::Client,
         url: &str,
@@ -341,12 +351,7 @@ impl AnthropicProvider {
             .json(body)
             .send()
             .await
-            .map_err(|e| FailoverError::Timeout {
-                provider: "anthropic".to_string(),
-                model: model.to_string(),
-                // 保留底层链（含连接拒绝词表），吞掉会让封存判定失明。
-                cause: nemesis_utils::llm_error_class::error_chain_msg(&e),
-            })
+            .map_err(|e| transport_error("anthropic", model, &e))
     }
 
     /// Anthropic Messages API 流式请求（B 根修 2026-09-17）。
@@ -406,13 +411,9 @@ impl AnthropicProvider {
             {
                 Ok(r) => r,
                 Err(e) => {
-                    let _ = tx
-                        .send(Err(FailoverError::Timeout {
-                            provider: "anthropic".to_string(),
-                            model: model.clone(),
-                            cause: nemesis_utils::llm_error_class::error_chain_msg(&e),
-                        }))
-                        .await;
+                    // 诚实化（2026-10-13）：真超时→Timeout；其余传输错误→
+                    // Unknown + "connect error: <根因链>"（不伪装）。
+                    let _ = tx.send(Err(transport_error("anthropic", &model, &e))).await;
                     return;
                 }
             };
@@ -522,13 +523,9 @@ impl AnthropicProvider {
                             error = %e,
                             "[Provider] Anthropic SSE stream read error"
                         );
-                        let _ = tx
-                            .send(Err(FailoverError::Timeout {
-                                provider: "anthropic".to_string(),
-                                model: model.clone(),
-                                cause: nemesis_utils::llm_error_class::error_chain_msg(&e),
-                            }))
-                            .await;
+                        // 诚实化（2026-10-13）：客户端超时→Timeout；其余
+                        // 读错误→Unknown + "connect error: <根因链>"。
+                        let _ = tx.send(Err(transport_error("anthropic", &model, &e))).await;
                         return;
                     }
                 };
@@ -673,6 +670,9 @@ impl AnthropicProvider {
                             let err = if etype == "overloaded_error" {
                                 FailoverError::Overloaded {
                                     provider: "anthropic".to_string(),
+                                    // SSE error 事件无 HTTP 状态码（流已在 200 里）
+                                    // → 0（未携带），与 Auth 纯文案形态同约定。
+                                    status: 0,
                                 }
                             } else {
                                 FailoverError::Format {
@@ -979,6 +979,19 @@ impl LLMProvider for AnthropicProvider {
         model: &str,
         options: &ChatOptions,
     ) -> Result<LLMResponse, FailoverError> {
+        // per-model `stream` 键（2026-10-13）：`yes` = 内部流式化——复用固有
+        // `chat_stream`（SSE 解析/tool_calls 累积/usage 全同源）聚合为非流式
+        // `LLMResponse`，`chat()` 对调用方签名不变。语义对齐 protocol：构造期
+        // 消费，改条目需重新设默认或重启。auto（缺省）维持非流式现状。
+        if self.config.stream_mode == "yes" {
+            return collect_stream_response(
+                "anthropic",
+                model,
+                AnthropicProvider::chat_stream(self, messages, tools, model, options),
+            )
+            .await;
+        }
+
         let model = if model.is_empty() {
             &self.config.default_model
         } else {

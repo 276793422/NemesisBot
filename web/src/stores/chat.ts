@@ -16,6 +16,10 @@ export interface ChatMessage {
   sourceNode?: string
   /** T8 多模态：该消息附带的图片数（本地回显 + 历史映射 m.images.length）。 */
   imageCount?: number
+  /** N5（2026-10-13 机会项）：本 turn 的交付物清单（present_files 工具登记，
+   *  历史行 deliverables 透传）。渲染交付物卡片（「该看什么」产物指引，
+   *  与 file_changes 变更映射并列不重叠）。缺省 = 无交付物/旧条目。 */
+  deliverables?: DeliverableFile[]
   /** M1b（devtool-upgrade 阶段 3）：本条 assistant 消息对应的工具调用卡片
    *  事件（M1a AgentEvent 通道实时收集，响应落地时 flush 挂载）。
    *  会话重同步（watchdog replaceMessages）后事件丢失——诚实降级为无卡片。 */
@@ -36,6 +40,13 @@ export interface ChatMessage {
    *  （历史快照行不带 seq）。用于历史响应 last_seq 到达后剔除「先于
    *  快照渲染的重复 assistant 帧」。 */
   seq?: number
+}
+
+/** N5：单条交付物（与后端 chat_log PresentedFile serde 字段对齐）。 */
+export interface DeliverableFile {
+  path: string
+  title: string
+  note: string
 }
 
 /** H1/H2（2026-09-05）：单条 todo（与后端 TodoItem serde snake_case 对齐）。 */
@@ -101,6 +112,12 @@ export const useChatStore = defineStore('chat', () => {
   // R1：进行中轮次的中间正文缓冲（模型每轮过程叙述；回复落地时 flush
   // 折叠挂载；reset 清空——语义同 pendingToolEvents）。
   const pendingRoundTexts = ref<RoundTextEntry[]>([])
+  // N5（2026-10-13 机会项）：进行中轮次的交付物缓冲（present_files 登记
+  // 事件先于 assistant 回复帧到达——落盘后发布、回复帧最后发布，顺序由
+  // 后端单 turn 串行保证；回复落地时 flush 挂载；reset 清空——语义同
+  // pendingToolEvents）。ChatPanel 侧按 session_id 过滤后入列（异会话
+  // 的交付物不入缓冲，历史映射兜底）。
+  const pendingDeliverables = ref<DeliverableFile[]>([])
   // F1（devtool-upgrade 阶段 4）：plan/build 工作模式徽标。'build' 是保守
   // 初值——真实值进会话时经 chat.get_mode 对齐；ModeChanged push（/plan
   // /build slash 或 chat.set_mode）实时刷新。注意后端模式是 loop 级全局态
@@ -197,6 +214,7 @@ export const useChatStore = defineStore('chat', () => {
     // M1b：重同步后事件通道状态不可信，清空 pending 防止误挂到下一轮。
     pendingToolEvents.value = []
     pendingRoundTexts.value = []
+    pendingDeliverables.value = []
     // M6：行号锚随消息列表重推——watchdog 路径（fresh 对象无行号）归 null
     // 诚实降级；resync 路径（带 oldest_index 行号）重推出正确锚。
     recomputeNextRowIndex()
@@ -267,6 +285,19 @@ export const useChatStore = defineStore('chat', () => {
     return out
   }
 
+  /** N5：收集交付物（`deliverables` push 帧，ChatPanel 按 session 过滤后
+   *  入列；登记事件单 turn 至多一次、无幂等键，重复推送不存在）。 */
+  function appendPendingDeliverables(files: DeliverableFile[]) {
+    pendingDeliverables.value.push(...files)
+  }
+
+  /** N5：取走 pending 交付物（assistant 消息落地时挂载到该消息）。 */
+  function flushPendingDeliverables(): DeliverableFile[] {
+    const out = pendingDeliverables.value
+    pendingDeliverables.value = []
+    return out
+  }
+
   function clearInput() {
     input.value = ''
   }
@@ -290,6 +321,7 @@ export const useChatStore = defineStore('chat', () => {
     todos.value = []
     pendingToolEvents.value = []
     pendingRoundTexts.value = []
+    pendingDeliverables.value = []
     agentMode.value = 'build'
     historyLoading.value = false
     hasMoreHistory.value = true
@@ -313,6 +345,7 @@ export const useChatStore = defineStore('chat', () => {
     todos,
     pendingToolEvents,
     pendingRoundTexts,
+    pendingDeliverables,
     agentMode,
     commandDraft,
     inflightTurns,
@@ -330,6 +363,8 @@ export const useChatStore = defineStore('chat', () => {
     flushPendingToolEvents,
     appendRoundText,
     flushPendingRoundTexts,
+    appendPendingDeliverables,
+    flushPendingDeliverables,
     clearInput,
     /** F1：ModeChanged push / chat.set_mode 回包 / get_mode 对齐共用。 */
     setAgentMode(m: 'build' | 'plan') {

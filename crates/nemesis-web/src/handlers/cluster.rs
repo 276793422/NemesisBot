@@ -285,6 +285,35 @@ fn peers_path(workspace: &str) -> PathBuf {
     nemesis_path::resolve_cluster_peers_path_in_workspace(Path::new(workspace))
 }
 
+/// peers.toml [node] 段 RMW 事务唯一入口——写串行锁在函数内取得，罩
+/// 「load（缺失从默认节点起）→ 闭包改 → 写回」全程；闭包返回 Err 不落盘
+///（abort 语义）。调用方结构上不可能忘锁（2026-10-13 闭包事务收口）。
+/// 纪律：闭包内不得再调任何 update_* / [`nemesis_config::config_write_lock`]
+///（Mutex 非重入，嵌套即死锁）。
+fn update_peers_node<T>(
+    workspace: &str,
+    f: impl FnOnce(&mut nemesis_cluster::cluster_config::NodeInfo) -> Result<T, String>,
+) -> Result<T, String> {
+    let _cfg_serial = nemesis_config::config_write_lock();
+    let ppath = peers_path(workspace);
+    let mut config = if ppath.exists() {
+        nemesis_cluster::cluster_config::load_static_config(&ppath)
+            .map_err(|e| format!("加载 peers.toml 失败: {}", e))?
+    } else {
+        nemesis_cluster::cluster_config::StaticConfig {
+            node: nemesis_cluster::cluster_config::NodeInfo::default(),
+        }
+    };
+    let out = f(&mut config.node)?;
+    if let Some(parent) = ppath.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to save peers.toml: create cluster dir: {e}"))?;
+    }
+    nemesis_cluster::cluster_config::save_static_config(&ppath, &config)
+        .map_err(|e| format!("failed to save peers.toml: {}", e))?;
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------
 // Runtime data commands
 // ---------------------------------------------------------------------------
@@ -1012,42 +1041,33 @@ impl ClusterHandler {
 
         // Persist to peers.toml [node] section
         if let Ok(workspace) = require_workspace(ctx) {
-            let ppath = peers_path(workspace);
-            let mut config = if ppath.exists() {
-                nemesis_cluster::cluster_config::load_static_config(&ppath)
-                    .map_err(|e| format!("failed to load peers.toml: {}", e))?
-            } else {
-                nemesis_cluster::cluster_config::StaticConfig {
-                    node: nemesis_cluster::cluster_config::NodeInfo::default(),
+            // 锁在 update_peers_node 内：读→改 [node] 段→写回与 persona_apply
+            // 落盘（persist_peers_identity 同一事务入口）互斥（2026-10-13 收口）。
+            update_peers_node(workspace, |node| {
+                if let Some(name) = data.get("name").and_then(|v| v.as_str()) {
+                    node.name = name.trim().to_string();
                 }
-            };
-            if let Some(name) = data.get("name").and_then(|v| v.as_str()) {
-                config.node.name = name.trim().to_string();
-            }
-            if let Some(role) = data.get("role").and_then(|v| v.as_str()) {
-                config.node.role = role.trim().to_string();
-            }
-            if let Some(category) = data.get("category").and_then(|v| v.as_str()) {
-                config.node.category = category.trim().to_string();
-            }
-            if let Some(tags_arr) = data.get("tags").and_then(|v| v.as_array()) {
-                config.node.tags = tags_arr
-                    .iter()
-                    .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
-                    .filter(|s| !s.is_empty())
-                    .collect();
-            }
-            if let Some(profs) = &prof_opt {
-                config.node.professions = profs.clone();
-            }
-            if let Some(t) = &tier_parsed {
-                config.node.tier = t.clone();
-            }
-            if let Some(parent) = ppath.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            nemesis_cluster::cluster_config::save_static_config(&ppath, &config)
-                .map_err(|e| format!("failed to save peers.toml: {}", e))?;
+                if let Some(role) = data.get("role").and_then(|v| v.as_str()) {
+                    node.role = role.trim().to_string();
+                }
+                if let Some(category) = data.get("category").and_then(|v| v.as_str()) {
+                    node.category = category.trim().to_string();
+                }
+                if let Some(tags_arr) = data.get("tags").and_then(|v| v.as_array()) {
+                    node.tags = tags_arr
+                        .iter()
+                        .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                }
+                if let Some(profs) = &prof_opt {
+                    node.professions = profs.clone();
+                }
+                if let Some(t) = &tier_parsed {
+                    node.tier = t.clone();
+                }
+                Ok(())
+            })?;
         }
 
         // Return current values
@@ -1635,26 +1655,15 @@ impl ClusterHandler {
         let path = cluster_config_path(workspace);
         // get 响应是脱敏形态：UI 回存时掩码值还原为存量原值（无原值 loud
         // 拒绝），绝不把掩码当真值写进 config.cluster.json。
+        // 锁在 update_json_file 内：掩码还原要读存量文件（读→合并→整写 =
+        // RMW），与 update_cluster_config_enabled 等写臂互斥（2026-10-13 收口）。
         let mut data = data.clone();
-        if path.exists() {
-            let content = std::fs::read_to_string(&path)
-                .map_err(|e| format!("failed to read cluster config: {}", e))?;
-            let existing: serde_json::Value = serde_json::from_str(&content)
-                .map_err(|e| format!("invalid cluster config: {}", e))?;
-            crate::handlers::restore_masked_named_fields(&mut data, &existing)?;
-        } else {
-            let empty = serde_json::json!({});
-            crate::handlers::restore_masked_named_fields(&mut data, &empty)?;
-        }
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("failed to create config dir: {}", e))?;
-        }
-        let json = serde_json::to_string_pretty(&data)
-            .map_err(|e| format!("failed to serialize: {}", e))?;
-        // REL-002：统一原子写入（config.cluster.json 含 token）。
-        nemesis_utils::write_file_atomic(&path.to_string_lossy(), json.as_bytes(), 0o600)
-            .map_err(|e| format!("failed to write cluster config: {}", e))?;
+        super::config::update_json_file(&path, |existing| {
+            crate::handlers::restore_masked_named_fields(&mut data, existing)?;
+            // 合并结果整体替换落盘（原子写由事务入口承担）。
+            *existing = data;
+            Ok(())
+        })?;
 
         Ok(Some(serde_json::json!({ "saved": true })))
     }
@@ -1675,28 +1684,20 @@ impl ClusterHandler {
         if !main_cfg_path.exists() {
             return Err("config.json not found".to_string());
         }
-        let content = std::fs::read_to_string(&main_cfg_path)
-            .map_err(|e| format!("failed to read config.json: {}", e))?;
-        let mut main_cfg: serde_json::Value =
-            serde_json::from_str(&content).map_err(|e| format!("invalid config.json: {}", e))?;
-        // Ensure cluster object exists
-        if main_cfg.get("cluster").is_none() {
-            main_cfg["cluster"] = serde_json::json!({});
-        }
-        if let Some(cluster_obj) = main_cfg.get_mut("cluster")
-            && let Some(obj) = cluster_obj.as_object_mut()
-        {
-            obj.insert("enabled".to_string(), serde_json::json!(enabled));
-        }
-        let updated = serde_json::to_string_pretty(&main_cfg)
-            .map_err(|e| format!("failed to serialize config.json: {}", e))?;
-        // REL-002：统一原子写入（config.json 含 API key）
-        nemesis_utils::write_file_atomic(
-            &main_cfg_path.to_string_lossy(),
-            updated.as_bytes(),
-            0o600,
-        )
-        .map_err(|e| format!("failed to write config.json: {e}"))?;
+        // 锁在 update_raw_config 内：读→改 cluster.enabled→原子写回 = RMW
+        //（2026-10-13 收口；落盘后 store.reload 对账由写半边承担）。
+        super::config::update_raw_config(home, |main_cfg| {
+            // Ensure cluster object exists
+            if main_cfg.get("cluster").is_none() {
+                main_cfg["cluster"] = serde_json::json!({});
+            }
+            if let Some(cluster_obj) = main_cfg.get_mut("cluster")
+                && let Some(obj) = cluster_obj.as_object_mut()
+            {
+                obj.insert("enabled".to_string(), serde_json::json!(enabled));
+            }
+            Ok(())
+        })?;
         Ok(Some(
             serde_json::json!({ "updated": true, "enabled": enabled }),
         ))
@@ -1704,6 +1705,9 @@ impl ClusterHandler {
 
     /// Update the `enabled` field in config.cluster.json.
     fn update_cluster_config_enabled(workspace: &str, enabled: bool) -> Result<(), String> {
+        // 咽喉点取锁：enable/disable 两臂都以 best-effort 调本函数，均未持锁，
+        // 在此罩住「读→插 enabled→写回」整段（同类横扫 2026-10-13）。
+        let _cfg_serial = nemesis_config::config_write_lock();
         let path = cluster_config_path(workspace);
         let mut cfg: serde_json::Value = if path.exists() {
             let content = std::fs::read_to_string(&path)
@@ -1925,25 +1929,15 @@ impl ClusterHandler {
         workspace: &str,
         pkg: &cluster_persona_gen::PersonaPackage,
     ) -> Result<(), String> {
-        let ppath = peers_path(workspace);
-        let mut config = if ppath.exists() {
-            nemesis_cluster::cluster_config::load_static_config(&ppath)
-                .map_err(|e| format!("加载 peers.toml 失败: {}", e))?
-        } else {
-            nemesis_cluster::cluster_config::StaticConfig {
-                node: nemesis_cluster::cluster_config::NodeInfo::default(),
-            }
-        };
-        config.node.name = pkg.display_name.clone();
-        config.node.role = pkg.role.clone();
-        config.node.category = pkg.category.clone();
-        config.node.tags = pkg.tags.clone();
-        if let Some(parent) = ppath.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        nemesis_cluster::cluster_config::save_static_config(&ppath, &config)
-            .map_err(|e| format!("保存 peers.toml 失败: {}", e))?;
-        Ok(())
+        // 锁在 update_peers_node 事务入口内（与 node_update_identity 同一
+        // 咽喉点，互不嵌套——persona_apply 未持锁直接进事务）。
+        update_peers_node(workspace, |node| {
+            node.name = pkg.display_name.clone();
+            node.role = pkg.role.clone();
+            node.category = pkg.category.clone();
+            node.tags = pkg.tags.clone();
+            Ok(())
+        })
     }
 }
 

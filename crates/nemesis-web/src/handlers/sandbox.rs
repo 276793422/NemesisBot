@@ -88,6 +88,10 @@ fn update_executor<F: FnOnce(&mut nemesis_config::ExecutorSeparationConfig)>(
     home: &std::path::Path,
     f: F,
 ) -> Result<(), String> {
+    // 写串行锁覆盖整个 RMW（store.update 落盘路径与 CLI 读改写路径都在本
+    // 函数内完成——本函数是 executor 段写入唯一咽喉点，锁在此取一次即罩住
+    // 全部调用臂；调用方不得再持有 config_write_lock，非重入会死锁）。
+    let _cfg_serial = nemesis_config::config_write_lock();
     if let Some(store) = nemesis_config::global() {
         return store
             .update(|c| {

@@ -138,6 +138,34 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
     #[cfg(target_os = "macos")]
     let _tray_channel_guard = nemesis_desktop::main_thread_handoff::channel_guard();
 
+    // L9 selfupdate：启动收口先于任何端口 bind——journal 未竟事务处置：
+    // restarting 相位 commit 命中 = 上次切换成功收口；miss / staging 相位 =
+    // .old 归位回滚。**不带 selfupdate feature 的构建也执行**：journal 清理
+    // 是纯 fs 语义（ungated），feature 裁剪版也要能擦净上个全量版本留下的
+    // staging 现场。启动身份（version + 短 commit + workspace）注入 WSAPI
+    // 槽供 selfupdate.check/status 消费（空 commit = dev 构建，check 诚实
+    // 报「当前版本未知」）。
+    {
+        let home = crate::common::resolve_home(local);
+        let ws_dir = crate::common::workspace_path(&home);
+        let recovery = nemesis_web::selfupdate::recover_on_boot(
+            &ws_dir,
+            crate::common::VERSION_INFO.git_commit,
+        );
+        if recovery.action != "none" {
+            tracing::info!(
+                "[Gateway] selfupdate boot recovery: {} ({})",
+                recovery.action,
+                recovery.detail
+            );
+        }
+        nemesis_web::handlers::selfupdate::set_boot_identity(
+            crate::common::VERSION_INFO.version,
+            crate::common::VERSION_INFO.git_commit,
+            &ws_dir,
+        );
+    }
+
     // Phase B1（计划 §4.2）：Steps 1–9b（PB-0 bootstrap + PB-1 单例预装配）
     // 收敛为 GatewayCtx::assemble（gateway/ctx.rs）。`--relay` 纯中继早退在
     // assemble 内部处理（None → 直接 Ok 返回；run_relay 语义不变）；

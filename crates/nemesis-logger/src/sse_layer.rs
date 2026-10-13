@@ -88,6 +88,12 @@ impl SseLogEvent {
     /// Mapping is by crate prefix — keeps the per-event cost down (a single `starts_with` chain).
     /// Anything unrecognized falls back to `general`.
     pub fn classify_source(target: &str) -> String {
+        // L10（2026-10-13）：cache warmer 的 warm 生命周期日志（crate 前缀
+        // 同为 nemesis_agent）按完整模块路径先判——warm 花真金白银 API 调用，
+        // 归「llm」观测面（Logs Dashboard llm 源可查）。
+        if target.starts_with("nemesis_agent::loop::cache_warmer") {
+            return "llm".to_string();
+        }
         let first = target.split("::").next().unwrap_or(target);
         match first {
             "nemesis_providers" | "nemesis_llm_bridge" => "llm",

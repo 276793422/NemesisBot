@@ -72,6 +72,80 @@ impl BoardAssetTool {
     fn assets_dir(&self) -> PathBuf {
         nemesis_path::resolve_board_assets_dir_in_workspace(&self.workspace)
     }
+
+    /// B8（2026-10-13）：本地资产缓存体检——对 assets 目录逐文件重算
+    /// sha256 与登记表比对，漂移（磁盘损坏 / 手工改动 / 落定链中断）的
+    /// 实体改名 `<ref>.corrupt` 隔离（不删——留证据；同 ref 再 fetch 会
+    /// 覆盖重建），返回 (已核验数, 隔离数)。语义边界：`.part`/`.corrupt`
+    /// 后缀与登记表外的文件不归本机制管（下载中间态 / 手工放置），跳过；
+    /// board.db 缺席或 assets 目录缺席 = 无缓存常态 `Ok((0, 0))`，绝不
+    /// 阻断启动。消费点唯一：gateway bind 后的后台体检（services.rs）。
+    pub fn verify_cached_assets(&self) -> Result<(usize, usize), String> {
+        let db_path = self.workspace.join("board").join("board.db");
+        if !db_path.exists() {
+            return Ok((0, 0));
+        }
+        let store = nemesis_board::BoardStore::open(&db_path, "NB")?;
+        let assets_dir = self.assets_dir();
+        let Ok(entries) = std::fs::read_dir(&assets_dir) else {
+            return Ok((0, 0));
+        };
+        // 显式排序（CLAUDE.md diff 自检：read_dir 顺序是平台实现细节）。
+        let mut names: Vec<String> = entries
+            .filter_map(|e| e.ok().and_then(|e| e.file_name().into_string().ok()))
+            .collect();
+        names.sort();
+        let mut checked = 0usize;
+        let mut quarantined = 0usize;
+        for name in names {
+            if name.ends_with(".part") || name.ends_with(".corrupt") {
+                continue;
+            }
+            let path = assets_dir.join(&name);
+            if !path.is_file() {
+                continue;
+            }
+            let Some(asset) = store.lookup_asset(&name)? else {
+                continue;
+            };
+            // 单文件读失败（AV/索引器瞬时句柄是常态不是异常）= warn + 本轮
+            // 跳过该文件，不中止整个体检——`?` 上抛会让一次瞬时占用把本轮
+            // 源头侧防线整个跳掉（下轮启动才有机会重试）。DB 级错误仍 `?`
+            // 上抛（系统性故障，诚实 skip 整轮）。
+            let Ok(actual) = nemesis_board::sha256_file(&path) else {
+                tracing::warn!(
+                    "[board_asset] cached asset `{name}` unreadable this round — skipped, retry on next startup"
+                );
+                continue;
+            };
+            checked += 1;
+            if actual == asset.sha256.trim().to_lowercase() {
+                continue;
+            }
+            let corrupt = assets_dir.join(format!("{name}.corrupt"));
+            // Windows rename 不覆盖已存在目标：先清旧隔离件（瞬时句柄
+            // 占用让 rename 失败 = 本轮跳过该文件，下轮启动再试——不升级
+            // 为致命，见返回值语义）。
+            let _ = std::fs::remove_file(&corrupt);
+            match std::fs::rename(&path, &corrupt) {
+                Ok(()) => {
+                    tracing::warn!(
+                        "[board_asset] cached asset `{name}` sha256 drifted \
+                         (registered {}, actual {actual}) — quarantined as `{name}.corrupt`",
+                        asset.sha256.trim().to_lowercase()
+                    );
+                    quarantined += 1;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "[board_asset] cached asset `{name}` sha256 drifted but \
+                         quarantine failed ({e}) — will retry on next startup"
+                    );
+                }
+            }
+        }
+        Ok((checked, quarantined))
+    }
 }
 
 /// 解析后的工具参数（execute 内部第一步；独立成纯函数便于单测）。

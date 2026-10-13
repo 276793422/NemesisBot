@@ -93,23 +93,16 @@ impl ModuleHandler for ModelsHandler {
 }
 
 fn config_path(home: &str) -> PathBuf {
-    PathBuf::from(home).join("config.json")
-}
-
-fn load_config(home: &str) -> Result<nemesis_config::Config, String> {
-    if let Some(cfg) = nemesis_config::load_live() {
-        return Ok(cfg);
-    }
-    let path = config_path(home);
-    nemesis_config::load_config(&path).map_err(|e| format!("failed to load config: {}", e))
+    super::config::config_path(home)
 }
 
 /// DISABLED (P3-2, 2026-08-24): typed save is no longer called — every
-/// `model_list` mutation here goes through raw RMW (`write_raw_config`)
-/// because a typed round-trip DROPS the tier/size/real_name/context_window
-/// extras. Kept (not deleted) per the code-change discipline: safe to revive
-/// only for sections whose keys the typed `Config` fully models.
-/// To restore: route the mutation through this instead of `write_raw_config`.
+/// `model_list` mutation here goes through raw RMW
+/// ([`super::config::update_raw_config`]) because a typed round-trip DROPS
+/// the tier/size/real_name/context_window extras. Kept (not deleted) per the
+/// code-change discipline: safe to revive only for sections whose keys the
+/// typed `Config` fully models.
+/// To restore: route the mutation through this instead of `update_raw_config`.
 #[allow(dead_code)]
 fn save_config(home: &str, config: &mut nemesis_config::Config) -> Result<(), String> {
     if let Some(r) = nemesis_config::save_live(config.clone()) {
@@ -117,36 +110,6 @@ fn save_config(home: &str, config: &mut nemesis_config::Config) -> Result<(), St
     }
     let path = config_path(home);
     nemesis_config::save_config(&path, config).map_err(|e| format!("failed to save config: {}", e))
-}
-
-/// Read config.json as RAW JSON (preserves keys the typed `Config` does not
-/// model — tier/size/real_name/context_window extras on `model_list[]`
-/// entries). Every `model_list` mutation in this handler must go through a
-/// raw read-modify-write + [`write_raw_config`]: the CLI writes the extras
-/// via raw RMW precisely because a typed round-trip DROPS them
-/// (nemesisbot/src/commands/model.rs `update_model_entry`).
-fn read_raw_config(home: &str) -> Result<serde_json::Value, String> {
-    let path = config_path(home);
-    let raw = std::fs::read_to_string(&path).map_err(|e| format!("read config.json: {e}"))?;
-    serde_json::from_str(&raw).map_err(|e| format!("parse config.json: {e}"))
-}
-
-/// Write config.json as RAW JSON, then reconcile the process-global
-/// ConfigStore (if installed) from disk — typed readers via `load_live`
-/// would otherwise keep serving the pre-write snapshot.
-fn write_raw_config(home: &str, cfg: &serde_json::Value) -> Result<(), String> {
-    let path = config_path(home);
-    let out =
-        serde_json::to_string_pretty(cfg).map_err(|e| format!("serialize config.json: {e}"))?;
-    // REL-002：统一原子写入（config.json 含 API key）。
-    nemesis_utils::write_file_atomic(&path.to_string_lossy(), out.as_bytes(), 0o600)
-        .map_err(|e| format!("write config.json: {e}"))?;
-    if let Some(store) = nemesis_config::global() {
-        store
-            .reload()
-            .map_err(|e| format!("reload live config store: {e}"))?;
-    }
-    Ok(())
 }
 
 /// set_default 运行时热切参数（canonical_swap_params 返回值）。
@@ -162,11 +125,14 @@ struct SwapParams {
     timeout_secs: u64,
     /// Per-model 出站代理 URL（代理接线修复 2026-09-17）。空 = 不代理。
     proxy: String,
+    /// per-model 流式开关（2026-10-13 stream 键）："yes"/"no"/""(auto)。
+    /// 构造期消费——热切重设默认后生效。
+    stream_mode: String,
 }
 
 impl ModelsHandler {
     fn list(&self, home: &str) -> Result<Option<serde_json::Value>, String> {
-        let config = load_config(home)?;
+        let config = super::config::load_config(home)?;
         // 默认模型以 agents.defaults.llm 为权威（启动 get_effective_llm 读的就是它），
         // 不能用 model_list[0] 位置判——CLI 的 `model add --default` 把新模型追加到
         // 末尾、只改 agents.defaults.llm，位置判会把旧模型误标为默认，dashboard 就
@@ -245,7 +211,7 @@ impl ModelsHandler {
     /// （proxy 字段）或 config.json，保存后 set_default 热切/下一轮
     /// config 重读生效。
     fn proxy_overview(&self, home: &str) -> Result<Option<serde_json::Value>, String> {
-        let config = load_config(home)?;
+        let config = super::config::load_config(home)?;
         let default_llm = config.agents.defaults.llm.clone();
         let models: Vec<_> = config
             .model_list
@@ -322,107 +288,108 @@ impl ModelsHandler {
             &crate::handlers::get_opt_str(data, "protocol").unwrap_or_default(),
         )?;
 
-        // Raw RMW (NOT typed save): preserves the tier/size/real_name/
-        // context_window extras other entries may carry — the typed
-        // ModelConfig does not model them, so a typed round-trip would drop
-        // them (same reason the CLI `model add` is raw JSON).
-        let mut cfg = read_raw_config(home)?;
-        let list = cfg
-            .get_mut("model_list")
-            .and_then(|v| v.as_array_mut())
-            .ok_or("config.json has no model_list")?;
-        if list
-            .iter()
-            .any(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(&model_name))
-        {
-            return Err(format!("model '{}' already exists", model_name));
-        }
-
-        let mut entry = serde_json::json!({
-            // Same field set the old typed push produced (all-default empties).
-            "model_name": model_name,
-            "model": model,
-            "api_base": api_base,
-            "api_key": api_key,
-            "proxy": proxy,
-            "auth_method": "",
-            "connect_mode": "",
-            "workspace": "",
-            "reasoning_effort": "",
-            "protocol": protocol,
-            // CLI `model add` parity: tag auto-detect tier explicitly.
-            "model_tier": "auto",
-        });
-        // U16 parity: auto-fill context_window / max_output_tokens from the
-        // models.dev catalog cache on an exact-key hit (silent no-op without
-        // a cache — `model catalog-update` / the dashboard button fills it).
-        if let Some(cat) = read_catalog(home)
-            && let Some(hit) = cat.entries.iter().find(|e| e.key == model)
-        {
-            entry["context_window"] = serde_json::Value::Number(hit.context_window.into());
-            if let Some(mot) = hit.max_output_tokens {
-                entry["max_output_tokens"] = serde_json::Value::Number(mot.into());
+        // Raw RMW via the transaction entry (NOT typed save): preserves the
+        // tier/size/real_name/context_window extras other entries may carry —
+        // the typed ModelConfig does not model them, so a typed round-trip
+        // would drop them (same reason the CLI `model add` is raw JSON).
+        // 锁在 update_raw_config 内——探测/校验代码不可能忘锁。
+        super::config::update_raw_config(home, |cfg| {
+            let list = cfg
+                .get_mut("model_list")
+                .and_then(|v| v.as_array_mut())
+                .ok_or("config.json has no model_list")?;
+            if list
+                .iter()
+                .any(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(&model_name))
+            {
+                return Err(format!("model '{}' already exists", model_name));
             }
-        }
 
-        list.push(entry);
-        write_raw_config(home, &cfg)?;
-        Ok(Some(
-            serde_json::json!({ "added": true, "name": model_name }),
-        ))
+            let mut entry = serde_json::json!({
+                // Same field set the old typed push produced (all-default empties).
+                "model_name": model_name,
+                "model": model,
+                "api_base": api_base,
+                "api_key": api_key,
+                "proxy": proxy,
+                "auth_method": "",
+                "connect_mode": "",
+                "workspace": "",
+                "reasoning_effort": "",
+                "protocol": protocol,
+                // CLI `model add` parity: tag auto-detect tier explicitly.
+                "model_tier": "auto",
+            });
+            // U16 parity: auto-fill context_window / max_output_tokens from the
+            // models.dev catalog cache on an exact-key hit (silent no-op without
+            // a cache — `model catalog-update` / the dashboard button fills it).
+            if let Some(cat) = read_catalog(home)
+                && let Some(hit) = cat.entries.iter().find(|e| e.key == model)
+            {
+                entry["context_window"] = serde_json::Value::Number(hit.context_window.into());
+                if let Some(mot) = hit.max_output_tokens {
+                    entry["max_output_tokens"] = serde_json::Value::Number(mot.into());
+                }
+            }
+
+            list.push(entry);
+            Ok(Some(
+                serde_json::json!({ "added": true, "name": model_name }),
+            ))
+        })
     }
 
     fn delete(&self, home: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
-        // Raw RMW: a typed round-trip would drop the tier/size/real_name/
-        // context_window extras the surviving entries carry.
-        let mut cfg = read_raw_config(home)?;
-
-        // 守卫：禁止删除当前默认模型。否则 agents.defaults.llm 变成悬空引用，
-        // 下次启动 get_effective_llm → resolve_model_config 找不到模型直接失败。
-        // default_llm 可能是 model_name、vendor/model 串或别名（CLI 设的是别名），
-        // 故把目标模型的所有标识都拿来比对。同时兜住 list[0] 这个 dashboard 位置默认。
-        let default_llm = cfg
-            .get("agents")
-            .and_then(|a| a.get("defaults"))
-            .and_then(|d| d.get("llm"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let list = cfg
-            .get_mut("model_list")
-            .and_then(|v| v.as_array_mut())
-            .ok_or("config.json has no model_list")?;
-        let first_name = list
-            .first()
-            .and_then(|m| m.get("model_name"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        if let Some(m) = list
-            .iter()
-            .find(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name))
-        {
-            let model = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
-            let alias = model.split('/').next_back().unwrap_or("");
-            let is_default = name == default_llm
-                || name == first_name
-                || model == default_llm
-                || (!alias.is_empty() && alias == default_llm);
-            if is_default {
-                return Err(format!(
-                    "cannot delete default model '{}'. Switch the default to another model first.",
-                    name
-                ));
+        // Raw RMW via the transaction entry: a typed round-trip would drop the
+        // tier/size/real_name/context_window extras the surviving entries carry.
+        // 锁在 update_raw_config 内。
+        super::config::update_raw_config(home, |cfg| {
+            // 守卫：禁止删除当前默认模型。否则 agents.defaults.llm 变成悬空引用，
+            // 下次启动 get_effective_llm → resolve_model_config 找不到模型直接失败。
+            // default_llm 可能是 model_name、vendor/model 串或别名（CLI 设的是别名），
+            // 故把目标模型的所有标识都拿来比对。同时兜住 list[0] 这个 dashboard 位置默认。
+            let default_llm = cfg
+                .get("agents")
+                .and_then(|a| a.get("defaults"))
+                .and_then(|d| d.get("llm"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let list = cfg
+                .get_mut("model_list")
+                .and_then(|v| v.as_array_mut())
+                .ok_or("config.json has no model_list")?;
+            let first_name = list
+                .first()
+                .and_then(|m| m.get("model_name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if let Some(m) = list
+                .iter()
+                .find(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name))
+            {
+                let model = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
+                let alias = model.split('/').next_back().unwrap_or("");
+                let is_default = name == default_llm
+                    || name == first_name
+                    || model == default_llm
+                    || (!alias.is_empty() && alias == default_llm);
+                if is_default {
+                    return Err(format!(
+                        "cannot delete default model '{}'. Switch the default to another model first.",
+                        name
+                    ));
+                }
             }
-        }
 
-        let before = list.len();
-        list.retain(|m| m.get("model_name").and_then(|v| v.as_str()) != Some(name));
-        if list.len() == before {
-            return Err(format!("model '{}' not found", name));
-        }
-        write_raw_config(home, &cfg)?;
-        Ok(Some(serde_json::json!({ "deleted": true, "name": name })))
+            let before = list.len();
+            list.retain(|m| m.get("model_name").and_then(|v| v.as_str()) != Some(name));
+            if list.len() == before {
+                return Err(format!("model '{}' not found", name));
+            }
+            Ok(Some(serde_json::json!({ "deleted": true, "name": name })))
+        })
     }
 
     fn set_default(
@@ -431,61 +398,74 @@ impl ModelsHandler {
         name: &str,
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
-        // Raw RMW: a typed round-trip would drop the tier/size/real_name/
-        // context_window extras entries carry.
-        let mut cfg = read_raw_config(home)?;
-        let list = cfg
-            .get_mut("model_list")
-            .and_then(|v| v.as_array_mut())
-            .ok_or("config.json has no model_list")?;
-        let idx = list
-            .iter()
-            .position(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name))
-            .ok_or_else(|| format!("model '{}' not found", name))?;
-        // 集群专业职能框架 M4 守卫②：图像协议条目唯一消费点 = generate_image
-        // 工具，不能坐上 agent 默认对话模型槽（写盘前 loud 拒绝，不产生半状态）。
-        {
-            let proto = list[idx]
-                .get("protocol")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if nemesis_types::capability::is_image_protocol(proto) {
-                return Err(format!(
-                    "'{name}' 是 images-openai 图像协议条目，不能设为默认对话模型\
-                     （仅供 generate_image 工具消费）"
-                ));
+        // Raw RMW via the transaction entry: a typed round-trip would drop the
+        // tier/size/real_name/context_window extras entries carry.
+        // 锁在 update_raw_config 内；闭包返回落盘后的配置快照供运行时热切用。
+        let final_cfg = super::config::update_raw_config(home, |cfg| {
+            let list = cfg
+                .get_mut("model_list")
+                .and_then(|v| v.as_array_mut())
+                .ok_or("config.json has no model_list")?;
+            let idx = list
+                .iter()
+                .position(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name))
+                .ok_or_else(|| format!("model '{}' not found", name))?;
+            // 集群专业职能框架 M4 守卫②：图像协议条目唯一消费点 = generate_image
+            // 工具，不能坐上 agent 默认对话模型槽（写盘前 loud 拒绝，不产生半状态）。
+            {
+                let proto = list[idx]
+                    .get("protocol")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if nemesis_types::capability::is_image_protocol(proto) {
+                    return Err(format!(
+                        "'{name}' 是 images-openai 图像协议条目，不能设为默认对话模型\
+                         （仅供 generate_image 工具消费）"
+                    ));
+                }
             }
-        }
-        let entry = list.remove(idx);
-        list.insert(0, entry.clone());
-        // 同步 agents.defaults.llm：启动时 get_effective_llm 只读这个字段、不看
-        // model_list 顺序。不写这行，dashboard 切模型只在运行时生效（provider 已换），
-        // 重启后回退到旧模型；若旧模型随后被删，启动会因 "model not found" 失败。
-        {
-            let obj = cfg
-                .as_object_mut()
-                .ok_or("config.json root is not an object")?;
-            let agents = obj.entry("agents").or_insert_with(|| serde_json::json!({}));
-            let agents_obj = agents
-                .as_object_mut()
-                .ok_or("config.json agents is not an object")?;
-            let defaults = agents_obj
-                .entry("defaults")
-                .or_insert_with(|| serde_json::json!({}));
-            let defaults_obj = defaults
-                .as_object_mut()
-                .ok_or("config.json agents.defaults is not an object")?;
-            defaults_obj.insert(
-                "llm".to_string(),
-                serde_json::Value::String(name.to_string()),
-            );
-        }
-        write_raw_config(home, &cfg)?;
+            // 声明式模型角色（2026-10-13 N6）守卫②：utility/classifier 条目对话
+            // 形态但不是默认对话槽合法形态（杂务消费走 agents.small_model）。
+            {
+                let role = list[idx].get("role").and_then(|v| v.as_str()).unwrap_or("");
+                if !nemesis_types::capability::is_conversation_role(role) {
+                    return Err(format!(
+                        "'{name}' 声明的 role '{role}' 不是默认对话模型槽的合法形态\
+                         （杂务消费走 agents.small_model 指向该条目）"
+                    ));
+                }
+            }
+            let entry = list.remove(idx);
+            list.insert(0, entry.clone());
+            // 同步 agents.defaults.llm：启动时 get_effective_llm 只读这个字段、不看
+            // model_list 顺序。不写这行，dashboard 切模型只在运行时生效（provider 已换），
+            // 重启后回退到旧模型；若旧模型随后被删，启动会因 "model not found" 失败。
+            {
+                let obj = cfg
+                    .as_object_mut()
+                    .ok_or("config.json root is not an object")?;
+                let agents = obj.entry("agents").or_insert_with(|| serde_json::json!({}));
+                let agents_obj = agents
+                    .as_object_mut()
+                    .ok_or("config.json agents is not an object")?;
+                let defaults = agents_obj
+                    .entry("defaults")
+                    .or_insert_with(|| serde_json::json!({}));
+                let defaults_obj = defaults
+                    .as_object_mut()
+                    .ok_or("config.json agents.defaults is not an object")?;
+                defaults_obj.insert(
+                    "llm".to_string(),
+                    serde_json::Value::String(name.to_string()),
+                );
+            }
+            Ok(cfg.clone())
+        })?;
 
         // Runtime provider swap so the change takes effect immediately.
         // 唯一 chokepoint（2026-09-22 方案A）：展示三字段 + 统一默认槽 +
         // 主 loop + Forge 全在 apply_runtime_swap 内。
-        Self::apply_runtime_swap(&cfg, name, ctx)?;
+        Self::apply_runtime_swap(&final_cfg, name, ctx)?;
 
         // 模型热切联动（BUG 2026-09-21）：项目 loop 不经上面的 agent_loop
         // 槽——gateway 装配期一次性 spawn 后永不再读 config。通知 bridge 用
@@ -545,6 +525,7 @@ impl ModelsHandler {
             connect_mode: swap.connect_mode.clone(),
             protocol: swap.protocol.clone(),
             timeout_secs: swap.timeout_secs,
+            stream_mode: swap.stream_mode.clone(),
             account_id: String::new(),
             headers: std::collections::HashMap::new(),
         };
@@ -635,6 +616,7 @@ impl ModelsHandler {
                         connect_mode: fr.connect_mode,
                         protocol: fr.protocol.clone(),
                         timeout_secs: fr.timeout_secs,
+                        stream_mode: fr.stream_mode.clone(),
                         account_id: String::new(),
                         headers: std::collections::HashMap::new(),
                     },
@@ -668,6 +650,7 @@ impl ModelsHandler {
             protocol: resolution.protocol,
             timeout_secs: resolution.timeout_secs,
             proxy: resolution.proxy,
+            stream_mode: resolution.stream_mode,
         })
     }
 
@@ -772,47 +755,51 @@ impl ModelsHandler {
             }
         };
 
-        let mut cfg = read_raw_config(home)?;
-        // 默认判定（改 protocol/proxy 时的热切条件）：与 list/delete 同思路
-        // 的多形态比对（model_name / model 串 / 别名），权威是
-        // agents.defaults.llm（get_effective_llm），不含 list[0] 位置臂。
-        let default_llm = cfg
-            .pointer("/agents/defaults/llm")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let list = cfg
-            .get_mut("model_list")
-            .and_then(|v| v.as_array_mut())
-            .ok_or("config.json has no model_list")?;
-        let mut updated = false;
-        let mut entry_is_default = false;
-        // 热切用命中条目的 model_name（而非调用方 name）：name 可能是 model
-        // 串命中，无斜杠时 resolve_model_config 会走推断臂拿到不带本条目
-        // key 的合成 resolution，热切会造出坏 provider。
-        let mut entry_model_name = String::new();
-        for entry in list.iter_mut() {
-            let model_name = entry
-                .get("model_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let model = entry.get("model").and_then(|v| v.as_str()).unwrap_or("");
-            if model_name == name || model == name {
-                let alias = model.split('/').next_back().unwrap_or("");
-                entry_is_default = !default_llm.is_empty()
-                    && (model_name == default_llm
-                        || model == default_llm
-                        || (!alias.is_empty() && alias == default_llm));
-                entry_model_name = model_name.to_string();
-                entry[field.as_str()] = normalized.clone();
-                updated = true;
-                break;
-            }
-        }
-        if !updated {
-            return Err(format!("model '{name}' not found"));
-        }
-        write_raw_config(home, &cfg)?;
+        // 锁在 update_raw_config 内；闭包返回 (是否默认条目, 热切用 model_name,
+        // 落盘后的配置快照)。
+        let (entry_is_default, entry_model_name, final_cfg) =
+            super::config::update_raw_config(home, |cfg| {
+                // 默认判定（改 protocol/proxy 时的热切条件）：与 list/delete 同思路
+                // 的多形态比对（model_name / model 串 / 别名），权威是
+                // agents.defaults.llm（get_effective_llm），不含 list[0] 位置臂。
+                let default_llm = cfg
+                    .pointer("/agents/defaults/llm")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let list = cfg
+                    .get_mut("model_list")
+                    .and_then(|v| v.as_array_mut())
+                    .ok_or("config.json has no model_list")?;
+                let mut entry_is_default = false;
+                // 热切用命中条目的 model_name（而非调用方 name）：name 可能是 model
+                // 串命中，无斜杠时 resolve_model_config 会走推断臂拿到不带本条目
+                // key 的合成 resolution，热切会造出坏 provider。
+                let mut entry_model_name = String::new();
+                let mut updated = false;
+                for entry in list.iter_mut() {
+                    let model_name = entry
+                        .get("model_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let model = entry.get("model").and_then(|v| v.as_str()).unwrap_or("");
+                    if model_name == name || model == name {
+                        let alias = model.split('/').next_back().unwrap_or("");
+                        entry_is_default = !default_llm.is_empty()
+                            && (model_name == default_llm
+                                || model == default_llm
+                                || (!alias.is_empty() && alias == default_llm));
+                        entry_model_name = model_name.to_string();
+                        entry[field.as_str()] = normalized.clone();
+                        updated = true;
+                        break;
+                    }
+                }
+                if !updated {
+                    return Err(format!("model '{name}' not found"));
+                }
+                Ok((entry_is_default, entry_model_name, cfg.clone()))
+            })?;
 
         // 统一默认槽联动（2026-09-22 方案A）：protocol/proxy 在 provider
         // 构造时消费——改的是当前默认模型时补跑运行时热切（此前只有前端
@@ -820,7 +807,7 @@ impl ModelsHandler {
         // 集群/SSE 侧槽全是旧 provider）。tier/effort/size/real_name/
         // context_window 走 agent loop 的 config mtime 重读，不经此处。
         if matches!(field.as_str(), "protocol" | "proxy") && entry_is_default {
-            Self::apply_runtime_swap(&cfg, &entry_model_name, ctx)?;
+            Self::apply_runtime_swap(&final_cfg, &entry_model_name, ctx)?;
         }
         Ok(Some(serde_json::json!({
             "updated": true, "name": name, "field": field, "value": normalized,

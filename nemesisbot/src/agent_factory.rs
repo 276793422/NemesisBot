@@ -424,6 +424,7 @@ fn wrap_fallback_chain(
                 model: fr.model_name.clone(),
                 factory: nemesis_providers::factory::FactoryConfig {
                     proxy: fr.proxy.clone(),
+                    stream_mode: fr.stream_mode.clone(),
                     llm_ref: format!("{}/{}", fr.provider_name, fr.model_name),
                     api_key: fr.api_key.clone(),
                     api_base: fr.api_base.clone(),
@@ -463,8 +464,15 @@ pub fn build_agent_loop(
 
     // 2. Resolve LLM model → create fresh provider.
     let llm_ref = nemesis_config::get_effective_llm(Some(&cfg));
-    let (resolution, _resolve_degraded) = match nemesis_config::resolve_model_config(&cfg, &llm_ref)
-    {
+    // N6（2026-10-13）装配守卫④：默认对话模型槽只收 conversation 角色——
+    // utility/classifier 条目手改 config 才能到达该状态（CLI/WSAPI 写入侧
+    // 守卫①②已拦），loud 报错并走下方既有 NullProvider 降级臂（不硬崩，
+    // Dashboard 配好并设默认后热切恢复）。
+    let assembly = match nemesis_config::ensure_conversation_role(&cfg, &llm_ref) {
+        Err(e) => Err(e),
+        Ok(()) => nemesis_config::resolve_model_config(&cfg, &llm_ref).map_err(|e| e.to_string()),
+    };
+    let (resolution, _resolve_degraded) = match assembly {
         Ok(r) => (r, None),
         Err(e) => {
             warn!(
@@ -484,6 +492,7 @@ pub fn build_agent_loop(
 
     let factory_cfg = nemesis_providers::factory::FactoryConfig {
         proxy: resolution.proxy.clone(),
+        stream_mode: resolution.stream_mode.clone(),
         llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
         api_key: resolution.api_key.clone(),
         api_base: resolution.api_base.clone(),
@@ -645,6 +654,17 @@ pub fn build_agent_loop(
     // 发布 ModeChanged（前端徽标实时刷新）。与 hook 注入不同，这里 None 也
     // 照常注入（loop 侧对 None 静默跳过）——standalone 模式切换本身仍可用。
     agent_loop.set_agent_event_tx(shared.agent_event_tx.clone());
+    // N2（机会项）：present_plan 计划审批句柄——plan 模式下模型把写好的计划
+    // 交给用户裁决（question broker 同款阻塞等答）；批准=共享 mode Arc 翻转
+    // build + ModeChanged 广播，驳回/超时=批次尾消费 verdict 结构性终止本轮。
+    // broker 未装配（CLI headless 无 Dashboard）= 工具调用诚实报错，注册不受影响。
+    let plan_present_handle = Arc::new(nemesis_agent::loop_tools::PlanPresentHandle {
+        broker: shared.question_slot.clone(),
+        mode: agent_loop.mode_arc(),
+        agent_event_tx: shared.agent_event_tx.clone(),
+        verdicts: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
+    });
+    agent_loop.set_plan_present_handle(plan_present_handle.clone());
     // G4 (U4): enable tool-result spill under <workspace>/logs/spill — oversized
     // results (>64k chars) land there whole with a locator in-conversation.
     // 2026-08-31 迁回 workspace（U4 设计指定位置）：定位器必须在
@@ -685,6 +705,19 @@ pub fn build_agent_loop(
     // + voice_prompt 旗注入（Arc<AtomicBool> 镜像，apply_realtime_config 同步刷）。
     nemesis_web::voice_relay::init_realtime_hot(&shared.workspace_dir().join("config"));
     agent_loop.set_voice_prompt(nemesis_web::voice_relay::voice_prompt_flag());
+    // L8（三方学习总计划重评估）turn WAL：`agents.turn_wal`（默认 true）→
+    // 打开 `<workspace>/logs/turn_wal/wal.jsonl` 并注入 loop；dispatch 三态
+    // 写入 + run_bus 启动恢复（断头工具调用补 interrupted + 续轮）都吃这个
+    // Arc。打开失败（盘满/权限）诚实降级为无 WAL——warn 不阻断装配。
+    // 作用域：仅主 loop（项目 loop 的会话经 resolve_session_loop 路由，
+    // 续轮消息会错落主 loop 工作区，v1 明确不覆盖——见交付报告诚实边界）。
+    if cfg.agents.turn_wal {
+        let wal_dir = shared.workspace_dir().join("logs").join("turn_wal");
+        match nemesis_agent::turn_wal::TurnWal::open(&wal_dir) {
+            Ok(wal) => agent_loop.set_turn_wal(std::sync::Arc::new(wal)),
+            Err(e) => warn!("[AgentFactory] turn WAL 打开失败（降级为无 WAL，不落盘不续轮）: {e}"),
+        }
+    }
     // 件4（2026-09-24 三合一收口 §6）：纪律闭环——D5 总开关（默认 false =
     // 全链路惰性：钩子不注册、/discipline 提示未启用）。开 = 注入共享态 +
     // 注册闸/证伪钩子；闸在 user pre hooks **首位**（先于方言桥；metrics/
@@ -727,6 +760,7 @@ pub fn build_agent_loop(
             Ok(resolution) => {
                 let small_factory_cfg = nemesis_providers::factory::FactoryConfig {
                     proxy: resolution.proxy.clone(),
+                    stream_mode: resolution.stream_mode.clone(),
                     llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
                     api_key: resolution.api_key.clone(),
                     api_base: resolution.api_base.clone(),
@@ -857,12 +891,18 @@ pub fn build_agent_loop(
 
     // 7. Build tool config + register all tools + enable MCP.
     // G0: 第二返回值是 spawn 共享槽原件——Arc<AgentLoop> 定型后注入闭包。
-    let (tool_config, spawn_slot) = build_shared_tool_config(
+    let (mut tool_config, spawn_slot) = build_shared_tool_config(
         shared,
         &cfg,
         &model_name,
         Some(agent_loop.mcp_tool_snapshot()),
     );
+    // N2（机会项）：present_plan 工具供给（plan 模式白名单 + SharedToolConfig
+    // 注册同源；loop 侧 verdict 消费槽已装配）。
+    tool_config.plan_present = Some(plan_present_handle);
+    // N5（机会项）：present_files 工具供给——交付物流水桶与 loop 共享同一
+    // Arc（工具登记、assistant 回复落盘时 drain 进 chat_log deliverables）。
+    tool_config.turn_deliverables = Some(agent_loop.turn_deliverables_bucket());
 
     // Executor separation: if enabled, MOVE tools are wrapped in RemoteExecutorTool
     // and dispatched to a per-call child process. sandbox=false → stdio transport
@@ -1061,6 +1101,64 @@ pub fn build_agent_loop(
             &agent_loop,
         )));
     }
+    // T2 codemode（三方学习总计划 L1）：code_run 脚本工具。编译闸 `codemode`
+    // feature + 运行闸 `agents.codemode.enabled`（默认关）+ min_tier big 双闸
+    // （工具自带）。仅主 gateway loop 装配：项目 loop（L6++ 固定子集，与
+    // 插件工具同一挂账边界）与集群 agent 不含；脚本内 tool() 走完整 dispatch
+    // 瀑布（同 GatewayHostInvoker 桥形态），code_run 自身按 exec 档显式声明
+    // 操作类型（不声明会走未知名 fail-closed = ProcessExec，行为等价但每调
+    // 一次 warn 一次——显式声明去噪 + 分类明示）。
+    // （android 上 rquickjs 依赖缺席→ feature 静默无模块，注册点同 cfg 收口）。
+    #[cfg(all(feature = "codemode", not(target_os = "android")))]
+    if cfg.agents.codemode.enabled {
+        #[cfg(feature = "security")]
+        nemesis_security::types::declare_tool_operation(
+            nemesis_agent::code_run::CODE_RUN_TOOL_NAME,
+            nemesis_security::types::OperationType::ProcessExec,
+        );
+        let code_tool = Arc::new(nemesis_agent::code_run::CodeRunTool::new(
+            cfg.agents.codemode.timeout_secs,
+            cfg.agents.codemode.memory_limit_mb,
+        ));
+        agent_loop.register_plugin_tool(
+            nemesis_agent::code_run::CODE_RUN_TOOL_NAME.to_string(),
+            code_tool.clone(),
+        );
+        code_tool.set_loop(Arc::downgrade(&agent_loop));
+        info!(
+            timeout_secs = cfg.agents.codemode.timeout_secs,
+            memory_limit_mb = cfg.agents.codemode.memory_limit_mb,
+            "[AgentFactory] codemode code_run registered"
+        );
+    }
+    // L9 selfupdate 工具面（三方学习总计划）：selfupdate_check（只读）+
+    // selfupdate_apply（提案——人类闸=编排内 CRITICAL 审批卡，「总是允许」
+    // 恒忽略）。主 loop 独占（项目 loop 不该重启整个 gateway 杀掉兄弟项目；
+    // 集群 worker 不参与版本治理）；操作类型显式声明（check=NetworkRequest、
+    // apply=SystemInstall），不声明走未知名 fail-closed 行为等价但每次 warn。
+    #[cfg(feature = "selfupdate")]
+    {
+        #[cfg(feature = "security")]
+        {
+            nemesis_security::types::declare_tool_operation(
+                crate::selfupdate_tool::CHECK_TOOL_NAME,
+                nemesis_security::types::OperationType::NetworkRequest,
+            );
+            nemesis_security::types::declare_tool_operation(
+                crate::selfupdate_tool::APPLY_TOOL_NAME,
+                nemesis_security::types::OperationType::SystemInstall,
+            );
+        }
+        agent_loop.register_plugin_tool(
+            crate::selfupdate_tool::CHECK_TOOL_NAME.to_string(),
+            Arc::new(crate::selfupdate_tool::SelfupdateCheckTool),
+        );
+        agent_loop.register_plugin_tool(
+            crate::selfupdate_tool::APPLY_TOOL_NAME.to_string(),
+            Arc::new(crate::selfupdate_tool::SelfupdateApplyTool),
+        );
+        info!("[AgentFactory] selfupdate tools registered (check + apply, L9)");
+    }
     // I1 (devtool-upgrade 阶段 3)：workspace fs watcher——外部编辑下一轮
     // 以 <external_changes> 注记浮出（指令链文件走 digest 失效锚点）。句柄
     // 活在 AgentLoop 内、随其销毁；启动失败 warn 一次后禁用，不阻断装配。
@@ -1182,6 +1280,14 @@ fn build_shared_tool_config(
         approval_manager: Some(shared.approval_slot.clone()),
         // F7（2026-09-06）：question 工具 broker 槽（gateway 晚填 WebQuestionBroker）。
         question_broker: Some(shared.question_slot.clone()),
+        // N2（机会项）：present_plan 默认不注册——主 loop / 项目 loop 的
+        // builder 持 PlanPresentHandle 后覆写（plan 模式语义只在那两处可达；
+        // 集群 loop 恒 None）。
+        plan_present: None,
+        // N5（机会项）：present_files 默认不注册——主 loop / 项目 loop 的
+        // builder 注入交付物桶后覆写；集群 loop 恒 None（B 端 worker 的
+        // 文件路径在 A 端用户文件系统上不存在，交付卡必是幽灵条目）。
+        turn_deliverables: None,
         skills_manage_approval: cfg
             .skills
             .as_ref()
@@ -1693,8 +1799,13 @@ pub fn build_cluster_agent_loop(
 
     // 2. Resolve LLM model → create provider.
     let llm_ref = nemesis_config::get_effective_llm(Some(&cfg));
-    let (resolution, _resolve_degraded) = match nemesis_config::resolve_model_config(&cfg, &llm_ref)
-    {
+    // N6（2026-10-13）装配守卫④：同 build_agent_loop——utility/classifier
+    // 条目 loud 拒绝走 NullProvider 降级臂。
+    let assembly = match nemesis_config::ensure_conversation_role(&cfg, &llm_ref) {
+        Err(e) => Err(e),
+        Ok(()) => nemesis_config::resolve_model_config(&cfg, &llm_ref).map_err(|e| e.to_string()),
+    };
+    let (resolution, _resolve_degraded) = match assembly {
         Ok(r) => (r, None),
         Err(e) => {
             warn!(
@@ -1714,6 +1825,7 @@ pub fn build_cluster_agent_loop(
 
     let factory_cfg = nemesis_providers::factory::FactoryConfig {
         proxy: resolution.proxy.clone(),
+        stream_mode: resolution.stream_mode.clone(),
         llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
         api_key: resolution.api_key.clone(),
         api_base: resolution.api_base.clone(),
@@ -2324,8 +2436,13 @@ pub fn build_project_agent_loop(
     let cfg = nemesis_config::load_config(&config_path)
         .map_err(|e| anyhow::anyhow!("Failed to load config: {}", e))?;
     let llm_ref = nemesis_config::get_effective_llm(Some(&cfg));
-    let (resolution, _resolve_degraded) = match nemesis_config::resolve_model_config(&cfg, &llm_ref)
-    {
+    // N6（2026-10-13）装配守卫④：同 build_agent_loop——utility/classifier
+    // 条目 loud 拒绝走 NullProvider 降级臂。
+    let assembly = match nemesis_config::ensure_conversation_role(&cfg, &llm_ref) {
+        Err(e) => Err(e),
+        Ok(()) => nemesis_config::resolve_model_config(&cfg, &llm_ref).map_err(|e| e.to_string()),
+    };
+    let (resolution, _resolve_degraded) = match assembly {
         Ok(r) => (r, None),
         Err(e) => {
             warn!(
@@ -2345,6 +2462,7 @@ pub fn build_project_agent_loop(
 
     let factory_cfg = nemesis_providers::factory::FactoryConfig {
         proxy: resolution.proxy.clone(),
+        stream_mode: resolution.stream_mode.clone(),
         llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
         api_key: resolution.api_key.clone(),
         api_base: resolution.api_base.clone(),
@@ -2456,6 +2574,16 @@ pub fn build_project_agent_loop(
         ));
     }
     agent_loop.set_agent_event_tx(shared.agent_event_tx.clone());
+    // N2（机会项）：项目 loop 同样接 present_plan——项目会话的 plan 模式
+    // 经 chat.set_mode 按 loop 路由，审批卡（question broker 全局单例）与
+    // mode 翻转都锚本 loop 的共享句柄。
+    let project_plan_present = Arc::new(nemesis_agent::loop_tools::PlanPresentHandle {
+        broker: shared.question_slot.clone(),
+        mode: agent_loop.mode_arc(),
+        agent_event_tx: shared.agent_event_tx.clone(),
+        verdicts: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
+    });
+    agent_loop.set_plan_present_handle(project_plan_present.clone());
     // G4 (U4)：spill 锚主 workspace（定位器给用户看；写侧围栏只拦
     // write/edit/append，read 不受限，跨根定位器项目 loop 也读得到）。
     // 清扫任务不重复起——主 loop 侧唯一持有。
@@ -2465,6 +2593,21 @@ pub fn build_project_agent_loop(
     // H5：指令链（AGENTS.md/CLAUDE.md）根锚项目目录——项目可带自己的指令
     // 文件，与主 workspace 互不影响。
     agent_loop.set_workspace_root(project_dir.clone());
+    // N7（2026-10-13）：指令信任档解析——注册表条目受信（缺省）= verbatim
+    // （主循环行为）；未受信按 config projects.instruction_trust 全局策略
+    // 降级（annotate=横幅 / isolated=整段跳过）。运行中 `projects.trust`
+    // 经 ProjectsBridge 热更新本 loop，装配值只是起点。
+    let instruction_trust = if project.instructions_trusted {
+        nemesis_agent::workspace_instructions::InstructionTrust::Trusted
+    } else {
+        nemesis_agent::workspace_instructions::InstructionTrust::from_policy(
+            cfg.projects
+                .as_ref()
+                .map(|p| p.instruction_trust.as_str())
+                .unwrap_or_default(),
+        )
+    };
+    agent_loop.set_instruction_trust(instruction_trust);
     agent_loop.set_snapshot_role(&cfg.agents.defaults.snapshot_role);
     // 急停：绑同一个 Arc——estop 触发连项目 loop 一起冻结（G2 手验项）。
     agent_loop.set_estop(shared.estop.clone());
@@ -2518,6 +2661,7 @@ pub fn build_project_agent_loop(
             Ok(resolution) => {
                 let small_factory_cfg = nemesis_providers::factory::FactoryConfig {
                     proxy: resolution.proxy.clone(),
+                    stream_mode: resolution.stream_mode.clone(),
                     llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
                     api_key: resolution.api_key.clone(),
                     api_base: resolution.api_base.clone(),
@@ -2581,6 +2725,11 @@ pub fn build_project_agent_loop(
         &model_name,
         Some(agent_loop.mcp_tool_snapshot()),
     );
+    // N2（机会项）：present_plan 工具供给（与 loop verdict 消费槽同一句柄）。
+    tool_config.plan_present = Some(project_plan_present);
+    // N5（机会项）：项目 loop 同样接 present_files——交付物桶锚本 loop
+    // （chat_log deliverables 落主 workspace logs，项目会话一样有交付卡）。
+    tool_config.turn_deliverables = Some(agent_loop.turn_deliverables_bucket());
     tool_config.workspace = Some(project_dir.to_string_lossy().to_string());
     // A5 纵深防御：围栏锚项目目录且强制 restrict=true（项目模式不跟随全局
     // restrict_to_workspace 开关——项目会话写入绝不越出项目目录）。

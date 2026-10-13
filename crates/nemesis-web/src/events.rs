@@ -85,6 +85,22 @@ impl EventHub {
         let _ = self.sender.send((*event).clone());
     }
 
+    /// L10（2026-10-13 三方学习 T3）：易逝事件——只投递在线订阅者（SSE
+    /// live / WS push），**不盖章 seq、不进补拉环形缓冲**。约定 `seq: 0`
+    /// 为 ephemeral 标记：SSE 端点据此不发 `id:`、不推进重放游标、重放
+    /// 逻辑天然跳过；断线窗口内的事件不可补 = 设计语义（provider 流式
+    /// 增量是易逝观测——重放半截流无意义，且高频 delta 会冲刷 1000 帧
+    /// 环、挤掉真正需要补拉的事件）。
+    pub fn publish_ephemeral(&self, event_type: &str, data: serde_json::Value) {
+        let event = Event {
+            seq: 0,
+            event_type: event_type.to_string(),
+            data,
+        };
+        // broadcast::send ignores errors when no receivers
+        let _ = self.sender.send(event);
+    }
+
     /// Latest published seq（0 = 尚未发布过任何事件）。
     pub fn latest_seq(&self) -> u64 {
         self.next_seq.load(Ordering::SeqCst)

@@ -53,6 +53,11 @@ pub struct ProviderResolution {
     /// 超时的根因）。
     #[serde(default)]
     pub timeout_secs: u64,
+    /// per-model 流式开关（2026-10-13 stream 键）：模型条目 extra 的 `stream`。
+    /// 值集归一："yes" / "no" / ""（auto）。factory 透传到各 HTTP lane 构造期
+    /// 消费（codex auto=流式；anthropic/openai auto=非流式；yes/no 强制）。
+    #[serde(default)]
+    pub stream_mode: String,
 }
 
 impl Default for ProviderResolution {
@@ -62,6 +67,7 @@ impl Default for ProviderResolution {
             model_name: String::new(),
             reasoning_effort: String::new(),
             timeout_secs: 0,
+            stream_mode: String::new(),
             api_key: String::new(),
             api_base: String::new(),
             proxy: String::new(),
@@ -97,18 +103,32 @@ pub fn resolve_model_config(cfg: &Config, model_ref: &str) -> Result<ProviderRes
         }
     }
 
-    // Then, try to find by model field (vendor/model format)
-    if model_ref.contains('/') {
-        for mc in &cfg.model_list {
-            if mc.model == model_ref {
-                return resolve_from_model_config(mc);
-            }
+    // Then, try to find by the entry's `model` field (exact match, no '/'
+    // gating). 2026-10-13 根修：旧实现只在该 ref 含 '/' 时才比对 model 字段，
+    // 无前缀条目（model: "gpt-5.6-sol"）+ 同名 ref 会**错过**直接落 inference
+    // fallback（gpt→openai→api.openai.com 默认 base + 空 key → SYN 黑洞 21s
+    // 假超时，gpt-5.6-sol 风暴排查破案的第二层）。精确命中条目就该命中——
+    // 与 find_model_by_name / get_model_by_name 的无门控语义对齐（三函数
+    // 同族，此前一个有门控两个没有，本身就是口径分裂）。
+    for mc in &cfg.model_list {
+        if mc.model == model_ref {
+            return resolve_from_model_config(mc);
         }
     }
 
-    // Not found, try to infer provider from model name
+    // Not found, try to infer provider from model name. 这是**推断**不是
+    // 解析：默认 base + 无 key 的组合几乎必然连不上真实服务（21s 假超时 /
+    // 401），loud warn 把「条目名字形态不匹配」这个真根因顶到日志面上，
+    // 不再静默。修复方向：条目 model_name/model/model_ref 三者形态对齐。
     let inferred = infer_provider_from_model(model_ref);
     if !inferred.is_empty() {
+        tracing::warn!(
+            model_ref = %model_ref,
+            inferred_provider = %inferred,
+            "model not found in model_list by model_name or model field — \
+             falling back to inferred provider with DEFAULT api_base and NO api_key \
+             (likely misconfigured entry name; check model_name/model/model_ref forms)"
+        );
         return Ok(ProviderResolution {
             provider_name: inferred.clone(),
             model_name: model_ref.to_string(),
@@ -194,6 +214,34 @@ fn extract_timeout_secs(extra: &std::collections::BTreeMap<String, serde_json::V
     0
 }
 
+/// per-model 流式开关提取（2026-10-13 stream 键）：读模型条目 extra 的
+/// `stream`。值集归一到 "yes" / "no" / ""（auto）：
+/// - 布尔 `true` / 字符串 "yes"/"true"（大小写不敏感）→ "yes"；
+/// - 布尔 `false` / 字符串 "no"/"false" → "no"；
+/// - 缺省 / 其他值 → ""（auto，lane 默认形态）。未知值诚实忽略落 auto
+///   （与 timeout 的「非 u64 忽略」同策略——配置层不做静默纠偏）。
+fn extract_stream_mode(extra: &std::collections::BTreeMap<String, serde_json::Value>) -> String {
+    extra
+        .get("stream")
+        .and_then(normalize_stream_value)
+        .unwrap_or_default()
+}
+
+/// `stream` 值归一单一真相源：`Some("yes"/"no")` = 合法值；`None` = 非法
+/// （调用方决定处置——配置解析层诚实忽略落 auto，CLI 显式 flag loud 报错）。
+pub fn normalize_stream_value(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::Bool(true) => Some("yes".to_string()),
+        serde_json::Value::Bool(false) => Some("no".to_string()),
+        serde_json::Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
+            "yes" | "true" => Some("yes".to_string()),
+            "no" | "false" => Some("no".to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn resolve_from_model_config(mc: &ModelConfig) -> Result<ProviderResolution> {
     let (provider_name, model_name) = if mc.model.contains('/') {
         let mut parts = mc.model.splitn(2, '/');
@@ -225,6 +273,7 @@ fn resolve_from_model_config(mc: &ModelConfig) -> Result<ProviderResolution> {
         enabled: true,
         reasoning_effort: mc.reasoning_effort.clone(),
         timeout_secs: extract_timeout_secs(&mc.extra),
+        stream_mode: extract_stream_mode(&mc.extra),
     })
 }
 
@@ -249,6 +298,25 @@ pub fn find_model_by_name<'a>(cfg: &'a Config, model_ref: &str) -> Result<&'a Mo
         "model {:?} not found in model_list",
         model_ref
     )))
+}
+
+/// 声明式模型角色守卫④（2026-10-13 N6）：装配点专用——校验「即将坐上
+/// 默认对话模型槽的条目」role 是对话形态。utility/classifier 条目对话形态
+/// 但不该坐主槽（杂务消费走 agents.small_model），手改 config 是到达该
+/// 状态的唯一路径（CLI/WSAPI 写入侧守卫①②已拦），所以这里 loud 报错并
+/// 交由调用方走既有的 warn+NullProvider 降级臂（不硬崩——双击直启优先，
+/// Dashboard 配好后热切恢复）。**不要**把它塞进 `resolve_model_config`：
+/// 那条路径合法解析 utility 条目（small_model lane 消费）。
+pub fn ensure_conversation_role(cfg: &Config, model_ref: &str) -> std::result::Result<(), String> {
+    match find_model_by_name(cfg, model_ref) {
+        Ok(mc) if nemesis_types::capability::is_conversation_role(&mc.role) => Ok(()),
+        Ok(mc) => Err(format!(
+            "model '{}' declares role '{}' — not allowed in the default conversation \
+             slot (utility/classifier entries are consumed via agents.small_model)",
+            model_ref, mc.role
+        )),
+        Err(_) => Ok(()), // 未命中条目：resolution 失败由调用方既有降级处理，不在此重复报错
+    }
 }
 
 /// Get the effective LLM reference for the default agent.

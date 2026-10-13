@@ -677,10 +677,16 @@ fn test_full_config_roundtrip() {
             hidden_tools: Vec::new(),
             roles: crate::RolesConfig::default(),
             small_model: None,
+            guardian_model: None,
             doom_loop_approval: false,
             image_downscale: true,
             // WS9/P22 写租约开关（serde 缺省 true）——全字段初始化器补齐。
             lease_enabled: true,
+            // T2/T3（2026-10-13 三方学习批次：codemode / turn WAL / provider
+            // 流事件开关）——全字段初始化器补齐（值对齐 lib.rs Default）。
+            codemode: crate::CodeModeConfig::default(),
+            turn_wal: true,
+            provider_stream_events: true,
             defaults: AgentDefaults {
                 max_tokens: 256000,
                 temperature: 0.5,
@@ -915,6 +921,38 @@ fn test_small_model_config() {
     // null（Dashboard「清空」写 null）→ None，恢复未配置语义。
     let unset: AgentsConfig = serde_json::from_str(r#"{"small_model": null}"#).unwrap();
     assert!(unset.small_model.is_none(), "null = 未配置");
+}
+
+/// B7（2026-10-13）：guardian judge 专用模型通道 — `agents.guardian_model`
+/// parses when present, defaults to None on old config.json, round-trips
+/// losslessly（typed 保存路径不得静默丢键）。阶梯消费点唯一：gateway
+/// guardian judge 装配（commands/gateway/runtime.rs
+/// resolve_guardian_judge_lane）。
+#[test]
+fn test_guardian_model_config() {
+    // Old JSON (pre-B7) — no agents.guardian_model key.
+    let old: AgentsConfig = serde_json::from_str(r#"{"list": []}"#).unwrap();
+    assert!(old.guardian_model.is_none(), "缺省键 = 未配置专用通道");
+
+    // Explicit model reference.
+    let cfg: AgentsConfig = serde_json::from_str(r#"{"guardian_model": "big-audit"}"#).unwrap();
+    assert_eq!(cfg.guardian_model.as_deref(), Some("big-audit"));
+
+    // Empty string stays present（runtime 侧 trim+empty filter 处理）。
+    let blank: AgentsConfig = serde_json::from_str(r#"{"guardian_model": "  "}"#).unwrap();
+    assert_eq!(blank.guardian_model.as_deref(), Some("  "));
+
+    // Round-trip keeps the value.
+    let rt: AgentsConfig = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+    assert_eq!(
+        rt.guardian_model.as_deref(),
+        Some("big-audit"),
+        "round-trip 不得丢 guardian_model"
+    );
+
+    // null（Dashboard「清空」写 null）→ None，恢复未配置语义。
+    let unset: AgentsConfig = serde_json::from_str(r#"{"guardian_model": null}"#).unwrap();
+    assert!(unset.guardian_model.is_none(), "null = 未配置");
 }
 
 /// prompt-pack pro（2026-09-27）：`agents.prompt_system` — 缺省键 = "pro"
@@ -2312,6 +2350,7 @@ fn test_model_config_all_fields() {
         reasoning_effort: "high".to_string(),
         connect_mode: "streaming".to_string(),
         protocol: "anthropic".to_string(),
+        role: "conversation".to_string(),
         workspace: "/custom/ws".to_string(),
     };
     assert_eq!(model.api_base, "https://api.test.com/v1");
@@ -3476,6 +3515,24 @@ fn test_projects_config_serde_roundtrip() {
     // 段内缺字段 = Default（max=4）
     let cfg: Config = serde_json::from_str(r#"{"projects":{}}"#).unwrap();
     assert_eq!(cfg.projects.as_ref().unwrap().max, 4);
+}
+
+// N7（2026-10-13）：projects.instruction_trust——缺省空串（= annotate 策略）
+// 且空串不序列化（typed 保存字节零变化，role 先例）；显式值 round-trip。
+#[test]
+fn test_projects_instruction_trust_default_skip_empty_and_roundtrip() {
+    // 缺键 → 空串。
+    let cfg: Config = serde_json::from_str(r#"{"projects":{"max":4}}"#).unwrap();
+    assert_eq!(cfg.projects.as_ref().unwrap().instruction_trust, "");
+    // 空串不序列化（缺省态字节零变化）。
+    let json = serde_json::to_value(&cfg).unwrap();
+    assert!(json["projects"].get("instruction_trust").is_none());
+    // 显式值 round-trip 保留。
+    let cfg: Config =
+        serde_json::from_str(r#"{"projects":{"max":4,"instruction_trust":"isolated"}}"#).unwrap();
+    assert_eq!(cfg.projects.as_ref().unwrap().instruction_trust, "isolated");
+    let json = serde_json::to_value(&cfg).unwrap();
+    assert_eq!(json["projects"]["instruction_trust"], "isolated");
 }
 
 // 看板项目档案 P5/F1：board.conflict_auto_resolve 默认 false（human 档）

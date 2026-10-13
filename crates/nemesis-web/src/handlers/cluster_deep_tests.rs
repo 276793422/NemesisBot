@@ -1376,6 +1376,7 @@ use nemesis_providers::http_provider::{HttpProvider, HttpProviderConfig};
 
 fn dummy_provider() -> Arc<HttpProvider> {
     Arc::new(HttpProvider::new(HttpProviderConfig {
+        stream_mode: String::new(),
         name: "dummy".into(),
         base_url: "http://127.0.0.1:1".into(),
         api_key: "k".into(),
@@ -1608,6 +1609,7 @@ async fn persona_generate_success_via_mock_llm() {
     .await;
 
     let provider = Arc::new(HttpProvider::new(HttpProviderConfig {
+        stream_mode: String::new(),
         name: "mock".into(),
         base_url: server.uri(),
         api_key: "test-key".into(),

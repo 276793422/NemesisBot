@@ -1343,3 +1343,89 @@ async fn test_install_null_engine_raw_fails_without_network() {
     let entry = engines.iter().find(|e| e["name"] == "ghost-eng").unwrap();
     assert!(entry.get("state").is_none(), "{:?}", entry);
 }
+
+// ---------------------------------------------------------------------------
+// 事务入口并发回归钉（2026-10-13 横扫七期）：config.scanner.json 此前九个
+// 写臂全部裸 RMW（与 mcp.rs 同款漏网——helper 名带 scanner 前缀，模式匹配
+// 落空），现收敛到 update_scanner_config（锁在入口内）。两线程并发改
+// **不同字段**（engine patch vs enable），两个变更都必须存活。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn scanner_update_entries_serialized_both_mutations_survive() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_dir = dir.path().join("config");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    std::fs::write(
+        cfg_dir.join("config.scanner.json"),
+        serde_json::json!({
+            "enabled": [],
+            "engines": { "clamav": { "address": "127.0.0.1:3310" } }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let dir = std::sync::Arc::new(dir);
+    let dir_a = dir.clone();
+    let dir_b = dir.clone();
+    std::thread::scope(|s| {
+        let ra = s.spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                let ctx = make_ctx(&dir_a);
+                scanner::ScannerHandler::new()
+                    .handle_cmd(
+                        "engine.update_config",
+                        Some(serde_json::json!({
+                            "name": "clamav",
+                            "config": { "url": "https://example.com/clamav.zip" }
+                        })),
+                        &ctx,
+                    )
+                    .await
+                    .unwrap();
+            });
+        });
+        let rb = s.spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                let ctx = make_ctx(&dir_b);
+                scanner::ScannerHandler::new()
+                    .handle_cmd(
+                        "enable",
+                        Some(serde_json::json!({ "name": "clamav" })),
+                        &ctx,
+                    )
+                    .await
+                    .unwrap();
+            });
+        });
+        ra.join().unwrap();
+        rb.join().unwrap();
+    });
+
+    let raw: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("config/config.scanner.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        raw["enabled"].as_array().unwrap().len(),
+        1,
+        "enable 变更存活"
+    );
+    assert_eq!(
+        raw["engines"]["clamav"]["url"], "https://example.com/clamav.zip",
+        "patch 变更存活"
+    );
+    assert_eq!(
+        raw["engines"]["clamav"]["address"], "127.0.0.1:3310",
+        "种子字段不被冲掉"
+    );
+}

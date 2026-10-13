@@ -8,7 +8,11 @@ edition.workspace = true
 # 这些 crate 被 nemesis-agent 硬引用，所以 agent 自身也要开 feature 体系并在源码里 cfg-gate。
 # 见 docs/PLAN/2026-07-01_feature-trimming-and-build-configurator.md Phase 5。
 [features]
-default = ["forge", "memory", "workflow", "security"]
+default = ["codemode", "forge", "memory", "workflow", "security"]
+# T2（L1 codemode）：code_run 脚本工具（rquickjs QuickJS 引擎随它进出；
+# 关 = 无 code_run 工具，IoT/极小镜像可裁）。运行开关是 config
+# agents.codemode.enabled（默认关）——编译期与运行期双闸同 hidden_tools 模型。
+codemode = ["dep:rquickjs"]
 forge = ["dep:nemesis-forge"]
 memory = ["dep:nemesis-memory"]
 workflow = ["dep:nemesis-workflow"]
@@ -74,6 +78,15 @@ html2text = "0.17"
 # U20 (sixth batch): FTS5 index for session full-text search. Same version +
 # features as nemesis-data's rusqlite — Cargo compiles the bundled SQLite once.
 rusqlite = { version = "0.34", features = ["bundled"] }
+# T2（L1 codemode）：code_run 脚本工具的 JS 引擎（optional，随 codemode
+# feature）。**声明在下方 target 门控表**——rquickjs-sys 0.14 预生成
+# bindings 不含任何 *-linux-android 三元组（bindgen 运行时生成需宿主接管
+# NDK sysroot，不可取），android 上 codemode feature 静默无依赖，code_run
+# 模块/注册点同 cfg 诚实缺席，其余平台默认 feature 不变
+#（2026-10-13 android 交叉检查抓出）。
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+rquickjs = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

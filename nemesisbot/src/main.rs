@@ -125,6 +125,10 @@ mod question_broker;
 /// K1（devtool-upgrade 阶段 4）：SecurityPlugin 构造单一真相源（gateway /
 /// headless `run` 共用，安全 9 层在无端口形态不降级）。
 mod security_setup;
+/// L9 selfupdate 工具面：selfupdate_check（只读）/ selfupdate_apply（提案，
+/// 人类闸=编排内 CRITICAL 审批卡）。主 loop 专属注册，编译闸=selfupdate。
+#[cfg(feature = "selfupdate")]
+mod selfupdate_tool;
 /// P0 vault（B1，2026-09-22 计划）：进程级 `vault:<alias>` 解析器注入。
 /// 门控随 nemesis-security（security feature off 时 `vault:` 引用诚实报
 /// "解析器未安装"，明文/env/yaml 链路不受影响）。
@@ -432,6 +436,13 @@ enum Commands {
     },
     /// Graceful shutdown
     Shutdown,
+    /// Version self-update channel (check latest Release / apply via running
+    /// gateway / show journal + fuse state)
+    #[cfg(feature = "selfupdate")]
+    Selfupdate {
+        #[command(subcommand)]
+        action: commands::selfupdate::SelfupdateCommand,
+    },
     /// Migrate from OpenClaw
     #[cfg(feature = "migrate")]
     Migrate {
@@ -919,6 +930,11 @@ async fn run_command(cli: Cli) -> Result<()> {
         Commands::Shutdown => {
             common::ensure_default_logger();
             commands::shutdown::run(cli.local)?;
+        }
+        #[cfg(feature = "selfupdate")]
+        Commands::Selfupdate { action } => {
+            common::ensure_default_logger();
+            commands::selfupdate::run(action, cli.local).await?;
         }
         #[cfg(feature = "migrate")]
         Commands::Migrate { options } => {

@@ -237,3 +237,43 @@ fn test_claude_only_and_neither_dirs() {
 fn test_render_empty_chain_is_empty_string() {
     assert_eq!(render_instructions_section(&[]), "");
 }
+
+// ---------------------------------------------------------------------------
+// N7（2026-10-13）：信任档解析 + 横幅。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_from_policy_table() {
+    // 缺省/annotate → Annotate。
+    assert_eq!(
+        InstructionTrust::from_policy(""),
+        InstructionTrust::Annotate
+    );
+    assert_eq!(
+        InstructionTrust::from_policy("annotate"),
+        InstructionTrust::Annotate
+    );
+    // 大小写/空白宽容。
+    assert_eq!(
+        InstructionTrust::from_policy(" Isolated "),
+        InstructionTrust::Isolated
+    );
+    assert_eq!(
+        InstructionTrust::from_policy("ANNOTATE"),
+        InstructionTrust::Annotate
+    );
+    // 未知值 → lenient Annotate（读路径不炸）。
+    assert_eq!(
+        InstructionTrust::from_policy("paranoid"),
+        InstructionTrust::Annotate
+    );
+}
+
+#[test]
+fn test_untrusted_banner_mentions_reference_data() {
+    // 横幅自描述：来源未受信 + 参考数据定位 + 冲突裁决（措辞面契约，防
+    // 退化成无信息量的「注意」）。
+    assert!(UNTRUSTED_INSTRUCTIONS_BANNER.contains("Untrusted Workspace Instructions"));
+    assert!(UNTRUSTED_INSTRUCTIONS_BANNER.contains("参考数据"));
+    assert!(UNTRUSTED_INSTRUCTIONS_BANNER.contains("以用户与安全原则为准"));
+}

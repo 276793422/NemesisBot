@@ -187,7 +187,7 @@ impl WsApi {
 // 环境装配
 // ---------------------------------------------------------------------------
 
-/// 基准专用 config.json：4 个确定性模型 + restrict_to_workspace（安全场景
+/// 基准专用 config.json：6 个确定性模型 + restrict_to_workspace（安全场景
 /// 依赖边界硬围栏）。onboard 先行提取 workspace 模板，再整体覆写 config。
 fn write_bench_config(ws: &TestWorkspace, prompt_system: &str) -> Result<()> {
     let ai = ai_server_port();
@@ -211,9 +211,12 @@ fn write_bench_config(ws: &TestWorkspace, prompt_system: &str) -> Result<()> {
         "model_list": [
             model("testai-1.1"),
             model("testai-9.3"),
+            model("testai-sum-1.0"),
             model("testai-2.1"),
             model("testai-5.0"),
             model("testai-vision-1.0"),
+            model("testai-codemode-1.0"),
+            model("testai-docslift-1.0"),
         ],
         "channels": {
             "web": {"enabled": true, "host": "127.0.0.1", "port": 37300, "auth_token": AUTH_TOKEN},
@@ -224,6 +227,9 @@ fn write_bench_config(ws: &TestWorkspace, prompt_system: &str) -> Result<()> {
         "gateway": {"host": "127.0.0.1", "port": HEALTH_PORT as i64},
         "agents": {
             "prompt_system": prompt_system,
+            // T2 codemode：bench 网关开 code_run（脚本编排场景的消费前提；
+            // 产品默认仍是关——bench 配置只服务本套件）。
+            "codemode": {"enabled": true, "timeout_secs": 30, "memory_limit_mb": 64},
             "defaults": {
                 "workspace": "",
                 "restrict_to_workspace": true,
@@ -272,6 +278,7 @@ async fn run_scenario(
     match name {
         "basic_chat" => scenarios::run_basic_chat(ctx, runs).await,
         "context_integrity" => scenarios::run_context_integrity(ctx, runs).await,
+        "identifier_survival" => scenarios::run_identifier_survival(ctx, runs).await,
         "tool_parallel_batch" => scenarios::run_tool_parallel_batch(ctx, runs).await,
         "security_boundary_block" => {
             scenarios::run_security_boundary_block(ctx, runs, ws, security_target).await
@@ -281,6 +288,8 @@ async fn run_scenario(
             scenarios::run_vision_roundtrip(ctx, runs, &ws.workspace().join("bench_image.png"))
                 .await
         }
+        "codemode_orchestration" => scenarios::run_codemode_orchestration(ctx, runs, ws).await,
+        "docs_lift" => scenarios::run_docs_lift(ctx, runs, ws).await,
         other => {
             println!("  未知场景 {other}，跳过");
             Vec::new()

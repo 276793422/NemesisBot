@@ -161,6 +161,9 @@ impl AgentHandler {
                     "max_retries": st.max_retries,
                     "wait_secs": st.wait_secs,
                     "model": st.model,
+                    // 展示标签（2026-10-13）：「上游限流」/「上游过载」按真类；
+                    // 旧 loop 无此字段时前端回落「上游限流」。
+                    "label": st.label,
                 }))),
                 None => Ok(Some(serde_json::json!({
                     "available": true,
