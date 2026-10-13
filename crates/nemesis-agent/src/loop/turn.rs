@@ -1,4 +1,4 @@
-//! 单轮驱动：CHANGES_SUMMARY_CAP/render_turn_changes_summary、ProcessOptions、DetachedOpts、spawn_session_title_job、get_or_create_instance、run(_with_trace/_detached/_detached_events)、resume_execution(_with_token)、drain_turn_file_changes。
+//! 单轮驱动：CHANGES_SUMMARY_CAP/render_turn_changes_summary、ProcessOptions、DetachedOpts、spawn_session_title_job、get_or_create_instance、run(_with_trace/_detached/_detached_events)、resume_execution(_with_token)、drain_turn_file_changes、drain_turn_deliverables。
 //!
 //! P1 自 `loop.rs` 物理搬迁（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）；语义零变化。
 use super::prelude::*;
@@ -152,6 +152,29 @@ impl AgentLoop {
         crate::chat_log::dedup_file_changes(drained)
     }
 
+    /// N5：drain 本 session 的交付物流水（取走即清 + 按 path 去重，title/note
+    /// 取最后登记——投影规则见 `chat_log::dedup_presented_files`）。
+    /// assistant 最终回复落盘前调用（与 `drain_turn_file_changes` 同点）。
+    pub(crate) fn drain_turn_deliverables(
+        &self,
+        session_key: &str,
+    ) -> Vec<crate::chat_log::PresentedFile> {
+        let drained = self
+            .turn_deliverables
+            .lock()
+            .remove(session_key)
+            .unwrap_or_default();
+        crate::chat_log::dedup_presented_files(drained)
+    }
+
+    /// N5：交付物流水桶共享访问器——agent_factory 把同一 Arc 注入
+    /// SharedToolConfig（present_files 工具登记、loop drain 双侧共用）。
+    pub fn turn_deliverables_bucket(
+        &self,
+    ) -> Arc<parking_lot::Mutex<HashMap<String, Vec<crate::chat_log::PresentedFile>>>> {
+        Arc::clone(&self.turn_deliverables)
+    }
+
     /// Get or create an AgentInstance for the given session key.
     pub(crate) fn get_or_create_instance(&self, session_key: &str) -> AgentInstance {
         let config = AgentConfig {
@@ -238,8 +261,10 @@ impl AgentLoop {
         let start_time = std::time::Instant::now();
 
         // D3：本 turn 文件变更缓冲从空开始（正常路径上轮 drain 已清；这里
-        // 兜底上轮异常短路未走到 assistant 落盘的残留）。
+        // 兜底上轮异常短路未走到 assistant 落盘的残留）。N5 交付物流水同点
+        // 同规则兜底。
         self.turn_file_changes.lock().remove(session_key);
+        self.turn_deliverables.lock().remove(session_key);
 
         // B1（2026-09-22 聊天切会话竞态）：user 行落盘职责已上移到调用方——
         // process_admitted 在预处理链之前落原始文本（「接纳即落盘」，消除
@@ -374,6 +399,10 @@ impl AgentLoop {
         // 变更映射；M3 会话级 diff 查看器的数据源）。drain 即清（下 turn
         // 从空开始）；去重规则见 `chat_log::dedup_file_changes`。
         let turn_changes = self.drain_turn_file_changes(session_key);
+        // N5：本 turn 交付物随 assistant 行落盘（前端交付物卡片的数据源；
+        // 与 file_changes 并列不重叠——「该看什么」产物指引 vs「改了什么」
+        // 变更映射）。drain 即清，与 file_changes 同点同节奏。
+        let turn_deliverables = self.drain_turn_deliverables(session_key);
         // K4 (c) (devtool-upgrade 阶段 7): B 端 peer_chat 任务完成回报带
         // 变更摘要——`cluster_rpc:` 会话（B 端执行节点）本轮有声明式文件
         // 变更时，把紧凑列表追加进最终回复。落盘与出站共用同一字符串：
@@ -395,9 +424,16 @@ impl AgentLoop {
                 cron_job_name,
                 images: &[],
                 file_changes: &turn_changes,
+                deliverables: &turn_deliverables,
                 checkpoint_turn: None, // E3：标记只在 user 行（turn 开始锚）
             },
         );
+
+        // N5：交付物实时面——落盘**之后**发布（与 emit_session_created 同一
+        // 纪律：persisted 先于 pushed）。web pump → SSE `deliverables` + WS
+        // push，前端缓冲挂到即将落地的 assistant 回复卡；历史映射（chat_log
+        // 权威源）覆盖重载/重同步窗口。空清单 emit 内部短路。
+        self.emit_deliverables_registered(session_key, chat_id, &turn_deliverables);
 
         // E7：会话标题自动生成（assistant 回复落盘后；无资格/未配置小模型
         // 内部诚实跳过。通常首轮触发——meta 已有标题后不再重复）。

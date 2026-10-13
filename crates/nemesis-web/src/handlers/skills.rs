@@ -47,6 +47,8 @@ impl ModuleHandler for SkillsHandler {
             "shop_code",
             "browse",
             "learn",
+            "learned_list",
+            "learned_remove",
         ]
     }
 
@@ -135,6 +137,12 @@ impl ModuleHandler for SkillsHandler {
             "learn" => {
                 let data = data.ok_or("missing data")?;
                 learn(&data, ctx).await
+            }
+            "learned_list" => self.learned_list(workspace),
+            "learned_remove" => {
+                let data = data.ok_or("missing data")?;
+                let name = crate::handlers::get_str(&data, "name")?;
+                self.learned_remove(workspace, &name)
             }
             _ => Err(format!("unknown command: skills.{}", cmd)),
         }
@@ -323,6 +331,57 @@ impl SkillsHandler {
         Ok(Some(
             serde_json::json!({ "uninstalled": true, "name": name }),
         ))
+    }
+
+    /// N3（2026-10-13 机会项）：学得技能账目列表（`.learned.json`）。
+    /// 附带 on_disk 现场核对（账有盘无 = 幽灵条目，如实标记）。
+    fn learned_list(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+        let manifest =
+            nemesis_skills::learned::LearnedManifest::load(std::path::Path::new(workspace));
+        let entries: Vec<serde_json::Value> = manifest
+            .entries
+            .values()
+            .map(|e| {
+                let dir = PathBuf::from(workspace).join("skills").join(&e.name);
+                serde_json::json!({
+                    "name": e.name,
+                    "created_at_ms": e.created_at_ms,
+                    "description": e.description,
+                    "on_disk": dir.is_dir(),
+                })
+            })
+            .collect();
+        Ok(Some(serde_json::json!({ "entries": entries })))
+    }
+
+    /// N3：移除一条学得技能（目录 + 账目一起清）。护栏 = **manifest 成员
+    /// 资格**——只删账上记着的；registry 装的技能走 `skills.uninstall`
+    /// （skills.lock.json 记账面），两条管理面互不越界。名字先过
+    /// `validate_skill_identifier`（与 skill_manage 同一守卫，防路径穿越）。
+    fn learned_remove(
+        &self,
+        workspace: &str,
+        name: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let ws_path = std::path::Path::new(workspace);
+        nemesis_skills::types::validate_skill_identifier(name)
+            .map_err(|e| format!("invalid skill name '{}': {}", name, e))?;
+        if nemesis_skills::learned::LearnedManifest::load(ws_path)
+            .get(name)
+            .is_none()
+        {
+            return Err(format!(
+                "skill '{}' is not in the learned manifest (registry-installed skills go through skills.uninstall)",
+                name
+            ));
+        }
+        let skill_dir = ws_path.join("skills").join(name);
+        if skill_dir.exists() {
+            std::fs::remove_dir_all(&skill_dir)
+                .map_err(|e| format!("failed to remove skill dir: {}", e))?;
+        }
+        nemesis_skills::learned::remove_learned(ws_path, name)?;
+        Ok(Some(serde_json::json!({ "removed": true, "name": name })))
     }
 
     async fn search(

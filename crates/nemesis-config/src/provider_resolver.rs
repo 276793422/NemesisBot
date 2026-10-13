@@ -251,6 +251,25 @@ pub fn find_model_by_name<'a>(cfg: &'a Config, model_ref: &str) -> Result<&'a Mo
     )))
 }
 
+/// 声明式模型角色守卫④（2026-10-13 N6）：装配点专用——校验「即将坐上
+/// 默认对话模型槽的条目」role 是对话形态。utility/classifier 条目对话形态
+/// 但不该坐主槽（杂务消费走 agents.small_model），手改 config 是到达该
+/// 状态的唯一路径（CLI/WSAPI 写入侧守卫①②已拦），所以这里 loud 报错并
+/// 交由调用方走既有的 warn+NullProvider 降级臂（不硬崩——双击直启优先，
+/// Dashboard 配好后热切恢复）。**不要**把它塞进 `resolve_model_config`：
+/// 那条路径合法解析 utility 条目（small_model lane 消费）。
+pub fn ensure_conversation_role(cfg: &Config, model_ref: &str) -> std::result::Result<(), String> {
+    match find_model_by_name(cfg, model_ref) {
+        Ok(mc) if nemesis_types::capability::is_conversation_role(&mc.role) => Ok(()),
+        Ok(mc) => Err(format!(
+            "model '{}' declares role '{}' — not allowed in the default conversation \
+             slot (utility/classifier entries are consumed via agents.small_model)",
+            model_ref, mc.role
+        )),
+        Err(_) => Ok(()), // 未命中条目：resolution 失败由调用方既有降级处理，不在此重复报错
+    }
+}
+
 /// Get the effective LLM reference for the default agent.
 ///
 /// After migration, only the LLM field is used (old Provider/Model fields are removed).

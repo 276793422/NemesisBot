@@ -36,6 +36,12 @@ pub enum ModelAction {
         /// "claude" is accepted as an alias of "anthropic".
         #[arg(long)]
         protocol: Option<String>,
+        /// Declared model role (2026-10-13): conversation | utility | classifier.
+        /// Omit = conversation. utility/classifier entries are chat-shaped but
+        /// rejected from the default conversation slot (--default / WSAPI
+        /// models.set_default / gateway assembly).
+        #[arg(long)]
+        role: Option<String>,
         /// Set as default model
         #[arg(long, default_value_t = false)]
         default: bool,
@@ -151,6 +157,28 @@ pub enum PricesAction {
     },
 }
 
+/// 守卫①生效键（M4 + 2026-10-13 N6）：新 entry 显式键优先，重复 add 回退
+/// 旧条目——与 model_list 合并的 `or_insert`（旧键只填缺）语义一致。只看
+/// 新 entry 会漏「旧条目是 images-openai/utility，重复 `--default` 仍把
+/// 它指到主对话槽」的旁路（两守卫同款洞，合并生效值一并封死）。
+fn effective_entry_key(
+    entry: &serde_json::Value,
+    existing: Option<&serde_json::Value>,
+    key: &str,
+) -> String {
+    entry
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .or_else(|| {
+            existing
+                .and_then(|e| e.get(key))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_default()
+}
+
 pub async fn run(action: ModelAction, local: bool) -> Result<()> {
     let home = common::resolve_home(local);
     let cfg_path = common::config_path(&home);
@@ -164,6 +192,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             proxy,
             auth,
             protocol,
+            role,
             default,
         } => {
             if !cfg_path.exists() {
@@ -276,12 +305,43 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             // （经 tools.image_gen / 唯一 images-openai 条目解析），不能坐上
             // agent 默认对话模型槽。--default 显式请求 = loud 拒绝（守卫①）；
             // 仅一条模型时的自动默认（守卫①b）也跳过图像条目，诚实打印说明。
-            let entry_protocol = entry.get("protocol").and_then(|v| v.as_str()).unwrap_or("");
-            let is_image_entry = nemesis_types::capability::is_image_protocol(entry_protocol);
+            // N6（2026-10-13）：守卫判定用**合并生效值**——重复 add 不带
+            // --protocol/--role 时新 entry 缺键、旧条目经下方 merge 回填，
+            // 只看新 entry 会漏掉「旧条目是 images-openai/utility 仍被
+            // --default 指到主对话槽」的旁路（两守卫同款洞，一并修）。
+            let existing_entry = cfg
+                .get("model_list")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| {
+                    arr.iter()
+                        .find(|m| m.get("model").and_then(|v| v.as_str()) == Some(model.as_str()))
+                })
+                .cloned();
+            // 生效键 = 新 entry 显式键优先，重复 add 时回退旧条目（与下方
+            // merge 的 or_insert 语义一致）。
+            let entry_protocol = effective_entry_key(&entry, existing_entry.as_ref(), "protocol");
+            let is_image_entry = nemesis_types::capability::is_image_protocol(&entry_protocol);
             if default && is_image_entry {
                 anyhow::bail!(
                     "protocol 'images-openai' 是图像生成协议，不能设为默认对话模型；\
                      请去掉 --default 重新添加（generate_image 工具会自动解析该条目）"
+                );
+            }
+            // 声明式模型角色（2026-10-13 N6）：显式 --role 写盘；校验/归一走
+            // 单一真相源，未知值 loud 报错退出。utility/classifier 是对话形态
+            // 条目（probe 照常），但不是默认对话模型槽的合法形态——守卫①
+            // 同款 loud 拒绝（agents.small_model 才是这类条目的消费点）。
+            if let Some(r) = &role {
+                let normalized = nemesis_types::capability::normalize_model_role(r)
+                    .map_err(anyhow::Error::msg)?;
+                entry["role"] = serde_json::Value::String(normalized);
+            }
+            let entry_role = effective_entry_key(&entry, existing_entry.as_ref(), "role");
+            if default && !nemesis_types::capability::is_conversation_role(&entry_role) {
+                anyhow::bail!(
+                    "role '{}' 不是默认对话模型槽的合法形态（只有 conversation 可以）；\
+                     请去掉 --default 重新添加（杂务消费走 agents.small_model 指向该条目）",
+                    entry_role
                 );
             }
 
@@ -423,6 +483,12 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                         // = generate_image 工具），诚实打印而非悄悄写 agents.defaults.llm。
                         println!(
                             "  Note: 'images-openai' 协议条目不自动设为默认对话模型（仅供 generate_image 工具消费）"
+                        );
+                    } else if !nemesis_types::capability::is_conversation_role(&entry_role) {
+                        // 守卫①b（N6）：utility/classifier 条目同样不自动坐槽。
+                        println!(
+                            "  Note: role '{}' 条目不自动设为默认对话模型（杂务消费走 agents.small_model）",
+                            entry_role
                         );
                     } else {
                         // Auto-set as default

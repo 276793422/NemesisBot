@@ -31,6 +31,8 @@ pub struct ProjectInfo {
     pub created_at: String,
     /// 项目 loop 是否在运行。
     pub running: bool,
+    /// N7：项目工作区指令是否受信（`projects.trust` 可翻转；缺省 true）。
+    pub instructions_trusted: bool,
 }
 
 /// nemesisbot 侧项目管理能力的抽象（[`ProjectLoopManager`](动态)）。
@@ -46,6 +48,11 @@ pub trait ProjectsBridge: Send + Sync {
     fn remove(&self, project_id: &str) -> Result<ProjectInfo, String>;
     /// 重命名（path 不可改——Phase 1 语义）。
     fn rename(&self, project_id: &str, new_name: &str) -> Result<ProjectInfo, String>;
+    /// N7（2026-10-13）：翻转项目指令信任位（`projects.trust`）。实现方
+    /// 写注册表（read-modify-write，损坏 loud 拒绝）+ 热更新在跑 loop
+    /// （下一轮 build_messages 生效）；未在跑 = 仅写盘，spawn 时按注册表
+    /// 解析起点。
+    fn set_trust(&self, project_id: &str, trusted: bool) -> Result<ProjectInfo, String>;
     /// 会话归属查询（session_key → project_id；None = 对话组）。
     fn owner_of(&self, session_key: &str) -> Option<String>;
     /// 项目 loop 句柄（未运行 / 目录消失 = None——调用方诚实报错）。
@@ -223,7 +230,7 @@ impl ModuleHandler for ProjectsHandler {
     }
 
     fn commands(&self) -> &'static [&'static str] {
-        &["list", "create", "remove", "rename", "open_dir"]
+        &["list", "create", "remove", "rename", "open_dir", "trust"]
     }
 
     async fn handle_cmd(
@@ -263,6 +270,14 @@ impl ModuleHandler for ProjectsHandler {
                 let project_id = crate::handlers::get_str(&data, "project_id")?;
                 let name = crate::handlers::get_str(&data, "name")?;
                 let info = bridge.rename(&project_id, &name)?;
+                Ok(Some(serde_json::json!({ "project": info })))
+            }
+            "trust" => {
+                let data = data.ok_or("missing data")?;
+                let project_id = crate::handlers::get_str(&data, "project_id")?;
+                let trusted = crate::handlers::get_opt_bool_loud(&data, "trusted")?
+                    .ok_or("missing field: trusted")?;
+                let info = bridge.set_trust(&project_id, trusted)?;
                 Ok(Some(serde_json::json!({ "project": info })))
             }
             "open_dir" => {

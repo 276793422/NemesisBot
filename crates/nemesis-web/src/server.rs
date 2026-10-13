@@ -2125,6 +2125,48 @@ pub async fn pump_agent_events(
                     }
                     continue;
                 }
+                // N5（2026-10-13 机会项）：交付物登记 → SSE `deliverables` +
+                // WS push `deliverables`。不入 chat_event_log 环——交付物已
+                // 随 assistant 行持久化在 chat_log（历史映射是权威恢复源，
+                // 重连/重载走 loadHistory 即恢复），环内重放只会让前端重复
+                // 挂卡；不落环 → 无 seq → 低频事件走必达通道（非洪泛源）。
+                if let nemesis_types::agent::AgentEvent::DeliverablesRegistered {
+                    session_key,
+                    files,
+                    ..
+                } = &event
+                {
+                    let mut payload = serde_json::json!({ "files": files });
+                    if let Some(sid) = session_key.rsplit(':').next() {
+                        payload["session_id"] = serde_json::Value::String(sid.to_string());
+                    }
+                    event_hub.publish("deliverables", payload.clone());
+                    let chat_id = event.chat_id().to_string();
+                    if let Some(session_id) = chat_id.strip_prefix("web:") {
+                        let frame = crate::protocol::ProtocolMessage::new(
+                            "push",
+                            "chat",
+                            "deliverables",
+                            Some(payload),
+                        );
+                        match frame.to_json() {
+                            Ok(bytes) => {
+                                if let Err(e) = session_manager.broadcast(session_id, &bytes).await
+                                {
+                                    tracing::debug!(
+                                        session_id = %session_id,
+                                        error = %e,
+                                        "[AgentEventPump] session broadcast failed (session gone?)"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "[AgentEventPump] deliverables frame marshal failed; dropped");
+                            }
+                        }
+                    }
+                    continue;
+                }
                 // BUG-A（2026-09-20）：帧内层注入 web 会话 id。chat_id 是
                 // 连接级（`web:{连接id}`，session.rs create_session_with_method
                 // 派生），与前端会话 id（sessionStore.currentId，create/list

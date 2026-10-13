@@ -678,3 +678,77 @@ fn test_agent_event_canvas_open_serde_shape() {
     assert_eq!(ev.kind(), "CanvasOpen");
     assert_eq!(ev.session_key(), Some("web:s-9"));
 }
+
+/// N5（2026-10-13 机会项）：DeliverablesRegistered 的 serde 形状 +
+/// accessors（adjacently tagged：kind 外层 / data 内层 files 数组）。
+#[test]
+fn test_agent_event_deliverables_registered_serde_shape() {
+    use super::{AgentEvent, PresentedFile};
+    let ev = AgentEvent::DeliverablesRegistered {
+        session_key: "agent:main:session:s5".to_string(),
+        chat_id: "web:conn-5".to_string(),
+        files: vec![
+            PresentedFile {
+                path: "reports/daily.md".to_string(),
+                title: "日报".to_string(),
+                note: "今日汇总".to_string(),
+            },
+            PresentedFile {
+                path: "out.png".to_string(),
+                title: String::new(),
+                note: String::new(),
+            },
+        ],
+    };
+    let v = serde_json::to_value(&ev).unwrap();
+    assert_eq!(v["kind"], "DeliverablesRegistered");
+    assert_eq!(v["data"]["chat_id"], "web:conn-5");
+    let files = v["data"]["files"].as_array().expect("files array");
+    assert_eq!(files.len(), 2);
+    assert_eq!(files[0]["path"], "reports/daily.md");
+    assert_eq!(files[0]["title"], "日报");
+    assert_eq!(files[1]["note"], "");
+    match serde_json::from_value::<AgentEvent>(v).unwrap() {
+        AgentEvent::DeliverablesRegistered {
+            session_key,
+            chat_id,
+            files,
+        } => {
+            assert_eq!(session_key, "agent:main:session:s5");
+            assert_eq!(chat_id, "web:conn-5");
+            assert_eq!(files.len(), 2);
+            assert_eq!(files[0].path, "reports/daily.md");
+            assert_eq!(files[1].title, "");
+        }
+        other => panic!("wrong variant: {:?}", other),
+    }
+    // 访问器对齐——web pump 按 session_key()/chat_id() 路由、按 kind() 分支。
+    assert_eq!(ev.chat_id(), "web:conn-5");
+    assert_eq!(ev.kind(), "DeliverablesRegistered");
+    assert_eq!(ev.session_key(), Some("agent:main:session:s5"));
+}
+
+/// N5：PresentedFile 的 `#[serde(default)]` 契约——title/note 缺省反序列化
+/// 为空串（前端按空串回退文件名/隐藏注记），path 必填。
+#[test]
+fn test_presented_file_serde_defaults() {
+    use super::PresentedFile;
+    let minimal: PresentedFile =
+        serde_json::from_str(r#"{"path": "only.bin"}"#).expect("path-only deserializes");
+    assert_eq!(minimal.path, "only.bin");
+    assert_eq!(minimal.title, "");
+    assert_eq!(minimal.note, "");
+
+    let round: PresentedFile = serde_json::from_value(serde_json::json!({
+        "path": "r.md", "title": "T", "note": "N"
+    }))
+    .unwrap();
+    assert_eq!(
+        round,
+        PresentedFile {
+            path: "r.md".to_string(),
+            title: "T".to_string(),
+            note: "N".to_string()
+        }
+    );
+}

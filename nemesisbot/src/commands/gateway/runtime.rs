@@ -36,6 +36,101 @@ use super::trigger_global_shutdown;
 use super::{open_browser, open_plugin_window};
 use crate::common;
 
+/// B7（2026-10-13）：guardian judge 模型通道三级阶梯（单一真相源，原内联
+/// match 抽取 + guardian_model 前置级）。优先级：`agents.guardian_model`
+/// （审计专用——审计点独立于 /compact 杂务，可单独选档）→
+/// `agents.small_model`（杂务通道，/compact 先例）→ 主模型。各级未配置 /
+/// 解析失败 / provider 构造失败 = 提示 + 落下一级，绝不阻断启动。返回
+/// (provider, model, 来源描述)。
+#[cfg(feature = "security")]
+fn resolve_guardian_judge_lane(
+    cfg: &nemesis_config::Config,
+    home: &std::path::Path,
+    main_provider: Arc<dyn nemesis_providers::router::LLMProvider>,
+    main_model: &str,
+) -> (
+    Arc<dyn nemesis_providers::router::LLMProvider>,
+    String,
+    String,
+) {
+    // 单级尝试：model_ref → resolve → FactoryConfig → create_provider。
+    // Err = 该级不可用的原因（调用方落下一级；两类失败消息在级内分别 warn）。
+    fn try_rung(
+        cfg: &nemesis_config::Config,
+        home: &std::path::Path,
+        model_ref: &str,
+    ) -> std::result::Result<(Arc<dyn nemesis_providers::router::LLMProvider>, String), String>
+    {
+        let resolution = nemesis_config::resolve_model_config(cfg, model_ref)
+            .map_err(|e| format!("not resolvable ({e})"))?;
+        let judge_factory_cfg = nemesis_providers::factory::FactoryConfig {
+            proxy: resolution.proxy.clone(),
+            llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
+            api_key: resolution.api_key.clone(),
+            api_base: resolution.api_base.clone(),
+            workspace: home.join("workspace").to_string_lossy().to_string(),
+            connect_mode: resolution.connect_mode.clone(),
+            protocol: resolution.protocol.clone(),
+            timeout_secs: resolution.timeout_secs,
+            account_id: String::new(),
+            headers: std::collections::HashMap::new(),
+        };
+        let provider = nemesis_providers::factory::create_provider(&judge_factory_cfg)
+            .map_err(|e| format!("provider create failed ({e})"))?;
+        Ok((provider, resolution.model_name))
+    }
+
+    // 级 1：guardian_model 专用通道。
+    if let Some(guardian_ref) = cfg
+        .agents
+        .guardian_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        match try_rung(cfg, home, guardian_ref) {
+            Ok((provider, model)) => {
+                return (provider, model, format!("guardian model '{guardian_ref}'"));
+            }
+            Err(e) => warn!(
+                "[Gateway] Guardian judge: agents.guardian_model '{}' {e}; falling to agents.small_model ladder",
+                guardian_ref
+            ),
+        }
+    }
+
+    // 级 2：small_model 杂务通道。
+    if let Some(small_ref) = cfg
+        .agents
+        .small_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        match try_rung(cfg, home, small_ref) {
+            Ok((provider, model)) => {
+                return (provider, model, format!("small model '{small_ref}'"));
+            }
+            Err(e) => warn!(
+                "[Gateway] Guardian judge: agents.small_model '{}' {e}; falling back to the main model",
+                small_ref
+            ),
+        }
+    }
+
+    // 级 3：主模型回落（两级均未配置才 info 提示；失败落下的已有各自 warn）。
+    if cfg.agents.guardian_model.is_none() && cfg.agents.small_model.is_none() {
+        info!(
+            "[Gateway] Guardian judge: agents.guardian_model/agents.small_model not configured; using the main model (set agents.guardian_model to keep audit cost off the main model)"
+        );
+    }
+    (
+        main_provider,
+        main_model.to_string(),
+        "main model".to_string(),
+    )
+}
+
 /// PB-8/PB-9 门控三件入参打包（§4.2 B7）：字段双臂声明——真身随 feature
 /// 门，@not 臂空桩（Option<()> / ()）保持结构体全组合可构造；体内消费点
 /// 均处同门块内（含 Step 24 善后）。
@@ -343,86 +438,15 @@ pub(crate) async fn run_runtime(
             // CRITICAL 审也不跑）；critical = 旧 CRITICAL 全审；high =
             // HIGH+CRITICAL 破坏形态预筛 + LLM 审（消费闸在
             // SecurityPlugin::guardian_should_review 单一决策点）。
-            // 模型通道：`agents.small_model` 杂务通道优先（同 /compact 先
-            // 例——审计点独立于主对话，不烧主模型），未配置/解析失败 =
-            // 回落主模型 + warn，绝不阻断启动。
+            // 模型通道：B7（2026-10-13）三级阶梯——`agents.guardian_model`
+            // 审计专用优先 → `agents.small_model` 杂务通道（/compact 先例
+            // ——审计点独立于主对话，不烧主模型）→ 主模型回落，绝不阻断
+            // 启动（见 resolve_guardian_judge_lane）。
             let guardian_mode = plugin.guardian_mode();
             match guardian_mode.as_str() {
                 "critical" | "high" => {
-                    let (judge_provider, judge_model, judge_source) = match cfg
-                        .agents
-                        .small_model
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                    {
-                        Some(small_ref) => {
-                            match nemesis_config::resolve_model_config(&cfg, small_ref) {
-                                Ok(resolution) => {
-                                    let judge_factory_cfg =
-                                        nemesis_providers::factory::FactoryConfig {
-                                            proxy: resolution.proxy.clone(),
-                                            llm_ref: format!(
-                                                "{}/{}",
-                                                resolution.provider_name, resolution.model_name
-                                            ),
-                                            api_key: resolution.api_key.clone(),
-                                            api_base: resolution.api_base.clone(),
-                                            workspace: home
-                                                .join("workspace")
-                                                .to_string_lossy()
-                                                .to_string(),
-                                            connect_mode: resolution.connect_mode.clone(),
-                                            protocol: resolution.protocol.clone(),
-                                            timeout_secs: resolution.timeout_secs,
-                                            account_id: String::new(),
-                                            headers: std::collections::HashMap::new(),
-                                        };
-                                    match nemesis_providers::factory::create_provider(
-                                        &judge_factory_cfg,
-                                    ) {
-                                        Ok(p) => (
-                                            p,
-                                            resolution.model_name,
-                                            format!("small model '{}'", small_ref),
-                                        ),
-                                        Err(e) => {
-                                            warn!(
-                                                "[Gateway] Guardian judge: agents.small_model '{}' provider create failed ({}); falling back to the main model",
-                                                small_ref, e
-                                            );
-                                            (
-                                                llm_provider.clone(),
-                                                model_name.clone(),
-                                                "main model".to_string(),
-                                            )
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        "[Gateway] Guardian judge: agents.small_model '{}' not resolvable ({}); falling back to the main model",
-                                        small_ref, e
-                                    );
-                                    (
-                                        llm_provider.clone(),
-                                        model_name.clone(),
-                                        "main model".to_string(),
-                                    )
-                                }
-                            }
-                        }
-                        None => {
-                            info!(
-                                "[Gateway] Guardian judge: agents.small_model not configured; using the main model (set agents.small_model to keep audit cost off the main model)"
-                            );
-                            (
-                                llm_provider.clone(),
-                                model_name.clone(),
-                                "main model".to_string(),
-                            )
-                        }
-                    };
+                    let (judge_provider, judge_model, judge_source) =
+                        resolve_guardian_judge_lane(&cfg, &home, llm_provider.clone(), &model_name);
                     plugin.set_judge(Arc::new(GatewayLlmJudge {
                         provider: judge_provider,
                         model: judge_model,

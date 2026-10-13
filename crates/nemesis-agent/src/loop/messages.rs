@@ -524,11 +524,28 @@ impl AgentLoop {
                 }
             }
             if let Some(ref root) = ws_root {
-                let cwd = root.clone(); // workspace root ≈ conversation cwd
-                let chain = crate::workspace_instructions::load_instruction_chain(root, &cwd);
-                let rendered = crate::workspace_instructions::render_instructions_section(&chain);
-                if !rendered.is_empty() {
-                    sections.push(rendered);
+                // N7（2026-10-13）：信任档三分——isolated 整段跳过（指令链
+                // 完全不进上下文）；annotate 注入但前置不可信来源横幅；
+                // trusted verbatim（主循环行为，缺省）。区块逐 build 重渲染
+                // ——运行中 `projects.trust` 热更新下一轮即生效，无残留。
+                let trust = *self.instruction_trust.read();
+                if trust != crate::workspace_instructions::InstructionTrust::Isolated {
+                    let cwd = root.clone(); // workspace root ≈ conversation cwd
+                    let chain = crate::workspace_instructions::load_instruction_chain(root, &cwd);
+                    let mut rendered =
+                        crate::workspace_instructions::render_instructions_section(&chain);
+                    if !rendered.is_empty() {
+                        if trust == crate::workspace_instructions::InstructionTrust::Annotate {
+                            rendered = format!(
+                                "{}
+
+{}",
+                                crate::workspace_instructions::UNTRUSTED_INSTRUCTIONS_BANNER,
+                                rendered
+                            );
+                        }
+                        sections.push(rendered);
+                    }
                 }
             }
             // I3 (devtool-upgrade 阶段 3): lazily discovered sub-directory
@@ -537,13 +554,28 @@ impl AgentLoop {
             // empty between discoveries keeps the merged message
             // byte-stable). Claims live on the instance, so dedup is
             // session-scoped.
+            // N7：惰性发现区块同样受信任档约束——isolated 只排空不渲染
+            // （缓冲有界，内容不进上下文）；annotate 前置同款横幅。恒排空
+            // （claims 是 session 级一次性），trust 决定的是渲染与否。
             let pending_instructions = instance.drain_pending_instructions();
             if !pending_instructions.is_empty() {
-                sections.push(
-                    crate::workspace_instructions::render_new_instructions_section(
-                        &pending_instructions,
-                    ),
-                );
+                let trust = *self.instruction_trust.read();
+                if trust != crate::workspace_instructions::InstructionTrust::Isolated {
+                    let mut rendered =
+                        crate::workspace_instructions::render_new_instructions_section(
+                            &pending_instructions,
+                        );
+                    if trust == crate::workspace_instructions::InstructionTrust::Annotate {
+                        rendered = format!(
+                            "{}
+
+{}",
+                            crate::workspace_instructions::UNTRUSTED_INSTRUCTIONS_BANNER,
+                            rendered
+                        );
+                    }
+                    sections.push(rendered);
+                }
             }
             // P3.1 (sixth batch): pre-fetched memory hits as a section. The
             // caller (run_llm_loop) did the async search against the CURRENT

@@ -29,6 +29,11 @@ fn manifests_nonempty_and_readonly_flag() {
 
 #[tokio::test]
 async fn apply_without_manager_errors_honestly() {
+    // 自钉前置条件（2026-10-13 根修）：同 bin 的 gateway full_assembly 冒烟
+    // 在测试进程里跑生产 run()，会把 manager 装进进程级全局槽（OnceLock 时代
+    // 无法清除，断言「未装配」只能赌执行顺序 → 偶发假红）。槽已 RwLock 化，
+    // arrange 段先清，本测试不再依赖顺序。
+    nemesis_web::handlers::selfupdate::clear_manager_for_tests();
     // 测试进程不跑 gateway 装配 → manager 槽必空 → 诚实报「未装配」，
     // 不 panic、不假成功。真编排路径（受理/闸门/审批卡）归 nemesis-web
     // selfupdate 套件与本文件外的 gateway 集成面。

@@ -560,3 +560,35 @@ fn protocol_images_openai_and_predicate() {
     assert!(!is_image_protocol("anthropic"));
     assert!(!is_image_protocol("responses"));
 }
+
+/// N6（2026-10-13）：模型角色声明——canonical 值集 + 对话谓词。
+/// 守卫语义：三个 default 槽写入点 + factory 装配点消费 is_conversation_role。
+#[test]
+fn model_role_normalize_and_conversation_predicate() {
+    // 空与显式 conversation 都归 canonical "conversation"（缺省形态）。
+    assert_eq!(normalize_model_role("").unwrap(), "conversation");
+    assert_eq!(
+        normalize_model_role("conversation").unwrap(),
+        "conversation"
+    );
+    assert_eq!(
+        normalize_model_role(" Conversation ").unwrap(),
+        "conversation"
+    );
+    assert_eq!(normalize_model_role("utility").unwrap(), "utility");
+    assert_eq!(normalize_model_role(" classifier ").unwrap(), "classifier");
+    // 未知值 loud 拒绝（错别字不静默当 conversation）。
+    let err = normalize_model_role("batch").unwrap_err();
+    assert!(
+        err.contains("unknown model role 'batch'")
+            && err.contains("conversation | utility | classifier"),
+        "错误信息带值集: {err}"
+    );
+    // 谓词：只有 conversation（含空缺省）坐主对话槽。
+    assert!(is_conversation_role(""));
+    assert!(is_conversation_role("conversation"));
+    assert!(is_conversation_role(" CONVERSATION "));
+    assert!(!is_conversation_role("utility"));
+    assert!(!is_conversation_role("classifier"));
+    assert!(!is_conversation_role("nonsense"));
+}

@@ -2,8 +2,10 @@
 //! `selfupdate.status`。
 //!
 //! manager 槽（`set_manager`，gateway run_runtime 审批装配点注入）与启动身份
-//! 槽（`set_boot_identity`：version + 短 commit + workspace）都是 OnceLock
-//! 静态——handlers 模块无状态、槽未装配时命令诚实报「未装配」（plugins_wasm
+//! 槽（`set_boot_identity`：version + 短 commit + workspace）都是静态槽
+//!（身份槽 OnceLock；manager 槽 RwLock<Option>——测试进程需可清，装配语义
+//! 仍「首个生效」）——handlers 模块无状态、槽未装配时命令诚实报「未装配」
+//!（plugins_wasm
 //! installer 槽同款模式）。check/status/journal 只依赖身份槽（无 feature）；
 //! apply 需要 `selfupdate` feature（manager 类型本体）+ gateway 装配，双闸
 //! 诚实降级。
@@ -36,19 +38,34 @@ fn boot_identity() -> Option<&'static BootIdentity> {
 }
 
 // manager 槽（selfupdate feature 门控——类型本体随 feature 进出）。
+// RwLock<Option> 而非 OnceLock：装配语义仍是「首个生效」，但测试进程需要
+// 可清——gateway full_assembly 冒烟在同进程跑生产 run() 会占槽，OnceLock
+// 时代断言「未装配」的测试只能靠执行顺序，跨测试污染偶发假红（2026-10-13）。
 #[cfg(feature = "selfupdate")]
-static MANAGER: OnceLock<std::sync::Arc<crate::selfupdate::SelfUpdateManager>> = OnceLock::new();
+static MANAGER: std::sync::RwLock<Option<std::sync::Arc<crate::selfupdate::SelfUpdateManager>>> =
+    std::sync::RwLock::new(None);
 
 /// gateway 装配点：注入 apply 编排器（首个生效——agent 重启不重装）。
 #[cfg(feature = "selfupdate")]
 pub fn set_manager(m: std::sync::Arc<crate::selfupdate::SelfUpdateManager>) {
-    let _ = MANAGER.set(m);
+    let mut slot = MANAGER.write().unwrap_or_else(|e| e.into_inner());
+    if slot.is_none() {
+        *slot = Some(m);
+    }
 }
 
 /// 槽读取（gateway 内部命令监听臂与 WSAPI apply 共用；None = 未装配）。
 #[cfg(feature = "selfupdate")]
 pub fn manager() -> Option<std::sync::Arc<crate::selfupdate::SelfUpdateManager>> {
-    MANAGER.get().cloned()
+    MANAGER.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// 测试隔离钩子（生产禁用——唯一合法调用方 = 测试 arrange 段）：清空
+/// manager 槽，让「未装配诚实报错」类断言不依赖同进程测试执行顺序。
+#[doc(hidden)]
+#[cfg(feature = "selfupdate")]
+pub fn clear_manager_for_tests() {
+    *MANAGER.write().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 pub struct SelfupdateHandler;

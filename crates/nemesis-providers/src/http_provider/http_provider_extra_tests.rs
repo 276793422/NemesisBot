@@ -1703,4 +1703,14 @@ async fn test_chat_stream_read_error_classified_as_timeout() {
         Some(FailoverError::Timeout { .. }) => {}
         other => panic!("expected Timeout, got {:?}", other),
     }
+    // J1 纪律另一半（2026-10-13 B10 审计补钉）：错误已是终态——Err 之后
+    // 不得再出现任何合成 Ok chunk（EOF flush 路径被 return 短路），通道
+    // 应直接关闭。二次产物会让聚合侧把错误消费成「部分成功」。
+    if let Some(chunk_result) = rx.recv().await {
+        panic!(
+            "no chunk may follow the terminal stream error, got {:?}",
+            chunk_result
+        );
+    }
+    // recv() 返回 None = 所有发送端已 drop 且无二次 chunk = 契约成立。
 }

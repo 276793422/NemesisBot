@@ -56,7 +56,11 @@ Triggered by requests like:
    do not silently clobber.
 
 5. **Report back**: tell the user the new slash-command name and a one-line summary. The skill
-   is now live and visible via `skills_list` / `skills_info` (no restart needed).
+   is now live and visible via `skills_list` / `skills_info` (no restart needed). Skills
+   created this way are recorded in the learned-skills manifest
+   (`workspace/skills/.learned.json`) automatically by `skill_manage` — the user can list or
+   remove learned skills later (Dashboard Skills 面或 `skills.learned_list` /
+   `skills.learned_remove`), so a stale skill does not linger forever.
 
 ## Pitfalls
 
