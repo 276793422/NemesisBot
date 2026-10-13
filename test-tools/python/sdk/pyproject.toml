@@ -25,7 +25,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/276793422/NemesisBot_Rust"
+Homepage = "https://github.com/276793422/NemesisBot"
 
 [project.optional-dependencies]
 dev = [

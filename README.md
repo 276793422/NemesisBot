@@ -115,8 +115,8 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/276793422/NemesisBot_Rust.git
-cd NemesisBot_Rust
+git clone https://github.com/276793422/NemesisBot.git
+cd NemesisBot
 
 # Windows 编译（标准构建脚本，带版本注入 + Vue 前端 + 插件编译）
 scripts\build-windows.bat
