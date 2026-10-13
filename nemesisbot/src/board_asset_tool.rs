@@ -108,8 +108,17 @@ impl BoardAssetTool {
             let Some(asset) = store.lookup_asset(&name)? else {
                 continue;
             };
+            // 单文件读失败（AV/索引器瞬时句柄是常态不是异常）= warn + 本轮
+            // 跳过该文件，不中止整个体检——`?` 上抛会让一次瞬时占用把本轮
+            // 源头侧防线整个跳掉（下轮启动才有机会重试）。DB 级错误仍 `?`
+            // 上抛（系统性故障，诚实 skip 整轮）。
+            let Ok(actual) = nemesis_board::sha256_file(&path) else {
+                tracing::warn!(
+                    "[board_asset] cached asset `{name}` unreadable this round — skipped, retry on next startup"
+                );
+                continue;
+            };
             checked += 1;
-            let actual = nemesis_board::sha256_file(&path)?;
             if actual == asset.sha256.trim().to_lowercase() {
                 continue;
             }
