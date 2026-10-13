@@ -87,6 +87,22 @@ fn save_mcp_config(workspace: &str, config: &nemesis_config::McpConfig) -> Resul
         .map_err(|e| format!("failed to save MCP config: {}", e))
 }
 
+/// config.mcp.json RMW 事务唯一入口——写串行锁在函数内取得，罩
+/// 「load → 闭包改 → 落盘」全程；闭包返回 Err 不落盘（abort 语义）。
+/// 调用方结构上不可能忘锁（同类横扫四期补网，2026-10-13）。
+/// 纪律：闭包内不得再调任何 update_* / [`nemesis_config::config_write_lock`]
+/// （Mutex 非重入，嵌套即死锁）。
+fn update_mcp_config<T>(
+    workspace: &str,
+    f: impl FnOnce(&mut nemesis_config::McpConfig) -> Result<T, String>,
+) -> Result<T, String> {
+    let _serial = nemesis_config::config_write_lock();
+    let mut cfg = load_mcp_config(workspace)?;
+    let out = f(&mut cfg)?;
+    save_mcp_config(workspace, &cfg)?;
+    Ok(out)
+}
+
 /// headers/env 是 `"Key: value"` / `"KEY=value"` 字符串列表——回显前逐条
 /// 值部脱敏（凭据回显脱敏批次，2026-09-25；vault 方案 0.4.7 遗留）。
 fn mask_string_list(list: &[String]) -> Vec<String> {
@@ -148,12 +164,6 @@ impl McpHandler {
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
         let name = crate::handlers::get_str(data, "name")?;
-        let mut config = load_mcp_config(workspace)?;
-
-        if config.servers.iter().any(|s| s.name == name) {
-            return Err(format!("MCP server '{}' already exists", name));
-        }
-
         let mut server = nemesis_config::McpServerConfig {
             name: name.clone(),
             transport_type: crate::handlers::get_opt_str(data, "transport_type")
@@ -180,8 +190,15 @@ impl McpHandler {
         }
         // Legacy compat: if url empty but command provided, use command as url
         server.normalize();
-        config.servers.push(server);
-        save_mcp_config(workspace, &config)?;
+        // 锁在 update_mcp_config 内：权威去重 + push 全程串行（source_add
+        // 同款——检测窗口内他人写入不丢）。
+        update_mcp_config(workspace, |config| {
+            if config.servers.iter().any(|s| s.name == name) {
+                return Err(format!("MCP server '{}' already exists", name));
+            }
+            config.servers.push(server);
+            Ok(())
+        })?;
         Ok(Some(serde_json::json!({ "added": true, "name": name })))
     }
 
@@ -191,55 +208,56 @@ impl McpHandler {
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
         let name = crate::handlers::get_str(data, "name")?;
-        let mut config = load_mcp_config(workspace)?;
+        // 锁在 update_mcp_config 内：patch 字段全程串行（掩码还原要读存量
+        // 同名条目，读→改→写一事务）。
+        update_mcp_config(workspace, |config| {
+            let server = config
+                .servers
+                .iter_mut()
+                .find(|s| s.name == name)
+                .ok_or_else(|| format!("MCP server '{}' not found", name))?;
 
-        let server = config
-            .servers
-            .iter_mut()
-            .find(|s| s.name == name)
-            .ok_or_else(|| format!("MCP server '{}' not found", name))?;
-
-        if let Some(v) = data.get("transport_type").and_then(|v| v.as_str()) {
-            server.transport_type = v.to_string();
-        }
-        if let Some(v) = data.get("url").and_then(|v| v.as_str()) {
-            server.url = v.to_string();
-        }
-        if let Some(v) = data.get("description").and_then(|v| v.as_str()) {
-            server.description = v.to_string();
-        }
-        if let Some(mut v) = parse_string_list(data, "headers") {
-            // 回显是脱敏形态：掩码条目按键还原存量原值，找不到 = loud 拒绝。
-            restore_masked_entries(&mut v, &server.headers)?;
-            server.headers = v;
-        }
-        if let Some(v) = parse_string_list(data, "args") {
-            server.args = v;
-        }
-        if let Some(mut v) = parse_string_list(data, "env") {
-            restore_masked_entries(&mut v, &server.env)?;
-            server.env = v;
-        }
-        if let Some(v) = data
-            .get("timeout")
-            .or_else(|| data.get("timeout_secs"))
-            .and_then(|v| v.as_u64())
-        {
-            server.timeout_secs = v;
-        }
-        if let Some(v) = data.get("provider_name").and_then(|v| v.as_str()) {
-            server.provider_name = v.to_string();
-        }
-        if let Some(v) = data.get("provider_url").and_then(|v| v.as_str()) {
-            server.provider_url = v.to_string();
-        }
-        if let Some(v) = data.get("tags").cloned()
-            && let Ok(parsed) = serde_json::from_value::<Vec<String>>(v)
-        {
-            server.tags = parsed;
-        }
-
-        save_mcp_config(workspace, &config)?;
+            if let Some(v) = data.get("transport_type").and_then(|v| v.as_str()) {
+                server.transport_type = v.to_string();
+            }
+            if let Some(v) = data.get("url").and_then(|v| v.as_str()) {
+                server.url = v.to_string();
+            }
+            if let Some(v) = data.get("description").and_then(|v| v.as_str()) {
+                server.description = v.to_string();
+            }
+            if let Some(mut v) = parse_string_list(data, "headers") {
+                // 回显是脱敏形态：掩码条目按键还原存量原值，找不到 = loud 拒绝。
+                restore_masked_entries(&mut v, &server.headers)?;
+                server.headers = v;
+            }
+            if let Some(v) = parse_string_list(data, "args") {
+                server.args = v;
+            }
+            if let Some(mut v) = parse_string_list(data, "env") {
+                restore_masked_entries(&mut v, &server.env)?;
+                server.env = v;
+            }
+            if let Some(v) = data
+                .get("timeout")
+                .or_else(|| data.get("timeout_secs"))
+                .and_then(|v| v.as_u64())
+            {
+                server.timeout_secs = v;
+            }
+            if let Some(v) = data.get("provider_name").and_then(|v| v.as_str()) {
+                server.provider_name = v.to_string();
+            }
+            if let Some(v) = data.get("provider_url").and_then(|v| v.as_str()) {
+                server.provider_url = v.to_string();
+            }
+            if let Some(v) = data.get("tags").cloned()
+                && let Ok(parsed) = serde_json::from_value::<Vec<String>>(v)
+            {
+                server.tags = parsed;
+            }
+            Ok(())
+        })?;
         Ok(Some(serde_json::json!({ "updated": true, "name": name })))
     }
 
@@ -248,13 +266,15 @@ impl McpHandler {
         workspace: &str,
         name: &str,
     ) -> Result<Option<serde_json::Value>, String> {
-        let mut config = load_mcp_config(workspace)?;
-        let before = config.servers.len();
-        config.servers.retain(|s| s.name != name);
-        if config.servers.len() == before {
-            return Err(format!("MCP server '{}' not found", name));
-        }
-        save_mcp_config(workspace, &config)?;
+        // 锁在 update_mcp_config 内。
+        update_mcp_config(workspace, |config| {
+            let before = config.servers.len();
+            config.servers.retain(|s| s.name != name);
+            if config.servers.len() == before {
+                return Err(format!("MCP server '{}' not found", name));
+            }
+            Ok(())
+        })?;
         Ok(Some(serde_json::json!({ "deleted": true, "name": name })))
     }
 
@@ -284,20 +304,23 @@ impl McpHandler {
         workspace: &str,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
-        let mut config: nemesis_config::McpConfig = serde_json::from_value(data.clone())
+        let mut new_cfg: nemesis_config::McpConfig = serde_json::from_value(data.clone())
             .map_err(|e| format!("invalid MCP config: {}", e))?;
-        // 整包回存同源还原：掩码条目按同名存量 server 还原；无存量 loud 拒绝。
-        let existing = load_mcp_config(workspace)?;
-        for server in config.servers.iter_mut() {
-            if let Some(old) = existing.servers.iter().find(|s| s.name == server.name) {
-                restore_masked_entries(&mut server.headers, &old.headers)?;
-                restore_masked_entries(&mut server.env, &old.env)?;
-            } else {
-                restore_masked_entries(&mut server.headers, &[])?;
-                restore_masked_entries(&mut server.env, &[])?;
+        // 锁在 update_mcp_config 内：掩码还原要读存量（读→合并→整写 = RMW）。
+        update_mcp_config(workspace, |cfg| {
+            // 整包回存同源还原：掩码条目按同名存量 server 还原；无存量 loud 拒绝。
+            for server in new_cfg.servers.iter_mut() {
+                if let Some(old) = cfg.servers.iter().find(|s| s.name == server.name) {
+                    restore_masked_entries(&mut server.headers, &old.headers)?;
+                    restore_masked_entries(&mut server.env, &old.env)?;
+                } else {
+                    restore_masked_entries(&mut server.headers, &[])?;
+                    restore_masked_entries(&mut server.env, &[])?;
+                }
             }
-        }
-        save_mcp_config(workspace, &config)?;
+            *cfg = new_cfg;
+            Ok(())
+        })?;
         Ok(Some(serde_json::json!({ "saved": true })))
     }
 }

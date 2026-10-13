@@ -3,6 +3,7 @@ use super::*;
 #[test]
 fn test_build_request_body() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -36,6 +37,7 @@ fn test_deepseek_thinking_disabled_workaround_characterization() {
     // reasoning_content from the response while the API still required it to be
     // replayed in multi-turn history → HTTP 400. Thinking now runs normally.
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.example.com/v1".to_string(),
         api_key: "k".to_string(),
@@ -87,6 +89,7 @@ fn test_deepseek_thinking_disabled_workaround_characterization() {
 #[test]
 fn test_build_request_with_tools() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -156,6 +159,7 @@ fn test_uses_completion_tokens() {
 #[test]
 fn test_build_request_body_normalizes_model() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -174,6 +178,7 @@ fn test_build_request_body_normalizes_model() {
 #[test]
 fn test_build_request_body_o1_no_temperature() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -205,6 +210,7 @@ fn test_build_request_body_o1_no_temperature() {
 #[test]
 fn test_http_provider_config_serialization() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "sk-test".to_string(),
@@ -224,6 +230,7 @@ fn test_http_provider_config_serialization() {
 #[test]
 fn test_http_provider_config_with_proxy() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -240,6 +247,7 @@ fn test_http_provider_config_with_proxy() {
 #[test]
 fn test_http_provider_config_with_headers() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -333,6 +341,7 @@ fn test_uses_completion_tokens_various() {
 #[test]
 fn test_build_request_body_completion_tokens() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -362,6 +371,7 @@ fn test_build_request_body_completion_tokens() {
 #[test]
 fn test_build_request_body_regular_max_tokens() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -391,6 +401,7 @@ fn test_build_request_body_regular_max_tokens() {
 #[test]
 fn test_build_request_body_top_p() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -417,6 +428,7 @@ fn test_build_request_body_top_p() {
 #[test]
 fn test_build_request_body_stop() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -443,6 +455,7 @@ fn test_build_request_body_stop() {
 #[test]
 fn test_build_request_body_no_optional_fields() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -465,6 +478,7 @@ fn test_build_request_body_no_optional_fields() {
 #[test]
 fn test_build_request_body_kimi_temperature() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -485,6 +499,7 @@ fn test_build_request_body_kimi_temperature() {
 #[test]
 fn test_build_request_body_preserve_prefix() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -503,6 +518,7 @@ fn test_build_request_body_preserve_prefix() {
 #[test]
 fn test_build_request_body_o3_no_temperature() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -529,6 +545,7 @@ fn test_build_request_body_o3_no_temperature() {
 #[test]
 fn test_default_model_and_name() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "my-provider".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -546,6 +563,7 @@ fn test_default_model_and_name() {
 #[test]
 fn test_build_request_body_with_multiple_messages() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -673,6 +691,7 @@ fn test_stream_chunk_deserialize() {
 #[tokio::test]
 async fn test_chat_stream_returns_channel() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "http://127.0.0.1:1".to_string(), // non-existent
         api_key: "test".to_string(),
@@ -719,6 +738,7 @@ async fn test_chat_stream_returns_channel() {
 #[test]
 fn test_build_request_body_empty_model_stays_empty() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -738,6 +758,7 @@ fn test_build_request_body_empty_model_stays_empty() {
 #[test]
 fn test_build_request_body_with_stop_strings() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -805,6 +826,7 @@ fn test_uses_completion_tokens_negative_cases() {
 #[test]
 fn test_http_provider_new_creates_client() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.example.com/v1".to_string(),
         api_key: "key".to_string(),
@@ -822,6 +844,7 @@ fn test_http_provider_new_creates_client() {
 #[test]
 fn test_http_provider_config_with_multiple_headers() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -844,6 +867,7 @@ fn test_http_provider_config_with_multiple_headers() {
 #[test]
 fn test_build_request_body_with_tool_calls_message() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -885,6 +909,7 @@ fn test_build_request_body_with_tool_calls_message() {
 #[test]
 fn test_build_request_body_with_tool_result_message() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -916,6 +941,7 @@ fn test_build_request_body_with_tool_result_message() {
 #[test]
 fn test_build_request_body_kimi_with_custom_temperature() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -943,6 +969,7 @@ fn test_build_request_body_kimi_with_custom_temperature() {
 #[test]
 fn test_http_provider_config_default_model_accessor() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "my-provider".to_string(),
         base_url: "https://api.custom.com".to_string(),
         api_key: "key".to_string(),
@@ -963,11 +990,14 @@ fn test_http_provider_config_default_model_accessor() {
 #[tokio::test]
 async fn test_chat_connection_error() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "http://127.0.0.1:1".to_string(), // non-existent
         api_key: "test-key".to_string(),
         default_model: "gpt-4".to_string(),
-        timeout_secs: 1,
+        // 10s：本机（过滤器驱动环境）回环连接拒绝延迟可达 ~2s，1s 会先
+        // 触发真超时（那是另一条错误路径）；拒绝先浮出才落到被测的 connect error。
+        timeout_secs: 10,
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
@@ -989,13 +1019,18 @@ async fn test_chat_connection_error() {
         .await;
     assert!(result.is_err());
     match result {
-        Err(FailoverError::Timeout {
-            provider, model, ..
-        }) => {
+        // 2026-10-13 诚实传输错误映射：reqwest 连接失败（非超时）不再伪装成
+        // Timeout，落 Unknown + "connect error" 前缀（provider/model 编进
+        // message——Unknown 变体无 model 槽位）。
+        Err(FailoverError::Unknown { provider, message }) => {
             assert_eq!(provider, "test");
-            assert_eq!(model, "gpt-4");
+            assert!(message.starts_with("connect error"), "got: {message}");
+            assert!(
+                message.contains("gpt-4"),
+                "model must be in message: {message}"
+            );
         }
-        Err(other) => panic!("Expected Timeout error, got: {:?}", other),
+        Err(other) => panic!("Expected connect error, got: {:?}", other),
         Ok(_) => panic!("Expected error for non-existent server"),
     }
 }
@@ -1006,6 +1041,7 @@ async fn test_chat_http_401_error() {
     // We'll test error handling logic by simulating HTTP errors
 
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "http://127.0.0.1:12345".to_string(), // non-existent mock server
         api_key: "invalid-key".to_string(),
@@ -1037,11 +1073,14 @@ async fn test_chat_http_401_error() {
 #[tokio::test]
 async fn test_chat_empty_model_uses_default() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "http://127.0.0.1:1".to_string(),
         api_key: "test-key".to_string(),
         default_model: "gpt-4o".to_string(),
-        timeout_secs: 1,
+        // 10s：本机（过滤器驱动环境）回环连接拒绝延迟可达 ~2s，1s 会先
+        // 触发真超时（那是另一条错误路径）；拒绝先浮出才落到被测的 connect error。
+        timeout_secs: 10,
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
@@ -1064,11 +1103,13 @@ async fn test_chat_empty_model_uses_default() {
         .await;
     assert!(result.is_err());
     match result {
-        Err(FailoverError::Timeout {
-            provider: _, model, ..
-        }) => {
-            // Should use default model in error info
-            assert_eq!(model, "gpt-4o");
+        // 空模型名回落 default_model 的可断言性：model 编进 connect error
+        // message（Unknown 变体无 model 槽位）。
+        Err(FailoverError::Unknown { message, .. }) => {
+            assert!(
+                message.contains("(model gpt-4o)"),
+                "default model must appear in message: {message}"
+            );
         }
         Err(_) => { /* other errors acceptable */ }
         Ok(_) => panic!("Expected error for non-existent server"),
@@ -1078,14 +1119,13 @@ async fn test_chat_empty_model_uses_default() {
 #[tokio::test]
 async fn test_chat_stream_connection_error() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "http://127.0.0.1:1".to_string(),
         api_key: "test-key".to_string(),
         default_model: "gpt-4".to_string(),
-        // 10s：本机死端口 connect 失败实测 ~2s 才返回（SYN 被 2 秒后判死），
-        // 客户端总超时必须大于 connect 失败窗口，否则先触发的是 operation
-        // timed out（超时类），底层连接错误永远到不了 cause——生产 lane
-        // 预算是 600s，同样远大于 connect 窗口，此处对齐生产量级。
+        // 10s：本机（过滤器驱动环境）回环连接拒绝延迟可达 ~2s，1s 会先
+        // 触发真超时（那是另一条错误路径）；拒绝先浮出才落到被测的 connect error。
         timeout_secs: 10,
         headers: HashMap::new(),
         proxy: None,
@@ -1110,30 +1150,13 @@ async fn test_chat_stream_connection_error() {
 
     match result {
         Ok(Some(Err(e))) => {
-            // Expected: connection error
+            // Expected: connection error（诚实映射，非 Timeout 伪装）
             match e {
-                FailoverError::Timeout {
-                    provider,
-                    model,
-                    cause,
-                } => {
+                FailoverError::Unknown { provider, message } => {
                     assert_eq!(provider, "test");
-                    assert_eq!(model, "gpt-4");
-                    // 回归锁（E2E-9 验收）：连接失败必须携带底层链全文，
-                    // 否则端点封存判定（is_connect_error）对词表失明。
-                    // 打印实际链文本供 CI 日志核对；断言按
-                    // is_connect_error 词表的连接类关键词钉死。
-                    eprintln!("Timeout.cause 链全文: {cause}");
-                    let lower = cause.to_lowercase();
-                    assert!(
-                        lower.contains("connect")
-                            || lower.contains("refused")
-                            || lower.contains("os error 10061")
-                            || lower.contains("os error 10060"),
-                        "Timeout.cause 应含连接链文本，实得: {cause:?}"
-                    );
+                    assert!(message.starts_with("connect error"), "got: {message}");
                 }
-                _ => { /* other network errors acceptable */ }
+                other => panic!("Expected Unknown connect error, got: {:?}", other),
             }
         }
         Ok(Some(Ok(_))) => {
@@ -1151,11 +1174,14 @@ async fn test_chat_stream_connection_error() {
 #[tokio::test]
 async fn test_chat_stream_empty_model_uses_default() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "http://127.0.0.1:1".to_string(),
         api_key: "test-key".to_string(),
         default_model: "gpt-4o".to_string(),
-        timeout_secs: 1,
+        // 10s：本机（过滤器驱动环境）回环连接拒绝延迟可达 ~2s，1s 会先
+        // 触发真超时（那是另一条错误路径）；拒绝先浮出才落到被测的 connect error。
+        timeout_secs: 10,
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
@@ -1179,8 +1205,12 @@ async fn test_chat_stream_empty_model_uses_default() {
 
     // Just verify it doesn't panic and uses default model logic
     match result {
-        Ok(Some(Err(FailoverError::Timeout { model, .. }))) => {
-            assert_eq!(model, "gpt-4o");
+        // 空模型名回落 default_model：model 编进 connect error message。
+        Ok(Some(Err(FailoverError::Unknown { message, .. }))) => {
+            assert!(
+                message.contains("(model gpt-4o)"),
+                "default model must appear in message: {message}"
+            );
         }
         _ => { /* other outcomes acceptable */ }
     }
@@ -1189,6 +1219,7 @@ async fn test_chat_stream_empty_model_uses_default() {
 #[tokio::test]
 async fn test_chat_stream_with_tools() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "http://127.0.0.1:1".to_string(),
         api_key: "test-key".to_string(),
@@ -1235,6 +1266,7 @@ async fn test_chat_stream_with_tools() {
 #[tokio::test]
 async fn test_chat_stream_with_custom_options() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "http://127.0.0.1:1".to_string(),
         api_key: "test-key".to_string(),
@@ -1281,6 +1313,7 @@ async fn test_chat_stream_with_custom_options() {
 #[tokio::test]
 async fn test_chat_with_tools() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "http://127.0.0.1:1".to_string(),
         api_key: "test-key".to_string(),
@@ -1321,6 +1354,7 @@ async fn test_chat_with_tools() {
 #[tokio::test]
 async fn test_chat_with_custom_options() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "http://127.0.0.1:1".to_string(),
         api_key: "test-key".to_string(),
@@ -1359,6 +1393,7 @@ async fn test_chat_with_custom_options() {
 #[tokio::test]
 async fn test_chat_with_proxy_config() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "http://127.0.0.1:1".to_string(),
         api_key: "test-key".to_string(),
@@ -1394,6 +1429,7 @@ async fn test_chat_with_custom_headers() {
     headers.insert("X-Request-ID".to_string(), "req-123".to_string());
 
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "http://127.0.0.1:1".to_string(),
         api_key: "test-key".to_string(),
@@ -1425,6 +1461,7 @@ async fn test_chat_with_custom_headers() {
 #[tokio::test]
 async fn test_chat_stream_reasoning_model() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "http://127.0.0.1:1".to_string(),
         api_key: "test-key".to_string(),
@@ -1587,6 +1624,7 @@ fn test_stream_chunk_default_fields() {
 #[test]
 fn test_http_provider_config_default_timeout() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -1605,6 +1643,7 @@ fn test_http_provider_config_default_timeout() {
 #[test]
 fn test_http_provider_config_socks_proxy() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -1622,6 +1661,7 @@ fn test_http_provider_config_socks_proxy() {
 #[test]
 fn test_build_request_body_multiple_tools() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -1662,6 +1702,7 @@ fn test_build_request_body_multiple_tools() {
 #[test]
 fn test_build_request_body_glm_model() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -1718,6 +1759,7 @@ fn test_uses_completion_tokens_edge_cases() {
 #[test]
 fn test_build_request_body_with_system_and_user_messages() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -1764,6 +1806,7 @@ fn test_build_request_body_with_system_and_user_messages() {
 #[test]
 fn test_build_request_body_image_parts_openai_format() {
     let config = HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url: "https://api.example.com/v1".to_string(),
         api_key: "test-key".to_string(),
@@ -1816,6 +1859,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn b_wire_provider(base_url: String) -> HttpProvider {
     HttpProvider::new(HttpProviderConfig {
+        stream_mode: String::new(),
         name: "b-guard".to_string(),
         base_url,
         api_key: "k".to_string(),

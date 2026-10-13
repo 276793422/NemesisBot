@@ -511,6 +511,34 @@ pub(crate) async fn init_services(
                     warn!("[Gateway] asset node id persist failed: {}", e);
                 }
 
+                // B8（2026-10-13）：本地资产缓存体检（后台，不阻塞 bind 报告
+                // ——大资产逐个重算 sha256 可能秒级以上）。磁盘漂移的实体
+                // 隔离为 `<ref>.corrupt`，防坏实体经 HTTP 分发给拉取方（拉
+                // 取侧本有 sha256 闸，这里是源头侧的同源防线）。DB 缺席 =
+                // 无看板常态，诚实 (0,0)。
+                let verify_home = home.clone();
+                tokio::task::spawn_blocking(move || {
+                    let tool =
+                        crate::board_asset_tool::BoardAssetTool::new(verify_home.join("workspace"));
+                    match tool.verify_cached_assets() {
+                        Ok((checked, quarantined)) if quarantined > 0 => {
+                            warn!(
+                                "[Gateway] Board asset cache verify: {checked} checked, \
+                                 {quarantined} quarantined as .corrupt (sha256 drift)"
+                            );
+                        }
+                        Ok((checked, _)) if checked > 0 => {
+                            info!(
+                                "[Gateway] Board asset cache verify: {checked} checked, all match"
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            warn!("[Gateway] Board asset cache verify skipped: {e}");
+                        }
+                    }
+                });
+
                 // G9 自愈：每 30s 按最新注册表重算对外基址，变化才更新槽与
                 // 落盘（UDP 发现的 peer 入表 / 本机 IP 变化后 bundle 广告
                 // 自动修正）。槽是可更新句柄（AdvertisedUrl），刷新无碍

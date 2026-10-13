@@ -504,7 +504,6 @@ mod failover_extra {
         let err = FailoverError::Timeout {
             provider: "deepseek".to_string(),
             model: "chat".to_string(),
-            cause: String::new(),
         };
         let msg = format!("{}", err);
         assert!(msg.contains("deepseek"));
@@ -526,6 +525,7 @@ mod failover_extra {
     fn test_overloaded_error_display() {
         let err = FailoverError::Overloaded {
             provider: "anthropic".to_string(),
+            status: 502,
         };
         let msg = format!("{}", err);
         assert!(msg.contains("anthropic"));
@@ -596,13 +596,13 @@ mod failover_extra {
             FailoverError::Timeout {
                 provider: "p".into(),
                 model: "m".into(),
-                cause: String::new()
             }
             .is_retriable()
         );
         assert!(
             FailoverError::Overloaded {
-                provider: "p".into()
+                provider: "p".into(),
+                status: 502,
             }
             .is_retriable()
         );
@@ -667,7 +667,6 @@ mod failover_extra {
             FailoverError::Timeout {
                 provider: "p".into(),
                 model: "m".into(),
-                cause: String::new()
             }
             .reason(),
             FailoverReason::Timeout
@@ -682,7 +681,8 @@ mod failover_extra {
         );
         assert_eq!(
             FailoverError::Overloaded {
-                provider: "p".into()
+                provider: "p".into(),
+                status: 503,
             }
             .reason(),
             FailoverReason::Overloaded

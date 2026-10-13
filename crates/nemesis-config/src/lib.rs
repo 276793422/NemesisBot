@@ -26,14 +26,16 @@ pub use vault_ref::{
 };
 
 // Runtime config cache (single source of truth for the live config).
-pub use store::{ConfigHandle, ConfigStore, global, load_live, save_live, set_global};
+pub use store::{
+    ConfigHandle, ConfigStore, config_write_lock, global, load_live, save_live, set_global,
+};
 
 // Re-export provider_resolver types and functions for backward compatibility
 pub use provider_resolver::{
     ModelResolution, PROVIDER_PRESETS, ProviderPreset, ProviderResolution, ProviderResolver,
-    find_model_by_name, find_provider_preset, get_default_api_base, get_effective_llm,
-    get_model_by_name, infer_default_model, infer_provider_from_model, provider_preset_ids,
-    resolve_model_config, resolve_model_resolution,
+    ensure_conversation_role, find_model_by_name, find_provider_preset, get_default_api_base,
+    get_effective_llm, get_model_by_name, infer_default_model, infer_provider_from_model,
+    normalize_stream_value, provider_preset_ids, resolve_model_config, resolve_model_resolution,
 };
 
 #[derive(Error, Debug)]
@@ -303,11 +305,22 @@ pub struct ProjectsConfig {
     /// 项目数上限（每项目 = 一个常驻 AgentLoop，上限即可预期的资源面；
     /// 默认 4。`config set_field projects.max` 经 typed round-trip 自动可用）。
     pub max: usize,
+    /// N7（2026-10-13）：**未受信**项目（注册表条目 `instructions_trusted:
+    /// false`，`projects.trust` 翻转）的工作区指令处理策略——`""`/`annotate`
+    /// = 注入但前置不可信来源横幅（缺省）；`isolated` = 整段跳过；未知值
+    /// lenient 按 annotate 处理 + warn。受信条目恒 verbatim 注入（逐项目
+    /// 显式信任是用户最具体的意图，全局策略不降级它）。空串不序列化
+    /// （`skip_serializing_if`）——缺省态 typed 保存字节零变化（role 先例）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub instruction_trust: String,
 }
 
 impl Default for ProjectsConfig {
     fn default() -> Self {
-        Self { max: 4 }
+        Self {
+            max: 4,
+            instruction_trust: String::new(),
+        }
     }
 }
 
@@ -955,6 +968,21 @@ pub struct AgentsConfig {
     /// I1 (devtool-upgrade 阶段 3): workspace fs-watcher settings.
     #[serde(default)]
     pub fs_watcher: FsWatcherConfig,
+    /// T2（L1 codemode）: `code_run` 脚本工具开关与资源限制（默认关）。
+    #[serde(default)]
+    pub codemode: CodeModeConfig,
+    /// L8（内部专项总计划重评估）：工具调用三态 WAL——工具
+    /// admit/start/finish 每态一行 JSONL 落 `<workspace>/logs/turn_wal/`，
+    /// 进程被强杀（taskkill /F）后重启扫描补 interrupted 并自动续轮。
+    /// 默认开；关闭后完全不落盘。诚实边界：纯 flush 无 fsync，断电不保。
+    #[serde(default = "default_true")]
+    pub turn_wal: bool,
+    /// L10（内部专项总计划重评估）：provider 流式输出观测面——主 turn
+    /// LLM 调用经流式 lane（provider 支持则真实增量，否则聚合后合成）发
+    /// `provider_stream_event` 易逝帧（SSE + WS push，不入补拉环）。默认
+    /// 开；关闭后零事件零开销。运行时改键下一轮生效（每轮新鲜读）。
+    #[serde(default = "default_true")]
+    pub provider_stream_events: bool,
     /// F8 (devtool-upgrade 阶段 3): tool names hidden from the model's
     /// tool_defs AND rejected at dispatch (double gate). Entries may carry a
     /// trailing `*` wildcard (e.g. `mcp_*` hides every MCP tool). Runtime
@@ -976,6 +1004,13 @@ pub struct AgentsConfig {
     /// startup blocker). Runtime edits need an Agent restart.
     #[serde(default)]
     pub small_model: Option<String>,
+    /// B7（2026-10-13）：guardian LLM 审计专用模型通道（优先于
+    /// `small_model`——审计点独立于 /compact 杂务，可用不同档位；两者都
+    /// 未配置 = 回落主模型）。Absent/empty/unresolvable = 沿阶梯回落
+    /// （small_model → main），never a startup blocker。消费点唯一：
+    /// gateway guardian judge 装配（commands/gateway/runtime.rs）。
+    #[serde(default)]
+    pub guardian_model: Option<String>,
     /// J5 (devtool-upgrade 阶段 6): doom-loop 审批化开关。默认关——turn_guard
     /// 的 escalation 硬停是安全底座。开且 question asker 已装配时，escalation
     /// 触发先发提问卡问用户「继续吗？」：approve = 清签名计数继续；deny /
@@ -1136,6 +1171,45 @@ impl Default for SubagentConfig {
 
 fn default_subagent_max_depth() -> usize {
     1
+}
+
+/// T2（内部专项总计划 L1 codemode，2026-10-13）: `agents.codemode` config
+/// section — `code_run` 脚本工具（QuickJS 沙箱）的运行开关与资源限制。
+/// 编译闸是 `codemode` cargo feature；这里管运行态：`enabled` 默认关
+/// （不注册即供给不可见），注册发生在 AgentLoop 装配期（改键需 loop 重建
+/// ——切模型/人格重启自动带上，与插件工具同语义）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeModeConfig {
+    /// Enable the `code_run` tool registration (default false).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Per-call wall-clock budget in seconds; the QuickJS interrupt handler
+    /// checks it (default 30). Infinite JS loops are cut at the deadline and
+    /// the error is returned to the model as tool result text.
+    #[serde(default = "default_codemode_timeout_secs")]
+    pub timeout_secs: u64,
+    /// QuickJS memory cap in MB via `set_memory_limit` (default 64). A
+    /// larger allocation fails as a JS OOM error inside the sandbox.
+    #[serde(default = "default_codemode_memory_limit_mb")]
+    pub memory_limit_mb: u64,
+}
+
+fn default_codemode_timeout_secs() -> u64 {
+    30
+}
+
+fn default_codemode_memory_limit_mb() -> u64 {
+    64
+}
+
+impl Default for CodeModeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            timeout_secs: default_codemode_timeout_secs(),
+            memory_limit_mb: default_codemode_memory_limit_mb(),
+        }
+    }
 }
 
 /// Y1 (Phase4-a): `agents.tool_doc_folding` config section. When enabled,
@@ -2285,6 +2359,17 @@ pub struct ModelConfig {
     /// 显示名仍由 provider 前缀管辖。
     #[serde(default)]
     pub protocol: String,
+    /// 声明式模型角色（2026-10-13 N6）：`conversation`（缺省/空，agent loop
+    /// 主通道合法形态）/ `utility`（杂务通道，agents.small_model 消费：/compact
+    /// 摘要 + 会话标题生成）/ `classifier`（分类/路由/打标）。后两者是对话
+    /// 形态条目（probe/messages 可收发），但**不该坐默认对话模型槽**——三个
+    /// default 槽写入点（CLI `--default`、唯一模型自动坐槽、WSAPI
+    /// `models.set_default`）与 factory 装配点按 `is_conversation_role` 拒绝/
+    /// 降级。值集单一真相源 `nemesis_types::capability::normalize_model_role`。
+    /// 空串不序列化（`skip_serializing_if`）——老条目 typed 保存字节零变化
+    /// （零迁移完整语义；protocol 先例是无条件序列化，role 以空为常态故收紧）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub role: String,
     #[serde(default)]
     pub workspace: String,
     /// H4 (U16 half): reasoning-effort tier for this model ("off" | "low" |
@@ -3135,6 +3220,12 @@ pub struct SecurityConfig {
     // 统一查询。
     #[serde(default = "default_true")]
     pub sanitize_child_env: bool,
+    // L6（2026-10-12 T1）：pre-exec 脚本内容扫描开关（默认开）。runtime 侧
+    // security_setup.rs 构造期按裸 JSON 键读取注入 SecurityPluginConfig；
+    // typed 字段的存在只为 Dashboard typed round-trip 不丢键（CFG-01 同族
+    // 删键 bug 防线）。
+    #[serde(default = "default_true")]
+    pub preexec_scan_enabled: bool,
     #[serde(default)]
     pub file_rules: Option<FileSecurityRules>,
     // CFG-01（2026-09-16 横扫存量加固）：磁盘/出厂模板真相源键名是
@@ -3250,6 +3341,7 @@ impl Default for SecurityConfig {
             synchronous_mode: false,
             audit_chain_enabled: false,
             sanitize_child_env: true,
+            preexec_scan_enabled: true,
             file_rules: None,
             directory_rules: None,
             process_rules: None,
@@ -3867,9 +3959,13 @@ pub fn default_config() -> Config {
             hidden_tools: Vec::new(),
             roles: RolesConfig::default(),
             small_model: None,
+            guardian_model: None,
             doom_loop_approval: false,
             image_downscale: true,
             lease_enabled: true,
+            codemode: CodeModeConfig::default(),
+            turn_wal: true,
+            provider_stream_events: true,
             defaults: AgentDefaults {
                 workspace: ws,
                 restrict_to_workspace: true,

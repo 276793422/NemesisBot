@@ -247,6 +247,88 @@ fn test_find_model_by_name() {
     assert_eq!(found_by_model.model_name, "primary");
 }
 
+/// 声明式模型角色守卫④（2026-10-13 N6）：装配点专用——conversation/缺省
+/// 放行，utility/classifier loud 报错，未命中条目不在此重复报错（resolution
+/// 失败由调用方既有降级处理）。
+#[test]
+fn test_ensure_conversation_role() {
+    let cfg = Config {
+        model_list: vec![
+            ModelConfig {
+                model_name: "conv".to_string(),
+                model: "glm-5".to_string(),
+                role: "conversation".to_string(),
+                ..Default::default()
+            },
+            ModelConfig {
+                model_name: "util".to_string(),
+                model: "glm-4.7-flash".to_string(),
+                role: "utility".to_string(),
+                ..Default::default()
+            },
+            ModelConfig {
+                model_name: "cls".to_string(),
+                model: "bge-reranker".to_string(),
+                role: "classifier".to_string(),
+                ..Default::default()
+            },
+            ModelConfig {
+                model_name: "legacy".to_string(),
+                model: "old-model".to_string(),
+                // role 缺省（老条目零迁移）= 对话形态。
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+
+    assert!(ensure_conversation_role(&cfg, "conv").is_ok());
+    assert!(ensure_conversation_role(&cfg, "legacy").is_ok());
+    // 缺省 role 为空串 → is_conversation_role 放行。
+    assert!(
+        cfg.model_list
+            .iter()
+            .find(|m| m.model_name == "legacy")
+            .map(|m| nemesis_types::capability::is_conversation_role(&m.role))
+            == Some(true)
+    );
+
+    let err = ensure_conversation_role(&cfg, "util").unwrap_err();
+    assert!(
+        err.contains("util") && err.contains("utility") && err.contains("agents.small_model"),
+        "错误信息带条目名与角色: {err}"
+    );
+    let err = ensure_conversation_role(&cfg, "cls").unwrap_err();
+    assert!(err.contains("classifier"), "{err}");
+
+    // 未命中条目：Ok（resolution 失败由调用方处理，不在此重复报错）。
+    assert!(ensure_conversation_role(&cfg, "no-such-model").is_ok());
+}
+
+/// ModelConfig.role 字段（N6）：typed 反序列化缺省 = 空串（老条目零迁移）；
+/// 显式值 round-trip 保留；空串不序列化（typed 保存字节零变化）。
+#[test]
+fn test_model_config_role_serde_default_and_roundtrip() {
+    let v: serde_json::Value = serde_json::json!({
+        "model_name": "m", "model": "vendor/model", "api_key": "k"
+    });
+    let mc: ModelConfig = serde_json::from_value(v).expect("老形态条目反序列化");
+    assert_eq!(mc.role, "", "缺省 role = 空串（零迁移）");
+    let back = serde_json::to_value(&mc).expect("serialize");
+    assert!(
+        back.get("role").is_none(),
+        "空 role 不写盘（skip_serializing_if）：{back}"
+    );
+
+    let v2 = serde_json::json!({
+        "model_name": "u", "model": "vendor/small", "role": "utility"
+    });
+    let mc2: ModelConfig = serde_json::from_value(v2).expect("带 role 条目反序列化");
+    assert_eq!(mc2.role, "utility");
+    let back2 = serde_json::to_value(&mc2).expect("serialize");
+    assert_eq!(back2["role"], "utility", "typed round-trip 保留 role");
+}
+
 // ---- Additional coverage tests for 95%+ ----
 
 #[test]
@@ -426,6 +508,7 @@ fn test_provider_resolution_serialization() {
         workspace: String::new(),
         enabled: true,
         timeout_secs: 0,
+        stream_mode: String::new(),
     };
     let json = serde_json::to_string(&pr).unwrap();
     let parsed: ProviderResolution = serde_json::from_str(&json).unwrap();
@@ -915,4 +998,128 @@ fn test_preset_ids_helper_sorted_unique_and_complete() {
     for p in PROVIDER_PRESETS {
         assert!(ids.contains(&p.id), "provider_preset_ids missing {}", p.id);
     }
+}
+
+// ---------------------------------------------------------------------------
+// stream 键提取（2026-10-13 per-model 流式开关）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_extract_stream_mode_value_matrix() {
+    use serde_json::json;
+    let mk = |v: serde_json::Value| {
+        let extra = std::collections::BTreeMap::from([("stream".to_string(), v)]);
+        extract_stream_mode(&extra)
+    };
+    // yes 侧
+    assert_eq!(mk(json!(true)), "yes");
+    assert_eq!(mk(json!("yes")), "yes");
+    assert_eq!(mk(json!("YES")), "yes");
+    assert_eq!(mk(json!("true")), "yes");
+    assert_eq!(mk(json!(" True ")), "yes");
+    // no 侧
+    assert_eq!(mk(json!(false)), "no");
+    assert_eq!(mk(json!("no")), "no");
+    assert_eq!(mk(json!("False")), "no");
+    // auto 侧（缺省 / 未知值 / 非 bool 非字符串）
+    let empty = std::collections::BTreeMap::new();
+    assert_eq!(extract_stream_mode(&empty), "");
+    assert_eq!(mk(json!("maybe")), "");
+    assert_eq!(mk(json!(1)), "");
+    assert_eq!(mk(json!(null)), "");
+}
+
+#[test]
+fn test_resolve_model_config_stream_mode_passthrough() {
+    let cfg = Config {
+        model_list: vec![
+            ModelConfig {
+                extra: std::collections::BTreeMap::from([(
+                    "stream".to_string(),
+                    serde_json::json!(true),
+                )]),
+                model_name: "streamed".to_string(),
+                model: "openai/gpt-x".to_string(),
+                api_key: "k".to_string(),
+                ..Default::default()
+            },
+            ModelConfig {
+                extra: std::collections::BTreeMap::from([(
+                    "stream".to_string(),
+                    serde_json::json!("no"),
+                )]),
+                model_name: "unstreamed".to_string(),
+                model: "openai/gpt-x".to_string(),
+                api_key: "k".to_string(),
+                ..Default::default()
+            },
+            ModelConfig {
+                extra: Default::default(),
+                model_name: "plain".to_string(),
+                model: "openai/gpt-x".to_string(),
+                api_key: "k".to_string(),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    assert_eq!(
+        resolve_model_config(&cfg, "streamed").unwrap().stream_mode,
+        "yes"
+    );
+    assert_eq!(
+        resolve_model_config(&cfg, "unstreamed")
+            .unwrap()
+            .stream_mode,
+        "no"
+    );
+    assert_eq!(resolve_model_config(&cfg, "plain").unwrap().stream_mode, "");
+}
+
+// ---------------------------------------------------------------------------
+// BUG-b 根修回归（2026-10-13）：model 字段比对不再有 '/' 门控
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_resolve_model_config_prefixless_model_field_matches() {
+    // 无前缀条目（model: "gpt-5.6-sol"）+ 同名 ref：旧实现门控错过，
+    // 落 inference fallback（默认 base + 空 key）。根修后精确命中条目，
+    // key/base 都来自条目本身。
+    let cfg = Config {
+        model_list: vec![ModelConfig {
+            extra: Default::default(),
+            model_name: "main".to_string(),
+            model: "gpt-5.6-sol".to_string(),
+            api_key: "real-key".to_string(),
+            api_base: "http://127.0.0.1:15721/v1".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let res = resolve_model_config(&cfg, "gpt-5.6-sol").unwrap();
+    assert_eq!(res.api_key, "real-key");
+    assert_eq!(res.api_base, "http://127.0.0.1:15721/v1");
+    assert_eq!(res.model_name, "gpt-5.6-sol");
+    // 无前缀模型名走推断：gpt → openai
+    assert_eq!(res.provider_name, "openai");
+}
+
+#[test]
+fn test_resolve_model_config_prefixless_model_field_beats_inference_fallback() {
+    // 命中条目时 api_base 必须来自条目而非 get_default_api_base ——
+    // 旧门控下此 ref 会静默落到 https://api.openai.com/v1 + 空 key。
+    let cfg = Config {
+        model_list: vec![ModelConfig {
+            extra: Default::default(),
+            model_name: "sol".to_string(),
+            model: "gpt-5.6-sol".to_string(),
+            api_key: "k2".to_string(),
+            api_base: "http://10.1.1.1:9999".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let res = resolve_model_config(&cfg, "gpt-5.6-sol").unwrap();
+    assert_ne!(res.api_base, get_default_api_base("openai"));
+    assert_eq!(res.api_base, "http://10.1.1.1:9999");
 }

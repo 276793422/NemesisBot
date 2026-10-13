@@ -606,6 +606,7 @@ impl ProjectLoopManager {
         };
         let factory_cfg = nemesis_providers::factory::FactoryConfig {
             proxy: resolution.proxy.clone(),
+            stream_mode: resolution.stream_mode.clone(),
             llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
             api_key: resolution.api_key.clone(),
             api_base: resolution.api_base.clone(),
@@ -663,6 +664,7 @@ impl nemesis_web::handlers::projects::ProjectsBridge for ProjectLoopManager {
                 name: e.name,
                 path: e.path.to_string_lossy().to_string(),
                 created_at: e.created_at,
+                instructions_trusted: e.instructions_trusted,
             })
             .collect()
     }
@@ -690,6 +692,7 @@ impl nemesis_web::handlers::projects::ProjectsBridge for ProjectLoopManager {
             name: entry.name,
             path: entry.path.to_string_lossy().to_string(),
             created_at: entry.created_at,
+            instructions_trusted: entry.instructions_trusted,
         })
     }
 
@@ -709,6 +712,7 @@ impl nemesis_web::handlers::projects::ProjectsBridge for ProjectLoopManager {
             name: entry.name,
             path: entry.path.to_string_lossy().to_string(),
             created_at: entry.created_at,
+            instructions_trusted: entry.instructions_trusted,
         })
     }
 
@@ -725,6 +729,50 @@ impl nemesis_web::handlers::projects::ProjectsBridge for ProjectLoopManager {
             name: entry.name,
             path: entry.path.to_string_lossy().to_string(),
             created_at: entry.created_at,
+            instructions_trusted: entry.instructions_trusted,
+        })
+    }
+
+    fn set_trust(
+        &self,
+        project_id: &str,
+        trusted: bool,
+    ) -> Result<nemesis_web::handlers::projects::ProjectInfo, String> {
+        // 注册表先写（真相源；损坏 loud 拒绝）。
+        let entry = registry::set_project_trust(&self.registry_path, project_id, trusted)
+            .map_err(|e| format!("{e:#}"))?;
+        // 热更新在跑 loop（区块逐 build 重渲染，下一轮即生效；无残留）。
+        // 未在跑 = 仅写盘（spawn 时 build_project_agent_loop 按注册表解析
+        // 起点）。config 读取失败 → warn + annotate 兜底（注册表已写成功
+        // 不回滚——lenient 与装配期 from_policy 未知值同语义）。
+        if let Some(loop_arc) = self.project_loop(project_id) {
+            let trust = if trusted {
+                nemesis_agent::workspace_instructions::InstructionTrust::Trusted
+            } else {
+                let policy = nemesis_config::load_config(&self.shared.home.join("config.json"))
+                    .map(|c| {
+                        c.projects
+                            .as_ref()
+                            .map(|p| p.instruction_trust.clone())
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_else(|e| {
+                        warn!(
+                            "[ProjectLoops] set_trust: config.json 读取失败，未受信项目按 annotate 兜底: {e}"
+                        );
+                        String::new()
+                    });
+                nemesis_agent::workspace_instructions::InstructionTrust::from_policy(&policy)
+            };
+            loop_arc.set_instruction_trust(trust);
+        }
+        Ok(nemesis_web::handlers::projects::ProjectInfo {
+            running: self.is_running(project_id),
+            id: entry.id,
+            name: entry.name,
+            path: entry.path.to_string_lossy().to_string(),
+            created_at: entry.created_at,
+            instructions_trusted: entry.instructions_trusted,
         })
     }
 

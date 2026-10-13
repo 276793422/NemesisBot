@@ -423,6 +423,125 @@ async fn locked_vault_reports_unlocked_false_and_set_fails_loud() {
 }
 
 // ---------------------------------------------------------------------------
+// unlock（解锁测试；显式口令——跨平台强制 argon2id fixture，不依赖默认模式）
+// ---------------------------------------------------------------------------
+
+/// 建一个**强制 argon2id** 的 vault fixture（与平台默认无关；dpapi 平台
+/// 也能验证「锁着 → 显式口令开」语义）。
+fn create_argon2_fixture(dir: &tempfile::TempDir) {
+    let path = nemesis_path::resolve_vault_path_in_workspace(dir.path());
+    VaultStore::create(&path, VaultMode::Argon2id, Some(PW)).expect("create argon2 vault");
+}
+
+#[tokio::test]
+async fn unlock_missing_vault_is_honest_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    let err = VaultHandler
+        .handle_cmd(
+            "unlock",
+            Some(serde_json::json!({ "passphrase": PW })),
+            &ctx,
+        )
+        .await
+        .expect_err("unlock on missing vault must error");
+    assert!(err.contains("vault 文件不存在"), "{err}");
+}
+
+#[tokio::test]
+async fn unlock_explicit_passphrase_roundtrip_without_env() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    create_argon2_fixture(&dir);
+
+    // 无 env 口令环境：显式正确口令 → unlocked:true + 模式回显。
+    let ok = without_passphrase(async {
+        VaultHandler
+            .handle_cmd(
+                "unlock",
+                Some(serde_json::json!({ "passphrase": PW })),
+                &ctx,
+            )
+            .await
+            .expect("unlock with correct passphrase")
+            .expect("payload")
+    })
+    .await;
+    assert_eq!(ok["unlocked"], true);
+    assert_eq!(ok["mode"], VaultMode::Argon2id.to_string());
+
+    // 错误口令 → 诚实失败（不带 env 指引也能定位到口令错误）。
+    let err = without_passphrase(async {
+        VaultHandler
+            .handle_cmd(
+                "unlock",
+                Some(serde_json::json!({ "passphrase": "wrong-passphrase" })),
+                &ctx,
+            )
+            .await
+    })
+    .await
+    .expect_err("wrong passphrase must error");
+    assert!(err.contains("解锁失败"), "{err}");
+    let err = err.replace(PW, "***");
+    assert!(!err.contains("***"), "错误文案不应回显口令: {err}");
+}
+
+#[tokio::test]
+async fn unlock_requires_passphrase_from_data_or_env() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    create_argon2_fixture(&dir);
+
+    // data 与 env 都没有口令：拒绝并给出两条来源指引。
+    let err = without_passphrase(async { VaultHandler.handle_cmd("unlock", None, &ctx).await })
+        .await
+        .expect_err("no passphrase anywhere must error");
+    assert!(err.contains("未提供口令"), "{err}");
+    assert!(err.contains("passphrase"), "{err}");
+    assert!(err.contains("NEMESISBOT_VAULT_PASSPHRASE"), "{err}");
+
+    // env 在场、data 缺省：回退 env（与 CLI/解析器同源）。
+    let ok = with_passphrase(PW, async {
+        VaultHandler
+            .handle_cmd("unlock", None, &ctx)
+            .await
+            .expect("unlock falls back to env")
+            .expect("payload")
+    })
+    .await;
+    assert_eq!(ok["unlocked"], true);
+}
+
+#[tokio::test]
+async fn unlock_does_not_mutate_lock_state_of_later_requests() {
+    // 解锁态不跨请求存留：unlock 成功后，下一次 list（无口令环境）仍报
+    // locked——「测试」语义不产生持久副作用。
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    create_argon2_fixture(&dir);
+    without_passphrase(async {
+        VaultHandler
+            .handle_cmd(
+                "unlock",
+                Some(serde_json::json!({ "passphrase": PW })),
+                &ctx,
+            )
+            .await
+            .expect("unlock ok")
+            .expect("payload");
+
+        let ls = VaultHandler
+            .handle_cmd("list", None, &ctx)
+            .await
+            .expect("list")
+            .expect("payload");
+        assert_eq!(ls["unlocked"], false, "解锁测试不应改变后续请求的锁态");
+    })
+    .await;
+}
+
+// ---------------------------------------------------------------------------
 // L1 注册表面
 // ---------------------------------------------------------------------------
 
@@ -431,6 +550,6 @@ fn module_surface() {
     assert_eq!(VaultHandler.module_name(), "vault");
     assert_eq!(
         VaultHandler.commands(),
-        &["list", "set", "remove", "status"]
+        &["list", "set", "remove", "status", "unlock"]
     );
 }

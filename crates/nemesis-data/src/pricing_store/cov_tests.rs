@@ -29,6 +29,7 @@ fn entry(id: &str, aliases: &[&str]) -> ModelPricing {
         max_input_tokens: None,
         max_output_tokens: None,
         aliases: aliases.iter().map(|s| s.to_string()).collect(),
+        price_tiers: None,
     }
 }
 

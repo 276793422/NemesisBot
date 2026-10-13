@@ -49,6 +49,16 @@ fn classifies_source_by_target_prefix() {
         SseLogEvent::classify_source("nemesis_agent::loop"),
         "general"
     );
+    // L10（2026-10-13）：cache warmer 完整模块路径先判 → llm（warm 是
+    // 真金白银的 API 调用，观测面归 llm 源）；其余 nemesis_agent 不受影响。
+    assert_eq!(
+        SseLogEvent::classify_source("nemesis_agent::loop::cache_warmer"),
+        "llm"
+    );
+    assert_eq!(
+        SseLogEvent::classify_source("nemesis_agent::loop::cache_warmer_tests"),
+        "llm"
+    );
     assert_eq!(
         SseLogEvent::classify_source("nemesis_web::server"),
         "general"

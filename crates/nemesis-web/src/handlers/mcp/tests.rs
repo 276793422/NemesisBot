@@ -170,3 +170,75 @@ async fn server_update_patches_all_optional_fields_and_persists() {
         "掩码回存必须还原为存量原值: {raw}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 事务入口并发回归钉（2026-10-13 横扫四期）：config.mcp.json 此前四个写臂
+// 全部裸 RMW（横扫清单漏网），现收敛到 update_mcp_config（锁在入口内）。
+// 两线程并发改不同 server，两个变更都必须存活。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mcp_update_entries_serialized_both_mutations_survive() {
+    let dir = tempfile::tempdir().unwrap();
+    seed_mcp_config(
+        &dir,
+        serde_json::json!([
+            { "name": "a", "transport_type": "stdio" },
+            { "name": "b", "transport_type": "stdio" }
+        ]),
+    );
+    let ws = dir.path().to_string_lossy().to_string();
+
+    let ws_a = ws.clone();
+    let ws_b = ws.clone();
+    std::thread::scope(|s| {
+        let ra = s.spawn(move || {
+            super::update_mcp_config(&ws_a, |cfg| {
+                cfg.servers.iter_mut().find(|s| s.name == "a").unwrap().url = "http://a".into();
+                Ok(())
+            })
+        });
+        let rb = s.spawn(move || {
+            super::update_mcp_config(&ws_b, |cfg| {
+                cfg.servers.iter_mut().find(|s| s.name == "b").unwrap().url = "http://b".into();
+                Ok(())
+            })
+        });
+        ra.join().unwrap().expect("tx a ok");
+        rb.join().unwrap().expect("tx b ok");
+    });
+
+    let raw: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("config/config.mcp.json")).unwrap(),
+    )
+    .unwrap();
+    let servers = raw["servers"].as_array().unwrap();
+    let a = servers.iter().find(|s| s["name"] == "a").unwrap();
+    let b = servers.iter().find(|s| s["name"] == "b").unwrap();
+    assert_eq!(a["url"], "http://a", "并发事务 a 的变更存活");
+    assert_eq!(b["url"], "http://b", "并发事务 b 的变更存活");
+}
+
+// abort 语义钉：闭包 Err ⇒ 不落盘（与 config 家族入口同语义）。
+#[test]
+fn mcp_update_entry_closure_err_leaves_disk_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    seed_mcp_config(
+        &dir,
+        serde_json::json!([{ "name": "a", "transport_type": "stdio", "url": "" }]),
+    );
+    let ws = dir.path().to_string_lossy().to_string();
+
+    let err = super::update_mcp_config(&ws, |cfg| {
+        cfg.servers[0].url = "http://should-not-persist".into();
+        Err::<(), String>("deliberate abort".to_string())
+    })
+    .unwrap_err();
+    assert_eq!(err, "deliberate abort");
+
+    let raw: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("config/config.mcp.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(raw["servers"][0]["url"], "", "abort 后盘上保持事务前状态");
+}

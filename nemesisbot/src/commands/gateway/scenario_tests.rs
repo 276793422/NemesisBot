@@ -335,24 +335,27 @@ async fn s1_cross_session_turns_run_in_parallel() {
 
     let t_send_b = Instant::now();
     chat_send(&mut conn, "乙插话", "scn-b").await;
-    // 并行性核心断言：B 的真实回答在 4s 内到达（串行世界 B 必须 ≥6s 后才
-    // 轮到；4s 界两侧间隔充足，不受 CI CPU 抖动影响）。
-    let b_frame = tokio::time::timeout(Duration::from_secs(8), async {
+    // 并行性核心断言：第一条到达的 assistant 帧必是 B（即时回）。串行世界
+    // B 排在 A 的 6s turn 之后、第一条必是 A——次序判据与机器快慢无关，
+    // 满载/慢机不假红；原 4s 绝对界把「并行性成立」误钉成「本机往返够快」，
+    // 全量并发下 B 的墙钟本身可超 4s 而并行性无损。
+    let first = tokio::time::timeout(Duration::from_secs(20), async {
         ws_recv_matching(
             &mut conn,
-            Duration::from_secs(8),
-            "assistant frame [scn-b]",
-            |v| test_harness::chat_receive_match(v, Some("scn-b"), Some("assistant"), "乙-完成"),
+            Duration::from_secs(20),
+            "first assistant frame",
+            |v| test_harness::chat_receive_match(v, None, Some("assistant"), ""),
         )
         .await
-        .expect("assistant frame [scn-b]")
+        .expect("first assistant frame")
     })
     .await
-    .expect("B reply within 8s wall clock");
+    .expect("first assistant frame within 20s wall clock");
     let b_ms = t_send_b.elapsed().as_millis();
-    assert!(
-        b_ms < 4000,
-        "跨会话并行破坏：B 等了 {b_ms}ms 才得到回答（>4s 说明仍被 A 的长 turn 串行阻塞）；frame={b_frame}"
+    assert_eq!(
+        first["data"]["session_id"].as_str().unwrap_or_default(),
+        "scn-b",
+        "跨会话并行破坏：A 的回复先于 B 到达（B 被 A 的长 turn 串行阻塞，B 实际等了 {b_ms}ms）；frame={first}"
     );
 
     // A 的长 turn 正常收尾（不算丢失）。

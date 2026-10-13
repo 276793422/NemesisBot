@@ -198,6 +198,17 @@ pub(crate) async fn build_security_plugin(
         security_config.log_all_operations = b;
         info!("[Security] log_all_operations: {}", b);
     }
+    // L6（2026-10-12 T1）：pre-exec 脚本内容扫描开关（默认开）。独立键 +
+    // security.enabled 主闸兼容（主闸关 = 全管线短路）。构造期消费
+    // （关 = 扫描器不装配）；命中走升级审批卡而非硬拦，见 preexec 模块。
+    if let Some(b) = sec_json
+        .as_ref()
+        .and_then(|v| v.get("preexec_scan_enabled"))
+        .and_then(|x| x.as_bool())
+    {
+        security_config.preexec_scan_enabled = b;
+        info!("[Security] preexec_scan_enabled: {}", b);
+    }
     // T4（扩展计划 D2a）：子进程环境凭据清洗开关（默认开）。进程级静态，
     // 三处 spawn 点（agent loop exec/run_checks 闸 + nemesis-tools
     // shell/async_shell）统一查询；缺键 = 开（旧行为的唯偏离点是多剥
@@ -257,6 +268,9 @@ pub(crate) async fn build_security_plugin(
     plugin
         .auditor()
         .set_self_destruct_exempt_path(&workspace_root.to_string_lossy());
+    // L6（2026-10-12 T1）：pre-exec 扫描的相对脚本路径解析根（workspace，
+    // 与 D1 保护路径同源）。未注入 = 相对路径不解析（诚实降级）。
+    plugin.set_preexec_workspace_root(&workspace_root.to_string_lossy());
 
     // Full Access 编辑器放行开关(2026-09-20 用户裁决):创建运行
     // 时态(**双关,不持久化——进程重启一律回关,必须用户手动再开**),同一

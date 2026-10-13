@@ -1035,3 +1035,112 @@ fn peer_config_professions_roundtrip_and_legacy_default() {
     assert!(old.professions.is_empty());
     assert_eq!(old.tier, None);
 }
+
+// ---------------------------------------------------------------------------
+// peers.toml 写串行锁并发回归钉（2026-10-13 横扫四期）：peers.toml 的写者
+// 家族（append / remove / save_static_config 经 web update_peers_node）此前
+// 只有 [node] 段进锁——append/remove 的读→改→写快照不互斥，并发身份写回会
+// 冲掉刚落的 [peers.X]。现在 append/remove 在函数内取 config_write_lock。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn concurrent_appends_all_peers_survive() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peers.toml");
+
+    std::thread::scope(|s| {
+        for i in 0..6 {
+            let path = path.clone();
+            s.spawn(move || {
+                append_peer_to_file(
+                    &path,
+                    &format!("node-{i}"),
+                    "127.0.0.1:11949",
+                    "worker",
+                    "dev",
+                    0,
+                )
+                .expect("append ok");
+            });
+        }
+    });
+
+    let loaded = load_static_config(&path).unwrap();
+    for i in 0..6 {
+        let key = format!("node-{i}");
+        assert!(
+            peers_from_doc(&path).contains(&key),
+            "并发 append 丢失 peer {key}"
+        );
+    }
+    let _ = loaded;
+}
+
+/// 便捷读：直接解析文档拿 [peers.X] 键集（测试专用，不依赖装载端过滤）。
+fn peers_from_doc(path: &std::path::Path) -> Vec<String> {
+    let content = std::fs::read_to_string(path).unwrap_or_default();
+    content
+        .parse::<toml::Value>()
+        .ok()
+        .and_then(|doc| doc.get("peers").and_then(|v| v.as_table()).cloned())
+        .map(|t| t.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn identity_write_with_lock_does_not_clobber_concurrent_append() {
+    // B 线程持 config_write_lock 做 [node] 身份写（web update_peers_node
+    // 的锁内形态）；A 线程并发 append（锁内等 B 释放）——两者串行后
+    // [node] 新身份与 [peers.X] 都必须存活。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peers.toml");
+    // 种子文件：先有一个默认 node 段，让两条路径都走「已存在文件」分支。
+    save_static_config(
+        &path,
+        &StaticConfig {
+            node: NodeInfo {
+                id: "self".into(),
+                name: "Self".into(),
+                role: "worker".into(),
+                category: "dev".into(),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+
+    std::thread::scope(|s| {
+        let pa = path.clone();
+        s.spawn(move || {
+            append_peer_to_file(&pa, "node-x", "127.0.0.1:11949", "worker", "dev", 0)
+                .expect("append ok");
+        });
+        let pb = path.clone();
+        s.spawn(move || {
+            let _g = nemesis_config::config_write_lock();
+            save_static_config(
+                &pb,
+                &StaticConfig {
+                    node: NodeInfo {
+                        id: "self".into(),
+                        name: "Renamed".into(),
+                        role: "manager".into(),
+                        category: "dev".into(),
+                        ..Default::default()
+                    },
+                },
+            )
+            .expect("identity write ok");
+        });
+    });
+
+    // 身份写存活（peer-preserving）。
+    let node = load_static_config(&path).unwrap().node;
+    assert_eq!(node.name, "Renamed");
+    // append 存活（锁缺席时 B 的旧快照写回会把 node-x 冲掉）。
+    let peers = peers_from_doc(&path);
+    assert!(
+        peers.iter().any(|k| k == "node-x"),
+        "并发身份写回不得冲掉 append 的 peer，实际 peers: {peers:?}"
+    );
+}

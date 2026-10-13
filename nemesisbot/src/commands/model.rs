@@ -36,6 +36,16 @@ pub enum ModelAction {
         /// "claude" is accepted as an alias of "anthropic".
         #[arg(long)]
         protocol: Option<String>,
+        /// Declared model role (2026-10-13): conversation | utility | classifier.
+        /// Omit = conversation. utility/classifier entries are chat-shaped but
+        /// rejected from the default conversation slot (--default / WSAPI
+        /// models.set_default / gateway assembly).
+        #[arg(long)]
+        role: Option<String>,
+        /// Per-model streaming switch: yes | no（别名 true/false）。
+        /// Omit = auto（codex lane 流式、anthropic/openai 兼容 lane 非流式）。
+        #[arg(long)]
+        stream: Option<String>,
         /// Set as default model
         #[arg(long, default_value_t = false)]
         default: bool,
@@ -138,12 +148,39 @@ pub enum PricesAction {
         /// 显示名（可选，缺省用模型名）。
         #[arg(long)]
         display: Option<String>,
+        /// Prompt-length 阶梯价（L3，可重复）：`<min_prompt_tokens>:<input>:<output>`
+        /// （USD / 百万 token；input_tokens ≥ min 时该档生效，多条命中取
+        /// 阈值最大档；缓存价继承基础价——需精细控制走 Dashboard 属性编辑器）。
+        #[arg(long = "price-tier")]
+        price_tiers: Vec<String>,
     },
     /// 删除自定义条目（只影响自定义层；下载/内置层不动）。
     Remove {
         /// 自定义条目模型名（`prices add` 时的 model）。
         model: String,
     },
+}
+
+/// 守卫①生效键（M4 + 2026-10-13 N6）：新 entry 显式键优先，重复 add 回退
+/// 旧条目——与 model_list 合并的 `or_insert`（旧键只填缺）语义一致。只看
+/// 新 entry 会漏「旧条目是 images-openai/utility，重复 `--default` 仍把
+/// 它指到主对话槽」的旁路（两守卫同款洞，合并生效值一并封死）。
+fn effective_entry_key(
+    entry: &serde_json::Value,
+    existing: Option<&serde_json::Value>,
+    key: &str,
+) -> String {
+    entry
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .or_else(|| {
+            existing
+                .and_then(|e| e.get(key))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_default()
 }
 
 pub async fn run(action: ModelAction, local: bool) -> Result<()> {
@@ -159,6 +196,8 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             proxy,
             auth,
             protocol,
+            role,
+            stream,
             default,
         } => {
             if !cfg_path.exists() {
@@ -267,16 +306,61 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 // 表内协议均为归一值（完整性测试钉住），直接写盘即可。
                 entry["protocol"] = serde_json::Value::String(p.protocol.to_string());
             }
+            // per-model 流式开关（2026-10-13 stream 键）：归一走单一真相源
+            // normalize_stream_value（与配置解析同源），非法值 loud 报错
+            // （CLI 显式 flag 不做静默忽略——与配置层「未知值落 auto」的分
+            // 工是刻意的：flag 是用户当次意志，错了就该说）。
+            if let Some(s) = &stream {
+                let normalized = nemesis_config::normalize_stream_value(&serde_json::json!(s))
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Invalid --stream value '{}'. Use yes | no (aliases: true | false).",
+                            s
+                        )
+                    })?;
+                entry["stream"] = serde_json::Value::String(normalized);
+            }
             // 集群专业职能框架 M4：图像协议条目唯一消费点 = generate_image 工具
             // （经 tools.image_gen / 唯一 images-openai 条目解析），不能坐上
             // agent 默认对话模型槽。--default 显式请求 = loud 拒绝（守卫①）；
             // 仅一条模型时的自动默认（守卫①b）也跳过图像条目，诚实打印说明。
-            let entry_protocol = entry.get("protocol").and_then(|v| v.as_str()).unwrap_or("");
-            let is_image_entry = nemesis_types::capability::is_image_protocol(entry_protocol);
+            // N6（2026-10-13）：守卫判定用**合并生效值**——重复 add 不带
+            // --protocol/--role 时新 entry 缺键、旧条目经下方 merge 回填，
+            // 只看新 entry 会漏掉「旧条目是 images-openai/utility 仍被
+            // --default 指到主对话槽」的旁路（两守卫同款洞，一并修）。
+            let existing_entry = cfg
+                .get("model_list")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| {
+                    arr.iter()
+                        .find(|m| m.get("model").and_then(|v| v.as_str()) == Some(model.as_str()))
+                })
+                .cloned();
+            // 生效键 = 新 entry 显式键优先，重复 add 时回退旧条目（与下方
+            // merge 的 or_insert 语义一致）。
+            let entry_protocol = effective_entry_key(&entry, existing_entry.as_ref(), "protocol");
+            let is_image_entry = nemesis_types::capability::is_image_protocol(&entry_protocol);
             if default && is_image_entry {
                 anyhow::bail!(
                     "protocol 'images-openai' 是图像生成协议，不能设为默认对话模型；\
                      请去掉 --default 重新添加（generate_image 工具会自动解析该条目）"
+                );
+            }
+            // 声明式模型角色（2026-10-13 N6）：显式 --role 写盘；校验/归一走
+            // 单一真相源，未知值 loud 报错退出。utility/classifier 是对话形态
+            // 条目（probe 照常），但不是默认对话模型槽的合法形态——守卫①
+            // 同款 loud 拒绝（agents.small_model 才是这类条目的消费点）。
+            if let Some(r) = &role {
+                let normalized = nemesis_types::capability::normalize_model_role(r)
+                    .map_err(anyhow::Error::msg)?;
+                entry["role"] = serde_json::Value::String(normalized);
+            }
+            let entry_role = effective_entry_key(&entry, existing_entry.as_ref(), "role");
+            if default && !nemesis_types::capability::is_conversation_role(&entry_role) {
+                anyhow::bail!(
+                    "role '{}' 不是默认对话模型槽的合法形态（只有 conversation 可以）；\
+                     请去掉 --default 重新添加（杂务消费走 agents.small_model 指向该条目）",
+                    entry_role
                 );
             }
 
@@ -418,6 +502,12 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                         // = generate_image 工具），诚实打印而非悄悄写 agents.defaults.llm。
                         println!(
                             "  Note: 'images-openai' 协议条目不自动设为默认对话模型（仅供 generate_image 工具消费）"
+                        );
+                    } else if !nemesis_types::capability::is_conversation_role(&entry_role) {
+                        // 守卫①b（N6）：utility/classifier 条目同样不自动坐槽。
+                        println!(
+                            "  Note: role '{}' 条目不自动设为默认对话模型（杂务消费走 agents.small_model）",
+                            entry_role
                         );
                     } else {
                         // Auto-set as default
@@ -890,6 +980,51 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
     Ok(())
 }
 
+/// 解析 `--price-tier <min>:<input>:<output>` 重复参数（L3）。解析失败
+/// 响亮报错（带条目序号与原文），空列表 = 无阶梯（None）。
+fn parse_price_tiers(specs: &[String]) -> Result<Option<Vec<nemesis_data::PriceTier>>> {
+    if specs.is_empty() {
+        return Ok(None);
+    }
+    let mut tiers = Vec::with_capacity(specs.len());
+    for (i, spec) in specs.iter().enumerate() {
+        let parts: Vec<&str> = spec.split(':').map(str::trim).collect();
+        if parts.len() != 3 {
+            anyhow::bail!(
+                "第 {} 条阶梯价格式错误（{spec:?}）：应为 <min_prompt_tokens>:<input>:<output>",
+                i + 1
+            );
+        }
+        let min_prompt_tokens: i64 = parts[0].parse().map_err(|_| {
+            anyhow::anyhow!(
+                "第 {} 条阶梯价阈值非法（{}）：须为非负整数",
+                i + 1,
+                parts[0]
+            )
+        })?;
+        if min_prompt_tokens < 0 {
+            anyhow::bail!("第 {} 条阶梯价阈值不能为负（{}）", i + 1, parts[0]);
+        }
+        let input_cost_per_million: f64 = parts[1]
+            .parse()
+            .map_err(|_| anyhow::anyhow!("第 {} 条阶梯输入价非法（{}）", i + 1, parts[1]))?;
+        let output_cost_per_million: f64 = parts[2]
+            .parse()
+            .map_err(|_| anyhow::anyhow!("第 {} 条阶梯输出价非法（{}）", i + 1, parts[2]))?;
+        if !(input_cost_per_million.is_finite() && output_cost_per_million.is_finite()) {
+            anyhow::bail!("第 {} 条阶梯价须为有限数值", i + 1);
+        }
+        tiers.push(nemesis_data::PriceTier {
+            min_prompt_tokens,
+            input_cost_per_million: Some(input_cost_per_million),
+            output_cost_per_million: Some(output_cost_per_million),
+            cache_read_cost_per_million: None,
+            cache_creation_cost_per_million: None,
+        });
+    }
+    Ok(Some(tiers))
+}
+
 /// A2（2026-08-31）：`model prices` 子命令实现。CLI 直开 DataStore（与
 /// gateway 同一路径真相源 `workspace_data_dir`），计价/价目管理复用
 /// nemesis-data + nemesis-web 的同步实现，不重复造轮子。
@@ -932,13 +1067,30 @@ async fn run_prices(action: PricesAction, home: &Path) -> Result<()> {
             if !custom.is_empty() {
                 println!("自定义条目：");
                 for p in &custom {
+                    let tiers = match &p.price_tiers {
+                        Some(t) if !t.is_empty() => {
+                            let mut parts = Vec::new();
+                            for t in t {
+                                parts.push(format!(
+                                    "≥{}:in={:.4} out={:.4}",
+                                    t.min_prompt_tokens,
+                                    t.input_cost_per_million.unwrap_or(p.input_cost_per_million),
+                                    t.output_cost_per_million
+                                        .unwrap_or(p.output_cost_per_million)
+                                ));
+                            }
+                            format!("  阶梯：{}", parts.join(" | "))
+                        }
+                        _ => String::new(),
+                    };
                     println!(
-                        "  {:<32} in={:.4} out={:.4} cache_read={:.4} cache_creation={:.4} $/Mtok",
+                        "  {:<32} in={:.4} out={:.4} cache_read={:.4} cache_creation={:.4} $/Mtok{}",
                         p.model_id,
                         p.input_cost_per_million,
                         p.output_cost_per_million,
                         p.cache_read_cost_per_million,
-                        p.cache_creation_cost_per_million
+                        p.cache_creation_cost_per_million,
+                        tiers
                     );
                 }
             }
@@ -991,11 +1143,18 @@ async fn run_prices(action: PricesAction, home: &Path) -> Result<()> {
             cache_read,
             cache_creation,
             display,
+            price_tiers,
         } => {
             let name = model.trim().to_string();
             if name.is_empty() {
                 anyhow::bail!("模型名不能为空");
             }
+            let tiers = parse_price_tiers(&price_tiers)?;
+            let tier_note = if tiers.is_some() {
+                "（含阶梯价）"
+            } else {
+                ""
+            };
             pricing
                 .upsert_custom(nemesis_data::ModelPricing {
                     model_id: name.clone(),
@@ -1007,9 +1166,12 @@ async fn run_prices(action: PricesAction, home: &Path) -> Result<()> {
                     max_input_tokens: None,
                     max_output_tokens: None,
                     aliases: Vec::new(),
+                    price_tiers: tiers,
                 })
                 .map_err(|e| anyhow::anyhow!("写入自定义条目失败：{e}"))?;
-            println!("自定义条目已保存：{name}（in={input} out={output} $/Mtok，最高查表优先级）");
+            println!(
+                "自定义条目已保存：{name}（in={input} out={output} $/Mtok，最高查表优先级）{tier_note}"
+            );
         }
         PricesAction::Remove { model } => {
             let removed = pricing
@@ -1089,6 +1251,7 @@ async fn run_probe(
     let model_name = resolution.model_name.clone();
     let factory_cfg = nemesis_providers::factory::FactoryConfig {
         proxy: resolution.proxy.clone(),
+        stream_mode: resolution.stream_mode.clone(),
         llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
         api_key: resolution.api_key.clone(),
         api_base: resolution.api_base.clone(),

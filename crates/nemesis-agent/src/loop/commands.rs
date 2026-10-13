@@ -73,6 +73,7 @@ impl AgentLoop {
                     cron_job_name,
                     images: &[],
                     file_changes: &[],
+                    deliverables: &[],
                     checkpoint_turn: None, // E3：system 直调不经 gate/preamble，无 checkpoint 标记
                 },
             );

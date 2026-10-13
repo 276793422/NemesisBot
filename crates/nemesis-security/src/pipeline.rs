@@ -87,6 +87,10 @@ pub struct SecurityPluginConfig {
     /// 现接线到 execute() 末尾的 "passed all security layers" 事件。
     /// 默认 true = 旧行为不变。
     pub log_all_operations: bool,
+    /// L6（2026-10-12 T1）：pre-exec 脚本内容扫描开关（默认开）。独立键，
+    /// 同时受 `enabled` 主闸约束（主闸关 = 全管线短路）。关 = 扫描器不
+    /// 装配（构造期唯一生效路径，与 injection/command_guard 同款）。
+    pub preexec_scan_enabled: bool,
     /// File rules: operation type -> list of (pattern, action) pairs.
     pub file_rules: Vec<SecurityRule>,
     pub dir_rules: Vec<SecurityRule>,
@@ -117,6 +121,7 @@ impl Default for SecurityPluginConfig {
             default_action: "deny".to_string(),
             approval_timeout_secs: 300,
             log_all_operations: true,
+            preexec_scan_enabled: true,
             file_rules: Vec::new(),
             dir_rules: Vec::new(),
             process_rules: Vec::new(),
@@ -157,6 +162,9 @@ pub struct SecurityPlugin {
     /// 由 security_setup 按裸 JSON 键 `guardian_mode` 注入；装配点
     /// （gateway set_judge）与消费点（agent loop）同读此闸。
     guardian_mode: RwLock<String>,
+    /// L6（2026-10-12 T1）：pre-exec 脚本内容扫描器。`preexec_scan_enabled`
+    /// 关 = 不装配 = 扫描短路（None）。
+    preexec: Option<crate::preexec::PreExecScanner>,
 }
 
 impl SecurityPlugin {
@@ -274,6 +282,16 @@ impl SecurityPlugin {
             );
         }
 
+        // L6（2026-10-12 T1）：pre-exec 脚本内容扫描器。注入阈值与第 1 层
+        // 同源（config.injection_threshold——单一灵敏度旋钮）。
+        let preexec = if config.preexec_scan_enabled {
+            Some(crate::preexec::PreExecScanner::new(
+                config.injection_threshold,
+            ))
+        } else {
+            None
+        };
+
         let plugin = Self {
             config,
             auditor,
@@ -291,6 +309,7 @@ impl SecurityPlugin {
             judge: RwLock::new(None),
             guardian_failure_policy: RwLock::new(String::new()),
             guardian_mode: RwLock::new(String::new()),
+            preexec,
         };
 
         // Register rules from config
@@ -680,6 +699,44 @@ impl SecurityPlugin {
             );
         }
 
+        // L6: pre-exec 脚本内容扫描（2026-10-12 T1）。8 层只看 args——
+        // 磁盘既有脚本的内容 exec 前零检查是盲区。命中不硬拦：把
+        // force_approval 钉到请求上，ABAC 升格强制人工审批（误报出路，
+        // 审批卡可放行）；文件缺失/二进制自然放行，`bash -c` 内联不受影响。
+        let mut preexec_force: Option<String> = None;
+        if let Some(ref scanner) = self.preexec
+            && matches!(
+                op_type,
+                OperationType::ProcessExec | OperationType::ProcessSpawn
+            )
+            && !target.is_empty()
+            && let Some(hit) = scanner.scan(&target)
+        {
+            let reason = format!(
+                "pre-exec script scan: suspicious content in `{}` (score: {:.2}, level: {}, matched: {})",
+                hit.script,
+                hit.score,
+                hit.level,
+                hit.matched
+                    .iter()
+                    .take(3)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            );
+            self.log_audit_event(
+                "warn",
+                &op_type.to_string(),
+                &invocation.user,
+                &invocation.source,
+                &target,
+                "HIGH",
+                &reason,
+                "preexec_scan",
+            );
+            preexec_force = Some(reason);
+        }
+
         // Layer 3: ABAC (Auditor)
         let req = OperationRequest {
             id: uuid::Uuid::new_v4().to_string(),
@@ -692,6 +749,7 @@ impl SecurityPlugin {
             approver: None,
             approved_at: None,
             denied_reason: None,
+            force_approval: preexec_force,
         };
         // K4 (b): 从 invocation metadata 提取审批来源上下文（loop 构造
         // invocation 时填入）——RequireApproval 时审批卡按它路由回发起
@@ -1026,6 +1084,15 @@ impl SecurityPlugin {
 
     pub fn guardian_failure_policy(&self) -> String {
         self.guardian_failure_policy.read().clone()
+    }
+
+    /// L6（2026-10-12 T1）：注入 pre-exec 扫描的相对脚本路径解析根
+    /// （workspace root，security_setup 构造期调用；与 D1 保护路径同源）。
+    /// 未注入 = 相对路径不解析（诚实降级，绝对路径仍覆盖）。
+    pub fn set_preexec_workspace_root(&self, root: &str) {
+        if let Some(ref scanner) = self.preexec {
+            scanner.set_workspace_root(root);
+        }
     }
 
     /// 覆盖面开关存取（2026-09-16 无上下文 LLM 命令审计）。空串 = 未配置

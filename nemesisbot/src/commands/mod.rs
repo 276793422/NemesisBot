@@ -52,6 +52,9 @@ pub mod scanner;
 #[cfg(feature = "security")]
 pub mod security;
 pub mod session;
+// L9 版本自切换通道 CLI（check/status 离线可用；apply 触发 gateway 侧编排）。
+#[cfg(feature = "selfupdate")]
+pub mod selfupdate;
 pub mod shutdown;
 // WASM 插件 CLI（plugins-wasm feature 从 security 派生；implies security）。
 #[cfg(feature = "plugins-wasm")]

@@ -3247,6 +3247,92 @@ fn test_cluster_peer_resolver_with_empty_primary_address() {
     assert!(resolver.get_peer_info("empty-addr").is_none());
 }
 
+// G14 同族（2026-10-13 本机实录）：announce/探针身份载荷 addresses 为空时，
+// 已知节点（静态 peer）的可用地址不得被空记录覆盖——曾致静态 127.0.0.1:<rpc>
+// 被抹成 ""，后续 peer_chat 全部 `connect to : invalid socket address`。
+// 身份字段（tier/professions/capabilities 等）照常合并（探针身份回传的
+// purpose 不受损）。
+#[test]
+fn test_discovered_node_empty_addresses_known_peer_identity_merge_preserves_address() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "static-peer".into(),
+            name: "static-peer".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "127.0.0.1:50591".into(),
+            category: "development".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status: NodeStatus::Online,
+        capabilities: vec![],
+        tags: Vec::new(),
+        addresses: vec!["127.0.0.1".into()],
+        professions: Vec::new(),
+        tier: None,
+        node_type: "agent".into(),
+    });
+
+    let changed = cluster.handle_discovered_node_ex(
+        "static-peer",
+        "static-peer",
+        Vec::new(), // 空地址载荷（本机实录形态）
+        50591,      // rpc_port 合法（G14 只挡 0，本闸挡空地址这扇门）
+        "worker",
+        "development",
+        Vec::new(),
+        vec!["rpc".into()],
+        "agent",
+        Vec::new(),
+        Some("big".into()),
+    );
+    assert!(
+        changed,
+        "identity merge should report change (tier None->big)"
+    );
+
+    let node = cluster
+        .registry
+        .get("static-peer")
+        .expect("known peer kept");
+    assert_eq!(
+        node.base.address, "127.0.0.1:50591",
+        "usable address must survive"
+    );
+    assert_eq!(node.addresses, vec!["127.0.0.1".to_string()]);
+    assert_eq!(node.tier, Some("big".to_string()), "identity fields merge");
+    assert_eq!(node.status, NodeStatus::Online);
+}
+
+#[test]
+fn test_discovered_node_empty_addresses_unknown_peer_still_registered_bridge_semantics() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+
+    // 未知节点 + 空地址 + 有效 rpc_port：照常入册——空地址记录是桥接拓扑的
+    // 合法形态（bridge member_sync 广播成员本就 via-bridge 可达；拒 registering
+    // 会断桥接设备的成员注册）。空地址闸只保护**已知节点**的地址不被覆盖。
+    let changed = cluster.handle_discovered_node_ex(
+        "ghost-peer",
+        "ghost-peer",
+        Vec::new(),
+        21949,
+        "worker",
+        "development",
+        Vec::new(),
+        Vec::new(),
+        "agent",
+        Vec::new(),
+        None,
+    );
+    assert!(changed, "bridge member with empty addresses must register");
+    let node = cluster.registry.get("ghost-peer").expect("registered");
+    assert_eq!(node.base.address, "", "empty-address insert stays empty");
+    assert_eq!(node.base.role, nemesis_types::cluster::NodeRole::Worker);
+}
+
 #[test]
 fn test_cluster_peer_resolver_uses_stored_addresses() {
     let cluster = Cluster::new(make_config());

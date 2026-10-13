@@ -350,6 +350,12 @@ impl AgentLoop {
         *self.mode.read()
     }
 
+    /// N2（机会项）：mode Arc 句柄——`PlanPresentHandle` 与 loop 共享同一
+    /// 份模式状态（工具批准侧直接翻转，loop 下轮供给闸读到的就是 build）。
+    pub fn mode_arc(&self) -> Arc<parking_lot::RwLock<crate::types::AgentMode>> {
+        self.mode.clone()
+    }
+
     /// F1：翻转工作模式并广播 `ModeChanged`（session_key/chat_id 供 web
     /// pump 路由到会话徽标；传空串 = 只进 SSE）。重复设置同一模式仍是
     /// 幂等无害（徽标确认刷新），事件照发——调用方（/plan /build 臂）已经
@@ -398,6 +404,7 @@ impl AgentLoop {
         "history_search",
         "todowrite",
         "question",
+        "present_plan",
     ];
 
     /// F1：分发端写类集合（Plan 模式拦截对象）。**有意偏离计划字面**

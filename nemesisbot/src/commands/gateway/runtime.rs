@@ -41,6 +41,102 @@ use super::trigger_global_shutdown;
 use super::{open_browser, open_plugin_window};
 use crate::common;
 
+/// B7（2026-10-13）：guardian judge 模型通道三级阶梯（单一真相源，原内联
+/// match 抽取 + guardian_model 前置级）。优先级：`agents.guardian_model`
+/// （审计专用——审计点独立于 /compact 杂务，可单独选档）→
+/// `agents.small_model`（杂务通道，/compact 先例）→ 主模型。各级未配置 /
+/// 解析失败 / provider 构造失败 = 提示 + 落下一级，绝不阻断启动。返回
+/// (provider, model, 来源描述)。
+#[cfg(feature = "security")]
+fn resolve_guardian_judge_lane(
+    cfg: &nemesis_config::Config,
+    home: &std::path::Path,
+    main_provider: Arc<dyn nemesis_providers::router::LLMProvider>,
+    main_model: &str,
+) -> (
+    Arc<dyn nemesis_providers::router::LLMProvider>,
+    String,
+    String,
+) {
+    // 单级尝试：model_ref → resolve → FactoryConfig → create_provider。
+    // Err = 该级不可用的原因（调用方落下一级；两类失败消息在级内分别 warn）。
+    fn try_rung(
+        cfg: &nemesis_config::Config,
+        home: &std::path::Path,
+        model_ref: &str,
+    ) -> std::result::Result<(Arc<dyn nemesis_providers::router::LLMProvider>, String), String>
+    {
+        let resolution = nemesis_config::resolve_model_config(cfg, model_ref)
+            .map_err(|e| format!("not resolvable ({e})"))?;
+        let judge_factory_cfg = nemesis_providers::factory::FactoryConfig {
+            proxy: resolution.proxy.clone(),
+            stream_mode: resolution.stream_mode.clone(),
+            llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
+            api_key: resolution.api_key.clone(),
+            api_base: resolution.api_base.clone(),
+            workspace: home.join("workspace").to_string_lossy().to_string(),
+            connect_mode: resolution.connect_mode.clone(),
+            protocol: resolution.protocol.clone(),
+            timeout_secs: resolution.timeout_secs,
+            account_id: String::new(),
+            headers: std::collections::HashMap::new(),
+        };
+        let provider = nemesis_providers::factory::create_provider(&judge_factory_cfg)
+            .map_err(|e| format!("provider create failed ({e})"))?;
+        Ok((provider, resolution.model_name))
+    }
+
+    // 级 1：guardian_model 专用通道。
+    if let Some(guardian_ref) = cfg
+        .agents
+        .guardian_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        match try_rung(cfg, home, guardian_ref) {
+            Ok((provider, model)) => {
+                return (provider, model, format!("guardian model '{guardian_ref}'"));
+            }
+            Err(e) => warn!(
+                "[Gateway] Guardian judge: agents.guardian_model '{}' {e}; falling to agents.small_model ladder",
+                guardian_ref
+            ),
+        }
+    }
+
+    // 级 2：small_model 杂务通道。
+    if let Some(small_ref) = cfg
+        .agents
+        .small_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        match try_rung(cfg, home, small_ref) {
+            Ok((provider, model)) => {
+                return (provider, model, format!("small model '{small_ref}'"));
+            }
+            Err(e) => warn!(
+                "[Gateway] Guardian judge: agents.small_model '{}' {e}; falling back to the main model",
+                small_ref
+            ),
+        }
+    }
+
+    // 级 3：主模型回落（两级均未配置才 info 提示；失败落下的已有各自 warn）。
+    if cfg.agents.guardian_model.is_none() && cfg.agents.small_model.is_none() {
+        info!(
+            "[Gateway] Guardian judge: agents.guardian_model/agents.small_model not configured; using the main model (set agents.guardian_model to keep audit cost off the main model)"
+        );
+    }
+    (
+        main_provider,
+        main_model.to_string(),
+        "main model".to_string(),
+    )
+}
+
 /// PB-8/PB-9 门控三件入参打包（§4.2 B7）：字段双臂声明——真身随 feature
 /// 门，@not 臂空桩（Option<()> / ()）保持结构体全组合可构造；体内消费点
 /// 均处同门块内（含 Step 24 善后）。
@@ -385,7 +481,10 @@ pub(crate) async fn run_runtime(
             // bypassed by YOLO/auto. No-op if no memory executor was stashed.
             #[cfg(feature = "memory")]
             {
-                agent_loop.set_memory_approval_gate(Arc::new(GatewayMemoryGate::new(adapter)));
+                // clone：adapter 的最后消费方在此之后（L9 selfupdate 装配块
+                // 也要一份——memory feature 开/关两种形态下都取 owned）。
+                agent_loop
+                    .set_memory_approval_gate(Arc::new(GatewayMemoryGate::new(adapter.clone())));
             }
             // M7: dashboard 审批卡的响应端点经 AgentLoop 的 responder 槽触达
             // （nemesis-web approval handler 读 agent_loop.approval_responder()）。
@@ -409,92 +508,43 @@ pub(crate) async fn run_runtime(
             // in the merged context snapshot's `# Runtime Policy` section.
             agent_loop.set_interactive_approval(true);
             info!("[Gateway] Approval manager wired (dashboard web approval, M7)");
+            // L9 selfupdate：九步 apply 编排器装配（selfupdate implies
+            // security）。审批走同一 adapter（CRITICAL 卡全平台生效，「总是
+            // 允许」对 CRITICAL 恒忽略）；审计链走 security_plugin；estop
+            // 同源。WSAPI selfupdate.* 与 /api/internal selfupdate_apply 都
+            // 从 handlers::selfupdate 的 OnceLock 槽取真身；未装配 = 诚实报。
+            #[cfg(feature = "selfupdate")]
+            {
+                let mgr = Arc::new(nemesis_web::selfupdate::SelfUpdateManager {
+                    workspace: shared_resources.workspace_dir(),
+                    estop: shared_resources.estop.clone(),
+                    approval: adapter.clone(),
+                    audit: Some(plugin.clone()),
+                    shutdown: Arc::new(|| {
+                        // android 无此导入（cfg not(android)）；该平台 apply
+                        // 本身运行期诚实拒绝，闭包退化为空操作即可。
+                        #[cfg(not(target_os = "android"))]
+                        trigger_global_shutdown();
+                    }),
+                });
+                nemesis_web::handlers::selfupdate::set_manager(mgr);
+                info!("[Gateway] selfupdate manager wired (L9)");
+            }
             // P5: guardian judge attach — `guardian_mode` 闸（2026-09-16
             // 无上下文 LLM 命令审计，用户拍板默认 off：LLM 审计耗时且贵，
             // 是双刃剑）。off/空/未知值 = 不装配 judge（零 LLM 成本，连旧
             // CRITICAL 审也不跑）；critical = 旧 CRITICAL 全审；high =
             // HIGH+CRITICAL 破坏形态预筛 + LLM 审（消费闸在
             // SecurityPlugin::guardian_should_review 单一决策点）。
-            // 模型通道：`agents.small_model` 杂务通道优先（同 /compact 先
-            // 例——审计点独立于主对话，不烧主模型），未配置/解析失败 =
-            // 回落主模型 + warn，绝不阻断启动。
+            // 模型通道：B7（2026-10-13）三级阶梯——`agents.guardian_model`
+            // 审计专用优先 → `agents.small_model` 杂务通道（/compact 先例
+            // ——审计点独立于主对话，不烧主模型）→ 主模型回落，绝不阻断
+            // 启动（见 resolve_guardian_judge_lane）。
             let guardian_mode = plugin.guardian_mode();
             match guardian_mode.as_str() {
                 "critical" | "high" => {
-                    let (judge_provider, judge_model, judge_source) = match cfg
-                        .agents
-                        .small_model
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                    {
-                        Some(small_ref) => {
-                            match nemesis_config::resolve_model_config(&cfg, small_ref) {
-                                Ok(resolution) => {
-                                    let judge_factory_cfg =
-                                        nemesis_providers::factory::FactoryConfig {
-                                            proxy: resolution.proxy.clone(),
-                                            llm_ref: format!(
-                                                "{}/{}",
-                                                resolution.provider_name, resolution.model_name
-                                            ),
-                                            api_key: resolution.api_key.clone(),
-                                            api_base: resolution.api_base.clone(),
-                                            workspace: home
-                                                .join("workspace")
-                                                .to_string_lossy()
-                                                .to_string(),
-                                            connect_mode: resolution.connect_mode.clone(),
-                                            protocol: resolution.protocol.clone(),
-                                            timeout_secs: resolution.timeout_secs,
-                                            account_id: String::new(),
-                                            headers: std::collections::HashMap::new(),
-                                        };
-                                    match nemesis_providers::factory::create_provider(
-                                        &judge_factory_cfg,
-                                    ) {
-                                        Ok(p) => (
-                                            p,
-                                            resolution.model_name,
-                                            format!("small model '{}'", small_ref),
-                                        ),
-                                        Err(e) => {
-                                            warn!(
-                                                "[Gateway] Guardian judge: agents.small_model '{}' provider create failed ({}); falling back to the main model",
-                                                small_ref, e
-                                            );
-                                            (
-                                                llm_provider.clone(),
-                                                model_name.clone(),
-                                                "main model".to_string(),
-                                            )
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        "[Gateway] Guardian judge: agents.small_model '{}' not resolvable ({}); falling back to the main model",
-                                        small_ref, e
-                                    );
-                                    (
-                                        llm_provider.clone(),
-                                        model_name.clone(),
-                                        "main model".to_string(),
-                                    )
-                                }
-                            }
-                        }
-                        None => {
-                            info!(
-                                "[Gateway] Guardian judge: agents.small_model not configured; using the main model (set agents.small_model to keep audit cost off the main model)"
-                            );
-                            (
-                                llm_provider.clone(),
-                                model_name.clone(),
-                                "main model".to_string(),
-                            )
-                        }
-                    };
+                    let (judge_provider, judge_model, judge_source) =
+                        resolve_guardian_judge_lane(&cfg, &home, llm_provider.clone(), &model_name);
                     plugin.set_judge(Arc::new(GatewayLlmJudge {
                         provider: judge_provider,
                         model: judge_model,
@@ -658,6 +708,33 @@ pub(crate) async fn run_runtime(
                         trigger_global_shutdown();
                         shutdown_svc_internal.shutdown();
                     }
+                    nemesis_web::internal::InternalCommand::SelfUpdateApply { allow_downgrade } => {
+                        // L9：CLI `nemesisbot selfupdate apply` 经 /api/internal
+                        // 落到这里——受理后 spawn 九步编排（下载 + 审批卡 +
+                        // staging 全程分钟级，不能占住监听）。成功路径 apply
+                        // 内部已 spawn 新版本并自带优雅停机线程，此处不再动
+                        // svc_mgr（避免双重停机竞态）。
+                        #[cfg(feature = "selfupdate")]
+                        if let Some(mgr) = nemesis_web::handlers::selfupdate::manager() {
+                            let version = crate::common::VERSION_INFO.version;
+                            let commit = crate::common::VERSION_INFO.git_commit;
+                            tokio::spawn(async move {
+                                match mgr.apply(version, commit, allow_downgrade).await {
+                                    Ok(msg) => info!("[Gateway] selfupdate apply: {msg}"),
+                                    Err(e) => warn!("[Gateway] selfupdate apply 失败：{e}"),
+                                }
+                            });
+                        } else {
+                            warn!(
+                                "[Gateway] selfupdate apply：manager 未装配（security 未启用？），忽略"
+                            );
+                        }
+                        #[cfg(not(feature = "selfupdate"))]
+                        {
+                            let _ = allow_downgrade;
+                            warn!("[Gateway] selfupdate apply：构建未带 selfupdate feature，忽略");
+                        }
+                    }
                 }
             }
         });
@@ -731,42 +808,53 @@ pub(crate) async fn run_runtime(
                 let home_for_start = home.clone();
                 let ca_start = ca.clone();
                 tray.set_on_cluster_start(Box::new(move || {
-                    // Write config.json cluster.enabled = true
-                    let cfg_path = home_for_start.join("config.json");
-                    if let Ok(content) = std::fs::read_to_string(&cfg_path)
-                        && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
+                    // 写串行锁罩两个 config RMW（同类横扫四期，2026-10-13）：
+                    // 本回调与 Dashboard 任意 config 写臂（update_config/
+                    // update_raw_config/update_json_file 同族）互斥——裸 RMW
+                    // 的整份快照写回会冲掉并发写臂的字段，反之亦然。锁块只
+                    // 罩文件写段，cluster start() 在锁外（不得长时间占锁）。
                     {
-                        if cfg.get("cluster").is_none() {
-                            cfg["cluster"] = serde_json::json!({});
+                        let _cfg_serial = nemesis_config::config_write_lock();
+                        // Write config.json cluster.enabled = true
+                        let cfg_path = home_for_start.join("config.json");
+                        if let Ok(content) = std::fs::read_to_string(&cfg_path)
+                            && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
+                        {
+                            if cfg.get("cluster").is_none() {
+                                cfg["cluster"] = serde_json::json!({});
+                            }
+                            if let Some(obj) =
+                                cfg.get_mut("cluster").and_then(|c| c.as_object_mut())
+                            {
+                                obj.insert("enabled".to_string(), serde_json::json!(true));
+                                if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
+                                    // REL-002：统一原子写入（cluster enable 开关写主配置）。
+                                    let _ = nemesis_utils::write_file_atomic(
+                                        &cfg_path.to_string_lossy(),
+                                        updated.as_bytes(),
+                                        0o600,
+                                    );
+                                }
+                            }
                         }
-                        if let Some(obj) = cfg.get_mut("cluster").and_then(|c| c.as_object_mut()) {
+                        // Write config.cluster.json enabled = true
+                        let cluster_cfg_path =
+                            nemesis_path::resolve_cluster_config_path_in_workspace(
+                                &common::workspace_path(&home_for_start),
+                            );
+                        if let Ok(content) = std::fs::read_to_string(&cluster_cfg_path)
+                            && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
+                            && let Some(obj) = cfg.as_object_mut()
+                        {
                             obj.insert("enabled".to_string(), serde_json::json!(true));
                             if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
-                                // REL-002：统一原子写入（cluster enable 开关写主配置）。
+                                // REL-002：统一原子写入（config.cluster.json 含 token）。
                                 let _ = nemesis_utils::write_file_atomic(
-                                    &cfg_path.to_string_lossy(),
+                                    &cluster_cfg_path.to_string_lossy(),
                                     updated.as_bytes(),
                                     0o600,
                                 );
                             }
-                        }
-                    }
-                    // Write config.cluster.json enabled = true
-                    let cluster_cfg_path = nemesis_path::resolve_cluster_config_path_in_workspace(
-                        &common::workspace_path(&home_for_start),
-                    );
-                    if let Ok(content) = std::fs::read_to_string(&cluster_cfg_path)
-                        && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
-                        && let Some(obj) = cfg.as_object_mut()
-                    {
-                        obj.insert("enabled".to_string(), serde_json::json!(true));
-                        if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
-                            // REL-002：统一原子写入（config.cluster.json 含 token）。
-                            let _ = nemesis_utils::write_file_atomic(
-                                &cluster_cfg_path.to_string_lossy(),
-                                updated.as_bytes(),
-                                0o600,
-                            );
                         }
                     }
                     if let Err(e) = ca_start.start() {
@@ -780,38 +868,44 @@ pub(crate) async fn run_runtime(
                     if let Err(e) = ca_stop.stop() {
                         tracing::warn!("[Gateway] Tray: failed to stop cluster: {}", e);
                     }
-                    // Write config.cluster.json enabled = false
-                    let cluster_cfg_path = nemesis_path::resolve_cluster_config_path_in_workspace(
-                        &common::workspace_path(&home_for_stop),
-                    );
-                    if let Ok(content) = std::fs::read_to_string(&cluster_cfg_path)
-                        && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
-                        && let Some(obj) = cfg.as_object_mut()
+                    // 写串行锁罩两个 config RMW（同 start 回调，2026-10-13）。
                     {
-                        obj.insert("enabled".to_string(), serde_json::json!(false));
-                        if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
-                            // REL-002：统一原子写入（config.cluster.json 含 token）。
-                            let _ = nemesis_utils::write_file_atomic(
-                                &cluster_cfg_path.to_string_lossy(),
-                                updated.as_bytes(),
-                                0o600,
+                        let _cfg_serial = nemesis_config::config_write_lock();
+                        // Write config.cluster.json enabled = false
+                        let cluster_cfg_path =
+                            nemesis_path::resolve_cluster_config_path_in_workspace(
+                                &common::workspace_path(&home_for_stop),
                             );
+                        if let Ok(content) = std::fs::read_to_string(&cluster_cfg_path)
+                            && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
+                            && let Some(obj) = cfg.as_object_mut()
+                        {
+                            obj.insert("enabled".to_string(), serde_json::json!(false));
+                            if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
+                                // REL-002：统一原子写入（config.cluster.json 含 token）。
+                                let _ = nemesis_utils::write_file_atomic(
+                                    &cluster_cfg_path.to_string_lossy(),
+                                    updated.as_bytes(),
+                                    0o600,
+                                );
+                            }
                         }
-                    }
-                    // Write config.json cluster.enabled = false
-                    let cfg_path = home_for_stop.join("config.json");
-                    if let Ok(content) = std::fs::read_to_string(&cfg_path)
-                        && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
-                        && let Some(obj) = cfg.get_mut("cluster").and_then(|c| c.as_object_mut())
-                    {
-                        obj.insert("enabled".to_string(), serde_json::json!(false));
-                        if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
-                            // REL-002：统一原子写入。
-                            let _ = nemesis_utils::write_file_atomic(
-                                &cfg_path.to_string_lossy(),
-                                updated.as_bytes(),
-                                0o600,
-                            );
+                        // Write config.json cluster.enabled = false
+                        let cfg_path = home_for_stop.join("config.json");
+                        if let Ok(content) = std::fs::read_to_string(&cfg_path)
+                            && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
+                            && let Some(obj) =
+                                cfg.get_mut("cluster").and_then(|c| c.as_object_mut())
+                        {
+                            obj.insert("enabled".to_string(), serde_json::json!(false));
+                            if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
+                                // REL-002：统一原子写入。
+                                let _ = nemesis_utils::write_file_atomic(
+                                    &cfg_path.to_string_lossy(),
+                                    updated.as_bytes(),
+                                    0o600,
+                                );
+                            }
                         }
                     }
                 }));

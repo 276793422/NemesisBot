@@ -918,6 +918,31 @@ impl AgentLoop {
             }
         }
 
+        // N2（机会项）：present_plan verdict 消费（批次边界，单一消费点）。
+        // 按 session_key 取走本会话的裁决（跨会话 turn 并发不串台）。
+        // 驳回/超时 = 本轮结构性终止（模型不再获得下一轮，工具结果文本已落
+        // 历史，下条用户消息可见）；批准 = 模式已在工具内翻转，落回正常轮。
+        if let Some(handle) = self.plan_present.read().clone()
+            && let Some(verdict) = handle.verdicts.lock().remove(&context.session_key)
+        {
+            match verdict {
+                crate::loop_tools::PlanPresentVerdict::Approved => {}
+                crate::loop_tools::PlanPresentVerdict::Rejected => {
+                    st.terminal_reason = Some("plan_rejected");
+                    return TurnFlow::Stop(AgentEvent::Done(
+                        "❌ 计划已被用户驳回 — 本轮到此结束（仍处于 plan 模式）。请根据用户反馈修改计划后再次调用 present_plan。"
+                            .to_string(),
+                    ));
+                }
+                crate::loop_tools::PlanPresentVerdict::Timeout => {
+                    st.terminal_reason = Some("plan_timeout");
+                    return TurnFlow::Stop(AgentEvent::Done(
+                        "⏱ 计划审批超时未获响应 — 本轮到此结束（仍处于 plan 模式）。".to_string(),
+                    ));
+                }
+            }
+        }
+
         TurnFlow::Continue
     }
 }

@@ -560,6 +560,7 @@ fn custom_entry(model_id: &str, input: f64) -> nemesis_data::ModelPricing {
         max_input_tokens: None,
         max_output_tokens: None,
         aliases: Vec::new(),
+        price_tiers: None,
     }
 }
 
@@ -646,6 +647,58 @@ async fn pricing_custom_upsert_and_remove_endpoints() {
     )
     .await;
     assert!(v["error"].is_string(), "removing missing entry must error");
+}
+
+// L3（2026-10-12 内部专项 T0）：阶梯价 WSAPI 全链路——upsert 载荷携带
+// price_tiers（serde 原名透传）→ 落盘 → /api/usage/pricing 视图以
+// priceTiers 投影回前端（None 字段按 null 投影，前端按继承渲染）。
+#[tokio::test]
+async fn pricing_tier_upsert_roundtrip_and_view_projection() {
+    let (_dir, ds) = open_store();
+    let state = make_state_with_store(ds.clone());
+
+    let mut entry = custom_entry("tiered-model", 1.0);
+    entry.price_tiers = Some(vec![nemesis_data::PriceTier {
+        min_prompt_tokens: 200_000,
+        input_cost_per_million: Some(3.0),
+        output_cost_per_million: None, // None = 继承基础价（null 投影）
+        cache_read_cost_per_million: None,
+        cache_creation_cost_per_million: None,
+    }]);
+    let Json(v) = handle_api_usage_pricing_custom_upsert(State(state.clone()), Json(entry)).await;
+    assert_eq!(v["status"], "success");
+
+    // 落盘层保留完整档位。
+    let stored = &ds.pricing().list_custom()[0];
+    let tiers = stored.price_tiers.as_ref().expect("tiers persisted");
+    assert_eq!(tiers[0].min_prompt_tokens, 200_000);
+    assert_eq!(tiers[0].output_cost_per_million, None);
+
+    // 合并视图 priceTiers 投影：camelCase 字段名 + null 继承语义。
+    let Json(view) = handle_api_usage_pricing(State(state)).await;
+    let row = view["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["modelId"] == "tiered-model")
+        .expect("custom entry visible in merged view");
+    let projected = &row["priceTiers"];
+    assert!(projected.is_array(), "tiers must project to the view");
+    let t0 = &projected[0];
+    assert_eq!(t0["minPromptTokens"], 200_000);
+    assert_eq!(t0["inputCostPerMillion"], 3.0);
+    assert!(
+        t0["outputCostPerMillion"].is_null(),
+        "None field must project as null (inherit)"
+    );
+
+    // 无阶梯条目：priceTiers 投影为 null（前端按单一价渲染）。
+    let Json(v2) = handle_api_usage_pricing_custom_upsert(
+        State(make_state_with_store(ds)),
+        Json(custom_entry("plain-model", 2.0)),
+    )
+    .await;
+    assert_eq!(v2["status"], "success");
 }
 
 #[tokio::test]

@@ -101,13 +101,37 @@ fn cmds_of<'a>(reg: &'a [(String, Vec<&'static str>)], module: &str) -> &'a [&'s
         .unwrap_or(&[])
 }
 
-/// 无 feature 闸的 26 个模块（register_all 的无条件注册段；L6++ G4 起
+/// 无 feature 闸的 27 个模块（register_all 的无条件注册段；L6++ G4 起
 /// 含 projects，P30（WS14）起含 canvas，2026-09-28 起含 roles——角色目录
-/// WSAPI）。
+/// WSAPI，2026-10-13 起含 selfupdate——L9 版本自切换通道）。
 const UNCONDITIONAL_MODULES: &[&str] = &[
-    "system", "estop", "approval", "question", "chat", "config", "models", "channels", "identity",
-    "tools", "skills", "mcp", "tasks", "coding", "hooks", "commands", "fs", "plugins", "board",
-    "logs", "agent", "persona", "sessions", "projects", "canvas", "roles",
+    "system",
+    "estop",
+    "approval",
+    "question",
+    "chat",
+    "config",
+    "models",
+    "channels",
+    "identity",
+    "tools",
+    "skills",
+    "mcp",
+    "tasks",
+    "coding",
+    "hooks",
+    "commands",
+    "fs",
+    "plugins",
+    "board",
+    "logs",
+    "agent",
+    "persona",
+    "sessions",
+    "projects",
+    "canvas",
+    "roles",
+    "selfupdate",
 ];
 
 // ---------------------------------------------------------------------------
@@ -207,6 +231,8 @@ fn registry_anchor_commands_present() {
         // S3c（2026-10-09）：凭据 vault 管理面锚点。
         assert!(cmds_of(&reg, "vault").contains(&"list"));
         assert!(cmds_of(&reg, "vault").contains(&"set"));
+        // L7c（2026-10-13）：解锁测试命令。
+        assert!(cmds_of(&reg, "vault").contains(&"unlock"));
     }
     if cfg!(feature = "sandbox") {
         assert!(cmds_of(&reg, "sandbox").contains(&"commit"));

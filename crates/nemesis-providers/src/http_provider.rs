@@ -73,6 +73,13 @@ pub struct HttpProviderConfig {
     /// If true, preserve the provider prefix in model names (e.g. "openrouter/model").
     #[serde(default)]
     pub preserve_prefix: bool,
+    /// per-model 流式开关（2026-10-13 stream 键）：空（auto）= 维持非流式
+    /// （现状）；"yes" = `chat()` 内部走流式（聚合固有 `chat_stream`，对外
+    /// 签名不变）——非流式请求等完整补全才回响应头，推理型模型 + 大上下文
+    /// 会撞中转链路 ~120s 墙钟（gpt-5.6-sol 风暴根因，openai 兼容 lane 同墙）。
+    /// 经 FactoryConfig.stream_mode 透传，构造期消费。
+    #[serde(default)]
+    pub stream_mode: String,
 }
 
 // P3A 超时对齐（2026-09-12）：serde 缺省与 factory 显式值统一 600s
@@ -296,12 +303,14 @@ impl HttpProvider {
             let resp = match req.json(&body).send().await {
                 Ok(r) => r,
                 Err(e) => {
+                    // 诚实化（2026-10-13）：真超时→Timeout；其余传输错误→
+                    // Unknown + "connect error: <根因链>"（不伪装）。
                     let _ = tx
-                        .send(Err(FailoverError::Timeout {
-                            provider: provider_name,
-                            model: model.clone(),
-                            cause: nemesis_utils::llm_error_class::error_chain_msg(&e),
-                        }))
+                        .send(Err(crate::failover::transport_error(
+                            &provider_name,
+                            &model,
+                            &e,
+                        )))
                         .await;
                     return;
                 }
@@ -371,6 +380,41 @@ impl HttpProvider {
                         .as_str()
                         .unwrap_or("stop")
                         .to_string();
+                    // 非流式完整形态的 message.tool_calls 原样带上（2026-10-13
+                    // wal_crash 实证修）：工具调用模型在此路径此前被丢弃成
+                    // tool_calls=[]，agent 侧只见空文本终答。anthropic 同路径
+                    // （parse_response）一直保留，此处对齐。
+                    let msg_tool_calls: Vec<ToolCall> =
+                        parsed["choices"][0]["message"]["tool_calls"]
+                            .as_array()
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|tc| {
+                                        Some(ToolCall {
+                                            id: tc["id"].as_str()?.to_string(),
+                                            call_type: Some(
+                                                tc["type"]
+                                                    .as_str()
+                                                    .unwrap_or("function")
+                                                    .to_string(),
+                                            ),
+                                            function: Some(FunctionCall {
+                                                name: tc["function"]["name"]
+                                                    .as_str()
+                                                    .unwrap_or_default()
+                                                    .to_string(),
+                                                arguments: tc["function"]["arguments"]
+                                                    .as_str()
+                                                    .unwrap_or_default()
+                                                    .to_string(),
+                                            }),
+                                            name: None,
+                                            arguments: None,
+                                        })
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
                     let usage = parsed.get("usage").map(extract_usage);
                     if !content.is_empty() {
                         let _ = tx
@@ -386,7 +430,7 @@ impl HttpProvider {
                     let _ = tx
                         .send(Ok(StreamChunk {
                             delta: String::new(),
-                            tool_calls: vec![],
+                            tool_calls: msg_tool_calls,
                             finish_reason: Some(finish),
                             usage,
                             reasoning_content: None,
@@ -421,6 +465,11 @@ impl HttpProvider {
                 std::collections::HashMap::new();
             // Accumulated reasoning content from thinking-mode models.
             let mut accumulated_reasoning = String::new();
+            // 终态帧是否已发（finish chunk 正常先行，[DONE] 只收尾不再补发；
+            // 2026-10-13 wal_crash 实证根修——[DONE] 硬编码 "stop" 二连发会把
+            // 聚合侧已收的 finish_reason="tool_calls" 覆盖成 "stop"，工具调用
+            // 轮被判成空终答）。
+            let mut finish_emitted = false;
 
             while let Some(chunk_result) = stream.next().await {
                 let bytes = match chunk_result {
@@ -431,16 +480,18 @@ impl HttpProvider {
                             error = %e,
                             "[Provider] SSE stream read error"
                         );
-                        // J1：读错误（连接中断）是暂时性故障 → Timeout（可
-                        // failover）；旧分类 Format 会直接放弃整条链。终止后
-                        // return（不走下方 EOF flush——错误已是终态，不再发
-                        // 合成 chunk 混淆消费者）。
+                        // J1：读错误（连接中断）是暂时性故障 → 可 failover；
+                        // 诚实化（2026-10-13）：客户端超时→Timeout，其余读
+                        // 错误→Unknown + "connect error: <根因链>"。旧分类
+                        // Format 会直接放弃整条链。终止后 return（不走下方
+                        // EOF flush——错误已是终态，不再发合成 chunk 混淆
+                        // 消费者）。
                         let _ = tx
-                            .send(Err(FailoverError::Timeout {
-                                provider: provider_name.clone(),
-                                model: model.clone(),
-                                cause: nemesis_utils::llm_error_class::error_chain_msg(&e),
-                            }))
+                            .send(Err(crate::failover::transport_error(
+                                &provider_name,
+                                &model,
+                                &e,
+                            )))
                             .await;
                         return;
                     }
@@ -460,16 +511,50 @@ impl HttpProvider {
                         }
                         let data = &line[6..];
                         if data.trim() == "[DONE]" {
+                            if finish_emitted {
+                                // 正常收尾（OpenAI 语义 finish → [DONE]）：终态
+                                // 帧已随 finish chunk 发出，这里只关闭通道。与
+                                // EOF 路径同一条纪律——final chunk 单发，二连发
+                                // 会让覆盖式消费的下游丢 tool_calls。
+                                tracing::debug!(
+                                    provider = %provider_name,
+                                    model = %model,
+                                    "[Provider] SSE stream completed ([DONE]) — final chunk already emitted"
+                                );
+                                return;
+                            }
+                            // 异常形态：[DONE] 前没有 finish 帧——合成唯一终态
+                            // （flush 已累积 tool_calls），语义对齐 EOF 路径。
+                            let done_calls: Vec<ToolCall> = pending_tool_calls
+                                .iter()
+                                .map(|(_, (id, name, args))| ToolCall {
+                                    id: id.clone(),
+                                    call_type: Some("function".to_string()),
+                                    function: Some(FunctionCall {
+                                        name: name.clone(),
+                                        arguments: args.clone(),
+                                    }),
+                                    name: None,
+                                    arguments: None,
+                                })
+                                .collect();
                             tracing::debug!(
                                 provider = %provider_name,
                                 model = %model,
-                                "[Provider] SSE stream completed ([DONE])"
+                                "[Provider] SSE [DONE] without finish chunk — synthesizing termination chunk"
                             );
                             let _ = tx
                                 .send(Ok(StreamChunk {
                                     delta: String::new(),
-                                    tool_calls: vec![],
-                                    finish_reason: Some("stop".to_string()),
+                                    tool_calls: done_calls,
+                                    finish_reason: Some(
+                                        if !pending_tool_calls.is_empty() {
+                                            "tool_calls"
+                                        } else {
+                                            "stop"
+                                        }
+                                        .to_string(),
+                                    ),
                                     usage: None,
                                     reasoning_content: if accumulated_reasoning.is_empty() {
                                         None
@@ -573,6 +658,9 @@ impl HttpProvider {
                             // Receiver dropped, stop streaming.
                             return;
                         }
+                        if finish_reason.is_some() {
+                            finish_emitted = true;
+                        }
                     }
                 }
             }
@@ -582,6 +670,17 @@ impl HttpProvider {
             // "tool_calls"，OpenAI 语义），否则纯 "stop"。单 chunk 而非
             // tool_calls chunk + stop chunk 两连发——覆盖式消费 final chunk
             // 的下游会在第二发丢掉 tool_calls。
+            // 终态帧已发（finish chunk 正常收尾后服务端直接断流）→ 不再补发：
+            // 二连发会让聚合侧把已收的 "tool_calls" 覆盖成 "stop"（2026-10-13
+            // wal_crash 实证根修）。
+            if finish_emitted {
+                tracing::debug!(
+                    provider = %provider_name,
+                    model = %model,
+                    "[Provider] SSE stream ended after final chunk — no synthesized duplicate"
+                );
+                return;
+            }
             let flushed_calls: Vec<ToolCall> = pending_tool_calls
                 .iter()
                 .map(|(_, (id, name, args))| ToolCall {
@@ -661,6 +760,19 @@ impl LLMProvider for HttpProvider {
         model: &str,
         options: &ChatOptions,
     ) -> Result<LLMResponse, FailoverError> {
+        // per-model `stream` 键（2026-10-13）：`yes` = 内部流式化——复用固有
+        // `chat_stream`（SSE 解析/tool_calls 累积/usage 全同源）聚合为非流式
+        // `LLMResponse`，`chat()` 对调用方签名不变。语义对齐 protocol：构造期
+        // 消费，改条目需重新设默认或重启。auto（缺省）维持非流式现状。
+        if self.config.stream_mode == "yes" {
+            return crate::stream_util::collect_stream_response(
+                &self.config.name,
+                model,
+                HttpProvider::chat_stream(self, messages, tools, model, options),
+            )
+            .await;
+        }
+
         let model = if model.is_empty() {
             &self.config.default_model
         } else {
@@ -695,11 +807,10 @@ impl LLMProvider for HttpProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| FailoverError::Timeout {
-                provider: self.config.name.clone(),
-                model: model.to_string(),
-                cause: nemesis_utils::llm_error_class::error_chain_msg(&e),
-            })?;
+            // 诚实化（2026-10-13）：真超时→Timeout；DNS/连接拒绝/SYN 黑洞等
+            // 传输错误→Unknown + "connect error: <根因链>"（此前一律伪装
+            // Timeout，连接失败与上游慢处置不同却不可区分）。
+            .map_err(|e| crate::failover::transport_error(&self.config.name, model, &e))?;
 
         let status = resp.status().as_u16();
 

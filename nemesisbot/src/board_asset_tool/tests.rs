@@ -908,3 +908,113 @@ async fn rpc_chunk_failure_matrix() {
         "校验不过不得落定"
     );
 }
+
+// ---- B8（2026-10-13）：verify_cached_assets 本地缓存体检 ----
+
+/// 载荷准备：登记 ref → 真文件（可选内容篡改）→ 体检断言。
+fn register_asset(ws: &Path, ref_name: &str, content: &[u8]) {
+    let db_path = ws.join("board").join("board.db");
+    let store = nemesis_board::BoardStore::open(&db_path, "NB").expect("open store");
+    store
+        .register_asset(nemesis_board::NewAsset {
+            ref_name: ref_name.to_string(),
+            origin_issue: None,
+            sha256: nemesis_board::sha256_bytes(content),
+            size: content.len() as i64,
+        })
+        .expect("register");
+}
+
+/// 无 board.db（首次启动 / 非看板节点）= 诚实 (0, 0)，不报错。
+#[test]
+fn verify_no_db_is_honest_zero() {
+    let (_dir, ws) = temp_workspace();
+    let tool = BoardAssetTool::new(ws);
+    let (checked, quarantined) = tool.verify_cached_assets().expect("verify");
+    assert_eq!((checked, quarantined), (0, 0));
+}
+
+/// 无 assets 目录（有 DB 无缓存）= 同样 (0, 0)。
+#[test]
+fn verify_no_assets_dir_is_honest_zero() {
+    let (_dir, ws) = temp_workspace();
+    std::fs::create_dir_all(ws.join("board")).expect("mkdir board");
+    register_asset(&ws, "ghost.bin", b"x");
+    let tool = BoardAssetTool::new(ws);
+    let (checked, quarantined) = tool.verify_cached_assets().expect("verify");
+    assert_eq!((checked, quarantined), (0, 0));
+}
+
+/// 完好缓存全数核验通过，零隔离。
+#[test]
+fn verify_intact_cache_passes() {
+    let (_dir, ws) = temp_workspace();
+    let assets = ws.join("board").join("assets");
+    std::fs::create_dir_all(&assets).expect("mkdir assets");
+    let a = b"alpha payload";
+    let b = b"beta payload";
+    std::fs::write(assets.join("a.bin"), a).expect("write a");
+    std::fs::write(assets.join("b.bin"), b).expect("write b");
+    register_asset(&ws, "a.bin", a);
+    register_asset(&ws, "b.bin", b);
+
+    let tool = BoardAssetTool::new(ws);
+    let (checked, quarantined) = tool.verify_cached_assets().expect("verify");
+    assert_eq!((checked, quarantined), (2, 0));
+}
+
+/// 漂移实体被隔离为 `<ref>.corrupt`（原文件消失、隔离件保留原坏字节、
+/// 计数如实），好文件不受牵连。
+#[test]
+fn verify_quarantines_drifted_file() {
+    let (_dir, ws) = temp_workspace();
+    let assets = ws.join("board").join("assets");
+    std::fs::create_dir_all(&assets).expect("mkdir assets");
+    let good = b"still good";
+    let bad = b"TAMPERED";
+    std::fs::write(assets.join("good.bin"), good).expect("write good");
+    std::fs::write(assets.join("bad.bin"), bad).expect("write bad");
+    register_asset(&ws, "good.bin", good);
+    // bad.bin 登记的是别的内容的 sha —— 磁盘漂移形态。
+    register_asset(&ws, "bad.bin", b"original content");
+
+    let tool = BoardAssetTool::new(ws);
+    let (checked, quarantined) = tool.verify_cached_assets().expect("verify");
+    assert_eq!((checked, quarantined), (2, 1));
+    assert!(
+        !assets.join("bad.bin").exists(),
+        "漂移实体原名退场（改名隔离）"
+    );
+    let corrupt = assets.join("bad.bin.corrupt");
+    assert!(corrupt.exists(), "隔离件在场");
+    assert_eq!(
+        std::fs::read(&corrupt).expect("read corrupt"),
+        bad,
+        "隔离件保留坏字节（证据不删）"
+    );
+    assert!(assets.join("good.bin").exists(), "好文件不受牵连");
+}
+
+/// `.part` / `.corrupt` / 登记表外文件跳过不计。
+#[test]
+fn verify_skips_part_corrupt_and_unregistered() {
+    let (_dir, ws) = temp_workspace();
+    let assets = ws.join("board").join("assets");
+    std::fs::create_dir_all(&assets).expect("mkdir assets");
+    let payload = b"tracked";
+    std::fs::write(assets.join("real.bin"), payload).expect("write real");
+    std::fs::write(assets.join("wip.bin.part"), b"half").expect("write part");
+    std::fs::write(assets.join("old.bin.corrupt"), b"old").expect("write corrupt");
+    std::fs::write(assets.join("manual.txt"), b"manual").expect("write manual");
+    register_asset(&ws, "real.bin", payload);
+
+    let tool = BoardAssetTool::new(ws);
+    let (checked, quarantined) = tool.verify_cached_assets().expect("verify");
+    assert_eq!((checked, quarantined), (1, 0), "只核验登记在册的实体");
+    assert!(
+        assets.join("manual.txt").exists(),
+        "登记表外文件不动（手工放置不归本机制管）"
+    );
+    assert!(assets.join("wip.bin.part").exists());
+    assert!(assets.join("old.bin.corrupt").exists());
+}

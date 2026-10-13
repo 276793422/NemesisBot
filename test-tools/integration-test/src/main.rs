@@ -20,6 +20,7 @@ mod security_tests;
 mod subsystem_tests;
 mod tool_tests;
 mod ui_batch_series;
+mod vault_ws_tests;
 mod wsapi;
 
 use std::path::PathBuf;
@@ -384,6 +385,7 @@ async fn main() -> Result<()> {
     all_results.extend(cli_tests::test_cli_model_list(&ws, &cfg.gateway_bin).await);
     all_results.extend(cli_tests::test_cli_model_remove(&ws, &cfg.gateway_bin).await);
     all_results.extend(cli_tests::test_cli_model_default(&ws, &cfg.gateway_bin).await);
+    all_results.extend(cli_tests::test_cli_model_prices(&ws, &cfg.gateway_bin).await);
 
     // --- New-CLI series (4b layer-④ fill): set-effort / session fork /
     //     history search / credentials import / catalog-update.
@@ -881,6 +883,10 @@ async fn main() -> Result<()> {
     println!("\n[Phase 2i] Board project archive surface (P2 B/C)...");
     println!("{}", "-".repeat(60));
     all_results.extend(board_ws_tests::test_board_project_archive(&ws, &cfg.gateway_bin).await);
+
+    // L7c（2026-10-13）：vault WSAPI 表面契约——写工作区 config/vault.enc，
+    // 沿「改共享状态套件排尾」纪律（套件自带清理恢复原状）。
+    all_results.extend(vault_ws_tests::test_vault_surface(&ws, &cfg.gateway_bin).await);
 
     // ---- Cleanup ----
     // Coverage-safe teardown: graceful /api/internal shutdown lets an

@@ -216,6 +216,16 @@ fn pricing_entry_json(p: &nemesis_data::ModelPricing, source: &str) -> serde_jso
         "maxInputTokens": p.max_input_tokens,
         "maxOutputTokens": p.max_output_tokens,
         "aliases": p.aliases,
+        // L3 阶梯价：None/空 = 无阶梯（字段省略，前端按单一价渲染）。
+        "priceTiers": p.price_tiers.as_ref().filter(|t| !t.is_empty()).map(|tiers| {
+            tiers.iter().map(|t| serde_json::json!({
+                "minPromptTokens": t.min_prompt_tokens,
+                "inputCostPerMillion": t.input_cost_per_million,
+                "outputCostPerMillion": t.output_cost_per_million,
+                "cacheReadCostPerMillion": t.cache_read_cost_per_million,
+                "cacheCreationCostPerMillion": t.cache_creation_cost_per_million,
+            })).collect::<Vec<_>>()
+        }),
         "source": source,
     })
 }
