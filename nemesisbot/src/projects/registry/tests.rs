@@ -289,3 +289,68 @@ fn test_set_project_trust_rmw_and_not_found() {
         .to_string();
     assert!(err.contains("项目不存在"), "unexpected: {err}");
 }
+
+// ---------------------------------------------------------------------------
+// 写并发串行化（2026-10-13 同类横扫补钉）：create/remove/rename/set_trust 都
+// 是 load→改→save 的 RMW，WSAPI 各臂可并发到达。无锁时后写者以自己的快照
+// 整体覆盖先写者的更新（save 原子救不了丢更新）——trust 翻转被 create 的
+// 旧快照冲回 true = 指令信任闸静默失效。REGISTRY_WRITE_LOCK 串行化后，
+// 任意交错下两笔更新都必须同时落盘。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_concurrent_create_and_trust_flip_no_lost_update() {
+    let ws = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let reg = registry_path(ws.path());
+
+    // 先注册 A（trust 翻转的靶子），再并发：N 路 create 新项目 + M 路把 A
+    // 翻成 false。串行化保证最终态=某种串行序：全部新项目在场且 A=false。
+    let proj_a = parent.path().join("proj-a");
+    std::fs::create_dir_all(&proj_a).unwrap();
+    let ea = create_project(&reg, ws.path(), "A", proj_a.to_str().unwrap(), 8).unwrap();
+
+    const N: usize = 6;
+    std::thread::scope(|s| {
+        for i in 0..N {
+            let reg = &reg;
+            let ws = ws.path();
+            let parent = parent.path();
+            s.spawn(move || {
+                let p = parent.join(format!("proj-new-{i}"));
+                std::fs::create_dir_all(&p).unwrap();
+                create_project(reg, ws, &format!("新项目{i}"), p.to_str().unwrap(), 8)
+                    .unwrap_or_else(|e| panic!("并发 create {i} 失败: {e}"));
+            });
+        }
+        for _ in 0..N {
+            let reg = &reg;
+            let id = ea.id.clone();
+            s.spawn(move || {
+                set_project_trust(reg, &id, false)
+                    .unwrap_or_else(|e| panic!("并发 trust 翻转失败: {e}"));
+            });
+        }
+    });
+
+    let entries = list_projects(&reg);
+    assert_eq!(
+        entries.len(),
+        1 + N,
+        "并发 create 不得互相冲掉（丢更新即少条目）: {}",
+        entries.len()
+    );
+    assert!(
+        !find_project(&reg, &ea.id).unwrap().instructions_trusted,
+        "trust 翻转不得被并发 create 的快照覆盖回 true"
+    );
+    for i in 0..N {
+        let p = parent.path().join(format!("proj-new-{i}"));
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.path == canonicalize_for_compare(&p)),
+            "新项目 {i} 必须在场"
+        );
+    }
+}
