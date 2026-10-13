@@ -734,6 +734,41 @@ fn write_voiceprint_config(
         .map_err(|e| format!("failed to write voiceprint config: {}", e))
 }
 
+/// config.voice.json RMW 事务唯一入口——写串行锁在函数内取得，罩
+/// 「宽容读（缺失种子由 [`read_voice_config`] 承担）→ 闭包改 → 原子落盘」
+/// 全程；闭包返回 Err 不落盘（abort 语义）。调用方结构上不可能忘锁
+///（2026-10-13 闭包事务收口）。纪律：闭包内不得再调任何 update_* /
+/// [`nemesis_config::config_write_lock`]（Mutex 非重入，嵌套即死锁）。
+#[cfg(target_os = "windows")]
+fn update_voice_config<T>(
+    config_dir: &std::path::Path,
+    f: impl FnOnce(&mut serde_json::Value) -> Result<T, String>,
+) -> Result<T, String> {
+    let _serial = nemesis_config::config_write_lock();
+    let mut cfg = read_voice_config(config_dir);
+    let out = f(&mut cfg)?;
+    let content = serde_json::to_string_pretty(&cfg)
+        .map_err(|e| format!("failed to serialize voice config: {}", e))?;
+    let path = ensure_voice_config(config_dir);
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600)
+        .map_err(|e| format!("failed to write voice config: {}", e))?;
+    Ok(out)
+}
+
+/// config.voice.print.json RMW 事务唯一入口——锁语义同 [`update_voice_config`]；
+/// 宽容读 + 缺失种子（threshold/speakers）由 [`read_voiceprint_config`] 承担。
+#[cfg(target_os = "windows")]
+fn update_voiceprint_config<T>(
+    config_dir: &std::path::Path,
+    f: impl FnOnce(&mut serde_json::Value) -> Result<T, String>,
+) -> Result<T, String> {
+    let _serial = nemesis_config::config_write_lock();
+    let mut cfg = read_voiceprint_config(config_dir);
+    let out = f(&mut cfg)?;
+    write_voiceprint_config(config_dir, &cfg)?;
+    Ok(out)
+}
+
 /// Push speaker verification rejected notification to frontend.
 /// Used by ChatPanel to display "⚠ 声纹验证未通过" warning.
 #[cfg(target_os = "windows")]
@@ -1368,52 +1403,46 @@ impl VoiceHandler {
         config_dir: &std::path::Path,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
-        // 写串行锁：read→合并 11 字段→写回 = RMW（同类横扫 2026-10-13）。
-        let _cfg_serial = nemesis_config::config_write_lock();
-        let path = ensure_voice_config(config_dir);
-        let mut current = read_voice_config(config_dir);
-
-        if let Some(obj) = current.as_object_mut() {
-            if let Some(v) = data.get("speaker_id").and_then(|v| v.as_u64()) {
-                obj.insert("speaker_id".to_string(), serde_json::json!(v));
+        // 锁在 update_voice_config 内：读（缺失种子）→合并 11 字段→原子写
+        // 全程串行（2026-10-13 闭包事务收口）。
+        update_voice_config(config_dir, |current| {
+            if let Some(obj) = current.as_object_mut() {
+                if let Some(v) = data.get("speaker_id").and_then(|v| v.as_u64()) {
+                    obj.insert("speaker_id".to_string(), serde_json::json!(v));
+                }
+                if let Some(v) = data.get("volume").and_then(|v| v.as_u64()) {
+                    obj.insert("volume".to_string(), serde_json::json!(v));
+                }
+                if let Some(v) = data.get("speed").and_then(|v| v.as_f64()) {
+                    obj.insert("speed".to_string(), serde_json::json!(v));
+                }
+                if let Some(v) = data.get("capture_device") {
+                    obj.insert("capture_device".to_string(), v.clone());
+                }
+                if let Some(v) = data.get("playback_device") {
+                    obj.insert("playback_device".to_string(), v.clone());
+                }
+                if let Some(v) = data.get("stt_enabled") {
+                    obj.insert("stt_enabled".to_string(), v.clone());
+                }
+                if let Some(v) = data.get("tts_enabled") {
+                    obj.insert("tts_enabled".to_string(), v.clone());
+                }
+                if let Some(v) = data.get("punct_enabled") {
+                    obj.insert("punct_enabled".to_string(), v.clone());
+                }
+                if let Some(v) = data.get("speaker_enabled") {
+                    obj.insert("speaker_enabled".to_string(), v.clone());
+                }
+                if let Some(v) = data.get("silence_timeout") {
+                    obj.insert("silence_timeout".to_string(), v.clone());
+                }
+                if let Some(v) = data.get("aec_enabled") {
+                    obj.insert("aec_enabled".to_string(), v.clone());
+                }
             }
-            if let Some(v) = data.get("volume").and_then(|v| v.as_u64()) {
-                obj.insert("volume".to_string(), serde_json::json!(v));
-            }
-            if let Some(v) = data.get("speed").and_then(|v| v.as_f64()) {
-                obj.insert("speed".to_string(), serde_json::json!(v));
-            }
-            if let Some(v) = data.get("capture_device") {
-                obj.insert("capture_device".to_string(), v.clone());
-            }
-            if let Some(v) = data.get("playback_device") {
-                obj.insert("playback_device".to_string(), v.clone());
-            }
-            if let Some(v) = data.get("stt_enabled") {
-                obj.insert("stt_enabled".to_string(), v.clone());
-            }
-            if let Some(v) = data.get("tts_enabled") {
-                obj.insert("tts_enabled".to_string(), v.clone());
-            }
-            if let Some(v) = data.get("punct_enabled") {
-                obj.insert("punct_enabled".to_string(), v.clone());
-            }
-            if let Some(v) = data.get("speaker_enabled") {
-                obj.insert("speaker_enabled".to_string(), v.clone());
-            }
-            if let Some(v) = data.get("silence_timeout") {
-                obj.insert("silence_timeout".to_string(), v.clone());
-            }
-            if let Some(v) = data.get("aec_enabled") {
-                obj.insert("aec_enabled".to_string(), v.clone());
-            }
-        }
-
-        let content = serde_json::to_string_pretty(&current)
-            .map_err(|e| format!("failed to serialize voice config: {}", e))?;
-        // REL-002：统一原子写入（config.voice.json）。
-        nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600)
-            .map_err(|e| format!("failed to write voice config: {}", e))?;
+            Ok(())
+        })?;
 
         Ok(Some(serde_json::json!({ "success": true })))
     }
@@ -2194,24 +2223,24 @@ impl VoiceHandler {
             manager.remove(&name); // Remove existing if re-registering
             manager.register(&name, &embedding);
 
-            // Persist to config.voice.print.json（写串行锁：读→改→写 = RMW，
-            // 与 speaker_remove/set_threshold 等写臂互斥；此时持有 speaker
-            // 状态锁，锁序恒为 speaker→config，无反向路径无死锁）
-            let _cfg_serial = nemesis_config::config_write_lock();
-            let mut vp_cfg = read_voiceprint_config(config_dir);
-            if vp_cfg.get("speakers").is_none() {
-                vp_cfg["speakers"] = serde_json::json!({});
-            }
-            if let Some(obj) = vp_cfg.get_mut("speakers").and_then(|v| v.as_object_mut()) {
-                obj.insert(
-                    name.clone(),
-                    serde_json::json!({
-                        "embedding": embedding,
-                        "created_at": chrono::Local::now().to_rfc3339(),
-                    }),
-                );
-            }
-            write_voiceprint_config(config_dir, &vp_cfg)?;
+            // Persist to config.voice.print.json（锁在 update_voiceprint_config
+            // 内：读→改→写 = RMW，与 speaker_remove/set_threshold 等写臂互斥；
+            // 此时持有 speaker 状态锁，锁序恒为 speaker→config，无反向路径无死锁）
+            update_voiceprint_config(config_dir, |vp_cfg| {
+                if vp_cfg.get("speakers").is_none() {
+                    vp_cfg["speakers"] = serde_json::json!({});
+                }
+                if let Some(obj) = vp_cfg.get_mut("speakers").and_then(|v| v.as_object_mut()) {
+                    obj.insert(
+                        name.clone(),
+                        serde_json::json!({
+                            "embedding": embedding,
+                            "created_at": chrono::Local::now().to_rfc3339(),
+                        }),
+                    );
+                }
+                Ok(())
+            })?;
 
             tracing::info!(
                 "[Speaker] Registered '{}' ({} samples, {:.1}s)",
@@ -2253,13 +2282,13 @@ impl VoiceHandler {
                 manager.remove(name);
             }
         }
-        // 写串行锁：读→删→写 = RMW（同类横扫 2026-10-13）。
-        let _cfg_serial = nemesis_config::config_write_lock();
-        let mut vp_cfg = read_voiceprint_config(config_dir);
-        if let Some(speakers) = vp_cfg.get_mut("speakers").and_then(|v| v.as_object_mut()) {
-            speakers.remove(name);
-        }
-        write_voiceprint_config(config_dir, &vp_cfg)?;
+        // 锁在 update_voiceprint_config 内：读→删→写 = RMW（2026-10-13 闭包事务收口）。
+        update_voiceprint_config(config_dir, |vp_cfg| {
+            if let Some(speakers) = vp_cfg.get_mut("speakers").and_then(|v| v.as_object_mut()) {
+                speakers.remove(name);
+            }
+            Ok(())
+        })?;
         tracing::info!("[Speaker] Removed '{}'", name);
         Ok(Some(serde_json::json!({ "removed": true, "name": name })))
     }
@@ -2294,11 +2323,11 @@ impl VoiceHandler {
             return Err("Threshold must be between 0.0 and 1.0".to_string());
         }
         *speaker_threshold_state().lock().unwrap() = threshold;
-        // 写串行锁：读→改→写 = RMW（同类横扫 2026-10-13）。
-        let _cfg_serial = nemesis_config::config_write_lock();
-        let mut vp_cfg = read_voiceprint_config(config_dir);
-        vp_cfg["threshold"] = serde_json::json!(threshold);
-        write_voiceprint_config(config_dir, &vp_cfg)?;
+        // 锁在 update_voiceprint_config 内：读→改→写 = RMW（2026-10-13 闭包事务收口）。
+        update_voiceprint_config(config_dir, |vp_cfg| {
+            vp_cfg["threshold"] = serde_json::json!(threshold);
+            Ok(())
+        })?;
         Ok(Some(serde_json::json!({ "threshold": threshold })))
     }
 
