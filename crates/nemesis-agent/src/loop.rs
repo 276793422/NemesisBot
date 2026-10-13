@@ -502,7 +502,7 @@ pub struct AgentLoop {
     /// （PlanPresentHandle.mode，批准臂直接翻转），本侧读写经 Deref 零变化。
     mode: Arc<parking_lot::RwLock<crate::types::AgentMode>>,
     /// N2：present_plan 审批结论槽（与工具共享 PlanPresentHandle；批次尾
-    /// `take_plan_present_verdict` 消费——Rejected/Timeout 结构化终止本轮）。
+    /// `remove` 按 session_key 消费——Rejected/Timeout 结构化终止本轮）。
     /// None = 工具未注册（headless 形态），消费点恒 None 零开销。
     plan_present: parking_lot::RwLock<Option<Arc<crate::loop_tools::PlanPresentHandle>>>,
     /// F1：M1a 事件广播发送端——模式切换后发布 `ModeChanged`（前端徽标
