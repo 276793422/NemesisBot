@@ -288,7 +288,10 @@ pub(crate) async fn run_runtime(
             // bypassed by YOLO/auto. No-op if no memory executor was stashed.
             #[cfg(feature = "memory")]
             {
-                agent_loop.set_memory_approval_gate(Arc::new(GatewayMemoryGate::new(adapter)));
+                // clone：adapter 的最后消费方在此之后（L9 selfupdate 装配块
+                // 也要一份——memory feature 开/关两种形态下都取 owned）。
+                agent_loop
+                    .set_memory_approval_gate(Arc::new(GatewayMemoryGate::new(adapter.clone())));
             }
             // M7: dashboard 审批卡的响应端点经 AgentLoop 的 responder 槽触达
             // （nemesis-web approval handler 读 agent_loop.approval_responder()）。
@@ -312,6 +315,28 @@ pub(crate) async fn run_runtime(
             // in the merged context snapshot's `# Runtime Policy` section.
             agent_loop.set_interactive_approval(true);
             info!("[Gateway] Approval manager wired (dashboard web approval, M7)");
+            // L9 selfupdate：九步 apply 编排器装配（selfupdate implies
+            // security）。审批走同一 adapter（CRITICAL 卡全平台生效，「总是
+            // 允许」对 CRITICAL 恒忽略）；审计链走 security_plugin；estop
+            // 同源。WSAPI selfupdate.* 与 /api/internal selfupdate_apply 都
+            // 从 handlers::selfupdate 的 OnceLock 槽取真身；未装配 = 诚实报。
+            #[cfg(feature = "selfupdate")]
+            {
+                let mgr = Arc::new(nemesis_web::selfupdate::SelfUpdateManager {
+                    workspace: shared_resources.workspace_dir(),
+                    estop: shared_resources.estop.clone(),
+                    approval: adapter.clone(),
+                    audit: Some(plugin.clone()),
+                    shutdown: Arc::new(|| {
+                        // android 无此导入（cfg not(android)）；该平台 apply
+                        // 本身运行期诚实拒绝，闭包退化为空操作即可。
+                        #[cfg(not(target_os = "android"))]
+                        trigger_global_shutdown();
+                    }),
+                });
+                nemesis_web::handlers::selfupdate::set_manager(mgr);
+                info!("[Gateway] selfupdate manager wired (L9)");
+            }
             // P5: guardian judge attach — `guardian_mode` 闸（2026-09-16
             // 无上下文 LLM 命令审计，用户拍板默认 off：LLM 审计耗时且贵，
             // 是双刃剑）。off/空/未知值 = 不装配 judge（零 LLM 成本，连旧
@@ -560,6 +585,33 @@ pub(crate) async fn run_runtime(
                         #[cfg(not(target_os = "android"))]
                         trigger_global_shutdown();
                         shutdown_svc_internal.shutdown();
+                    }
+                    nemesis_web::internal::InternalCommand::SelfUpdateApply { allow_downgrade } => {
+                        // L9：CLI `nemesisbot selfupdate apply` 经 /api/internal
+                        // 落到这里——受理后 spawn 九步编排（下载 + 审批卡 +
+                        // staging 全程分钟级，不能占住监听）。成功路径 apply
+                        // 内部已 spawn 新版本并自带优雅停机线程，此处不再动
+                        // svc_mgr（避免双重停机竞态）。
+                        #[cfg(feature = "selfupdate")]
+                        if let Some(mgr) = nemesis_web::handlers::selfupdate::manager() {
+                            let version = crate::common::VERSION_INFO.version;
+                            let commit = crate::common::VERSION_INFO.git_commit;
+                            tokio::spawn(async move {
+                                match mgr.apply(version, commit, allow_downgrade).await {
+                                    Ok(msg) => info!("[Gateway] selfupdate apply: {msg}"),
+                                    Err(e) => warn!("[Gateway] selfupdate apply 失败：{e}"),
+                                }
+                            });
+                        } else {
+                            warn!(
+                                "[Gateway] selfupdate apply：manager 未装配（security 未启用？），忽略"
+                            );
+                        }
+                        #[cfg(not(feature = "selfupdate"))]
+                        {
+                            let _ = allow_downgrade;
+                            warn!("[Gateway] selfupdate apply：构建未带 selfupdate feature，忽略");
+                        }
                     }
                 }
             }

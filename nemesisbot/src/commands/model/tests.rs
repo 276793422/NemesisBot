@@ -2623,6 +2623,7 @@ mod wave_a {
                 cache_read: 0.1,
                 cache_creation: 0.2,
                 display: Some("Acme Tiny".into()),
+                price_tiers: Vec::new(),
             },
             &th.home,
         )
@@ -2657,6 +2658,7 @@ mod wave_a {
                 cache_read: 0.0,
                 cache_creation: 0.0,
                 display: None,
+                price_tiers: Vec::new(),
             },
             &th.home,
         )
@@ -2664,6 +2666,60 @@ mod wave_a {
         .unwrap_err();
         assert!(err.to_string().contains("模型名不能为空"));
         assert!(reopen_custom(&th.home).is_empty(), "失败路径不得落条目");
+    }
+
+    #[tokio::test]
+    async fn prices_add_with_tiers_persists_bad_spec_bails() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        super::super::run_prices(
+            PricesAction::Add {
+                model: "acme/huge".into(),
+                input: 1.0,
+                output: 2.0,
+                cache_read: 0.0,
+                cache_creation: 0.0,
+                display: None,
+                price_tiers: vec!["200000:3.0:9.0".into(), "500000:4.0:16.0".into()],
+            },
+            &th.home,
+        )
+        .await
+        .expect("带阶梯 Add 必须成功");
+        let custom = reopen_custom(&th.home);
+        assert_eq!(custom.len(), 1);
+        let tiers = custom[0]
+            .price_tiers
+            .as_ref()
+            .expect("阶梯必须持久化（Some）");
+        assert_eq!(tiers.len(), 2);
+        assert_eq!(tiers[0].min_prompt_tokens, 200_000);
+        assert!((tiers[0].input_cost_per_million.unwrap() - 3.0).abs() < 1e-9);
+        assert!((tiers[0].output_cost_per_million.unwrap() - 9.0).abs() < 1e-9);
+        assert_eq!(tiers[0].cache_read_cost_per_million, None);
+        assert_eq!(tiers[0].cache_creation_cost_per_million, None);
+        assert_eq!(tiers[1].min_prompt_tokens, 500_000);
+        assert!((tiers[1].input_cost_per_million.unwrap() - 4.0).abs() < 1e-9);
+        assert!((tiers[1].output_cost_per_million.unwrap() - 16.0).abs() < 1e-9);
+        // CLI 形态错误（缺一段）必须响亮 bail 且不落新条目。
+        let err = super::super::run_prices(
+            PricesAction::Add {
+                model: "acme/bad".into(),
+                input: 1.0,
+                output: 2.0,
+                cache_read: 0.0,
+                cache_creation: 0.0,
+                display: None,
+                price_tiers: vec!["200000:3.0".into()],
+            },
+            &th.home,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("第 1 条"));
+        assert_eq!(reopen_custom(&th.home).len(), 1, "坏阶梯路径不得落新条目");
     }
 
     #[tokio::test]
@@ -2691,6 +2747,7 @@ mod wave_a {
                 cache_read: 0.0,
                 cache_creation: 0.0,
                 display: None,
+                price_tiers: Vec::new(),
             },
             &th.home,
         )
@@ -3113,6 +3170,7 @@ mod w5b2 {
                     cache_read: 0.1,
                     cache_creation: 0.2,
                     display: None,
+                    price_tiers: Vec::new(),
                 },
             },
             false,

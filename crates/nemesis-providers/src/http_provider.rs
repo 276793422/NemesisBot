@@ -370,6 +370,41 @@ impl HttpProvider {
                         .as_str()
                         .unwrap_or("stop")
                         .to_string();
+                    // 非流式完整形态的 message.tool_calls 原样带上（2026-10-13
+                    // wal_crash 实证修）：工具调用模型在此路径此前被丢弃成
+                    // tool_calls=[]，agent 侧只见空文本终答。anthropic 同路径
+                    // （parse_response）一直保留，此处对齐。
+                    let msg_tool_calls: Vec<ToolCall> =
+                        parsed["choices"][0]["message"]["tool_calls"]
+                            .as_array()
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|tc| {
+                                        Some(ToolCall {
+                                            id: tc["id"].as_str()?.to_string(),
+                                            call_type: Some(
+                                                tc["type"]
+                                                    .as_str()
+                                                    .unwrap_or("function")
+                                                    .to_string(),
+                                            ),
+                                            function: Some(FunctionCall {
+                                                name: tc["function"]["name"]
+                                                    .as_str()
+                                                    .unwrap_or_default()
+                                                    .to_string(),
+                                                arguments: tc["function"]["arguments"]
+                                                    .as_str()
+                                                    .unwrap_or_default()
+                                                    .to_string(),
+                                            }),
+                                            name: None,
+                                            arguments: None,
+                                        })
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
                     let usage = parsed.get("usage").map(extract_usage);
                     if !content.is_empty() {
                         let _ = tx
@@ -385,7 +420,7 @@ impl HttpProvider {
                     let _ = tx
                         .send(Ok(StreamChunk {
                             delta: String::new(),
-                            tool_calls: vec![],
+                            tool_calls: msg_tool_calls,
                             finish_reason: Some(finish),
                             usage,
                             reasoning_content: None,
@@ -420,6 +455,11 @@ impl HttpProvider {
                 std::collections::HashMap::new();
             // Accumulated reasoning content from thinking-mode models.
             let mut accumulated_reasoning = String::new();
+            // 终态帧是否已发（finish chunk 正常先行，[DONE] 只收尾不再补发；
+            // 2026-10-13 wal_crash 实证根修——[DONE] 硬编码 "stop" 二连发会把
+            // 聚合侧已收的 finish_reason="tool_calls" 覆盖成 "stop"，工具调用
+            // 轮被判成空终答）。
+            let mut finish_emitted = false;
 
             while let Some(chunk_result) = stream.next().await {
                 let bytes = match chunk_result {
@@ -458,16 +498,50 @@ impl HttpProvider {
                         }
                         let data = &line[6..];
                         if data.trim() == "[DONE]" {
+                            if finish_emitted {
+                                // 正常收尾（OpenAI 语义 finish → [DONE]）：终态
+                                // 帧已随 finish chunk 发出，这里只关闭通道。与
+                                // EOF 路径同一条纪律——final chunk 单发，二连发
+                                // 会让覆盖式消费的下游丢 tool_calls。
+                                tracing::debug!(
+                                    provider = %provider_name,
+                                    model = %model,
+                                    "[Provider] SSE stream completed ([DONE]) — final chunk already emitted"
+                                );
+                                return;
+                            }
+                            // 异常形态：[DONE] 前没有 finish 帧——合成唯一终态
+                            // （flush 已累积 tool_calls），语义对齐 EOF 路径。
+                            let done_calls: Vec<ToolCall> = pending_tool_calls
+                                .iter()
+                                .map(|(_, (id, name, args))| ToolCall {
+                                    id: id.clone(),
+                                    call_type: Some("function".to_string()),
+                                    function: Some(FunctionCall {
+                                        name: name.clone(),
+                                        arguments: args.clone(),
+                                    }),
+                                    name: None,
+                                    arguments: None,
+                                })
+                                .collect();
                             tracing::debug!(
                                 provider = %provider_name,
                                 model = %model,
-                                "[Provider] SSE stream completed ([DONE])"
+                                "[Provider] SSE [DONE] without finish chunk — synthesizing termination chunk"
                             );
                             let _ = tx
                                 .send(Ok(StreamChunk {
                                     delta: String::new(),
-                                    tool_calls: vec![],
-                                    finish_reason: Some("stop".to_string()),
+                                    tool_calls: done_calls,
+                                    finish_reason: Some(
+                                        if !pending_tool_calls.is_empty() {
+                                            "tool_calls"
+                                        } else {
+                                            "stop"
+                                        }
+                                        .to_string(),
+                                    ),
                                     usage: None,
                                     reasoning_content: if accumulated_reasoning.is_empty() {
                                         None
@@ -571,6 +645,9 @@ impl HttpProvider {
                             // Receiver dropped, stop streaming.
                             return;
                         }
+                        if finish_reason.is_some() {
+                            finish_emitted = true;
+                        }
                     }
                 }
             }
@@ -580,6 +657,17 @@ impl HttpProvider {
             // "tool_calls"，OpenAI 语义），否则纯 "stop"。单 chunk 而非
             // tool_calls chunk + stop chunk 两连发——覆盖式消费 final chunk
             // 的下游会在第二发丢掉 tool_calls。
+            // 终态帧已发（finish chunk 正常收尾后服务端直接断流）→ 不再补发：
+            // 二连发会让聚合侧把已收的 "tool_calls" 覆盖成 "stop"（2026-10-13
+            // wal_crash 实证根修）。
+            if finish_emitted {
+                tracing::debug!(
+                    provider = %provider_name,
+                    model = %model,
+                    "[Provider] SSE stream ended after final chunk — no synthesized duplicate"
+                );
+                return;
+            }
             let flushed_calls: Vec<ToolCall> = pending_tool_calls
                 .iter()
                 .map(|(_, (id, name, args))| ToolCall {

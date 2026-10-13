@@ -34,7 +34,23 @@ impl AgentLoop {
         let turns_used = st.turns_used;
         let chat_opts = &st.chat_opts;
         // Clone provider Arc so RwLock guard is dropped before .await.
-        let active_provider = self.provider.read().clone();
+        let active_provider_base = self.provider.read().clone();
+        // L10（2026-10-13）：流式观测 lane——包装后本函数五个调用点（首捕 +
+        // 四重试环）共享同一包装实例；重试 = 新流（seq 从 0 重开 + start 帧
+        // 重置前端缓冲）。双闸不满足（event tx 未接线 / provider_stream_
+        // events 关）→ None → 原 provider 原字节路径，零额外开销。
+        // sink 引用另外持一份：cancel/estop 臂 select! 直接 drop chat future
+        //（包装器的 Err 臂没机会跑），此处显式补 error 帧让前端流半开收口；
+        // 上游超时（chat_call_bounded 内部 drop）无同步钩子，靠重试新流的
+        // start 帧重置 + 终答回复覆盖收口（观测 lane 已知边界，模块头注记）。
+        let stream_sink = self.provider_stream_sink(context, active_model);
+        let active_provider: Arc<dyn LlmProvider> = match &stream_sink {
+            Some(sink) => Arc::new(StreamingLlmProvider::new(
+                active_provider_base,
+                sink.clone(),
+            )),
+            None => active_provider_base,
+        };
 
         // 订阅急停状态——LLM 调用进行中若触发急停，能即时打断：select 命中
         // estop arm 后，chat future 被 drop → reqwest 取消在途 HTTP 请求。
@@ -59,6 +75,9 @@ impl AgentLoop {
             ) => result,
             _ = cancel_token.cancelled() => {
                 info!("[AgentLoop] LLM call cancelled while waiting for response, turns_used={}", turns_used);
+                if let Some(sink) = &stream_sink {
+                    sink.error("已取消（用户中断）");
+                }
                 return Err(AgentEvent::Done("已取消".to_string()));
             }
             // 急停：watch 翻成 engaged 才 resolve。（K1b 起该等待逻辑抽成
@@ -68,6 +87,9 @@ impl AgentLoop {
                     "[AgentLoop] E-stop engaged during LLM call, turns_used={}",
                     turns_used
                 );
+                if let Some(sink) = &stream_sink {
+                    sink.error("已急停（E-STOP），LLM 调用已中断");
+                }
                 return Err(AgentEvent::Done(
                     "⛔ 已急停 (E-STOP) — LLM 调用已中断。发送 `nemesisbot estop --release` 恢复。"
                         .to_string(),

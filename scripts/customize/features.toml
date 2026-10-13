@@ -358,6 +358,18 @@ desc = "Dashboard 交互终端（/ws/pty + xterm.js，config terminal.enabled �
 category = "subsystems"
 default = true
 
+# NOTE: `codemode`（T2，L1 脚本工具层）——code_run 工具（rquickjs QuickJS 引擎
+# 随它进出；关 = 工具不注册，引擎不参与编译）。运行开关是 config
+# agents.codemode.enabled（默认关）：编译裁剪 + 运行双闸，同 hidden_tools 模型。
+# **Android 构建恒无此模块**（rquickjs-sys 无 android bindings，依赖 target
+# 门控排除——勾不勾都一样），其余平台随本开关。
+[[feature]]
+id = "codemode"
+label = "code_run 脚本工具"
+desc = "脚本化批量工具编排（QuickJS 沙箱：资源限制 + 工具调用过安全 8 层，config agents.codemode.enabled 默认关）。IoT/极小镜像建议关；Android 构建恒无（引擎无 android bindings）"
+category = "subsystems"
+default = true
+
 # NOTE: `verify-enforce-lock` 是**锁定版旗标**（签名验证接入计划 §2.1）——空
 # feature，纯编译期 cfg：勾上即把 enforce 策略烧死（config.security.json 的
 # signature_verify 任意值被忽略，启动自验失败 exit 86；无编译期锚直接拒启）。

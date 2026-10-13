@@ -86,3 +86,8 @@ test-tools/mcp/server/mcp-test-server.exe
 /staging-wasm-devkit/
 /nightly-wasm-devkit.zip
 /nightly-wasm-devkit.tar.gz
+
+# 本地测试散落产物（不入库）：verify-loader gen-keys 落 cwd 的根锚指纹 +
+# llvm-cov 覆盖率摘要落盘目录
+/root_anchor.hex
+/baselines/

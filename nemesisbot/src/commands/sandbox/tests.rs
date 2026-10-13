@@ -444,9 +444,14 @@ fn test_s11b_run_startexe_timeout_hang_tree_killed_false() {
         std::time::Duration::from_millis(400),
     );
     assert!(!ok);
+    // 30s 界只钉「树杀会返回、不悬挂」（真悬挂=永不返回，任何有界超时都能
+    // 抓），不钉 taskkill 速度——超时路径同步 .status() 等 taskkill，满载
+    // 并发下单发可达秒级（B4 假红同模式，CLAUDE.md 已记载）。若树杀整体
+    // 失效，ping 会在 ~30s 自然退出 → 返回 true → 上面 !ok 在正确位置判败，
+    // 放宽本界不遮蔽任何失效。
     assert!(
-        t0.elapsed() < std::time::Duration::from_secs(5),
-        "超时后必须树杀返回"
+        t0.elapsed() < std::time::Duration::from_secs(30),
+        "超时后必须树杀返回（不悬挂）"
     );
 }
 

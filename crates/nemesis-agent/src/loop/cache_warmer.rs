@@ -136,8 +136,9 @@ pub(crate) fn parse_cache_warmer_config(
 
 impl AgentLoop {
     /// 新鲜读 config.json（同 `config_watch` 各 current_* 模式；standalone
-    /// 无 config_path → `None`）。
-    fn read_config_json(&self) -> Option<serde_json::Value> {
+    /// 无 config_path → `None`）。`pub(crate)`：provider_stream sink 构造
+    /// （L10）同源复用，不另抄第二份读文件逻辑。
+    pub(crate) fn read_config_json(&self) -> Option<serde_json::Value> {
         let path = self.config_path.read().clone()?;
         std::fs::read_to_string(&path)
             .ok()
@@ -316,6 +317,14 @@ impl AgentLoop {
             max_tokens: Some(1),
             ..Default::default()
         };
+        // L10 观测面（2026-10-13）：warm 生命周期升 info!——Logs Dashboard
+        // 「llm」源可见（warm 花的是真金白银的 API 调用，开销必须可观测；
+        // 此前全程 debug! 只有开 trace 才看得见）。start 带估算成本口径。
+        let started_at = std::time::Instant::now();
+        info!(
+            "[cache-warmer] {} warm start (model={}, est_cost={:?} USD, limit={} USD)",
+            session_key, model, estimated, cost_limit_usd
+        );
         let result = Self::chat_call_bounded(
             WARM_CALL_TIMEOUT_SECS,
             &provider,
@@ -336,13 +345,18 @@ impl AgentLoop {
             }
         }
         match result {
-            Ok(_) => debug!(
-                "[cache-warmer] {} cache refreshed (model={}, ttl={}s)",
-                session_key, model, ttl_secs
+            Ok(_) => info!(
+                "[cache-warmer] {} cache refreshed (model={}, ttl={}s, took {}ms)",
+                session_key,
+                model,
+                ttl_secs,
+                started_at.elapsed().as_millis()
             ),
-            Err(e) => debug!(
-                "[cache-warmer] {} warm replay failed (silent): {}",
-                session_key, e
+            Err(e) => info!(
+                "[cache-warmer] {} warm replay failed (silent, cache stays cold): {} (took {}ms)",
+                session_key,
+                e,
+                started_at.elapsed().as_millis()
             ),
         }
     }

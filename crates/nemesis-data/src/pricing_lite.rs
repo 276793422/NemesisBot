@@ -60,6 +60,8 @@ pub fn parse_litellm_json(raw: &str) -> Result<Vec<ModelPricing>, String> {
             // 精选补充层条目带 aliases（`deepseek/deepseek-chat` 等）；上游
             // 条目无此字段 → 空表（同义名靠 lookup 的后缀匹配兜底）。
             aliases: e.aliases.unwrap_or_default(),
+            // LiteLLM 原始表无阶梯价字段（阶梯价是自定义层语义，L3）。
+            price_tiers: None,
         });
     }
     // 0 条 = 传错文件/形状不对（真表数千条）——报错让调用方降级保留旧表。

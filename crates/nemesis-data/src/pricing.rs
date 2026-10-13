@@ -139,6 +139,55 @@ pub fn compute_cost_usd(
     )
 }
 
+/// Prompt-length 阶梯解析（L3，2026-10-12 内部专项 T0）：`input_tokens`
+/// 达到某档 `min_prompt_tokens` 即该档生效；多条命中取阈值最大的一档；
+/// 档内 `None` 价目字段继承基础价。**单一真相源**——`cost_from_pricing`
+/// 与 `cost_breakdown_from_pricing` 共同消费，两条口径永不分叉。
+fn effective_prices(p: &ModelPricing, input_tokens: i64) -> EffectivePrices {
+    let Some(tiers) = &p.price_tiers else {
+        return EffectivePrices {
+            input: p.input_cost_per_million,
+            output: p.output_cost_per_million,
+            cache_read: p.cache_read_cost_per_million,
+            cache_creation: p.cache_creation_cost_per_million,
+        };
+    };
+    // 命中 = input_tokens >= min_prompt_tokens；多条命中取阈值最大的一档
+    // （max_by_key 平票取后者，但等阈值档语义上应同价——取哪条都一致）。
+    let tier = tiers
+        .iter()
+        .filter(|t| input_tokens >= t.min_prompt_tokens)
+        .max_by_key(|t| t.min_prompt_tokens);
+    match tier {
+        None => EffectivePrices {
+            input: p.input_cost_per_million,
+            output: p.output_cost_per_million,
+            cache_read: p.cache_read_cost_per_million,
+            cache_creation: p.cache_creation_cost_per_million,
+        },
+        Some(t) => EffectivePrices {
+            input: t.input_cost_per_million.unwrap_or(p.input_cost_per_million),
+            output: t
+                .output_cost_per_million
+                .unwrap_or(p.output_cost_per_million),
+            cache_read: t
+                .cache_read_cost_per_million
+                .unwrap_or(p.cache_read_cost_per_million),
+            cache_creation: t
+                .cache_creation_cost_per_million
+                .unwrap_or(p.cache_creation_cost_per_million),
+        },
+    }
+}
+
+/// [`effective_prices`] 的解析产物（四列价目，已含继承回填）。
+struct EffectivePrices {
+    input: f64,
+    output: f64,
+    cache_read: f64,
+    cache_creation: f64,
+}
+
 /// Pure cost math for a known pricing entry (unit-testable without the table).
 pub fn cost_from_pricing(
     p: &ModelPricing,
@@ -147,18 +196,20 @@ pub fn cost_from_pricing(
     cache_creation_tokens: i64,
     cache_read_tokens: i64,
 ) -> f64 {
+    let prices = effective_prices(p, input_tokens);
     // Plain input = total input minus cached portions, clamped at zero for
     // providers that report cache tokens separately from prompt tokens.
     let plain_input = (input_tokens - cache_creation_tokens - cache_read_tokens).max(0);
-    (plain_input as f64 * p.input_cost_per_million
-        + output_tokens as f64 * p.output_cost_per_million
-        + cache_creation_tokens as f64 * p.cache_creation_cost_per_million
-        + cache_read_tokens as f64 * p.cache_read_cost_per_million)
+    (plain_input as f64 * prices.input
+        + output_tokens as f64 * prices.output
+        + cache_creation_tokens as f64 * prices.cache_creation
+        + cache_read_tokens as f64 * prices.cache_read)
         / 1_000_000.0
 }
 
 /// [`cost_from_pricing`] 的分项版：同一公式按列拆开，`total` = 分项之和
 /// （浮点上直接相加，不做二次舍入——明细表四分项之和恒等于 total）。
+/// 阶梯解析与总价版同源（[`effective_prices`]），命中档时分项列按阶梯价。
 pub fn cost_breakdown_from_pricing(
     p: &ModelPricing,
     input_tokens: i64,
@@ -166,13 +217,13 @@ pub fn cost_breakdown_from_pricing(
     cache_creation_tokens: i64,
     cache_read_tokens: i64,
 ) -> crate::CostBreakdown {
+    let prices = effective_prices(p, input_tokens);
     let plain_input = (input_tokens - cache_creation_tokens - cache_read_tokens).max(0);
-    let input_cost_usd = plain_input as f64 * p.input_cost_per_million / 1_000_000.0;
-    let output_cost_usd = output_tokens as f64 * p.output_cost_per_million / 1_000_000.0;
+    let input_cost_usd = plain_input as f64 * prices.input / 1_000_000.0;
+    let output_cost_usd = output_tokens as f64 * prices.output / 1_000_000.0;
     let cache_creation_cost_usd =
-        cache_creation_tokens as f64 * p.cache_creation_cost_per_million / 1_000_000.0;
-    let cache_read_cost_usd =
-        cache_read_tokens as f64 * p.cache_read_cost_per_million / 1_000_000.0;
+        cache_creation_tokens as f64 * prices.cache_creation / 1_000_000.0;
+    let cache_read_cost_usd = cache_read_tokens as f64 * prices.cache_read / 1_000_000.0;
     crate::CostBreakdown {
         pricing_model: p.model_id.clone(),
         input_cost_usd,
@@ -213,3 +264,7 @@ mod cov_tests;
 // Wave6B 覆盖率收尾：见 cov_wave6b_tests.rs 头注释。
 #[cfg(test)]
 mod cov_wave6b_tests;
+
+// L3（2026-10-12 内部专项 T0）：prompt-length 阶梯价解析/计价/透传测试。
+#[cfg(test)]
+mod tier_tests;

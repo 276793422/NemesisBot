@@ -98,6 +98,9 @@ terminal = ["dep:portable-pty"]
 # 皮肤包加载/签名验证/WSAPI 管理面（skins.rs + handlers/skins.rs + 路由
 # 挂载点）。zip 与 nemesis-verify 是本功能的实现依赖，随 skins 进出。
 skins = ["dep:zip", "dep:nemesis-verify"]
+# L9 版本自切换通道（selfupdate.rs apply 编排：v4 验签 + zip 解包 + 审批 +
+# 审计链，implies security）。check/status/journal/boot 收口不门控。
+selfupdate = ["security", "dep:zip", "dep:nemesis-verify"]
 
 [dev-dependencies]
 tempfile = "3"

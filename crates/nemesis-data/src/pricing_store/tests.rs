@@ -21,6 +21,7 @@ fn entry(id: &str, input: f64, output: f64) -> ModelPricing {
         max_input_tokens: None,
         max_output_tokens: None,
         aliases: Vec::new(),
+        price_tiers: None,
     }
 }
 

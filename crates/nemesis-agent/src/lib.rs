@@ -27,6 +27,13 @@ pub mod chat_log;
 pub mod checkpoint;
 // P30（WS14）Canvas widget：```canvas 块检出 + JS 语法预检（终答判定处消费）。
 pub mod canvas;
+/// T2（内部专项总计划 L1 codemode）：`code_run` QuickJS 脚本工具——脚本内
+/// tool() 过完整 dispatch 瀑布；编译闸 `codemode` feature + 运行闸
+/// `agents.codemode.enabled`（默认关）+ min_tier big 双闸。**非 Android
+/// only**：rquickjs-sys 无 android bindings（依赖声明在 target 门控表，
+/// 与本 cfg 同收口——android 上 codemode feature 在但无依赖，模块缺席）。
+#[cfg(all(feature = "codemode", not(target_os = "android")))]
+pub mod code_run;
 pub mod context;
 pub mod discipline;
 pub mod estop;
@@ -70,6 +77,8 @@ pub mod tool_event_hook;
 /// T1（扩展计划 D3）：工具收据——防幻觉执行证明（HMAC-SHA256）。
 pub mod tool_receipts;
 pub mod turn_guard;
+/// L8（内部专项总计划重评估）：工具调用三态 WAL（崩溃恢复续轮）。
+pub mod turn_wal;
 pub mod types;
 pub mod workspace_instructions;
 /// WS9/P22：workspace 级写租约（文件锁 + 持有者 sidecar；写类工具包装）。
