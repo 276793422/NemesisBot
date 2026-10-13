@@ -3253,6 +3253,7 @@ fn test_typed_save_roundtrip_preserves_untyped_per_model_keys() {
                 "vision": "no",
                 "vision_probe": false,
                 "max_output_tokens": 4096,
+                "stream": "yes",
                 "some_future_key": { "nested": [1, 2, 3] },
                 "extra": { "note": "字面 extra 键也必须保留（flatten 吸收后回吐）" }
             },
@@ -3278,6 +3279,7 @@ fn test_typed_save_roundtrip_preserves_untyped_per_model_keys() {
     assert_eq!(e1["vision"], "no");
     assert_eq!(e1["vision_probe"], false);
     assert_eq!(e1["max_output_tokens"], 4096);
+    assert_eq!(e1["stream"], "yes");
     assert_eq!(e1["some_future_key"]["nested"][2], 3);
     // 字面名为 "extra" 的用户键：flatten 吸收进 extra map、round-trip 后原样
     // 回吐（值在 map 里，不作为实体键丢失）。

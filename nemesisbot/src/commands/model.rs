@@ -88,6 +88,15 @@ pub enum ModelAction {
         /// Real model name, e.g. "Qwen3-30B-A3B"
         real_name: String,
     },
+    /// per-model 流式开关（2026-10-13 stream 键）：yes/no（别名 true/false）
+    /// 强制流式/非流式请求形态；auto 或空串清除回 lane 默认（codex=流式，
+    /// anthropic/openai 兼容=非流式）。构造期消费：默认模型需重新设默认
+    /// 或重启生效。
+    SetStream {
+        name: String,
+        /// One of: auto | yes | no（别名 true/false）
+        stream: String,
+    },
     /// H4 (U16 half): set the reasoning-effort tier for a model.
     /// "off" clears it (send nothing); low/medium/high set the tier that
     /// providers translate into their wire format.
@@ -859,6 +868,47 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 println!(
                     "✓ {} → real_name=\"{}\" (auto 检测将解析为 tier={})",
                     name, real_name, resolved
+                );
+            } else {
+                anyhow::bail!("Model not found: {}", name);
+            }
+        }
+        ModelAction::SetStream { name, stream } => {
+            if !cfg_path.exists() {
+                anyhow::bail!("Configuration not found.");
+            }
+            // 归一走单一真相源 normalize_stream_value（与 model add --stream /
+            // web update_field / 配置解析同源）：auto/空串清除（写空串 =
+            // 跟随 lane 默认），yes/no（别名 true/false）归一写盘，未知值
+            // loud 拒绝——flag 是用户当次意志，不静默纠偏。
+            let normalized = if stream.is_empty() || stream.eq_ignore_ascii_case("auto") {
+                String::new()
+            } else {
+                nemesis_config::normalize_stream_value(&serde_json::json!(stream)).ok_or_else(
+                    || {
+                        anyhow::anyhow!(
+                            "Invalid stream value '{}'. Use yes | no (aliases: true | false), or auto to reset.",
+                            stream
+                        )
+                    },
+                )?
+            };
+            let data = std::fs::read_to_string(&cfg_path)?;
+            let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
+            let updated = update_model_entry(&mut cfg, &name, |e| {
+                e["stream"] = serde_json::Value::String(normalized.clone());
+            });
+            if updated {
+                // REL-002：统一原子写入。
+                write_config_atomic(&cfg_path, &cfg)?;
+                let shown = if normalized.is_empty() {
+                    "auto".to_string()
+                } else {
+                    normalized
+                };
+                println!(
+                    "✓ {} → stream={} (构造期消费：默认模型需重新设默认或重启生效)",
+                    name, shown
                 );
             } else {
                 anyhow::bail!("Model not found: {}", name);
