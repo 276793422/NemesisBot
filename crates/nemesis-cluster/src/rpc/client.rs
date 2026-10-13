@@ -489,7 +489,14 @@ impl RpcClient {
                 .as_ref()
                 .and_then(|r| r.get_peer_info(peer_id))
                 .ok_or_else(|| {
-                    RpcClientError::Connection(format!("peer not found: {}", peer_id))
+                    // R4 自投递防护后全空候选也会走到 None——错误文案同时
+                    // 覆盖「未在册」与「仅剩自端点候选被拒拨」两种成因，
+                    // 派发失败留痕时不误导排障方向。
+                    RpcClientError::Connection(format!(
+                        "peer unresolvable: {} (unknown, or all dial candidates \
+                         collide with the local endpoint)",
+                        peer_id
+                    ))
                 })?;
 
             if require_online && !is_online {

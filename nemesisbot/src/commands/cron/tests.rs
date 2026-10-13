@@ -86,7 +86,7 @@ fn add_interval_job_persists_canonical_envelope() {
         assert_eq!(job.name, "j1");
         assert_eq!(job.schedule.kind, "every", "kind 与 gateway 语义对齐");
         assert_eq!(job.schedule.every_ms, Some(30000));
-        assert_eq!(job.enabled, true);
+        assert!(job.enabled);
         assert_eq!(job.payload.message, "m");
         assert_eq!(job.id.len(), 16, "id 与 gateway generate_id 同源（16 hex）");
     });
@@ -111,7 +111,7 @@ fn add_cron_job_deliver_fields_and_validation() {
         let job = &read_store(&home).jobs[0];
         assert_eq!(job.schedule.kind, "cron");
         assert_eq!(job.schedule.expr.as_deref(), Some("*/5 * * * *"));
-        assert_eq!(job.payload.deliver, true);
+        assert!(job.payload.deliver);
         assert_eq!(job.payload.to.as_deref(), Some("user1"));
         assert_eq!(job.payload.channel.as_deref(), Some("web"));
 
@@ -172,10 +172,10 @@ fn enable_disable_dispatch_updates_envelope() {
             r#"{"version":1,"jobs":[{"id":"abc","name":"n","enabled":true,"schedule":{"kind":"every","at_ms":null,"every_ms":60000,"expr":null,"tz":null},"payload":{"kind":"agent_turn","message":"m","command":null,"deliver":false,"channel":null,"to":null,"session_key":null,"max_rounds":null},"state":{"next_run_at_ms":null,"last_run_at_ms":null,"last_status":null,"last_error":null,"history":[]},"created_at_ms":1,"updated_at_ms":1,"delete_after_run":false}]}"#,
         );
         run(CronAction::Disable { id: "abc".into() }, false).expect("disable ok");
-        assert_eq!(read_store(&home).jobs[0].enabled, false);
+        assert!(!read_store(&home).jobs[0].enabled);
 
         run(CronAction::Enable { id: "abc".into() }, false).expect("enable ok");
-        assert_eq!(read_store(&home).jobs[0].enabled, true);
+        assert!(read_store(&home).jobs[0].enabled);
 
         run(CronAction::Enable { id: "ghost".into() }, false).expect("不存在 → not found Ok");
     });
@@ -398,7 +398,7 @@ mod cross_layer {
             assert_eq!(legacy.schedule.kind, "every", "interval → every");
             assert_eq!(legacy.schedule.every_ms, Some(120000));
             assert_eq!(legacy.payload.message, "hello from old cli");
-            assert_eq!(legacy.payload.deliver, true);
+            assert!(legacy.payload.deliver);
             assert_eq!(legacy.payload.channel.as_deref(), Some("web"));
 
             // gateway 面：CronService 直接读同一文件，无需任何特殊处理。

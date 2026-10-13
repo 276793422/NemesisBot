@@ -319,3 +319,78 @@ fn reduce_longest_match_beats_shorter_high_arity_first() {
     // 表序无关性：无论 "pnpm"(2) 与 "pnpm run"(3) 谁先，最长匹配胜出
     assert_eq!(reduce_command("pnpm run build --prod"), "pnpm run build *");
 }
+
+// ---------- CMD-12（2026-10-13）：command_segments 顶层复合分段 ----------
+
+use crate::command_arity::command_segments;
+
+fn segs(cmd: &str) -> Vec<String> {
+    command_segments(cmd)
+}
+
+#[test]
+fn test_segments_split_top_level_operators() {
+    assert_eq!(segs("cd /tmp && rm -rf y"), vec!["cd /tmp", "rm -rf y"]);
+    assert_eq!(segs("echo hi||rm x"), vec!["echo hi", "rm x"]);
+    assert_eq!(segs("a; b ;c"), vec!["a", "b", "c"]);
+    assert_eq!(
+        segs("cargo build | tee out.txt"),
+        vec!["cargo build", "tee out.txt"]
+    );
+    // 单 `&`（后台）同族切分
+    assert_eq!(segs("make & make install"), vec!["make", "make install"]);
+    // 换行同族
+    assert_eq!(segs("a\nb"), vec!["a", "b"]);
+}
+
+#[test]
+fn test_segments_quoted_operators_not_split() {
+    // 引号内的操作符是字面量，不切
+    assert_eq!(segs("echo \"a && b\""), vec!["echo \"a && b\""]);
+    assert_eq!(segs("grep 'x|y' file"), vec!["grep 'x|y' file"]);
+    // 单引号内的双引号不开启双引号态
+    assert_eq!(segs("echo '\" && \"'"), vec!["echo '\" && \"'"]);
+}
+
+#[test]
+fn test_segments_unbalanced_quote_falls_back_to_whole() {
+    // 引号不闭合 → 整条命令退单段（宁可不切，不可切错）
+    assert_eq!(segs("echo \"hi && rm -rf y"), vec!["echo \"hi && rm -rf y"]);
+    assert_eq!(segs("echo 'unterminated"), vec!["echo 'unterminated"]);
+}
+
+#[test]
+fn test_segments_redirection_amp_not_split() {
+    // `2>&1` 的 `&` 前导是 `>`，是重定向不是操作符
+    assert_eq!(
+        segs("cargo build > log.txt 2>&1"),
+        vec!["cargo build > log.txt 2>&1"]
+    );
+    assert_eq!(segs("cargo test 2>&1"), vec!["cargo test 2>&1"]);
+    // `>&` 出现在段中也不切
+    assert_eq!(
+        segs("app --log 2>&1 && echo done"),
+        vec!["app --log 2>&1", "echo done"]
+    );
+}
+
+#[test]
+fn test_segments_empty_and_single_segment_pins() {
+    // 连续操作符产生空段：跳过
+    assert_eq!(segs("a && && b"), vec!["a", "b"]);
+    assert_eq!(segs("a;;b"), vec!["a", "b"]);
+    // 纯操作符 → 空
+    assert!(command_segments("&&").is_empty());
+    assert!(command_segments("").is_empty());
+    assert!(command_segments("   ").is_empty());
+    // 无操作符 = 单段（旧整串语义锚点）
+    assert_eq!(segs("cargo build --release"), vec!["cargo build --release"]);
+    assert_eq!(segs("git status"), vec!["git status"]);
+}
+
+#[test]
+fn test_segments_trims_and_dedups() {
+    assert_eq!(segs("  a  &&  b  "), vec!["a", "b"]);
+    // 相邻重复段塌缩（any/all 语义不变）
+    assert_eq!(segs("cargo test && cargo test"), vec!["cargo test"]);
+}
