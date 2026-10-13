@@ -24,4 +24,8 @@ ignore = [
     # rustls-pemfile 2.2 unmaintained（RUSTSEC-2025-0134）。与 deny.toml 同源豁免
     # （rumqttc 0.25.1 硬钉 ^2.2、本项目直接使用已迁 pki-types，详见该处注释）。
     "RUSTSEC-2025-0134",
+    # unsafe-libyaml 归档无人维护（RUSTSEC-2024-0449）。与 deny.toml 同源豁免
+    # （serde_yaml 0.9.34+deprecated 硬钉、只解析本机用户自有 YAML 配置、
+    # 移除条件 = serde_yaml 迁移完成，详见该处注释）。（2026-10-14）
+    "RUSTSEC-2024-0449",
 ]
