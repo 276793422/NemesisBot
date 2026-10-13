@@ -251,6 +251,16 @@ fn is_env_assignment(token: &str) -> bool {
     first_ok && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// 剥 token 序列头部的 `VAR=value` 环境变量前缀（D12-5 单一真相源：
+/// 写侧 [`reduce_command`] 与读侧 `approval_rules::matches_rule` 都在
+/// **tokenize 之后**剥——在原串上剥的 [`strip_env_assignments`] 看见的
+/// 首 token 带引号（`"FOO=1" cargo test`），`is_env_assignment` 判非
+/// env，读侧剥不掉而写侧剥了 = 归约规则永远弹卡）。
+pub fn strip_env_tokens(tokens: &[String]) -> &[String] {
+    let start = tokens.iter().take_while(|t| is_env_assignment(t)).count();
+    &tokens[start..]
+}
+
 /// 把命令行归约成可读前缀 pattern（详见模块文档）。
 ///
 /// 例：`cargo build --release` → `cargo build *`；`git status` → `git status`；
@@ -258,8 +268,7 @@ fn is_env_assignment(token: &str) -> bool {
 pub fn reduce_command(cmd: &str) -> String {
     let tokens = tokenize_command(cmd);
     // 跳过头部 VAR=value 前缀（输出同样不含它们，pattern 更可复用）
-    let start = tokens.iter().take_while(|t| is_env_assignment(t)).count();
-    let rest = &tokens[start..];
+    let rest = strip_env_tokens(&tokens);
     if rest.is_empty() {
         return String::new();
     }

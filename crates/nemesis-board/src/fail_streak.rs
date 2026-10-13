@@ -56,10 +56,17 @@ pub enum StreakOutcome {
 }
 
 /// 同因失败签名账本（随 workspace 走，按次落盘）。
+#[derive(Default)]
 pub struct FailStreakLedger {
     path: PathBuf,
     inner: LedgerFile,
 }
+
+/// 进程级 IO 互斥（D10-3）：账本生命周期是 per-review 的 load→mutate→save，
+/// 同批多单并行评审各持快照曾 last-writer-wins 互踩（丢计数=熔断保险丝
+/// 迟到，恰是保险丝最不该犯的错）。所有读-改-写在锁内先以磁盘最新为底
+/// reload 再改再存——实例快照仅作磁盘缺失/损坏时的兜底。
+static LEDGER_IO_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// 失败签名（M3 + §6.4A）：`{verdict 小写}|{排序失败锚点 raw 集合 join}`；
 /// 无失败锚点（锚点全过/无锚点）= `{verdict 小写}|no-anchors`。
@@ -98,19 +105,32 @@ pub fn unsure_gate_trips(
 impl FailStreakLedger {
     /// 从 `<workspace>/board/fail_streaks.json` 加载；缺失/损坏 = 空账本。
     pub fn load(workspace: &Path) -> Self {
-        let path = workspace.join("board").join("fail_streaks.json");
-        let inner = std::fs::read_to_string(&path)
+        Self {
+            path: workspace.join("board").join("fail_streaks.json"),
+            inner: LedgerFile::default(),
+        }
+        .reload()
+    }
+
+    /// 以磁盘最新内容重载 inner（锁内调用；磁盘缺失/损坏回落当前快照）。
+    fn reload(self) -> Self {
+        let inner = std::fs::read_to_string(&self.path)
             .ok()
             .and_then(|s| {
                 let parsed: LedgerFile = serde_json::from_str(&s).ok()?;
                 Some(parsed)
             })
-            .unwrap_or_default();
-        Self { path, inner }
+            .unwrap_or(self.inner);
+        Self {
+            path: self.path,
+            inner,
+        }
     }
 
     /// 记一笔失败并判定。同签名 → 次数 +1；签名翻转 → 清零重计为 1。
     pub fn record_and_check(&mut self, issue_id: i64, signature: &str) -> StreakOutcome {
+        let _io = LEDGER_IO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        *self = std::mem::take(self).reload();
         let entry = self
             .inner
             .issues
@@ -137,6 +157,8 @@ impl FailStreakLedger {
 
     /// 清账（非重派终态 / estop 停车 / 人工介入 / 手动重派）。
     pub fn clear(&mut self, issue_id: i64) {
+        let _io = LEDGER_IO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        *self = std::mem::take(self).reload();
         if self.inner.issues.remove(&issue_id.to_string()).is_some() {
             self.save();
         }

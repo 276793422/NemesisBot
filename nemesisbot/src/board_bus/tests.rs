@@ -152,6 +152,54 @@ fn test_comment_post_validation_errors() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// D11-1（2026-10-13 第 6 轮审计）：远端 kind_tag 白名单——保留类型
+/// （system/status_change/comment）worker 上行 VALIDATION 拒绝（否则
+/// worker 自选 ctype 落成系统/状态变更/普通评论形态）；正常 tag 放行。
+/// tokio::test：放行腿会走到 wake 派发的 tokio::spawn（无 reactor 即 panic）。
+#[tokio::test]
+async fn comment_post_rejects_reserved_kind_tags_from_remote() {
+    let (store, dir) = temp_store("kind-tag-guard");
+    let deps = make_deps(store.clone(), quota(8));
+    let ch = store.get_channel_by_name("#dev").unwrap().unwrap();
+    let payload_with_tag = |id: &str, tag: &str| {
+        serde_json::json!({
+            "v": 1, "ns": "board", "op": "comment.post", "corr_id": "c-1",
+            "body": {
+                "client_msg_id": id,
+                "thread": {"kind": "channel", "id": ch.id},
+                "sender": {"type": "agent", "id": "node-b"},
+                "content": "hello",
+                "reply_to": null,
+                "kind_tag": tag,
+            }
+        })
+    };
+    for tag in ["system", "status_change", "comment"] {
+        let (ok, code, _) = parse_reply(handle_nb_bus(&deps, payload_with_tag(tag, tag)));
+        assert!(!ok, "kind_tag={tag} 必须拒绝");
+        assert_eq!(
+            code.as_deref(),
+            Some(nemesis_cluster::envelope::error_code::VALIDATION),
+            "kind_tag={tag}"
+        );
+    }
+    // 正常 tag 放行（worker 常态 discussion/text + 协议余量 + 缺省空）。
+    for (i, tag) in ["discussion", "text", "question", "delivery", ""]
+        .iter()
+        .enumerate()
+    {
+        let (ok, code, _) = parse_reply(handle_nb_bus(
+            &deps,
+            payload_with_tag(&format!("ok-{i}"), tag),
+        ));
+        assert!(ok, "kind_tag={tag:?} 必须放行: {code:?}");
+    }
+    // 拒绝路径不落库。
+    let msgs = store.list_channel_messages(ch.id, 0, 100).unwrap();
+    assert_eq!(msgs.len(), 5, "只有 5 条放行消息落库");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test]
 async fn test_comment_post_happy_path_and_idempotent() {
     let (store, dir) = temp_store("happy");
@@ -2450,6 +2498,10 @@ mod m5_approval {
     /// post_discussion_core 落库后异步转发远程审批——裸 Cluster 无 RPC
     /// 客户端 → 诚实失败留痕（❌ 系统评论）；杂散同形评论（短号未登记）
     /// 零影响。旁路 spawn 无 join → 轮询等待留痕。
+    /// D11-2（2026-10-13 第 6 轮审计）：回源只走 dashboard 本地发言
+    /// （post_discussion_locally）——worker RPC 上行同形文本不得触发
+    /// （审批 verdict 是人的裁决，worker 上行批复自己待审批卡 = 闸被
+    /// 执行方自答击穿）。
     #[tokio::test]
     async fn board_comment_reply_relays_remote_approval() {
         let (store, dir) = temp_store("m5-relay");
@@ -2475,10 +2527,23 @@ mod m5_approval {
                 created_at: std::time::Instant::now(),
             },
         );
-        let (ok, code, _) = parse_reply(handle_nb_bus(
-            &deps,
-            post_payload("m5-msg-1", "issue", issue.id, &format!("/approve {short}")),
-        ));
+        let sender = nemesis_board::Actor::new("user", "dashboard-admin");
+        let (ok, code) = {
+            let r = post_discussion_locally(
+                &deps,
+                &sender,
+                "issue",
+                issue.id,
+                "m5-msg-1",
+                &format!("/approve {short}"),
+                None,
+                "text",
+            );
+            match r {
+                Ok(_) => (true, None),
+                Err(e) => (false, Some(e)),
+            }
+        };
         assert!(ok, "comment must post: {code:?}");
         let mut receipt = None;
         for _ in 0..40 {
@@ -2492,8 +2557,8 @@ mod m5_approval {
         }
         let receipt = receipt.expect("failure receipt comment must appear");
         assert!(receipt.contains("node-b"));
-        // 杂散同形评论（短号未登记）零影响——不产生新的回执系统评论
-        //（worker 发言本身照常落库，计数必须按回执文案过滤）。
+        // D11-2 负向锁：worker RPC 上行（comment.post 信封）同形 /approve
+        // 文本不触发回源——照常落库，但无新回执。
         let receipt_count = || {
             store
                 .list_comments(issue.id)
@@ -2504,9 +2569,18 @@ mod m5_approval {
         };
         let before = receipt_count();
         assert_eq!(before, 1);
+        let (ok, code, _) = parse_reply(handle_nb_bus(
+            &deps,
+            post_payload("m5-msg-2", "issue", issue.id, &format!("/approve {short}")),
+        ));
+        assert!(ok, "worker 上行照常落库: {code:?}");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(receipt_count(), before, "rpc path must not relay approval");
+        // 杂散同形评论（短号未登记）零影响——不产生新的回执系统评论
+        //（worker 发言本身照常落库，计数必须按回执文案过滤）。
         let (ok, _, _) = parse_reply(handle_nb_bus(
             &deps,
-            post_payload("m5-msg-2", "issue", issue.id, "/approve nosuch1"),
+            post_payload("m5-msg-3", "issue", issue.id, "/approve nosuch1"),
         ));
         assert!(ok);
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;

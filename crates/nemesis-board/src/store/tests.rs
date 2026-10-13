@@ -3942,3 +3942,88 @@ fn test_send_failure_in_review_pool() {
 
     cleanup(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// 授予标签台账（E / D10-2）
+// ---------------------------------------------------------------------------
+
+/// grant_tags_to_node 确定性语义：合并去重（大小写不敏感）+ trim + 空 tag
+/// 跳过 + 返回值只含实际新授予。
+#[test]
+fn grant_tags_dedup_and_trim_semantics() {
+    let (store, dir) = temp_store("grant-tags-sem");
+    let granted = store
+        .grant_tags_to_node(
+            "Node-A",
+            &[
+                " cpp ".to_string(),
+                "CPP".to_string(),
+                "".to_string(),
+                "   ".to_string(),
+                "test-whitebox".to_string(),
+            ],
+        )
+        .unwrap();
+    assert_eq!(
+        granted,
+        vec!["cpp", "test-whitebox"],
+        "trim 后授予；重复（大小写不敏感）/空跳过；返回=实际新授予"
+    );
+    let again = store
+        .grant_tags_to_node("Node-A", &["cpp".to_string(), "rust".to_string()])
+        .unwrap();
+    assert_eq!(again, vec!["rust"], "已拥有的不再重复授予");
+    let map = store.granted_tags_map().unwrap();
+    assert_eq!(
+        map.get("Node-A").unwrap(),
+        &vec![
+            "cpp".to_string(),
+            "test-whitebox".to_string(),
+            "rust".to_string()
+        ]
+    );
+    cleanup(&dir);
+}
+
+/// D10-2 单临界区回归（并发压力钉）：grant 曾拆成 get_meta/set_meta 两次
+/// 独立加锁——落定波与 sweep 波并发授予同一节点时后写者覆盖前写者，丢一
+/// 次授予（下次授予自愈，但该次匹配滑进松弛阶梯 + 一条误导性降级评论）。
+/// 现为 conn 锁内 RMW 单临界区。压力形态：8 线程 barrier 齐发，各向同一
+/// 节点授 20 个互斥 tag × 30 轮 → 终态必须全量在账。并发时序测试本质是
+/// 概率性取证（确定性语义见上测）；临界区若被拆开，此形态下丢更新高概率
+/// 现形。
+#[test]
+fn grant_tags_concurrent_writers_do_not_lose_grants() {
+    let (store, dir) = temp_store("grant-tags-race");
+    let store = std::sync::Arc::new(store);
+    const THREADS: usize = 8;
+    const TAGS_PER_THREAD: usize = 20;
+    const ROUNDS: usize = 30;
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(THREADS));
+    let mut handles = Vec::new();
+    for t in 0..THREADS {
+        let store = store.clone();
+        let barrier = barrier.clone();
+        handles.push(std::thread::spawn(move || {
+            barrier.wait();
+            let tags: Vec<String> = (0..TAGS_PER_THREAD).map(|j| format!("t{t}_{j}")).collect();
+            for _ in 0..ROUNDS {
+                store.grant_tags_to_node("race-node", &tags).unwrap();
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+    let map = store.granted_tags_map().unwrap();
+    let got = map.get("race-node").expect("race-node 必须在账");
+    let expected: std::collections::HashSet<String> = (0..THREADS)
+        .flat_map(|t| (0..TAGS_PER_THREAD).map(move |j| format!("t{t}_{j}")))
+        .collect();
+    let got_set: std::collections::HashSet<_> = got.iter().cloned().collect();
+    assert_eq!(
+        got_set, expected,
+        "并发授予不得丢更新（丢任一 tag = RMW 临界区被拆开的回归）"
+    );
+    cleanup(&dir);
+}

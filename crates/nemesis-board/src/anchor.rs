@@ -690,7 +690,11 @@ fn run_exec_anchor(anchor: &AnchorCheck, root: &Path, timeout_secs: u64) -> Exec
     // 主线程 try_wait 轮询到超时上限。
     let out_rx = spawn_pipe_reader(child.stdout.take().map(|p| Box::new(p) as PipeReader));
     let err_rx = spawn_pipe_reader(child.stderr.take().map(|p| Box::new(p) as PipeReader));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs.max(1));
+    // 上界钳制（D12-6）：config 的 exec_anchor_timeout_secs 是无界 u64，
+    // `Instant + Duration` 溢出按 std 契约 panic——clamp 只防荒谬值，
+    // 正常配置（≤1 天）逐字节不变。
+    let timeout_secs = timeout_secs.clamp(1, 86_400);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
     let status = loop {
         match child.try_wait() {
             Ok(Some(st)) => break Some(st),
@@ -802,16 +806,39 @@ fn probe_tool_present(tool: &str, root: &Path) -> bool {
 
 type PipeReader = Box<dyn std::io::Read + Send>;
 
+/// 单管道捕获上限：孙进程占住管道时读者线程照常退出（不再无限阻塞），
+/// 且缓冲有界——曾是无界 `read_to_string`，孙进程每写一行都追加进永不
+/// 被消费的 String（D10-4）。锚点只消费尾部，尾部保留语义不变。
+const PIPE_CAPTURE_CAP_BYTES: usize = 1 << 20;
+
 /// 管道→字符串读取线程（exit 后由 [`run_exec_anchor`] 带超时回收）。
+/// 有界读循环：累计超 [`PIPE_CAPTURE_CAP_BYTES`] 丢头保尾——孙进程占住
+/// 管道时曾是无界 `read_to_string`，每写一行都追加进永不消费的 String
+/// （D10-4：缓冲无界增长面已封；安静孙进程仍可让线程阻塞在 read 上，
+/// 但内存有界，主线程 2s 宽限后照常放弃）。锚点只消费尾部，语义不变。
 fn spawn_pipe_reader(pipe: Option<PipeReader>) -> std::sync::mpsc::Receiver<String> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let mut buf = String::new();
+        let mut buf: std::collections::VecDeque<u8> = std::collections::VecDeque::new();
         if let Some(mut p) = pipe {
             use std::io::Read;
-            let _ = p.read_to_string(&mut buf);
+            let mut chunk = [0u8; 8192];
+            loop {
+                match p.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        buf.extend(&chunk[..n]);
+                        if buf.len() > PIPE_CAPTURE_CAP_BYTES {
+                            let drop = buf.len() - PIPE_CAPTURE_CAP_BYTES;
+                            buf.drain(..drop);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
         }
-        let _ = tx.send(buf);
+        let text = String::from_utf8_lossy(buf.make_contiguous()).to_string();
+        let _ = tx.send(text);
     });
     rx
 }
