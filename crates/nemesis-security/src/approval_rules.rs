@@ -57,6 +57,9 @@ fn is_install_op(op: &str) -> bool {
 /// [`matches_rule`] 对带 ` *` 的 pattern 做 token 前缀匹配，裸命令照常
 /// 命中，无回退损失）。归约结果为空（target 全是 env 前缀）→ 空串
 /// （不构成规则——空 token 前缀若带 ` *` 会变成全放行，绝不产生）。
+/// **复合命令**（顶层 `&&`/`||`/`;`/`|`/`&` 多段）→ 空串：单一前缀
+/// pattern 表达不了「全段命中」语义（`cd *` 罩不住 `cd x && rm -rf y`
+/// 的删除段），宁拒绝写规则不放宽——CMD-12（2026-10-13）。
 /// 其余 → 完整 target（精确匹配）；空 target → 空串（不构成规则）。
 pub fn pattern_for(op: &str, target: &str) -> String {
     let target = target.trim();
@@ -64,6 +67,9 @@ pub fn pattern_for(op: &str, target: &str) -> String {
         return String::new();
     }
     if is_command_op(op) {
+        if crate::command_arity::command_segments(target).len() > 1 {
+            return String::new();
+        }
         let reduced = reduce_command(target);
         if reduced.is_empty() {
             return String::new();
@@ -97,7 +103,17 @@ pub fn rule_permitted_for(op: &str, risk: &str) -> bool {
 /// - op 必须相等；
 /// - pattern 以 ` *` 结尾 → token 前缀匹配（`cargo test *` 命中
 ///   `cargo test` 与 `cargo test --release`，不命中 `cargo publish`）；
-/// - 其余 → target 精确相等；
+///   exec 类操作额外要求**复合命令全段命中**（CMD-12）：`cd *` 不得
+///   罩住 `cd /tmp && rm -rf y` 的删除段——按顶层段切分后逐段做
+///   token 前缀匹配，任一段不命中即不放行；存量时期按旧语义写入的
+///   复合来源规则随之自然失效（对复合命令重新弹卡，安全方向收紧）；
+///   **逐段剥 env 前缀**（闭环批 2026-10-13，与写侧归约端同语义）：
+///   `pattern_for`/`reduce_command` 产出的 pattern 永无 env 头，读侧
+///   不剥则 `FOO=1 cargo test` 永远弹卡——ABAC 侧（auditor）已剥，
+///   两侧不一致 = ABAC 放行、审批记忆不放行的重复打扰；
+/// - 其余 → exec 类 token 向量相等（pattern 侧 tokenize、target 侧
+///   tokenize+剥 env 头——D12-5：与写侧归约同源，引号/多余空白两侧归一；
+///   非 exec 类 target 是路径/URL，精确相等）；
 /// - 手写裸 `*` pattern 永不命中（防规则文件被改成全放行）。
 pub fn matches_rule(rule_op: &str, rule_pattern: &str, op: &str, target: &str) -> bool {
     if rule_op != op || rule_pattern.is_empty() || target.is_empty() {
@@ -113,14 +129,41 @@ pub fn matches_rule(rule_op: &str, rule_pattern: &str, op: &str, target: &str) -
             if prefix_tokens.is_empty() {
                 return false;
             }
-            let target_tokens = crate::command_arity::tokenize_command(target);
-            target_tokens.len() >= prefix_tokens.len()
-                && target_tokens
-                    .iter()
-                    .zip(prefix_tokens.iter())
-                    .all(|(t, p)| t == p)
+            let prefix_hits = |seg: &str| {
+                // D12-5：tokenize 之后剥 env 头（[`strip_env_tokens`]）——
+                // 在原串上剥会漏引号形 env 头（`"FOO=1" cargo test`），
+                // 写侧归约剥了读侧没剥 = 规则永远弹卡。
+                let seg_tokens_v = crate::command_arity::tokenize_command(seg);
+                let seg_tokens = crate::command_arity::strip_env_tokens(&seg_tokens_v);
+                seg_tokens.len() >= prefix_tokens.len()
+                    && seg_tokens
+                        .iter()
+                        .zip(prefix_tokens.iter())
+                        .all(|(t, p)| t == p)
+            };
+            if is_command_op(rule_op) {
+                // CMD-12：全段命中才放（`cd *` 不罩 `cd x && rm y`）；
+                // 逐段剥 env 头（`FOO=1 cargo test` → `cargo test`）。
+                let segments = crate::command_arity::command_segments(target);
+                !segments.is_empty() && segments.iter().all(|seg| prefix_hits(seg))
+            } else {
+                // 非 exec 类手写 ` *` pattern：维持整串 token 前缀（旧语义）。
+                prefix_hits(target)
+            }
         }
-        None => rule_pattern == target,
+        None => {
+            if is_command_op(rule_op) {
+                // D12-5：token 向量比较（写侧归约 = tokenize+剥 env+join，
+                // 手写 pattern 侧只 tokenize 不剥——引号/多余空白两侧归一，
+                // env 头剥离与写侧同源）。
+                let pattern_tokens = crate::command_arity::tokenize_command(rule_pattern);
+                let target_tokens_v = crate::command_arity::tokenize_command(target);
+                let target_tokens = crate::command_arity::strip_env_tokens(&target_tokens_v);
+                pattern_tokens == target_tokens
+            } else {
+                rule_pattern == target
+            }
+        }
     }
 }
 
@@ -201,6 +244,54 @@ pub fn save_rules(path: &Path, rules: &[ApprovalRule]) -> Result<(), String> {
     // REL-002：统一原子写入（审批规则表是安全配置，半截文件 = 规则集损坏）
     nemesis_utils::write_file_atomic(&path.to_string_lossy(), raw.as_bytes(), 0o600)
         .map_err(|e| format!("write rules {}: {e}", path.display()))
+}
+
+/// 规则落盘进程级串行闸（M7「总是允许」写入与 §2 免打扰集群来源持久化
+/// 双写者共用——防 read-modify-write 交错 last-write-wins 丢规则）。
+static RULES_WRITE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+/// 层级安全门 + pattern 生成 + upsert + save **单一收口**（M7「总是允许」
+/// 与 §2 免打扰集群来源持久化共用——写入语义单点，web_approval 的
+/// save_always_rule 与 auditor auto-approve 都走这里）。config 家族写
+/// 串行锁在此叠加：approval_rules.json 的另一写者（security.approvals
+/// .clear）持 config_write_lock——双写者互斥（同类横扫四期，2026-10-13）。
+/// 锁序单向 RULES_WRITE_LOCK → config_write_lock，无环。
+///
+/// 返回 `Some(pattern)` = 已落盘；`Ok(None)` = 层级门不过（CRITICAL 仅
+/// process_exec 豁免 + 安装类永不入规则），调用方 warn 忽略；`Err` = 写盘
+/// 失败（调用方裁决是否影响主流程——M7 主流程批准已生效不回滚，§2 同）。
+pub fn persist_auto_allow_rule(
+    path: &Path,
+    operation: &str,
+    target: &str,
+    risk_level: &str,
+) -> Result<Option<String>, String> {
+    if !rule_permitted_for(operation, risk_level) {
+        return Ok(None);
+    }
+    let pattern = pattern_for(operation, target);
+    if pattern.is_empty() {
+        if is_command_op(operation)
+            && crate::command_arity::command_segments(target.trim()).len() > 1
+        {
+            // CMD-12：复合命令不构成前缀规则（单一 pattern 罩不住全段）。
+            return Err(
+                "compound command cannot form a prefix rule (top-level `&&`/`||`/`;`/`|`); \
+                 approve this instance without \"always\", or split the command"
+                    .to_string(),
+            );
+        }
+        return Err(format!(
+            "cannot derive approval pattern from {operation} target"
+        ));
+    }
+    let _w = RULES_WRITE_LOCK.lock();
+    // 叠加 config 家族写串行锁（与 approvals.clear 互斥；锁序见函数头）。
+    let _cfg_serial = nemesis_config::config_write_lock();
+    let mut stored = load_rules(path);
+    upsert_rule(&mut stored, operation, &pattern);
+    save_rules(path, &stored)?;
+    Ok(Some(pattern))
 }
 
 #[cfg(test)]

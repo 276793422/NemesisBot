@@ -124,18 +124,20 @@ pub async fn test_cron_crud(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult> {
     let mut results = Vec::new();
     print_suite_header(suite);
 
-    // List cron (should be empty initially)
+    // List cron（store 文件缺失/为空都算成功起点）
     let output = ws.run_cli(bin, &["cron", "list"]).await;
     if output.success() {
         results.push(pass(&format!("{}/list", suite), "Cron list succeeded"));
     } else {
-        results.push(pass(
+        results.push(fail(
             &format!("{}/list", suite),
-            format!("exit={}", output.exit_code),
+            format!("exit={} stdout={}", output.exit_code, output.stdout),
         ));
     }
 
-    // Add a cron job (if supported)
+    // Add a cron job（现行 CLI 旗标 --name/--message/--cron。旧断言用已不
+    // 存在的 --schedule/--command，clap exit=2 被「may be partial」容忍吞掉
+    // ——套件实际从没测到 add，还掩盖过 CLI/gateway 存储格式分裂 BUG）。
     let output = ws
         .run_cli(
             bin,
@@ -144,32 +146,68 @@ pub async fn test_cron_crud(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult> {
                 "add",
                 "--name",
                 "test-cron",
-                "--schedule",
-                "*/5 * * * *",
-                "--command",
+                "--message",
                 "echo test",
+                "--cron",
+                "*/5 * * * *",
             ],
         )
         .await;
-    if output.success() || output.stdout_contains("added") || output.stdout_contains("Created") {
-        results.push(pass(&format!("{}/add", suite), "Cron job added"));
-    } else {
-        results.push(pass(
+    if !output.success() || !output.stdout_contains("Added job") {
+        results.push(fail(
             &format!("{}/add", suite),
-            format!("exit={} (cron add may be partial)", output.exit_code),
+            format!(
+                "exit={} stdout={} stderr={}",
+                output.exit_code, output.stdout, output.stderr
+            ),
+        ));
+        return results;
+    }
+    // 从「Added job 'test-cron' (<id>)」解析真实 id（remove/enable 只认 id）。
+    let job_id = output
+        .stdout
+        .rsplit('(')
+        .next()
+        .and_then(|rest| rest.split(')').next())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    if job_id.is_empty() || job_id.contains(' ') {
+        results.push(fail(
+            &format!("{}/add_id_parse", suite),
+            format!("无法从 stdout 解析 job id: {}", output.stdout),
+        ));
+        return results;
+    }
+    results.push(pass(
+        &format!("{}/add", suite),
+        format!("Cron job added id={job_id}"),
+    ));
+
+    // List 必须能看到刚加的任务（store 往返成立）。
+    let output = ws.run_cli(bin, &["cron", "list"]).await;
+    if output.success() && output.stdout_contains("test-cron") {
+        results.push(pass(
+            &format!("{}/list_after_add", suite),
+            "job visible in list",
+        ));
+    } else {
+        results.push(fail(
+            &format!("{}/list_after_add", suite),
+            format!("exit={} stdout={}", output.exit_code, output.stdout),
         ));
     }
 
-    // Remove cron job
-    let output = ws
-        .run_cli(bin, &["cron", "remove", "test-cron", "--force"])
-        .await;
-    if output.success() || output.stdout_contains("removed") || output.stdout_contains("Removed") {
+    // Remove by id
+    let output = ws.run_cli(bin, &["cron", "remove", &job_id]).await;
+    if output.success() && output.stdout_contains("Removed job") {
         results.push(pass(&format!("{}/remove", suite), "Cron job removed"));
     } else {
-        results.push(pass(
+        results.push(fail(
             &format!("{}/remove", suite),
-            format!("exit={}", output.exit_code),
+            format!(
+                "exit={} stdout={} stderr={}",
+                output.exit_code, output.stdout, output.stderr
+            ),
         ));
     }
 

@@ -299,26 +299,55 @@ impl ApprovalManager for ChannelApprovalManager {
     }
 }
 
-/// 回执语法解析（与 loop 侧 `parse_approval_reply` 同源格式：
-/// `/approve <id>` / `/deny <id>`）。返回 (verb, id)。
+/// 回执语法解析（单一真相源 = `nemesis_web::remote_approval::parse_approval_reply`
+/// ——M5 起看板评论回源共用同一格式；此处只做 verb 形态适配）。返回 (verb, id)。
 fn parse_reply(content: &str) -> Option<(&'static str, &str)> {
-    let trimmed = content.trim();
-    if let Some(rest) = trimmed.strip_prefix("/approve ") {
-        let id = rest.trim();
-        (!id.is_empty() && !id.chars().any(char::is_whitespace)).then_some(("approve", id))
-    } else if let Some(rest) = trimmed.strip_prefix("/deny ") {
-        let id = rest.trim();
-        (!id.is_empty() && !id.chars().any(char::is_whitespace)).then_some(("deny", id))
-    } else {
-        None
+    #[cfg(feature = "cluster")]
+    {
+        nemesis_web::remote_approval::parse_approval_reply(content)
+            .map(|(approved, id)| (if approved { "approve" } else { "deny" }, id))
+    }
+    #[cfg(not(feature = "cluster"))]
+    {
+        let trimmed = content.trim();
+        if let Some(rest) = trimmed.strip_prefix("/approve ") {
+            let id = rest.trim();
+            (!id.is_empty() && !id.chars().any(char::is_whitespace)).then_some(("approve", id))
+        } else if let Some(rest) = trimmed.strip_prefix("/deny ") {
+            let id = rest.trim();
+            (!id.is_empty() && !id.chars().any(char::is_whitespace)).then_some(("deny", id))
+        } else {
+            None
+        }
     }
 }
 
+/// M5-3（2026-10-10 机制加固）：cluster 通道 ask 的看板可见化通知载荷。
+/// 触发点 = [`CompositeApprovalManager::request_approval_sync_ctx`] 命中
+/// `channel == "cluster"` 的 ask（worker 执行看板任务时的 ABAC 审批）。
+#[derive(Debug, Clone)]
+pub struct BoardAskNotice {
+    pub request_id: String,
+    pub operation: String,
+    pub target: String,
+    pub risk_level: String,
+    pub reason: String,
+    pub timeout_secs: u64,
+    /// 触发 ask 的 cluster 会话键（worker 侧形态
+    /// `cluster_rpc:{source_node}/board:{n}`——派发 chat_id 恒为裸数字
+    /// 单号，含单号可反查 issue；parser 容忍旧 `board:NB-{n}` 形态）。
+    pub chat_id: String,
+}
+
 /// 组合审批管理器：按来源上下文分流——web/无上下文 → 默认管理器（现状：
-/// Dashboard 卡片），IM 通道 → [`ChannelApprovalManager`]。
+/// Dashboard 卡片），IM 通道 → [`ChannelApprovalManager`]；cluster 通道 →
+/// 默认管理器 + [`BoardAskNotice`] 通知（M5-3：审批卡落本节点 Dashboard
+/// SSE 可见 + 看板注记，不再无声等超时）。
 pub struct CompositeApprovalManager {
     default: std::sync::Arc<dyn ApprovalManager>,
     channel: std::sync::Arc<ChannelApprovalManager>,
+    /// M5-3：cluster ask 观察者（gateway 装配时安装；None = 只改路由不通知）。
+    board_notifier: std::sync::Mutex<Option<std::sync::Arc<dyn Fn(&BoardAskNotice) + Send + Sync>>>,
 }
 
 impl CompositeApprovalManager {
@@ -326,7 +355,32 @@ impl CompositeApprovalManager {
         default: std::sync::Arc<dyn ApprovalManager>,
         channel: std::sync::Arc<ChannelApprovalManager>,
     ) -> Self {
-        Self { default, channel }
+        Self {
+            default,
+            channel,
+            board_notifier: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// M5-3：安装 cluster ask 观察者（gateway 装配调用一次；重复安装覆盖
+    /// ——同刻只有一个 gateway 装配流程，覆盖无实害）。
+    pub fn set_board_notifier(
+        &self,
+        notifier: std::sync::Arc<dyn Fn(&BoardAskNotice) + Send + Sync>,
+    ) {
+        *self
+            .board_notifier
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(notifier);
+    }
+
+    /// M5-3：fire 观察者（通知失败不阻塞审批等待——可见化是旁路不是主路径）。
+    fn notify_board(&self, notice: &BoardAskNotice) {
+        if let Ok(guard) = self.board_notifier.lock()
+            && let Some(f) = guard.as_ref()
+        {
+            f(notice);
+        }
     }
 }
 
@@ -365,6 +419,30 @@ impl ApprovalManager for CompositeApprovalManager {
         timeout_secs: u64,
         ctx: &ApprovalContext,
     ) -> Result<ApprovalVerdict, String> {
+        // M5-3（2026-10-10 机制加固）：cluster 通道（worker 执行看板任务
+        // 的 ABAC ask）此前落通道卡片——"cluster" 通道无出站投递面，卡静默
+        // 丢弃、ask 无声等满超时被拒。改走默认管理器（本节点 Dashboard
+        // SSE 审批卡，人可当场批复）+ fire 看板注记观察者（master issue
+        // 线程留痕）。
+        if ctx.channel == "cluster" {
+            self.notify_board(&BoardAskNotice {
+                request_id: request_id.to_string(),
+                operation: operation.to_string(),
+                target: target.to_string(),
+                risk_level: risk_level.to_string(),
+                reason: reason.to_string(),
+                timeout_secs,
+                chat_id: ctx.chat_id.clone(),
+            });
+            return self.default.request_approval_sync(
+                request_id,
+                operation,
+                target,
+                risk_level,
+                reason,
+                timeout_secs,
+            );
+        }
         // web 通道 = Dashboard 卡片（默认管理器的领地）；空 channel/chat =
         // 无可寻址对话 → 默认管理器。其余（telegram/feishu/discord/...）
         // → 通道卡片。

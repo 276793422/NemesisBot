@@ -269,3 +269,57 @@ fn test_tree_export_includes_grandchildren() {
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&ws);
 }
+
+/// U-C 单一真相源断言：timeline.md 与 `timeline::collect_issue_timeline`
+/// 同源——聚合出的每个事件摘要都能在导出的 markdown 里找到。
+#[test]
+fn test_timeline_md_shares_aggregation_source() {
+    let (store, dir) = temp_store("ucsrc");
+    let ws = temp_dir("ws");
+    let issue = store.create_issue(new_issue("同源")).unwrap();
+    store
+        .add_activity(
+            issue.id,
+            &admin(),
+            "auto_decide",
+            Some(r#"{"verdict":"FAIL"}"#),
+        )
+        .unwrap();
+    store
+        .add_comment(NewComment {
+            issue_id: issue.id,
+            author: admin(),
+            content: "交付已上传".into(),
+            parent_id: None,
+            ctype: CommentType::Delivery,
+        })
+        .unwrap();
+    store
+        .insert_dispatch("task-uc", issue.id, "node-w", &admin())
+        .unwrap();
+
+    let outcome =
+        export_issue_tree(&store, &issue.number, &ws, &ws.join("out"), &NO_USAGE).unwrap();
+    let md = std::fs::read_to_string(outcome.root.join("timeline.md")).unwrap();
+
+    let events = crate::timeline::collect_issue_timeline(&store, issue.id, Vec::new());
+    assert!(events.len() >= 3, "events: {events:?}");
+    for ev in &events {
+        let needle = match ev.source {
+            // 评论行渲染的是摘要（首行）；派发行含 task id；活动行含 action。
+            "comment" => ev.summary.clone(),
+            "dispatch" => ev.detail.clone().unwrap_or_default(),
+            _ => ev.kind.clone(),
+        };
+        assert!(
+            !needle.is_empty() && md.contains(&needle),
+            "source={} needle={needle:?} 未出现在 timeline.md",
+            ev.source
+        );
+    }
+    // 图标形态保留（评论 💬 / 派发 📤）。
+    assert!(md.contains("💬[delivery]"));
+    assert!(md.contains("📤 派发 → node-w"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&ws);
+}

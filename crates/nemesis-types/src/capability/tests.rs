@@ -561,6 +561,83 @@ fn protocol_images_openai_and_predicate() {
     assert!(!is_image_protocol("responses"));
 }
 
+/// M6-1：`agents.defaults.max_tool_iterations` 解析——三态（在值/键缺席/
+/// 0=不限透传）。
+#[test]
+fn resolve_max_tool_iterations_tri_state() {
+    let with_key: serde_json::Value = serde_json::json!({
+        "agents": {"defaults": {"max_tool_iterations": 42}}
+    });
+    assert_eq!(resolve_max_tool_iterations(&with_key), Some(42));
+
+    let zero: serde_json::Value = serde_json::json!({
+        "agents": {"defaults": {"max_tool_iterations": 0}}
+    });
+    assert_eq!(resolve_max_tool_iterations(&zero), Some(0), "0=不限照透传");
+
+    let no_key: serde_json::Value = serde_json::json!({"model_list": []});
+    assert_eq!(resolve_max_tool_iterations(&no_key), None);
+
+    let no_section: serde_json::Value = serde_json::json!({});
+    assert_eq!(resolve_max_tool_iterations(&no_section), None);
+
+    // 负值照透传——消费侧（run_loop organ 1）<=0 统一映射不限。
+    let negative: serde_json::Value = serde_json::json!({
+        "agents": {"defaults": {"max_tool_iterations": -1}}
+    });
+    assert_eq!(resolve_max_tool_iterations(&negative), Some(-1));
+}
+
+/// §6.2（2026-10-12 无人值守）：`agents.defaults.max_output_ceiling` 翻倍
+/// 阶梯封顶解析——值生效 / 0 与负数与非数字回落默认 / 缺席回落默认。
+/// 惯例与 `max_tool_iterations` 0=不限 相反：封顶没有不限形态。
+#[test]
+fn resolve_max_output_ceiling_defaulting() {
+    let with_key: serde_json::Value = serde_json::json!({
+        "agents": {"defaults": {"max_output_ceiling": 524288}}
+    });
+    assert_eq!(resolve_max_output_ceiling(&with_key), 524_288);
+
+    let zero: serde_json::Value = serde_json::json!({
+        "agents": {"defaults": {"max_output_ceiling": 0}}
+    });
+    assert_eq!(
+        resolve_max_output_ceiling(&zero),
+        MAX_OUTPUT_CEILING_DEFAULT,
+        "0 不表示不限——封顶失守 = 成本无界，回落默认"
+    );
+
+    let negative: serde_json::Value = serde_json::json!({
+        "agents": {"defaults": {"max_output_ceiling": -1}}
+    });
+    assert_eq!(
+        resolve_max_output_ceiling(&negative),
+        MAX_OUTPUT_CEILING_DEFAULT
+    );
+
+    let non_number: serde_json::Value = serde_json::json!({
+        "agents": {"defaults": {"max_output_ceiling": "unlimited"}}
+    });
+    assert_eq!(
+        resolve_max_output_ceiling(&non_number),
+        MAX_OUTPUT_CEILING_DEFAULT
+    );
+
+    let no_key: serde_json::Value = serde_json::json!({"model_list": []});
+    assert_eq!(
+        resolve_max_output_ceiling(&no_key),
+        MAX_OUTPUT_CEILING_DEFAULT
+    );
+
+    let no_section: serde_json::Value = serde_json::json!({});
+    assert_eq!(
+        resolve_max_output_ceiling(&no_section),
+        MAX_OUTPUT_CEILING_DEFAULT
+    );
+
+    assert_eq!(MAX_OUTPUT_CEILING_DEFAULT, 262_144);
+}
+
 /// N6（2026-10-13）：模型角色声明——canonical 值集 + 对话谓词。
 /// 守卫语义：三个 default 槽写入点 + factory 装配点消费 is_conversation_role。
 #[test]

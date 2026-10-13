@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useWSAPI } from '../../composables/useWSAPI'
 import { useToast } from '../../composables/useToast'
 import { useBoardChanged } from '../../composables/useBoardChanged'
+import { usePlanning, fmtElapsed, ABNORMAL_SECS } from '../../composables/usePlanning'
 import { fmtTime } from './boardMeta'
 
 // 项目面板（W2 P3）：项目列表 + 创建 + 编辑（字段级 patch）+ 归档/恢复。
@@ -59,6 +60,39 @@ interface ProjectProgress {
   archive_missing_blocks?: string[]
 }
 const progressMap = ref<Record<number, ProjectProgress>>({})
+
+// 拆解可观测（§1.2B，2026-10-11 Part 1 配套前端）：项目卡片行「🧩 AI 拆解中」
+// ——issue.list 的 planning 投影按 project_id 聚合。auto_start 建项目后用户
+// 停在本页，不切列表页也能看到「拆解中」。usePlanning 单例同源：live 条目
+// 自计时（分钟粒度足够），无 live 走静态投影。
+const { list: planningList, elapsed, reconcile } = usePlanning()
+const planningById = computed(() => new Map(planningList.value.map((e) => [e.issueId, e])))
+
+interface ProjectPlanning {
+  issueNumber: string
+  elapsedSecs: number
+  attempt: number
+  abnormal: boolean
+}
+const planningByProject = ref<Record<number, ProjectPlanning[]>>({})
+
+function planningRows(rows: any[]): Record<number, ProjectPlanning[]> {
+  const map: Record<number, ProjectPlanning[]> = {}
+  for (const row of rows || []) {
+    if (!row?.planning || row.project_id == null) continue
+    if (row.status === 'done' || row.status === 'cancelled') continue
+    const secs = planningById.value.has(row.id)
+      ? elapsed(row.id)
+      : Number(row.planning.elapsed_secs ?? 0)
+    ;(map[row.project_id] ||= []).push({
+      issueNumber: String(row.number ?? ''),
+      elapsedSecs: secs,
+      attempt: Number(row.planning.attempt ?? 1) || 1,
+      abnormal: secs > ABNORMAL_SECS,
+    })
+  }
+  return map
+}
 
 function progressLine(p: Project): string {
   const g = progressMap.value[p.id]
@@ -163,15 +197,20 @@ async function load(silent = false) {
   if (!silent) loading.value = true
   try {
     // C1/C3：项目列表 + 进度摘要并行拉取；board-changed 推送时静默刷新
-    // 实现「进度实时跳变」（拍板②=事件推送）。
-    const [r, pr] = await Promise.all([
+    // 实现「进度实时跳变」（拍板②=事件推送）。第三路 issue.list 供拆解
+    // 在途聚合（失败不阻塞主加载）。
+    const [r, pr, il] = await Promise.all([
       request('board', 'project.list', {}),
       request('board', 'project.progress', {}).catch(() => null),
+      request('board', 'issue.list', {}).catch(() => null),
     ])
     projects.value = r?.projects || []
     const map: Record<number, ProjectProgress> = {}
     for (const row of pr?.projects || []) map[row.project_id] = row
     progressMap.value = map
+    const issueRows = il?.issues || []
+    reconcile(issueRows)
+    planningByProject.value = planningRows(issueRows)
   } catch (e: any) {
     if (silent) console.warn('[ProjectPanel] silent refresh failed:', e)
     else toast.error('加载项目失败: ' + e)
@@ -294,6 +333,14 @@ useBoardChanged(() => load(true))
                   style="margin-left: var(--space-1);"
                   :title="'档案缺失块：\n' + missingBlocks(p).join('\n')"
                 >⚠ 缺 {{ missingBlocks(p).length }} 块</span>
+                <!-- 拆解在途行（§1.2B）：每条在途计划一行；异常超时黄字。 -->
+                <div
+                  v-for="pp in planningByProject[p.id] || []"
+                  :key="pp.issueNumber"
+                  class="planning-row"
+                  :class="{ abnormal: pp.abnormal }"
+                  data-test="project-planning-row"
+                >🧩 {{ pp.issueNumber }} AI 拆解中（已 {{ fmtElapsed(pp.elapsedSecs) }}<template v-if="pp.attempt > 1">，第 {{ pp.attempt }} 次尝试</template>）<template v-if="pp.abnormal">— 异常超时</template></div>
               </td>
               <td style="font-size: var(--text-sm); color: var(--text-muted);">{{ p.description || '—' }}</td>
               <td>
@@ -494,6 +541,15 @@ useBoardChanged(() => load(true))
   align-items: center;
   gap: var(--space-3);
   margin-bottom: var(--space-4);
+}
+/* 拆解在途行（§1.2B）：进度列下方小字行，异常超时黄字。 */
+.planning-row {
+  margin-top: var(--space-1);
+  color: var(--info-color, #3b82f6);
+  font-variant-numeric: tabular-nums;
+}
+.planning-row.abnormal {
+  color: var(--warning-text, #8a6d00);
 }
 .archived-toggle {
   color: var(--text-muted);

@@ -29,6 +29,8 @@ fn call() -> HookToolCall {
 
 fn llm_response() -> LlmResponse {
     LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "cov-answer".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -203,6 +205,8 @@ impl LlmHook for PostLlm {
     ) -> LlmResponseDecision {
         match self.0 {
             PostKind::Replace => LlmResponseDecision::Replace(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "rewritten".to_string(),
                 ..llm_response()
             }),

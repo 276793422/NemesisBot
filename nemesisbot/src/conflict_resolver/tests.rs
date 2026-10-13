@@ -335,6 +335,8 @@ async fn run_resolver_rejects_mini_tier() {
             _tools: Vec<nemesis_agent::types::ToolDefinition>,
         ) -> Result<LlmResponse, String> {
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "null".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
@@ -800,6 +802,8 @@ impl nemesis_agent::r#loop::LlmProvider for ResolverLlm {
             None => self.fallback.clone(),
         };
         Ok(nemesis_agent::r#loop::LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: raw,
             tool_calls: Vec::new(),
             finished: true,

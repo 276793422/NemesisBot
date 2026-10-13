@@ -121,6 +121,53 @@ fn composite_routes_web_and_empty_to_default() {
     assert_eq!(mock.calls.load(std::sync::atomic::Ordering::SeqCst), 3);
 }
 
+/// M5-3（2026-10-10 机制加固）：cluster 通道 ask → 默认管理器（本节点
+/// Dashboard 卡）+ 看板注记观察者触发，**不走通道卡片**（"cluster" 通道
+/// 无出站投递面，旧路径卡静默丢弃、ask 无声等满超时）。
+#[test]
+fn composite_routes_cluster_to_default_and_fires_board_notifier() {
+    let mock = Arc::new(RecordingMock::default());
+    let bus = Arc::new(MessageBus::new());
+    let composite = CompositeApprovalManager::new(
+        mock.clone(),
+        Arc::new(ChannelApprovalManager::new(bus.clone())),
+    );
+    let notices = Arc::new(std::sync::Mutex::new(Vec::<BoardAskNotice>::new()));
+    let sink = notices.clone();
+    composite.set_board_notifier(Arc::new(move |n: &BoardAskNotice| {
+        sink.lock().unwrap().push(n.clone());
+    }));
+
+    // cluster 上下文 → 立即返回（默认管理器同步批准）而非挂满超时。
+    let v = composite
+        .request_approval_sync_ctx(
+            "req-cluster-1",
+            "file_write",
+            "/tmp/x",
+            "HIGH",
+            "board task ask",
+            5,
+            &ctx_of("cluster", "cluster_rpc:node-x/board:21"),
+        )
+        .unwrap();
+    assert!(v.approved, "cluster ask 必须即时走默认管理器（非通道超时）");
+    assert_eq!(mock.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let got = notices.lock().unwrap();
+    assert_eq!(got.len(), 1, "观察者恰好触发一次");
+    assert_eq!(got[0].request_id, "req-cluster-1");
+    assert_eq!(got[0].operation, "file_write");
+    assert_eq!(got[0].target, "/tmp/x");
+    assert_eq!(got[0].chat_id, "cluster_rpc:node-x/board:21");
+    assert_eq!(got[0].timeout_secs, 5);
+
+    // 未安装观察者时 cluster ask 仍走默认（不炸、不通知）。
+    let bare =
+        CompositeApprovalManager::new(mock.clone(), Arc::new(ChannelApprovalManager::new(bus)));
+    bare.request_approval_sync_ctx("r4", "op", "t", "HIGH", "why", 5, &ctx_of("cluster", "c"))
+        .unwrap();
+    assert_eq!(mock.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
 // ---------------------------------------------------------------------------
 // ④/⑤ 端到端往返 + 超时（真 MessageBus）
 // ---------------------------------------------------------------------------

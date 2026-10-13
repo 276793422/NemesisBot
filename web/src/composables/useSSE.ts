@@ -18,7 +18,7 @@ const eventHandlers: Record<string, EventHandler[]> = {}
 // L10（2026-10-13）：'provider_stream_event' = provider 流式输出增量帧
 //（ephemeral：无 id 不参与补拉——断线窗口内的流不可回放，Logs Dashboard
 // 实时页 ProviderStreamPanel 消费）。
-const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'question-asked', 'question-resolved', 'board.plan_ready', 'board.plan_failed', 'resync', 'session.created', 'editor-mode', 'chat.activity', 'canvas.open', 'provider_stream_event']
+const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'approval-remote-requested', 'approval-remote-resolved', 'question-asked', 'question-resolved', 'board.plan_started', 'board.plan_ready', 'board.plan_failed', 'resync', 'session.created', 'editor-mode', 'chat.activity', 'canvas.open', 'provider_stream_event']
 
 function dispatch(eventType: string, data: any) {
   const handlers = eventHandlers[eventType] || []

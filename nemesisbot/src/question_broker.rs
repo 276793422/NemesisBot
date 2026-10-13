@@ -89,6 +89,17 @@ impl WebQuestionBroker {
 
 impl nemesis_types::agent::QuestionAsker for WebQuestionBroker {
     fn ask(&self, request: QuestionRequest) -> Result<QuestionOutcome, String> {
+        // §2 免打扰（无人值守计划 Part 2）：开关开 = 提问卡不广播不进
+        // pending，直接超时语义返回——工具侧回灌「按最佳判断继续」，无人
+        // 值守下 agent 全自主推进。doom-loop 卡不走这里（check_escalation
+        // 在上游已用同一开关短路为「自动批准」，轮不到发卡）。
+        if nemesis_web::handlers::security::approval_auto_state().is_some_and(|s| s.enabled()) {
+            tracing::info!(
+                "[WebQuestion] auto-approve on: question {} skipped (timeout semantics)",
+                request.question_id
+            );
+            return Ok(QuestionOutcome::Timeout);
+        }
         let (tx, rx) = mpsc::channel::<Vec<String>>();
         let entry = PendingEntry {
             question: request.question.clone(),

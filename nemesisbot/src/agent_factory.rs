@@ -1033,6 +1033,11 @@ pub fn build_agent_loop(
         if let Some(ref plugin) = shared.security_plugin {
             agent_loop.set_security_plugin(plugin.clone());
         }
+        // §2：免打扰运行时态挂主 loop（doom-loop escalation 自动批准臂）；
+        // 槽本体在 security_setup 全局安装，未装配 = None = 现行为。
+        if let Some(state) = nemesis_web::handlers::security::approval_auto_state() {
+            agent_loop.set_approval_auto_approve(state);
+        }
     }
     // Checkpoint store (edit safety net): snapshots writer-tool file changes so
     // a rewind can restore them. One per agent loop under
@@ -1858,10 +1863,17 @@ pub fn build_cluster_agent_loop(
     let system_prompt = load_cluster_system_prompt(&shared.home, cluster_app.worker_discipline);
 
     // 4. Create AgentConfig + AgentLoop (standalone mode, no bus).
+    // max_turns 跟随 agents.defaults.max_tool_iterations（2026-10-09 根修：
+    // 此前硬编码 60——config 改值/重启装配都不生效，编码单 60 轮必撞暂停墙；
+    // 0=不限与主 loop/project loop 同语义）。
     let config = nemesis_agent::types::AgentConfig {
         model: model_name.clone(),
         system_prompt,
-        max_turns: 60,
+        max_turns: if cfg.agents.defaults.max_tool_iterations <= 0 {
+            0
+        } else {
+            cfg.agents.defaults.max_tool_iterations as u32
+        },
         ..Default::default()
     };
     let adapter = ProviderAdapter::new(provider_arc, model_name.clone());
@@ -1918,6 +1930,12 @@ pub fn build_cluster_agent_loop(
     if let Some(ref plugin) = shared.security_plugin {
         agent_loop.set_security_plugin(plugin.clone());
         info!("[AgentFactory] cluster loop security 8-layer pipeline attached (ASM-01)");
+    }
+    // §2：免打扰运行时态挂集群 loop（无人值守主战场——worker 执行 board
+    // 任务时 doom-loop escalation 不停车等人）。槽未装配 = None = 现行为。
+    #[cfg(feature = "security")]
+    if let Some(state) = nemesis_web::handlers::security::approval_auto_state() {
+        agent_loop.set_approval_auto_approve(state);
     }
 
     // ASM-02（2026-09-16 横扫存量加固）：memory 审批闸接集群 loop——此前闸
@@ -2624,6 +2642,11 @@ pub fn build_project_agent_loop(
     {
         if let Some(ref plugin) = shared.security_plugin {
             agent_loop.set_security_plugin(plugin.clone());
+        }
+        // §2：免打扰运行时态挂项目 loop（同主 loop——项目会话不是安全旁路，
+        // 免打扰也不旁路）。槽未装配 = None = 现行为。
+        if let Some(state) = nemesis_web::handlers::security::approval_auto_state() {
+            agent_loop.set_approval_auto_approve(state);
         }
     }
     // N2：small_model 杂务通道与主 loop 同配置。

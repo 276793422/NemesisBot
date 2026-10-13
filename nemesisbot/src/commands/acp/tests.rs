@@ -1,5 +1,12 @@
 //! `commands::acp`（CLI 薄壳）的 w5b2 覆盖：缺 config 的 fail-closed 臂与
-//! config 在场时进入 run_server（stdin EOF 自然收尾）的委派臂。
+//! config 在场时进入 run_with_io（注入 EOF 干净收尾）的委派臂。
+//!
+//! stdin 纪律（docs/REPORT/2026-10-13_stdin-eof-assumption-test-deadlock-
+//! fix.md）：测试一律不得触碰进程真实 stdin——旧版直接跑 `run()`（挂真
+//! stdin），宿主给 cargo test 一条永不 EOF 的管道时 serve 的 blocking 读
+//! 永久占住 stdin 锁，runtime drop 等 blocking 任务 → 测试线程带着
+//! GLOBAL_STATE_LOCK 卡死 → 整个测试进程死锁。现走 `run_with_io` 注入
+//! duplex：EOF 由测试自己制造，确定性即刻返回，无需超时容忍臂。
 
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod tests {
@@ -19,8 +26,8 @@ mod tests {
         );
     }
 
-    /// config 在场 → 走完 credentials 路径注入 + run_server 委派。serve 挂在
-    /// stdin 上；cargo test 的 stdin 是管道/EOF，正常即刻返回。进程级 path
+    /// config 在场 → 走完 credentials 路径注入 + run_server_with_io 委派，
+    /// 注入 EOF（drop duplex client 端）后 serve 必须干净返回。进程级 path
     /// manager 单例先重定向（migrate_nested_session_logs 会触碰 session 根，
     /// 不许落在真实家目录）；run 用独立 temp home（acp::run 不做 pm 一致性
     /// 检查，二者无需同 home）。
@@ -37,19 +44,12 @@ mod tests {
         std::fs::write(home.join("config.json"), "{}").unwrap();
         let _env = EnvHomeGuard::point_at(&home);
 
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            crate::commands::acp::run(&home),
-        )
-        .await
-        {
-            Ok(res) => {
-                res.expect("stdin EOF 下 serve 必须干净返回");
-            }
-            Err(_elapsed) => {
-                // 全量并行负载下 stdin 读可能未及调度；委派臂（run_server
-                // 已进入）即本测试目标，超时不视为失败。
-            }
-        }
+        // 注入 transport：client 端立刻 drop → server 读端即刻 EOF；出站帧
+        // 写 sink（协议帧内容非本测目标）。
+        let (_client, server) = tokio::io::duplex(64);
+        drop(_client);
+
+        let res = crate::commands::acp::run_with_io(&home, server, tokio::io::sink()).await;
+        res.expect("注入 EOF 下 serve 必须干净返回");
     }
 }

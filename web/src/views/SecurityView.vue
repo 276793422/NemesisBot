@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 
@@ -77,6 +77,43 @@ function onPolicyChange(key: PolicyKey, ev: Event) {
   savePolicy(key, (ev.target as HTMLSelectElement).value)
 }
 
+// ── §2 免打扰（2026-10-11 无人值守计划 Part 2）：审批自动批准 ──────────
+// config.approvals.auto_approve（持久真相源，typed save 热翻运行态投影）。
+// 老配置缺 approvals 段 = 关（skip_serializing_if 不落盘）。运行态计数从
+// security.approvals.status 读（count 重启清零，诚实标「本次会话」）。
+const autoApprove = computed(() => !!config.value.approvals?.auto_approve)
+
+const autoApproveStatus = ref<{ injected: boolean; enabled?: boolean; auto_approved_count?: number }>({
+  injected: false,
+})
+
+async function loadApprovalStatus() {
+  try {
+    const r = await request('security', 'approvals.status', {})
+    autoApproveStatus.value = r || { injected: false }
+  } catch {
+    /* 状态读取失败不阻塞页面 */
+  }
+}
+
+async function onAutoApproveToggle(ev: Event) {
+  const on = (ev.target as HTMLInputElement).checked
+  const prevApprovals = config.value.approvals
+  policySaving.value = 'auto_approve'
+  config.value.approvals = { ...(prevApprovals || {}), auto_approve: on }
+  try {
+    await request('security', 'config.save', config.value)
+    toast.success(on ? '免打扰已开启（审批将自动批准）' : '免打扰已关闭（恢复人工审批）')
+    await loadApprovalStatus()
+  } catch (e: any) {
+    config.value.approvals = prevApprovals
+    ;(ev.target as HTMLInputElement).checked = !on
+    toast.error('保存失败: ' + e)
+  } finally {
+    policySaving.value = ''
+  }
+}
+
 async function loadConfig() {
   try {
     const data = await request('security', 'config.get')
@@ -117,7 +154,7 @@ function formatDate(ts?: string): string {
 }
 
 onMounted(async () => {
-  await Promise.all([loadConfig(), loadAudit(), loadStats()])
+  await Promise.all([loadConfig(), loadAudit(), loadStats(), loadApprovalStatus()])
   loading.value = false
 })
 </script>
@@ -139,6 +176,36 @@ onMounted(async () => {
 
         <!-- Config -->
         <div v-if="activeTab === 'config'">
+          <!-- §2 免打扰：审批自动批准开关（无人值守） -->
+          <div class="card" style="margin-bottom: var(--space-4);">
+            <div class="card-header"><h3>无人值守免打扰</h3></div>
+            <div class="card-body">
+              <label class="auto-approve-row" data-test="auto-approve-block">
+                <input
+                  type="checkbox"
+                  data-test="auto-approve-toggle"
+                  :checked="autoApprove"
+                  :disabled="policySaving !== '' || editing"
+                  @change="onAutoApproveToggle($event)"
+                />
+                <span>
+                  <strong>审批自动批准（免打扰模式）</strong>
+                  <div class="hint">
+                    开启后所有审批卡（本地操作 / 看板派发远程审批 / agent 提问 / doom loop 停轮）一律自动批准，不再等待人工——适合无人值守运行；安全 8 层其余检查照常，每次自动批准照常落审计。配置持久化，重启后保持。
+                  </div>
+                </span>
+              </label>
+              <div
+                v-if="autoApproveStatus.enabled"
+                class="auto-approve-status"
+                data-test="auto-approve-status"
+              >✅ 免打扰中：本次会话已自动批准 {{ autoApproveStatus.auto_approved_count || 0 }} 条</div>
+              <div v-else-if="!autoApproveStatus.injected" class="hint">
+                免打扰运行态未装配（开发/降级形态）——开关只落配置，运行期投影以网关重启后为准。
+              </div>
+            </div>
+          </div>
+
           <!-- D1/D2 策略开关 -->
           <div class="card" style="margin-bottom: var(--space-4);">
             <div class="card-header"><h3>策略开关</h3></div>
@@ -258,3 +325,31 @@ onMounted(async () => {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* §2 免打扰开关块 */
+.auto-approve-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  cursor: pointer;
+  user-select: none;
+}
+.auto-approve-row input[type='checkbox'] {
+  margin-top: 3px;
+}
+.auto-approve-row .hint {
+  font-weight: 400;
+}
+.hint {
+  font-size: var(--text-xs);
+  color: var(--text-muted, #888);
+  margin-top: var(--space-1);
+  max-width: 640px;
+}
+.auto-approve-status {
+  margin-top: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--success, #2da44e);
+}
+</style>

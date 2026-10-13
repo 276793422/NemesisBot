@@ -27,6 +27,8 @@ impl LlmProvider for McpReloadMockProvider {
         _tools: Vec<crate::types::ToolDefinition>,
     ) -> Result<LlmResponse, String> {
         Ok(LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "ok".to_string(),
             tool_calls: Vec::new(),
             finished: true,

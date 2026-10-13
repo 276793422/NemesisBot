@@ -1502,9 +1502,9 @@ async fn test_s4_call_result_logging_fields() {
         .await;
     match err {
         Err(RpcClientError::Connection(msg)) => {
-            assert!(msg.contains("peer not found"), "{}", msg)
+            assert!(msg.contains("peer unresolvable"), "{}", msg)
         }
-        other => panic!("expected Connection(peer not found), got {:?}", other),
+        other => panic!("expected Connection(peer unresolvable), got {:?}", other),
     }
 }
 

@@ -1,7 +1,13 @@
-//! Cron command - manage scheduled tasks.
+//! Cron command - manage scheduled jobs.
+//!
+//! 存储读写统一走 `nemesis-cron`（`CronService` + `store` 模块单一真相源，
+//! 与 gateway 同一形态；旧版手拼裸数组是 docs/REPORT/2026-10-13_cron-
+//! store-format-split-cli-vs-gateway-fix.md 记录的格式分裂 BUG，已修）。
+//! 本文件不再出现任何存储 JSON 拼装。
 
 use crate::common;
 use anyhow::Result;
+use nemesis_cron::{CronSchedule, CronService};
 
 #[derive(clap::Subcommand)]
 pub enum CronAction {
@@ -52,61 +58,43 @@ pub fn run(action: CronAction, local: bool) -> Result<()> {
     let home = common::resolve_home(local);
     let store_path = common::cron_store_path(&home);
 
+    // REL-002 损坏守卫：存储存在但解析失败（含旧形态迁移失败）⇒ 拒绝一切
+    // 改动——后续 save 会拿空/半态 store 顶掉盘上未知数据。
+    if store_path.exists() {
+        nemesis_cron::store::load(&store_path).map_err(|e| {
+            anyhow::anyhow!(
+                "定时任务存储已损坏，已中止操作以免覆盖既有任务: {} ({e})",
+                store_path.display()
+            )
+        })?;
+    }
+
+    // 变更/查询全部经 CronService（id 生成、时间戳、state、落盘回滚与
+    // gateway 同一实现）。service 不 spawn 后台线程（start() 才会），drop 安全。
+    let svc = CronService::new(&store_path.to_string_lossy());
+
     match action {
         CronAction::List => {
             println!("Scheduled Jobs");
             println!("===============");
-            if store_path.exists() {
-                let data = std::fs::read_to_string(&store_path)?;
-                let jobs: serde_json::Value = serde_json::from_str(&data)?;
-                if let Some(arr) = jobs.as_array() {
-                    if arr.is_empty() {
-                        println!("  No scheduled jobs.");
-                    } else {
-                        for job in arr {
-                            let id = job.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                            let name = job.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                            let enabled =
-                                job.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
-
-                            // Structured schedule: try "display" field first, fall back to plain string
-                            let schedule_display = job
-                                .get("schedule")
-                                .and_then(|s| {
-                                    // If schedule is an object with "display", use it
-                                    if s.is_object() {
-                                        s.get("display").and_then(|v| v.as_str())
-                                    } else {
-                                        s.as_str()
-                                    }
-                                })
-                                .unwrap_or("?");
-
-                            // Compute next run for interval-based jobs
-                            let next_run = job
-                                .get("schedule")
-                                .and_then(|s| s.get("every_ms").and_then(|v| v.as_u64()))
-                                .map(|ms| {
-                                    let secs = ms / 1000;
-                                    format!("every {}s", secs)
-                                })
-                                .unwrap_or_else(|| schedule_display.to_string());
-
-                            println!("  {} ({})", name, id);
-                            println!("    Schedule: {}", next_run);
-                            println!(
-                                "    Status: {}",
-                                if enabled { "enabled" } else { "disabled" }
-                            );
-                            println!();
-                        }
-                    }
-                } else {
-                    println!("  No scheduled jobs.");
-                }
-            } else {
+            if !store_path.exists() {
                 println!("  No scheduled jobs.");
                 println!("  Add one with: nemesisbot cron add -n <name> -m <message> -e <seconds>");
+                return Ok(());
+            }
+            let jobs = svc.list_jobs(true);
+            if jobs.is_empty() {
+                println!("  No scheduled jobs.");
+            } else {
+                for job in jobs {
+                    println!("  {} ({})", job.name, job.id);
+                    println!("    Schedule: {}", describe_schedule(&job.schedule));
+                    println!(
+                        "    Status: {}",
+                        if job.enabled { "enabled" } else { "disabled" }
+                    );
+                    println!();
+                }
             }
         }
         CronAction::Add {
@@ -119,127 +107,87 @@ pub fn run(action: CronAction, local: bool) -> Result<()> {
             channel,
         } => {
             let schedule = if let Some(secs) = every {
-                serde_json::json!({
-                    "kind": "interval",
-                    "every_ms": secs * 1000,
-                    "display": format!("every {}s", secs)
-                })
+                if secs == 0 {
+                    anyhow::bail!("--every 必须 > 0 秒（0 秒间隔的任务永远不会触发）");
+                }
+                CronSchedule {
+                    kind: "every".to_string(),
+                    at_ms: None,
+                    every_ms: Some((secs * 1000) as i64),
+                    expr: None,
+                    tz: None,
+                }
             } else if let Some(ref cron_expr) = cron {
-                serde_json::json!({
-                    "kind": "cron",
-                    "expr": cron_expr,
-                    "display": format!("cron: {}", cron_expr)
-                })
+                CronService::validate_schedule(cron_expr)
+                    .map_err(|e| anyhow::anyhow!("cron 表达式无效: {e}"))?;
+                CronSchedule {
+                    kind: "cron".to_string(),
+                    at_ms: None,
+                    every_ms: None,
+                    expr: Some(cron_expr.clone()),
+                    tz: None,
+                }
             } else {
                 println!("Error: Either --every or --cron must be specified.");
                 return Ok(());
             };
 
-            let id = uuid::Uuid::new_v4().to_string()[..8].to_string();
-            let job = serde_json::json!({
-                "id": id,
-                "name": name,
-                "message": message,
-                "schedule": schedule,
-                "deliver": deliver,
-                "to": to,
-                "channel": channel,
-                "enabled": true,
-            });
-
-            // Load/create store
-            let dir = store_path.parent().unwrap();
-            let _ = std::fs::create_dir_all(dir);
-            let mut jobs: Vec<serde_json::Value> = if store_path.exists() {
-                let data = std::fs::read_to_string(&store_path)?;
-                // 已存在的存储解析失败 ⇒ 拒绝覆盖（否则 unwrap_or_default
-                // 会拿空数组顶掉全部旧任务再写盘，静默毁数据）。
-                serde_json::from_str(&data).map_err(|e| {
-                    anyhow::anyhow!(
-                        "定时任务存储已损坏，已中止新增以免覆盖既有任务: {} ({e})",
-                        store_path.display()
-                    )
-                })?
-            } else {
-                vec![]
-            };
-            jobs.push(job);
-            // REL-002：统一原子写入（cron 任务存储，半截文件 = 任务清单损坏）。
-            nemesis_utils::write_file_atomic(
-                &store_path.to_string_lossy(),
-                serde_json::to_string_pretty(&serde_json::Value::Array(jobs))
-                    .unwrap_or_default()
-                    .as_bytes(),
-                0o600,
-            )
-            .map_err(anyhow::Error::msg)?;
-
-            println!("Added job '{}' ({})", name, id);
+            let job = svc
+                .add_job_ext(
+                    &name,
+                    schedule,
+                    &message,
+                    deliver,
+                    channel.as_deref(),
+                    to.as_deref(),
+                    None,
+                    None,
+                    true,
+                )
+                .map_err(anyhow::Error::msg)?;
+            println!("Added job '{}' ({})", name, job.id);
         }
-        CronAction::Remove { id } => {
-            if store_path.exists() {
-                let data = std::fs::read_to_string(&store_path)?;
-                let mut jobs: Vec<serde_json::Value> =
-                    serde_json::from_str(&data).unwrap_or_default();
-                let before = jobs.len();
-                jobs.retain(|j| j.get("id").and_then(|v| v.as_str()) != Some(&id));
-                if jobs.len() < before {
-                    // REL-002：统一原子写入（同上）。
-                    nemesis_utils::write_file_atomic(
-                        &store_path.to_string_lossy(),
-                        serde_json::to_string_pretty(&serde_json::Value::Array(jobs))
-                            .unwrap_or_default()
-                            .as_bytes(),
-                        0o600,
-                    )
-                    .map_err(anyhow::Error::msg)?;
-                    println!("Removed job {}", id);
-                } else {
-                    println!("Job {} not found.", id);
-                }
-            } else {
-                println!("Job {} not found.", id);
-            }
-        }
-        CronAction::Enable { id } => toggle_job(&store_path, &id, true),
-        CronAction::Disable { id } => toggle_job(&store_path, &id, false),
+        CronAction::Remove { id } => match svc.remove_job(&id) {
+            Ok(true) => println!("Removed job {}", id),
+            Ok(false) => println!("Job {} not found.", id),
+            Err(e) => return Err(anyhow::anyhow!("删除任务落盘失败（任务保留）: {e}")),
+        },
+        CronAction::Enable { id } => toggle(&svc, &id, true),
+        CronAction::Disable { id } => toggle(&svc, &id, false),
     }
     Ok(())
 }
 
-fn toggle_job(store_path: &std::path::Path, id: &str, enabled: bool) {
-    if store_path.exists() {
-        if let Ok(data) = std::fs::read_to_string(store_path) {
-            let mut jobs: Vec<serde_json::Value> = serde_json::from_str(&data).unwrap_or_default();
-            let mut found = false;
-            for job in &mut jobs {
-                if job.get("id").and_then(|v| v.as_str()) == Some(id)
-                    && let Some(obj) = job.as_object_mut()
-                {
-                    obj.insert("enabled".to_string(), serde_json::Value::Bool(enabled));
-                    found = true;
-                }
-            }
-            if found {
-                // REL-002：统一原子写入（同上）。
-                let _ = nemesis_utils::write_file_atomic(
-                    &store_path.to_string_lossy(),
-                    serde_json::to_string_pretty(&serde_json::Value::Array(jobs))
-                        .unwrap_or_default()
-                        .as_bytes(),
-                    0o600,
-                );
-                println!(
-                    "Job {} {}",
-                    id,
-                    if enabled { "enabled" } else { "disabled" }
-                );
-            } else {
-                println!("Job {} not found.", id);
-            }
-        }
-    } else {
-        println!("Job {} not found.", id);
+fn toggle(svc: &CronService, id: &str, enabled: bool) {
+    match svc.enable_job(id, enabled) {
+        Ok(_) => println!(
+            "Job {} {}",
+            id,
+            if enabled { "enabled" } else { "disabled" }
+        ),
+        Err(_) => println!("Job {} not found.", id),
+    }
+}
+
+/// 人类可读的调度描述（与 gateway 侧语义同源：every/at/cron 三态）。
+fn describe_schedule(schedule: &CronSchedule) -> String {
+    match schedule.kind.as_str() {
+        "every" => format!("every {}s", schedule.every_ms.unwrap_or(0) / 1000),
+        "at" => schedule
+            .at_ms
+            .and_then(chrono::DateTime::from_timestamp_millis)
+            .map(|dt| {
+                dt.with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string()
+            })
+            .unwrap_or_else(|| "at (已过期)".to_string()),
+        "cron" => schedule
+            .expr
+            .as_deref()
+            .map(CronService::describe_schedule)
+            .unwrap_or_else(|| "cron".to_string()),
+        other => other.to_string(),
     }
 }
 

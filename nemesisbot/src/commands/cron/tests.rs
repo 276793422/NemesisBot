@@ -1,795 +1,461 @@
+//! cron CLI 测试。存储格式统一（docs/REPORT/2026-10-13_cron-store-format-
+//! split-cli-vs-gateway-fix.md）后本文件整体重写：CLI 与 gateway 共用
+//! nemesis-cron store（canonical envelope），旧「裸数组」形态只以**迁移输入**
+//! 的身份出现在测试里。断言一律落在磁盘上的 store 文件 + `CronService` 读回
+//! 两个面上，不再断言手拼 JSON 的中间形状。
+
 use super::*;
-use tempfile::TempDir;
 
-fn make_store(tmp: &TempDir, jobs: &[serde_json::Value]) -> std::path::PathBuf {
-    let dir = tmp.path().join("cron");
-    std::fs::create_dir_all(&dir).unwrap();
-    let store = dir.join("jobs.json");
-    std::fs::write(
-        &store,
-        serde_json::to_string_pretty(&serde_json::Value::Array(jobs.to_vec())).unwrap(),
-    )
-    .unwrap();
-    store
+// ===========================================================================
+// run() 全臂 —— env home 隔离 + GLOBAL_STATE_LOCK 串行；store 落在
+// {home}/workspace/cron/jobs.json。
+// ===========================================================================
+
+fn with_env_home(f: impl FnOnce(std::path::PathBuf)) {
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let tmp = tempfile::tempdir().unwrap();
+    unsafe {
+        std::env::set_var("NEMESISBOT_HOME", tmp.path());
+    }
+    f(tmp.path().join(".nemesisbot"));
+    unsafe {
+        std::env::remove_var("NEMESISBOT_HOME");
+    }
 }
 
-fn sample_job(id: &str, name: &str, enabled: bool) -> serde_json::Value {
-    serde_json::json!({
-        "id": id,
-        "name": name,
-        "enabled": enabled,
-        "schedule": {
-            "kind": "interval",
-            "every_ms": 60000,
-            "display": "every 60s"
-        }
-    })
+fn store_of(home: &std::path::Path) -> std::path::PathBuf {
+    home.join("workspace").join("cron").join("jobs.json")
 }
 
-#[test]
-fn test_toggle_job_enable() {
-    let tmp = TempDir::new().unwrap();
-    let store = make_store(&tmp, &[sample_job("abc123", "test_job", false)]);
-
-    toggle_job(&store, "abc123", true);
-
-    let data = std::fs::read_to_string(&store).unwrap();
-    let jobs: Vec<serde_json::Value> = serde_json::from_str(&data).unwrap();
-    assert_eq!(jobs[0]["enabled"], true);
+fn read_store(home: &std::path::Path) -> nemesis_cron::store::CronStoreData {
+    nemesis_cron::store::load(&store_of(home)).expect("store 必须可被共享 loader 解析")
 }
 
-#[test]
-fn test_toggle_job_disable() {
-    let tmp = TempDir::new().unwrap();
-    let store = make_store(&tmp, &[sample_job("def456", "another_job", true)]);
+fn write_store(home: &std::path::Path, body: &str) {
+    let p = store_of(home);
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(p, body).unwrap();
+}
 
-    toggle_job(&store, "def456", false);
-
-    let data = std::fs::read_to_string(&store).unwrap();
-    let jobs: Vec<serde_json::Value> = serde_json::from_str(&data).unwrap();
-    assert_eq!(jobs[0]["enabled"], false);
+fn add_args(name: &str, every: Option<u64>, cron: Option<String>) -> CronAction {
+    CronAction::Add {
+        name: name.into(),
+        message: "m".into(),
+        every,
+        cron,
+        deliver: false,
+        to: None,
+        channel: None,
+    }
 }
 
 #[test]
-fn test_toggle_job_not_found() {
-    let tmp = TempDir::new().unwrap();
-    let store = make_store(&tmp, &[sample_job("abc123", "test_job", true)]);
-
-    toggle_job(&store, "nonexistent", false);
-
-    // Job should remain unchanged
-    let data = std::fs::read_to_string(&store).unwrap();
-    let jobs: Vec<serde_json::Value> = serde_json::from_str(&data).unwrap();
-    assert_eq!(jobs[0]["enabled"], true);
-}
-
-#[test]
-fn test_toggle_job_no_file() {
-    let tmp = TempDir::new().unwrap();
-    let store = tmp.path().join("nonexistent").join("jobs.json");
-
-    // Should not panic
-    toggle_job(&store, "abc123", true);
-}
-
-#[test]
-fn test_toggle_job_multiple_jobs() {
-    let tmp = TempDir::new().unwrap();
-    let store = make_store(
-        &tmp,
-        &[
-            sample_job("job1", "first", true),
-            sample_job("job2", "second", true),
-            sample_job("job3", "third", false),
-        ],
-    );
-
-    toggle_job(&store, "job2", false);
-
-    let data = std::fs::read_to_string(&store).unwrap();
-    let jobs: Vec<serde_json::Value> = serde_json::from_str(&data).unwrap();
-    assert_eq!(jobs[0]["enabled"], true); // unchanged
-    assert_eq!(jobs[1]["enabled"], false); // changed
-    assert_eq!(jobs[2]["enabled"], false); // unchanged
-}
-
-#[test]
-fn test_add_interval_job() {
-    let _tmp = TempDir::new().unwrap();
-    // Simulate CronAction::Add with interval schedule
-    let schedule = serde_json::json!({
-        "kind": "interval",
-        "every_ms": 300000u64,  // 5 minutes
-        "display": "every 300s"
+fn list_without_store_shows_hint() {
+    with_env_home(|_home| {
+        run(CronAction::List, false).expect("无 store → 提示 + Ok");
     });
-    let id = uuid::Uuid::new_v4().to_string()[..8].to_string();
-    let job = serde_json::json!({
-        "id": id,
-        "name": "test_interval",
-        "message": "do something",
-        "schedule": schedule,
-        "deliver": false,
-        "enabled": true,
+}
+
+#[test]
+fn list_covers_envelope_empty_and_corrupt() {
+    with_env_home(|home| {
+        // canonical 空 envelope。
+        write_store(&home, r#"{"version":1,"jobs":[]}"#);
+        run(CronAction::List, false).expect("空 envelope → No scheduled jobs");
+
+        // 损坏存储 → List 也必须 loud（诚实报错，不假装没有任务）。
+        write_store(&home, r#"{"not":"an array"}"#);
+        let err = run(CronAction::List, false).expect_err("损坏 store 必须 Err");
+        assert!(
+            err.to_string().contains("已损坏"),
+            "错误要点明存储损坏: {err}"
+        );
     });
-
-    assert_eq!(job["schedule"]["every_ms"], 300000);
-    assert_eq!(job["schedule"]["kind"], "interval");
-    assert_eq!(job["enabled"], true);
 }
 
 #[test]
-fn test_add_cron_expr_job() {
-    let cron_expr = "0 */5 * * *";
-    let schedule = serde_json::json!({
-        "kind": "cron",
-        "expr": cron_expr,
-        "display": format!("cron: {}", cron_expr)
+fn add_interval_job_persists_canonical_envelope() {
+    with_env_home(|home| {
+        run(add_args("j1", Some(30), None), false).expect("add ok");
+        let store = read_store(&home);
+        assert_eq!(store.version, 1, "落盘必须是 canonical envelope");
+        assert_eq!(store.jobs.len(), 1);
+        let job = &store.jobs[0];
+        assert_eq!(job.name, "j1");
+        assert_eq!(job.schedule.kind, "every", "kind 与 gateway 语义对齐");
+        assert_eq!(job.schedule.every_ms, Some(30000));
+        assert!(job.enabled);
+        assert_eq!(job.payload.message, "m");
+        assert_eq!(job.id.len(), 16, "id 与 gateway generate_id 同源（16 hex）");
     });
-
-    assert_eq!(schedule["kind"], "cron");
-    assert_eq!(schedule["expr"], cron_expr);
 }
 
 #[test]
-fn test_remove_job_from_store() {
-    let tmp = TempDir::new().unwrap();
-    let store = make_store(
-        &tmp,
-        &[
-            sample_job("j1", "job1", true),
-            sample_job("j2", "job2", true),
-        ],
-    );
+fn add_cron_job_deliver_fields_and_validation() {
+    with_env_home(|home| {
+        run(
+            CronAction::Add {
+                name: "j2".into(),
+                message: "m".into(),
+                every: None,
+                cron: Some("*/5 * * * *".into()),
+                deliver: true,
+                to: Some("user1".into()),
+                channel: Some("web".into()),
+            },
+            false,
+        )
+        .expect("cron add ok");
+        let job = &read_store(&home).jobs[0];
+        assert_eq!(job.schedule.kind, "cron");
+        assert_eq!(job.schedule.expr.as_deref(), Some("*/5 * * * *"));
+        assert!(job.payload.deliver);
+        assert_eq!(job.payload.to.as_deref(), Some("user1"));
+        assert_eq!(job.payload.channel.as_deref(), Some("web"));
 
-    let data = std::fs::read_to_string(&store).unwrap();
-    let mut jobs: Vec<serde_json::Value> = serde_json::from_str(&data).unwrap();
-    let before = jobs.len();
-    jobs.retain(|j| j.get("id").and_then(|v| v.as_str()) != Some("j1"));
-    assert_eq!(jobs.len(), before - 1);
-    assert_eq!(jobs[0]["id"], "j2");
-}
+        // 非法 cron 表达式 → 落盘前拒绝（gateway validate_schedule 同源）。
+        let err = run(
+            CronAction::Add {
+                name: "bad".into(),
+                message: "m".into(),
+                every: None,
+                cron: Some("not a cron".into()),
+                deliver: false,
+                to: None,
+                channel: None,
+            },
+            false,
+        )
+        .expect_err("非法表达式必须 Err");
+        assert!(err.to_string().contains("cron 表达式无效"), "{err}");
+        assert_eq!(read_store(&home).jobs.len(), 1, "失败的 add 不落盘");
 
-#[test]
-fn test_remove_nonexistent_job() {
-    let tmp = TempDir::new().unwrap();
-    let store = make_store(&tmp, &[sample_job("j1", "job1", true)]);
-
-    let data = std::fs::read_to_string(&store).unwrap();
-    let mut jobs: Vec<serde_json::Value> = serde_json::from_str(&data).unwrap();
-    let before = jobs.len();
-    jobs.retain(|j| j.get("id").and_then(|v| v.as_str()) != Some("nonexistent"));
-    assert_eq!(jobs.len(), before); // nothing removed
-}
-
-#[test]
-fn test_job_id_is_8_chars() {
-    let id = uuid::Uuid::new_v4().to_string()[..8].to_string();
-    assert_eq!(id.len(), 8);
-}
-
-#[test]
-fn test_empty_store_is_valid_json() {
-    let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join("cron");
-    std::fs::create_dir_all(&dir).unwrap();
-    let store = dir.join("jobs.json");
-    std::fs::write(&store, "[]").unwrap();
-
-    let data = std::fs::read_to_string(&store).unwrap();
-    let jobs: Vec<serde_json::Value> = serde_json::from_str(&data).unwrap();
-    assert!(jobs.is_empty());
-}
-
-// -------------------------------------------------------------------------
-// Additional cron tests for coverage
-// -------------------------------------------------------------------------
-
-#[test]
-fn test_toggle_job_with_invalid_json() {
-    let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join("cron");
-    std::fs::create_dir_all(&dir).unwrap();
-    let store = dir.join("jobs.json");
-    std::fs::write(&store, "invalid json").unwrap();
-
-    // Should not panic, just do nothing
-    toggle_job(&store, "any-id", true);
-}
-
-#[test]
-fn test_toggle_job_empty_array() {
-    let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join("cron");
-    std::fs::create_dir_all(&dir).unwrap();
-    let store = dir.join("jobs.json");
-    std::fs::write(&store, "[]").unwrap();
-
-    toggle_job(&store, "any-id", true);
-
-    // Should remain empty
-    let data = std::fs::read_to_string(&store).unwrap();
-    let jobs: Vec<serde_json::Value> = serde_json::from_str(&data).unwrap();
-    assert!(jobs.is_empty());
-}
-
-#[test]
-fn test_schedule_interval_json_structure() {
-    let secs: u64 = 300;
-    let schedule = serde_json::json!({
-        "kind": "interval",
-        "every_ms": secs * 1000,
-        "display": format!("every {}s", secs)
+        // 两个调度参数都不给 → 错误提示后 Ok（不写文件）。
+        run(add_args("j3", None, None), false).expect("缺调度参数 → 打印错误 + Ok");
+        assert_eq!(read_store(&home).jobs.len(), 1);
     });
-    assert_eq!(schedule["kind"], "interval");
-    assert_eq!(schedule["every_ms"], 300000);
-    assert_eq!(schedule["display"], "every 300s");
 }
 
 #[test]
-fn test_schedule_cron_json_structure() {
-    let cron_expr = "0 */5 * * *";
-    let schedule = serde_json::json!({
-        "kind": "cron",
-        "expr": cron_expr,
-        "display": format!("cron: {}", cron_expr)
+fn add_every_zero_is_rejected_before_touching_store() {
+    with_env_home(|home| {
+        let err = run(add_args("zero", Some(0), None), false).expect_err("--every 0 必须 Err");
+        assert!(err.to_string().contains("--every"), "{err}");
+        assert!(!store_of(&home).exists(), "拒绝路径不得创建 store");
     });
-    assert_eq!(schedule["kind"], "cron");
-    assert_eq!(schedule["expr"], cron_expr);
-    assert_eq!(schedule["display"], "cron: 0 */5 * * *");
 }
 
 #[test]
-fn test_job_json_structure() {
-    let id = "test1234".to_string();
-    let name = "test_job".to_string();
-    let message = "do something".to_string();
-    let schedule =
-        serde_json::json!({"kind": "interval", "every_ms": 60000, "display": "every 60s"});
-    let deliver = true;
-    let to: Option<String> = Some("user1".to_string());
-    let channel: Option<String> = Some("web".to_string());
+fn remove_found_not_found_and_no_store() {
+    with_env_home(|home| {
+        // 无 store。
+        run(CronAction::Remove { id: "x".into() }, false).expect("无 store → not found Ok");
 
-    let job = serde_json::json!({
-        "id": id,
-        "name": name,
-        "message": message,
-        "schedule": schedule,
-        "deliver": deliver,
-        "to": to,
-        "channel": channel,
-        "enabled": true,
+        write_store(
+            &home,
+            r#"{"version":1,"jobs":[{"id":"abc","name":"n","enabled":true,"schedule":{"kind":"every","at_ms":null,"every_ms":60000,"expr":null,"tz":null},"payload":{"kind":"agent_turn","message":"m","command":null,"deliver":false,"channel":null,"to":null,"session_key":null,"max_rounds":null},"state":{"next_run_at_ms":null,"last_run_at_ms":null,"last_status":null,"last_error":null,"history":[]},"created_at_ms":1,"updated_at_ms":1,"delete_after_run":false}]}"#,
+        );
+        run(CronAction::Remove { id: "abc".into() }, false).expect("remove ok");
+        assert!(read_store(&home).jobs.is_empty(), "已删除");
+
+        run(CronAction::Remove { id: "ghost".into() }, false).expect("不存在 → not found Ok");
     });
-
-    assert_eq!(job["id"], "test1234");
-    assert_eq!(job["name"], "test_job");
-    assert_eq!(job["message"], "do something");
-    assert_eq!(job["deliver"], true);
-    assert_eq!(job["to"], "user1");
-    assert_eq!(job["channel"], "web");
-    assert_eq!(job["enabled"], true);
 }
 
 #[test]
-fn test_job_list_display_schedule_object() {
-    let job = serde_json::json!({
-        "id": "j1",
-        "name": "test",
-        "enabled": true,
-        "schedule": {
-            "kind": "interval",
-            "every_ms": 120000,
-            "display": "every 120s"
-        }
+fn enable_disable_dispatch_updates_envelope() {
+    with_env_home(|home| {
+        write_store(
+            &home,
+            r#"{"version":1,"jobs":[{"id":"abc","name":"n","enabled":true,"schedule":{"kind":"every","at_ms":null,"every_ms":60000,"expr":null,"tz":null},"payload":{"kind":"agent_turn","message":"m","command":null,"deliver":false,"channel":null,"to":null,"session_key":null,"max_rounds":null},"state":{"next_run_at_ms":null,"last_run_at_ms":null,"last_status":null,"last_error":null,"history":[]},"created_at_ms":1,"updated_at_ms":1,"delete_after_run":false}]}"#,
+        );
+        run(CronAction::Disable { id: "abc".into() }, false).expect("disable ok");
+        assert!(!read_store(&home).jobs[0].enabled);
+
+        run(CronAction::Enable { id: "abc".into() }, false).expect("enable ok");
+        assert!(read_store(&home).jobs[0].enabled);
+
+        run(CronAction::Enable { id: "ghost".into() }, false).expect("不存在 → not found Ok");
     });
+}
 
-    // Test the schedule display extraction logic from CronAction::List
-    let schedule_display = job
-        .get("schedule")
-        .and_then(|s| {
-            if s.is_object() {
-                s.get("display").and_then(|v| v.as_str())
-            } else {
-                s.as_str()
-            }
-        })
-        .unwrap_or("?");
+// -----------------------------------------------------------------------
+// R7（coverage-95 goal）：Add/Remove 的 store-已存在读臂 + 写失败臂。
+// - Add 在 store 已存在时必须读旧内容做合并（此前只测过空新建）；
+// - {home}/workspace 是普通文件时保存失败 → ? 上抛 Err；
+// - store 文件只读（Windows READONLY attr / unix 目录 0555）时 Remove 的
+//   收尾原子写失败 → ? 上抛 Err，且原内容保持不变。
+// -----------------------------------------------------------------------
 
-    assert_eq!(schedule_display, "every 120s");
+/// 只读化（跨平台）：Windows std 把 0o444 映射为 FILE_ATTRIBUTE_READONLY，
+/// unix 即权限位。返回恢复闭包句柄由调用方在断言后手动还原。
+fn deny_write(p: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perm = std::fs::metadata(p).unwrap().permissions();
+        perm.set_mode(0o444);
+        std::fs::set_permissions(p, perm).unwrap();
+    }
+    #[cfg(windows)]
+    {
+        let mut perm = std::fs::metadata(p).unwrap().permissions();
+        perm.set_readonly(true);
+        std::fs::set_permissions(p, perm).unwrap();
+    }
+}
 
-    // Test next run extraction
-    let next_run = job
-        .get("schedule")
-        .and_then(|s| s.get("every_ms").and_then(|v| v.as_u64()))
-        .map(|ms| {
-            let secs = ms / 1000;
-            format!("every {}s", secs)
-        })
-        .unwrap_or_else(|| schedule_display.to_string());
+fn allow_write(p: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perm = std::fs::metadata(p).unwrap().permissions();
+        perm.set_mode(0o644);
+        std::fs::set_permissions(p, perm).unwrap();
+    }
+    #[cfg(windows)]
+    {
+        let mut perm = std::fs::metadata(p).unwrap().permissions();
+        perm.set_readonly(false);
+        std::fs::set_permissions(p, perm).unwrap();
+    }
+}
 
-    assert_eq!(next_run, "every 120s");
+/// POSIX 侧测试助手：临时把目录设为只读，Drop 恢复原模式。cron 收尾
+/// 保存走 `write_file_atomic`（同目录 tmp + rename 覆盖），POSIX 语义
+/// 只看目录写权限——store 文件 0o444 拦不住（2026-09-24 nightly run
+/// 36001616750 实证假红），拦父目录才是 POSIX 下「保存必失败」的
+/// 正确构造；Windows 上 readonly 属性本身即拒绝 replace，无需此件。
+/// 同款先例：commands::cors::tests::wave_a::DenyDirWrite。
+#[cfg(unix)]
+struct DenyDirWrite(std::path::PathBuf, std::fs::Permissions);
+
+#[cfg(unix)]
+impl DenyDirWrite {
+    fn new(p: &std::path::Path) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let perm = std::fs::metadata(p).unwrap().permissions();
+        let mut denied = perm.clone();
+        denied.set_mode(0o555);
+        std::fs::set_permissions(p, denied).unwrap();
+        Self(p.to_path_buf(), perm)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for DenyDirWrite {
+    fn drop(&mut self) {
+        // 恢复必须先于 TempDir 清理：声明序上本 guard 晚于 tmp 创建，
+        // 逆序 drop 保证先还原目录再删树。
+        std::fs::set_permissions(&self.0, self.1.clone()).unwrap();
+    }
 }
 
 #[test]
-fn test_job_list_display_schedule_string() {
-    let job = serde_json::json!({
-        "id": "j1",
-        "name": "test",
-        "enabled": true,
-        "schedule": "every 5 minutes"
+fn add_merges_into_existing_store() {
+    with_env_home(|home| {
+        write_store(
+            &home,
+            r#"{"version":1,"jobs":[{"id":"keep1","name":"kept","enabled":true,"schedule":{"kind":"every","at_ms":null,"every_ms":60000,"expr":null,"tz":null},"payload":{"kind":"agent_turn","message":"m","command":null,"deliver":false,"channel":null,"to":null,"session_key":null,"max_rounds":null},"state":{"next_run_at_ms":null,"last_run_at_ms":null,"last_status":null,"last_error":null,"history":[]},"created_at_ms":1,"updated_at_ms":1,"delete_after_run":false}]}"#,
+        );
+        run(add_args("j9", Some(5), None), false).expect("store 已存在 → 读旧内容合并后追加");
+        let store = read_store(&home);
+        assert_eq!(store.jobs.len(), 2, "旧 job 保留 + 新 job 追加");
+        assert_eq!(store.jobs[0].id, "keep1");
+        assert_eq!(store.jobs[1].name, "j9");
+        assert_eq!(store.jobs[1].schedule.every_ms, Some(5000));
     });
-
-    let schedule_display = job
-        .get("schedule")
-        .and_then(|s| {
-            if s.is_object() {
-                s.get("display").and_then(|v| v.as_str())
-            } else {
-                s.as_str()
-            }
-        })
-        .unwrap_or("?");
-
-    assert_eq!(schedule_display, "every 5 minutes");
 }
 
 #[test]
-fn test_job_id_uniqueness() {
-    let id1 = uuid::Uuid::new_v4().to_string()[..8].to_string();
-    let id2 = uuid::Uuid::new_v4().to_string()[..8].to_string();
-    assert_ne!(id1, id2);
+fn add_write_failure_when_workspace_is_regular_file_surfaces_error() {
+    with_env_home(|home| {
+        std::fs::create_dir_all(&home).unwrap();
+        // workspace 是普通文件：store 祖先被文件挡住（exists()==false）→
+        // svc 走空 store；add_job_ext 落盘时 write_file_atomic 的 mkdir
+        // 失败 → Err 上抛（service 侧同步回滚内存）。
+        std::fs::write(home.join("workspace"), b"not a directory").unwrap();
+
+        let r = run(add_args("blocked", Some(5), None), false);
+        assert!(r.is_err(), "写路径被普通文件阻断必须 Err");
+        assert!(!store_of(&home).exists(), "store 没能创建");
+    });
 }
 
 #[test]
-fn test_remove_job_from_empty_store() {
-    let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join("cron");
-    std::fs::create_dir_all(&dir).unwrap();
-    let store = dir.join("jobs.json");
-    std::fs::write(&store, "[]").unwrap();
+fn remove_write_failure_denied_by_readonly_store_surfaces_error() {
+    with_env_home(|home| {
+        write_store(
+            &home,
+            r#"{"version":1,"jobs":[{"id":"abc","name":"n","enabled":true,"schedule":{"kind":"every","at_ms":null,"every_ms":60000,"expr":null,"tz":null},"payload":{"kind":"agent_turn","message":"m","command":null,"deliver":false,"channel":null,"to":null,"session_key":null,"max_rounds":null},"state":{"next_run_at_ms":null,"last_run_at_ms":null,"last_status":null,"last_error":null,"history":[]},"created_at_ms":1,"updated_at_ms":1,"delete_after_run":false}]}"#,
+        );
+        let store = store_of(&home);
+        deny_write(&store);
+        // POSIX：rename 型保存只看目录写权限，需父目录一并只读
+        //（Drop 恢复，逆序 drop 先于 TempDir 清理）。
+        #[cfg(unix)]
+        let _dir_deny = DenyDirWrite::new(store.parent().unwrap());
 
-    let data = std::fs::read_to_string(&store).unwrap();
-    let mut jobs: Vec<serde_json::Value> = serde_json::from_str(&data).unwrap();
-    let before = jobs.len();
-    jobs.retain(|j| j.get("id").and_then(|v| v.as_str()) != Some("nonexistent"));
-    assert_eq!(jobs.len(), before);
-}
+        let r = run(CronAction::Remove { id: "abc".into() }, false);
 
-#[test]
-fn test_toggle_job_preserves_other_fields() {
-    let tmp = TempDir::new().unwrap();
-    let store = make_store(
-        &tmp,
-        &[serde_json::json!({
-            "id": "j1",
-            "name": "myjob",
-            "enabled": true,
-            "message": "hello",
-            "schedule": {"kind": "interval", "every_ms": 60000}
-        })],
-    );
-
-    toggle_job(&store, "j1", false);
-
-    let data = std::fs::read_to_string(&store).unwrap();
-    let jobs: Vec<serde_json::Value> = serde_json::from_str(&data).unwrap();
-    assert_eq!(jobs[0]["enabled"], false);
-    assert_eq!(jobs[0]["name"], "myjob"); // other fields preserved
-    assert_eq!(jobs[0]["message"], "hello");
+        allow_write(&store); // 先还原再断言，保证 TempDir 能清理
+        assert!(r.is_err(), "readonly store → 收尾写入被拒 → Err");
+        // 原内容保持不变（删除没有落盘）。
+        assert_eq!(read_store(&home).jobs[0].id, "abc");
+    });
 }
 
 // ===========================================================================
-// run() 全臂（S11c，quality-hardening goal 冲刺 S11）—— run(action, local)
-// 此前 LH=0（toggle_job 有直调测试，但 dispatch 层从没跑过）。env home 隔离
-// + GLOBAL_STATE_LOCK 串行；store 落在 {home}/workspace/cron/jobs.json。
+// wave_b：损坏 store 守卫（BUG 台账 #37 契约延续）。
 // ===========================================================================
 
-mod run_arm {
+#[test]
+fn wave_b_add_over_corrupt_store_fails_loud_and_keeps_store_untouched() {
+    with_env_home(|home| {
+        let store = store_of(&home);
+        std::fs::create_dir_all(store.parent().unwrap()).unwrap();
+        let corrupt = "not-a-json-array {{{";
+        std::fs::write(&store, corrupt).unwrap();
+
+        let err = run(add_args("wb-corrupt", Some(7), None), false)
+            .expect_err("损坏 store 必须 loud 失败");
+        assert!(
+            err.to_string().contains("已损坏"),
+            "错误信息应点明存储损坏: {err}"
+        );
+
+        // 文件必须一个字节都没被改。
+        let after = std::fs::read_to_string(&store).unwrap();
+        assert_eq!(after, corrupt, "失败路径不得触碰磁盘上的存储文件");
+    });
+}
+
+#[test]
+fn wave_b_add_on_missing_store_still_creates_fresh_store() {
+    // 对照组：无存储时 Add 照常建库（首插臂不受损坏守卫影响）。
+    with_env_home(|home| {
+        let store = store_of(&home);
+        assert!(!store.exists());
+
+        run(add_args("wb-fresh", Some(5), None), false).expect("缺省存储 → 正常新建");
+
+        let loaded = read_store(&home);
+        assert_eq!(loaded.version, 1);
+        assert_eq!(loaded.jobs.len(), 1);
+        assert_eq!(loaded.jobs[0].name, "wb-fresh");
+    });
+}
+
+// ===========================================================================
+// 跨层回归锁（BUG 修复核心，docs/REPORT/2026-10-13_cron-store-format-
+// split-cli-vs-gateway-fix.md 方向 3）：旧 CLI 裸数组 store → CLI add 迁移
+// 合并 → gateway 侧 CronService 直接可见。修复前这个场景是「gateway 启动
+// WARN + 空 store + 首次保存把 CLI 任务顶掉」。
+// ===========================================================================
+
+mod cross_layer {
     use super::super::{CronAction, run};
+    use super::{add_args, read_store, store_of, with_env_home, write_store};
 
-    fn with_env_home(f: impl FnOnce(std::path::PathBuf)) {
-        let _guard = crate::GLOBAL_STATE_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let tmp = tempfile::tempdir().unwrap();
-        unsafe {
-            std::env::set_var("NEMESISBOT_HOME", tmp.path());
-        }
-        f(tmp.path().join(".nemesisbot"));
-        unsafe {
-            std::env::remove_var("NEMESISBOT_HOME");
-        }
-    }
-
-    fn store_of(home: &std::path::Path) -> std::path::PathBuf {
-        home.join("workspace").join("cron").join("jobs.json")
-    }
-
-    fn write_store(home: &std::path::Path, body: &str) {
-        let p = store_of(home);
-        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(p, body).unwrap();
+    /// 旧 CLI 手拼形态的完整 store（真实历史形态：message/deliver/to/channel
+    /// 在条目顶层，schedule.kind="interval"，带 display 字段）。
+    fn legacy_store_body() -> String {
+        r#"[
+  {
+    "id": "oldjob01",
+    "name": "legacy-job",
+    "message": "hello from old cli",
+    "schedule": { "kind": "interval", "every_ms": 120000, "display": "every 120s" },
+    "deliver": true,
+    "to": "user1",
+    "channel": "web",
+    "enabled": true
+  }
+]"#
+        .to_string()
     }
 
     #[test]
-    fn list_without_store_shows_hint() {
-        with_env_home(|_home| {
-            run(CronAction::List, false).expect("无 store → 提示 + Ok");
+    fn cli_add_over_legacy_store_migrates_and_gateway_service_sees_both_jobs() {
+        with_env_home(|home| {
+            write_store(&home, &legacy_store_body());
+
+            run(add_args("new-job", Some(5), None), false)
+                .expect("旧形态 store 上 add 必须走迁移+合并");
+
+            // 磁盘面：文件已愈合为 canonical envelope，两个任务都在。
+            let store = read_store(&home);
+            assert_eq!(store.version, 1);
+            assert_eq!(store.jobs.len(), 2);
+            let legacy = store
+                .jobs
+                .iter()
+                .find(|j| j.id == "oldjob01")
+                .expect("旧任务必须被迁移保留");
+            assert_eq!(legacy.name, "legacy-job");
+            assert_eq!(legacy.schedule.kind, "every", "interval → every");
+            assert_eq!(legacy.schedule.every_ms, Some(120000));
+            assert_eq!(legacy.payload.message, "hello from old cli");
+            assert!(legacy.payload.deliver);
+            assert_eq!(legacy.payload.channel.as_deref(), Some("web"));
+
+            // gateway 面：CronService 直接读同一文件，无需任何特殊处理。
+            let svc = nemesis_cron::CronService::new(&store_of(&home).to_string_lossy());
+            let jobs = svc.list_jobs(true);
+            assert_eq!(jobs.len(), 2, "gateway 必须看到 CLI 写入的全部任务");
+            assert!(jobs.iter().any(|j| j.name == "new-job"));
+            assert!(jobs.iter().any(|j| j.name == "legacy-job"));
         });
     }
 
     #[test]
-    fn list_covers_empty_nonarray_interval_and_string_schedules() {
+    fn gateway_written_store_is_readable_by_cli_list() {
         with_env_home(|home| {
-            // 空数组。
-            write_store(&home, "[]");
-            run(CronAction::List, false).expect("空数组 → No scheduled jobs");
+            // gateway 面：CronService 写 store（add_job_ext 落盘）。
+            let svc = nemesis_cron::CronService::new(&store_of(&home).to_string_lossy());
+            svc.add_job(
+                "gw-job",
+                nemesis_cron::CronSchedule {
+                    kind: "every".into(),
+                    at_ms: None,
+                    every_ms: Some(60000),
+                    expr: None,
+                    tz: None,
+                },
+                "from gateway",
+                false,
+                None,
+                None,
+            )
+            .expect("service add ok");
 
-            // 非数组 JSON（as_array None 分支）。
-            write_store(&home, r#"{"not":"an array"}"#);
-            run(CronAction::List, false).expect("非数组 → No scheduled jobs");
+            // CLI 面：list 直接消费（修复前 CLI 只认裸数组，读到 envelope
+            // 会当成「没有任务」）。
+            run(CronAction::List, false).expect("CLI 必须能列 gateway 写的 store");
+            assert_eq!(read_store(&home).jobs[0].name, "gw-job");
+        });
+    }
 
-            // 结构化 schedule（every_ms 优先）+ 字符串 schedule + 缺字段落默认。
+    #[test]
+    fn corrupt_legacy_entry_blocks_add_with_position() {
+        with_env_home(|home| {
+            // 旧形态但缺 message（不存在于真实历史文件，属损坏）→ 迁移
+            // 整体拒绝，CLI 损坏守卫接住。serde 层的结构性错误（缺字段）
+            // 只能给行/列定位；条目名定位归 migrate 自身错误（见
+            // nemesis-cron store::tests 的 every_ms 用例）。
             write_store(
                 &home,
-                r#"[
-                    {"id":"i1","name":"n1","enabled":false,
-                     "schedule":{"kind":"interval","every_ms":120000,"display":"every 120s"}},
-                    {"id":"i2","name":"n2","schedule":"每分钟"},
-                    {"id":"i3","schedule":{"kind":"cron","expr":"* * * * *"}}
-                ]"#,
+                r#"[{"id":"x","name":"broken","schedule":{"kind":"interval","every_ms":1000}}]"#,
             );
-            run(CronAction::List, false).expect("interval/string/缺字段 三态 → Ok");
-        });
-    }
-
-    #[test]
-    fn add_interval_job_persists_to_store() {
-        with_env_home(|home| {
-            run(
-                CronAction::Add {
-                    name: "j1".into(),
-                    message: "hello".into(),
-                    every: Some(30),
-                    cron: None,
-                    deliver: false,
-                    to: None,
-                    channel: None,
-                },
-                false,
-            )
-            .expect("add ok");
-            let jobs: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(store_of(&home)).unwrap()).unwrap();
-            let arr = jobs.as_array().unwrap();
-            assert_eq!(arr.len(), 1);
-            assert_eq!(arr[0]["name"], "j1");
-            assert_eq!(arr[0]["schedule"]["kind"], "interval");
-            assert_eq!(arr[0]["schedule"]["every_ms"], 30000);
-            assert_eq!(arr[0]["enabled"], true);
-            assert_eq!(
-                arr[0]["id"].as_str().unwrap().len(),
-                8,
-                "id 是 uuid 前 8 位"
-            );
-        });
-    }
-
-    #[test]
-    fn add_cron_job_and_neither_flag_error_paths() {
-        with_env_home(|home| {
-            run(
-                CronAction::Add {
-                    name: "j2".into(),
-                    message: "m".into(),
-                    every: None,
-                    cron: Some("*/5 * * * *".into()),
-                    deliver: true,
-                    to: Some("user1".into()),
-                    channel: Some("web".into()),
-                },
-                false,
-            )
-            .expect("cron add ok");
-            let jobs: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(store_of(&home)).unwrap()).unwrap();
-            assert_eq!(jobs[0]["schedule"]["kind"], "cron");
-            assert_eq!(jobs[0]["schedule"]["expr"], "*/5 * * * *");
-            assert_eq!(jobs[0]["deliver"], true);
-            assert_eq!(jobs[0]["to"], "user1");
-            assert_eq!(jobs[0]["channel"], "web");
-
-            // 两个调度参数都不给 → 错误提示后 Ok（不写文件）。
-            let before = std::fs::read_to_string(store_of(&home)).unwrap();
-            run(
-                CronAction::Add {
-                    name: "j3".into(),
-                    message: "m".into(),
-                    every: None,
-                    cron: None,
-                    deliver: false,
-                    to: None,
-                    channel: None,
-                },
-                false,
-            )
-            .expect("缺调度参数 → 打印错误 + Ok");
-            assert_eq!(std::fs::read_to_string(store_of(&home)).unwrap(), before);
-        });
-    }
-
-    #[test]
-    fn remove_found_not_found_and_no_store() {
-        with_env_home(|home| {
-            // 无 store。
-            run(CronAction::Remove { id: "x".into() }, false).expect("无 store → not found Ok");
-
-            write_store(&home, r#"[{"id":"abc","name":"n"}]"#);
-            run(CronAction::Remove { id: "abc".into() }, false).expect("remove ok");
-            let jobs: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(store_of(&home)).unwrap()).unwrap();
-            assert!(jobs.as_array().unwrap().is_empty(), "已删除");
-
-            run(CronAction::Remove { id: "ghost".into() }, false).expect("不存在 → not found Ok");
-        });
-    }
-
-    #[test]
-    fn enable_disable_dispatch_through_toggle() {
-        with_env_home(|home| {
-            write_store(&home, r#"[{"id":"abc","name":"n","enabled":true}]"#);
-            run(CronAction::Disable { id: "abc".into() }, false).expect("disable ok");
-            let jobs: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(store_of(&home)).unwrap()).unwrap();
-            assert_eq!(jobs[0]["enabled"], false);
-
-            run(CronAction::Enable { id: "abc".into() }, false).expect("enable ok");
-            let jobs: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(store_of(&home)).unwrap()).unwrap();
-            assert_eq!(jobs[0]["enabled"], true);
-        });
-    }
-
-    // -----------------------------------------------------------------------
-    // R7（coverage-95 goal）：Add/Remove 的 store-已存在读臂 + 写失败臂。
-    // - Add 在 store 已存在时必须读旧数组做合并（此前只测过空新建）；
-    // - {home}/workspace 是普通文件时 create_dir_all 被静默吞掉、
-    //   fs::write 因父路径不是目录而失败 → ? 上抛 Err；
-    // - store 文件只读（Windows READONLY attr / unix 0444）时 Remove 的
-    //   收尾 fs::write 失败 → ? 上抛 Err，且原内容保持不变。
-    // -----------------------------------------------------------------------
-
-    /// 只读化（跨平台）：Windows std 把 0o444 映射为 FILE_ATTRIBUTE_READONLY，
-    /// unix 即权限位。返回恢复闭包句柄由调用方在断言后手动还原。
-    fn deny_write(p: &std::path::Path) {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perm = std::fs::metadata(p).unwrap().permissions();
-            perm.set_mode(0o444);
-            std::fs::set_permissions(p, perm).unwrap();
-        }
-        #[cfg(windows)]
-        {
-            let mut perm = std::fs::metadata(p).unwrap().permissions();
-            perm.set_readonly(true);
-            std::fs::set_permissions(p, perm).unwrap();
-        }
-    }
-
-    fn allow_write(p: &std::path::Path) {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perm = std::fs::metadata(p).unwrap().permissions();
-            perm.set_mode(0o644);
-            std::fs::set_permissions(p, perm).unwrap();
-        }
-        #[cfg(windows)]
-        {
-            let mut perm = std::fs::metadata(p).unwrap().permissions();
-            perm.set_readonly(false);
-            std::fs::set_permissions(p, perm).unwrap();
-        }
-    }
-
-    /// POSIX 侧测试助手：临时把目录设为只读，Drop 恢复原模式。cron 收尾
-    /// 保存走 `write_file_atomic`（同目录 tmp + rename 覆盖），POSIX 语义
-    /// 只看目录写权限——store 文件 0o444 拦不住（2026-09-24 nightly run
-    /// 36001616750 实证假红），拦父目录才是 POSIX 下「保存必失败」的
-    /// 正确构造；Windows 上 readonly 属性本身即拒绝 replace，无需此件。
-    /// 同款先例：commands::cors::tests::wave_a::DenyDirWrite。
-    #[cfg(unix)]
-    struct DenyDirWrite(std::path::PathBuf, std::fs::Permissions);
-
-    #[cfg(unix)]
-    impl DenyDirWrite {
-        fn new(p: &std::path::Path) -> Self {
-            use std::os::unix::fs::PermissionsExt;
-            let perm = std::fs::metadata(p).unwrap().permissions();
-            let mut denied = perm.clone();
-            denied.set_mode(0o555);
-            std::fs::set_permissions(p, denied).unwrap();
-            Self(p.to_path_buf(), perm)
-        }
-    }
-
-    #[cfg(unix)]
-    impl Drop for DenyDirWrite {
-        fn drop(&mut self) {
-            // 恢复必须先于 TempDir 清理：声明序上本 guard 晚于 tmp 创建，
-            // 逆序 drop 保证先还原目录再删树。
-            std::fs::set_permissions(&self.0, self.1.clone()).unwrap();
-        }
-    }
-
-    #[test]
-    fn add_merges_into_existing_store() {
-        with_env_home(|home| {
-            write_store(&home, r#"[{"id":"keep1","name":"kept"}]"#);
-            run(
-                CronAction::Add {
-                    name: "j9".into(),
-                    message: "m".into(),
-                    every: Some(5),
-                    cron: None,
-                    deliver: false,
-                    to: None,
-                    channel: None,
-                },
-                false,
-            )
-            .expect("store 已存在 → 读旧数组合并后追加");
-            let jobs: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(store_of(&home)).unwrap()).unwrap();
-            let arr = jobs.as_array().unwrap();
-            assert_eq!(arr.len(), 2, "旧 job 保留 + 新 job 追加");
-            assert_eq!(arr[0]["id"], "keep1");
-            assert_eq!(arr[1]["name"], "j9");
-            assert_eq!(arr[1]["schedule"]["every_ms"], 5000);
-        });
-    }
-
-    #[test]
-    fn add_write_failure_when_workspace_is_regular_file_surfaces_error() {
-        with_env_home(|home| {
-            std::fs::create_dir_all(&home).unwrap();
-            // workspace 是普通文件：create_dir_all({home}/workspace/cron)
-            // 失败但被 `let _` 吞掉；store.exists()==false（祖先被文件挡住）
-            // → 初始化空 vec；最终 fs::write 打不开父路径 → Err 上抛。
-            std::fs::write(home.join("workspace"), b"not a directory").unwrap();
-
-            let r = run(
-                CronAction::Add {
-                    name: "blocked".into(),
-                    message: "m".into(),
-                    every: Some(5),
-                    cron: None,
-                    deliver: false,
-                    to: None,
-                    channel: None,
-                },
-                false,
-            );
-            assert!(r.is_err(), "写路径被普通文件阻断必须 Err");
-            assert!(!store_of(&home).exists(), "store 没能创建");
-        });
-    }
-
-    #[test]
-    fn remove_write_failure_denied_by_readonly_store_surfaces_error() {
-        with_env_home(|home| {
-            write_store(&home, r#"[{"id":"abc","name":"n"}]"#);
-            let store = store_of(&home);
-            deny_write(&store);
-            // POSIX：rename 型保存只看目录写权限，需父目录一并只读
-            //（Drop 恢复，逆序 drop 先于 TempDir 清理）。
-            #[cfg(unix)]
-            let _dir_deny = DenyDirWrite::new(store.parent().unwrap());
-
-            let r = run(CronAction::Remove { id: "abc".into() }, false);
-
-            allow_write(&store); // 先还原再断言，保证 TempDir 能清理
-            assert!(r.is_err(), "readonly store → 收尾写入被拒 → Err");
-            // 原内容保持不变（删除没有落盘）。
-            let jobs: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap();
-            assert_eq!(jobs[0]["id"], "abc");
-        });
-    }
-}
-
-// =========================================================================
-// wave_b（覆盖率补测 2026-08-27）：Add 读臂的损坏 store 形态。
-// 既有 add_merges_into_existing_store 已合法 JSON 路径走过 153-155/160-163；
-// 本测试补「文件存在但内容损坏」这一不同分支形状：serde 解析失败 →
-// unwrap_or_default 回退空数组（旧内容静默丢弃，见生产可疑点报告）→
-// 追加新 job 后整体重写为合法数组。钉住该语义，防止未来改动悄悄变更行为。
-// 注：with_env_home/store_of/write_store 是 run_arm 内私有 helper，
-// 兄弟模块不可见，此处最小克隆。
-// =========================================================================
-mod wave_b {
-    use super::super::{CronAction, run};
-
-    fn with_env_home(f: impl FnOnce(std::path::PathBuf)) {
-        let _guard = crate::GLOBAL_STATE_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let tmp = tempfile::tempdir().unwrap();
-        unsafe {
-            std::env::set_var("NEMESISBOT_HOME", tmp.path());
-        }
-        f(tmp.path().join(".nemesisbot"));
-        unsafe {
-            std::env::remove_var("NEMESISBOT_HOME");
-        }
-    }
-
-    fn store_of(home: &std::path::Path) -> std::path::PathBuf {
-        home.join("workspace").join("cron").join("jobs.json")
-    }
-
-    #[test]
-    fn wave_b_add_over_corrupt_store_fails_loud_and_keeps_store_untouched() {
-        // BUG 台账 #37：原实现 unwrap_or_default 把损坏 store 当空数组 →
-        // 写盘静默顶掉全部旧任务。新契约：Add 遇损坏存储必须 Err 且
-        // 文件保持原样（绝不半覆盖）。
-        with_env_home(|home| {
-            let store = store_of(&home);
-            std::fs::create_dir_all(store.parent().unwrap()).unwrap();
-            let corrupt = "not-a-json-array {{{";
-            std::fs::write(&store, corrupt).unwrap();
-
-            let err = run(
-                CronAction::Add {
-                    name: "wb-corrupt".into(),
-                    message: "m".into(),
-                    every: Some(7),
-                    cron: None,
-                    deliver: false,
-                    to: None,
-                    channel: None,
-                },
-                false,
-            )
-            .expect_err("损坏 store 必须 loud 失败");
+            let err =
+                run(add_args("n", Some(5), None), false).expect_err("不可迁移的旧条目必须拒绝 add");
+            let msg = err.to_string();
             assert!(
-                err.to_string().contains("已损坏"),
-                "错误信息应点明存储损坏: {err}"
+                msg.contains("已损坏") && msg.contains("missing field"),
+                "错误要点明损坏与原因: {msg}"
             );
-
-            // 文件必须一个字节都没被改。
-            let after = std::fs::read_to_string(&store).unwrap();
-            assert_eq!(after, corrupt, "失败路径不得触碰磁盘上的存储文件");
-        });
-    }
-
-    #[test]
-    fn wave_b_add_on_missing_store_still_creates_fresh_store() {
-        // 对照组：无存储时 Add 照常建库（首插臂不受损坏守卫影响）。
-        with_env_home(|home| {
-            let store = store_of(&home);
-            assert!(!store.exists());
-
-            run(
-                CronAction::Add {
-                    name: "wb-fresh".into(),
-                    message: "m".into(),
-                    every: Some(5),
-                    cron: None,
-                    deliver: false,
-                    to: None,
-                    channel: None,
-                },
-                false,
-            )
-            .expect("缺省存储 → 正常新建");
-
-            let jobs: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&store).unwrap())
-                    .expect("add 后 store 是合法 JSON 数组");
-            let arr = jobs.as_array().unwrap();
-            assert_eq!(arr.len(), 1);
-            assert_eq!(arr[0]["name"], "wb-fresh");
         });
     }
 }

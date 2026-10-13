@@ -491,7 +491,7 @@ fn save_always_rule_is_exclusive_with_config_family_lock() {
     std::thread::scope(|s| {
         let sa = s.spawn(|| {
             for _ in 0..5 {
-                mgr.save_always_rule("process_exec", "cmd-0")
+                mgr.save_always_rule("process_exec", "cmd-0", "medium")
                     .expect("save rule ok");
             }
         });

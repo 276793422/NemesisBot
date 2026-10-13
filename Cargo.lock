@@ -969,6 +969,7 @@ dependencies = [
  "futures",
  "git2",
  "nemesis-board",
+ "nemesis-cluster",
  "nemesis-data",
  "nemesis-path",
  "reqwest",
@@ -4249,6 +4250,7 @@ dependencies = [
  "toml 0.8.2",
  "tracing",
  "uuid",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4276,6 +4278,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "croner",
+ "nemesis-utils",
  "parking_lot",
  "rand 0.8.6",
  "serde",
@@ -4409,6 +4412,7 @@ dependencies = [
 name = "nemesis-http-pool"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "parking_lot",
  "reqwest",
  "serde",

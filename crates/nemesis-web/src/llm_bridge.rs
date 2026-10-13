@@ -190,6 +190,9 @@ fn provider_response_to_agent(
         tool_calls,
         finished,
         reasoning_content: resp.reasoning_content,
+        // §6.2：归一化停止原因透传（主 loop 输出翻倍阶梯判定输入）。
+        finish_reason: Some(resp.finish_reason),
+        escalated_to: None,
         usage: resp
             .usage
             .map(|u| nemesis_agent::loop_executor::ObserverUsageInfo {
@@ -291,6 +294,7 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
         let mut last_tool_calls: Vec<nemesis_providers::types::ToolCall> = Vec::new();
         let mut usage: Option<nemesis_providers::types::UsageInfo> = None;
         let mut reasoning_content: Option<String> = None;
+        let mut finish_reason: Option<String> = None;
         let first = match rx.recv().await {
             None => {
                 // 空流（发送端即断）：与"流不支持"同判——回落非流式。
@@ -340,6 +344,10 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
                 if c.reasoning_content.is_some() {
                     reasoning_content = c.reasoning_content;
                 }
+                // §6.2：终态块的归一化停止原因（输出翻倍阶梯判定输入）。
+                if c.finish_reason.is_some() {
+                    finish_reason = c.finish_reason;
+                }
             }
             match rx.recv().await {
                 Some(Ok(next)) => chunk = Some(next),
@@ -371,6 +379,10 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
             tool_calls,
             finished,
             reasoning_content,
+            // §6.2：归一化停止原因透传；EOF 无 finish_reason（上游早断）=
+            // None（不虚构终止原因，阶梯判定按缺省走）。
+            finish_reason,
+            escalated_to: None,
             usage: usage.map(|u| nemesis_agent::loop_executor::ObserverUsageInfo {
                 prompt_tokens: u.prompt_tokens,
                 completion_tokens: u.completion_tokens,

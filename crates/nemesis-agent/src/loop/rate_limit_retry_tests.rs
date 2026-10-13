@@ -38,6 +38,8 @@ impl LlmProvider for RateLimitedThenSuccess {
             Err(self.err_text.clone())
         } else {
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "Recovered!".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
@@ -543,6 +545,8 @@ impl LlmProvider for Status500ThenSuccess {
             Err(GLM_500_ERR.to_string())
         } else {
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "Recovered!".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,

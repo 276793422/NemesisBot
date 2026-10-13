@@ -18,8 +18,10 @@ pub mod assignment;
 pub mod backup;
 pub mod db;
 pub mod dossier;
+pub mod fail_streak;
 pub mod fingerprint;
 pub mod git_repo;
+pub mod handoff;
 pub mod matcher;
 pub mod models;
 pub mod planner;
@@ -31,12 +33,14 @@ pub mod service;
 pub mod state_machine;
 pub mod store;
 pub mod team_memory;
+pub mod timeline;
 pub mod watcher;
 
 pub use anchor::{
-    ANCHOR_PREFIX, AnchorCheck, AnchorKind, AnchorResult, RejectedAnchor, all_passed,
-    has_content_regex_anchor, parse_anchors, render_anchor_failures, render_anchor_summary,
-    run_anchors, validate_anchor_path_shape,
+    ANCHOR_PREFIX, AnchorCheck, AnchorKind, AnchorResult, EXEC_ANCHOR_DEFAULT_TIMEOUT_SECS,
+    ExecAnchorPolicy, RejectedAnchor, all_passed, has_content_regex_anchor, parse_anchors,
+    render_anchor_failures, render_anchor_summary, run_anchors, run_anchors_dual,
+    run_anchors_dual_ext, validate_anchor_path_shape, validate_anchor_roots,
 };
 pub use arbitrator::{
     NodeCandidate, SkipRecord, WakeInput, WakePlan, has_mentions, mentions_node,
@@ -56,6 +60,10 @@ pub use asset_token::{
     sha256_bytes, sha256_file, sign_asset_token, verify_asset_token,
 };
 pub use assignment::{Actor, AssignmentType};
+pub use fail_streak::{
+    FAIL_STREAK_THRESHOLD, FailStreakLedger, StreakOutcome, UNSURE_SIGNATURE, failure_signature,
+    unsure_gate_trips,
+};
 pub use fingerprint::{
     FINGERPRINT_MIN_SAMPLES, FingerprintTier, TASK_TYPE_BUCKETS, apply_fingerprint_weights,
     classify_tier, task_type_of, tier_note,
@@ -84,7 +92,7 @@ pub use review::{
 };
 pub use service::BoardService;
 pub use state_machine::{can_transition, validate_transition};
-pub use store::BoardStore;
+pub use store::{BoardStore, PARK_NOTICE_MARK, SEND_FAILURE_MARK, send_failure_backoff_secs};
 pub use team_memory::{
     MAX_MATCHED_EXPERIENCES, match_experiences, render_dispatch_experience_section,
     render_planner_experience_strings,

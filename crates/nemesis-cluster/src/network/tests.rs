@@ -779,3 +779,110 @@ fn hold_full_udp_window(base: u16, cap: u16) -> (Vec<std::net::UdpSocket>, u16) 
         base, cap
     );
 }
+
+// ---------------------------------------------------------------------------
+// R1: collect_adapter_link_local（if_addrs Windows APIPA 缺口补齐的纯函数核）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_collect_adapter_link_local_keeps_apipa_only() {
+    let mut out = Vec::new();
+    collect_adapter_link_local(
+        "Ethernet",
+        &[
+            "169.254.10.20".parse().unwrap(),
+            "192.168.1.5".parse().unwrap(),
+            "10.0.0.1".parse().unwrap(),
+        ],
+        &mut out,
+    );
+    // 只收 link-local；常规网段走 if_addrs 主路径，不在这里重复入池。
+    assert_eq!(out, vec!["169.254.10.20".to_string()]);
+}
+
+#[test]
+fn test_collect_adapter_link_local_skips_virtual_and_loopback() {
+    let mut out = Vec::new();
+    collect_adapter_link_local(
+        "vEthernet (WSL)",
+        &["169.254.9.9".parse().unwrap()],
+        &mut out,
+    );
+    collect_adapter_link_local("docker0", &["169.254.8.8".parse().unwrap()], &mut out);
+    collect_adapter_link_local(
+        "Ethernet",
+        &["127.0.0.1".parse().unwrap(), "169.254.7.7".parse().unwrap()],
+        &mut out,
+    );
+    // 虚拟接口整体跳过；回环非 link-local 跳过；真实网卡 APIPA 保留。
+    assert_eq!(out, vec!["169.254.7.7".to_string()]);
+}
+
+#[test]
+fn test_collect_adapter_link_local_dedups() {
+    let mut out = vec!["169.254.1.2".to_string()];
+    collect_adapter_link_local(
+        "Ethernet 2",
+        &[
+            "169.254.1.2".parse().unwrap(),
+            "169.254.3.4".parse().unwrap(),
+        ],
+        &mut out,
+    );
+    assert_eq!(
+        out,
+        vec!["169.254.1.2".to_string(), "169.254.3.4".to_string()]
+    );
+}
+
+/// R1 接口形态：前缀长 → 掩码推导（含钳位）。
+#[test]
+fn test_prefix_len_to_v4_mask() {
+    assert_eq!(crate::network::prefix_len_to_v4_mask(0), "0.0.0.0");
+    assert_eq!(crate::network::prefix_len_to_v4_mask(8), "255.0.0.0");
+    assert_eq!(crate::network::prefix_len_to_v4_mask(16), "255.255.0.0");
+    assert_eq!(crate::network::prefix_len_to_v4_mask(24), "255.255.255.0");
+    assert_eq!(crate::network::prefix_len_to_v4_mask(32), "255.255.255.255");
+    // 防御性钳位：OS 给出越界前缀长时按 32 处理（不 panic 不回绕）
+    assert_eq!(crate::network::prefix_len_to_v4_mask(33), "255.255.255.255");
+    assert_eq!(
+        crate::network::prefix_len_to_v4_mask(255),
+        "255.255.255.255"
+    );
+}
+
+/// R1 接口形态：link-local (ip, 前缀长) → NetworkInterface（掩码/网络号
+/// 推导 + 虚拟接口跳过 + 非 link-local 跳过 + ip 去重）。Windows 形态
+/// 函数，非 Windows 编译期不存在。
+#[cfg(windows)]
+#[test]
+fn test_collect_adapter_link_local_ifaces() {
+    use crate::network::collect_adapter_link_local_ifaces;
+    let mk = |ip: &str, prefix: u8| (ip.parse::<std::net::Ipv4Addr>().unwrap(), prefix);
+
+    // 正常路径：169.254.10.2/16 → ip + 255.255.0.0 + 169.254.0.0
+    let mut out = Vec::new();
+    collect_adapter_link_local_ifaces(
+        "以太网",
+        &[mk("169.254.10.2", 16), mk("192.168.1.5", 24)],
+        &mut out,
+    );
+    assert_eq!(out.len(), 1, "非 link-local 不入表");
+    assert_eq!(out[0].ip, "169.254.10.2");
+    assert_eq!(out[0].mask, "255.255.0.0");
+    assert_eq!(out[0].network_ip, "169.254.0.0");
+
+    // 虚拟接口整表跳过
+    let mut out2 = Vec::new();
+    collect_adapter_link_local_ifaces("vEthernet (WSL)", &[mk("169.254.10.3", 16)], &mut out2);
+    assert!(out2.is_empty());
+
+    // 跨 adapter ip 去重
+    let mut out3 = vec![crate::network::NetworkInterface {
+        ip: "169.254.10.2".into(),
+        mask: "255.255.0.0".into(),
+        network_ip: "169.254.0.0".into(),
+    }];
+    collect_adapter_link_local_ifaces("另一个适配器", &[mk("169.254.10.2", 16)], &mut out3);
+    assert_eq!(out3.len(), 1, "同 ip 跨 adapter 不重复入表");
+}

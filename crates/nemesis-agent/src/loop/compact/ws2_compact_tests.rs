@@ -78,6 +78,8 @@ impl LlmProvider for CaptureProvider {
     ) -> Result<LlmResponse, String> {
         self.captured.lock().unwrap().push(messages);
         Ok(LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: self.reply.clone(),
             tool_calls: Vec::new(),
             finished: true,
@@ -104,6 +106,8 @@ impl LlmProvider for OnceProvider {
         _tools: Vec<crate::types::ToolDefinition>,
     ) -> Result<LlmResponse, String> {
         Ok(LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: self.reply.clone(),
             tool_calls: Vec::new(),
             finished: true,

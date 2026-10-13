@@ -109,6 +109,20 @@ impl ConnectionPool {
 
     /// Download a file from a URL, writing to the specified path.
     pub async fn download_file(&self, url: &str, dest_path: &str) -> Result<(), String> {
+        self.download_file_capped(url, dest_path, u64::MAX).await
+    }
+
+    /// [`Self::download_file`] 的有界版（D10-1，2026-10-13 第 6 轮审计）：
+    /// `max_bytes` 上限内才落盘——曾 `resp.bytes()` 无界缓冲，恶意/失控
+    /// 远端可把任意大响应灌进内存（磁盘弹药）。两道闸：Content-Length
+    /// 预检（超限在传输前拒绝）+ 分块累积硬上限（缺/谎报 Content-Length
+    /// 的 chunked 响应由实收字节兜底）。`u64::MAX` = 不限（旧语义）。
+    pub async fn download_file_capped(
+        &self,
+        url: &str,
+        dest_path: &str,
+        max_bytes: u64,
+    ) -> Result<(), String> {
         let resp = self
             .client
             .get(url)
@@ -120,16 +134,32 @@ impl ConnectionPool {
             return Err(format!("HTTP {}", resp.status()));
         }
 
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| format!("read body: {}", e))?;
+        if let Some(len) = resp.content_length()
+            && len > max_bytes
+        {
+            return Err(format!(
+                "download too large: Content-Length {len} > cap {max_bytes}"
+            ));
+        }
+
+        let mut body: Vec<u8> = Vec::new();
+        let mut stream = resp.bytes_stream();
+        use futures::StreamExt;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| format!("read body: {}", e))?;
+            if body.len() as u64 + chunk.len() as u64 > max_bytes {
+                return Err(format!(
+                    "download too large: exceeded cap {max_bytes} while streaming"
+                ));
+            }
+            body.extend_from_slice(&chunk);
+        }
 
         if let Some(parent) = std::path::Path::new(dest_path).parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {}", e))?;
         }
 
-        std::fs::write(dest_path, &bytes).map_err(|e| format!("write: {}", e))?;
+        std::fs::write(dest_path, &body).map_err(|e| format!("write: {}", e))?;
 
         Ok(())
     }

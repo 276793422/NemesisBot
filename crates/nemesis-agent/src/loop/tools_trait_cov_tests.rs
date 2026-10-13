@@ -22,6 +22,8 @@ impl crate::r#loop::LlmProvider for CovMcpProvider {
         _tools: Vec<crate::types::ToolDefinition>,
     ) -> Result<crate::r#loop::LlmResponse, String> {
         Ok(crate::r#loop::LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "ok".to_string(),
             tool_calls: Vec::new(),
             finished: true,

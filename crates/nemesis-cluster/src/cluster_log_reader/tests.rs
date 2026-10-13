@@ -10,6 +10,14 @@ fn test_short_id() {
     assert_eq!(short_id("short"), "short");
 }
 
+/// 中文 id 裸字节截断曾 panic（2026-10-11 横扫修复）：8 字节预算回退到
+/// 字符边界，不撕裂多字节字符。
+#[test]
+fn test_short_id_cjk_truncates_at_char_boundary() {
+    assert_eq!(short_id("任务编号中文字符"), "任务"); // 8 字节预算 → 回退 6 字节 = 2 个汉字
+    assert_eq!(short_id("任务"), "任务"); // 短于预算原样返回
+}
+
 #[test]
 fn test_read_recent_events_empty_directory() {
     let temp_dir = TempDir::new().unwrap();

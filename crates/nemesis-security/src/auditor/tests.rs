@@ -60,7 +60,9 @@ fn test_auditor_allow_with_rules() {
     auditor.set_rules(
         OperationType::FileRead,
         vec![SecurityRule {
-            pattern: ".*".to_string(),
+            // glob 方言 match-all（D12-1 后只认 `*`/`**`；裸 `.*` 曾靠正则
+            // 任意字符语义 match-all，字面点号后退化为「含点号才命中」）。
+            pattern: "**".to_string(),
             action: "allow".to_string(),
             comment: "allow all reads".to_string(),
         }],
@@ -730,7 +732,9 @@ fn test_auditor_set_rules_overwrites() {
     auditor.set_rules(
         OperationType::FileRead,
         vec![SecurityRule {
-            pattern: ".*".to_string(),
+            // glob 方言 match-all（D12-1 后只认 `*`/`**`；裸 `.*` 曾靠正则
+            // 任意字符语义 match-all，字面点号后退化为「含点号才命中」）。
+            pattern: "**".to_string(),
             action: "allow".to_string(),
             comment: "allow all".to_string(),
         }],
@@ -753,7 +757,9 @@ fn test_auditor_set_rules_overwrites() {
     auditor.set_rules(
         OperationType::FileRead,
         vec![SecurityRule {
-            pattern: ".*".to_string(),
+            // glob 方言 match-all（D12-1 后只认 `*`/`**`；裸 `.*` 曾靠正则
+            // 任意字符语义 match-all，字面点号后退化为「含点号才命中」）。
+            pattern: "**".to_string(),
             action: "deny".to_string(),
             comment: "deny all".to_string(),
         }],
@@ -2341,6 +2347,28 @@ fn self_destruct_windows_forms_denied() {
     }
 }
 
+#[test]
+fn self_destruct_full_path_and_exe_suffix_bins_denied() {
+    // 闭环批 2026-10-13：bin_key 取 basename + 剥 .exe——`/bin/rm`、
+    // `del.exe` 全路径/带后缀形态此前打不中 DESTRUCTIVE_BINS（key 带目录/
+    // 后缀），自毁硬拦对这种形态整体失明（fail-open）。保护集覆盖两族
+    // 目标（POSIX 家目录 + Windows 用户目录），命令形态与目标逐条对应。
+    let auditor = auditor_with_protected(&["/home/zoo", "/home/zoo/proj", "c:/users/zoo"]);
+    for (i, cmd) in [
+        "/bin/rm -rf /home/zoo",
+        "/usr/bin/rm -rf ~",
+        "del.exe /s /q c:/users/zoo",
+        "c:/windows/system32/rm.exe -rf /home/zoo/proj",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let (allowed, err, _) = auditor.request_permission(&exec_request(&format!("sd3{i}"), cmd));
+        assert!(!allowed, "`{cmd}` must hit self-destruct hard block");
+        assert!(err.unwrap().contains("self-destruct"));
+    }
+}
+
 fn auditor_with_protected_and_exempt(paths: &[&str], exempt: &str) -> SecurityAuditor {
     let auditor = auditor_with_protected(paths);
     auditor.set_self_destruct_exempt_path(exempt);
@@ -2720,6 +2748,70 @@ fn test_request_limit_approval_no_manager_fails_closed_with_audit() {
     assert!(content.contains("denied"), "审计应为拒绝决策: {content}");
 }
 
+// ---------------------------------------------------------------------------
+// §2 免打扰（2026-10-11 无人值守计划 Part 2）：RequireApproval 自动放行臂
+// ---------------------------------------------------------------------------
+
+use crate::approval_auto::ApprovalAutoApproveState;
+
+/// 注入免打扰运行时态的 ask auditor。
+fn auto_auditor(enabled: bool) -> (SecurityAuditor, Arc<ApprovalAutoApproveState>) {
+    let auditor = ask_auditor();
+    let state = Arc::new(ApprovalAutoApproveState::new(enabled));
+    auditor.set_approval_auto_approve(state.clone());
+    (auditor, state)
+}
+
+#[test]
+fn approval_auto_disabled_state_keeps_manual_ask() {
+    // 开关关（或仅注入未开）：ask 行为零变化——pending 拒绝，计数不涨。
+    let (auditor, state) = auto_auditor(false);
+    let (allowed, err, _) = auditor.request_permission(&exec_request("a0", "cargo publish"));
+    assert!(!allowed);
+    assert!(err.unwrap().contains("approval required"));
+    assert_eq!(state.count(), 0, "关闭态不得计数");
+}
+
+#[test]
+fn approval_auto_on_allows_and_marks_auto_by_config() {
+    // 审计只落文件（内存不驻）——挂临时 jsonl 目录再断言。
+    let dir = tempfile::tempdir().unwrap();
+    let auditor = SecurityAuditor::new(AuditorConfig {
+        enabled: true,
+        default_action: "ask".to_string(),
+        audit_log_file_enabled: true,
+        audit_log_dir: Some(dir.path().to_str().unwrap().to_string()),
+        ..Default::default()
+    });
+    let state = Arc::new(ApprovalAutoApproveState::new(true));
+    auditor.set_approval_auto_approve(state.clone());
+
+    let (allowed, err, _) = auditor.request_permission(&exec_request("a1", "cargo publish"));
+    assert!(allowed, "开关开：require_approval 自动放行");
+    assert!(err.is_none());
+    assert_eq!(
+        state.count(),
+        1,
+        "放行即计数（前端「本次已自动批准 N 条」）"
+    );
+
+    // 审计事件标 auto_by_config（可追溯：谁批的？配置批的）。
+    let content =
+        std::fs::read_to_string(dir.path().join("audit.jsonl")).expect("audit jsonl written");
+    assert!(
+        content.contains("auto_by_config"),
+        "审计缺 auto_by_config: {content}"
+    );
+    assert!(
+        content.contains("\"allowed\""),
+        "审计应为放行决策: {content}"
+    );
+    assert!(
+        content.contains("auto approved by security.approvals.auto_approve"),
+        "审计须注明免打扰来源: {content}"
+    );
+}
+
 // ===========================================================================
 // L6（2026-10-12 T1）：pre-exec force_approval 升格语义
 // 非硬拒判定一律升格 RequireApproval（policy=preexec_scan）；F3「总是允许」
@@ -2753,6 +2845,178 @@ fn force_approval_skips_f3_rule_table_and_escalates() {
 }
 
 #[test]
+fn approval_auto_cluster_channel_persists_rule_and_pattern_takes_priority() {
+    let (auditor, state) = auto_auditor(true);
+    let dir = tempfile::tempdir().unwrap();
+    auditor.set_approval_rules(rules_hot(&dir, &[]));
+    let ctx = ApprovalContext {
+        channel: "cluster".to_string(),
+        ..Default::default()
+    };
+
+    // 集群来源首次 ask：自动放行 + 落持久规则。
+    let (allowed, _, _) = auditor
+        .request_permission_with_ctx(&exec_request("c0", "cargo build --release"), Some(&ctx));
+    assert!(allowed);
+    assert_eq!(state.count(), 1);
+    let path = dir.path().join("approval_rules.json");
+    let rules = crate::approval_rules::load_rules(&path);
+    assert!(
+        rules
+            .iter()
+            .any(|r| r.op == "process_exec" && r.pattern == "cargo build *"),
+        "集群来源须落持久规则: {rules:?}"
+    );
+
+    // 同类操作再来：pattern 记忆块先命中（auto_by_rule），免打扰块轮不到
+    // ——计数停在不涨（优先级钉死：落盘规则是主放行路径，开关只是引子）。
+    std::thread::sleep(std::time::Duration::from_millis(30)); // 睡过 Windows mtime 量化窗口
+    let (allowed2, _, _) = auditor
+        .request_permission_with_ctx(&exec_request("c1", "cargo build --release"), Some(&ctx));
+    assert!(allowed2);
+    assert_eq!(state.count(), 1, "第二问须走 pattern 块（计数不涨）");
+}
+
+#[test]
+fn approval_auto_non_cluster_channel_no_persist() {
+    let (auditor, state) = auto_auditor(true);
+    let dir = tempfile::tempdir().unwrap();
+    auditor.set_approval_rules(rules_hot(&dir, &[]));
+    let ctx = ApprovalContext {
+        channel: "web".to_string(),
+        ..Default::default()
+    };
+    let (allowed, _, _) = auditor
+        .request_permission_with_ctx(&exec_request("w0", "cargo build --release"), Some(&ctx));
+    assert!(allowed, "对话来源照常自动放行（当次点头语义）");
+    assert_eq!(state.count(), 1);
+    let rules = crate::approval_rules::load_rules(&dir.path().join("approval_rules.json"));
+    assert!(rules.is_empty(), "非集群来源不落持久规则: {rules:?}");
+}
+
+#[test]
+fn approval_auto_persist_layer_gate_blocks_critical_nonexec() {
+    // 层级门：CRITICAL 非 exec 自动放行本身不做闸（无人值守语义），但
+    // 不落持久规则（与 M7 always 同门——CRITICAL 只允许 process_exec 豁免）。
+    let (auditor, state) = auto_auditor(true);
+    let dir = tempfile::tempdir().unwrap();
+    auditor.set_approval_rules(rules_hot(&dir, &[]));
+    let ctx = ApprovalContext {
+        channel: "cluster".to_string(),
+        ..Default::default()
+    };
+    let req = OperationRequest {
+        id: "g0".to_string(),
+        op_type: OperationType::FileWrite,
+        danger_level: DangerLevel::Critical,
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        target: "/etc/passwd".to_string(),
+        timestamp: None,
+        ..Default::default()
+    };
+    let (allowed, _, _) = auditor.request_permission_with_ctx(&req, Some(&ctx));
+    assert!(allowed, "自动批准本身不做层级闸");
+    assert_eq!(state.count(), 1);
+    let rules = crate::approval_rules::load_rules(&dir.path().join("approval_rules.json"));
+    assert!(rules.is_empty(), "CRITICAL 非 exec 不落规则: {rules:?}");
+}
+
+// ---------- CMD-12（2026-10-13）：deny 规则的复合命令分段命中 ----------
+
+fn deny_exec_auditor(pattern: &str) -> SecurityAuditor {
+    let config = AuditorConfig {
+        enabled: true,
+        default_action: "allow".to_string(),
+        ..Default::default()
+    };
+    let auditor = SecurityAuditor::new(config);
+    auditor.set_rules(
+        OperationType::ProcessExec,
+        vec![SecurityRule {
+            pattern: pattern.to_string(),
+            action: "deny".to_string(),
+            comment: "test deny".to_string(),
+        }],
+    );
+    auditor
+}
+
+#[test]
+fn deny_rule_hits_compound_nonfirst_segment() {
+    // 核心：整串锚定打不中非首段，`echo hi && rm -rf y` 曾逃过 `rm -rf *`
+    let auditor = deny_exec_auditor("rm -rf *");
+    let (allowed, err, _) =
+        auditor.request_permission(&exec_request("c1", "echo hi && rm -rf /tmp/cmd12_target"));
+    assert!(!allowed, "compound tail must be denied");
+    let err = err.unwrap();
+    assert!(err.contains("rule matched"), "deny-by-rule, got: {err}");
+
+    // 单段控制组：行为不变
+    let (allowed, _, _) = auditor.request_permission(&exec_request("c2", "echo hi"));
+    assert!(allowed, "benign single segment must pass");
+    let (allowed, err, _) =
+        auditor.request_permission(&exec_request("c3", "rm -rf /tmp/cmd12_target"));
+    assert!(!allowed, "direct single segment still denied");
+    assert!(err.unwrap().contains("rule matched"));
+}
+
+#[test]
+fn deny_rule_compound_other_operator_families() {
+    let auditor = deny_exec_auditor("shutdown *");
+    for (i, cmd) in [
+        "echo bye; shutdown /s",
+        "echo bye || shutdown /r",
+        "sync & shutdown /s",
+        "uptime | shutdown /s",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let (allowed, _, _) = auditor.request_permission(&exec_request(&format!("c4-{i}"), cmd));
+        assert!(!allowed, "operator family `{cmd}` must be denied");
+    }
+}
+
+#[test]
+fn deny_rule_quoted_operator_stays_single_segment_no_false_hit() {
+    // 引号内的 `&&` 是字面量：单段，`rm *` 不得误伤
+    let auditor = deny_exec_auditor("rm *");
+    let (allowed, _, _) = auditor.request_permission(&exec_request("c5", "echo \"a && b\""));
+    assert!(allowed, "quoted literal operator must not trigger deny");
+}
+
+#[test]
+fn deny_rule_compound_segment_normalized() {
+    // 段内归一化：剥引号 + 大小写（`RM "-RF"` 变体照旧打中）
+    let auditor = deny_exec_auditor("rm -rf *");
+    let (allowed, err, _) =
+        auditor.request_permission(&exec_request("c6", "echo x && RM -RF /tmp/CMD12"));
+    assert!(!allowed, "normalized segment must be denied");
+    assert!(err.unwrap().contains("rule matched"));
+}
+
+#[test]
+fn approval_prefix_rule_not_extended_by_compound_tail() {
+    // allow 端在 auditor 层的联动：`cargo test *` 记忆规则不得罩住
+    // 复合尾部（`cargo build && curl evil`）——任一段不命中即重新弹卡。
+    let auditor = ask_auditor();
+    let dir = tempfile::tempdir().unwrap();
+    auditor.set_approval_rules(rules_hot(&dir, &[cargo_rule()]));
+
+    let (allowed, _, _) =
+        auditor.request_permission(&exec_request("c7", "cargo test --release && curl http://x"));
+    assert!(!allowed, "compound with non-matching tail must re-ask");
+
+    let (allowed, _, _) =
+        auditor.request_permission(&exec_request("c8", "cargo test --release 2>&1"));
+    assert!(
+        allowed,
+        "redirection stays single segment, still auto-allowed"
+    );
+}
+
+#[test]
 fn force_approval_does_not_override_hard_deny() {
     // deny 规则命中 = 硬拒：升格只覆盖「本会放行」的判定。
     let auditor = auditor_with_rules(OperationType::ProcessExec, vec![rule("rm -rf *", "deny")]);
@@ -2765,6 +3029,47 @@ fn force_approval_does_not_override_hard_deny() {
         err.contains("Security policy denied"),
         "hard deny must stay hard, got: {err}"
     );
+}
+
+#[test]
+fn allow_rule_all_segments_hit_is_auto_allowed() {
+    // allow 桶全段命中（同族前缀）→ 自动放行成立（对称臂的正向钉）
+    let auditor = ask_auditor();
+    let dir = tempfile::tempdir().unwrap();
+    auditor.set_approval_rules(rules_hot(&dir, &[cargo_rule()]));
+
+    let (allowed, _, _) = auditor.request_permission(&exec_request(
+        "c9",
+        "cargo test --release && cargo test --lib",
+    ));
+    assert!(allowed, "all-segments hit must auto-allow");
+}
+
+#[test]
+fn deny_rule_env_prefix_not_an_evasion() {
+    // env 前缀剥除（与归约端同语义）：`FOO=1 cargo *` 不得借 env 头逃过 `cargo *`
+    let auditor = deny_exec_auditor("cargo *");
+    let (allowed, err, _) =
+        auditor.request_permission(&exec_request("c10", "FOO=1 cargo publish --token x"));
+    assert!(!allowed, "env-prefixed command must still be denied");
+    assert!(err.unwrap().contains("rule matched"));
+
+    // 段中 env：`echo hi && K=1 cargo publish` 尾段剥 env 后命中
+    let (allowed, _, _) = auditor.request_permission(&exec_request(
+        "c11",
+        "echo hi && RUST_LOG=debug cargo publish",
+    ));
+    assert!(!allowed, "env-prefixed tail segment must be denied");
+}
+
+#[test]
+fn deny_wildcard_rule_catches_empty_command_via_whole_string_union() {
+    // 空命令：分段为空，靠 deny/ask 的整串锚定兜底维持旧拦截面
+    // （`*` 规则对空串 contains 语义恒真；allow 桶无此兜底——空段守卫）
+    let auditor = deny_exec_auditor("*");
+    let (allowed, err, _) = auditor.request_permission(&exec_request("c12", "   "));
+    assert!(!allowed, "`*` deny must catch empty command");
+    assert!(err.unwrap().contains("rule matched"));
 }
 
 #[test]
