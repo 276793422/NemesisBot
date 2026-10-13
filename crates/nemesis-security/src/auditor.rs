@@ -1444,7 +1444,19 @@ impl SecurityAuditor {
                 | OperationType::ProcessSpawn
                 | OperationType::ProcessKill
                 | OperationType::ProcessSuspend => {
-                    matcher::match_command_pattern(&rule.pattern.to_lowercase(), &match_target)
+                    // CMD-12（2026-10-13）：deny 匹配按顶层段任一命中即拦
+                    // ——整串锚定打不中非首段（`echo hi && rm -rf y` 曾逃过
+                    // `rm -rf *`）。段在原文上切（引号感知，引号内的 `&&`
+                    // 不切），逐段归一化后匹配；无操作符的单段命令归一化
+                    // 结果 == match_target，行为与旧整串匹配一致。
+                    crate::command_arity::command_segments(&req.target)
+                        .iter()
+                        .any(|seg| {
+                            matcher::match_command_pattern(
+                                &rule.pattern.to_lowercase(),
+                                &matcher::normalize_exec_command(seg),
+                            )
+                        })
                 }
                 OperationType::NetworkDownload
                 | OperationType::NetworkUpload

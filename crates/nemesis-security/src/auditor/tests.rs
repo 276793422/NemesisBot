@@ -2861,3 +2861,97 @@ fn approval_auto_persist_layer_gate_blocks_critical_nonexec() {
     let rules = crate::approval_rules::load_rules(&dir.path().join("approval_rules.json"));
     assert!(rules.is_empty(), "CRITICAL 非 exec 不落规则: {rules:?}");
 }
+
+// ---------- CMD-12（2026-10-13）：deny 规则的复合命令分段命中 ----------
+
+fn deny_exec_auditor(pattern: &str) -> SecurityAuditor {
+    let config = AuditorConfig {
+        enabled: true,
+        default_action: "allow".to_string(),
+        ..Default::default()
+    };
+    let auditor = SecurityAuditor::new(config);
+    auditor.set_rules(
+        OperationType::ProcessExec,
+        vec![SecurityRule {
+            pattern: pattern.to_string(),
+            action: "deny".to_string(),
+            comment: "test deny".to_string(),
+        }],
+    );
+    auditor
+}
+
+#[test]
+fn deny_rule_hits_compound_nonfirst_segment() {
+    // 核心：整串锚定打不中非首段，`echo hi && rm -rf y` 曾逃过 `rm -rf *`
+    let auditor = deny_exec_auditor("rm -rf *");
+    let (allowed, err, _) =
+        auditor.request_permission(&exec_request("c1", "echo hi && rm -rf /tmp/cmd12_target"));
+    assert!(!allowed, "compound tail must be denied");
+    let err = err.unwrap();
+    assert!(err.contains("rule matched"), "deny-by-rule, got: {err}");
+
+    // 单段控制组：行为不变
+    let (allowed, _, _) = auditor.request_permission(&exec_request("c2", "echo hi"));
+    assert!(allowed, "benign single segment must pass");
+    let (allowed, err, _) =
+        auditor.request_permission(&exec_request("c3", "rm -rf /tmp/cmd12_target"));
+    assert!(!allowed, "direct single segment still denied");
+    assert!(err.unwrap().contains("rule matched"));
+}
+
+#[test]
+fn deny_rule_compound_other_operator_families() {
+    let auditor = deny_exec_auditor("shutdown *");
+    for (i, cmd) in [
+        "echo bye; shutdown /s",
+        "echo bye || shutdown /r",
+        "sync & shutdown /s",
+        "uptime | shutdown /s",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let (allowed, _, _) = auditor.request_permission(&exec_request(&format!("c4-{i}"), cmd));
+        assert!(!allowed, "operator family `{cmd}` must be denied");
+    }
+}
+
+#[test]
+fn deny_rule_quoted_operator_stays_single_segment_no_false_hit() {
+    // 引号内的 `&&` 是字面量：单段，`rm *` 不得误伤
+    let auditor = deny_exec_auditor("rm *");
+    let (allowed, _, _) = auditor.request_permission(&exec_request("c5", "echo \"a && b\""));
+    assert!(allowed, "quoted literal operator must not trigger deny");
+}
+
+#[test]
+fn deny_rule_compound_segment_normalized() {
+    // 段内归一化：剥引号 + 大小写（`RM "-RF"` 变体照旧打中）
+    let auditor = deny_exec_auditor("rm -rf *");
+    let (allowed, err, _) =
+        auditor.request_permission(&exec_request("c6", "echo x && RM -RF /tmp/CMD12"));
+    assert!(!allowed, "normalized segment must be denied");
+    assert!(err.unwrap().contains("rule matched"));
+}
+
+#[test]
+fn approval_prefix_rule_not_extended_by_compound_tail() {
+    // allow 端在 auditor 层的联动：`cargo test *` 记忆规则不得罩住
+    // 复合尾部（`cargo build && curl evil`）——任一段不命中即重新弹卡。
+    let auditor = ask_auditor();
+    let dir = tempfile::tempdir().unwrap();
+    auditor.set_approval_rules(rules_hot(&dir, &[cargo_rule()]));
+
+    let (allowed, _, _) =
+        auditor.request_permission(&exec_request("c7", "cargo test --release && curl http://x"));
+    assert!(!allowed, "compound with non-matching tail must re-ask");
+
+    let (allowed, _, _) =
+        auditor.request_permission(&exec_request("c8", "cargo test --release 2>&1"));
+    assert!(
+        allowed,
+        "redirection stays single segment, still auto-allowed"
+    );
+}

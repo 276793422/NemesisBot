@@ -1360,6 +1360,44 @@ async fn estop_parks_project_review_with_kind() {
     );
 }
 
+// BUG-6 回归锁（2026-10-13）：停车去重键必须是 (kind, issue_id) 而非裸
+// issue_id——同一单先走子单评审停车（Issue）、后走父单收口停车（Parent）
+// 时，后者不得被前者吞号（吞号 = 该维度永不复评）。
+#[tokio::test]
+async fn estop_park_dedup_does_not_swallow_cross_kind() {
+    let (deps, _ws) = review_deps("estop-cross-kind");
+    let parent = issue_in_review(&deps.store, "跨维度停车", "", "交付");
+    deps.estop.trigger();
+
+    // 第一检查点：父单也被当普通单评审 → (Issue, id) 入队。
+    let reviewed = review_issue(&deps, parent.id, ReviewCtx::first_stage())
+        .await
+        .unwrap();
+    assert!(!reviewed, "estop 冻结中不得评审");
+
+    // 第二检查点：同一单走父单收口 → (Parent, id) 必须独立入队，不得吞。
+    let reviewed = review_parent_issue(&deps, parent.id).await.unwrap();
+    assert!(!reviewed, "estop 冻结中不得做父单收口评审");
+
+    let parked = deps.estop_parked.lock().unwrap().clone();
+    assert!(
+        parked.contains(&(ParkedKind::Issue, parent.id))
+            && parked.contains(&(ParkedKind::Parent, parent.id)),
+        "同单跨维度停车必须两维都在队（BUG-6：裸 issue_id 去重会吞第二维）: {parked:?}"
+    );
+    // 重复触发同一维度不刷队（去重仍生效）。
+    let _ = review_parent_issue(&deps, parent.id).await.unwrap();
+    let parked = deps.estop_parked.lock().unwrap().clone();
+    assert_eq!(
+        parked
+            .iter()
+            .filter(|&&(k, _)| k == ParkedKind::Parent)
+            .count(),
+        1,
+        "同维度重复停车必须去重: {parked:?}"
+    );
+}
+
 // ---------- F3：review_project_completion 跳过路径（不触 LLM） ----------
 
 #[tokio::test]

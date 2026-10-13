@@ -31,6 +31,27 @@ pub struct BoardStore {
     asset_signing: std::sync::OnceLock<crate::asset_token::AssetSignContext>,
 }
 
+/// 送达失败标记（F2，2026-10-13）——评论即账本的单一真相源：RPC 送达
+/// 失败路径写 `⛔ 派发失败：[类别] ...` 系统评论，sweep 候选查询按本
+/// 前缀识别（`instr(content, ?) = 1` = 前缀匹配）。写入侧（nemesis-web
+/// issue_dispatch）与查询侧共用本常量，字面量漂移 = 重试静默失效。
+pub const SEND_FAILURE_MARK: &str = "⛔ 派发失败";
+
+/// 送达失败重试退避阶梯（F2）：第 n 次失败后等 `min(1800, 60 * 2^(n-1))`
+/// 秒再重试——1m→2m→4m→8m→16m→30m 封顶。0 次失败 = 0（尚未失败立即可试）。
+/// 纯函数单测钉死；调用方（sweep）拿 DB 派生的失败次数喂入。
+pub fn send_failure_backoff_secs(attempts: u32) -> u64 {
+    match attempts {
+        0 => 0,
+        1 => 60,
+        2 => 120,
+        3 => 240,
+        4 => 480,
+        5 => 960,
+        _ => 1800,
+    }
+}
+
 /// 后代可达的展开形态（SAN-08 单一真相源，2026-09-16 横扫加固）：一个
 /// BFS 引擎（`BoardStore::descendants`）、两种命名边集。此前三处手搓遍历
 /// 各用一种边集（级联 BFS = 依赖∪父子、`sync_parent_status`/收口缺口闸 =
@@ -945,6 +966,59 @@ impl BoardStore {
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |r| r.get::<_, i64>(0))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
+    /// 送达失败重试候选（F2，2026-10-13；复检批扩 in_review）：待派态
+    /// （backlog/todo）或 **in_review** 且**最后一条 system 评论是送达失败
+    /// 标记**的单。返回 `(issue_id, 失败次数, 末次失败 unix_secs, 状态)`——
+    /// 失败次数 = 标记评论条数（退避阶梯与 E1 预算的输入），末次失败时刻
+    /// = 退避计时基点，状态供 sweep 分流执行器（backlog/todo → 自动派发
+    /// 匹配器；in_review → 重派语义：原节点在线优先，离线换榜首在线候选）。
+    /// **in_review 必须在池**（复检批缺口根修）：评审 FAIL→自动重派直接走
+    /// `dispatch_issue_core`（in_review 合法派发态），送达失败回滚回
+    /// in_review——只捞 backlog/todo 会漏掉 NB-24 原始事故形态（验收实机
+    /// in_review 滞留 16 分钟待人工）。全部事实派生自 DB（评论即账本）：
+    /// gateway 重启不丢退避进度，不新增存储。`🛑` 转人工评论落盘后，
+    /// 「最后一条」不再是送达失败标记 → 候选自然出池。
+    pub fn list_send_failure_candidates(
+        &self,
+        mark: &str,
+    ) -> Result<Vec<(i64, u32, i64, String)>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT i.id,
+                        (SELECT COUNT(*) FROM comment c
+                         WHERE c.issue_id = i.id AND c.ctype = 'system'
+                           AND instr(c.content, ?1) = 1),
+                        (SELECT c.created_at FROM comment c
+                         WHERE c.issue_id = i.id AND c.ctype = 'system'
+                           AND instr(c.content, ?1) = 1
+                         ORDER BY c.id DESC LIMIT 1),
+                        i.status
+                 FROM issue i
+                 WHERE i.status IN ('backlog', 'todo', 'in_review')
+                   AND EXISTS (
+                     SELECT 1 FROM comment c
+                     WHERE c.issue_id = i.id AND c.ctype = 'system'
+                       AND c.id = (SELECT MAX(c2.id) FROM comment c2
+                                   WHERE c2.issue_id = i.id AND c2.ctype = 'system')
+                       AND instr(c.content, ?1) = 1)
+                 ORDER BY i.id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![mark], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)? as u32,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())

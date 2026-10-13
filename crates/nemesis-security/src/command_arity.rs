@@ -54,6 +54,86 @@ pub fn tokenize_command(cmd: &str) -> Vec<String> {
     tokens
 }
 
+/// 顶层复合命令分段（CMD-12，2026-10-13）。
+///
+/// 在**原文**上按顶层操作符切分：`&&` / `||` / `;` / `|` / `&` / 换行。
+/// 引号感知（同 [`tokenize_command`]：单双引号内不切分；不支持引号内
+/// 反斜杠转义）。段各自 trim，空段（连续操作符）跳过；引号不闭合 →
+/// 整条命令退单段（宁可不切，不可切错）。**不是 shell 解析器**——
+/// 只认顶层操作符字面形态；`2>&1` 这类重定向中的 `&` 因前导字符为
+/// `>` 不切分（`cargo build 2>&1` 保持单段）。
+///
+/// 消费语义（两端不对称是刻意的）：
+/// - deny/ask（ABAC 规则）：**任一段命中即拦**——整串锚定打不中非首段
+///   （`echo hi && rm -rf y` 曾逃过 `rm -rf *`）。
+/// - allow（审批 pattern 记忆）：**全部段命中才放**——`cd *` 不得罩住
+///   `cd x && rm -rf y` 的删除段。
+/// - 归约（[`crate::approval_rules::pattern_for`]）：复合命令不构成
+///   前缀规则（单一 pattern 表达不了全段语义，宁拒绝不放宽）。
+pub fn command_segments(cmd: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+    let mut cur = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut prev_char: Option<char> = None;
+
+    let mut chars = cmd.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\'' if !in_double => {
+                in_single = !in_single;
+                cur.push(ch);
+                prev_char = Some(ch);
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+                cur.push(ch);
+                prev_char = Some(ch);
+            }
+            ';' | '\n' | '\r' if !in_single && !in_double => {
+                segments.push(std::mem::take(&mut cur));
+                prev_char = None;
+            }
+            '&' | '|' if !in_single && !in_double => {
+                // `>&`（重定向，如 2>&1）不是操作符——`&` 随前导 `>` 归段。
+                if ch == '&' && prev_char == Some('>') {
+                    cur.push(ch);
+                    prev_char = Some(ch);
+                    continue;
+                }
+                segments.push(std::mem::take(&mut cur));
+                if ch == chars.peek().copied().unwrap_or('\0') {
+                    chars.next(); // `&&` / `||` 整体消费
+                }
+                prev_char = None;
+            }
+            c => {
+                cur.push(c);
+                prev_char = Some(c);
+            }
+        }
+    }
+    segments.push(cur);
+
+    // 引号不闭合 → 整条命令退单段（原文原样，不冒险切一半）
+    if in_single || in_double {
+        let whole = cmd.trim().to_string();
+        return if whole.is_empty() {
+            Vec::new()
+        } else {
+            vec![whole]
+        };
+    }
+
+    let mut out: Vec<String> = segments
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    out.dedup();
+    out
+}
+
 /// 静态 arity 表：key（空格连接的前缀）→ 保留 token 数（含 key 自身）。
 /// 匹配时最长 key 优先。未命中的命令退首 token。
 static ARITY_TABLE: &[(&str, usize)] = &[

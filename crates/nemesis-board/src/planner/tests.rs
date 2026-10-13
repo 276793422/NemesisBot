@@ -29,6 +29,28 @@ fn parse_plan_tolerates_markdown_fence_and_prose() {
     assert_eq!(plan[0].title, "任务A");
 }
 
+/// P4（2026-10-13 编写陷阱防线）拆解管线 sanity：AC 内的 ` # ` 注释锚点
+/// 原样透传——planner 产出的 AC 文本逐字落 PlannedSubIssue，不剥离注释
+/// （注释剥离是 anchor 解析层的职责，拆解层不做二次加工）。
+#[test]
+fn parse_plan_preserves_comment_anchor_ac_verbatim() {
+    let raw = r#"[
+        {"title":"跑测试","description":"全量绿","acceptance_criteria":"[CHECK] exec:cargo test # 跑全部用例\n[CHECK] re:^测试通过 # 汇报须含测试结论","depends_on":[]}
+    ]"#;
+    let plan = parse_plan(raw).expect("带注释锚点的拆解应通过");
+    assert_eq!(plan.len(), 1);
+    assert_eq!(
+        plan[0].acceptance_criteria,
+        "[CHECK] exec:cargo test # 跑全部用例\n[CHECK] re:^测试通过 # 汇报须含测试结论"
+    );
+    // 透传文本喂回锚点解析器 → pattern/命令只取 ` # ` 前段（端到端闭环）。
+    let (anchors, _, rejected) = crate::parse_anchors(&plan[0].acceptance_criteria);
+    assert_eq!(anchors.len(), 2, "{anchors:?}");
+    assert!(rejected.is_empty());
+    assert_eq!(anchors[0].target, "cargo test");
+    assert_eq!(anchors[1].pattern.as_deref(), Some("^测试通过"));
+}
+
 #[test]
 fn parse_plan_missing_array_is_error() {
     let err = parse_plan("我觉得这个任务不需要拆解。").expect_err("无 JSON 数组必须报错");
@@ -281,6 +303,20 @@ fn system_prompt_declares_anchor_downgrade_discipline() {
         assert!(
             PLANNER_SYSTEM_PROMPT.contains(marker),
             "system prompt 必须含父单锚点下放纪律标记 {marker}"
+        );
+    }
+}
+
+/// P4（2026-10-13 编写陷阱防线）防误删快照：planner prompt 必须携带
+/// ` # ` 注释语法与反例——删掉这段 planner 会继续把描述文本写进 re:
+/// pattern（核验几乎必然失败 → 无谓重派，与 anchor 解析器的显式注释
+/// 切分同步演化）。
+#[test]
+fn system_prompt_declares_anchor_comment_syntax() {
+    for marker in [" # ", "反例", "只用前半段匹配"] {
+        assert!(
+            PLANNER_SYSTEM_PROMPT.contains(marker),
+            "system prompt 必须含锚点注释语法标记 {marker}（与 anchor 模块同步）"
         );
     }
 }

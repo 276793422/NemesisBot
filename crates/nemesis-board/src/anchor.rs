@@ -12,6 +12,15 @@
 //! [CHECK] file:src/main.rs re:^fn main      — 文件内容正则匹配
 //! ```
 //!
+//! **行内注释（P4 编写陷阱防线，2026-10-13）**：行内 ` # `（空格#空格）
+//! 之后是编写者注释，不参与匹配——`[CHECK] re:^测试通过 # 汇报须含测试结论`
+//! 只用前半段。引号感知：引号**成对**时引号内的 ` # ` 是字面内容不切
+//! （`exec:git log --format="%h # %s"` 不被误截）；引号不成对退简单切分。
+//! re: 模式无分隔却含空白/非 ASCII（疑似把描述写进匹配式）时
+//! **WARN 不拒装**（兼容存量），且该锚点 FAIL 时明细尾部带编写面诊断
+//! （「应用 ` # ` 分隔注释」）——歧义输入宁 WARN 不假 FAIL，重派前先给
+//! 编写者纠错线索。
+//!
 //! **exec: 锚点（M7，config 闸门默认关）**：`[CHECK] exec:<命令>` 在锚点
 //! 根目录（项目目录在场优先，否则 workspace 根）以子进程执行命令，退出码
 //! 0 = 过、非 0 = 不过。服务「表现层零可执行验证手段」（21 个 JS 文件全
@@ -54,6 +63,72 @@ const EXEC_OUTPUT_TAIL_CHARS: usize = 1024;
 
 /// 锚点行前缀（trim 后判定；planner 指令段使用同一标记）。
 pub const ANCHOR_PREFIX: &str = "[CHECK]";
+
+/// re: 模式疑似描述混入的失败面诊断（编写面提示，只挂在 FAIL 明细尾部——
+/// PASS 不噪音）。
+const PROSE_PATTERN_HINT: &str =
+    "\n提示：pattern 含空白/非 ASCII，疑似描述混入，应用 ` # ` 分隔注释";
+
+/// 按首个**引号外**的 ` # ` 切掉行尾显式注释，返回（前段, 是否有显式注释）
+/// ——单一真相源，re:/exec:/file: 各臂共用。
+///
+/// 引号感知：单/双引号**成对**（全行偶数）时，引号内的 ` # ` 是字面内容
+/// 不是注释——`exec:git log --format="%h # %s"`、`re:"\d+ # \d+"` 不被误切
+/// （复检批发现 quote-blind 切分会把这类命令截断在引号中间，编写者意图
+/// 与语义漂移的同族问题）。引号不成对 → 退 quote-blind 切分：残缺引号
+/// 本身就是病态输入，而英文叙述撇号（`it's done # 备注`）天然不成对，
+/// 此时切分至少保住 pattern 主体；运行时诚实失败兜底。转义形态 `\ \#\ `
+/// 的 `#` 前是反斜杠非空格，天然不命中。字节扫描安全：`'`/`"`/`#`/` `
+/// 均为 ASCII，UTF-8 多字节序列（≥0x80）不会误配，`rest[..i]` 落在
+/// 字符边界上。
+fn split_anchor_comment(rest: &str) -> (&str, bool) {
+    let quote_aware =
+        rest.matches('\'').count().is_multiple_of(2) && rest.matches('"').count().is_multiple_of(2);
+    let bytes = rest.as_bytes();
+    let (mut in_single, mut in_double) = (false, false);
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'\'' if quote_aware && !in_double => in_single = !in_single,
+            b'"' if quote_aware && !in_single => in_double = !in_double,
+            b'#' if i > 0
+                && bytes[i - 1] == b' '
+                && bytes.get(i + 1) == Some(&b' ')
+                && !(quote_aware && (in_single || in_double)) =>
+            {
+                return (&rest[..i], true);
+            }
+            _ => {}
+        }
+    }
+    (rest, false)
+}
+
+/// re: 模式「疑似描述混入」判定（WARN 与 FAIL 提示共用的单一谓词）：
+/// 含空白或非 ASCII 字符——正则本身完全合法（照常安装，兼容存量），但这
+/// 类模式大概率是自然语言描述而非匹配式（`re:交付完成 包含测试报告`）。
+fn pattern_looks_like_prose(pattern: &str) -> bool {
+    pattern.chars().any(|c| c.is_whitespace() || !c.is_ascii())
+}
+
+/// 解析期编写面 WARN（不拒装）：无显式 ` # ` 分隔 yet 模式含空白/非 ASCII
+/// → 大概率把描述写进了匹配式（核验几乎必然失败 → 无谓重派）。照常安装
+/// （存量验收标准零迁移），只落 WARN 供编写者自查。
+fn warn_if_prose_pattern(pattern: &str, explicit_comment: bool, raw: &str) {
+    if !explicit_comment && pattern_looks_like_prose(pattern) {
+        tracing::warn!(
+            "[Anchor] re: 模式疑似混入描述文本（含空白/非 ASCII 且未用 ` # ` 分隔注释），已照常安装；若本意为「pattern + 注释」请改写为 `<pattern> # <注释>`：{raw}"
+        );
+    }
+}
+
+/// 失败面编写诊断：prose 形模式未命中时在 FAIL 明细尾部追加提示（PASS 不加）。
+fn prose_pattern_hint(pattern: &str) -> &str {
+    if pattern_looks_like_prose(pattern) {
+        PROSE_PATTERN_HINT
+    } else {
+        ""
+    }
+}
 
 /// exec: 锚点的执行策略（M7 护栏闸）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -198,6 +273,12 @@ fn parse_anchor_line(rest: &str) -> Result<Option<AnchorCheck>, String> {
     if rest.is_empty() {
         return Ok(None);
     }
+    // 显式注释切分（行级单点，P4）：引号外的 ` # ` 之后不参与任何臂的
+    // 语义——file: 路径/谓词、re: 模式、exec: 命令（含黑名单校验）都只看
+    // 前段。行尾注释因此不会把关键词/命令弄脏（`exec:npm test # 不用 curl`
+    // 不再因注释里的黑名单词被误拒）；引号内的 ` # ` 是字面内容不切
+    // （split_anchor_comment 文档）。raw 保留全行（回显/自指防御语义不变）。
+    let (rest, explicit_comment) = split_anchor_comment(rest);
     if let Some(target) = rest.strip_prefix("file:") {
         // 目标路径到首个空白为止；谓词可含空格（正则/关键词）。
         let (target, predicate) = match target.find(char::is_whitespace) {
@@ -214,10 +295,12 @@ fn parse_anchor_line(rest: &str) -> Result<Option<AnchorCheck>, String> {
         let (kind, pattern) = if predicate == "exists" {
             (AnchorKind::FileExists, None)
         } else if let Some(pattern) = predicate.strip_prefix("re:") {
-            if pattern.trim().is_empty() || Regex::new(pattern.trim()).is_err() {
+            let pattern = pattern.trim();
+            if pattern.is_empty() || Regex::new(pattern).is_err() {
                 return Ok(None); // 空模式 / 非法正则 → 语义项回落
             }
-            (AnchorKind::FileRegex, Some(pattern.trim().to_string()))
+            warn_if_prose_pattern(pattern, explicit_comment, &raw);
+            (AnchorKind::FileRegex, Some(pattern.to_string()))
         } else if let Some(keyword) = predicate.strip_prefix("contains:") {
             let keyword = keyword.trim();
             if keyword.is_empty() {
@@ -239,6 +322,7 @@ fn parse_anchor_line(rest: &str) -> Result<Option<AnchorCheck>, String> {
         if pattern.is_empty() || Regex::new(pattern).is_err() {
             return Ok(None);
         }
+        warn_if_prose_pattern(pattern, explicit_comment, &raw);
         return Ok(Some(AnchorCheck {
             raw,
             kind: AnchorKind::ContentRegex,
@@ -732,7 +816,10 @@ fn run_one(
                     if re.is_match(&cleaned) {
                         (true, format!("交付文本命中 /{pattern}/"))
                     } else {
-                        (false, format!("交付文本未命中 /{pattern}/"))
+                        (
+                            false,
+                            format!("交付文本未命中 /{pattern}/{}", prose_pattern_hint(pattern)),
+                        )
                     }
                 }
                 Err(e) => (false, format!("正则编译失败（{e}）")),
@@ -795,7 +882,10 @@ fn read_and_match(anchor: &AnchorCheck, root: &Path) -> (bool, String) {
                     if re.is_match(&content) {
                         (true, format!("文件命中 /{pattern}/"))
                     } else {
-                        (false, format!("文件未命中 /{pattern}/"))
+                        (
+                            false,
+                            format!("文件未命中 /{pattern}/{}", prose_pattern_hint(pattern)),
+                        )
                     }
                 }
                 Err(e) => (false, format!("正则编译失败（{e}）")),

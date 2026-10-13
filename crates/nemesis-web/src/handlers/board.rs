@@ -519,6 +519,8 @@ pub fn handoff_workspace_root() -> Option<&'static std::path::PathBuf> {
 
 /// 派发/拆解侧停车档案落盘（board_review::park_with_handoff 的 web 侧
 /// 简化形态：无 deps/评论拼接职责，只写档案；失败 WARN 不阻塞停车流）。
+/// 调用方全在 cluster-gated 函数内——default-feature 单独编译时放行死代码。
+#[cfg_attr(not(feature = "cluster"), allow(dead_code))]
 fn write_side_handoff(
     store: &BoardStore,
     issue: &nemesis_board::Issue,
@@ -942,7 +944,10 @@ pub fn dispatch_issue_core(
                     issue_id,
                     author: nemesis_board::Actor::system("board"),
                     content: format!(
-                        "⛔ 派发失败：[{}] RPC 送达失败（{e}）",
+                        // F2：前缀走单一真相源常量（sweep 重试候选按前缀识别，
+                        // 字面量漂移 = 重试静默失效）。
+                        "{}: [{}] RPC 送达失败（{e}）",
+                        nemesis_board::SEND_FAILURE_MARK,
                         e.failure_category()
                     ),
                     parent_id: None,
@@ -3101,7 +3106,151 @@ pub fn sweep_parked_dispatches_with_config(
             }
         }
     }
-    (candidates.len(), dispatched, failed)
+    // F2（2026-10-13）：送达失败自动重试——待派态且最后一条 system 评论是
+    // ⛔ 送达失败标记的单进入重试池（评论即账本，gateway 重启不丢退避进度）。
+    // 池含 in_review：评审 FAIL 自动重派绕过 backlog/todo 状态闸，issue 带
+    // in_review 直进 dispatch_issue_core，送达失败回滚也回 in_review——只捞
+    // backlog/todo 会漏掉该形态（复检批补：NB-24 原始事故形状）。
+    // 闸序：E1 预算（超限 → 🛑 转人工评论，落盘即出池）→ 退避
+    // （1m→2m→4m…封顶 30m，从末次失败时刻起算）→ 执行器按状态分流：
+    // backlog/todo 走 dispatch_subissue_auto（完整松弛阶梯+停车路径）；
+    // in_review 走 dispatch_issue_core 直派（重派目标=末次 worker 在线则
+    // 原地重试，否则在线候选首选；无可用节点本 tick 跳过留池）。上一轮
+    // park 候选已先跑完（顺序执行）：派出的单已 in_progress，不会在本池
+    // 重复出现。
+    let mut considered = candidates.len();
+    match store.list_send_failure_candidates(nemesis_board::SEND_FAILURE_MARK) {
+        Ok(send_fails) => {
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let cap = board_cfg
+                .map(|c| c.budget.max_total_redispatch)
+                .unwrap_or(0);
+            for (id, attempts, last_fail, status) in send_fails {
+                considered += 1;
+                // E1 预算并入（0=关）：失败次数超过全链派发上限 → 转人工。
+                // 🛑 评论落盘 = 最后一条 system 评论不再是 ⛔ 标记 → 出池。
+                if cap > 0 && attempts > cap {
+                    tracing::info!(
+                        "[Board] 送达失败重试超预算（issue={id} {attempts}>{cap}）→ 转人工"
+                    );
+                    let _ = store.add_comment(nemesis_board::models::NewComment {
+                        issue_id: id,
+                        author: actor.clone(),
+                        content: format!(
+                            "🛑 送达失败自动重试已达预算上限（{attempts} 次 > \
+                             board.budget.max_total_redispatch={cap}）：转人工处理。\
+                             可人工指派节点后重新派发，或调大预算后重新派发恢复自动重试。"
+                        ),
+                        parent_id: None,
+                        ctype: nemesis_board::CommentType::System,
+                    });
+                    continue;
+                }
+                // 退避闸：未到重试时刻 → 本 tick 跳过。
+                if now_secs
+                    < last_fail.unsigned_abs() + nemesis_board::send_failure_backoff_secs(attempts)
+                {
+                    continue;
+                }
+                let dispatched_ok = if status == "in_review" {
+                    // 评审 FAIL 重派回流形态：直派单点（不做松弛阶梯——
+                    // 评审已经认可原目标的能力面，先原地重试）。差距意见
+                    // 从评论找回随包重发（worker 必须知道为什么被打回，
+                    // 否则重派就是掷骰子——§6.1 检视 2 同源纪律）。
+                    let target = pick_send_failure_redispatch_target(store, cluster, id);
+                    match target {
+                        Some(target) => {
+                            let feedback = recover_review_feedback(store, id);
+                            dispatch_issue_core(
+                                store,
+                                Some(cluster),
+                                id,
+                                &target,
+                                actor,
+                                feedback.as_deref(),
+                            )
+                            .map(|_| Some(()))
+                        }
+                        None => {
+                            tracing::info!(
+                                "[Board] 送达失败重试 issue={id}（in_review）无在线可用节点，本 tick 留池"
+                            );
+                            Ok(None)
+                        }
+                    }
+                } else {
+                    dispatch_subissue_auto_with_config(
+                        board_cfg,
+                        store,
+                        Some(cluster),
+                        id,
+                        actor,
+                        notify_park,
+                    )
+                    .map(|opt| opt.map(|_| ()))
+                };
+                match dispatched_ok {
+                    Ok(Some(_)) => {
+                        dispatched += 1;
+                        tracing::info!(
+                            "[Board] 送达失败重试发车（issue={id} 第 {} 次）",
+                            attempts + 1
+                        );
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        failed += 1;
+                        tracing::warn!("[Board] 送达失败重试派发 issue {id} 失败：{e}");
+                    }
+                }
+            }
+        }
+        Err(e) => tracing::warn!("[Board] 送达失败重试候选查询失败：{e}"),
+    }
+    (considered, dispatched, failed)
+}
+
+/// F2 送达失败重试的 in_review 重派目标：末次派发 worker 在线则原地重试
+/// （送达失败 = 可达性本身是失败项，与 D3 评审重派的 Same(last) 不同——
+/// 那里 worker 刚交付过、可达性成立）；末次 worker 离线/无派发记录 →
+/// 在线候选首选（[`rank_dispatch_candidates`] 匹配序）。无在线可用节点
+/// 返回 None（调用方本 tick 跳过留池，退避闸继续生效）。
+#[cfg(feature = "cluster")]
+fn pick_send_failure_redispatch_target(
+    store: &Arc<BoardStore>,
+    cluster: &Arc<nemesis_cluster::cluster::Cluster>,
+    issue_id: i64,
+) -> Option<String> {
+    if let Ok(dispatches) = store.list_dispatches(issue_id)
+        && let Some(last) = dispatches.last()
+        && let Some(peer) = cluster.get_peer(&last.worker_id)
+        && peer.is_online()
+    {
+        return Some(last.worker_id.clone());
+    }
+    let issue = store.get_issue(issue_id).ok()?;
+    rank_dispatch_candidates(store, cluster, &issue)
+        .into_iter()
+        .find(|name| cluster.get_peer(name).is_some_and(|p| p.is_online()))
+}
+
+/// F2 送达失败重试（in_review）的验收差距找回：评审 FAIL 臂把差距以
+/// 「❌ agent 验收未通过（第 N/M 次重派）## 差距…」用户评论落库（board_review.rs），
+/// 取最后一条含「## 差距」的用户评论**整段原文**作 review_feedback——不解析
+/// 差距/reasons 边界，整段随「上轮验收意见」段重发（信息只多不少）。无此类
+/// 评论（人工 in_review 直派送达失败等形态）返回 None——不造空意见。
+#[cfg(feature = "cluster")]
+fn recover_review_feedback(store: &Arc<BoardStore>, issue_id: i64) -> Option<String> {
+    store
+        .list_comments(issue_id)
+        .ok()?
+        .into_iter()
+        .rev()
+        .find(|c| c.ctype == nemesis_board::CommentType::Comment && c.content.contains("## 差距"))
+        .map(|c| c.content)
 }
 
 /// D0b（goal P2）重平衡：节点 announce（上线/刷新）时，把其他 worker 手里

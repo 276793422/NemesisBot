@@ -57,6 +57,9 @@ fn is_install_op(op: &str) -> bool {
 /// [`matches_rule`] 对带 ` *` 的 pattern 做 token 前缀匹配，裸命令照常
 /// 命中，无回退损失）。归约结果为空（target 全是 env 前缀）→ 空串
 /// （不构成规则——空 token 前缀若带 ` *` 会变成全放行，绝不产生）。
+/// **复合命令**（顶层 `&&`/`||`/`;`/`|`/`&` 多段）→ 空串：单一前缀
+/// pattern 表达不了「全段命中」语义（`cd *` 罩不住 `cd x && rm -rf y`
+/// 的删除段），宁拒绝写规则不放宽——CMD-12（2026-10-13）。
 /// 其余 → 完整 target（精确匹配）；空 target → 空串（不构成规则）。
 pub fn pattern_for(op: &str, target: &str) -> String {
     let target = target.trim();
@@ -64,6 +67,9 @@ pub fn pattern_for(op: &str, target: &str) -> String {
         return String::new();
     }
     if is_command_op(op) {
+        if crate::command_arity::command_segments(target).len() > 1 {
+            return String::new();
+        }
         let reduced = reduce_command(target);
         if reduced.is_empty() {
             return String::new();
@@ -97,6 +103,10 @@ pub fn rule_permitted_for(op: &str, risk: &str) -> bool {
 /// - op 必须相等；
 /// - pattern 以 ` *` 结尾 → token 前缀匹配（`cargo test *` 命中
 ///   `cargo test` 与 `cargo test --release`，不命中 `cargo publish`）；
+///   exec 类操作额外要求**复合命令全段命中**（CMD-12）：`cd *` 不得
+///   罩住 `cd /tmp && rm -rf y` 的删除段——按顶层段切分后逐段做
+///   token 前缀匹配，任一段不命中即不放行；存量时期按旧语义写入的
+///   复合来源规则随之自然失效（对复合命令重新弹卡，安全方向收紧）；
 /// - 其余 → target 精确相等；
 /// - 手写裸 `*` pattern 永不命中（防规则文件被改成全放行）。
 pub fn matches_rule(rule_op: &str, rule_pattern: &str, op: &str, target: &str) -> bool {
@@ -113,12 +123,22 @@ pub fn matches_rule(rule_op: &str, rule_pattern: &str, op: &str, target: &str) -
             if prefix_tokens.is_empty() {
                 return false;
             }
-            let target_tokens = crate::command_arity::tokenize_command(target);
-            target_tokens.len() >= prefix_tokens.len()
-                && target_tokens
-                    .iter()
-                    .zip(prefix_tokens.iter())
-                    .all(|(t, p)| t == p)
+            let prefix_hits = |seg: &str| {
+                let seg_tokens = crate::command_arity::tokenize_command(seg);
+                seg_tokens.len() >= prefix_tokens.len()
+                    && seg_tokens
+                        .iter()
+                        .zip(prefix_tokens.iter())
+                        .all(|(t, p)| t == p)
+            };
+            if is_command_op(rule_op) {
+                // CMD-12：全段命中才放（`cd *` 不罩 `cd x && rm y`）。
+                let segments = crate::command_arity::command_segments(target);
+                !segments.is_empty() && segments.iter().all(|seg| prefix_hits(seg))
+            } else {
+                // 非 exec 类手写 ` *` pattern：维持整串 token 前缀（旧语义）。
+                prefix_hits(target)
+            }
         }
         None => rule_pattern == target,
     }
@@ -225,6 +245,16 @@ pub fn persist_auto_allow_rule(
     }
     let pattern = pattern_for(operation, target);
     if pattern.is_empty() {
+        if is_command_op(operation)
+            && crate::command_arity::command_segments(target.trim()).len() > 1
+        {
+            // CMD-12：复合命令不构成前缀规则（单一 pattern 罩不住全段）。
+            return Err(
+                "compound command cannot form a prefix rule (top-level `&&`/`||`/`;`/`|`); \
+                 approve this instance without \"always\", or split the command"
+                    .to_string(),
+            );
+        }
         return Err(format!(
             "cannot derive approval pattern from {operation} target"
         ));

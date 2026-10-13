@@ -88,6 +88,112 @@ fn parse_regex_pattern_may_contain_spaces() {
     assert_eq!(anchors[0].pattern.as_deref(), Some("验收 标准 v2"));
 }
 
+// ---------- P4（2026-10-13）：` # ` 显式注释切分 / 编写陷阱防线 ----------
+
+/// ` # ` 之后是注释，不参与任何臂的语义；raw 保留全行（回显语义不变）。
+#[test]
+fn parse_explicit_comment_split_across_forms() {
+    let ac = "\
+[CHECK] re:^测试通过 # 汇报须含测试结论
+[CHECK] file:out/report.md contains:测试报告 # 交付物清单
+[CHECK] file:src/lib.rs re:^pub fn run # 入口函数
+[CHECK] exec:npm test # 跑全部用例";
+    let (anchors, semantic, rejected) = parse_anchors(ac);
+    assert_eq!(anchors.len(), 4, "四条带注释锚点全解析: {anchors:?}");
+    assert!(semantic.is_empty());
+    assert!(rejected.is_empty());
+    assert_eq!(anchors[0].pattern.as_deref(), Some("^测试通过"));
+    assert_eq!(anchors[1].pattern.as_deref(), Some("测试报告"));
+    assert_eq!(anchors[2].pattern.as_deref(), Some("^pub fn run"));
+    assert_eq!(anchors[3].target, "npm test");
+    for a in &anchors {
+        assert!(
+            a.raw.contains(" # "),
+            "raw 保留全行含注释（回显/自指防御语义不变）: {}",
+            a.raw
+        );
+    }
+}
+
+/// 注释不参与 exec 黑名单校验——`exec:npm test # 不用 curl 下载` 不得因
+/// 注释里的黑名单词被误拒（修复前整行进分词器 → curl 命中 → 锚点作废）。
+#[test]
+fn parse_exec_comment_tokens_skip_blacklist() {
+    let (anchors, _, rejected) = parse_anchors("[CHECK] exec:npm test # 不用 curl 下载");
+    assert_eq!(anchors.len(), 1, "注释里的黑名单词不得误拒: {anchors:?}");
+    assert_eq!(anchors[0].target, "npm test");
+    assert!(rejected.is_empty(), "{rejected:?}");
+}
+
+/// 正则里合法的字面 ` # ` 序列须转义（`\\ \\#\\ `）——转义后不落分隔符，
+/// 文档化逃生通道钉死。
+#[test]
+fn parse_escaped_hash_stays_in_pattern() {
+    let (anchors, _, _) = parse_anchors("[CHECK] re:标题\\ \\#\\d+");
+    assert_eq!(anchors.len(), 1);
+    assert_eq!(anchors[0].pattern.as_deref(), Some("标题\\ \\#\\d+"));
+}
+
+/// 存量兼容：无分隔符的 prose 形模式**照常安装**（WARN 是日志面，不拒装
+/// 不回落）——`re:交付完成，包含全部模块说明` 与旧行为逐字节一致。
+#[test]
+fn legacy_prose_pattern_still_installs() {
+    let (anchors, semantic, rejected) = parse_anchors("[CHECK] re:交付完成，包含全部模块说明");
+    assert_eq!(anchors.len(), 1, "兼容存量：不拒装");
+    assert!(semantic.is_empty());
+    assert!(rejected.is_empty());
+    assert_eq!(
+        anchors[0].pattern.as_deref(),
+        Some("交付完成，包含全部模块说明")
+    );
+    // 模块文档里的 CJK 例（非 ASCII 且无分隔）同照常安装。
+    let (anchors, _, _) = parse_anchors("[CHECK] re:交付完成");
+    assert_eq!(anchors.len(), 1);
+}
+
+/// FAIL 面编写诊断：prose 形模式未命中 → 明细带 ` # ` 提示；命中 / ASCII
+/// 纯模式未命中 → 不加（PASS 不噪音、无嫌疑不提示）。
+#[test]
+fn fail_detail_carries_prose_hint_only_for_prose_patterns() {
+    let ws = temp_workspace("prose-hint");
+    let (prose, _, _) = parse_anchors("[CHECK] re:交付完成 包含测试报告");
+    let results = run_anchors(&prose, &ws, "随便什么交付文本");
+    assert!(!results[0].passed);
+    assert!(
+        results[0].detail.contains("疑似描述混入") && results[0].detail.contains("` # `"),
+        "prose 模式 FAIL 必须带编写面诊断: {}",
+        results[0].detail
+    );
+
+    let results = run_anchors(&prose, &ws, "交付完成 包含测试报告");
+    assert!(results[0].passed, "{}", results[0].detail);
+    assert!(
+        !results[0].detail.contains("疑似描述混入"),
+        "PASS 不带提示: {}",
+        results[0].detail
+    );
+
+    let (ascii, _, _) = parse_anchors("[CHECK] re:^done$");
+    let results = run_anchors(&ascii, &ws, "not done");
+    assert!(!results[0].passed);
+    assert!(
+        !results[0].detail.contains("疑似描述混入"),
+        "ASCII 纯模式无嫌疑不加提示: {}",
+        results[0].detail
+    );
+
+    // 文件正则臂同款：prose 模式未命中 → 提示进明细。
+    write_file(&ws, "out/a.md", "内容不含目标");
+    let (file_re, _, _) = parse_anchors("[CHECK] file:out/a.md re:完成 且有总结");
+    let results = run_anchors(&file_re, &ws, "");
+    assert!(!results[0].passed);
+    assert!(
+        results[0].detail.contains("疑似描述混入"),
+        "文件正则臂 FAIL 同带诊断: {}",
+        results[0].detail
+    );
+}
+
 #[test]
 fn parse_empty_criteria_yields_nothing() {
     assert_eq!(parse_anchors("").0.len(), 0);
@@ -826,4 +932,42 @@ fn probe_target_token_skips_env_path_and_builtins() {
         None,
         "内建开头不探"
     );
+}
+
+/// 引号成对时引号内的 ` # ` 是字面内容不是注释——exec 命令带引号参数
+/// （git log format 串等）不被截断（复检批发现的 quote-blind 误切回归锁）。
+#[test]
+fn parse_exec_quoted_hash_not_comment() {
+    let cmd = r#"node -e "console.log('a # b')""#;
+    let (anchors, _, rejected) = parse_anchors(&format!("[CHECK] exec:{cmd}"));
+    assert_eq!(anchors.len(), 1, "引号内 ` # ` 不切: {anchors:?}");
+    assert_eq!(anchors[0].target, cmd, "命令完整保留");
+    assert!(rejected.is_empty(), "{rejected:?}");
+}
+
+/// 引号外的 ` # ` 照常切：引号参数后跟注释，命令止于引号闭合处。
+#[test]
+fn parse_exec_comment_after_quoted_arg_splits_top_level() {
+    let (anchors, _, _) =
+        parse_anchors(r#"[CHECK] exec:git log --format="%h # %s" -1 # 只看最近一条"#);
+    assert_eq!(anchors.len(), 1);
+    assert_eq!(anchors[0].target, r#"git log --format="%h # %s" -1"#);
+    assert!(anchors[0].raw.contains("只看最近一条"), "raw 保留全行");
+}
+
+/// ContentRegex 模式含成对引号包住的 ` # `——模式整体保留不切。
+#[test]
+fn parse_content_regex_quoted_hash_stays() {
+    let (anchors, _, _) = parse_anchors(r#"[CHECK] re:"\d+ # \d+""#);
+    assert_eq!(anchors.len(), 1);
+    assert_eq!(anchors[0].pattern.as_deref(), Some(r#""\d+ # \d+""#));
+}
+
+/// 引号不成对（英文撇号 it's）→ 退 quote-blind 切分——叙述性 pattern +
+/// 注释仍正确分离（残缺引号是病态输入，切分保住 pattern 主体）。
+#[test]
+fn parse_regex_apostrophe_prose_still_splits() {
+    let (anchors, _, _) = parse_anchors("[CHECK] re:it's done # 备注: 全部完成");
+    assert_eq!(anchors.len(), 1);
+    assert_eq!(anchors[0].pattern.as_deref(), Some("it's done"));
 }
