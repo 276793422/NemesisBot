@@ -525,6 +525,7 @@ mod failover_extra {
     fn test_overloaded_error_display() {
         let err = FailoverError::Overloaded {
             provider: "anthropic".to_string(),
+            status: 502,
         };
         let msg = format!("{}", err);
         assert!(msg.contains("anthropic"));
@@ -600,7 +601,8 @@ mod failover_extra {
         );
         assert!(
             FailoverError::Overloaded {
-                provider: "p".into()
+                provider: "p".into(),
+                status: 502,
             }
             .is_retriable()
         );
@@ -679,7 +681,8 @@ mod failover_extra {
         );
         assert_eq!(
             FailoverError::Overloaded {
-                provider: "p".into()
+                provider: "p".into(),
+                status: 503,
             }
             .reason(),
             FailoverReason::Overloaded

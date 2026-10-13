@@ -337,6 +337,7 @@ pub(crate) async fn run_runtime(
                                     let judge_factory_cfg =
                                         nemesis_providers::factory::FactoryConfig {
                                             proxy: resolution.proxy.clone(),
+                                            stream_mode: resolution.stream_mode.clone(),
                                             llm_ref: format!(
                                                 "{}/{}",
                                                 resolution.provider_name, resolution.model_name

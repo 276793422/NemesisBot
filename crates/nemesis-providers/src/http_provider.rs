@@ -73,6 +73,13 @@ pub struct HttpProviderConfig {
     /// If true, preserve the provider prefix in model names (e.g. "openrouter/model").
     #[serde(default)]
     pub preserve_prefix: bool,
+    /// per-model 流式开关（2026-10-13 stream 键）：空（auto）= 维持非流式
+    /// （现状）；"yes" = `chat()` 内部走流式（聚合固有 `chat_stream`，对外
+    /// 签名不变）——非流式请求等完整补全才回响应头，推理型模型 + 大上下文
+    /// 会撞中转链路 ~120s 墙钟（gpt-5.6-sol 风暴根因，openai 兼容 lane 同墙）。
+    /// 经 FactoryConfig.stream_mode 透传，构造期消费。
+    #[serde(default)]
+    pub stream_mode: String,
 }
 
 // P3A 超时对齐（2026-09-12）：serde 缺省与 factory 显式值统一 600s
@@ -295,12 +302,15 @@ impl HttpProvider {
 
             let resp = match req.json(&body).send().await {
                 Ok(r) => r,
-                Err(_) => {
+                Err(e) => {
+                    // 诚实化（2026-10-13）：真超时→Timeout；其余传输错误→
+                    // Unknown + "connect error: <根因链>"（不伪装）。
                     let _ = tx
-                        .send(Err(FailoverError::Timeout {
-                            provider: provider_name,
-                            model: model.clone(),
-                        }))
+                        .send(Err(crate::failover::transport_error(
+                            &provider_name,
+                            &model,
+                            &e,
+                        )))
                         .await;
                     return;
                 }
@@ -430,15 +440,18 @@ impl HttpProvider {
                             error = %e,
                             "[Provider] SSE stream read error"
                         );
-                        // J1：读错误（连接中断）是暂时性故障 → Timeout（可
-                        // failover）；旧分类 Format 会直接放弃整条链。终止后
-                        // return（不走下方 EOF flush——错误已是终态，不再发
-                        // 合成 chunk 混淆消费者）。
+                        // J1：读错误（连接中断）是暂时性故障 → 可 failover；
+                        // 诚实化（2026-10-13）：客户端超时→Timeout，其余读
+                        // 错误→Unknown + "connect error: <根因链>"。旧分类
+                        // Format 会直接放弃整条链。终止后 return（不走下方
+                        // EOF flush——错误已是终态，不再发合成 chunk 混淆
+                        // 消费者）。
                         let _ = tx
-                            .send(Err(FailoverError::Timeout {
-                                provider: provider_name.clone(),
-                                model: model.clone(),
-                            }))
+                            .send(Err(crate::failover::transport_error(
+                                &provider_name,
+                                &model,
+                                &e,
+                            )))
                             .await;
                         return;
                     }
@@ -659,6 +672,19 @@ impl LLMProvider for HttpProvider {
         model: &str,
         options: &ChatOptions,
     ) -> Result<LLMResponse, FailoverError> {
+        // per-model `stream` 键（2026-10-13）：`yes` = 内部流式化——复用固有
+        // `chat_stream`（SSE 解析/tool_calls 累积/usage 全同源）聚合为非流式
+        // `LLMResponse`，`chat()` 对调用方签名不变。语义对齐 protocol：构造期
+        // 消费，改条目需重新设默认或重启。auto（缺省）维持非流式现状。
+        if self.config.stream_mode == "yes" {
+            return crate::stream_util::collect_stream_response(
+                &self.config.name,
+                model,
+                HttpProvider::chat_stream(self, messages, tools, model, options),
+            )
+            .await;
+        }
+
         let model = if model.is_empty() {
             &self.config.default_model
         } else {
@@ -693,10 +719,10 @@ impl LLMProvider for HttpProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|_e| FailoverError::Timeout {
-                provider: self.config.name.clone(),
-                model: model.to_string(),
-            })?;
+            // 诚实化（2026-10-13）：真超时→Timeout；DNS/连接拒绝/SYN 黑洞等
+            // 传输错误→Unknown + "connect error: <根因链>"（此前一律伪装
+            // Timeout，连接失败与上游慢处置不同却不可区分）。
+            .map_err(|e| crate::failover::transport_error(&self.config.name, model, &e))?;
 
         let status = resp.status().as_u16();
 

@@ -36,6 +36,10 @@ pub enum ModelAction {
         /// "claude" is accepted as an alias of "anthropic".
         #[arg(long)]
         protocol: Option<String>,
+        /// Per-model streaming switch: yes | no（别名 true/false）。
+        /// Omit = auto（codex lane 流式、anthropic/openai 兼容 lane 非流式）。
+        #[arg(long)]
+        stream: Option<String>,
         /// Set as default model
         #[arg(long, default_value_t = false)]
         default: bool,
@@ -159,6 +163,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             proxy,
             auth,
             protocol,
+            stream,
             default,
         } => {
             if !cfg_path.exists() {
@@ -266,6 +271,20 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             } else if let Some(p) = preset {
                 // 表内协议均为归一值（完整性测试钉住），直接写盘即可。
                 entry["protocol"] = serde_json::Value::String(p.protocol.to_string());
+            }
+            // per-model 流式开关（2026-10-13 stream 键）：归一走单一真相源
+            // normalize_stream_value（与配置解析同源），非法值 loud 报错
+            // （CLI 显式 flag 不做静默忽略——与配置层「未知值落 auto」的分
+            // 工是刻意的：flag 是用户当次意志，错了就该说）。
+            if let Some(s) = &stream {
+                let normalized = nemesis_config::normalize_stream_value(&serde_json::json!(s))
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Invalid --stream value '{}'. Use yes | no (aliases: true | false).",
+                            s
+                        )
+                    })?;
+                entry["stream"] = serde_json::Value::String(normalized);
             }
             // 集群专业职能框架 M4：图像协议条目唯一消费点 = generate_image 工具
             // （经 tools.image_gen / 唯一 images-openai 条目解析），不能坐上
@@ -1089,6 +1108,7 @@ async fn run_probe(
     let model_name = resolution.model_name.clone();
     let factory_cfg = nemesis_providers::factory::FactoryConfig {
         proxy: resolution.proxy.clone(),
+        stream_mode: resolution.stream_mode.clone(),
         llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
         api_key: resolution.api_key.clone(),
         api_base: resolution.api_base.clone(),
