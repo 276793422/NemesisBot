@@ -129,54 +129,55 @@ impl SkinsHandler {
             .clone()
             .ok_or_else(|| "home not configured".to_string())?;
 
-        // config 一次装载：require_signed 读取与 ui.skin 写入同源。
-        // 写串行锁罩整段 load→改 ui.skin→save（scan_skins 目录扫描在中间
-        // 拉宽窗口；锁覆盖到 save 落盘为止，同类横扫 2026-10-13）。
-        let _cfg_serial = nemesis_config::config_write_lock();
-        let mut cfg = super::config::load_config(&home)?;
+        // 锁在 update_config 内：require_signed 读取与 ui.skin 写入同源一事务
+        //（scan_skins 目录扫描在闭包内拉宽持锁窗口，与旧手动锁等价；
+        // 2026-10-13 闭包事务收口）。
+        super::config::update_config(&home, |cfg| {
+            // ① 非默认 id：先过包体/策略校验，全绿才动 config。
+            if id != "default" {
+                let dir = h
+                    .dir
+                    .as_deref()
+                    .ok_or_else(|| "皮肤系统未装配".to_string())?;
+                let entry = scan_skins(dir)
+                    .into_iter()
+                    .find(|e| e.id == id)
+                    .ok_or_else(|| format!("皮肤不存在：{id}"))?;
+                if entry.status != SkinStatus::Ok {
+                    let reason = entry.status_detail.unwrap_or_else(|| "未知原因".into());
+                    return Err(format!("皮肤包损坏，无法启用（{reason}）"));
+                }
+                // v2 双载荷闸 → P2a 三载荷闸：entry（CSS 换色）∥ structure
+                //（结构骨架）∥ script（行为扩展）任一在场即可激活；全无 =
+                // 无任何可服务载荷，拒绝。
+                if entry.manifest.entry.is_none()
+                    && entry.manifest.structure.is_none()
+                    && entry.manifest.script.is_none()
+                {
+                    return Err(
+                        "该皮肤包无任何载荷（skin/ CSS、structure 结构或 script 脚本），无法设为默认观感"
+                            .to_string(),
+                    );
+                }
+                // require_signed 后手开关（默认 false；闸在信任决策点，数据面不拦）。
+                let require_signed = cfg
+                    .ui
+                    .as_ref()
+                    .map(|u| u.skins.require_signed)
+                    .unwrap_or(false);
+                if require_signed && entry.signature != SkinSignature::Verified {
+                    return Err(
+                        "ui.skins.require_signed 已开启：拒绝非 verified 皮肤包".to_string()
+                    );
+                }
+            }
 
-        // ① 非默认 id：先过包体/策略校验，全绿才动 config 与锁。
-        if id != "default" {
-            let dir = h
-                .dir
-                .as_deref()
-                .ok_or_else(|| "皮肤系统未装配".to_string())?;
-            let entry = scan_skins(dir)
-                .into_iter()
-                .find(|e| e.id == id)
-                .ok_or_else(|| format!("皮肤不存在：{id}"))?;
-            if entry.status != SkinStatus::Ok {
-                let reason = entry.status_detail.unwrap_or_else(|| "未知原因".into());
-                return Err(format!("皮肤包损坏，无法启用（{reason}）"));
-            }
-            // v2 双载荷闸 → P2a 三载荷闸：entry（CSS 换色）∥ structure
-            //（结构骨架）∥ script（行为扩展）任一在场即可激活；全无 =
-            // 无任何可服务载荷，拒绝。
-            if entry.manifest.entry.is_none()
-                && entry.manifest.structure.is_none()
-                && entry.manifest.script.is_none()
-            {
-                return Err(
-                    "该皮肤包无任何载荷（skin/ CSS、structure 结构或 script 脚本），无法设为默认观感"
-                        .to_string(),
-                );
-            }
-            // require_signed 后手开关（默认 false；闸在信任决策点，数据面不拦）。
-            let require_signed = cfg
-                .ui
-                .as_ref()
-                .map(|u| u.skins.require_signed)
-                .unwrap_or(false);
-            if require_signed && entry.signature != SkinSignature::Verified {
-                return Err("ui.skins.require_signed 已开启：拒绝非 verified 皮肤包".to_string());
-            }
-        }
-
-        // ② 写 config.json `ui.skin`（typed save，未类型化键保留的回归已锁）。
-        let mut ui = cfg.ui.take().unwrap_or_default();
-        ui.skin = id.to_string();
-        cfg.ui = Some(ui);
-        super::config::save_config_to_disk(&home, &mut cfg)?;
+            // ② 写 config.json `ui.skin`（typed save，未类型化键保留的回归已锁）。
+            let mut ui = cfg.ui.take().unwrap_or_default();
+            ui.skin = id.to_string();
+            cfg.ui = Some(ui);
+            Ok(())
+        })?;
 
         // ③ 翻内存锁：下一请求 active.css 立即切到新皮肤（免重启）。
         *h.active.write() = id.to_string();

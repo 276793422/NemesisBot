@@ -27,15 +27,17 @@ fn disabled_save_config_still_roundtrips_via_disk() {
         r#"{ "model_list": [ { "model_name": "m", "model": "x/y", "api_key": "sk" } ] }"#,
     );
 
-    let mut cfg = load_config(&home).expect("load seeded config");
+    let mut cfg = crate::handlers::config::load_config(&home).expect("load seeded config");
     let len_before = cfg.model_list.len();
     cfg.agents.defaults.llm = "m".to_string();
     save_config(&home, &mut cfg).expect("typed save via disk path");
 
     // Round-trip: the typed write persists and reloads.
-    let reloaded = load_config(&home).expect("reload after save");
+    let reloaded = crate::handlers::config::load_config(&home).expect("reload after save");
     assert_eq!(reloaded.model_list.len(), len_before);
     assert_eq!(reloaded.agents.defaults.llm, "m");
     // Raw file still parses.
-    assert!(read_raw_config(&home).expect("raw read")["model_list"].is_array());
+    assert!(
+        crate::handlers::config::read_raw_config(&home).expect("raw read")["model_list"].is_array()
+    );
 }

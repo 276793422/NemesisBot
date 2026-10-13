@@ -4514,206 +4514,195 @@ fn board_config_set(
     key: &str,
     value: &serde_json::Value,
 ) -> Result<Option<serde_json::Value>, String> {
-    let _cfg_serial = nemesis_config::config_write_lock();
     let home = ctx.home.as_deref().ok_or("home 未解析")?;
-    let path = std::path::Path::new(home).join("config.json");
-    // live 缓存优先（与其他 handler 同一视图），无 live 时回落磁盘读取。
-    let mut config = match nemesis_config::load_live() {
-        Some(c) => c,
-        None => {
-            nemesis_config::load_config(&path).map_err(|e| format!("config.json 读取失败：{e}"))?
-        }
-    };
-    let board = config.board.get_or_insert_with(Default::default);
+    // 锁在 update_config 内——typed 改字段 → round-trip 验证 → 落盘全程
+    // 串行（live 缓存优先视图由共享入口承担，2026-10-13 闭包事务收口）。
+    super::config::update_config(home, |config| {
+        let board = config.board.get_or_insert_with(Default::default);
 
-    fn need_bool(v: &serde_json::Value) -> Result<bool, String> {
-        v.as_bool().ok_or_else(|| "需要布尔值".to_string())
-    }
+        fn need_bool(v: &serde_json::Value) -> Result<bool, String> {
+            v.as_bool().ok_or_else(|| "需要布尔值".to_string())
+        }
 
-    match key {
-        "auto_review" => board.auto_review = need_bool(value)?,
-        "auto_accept" => board.auto_accept = need_bool(value)?,
-        "auto_close_parent" => board.auto_close_parent = need_bool(value)?,
-        "unlimited_mode" => board.unlimited_mode = need_bool(value)?,
-        // P5/F1 冲突漏斗全局开关（false=human 档：冻结转人工）。
-        "conflict_auto_resolve" => board.conflict_auto_resolve = need_bool(value)?,
-        // P34 重派决策量化（灰度默认关；true = D3 换节点重派叠加
-        // worker × 任务类型成功率指纹三档权重）。
-        "fingerprint_weighting" => board.fingerprint_weighting = need_bool(value)?,
-        // 2026-09-29 三档化：off/role/full（默认 role=丢职能保角色）；
-        // 旧布尔 false/true 兼容接收（→off/full），写盘统一为字符串档位。
-        "dispatch_fallback" => {
-            board.dispatch_fallback = serde_json::from_value(value.clone()).map_err(|e| {
-                format!("dispatch_fallback 需要 \"off\"|\"role\"|\"full\"（或旧布尔）: {e}")
-            })?;
-        }
-        // D0（goal P2）派发准入：单 worker 在途派发上限（非负整数；0=不限）。
-        "worker_max_inflight" => {
-            board.worker_max_inflight = value
-                .as_i64()
-                .filter(|v| *v >= 0)
-                .ok_or("worker_max_inflight 需要非负整数")?;
-        }
-        "dispatch_fallback_target" => {
-            board.dispatch_fallback_target = if value.is_null() {
-                None
-            } else {
-                Some(
-                    value
-                        .as_str()
-                        .ok_or("dispatch_fallback_target 需要字符串或 null")?
-                        .trim()
-                        .to_string(),
-                )
-            };
-        }
-        "review.selfcheck" => board.review.selfcheck = need_bool(value)?,
-        "review.auto_close_project" => board.review.auto_close_project = need_bool(value)?,
-        "plan.auto_confirm" => board.plan.auto_confirm = need_bool(value)?,
-        // 任务档案（2026-09-29）：项目收口自动导出（默认开）。
-        "dossier.auto_on_complete" => board.dossier.auto_on_complete = need_bool(value)?,
-        "plan.model" => {
-            board.plan.model = if value.is_null() {
-                None
-            } else {
-                Some(
-                    value
-                        .as_str()
-                        .ok_or("plan.model 需要字符串或 null")?
-                        .to_string(),
-                )
-            };
-        }
-        "max_redispatch" => {
-            board.max_redispatch =
-                u32::try_from(value.as_u64().ok_or("max_redispatch 需要非负整数")?)
-                    .map_err(|_| "max_redispatch 超出 u32 范围")?;
-        }
-        "review.max_turns" => {
-            board.review.max_turns =
-                u32::try_from(value.as_u64().ok_or("review.max_turns 需要非负整数")?)
-                    .map_err(|_| "review.max_turns 超出 u32 范围")?;
-        }
-        "review.checkers" => {
-            board.review.checkers =
-                u32::try_from(value.as_u64().ok_or("review.checkers 需要非负整数")?)
-                    .map_err(|_| "review.checkers 超出 u32 范围")?;
-            // 消费侧（run_review_panel）同样收敛，这里前置拒绝给出明确文案。
-            if board.review.checkers < 1 || board.review.checkers > 5 {
-                return Err("review.checkers 需要在 1..=5 范围内".to_string());
+        match key {
+            "auto_review" => board.auto_review = need_bool(value)?,
+            "auto_accept" => board.auto_accept = need_bool(value)?,
+            "auto_close_parent" => board.auto_close_parent = need_bool(value)?,
+            "unlimited_mode" => board.unlimited_mode = need_bool(value)?,
+            // P5/F1 冲突漏斗全局开关（false=human 档：冻结转人工）。
+            "conflict_auto_resolve" => board.conflict_auto_resolve = need_bool(value)?,
+            // P34 重派决策量化（灰度默认关；true = D3 换节点重派叠加
+            // worker × 任务类型成功率指纹三档权重）。
+            "fingerprint_weighting" => board.fingerprint_weighting = need_bool(value)?,
+            // 2026-09-29 三档化：off/role/full（默认 role=丢职能保角色）；
+            // 旧布尔 false/true 兼容接收（→off/full），写盘统一为字符串档位。
+            "dispatch_fallback" => {
+                board.dispatch_fallback = serde_json::from_value(value.clone()).map_err(|e| {
+                    format!("dispatch_fallback 需要 \"off\"|\"role\"|\"full\"（或旧布尔）: {e}")
+                })?;
             }
-        }
-        "budget.max_subissues_per_parent" => {
-            board.budget.max_subissues_per_parent = u32::try_from(
-                value
+            // D0（goal P2）派发准入：单 worker 在途派发上限（非负整数；0=不限）。
+            "worker_max_inflight" => {
+                board.worker_max_inflight = value
+                    .as_i64()
+                    .filter(|v| *v >= 0)
+                    .ok_or("worker_max_inflight 需要非负整数")?;
+            }
+            "dispatch_fallback_target" => {
+                board.dispatch_fallback_target = if value.is_null() {
+                    None
+                } else {
+                    Some(
+                        value
+                            .as_str()
+                            .ok_or("dispatch_fallback_target 需要字符串或 null")?
+                            .trim()
+                            .to_string(),
+                    )
+                };
+            }
+            "review.selfcheck" => board.review.selfcheck = need_bool(value)?,
+            "review.auto_close_project" => board.review.auto_close_project = need_bool(value)?,
+            "plan.auto_confirm" => board.plan.auto_confirm = need_bool(value)?,
+            // 任务档案（2026-09-29）：项目收口自动导出（默认开）。
+            "dossier.auto_on_complete" => board.dossier.auto_on_complete = need_bool(value)?,
+            "plan.model" => {
+                board.plan.model = if value.is_null() {
+                    None
+                } else {
+                    Some(
+                        value
+                            .as_str()
+                            .ok_or("plan.model 需要字符串或 null")?
+                            .to_string(),
+                    )
+                };
+            }
+            "max_redispatch" => {
+                board.max_redispatch =
+                    u32::try_from(value.as_u64().ok_or("max_redispatch 需要非负整数")?)
+                        .map_err(|_| "max_redispatch 超出 u32 范围")?;
+            }
+            "review.max_turns" => {
+                board.review.max_turns =
+                    u32::try_from(value.as_u64().ok_or("review.max_turns 需要非负整数")?)
+                        .map_err(|_| "review.max_turns 超出 u32 范围")?;
+            }
+            "review.checkers" => {
+                board.review.checkers =
+                    u32::try_from(value.as_u64().ok_or("review.checkers 需要非负整数")?)
+                        .map_err(|_| "review.checkers 超出 u32 范围")?;
+                // 消费侧（run_review_panel）同样收敛，这里前置拒绝给出明确文案。
+                if board.review.checkers < 1 || board.review.checkers > 5 {
+                    return Err("review.checkers 需要在 1..=5 范围内".to_string());
+                }
+            }
+            "budget.max_subissues_per_parent" => {
+                board.budget.max_subissues_per_parent = u32::try_from(
+                    value
+                        .as_u64()
+                        .ok_or("budget.max_subissues_per_parent 需要非负整数")?,
+                )
+                .map_err(|_| "超出 u32 范围")?;
+            }
+            "budget.max_total_redispatch" => {
+                board.budget.max_total_redispatch = u32::try_from(
+                    value
+                        .as_u64()
+                        .ok_or("budget.max_total_redispatch 需要非负整数")?,
+                )
+                .map_err(|_| "超出 u32 范围")?;
+            }
+            "budget.wall_clock_budget_secs" => {
+                board.budget.wall_clock_budget_secs = value
                     .as_u64()
-                    .ok_or("budget.max_subissues_per_parent 需要非负整数")?,
-            )
-            .map_err(|_| "超出 u32 范围")?;
-        }
-        "budget.max_total_redispatch" => {
-            board.budget.max_total_redispatch = u32::try_from(
-                value
+                    .ok_or("budget.wall_clock_budget_secs 需要非负整数")?;
+            }
+            "budget.max_tokens_per_parent" => {
+                board.budget.max_tokens_per_parent = value
                     .as_u64()
-                    .ok_or("budget.max_total_redispatch 需要非负整数")?,
-            )
-            .map_err(|_| "超出 u32 范围")?;
-        }
-        "budget.wall_clock_budget_secs" => {
-            board.budget.wall_clock_budget_secs = value
-                .as_u64()
-                .ok_or("budget.wall_clock_budget_secs 需要非负整数")?;
-        }
-        "budget.max_tokens_per_parent" => {
-            board.budget.max_tokens_per_parent = value
-                .as_u64()
-                .ok_or("budget.max_tokens_per_parent 需要非负整数")?;
-        }
-        "dispatch_timeout_secs" => {
-            board.dispatch_timeout_secs =
-                value.as_u64().ok_or("dispatch_timeout_secs 需要非负整数")?;
-        }
-        "discussion.retention_days" => {
-            board.discussion.retention_days =
-                value.as_i64().ok_or("discussion.retention_days 需要整数")?;
-        }
-        "discussion.max_agent_turns_per_thread" => {
-            board.discussion.max_agent_turns_per_thread = u32::try_from(
-                value
-                    .as_u64()
-                    .ok_or("discussion.max_agent_turns_per_thread 需要非负整数")?,
-            )
-            .map_err(|_| "超出 u32 范围")?;
-        }
-        "discussion.hourly_budget_per_node" => {
-            board.discussion.hourly_budget_per_node = u32::try_from(
-                value
-                    .as_u64()
-                    .ok_or("discussion.hourly_budget_per_node 需要非负整数")?,
-            )
-            .map_err(|_| "超出 u32 范围")?;
-        }
-        "discussion.rate_limit_per_min" => {
-            board.discussion.rate_limit_per_min = u32::try_from(
-                value
-                    .as_u64()
-                    .ok_or("discussion.rate_limit_per_min 需要非负整数")?,
-            )
-            .map_err(|_| "超出 u32 范围")?;
-        }
-        _ => {
-            return Err(format!(
-                "未知或不允许的 board 配置键：{key}（允许：auto_review / auto_accept / \
+                    .ok_or("budget.max_tokens_per_parent 需要非负整数")?;
+            }
+            "dispatch_timeout_secs" => {
+                board.dispatch_timeout_secs =
+                    value.as_u64().ok_or("dispatch_timeout_secs 需要非负整数")?;
+            }
+            "discussion.retention_days" => {
+                board.discussion.retention_days =
+                    value.as_i64().ok_or("discussion.retention_days 需要整数")?;
+            }
+            "discussion.max_agent_turns_per_thread" => {
+                board.discussion.max_agent_turns_per_thread = u32::try_from(
+                    value
+                        .as_u64()
+                        .ok_or("discussion.max_agent_turns_per_thread 需要非负整数")?,
+                )
+                .map_err(|_| "超出 u32 范围")?;
+            }
+            "discussion.hourly_budget_per_node" => {
+                board.discussion.hourly_budget_per_node = u32::try_from(
+                    value
+                        .as_u64()
+                        .ok_or("discussion.hourly_budget_per_node 需要非负整数")?,
+                )
+                .map_err(|_| "超出 u32 范围")?;
+            }
+            "discussion.rate_limit_per_min" => {
+                board.discussion.rate_limit_per_min = u32::try_from(
+                    value
+                        .as_u64()
+                        .ok_or("discussion.rate_limit_per_min 需要非负整数")?,
+                )
+                .map_err(|_| "超出 u32 范围")?;
+            }
+            _ => {
+                return Err(format!(
+                    "未知或不允许的 board 配置键：{key}（允许：auto_review / auto_accept / \
                  auto_close_parent / unlimited_mode / conflict_auto_resolve / dispatch_fallback / \
                  dispatch_fallback_target / fingerprint_weighting / \
                  max_redispatch / dispatch_timeout_secs / worker_max_inflight / \
                  plan.auto_confirm / plan.model / review.max_turns / review.selfcheck / \
                  review.auto_close_project / review.checkers / budget.max_subissues_per_parent / \
                  budget.max_total_redispatch / budget.wall_clock_budget_secs /                  budget.max_tokens_per_parent / discussion.*）"
-            ));
-        }
-    }
-
-    // round-trip 验证：typed 重序列化后字段必须仍在且值一致（防 typed
-    // 结构与键清单漂移时谎报 updated——config.set_field G6 契约同款）。
-    let reserialized =
-        serde_json::to_value(&config).map_err(|e| format!("config 重序列化失败：{e}"))?;
-    let Some(board_json) = reserialized.get("board") else {
-        return Err("board 段 round-trip 丢失（typed 结构漂移）".to_string());
-    };
-    let leaf = key.rsplit('.').next().unwrap_or(key);
-    let persisted = match leaf {
-        "plan" | "discussion" | "backup" | "review" | "budget" => board_json.get(leaf),
-        _ => {
-            // plan.x / discussion.x 嵌套键到子对象里核。
-            if let Some((parent, _)) = key.split_once('.') {
-                board_json.get(parent).and_then(|p| p.get(leaf))
-            } else {
-                board_json.get(leaf)
+                ));
             }
         }
-    };
-    match persisted {
-        None => return Err(format!("配置键 {key} round-trip 丢失（typed 结构漂移）")),
-        // 值不一致且布尔/数值维度也不等价（排除 serde 归一化等价形态）才报错。
-        Some(actual)
-            if actual != value
-                && actual.as_bool() != value.as_bool()
-                && actual.as_u64() != value.as_u64() =>
-        {
-            return Err(format!(
-                "配置键 {key} round-trip 不一致（值被拒绝或归一化）"
-            ));
-        }
-        _ => {}
-    }
 
-    if let Some(r) = nemesis_config::save_live(config.clone()) {
-        r.map_err(|e| format!("failed to save config: {e}"))?;
-    } else {
-        nemesis_config::save_config(&path, &mut config)
-            .map_err(|e| format!("failed to save config: {e}"))?;
-    }
+        // round-trip 验证：typed 重序列化后字段必须仍在且值一致（防 typed
+        // 结构与键清单漂移时谎报 updated——config.set_field G6 契约同款）。
+        let reserialized =
+            serde_json::to_value(&*config).map_err(|e| format!("config 重序列化失败：{e}"))?;
+        let Some(board_json) = reserialized.get("board") else {
+            return Err("board 段 round-trip 丢失（typed 结构漂移）".to_string());
+        };
+        let leaf = key.rsplit('.').next().unwrap_or(key);
+        let persisted = match leaf {
+            "plan" | "discussion" | "backup" | "review" | "budget" => board_json.get(leaf),
+            _ => {
+                // plan.x / discussion.x 嵌套键到子对象里核。
+                if let Some((parent, _)) = key.split_once('.') {
+                    board_json.get(parent).and_then(|p| p.get(leaf))
+                } else {
+                    board_json.get(leaf)
+                }
+            }
+        };
+        match persisted {
+            None => return Err(format!("配置键 {key} round-trip 丢失（typed 结构漂移）")),
+            // 值不一致且布尔/数值维度也不等价（排除 serde 归一化等价形态）才报错。
+            Some(actual)
+                if actual != value
+                    && actual.as_bool() != value.as_bool()
+                    && actual.as_u64() != value.as_u64() =>
+            {
+                return Err(format!(
+                    "配置键 {key} round-trip 不一致（值被拒绝或归一化）"
+                ));
+            }
+            _ => {}
+        }
+        Ok(())
+    })?;
     tracing::info!("[Board] board.config.set key={key}");
     Ok(Some(serde_json::json!({ "updated": true, "key": key })))
 }

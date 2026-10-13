@@ -360,3 +360,81 @@ async fn config_set_field_supports_array_index_paths() {
         .unwrap_err();
     assert!(err.contains("not a valid array index"), "{err}");
 }
+
+// ---------------------------------------------------------------------------
+// 闭包事务入口级并发回归钉（2026-10-13 RMW 收口三期）：锁在 update_* 入口内
+// 取得，两个并发事务改**不同字段**时两个变更都必须存活——旧「调用点手锁」
+// 形态的丢更新类（各自读到旧底、后写整体覆盖先写）在此结构上不可能复现。
+// 一 typed 一 raw 两个入口混用，同钉「同族共用同一把进程级写串行锁」。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn config_update_entries_serialized_both_mutations_survive() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().to_string_lossy().to_string();
+    // 最小可解析 config.json（Config 全字段 serde(default)）。
+    std::fs::write(
+        dir.path().join("config.json"),
+        serde_json::json!({ "model_list": [ { "model_name": "seed" } ] }).to_string(),
+    )
+    .unwrap();
+
+    let home_raw = home.clone();
+    let home_typed = home.clone();
+    std::thread::scope(|s| {
+        let ra = s.spawn(move || {
+            super::config::update_raw_config(&home_raw, |cfg| {
+                cfg["agents"]["defaults"]["llm"] = serde_json::json!("from-raw");
+                Ok(())
+            })
+        });
+        let rb = s.spawn(move || {
+            super::config::update_config(&home_typed, |cfg| {
+                cfg.agents.tool_doc_folding.enabled = true;
+                Ok(())
+            })
+        });
+        ra.join().unwrap().expect("raw tx ok");
+        rb.join().unwrap().expect("typed tx ok");
+    });
+
+    // 盘上两个变更都在（任一整体覆盖都会抹掉另一个的字段）。
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("config.json")).unwrap())
+            .unwrap();
+    assert_eq!(raw["agents"]["defaults"]["llm"], "from-raw");
+    assert_eq!(raw["agents"]["tool_doc_folding"]["enabled"], true);
+    // 播种的条目没有被 typed round-trip 或整体替换冲掉。
+    assert_eq!(raw["model_list"][0]["model_name"], "seed");
+}
+
+// 事务 abort 语义钉：闭包 Err ⇒ 不落盘，盘上保持事务前状态（并发行下同样成立）。
+#[test]
+fn config_update_entry_closure_err_leaves_disk_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().to_string_lossy().to_string();
+    // 种子里显式落 enabled=false：闭包把它改成 true 后 abort，断言盘上仍是 false
+    //（若闭包改动泄漏到盘，这里就是 true）。
+    std::fs::write(
+        dir.path().join("config.json"),
+        serde_json::json!({
+            "model_list": [ { "model_name": "seed" } ],
+            "agents": { "tool_doc_folding": { "enabled": false } }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let err = super::config::update_config(&home, |cfg| {
+        cfg.agents.tool_doc_folding.enabled = true;
+        Err::<(), String>("deliberate abort".to_string())
+    })
+    .unwrap_err();
+    assert_eq!(err, "deliberate abort");
+
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("config.json")).unwrap())
+            .unwrap();
+    assert_eq!(raw["agents"]["tool_doc_folding"]["enabled"], false);
+    assert_eq!(raw["model_list"][0]["model_name"], "seed");
+}
