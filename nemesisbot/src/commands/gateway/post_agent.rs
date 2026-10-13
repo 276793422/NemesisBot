@@ -148,7 +148,10 @@ pub(crate) async fn init_post_agent(
         {
             let deps = crate::board_review::BoardReviewDeps {
                 store,
-                workspace: home.join("workspace"),
+                // M1（2026-10-10 机制加固）：锚点根单一真相源——经
+                // workspace_dir() 解析（显式覆盖跟随，canonical 回退），
+                // 禁止从 home 手拼（A10：部署形态漂移 → 九锚点全 os error 2 假红）。
+                workspace: shared_resources.workspace_dir(),
                 home: home.clone(),
                 moderator_loop: board_moderator_loop.clone(),
                 cluster: cluster.clone(),
@@ -232,7 +235,8 @@ pub(crate) async fn init_post_agent(
                 store: board_store
                     .clone()
                     .expect("cluster_ok arm guarantees board store present"),
-                workspace: home.join("workspace"),
+                // M1：同上——锚点根单一真相源，禁止 home 手拼。
+                workspace: shared_resources.workspace_dir(),
                 home: home.clone(),
                 moderator_loop: board_moderator_loop.clone(),
                 cluster: cluster.clone(),
@@ -301,11 +305,69 @@ pub(crate) async fn init_post_agent(
                 info!("[Gateway] Board project summary hook armed (archive summary.md)");
             }
 
+            // M5-1（2026-10-10 机制加固）：评审重触发钩子——WSAPI
+            // `review.retrigger` 经此回调 spawn 评审（卡 in_review 单子的
+            // 人工一键重入）。master 判定同父单钩子（非 master 的 board
+            // store 是只读镜像，不跑评审）。
+            let retrig_deps = replay_sweep_deps.clone();
+            let retrig_cluster = cluster.clone();
+            if let Err(e) = nemesis_web::handlers::board::set_review_retrigger_hook(
+                std::sync::Arc::new(move |issue_id: i64| {
+                    if !matches!(
+                        retrig_cluster.role().as_str(),
+                        "coordinator" | "master" | "manager"
+                    ) {
+                        return;
+                    }
+                    crate::board_review::spawn_board_review((*retrig_deps).clone(), issue_id);
+                }),
+            ) {
+                warn!("[Gateway] Board review retrigger hook register failed: {e}");
+            } else {
+                info!("[Gateway] Board review retrigger hook armed (review.retrigger)");
+            }
+
             // 启动重放（R4-BUG-2 根修）：评审 spawn 纯内存、master 重启即
             // 丢——in_review 单据/父单/项目在重启后由这里扫描重触发。必须
             // 在三类钩子注册完成后调用（重放验收 PASS 会级联点火上层钩子）。
             crate::board_review::replay_stuck_reviews(&replay_sweep_deps, &[]);
             info!("[Gateway] Board stuck-review replay sweep done");
+
+            // N1（§1.3 无人值守闭环）：拆解中断恢复扫描——RUNNING_PLANS 内存
+            // 态、重启杀拆解任务，backlog/todo +「已开始自动拆解」评论态的
+            // 单子自动重新发起拆解（开关 board.plan.restart_recover 默认开；
+            // estop 挂起跳过；worker 镜像不跑）。评审重放同阶段、moderator
+            // 槽已装配（:119 set）。
+            if let Some(agent_loop) = replay_sweep_deps.moderator_loop.get().cloned() {
+                let recovered = nemesis_web::handlers::board::recover_interrupted_plans(
+                    &replay_sweep_deps.store,
+                    Some(cluster.clone()),
+                    agent_loop,
+                    Some(home.clone()),
+                    Some(web_server.event_hub().clone()),
+                    Some(replay_sweep_deps.estop.as_ref()),
+                );
+                if recovered > 0 {
+                    info!(
+                        "[Gateway] Board plan recovery: {recovered} interrupted plan(s) re-armed"
+                    );
+                }
+            } else {
+                warn!("[Gateway] Board plan recovery skipped: moderator loop 未装配");
+            }
+
+            // U-B（§9.2 无人值守）：LLM 端点不可用恢复探针——封存期周期
+            // 最小 completion 探测（TCP 通 ≠ LLM 活），解封边沿读中断档案
+            // 逐单续做（复评/续拆/项目收口）。estop 挂起时不探测（优先级
+            // 更高）；probe_interval_secs=0 只封存不探测。全部节点装配，
+            // loop 内角色闸（worker 只记账不续做）。
+            crate::board_unavailable::spawn_unavailable_probe(
+                crate::board_unavailable::UnavailableProbeDeps {
+                    review: (*replay_sweep_deps).clone(),
+                    home: home.clone(),
+                    hub: Some(web_server.event_hub().clone()),
+                },
+            );
         }
     }
 
@@ -534,6 +596,12 @@ pub(crate) async fn init_post_agent(
         if nemesis_web::handlers::board::install_board_estop(shared_resources.estop.clone()) {
             info!("[Gateway] E-stop gate installed for board dispatch family");
         }
+    }
+
+    // U-A（2026-10-12 停车现场工程）：派发/拆解侧停车档案的工作区根注入
+    // （<workspace>/board/handoffs/；模块级 OnceLock，单测不装配零波及）。
+    if nemesis_web::handlers::board::install_handoff_workspace(home.join("workspace")) {
+        info!("[Gateway] Board handoff workspace root installed");
     }
 
     // C5: inject the shared LSP manager (same Arc the LspTool registered

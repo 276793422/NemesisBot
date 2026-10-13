@@ -442,9 +442,12 @@ impl RpcClient {
 
     /// G2: 发送健康探针 RPC，**不受对端 Online 状态门禁限制**。
     ///
-    /// [`Self::call_with_timeout`] 会拒绝 Offline 对端（online gate）；而健康
-    /// 探针恰恰要在对端"看起来离线"时到达它——既确认真故障也捕捉自愈。
-    /// 本变体跳过门禁，其余路径（限流/组帧/日志）与普通调用完全一致。
+    /// [`Self::call_with_timeout`] 会拒绝 Offline 对端（online gate）；而
+    /// must-reach 通路恰恰要在对端"看起来离线"时到达它——既确认真故障
+    /// 也捕捉自愈。本变体跳过门禁，其余路径（限流/组帧/日志）与普通调用
+    /// 完全一致。两类消费方：健康探针（本簇自愈检测）与任务回调
+    /// （peer_chat_handler，任务结果唯一交付路径——registry Offline 判定
+    /// 滞后于网络恢复时门禁瞬断会丢已完成的任务结果）。
     pub async fn call_probe_with_timeout(
         &self,
         peer_id: &str,
@@ -457,8 +460,8 @@ impl RpcClient {
     /// Shared dispatch path behind [`Self::call_with_timeout`] and
     /// [`Self::call_probe_with_timeout`].
     ///
-    /// `require_online = false` 跳过 registry online 门禁（探针专用），
-    /// 其余步骤完全共享。
+    /// `require_online = false` 跳过 registry online 门禁（探针/回调等
+    /// must-reach 通路——拨号结果即可达性真值），其余步骤完全共享。
     async fn dispatch(
         &self,
         peer_id: &str,
@@ -486,7 +489,14 @@ impl RpcClient {
                 .as_ref()
                 .and_then(|r| r.get_peer_info(peer_id))
                 .ok_or_else(|| {
-                    RpcClientError::Connection(format!("peer not found: {}", peer_id))
+                    // R4 自投递防护后全空候选也会走到 None——错误文案同时
+                    // 覆盖「未在册」与「仅剩自端点候选被拒拨」两种成因，
+                    // 派发失败留痕时不误导排障方向。
+                    RpcClientError::Connection(format!(
+                        "peer unresolvable: {} (unknown, or all dial candidates \
+                         collide with the local endpoint)",
+                        peer_id
+                    ))
                 })?;
 
             if require_online && !is_online {

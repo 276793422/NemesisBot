@@ -41,6 +41,8 @@ mod board_bus;
 /// agent；信封/RPC 复用 cluster_agent 共用件）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod board_discuss_tool;
+// M3 同因失败签名熔断账本已移 nemesis-board 公开（§6.4D：nemesis-web 手动
+// 重派清账与评审链共用同一 JSON，nemesis_board::fail_streak 消费）。
 /// 全自动流转 P3/D1：board_issue 工具（仅注册进主 agent——「对 master 说
 /// 一句话建单」入口；create 复用 WSAPI issue.create 解析，plan 复用
 /// execute_plan_chain 四入口单一真相源）。
@@ -55,6 +57,12 @@ mod board_review;
 /// provider 走 default_slot 与主 loop 同源，降级按次回落文本评审）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod board_review_assets;
+/// U-B（2026-10-12 无人值守 §9.2）：LLM 端点不可用恢复探针——封存期最小
+/// completion 探测（TCP 通 ≠ LLM 活），解封边沿读中断档案逐单续做
+/// （review→复评 / plan→续拆 / project→收口复评）；estop 优先级更高；
+/// 数据面/闸在 nemesis-web board_unavailable（同源）。
+#[cfg(all(feature = "board", feature = "cluster"))]
+mod board_unavailable;
 /// 反向桥客户端（goal：节点显示名 + 反向桥与多设备汇聚，一期批次二）：
 /// 出站连远端中继、hello 握手、退避重连、conn 泵（本机 web server 字节流
 /// 搬运）、access_check 比对。旁路——任何失败不影响本机 dashboard。
@@ -141,6 +149,12 @@ mod web_approval;
 /// web_approval 同门（依赖 nemesis_security::auditor trait）。
 #[cfg(feature = "security")]
 mod channel_approval;
+
+/// M5（2026-10-10 集群无人值守硬化）：跨节点批复桥 worker 侧（ask 上行
+/// 登记/摘除上行 + Dashboard responder 装饰器）。双门：消费方全在
+/// gateway 的 security cfg 装配块（web_mgr 在手处）+ 依赖 cluster。
+#[cfg(all(feature = "cluster", feature = "security"))]
+mod remote_approval;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -1031,6 +1045,13 @@ fn write_fallback_config(cfg_path: &std::path::Path) -> anyhow::Result<()> {
 // nemesis-agent background_registry 的模块级 TEST_LOCK。
 #[cfg(test)]
 static GLOBAL_STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+// §2 免打扰（无人值守计划 Part 2）：APPROVAL_AUTO 进程级槽（nemesis-web
+// 全局态）触碰类测试的共享串行锁——question_broker / board_bus 等模块的
+// 测试会装 enabled 态置换它，并行测试互相交叠会 flake。获取侧同上：
+// poison-aware（`.lock().unwrap_or_else(|e| e.into_inner())`）。
+#[cfg(test)]
+pub(crate) static APPROVAL_AUTO_SLOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod bridge_client_tests;

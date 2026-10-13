@@ -25,6 +25,8 @@ impl LlmProvider for QuietProvider {
         _tools: Vec<crate::types::ToolDefinition>,
     ) -> Result<LlmResponse, String> {
         Ok(LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "cov-ok".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -224,6 +226,8 @@ async fn pump_expands_builtin_template_before_gate() {
                 .unwrap()
                 .extend(messages.iter().map(|m| m.content.clone()));
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "cov-ok".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,

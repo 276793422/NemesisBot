@@ -40,6 +40,8 @@ impl LlmProvider for GatedProvider {
             rx.changed().await.map_err(|_| "gate dropped".to_string())?;
         }
         Ok(LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "gated reply".to_string(),
             tool_calls: Vec::new(),
             finished: true,

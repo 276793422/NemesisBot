@@ -27,6 +27,8 @@ impl nemesis_agent::r#loop::LlmProvider for NoopProvider {
         _: Vec<nemesis_agent::types::ToolDefinition>,
     ) -> Result<nemesis_agent::r#loop::LlmResponse, String> {
         Ok(nemesis_agent::r#loop::LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: String::new(),
             tool_calls: Vec::new(),
             finished: true,
@@ -339,4 +341,92 @@ async fn pending_lists_responder_entries() {
     assert_eq!(out["pending"][0]["request_id"], "fake-1");
     assert_eq!(out["pending"][0]["risk_level"], "HIGH");
     assert_eq!(fake.calls.lock().len(), 0, "pending must not consume calls");
+}
+
+// ---------------------------------------------------------------------------
+// M5（2026-10-10 集群无人值守硬化）：remote_list / remote_respond 表面契约。
+// 注册表是进程全局——用例独立 request_id + 结尾摘除防串扰。
+// ---------------------------------------------------------------------------
+
+// registry 在 lib.rs 是 cluster 门（无 feature 编译期消失，引用点必须同门）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn remote_list_surfaces_registry_snapshot_without_loop() {
+    let dir = tempfile::tempdir().unwrap();
+    // agent_loop = None（master 侧 remote 臂不消费本节点 responder 槽）。
+    let ctx = make_ctx(&dir, None);
+    let rid = "m5-wsapi-list-request-01";
+    crate::remote_approval::registry().register(crate::remote_approval::RemoteAskEntry {
+        request_id: rid.into(),
+        worker_node: "node-b".into(),
+        operation: "process_exec".into(),
+        target: "cargo build".into(),
+        risk_level: "HIGH".into(),
+        reason: "wsapi surface".into(),
+        issue_number: Some(3),
+        timeout_secs: 300,
+        created_at: Instant::now(),
+    });
+    let out = ApprovalHandler
+        .handle_cmd("remote_list", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    let row = out["pending"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["request_id"] == *rid)
+        .expect("registered ask must surface")
+        .clone();
+    assert_eq!(row["short_id"], "m5-wsapi");
+    assert_eq!(row["worker"], "node-b");
+    assert!(row["remaining_secs"].as_u64().is_some());
+    crate::remote_approval::registry().remove_by_request_id(rid);
+}
+
+// remote_respond 命令臂在 handler 是 cluster 门（上方 remote_list 同款纪律：
+// 无 feature 编译期消失）——本用例实际验证的是「cluster 已编译、AppState
+// 槽为 None」的诚实错误，门不同挂会在默认特性单包跑撞 unknown command。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn remote_respond_without_cluster_is_honest_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir, None);
+    let err = ApprovalHandler
+        .handle_cmd(
+            "remote_respond",
+            Some(serde_json::json!({"request_id": "whatever1", "approved": true})),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("cluster not available"), "err: {err}");
+}
+
+// 同上：命令臂 cluster 门，本用例引用该命令（缺 data / 缺 request_id 分支）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn remote_respond_unknown_id_is_honest_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir, None);
+    // cluster 槽有值（AppState literal 带 cluster: None——这里只测未知 id
+    // 分支需先过 cluster 检查？否：resolve 先行会撞 cluster None。装饰
+    // 顺序 = cluster 槽 → resolve → RPC。无集群形态下未知 id 同样诚实报
+    // cluster 缺失，语义可接受（无集群本就无远程批复）。此用例改为验证
+    // 参数缺失分支（不依赖 cluster 槽）。
+    let err = ApprovalHandler
+        .handle_cmd("remote_respond", None, &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("missing data"), "err: {err}");
+    let err = ApprovalHandler
+        .handle_cmd(
+            "remote_respond",
+            Some(serde_json::json!({"approved": true})),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("missing request_id"), "err: {err}");
 }

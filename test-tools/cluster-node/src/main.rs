@@ -32,11 +32,11 @@ enum Cmd {
         /// Node category (default: random).
         #[arg(long)]
         category: Option<String>,
-        /// Cluster discovery port (default: 11949).
-        #[arg(long, default_value = "11949")]
+        /// Cluster discovery port (default: 38449).
+        #[arg(long, default_value = "38449")]
         port: u16,
-        /// Cluster RPC port (default: 21949).
-        #[arg(long, default_value = "21949")]
+        /// Cluster RPC port (default: 48449).
+        #[arg(long, default_value = "48449")]
         rpc_port: u16,
     },
     /// Run a cluster node from the target directory.

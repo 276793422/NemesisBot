@@ -45,6 +45,8 @@ impl LlmProvider for MockLlmProvider {
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "No more responses".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
@@ -103,6 +105,8 @@ fn test_config() -> AgentConfig {
 
 fn resp(content: &str) -> LlmResponse {
     LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: content.to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -678,6 +682,8 @@ fn plain_msg(content: &str) -> nemesis_types::channel::InboundMessage {
 
 fn tc_resp(calls: Vec<crate::types::ToolCallInfo>) -> LlmResponse {
     LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: String::new(),
         tool_calls: calls,
         finished: false,
@@ -1013,6 +1019,8 @@ async fn bus_flow_data_store_records_usage() {
     let (in_tx, in_rx) = tokio::sync::mpsc::channel(16);
     let mut agent_loop = AgentLoop::new_bus(
         Box::new(MockLlmProvider::new(vec![LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "usage reply".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -1110,6 +1118,8 @@ async fn bus_flow_hit_cap_continue_generation() {
     let agent_loop = AgentLoop::new_bus(
         Box::new(MockLlmProvider::new(vec![
             LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "partial output cut mid".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
@@ -1653,6 +1663,8 @@ async fn bus_flow_prose_repetition_sets_nudge() {
     let mut agent_loop = AgentLoop::new_bus(
         Box::new(MockLlmProvider::new(vec![
             LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "dup prose answer".to_string(),
                 tool_calls: vec![s9_call("r1", "s9echo", "{}")],
                 finished: false,
@@ -1662,6 +1674,8 @@ async fn bus_flow_prose_repetition_sets_nudge() {
                 raw_response_body: None,
             },
             LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "dup prose answer".to_string(),
                 tool_calls: vec![s9_call("r2", "s9echo", "{}")],
                 finished: false,

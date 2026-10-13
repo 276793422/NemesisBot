@@ -51,6 +51,8 @@ impl LlmProvider for DetachedMockProvider {
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "no more responses".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
@@ -414,6 +416,8 @@ async fn effective_tool_defs_filters_detached_allowlist() {
 #[tokio::test]
 async fn run_detached_returns_done_text() {
     let provider = DetachedMockProvider::ok(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "sub-agent final answer".to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -464,6 +468,8 @@ async fn run_detached_allowlist_flows_into_instance() {
                 .unwrap()
                 .push(tools.iter().map(|d| d.function.name.clone()).collect());
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "done".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
@@ -683,6 +689,8 @@ async fn readonly_profile_hides_writer_and_feeds_unknown_tool_back() {
                 *self.state.first_defs.lock().unwrap() =
                     tools.iter().map(|d| d.function.name.clone()).collect();
                 return Ok(LlmResponse {
+                    finish_reason: None,
+                    escalated_to: None,
                     content: String::new(),
                     tool_calls: vec![ToolCallInfo {
                         id: "tc_1".to_string(),
@@ -701,6 +709,8 @@ async fn readonly_profile_hides_writer_and_feeds_unknown_tool_back() {
                 .map(|m| format!("[{}] {}", m.role, m.content))
                 .collect();
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "gave up".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
@@ -795,6 +805,8 @@ async fn notools_run_refuses_injected_tool_call_at_dispatch() {
                 *self.state.first_defs.lock().unwrap() =
                     tools.iter().map(|d| d.function.name.clone()).collect();
                 return Ok(LlmResponse {
+                    finish_reason: None,
+                    escalated_to: None,
                     content: String::new(),
                     tool_calls: vec![ToolCallInfo {
                         id: "tc_inj".to_string(),
@@ -813,6 +825,8 @@ async fn notools_run_refuses_injected_tool_call_at_dispatch() {
                 .map(|m| format!("[{}] {}", m.role, m.content))
                 .collect();
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "review conclusion".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
@@ -987,6 +1001,8 @@ async fn run_detached_depth_enforcement_grandchild_rejected() {
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if n == 0 {
                 return Ok(LlmResponse {
+                    finish_reason: None,
+                    escalated_to: None,
                     content: String::new(),
                     tool_calls: vec![ToolCallInfo {
                         id: "tc_g2".to_string(),
@@ -1005,6 +1021,8 @@ async fn run_detached_depth_enforcement_grandchild_rejected() {
                 .map(|m| format!("[{}] {}", m.role, m.content))
                 .collect();
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "completed myself instead".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
@@ -1094,6 +1112,8 @@ impl LlmProvider for BareCaptureProvider {
             tools.iter().map(|d| d.function.name.clone()).collect(),
         ));
         Ok(LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "{\"plan\":[]}".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -1220,6 +1240,8 @@ async fn run_detached_emits_observer_lifecycle_for_request_logging() {
     }
 
     let provider = DetachedMockProvider::ok(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "sub-agent final answer".to_string(),
         tool_calls: Vec::new(),
         finished: true,

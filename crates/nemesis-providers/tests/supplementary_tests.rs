@@ -595,7 +595,7 @@ mod failover_extra {
         assert!(
             FailoverError::Timeout {
                 provider: "p".into(),
-                model: "m".into()
+                model: "m".into(),
             }
             .is_retriable()
         );
@@ -666,7 +666,7 @@ mod failover_extra {
         assert_eq!(
             FailoverError::Timeout {
                 provider: "p".into(),
-                model: "m".into()
+                model: "m".into(),
             }
             .reason(),
             FailoverReason::Timeout

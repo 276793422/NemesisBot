@@ -47,8 +47,6 @@ pub struct WebApprovalManager {
     /// F3:「总是允许」规则表路径（`<workspace>/config/approval_rules.json`）。
     /// None = 未配置（respond always 诚实报错，不静默吞）。
     rules_path: Option<std::path::PathBuf>,
-    /// 规则文件读-改-写串行化锁（同刻多卡连点不互踩）。
-    rules_write: Mutex<()>,
 }
 
 impl WebApprovalManager {
@@ -60,42 +58,27 @@ impl WebApprovalManager {
             agent_event_tx,
             pending: Mutex::new(HashMap::new()),
             rules_path,
-            rules_write: Mutex::new(()),
         }
     }
 
     /// F3:「总是允许」规则落盘。pattern 由 B5 归约生成（单一真相源
-    /// `approval_rules::pattern_for`，与 auditor 匹配侧同源）；空 pattern
-    /// 诚实报错（如 run_script 无 target 提取，这类操作保持每次人工）。
-    fn save_always_rule(&self, operation: &str, target: &str) -> Result<(), String> {
+    /// `approval_rules::pattern_for`，与 auditor 匹配侧同源）；层级安全门
+    /// 与写入语义单一收口在 `approval_rules::persist_auto_allow_rule`
+    /// （§2 免打扰集群来源持久化同款）：`Ok(Some(pattern))` = 已落盘，
+    /// `Ok(None)` = 层级门不过（CRITICAL 仅 process_exec 豁免 + 安装类
+    /// 永不入规则），`Err` = pattern 推导失败或写盘失败（空 pattern =
+    /// run_script 无 target 提取，这类操作保持每次人工）。
+    fn save_always_rule(
+        &self,
+        operation: &str,
+        target: &str,
+        risk_level: &str,
+    ) -> Result<Option<String>, String> {
         use nemesis_security::approval_rules as rules;
         let Some(path) = self.rules_path.as_ref() else {
             return Err("approval rules not configured (no workspace)".to_string());
         };
-        let pattern = rules::pattern_for(operation, target);
-        if pattern.is_empty() {
-            return Err(format!(
-                "cannot derive approval pattern from {} target",
-                operation
-            ));
-        }
-        let _w = self
-            .rules_write
-            .lock()
-            .map_err(|e| format!("rules lock poisoned: {}", e))?;
-        // 叠加 config 家族写串行锁：approval_rules.json 的另一写者
-        // （security.approvals.clear）持同锁——两写者互斥（同类横扫四期，
-        // 2026-10-13）。锁序单向 rules_write → config_write_lock，无环。
-        let _cfg_serial = nemesis_config::config_write_lock();
-        let mut stored = rules::load_rules(path);
-        rules::upsert_rule(&mut stored, operation, &pattern);
-        rules::save_rules(path, &stored)?;
-        tracing::info!(
-            "[WebApproval] always-allow rule saved: {} {}",
-            operation,
-            pattern
-        );
-        Ok(())
+        rules::persist_auto_allow_rule(path, operation, target, risk_level)
     }
 
     /// 广播审批请求事件（无订阅者/通道关闭都是良性——审批等待不依赖广播）。
@@ -266,17 +249,22 @@ impl ApprovalResponder for WebApprovalManager {
         // always 并 warn；规则写失败诚实回 Err（前端 toast 提示，本次批准
         // 仍生效）。
         if approved && always {
-            if !nemesis_security::approval_rules::rule_permitted_for(
-                &entry.operation,
-                &entry.risk_level,
-            ) {
-                tracing::warn!(
-                    "[WebApproval] always-allow ignored for {} (risk {}): CRITICAL ops and code installs stay manual",
-                    entry.operation,
-                    entry.risk_level
-                );
-            } else {
-                self.save_always_rule(&entry.operation, &entry.target)?;
+            match self.save_always_rule(&entry.operation, &entry.target, &entry.risk_level) {
+                Ok(Some(pattern)) => {
+                    tracing::info!(
+                        "[WebApproval] always-allow rule saved: {} {}",
+                        entry.operation,
+                        pattern
+                    );
+                }
+                Ok(None) => {
+                    tracing::warn!(
+                        "[WebApproval] always-allow ignored for {} (risk {}): CRITICAL ops and code installs stay manual",
+                        entry.operation,
+                        entry.risk_level
+                    );
+                }
+                Err(e) => return Err(e),
             }
         }
         Ok(approved)

@@ -77,7 +77,10 @@ pub(crate) fn rate_limit_wait_secs(err: &str, attempt: u32) -> u64 {
 /// BUG 2026-09-21 ②：单次上游调用超时默认 180s——429 后连接挂起（不回
 /// 响应体）时旧行为可挂任意久（实测 27 分钟缺口）。0 = 关闭超时（退回
 /// 旧行为）。`agents.defaults.provider_call_timeout_secs` 覆盖。
-pub const DEFAULT_PROVIDER_CALL_TIMEOUT_SECS: u64 = 180;
+/// M6-3（2026-10-10 机制加固）：180→480——thinking 型模型 prefill 实测
+/// 212s 撞破 180s 闸（诚实调用被超时误杀）；仍低于 provider lane 默认
+/// 600s，超时阶梯不倒挂。
+pub const DEFAULT_PROVIDER_CALL_TIMEOUT_SECS: u64 = 480;
 /// BUG 2026-09-21 ②：限流重试环总预算默认 900s（等待 + 调用累计）——
 /// 10 次上限只限次数不限总时长（实测 46 分钟无熔断）。0 = 不限。
 /// `agents.defaults.rate_limit_budget_secs` 覆盖。

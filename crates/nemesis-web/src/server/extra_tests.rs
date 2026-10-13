@@ -1398,6 +1398,8 @@ async fn webserver_all_setters_assemble() {
             _: Vec<nemesis_agent::types::ToolDefinition>,
         ) -> Result<nemesis_agent::r#loop::LlmResponse, String> {
             Ok(nemesis_agent::r#loop::LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: String::new(),
                 tool_calls: Vec::new(),
                 finished: true,

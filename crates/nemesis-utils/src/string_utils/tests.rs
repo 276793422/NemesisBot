@@ -441,3 +441,36 @@ fn test_format_datetime_compact_not_empty() {
     let dt = format_datetime_compact();
     assert!(!dt.is_empty());
 }
+
+#[test]
+fn truncate_bytes_at_boundary_ascii_passthrough() {
+    assert_eq!(truncate_bytes_at_boundary("abcdef", 8), "abcdef");
+    assert_eq!(truncate_bytes_at_boundary("abcdef", 4), "abcd");
+}
+
+#[test]
+fn truncate_bytes_at_boundary_cjk_falls_back_to_char_boundary() {
+    // 3 个「中」= 9 字节；预算 8 落在第 3 个「中」内部 → 回退到 6 字节。
+    let s = "中中中";
+    assert_eq!(truncate_bytes_at_boundary(s, 8), "中中");
+    // 预算 0 → 空串（回退到底，不 panic）。
+    assert_eq!(truncate_bytes_at_boundary(s, 0), "");
+}
+
+#[test]
+fn panic_message_str_payload() {
+    let p: Box<dyn std::any::Any + Send> = Box::new("boom中文");
+    assert_eq!(panic_message(p), "boom中文");
+}
+
+#[test]
+fn panic_message_string_payload() {
+    let p: Box<dyn std::any::Any + Send> = Box::new(String::from("boom 中文 panic"));
+    assert_eq!(panic_message(p), "boom 中文 panic");
+}
+
+#[test]
+fn panic_message_non_text_payload() {
+    let p: Box<dyn std::any::Any + Send> = Box::new(42u32);
+    assert_eq!(panic_message(p), "非文本 panic 载荷");
+}

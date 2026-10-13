@@ -66,6 +66,8 @@ impl LlmProvider for ClassifiedThenSuccess {
             Err(self.err_text.clone())
         } else {
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "Recovered!".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,

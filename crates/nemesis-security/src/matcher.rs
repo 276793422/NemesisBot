@@ -46,6 +46,20 @@ fn normalize_path(path: &str) -> String {
     path.replace('\\', "/")
 }
 
+/// 文件/注册表路径规则匹配（auditor 路径桶单一入口）：Windows 文件系统
+/// 大小写不敏感，规则与目标两侧同折小写——target 是模型敲的原始字符串
+/// （无规范化直通），deny 规则 `D:/Secrets/*` 曾被任意大小写变体绕过
+/// （D12-3，fail-open）；allow 规则反向不命中=重复弹卡。非 Windows 路径
+/// 大小写敏感保持原样（fold 会让 allow 规则误放，fail-open 方向）。
+/// 分隔符归一与通配语义仍由 [`match_pattern`] 承担。
+pub fn match_path_rule(pattern: &str, target: &str) -> bool {
+    if cfg!(windows) {
+        match_pattern(&pattern.to_lowercase(), &target.to_lowercase())
+    } else {
+        match_pattern(pattern, target)
+    }
+}
+
 /// Convert a wildcard pattern to a regex and match against the target.
 fn do_match(pattern: &str, target: &str) -> bool {
     let regex_pattern = wildcard_to_regex(pattern);
@@ -77,9 +91,12 @@ fn wildcard_to_regex(pattern: &str) -> String {
             i += 1;
         } else if matches!(
             chars[i],
-            '^' | '$' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\'
+            '^' | '$' | '+' | '.' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\'
         ) {
-            // Escape special regex characters
+            // Escape special regex characters（D12-1：`.` 与 `?` 曾漏转义
+            // ——字面点号被当正则任意字符（`*.key` 命中 `testXkey`），`?`
+            // 被当可选量词（`file?.log` 漂移成「可选 e」）。本函数契约只
+            // 认 `*`/`**` 通配，其余元字符一律字面。
             regex.push('\\');
             regex.push(chars[i]);
             i += 1;
@@ -149,7 +166,11 @@ pub fn normalize_exec_command(command: &str) -> String {
 /// 由 exec_unknown_policy（D1）治理。
 pub fn extract_interpreter_payloads(normalized_command: &str) -> Vec<String> {
     fn bin_key(token: &str) -> &str {
-        token.strip_suffix(".exe").unwrap_or(token)
+        // 取 basename（复检批：`/bin/sh`、`C:\Windows\System32\cmd.exe`
+        // 这类带路径形态此前打不中包装表，内层载荷逃过 deny/ask 扫描；
+        // 提取只增加扫描面，方向 fail-closed）。再剥 `.exe` 后缀。
+        let base = token.rsplit(['/', '\\']).next().unwrap_or(token);
+        base.strip_suffix(".exe").unwrap_or(base)
     }
     // (解释器 token, 该解释器认的载荷旗标集)
     const WRAPPERS: &[(&str, &[&str])] = &[
@@ -215,6 +236,61 @@ pub fn glob_contains(pattern: &str, text: &str) -> bool {
         }
     }
     true
+}
+
+/// exec 规则匹配的段准备（闭环批 2026-10-13 收口：auditor 执行管线与
+/// `security.rs` CLI 预览的字节级双拷贝闭包上移为单一真相源——两处语义
+/// 曾靠人肉同步，漂移即审批预览与真实判定分叉）。
+///
+/// 在原文上切顶层复合段（`command_segments`：引号感知，引号内的 `&&`
+/// 不切；引号不平衡退 quote-blind 盲切——单段 fallback 是 fail-open，一
+/// 个撇号就能整体击穿），逐段归一化 + 剥 env 前缀（与归约端同语义）。
+pub fn exec_rule_segments(target: &str) -> Vec<String> {
+    crate::command_arity::command_segments(target)
+        .iter()
+        .map(|seg| {
+            crate::command_arity::strip_env_assignments(&normalize_exec_command(seg)).to_string()
+        })
+        .collect()
+}
+
+/// exec 规则桶匹配（闭环批 2026-10-13 与 [`exec_rule_segments`] 一并上移）。
+///
+/// 两端不对称：**allow = 全部段命中才放**——任一段命中会把
+/// `echo hi && cargo publish` 被 `cargo *` allow 规则整体放行（default
+/// deny 配置下的镜像洞）；空段显式不命中（`.all()` 空迭代器恒真，空命令
+/// 不得自动放行）。deny/ask = 任一段命中，或整串锚定命中——整串兜底是
+/// **双形态联合**：剥 env 整串（跨段通配 `*a*b*` 与空命令 `*` 规则的旧
+/// 拦截面）+ **未剥整串**（显式 env 形 deny 规则 `deny FOO=1 curl *` 的
+/// 字面形态——target 侧剥 env 后，pattern 侧的 env 头只有靠未剥整串才能
+/// 命中本尊输入；§九 D1 F4 声称的三臂联合，上移单一真相源时曾丢失）。
+///
+/// - `bucket`：`"allow"` / `"deny"` / `"ask"`（其余按 deny 桶处理）
+/// - `pattern`：规则 pattern 原文（桶匹配内部过 [`normalize_exec_command`]
+///   ——与 target 同管道字节级同源。曾只做小写：pattern 侧保留引号/多余
+///   空白而 target 侧已剥已并，手写 shell 拟形 deny 规则（`rm "-rf" *`）
+///   对归一化 target 永不命中 = 静默死规则 fail-open（D12-2））
+/// - `target_normalized`：整串归一化（[`normalize_exec_command`] 产物）
+/// - `segs`：[`exec_rule_segments`] 的产物
+pub fn exec_rule_bucket_match(
+    bucket: &str,
+    pattern: &str,
+    target_normalized: &str,
+    segs: &[String],
+) -> bool {
+    let pattern_lower = &normalize_exec_command(pattern);
+    let hit = |seg: &str| match_command_pattern(pattern_lower, seg);
+    match bucket {
+        "allow" => !segs.is_empty() && segs.iter().all(|seg| hit(seg)),
+        // deny/ask：任一段命中，或整串锚定兜底（剥 env + 未剥双形态）
+        _ => {
+            segs.iter().any(|seg| hit(seg))
+                || hit(crate::command_arity::strip_env_assignments(
+                    target_normalized,
+                ))
+                || hit(target_normalized)
+        }
+    }
 }
 
 /// Check if a domain matches a pattern.

@@ -87,27 +87,34 @@ pub(crate) fn fire_board_autopilot(
 /// dispatch_failed 站内通知；输者（worker 恰好回报）不动，下一轮自然不再
 /// 列出。MVP 策略 = abort + notify + 手动重派，不自动 retry/reassign——
 /// 同一 issue 双 worker 并发执行的风险大于自动化的收益（开发日志有记）。
+///
+/// M5-2（2026-10-10 机制加固）：清扫失败的 issue **回流验收决策链**——
+/// 推进 in_progress → in_review 并把 issue_id 返回给调用方 spawn 标准评
+/// 审 agent 定案（裁决权在评审 LLM，非预设 FAIL：真模型下按交付证据
+/// FAIL → 走重派/预算/同因熔断漏斗，不再有「标失败后等人工」的死角）。
+/// 转移失败（状态机拒绝/竞态）只 WARN 不阻塞其余清扫。
 #[cfg(all(feature = "board", feature = "cluster"))]
 pub(crate) fn sweep_dispatch_timeouts(
     store: &std::sync::Arc<nemesis_board::BoardStore>,
     cluster: &std::sync::Arc<nemesis_cluster::cluster::Cluster>,
     timeout_secs: u64,
-) {
+) -> Vec<i64> {
     const OFFLINE_GRACE_SECS: u64 = 600;
     let records = match store.list_active_dispatches() {
         Ok(r) => r,
         Err(e) => {
             warn!("[Board][Sweep] list active dispatches failed: {e}");
-            return;
+            return Vec::new();
         }
     };
     if records.is_empty() {
-        return;
+        return Vec::new();
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    let mut for_review: Vec<i64> = Vec::new();
     for record in records {
         let age = now.saturating_sub(record.dispatched_at.max(0) as u64);
         let offline = cluster
@@ -150,6 +157,25 @@ pub(crate) fn sweep_dispatch_timeouts(
                     "[Board][Sweep] dispatch failed: task={} issue={} ({reason})",
                     rec.task_id, rec.issue_id
                 );
+                // M5-2：回流验收决策链（对齐 write_back 失败臂语义——失败
+                // 评论正是 review_issue 无 Delivery 时的诚实降级输入）。
+                match store.get_issue(rec.issue_id) {
+                    Ok(issue) if issue.status == nemesis_board::IssueStatus::InProgress => {
+                        match store.transition_issue(
+                            rec.issue_id,
+                            nemesis_board::IssueStatus::InReview,
+                            &nemesis_board::Actor::system("board-sweep"),
+                        ) {
+                            Ok(_) => for_review.push(rec.issue_id),
+                            Err(e) => warn!(
+                                "[Board][Sweep] issue {} 回流 in_review 失败（留人工处置）：{e}",
+                                rec.issue_id
+                            ),
+                        }
+                    }
+                    Ok(_) => { /* 非 in_progress（人工已动）→ 让位，不回流 */ }
+                    Err(e) => warn!("[Board][Sweep] issue {} 状态读取失败：{e}", rec.issue_id),
+                }
             }
             Ok(None) => { /* 输竞态（worker 恰好回报），下轮不再列出 */ }
             Err(e) => warn!(
@@ -158,6 +184,7 @@ pub(crate) fn sweep_dispatch_timeouts(
             ),
         }
     }
+    for_review
 }
 
 #[cfg(test)]

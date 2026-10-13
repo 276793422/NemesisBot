@@ -330,10 +330,9 @@ impl LLMProvider for OpenAICompatProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|_| FailoverError::Timeout {
-                provider: self.config.name.clone(),
-                model: model.to_string(),
-            })?;
+            // 诚实化（2026-10-13）：真超时→Timeout；DNS/连接拒绝等传输
+            // 错误→Unknown + "connect error: <根因链>"（全 lane 口径统一）。
+            .map_err(|e| crate::failover::transport_error(&self.config.name, model, &e))?;
 
         let status = resp.status().as_u16();
 

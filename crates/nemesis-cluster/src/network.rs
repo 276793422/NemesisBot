@@ -81,6 +81,12 @@ pub struct NetworkInterface {
 /// discovery structurally cannot work on such networks. See
 /// `docs/REPORT/2026-09-01_link-local-discovery-fix.md`.
 pub fn get_local_network_interfaces() -> Vec<NetworkInterface> {
+    let mut result = get_local_network_interfaces_impl();
+    supplement_apipa_interfaces(&mut result);
+    result
+}
+
+fn get_local_network_interfaces_impl() -> Vec<NetworkInterface> {
     match if_addrs::get_if_addrs() {
         Ok(interfaces) => {
             let mut result = Vec::new();
@@ -238,7 +244,17 @@ struct CandidateIp {
 ///    kept but sorted last (normal addresses win when present).
 /// 4. Sorts by interface priority (Ethernet > WiFi > Other), link-local last.
 /// 5. Falls back to the UDP-connect trick if interface enumeration fails.
+/// 6. Windows: if-addrs misses APIPA (169.254/16) addresses entirely
+///    (`ipconfig` shows them, enumeration doesn't — 2026-10-12 acceptance
+///    verified), so `GetAdaptersAddresses` supplements them at the tail.
+///    On direct-cable / ICS topologies link-local is the *only* interconnect.
 pub fn get_all_local_ips() -> Vec<String> {
+    let mut result = get_all_local_ips_impl();
+    supplement_apipa_ips(&mut result);
+    result
+}
+
+fn get_all_local_ips_impl() -> Vec<String> {
     // Try enumerating real network interfaces first (matches Go's net.Interfaces()).
     match if_addrs::get_if_addrs() {
         Ok(interfaces) => {
@@ -311,6 +327,258 @@ fn fallback_local_ip() -> Vec<String> {
     } else {
         vec![local_ip.to_string()]
     }
+}
+
+// ---------------------------------------------------------------------------
+// R1: Windows APIPA (169.254/16) supplement
+// ---------------------------------------------------------------------------
+
+/// Supplement link-local (169.254/16) addresses that `if_addrs` missed on
+/// Windows. Appends to the tail — callers of `get_all_local_ips` already
+/// treat normal addresses as higher priority, so tail position preserves the
+/// "link-local sorts last" contract. Dedup against the existing result; on
+/// non-Windows this is a no-op (if_addrs enumerates APIPA fine there).
+fn supplement_apipa_ips(result: &mut Vec<String>) {
+    #[cfg(target_os = "windows")]
+    {
+        for ip in windows_apipa_ips() {
+            if !result.contains(&ip) {
+                result.push(ip);
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = result;
+    }
+}
+
+/// Supplement link-local (169.254/16) **interfaces** (ip + netmask) that
+/// `if_addrs` missed on Windows — same root gap as [`supplement_apipa_ips`],
+/// second consumer: subnet matching (`get_local_interfaces` → dial ordering
+/// and bridge arbitration). Without it, link-local-only topologies are
+/// invisible to `is_same_subnet` and candidates never get the direct-connect
+/// preference. On non-Windows this is a no-op.
+fn supplement_apipa_interfaces(result: &mut Vec<NetworkInterface>) {
+    #[cfg(target_os = "windows")]
+    {
+        for (name, entries) in windows_apipa_adapters() {
+            collect_adapter_link_local_ifaces(&name, &entries, result);
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = result;
+    }
+}
+
+/// R1 纯函数核（接口形态）：把单个 adapter 的 (IPv4, 前缀长) 列表里该入
+/// 表的 link-local 项转成 NetworkInterface（掩码由前缀长推导）追加——
+/// 跳过虚拟接口，按 ip 去重。FFI 侧逐 adapter 委托本函数。
+#[cfg(target_os = "windows")]
+fn collect_adapter_link_local_ifaces(
+    name: &str,
+    entries: &[(Ipv4Addr, u8)],
+    out: &mut Vec<NetworkInterface>,
+) {
+    if is_virtual_interface(name) {
+        return;
+    }
+    for (ip, prefix) in entries {
+        if ip.is_loopback() || !ip.is_link_local() {
+            continue;
+        }
+        let s = ip.to_string();
+        if out.iter().any(|i| i.ip == s) {
+            continue;
+        }
+        let mask = prefix_len_to_v4_mask(*prefix);
+        let mask_octets: Vec<u8> = mask.split('.').filter_map(|o| o.parse().ok()).collect();
+        let octets = ip.octets();
+        let network_ip = if mask_octets.len() == 4 {
+            format!(
+                "{}.{}.{}.{}",
+                octets[0] & mask_octets[0],
+                octets[1] & mask_octets[1],
+                octets[2] & mask_octets[2],
+                octets[3] & mask_octets[3]
+            )
+        } else {
+            mask.clone()
+        };
+        out.push(NetworkInterface {
+            ip: s,
+            mask,
+            network_ip,
+        });
+    }
+}
+
+/// R1 纯函数核：从单个 adapter 的（名称, IPv4 列表）里挑出该入池的
+/// link-local 候选——跳过虚拟接口与回环，去重追加。FFI 侧把
+/// GetAdaptersAddresses 的链表拉平成这个形状后委托本函数，单测用合成
+/// adapter 数据钉死行为（实机断言归真机腿）。
+/// allow(dead_code)：唯一生产调用方在 `#[cfg(windows)]` 的
+/// windows_apipa_ips 里，非 Windows lib 目标下仅测试可见——不加门控会让
+/// Linux clippy -D warnings 门禁红（先例：本文件 prefix_len_to_mask）。
+#[allow(dead_code)]
+fn collect_adapter_link_local(name: &str, ips: &[Ipv4Addr], out: &mut Vec<String>) {
+    if is_virtual_interface(name) {
+        return;
+    }
+    for ip in ips {
+        if ip.is_loopback() || !ip.is_link_local() {
+            continue;
+        }
+        let s = ip.to_string();
+        if !out.contains(&s) {
+            out.push(s);
+        }
+    }
+}
+
+/// Enumerate adapters via `GetAdaptersAddresses` (IPv4 only) and return the
+/// link-local unicast addresses if_addrs fails to report on Windows. Best
+/// effort: any FFI/allocation failure returns what was collected so far (the
+/// caller's list stays untouched on empty).
+#[cfg(target_os = "windows")]
+fn windows_apipa_ips() -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (name, entries) in windows_apipa_adapters() {
+        let ips: Vec<Ipv4Addr> = entries.iter().map(|(ip, _)| *ip).collect();
+        collect_adapter_link_local(&name, &ips, &mut out);
+    }
+    out
+}
+
+/// FFI 单一来源：GetAdaptersAddresses 拉平成 `(适配器名, [(IPv4, 前缀长)])`
+/// 列表（跳过回环适配器；保留全部 IPv4 单播，link-local 过滤交给各消费
+/// 方——IP 补齐与接口补齐各自判定）。前缀长供接口形态补齐推导掩码。
+#[cfg(target_os = "windows")]
+fn windows_apipa_adapters() -> Vec<(String, Vec<(Ipv4Addr, u8)>)> {
+    use windows_sys::Win32::Foundation::ERROR_BUFFER_OVERFLOW;
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_MULTICAST,
+        GetAdaptersAddresses, IP_ADAPTER_ADDRESSES_LH,
+    };
+    use windows_sys::Win32::Networking::WinSock::{AF_INET, SOCKADDR_IN};
+
+    // if_addrs 缺口补齐只需 AF_INET 单播地址；跳过 anycast/multicast/DNS
+    // 附加信息减小缓冲。
+    const FLAGS: u32 = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+
+    let mut out: Vec<(String, Vec<(Ipv4Addr, u8)>)> = Vec::new();
+    // 常见宿主机一次 16KB 足够；ERROR_BUFFER_OVERFLOW 时按系统回填的
+    // size 重试（标准两段式调用）。
+    let mut size: u32 = 16 * 1024;
+    let buffer = loop {
+        let mut buf = vec![0u8; size as usize];
+        let mut len = size;
+        let ret = unsafe {
+            GetAdaptersAddresses(
+                AF_INET as u32,
+                FLAGS,
+                std::ptr::null_mut(),
+                // as_mut_ptr（多角度审计批低-1）：as_ptr 派生 SharedReadOnly
+                // 溯源，传给会写入的 FFI 是严格意义的 UB（Miri 报）；一词
+                // 修正指针溯源，无行为变化。
+                buf.as_mut_ptr() as *mut IP_ADAPTER_ADDRESSES_LH,
+                &mut len,
+            )
+        };
+        if ret != ERROR_BUFFER_OVERFLOW {
+            if ret != 0 {
+                tracing::debug!(
+                    code = ret,
+                    "[Cluster] GetAdaptersAddresses failed; APIPA supplement skipped"
+                );
+                return out;
+            }
+            break buf;
+        }
+        size = len;
+        if size > 64 * 1024 * 1024 {
+            tracing::debug!("[Cluster] GetAdaptersAddresses buffer size runaway; skipped");
+            return out;
+        }
+    };
+
+    let mut adapter = buffer.as_ptr() as *const IP_ADAPTER_ADDRESSES_LH;
+    while !adapter.is_null() {
+        // SAFETY: GetAdaptersAddresses 成功返回时链表节点均在缓冲内有效。
+        let a = unsafe { *adapter };
+
+        // IF_TYPE_SOFTWARE_LOOPBACK = 24（值固定于 IANA ifType；不依赖
+        // windows-sys 是否导出常量）。OperStatus == 1（IfOperStatusUp，同
+        // IANA 固定值，多角度审计批低-2）：media disconnected 的适配器
+        // （拔线网口/断开的内部 vSwitch）可能带 169.254 残留地址，进池/
+        // 进 announce = 低优先级死候选白耗对端拨号预算；目标场景（直连
+        // DHCP 失败）适配器是 Up 的，过滤不伤目标。诚实边界：FFI 系统调用
+        // 面，单测无法注入 Down 适配器（真实网卡的 Down 形态归真机验收）。
+        if a.IfType != 24 && a.OperStatus == 1 {
+            let name = wide_to_string(a.FriendlyName);
+            let mut ips: Vec<(Ipv4Addr, u8)> = Vec::new();
+            let mut ua = a.FirstUnicastAddress;
+            while !ua.is_null() {
+                // SAFETY: 单播地址链表节点由系统填充、缓冲内有效。
+                let u = unsafe { *ua };
+                let sa = u.Address.lpSockaddr;
+                if !sa.is_null() {
+                    // SAFETY: AF_INET 时 lpSockaddr 实际指向 SOCKADDR_IN；
+                    // union 字段访问本身也需 unsafe 块。
+                    let (family, addr_u32, prefix_len) = unsafe {
+                        let sin = &*(sa as *const SOCKADDR_IN);
+                        (
+                            sin.sin_family,
+                            sin.sin_addr.S_un.S_addr,
+                            u.OnLinkPrefixLength,
+                        )
+                    };
+                    // AF_INET = 2；与上层过滤一致，只收 IPv4。
+                    if family == AF_INET {
+                        ips.push((Ipv4Addr::from(u32::from_be(addr_u32)), prefix_len));
+                    }
+                }
+                ua = u.Next;
+            }
+            out.push((name, ips));
+        }
+
+        adapter = a.Next;
+    }
+    out
+}
+
+/// 前缀长 → IPv4 点分掩码（防御性钳位：>32 视作 32）。0 → 0.0.0.0。
+/// allow(dead_code)：唯一生产调用方在 `#[cfg(windows)]` 的
+/// collect_adapter_link_local_ifaces 里（同 collect_adapter_link_local）。
+#[allow(dead_code)]
+fn prefix_len_to_v4_mask(prefix: u8) -> String {
+    let p = prefix.min(32);
+    let mask = if p == 0 {
+        0u32
+    } else {
+        u32::MAX << (32 - p as u32)
+    };
+    Ipv4Addr::from(mask).to_string()
+}
+
+/// UTF-16 wide string (PWSTR) → String。非 UTF-16/空指针容忍（空名 = 不匹配
+/// 虚拟接口名单，照常收集——名称过滤只是尽力降噪）。
+#[cfg(target_os = "windows")]
+fn wide_to_string(ptr: *const u16) -> String {
+    if ptr.is_null() {
+        return String::new();
+    }
+    // SAFETY: FriendlyName 由系统保证 NUL 结尾。
+    let mut len = 0usize;
+    unsafe {
+        while *ptr.add(len) != 0 {
+            len += 1;
+        }
+    }
+    let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
+    String::from_utf16_lossy(slice)
 }
 
 /// Get all local IPs with virtual interface filtering.

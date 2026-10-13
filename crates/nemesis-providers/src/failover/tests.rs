@@ -197,7 +197,7 @@ fn test_reason_all_variants() {
     assert_eq!(
         FailoverError::Timeout {
             provider: "p".to_string(),
-            model: "m".to_string()
+            model: "m".to_string(),
         }
         .reason(),
         FailoverReason::Timeout

@@ -34,6 +34,8 @@ impl LlmProvider for N5NoopProvider {
             finished: true,
             reasoning_content: None,
             usage: None,
+            finish_reason: None,
+            escalated_to: None,
             raw_request_body: None,
             raw_response_body: None,
         })

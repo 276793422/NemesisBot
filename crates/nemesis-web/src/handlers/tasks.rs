@@ -253,11 +253,11 @@ impl TasksHandler {
         svc: &Arc<std::sync::Mutex<CronService>>,
         id: &str,
     ) -> Result<Option<serde_json::Value>, String> {
-        let removed = svc.lock().unwrap().remove_job(id);
-        if !removed {
-            return Err(format!("cron job '{}' not found", id));
+        match svc.lock().unwrap().remove_job(id) {
+            Ok(true) => Ok(Some(serde_json::json!({ "deleted": true, "id": id }))),
+            Ok(false) => Err(format!("cron job '{}' not found", id)),
+            Err(e) => Err(format!("cron job '{}' delete failed: {}", id, e)),
         }
-        Ok(Some(serde_json::json!({ "deleted": true, "id": id })))
     }
 
     fn cron_toggle(

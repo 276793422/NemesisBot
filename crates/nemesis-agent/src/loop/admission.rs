@@ -1,7 +1,6 @@
 //! 入站门控：ConcurrentMode/GateOutcome/TurnAdmission/SessionBusyState/SentInRoundTracker、parse_approval_reply、route/gate/process_direct/heartbeat/inbound_message、会话忙/取消/收件箱族、persist_busy_refusal。
 //!
 //! P1 自 `loop.rs` 物理搬迁（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）；语义零变化。
-use super::prelude::*;
 use super::*;
 
 /// Concurrent request handling mode.

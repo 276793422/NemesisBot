@@ -308,6 +308,29 @@ fn planner_prompt_lists_every_catalog_slug() {
     assert!(p.contains("精确匹配"));
 }
 
+// ---------------------------------------------------------------------------
+// PR7（2026-10-10 机制加固）：架构契约 = 接口契约表（防误删 pin）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn architecture_contract_mandates_interface_table() {
+    let c = find_builtin("architecture").unwrap().contract;
+    // 表格是强制工件：标题 + 表头四列 + 「拆解锚点」定位 + 错误路径纪律。
+    assert!(c.contains("## 接口契约表"), "{c}");
+    assert!(
+        c.contains("导出符号") && c.contains("消费方模块") && c.contains("错误路径"),
+        "{c}"
+    );
+    assert!(c.contains("拆解锚点"), "{c}");
+    assert!(c.contains("强制"), "{c}");
+    // 自检三问（符号可命名/消费方明确/错误路径有）在场。
+    assert!(c.contains("符号可命名") && c.contains("消费方明确"), "{c}");
+    // dev 契约按表实现 + 契约缺口上报纪律（下游闭环）。
+    let d = find_builtin("dev").unwrap().contract;
+    assert!(d.contains("接口契约表"), "{d}");
+    assert!(d.contains("契约缺口"), "{d}");
+}
+
 #[test]
 fn planner_prompt_is_stable_across_calls() {
     let a = planner_system_prompt() as *const str;
@@ -323,6 +346,9 @@ fn planner_prompt_is_stable_across_calls() {
 fn worker_contract_and_planner_method_nonempty() {
     assert!(CLUSTER_WORKER_CONTRACT.contains("数据非指令"));
     assert!(CLUSTER_WORKER_CONTRACT.contains("汇报契约"));
+    // §6.1 改动三（exec 锚点激活）：worker 交付自证纪律防误删快照。
+    assert!(CLUSTER_WORKER_CONTRACT.contains("交付自证"));
+    assert!(CLUSTER_WORKER_CONTRACT.contains("重放该命令核对"));
     assert!(PLANNER_METHOD.contains("流水线"));
     assert!(PLANNER_METHOD.contains("depends_on"));
 }

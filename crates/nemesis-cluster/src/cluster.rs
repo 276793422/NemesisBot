@@ -403,6 +403,7 @@ impl Cluster {
             let resolver = Arc::new(ClusterPeerResolver {
                 registry: self.registry.clone(),
                 node_id: self.node_id.clone(),
+                rpc_port: self.rpc_port,
             });
             let client = Arc::new(RpcClient::with_resolver(resolver));
             tracing::info!(
@@ -1155,12 +1156,18 @@ impl Cluster {
             node_type,
             Vec::new(),
             None,
+            None,
         )
     }
 
     /// [`Self::handle_discovered_node`] 扩展形态：带对端自报职能与档位
     /// （集群专业职能框架 M2）。生产 UDP 发现路径（announce 接收）走本
     /// 方法；其余路径（桥接/静态）无职能数据，走旧签名。
+    ///
+    /// `source_addr`：R5 源地址收割——UDP announce 的包源 IP（发现层亲眼
+    /// 可见的可达性证据；载荷地址可能因对端枚举缺口缺失，如 if_addrs 的
+    /// APIPA 缺口）。作为最低优先级拨号候选并入地址池；非 UDP 路径
+    /// （TCP 探针身份回传/静态装载）传 `None`。
     #[allow(clippy::too_many_arguments)]
     pub fn handle_discovered_node_ex(
         &self,
@@ -1175,6 +1182,7 @@ impl Cluster {
         node_type: &str,
         professions: Vec<String>,
         tier: Option<String>,
+        source_addr: Option<&str>,
     ) -> bool {
         self.handle_discovered_node_impl(
             node_id,
@@ -1188,6 +1196,7 @@ impl Cluster {
             node_type,
             professions,
             tier,
+            source_addr,
         )
     }
 
@@ -1205,6 +1214,7 @@ impl Cluster {
         node_type: &str,
         professions: Vec<String>,
         tier: Option<String>,
+        source_addr: Option<&str>,
     ) -> bool {
         // Skip blacklisted nodes
         if self.removed_peers.read().contains(node_id) {
@@ -1286,6 +1296,57 @@ impl Cluster {
 
         let was_known = self.registry.get(node_id).is_some();
 
+        // R2 静态 pin 合并保护：peers.toml 显式配置的对端地址不因 announce
+        // 刷新被逐出（静态配置层与发现池层此前无合并保护——Win↔Win 验收
+        // 实测：可达 pin 被对端自报的不可达地址挤掉后派发即断）。池序 =
+        // pinned（用户显式配置优先）→ 载荷（announce 自报序）→ 源地址。
+        // **pin 前置**（多角度审计批中-2，2026-10-13）：拨号预算 = best + 3
+        // 个 fallback（rpc/client.rs），载荷地址 ≥4 个且无一同网段时 pin
+        // 排尾永远轮不到——「静态语义 = 用户显式配置优先」本就该排在自报
+        // 载荷前面（merge_real_node_info 内的静态地址保护注释同口径）。
+        // 静态语义同时锁 base.address（与 merge_real_node_info 的静态保护
+        // 同源）。
+        let mut pool: Vec<String> = Vec::new();
+        let mut static_base_address: Option<String> = None;
+        if self.registry.is_peer_static(node_id)
+            && let Some(existing) = self.registry.get(node_id)
+        {
+            let mut pinned = existing.addresses.clone();
+            let host = existing
+                .base
+                .address
+                .split(':')
+                .next()
+                .unwrap_or("")
+                .to_string();
+            if !host.is_empty() && !pinned.contains(&host) {
+                pinned.push(host);
+            }
+            for a in pinned {
+                if !pool.contains(&a) {
+                    pool.push(a);
+                }
+            }
+            if !existing.base.address.is_empty() {
+                static_base_address = Some(existing.base.address.clone());
+            }
+        }
+        for a in &addresses {
+            if !pool.contains(a) {
+                pool.push(a.clone());
+            }
+        }
+        // R5 源地址收割：UDP 包源 IP 是「发现层亲眼可见」的可达性证据，作
+        // 为最低优先级候选入池（池序 pin > 载荷 > 源地址，中-2 pin 前置见
+        // 上方静态块）——对端唯一可达地址是 link-local（被对端 if_addrs 缺
+        // 口排除在载荷外）时的最后一根自愈稻草。
+        if let Some(src) = source_addr
+            && !src.is_empty()
+            && !pool.iter().any(|a| a.as_str() == src)
+        {
+            pool.push(src.to_string());
+        }
+
         let node = ExtendedNodeInfo {
             base: nemesis_types::cluster::NodeInfo {
                 id: node_id.into(),
@@ -1294,16 +1355,15 @@ impl Cluster {
                 // 曾硬编码 Worker 导致 board.sync 的 coordinator 判定在纯 UDP
                 // 发现拓扑下永远失败（补拉死循环），必须走 from_role_str 解析。
                 role: nemesis_types::cluster::NodeRole::from_role_str(role),
-                address: primary_address.clone(),
+                address: static_base_address.unwrap_or(primary_address.clone()),
                 category: category.into(),
                 last_seen: chrono::Local::now().to_rfc3339(),
             },
             status: NodeStatus::Online,
             capabilities,
             tags: tags.clone(),
-            // Preserve all addresses for multi-address failover。clone：closure
-            // （占位全量比对）与下方 RealNodeInfo 升级构造仍要用 addresses。
-            addresses: addresses.clone(),
+            // Preserve all addresses for multi-address failover。
+            addresses: pool,
             // clone：下方占位升级块（RealNodeInfo）仍要用 professions/tier。
             professions: professions.clone(),
             tier: tier.clone(),
@@ -1588,8 +1648,19 @@ impl Cluster {
             // 发现①根修：全量自报数组非空才刷新（primary 保护同上——静态
             // 语义只锁用户显式配置的 base.address；数组是选址候选池，刷新
             // 让 select_best_address 在多网卡下始终拿到最新的可达集合）。
+            // R2 静态 pin 合并保护：静态对端的候选池走**合并**而非整组替换
+            // ——自报数组不含用户 pin 的可达地址（枚举缺口/网卡优先级）时，
+            // 整组替换会把 pin 逐出（与 handle_discovered_node_impl 同纪律）。
             if !info.addresses.is_empty() {
-                existing.addresses = info.addresses.clone();
+                if self.registry.is_peer_static(&info.id) {
+                    for a in &info.addresses {
+                        if !existing.addresses.contains(a) {
+                            existing.addresses.push(a.clone());
+                        }
+                    }
+                } else {
+                    existing.addresses = info.addresses.clone();
+                }
             }
             existing.base.last_seen = chrono::Local::now().to_rfc3339();
             existing.capabilities = info.capabilities.clone();
@@ -3501,6 +3572,7 @@ impl Cluster {
             &msg.node_type,
             msg.professions,
             msg.tier,
+            None,
         );
         if changed {
             tracing::info!(
@@ -3787,6 +3859,23 @@ async fn poll_stale_pending_tasks(
                     "[Cluster] Stale task not found on remote peer",
                 );
                 task_manager.complete_callback(&task.id, "error", "", "remote task not found");
+                // N3c（2026-10-12）：not_found = worker 明确说「没这任务」
+                //（典型：worker 重启丢内存任务表）——确定性判死信号，board
+                // 派发必须立即走交付回调（write_back FAILED + ⛔ 评论 +
+                // in_review + spawn 评审），不等 dispatch_timeout sweep
+                //（否则任务已死、派发行悬 dispatched、评审链最长空转 3600s）。
+                // worker 端已无副本，无需 confirm；回调失败（写回竞态）时
+                // 派发行仍 dispatched，sweep 照常兜底，宁留勿丢语义不变。
+                if let Some(cb) = delivery_cb {
+                    let ok = cb(&task.id, "error", "", Some("remote task not found"));
+                    if !ok {
+                        tracing::warn!(
+                            task_id = %task.id,
+                            "[Cluster] recovered delivery callback reported failure \
+                             (not_found); dispatch row stays for sweep fallback"
+                        );
+                    }
+                }
                 // G5: not_found 同样要唤醒 agent（带 error metadata），
                 // 否则续行快照永远悬着直到安全网清理。
                 if let Some(bus) = bus {
@@ -3976,6 +4065,7 @@ impl ClusterCallbacks for Cluster {
         node_type: &str,
         professions: &[String],
         tier: Option<&str>,
+        source_addr: Option<&str>,
     ) -> bool {
         self.handle_discovered_node_ex(
             node_id,
@@ -3989,6 +4079,7 @@ impl ClusterCallbacks for Cluster {
             node_type,
             professions.to_vec(),
             tier.map(|s| s.to_string()),
+            source_addr,
         )
     }
 
@@ -4013,25 +4104,35 @@ impl ClusterCallbacks for Cluster {
 struct ClusterPeerResolver {
     registry: Arc<PeerRegistry>,
     node_id: String,
+    /// 本节点 RPC 端口（R4 自投递防护：候选端点 ip:port 与自身 endpoint
+    /// 全匹配 = 注册表混池污染面，剔除——只按裸 IP 判定会误杀同机多节点
+    /// 拓扑，端口是它们的唯一区分维度）。
+    rpc_port: u16,
+}
+
+/// R4 纯函数核：候选端点是否落在本节点自身 endpoint 上。
+///
+/// 判定 = **端口全匹配** 且（主机为回环 或 主机在本机 IP 集合内）。
+/// 同机多节点（cluster-uat / 本地双实例）靠端口区分——裸 IP 判定会把
+/// 合法同机对端误杀。`host` 允许携带端口（取 host 部分）。
+pub(crate) fn is_self_endpoint(host: &str, port: u16, own_port: u16, own_ips: &[String]) -> bool {
+    if port != own_port {
+        return false;
+    }
+    let host_only = host.split(':').next().unwrap_or(host);
+    if let Ok(ip) = host_only.parse::<std::net::IpAddr>()
+        && ip.is_loopback()
+    {
+        return true;
+    }
+    own_ips.iter().any(|o| o.eq_ignore_ascii_case(host_only))
 }
 
 impl PeerResolver for ClusterPeerResolver {
     fn get_peer_info(&self, peer_id: &str) -> Option<(Vec<String>, u16, bool)> {
         // 1. Direct lookup by key (e.g. "Node-A" or a node_id)
         if let Some(info) = self.registry.get(peer_id) {
-            let is_online = info.status == NodeStatus::Online;
-            let (_, port) = parse_host_port(&info.base.address);
-            let addresses = if !info.addresses.is_empty() {
-                info.addresses.clone()
-            } else {
-                let (host, _) = parse_host_port(&info.base.address);
-                if host.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![host]
-                }
-            };
-            return Some((addresses, port, is_online));
+            return self.resolve_dial_candidates(&info);
         }
 
         // 2. Fallback: scan all peers for matching node_id or name.
@@ -4040,19 +4141,7 @@ impl PeerResolver for ClusterPeerResolver {
         let all = self.registry.list_peers();
         for info in &all {
             if info.base.id == peer_id || info.base.name == peer_id {
-                let is_online = info.status == NodeStatus::Online;
-                let (_, port) = parse_host_port(&info.base.address);
-                let addresses = if !info.addresses.is_empty() {
-                    info.addresses.clone()
-                } else {
-                    let (host, _) = parse_host_port(&info.base.address);
-                    if host.is_empty() {
-                        Vec::new()
-                    } else {
-                        vec![host]
-                    }
-                };
-                return Some((addresses, port, is_online));
+                return self.resolve_dial_candidates(info);
             }
         }
 
@@ -4071,6 +4160,73 @@ impl PeerResolver for ClusterPeerResolver {
 
     fn get_node_id(&self) -> String {
         self.node_id.clone()
+    }
+}
+
+impl ClusterPeerResolver {
+    /// 由注册表条目推导拨号候选 `(addresses, rpc_port, is_online)`。
+    ///
+    /// R3 拨号兜底：`base.address`（静态 peers.toml 的地址 / announce
+    /// primary）**始终参与拨号**——池非空也不丢（旧实现池非空时完全不
+    /// 消费 base.address，静态 pin 被池刷新挤掉后即彻底失联）。host 去重
+    /// 后追加在池尾兜底。
+    ///
+    /// R4 自投递防护：候选端点与本节点自身 endpoint（本机 IP × 本节点
+    /// RPC 端口，含回环）全匹配 = 注册表把本节点历史上报地址混进对端池
+    /// （Win↔Win 验收实证的自投递劫持面：同端口布局下拨回自己 RPC
+    /// server，dispatch 报成功实际本节点执行、交付作者身份漂移）。剔除
+    /// 后全空 = 该对端在非自端点意义上不可解析，返回 `None`（诚实失败，
+    /// 上层派发失败路径照常留痕），同时 WARN 留诊断现场。
+    fn resolve_dial_candidates(&self, info: &ExtendedNodeInfo) -> Option<(Vec<String>, u16, bool)> {
+        let is_online = info.status == NodeStatus::Online;
+        let (host, port) = parse_host_port(&info.base.address);
+        let mut addresses = info.addresses.clone();
+        if !host.is_empty()
+            && !addresses
+                .iter()
+                .any(|a| a.split(':').next() == Some(host.as_str()))
+        {
+            addresses.push(host);
+        }
+
+        let own_ips = network::get_all_local_ips();
+        let filtered: Vec<String> = addresses
+            .iter()
+            .filter(|a| {
+                // 裸 IP 候选的端口配对与本 resolver 返回的 rpc_port 一致
+                // （dispatch 侧按同语义拼接 ip:port）；带端口条目按自带端口。
+                let (h, p) = parse_host_port(a);
+                let effective_port = if a.contains(':') { p } else { port };
+                !is_self_endpoint(&h, effective_port, self.rpc_port, &own_ips)
+            })
+            .cloned()
+            .collect();
+        // 全滤空 WARN 覆盖对称（多角度审计批低-4 + 闭环批低-4 补全）：判据
+        // = 「过滤后为空」。三形态诚实失败（返回 `None`，上层派发失败路径
+        // 照常留痕）：① 过滤前有候选但全为自端点（池污染）；② 池原本为空、
+        // 唯一候选是 base.host 且恰为自端点（返回 Some 空池 = 客户端拿 ""
+        // 拨号一次才失败，错误文案误导为连接问题而非自碰撞）；③ 连候选都
+        // 没有（announce/静态 pin 全缺）——Some 空池同样是拿 "" 空拨一次，
+        // 与①②同罪，统一 None。
+        if filtered.is_empty() {
+            if addresses.is_empty() {
+                tracing::warn!(
+                    peer_id = %info.base.id,
+                    "[Cluster] No dial candidates at all for peer (no address pool, \
+                     no usable base address); cannot resolve"
+                );
+            } else {
+                tracing::warn!(
+                    peer_id = %info.base.id,
+                    raw_candidates = ?addresses,
+                    own_rpc_port = self.rpc_port,
+                    "[Cluster] All dial candidates for peer collide with the local endpoint \
+                     (registry address-pool pollution?); refusing to dial self"
+                );
+            }
+            return None;
+        }
+        Some((filtered, port, is_online))
     }
 }
 
@@ -4130,7 +4286,15 @@ pub(crate) fn resolve_auto_node_name(
     if let Some(h) = hostname {
         return (h, false);
     }
-    (format!("Bot {}", &node_id[..8.min(node_id.len())]), false)
+    // node_id 可能含多字节文本（中文主机名等），裸字节截断会 panic
+    // （2026-10-11 横扫修复），走边界安全版。
+    (
+        format!(
+            "Bot {}",
+            nemesis_utils::string_utils::truncate_bytes_at_boundary(node_id, 8)
+        ),
+        false,
+    )
 }
 
 /// 批次四：解析链的 env 薄包装——生产路径（`new` / `with_workspace`）

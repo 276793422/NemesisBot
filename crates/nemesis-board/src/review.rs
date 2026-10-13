@@ -155,15 +155,7 @@ fn extract_json_object(raw: &str) -> Option<String> {
 
 /// 解析失败后的回灌重试提示词（把错误与原输出喂回，要求自纠）。
 pub fn build_retry_prompt(prev_output: &str, error: &ReviewParseError) -> String {
-    let prev = if prev_output.len() > 4000 {
-        let mut cut = 4000;
-        while !prev_output.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        format!("{}…（已截断）", &prev_output[..cut])
-    } else {
-        prev_output.to_string()
-    };
+    let prev = truncate_bytes(prev_output, 4000);
     format!(
         "你上一次的输出无法通过校验：{}\n\n上一次输出：\n{prev}\n\n请修正后重新输出：只输出符合格式的 JSON 对象，不要任何其他文字或解释。",
         error.message
@@ -197,7 +189,11 @@ pub fn strip_directive_lines(acceptance_criteria: &str) -> String {
 }
 
 /// 按 rune 边界安全截断到 `max` 字节，超限加省略号注记。
-fn truncate_bytes(text: &str, max: usize) -> String {
+///
+/// pub(crate)：planner 回灌提示词共用（planner.rs:363 曾裸字节切片
+/// `&s[..4000]`，中文第 4000 字节落在多字节字符中间直接 panic——tokio
+/// 任务无声死亡、规划链断、看板零留痕，2026-10-11 真机实证）。
+pub(crate) fn truncate_bytes(text: &str, max: usize) -> String {
     if text.len() <= max {
         return text.to_string();
     }

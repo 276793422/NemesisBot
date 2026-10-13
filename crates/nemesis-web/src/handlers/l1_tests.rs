@@ -219,6 +219,9 @@ fn registry_anchor_commands_present() {
     if cfg!(feature = "cluster") {
         assert!(cmds_of(&reg, "cluster").contains(&"node.update_identity"));
     }
+    // M5-1（2026-10-10 机制加固）：评审重触发入口（命令无条件注册，钩子
+    // 未安装时诚实报错）。
+    assert!(cmds_of(&reg, "board").contains(&"review.retrigger"));
     if cfg!(feature = "security") {
         assert!(cmds_of(&reg, "security").contains(&"config.get"));
         assert!(cmds_of(&reg, "scanner").contains(&"config.get"));

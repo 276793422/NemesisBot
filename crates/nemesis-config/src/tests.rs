@@ -250,6 +250,39 @@ fn test_save_and_load_security_config() {
 }
 
 #[test]
+fn test_security_config_approvals_auto_approve_default_off_and_roundtrip() {
+    // §2 免打扰（无人值守计划 Part 2）：approvals.auto_approve 缺省关
+    // （现行为零变化——弹卡照旧），显式 true 落盘 + 回读保真。
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+    assert!(
+        !SecurityConfig::default().approvals.auto_approve,
+        "默认必须关（现行为 pin）"
+    );
+    // 缺省序列化时 approvals 段整个 skip（老配置文件缺键不炸）。
+    let default_json = serde_json::to_string(&SecurityConfig::default()).unwrap();
+    assert!(
+        !default_json.contains("auto_approve"),
+        "缺省 approvals 段应 skip 序列化: {default_json}"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.security.json");
+    let cfg = SecurityConfig {
+        approvals: crate::ApprovalsConfig { auto_approve: true },
+        ..Default::default()
+    };
+    save_security_config(&path, &cfg).unwrap();
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(raw.contains("auto_approve"), "true 须落盘: {raw}");
+    let loaded = load_security_config(&path).unwrap();
+    assert!(loaded.approvals.auto_approve, "回读保真");
+    // 老配置文件（无 approvals 键）容忍缺省。
+    let legacy: SecurityConfig =
+        serde_json::from_str(r#"{"enabled": true, "default_action": "deny"}"#).unwrap();
+    assert!(!legacy.approvals.auto_approve, "缺键 = 关");
+}
+
+#[test]
 fn test_load_scanner_config_default() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -1921,6 +1954,41 @@ fn test_apply_env_overrides_max_tool_iterations() {
     }
 }
 
+/// P8（2026-10-10 集群无人值守硬化 A2）：session_token_budget 默认 pin。
+/// **0 = 关**（与 max_tool_iterations 的 0=不限惯例相反）；typed round-trip
+/// 保值（AgentDefaults 无 flatten extra，typed 字段是防 save_config 抹键的
+/// 唯一防线）；内嵌 config.default.json 恒 0（默认不改现网行为）。
+#[test]
+fn test_session_token_budget_default_pin_and_roundtrip() {
+    // ① typed 默认 = 0（关）。
+    assert_eq!(
+        AgentDefaults::default().session_token_budget,
+        0,
+        "0 = 关（默认不改现网行为）"
+    );
+    // ② serde round-trip：非零值经序列化→反序列化保值（抹键 = 预算静默失效）。
+    let json = r#"{"session_token_budget": 250000}"#;
+    let parsed: AgentDefaults = serde_json::from_str(json).unwrap();
+    assert_eq!(parsed.session_token_budget, 250_000);
+    let roundtrip: AgentDefaults =
+        serde_json::from_str(&serde_json::to_string(&parsed).unwrap()).unwrap();
+    assert_eq!(roundtrip.session_token_budget, 250_000);
+    // ③ 键缺失 = serde default 0（关），不是报错。
+    let bare: AgentDefaults = serde_json::from_str("{}").unwrap();
+    assert_eq!(bare.session_token_budget, 0);
+    // ④ 内嵌默认模板恒 0（onboard 出来的新工作空间默认关）。
+    let default_json = include_str!("../../../nemesisbot/config/config.default.json");
+    let v: serde_json::Value = serde_json::from_str(default_json).unwrap();
+    assert_eq!(
+        v.get("agents")
+            .and_then(|a| a.get("defaults"))
+            .and_then(|d| d.get("session_token_budget"))
+            .and_then(|n| n.as_u64()),
+        Some(0),
+        "config.default.json 的 session_token_budget 必须 pin 在 0（关）"
+    );
+}
+
 #[test]
 fn test_apply_env_overrides_concurrent_request_mode() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
@@ -3111,17 +3179,22 @@ fn test_board_flag_config_auto_dispatch_roundtrip() {
 
 #[test]
 fn test_board_review_budget_defaults_conservative() {
-    // P4 新段默认必须保守：执行型取证轮数=1（与历史行为字节等价）、自检/
-    // 项目收口关（自动 agent 活动显式 opt-in）、预算三维全关（0=不设限，
-    // 存量行为不变）。缺段 / 空段 / 段内缺字段三形态一致。
+    // P4 新段默认必须保守：取证轮数 0=不限（M6-3，2026-10-10 C1 预算耗尽
+    // 根修——1 轮经常不够下结论 → 假 UNSURE/假 FAIL；doom-loop/estop 守卫
+    // 仍在，0 语义安全）、自检/项目收口关（自动 agent 活动显式 opt-in）、
+    // 预算三维全关（0=不设限，存量行为不变）。缺段 / 空段 / 段内缺字段
+    // 三形态一致。
     let empty: Config = serde_json::from_str("{}").unwrap();
     let b = empty.board.unwrap_or_default();
-    assert_eq!(b.review.max_turns, 1);
+    assert_eq!(b.review.max_turns, 0, "M6-3：默认 0=不限取证轮数");
     assert!(!b.review.selfcheck);
     assert!(!b.review.auto_close_project);
     assert_eq!(b.budget.max_subissues_per_parent, 20);
     assert_eq!(b.budget.max_total_redispatch, 0);
     assert_eq!(b.budget.wall_clock_budget_secs, 0);
+    // F2 送达失败重试熔断默认**开**（5 次）——自动重试循环默认带护栏的
+    // 系统惯例；其余预算维默认关不冲突（那是「不设限」、这是「熔断」）。
+    assert_eq!(b.budget.max_send_retries, 5);
 
     let partial: BoardFlagConfig = serde_json::from_value(serde_json::json!({
         "auto_review": true,
@@ -3131,6 +3204,7 @@ fn test_board_review_budget_defaults_conservative() {
     assert_eq!(partial.review.max_turns, 4);
     assert!(!partial.review.selfcheck, "段内缺字段必须落保守默认");
     assert_eq!(partial.budget.max_subissues_per_parent, 20);
+    assert_eq!(partial.budget.max_send_retries, 5, "段内缺字段落默认 5");
 }
 
 #[test]
@@ -3138,7 +3212,7 @@ fn test_board_review_budget_roundtrip() {
     let cfg: BoardFlagConfig = serde_json::from_value(serde_json::json!({
         "review": { "max_turns": 3, "selfcheck": true, "auto_close_project": true },
         "budget": { "max_subissues_per_parent": 10, "max_total_redispatch": 5,
-                    "wall_clock_budget_secs": 3600 }
+                    "wall_clock_budget_secs": 3600, "max_send_retries": 7 }
     }))
     .unwrap();
     assert_eq!(cfg.review.max_turns, 3);
@@ -3146,9 +3220,15 @@ fn test_board_review_budget_roundtrip() {
     assert_eq!(cfg.budget.max_subissues_per_parent, 10);
     assert_eq!(cfg.budget.max_total_redispatch, 5);
     assert_eq!(cfg.budget.wall_clock_budget_secs, 3600);
+    assert_eq!(cfg.budget.max_send_retries, 7);
     let re: BoardFlagConfig = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
     assert_eq!(re.review.max_turns, 3);
     assert_eq!(re.budget.wall_clock_budget_secs, 3600);
+    assert_eq!(re.budget.max_send_retries, 7, "round-trip 保留 F2 熔断键");
+    // 0 = 关（无限重试）合法值透传
+    let off: BoardFlagConfig =
+        serde_json::from_value(serde_json::json!({ "budget": { "max_send_retries": 0 } })).unwrap();
+    assert_eq!(off.budget.max_send_retries, 0);
 }
 
 // ============================================================

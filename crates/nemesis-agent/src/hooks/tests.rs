@@ -421,6 +421,8 @@ impl LlmProvider for RecordingProvider {
 
 fn scripted_resp(content: &str) -> LlmResponse {
     LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: content.to_string(),
         tool_calls: Vec::new(),
         finished: true,

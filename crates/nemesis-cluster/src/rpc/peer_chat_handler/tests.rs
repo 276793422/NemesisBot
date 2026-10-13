@@ -1936,3 +1936,90 @@ fn required_profession_from_payload_arms() {
         None
     );
 }
+
+// ---------------------------------------------------------------------------
+// T44C 真机注入回归锁（2026-10-01）：回调必须走拨号穿透（must-reach）。
+//
+// registry 判 Offline 但对端实际可达（真实 TCP echo 在听）时，回调仍须
+// 拨号送达。门禁瞬断的反面教材（T44C iptables run2 实证）：heal 滞后窗
+// 内 3 次重试 15s 全被「peer is offline」拒发、零拨号，已完成任务结果
+// 丢失。修复 = send_callback 走 require_online=false 通路；本测试钉死
+// 「offline registry 不拦回调拨号」语义。
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn test_send_callback_dials_through_offline_registry() {
+    use crate::rpc::client::{LocalNetworkInterface, PeerResolver, RpcClient};
+    use crate::transport::conn::WireMessage;
+
+    // 真 TCP echo：读一帧请求，按请求 id 回成功响应帧（client/tests.rs
+    // spawn_arb_echo 同款最小形态）。
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let Ok((mut sock, _)) = listener.accept().await else {
+            return;
+        };
+        let mut len_buf = [0u8; 4];
+        if sock.read_exact(&mut len_buf).await.is_err() {
+            return;
+        }
+        let len = u32::from_be_bytes(len_buf) as usize;
+        let mut buf = vec![0u8; len];
+        if sock.read_exact(&mut buf).await.is_err() {
+            return;
+        }
+        let Ok(req) = serde_json::from_slice::<WireMessage>(&buf) else {
+            return;
+        };
+        let resp = WireMessage {
+            version: "1.0".into(),
+            id: req.id.clone(),
+            msg_type: "response".into(),
+            from: "echo-peer".into(),
+            to: req.from.clone(),
+            action: req.action.clone(),
+            payload: serde_json::json!({"ok": true}),
+            timestamp: chrono::Local::now().timestamp(),
+            error: String::new(),
+        };
+        let json = serde_json::to_vec(&resp).unwrap();
+        let _ = sock.write_all(&(json.len() as u32).to_be_bytes()).await;
+        let _ = sock.write_all(&json).await;
+        let _ = sock.flush().await;
+    });
+
+    // registry 报 Offline（heal 滞后窗形态），地址指向真实 echo。
+    struct OfflineResolver(String);
+    impl PeerResolver for OfflineResolver {
+        fn get_peer_info(&self, _peer_id: &str) -> Option<(Vec<String>, u16, bool)> {
+            Some((vec![self.0.clone()], 0, false))
+        }
+        fn get_local_interfaces(&self) -> Vec<LocalNetworkInterface> {
+            Vec::new()
+        }
+        fn get_node_id(&self) -> String {
+            "test-worker".into()
+        }
+    }
+    let client = RpcClient::with_resolver(Arc::new(OfflineResolver(addr)));
+
+    // 修复前：门禁瞬断 → 立即 false（3 次重试零拨号，~15s 空转）。
+    // 修复后：拨号穿透 → 首试即送达，true。
+    let delivered = send_callback(
+        Some(&client),
+        "master-node",
+        "test-worker",
+        "task-t44c",
+        "success",
+        "echo-back",
+        "",
+        None,
+        None,
+    )
+    .await;
+    assert!(
+        delivered,
+        "回调必须穿透 offline registry 拨号送达（must-reach 语义）"
+    );
+}

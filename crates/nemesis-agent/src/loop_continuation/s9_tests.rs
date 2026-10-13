@@ -139,6 +139,8 @@ impl crate::r#loop::LlmProvider for OneShotProvider {
         _tools: Vec<crate::types::ToolDefinition>,
     ) -> Result<LlmResponse, String> {
         Ok(LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: self.response.content.clone(),
             tool_calls: Vec::new(),
             finished: true,
@@ -171,6 +173,8 @@ async fn continuation_final_response_logs_info_fields() {
 
     let provider = OneShotProvider {
         response: LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "final s9 answer".to_string(),
             tool_calls: Vec::new(),
             finished: true,

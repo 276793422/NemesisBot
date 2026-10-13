@@ -233,6 +233,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             let self_node_id = cluster.node_id().to_string();
             let sweep_cluster_slot = sweep_cluster_slot.clone();
             let sweep_last = sweep_last.clone();
+            let home_for_rebalance = home.clone();
             // 真机缺陷（2026-09-11 双端双平台复现）：本闭包在 std 线程
             // discovery-udp-listen 上触发——该线程无 tokio reactor，闭包内
             // 直接 tokio::spawn 会 panic 并炸死监听线程 → announce 接收全哑
@@ -262,6 +263,9 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                         let store = store_for_hook.clone();
                         let cluster = sweep_cluster_slot.get().unwrap().clone();
                         let node_id = node_id.to_string();
+                        // 外层闭包是 Fn（每次 announce 都调用），async move
+                        // 块须自持 home 副本（PathBuf 非 Copy，不能搬闭包捕获）。
+                        let home_for_rebalance = home_for_rebalance.clone();
                         discovery_rt.spawn(async move {
                             if let Some(store) = store.as_ref() {
                                 let actor = nemesis_board::Actor::system("board");
@@ -274,13 +278,20 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                                     );
                                 }
                                 // D0b（goal P2）重平衡：announce 节点有空闲 slot
-                                // 时，从超载 worker（在途 > 上限）偷排队单转派
-                                // 过来——新设备上线即有活接（准入控制留量的
-                                // 承接半环）。
+                                // 时，从超载 worker（活跃 = 在途+排队 > cap）偷
+                                // 排队单转派过来——新设备上线即有活接（准入控制
+                                // 留量的承接半环）。board_cfg 每次 announce 现读
+                                // config.json（2026-10-08 根修⑤：此前传 None →
+                                // cap 恒按缺省 1 判定，worker_max_inflight 配置
+                                // 在重平衡面失效；现读同时让热改即时生效）。读
+                                // 失败按无配置处理（cap 回落 1，与旧行为一致）。
+                                let board_flags =
+                                    crate::board_review::load_board_flags(&home_for_rebalance)
+                                        .ok();
                                 let moved = nemesis_web::handlers::board::rebalance_queued_to_worker(
                                     store,
                                     &cluster,
-                                    None,
+                                    board_flags.as_ref(),
                                     &node_id,
                                     &actor,
                                 )
@@ -505,6 +516,13 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             Option<std::sync::Arc<nemesis_cluster::outbox::TransferOutbox>>,
         ) = match rpc_client.clone() {
             Some(rc) => {
+                // M1（2026-10-10 机制加固）注记：本根与锚点主根同源
+                //（workspace canonical 布局）。init_cluster 先于
+                // shared_resources 构造（gateway.rs Phase B2），拿不到
+                // workspace_dir()——gateway 恒 canonical（agent_build 显式
+                // 写出），本表达式与 SharedResources::workspace_dir() 字节
+                // 等价；改 workspace 解析语义时必须同改（契约测试
+                // anchor_root_contract_single_source 钉死三者一致）。
                 let ws_dir = home.join("workspace");
                 let limit0 = cfg
                     .board
@@ -682,6 +700,13 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 let seen = Arc::new(tokio::sync::Mutex::new(
                     std::collections::HashSet::<String>::new(),
                 ));
+                // M1（2026-10-10 机制加固）注记：本根与锚点主根同源
+                //（workspace canonical 布局）。init_cluster 先于
+                // shared_resources 构造（gateway.rs Phase B2），拿不到
+                // workspace_dir()——gateway 恒 canonical（agent_build 显式
+                // 写出），本表达式与 SharedResources::workspace_dir() 字节
+                // 等价；改 workspace 解析语义时必须同改（契约测试
+                // anchor_root_contract_single_source 钉死三者一致）。
                 let ws_dir = home.join("workspace");
                 tokio::spawn(async move {
                     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
@@ -908,6 +933,13 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 let store_for_sweep = board_store.clone();
                 let cluster_for_sweep = cluster.clone();
                 let home_for_sweep = home.clone();
+                // M5-2（2026-10-10 机制加固）：清扫失败的 issue 回流验收
+                // 决策链——评审依赖集在此快照（与派发写回回调同一构造）。
+                let sweep_moderator = board_moderator_loop.clone();
+                let sweep_estop = estop.clone();
+                let sweep_estop_parked = board_estop_parked.clone();
+                let sweep_selfcheck = board_selfcheck_registry.clone();
+                let sweep_workspace = home.join("workspace");
                 tokio::spawn(async move {
                     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
                         sweep_cfg.dispatch_sweep_interval_secs.max(1),
@@ -949,7 +981,25 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                         if timeout_secs == 0 {
                             continue;
                         }
-                        sweep_dispatch_timeouts(store, &cluster_for_sweep, timeout_secs);
+                        // M5-2：清扫失败 → in_review 回流 + spawn 评审 agent
+                        //（视同验收 FAIL 走重派/预算/熔断漏斗）。
+                        for review_issue_id in
+                            sweep_dispatch_timeouts(store, &cluster_for_sweep, timeout_secs)
+                        {
+                            crate::board_review::spawn_board_review(
+                                crate::board_review::BoardReviewDeps {
+                                    store: store.clone(),
+                                    workspace: sweep_workspace.clone(),
+                                    home: home_for_sweep.clone(),
+                                    moderator_loop: sweep_moderator.clone(),
+                                    cluster: cluster_for_sweep.clone(),
+                                    estop: sweep_estop.clone(),
+                                    estop_parked: sweep_estop_parked.clone(),
+                                    selfcheck: sweep_selfcheck.clone(),
+                                },
+                                review_issue_id,
+                            );
+                        }
                     }
                 });
                 info!(

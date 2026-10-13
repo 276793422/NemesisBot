@@ -278,6 +278,7 @@ impl nemesis_agent::r#loop::Tool for BoardIssueTool {
                     &plan_id,
                     self.home_ref(),
                     self.hub.as_deref(),
+                    1, // attempt：agent 工具入口无后台超时监视，恒首发
                 )
                 .await?;
                 Ok(serde_json::to_string_pretty(&out).unwrap_or_else(|_| out.to_string()))
