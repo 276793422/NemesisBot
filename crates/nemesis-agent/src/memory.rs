@@ -165,6 +165,14 @@ fn estimate_tokens(text: &str) -> usize {
 ///
 /// - Long-term memory: `memory/MEMORY.md`
 /// - Daily notes: `memory/YYYYMM/YYYYMMDD.md`
+///
+/// 写串行锁（横扫六期记档，2026-10-13）：本结构当前无生产接线（仅测试
+/// 保活；生产记忆写走 nemesis-memory 的 jsonl append 链），但
+/// append_today 是读→拼接→写的 RMW——一旦接线，主 loop/项目 loop/集群
+/// B 端并发调 memory 工具即互相丢笔记。锁取在写函数内，未来接线者
+/// 结构性安全。
+static MEMORY_FILE_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub struct MemoryStore {
     #[allow(dead_code)] // Reserved for future workspace-relative operations
     workspace: PathBuf,
@@ -218,6 +226,9 @@ impl MemoryStore {
             "[MemoryStore] Writing long-term memory, {} bytes",
             content.len()
         );
+        let _g = MEMORY_FILE_WRITE_LOCK
+            .lock()
+            .map_err(|_| std::io::Error::other("memory file write lock poisoned"))?;
         if let Some(parent) = self.memory_file.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -247,6 +258,10 @@ impl MemoryStore {
             fs::create_dir_all(parent)?;
         }
 
+        // 读→拼接→写全程持锁（RMW：并发 append 各读同一基线会互丢笔记）。
+        let _g = MEMORY_FILE_WRITE_LOCK
+            .lock()
+            .map_err(|_| std::io::Error::other("memory file write lock poisoned"))?;
         let existing = fs::read_to_string(&path).unwrap_or_default();
 
         let new_content = if existing.is_empty() {
