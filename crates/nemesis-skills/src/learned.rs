@@ -14,8 +14,15 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
+
+/// manifest 写串行锁（进程级）：`record_learned`/`remove_learned` 都是
+/// load→改→save 的 RMW，agent 侧工具路径与 WSAPI 管理面可跨会话并发到达，
+/// 无锁时后写者会把先写者的条目整条冲掉（save 虽原子，丢的是先者的更新）。
+/// 只串行写者——读路径（learned_list）吃 rename 原子性，无需入锁。
+static MANIFEST_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 /// manifest 文件名（置于 `<workspace>/skills/` 下；点前缀 + 文件形态，
 /// `installed()` 等目录扫描天然跳过）。
@@ -137,7 +144,10 @@ impl LearnedManifest {
 
 /// 便捷一次成型：load → upsert → save。给 `skill_manage create` 成功路径用，
 /// 失败不影响 create 本身（调用方决定降级策略）。
+///
+/// 写侧全程持有 [`MANIFEST_WRITE_LOCK`]——RMW 与并发写者互斥（见锁注释）。
 pub fn record_learned(workspace: &Path, name: &str, description: &str) -> Result<(), String> {
+    let _serial = MANIFEST_WRITE_LOCK.lock();
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -148,7 +158,10 @@ pub fn record_learned(workspace: &Path, name: &str, description: &str) -> Result
 }
 
 /// 便捷一次成型：load → remove → save。返回移除前是否存在。
+///
+/// 写侧全程持有 [`MANIFEST_WRITE_LOCK`]（同 [`record_learned`]）。
 pub fn remove_learned(workspace: &Path, name: &str) -> Result<bool, String> {
+    let _serial = MANIFEST_WRITE_LOCK.lock();
     let mut manifest = LearnedManifest::load(workspace);
     let existed = manifest.remove(name);
     if existed {
