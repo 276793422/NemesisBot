@@ -418,6 +418,10 @@ fn collect_adapter_link_local_ifaces(
 /// link-local 候选——跳过虚拟接口与回环，去重追加。FFI 侧把
 /// GetAdaptersAddresses 的链表拉平成这个形状后委托本函数，单测用合成
 /// adapter 数据钉死行为（实机断言归真机腿）。
+/// allow(dead_code)：唯一生产调用方在 `#[cfg(windows)]` 的
+/// windows_apipa_ips 里，非 Windows lib 目标下仅测试可见——不加门控会让
+/// Linux clippy -D warnings 门禁红（先例：本文件 prefix_len_to_mask）。
+#[allow(dead_code)]
 fn collect_adapter_link_local(name: &str, ips: &[Ipv4Addr], out: &mut Vec<String>) {
     if is_virtual_interface(name) {
         return;
@@ -468,14 +472,17 @@ fn windows_apipa_adapters() -> Vec<(String, Vec<(Ipv4Addr, u8)>)> {
     // size 重试（标准两段式调用）。
     let mut size: u32 = 16 * 1024;
     let buffer = loop {
-        let buf = vec![0u8; size as usize];
+        let mut buf = vec![0u8; size as usize];
         let mut len = size;
         let ret = unsafe {
             GetAdaptersAddresses(
                 AF_INET as u32,
                 FLAGS,
                 std::ptr::null_mut(),
-                buf.as_ptr() as *mut IP_ADAPTER_ADDRESSES_LH,
+                // as_mut_ptr（多角度审计批低-1）：as_ptr 派生 SharedReadOnly
+                // 溯源，传给会写入的 FFI 是严格意义的 UB（Miri 报）；一词
+                // 修正指针溯源，无行为变化。
+                buf.as_mut_ptr() as *mut IP_ADAPTER_ADDRESSES_LH,
                 &mut len,
             )
         };
@@ -502,8 +509,13 @@ fn windows_apipa_adapters() -> Vec<(String, Vec<(Ipv4Addr, u8)>)> {
         let a = unsafe { *adapter };
 
         // IF_TYPE_SOFTWARE_LOOPBACK = 24（值固定于 IANA ifType；不依赖
-        // windows-sys 是否导出常量）。
-        if a.IfType != 24 {
+        // windows-sys 是否导出常量）。OperStatus == 1（IfOperStatusUp，同
+        // IANA 固定值，多角度审计批低-2）：media disconnected 的适配器
+        // （拔线网口/断开的内部 vSwitch）可能带 169.254 残留地址，进池/
+        // 进 announce = 低优先级死候选白耗对端拨号预算；目标场景（直连
+        // DHCP 失败）适配器是 Up 的，过滤不伤目标。诚实边界：FFI 系统调用
+        // 面，单测无法注入 Down 适配器（真实网卡的 Down 形态归真机验收）。
+        if a.IfType != 24 && a.OperStatus == 1 {
             let name = wide_to_string(a.FriendlyName);
             let mut ips: Vec<(Ipv4Addr, u8)> = Vec::new();
             let mut ua = a.FirstUnicastAddress;
@@ -538,6 +550,9 @@ fn windows_apipa_adapters() -> Vec<(String, Vec<(Ipv4Addr, u8)>)> {
 }
 
 /// 前缀长 → IPv4 点分掩码（防御性钳位：>32 视作 32）。0 → 0.0.0.0。
+/// allow(dead_code)：唯一生产调用方在 `#[cfg(windows)]` 的
+/// collect_adapter_link_local_ifaces 里（同 collect_adapter_link_local）。
+#[allow(dead_code)]
 fn prefix_len_to_v4_mask(prefix: u8) -> String {
     let p = prefix.min(32);
     let mask = if p == 0 {

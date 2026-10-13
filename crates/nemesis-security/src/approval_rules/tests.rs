@@ -345,3 +345,62 @@ fn persist_compound_command_returns_honest_error() {
     assert!(!path.exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------- env 前缀（闭环批 2026-10-13）：读侧剥离与写侧归约同语义 ----------
+
+#[test]
+fn matches_rule_strips_env_prefix_per_segment() {
+    // 写侧 pattern 永无 env 头（reduce_command 剥）；读侧不剥则
+    // `FOO=1 cargo test` 永远弹卡——ABAC 放行、审批记忆打扰的分叉。
+    assert!(matches_rule(
+        "process_exec",
+        "cargo test *",
+        "process_exec",
+        "FOO=1 cargo test --release"
+    ));
+    // 复合命令逐段剥：`RUST_LOG=x` 只属于左段
+    assert!(matches_rule(
+        "process_exec",
+        "cargo *",
+        "process_exec",
+        "RUST_LOG=debug cargo build && cargo test"
+    ));
+    // env 头不构成通配逃生：`FOO=1 rm x` 不得命中 `cargo *`
+    assert!(!matches_rule(
+        "process_exec",
+        "cargo *",
+        "process_exec",
+        "FOO=1 rm x"
+    ));
+    // 纯 env 无命令：剥后为空 → 不命中（不得借 env 头全放行）
+    assert!(!matches_rule(
+        "process_exec",
+        "cargo *",
+        "process_exec",
+        "FOO=1"
+    ));
+}
+
+#[test]
+fn matches_rule_exact_branch_strips_env_for_command_ops() {
+    // 手写裸 pattern（无 " *" 后缀）的 exec 防御性对齐：剥 env 头再比
+    assert!(matches_rule(
+        "process_exec",
+        "cargo build",
+        "process_exec",
+        "FOO=1 cargo build"
+    ));
+    // 非 exec 类 target 是路径/URL：env 剥离不适用（含 `=` 的路径不变形）
+    assert!(!matches_rule(
+        "file_write",
+        "/tmp/a=b.txt",
+        "file_write",
+        "/tmp/other.txt"
+    ));
+    assert!(matches_rule(
+        "file_write",
+        "/tmp/a=b.txt",
+        "file_write",
+        "/tmp/a=b.txt"
+    ));
+}

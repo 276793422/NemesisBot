@@ -955,12 +955,38 @@ fn parse_exec_comment_after_quoted_arg_splits_top_level() {
     assert!(anchors[0].raw.contains("只看最近一条"), "raw 保留全行");
 }
 
-/// ContentRegex 模式含成对引号包住的 ` # `——模式整体保留不切。
+/// ContentRegex 模式含成对引号包住的 ` # `——切分不误切（quote-aware），
+/// 且**包裹引号对被剥除**（多角度审计批 A2 根修：引号字面进正则永远
+/// 匹配不上——`re:"交付完成"` 字面找 `"交付完成"`）。
 #[test]
 fn parse_content_regex_quoted_hash_stays() {
     let (anchors, _, _) = parse_anchors(r#"[CHECK] re:"\d+ # \d+""#);
     assert_eq!(anchors.len(), 1);
-    assert_eq!(anchors[0].pattern.as_deref(), Some(r#""\d+ # \d+""#));
+    assert_eq!(
+        anchors[0].pattern.as_deref(),
+        Some(r#"\d+ # \d+"#),
+        "wrap-quote pair stripped, inner ` # ` preserved"
+    );
+}
+
+/// A2 根修行为锁：包裹引号的 CJK 模式必须真的匹配得到交付文本。
+#[test]
+fn content_regex_wrap_quotes_match_delivery_text() {
+    let ws = temp_workspace("wrap-quote-match");
+    let (anchors, _, _) = parse_anchors(r#"[CHECK] re:"交付完成""#);
+    assert_eq!(anchors.len(), 1);
+    let results = run_anchors(&anchors, &ws, "任务已交付完成，请查阅");
+    assert!(results[0].passed, "{}", results[0].detail);
+}
+
+/// 不成对包裹（残引号）不剥——那是 split_anchor_comment 盲切分支的病态
+/// 输入域，此处不猜（剥一半反而改写语义）。
+#[test]
+fn content_regex_unbalanced_quote_not_stripped() {
+    let (anchors, _, _) = parse_anchors(r#"[CHECK] re:"交付完成"#);
+    // 残引号 → 盲切无 ` # ` → pattern 原样（含前引号），正则合法照常安装。
+    assert_eq!(anchors.len(), 1);
+    assert_eq!(anchors[0].pattern.as_deref(), Some(r#""交付完成"#));
 }
 
 /// 引号不成对（英文撇号 it's）→ 退 quote-blind 切分——叙述性 pattern +
@@ -970,4 +996,17 @@ fn parse_regex_apostrophe_prose_still_splits() {
     let (anchors, _, _) = parse_anchors("[CHECK] re:it's done # 备注: 全部完成");
     assert_eq!(anchors.len(), 1);
     assert_eq!(anchors[0].pattern.as_deref(), Some("it's done"));
+}
+
+/// A1 根修锁（多角度审计批）：盲切模式下注释切在**最后一个** ` # `——
+/// 残引号在 pattern 中间时早切会把 pattern 主体截断在引号残迹前。
+#[test]
+fn parse_regex_blind_mode_splits_at_last_hash() {
+    let (anchors, _, _) = parse_anchors("[CHECK] re:\"\\d+ # \\d+ # 备注");
+    assert_eq!(anchors.len(), 1);
+    assert_eq!(
+        anchors[0].pattern.as_deref(),
+        Some(r#""\d+ # \d+"#),
+        "blind fallback keeps the pattern body, comment = last ` # ` tail"
+    );
 }

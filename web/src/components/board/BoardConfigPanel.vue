@@ -32,6 +32,7 @@ interface BoardFlags {
     max_total_redispatch: number
     wall_clock_budget_secs: number
     max_tokens_per_parent: number
+    max_send_retries: number
   }
   discussion: {
     retention_days: number
@@ -64,7 +65,8 @@ async function load() {
         model: r?.plan?.model ?? null,
       },
       review: {
-        max_turns: r?.review?.max_turns ?? 1,
+        // 0=不限（取证到能下结论为止）——与后端 BoardReviewConfig::default 同源。
+        max_turns: r?.review?.max_turns ?? 0,
         selfcheck: !!r?.review?.selfcheck,
         auto_close_project: !!r?.review?.auto_close_project,
         checkers: r?.review?.checkers ?? 1,
@@ -74,6 +76,7 @@ async function load() {
         max_total_redispatch: r?.budget?.max_total_redispatch ?? 0,
         wall_clock_budget_secs: r?.budget?.wall_clock_budget_secs ?? 0,
         max_tokens_per_parent: r?.budget?.max_tokens_per_parent ?? 0,
+        max_send_retries: r?.budget?.max_send_retries ?? 5,
       },
       discussion: {
         retention_days: r?.discussion?.retention_days ?? 30,
@@ -387,6 +390,19 @@ onMounted(load)
             min="0"
             :value="flags.budget.max_tokens_per_parent"
             @change="onNumber('budget.max_tokens_per_parent', $event)"
+          />
+        </div>
+        <div class="param-row">
+          <div class="flag-text">
+            <div class="flag-label">送达失败自动重试上限</div>
+            <div class="flag-desc">单个任务派发送达失败后的自动重试次数（退避 1 分钟起步、最长间隔 30 分钟），超限自动转人工（0 = 关闭保险丝，无限重试；不推荐）</div>
+          </div>
+          <input
+            class="form-input param-input"
+            type="number"
+            min="0"
+            :value="flags.budget.max_send_retries"
+            @change="onNumber('budget.max_send_retries', $event)"
           />
         </div>
       </div>

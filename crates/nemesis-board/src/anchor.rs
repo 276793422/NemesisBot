@@ -75,25 +75,45 @@ const PROSE_PATTERN_HINT: &str =
 /// 引号感知：单/双引号**成对**（全行偶数）时，引号内的 ` # ` 是字面内容
 /// 不是注释——`exec:git log --format="%h # %s"`、`re:"\d+ # \d+"` 不被误切
 /// （复检批发现 quote-blind 切分会把这类命令截断在引号中间，编写者意图
-/// 与语义漂移的同族问题）。引号不成对 → 退 quote-blind 切分：残缺引号
-/// 本身就是病态输入，而英文叙述撇号（`it's done # 备注`）天然不成对，
-/// 此时切分至少保住 pattern 主体；运行时诚实失败兜底。转义形态 `\ \#\ `
-/// 的 `#` 前是反斜杠非空格，天然不命中。字节扫描安全：`'`/`"`/`#`/` `
-/// 均为 ASCII，UTF-8 多字节序列（≥0x80）不会误配，`rest[..i]` 落在
-/// 字符边界上。
+/// 与语义漂移的同族问题）。转义形态 `\ \#\ ` 的 `#` 前是反斜杠非空格，
+/// 天然不命中。字节扫描安全：`'`/`"`/`#`/` ` 均为 ASCII，UTF-8 多字节
+/// 序列（≥0x80）不会误配，`rest[..i]` 落在字符边界上。
+///
+/// 引号不成对 → 退 quote-blind 盲切（多角度审计批 2026-10-13 改向）：
+/// 视引号为普通字符，注释切在**最后一个** ` # `——编写约定注释在行尾，
+/// 残引号在 pattern 中间时早切会把 pattern 主体截断在引号残迹前
+///（`re:"\d+ # \d+ # 备注` 少个闭引号，早切只剩 `\d+`）；取末个保住主体。
+/// 英文叙述撇号（`it's done # 备注`）单 ` # ` 场景首末等价，不受影响。
+/// 切分落 **debug**（闭环批 2026-10-13 降档）：本函数在 sweep/验收热路径
+/// 被反复调用（has_file_anchor 等 tick 级扫查），残缺引号的存量单子会
+/// 每 tick 刷一条 WARN（30s tick ≈ 2880 条/天）——编写面诊断的正确落点
+/// 是安装期 WARN（`warn_if_prose_pattern` 的 prose 检查）与 FAIL 面明细，
+/// 此处降 debug 保现场可查不刷屏。
 fn split_anchor_comment(rest: &str) -> (&str, bool) {
     let quote_aware =
         rest.matches('\'').count().is_multiple_of(2) && rest.matches('"').count().is_multiple_of(2);
+    if !quote_aware {
+        tracing::debug!(
+            "[Anchor] 锚点引号不成对（残缺引号），退 quote-blind 注释切分（最后一个 ` # ` 为注释起点）：{rest}"
+        );
+        if let Some((idx, _)) = rest.rmatch_indices(" # ").next() {
+            // idx 指向 ` # ` 的前导空格；前段含该空格（与 quote-aware 臂
+            // 的 `&rest[..i]` 同形态，调用方各自 trim）。
+            return (&rest[..idx + 1], true);
+        }
+        return (rest, false);
+    }
     let bytes = rest.as_bytes();
     let (mut in_single, mut in_double) = (false, false);
     for (i, &b) in bytes.iter().enumerate() {
         match b {
-            b'\'' if quote_aware && !in_double => in_single = !in_single,
-            b'"' if quote_aware && !in_single => in_double = !in_double,
+            b'\'' if !in_double => in_single = !in_single,
+            b'"' if !in_single => in_double = !in_double,
             b'#' if i > 0
                 && bytes[i - 1] == b' '
                 && bytes.get(i + 1) == Some(&b' ')
-                && !(quote_aware && (in_single || in_double)) =>
+                && !in_single
+                && !in_double =>
             {
                 return (&rest[..i], true);
             }
@@ -103,20 +123,49 @@ fn split_anchor_comment(rest: &str) -> (&str, bool) {
     (rest, false)
 }
 
-/// re: 模式「疑似描述混入」判定（WARN 与 FAIL 提示共用的单一谓词）：
-/// 含空白或非 ASCII 字符——正则本身完全合法（照常安装，兼容存量），但这
-/// 类模式大概率是自然语言描述而非匹配式（`re:交付完成 包含测试报告`）。
+/// 剥模式两端的成对包裹引号（多角度审计批 2026-10-13）：编写者借引号包住
+/// 含空白的模式（shell 习惯），但 re:/contains: 的模式是裸文本——引号字面
+/// 进了正则/关键词几乎永远匹配不上（`re:"交付完成"` 字面找 `"交付完成"`，
+/// 而交付文本极少逐字含引号 → 大概率 FAIL → 无谓重派）。只剥**成对**包裹
+/// （首尾同引号字符且长度 ≥2）；不成对（残引号）不动——那是
+/// split_anchor_comment 盲切分支的病态输入域，此处不猜。
+/// 方向注记（诚实面）：剥引号是**超集匹配**（不带引号的匹配 ⊇ 带引号字面
+/// 的匹配），只会把 FAIL 翻成 PASS、绝不把 PASS 翻成 FAIL——不构成验收
+/// 放水面（planner/评审对交付内容的核验不靠锚点单点，exec:/file: 锚点
+/// 是客观实核）。
+fn strip_wrap_quotes(pattern: &str) -> &str {
+    let b = pattern.as_bytes();
+    let wrapped = b.len() >= 2 && b[0] == b[b.len() - 1] && (b[0] == b'"' || b[0] == b'\'');
+    if wrapped {
+        &pattern[1..pattern.len() - 1]
+    } else {
+        pattern
+    }
+}
+
+/// re: 模式「疑似描述混入」判定——两档谓词（多角度审计批 2026-10-13 拆分）：
+/// - **安装 WARN 用窄档**（[`pattern_looks_like_prose_strict`]）：含空白才
+///   疑似——多词自然语言描述的强信号。纯 CJK 无空白（`re:交付完成`，planner
+///   提示词自己推荐的形态）是合法匹配式，WARN 是误报噪音。
+/// - **FAIL 提示用宽档**（本函数）：含空白**或**非 ASCII——FAIL 时的提示
+///   是零成本诊断（PASS 不噪音），CJK 模式失配也值得提醒「可能把描述写进
+///   了匹配式」。
 fn pattern_looks_like_prose(pattern: &str) -> bool {
     pattern.chars().any(|c| c.is_whitespace() || !c.is_ascii())
 }
 
-/// 解析期编写面 WARN（不拒装）：无显式 ` # ` 分隔 yet 模式含空白/非 ASCII
-/// → 大概率把描述写进了匹配式（核验几乎必然失败 → 无谓重派）。照常安装
-/// （存量验收标准零迁移），只落 WARN 供编写者自查。
+/// 安装 WARN 谓词（窄档）：仅空白。见 [`pattern_looks_like_prose`] 分档说明。
+fn pattern_looks_like_prose_strict(pattern: &str) -> bool {
+    pattern.chars().any(|c| c.is_whitespace())
+}
+
+/// 解析期编写面 WARN（不拒装）：无显式 ` # ` 分隔 yet 模式含空白 → 大概率
+/// 把描述写进了匹配式（核验几乎必然失败 → 无谓重派）。照常安装（存量验收
+/// 标准零迁移），只落 WARN 供编写者自查。纯 CJK 无空白不 WARN（合法匹配式）。
 fn warn_if_prose_pattern(pattern: &str, explicit_comment: bool, raw: &str) {
-    if !explicit_comment && pattern_looks_like_prose(pattern) {
+    if !explicit_comment && pattern_looks_like_prose_strict(pattern) {
         tracing::warn!(
-            "[Anchor] re: 模式疑似混入描述文本（含空白/非 ASCII 且未用 ` # ` 分隔注释），已照常安装；若本意为「pattern + 注释」请改写为 `<pattern> # <注释>`：{raw}"
+            "[Anchor] re: 模式疑似混入描述文本（含空白且未用 ` # ` 分隔注释），已照常安装；若本意为「pattern + 注释」请改写为 `<pattern> # <注释>`：{raw}"
         );
     }
 }
@@ -295,14 +344,14 @@ fn parse_anchor_line(rest: &str) -> Result<Option<AnchorCheck>, String> {
         let (kind, pattern) = if predicate == "exists" {
             (AnchorKind::FileExists, None)
         } else if let Some(pattern) = predicate.strip_prefix("re:") {
-            let pattern = pattern.trim();
+            let pattern = strip_wrap_quotes(pattern.trim());
             if pattern.is_empty() || Regex::new(pattern).is_err() {
                 return Ok(None); // 空模式 / 非法正则 → 语义项回落
             }
             warn_if_prose_pattern(pattern, explicit_comment, &raw);
             (AnchorKind::FileRegex, Some(pattern.to_string()))
         } else if let Some(keyword) = predicate.strip_prefix("contains:") {
-            let keyword = keyword.trim();
+            let keyword = strip_wrap_quotes(keyword.trim());
             if keyword.is_empty() {
                 return Ok(None);
             }
@@ -318,7 +367,7 @@ fn parse_anchor_line(rest: &str) -> Result<Option<AnchorCheck>, String> {
         }));
     }
     if let Some(pattern) = rest.strip_prefix("re:") {
-        let pattern = pattern.trim();
+        let pattern = strip_wrap_quotes(pattern.trim());
         if pattern.is_empty() || Regex::new(pattern).is_err() {
             return Ok(None);
         }

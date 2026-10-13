@@ -353,10 +353,30 @@ fn test_segments_quoted_operators_not_split() {
 }
 
 #[test]
-fn test_segments_unbalanced_quote_falls_back_to_whole() {
-    // 引号不闭合 → 整条命令退单段（宁可不切，不可切错）
-    assert_eq!(segs("echo \"hi && rm -rf y"), vec!["echo \"hi && rm -rf y"]);
-    assert_eq!(segs("echo 'unterminated"), vec!["echo 'unterminated"]);
+fn test_segments_unbalanced_quote_blind_splits() {
+    // 引号不闭合 → quote-blind 盲切（复检批改向，多角度审计批固化）：
+    // 旧 fallback「退单段」是 fail-open——deny 整串锚定打不中非首段，
+    // 一个撇号就能整体击穿。盲切方向论证见 command_segments 文档：
+    // cmd.exe（本项目 Windows 主执行路径）视 `'` 为普通字符，盲切对齐
+    // 真实解析器；POSIX 下残引号本就是残命令。
+    assert_eq!(
+        segs("echo \"hi && rm -rf y"),
+        vec!["echo \"hi", "rm -rf y"],
+        "盲切把操作符真实切开，deny 任一段命中即拦"
+    );
+    // 英文撇号叙述：cmd.exe 语义下 `'` 是字面量，`&&` 真切分
+    assert_eq!(
+        segs("echo it's done && git push"),
+        vec!["echo it's done", "git push"]
+    );
+    // 盲切多段不丢段（`a ' && b '` 是**偶数**引号 → quote-aware 域，
+    // 引号真引住了操作符，不切——那条语义由
+    // test_segments_quoted_operators_not_split 钉）
+    assert_eq!(
+        segs("echo 'a && rm x && git push"),
+        vec!["echo 'a", "rm x", "git push"],
+        "奇数引号盲切域内多段全保留"
+    );
 }
 
 #[test]
@@ -372,6 +392,23 @@ fn test_segments_redirection_amp_not_split() {
         segs("app --log 2>&1 && echo done"),
         vec!["app --log 2>&1", "echo done"]
     );
+    // `&>`（bash 合并重定向）：`&` 后继是 `>`，同族不切
+    assert_eq!(
+        segs("cargo build &> log.txt"),
+        vec!["cargo build &> log.txt"]
+    );
+    // `>|`（强制覆盖重定向，bash）：`|` 前导 `>` 不切
+    assert_eq!(segs("cmd >| out.txt"), vec!["cmd >| out.txt"]);
+    // `<&N`（fd 复制重定向，bash）：`&` 前导 `<` 不切（闭环批 2026-10-13
+    // 补齐——此前 `cmd <&0` 把 `&` 当操作符切出假段 `&0`）
+    assert_eq!(segs("cmd <&0"), vec!["cmd <&0"]);
+    assert_eq!(
+        segs("cmd <&0 && echo done"),
+        vec!["cmd <&0", "echo done"],
+        "<&N 随段保留后，后续真操作符照常切"
+    );
+    // `b &` 的 `&` 前导不是 `<`/`>`：`a<b & c` 的 `&` 是真后台操作符
+    assert_eq!(segs("a<b & c"), vec!["a<b", "c"]);
 }
 
 #[test]
@@ -393,4 +430,22 @@ fn test_segments_trims_and_dedups() {
     assert_eq!(segs("  a  &&  b  "), vec!["a", "b"]);
     // 相邻重复段塌缩（any/all 语义不变）
     assert_eq!(segs("cargo test && cargo test"), vec!["cargo test"]);
+}
+
+// ---------- strip_env_assignments（分段后 env 剥离，deny 口径与 reduce 表分流一致） ----------
+
+use crate::command_arity::strip_env_assignments;
+
+#[test]
+fn test_strip_env_prefix_before_operator() {
+    // env 前缀只属于 `&&` 左段；不剥会把 `cargo *` 的 deny 打空
+    assert_eq!(strip_env_assignments("FOO=1 cargo build"), "cargo build");
+    assert_eq!(strip_env_assignments("A=1 B= git push"), "git push");
+    // 全 env 无命令 → 空串（allow 侧空段守卫 + deny 锚定联合语义照常）
+    assert_eq!(strip_env_assignments("FOO=1"), "");
+    // 非 env 首 token 原样保留
+    assert_eq!(strip_env_assignments("rm -rf x"), "rm -rf x");
+    // 契约边界（文档：输入须是 trim 过的段）：空白段无 token 可剥，原样
+    // 返回——调用端（auditor/CLI 预览）输入恒为 trim 后的段，不在此猜。
+    assert_eq!(strip_env_assignments("   "), "   ");
 }

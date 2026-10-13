@@ -188,7 +188,15 @@ fn test_set_enabled() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_safe_download_allowed() {
-    let plugin = make_plugin();
+    // SSRF 关（对齐 test_safe_network_request_allowed 的既有先例）：本测试
+    // 验「download 工具默认放行」，SSRF 层会对 example.com 做真实 DNS
+    // 解析——离线/受限 DNS 环境解析 Err 即 deny，套件被环境绑死。
+    let plugin = SecurityPlugin::new(SecurityPluginConfig {
+        enabled: true,
+        ssrf_enabled: false,
+        default_action: "allow".to_string(),
+        ..Default::default()
+    });
     let inv = ToolInvocation {
         tool_name: "download".to_string(),
         args: serde_json::json!({"url": "https://example.com/file.zip"}),
@@ -196,8 +204,8 @@ async fn test_safe_download_allowed() {
         source: "cli".to_string(),
         metadata: Default::default(),
     };
-    let (allowed, _) = plugin.execute(&inv);
-    assert!(allowed);
+    let (allowed, deny) = plugin.execute(&inv);
+    assert!(allowed, "安全下载被拦：deny={deny:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

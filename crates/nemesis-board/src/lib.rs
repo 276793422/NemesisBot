@@ -92,7 +92,7 @@ pub use review::{
 };
 pub use service::BoardService;
 pub use state_machine::{can_transition, validate_transition};
-pub use store::{BoardStore, SEND_FAILURE_MARK, send_failure_backoff_secs};
+pub use store::{BoardStore, PARK_NOTICE_MARK, SEND_FAILURE_MARK, send_failure_backoff_secs};
 pub use team_memory::{
     MAX_MATCHED_EXPERIENCES, match_experiences, render_dispatch_experience_section,
     render_planner_experience_strings,
