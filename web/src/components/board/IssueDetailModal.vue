@@ -94,6 +94,69 @@ const detail = ref<Issue | null>(null)
 const attachments = ref<AttachmentRow[]>([])
 const busy = ref(false)
 
+// U-C（2026-10-12 §9.3）：单子全链路时间线页签——活动/评论/派发/任务结果
+// 统一投影（后端单一真相源 nemesis-board::timeline，与 dossier timeline.md
+// 同源聚合）。默认「详情」页保持原布局；时间线按需加载（每次激活重查）。
+type DetailTab = 'detail' | 'timeline'
+const activeTab = ref<DetailTab>('detail')
+
+interface TimelineEvent {
+  ts: number
+  source: string
+  kind: string
+  actor: string
+  summary: string
+  detail?: string
+}
+const timelineEvents = ref<TimelineEvent[]>([])
+const timelineLoading = ref(false)
+
+const SOURCE_BADGE: Record<string, string> = {
+  activity: 'badge-neutral',
+  comment: 'badge-info',
+  dispatch: 'badge-warning',
+  archive: 'badge-neutral',
+  cluster_task: 'badge-info',
+  continuation: 'badge-warning',
+}
+const SOURCE_LABEL: Record<string, string> = {
+  activity: '活动',
+  comment: '评论',
+  dispatch: '派发',
+  archive: '档案',
+  cluster_task: '任务',
+  continuation: '在途',
+}
+// 活动行：action 词进了徽标（·kind），正文优先展示 details（如 todo→in_review
+// / auto_decide 的 verdict JSON）——比重复 action 词更有信息量。
+function timelineSummary(e: TimelineEvent): string {
+  if (e.source === 'activity') return e.detail || e.kind
+  return e.summary || e.kind
+}
+function timelineDetail(e: TimelineEvent): string {
+  if (e.source === 'activity') return ''
+  if (!e.detail || e.detail === e.summary) return ''
+  return e.detail.length > 120 ? e.detail.slice(0, 120) + '…' : e.detail
+}
+
+async function loadTimeline() {
+  if (!props.issueId || timelineLoading.value) return
+  timelineLoading.value = true
+  try {
+    const r = await request('board', 'issue.timeline', { id: props.issueId })
+    timelineEvents.value = (r?.events || []) as TimelineEvent[]
+  } catch {
+    timelineEvents.value = []
+  } finally {
+    timelineLoading.value = false
+  }
+}
+
+function switchTab(t: DetailTab) {
+  activeTab.value = t
+  if (t === 'timeline') loadTimeline()
+}
+
 const newComment = ref('')
 const replyTo = ref<CommentRow | null>(null)
 // @提及辅助的候选集（订阅者 + 当前指派对象；插入后端能识别的 @id 记号）。
@@ -361,6 +424,8 @@ watch(
   () => props.issueId,
   (id) => {
     dismissPlan() // 换 issue/关闭 → 上一个拆解预览作废
+    activeTab.value = 'detail' // 换单回落详情页；时间线重进重查
+    timelineEvents.value = []
     if (id != null) {
       detail.value = null
       newComment.value = ''
@@ -579,10 +644,40 @@ async function downloadAttachment(a: AttachmentRow) {
 <template>
   <div v-if="detail" class="modal-backdrop" @click.self="emit('close')">
     <div class="modal" style="max-width: 720px;">
-      <div class="modal-header">
+      <div class="modal-header" style="display: flex; align-items: center; gap: var(--space-3);">
         <h3><code>{{ detail.number }}</code> {{ detail.title }}</h3>
+        <!-- U-C 页签：详情（默认，原布局）/ 时间线（全链路统一投影） -->
+        <div class="detail-tabs">
+          <button
+            class="btn btn-sm"
+            :class="{ 'btn-primary': activeTab === 'detail' }"
+            @click="switchTab('detail')"
+          >详情</button>
+          <button
+            class="btn btn-sm"
+            :class="{ 'btn-primary': activeTab === 'timeline' }"
+            title="活动/评论/派发/任务结果统一时间线（与任务档案同源聚合）"
+            @click="switchTab('timeline')"
+          >🕐 时间线</button>
+        </div>
       </div>
-      <div class="modal-body">
+      <div class="modal-body" v-if="activeTab === 'timeline'">
+        <!-- U-C 时间线页 -->
+        <div v-if="timelineLoading" class="muted">加载中…</div>
+        <div v-else-if="timelineEvents.length === 0" class="muted" style="padding: var(--space-2) 0;">暂无记录</div>
+        <div v-else class="timeline-list">
+          <div v-for="(e, i) in timelineEvents" :key="i" class="timeline-row">
+            <span class="muted timeline-ts">{{ fmtTime(e.ts) }}</span>
+            <span class="badge" :class="SOURCE_BADGE[e.source] || 'badge-neutral'">{{ SOURCE_LABEL[e.source] || e.source }}<template v-if="e.source === 'comment' || e.source === 'dispatch'">·{{ e.kind }}</template></span>
+            <span class="timeline-body">
+              <strong v-if="e.actor">{{ e.actor }}</strong>
+              {{ timelineSummary(e) }}
+              <span v-if="timelineDetail(e)" class="muted activity-details" :title="e.detail">{{ timelineDetail(e) }}</span>
+            </span>
+          </div>
+        </div>
+      </div>
+      <div class="modal-body" v-else>
         <!-- 元信息 -->
         <div class="detail-meta">
           <span class="badge" :class="STATUS_BADGE[detail.status]" :title="statusTitle(detail.status)">{{ statusLabel(detail.status) }}</span>
@@ -918,6 +1013,34 @@ async function downloadAttachment(a: AttachmentRow) {
 }
 .activity-details {
   word-break: break-all;
+}
+/* U-C 时间线页签 */
+.detail-tabs {
+  display: flex;
+  gap: var(--space-1);
+  margin-left: auto;
+}
+.timeline-list {
+  display: flex;
+  flex-direction: column;
+}
+.timeline-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  padding: var(--space-1) 0;
+  border-bottom: 1px solid var(--border-color, var(--border));
+}
+.timeline-ts {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.timeline-body {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
 }
 .plan-error {
   color: var(--danger, #d33);

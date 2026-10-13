@@ -341,9 +341,11 @@ impl AnthropicProvider {
             .json(body)
             .send()
             .await
-            .map_err(|_| FailoverError::Timeout {
+            .map_err(|e| FailoverError::Timeout {
                 provider: "anthropic".to_string(),
                 model: model.to_string(),
+                // 保留底层链（含连接拒绝词表），吞掉会让封存判定失明。
+                cause: nemesis_utils::llm_error_class::error_chain_msg(&e),
             })
     }
 
@@ -403,11 +405,12 @@ impl AnthropicProvider {
                 .await
             {
                 Ok(r) => r,
-                Err(_) => {
+                Err(e) => {
                     let _ = tx
                         .send(Err(FailoverError::Timeout {
                             provider: "anthropic".to_string(),
                             model: model.clone(),
+                            cause: nemesis_utils::llm_error_class::error_chain_msg(&e),
                         }))
                         .await;
                     return;
@@ -523,6 +526,7 @@ impl AnthropicProvider {
                             .send(Err(FailoverError::Timeout {
                                 provider: "anthropic".to_string(),
                                 model: model.clone(),
+                                cause: nemesis_utils::llm_error_class::error_chain_msg(&e),
                             }))
                             .await;
                         return;

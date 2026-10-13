@@ -27,6 +27,8 @@ impl nemesis_agent::r#loop::LlmProvider for NoopProvider {
         _: Vec<nemesis_agent::types::ToolDefinition>,
     ) -> Result<nemesis_agent::r#loop::LlmResponse, String> {
         Ok(nemesis_agent::r#loop::LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: String::new(),
             tool_calls: Vec::new(),
             finished: true,
@@ -346,6 +348,8 @@ async fn pending_lists_responder_entries() {
 // 注册表是进程全局——用例独立 request_id + 结尾摘除防串扰。
 // ---------------------------------------------------------------------------
 
+// registry 在 lib.rs 是 cluster 门（无 feature 编译期消失，引用点必须同门）。
+#[cfg(feature = "cluster")]
 #[tokio::test]
 async fn remote_list_surfaces_registry_snapshot_without_loop() {
     let dir = tempfile::tempdir().unwrap();

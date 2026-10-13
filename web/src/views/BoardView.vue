@@ -11,6 +11,7 @@ import AuditPanel from '../components/board/AuditPanel.vue'
 import BoardConfigPanel from '../components/board/BoardConfigPanel.vue'
 import { useToast } from '../composables/useToast'
 import { on as sseOn, off as sseOff } from '../composables/useSSE'
+import { usePlanning, fmtElapsed, ABNORMAL_SECS } from '../composables/usePlanning'
 
 // 托管 Agent 看板容器（W2 P3/P4）：项目 / 列表 / 看板（Kanban 拖拽） /
 // 收件箱 / 自动化 / 讨论 / 决策流（P5/E2） / 配置 八个页签（顺序=使用依赖
@@ -41,12 +42,35 @@ function onPlanStarted(data: any) {
 }
 sseOn('board.plan_started', onPlanStarted)
 onUnmounted(() => sseOff('board.plan_started', onPlanStarted))
+
+// §1.2C 持续横幅（2026-10-11 Part 1 配套前端）：toast 只在事件瞬间闪一下，
+// 用户停留期间的主体反馈是这条横幅——自计时 + 超时异常态（>20 分钟变黄，
+// 正常 3~8 分钟）。数据源 = usePlanning 单例（SSE + issue.list 投影 reconcile）。
+const { list: planningList, elapsed } = usePlanning()
 </script>
 
 <template>
   <div class="page-board">
     <div class="page-header"><h2>Agent 看板</h2></div>
     <div class="page-body">
+      <!-- 拆解在途横幅（§1.2C）：每条在途计划一行自计时；超 ABNORMAL_SECS
+           转「拆解异常」黄态。数据独立于页签，任何页签都可见。 -->
+      <div v-if="planningList.length" class="planning-banner" data-test="planning-banner">
+        <div
+          v-for="e in planningList"
+          :key="e.issueId"
+          class="planning-line"
+          :class="{ abnormal: elapsed(e.issueId) > ABNORMAL_SECS }"
+          :data-test="'planning-line-' + e.issueNumber"
+        >
+          <template v-if="elapsed(e.issueId) > ABNORMAL_SECS">
+            ⚠ 拆解异常：{{ e.issueNumber }} 已拆解 {{ fmtElapsed(elapsed(e.issueId)) }}（远超正常 3~8 分钟）——请到日志页查 planner 现场或取消后重试
+          </template>
+          <template v-else>
+            🧩 正在 AI 拆解 {{ e.issueNumber }}…（<template v-if="e.attempt > 1">第 {{ e.attempt }} 次尝试，</template>已 {{ fmtElapsed(elapsed(e.issueId)) }}，通常 3~8 分钟）
+          </template>
+        </div>
+      </div>
       <BoardTabs v-model="activeTab" />
       <div style="margin-top:var(--space-4)">
         <component :is="tabMap[activeTab]" />
@@ -54,3 +78,25 @@ onUnmounted(() => sseOff('board.plan_started', onPlanStarted))
     </div>
   </div>
 </template>
+
+<style scoped>
+/* 拆解在途横幅（§1.2C）：信息蓝常态 / 异常黄态（对齐 anchor-warn-bar 色板）。 */
+.planning-banner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-bottom: var(--space-3);
+}
+.planning-line {
+  background: var(--info-bg, rgba(0, 120, 212, 0.08));
+  border: 1px solid var(--info-border, rgba(0, 120, 212, 0.35));
+  border-radius: var(--radius-sm, 6px);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  padding: var(--space-2) var(--space-3);
+}
+.planning-line.abnormal {
+  background: var(--warning-bg, rgba(255, 193, 7, 0.12));
+  border-color: var(--warning-border, rgba(255, 193, 7, 0.45));
+}
+</style>

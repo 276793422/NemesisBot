@@ -3,6 +3,8 @@ use crate::types::ToolCallInfo;
 
 fn resp_with_tool(name: &str, args: &str) -> LlmResponse {
     LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: String::new(),
         tool_calls: vec![ToolCallInfo {
             id: "tc".to_string(),
@@ -27,6 +29,8 @@ fn read_file_task() -> ProbeTask {
 #[test]
 fn score_no_tool_call_is_all_zero() {
     let resp = LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "I refuse to use tools.".to_string(),
         tool_calls: vec![],
         finished: true,
@@ -205,6 +209,8 @@ fn valid_args_for(tool: &str) -> &'static str {
 
 fn empty_resp() -> LlmResponse {
     LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: "I'll just answer directly.".to_string(),
         tool_calls: vec![],
         finished: true,
@@ -243,6 +249,8 @@ impl crate::r#loop::LlmProvider for MockProbeProvider {
                 "vision_reject" => Err("400 Bad Request: image input not supported".to_string()),
                 "fail" => unreachable!(),
                 _ => Ok(LlmResponse {
+                    finish_reason: None,
+                    escalated_to: None,
                     content: "灰色".to_string(),
                     tool_calls: vec![],
                     finished: true,

@@ -554,6 +554,9 @@ impl AgentLoop {
     /// question asker 已装配时，先发提问卡问用户「继续吗？」——
     /// approve = 清签名计数继续；deny / 超时 / 通路缺失 / 开关关 =
     /// 现行为（停轮）。turn_guard 现行为是安全底座，开关默认关。
+    /// §2（无人值守计划 Part 2）：免打扰开关开 = 跳过发卡直接视为批准
+    /// （清签名继续）——无人值守下循环守卫不停车等人；asker 缺失也放行
+    /// （开关开 = 用户显式接受全自动）。
     /// `Some(Done(升级停轮文案))`；批准继续 = `None`。
     pub(crate) async fn check_escalation(
         &self,
@@ -561,16 +564,26 @@ impl AgentLoop {
         context: &RequestContext,
     ) -> Option<AgentEvent> {
         if let Some((sig, count)) = turn_guard.escalating_signature() {
+            #[cfg(not(feature = "security"))]
+            let auto_approved = false;
+            #[cfg(feature = "security")]
+            let auto_approved = self.approval_auto_enabled();
             let approved = self.current_doom_loop_approval()
-                && self
-                    .ask_doom_loop_approval(&sig, count, context)
-                    .await
-                    .unwrap_or(false);
+                && (auto_approved
+                    || self
+                        .ask_doom_loop_approval(&sig, count, context)
+                        .await
+                        .unwrap_or(false));
             if approved {
                 warn!(
-                    "[AgentLoop] loop guard escalation on '{}' (x{}) — user approved, clearing signature count and continuing",
+                    "[AgentLoop] loop guard escalation on '{}' (x{}) — {}clearing signature count and continuing",
                     sig.split('\x00').next().unwrap_or("tool"),
-                    count
+                    count,
+                    if auto_approved {
+                        "auto-approve (unattended), "
+                    } else {
+                        "user approved, "
+                    }
                 );
                 turn_guard.clear_signature(&sig);
             } else {

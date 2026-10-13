@@ -16,6 +16,7 @@
 //! ├── records/             项目档案里该任务的执行档案（worker 推回的
 //! │                        逐轮 LLM 原文 + 交付），按 issue 分目录拷贝
 //! ├── inbox-unplaced/      收件箱里尚未安置的执行档案（诚实可见）
+//! ├── handoffs/            停车现场档案（U-A：有停车历史的单逐一拷入）
 //! └── usage.csv            per-task token 用量（调用方从 DataStore 聚合
 //!                          后传入；本模块不碰账本）
 //! ```
@@ -175,6 +176,19 @@ fn export_core(
             copy_dir_sorted(&src, &root.join("inbox-unplaced").join(&d.task_id))?;
         }
         let _ = number; // 目录按 task_id 组织（与 cluster_logs 目录名同源）
+    }
+
+    // ---- U-A 停车现场归档（handoffs/）：导出树里有停车档案的单逐一拷入
+    // （存在才拷；缺席不注记——多数单子无停车历史是常态）。
+    for issue in &issues {
+        let src = crate::handoff::handoff_path(workspace, &issue.number);
+        if src.is_file() {
+            let dst_dir = root.join("handoffs");
+            std::fs::create_dir_all(&dst_dir)
+                .map_err(|e| format!("创建 handoffs 目录失败: {e}"))?;
+            std::fs::copy(&src, dst_dir.join(format!("{}.json", issue.number)))
+                .map_err(|e| format!("拷贝 {} 停车档案失败: {e}", issue.number))?;
+        }
     }
 
     // ---- 执行档案落位核对（notes）----
@@ -361,15 +375,19 @@ fn fmt_ts(secs: i64) -> String {
         .unwrap_or_else(|| secs.to_string())
 }
 
-/// 人读时间线：每单一段 + 合并事件流（board.db 活动/评论 + 项目档案
-/// timeline.jsonl 中该单条目），按时间排序。
+/// 人读时间线：每单一段 + 合并事件流。U-C（2026-10-12）起与 WSAPI
+/// `board.timeline` 复用同一聚合入口 [`timeline::collect_issue_timeline`]——
+/// 收口导出与运行态查询不两套逻辑（单一真相源）。事件按 (ts, source_rank)
+/// 统一时间排序（旧实现档案事件恒排最前的分层序已随同源化消除）。
 fn render_timeline(
     store: &BoardStore,
     by_id: &BTreeMap<i64, &Issue>,
     issues: &[Issue],
     archive_root: Option<&Path>,
 ) -> Result<String, String> {
+    use crate::timeline::{TimelineEvent, collect_issue_timeline};
     use std::fmt::Write as _;
+    let _ = by_id;
     let mut out = String::new();
     let _ = writeln!(out, "# 任务时间线");
     let _ = writeln!(out);
@@ -379,8 +397,9 @@ fn render_timeline(
     );
 
     // 项目档案 timeline.jsonl 按 issue 聚合（存在才读；坏行跳过——投影
-    // 文件允许手改，不因一行坏 JSON 拒绝整个档案）。
-    let mut archive_events: BTreeMap<String, Vec<(String, String, String)>> = BTreeMap::new();
+    // 文件允许手改，不因一行坏 JSON 拒绝整个档案）。转成结构化事件后
+    // 经 extra 注入聚合入口。
+    let mut archive_events: BTreeMap<String, Vec<TimelineEvent>> = BTreeMap::new();
     if let Some(arch) = archive_root
         && let Ok(body) = std::fs::read_to_string(arch.join("timeline.jsonl"))
     {
@@ -391,20 +410,30 @@ fn render_timeline(
             let Some(issue) = v.get("issue").and_then(|x| x.as_str()) else {
                 continue;
             };
-            archive_events.entry(issue.to_string()).or_default().push((
-                v.get("ts")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                v.get("kind")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("?")
-                    .to_string(),
-                v.get("summary")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-            ));
+            let ts_text = v
+                .get("ts")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            archive_events
+                .entry(issue.to_string())
+                .or_default()
+                .push(TimelineEvent {
+                    ts: crate::timeline::parse_ts_to_epoch(&ts_text),
+                    source: "archive",
+                    kind: v
+                        .get("kind")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("?")
+                        .to_string(),
+                    actor: String::new(),
+                    summary: v
+                        .get("summary")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    detail: None,
+                });
         }
     }
 
@@ -415,82 +444,44 @@ fn render_timeline(
             issue.number, issue.title, issue.status
         );
 
-        #[derive(Clone)]
-        struct Ev {
-            sort_key: String,
-            line: String,
-        }
-        let mut events: Vec<Ev> = Vec::new();
-
-        // 项目档案 timeline 事件（ts 是 rfc3339 字符串，字典序即时间序）。
-        for (ts, kind, summary) in archive_events.get(&issue.number).into_iter().flatten() {
-            events.push(Ev {
-                sort_key: format!("0{ts}"),
-                line: format!("- `{ts}` **{kind}** {summary}"),
-            });
-        }
-        // board.db 活动。
-        if let Ok(list) = store.list_activity(issue.id) {
-            for a in list {
-                let who = format!("{}/{}", a.actor.kind, a.actor.id);
-                let detail = a.details.unwrap_or_default();
-                events.push(Ev {
-                    sort_key: format!("1{}", a.created_at),
-                    line: format!(
-                        "- `{}` **{}**（{who}）{}",
-                        fmt_ts(a.created_at),
-                        a.action,
-                        if detail.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" — {detail}")
-                        }
-                    ),
-                });
-            }
-        }
-        // 评论（类型标注；全文在 audit/comments.jsonl）。
-        if let Ok(list) = store.list_comments(issue.id) {
-            for c in list {
-                let who = format!("{}/{}", c.author.kind, c.author.id);
-                let first_line = c.content.lines().next().unwrap_or("").to_string();
-                events.push(Ev {
-                    sort_key: format!("2{}", c.created_at),
-                    line: format!(
-                        "- `{}` 💬[{}]（{who}）{}",
-                        fmt_ts(c.created_at),
-                        c.ctype.as_str(),
-                        first_line
-                    ),
-                });
-            }
-        }
-        // 派发行。
-        if let Ok(list) = store.list_dispatches(issue.id) {
-            for d in list {
-                events.push(Ev {
-                    sort_key: format!("1{}.{}", d.dispatched_at, d.task_id),
-                    line: format!(
-                        "- `{}` 📤 派发 → {}（task {}，状态 {}）",
-                        fmt_ts(d.dispatched_at),
-                        d.worker_id,
-                        d.task_id,
-                        d.state
-                    ),
-                });
-            }
-        }
-
-        events.sort_by(|a, b| a.sort_key.cmp(&b.sort_key));
+        let extra = archive_events
+            .get(&issue.number)
+            .cloned()
+            .unwrap_or_default();
+        let events = collect_issue_timeline(store, issue.id, extra);
         if events.is_empty() {
             let _ = writeln!(out, "\n（无记录）");
         }
         for ev in events {
-            let _ = writeln!(out, "{}", ev.line);
+            let _ = writeln!(out, "{}", render_timeline_line(&ev));
         }
     }
-    let _ = by_id;
     Ok(out)
+}
+
+/// 结构化事件 → 人读 markdown 行（图标按源；时刻 = master 本机时间）。
+fn render_timeline_line(ev: &crate::timeline::TimelineEvent) -> String {
+    let ts = fmt_ts(ev.ts);
+    match ev.source {
+        "comment" => format!("- `{}` 💬[{}]（{}）{}", ts, ev.kind, ev.actor, ev.summary),
+        "dispatch" => format!("- `{}` 📤 {}", ts, ev.summary),
+        "archive" => format!("- `{}` **{}** {}", ts, ev.kind, ev.summary),
+        // activity / cluster_task / continuation 及未来新增源：机械行形态。
+        _ => {
+            let detail = ev.detail.as_deref().unwrap_or("");
+            format!(
+                "- `{}` **{}**（{}）{}",
+                ts,
+                ev.kind,
+                ev.actor,
+                if detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — {detail}")
+                }
+            )
+        }
+    }
 }
 
 /// README 总览。

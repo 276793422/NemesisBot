@@ -2719,3 +2719,145 @@ fn test_request_limit_approval_no_manager_fails_closed_with_audit() {
     );
     assert!(content.contains("denied"), "审计应为拒绝决策: {content}");
 }
+
+// ---------------------------------------------------------------------------
+// §2 免打扰（2026-10-11 无人值守计划 Part 2）：RequireApproval 自动放行臂
+// ---------------------------------------------------------------------------
+
+use crate::approval_auto::ApprovalAutoApproveState;
+
+/// 注入免打扰运行时态的 ask auditor。
+fn auto_auditor(enabled: bool) -> (SecurityAuditor, Arc<ApprovalAutoApproveState>) {
+    let auditor = ask_auditor();
+    let state = Arc::new(ApprovalAutoApproveState::new(enabled));
+    auditor.set_approval_auto_approve(state.clone());
+    (auditor, state)
+}
+
+#[test]
+fn approval_auto_disabled_state_keeps_manual_ask() {
+    // 开关关（或仅注入未开）：ask 行为零变化——pending 拒绝，计数不涨。
+    let (auditor, state) = auto_auditor(false);
+    let (allowed, err, _) = auditor.request_permission(&exec_request("a0", "cargo publish"));
+    assert!(!allowed);
+    assert!(err.unwrap().contains("approval required"));
+    assert_eq!(state.count(), 0, "关闭态不得计数");
+}
+
+#[test]
+fn approval_auto_on_allows_and_marks_auto_by_config() {
+    // 审计只落文件（内存不驻）——挂临时 jsonl 目录再断言。
+    let dir = tempfile::tempdir().unwrap();
+    let auditor = SecurityAuditor::new(AuditorConfig {
+        enabled: true,
+        default_action: "ask".to_string(),
+        audit_log_file_enabled: true,
+        audit_log_dir: Some(dir.path().to_str().unwrap().to_string()),
+        ..Default::default()
+    });
+    let state = Arc::new(ApprovalAutoApproveState::new(true));
+    auditor.set_approval_auto_approve(state.clone());
+
+    let (allowed, err, _) = auditor.request_permission(&exec_request("a1", "cargo publish"));
+    assert!(allowed, "开关开：require_approval 自动放行");
+    assert!(err.is_none());
+    assert_eq!(
+        state.count(),
+        1,
+        "放行即计数（前端「本次已自动批准 N 条」）"
+    );
+
+    // 审计事件标 auto_by_config（可追溯：谁批的？配置批的）。
+    let content =
+        std::fs::read_to_string(dir.path().join("audit.jsonl")).expect("audit jsonl written");
+    assert!(
+        content.contains("auto_by_config"),
+        "审计缺 auto_by_config: {content}"
+    );
+    assert!(
+        content.contains("\"allowed\""),
+        "审计应为放行决策: {content}"
+    );
+    assert!(
+        content.contains("auto approved by security.approvals.auto_approve"),
+        "审计须注明免打扰来源: {content}"
+    );
+}
+
+#[test]
+fn approval_auto_cluster_channel_persists_rule_and_pattern_takes_priority() {
+    let (auditor, state) = auto_auditor(true);
+    let dir = tempfile::tempdir().unwrap();
+    auditor.set_approval_rules(rules_hot(&dir, &[]));
+    let ctx = ApprovalContext {
+        channel: "cluster".to_string(),
+        ..Default::default()
+    };
+
+    // 集群来源首次 ask：自动放行 + 落持久规则。
+    let (allowed, _, _) = auditor
+        .request_permission_with_ctx(&exec_request("c0", "cargo build --release"), Some(&ctx));
+    assert!(allowed);
+    assert_eq!(state.count(), 1);
+    let path = dir.path().join("approval_rules.json");
+    let rules = crate::approval_rules::load_rules(&path);
+    assert!(
+        rules
+            .iter()
+            .any(|r| r.op == "process_exec" && r.pattern == "cargo build *"),
+        "集群来源须落持久规则: {rules:?}"
+    );
+
+    // 同类操作再来：pattern 记忆块先命中（auto_by_rule），免打扰块轮不到
+    // ——计数停在不涨（优先级钉死：落盘规则是主放行路径，开关只是引子）。
+    std::thread::sleep(std::time::Duration::from_millis(30)); // 睡过 Windows mtime 量化窗口
+    let (allowed2, _, _) = auditor
+        .request_permission_with_ctx(&exec_request("c1", "cargo build --release"), Some(&ctx));
+    assert!(allowed2);
+    assert_eq!(state.count(), 1, "第二问须走 pattern 块（计数不涨）");
+}
+
+#[test]
+fn approval_auto_non_cluster_channel_no_persist() {
+    let (auditor, state) = auto_auditor(true);
+    let dir = tempfile::tempdir().unwrap();
+    auditor.set_approval_rules(rules_hot(&dir, &[]));
+    let ctx = ApprovalContext {
+        channel: "web".to_string(),
+        ..Default::default()
+    };
+    let (allowed, _, _) = auditor
+        .request_permission_with_ctx(&exec_request("w0", "cargo build --release"), Some(&ctx));
+    assert!(allowed, "对话来源照常自动放行（当次点头语义）");
+    assert_eq!(state.count(), 1);
+    let rules = crate::approval_rules::load_rules(&dir.path().join("approval_rules.json"));
+    assert!(rules.is_empty(), "非集群来源不落持久规则: {rules:?}");
+}
+
+#[test]
+fn approval_auto_persist_layer_gate_blocks_critical_nonexec() {
+    // 层级门：CRITICAL 非 exec 自动放行本身不做闸（无人值守语义），但
+    // 不落持久规则（与 M7 always 同门——CRITICAL 只允许 process_exec 豁免）。
+    let (auditor, state) = auto_auditor(true);
+    let dir = tempfile::tempdir().unwrap();
+    auditor.set_approval_rules(rules_hot(&dir, &[]));
+    let ctx = ApprovalContext {
+        channel: "cluster".to_string(),
+        ..Default::default()
+    };
+    let req = OperationRequest {
+        id: "g0".to_string(),
+        op_type: OperationType::FileWrite,
+        danger_level: DangerLevel::Critical,
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        target: "/etc/passwd".to_string(),
+        timestamp: None,
+        ..Default::default()
+    };
+    let (allowed, _, _) = auditor.request_permission_with_ctx(&req, Some(&ctx));
+    assert!(allowed, "自动批准本身不做层级闸");
+    assert_eq!(state.count(), 1);
+    let rules = crate::approval_rules::load_rules(&dir.path().join("approval_rules.json"));
+    assert!(rules.is_empty(), "CRITICAL 非 exec 不落规则: {rules:?}");
+}

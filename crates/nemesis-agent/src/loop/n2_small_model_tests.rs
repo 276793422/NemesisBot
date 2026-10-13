@@ -46,6 +46,8 @@ impl LlmProvider for RecordingProvider {
     ) -> Result<LlmResponse, String> {
         self.log.models.lock().unwrap().push(model.to_string());
         Ok(LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: self.response.clone(),
             tool_calls: Vec::new(),
             finished: true,

@@ -94,6 +94,9 @@ export interface IssueRow {
   /** A2b（看板项目档案 goal P1）：取消单清理后的永久收起标记——
    *  issue.list 恒排除 hidden 单，此字段只在详情/CLI 全量面可见。 */
   hidden?: boolean
+  /** 拆解运行期可观测（2026-10-11 Part 1）：planner 在途投影——
+   *  issue.list 行附 {elapsed_secs, attempt}，不在途无此键。 */
+  planning?: { elapsed_secs: number; attempt: number }
   comments?: any[]
   activity?: any[]
   subscribers?: any[]

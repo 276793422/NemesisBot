@@ -79,6 +79,8 @@ impl LlmProvider for RecordingProvider {
             tool_count: tools.len(),
         });
         Ok(LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "ok".to_string(),
             tool_calls: Vec::new(),
             finished: true,

@@ -184,6 +184,8 @@ impl nemesis_agent::r#loop::LlmProvider for MockLlmProvider {
         _tools: Vec<nemesis_agent::types::ToolDefinition>,
     ) -> Result<nemesis_agent::r#loop::LlmResponse, String> {
         Ok(nemesis_agent::r#loop::LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: "mock".to_string(),
             tool_calls: Vec::new(),
             finished: true,
@@ -580,6 +582,8 @@ mod wave4b {
         ) -> Result<nemesis_agent::r#loop::LlmResponse, String> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(nemesis_agent::r#loop::LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "mock".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,

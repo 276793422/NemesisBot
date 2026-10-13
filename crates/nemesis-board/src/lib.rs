@@ -18,8 +18,10 @@ pub mod assignment;
 pub mod backup;
 pub mod db;
 pub mod dossier;
+pub mod fail_streak;
 pub mod fingerprint;
 pub mod git_repo;
+pub mod handoff;
 pub mod matcher;
 pub mod models;
 pub mod planner;
@@ -31,6 +33,7 @@ pub mod service;
 pub mod state_machine;
 pub mod store;
 pub mod team_memory;
+pub mod timeline;
 pub mod watcher;
 
 pub use anchor::{
@@ -57,6 +60,10 @@ pub use asset_token::{
     sha256_bytes, sha256_file, sign_asset_token, verify_asset_token,
 };
 pub use assignment::{Actor, AssignmentType};
+pub use fail_streak::{
+    FAIL_STREAK_THRESHOLD, FailStreakLedger, StreakOutcome, UNSURE_SIGNATURE, failure_signature,
+    unsure_gate_trips,
+};
 pub use fingerprint::{
     FINGERPRINT_MIN_SAMPLES, FingerprintTier, TASK_TYPE_BUCKETS, apply_fingerprint_weights,
     classify_tier, task_type_of, tier_note,

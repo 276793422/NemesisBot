@@ -2028,6 +2028,8 @@ async fn e1_token_breach_gate_matrix_through_moderator_loop() {
             _tools: Vec<nemesis_agent::types::ToolDefinition>,
         ) -> Result<LlmResponse, String> {
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "null".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
@@ -3645,6 +3647,8 @@ async fn stale_review_anchor_fail_yields_to_manual_intervention() {
             // 返回合法 PASS 结论——结论本身完全成立（旧交付线程），
             // 但单据已归人工，迟到结论必须让位。
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: r#"{"verdict":"PASS","reasons":["自检对照成立"],"gap":""}"#.to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
@@ -3758,6 +3762,8 @@ impl nemesis_agent::r#loop::LlmProvider for ScriptedLlm {
             None => self.fallback.clone(),
         };
         Ok(nemesis_agent::r#loop::LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: raw,
             tool_calls: Vec::new(),
             finished: true,
@@ -3795,6 +3801,8 @@ impl nemesis_agent::r#loop::LlmProvider for CapturingLlm {
             .unwrap_or_else(|p| p.into_inner())
             .push(joined);
         Ok(nemesis_agent::r#loop::LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
             content: self.reply.clone(),
             tool_calls: Vec::new(),
             finished: true,
@@ -4027,6 +4035,7 @@ async fn sweep_second_stage_evidence_is_injected_into_prompt() {
     let ctx = ReviewCtx {
         allow_selfcheck: false,
         evidence: Some("测试日志：assertion passed ×3".to_string()),
+        retry: 0,
     };
     let reviewed = review_issue(&deps, issue.id, ctx)
         .await
@@ -5059,6 +5068,157 @@ async fn parent_llm_parse_failure_posts_honest_comment() {
     );
 }
 
+/// N4（§6.3 2026-10-12）：review_issue 父单分流——review.retrigger 对收口
+/// 失败转人工（保持 in_review）的父单一键重评时，review_issue 必须识别
+/// 「有子单」并分流 review_parent_issue（收口汇总语义），不得跑子单式
+/// 评审（父单自身无交付汇报，跑出来的是无依据结论；PASS 臂还会错误
+/// auto-done 父单绕过收口评审）。分流证据 = 决策词走 parent_escalate_human
+/// （子单式评审 FAIL 无派发记录不会产出该决策词）。
+#[tokio::test]
+async fn review_issue_diverts_parent_with_children_to_parent_review() {
+    use nemesis_board::{IssueStatus, NewIssue};
+    let (deps, _ws) = review_deps("divert-parent");
+    write_board_config(&deps.home, r#"{"auto_close_parent":true}"#);
+    let parent = issue_in_review(
+        &deps.store,
+        "父单分流",
+        "",
+        "（父单不该被当成 worker 交付评审——本 Delivery 是干扰项）",
+    );
+    deps.store
+        .create_issue(NewIssue {
+            title: "子单占位".to_string(),
+            priority: 2,
+            creator: nemesis_board::Actor::agent("node-a"),
+            parent_issue_id: Some(parent.id),
+            ..Default::default()
+        })
+        .unwrap();
+    attach_loop(
+        &deps,
+        Arc::new(CapturingLlm {
+            prompts: std::sync::Mutex::new(Vec::new()),
+            reply: review_json("FAIL", "子单结论缺口"),
+        }),
+    );
+
+    let reviewed = review_issue(&deps, parent.id, ReviewCtx::first_stage())
+        .await
+        .expect("父单分流评审必须闭环");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.get_issue(parent.id).unwrap().status,
+        IssueStatus::InReview,
+        "父单 FAIL 转人工保持 in_review"
+    );
+    assert_eq!(
+        decided_word(&deps.store, parent.id).as_deref(),
+        Some("parent_escalate_human"),
+        "必须走父单收口语义（parent_escalate_human），证明分流生效"
+    );
+    assert!(
+        deps.store
+            .list_comments(parent.id)
+            .unwrap()
+            .iter()
+            .any(|c| c.content.contains("父单收口验收未定案（FAIL）")),
+        "必须落父单收口转人工评论（非子单式评审产物）"
+    );
+}
+
+// ===== N2（2026-10-12）：评审自身失败自动重评（failure_retries） =====
+
+/// N2 决策面共用：in_review 单 + 恒失败 LLM。
+fn n2_fail_fixture(deps: &BoardReviewDeps, name: &str) -> nemesis_board::Issue {
+    let issue = issue_in_review(&deps.store, name, "", "## 结论\n交付完成");
+    attach_loop(
+        deps,
+        Arc::new(ScriptedLlm {
+            script: std::sync::Mutex::new(std::collections::VecDeque::from([Err(
+                "LLM 调用失败：连接被重置".to_string(),
+            )])),
+            fallback: String::new(),
+            on_call: None,
+        }),
+    );
+    issue
+}
+
+/// 预算内（failure_retries=1，ctx.retry=0）→ 落「自动重评」审计评论，
+/// 不落「请人工裁决」（重评 spawn 的 60s 延迟任务随测试 runtime 结束取消）。
+#[tokio::test]
+async fn n2_review_failure_within_budget_schedules_retry() {
+    let (deps, _ws) = review_deps("n2-retry");
+    write_board_config(&deps.home, r#"{"review":{"failure_retries":1}}"#);
+    let issue = n2_fail_fixture(&deps, "评审失败重评");
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("重评调度闭环");
+    assert!(reviewed);
+    let comments = deps.store.list_comments(issue.id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("自动重评（第 1/1 次）")),
+        "必须落自动重评审计评论：{:?}",
+        comments.iter().map(|c| &c.content).collect::<Vec<_>>()
+    );
+    assert!(
+        !comments.iter().any(|c| c.content.contains("请人工裁决")),
+        "预算内不得直接转人工"
+    );
+}
+
+/// failure_retries=0（关）→ 旧行为 pin：直接转人工，不调度重评。
+#[tokio::test]
+async fn n2_review_failure_retries_zero_keeps_legacy_escalation() {
+    let (deps, _ws) = review_deps("n2-off");
+    write_board_config(&deps.home, r#"{"review":{"failure_retries":0}}"#);
+    let issue = n2_fail_fixture(&deps, "评审失败旧行为");
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("旧行为闭环");
+    assert!(reviewed);
+    let comments = deps.store.list_comments(issue.id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("请人工裁决") && c.content.contains("review.retrigger")),
+        "0=关必须走旧行为转人工"
+    );
+    assert!(
+        !comments.iter().any(|c| c.content.contains("自动重评")),
+        "0=关不得调度重评"
+    );
+}
+
+/// 重评轮再失败（ctx.retry 已达预算）→ 转人工（预算耗尽），不再调度。
+#[tokio::test]
+async fn n2_review_failure_budget_exhausted_escalates() {
+    let (deps, _ws) = review_deps("n2-exhausted");
+    write_board_config(&deps.home, r#"{"review":{"failure_retries":1}}"#);
+    let issue = n2_fail_fixture(&deps, "重评预算耗尽");
+
+    let ctx = ReviewCtx {
+        allow_selfcheck: true,
+        evidence: None,
+        retry: 1,
+    };
+    let reviewed = review_issue(&deps, issue.id, ctx).await.expect("闭环");
+    assert!(reviewed);
+    let comments = deps.store.list_comments(issue.id).unwrap();
+    assert!(
+        comments.iter().any(|c| c.content.contains("请人工裁决")),
+        "预算耗尽必须转人工"
+    );
+    assert!(
+        !comments.iter().any(|c| c.content.contains("自动重评")),
+        "预算耗尽不得再调度重评"
+    );
+}
+
 // ===== review_project_completion LLM 语义臂（PASS 收口 / 解析失败全父单评论） =====
 
 fn done_top_parent(deps: &BoardReviewDeps, pid: i64, title: &str) -> nemesis_board::Issue {
@@ -5894,6 +6054,8 @@ async fn w5_parse_failed_unlimited_escalates_without_redispatch() {
             _tools: Vec<nemesis_agent::types::ToolDefinition>,
         ) -> Result<LlmResponse, String> {
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "这不是评审 JSON，只是一段散文。".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
@@ -5960,6 +6122,8 @@ async fn w5_parse_failed_guardrail_escalates_to_human() {
             _tools: Vec<nemesis_agent::types::ToolDefinition>,
         ) -> Result<LlmResponse, String> {
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "同样不是评审 JSON。".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
@@ -5972,6 +6136,11 @@ async fn w5_parse_failed_guardrail_escalates_to_human() {
     }
 
     let (mut deps, _ws) = review_deps("w5-parse-guard");
+    // N2 默认 failure_retries=1：首轮解析失败落「自动重评」延迟链（60s 后
+    // 异步重跑），不会同步出现转人工评论。本测试钉的是重评预算耗尽臂——
+    // 关掉重评（0=关）直达转人工（与 n2_review_failure_retries_zero 同款
+    // pin）。
+    write_board_config(&deps.home, r#"{"review":{"failure_retries":0}}"#);
     let agent_loop = AgentLoop::new(Box::new(JunkProvider), AgentConfig::default());
     deps.moderator_loop = Arc::new(std::sync::OnceLock::new());
     let _ = deps.moderator_loop.set(Arc::new(agent_loop));
@@ -7163,4 +7332,151 @@ async fn project_defect_gate_blocks_completion() {
         }),
         "项目缺陷闸门决策必须入审计账"
     );
+}
+
+// ---- U-A（2026-10-12 停车现场工程）：停车档案落盘断言 ----
+// 三个代表臂（UNSURE 闸 / token 预算 / 缺陷闸门）经完整 review 链跑通后，
+// 断言 `<workspace>/board/handoffs/<NB-x>.json` 在场且字段正确——停车档案
+// 是「继续 NB-x」LLM 接手链路的数据源，缺席 = 接手断链。
+
+/// handoff JSON 读取助手（断言在场 + 反序列化）。
+fn read_handoff_json(ws: &std::path::Path, number: &str) -> serde_json::Value {
+    let path = nemesis_board::handoff::handoff_path(ws, number);
+    assert!(path.is_file(), "停车档案必须落盘：{}", path.display());
+    serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).expect("handoff JSON")
+}
+
+#[tokio::test]
+async fn ua_unsure_park_writes_handoff_archive() {
+    use nemesis_board::IssueStatus;
+    let (deps, ws) = review_deps("ua-unsure");
+    let issue = delivered_issue(&deps.store, "UNSURE 停车档案", "t-ua-unsure-1");
+    attach_loop(
+        &deps,
+        Arc::new(CapturingLlm {
+            prompts: std::sync::Mutex::new(Vec::new()),
+            reply: review_json("UNSURE", "证据不足"),
+        }),
+    );
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("UNSURE 闭环");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.get_issue(issue.id).unwrap().status,
+        IssueStatus::InReview
+    );
+
+    let doc = read_handoff_json(&ws, &issue.number);
+    assert_eq!(doc["schema"], 1);
+    assert_eq!(doc["issue"], issue.number.as_str());
+    // 单轮 UNSURE 走 EscalateHuman 通用臂：诚实分型 unsure（≠ streak 闸的
+    // unsure_streak——默认阈值 2，一轮不构成 streak）。
+    assert_eq!(doc["stop_kind"], "unsure");
+    assert_eq!(doc["suggested_action"], "manual_check");
+    assert!(
+        doc["resume_entry"]
+            .as_str()
+            .unwrap()
+            .contains("review.retrigger"),
+        "resume 入口必须可执行: {}",
+        doc["resume_entry"]
+    );
+    // 停车评论带档案注记（人可读轨指路机器可读轨）。
+    let comments = deps.store.list_comments(issue.id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("停车现场已存档")),
+        "转人工评论必须带停车档案注记"
+    );
+}
+
+#[tokio::test]
+async fn ua_budget_park_writes_handoff_archive() {
+    use nemesis_board::IssueStatus;
+    let (deps, ws) = review_deps("ua-budget");
+    write_board_config(&deps.home, r#"{"max_redispatch":0}"#);
+    let issue = delivered_issue(&deps.store, "预算停车档案", "t-ua-budget-1");
+    attach_loop(
+        &deps,
+        Arc::new(CapturingLlm {
+            prompts: std::sync::Mutex::new(Vec::new()),
+            reply: review_json("FAIL", "缺口乙"),
+        }),
+    );
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("FAIL+零预算闭环");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.get_issue(issue.id).unwrap().status,
+        IssueStatus::InReview
+    );
+
+    let doc = read_handoff_json(&ws, &issue.number);
+    // max_redispatch=0 的 FAIL 走 EscalateHuman 通用臂：诚实分型
+    // redispatch_budget（≠ token 会话预算的 budget）。
+    assert_eq!(doc["stop_kind"], "redispatch_budget");
+    assert_eq!(doc["suggested_action"], "manual_check");
+    assert!(
+        doc["environment"].as_object().is_some(),
+        "environment 快照必须在场: {}",
+        doc["environment"]
+    );
+}
+
+#[tokio::test]
+async fn ua_defect_gate_park_writes_handoff_archive() {
+    use nemesis_board::{CommentType, IssueStatus, NewComment, NewIssue};
+
+    let (deps, ws) = review_deps("ua-defect-gate");
+    std::fs::write(
+        deps.home.join("config.json"),
+        r#"{"board":{"auto_close_parent":true}}"#,
+    )
+    .unwrap();
+    let creator = nemesis_board::Actor::agent("node-a");
+    let parent = deps
+        .store
+        .create_issue(NewIssue {
+            title: "UA 缺陷父单".to_string(),
+            creator: creator.clone(),
+            ..Default::default()
+        })
+        .unwrap();
+    let child = deps
+        .store
+        .create_issue(NewIssue {
+            title: "UA 缺陷子单".to_string(),
+            creator: creator.clone(),
+            parent_issue_id: Some(parent.id),
+            ..Default::default()
+        })
+        .unwrap();
+    deps.store
+        .transition_issue(parent.id, IssueStatus::InProgress, &creator)
+        .unwrap();
+    deps.store
+        .transition_issue(parent.id, IssueStatus::InReview, &creator)
+        .unwrap();
+    deps.store
+        .add_comment(NewComment {
+            issue_id: child.id,
+            author: nemesis_board::Actor::agent("node-w"),
+            content: "完成\n[P1] 内存泄漏未修".to_string(),
+            parent_id: None,
+            ctype: CommentType::Delivery,
+        })
+        .unwrap();
+
+    let reviewed = review_parent_issue(&deps, parent.id).await.unwrap();
+    assert!(reviewed);
+
+    let doc = read_handoff_json(&ws, &parent.number);
+    assert_eq!(doc["stop_kind"], "defect_gate");
+    assert_eq!(doc["suggested_action"], "manual_check");
+    assert_eq!(doc["environment"]["unclosed_defects"], 1);
 }

@@ -56,7 +56,7 @@ pub fn sync_dreaming_job(
         // 关闭态：清理残留 job（幂等——无 job 时静默返回）
         for job in svc.list_jobs(true) {
             if job.name == DREAMING_JOB_NAME {
-                svc.remove_job(&job.id);
+                let _ = svc.remove_job(&job.id); // 幂等清理，失败留待下次同步
                 info!(
                     "[Dreaming] memory.dreaming.enabled=false — 已移除 cron job {}",
                     job.id

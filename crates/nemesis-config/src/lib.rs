@@ -442,10 +442,12 @@ pub struct BoardFlagConfig {
     /// 存在 cancelled 子单的父单不适用（范围缺口必须人工裁决）。
     pub auto_close_parent: bool,
     /// 无限模式（全自动流转 P1；用户裁定 2026-09-10；默认 false = 护栏生效）。
-    /// true：max_redispatch 视为 ∞（FAIL 无限重派）、UNSURE 不转人工（带
-    /// 「无法定案」意见继续重派）——无条件强制流程运转，最大限度减少人类
-    /// 介入。estop 急停不受影响（保险丝非护栏）。停滞仍可观测：连续重派且
-    /// 差距无变化时 WARN 告警（只告警不停）。
+    /// true：max_redispatch 视为 ∞（FAIL 无限重派）、UNSURE 带「无法定案」
+    /// 意见继续重派——但 §6.4B 语义变化（2026-10-12 批准）：UNSURE 连续达到
+    /// `board.review.max_unsure_streak`（默认 2，0=不限恢复完全旧行为）转
+    /// 人工——unlimited 放大的是重派次数不设限，不是无收敛重派授权。
+    /// estop 急停不受影响（保险丝非护栏）。停滞仍可观测：连续重派且差距无
+    /// 变化时 WARN 告警（只告警不停）。
     pub unlimited_mode: bool,
     /// 停车场兜底派发档位（集群完备性加固 2026-09-11 引入；2026-09-29 三档化，
     /// 默认 `Role` = 角色缺失是常态：职能/tier 门槛随职能放开，但角色纪律
@@ -483,6 +485,8 @@ pub struct BoardFlagConfig {
     /// 非绝对排除；样本 <3 一律 neutral），重派换节点评论带档位留痕。
     /// 记账与开关解耦（评审定案照常入账，灰度期攒数据，开闸即有历史）。
     pub fingerprint_weighting: bool,
+    /// LLM 端点不可用期封存（U-B 断网封存；`board.unavailable` 段）。
+    pub unavailable: BoardUnavailableConfig,
 }
 
 impl Default for BoardFlagConfig {
@@ -508,6 +512,7 @@ impl Default for BoardFlagConfig {
             archive: BoardArchiveConfig::default(),
             conflict_auto_resolve: false,
             fingerprint_weighting: false,
+            unavailable: BoardUnavailableConfig::default(),
         }
     }
 }
@@ -538,13 +543,27 @@ pub struct BoardReviewConfig {
     /// （保留注入防线与三态 JSON 契约，关闭取证/经验）。无法识别的值安全
     /// 回落 thorough（宁可全量也不放水）。
     pub tier: String,
-    /// exec: 锚点执行开关（M7；默认 false = exec 锚点诚实跳过并注记，
-    /// 不进失败集）。开启后 `[CHECK] exec:<命令>` 在锚点根目录以子进程
-    /// 执行，退出码 0 = 过。planner 不自动产出此类型，仅编排者/需求书
-    /// 显式写入。
+    /// exec: 锚点执行开关（M7 + §6.1 激活；代码默认 false = 安全缺省不变，
+    /// 三机环境配置开启）。开启后 `[CHECK] exec:<命令>` 在锚点根目录以子进程
+    /// 执行，退出码 0 = 过。planner 对可运行时验证的子单应产出此形态（§6.1
+    /// 改动二），危险命令形态解析期黑名单拒绝；环境依赖缺失诚实跳过不进
+    /// 失败集（探针闸）。
     pub exec_anchors_enabled: bool,
     /// exec: 锚点单条执行超时秒数（默认 120；超时 = 不过 + kill）。
     pub exec_anchor_timeout_secs: u64,
+    /// 评审自身失败自动重评次数（N2；默认 1，**0 = 关**回旧行为——评审
+    /// LLM 调用失败恒转人工）。评审 LLM 失败（非 verdict）时延迟自动重评，
+    /// 全部重评仍失败才转人工。约束：estop / 单据状态已变则不重试（尊重
+    /// 迟到评审守卫）；每次重评审计评论留痕。与 fail_class 重派方向相反
+    ///——重评不重派，评审侧故障不放大成 worker 重写循环。
+    pub failure_retries: u32,
+    /// UNSURE 连续转人工阈值（§6.4 B；默认 **2**，**0 = 不限**=旧行为）。
+    /// 同签名 UNSURE 连续达到阈值 → 复用 EscalateHuman 路径转人工（自带
+    /// 清账 + 审计 + reasons 评论）。语义：给一次 worker 自愈机会，超出
+    /// 即认定「只有人能解」（NB-8 第 4 轮实证）。unlimited_mode 下 UNSURE
+    /// 处置从「无限重派」限缩为「同签名连续 2 轮转人工」（2026-10-12
+    /// 用户批准的语义变化）。
+    pub max_unsure_streak: u32,
 }
 
 impl Default for BoardReviewConfig {
@@ -561,6 +580,8 @@ impl Default for BoardReviewConfig {
             tier: "thorough".to_string(),
             exec_anchors_enabled: false,
             exec_anchor_timeout_secs: 120,
+            failure_retries: 1,
+            max_unsure_streak: 2,
         }
     }
 }
@@ -630,8 +651,9 @@ impl Default for BoardDossierConfig {
     }
 }
 
-/// 任务拆解配置（`board.plan` 段；Swarm M1）。
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+/// 任务拆解配置（`board.plan` 段；Swarm M1；超时重拆四键 2026-10-11 无人值守
+/// 硬化 §5#1——凡可致流程停滞处必有开关）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct BoardPlanConfig {
     /// planner 拆解用模型别名（None = 主模型）。
@@ -641,6 +663,69 @@ pub struct BoardPlanConfig {
     /// true 即自动 confirm 发车（全自动流转 P1 接线；planner 失败仍转
     /// 人工通知，不自动重试）。
     pub auto_confirm: bool,
+    /// 单次拆解链超时阈值秒数（默认 1200 = 20 分钟，用户裁定；0 = 不限）。
+    /// 超时处置链见 `timeout_reattempt`。计时起点 = 单次链的 started_at
+    ///（重拆后重置）——这是「单次拆解」阈值，不是累计。
+    pub timeout_secs: u64,
+    /// 拆解重试上限（默认 3；0 = 不限）。超时重拆达到上限后停车：父单评论
+    ///「拆解连续超时」+ `board.plan_failed` 事件 + RUNNING_PLANS 摘除，
+    /// 等人工重拆——停车而非无限烧 LLM。
+    pub max_attempts: u32,
+    /// 拆解超时是否自动重拆（默认 true）。false = 超时不重拆，直接转人工
+    /// 评论（现行为补强前的语义，保留开关）。
+    pub timeout_reattempt: bool,
+    /// gateway 重启后自动恢复中断拆解（N1；默认 true）。重启杀拆解任务且
+    /// RUNNING_PLANS 是内存态——旧行为 = 父单停留「已开始拆解」评论态等
+    /// 手动重拆（无人值守语义下 = 流程中断）。true 时启动扫描满足
+    /// 「状态为 backlog/todo 且带拆解中评论形态且不在 RUNNING_PLANS」的
+    /// 单子，自动重新发起拆解（走同一超时重拆链，attempt 重计）。
+    /// false = 关回旧行为。手动 cancel 的单子状态非 backlog/todo 天然排除；
+    /// 恢复拆解同受 `max_attempts` 闸。
+    pub restart_recover: bool,
+}
+
+impl Default for BoardPlanConfig {
+    fn default() -> Self {
+        Self {
+            model: None,
+            auto_confirm: false,
+            timeout_secs: 1200,
+            max_attempts: 3,
+            timeout_reattempt: true,
+            restart_recover: true,
+        }
+    }
+}
+
+/// LLM 端点不可用期封存配置（`board.unavailable` 段；U-B 断网封存）。
+/// 语义：master 侧 circuit breaker 只认**连接建立类**错误（connect refused /
+/// DNS 失败；reqwest `is_connect`/`is_request`）——超时不计入（慢模型/长
+/// 思考跑满 provider 600s 是常态，计入会误封存）。连续阈值次连接类失败 →
+/// 端点标记 unavailable → 封存：只短路「下一步需要 LLM 的自动动作」（拆解
+/// 发起 / 评审触发 / 自动重派），不需 LLM 的动作照常；手动操作放行 + WARN。
+/// 恢复探针发最小真实 completion（TCP 通 ≠ LLM 活）。estop 优先级更高；
+/// 封存状态独立于 estop（release 不解封，探针才解封）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BoardUnavailableConfig {
+    /// 封存开关（默认 **true**——封存是无人值守语义的默认正确行为）。
+    /// false = 关回各环节各自失败现状（连接失败各自 fail_class 处理）。
+    pub freeze: bool,
+    /// 连续连接类失败判定阈值（默认 3）。
+    pub connect_fail_threshold: u32,
+    /// 恢复探针间隔秒数（默认 300）。**0 = 只封存不自动解封**（人工恢复：
+    /// 手动触发探针或重启）。
+    pub probe_interval_secs: u64,
+}
+
+impl Default for BoardUnavailableConfig {
+    fn default() -> Self {
+        Self {
+            freeze: true,
+            connect_fail_threshold: 3,
+            probe_interval_secs: 300,
+        }
+    }
 }
 
 /// 频道讨论区配置（`board.discussion` 段；Swarm M2/M3）。
@@ -1289,6 +1374,18 @@ pub struct AgentDefaults {
     /// 2026-09-03 同类回归；AgentDefaults 无 flatten extra）。
     #[serde(default)]
     pub session_token_budget: u64,
+    /// 输出撞顶翻倍阶梯的封顶值（§6.2 无人值守硬化；默认 262144 = 256K）。
+    /// LLM 响应 `finish_reason=length` 且正文为空（思考烧穿形态）时翻倍重发
+    ///（`max(当前×2, 32768)` 起步地板），直到有正文或触及本封顶。触及封顶
+    /// 仍空 = 按现行失败收口（文案注明已试到封顶）。只改当次请求，不回写
+    /// config（会话级 escalation，防单次事故永久抬高全局基线）。
+    #[serde(default = "default_max_output_ceiling")]
+    pub max_output_ceiling: u64,
+}
+
+/// 翻倍阶梯封顶缺省（serde 缺省 / Default 单一真相源）。
+pub fn default_max_output_ceiling() -> u64 {
+    262144
 }
 
 impl Default for AgentDefaults {
@@ -1313,6 +1410,7 @@ impl Default for AgentDefaults {
             rate_limit_retries: default_rate_limit_retries(),
             compact_keep_recent_tokens: default_compact_keep_recent_tokens(),
             session_token_budget: 0,
+            max_output_ceiling: default_max_output_ceiling(),
         }
     }
 }
@@ -3097,6 +3195,28 @@ pub struct SecurityConfig {
     // Dashboard 保存一次字节不变；用户显式选择后才物化。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub signature_verify: String,
+    // ── §2 免打扰（2026-10-11 无人值守计划 Part 2）──────────────────
+    // 审批自动批准段。缺省关（弹卡照旧）；`auto_approve=true` 时
+    // RequireApproval 一律自动放行（审计标 auto_by_config，安全 8 层其余
+    // 各层照常全跑）。整段缺省不落盘（skip_serializing_if）：未配置的
+    // 部署 typed round-trip 字节不变（A-F4 缺省语义同款）。
+    #[serde(default, skip_serializing_if = "approvals_is_default")]
+    pub approvals: ApprovalsConfig,
+}
+
+/// §2 免打扰：审批自动批准配置段（2026-10-11 无人值守计划 Part 2）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ApprovalsConfig {
+    /// 无人值守免打扰：RequireApproval 审批卡一律自动批准（pattern 记忆
+    /// 优先；guardian 语义二审不是弹窗不纳入；技能安装闸按发起流程分叉
+    /// ——见计划 §2.4）。默认关 = 现行为（弹窗）。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_approve: bool,
+}
+
+/// serde skip_serializing_if：整段处于缺省（关）时不落盘。
+fn approvals_is_default(v: &ApprovalsConfig) -> bool {
+    !v.auto_approve
 }
 
 /// 单类别的滑动窗口限制规则（P0 D1）。
@@ -3137,6 +3257,8 @@ impl Default for SecurityConfig {
             limits: std::collections::BTreeMap::new(),
             // 签名验证三态开关：空串 = 未配置 = 落默认 warn。
             signature_verify: String::new(),
+            // §2 免打扰：缺省关。
+            approvals: ApprovalsConfig::default(),
         }
     }
 }

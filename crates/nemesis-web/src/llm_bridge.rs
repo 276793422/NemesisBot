@@ -180,6 +180,9 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
                     tool_calls,
                     finished,
                     reasoning_content: resp.reasoning_content,
+                    // §6.2：归一化停止原因透传（主 loop 翻倍阶梯判定输入）。
+                    finish_reason: Some(resp.finish_reason),
+                    escalated_to: None,
                     usage: resp
                         .usage
                         .map(|u| nemesis_agent::loop_executor::ObserverUsageInfo {

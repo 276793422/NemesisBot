@@ -330,9 +330,10 @@ impl LLMProvider for OpenAICompatProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|_| FailoverError::Timeout {
+            .map_err(|e| FailoverError::Timeout {
                 provider: self.config.name.clone(),
                 model: model.to_string(),
+                cause: nemesis_utils::llm_error_class::error_chain_msg(&e),
             })?;
 
         let status = resp.status().as_u16();

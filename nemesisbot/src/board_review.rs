@@ -594,10 +594,13 @@ fn capability_fail_hint(fc: &str) -> &'static str {
 /// 评审上下文（P4）：一段评审 fresh（`allow_selfcheck=true`，配置闸在
 /// review_issue 内现读）；B2b 二段评审带 evidence 且 `allow_selfcheck=false`
 /// ——取证只带一程，二段结论直接处置（防取证-评审乒乓死循环）。
+/// N2（2026-10-12）：`retry` = 已消耗的评审自身失败自动重评次数
+///（failure_retries 预算记账，随重评链传递）。
 #[derive(Debug, Clone)]
 struct ReviewCtx {
     allow_selfcheck: bool,
     evidence: Option<String>,
+    retry: u32,
 }
 
 impl ReviewCtx {
@@ -605,6 +608,7 @@ impl ReviewCtx {
         Self {
             allow_selfcheck: true,
             evidence: None,
+            retry: 0,
         }
     }
 }
@@ -661,6 +665,30 @@ pub(crate) fn spawn_board_review(deps: BoardReviewDeps, issue_id: i64) {
     });
 }
 
+/// N2（2026-10-12）：评审自身失败自动重评的延迟（秒）。给评审侧基础设施
+/// 故障（LLM 限流/端点抖动）一个自愈窗口——立即重跑大概率撞同一个故障。
+const REVIEW_RETRY_DELAY_SECS: u64 = 60;
+
+/// N2：延迟重评（fire-and-forget）。睡眠后重入 review_issue 同一入口——
+/// estop 挂起闸、in_review 状态闸（人工已改状态让位）、S-O2 迟到守卫全部
+/// 天然生效；ctx.retry 记账让重评再失败时预算判定继续累积。
+fn spawn_review_retry(deps: BoardReviewDeps, issue_id: i64, attempt: u32) {
+    let store = deps.store.clone();
+    let cluster = deps.cluster.clone();
+    spawn_watched(store, cluster, Some(issue_id), "评审重试", async move {
+        tokio::time::sleep(std::time::Duration::from_secs(REVIEW_RETRY_DELAY_SECS)).await;
+        let ctx = ReviewCtx {
+            allow_selfcheck: true,
+            evidence: None,
+            retry: attempt,
+        };
+        match review_issue(&deps, issue_id, ctx).await {
+            Ok(_) => {} // 跳过/闭环结果已在 review_issue 内记日志
+            Err(e) => warn!("[BoardReview] issue {issue_id} 评审重试失败：{e}（人工兜底）"),
+        }
+    });
+}
+
 /// 执行一次完整验收。返回 `Ok(false)` = 未评审即跳过（配置关/状态已变/
 /// loop 未就绪/estop 冻结），`Ok(true)` = 评审闭环完成（含 B2b 取证挂起）。
 async fn review_issue(
@@ -669,8 +697,9 @@ async fn review_issue(
     ctx: ReviewCtx,
 ) -> Result<bool, String> {
     // M3 同因熔断账本（随函数全程使用：estop 停车清账 / 非重派终态清账 /
-    // Redispatch 臂记账判定）。
-    let mut fail_streaks = crate::board_fail_streak::FailStreakLedger::load(&deps.workspace);
+    // Redispatch 臂记账判定）。§6.4D：账本移 nemesis-board 公开（web 层
+    // 手动重派清账同源同一 JSON）。
+    let mut fail_streaks = nemesis_board::fail_streak::FailStreakLedger::load(&deps.workspace);
     // estop 保险丝检查点 ①：挂起即冻结（不读配置不跑 LLM），停车等释放。
     // 停车清账（M3）：急停是世界被外力改变，release 复评时旧失败计数作废。
     if estop_fuse_engaged(deps, issue_id, ParkedKind::Issue) {
@@ -693,6 +722,34 @@ async fn review_issue(
             issue.status
         );
         return Ok(false);
+    }
+
+    // U-B（§9.2）：LLM 端点不可用封存闸——评审挂起（不烧 N2 重评链）。
+    // 挂起即写中断档案，恢复探针解封后逐单续评（review pending）。手动
+    // review.retrigger 期间撞封存也走此路：诚实挂起 + 自动续做，意图不丢。
+    if nemesis_web::handlers::board_unavailable::frozen_now() {
+        nemesis_web::handlers::board_unavailable::write_interruption(
+            &deps.workspace,
+            &deps.store,
+            &issue,
+            "review",
+            "评审挂起：LLM 端点不可用封存中，恢复后探针自动续评".to_string(),
+            serde_json::json!({ "attempt": ctx.retry }),
+        );
+        warn!("[BoardReview] issue {issue_id} 评审挂起：LLM 端点不可用封存中（恢复后自动续评）");
+        return Ok(false);
+    }
+
+    // N4（§6.3 2026-10-12）：父单分流——review.retrigger 对收口失败转人工
+    // （保持 in_review）的父单同样一键重评。review_parent_issue 是收口汇总
+    // 评审（输入=父单目标+全子单结论），review_issue 的子单式评审对父单无
+    // 意义（父单自身无交付汇报，跑出来的是无依据结论）。分流在状态闸之后：
+    // review_parent_issue 内部自带 estop/旗标/状态/子树四重守卫，重复读
+    // config 幂等无害；所有 review_issue 调用路径（retrigger/write_back/
+    // 重放 sweep/estop 复评）自动获得正确分流。
+    if !store.list_children(issue_id)?.is_empty() {
+        info!("[BoardReview] issue {issue_id} 是父单（有子单），分流收口汇总评审");
+        return review_parent_issue(deps, issue_id).await;
     }
 
     // ---- 组装评审输入：worker 汇报 + 线程争议点 ----
@@ -912,8 +969,24 @@ async fn review_issue(
         warn!(
             "[BoardReview] issue {issue_id} 锚点根不可达（基础设施故障）→ 转人工，不产出锚点 FAIL：{root_err}"
         );
+        let handoff_note = park_with_handoff(
+            deps,
+            &issue.number,
+            issue_id,
+            nemesis_board::handoff::HandoffSpec {
+                stop_kind: "infra",
+                suggested_action: "retry",
+                hint: "锚点主根与项目目录均不可达（基础设施故障，非交付质量问题）：核查工作区/项目档案目录是否被移动或删除，修好后复评".into(),
+                resume_entry: "review.retrigger（number=NB-x，环境修复后复评）".into(),
+                environment: last_dispatch_env(&dispatches),
+                attempted: vec![serde_json::json!({
+                    "action": "validate_anchor_roots",
+                    "result": root_err.to_string(),
+                })],
+            },
+        );
         let msg = format!(
-            "{}🧭 客观锚点检查无法执行：锚点主根与项目目录均不可达（基础设施故障，非交付质量问题）。已停止自动验收，请人工核查工作区环境后用 board.review.retrigger 重试，或直接裁决。\n\n{root_err}",
+            "{}🧭 客观锚点检查无法执行：锚点主根与项目目录均不可达（基础设施故障，非交付质量问题）。已停止自动验收，请人工核查工作区环境后用 board.review.retrigger 重试，或直接裁决。\n\n{root_err}{handoff_note}",
             human_mention
         );
         store.add_comment(nemesis_board::NewComment {
@@ -949,10 +1022,10 @@ async fn review_issue(
         &exec_policy,
     );
     // exec 跳过注记：诚实落系统评论 + 注入 prompt（评审员知道命令类验收
-    // 未执行，不自行脑补 PASS）。
+    // 未执行，不自行脑补 PASS）。注记自描述原因（开关关闭 / 环境依赖缺失）。
     if !anchor_skipped.is_empty() {
         let note_body = format!(
-            "⏭ 以下 exec: 锚点本轮未执行（board.review.exec_anchors_enabled 未开启）：\n{}",
+            "⏭ 以下 exec: 锚点本轮未执行（原因见各条注记）：\n{}",
             anchor_skipped
                 .iter()
                 .map(|s| format!("- {s}"))
@@ -969,7 +1042,7 @@ async fn review_issue(
             warn!("[BoardReview] issue {issue_id} exec 跳过注记评论落库失败：{e}");
         }
         prompt.push_str(&format!(
-            "\n## 客观锚点检查（部分未执行）\n以下 exec: 锚点因开关关闭未执行，其验收项**未经系统核验**，请按语义项人工评判，不得视为已通过：\n{}",
+            "\n## 客观锚点检查（部分未执行）\n以下 exec: 锚点本轮未执行（开关关闭或环境依赖缺失，见各条注记），其验收项**未经系统核验**，请按语义项人工评判，不得视为已通过：\n{}",
             anchor_skipped
                 .iter()
                 .map(|s| format!("- {s}"))
@@ -1149,8 +1222,32 @@ async fn review_issue(
         )
         .await
         {
-            Ok(ok) => ok,
+            Ok(ok) => {
+                // U-B：评审成功 = 端点活证据（连击清零；封存中不可能到这里
+                // ——入口闸已拦，此处是成功路径对账）。
+                nemesis_web::handlers::board_unavailable::record_llm_success(&cfg.unavailable);
+                ok
+            }
             Err(last_err) => {
+                // U-B：评审失败喂封存判定；恰好触发封存 = 在途工作逐一写
+                // 中断档案（本单 + 在途拆解链）。
+                let tripped = nemesis_web::handlers::board_unavailable::record_llm_failure(
+                    &cfg.unavailable,
+                    &last_err,
+                );
+                if tripped {
+                    nemesis_web::handlers::board_unavailable::write_trip_interruptions(
+                        Some(deps.workspace.as_path()),
+                        &deps.store,
+                        Some((
+                            &issue,
+                            "review",
+                            "评审进行中 LLM 端点不可用封存：恢复后探针自动续评".to_string(),
+                            serde_json::json!({ "attempt": ctx.retry }),
+                        )),
+                        &last_err,
+                    );
+                }
                 // S-O2 迟到评审守卫（评审自身失败路径）：评审期间单据已被
                 // 人工改状态 → 不落评论不重派，让位人工（无 verdict 可留痕）。
                 if !review_still_relevant(
@@ -1161,6 +1258,34 @@ async fn review_issue(
                     "子单验收",
                 ) {
                     return Ok(false);
+                }
+                // N2（2026-10-12）：评审自身失败 ≠ verdict——评审侧基础设施
+                // 故障（LLM 限流/端点抖动）自愈后重跑同一单据即可，不必打扰
+                // 人工。`board.review.failure_retries`（默认 1，0=关回旧行为）
+                // 预算内 → 落审计评论 + 延迟自动重评（ctx.retry 记账，重评
+                // 再失败预算耗尽才转人工）。重评不重派：与 C1 教训（评审侧
+                // 故障不可放大成 worker 重写循环）方向相反，worker 不受影响。
+                // estop/状态已变守卫由 review_issue 入口闸天然覆盖（重评走
+                // 同一入口）。
+                if cfg.review.failure_retries > 0
+                    && ctx.retry < cfg.review.failure_retries
+                    && !estop_fuse_engaged(deps, issue_id, ParkedKind::Issue)
+                {
+                    let attempt = ctx.retry + 1;
+                    let total = cfg.review.failure_retries;
+                    info!(
+                        "[BoardReview] issue {issue_id} 评审自身失败（{last_err}），{REVIEW_RETRY_DELAY_SECS}s 后自动重评（第 {attempt}/{total} 次）"
+                    );
+                    post_review_comment(
+                        store,
+                        issue_id,
+                        &deps.cluster,
+                        &format!(
+                            "🔁 验收评审自身失败（非交付质量问题），{REVIEW_RETRY_DELAY_SECS}s 后自动重评（第 {attempt}/{total} 次）。\n\n原因：{last_err}"
+                        ),
+                    )?;
+                    spawn_review_retry(deps.clone(), issue_id, attempt);
+                    return Ok(true);
                 }
                 // 评审自身失败（LLM 调用失败 / 取证预算耗尽 / 解析失败）≠
                 // 交付质量 FAIL：评审没出结论就没有重派 worker 的授权。
@@ -1173,8 +1298,28 @@ async fn review_issue(
                 // 分支同语义；评审预算不足的正确修复手段是调大
                 // board.review.max_turns（0=不限），不是把 worker 送回来
                 // 重写。
+                // U-A：停车现场落盘（重评预算耗尽 = retry_exhausted 停车）。
+                let handoff_note = park_with_handoff(
+                    deps,
+                    &issue.number,
+                    issue_id,
+                    nemesis_board::handoff::HandoffSpec {
+                        stop_kind: "retry_exhausted",
+                        suggested_action: "retry",
+                        hint: format!(
+                            "验收评审自身失败且重评预算耗尽（failure_retries={}）：评审侧故障不惩罚交付，修好环境（调大 board.review.max_turns（0=不限）/ 检查模型端点）后一键重试",
+                            cfg.review.failure_retries
+                        ),
+                        resume_entry: "review.retrigger（number=NB-x，修好后重试）".into(),
+                        environment: last_dispatch_env(&dispatches),
+                        attempted: vec![serde_json::json!({
+                            "action": "review_retry",
+                            "result": format!("重评 {}/{} 次后仍失败：{last_err}", ctx.retry, cfg.review.failure_retries),
+                        })],
+                    },
+                );
                 let comment = format!(
-                    "{}🤷 验收 agent 无法判定（验收评审自身失败），请人工裁决。评审侧故障不惩罚交付：若因取证预算耗尽，调大 board.review.max_turns（0=不限）后重试验收即可。\n\n原因：{last_err}",
+                    "{}🤷 验收 agent 无法判定（验收评审自身失败），请人工裁决。评审侧故障不惩罚交付：修好环境（如调大 board.review.max_turns（0=不限）/ 检查模型端点）后，用 review.retrigger（number=NB-N）一键重试验收。\n\n原因：{last_err}{handoff_note}",
                     human_mention
                 );
                 post_review_comment(store, issue_id, &deps.cluster, &comment)?;
@@ -1341,9 +1486,26 @@ async fn review_issue(
             // 会话 / 改派发语义）。unlimited 放大的是重派次数，不是预算。
             if latest_fail_class(&comments) == Some("token_budget") {
                 fail_streaks.clear(issue_id);
+                // U-A：停车现场落盘（verdict_chain 全程链）。
+                let handoff_note = park_with_handoff(
+                    deps,
+                    &issue.number,
+                    issue_id,
+                    nemesis_board::handoff::HandoffSpec {
+                        stop_kind: "budget",
+                        suggested_action: "manual_check",
+                        hint: "worker 会话 token 预算耗尽（资源闸，重派会被入口拒接原样退回、换节点也不解）：调大 agents.defaults.session_token_budget 或新建会话后重新派发".into(),
+                        resume_entry: "review.retrigger（number=NB-x，修好后复评）/ issue.dispatch（新会话重派）".into(),
+                        environment: last_dispatch_env(&dispatches),
+                        attempted: vec![serde_json::json!({
+                            "action": "redispatch",
+                            "result": "worker 入口预算闸拒接（fail_class=token_budget）",
+                        })],
+                    },
+                );
                 let comment = format!(
                     "{}💰 会话 token 预算耗尽：worker 会话累计用量已达 \
-                     agents.defaults.session_token_budget 上限，已停止自动重派，请人工裁决（调大预算或新建会话后重新派发/复评）。",
+                     agents.defaults.session_token_budget 上限，已停止自动重派，请人工裁决（调大预算或新建会话后重新派发/复评）。{handoff_note}",
                     human_mention
                 );
                 store.add_comment(NewComment {
@@ -1375,8 +1537,28 @@ async fn review_issue(
                 detect_worker_loop_marker(store, issue_id, deps.cluster.node_id())?
             {
                 fail_streaks.clear(issue_id);
+                // U-A：停车现场落盘。
+                let handoff_note = park_with_handoff(
+                    deps,
+                    &issue.number,
+                    issue_id,
+                    nemesis_board::handoff::HandoffSpec {
+                        stop_kind: "worker_loop",
+                        suggested_action: "manual_check",
+                        hint: format!(
+                            "worker 自报同一问题反复重派无解（卡点：{marker}）——执行方喊停是比失败计数更强的信号：换方法/换人/修需求书后再续"
+                        ),
+                        resume_entry: "issue.dispatch（换条件重派）/ review.retrigger（复评）"
+                            .into(),
+                        environment: last_dispatch_env(&dispatches),
+                        attempted: vec![serde_json::json!({
+                            "action": "redispatch",
+                            "result": format!("worker 循环升级标记（卡点：{marker}）"),
+                        })],
+                    },
+                );
                 let comment = format!(
-                    "{}🛑 worker 循环升级：执行方在交付中声明同一问题反复重派无解（卡点：{marker}），已停止自动重派，请人工裁决（换方法/换人/修需求书后重新派发或复评）。",
+                    "{}🛑 worker 循环升级：执行方在交付中声明同一问题反复重派无解（卡点：{marker}），已停止自动重派，请人工裁决（换方法/换人/修需求书后重新派发或复评）。{handoff_note}",
                     human_mention
                 );
                 store.add_comment(NewComment {
@@ -1401,19 +1583,41 @@ async fn review_issue(
                 warn!("[BoardReview] issue {issue_id} worker 循环升级标记 → 停止重派转人工");
                 return Ok(true);
             }
-            // M3 同因熔断（2026-10-10 机制加固；优先于 unlimited_mode 与
-            // P2A——unlimited 放大的是「重派次数不设限」，不是「无收敛
-            // 重派授权」）：同一失败签名（排序失败锚点集合；无锚点 =
-            // fail:no-anchors）连续 ≥3 次 → 停止自动重派转人工。签名翻转
-            // 已在账本内清零重计。
-            let streak_signature = crate::board_fail_streak::failure_signature(&anchor_results);
-            if let crate::board_fail_streak::StreakOutcome::Tripped(n) =
-                fail_streaks.record_and_check(issue_id, &streak_signature)
-            {
-                let comment = format!(
-                    "{}⛔ 同因熔断：同一失败签名已连续 {n} 轮未通过（签名：{streak_signature}），自动重派无收敛迹象，已停止重派，请人工裁决（人工处理后自动复评会清零计数）。",
+            // M3 同因熔断（2026-10-10 机制加固；§6.4A 签名带 verdict；优先于
+            // unlimited_mode 与 P2A——unlimited 放大的是「重派次数不设限」，
+            // 不是「无收敛重派授权」）：同一失败签名（{verdict}|{排序失败
+            // 锚点集合}；无失败锚点 = {verdict}|no-anchors）连续 ≥3 次 →
+            // 停止自动重派转人工。签名翻转已在账本内清零重计。
+            let streak_signature =
+                nemesis_board::fail_streak::failure_signature(&anchor_results, &output.verdict);
+            let streak_outcome = fail_streaks.record_and_check(issue_id, &streak_signature);
+            if let nemesis_board::fail_streak::StreakOutcome::Tripped(n) = streak_outcome {
+                // §6.4C：熔断评论 + 审计 extra 带最后一轮评审理由（停车即可
+                // 裁决，对齐 EscalateHuman 先例）。U-A：停车现场落盘（本
+                // 分支已并入 park_with_handoff 单一收口）。
+                let handoff_note = park_with_handoff(
+                    deps,
+                    &issue.number,
+                    issue_id,
+                    nemesis_board::handoff::HandoffSpec {
+                        stop_kind: "fail_streak",
+                        suggested_action: "manual_check",
+                        hint: format!(
+                            "同一失败签名「{streak_signature}」连续 {n} 轮未通过（无收敛重派）：人工核查交付/环境后复评或手动重派（清零计数）"
+                        ),
+                        resume_entry: "review.retrigger（number=NB-x，人工处理后清零复评）".into(),
+                        environment: last_dispatch_env(&dispatches),
+                        attempted: vec![serde_json::json!({
+                            "action": "redispatch",
+                            "result": format!("同因熔断：签名 {streak_signature} 连续 {n} 轮"),
+                        })],
+                    },
+                );
+                let mut comment = format!(
+                    "{}⛔ 同因熔断：同一失败签名已连续 {n} 轮未通过（签名：{streak_signature}），已停止重派，请人工裁决（人工处理后自动复评/手动重派会清零计数）。\n{handoff_note}",
                     human_mention
                 );
+                append_reasons_unless_gapped(&mut comment, &output);
                 store.add_comment(NewComment {
                     issue_id,
                     author: reviewer.clone(),
@@ -1432,10 +1636,80 @@ async fn review_issue(
                         "reason": "fail_signature_streak",
                         "signature": streak_signature,
                         "streak": n,
+                        "reasons": render_reasons(&output.reasons),
                     }),
                 );
                 warn!(
                     "[BoardReview] issue {issue_id} 同因熔断：签名「{streak_signature}」连续 {n} 轮 → 转人工不重派"
+                );
+                return Ok(true);
+            }
+            // §6.4B UNSURE 独立收敛闸（默认 2，0=不限）：UNSURE 恒签名
+            // 「unsure|no-anchors」，2 < M3 阈值 3 → 本闸先停。语义：给一次
+            // worker 自愈机会，超出即认定「只有人能解」（NB-8 第 4 轮实证
+            // ——已补齐全部证据仍 UNSURE，卡点超出无人环境能力）。复用
+            // EscalateHuman 语义：清账 + 审计 + reasons 评论。
+            if nemesis_board::fail_streak::unsure_gate_trips(
+                &output.verdict,
+                &streak_outcome,
+                cfg.review.max_unsure_streak,
+            ) {
+                let n = match streak_outcome {
+                    nemesis_board::fail_streak::StreakOutcome::Continue(n) => n,
+                    nemesis_board::fail_streak::StreakOutcome::Tripped(_) => {
+                        unreachable!("Tripped 已由 M3 熔断臂先行 return，闸判定只收 Continue")
+                    }
+                };
+                let max_unsure = cfg.review.max_unsure_streak;
+                fail_streaks.clear(issue_id);
+                // U-A：停车现场落盘。
+                let handoff_note = park_with_handoff(
+                    deps,
+                    &issue.number,
+                    issue_id,
+                    nemesis_board::handoff::HandoffSpec {
+                        stop_kind: "unsure_streak",
+                        suggested_action: "manual_check",
+                        hint: format!(
+                            "连续 {n} 轮验收无法定案（UNSURE 达闸 {max_unsure}）——已补齐全部证据仍不能客观判定，卡点超出无人环境能力，只有人能解"
+                        ),
+                        resume_entry: "review.retrigger（number=NB-x，人工处理后清零复评）".into(),
+                        environment: last_dispatch_env(&dispatches),
+                        attempted: vec![serde_json::json!({
+                            "action": "redispatch",
+                            "result": format!("UNSURE 连续 {n} 轮（阈值 {max_unsure}）"),
+                        })],
+                    },
+                );
+                record_auto_decide(
+                    store,
+                    issue_id,
+                    deps.cluster.node_id(),
+                    "escalate_human",
+                    output.verdict.as_str(),
+                    serde_json::json!({
+                        "round": round,
+                        "reason": "unsure_streak",
+                        "signature": streak_signature,
+                        "streak": n,
+                        "threshold": max_unsure,
+                        "reasons": render_reasons(&output.reasons),
+                    }),
+                );
+                let mut comment = format!(
+                    "{}🤷 连续 {n} 轮验收无法定案（UNSURE，达到 board.review.max_unsure_streak={max_unsure}），已停止自动重派，请人工裁决（人工处理后自动复评/手动重派会清零计数）。\n{handoff_note}",
+                    human_mention
+                );
+                append_reasons_unless_gapped(&mut comment, &output);
+                store.add_comment(NewComment {
+                    issue_id,
+                    author: reviewer.clone(),
+                    content: comment,
+                    parent_id: None,
+                    ctype: CommentType::Comment,
+                })?;
+                warn!(
+                    "[BoardReview] issue {issue_id} UNSURE 连续 {n} 轮（阈值 {max_unsure}）→ 转人工不重派"
                 );
                 return Ok(true);
             }
@@ -1462,8 +1736,28 @@ async fn review_issue(
                         "[BoardReview] issue {issue_id} 能力类失败（{fc}）+ 同目标重派（unlimited_mode 告警继续）"
                     );
                 } else {
+                    // U-A：停车现场落盘。
+                    let handoff_note = park_with_handoff(
+                        deps,
+                        &issue.number,
+                        issue_id,
+                        nemesis_board::handoff::HandoffSpec {
+                            stop_kind: "capability_fail",
+                            suggested_action: "redispatch",
+                            hint: format!(
+                                "能力类失败（fail_class: {fc}）且重派目标未换——同模型同环境大概率原样复现：换节点/换模型档位后重派"
+                            ),
+                            resume_entry: "issue.dispatch（换节点）/ 调整模型后 review.retrigger"
+                                .into(),
+                            environment: last_dispatch_env(&dispatches),
+                            attempted: vec![serde_json::json!({
+                                "action": "redispatch",
+                                "result": format!("能力类失败 {fc} + 同目标预判"),
+                            })],
+                        },
+                    );
                     let comment = format!(
-                        "{}🤖 能力类失败保护（fail_class: {fc}）：worker 在同一节点反复以相同方式失败，自动重派同节点大概率原样复现，已停止自动重派，请人工裁决。\n\n{}",
+                        "{}🤖 能力类失败保护（fail_class: {fc}）：worker 在同一节点反复以相同方式失败，自动重派同节点大概率原样复现，已停止自动重派，请人工裁决。\n\n{}{handoff_note}",
                         human_mention,
                         capability_fail_hint(fc)
                     );
@@ -1558,8 +1852,27 @@ async fn review_issue(
                         "[BoardReview] issue {issue_id} 预算超限（unlimited_mode 仅告警继续）：{breach}"
                     );
                 } else {
+                    // U-A：停车现场落盘。
+                    let handoff_note = park_with_handoff(
+                        deps,
+                        &issue.number,
+                        issue_id,
+                        nemesis_board::handoff::HandoffSpec {
+                            stop_kind: "budget",
+                            suggested_action: "manual_check",
+                            hint: format!(
+                                "自动重派预算超限（{breach}）：调大 board.budget.*（0=关该维）后复评"
+                            ),
+                            resume_entry: "review.retrigger（number=NB-x，调预算后复评）".into(),
+                            environment: last_dispatch_env(&dispatches),
+                            attempted: vec![serde_json::json!({
+                                "action": "redispatch",
+                                "result": format!("预算超限：{breach}"),
+                            })],
+                        },
+                    );
                     let msg = format!(
-                        "{}🛑 自动重派预算超限，停止自动重派，请人工裁决。\n\n超限项：{breach}",
+                        "{}🛑 自动重派预算超限，停止自动重派，请人工裁决。\n\n超限项：{breach}{handoff_note}",
                         human_mention
                     );
                     post_review_comment(store, issue_id, &deps.cluster, &msg)?;
@@ -1626,6 +1939,35 @@ async fn review_issue(
         ReviewAction::EscalateHuman => {
             // 转人工 = 人即将介入，失败账清零（M3：人工处理后计数作废）。
             fail_streaks.clear(issue_id);
+            // U-A：停车现场落盘——本臂也是停车路径（零预算 FAIL / 单轮
+            // UNSURE 等直接转人工形态），「全部停车分支收口 park_with_
+            // handoff 单一真相源」的最后一臂。stop_kind 按 verdict 诚实
+            // 分型：UNSURE 单轮≠ streak 闸（unsure），FAIL 预算耗尽≠
+            // token 预算（redispatch_budget）。
+            let stop_kind = match output.verdict {
+                nemesis_board::ReviewVerdict::Unsure => "unsure",
+                _ => "redispatch_budget",
+            };
+            let handoff_note = park_with_handoff(
+                deps,
+                &issue.number,
+                issue_id,
+                nemesis_board::handoff::HandoffSpec {
+                    stop_kind,
+                    suggested_action: "manual_check",
+                    hint: format!(
+                        "验收无法定案（verdict={}，重派预算 {}/已耗尽状态：round={round}）：人工核查交付与验收意见后复评或重派",
+                        output.verdict.as_str(),
+                        cfg.max_redispatch
+                    ),
+                    resume_entry: "review.retrigger（number=NB-x，人工处理后复评）/ issue.dispatch（人工裁决后重派）".into(),
+                    environment: last_dispatch_env(&dispatches),
+                    attempted: vec![serde_json::json!({
+                        "action": "review",
+                        "result": format!("verdict={}，按决策表直接转人工", output.verdict.as_str()),
+                    })],
+                },
+            );
             record_auto_decide(
                 store,
                 issue_id,
@@ -1646,6 +1988,7 @@ async fn review_issue(
                 ));
             }
             append_reasons_unless_gapped(&mut comment, &output);
+            comment.push_str(&handoff_note);
             store.add_comment(NewComment {
                 issue_id,
                 author: reviewer.clone(),
@@ -1972,6 +2315,48 @@ pub(crate) fn record_auto_decide(
         nemesis_board::archive_writer::write_review_milestone(
             store, &issue, node_id, decision, verdict, &details,
         );
+    }
+}
+
+/// U-A（2026-10-12 停车现场工程 §9.1）：停车现场落盘（机器可读侧车
+/// `<workspace>/board/handoffs/<NB-x>.json`）+ 返回人可读评论的档案注记
+/// 尾巴。verdict_chain 从 U-C timeline 聚合提取（每轮决策全程链，单一
+/// 真相源）。写失败只 WARN + 返回空串——停车评论照发（停车优先，档案
+/// 缺席诚实）；全部停车分支收口本函数（单一真相源）。
+pub(crate) fn park_with_handoff(
+    deps: &BoardReviewDeps,
+    issue_number: &str,
+    issue_id: i64,
+    spec: nemesis_board::handoff::HandoffSpec,
+) -> String {
+    let chain = nemesis_board::handoff::verdict_chain_from(&deps.store, issue_id);
+    match nemesis_board::handoff::write_handoff(
+        &deps.workspace,
+        issue_number,
+        issue_id,
+        &spec,
+        chain,
+    ) {
+        Ok(path) => format!(
+            "\n\n📋 停车现场已存档：{}（对本节点说「继续 {issue_number}」可读档续做）",
+            path.display()
+        ),
+        Err(e) => {
+            warn!("[BoardReview] {issue_number} 停车档案写失败（评论照发）：{e}");
+            String::new()
+        }
+    }
+}
+
+/// 环境快照默认字段（最后派发 worker + 状态）——handoff `environment`
+/// 的公共底座；调用方可按需补节点/模型细节。
+fn last_dispatch_env(dispatches: &[nemesis_board::models::DispatchRecord]) -> serde_json::Value {
+    match dispatches.last() {
+        Some(d) => serde_json::json!({
+            "last_worker": d.worker_id,
+            "last_dispatch_state": d.state,
+        }),
+        None => serde_json::json!({ "last_worker": null }),
     }
 }
 
@@ -2465,6 +2850,20 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
     if parent.status != IssueStatus::InReview {
         return Ok(false);
     }
+    // U-B（§9.2）：LLM 端点不可用封存闸——父单收口挂起（pending=review，
+    // resume 走 spawn_board_review → review_issue 分流回本函数）。
+    if nemesis_web::handlers::board_unavailable::frozen_now() {
+        nemesis_web::handlers::board_unavailable::write_interruption(
+            &deps.workspace,
+            store,
+            &parent,
+            "review",
+            "父单收口评审挂起：LLM 端点不可用封存中，恢复后探针自动续评".to_string(),
+            serde_json::json!({}),
+        );
+        warn!("[BoardReview] 父单 {parent_id} 收口挂起：LLM 端点不可用封存中（恢复后自动续评）");
+        return Ok(false);
+    }
     // 范围缺口边界：子树（Subtree 闭包，SAN-08——旧单层 children 扫描看
     // 不见 done 子单之下的 cancelled 孙单，收口会带着隐藏缺口宣称完成）
     // 存在 cancelled → 范围缺口要人裁决，验收补不了。
@@ -2488,8 +2887,26 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
         } else {
             String::new()
         };
+        // U-A：缺陷闸门停车档案（修复闭环后人工收口；worker 侧修好即
+        // [FIXED] 闭环，无需重派）。
+        let handoff_note = park_with_handoff(
+            deps,
+            &parent.number,
+            parent_id,
+            nemesis_board::handoff::HandoffSpec {
+                stop_kind: "defect_gate",
+                suggested_action: "manual_check",
+                hint: format!(
+                    "子树存在 {} 条未闭环 P0/P1 缺陷声明：worker 修复闭环（[FIXED]）后人工收口父单",
+                    defects.len()
+                ),
+                resume_entry: "人工收口（子单 [FIXED] 闭环后父单设 done）".into(),
+                environment: serde_json::json!({ "unclosed_defects": defects.len() }),
+                attempted: vec![],
+            },
+        );
         let msg = format!(
-            "{mention}🚨 [缺陷闸门] 子任务交付中存在 {n} 条未闭环缺陷声明（交付/评论**行首** `[P0]`/`[P1]` 声明、`[FIXED]` 闭环），父单自动收口转人工，修复闭环后请人工收口：\n\n{body}",
+            "{mention}🚨 [缺陷闸门] 子任务交付中存在 {n} 条未闭环缺陷声明（交付/评论**行首** `[P0]`/`[P1]` 声明、`[FIXED]` 闭环），父单自动收口转人工，修复闭环后请人工收口：\n\n{body}{handoff_note}",
             n = defects.len(),
             body = render_defect_gate_comment(&defects),
         );
@@ -2597,8 +3014,25 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
         } else {
             String::new()
         };
+        let parent_dispatches = store.list_dispatches(parent_id).unwrap_or_default();
+        let handoff_note = park_with_handoff(
+            deps,
+            &parent.number,
+            parent_id,
+            nemesis_board::handoff::HandoffSpec {
+                stop_kind: "infra",
+                suggested_action: "retry",
+                hint: "父单收口锚点主根与项目目录均不可达（基础设施故障，非交付质量问题）：核查工作区/项目档案目录是否被移动或删除，修好后复评".into(),
+                resume_entry: "review.retrigger（number=NB-x，环境修复后复评）".into(),
+                environment: last_dispatch_env(&parent_dispatches),
+                attempted: vec![serde_json::json!({
+                    "action": "validate_anchor_roots",
+                    "result": root_err.to_string(),
+                })],
+            },
+        );
         let msg = format!(
-            "{mention}🧭 父单收口的客观锚点检查无法执行：锚点主根与项目目录均不可达（基础设施故障，非交付质量问题），请人工核查工作区环境后裁决。\n\n{root_err}"
+            "{mention}🧭 父单收口的客观锚点检查无法执行：锚点主根与项目目录均不可达（基础设施故障，非交付质量问题），请人工核查工作区环境后裁决。\n\n{root_err}{handoff_note}"
         );
         store.add_comment(nemesis_board::NewComment {
             issue_id: parent_id,
@@ -2626,7 +3060,7 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
     );
     if !anchor_skipped.is_empty() {
         prompt.push_str(&format!(
-            "\n## 客观锚点检查（部分未执行）\n以下 exec: 锚点因开关关闭未执行，其验收项**未经系统核验**，请按语义项人工评判，不得视为已通过：\n{}",
+            "\n## 客观锚点检查（部分未执行）\n以下 exec: 锚点本轮未执行（开关关闭或环境依赖缺失，见各条注记），其验收项**未经系统核验**，请按语义项人工评判，不得视为已通过：\n{}",
             anchor_skipped
                 .iter()
                 .map(|s| format!("- {s}"))
@@ -2694,10 +3128,51 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
         )
         .await
         {
-            Ok(ok) => ok,
+            Ok(ok) => {
+                // U-B：评审成功 = 端点活证据（入口闸保证封存期到不了这里）。
+                nemesis_web::handlers::board_unavailable::record_llm_success(&cfg.unavailable);
+                ok
+            }
             Err(last_err) => {
+                // U-B：评审失败喂封存判定；恰好触发封存 = 在途工作逐一写
+                // 中断档案（本父单 + 在途拆解链）。
+                let tripped = nemesis_web::handlers::board_unavailable::record_llm_failure(
+                    &cfg.unavailable,
+                    &last_err,
+                );
+                if tripped {
+                    nemesis_web::handlers::board_unavailable::write_trip_interruptions(
+                        Some(deps.workspace.as_path()),
+                        store,
+                        Some((
+                            &parent,
+                            "review",
+                            "父单收口评审进行中 LLM 端点不可用封存：恢复后探针自动续评".to_string(),
+                            serde_json::json!({}),
+                        )),
+                        &last_err,
+                    );
+                }
+                // U-A：评审自身失败也是停车路径（父单无 N2 重评链——文本
+                // 单轮），落停车档案 + 评论注记，resume=review.retrigger。
+                let handoff_note = park_with_handoff(
+                    deps,
+                    &parent.number,
+                    parent_id,
+                    nemesis_board::handoff::HandoffSpec {
+                        stop_kind: "retry_exhausted",
+                        suggested_action: "retry",
+                        hint: "父单收口验收评审自身失败（非交付质量问题）：核查模型端点/评审配置后复评".into(),
+                        resume_entry: "review.retrigger（number=NB-x，环境修复后复评）".into(),
+                        environment: serde_json::json!({ "review_tier": cfg.review.tier }),
+                        attempted: vec![serde_json::json!({
+                            "action": "review_panel",
+                            "result": last_err.to_string(),
+                        })],
+                    },
+                );
                 let comment = format!(
-                    "🤷 父单收口验收无法完成（验收评审自身失败），请人工裁决。\n\n原因：{last_err}"
+                    "🤷 父单收口验收无法完成（验收评审自身失败），请人工裁决。\n\n原因：{last_err}{handoff_note}"
                 );
                 post_review_comment(store, parent_id, &deps.cluster, &comment)?;
                 return Ok(true);
@@ -2766,6 +3241,27 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
             } else {
                 String::new()
             };
+            // U-A：父单无重派承接单位，FAIL/UNSURE = 收口停车（父单结论
+            // 需要人核查子单后定夺）。
+            let handoff_note = park_with_handoff(
+                deps,
+                &parent.number,
+                parent_id,
+                nemesis_board::handoff::HandoffSpec {
+                    stop_kind: "parent_unresolved",
+                    suggested_action: "manual_check",
+                    hint: format!(
+                        "父单收口验收 {}：核查各子单结论后人工定 done 或重开子单（父单不派发、无重派承接单位）",
+                        verdict.as_str()
+                    ),
+                    resume_entry: "review.retrigger（number=NB-x，子单处理完后复评）".into(),
+                    environment: serde_json::json!({
+                        "verdict": verdict.as_str(),
+                        "gap": if verdict == nemesis_board::ReviewVerdict::Fail { output.gap.trim().to_string() } else { String::new() },
+                    }),
+                    attempted: vec![],
+                },
+            );
             let mut comment = format!(
                 "{human_mention}🤷 父单收口验收未定案（{ver}），请人工裁决。\n",
                 ver = verdict.as_str()
@@ -2777,6 +3273,7 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
             comment.push_str(
                 "\n（父单不派发、无重派承接单位——请检查各子单结论后人工定 done 或重开子单）",
             );
+            comment.push_str(&handoff_note);
             store.add_comment(NewComment {
                 issue_id: parent_id,
                 author: reviewer.clone(),
@@ -2818,11 +3315,36 @@ pub(crate) fn spawn_selfcheck_second_stage(
             warn!(
                 "[BoardReview] issue {issue_id} 自检取证回报失败（status=error）→ 转人工（评审保持 in_review）"
             );
+            // U-A：取证闭环无法完成也是停车路径（worker 侧出错——重发
+            // 取证或放弃自检直评都需要明确入口）。
+            let handoff_note = match deps.store.get_issue(issue_id) {
+                Ok(issue) => park_with_handoff(
+                    &deps,
+                    &issue.number,
+                    issue_id,
+                    nemesis_board::handoff::HandoffSpec {
+                        stop_kind: "retry_exhausted",
+                        suggested_action: "retry",
+                        hint: "自检取证回报失败（worker 侧出错）：核查 worker 状态后 review.retrigger 重新验收（评审会按需重新取证）".into(),
+                        resume_entry: "review.retrigger（number=NB-x）".into(),
+                        environment: last_dispatch_env(
+                            &deps.store.list_dispatches(issue_id).unwrap_or_default(),
+                        ),
+                        attempted: vec![serde_json::json!({
+                            "action": "selfcheck_evidence",
+                            "result": nemesis_utils::truncate(response.trim(), 300),
+                        })],
+                    },
+                ),
+                Err(_) => String::new(),
+            };
             let _ = post_review_comment(
                 &deps.store,
                 issue_id,
                 &deps.cluster,
-                "⚠ 自检取证回报失败（worker 侧出错），取证闭环无法完成，请人工裁决或重新派发。",
+                &format!(
+                    "⚠ 自检取证回报失败（worker 侧出错），取证闭环无法完成，请人工裁决或重新派发。{handoff_note}"
+                ),
             );
             return;
         }
@@ -2830,6 +3352,7 @@ pub(crate) fn spawn_selfcheck_second_stage(
         let ctx = ReviewCtx {
             allow_selfcheck: false,
             evidence: Some(response.to_string()),
+            retry: 0,
         };
         match review_issue(&deps, issue_id, ctx).await {
             Ok(true) => {}
@@ -2953,6 +3476,29 @@ async fn review_project_completion(
         return Ok(false);
     }
 
+    // U-B 入口闸：LLM 端点封存期不进语义评审（项目档案单独落——项目无
+    // comment 载体，`project-<id>.json` 是其唯一现场），恢复后探针续评。
+    if nemesis_web::handlers::board_unavailable::frozen_now() {
+        nemesis_web::handlers::board_unavailable::write_interruption_doc(
+            &deps.workspace,
+            &format!("project-{}", project.id),
+            project.id,
+            "project",
+            format!(
+                "项目「{}」收口验收挂起：LLM 端点不可用封存中，恢复后探针自动续评",
+                project.name
+            ),
+            serde_json::json!({
+                "project_id": project.id,
+                "project_name": project.name,
+            }),
+        );
+        warn!(
+            "[BoardReview] 项目 {project_id} 收口验收挂起：LLM 端点不可用封存中（中断档案已落盘，恢复后自动续评）"
+        );
+        return Ok(false);
+    }
+
     // 触发前置防御性复核（触发到评审排队之间人工可能又动了单子）。
     let parents: Vec<nemesis_board::Issue> = store
         .list_issues(&nemesis_board::models::IssueFilter {
@@ -3016,10 +3562,31 @@ async fn review_project_completion(
             } else {
                 String::new()
             };
+            // U-A：缺陷闸门停车档案随父单落盘（评论载体 = resume 载体）。
+            let handoff_note = park_with_handoff(
+                deps,
+                &p.number,
+                p.id,
+                nemesis_board::handoff::HandoffSpec {
+                    stop_kind: "defect_gate",
+                    suggested_action: "manual_check",
+                    hint: format!(
+                        "项目「{}」存在 {} 条未闭环 P0/P1 缺陷声明：worker 修复闭环（[FIXED]）后人工收口项目",
+                        project.name,
+                        project_defects.len()
+                    ),
+                    resume_entry: "人工收口（缺陷闭环后项目设 completed）".into(),
+                    environment: serde_json::json!({
+                        "project_id": project.id,
+                        "unclosed_defects": project_defects.len(),
+                    }),
+                    attempted: vec![],
+                },
+            );
             store.add_comment(NewComment {
                 issue_id: p.id,
                 author: reviewer.clone(),
-                content: format!("{human_mention}{body}"),
+                content: format!("{human_mention}{body}{handoff_note}"),
                 parent_id: None,
                 ctype: CommentType::Comment,
             })?;
@@ -3163,10 +3730,31 @@ async fn review_project_completion(
             } else {
                 String::new()
             };
+            // U-A：每个顶层父单各自落停车档案（父单是续做载体，项目无
+            // comment 面——resume 入口按父单走）。
+            let handoff_note = park_with_handoff(
+                deps,
+                &p.number,
+                p.id,
+                nemesis_board::handoff::HandoffSpec {
+                    stop_kind: "infra",
+                    suggested_action: "retry",
+                    hint: format!(
+                        "项目「{}」收口锚点主根与项目目录均不可达（基础设施故障）：核查工作区/项目档案目录后复评",
+                        project.name
+                    ),
+                    resume_entry: "review.retrigger（number=NB-x，环境修复后复评）".into(),
+                    environment: serde_json::json!({ "project_id": project.id, "project_name": project.name }),
+                    attempted: vec![serde_json::json!({
+                        "action": "validate_anchor_roots",
+                        "result": root_err.to_string(),
+                    })],
+                },
+            );
             store.add_comment(NewComment {
                 issue_id: p.id,
                 author: reviewer.clone(),
-                content: format!("{human_mention}{body}"),
+                content: format!("{human_mention}{body}{handoff_note}"),
                 parent_id: None,
                 ctype: CommentType::Comment,
             })?;
@@ -3190,7 +3778,7 @@ async fn review_project_completion(
     );
     if !anchor_skipped.is_empty() {
         prompt.push_str(&format!(
-            "\n## 客观锚点检查（部分未执行）\n以下 exec: 锚点因开关关闭未执行，其验收项**未经系统核验**，请按语义项人工评判，不得视为已通过：\n{}",
+            "\n## 客观锚点检查（部分未执行）\n以下 exec: 锚点本轮未执行（开关关闭或环境依赖缺失，见各条注记），其验收项**未经系统核验**，请按语义项人工评判，不得视为已通过：\n{}",
             anchor_skipped
                 .iter()
                 .map(|s| format!("- {s}"))
@@ -3238,16 +3826,74 @@ async fn review_project_completion(
         )
         .await
         {
-            Ok(ok) => ok,
+            Ok(ok) => {
+                // U-B：评审成功 = 端点活证据（入口闸保证封存期到不了这里）。
+                nemesis_web::handlers::board_unavailable::record_llm_success(&cfg.unavailable);
+                ok
+            }
             Err(last_err) => {
+                // U-B：失败喂封存判定；恰好触发封存时在途拆解链逐一写中断
+                // 档案（focus=None），项目档案单独落（issue_key=project-<id>，
+                // 项目无 comment 载体，档案是其唯一现场）。
+                let tripped = nemesis_web::handlers::board_unavailable::record_llm_failure(
+                    &cfg.unavailable,
+                    &last_err,
+                );
+                if tripped {
+                    nemesis_web::handlers::board_unavailable::write_trip_interruptions(
+                        Some(deps.workspace.as_path()),
+                        store,
+                        None,
+                        &last_err,
+                    );
+                    nemesis_web::handlers::board_unavailable::write_interruption_doc(
+                        &deps.workspace,
+                        &format!("project-{}", project.id),
+                        project.id,
+                        "project",
+                        format!(
+                            "项目「{}」收口验收进行中 LLM 端点不可用封存：恢复后探针自动续评",
+                            project.name
+                        ),
+                        serde_json::json!({
+                            "project_id": project.id,
+                            "project_name": project.name,
+                            "review_tier": cfg.review.tier,
+                        }),
+                    );
+                }
                 // 解析失败 → 全部顶层父单写转人工评论（项目无评论表，
-                // 落在父单线程里人必然看得见）。
-                let comment = format!(
+                // 落在父单线程里人必然看得见）。U-A：停车档案随父单落盘。
+                let comment_head = format!(
                     "🏛 项目「{}」收口验收无法完成（验收评审自身失败），请人工裁决。\n\n原因：{last_err}",
                     project.name
                 );
                 for p in &parents {
-                    let _ = post_review_comment(store, p.id, &deps.cluster, &comment);
+                    let handoff_note = park_with_handoff(
+                        deps,
+                        &p.number,
+                        p.id,
+                        nemesis_board::handoff::HandoffSpec {
+                            stop_kind: "retry_exhausted",
+                            suggested_action: "retry",
+                            hint: format!(
+                                "项目「{}」收口验收评审自身失败（非交付质量问题）：核查模型端点/评审配置后复评",
+                                project.name
+                            ),
+                            resume_entry: "review.retrigger（number=NB-x，环境修复后复评）".into(),
+                            environment: serde_json::json!({ "project_id": project.id, "review_tier": cfg.review.tier }),
+                            attempted: vec![serde_json::json!({
+                                "action": "review_panel",
+                                "result": last_err.to_string(),
+                            })],
+                        },
+                    );
+                    let _ = post_review_comment(
+                        store,
+                        p.id,
+                        &deps.cluster,
+                        &format!("{comment_head}{handoff_note}"),
+                    );
                 }
                 return Ok(true);
             }
@@ -3365,10 +4011,34 @@ fn apply_project_review_outcome(
                 } else {
                     String::new()
                 };
+                // U-A：缺口落在哪个父单，停车档案就落在哪个父单（resume
+                // 载体与评论载体一致）。
+                let handoff_note = park_with_handoff(
+                    deps,
+                    &p.number,
+                    p.id,
+                    nemesis_board::handoff::HandoffSpec {
+                        stop_kind: "project_unresolved",
+                        suggested_action: "manual_check",
+                        hint: format!(
+                            "项目「{}」收口验收 {}：检查各任务结论后人工处置，完成后项目可人工设 completed",
+                            project.name,
+                            verdict.as_str()
+                        ),
+                        resume_entry: "review.retrigger（number=NB-x，处置后复评）".into(),
+                        environment: serde_json::json!({
+                            "project_id": project.id,
+                            "project_name": project.name,
+                            "verdict": verdict.as_str(),
+                            "gap": if output.verdict == nemesis_board::ReviewVerdict::Fail { output.gap.trim().to_string() } else { String::new() },
+                        }),
+                        attempted: vec![],
+                    },
+                );
                 store.add_comment(NewComment {
                     issue_id: p.id,
                     author: reviewer.clone(),
-                    content: format!("{human_mention}{comment}"),
+                    content: format!("{human_mention}{comment}{handoff_note}"),
                     parent_id: None,
                     ctype: CommentType::Comment,
                 })?;

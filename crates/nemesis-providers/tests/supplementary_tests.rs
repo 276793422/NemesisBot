@@ -504,6 +504,7 @@ mod failover_extra {
         let err = FailoverError::Timeout {
             provider: "deepseek".to_string(),
             model: "chat".to_string(),
+            cause: String::new(),
         };
         let msg = format!("{}", err);
         assert!(msg.contains("deepseek"));
@@ -594,7 +595,8 @@ mod failover_extra {
         assert!(
             FailoverError::Timeout {
                 provider: "p".into(),
-                model: "m".into()
+                model: "m".into(),
+                cause: String::new()
             }
             .is_retriable()
         );
@@ -664,7 +666,8 @@ mod failover_extra {
         assert_eq!(
             FailoverError::Timeout {
                 provider: "p".into(),
-                model: "m".into()
+                model: "m".into(),
+                cause: String::new()
             }
             .reason(),
             FailoverReason::Timeout

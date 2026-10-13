@@ -270,6 +270,28 @@ pub(crate) async fn build_security_plugin(
     nemesis_web::handlers::editor::install_editor_access(editor_access.clone());
     editor_access.set_workspace_roots(vec![workspace_root.to_string_lossy().to_string()]);
 
+    // §2 免打扰开关（无人值守计划 Part 2，2026-10-11）：config.json 是
+    // **持久真相源**（`security.approvals.auto_approve`，默认 false = 现网
+    // 零变化），运行期投影同一 Arc 双注入：auditor（RequireApproval 臂
+    // 自动放行 + 计数）+ web security handler（WSAPI status 透传 +
+    // config.save 热翻）。初始值读 config.security.json 同一 typed 源
+    // （limits 同款容错：读失败按缺省关处理，不阻塞启动）。headless
+    // `run` 共用本函数：槽安装无端口也无害。
+    let approvals_auto = match nemesis_config::load_security_config(&sec_config_path) {
+        Ok(sec) => sec.approvals.auto_approve,
+        Err(_) => false,
+    };
+    let approval_auto_state = std::sync::Arc::new(
+        nemesis_security::approval_auto::ApprovalAutoApproveState::new(approvals_auto),
+    );
+    plugin
+        .auditor()
+        .set_approval_auto_approve(approval_auto_state.clone());
+    nemesis_web::handlers::security::install_auto_approve(approval_auto_state);
+    if approvals_auto {
+        info!("[Security] approvals.auto_approve: true (unattended mode)");
+    }
+
     // Initialize audit log file (CFG-06：`audit_log_file_enabled` 此前被
     // 无视——注释声称生效但代码无条件初始化。现诚实接线：false = 跳过
     // JSONL 初始化；缺键 = true（默认开，旧行为）。审计链（Merkle）不受

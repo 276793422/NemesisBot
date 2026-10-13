@@ -86,3 +86,9 @@ test-tools/mcp/server/mcp-test-server.exe
 /staging-wasm-devkit/
 /nightly-wasm-devkit.zip
 /nightly-wasm-devkit.tar.gz
+
+# 集群 campaign 本地测试产物与一次性二进制备份（工作产物不入库，
+# 2026-10-13 提交清理时归档）
+/test-campaign-data/
+/test-tools/TestAIServer/testaiserver.exe.campaign-orphan
+/test-tools/TestAIServer/testaiserver.exe~

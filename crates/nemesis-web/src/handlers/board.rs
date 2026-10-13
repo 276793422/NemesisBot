@@ -335,6 +335,13 @@ async fn issue_dispatch(
 
     let cluster = ctx.state.cluster.clone();
     let out = dispatch_issue_core(store, cluster.as_ref(), id, &target, &actor, None)?;
+    // §6.4D：手动重派 = 人类明确意图 → 失败账清零（M3「人工处理后计数作废」
+    // 在手动路径成真；熔断停车后 reopen 重派不再因存量 count 秒熔断）。与评
+    // 审链同源同一 JSON（nemesis-board fail_streak 单一真相源）；清账失败不
+    // 阻断派发结果（护栏非主路径）。workspace 未注入 = 跳过（测试形态）。
+    if let Some(ws) = ctx.state.workspace.as_deref() {
+        nemesis_board::fail_streak::FailStreakLedger::load(std::path::Path::new(ws)).clear(id);
+    }
     Ok(Some(out))
 }
 
@@ -407,13 +414,11 @@ fn reject_remote_file_anchors(
     local_node_id: &str,
     local_node_name: &str,
 ) -> Option<String> {
-    use nemesis_board::anchor::AnchorKind;
-
     let ac = acceptance_criteria?;
     let (anchors, _semantic, _rejected) = nemesis_board::anchor::parse_anchors(ac);
     let file_anchors: Vec<&str> = anchors
         .iter()
-        .filter(|a| !matches!(a.kind, AnchorKind::ContentRegex))
+        .filter(|a| a.kind.is_file_anchor())
         .map(|a| a.raw.as_str())
         .collect();
     if file_anchors.is_empty() {
@@ -489,6 +494,57 @@ pub fn install_board_estop(estop: Arc<nemesis_agent::estop::EstopState>) -> bool
 #[cfg(feature = "cluster")]
 fn board_estop_engaged() -> bool {
     estop_dispatch_frozen(BOARD_ESTOP.get().map(|e| e.as_ref()))
+}
+
+// ---------------------------------------------------------------------------
+// U-A（2026-10-12 停车现场工程）：派发/拆解侧停车档案的工作区根。
+// handoff 落盘需要 `<workspace>/board/handoffs/`，而派发/拆解族全是
+// store+cluster 纯函数（AppState 字面量测试点太多，加参数是断点级改动）
+// ——同 BASELINE_PUSHER/BOARD_ESTOP 理由走模块级 OnceLock 注入，gateway
+// 装配时注册；未装配（单测/极简装配）= 停车档案缺席但评论照常（诚实降级）。
+// ---------------------------------------------------------------------------
+
+static HANDOFF_WORKSPACE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// 装配停车档案工作区根（gateway 启动期调用一次；重复装配保留首份）。
+pub fn install_handoff_workspace(ws: std::path::PathBuf) -> bool {
+    HANDOFF_WORKSPACE.set(ws).is_ok()
+}
+
+/// 工作区根访问器（U-B 中断档案 `<workspace>/board/interruptions/` 与
+/// handoffs 同根复用；未装配 = None——中断档案静默缺席）。
+pub fn handoff_workspace_root() -> Option<&'static std::path::PathBuf> {
+    HANDOFF_WORKSPACE.get()
+}
+
+/// 派发/拆解侧停车档案落盘（board_review::park_with_handoff 的 web 侧
+/// 简化形态：无 deps/评论拼接职责，只写档案；失败 WARN 不阻塞停车流）。
+fn write_side_handoff(
+    store: &BoardStore,
+    issue: &nemesis_board::Issue,
+    stop_kind: &'static str,
+    suggested_action: &'static str,
+    hint: String,
+    resume_entry: &str,
+    environment: serde_json::Value,
+    attempted: Vec<serde_json::Value>,
+) {
+    let Some(ws) = HANDOFF_WORKSPACE.get() else {
+        return; // 未装配（单测/极简装配）：档案缺席，评论照常
+    };
+    let spec = nemesis_board::handoff::HandoffSpec {
+        stop_kind,
+        suggested_action,
+        hint,
+        resume_entry: resume_entry.to_string(),
+        environment,
+        attempted,
+    };
+    let chain = nemesis_board::handoff::verdict_chain_from(store, issue.id);
+    if let Err(e) = nemesis_board::handoff::write_handoff(ws, &issue.number, issue.id, &spec, chain)
+    {
+        tracing::warn!("[Board] {} 停车档案写失败（评论照发）：{e}", issue.number);
+    }
 }
 
 /// estop 闸判定可测内核（BOARD_ESTOP 是进程级 OnceLock——engaged 态若在
@@ -1405,12 +1461,26 @@ const PLAN_TTL: std::time::Duration = std::time::Duration::from_secs(600);
 struct RunningPlan {
     pub(super) issue_id: i64,
     pub(super) started_at: std::time::Instant,
+    /// 第几次尝试（1 起）。超时重拆链（§1.1）每次 +1；列表投影/横幅
+    /// 「第 N 次尝试」文案数据源。
+    pub(super) attempt: u32,
 }
 
 #[cfg(feature = "cluster")]
 static RUNNING_PLANS: std::sync::LazyLock<
     parking_lot::Mutex<std::collections::HashMap<String, RunningPlan>>,
 > = std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+
+/// 在途拆解快照（U-B trip 边沿逐一写中断档案用；也供探针 resume 前的
+/// 在途双保险查询）：`[(plan_id, issue_id, attempt)]`。
+#[cfg(feature = "cluster")]
+pub(crate) fn running_plans_snapshot() -> Vec<(String, i64, u32)> {
+    RUNNING_PLANS
+        .lock()
+        .iter()
+        .map(|(plan_id, r)| (plan_id.clone(), r.issue_id, r.attempt))
+        .collect()
+}
 
 /// RUNNING_PLANS 摘除 guard：Drop 语义保证正常返回 / 错误返回 / panic 展开
 /// 三种退出路径都摘条目（watched 壳管留痕，guard 管注册表清洁，各管各的）。
@@ -1455,6 +1525,7 @@ fn plan_list(
                 "plan_id": plan_id,
                 "issue_id": r.issue_id,
                 "status": "running",
+                "attempt": r.attempt,
                 "created_ms": 0u64,
                 "elapsed_secs": now.duration_since(r.started_at).as_secs(),
             }));
@@ -1487,6 +1558,7 @@ fn plan_get(data: Option<serde_json::Value>) -> Result<Option<serde_json::Value>
             "plan_id": plan_id,
             "issue_id": r.issue_id,
             "status": "running",
+            "attempt": r.attempt,
             "elapsed_secs": now.duration_since(r.started_at).as_secs(),
         })));
     }
@@ -1681,16 +1753,357 @@ fn spawn_plan_chain_watched(
             if let Some(hub) = hub {
                 hub.publish(
                     "board.plan_failed",
-                    serde_json::json!({ "issue_id": issue_id, "error": format!("后台任务异常终止（panic）：{short}") }),
+                    serde_json::json!({ "plan_id": plan_id, "issue_id": issue_id, "error": format!("后台任务异常终止（panic）：{short}") }),
                 );
             }
         }
     });
 }
 
+/// plan 链环境快照（fire-and-forget 三入口 + N1 重启恢复共用）：一次克隆
+/// 进 `Arc`，超时重拆监视直接用同一份环境发起新链（递归走
+/// [`spawn_plan_chain`]，panic 留痕与超时监视对新链自动续上）。
+#[cfg(feature = "cluster")]
+struct PlanChainEnv {
+    store: Arc<BoardStore>,
+    cluster: Option<Arc<nemesis_cluster::cluster::Cluster>>,
+    agent_loop: Arc<nemesis_agent::r#loop::AgentLoop>,
+    issue: nemesis_board::Issue,
+    actor: Actor,
+    /// config.json 读取根（超时阈值/attempt 上限/重启恢复开关现读；None =
+    /// 全部走缺省值）。与 auto_confirm 同链路：改配置对下一链即时生效。
+    home: Option<std::path::PathBuf>,
+    hub: Option<Arc<crate::events::EventHub>>,
+}
+
+/// `board.plan` 段现读（home 缺失/读取失败 = 缺省值；不 fail-closed——
+/// 超时/重试上限走缺省是安全方向，与 auto_confirm 的 fail-closed 语义
+/// 不同：发车是副作用，超时监视只是兜底）。
+#[cfg(feature = "cluster")]
+fn plan_chain_cfg(home: Option<&std::path::Path>) -> nemesis_config::BoardPlanConfig {
+    home.and_then(|h| {
+        nemesis_config::load_config(&std::path::Path::new(h).join("config.json")).ok()
+    })
+    .map(|c| c.board.unwrap_or_default().plan)
+    .unwrap_or_default()
+}
+
+/// 拆解链 spawn 单点（超时重拆 §1.1 / §5#1 配置化）：= panic 留痕监视壳
+///（[`spawn_plan_chain_watched`]）+ 超时重拆监视。attempt 从 1 起；重拆
+/// attempt+1 新 plan_id；attempt 耗尽停车（评论 + `board.plan_failed` +
+/// RUNNING_PLANS 摘除）——停车而非无限烧 LLM。
+///
+/// 设计注记（四入口覆盖面）：fire-and-forget 三入口（WSAPI `issue.plan` /
+/// autopilot `auto_plan` / 项目 `auto_start`）+ N1 重启恢复走本函数；
+/// agent 工具 `board_issue plan` 是同步 await 形态（agent 自盯结果，LLM
+/// 调用受 provider 600s 超时 + parse 3 轮上限约束），不挂后台监视。
+#[cfg(feature = "cluster")]
+fn spawn_plan_chain(
+    env: Arc<PlanChainEnv>,
+    plan_id: String,
+    attempt: u32,
+    cfg: nemesis_config::BoardPlanConfig,
+) {
+    let chain_plan_id = plan_id.clone();
+    let fut_env = env.clone();
+    let fut = async move {
+        if let Err(e) = execute_plan_chain(
+            &fut_env.store,
+            fut_env.cluster.clone(),
+            fut_env.agent_loop.clone(),
+            fut_env.issue.clone(),
+            fut_env.actor.clone(),
+            &chain_plan_id,
+            fut_env.home.as_deref(),
+            fut_env.hub.as_deref(),
+            attempt,
+        )
+        .await
+        {
+            tracing::warn!(
+                "[Board] plan chain failed issue={} plan={chain_plan_id}: {e}",
+                fut_env.issue.id
+            );
+        }
+    };
+    spawn_plan_chain_watched(
+        env.store.clone(),
+        env.hub.clone(),
+        env.issue.id,
+        plan_id.clone(),
+        fut,
+    );
+    spawn_plan_timeout_watch(env, plan_id, attempt, cfg);
+}
+
+/// 超时重拆监视（§1.1 D）：`timeout_secs`（0=不限，不监视）后醒来检查
+/// RUNNING_PLANS——条目仍在 = 超时（正常完成 / panic / 错误路径的 guard
+/// 都已摘条目）。处置：摘除本 plan_id（旧链 LLM 返回后 superseded 自检
+/// 静默放弃——tokio 任务不可取消，双闸防双发车）→ 评论 → 重拆或停车。
+/// `cfg` 由调用方注入（生产读 config，测试传秒级短值——§5#1 裁决）。
+#[cfg(feature = "cluster")]
+fn spawn_plan_timeout_watch(
+    env: Arc<PlanChainEnv>,
+    plan_id: String,
+    attempt: u32,
+    cfg: nemesis_config::BoardPlanConfig,
+) {
+    if cfg.timeout_secs == 0 {
+        return; // 0 = 不限：不挂监视
+    }
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(cfg.timeout_secs)).await;
+        {
+            let mut reg = RUNNING_PLANS.lock();
+            match reg.get(&plan_id) {
+                Some(rp) if rp.issue_id == env.issue.id => {
+                    reg.remove(&plan_id);
+                }
+                _ => return, // 已完成/已失败/已被其它链取代 = 未超时
+            }
+        }
+        tracing::warn!(
+            "[Board] plan chain timeout issue={} plan={plan_id} attempt={attempt} ({}s)",
+            env.issue.id,
+            cfg.timeout_secs
+        );
+        let minutes = cfg.timeout_secs / 60;
+        let can_retry =
+            cfg.timeout_reattempt && (cfg.max_attempts == 0 || attempt < cfg.max_attempts);
+        if !can_retry {
+            // 停车：不重拆（reattempt 关 或 attempt 耗尽），等人工。
+            let why = if !cfg.timeout_reattempt {
+                "自动重拆未开启（board.plan.timeout_reattempt=false）".to_string()
+            } else {
+                format!(
+                    "已连续超时 {} 次（board.plan.max_attempts={}），已停止自动重试",
+                    attempt, cfg.max_attempts
+                )
+            };
+            tracing::warn!("[Board] plan chain 停车 issue={}：{why}", env.issue.id);
+            // U-A：拆解停车档案（手动重拆 = issue.plan 入口）。
+            write_side_handoff(
+                &env.store,
+                &env.issue,
+                "plan_exhausted",
+                "retry",
+                format!("拆解超时 {why}：核查模型端点后手动重拆（issue.plan），或人工直接创建子单"),
+                "issue.plan（number=NB-x）手动重拆；或人工拆解",
+                serde_json::json!({
+                    "attempt": attempt,
+                    "max_attempts": cfg.max_attempts,
+                    "timeout_secs": cfg.timeout_secs,
+                }),
+                vec![serde_json::json!({
+                    "action": "plan_chain",
+                    "result": format!("第 {attempt} 次拆解超时（{} 分钟）", minutes),
+                })],
+            );
+            let _ = env.store.add_comment(NewComment {
+                issue_id: env.issue.id,
+                author: Actor::system("board"),
+                content: format!(
+                    "❌ 拆解超时（{} 分钟），{why}，请人工处理（可手动重拆）",
+                    minutes
+                ),
+                parent_id: None,
+                ctype: CommentType::System,
+            });
+            if let Some(hub) = env.hub.as_deref() {
+                hub.publish(
+                    "board.plan_failed",
+                    serde_json::json!({
+                        "plan_id": plan_id,
+                        "issue_id": env.issue.id,
+                        "error": format!("拆解超时（{} 分钟），{why}", minutes),
+                    }),
+                );
+            }
+            return;
+        }
+        let next = attempt + 1;
+        let _ = env.store.add_comment(NewComment {
+            issue_id: env.issue.id,
+            author: Actor::system("board"),
+            content: format!(
+                "⏰ 拆解超时（{} 分钟），自动重试（第 {} 次）",
+                minutes, next
+            ),
+            parent_id: None,
+            ctype: CommentType::System,
+        });
+        // 新链配置现读（热生效：改阈值/上限对重拆链即时生效）。
+        let new_cfg = plan_chain_cfg(env.home.as_deref());
+        let new_plan_id = format!("plan-{}", uuid::Uuid::new_v4());
+        tracing::info!(
+            "[Board] plan chain 重新拆解 issue={} new_plan={new_plan_id} attempt={next}",
+            env.issue.id
+        );
+        spawn_plan_chain(env, new_plan_id, next, new_cfg);
+    });
+}
+
+/// N1 gateway 重启拆解恢复（§1.3 / §7.2 N1，无人值守闭环）：RUNNING_PLANS
+/// 是内存态、重启杀拆解任务——旧行为 = 父单停留「已开始自动拆解」评论态
+/// 等手动重拆（无人值守语义下 = 流程中断）。启动恢复扫描：状态仍
+/// backlog/todo + 最新系统评论为拆解中形态 + 无子单 + 不在 RUNNING_PLANS
+/// 的单子 = 中断残留 → 自动重新发起拆解（走 [`spawn_plan_chain`] 同一
+/// 超时重拆链，attempt 重计）。手动 cancel 的单子状态非 backlog/todo 天然
+/// 排除；恢复拆解同受 `board.plan.max_attempts` 闸。
+///
+/// 调用点 = gateway 装配期（评审重放扫描同阶段，moderator 槽已装配）。
+/// 守卫链：`board.plan.restart_recover`（默认开，关=关回旧行为）→ estop
+/// 挂起跳过（急停意志优先，恢复不抢跑；estop release 不自动补拆——用户
+/// 释放后可手动重拆或重启）→ 非 master 节点跳过（worker 本地 board.db 是
+/// 只读镜像，拆解/派发链跑在 master）。返回恢复发起数。
+#[cfg(feature = "cluster")]
+pub fn recover_interrupted_plans(
+    store: &Arc<BoardStore>,
+    cluster: Option<Arc<nemesis_cluster::cluster::Cluster>>,
+    agent_loop: Arc<nemesis_agent::r#loop::AgentLoop>,
+    home: Option<std::path::PathBuf>,
+    hub: Option<Arc<crate::events::EventHub>>,
+    estop: Option<&nemesis_agent::estop::EstopState>,
+) -> usize {
+    let cfg = plan_chain_cfg(home.as_deref());
+    if !cfg.restart_recover {
+        tracing::info!("[Board] 拆解恢复扫描跳过：board.plan.restart_recover=false");
+        return 0;
+    }
+    if let Some(estop) = estop
+        && estop.is_engaged()
+    {
+        tracing::warn!("[Board] 拆解恢复扫描跳过：estop 挂起（释放后请手动重拆或重启再试）");
+        return 0;
+    }
+    if let Some(c) = &cluster
+        && !matches!(c.role().as_str(), "coordinator" | "master" | "manager")
+    {
+        return 0; // worker 镜像不跑拆解链（与评审钩子同款角色闸）
+    }
+    let mut recovered = 0usize;
+    for status in [IssueStatus::Backlog, IssueStatus::Todo] {
+        let issues = match store.list_issues(&nemesis_board::models::IssueFilter {
+            status: Some(status),
+            ..Default::default()
+        }) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("[Board] 拆解恢复扫描 {status:?} 单据失败：{e}");
+                continue;
+            }
+        };
+        for issue in issues {
+            // 拆解中形态 = 最新系统评论是「已开始自动拆解」（完成/失败/超时
+            // 评论都在其后顶掉它；用户手动评论是普通类型不影响系统序列）。
+            let interrupted = store
+                .list_comments(issue.id)
+                .map(|cs| {
+                    cs.iter()
+                        .rev()
+                        .find(|c| c.ctype == CommentType::System)
+                        .is_some_and(|c| c.content.starts_with("🧩 已开始自动拆解"))
+                })
+                .unwrap_or(false);
+            if !interrupted {
+                continue;
+            }
+            // 双保险：已有子单（拆解实际发过车）/ 已有在途链（扫描期间用户
+            // 手动触发）→ 让位。
+            if store
+                .list_children(issue.id)
+                .map(|c| !c.is_empty())
+                .unwrap_or(true)
+            {
+                continue;
+            }
+            if RUNNING_PLANS
+                .lock()
+                .values()
+                .any(|r| r.issue_id == issue.id)
+            {
+                continue;
+            }
+            tracing::info!(
+                "[Board] 拆解恢复：issue {}（{}）重启中断残留 → 自动重新发起拆解",
+                issue.number,
+                issue.title
+            );
+            let _ = store.add_comment(NewComment {
+                issue_id: issue.id,
+                author: Actor::system("board"),
+                content: "🔄 检测到上次拆解因重启中断，自动重新发起拆解".to_string(),
+                parent_id: None,
+                ctype: CommentType::System,
+            });
+            let env = Arc::new(PlanChainEnv {
+                store: store.clone(),
+                cluster: cluster.clone(),
+                agent_loop: agent_loop.clone(),
+                issue,
+                actor: Actor::system("board"),
+                home: home.clone(),
+                hub: hub.clone(),
+            });
+            let plan_id = format!("plan-{}", uuid::Uuid::new_v4());
+            spawn_plan_chain(env, plan_id, 1, cfg.clone());
+            recovered += 1;
+        }
+    }
+    if recovered > 0 {
+        tracing::info!("[Board] 拆解恢复扫描完成：恢复 {recovered} 个中断拆解");
+    }
+    recovered
+}
+
+/// U-B（§9.2）中断续拆：探针解封后对 `pending=plan` 中断档案重建拆解链
+/// （与 N1 恢复同链——走 [`spawn_plan_chain`] 超时重拆链，attempt 重计 1）。
+/// 在途双保险：该单已有在途链 = 让位（扫描/探针/手动三方竞态防双发车）。
+/// 返回是否实际发车。
+#[cfg(feature = "cluster")]
+pub fn respawn_plan_chain(
+    store: &Arc<BoardStore>,
+    cluster: Option<Arc<nemesis_cluster::cluster::Cluster>>,
+    agent_loop: Arc<nemesis_agent::r#loop::AgentLoop>,
+    issue: nemesis_board::Issue,
+    home: Option<std::path::PathBuf>,
+    hub: Option<Arc<crate::events::EventHub>>,
+) -> bool {
+    if RUNNING_PLANS
+        .lock()
+        .values()
+        .any(|r| r.issue_id == issue.id)
+    {
+        tracing::info!("[Board] 中断续拆让位：issue {} 已有在途拆解链", issue.id);
+        return false;
+    }
+    let _ = store.add_comment(NewComment {
+        issue_id: issue.id,
+        author: Actor::system("board"),
+        content: "🔄 LLM 端点已恢复，中断的拆解自动续做".to_string(),
+        parent_id: None,
+        ctype: CommentType::System,
+    });
+    let env = Arc::new(PlanChainEnv {
+        store: store.clone(),
+        cluster,
+        agent_loop,
+        issue,
+        actor: Actor::system("board"),
+        home,
+        hub,
+    });
+    let plan_id = format!("plan-{}", uuid::Uuid::new_v4());
+    let cfg = plan_chain_cfg(env.home.as_deref());
+    spawn_plan_chain(env, plan_id, 1, cfg);
+    true
+}
+
 /// `home` 供 A1 旗标现读（config.json 热改即时生效；None = 视为关闭，
 /// fail-closed 回人工确认）。`hub` 供 SSE 事件（cron 路径 None——诚实降级：
-/// 无实时推送，评论/落库/发车链路完整）。
+/// 无实时推送，评论/落库/发车链路完整）。`attempt` = 第几次尝试（1 起；
+/// 超时重拆链每次 +1，随 [`RunningPlan`] 注册与 `board.plan_started`
+/// 载荷透出——前端横幅「第 N 次尝试」数据源）。
 #[cfg(feature = "cluster")]
 pub async fn execute_plan_chain(
     store: &Arc<BoardStore>,
@@ -1701,8 +2114,33 @@ pub async fn execute_plan_chain(
     plan_id: &str,
     home: Option<&std::path::Path>,
     hub: Option<&crate::events::EventHub>,
+    attempt: u32,
 ) -> Result<serde_json::Value, String> {
     let started = std::time::Instant::now();
+    // U-B（§9.2）：LLM 端点不可用封存闸——拆解发起短路。自动/手动同闸：
+    // 手动得到诚实挂起说明 + 中断档案（意图不丢，恢复后探针自动续做），
+    // 不是静默吞掉。
+    if super::board_unavailable::frozen_now() {
+        if let Some(ws) = handoff_workspace_root().map(|p| p.as_path()) {
+            super::board_unavailable::write_interruption(
+                ws,
+                store,
+                &issue,
+                "plan",
+                format!("拆解发起时 LLM 端点不可用封存中（attempt {attempt}）：恢复后探针自动续拆"),
+                serde_json::json!({ "plan_id": plan_id, "attempt": attempt }),
+            );
+        }
+        tracing::warn!(
+            "[Board] plan chain 挂起 issue={}：LLM 端点不可用封存中（恢复后自动续做）",
+            issue.id
+        );
+        return Err(
+            "⏸ LLM 端点不可用（封存中）：拆解已挂起，端点恢复后自动续做；也可稍后手动重拆（issue.plan）"
+                .to_string(),
+        );
+    }
+    let ub_cfg = super::board_unavailable::unavailable_cfg(home);
     // 拆解运行期可观测（2026-10-11「停着」事故）：running 条目（guard 摘除）
     // + `board.plan_started` SSE + 父单「已开始拆解」评论。planner 单次
     // 4~7 分钟且此前全程零反馈，用户体感=「停着」。
@@ -1711,6 +2149,7 @@ pub async fn execute_plan_chain(
         RunningPlan {
             issue_id: issue.id,
             started_at: started,
+            attempt,
         },
     );
     let _running_guard = RunningPlanGuard {
@@ -1723,6 +2162,7 @@ pub async fn execute_plan_chain(
                 "plan_id": plan_id,
                 "issue_id": issue.id,
                 "issue_number": issue.number,
+                "attempt": attempt,
             }),
         );
     }
@@ -1774,30 +2214,104 @@ pub async fn execute_plan_chain(
             .collect();
         (!lines.is_empty()).then(|| lines.join("\n"))
     });
-    let (subs, downgrades) =
-        match run_planner(&agent_loop, &issue, team_experience, cluster_profile).await {
-            Ok((subs, downgrades)) => (subs, downgrades),
-            Err(e) => {
-                tracing::warn!("[Board] planner failed issue={}: {e}", issue.id);
-                // P11 观测面：失败评论留痕（SSE 只在线可见，评论持久可回查；
-                // 截断 200 字符防异常长报错刷屏单据）。
-                let err_short: String = e.chars().take(200).collect();
-                let _ = store.add_comment(NewComment {
-                    issue_id: issue.id,
-                    author: Actor::system("board"),
-                    content: format!("❌ planner 拆解失败：{err_short}"),
-                    parent_id: None,
-                    ctype: CommentType::System,
-                });
-                if let Some(hub) = hub {
-                    hub.publish(
-                        "board.plan_failed",
-                        serde_json::json!({ "issue_id": issue.id, "error": e.clone() }),
-                    );
-                }
-                return Err(e);
+    let (subs, downgrades) = match run_planner(
+        &agent_loop,
+        &issue,
+        team_experience,
+        cluster_profile,
+    )
+    .await
+    {
+        Ok((subs, downgrades)) => {
+            // U-B：planner 成功 = 端点活证据（连击清零/封存解除——生产里
+            // 封存期到不了这里：入口闸已拦）。
+            super::board_unavailable::record_llm_success(&ub_cfg);
+            (subs, downgrades)
+        }
+        Err(e) => {
+            // U-B：planner 失败喂封存判定；恰好触发封存 = 全部在途工作写
+            // 中断档案（本单 + 其它在途拆解链）。
+            let tripped = super::board_unavailable::record_llm_failure(&ub_cfg, &e);
+            if tripped {
+                super::board_unavailable::write_trip_interruptions(
+                    handoff_workspace_root().map(|p| p.as_path()),
+                    store,
+                    Some((
+                        &issue,
+                        "plan",
+                        format!(
+                            "拆解在途（attempt {attempt}）时 LLM 端点不可用封存：恢复后自动续拆"
+                        ),
+                        serde_json::json!({ "plan_id": plan_id, "attempt": attempt }),
+                    )),
+                    &e,
+                );
             }
-        };
+            // superseded 优先于失败面（§1.1 双闸）：被超时重拆取代的旧链
+            // 静默放弃——不发失败评论、不发 plan_failed（旧链迟到的失败
+            // 事件会撤掉新链横幅），不消费解析结果。
+            if !RUNNING_PLANS.lock().contains_key(plan_id) {
+                tracing::info!(
+                    "[Board] plan chain superseded（已被超时重拆取代）issue={} plan={plan_id}，旧链静默放弃",
+                    issue.id
+                );
+                return Ok(serde_json::json!({
+                    "status": "superseded",
+                    "plan_id": plan_id,
+                    "issue_id": issue.id,
+                }));
+            }
+            tracing::warn!("[Board] planner failed issue={}: {e}", issue.id);
+            // P11 观测面：失败评论留痕（SSE 只在线可见，评论持久可回查；
+            // 截断 200 字符防异常长报错刷屏单据）。U-A：链内重试已耗尽的
+            // 最终失败 = 停车，落现场档案。
+            let err_short: String = e.chars().take(200).collect();
+            write_side_handoff(
+                store,
+                &issue,
+                "plan_exhausted",
+                "retry",
+                format!(
+                    "planner 拆解失败（链内重试已耗尽）：核查模型端点后手动重拆（issue.plan），或人工直接创建子单。原因：{err_short}"
+                ),
+                "issue.plan（number=NB-x）手动重拆；或人工拆解",
+                serde_json::json!({ "plan_id": plan_id }),
+                vec![serde_json::json!({
+                    "action": "run_planner",
+                    "result": err_short,
+                })],
+            );
+            let _ = store.add_comment(NewComment {
+                issue_id: issue.id,
+                author: Actor::system("board"),
+                content: format!("❌ planner 拆解失败：{err_short}"),
+                parent_id: None,
+                ctype: CommentType::System,
+            });
+            if let Some(hub) = hub {
+                hub.publish(
+                        "board.plan_failed",
+                        serde_json::json!({ "plan_id": plan_id, "issue_id": issue.id, "error": e.clone() }),
+                    );
+            }
+            return Err(e);
+        }
+    };
+    // superseded 自检（§1.1 双闸之一，成功路径）：超时重拆监视在超时点摘除
+    // 本 plan_id 并发起新链——本链的 LLM future 不可取消仍在飞，返回后第一
+    // 检查点验证自己仍在 RUNNING_PLANS；不在 = 已被取代 → 静默放弃：不发
+    // plan_ready、不落缓存、不评论、不 confirm（防「双计划双发车」）。
+    if !RUNNING_PLANS.lock().contains_key(plan_id) {
+        tracing::info!(
+            "[Board] plan chain superseded（已被超时重拆取代）issue={} plan={plan_id}，旧链静默放弃",
+            issue.id
+        );
+        return Ok(serde_json::json!({
+            "status": "superseded",
+            "plan_id": plan_id,
+            "issue_id": issue.id,
+        }));
+    }
     let count = subs.len();
     {
         let mut cache = PLAN_CACHE.lock();
@@ -1922,6 +2436,7 @@ pub async fn execute_plan_chain(
                 hub.publish(
                     "board.plan_failed",
                     serde_json::json!({
+                        "plan_id": plan_id,
                         "issue_id": issue.id,
                         "error": format!("auto_confirm 发车失败：{e}"),
                     }),
@@ -2000,40 +2515,17 @@ async fn issue_plan(
         // 事件的发布在链内完成，不重复发）。
         let plan_id = format!("plan-{}", uuid::Uuid::new_v4());
         let hub = ctx.state.event_hub.clone();
-        let plan_id_for_task = plan_id.clone();
-        let store_for_chain = store.clone();
-        let cluster_for_chain = ctx.state.cluster.clone();
-        let home_for_chain = ctx.home.clone();
-        let actor_for_chain = actor.clone();
-        let issue_for_chain = issue.clone();
-        let loop_for_chain = agent_loop.clone();
-        let issue_watch_id = issue.id;
-        let hub_for_watch = Some(hub.clone());
-        let plan_id_for_watch = plan_id_for_task.clone();
-        let store_for_watch = store_for_chain.clone();
-        spawn_plan_chain_watched(
-            store_for_watch,
-            hub_for_watch,
-            issue_watch_id,
-            plan_id_for_watch,
-            async move {
-                if let Err(e) = execute_plan_chain(
-                    &store_for_chain,
-                    cluster_for_chain,
-                    loop_for_chain,
-                    issue_for_chain,
-                    actor_for_chain,
-                    &plan_id_for_task,
-                    // ctx.home 是 Option<String>（workspace 覆盖或 None）。
-                    home_for_chain.as_deref().map(std::path::Path::new),
-                    Some(&hub),
-                )
-                .await
-                {
-                    tracing::warn!("[Board] plan chain failed issue={issue_watch_id}: {e}");
-                }
-            },
-        );
+        let env = std::sync::Arc::new(PlanChainEnv {
+            store: store.clone(),
+            cluster: ctx.state.cluster.clone(),
+            agent_loop,
+            issue: issue.clone(),
+            actor: actor.clone(),
+            home: ctx.home.clone().map(std::path::PathBuf::from),
+            hub: Some(hub),
+        });
+        let cfg = plan_chain_cfg(env.home.as_deref());
+        spawn_plan_chain(env, plan_id.clone(), 1, cfg);
         Ok(Some(
             serde_json::json!({ "status": "planning", "plan_id": plan_id }),
         ))
@@ -2394,6 +2886,27 @@ pub fn dispatch_subissue_auto_with_config(
                                     parent_id: None,
                                     ctype: nemesis_board::CommentType::System,
                                 })?;
+                                // U-A：首次停车落现场档案（去重闸同款——只
+                                // 首次写，sweep 重扫不覆写）。
+                                write_side_handoff(
+                                    store,
+                                    &issue,
+                                    "no_match",
+                                    "retry",
+                                    format!(
+                                        "无在线节点满足角色/标签要求：上线合格节点后停车场 sweep 自动重派，或手动指派节点后派发。匹配明细：{detail}"
+                                    ),
+                                    "issue.dispatch（number=NB-x，可带 target 手动指派）；或等 sweep 自动重试",
+                                    serde_json::json!({
+                                        "required_role": issue.required_role,
+                                        "required_tags": issue.required_tags,
+                                        "required_profession": issue.required_profession,
+                                    }),
+                                    vec![serde_json::json!({
+                                        "action": "match",
+                                        "result": detail,
+                                    })],
+                                );
                             }
                             // B5 可见性：整条链都在等节点 → 父单转 blocked 显形。
                             mark_parent_blocked_if_stalled(store, &issue, actor);
@@ -2553,6 +3066,13 @@ pub fn sweep_parked_dispatches_with_config(
     // 的 estop 闸本会逐单拒绝，这里提前收敛，避免 20s 周期对全部停车候选
     // 的无效报错 churn。release 后（resume watcher / 定时器）自然恢复。
     if board_estop_engaged() {
+        return (0, 0, 0);
+    }
+    // U-B（§9.2）：LLM 端点不可用封存中——派发重试 sweep 短路（worker 与
+    // master 共享端点，发车必然烧在不可用端点上；恢复后 sweep 自然续跑，
+    // 停车候选语义不变）。
+    if super::board_unavailable::frozen_now() {
+        tracing::debug!("[Board] 停车场 sweep 短路：LLM 端点不可用封存中");
         return (0, 0, 0);
     }
     let candidates = match store.list_dispatch_park_candidates() {
@@ -3641,38 +4161,17 @@ fn spawn_project_auto_start(
         }
     };
     let plan_id = format!("plan-{}", uuid::Uuid::new_v4());
-    let store_for_chain = store.clone();
-    let cluster_for_chain = ctx.state.cluster.clone();
-    let home_for_chain = ctx.home.clone().map(std::path::PathBuf::from);
-    let actor_for_chain = actor.clone();
-    let issue_for_chain = issue.clone();
-    let hub_for_chain = ctx.state.event_hub.clone();
-    let plan_id_for_chain = plan_id.clone();
-    let issue_watch_id = issue.id;
-    let plan_id_for_watch = plan_id_for_chain.clone();
-    let store_for_watch = store_for_chain.clone();
-    spawn_plan_chain_watched(
-        store_for_watch,
-        Some(hub_for_chain.clone()),
-        issue_watch_id,
-        plan_id_for_watch,
-        async move {
-            if let Err(e) = execute_plan_chain(
-                &store_for_chain,
-                cluster_for_chain,
-                agent_loop,
-                issue_for_chain,
-                actor_for_chain,
-                &plan_id_for_chain,
-                home_for_chain.as_deref(),
-                Some(&hub_for_chain),
-            )
-            .await
-            {
-                tracing::warn!("[Board] 项目自动启动 plan chain failed: {e}");
-            }
-        },
-    );
+    let env = std::sync::Arc::new(PlanChainEnv {
+        store: store.clone(),
+        cluster: ctx.state.cluster.clone(),
+        agent_loop,
+        issue: issue.clone(),
+        actor: actor.clone(),
+        home: ctx.home.clone().map(std::path::PathBuf::from),
+        hub: Some(ctx.state.event_hub.clone()),
+    });
+    let cfg = plan_chain_cfg(env.home.as_deref());
+    spawn_plan_chain(env, plan_id, 1, cfg);
     Ok(issue)
 }
 
@@ -3711,7 +4210,6 @@ fn fire_autopilot_plan_chain(
         });
     };
     let plan_id = format!("plan-{}", uuid::Uuid::new_v4());
-    let store_for_chain = store.clone();
     let issue_for_chain = match store.get_issue(issue_id) {
         Ok(i) => i,
         Err(e) => {
@@ -3719,38 +4217,17 @@ fn fire_autopilot_plan_chain(
             return serde_json::json!({ "status": "failed", "reason": e });
         }
     };
-    let actor_for_chain = actor.clone();
-    let home_for_chain = ap_ctx.home.clone();
-    let hub_for_chain = ap_ctx.hub.clone();
-    let cluster_for_chain = ap_ctx.cluster.clone();
-    let plan_id_for_chain = plan_id.clone();
-    let plan_id_for_watch = plan_id_for_chain.clone();
-    let store_for_watch = store_for_chain.clone();
-    let hub_for_watch = hub_for_chain.clone();
-    spawn_plan_chain_watched(
-        store_for_watch,
-        hub_for_watch,
-        issue_id,
-        plan_id_for_watch,
-        async move {
-            if let Err(e) = execute_plan_chain(
-                &store_for_chain,
-                cluster_for_chain, // 匹配器选节点靠它；None=派发诚实降级
-                agent_loop,
-                issue_for_chain,
-                actor_for_chain,
-                &plan_id_for_chain,
-                Some(&home_for_chain),
-                hub_for_chain.as_deref(),
-            )
-            .await
-            {
-                tracing::warn!(
-                    "[Board] autopilot auto_plan plan chain issue={issue_id} failed: {e}"
-                );
-            }
-        },
-    );
+    let env = std::sync::Arc::new(PlanChainEnv {
+        store: store.clone(),
+        cluster: ap_ctx.cluster.clone(), // 匹配器选节点靠它；None=派发诚实降级
+        agent_loop,
+        issue: issue_for_chain,
+        actor: actor.clone(),
+        home: Some(ap_ctx.home.clone()),
+        hub: ap_ctx.hub.clone(),
+    });
+    let cfg = plan_chain_cfg(env.home.as_deref());
+    spawn_plan_chain(env, plan_id.clone(), 1, cfg);
     serde_json::json!({ "status": "planning", "plan_id": plan_id })
 }
 
@@ -3864,11 +4341,15 @@ fn arm_autopilot_job_with(
 fn disarm_autopilot_job(ctx: &RequestContext, ap: &nemesis_board::Autopilot) {
     if let (Some(cron), Some(job_id)) = (ctx.state.cron.as_ref(), ap.cron_job_id.as_deref()) {
         match cron.lock() {
-            Ok(svc) => {
-                if !svc.remove_job(job_id) {
+            Ok(svc) => match svc.remove_job(job_id) {
+                Ok(true) => {}
+                Ok(false) => {
                     tracing::warn!("[Board] autopilot cron job not found: {job_id}");
                 }
-            }
+                Err(e) => {
+                    tracing::warn!("[Board] autopilot cron job {job_id} remove failed: {e}");
+                }
+            },
             Err(_) => tracing::warn!(
                 "[Board] cron service lock poisoned; autopilot job {job_id} left behind"
             ),
@@ -3907,7 +4388,11 @@ pub fn sync_autopilot_jobs(
                     job.id,
                     job.name
                 );
-                svc.remove_job(&job.id);
+                svc.remove_job(&job.id)
+                    .map_err(|e| {
+                        tracing::warn!("[Board] orphan cron job {} remove failed: {e}", job.id)
+                    })
+                    .ok();
             }
         }
     }
@@ -3941,6 +4426,7 @@ impl ModuleHandler for BoardHandler {
         &[
             "issue.list",
             "issue.get",
+            "issue.timeline",
             "issue.create",
             "issue.update",
             "issue.assign",
@@ -3984,6 +4470,8 @@ impl ModuleHandler for BoardHandler {
             "audit.rollback",
             "audit.retry_merge",
             "review.retrigger",
+            "unavailable.status",
+            "unavailable.release",
             "config.get",
             "config.set",
             "dossier.export",
@@ -4009,6 +4497,24 @@ impl ModuleHandler for BoardHandler {
                 let total = issues.len();
                 // goal P1/C2：逐单附环节（issue_stage 单一真相源）——前端
                 // 子单行环节徽标数据源；加法变更，旧前端兼容。
+                // §1.1 拆解运行期投影（cluster 编译时）：命中 RUNNING_PLANS
+                // 的单附 `planning: {elapsed_secs, attempt}`（纯展示叠加，
+                // 不改 issue 状态机——backlog 语义不变）。前端列表徽标/
+                // 项目卡片行「🧩 拆解中」数据源。
+                #[cfg(feature = "cluster")]
+                let planning_now: std::collections::HashMap<i64, (u64, u32)> = {
+                    let now = std::time::Instant::now();
+                    RUNNING_PLANS
+                        .lock()
+                        .values()
+                        .map(|r| {
+                            (
+                                r.issue_id,
+                                (now.duration_since(r.started_at).as_secs(), r.attempt),
+                            )
+                        })
+                        .collect()
+                };
                 let mut rows = Vec::with_capacity(issues.len());
                 for issue in &issues {
                     let mut v =
@@ -4018,6 +4524,16 @@ impl ModuleHandler for BoardHandler {
                             "stage".to_string(),
                             serde_json::json!(issue_stage(&store, issue)?),
                         );
+                        #[cfg(feature = "cluster")]
+                        if let Some((elapsed, attempt)) = planning_now.get(&issue.id) {
+                            obj.insert(
+                                "planning".to_string(),
+                                serde_json::json!({
+                                    "elapsed_secs": elapsed,
+                                    "attempt": attempt,
+                                }),
+                            );
+                        }
                     }
                     rows.push(v);
                 }
@@ -4033,6 +4549,62 @@ impl ModuleHandler for BoardHandler {
                 Ok(Some(
                     serde_json::json!({ "issue": issue_to_view(&store, &issue)? }),
                 ))
+            }
+            // U-C（2026-10-12 §9.3）：单子全链路时间线（可追溯查询面——终结
+            // 「人查 4 个库」）。聚合入口与 dossier timeline.md 同源
+            // （nemesis-board::timeline）；集群侧事件（任务结果 / 续行快照
+            // 在场）在此注入。按 (ts, source_rank) 升序。
+            "issue.timeline" => {
+                let data = data.ok_or("missing data")?;
+                let issue = if let Ok(id) = data.get("id").and_then(|v| v.as_i64()).ok_or(()) {
+                    store.get_issue(id)?
+                } else {
+                    store.get_issue_by_number(&get_str(&data, "number")?)?
+                };
+                #[allow(unused_mut)] // 非 cluster 编译：extra 恒空仍照常传聚合入口
+                let mut extra: Vec<nemesis_board::timeline::TimelineEvent> = Vec::new();
+                #[cfg(feature = "cluster")]
+                if let Some(cluster) = ctx.state.cluster.as_ref() {
+                    for d in store.list_dispatches(issue.id)? {
+                        // 已终结任务：结果存储在案（success/failure + stored_at）。
+                        if let Some(r) = cluster.result_store().get(&d.task_id) {
+                            extra.push(nemesis_board::timeline::TimelineEvent {
+                                ts: nemesis_board::timeline::parse_ts_to_epoch(&r.stored_at),
+                                source: "cluster_task",
+                                kind: if r.success { "success" } else { "failure" }.into(),
+                                actor: d.worker_id.clone(),
+                                summary: format!(
+                                    "任务结果（{}）：{}",
+                                    r.action,
+                                    if r.success { "成功" } else { "失败" }
+                                ),
+                                detail: r.result.as_str().map(|s| s.to_string()).or_else(|| {
+                                    r.result
+                                        .get("error")
+                                        .and_then(|e| e.as_str())
+                                        .map(String::from)
+                                }),
+                            });
+                        } else if cluster.continuation_store().contains(&d.task_id) {
+                            // 在途：续行快照在场（任务未终结）。
+                            extra.push(nemesis_board::timeline::TimelineEvent {
+                                ts: d.dispatched_at,
+                                source: "continuation",
+                                kind: "pending".into(),
+                                actor: d.worker_id.clone(),
+                                summary: format!("任务 {} 在途（续行快照在场）", d.task_id),
+                                detail: Some(d.task_id),
+                            });
+                        }
+                    }
+                }
+                let events =
+                    nemesis_board::timeline::collect_issue_timeline(&store, issue.id, extra);
+                Ok(Some(serde_json::json!({
+                    "issue": issue.number,
+                    "issue_id": issue.id,
+                    "events": events,
+                })))
             }
             "issue.create" => {
                 let data = data.ok_or("missing data")?;
@@ -4889,6 +5461,35 @@ impl ModuleHandler for BoardHandler {
                 });
                 Ok(Some(
                     serde_json::json!({ "retriggered": true, "issue": issue.number }),
+                ))
+            }
+            // U-B（2026-10-12 无人值守）：端点不可用封存观测 + 手动放行。
+            // status = 状态机快照 + 待续做中断档案清单（不 load 内容）。
+            "unavailable.status" => {
+                let mut snap = super::board_unavailable::snapshot_json();
+                if let Some(ws) = handoff_workspace_root().map(|p| p.as_path()) {
+                    let pending: Vec<String> =
+                        super::board_unavailable::read_pending_interruptions(ws)
+                            .iter()
+                            .filter_map(|d| {
+                                d.get("issue")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string())
+                            })
+                            .collect();
+                    snap["pending_interruptions"] = serde_json::json!(pending);
+                }
+                Ok(Some(snap))
+            }
+            "unavailable.release" => {
+                let was = super::board_unavailable::manual_release();
+                tracing::info!(
+                    "[Board] board.unavailable.release by {}/{} (was_frozen={was})",
+                    actor.kind,
+                    actor.id
+                );
+                Ok(Some(
+                    serde_json::json!({ "released": true, "was_frozen": was }),
                 ))
             }
             // --- config（全自动流转 P1/A4：配置 TAB 读写 board 段旗标）---

@@ -43,6 +43,8 @@ impl LlmProvider for G4MockProvider {
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
             Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
                 content: "g4 exhausted".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
@@ -59,6 +61,8 @@ impl LlmProvider for G4MockProvider {
 
 fn g4_resp(content: &str) -> LlmResponse {
     LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: content.to_string(),
         tool_calls: Vec::new(),
         finished: true,
@@ -71,6 +75,8 @@ fn g4_resp(content: &str) -> LlmResponse {
 
 fn g4_tc_resp(calls: Vec<crate::types::ToolCallInfo>) -> LlmResponse {
     LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
         content: String::new(),
         tool_calls: calls,
         finished: false,
