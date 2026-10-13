@@ -4,7 +4,7 @@
 //! title 可选）、批准臂（mode 翻 Build + ModeChanged 事件 + verdict 落
 //! Approved）、驳回臂（verdict 落 Rejected，mode 不动）、超时臂（verdict
 //! 落 Timeout）、broker 槽空诚实报错、build 模式直呼拒绝、缺 plan 字段
-//! 校验、verdict take 单次消费。
+//! 校验、verdict 按会话键 remove 单次消费 + 跨会话隔离。
 
 use super::{
     PlanPresentHandle, PlanPresentTool, QuestionBrokerSlot, SharedToolConfig, register_shared_tools,
@@ -67,7 +67,7 @@ fn handle_with(
         broker,
         mode: Arc::new(parking_lot::RwLock::new(crate::types::AgentMode::Plan)),
         agent_event_tx: Some(tx),
-        verdict: Arc::new(parking_lot::Mutex::new(None)),
+        verdicts: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
     });
     (handle, rx)
 }
@@ -131,8 +131,8 @@ async fn approve_flips_mode_and_sets_verdict() {
     assert!(out.contains("✅"), "批准回灌: {out}");
     assert_eq!(*handle.mode.read(), crate::types::AgentMode::Build);
     assert_eq!(
-        *handle.verdict.lock(),
-        Some(super::PlanPresentVerdict::Approved)
+        handle.verdicts.lock().get("agent:main:session:pp"),
+        Some(&super::PlanPresentVerdict::Approved)
     );
     let ev = rx.recv().await.expect("ModeChanged 必须广播");
     match &ev {
@@ -156,8 +156,8 @@ async fn reject_sets_verdict_and_keeps_plan_mode() {
     assert!(out.contains("❌"), "驳回回灌: {out}");
     assert_eq!(*handle.mode.read(), crate::types::AgentMode::Plan);
     assert_eq!(
-        *handle.verdict.lock(),
-        Some(super::PlanPresentVerdict::Rejected)
+        handle.verdicts.lock().get("agent:main:session:pp"),
+        Some(&super::PlanPresentVerdict::Rejected)
     );
 }
 
@@ -172,8 +172,8 @@ async fn timeout_sets_timeout_verdict() {
     assert!(out.contains("⏱"), "超时回灌: {out}");
     assert_eq!(*handle.mode.read(), crate::types::AgentMode::Plan);
     assert_eq!(
-        *handle.verdict.lock(),
-        Some(super::PlanPresentVerdict::Timeout)
+        handle.verdicts.lock().get("agent:main:session:pp"),
+        Some(&super::PlanPresentVerdict::Timeout)
     );
 }
 
@@ -217,12 +217,37 @@ async fn missing_plan_field_is_validation_error() {
 }
 
 #[test]
-fn verdict_take_is_single_consumption() {
+fn verdict_remove_is_single_consumption_and_session_isolated() {
     let (handle, _rx) = handle_with(empty_slot());
-    *handle.verdict.lock() = Some(super::PlanPresentVerdict::Rejected);
+    let sess_a = "agent:main:session:a";
+    let sess_b = "agent:main:session:b";
+    // 跨会话并发（gate 内联 + turn spawn）：A/B 两会话各写各的键，互不覆盖。
+    handle
+        .verdicts
+        .lock()
+        .insert(sess_a.to_string(), super::PlanPresentVerdict::Approved);
+    handle
+        .verdicts
+        .lock()
+        .insert(sess_b.to_string(), super::PlanPresentVerdict::Rejected);
     assert_eq!(
-        handle.verdict.lock().take(),
-        Some(super::PlanPresentVerdict::Rejected)
+        handle.verdicts.lock().get(sess_a),
+        Some(&super::PlanPresentVerdict::Approved),
+        "B 会话写入不得覆盖 A 会话裁决"
     );
-    assert_eq!(handle.verdict.lock().take(), None, "take 后槽必须清空");
+    // remove 取走即清：本会话第二次 remove 为空，另一会话键不受影响。
+    assert_eq!(
+        handle.verdicts.lock().remove(sess_a),
+        Some(super::PlanPresentVerdict::Approved)
+    );
+    assert_eq!(
+        handle.verdicts.lock().remove(sess_a),
+        None,
+        "remove 后必须清空"
+    );
+    assert_eq!(
+        handle.verdicts.lock().remove(sess_b),
+        Some(super::PlanPresentVerdict::Rejected),
+        "A 会话消费不得领走 B 会话裁决"
+    );
 }

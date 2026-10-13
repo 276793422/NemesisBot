@@ -660,7 +660,7 @@ pub fn build_agent_loop(
         broker: shared.question_slot.clone(),
         mode: agent_loop.mode_arc(),
         agent_event_tx: shared.agent_event_tx.clone(),
-        verdict: Arc::new(parking_lot::Mutex::new(None)),
+        verdicts: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
     });
     agent_loop.set_plan_present_handle(plan_present_handle.clone());
     // G4 (U4): enable tool-result spill under <workspace>/logs/spill — oversized
@@ -2558,7 +2558,7 @@ pub fn build_project_agent_loop(
         broker: shared.question_slot.clone(),
         mode: agent_loop.mode_arc(),
         agent_event_tx: shared.agent_event_tx.clone(),
-        verdict: Arc::new(parking_lot::Mutex::new(None)),
+        verdicts: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
     });
     agent_loop.set_plan_present_handle(project_plan_present.clone());
     // G4 (U4)：spill 锚主 workspace（定位器给用户看；写侧围栏只拦

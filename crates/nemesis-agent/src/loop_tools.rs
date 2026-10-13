@@ -5821,8 +5821,11 @@ pub enum PlanPresentVerdict {
 
 /// N2：present_plan 工具与 run_loop 之间的共享接线。agent_factory 构造，
 /// 同一 Arc 双侧注入：工具侧（SharedToolConfig.plan_present）做 mode 翻转 +
-/// verdict 写入；loop 侧（`set_plan_present_handle`）在批次尾读 verdict
-/// 决定是否终止本轮。`verdict` 取走即清（take 语义，一轮至多一个裁决）。
+/// verdict 写入；loop 侧（`set_plan_present_handle`）在批次尾按 session_key
+/// 取走本会话的 verdict 决定是否终止本轮。`verdicts` 按 session_key 分键、
+/// `remove` 取走即清——loop 内跨会话 turn 并发（admission「gate 内联 +
+/// turn spawn」），单槽会让 A 会话的裁决被 B 会话覆盖/领走；同会话 turn
+/// 由 busy 闸串行，会话键就是正确的隔离粒度。
 pub struct PlanPresentHandle {
     /// 提问 broker（与 question 工具同源槽——present_plan 的审批卡就是
     /// 一张单选 question 卡，复用同一 WebQuestionBroker 装配）。
@@ -5831,8 +5834,8 @@ pub struct PlanPresentHandle {
     pub mode: Arc<parking_lot::RwLock<crate::types::AgentMode>>,
     /// ModeChanged 广播（徽标刷新；与 set_mode_with_event 同一通道形态）。
     pub agent_event_tx: Option<tokio::sync::broadcast::Sender<nemesis_types::agent::AgentEvent>>,
-    /// 审批结论槽（工具写 / run_loop 批次尾 take）。
-    pub verdict: Arc<parking_lot::Mutex<Option<PlanPresentVerdict>>>,
+    /// 审批结论槽（按 session_key 分键；工具写 / run_loop 批次尾 remove）。
+    pub verdicts: Arc<parking_lot::Mutex<std::collections::HashMap<String, PlanPresentVerdict>>>,
 }
 
 impl PlanPresentHandle {
@@ -5951,17 +5954,26 @@ impl Tool for PlanPresentTool {
             {
                 self.handle
                     .flip_to_build(&context.session_key, &context.chat_id);
-                *self.handle.verdict.lock() = Some(PlanPresentVerdict::Approved);
+                self.handle
+                    .verdicts
+                    .lock()
+                    .insert(context.session_key.clone(), PlanPresentVerdict::Approved);
                 Ok("✅ 用户已批准计划：已切换到 build 模式。现在按计划开始执行。".to_string())
             }
             nemesis_types::agent::QuestionOutcome::Answered(_) => {
-                *self.handle.verdict.lock() = Some(PlanPresentVerdict::Rejected);
+                self.handle
+                    .verdicts
+                    .lock()
+                    .insert(context.session_key.clone(), PlanPresentVerdict::Rejected);
                 // 本文本模型本轮看不到（run_loop 消费 verdict 后直接终局），
                 // 落在这里是给 history/审计留一致记录。
                 Ok("❌ 用户驳回了计划：本轮到此结束。".to_string())
             }
             nemesis_types::agent::QuestionOutcome::Timeout => {
-                *self.handle.verdict.lock() = Some(PlanPresentVerdict::Timeout);
+                self.handle
+                    .verdicts
+                    .lock()
+                    .insert(context.session_key.clone(), PlanPresentVerdict::Timeout);
                 Ok("⏱ 计划审批超时未获响应：本轮到此结束（仍处 plan 模式）。".to_string())
             }
         }
