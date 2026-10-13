@@ -663,6 +663,10 @@ mod skills_more_tests;
 // uninstall 联动/verify 漂移检测的 WSAPI 面。
 #[cfg(all(test, feature = "workflow"))]
 mod skills_ws4_tests;
+// N3 学得技能 manifest（2026-10-13 机会项）：learned_list/learned_remove
+// 管理面 + manifest 成员资格护栏（registry 技能保护）。
+#[cfg(all(test, feature = "workflow"))]
+mod skills_learned_tests;
 #[cfg(all(test, feature = "voice"))]
 mod voice_extra_tests;
 // 凭据回显脱敏批次（2026-09-25；vault 方案 0.4.7 遗留收尾）：WSAPI 回显面

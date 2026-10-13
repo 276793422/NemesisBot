@@ -225,6 +225,17 @@ pub enum AgentEvent {
         /// 同一回复内的块序号（0 起）——前端按 (session_id, index) 幂等 upsert。
         index: usize,
     },
+    /// N5（2026-10-13 机会项）：交付物登记事件。`present_files` 工具登记的
+    /// 交付物随 assistant 行落盘（chat_log 权威源）后发布；web pump 转 SSE
+    /// `deliverables` + WS push `deliverables`（不入 chat_event_log 环——
+    /// 历史映射是权威恢复源，环内重放只会重复），前端缓冲挂到即将落地的
+    /// assistant 回复卡。agent_event_tx 未装配（CLI / B 端 worker）不发布。
+    DeliverablesRegistered {
+        session_key: String,
+        chat_id: String,
+        /// 本 turn 的交付物清单（已按 path 去重；title/note 取最后登记）。
+        files: Vec<PresentedFile>,
+    },
     /// L10（2026-10-13 三方学习 T3）provider 流式输出事件。主 turn 的 LLM
     /// 调用经流式 lane（provider 支持 `chat_stream` 且 `agents.provider_
     /// stream_events` 开启）时按增量发布；web pump 转 SSE `provider_stream_
@@ -266,6 +277,23 @@ pub enum TodoStatus {
     Completed,
 }
 
+/// N5（2026-10-13 机会项）：`present_files` 工具登记的**交付物**——agent
+/// 认为本 turn 的用户应该去看的产物文件（报告/图/导出物）。单一真相源在
+/// nemesis-types（`AgentEvent::DeliverablesRegistered` 载荷 + nemesis-agent
+/// chat_log 的 `deliverables` 字段共用，两处 serde 形态天然一致）；路径
+/// 引用不落字节（与 images 同语义）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PresentedFile {
+    /// 交付物路径（工具侧相对 workspace 根登记，存在性已验）。
+    pub path: String,
+    /// 展示标题（缺省 = 文件名）。
+    #[serde(default)]
+    pub title: String,
+    /// 一句话说明（缺省 = 空串，前端隐藏）。
+    #[serde(default)]
+    pub note: String,
+}
+
 impl AgentEvent {
     /// 该事件关联的 chat_id（web pump 按 `web:` 前缀路由到 session）。
     pub fn chat_id(&self) -> &str {
@@ -282,6 +310,8 @@ impl AgentEvent {
             // L10：provider 流事件同样绑定发起会话。
             AgentEvent::CanvasOpen { chat_id, .. }
             | AgentEvent::ProviderStream { chat_id, .. } => chat_id,
+            // N5：交付物登记绑定发起会话。
+            AgentEvent::DeliverablesRegistered { chat_id, .. } => chat_id,
             // 审批不属单一会话（auditor 无 session 上下文，同 ApprovalRequested）。
             // 提问了结事件同理只带 id（全局广播）。
             AgentEvent::ApprovalResolved { .. }
@@ -307,7 +337,8 @@ impl AgentEvent {
             | AgentEvent::QuestionAsked { session_key, .. }
             | AgentEvent::SessionCreated { session_key, .. }
             | AgentEvent::CanvasOpen { session_key, .. }
-            | AgentEvent::ProviderStream { session_key, .. } => Some(session_key),
+            | AgentEvent::ProviderStream { session_key, .. }
+            | AgentEvent::DeliverablesRegistered { session_key, .. } => Some(session_key),
             AgentEvent::ApprovalResolved { .. } | AgentEvent::QuestionResolved { .. } => None,
         }
     }
@@ -327,6 +358,7 @@ impl AgentEvent {
             AgentEvent::SessionCreated { .. } => "SessionCreated",
             AgentEvent::CanvasOpen { .. } => "CanvasOpen",
             AgentEvent::ProviderStream { .. } => "ProviderStream",
+            AgentEvent::DeliverablesRegistered { .. } => "DeliverablesRegistered",
         }
     }
 }

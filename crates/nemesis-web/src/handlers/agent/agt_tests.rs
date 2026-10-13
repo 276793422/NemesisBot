@@ -91,6 +91,9 @@ impl ProjectsBridge for AgtStubBridge {
     fn rename(&self, _project_id: &str, _new_name: &str) -> Result<ProjectInfo, String> {
         Err("not wired".to_string())
     }
+    fn set_trust(&self, _project_id: &str, _trusted: bool) -> Result<ProjectInfo, String> {
+        Err("not wired".to_string())
+    }
     fn owner_of(&self, _session_key: &str) -> Option<String> {
         None
     }

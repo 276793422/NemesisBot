@@ -1055,6 +1055,7 @@ async fn test_s11b_run_add_no_config_bails() {
             proxy: None,
             auth: None,
             protocol: None,
+            role: None,
             default: false,
         },
         false,
@@ -1081,6 +1082,7 @@ async fn test_s11b_run_add_invalid_format_bails() {
             proxy: None,
             auth: None,
             protocol: None,
+            role: None,
             default: false,
         },
         false,
@@ -1114,6 +1116,7 @@ async fn test_s11b_run_add_basic_writes_entry() {
             proxy: None,
             auth: None,
             protocol: None,
+            role: None,
             default: false,
         },
         false,
@@ -1148,6 +1151,7 @@ async fn test_s11b_run_add_full_fields() {
             proxy: Some("http://127.0.0.1:1".into()),
             auth: Some("token".into()),
             protocol: None,
+            role: None,
             default: false,
         },
         false,
@@ -1185,6 +1189,7 @@ async fn test_s11b_run_add_default_flag_sets_llm() {
             proxy: None,
             auth: None,
             protocol: None,
+            role: None,
             default: true,
         },
         false,
@@ -1222,6 +1227,7 @@ async fn test_s11b_run_add_auto_default_skipped_when_default_exists() {
             proxy: None,
             auth: None,
             protocol: None,
+            role: None,
             default: false,
         },
         false,
@@ -1250,6 +1256,7 @@ async fn test_s11b_run_add_duplicate_replaces() {
                 proxy: None,
                 auth: None,
                 protocol: None,
+                role: None,
                 default: false,
             },
             false,
@@ -1286,6 +1293,7 @@ async fn test_fi_readd_preserves_tier_vision_and_probe_assets() {
             proxy: None,
             auth: None,
             protocol: None,
+            role: None,
             default: false,
         },
         false,
@@ -1311,6 +1319,7 @@ async fn test_fi_readd_preserves_tier_vision_and_probe_assets() {
             proxy: None,
             auth: None,
             protocol: None,
+            role: None,
             default: false,
         },
         false,
@@ -1344,6 +1353,7 @@ async fn test_fi_new_add_still_tags_auto_tier() {
             proxy: None,
             auth: None,
             protocol: None,
+            role: None,
             default: false,
         },
         false,
@@ -1376,6 +1386,7 @@ async fn test_fi_readd_legacy_entry_without_tier_stays_absent() {
             proxy: None,
             auth: None,
             protocol: None,
+            role: None,
             default: false,
         },
         false,
@@ -1418,6 +1429,7 @@ async fn test_s11b_run_add_catalog_hit_fills_context_window() {
             proxy: None,
             auth: None,
             protocol: None,
+            role: None,
             default: false,
         },
         false,
@@ -2019,6 +2031,7 @@ mod wave_b {
                 proxy: None,
                 auth: None,
                 protocol: None,
+                role: None,
                 default: false,
             },
             false,
@@ -2858,6 +2871,7 @@ mod wave_a {
                 proxy: None,
                 auth: None,
                 protocol: Some("claude".into()), // 别名 → anthropic
+                role: None,
                 default: false,
             },
             false,
@@ -2890,6 +2904,7 @@ mod wave_a {
                 proxy: None,
                 auth: None,
                 protocol: Some("bogus".into()),
+                role: None,
                 default: false,
             },
             false,
@@ -3024,6 +3039,7 @@ mod w5b2 {
                 proxy: None,
                 auth: None,
                 protocol: None,
+                role: None,
                 default: true,
             },
             false,
@@ -3047,6 +3063,7 @@ mod w5b2 {
                 proxy: None,
                 auth: None,
                 protocol: None,
+                role: None,
                 default: false,
             },
             false,
@@ -3320,6 +3337,7 @@ async fn test_ws5_provider_add_autofills_preset() {
             proxy: None,
             auth: None,
             protocol: None,
+            role: None,
             default: false,
         },
         false,
@@ -3371,6 +3389,7 @@ async fn test_ws5_provider_add_alias_and_case_insensitive() {
             proxy: None,
             auth: None,
             protocol: None,
+            role: None,
             default: false,
         },
         false,
@@ -3406,6 +3425,7 @@ async fn test_ws5_provider_add_explicit_flags_win() {
             proxy: None,
             auth: None,
             protocol: Some("anthropic".into()),
+            role: None,
             default: false,
         },
         false,
@@ -3446,6 +3466,7 @@ async fn test_ws5_provider_add_unknown_family_bails_with_families() {
             proxy: None,
             auth: None,
             protocol: None,
+            role: None,
             default: false,
         },
         false,
@@ -3478,6 +3499,7 @@ async fn test_ws5_provider_add_requires_model_or_provider() {
             proxy: None,
             auth: None,
             protocol: None,
+            role: None,
             default: false,
         },
         false,
@@ -3512,6 +3534,7 @@ async fn test_ws5_provider_add_empty_default_model_bails() {
             proxy: None,
             auth: None,
             protocol: None,
+            role: None,
             default: false,
         },
         false,
@@ -3523,4 +3546,175 @@ async fn test_ws5_provider_add_empty_default_model_bails() {
         err.to_string().contains("no built-in default model"),
         "空 default_model 家族必须拒绝并指路 --model: {err}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// N6（2026-10-13）声明式模型角色：--role 写盘 / 守卫①（含重复 add 合并
+// 生效值旁路封死）/ 守卫①b 自动默认跳过 / effective_entry_key 合并语义。
+// 本 mod 全部走进程内 run()（s11b 同款 Windows 形态 + 全局锁）。
+// ---------------------------------------------------------------------------
+
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+mod n6_role {
+    // N6 守卫测试复用 s11b RAII 助手（NEMESISBOT_HOME 指向临时根）。
+    use super::{s11b_read_cfg, s11b_temp_home_env, s11b_write_cfg};
+
+    fn add_action(model: &str, role: Option<String>, default: bool) -> super::super::ModelAction {
+        super::super::ModelAction::Add {
+            model: Some(model.into()),
+            provider: None,
+            key: Some("k".into()),
+            base: None,
+            proxy: None,
+            auth: None,
+            protocol: None,
+            role,
+            default,
+        }
+    }
+
+    #[tokio::test]
+    async fn run_add_role_utility_with_default_bails() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
+
+        let err = super::super::run(
+            add_action("zhipu/glm-4.7-flash", Some("utility".into()), true),
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("utility") && err.to_string().contains("agents.small_model"),
+            "守卫①必须 loud 拒绝并指路 small_model: {err}"
+        );
+        // 写盘前拒绝：config 无 default 写入。
+        let cfg = s11b_read_cfg(&th.home);
+        assert!(cfg["model_list"].as_array().unwrap().is_empty());
+        assert!(cfg["agents"]["defaults"]["llm"].is_null());
+    }
+
+    #[tokio::test]
+    async fn run_add_role_invalid_bails() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
+
+        let err = super::super::run(
+            add_action("zhipu/glm-4.7", Some("bogus".into()), false),
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("unknown model role 'bogus'"),
+            "未知角色 loud 拒绝: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_add_role_utility_writes_and_skips_auto_default() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
+
+        // 唯一模型 + 无默认：role=utility 条目不得自动坐默认槽（守卫①b）。
+        super::super::run(
+            add_action("zhipu/glm-4.7-flash", Some("utility".into()), false),
+            false,
+        )
+        .await
+        .expect("不带 --default 的 utility 条目必须成功");
+
+        let cfg = s11b_read_cfg(&th.home);
+        let list = cfg["model_list"].as_array().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0]["role"], "utility");
+        assert!(
+            cfg["agents"]["defaults"]["llm"].is_null(),
+            "守卫①b：utility 条目不自动坐默认对话模型槽"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_readd_default_picks_up_existing_role_guard() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        // 旧条目已声明 utility（手改 config / 早先 add 留下）。
+        s11b_write_cfg(
+            &th.home,
+            serde_json::json!({"model_list": [
+                {"model": "zhipu/flash-8b", "model_name": "flash", "api_key": "old", "role": "utility"}
+            ]}),
+        );
+
+        // 重复 add 不带 --role（新 entry 缺 role 键）+ --default：
+        // 合并生效值仍判 utility → 守卫必须拦（旁路封死回归钉）。
+        let err = super::super::run(add_action("zhipu/flash-8b", None, true), false)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("utility"),
+            "重复 add 经合并生效值必须仍被守卫拦下: {err}"
+        );
+        let cfg = s11b_read_cfg(&th.home);
+        assert!(cfg["agents"]["defaults"]["llm"].is_null(), "config 未动");
+    }
+
+    #[tokio::test]
+    async fn run_readd_default_existing_image_protocol_guard() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        s11b_write_cfg(
+            &th.home,
+            serde_json::json!({"model_list": [
+                {"model": "vendor/dall-e", "model_name": "dall", "api_key": "old", "protocol": "images-openai"}
+            ]}),
+        );
+
+        // M4 守卫①同款旁路：重复 add 不带 --protocol + --default → 合并
+        // 生效值仍是 images-openai → 拦（守卫①洞修复回归钉）。
+        let err = super::super::run(add_action("vendor/dall-e", None, true), false)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("images-openai"),
+            "图像协议旧条目重复 --default 必须拦: {err}"
+        );
+    }
+
+    #[test]
+    fn effective_entry_key_merge_semantics() {
+        use serde_json::json;
+        // 新 entry 显式键优先。
+        let new = json!({"role": "conversation"});
+        let old = json!({"role": "utility"});
+        assert_eq!(
+            super::super::effective_entry_key(&new, Some(&old), "role"),
+            "conversation"
+        );
+        // 新 entry 缺键 → 回退旧条目（与 model_list 合并 or_insert 一致）。
+        let new2 = json!({"model": "m"});
+        assert_eq!(
+            super::super::effective_entry_key(&new2, Some(&old), "role"),
+            "utility"
+        );
+        // 双方皆缺 → 空串（is_conversation_role 放行 = 老条目零迁移）。
+        let old3 = json!({"model": "legacy"});
+        assert_eq!(
+            super::super::effective_entry_key(&new2, Some(&old3), "role"),
+            ""
+        );
+    }
 }

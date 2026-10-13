@@ -469,3 +469,130 @@ async fn canvas_open_sse_payload_flattened_and_no_ws_push() {
 
     pump.abort();
 }
+
+// -------------------------------------------------------------------------
+// N5（2026-10-13 机会项）：DeliverablesRegistered → SSE `deliverables` +
+// WS push `deliverables`（必达通道——不入 chat_event_log 环，无 seq，
+// 历史恢复走 chat_log 权威源；tool_event 通道不得被污染）。
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn deliverables_event_sse_and_ws_push() {
+    let manager = SessionManager::with_default_timeout();
+    let session = manager.create_session();
+    let (queue, mut hi_rx, _lo_rx, _done_tx) = SendQueue::test_channels(16);
+    manager.set_send_queue(&session.id, Arc::new(queue));
+
+    let event_hub = Arc::new(EventHub::new());
+    // 订阅先于发事件（broadcast 无订阅者即丢）。
+    let mut hub_rx = event_hub.subscribe();
+
+    let (tx, rx) = tokio::sync::broadcast::channel::<AgentEvent>(16);
+    let pump = tokio::spawn(pump_agent_events(rx, Arc::new(manager), event_hub.clone()));
+
+    tx.send(AgentEvent::DeliverablesRegistered {
+        session_key: format!("agent:main:session:{}", session.id),
+        chat_id: format!("web:{}", session.id),
+        files: vec![
+            nemesis_types::agent::PresentedFile {
+                path: "reports/daily.md".into(),
+                title: "日报".into(),
+                note: "今日汇总".into(),
+            },
+            nemesis_types::agent::PresentedFile {
+                path: "out.png".into(),
+                title: String::new(),
+                note: String::new(),
+            },
+        ],
+    })
+    .unwrap();
+
+    // SSE 侧：event_type = deliverables，files 原样 + session_id 注入
+    // （session_key 末段），自定义载荷（无 kind/data 包装），不入
+    // tool_event 通道。
+    let ev = tokio::time::timeout(std::time::Duration::from_secs(5), hub_rx.recv())
+        .await
+        .expect("timed out waiting for hub event")
+        .expect("hub closed");
+    assert_eq!(ev.event_type, "deliverables", "ev: {}", ev.data);
+    assert_eq!(
+        ev.data["session_id"],
+        session.id.as_str(),
+        "session_id must be injected from session_key tail: {}",
+        ev.data
+    );
+    let files = ev.data["files"].as_array().expect("files array");
+    assert_eq!(files.len(), 2);
+    assert_eq!(files[0]["path"], "reports/daily.md");
+    assert_eq!(files[0]["title"], "日报");
+    assert_eq!(files[1]["note"], "");
+
+    // WS push 侧：必达通道（hi lane）——交付物未落环，丢失不可补拉，
+    // 走会阻塞的 send 而非可丢 lo 通道（与注释纪律一致）。
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(5), hi_rx.recv())
+        .await
+        .expect("timed out waiting for session frame")
+        .expect("queue closed");
+    let text = String::from_utf8(frame).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(parsed["type"], "push", "frame: {text}");
+    assert_eq!(parsed["cmd"], "deliverables", "frame: {text}");
+    assert_eq!(
+        parsed["data"]["files"][0]["path"], "reports/daily.md",
+        "frame: {text}"
+    );
+    assert_eq!(
+        parsed["data"]["session_id"],
+        session.id.as_str(),
+        "session_id injected in frame too: {text}"
+    );
+
+    // 专支短路：tool_event 通道不得收到该事件（hub drain 只见 deliverables
+    // ——无 kind 包装断言顺带钉死展平形状）。
+    assert!(
+        ev.data.get("kind").is_none(),
+        "payload must be flattened: {}",
+        ev.data
+    );
+    while let Ok(extra) = hub_rx.try_recv() {
+        assert_ne!(
+            extra.event_type, "tool_event",
+            "deliverables must not leak into the tool_event channel"
+        );
+    }
+
+    pump.abort();
+}
+
+#[tokio::test]
+async fn deliverables_event_non_web_chat_id_sse_only() {
+    let manager = SessionManager::with_default_timeout();
+    let event_hub = Arc::new(EventHub::new());
+    let mut hub_rx = event_hub.subscribe();
+
+    let (tx, rx) = tokio::sync::broadcast::channel::<AgentEvent>(16);
+    let pump = tokio::spawn(pump_agent_events(rx, Arc::new(manager), event_hub.clone()));
+
+    tx.send(AgentEvent::DeliverablesRegistered {
+        session_key: "agent:main:session:cluster-s1".into(),
+        chat_id: "cluster:node-b".into(),
+        files: vec![nemesis_types::agent::PresentedFile {
+            path: "r.md".into(),
+            title: "R".into(),
+            note: String::new(),
+        }],
+    })
+    .unwrap();
+
+    let ev = tokio::time::timeout(std::time::Duration::from_secs(5), hub_rx.recv())
+        .await
+        .expect("timed out waiting for hub event")
+        .expect("hub closed");
+    assert_eq!(ev.event_type, "deliverables");
+    // 非 web chat_id：不发 WS push；session_id 仍按 session_key 末段注入
+    // （SSE 消费方按字段过滤）。
+    assert_eq!(ev.data["session_id"], "cluster-s1");
+
+    pump.abort();
+}

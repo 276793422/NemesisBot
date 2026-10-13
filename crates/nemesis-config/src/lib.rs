@@ -31,9 +31,9 @@ pub use store::{ConfigHandle, ConfigStore, global, load_live, save_live, set_glo
 // Re-export provider_resolver types and functions for backward compatibility
 pub use provider_resolver::{
     ModelResolution, PROVIDER_PRESETS, ProviderPreset, ProviderResolution, ProviderResolver,
-    find_model_by_name, find_provider_preset, get_default_api_base, get_effective_llm,
-    get_model_by_name, infer_default_model, infer_provider_from_model, provider_preset_ids,
-    resolve_model_config, resolve_model_resolution,
+    ensure_conversation_role, find_model_by_name, find_provider_preset, get_default_api_base,
+    get_effective_llm, get_model_by_name, infer_default_model, infer_provider_from_model,
+    provider_preset_ids, resolve_model_config, resolve_model_resolution,
 };
 
 #[derive(Error, Debug)]
@@ -303,11 +303,22 @@ pub struct ProjectsConfig {
     /// 项目数上限（每项目 = 一个常驻 AgentLoop，上限即可预期的资源面；
     /// 默认 4。`config set_field projects.max` 经 typed round-trip 自动可用）。
     pub max: usize,
+    /// N7（2026-10-13）：**未受信**项目（注册表条目 `instructions_trusted:
+    /// false`，`projects.trust` 翻转）的工作区指令处理策略——`""`/`annotate`
+    /// = 注入但前置不可信来源横幅（缺省）；`isolated` = 整段跳过；未知值
+    /// lenient 按 annotate 处理 + warn。受信条目恒 verbatim 注入（逐项目
+    /// 显式信任是用户最具体的意图，全局策略不降级它）。空串不序列化
+    /// （`skip_serializing_if`）——缺省态 typed 保存字节零变化（role 先例）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub instruction_trust: String,
 }
 
 impl Default for ProjectsConfig {
     fn default() -> Self {
-        Self { max: 4 }
+        Self {
+            max: 4,
+            instruction_trust: String::new(),
+        }
     }
 }
 
@@ -886,6 +897,13 @@ pub struct AgentsConfig {
     /// startup blocker). Runtime edits need an Agent restart.
     #[serde(default)]
     pub small_model: Option<String>,
+    /// B7（2026-10-13）：guardian LLM 审计专用模型通道（优先于
+    /// `small_model`——审计点独立于 /compact 杂务，可用不同档位；两者都
+    /// 未配置 = 回落主模型）。Absent/empty/unresolvable = 沿阶梯回落
+    /// （small_model → main），never a startup blocker。消费点唯一：
+    /// gateway guardian judge 装配（commands/gateway/runtime.rs）。
+    #[serde(default)]
+    pub guardian_model: Option<String>,
     /// J5 (devtool-upgrade 阶段 6): doom-loop 审批化开关。默认关——turn_guard
     /// 的 escalation 硬停是安全底座。开且 question asker 已装配时，escalation
     /// 触发先发提问卡问用户「继续吗？」：approve = 清签名计数继续；deny /
@@ -2209,6 +2227,17 @@ pub struct ModelConfig {
     /// 显示名仍由 provider 前缀管辖。
     #[serde(default)]
     pub protocol: String,
+    /// 声明式模型角色（2026-10-13 N6）：`conversation`（缺省/空，agent loop
+    /// 主通道合法形态）/ `utility`（杂务通道，agents.small_model 消费：/compact
+    /// 摘要 + 会话标题生成）/ `classifier`（分类/路由/打标）。后两者是对话
+    /// 形态条目（probe/messages 可收发），但**不该坐默认对话模型槽**——三个
+    /// default 槽写入点（CLI `--default`、唯一模型自动坐槽、WSAPI
+    /// `models.set_default`）与 factory 装配点按 `is_conversation_role` 拒绝/
+    /// 降级。值集单一真相源 `nemesis_types::capability::normalize_model_role`。
+    /// 空串不序列化（`skip_serializing_if`）——老条目 typed 保存字节零变化
+    /// （零迁移完整语义；protocol 先例是无条件序列化，role 以空为常态故收紧）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub role: String,
     #[serde(default)]
     pub workspace: String,
     /// H4 (U16 half): reasoning-effort tier for this model ("off" | "low" |
@@ -3774,6 +3803,7 @@ pub fn default_config() -> Config {
             hidden_tools: Vec::new(),
             roles: RolesConfig::default(),
             small_model: None,
+            guardian_model: None,
             doom_loop_approval: false,
             image_downscale: true,
             lease_enabled: true,

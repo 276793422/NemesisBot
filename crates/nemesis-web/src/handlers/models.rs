@@ -456,6 +456,17 @@ impl ModelsHandler {
                 ));
             }
         }
+        // 声明式模型角色（2026-10-13 N6）守卫②：utility/classifier 条目对话
+        // 形态但不是默认对话槽合法形态（杂务消费走 agents.small_model）。
+        {
+            let role = list[idx].get("role").and_then(|v| v.as_str()).unwrap_or("");
+            if !nemesis_types::capability::is_conversation_role(role) {
+                return Err(format!(
+                    "'{name}' 声明的 role '{role}' 不是默认对话模型槽的合法形态\
+                     （杂务消费走 agents.small_model 指向该条目）"
+                ));
+            }
+        }
         let entry = list.remove(idx);
         list.insert(0, entry.clone());
         // 同步 agents.defaults.llm：启动时 get_effective_llm 只读这个字段、不看

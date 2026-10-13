@@ -469,6 +469,13 @@ pub struct AgentLoop {
     /// 到本轮）；steer 注入不重入 `run_agent_loop_internal`，正在跑的 turn
     /// 缓冲不受影响。
     turn_file_changes: Arc<parking_lot::Mutex<HashMap<String, Vec<FileChange>>>>,
+    /// N5（2026-10-13 机会项）：本 turn 的交付物流水（`present_files` 工具
+    /// 登记），按 session_key 分桶。与 [`Self::turn_file_changes`] 同一缓冲
+    /// 模式：assistant 最终回复落盘时 drain+去重，写进 chat_log jsonl 行的
+    /// `deliverables` 字段（前端交付物卡片；「该看什么」产物指引，区别于
+    /// file_changes 的「改了什么」变更映射）。清理时点同 file_changes。
+    turn_deliverables:
+        Arc<parking_lot::Mutex<HashMap<String, Vec<crate::chat_log::PresentedFile>>>>,
     /// E3（devtool-upgrade 阶段 5）：消息级回退的 undo 栈，按 session_key
     /// 分栈（会话间互不干扰，栈内严格 LIFO）。`rewind_to_message` 压栈，
     /// `redo_rewind` 弹栈反向。内存态（重启即失——redo 只对本次进程内的
@@ -491,7 +498,13 @@ pub struct AgentLoop {
     /// （`handle_tool_call_at_depth` 入口，防 MCP/未知写工具与陈旧 defs
     /// 漏网）+ plans/ 写放行。运行时态不持久化（重启回 Build）；
     /// `/plan` `/build` 与 WSAPI `chat.set_mode` 双入口改同一份状态。
-    mode: parking_lot::RwLock<crate::types::AgentMode>,
+    /// N2（2026-10-13）：Arc 化——同一槽与 present_plan 工具共享
+    /// （PlanPresentHandle.mode，批准臂直接翻转），本侧读写经 Deref 零变化。
+    mode: Arc<parking_lot::RwLock<crate::types::AgentMode>>,
+    /// N2：present_plan 审批结论槽（与工具共享 PlanPresentHandle；批次尾
+    /// `take_plan_present_verdict` 消费——Rejected/Timeout 结构化终止本轮）。
+    /// None = 工具未注册（headless 形态），消费点恒 None 零开销。
+    plan_present: parking_lot::RwLock<Option<Arc<crate::loop_tools::PlanPresentHandle>>>,
     /// F1：M1a 事件广播发送端——模式切换后发布 `ModeChanged`（前端徽标
     /// 实时刷新；chat_id 缺省空 = 只进 SSE EventHub，不路由具体会话）。
     /// `None`（standalone / 未注入）→ 发布静默跳过（观察者通道空转是常态）。
@@ -559,6 +572,11 @@ pub struct AgentLoop {
     /// chain. `None` disables the instructions section of the merged
     /// context digest.
     workspace_root: parking_lot::RwLock<Option<std::path::PathBuf>>,
+    /// N7（2026-10-13）：工作区指令信任档（见
+    /// [`crate::workspace_instructions::InstructionTrust`]）。缺省 Trusted
+    /// ——主/集群 loop 不经显式注入即为主循环行为；项目 loop 装配时按注册
+    /// 表条目 × 全局策略注入。运行中经 `projects.trust` WSAPI 热更新。
+    instruction_trust: parking_lot::RwLock<crate::workspace_instructions::InstructionTrust>,
     /// I1 (devtool-upgrade 阶段 3): fs-watcher keep-alive handle. `None` =
     /// not started / disabled / failed (warn-once). Callbacks hold a
     /// Weak<AgentLoop> (handle lives INSIDE the loop — Arc would cycle).
@@ -696,6 +714,7 @@ impl AgentLoop {
             cancel_tokens: dashmap::DashMap::new(),
             turn_counter: std::sync::atomic::AtomicUsize::new(0),
             turn_file_changes: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            turn_deliverables: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             rewind_undo_stacks: parking_lot::Mutex::new(HashMap::new()),
             hooks: HooksState {
                 tool_hooks: parking_lot::RwLock::new(crate::hooks::ToolHookManager::new()),
@@ -713,7 +732,7 @@ impl AgentLoop {
                 tool_vec_cache: parking_lot::RwLock::new(std::collections::HashMap::new()),
             },
             tier: parking_lot::RwLock::new(nemesis_types::capability::ModelTier::Big),
-            mode: parking_lot::RwLock::new(crate::types::AgentMode::Build),
+            mode: std::sync::Arc::new(parking_lot::RwLock::new(crate::types::AgentMode::Build)),
             agent_event_tx: parking_lot::RwLock::new(None),
             config_path: parking_lot::RwLock::new(None),
             prompt_system: parking_lot::RwLock::new(crate::prompt::PromptSystem::Classic),
@@ -725,11 +744,15 @@ impl AgentLoop {
             commands_hot: parking_lot::RwLock::new(None),
             cc_bridge: parking_lot::RwLock::new(None),
             spill_root: parking_lot::RwLock::new(None),
+            plan_present: parking_lot::RwLock::new(None),
             skills_loader: parking_lot::RwLock::new(None),
             skills_digest_state: std::sync::Arc::new(crate::skills_digest::DigestState::new()),
             inbox: std::sync::Arc::new(crate::inbox::Inbox::new(crate::inbox::DEFAULT_QUEUE_SIZE)),
             turn_task_handles: parking_lot::Mutex::new(Vec::new()),
             workspace_root: parking_lot::RwLock::new(None),
+            instruction_trust: parking_lot::RwLock::new(
+                crate::workspace_instructions::InstructionTrust::Trusted,
+            ),
             fs_watcher: parking_lot::RwLock::new(None),
             external_changes: parking_lot::Mutex::new(Vec::new()),
             recent_self_writes: parking_lot::Mutex::new(std::collections::HashMap::new()),
@@ -766,6 +789,14 @@ impl AgentLoop {
         self.turn_wal.read().clone()
     }
 
+    /// N2（机会项）：`present_plan` 计划审批 late-binding（gateway 装配；仿
+    /// set_turn_wal 模式）。装配后 plan 模式下模型可调 `present_plan` 把计划
+    /// 交给用户审批；批准=翻转 build 模式 + 广播 ModeChanged，驳回/超时=
+    /// 本轮结构性终止（tool_batch 消费 verdict）。
+    pub fn set_plan_present_handle(&self, handle: Arc<crate::loop_tools::PlanPresentHandle>) {
+        *self.plan_present.write() = Some(handle);
+    }
+
     /// R1（2026-09-21）：中间轮正文发布（[`nemesis_types::agent::AgentEvent::RoundText`]）。
     /// web pump 的默认路径即覆盖全部投递（注入 session_id + record_tool 入环 +
     /// tool_event 通道 WS push），本方法只负责发；agent_event_tx 未装配
@@ -800,6 +831,29 @@ impl AgentLoop {
         }
     }
 
+    /// N5（2026-10-13 机会项）：交付物登记事件发布
+    /// ([`nemesis_types::agent::AgentEvent::DeliverablesRegistered`])。交付物
+    /// 随 assistant 行落盘（chat_log 权威源）后调用；web pump 转 SSE
+    /// `deliverables` + WS push，前端缓冲挂到即将落地的 assistant 回复卡。
+    /// agent_event_tx 未装配（CLI / B 端 worker）为 no-op；空清单不发布。
+    fn emit_deliverables_registered(
+        &self,
+        session_key: &str,
+        chat_id: &str,
+        files: &[crate::chat_log::PresentedFile],
+    ) {
+        if files.is_empty() {
+            return;
+        }
+        if let Some(tx) = self.agent_event_tx.read().as_ref() {
+            // 无订阅者（CLI / 无人在线）= 观察者通道空转，静默忽略。
+            let _ = tx.send(nemesis_types::agent::AgentEvent::DeliverablesRegistered {
+                session_key: session_key.to_string(),
+                chat_id: chat_id.to_string(),
+                files: files.to_vec(),
+            });
+        }
+    }
     /// P30（WS14）：canvas 打开事件发布（[`nemesis_types::agent::AgentEvent::CanvasOpen`]）。
     /// 终答里检出**全部合法**的 ```canvas 块后逐块发布；web pump 转 SSE
     /// `canvas.open`（内层 data 展平 + session_id 注入），前端 CanvasPanel
@@ -953,6 +1007,14 @@ mod i3_lazy_instructions_tests;
 // plans/ 写放行 + slash 切换 + ModeChanged 事件）测试。
 #[cfg(test)]
 mod f1_plan_mode_tests;
+// N7（2026-10-13 机会项）：工作区指令信任档（isolated 整段跳过 / annotate
+// 横幅 / trusted verbatim + 运行中热更新）测试。
+#[cfg(test)]
+mod n7_instruction_trust_tests;
+// N2（2026-10-13 机会项）：present_plan 计划审批（批准翻 build + 驳回/
+// 超时结构性停轮 + ModeChanged 广播 + 供给双闸）循环级测试。
+#[cfg(test)]
+mod present_plan_loop_tests;
 // J3 (devtool-upgrade 阶段 4)：MCP 客户端补齐 agent 侧测试（前缀前向推导
 // 回归锁 + 同名冲突改名）。
 #[cfg(test)]
@@ -969,6 +1031,11 @@ mod prompt_system_tests;
 // （dispatch 瀑布收集独立于 checkpoint 挂载 / drain 即清 + 去重）。
 #[cfg(test)]
 mod d3_tests;
+
+// N5（2026-10-13 机会项）：交付物登记——dispatch 入桶 / drain 即清去重 /
+// DeliverablesRegistered 事件广播（字段+访问器）/ 空清单与未接线 no-op。
+#[cfg(test)]
+mod deliverables_tests;
 // E3 (devtool-upgrade 阶段 5)：消息级回退/重做编排测试
 // （turn 对齐截断 + 文件恢复 + redo 回填 + 陈旧性守卫）。
 #[cfg(test)]

@@ -609,6 +609,14 @@ pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
             // 是写文件语义（与 write_file 同档考虑）。
             "workflow_create",
             "workflow_capabilities",
+            // N2（2026-10-13）：计划审批卡。Mini 不给——与 question 同款
+            // 高信任交互（且批准动作翻转 plan→build 模式），小模型在琐碎
+            // 场景滥用审批卡会打断用户。
+            "present_plan",
+            // N5（2026-10-13）：交付物登记。Mini 不给——结果面产物指引需要
+            // 判断「什么值得用户看」，小模型容易把中间产物全量上报稀释价值；
+            // 误登记只污染展示面（无副作用），normal/big 放行。
+            "present_files",
         ],
         ModelTier::Big | ModelTier::Auto => &[],
     }
@@ -642,6 +650,37 @@ pub fn normalize_model_protocol(input: &str) -> Result<String, String> {
 /// 防「图像条目混进对话模型槽」各处散写 `== "images-openai"`。
 pub fn is_image_protocol(protocol: &str) -> bool {
     protocol.trim().eq_ignore_ascii_case("images-openai")
+}
+
+/// 模型角色声明（2026-10-13 N6）：模型条目 `role` 字段的 canonical 值集
+/// 与归一。声明「这个模型是干什么用的」，让 default 对话模型槽的写入侧
+/// 有客观依据拒绝错配条目（防杂务模型霸占主对话槽——曾用 `agents.defaults.llm`
+/// 指向 8B flash 提速 /compact，首轮对话也跟着掉智）：
+/// - `conversation`（缺省）：默认对话模型槽的合法形态（agent loop 主通道）
+/// - `utility`：杂务通道（/compact 摘要、会话标题生成等 agents.small_model 消费）
+/// - `classifier`：分类/路由/打标（对话形态，但绝不坐主对话槽）
+///
+/// 空输入 = conversation（缺省，老条目零迁移）；未知值 loud 拒绝。
+/// 守卫语义与 images-openai 刻意不同：utility/classifier 是对话形态条目
+/// （probe 走得通、messages 可收发），只是**不该当默认对话模型**——所以
+/// 四道守卫里 probe 放行、三个 default 槽写入点（CLI --default、唯一模型
+/// 自动坐槽、WSAPI models.set_default）+ factory 装配点 loud 拒绝/降级。
+pub fn normalize_model_role(input: &str) -> Result<String, String> {
+    match input.trim().to_lowercase().as_str() {
+        "" | "conversation" => Ok("conversation".to_string()),
+        "utility" => Ok("utility".to_string()),
+        "classifier" => Ok("classifier".to_string()),
+        other => Err(format!(
+            "unknown model role '{other}'. Supported: conversation | utility | classifier"
+        )),
+    }
+}
+
+/// 对话角色判定（N6 单一谓词）：默认对话模型槽各守卫共用。
+/// 空串（缺省）与 `conversation` 均为对话形态。
+pub fn is_conversation_role(role: &str) -> bool {
+    let r = role.trim().to_lowercase();
+    r.is_empty() || r == "conversation"
 }
 
 #[cfg(test)]

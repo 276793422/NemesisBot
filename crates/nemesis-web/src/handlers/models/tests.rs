@@ -289,6 +289,7 @@ fn list_attaches_extras_and_catalog_match() {
         auth_method: String::new(),
         connect_mode: String::new(),
         protocol: String::new(),
+        role: String::new(),
         workspace: String::new(),
         reasoning_effort: String::new(),
         extra: Default::default(),
@@ -302,6 +303,7 @@ fn list_attaches_extras_and_catalog_match() {
         auth_method: String::new(),
         connect_mode: String::new(),
         protocol: String::new(),
+        role: String::new(),
         workspace: String::new(),
         reasoning_effort: String::new(),
         extra: Default::default(),
@@ -532,6 +534,42 @@ fn set_default_rejects_image_protocol_entry() {
     let cfg = read_config_raw(dir.path());
     assert_eq!(cfg["model_list"][0]["model_name"], "chat");
     assert_eq!(cfg["agents"]["defaults"]["llm"], serde_json::Value::Null);
+}
+
+/// 声明式模型角色（2026-10-13 N6）守卫②：utility/classifier 条目不能被设
+/// 为默认对话模型——写盘前 loud 拒绝；conversation/缺省照常放行。
+#[test]
+fn set_default_rejects_non_conversation_role_entry() {
+    let seed = r#"{
+        "model_list": [
+            {"model_name": "chat", "model": "glm-5", "api_base": "http://a", "api_key": "k"},
+            {"model_name": "util", "model": "glm-4.7-flash", "api_base": "http://b", "api_key": "k", "role": "utility"},
+            {"model_name": "cls", "model": "bge-reranker", "api_base": "http://c", "api_key": "k", "role": "classifier"}
+        ]
+    }"#;
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), seed);
+    let ctx = make_ctx(&dir);
+    let h = ModelsHandler::new();
+
+    for name in ["util", "cls"] {
+        let err = h.set_default(&home_str(&dir), name, &ctx).unwrap_err();
+        assert!(
+            err.contains(name) && err.contains("role") && err.contains("agents.small_model"),
+            "{name} 应被拒并指路 small_model: {err}"
+        );
+    }
+    // config 未动：顺序与 agents.defaults.llm 均保持原状。
+    let cfg = read_config_raw(dir.path());
+    assert_eq!(cfg["model_list"][0]["model_name"], "chat");
+    assert_eq!(cfg["agents"]["defaults"]["llm"], serde_json::Value::Null);
+
+    // conversation 角色与缺省条目照常可坐槽。
+    h.set_default(&home_str(&dir), "chat", &ctx)
+        .unwrap()
+        .unwrap();
+    let cfg = read_config_raw(dir.path());
+    assert_eq!(cfg["agents"]["defaults"]["llm"], "chat");
 }
 
 /// 概览页同步（BUG 2026-09-21）：set_default 写 config 成功后必须同步
