@@ -551,6 +551,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 async fn mock_provider_at(uri: String) -> Arc<HttpProvider> {
     Arc::new(HttpProvider::new(HttpProviderConfig {
+        stream_mode: String::new(),
         name: "mock".into(),
         base_url: uri,
         api_key: "test-key".into(),

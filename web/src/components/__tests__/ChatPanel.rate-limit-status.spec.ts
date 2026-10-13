@@ -120,6 +120,45 @@ describe('限流重试进度文案（agent.retry_status 轮询，BUG ①）', ()
     w.unmount()
   })
 
+  it('label=上游过载 → 文案按真类渲染', async () => {
+    prepareSession()
+    const w = await mountWithDanglingTurn({
+      available: true,
+      retrying: true,
+      retry: 1,
+      max_retries: 10,
+      wait_secs: 5,
+      model: 'gpt-5.6-sol',
+      label: '上游过载',
+    })
+    await vi.advanceTimersByTimeAsync(4000)
+    await flushPromises()
+    const text = w.find('.retry-status-text')
+    expect(text.exists()).toBe(true)
+    expect(text.text()).toContain('上游过载')
+    expect(text.text()).not.toContain('上游限流')
+    w.unmount()
+  })
+
+  it('无 label 字段（旧后端）→ 回落「上游限流」', async () => {
+    prepareSession()
+    const w = await mountWithDanglingTurn({
+      available: true,
+      retrying: true,
+      retry: 1,
+      max_retries: 10,
+      wait_secs: 5,
+      model: 'm',
+    })
+    await vi.advanceTimersByTimeAsync(4000)
+    await flushPromises()
+    const text = w.find('.retry-status-text')
+    expect(text.exists()).toBe(true)
+    expect(text.text()).toContain('上游限流')
+    expect(text.text()).not.toContain('上游过载')
+    w.unmount()
+  })
+
   it('retrying=false（重试终局）→ 文案消失，占位退化为转圈', async () => {
     prepareSession()
     const w = await mountWithDanglingTurn({ available: true, retrying: false })
