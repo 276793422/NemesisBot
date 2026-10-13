@@ -77,7 +77,7 @@ Vue 3 + Vite 工程，全部宽松许可：
 
 ## 6. 致谢
 
-- [NemesisBot（Go 版）](https://github.com/276793422/NemesisBot) — 本 Rust 版的 1:1 重写蓝本
+- [NemesisBot（Go 版）](https://github.com/276793422/NemesisBot_GO) — 本 Rust 版的 1:1 重写蓝本（原地址 `276793422/NemesisBot`，2026-10-12 改名后由本仓库接管）
 
 > 仓库内未发现直接拷贝/移植的第三方项目源代码（审计于 2026-07-04）；如发现具体文件的署名缺失，请提 Issue，我们将补正。
 

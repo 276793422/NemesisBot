@@ -159,7 +159,7 @@ async fn read_capped(resp: reqwest::Response, max_bytes: usize) -> Result<Vec<u8
 
 /// 官方发布源 Release 的列表 API 址。
 const RELEASE_LIST_API: &str =
-    "https://api.github.com/repos/276793422/NemesisBot_Rust/releases?per_page=10";
+    "https://api.github.com/repos/276793422/NemesisBot/releases?per_page=10";
 
 /// 官方 Release 指定附件下载：列表 API → 首个含 `asset_name` 附件的
 /// Release → SSRF 闸逐跳下载。找不到附件 = 诚实报错（CI 尚未产出）。

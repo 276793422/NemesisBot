@@ -44,6 +44,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
+      # 平台环境指纹（设备归因纪律，见 ci.yml rust-check 同名步骤注释）
+      - name: Environment fingerprint
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/dump-env.sh"
+
       # 预编译二进制，秒级安装（cargo install 源码编译要 10+ 分钟）
       - name: Install cargo-deny
         uses: taiki-e/install-action@v2
@@ -61,6 +66,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
+      # 环境指纹（设备归因，见 cargo-deny 同名步骤注释）
+      - name: Environment fingerprint
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/dump-env.sh"
+
       - name: Install cargo-audit
         uses: taiki-e/install-action@v2
         with:
@@ -76,6 +86,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+
+      # 环境指纹（设备归因，见 cargo-deny 同名步骤注释）
+      - name: Environment fingerprint
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/dump-env.sh"
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
