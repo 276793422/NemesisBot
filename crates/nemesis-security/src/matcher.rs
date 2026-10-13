@@ -46,6 +46,20 @@ fn normalize_path(path: &str) -> String {
     path.replace('\\', "/")
 }
 
+/// 文件/注册表路径规则匹配（auditor 路径桶单一入口）：Windows 文件系统
+/// 大小写不敏感，规则与目标两侧同折小写——target 是模型敲的原始字符串
+/// （无规范化直通），deny 规则 `D:/Secrets/*` 曾被任意大小写变体绕过
+/// （D12-3，fail-open）；allow 规则反向不命中=重复弹卡。非 Windows 路径
+/// 大小写敏感保持原样（fold 会让 allow 规则误放，fail-open 方向）。
+/// 分隔符归一与通配语义仍由 [`match_pattern`] 承担。
+pub fn match_path_rule(pattern: &str, target: &str) -> bool {
+    if cfg!(windows) {
+        match_pattern(&pattern.to_lowercase(), &target.to_lowercase())
+    } else {
+        match_pattern(pattern, target)
+    }
+}
+
 /// Convert a wildcard pattern to a regex and match against the target.
 fn do_match(pattern: &str, target: &str) -> bool {
     let regex_pattern = wildcard_to_regex(pattern);
@@ -77,9 +91,12 @@ fn wildcard_to_regex(pattern: &str) -> String {
             i += 1;
         } else if matches!(
             chars[i],
-            '^' | '$' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\'
+            '^' | '$' | '+' | '.' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\'
         ) {
-            // Escape special regex characters
+            // Escape special regex characters（D12-1：`.` 与 `?` 曾漏转义
+            // ——字面点号被当正则任意字符（`*.key` 命中 `testXkey`），`?`
+            // 被当可选量词（`file?.log` 漂移成「可选 e」）。本函数契约只
+            // 认 `*`/`**` 通配，其余元字符一律字面。
             regex.push('\\');
             regex.push(chars[i]);
             i += 1;
@@ -249,15 +266,19 @@ pub fn exec_rule_segments(target: &str) -> Vec<String> {
 /// 命中本尊输入；§九 D1 F4 声称的三臂联合，上移单一真相源时曾丢失）。
 ///
 /// - `bucket`：`"allow"` / `"deny"` / `"ask"`（其余按 deny 桶处理）
-/// - `pattern_lower`：规则 pattern 的小写形态
+/// - `pattern`：规则 pattern 原文（桶匹配内部过 [`normalize_exec_command`]
+///   ——与 target 同管道字节级同源。曾只做小写：pattern 侧保留引号/多余
+///   空白而 target 侧已剥已并，手写 shell 拟形 deny 规则（`rm "-rf" *`）
+///   对归一化 target 永不命中 = 静默死规则 fail-open（D12-2））
 /// - `target_normalized`：整串归一化（[`normalize_exec_command`] 产物）
 /// - `segs`：[`exec_rule_segments`] 的产物
 pub fn exec_rule_bucket_match(
     bucket: &str,
-    pattern_lower: &str,
+    pattern: &str,
     target_normalized: &str,
     segs: &[String],
 ) -> bool {
+    let pattern_lower = &normalize_exec_command(pattern);
     let hit = |seg: &str| match_command_pattern(pattern_lower, seg);
     match bucket {
         "allow" => !segs.is_empty() && segs.iter().all(|seg| hit(seg)),

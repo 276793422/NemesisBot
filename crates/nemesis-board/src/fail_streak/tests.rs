@@ -174,6 +174,35 @@ fn ledger_persists_across_reload() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
+/// 跨实例落定（D10-3）：账本生命周期是 per-review 的 load→mutate→save，
+/// 同批多单并行评审各持实例打同一 JSON——曾 last-writer-wins 互踩丢计数
+/// （熔断保险丝迟到）。回归钉：B 实例记账前以磁盘最新为底 reload，A 的
+/// 过期快照也不得把 B 已记的账覆盖回退。
+#[test]
+fn cross_instance_recording_sees_disk_latest() {
+    let ws = temp_ws("cross");
+    let mut a = FailStreakLedger::load(&ws);
+    assert_eq!(
+        a.record_and_check(42, "sig-d"),
+        StreakOutcome::Continue(1),
+        "A 实例首记"
+    );
+    // B 是独立实例（同批并行评审的另一条链路），中途加载。
+    let mut b = FailStreakLedger::load(&ws);
+    assert_eq!(
+        b.record_and_check(42, "sig-d"),
+        StreakOutcome::Continue(2),
+        "B 记账须见到 A 已落盘的计数（丢计数=熔断迟到）"
+    );
+    // A 再记：其内存快照已过期（count=1），reload 合并磁盘最新后续到 3。
+    assert_eq!(
+        a.record_and_check(42, "sig-d"),
+        StreakOutcome::Tripped(3),
+        "A 过期快照不得覆盖 B 的账（无 reload 时这里会退回 Continue(2)）"
+    );
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
 /// 清账复位：Tripped 后 clear → 下一次从 1 起算（人工处理/estop 后作废）。
 #[test]
 fn clear_resets_account() {

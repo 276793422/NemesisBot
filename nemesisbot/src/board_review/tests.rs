@@ -1241,6 +1241,14 @@ async fn e1_wall_clock_dimension_and_saturating_arithmetic() {
         budget_breach(&deps, &issue, &cfg).is_none(),
         "刚建的单不可能超 u64::MAX 秒"
     );
+    // D9-1 单位回归锁：created_at 是 store::now() 的 unix 秒，曾直接从
+    // 毫秒 now 里减——差值恒带 ~1.77e12 ms 偏移，1h 预算对刚建的单也
+    // 即刻误报超支。真实单位语义下新单不得报 1h 墙钟超支。
+    cfg.budget.wall_clock_budget_secs = 3600;
+    assert!(
+        budget_breach(&deps, &issue, &cfg).is_none(),
+        "刚建的单不得报 1h 墙钟超支（created_at 秒/毫秒单位混用回归）"
+    );
     // 1 秒预算：等过线 → 超限（文案带秒数）。
     cfg.budget.wall_clock_budget_secs = 1;
     std::thread::sleep(std::time::Duration::from_millis(1200));
@@ -7133,16 +7141,23 @@ fn defect_scan_line_start_and_fifo_semantics() {
     let open = scan_unclosed_defects(&store, std::slice::from_ref(&issue)).unwrap();
     assert_eq!(open.len(), 3, "三条声明都在账: {open:?}");
 
-    // FIFO：一条 FIXED 只关最早（崩溃一），其余保持在账。
-    comment("[FIXED] 崩溃一已修复", CommentType::Comment);
+    // FIFO：一条 FIXED 只关最早（崩溃一），其余保持在账。闭环只认
+    // Delivery（D11-3：拆闸方向只走正式交付通道）。
+    comment("[FIXED] 崩溃一已修复", CommentType::Delivery);
     let open = scan_unclosed_defects(&store, std::slice::from_ref(&issue)).unwrap();
     assert_eq!(open.len(), 2, "FIFO 只关最早一条: {open:?}");
     assert_eq!(open[0].snippet, "崩溃一乙", "剩余的应是后声明那些");
     assert_eq!(open[1].snippet, "崩溃二", "剩余的应是后声明那些");
 
-    // 逐条闭环 + 多余 FIXED（无在账缺陷）= 空操作不炸。
-    comment("[FIXED]", CommentType::Comment);
-    comment("[FIXED] 多余闭环", CommentType::Comment);
+    // D11-3 负向锁：非 Delivery（Discussion/Comment/system…）评论行首
+    // [FIXED] 不闭环——任何能落讨论评论的路径不得借此清空在账缺陷。
+    comment("[FIXED] 崩溃一乙讨论区闭环", CommentType::Comment);
+    let open = scan_unclosed_defects(&store, std::slice::from_ref(&issue)).unwrap();
+    assert_eq!(open.len(), 2, "Comment 形 [FIXED] 不得闭环: {open:?}");
+
+    // 逐条闭环（Delivery）+ 多余 FIXED（无在账缺陷）= 空操作不炸。
+    comment("[FIXED]", CommentType::Delivery);
+    comment("[FIXED] 多余闭环", CommentType::Delivery);
     let open = scan_unclosed_defects(&store, &[issue]).unwrap();
     assert!(open.is_empty(), "全部闭环后应无在账: {open:?}");
     let _ = std::fs::remove_dir_all(&dir);
@@ -7281,7 +7296,7 @@ async fn parent_defect_gate_fixed_recovers_auto_flow() {
             author: nemesis_board::Actor::agent("node-w"),
             content: "[FIXED] 崩溃已根修并补回归测试".to_string(),
             parent_id: None,
-            ctype: CommentType::Comment,
+            ctype: CommentType::Delivery,
         })
         .unwrap();
 

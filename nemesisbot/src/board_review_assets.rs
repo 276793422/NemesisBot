@@ -134,10 +134,24 @@ pub(crate) async fn collect_review_images(
     for b in bundles {
         let dest = assets_dir.join(&b.asset_ref);
         // 先本地：实体已在（上次取回/本机 worker publish）→ 免网络。
-        let ok_local = std::fs::metadata(&dest).is_ok_and(|m| m.is_file())
-            && nemesis_board::sha256_file(&dest)
+        // D10-1：尺寸前置闸——曾只查 is_file 就整读 sha256（超限实体全量
+        // 过哈希），尺寸检查推迟到取回+整读之后。本地已在但超限 = 该 ref
+        // 永远过不了单张上限 → 直接跳过（不重取不整读）。
+        let local_meta = std::fs::metadata(&dest).ok().filter(|m| m.is_file());
+        let ok_local = match local_meta {
+            Some(m) if m.len() > MAX_IMAGE_BYTES => {
+                warn!(
+                    "[BoardReviewAssets] 图像 `{}` 本地实体 {} 字节超单张上限（跳过该图）",
+                    b.asset_ref,
+                    m.len()
+                );
+                continue;
+            }
+            Some(_) => nemesis_board::sha256_file(&dest)
                 .map(|sha| sha == b.sha256)
-                .unwrap_or(false);
+                .unwrap_or(false),
+            None => false,
+        };
         if !ok_local {
             match tool
                 .do_fetch(
@@ -147,6 +161,8 @@ pub(crate) async fn collect_review_images(
                     b.expires_at,
                     &b.sha256,
                     Some(&b.node_id),
+                    // 取图腿与单张上限同源：传输中即截停，不落超限实体。
+                    MAX_IMAGE_BYTES,
                 )
                 .await
             {

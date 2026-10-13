@@ -235,6 +235,7 @@ impl BoardAssetTool {
         expires_at: i64,
         sha256: &str,
         node_id: Option<&str>,
+        max_bytes: u64,
     ) -> Result<String, String> {
         let (url, expected_sha) =
             validate_fetch_params(node_url, asset_ref, asset_token, expires_at, sha256)?;
@@ -248,7 +249,13 @@ impl BoardAssetTool {
 
         let dest = self.assets_dir().join(format!("{asset_ref}.part"));
         let pool = nemesis_http_pool::pool::shared_pool();
-        match pool.download_file(&url, &dest.to_string_lossy()).await {
+        // D10-1：HTTP 腿有界下载（Content-Length 预检 + 流式硬上限）——
+        // 曾 resp.bytes() 无界缓冲，恶意/失控远端可把任意大响应灌进内存。
+        // RPC 兜底腿自带 MAX_RPC_FETCH_BYTES 闸，两腿都有界。
+        match pool
+            .download_file_capped(&url, &dest.to_string_lossy(), max_bytes)
+            .await
+        {
             Ok(()) => {
                 let (final_path, size) = self.finalize_download(&dest, asset_ref, &expected_sha)?;
                 Ok(format!(
@@ -618,6 +625,9 @@ impl nemesis_agent::r#loop::Tool for BoardAssetTool {
                     expires_at,
                     &sha256,
                     node_id.as_deref(),
+                    // agent 工具路径不设限（构建产物体积无先验界）；评审取图
+                    // 路径（board_review_assets）另传 MAX_IMAGE_BYTES。
+                    u64::MAX,
                 )
                 .await
             }

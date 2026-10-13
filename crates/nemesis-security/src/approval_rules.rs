@@ -111,8 +111,9 @@ pub fn rule_permitted_for(op: &str, risk: &str) -> bool {
 ///   `pattern_for`/`reduce_command` 产出的 pattern 永无 env 头，读侧
 ///   不剥则 `FOO=1 cargo test` 永远弹卡——ABAC 侧（auditor）已剥，
 ///   两侧不一致 = ABAC 放行、审批记忆不放行的重复打扰；
-/// - 其余 → target 精确相等（exec 类先剥 env 头再比——手写裸 pattern
-///   的防御性对齐；非 exec 类 target 是路径/URL，env 剥离不适用）；
+/// - 其余 → exec 类 token 向量相等（pattern 侧 tokenize、target 侧
+///   tokenize+剥 env 头——D12-5：与写侧归约同源，引号/多余空白两侧归一；
+///   非 exec 类 target 是路径/URL，精确相等）；
 /// - 手写裸 `*` pattern 永不命中（防规则文件被改成全放行）。
 pub fn matches_rule(rule_op: &str, rule_pattern: &str, op: &str, target: &str) -> bool {
     if rule_op != op || rule_pattern.is_empty() || target.is_empty() {
@@ -129,7 +130,11 @@ pub fn matches_rule(rule_op: &str, rule_pattern: &str, op: &str, target: &str) -
                 return false;
             }
             let prefix_hits = |seg: &str| {
-                let seg_tokens = crate::command_arity::tokenize_command(seg);
+                // D12-5：tokenize 之后剥 env 头（[`strip_env_tokens`]）——
+                // 在原串上剥会漏引号形 env 头（`"FOO=1" cargo test`），
+                // 写侧归约剥了读侧没剥 = 规则永远弹卡。
+                let seg_tokens_v = crate::command_arity::tokenize_command(seg);
+                let seg_tokens = crate::command_arity::strip_env_tokens(&seg_tokens_v);
                 seg_tokens.len() >= prefix_tokens.len()
                     && seg_tokens
                         .iter()
@@ -140,10 +145,7 @@ pub fn matches_rule(rule_op: &str, rule_pattern: &str, op: &str, target: &str) -
                 // CMD-12：全段命中才放（`cd *` 不罩 `cd x && rm y`）；
                 // 逐段剥 env 头（`FOO=1 cargo test` → `cargo test`）。
                 let segments = crate::command_arity::command_segments(target);
-                !segments.is_empty()
-                    && segments
-                        .iter()
-                        .all(|seg| prefix_hits(crate::command_arity::strip_env_assignments(seg)))
+                !segments.is_empty() && segments.iter().all(|seg| prefix_hits(seg))
             } else {
                 // 非 exec 类手写 ` *` pattern：维持整串 token 前缀（旧语义）。
                 prefix_hits(target)
@@ -151,7 +153,13 @@ pub fn matches_rule(rule_op: &str, rule_pattern: &str, op: &str, target: &str) -
         }
         None => {
             if is_command_op(rule_op) {
-                rule_pattern == crate::command_arity::strip_env_assignments(target)
+                // D12-5：token 向量比较（写侧归约 = tokenize+剥 env+join，
+                // 手写 pattern 侧只 tokenize 不剥——引号/多余空白两侧归一，
+                // env 头剥离与写侧同源）。
+                let pattern_tokens = crate::command_arity::tokenize_command(rule_pattern);
+                let target_tokens_v = crate::command_arity::tokenize_command(target);
+                let target_tokens = crate::command_arity::strip_env_tokens(&target_tokens_v);
+                pattern_tokens == target_tokens
             } else {
                 rule_pattern == target
             }

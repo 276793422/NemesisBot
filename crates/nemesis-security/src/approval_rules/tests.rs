@@ -404,3 +404,42 @@ fn matches_rule_exact_branch_strips_env_for_command_ops() {
         "/tmp/a=b.txt"
     ));
 }
+
+// ---------- D12-5（2026-10-13 第 6 轮审计）：引号形 env 头两侧同源 ----------
+
+#[test]
+fn quoted_env_prefix_hits_reduced_rule() {
+    // 写侧 reduce_command 在 tokenize 后剥 env（引号已掉，`"FOO=1"` 判 env）；
+    // 读侧若在原串上剥，首 token 带引号判非 env → 剥不掉 → 规则永远弹卡。
+    assert_eq!(
+        pattern_for("process_exec", "\"FOO=1\" cargo test"),
+        "cargo test *"
+    );
+    assert!(matches_rule(
+        "process_exec",
+        "cargo test *",
+        "process_exec",
+        "\"FOO=1\" cargo test --release"
+    ));
+    // 精确臂同源：手写 pattern 与引号 env 头 target
+    assert!(matches_rule(
+        "process_exec",
+        "cargo build",
+        "process_exec",
+        "\"FOO=1\" cargo build"
+    ));
+    // 引号形 env 头不构成通配逃生
+    assert!(!matches_rule(
+        "process_exec",
+        "cargo *",
+        "process_exec",
+        "\"FOO=1\" rm x"
+    ));
+    // 手写 pattern 的引号/多余空白与 target 归一（token 向量比较）
+    assert!(matches_rule(
+        "process_exec",
+        "cargo   build",
+        "process_exec",
+        "cargo build"
+    ));
+}

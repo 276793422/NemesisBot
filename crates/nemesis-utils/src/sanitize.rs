@@ -56,11 +56,34 @@ pub fn sanitize_path_segment(raw: &str) -> String {
     // chat_log 重建 / TTL 自愈兜底。尾 `.` 修剪同趟进行（Windows 剥尾
     // 点；hash 后缀是 hex，永不触点）。
     let char_count = out.chars().count();
-    if char_count <= 80 {
-        return out.trim_end_matches('.').to_string();
+    // 尾点修剪先行（Windows 剥尾点），撞形判定看**修剪后**的形态——
+    // `<60>__<16hex>.` 修剪后恰是 hash 形态，判定在修剪前会让这条 79 字
+    // 符输入经直通+修剪重新抵达 hash 输出域，分离失效。
+    let trimmed = out.trim_end_matches('.');
+    // D12-4（2026-10-13 第 6 轮审计）：hash 输出形态与输入域分离——
+    // 78 字符且形如 `<60>__<16 hex>` 的**合法输入**逐字节直通时，与超限
+    // 输入的 hash 输出无法区分：两个不同 id 产出同一文件段（直通原样 vs
+    // 另一个 head60 恰好同前缀的 id 的 hash 后缀撞形），读写两侧同函数
+    // 自洽掩盖了跨段串读。hash 形态输出的不变量因此收紧为「只有 hash
+    // 分支产出」：撞形输入强制进 hash 分支（输出仍是 head60__hash16，
+    // 但输入域里不再有第二条路抵达该形态；FNV-1a64 碰撞界 2^-64 与既有
+    // 方案同量级）。
+    if char_count <= 80 && !is_hash_suffix_form(trimmed) {
+        return trimmed.to_string();
     }
     let head: String = out.chars().take(60).collect();
     format!("{head}__{:016x}", fnv1a64(out.as_bytes()))
+}
+
+/// hash 后缀输出形态判定：78 字节 = 头 60 + `__` + 16 个小写 hex。
+/// 只认 hash 分支会产出的形态（小写 hex、精确 78 字节）——直通域里的
+/// 撞形输入由此识别并强制改道 hash 分支。
+fn is_hash_suffix_form(out: &str) -> bool {
+    out.len() == 78
+        && out.as_bytes()[60..62] == *b"__"
+        && out.as_bytes()[62..]
+            .iter()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
 }
 
 /// FNV-1a 64-bit（零依赖确定性哈希，仅供超长段的区分后缀）。

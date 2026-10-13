@@ -4409,6 +4409,7 @@ dependencies = [
 name = "nemesis-http-pool"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "parking_lot",
  "reqwest",
  "serde",
