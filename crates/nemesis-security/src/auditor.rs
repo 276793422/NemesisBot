@@ -1427,7 +1427,7 @@ impl SecurityAuditor {
                 _ => "deny",
             }
         };
-        let rule_matches = |rule: &SecurityRule| -> bool {
+        let rule_matches = |bucket: &str, rule: &SecurityRule| -> bool {
             match req.op_type {
                 OperationType::FileRead
                 | OperationType::FileWrite
@@ -1444,19 +1444,28 @@ impl SecurityAuditor {
                 | OperationType::ProcessSpawn
                 | OperationType::ProcessKill
                 | OperationType::ProcessSuspend => {
-                    // CMD-12（2026-10-13）：deny 匹配按顶层段任一命中即拦
+                    // CMD-12（2026-10-13）：deny/ask 匹配按顶层段任一命中即拦
                     // ——整串锚定打不中非首段（`echo hi && rm -rf y` 曾逃过
                     // `rm -rf *`）。段在原文上切（引号感知，引号内的 `&&`
-                    // 不切），逐段归一化后匹配；无操作符的单段命令归一化
-                    // 结果 == match_target，行为与旧整串匹配一致。
-                    crate::command_arity::command_segments(&req.target)
-                        .iter()
-                        .any(|seg| {
-                            matcher::match_command_pattern(
-                                &rule.pattern.to_lowercase(),
-                                &matcher::normalize_exec_command(seg),
-                            )
-                        })
+                    // 不切；引号不平衡退 quote-blind 盲切——单段 fallback 是
+                    // fail-open，一个撇号就能整体击穿），逐段归一化 + 剥 env
+                    // 前缀（与归约端同语义）后匹配。
+                    // 两端不对称（复检批补齐）：**allow 桶 = 全部段命中才放**
+                    // ——任一段命中会把 `echo hi && cargo publish` 被 `cargo *`
+                    // allow 规则整体放行（default deny 配置下的镜像洞）；空段
+                    // 显式不命中（空命令不得自动放行）。
+                    // deny/ask 另并整串锚定兜底（= 旧行为，恒不放宽）：跨段
+                    // 通配（`*a*b*`）与空命令的 `*` 规则靠它维持旧拦截面。
+                    // 段准备与桶匹配在 [`matcher::exec_rule_segments`] /
+                    // [`matcher::exec_rule_bucket_match`]（闭环批上移的单一
+                    // 真相源，`security.rs` CLI 预览同源消费）。
+                    let segs = matcher::exec_rule_segments(&req.target);
+                    matcher::exec_rule_bucket_match(
+                        bucket,
+                        &rule.pattern.to_lowercase(),
+                        &match_target,
+                        &segs,
+                    )
                 }
                 OperationType::NetworkDownload
                 | OperationType::NetworkUpload
@@ -1476,7 +1485,7 @@ impl SecurityAuditor {
                     if action_bucket(&rule.action) != want {
                         continue;
                     }
-                    if rule_matches(rule) {
+                    if rule_matches(want, rule) {
                         let reason = format!("rule matched: pattern={}", rule.pattern);
                         return (
                             normalize_decision(&rule.action),
@@ -1545,7 +1554,7 @@ impl SecurityAuditor {
                 if action_bucket(&rule.action) != "allow" {
                     continue;
                 }
-                if rule_matches(rule) {
+                if rule_matches("allow", rule) {
                     return (
                         normalize_decision(&rule.action),
                         format!("rule matched: pattern={}", rule.pattern),
@@ -1627,7 +1636,12 @@ fn detect_self_destruct(normalized: &str, protected: &[String], exempt: &str) ->
         "remove-item",
     ];
     fn bin_key(t: &str) -> &str {
-        t.strip_suffix(".exe").unwrap_or(t)
+        // 取 basename（闭环批 2026-10-13，对齐 extract_interpreter_payloads
+        // 同名修复）：`/bin/rm`、`del.exe` 全路径/带后缀形态此前打不中
+        // DESTRUCTIVE_BINS（key 带目录/后缀）——自毁硬拦对这种形态整体失明
+        //（fail-open）。提取只增加拦截面，方向 fail-closed。
+        let base = t.rsplit(['/', '\\']).next().unwrap_or(t);
+        base.strip_suffix(".exe").unwrap_or(base)
     }
     let tokens: Vec<&str> = normalized.split(' ').filter(|t| !t.is_empty()).collect();
 

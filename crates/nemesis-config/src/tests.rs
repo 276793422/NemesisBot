@@ -3153,6 +3153,9 @@ fn test_board_review_budget_defaults_conservative() {
     assert_eq!(b.budget.max_subissues_per_parent, 20);
     assert_eq!(b.budget.max_total_redispatch, 0);
     assert_eq!(b.budget.wall_clock_budget_secs, 0);
+    // F2 送达失败重试熔断默认**开**（5 次）——自动重试循环默认带护栏的
+    // 系统惯例；其余预算维默认关不冲突（那是「不设限」、这是「熔断」）。
+    assert_eq!(b.budget.max_send_retries, 5);
 
     let partial: BoardFlagConfig = serde_json::from_value(serde_json::json!({
         "auto_review": true,
@@ -3162,6 +3165,7 @@ fn test_board_review_budget_defaults_conservative() {
     assert_eq!(partial.review.max_turns, 4);
     assert!(!partial.review.selfcheck, "段内缺字段必须落保守默认");
     assert_eq!(partial.budget.max_subissues_per_parent, 20);
+    assert_eq!(partial.budget.max_send_retries, 5, "段内缺字段落默认 5");
 }
 
 #[test]
@@ -3169,7 +3173,7 @@ fn test_board_review_budget_roundtrip() {
     let cfg: BoardFlagConfig = serde_json::from_value(serde_json::json!({
         "review": { "max_turns": 3, "selfcheck": true, "auto_close_project": true },
         "budget": { "max_subissues_per_parent": 10, "max_total_redispatch": 5,
-                    "wall_clock_budget_secs": 3600 }
+                    "wall_clock_budget_secs": 3600, "max_send_retries": 7 }
     }))
     .unwrap();
     assert_eq!(cfg.review.max_turns, 3);
@@ -3177,9 +3181,15 @@ fn test_board_review_budget_roundtrip() {
     assert_eq!(cfg.budget.max_subissues_per_parent, 10);
     assert_eq!(cfg.budget.max_total_redispatch, 5);
     assert_eq!(cfg.budget.wall_clock_budget_secs, 3600);
+    assert_eq!(cfg.budget.max_send_retries, 7);
     let re: BoardFlagConfig = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
     assert_eq!(re.review.max_turns, 3);
     assert_eq!(re.budget.wall_clock_budget_secs, 3600);
+    assert_eq!(re.budget.max_send_retries, 7, "round-trip 保留 F2 熔断键");
+    // 0 = 关（无限重试）合法值透传
+    let off: BoardFlagConfig =
+        serde_json::from_value(serde_json::json!({ "budget": { "max_send_retries": 0 } })).unwrap();
+    assert_eq!(off.budget.max_send_retries, 0);
 }
 
 // ============================================================

@@ -3424,10 +3424,16 @@ fn test_send_failure_candidates_marker_and_state_gates() {
     let (store, dir) = temp_store("send-failure-candidates");
     let actor = crate::assignment::Actor::system("board");
 
-    // 候选：todo + 最后一条 system 评论是送达失败标记。状态回流走真实的
-    // rollback_dispatch_failure（生产路径：直写 SQL 绕状态机，普通转移
-    // in_progress→todo 会被状态机拒绝）。
+    // 候选：todo + 最后一条 system 评论是送达失败标记 + 最新派发行 failed
+    //（账本闸）。状态回流走真实的 rollback_dispatch_failure（生产路径：直写
+    // SQL 绕状态机，普通转移 in_progress→todo 会被状态机拒绝）。
     let hit = store.create_issue(new_issue("送达失败单")).unwrap();
+    store
+        .insert_dispatch("task-sf-1", hit.id, "worker-a", &actor)
+        .unwrap();
+    store
+        .finish_dispatch("task-sf-1", crate::models::dispatch_state::FAILED)
+        .unwrap();
     store
         .transition_issue(hit.id, IssueStatus::InProgress, &actor)
         .unwrap();
@@ -3480,8 +3486,15 @@ fn test_send_failure_candidates_marker_and_state_gates() {
         "marker not last → not a candidate"
     );
 
-    // 非②：状态不在待派态
+    // 非②：状态不在待派态（补齐账本/时序前件，让状态闸成为唯一失败闸——
+    // 否则无派发行时 NULL 时序比较也会排除，断言空过是假阳性）
     let busy = store.create_issue(new_issue("执行中失败单")).unwrap();
+    store
+        .insert_dispatch("task-sf-2", busy.id, "worker-a", &actor)
+        .unwrap();
+    store
+        .finish_dispatch("task-sf-2", crate::models::dispatch_state::FAILED)
+        .unwrap();
     store
         .transition_issue(busy.id, IssueStatus::InProgress, &actor)
         .unwrap();
@@ -3502,8 +3515,25 @@ fn test_send_failure_candidates_marker_and_state_gates() {
         "in_progress → not a candidate"
     );
 
-    // 非③：用户普通评论引用标记文本不算（ctype 过滤）
+    // 非③：用户普通评论引用标记文本不算（ctype 过滤）。补齐候选前件后断言
+    // 仍是候选且 attempts 不涨——普通评论既不当标记也不计次（空池断言在
+    // 无派发行构造下是假阳性，测不到 ctype 过滤本身）。
     let quoted = store.create_issue(new_issue("引用标记单")).unwrap();
+    store
+        .insert_dispatch("task-sf-3", quoted.id, "worker-a", &actor)
+        .unwrap();
+    store
+        .finish_dispatch("task-sf-3", crate::models::dispatch_state::FAILED)
+        .unwrap();
+    store
+        .add_comment(crate::models::NewComment {
+            issue_id: quoted.id,
+            author: actor.clone(),
+            content: format!("{}: [connect] y", super::SEND_FAILURE_MARK),
+            parent_id: None,
+            ctype: crate::models::CommentType::System,
+        })
+        .unwrap();
     store
         .add_comment(crate::models::NewComment {
             issue_id: quoted.id,
@@ -3513,16 +3543,26 @@ fn test_send_failure_candidates_marker_and_state_gates() {
             ctype: crate::models::CommentType::Comment,
         })
         .unwrap();
-    assert!(
-        store
-            .list_send_failure_candidates(super::SEND_FAILURE_MARK)
-            .unwrap()
-            .is_empty(),
-        "non-system comment never counts"
+    let quoted_cands = store
+        .list_send_failure_candidates(super::SEND_FAILURE_MARK)
+        .unwrap();
+    assert_eq!(
+        quoted_cands.len(),
+        1,
+        "user Comment quoting mark neither \
+               ejects nor inflates (ctype filter)"
     );
+    assert_eq!(quoted_cands[0].1, 1, "attempts counts system ⛔ only");
 
-    // 非④：非前缀引用（标记在中间）
+    // 非④：非前缀引用（标记在中间）不计入 attempts——前缀锚定（instr=1）。
+    // 中段引用在前、真标记在后：候选成立且计数只认前缀那条。
     let mid = store.create_issue(new_issue("中段标记单")).unwrap();
+    store
+        .insert_dispatch("task-sf-4", mid.id, "worker-a", &actor)
+        .unwrap();
+    store
+        .finish_dispatch("task-sf-4", crate::models::dispatch_state::FAILED)
+        .unwrap();
     store
         .add_comment(crate::models::NewComment {
             issue_id: mid.id,
@@ -3532,14 +3572,231 @@ fn test_send_failure_candidates_marker_and_state_gates() {
             ctype: crate::models::CommentType::System,
         })
         .unwrap();
-    assert!(
+    store
+        .add_comment(crate::models::NewComment {
+            issue_id: mid.id,
+            author: actor.clone(),
+            content: format!("{}: [timeout] z", super::SEND_FAILURE_MARK),
+            parent_id: None,
+            ctype: crate::models::CommentType::System,
+        })
+        .unwrap();
+    let mid_cands = store
+        .list_send_failure_candidates(super::SEND_FAILURE_MARK)
+        .unwrap();
+    // ③ 的 quoted 单按构造仍是候选（ctype 隔离断言留它入池）——按 id 定位
+    // 本用例的单，不做全池长度断言。
+    let mid_entry = mid_cands
+        .iter()
+        .find(|(id, _, _, _)| *id == mid.id)
+        .expect("prefix-anchored ⛔ as marker");
+    assert_eq!(
+        mid_entry.1, 1,
+        "mid-mark reference must not inflate attempts"
+    );
+
+    cleanup(&dir);
+}
+
+#[test]
+fn test_send_failure_worker_error_shape_stays_out_of_pool() {
+    let (store, dir) = temp_store("send-failure-worker-error");
+    let actor = crate::assignment::Actor::system("board");
+
+    // 闭环批根修锁（2026-10-13）：worker 汇报失败 / 交付守卫拦截只写
+    // **Comment 型**评论 + finish_dispatch(failed)，无 system 评论落盘——
+    // 此前旧 ⛔ 滞留 last-system 位且计数冻结，标记时序闸（⛔ 必须 ≥ 最新
+    // 派发行 completed_at）把这种「第三种 failed 终态」请出池：无时序闸时
+    // settled 波/30s tick 盲重派 + max_send_retries 熔断永不触发。
+    let hit = store
+        .create_issue(new_issue("先送达失败后worker失败单"))
+        .unwrap();
+    // 第一次派发：真送达失败（⛔ system 标记 + 回滚 in_review）→ 入池前件
+    store
+        .insert_dispatch("task-we-1", hit.id, "worker-a", &actor)
+        .unwrap();
+    store
+        .finish_dispatch("task-we-1", crate::models::dispatch_state::FAILED)
+        .unwrap();
+    store
+        .transition_issue(hit.id, IssueStatus::InProgress, &actor)
+        .unwrap();
+    store
+        .add_comment(crate::models::NewComment {
+            issue_id: hit.id,
+            author: actor.clone(),
+            content: format!("{}: [connect] RPC 送达失败", super::SEND_FAILURE_MARK),
+            parent_id: None,
+            ctype: crate::models::CommentType::System,
+        })
+        .unwrap();
+    store
+        .rollback_dispatch_failure(hit.id, IssueStatus::InReview, None, None, &actor)
+        .unwrap();
+    assert_eq!(
         store
             .list_send_failure_candidates(super::SEND_FAILURE_MARK)
             .unwrap()
-            .is_empty(),
-        "prefix match only (instr = 1)"
+            .len(),
+        1,
+        "precondition: in pool after genuine send failure"
     );
 
+    // 生产时序分离显式建模：时序闸粒度是 unix 秒，测试同秒跑完两轮不可
+    // 分辨；生产中自动重试必过 ≥60s 退避、人工重派是秒级以上操作，后续
+    // 派发轮的 completed_at 必然晚于 ⛔ 所在秒。回拨 ⛔ 120s 等价于
+    // 「worker 轮在标记之后完成」，把生产保证的时间分离搬进测试。
+    store
+        .conn
+        .lock()
+        .unwrap()
+        .execute(
+            "UPDATE comment SET created_at = created_at - 120
+             WHERE issue_id = ?1 AND ctype = 'system'",
+            params![hit.id],
+        )
+        .unwrap();
+
+    // 第二次派发：送达成功但 worker 汇报失败（生产形态 board_dispatch.rs：
+    // finish(FAILED) + Comment 型「⛔ worker 汇报失败」+ status→in_review，
+    // 全程无 system 评论）
+    store
+        .insert_dispatch("task-we-2", hit.id, "worker-a", &actor)
+        .unwrap();
+    store
+        .finish_dispatch("task-we-2", crate::models::dispatch_state::FAILED)
+        .unwrap();
+    store
+        .add_comment(crate::models::NewComment {
+            issue_id: hit.id,
+            author: crate::assignment::Actor::agent("worker-a"),
+            content: "⛔ worker 汇报失败：编译错误".into(),
+            parent_id: None,
+            ctype: crate::models::CommentType::Comment,
+        })
+        .unwrap();
+
+    let cands = store
+        .list_send_failure_candidates(super::SEND_FAILURE_MARK)
+        .unwrap();
+    assert!(
+        cands.iter().all(|(id, _, _, _)| *id != hit.id),
+        "worker-error failed round (Comment-type, no new system ⛔) must NOT \
+         re-admit via stale ⛔ — timing gate: old ⛔ < latest completed_at"
+    );
+    cleanup(&dir);
+}
+
+#[test]
+fn test_send_failure_success_delivery_exits_pool() {
+    let (store, dir) = temp_store("send-failure-success-exit");
+    let actor = crate::assignment::Actor::system("board");
+
+    // 多角度审计批根修锁（2026-10-13）：成功交付只写 Delivery 评论 + 派发行
+    // done，**不写 system 评论**——无账本闸时旧 ⛔ 仍是最后一条 system 评论，
+    // 交付后 in_review 立即重新入池（评审进行中被重派的乒乓循环）。重派成功
+    // 后账本尾行顶掉 failed → 必须出池。
+    let hit = store.create_issue(new_issue("重试后成功交付单")).unwrap();
+    // 第一次派发：送达失败（failed 行 + ⛔ 标记 + 回滚 in_review）
+    store
+        .insert_dispatch("task-se-1", hit.id, "worker-a", &actor)
+        .unwrap();
+    store
+        .finish_dispatch("task-se-1", crate::models::dispatch_state::FAILED)
+        .unwrap();
+    store
+        .transition_issue(hit.id, IssueStatus::InProgress, &actor)
+        .unwrap();
+    store
+        .add_comment(crate::models::NewComment {
+            issue_id: hit.id,
+            author: actor.clone(),
+            content: format!("{}: [timeout] RPC 送达失败", super::SEND_FAILURE_MARK),
+            parent_id: None,
+            ctype: crate::models::CommentType::System,
+        })
+        .unwrap();
+    store
+        .rollback_dispatch_failure(hit.id, IssueStatus::InReview, None, None, &actor)
+        .unwrap();
+    assert_eq!(
+        store
+            .list_send_failure_candidates(super::SEND_FAILURE_MARK)
+            .unwrap()
+            .len(),
+        1,
+        "precondition: in pool after send failure"
+    );
+
+    // 第二次派发：重试成功 → worker 交付（Delivery ctype 评论，生产形态）
+    // + 派发行 done + in_review。
+    store
+        .insert_dispatch("task-se-2", hit.id, "worker-a", &actor)
+        .unwrap();
+    store
+        .transition_issue(hit.id, IssueStatus::InProgress, &actor)
+        .unwrap();
+    store
+        .add_comment(crate::models::NewComment {
+            issue_id: hit.id,
+            author: crate::assignment::Actor::agent("worker-a"),
+            content: "交付内容……".into(),
+            parent_id: None,
+            ctype: crate::models::CommentType::Delivery,
+        })
+        .unwrap();
+    store
+        .finish_dispatch("task-se-2", crate::models::dispatch_state::DONE)
+        .unwrap();
+    store
+        .transition_issue(hit.id, IssueStatus::InReview, &actor)
+        .unwrap();
+
+    let cands = store
+        .list_send_failure_candidates(super::SEND_FAILURE_MARK)
+        .unwrap();
+    assert!(
+        cands.iter().all(|(id, _, _, _)| *id != hit.id),
+        "successful delivery (done ledger row) must evict from pool — \
+         old ⛔ marker alone must NOT re-admit an in_review issue"
+    );
+    cleanup(&dir);
+}
+
+#[test]
+fn test_rollback_dispatch_failure_yields_to_active_dispatch() {
+    let (store, dir) = temp_store("rollback-active-dispatch-guard");
+    let actor = crate::assignment::Actor::system("board");
+
+    // 多角度审计批根修锁（2026-10-13）：finish_dispatch(failed) 与回退之间
+    // 有并发触发源抢到新 claim（dispatched 行在途）→ 回退必须让位
+    //（Ok(false)），状态不动——把在跑任务回退会谎报状态位。
+    let issue = store.create_issue(new_issue("竞态接管单")).unwrap();
+    store
+        .insert_dispatch("task-ra-1", issue.id, "worker-a", &actor)
+        .unwrap();
+    store
+        .finish_dispatch("task-ra-1", crate::models::dispatch_state::FAILED)
+        .unwrap();
+    store
+        .transition_issue(issue.id, IssueStatus::InProgress, &actor)
+        .unwrap();
+    // 并发接管：新派发 claim（dispatched = 在途）
+    store
+        .insert_dispatch("task-ra-2", issue.id, "worker-b", &actor)
+        .unwrap();
+
+    assert!(
+        !store
+            .rollback_dispatch_failure(issue.id, IssueStatus::Todo, None, None, &actor)
+            .unwrap(),
+        "rollback must yield when an active dispatch exists"
+    );
+    assert_eq!(
+        store.get_issue(issue.id).unwrap().status,
+        IssueStatus::InProgress,
+        "status untouched when yielding"
+    );
     cleanup(&dir);
 }
 
@@ -3548,7 +3805,16 @@ fn test_send_failure_attempts_count_multiple_markers() {
     let (store, dir) = temp_store("send-failure-attempts");
     let actor = crate::assignment::Actor::system("board");
     let issue = store.create_issue(new_issue("两连败单")).unwrap();
-    for category in ["connect", "timeout"] {
+    for (i, category) in ["connect", "timeout"].iter().enumerate() {
+        store
+            .insert_dispatch(&format!("task-am-{i}"), issue.id, "worker-a", &actor)
+            .unwrap();
+        store
+            .finish_dispatch(
+                &format!("task-am-{i}"),
+                crate::models::dispatch_state::FAILED,
+            )
+            .unwrap();
         store
             .add_comment(crate::models::NewComment {
                 issue_id: issue.id,
@@ -3578,6 +3844,12 @@ fn test_send_failure_in_review_pool() {
     // 旧查询 status IN ('backlog','todo') 漏掉 → in_review 滞留待人工）。
     // 状态回流走真实 rollback_dispatch_failure（生产路径）。
     let hit = store.create_issue(new_issue("评审重派送达失败单")).unwrap();
+    store
+        .insert_dispatch("task-ir-1", hit.id, "worker-a", &actor)
+        .unwrap();
+    store
+        .finish_dispatch("task-ir-1", crate::models::dispatch_state::FAILED)
+        .unwrap();
     store
         .transition_issue(hit.id, IssueStatus::InProgress, &actor)
         .unwrap();
@@ -3645,13 +3917,16 @@ fn test_send_failure_in_review_pool() {
         "review-redispatch failure comment is NOT a send-failure marker"
     );
 
-    // in_review 负闸②：⛔ 标记后又有新 system 评论（如交付评论）→ 出池
-    //（与 backlog/todo 的「标记非末条」同语义，in_review 形态再钉一次）。
+    // in_review 负闸②（多角度审计批重写实形态）：🛑 预算熔断/⏸ 暂停类
+    // system 评论（真实生产者 = sweep 超限臂与 file: 锚点暂停臂）顶掉 ⛔
+    // 标记 → 出池。旧版本此处钉的是「System worker 交付评论」，但生产
+    // 交付写的是 Delivery ctype + 账本 done（成功出池见
+    // test_send_failure_success_delivery_exits_pool）——假形态已纠正。
     store
         .add_comment(crate::models::NewComment {
             issue_id: hit.id,
             author: actor.clone(),
-            content: "worker 交付：xxx".into(),
+            content: "🛑 送达失败自动重试已达预算上限（本单 3 次 > board.budget.max_send_retries=2）：转人工处理。".into(),
             parent_id: None,
             ctype: crate::models::CommentType::System,
         })
@@ -3662,7 +3937,7 @@ fn test_send_failure_in_review_pool() {
             .unwrap()
             .iter()
             .all(|(id, _, _, _)| *id != hit.id),
-        "superseding system comment evicts from pool (in_review shape)"
+        "superseding system comment (🛑 fuse) evicts from pool (in_review shape)"
     );
 
     cleanup(&dir);

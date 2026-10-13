@@ -5954,15 +5954,18 @@ async fn w5_redispatch_switch_comment_and_dispatch_to_fresh_node() {
     );
 }
 
-/// 重派决策⑤：活跃派发在途 → dispatch_issue_core 重复闸拒绝 →
-/// ⛔ 系统评论诚实留痕，不发车不炸流程。
+/// 重派决策⑤：活跃派发在途 → 闭环批 2026-10-13 的并发让位预检先命中 →
+/// **静默让位不落评论**（「请人工派发」文案对瞬时竞态是误导——数秒后并发
+/// 触发源自己完成派发，且 ⛔ 会打断 F2/停车去重锚定的 system 评论链），
+/// 不发车不炸流程。旧契约「dispatch_issue_core 重复闸拒绝 → ⛔ 留痕」
+/// 已被让位预检取代，此锁钉住新契约防回退。
 #[tokio::test]
-async fn w5_redispatch_dispatch_failure_leaves_honest_system_comment() {
+async fn w5_redispatch_active_dispatch_yields_silently() {
     use nemesis_board::{CommentType, IssueStatus};
     let (deps, _ws) = review_deps("w5-dispatch-err");
     let issue = issue_in_review(&deps.store, "派发失败留痕", W5_FAIL_AC, W5_FAIL_DELIVERY);
     seed_dispatch(&deps.store, "t-w5-de-1", issue.id, "node-b");
-    // 活跃（未完结）派发 → has_active_dispatch 闸必拒。
+    // 活跃（未完结）派发 → 让位预检必命中（先于 dispatch_issue_core）。
     deps.store
         .insert_dispatch(
             "t-w5-de-2",
@@ -5974,20 +5977,26 @@ async fn w5_redispatch_dispatch_failure_leaves_honest_system_comment() {
 
     let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
         .await
-        .expect("重派失败必须诚实闭环");
+        .expect("重派让位必须诚实闭环");
     assert!(reviewed);
 
     let comments = deps.store.list_comments(issue.id).unwrap();
-    let note = comments
-        .iter()
-        .find(|c| c.ctype == CommentType::System && c.content.contains("自动重派失败"))
-        .expect("⛔ 重派失败系统评论在场");
     assert!(
-        note.content.contains("已有进行中的派发"),
-        "拒绝原因透传: {}",
-        note.content
+        !comments
+            .iter()
+            .any(|c| c.ctype == CommentType::System && c.content.contains("自动重派失败")),
+        "让位臂不得落 ⛔ 评论（对瞬时态撒谎）：{:?}",
+        comments
+            .iter()
+            .filter(|c| c.ctype == CommentType::System)
+            .map(|c| &c.content)
+            .collect::<Vec<_>>()
     );
-    assert_eq!(deps.store.list_dispatches(issue.id).unwrap().len(), 2);
+    assert_eq!(
+        deps.store.list_dispatches(issue.id).unwrap().len(),
+        2,
+        "不发新派发"
+    );
     assert_eq!(
         deps.store.get_issue(issue.id).unwrap().status,
         IssueStatus::InReview
