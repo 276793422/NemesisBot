@@ -4514,6 +4514,7 @@ fn board_config_set(
     key: &str,
     value: &serde_json::Value,
 ) -> Result<Option<serde_json::Value>, String> {
+    let _cfg_serial = nemesis_config::config_write_lock();
     let home = ctx.home.as_deref().ok_or("home 未解析")?;
     let path = std::path::Path::new(home).join("config.json");
     // live 缓存优先（与其他 handler 同一视图），无 live 时回落磁盘读取。

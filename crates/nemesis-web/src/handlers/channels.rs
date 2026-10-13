@@ -121,6 +121,7 @@ impl ChannelsHandler {
         name: &str,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
+        let _cfg_serial = nemesis_config::config_write_lock();
         let mut channel_config = data.get("config").ok_or("missing config field")?.clone();
         let mut config = load_config(home)?;
 

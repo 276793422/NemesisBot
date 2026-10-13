@@ -124,6 +124,7 @@ impl ConfigHandler {
         home: &str,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
+        let _cfg_serial = nemesis_config::config_write_lock();
         let mut config: nemesis_config::Config = serde_json::from_value(data.clone())
             .map_err(|e| format!("invalid config data: {}", e))?;
         save_config_to_disk(home, &mut config)?;
@@ -136,6 +137,7 @@ impl ConfigHandler {
         path: &str,
         value: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
+        let _cfg_serial = nemesis_config::config_write_lock();
         let mut config = load_config(home)?;
         let mut json = serde_json::to_value(&config)
             .map_err(|e| format!("failed to serialize config: {}", e))?;

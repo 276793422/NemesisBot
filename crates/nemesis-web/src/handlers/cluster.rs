@@ -1012,6 +1012,9 @@ impl ClusterHandler {
 
         // Persist to peers.toml [node] section
         if let Ok(workspace) = require_workspace(ctx) {
+            // 写串行锁：读→改 [node] 段→写回 = RMW，与 persona_apply 落盘
+            // （persist_peers_identity 同锁）互斥（同类横扫 2026-10-13）。
+            let _cfg_serial = nemesis_config::config_write_lock();
             let ppath = peers_path(workspace);
             let mut config = if ppath.exists() {
                 nemesis_cluster::cluster_config::load_static_config(&ppath)
@@ -1635,6 +1638,9 @@ impl ClusterHandler {
         let path = cluster_config_path(workspace);
         // get 响应是脱敏形态：UI 回存时掩码值还原为存量原值（无原值 loud
         // 拒绝），绝不把掩码当真值写进 config.cluster.json。
+        // 写串行锁：掩码还原要读存量文件（读→合并→整写 = RMW），与
+        // update_cluster_config_enabled 等写臂互斥（同类横扫 2026-10-13）。
+        let _cfg_serial = nemesis_config::config_write_lock();
         let mut data = data.clone();
         if path.exists() {
             let content = std::fs::read_to_string(&path)
@@ -1675,6 +1681,8 @@ impl ClusterHandler {
         if !main_cfg_path.exists() {
             return Err("config.json not found".to_string());
         }
+        // 写串行锁：读→改 cluster.enabled→原子写回 = RMW（同类横扫 2026-10-13）。
+        let _cfg_serial = nemesis_config::config_write_lock();
         let content = std::fs::read_to_string(&main_cfg_path)
             .map_err(|e| format!("failed to read config.json: {}", e))?;
         let mut main_cfg: serde_json::Value =
@@ -1704,6 +1712,9 @@ impl ClusterHandler {
 
     /// Update the `enabled` field in config.cluster.json.
     fn update_cluster_config_enabled(workspace: &str, enabled: bool) -> Result<(), String> {
+        // 咽喉点取锁：enable/disable 两臂都以 best-effort 调本函数，均未持锁，
+        // 在此罩住「读→插 enabled→写回」整段（同类横扫 2026-10-13）。
+        let _cfg_serial = nemesis_config::config_write_lock();
         let path = cluster_config_path(workspace);
         let mut cfg: serde_json::Value = if path.exists() {
             let content = std::fs::read_to_string(&path)
@@ -1925,6 +1936,9 @@ impl ClusterHandler {
         workspace: &str,
         pkg: &cluster_persona_gen::PersonaPackage,
     ) -> Result<(), String> {
+        // 咽喉点取锁：本函数读→改 [node]→写回是完整 RMW；唯一调用方
+        // persona_apply 未持锁（node_update_identity 走自己的内联块，互不嵌套）。
+        let _cfg_serial = nemesis_config::config_write_lock();
         let ppath = peers_path(workspace);
         let mut config = if ppath.exists() {
             nemesis_cluster::cluster_config::load_static_config(&ppath)

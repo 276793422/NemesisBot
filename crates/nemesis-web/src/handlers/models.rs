@@ -311,6 +311,7 @@ impl ModelsHandler {
         home: &str,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
+        let _cfg_serial = nemesis_config::config_write_lock();
         let model_name = crate::handlers::get_str(data, "name")?;
         let model = crate::handlers::get_str(data, "model")?;
         let api_key = crate::handlers::get_str(data, "key")?;
@@ -373,6 +374,7 @@ impl ModelsHandler {
     }
 
     fn delete(&self, home: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
+        let _cfg_serial = nemesis_config::config_write_lock();
         // Raw RMW: a typed round-trip would drop the tier/size/real_name/
         // context_window extras the surviving entries carry.
         let mut cfg = read_raw_config(home)?;
@@ -431,6 +433,7 @@ impl ModelsHandler {
         name: &str,
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
+        let _cfg_serial = nemesis_config::config_write_lock();
         // Raw RMW: a typed round-trip would drop the tier/size/real_name/
         // context_window extras entries carry.
         let mut cfg = read_raw_config(home)?;
@@ -708,6 +711,7 @@ impl ModelsHandler {
         data: &serde_json::Value,
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
+        let _cfg_serial = nemesis_config::config_write_lock();
         let name = crate::handlers::get_str(data, "name")?;
         let field = crate::handlers::get_str(data, "field")?;
         let value = data.get("value").ok_or("missing value")?;

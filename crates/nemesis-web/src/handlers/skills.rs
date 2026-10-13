@@ -717,6 +717,7 @@ impl SkillsHandler {
         workspace: &str,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
+        let _cfg_serial = nemesis_config::config_write_lock();
         let config: nemesis_config::SkillsFullConfig = serde_json::from_value(data.clone())
             .map_err(|e| format!("invalid skills config: {}", e))?;
         save_config(workspace, &config)?;
@@ -728,6 +729,7 @@ impl SkillsHandler {
         workspace: &str,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
+        let _cfg_serial = nemesis_config::config_write_lock();
         let mut cfg = load_config(workspace)?;
         if let Some(v) = data.get("enabled").and_then(|v| v.as_bool()) {
             cfg.enabled = v;
@@ -809,13 +811,16 @@ impl SkillsHandler {
         let full_repo = format!("{}/{}", owner, repo);
         let name = repo.clone();
 
-        // Check duplicate
-        let mut cfg = load_config(workspace)?;
-        if cfg.github_sources.iter().any(|s| s.name == name) {
-            return Err(format!("源 '{}' 已存在", name));
+        // 快速路径查重（锁外，仅省一次网络探测；权威查重在下方锁内重做）。
+        {
+            let cfg = load_config(workspace)?;
+            if cfg.github_sources.iter().any(|s| s.name == name) {
+                return Err(format!("源 '{}' 已存在", name));
+            }
         }
 
-        // Auto-detect structure in a blocking thread
+        // Auto-detect structure in a blocking thread —— 网络 IO 先行，配置
+        // 快照不跨 await 持有（旧快照回写会丢并发写臂的改动）。
         let owner_clone = owner.clone();
         let repo_clone = repo.clone();
         let detected =
@@ -825,6 +830,13 @@ impl SkillsHandler {
 
         match detected {
             Ok((index_type, skill_path_pattern, branch)) => {
+                // 写串行锁覆盖整段 RMW：探测（网络，秒级）期间其他写臂可能
+                // 已改配置，锁内重读 + 重查重 + 写（同类横扫 2026-10-13）。
+                let _cfg_serial = nemesis_config::config_write_lock();
+                let mut cfg = load_config(workspace)?;
+                if cfg.github_sources.iter().any(|s| s.name == name) {
+                    return Err(format!("源 '{}' 已存在", name));
+                }
                 cfg.github_sources.push(nemesis_config::GitHubSourceConfig {
                     name: name.clone(),
                     repo: full_repo.clone(),
@@ -873,6 +885,7 @@ impl SkillsHandler {
             .unwrap_or("skills/{slug}/SKILL.md")
             .to_string();
 
+        let _cfg_serial = nemesis_config::config_write_lock();
         let mut cfg = load_config(workspace)?;
         if cfg.github_sources.iter().any(|s| s.name == name) {
             return Err(format!("源 '{}' 已存在", name));
@@ -901,6 +914,7 @@ impl SkillsHandler {
         workspace: &str,
         name: &str,
     ) -> Result<Option<serde_json::Value>, String> {
+        let _cfg_serial = nemesis_config::config_write_lock();
         let mut cfg = load_config(workspace)?;
         let before = cfg.github_sources.len();
         cfg.github_sources.retain(|s| s.name != name);
@@ -917,6 +931,7 @@ impl SkillsHandler {
         name: &str,
         enabled: bool,
     ) -> Result<Option<serde_json::Value>, String> {
+        let _cfg_serial = nemesis_config::config_write_lock();
         let mut cfg = load_config(workspace)?;
 
         // Check GitHub sources
