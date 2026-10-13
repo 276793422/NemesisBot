@@ -1652,6 +1652,15 @@ pub async fn handle_events_stream(
         loop {
             match receiver.recv().await {
                 Ok(event) => {
+                    // L10：ephemeral 事件（seq==0，publish_ephemeral）——无 id、
+                    // 不推进 last_sent 游标、不参与重放去重；只投递在线订阅者
+                    // （缺省去重分支 `0 <= last_sent` 恒真会把它整类丢掉，故
+                    // 前置专发）。
+                    if event.seq == 0 {
+                        let data = serde_json::to_string(&event.data).unwrap_or_default();
+                        yield Ok(SseEvent::default().event(&event.event_type).data(data));
+                        continue;
+                    }
                     // 重放桥接期已送达的 seq 跳过（订阅先于重放快照所致重叠）
                     if event.seq <= last_sent {
                         continue;
@@ -2070,6 +2079,50 @@ pub async fn pump_agent_events(
                         payload["session_id"] = serde_json::Value::String(sid.to_string());
                     }
                     event_hub.publish("canvas.open", payload);
+                    continue;
+                }
+                // L10（2026-10-13）：provider 流式输出 → SSE `provider_stream_
+                // event`（**ephemeral**：publish_ephemeral 不盖章不入补拉环——
+                // 流式增量是易逝观测，断线重放半截流无意义，且高频 delta 会
+                // 冲刷 1000 帧环挤掉真正需要补拉的事件）+ WS push（**恒可丢**
+                // broadcast_droppable：delta 洪泛源，事件泵绝不被慢客户端队列
+                // 阻塞）。不入 chat_event_log 环（同 canvas 的前端本地态语义，
+                // 断线窗口内的流只能靠终答回看）。载荷 = 内层 data 展平 +
+                // session_id 注入（canvas 同款形态）。
+                if let nemesis_types::agent::AgentEvent::ProviderStream {
+                    session_key,
+                    chat_id,
+                    seq,
+                    phase,
+                    text,
+                    model,
+                    elapsed_ms,
+                } = &event
+                {
+                    let mut payload = serde_json::json!({
+                        "seq": seq,
+                        "phase": phase,
+                        "text": text,
+                        "model": model,
+                    });
+                    if let Some(ms) = elapsed_ms {
+                        payload["elapsed_ms"] = serde_json::Value::from(*ms);
+                    }
+                    if let Some(sid) = session_key.rsplit(':').next() {
+                        payload["session_id"] = serde_json::Value::String(sid.to_string());
+                    }
+                    event_hub.publish_ephemeral("provider_stream_event", payload.clone());
+                    if let Some(session_id) = chat_id.strip_prefix("web:") {
+                        let frame = crate::protocol::ProtocolMessage::new(
+                            "push",
+                            "chat",
+                            "provider_stream_event",
+                            Some(payload),
+                        );
+                        if let Ok(bytes) = frame.to_json() {
+                            let _ = session_manager.broadcast_droppable(session_id, &bytes);
+                        }
+                    }
                     continue;
                 }
                 // BUG-A（2026-09-20）：帧内层注入 web 会话 id。chat_id 是

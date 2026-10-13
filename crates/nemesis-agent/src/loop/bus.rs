@@ -207,6 +207,7 @@ impl AgentLoop {
             small_model: parking_lot::RwLock::new(None),
             spawn_slot: parking_lot::RwLock::new(None),
             voice_prompt: parking_lot::RwLock::new(None),
+            turn_wal: parking_lot::RwLock::new(None),
         }
     }
 
@@ -222,6 +223,18 @@ impl AgentLoop {
         msg: &nemesis_types::channel::InboundMessage,
     ) {
         let task_response = msg.content.clone();
+        // L5（2026-10-12 三方学习 T0）：续行回灌的输出凭据/DLP 复扫。工具
+        // 输出回灌有三条路——直接回灌（tool_dispatch 主线，已有复扫）、
+        // cluster 续行追加、子代理后台返回（`subagent_continuation:{task_id}`
+        // 走同一续行机制）。本函数是后两条的单一汇合点，在此复扫一次即全
+        // 覆盖，防只堵正门。worker 返回的内容同样可能回显明文秘密（远端
+        // read_file/exec），脱敏式处理与主线同语义。
+        #[cfg(feature = "security")]
+        let task_response = output_rescan::rescan_tool_output(
+            self.security.security_plugin.as_deref(),
+            "cluster_continuation",
+            task_response,
+        );
         let task_metadata = msg.metadata.clone();
         let task_failed = task_metadata
             .get("status")
@@ -480,91 +493,16 @@ impl AgentLoop {
         // 周期扫描任务（TTL/经济闸/锁纪律见 cache_warmer.rs 模块注释）。
         self.spawn_cache_warmer_if_enabled();
 
+        // L8（三方学习总计划重评估）turn WAL 启动恢复：扫断头工具调用 →
+        // 补 interrupted → agent 键会话合成续轮消息走**正常泵派发**（gate
+        // /admission/busy 全语义同源）。在主循环消费前执行——续轮先于
+        // 新消息起跑，与真实消息零差别。
+        self.recover_interrupted_turns().await;
+
         while self.running.load(Ordering::Acquire) {
             match inbound_rx.recv().await {
                 Some(mut msg) => {
-                    // slash 四段解析链（自定义命令 > 内置模板 > 技能回落）在
-                    // 生产泵路径的唯一接线点：改写必须在 gate 分类前完成，
-                    // 消息以最终形态参与 gate 判定（内置短路名 /compact 等
-                    // 在 rewrite 内部原样跳过；非 slash 消息早退零开销）。
-                    // 2026-09-28 真模型验证发现：此前的改写只接在 legacy
-                    // process_inbound_message（tests/inline 回退），泵直调
-                    // gate_inbound 导致四类 slash 在生产路径原样透传给 LLM。
-                    self.rewrite_custom_command(&mut msg).await;
-                    match self.gate_inbound(&msg) {
-                        GateOutcome::Continuation(task_id) => {
-                            info!(
-                                "[AgentLoop] Handling cluster continuation for task {} (permits={})",
-                                task_id, self.max_continuation_permits
-                            );
-                            self.dispatch_continuation(task_id, &msg).await;
-                        }
-                        GateOutcome::Immediate {
-                            agent_id: _,
-                            response,
-                        } => {
-                            // Busy receipt / busy bounce / queue-full / slash
-                            // reply — publish inline. Never touches
-                            // sent_in_round (may overlap the session's
-                            // running turn; see finish_message).
-                            self.finish_message(&msg, response, None, false).await;
-                        }
-                        GateOutcome::Maintenance {
-                            kind,
-                            session_key,
-                            receipt,
-                        } => {
-                            // E6: 维护命令 — 会话已在 gate 获取，派独立
-                            // task 执行（LLM 摘要可达分钟级，不得堵泵）；
-                            // task 尾部释放会话。同串行路径：⏳ 先发、✓
-                            // 后发，均不碰 sent_in_round。
-                            let this = self.clone();
-                            let m = msg.clone();
-                            self.spawn_turn_task(async move {
-                                this.finish_message(&m, receipt, None, false).await;
-                                let response = this.handle_maintenance(kind, &session_key).await;
-                                this.release_session(&session_key);
-                                // 排队消息排空（2026-09-28 真模型验证发现）：
-                                // 分钟级维护期间排队的消息此前在维护尾巴
-                                // 永久滞留 next_turn——与 admitted 尾部共用
-                                // drain_next_turn_queue 对称排空。
-                                this.drain_next_turn_queue(&session_key).await;
-                                this.finish_message(&m, response, None, false).await;
-                            });
-                        }
-                        GateOutcome::UserDispatch {
-                            task_text,
-                            node_id,
-                            session_key,
-                        } => {
-                            // K4: 用户直发远程编码任务派发 — 会话已在
-                            // gate 获取，派独立 task 执行（RPC ACK 等待
-                            // 可达分钟级，不得堵泵）；task 尾部释放会话
-                            // （process_user_dispatch 内部负责）。
-                            let this = self.clone();
-                            let m = msg.clone();
-                            self.spawn_turn_task(async move {
-                                this.process_user_dispatch(&m, &task_text, &node_id, &session_key)
-                                    .await;
-                            });
-                        }
-                        GateOutcome::Ungated => {
-                            let this = self.clone();
-                            let m = msg.clone();
-                            self.spawn_turn_task(async move {
-                                let (_, response, err) = this.process_ungated(&m).await;
-                                this.finish_message(&m, response, err, true).await;
-                            });
-                        }
-                        GateOutcome::Admitted(admission) => {
-                            let this = self.clone();
-                            let m = msg.clone();
-                            self.spawn_turn_task(async move {
-                                let (_, response, err) = this.process_admitted(&m, admission).await;
-                                this.finish_message(&m, response, err, true).await;
-                            });
-                        }
-                    }
+                    self.pump_dispatch(&mut msg).await;
                 }
                 None => {
                     // Channel closed.
@@ -575,6 +513,152 @@ impl AgentLoop {
 
         info!("[AgentLoop] Bus consumption loop stopped");
         self.running.store(false, Ordering::Release);
+    }
+
+    /// 单条入站消息的泵级派发（L8 从 run_bus_impl 抽出，恢复循环与主循环
+    /// 共用同一条形状）。rewrite → gate 分类 → 按结果内联或 spawn：
+    /// **Continuation 保持与泵串行**（内联 await），其余臂 spawn tracked
+    /// task——跨会话并发、同会话保序不变量原样保留。
+    async fn pump_dispatch(self: &Arc<Self>, msg: &mut nemesis_types::channel::InboundMessage) {
+        // slash 四段解析链（自定义命令 > 内置模板 > 技能回落）在
+        // 生产泵路径的唯一接线点：改写必须在 gate 分类前完成，
+        // 消息以最终形态参与 gate 判定（内置短路名 /compact 等
+        // 在 rewrite 内部原样跳过；非 slash 消息早退零开销）。
+        // 2026-09-28 真模型验证发现：此前的改写只接在 legacy
+        // process_inbound_message（tests/inline 回退），泵直调
+        // gate_inbound 导致四类 slash 在生产路径原样透传给 LLM。
+        self.rewrite_custom_command(msg).await;
+        match self.gate_inbound(msg) {
+            GateOutcome::Continuation(task_id) => {
+                info!(
+                    "[AgentLoop] Handling cluster continuation for task {} (permits={})",
+                    task_id, self.max_continuation_permits
+                );
+                self.dispatch_continuation(task_id, msg).await;
+            }
+            GateOutcome::Immediate {
+                agent_id: _,
+                response,
+            } => {
+                // Busy receipt / busy bounce / queue-full / slash
+                // reply — publish inline. Never touches
+                // sent_in_round (may overlap the session's
+                // running turn; see finish_message).
+                self.finish_message(msg, response, None, false).await;
+            }
+            GateOutcome::Maintenance {
+                kind,
+                session_key,
+                receipt,
+            } => {
+                // E6: 维护命令 — 会话已在 gate 获取，派独立
+                // task 执行（LLM 摘要可达分钟级，不得堵泵）；
+                // task 尾部释放会话。同串行路径：⏳ 先发、✓
+                // 后发，均不碰 sent_in_round。
+                let this = self.clone();
+                let m = msg.clone();
+                self.spawn_turn_task(async move {
+                    this.finish_message(&m, receipt, None, false).await;
+                    let response = this.handle_maintenance(kind, &session_key).await;
+                    this.release_session(&session_key);
+                    // 排队消息排空（2026-09-28 真模型验证发现）：
+                    // 分钟级维护期间排队的消息此前在维护尾巴
+                    // 永久滞留 next_turn——与 admitted 尾部共用
+                    // drain_next_turn_queue 对称排空。
+                    this.drain_next_turn_queue(&session_key).await;
+                    this.finish_message(&m, response, None, false).await;
+                });
+            }
+            GateOutcome::UserDispatch {
+                task_text,
+                node_id,
+                session_key,
+            } => {
+                // K4: 用户直发远程编码任务派发 — 会话已在
+                // gate 获取，派独立 task 执行（RPC ACK 等待
+                // 可达分钟级，不得堵泵）；task 尾部释放会话
+                // （process_user_dispatch 内部负责）。
+                let this = self.clone();
+                let m = msg.clone();
+                self.spawn_turn_task(async move {
+                    this.process_user_dispatch(&m, &task_text, &node_id, &session_key)
+                        .await;
+                });
+            }
+            GateOutcome::Ungated => {
+                let this = self.clone();
+                let m = msg.clone();
+                self.spawn_turn_task(async move {
+                    let (_, response, err) = this.process_ungated(&m).await;
+                    this.finish_message(&m, response, err, true).await;
+                });
+            }
+            GateOutcome::Admitted(admission) => {
+                let this = self.clone();
+                let m = msg.clone();
+                self.spawn_turn_task(async move {
+                    let (_, response, err) = this.process_admitted(&m, admission).await;
+                    this.finish_message(&m, response, err, true).await;
+                });
+            }
+        }
+    }
+
+    /// L8 turn WAL 启动恢复：`recover_and_finalize` 产出断头候选 →
+    /// `agent:` 前缀键会话合成续轮消息（session_key 原样回填——route_message
+    /// 对 agent 前缀键原样采纳，重路由确定性落回原会话）→ 走
+    /// [`Self::pump_dispatch`] 正常闸门。非 agent 键（standalone fallback /
+    /// 集群复合键）不自动续轮——重路由不保证落回原会话（fallback 按
+    /// sender/chat 重组、集群会话有自己的 G5 恢复链），诚实放弃，
+    /// interrupted 留痕照写。
+    async fn recover_interrupted_turns(self: &Arc<Self>) {
+        let Some(wal) = self.turn_wal() else {
+            return;
+        };
+        let candidates = wal.recover_and_finalize();
+        if candidates.is_empty() {
+            return;
+        }
+        info!(
+            "[AgentLoop] Turn WAL 恢复：{} 个断头工具调用",
+            candidates.len()
+        );
+        for cand in candidates {
+            let rec = &cand.record;
+            if !rec.session_key.starts_with("agent:") {
+                info!(
+                    "[AgentLoop] Turn WAL：会话 {} 非 agent 键，跳过自动续轮（interrupted 已留痕）",
+                    rec.session_key
+                );
+                continue;
+            }
+            let content = format!(
+                "⟳ 系统续轮：上次进程在工具执行中被中断（tool={}，args={}）。该次调用的结果已丢失；请从中断处继续完成任务（必要时重新执行该工具）。",
+                rec.tool, rec.args_preview
+            );
+            let mut msg = nemesis_types::channel::InboundMessage {
+                channel: if rec.channel.is_empty() {
+                    "web".to_string()
+                } else {
+                    rec.channel.clone()
+                },
+                sender_id: "system".to_string(),
+                chat_id: rec.chat_id.clone(),
+                content,
+                media: Vec::new(),
+                session_key: rec.session_key.clone(),
+                correlation_id: String::new(),
+                metadata: [("turn_wal_resume".to_string(), "1".to_string())]
+                    .into_iter()
+                    .collect(),
+                voice_playback: None,
+            };
+            info!(
+                "[AgentLoop] Turn WAL 续轮：session={} tool={}",
+                rec.session_key, rec.tool
+            );
+            self.pump_dispatch(&mut msg).await;
+        }
     }
 
     /// Run the main bus consumption loop (takes ownership of the receiver).

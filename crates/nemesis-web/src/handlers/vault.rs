@@ -1,6 +1,6 @@
 //! Vault（凭据 vault）WSAPI — `vault.list` / `vault.set` / `vault.remove` /
-//! `vault.status`（S3c，2026-10-09 高优差距批次；配套 S3a 的 `vault:` 别名
-//! 注入，让 Dashboard 能管理模型/通道凭据的别名）。
+//! `vault.status` / `vault.unlock`（S3c，2026-10-09 高优差距批次；配套 S3a
+//! 的 `vault:` 别名注入，让 Dashboard 能管理模型/通道凭据的别名）。
 //!
 //! 语义与 `nemesisbot vault` CLI（nemesisbot/src/commands/vault.rs）同源：
 //! - **永不显示值**——list/status 只含别名与元数据；刻意不提供 `vault.get`
@@ -19,6 +19,11 @@
 //! vault 文件缺失的语义：`list`/`status` 诚实报 `exists:false`（不创建）；
 //! `set` 允许创建（与 CLI open_or_create 同）；`remove` 诚实报错（对不存在
 //! 的文件做删除是调用方 bug，不悄悄造一个空 vault）。
+//!
+//! `vault.unlock` 是**解锁测试**：每次请求现开 vault（无长驻句柄），解锁
+//! 态不跨请求存留——本命令的意义是让 Dashboard 在 gateway 未带口令环境
+//! 变量启动时，仍能用用户显式输入的口令验证能否解锁（argon2 模式）。
+//! 口令只在本请求内使用，不落日志、不写盘、不进响应。
 
 use crate::ws_router::{ModuleHandler, RequestContext};
 use nemesis_path::resolve_vault_path_in_workspace;
@@ -34,7 +39,7 @@ impl ModuleHandler for VaultHandler {
     }
 
     fn commands(&self) -> &'static [&'static str] {
-        &["list", "set", "remove", "status"]
+        &["list", "set", "remove", "status", "unlock"]
     }
 
     async fn handle_cmd(
@@ -164,6 +169,34 @@ impl ModuleHandler for VaultHandler {
                     .map_err(|e| format!("vault 落盘失败: {e}（文件: {}）", path.display()))?;
                 tracing::info!("[Web/WSAPI] vault.remove alias={alias}");
                 Ok(Some(serde_json::json!({ "removed": true, "alias": alias })))
+            }
+            "unlock" => {
+                // 解锁测试：显式口令优先（Dashboard 输入框），缺省回退进程
+                // env。解锁态不跨请求存留（现开现抛），这里只回答「这把口
+                // 令能不能开」——所以成功与否都只回布尔/错误，口令不落日志。
+                // 无口令请求：dpapi 模式（Windows 默认，口令不参与）open 即
+                // 解锁 = 恒真；argon2 模式没口令就无从验证 = 诚实报错
+                //（2026-10-13 修复：原实现把口令检查放在开店之前，dpapi 下
+                // 无口令 unlock 永远报「未提供口令」，与模式语义矛盾）。
+                let pw = data
+                    .as_ref()
+                    .and_then(|d| d.get("passphrase"))
+                    .and_then(|v| v.as_str())
+                    .filter(|p| !p.is_empty())
+                    .map(str::to_string)
+                    .or(passphrase);
+                let path = vault_path(ctx)?;
+                let mut store = open_store(&path)?;
+                let mode = store.mode().to_string();
+                if pw.is_none() && !store.is_unlocked() {
+                    return Err(
+                        "未提供口令：请求带 passphrase，或设置 NEMESISBOT_VAULT_PASSPHRASE"
+                            .to_string(),
+                    );
+                }
+                try_unlock(&mut store, pw.as_deref())?;
+                tracing::info!("[Web/WSAPI] vault.unlock ok（口令不落日志）");
+                Ok(Some(serde_json::json!({ "unlocked": true, "mode": mode })))
             }
             _ => Err(format!("unknown command: vault.{cmd}")),
         }

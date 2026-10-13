@@ -251,6 +251,15 @@ pub struct OperationRequest {
     pub approved_at: Option<chrono::DateTime<chrono::Local>>,
     /// Reason for denial (if denied).
     pub denied_reason: Option<String>,
+    /// L6 pre-exec 误报出路（2026-10-12 T1）：pre-exec 脚本内容扫描命中
+    /// 时，pipeline 在评估前把「强制人工审批」旗标钉在本请求上（Some =
+    /// 命中理由）。`evaluate_request` 对非硬拒判定一律升格
+    /// RequireApproval（policy=preexec_scan）；`request_permission_with_ctx`
+    /// 对带旗标请求**跳过 F3「总是允许」规则表**——审批卡必须到达人，
+    /// 不得被 pattern 记忆自动吞掉。硬拒（deny 规则/自毁硬拦）不受影响：
+    /// 升级只覆盖「本会放行」的判定。
+    #[serde(default)]
+    pub force_approval: Option<String>,
 }
 
 impl Default for OperationRequest {
@@ -266,6 +275,7 @@ impl Default for OperationRequest {
             approver: None,
             approved_at: None,
             denied_reason: None,
+            force_approval: None,
         }
     }
 }
@@ -836,7 +846,10 @@ impl SecurityAuditor {
         // 命中且层级安全门放行（CRITICAL 仅 process_exec 豁免）则自动放行，
         // 审计事件标注 auto_by_rule。查前 check() 让 approval_rules.json 的
         // 磁盘变化（审批卡写入 / CLI 清理 / 手工编辑）即时生效。
+        // L6（2026-10-12 T1）：带 force_approval 旗标的请求**跳过**规则表
+        // ——pre-exec 命中的卡片必须到达人，pattern 记忆不得自动放行。
         if decision == SecurityDecision::RequireApproval
+            && req.force_approval.is_none()
             && let Some(hot) = self.approval_rules.read().clone()
         {
             hot.check();
@@ -1262,6 +1275,28 @@ impl SecurityAuditor {
     }
 
     fn evaluate_request(&self, req: &OperationRequest) -> (SecurityDecision, String, String) {
+        let inner = self.evaluate_request_inner(req);
+        // L6 pre-exec 误报出路（2026-10-12 T1）：扫描命中 → 强制人工审批，
+        // 非纯硬拦。硬拒（deny 规则 / 自毁硬拦 / editor 短路 deny）保持
+        // 硬拒——升级只覆盖「本会放行」的判定（Allowed / 既有 Require-
+        // Approval），理由换成扫描命中详情（更具体的理由优先展示）。
+        if inner.0 != SecurityDecision::Denied
+            && let Some(reason) = req
+                .force_approval
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+        {
+            return (
+                SecurityDecision::RequireApproval,
+                reason.to_string(),
+                "preexec_scan".to_string(),
+            );
+        }
+        inner
+    }
+
+    fn evaluate_request_inner(&self, req: &OperationRequest) -> (SecurityDecision, String, String) {
         let rules = self.rules.read();
         let op_rules = match rules.get(&req.op_type) {
             Some(r) if !r.is_empty() => Some(r),

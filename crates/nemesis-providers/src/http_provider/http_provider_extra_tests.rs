@@ -704,8 +704,10 @@ async fn test_chat_stream_success_content_done() {
         }
     }
     assert_eq!(received_content, "Hello, world");
-    // API emits stop+usage chunk, then [DONE] emits another synthetic stop chunk.
-    assert_eq!(stop_count, 2);
+    // 终态帧单发（2026-10-13 根修）：finish chunk 即终态，[DONE] 只关闭
+    // 通道不再补发第二发合成 stop——二连发会把聚合侧已收的 finish_reason
+    // 覆盖掉（覆盖式消费的下游丢 tool_calls，wal_crash 实证）。
+    assert_eq!(stop_count, 1);
     assert!(got_usage);
 }
 
@@ -822,6 +824,114 @@ async fn test_chat_stream_accumulates_tool_calls() {
         }
     }
     assert!(got_tool_call_chunk);
+}
+
+// 2026-10-13 wal_crash 回归钉：TestAIServer 形态的完整 SSE 工具调用序列
+// （role chunk → 完整 tool_calls chunk → finish chunk("tool_calls") →
+// [DONE]）。修复前 [DONE] 补发第二发 finish_reason="stop" 的合成帧，聚合侧
+// 取最后 finish_reason → finished=true + 空文本 → agent 把工具调用轮当空终答
+// （degenerate nudge ×3 → give up）。修复后终态帧单发，finish_reason 保真。
+#[tokio::test]
+async fn test_chat_stream_tool_calls_done_no_stop_clobber() {
+    let server = MockServer::start().await;
+    let provider = HttpProvider::new(basic_config(server.uri()));
+
+    let sse_body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-wal\",\"type\":\"function\",\"function\":{\"name\":\"sleep\",\"arguments\":\"{\\\"seconds\\\":20}\"}}]}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(sse_body),
+        )
+        .mount(&server)
+        .await;
+
+    let mut rx = provider.chat_stream(
+        &[user_message("start long task")],
+        &[],
+        "testai-wal-1.0",
+        &ChatOptions::default(),
+    );
+
+    let mut final_chunks: Vec<StreamChunk> = Vec::new();
+    while let Some(Ok(chunk)) = rx.recv().await {
+        if chunk.finish_reason.is_some() {
+            final_chunks.push(chunk);
+        }
+    }
+    assert_eq!(
+        final_chunks.len(),
+        1,
+        "final chunk must be emitted exactly once (finish chunk only; [DONE] closes without a duplicate)"
+    );
+    let final_chunk = &final_chunks[0];
+    assert_eq!(final_chunk.finish_reason.as_deref(), Some("tool_calls"));
+    assert_eq!(final_chunk.tool_calls.len(), 1);
+    assert_eq!(
+        final_chunk.tool_calls[0].function.as_ref().unwrap().name,
+        "sleep"
+    );
+}
+
+// 200-JSON 兼容路径（服务端忽略 stream:true 回完整 JSON）的 tool_calls 保真：
+// 此前该路径只取 content、终帧 tool_calls 写死空数组——工具调用模型在此路径
+// 被静默丢弃（anthropic 同路径一直保留，此处对齐）。
+#[tokio::test]
+async fn test_chat_stream_json_wrap_preserves_tool_calls() {
+    let server = MockServer::start().await;
+    let provider = HttpProvider::new(basic_config(server.uri()));
+
+    let body = serde_json::json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call-json",
+                    "type": "function",
+                    "function": {"name": "sleep", "arguments": "{\"seconds\":20}"}
+                }]
+            },
+            "finish_reason": "tool_calls"
+        }],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6}
+    });
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&server)
+        .await;
+
+    let mut rx = provider.chat_stream(
+        &[user_message("start long task")],
+        &[],
+        "testai-wal-1.0",
+        &ChatOptions::default(),
+    );
+
+    let mut final_chunk: Option<StreamChunk> = None;
+    let mut content = String::new();
+    while let Some(Ok(chunk)) = rx.recv().await {
+        content.push_str(&chunk.delta);
+        if chunk.finish_reason.is_some() {
+            final_chunk = Some(chunk);
+        }
+    }
+    let final_chunk = final_chunk.expect("JSON-wrap path must emit a final chunk");
+    assert_eq!(final_chunk.finish_reason.as_deref(), Some("tool_calls"));
+    assert_eq!(final_chunk.tool_calls.len(), 1);
+    let tc = &final_chunk.tool_calls[0];
+    assert_eq!(tc.id, "call-json");
+    assert_eq!(tc.function.as_ref().unwrap().name, "sleep");
+    assert_eq!(tc.function.as_ref().unwrap().arguments, "{\"seconds\":20}");
 }
 
 #[tokio::test]

@@ -155,6 +155,7 @@ fn cost_from_pricing_synthetic_entry() {
         max_input_tokens: None,
         max_output_tokens: None,
         aliases: vec!["vendor/synthetic".into()],
+        price_tiers: None,
     };
     // plain 100k*1 + out 200k*2 + write 50k*1.25 + read 150k*0.1 = 100k+400k+62.5k+15k = 577.5k /1e6
     let cost = cost_from_pricing(&p, 300_000, 200_000, 50_000, 150_000);

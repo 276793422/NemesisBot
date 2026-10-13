@@ -2719,3 +2719,62 @@ fn test_request_limit_approval_no_manager_fails_closed_with_audit() {
     );
     assert!(content.contains("denied"), "审计应为拒绝决策: {content}");
 }
+
+// ===========================================================================
+// L6（2026-10-12 T1）：pre-exec force_approval 升格语义
+// 非硬拒判定一律升格 RequireApproval（policy=preexec_scan）；F3「总是允许」
+// 规则表对带旗标请求跳过（卡片必须到达人）；硬拒（deny 规则）不受影响。
+// ===========================================================================
+
+#[test]
+fn force_approval_skips_f3_rule_table_and_escalates() {
+    let auditor = ask_auditor();
+    let dir = tempfile::tempdir().unwrap();
+    auditor.set_approval_rules(rules_hot(&dir, &[cargo_rule()]));
+
+    // 基线：规则命中 → 自动放行。
+    let (allowed, err, _) =
+        auditor.request_permission(&exec_request("l6-r0", "cargo test --release"));
+    assert!(allowed, "rule-matched exec must auto-allow without flag");
+    assert!(err.is_none());
+
+    // 同一请求带 force_approval：跳过规则表 → pending 存储 + 拒绝。
+    let mut req = exec_request("l6-r1", "cargo test --release");
+    req.force_approval = Some("pre-exec script scan: suspicious content".to_string());
+    let (allowed, err, _) = auditor.request_permission(&req);
+    assert!(
+        !allowed,
+        "flagged request must NOT auto-allow via rule table"
+    );
+    assert!(
+        err.unwrap().contains("approval required"),
+        "flagged request must surface as approval card"
+    );
+}
+
+#[test]
+fn force_approval_does_not_override_hard_deny() {
+    // deny 规则命中 = 硬拒：升格只覆盖「本会放行」的判定。
+    let auditor = auditor_with_rules(OperationType::ProcessExec, vec![rule("rm -rf *", "deny")]);
+    let mut req = exec_request("l6-r2", "rm -rf /tmp/x");
+    req.force_approval = Some("pre-exec script scan: suspicious content".to_string());
+    let (allowed, err, _) = auditor.request_permission(&req);
+    assert!(!allowed);
+    let err = err.unwrap();
+    assert!(
+        err.contains("Security policy denied"),
+        "hard deny must stay hard, got: {err}"
+    );
+}
+
+#[test]
+fn force_approval_escalates_default_allow_decision() {
+    // default_action=allow 的 auditor：无旗标本会直接放行；
+    // 带旗标 → 升格 RequireApproval → 无 manager → pending。
+    let auditor = allow_auditor();
+    let mut req = exec_request("l6-r3", "bash ./setup.sh");
+    req.force_approval = Some("pre-exec script scan: suspicious content".to_string());
+    let (allowed, err, _) = auditor.request_permission(&req);
+    assert!(!allowed, "flagged request must escalate over default-allow");
+    assert!(err.unwrap().contains("approval required"));
+}

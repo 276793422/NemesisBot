@@ -56,12 +56,16 @@ pub mod projects;
 // question.pending）。无 feature 闸——responder 槽在 nemesis-types，未装配时
 // handler 诚实报「未装配」。
 pub mod question;
-// GitHub Release 资产下载管线（skins 与 WASM 插件开发包 devkit 下载共用的
-// 单一来源）。闸随消费方：两者全关 = 无消费点，整模块不编译。
-#[cfg(any(feature = "skins", feature = "plugins-wasm"))]
+// GitHub Release 资产下载管线（skins / WASM 插件开发包 devkit 下载 / L9
+// selfupdate check 共用的单一来源）。selfupdate 的 check 是无 feature 消费点
+//（check/status 全平台可用），故模块不再整体门控；zip 解包等重依赖仍留在
+// 各消费方的 feature 闸内。
 pub mod release_fetch;
+// L9 版本自切换通道 WSAPI（selfupdate.check/apply/status）。无 feature 闸
+// ——manager 槽未装配（feature 关/未启动）时 handler 诚实报「未装配」。
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
+pub mod selfupdate;
 // 病毒扫描管理面（scanner feature 从 security 拆出；implies security）。
 #[cfg(feature = "scanner")]
 pub mod scanner;
@@ -180,6 +184,8 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(estop::EstopHandler));
     // P30（WS14）：canvas 关闭回执。
     router.register(Arc::new(canvas::CanvasHandler));
+    // L9：版本自切换通道（check/apply/status；manager 槽未装配诚实报）。
+    router.register(Arc::new(selfupdate::SelfupdateHandler));
     // M7：审批响应端点（dashboard 审批卡 → WebApprovalManager）。
     router.register(Arc::new(approval::ApprovalHandler));
     // F7：提问响应端点（dashboard 提问卡 → WebQuestionBroker）。

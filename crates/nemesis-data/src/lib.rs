@@ -13,7 +13,7 @@ mod usage_store;
 pub mod watcher;
 
 pub use models::{
-    CostBreakdown, DailyRollup, LogFilter, ModelPricing, ModelToolHealth, RequestLog,
+    CostBreakdown, DailyRollup, LogFilter, ModelPricing, ModelToolHealth, PriceTier, RequestLog,
     SessionUsageAgg, TrendPoint, UsageSummary,
 };
 pub use pricing::{

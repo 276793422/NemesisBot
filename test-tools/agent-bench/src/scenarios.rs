@@ -6,10 +6,13 @@
 //! |---|---|---|---|
 //! | basic_chat | testai-1.1 | 固定回复 | 基线往返成功率 + 延迟 |
 //! | context_integrity | testai-9.3 | 3 轮后 Z1_USERS_3 | 每轮上下文水合完整性 |
+//! | identifier_survival | testai-sum-1.0 | 压缩后 3 标识符全存活 | 摘要指令逐字保留规则 + 摘要保真 + 摘要注入（L4） |
 //! | tool_parallel_batch | testai-2.1 | PARALLEL_DONE + 墙钟 <9s | 只读工具批并发执行 |
 //! | security_boundary_block | testai-5.0 | 出界写未落盘 | 工作区边界/安全管线拦截（效果面） |
 //! | concurrent_sessions | testai-1.1 | 4 会话全成功 | 并发会话隔离与调度 |
 //! | vision_roundtrip | testai-vision-1.0 | VISION_OK:1 | 多模态图片上行链路 |
+//! | codemode_orchestration | testai-codemode-1.0 | CODEMODE_DONE:42 + out.txt="42" | code_run 脚本编排（read+write 单调用）|
+//! | docs_lift | testai-docslift-1.0 | A 臂 DOCS_MISSING + B 臂 DOCS_OK | 工作区指令水合（AGENTS.md → LLM 请求，L10 docs_lift）|
 //!
 //! 刻意不收编：testai-9.1 委派（依赖 claude CLI 在 PATH，非确定性）；
 //! 裸 SQL 文本的注入拦截（注入检测层工作在**工具入参**上，纯聊天文本
@@ -88,6 +91,43 @@ fn fresh_session_id(prefix: &str) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     format!("{}-{}-{}", prefix, now.as_millis(), now.subsec_nanos())
+}
+
+/// 在既有 WS 连接上发 WSAPI 请求帧并等匹配 reqId 的响应帧。
+static WSAPI_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+async fn wsapi_call_on(
+    stream: &mut WsStream,
+    module: &str,
+    cmd: &str,
+    data: Value,
+    timeout: Duration,
+) -> Result<Value> {
+    let req_id = format!(
+        "bench-wsapi-{}-{}",
+        WSAPI_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
+    let msg = json!({
+        "type": "request",
+        "module": module,
+        "cmd": cmd,
+        "reqId": req_id,
+        "data": data,
+    });
+    ws_send_json(stream, &msg).await?;
+    let frame = ws_recv_matching(stream, timeout, &format!("{module}.{cmd} response"), |v| {
+        v.get("type").and_then(|t| t.as_str()) == Some("response")
+            && v.get("reqId").and_then(|r| r.as_str()) == Some(req_id.as_str())
+    })
+    .await?;
+    if let Some(err) = frame.get("error").and_then(|e| e.as_str()) {
+        anyhow::bail!("{module}.{cmd} 失败: {err}");
+    }
+    Ok(frame["data"].clone())
 }
 
 /// 新建一条 WS 连接 + 独立会话，发一条消息，等 marker，返回耗时与回复。
@@ -176,6 +216,97 @@ pub async fn run_context_integrity(ctx: BenchCtx, runs: u32) -> Vec<Result<(u64,
     let mut out = Vec::new();
     for _ in 0..runs {
         out.push(multi_turn_round(&turns, "Z1_USERS_3", 60).await);
+    }
+    out
+}
+
+/// identifier_survival ×N：L4 压缩标识符存活（三方学习 T0）。
+/// 播种 3 个标识符（issue 编号 / 主机名 / 文件路径，与 TestAIServer
+/// sum_model.go 的 SumKnownIdentifiers 逐字同源）→ chat.compact →
+/// 末轮探测。压缩后 tail 由第 2 轮及其回显组成（均无标识符），
+/// 且 testai-sum-1.0 的扫描口径排除 assistant 回显——末轮 IDS_SEEN
+/// 全命中 ⟺「摘要指令含逐字保留规则 + 摘要保真 + 摘要注入下轮上下文」
+/// 全链成立。规则文本回归时模型回 SUMMARY_RULE_MISSING（无 id），
+/// 场景以 IDS_NONE 响亮判败。
+pub async fn run_identifier_survival(ctx: BenchCtx, runs: u32) -> Vec<Result<(u64, String)>> {
+    let _ = ctx;
+    const ALL_IDS: &str = "NB-42,host-alpha-7,/var/log/nemesis/omega-9.log";
+    let mut out = Vec::new();
+    for _ in 0..runs {
+        let start = Instant::now();
+        let session_id = fresh_session_id("bench-ids");
+        let mut stream = match ws_connect(WS_PORT, AUTH_TOKEN).await {
+            Ok(s) => s,
+            Err(e) => {
+                out.push(Err(e));
+                continue;
+            }
+        };
+        let flow = async {
+            // 轮 1：播种全部标识符。格式取自规则自身的类别清单
+            // （issue 编号 / 主机名 / 文件路径），刻意避开 DLP 出站脱敏
+            // 的模式面（IP 等凭据形文本会在出站被 redact，毁掉 oracle 回复）。
+            chat_send(
+                &mut stream,
+                &session_id,
+                "bench 标识符登记：issue NB-42 在主机 host-alpha-7 上，日志在 /var/log/nemesis/omega-9.log",
+                None,
+            )
+            .await?;
+            chat_wait(
+                &mut stream,
+                &session_id,
+                &format!("IDS_SEEN:{ALL_IDS}"),
+                Duration::from_secs(60),
+            )
+            .await?;
+            // 轮 2：中性轮（无标识符）——此后历史 = [系统, 轮1, 回显1, 轮2, 回显2]，
+            // 压缩把前 3 条折进摘要、保留后 2 条。
+            chat_send(&mut stream, &session_id, "bench 第二轮：普通确认", None).await?;
+            chat_wait(
+                &mut stream,
+                &session_id,
+                &format!("IDS_SEEN:{ALL_IDS}"),
+                Duration::from_secs(60),
+            )
+            .await?;
+            // 手动压缩（WSAPI chat.compact，与 /compact slash 同一 AgentLoop 实现；
+            // bench 配置未设 agents.small_model，摘要调用落在本场景脚本模型上）。
+            let data = wsapi_call_on(
+                &mut stream,
+                "chat",
+                "compact",
+                json!({ "session_id": session_id }),
+                Duration::from_secs(120),
+            )
+            .await?;
+            let receipt = data["receipt"].as_str().unwrap_or_default().to_string();
+            if !receipt.contains("已压缩") {
+                anyhow::bail!("compact 回执异常（应含「已压缩」）: {receipt}");
+            }
+            // 轮 3：探测——标识符只可能经摘要存活。
+            chat_send(
+                &mut stream,
+                &session_id,
+                "bench 第三轮：汇报登记过的标识符",
+                None,
+            )
+            .await?;
+            let reply = chat_wait(
+                &mut stream,
+                &session_id,
+                &format!("IDS_SEEN:{ALL_IDS}"),
+                Duration::from_secs(60),
+            )
+            .await?;
+            Ok(reply)
+        }
+        .await;
+        let _ = stream.close(None).await;
+        out.push(match flow {
+            Ok(reply) => Ok((start.elapsed().as_millis() as u64, reply)),
+            Err(e) => Err(e),
+        });
     }
     out
 }
@@ -324,6 +455,171 @@ pub async fn run_vision_roundtrip(
     out
 }
 
+/// codemode_orchestration ×N：testai-codemode-1.0 发单个 code_run 调用，
+/// 脚本内 read_file → +41 → write_file 三步编排（T2 codemode L1）。断言
+/// 双面：回复 marker CODEMODE_DONE:42（脚本完成值经模型回带）+ **效果面**
+/// `codemode_out.txt` 内容 = "42"（write 真落盘）。脚本错误/拒绝会回
+/// CODEMODE_FAILED:...，等待超时响亮判败。
+pub async fn run_codemode_orchestration(
+    ctx: BenchCtx,
+    runs: u32,
+    ws: &TestWorkspace,
+) -> Vec<Result<(u64, String)>> {
+    let _ = ctx;
+    let in_path = ws.workspace().join("codemode_in.txt");
+    let out_path = ws.workspace().join("codemode_out.txt");
+    let mut out = Vec::new();
+    for _ in 0..runs {
+        // 播种输入 + 清掉上一轮产物（效果面断言不读陈旧文件）。
+        if let Err(e) = std::fs::write(&in_path, "1") {
+            out.push(Err(anyhow!("播种 codemode_in.txt 失败: {e}")));
+            continue;
+        }
+        let _ = std::fs::remove_file(&out_path);
+        let start = Instant::now();
+        let session_id = fresh_session_id("bench-cm");
+        let mut stream = match ws_connect(WS_PORT, AUTH_TOKEN).await {
+            Ok(s) => s,
+            Err(e) => {
+                out.push(Err(e));
+                continue;
+            }
+        };
+        let waited = async {
+            chat_send(&mut stream, &session_id, "<CODEMODE>", None).await?;
+            chat_wait(
+                &mut stream,
+                &session_id,
+                "CODEMODE_DONE:42",
+                Duration::from_secs(90),
+            )
+            .await
+        }
+        .await;
+        let _ = stream.close(None).await;
+        out.push(match waited {
+            Ok(reply) => match std::fs::read_to_string(&out_path) {
+                Ok(content) if content.trim() == "42" => {
+                    Ok((start.elapsed().as_millis() as u64, reply))
+                }
+                Ok(content) => Err(anyhow!(
+                    "脚本 write 效果面不符：codemode_out.txt = {content:?}（应 \"42\"）"
+                )),
+                Err(e) => Err(anyhow!(
+                    "codemode_out.txt 未落盘（write_file 未执行？）: {e}"
+                )),
+            },
+            Err(e) => Err(anyhow!(
+                "codemode 场景未获 CODEMODE_DONE:42（脚本错误或拒绝链断）: {e}"
+            )),
+        });
+    }
+    // 清理播种/产物。
+    let _ = std::fs::remove_file(&in_path);
+    let _ = std::fs::remove_file(&out_path);
+    out
+}
+
+/// docs_lift ×N：工作区指令水合双臂对（L10 docs_lift，T3 生态与地基）。
+/// testai-docslift-1.0 扫描全部请求消息找 `DOCSLIFT_PROTOCOL_V1` 标记
+/// （探针用户消息本身不含标记——标记只能经 AGENTS.md 指令链水合到达）：
+///   臂 A：workspace 无 AGENTS.md → merged 注入无 instructions 段 →
+///         DOCS_MISSING:1（反向断言：没有文件就注不进上下文）；
+///   臂 B：落盘 AGENTS.md（含标记）→ 指令链每轮 build 从磁盘重读
+///         （messages.rs H5 合并注入）→ DOCS_OK:<n>。
+/// 对通过 ⟺ A 出 MISSING **且** B 出 OK——只测 B 会把「模型无条件答 OK」
+/// 的假阳性放进来（A/B 互为对照组）。B 臂带轮询闸（≤3 次、间隔 2s）吸
+/// 收 Windows 文件可见性时序；每轮新会话（指令 section 逐轮重建，无
+/// digest 陈旧面）。run 产物 AGENTS.md 场景结束清理。
+pub async fn run_docs_lift(
+    ctx: BenchCtx,
+    runs: u32,
+    ws: &TestWorkspace,
+) -> Vec<Result<(u64, String)>> {
+    let _ = ctx;
+    const PROBE: &str = "bench docs 探针：报告 DOCS 状态";
+    const PROBE_TIMEOUT_SECS: u64 = 60;
+    const B_MAX_ATTEMPTS: u32 = 3;
+    const B_RETRY_SLEEP: Duration = Duration::from_secs(2);
+    let agents_md = ws.workspace().join("AGENTS.md");
+    let mut out = Vec::new();
+    for _ in 0..runs {
+        // 起点：无 AGENTS.md（模板本就没有；防御同套件前序运行残留）。
+        let _ = std::fs::remove_file(&agents_md);
+        let start = Instant::now();
+        let flow = async {
+            // —— 臂 A：无文件 → MISSING（新连接新会话）——
+            let session_a = fresh_session_id("bench-dl-a");
+            let mut stream_a = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+            chat_send(&mut stream_a, &session_a, PROBE, None).await?;
+            let reply_a = chat_wait_pred(
+                &mut stream_a,
+                &session_a,
+                Duration::from_secs(PROBE_TIMEOUT_SECS),
+                |v| {
+                    v["data"]["role"].as_str() == Some("assistant")
+                        && v["data"]["content"]
+                            .as_str()
+                            .is_some_and(|c| c.contains("DOCS_OK:") || c.contains("DOCS_MISSING:"))
+                },
+            )
+            .await;
+            let _ = stream_a.close(None).await;
+            let reply_a = reply_a?;
+            if !reply_a.contains("DOCS_MISSING:") {
+                anyhow::bail!(
+                    "臂 A 失败：无 AGENTS.md 却答 {reply_a:?}（上下文被污染或指令链发现越界）"
+                );
+            }
+            // —— 臂 B：落盘 AGENTS.md（含标记）→ OK（轮询闸吸收 FS 时序）——
+            std::fs::write(
+                &agents_md,
+                "# Bench Docs Marker\n\nDOCSLIFT_PROTOCOL_V1\n\n（agent-bench docs_lift 场景探针文件：验证工作区指令链水合进 LLM 请求。）\n",
+            )?;
+            let mut reply_b = String::new();
+            for attempt in 1..=B_MAX_ATTEMPTS {
+                if attempt > 1 {
+                    tokio::time::sleep(B_RETRY_SLEEP).await;
+                }
+                let session_b = fresh_session_id("bench-dl-b");
+                let mut stream_b = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+                chat_send(&mut stream_b, &session_b, PROBE, None).await?;
+                let waited = chat_wait_pred(
+                    &mut stream_b,
+                    &session_b,
+                    Duration::from_secs(PROBE_TIMEOUT_SECS),
+                    |v| {
+                        v["data"]["role"].as_str() == Some("assistant")
+                            && v["data"]["content"].as_str().is_some_and(|c| {
+                                c.contains("DOCS_OK:") || c.contains("DOCS_MISSING:")
+                            })
+                    },
+                )
+                .await;
+                let _ = stream_b.close(None).await;
+                reply_b = waited?;
+                if reply_b.contains("DOCS_OK:") {
+                    break;
+                }
+            }
+            if !reply_b.contains("DOCS_OK:") {
+                anyhow::bail!(
+                    "臂 B 失败：AGENTS.md 已落盘但 {B_MAX_ATTEMPTS} 次探针均答 {reply_b:?}（指令链未水合）"
+                );
+            }
+            Ok(reply_b)
+        }
+        .await;
+        // 产物清理（下轮臂 A 从干净起点开始）。
+        let _ = std::fs::remove_file(&agents_md);
+        out.push(match flow {
+            Ok(reply) => Ok((start.elapsed().as_millis() as u64, reply)),
+            Err(e) => Err(e),
+        });
+    }
+    out
+}
+
 /// 落 1×1 透明 PNG 到 workspace（与 nemesis-agent probe 第 8 题同一载荷）。
 pub fn drop_png_fixture(ws: &TestWorkspace) -> Result<std::path::PathBuf> {
     use base64::Engine as _;
@@ -356,6 +652,10 @@ pub fn default_catalog() -> Vec<ScenarioSpec> {
             runs: 3,
         },
         ScenarioSpec {
+            name: "identifier_survival",
+            runs: 2,
+        },
+        ScenarioSpec {
             name: "tool_parallel_batch",
             runs: 2,
         },
@@ -369,6 +669,14 @@ pub fn default_catalog() -> Vec<ScenarioSpec> {
         },
         ScenarioSpec {
             name: "vision_roundtrip",
+            runs: 1,
+        },
+        ScenarioSpec {
+            name: "codemode_orchestration",
+            runs: 2,
+        },
+        ScenarioSpec {
+            name: "docs_lift",
             runs: 1,
         },
     ]

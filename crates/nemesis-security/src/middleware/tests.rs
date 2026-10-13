@@ -2817,6 +2817,7 @@ fn test_operation_request_fields() {
         approver: None,
         approved_at: None,
         denied_reason: None,
+        force_approval: None,
     };
     assert_eq!(req.id, "test");
     assert!(req.approver.is_none());

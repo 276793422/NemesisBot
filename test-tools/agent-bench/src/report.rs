@@ -180,9 +180,12 @@ impl Scorecard {
 pub(crate) fn scenario_model(name: &str) -> &'static str {
     match name {
         "context_integrity" => "testai-9.3",
+        "identifier_survival" => "testai-sum-1.0",
         "tool_parallel_batch" => "testai-2.1",
         "security_boundary_block" => "testai-5.0",
         "vision_roundtrip" => "testai-vision-1.0",
+        "codemode_orchestration" => "testai-codemode-1.0",
+        "docs_lift" => "testai-docslift-1.0",
         _ => "testai-1.1",
     }
 }

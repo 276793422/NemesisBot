@@ -99,6 +99,32 @@ pub trait LlmProvider: Send + Sync {
         options: Option<crate::types::ChatOptions>,
         tools: Vec<crate::types::ToolDefinition>,
     ) -> Result<LlmResponse, String>;
+
+    /// L10（2026-10-13 三方学习 T3）：流式增量 lane。语义与 [`Self::chat`]
+    /// 完全一致（同参同返回），额外在**内容增量**到达时同步回调 `on_delta`
+    /// （合并窗口在 sink 侧，实现方可按块直呼）。默认实现忽略回调、直接
+    /// 委托 `chat()`——非流式 provider / CLI 型 provider / 测试桩行为字节
+    /// 不变，无需逐一实现。
+    ///
+    /// 回调取 owned `String`：`#[async_trait]` 会给 `dyn Fn(&str)` 的参数
+    /// 生命周期做显式展开（非 higher-ranked），跨函数传递与任意借用点调用
+    /// 会撞 "one type is more general" 推断失败——owned 形态绕开整类问题，
+    /// 每增量一次小串分配可忽略（deltas 本就是新串）。
+    ///
+    /// 实现约定：provider 不支持流式（`chat_stream` 缺省 = 首块即
+    /// `FailoverError::Unknown`"not implemented"）时实现方应**静默回落**
+    /// 非流式调用（成功后合成一条增量回调），调用方无感知。
+    async fn chat_streamed(
+        &self,
+        model: &str,
+        messages: Vec<LlmMessage>,
+        options: Option<crate::types::ChatOptions>,
+        tools: Vec<crate::types::ToolDefinition>,
+        on_delta: &(dyn Fn(String) + Send + Sync),
+    ) -> Result<LlmResponse, String> {
+        let _ = on_delta;
+        self.chat(model, messages, options, tools).await
+    }
 }
 
 impl AgentLoop {

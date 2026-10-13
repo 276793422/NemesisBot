@@ -154,6 +154,10 @@ tokio-tungstenite = "0.26"
 # 0.21：修 RUSTSEC-2026-0183/0184（git2 unsound，0.21.0 起修复；cargo-deny 闸）
 git2 = { version = "0.21", default-features = false }
 
+# T2（三方学习总计划 L1 codemode）：code_run 工具的 QuickJS 引擎（同步 API，
+# 每次调用独立 runtime；interrupt handler + memory limit 资源闸）。
+rquickjs = "0.14"
+
 # Crypto
 # oid feature：cms builder 要求 Digest 的 AssociatedOid（S0-6 坑位 5b）
 sha2 = { version = "0.10", features = ["oid"] }

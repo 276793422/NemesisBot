@@ -158,6 +158,7 @@ fn pricing_store_with_test_model() -> Arc<nemesis_data::PricingStore> {
             max_input_tokens: None,
             max_output_tokens: None,
             aliases: vec![],
+            price_tiers: None,
         })
         .unwrap();
     Arc::new(store)

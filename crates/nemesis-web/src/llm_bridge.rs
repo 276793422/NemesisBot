@@ -97,6 +97,114 @@ impl ProviderAdapter {
     }
 }
 
+/// L10（2026-10-13）：FailoverError → loop 层 String 的单一映射源（chat /
+/// chat_streamed 共用）。429 Retry-After 保真（2026-09-17 BUG 文档裁决④⑧）
+/// ——` (retry_after=Ns)` 后缀供 loop 层子串提取后取 max（上游要求 vs 本地
+/// 阶梯），不引入跨 crate 依赖。
+fn map_provider_error(e: &nemesis_providers::failover::FailoverError) -> String {
+    match e {
+        nemesis_providers::failover::FailoverError::RateLimit {
+            retry_after: Some(secs),
+            ..
+        } => format!("{} (retry_after={}s)", e, secs),
+        _ => format!("{}", e),
+    }
+}
+
+/// L10：流式不支持探测——`chat_stream` trait 缺省实现的诚实错误文本
+/// （"streaming (chat_stream) not implemented for this provider"）。
+/// 命中 = 该 provider 没有流式 lane（CLI 型 / 未实现），chat_streamed 静默
+/// 回落非流式调用。
+fn is_stream_unsupported(e: &nemesis_providers::failover::FailoverError) -> bool {
+    format!("{e}").contains("not implemented")
+}
+
+/// L10：agent 层 ChatOptions → provider 层（chat / chat_streamed 共用转换，
+/// 单一真相源——此前内联在 chat()）。
+fn agent_options_to_provider(
+    options: Option<nemesis_agent::types::ChatOptions>,
+) -> nemesis_providers::types::ChatOptions {
+    match options {
+        Some(opts) => nemesis_providers::types::ChatOptions {
+            temperature: opts.temperature.map(|t| t as f64),
+            max_tokens: opts.max_tokens.map(|t| t as i64),
+            top_p: opts.top_p.map(|p| p as f64),
+            stop: opts.stop,
+            reasoning_effort: opts.reasoning_effort.clone(), // H4: tier passes through
+            extra: HashMap::new(),
+        },
+        None => nemesis_providers::types::ChatOptions {
+            temperature: Some(0.7),
+            max_tokens: Some(8192),
+            top_p: None,
+            stop: None,
+            reasoning_effort: None,
+            extra: HashMap::new(),
+        },
+    }
+}
+
+/// L10：agent 层 ToolDefinition → provider 层（同上共用转换）。
+fn agent_tools_to_provider(
+    tools: Vec<nemesis_agent::types::ToolDefinition>,
+) -> Vec<nemesis_providers::types::ToolDefinition> {
+    tools
+        .into_iter()
+        .map(|t| nemesis_providers::types::ToolDefinition {
+            tool_type: t.tool_type,
+            function: nemesis_providers::types::ToolFunctionDefinition {
+                name: t.function.name,
+                description: t.function.description,
+                parameters: t.function.parameters,
+            },
+        })
+        .collect()
+}
+
+/// L10：provider LLMResponse → agent LlmResponse（同上共用映射；finished
+/// 判定见函数内注记——工具调用在场恒未终答）。
+fn provider_response_to_agent(
+    resp: nemesis_providers::types::LLMResponse,
+) -> nemesis_agent::r#loop::LlmResponse {
+    use nemesis_agent::types::ToolCallInfo as AgentToolCallInfo;
+
+    let tool_calls: Vec<AgentToolCallInfo> = resp
+        .tool_calls
+        .into_iter()
+        .filter_map(|tc| {
+            let func = tc.function?;
+            Some(AgentToolCallInfo {
+                id: tc.id,
+                name: func.name,
+                arguments: func.arguments,
+            })
+        })
+        .collect();
+    // finished 判定：工具调用在场 ⇒ 恒未终答（loop 侧必须 dispatch）。此前
+    // `|| finish_reason == "stop"` 会被异常上游（stop 邮票 + tools 在场）静默
+    // 丢掉工具调用——judge_final_answer 见 finished=true 直接当终答
+    // （2026-10-13 wal_crash 实证；与 chat() 共用同源语义）。
+    let finished = tool_calls.is_empty();
+    nemesis_agent::r#loop::LlmResponse {
+        content: resp.content,
+        tool_calls,
+        finished,
+        reasoning_content: resp.reasoning_content,
+        usage: resp
+            .usage
+            .map(|u| nemesis_agent::loop_executor::ObserverUsageInfo {
+                prompt_tokens: u.prompt_tokens,
+                completion_tokens: u.completion_tokens,
+                total_tokens: u.total_tokens,
+                cached_tokens: u.cached_tokens,
+                cache_creation_tokens: u.cache_creation_tokens,
+                cache_read_tokens: u.cache_read_tokens,
+            }),
+        raw_request_body: resp.raw_request_body,
+        raw_response_body: resp.raw_response_body,
+    }
+}
+
 #[async_trait::async_trait]
 impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
     async fn chat(
@@ -106,8 +214,6 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
         options: Option<nemesis_agent::types::ChatOptions>,
         tools: Vec<nemesis_agent::types::ToolDefinition>,
     ) -> std::result::Result<nemesis_agent::r#loop::LlmResponse, String> {
-        use nemesis_agent::types::ToolCallInfo as AgentToolCallInfo;
-
         let model_to_use = if model.is_empty() {
             &self.default_model
         } else {
@@ -119,37 +225,8 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
             .into_iter()
             .map(agent_message_to_provider)
             .collect();
-
-        let provider_options = match options {
-            Some(opts) => nemesis_providers::types::ChatOptions {
-                temperature: opts.temperature.map(|t| t as f64),
-                max_tokens: opts.max_tokens.map(|t| t as i64),
-                top_p: opts.top_p.map(|p| p as f64),
-                stop: opts.stop,
-                reasoning_effort: opts.reasoning_effort.clone(), // H4: tier passes through
-                extra: HashMap::new(),
-            },
-            None => nemesis_providers::types::ChatOptions {
-                temperature: Some(0.7),
-                max_tokens: Some(8192),
-                top_p: None,
-                stop: None,
-                reasoning_effort: None,
-                extra: HashMap::new(),
-            },
-        };
-
-        let provider_tools: Vec<nemesis_providers::types::ToolDefinition> = tools
-            .into_iter()
-            .map(|t| nemesis_providers::types::ToolDefinition {
-                tool_type: t.tool_type,
-                function: nemesis_providers::types::ToolFunctionDefinition {
-                    name: t.function.name,
-                    description: t.function.description,
-                    parameters: t.function.parameters,
-                },
-            })
-            .collect();
+        let provider_options = agent_options_to_provider(options);
+        let provider_tools = agent_tools_to_provider(tools);
 
         match self
             .inner
@@ -161,52 +238,186 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
             )
             .await
         {
-            Ok(resp) => {
-                let tool_calls: Vec<AgentToolCallInfo> = resp
-                    .tool_calls
-                    .into_iter()
-                    .filter_map(|tc| {
-                        let func = tc.function?;
-                        Some(AgentToolCallInfo {
-                            id: tc.id,
-                            name: func.name,
-                            arguments: func.arguments,
-                        })
-                    })
-                    .collect();
-                let finished = tool_calls.is_empty() || resp.finish_reason == "stop";
-                Ok(nemesis_agent::r#loop::LlmResponse {
-                    content: resp.content,
-                    tool_calls,
-                    finished,
-                    reasoning_content: resp.reasoning_content,
-                    usage: resp
-                        .usage
-                        .map(|u| nemesis_agent::loop_executor::ObserverUsageInfo {
-                            prompt_tokens: u.prompt_tokens,
-                            completion_tokens: u.completion_tokens,
-                            total_tokens: u.total_tokens,
-                            cached_tokens: u.cached_tokens,
-                            cache_creation_tokens: u.cache_creation_tokens,
-                            cache_read_tokens: u.cache_read_tokens,
-                        }),
-                    raw_request_body: resp.raw_request_body,
-                    raw_response_body: resp.raw_response_body,
+            Ok(resp) => Ok(provider_response_to_agent(resp)),
+            Err(e) => {
+                warn!("[LlmBridge] LLM provider error: {}", e);
+                Err(map_provider_error(&e))
+            }
+        }
+    }
+
+    /// L10：流式 lane 覆写。真实流式经 `inner.chat_stream`（SSE 逐块）→
+    /// 增量同步回调 `on_delta` + 聚合成 [`LlmResponse`]（语义与 `chat` 一致：
+    /// 同参同返回，finished 判定同源）。三个诚实回落：
+    /// - 首块即 "not implemented"（trait 缺省实现）→ 该 provider 无流式
+    ///   lane，静默回落 `inner.chat`（非流式），成功后合成一条全量增量；
+    /// - 流中途 Err → `map_provider_error`（与 chat 同一映射，429 保真）；
+    /// - EOF 无 finish_reason（上游早断）→ 按 tool_calls 推导 finished，
+    ///   不虚构终止原因。
+    /// raw_request_body / raw_response_body 恒 None（流式路径不缓存原文——
+    /// raw 日志模式在此类调用下显示缺省，诚实边界）。
+    async fn chat_streamed(
+        &self,
+        model: &str,
+        messages: Vec<nemesis_agent::r#loop::LlmMessage>,
+        options: Option<nemesis_agent::types::ChatOptions>,
+        tools: Vec<nemesis_agent::types::ToolDefinition>,
+        on_delta: &(dyn Fn(String) + Send + Sync),
+    ) -> std::result::Result<nemesis_agent::r#loop::LlmResponse, String> {
+        let model_to_use = if model.is_empty() {
+            &self.default_model
+        } else {
+            model
+        };
+        let provider_messages: Vec<nemesis_providers::types::Message> = messages
+            .into_iter()
+            .map(agent_message_to_provider)
+            .collect();
+        let provider_options = agent_options_to_provider(options);
+        let provider_tools = agent_tools_to_provider(tools);
+
+        let mut rx = self.inner.chat_stream(
+            &provider_messages,
+            &provider_tools,
+            model_to_use,
+            &provider_options,
+        );
+
+        // 显式 HRTB 重绑不再需要：回调取 owned String（见 trait 方法头），
+        // async_trait 的生命周期展开不再制造 trait object 统一失败。
+
+        // 首块探测（见方法头回落①）。
+        let mut content = String::new();
+        let mut last_tool_calls: Vec<nemesis_providers::types::ToolCall> = Vec::new();
+        let mut usage: Option<nemesis_providers::types::UsageInfo> = None;
+        let mut reasoning_content: Option<String> = None;
+        let first = match rx.recv().await {
+            None => {
+                // 空流（发送端即断）：与"流不支持"同判——回落非流式。
+                tracing::debug!(
+                    "[LlmBridge] stream closed before first chunk, falling back to non-stream"
+                );
+                return self
+                    .fallback_non_stream(
+                        &provider_messages,
+                        &provider_tools,
+                        model_to_use,
+                        &provider_options,
+                        on_delta,
+                    )
+                    .await;
+            }
+            Some(item) => item,
+        };
+        if let Err(e) = &first {
+            if is_stream_unsupported(e) {
+                return self
+                    .fallback_non_stream(
+                        &provider_messages,
+                        &provider_tools,
+                        model_to_use,
+                        &provider_options,
+                        on_delta,
+                    )
+                    .await;
+            }
+            warn!("[LlmBridge] LLM stream error: {}", e);
+            return Err(map_provider_error(e));
+        }
+        let mut chunk = first.ok();
+        loop {
+            if let Some(c) = chunk.take() {
+                if !c.delta.is_empty() {
+                    on_delta(c.delta.clone());
+                    content.push_str(&c.delta);
+                }
+                if !c.tool_calls.is_empty() {
+                    last_tool_calls = c.tool_calls;
+                }
+                if c.usage.is_some() {
+                    usage = c.usage;
+                }
+                if c.reasoning_content.is_some() {
+                    reasoning_content = c.reasoning_content;
+                }
+            }
+            match rx.recv().await {
+                Some(Ok(next)) => chunk = Some(next),
+                Some(Err(e)) => {
+                    warn!("[LlmBridge] LLM stream error: {}", e);
+                    return Err(map_provider_error(&e));
+                }
+                None => break,
+            }
+        }
+
+        let tool_calls: Vec<nemesis_agent::types::ToolCallInfo> = last_tool_calls
+            .into_iter()
+            .filter_map(|tc| {
+                let func = tc.function?;
+                Some(nemesis_agent::types::ToolCallInfo {
+                    id: tc.id,
+                    name: func.name,
+                    arguments: func.arguments,
                 })
+            })
+            .collect();
+        // finished 与 provider_response_to_agent 同源：工具调用在场恒未终答
+        // （"stop" 邮票 + tools 在场 = 异常上游，不丢工具调用，2026-10-13
+        // wal_crash 实证）。
+        let finished = tool_calls.is_empty();
+        Ok(nemesis_agent::r#loop::LlmResponse {
+            content,
+            tool_calls,
+            finished,
+            reasoning_content,
+            usage: usage.map(|u| nemesis_agent::loop_executor::ObserverUsageInfo {
+                prompt_tokens: u.prompt_tokens,
+                completion_tokens: u.completion_tokens,
+                total_tokens: u.total_tokens,
+                cached_tokens: u.cached_tokens,
+                cache_creation_tokens: u.cache_creation_tokens,
+                cache_read_tokens: u.cache_read_tokens,
+            }),
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+}
+
+impl ProviderAdapter {
+    /// L10：chat_streamed 的非流式回落（provider 无流式 lane / 空流）。
+    /// 复用已转换的 provider 侧入参（不重复拷贝 agent 层 messages）；成功后
+    /// 合成一条全量增量（loop 侧 StreamingLlmProvider 约定——非流式 provider
+    /// 也产生一次完整「流」）。
+    async fn fallback_non_stream(
+        &self,
+        provider_messages: &[nemesis_providers::types::Message],
+        provider_tools: &[nemesis_providers::types::ToolDefinition],
+        model_to_use: &str,
+        provider_options: &nemesis_providers::types::ChatOptions,
+        on_delta: &(dyn Fn(String) + Send + Sync),
+    ) -> std::result::Result<nemesis_agent::r#loop::LlmResponse, String> {
+        match self
+            .inner
+            .chat(
+                provider_messages,
+                provider_tools,
+                model_to_use,
+                provider_options,
+            )
+            .await
+        {
+            Ok(resp) => {
+                let mapped = provider_response_to_agent(resp);
+                if !mapped.content.is_empty() {
+                    on_delta(mapped.content.clone());
+                }
+                Ok(mapped)
             }
             Err(e) => {
                 warn!("[LlmBridge] LLM provider error: {}", e);
-                // 429 重试环（2026-09-17 BUG 文档裁决④⑧）：Retry-After 保真
-                // ——FailoverError 到 loop 层会展平成 String，此处把结构化的
-                // retry_after 折进文本（` (retry_after=Ns)` 后缀），loop 层用
-                // 子串提取后取 max(上游要求, 本地阶梯)。不引入跨 crate 依赖。
-                Err(match &e {
-                    nemesis_providers::failover::FailoverError::RateLimit {
-                        retry_after: Some(secs),
-                        ..
-                    } => format!("{} (retry_after={}s)", e, secs),
-                    _ => format!("{}", e),
-                })
+                Err(map_provider_error(&e))
             }
         }
     }

@@ -163,17 +163,109 @@ const RELEASE_LIST_API: &str =
 
 /// 官方 Release 指定附件下载：列表 API → 首个含 `asset_name` 附件的
 /// Release → SSRF 闸逐跳下载。找不到附件 = 诚实报错（CI 尚未产出）。
+/// 消费方全在 feature 门（skins / plugins-wasm / selfupdate）内——裸构建
+/// 无人调用，条件放行 dead_code；selfupdate 的 apply 主体又是
+/// Windows-only（v1 平台边界），非 Windows+selfupdate 组合同样无人调用。
+#[cfg_attr(
+    not(any(feature = "skins", feature = "plugins-wasm", feature = "selfupdate")),
+    allow(dead_code)
+)]
+#[cfg_attr(
+    all(feature = "selfupdate", not(target_os = "windows")),
+    allow(dead_code)
+)]
 pub(crate) async fn fetch_release_asset(
     asset_name: &str,
     max_bytes: usize,
 ) -> Result<Vec<u8>, String> {
-    let api_bytes = fetch_bytes(RELEASE_LIST_API, max_bytes).await?;
+    let url = latest_release_asset_url(asset_name).await?;
+    fetch_bytes(&url, max_bytes).await
+}
+
+/// Release 元信息（L9 check 用：免下主包即可读 tag/名/body commit/附件在场）。
+pub(crate) struct ReleaseMeta {
+    pub tag_name: String,
+    pub name: String,
+    pub body: String,
+    pub asset_names: Vec<String>,
+}
+
+impl ReleaseMeta {
+    pub fn has_asset(&self, name: &str) -> bool {
+        self.asset_names.iter().any(|a| a == name)
+    }
+
+    /// body 表行 `` | Commit | `<sha>` | `` 里的全量 sha。
+    pub fn body_commit(&self) -> Option<String> {
+        crate::selfupdate::extract_commit_from_release_body(&self.body)
+    }
+}
+
+/// 列表 API 首条 Release 的元信息（不下载主包资产）。
+pub(crate) async fn fetch_latest_release_meta() -> Result<ReleaseMeta, String> {
+    // 元信息很小，25MB 上限同口径防异常。
+    let api_bytes = fetch_bytes(RELEASE_LIST_API, 25 * 1024 * 1024).await?;
     let api: serde_json::Value = serde_json::from_slice(&api_bytes)
         .map_err(|e| format!("Release API 响应不是合法 JSON：{e}"))?;
     let releases = api
         .as_array()
         .ok_or_else(|| "Release API 响应不是列表（仓库不存在或 API 限流）".to_string())?;
-    let url = releases
+    let first = releases
+        .first()
+        .ok_or_else(|| "Release 列表为空（CI 尚未产出任何发布）".to_string())?;
+    let tag_name = first
+        .get("tag_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let name = first
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let body = first
+        .get("body")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let asset_names = first
+        .get("assets")
+        .and_then(|v| v.as_array())
+        .map(|assets| {
+            assets
+                .iter()
+                .filter_map(|a| a.get("name").and_then(|v| v.as_str()))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(ReleaseMeta {
+        tag_name,
+        name,
+        body,
+        asset_names,
+    })
+}
+
+/// 列表 API → 首个含 `asset_name` 附件的 Release 的下载 URL。（唯一调用方
+/// fetch_release_asset 的 dead_code 门随它——它活则此活。）
+#[cfg_attr(
+    not(any(feature = "skins", feature = "plugins-wasm", feature = "selfupdate")),
+    allow(dead_code)
+)]
+#[cfg_attr(
+    all(feature = "selfupdate", not(target_os = "windows")),
+    allow(dead_code)
+)]
+async fn latest_release_asset_url(asset_name: &str) -> Result<String, String> {
+    // 元信息很小，25MB 上限同口径防异常。
+    let api_bytes = fetch_bytes(RELEASE_LIST_API, 25 * 1024 * 1024).await?;
+    let api: serde_json::Value = serde_json::from_slice(&api_bytes)
+        .map_err(|e| format!("Release API 响应不是合法 JSON：{e}"))?;
+    let releases = api
+        .as_array()
+        .ok_or_else(|| "Release API 响应不是列表（仓库不存在或 API 限流）".to_string())?;
+    releases
         .iter()
         .filter_map(|r| r.get("assets").and_then(|v| v.as_array()))
         .find_map(|assets| {
@@ -184,9 +276,8 @@ pub(crate) async fn fetch_release_asset(
                     .flatten()
             })
         })
-        .ok_or_else(|| format!("近期 Release 均未找到 {asset_name} 附件（CI 尚未产出该包）"))?
-        .to_string();
-    fetch_bytes(&url, max_bytes).await
+        .map(str::to_string)
+        .ok_or_else(|| format!("近期 Release 均未找到 {asset_name} 附件（CI 尚未产出该包）"))
 }
 
 /// 带退避重试的目录树删除（nemesis-cluster::fsutil 同款模式——Windows 上

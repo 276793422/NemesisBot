@@ -685,6 +685,19 @@ pub fn build_agent_loop(
     // + voice_prompt 旗注入（Arc<AtomicBool> 镜像，apply_realtime_config 同步刷）。
     nemesis_web::voice_relay::init_realtime_hot(&shared.workspace_dir().join("config"));
     agent_loop.set_voice_prompt(nemesis_web::voice_relay::voice_prompt_flag());
+    // L8（三方学习总计划重评估）turn WAL：`agents.turn_wal`（默认 true）→
+    // 打开 `<workspace>/logs/turn_wal/wal.jsonl` 并注入 loop；dispatch 三态
+    // 写入 + run_bus 启动恢复（断头工具调用补 interrupted + 续轮）都吃这个
+    // Arc。打开失败（盘满/权限）诚实降级为无 WAL——warn 不阻断装配。
+    // 作用域：仅主 loop（项目 loop 的会话经 resolve_session_loop 路由，
+    // 续轮消息会错落主 loop 工作区，v1 明确不覆盖——见交付报告诚实边界）。
+    if cfg.agents.turn_wal {
+        let wal_dir = shared.workspace_dir().join("logs").join("turn_wal");
+        match nemesis_agent::turn_wal::TurnWal::open(&wal_dir) {
+            Ok(wal) => agent_loop.set_turn_wal(std::sync::Arc::new(wal)),
+            Err(e) => warn!("[AgentFactory] turn WAL 打开失败（降级为无 WAL，不落盘不续轮）: {e}"),
+        }
+    }
     // 件4（2026-09-24 三合一收口 §6）：纪律闭环——D5 总开关（默认 false =
     // 全链路惰性：钩子不注册、/discipline 提示未启用）。开 = 注入共享态 +
     // 注册闸/证伪钩子；闸在 user pre hooks **首位**（先于方言桥；metrics/
@@ -1055,6 +1068,64 @@ pub fn build_agent_loop(
         pm.set_invoker(Arc::new(crate::plugin_bridge::GatewayHostInvoker::new(
             &agent_loop,
         )));
+    }
+    // T2 codemode（三方学习总计划 L1）：code_run 脚本工具。编译闸 `codemode`
+    // feature + 运行闸 `agents.codemode.enabled`（默认关）+ min_tier big 双闸
+    // （工具自带）。仅主 gateway loop 装配：项目 loop（L6++ 固定子集，与
+    // 插件工具同一挂账边界）与集群 agent 不含；脚本内 tool() 走完整 dispatch
+    // 瀑布（同 GatewayHostInvoker 桥形态），code_run 自身按 exec 档显式声明
+    // 操作类型（不声明会走未知名 fail-closed = ProcessExec，行为等价但每调
+    // 一次 warn 一次——显式声明去噪 + 分类明示）。
+    // （android 上 rquickjs 依赖缺席→ feature 静默无模块，注册点同 cfg 收口）。
+    #[cfg(all(feature = "codemode", not(target_os = "android")))]
+    if cfg.agents.codemode.enabled {
+        #[cfg(feature = "security")]
+        nemesis_security::types::declare_tool_operation(
+            nemesis_agent::code_run::CODE_RUN_TOOL_NAME,
+            nemesis_security::types::OperationType::ProcessExec,
+        );
+        let code_tool = Arc::new(nemesis_agent::code_run::CodeRunTool::new(
+            cfg.agents.codemode.timeout_secs,
+            cfg.agents.codemode.memory_limit_mb,
+        ));
+        agent_loop.register_plugin_tool(
+            nemesis_agent::code_run::CODE_RUN_TOOL_NAME.to_string(),
+            code_tool.clone(),
+        );
+        code_tool.set_loop(Arc::downgrade(&agent_loop));
+        info!(
+            timeout_secs = cfg.agents.codemode.timeout_secs,
+            memory_limit_mb = cfg.agents.codemode.memory_limit_mb,
+            "[AgentFactory] codemode code_run registered"
+        );
+    }
+    // L9 selfupdate 工具面（三方学习总计划）：selfupdate_check（只读）+
+    // selfupdate_apply（提案——人类闸=编排内 CRITICAL 审批卡，「总是允许」
+    // 恒忽略）。主 loop 独占（项目 loop 不该重启整个 gateway 杀掉兄弟项目；
+    // 集群 worker 不参与版本治理）；操作类型显式声明（check=NetworkRequest、
+    // apply=SystemInstall），不声明走未知名 fail-closed 行为等价但每次 warn。
+    #[cfg(feature = "selfupdate")]
+    {
+        #[cfg(feature = "security")]
+        {
+            nemesis_security::types::declare_tool_operation(
+                crate::selfupdate_tool::CHECK_TOOL_NAME,
+                nemesis_security::types::OperationType::NetworkRequest,
+            );
+            nemesis_security::types::declare_tool_operation(
+                crate::selfupdate_tool::APPLY_TOOL_NAME,
+                nemesis_security::types::OperationType::SystemInstall,
+            );
+        }
+        agent_loop.register_plugin_tool(
+            crate::selfupdate_tool::CHECK_TOOL_NAME.to_string(),
+            Arc::new(crate::selfupdate_tool::SelfupdateCheckTool),
+        );
+        agent_loop.register_plugin_tool(
+            crate::selfupdate_tool::APPLY_TOOL_NAME.to_string(),
+            Arc::new(crate::selfupdate_tool::SelfupdateApplyTool),
+        );
+        info!("[AgentFactory] selfupdate tools registered (check + apply, L9)");
     }
     // I1 (devtool-upgrade 阶段 3)：workspace fs watcher——外部编辑下一轮
     // 以 <external_changes> 注记浮出（指令链文件走 digest 失效锚点）。句柄
