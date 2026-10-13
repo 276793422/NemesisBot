@@ -689,3 +689,56 @@ fn test_get_event_across_rotated_segments_and_close() {
     assert!(chain.is_closed());
     chain.close().unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// append 全程串行并发回归钉（横扫九期，2026-10-14）：链不变量
+// 「行 i.prev == 行 i-1.hash」——修复前 last_hash 读/写两次独立取锁，
+// 并发 append 各读到同一 prev ⇒ 链分叉（verify 必 FAIL）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn concurrent_appends_keep_chain_linked() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = AuditChainConfig {
+        storage_path: dir.path().join("audit.jsonl"),
+        ..Default::default()
+    };
+    let chain = std::sync::Arc::new(AuditChain::new(config));
+
+    // 4 线程 × 25 次 append——修复前高概率分叉（verify 报 prev 断链）。
+    std::thread::scope(|s| {
+        for t in 0..4 {
+            let chain = chain.clone();
+            s.spawn(move || {
+                for i in 0..25 {
+                    chain
+                        .append(
+                            "file_read",
+                            "read_file",
+                            &format!("user-{t}"),
+                            "test",
+                            &format!("/tmp/{t}/{i}"),
+                            "allowed",
+                            "pin",
+                        )
+                        .expect("append ok");
+                }
+            });
+        }
+    });
+
+    assert_eq!(chain.total_event_count(), 100);
+    assert_eq!(chain.event_count(), 100);
+
+    // 读回 JSONL 逐行验链：prev 链必须完整（分叉 = 某行 prev 不等于前一行 hash）。
+    let content = std::fs::read_to_string(dir.path().join("audit.jsonl")).unwrap();
+    let events: Vec<AuditEvent> = content
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("parse event"))
+        .collect();
+    assert_eq!(events.len(), 100);
+    assert!(
+        AuditChain::verify_chain(&events),
+        "并发 append 后链必须完整"
+    );
+}
