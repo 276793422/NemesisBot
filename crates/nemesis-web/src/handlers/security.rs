@@ -83,6 +83,24 @@ fn security_config_path(workspace: &str) -> PathBuf {
     nemesis_path::resolve_security_config_path_in_workspace(Path::new(workspace))
 }
 
+/// config.security.json RMW 事务唯一入口——写串行锁在函数内取得，罩
+/// 「load → 闭包改 → 落盘」全程；闭包返回 Err 不落盘（abort 语义）。
+/// 纪律：闭包内不得再调任何 update_* / [`nemesis_config::config_write_lock`]
+/// （Mutex 非重入，嵌套即死锁）。（同类横扫七期补网，2026-10-13。）
+fn update_security_config<T>(
+    workspace: &str,
+    f: impl FnOnce(&mut nemesis_config::SecurityConfig) -> Result<T, String>,
+) -> Result<T, String> {
+    let _serial = nemesis_config::config_write_lock();
+    let path = security_config_path(workspace);
+    let mut cfg = nemesis_config::load_security_config(&path)
+        .map_err(|e| format!("failed to load security config: {}", e))?;
+    let out = f(&mut cfg)?;
+    nemesis_config::save_security_config(&path, &cfg)
+        .map_err(|e| format!("failed to save security config: {}", e))?;
+    Ok(out)
+}
+
 /// F3: 审批记忆规则表管理（list/clear）。路径唯一真相源 nemesis-path。
 fn approval_rules_path(workspace: &str) -> PathBuf {
     nemesis_path::resolve_approval_rules_path_in_workspace(Path::new(workspace))
@@ -167,9 +185,11 @@ impl SecurityHandler {
     ) -> Result<Option<serde_json::Value>, String> {
         let config: nemesis_config::SecurityConfig = serde_json::from_value(data.clone())
             .map_err(|e| format!("invalid security config: {}", e))?;
-        let path = security_config_path(workspace);
-        nemesis_config::save_security_config(&path, &config)
-            .map_err(|e| format!("failed to save security config: {}", e))?;
+        // 锁在 update_security_config 内（整档回存与 config.json 编辑臂同基准）。
+        update_security_config(workspace, |cfg| {
+            *cfg = config;
+            Ok(())
+        })?;
         Ok(Some(serde_json::json!({ "saved": true })))
     }
 
