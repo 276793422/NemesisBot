@@ -38,6 +38,19 @@ pub(crate) const RATE_LIMIT_ERROR_KEYWORDS: [&str; 4] = [
     "overloaded",
 ];
 
+/// 展示标签（2026-10-13）：限流环内错误含 "overloaded"（FailoverError::
+/// Overloaded 的 Display 尾词）→「上游过载」；其余（429 等真限流）→
+/// 「上游限流」。此前两态共用「上游限流」文案——号池过载（502/503）被
+/// 误报成限流，用户排障方向被带偏（gpt-5.6-sol 风暴实录）。环归类口径
+/// 不变（Overloaded 照旧进限流环），只改展示层。
+pub(crate) fn rate_limit_display_label(err_text: &str) -> &'static str {
+    if err_text.to_lowercase().contains("overloaded") {
+        "上游过载"
+    } else {
+        "上游限流"
+    }
+}
+
 /// 阶梯取值（attempt 从 1 起计；超出阶梯长度取末档）。
 pub(crate) fn rate_limit_ladder_secs(attempt: u32) -> u64 {
     RATE_LIMIT_BACKOFF_LADDER[(attempt as usize)
@@ -81,6 +94,9 @@ pub struct RateLimitStatus {
     pub max_retries: u32,
     pub wait_secs: u64,
     pub model: String,
+    /// 展示标签（「上游限流」/「上游过载」）——环归类不变，只改展示层
+    /// （2026-10-13）；由 [`rate_limit_display_label`] 生成。
+    pub label: &'static str,
     /// 写入时刻（读侧判过期用 [`RETRY_STATUS_STALE_SECS`]）。
     pub updated_at: std::time::Instant,
 }

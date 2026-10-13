@@ -64,6 +64,16 @@ fn class_by_status(status: u16) -> Option<LlmErrorClass> {
 
 /// Classify by message pattern matching.
 fn class_by_message(msg: &str) -> Option<LlmErrorClass> {
+    // 传输层连接失败（2026-10-13 诚实化配套）：`failover::transport_error`
+    // 把 DNS/连接拒绝/SYN 黑洞/中途断流统一盖章 "connect error (model X):
+    // <根因链>" 前缀。必须**先于** auth/format 判定——错误链里携带的
+    // URL/系统文案可能含孤立三位数字（如端口号 :401/），放行到 auth 分支
+    // 会被 `\b401\b` 误分类成 Auth 而跳过一切重试。归 Timeout 类 = 同属
+    // 「瞬态、可重试/可故障转移」处置；真实根因在消息链里不丢，只是重试
+    // 归宿与超时同门。
+    if msg.contains("connect error") {
+        return Some(LlmErrorClass::Timeout);
+    }
     if matches_rate_limit(msg) {
         return Some(LlmErrorClass::RateLimit);
     }

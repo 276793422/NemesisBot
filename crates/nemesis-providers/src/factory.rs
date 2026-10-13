@@ -70,6 +70,13 @@ pub struct FactoryConfig {
     /// 失效」的死配置（factory 整合期回归）。CLI 型 lane（claude-cli/
     /// codex-cli 子进程）不消费此字段：经进程环境变量 HTTPS_PROXY 代理。
     pub proxy: String,
+    /// per-model 流式开关（2026-10-13 stream 键）：来自模型条目 `stream`
+    /// 字段（provider_resolver 透传）。值集：空（auto）/ "yes" / "no"。
+    /// auto = codex lane 流式（墙钟根因修复形态）、anthropic/openai 兼容
+    /// lane 维持非流式；yes = 强制内部流式（聚合 chat_stream，chat() 对外
+    /// 签名不变）；no = 逃生门强制非流式。语义对齐 protocol：构造期消费，
+    /// 改条目需重新设默认或重启。CLI 型 lane 不消费此字段。
+    pub stream_mode: String,
 }
 
 /// 全 lane 统一的单请求默认超时（超时阶梯最内层；外层链见 CLAUDE.md）。
@@ -215,6 +222,7 @@ pub fn create_provider(cfg: &FactoryConfig) -> Result<Arc<dyn LLMProvider>, Stri
                 default_model: sel.model,
                 timeout_secs: effective_timeout(sel.timeout_secs),
                 proxy: opt_proxy(cfg),
+                stream_mode: cfg.stream_mode.clone(),
             };
             Arc::new(AnthropicProvider::new(anthropic_cfg))
         }
@@ -226,6 +234,7 @@ pub fn create_provider(cfg: &FactoryConfig) -> Result<Arc<dyn LLMProvider>, Stri
                 base_url: sel.api_base,
                 timeout_secs: effective_timeout(sel.timeout_secs),
                 proxy: opt_proxy(cfg),
+                stream_mode: cfg.stream_mode.clone(),
                 ..Default::default()
             };
             Arc::new(CodexProvider::new(codex_cfg))
@@ -263,6 +272,7 @@ pub fn create_provider(cfg: &FactoryConfig) -> Result<Arc<dyn LLMProvider>, Stri
                 headers: cfg.headers.clone(),
                 proxy: opt_proxy(cfg),
                 preserve_prefix: false,
+                stream_mode: cfg.stream_mode.clone(),
             };
             Arc::new(HttpProvider::new(http_cfg))
         }

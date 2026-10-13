@@ -1,9 +1,9 @@
-// github_copilot.rs 覆盖率补充测试（send 失败 → 诚实 Timeout 105-107）。
+// github_copilot.rs 覆盖率补充测试（send 失败 → 诚实 connect error 105-112）。
 
 use super::*;
 use crate::types::{ChatOptions, Message};
 
-/// 不可达 uri → send 失败映射 Timeout（105-107）。
+/// 不可达 uri → send 失败映射 Unknown + "connect error" 前缀（105-112）。
 #[tokio::test]
 async fn chat_dead_uri_returns_timeout() {
     let provider = GitHubCopilotProvider::new(GitHubCopilotConfig {
@@ -18,7 +18,14 @@ async fn chat_dead_uri_returns_timeout() {
         .await
         .unwrap_err();
     match err {
-        FailoverError::Timeout { provider: p, .. } => assert_eq!(p, "github-copilot"),
-        other => panic!("预期 Timeout，得到 {other:?}"),
+        FailoverError::Unknown {
+            provider: p,
+            message,
+        } => {
+            assert_eq!(p, "github-copilot");
+            assert!(message.starts_with("connect error"), "got: {message}");
+            assert!(message.contains("cov-model"), "model in message: {message}");
+        }
+        other => panic!("预期 connect error，得到 {other:?}"),
     }
 }

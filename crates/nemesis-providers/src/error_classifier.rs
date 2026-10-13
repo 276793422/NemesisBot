@@ -43,6 +43,8 @@ pub fn classify_error(error_msg: &str, provider: &str, model: &str) -> Option<Fa
         },
         LlmErrorClass::Overloaded => FailoverError::Overloaded {
             provider: provider.to_string(),
+            // 状态码形态带真值；纯文案形态（原实现约定）= 0。
+            status: extract_http_status(&msg).unwrap_or(0),
         },
     })
 }

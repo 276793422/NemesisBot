@@ -32,8 +32,8 @@ pub use store::{ConfigHandle, ConfigStore, global, load_live, save_live, set_glo
 pub use provider_resolver::{
     ModelResolution, PROVIDER_PRESETS, ProviderPreset, ProviderResolution, ProviderResolver,
     find_model_by_name, find_provider_preset, get_default_api_base, get_effective_llm,
-    get_model_by_name, infer_default_model, infer_provider_from_model, provider_preset_ids,
-    resolve_model_config, resolve_model_resolution,
+    get_model_by_name, infer_default_model, infer_provider_from_model, normalize_stream_value,
+    provider_preset_ids, resolve_model_config, resolve_model_resolution,
 };
 
 #[derive(Error, Debug)]

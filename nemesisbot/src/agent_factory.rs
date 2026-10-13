@@ -424,6 +424,7 @@ fn wrap_fallback_chain(
                 model: fr.model_name.clone(),
                 factory: nemesis_providers::factory::FactoryConfig {
                     proxy: fr.proxy.clone(),
+                    stream_mode: fr.stream_mode.clone(),
                     llm_ref: format!("{}/{}", fr.provider_name, fr.model_name),
                     api_key: fr.api_key.clone(),
                     api_base: fr.api_base.clone(),
@@ -484,6 +485,7 @@ pub fn build_agent_loop(
 
     let factory_cfg = nemesis_providers::factory::FactoryConfig {
         proxy: resolution.proxy.clone(),
+        stream_mode: resolution.stream_mode.clone(),
         llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
         api_key: resolution.api_key.clone(),
         api_base: resolution.api_base.clone(),
@@ -727,6 +729,7 @@ pub fn build_agent_loop(
             Ok(resolution) => {
                 let small_factory_cfg = nemesis_providers::factory::FactoryConfig {
                     proxy: resolution.proxy.clone(),
+                    stream_mode: resolution.stream_mode.clone(),
                     llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
                     api_key: resolution.api_key.clone(),
                     api_base: resolution.api_base.clone(),
@@ -1709,6 +1712,7 @@ pub fn build_cluster_agent_loop(
 
     let factory_cfg = nemesis_providers::factory::FactoryConfig {
         proxy: resolution.proxy.clone(),
+        stream_mode: resolution.stream_mode.clone(),
         llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
         api_key: resolution.api_key.clone(),
         api_base: resolution.api_base.clone(),
@@ -2327,6 +2331,7 @@ pub fn build_project_agent_loop(
 
     let factory_cfg = nemesis_providers::factory::FactoryConfig {
         proxy: resolution.proxy.clone(),
+        stream_mode: resolution.stream_mode.clone(),
         llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
         api_key: resolution.api_key.clone(),
         api_base: resolution.api_base.clone(),
@@ -2495,6 +2500,7 @@ pub fn build_project_agent_loop(
             Ok(resolution) => {
                 let small_factory_cfg = nemesis_providers::factory::FactoryConfig {
                     proxy: resolution.proxy.clone(),
+                    stream_mode: resolution.stream_mode.clone(),
                     llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
                     api_key: resolution.api_key.clone(),
                     api_base: resolution.api_base.clone(),

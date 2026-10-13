@@ -1337,6 +1337,7 @@ async fn webserver_all_setters_assemble() {
     server.set_streaming_provider(std::sync::Arc::new(
         nemesis_providers::http_provider::HttpProvider::new(
             nemesis_providers::http_provider::HttpProviderConfig {
+                stream_mode: String::new(),
                 name: "t".to_string(),
                 base_url: "http://127.0.0.1:9".to_string(),
                 api_key: "k".to_string(),

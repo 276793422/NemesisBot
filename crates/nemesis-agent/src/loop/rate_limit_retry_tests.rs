@@ -197,11 +197,18 @@ async fn overloaded_error_enters_rate_limit_loop_and_recovers() {
     }
     assert_eq!(progresses.len(), 2, "过载进度通知: {progresses:?}");
     assert!(progresses[0].contains("第 1/10 次"));
+    // 2026-10-13：过载与限流展示层分家——过载错误进环但文案必须是
+    // 「上游过载」而非「上游限流」（排障方向不再被带偏）。
+    assert!(
+        progresses[0].contains("上游过载") && !progresses[0].contains("上游限流"),
+        "过载进度必须标注上游过载: {progresses:?}"
+    );
 }
 
 #[tokio::test(start_paused = true)]
 async fn overloaded_exhausted_yields_structured_terminal_error() {
-    // 过载耗尽同样走结构化终局（上游限流口径），不裸抛。
+    // 过载耗尽同样走结构化终局（不裸抛）；2026-10-13 起标签按真类
+    // 「上游过载」（环归类口径不变，只改展示层）。
     let provider = RateLimitedThenSuccess {
         calls: std::sync::atomic::AtomicUsize::new(0),
         fail_times: usize::MAX,
@@ -221,7 +228,7 @@ async fn overloaded_exhausted_yields_structured_terminal_error() {
         })
         .collect();
     assert!(
-        errs.iter().any(|m| m.contains("上游限流，已重试 10 次")),
+        errs.iter().any(|m| m.contains("上游过载，已重试 10 次")),
         "过载终局必须结构化标注: {errs:?}"
     );
     assert!(
@@ -461,6 +468,7 @@ fn retry_status_snapshot_roundtrip_and_expiry() {
             max_retries: 10,
             wait_secs: 40,
             model: "gpt-test".to_string(),
+            label: "上游限流",
             updated_at: std::time::Instant::now(),
         },
     );
@@ -469,6 +477,7 @@ fn retry_status_snapshot_roundtrip_and_expiry() {
     assert_eq!(st.max_retries, 10);
     assert_eq!(st.wait_secs, 40);
     assert_eq!(st.model, "gpt-test");
+    assert_eq!(st.label, "上游限流");
 
     // 过期快照（E-STOP abort 残留形态）读侧判失效并回收。
     agent_loop.set_rate_limit_status(
@@ -478,6 +487,7 @@ fn retry_status_snapshot_roundtrip_and_expiry() {
             max_retries: 10,
             wait_secs: 60,
             model: "gpt-test".to_string(),
+            label: "上游过载",
             updated_at: std::time::Instant::now()
                 - std::time::Duration::from_secs(RETRY_STATUS_STALE_SECS + 1),
         },
@@ -498,6 +508,7 @@ fn retry_status_snapshot_roundtrip_and_expiry() {
             max_retries: 10,
             wait_secs: 5,
             model: "m".to_string(),
+            label: "上游限流",
             updated_at: std::time::Instant::now(),
         },
     );
@@ -607,4 +618,31 @@ async fn upstream_status_500_exhausts_transient_ring_without_rate_limit_ring() {
         !errs.iter().any(|m| m.contains("上游限流")),
         "500 不得被误分类进限流环（互斥不互吞）: {errs:?}"
     );
+}
+
+#[test]
+fn rate_limit_display_label_distinguishes_overload() {
+    // 2026-10-13：过载与限流展示层分家——环归类不变，只改标签。
+    assert_eq!(
+        rate_limit_display_label("provider codex is overloaded"),
+        "上游过载"
+    );
+    assert_eq!(
+        rate_limit_display_label("provider codex is overloaded (status: 502)"),
+        "上游过载"
+    );
+    // 大小写不敏感（Overloaded 展平形态大写开头也命中）。
+    assert_eq!(
+        rate_limit_display_label("Provider X Is OVERLOADED"),
+        "上游过载"
+    );
+    assert_eq!(
+        rate_limit_display_label("rate limited by provider x"),
+        "上游限流"
+    );
+    assert_eq!(
+        rate_limit_display_label("429 too many requests"),
+        "上游限流"
+    );
+    assert_eq!(rate_limit_display_label(""), "上游限流");
 }
