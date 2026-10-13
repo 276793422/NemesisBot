@@ -113,6 +113,45 @@ fn record_then_remove_learned_roundtrip() {
 }
 
 // ---------------------------------------------------------------------------
+// 写并发串行化（2026-10-13 同类横扫补钉）：record/remove 都是 load→改→save
+// 的 RMW，agent 工具路径（跨会话并发 turn）与 WSAPI 管理面可并发到达。
+// 无锁时后写者以自己的快照整体覆盖先写者的更新（save 原子救不了丢更新）。
+// MANIFEST_WRITE_LOCK 串行化后，任意交错下两笔更新都必须同时落盘。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn concurrent_record_and_remove_no_lost_update() {
+    let ws = temp_ws();
+    // 预置一条 remove 的靶子。
+    record_learned(ws.path(), "seed", "to be removed").unwrap();
+
+    std::thread::scope(|s| {
+        // 并发 record 一批新条目。
+        for i in 0..6 {
+            let ws = ws.path();
+            s.spawn(move || {
+                record_learned(ws, &format!("skill-{i}"), &format!("desc {i}"))
+                    .unwrap_or_else(|e| panic!("并发 record {i} 失败: {e}"));
+            });
+        }
+        // 同批并发 remove 靶子。
+        let ws = ws.path();
+        s.spawn(move || {
+            remove_learned(ws, "seed").unwrap();
+        });
+    });
+
+    let m = LearnedManifest::load(ws.path());
+    assert!(!m.entries.contains_key("seed"), "seed 必须已被移除");
+    for i in 0..6 {
+        assert!(
+            m.entries.contains_key(&format!("skill-{i}")),
+            "skill-{i} 不得被并发 remove 的快照冲掉（丢更新即缺条目）"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // extract_description
 // ---------------------------------------------------------------------------
 
