@@ -111,6 +111,7 @@ fn pkg_args_with_role(identity_md: &str, soul_md: &str, role: &str) -> serde_jso
 
 fn provider_for(server: &MockServer) -> Arc<HttpProvider> {
     Arc::new(HttpProvider::new(HttpProviderConfig {
+        stream_mode: String::new(),
         name: "s10b-mock".to_string(),
         base_url: server.uri(),
         api_key: "test-key".to_string(),

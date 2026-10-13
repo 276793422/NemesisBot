@@ -33,6 +33,7 @@ fn user_message(content: &str) -> Message {
 
 fn basic_config(base_url: String) -> HttpProviderConfig {
     HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url,
         api_key: "test-key".to_string(),
@@ -1563,8 +1564,11 @@ async fn test_chat_stream_eof_plain_text_synthesizes_stop() {
     assert_eq!(finals, 1, "exactly one synthesized stop chunk");
 }
 
-/// J1：SSE 流中途真读错误（Content-Length 谎报 + 提前关闭连接）→ Timeout
-/// （可 failover），而非旧分类 Format（不可重试、直接放弃整条链）。
+/// J1：SSE 流中途真读错误（Content-Length 谎报 + 提前关闭连接）→ 诚实
+/// connect error（2026-10-13 transport_error 映射），而非旧分类 Format
+/// （不可重试、直接放弃整条链）。可重试性锚点从变体（Timeout）移到
+/// message 前缀（"connect error"）——llm_error_class 早判把它归 Timeout
+/// 类，failover 语义不变。
 #[tokio::test]
 async fn test_chat_stream_read_error_classified_as_timeout() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1590,7 +1594,13 @@ async fn test_chat_stream_read_error_classified_as_timeout() {
         }
     }
     match got_err {
-        Some(FailoverError::Timeout { .. }) => {}
-        other => panic!("expected Timeout, got {:?}", other),
+        Some(FailoverError::Unknown { message, .. }) => {
+            assert!(
+                message.starts_with("connect error"),
+                "read error must map to honest connect error, got: {message}"
+            );
+            assert!(message.contains("gpt-4"), "model in message: {message}");
+        }
+        other => panic!("expected Unknown connect error, got {:?}", other),
     }
 }

@@ -162,6 +162,9 @@ struct SwapParams {
     timeout_secs: u64,
     /// Per-model 出站代理 URL（代理接线修复 2026-09-17）。空 = 不代理。
     proxy: String,
+    /// per-model 流式开关（2026-10-13 stream 键）："yes"/"no"/""(auto)。
+    /// 构造期消费——热切重设默认后生效。
+    stream_mode: String,
 }
 
 impl ModelsHandler {
@@ -545,6 +548,7 @@ impl ModelsHandler {
             connect_mode: swap.connect_mode.clone(),
             protocol: swap.protocol.clone(),
             timeout_secs: swap.timeout_secs,
+            stream_mode: swap.stream_mode.clone(),
             account_id: String::new(),
             headers: std::collections::HashMap::new(),
         };
@@ -635,6 +639,7 @@ impl ModelsHandler {
                         connect_mode: fr.connect_mode,
                         protocol: fr.protocol.clone(),
                         timeout_secs: fr.timeout_secs,
+                        stream_mode: fr.stream_mode.clone(),
                         account_id: String::new(),
                         headers: std::collections::HashMap::new(),
                     },
@@ -668,6 +673,7 @@ impl ModelsHandler {
             protocol: resolution.protocol,
             timeout_secs: resolution.timeout_secs,
             proxy: resolution.proxy,
+            stream_mode: resolution.stream_mode,
         })
     }
 

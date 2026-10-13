@@ -101,9 +101,10 @@ impl LLMProvider for GitHubCopilotProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|_| FailoverError::Timeout {
-                provider: "github-copilot".to_string(),
-                model: self.config.default_model.clone(),
+            // 诚实化（2026-10-13）：真超时→Timeout；连接失败等→Unknown +
+            // "connect error" 前缀（与全 lane 口径一致，错误链不再丢弃）。
+            .map_err(|e| {
+                crate::failover::transport_error("github-copilot", &self.config.default_model, &e)
             })?;
 
         let status = resp.status().as_u16();

@@ -522,12 +522,13 @@ impl AgentLoop {
             }
             retries += 1;
             let wait = rate_limit_wait_secs(&last_err, retries);
+            let label = rate_limit_display_label(&last_err);
             // 裁决③「显式进度」：每次重试对用户可见；B 端
             // outbound_tx 未装配 → 静默重试。
             self.send_retry_progress(
                 context,
                 format!(
-                    "⏳ 上游限流（{}），第 {retries}/{max_retries} 次重试，等待 {wait} 秒…",
+                    "⏳ {label}（{}），第 {retries}/{max_retries} 次重试，等待 {wait} 秒…",
                     self.current_display_model()
                 ),
             )
@@ -546,6 +547,7 @@ impl AgentLoop {
                     max_retries,
                     wait_secs: wait,
                     model: self.current_display_model(),
+                    label,
                     updated_at: std::time::Instant::now(),
                 },
             );
@@ -588,13 +590,14 @@ impl AgentLoop {
         self.clear_rate_limit_status(&context.session_key);
         if maybe_resp.is_none() {
             // 裁决④「终局诚实」：结构化标注，不再裸抛
-            // 原始错误。
+            // 原始错误。标签按最后错误的真类（限流/过载）。
+            let label = rate_limit_display_label(&last_err);
             last_err = if budget_exhausted {
                 format!(
-                    "上游限流，重试总时长超过 {budget_secs} 秒预算（已重试 {retries} 次），停止重试"
+                    "{label}，重试总时长超过 {budget_secs} 秒预算（已重试 {retries} 次），停止重试"
                 )
             } else {
-                format!("上游限流，已重试 {retries} 次：{}", last_err)
+                format!("{label}，已重试 {retries} 次：{}", last_err)
             };
         }
         (maybe_resp, last_err)

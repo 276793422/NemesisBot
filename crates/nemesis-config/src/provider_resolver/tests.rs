@@ -426,6 +426,7 @@ fn test_provider_resolution_serialization() {
         workspace: String::new(),
         enabled: true,
         timeout_secs: 0,
+        stream_mode: String::new(),
     };
     let json = serde_json::to_string(&pr).unwrap();
     let parsed: ProviderResolution = serde_json::from_str(&json).unwrap();
@@ -915,4 +916,128 @@ fn test_preset_ids_helper_sorted_unique_and_complete() {
     for p in PROVIDER_PRESETS {
         assert!(ids.contains(&p.id), "provider_preset_ids missing {}", p.id);
     }
+}
+
+// ---------------------------------------------------------------------------
+// stream 键提取（2026-10-13 per-model 流式开关）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_extract_stream_mode_value_matrix() {
+    use serde_json::json;
+    let mk = |v: serde_json::Value| {
+        let extra = std::collections::BTreeMap::from([("stream".to_string(), v)]);
+        extract_stream_mode(&extra)
+    };
+    // yes 侧
+    assert_eq!(mk(json!(true)), "yes");
+    assert_eq!(mk(json!("yes")), "yes");
+    assert_eq!(mk(json!("YES")), "yes");
+    assert_eq!(mk(json!("true")), "yes");
+    assert_eq!(mk(json!(" True ")), "yes");
+    // no 侧
+    assert_eq!(mk(json!(false)), "no");
+    assert_eq!(mk(json!("no")), "no");
+    assert_eq!(mk(json!("False")), "no");
+    // auto 侧（缺省 / 未知值 / 非 bool 非字符串）
+    let empty = std::collections::BTreeMap::new();
+    assert_eq!(extract_stream_mode(&empty), "");
+    assert_eq!(mk(json!("maybe")), "");
+    assert_eq!(mk(json!(1)), "");
+    assert_eq!(mk(json!(null)), "");
+}
+
+#[test]
+fn test_resolve_model_config_stream_mode_passthrough() {
+    let cfg = Config {
+        model_list: vec![
+            ModelConfig {
+                extra: std::collections::BTreeMap::from([(
+                    "stream".to_string(),
+                    serde_json::json!(true),
+                )]),
+                model_name: "streamed".to_string(),
+                model: "openai/gpt-x".to_string(),
+                api_key: "k".to_string(),
+                ..Default::default()
+            },
+            ModelConfig {
+                extra: std::collections::BTreeMap::from([(
+                    "stream".to_string(),
+                    serde_json::json!("no"),
+                )]),
+                model_name: "unstreamed".to_string(),
+                model: "openai/gpt-x".to_string(),
+                api_key: "k".to_string(),
+                ..Default::default()
+            },
+            ModelConfig {
+                extra: Default::default(),
+                model_name: "plain".to_string(),
+                model: "openai/gpt-x".to_string(),
+                api_key: "k".to_string(),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    assert_eq!(
+        resolve_model_config(&cfg, "streamed").unwrap().stream_mode,
+        "yes"
+    );
+    assert_eq!(
+        resolve_model_config(&cfg, "unstreamed")
+            .unwrap()
+            .stream_mode,
+        "no"
+    );
+    assert_eq!(resolve_model_config(&cfg, "plain").unwrap().stream_mode, "");
+}
+
+// ---------------------------------------------------------------------------
+// BUG-b 根修回归（2026-10-13）：model 字段比对不再有 '/' 门控
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_resolve_model_config_prefixless_model_field_matches() {
+    // 无前缀条目（model: "gpt-5.6-sol"）+ 同名 ref：旧实现门控错过，
+    // 落 inference fallback（默认 base + 空 key）。根修后精确命中条目，
+    // key/base 都来自条目本身。
+    let cfg = Config {
+        model_list: vec![ModelConfig {
+            extra: Default::default(),
+            model_name: "main".to_string(),
+            model: "gpt-5.6-sol".to_string(),
+            api_key: "real-key".to_string(),
+            api_base: "http://127.0.0.1:15721/v1".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let res = resolve_model_config(&cfg, "gpt-5.6-sol").unwrap();
+    assert_eq!(res.api_key, "real-key");
+    assert_eq!(res.api_base, "http://127.0.0.1:15721/v1");
+    assert_eq!(res.model_name, "gpt-5.6-sol");
+    // 无前缀模型名走推断：gpt → openai
+    assert_eq!(res.provider_name, "openai");
+}
+
+#[test]
+fn test_resolve_model_config_prefixless_model_field_beats_inference_fallback() {
+    // 命中条目时 api_base 必须来自条目而非 get_default_api_base ——
+    // 旧门控下此 ref 会静默落到 https://api.openai.com/v1 + 空 key。
+    let cfg = Config {
+        model_list: vec![ModelConfig {
+            extra: Default::default(),
+            model_name: "sol".to_string(),
+            model: "gpt-5.6-sol".to_string(),
+            api_key: "k2".to_string(),
+            api_base: "http://10.1.1.1:9999".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let res = resolve_model_config(&cfg, "gpt-5.6-sol").unwrap();
+    assert_ne!(res.api_base, get_default_api_base("openai"));
+    assert_eq!(res.api_base, "http://10.1.1.1:9999");
 }
