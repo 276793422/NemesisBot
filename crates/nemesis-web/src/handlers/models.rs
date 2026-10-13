@@ -842,12 +842,13 @@ impl ModelsHandler {
                 Ok((entry_is_default, entry_model_name, cfg.clone()))
             })?;
 
-        // 统一默认槽联动（2026-09-22 方案A）：protocol/proxy 在 provider
+        // 统一默认槽联动（2026-09-22 方案A）：protocol/proxy/stream 在 provider
         // 构造时消费——改的是当前默认模型时补跑运行时热切（此前只有前端
         // 代理页自动跟发 set_default 打补丁，模型页改 protocol 后 workflow/
-        // 集群/SSE 侧槽全是旧 provider）。tier/effort/size/real_name/
-        // context_window 走 agent loop 的 config mtime 重读，不经此处。
-        if matches!(field.as_str(), "protocol" | "proxy") && entry_is_default {
+        // 集群/SSE 侧槽全是旧 provider；stream 同为构造期消费，2026-10-14
+        // 补进热切联动）。tier/effort/size/real_name/context_window 走
+        // agent loop 的 config mtime 重读，不经此处。
+        if matches!(field.as_str(), "protocol" | "proxy" | "stream") && entry_is_default {
             Self::apply_runtime_swap(&final_cfg, &entry_model_name, ctx)?;
         }
         Ok(Some(serde_json::json!({

@@ -195,7 +195,7 @@ describe('ModelsView 流式开关（stream 键 UI）', () => {
     const values = sel.findAll('option').map((o) => (o.element as HTMLOptionElement).value)
     expect(values).toEqual(['', 'yes', 'no'])
     expect((sel.element as HTMLSelectElement).value).toBe('yes')
-    expect(field!.find('.attr-effect').text()).toContain('重新设为默认时生效')
+    expect(field!.find('.attr-effect').text()).toContain('改默认模型立即生效（自动热切）')
     w.unmount()
   })
 })

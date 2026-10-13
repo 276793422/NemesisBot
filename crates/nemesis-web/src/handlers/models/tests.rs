@@ -1232,3 +1232,63 @@ fn update_field_proxy_swap_resolves_by_entry_model_name() {
         "热切必须按条目自身配置解析，而非推断臂合成值"
     );
 }
+
+/// stream 与 protocol/proxy 同为构造期消费——update_field 改默认模型的
+/// stream 必须触发热切（provider 带 stream_mode 重建进统一槽），不能只落盘
+/// 等重启。判据用 model_name 槽：初始 "test-model"，swap 跑过即刷成命中
+/// 条目的 model_name（"dm"）；非默认条目改 stream 不触发热切，槽保持不动。
+#[test]
+fn update_field_stream_swap_fires_for_default_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(
+        dir.path(),
+        r#"{ "agents": { "defaults": { "llm": "dm" } }, "model_list": [
+            { "model_name": "dm", "model": "gpt-x", "api_key": "sk", "api_base": "http://127.0.0.1:9" },
+            { "model_name": "other", "model": "zhipu/glm-4.7", "api_key": "sk2" }
+        ] }"#,
+    );
+    let h = ModelsHandler::new();
+
+    // 默认条目改 stream：热切触发，槽刷新为命中条目解析后的实际模型 ID
+    // （canonical 口径：resolution.model_name = 去前缀 model 字段，非别名；
+    // 槽初值 "test-model" 被刷掉即证明 swap 跑过）。
+    let ctx = make_ctx(&dir);
+    h.update_field(
+        &home_str(&dir),
+        &serde_json::json!({ "name": "dm", "field": "stream", "value": "yes" }),
+        &ctx,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        *ctx.state.model_name.lock(),
+        "gpt-x",
+        "改默认模型 stream 必须触发热切（构造期消费字段）——槽刷成解析后实际模型 ID"
+    );
+    // 落盘同时发生（归一值）。
+    assert_eq!(
+        read_config_raw(dir.path())["model_list"][0]["stream"],
+        "yes",
+        "热切不得替代落盘"
+    );
+
+    // 非默认条目改 stream：只落盘，不触发热切（槽保持初值）。
+    let ctx2 = make_ctx(&dir);
+    h.update_field(
+        &home_str(&dir),
+        &serde_json::json!({ "name": "other", "field": "stream", "value": "no" }),
+        &ctx2,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        *ctx2.state.model_name.lock(),
+        "test-model",
+        "非默认条目改 stream 不得触发热切"
+    );
+    assert_eq!(
+        read_config_raw(dir.path())["model_list"][1]["stream"],
+        "no",
+        "非默认条目仍要落盘"
+    );
+}
