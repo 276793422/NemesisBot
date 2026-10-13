@@ -1455,7 +1455,7 @@ const pendingTurn = ref(false)
 // BUG 2026-09-21 ①：占位区的限流重试实时态（agent.retry_status 轮询）——
 // 切走切回后用户看到「第 N/M 次重试」而非哑转圈；重试不落盘（既有裁决
 // 进度只走实时帧），这里是唯一的过程可见面。
-const retryStatus = ref<{ retry: number; max_retries: number; wait_secs: number; model: string } | null>(null)
+const retryStatus = ref<{ retry: number; max_retries: number; wait_secs: number; model: string; label?: string } | null>(null)
 let pendingTurnTimer: number | null = null
 let pendingTurnDeadPolls = 0
 let pendingTurnStartedAt = 0
@@ -1529,7 +1529,7 @@ async function pollPendingTurn() {
   try {
     const rs = await request('agent', 'retry_status', { session_id: effectiveSid.value || '' })
     retryStatus.value = rs?.retrying
-      ? { retry: rs.retry, max_retries: rs.max_retries, wait_secs: rs.wait_secs, model: rs.model }
+      ? { retry: rs.retry, max_retries: rs.max_retries, wait_secs: rs.wait_secs, model: rs.model, label: rs.label }
       : null
   } catch {
     /* 后端不可用/非 default chat——占位退化为转圈，无害 */
@@ -2574,7 +2574,8 @@ onUnmounted(() => {
                  转圈。streaming（本地发送）不显示——重试进度已有实时帧。 -->
             <template v-if="pendingTurn && retryStatus">
               <div class="retry-status-text">
-                ⏳ 上游限流（{{ retryStatus.model }}），第 {{ retryStatus.retry }}/{{ retryStatus.max_retries }} 次重试，等待 {{ retryStatus.wait_secs }} 秒…
+                <!-- label 按真类（上游限流/上游过载，2026-10-13）；旧后端无 label 字段回落「上游限流」。 -->
+                ⏳ {{ retryStatus.label || '上游限流' }}（{{ retryStatus.model }}），第 {{ retryStatus.retry }}/{{ retryStatus.max_retries }} 次重试，等待 {{ retryStatus.wait_secs }} 秒…
               </div>
             </template>
             <div class="typing-indicator"><span></span><span></span><span></span></div>

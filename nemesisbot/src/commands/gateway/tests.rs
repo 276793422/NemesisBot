@@ -5459,6 +5459,7 @@ fn gateway_ctx_fixture(cfg_json: &str) -> GatewayCtxFixture {
                 headers: std::collections::HashMap::new(),
                 timeout_secs: 0,
                 proxy: String::new(),
+                stream_mode: String::new(),
             },
         )
         .0;
