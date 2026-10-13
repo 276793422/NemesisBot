@@ -582,6 +582,22 @@ fn handle_comment_post(deps: &MasterBusDeps, env: &Envelope) -> EnvelopeResponse
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    // D11-1（2026-10-13 第 6 轮审计）：远端 kind_tag 白名单——store 侧
+    // `CommentType::from_str(kind_tag)` 对未知值回退 Comment，但
+    // "system"/"status_change"/"comment" 三值**有**映射：worker 上行可自
+    // 选 ctype 落成系统/状态变更/普通评论形态（讨论区伪装系统痕迹、伪造
+    // 状态变更时间线）。worker 正常路径只用 discussion/text（见
+    // cluster_agent build_comment_post_envelope）；question/delivery 留
+    // 协议余量。dashboard 本地发言不经此路径，不受影响。
+    if matches!(kind_tag.as_str(), "system" | "status_change" | "comment") {
+        return EnvelopeResponse::failure(
+            env,
+            EnvelopeError::new(
+                envelope::error_code::VALIDATION,
+                format!("kind_tag `{kind_tag}` 不允许远端上行（保留类型）"),
+            ),
+        );
+    }
 
     let sender = Actor::new(sender_type, &sender_id);
     match post_discussion_core(
@@ -593,6 +609,7 @@ fn handle_comment_post(deps: &MasterBusDeps, env: &Envelope) -> EnvelopeResponse
         &content,
         reply_to,
         &kind_tag,
+        false,
     ) {
         Ok(p) => EnvelopeResponse::success(env, p.response),
         Err(PostError::Quota(denied)) => {
@@ -642,8 +659,16 @@ fn wake_summary_json(plan: &WakePlan) -> serde_json::Value {
 /// 讨论管线共享核心（单一真相）：① 幂等预检（重复 → 缓存首响，不扣
 /// 额度）→ ② 额度三闸（拒绝不落库——worker/用户明确知道被护栏拦下）→
 /// ③ 落库（全副作用 + seq 台账）→ ④ 新消息异步裁决 + wake 下行（handler
-/// 立即返回首响，投递不占 ACK）。worker RPC 上行（[`handle_comment_post`]）
-/// 与 dashboard 本地发言（[`post_discussion_locally`]）共用，G3/G12 语义同源。
+/// 立即返回首响，投递不占 ACK）。worker RPC 上行（[`handle_comment_post`]，
+/// `from_local=false`）与 dashboard 本地发言（[`post_discussion_locally`]，
+/// `from_local=true`）共用，G3/G12 语义同源。
+///
+/// `from_local` 同时是 M5 审批回源闸（D11-2，2026-10-13 第 6 轮审计）：
+/// `/approve|/deny <短号>` → 远程审批 verdict 是**人**的裁决——曾对一切
+/// 来源开放，worker 经 board.comment.post 上行一条同形文本即可批复自己
+/// 的待审批卡（审批闸被执行方自答击穿）。回源只走 dashboard 本地发言
+/// （web 层登录鉴权）。
+#[allow(clippy::too_many_arguments)]
 fn post_discussion_core(
     deps: &MasterBusDeps,
     sender: &Actor,
@@ -653,6 +678,7 @@ fn post_discussion_core(
     content: &str,
     reply_to: Option<i64>,
     kind_tag: &str,
+    from_local: bool,
 ) -> Result<PostedMessage, PostError> {
     // ⓪ wake 裁决前置（goal P1/F3）：裁决器是纯函数，先于落库计算——
     // 幂等命中与新落库的首响都带 wake 摘要，G12「相同首响」契约不破；
@@ -802,8 +828,9 @@ fn post_discussion_core(
     // M5（2026-10-10 集群无人值守硬化）：看板评论回源——issue 线程的
     // `/approve|/deny <短号>` 评论转发远程审批（短号在注册表才动作，杂散
     // 同形文本零影响；失败留痕为系统评论）。与 deliver_wakeups 并行的旁路
-    // spawn，不阻塞首响。
-    if thread_kind == thread_kind::ISSUE
+    // spawn，不阻塞首响。D11-2：只认本地发言（见 fn doc）。
+    if from_local
+        && thread_kind == thread_kind::ISSUE
         && nemesis_web::remote_approval::looks_like_approval_reply(content)
     {
         let store = deps.store.clone();
@@ -848,6 +875,7 @@ pub fn post_discussion_locally(
         content,
         reply_to,
         kind_tag,
+        true,
     ) {
         Ok(p) => Ok(p.response),
         Err(PostError::Quota(denied)) => {

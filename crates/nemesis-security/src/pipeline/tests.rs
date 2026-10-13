@@ -113,7 +113,9 @@ async fn test_register_rules() {
         enabled: true,
         default_action: "deny".to_string(),
         file_rules: vec![SecurityRule {
-            pattern: "/tmp/.*".to_string(),
+            // glob 方言（D12-1 后 matcher 只认 `*`/`**` 通配；regex 风味
+            // `/tmp/.*` 是旧契约漂移——字面点号后失配，deny 静默失效）。
+            pattern: "/tmp/**".to_string(),
             action: "allow".to_string(),
             comment: "allow tmp".to_string(),
         }],
@@ -784,7 +786,9 @@ async fn test_plugin_set_rules_override() {
     plugin.set_rules(
         OperationType::FileRead,
         vec![SecurityRule {
-            pattern: "/tmp/.*".to_string(),
+            // glob 方言（D12-1 后 matcher 只认 `*`/`**` 通配；regex 风味
+            // `/tmp/.*` 是旧契约漂移——字面点号后失配，deny 静默失效）。
+            pattern: "/tmp/**".to_string(),
             action: "deny".to_string(),
             comment: "deny tmp".to_string(),
         }],
@@ -830,7 +834,9 @@ async fn test_plugin_network_rules() {
         ssrf_enabled: false,
         default_action: "allow".to_string(),
         network_rules: vec![SecurityRule {
-            pattern: "https://trusted.com/.*".to_string(),
+            // glob 方言（D12-1 后只认 `*`/`**`；旧 regex 风味 `.*` 曾使该
+            // allow 规则整体失配、断言靠 default allow 侥幸绿——死覆盖）。
+            pattern: "https://trusted.com/**".to_string(),
             action: "allow".to_string(),
             comment: "trusted domain".to_string(),
         }],
@@ -856,7 +862,10 @@ fn test_plugin_hardware_rules() {
         enabled: true,
         default_action: "allow".to_string(),
         file_rules: vec![SecurityRule {
-            pattern: "/dev/.*".to_string(),
+            // glob 方言（D12-1 后只认 `*`/`**`；regex 风味 `/dev/.*` 曾使
+            // deny 静默失效，且无 runtime 的同步测试曾因此落进 Layer 7 的
+            // tokio block_in_place 而 panic——deny 命中即提前返回不进扫描层）。
+            pattern: "/dev/**".to_string(),
             action: "deny".to_string(),
             comment: "no device access".to_string(),
         }],
@@ -1087,7 +1096,9 @@ fn test_plugin_dir_rules_deny() {
         enabled: true,
         default_action: "allow".to_string(),
         dir_rules: vec![SecurityRule {
-            pattern: "/tmp/.*".to_string(),
+            // glob 方言（D12-1 后 matcher 只认 `*`/`**` 通配；regex 风味
+            // `/tmp/.*` 是旧契约漂移——字面点号后失配，deny 静默失效）。
+            pattern: "/tmp/**".to_string(),
             action: "deny".to_string(),
             comment: "deny tmp dirs".to_string(),
         }],
@@ -1484,12 +1495,14 @@ async fn test_register_rules_hardware_and_registry_arms() {
         enabled: true,
         default_action: "allow".to_string(),
         hardware_rules: vec![SecurityRule {
-            pattern: ".*".to_string(),
+            // glob 方言 match-all（D12-1 后只认 `*`/`**`；装饰性规则，
+            // 断言不触及——工具名映射表无 hardware/registry 工具）。
+            pattern: "**".to_string(),
             action: "deny".to_string(),
             comment: "deny all i2c/gpio".to_string(),
         }],
         registry_rules: vec![SecurityRule {
-            pattern: "HKLM.*".to_string(),
+            pattern: "HKEY_LOCAL_MACHINE/**".to_string(),
             action: "deny".to_string(),
             comment: "deny machine software keys".to_string(),
         }],

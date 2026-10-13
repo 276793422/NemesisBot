@@ -87,22 +87,12 @@ fn extract_interpreter_payloads_full_path_interpreter_hits_wrappers() {
 
 fn deny_match(pattern: &str, target: &str) -> bool {
     let segs = exec_rule_segments(target);
-    exec_rule_bucket_match(
-        "deny",
-        &pattern.to_lowercase(),
-        &normalize_exec_command(target),
-        &segs,
-    )
+    exec_rule_bucket_match("deny", pattern, &normalize_exec_command(target), &segs)
 }
 
 fn allow_match(pattern: &str, target: &str) -> bool {
     let segs = exec_rule_segments(target);
-    exec_rule_bucket_match(
-        "allow",
-        &pattern.to_lowercase(),
-        &normalize_exec_command(target),
-        &segs,
-    )
+    exec_rule_bucket_match("allow", pattern, &normalize_exec_command(target), &segs)
 }
 
 /// deny：任一段命中即拦 + 显式 env 头不构成逃生（整串锚定兜底也剥 env）。
@@ -166,4 +156,43 @@ fn exec_bucket_allow_requires_all_segments() {
 fn exec_rule_segments_trims_via_command_segments() {
     let segs = exec_rule_segments("  cargo build  &&  rm x  ");
     assert_eq!(segs, vec!["cargo build", "rm x"]);
+}
+
+/// D12-2 回归锁：pattern 侧与 target 侧同管道归一化——手写 shell 拟形
+/// deny 规则（引号包裹/多余空白）曾只做小写不剥引号不并空白，对归一化
+/// 后的 target 永不命中 = 静默死规则 fail-open，且安装期零告警。
+#[test]
+fn exec_bucket_pattern_side_normalized_same_pipeline_as_target() {
+    // 引号被 target 侧剥掉：pattern 侧的引号拟形必须照样命中
+    assert!(
+        deny_match("rm \"-rf\" *", "rm -rf /tmp/x"),
+        "引号形 deny 规则不得是死规则"
+    );
+    // 多余空白被 target 侧合并：pattern 侧的多空白形态必须照样命中
+    assert!(
+        deny_match("rm  -rf  *", "rm -rf /tmp/x"),
+        "多空白形 deny 规则不得是死规则"
+    );
+    // allow 同管道：归一化不放宽 allow（引号形 allow 对未带引号命令放行
+    // 是本修复带来的合法对称——规则作者写什么 shell 拟形都等价）
+    assert!(allow_match("cargo   build *", "cargo build --release"));
+}
+
+/// D12-1 回归锁：路径通配转义完备——字面 `.` 曾被当正则任意字符
+/// （`*.key` 命中无点号文件 `testXkey`），`?` 曾被当可选量词。
+#[test]
+fn wildcard_path_pattern_escapes_literal_dot_and_question() {
+    // `.` 字面：`*.key` 不得命中无点号目标
+    assert!(match_pattern("D:/123/*.key", "D:/123/test.key"));
+    assert!(
+        !match_pattern("D:/123/*.key", "D:/123/testXkey"),
+        "字面点号不得当正则任意字符"
+    );
+    // `*` 不跨 `/` 语义保持
+    assert!(!match_pattern("D:/123/*.key", "D:/123/sub/test.key"));
+    // `?` 字面：不再当可选量词漂移匹配集合
+    assert!(
+        !match_pattern("file?.log", "fil.log"),
+        "`?` 不得当可选量词（glob 契约只认 * 与 **）"
+    );
 }

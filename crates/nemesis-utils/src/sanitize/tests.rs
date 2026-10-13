@@ -79,8 +79,11 @@ fn over_limit_keys_differing_at_tail_do_not_collide() {
     assert_ne!(a, c);
     // 同输入两次调用一致（读写两侧同源）。
     assert_eq!(a, sanitize_path_segment(&format!("{node}/board:10")));
-    // 幂等：消毒产物再消毒原样（≤80 分支）。
-    assert_eq!(sanitize_path_segment(&a), a);
+    // D12-4 域分离：hash 形态产物再消毒**不再**原样（hash 输出形态是
+    // 输出域专属——若直通原样，任何能注入会话键的一方都能把 78 字符
+    // 撞形 id 直接落到别人会话的文件段上）。映射仍确定（读写两侧同函
+    // 数同输入恒同输出），只是 hash 形态段不再幂等。
+    assert_ne!(sanitize_path_segment(&a), a);
 }
 
 #[test]
@@ -102,4 +105,42 @@ fn whitelist_is_idempotent() {
     let once = sanitize_path_segment("web://user/chat|file?x");
     assert_eq!(sanitize_path_segment(&once), once);
     assert_eq!(once, "web___user_chat_file_x");
+}
+
+// ---------- D12-4（2026-10-13 第 6 轮审计）：hash 输出形态与输入域分离 ----------
+
+#[test]
+fn hash_form_lookalike_input_does_not_pass_through() {
+    // 78 字符、形如 `<60>__<16hex>` 的合法输入曾逐字节直通——与超限输入
+    // 的 hash 输出同形态，撞形 id 直接落到目标会话的文件段（确定性伪造，
+    // 无需哈希碰撞）。域分离后必须改道 hash 分支。
+    let lookalike = format!("{}__0123456789abcdef", "a".repeat(60));
+    assert_eq!(lookalike.len(), 78);
+    let out = sanitize_path_segment(&lookalike);
+    assert_ne!(out, lookalike, "撞形输入不得直通");
+    assert_eq!(out.len(), 78, "改道后仍是 hash 形态");
+    assert!(out.starts_with(&"a".repeat(60)));
+    // 尾点修剪后再撞形同样改道（`<60>__<16hex>.` 修剪后恰是 hash 形态）。
+    let dotted = format!("{lookalike}.");
+    assert_ne!(sanitize_path_segment(&dotted), dotted.trim_end_matches('.'));
+    // 接近但不构成 hash 形态的输入照常直通（不扩大改道面）：
+    // 77 字符（hex 少一位）不撞形。
+    let short = format!("{}__0123456789abcde", "a".repeat(60));
+    assert_eq!(sanitize_path_segment(&short), short);
+    // 大写 hex 不是 hash 分支产出形态（输出恒小写），不撞形。
+    let upper = format!("{}__0123456789ABCDEF", "a".repeat(60));
+    assert_eq!(sanitize_path_segment(&upper), upper);
+}
+
+#[test]
+fn hash_output_represented_as_id_lands_elsewhere() {
+    // 攻击面回归钉：受害者超限会话键的文件段 V，作为**原始 id**再喂入
+    // 不得落回 V（2026-09-29 纯截断碰撞根修的完整性补丁）。
+    let node = "cluster_rpc:node-laptop-mbrq578qxyz-b11dbf4f-905f-40d9-8530-a2238e5aaf5c";
+    let victim = sanitize_path_segment(&format!("{node}/board:10"));
+    assert_eq!(victim.len(), 78);
+    let relay = sanitize_path_segment(&victim);
+    assert_ne!(relay, victim, "hash 段作原始 id 不得落回本段");
+    // 确定性：同一输入恒同输出（读写两侧同函数）。
+    assert_eq!(sanitize_path_segment(&victim), relay);
 }

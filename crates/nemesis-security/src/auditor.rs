@@ -1438,7 +1438,7 @@ impl SecurityAuditor {
                 | OperationType::RegistryRead
                 | OperationType::RegistryWrite
                 | OperationType::RegistryDelete => {
-                    matcher::match_pattern(&rule.pattern, &req.target)
+                    matcher::match_path_rule(&rule.pattern, &req.target)
                 }
                 OperationType::ProcessExec
                 | OperationType::ProcessSpawn
@@ -1458,21 +1458,17 @@ impl SecurityAuditor {
                     // 通配（`*a*b*`）与空命令的 `*` 规则靠它维持旧拦截面。
                     // 段准备与桶匹配在 [`matcher::exec_rule_segments`] /
                     // [`matcher::exec_rule_bucket_match`]（闭环批上移的单一
-                    // 真相源，`security.rs` CLI 预览同源消费）。
+                    // 真相源，`security.rs` CLI 预览同源消费；pattern 归一化
+                    // 在桶匹配内部——D12-2 后两侧同管道）。
                     let segs = matcher::exec_rule_segments(&req.target);
-                    matcher::exec_rule_bucket_match(
-                        bucket,
-                        &rule.pattern.to_lowercase(),
-                        &match_target,
-                        &segs,
-                    )
+                    matcher::exec_rule_bucket_match(bucket, &rule.pattern, &match_target, &segs)
                 }
                 OperationType::NetworkDownload
                 | OperationType::NetworkUpload
                 | OperationType::NetworkRequest => {
                     matcher::match_domain_pattern(&rule.pattern, &req.target)
                 }
-                _ => rule.pattern == "*" || matcher::match_pattern(&rule.pattern, &req.target),
+                _ => rule.pattern == "*" || matcher::match_path_rule(&rule.pattern, &req.target),
             }
         };
 

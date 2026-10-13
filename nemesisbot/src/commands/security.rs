@@ -645,7 +645,7 @@ fn cmd_rules_test(
             let segs = nemesis_security::matcher::exec_rule_segments(target);
             nemesis_security::matcher::exec_rule_bucket_match(
                 bucket,
-                &pattern.to_lowercase(),
+                pattern,
                 &nemesis_security::matcher::normalize_exec_command(target),
                 &segs,
             )

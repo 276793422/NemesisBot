@@ -2174,9 +2174,20 @@ impl BoardStore {
         tags: &[String],
     ) -> Result<Vec<String>, String> {
         const KEY: &str = "granted_tags";
-        let existing = self.get_meta(KEY)?.unwrap_or_else(|| "{}".to_string());
+        // 单临界区 RMW（D10-2）：曾拆成 get_meta/set_meta 两次独立加锁——
+        // 落定波与 sweep 波并发授予同一节点时后写者覆盖前写者，丢一次授予
+        //（下次授予自愈，但该次匹配滑进松弛阶梯 + 一条误导性降级评论）。
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT value FROM board_meta WHERE key = ?1",
+                params![KEY],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| format!("get_meta: {e}"))?;
         let mut map: std::collections::HashMap<String, Vec<String>> =
-            serde_json::from_str(&existing).unwrap_or_default();
+            serde_json::from_str(&existing.unwrap_or_else(|| "{}".to_string())).unwrap_or_default();
         let entry = map.entry(node_id.to_string()).or_default();
         let mut granted_new = Vec::new();
         for t in tags {
@@ -2190,10 +2201,14 @@ impl BoardStore {
             }
         }
         if !granted_new.is_empty() {
-            self.set_meta(
-                KEY,
-                &serde_json::to_string(&map).map_err(|e| format!("序列化 granted_tags: {e}"))?,
-            )?;
+            let value =
+                serde_json::to_string(&map).map_err(|e| format!("序列化 granted_tags: {e}"))?;
+            conn.execute(
+                "INSERT INTO board_meta(key, value) VALUES(?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = ?2",
+                params![KEY, value],
+            )
+            .map_err(|e| format!("set_meta: {e}"))?;
         }
         Ok(granted_new)
     }

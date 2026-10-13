@@ -415,15 +415,20 @@ pub(crate) fn budget_breach(
     // 维度 3：墙钟预算（created_at 起算；checked 防时钟倒挂下溢——倒挂
     // 视为未超时，不炸流程；超大预算秒数过 i64::try_from 截到 i64::MAX，
     // 防 u64::MAX as i64 回绕成 -1 让任何存活时间都误判超支）。
+    // D9-1（2026-10-13 第 6 轮审计）：created_at 是 store::now() 的 unix
+    // **秒**（store.rs:111），曾直接从毫秒 now 里减——差值恒带 ~1.77e12
+    // ms 的单位偏移，配了墙钟预算的父单**刚建单即报超支**，E1 保险丝第
+    // 三维形同虚设且永远误熔断。秒→毫秒显式换算后作差。
     if budget.wall_clock_budget_secs > 0 {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
+        let created_ms = issue.created_at.saturating_mul(1000);
         let budget_ms = i64::try_from(budget.wall_clock_budget_secs)
             .unwrap_or(i64::MAX)
             .saturating_mul(1000);
-        if let Some(elapsed_ms) = now_ms.checked_sub(issue.created_at)
+        if let Some(elapsed_ms) = now_ms.checked_sub(created_ms)
             && elapsed_ms >= budget_ms
         {
             return Some(format!(
@@ -1442,6 +1447,12 @@ async fn review_issue(
                 return Ok(false);
             }
             fail_streaks.clear(issue_id);
+            // D10-5（2026-10-13 第 6 轮审计）：决策审计在收货**生效后**落
+            // ——曾先记 auto_accept 再 settle，settle Err（? 传播）时审计已
+            // 记「已自动收货」而状态仍 in_review，决策流视图出现从未生效
+            // 的决策（审计面与实际状态分叉）。审计记录已发生的事，不预设
+            // 将发生的事。
+            auto_accept_and_settle(deps, issue_id, &output.reasons)?;
             record_auto_decide(
                 store,
                 issue_id,
@@ -1453,7 +1464,6 @@ async fn review_issue(
                     "reasons": render_reasons(&output.reasons),
                 }),
             );
-            auto_accept_and_settle(deps, issue_id, &output.reasons)?;
         }
         ReviewAction::SuggestManual => {
             fail_streaks.clear(issue_id);
@@ -1592,6 +1602,14 @@ async fn review_issue(
                 nemesis_board::fail_streak::failure_signature(&anchor_results, &output.verdict);
             let streak_outcome = fail_streaks.record_and_check(issue_id, &streak_signature);
             if let nemesis_board::fail_streak::StreakOutcome::Tripped(n) = streak_outcome {
+                // D9-2（2026-10-13 第 6 轮审计）：熔断转人工是**非重派终态**
+                // ——账本清账（与 worker 循环升级/token 预算/UNSURE 闸三臂
+                // 同纪律，fail_streak.rs 不变量「转人工清账」）。曾漏清：
+                // 熔断停车后人按 resume_entry 指引 review.retrigger 复评
+                // （retrigger 不清账），存量 count≥3 仍在账——人工修好后
+                // 首轮同签名失败即刻再熔断，「人工处理后清零复评」的承诺
+                // 在此路径落空，人工修复零重派预算。
+                fail_streaks.clear(issue_id);
                 // §6.4C：熔断评论 + 审计 extra 带最后一轮评审理由（停车即可
                 // 裁决，对齐 EscalateHuman 先例）。U-A：停车现场落盘（本
                 // 分支已并入 park_with_handoff 单一收口）。
@@ -1824,11 +1842,15 @@ async fn review_issue(
             );
             // 停滞可观测（E3 配套，复审补充）：连续重派且差距文本与上一轮
             // 完全相同 → WARN 告警（只告警不停流程，人可观测不干预）。
+            // D9-3（2026-10-13 第 6 轮审计）：comments 是评审入口快照（761
+            // 行），本轮刚落的差距评论**不在**里面——曾 skip(1) 想跳「刚落
+            // 的本轮评论」，实际跳掉的是上一轮的差距评论（本该比对的对象）
+            // ：停滞告警晚一轮触发（同差距要连续 3 轮才响）甚至 2 轮即收敛
+            // 时永不触发。
             if unlimited && round >= 2 && !gap_raw.is_empty() {
                 let stale = comments
                     .iter()
                     .rev()
-                    .skip(1) // 跳过刚落的本轮评论
                     .find(|c| c.ctype == CommentType::Comment && c.content.contains("## 差距"))
                     .is_some_and(|c| c.content.contains(gap_raw));
                 if stale {
@@ -2779,6 +2801,13 @@ fn defect_snippet(line: &str) -> String {
 ///   FIXED 只关一单，多缺陷一次 FIXED 只关最早一条，其余保持转人工；
 ///   多余 FIXED（无在账缺陷）是空操作。
 /// - 扫描顺序 = 入参单序 × 单内评论时间升序；跨单 FIXED 关「当前队首」。
+/// - D11-3（2026-10-13 第 6 轮审计）：`[FIXED]` 闭环只认 **Delivery**
+///   评论（worker 正式交付回流的唯一通道，`board_dispatch` 回调写入）
+///   ——声明无方向性（多声明=转人工，fail-closed）任何评论都可入账，
+///   闭环是拆闸方向（在账清零→自动流转放行），曾对一切 ctype 开放：
+///   任何能落一条 Discussion/system 评论的路径写一行 `[FIXED]` 即可
+///   清空在账缺陷绕过质量闸门。残余边界：正式交付里伪造 `[FIXED]`
+///   与交付内容撒谎同信任级（worker 侧信任边界，不在此重复设防）。
 pub(crate) fn scan_unclosed_defects(
     store: &nemesis_board::BoardStore,
     issues: &[nemesis_board::Issue],
@@ -2794,7 +2823,10 @@ pub(crate) fn scan_unclosed_defects(
                         severity,
                         snippet: defect_snippet(line),
                     });
-                } else if is_fixed_marker_line(line) && !open.is_empty() {
+                } else if cm.ctype == CommentType::Delivery
+                    && is_fixed_marker_line(line)
+                    && !open.is_empty()
+                {
                     open.remove(0);
                 }
             }

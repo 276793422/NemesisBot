@@ -60,7 +60,9 @@ fn test_auditor_allow_with_rules() {
     auditor.set_rules(
         OperationType::FileRead,
         vec![SecurityRule {
-            pattern: ".*".to_string(),
+            // glob 方言 match-all（D12-1 后只认 `*`/`**`；裸 `.*` 曾靠正则
+            // 任意字符语义 match-all，字面点号后退化为「含点号才命中」）。
+            pattern: "**".to_string(),
             action: "allow".to_string(),
             comment: "allow all reads".to_string(),
         }],
@@ -730,7 +732,9 @@ fn test_auditor_set_rules_overwrites() {
     auditor.set_rules(
         OperationType::FileRead,
         vec![SecurityRule {
-            pattern: ".*".to_string(),
+            // glob 方言 match-all（D12-1 后只认 `*`/`**`；裸 `.*` 曾靠正则
+            // 任意字符语义 match-all，字面点号后退化为「含点号才命中」）。
+            pattern: "**".to_string(),
             action: "allow".to_string(),
             comment: "allow all".to_string(),
         }],
@@ -753,7 +757,9 @@ fn test_auditor_set_rules_overwrites() {
     auditor.set_rules(
         OperationType::FileRead,
         vec![SecurityRule {
-            pattern: ".*".to_string(),
+            // glob 方言 match-all（D12-1 后只认 `*`/`**`；裸 `.*` 曾靠正则
+            // 任意字符语义 match-all，字面点号后退化为「含点号才命中」）。
+            pattern: "**".to_string(),
             action: "deny".to_string(),
             comment: "deny all".to_string(),
         }],
