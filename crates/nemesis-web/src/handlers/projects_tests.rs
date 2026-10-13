@@ -127,6 +127,8 @@ struct MockState {
     bound: HashMap<String, String>,
     /// 归属命中但 loop 不在（不可用形态）。
     missing_loops: HashSet<String>,
+    /// N7：最近一次 set_trust 入参（handler→bridge 传递验证）。
+    last_trust: Option<(String, bool)>,
 }
 
 impl MockBridge {
@@ -139,9 +141,11 @@ impl MockBridge {
                     path: SENTINEL_PATH.to_string(),
                     created_at: "2026-09-08T00:00:00+08:00".to_string(),
                     running: true,
+                    instructions_trusted: true,
                 }],
                 bound: HashMap::new(),
                 missing_loops: HashSet::new(),
+                last_trust: None,
             }),
             project_loop: std::sync::OnceLock::new(),
         }
@@ -169,6 +173,7 @@ impl ProjectsBridge for MockBridge {
             path: path.to_string(),
             created_at: "2026-09-08T00:00:00+08:00".to_string(),
             running: true,
+            instructions_trusted: true,
         };
         s.projects.push(info.clone());
         Ok(info)
@@ -194,6 +199,18 @@ impl ProjectsBridge for MockBridge {
             .find(|p| p.id == project_id)
             .ok_or_else(|| format!("项目不存在: {project_id}"))?;
         e.name = new_name.to_string();
+        Ok(e.clone())
+    }
+
+    fn set_trust(&self, project_id: &str, trusted: bool) -> Result<ProjectInfo, String> {
+        let mut s = self.inner.lock();
+        s.last_trust = Some((project_id.to_string(), trusted));
+        let e = s
+            .projects
+            .iter_mut()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| format!("项目不存在: {project_id}"))?;
+        e.instructions_trusted = trusted;
         Ok(e.clone())
     }
 
@@ -283,7 +300,7 @@ async fn projects_cmds_without_bridge_are_honest_errors() {
     let _g = BridgeGuard::empty();
     let ctx = make_ctx(None);
     let h = ProjectsHandler;
-    for cmd in ["list", "create", "remove", "rename", "open_dir"] {
+    for cmd in ["list", "create", "remove", "rename", "open_dir", "trust"] {
         let data = if cmd == "list" {
             None
         } else {
@@ -379,6 +396,70 @@ async fn projects_list_create_remove_rename_route_through_bridge() {
         err.contains("不存在"),
         "honest remove error must pass through: {err}"
     );
+    drop(g);
+}
+
+#[tokio::test]
+async fn projects_trust_routes_through_bridge_and_reflects_flag() {
+    let (g, mock) = BridgeGuard::with_mock();
+    let ctx = make_ctx(None);
+    let h = ProjectsHandler;
+
+    // 翻转 false：响应携带新值 + bridge 收到入参。
+    let out = h
+        .handle_cmd(
+            "trust",
+            Some(serde_json::json!({"project_id": SENTINEL_PID, "trusted": false})),
+            &ctx,
+        )
+        .await
+        .expect("trust succeeds")
+        .expect("trust returns payload");
+    assert_eq!(out["project"]["instructions_trusted"], false);
+    // 锁作用域化（await 前出锁——parking_lot 守卫不许跨 await 持有）。
+    {
+        let state = mock.inner.lock();
+        assert_eq!(
+            state.last_trust.as_ref().map(|(id, t)| (id.as_str(), *t)),
+            Some((SENTINEL_PID, false)),
+            "handler 必须把 trusted 布尔原样传给 bridge"
+        );
+    }
+
+    // 翻回 true。
+    let out = h
+        .handle_cmd(
+            "trust",
+            Some(serde_json::json!({"project_id": SENTINEL_PID, "trusted": true})),
+            &ctx,
+        )
+        .await
+        .expect("trust back succeeds")
+        .expect("payload");
+    assert_eq!(out["project"]["instructions_trusted"], true);
+
+    // 未知 id：诚实文案透传。
+    let err = h
+        .handle_cmd(
+            "trust",
+            Some(serde_json::json!({"project_id": "p-nope", "trusted": true})),
+            &ctx,
+        )
+        .await
+        .expect_err("unknown project must fail honestly");
+    assert!(err.contains("不存在"), "unexpected: {err}");
+
+    // trusted 缺失/错型：loud 拒绝（不静默当 false）。
+    for bad in [
+        serde_json::json!({"project_id": SENTINEL_PID}),
+        serde_json::json!({"project_id": SENTINEL_PID, "trusted": "yes"}),
+    ] {
+        let err = h
+            .handle_cmd("trust", Some(bad), &ctx)
+            .await
+            .expect_err("missing/mistyped trusted must fail loudly");
+        assert!(err.contains("trusted"), "error must name the field: {err}");
+    }
     drop(g);
 }
 

@@ -25,8 +25,15 @@ const ID_HEX_LEN: usize = 8;
 /// 项目名称最大长度（防滥用；超限拒绝）。
 const NAME_MAX: usize = 100;
 
+/// `#[serde(default = "default_true")]` 的默认值函数（老条目零迁移——缺键
+/// 反序列化为 true，保持主循环同款行为）。
+fn default_true() -> bool {
+    true
+}
+
 /// 单条项目注册。创建时烧入：`path` 不可改（改路径 = 移除后重建，Phase 1
-/// 语义）；`name` 可改（rename）。
+/// 语义）；`name` 可改（rename）；`instructions_trusted` 可改
+/// （`projects.trust` WSAPI）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProjectEntry {
     pub id: String,
@@ -35,6 +42,12 @@ pub struct ProjectEntry {
     pub path: PathBuf,
     /// RFC3339 创建时间。
     pub created_at: String,
+    /// N7（2026-10-13）：项目工作区指令（AGENTS.md/CLAUDE.md）是否受信。
+    /// 缺省 true——注册即信任行为（与主循环一致，老条目零迁移）；false 时
+    /// 该项目 loop 按 config `projects.instruction_trust` 全局策略降级
+    /// （annotate=注入但加不可信来源横幅 / isolated=整段跳过）。
+    #[serde(default = "default_true")]
+    pub instructions_trusted: bool,
 }
 
 /// projects.json 根结构。
@@ -180,6 +193,7 @@ pub fn build_new_entry(
         name,
         path,
         created_at: chrono::Local::now().to_rfc3339(),
+        instructions_trusted: true,
     })
 }
 
@@ -222,6 +236,20 @@ pub fn rename_project(path: &Path, id: &str, new_name: &str) -> Result<ProjectEn
         .find(|p| p.id == id)
         .ok_or_else(|| anyhow!("项目不存在: {id}"))?;
     entry.name = new_name;
+    let updated = entry.clone();
+    save_projects(path, &file)?;
+    Ok(updated)
+}
+
+/// 翻转项目指令信任位（N7；读-改-写，损坏文件 loud 拒绝）。返回更新后条目。
+pub fn set_project_trust(path: &Path, id: &str, trusted: bool) -> Result<ProjectEntry> {
+    let mut file = try_load_projects(path)?.unwrap_or_default();
+    let entry = file
+        .projects
+        .iter_mut()
+        .find(|p| p.id == id)
+        .ok_or_else(|| anyhow!("项目不存在: {id}"))?;
+    entry.instructions_trusted = trusted;
     let updated = entry.clone();
     save_projects(path, &file)?;
     Ok(updated)

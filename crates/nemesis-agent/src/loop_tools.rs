@@ -5252,8 +5252,21 @@ impl SkillManageTool {
             let _ = std::fs::remove_dir_all(skill_dir);
             return Err(format!("failed to write SKILL.md: {}", e));
         }
+        // N3：学得技能 manifest 记账（created/overwrite 共用 upsert）。记账失败
+        // 不回滚 create——技能本体已落盘，降级为结果附注（账本可后补）。
+        let manifest_note = match nemesis_skills::learned::record_learned(
+            Path::new(&self.workspace),
+            name,
+            &nemesis_skills::learned::extract_description(content),
+        ) {
+            Ok(()) => String::new(),
+            Err(e) => format!(
+                "\n⚠ learned manifest 记账失败（技能已创建，账目可后补）: {}",
+                e
+            ),
+        };
         Ok(format!(
-            "Skill '{}' created at {} (lint {:.0}/100{}).",
+            "Skill '{}' created at {} (lint {:.0}/100{}).{}",
             name,
             skill_md.display(),
             check.lint_result.score * 100.0,
@@ -5261,7 +5274,8 @@ impl SkillManageTool {
                 .quality_score
                 .as_ref()
                 .map(|q| format!(", quality {:.0}/100", q.overall))
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            manifest_note
         ))
     }
 
@@ -5375,7 +5389,17 @@ impl SkillManageTool {
             ));
         }
         std::fs::remove_dir_all(skill_dir).map_err(|e| format!("failed to delete skill: {}", e))?;
-        Ok(format!("Skill '{}' deleted.", name))
+        // N3：学得技能 manifest 同步移除（不在账 = 无操作）。失败降级附注，
+        // 不回滚 delete（目录已删，账目残条可由 learned_remove 清）。
+        let manifest_note =
+            match nemesis_skills::learned::remove_learned(Path::new(&self.workspace), name) {
+                Ok(_) => String::new(),
+                Err(e) => format!(
+                    "\n⚠ learned manifest 移除失败（可由 skills.learned_remove 清理）: {}",
+                    e
+                ),
+            };
+        Ok(format!("Skill '{}' deleted.{}", name, manifest_note))
     }
 }
 
@@ -5616,6 +5640,329 @@ impl Tool for QuestionTool {
             }
             nemesis_types::agent::QuestionOutcome::Timeout => {
                 Ok("No answer: user did not answer, proceed with your best judgment.".to_string())
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// N5: present_files — turn 交付物登记（机会项 N5，2026-10-13）
+// ===========================================================================
+
+/// N5：交付物流水桶类型别名（AgentLoop 与 PresentFilesTool 共享同一 Arc；
+/// drain 语义与 `turn_file_changes` 同构——assistant 回复落盘时取走即清）。
+pub type TurnDeliverablesBucket =
+    Arc<parking_lot::Mutex<HashMap<String, Vec<crate::chat_log::PresentedFile>>>>;
+
+/// N5（2026-10-13 机会项）：交付物登记工具。agent 认为本 turn 的用户**应该
+/// 去看**的产物文件（报告/图/导出物）在此声明——与 write_file「改了什么」
+/// （D3 file_changes）分工：这是「该看什么」的结果面指引。登记项随
+/// assistant 最终回复落盘为 chat_log 的 `deliverables` 字段，Dashboard 在
+/// 消息气泡下渲染交付物卡片。纯登记：不复制/不改文件，只做存在性验真
+/// （全部存在才登记——all-or-nothing，诚实报缺失清单）。
+pub struct PresentFilesTool {
+    workspace: String,
+    bucket: TurnDeliverablesBucket,
+}
+
+impl PresentFilesTool {
+    pub fn new(workspace: String, bucket: TurnDeliverablesBucket) -> Self {
+        Self { workspace, bucket }
+    }
+}
+
+#[async_trait]
+impl Tool for PresentFilesTool {
+    fn description(&self) -> String {
+        "Register deliverables — files the user should look at as the outcome of this turn \
+         (report, chart, exported artifact). Purely declarative: the files must already \
+         exist; nothing is copied or modified. Registered files are shown as deliverable \
+         cards under your final reply. Call once at the end of a turn with the complete \
+         list. Paths are workspace-relative (or absolute). Use ONLY for results worth the \
+         user's attention — not for every intermediate file."
+            .to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "files": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "File path (workspace-relative or absolute); must exist"
+                            },
+                            "title": {
+                                "type": "string",
+                                "description": "Display title (default: file name)"
+                            },
+                            "note": {
+                                "type": "string",
+                                "description": "One-line description (optional)"
+                            }
+                        },
+                        "required": ["path"]
+                    },
+                    "description": "Deliverable files of this turn (1+ entries)"
+                }
+            },
+            "required": ["files"]
+        })
+    }
+
+    async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
+        let v: serde_json::Value =
+            serde_json::from_str(args).map_err(|e| format!("Invalid JSON arguments: {}", e))?;
+        let files_v = v
+            .get("files")
+            .and_then(|f| f.as_array())
+            .ok_or("missing required 'files' field (array of {path,title,note})")?;
+        if files_v.is_empty() {
+            return Err("'files' must contain at least one entry".to_string());
+        }
+
+        // 逐条解析（path 必填非空；title 缺省取文件名；note 可缺省）。
+        let mut parsed: Vec<crate::chat_log::PresentedFile> = Vec::with_capacity(files_v.len());
+        for (i, f) in files_v.iter().enumerate() {
+            let path = f
+                .get("path")
+                .and_then(|p| p.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| format!("files[{}]: missing required 'path' field", i))?;
+            let title = f
+                .get("title")
+                .and_then(|t| t.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    std::path::Path::new(path)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| path.to_string())
+                });
+            let note = f
+                .get("note")
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            parsed.push(crate::chat_log::PresentedFile {
+                path: path.to_string(),
+                title,
+                note,
+            });
+        }
+
+        // 存在性验真：all-or-nothing（任一缺失 = 整批拒绝，缺失清单诚实回灌
+        // ——半登记会让交付物卡出现幽灵条目）。相对路径按 workspace 解析，
+        // 绝对路径放行（与 media 点名路径同语义）。
+        let ws = std::path::Path::new(&self.workspace);
+        let mut missing: Vec<String> = Vec::new();
+        for f in &parsed {
+            let p = std::path::Path::new(&f.path);
+            let resolved = if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                ws.join(p)
+            };
+            if !resolved.is_file() {
+                missing.push(f.path.clone());
+            }
+        }
+        if !missing.is_empty() {
+            return Err(format!(
+                "file(s) do not exist (nothing registered): {}",
+                missing.join(", ")
+            ));
+        }
+
+        // 会话内去重后入桶（drain 侧还有一道全局 dedup；这里先收口让结果
+        // 文本与桶内实态一致）。
+        let deduped = crate::chat_log::dedup_presented_files(parsed);
+        let n = deduped.len();
+        self.bucket
+            .lock()
+            .entry(context.session_key.clone())
+            .or_default()
+            .extend(deduped);
+
+        Ok(format!("Registered {} deliverable(s) for this turn.", n))
+    }
+}
+
+// ===========================================================================
+// N2: present_plan — plan 模式审批语义（内部专项机会项 N2，2026-10-13）
+// ===========================================================================
+
+/// present_plan 审批等待窗口（秒）。计划需要阅读时间，比 question 的 120s
+/// 长；超时按驳回处理（结束本轮，仍处 plan 模式）——无人值守时绝不放行。
+pub const PLAN_PRESENT_TIMEOUT_SECS: u64 = 600;
+
+/// present_plan 审批选项原文（与 Dashboard 卡片渲染、测试断言共用）。
+pub const PLAN_PRESENT_OPTION_APPROVE: &str = "批准：切换到 build 模式并按计划执行";
+pub const PLAN_PRESENT_OPTION_REJECT: &str = "驳回：结束本轮（先修改计划）";
+
+/// present_plan 的审批结论（工具写入共享 verdict 槽，run_loop 批次尾消费）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanPresentVerdict {
+    /// 用户批准 → 工具已把 mode 翻到 Build，本轮照常继续执行计划。
+    Approved,
+    /// 用户驳回 → run_loop 消费后结束本轮（不空转，仍处 plan 模式）。
+    Rejected,
+    /// 审批超时 → 与驳回同语义（结束本轮，不放行）。
+    Timeout,
+}
+
+/// N2：present_plan 工具与 run_loop 之间的共享接线。agent_factory 构造，
+/// 同一 Arc 双侧注入：工具侧（SharedToolConfig.plan_present）做 mode 翻转 +
+/// verdict 写入；loop 侧（`set_plan_present_handle`）在批次尾读 verdict
+/// 决定是否终止本轮。`verdict` 取走即清（take 语义，一轮至多一个裁决）。
+pub struct PlanPresentHandle {
+    /// 提问 broker（与 question 工具同源槽——present_plan 的审批卡就是
+    /// 一张单选 question 卡，复用同一 WebQuestionBroker 装配）。
+    pub broker: QuestionBrokerSlot,
+    /// loop 的 mode 槽（AgentLoop.mode 同一 Arc——批准侧直接翻转）。
+    pub mode: Arc<parking_lot::RwLock<crate::types::AgentMode>>,
+    /// ModeChanged 广播（徽标刷新；与 set_mode_with_event 同一通道形态）。
+    pub agent_event_tx: Option<tokio::sync::broadcast::Sender<nemesis_types::agent::AgentEvent>>,
+    /// 审批结论槽（工具写 / run_loop 批次尾 take）。
+    pub verdict: Arc<parking_lot::Mutex<Option<PlanPresentVerdict>>>,
+}
+
+impl PlanPresentHandle {
+    /// 批准臂：mode 翻 Build + ModeChanged 广播（幂等，事件照发——与
+    /// `AgentLoop::set_mode_with_event` 同语义；loop 侧方法拿不到本句柄，
+    /// 翻转逻辑在此内联，`*mode.write()` 单点写入无竞态面）。
+    fn flip_to_build(&self, session_key: &str, chat_id: &str) {
+        *self.mode.write() = crate::types::AgentMode::Build;
+        if let Some(tx) = self.agent_event_tx.as_ref() {
+            let _ = tx.send(nemesis_types::agent::AgentEvent::ModeChanged {
+                session_key: session_key.to_string(),
+                chat_id: chat_id.to_string(),
+                mode: crate::types::AgentMode::Build.as_str().to_string(),
+            });
+        }
+    }
+}
+
+/// N2：计划提交审批工具。plan 模式下把写好的计划交给用户裁决：
+/// 批准 → mode 翻到 Build，工具结果告知模型按计划执行（本轮照常继续）；
+/// 驳回/超时 → verdict 槽落 Rejected/Timeout，run_loop 批次尾消费后
+/// **结构化终止本轮**（模型拿不到下一轮——不空转不靠提示词自觉）。
+/// 仅 plan 模式可调用（build 模式诚实报错；供给闸同时隐藏 build 侧定义，
+/// 双闸同 hidden_tools 形态）。broker 未接线（headless 变体误注册）=
+/// 诚实报错不猜默认放行。
+pub struct PlanPresentTool {
+    handle: Arc<PlanPresentHandle>,
+}
+
+impl PlanPresentTool {
+    pub fn new(handle: Arc<PlanPresentHandle>) -> Self {
+        Self { handle }
+    }
+}
+
+#[async_trait]
+impl Tool for PlanPresentTool {
+    fn description(&self) -> String {
+        "Submit your plan for user approval while in plan mode. Call this AFTER you have \
+         finished researching and drafted the plan (optionally saved to plans/ via write_file). \
+         The user either approves (mode switches to build; execute the plan next) or rejects \
+         (this turn ends immediately — revise the plan and present again when asked). Do NOT \
+         call with a half-formed plan; do NOT continue calling other tools after a rejection."
+            .to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "plan": {
+                    "type": "string",
+                    "description": "The full plan text (markdown) for the user to review"
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Short plan title (optional, shown as the card heading)"
+                }
+            },
+            "required": ["plan"]
+        })
+    }
+
+    async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
+        // build 模式诚实拒绝（供给闸已隐藏定义，这里是 dispatch 直呼的兜底）。
+        if *self.handle.mode.read() == crate::types::AgentMode::Build {
+            return Err("already in build mode: no plan approval needed, just execute".to_string());
+        }
+        let v: serde_json::Value =
+            serde_json::from_str(args).map_err(|e| format!("Invalid JSON arguments: {}", e))?;
+        let plan = v["plan"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| "missing required 'plan' field".to_string())?;
+        let title = v["title"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("执行计划审批");
+
+        let broker = {
+            let guard = self.handle.broker.read();
+            match guard.as_ref() {
+                Some(b) => b.clone(),
+                None => {
+                    return Err(
+                        "present_plan unavailable: no interactive session wired".to_string()
+                    );
+                }
+            }
+        };
+
+        let req = nemesis_types::agent::QuestionRequest {
+            question_id: next_question_id(),
+            question: format!("{title}\n\n{plan}"),
+            options: vec![
+                PLAN_PRESENT_OPTION_APPROVE.to_string(),
+                PLAN_PRESENT_OPTION_REJECT.to_string(),
+            ],
+            multi: false,
+            chat_id: context.chat_id.clone(),
+            session_key: context.session_key.clone(),
+            timeout_secs: PLAN_PRESENT_TIMEOUT_SECS,
+        };
+
+        // ask 是同步阻塞（最长 600s）——spawn_blocking 出 worker 线程
+        // （question 工具同款形态）。
+        let outcome = tokio::task::spawn_blocking(move || broker.ask(req))
+            .await
+            .map_err(|e| format!("present_plan task failed: {}", e))??;
+
+        match outcome {
+            nemesis_types::agent::QuestionOutcome::Answered(selected)
+                if selected.first().map(String::as_str) == Some(PLAN_PRESENT_OPTION_APPROVE) =>
+            {
+                self.handle
+                    .flip_to_build(&context.session_key, &context.chat_id);
+                *self.handle.verdict.lock() = Some(PlanPresentVerdict::Approved);
+                Ok("✅ 用户已批准计划：已切换到 build 模式。现在按计划开始执行。".to_string())
+            }
+            nemesis_types::agent::QuestionOutcome::Answered(_) => {
+                *self.handle.verdict.lock() = Some(PlanPresentVerdict::Rejected);
+                // 本文本模型本轮看不到（run_loop 消费 verdict 后直接终局），
+                // 落在这里是给 history/审计留一致记录。
+                Ok("❌ 用户驳回了计划：本轮到此结束。".to_string())
+            }
+            nemesis_types::agent::QuestionOutcome::Timeout => {
+                *self.handle.verdict.lock() = Some(PlanPresentVerdict::Timeout);
+                Ok("⏱ 计划审批超时未获响应：本轮到此结束（仍处 plan 模式）。".to_string())
             }
         }
     }
@@ -7229,6 +7576,15 @@ pub struct SharedToolConfig {
     /// LEASE_WRITE_TOOLS 换成 LeaseGuardTool 委派包装（acquire → 执行 →
     /// release；宽限 30s 超时诚实拒绝）。None = 基线/测试形态不包装。
     pub workspace_lease: Option<Arc<crate::workspace_lease::WorkspaceLease>>,
+    /// N2（2026-10-13）：present_plan 工具的共享接线（broker/mode/tx/
+    /// verdict 四件）。Some 时注册 `present_plan`（与 question 同条件——
+    /// gateway 交互形态）；None = 不注册（headless / 基线注册）。
+    pub plan_present: Option<Arc<PlanPresentHandle>>,
+    /// N5（2026-10-13）：present_files 工具的交付物流水桶（与 AgentLoop
+    /// `turn_deliverables` 共享同一 Arc——工具登记、loop drain）。Some 时
+    /// 注册 `present_files`；None = 不注册（cluster worker / 基线注册——
+    /// worker 文件路径对 A 端用户无意义）。
+    pub turn_deliverables: Option<TurnDeliverablesBucket>,
 }
 
 /// H1（2026-09-05）：`todowrite` 工具的接线配置。
@@ -7288,6 +7644,17 @@ impl std::fmt::Debug for SharedToolConfig {
             .field(
                 "workspace_lease",
                 &self.workspace_lease.as_ref().map(|_| "WorkspaceLease"),
+            )
+            .field(
+                "plan_present",
+                &self.plan_present.as_ref().map(|_| "PlanPresentHandle"),
+            )
+            .field(
+                "turn_deliverables",
+                &self
+                    .turn_deliverables
+                    .as_ref()
+                    .map(|_| "TurnDeliverablesBucket"),
             )
             .field(
                 "security",
@@ -7489,6 +7856,27 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         tools.insert(
             "question".to_string(),
             Box::new(QuestionTool::new(slot.clone())),
+        );
+    }
+
+    // N2（2026-10-13）: present_plan — plan 模式审批卡（批准翻 build /
+    // 驳回结构化止步）。注册条件与 question 同源（broker 已接线 = 交互
+    // 形态）；handle 由 agent_factory 构造并双侧注入（工具 + loop）。
+    if let Some(ref handle) = config.plan_present {
+        tools.insert(
+            "present_plan".to_string(),
+            Box::new(PlanPresentTool::new(handle.clone())),
+        );
+    }
+
+    // N5（2026-10-13）: present_files — turn 交付物登记（「该看什么」产物
+    // 指引，随 assistant 回复落盘为 deliverables 字段）。注册条件 = 桶与
+    // workspace 双接线（agent_factory 注入 loop 同一 Arc）；cluster worker /
+    // 基线形态不注册（worker 的文件路径对 A 端用户无意义）。
+    if let (Some(workspace), Some(bucket)) = (&config.workspace, &config.turn_deliverables) {
+        tools.insert(
+            "present_files".to_string(),
+            Box::new(PresentFilesTool::new(workspace.clone(), bucket.clone())),
         );
     }
 
@@ -8112,6 +8500,8 @@ pub fn register_extended_tools(
         question_broker: None,
         hardware_policy: None,
         workspace_lease: None,
+        plan_present: None,
+        turn_deliverables: None,
     };
     register_shared_tools(&shared_config)
 }
@@ -8171,6 +8561,18 @@ mod run_checks_tests;
 // / 回灌格式（选中项 / 超时按最佳判断继续）/ 槽未装配诚实报错 / id 自增。
 #[cfg(test)]
 mod question_tool_tests;
+
+// N2 (2026-10-13 机会项): present_plan 计划审批——注册门控 / schema /
+// 批准翻转 build+事件 / 驳回与超时落 verdict / 无 broker 诚实报错 /
+// build 模式拒绝 / plan 必填。
+#[cfg(test)]
+mod present_plan_tests;
+
+// N5 (2026-10-13 机会项): present_files 交付物登记——注册门控 / schema /
+// 解析（title 缺省文件名）/ 存在性 all-or-nothing / 相对路径锚定工作区 /
+// session_key 分桶 / 重复登记去重 / 校验路径。
+#[cfg(test)]
+mod present_files_tests;
 
 // A7 (2026-09-06): multiedit 批量编辑——args 解析 / 原子性（一败全不落盘）
 // / 同文件累积 / 级联与 replace_all / preview_all 多文件预检 / 边界拦截。

@@ -234,3 +234,58 @@ fn test_remove_unbinds_only_and_missing_errors() {
     let again = create_project(&reg, ws.path(), "one-again", p1.to_str().unwrap(), 4).unwrap();
     assert_ne!(again.id, e1.id);
 }
+
+// ---------------------------------------------------------------------------
+// N7（2026-10-13）：指令信任位——serde 缺省 true（老条目零迁移）+ set_project_trust RMW。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_entry_instructions_trusted_defaults_true_and_roundtrips() {
+    // 老形态 JSON（无 instructions_trusted 键）→ 反序列化为 true（注册即
+    // 信任行为，零迁移）。
+    let legacy: ProjectEntry = serde_json::from_str(
+        r#"{"id":"p-00000001","name":"老条目","path":"C:/p","created_at":"2026-09-08T00:00:00Z"}"#,
+    )
+    .unwrap();
+    assert!(legacy.instructions_trusted);
+
+    // 显式 false round-trip 保留。
+    let e = ProjectEntry {
+        instructions_trusted: false,
+        ..legacy.clone()
+    };
+    let json = serde_json::to_string(&e).unwrap();
+    let back: ProjectEntry = serde_json::from_str(&json).unwrap();
+    assert!(!back.instructions_trusted);
+    assert_eq!(back, e);
+}
+
+#[test]
+fn test_set_project_trust_rmw_and_not_found() {
+    let ws = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let proj = parent.path().join("demo");
+    std::fs::create_dir_all(&proj).unwrap();
+    let reg = registry_path(ws.path());
+
+    let e = create_project(&reg, ws.path(), "演示项目", proj.to_str().unwrap(), 4).unwrap();
+    assert!(e.instructions_trusted, "新条目缺省受信");
+
+    // 翻转为 false：返回值 + 盘上状态一致。
+    let updated = set_project_trust(&reg, &e.id, false).unwrap();
+    assert!(!updated.instructions_trusted);
+    assert!(
+        !find_project(&reg, &e.id).unwrap().instructions_trusted,
+        "盘上状态必须与返回值一致（翻转为 false）"
+    );
+
+    // 再翻回 true。
+    let back = set_project_trust(&reg, &e.id, true).unwrap();
+    assert!(back.instructions_trusted);
+
+    // 不存在：与 remove/rename 同报错语义。
+    let err = set_project_trust(&reg, "p-ffffffff", false)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("项目不存在"), "unexpected: {err}");
+}

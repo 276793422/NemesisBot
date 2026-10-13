@@ -40,6 +40,9 @@ impl ProjectsBridge for AgtOneProjectBridge {
     fn rename(&self, _project_id: &str, _new_name: &str) -> Result<ProjectInfo, String> {
         Err("agt: not implemented".to_string())
     }
+    fn set_trust(&self, _project_id: &str, _trusted: bool) -> Result<ProjectInfo, String> {
+        Err("agt: not implemented".to_string())
+    }
     fn owner_of(&self, _session_key: &str) -> Option<String> {
         None
     }
@@ -123,6 +126,7 @@ async fn agt_get_refreshes_roots_from_bridge_and_abac_sees_project_root() {
             path: proj.to_string_lossy().to_string(),
             created_at: "2026-09-25T00:00:00Z".to_string(),
             running: false,
+            instructions_trusted: true,
         },
     });
     install_projects_bridge(bridge);

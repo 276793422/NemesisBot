@@ -13,6 +13,15 @@ use std::path::PathBuf;
 
 use crate::r#loop::FileChange;
 
+/// N5（2026-10-13 机会项）：交付物条目单一真相源在 `nemesis_types::agent`
+/// （`AgentEvent::DeliverablesRegistered` 载荷与本字段共用同一 serde 形态，
+/// 不维护两份镜像 struct）；本模块 re-export 保持 `crate::chat_log::
+/// PresentedFile` 路径稳定。与 D3 `file_changes` 的分工：file_changes 是
+/// 「改了什么」（消息↔文件变更映射，服务 rewind/diff），deliverables 是
+/// 「该看什么」（结果面向用户的产物指引，服务前端交付物卡片）。路径引用
+/// 不落字节（与 images 同语义）。
+pub use nemesis_types::agent::PresentedFile;
+
 /// D3（devtool-upgrade 阶段 5）：chat_log 条目在 `role`/`content` 之外的
 /// 可选元数据。jsonl 行 shape 的单一真相源仍是 [`write_chat_entry`]；本
 /// struct 是**写入 API** 的单一入口——扩字段只动这里，不再加位置参数
@@ -33,6 +42,11 @@ pub struct ChatLogMeta<'a> {
     /// M3 会话级 diff 查看器的数据源。空切片不写——旧条目/无变更解析
     /// 不受影响。
     pub file_changes: &'a [FileChange],
+    /// N5（2026-10-13 机会项）：`"deliverables"` 字段——本 turn 的交付物
+    /// 清单（`[{path, title, note}]`；`present_files` 工具登记，assistant
+    /// 最终回复落盘时去重随行）。与 `file_changes` 并列不重叠：前者服务
+    /// 变更映射（rewind/diff），后者服务交付展示。空切片不写。
+    pub deliverables: &'a [PresentedFile],
     /// E3（devtool-upgrade 阶段 5）：`"checkpoint_turn"` 字段——本行所属
     /// turn 的 checkpoint 序号（`turn_preamble` begin 的值随 admission 穿针
     /// 到行落盘点）。E3 消息级回退用它把 jsonl 行精确定位回 checkpoint
@@ -52,6 +66,7 @@ pub fn append_chat_log_meta(session_key: &str, role: &str, content: &str, meta: 
         meta.cron_job_name,
         meta.images,
         meta.file_changes,
+        meta.deliverables,
         meta.checkpoint_turn,
         None,
     );
@@ -70,6 +85,27 @@ pub fn dedup_file_changes(changes: Vec<FileChange>) -> Vec<FileChange> {
             None => {
                 seen.insert(c.path.clone(), out.len());
                 out.push(c);
+            }
+        }
+    }
+    out
+}
+
+/// N5：把本 turn 的交付物按 `path` 去重——与 [`dedup_file_changes`] 同规则：
+/// 保留首次出现顺序（展示顺序稳定），`title`/`note` 取**最后一次**登记
+/// （agent 对同一产物的最新描述胜出）。
+pub fn dedup_presented_files(files: Vec<PresentedFile>) -> Vec<PresentedFile> {
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut out: Vec<PresentedFile> = Vec::with_capacity(files.len());
+    for f in files {
+        match seen.get(&f.path) {
+            Some(&i) => {
+                out[i].title = f.title;
+                out[i].note = f.note;
+            }
+            None => {
+                seen.insert(f.path.clone(), out.len());
+                out.push(f);
             }
         }
     }
@@ -118,6 +154,7 @@ pub fn append_chat_log_with_model_and_node(
         None,
         &[],
         &[],
+        &[],
         None,
         source_node,
     );
@@ -144,6 +181,7 @@ pub fn append_chat_log_full(
         model,
         cron_job_id,
         cron_job_name,
+        &[],
         &[],
         &[],
         None,
@@ -175,6 +213,7 @@ pub fn append_chat_log_full_with_images(
         cron_job_name,
         images,
         &[],
+        &[],
         None,
         None,
     );
@@ -183,6 +222,7 @@ pub fn append_chat_log_full_with_images(
 /// Write core shared by all append variants (single source of truth for the
 /// jsonl entry shape). `images` non-empty → extra `"images"` array field.
 /// `file_changes` non-empty → extra `"file_changes"` array field (D3).
+/// `deliverables` non-empty → extra `"deliverables"` array field (N5).
 /// `checkpoint_turn` Some → extra `"checkpoint_turn"` numeric field (E3).
 #[allow(clippy::too_many_arguments)]
 fn write_chat_entry(
@@ -194,6 +234,7 @@ fn write_chat_entry(
     cron_job_name: Option<&str>,
     images: &[String],
     file_changes: &[FileChange],
+    deliverables: &[PresentedFile],
     checkpoint_turn: Option<usize>,
     source_node: Option<&str>,
 ) {
@@ -237,6 +278,11 @@ fn write_chat_entry(
     // /无变更，读侧解析不受影响（与 model/cron/images 同一宽容读法）。
     if !file_changes.is_empty() {
         entry["file_changes"] = serde_json::to_value(file_changes).unwrap_or(Value::Null);
+    }
+    // N5：本 turn 交付物（`[{path, title, note}]`）。缺字段 = 旧条目/无交付
+    // 物，读侧解析不受影响（同一宽容读法）。
+    if !deliverables.is_empty() {
+        entry["deliverables"] = serde_json::to_value(deliverables).unwrap_or(Value::Null);
     }
     // E3：本行所属 turn 的 checkpoint 序号（消息级回退的行→turn 定位锚）。
     // 缺字段 = 无 store 时代的行，回退只截断对话不回滚文件。
@@ -1256,6 +1302,11 @@ mod cov_tests;
 // sidecar 写失败 + 平化迁移各分支）。
 #[cfg(test)]
 mod cov2_tests;
+
+// N5（2026-10-13 机会项）：deliverables 字段写入 + dedup_presented_files
+// 投影 + PresentedFile serde 缺省契约测试。
+#[cfg(test)]
+mod n5_tests;
 
 // cov 系文件型测试的共享串行锁（2026-09-28 复查新增）：目录型夹具（rewind
 // tmp 目录 / rename 目标目录 / legacy 嵌套目录 / boundary sidecar 目录）与

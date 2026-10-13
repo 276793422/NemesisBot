@@ -207,6 +207,9 @@ impl AgentLoop {
                     || name.starts_with("mcp_")
                     || name.as_str() == "spawn"
             })
+            // N2（机会项）：present_plan 只在 plan 模式供给（build 模式下
+            // 调用无意义且工具内已诚实报错——供给+调用双闸对齐）。
+            .filter(|name| name.as_str() != "present_plan" || plan_mode)
             .filter_map(|name| tools_guard.get(name).map(|tool| (name, tool)))
             .map(|(name, tool)| crate::types::ToolDefinition {
                 tool_type: "function".to_string(),

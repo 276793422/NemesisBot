@@ -8,6 +8,7 @@ pub mod github_registry;
 pub mod github_tree;
 pub mod install_gate;
 pub mod installer;
+pub mod learned;
 pub mod lint;
 pub mod loader;
 pub mod lockfile;

@@ -247,6 +247,88 @@ fn test_find_model_by_name() {
     assert_eq!(found_by_model.model_name, "primary");
 }
 
+/// 声明式模型角色守卫④（2026-10-13 N6）：装配点专用——conversation/缺省
+/// 放行，utility/classifier loud 报错，未命中条目不在此重复报错（resolution
+/// 失败由调用方既有降级处理）。
+#[test]
+fn test_ensure_conversation_role() {
+    let cfg = Config {
+        model_list: vec![
+            ModelConfig {
+                model_name: "conv".to_string(),
+                model: "glm-5".to_string(),
+                role: "conversation".to_string(),
+                ..Default::default()
+            },
+            ModelConfig {
+                model_name: "util".to_string(),
+                model: "glm-4.7-flash".to_string(),
+                role: "utility".to_string(),
+                ..Default::default()
+            },
+            ModelConfig {
+                model_name: "cls".to_string(),
+                model: "bge-reranker".to_string(),
+                role: "classifier".to_string(),
+                ..Default::default()
+            },
+            ModelConfig {
+                model_name: "legacy".to_string(),
+                model: "old-model".to_string(),
+                // role 缺省（老条目零迁移）= 对话形态。
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+
+    assert!(ensure_conversation_role(&cfg, "conv").is_ok());
+    assert!(ensure_conversation_role(&cfg, "legacy").is_ok());
+    // 缺省 role 为空串 → is_conversation_role 放行。
+    assert!(
+        cfg.model_list
+            .iter()
+            .find(|m| m.model_name == "legacy")
+            .map(|m| nemesis_types::capability::is_conversation_role(&m.role))
+            == Some(true)
+    );
+
+    let err = ensure_conversation_role(&cfg, "util").unwrap_err();
+    assert!(
+        err.contains("util") && err.contains("utility") && err.contains("agents.small_model"),
+        "错误信息带条目名与角色: {err}"
+    );
+    let err = ensure_conversation_role(&cfg, "cls").unwrap_err();
+    assert!(err.contains("classifier"), "{err}");
+
+    // 未命中条目：Ok（resolution 失败由调用方处理，不在此重复报错）。
+    assert!(ensure_conversation_role(&cfg, "no-such-model").is_ok());
+}
+
+/// ModelConfig.role 字段（N6）：typed 反序列化缺省 = 空串（老条目零迁移）；
+/// 显式值 round-trip 保留；空串不序列化（typed 保存字节零变化）。
+#[test]
+fn test_model_config_role_serde_default_and_roundtrip() {
+    let v: serde_json::Value = serde_json::json!({
+        "model_name": "m", "model": "vendor/model", "api_key": "k"
+    });
+    let mc: ModelConfig = serde_json::from_value(v).expect("老形态条目反序列化");
+    assert_eq!(mc.role, "", "缺省 role = 空串（零迁移）");
+    let back = serde_json::to_value(&mc).expect("serialize");
+    assert!(
+        back.get("role").is_none(),
+        "空 role 不写盘（skip_serializing_if）：{back}"
+    );
+
+    let v2 = serde_json::json!({
+        "model_name": "u", "model": "vendor/small", "role": "utility"
+    });
+    let mc2: ModelConfig = serde_json::from_value(v2).expect("带 role 条目反序列化");
+    assert_eq!(mc2.role, "utility");
+    let back2 = serde_json::to_value(&mc2).expect("serialize");
+    assert_eq!(back2["role"], "utility", "typed round-trip 保留 role");
+}
+
 // ---- Additional coverage tests for 95%+ ----
 
 #[test]

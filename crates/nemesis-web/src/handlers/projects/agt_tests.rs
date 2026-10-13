@@ -28,6 +28,9 @@ impl ProjectsBridge for AgtNoopBridge {
     fn rename(&self, _project_id: &str, _new_name: &str) -> Result<ProjectInfo, String> {
         Err("noop".to_string())
     }
+    fn set_trust(&self, _project_id: &str, _trusted: bool) -> Result<ProjectInfo, String> {
+        Err("noop".to_string())
+    }
     fn owner_of(&self, _session_key: &str) -> Option<String> {
         None
     }
