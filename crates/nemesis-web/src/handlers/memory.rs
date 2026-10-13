@@ -287,7 +287,16 @@ fn read_main_switch(home: &str) -> bool {
 }
 
 /// Write the `memory.enabled` field in the main config.json.
+/// 锁内包装：独立调用方（setup 臂）直接用本函数；已持写锁的调用方
+/// （config_set）改调 [`set_main_switch_inner`]（Mutex 非重入，勿嵌套）。
 fn set_main_switch(home: &str, enabled: bool) -> Result<(), String> {
+    let _cfg_serial = nemesis_config::config_write_lock();
+    set_main_switch_inner(home, enabled)
+}
+
+/// RMW 本体（load→改 memory.enabled→原子写回）。调用方必须持有
+/// [`nemesis_config::config_write_lock`]。
+fn set_main_switch_inner(home: &str, enabled: bool) -> Result<(), String> {
     let cfg_path = PathBuf::from(home).join("config.json");
     if !cfg_path.exists() {
         return Err(format!("config.json not found at {}", cfg_path.display()));
@@ -545,14 +554,19 @@ impl MemoryHandler {
                 &config_dir_clone,
             );
 
-            // 3. Write enabled=true to unified config
-            let mut emb_cfg =
-                nemesis_memory::vector::embedding_config::load_embedding_config(&config_dir_clone);
-            emb_cfg.enabled = true;
-            nemesis_memory::vector::embedding_config::save_embedding_config(
-                &emb_cfg,
-                &config_dir_clone,
-            );
+            // 3. Write enabled=true to unified config（写锁罩住 RMW 三连；
+            // guard 不跨 await——模型下载已在上方完成，剩纯文件 IO）
+            {
+                let _cfg_serial = nemesis_config::config_write_lock();
+                let mut emb_cfg = nemesis_memory::vector::embedding_config::load_embedding_config(
+                    &config_dir_clone,
+                );
+                emb_cfg.enabled = true;
+                nemesis_memory::vector::embedding_config::save_embedding_config(
+                    &emb_cfg,
+                    &config_dir_clone,
+                );
+            }
 
             hub.publish(
                 "memory-setup",
@@ -621,9 +635,13 @@ impl MemoryHandler {
         // 2026-08-24 re-review: every switch key below validates loudly
         // (present-but-mistyped → Err, absent/null → unchanged) instead of
         // silently ignoring wrong types — sandbox `set_config` convention.
+        // 写串行锁：本臂对 config.json（set_main_switch_inner）与
+        // config.enhanced_memory.json（下方多组 load→改→save）都是 RMW，
+        // 锁罩全臂防并发写臂丢更新（同类横扫 2026-10-13）。
+        let _cfg_serial = nemesis_config::config_write_lock();
         // Main switch
         if let Some(enabled) = get_opt_bool_loud(data, "main_enabled")? {
-            set_main_switch(home, enabled)?;
+            set_main_switch_inner(home, enabled)?;
             if !enabled && let Some(mgr) = ctx.state.memory_manager.as_ref() {
                 mgr.set_vector_enabled(false);
             }

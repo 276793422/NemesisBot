@@ -26,7 +26,9 @@ pub use vault_ref::{
 };
 
 // Runtime config cache (single source of truth for the live config).
-pub use store::{ConfigHandle, ConfigStore, global, load_live, save_live, set_global};
+pub use store::{
+    ConfigHandle, ConfigStore, config_write_lock, global, load_live, save_live, set_global,
+};
 
 // Re-export provider_resolver types and functions for backward compatibility
 pub use provider_resolver::{

@@ -130,6 +130,9 @@ impl SkinsHandler {
             .ok_or_else(|| "home not configured".to_string())?;
 
         // config 一次装载：require_signed 读取与 ui.skin 写入同源。
+        // 写串行锁罩整段 load→改 ui.skin→save（scan_skins 目录扫描在中间
+        // 拉宽窗口；锁覆盖到 save 落盘为止，同类横扫 2026-10-13）。
+        let _cfg_serial = nemesis_config::config_write_lock();
         let mut cfg = super::config::load_config(&home)?;
 
         // ① 非默认 id：先过包体/策略校验，全绿才动 config 与锁。

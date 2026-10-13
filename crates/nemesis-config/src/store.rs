@@ -127,6 +127,30 @@ pub fn global() -> Option<Arc<ConfigStore>> {
     GLOBAL_STORE.get().cloned()
 }
 
+// ---------------------------------------------------------------------------
+// 进程级配置写串行锁（2026-10-13 同类横扫）。
+//
+// config.json（及 config.skills.json 等同族配置）的每个写命令臂都是
+// load→改→save 的 RMW，而 WSAPI 每请求帧独立 tokio::spawn 并发分发——
+// 两个 dashboard 写操作（或写臂与 agent 侧写）交错时，后写者以自己的
+// 旧快照整体覆盖先写者的改动（save 原子救不了丢更新）。[`ConfigStore`]
+// 的内存 RwLock 只串行「update 闭包内」的变异，罩不住「load 克隆→改→
+// save_live 整体替换」与 raw JSON RMW 这类跨调用读改写。
+//
+// 纪律：**只在命令臂最外层取一次**，覆盖整段 RMW（从 load 到 save 落盘）；
+// 辅助函数与 [`ConfigStore`] 内部**不得**重复取（Mutex 非重入，嵌套即死锁）。
+// 读路径不入锁（rename 原子性保证读到完整旧值或完整新值）。
+// ---------------------------------------------------------------------------
+
+static CONFIG_WRITE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+/// 取配置写串行锁。用法：写命令臂首行 `let _cfg_serial =
+/// nemesis_config::config_write_lock();`，guard 存活到 save 落盘为止。
+/// 见上方锁注释的取锁纪律（只在命令臂取、勿嵌套）。
+pub fn config_write_lock() -> parking_lot::MutexGuard<'static, ()> {
+    CONFIG_WRITE_LOCK.lock()
+}
+
 /// Convenience: read the live config from the global store (clone). Returns
 /// `None` if no store is installed (CLI mode) — callers fall back to
 /// `load_config` from disk.

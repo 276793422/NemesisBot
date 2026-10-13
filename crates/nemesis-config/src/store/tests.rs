@@ -212,3 +212,27 @@ fn executor_backend_defaults_to_auto_for_legacy_config() {
         "typed save 显式写回 backend 键"
     );
 }
+
+/// 写串行锁互斥回归钉（2026-10-13 同类横扫）：A 持锁期间 B 必须阻塞，
+/// A 释放后 B 才能进入。防将来有人把 config_write_lock 改成 no-op 或
+/// 每次调用新建锁（那样互斥即失效，RMW 丢更新回归）。
+#[test]
+fn config_write_lock_is_exclusive() {
+    let guard = crate::config_write_lock();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let h = std::thread::spawn(move || {
+        let _g2 = crate::config_write_lock(); // 阻塞直到主线程释放
+        tx.send(()).expect("receiver dropped");
+    });
+    // B 仍在等锁（给一点时间窗口确认没有误放行）。
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(
+        rx.recv_timeout(std::time::Duration::from_millis(1))
+            .is_err(),
+        "B 在 A 持锁期间就拿到了锁——互斥失效"
+    );
+    drop(guard);
+    rx.recv_timeout(std::time::Duration::from_secs(5))
+        .expect("A 释放后 B 应能拿到锁");
+    h.join().unwrap();
+}
