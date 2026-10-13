@@ -33,22 +33,12 @@ pub enum FailoverError {
     },
     #[error("billing issue with provider {provider}")]
     Billing { provider: String },
-    #[error("timeout calling provider {provider}/{model}{cause}")]
-    Timeout {
-        provider: String,
-        model: String,
-        /// 底层错误链全文（`error_chain_msg`，含 reqwest source 链）。
-        /// 空串 = 无底层错误（分类器从文本归类路径）。**必须保留**——
-        /// 连接建立失败的判定词（"connection refused"/"os error 10061"）
-        /// 只在链内可见，丢弃它端点封存判定（is_connect_error）永远失明
-        ///（E2E-9 验收实证：anthropic lane `map_err(|_|)` 吞掉后死端点
-        /// 三连失败零计数的根因）。
-        cause: String,
-    },
+    #[error("timeout calling provider {provider}/{model}")]
+    Timeout { provider: String, model: String },
     #[error("format error from provider {provider}: {message}")]
     Format { provider: String, message: String },
-    #[error("provider {provider} is overloaded")]
-    Overloaded { provider: String },
+    #[error("provider {provider} is overloaded (status: {status})")]
+    Overloaded { provider: String, status: u16 },
     #[error("unknown error from provider {provider}: {message}")]
     Unknown { provider: String, message: String },
 }
@@ -56,12 +46,19 @@ pub enum FailoverError {
 impl FailoverError {
     /// Check if this error is retriable with a different provider.
     pub fn is_retriable(&self) -> bool {
-        matches!(
-            self,
+        match self {
             FailoverError::RateLimit { .. }
-                | FailoverError::Timeout { .. }
-                | FailoverError::Overloaded { .. }
-        )
+            | FailoverError::Timeout { .. }
+            | FailoverError::Overloaded { .. } => true,
+            // 2026-10-13 诚实化配套：`transport_error` 的传输层连接失败
+            // （DNS/连接拒绝/SYN 黑洞/中途断流）落 Unknown 但带 "connect
+            // error" 前缀——与 Timeout 同属瞬态故障，fallback 链与路由
+            // 必须照常轮转（此前伪装 Timeout 时 is_retriable 恒 true，
+            // 诚实化若不补这条，主端点连不上就不再故障转移 = 回归）。
+            // 其余 Unknown（HTTP 4xx/500 等应用层错误）维持不可重试。
+            FailoverError::Unknown { message, .. } => message.starts_with("connect error"),
+            _ => false,
+        }
     }
 
     /// Get the failover reason.
@@ -118,6 +115,11 @@ impl FailoverError {
             },
             503 | 502 => FailoverError::Overloaded {
                 provider: provider.to_string(),
+                // 真实上游状态码随错误携带（2026-10-13）：此前只带 provider，
+                // 502（中转转发失败）与 503 分不清，归因盲点。Display 的
+                // "(status: NNN)" 形态可被 llm_error_class::extract_http_status
+                // 还原——展平文本回灌分类器时不丢状态码。
+                status,
             },
             _ => FailoverError::Unknown {
                 provider: provider.to_string(),
@@ -157,6 +159,47 @@ pub fn parse_retry_after(value: Option<&str>) -> Option<u64> {
 /// Extract + parse the `Retry-After` header from a response header map.
 pub fn retry_after_from_headers(headers: &reqwest::header::HeaderMap) -> Option<u64> {
     parse_retry_after(headers.get("retry-after").and_then(|v| v.to_str().ok()))
+}
+
+/// Map a reqwest transport error to a `FailoverError`, honestly.
+///
+/// 2026-10-13 根修（gpt-5.6-sol 风暴排查副产品）：此前各 lane 把**一切**
+/// `send()`/流读错误一律 `.map_err(|_| Timeout)`——DNS 失败、连接拒绝、
+/// SYN 黑洞（Windows TCP 重传 ~21s）全部伪装成「超时」，误导排查方向
+/// （真超时=上游慢；连接失败=地址/网络错，处置与文案完全不同）。现在：
+/// - `reqwest::Error::is_timeout()`（客户端级真超时，含 connect_timeout）
+///   → `Timeout`（语义不变，瞬态可重试）；
+/// - 其余传输错误 → `Unknown`，message 以 **"connect error: "** 前缀 +
+///   完整 source 链（DNS/连接/OS 根因原文）。该前缀是 agent loop transient
+///   词表成员（"connect error"），也是 `llm_error_class` 的早判分支
+///   （先于 auth/format，防 URL 孤立数字误分类）——可重试归宿有双保险。
+pub fn transport_error(provider: &str, model: &str, e: &reqwest::Error) -> FailoverError {
+    if e.is_timeout() {
+        return FailoverError::Timeout {
+            provider: provider.to_string(),
+            model: model.to_string(),
+        };
+    }
+    // Unknown 变体只带 provider + message（Timeout 才带 model 槽位）——把
+    // model 编进 message 保住可观测性与「空模型名回落 default_model」的
+    // 可断言性（"connect error" 前缀保持在最前，词表/分类器锚定它）。
+    FailoverError::Unknown {
+        provider: provider.to_string(),
+        message: format!("connect error (model {}): {}", model, error_chain(e)),
+    }
+}
+
+/// Walk `std::error::Error::source()` chain and join with ": "——reqwest 的
+/// `Display` 只有顶层（"error sending request for url (...)"），真实根因
+/// （hyper/tcp/OS 文案）藏在 source 链里。
+fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut parts = vec![e.to_string()];
+    let mut src = e.source();
+    while let Some(s) = src {
+        parts.push(s.to_string());
+        src = s.source();
+    }
+    parts.join(": ")
 }
 
 #[cfg(test)]

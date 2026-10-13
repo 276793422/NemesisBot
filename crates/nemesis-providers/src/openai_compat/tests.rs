@@ -640,14 +640,25 @@ async fn test_w4c_oacc_chat_invalid_json_maps_format_error() {
 }
 
 #[tokio::test]
-async fn test_w4c_oacc_chat_dead_port_maps_timeout() {
-    // 指向一个必然关闭的端口：send 失败 → Timeout
+async fn test_w4c_oacc_chat_dead_port_maps_connect_error() {
+    // 诚实化（2026-10-13）后契约：死端口连接失败不再伪装 Timeout——落
+    // Unknown + "connect error" 前缀（根因链保留在 message），且
+    // is_retriable 仍为 true（瞬态故障，fallback 链照常轮转）。
     let provider = OpenAICompatProvider::new(oacc_config("http://127.0.0.1:1"));
     let err = provider
         .chat(&oacc_messages(), &[], "m", &ChatOptions::default())
         .await
         .unwrap_err();
-    assert!(matches!(err, FailoverError::Timeout { .. }));
+    match err {
+        FailoverError::Unknown { message, .. } => {
+            assert!(message.starts_with("connect error"), "got: {message}");
+            assert!(
+                message.contains("model m"),
+                "model 编进 message 保可观测性: {message}"
+            );
+        }
+        other => panic!("expected Unknown(connect error), got {:?}", other),
+    }
 }
 
 #[tokio::test]

@@ -9,6 +9,9 @@ import {
   sseReadyState,
 } from '../../composables/useSSE'
 import MultiSelectDialog, { type SelectableItem } from './MultiSelectDialog.vue'
+// L10（2026-10-13）：provider 流式输出观测面板（实时页专属——只呈现
+// 「此刻正在发生的流」，ephemeral 帧不参与补拉）。
+import ProviderStreamPanel from './ProviderStreamPanel.vue'
 
 const entries = ref<LogEntry[]>([])
 const sources = ref<Set<LogSource>>(new Set(['general', 'cluster', 'security', 'heartbeat', 'llm']))
@@ -379,6 +382,9 @@ function levelClass(l: LogLevel): string {
         <span>自动滚动</span>
       </label>
     </div>
+
+    <!-- L10：provider 流式输出观测（有活跃/近期流时出现在日志列表上方） -->
+    <ProviderStreamPanel />
 
     <!-- 空状态提示 -->
     <div v-if="entries.length === 0" class="event-empty">

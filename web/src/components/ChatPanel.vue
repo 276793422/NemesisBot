@@ -401,6 +401,14 @@ function modelBadge(model: string | undefined): string {
 }
 
 /**
+ * N5: 交付物缺省标题 = 文件名（与后端工具侧缺省规则一致——title 空/缺失
+ * 时前端兜底取 basename；正反斜杠都切，兼容 Windows 绝对路径）。
+ */
+function deliverableFileName(path: string): string {
+  return path.split(/[\\/]/).pop() || path
+}
+
+/**
  * E2: 并发回执徽章——识别 AgentLoop 的排队/插话回执（前缀见 loop.rs
  * gate_inbound 的 busy 收据文案；⏳ 还有 /compact /clear 忙时拒绝回执，
  * 语义是"已忽略"不是"已排队"，所以匹配具体前缀而非裸 emoji）。
@@ -500,6 +508,27 @@ function handleWSMessage(data: any) {
     if (typeof ev?.seq === 'number') lastChatSeq = Math.max(lastChatSeq, ev.seq)
     return
   }
+  // N5（2026-10-13 机会项）：deliverables push（present_files 登记事件，
+  // 后端落盘后发布、先于 assistant 回复帧）。会话过滤与 tool_event 同款；
+  // 异会话的交付物不入缓冲（历史映射兜底）。
+  if (data.type === 'push' && data.cmd === 'deliverables') {
+    const p = data.data ?? {}
+    if (typeof p.session_id === 'string' && p.session_id.length > 0) {
+      // 无会话锚时保持接受（与 tool_event 分支的 legacy 豁免同语义）。
+      if (effectiveSid.value && p.session_id !== effectiveSid.value) return
+    } else {
+      const expected = effectiveSid.value ? `web:${effectiveSid.value}` : null
+      if (expected ? p.chat_id !== expected : !String(p.chat_id ?? '').startsWith('web:')) return
+    }
+    if (Array.isArray(p.files)) {
+      chatStore.appendPendingDeliverables(
+        p.files.filter(
+          (f: any) => f && typeof f.path === 'string' && f.path,
+        ),
+      )
+    }
+    return
+  }
   if (data.module !== undefined) {
     const activeModule = props.module ?? 'chat'
     if (data.type === 'message' && data.module === activeModule) {
@@ -553,6 +582,12 @@ function handleWSMessage(data: any) {
             incomingRole === 'assistant' && chatStore.pendingRoundTexts.length
               ? chatStore.flushPendingRoundTexts()
               : undefined
+          // N5：交付物同轮收尾——登记 push 先于回复帧（后端落盘后发布），
+          // flush 挂载到本条 assistant 消息（空缓冲 = undefined 不占字段）。
+          const deliverables =
+            incomingRole === 'assistant' && chatStore.pendingDeliverables.length
+              ? chatStore.flushPendingDeliverables()
+              : undefined
           chatStore.addMessage({
             role: incomingRole,
             content: data.data.content,
@@ -565,6 +600,7 @@ function handleWSMessage(data: any) {
             seq: typeof data.data?.seq === 'number' ? data.data.seq : undefined,
             toolEvents,
             roundTexts,
+            deliverables,
           })
         }
         // P8 补全（2026-09-21）：user 回声帧（后端入环回推，多端一致）不是
@@ -759,6 +795,14 @@ async function replayToolsFromRing() {
             if (chatStore.pendingRoundTexts.length) {
               target.roundTexts = chatStore.flushPendingRoundTexts()
             }
+            // N5：环回放不携带交付物（未落环），但缓冲可能持有「push 已到、
+            // 回复帧已由历史/回放渲染」场景的交付物——同位挂载防误挂下轮。
+            if (chatStore.pendingDeliverables.length) {
+              target.deliverables = [
+                ...(target.deliverables ?? []),
+                ...chatStore.flushPendingDeliverables(),
+              ]
+            }
           }
         }
         seen++
@@ -826,6 +870,13 @@ async function syncMissedChat() {
         ev.role === 'assistant' && chatStore.pendingRoundTexts.length
           ? chatStore.flushPendingRoundTexts()
           : undefined
+      // N5：补拉路径的交付物同轮收尾——环内 chat 行不带 deliverables（未
+      // 落环），但登记 push 已实时到达、回复帧丢失走补拉的场景下，缓冲里
+      // 的交付物挂到补拉恢复的回复上（与 toolEvents 同语义）。
+      const deliverables =
+        ev.role === 'assistant' && chatStore.pendingDeliverables.length
+          ? chatStore.flushPendingDeliverables()
+          : undefined
       chatStore.addMessage({
         role: ev.role,
         content: ev.content,
@@ -839,6 +890,7 @@ async function syncMissedChat() {
         seq: typeof ev.seq === 'number' ? ev.seq : undefined,
         toolEvents,
         roundTexts,
+        deliverables,
       })
       if (ev.role === 'assistant') gotAssistant = true
       if (typeof ev.seq === 'number') lastChatSeq = Math.max(lastChatSeq, ev.seq)
@@ -1155,6 +1207,7 @@ function handleHistoryResponse(data: any) {
         model: m.model,
         sourceNode: m.source_node,
         imageCount: Array.isArray(m.images) ? m.images.length : undefined,
+        deliverables: Array.isArray(m.deliverables) ? m.deliverables : undefined,
         rowIndex: oldest !== null ? oldest + j : undefined,
       })),
     )
@@ -1196,6 +1249,7 @@ function handleHistoryResponse(data: any) {
           model: m.model,
           sourceNode: m.source_node,
           imageCount: Array.isArray(m.images) ? m.images.length : undefined,
+          deliverables: Array.isArray(m.deliverables) ? m.deliverables : undefined,
         })),
       )
       chatStore.setBusy(effectiveSid.value, false)
@@ -1257,6 +1311,7 @@ function handleHistoryResponse(data: any) {
       model: m.model,
       sourceNode: m.source_node,
       imageCount: Array.isArray(m.images) ? m.images.length : undefined,
+      deliverables: Array.isArray(m.deliverables) ? m.deliverables : undefined,
     }))
     // M6：批次行号连续——oldest_index 传给 store 逐条编号（E3 rewind 定位）。
     chatStore.prependHistory(
@@ -1400,7 +1455,7 @@ const pendingTurn = ref(false)
 // BUG 2026-09-21 ①：占位区的限流重试实时态（agent.retry_status 轮询）——
 // 切走切回后用户看到「第 N/M 次重试」而非哑转圈；重试不落盘（既有裁决
 // 进度只走实时帧），这里是唯一的过程可见面。
-const retryStatus = ref<{ retry: number; max_retries: number; wait_secs: number; model: string } | null>(null)
+const retryStatus = ref<{ retry: number; max_retries: number; wait_secs: number; model: string; label?: string } | null>(null)
 let pendingTurnTimer: number | null = null
 let pendingTurnDeadPolls = 0
 let pendingTurnStartedAt = 0
@@ -1474,7 +1529,7 @@ async function pollPendingTurn() {
   try {
     const rs = await request('agent', 'retry_status', { session_id: effectiveSid.value || '' })
     retryStatus.value = rs?.retrying
-      ? { retry: rs.retry, max_retries: rs.max_retries, wait_secs: rs.wait_secs, model: rs.model }
+      ? { retry: rs.retry, max_retries: rs.max_retries, wait_secs: rs.wait_secs, model: rs.model, label: rs.label }
       : null
   } catch {
     /* 后端不可用/非 default chat——占位退化为转圈，无害 */
@@ -2409,6 +2464,24 @@ onUnmounted(() => {
             <div v-else class="message-text">{{ msg.content }}</div>
             <span v-if="msg.imageCount" class="msg-image-chip" title="消息附带图片">📷 {{ msg.imageCount }}</span>
           </div>
+          <!-- N5: 本 turn 的交付物卡片（present_files 登记，「该看什么」产物
+               指引；实时 push + 历史映射双路挂载，与 file_changes 变更映射
+               并列不重叠）。路径只读展示（引用不落字节）。 -->
+          <div v-if="msg.deliverables && msg.deliverables.length" class="deliverables">
+            <div class="deliverables-header">📦 交付物 · {{ msg.deliverables.length }}</div>
+            <div class="deliverables-list">
+              <div
+                v-for="(d, di) in msg.deliverables"
+                :key="di"
+                class="deliverable-item"
+                :title="d.path"
+              >
+                <span class="deliverable-title">{{ d.title || deliverableFileName(d.path) }}</span>
+                <span v-if="d.note" class="deliverable-note">{{ d.note }}</span>
+                <span class="deliverable-path">{{ d.path }}</span>
+              </div>
+            </div>
+          </div>
           <div class="message-time">
             <span>{{ formatTime(msg.timestamp) }}</span>
             <span v-if="msg.role === 'assistant' && modelBadge(msg.model)" class="model-badge">{{ modelBadge(msg.model) }}</span>
@@ -2443,7 +2516,7 @@ onUnmounted(() => {
            多端场景下本端未发起轮次（另一端在跑工具）也能实时看到工具卡，
            否则实时 tool_event 只进 store 不渲染，直到回复落地才闪现。 -->
       <div
-        v-if="streaming || pendingTurn || chatStore.pendingToolEvents.length || chatStore.pendingRoundTexts.length"
+        v-if="streaming || pendingTurn || chatStore.pendingToolEvents.length || chatStore.pendingRoundTexts.length || chatStore.pendingDeliverables.length"
         class="message assistant"
       >
         <div class="message-avatar">NB</div>
@@ -2478,13 +2551,31 @@ onUnmounted(() => {
               <ToolCallCard v-for="ev in chatStore.pendingToolEvents" :key="ev.callId" :event="ev" />
             </div>
           </template>
+          <!-- N5: 登记已到、回复帧未到的交付物（push 先于回复帧的窗口期
+               实时可见；回复落地时 flush 挂载，与 toolCards 同语义）。 -->
+          <div v-if="chatStore.pendingDeliverables.length" class="deliverables">
+            <div class="deliverables-header">📦 交付物 · {{ chatStore.pendingDeliverables.length }}</div>
+            <div class="deliverables-list">
+              <div
+                v-for="(d, di) in chatStore.pendingDeliverables"
+                :key="di"
+                class="deliverable-item"
+                :title="d.path"
+              >
+                <span class="deliverable-title">{{ d.title || deliverableFileName(d.path) }}</span>
+                <span v-if="d.note" class="deliverable-note">{{ d.note }}</span>
+                <span class="deliverable-path">{{ d.path }}</span>
+              </div>
+            </div>
+          </div>
           <div v-if="streaming || pendingTurn" class="message-bubble">
             <!-- BUG 2026-09-21 ①：pendingTurn（切回会话）时限流重试实时态
                  可见——文案与实时帧同口径；无快照（非限流/查询不可用）退化为
                  转圈。streaming（本地发送）不显示——重试进度已有实时帧。 -->
             <template v-if="pendingTurn && retryStatus">
               <div class="retry-status-text">
-                ⏳ 上游限流（{{ retryStatus.model }}），第 {{ retryStatus.retry }}/{{ retryStatus.max_retries }} 次重试，等待 {{ retryStatus.wait_secs }} 秒…
+                <!-- label 按真类（上游限流/上游过载，2026-10-13）；旧后端无 label 字段回落「上游限流」。 -->
+                ⏳ {{ retryStatus.label || '上游限流' }}（{{ retryStatus.model }}），第 {{ retryStatus.retry }}/{{ retryStatus.max_retries }} 次重试，等待 {{ retryStatus.wait_secs }} 秒…
               </div>
             </template>
             <div class="typing-indicator"><span></span><span></span><span></span></div>

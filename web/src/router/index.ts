@@ -43,6 +43,9 @@ const routes: RouteRecordRaw[] = [
   ...(import.meta.env.VITE_FEATURE_BOARD !== 'false' ? [{ path: '/board', name: 'board', component: () => import('../views/BoardView.vue') }] : []),
   ...(import.meta.env.VITE_FEATURE_CLUSTER !== 'false' ? [{ path: '/cluster', name: 'cluster', component: () => import('../views/ClusterView.vue') }] : []),
   ...(import.meta.env.VITE_FEATURE_SECURITY !== 'false' ? [{ path: '/security', name: 'security', component: () => import('../views/SecurityView.vue') }] : []),
+  // L7c (2026-10-13)：凭据 Vault 管理页（后端 vault handler 挂 security
+  // feature——与 SecurityView 同一 VITE_FEATURE_SECURITY 门控）。
+  ...(import.meta.env.VITE_FEATURE_SECURITY !== 'false' ? [{ path: '/vault', name: 'vault', component: () => import('../views/VaultView.vue') }] : []),
   ...(import.meta.env.VITE_FEATURE_SCANNER !== 'false' ? [{ path: '/scanner', name: 'scanner', component: () => import('../views/ScannerView.vue') }] : []),
   ...(import.meta.env.VITE_FEATURE_SANDBOX !== 'false' ? [{ path: '/sandbox', name: 'sandbox', component: () => import('../views/SandboxView.vue') }] : []),
   // L8 (2026-09-07)：PTY 内嵌终端（terminal feature / VITE_FEATURE_TERMINAL 门控）。

@@ -42,7 +42,6 @@ fn test_retriable_timeout() {
     let err = FailoverError::Timeout {
         provider: "openai".to_string(),
         model: "gpt-4".to_string(),
-        cause: String::new(),
     };
     assert!(err.is_retriable());
     assert_eq!(err.reason(), FailoverReason::Timeout);
@@ -52,6 +51,7 @@ fn test_retriable_timeout() {
 fn test_retriable_overloaded() {
     let err = FailoverError::Overloaded {
         provider: "openai".to_string(),
+        status: 502,
     };
     assert!(err.is_retriable());
     assert_eq!(err.reason(), FailoverReason::Overloaded);
@@ -84,6 +84,26 @@ fn test_not_retriable_unknown() {
     };
     assert!(!err.is_retriable());
     assert_eq!(err.reason(), FailoverReason::Unknown);
+}
+
+#[test]
+fn test_connect_error_unknown_is_retriable() {
+    // 2026-10-13 诚实化配套：transport_error 的连接失败落 Unknown，但
+    // fallback 链/路由的轮转判据是 is_retriable——前缀必须算 retriable
+    // （此前伪装 Timeout 时恒 true，不补 = 主端点连不上不再故障转移）。
+    let err = FailoverError::Unknown {
+        provider: "codex".to_string(),
+        message: "connect error (model gpt-x): error sending request".to_string(),
+    };
+    assert!(err.is_retriable(), "connect error must be retriable");
+    // 其余 Unknown 维持不可重试。
+    assert!(
+        !FailoverError::Unknown {
+            provider: "openai".to_string(),
+            message: "status 500: boom".to_string(),
+        }
+        .is_retriable()
+    );
 }
 
 #[test]
@@ -178,7 +198,6 @@ fn test_reason_all_variants() {
         FailoverError::Timeout {
             provider: "p".to_string(),
             model: "m".to_string(),
-            cause: String::new()
         }
         .reason(),
         FailoverReason::Timeout
@@ -193,7 +212,8 @@ fn test_reason_all_variants() {
     );
     assert_eq!(
         FailoverError::Overloaded {
-            provider: "p".to_string()
+            provider: "p".to_string(),
+            status: 503,
         }
         .reason(),
         FailoverReason::Overloaded
@@ -284,7 +304,6 @@ fn test_retry_after_hint_accessor() {
     let timeout = FailoverError::Timeout {
         provider: "p".to_string(),
         model: "m".to_string(),
-        cause: String::new(),
     };
     assert_eq!(timeout.retry_after_hint(), None);
 }

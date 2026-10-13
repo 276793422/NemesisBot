@@ -2,7 +2,6 @@
 
 use crate::handlers::{mask_sensitive_fields, require_home};
 use crate::ws_router::{ModuleHandler, RequestContext};
-use std::path::PathBuf;
 
 pub struct ChannelsHandler {
     _priv: (),
@@ -59,28 +58,9 @@ impl ModuleHandler for ChannelsHandler {
     }
 }
 
-fn load_config(home: &str) -> Result<nemesis_config::Config, String> {
-    // Live store first (single source of truth); fall back to disk in CLI mode.
-    if let Some(cfg) = nemesis_config::load_live() {
-        return Ok(cfg);
-    }
-    let path = PathBuf::from(home).join("config.json");
-    nemesis_config::load_config(&path).map_err(|e| format!("failed to load config: {}", e))
-}
-
-fn save_config(home: &str, config: &mut nemesis_config::Config) -> Result<(), String> {
-    // Live store first: update lands in-memory AND on disk, so every consumer
-    // (executor sandbox probe, tier, …) sees the change without a restart.
-    if let Some(r) = nemesis_config::save_live(config.clone()) {
-        return r.map_err(|e| format!("failed to save config: {}", e));
-    }
-    let path = PathBuf::from(home).join("config.json");
-    nemesis_config::save_config(&path, config).map_err(|e| format!("failed to save config: {}", e))
-}
-
 impl ChannelsHandler {
     fn list(&self, home: &str) -> Result<Option<serde_json::Value>, String> {
-        let config = load_config(home)?;
+        let config = super::config::load_config(home)?;
         let json = serde_json::to_value(&config.channels)
             .map_err(|e| format!("failed to serialize channels: {}", e))?;
         // Return the channels object with enabled status summary
@@ -103,7 +83,7 @@ impl ChannelsHandler {
     }
 
     fn get(&self, home: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
-        let config = load_config(home)?;
+        let config = super::config::load_config(home)?;
         let json = serde_json::to_value(&config.channels)
             .map_err(|e| format!("failed to serialize channels: {}", e))?;
         let channel = json
@@ -122,25 +102,26 @@ impl ChannelsHandler {
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
         let mut channel_config = data.get("config").ok_or("missing config field")?.clone();
-        let mut config = load_config(home)?;
-
-        // Serialize channels to a mutable JSON object, update the channel, then re-parse
-        let mut channels_json = serde_json::to_value(&config.channels)
-            .map_err(|e| format!("failed to serialize channels: {}", e))?;
-        if channels_json.get(name).is_none() {
-            return Err(format!("channel '{}' not found", name));
-        }
-        // get 响应是脱敏形态：UI 回存时掩码值还原为存量原值，绝不落盘掩码。
-        let existing = channels_json
-            .get(name)
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
-        crate::handlers::restore_masked_named_fields(&mut channel_config, &existing)?;
-        channels_json[name] = channel_config;
-        config.channels = serde_json::from_value(channels_json)
-            .map_err(|e| format!("failed to parse updated channels: {}", e))?;
-
-        save_config(home, &mut config)?;
+        // 锁在 update_config 内——掩码还原 + 命中校验 + 回写全程串行，
+        // 不可能出现并发丢更新。
+        super::config::update_config(home, |config| {
+            // Serialize channels to a mutable JSON object, update the channel, then re-parse
+            let mut channels_json = serde_json::to_value(&config.channels)
+                .map_err(|e| format!("failed to serialize channels: {}", e))?;
+            if channels_json.get(name).is_none() {
+                return Err(format!("channel '{}' not found", name));
+            }
+            // get 响应是脱敏形态：UI 回存时掩码值还原为存量原值，绝不落盘掩码。
+            let existing = channels_json
+                .get(name)
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            crate::handlers::restore_masked_named_fields(&mut channel_config, &existing)?;
+            channels_json[name] = channel_config;
+            config.channels = serde_json::from_value(channels_json)
+                .map_err(|e| format!("failed to parse updated channels: {}", e))?;
+            Ok(())
+        })?;
         Ok(Some(serde_json::json!({ "updated": true, "name": name })))
     }
 

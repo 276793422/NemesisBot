@@ -11,8 +11,8 @@ use crate::types::{ChatOptions, Message};
 fn wrapper() -> Arc<dyn LLMProvider> {
     // captured 用 CodexProvider（default_model/name 有确定值；NullProvider
     // 的 default_model 是空串，不适合断言委派）。base_url 钉死端口（:1 无监
-    // 听）→ 连接拒绝映射 Timeout，chat 断言确定性成立；空 base_url 会打真
-    // 实端点（401 Auth），测试结果随远端漂移。
+    // 听）→ 连接拒绝映射 Unknown + "connect error" 前缀，chat 断言确定性成
+    // 立；空 base_url 会打真实端点（401 Auth），测试结果随远端漂移。
     let captured = crate::codex::CodexProvider::new(crate::codex::CodexConfig {
         default_model: "captured-model".to_string(),
         base_url: "http://127.0.0.1:1".to_string(),
@@ -30,7 +30,7 @@ fn wrapper_delegates_default_model_and_name() {
 }
 
 /// 显式钉扎模型名经 chat 委派到 captured（codex lane 对死端口连接失败
-/// → Timeout 诚实上报，证明请求确实走到了 captured）。
+/// → Unknown + "connect error" 前缀诚实上报，证明请求确实走到了 captured）。
 #[tokio::test]
 async fn wrapper_chat_pinned_model_uses_captured() {
     let w = wrapper();
@@ -40,8 +40,12 @@ async fn wrapper_chat_pinned_model_uses_captured() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err, FailoverError::Timeout { ref provider, .. } if provider == "codex"),
-        "预期 codex lane 的 Timeout，得到 {err:?}"
+        matches!(
+            err,
+            FailoverError::Unknown { ref provider, ref message }
+                if provider == "codex" && message.starts_with("connect error")
+        ),
+        "预期 codex lane 的 connect error，得到 {err:?}"
     );
 }
 

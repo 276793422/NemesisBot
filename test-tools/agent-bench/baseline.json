@@ -1,14 +1,14 @@
 {
-  "bench_wall_secs": 12,
-  "gateway_version": "C:\\AI\\NemesisBot_Rust_2\\target/release/nemesisbot.exe",
+  "bench_wall_secs": 11,
+  "gateway_version": "C:\\AI\\NemesisBot_Rust\\target/release/nemesisbot.exe",
   "scenarios": [
     {
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 44,
-        "p50": 17,
-        "p95": 44
+        "max": 150,
+        "p50": 104,
+        "p95": 150
       },
       "model": "testai-1.1",
       "name": "basic_chat",
@@ -20,9 +20,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 51,
-        "p50": 50,
-        "p95": 51
+        "max": 414,
+        "p50": 406,
+        "p95": 414
       },
       "model": "testai-9.3",
       "name": "context_integrity",
@@ -34,9 +34,23 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 6052,
-        "p50": 6052,
-        "p95": 6052
+        "max": 1889,
+        "p50": 1889,
+        "p95": 1889
+      },
+      "model": "testai-sum-1.0",
+      "name": "identifier_survival",
+      "pass_rate": 1.0,
+      "passed": 2,
+      "runs": 2
+    },
+    {
+      "failed": 0,
+      "failure_notes": [],
+      "latency_ms": {
+        "max": 188,
+        "p50": 188,
+        "p95": 188
       },
       "model": "testai-2.1",
       "name": "tool_parallel_batch",
@@ -48,9 +62,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 54,
-        "p50": 50,
-        "p95": 54
+        "max": 1309,
+        "p50": 1298,
+        "p95": 1309
       },
       "model": "testai-5.0",
       "name": "security_boundary_block",
@@ -62,9 +76,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 33,
-        "p50": 33,
-        "p95": 33
+        "max": 150,
+        "p50": 150,
+        "p95": 150
       },
       "model": "testai-1.1",
       "name": "concurrent_sessions",
@@ -76,22 +90,50 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 42,
-        "p50": 42,
-        "p95": 42
+        "max": 146,
+        "p50": 146,
+        "p95": 146
       },
       "model": "testai-vision-1.0",
       "name": "vision_roundtrip",
       "pass_rate": 1.0,
       "passed": 1,
       "runs": 1
+    },
+    {
+      "failed": 0,
+      "failure_notes": [],
+      "latency_ms": {
+        "max": 252,
+        "p50": 252,
+        "p95": 252
+      },
+      "model": "testai-codemode-1.0",
+      "name": "codemode_orchestration",
+      "pass_rate": 1.0,
+      "passed": 2,
+      "runs": 2
+    },
+    {
+      "failed": 0,
+      "failure_notes": [],
+      "latency_ms": {
+        "max": 315,
+        "p50": 315,
+        "p95": 315
+      },
+      "model": "testai-docslift-1.0",
+      "name": "docs_lift",
+      "pass_rate": 1.0,
+      "passed": 1,
+      "runs": 1
     }
   ],
   "schema": "agent-bench/v1",
-  "started_at": "2026-09-27T22:39:06.008975100+08:00",
+  "started_at": "2026-10-13T04:47:36.082768100+08:00",
   "totals": {
     "pass_rate": 1.0,
-    "passed": 15,
-    "runs": 15
+    "passed": 20,
+    "runs": 20
   }
 }

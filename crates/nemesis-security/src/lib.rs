@@ -56,6 +56,8 @@ pub mod middleware;
 #[cfg(feature = "security")]
 pub mod pipeline;
 #[cfg(feature = "security")]
+pub mod preexec;
+#[cfg(feature = "security")]
 pub mod resolver;
 #[cfg(feature = "scanner")]
 pub mod scanner;

@@ -252,7 +252,10 @@ static RULES_WRITE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 /// 层级安全门 + pattern 生成 + upsert + save **单一收口**（M7「总是允许」
 /// 与 §2 免打扰集群来源持久化共用——写入语义单点，web_approval 的
-/// save_always_rule 与 auditor auto-approve 都走这里）。
+/// save_always_rule 与 auditor auto-approve 都走这里）。config 家族写
+/// 串行锁在此叠加：approval_rules.json 的另一写者（security.approvals
+/// .clear）持 config_write_lock——双写者互斥（同类横扫四期，2026-10-13）。
+/// 锁序单向 RULES_WRITE_LOCK → config_write_lock，无环。
 ///
 /// 返回 `Some(pattern)` = 已落盘；`Ok(None)` = 层级门不过（CRITICAL 仅
 /// process_exec 豁免 + 安装类永不入规则），调用方 warn 忽略；`Err` = 写盘
@@ -283,6 +286,8 @@ pub fn persist_auto_allow_rule(
         ));
     }
     let _w = RULES_WRITE_LOCK.lock();
+    // 叠加 config 家族写串行锁（与 approvals.clear 互斥；锁序见函数头）。
+    let _cfg_serial = nemesis_config::config_write_lock();
     let mut stored = load_rules(path);
     upsert_rule(&mut stored, operation, &pattern);
     save_rules(path, &stored)?;

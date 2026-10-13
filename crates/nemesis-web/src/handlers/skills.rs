@@ -47,6 +47,8 @@ impl ModuleHandler for SkillsHandler {
             "shop_code",
             "browse",
             "learn",
+            "learned_list",
+            "learned_remove",
         ]
     }
 
@@ -136,6 +138,12 @@ impl ModuleHandler for SkillsHandler {
                 let data = data.ok_or("missing data")?;
                 learn(&data, ctx).await
             }
+            "learned_list" => self.learned_list(workspace),
+            "learned_remove" => {
+                let data = data.ok_or("missing data")?;
+                let name = crate::handlers::get_str(&data, "name")?;
+                self.learned_remove(workspace, &name)
+            }
             _ => Err(format!("unknown command: skills.{}", cmd)),
         }
     }
@@ -212,6 +220,22 @@ fn save_config(workspace: &str, cfg: &nemesis_config::SkillsFullConfig) -> Resul
     let path = skills_config_path(workspace);
     nemesis_config::save_skills_config(&path, cfg)
         .map_err(|e| format!("failed to save skills config: {}", e))
+}
+
+/// config.skills.json RMW 事务唯一入口——写串行锁在函数内取得，罩
+/// 「load → 闭包改 → 落盘」全程；闭包返回 Err 不落盘（abort 语义）。
+/// 调用方结构上不可能忘锁（2026-10-13 闭包事务收口）。
+/// 纪律：闭包内不得再调任何 update_* / [`nemesis_config::config_write_lock`]
+/// （Mutex 非重入，嵌套即死锁）。
+fn update_skills_config<T>(
+    workspace: &str,
+    f: impl FnOnce(&mut nemesis_config::SkillsFullConfig) -> Result<T, String>,
+) -> Result<T, String> {
+    let _serial = nemesis_config::config_write_lock();
+    let mut cfg = load_config(workspace)?;
+    let out = f(&mut cfg)?;
+    save_config(workspace, &cfg)?;
+    Ok(out)
 }
 
 /// 主配置 `{home}/config.json` 的 skills 段（WS4 P11/P16 消费）。
@@ -323,6 +347,57 @@ impl SkillsHandler {
         Ok(Some(
             serde_json::json!({ "uninstalled": true, "name": name }),
         ))
+    }
+
+    /// N3（2026-10-13 机会项）：学得技能账目列表（`.learned.json`）。
+    /// 附带 on_disk 现场核对（账有盘无 = 幽灵条目，如实标记）。
+    fn learned_list(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+        let manifest =
+            nemesis_skills::learned::LearnedManifest::load(std::path::Path::new(workspace));
+        let entries: Vec<serde_json::Value> = manifest
+            .entries
+            .values()
+            .map(|e| {
+                let dir = PathBuf::from(workspace).join("skills").join(&e.name);
+                serde_json::json!({
+                    "name": e.name,
+                    "created_at_ms": e.created_at_ms,
+                    "description": e.description,
+                    "on_disk": dir.is_dir(),
+                })
+            })
+            .collect();
+        Ok(Some(serde_json::json!({ "entries": entries })))
+    }
+
+    /// N3：移除一条学得技能（目录 + 账目一起清）。护栏 = **manifest 成员
+    /// 资格**——只删账上记着的；registry 装的技能走 `skills.uninstall`
+    /// （skills.lock.json 记账面），两条管理面互不越界。名字先过
+    /// `validate_skill_identifier`（与 skill_manage 同一守卫，防路径穿越）。
+    fn learned_remove(
+        &self,
+        workspace: &str,
+        name: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let ws_path = std::path::Path::new(workspace);
+        nemesis_skills::types::validate_skill_identifier(name)
+            .map_err(|e| format!("invalid skill name '{}': {}", name, e))?;
+        if nemesis_skills::learned::LearnedManifest::load(ws_path)
+            .get(name)
+            .is_none()
+        {
+            return Err(format!(
+                "skill '{}' is not in the learned manifest (registry-installed skills go through skills.uninstall)",
+                name
+            ));
+        }
+        let skill_dir = ws_path.join("skills").join(name);
+        if skill_dir.exists() {
+            std::fs::remove_dir_all(&skill_dir)
+                .map_err(|e| format!("failed to remove skill dir: {}", e))?;
+        }
+        nemesis_skills::learned::remove_learned(ws_path, name)?;
+        Ok(Some(serde_json::json!({ "removed": true, "name": name })))
     }
 
     async fn search(
@@ -663,9 +738,12 @@ impl SkillsHandler {
         workspace: &str,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
-        let config: nemesis_config::SkillsFullConfig = serde_json::from_value(data.clone())
-            .map_err(|e| format!("invalid skills config: {}", e))?;
-        save_config(workspace, &config)?;
+        // 整档替换语义；锁在 update_skills_config 内。
+        update_skills_config(workspace, |cfg| {
+            *cfg = serde_json::from_value(data.clone())
+                .map_err(|e| format!("invalid skills config: {}", e))?;
+            Ok(())
+        })?;
         Ok(Some(serde_json::json!({ "saved": true })))
     }
 
@@ -674,39 +752,41 @@ impl SkillsHandler {
         workspace: &str,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
-        let mut cfg = load_config(workspace)?;
-        if let Some(v) = data.get("enabled").and_then(|v| v.as_bool()) {
-            cfg.enabled = v;
-        }
-        if let Some(obj) = data.get("search_cache").and_then(|v| v.as_object()) {
-            if let Some(v) = obj.get("enabled").and_then(|v| v.as_bool()) {
-                cfg.search_cache.enabled = v;
+        // 锁在 update_skills_config 内。
+        update_skills_config(workspace, |cfg| {
+            if let Some(v) = data.get("enabled").and_then(|v| v.as_bool()) {
+                cfg.enabled = v;
             }
-            if let Some(v) = obj.get("max_size").and_then(|v| v.as_i64()) {
-                cfg.search_cache.max_size = v;
+            if let Some(obj) = data.get("search_cache").and_then(|v| v.as_object()) {
+                if let Some(v) = obj.get("enabled").and_then(|v| v.as_bool()) {
+                    cfg.search_cache.enabled = v;
+                }
+                if let Some(v) = obj.get("max_size").and_then(|v| v.as_i64()) {
+                    cfg.search_cache.max_size = v;
+                }
+                if let Some(v) = obj.get("ttl_seconds").and_then(|v| v.as_i64()) {
+                    cfg.search_cache.ttl_seconds = v;
+                }
             }
-            if let Some(v) = obj.get("ttl_seconds").and_then(|v| v.as_i64()) {
-                cfg.search_cache.ttl_seconds = v;
+            if let Some(v) = data.get("max_concurrent_searches").and_then(|v| v.as_i64()) {
+                cfg.max_concurrent_searches = v;
             }
-        }
-        if let Some(v) = data.get("max_concurrent_searches").and_then(|v| v.as_i64()) {
-            cfg.max_concurrent_searches = v;
-        }
-        if let Some(obj) = data.get("clawhub").and_then(|v| v.as_object()) {
-            if let Some(v) = obj.get("enabled").and_then(|v| v.as_bool()) {
-                cfg.clawhub.enabled = v;
+            if let Some(obj) = data.get("clawhub").and_then(|v| v.as_object()) {
+                if let Some(v) = obj.get("enabled").and_then(|v| v.as_bool()) {
+                    cfg.clawhub.enabled = v;
+                }
+                if let Some(v) = obj.get("base_url").and_then(|v| v.as_str()) {
+                    cfg.clawhub.base_url = v.to_string();
+                }
+                if let Some(v) = obj.get("convex_url").and_then(|v| v.as_str()) {
+                    cfg.clawhub.convex_url = v.to_string();
+                }
+                if let Some(v) = obj.get("timeout").and_then(|v| v.as_i64()) {
+                    cfg.clawhub.timeout = v;
+                }
             }
-            if let Some(v) = obj.get("base_url").and_then(|v| v.as_str()) {
-                cfg.clawhub.base_url = v.to_string();
-            }
-            if let Some(v) = obj.get("convex_url").and_then(|v| v.as_str()) {
-                cfg.clawhub.convex_url = v.to_string();
-            }
-            if let Some(v) = obj.get("timeout").and_then(|v| v.as_i64()) {
-                cfg.clawhub.timeout = v;
-            }
-        }
-        save_config(workspace, &cfg)?;
+            Ok(())
+        })?;
         Ok(Some(serde_json::json!({ "updated": true })))
     }
 
@@ -755,13 +835,16 @@ impl SkillsHandler {
         let full_repo = format!("{}/{}", owner, repo);
         let name = repo.clone();
 
-        // Check duplicate
-        let mut cfg = load_config(workspace)?;
-        if cfg.github_sources.iter().any(|s| s.name == name) {
-            return Err(format!("源 '{}' 已存在", name));
+        // 快速路径查重（锁外，仅省一次网络探测；权威查重在下方锁内重做）。
+        {
+            let cfg = load_config(workspace)?;
+            if cfg.github_sources.iter().any(|s| s.name == name) {
+                return Err(format!("源 '{}' 已存在", name));
+            }
         }
 
-        // Auto-detect structure in a blocking thread
+        // Auto-detect structure in a blocking thread —— 网络 IO 先行，配置
+        // 快照不跨 await 持有（旧快照回写会丢并发写臂的改动）。
         let owner_clone = owner.clone();
         let repo_clone = repo.clone();
         let detected =
@@ -771,18 +854,26 @@ impl SkillsHandler {
 
         match detected {
             Ok((index_type, skill_path_pattern, branch)) => {
-                cfg.github_sources.push(nemesis_config::GitHubSourceConfig {
-                    name: name.clone(),
-                    repo: full_repo.clone(),
-                    enabled: true,
-                    branch,
-                    index_type,
-                    index_path: String::new(),
-                    skill_path_pattern,
-                    timeout: 0,
-                    max_size: 0,
-                });
-                save_config(workspace, &cfg)?;
+                // 事务入口罩整段 RMW：探测（网络，秒级）期间其他写臂可能
+                // 已改配置，锁内重读 + 重查重 + 写（同类横扫 2026-10-13，
+                // 锁在 update_skills_config 内）。
+                update_skills_config(workspace, |cfg| {
+                    if cfg.github_sources.iter().any(|s| s.name == name) {
+                        return Err(format!("源 '{}' 已存在", name));
+                    }
+                    cfg.github_sources.push(nemesis_config::GitHubSourceConfig {
+                        name: name.clone(),
+                        repo: full_repo.clone(),
+                        enabled: true,
+                        branch,
+                        index_type,
+                        index_path: String::new(),
+                        skill_path_pattern,
+                        timeout: 0,
+                        max_size: 0,
+                    });
+                    Ok(())
+                })?;
                 Ok(Some(serde_json::json!({
                     "success": true,
                     "source": { "type": "github", "name": name, "repo": full_repo }
@@ -819,23 +910,24 @@ impl SkillsHandler {
             .unwrap_or("skills/{slug}/SKILL.md")
             .to_string();
 
-        let mut cfg = load_config(workspace)?;
-        if cfg.github_sources.iter().any(|s| s.name == name) {
-            return Err(format!("源 '{}' 已存在", name));
-        }
-
-        cfg.github_sources.push(nemesis_config::GitHubSourceConfig {
-            name: name.clone(),
-            repo: repo.clone(),
-            enabled: true,
-            branch,
-            index_type,
-            index_path: String::new(),
-            skill_path_pattern,
-            timeout: 0,
-            max_size: 0,
-        });
-        save_config(workspace, &cfg)?;
+        // 锁在 update_skills_config 内。
+        update_skills_config(workspace, |cfg| {
+            if cfg.github_sources.iter().any(|s| s.name == name) {
+                return Err(format!("源 '{}' 已存在", name));
+            }
+            cfg.github_sources.push(nemesis_config::GitHubSourceConfig {
+                name: name.clone(),
+                repo: repo.clone(),
+                enabled: true,
+                branch,
+                index_type,
+                index_path: String::new(),
+                skill_path_pattern,
+                timeout: 0,
+                max_size: 0,
+            });
+            Ok(())
+        })?;
         Ok(Some(serde_json::json!({
             "success": true,
             "source": { "type": "github", "name": name, "repo": repo }
@@ -847,13 +939,15 @@ impl SkillsHandler {
         workspace: &str,
         name: &str,
     ) -> Result<Option<serde_json::Value>, String> {
-        let mut cfg = load_config(workspace)?;
-        let before = cfg.github_sources.len();
-        cfg.github_sources.retain(|s| s.name != name);
-        if cfg.github_sources.len() == before {
-            return Err(format!("源 '{}' 不存在", name));
-        }
-        save_config(workspace, &cfg)?;
+        // 锁在 update_skills_config 内。
+        update_skills_config(workspace, |cfg| {
+            let before = cfg.github_sources.len();
+            cfg.github_sources.retain(|s| s.name != name);
+            if cfg.github_sources.len() == before {
+                return Err(format!("源 '{}' 不存在", name));
+            }
+            Ok(())
+        })?;
         Ok(Some(serde_json::json!({ "removed": true, "name": name })))
     }
 
@@ -863,36 +957,28 @@ impl SkillsHandler {
         name: &str,
         enabled: bool,
     ) -> Result<Option<serde_json::Value>, String> {
-        let mut cfg = load_config(workspace)?;
-
-        // Check GitHub sources
-        if let Some(source) = cfg.github_sources.iter_mut().find(|s| s.name == name) {
-            source.enabled = enabled;
-            save_config(workspace, &cfg)?;
-            return Ok(Some(
-                serde_json::json!({ "toggled": true, "name": name, "enabled": enabled }),
-            ));
-        }
-
-        // Check ClawHub
-        if name == "ClawHub" || name == "clawhub" {
-            cfg.clawhub.enabled = enabled;
-            save_config(workspace, &cfg)?;
-            return Ok(Some(
-                serde_json::json!({ "toggled": true, "name": name, "enabled": enabled }),
-            ));
-        }
-
-        // Check ModelScope
-        if name == "ModelScope" || name == "modelscope" {
-            cfg.modelscope.enabled = enabled;
-            save_config(workspace, &cfg)?;
-            return Ok(Some(
-                serde_json::json!({ "toggled": true, "name": name, "enabled": enabled }),
-            ));
-        }
-
-        Err(format!("源 '{}' 不存在", name))
+        // 锁在 update_skills_config 内；三分支在同一事务内顺序判定。
+        update_skills_config(workspace, |cfg| {
+            // Check GitHub sources
+            if let Some(source) = cfg.github_sources.iter_mut().find(|s| s.name == name) {
+                source.enabled = enabled;
+                return Ok(());
+            }
+            // Check ClawHub
+            if name == "ClawHub" || name == "clawhub" {
+                cfg.clawhub.enabled = enabled;
+                return Ok(());
+            }
+            // Check ModelScope
+            if name == "ModelScope" || name == "modelscope" {
+                cfg.modelscope.enabled = enabled;
+                return Ok(());
+            }
+            Err(format!("源 '{}' 不存在", name))
+        })?;
+        Ok(Some(
+            serde_json::json!({ "toggled": true, "name": name, "enabled": enabled }),
+        ))
     }
 }
 

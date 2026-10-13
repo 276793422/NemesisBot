@@ -1260,6 +1260,34 @@ impl Cluster {
             return false;
         }
 
+        // G14 同族（2026-10-13 本机实录）：addresses 为空时下方构造出的记录
+        // address=""（直连不可达形态）。**已知节点**只合并身份字段
+        // （professions/tier/capabilities/tags/role/name 照常更新），地址保留
+        // 原值——身份传播（探针回传在 UDP 隔离拓扑的 purpose）不得因对端 IP
+        // 枚举暂空而把可用地址抹成空（实录：静态 peer 的 127.0.0.1:<rpc> 被
+        // 探针身份回传覆盖为 ""，后续 peer_chat 全部
+        // `connect to : invalid socket address`）。
+        // **未知节点**照常入册：空地址记录是桥接拓扑的合法形态——bridge
+        // member_sync 广播的成员本就经 via-bridge 可达而非直连（新到空地址
+        // 成员若被拒，桥接设备的成员注册就断了，bridge_rpc/member_sync
+        // 契约测试钉此语义）。
+        if addresses.is_empty()
+            && let Some(existing) = self.registry.get(node_id)
+        {
+            let mut merged = existing;
+            merged.base.name = name.into();
+            merged.base.role = nemesis_types::cluster::NodeRole::from_role_str(role);
+            merged.base.category = category.into();
+            merged.base.last_seen = chrono::Local::now().to_rfc3339();
+            merged.status = NodeStatus::Online;
+            merged.capabilities = capabilities;
+            merged.tags = tags.clone();
+            merged.professions = professions.clone();
+            merged.tier = tier.clone();
+            merged.node_type = node_type.to_string();
+            return self.registry.upsert_if_changed(merged);
+        }
+
         let primary_address = if !addresses.is_empty() {
             format!("{}:{}", addresses[0], rpc_port)
         } else {

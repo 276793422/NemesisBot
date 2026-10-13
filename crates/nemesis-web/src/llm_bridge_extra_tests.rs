@@ -255,9 +255,11 @@ async fn adapter_chat_with_tool_calls_marks_not_finished() {
 }
 
 #[tokio::test]
-async fn adapter_chat_finish_reason_stop_marks_finished_even_with_tools() {
+async fn adapter_chat_stop_stamp_with_tools_never_marks_finished() {
     let mock = Arc::new(MockProvider::new("m", "p"));
-    // tool_calls present BUT finish_reason == stop → finished=true
+    // 工具调用在场 ⇒ finished 恒 false（2026-10-13 wal_crash 根修后语义）：
+    // 异常上游（stop 邮票 + tools 在场）不再被当成终答——那会静默丢掉
+    // tool_calls，agent 侧只见空文本。finished = tool_calls.is_empty()。
     let mut resp = tool_call_response();
     resp.finish_reason = "stop".to_string();
     mock.set_response(resp);
@@ -267,7 +269,8 @@ async fn adapter_chat_finish_reason_stop_marks_finished_even_with_tools() {
         .chat("m", one_user_message(), None, empty_messages_to_tools())
         .await
         .unwrap();
-    assert!(r.finished);
+    assert!(!r.finished);
+    assert_eq!(r.tool_calls.len(), 1);
 }
 
 #[tokio::test]

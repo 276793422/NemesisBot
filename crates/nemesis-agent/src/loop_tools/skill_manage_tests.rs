@@ -501,3 +501,82 @@ async fn test_git_tool_status_in_real_repo() {
         &output[..output.len().min(200)]
     );
 }
+
+// ---------------------------------------------------------------------------
+// N3（2026-10-13 机会项）：learned manifest 记账联动
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn create_records_learned_manifest_entry() {
+    let tmp = TempDir::new().unwrap();
+    let tool = tool_in(&tmp);
+    let args = json_args(
+        serde_json::json!({"action":"create","name":"learned-one","content":SAMPLE_SKILL}),
+    );
+    let res = tool.execute(&args, &ctx()).await.unwrap();
+    assert!(!res.contains("manifest"), "正常路径无附注: {}", res);
+
+    let manifest = nemesis_skills::learned::LearnedManifest::load(tmp.path());
+    let entry = manifest.get("learned-one").expect("create 必须记账");
+    assert_eq!(
+        entry.description,
+        "A test skill. Use when the user asks to do X for the test suite."
+    );
+    assert!(entry.created_at_ms > 0);
+}
+
+#[tokio::test]
+async fn create_overwrite_updates_manifest_description() {
+    let tmp = TempDir::new().unwrap();
+    let tool = tool_in(&tmp);
+    let args = json_args(serde_json::json!({"action":"create","name":"ow","content":SAMPLE_SKILL}));
+    tool.execute(&args, &ctx()).await.unwrap();
+
+    let updated = SAMPLE_SKILL.replace("A test skill.", "Revised description.");
+    let args2 = json_args(
+        serde_json::json!({"action":"create","name":"ow","content":updated,"overwrite":true}),
+    );
+    tool.execute(&args2, &ctx()).await.unwrap();
+
+    let manifest = nemesis_skills::learned::LearnedManifest::load(tmp.path());
+    let entry = manifest.get("ow").expect("overwrite 后账目仍在");
+    assert!(
+        entry.description.starts_with("Revised description."),
+        "{}",
+        entry.description
+    );
+}
+
+#[tokio::test]
+async fn delete_clears_learned_manifest_entry() {
+    let tmp = TempDir::new().unwrap();
+    let tool = tool_in(&tmp);
+    let args =
+        json_args(serde_json::json!({"action":"create","name":"bye","content":SAMPLE_SKILL}));
+    tool.execute(&args, &ctx()).await.unwrap();
+
+    let del = json_args(serde_json::json!({"action":"delete","name":"bye"}));
+    let res = tool.execute(&del, &ctx()).await.unwrap();
+    assert!(!res.contains("manifest"), "正常删除无附注: {}", res);
+    assert!(
+        nemesis_skills::learned::LearnedManifest::load(tmp.path())
+            .get("bye")
+            .is_none(),
+        "delete 必须同步清账"
+    );
+}
+
+#[tokio::test]
+async fn delete_non_manifest_dir_still_succeeds() {
+    // registry 形态：目录在、账上没有 → delete 照常成功，账目不被误建/误删。
+    let tmp = TempDir::new().unwrap();
+    let tool = tool_in(&tmp);
+    let dir = tmp.path().join("skills/registry-style");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("SKILL.md"), "# x").unwrap();
+
+    let del = json_args(serde_json::json!({"action":"delete","name":"registry-style"}));
+    let res = tool.execute(&del, &ctx()).await.unwrap();
+    assert!(res.contains("deleted"), "{}", res);
+    assert!(!dir.exists());
+}

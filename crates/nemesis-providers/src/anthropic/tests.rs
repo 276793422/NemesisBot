@@ -175,6 +175,7 @@ fn test_anthropic_config_serialization_roundtrip() {
         default_model: "claude-3-opus".into(),
         timeout_secs: 60,
         proxy: None,
+        stream_mode: String::new(),
     };
     let json = serde_json::to_string(&config).unwrap();
     let back: AnthropicConfig = serde_json::from_str(&json).unwrap();
@@ -623,6 +624,7 @@ fn anth_config(base: &str) -> AnthropicConfig {
         default_model: "claude-default".to_string(),
         timeout_secs: 10,
         proxy: None,
+        stream_mode: String::new(),
     }
 }
 
@@ -702,13 +704,93 @@ async fn test_w4c_anth_chat_invalid_json_maps_format() {
 }
 
 #[tokio::test]
-async fn test_w4c_anth_chat_dead_port_maps_timeout() {
+async fn test_w4c_anth_chat_dead_port_maps_connect_error() {
+    // 诚实化（2026-10-13）：连接拒绝（端口 1 无监听）不是超时——
+    // Unknown + "connect error: <根因链>"（可重试归宿经前缀词表保证）。
     let provider = AnthropicProvider::new(anth_config("http://127.0.0.1:1"));
     let err = provider
         .chat(&anth_messages(), &[], "m", &ChatOptions::default())
         .await
         .unwrap_err();
-    assert!(matches!(err, FailoverError::Timeout { .. }));
+    match err {
+        FailoverError::Unknown { message, .. } => {
+            assert!(
+                message.starts_with("connect error"),
+                "必须带 connect error 前缀: {message}"
+            );
+        }
+        other => panic!("预期 Unknown(connect error)，得到 {other:?}"),
+    }
+}
+
+/// per-model `stream=yes`（2026-10-13 stream 键）：`chat()` 内部走流式
+/// （SSE wire 契约），聚合回非流式 `LLMResponse`——内容/finish_reason/usage
+/// 与非流式路径同构，对外签名不变。
+#[tokio::test]
+async fn test_stream_yes_chat_aggregates_sse_into_llm_response() {
+    let server = MockServer::start().await;
+    // 请求侧钉 stream:true wire 契约（流式化确实发生）。
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(body_partial_json(json!({"stream": true})))
+        .respond_with(sse_response(concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":5}}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hel\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"lo\"}}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":3}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        )))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut cfg = anth_config(&server.uri());
+    cfg.stream_mode = "yes".to_string();
+    let provider = AnthropicProvider::new(cfg);
+    let resp = provider
+        .chat(&anth_messages(), &[], "m", &ChatOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(resp.content, "Hello");
+    assert_eq!(resp.finish_reason, "stop");
+    let u = resp.usage.as_ref().expect("usage 聚合自 SSE");
+    assert_eq!(u.prompt_tokens, 5);
+    assert_eq!(u.completion_tokens, 3);
+}
+
+/// auto（缺省）维持非流式现状：wire 上请求 body **不带** stream:true
+///（stream:true 匹配器 expect(0)），走整包 JSON 响应路径。
+#[tokio::test]
+async fn test_stream_auto_keeps_non_streaming_wire() {
+    let server = MockServer::start().await;
+    // 无请求允许携带 stream:true（auto = 非流式 wire 契约不变）。
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(body_partial_json(json!({"stream": true})))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [{"type": "text", "text": "plain"}],
+            "stop_reason": "end_turn",
+        })))
+        .mount(&server)
+        .await;
+
+    let provider = AnthropicProvider::new(anth_config(&server.uri()));
+    let resp = provider
+        .chat(&anth_messages(), &[], "m", &ChatOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(resp.content, "plain");
 }
 
 // ===========================================================================

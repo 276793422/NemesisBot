@@ -192,6 +192,12 @@ pub struct InMemoryGraphStore {
     persistence_dir: Option<PathBuf>,
     /// Ensures data is loaded from disk at most once.
     load_once: OnceLock<()>,
+    /// persist 串行锁（横扫八期补网，2026-10-14）：persist 的 tmp 文件名是
+    /// 固定的（`entities.jsonl.tmp`/`triples.jsonl.tmp`），并发 persist 互踩
+    /// 同一 tmp ⇒ rename 出交错坏文件。manager 单例被主 loop/项目 loop/集群
+    /// B 端共享，变更入口并发面真实。锁取在 persist 本体内，变更方法结构上
+    /// 不可能忘锁；persist_all 持锁调 *_locked 内部版（Mutex 非重入）。
+    persist_lock: parking_lot::Mutex<()>,
 }
 
 impl InMemoryGraphStore {
@@ -203,6 +209,7 @@ impl InMemoryGraphStore {
             triples_by_object: DashMap::new(),
             persistence_dir: None,
             load_once: OnceLock::new(),
+            persist_lock: parking_lot::Mutex::new(()),
         }
     }
 
@@ -284,7 +291,16 @@ impl InMemoryGraphStore {
     /// Atomic write: data is first written to a `.tmp` file, then renamed
     /// to the final path. This prevents partial writes on crash.
     fn persist_entities(&self) -> Result<(), String> {
-        let dir = self.persistence_dir.as_ref().ok_or("no persistence dir")?;
+        let _serial = self.persist_lock.lock();
+        Self::persist_entities_locked(&self.persistence_dir, &self.entities)
+    }
+
+    /// persist_entities 本体（调用方持 [`Self::persist_lock`]，Mutex 非重入）。
+    fn persist_entities_locked(
+        persistence_dir: &Option<PathBuf>,
+        entities: &DashMap<String, GraphEntity>,
+    ) -> Result<(), String> {
+        let dir = persistence_dir.as_ref().ok_or("no persistence dir")?;
         std::fs::create_dir_all(dir).map_err(|e| format!("graph: create dir: {e}"))?;
 
         let final_path = dir.join("entities.jsonl");
@@ -293,7 +309,7 @@ impl InMemoryGraphStore {
         let mut file =
             std::fs::File::create(&tmp_path).map_err(|e| format!("graph: create tmp: {e}"))?;
 
-        for entry in self.entities.iter() {
+        for entry in entities.iter() {
             let json = serde_json::to_string(entry.value())
                 .map_err(|e| format!("graph: serialize entity: {e}"))?;
             writeln!(file, "{json}").map_err(|e| format!("graph: write entity: {e}"))?;
@@ -311,7 +327,16 @@ impl InMemoryGraphStore {
 
     /// Write all triples to `triples.jsonl` using atomic write.
     fn persist_triples(&self) -> Result<(), String> {
-        let dir = self.persistence_dir.as_ref().ok_or("no persistence dir")?;
+        let _serial = self.persist_lock.lock();
+        Self::persist_triples_locked(&self.persistence_dir, &self.triples_by_subject)
+    }
+
+    /// persist_triples 本体（调用方持 [`Self::persist_lock`]，Mutex 非重入）。
+    fn persist_triples_locked(
+        persistence_dir: &Option<PathBuf>,
+        triples_by_subject: &DashMap<String, Vec<GraphTriple>>,
+    ) -> Result<(), String> {
+        let dir = persistence_dir.as_ref().ok_or("no persistence dir")?;
         std::fs::create_dir_all(dir).map_err(|e| format!("graph: create dir: {e}"))?;
 
         let final_path = dir.join("triples.jsonl");
@@ -322,7 +347,7 @@ impl InMemoryGraphStore {
 
         // Deduplicate triples across both indices.
         let mut seen: HashSet<(String, String, String)> = HashSet::new();
-        for entry in self.triples_by_subject.iter() {
+        for entry in triples_by_subject.iter() {
             for t in entry.value().iter() {
                 let key = (t.subject.clone(), t.predicate.clone(), t.object.clone());
                 if seen.insert(key) {
@@ -343,10 +368,12 @@ impl InMemoryGraphStore {
         Ok(())
     }
 
-    /// Persist both entities and triples.
+    /// Persist both entities and triples（单次持锁罩两文件，锁内调 *_locked
+    /// 内部版）。
     fn persist_all(&self) -> Result<(), String> {
-        self.persist_entities()?;
-        self.persist_triples()
+        let _serial = self.persist_lock.lock();
+        Self::persist_entities_locked(&self.persistence_dir, &self.entities)?;
+        Self::persist_triples_locked(&self.persistence_dir, &self.triples_by_subject)
     }
 }
 

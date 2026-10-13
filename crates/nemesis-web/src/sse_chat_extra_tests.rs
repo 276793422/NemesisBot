@@ -302,6 +302,7 @@ fn make_state(
 
 fn provider_for(base_url: String) -> Arc<HttpProvider> {
     Arc::new(HttpProvider::new(HttpProviderConfig {
+        stream_mode: String::new(),
         name: "test".to_string(),
         base_url,
         api_key: "test-key".to_string(),

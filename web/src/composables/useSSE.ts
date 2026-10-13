@@ -15,7 +15,10 @@ const eventHandlers: Record<string, EventHandler[]> = {}
 // 感知落后并全量刷新（本端 WS 实时帧先行，seq 游标短路零开销）。
 // P30（WS14）：'canvas.open' = agent 终答检出合法 ```canvas 块（Canvas
 // 面板渲染，iframe sandbox + 严格 CSP，v1 无网络）。
-const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'approval-remote-requested', 'approval-remote-resolved', 'question-asked', 'question-resolved', 'board.plan_started', 'board.plan_ready', 'board.plan_failed', 'resync', 'session.created', 'editor-mode', 'chat.activity', 'canvas.open']
+// L10（2026-10-13）：'provider_stream_event' = provider 流式输出增量帧
+//（ephemeral：无 id 不参与补拉——断线窗口内的流不可回放，Logs Dashboard
+// 实时页 ProviderStreamPanel 消费）。
+const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'approval-remote-requested', 'approval-remote-resolved', 'question-asked', 'question-resolved', 'board.plan_started', 'board.plan_ready', 'board.plan_failed', 'resync', 'session.created', 'editor-mode', 'chat.activity', 'canvas.open', 'provider_stream_event']
 
 function dispatch(eventType: string, data: any) {
   const handlers = eventHandlers[eventType] || []

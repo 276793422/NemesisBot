@@ -94,6 +94,28 @@ pub struct DailyRollup {
     pub avg_latency_ms: f64,
 }
 
+/// Prompt-length 阶梯价单档（L3，2026-10-12 内部专项 T0）：`input_tokens`
+/// 达到 `min_prompt_tokens` 后整套价目切换到本档；`None` 的价目字段继承
+/// 基础价（部分覆盖场景——只调输出价、其余沿用）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PriceTier {
+    /// 生效阈值：`input_tokens >= min_prompt_tokens` 即命中；多条命中取
+    /// `min_prompt_tokens` 最大的一档（pi S3 语义：长上下文按段计价）。
+    pub min_prompt_tokens: i64,
+    /// 阶梯输入价（$/M）。`None` = 继承基础价。
+    #[serde(default)]
+    pub input_cost_per_million: Option<f64>,
+    /// 阶梯输出价（$/M）。`None` = 继承基础价。
+    #[serde(default)]
+    pub output_cost_per_million: Option<f64>,
+    /// 阶梯缓存读价（$/M）。`None` = 继承基础价。
+    #[serde(default)]
+    pub cache_read_cost_per_million: Option<f64>,
+    /// 阶梯缓存写价（$/M）。`None` = 继承基础价。
+    #[serde(default)]
+    pub cache_creation_cost_per_million: Option<f64>,
+}
+
 /// Model pricing entry (embedded table; see `pricing.rs`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelPricing {
@@ -112,6 +134,10 @@ pub struct ModelPricing {
     /// Provider-qualified or historic names resolving to this entry.
     #[serde(default)]
     pub aliases: Vec<String>,
+    /// Prompt-length 阶梯价（L3）。`None`/缺省 = 单一价（旧行为，零迁移）。
+    /// 解析语义见 [`PriceTier`]：命中档价目覆盖基础价，`None` 字段继承。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_tiers: Option<Vec<PriceTier>>,
 }
 
 /// Aggregated usage summary for a time range.

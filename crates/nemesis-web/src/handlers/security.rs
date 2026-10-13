@@ -134,6 +134,24 @@ fn security_config_path(workspace: &str) -> PathBuf {
     nemesis_path::resolve_security_config_path_in_workspace(Path::new(workspace))
 }
 
+/// config.security.json RMW 事务唯一入口——写串行锁在函数内取得，罩
+/// 「load → 闭包改 → 落盘」全程；闭包返回 Err 不落盘（abort 语义）。
+/// 纪律：闭包内不得再调任何 update_* / [`nemesis_config::config_write_lock`]
+/// （Mutex 非重入，嵌套即死锁）。（同类横扫七期补网，2026-10-13。）
+fn update_security_config<T>(
+    workspace: &str,
+    f: impl FnOnce(&mut nemesis_config::SecurityConfig) -> Result<T, String>,
+) -> Result<T, String> {
+    let _serial = nemesis_config::config_write_lock();
+    let path = security_config_path(workspace);
+    let mut cfg = nemesis_config::load_security_config(&path)
+        .map_err(|e| format!("failed to load security config: {}", e))?;
+    let out = f(&mut cfg)?;
+    nemesis_config::save_security_config(&path, &cfg)
+        .map_err(|e| format!("failed to save security config: {}", e))?;
+    Ok(out)
+}
+
 /// F3: 审批记忆规则表管理（list/clear）。路径唯一真相源 nemesis-path。
 fn approval_rules_path(workspace: &str) -> PathBuf {
     nemesis_path::resolve_approval_rules_path_in_workspace(Path::new(workspace))
@@ -218,13 +236,17 @@ impl SecurityHandler {
     ) -> Result<Option<serde_json::Value>, String> {
         let config: nemesis_config::SecurityConfig = serde_json::from_value(data.clone())
             .map_err(|e| format!("invalid security config: {}", e))?;
-        let path = security_config_path(workspace);
-        nemesis_config::save_security_config(&path, &config)
-            .map_err(|e| format!("failed to save security config: {}", e))?;
+        // 锁在 update_security_config 内（整档回存与 config.json 编辑臂同基准）。
+        // §2 热翻所需布尔先捕获（闭包按值拿走 config）。
+        let auto_approve = config.approvals.auto_approve;
+        update_security_config(workspace, |cfg| {
+            *cfg = config;
+            Ok(())
+        })?;
         // §2: 免打扰热翻（运行期投影即时生效；config 是持久真相源，这里
         // 只翻投影——auditor 下一次 require_approval 即读新值）。
         if let Some(state) = approval_auto() {
-            state.set_enabled(config.approvals.auto_approve);
+            state.set_enabled(auto_approve);
         }
         Ok(Some(serde_json::json!({ "saved": true })))
     }
@@ -343,6 +365,11 @@ impl SecurityHandler {
     /// F3: 清空「总是允许」规则表（写回空表；文件保留 = 运行中 gateway 的
     /// HotReloader 照常经 mtime 感知）。
     fn approvals_clear(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+        // 写串行锁：approval_rules.json 与 WebApprovalManager::save_always_rule
+        // 是同一文件的两个写者——「总是允许」RMW 已持 config_write_lock（叠加
+        // 自身 rules_write），本清空臂同锁互斥，防并发清空被复活/规则被丢
+        //（同类横扫四期，2026-10-13）。
+        let _cfg_serial = nemesis_config::config_write_lock();
         let path = approval_rules_path(workspace);
         let removed = if path.exists() {
             let raw = std::fs::read_to_string(&path).unwrap_or_default();

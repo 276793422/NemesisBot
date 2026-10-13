@@ -95,26 +95,6 @@ impl ModuleHandler for ForgeHandler {
     }
 }
 
-fn config_path(home: &str) -> PathBuf {
-    PathBuf::from(home).join("config.json")
-}
-
-fn load_config(home: &str) -> Result<nemesis_config::Config, String> {
-    if let Some(cfg) = nemesis_config::load_live() {
-        return Ok(cfg);
-    }
-    nemesis_config::load_config(&config_path(home))
-        .map_err(|e| format!("failed to load config: {}", e))
-}
-
-fn save_config_to_disk(home: &str, config: &mut nemesis_config::Config) -> Result<(), String> {
-    if let Some(r) = nemesis_config::save_live(config.clone()) {
-        return r.map_err(|e| format!("failed to save config: {}", e));
-    }
-    nemesis_config::save_config(&config_path(home), config)
-        .map_err(|e| format!("failed to save config: {}", e))
-}
-
 fn forge_dir(workspace: &str) -> PathBuf {
     PathBuf::from(workspace).join("forge")
 }
@@ -130,7 +110,7 @@ impl ForgeHandler {
         workspace: &str,
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
-        let config = load_config(home)?;
+        let config = super::config::load_config(home)?;
         let enabled = config.forge.as_ref().map(|f| f.enabled).unwrap_or(false);
 
         // Check actual runtime state from Forge instance.
@@ -190,7 +170,7 @@ impl ForgeHandler {
     }
 
     fn stats(&self, home: &str, workspace: &str) -> Result<Option<serde_json::Value>, String> {
-        let config = load_config(home)?;
+        let config = super::config::load_config(home)?;
         let forge_enabled = config.forge.as_ref().map(|f| f.enabled).unwrap_or(false);
 
         // Load full forge config from config dir if available
@@ -449,43 +429,43 @@ impl ForgeHandler {
             .and_then(|v| v.as_str())
             .ok_or("missing 'status' field")?;
 
+        // registry.json 是 load→改→写 RMW（并发 registry_update 后写覆盖先写
+        // 丢状态翻转），与 config 同族文件共用写串行锁（2026-10-13）。
+        // 锁在 update_json_file 内；顶层是数组，Value 事务天然兼容。
         let registry_file = forge_dir(workspace).join("registry.json");
-        if !registry_file.exists() {
-            return Err("registry not found".to_string());
-        }
-
-        // Read, update, write
-        let content = std::fs::read_to_string(&registry_file)
-            .map_err(|e| format!("failed to read registry: {}", e))?;
-        let mut artifacts: Vec<serde_json::Value> = serde_json::from_str(&content)
-            .map_err(|e| format!("failed to parse registry: {}", e))?;
-
-        let mut found = false;
-        for artifact in &mut artifacts {
-            if artifact.get("id").and_then(|v| v.as_str()) == Some(id) {
-                if let Some(obj) = artifact.as_object_mut() {
-                    obj.insert(
-                        "status".to_string(),
-                        serde_json::Value::String(status.to_string()),
-                    );
-                    obj.insert(
-                        "updated_at".to_string(),
-                        serde_json::Value::String(chrono::Local::now().to_rfc3339()),
-                    );
-                }
-                found = true;
-                break;
+        super::config::update_json_file(&registry_file, |v| {
+            if !registry_file.exists() {
+                return Err("registry not found".to_string());
             }
-        }
+            let artifacts: Vec<serde_json::Value> = serde_json::from_value(std::mem::take(v))
+                .map_err(|e| format!("failed to parse registry: {}", e))?;
+            let mut artifacts = artifacts;
 
-        if !found {
-            return Err(format!("artifact '{}' not found", id));
-        }
+            let mut found = false;
+            for artifact in &mut artifacts {
+                if artifact.get("id").and_then(|v| v.as_str()) == Some(id) {
+                    if let Some(obj) = artifact.as_object_mut() {
+                        obj.insert(
+                            "status".to_string(),
+                            serde_json::Value::String(status.to_string()),
+                        );
+                        obj.insert(
+                            "updated_at".to_string(),
+                            serde_json::Value::String(chrono::Local::now().to_rfc3339()),
+                        );
+                    }
+                    found = true;
+                    break;
+                }
+            }
 
-        let updated = serde_json::to_string_pretty(&artifacts)
-            .map_err(|e| format!("failed to serialize registry: {}", e))?;
-        std::fs::write(&registry_file, updated)
-            .map_err(|e| format!("failed to write registry: {}", e))?;
+            if !found {
+                return Err(format!("artifact '{}' not found", id));
+            }
+
+            *v = serde_json::Value::Array(artifacts);
+            Ok(())
+        })?;
 
         Ok(Some(
             serde_json::json!({ "updated": true, "id": id, "status": status }),
@@ -597,35 +577,42 @@ impl ForgeHandler {
             .and_then(|v| v.as_bool())
             .ok_or("missing or invalid 'enabled' field")?;
 
-        let mut config = load_config(home)?;
-        let forge = config.forge.get_or_insert_with(Default::default);
-        let was_enabled = forge.enabled;
-        forge.enabled = enabled;
-        save_config_to_disk(home, &mut config)?;
+        // config.json 锁在 update_config 内；闭包返回 was_enabled 供运行时启停用。
+        let was_enabled = super::config::update_config(home, |config| {
+            let forge = config.forge.get_or_insert_with(Default::default);
+            let was = forge.enabled;
+            forge.enabled = enabled;
+            Ok(was)
+        })?;
 
         // Sync enabled to config.forge.json as well.
+        // 顺序第二个事务（非嵌套——update_* 持同一把非重入锁，嵌套即死锁）：
+        // config.json 事务已落盘释放，这里再开 config.forge.json 事务。
         let workspace = require_workspace(ctx)?;
         let forge_config_path =
             nemesis_path::resolve_forge_config_path_in_workspace(Path::new(workspace));
-        if let Some(parent) = forge_config_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
         if forge_config_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&forge_config_path)
-                && let Ok(mut fc) = serde_json::from_str::<serde_json::Value>(&content)
-                && let Some(obj) = fc.as_object_mut()
-            {
-                obj.insert("enabled".to_string(), serde_json::Value::Bool(enabled));
-                if let Ok(updated) = serde_json::to_string_pretty(&fc) {
-                    let _ = std::fs::write(&forge_config_path, updated);
+            // Best-effort 同步（存量语义：读/解析失败跳过，不阻断主流程）。
+            let _ = super::config::update_json_file(&forge_config_path, |fc| {
+                if let Some(obj) = fc.as_object_mut() {
+                    obj.insert("enabled".to_string(), serde_json::Value::Bool(enabled));
                 }
-            }
+                Ok(())
+            });
         } else {
             // Auto-create from defaults with the current enabled value.
+            if let Some(parent) = forge_config_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
             let mut default_config = nemesis_forge::config::ForgeConfig::default();
             default_config.enabled = enabled;
             if let Ok(json) = serde_json::to_string_pretty(&default_config) {
-                let _ = std::fs::write(&forge_config_path, json);
+                // REL-002：原子写入。
+                let _ = nemesis_utils::write_file_atomic(
+                    &forge_config_path.to_string_lossy(),
+                    json.as_bytes(),
+                    0o600,
+                );
             }
         }
 
@@ -673,6 +660,8 @@ impl ForgeHandler {
             .ok_or("missing 'enabled' field")?;
 
         // Ensure config.forge.json exists — auto-create from defaults if missing.
+        // 纯创建（非 RMW），锁外执行；随后的 update_json_file 事务罩真正的
+        // 读→改→写（与 config_save 等写臂互斥，同族配置写串行锁，2026-10-13）。
         let forge_config_path =
             nemesis_path::resolve_forge_config_path_in_workspace(Path::new(workspace));
         if !forge_config_path.exists() {
@@ -682,31 +671,32 @@ impl ForgeHandler {
             let default_config = nemesis_forge::config::ForgeConfig::default();
             let json = serde_json::to_string_pretty(&default_config)
                 .map_err(|e| format!("failed to serialize default forge config: {}", e))?;
-            std::fs::write(&forge_config_path, json)
-                .map_err(|e| format!("failed to write config.forge.json: {}", e))?;
+            // REL-002：原子写入。
+            nemesis_utils::write_file_atomic(
+                &forge_config_path.to_string_lossy(),
+                json.as_bytes(),
+                0o600,
+            )
+            .map_err(|e| format!("failed to write config.forge.json: {}", e))?;
         }
 
-        // Update the file on disk.
-        let content = std::fs::read_to_string(&forge_config_path)
-            .map_err(|e| format!("failed to read config.forge.json: {}", e))?;
-        let mut forge_config: serde_json::Value = serde_json::from_str(&content)
-            .map_err(|e| format!("failed to parse config.forge.json: {}", e))?;
-        if let Some(obj) = forge_config.as_object_mut() {
-            if let Some(learning) = obj.get_mut("learning") {
-                if let Some(learning_obj) = learning.as_object_mut() {
-                    learning_obj.insert("enabled".to_string(), serde_json::Value::Bool(enabled));
+        // Update the file on disk（锁在 update_json_file 内，原子落盘）。
+        super::config::update_json_file(&forge_config_path, |forge_config| {
+            if let Some(obj) = forge_config.as_object_mut() {
+                if let Some(learning) = obj.get_mut("learning") {
+                    if let Some(learning_obj) = learning.as_object_mut() {
+                        learning_obj
+                            .insert("enabled".to_string(), serde_json::Value::Bool(enabled));
+                    }
+                } else {
+                    obj.insert(
+                        "learning".to_string(),
+                        serde_json::json!({ "enabled": enabled }),
+                    );
                 }
-            } else {
-                obj.insert(
-                    "learning".to_string(),
-                    serde_json::json!({ "enabled": enabled }),
-                );
             }
-        }
-        let updated = serde_json::to_string_pretty(&forge_config)
-            .map_err(|e| format!("failed to serialize forge config: {}", e))?;
-        std::fs::write(&forge_config_path, updated)
-            .map_err(|e| format!("failed to write config.forge.json: {}", e))?;
+            Ok(())
+        })?;
 
         // Update runtime flag on Forge instance.
         if let Some(ref forge) = ctx.state.forge {

@@ -76,6 +76,14 @@ interface LogsPage {
 }
 
 // 价目表行（/api/usage/pricing，分层合并视图：custom > downloaded > embedded）。
+// priceTiers：L3 prompt-length 阶梯价（仅自定义层可配；null = 单一价）。
+interface PricingTier {
+  minPromptTokens: number
+  inputCostPerMillion: number | null
+  outputCostPerMillion: number | null
+  cacheReadCostPerMillion: number | null
+  cacheCreationCostPerMillion: number | null
+}
 interface PricingRow {
   modelId: string
   displayName: string
@@ -86,7 +94,16 @@ interface PricingRow {
   maxInputTokens: number | null
   maxOutputTokens: number | null
   aliases: string[]
+  priceTiers?: PricingTier[] | null
   source: 'custom' | 'downloaded' | 'embedded'
+}
+// upsert 请求体里的阶梯价（serde 原名字段，snake_case）。
+interface PricingTierPayload {
+  min_prompt_tokens: number
+  input_cost_per_million: number | null
+  output_cost_per_million: number | null
+  cache_read_cost_per_million: number | null
+  cache_creation_cost_per_million: number | null
 }
 
 // 下载元数据（在线更新状态展示）。
@@ -144,8 +161,47 @@ const customForm = ref({
   output: 0,
   cacheRead: 0,
   cacheCreation: 0,
+  // L3 阶梯价文本区：每行一条 `<min_prompt_tokens>:<input>:<output>`（与 CLI
+  // `--price-tier` 同语法）；空 = 无阶梯。缓存价恒继承基础价。
+  tiersText: '',
 })
 const customSaving = ref(false)
+
+// 阶梯价文本 ⇄ 结构化（L3）。解析失败返回错误文案（调用方 toast），响亮
+// 不猜测；条目内字段须为有限非负数值。
+function parseTiersText(text: string): { tiers?: PricingTierPayload[]; error?: string } {
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
+  if (!lines.length) return {}
+  const tiers: PricingTierPayload[] = []
+  for (let i = 0; i < lines.length; i++) {
+    const parts = lines[i].split(':').map(s => s.trim())
+    if (parts.length !== 3) return { error: `第 ${i + 1} 行格式错误（${lines[i]}）：应为 <min>:<input>:<output>` }
+    const min = Number(parts[0])
+    const input = Number(parts[1])
+    const output = Number(parts[2])
+    if (!Number.isInteger(min) || min < 0) return { error: `第 ${i + 1} 行阈值非法（${parts[0]}）：须为非负整数` }
+    if (!Number.isFinite(input) || input < 0) return { error: `第 ${i + 1} 行输入价非法（${parts[1]}）` }
+    if (!Number.isFinite(output) || output < 0) return { error: `第 ${i + 1} 行输出价非法（${parts[2]}）` }
+    tiers.push({
+      min_prompt_tokens: min,
+      input_cost_per_million: input,
+      output_cost_per_million: output,
+      cache_read_cost_per_million: null,
+      cache_creation_cost_per_million: null,
+    })
+  }
+  return { tiers }
+}
+
+// 结构化 → 文本（编辑回填；None 字段用基础价显示有效值，缓存价恒继承）。
+function tiersToText(row: PricingRow): string {
+  if (!row.priceTiers?.length) return ''
+  return row.priceTiers
+    .map(t =>
+      `${t.minPromptTokens}:${t.inputCostPerMillion ?? row.inputCostPerMillion}:${t.outputCostPerMillion ?? row.outputCostPerMillion}`,
+    )
+    .join('\n')
+}
 
 // —— 请求明细 tab（A3，2026-08-31） ——
 const logsLoading = ref(false)
@@ -337,7 +393,7 @@ async function updatePricing() {
 
 function openCustomCreate() {
   customEditingId.value = ''
-  customForm.value = { modelId: '', displayName: '', input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }
+  customForm.value = { modelId: '', displayName: '', input: 0, output: 0, cacheRead: 0, cacheCreation: 0, tiersText: '' }
   showCustomModal.value = true
 }
 
@@ -350,6 +406,7 @@ function openCustomEdit(row: PricingRow) {
     output: row.outputCostPerMillion,
     cacheRead: row.cacheReadCostPerMillion,
     cacheCreation: row.cacheCreationCostPerMillion,
+    tiersText: tiersToText(row),
   }
   showCustomModal.value = true
 }
@@ -359,6 +416,11 @@ async function saveCustom() {
   const f = customForm.value
   if (!f.modelId.trim()) {
     toast.error('模型名不能为空')
+    return
+  }
+  const parsed = parseTiersText(f.tiersText)
+  if (parsed.error) {
+    toast.error(parsed.error)
     return
   }
   customSaving.value = true
@@ -376,6 +438,7 @@ async function saveCustom() {
         max_input_tokens: null,
         max_output_tokens: null,
         aliases: [],
+        price_tiers: parsed.tiers ?? null,
       }),
     })
     const j = await r.json()
@@ -410,6 +473,16 @@ const SOURCE_LABELS: Record<string, string> = {
   custom: '自定义',
   downloaded: '下载',
   embedded: '内置',
+}
+
+// 阶梯徽标悬浮明细（有效值口径：None 字段继承基础价）。
+function tierTooltip(row: PricingRow): string {
+  if (!row.priceTiers?.length) return ''
+  return row.priceTiers
+    .map(t =>
+      `≥${t.minPromptTokens.toLocaleString()} tokens: 输入 ${t.inputCostPerMillion ?? row.inputCostPerMillion} / 输出 ${t.outputCostPerMillion ?? row.outputCostPerMillion} $/M`,
+    )
+    .join('\n')
 }
 
 function formatFetchedAt(ts: number | null): string {
@@ -795,7 +868,14 @@ onMounted(() => {
                   <td>
                     <span class="pricing-source" :class="`is-${row.source}`">{{ SOURCE_LABELS[row.source] || row.source }}</span>
                   </td>
-                  <td class="num">{{ formatPrice(row.inputCostPerMillion) }}</td>
+                  <td class="num">
+                    {{ formatPrice(row.inputCostPerMillion) }}
+                    <span
+                      v-if="row.priceTiers?.length"
+                      class="pricing-tier-badge"
+                      :title="tierTooltip(row)"
+                    >阶梯×{{ row.priceTiers.length }}</span>
+                  </td>
                   <td class="num">{{ formatPrice(row.outputCostPerMillion) }}</td>
                   <td class="num">{{ formatPrice(row.cacheReadCostPerMillion) }}</td>
                   <td class="num">{{ formatPrice(row.cacheCreationCostPerMillion) }}</td>
@@ -852,6 +932,16 @@ onMounted(() => {
                   </label>
                 </div>
                 <p class="custom-form-hint">自定义条目查表优先级最高；同名会覆盖下载层/内置层。</p>
+                <label class="custom-form-field">
+                  <span>阶梯价（可选，L3：每行一条 <code>min_prompt_tokens:输入价:输出价</code>，input_tokens ≥ min 时该档生效，多条命中取阈值最大档；缓存价继承上方基础价）</span>
+                  <textarea
+                    v-model="customForm.tiersText"
+                    rows="3"
+                    class="custom-form-textarea"
+                    data-testid="custom-tiers"
+                    placeholder="例如：&#10;200000:2.0:8.0&#10;500000:3.0:12.0"
+                  ></textarea>
+                </label>
               </div>
             </div>
             <div class="modal-footer">
@@ -1807,6 +1897,19 @@ onMounted(() => {
   white-space: nowrap;
 }
 
+.pricing-tier-badge {
+  display: inline-block;
+  margin-left: var(--space-1);
+  font-size: var(--text-xs);
+  border-radius: var(--radius-full, 999px);
+  padding: 0 var(--space-1);
+  line-height: 1.5;
+  border: 1px solid rgba(234, 179, 8, 0.5);
+  color: #eab308;
+  white-space: nowrap;
+  cursor: help;
+}
+
 .pricing-action-btn {
   border: none;
   background: transparent;
@@ -1869,6 +1972,23 @@ onMounted(() => {
   font-size: var(--text-xs);
   color: var(--text-muted);
   margin: 0;
+}
+
+.custom-form-textarea {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text);
+  font-size: var(--text-sm);
+  font-family: var(--font-mono, monospace);
+  outline: none;
+  resize: vertical;
+  transition: border-color var(--duration-fast);
+}
+
+.custom-form-textarea:focus {
+  border-color: var(--accent);
 }
 
 /* —— 请求明细 tab（A3） —— */

@@ -20,7 +20,7 @@ default = [
     "channels-websocket", "channels-external", "channels-maixcam", "channels-line",
     "migrate", "devices", "desktop", "health", "heartbeat", "auth", "voice", "voice-capture", "cluster",
     "forge", "memory", "workflow", "security", "scanner", "sandbox", "eval", "usage", "board",
-    "terminal", "skins", "plugins-wasm",
+    "terminal", "skins", "plugins-wasm", "codemode", "selfupdate",
 ]
 
 # Optional subsystems (on by default = current full build; drop with --no-default-features)
@@ -66,6 +66,15 @@ terminal = ["nemesis-web/terminal"]
 # handlers/skins.rs WSAPI；nemesis-verify 依赖随 skins 进出）。关 =
 # `/skins/*` 路由、WSAPI skins 模块、前端皮肤 tab 整体消失。
 skins = ["nemesis-web/skins"]
+
+# T2（L1 codemode）：code_run 脚本工具（rquickjs 随它进出；运行开关
+# config agents.codemode.enabled 默认关——编译裁剪 + 运行双闸）。
+codemode = ["nemesis-agent/codemode"]
+
+# L9 版本自切换通道（`nemesisbot selfupdate check/apply/status` CLI + gateway
+# 九步 apply 编排；v4 验签 + zip 解包 + 审批卡随 nemesis-web/selfupdate 进出）。
+# implies security（审批 manager + 审计链是九步的两步）。
+selfupdate = ["security", "nemesis-web/selfupdate"]
 
 # 锁定版旗标（签名验证接入计划 §2.1）：空 feature，纯编译期 cfg——verify_policy
 # 据此把 enforce 烧死（config 任意值被忽略）。cargo feature 指纹原生跟踪，

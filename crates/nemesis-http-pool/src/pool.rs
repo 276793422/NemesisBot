@@ -134,12 +134,12 @@ impl ConnectionPool {
             return Err(format!("HTTP {}", resp.status()));
         }
 
-        if let Some(len) = resp.content_length() {
-            if len > max_bytes {
-                return Err(format!(
-                    "download too large: Content-Length {len} > cap {max_bytes}"
-                ));
-            }
+        if let Some(len) = resp.content_length()
+            && len > max_bytes
+        {
+            return Err(format!(
+                "download too large: Content-Length {len} > cap {max_bytes}"
+            ));
         }
 
         let mut body: Vec<u8> = Vec::new();

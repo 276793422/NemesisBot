@@ -36,9 +36,6 @@ pub fn classify_error(error_msg: &str, provider: &str, model: &str) -> Option<Fa
         LlmErrorClass::Timeout => FailoverError::Timeout {
             provider: provider.to_string(),
             model: model.to_string(),
-            // 分类器输入是已丢失底层的文本（无 Error trait 对象可查链），
-            // cause 留空——链保留是发送路径构造点的职责。
-            cause: String::new(),
         },
         LlmErrorClass::Format => FailoverError::Format {
             provider: provider.to_string(),
@@ -46,6 +43,8 @@ pub fn classify_error(error_msg: &str, provider: &str, model: &str) -> Option<Fa
         },
         LlmErrorClass::Overloaded => FailoverError::Overloaded {
             provider: provider.to_string(),
+            // 状态码形态带真值；纯文案形态（原实现约定）= 0。
+            status: extract_http_status(&msg).unwrap_or(0),
         },
     })
 }

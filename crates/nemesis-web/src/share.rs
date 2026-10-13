@@ -45,6 +45,12 @@ fn shares_path(workspace: &str) -> PathBuf {
         .join("session_shares.json")
 }
 
+/// 分享注册表写串行锁——罩 load→改→save 全程（session_shares.json 是共享
+/// RMW 文件，create∥create 并发各持旧快照会互丢记录；姊妹文件
+/// session_bindings.json 的 BINDING_LOCK 同构先例，2026-10-13 补锁）。
+/// 读路径不入锁（tmp+rename 原子性已够）。
+static SHARE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn load_shares(workspace: &str) -> Vec<ShareEntry> {
     match std::fs::read_to_string(shares_path(workspace)) {
         Ok(s) => {
@@ -81,6 +87,9 @@ fn save_shares(workspace: &str, shares: &[ShareEntry]) -> Result<(), String> {
 /// 这一层（单一真相源），所有调用方自动覆盖。
 pub fn create_share(workspace: &str, session_id: &str) -> Result<ShareEntry, String> {
     let session_id = nemesis_agent::session::SessionStore::sanitize_session_id(session_id);
+    let _g = SHARE_LOCK
+        .lock()
+        .map_err(|_| "分享注册表锁毒化".to_string())?;
     let mut shares = load_shares(workspace);
     if let Some(existing) = shares
         .iter()
@@ -101,6 +110,9 @@ pub fn create_share(workspace: &str, session_id: &str) -> Result<ShareEntry, Str
 
 /// 撤销分享。返回 false = token 不存在。
 pub fn revoke_share(workspace: &str, token: &str) -> Result<bool, String> {
+    let _g = SHARE_LOCK
+        .lock()
+        .map_err(|_| "分享注册表锁毒化".to_string())?;
     let mut shares = load_shares(workspace);
     let mut found = false;
     for s in shares.iter_mut() {

@@ -98,9 +98,100 @@ pub(crate) fn load_config(home: &str) -> Result<nemesis_config::Config, String> 
         .map_err(|e| format!("failed to load config: {}", e))
 }
 
+/// config.json RMW 事务唯一入口（typed Config 视图）——写串行锁在函数内
+/// 取得，罩「live 优先 load → 闭包改 → 落盘」全程；闭包返回 Err 不落盘
+/// （abort 语义）。调用方结构上不可能忘锁：落盘原语要求传入锁 guard，
+/// 裸组合 load+save 编译不过（同类横扫二期收口，2026-10-13）。
+/// 纪律：闭包内不得再调任何 update_* / [`nemesis_config::config_write_lock`]
+/// （Mutex 非重入，嵌套即死锁）。
+pub(crate) fn update_config<T>(
+    home: &str,
+    f: impl FnOnce(&mut nemesis_config::Config) -> Result<T, String>,
+) -> Result<T, String> {
+    let _serial = nemesis_config::config_write_lock();
+    let mut cfg = load_config(home)?;
+    let out = f(&mut cfg)?;
+    save_config_to_disk(home, &mut cfg, &_serial)?;
+    Ok(out)
+}
+
+/// 读 config.json 为 RAW JSON（保留 typed `Config` 不建模的键——model_list
+/// 条目上的 tier/size/real_name/context_window extras）。update_raw_config
+/// 的读半边；单独 pub(crate) 供只读面（attribute editor）复用。
+pub(crate) fn read_raw_config(home: &str) -> Result<serde_json::Value, String> {
+    let path = config_path(home);
+    let raw = std::fs::read_to_string(&path).map_err(|e| format!("read config.json: {e}"))?;
+    serde_json::from_str(&raw).map_err(|e| format!("invalid config.json: {e}"))
+}
+
+/// RAW JSON 落盘 + 进程全局 ConfigStore 对账（typed readers 走 load_live，
+/// 不 reload 会一直供着落盘前快照）。update_raw_config 的写半边。
+pub(crate) fn write_raw_config(home: &str, cfg: &serde_json::Value) -> Result<(), String> {
+    let path = config_path(home);
+    let out =
+        serde_json::to_string_pretty(cfg).map_err(|e| format!("serialize config.json: {e}"))?;
+    // REL-002：统一原子写入（config.json 含 API key）。
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), out.as_bytes(), 0o600)
+        .map_err(|e| format!("write config.json: {e}"))?;
+    if let Some(store) = nemesis_config::global() {
+        store
+            .reload()
+            .map_err(|e| format!("reload live config store: {e}"))?;
+    }
+    Ok(())
+}
+
+/// config.json RMW 事务入口（raw JSON 视图）：model_list 等含未类型化
+/// extras 的段必须保真回写——typed round-trip 会丢它们。锁语义同
+/// [`update_config`]。
+pub(crate) fn update_raw_config<T>(
+    home: &str,
+    f: impl FnOnce(&mut serde_json::Value) -> Result<T, String>,
+) -> Result<T, String> {
+    let _serial = nemesis_config::config_write_lock();
+    let mut cfg = read_raw_config(home)?;
+    let out = f(&mut cfg)?;
+    write_raw_config(home, &cfg)?;
+    Ok(out)
+}
+
+/// 任意 JSON 配置家族文件的事务入口（config.cluster.json / config.forge.json /
+/// registry.json 等，与 config.json 同族共用一把写串行锁）：锁罩「读→闭包改→
+/// 原子写」全程；文件缺失从空对象起（seed 默认是闭包的事）；读/解析失败
+/// = Err 不落盘。闭包 Err 不落盘（abort 语义）。
+pub(crate) fn update_json_file<T>(
+    path: &std::path::Path,
+    f: impl FnOnce(&mut serde_json::Value) -> Result<T, String>,
+) -> Result<T, String> {
+    let _serial = nemesis_config::config_write_lock();
+    let mut v = if path.exists() {
+        let s =
+            std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        serde_json::from_str(&s).map_err(|e| format!("parse {}: {e}", path.display()))?
+    } else {
+        serde_json::json!({})
+    };
+    let out = f(&mut v)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create config dir {}: {e}", parent.display()))?;
+    }
+    let content = serde_json::to_string_pretty(&v)
+        .map_err(|e| format!("serialize {}: {e}", path.display()))?;
+    // REL-002：统一原子写入（家族配置文件含 token/key 类敏感值）。
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600)
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
+    Ok(out)
+}
+
+/// config.json 落盘原语。**要求调用方已持有写串行锁**（proof-of-lock：
+/// guard 作参数，裸调用编译不过）——update_config 是 blessed 入口；多文件/
+/// 长跨度等不适合闭包事务的逃逸臂（memory config_set 双文件、cluster 身份
+/// 双写）经本原语落盘，锁的在场由类型系统强制。
 pub(crate) fn save_config_to_disk(
     home: &str,
     config: &mut nemesis_config::Config,
+    _write_guard: &parking_lot::MutexGuard<'static, ()>,
 ) -> Result<(), String> {
     if let Some(r) = nemesis_config::save_live(config.clone()) {
         return r.map_err(|e| format!("failed to save config: {}", e));
@@ -124,9 +215,12 @@ impl ConfigHandler {
         home: &str,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
-        let mut config: nemesis_config::Config = serde_json::from_value(data.clone())
-            .map_err(|e| format!("invalid config data: {}", e))?;
-        save_config_to_disk(home, &mut config)?;
+        // 编辑器整档保存语义：闭包整体替换（锁在 update_config 内）。
+        update_config(home, |config| {
+            *config = serde_json::from_value(data.clone())
+                .map_err(|e| format!("invalid config data: {}", e))?;
+            Ok(())
+        })?;
         Ok(Some(serde_json::json!({ "saved": true })))
     }
 
@@ -136,33 +230,33 @@ impl ConfigHandler {
         path: &str,
         value: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
-        let mut config = load_config(home)?;
-        let mut json = serde_json::to_value(&config)
-            .map_err(|e| format!("failed to serialize config: {}", e))?;
+        update_config(home, |config| {
+            let mut json = serde_json::to_value(&*config)
+                .map_err(|e| format!("failed to serialize config: {}", e))?;
 
-        set_json_path(&mut json, path, value.clone())?;
+            set_json_path(&mut json, path, value.clone())?;
 
-        config = serde_json::from_value(json)
-            .map_err(|e| format!("invalid config after field update: {}", e))?;
+            *config = serde_json::from_value(json)
+                .map_err(|e| format!("invalid config after field update: {}", e))?;
 
-        // Typed reparse silently drops unknown keys (serde ignores unrecognized
-        // fields). Verify the field survived the round-trip before claiming
-        // success — otherwise an unknown path would answer `updated:true` while
-        // persisting nothing (R1 真机验收发现的诚实性缺口，G6 loud 拒绝要求).
-        let reserialized = serde_json::to_value(&config)
-            .map_err(|e| format!("failed to serialize config: {}", e))?;
-        match json_path_get(&reserialized, path) {
-            None => return Err(format!("unknown config field: {}", path)),
-            Some(actual) if actual != value => {
-                return Err(format!(
-                    "config field {} did not round-trip (value rejected or normalized)",
-                    path
-                ));
+            // Typed reparse silently drops unknown keys (serde ignores unrecognized
+            // fields). Verify the field survived the round-trip before claiming
+            // success — otherwise an unknown path would answer `updated:true` while
+            // persisting nothing (R1 真机验收发现的诚实性缺口，G6 loud 拒绝要求).
+            let reserialized = serde_json::to_value(&*config)
+                .map_err(|e| format!("failed to serialize config: {}", e))?;
+            match json_path_get(&reserialized, path) {
+                None => return Err(format!("unknown config field: {}", path)),
+                Some(actual) if actual != value => {
+                    return Err(format!(
+                        "config field {} did not round-trip (value rejected or normalized)",
+                        path
+                    ));
+                }
+                _ => {}
             }
-            _ => {}
-        }
-
-        save_config_to_disk(home, &mut config)?;
+            Ok(())
+        })?;
         Ok(Some(serde_json::json!({ "updated": true, "path": path })))
     }
 

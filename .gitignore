@@ -92,3 +92,7 @@ test-tools/mcp/server/mcp-test-server.exe
 /test-campaign-data/
 /test-tools/TestAIServer/testaiserver.exe.campaign-orphan
 /test-tools/TestAIServer/testaiserver.exe~
+# 本地测试散落产物（不入库）：verify-loader gen-keys 落 cwd 的根锚指纹 +
+# llvm-cov 覆盖率摘要落盘目录
+/root_anchor.hex
+/baselines/

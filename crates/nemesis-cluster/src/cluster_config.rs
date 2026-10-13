@@ -432,6 +432,13 @@ pub fn append_peer_to_file_with_name(
     name: Option<&str>,
     rpc_port: u16,
 ) -> Result<(), ConfigError> {
+    // 写串行锁：peers.toml 与 web 侧 update_peers_node（[node] 段 RMW，持同
+    // 把 config_write_lock）是同一文件的两个写者——本函数的读→插→写快照
+    // 若不互斥，update 写回时会把本插入的 [peers.X] 冲掉（同类横扫四期，
+    // 2026-10-13）。锁取在本函数而非 save_static_config：后者被 update_*
+    // 事务入口在锁内调用，非重入 Mutex 会死锁。调用方不得已持有
+    // config_write_lock（嵌套即死锁）。
+    let _cfg_serial = nemesis_config::config_write_lock();
     // Ensure parent directory exists
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -518,6 +525,10 @@ pub fn append_peer_to_file_with_name(
 /// entries. If the file is corrupt, the deletion is skipped with a warn log
 /// (same fallback strategy as `append_peer_to_file`).
 pub fn remove_peer_from_file(path: &Path, peer_id: &str) -> Result<(), ConfigError> {
+    // 写串行锁：与 append_peer_to_file_with_name / web update_peers_node 同
+    // 一把 config_write_lock——删除的读→删→写快照不互斥会冲掉并发的
+    // [node] 改动或新 append 的 peer（同类横扫四期，2026-10-13）。
+    let _cfg_serial = nemesis_config::config_write_lock();
     // No file → nothing to remove.
     if !path.exists() {
         return Ok(());

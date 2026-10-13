@@ -332,3 +332,105 @@ describe('UsageView 价格 tab embeddedSource 短摘要', () => {
     expect(meta.attributes('title')).toBe('内置价目表')
   })
 })
+
+// -----------------------------------------------------------------------
+// L3（2026-10-12 内部专项 T0）：prompt-length 阶梯价——徽标渲染、
+// 保存载荷（snake_case price_tiers）、坏输入客户端拒绝、编辑回填。
+// -----------------------------------------------------------------------
+
+describe('UsageView 价格 tab 阶梯价（L3）', () => {
+  const TIERED = {
+    ...PRICING[0],
+    modelId: 'tiered-model',
+    source: 'custom',
+    priceTiers: [
+      { minPromptTokens: 200000, inputCostPerMillion: 3, outputCostPerMillion: null, cacheReadCostPerMillion: null, cacheCreationCostPerMillion: null },
+      { minPromptTokens: 500000, inputCostPerMillion: 4, outputCostPerMillion: 16, cacheReadCostPerMillion: null, cacheCreationCostPerMillion: null },
+    ],
+  }
+
+  function routeWith(rows: unknown[]) {
+    return (url: string) => {
+      if (url.startsWith('/api/usage/pricing')) {
+        return Promise.resolve(jsonResponse({ status: 'success', data: rows, meta: null, custom: [] }))
+      }
+      if (url.startsWith('/api/status')) return Promise.resolve(jsonResponse({ model_name: 'deepseek/deepseek-chat', version: 'test' }))
+      if (url.startsWith('/api/usage/summary')) return Promise.resolve(jsonResponse({ data: SUMMARY }))
+      if (url.startsWith('/api/usage/trends')) return Promise.resolve(jsonResponse({ data: [] }))
+      return Promise.resolve(jsonResponse({ data: null }))
+    }
+  }
+
+  it('阶梯徽标：带 priceTiers 的行显示「阶梯×N」+ 悬浮明细；无阶梯行没有', async () => {
+    fetchMock.mockImplementation(routeWith([TIERED, PRICING[1]]))
+    const w = await mountView()
+    await clickPricingTab(w)
+    const rows = pricedRows(w)
+    // 表按 modelId 排序：gpt-4o 在前、tiered-model 在后。
+    const badged = rows[1].find('.pricing-tier-badge')
+    expect(badged.exists()).toBe(true)
+    expect(badged.text()).toBe('阶梯×2')
+    expect(badged.attributes('title')).toContain('≥200,000')
+    expect(rows[0].find('.pricing-tier-badge').exists()).toBe(false)
+  })
+
+  it('新增带阶梯：textarea 两行 → POST body 带 snake_case price_tiers', async () => {
+    const w = await mountView()
+    await clickPricingTab(w)
+    await w.find('[data-testid="pricing-add-custom"]').trigger('click')
+    const modal = w.find('.modal-backdrop')
+    await modal.find('[data-testid="custom-model-id"]').setValue('my-tiered')
+    await modal.find('[data-testid="custom-input-price"]').setValue('1')
+    await modal.find('[data-testid="custom-output-price"]').setValue('2')
+    await modal.find('[data-testid="custom-tiers"]').setValue('200000:3:9\n500000:4:16')
+
+    let customBody: Record<string, unknown> | null = null
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/api/usage/pricing/custom') {
+        customBody = JSON.parse(String(init?.body))
+        return Promise.resolve(jsonResponse({ status: 'success' }))
+      }
+      return Promise.resolve(routeWith([])(url))
+    })
+    await modal.find('[data-testid="custom-save"]').trigger('click')
+    await flushPromises()
+
+    expect(customBody).not.toBeNull()
+    const tiers = customBody!['price_tiers'] as Array<Record<string, unknown>>
+    expect(tiers).toHaveLength(2)
+    expect(tiers[0]['min_prompt_tokens']).toBe(200000)
+    expect(tiers[0]['input_cost_per_million']).toBe(3)
+    expect(tiers[0]['output_cost_per_million']).toBe(9)
+    // 缓存价恒 null（继承基础价）。
+    expect(tiers[0]['cache_read_cost_per_million']).toBeNull()
+  })
+
+  it('坏阶梯文本：客户端拒绝（错误 toast，不发请求）', async () => {
+    const w = await mountView()
+    await clickPricingTab(w)
+    await w.find('[data-testid="pricing-add-custom"]').trigger('click')
+    const modal = w.find('.modal-backdrop')
+    await modal.find('[data-testid="custom-model-id"]').setValue('bad-tier')
+    await modal.find('[data-testid="custom-tiers"]').setValue('200000:3')
+    await modal.find('[data-testid="custom-save"]').trigger('click')
+    await flushPromises()
+    // 弹窗仍开着（保存被拦），且没有发出 custom POST。
+    expect(w.find('.modal-backdrop').exists()).toBe(true)
+    expect(fetchMock.mock.calls.some((c: unknown[]) => c[0] === '/api/usage/pricing/custom')).toBe(false)
+  })
+
+  it('编辑回填：custom 行的阶梯序列化回 textarea（<min>:<in>:<out> 语法）', async () => {
+    fetchMock.mockImplementation(routeWith([TIERED]))
+    vi.stubGlobal('confirm', () => true)
+    const w = await mountView()
+    await clickPricingTab(w)
+    const editBtn = w.findAll('.pricing-action-btn')[0]
+    await editBtn.trigger('click')
+    const modal = w.find('.modal-backdrop')
+    const text = (modal.find('[data-testid="custom-tiers"]').element as HTMLTextAreaElement).value
+    const lines = text.split('\n')
+    // None 字段回填有效值（继承语义）：第一档输出价 null → 基础输出价 0.42。
+    expect(lines[0]).toBe('200000:3:0.42')
+    expect(lines[1]).toBe('500000:4:16')
+  })
+})
