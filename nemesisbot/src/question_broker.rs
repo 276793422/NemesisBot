@@ -93,6 +93,10 @@ impl nemesis_types::agent::QuestionAsker for WebQuestionBroker {
         // pending，直接超时语义返回——工具侧回灌「按最佳判断继续」，无人
         // 值守下 agent 全自主推进。doom-loop 卡不走这里（check_escalation
         // 在上游已用同一开关短路为「自动批准」，轮不到发卡）。
+        // security 关闭 = 审批体系整体缺席（approval_auto_state 在
+        // handlers::security 模块内，随 feature 消失）→ 不可能有自动兜底，
+        // 恒发卡。feature matrix 实录：漏 gate 编译红 E0433（2026-10-14）。
+        #[cfg(feature = "security")]
         if nemesis_web::handlers::security::approval_auto_state().is_some_and(|s| s.enabled()) {
             tracing::info!(
                 "[WebQuestion] auto-approve on: question {} skipped (timeout semantics)",
