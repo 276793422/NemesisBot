@@ -599,6 +599,12 @@ pub struct BoardBudgetConfig {
     /// 单个父单全链 token 预算（E1 二期：worker 经回调回传的用量累计，
     /// input+output 口径；0 = 关闭。依赖集群回传，单机路径无 token 记账）。
     pub max_tokens_per_parent: u64,
+    /// 单个子单送达失败自动重试次数上限（F2 重试池；**按本单 ⛔ 标记评论
+    /// 计数**，与 max_total_redispatch 的父单全链派发行口径互不掺和）。
+    /// 超限 → 🛑 系统评论转人工、出池。默认 5（退避阶梯 60+120+240+480+960
+    /// = 1860s ≈ 31 分钟内重试 5 次，此后第 6 次失败熔断）；0 = 关闭保险丝
+    ///（无限重试）。`unlimited_mode` = true 时视为 0（操作者显式放弃护栏）。
+    pub max_send_retries: u32,
 }
 
 impl Default for BoardBudgetConfig {
@@ -608,6 +614,7 @@ impl Default for BoardBudgetConfig {
             max_total_redispatch: 0,
             wall_clock_budget_secs: 0,
             max_tokens_per_parent: 0,
+            max_send_retries: 5,
         }
     }
 }

@@ -149,7 +149,11 @@ pub fn normalize_exec_command(command: &str) -> String {
 /// 由 exec_unknown_policy（D1）治理。
 pub fn extract_interpreter_payloads(normalized_command: &str) -> Vec<String> {
     fn bin_key(token: &str) -> &str {
-        token.strip_suffix(".exe").unwrap_or(token)
+        // 取 basename（复检批：`/bin/sh`、`C:\Windows\System32\cmd.exe`
+        // 这类带路径形态此前打不中包装表，内层载荷逃过 deny/ask 扫描；
+        // 提取只增加扫描面，方向 fail-closed）。再剥 `.exe` 后缀。
+        let base = token.rsplit(['/', '\\']).next().unwrap_or(token);
+        base.strip_suffix(".exe").unwrap_or(base)
     }
     // (解释器 token, 该解释器认的载荷旗标集)
     const WRAPPERS: &[(&str, &[&str])] = &[
@@ -215,6 +219,57 @@ pub fn glob_contains(pattern: &str, text: &str) -> bool {
         }
     }
     true
+}
+
+/// exec 规则匹配的段准备（闭环批 2026-10-13 收口：auditor 执行管线与
+/// `security.rs` CLI 预览的字节级双拷贝闭包上移为单一真相源——两处语义
+/// 曾靠人肉同步，漂移即审批预览与真实判定分叉）。
+///
+/// 在原文上切顶层复合段（`command_segments`：引号感知，引号内的 `&&`
+/// 不切；引号不平衡退 quote-blind 盲切——单段 fallback 是 fail-open，一
+/// 个撇号就能整体击穿），逐段归一化 + 剥 env 前缀（与归约端同语义）。
+pub fn exec_rule_segments(target: &str) -> Vec<String> {
+    crate::command_arity::command_segments(target)
+        .iter()
+        .map(|seg| {
+            crate::command_arity::strip_env_assignments(&normalize_exec_command(seg)).to_string()
+        })
+        .collect()
+}
+
+/// exec 规则桶匹配（闭环批 2026-10-13 与 [`exec_rule_segments`] 一并上移）。
+///
+/// 两端不对称：**allow = 全部段命中才放**——任一段命中会把
+/// `echo hi && cargo publish` 被 `cargo *` allow 规则整体放行（default
+/// deny 配置下的镜像洞）；空段显式不命中（`.all()` 空迭代器恒真，空命令
+/// 不得自动放行）。deny/ask = 任一段命中，或整串锚定命中——整串兜底是
+/// **双形态联合**：剥 env 整串（跨段通配 `*a*b*` 与空命令 `*` 规则的旧
+/// 拦截面）+ **未剥整串**（显式 env 形 deny 规则 `deny FOO=1 curl *` 的
+/// 字面形态——target 侧剥 env 后，pattern 侧的 env 头只有靠未剥整串才能
+/// 命中本尊输入；§九 D1 F4 声称的三臂联合，上移单一真相源时曾丢失）。
+///
+/// - `bucket`：`"allow"` / `"deny"` / `"ask"`（其余按 deny 桶处理）
+/// - `pattern_lower`：规则 pattern 的小写形态
+/// - `target_normalized`：整串归一化（[`normalize_exec_command`] 产物）
+/// - `segs`：[`exec_rule_segments`] 的产物
+pub fn exec_rule_bucket_match(
+    bucket: &str,
+    pattern_lower: &str,
+    target_normalized: &str,
+    segs: &[String],
+) -> bool {
+    let hit = |seg: &str| match_command_pattern(pattern_lower, seg);
+    match bucket {
+        "allow" => !segs.is_empty() && segs.iter().all(|seg| hit(seg)),
+        // deny/ask：任一段命中，或整串锚定兜底（剥 env + 未剥双形态）
+        _ => {
+            segs.iter().any(|seg| hit(seg))
+                || hit(crate::command_arity::strip_env_assignments(
+                    target_normalized,
+                ))
+                || hit(target_normalized)
+        }
+    }
 }
 
 /// Check if a domain matches a pattern.

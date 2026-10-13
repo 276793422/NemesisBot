@@ -2341,6 +2341,28 @@ fn self_destruct_windows_forms_denied() {
     }
 }
 
+#[test]
+fn self_destruct_full_path_and_exe_suffix_bins_denied() {
+    // 闭环批 2026-10-13：bin_key 取 basename + 剥 .exe——`/bin/rm`、
+    // `del.exe` 全路径/带后缀形态此前打不中 DESTRUCTIVE_BINS（key 带目录/
+    // 后缀），自毁硬拦对这种形态整体失明（fail-open）。保护集覆盖两族
+    // 目标（POSIX 家目录 + Windows 用户目录），命令形态与目标逐条对应。
+    let auditor = auditor_with_protected(&["/home/zoo", "/home/zoo/proj", "c:/users/zoo"]);
+    for (i, cmd) in [
+        "/bin/rm -rf /home/zoo",
+        "/usr/bin/rm -rf ~",
+        "del.exe /s /q c:/users/zoo",
+        "c:/windows/system32/rm.exe -rf /home/zoo/proj",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let (allowed, err, _) = auditor.request_permission(&exec_request(&format!("sd3{i}"), cmd));
+        assert!(!allowed, "`{cmd}` must hit self-destruct hard block");
+        assert!(err.unwrap().contains("self-destruct"));
+    }
+}
+
 fn auditor_with_protected_and_exempt(paths: &[&str], exempt: &str) -> SecurityAuditor {
     let auditor = auditor_with_protected(paths);
     auditor.set_self_destruct_exempt_path(exempt);
@@ -2954,4 +2976,45 @@ fn approval_prefix_rule_not_extended_by_compound_tail() {
         allowed,
         "redirection stays single segment, still auto-allowed"
     );
+}
+
+#[test]
+fn allow_rule_all_segments_hit_is_auto_allowed() {
+    // allow 桶全段命中（同族前缀）→ 自动放行成立（对称臂的正向钉）
+    let auditor = ask_auditor();
+    let dir = tempfile::tempdir().unwrap();
+    auditor.set_approval_rules(rules_hot(&dir, &[cargo_rule()]));
+
+    let (allowed, _, _) = auditor.request_permission(&exec_request(
+        "c9",
+        "cargo test --release && cargo test --lib",
+    ));
+    assert!(allowed, "all-segments hit must auto-allow");
+}
+
+#[test]
+fn deny_rule_env_prefix_not_an_evasion() {
+    // env 前缀剥除（与归约端同语义）：`FOO=1 cargo *` 不得借 env 头逃过 `cargo *`
+    let auditor = deny_exec_auditor("cargo *");
+    let (allowed, err, _) =
+        auditor.request_permission(&exec_request("c10", "FOO=1 cargo publish --token x"));
+    assert!(!allowed, "env-prefixed command must still be denied");
+    assert!(err.unwrap().contains("rule matched"));
+
+    // 段中 env：`echo hi && K=1 cargo publish` 尾段剥 env 后命中
+    let (allowed, _, _) = auditor.request_permission(&exec_request(
+        "c11",
+        "echo hi && RUST_LOG=debug cargo publish",
+    ));
+    assert!(!allowed, "env-prefixed tail segment must be denied");
+}
+
+#[test]
+fn deny_wildcard_rule_catches_empty_command_via_whole_string_union() {
+    // 空命令：分段为空，靠 deny/ask 的整串锚定兜底维持旧拦截面
+    // （`*` 规则对空串 contains 语义恒真；allow 桶无此兜底——空段守卫）
+    let auditor = deny_exec_auditor("*");
+    let (allowed, err, _) = auditor.request_permission(&exec_request("c12", "   "));
+    assert!(!allowed, "`*` deny must catch empty command");
+    assert!(err.unwrap().contains("rule matched"));
 }

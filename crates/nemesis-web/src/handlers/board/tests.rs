@@ -2895,8 +2895,10 @@ async fn test_board_config_review_budget_keys_roundtrip() {
     assert_eq!(out["budget"]["wall_clock_budget_secs"], 0);
     assert_eq!(out["review"]["checkers"], 1);
     assert_eq!(out["budget"]["max_tokens_per_parent"], 0);
+    // F2 送达失败重试熔断默认开（5 次，自动循环默认带护栏）。
+    assert_eq!(out["budget"]["max_send_retries"], 5);
 
-    // 八键 set → 盘上真实落盘回读。
+    // 九键 set → 盘上真实落盘回读。
     for (key, value) in [
         ("review.max_turns", serde_json::json!(3)),
         ("review.selfcheck", serde_json::json!(true)),
@@ -2906,6 +2908,7 @@ async fn test_board_config_review_budget_keys_roundtrip() {
         ("budget.wall_clock_budget_secs", serde_json::json!(3600)),
         ("review.checkers", serde_json::json!(3)),
         ("budget.max_tokens_per_parent", serde_json::json!(100000)),
+        ("budget.max_send_retries", serde_json::json!(7)),
     ] {
         let out = dispatch(
             &ctx,
@@ -2927,6 +2930,7 @@ async fn test_board_config_review_budget_keys_roundtrip() {
     assert_eq!(raw["board"]["budget"]["wall_clock_budget_secs"], 3600);
     assert_eq!(raw["board"]["review"]["checkers"], 3);
     assert_eq!(raw["board"]["budget"]["max_tokens_per_parent"], 100000);
+    assert_eq!(raw["board"]["budget"]["max_send_retries"], 7);
     // typed 重序列化 round-trip：既有键不丢（P1 键仍在）。
     assert_eq!(raw["board"]["unlimited_mode"], false);
 
@@ -5614,6 +5618,7 @@ async fn agt_board_config_get_set_all_keys_and_rejections() {
         ("budget.max_total_redispatch", serde_json::json!(11)),
         ("budget.wall_clock_budget_secs", serde_json::json!(3600)),
         ("budget.max_tokens_per_parent", serde_json::json!(123456)),
+        ("budget.max_send_retries", serde_json::json!(4)),
         ("dispatch_timeout_secs", serde_json::json!(1800)),
         ("discussion.retention_days", serde_json::json!(30)),
         (
@@ -5652,6 +5657,12 @@ async fn agt_board_config_get_set_all_keys_and_rejections() {
         ("max_redispatch", serde_json::json!(-2), "非负整数"),
         ("review.max_turns", serde_json::json!(1.5), "非负整数"),
         ("review.checkers", serde_json::json!(9), "1..=5"),
+        ("budget.max_send_retries", serde_json::json!(-3), "非负整数"),
+        (
+            "budget.max_send_retries",
+            serde_json::json!("many"),
+            "非负整数",
+        ),
         (
             "budget.wall_clock_budget_secs",
             serde_json::json!(null),
@@ -9904,6 +9915,309 @@ async fn ua_no_match_park_writes_handoff_archive() {
     assert_eq!(
         doc["environment"]["required_tags"],
         serde_json::json!(["no-such-tag"])
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ------------------------------------------------------------------
+// F2 送达失败自动重试 sweep 闸序（多角度审计批 2026-10-13）：预算熔断 →
+// 退避 → 执行器。真派发腿（RPC 达成）归 cluster-uat；本节钉 surface 契约。
+// ------------------------------------------------------------------
+
+/// 造一个「送达失败池成员」：backlog + 失败派发行 + n 条 ⛔ 系统评论。
+#[cfg(feature = "cluster")]
+fn send_failure_issue(
+    store: &Arc<BoardStore>,
+    actor: &Actor,
+    title: &str,
+    markers: usize,
+) -> nemesis_board::Issue {
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: title.to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .insert_dispatch(
+            &format!("task-sf-{}", issue.id),
+            issue.id,
+            "node-gone",
+            actor,
+        )
+        .unwrap();
+    store
+        .finish_dispatch(&format!("task-sf-{}", issue.id), "failed")
+        .unwrap();
+    for i in 0..markers {
+        store
+            .add_comment(nemesis_board::models::NewComment {
+                issue_id: issue.id,
+                author: actor.clone(),
+                content: format!(
+                    "{}：[送达] 第 {i} 次连接拒绝",
+                    nemesis_board::SEND_FAILURE_MARK
+                ),
+                parent_id: None,
+                ctype: nemesis_board::CommentType::System,
+            })
+            .unwrap();
+    }
+    issue
+}
+
+/// 预算熔断：attempts(2) > cap(1) → 🛑 转人工评论，落盘即出池。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn send_failure_budget_fuse_parks_issue_with_stop_comment() {
+    let dir = unique_dir("sf-fuse");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("test-session");
+    let issue = send_failure_issue(&store, &actor, "超预算单", 2);
+    let pool = || {
+        store
+            .list_send_failure_candidates(nemesis_board::SEND_FAILURE_MARK)
+            .unwrap()
+    };
+    assert_eq!(pool().len(), 1, "前置：失败单在池");
+
+    let cfg = nemesis_config::BoardFlagConfig {
+        budget: nemesis_config::BoardBudgetConfig {
+            max_send_retries: 1,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let cluster = offline_cluster(&dir, "coord-sf-fuse");
+    let (considered, dispatched, _failed) =
+        super::sweep_parked_dispatches_with_config(Some(&cfg), &store, &cluster, &actor, false);
+    assert_eq!(dispatched, 0, "熔断不得派发");
+    assert_eq!(considered, 1, "池内唯一成员被审视");
+    let comments = store.list_comments(issue.id).unwrap();
+    let stop = comments
+        .iter()
+        .find(|c| c.content.contains("已达预算上限"))
+        .expect("🛑 转人工评论必须落盘");
+    assert!(
+        stop.content.contains("max_send_retries=1"),
+        "文案带配置键：{}",
+        stop.content
+    );
+    assert!(
+        pool().is_empty(),
+        "🛑 落盘 = 最后一条 system 评论不再是 ⛔ → 出池"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// unlimited_mode=true → 熔断关闭（cap 视为 0）：不派发、不落评论、
+/// 单子留在池里等退避。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn send_failure_fuse_disabled_by_unlimited_mode() {
+    let dir = unique_dir("sf-nofuse");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("test-session");
+    let issue = send_failure_issue(&store, &actor, "不限模式单", 2);
+    let cfg = nemesis_config::BoardFlagConfig {
+        unlimited_mode: true,
+        budget: nemesis_config::BoardBudgetConfig {
+            max_send_retries: 3,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let cluster = offline_cluster(&dir, "coord-sf-free");
+    let (_, dispatched, _) =
+        super::sweep_parked_dispatches_with_config(Some(&cfg), &store, &cluster, &actor, false);
+    assert_eq!(dispatched, 0, "退避未到（fresh ⛔）不得派发");
+    assert!(
+        !store
+            .list_comments(issue.id)
+            .unwrap()
+            .iter()
+            .any(|c| c.content.contains("已达预算上限")),
+        "unlimited_mode 下熔断必须关闭"
+    );
+    assert_eq!(
+        store
+            .list_send_failure_candidates(nemesis_board::SEND_FAILURE_MARK)
+            .unwrap()
+            .len(),
+        1,
+        "仍在池等退避"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 退避闸：末次失败 = 刚刚（attempts=1 → 60s 窗口），sweep 本 tick 必须跳过
+/// ——零派发、零副作用、留池。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn send_failure_backoff_gate_skips_fresh_failure() {
+    let dir = unique_dir("sf-backoff");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("test-session");
+    let issue = send_failure_issue(&store, &actor, "退避中单", 1);
+    let cluster = offline_cluster(&dir, "coord-sf-bo");
+    let (considered, dispatched, failed) =
+        super::sweep_parked_dispatches_with_config(None, &store, &cluster, &actor, false);
+    assert_eq!(considered, 1);
+    assert_eq!(dispatched, 0, "退避窗口内不得派发");
+    assert_eq!(failed, 0);
+    assert_eq!(
+        store.list_comments(issue.id).unwrap().len(),
+        1,
+        "退避跳过零副作用（只有那条 ⛔）"
+    );
+    assert_eq!(
+        store
+            .list_send_failure_candidates(nemesis_board::SEND_FAILURE_MARK)
+            .unwrap()
+            .len(),
+        1,
+        "留池"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// recover_review_feedback：只认「❌ agent 验收未通过」**开头**的 Comment；
+/// 人工评论引用「## 差距」字样（contains 曾误捞）不得误当自动重派差距。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn recover_review_feedback_anchored_prefix_not_contains() {
+    let dir = unique_dir("sf-feedback");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("test-session");
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "反馈找回".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(
+        super::recover_review_feedback(&store, issue.id),
+        None,
+        "无评论不造空意见"
+    );
+
+    let user_comment = |content: &str| {
+        store
+            .add_comment(nemesis_board::models::NewComment {
+                issue_id: issue.id,
+                author: actor.clone(),
+                content: content.to_string(),
+                parent_id: None,
+                ctype: nemesis_board::CommentType::Comment,
+            })
+            .unwrap();
+    };
+    // 人工评审引用「## 差距」字样（非 ❌ 开头）——contains 语义会误捞。
+    user_comment("worker 自述里写了 ## 差距 这几个字，但我这条是人工意见");
+    assert_eq!(
+        super::recover_review_feedback(&store, issue.id),
+        None,
+        "引用字样的人工评论不得误捞"
+    );
+    // 自动重派差距评论（❌ 开头）——唯一合法来源。
+    user_comment("❌ agent 验收未通过（第 1/2 次重派）## 差距\n- 缺测试");
+    let fb = super::recover_review_feedback(&store, issue.id).expect("❌ 开头必须捞起");
+    assert!(fb.starts_with("❌ agent 验收未通过"), "整段原文：{fb}");
+    assert!(fb.contains("缺测试"));
+    // 更新的一条覆盖旧条（取最后）。
+    user_comment("❌ agent 验收未通过（第 2/2 次重派）## 差距\n- 仍缺测试");
+    assert!(
+        super::recover_review_feedback(&store, issue.id)
+            .unwrap()
+            .contains("仍缺测试"),
+        "取最后一条 ❌ 开头评论"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// pick_send_failure_redispatch_target 三臂：末次 worker 在线 → 原地；
+/// 末次 worker 消失 → 在线候选榜首；无派发记录 → None。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn pick_send_failure_target_prefers_last_worker_then_best_online() {
+    let dir = unique_dir("sf-target");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("test-session");
+    let cluster = offline_cluster(&dir, "coord-sf-t");
+    cluster.set_rpc_client(Arc::new(nemesis_cluster::rpc::client::RpcClient::new()));
+    cluster.merge_real_node_info(&nemesis_cluster::cluster::RealNodeInfo {
+        id: "node-py".into(),
+        name: "PyWorker".into(),
+        address: "127.0.0.1:19999".into(),
+        rpc_port: 0,
+        addresses: Vec::new(),
+        role: NodeRole::Worker,
+        category: "development".into(),
+        capabilities: vec![],
+        tags: vec!["python".into()],
+        professions: Vec::new(),
+        tier: None,
+        node_type: "agent".into(),
+    });
+
+    // 无派发记录的单：在线候选存在时会走 rank 榜首臂；None 臂在下方
+    // 空注册表 cluster 上断言（全员离线 = 调用方留池的语义面）。
+    let bare = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "无派发".into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    // 末次 worker 在线 → 原地重试。
+    let online = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "末次在线".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .insert_dispatch("task-t1", online.id, "node-py", &actor)
+        .unwrap();
+    assert_eq!(
+        super::pick_send_failure_redispatch_target(&store, &cluster, online.id).as_deref(),
+        Some("node-py"),
+        "末次 worker 在线 = 原地重试"
+    );
+
+    // 末次 worker 消失（从未注册）→ 在线候选榜首（node-py 唯一在线）。
+    let gone = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "末次消失".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .insert_dispatch("task-t2", gone.id, "node-vanished", &actor)
+        .unwrap();
+    assert_eq!(
+        super::pick_send_failure_redispatch_target(&store, &cluster, gone.id).as_deref(),
+        Some("node-py"),
+        "末次 worker 消失 → 在线候选首选"
+    );
+
+    // 全员离线（换空注册表的 cluster）→ None。
+    let empty_cluster = offline_cluster(&dir, "coord-sf-empty");
+    empty_cluster.set_rpc_client(Arc::new(nemesis_cluster::rpc::client::RpcClient::new()));
+    assert_eq!(
+        super::pick_send_failure_redispatch_target(&store, &empty_cluster, bare.id),
+        None,
+        "无派发记录 + 无在线节点 → None（调用方留池）"
+    );
+    assert_eq!(
+        super::pick_send_failure_redispatch_target(&store, &empty_cluster, gone.id),
+        None,
+        "末次 worker 消失 + 无在线节点 → None"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

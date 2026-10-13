@@ -1271,9 +1271,14 @@ impl Cluster {
         // R2 静态 pin 合并保护：peers.toml 显式配置的对端地址不因 announce
         // 刷新被逐出（静态配置层与发现池层此前无合并保护——Win↔Win 验收
         // 实测：可达 pin 被对端自报的不可达地址挤掉后派发即断）。池序 =
-        // 载荷（announce 自报序）→ pinned（去重追加）；静态语义同时锁
-        // base.address（与 merge_real_node_info 的静态保护同源）。
-        let mut pool: Vec<String> = addresses.clone();
+        // pinned（用户显式配置优先）→ 载荷（announce 自报序）→ 源地址。
+        // **pin 前置**（多角度审计批中-2，2026-10-13）：拨号预算 = best + 3
+        // 个 fallback（rpc/client.rs），载荷地址 ≥4 个且无一同网段时 pin
+        // 排尾永远轮不到——「静态语义 = 用户显式配置优先」本就该排在自报
+        // 载荷前面（merge_real_node_info 内的静态地址保护注释同口径）。
+        // 静态语义同时锁 base.address（与 merge_real_node_info 的静态保护
+        // 同源）。
+        let mut pool: Vec<String> = Vec::new();
         let mut static_base_address: Option<String> = None;
         if self.registry.is_peer_static(node_id)
             && let Some(existing) = self.registry.get(node_id)
@@ -1298,10 +1303,15 @@ impl Cluster {
                 static_base_address = Some(existing.base.address.clone());
             }
         }
+        for a in &addresses {
+            if !pool.contains(a) {
+                pool.push(a.clone());
+            }
+        }
         // R5 源地址收割：UDP 包源 IP 是「发现层亲眼可见」的可达性证据，作
-        // 为最低优先级候选入池（载荷 > pinned > 源地址）——对端唯一可达
-        // 地址是 link-local（被对端 if_addrs 缺口排除在载荷外）时的最后一
-        // 根自愈稻草。
+        // 为最低优先级候选入池（池序 pin > 载荷 > 源地址，中-2 pin 前置见
+        // 上方静态块）——对端唯一可达地址是 link-local（被对端 if_addrs 缺
+        // 口排除在载荷外）时的最后一根自愈稻草。
         if let Some(src) = source_addr
             && !src.is_empty()
             && !pool.iter().any(|a| a.as_str() == src)
@@ -4153,7 +4163,7 @@ impl ClusterPeerResolver {
 
         let own_ips = network::get_all_local_ips();
         let filtered: Vec<String> = addresses
-            .into_iter()
+            .iter()
             .filter(|a| {
                 // 裸 IP 候选的端口配对与本 resolver 返回的 rpc_port 一致
                 // （dispatch 侧按同语义拼接 ip:port）；带端口条目按自带端口。
@@ -4161,15 +4171,31 @@ impl ClusterPeerResolver {
                 let effective_port = if a.contains(':') { p } else { port };
                 !is_self_endpoint(&h, effective_port, self.rpc_port, &own_ips)
             })
+            .cloned()
             .collect();
-        if filtered.is_empty() && !info.addresses.is_empty() {
-            tracing::warn!(
-                peer_id = %info.base.id,
-                raw_candidates = ?info.addresses,
-                own_rpc_port = self.rpc_port,
-                "[Cluster] All dial candidates for peer collide with the local endpoint \
-                 (registry address-pool pollution?); refusing to dial self"
-            );
+        // 全滤空 WARN 覆盖对称（多角度审计批低-4 + 闭环批低-4 补全）：判据
+        // = 「过滤后为空」。三形态诚实失败（返回 `None`，上层派发失败路径
+        // 照常留痕）：① 过滤前有候选但全为自端点（池污染）；② 池原本为空、
+        // 唯一候选是 base.host 且恰为自端点（返回 Some 空池 = 客户端拿 ""
+        // 拨号一次才失败，错误文案误导为连接问题而非自碰撞）；③ 连候选都
+        // 没有（announce/静态 pin 全缺）——Some 空池同样是拿 "" 空拨一次，
+        // 与①②同罪，统一 None。
+        if filtered.is_empty() {
+            if addresses.is_empty() {
+                tracing::warn!(
+                    peer_id = %info.base.id,
+                    "[Cluster] No dial candidates at all for peer (no address pool, \
+                     no usable base address); cannot resolve"
+                );
+            } else {
+                tracing::warn!(
+                    peer_id = %info.base.id,
+                    raw_candidates = ?addresses,
+                    own_rpc_port = self.rpc_port,
+                    "[Cluster] All dial candidates for peer collide with the local endpoint \
+                     (registry address-pool pollution?); refusing to dial self"
+                );
+            }
             return None;
         }
         Some((filtered, port, is_online))

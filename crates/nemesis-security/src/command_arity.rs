@@ -54,23 +54,44 @@ pub fn tokenize_command(cmd: &str) -> Vec<String> {
     tokens
 }
 
-/// 顶层复合命令分段（CMD-12，2026-10-13）。
+/// 顶层复合命令分段（CMD-12，2026-10-13；复检批加固）。
 ///
 /// 在**原文**上按顶层操作符切分：`&&` / `||` / `;` / `|` / `&` / 换行。
 /// 引号感知（同 [`tokenize_command`]：单双引号内不切分；不支持引号内
-/// 反斜杠转义）。段各自 trim，空段（连续操作符）跳过；引号不闭合 →
-/// 整条命令退单段（宁可不切，不可切错）。**不是 shell 解析器**——
-/// 只认顶层操作符字面形态；`2>&1` 这类重定向中的 `&` 因前导字符为
-/// `>` 不切分（`cargo build 2>&1` 保持单段）。
+/// 反斜杠转义）。段各自 trim，空段（连续操作符）跳过。
+///
+/// **引号不闭合 → 退 quote-blind 盲切**（复检批改向）：视引号为普通字符
+/// 照切操作符。方向论证：不平衡引号在 POSIX shell 本身就是残命令（bash
+/// 等 EOF 直接失败，切错无害）；在 cmd.exe（本项目 Windows 主执行路径）
+/// `'` 根本不是引号——`echo don't && git push` 的 `&&` 真切分，盲切恰好
+/// 对齐真实解析器。旧 fallback「退单段」是 fail-open：deny 整串锚定打
+/// 不中非首段，一个撇号就能整体击穿用户 deny 规则。**不是 shell 解析器**
+/// ——只认顶层操作符字面形态；`2>&1`（`&` 前导 `>`）与 `&>`（`&` 后继
+/// `>`，bash 双向重定向）这类重定向中的 `&` 不切分。
 ///
 /// 消费语义（两端不对称是刻意的）：
-/// - deny/ask（ABAC 规则）：**任一段命中即拦**——整串锚定打不中非首段
-///   （`echo hi && rm -rf y` 曾逃过 `rm -rf *`）。
+/// - deny/ask（ABAC 规则）：**任一段命中即拦**（另并整串锚定兜底，见
+///   auditor）——整串锚定打不中非首段（`echo hi && rm -rf y` 曾逃过
+///   `rm -rf *`）。
 /// - allow（审批 pattern 记忆）：**全部段命中才放**——`cd *` 不得罩住
 ///   `cd x && rm -rf y` 的删除段。
 /// - 归约（[`crate::approval_rules::pattern_for`]）：复合命令不构成
 ///   前缀规则（单一 pattern 表达不了全段语义，宁拒绝不放宽）。
 pub fn command_segments(cmd: &str) -> Vec<String> {
+    let (segments, balanced) = scan_segments(cmd, true);
+    if balanced {
+        return finish_segments(segments);
+    }
+    // 引号不闭合 → quote-blind 盲切（fail-closed 方向：deny 侧宁可多切，
+    // 切错段至多伤 allow 自动放行 UX；不切则 deny 整体失明）。
+    let (segments, _) = scan_segments(cmd, false);
+    finish_segments(segments)
+}
+
+/// 引号感知（`quote_aware=true`）或盲切（`false`）的一遍扫描。返回
+/// （原始段列表，引号是否闭合）。`quote_aware=false` 时 `'`/`"` 按普通
+/// 字符进段——盲切模式不存在「引号内」概念，操作符一律切。
+fn scan_segments(cmd: &str, quote_aware: bool) -> (Vec<String>, bool) {
     let mut segments = Vec::new();
     let mut cur = String::new();
     let mut in_single = false;
@@ -80,13 +101,12 @@ pub fn command_segments(cmd: &str) -> Vec<String> {
     let mut chars = cmd.chars().peekable();
     while let Some(ch) = chars.next() {
         match ch {
-            '\'' if !in_double => {
-                in_single = !in_single;
-                cur.push(ch);
-                prev_char = Some(ch);
-            }
-            '"' if !in_single => {
-                in_double = !in_double;
+            '\'' | '"' if quote_aware => {
+                if ch == '\'' && !in_double {
+                    in_single = !in_single;
+                } else if ch == '"' && !in_single {
+                    in_double = !in_double;
+                }
                 cur.push(ch);
                 prev_char = Some(ch);
             }
@@ -95,8 +115,16 @@ pub fn command_segments(cmd: &str) -> Vec<String> {
                 prev_char = None;
             }
             '&' | '|' if !in_single && !in_double => {
-                // `>&`（重定向，如 2>&1）不是操作符——`&` 随前导 `>` 归段。
-                if ch == '&' && prev_char == Some('>') {
+                // 重定向形态的 `&`/`|` 不是操作符：`2>&1`（前导 `>`）、
+                // `&>file`（后继 `>`，bash 合并重定向）、`>|file`（`|`
+                // 前导 `>`，bash 强制覆盖）、`<&0`（前导 `<`，bash fd 复制
+                // ——`cmd <&0` 此前把 `&` 当操作符切出假段 `&0`）均随段保留。
+                if (ch == '&'
+                    && (prev_char == Some('>')
+                        || prev_char == Some('<')
+                        || chars.peek() == Some(&'>')))
+                    || (ch == '|' && prev_char == Some('>'))
+                {
                     cur.push(ch);
                     prev_char = Some(ch);
                     continue;
@@ -114,17 +142,11 @@ pub fn command_segments(cmd: &str) -> Vec<String> {
         }
     }
     segments.push(cur);
+    (segments, !in_single && !in_double)
+}
 
-    // 引号不闭合 → 整条命令退单段（原文原样，不冒险切一半）
-    if in_single || in_double {
-        let whole = cmd.trim().to_string();
-        return if whole.is_empty() {
-            Vec::new()
-        } else {
-            vec![whole]
-        };
-    }
-
+/// 段后处理：trim、空段跳过、相邻等值段去重。
+fn finish_segments(segments: Vec<String>) -> Vec<String> {
     let mut out: Vec<String> = segments
         .into_iter()
         .map(|s| s.trim().to_string())
@@ -132,6 +154,26 @@ pub fn command_segments(cmd: &str) -> Vec<String> {
         .collect();
     out.dedup();
     out
+}
+
+/// 剥头部 `VAR=value` 环境变量前缀（匹配端与归约端
+/// [`reduce_command`] 同语义——`FOO=1 git push` 必须与 `git push` 同判，
+/// 否则锚定 deny 被一个 env 前缀绕过而 allow 记忆规则反而重新弹卡）。
+/// 输入须是 `trim` 过的段；输出从首个非 env token 起的后缀切片
+/// （全 env token → 空串）。
+pub fn strip_env_assignments(segment: &str) -> &str {
+    let mut rest = segment;
+    while let Some(token) = rest.split_whitespace().next() {
+        if !is_env_assignment(token) {
+            break;
+        }
+        match rest.find(token) {
+            // token 是首词：跳过它与其后空白
+            Some(pos) => rest = rest[pos + token.len()..].trim_start(),
+            None => break,
+        }
+    }
+    rest
 }
 
 /// 静态 arity 表：key（空格连接的前缀）→ 保留 token 数（含 key 自身）。

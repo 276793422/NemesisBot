@@ -1912,6 +1912,14 @@ async fn review_issue(
                     return Ok(true);
                 }
             };
+            // 并发让位预检（闭环批 2026-10-13）：评审 LLM 期间其他触发源
+            //（F2 重试臂 / 补派波 / 人工）已抢到 claim（在途派发）→ 本轮
+            // 重派让位——继续派会撞在途任务，且 Err 臂的「请人工派发」文案
+            // 对这种瞬时竞态是误导（数秒后并发触发源自己完成派发）。
+            if store.has_active_dispatch(issue_id).unwrap_or(false) {
+                info!("[BoardReview] issue {issue_id} FAIL 复核期间已有在途派发接管，重派让位");
+                return Ok(true);
+            }
             match nemesis_web::handlers::board::dispatch_issue_core(
                 store,
                 Some(&deps.cluster),
@@ -1924,6 +1932,21 @@ async fn review_issue(
                     info!("[BoardReview] issue {issue_id} FAIL → 重派 #{next_round} → {target}");
                 }
                 Err(e) => {
+                    // Err 三分诊：estop 中途拉闸 → 尊重冻结（release 后
+                    // 复评恢复），不落评论；并发触发源已抢到 claim（预检后
+                    // 窗口内）→ 让位，不落评论；其余（无在线节点等）→ ⛔
+                    // 留痕请人工。前两臂写 system 评论 = 对瞬时态撒谎，
+                    // 且会打断 ⛔/转人工标记链（F2/停车去重都锚 system 评论）。
+                    if deps.estop.is_engaged() {
+                        debug!(
+                            "[BoardReview] issue {issue_id} 重派受阻（estop 生效，留待 release 后复评）：{e}"
+                        );
+                        return Ok(false);
+                    }
+                    if store.has_active_dispatch(issue_id).unwrap_or(false) {
+                        info!("[BoardReview] issue {issue_id} 重派竞态让位（在途派发已接管）：{e}");
+                        return Ok(true);
+                    }
                     let msg = format!("⛔ 验收未通过，自动重派失败：{e}（请人工派发或处置）");
                     store.add_comment(NewComment {
                         issue_id,

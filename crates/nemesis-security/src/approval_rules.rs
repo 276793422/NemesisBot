@@ -107,7 +107,12 @@ pub fn rule_permitted_for(op: &str, risk: &str) -> bool {
 ///   罩住 `cd /tmp && rm -rf y` 的删除段——按顶层段切分后逐段做
 ///   token 前缀匹配，任一段不命中即不放行；存量时期按旧语义写入的
 ///   复合来源规则随之自然失效（对复合命令重新弹卡，安全方向收紧）；
-/// - 其余 → target 精确相等；
+///   **逐段剥 env 前缀**（闭环批 2026-10-13，与写侧归约端同语义）：
+///   `pattern_for`/`reduce_command` 产出的 pattern 永无 env 头，读侧
+///   不剥则 `FOO=1 cargo test` 永远弹卡——ABAC 侧（auditor）已剥，
+///   两侧不一致 = ABAC 放行、审批记忆不放行的重复打扰；
+/// - 其余 → target 精确相等（exec 类先剥 env 头再比——手写裸 pattern
+///   的防御性对齐；非 exec 类 target 是路径/URL，env 剥离不适用）；
 /// - 手写裸 `*` pattern 永不命中（防规则文件被改成全放行）。
 pub fn matches_rule(rule_op: &str, rule_pattern: &str, op: &str, target: &str) -> bool {
     if rule_op != op || rule_pattern.is_empty() || target.is_empty() {
@@ -132,15 +137,25 @@ pub fn matches_rule(rule_op: &str, rule_pattern: &str, op: &str, target: &str) -
                         .all(|(t, p)| t == p)
             };
             if is_command_op(rule_op) {
-                // CMD-12：全段命中才放（`cd *` 不罩 `cd x && rm y`）。
+                // CMD-12：全段命中才放（`cd *` 不罩 `cd x && rm y`）；
+                // 逐段剥 env 头（`FOO=1 cargo test` → `cargo test`）。
                 let segments = crate::command_arity::command_segments(target);
-                !segments.is_empty() && segments.iter().all(|seg| prefix_hits(seg))
+                !segments.is_empty()
+                    && segments
+                        .iter()
+                        .all(|seg| prefix_hits(crate::command_arity::strip_env_assignments(seg)))
             } else {
                 // 非 exec 类手写 ` *` pattern：维持整串 token 前缀（旧语义）。
                 prefix_hits(target)
             }
         }
-        None => rule_pattern == target,
+        None => {
+            if is_command_op(rule_op) {
+                rule_pattern == crate::command_arity::strip_env_assignments(target)
+            } else {
+                rule_pattern == target
+            }
+        }
     }
 }
 

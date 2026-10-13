@@ -15,6 +15,9 @@ use crate::handlers::{get_opt_str, get_str, require_workspace};
 use crate::ws_router::{ModuleHandler, RequestContext};
 use base64::Engine;
 use nemesis_board::BoardStore;
+// ⏸ 暂缓评论去重标记（闭环批 2026-10-13 从本文件上移）：停车判定 SQL
+// 与 sweep 落评论共用单一真相源，消灭跨 crate 字面量漂移面。
+use nemesis_board::PARK_NOTICE_MARK;
 use nemesis_board::assignment::{Actor, AssignmentType};
 use nemesis_board::models::{
     CommentType, IssueFilter, IssuePatch, IssueStatus, NewComment, NewIssue, ProjectPatch,
@@ -2715,16 +2718,14 @@ fn link_project_on_dispatch(store: &Arc<BoardStore>, project_id: Option<i64>) {
     }
 }
 
-/// ⏸ 暂缓评论的去重标记：单上最后一条 system 评论含此串 = 停车状态已
-/// 留痕，不再重复落同文案评论（B4 防堆叠）。
-#[cfg_attr(not(feature = "cluster"), allow(dead_code))]
-const PARK_NOTICE_MARK: &str = "自动派发暂缓";
-
 /// 三路 sweep 触发源（announce 回调 / 派发落定重估波 / 周期兜底 ticker，
 /// F-U3-4）的进程级串行锁：sweep 体是 check-then-dispatch 序列，两个
 /// wave 并发时可同时通过 `has_active_dispatch` 闸对同一单双派。同步锁
-/// 即可——sweep 体全同步（SQLite + fire-and-forget RPC spawn），持锁
-/// 毫秒级；poison 恢复沿用 `unwrap_or_else(into_inner)` 惯例。
+/// 即可——sweep 体全同步（SQLite + fire-and-forget RPC spawn），常态
+/// 持锁毫秒级；**例外**：档案基线转移（write_side_handoff 内 block_in_place
+/// 打包）可在持锁下跑秒级~分钟级，此窗口内其余触发源排队等待（正确性
+/// 优先，档案导出另有独立线程，不放大此锁）；poison 恢复沿用
+/// `unwrap_or_else(into_inner)` 惯例。
 #[cfg(feature = "cluster")]
 static PARK_SWEEP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// D0 准入停车评论标记（与 PARK_NOTICE_MARK 分开：原因不同、去重不互斥）。
@@ -2886,7 +2887,7 @@ pub fn dispatch_subissue_auto_with_config(
                                     issue_id: issue.id,
                                     author: nemesis_board::Actor::system("board"),
                                     content: format!(
-                                        "⏸ 自动派发暂缓：当前在线节点无可匹配（角色/标签）节点；节点上线或要求调整后系统会自动重试，也可手动指派节点后派发。匹配明细：{detail}"
+                                        "⏸ {PARK_NOTICE_MARK}：当前在线节点无可匹配（角色/标签）节点；节点上线或要求调整后系统会自动重试，也可手动指派节点后派发。匹配明细：{detail}"
                                     ),
                                     parent_id: None,
                                     ctype: nemesis_board::CommentType::System,
@@ -3106,18 +3107,22 @@ pub fn sweep_parked_dispatches_with_config(
             }
         }
     }
-    // F2（2026-10-13）：送达失败自动重试——待派态且最后一条 system 评论是
-    // ⛔ 送达失败标记的单进入重试池（评论即账本，gateway 重启不丢退避进度）。
-    // 池含 in_review：评审 FAIL 自动重派绕过 backlog/todo 状态闸，issue 带
-    // in_review 直进 dispatch_issue_core，送达失败回滚也回 in_review——只捞
-    // backlog/todo 会漏掉该形态（复检批补：NB-24 原始事故形状）。
-    // 闸序：E1 预算（超限 → 🛑 转人工评论，落盘即出池）→ 退避
-    // （1m→2m→4m…封顶 30m，从末次失败时刻起算）→ 执行器按状态分流：
-    // backlog/todo 走 dispatch_subissue_auto（完整松弛阶梯+停车路径）；
-    // in_review 走 dispatch_issue_core 直派（重派目标=末次 worker 在线则
-    // 原地重试，否则在线候选首选；无可用节点本 tick 跳过留池）。上一轮
-    // park 候选已先跑完（顺序执行）：派出的单已 in_progress，不会在本池
-    // 重复出现。
+    // F2（2026-10-13）：送达失败自动重试——待派态或 in_review 且最后一条
+    // system 评论是 ⛔ 送达失败标记且最新派发行 state=failed 的单进入重试
+    // 池（评论 + 派发行账本双闸，gateway 重启不丢退避进度）。池含 in_review：
+    // 评审 FAIL 自动重派绕过 backlog/todo 状态闸，issue 带 in_review 直进
+    // dispatch_issue_core，送达失败回滚也回 in_review——只捞 backlog/todo
+    // 会漏掉该形态（复检批补：NB-24 原始事故形状）。账本闸（多角度审计批）：
+    // 成功交付只写 Delivery/Comment 评论不写 system 评论——无账本闸则旧 ⛔
+    // 标记仍是最后一条 system 评论，交付后 in_review 立即重新入池，评审进行
+    // 中被重派（乒乓循环）。
+    // 闸序：重试预算（board.budget.max_send_retries 默认 5；超限 → 🛑 转人工
+    // 评论，落盘即出池）→ 退避（1m→2m→4m…封顶 30m，从末次失败时刻起算）→
+    // 执行器按状态分流：backlog/todo 走 dispatch_subissue_auto（完整松弛
+    // 阶梯+停车路径）；in_review 走 dispatch_issue_core 直派（重派目标=末次
+    // worker 在线则原地重试，否则在线候选首选；无可用节点——file: 锚点拓扑
+    // 死锁 ⏸ 出池转人工，全员离线 debug 留池）。上一轮 park 候选已先跑完
+    // （顺序执行）：派出的单已 in_progress，不会在本池重复出现。
     let mut considered = candidates.len();
     match store.list_send_failure_candidates(nemesis_board::SEND_FAILURE_MARK) {
         Ok(send_fails) => {
@@ -3125,28 +3130,58 @@ pub fn sweep_parked_dispatches_with_config(
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
-            let cap = board_cfg
-                .map(|c| c.budget.max_total_redispatch)
-                .unwrap_or(0);
-            for (id, attempts, last_fail, status) in send_fails {
+            // 重试预算（多角度审计批 2026-10-13，替换旧 E1 max_total_redispatch
+            // 挪用）：专用键 board.budget.max_send_retries，默认 5，按本单
+            // ⛔ 标记评论计数；0 = 关闭保险丝；unlimited_mode = true 视为 0
+            //（操作者显式放弃护栏）。与父单全链派发行口径（max_total_redispatch）
+            // 互不掺和——两种计数语义之前混在一个闸里，🛑 文案与审计口径双失真。
+            let cfg = board_cfg.cloned().unwrap_or_default();
+            let cap = if cfg.unlimited_mode || cfg.budget.max_send_retries == 0 {
+                0
+            } else {
+                cfg.budget.max_send_retries
+            };
+            for (id, attempts, last_fail, _snapshot_status) in send_fails {
                 considered += 1;
-                // E1 预算并入（0=关）：失败次数超过全链派发上限 → 转人工。
-                // 🛑 评论落盘 = 最后一条 system 评论不再是 ⛔ 标记 → 出池。
+                // 快照复核（并发审计批 2026-10-13）：池 SELECT 与本臂执行间
+                // 可隔基线转移等秒级窗口——单子可能已被并发链收口（done/
+                // cancelled）或改道（评审回 todo 等）。终态单不派发也不落
+                // 评论（⏸/🛑 落在收口单上是对事实撒谎）；分流一律用新鲜
+                // 状态（快照 status 弃用），直派臂不再凭快照绕过 todo 的
+                // 依赖闸。
+                let fresh = match store.get_issue(id) {
+                    Ok(i) => i,
+                    Err(_) => continue,
+                };
+                if matches!(fresh.status, IssueStatus::Done | IssueStatus::Cancelled) {
+                    tracing::debug!("[Board] 送达失败重试 issue={id} 已收口，跳过");
+                    continue;
+                }
+                let status = fresh.status.as_str().to_string();
+                // 重试预算闸：超限 → 🛑 转人工。🛑 评论落盘 = 最后一条
+                // system 评论不再是 ⛔ 标记 → 出池。
                 if cap > 0 && attempts > cap {
                     tracing::info!(
                         "[Board] 送达失败重试超预算（issue={id} {attempts}>{cap}）→ 转人工"
                     );
-                    let _ = store.add_comment(nemesis_board::models::NewComment {
+                    // 🛑 评论是熔断出池的载体（落盘 = 最后一条 system 评论
+                    // 不再是 ⛔）——写入失败必须可见，静默吞掉 = 熔断永不
+                    // 落盘 + 每 tick 静默重写（并发审计批 2026-10-13）。
+                    if let Err(e) = store.add_comment(nemesis_board::models::NewComment {
                         issue_id: id,
                         author: actor.clone(),
                         content: format!(
-                            "🛑 送达失败自动重试已达预算上限（{attempts} 次 > \
-                             board.budget.max_total_redispatch={cap}）：转人工处理。\
+                            "🛑 送达失败自动重试已达预算上限（本单 {attempts} 次 > \
+                             board.budget.max_send_retries={cap}）：转人工处理。\
                              可人工指派节点后重新派发，或调大预算后重新派发恢复自动重试。"
                         ),
                         parent_id: None,
                         ctype: nemesis_board::CommentType::System,
-                    });
+                    }) {
+                        tracing::warn!(
+                            "[Board] 🛑 熔断评论写入失败（issue={id}，下 tick 重写）：{e}"
+                        );
+                    }
                     continue;
                 }
                 // 退避闸：未到重试时刻 → 本 tick 跳过。
@@ -3160,24 +3195,114 @@ pub fn sweep_parked_dispatches_with_config(
                     // 评审已经认可原目标的能力面，先原地重试）。差距意见
                     // 从评论找回随包重发（worker 必须知道为什么被打回，
                     // 否则重派就是掷骰子——§6.1 检视 2 同源纪律）。
+                    // D0 在途闸（闭环批 2026-10-13 补齐：backlog 臂经
+                    // dispatch_subissue_auto_with_config 自带此闸，本直派
+                    // 臂此前绕过——目标 worker 在途满载仍硬塞，D0 的
+                    // 「同波多就绪单不挤单 worker」语义对重试臂失效）。
+                    // **只 debug 延后，不落任何 system 评论**——F2 候选的
+                    // 身份锚 = 最后一条 system 评论是 ⛔ 标记，此处写评论
+                    // 会把单子自己旋出重试池（自败）。
                     let target = pick_send_failure_redispatch_target(store, cluster, id);
                     match target {
                         Some(target) => {
-                            let feedback = recover_review_feedback(store, id);
-                            dispatch_issue_core(
-                                store,
-                                Some(cluster),
-                                id,
+                            let target = cluster.canonical_peer_id(&target).unwrap_or(target);
+                            // 拓扑预检（并发审计批 2026-10-13）：file: 锚点 +
+                            // 远端目标 = 确定性拓扑死锁，dispatch_issue_core
+                            // 的拓扑闸必拒——先于派发尝试落 ⏸（成因精确）。
+                            // 此前在 Err 臂事后判形态，冲突冻结/基线中止等
+                            // 先序闸的瞬态 Err 也会被误诊成拓扑死锁而停车
+                            // 出池（自动重试永久丢失）。
+                            if let Some(reason) = reject_remote_file_anchors(
+                                fresh.acceptance_criteria.as_deref(),
                                 &target,
-                                actor,
-                                feedback.as_deref(),
-                            )
-                            .map(|_| Some(()))
+                                cluster.node_id(),
+                                &cluster.node_name(),
+                            ) {
+                                tracing::info!(
+                                    "[Board] 送达失败重试 issue={id} 含 file: 锚点（远端重派拓扑不可行）→ ⏸ 暂停转人工"
+                                );
+                                if let Err(e) =
+                                    store.add_comment(nemesis_board::models::NewComment {
+                                        issue_id: id,
+                                        author: actor.clone(),
+                                        content: format!(
+                                            "⏸ 送达失败自动重试暂停：{reason}。\
+                                         请将 file: 锚点改为 re: 型，或人工将任务派给本节点后恢复。"
+                                        ),
+                                        parent_id: None,
+                                        ctype: nemesis_board::CommentType::System,
+                                    })
+                                {
+                                    tracing::warn!(
+                                        "[Board] ⏸ 出池评论写入失败（issue={id}，下 tick 重写）：{e}"
+                                    );
+                                }
+                                continue;
+                            }
+                            let cap = board_cfg.map(|c| c.worker_max_inflight).unwrap_or(1);
+                            let load = store.count_active_dispatch_by_worker().unwrap_or_default();
+                            if inflight_full(&load, &target, cap) {
+                                tracing::debug!(
+                                    "[Board] 送达失败重试 issue={id} 目标 {target} 在途满载\
+                                    （{}/{}），本 tick 延后",
+                                    load.get(&target).copied().unwrap_or(0),
+                                    cap
+                                );
+                                Ok(None)
+                            } else {
+                                let feedback = recover_review_feedback(store, id);
+                                dispatch_issue_core(
+                                    store,
+                                    Some(cluster),
+                                    id,
+                                    &target,
+                                    actor,
+                                    feedback.as_deref(),
+                                )
+                                .map(|_| Some(()))
+                            }
                         }
                         None => {
-                            tracing::info!(
-                                "[Board] 送达失败重试 issue={id}（in_review）无在线可用节点，本 tick 留池"
-                            );
+                            // 无可用目标分两类（多角度审计批 2026-10-13）：
+                            // file: 锚点单 = 拓扑死锁（只能本节点执行，而送达
+                            // 失败的目标是远端）——自动重试永不可能成功，⏸
+                            // 出池转人工；其余（全员离线等）= 瞬态，debug 留池
+                            // 等节点回来（此前 INFO 每 tick 刷屏）。
+                            let file_anchor = store
+                                .get_issue(id)
+                                .ok()
+                                .map(|i| {
+                                    nemesis_board::anchor::has_file_anchor(
+                                        i.acceptance_criteria.as_deref().unwrap_or(""),
+                                    )
+                                })
+                                .unwrap_or(false);
+                            if file_anchor {
+                                tracing::info!(
+                                    "[Board] 送达失败重试 issue={id} 含 file: 锚点（远端重派拓扑不可行）→ ⏸ 暂停转人工"
+                                );
+                                if let Err(e) =
+                                    store.add_comment(nemesis_board::models::NewComment {
+                                        issue_id: id,
+                                        author: actor.clone(),
+                                        content: "⏸ 送达失败自动重试暂停：本单验收标准含 file: 锚点，\
+                                                  只能在派发端节点实核，而末次送达失败的派发目标是远端节点——\
+                                                  自动重派在拓扑上不可行。请将 file: 锚点改为 re: 型，\
+                                                  或人工将任务派给本节点后恢复。"
+                                            .to_string(),
+                                        parent_id: None,
+                                        ctype: nemesis_board::CommentType::System,
+                                    })
+                                {
+                                    tracing::warn!(
+                                        "[Board] ⏸ 出池评论写入失败（issue={id}，下 tick 重写）：{e}"
+                                    );
+                                }
+                            } else {
+                                tracing::debug!(
+                                    "[Board] 送达失败重试 issue={id}（in_review）暂无在线可用节点，留池"
+                                );
+                            }
                             Ok(None)
                         }
                     }
@@ -3203,7 +3328,31 @@ pub fn sweep_parked_dispatches_with_config(
                     Ok(None) => {}
                     Err(e) => {
                         failed += 1;
-                        tracing::warn!("[Board] 送达失败重试派发 issue {id} 失败：{e}");
+                        // estop 中途拉闸 → 尊重冻结留池（release 后自然续跑），
+                        // 不落评论——冻结期对全部候选写 ⏸ 是纯噪声。
+                        if board_estop_engaged() {
+                            tracing::debug!(
+                                "[Board] 送达失败重试 issue={id} 派发受阻（estop 生效，留池）：{e}"
+                            );
+                            continue;
+                        }
+                        // 已有新派发在途（并发触发源抢到 claim）→ 账本闸自然
+                        // 出池，不落评论污染交付线程。
+                        if store.has_active_dispatch(id).unwrap_or(false) {
+                            tracing::debug!(
+                                "[Board] 送达失败重试 issue={id} 已有在途派发接管，让位"
+                            );
+                            continue;
+                        }
+                        // 其余 Err（RPC 提交瞬断 / 项目冲突冻结 / 基线中止 /
+                        // 状态竞态等）：留池按退避重试（1m→30m 限频，不是每
+                        // tick），冻结类由 project.resume 自愈后自然续跑。
+                        // 拓扑死锁已在派发前预检出池——此处不再事后判 file:
+                        // 形态（并发审计批 2026-10-13 修：冻结等先序闸的瞬态
+                        // Err 曾被误诊成拓扑死锁而永久停车）。
+                        tracing::warn!(
+                            "[Board] 送达失败重试派发 issue {id} 失败（留池按退避重试）：{e}"
+                        );
                     }
                 }
             }
@@ -3238,10 +3387,14 @@ fn pick_send_failure_redispatch_target(
 }
 
 /// F2 送达失败重试（in_review）的验收差距找回：评审 FAIL 臂把差距以
-/// 「❌ agent 验收未通过（第 N/M 次重派）## 差距…」用户评论落库（board_review.rs），
-/// 取最后一条含「## 差距」的用户评论**整段原文**作 review_feedback——不解析
-/// 差距/reasons 边界，整段随「上轮验收意见」段重发（信息只多不少）。无此类
-/// 评论（人工 in_review 直派送达失败等形态）返回 None——不造空意见。
+/// 「❌ agent 验收未通过（第 N/M 次重派）## 差距…」用户评论落库
+/// （board_review.rs 唯一写入方），取最后一条以「❌ agent 验收未通过」
+/// **开头**的用户评论**整段原文**作 review_feedback——不解析差距/reasons
+/// 边界，整段随「上轮验收意见」段重发（信息只多不少）。前缀锚定而非
+/// contains（多角度审计批 2026-10-13）：人工评审意见若引用「## 差距」
+/// 字样（引用 worker 自述/粘贴旧意见），contains 会把人工评论误当自动
+/// 重派差距重发。无此类评论（人工 in_review 直派送达失败等形态）返回
+/// None——不造空意见。
 #[cfg(feature = "cluster")]
 fn recover_review_feedback(store: &Arc<BoardStore>, issue_id: i64) -> Option<String> {
     store
@@ -3249,7 +3402,10 @@ fn recover_review_feedback(store: &Arc<BoardStore>, issue_id: i64) -> Option<Str
         .ok()?
         .into_iter()
         .rev()
-        .find(|c| c.ctype == nemesis_board::CommentType::Comment && c.content.contains("## 差距"))
+        .find(|c| {
+            c.ctype == nemesis_board::CommentType::Comment
+                && c.content.starts_with("❌ agent 验收未通过")
+        })
         .map(|c| c.content)
 }
 
@@ -5830,6 +5986,14 @@ fn board_config_set(
             )
             .map_err(|_| "超出 u32 范围")?;
         }
+        "budget.max_send_retries" => {
+            board.budget.max_send_retries = u32::try_from(
+                value
+                    .as_u64()
+                    .ok_or("budget.max_send_retries 需要非负整数")?,
+            )
+            .map_err(|_| "超出 u32 范围")?;
+        }
         "budget.wall_clock_budget_secs" => {
             board.budget.wall_clock_budget_secs = value
                 .as_u64()
@@ -5881,7 +6045,8 @@ fn board_config_set(
                  plan.auto_confirm / plan.model / review.max_turns / review.selfcheck / \
                  review.exec_anchors_enabled / review.exec_anchor_timeout_secs / \
                  review.auto_close_project / review.checkers / budget.max_subissues_per_parent / \
-                 budget.max_total_redispatch / budget.wall_clock_budget_secs /                  budget.max_tokens_per_parent / discussion.*）"
+                 budget.max_total_redispatch / budget.max_send_retries / budget.wall_clock_budget_secs / \
+                 budget.max_tokens_per_parent / discussion.*）"
             ));
         }
     }

@@ -2835,8 +2835,12 @@ fn test_cluster_peer_resolver_empty_primary_address() {
         rpc_port: cluster.rpc_port,
     };
 
-    let (addresses, _, _) = resolver.get_peer_info("empty-addr").unwrap();
-    assert!(addresses.is_empty());
+    // 零候选 → None（闭环批 2026-10-13：Some(空池) 会让拨号方对 "" 空拨
+    // 一次、错误文案误导为连接问题；registry 在册但地址全缺 = 诚实不可解析）。
+    assert!(
+        resolver.get_peer_info("empty-addr").is_none(),
+        "peer in registry with zero addresses → None (no dial candidates)"
+    );
 }
 
 #[test]
@@ -3238,10 +3242,9 @@ fn test_cluster_peer_resolver_with_empty_primary_address() {
         rpc_port: cluster.rpc_port,
     };
 
-    // Should return Some but with empty addresses and default port
-    let (addresses, port, _) = resolver.get_peer_info("empty-addr").unwrap();
-    assert!(addresses.is_empty());
-    assert_eq!(port, DEFAULT_RPC_PORT);
+    // 零候选 → None（闭环批 2026-10-13）：在册但地址全缺的 peer 对拨号方
+    // 是诚实不可解析，不再回 Some(空池, DEFAULT_RPC_PORT) 让其对 "" 空拨。
+    assert!(resolver.get_peer_info("empty-addr").is_none());
 }
 
 #[test]
@@ -6267,7 +6270,8 @@ fn test_cluster_peer_resolver_fallback_by_name_with_empty_address() {
     let cluster = Cluster::new(make_config());
     cluster.start();
     // Peer matched by NAME with an empty primary address and no address list
-    // → fallback scan yields an empty address vec.
+    // → 零候选 → None（闭环批 2026-10-13：名字命中救不了「无任何可拨地址」，
+    // Some(空池) 的 "" 空拨已废）。
     let mut peer = make_w3b_node("x1", "MyNode", "", NodeStatus::Online);
     peer.addresses = vec![];
     cluster.register_node(peer);
@@ -6277,9 +6281,7 @@ fn test_cluster_peer_resolver_fallback_by_name_with_empty_address() {
         node_id: cluster.node_id.clone(),
         rpc_port: cluster.rpc_port,
     };
-    let (addresses, _port, online) = resolver.get_peer_info("MyNode").unwrap();
-    assert!(addresses.is_empty());
-    assert!(online);
+    assert!(resolver.get_peer_info("MyNode").is_none());
     cluster.stop();
 }
 
@@ -8421,9 +8423,48 @@ fn test_announce_source_addr_appended_lowest_priority() {
     assert_eq!(info.addresses, vec!["203.0.113.96".to_string()]);
 }
 
-/// R5 池序综合：载荷 → 静态 pin → 源地址（三来源同场时顺序钉死）。
+/// 低-4（闭环批 2026-10-13 补全）：池空 + base.host 自碰撞、连候选都没有
+/// ——两种形态此前返回 Some 空池（客户端拿 "" 拨号一次才失败，错误文案
+/// 误导为连接问题），统一 None 诚实失败。
 #[test]
-fn test_pool_order_payload_then_pin_then_source() {
+fn test_resolver_empty_pool_self_host_and_no_candidates_none() {
+    let cluster = Cluster::new(make_config());
+    let resolver = ClusterPeerResolver {
+        registry: cluster.registry.clone(),
+        node_id: cluster.node_id.clone(),
+        rpc_port: cluster.rpc_port,
+    };
+
+    // 池空、唯一候选 base.host = 自端点（回环）→ None（自碰撞 WARN）
+    cluster.register_node(make_addr_chain_peer(
+        "empty-pool-self",
+        "127.0.0.1",
+        vec![],
+        NodeStatus::Online,
+    ));
+    assert!(
+        resolver.get_peer_info("empty-pool-self").is_none(),
+        "空池 + 自 host 必须返回 None，不得返回 Some 空池"
+    );
+
+    // 连候选都没有（base.address 空 + 池空）→ None（无候选 WARN）
+    cluster.register_node(make_addr_chain_peer(
+        "nothing-at-all",
+        "",
+        vec![],
+        NodeStatus::Online,
+    ));
+    assert!(
+        resolver.get_peer_info("nothing-at-all").is_none(),
+        "零候选必须返回 None，不得返回 Some 空池"
+    );
+}
+
+/// R5 池序综合：静态 pin → 载荷 → 源地址（三来源同场时顺序钉死）。
+/// pin 前置（多角度审计批中-2）：拨号预算 = best + 3 fallback，载荷 ≥4 个
+/// 且无一同网段时 pin 排尾永远轮不到；「用户显式配置优先」要求 pin 排头。
+#[test]
+fn test_pool_order_pin_then_payload_then_source() {
     let cluster = Cluster::new(make_config());
     cluster.handle_discovered_node(
         "order-1",
@@ -8456,10 +8497,10 @@ fn test_pool_order_payload_then_pin_then_source() {
     assert_eq!(
         info.addresses,
         vec![
-            "203.0.113.21".to_string(),
             "203.0.113.20".to_string(),
+            "203.0.113.21".to_string(),
             "203.0.113.29".to_string()
         ],
-        "池序必须为 载荷 → pin → 源地址"
+        "池序必须为 pin → 载荷 → 源地址"
     );
 }
