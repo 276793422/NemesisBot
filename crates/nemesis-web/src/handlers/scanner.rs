@@ -126,6 +126,27 @@ fn scanner_config_path(workspace: &str) -> PathBuf {
     nemesis_path::resolve_scanner_config_path_in_workspace(Path::new(workspace))
 }
 
+/// config.scanner.json RMW 事务唯一入口——写串行锁在函数内取得，罩
+/// 「load → 闭包改 → 落盘」全程；闭包返回 Err 不落盘（abort 语义）。
+/// 纪律：闭包内不得再调任何 update_* / [`nemesis_config::config_write_lock`]
+/// （Mutex 非重入，嵌套即死锁）；长窗口臂（install/update_db 的 spawn
+/// 任务）在 await 完成后调本入口权威重读——锁不横跨 await。
+/// （同类横扫七期补网，2026-10-13：本文件与 mcp.rs 同款漏网——helper 名
+/// 带 scanner 前缀，前六轮按 handler 清单的模式匹配落空。）
+fn update_scanner_config<T>(
+    workspace: &str,
+    f: impl FnOnce(&mut nemesis_config::ScannerFullConfig) -> Result<T, String>,
+) -> Result<T, String> {
+    let _serial = nemesis_config::config_write_lock();
+    let path = scanner_config_path(workspace);
+    let mut cfg =
+        load_scanner_config(&path).map_err(|e| format!("failed to load scanner config: {}", e))?;
+    let out = f(&mut cfg)?;
+    save_scanner_config(&path, &cfg)
+        .map_err(|e| format!("failed to save scanner config: {}", e))?;
+    Ok(out)
+}
+
 /// Parse engine config JSON into the nemesis-config ClamAVEngineConfig type.
 fn parse_engine_config(raw: &serde_json::Value) -> nemesis_config::ClamAVEngineConfig {
     serde_json::from_value(raw.clone()).unwrap_or_default()
@@ -236,9 +257,11 @@ impl ScannerHandler {
     ) -> Result<Option<serde_json::Value>, String> {
         let config: ScannerFullConfig = serde_json::from_value(data.clone())
             .map_err(|e| format!("invalid scanner config: {}", e))?;
-        let path = scanner_config_path(workspace);
-        save_scanner_config(&path, &config)
-            .map_err(|e| format!("failed to save scanner config: {}", e))?;
+        // 锁在 update_scanner_config 内。
+        update_scanner_config(workspace, |cfg| {
+            *cfg = config;
+            Ok(())
+        })?;
         Ok(Some(serde_json::json!({ "saved": true })))
     }
 
@@ -252,95 +275,92 @@ impl ScannerHandler {
         workspace: &str,
         data: Option<serde_json::Value>,
     ) -> Result<Option<serde_json::Value>, String> {
-        let path = scanner_config_path(workspace);
-        let mut cfg = load_scanner_config(&path)
-            .map_err(|e| format!("failed to load scanner config: {}", e))?;
-
         let target_name = data.and_then(|d| {
             d.get("name")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
         });
-        let enabled_set: HashSet<&str> = cfg.enabled.iter().map(|s| s.as_str()).collect();
+        // 锁在 update_scanner_config 内：探测全同步（本地可执行/DB 文件
+        // 存在性检查），state 回写与 load 同一事务。
+        let results = update_scanner_config(workspace, |cfg| {
+            let enabled_set: HashSet<&str> = cfg.enabled.iter().map(|s| s.as_str()).collect();
 
-        let names_to_check: Vec<String> = if let Some(ref name) = target_name {
-            vec![name.clone()]
-        } else {
-            cfg.engines.keys().cloned().collect()
-        };
-
-        let mut results = Vec::new();
-        let mut changed = false;
-
-        for name in &names_to_check {
-            let raw = match cfg.engines.get(name) {
-                Some(v) => v.clone(),
-                None => continue,
+            let names_to_check: Vec<String> = if let Some(ref name) = target_name {
+                vec![name.clone()]
+            } else {
+                cfg.engines.keys().cloned().collect()
             };
-            let engine_cfg = parse_engine_config(&raw);
-            let mut state = engine_cfg.state.clone();
-            let is_enabled = enabled_set.contains(name.as_str());
 
-            if is_enabled {
-                let resolved_path = engine_cfg.clamav_path.clone();
+            let mut results = Vec::new();
 
-                if !resolved_path.is_empty() {
-                    if check_executables_at_path(&resolved_path) {
-                        state.install_status = INSTALL_STATUS_INSTALLED.to_string();
-                        state.install_error = String::new();
-                    } else {
-                        state.install_status = INSTALL_STATUS_FAILED.to_string();
-                        state.install_error = format!("executable not found at {}", resolved_path);
-                    }
-                } else if state.install_status.is_empty() {
-                    state.install_status = INSTALL_STATUS_PENDING.to_string();
-                }
-
-                let data_dir = if !engine_cfg.data_dir.is_empty() {
-                    engine_cfg.data_dir.clone()
-                } else if !resolved_path.is_empty() {
-                    resolved_path.clone()
-                } else {
-                    String::new()
+            for name in &names_to_check {
+                let raw = match cfg.engines.get(name) {
+                    Some(v) => v.clone(),
+                    None => continue,
                 };
+                let engine_cfg = parse_engine_config(&raw);
+                let mut state = engine_cfg.state.clone();
+                let is_enabled = enabled_set.contains(name.as_str());
 
-                if !data_dir.is_empty() {
-                    let db_file = std::path::Path::new(&data_dir)
-                        .join("database")
-                        .join(DATABASE_FILE);
-                    state.db_status = if db_file.exists() {
-                        DB_STATUS_READY.to_string()
-                    } else {
-                        DB_STATUS_MISSING.to_string()
-                    };
-                }
+                if is_enabled {
+                    let resolved_path = engine_cfg.clamav_path.clone();
 
-                let old_state = parse_engine_config(&raw).state;
-                if state.install_status != old_state.install_status
-                    || state.db_status != old_state.db_status
-                    || state.install_error != old_state.install_error
-                {
-                    let mut updated = raw.clone();
-                    if let Some(obj) = updated.as_object_mut()
-                        && let Ok(state_val) = serde_json::to_value(&state)
-                    {
-                        obj.insert("state".to_string(), state_val);
+                    if !resolved_path.is_empty() {
+                        if check_executables_at_path(&resolved_path) {
+                            state.install_status = INSTALL_STATUS_INSTALLED.to_string();
+                            state.install_error = String::new();
+                        } else {
+                            state.install_status = INSTALL_STATUS_FAILED.to_string();
+                            state.install_error =
+                                format!("executable not found at {}", resolved_path);
+                        }
+                    } else if state.install_status.is_empty() {
+                        state.install_status = INSTALL_STATUS_PENDING.to_string();
                     }
-                    cfg.engines.insert(name.clone(), updated);
-                    changed = true;
+
+                    let data_dir = if !engine_cfg.data_dir.is_empty() {
+                        engine_cfg.data_dir.clone()
+                    } else if !resolved_path.is_empty() {
+                        resolved_path.clone()
+                    } else {
+                        String::new()
+                    };
+
+                    if !data_dir.is_empty() {
+                        let db_file = std::path::Path::new(&data_dir)
+                            .join("database")
+                            .join(DATABASE_FILE);
+                        state.db_status = if db_file.exists() {
+                            DB_STATUS_READY.to_string()
+                        } else {
+                            DB_STATUS_MISSING.to_string()
+                        };
+                    }
+
+                    let old_state = parse_engine_config(&raw).state;
+                    if state.install_status != old_state.install_status
+                        || state.db_status != old_state.db_status
+                        || state.install_error != old_state.install_error
+                    {
+                        let mut updated = raw.clone();
+                        if let Some(obj) = updated.as_object_mut()
+                            && let Ok(state_val) = serde_json::to_value(&state)
+                        {
+                            obj.insert("state".to_string(), state_val);
+                        }
+                        cfg.engines.insert(name.clone(), updated);
+                    }
                 }
+
+                results.push(build_engine_response(
+                    name,
+                    cfg.engines.get(name).unwrap_or(&raw),
+                    is_enabled,
+                ));
             }
 
-            results.push(build_engine_response(
-                name,
-                cfg.engines.get(name).unwrap_or(&raw),
-                is_enabled,
-            ));
-        }
-
-        if changed && let Err(e) = save_scanner_config(&path, &cfg) {
-            tracing::warn!("Failed to save scanner state after check: {}", e);
-        }
+            Ok(results)
+        })?;
 
         if target_name.is_some() && results.len() == 1 {
             Ok(Some(results.into_iter().next().unwrap()))
@@ -350,36 +370,35 @@ impl ScannerHandler {
     }
 
     fn cmd_enable(&self, workspace: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
-        let path = scanner_config_path(workspace);
-        let mut cfg = load_scanner_config(&path)
-            .map_err(|e| format!("failed to load scanner config: {}", e))?;
-
-        if !cfg.engines.contains_key(name) {
-            return Err(format!("engine '{}' not found in configuration", name));
-        }
-
-        if !cfg.enabled.iter().any(|e| e.eq_ignore_ascii_case(name)) {
-            cfg.enabled.push(name.to_string());
-        }
-
-        if let Some(raw) = cfg.engines.get(name) {
-            let engine_cfg = parse_engine_config(raw);
-            if engine_cfg.state.install_status.is_empty() {
-                let mut updated = raw.clone();
-                if let Some(obj) = updated.as_object_mut() {
-                    let state = EngineState {
-                        install_status: INSTALL_STATUS_PENDING.to_string(),
-                        ..Default::default()
-                    };
-                    if let Ok(state_val) = serde_json::to_value(&state) {
-                        obj.insert("state".to_string(), state_val);
-                    }
-                }
-                cfg.engines.insert(name.to_string(), updated);
+        // 锁在 update_scanner_config 内。
+        update_scanner_config(workspace, |cfg| {
+            if !cfg.engines.contains_key(name) {
+                return Err(format!("engine '{}' not found in configuration", name));
             }
-        }
 
-        save_scanner_config(&path, &cfg).map_err(|e| format!("failed to save config: {}", e))?;
+            if !cfg.enabled.iter().any(|e| e.eq_ignore_ascii_case(name)) {
+                cfg.enabled.push(name.to_string());
+            }
+
+            if let Some(raw) = cfg.engines.get(name) {
+                let engine_cfg = parse_engine_config(raw);
+                if engine_cfg.state.install_status.is_empty() {
+                    let mut updated = raw.clone();
+                    if let Some(obj) = updated.as_object_mut() {
+                        let state = EngineState {
+                            install_status: INSTALL_STATUS_PENDING.to_string(),
+                            ..Default::default()
+                        };
+                        if let Ok(state_val) = serde_json::to_value(&state) {
+                            obj.insert("state".to_string(), state_val);
+                        }
+                    }
+                    cfg.engines.insert(name.to_string(), updated);
+                }
+            }
+
+            Ok(())
+        })?;
 
         let engines = build_all_engines_status(workspace)?;
         Ok(Some(serde_json::json!({ "engines": engines })))
@@ -390,13 +409,11 @@ impl ScannerHandler {
         workspace: &str,
         name: &str,
     ) -> Result<Option<serde_json::Value>, String> {
-        let path = scanner_config_path(workspace);
-        let mut cfg = load_scanner_config(&path)
-            .map_err(|e| format!("failed to load scanner config: {}", e))?;
-
-        cfg.enabled.retain(|e| !e.eq_ignore_ascii_case(name));
-
-        save_scanner_config(&path, &cfg).map_err(|e| format!("failed to save config: {}", e))?;
+        // 锁在 update_scanner_config 内。
+        update_scanner_config(workspace, |cfg| {
+            cfg.enabled.retain(|e| !e.eq_ignore_ascii_case(name));
+            Ok(())
+        })?;
 
         let engines = build_all_engines_status(workspace)?;
         Ok(Some(serde_json::json!({ "engines": engines })))
@@ -454,25 +471,26 @@ impl ScannerHandler {
                             }),
                         );
                     } else {
-                        let path = scanner_config_path(&ws);
-                        if let Ok(mut cfg) = load_scanner_config(&path)
-                            && let Some(raw) = cfg.engines.get(&name).cloned()
-                        {
-                            let mut updated = raw.clone();
-                            if let Some(obj) = updated.as_object_mut() {
-                                let state = EngineState {
-                                    install_status: INSTALL_STATUS_FAILED.to_string(),
-                                    install_error: e.clone(),
-                                    last_install_attempt: chrono::Local::now().to_rfc3339(),
-                                    ..parse_engine_config(&raw).state
-                                };
-                                if let Ok(state_val) = serde_json::to_value(&state) {
-                                    obj.insert("state".to_string(), state_val);
+                        // await 完成后权威重读（锁在 update_scanner_config 内，
+                        // 不横跨下载窗口）；best-effort 语义保留（let _ =）。
+                        let _ = update_scanner_config(&ws, |cfg| {
+                            if let Some(raw) = cfg.engines.get(&name).cloned() {
+                                let mut updated = raw.clone();
+                                if let Some(obj) = updated.as_object_mut() {
+                                    let state = EngineState {
+                                        install_status: INSTALL_STATUS_FAILED.to_string(),
+                                        install_error: e.clone(),
+                                        last_install_attempt: chrono::Local::now().to_rfc3339(),
+                                        ..parse_engine_config(&raw).state
+                                    };
+                                    if let Ok(state_val) = serde_json::to_value(&state) {
+                                        obj.insert("state".to_string(), state_val);
+                                    }
                                 }
+                                cfg.engines.insert(name.clone(), updated);
                             }
-                            cfg.engines.insert(name.clone(), updated);
-                            let _ = save_scanner_config(&path, &cfg);
-                        }
+                            Ok(())
+                        });
 
                         hub.publish(
                             "scanner-progress",
@@ -523,22 +541,22 @@ impl ScannerHandler {
 
             match result {
                 Ok(()) => {
-                    let path = scanner_config_path(&ws);
-                    if let Ok(mut cfg) = load_scanner_config(&path)
-                        && let Some(raw) = cfg.engines.get(&name).cloned()
-                    {
-                        let mut updated = raw.clone();
-                        if let Some(obj) = updated.as_object_mut() {
-                            let mut state = parse_engine_config(&raw).state;
-                            state.db_status = DB_STATUS_READY.to_string();
-                            state.last_db_update = chrono::Local::now().to_rfc3339();
-                            if let Ok(state_val) = serde_json::to_value(&state) {
-                                obj.insert("state".to_string(), state_val);
+                    // await 完成后权威重读（锁在入口内）；best-effort 保留。
+                    let _ = update_scanner_config(&ws, |cfg| {
+                        if let Some(raw) = cfg.engines.get(&name).cloned() {
+                            let mut updated = raw.clone();
+                            if let Some(obj) = updated.as_object_mut() {
+                                let mut state = parse_engine_config(&raw).state;
+                                state.db_status = DB_STATUS_READY.to_string();
+                                state.last_db_update = chrono::Local::now().to_rfc3339();
+                                if let Ok(state_val) = serde_json::to_value(&state) {
+                                    obj.insert("state".to_string(), state_val);
+                                }
                             }
+                            cfg.engines.insert(name.clone(), updated);
                         }
-                        cfg.engines.insert(name.clone(), updated);
-                        let _ = save_scanner_config(&path, &cfg);
-                    }
+                        Ok(())
+                    });
 
                     hub.publish(
                         "scanner-progress",
@@ -618,51 +636,49 @@ impl ScannerHandler {
         let name = get_str_field(data, "name")?;
         let updates = data.get("config").ok_or("missing field: config")?;
 
-        let path = scanner_config_path(workspace);
-        let mut cfg = load_scanner_config(&path)
-            .map_err(|e| format!("failed to load scanner config: {}", e))?;
+        // 锁在 update_scanner_config 内：patch 字段全程串行。
+        update_scanner_config(workspace, |cfg| {
+            let raw = cfg
+                .engines
+                .get(&name)
+                .ok_or_else(|| format!("engine '{}' not found", name))?
+                .clone();
 
-        let raw = cfg
-            .engines
-            .get(&name)
-            .ok_or_else(|| format!("engine '{}' not found", name))?
-            .clone();
+            let mut engine_cfg = parse_engine_config(&raw);
 
-        let mut engine_cfg = parse_engine_config(&raw);
+            if let Some(v) = updates.get("url").and_then(|v| v.as_str()) {
+                engine_cfg.url = v.to_string();
+            }
+            if let Some(v) = updates.get("clamav_path").and_then(|v| v.as_str()) {
+                engine_cfg.clamav_path = v.to_string();
+            }
+            if let Some(v) = updates.get("address").and_then(|v| v.as_str()) {
+                engine_cfg.address = v.to_string();
+            }
+            if let Some(v) = updates.get("data_dir").and_then(|v| v.as_str()) {
+                engine_cfg.data_dir = v.to_string();
+            }
+            if let Some(v) = updates.get("scan_on_write").and_then(|v| v.as_bool()) {
+                engine_cfg.scan_on_write = v;
+            }
+            if let Some(v) = updates.get("scan_on_download").and_then(|v| v.as_bool()) {
+                engine_cfg.scan_on_download = v;
+            }
+            if let Some(v) = updates.get("scan_on_exec").and_then(|v| v.as_bool()) {
+                engine_cfg.scan_on_exec = v;
+            }
+            if let Some(v) = updates.get("max_file_size").and_then(|v| v.as_i64()) {
+                engine_cfg.max_file_size = v;
+            }
+            if let Some(v) = updates.get("update_interval").and_then(|v| v.as_str()) {
+                engine_cfg.update_interval = v.to_string();
+            }
 
-        if let Some(v) = updates.get("url").and_then(|v| v.as_str()) {
-            engine_cfg.url = v.to_string();
-        }
-        if let Some(v) = updates.get("clamav_path").and_then(|v| v.as_str()) {
-            engine_cfg.clamav_path = v.to_string();
-        }
-        if let Some(v) = updates.get("address").and_then(|v| v.as_str()) {
-            engine_cfg.address = v.to_string();
-        }
-        if let Some(v) = updates.get("data_dir").and_then(|v| v.as_str()) {
-            engine_cfg.data_dir = v.to_string();
-        }
-        if let Some(v) = updates.get("scan_on_write").and_then(|v| v.as_bool()) {
-            engine_cfg.scan_on_write = v;
-        }
-        if let Some(v) = updates.get("scan_on_download").and_then(|v| v.as_bool()) {
-            engine_cfg.scan_on_download = v;
-        }
-        if let Some(v) = updates.get("scan_on_exec").and_then(|v| v.as_bool()) {
-            engine_cfg.scan_on_exec = v;
-        }
-        if let Some(v) = updates.get("max_file_size").and_then(|v| v.as_i64()) {
-            engine_cfg.max_file_size = v;
-        }
-        if let Some(v) = updates.get("update_interval").and_then(|v| v.as_str()) {
-            engine_cfg.update_interval = v.to_string();
-        }
-
-        let updated = serde_json::to_value(&engine_cfg)
-            .map_err(|e| format!("failed to serialize engine config: {}", e))?;
-        cfg.engines.insert(name.clone(), updated);
-
-        save_scanner_config(&path, &cfg).map_err(|e| format!("failed to save config: {}", e))?;
+            let updated = serde_json::to_value(&engine_cfg)
+                .map_err(|e| format!("failed to serialize engine config: {}", e))?;
+            cfg.engines.insert(name.clone(), updated);
+            Ok(())
+        })?;
 
         let engines = build_all_engines_status(workspace)?;
         Ok(Some(serde_json::json!({ "engines": engines })))
@@ -679,10 +695,6 @@ impl ScannerHandler {
         if !valid.contains(&name.as_str()) {
             return Err(format!("unknown engine: {}. Available: {:?}", name, valid));
         }
-
-        let path = scanner_config_path(workspace);
-        let mut cfg = load_scanner_config(&path)
-            .map_err(|e| format!("failed to load scanner config: {}", e))?;
 
         let mut engine_cfg = nemesis_config::ClamAVEngineConfig::default();
         engine_cfg.address = "127.0.0.1:3310".to_string();
@@ -701,8 +713,11 @@ impl ScannerHandler {
         let engine_json = serde_json::to_value(&engine_cfg)
             .map_err(|e| format!("failed to serialize engine config: {}", e))?;
 
-        cfg.engines.insert(name.clone(), engine_json);
-        save_scanner_config(&path, &cfg).map_err(|e| format!("failed to save config: {}", e))?;
+        // 锁在 update_scanner_config 内（insert 覆盖语义保持）。
+        update_scanner_config(workspace, |cfg| {
+            cfg.engines.insert(name.clone(), engine_json);
+            Ok(())
+        })?;
 
         let engines = build_all_engines_status(workspace)?;
         Ok(Some(serde_json::json!({ "engines": engines })))
@@ -930,29 +945,32 @@ async fn install_engine_inner(
         }
     }
 
-    let mut cfg2 = load_scanner_config(&path).map_err(|e| format!("reload config: {}", e))?;
-    if let Some(old_raw) = cfg2.engines.get(name).cloned() {
-        let mut updated = old_raw.clone();
-        if let Some(obj) = updated.as_object_mut() {
-            let state = EngineState {
-                install_status: INSTALL_STATUS_INSTALLED.to_string(),
-                install_error: String::new(),
-                last_install_attempt: chrono::Local::now().to_rfc3339(),
-                db_status: DB_STATUS_READY.to_string(),
-                last_db_update: chrono::Local::now().to_rfc3339(),
-            };
-            if let Ok(state_val) = serde_json::to_value(&state) {
-                obj.insert("state".to_string(), state_val);
+    // 下载/装库两个 await 都已完成——权威重读再写 state（锁在入口内，
+    // 不横跨下载窗口；引擎条目若已消失则不写 state 字段，保持原语义）。
+    update_scanner_config(workspace, |cfg2| {
+        if let Some(old_raw) = cfg2.engines.get(name).cloned() {
+            let mut updated = old_raw.clone();
+            if let Some(obj) = updated.as_object_mut() {
+                let state = EngineState {
+                    install_status: INSTALL_STATUS_INSTALLED.to_string(),
+                    install_error: String::new(),
+                    last_install_attempt: chrono::Local::now().to_rfc3339(),
+                    db_status: DB_STATUS_READY.to_string(),
+                    last_db_update: chrono::Local::now().to_rfc3339(),
+                };
+                if let Ok(state_val) = serde_json::to_value(&state) {
+                    obj.insert("state".to_string(), state_val);
+                }
+                obj.insert("clamav_path".to_string(), serde_json::json!(clamav_path));
+                // Persist data_dir so the engine loads the right virus DB without
+                // depending on the runtime fallback in manager.rs (which points at
+                // clamav_path when data_dir is unset).
+                obj.insert("data_dir".to_string(), serde_json::json!(clamav_path));
             }
-            obj.insert("clamav_path".to_string(), serde_json::json!(clamav_path));
-            // Persist data_dir so the engine loads the right virus DB without
-            // depending on the runtime fallback in manager.rs (which points at
-            // clamav_path when data_dir is unset).
-            obj.insert("data_dir".to_string(), serde_json::json!(clamav_path));
+            cfg2.engines.insert(name.to_string(), updated);
         }
-        cfg2.engines.insert(name.to_string(), updated);
-        save_scanner_config(&path, &cfg2).map_err(|e| format!("save config: {}", e))?;
-    }
+        Ok(())
+    })?;
 
     Ok(())
 }

@@ -46,6 +46,23 @@ impl CommandsHandler {
     fn config_path(&self, workspace: &str) -> PathBuf {
         resolve_commands_config_path_in_workspace(Path::new(workspace))
     }
+
+    /// config.commands.json RMW 事务唯一入口——写串行锁在函数内取得，罩
+    /// 「load → 闭包改 → 落盘」全程；闭包返回 Err 不落盘（abort 语义）。
+    /// 纪律：闭包内不得再调任何 update_* / config_write_lock（非重入死锁）。
+    /// （同类横扫七期补网，2026-10-13。）
+    fn update_commands_config<T>(
+        &self,
+        workspace: &str,
+        f: impl FnOnce(&mut nemesis_config::CommandsConfig) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let _serial = nemesis_config::config_write_lock();
+        let mut cfg = load_commands_config(&self.config_path(workspace));
+        let out = f(&mut cfg)?;
+        save_commands_config(&self.config_path(workspace), &cfg)?;
+        Ok(out)
+    }
+
     fn commands_list(&self, workspace: &str) -> Result<serde_json::Value, String> {
         let cfg = load_commands_config(&self.config_path(workspace));
         // K3（devtool-upgrade 阶段 4）：内置命令名随清单下发（单一真相源 =
@@ -94,11 +111,15 @@ impl CommandsHandler {
             }
         }
 
-        let cfg = CommandsConfig { commands };
-        save_commands_config(&self.config_path(workspace), &cfg)?;
+        // 校验通过后整表替换（锁在 update_commands_config 内，与 config.json
+        // 编辑臂同基准：UI 整档快照回存也进 config 家族锁）。
+        let total = self.update_commands_config(workspace, |cfg| {
+            *cfg = CommandsConfig { commands };
+            Ok(cfg.commands.len())
+        })?;
         Ok(serde_json::json!({
             "saved": true,
-            "total": cfg.commands.len(),
+            "total": total,
         }))
     }
 }
