@@ -7471,7 +7471,8 @@ async fn main() {
     // T37: worker 用量回传 + 审计回滚 + token 预算闸 e2e（全自动流转 P5 E1 二期/E2）
     // ==================================================================
     //
-    // 前置：A/B 在 testai-board-10 组合桩（同 T33-T36 尾态）；桩非流式
+    // 前置：A/B 在 testai-board-10 组合桩（场景内自足切换，同 T34 模式；
+    // 桩非流式
     // 响应带真实 usage（prompt=countTokens>0）→ B 端 request_logs 有
     // 非零 token → 回传 delta 非零。
     // ①usage 回传：普通单派 Node-B → B 执行 → 回调带 usage → master
@@ -7487,6 +7488,53 @@ async fn main() {
     //   （派发数恒 1）。
     all_results.push(
         run_test("T37: 用量回传+审计回滚+token 预算闸 e2e（P5 E1 二期/E2）", || async {
+            // 0. A/B 切组合桩 + 重启（前置自足，T34 同款；--filter 单跑时
+            //    T30-T36 不会执行，fixture 初始只有 testai-3.1 回显桩——
+            //    master 评审落在回显桩上 verdict JSON 永远解析失败，诚实
+            //    走 3 轮重试+1 次重评+转人工停车，②③全假楔）。切桩后
+            //    testai-board-1.0 按输入分发（review prompt→verdict JSON、
+            //    worker→五段汇报），非流式响应带真实 usage。
+            let out = ws_a
+                .run_cli(
+                    &gateway_bin,
+                    &[
+                        "model", "add", "--model", "test/testai-board-1.0",
+                        "--base", &format!("http://127.0.0.1:{}/v1", ai_server_port()),
+                        "--key", "test-key", "--default",
+                    ],
+                )
+                .await;
+            if !out.success() {
+                return fail("T37", format!("A board model add failed: {}", out.stderr));
+            }
+            gw_a.kill().await;
+            gw_a = match start_gateway_and_wait("Gateway-A", &gateway_bin, ws_a.path(), &NODES[0])
+                .await
+            {
+                Ok(g) => g,
+                Err(e) => return fail("T37", format!("A restart failed: {e}")),
+            };
+            let out = ws_b
+                .run_cli(
+                    &gateway_bin,
+                    &[
+                        "model", "add", "--model", "test/testai-board-1.0",
+                        "--base", &format!("http://127.0.0.1:{}/v1", ai_server_port()),
+                        "--key", "test-key", "--default",
+                    ],
+                )
+                .await;
+            if !out.success() {
+                return fail("T37", format!("B board model add failed: {}", out.stderr));
+            }
+            gw_b.kill().await;
+            gw_b = match start_gateway_and_wait("Gateway-B", &gateway_bin, ws_b.path(), &NODES[1])
+                .await
+            {
+                Ok(g) => g,
+                Err(e) => return fail("T37", format!("B restart failed: {e}")),
+            };
+
             let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
                 Ok(s) => s,
                 Err(e) => return fail("T37", format!("WS connect to A failed: {e}")),

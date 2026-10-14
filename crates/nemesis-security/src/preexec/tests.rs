@@ -77,8 +77,17 @@ fn resolve_absolute_passthrough_and_relative_against_root() {
     let s = PreExecScanner::new(0.2);
     // 未注入 root：相对路径不解析（诚实降级），绝对路径照常。
     assert!(s.resolve("./evil.sh").is_none());
-    assert_eq!(s.resolve("C:/tmp/x.sh"), Some("C:/tmp/x.sh".to_string()));
+    // 绝对性判定是平台语义（Path::is_absolute）：Windows 认盘符路径、
+    // Unix 认根路径——各验各的形态（Linux CI 实录：`C:/tmp/x.sh` 在
+    // Linux 不是绝对路径，硬编码 Windows 形态会假红，2026-10-14）。
+    #[cfg(windows)]
+    let abs = "C:/tmp/x.sh";
+    #[cfg(not(windows))]
+    let abs = "/tmp/x.sh";
+    assert_eq!(s.resolve(abs), Some(abs.to_string()));
 
+    // 相对分支是纯字符串拼接（root.trim + trim_start_matches("./")），
+    // 平台无关——Windows 形态 root 在 Linux 上同样拼得出断言值。
     s.set_workspace_root("C:/ws");
     assert_eq!(s.resolve("./evil.sh"), Some("C:/ws/evil.sh".to_string()));
     assert_eq!(s.resolve("sub/a.sh"), Some("C:/ws/sub/a.sh".to_string()));

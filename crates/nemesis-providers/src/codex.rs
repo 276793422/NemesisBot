@@ -656,6 +656,13 @@ impl LLMProvider for CodexProvider {
         Ok(parse_codex_response(&data))
     }
 
+    fn stream_preferred(&self, _model: &str) -> bool {
+        // 与 chat() 的内部切换同判据（226 行）：codex lane auto = 流式
+        // （2026-10-13 stream 键语义——上游排队墙钟根因修复形态），显式
+        // no 才非流式。
+        self.config.stream_mode != "no"
+    }
+
     fn default_model(&self) -> &str {
         &self.config.default_model
     }

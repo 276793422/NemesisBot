@@ -31,6 +31,11 @@ aes-gcm = { workspace = true }
 toml = { workspace = true }
 if-addrs = "0.13"
 socket2 = { workspace = true }
+# per-task cancel（W2 P4）：CancellationToken 供 cluster_agent 的 agent loop
+# 中断执行中的任务（与 nemesis-agent / nemesisbot 同版本声明）。
+# 纯用户态原语全平台可用——cluster_task.rs 无条件使用，不能进 windows target
+# 段（错置实录：Linux CI E0433 两连红，2026-10-14）。
+tokio-util = { version = "0.7", features = ["rt"] }
 # R1（Win↔Win 集群地址缺陷链）：if_addrs 在 Windows 上不枚举 169.254/16
 # APIPA 地址（ipconfig 明有、枚举结果无，2026-10-12 三机验收实测）——
 # GetAdaptersAddresses 补齐，link-local 是直连/ICS 拓扑的唯一互通地址。
@@ -41,9 +46,6 @@ windows-sys = { version = "0.59", features = [
     "Win32_NetworkManagement_IpHelper",
     "Win32_Networking_WinSock",
 ] }
-# per-task cancel（W2 P4）：CancellationToken 供 cluster_agent 的 agent loop
-# 中断执行中的任务（与 nemesis-agent / nemesisbot 同版本声明）。
-tokio-util = { version = "0.7", features = ["rt"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
