@@ -8466,6 +8466,36 @@ fn test_self_endpoint_pollution_filtered_and_full_collision_none() {
     );
 }
 
+/// R4 豁免面（T47 R3 回归锁）：条目 id 与本节点 id 全等 = 显式自投递，
+/// 端点自碰撞是预期而非池污染——候选原样放行（Some），不落 None。
+/// 防护只拦「别人的单子误投给自己」（id 不等但候选全撞本地端点）；
+/// 发给自己的单子由自己执行，作者=执行者，无身份漂移。
+#[test]
+fn test_self_entry_dial_exempt_keeps_candidates() {
+    let cluster = Cluster::new(make_config());
+    // 条目 id = 本节点 id（announce 回环/状态回读会把本节点自己写进注册
+    // 表）；候选全为本机回环 × 本节点 rpc_port——旧防护把它全滤空成
+    // None，合法自派（file: 锚点单拓扑约束）派发即送达失败。
+    cluster.register_node(make_addr_chain_peer(
+        &cluster.node_id,
+        "127.0.0.1",
+        vec!["127.0.0.1".into()],
+        NodeStatus::Online,
+    ));
+    let resolver = ClusterPeerResolver {
+        registry: cluster.registry.clone(),
+        node_id: cluster.node_id.clone(),
+        rpc_port: cluster.rpc_port,
+    };
+    let (addresses, port, _) = resolver.get_peer_info(&cluster.node_id).unwrap();
+    assert_eq!(
+        addresses,
+        vec!["127.0.0.1".to_string()],
+        "自派豁免：候选必须原样保留，不得滤空"
+    );
+    assert_eq!(port, cluster.rpc_port);
+}
+
 /// R5：announce UDP 源地址作为最低优先级候选入池；与载荷地址去重。
 #[test]
 fn test_announce_source_addr_appended_lowest_priority() {
