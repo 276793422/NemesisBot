@@ -1181,7 +1181,14 @@ function handleHistoryResponse(data: any) {
     return
   }
 
-  chatStore.historyLoading = false
+  // W4（2026-10-14 审计）：只有常规翻页/首拉响应清 historyLoading——
+  // watchdog/resync 响应若也清，翻页在飞窗口内到达的 W/R 响应会把闸提前
+  // 抬起，滚动处理器随即再发同 oldestIndex 的第二页，两响应各过各的栅栏
+  // → 同批行前置两遍（重复消息）。page 响应由自己清；page 请求蒸发的
+  // 残局由 loadHistory 的 10s 安全超时兜底。
+  if (inflight.kind === 'page') {
+    chatStore.historyLoading = false
+  }
   if (!data) return
 
   // P2（2026-09-11）：历史到手 = 未读已见 → 清零未送达徽标（本地立即置 0 +
@@ -1266,9 +1273,11 @@ function handleHistoryResponse(data: any) {
       // 旧数据是诚实降级（真相源没有新内容可灌），但 streaming 旗标与
       // B2 在飞登记必须复位，否则输入框永久锁死、B2 占位恢复逻辑永挂。
       // 后到的真实回复帧仍可经 receive 正常入列（streaming=false 不拦）。
+      // W3（2026-10-14 审计）：复位升级为整条清账——setBusy(false) 会把
+      // 条目以 false 形态永久留在 busyBySid 表里（慢泄漏），dropSessionState
+      // 连条目带 inflight 登记一起删。
       if (streaming.value) {
-        chatStore.setBusy(effectiveSid.value, false)
-        chatStore.clearInflightTurn(effectiveSid.value)
+        chatStore.dropSessionState(effectiveSid.value)
       }
       clearWatchdog()
     }
@@ -2349,6 +2358,15 @@ onUnmounted(() => {
   if (activityDebounce !== null) {
     clearTimeout(activityDebounce)
     activityDebounce = null
+  }
+  // W4（2026-10-14 审计）：卸载清 watchdog 定时器与 @ 补全 debounce——
+  // 与上同理，残留 timer 在下个实例外开火（onWatchdog 读新实例的
+  // streaming/ref 状态可能误触 reloadLatest 重灌；at 补全回包写新实例
+  // 的 atItems）。
+  clearWatchdog()
+  if (atDebounce !== null) {
+    clearTimeout(atDebounce)
+    atDebounce = null
   }
   unwatchStatus()
   unwatchSession()

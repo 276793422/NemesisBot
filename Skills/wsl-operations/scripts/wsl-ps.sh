@@ -150,13 +150,18 @@ kill_processes() {
     fi
 
     echo -e "${GREEN}找到以下进程:${NC}"
-    $wsl_cmd bash -lic "ps -p $pids -o pid,user,comm"
+    # S9（2026-10-14 审计）：set -e 下展示步失败（如进程在 pgrep 与 ps 之间
+    # 消失）会中止脚本——展示步不应决定流程成败。
+    $wsl_cmd bash -lic "ps -p $pids -o pid,user,comm" || true
 
     echo ""
     echo -e "${CYAN}正在终止进程...${NC}"
-    $wsl_cmd bash -lic "pkill -f '$pattern'"
+    # S9：`|| kill_rc=$?` 接住失败——set -e 下 pkill 无匹配返回 1 直接中止
+    # 脚本，「终止失败」提示永不打印。
+    local kill_rc=0
+    $wsl_cmd bash -lic "pkill -f '$pattern'" || kill_rc=$?
 
-    if [ $? -eq 0 ]; then
+    if [ $kill_rc -eq 0 ]; then
         echo -e "${GREEN}✓ 进程已终止${NC}"
     else
         echo -e "${RED}✗ 终止进程失败${NC}"
