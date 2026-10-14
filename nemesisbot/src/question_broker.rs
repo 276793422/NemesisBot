@@ -115,11 +115,20 @@ impl nemesis_types::agent::QuestionAsker for WebQuestionBroker {
             created_at: std::time::Instant::now(),
             tx,
         };
-        self.broadcast_asked(&request.question_id, &entry);
-        self.pending
-            .lock()
-            .map_err(|e| format!("pending map poisoned: {}", e))?
-            .insert(request.question_id.clone(), entry);
+        // **先入册、后广播**（channel_approval 同款教训：先广播后挂表时，
+        // 消费方收到事件立即 respond 查表落空报 unknown——高负载并行下
+        // 请求线程被调度延迟卡在广播与入册之间，web_approval 实录同根因
+        // 假红）。broadcast send 是同步非阻塞操作，持锁发送无死锁面。
+        {
+            let mut map = self
+                .pending
+                .lock()
+                .map_err(|e| format!("pending map poisoned: {}", e))?;
+            map.insert(request.question_id.clone(), entry);
+            if let Some(registered) = map.get(request.question_id.as_str()) {
+                self.broadcast_asked(&request.question_id, registered);
+            }
+        }
 
         // 阻塞等作答。工具侧已经 spawn_blocking（不占 worker），这里直接
         // recv；block_in_place 分支保留给直接在 async 上下文调用 ask 的
