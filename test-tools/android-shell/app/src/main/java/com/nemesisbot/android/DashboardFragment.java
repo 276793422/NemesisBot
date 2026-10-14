@@ -250,7 +250,11 @@ public class DashboardFragment extends Fragment {
         if (authToken != null && !authToken.isEmpty()) {
             url += "#__dashboard_token=" + authToken;
         }
-        Log.i(TAG, "Loading dashboard: " + url);
+        // S5（2026-10-14 审计）：token 在 URL hash 里——整条打进 logcat 会
+        // 进共享缓冲（adb logcat / bug report 可读）。日志只留 # 之前的部分。
+        int hashIdx = url.indexOf('#');
+        Log.i(TAG, "Loading dashboard: "
+            + (hashIdx >= 0 ? url.substring(0, hashIdx) + "#<redacted>" : url));
         tvError.setVisibility(View.GONE);
         loading.setVisibility(View.VISIBLE);
         webView.setVisibility(View.VISIBLE);

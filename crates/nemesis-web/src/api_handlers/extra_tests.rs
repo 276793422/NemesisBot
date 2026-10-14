@@ -1288,6 +1288,23 @@ fn test_verify_token_one_empty_one_not() {
     assert!(!verify_token("", "expected"));
 }
 
+/// F6（2026-10-14）回归锁：XOR 折叠常数时间比较的正确性面——等长错
+/// token 必须拒绝（此形态是折叠实现的经典翻车点：只折叠不比较恒 0）。
+#[test]
+fn test_verify_token_constant_time_equality() {
+    // 等长错 token：拒绝。
+    assert!(!verify_token("AAAA", "BBBB"));
+    // 前缀相同尾字节不同（长度差 1）：拒绝。
+    assert!(!verify_token("secretX", "secretY"));
+    // 完全相等：放行。
+    assert!(verify_token("secretX", "secretX"));
+    // 长度不等（内容是前缀）：拒绝。
+    assert!(!verify_token("secret", "secretX"));
+    // 多字节 UTF-8：按字节比较语义不变。
+    assert!(verify_token("密★", "密★"));
+    assert!(!verify_token("密☆", "密★"));
+}
+
 // ============================================================
 // handle_api_internal: "shutdown" arm (BUG #31, quality-hardening
 // goal 冲刺 S11e) — CLI `nemesisbot shutdown` 的 HTTP 兜底臂后端。

@@ -132,7 +132,12 @@ if [ -f "web/package.json" ]; then
         echo "  Cleaning stale Vite assets (orphaned hashed chunks get embedded into the binary via include_dir!, bloating it ~2MB)..."
         rm -rf "crates/nemesis-web/static/assets"
         rm -f "web/.env"
-        echo "  Running Vite build..."
+        # S7（2026-10-14 审计）：与 build-linux.sh 同款——Linux 工具链构建开启
+        # 用户态沙盒自检面板（landlock/bwrap/Seatbelt）。用环境变量而非写
+        # web/.env（.env 上面刚被 rm）；env 在 Vite 编译期静态替换
+        # import.meta.env，不设则该组件整体 tree-shake 出二进制。
+        export VITE_USERLAND_SANDBOX=1
+        echo "  Running Vite build (VITE_USERLAND_SANDBOX=1)..."
         if (cd web && npm run build 2>&1); then
             echo "  OK Vue frontend built"
         else

@@ -121,7 +121,14 @@ export function connect(
   try {
     ws = new WebSocket(wsUrl)
 
-    ws.onopen = () => {
+    // W7（2026-10-14）：捕获本连接引用——守卫放行 CLOSING 态旧 socket 时
+    // connect 可重入，新 socket 已赋模块变量；旧 socket 迟到的 onclose
+    // 若直接清 `ws`/停心跳/报断线，会误杀新连接（sendRaw 永久入队、下次
+    // connect 双活 socket 帧双发、状态假断线）。各回调只在自己仍是当前
+    // 连接时才动模块状态。
+    const sock = ws
+
+    sock.onopen = () => {
       console.log('[NemesisAPI] WebSocket connected')
       reconnectDelay = 1000
       notifyStatus('connected')
@@ -129,7 +136,7 @@ export function connect(
       startHeartbeat()
     }
 
-    ws.onmessage = (event) => {
+    sock.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data)
 
@@ -149,8 +156,10 @@ export function connect(
       }
     }
 
-    ws.onclose = (event) => {
+    sock.onclose = (event) => {
       console.log('[NemesisAPI] WebSocket closed:', event.code)
+      // W7：被更新的连接取代后，本 socket 的关闭不再拥有模块状态。
+      if (ws !== sock) return
       ws = null
       stopHeartbeat()
 
@@ -162,7 +171,9 @@ export function connect(
       }
     }
 
-    ws.onerror = () => {
+    sock.onerror = () => {
+      // W7：同 onclose——旧 socket 的错误不得伪造新连接的断线状态。
+      if (ws !== sock) return
       notifyStatus('disconnected')
     }
   } catch (e) {

@@ -1319,7 +1319,8 @@ async fn test_async_exec_tool_no_command_returns_err() {
 async fn test_i2c_tool_with_confirm_write() {
     let t = I2CTool::default();
     let ctx = RequestContext::new("web", "c1", "u1", "s1");
-    // 地址用白名单内的 0x38（P8 白名单后 5=0x05 属保留段会被策略拒绝）
+    // BUG-13 接线后走真实实现：write 缺 bus = 确定性诚实报错（校验先于
+    // 真实 I/O，与硬件在否无关）；非 Linux 平台闸先挡。
     let r = t
         .execute(
             r#"{"action": "write", "address": 56, "confirm": true}"#,
@@ -1327,8 +1328,8 @@ async fn test_i2c_tool_with_confirm_write() {
         )
         .await;
     if cfg!(target_os = "linux") {
-        assert!(r.is_ok());
-        assert!(r.unwrap().contains("Write"));
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("bus is required"));
     } else {
         assert!(r.is_err());
     }
@@ -1338,6 +1339,8 @@ async fn test_i2c_tool_with_confirm_write() {
 async fn test_spi_tool_with_confirm_transfer() {
     let t = SPITool;
     let ctx = RequestContext::new("web", "c1", "u1", "s1");
+    // BUG-13 接线后走真实实现：device 必须是 "X.Y" 数字形态（完整路径
+    // /dev/spidev0.0 = 确定性诚实报错，与硬件在否无关）。
     let r = t
         .execute(
             r#"{"action": "transfer", "device": "/dev/spidev0.0", "confirm": true}"#,
@@ -1345,8 +1348,8 @@ async fn test_spi_tool_with_confirm_transfer() {
         )
         .await;
     if cfg!(target_os = "linux") {
-        assert!(r.is_ok());
-        assert!(r.unwrap().contains("Transfer"));
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("invalid device identifier"));
     } else {
         assert!(r.is_err());
     }
@@ -1359,7 +1362,7 @@ async fn test_i2c_tool_unknown_action_on_linux() {
     let r = t.execute(r#"{"action": "bogus"}"#, &ctx).await;
     if cfg!(target_os = "linux") {
         assert!(r.is_err());
-        assert!(r.unwrap_err().contains("Unknown I2C action"));
+        assert!(r.unwrap_err().contains("unknown action"));
     } else {
         assert!(r.is_err());
     }
@@ -1372,7 +1375,7 @@ async fn test_spi_tool_unknown_action_on_linux() {
     let r = t.execute(r#"{"action": "bogus"}"#, &ctx).await;
     if cfg!(target_os = "linux") {
         assert!(r.is_err());
-        assert!(r.unwrap_err().contains("Unknown SPI action"));
+        assert!(r.unwrap_err().contains("unknown action"));
     } else {
         assert!(r.is_err());
     }
@@ -1388,7 +1391,7 @@ async fn test_i2c_tool_write_without_confirm() {
         .await;
     if cfg!(target_os = "linux") {
         assert!(r.is_err());
-        assert!(r.unwrap_err().contains("confirm must be true"));
+        assert!(r.unwrap_err().contains("confirm: true"));
     } else {
         assert!(r.is_err());
     }
@@ -1406,7 +1409,7 @@ async fn test_spi_tool_transfer_without_confirm() {
         .await;
     if cfg!(target_os = "linux") {
         assert!(r.is_err());
-        assert!(r.unwrap_err().contains("confirm must be true"));
+        assert!(r.unwrap_err().contains("confirm: true"));
     } else {
         assert!(r.is_err());
     }

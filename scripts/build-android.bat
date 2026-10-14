@@ -10,7 +10,6 @@ REM ============================================
 REM Usage: scripts/build-android.bat [options]
 REM   No arguments    - Build release for arm64-v8a
 REM   --clean         - Clean before building
-REM   --skip-plugin   - Skip plugin .so build
 REM   --target <arch> - Target architecture (default: arm64-v8a)
 REM                      Supported: arm64-v8a, armeabi-v7a, x86_64, x86
 REM   --api <level>   - Android API level (default: 36)
@@ -33,7 +32,6 @@ REM ============================================
 REM Parse Arguments
 REM ============================================
 set CLEAN=0
-set SKIP_PLUGIN=0
 set TARGET_ARCH=arm64-v8a
 set API_LEVEL=36
 
@@ -44,11 +42,8 @@ if /i "%~1"=="--clean" (
     shift
     goto parse_args
 )
-if /i "%~1"=="--skip-plugin" (
-    set SKIP_PLUGIN=1
-    shift
-    goto parse_args
-)
+REM S6（2026-10-14 审计）：--skip-plugin 死参数已删——本脚本本无插件构建步
+REM （Android 产物不含 plugin .so），解析后无任何消费点。
 if /i "%~1"=="--target" (
     if "%~2"=="" (
         echo [ERROR] --target requires an architecture argument
@@ -79,7 +74,6 @@ echo Usage: build-android.bat [options]
 echo.
 echo Options:
 echo   --clean         Clean target\target_android before building
-echo   --skip-plugin   Skip plugin .so build
 echo   --target arch   Target architecture (default: arm64-v8a)
 echo                   Supported: arm64-v8a, armeabi-v7a, x86_64, x86
 echo   --api level     Android API level (default: 36)
