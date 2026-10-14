@@ -34,7 +34,12 @@ impl AgentLoop {
         let turns_used = st.turns_used;
         let chat_opts = &st.chat_opts;
         // Clone provider Arc so RwLock guard is dropped before .await.
-        let active_provider_base = self.provider.read().clone();
+        // Detached 模型覆盖（BUG 2026-10-08 `board.plan.model` dead-key 修复）：
+        // 本回合带覆盖时走覆盖 provider（调用侧解析注入），否则 loop 主
+        // provider——L10 流式包装对两者同构（包任意 Arc<dyn LlmProvider>）。
+        let active_provider_base = instance
+            .detached_model_provider()
+            .unwrap_or_else(|| self.provider.read().clone());
         // L10（2026-10-13）：流式观测 lane——包装后本函数五个调用点（首捕 +
         // 四重试环）共享同一包装实例；重试 = 新流（seq 从 0 重开 + start 帧
         // 重置前端缓冲）。双闸不满足（event tx 未接线 / provider_stream_

@@ -517,6 +517,8 @@ fn gate_inbound_discipline_arm_toggles_and_reports_disabled() {
             max_turns: 5,
             tools: Vec::new(),
             models: std::collections::HashMap::new(),
+
+            tool_fence_profession: None,
         },
     );
     // 未启用：诚实提示，不改状态。

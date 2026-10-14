@@ -3,6 +3,7 @@ package models
 import (
 	"encoding/json"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -129,6 +130,16 @@ func (m *TestAIBoard) masterProcess(messages []Message) string {
 			if strings.Contains(input, "<UAT_UI_TEXT>") {
 				return "UI图已交付（文本线）：登录页布局=顶部品牌区/中部表单/底部主按钮，配色=主色蓝灰，组件=输入框×2+按钮×1。"
 			}
+			// 职能框架 D2（U9）：定稿单对话机（轮1）——向本单 issue 讨论
+			// 线程发 @all 集群需求评审邀请（多变体摘要 + 请各节点发表实质
+			// 意见）。thread_id 从任务卡首行「# 看板任务 NB-n」提取。
+			if strings.Contains(input, "<UAT_D2_FINALIZE>") {
+				return buildSingleToolCall("board_discuss", map[string]interface{}{
+					"thread_kind": "issue",
+					"thread_id":   extractTaskCardIssueNumber(input),
+					"content":     "@all 需求评审邀请：本单聚合三条竞争解读变体（A 保守 / B 最大化 / C 重新框定），请各节点结合自身职能视角发表实质意见（支持/反对/修改建议均可），稍后本单将读取线程形成裁决并定稿。",
+				})
+			}
 			if title, ok := extractBoardIssueTitle(last.Content); ok {
 				return buildSingleToolCall("board_issue", map[string]interface{}{
 					"subcommand":  "create",
@@ -137,6 +148,11 @@ func (m *TestAIBoard) masterProcess(messages []Message) string {
 				})
 			}
 		case last.Role == "tool":
+			// 职能框架 D2（U9）：定稿单对话机（轮2+）——按工具结果推进
+			// 发帖→sleep→读线程→（空则再等）→裁决定稿汇报。
+			if strings.Contains(input, "<UAT_D2_FINALIZE>") {
+				return d2FinalizeToolTurn(input, last.Content)
+			}
 			// soak peer_chat 续行（轮2）：历史含 <PEER_CHAT> 且末条是 tool
 			// 结果 → 固定前缀转述对端回复（防落入 BOARD_ISSUE 兜底）。
 			if strings.Contains(input, "<PEER_CHAT>") {
@@ -276,6 +292,56 @@ func extractCreatedIssueNumber(toolResult string) string {
 		return ""
 	}
 	return "NB-" + string(digits)
+}
+
+// extractTaskCardIssueNumber 从任务卡提示词抠看板单号（board.rs
+// build_dispatch_prompt 首行契约「# 看板任务 NB-n」）。定稿对话机每轮都要
+// thread_id，而 sleep/读线程的工具结果不带单号——从全会话输入重复提取
+// （任务卡在首条 user 消息里，轮轮都在）。无命中返回 0（不应发生；后续
+// 工具调用会诚实失败，UAT 断言按失败暴露）。
+func extractTaskCardIssueNumber(input string) int {
+	re := regexp.MustCompile(`看板任务\s*NB-(\d+)`)
+	if m := re.FindStringSubmatch(input); m != nil {
+		if n, err := strconv.Atoi(m[1]); err == nil {
+			return n
+		}
+	}
+	return 0
+}
+
+// d2FinalizeToolTurn — <UAT_D2_FINALIZE> 定稿对话机的工具结果推进器：
+//   - post 结果「Posted to」（board_discuss 写确认）→ sleep（等应答节点发帖）；
+//   - sleep 结果「Slept for」→ 读线程（content 缺席 = 读模式）；
+//   - 读结果「no messages yet」（空线程，等待中的正常中间态）→ 再 sleep。
+//     注意该分支必须先于「Thread issue:」判定——空线程文本同样以
+//     「Thread issue:N has no messages yet」开头（format_comment_list 契约）；
+//   - 读结果「Thread issue:N (M messages)」（有应答）→ 裁决定稿汇报
+//     （AC 锚点「需求评审记录」「定稿」+ 应答原样引用——证据走交付正流）；
+//   - 其余 → D2_FINALIZE_TOOL_UNEXPECTED（UAT 断言按失败暴露）。
+//
+// sleep 参数名必须用 `seconds`：B 端 cluster loop 注册的是
+// agent::loop_tools::SleepTool（schema required=["seconds"]），args_validator
+// 先于宽容 execute 拦截；nemesis-tools 版 sleep（duration）不在集群 worker
+// 工具面。实录 2026-10-14：发 `duration` 被校验拒 → UNEXPECTED → 锚点 FAIL
+// → 重派烧穿线程配额 → 转人工停车（U9 首跑红根因）。
+func d2FinalizeToolTurn(input, toolResult string) string {
+	switch {
+	case strings.Contains(toolResult, "Posted to"):
+		return buildSingleToolCall("sleep", map[string]interface{}{"seconds": 3})
+	case strings.Contains(toolResult, "Slept for"):
+		return buildSingleToolCall("board_discuss", map[string]interface{}{
+			"thread_kind": "issue",
+			"thread_id":   extractTaskCardIssueNumber(input),
+		})
+	case strings.Contains(toolResult, "no messages yet"):
+		return buildSingleToolCall("sleep", map[string]interface{}{"seconds": 3})
+	case strings.Contains(toolResult, "Thread issue:"):
+		return "需求评审记录：\n" + toolResult +
+			"\n裁决：综合各节点职能视角的实质意见，采纳支持最多且实现风险最小的解读为胜者并定稿 docs/prd.md；" +
+			"未采纳变体中的合理点以附录形式并入。评审闭环，定稿完成。"
+	default:
+		return "D2_FINALIZE_TOOL_UNEXPECTED"
+	}
 }
 
 func (m *TestAIBoard) Delay() time.Duration { return 0 }

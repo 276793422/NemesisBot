@@ -577,6 +577,119 @@ pub struct BoardReviewConfig {
     /// 处置从「无限重派」限缩为「同签名连续 2 轮转人工」（2026-10-12
     /// 用户批准的语义变化）。
     pub max_unsure_streak: u32,
+    /// 职能→评审预设查表（职能能力演进 B1；`board.review.professions`
+    /// 嵌套 map，键=职能 slug，大小写不敏感）。查表三层覆盖：职能预设 >
+    /// 本结构全局字段 > 内置默认；slug 先精确匹配再裸 family 回落
+    /// （`dev:cpp` 无精确键时落 `dev` 键——自定义 spec 项继承 family 预设）。
+    /// 代码内置预设：`product`（max_turns=0 + checkers=2 + selfcheck=true，
+    /// 需求源头单全维加强）、`test-blackbox`（checkers=2，人工级防线双
+    /// 检查员防单评委漏判）——config 同名键**逐维度覆盖**内置预设。
+    /// 缺键零迁移（`#[serde(default)]`，空 map = 全部走全局/内置）。
+    #[serde(default)]
+    pub professions: std::collections::HashMap<String, BoardProfessionReviewPreset>,
+}
+
+impl BoardReviewConfig {
+    /// 职能评审参数解析（B1 单一入口）：全局字段打底 → 内置默认预设 →
+    /// config 职能预设逐维度覆盖。`profession` 空/None = 无职能，返回全局值。
+    pub fn resolve_for_profession(&self, profession: Option<&str>) -> BoardReviewParams {
+        let mut out = BoardReviewParams {
+            max_turns: self.max_turns,
+            checkers: self.checkers,
+            selfcheck: self.selfcheck,
+        };
+        let Some(slug) = profession.map(str::trim).filter(|s| !s.is_empty()) else {
+            return out;
+        };
+        let lower = slug.to_ascii_lowercase();
+        let preset = self.professions.get(&lower).or_else(|| {
+            // 裸 family 回落：`dev:cpp` 无精确键 → `dev` 键（无冒号时精确
+            // 查找已覆盖，不重复取）。
+            let family = lower.split(':').next().unwrap_or(&lower);
+            (family != lower)
+                .then_some(family)
+                .and_then(|f| self.professions.get(f))
+        });
+        let builtin = builtin_profession_presets()
+            .into_iter()
+            .find(|(k, _)| *k == lower)
+            .or_else(|| {
+                let family = lower.split(':').next().unwrap_or(&lower);
+                builtin_profession_presets()
+                    .into_iter()
+                    .find(|(k, _)| *k == family)
+            })
+            .map(|(_, p)| p);
+        // config 预设逐维度覆盖内置预设（None 维度沿用内置）。
+        let merged = match (preset.cloned(), builtin) {
+            (Some(cfg_p), Some(b)) => BoardProfessionReviewPreset {
+                max_turns: cfg_p.max_turns.or(b.max_turns),
+                checkers: cfg_p.checkers.or(b.checkers),
+                selfcheck: cfg_p.selfcheck.or(b.selfcheck),
+            },
+            (Some(p), None) | (None, Some(p)) => p,
+            (None, None) => return out,
+        };
+        if let Some(v) = merged.max_turns {
+            out.max_turns = v;
+        }
+        if let Some(v) = merged.checkers {
+            out.checkers = v;
+        }
+        if let Some(v) = merged.selfcheck {
+            out.selfcheck = v;
+        }
+        out
+    }
+}
+
+/// 代码内置职能预设（B1；config `board.review.professions` 同名键逐维度
+/// 覆盖）。`dev:*` 无内置预设（实现单评审与通用评审无差异诉求，维持全局
+/// 默认）。
+fn builtin_profession_presets() -> [(&'static str, BoardProfessionReviewPreset); 2] {
+    [
+        (
+            "product",
+            BoardProfessionReviewPreset {
+                max_turns: Some(0),
+                checkers: Some(2),
+                selfcheck: Some(true),
+            },
+        ),
+        (
+            "test-blackbox",
+            BoardProfessionReviewPreset {
+                max_turns: None,
+                checkers: Some(2),
+                selfcheck: None,
+            },
+        ),
+    ]
+}
+
+/// 职能评审预设（`board.review.professions.<slug>`；B1）。三个键全 Option：
+/// 只覆盖显式设置的维度，其余沿用内置预设/全局 `board.review.*`——局部
+/// 预设不必照抄全局值。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct BoardProfessionReviewPreset {
+    /// 覆盖 `board.review.max_turns`（0 = 不限取证轮数）。
+    #[serde(default)]
+    pub max_turns: Option<u32>,
+    /// 覆盖 `board.review.checkers`（多检查员路数）。
+    #[serde(default)]
+    pub checkers: Option<u32>,
+    /// 覆盖 `board.review.selfcheck`（评审取证挂起开关）。
+    #[serde(default)]
+    pub selfcheck: Option<bool>,
+}
+
+/// 解析后的评审参数三元组（[`BoardReviewConfig::resolve_for_profession`]
+/// 返回值；消费点直接替换对 `board.review.*` 的直读）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BoardReviewParams {
+    pub max_turns: u32,
+    pub checkers: u32,
+    pub selfcheck: bool,
 }
 
 impl Default for BoardReviewConfig {
@@ -595,6 +708,7 @@ impl Default for BoardReviewConfig {
             exec_anchor_timeout_secs: 120,
             failure_retries: 1,
             max_unsure_streak: 2,
+            professions: std::collections::HashMap::new(),
         }
     }
 }
@@ -760,6 +874,11 @@ pub struct BoardDiscussionConfig {
     pub hourly_budget_per_node: u32,
     /// 每节点每分钟 board.comment.post 上行限速（默认 12，0=不限）。
     pub rate_limit_per_min: u32,
+    /// D2 定稿评审有界等待（秒；默认 1800，0=不等直接裁决）。定稿单
+    /// worker 据此 sleep + 轮询讨论线程（双阈值的时间维；条数维在提示词
+    /// 契约里按职能自选）。消费面 = 定稿单任务提示词渲染（master config
+    /// 经 planner/派发描述传给 worker，worker 本地 config 不作数）。
+    pub review_wait_secs: u32,
 }
 
 impl Default for BoardDiscussionConfig {
@@ -769,6 +888,7 @@ impl Default for BoardDiscussionConfig {
             max_agent_turns_per_thread: 8,
             hourly_budget_per_node: 20,
             rate_limit_per_min: 12,
+            review_wait_secs: 1800,
         }
     }
 }

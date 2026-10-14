@@ -3232,6 +3232,130 @@ fn test_board_review_budget_roundtrip() {
 }
 
 // ============================================================
+// B1：职能→评审预设查表（board.review.professions）
+// ============================================================
+
+#[test]
+fn test_profession_review_preset_builtin_defaults() {
+    // 内置预设：product 单全维加强（不限取证 + 双检查员 + 自检挂起）；
+    // test-blackbox 双检查员（人工级防线防单评委漏判）；dev/test-whitebox
+    // 无内置预设 = 全局默认。空 map + 缺段两形态一致。
+    let cfg: BoardFlagConfig = serde_json::from_str("{}").unwrap();
+    let review = &cfg.review;
+
+    let product = review.resolve_for_profession(Some("product"));
+    assert_eq!(product.max_turns, 0, "product 内置：不限取证");
+    assert_eq!(product.checkers, 2, "product 内置：双检查员");
+    assert!(product.selfcheck, "product 内置：自检挂起开");
+
+    let blackbox = review.resolve_for_profession(Some("test-blackbox"));
+    assert_eq!(blackbox.checkers, 2, "test-blackbox 内置：双检查员");
+    assert_eq!(blackbox.max_turns, review.max_turns, "未设维度沿用全局");
+    assert_eq!(blackbox.selfcheck, review.selfcheck, "未设维度沿用全局");
+
+    let dev = review.resolve_for_profession(Some("dev:cpp"));
+    assert_eq!(dev.max_turns, review.max_turns, "dev:* 无内置预设=全局");
+    assert_eq!(dev.checkers, review.checkers);
+    assert_eq!(dev.selfcheck, review.selfcheck);
+
+    // 大小写不敏感（与派发 matcher 同口径）。
+    let upper = review.resolve_for_profession(Some("Product"));
+    assert_eq!(upper.checkers, 2);
+}
+
+#[test]
+fn test_profession_review_preset_config_overrides_builtin_per_dimension() {
+    // config 预设**逐维度**覆盖内置：只写 checkers 时，max_turns/selfcheck
+    // 仍取内置 product 值（局部预设不必照抄全局）。
+    let cfg: BoardFlagConfig = serde_json::from_value(serde_json::json!({
+        "review": {
+            "max_turns": 3,
+            "professions": { "product": { "checkers": 3 } }
+        }
+    }))
+    .unwrap();
+    let product = cfg.review.resolve_for_profession(Some("product"));
+    assert_eq!(product.checkers, 3, "config 显式维度覆盖内置");
+    assert_eq!(product.max_turns, 0, "未写维度沿用内置（非全局 3）");
+    assert!(product.selfcheck, "未写维度沿用内置");
+    // 未知 slug 无内置也无 config → 全局。
+    let unknown = cfg.review.resolve_for_profession(Some("dev:cuda"));
+    assert_eq!(unknown.max_turns, 3);
+}
+
+#[test]
+fn test_profession_review_preset_family_fallback_and_exact_wins() {
+    // family 回落：`dev:cpp` 无精确键 → 落 `dev` 键；精确键存在时压过 family。
+    let cfg: BoardFlagConfig = serde_json::from_value(serde_json::json!({
+        "review": {
+            "professions": { "dev": { "checkers": 3 } }
+        }
+    }))
+    .unwrap();
+    let cpp = cfg.review.resolve_for_profession(Some("dev:cpp"));
+    assert_eq!(cpp.checkers, 3, "无精确键落 family 预设");
+    let exact: BoardFlagConfig = serde_json::from_value(serde_json::json!({
+        "review": {
+            "professions": {
+                "dev": { "checkers": 3 },
+                "dev:cpp": { "checkers": 1 }
+            }
+        }
+    }))
+    .unwrap();
+    assert_eq!(
+        exact
+            .review
+            .resolve_for_profession(Some("dev:cpp"))
+            .checkers,
+        1,
+        "精确键压过 family"
+    );
+}
+
+#[test]
+fn test_profession_review_preset_no_profession_is_global() {
+    // 无职能/空白职能 = 全局值（绝大多数存量单行为不变）。
+    let cfg: BoardFlagConfig = serde_json::from_value(serde_json::json!({
+        "review": { "max_turns": 2, "checkers": 1, "selfcheck": true }
+    }))
+    .unwrap();
+    for p in [None, Some(""), Some("   ")] {
+        let r = cfg.review.resolve_for_profession(p);
+        assert_eq!(r.max_turns, 2);
+        assert_eq!(r.checkers, 1);
+        assert!(r.selfcheck);
+    }
+}
+
+#[test]
+fn test_profession_review_preset_roundtrip() {
+    // professions 嵌套 map 落盘 round-trip（typed save 保留；缺键零迁移）。
+    let cfg: BoardFlagConfig = serde_json::from_value(serde_json::json!({
+        "review": {
+            "professions": {
+                "product": { "max_turns": 1, "checkers": 2, "selfcheck": false },
+                "dev:cuda": { "checkers": 3 }
+            }
+        }
+    }))
+    .unwrap();
+    let re: BoardFlagConfig = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+    assert_eq!(
+        re.review.resolve_for_profession(Some("product")),
+        cfg.review.resolve_for_profession(Some("product"))
+    );
+    assert_eq!(
+        re.review.resolve_for_profession(Some("dev:cuda")).checkers,
+        3
+    );
+    // 空段缺键形态：professions 键整体缺失 = 空 map。
+    let no_key: BoardFlagConfig =
+        serde_json::from_value(serde_json::json!({ "review": { "max_turns": 1 } })).unwrap();
+    assert!(no_key.review.professions.is_empty());
+}
+
+// ============================================================
 // ModelConfig.extra passthrough（2026-09-03 二次回归根修回归锁）
 // ============================================================
 

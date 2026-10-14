@@ -57,6 +57,8 @@ fn i5_loop() -> AgentLoop {
             max_turns: 5,
             tools: vec![],
             models: std::collections::HashMap::new(),
+
+            tool_fence_profession: None,
         },
     )
 }
@@ -68,6 +70,8 @@ fn i5_instance() -> AgentInstance {
         max_turns: 5,
         tools: vec![],
         models: std::collections::HashMap::new(),
+
+        tool_fence_profession: None,
     });
     inst.add_user_message("look at my open files");
     inst

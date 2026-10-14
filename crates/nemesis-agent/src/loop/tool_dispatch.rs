@@ -46,6 +46,61 @@ pub(crate) fn detached_tool_refusal(instance: &AgentInstance, tool: &str) -> Opt
     None
 }
 
+/// B2（profession-capability-evolution 2026-10-14）：围栏豁免工具清单。
+/// 围栏内任务向人求助的唯一基础设施通道——`question`（F7 结构化提问）永
+/// 不被职能围栏拒绝（围栏禁的是能力面，不该连「举手」都禁掉）。estop 不
+/// 是工具形态，无此问题。供给闸与派发闸共用本表；显式全禁契约的哨兵形态
+/// 也引用它（`tools=["question"]`，见 cluster_agent 的 task_system_prompt）。
+/// pub：cluster_agent（nemesisbot）经 loop 根 glob 再导出消费，跨 crate。
+pub const FENCE_EXEMPT_TOOLS: &[&str] = &["question"];
+
+/// B2：工具是否豁免于职能围栏（[`FENCE_EXEMPT_TOOLS`] 成员测试）。
+pub(crate) fn fence_exempt_tool(tool: &str) -> bool {
+    FENCE_EXEMPT_TOOLS.contains(&tool)
+}
+
+/// B2：派发闸拒绝文案的单一真相源（serial 与 parallel 两条派发路径共用，
+/// 文案不允许劈叉）。`profession` = `AgentConfig.tool_fence_profession`
+///（Some 时文案带职能名，None 时通用措辞——讨论唤醒轮的宣言交集形态）。
+/// 白名单外（且非豁免工具）→ `Some(拒绝文案)`；命中白名单 → `None`。
+///
+/// `allowed` 为空 = 显式全禁（契约作者的明确选择）：除豁免外全部拒绝。
+pub(crate) fn profession_fence_refusal_for(
+    profession: Option<&str>,
+    allowed: &[String],
+    tool: &str,
+) -> Option<String> {
+    if fence_exempt_tool(tool) || allowed.iter().any(|a| a == tool) {
+        return None;
+    }
+    let who = profession
+        .map(|p| format!(" (profession: {p})"))
+        .unwrap_or_default();
+    Some(format!(
+        "Error: tool '{tool}' is outside the task's tool fence{who} (allowed: {}). \
+The profession contract deliberately limits this task's tool surface — work within it \
+(read files, write artifacts, use the allowed tools) or answer in plain text. \
+Do NOT retry this tool.",
+        allowed.join(", ")
+    ))
+}
+
+/// B2：派发闸 instance 包装——读任务装配写入的围栏白名单
+/// （[`AgentConfig::tools`]，非空 = 围栏生效）与职能标注（文案用）。
+/// loop 级 config 的 `tools` 恒空 → 主 loop / 普通对话 / 项目 loop 恒
+/// `None`，零行为变化。
+pub(crate) fn profession_fence_refusal(instance: &AgentInstance, tool: &str) -> Option<String> {
+    let allowed = &instance.config().tools;
+    if allowed.is_empty() {
+        return None;
+    }
+    profession_fence_refusal_for(
+        instance.config().tool_fence_profession.as_deref(),
+        allowed,
+        tool,
+    )
+}
+
 impl AgentLoop {
     /// J5：doom-loop 审批卡。经 [`Self::question_asker`]（F7 同源 broker 的
     /// ask 端）发结构化提问「继续吗？」，阻塞等用户作答。

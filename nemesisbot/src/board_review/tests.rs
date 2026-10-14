@@ -4356,6 +4356,8 @@ async fn sweep_run_review_llm_call_failure_fails_immediately() {
         &mut prompt,
         ReviewToolMode::NoTools,
         nemesis_prompts::board::ReviewTier::Thorough,
+        None,
+        None,
     )
     .await
     .expect_err("调用失败必须报错");
@@ -4386,6 +4388,8 @@ async fn sweep_run_review_llm_exhausts_three_parse_rounds() {
         &mut prompt,
         ReviewToolMode::NoTools,
         nemesis_prompts::board::ReviewTier::Thorough,
+        None,
+        None,
     )
     .await
     .expect_err("3 轮解析全败必须报错");
@@ -4416,6 +4420,8 @@ async fn sweep_run_review_llm_retries_then_succeeds_and_readonly_mode() {
         &mut prompt,
         ReviewToolMode::ReadOnly { max_turns: 3 },
         nemesis_prompts::board::ReviewTier::Thorough,
+        None,
+        None,
     )
     .await
     .expect("重试后必须成功");
@@ -4443,6 +4449,8 @@ async fn sweep_run_review_panel_single_delegates_and_multi_aggregates() {
         ReviewToolMode::NoTools,
         1,
         nemesis_prompts::board::ReviewTier::Thorough,
+        None,
+        None,
     )
     .await
     .expect("单路必须成功");
@@ -4468,6 +4476,8 @@ async fn sweep_run_review_panel_single_delegates_and_multi_aggregates() {
         ReviewToolMode::NoTools,
         3,
         nemesis_prompts::board::ReviewTier::Thorough,
+        None,
+        None,
     )
     .await
     .expect("多数票聚合必须成功");
@@ -4489,6 +4499,8 @@ async fn sweep_run_review_panel_single_delegates_and_multi_aggregates() {
         ReviewToolMode::NoTools,
         2,
         nemesis_prompts::board::ReviewTier::Thorough,
+        None,
+        None,
     )
     .await
     .expect_err("全路解析失败必须报错");
@@ -7541,4 +7553,81 @@ async fn ua_defect_gate_park_writes_handoff_archive() {
     assert_eq!(doc["stop_kind"], "defect_gate");
     assert_eq!(doc["suggested_action"], "manual_check");
     assert_eq!(doc["environment"]["unclosed_defects"], 1);
+}
+
+// ---------- B3 禁令节预取（extract_ban_section / prefetch_ban_section）----------
+
+#[test]
+fn extract_ban_section_stops_at_next_section() {
+    let text = "# 架构\n\nintro\n\n## 禁令与约束清单\nC1 禁止在接收层调用 poll()\nC2 禁止持锁跨 await\n\n## 其他节\nbody";
+    let section = extract_ban_section(text).expect("有节必抽出");
+    assert!(section.starts_with("## 禁令与约束清单"));
+    assert!(section.contains("C1 禁止在接收层调用 poll()"));
+    assert!(section.contains("C2 禁止持锁跨 await"));
+    assert!(!section.contains("其他节"), "下一节头起整体截断");
+    assert!(!section.contains("body"));
+    // 尾部换行被 trim_end 收掉。
+    assert!(!section.ends_with('\n'));
+}
+
+#[test]
+fn extract_ban_section_extends_to_eof_when_last() {
+    let text = "前文\n\n## 禁令与约束清单\nC1 禁止裸指针\n";
+    let section = extract_ban_section(text).expect("文末节也抽出");
+    assert!(section.contains("C1 禁止裸指针"));
+}
+
+#[test]
+fn extract_ban_section_absent_header_is_none() {
+    assert_eq!(extract_ban_section("# 架构\n只有普通内容"), None);
+    assert_eq!(extract_ban_section(""), None);
+    // 同形但非节头的文字不命中（find 的是整行节头子串——出现即命中，
+    // 这里钉住「必须带 ## 前缀」的形态才抽得出）。
+    assert!(extract_ban_section("## 禁令与约束清单").is_some());
+}
+
+#[test]
+fn prefetch_ban_section_prefers_main_root_then_falls_back() {
+    let ws = tempfile::tempdir().expect("ws");
+    let proj = tempfile::tempdir().expect("proj");
+
+    // 双根都缺 → None。
+    assert_eq!(prefetch_ban_section(ws.path(), Some(proj.path())), None);
+
+    // 仅 fallback 有 → 走 fallback（NB-22 双根形态：交付集合并在项目目录）。
+    let proj_docs = proj.path().join("docs");
+    std::fs::create_dir_all(&proj_docs).unwrap();
+    std::fs::write(
+        proj_docs.join("architecture.md"),
+        "## 禁令与约束清单\nC9 禁止同步 IO\n",
+    )
+    .unwrap();
+    assert_eq!(
+        prefetch_ban_section(ws.path(), Some(proj.path())).expect("fallback 命中"),
+        "## 禁令与约束清单\nC9 禁止同步 IO"
+    );
+
+    // 主根也有 → 主根优先（不是拼接、不是 fallback 抢答）。
+    let ws_docs = ws.path().join("docs");
+    std::fs::create_dir_all(&ws_docs).unwrap();
+    std::fs::write(
+        ws_docs.join("architecture.md"),
+        "## 禁令与约束清单\nC1 主根禁令\n",
+    )
+    .unwrap();
+    assert_eq!(
+        prefetch_ban_section(ws.path(), Some(proj.path())).expect("主根命中"),
+        "## 禁令与约束清单\nC1 主根禁令"
+    );
+
+    // 主根有文件但节缺席 → 穿透到 fallback（不是拿到文件就停）。
+    std::fs::write(ws_docs.join("architecture.md"), "# 架构无禁令节\n").unwrap();
+    assert_eq!(
+        prefetch_ban_section(ws.path(), Some(proj.path())).expect("主根缺节穿透 fallback"),
+        "## 禁令与约束清单\nC9 禁止同步 IO"
+    );
+
+    // fallback 槽位为 None + 主根缺 → None（无 panic）。
+    std::fs::remove_file(ws_docs.join("architecture.md")).unwrap();
+    assert_eq!(prefetch_ban_section(ws.path(), None), None);
 }

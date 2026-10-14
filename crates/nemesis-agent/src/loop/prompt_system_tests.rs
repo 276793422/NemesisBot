@@ -63,6 +63,8 @@ fn ps_loop() -> AgentLoop {
             max_turns: 5,
             tools: vec![],
             models: std::collections::HashMap::new(),
+
+            tool_fence_profession: None,
         },
     );
     // exec：描述表内槽位；zzz_custom：表外（模拟 forge/board/动态注册）。
@@ -195,6 +197,8 @@ async fn detached_role_overlays_persona_in_system_prompt() {
             max_turns: 3,
             tools: vec![],
             models: std::collections::HashMap::new(),
+
+            tool_fence_profession: None,
         },
     );
 

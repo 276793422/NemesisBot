@@ -129,10 +129,16 @@ impl AgentLoop {
                 // declared (each model's real output ceiling, not a blanket
                 // 8192 — large files write in one shot instead of
                 // truncating); else 8192. temperature 0.7.
-                max_tokens: Some(self.current_max_tokens().unwrap_or(8192)),
+                // detached 模型覆盖回合（BUG 2026-10-08 dead-key 修复）按
+                // 覆盖模型名查 per-model 键。
+                max_tokens: Some(
+                    self.current_max_tokens_override(instance.detached_model_name().as_deref())
+                        .unwrap_or(8192),
+                ),
                 temperature: Some(0.7),
                 // H4 (U16 half): per-model reasoning effort from config.json.
-                reasoning_effort: self.current_reasoning_effort(),
+                reasoning_effort: self
+                    .current_reasoning_effort_override(instance.detached_model_name().as_deref()),
                 ..Default::default()
             },
         };
@@ -188,7 +194,11 @@ impl AgentLoop {
             // 字节级副本）——warm 重放 = 同一请求 max_tokens=1，快照是「前缀
             // 字节不变」的唯一真相源（G1 纪律同源）。默认关 = 仅一次新鲜读，
             // 无克隆；多轮 turn 后写覆盖 → 天然收敛到最后一轮请求。
-            let warm_snapshot = if self.cache_warmer_capture_enabled() {
+            // detached 模型覆盖回合不快照——warm 重放走 loop 主 provider/
+            // 主模型，与覆盖请求不同源（重放会打到错误模型）。
+            let warm_snapshot = if self.cache_warmer_capture_enabled()
+                && instance.detached_model_name().is_none()
+            {
                 Some((messages.clone(), tool_defs.clone()))
             } else {
                 None
@@ -991,7 +1001,7 @@ impl AgentLoop {
             let llm_hooks = self.hooks.llm_hooks.read().snapshot();
             if !llm_hooks.is_empty() {
                 let hook_call = crate::hooks::HookLlmCall {
-                    model: self.active_model.read().clone(),
+                    model: self.effective_model(instance),
                     session_key: context.session_key.clone(),
                     round: turns_used as usize + 1,
                 };
@@ -1042,7 +1052,8 @@ impl AgentLoop {
             .filter_map(|t| serde_json::to_value(t).ok())
             .collect();
         // Extract model string before emit so RwLockReadGuard doesn't span the await.
-        let active_model = self.active_model.read().clone();
+        // detached 模型覆盖回合：观测与实调一致（覆盖名经 effective_model）。
+        let active_model = self.effective_model(instance);
         self.emit_observer_sync(crate::loop_executor::ObserverEvent::LlmRequest {
             trace_id: trace_id.to_string(),
             round: turns_used + 1,
@@ -1076,7 +1087,7 @@ impl AgentLoop {
                 "llm_request",
                 &format!(
                     "model={} messages={} turns_used={}",
-                    self.active_model.read(),
+                    active_model,
                     messages.len(),
                     turns_used
                 ),

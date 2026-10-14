@@ -385,6 +385,8 @@ async fn tool_calls_counted_in_extension_metadata() {
             max_turns: 5,
             tools: vec!["echotool".to_string()],
             models: Default::default(),
+
+            tool_fence_profession: None,
         },
     );
     agent_loop.register_tool("echotool".to_string(), Box::new(EchoTool));
