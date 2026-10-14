@@ -331,3 +331,55 @@ describe('chat store inflight turns (B2)', () => {
     expect(store.inflightTurnOf('s2')?.content).toBe('two')
   })
 })
+
+// W3（2026-10-14 审计）：按会话清账——busy 表与在飞 turn 登记在会话删除/
+// 清空/登出/watchdog 放弃等「收尾帧永不再来」的路径上显式清除，防慢性
+// 泄漏与会话 id 复用时的幽灵占位（二者都刻意不被 reset 清，全靠显式清账）。
+
+describe('chat store dropSessionState (W3)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('drops both busy state and the inflight registry entry', () => {
+    const store = useChatStore()
+    store.setBusy('s1', true)
+    store.markInflightTurn('s1', 'hello')
+    store.dropSessionState('s1')
+    expect(store.isBusy('s1')).toBe(false)
+    expect(store.inflightTurnOf('s1')).toBeUndefined()
+  })
+
+  it('only touches the target session', () => {
+    const store = useChatStore()
+    store.setBusy('s1', true)
+    store.setBusy('s2', true)
+    store.markInflightTurn('s2', 'two')
+    store.dropSessionState('s1')
+    expect(store.isBusy('s2')).toBe(true)
+    expect(store.inflightTurnOf('s2')?.content).toBe('two')
+  })
+
+  it('session id can be used again after dropping (no stale state)', () => {
+    const store = useChatStore()
+    store.setBusy('s1', true)
+    store.markInflightTurn('s1', 'old ghost')
+    store.dropSessionState('s1')
+    // 同 id 复用（新会话）：旧在飞登记不得复活占位。
+    expect(store.inflightTurnOf('s1')).toBeUndefined()
+    store.setBusy('s1', true)
+    expect(store.isBusy('s1')).toBe(true)
+  })
+
+  it('dropAllSessionState clears every session (logout path)', () => {
+    const store = useChatStore()
+    store.setBusy('s1', true)
+    store.setBusy('s2', true)
+    store.markInflightTurn('s1', 'one')
+    store.markInflightTurn('s2', 'two')
+    store.dropAllSessionState()
+    expect(store.isBusy('s1')).toBe(false)
+    expect(store.isBusy('s2')).toBe(false)
+    expect(Object.keys(store.inflightTurns)).toHaveLength(0)
+  })
+})

@@ -138,17 +138,31 @@ impl FsHandler {
         if !root.is_dir() {
             return Err(format!("workspace not found: {}", workspace));
         }
-        // 归一化：统一 `/`、剥首尾斜杠；`..` 逐段拒绝（只读列表也不给
-        // 越权探测面）。
+        // 归一化：统一 `/`、剥首尾斜杠；`..` 逐段拒绝；绝对/根路径形态
+        // 显式拒绝（只读列表也不给越权探测面）。
         let norm = path.replace('\\', "/");
         let norm = norm.trim_matches('/');
         if norm.split('/').any(|seg| seg == "..") {
             return Err(format!("path 越出 workspace: {}", path));
         }
+        // F7（2026-10-14）根修：`PathBuf::join` 遇绝对路径会**替换整个
+        // root**——Windows 盘符形态（`C:/Windows`）归一化后仍是绝对路径，
+        // 此前只拒 `..` 时漏挡 = 任意目录列举。`has_root` 覆盖盘符与根
+        // 形态（Unix 绝对路径已被 trim 剥成相对，此闸在 Windows 生效）。
+        let norm_path = Path::new(&norm);
+        if norm_path.is_absolute() || norm_path.has_root() {
+            return Err(format!("path 越出 workspace: {}", path));
+        }
         let dir = if norm.is_empty() {
             root.clone()
         } else {
-            root.join(norm)
+            let joined = root.join(norm);
+            // 纵深闸：join 后仍在 root 下才放行（防前两道闸漏网的替换
+            // 形态；相对路径 join 恒在 root 下，合法输入不受影响）。
+            if !joined.starts_with(&root) {
+                return Err(format!("path 越出 workspace: {}", path));
+            }
+            joined
         };
         if !dir.is_dir() {
             return Err(format!("目录不存在: {}", norm));

@@ -42,7 +42,12 @@ public class GatewayService extends Service {
     public static final String STATUS_STOPPED = "stopped";
     public static final String STATUS_ERROR = "error";
 
-    private Process gatewayProcess;
+    // S4（2026-10-14 审计）：volatile + start/stop 共用 gatewayLock——进程
+    // 字段跨线程读写（onStartCommand 主线程 / gateway worker / onDestroy 主
+    // 线程），裸字段加「start 后才 set(true)」的窗口曾致双起进程（字段覆盖
+    // 出孤儿）与 stop 检查窗口跳过收尸（见 startGateway/stopGateway 注释）。
+    private volatile Process gatewayProcess;
+    private final Object gatewayLock = new Object();
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
     private BinaryManager binaryManager;
     private Handler mainHandler;
@@ -103,17 +108,28 @@ public class GatewayService extends Service {
      * Start the nemesisbot gateway process.
      */
     private void startGateway() {
-        if (isRunning.get()) {
-            Log.w(TAG, "Gateway already running");
-            return;
+        // S4（2026-10-14 审计）：与 stopGateway 共用 gatewayLock——快速双击/
+        // 重复 onStartCommand 时两个线程都过 isRunning 检查会双起进程（字段
+        // 被覆盖后只剩最后一个可杀 → 孤儿）。锁内检查并抢占：先置 running 再
+        // 起进程（失败回滚），onDestroy 落在任何窗口 stop 都能看到 running 态。
+        synchronized (gatewayLock) {
+            if (isRunning.get()) {
+                Log.w(TAG, "Gateway already running");
+                return;
+            }
+            isRunning.set(true);
         }
 
         broadcastStatus(STATUS_STARTING);
 
         new Thread(() -> {
+            Process proc = null;
             try {
                 File binary = binaryManager.getBinaryFile();
                 if (!binary.exists()) {
+                    synchronized (gatewayLock) {
+                        isRunning.set(false); // 抢占回滚（进程未起，无条件清）
+                    }
                     broadcastLog("ERROR: Binary not found at " + binary.getAbsolutePath());
                     broadcastStatus(STATUS_ERROR);
                     return;
@@ -135,12 +151,22 @@ public class GatewayService extends Service {
                 pb.redirectErrorStream(true);
                 pb.environment().put("NEMESISBOT_HOME", workDirPath);
 
-                gatewayProcess = pb.start();
-                isRunning.set(true);
+                synchronized (gatewayLock) {
+                    if (!isRunning.get()) {
+                        // 占位后被 stop 清旗标（起进程前的 onDestroy 窗口，
+                        // stop 只能清旗标收不了尸）——此处放弃起进程，否则
+                        // 服务销毁后进程无人收尸。
+                        broadcastLog("Cancelled: service stopped before process start");
+                        broadcastStatus(STATUS_STOPPED);
+                        return;
+                    }
+                    proc = pb.start();
+                    gatewayProcess = proc;
+                }
 
                 // Read stdout/stderr in a loop
                 BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(gatewayProcess.getInputStream())
+                    new InputStreamReader(proc.getInputStream())
                 );
 
                 String line;
@@ -156,13 +182,25 @@ public class GatewayService extends Service {
                     }
                 }
 
-                int exitCode = gatewayProcess.waitFor();
-                isRunning.set(false);
+                int exitCode = proc.waitFor();
+                synchronized (gatewayLock) {
+                    // 只清自己的摊：自然退出与「新一轮 startGateway 抢占」
+                    // 并发时，旧 worker 不得清掉新轮次的 running 占位。
+                    if (gatewayProcess == proc) {
+                        gatewayProcess = null;
+                        isRunning.set(false);
+                    }
+                }
                 broadcastLog("Process exited with code: " + exitCode);
                 broadcastStatus(STATUS_STOPPED);
 
             } catch (Exception e) {
-                isRunning.set(false);
+                synchronized (gatewayLock) {
+                    if (gatewayProcess == proc) {
+                        gatewayProcess = null;
+                        isRunning.set(false);
+                    }
+                }
                 broadcastLog("ERROR: " + e.getMessage());
                 broadcastStatus(STATUS_ERROR);
                 Log.e(TAG, "Gateway process error", e);
@@ -174,14 +212,25 @@ public class GatewayService extends Service {
      * Stop the nemesisbot gateway process.
      */
     public void stopGateway() {
-        if (gatewayProcess != null && isRunning.get()) {
+        synchronized (gatewayLock) {
+            // S4（2026-10-14 审计）：与 startGateway 共用锁。旧实现双条件
+            // `gatewayProcess != null && isRunning.get()`——onDestroy 落在
+            // 「pb.start() 与 isRunning.set(true) 之间」时两条件不同真，
+            // 跳过 destroyForcibly → 孤儿进程。现在只认 running 旗标；进程
+            // 未起的窗口清旗标即可（worker 起进程前锁内复查会放弃启动）。
+            if (!isRunning.get()) {
+                return;
+            }
             broadcastLog("Stopping nemesisbot...");
-            gatewayProcess.destroyForcibly();
+            if (gatewayProcess != null) {
+                gatewayProcess.destroyForcibly();
+                gatewayProcess = null;
+            }
             isRunning.set(false);
             broadcastStatus(STATUS_STOPPED);
-            stopForeground(true);
-            stopSelf();
         }
+        stopForeground(true);
+        stopSelf();
     }
 
     private void broadcastLog(String line) {

@@ -723,11 +723,27 @@ impl MemoryManager {
     }
 
     /// Delete ("forget") a memory entry by ID.
+    ///
+    /// BUG-2（2026-10-14）根修：此前只删 keyword store，向量镜像残留——
+    /// keyword 删除后 get/search 落到向量路径仍能召回已「遗忘」的条目。
+    /// 对齐 `delete_by_id` 同款双删：keyword 主删 + 同 ID 向量镜像清理
+    /// （返回值语义为「任一存储发生了删除」，与 delete_by_id 一致）。
     pub async fn forget(&self, id: &str) -> Result<bool, String> {
         if !self.is_enabled() {
             return Ok(false);
         }
-        self.store.delete(id).await
+        let mut found = self.store.delete(id).await?;
+        // Remove the vector mirror with the same id (id namespace is shared
+        // across keyword store and vector mirror — see get()).
+        {
+            let vs_guard = self.vector_store.read();
+            if let Some(ref vs) = *vs_guard
+                && vs.delete_entry(id)
+            {
+                found = true;
+            }
+        }
+        Ok(found)
     }
 
     /// Delete a memory entry by ID (alias matching Go `Manager.Delete`).

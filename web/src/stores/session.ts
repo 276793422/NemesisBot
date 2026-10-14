@@ -150,9 +150,12 @@ export const useSessionStore = defineStore('session', () => {
   async function clear(session_id: string) {
     try {
       await api.clear(session_id)
+      const chatStore = useChatStore()
+      // W3（2026-10-14 审计）：会话内容被清空——该会话的 busy/在飞 turn
+      // 登记随之作废（收尾帧永不再来，不清即幽灵条目）。
+      chatStore.dropSessionState(session_id)
       // Clear the visible chat too if it's the active conversation.
       if (currentId.value === session_id) {
-        const chatStore = useChatStore()
         chatStore.reset()
       }
     } catch {
@@ -191,6 +194,9 @@ export const useSessionStore = defineStore('session', () => {
         useToast().warn(`已停用绑定该会话的定时任务：${names}（可在任务页重新启用）`, 8000)
       }
       sessions.value = sessions.value.filter(s => s.id !== session_id)
+      // W3（2026-10-14 审计）：会话已删除——busy/在飞 turn 登记一并清账
+      // （会话没了，永无收尾帧来清 → 不清即永久泄漏/幽灵占位）。
+      useChatStore().dropSessionState(session_id)
       // If we deleted the active one, fall back to the first remaining (or null).
       if (currentId.value === session_id) {
         currentId.value = sessions.value[0]?.id ?? null
