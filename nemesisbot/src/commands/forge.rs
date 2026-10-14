@@ -914,7 +914,8 @@ pub fn run(action: ForgeAction, local: bool) -> Result<()> {
         }
         ForgeAction::ReplayList => {
             let workspace = common::workspace_path(&home);
-            let (pending, confirmed) = nemesis_forge::replay::list(&workspace);
+            let (pending, confirmed) =
+                nemesis_forge::replay::list(&workspace).map_err(anyhow::Error::msg)?;
             println!("pending ({}):", pending.len());
             for n in &pending {
                 println!("  - {n}");

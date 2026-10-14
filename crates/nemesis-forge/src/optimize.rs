@@ -74,6 +74,11 @@ fn split_frontmatter(content: &str) -> (String, String) {
     let close = format!("{nl}---");
     if let Some(end) = rest.find(&close) {
         let fm = &rest[..end];
+        // 空 frontmatter（`---\n---`）= 按无 frontmatter 处理——拼回会产出
+        // 前导空行污染候选头部（四路评审 C-F5 根修）。
+        if fm.trim().is_empty() {
+            return (String::new(), content.to_string());
+        }
         let body = &rest[end + close.len()..];
         return (format!("---\n{fm}\n---"), body.to_string());
     }
