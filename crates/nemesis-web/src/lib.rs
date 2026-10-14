@@ -105,3 +105,8 @@ mod workflow_chat_s10b_tests;
 // itself is compiled unconditionally, so no feature gate needed).
 #[cfg(test)]
 mod llm_bridge_s10b_tests;
+
+// wire 语义闸（2026-10-14 T37/T42 根修）：chat_streamed 尊重 stream_preferred
+// 裁决 + 三条真实 lane 判据钉死。
+#[cfg(test)]
+mod llm_bridge_stream_gate_tests;

@@ -533,6 +533,15 @@ impl LLMProvider for FallbackProvider {
         }))
     }
 
+    fn stream_preferred(&self, model: &str) -> bool {
+        // 与 default_model 同约定：主级（chain 首）的偏好即整链 wire 形态——
+        // 非流式回落最终走 chat() 全链轮转，这里只定主级形态。
+        self.chain
+            .first()
+            .map(|e| e.provider.stream_preferred(model))
+            .unwrap_or(false)
+    }
+
     fn default_model(&self) -> &str {
         self.chain
             .first()
