@@ -279,6 +279,25 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
         let provider_options = agent_options_to_provider(options);
         let provider_tools = agent_tools_to_provider(tools);
 
+        // wire 语义闸（2026-10-14 T37/T42 根修）：provider 偏好非流式（显式
+        // stream=no，或 auto 且 lane 缺省非流式——anthropic/openai 兼容）时
+        // 静默回落 chat()。此前本 lane 无条件走 chat_stream 真流式，越权覆盖
+        // 了 chat() 内部的 stream_mode 语义：流式路径 raw 请求/响应体恒 None
+        // 且 usage 依赖上游 chunk 自带（多数兼容端点不带）→ 集群 usage 回传
+        // 断粮（账本 0 行）+ raw 日志响应件缺失，观测 lane 不得改写 wire 语义。
+        // 前端增量面由 fallback_non_stream 合成全量 delta，消费点无差别。
+        if !self.inner.stream_preferred(model_to_use) {
+            return self
+                .fallback_non_stream(
+                    &provider_messages,
+                    &provider_tools,
+                    model_to_use,
+                    &provider_options,
+                    on_delta,
+                )
+                .await;
+        }
+
         let mut rx = self.inner.chat_stream(
             &provider_messages,
             &provider_tools,

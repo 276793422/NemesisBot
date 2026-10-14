@@ -143,6 +143,13 @@ impl LLMProvider for DefaultFollowingProvider {
         provider.chat_stream(messages, tools, &model, options)
     }
 
+    fn stream_preferred(&self, model: &str) -> bool {
+        // 与 chat/chat_stream 同路由：跟随槽的当前默认判定，钉扎语义原样
+        // 透传——wire 形态决定权在被路由到的 provider 手里。
+        let (provider, model) = self.route(model);
+        provider.stream_preferred(&model)
+    }
+
     fn default_model(&self) -> &str {
         self.captured.default_model()
     }
