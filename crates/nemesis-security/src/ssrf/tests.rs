@@ -212,6 +212,28 @@ fn test_allowed_host_case_insensitive() {
     eprintln!("case-insensitive allowed host result: {:?}", result);
 }
 
+#[test]
+fn test_from_enabled_with_allowlist_passes_loopback() {
+    // from_enabled_with_allowlist（2026-10-14 connector e2e 接线）：白名单
+    // 命中在 IP 校验之前——回环地址显式放行；同参无白名单照拦。
+    let guard = Guard::from_enabled_with_allowlist(true, vec!["127.0.0.1".to_string()]);
+    assert!(
+        guard
+            .validate_url("http://127.0.0.1:18094/quote?symbol=AAPL")
+            .is_ok()
+    );
+    assert!(
+        guard
+            .resolve_and_validate_collect("http://127.0.0.1:18094/quote")
+            .is_ok()
+    );
+    // 白名单外回环地址（::1）不受放行影响
+    assert!(guard.validate_url("http://[::1]:9/pwn").is_err());
+
+    let plain = Guard::from_enabled(true);
+    assert!(plain.validate_url("http://127.0.0.1:18094/quote").is_err());
+}
+
 // =======================================================================
 // check_ip — loopback
 // =======================================================================

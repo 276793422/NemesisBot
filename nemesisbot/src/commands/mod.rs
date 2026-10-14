@@ -10,6 +10,7 @@ pub mod autopilot;
 pub mod channel;
 #[cfg(feature = "cluster")]
 pub mod cluster;
+pub mod connector;
 pub mod cors;
 pub mod credentials;
 pub mod cron;

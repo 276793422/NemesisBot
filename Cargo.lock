@@ -4082,6 +4082,7 @@ dependencies = [
  "image",
  "mockall",
  "nemesis-config",
+ "nemesis-connectors",
  "nemesis-cron",
  "nemesis-data",
  "nemesis-forge",
@@ -4267,6 +4268,22 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "toml 0.8.2",
+ "tracing",
+]
+
+[[package]]
+name = "nemesis-connectors"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hex",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
  "toml 0.8.2",
  "tracing",
 ]
@@ -4888,6 +4905,7 @@ dependencies = [
  "nemesis-bus",
  "nemesis-cluster",
  "nemesis-config",
+ "nemesis-connectors",
  "nemesis-cron",
  "nemesis-data",
  "nemesis-forge",
@@ -4979,6 +4997,7 @@ dependencies = [
  "nemesis-channels",
  "nemesis-cluster",
  "nemesis-config",
+ "nemesis-connectors",
  "nemesis-cron",
  "nemesis-data",
  "nemesis-desktop",

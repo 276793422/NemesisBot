@@ -1315,6 +1315,7 @@ mod pipeline_extra {
             dlp_low_confidence_action: "log".to_string(),
             dlp_inbound_action: "log".to_string(),
             ssrf_enabled: false,
+            ssrf_allowed_hosts: Vec::new(),
             audit_chain_enabled: true,
             audit_chain_path: Some("/tmp/chain".to_string()),
             audit_log_enabled: true,

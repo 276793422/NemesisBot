@@ -16,7 +16,7 @@ codemode = ["dep:rquickjs"]
 forge = ["dep:nemesis-forge"]
 memory = ["dep:nemesis-memory"]
 workflow = ["dep:nemesis-workflow"]
-security = ["dep:nemesis-security", "nemesis-security/security", "nemesis-skills/security"]
+security = ["dep:nemesis-security", "nemesis-security/security", "nemesis-skills/security", "dep:nemesis-connectors"]
 
 [dependencies]
 nemesis-types = { workspace = true }
@@ -48,6 +48,10 @@ dashmap = { workspace = true }
 futures = { workspace = true }
 nemesis-observer = { workspace = true }
 nemesis-security = { workspace = true, optional = true }
+# connector denied_approval 凭条（行动代理 P0）：dispatch 的 ABAC deny 分支
+# 代写回执——审批拒绝发生在工具 execute 之前，工具自身写不了。随 security
+# feature 进出（凭条语义绑定安全管线）。
+nemesis-connectors = { workspace = true, optional = true }
 nemesis-state = { workspace = true }
 nemesis-data = { workspace = true }
 nemesis-path = { workspace = true }

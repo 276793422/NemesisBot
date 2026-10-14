@@ -121,6 +121,11 @@ nemesis-types = { workspace = true }
 nemesis-prompts = { workspace = true }
 nemesis-config = { workspace = true }
 nemesis-security = { workspace = true, optional = true }
+# 行动代理 P0（2026-10-14）：connector 注册表核心（清单/registry/回执/预算/
+# 纸面账本）。非 optional——connector_find/connector_invoke 随 security
+# feature 门控注册，但 WSAPI 数据面（connectors.* handlers）与 CLI 查询
+# （connector list/receipts）在无 security 组合也要能读回执/账本。
+nemesis-connectors = { workspace = true }
 tokio-util = { version = "0.7", features = ["rt"] }
 nemesis-bus = { workspace = true }
 nemesis-agent = { workspace = true }

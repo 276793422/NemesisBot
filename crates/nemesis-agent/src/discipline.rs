@@ -503,6 +503,7 @@ impl DisciplineFalsificationHook {
             correlation_id: None,
             async_callback: None,
             tool_path_base: None,
+            approval_ref: None,
         };
         let outcome = exec.execute(&args, &ctx).await;
         // 成败判定走 loop_tools 单一真相源 [`crate::loop_tools::exec_output_passed`]

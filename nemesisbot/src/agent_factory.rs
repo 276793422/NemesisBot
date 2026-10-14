@@ -533,25 +533,10 @@ pub fn build_agent_loop(
         // 入口形态变体（gap ⑤）：Interactive 恒空（gateway 字节不变）；
         // headless/ACP 由各自入口在 SharedResources 上显式设置。
         context_builder.set_entrance(shared.entrance);
-        // B 线画像注入（仅 enabled；空画像零字节）+ E 线 tier 档位
-        //（Standard=零注入）。resolve 在此重算一次（成本可忽略，免改上游序）。
-        context_builder.set_prompt_profile(nemesis_agent::context::PromptProfile::from_tier(
-            nemesis_types::capability::resolve_active_tier(
-                &serde_json::to_value(&cfg).unwrap_or_default(),
-                &model_name,
-            ),
-        ));
-        if cfg
-            .user_profile
-            .as_ref()
-            .map(|u| u.enabled)
-            .unwrap_or(false)
-        {
-            let section = nemesis_agent::user_profile::render_section(
-                &nemesis_agent::user_profile::load_profile(&workspace_dir),
-            );
-            context_builder.set_user_profile_section(section);
-        }
+        // B 线画像 / E 线 tier 档位不再在此注入（2026-10-14 动态注入迁移）：
+        // 两段迁入 build_messages_inner 的 merged snapshot 每轮重渲染
+        // （mtime/live-tier 门控），sweep 学习、veto、tier 热切、pro 体系
+        // 全部即时生效——build 时冻结形态（classic-only + 重启才更新）已废。
         let skills_dir = workspace_dir.join("skills");
         if skills_dir.exists() {
             context_builder.load_skills(&skills_dir);
@@ -1193,6 +1178,38 @@ pub fn build_agent_loop(
             Arc::new(crate::selfupdate_tool::SelfupdateApplyTool),
         );
         info!("[AgentFactory] selfupdate tools registered (check + apply, L9)");
+    }
+    // 行动代理 P0（2026-10-14）：connector_find / connector_invoke 动态工具
+    // 对。总闸 config.connectors.enabled（缺省开）。注册期静态声明只给
+    // connector_find（纯读编排面 → Internal LOW）；connector_invoke **不
+    // 静态声明**——per-op 风险经 Tool::operation_override 每次调用投影
+    // （dispatch 嗅探写 metadata 三键，管线按 op_type 裁决），清单解析不出
+    // = 未知名 fail-closed CRITICAL 兜底。主 loop 独占（项目 loop 固定子集
+    // 不含插件工具的同一决策；集群 worker v1 不开行动面）。
+    #[cfg(feature = "security")]
+    if cfg.connectors.as_ref().map(|c| c.enabled).unwrap_or(true) {
+        nemesis_security::types::declare_tool_operation(
+            crate::connector_tools::FIND_TOOL_NAME,
+            nemesis_security::types::OperationType::Internal,
+        );
+        let connector_ws = shared.workspace_dir();
+        agent_loop.register_plugin_tool(
+            crate::connector_tools::FIND_TOOL_NAME.to_string(),
+            Arc::new(crate::connector_tools::ConnectorFindTool::new(
+                connector_ws.clone(),
+            )),
+        );
+        let invoke_tool = Arc::new(crate::connector_tools::ConnectorInvokeTool::new(
+            connector_ws,
+            config_path.clone(),
+            shared.security_plugin.clone(),
+        ));
+        agent_loop.register_plugin_tool(
+            crate::connector_tools::INVOKE_TOOL_NAME.to_string(),
+            invoke_tool.clone(),
+        );
+        invoke_tool.set_loop(Arc::downgrade(&agent_loop));
+        info!("[AgentFactory] connector tools registered (find + invoke, P0)");
     }
     // I1 (devtool-upgrade 阶段 3)：workspace fs watcher——外部编辑下一轮
     // 以 <external_changes> 注记浮出（指令链文件走 digest 失效锚点）。句柄

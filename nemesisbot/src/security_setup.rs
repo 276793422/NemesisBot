@@ -412,6 +412,23 @@ pub(crate) fn apply_security_layer_switches(
     flag("credential", &mut config.credential_enabled);
     flag("ssrf", &mut config.ssrf_enabled);
 
+    // SSRF 主机白名单（2026-10-14 connector e2e 实需接线）：SsrfConfig
+    // 一直支持 `allowed_hosts`（命中即跳过全部检查），但配置面此前不可达
+    // ——唯一开关是整层 `enabled=false`，而那会把 guard 变 None，触发
+    // connector http 绑定的 fail-closed 拒绝（层关 = 全拒，不是放行）。
+    // 放行本机自建服务的正确姿势：`layers.ssrf.allowed_hosts: ["127.0.0.1"]`。
+    if let Some(hosts) = layers
+        .get("ssrf")
+        .and_then(|d| d.get("allowed_hosts"))
+        .and_then(|x| x.as_array())
+    {
+        config.ssrf_allowed_hosts = hosts
+            .iter()
+            .filter_map(|h| h.as_str())
+            .map(String::from)
+            .collect();
+    }
+
     // CFG-06（2026-09-16 死键接线）：注入检测阈值。原键
     // `layers.injection.extra.threshold` 此前只在 reload 里读后丢弃
     // （`_` 前缀），构造期从未读取——恒 Default 0.7，属假姿态。

@@ -16,6 +16,7 @@ nemesis-types = { workspace = true }
 nemesis-bus = { workspace = true }
 nemesis-providers = { workspace = true }
 nemesis-config = { workspace = true }
+nemesis-connectors = { workspace = true }
 nemesis-cluster = { workspace = true, optional = true }
 nemesis-forge = { workspace = true, optional = true }
 nemesis-skills = { workspace = true }
