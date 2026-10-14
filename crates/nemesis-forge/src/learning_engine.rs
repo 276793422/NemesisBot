@@ -1193,8 +1193,13 @@ impl LearningEngine {
             3
         };
 
-        let pipeline_guard = self.pipeline.lock();
-        if let Some(ref pipeline) = *pipeline_guard {
+        // Arc clone 后立即放锁（F-M7 同款模式）：迭代 refine 是 30s+ 墙钟
+        // 的 LLM 调用，持 pipeline 锁跨 LLM 会把并发路径（observe/reflect
+        // 等一切读 pipeline 的调用）整段卡死（四路评审 A-F1 根修）。快照
+        // 语义 = 本轮创建流程锚定一个 pipeline 实例，set_pipeline 热替换
+        // 下轮生效。
+        let pipeline = { self.pipeline.lock().clone() };
+        if let Some(ref pipeline) = pipeline {
             let mut current_content = content;
             for attempt in 0..=max_refine {
                 let validation = pipeline.validate(

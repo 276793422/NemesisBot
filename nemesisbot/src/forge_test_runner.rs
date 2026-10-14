@@ -156,6 +156,16 @@ impl SkillTestRunner for BotSkillTestRunner {
         collect_relative_files(&workspace, &workspace, &mut files);
         files.sort();
 
+        // 10. 显式关闭并删除临时 home（TempDir drop 静默忽略删除失败——
+        //     Windows AV/索引器瞬时句柄是常态，残留会持续堆积磁盘；close()
+        //     把失败诚实上报，仅 warn 不吞执行结果。四路评审 A-F3）。
+        if let Err(e) = tmp.close() {
+            tracing::warn!(
+                "[ForgeTest] temp home cleanup failed ({}): {e}",
+                home.display()
+            );
+        }
+
         Ok(ExecutionTranscript {
             turns_executed: max_turns.min(
                 events
@@ -228,7 +238,7 @@ pub async fn run_replay_all(
     home: &Path,
     workspace: &Path,
 ) -> Result<Vec<(String, bool, Vec<String>)>, String> {
-    let confirmed = nemesis_forge::replay::confirmed_cases(workspace);
+    let confirmed = nemesis_forge::replay::confirmed_cases(workspace)?;
     let mut out = Vec::new();
     for case in &confirmed {
         let transcript = replay_once(home, case).await?;
@@ -273,6 +283,11 @@ async fn replay_once(home: &Path, case: &TestCase) -> Result<ExecutionTranscript
     let agent_loop = crate::agent_factory::build_agent_loop(&shared)
         .map_err(|e| format!("build agent loop: {e}"))?;
 
+    // 同 run_case：0-turn 用例在执行前诚实拒绝（join 出空任务文本会让
+    // detached loop 空转一轮，transcript 无意义——四路评审 A-F4）。
+    if case.turns.is_empty() {
+        return Err("replay case has no turns".into());
+    }
     let task_text = case
         .turns
         .iter()
@@ -314,6 +329,15 @@ async fn replay_once(home: &Path, case: &TestCase) -> Result<ExecutionTranscript
     let mut files = Vec::new();
     collect_relative_files(&run_ws, &run_ws, &mut files);
     files.sort();
+
+    // 同 run_case：显式 close 诚实化临时 home 清理失败（TempDir drop 静默
+    // 忽略删除失败，Windows 瞬时句柄残留会持续堆积。四路评审 A-F3）。
+    if let Err(e) = tmp.close() {
+        tracing::warn!(
+            "[ForgeTest] temp home cleanup failed ({}): {e}",
+            tmp_home.display()
+        );
+    }
 
     Ok(ExecutionTranscript {
         // 与 run_case 同语义：真实执行轮数（Message 事件计数），非预算值——

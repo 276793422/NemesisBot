@@ -377,3 +377,116 @@ fn empty_substring_is_rejected_for_veto_forget_pin() {
     p = load_profile(dir.path());
     assert_eq!(p.habits.len(), 2);
 }
+
+// ---- 四路评审修复回归锁 ----
+
+#[test]
+fn upsert_hit_clamps_out_of_range_confidence() {
+    // B-F2：LLM 反思通道候选可能带 >1.0 的越界置信度，命中合并路径必须
+    // 钳制（插入路径已有 clamp，这里钉命中路径）。
+    let mut p = UserProfile::default();
+    upsert_habit(&mut p, habit("用户偏好简洁回复", 0.4));
+    upsert_habit(&mut p, habit("用户偏好简洁回复", 1.7));
+    assert_eq!(p.habits.len(), 1);
+    assert!(
+        (p.habits[0].confidence - 1.0).abs() < 1e-9,
+        "命中合并 max 后必须钳到 [0,1]: {}",
+        p.habits[0].confidence
+    );
+    // 负值同钳。
+    let mut p2 = UserProfile::default();
+    upsert_habit(&mut p2, habit("习惯丙", 0.4));
+    upsert_habit(&mut p2, habit("习惯丙", -0.5));
+    assert!(
+        (p2.habits[0].confidence - 0.4).abs() < 1e-9,
+        "max(0.4, -0.5) = 0.4，不得为负"
+    );
+}
+
+#[test]
+fn prune_keeps_pinned_over_higher_confidence() {
+    // B-Minor2：pinned 是用户意志，截断不得丢——低置信度 pinned 条目
+    // 优先于高置信度未钉条目保留。
+    let mut p = UserProfile::default();
+    for i in 0..15 {
+        upsert_habit(&mut p, habit(&format!("习惯{i}"), 0.5 + i as f64 * 0.01));
+    }
+    let mut low = habit("钉住的低置信习惯", 0.1);
+    low.pinned = true;
+    p.habits.push(low);
+    prune_and_cap(&mut p);
+    assert!(
+        p.habits.iter().any(|h| h.content == "钉住的低置信习惯"),
+        "pinned 条目必须存活于截断后集合"
+    );
+    assert_eq!(
+        p.habits.len(),
+        MAX_ENTRIES,
+        "pinned 占活跃名额，总数仍按上限截断"
+    );
+}
+
+#[test]
+fn render_folds_newlines_in_content() {
+    // B-F2：反思通道内容若夹带换行会伪造注入行结构——渲染层压成单行。
+    let mut p = UserProfile::default();
+    let mut h = habit("第一行\r\n第二行", 0.8);
+    h.status = STATUS_ACTIVE.into();
+    p.habits = vec![h];
+    let s = render_section(&p);
+    assert!(!s.contains('\r'), "CR 必须被折叠");
+    assert_eq!(s.lines().count(), 1, "单条目渲染 = 单行（无结构换行注入）");
+    // \r 与 \n 各折一个空格 → CRLF 折叠为双空格。
+    assert!(s.contains("- [style] 第一行  第二行"), "{s}");
+}
+
+#[test]
+fn veto_and_forget_and_pin_match_case_insensitively() {
+    // B-Minor4：匹配子串大小写不敏感（此前区分大小写会漏命中）。
+    let dir = tempfile::tempdir().unwrap();
+    let p = UserProfile {
+        enabled_at: Some("2026-10-01T00:00:00Z".into()),
+        last_sweep_ms: None,
+        habits: vec![habit("Prefers Concise REPLY", 0.8)],
+    };
+    save_profile(dir.path(), &p).unwrap();
+    assert!(
+        veto_habit(dir.path(), "concise reply").unwrap(),
+        "veto 小写命中大写原文"
+    );
+    let loaded = load_profile(dir.path());
+    assert_eq!(loaded.habits[0].status, STATUS_VETOED);
+    // forget 同口径。
+    assert!(
+        forget_habit(dir.path(), "CONCISE").unwrap(),
+        "forget 大写命中小写子串"
+    );
+    assert!(load_profile(dir.path()).habits.is_empty());
+}
+
+#[test]
+fn try_load_corrupt_profile_is_err_and_load_tolerates() {
+    // B-F3：损坏画像 try_load = Err（写路径禁用容错形态）；load_profile
+    // 的展示容错语义保留（unwrap_or_default 不 panic）。
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(
+        dir.path().join("config").join("user_profile.json"),
+        "{not json",
+    )
+    .unwrap();
+    let err = try_load_profile(dir.path());
+    assert!(err.is_err(), "损坏画像必须 Err");
+    let msg = err.unwrap_err();
+    assert!(
+        msg.contains("user_profile.json"),
+        "错误信息必须带路径: {msg}"
+    );
+    assert!(
+        load_profile(dir.path()).habits.is_empty(),
+        "展示形态容错保留"
+    );
+    // 缺失文件 = Ok(空画像)（常态，不是错误）。
+    let dir2 = tempfile::tempdir().unwrap();
+    assert!(try_load_profile(dir2.path()).unwrap().habits.is_empty());
+}

@@ -29,6 +29,10 @@ pub struct FailureRecord {
 }
 
 /// 扫 turn WAL 目录，提取失败记录（按 session+tool 去重，保留最新）。
+///
+/// 扫描范围含**轮换代**：`wal.jsonl` 写满轮换为 `wal.jsonl.old`（turn_wal
+/// 单点轮换语义），只扫当前代会漏掉轮换点前最近一批失败（四路评审 C-F3
+/// 根修）。跨代去重按 ts 保最新——旧代与当前代的重叠记录天然合并。
 pub fn extract_failures(workspace: &Path) -> Result<Vec<FailureRecord>, String> {
     let wal_dir = workspace.join("logs").join("turn_wal");
     let mut out: Vec<(String, FailureRecord)> = Vec::new();
@@ -39,7 +43,8 @@ pub fn extract_failures(workspace: &Path) -> Result<Vec<FailureRecord>, String> 
     let mut paths: Vec<_> = entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
     paths.sort();
     for p in paths {
-        if p.extension().map(|e| e != "jsonl").unwrap_or(true) {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if !(name.ends_with(".jsonl") || name.ends_with(".jsonl.old")) {
             continue;
         }
         let Ok(content) = std::fs::read_to_string(&p) else {
@@ -138,11 +143,15 @@ fn replay_dir(workspace: &Path) -> PathBuf {
     workspace.join("forge").join("replay")
 }
 
-fn read_cases(file: &Path) -> Vec<TestCase> {
-    std::fs::read_to_string(file)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+/// 读用例区文件。缺失 = Ok(空)；**损坏 = Err**（四路评审 C-F2 根修——
+/// 静默当空会让 confirm/ingest 以空基线回写，整区用例被销毁）。
+fn read_cases(file: &Path) -> Result<Vec<TestCase>, String> {
+    let content = match std::fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("read {}: {e}", file.display())),
+    };
+    serde_json::from_str(&content).map_err(|e| format!("parse {}: {e}", file.display()))
 }
 
 fn write_cases(file: &Path, cases: &[TestCase]) -> Result<(), String> {
@@ -166,7 +175,7 @@ pub fn ingest(
     } else {
         replay_dir(workspace).join("pending.json")
     };
-    let mut existing = read_cases(&target);
+    let mut existing = read_cases(&target)?;
     for c in cases {
         if !existing.iter().any(|e| e.name == c.name) {
             existing.push(c.clone());
@@ -180,10 +189,14 @@ pub fn ingest(
 }
 
 /// 待审确认：pending → confirmed（按 name；全部 = None）。
+///
+/// **写序（四路评审 C-F1 根修）：confirmed 先写、pending 后写。** 中间
+/// 崩溃的最坏形态 = 用例两区重名（name 幂等去重自愈），不再是
+/// 「pending 已截、confirmed 未写」的整批销毁。
 pub fn confirm(workspace: &Path, name: Option<&str>) -> Result<usize, String> {
     let pending_file = replay_dir(workspace).join("pending.json");
     let confirmed_file = replay_dir(workspace).join("confirmed.json");
-    let pending = read_cases(&pending_file);
+    let pending = read_cases(&pending_file)?;
     let (kept, moving): (Vec<_>, Vec<_>) = pending
         .into_iter()
         .partition(|c| name.map(|n| c.name != n).unwrap_or(false));
@@ -191,36 +204,38 @@ pub fn confirm(workspace: &Path, name: Option<&str>) -> Result<usize, String> {
     if moved_count == 0 {
         return Ok(0);
     }
-    let mut confirmed = read_cases(&confirmed_file);
+    let mut confirmed = read_cases(&confirmed_file)?;
     for c in moving {
         if !confirmed.iter().any(|e| e.name == c.name) {
             confirmed.push(c);
         }
     }
-    write_cases(&pending_file, &kept)?;
     write_cases(&confirmed_file, &confirmed)?;
+    write_cases(&pending_file, &kept)?;
     Ok(moved_count)
 }
 
-/// 待审区/已入库用例全量（Dashboard/CLI 列表面）。
-pub fn list_full(workspace: &Path) -> (Vec<TestCase>, Vec<TestCase>) {
-    (
-        read_cases(&replay_dir(workspace).join("pending.json")),
-        read_cases(&replay_dir(workspace).join("confirmed.json")),
-    )
+/// 待审区/已入库用例全量（Dashboard/CLI 列表面）。区文件损坏 = Err
+/// （同 [`read_cases`]，不静默当空）。
+pub fn list_full(workspace: &Path) -> Result<(Vec<TestCase>, Vec<TestCase>), String> {
+    Ok((
+        read_cases(&replay_dir(workspace).join("pending.json"))?,
+        read_cases(&replay_dir(workspace).join("confirmed.json"))?,
+    ))
 }
 
 /// 列出两个区的用例名（CLI 简版）。
-pub fn list(workspace: &Path) -> (Vec<String>, Vec<String>) {
-    let (pending, confirmed) = list_full(workspace);
-    (
+pub fn list(workspace: &Path) -> Result<(Vec<String>, Vec<String>), String> {
+    let (pending, confirmed) = list_full(workspace)?;
+    Ok((
         pending.into_iter().map(|c| c.name).collect(),
         confirmed.into_iter().map(|c| c.name).collect(),
-    )
+    ))
 }
 
-/// 已确认回归集（执行侧输入）。
-pub fn confirmed_cases(workspace: &Path) -> Vec<TestCase> {
+/// 已确认回归集（执行侧输入）。区文件损坏 = Err（执行侧诚实失败，
+/// 不静默跑空回归集）。
+pub fn confirmed_cases(workspace: &Path) -> Result<Vec<TestCase>, String> {
     read_cases(&replay_dir(workspace).join("confirmed.json"))
 }
 

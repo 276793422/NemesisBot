@@ -73,6 +73,47 @@ fn test_set_channel_config_new_channel() {
 }
 
 #[test]
+fn test_set_channel_config_string_key_true_stays_string() {
+    // E-F4 根修回归锁：字符串键的合法值恰好是 "true"/"1" 时不得被毒化成
+    // JSON bool——旧实现对一切键无差别强制，auth_token="true" 会落盘成
+    // true（读侧 as_str() 取空、typed 解析炸）。布尔强制只认布尔键。
+    let tmp = TempDir::new().unwrap();
+    let cfg = make_config(&tmp);
+
+    set_channel_config(&cfg, "web", "auth_token", "true").unwrap();
+    set_channel_config(&cfg, "telegram", "token", "1").unwrap();
+
+    let data: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    assert_eq!(data["channels"]["web"]["auth_token"], "true");
+    assert_eq!(data["channels"]["telegram"]["token"], "1");
+}
+
+#[test]
+fn test_set_channel_config_bool_key_value_set_extended() {
+    // E-F4 配套：布尔键值集扩展 yes/no/on/off/1/0（大小写不敏感）；
+    // 布尔键 + 值集外的值原样落串（typed 读侧 loud 报错，不静默猜值）。
+    let tmp = TempDir::new().unwrap();
+    let cfg = make_config(&tmp);
+
+    set_channel_config(&cfg, "websocket", "enabled", "YES").unwrap();
+    set_channel_config(&cfg, "external", "sync_to_web", "off").unwrap();
+    set_channel_config(&cfg, "telegram", "enabled", "maybe").unwrap();
+
+    let data: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    assert_eq!(
+        data["channels"]["websocket"]["enabled"],
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        data["channels"]["external"]["sync_to_web"],
+        serde_json::json!(false)
+    );
+    assert_eq!(data["channels"]["telegram"]["enabled"], "maybe");
+}
+
+#[test]
 fn test_set_channel_config_no_channels_key() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_no_channels_config(&tmp);
