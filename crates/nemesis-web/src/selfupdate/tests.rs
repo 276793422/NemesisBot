@@ -206,8 +206,25 @@ fn rollback_missing_old_is_noop_message() {
 
 #[test]
 fn wait_for_pid_exit_returns_fast_for_dead_pid() {
-    // u32::MAX 不可能是真实 PID——tasklist/kill -0 均探不到。
-    assert!(wait_for_pid_exit(u32::MAX, 5_000), "死 PID 立即判退场");
+    // Windows：u32::MAX 不可能是真实 PID——tasklist 探不到 → 判死。
+    // Linux：procps 4 的 /usr/bin/kill 对超 pid_t 域的值反而 rc=0
+    // （判活假象，CI 实录 2026-10-14；bash builtin rc=1 但 Command 找的
+    // 是 PATH 上的二进制）——改用 ns_last_pid+N 构造「合法域内但当前
+    // 未分配」的死 PID；procfs 不可读则诚实跳过（环境探针纪律）。
+    #[cfg(windows)]
+    let dead_pid = u32::MAX;
+    #[cfg(not(windows))]
+    let dead_pid = match std::fs::read_to_string("/proc/sys/kernel/ns_last_pid")
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+    {
+        Some(last) => last.saturating_add(1000),
+        None => {
+            eprintln!("skip: ns_last_pid unavailable, cannot construct in-range dead pid");
+            return;
+        }
+    };
+    assert!(wait_for_pid_exit(dead_pid, 5_000), "死 PID 立即判退场");
 }
 
 #[test]
@@ -293,6 +310,10 @@ mod gated {
         }
     }
 
+    // apply 全链路 v1 仅 Windows（平台闸排第一道，见下方
+    // apply_refused_on_non_windows_before_any_network）——闸序测试
+    // 只在 Windows 编译（漏 gate 实录：Linux coverage 三连红，2026-10-14）。
+    #[cfg(windows)]
     #[tokio::test]
     async fn apply_denied_by_estop() {
         let ws = tmp_dir("gate-estop");
@@ -304,6 +325,7 @@ mod gated {
         let _ = std::fs::remove_dir_all(&ws);
     }
 
+    #[cfg(windows)]
     #[tokio::test]
     async fn apply_denied_by_pending_journal() {
         let ws = tmp_dir("gate-journal");
@@ -317,6 +339,7 @@ mod gated {
         let _ = std::fs::remove_dir_all(&ws);
     }
 
+    #[cfg(windows)]
     #[tokio::test]
     async fn apply_denied_by_frequency_fuse() {
         let ws = tmp_dir("gate-fuse");

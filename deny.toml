@@ -70,6 +70,14 @@ ignore = [
   # 剩余暴露面 = rumqttc 内部 TLS 装配（用户自配证书解析，非不可信网络输入）。
   # 移除条件：rumqttc 发布移除 rustls-pemfile 的新版本。台账：docs/INFO/2026-08-31_dependency-rules.md
   { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile unmaintained; hard-pinned by rumqttc 0.25.1 (latest, no newer release); project's own usage migrated to pki-types PemObject, crate remains transitive via rumqttc" },
+  # unsafe-libyaml 归档无人维护（RUSTSEC-2024-0449，上游 2024-03-25 只读，末版
+  # 0.2.11）。传递链：serde_yaml 0.9.34+deprecated 硬钉 unsafe-libyaml（作者
+  # dtolnay 官方弃坑标记，无 0.10）；serde_yaml 是 workspace 直依赖
+  # （nemesis-config / nemesis-agent / nemesis-workflow / nemesisbot），只解析
+  # 本机用户自有的 YAML 配置（credentials.yaml / MCP 配置），无网络不可信输入
+  # 暴露。移除条件：workspace 完成 serde_yaml 迁移（候选 serde_yml fork 或
+  # 配置格式归一 toml/json），属独立重构任务。台账：docs/INFO/2026-08-31_dependency-rules.md（2026-10-14）
+  { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml archived (last 0.2.11); hard-pinned by deprecated serde_yaml 0.9, parses only local user-owned YAML configs, no untrusted network input" },
 ]
 
 [licenses]

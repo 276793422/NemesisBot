@@ -69,12 +69,17 @@ fn ask_async(
 }
 
 /// 等待提问线程进入 pending（轮询代替裸 sleep，避免慢机 flake）。
+///
+/// 预算 30s 而非 1s：ask 线程要先过 crate 级 APPROVAL_AUTO_SLOT_LOCK——
+/// 全并行下锁被其他 ask 路径测试持到各自 respond 到达为止，排队深度 =
+/// 并发 ask 测试数，1s 预算会把「还在排队」误判成「没进 pending」假红
+/// （本地全量并行实证：wait_pending 1s 红 → 级联 3-4 测，2026-10-14）。
 fn wait_pending(broker: &WebQuestionBroker, want: usize) {
-    for _ in 0..100 {
+    for _ in 0..600 {
         if broker.pending().len() >= want {
             return;
         }
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(50));
     }
     panic!("pending did not reach {} in time", want);
 }
@@ -261,12 +266,24 @@ async fn ask_in_tokio_context_uses_block_in_place_and_still_resolves() {
         let _serial = slot_lock();
         b2.ask(make_req("q-bip", false))
     });
-    for _ in 0..100 {
+    // pending 未现前禁止盲目 respond：ask 线程可能还在 slot_lock 队列里，
+    // 此时 respond 必然 unknown 假红，且失败后 waiter 继续持锁到
+    // recv_timeout 到期（最长 10s），把锁质押给整条并行队列形成级联
+    // （本地全量并行实证：本测 270 行 unwrap 假红连锁 3-4 测，2026-10-14）。
+    // 定性 panic 优于误导性 unknown；waiter 自身 recv_timeout 会到期放锁。
+    let mut entered = false;
+    for _ in 0..600 {
         if !broker.pending().is_empty() {
+            entered = true;
             break;
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    assert!(
+        entered,
+        "ask 未进入 pending（疑 slot_lock 排队超 30s）：不 respond，\
+         避免盲目 unknown 假红 + 锁质押级联"
+    );
     assert!(broker.respond("q-bip", vec!["pnpm".into()]).unwrap());
     match waiter.await.unwrap().unwrap() {
         QuestionOutcome::Answered(sel) => assert_eq!(sel, vec!["pnpm".to_string()]),

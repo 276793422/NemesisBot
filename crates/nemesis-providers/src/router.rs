@@ -388,6 +388,21 @@ pub trait LLMProvider: Send + Sync {
         rx
     }
 
+    /// 流式偏好裁决（2026-10-14 T37/T42 根修）：当前配置下该 provider 的
+    /// LLM wire 请求是否应为流式。显式 per-model `stream` 键恒赢（yes=流 /
+    /// no=非流），缺省（auto）按 lane 缺省——codex lane 流式（上游排队墙钟
+    /// 语义，2026-10-13），anthropic / openai 兼容 lane 非流式。
+    ///
+    /// 唯一消费点是 llm_bridge 的 `chat_streamed`（L10 观测 lane）：偏好非
+    /// 流式时静默回落 `chat()`——流式路径 raw 请求/响应体恒 None 且 usage
+    /// 依赖上游 chunk 自带，越权走流式曾致集群 usage 回传断粮 + raw 日志
+    /// 响应件缺失（观测 lane 不得改写 wire 语义）。默认 false：CLI 型 /
+    /// 无流式 lane 的 provider 一律非流式。
+    fn stream_preferred(&self, model: &str) -> bool {
+        let _ = model;
+        false
+    }
+
     /// Get the default model for this provider.
     fn default_model(&self) -> &str;
 

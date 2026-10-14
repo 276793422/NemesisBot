@@ -20,7 +20,39 @@ pub fn resolve_addr(addr_str: &str) -> Result<Vec<SocketAddr>, String> {
 
 /// Get the first non-loopback IPv4 address of the local machine.
 /// Returns `127.0.0.1` if no suitable address is found.
+///
+/// The kernel's UDP-connect answer is **rejected when it belongs to a
+/// virtual interface** (docker0/virbr0/...): libvirt NAT bridges routinely
+/// own the default route, and a virtual-bridge address is unreachable to
+/// cluster peers — the same filter contract [`get_all_local_ips`] enforces
+/// (invariant: primary ∈ full list, pinned by
+/// `test_get_all_local_ips_enumerates_all_interfaces`). When rejected, the
+/// filtered enumeration's best address is used instead; when enumeration
+/// yields no non-virtual address at all, the kernel answer is kept as last
+/// resort.
 pub fn get_local_ip() -> IpAddr {
+    let ip = udp_connect_local_ip();
+    if ip.is_loopback() || ip.is_unspecified() {
+        return ip;
+    }
+    if let Some(ips) = enumerate_filtered_ips() {
+        if ips.contains(&ip.to_string()) {
+            return ip;
+        }
+        // Kernel picked a filtered-out (virtual) source; prefer the
+        // enumeration's best non-virtual address.
+        if let Some(best) = ips.first()
+            && let Ok(parsed) = best.parse()
+        {
+            return parsed;
+        }
+    }
+    ip
+}
+
+/// Raw UDP-connect trick: the source address the kernel would use to reach a
+/// public address. Returns `127.0.0.1` if no suitable address is found.
+fn udp_connect_local_ip() -> IpAddr {
     match std::net::UdpSocket::bind("0.0.0.0:0") {
         Ok(socket) => {
             if socket.connect("8.8.8.8:80").is_ok()
@@ -256,67 +288,67 @@ pub fn get_all_local_ips() -> Vec<String> {
 
 fn get_all_local_ips_impl() -> Vec<String> {
     // Try enumerating real network interfaces first (matches Go's net.Interfaces()).
-    match if_addrs::get_if_addrs() {
-        Ok(interfaces) => {
-            let mut candidates: Vec<CandidateIp> = Vec::new();
+    match enumerate_filtered_ips() {
+        Some(result) if !result.is_empty() => result,
+        _ => fallback_local_ip(),
+    }
+}
 
-            for iface in &interfaces {
-                // Skip loopback addresses
-                if iface.is_loopback() {
-                    continue;
-                }
+/// Enumeration-only core shared by [`get_all_local_ips`] and [`get_local_ip`]:
+/// interface enumeration + loopback/virtual/vethernet-NAT filters + priority
+/// sort + dedup. Returns `None` when enumeration itself fails; `Some(empty)`
+/// when every interface was filtered out. No UDP fallback here — callers
+/// decide.
+fn enumerate_filtered_ips() -> Option<Vec<String>> {
+    let interfaces = if_addrs::get_if_addrs().ok()?;
+    let mut candidates: Vec<CandidateIp> = Vec::new();
 
-                let ip = iface.addr.ip();
-
-                // Only consider IPv4; link-local is kept but deprioritized.
-                if let IpAddr::V4(v4) = ip {
-                    let is_link_local = v4.is_link_local();
-
-                    // Skip virtual interfaces by name
-                    if is_virtual_interface(&iface.name) {
-                        continue;
-                    }
-
-                    // P3：vethernet 命名 + 172.16.0.0/12 NAT 段 = Hyper-V/WSL
-                    // 内部交换机（Windows 外部 vSwitch 挂真网卡时地址是真实
-                    // 网段，不受影响）。
-                    if is_vethernet_nat_addr(&iface.name, v4) {
-                        continue;
-                    }
-
-                    let priority = get_interface_priority(&iface.name);
-                    candidates.push(CandidateIp {
-                        ip: v4.to_string(),
-                        priority,
-                        link_local: is_link_local,
-                    });
-                }
-            }
-
-            // Sort by (priority, link-local-last); stable sort preserves
-            // relative order within the same key.
-            candidates.sort_by_key(|c| (c.priority, c.link_local));
-
-            // Extract just the IP strings, deduplicating
-            let mut result: Vec<String> = Vec::new();
-            for c in candidates {
-                if !result.contains(&c.ip) {
-                    result.push(c.ip);
-                }
-            }
-
-            // If we found nothing, fall back to UDP connect trick
-            if result.is_empty() {
-                fallback_local_ip()
-            } else {
-                result
-            }
+    for iface in &interfaces {
+        // Skip loopback addresses
+        if iface.is_loopback() {
+            continue;
         }
-        Err(_) => {
-            // Interface enumeration failed, fall back
-            fallback_local_ip()
+
+        let ip = iface.addr.ip();
+
+        // Only consider IPv4; link-local is kept but deprioritized.
+        if let IpAddr::V4(v4) = ip {
+            let is_link_local = v4.is_link_local();
+
+            // Skip virtual interfaces by name
+            if is_virtual_interface(&iface.name) {
+                continue;
+            }
+
+            // P3：vethernet 命名 + 172.16.0.0/12 NAT 段 = Hyper-V/WSL
+            // 内部交换机（Windows 外部 vSwitch 挂真网卡时地址是真实
+            // 网段，不受影响）。
+            if is_vethernet_nat_addr(&iface.name, v4) {
+                continue;
+            }
+
+            let priority = get_interface_priority(&iface.name);
+            candidates.push(CandidateIp {
+                ip: v4.to_string(),
+                priority,
+                link_local: is_link_local,
+            });
         }
     }
+
+    // Sort by (priority, link-local-last); stable sort preserves
+    // relative order within the same key.
+    candidates.sort_by_key(|c| (c.priority, c.link_local));
+
+    // Extract just the IP strings, deduplicating
+    let mut result: Vec<String> = Vec::new();
+    for c in candidates {
+        if !result.contains(&c.ip) {
+            result.push(c.ip);
+        }
+    }
+
+    Some(result)
 }
 
 /// Fallback: get a single local IP via the UDP connect trick.

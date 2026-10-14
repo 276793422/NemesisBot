@@ -154,11 +154,22 @@ impl nemesis_security::auditor::ApprovalManager for WebApprovalManager {
             created_at: std::time::Instant::now(),
             tx,
         };
-        self.broadcast_requested(&entry, request_id);
-        self.pending
-            .lock()
-            .map_err(|e| format!("pending map poisoned: {}", e))?
-            .insert(request_id.to_string(), entry);
+        // **先入册、后广播**（不变量：广播 ApprovalRequested ⇒ pending 已
+        // 可裁决）。反序时消费方收到事件立即 respond 会查表落空报
+        // unknown——高负载并行下请求线程被调度延迟卡在广播与入册之间
+        // （实录 ET Linux resolved_broadcast_fires_on_respond_and_timeout
+        // 假红），前端秒点同病。channel_approval 同款教训（2026-09-07）。
+        // broadcast send 是同步非阻塞操作，持锁发送无死锁面。
+        {
+            let mut map = self
+                .pending
+                .lock()
+                .map_err(|e| format!("pending map poisoned: {}", e))?;
+            map.insert(request_id.to_string(), entry);
+            if let Some(registered) = map.get(request_id) {
+                self.broadcast_requested(registered, request_id);
+            }
+        }
 
         // 阻塞等裁决。tokio 上下文（agent loop 工具调度链）用 block_in_place
         // 让出当前 worker——否则多会话并发审批可能占满 worker 池，WSAPI 无法
