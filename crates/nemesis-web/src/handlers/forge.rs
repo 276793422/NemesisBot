@@ -1143,7 +1143,7 @@ pub fn load_forge_config(workspace: &str) -> nemesis_forge::config::ForgeConfig 
 
 /// `forge.replay_list`：失败重放待审区 + 已入库回归集全量。
 fn forge_replay_list(workspace: &str) -> Result<Option<serde_json::Value>, String> {
-    let (pending, confirmed) = nemesis_forge::replay::list_full(Path::new(workspace));
+    let (pending, confirmed) = nemesis_forge::replay::list_full(Path::new(workspace))?;
     let to_json = |cases: Vec<nemesis_forge::skill_tests::TestCase>| {
         cases
             .iter()

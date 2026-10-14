@@ -107,18 +107,38 @@ pub fn profile_path(workspace: &Path) -> PathBuf {
     workspace.join("config").join("user_profile.json")
 }
 
-/// 读取画像（缺失/损坏 = 空画像；不 panic 不误伤）。
-pub fn load_profile(workspace: &Path) -> UserProfile {
+/// 读取画像（**写路径禁用**）：缺失 = 空画像；损坏 = Err 带路径。
+///
+/// 只读展示类调用方可用 [`load_profile`] 的容错形态；**任何读取后回写
+/// 的路径（sweep/veto/forget/pin/enable）必须用本函数**——损坏静默当空
+/// 再 save 会把全量习惯清空（四路评审 B-F3 根修）。
+pub fn try_load_profile(workspace: &Path) -> Result<UserProfile, String> {
     let path = profile_path(workspace);
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    let content = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(UserProfile::default()),
+        Err(e) => return Err(format!("read {}: {e}", path.display())),
+    };
+    serde_json::from_str(&content).map_err(|e| format!("parse {}: {e}", path.display()))
+}
+
+/// 读取画像（缺失/损坏 = 空画像；不 panic 不误伤）。
+///
+/// ⚠ 仅限纯展示/统计读取；读后回写的调用方必须走 [`try_load_profile`]。
+pub fn load_profile(workspace: &Path) -> UserProfile {
+    try_load_profile(workspace).unwrap_or_default()
 }
 
 /// 写画像（config 家族写串行锁；原子落盘）。
 pub fn save_profile(workspace: &Path, profile: &UserProfile) -> Result<(), String> {
     let _serial = nemesis_config::config_write_lock();
+    save_profile_locked(workspace, profile)
+}
+
+/// [`save_profile`] 的锁内版：调用方**已持** [`nemesis_config::config_write_lock`]
+/// 时使用（锁不可重入——锁内函数再走 `save_profile` 会自死锁；四路评审
+/// B-F4 根修配套）。
+pub fn save_profile_locked(workspace: &Path, profile: &UserProfile) -> Result<(), String> {
     let path = profile_path(workspace);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create config dir: {e}"))?;
@@ -131,12 +151,15 @@ pub fn save_profile(workspace: &Path, profile: &UserProfile) -> Result<(), Strin
 
 /// 开启画像（记录 enabled_at——仅向前锚点；幂等：已开启不改动）。
 pub fn enable_profile(workspace: &Path) -> Result<UserProfile, String> {
-    let mut profile = load_profile(workspace);
+    // RMW 全程持锁（锁外读改写会丢并发写入；save_profile 锁不可重入，
+    // 内层走 save_profile_locked）。
+    let _serial = nemesis_config::config_write_lock();
+    let mut profile = try_load_profile(workspace)?;
     if profile.enabled_at.is_none() {
         profile.enabled_at = Some(chrono::Local::now().to_rfc3339());
     }
     prune_and_cap(&mut profile);
-    save_profile(workspace, &profile)?;
+    save_profile_locked(workspace, &profile)?;
     Ok(profile)
 }
 
@@ -181,10 +204,13 @@ pub fn prune_and_cap_with_max(profile: &mut UserProfile, max_entries: usize) {
         .drain(..)
         .partition(|h| h.status != STATUS_VETOED);
     let mut active = active;
+    // pinned 优先（用户意志不被截断），其次置信度。
     active.sort_by(|a, b| {
-        b.confidence
-            .partial_cmp(&a.confidence)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        b.pinned.cmp(&a.pinned).then_with(|| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
     });
     active.truncate(max_entries);
     profile.habits = active;
@@ -202,7 +228,9 @@ pub fn upsert_habit(profile: &mut UserProfile, mut entry: HabitEntry) {
     }
     for existing in profile.habits.iter_mut() {
         if existing.category == entry.category && norm(&existing.content) == norm(&entry.content) {
-            existing.confidence = existing.confidence.max(entry.confidence);
+            // max 后钳制：LLM 反思通道候选可能带 >1.0 的越界置信度（四路
+            // 评审 B-F2 根修）。
+            existing.confidence = existing.confidence.max(entry.confidence).clamp(0.0, 1.0);
             existing.hits += 1;
             if !entry.last_seen.is_empty() {
                 existing.last_seen = entry.last_seen;
@@ -246,8 +274,8 @@ pub fn decay_sweep_with_days(
     }
 }
 
-/// 注入段渲染（ContextBuilder::set_user_profile_section 的输入）。
-/// 空 = 未开启或无 active 条目（零字节注入）。
+/// 注入段渲染（loop::messages merged snapshot 的输入；空 = 未开启或无
+/// active 条目，零字节注入）。content 换行折叠为空格（单行纪律）。
 pub fn render_section(profile: &UserProfile) -> String {
     let mut lines = Vec::new();
     let mut entries: Vec<&HabitEntry> = profile
@@ -259,7 +287,10 @@ pub fn render_section(profile: &UserProfile) -> String {
     entries.sort_by_key(|h| std::cmp::Reverse(h.pinned));
     for h in entries {
         let pin_mark = if h.pinned { " [pinned]" } else { "" };
-        lines.push(format!("- [{}] {}{pin_mark}", h.category, h.content));
+        // 换行折叠：content 若夹带 \r\n 会伪造注入行结构（四路评审
+        // B-F2 根修——反思维护内容统一压成单行）。
+        let one_line = h.content.replace(['\r', '\n'], " ");
+        lines.push(format!("- [{}] {}{pin_mark}", h.category, one_line));
     }
     if lines.is_empty() {
         return String::new();
@@ -270,57 +301,65 @@ pub fn render_section(profile: &UserProfile) -> String {
 /// veto：按内容子串匹配置 vetoed（负样本：驻留抑制——prune 保留 vetoed
 /// 条目，upsert 命中同内容保持 vetoed，重生成被压制；详见
 /// [`prune_and_cap`]）。返回是否命中。空子串 = Err（`contains("")` 恒真
-/// 会全量命中，CLI/WSAPI 双入口共用此防线）。
+/// 会全量命中，CLI/WSAPI 双入口共用此防线）。匹配大小写不敏感。
 pub fn veto_habit(workspace: &Path, content_sub: &str) -> Result<bool, String> {
     if content_sub.trim().is_empty() {
         return Err("veto 匹配子串为空（会命中全部条目），拒绝执行".into());
     }
-    let mut p = load_profile(workspace);
+    // RMW 全程持锁（四路评审 B-F4 根修）；损坏画像 = Err 不回写。
+    let _serial = nemesis_config::config_write_lock();
+    let mut p = try_load_profile(workspace)?;
+    let needle = content_sub.to_lowercase();
     let mut hit = false;
     for h in p.habits.iter_mut() {
-        if h.content.contains(content_sub) {
+        if h.content.to_lowercase().contains(&needle) {
             h.status = STATUS_VETOED.to_string();
             hit = true;
         }
     }
     if hit {
-        save_profile(workspace, &p)?;
+        save_profile_locked(workspace, &p)?;
     }
     Ok(hit)
 }
 
 /// forget：按内容子串整条删除（与 veto 不同：删除后同语义候选可重新生成）。
-/// 空子串 = Err（同 [`veto_habit`] 防线）。
+/// 空子串 = Err（同 [`veto_habit`] 防线）。匹配大小写不敏感。
 pub fn forget_habit(workspace: &Path, content_sub: &str) -> Result<bool, String> {
     if content_sub.trim().is_empty() {
         return Err("forget 匹配子串为空（会命中全部条目），拒绝执行".into());
     }
-    let mut p = load_profile(workspace);
+    let _serial = nemesis_config::config_write_lock();
+    let mut p = try_load_profile(workspace)?;
+    let needle = content_sub.to_lowercase();
     let before = p.habits.len();
-    p.habits.retain(|h| !h.content.contains(content_sub));
+    p.habits
+        .retain(|h| !h.content.to_lowercase().contains(&needle));
     let removed = p.habits.len() < before;
     if removed {
-        save_profile(workspace, &p)?;
+        save_profile_locked(workspace, &p)?;
     }
     Ok(removed)
 }
 
 /// pin / unpin：按内容子串切换钉住（钉住 = 不衰减、渲染置顶）。
-/// 空子串 = Err（同 [`veto_habit`] 防线）。
+/// 空子串 = Err（同 [`veto_habit`] 防线）。匹配大小写不敏感。
 pub fn set_pinned(workspace: &Path, content_sub: &str, pinned: bool) -> Result<bool, String> {
     if content_sub.trim().is_empty() {
         return Err("pin 匹配子串为空（会命中全部条目），拒绝执行".into());
     }
-    let mut p = load_profile(workspace);
+    let _serial = nemesis_config::config_write_lock();
+    let mut p = try_load_profile(workspace)?;
+    let needle = content_sub.to_lowercase();
     let mut hit = false;
     for h in p.habits.iter_mut() {
-        if h.content.contains(content_sub) {
+        if h.content.to_lowercase().contains(&needle) {
             h.pinned = pinned;
             hit = true;
         }
     }
     if hit {
-        save_profile(workspace, &p)?;
+        save_profile_locked(workspace, &p)?;
     }
     Ok(hit)
 }
