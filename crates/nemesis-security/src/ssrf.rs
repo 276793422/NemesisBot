@@ -164,6 +164,20 @@ impl Guard {
         Self::new(config).expect("default SsrfConfig should always parse")
     }
 
+    /// Like [`Self::from_enabled`], but seeds the host whitelist. Whitelisted
+    /// hosts bypass ALL checks (loopback / private ranges / metadata / CIDR),
+    /// decided before IP validation in `validate_url` — this is how an
+    /// operator explicitly exposes a known-internal endpoint (e.g. a loopback
+    /// test server) without gutting the guard for everyone else.
+    pub fn from_enabled_with_allowlist(enabled: bool, allowed_hosts: Vec<String>) -> Self {
+        let config = SsrfConfig {
+            enabled,
+            allowed_hosts,
+            ..SsrfConfig::default()
+        };
+        Self::new(config).expect("default SsrfConfig should always parse")
+    }
+
     // -----------------------------------------------------------------------
     // Public queries
     // -----------------------------------------------------------------------

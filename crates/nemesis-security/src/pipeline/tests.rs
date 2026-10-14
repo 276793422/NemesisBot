@@ -1953,3 +1953,210 @@ async fn preexec_inline_bash_c_passes_pipeline() {
     let (allowed, err) = plugin.execute(&inv);
     assert!(allowed, "inline form must pass, got: {err:?}");
 }
+
+// ===== connector 动态工具 metadata 投影（行动代理 P0，2026-10-14）=====
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn override_op_type_metadata_respected_by_pipeline() {
+    // 静态表：exec → ProcessExec → 危险命令被 command guard 拦。
+    let plugin = make_plugin();
+    let inv_plain = ToolInvocation {
+        tool_name: "exec".to_string(),
+        args: serde_json::json!({"command": "rm -rf /"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, _err) = plugin.execute(&inv_plain);
+    assert!(
+        !allowed,
+        "plain exec with dangerous command must be blocked"
+    );
+
+    // metadata 投影 override_op_type=file_read → command guard（ProcessExec
+    // 门控）跳过。管线尊重调用方投影——trust boundary 在写 metadata 的
+    // dispatch 侧，这里只验证机制。
+    let mut metadata = HashMap::new();
+    metadata.insert("override_op_type".to_string(), "file_read".to_string());
+    let inv_overridden = ToolInvocation {
+        tool_name: "exec".to_string(),
+        args: serde_json::json!({"command": "rm -rf /"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata,
+    };
+    let (allowed, err) = plugin.execute(&inv_overridden);
+    assert!(
+        allowed,
+        "override to file_read must skip command guard, got: {err:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn override_op_type_unknown_slug_is_ignored() {
+    // 未知 slug 忽略 = 旧行为（静态表 / fail-closed），不 panic 不拦停。
+    let plugin = make_plugin();
+    let mut metadata = HashMap::new();
+    metadata.insert("override_op_type".to_string(), "not-a-slug".to_string());
+    let inv = ToolInvocation {
+        tool_name: "read_file".to_string(),
+        args: serde_json::json!({"path": "/tmp/test.txt"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata,
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(
+        allowed,
+        "unknown slug must fall back to static table, got: {err:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn override_force_approval_metadata_escalates_to_approval() {
+    // connector op `confirm = "required"` 声明 → dispatch 写
+    // override_force_approval → ABAC 强制人工审批（跳过规则表自动放行）；
+    // 无审批 manager = 拒绝且理由携带声明文案。
+    let plugin = make_plugin();
+    let mut metadata = HashMap::new();
+    metadata.insert(
+        "override_force_approval".to_string(),
+        "connector op 声明 confirm=required（强授权卡）".to_string(),
+    );
+    let inv = ToolInvocation {
+        tool_name: "read_file".to_string(),
+        args: serde_json::json!({"path": "/tmp/test.txt"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata,
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(!allowed, "force approval must escalate (no manager = deny)");
+    let msg = err.expect("escalation must carry approval-required info");
+    assert!(
+        msg.summary.contains("approval required"),
+        "summary must be approval-flavored, got: {}",
+        msg.summary
+    );
+    assert!(
+        msg.summary.contains("confirm=required"),
+        "summary must carry the override reason, got: {}",
+        msg.summary
+    );
+}
+
+#[test]
+fn guardian_should_review_with_danger_matches_static_path() {
+    // delegate 路径与旧静态实现同口径：exec（CRITICAL）在 critical 模式全审。
+    let plugin = make_plugin();
+    plugin.set_guardian_mode("critical");
+    assert!(plugin.guardian_should_review("exec", "{}"));
+    assert!(plugin.guardian_should_review_with_danger("connector_invoke", "{}", "CRITICAL"));
+    assert!(!plugin.guardian_should_review_with_danger("connector_invoke", "{}", "HIGH"));
+    // high 模式：HIGH/CRITICAL 危级进预筛；LOW 档不审。
+    plugin.set_guardian_mode("high");
+    assert!(
+        !plugin.guardian_should_review_with_danger("connector_invoke", "{}", "LOW"),
+        "LOW danger must not enter LLM review in high mode"
+    );
+    // off（缺省）模式恒不审。
+    plugin.set_guardian_mode("off");
+    assert!(!plugin.guardian_should_review_with_danger("connector_invoke", "{}", "CRITICAL"));
+}
+
+#[test]
+fn danger_level_of_slug_fail_closed_on_unknown() {
+    use crate::types::{danger_level_of_slug, operation_type_from_slug};
+    assert_eq!(
+        operation_type_from_slug("file_read"),
+        Some(crate::types::OperationType::FileRead)
+    );
+    assert_eq!(
+        operation_type_from_slug("process_exec"),
+        Some(crate::types::OperationType::ProcessExec)
+    );
+    assert_eq!(
+        operation_type_from_slug("internal"),
+        Some(crate::types::OperationType::Internal)
+    );
+    assert_eq!(operation_type_from_slug("nope"), None);
+    assert_eq!(danger_level_of_slug("file_read"), "LOW");
+    assert_eq!(danger_level_of_slug("process_exec"), "CRITICAL");
+    assert_eq!(
+        danger_level_of_slug("nope"),
+        "CRITICAL",
+        "unknown slug must fail closed"
+    );
+}
+
+// ---- 行动代理 P0（PLAN §6.2）：execute_tracked 必须透传审批引用（Cell 槽位）----
+// 无交互审批路径（直通/拦截）第三值恒 None；装配批准 manager 后 Some（pipeline
+// 的 ABAC 层自生成 req.id = uuid，测试做动态契约断言不钉死具体值）。
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn execute_tracked_returns_none_without_approval_path() {
+    let plugin = make_plugin();
+    let inv = ToolInvocation {
+        tool_name: "exec".to_string(),
+        args: serde_json::json!({"command": "ls"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, deny, approval_ref) = plugin.execute_tracked(&inv);
+    assert!(allowed);
+    assert!(deny.is_none());
+    assert!(
+        approval_ref.is_none(),
+        "straight-through execute must not fabricate approval_ref"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn execute_tracked_propagates_interactive_approval_ref() {
+    use crate::auditor::{ApprovalManager, ApprovalVerdict};
+
+    struct ApprovingMgr;
+    impl ApprovalManager for ApprovingMgr {
+        fn is_running(&self) -> bool {
+            true
+        }
+        fn request_approval_sync(
+            &self,
+            request_id: &str,
+            _operation: &str,
+            _target: &str,
+            _risk_level: &str,
+            _reason: &str,
+            _timeout_secs: u64,
+        ) -> Result<ApprovalVerdict, String> {
+            assert!(!request_id.is_empty(), "pipeline must assign a request id");
+            Ok(ApprovalVerdict::approved())
+        }
+    }
+
+    let cfg = SecurityPluginConfig {
+        enabled: true,
+        default_action: "ask".to_string(),
+        ..Default::default()
+    };
+    let plugin = SecurityPlugin::new(cfg);
+    plugin
+        .auditor()
+        .set_approval_manager(std::sync::Arc::new(ApprovingMgr));
+
+    let inv = ToolInvocation {
+        tool_name: "write_file".to_string(),
+        args: serde_json::json!({"path": "/tmp/pipe-ref.txt", "content": "x"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, deny, approval_ref) = plugin.execute_tracked(&inv);
+    assert!(allowed, "approved op must pass, deny={deny:?}");
+    assert!(deny.is_none());
+    assert!(
+        approval_ref.is_some_and(|r| !r.is_empty()),
+        "pipeline must surface the interactive approval ref to the receipt layer"
+    );
+}

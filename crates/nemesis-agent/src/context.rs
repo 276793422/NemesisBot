@@ -46,6 +46,12 @@ pub struct RequestContext {
     /// 会话恒 None，零行为变化。
     #[serde(skip)]
     pub tool_path_base: Option<PathBuf>,
+    /// 行动代理 P0（PLAN §6.2 凭条 `approval_ref` 契约字段）：dispatch 过
+    /// `execute_tracked` 拿到的交互审批引用（= 审批卡 request_id）。仅
+    /// ABAC RequireApproval 经人工批准时 Some；直通/规则表/免打扰/拒绝
+    /// 恒 None——凭条不伪造背书。connector 工具把它写进本次调用的凭条。
+    #[serde(skip)]
+    pub approval_ref: Option<String>,
 }
 
 impl std::fmt::Debug for RequestContext {
@@ -61,6 +67,7 @@ impl std::fmt::Debug for RequestContext {
                 &self.async_callback.as_ref().map(|_| "..."),
             )
             .field("tool_path_base", &self.tool_path_base)
+            .field("approval_ref", &self.approval_ref)
             .finish()
     }
 }
@@ -76,6 +83,7 @@ impl RequestContext {
             correlation_id: None,
             async_callback: None,
             tool_path_base: None,
+            approval_ref: None,
         }
     }
 
@@ -95,6 +103,7 @@ impl RequestContext {
             correlation_id: Some(correlation_id.to_string()),
             async_callback: None,
             tool_path_base: None,
+            approval_ref: None,
         }
     }
 
@@ -111,6 +120,7 @@ impl RequestContext {
             correlation_id: Some(correlation_id.to_string()),
             async_callback: None,
             tool_path_base: None,
+            approval_ref: None,
         }
     }
 
@@ -195,10 +205,6 @@ pub struct ContextBuilder {
     /// 入口形态变体（pro 体系专属）：缺省 Interactive——gateway 主链路
     /// 渲染字节与历史一致（golden 不变）；headless/ACP 由各自入口显式设置。
     entrance: crate::prompt::Entrance,
-    /// tier→prompt 档位（E 线）：缺省 Standard = 不注入字节。
-    prompt_profile: PromptProfile,
-    /// 用户画像注入段（B 线）：空串 = 不注入字节。
-    user_profile_section: String,
 }
 
 /// Information about a loaded skill.
@@ -235,6 +241,30 @@ impl PromptProfile {
     }
 }
 
+/// tier 档位段渲染（每轮消费，**纯状态派生**：两次变更之间字节稳定——
+/// prompt cache 前缀不受损）。Standard = 零字节。
+///
+/// 归属说明（2026-10-14 动态注入迁移）：画像段 + 档位段原挂
+/// `ContextBuilder`（build 时冻结、仅 classic 路径），现由
+/// `loop::messages::build_messages_inner` 的 merged snapshot 每轮重渲染
+/// ——tier 热切（`check_config_reload`）与画像 sweep 学习即时生效，且
+/// classic/pro 双体系统一覆盖。段文本经此处自由函数字节保留迁移。
+pub fn prompt_profile_section(profile: PromptProfile) -> String {
+    match profile {
+        PromptProfile::Standard => String::new(),
+        PromptProfile::Concise => "# 回复风格（当前模型能力档：精简）
+
+回复简洁直接、结论先行；避免冗长铺垫与重复确认；行动优先于解释。
+"
+        .into(),
+        PromptProfile::Full => "# 执行风格（当前模型能力档：完整）
+
+复杂任务先给出简要方案再动手；充分利用可用工具自主多步执行；完成后附简短说明。
+"
+        .into(),
+    }
+}
+
 impl ContextBuilder {
     /// Create a new context builder for the given workspace directory.
     pub fn new(workspace: &Path) -> Self {
@@ -246,8 +276,6 @@ impl ContextBuilder {
             tool_definitions: Vec::new(),
             prompt_system: crate::prompt::PromptSystem::Classic,
             entrance: crate::prompt::Entrance::Interactive,
-            prompt_profile: PromptProfile::Standard,
-            user_profile_section: String::new(),
         }
     }
 
@@ -266,52 +294,6 @@ impl ContextBuilder {
     pub fn set_entrance(&mut self, entrance: crate::prompt::Entrance) -> &mut Self {
         self.entrance = entrance;
         self
-    }
-
-    /// 设置 tier→prompt 档位（E 线，2026-10-14）：mini=Concise、
-    /// normal=Standard、big=Full。**Standard 不注入任何字节**（byte-stable
-    /// 缺省）；仅 Concise/Full 追加一小段风格指令。
-    pub fn set_prompt_profile(&mut self, profile: PromptProfile) -> &mut Self {
-        self.prompt_profile = profile;
-        self
-    }
-
-    /// 设置用户画像注入段（B 线，2026-10-14）：由 user_profile 模块渲染的
-    /// 纯文本；**空串不注入任何字节**。
-    pub fn set_user_profile_section(&mut self, section: String) -> &mut Self {
-        self.user_profile_section = section;
-        self
-    }
-
-    /// 画像段渲染（追加在 bootstrap 之后；空 = 无输出）。
-    fn user_profile_block(&self) -> String {
-        if self.user_profile_section.is_empty() {
-            return String::new();
-        }
-        format!(
-            "# 用户画像（自动学习，Dashboard 可管理）
-
-{}
-",
-            self.user_profile_section
-        )
-    }
-
-    /// 档位段渲染（Standard = 无输出）。
-    fn prompt_profile_block(&self) -> String {
-        match self.prompt_profile {
-            PromptProfile::Standard => String::new(),
-            PromptProfile::Concise => "# 回复风格（当前模型能力档：精简）
-
-回复简洁直接、结论先行；避免冗长铺垫与重复确认；行动优先于解释。
-"
-            .into(),
-            PromptProfile::Full => "# 执行风格（当前模型能力档：完整）
-
-复杂任务先给出简要方案再动手；充分利用可用工具自主多步执行；完成后附简短说明。
-"
-            .into(),
-        }
     }
 
     /// Set tool summaries for inclusion in the system prompt.
@@ -430,18 +412,6 @@ impl ContextBuilder {
         let bootstrap_content = self.load_bootstrap_files(skip_bootstrap);
         if !bootstrap_content.is_empty() {
             parts.push(bootstrap_content);
-        }
-
-        // 用户画像（B 线）：紧跟人格文件，空 = 零字节。
-        let profile_block = self.user_profile_block();
-        if !profile_block.is_empty() {
-            parts.push(profile_block);
-        }
-
-        // tier 档位段（E 线）：Standard = 零字节。
-        let tier_block = self.prompt_profile_block();
-        if !tier_block.is_empty() {
-            parts.push(tier_block);
         }
 
         // Tools section

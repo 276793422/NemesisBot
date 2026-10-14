@@ -25,6 +25,10 @@ pub mod cluster_persona_gen;
 pub mod coding;
 pub mod commands;
 pub mod config;
+// 行动代理 P0（2026-10-14）：connector 数据面（connectors.list /
+// connectors.receipts.list / paperbroker.ledger，只读——执行入口是 agent
+// 的 connector_invoke 工具，走完整安全管线）。
+pub mod connectors;
 // Full Access 编辑器放行开关 WSAPI（2026-09-20 用户裁决）——
 // editor.get/set。security 闸：EditorAccessState 在 nemesis-security。
 #[cfg(feature = "security")]
@@ -197,6 +201,9 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(question::QuestionHandler));
     // 自进化 B 线：用户习惯画像（后门动作 + 开关）。
     router.register(Arc::new(profile::ProfileHandler::new()));
+    // 行动代理 P0：connector 数据面（registry 状态 / 凭条流水 / 纸面账本）。
+    router.register(Arc::new(connectors::ConnectorsHandler));
+    router.register(Arc::new(connectors::PaperBrokerHandler));
     router.register(Arc::new(chat::ChatHandler));
     router.register(Arc::new(config::ConfigHandler::new()));
     router.register(Arc::new(models::ModelsHandler::new()));

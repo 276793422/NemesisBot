@@ -859,8 +859,23 @@ impl SecurityAuditor {
         req: &OperationRequest,
         ctx: Option<&ApprovalContext>,
     ) -> (bool, Option<String>, String) {
+        let (allowed, err, _) = self.request_permission_tracked(req, ctx);
+        (allowed, err, req.id.clone())
+    }
+
+    /// 行动代理 P0（PLAN §6.2 凭条 `approval_ref` 契约字段）：同
+    /// [`Self::request_permission_with_ctx`]，但第三返回值语义收窄——仅
+    /// RequireApproval 经交互审批管理器**人工批准**时 `Some(req.id)`（=
+    /// 审批卡 request_id，凭条审批引用的取值来源）；直通 / 规则表自动
+    /// 放行 / 免打扰自动放行 / 策略拒绝 / 无管理器挂起 = None（没人看过
+    /// 卡就不算审批引用，凭条不伪造背书）。
+    pub fn request_permission_tracked(
+        &self,
+        req: &OperationRequest,
+        ctx: Option<&ApprovalContext>,
+    ) -> (bool, Option<String>, Option<String>) {
         if !self.is_enabled() {
-            return (true, None, req.id.clone());
+            return (true, None, None);
         }
 
         self.total_events.fetch_add(1, Ordering::SeqCst);
@@ -898,7 +913,7 @@ impl SecurityAuditor {
                     policy_rule: format!("auto_by_rule:{}", rule.pattern),
                 };
                 self.log_audit_event(&event);
-                return (true, None, req.id.clone());
+                return (true, None, None);
             }
         }
 
@@ -967,7 +982,7 @@ impl SecurityAuditor {
                 req.danger_level,
                 ctx.map(|c| c.channel.as_str()).unwrap_or("<none>")
             );
-            return (true, None, req.id.clone());
+            return (true, None, None);
         }
 
         let decision_str = match decision {
@@ -990,7 +1005,7 @@ impl SecurityAuditor {
         match decision {
             SecurityDecision::Allowed => {
                 self.allowed_count.fetch_add(1, Ordering::SeqCst);
-                (true, None, req.id.clone())
+                (true, None, None)
             }
             SecurityDecision::Denied => {
                 self.denied_count.fetch_add(1, Ordering::SeqCst);
@@ -1000,7 +1015,7 @@ impl SecurityAuditor {
                         "Security policy denied {} on '{}' ({})",
                         req.op_type, req.target, reason
                     )),
-                    req.id.clone(),
+                    None,
                 )
             }
             SecurityDecision::RequireApproval => {
@@ -1037,7 +1052,7 @@ impl SecurityAuditor {
                             // User approved the operation
                             self.pending_count.fetch_sub(1, Ordering::SeqCst);
                             self.approved_count.fetch_add(1, Ordering::SeqCst);
-                            return (true, None, req.id.clone());
+                            return (true, None, Some(req.id.clone()));
                         }
                         Ok(v) => {
                             // User explicitly denied or timed out. F6: 用户备注
@@ -1052,7 +1067,7 @@ impl SecurityAuditor {
                                 Some(n) if !n.is_empty() => format!("{}: {}", base, n),
                                 _ => base,
                             };
-                            return (false, Some(msg), req.id.clone());
+                            return (false, Some(msg), None);
                         }
                         Err(_) => {
                             // Dialog failed, fall through to pending request storage
@@ -1069,7 +1084,7 @@ impl SecurityAuditor {
                         "approval required: {} (request ID: {})",
                         reason, req.id
                     )),
-                    req.id.clone(),
+                    None,
                 )
             }
         }

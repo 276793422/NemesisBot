@@ -194,6 +194,53 @@ pub struct Config {
     /// Dashboard 前端表现（皮肤等；None = 全默认——内置 static 皮肤）。
     #[serde(default)]
     pub ui: Option<UiConfig>,
+    /// 行动代理 connector 注册表（PLAN 行动代理 P0；None = 全默认——
+    /// enabled=true，预算 fail-closed：资金限额 0=拒绝所有）。
+    #[serde(default)]
+    pub connectors: Option<ConnectorsConfig>,
+}
+
+/// connector 注册表配置（`config.json` 的 `connectors` 段；`#[serde(default)]`
+/// 每字段全可省——老 config.json 零迁移）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ConnectorsConfig {
+    /// 总闸（false = connector_find/connector_invoke 两工具不上供给面）。
+    pub enabled: bool,
+    /// per-connector 每小时执行上限（0=限频关闭）。
+    pub max_ops_per_hour: u32,
+    /// 资金类限额（None = 全 0 = fail-closed 拒绝所有资金 op）。
+    #[serde(default)]
+    pub finance: Option<ConnectorsFinanceConfig>,
+}
+
+impl Default for ConnectorsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_ops_per_hour: 0,
+            finance: None,
+        }
+    }
+}
+
+/// 资金类限额（fail-closed：0 = 拒绝所有——不设限 = 不成交）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ConnectorsFinanceConfig {
+    /// 单笔数量上限（0 = 拒绝所有资金 op）。
+    pub max_order_qty: f64,
+    /// 日累计笔数上限（0 = 拒绝所有资金 op；UTC 自然日滚转）。
+    pub max_orders_per_day: u32,
+}
+
+impl Default for ConnectorsFinanceConfig {
+    fn default() -> Self {
+        Self {
+            max_order_qty: 0.0,
+            max_orders_per_day: 0,
+        }
+    }
 }
 
 /// 皮肤子系统策略（`config.json` 的 `ui.skins` 段；`#[serde(default)]`
@@ -4136,6 +4183,7 @@ pub fn default_config() -> Config {
         projects: None,
         bridge: None,
         ui: None,
+        connectors: None,
     }
 }
 

@@ -1588,6 +1588,7 @@ async fn test_cron_create_continue_session_uses_ext() {
         correlation_id: None,
         async_callback: None,
         tool_path_base: None,
+        approval_ref: None,
     };
 
     // continue_session=true → job payload carries the CALLER's session_key.
@@ -1647,6 +1648,7 @@ async fn test_cron_create_continue_session_max_rounds() {
         correlation_id: None,
         async_callback: None,
         tool_path_base: None,
+        approval_ref: None,
     };
 
     // Explicit tier → payload carries it.
