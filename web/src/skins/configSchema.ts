@@ -96,6 +96,13 @@ const FIELDS: Record<string, Omit<SchemaField, 'key' | 'default'>> = {
   'memory.dreaming.cron': { label: '整理计划（cron）', type: 'string' },
   'memory.dreaming.top_k': { label: '整理检索条数', type: 'number', range: { min: 1, max: 64, step: 1 } },
   'mcp.enabled': { label: '启用 MCP', type: 'boolean' },
+  // ---- 用户习惯画像（自进化升级 B 线，2026-10-14）----
+  'user_profile.enabled': { label: '启用用户习惯画像', type: 'boolean' },
+  'user_profile.confidence_threshold': { label: '上榜置信度阈值', type: 'number', range: { min: 0, max: 1, step: 0.05 } },
+  'user_profile.max_entries': { label: '注入条目上限', type: 'number', range: { min: 1, max: 50, step: 1 } },
+  'user_profile.decay_days': { label: '衰减天数（两段）', type: 'number', range: { min: 1, max: 365, step: 1 } },
+  'user_profile.stats_scan_interval_secs': { label: '统计扫描间隔（秒）', type: 'number', range: { min: 60, max: 86400, step: 60 } },
+  'user_profile.reflect_every_sweeps': { label: '反思间隔（每 N 次扫描）', type: 'number', range: { min: 1, max: 200, step: 1 } },
 }
 
 /** 通道显示名（`channels.<id>.*` 分组标题用）。 */

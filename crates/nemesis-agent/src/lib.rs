@@ -83,6 +83,7 @@ pub mod turn_guard;
 /// L8（三方学习总计划重评估）：工具调用三态 WAL（崩溃恢复续轮）。
 pub mod turn_wal;
 pub mod types;
+pub mod user_profile;
 pub mod workspace_instructions;
 /// WS9/P22：workspace 级写租约（文件锁 + 持有者 sidecar；写类工具包装）。
 pub mod workspace_lease;

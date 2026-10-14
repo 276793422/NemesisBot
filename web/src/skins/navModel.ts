@@ -80,6 +80,8 @@ export const NAV_GROUPS: NavGroupModel[] = [
     title: '自进化',
     items: [
       { id: 'forge', label: 'Forge', route: '/forge', icon: 'M13 10V3L4 14h7v7l9-11h-7z' },
+      // B 线用户习惯画像（2026-10-14）：运行期 config 闸，非 cargo feature。
+      { id: 'profile', label: '用户习惯', route: '/profile', icon: 'M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z M9 5l3 3 3-3' },
     ],
   },
   {

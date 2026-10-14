@@ -33,6 +33,9 @@ const routes: RouteRecordRaw[] = [
   // not as a Vue Router route. The dashboard SPA never renders this path;
   // WorkflowList opens it via window.open to a fresh tab.
   ...(import.meta.env.VITE_FEATURE_FORGE !== 'false' ? [{ path: '/forge', name: 'forge', component: () => import('../views/ForgeView.vue') }] : []),
+  // B 线用户习惯画像（2026-10-14）：运行期 config 闸（user_profile.enabled），
+  // 非 cargo feature——路由恒在，页面内诚实展示开关态。
+  { path: '/profile', name: 'profile', component: () => import('../views/ProfileView.vue') },
   { path: '/persona-shop', name: 'persona-shop', component: () => import('../views/PersonaShopView.vue') },
   // Configuration
   { path: '/settings', name: 'settings', component: () => import('../views/SettingsView.vue') },

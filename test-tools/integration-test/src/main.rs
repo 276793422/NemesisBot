@@ -534,6 +534,8 @@ async fn main() -> Result<()> {
     all_results.extend(forge_tests::test_forge_list_artifacts(&ws, &cfg.gateway_bin).await);
     all_results.extend(forge_tests::test_forge_learning_status(&ws, &cfg.gateway_bin).await);
     all_results.extend(forge_tests::test_forge_sanitizer(&ws).await);
+    all_results.extend(forge_tests::test_forge_behavior_replay_cli(&ws, &cfg.gateway_bin).await);
+    all_results.extend(forge_tests::test_profile_cli(&ws, &cfg.gateway_bin).await);
 
     // ---- Phase 7: Scanner tests (CLI) ----
     println!("\n[Phase 7] Scanner lifecycle tests...");

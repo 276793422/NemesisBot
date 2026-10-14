@@ -533,6 +533,25 @@ pub fn build_agent_loop(
         // 入口形态变体（gap ⑤）：Interactive 恒空（gateway 字节不变）；
         // headless/ACP 由各自入口在 SharedResources 上显式设置。
         context_builder.set_entrance(shared.entrance);
+        // B 线画像注入（仅 enabled；空画像零字节）+ E 线 tier 档位
+        //（Standard=零注入）。resolve 在此重算一次（成本可忽略，免改上游序）。
+        context_builder.set_prompt_profile(nemesis_agent::context::PromptProfile::from_tier(
+            nemesis_types::capability::resolve_active_tier(
+                &serde_json::to_value(&cfg).unwrap_or_default(),
+                &model_name,
+            ),
+        ));
+        if cfg
+            .user_profile
+            .as_ref()
+            .map(|u| u.enabled)
+            .unwrap_or(false)
+        {
+            let section = nemesis_agent::user_profile::render_section(
+                &nemesis_agent::user_profile::load_profile(&workspace_dir),
+            );
+            context_builder.set_user_profile_section(section);
+        }
         let skills_dir = workspace_dir.join("skills");
         if skills_dir.exists() {
             context_builder.load_skills(&skills_dir);
@@ -1075,6 +1094,22 @@ pub fn build_agent_loop(
         if let Some(ref forge) = shared.forge {
             let bridge = ForgeProviderBridge::new(provider_arc.clone(), model_name.clone());
             forge.set_provider(Arc::new(bridge));
+            // A 线行为回归执行器注入（同点级联到 pipeline 的回归闸）。
+            let test_runner: Arc<dyn nemesis_forge::skill_tests::SkillTestRunner> = Arc::new(
+                crate::forge_test_runner::BotSkillTestRunner::new(shared.home.clone()),
+            );
+            forge.set_skill_test_runner(test_runner.clone());
+            // Stage 2 judge 层杂务模型回落链（与 CLI/WSAPI 的 judge 口径
+            // 同源：judge_model → small_model → 主模型；chat 现场解析，
+            // 模型热切即时生效）。
+            forge.set_judge_caller(Arc::new(crate::forge_test_runner::ChainJudgeCaller::new(
+                shared.home.clone(),
+                crate::common::workspace_path(&shared.home),
+            )));
+            // web 槽（forge.test WSAPI 消费；PROJECTS_BRIDGE 同款槽模式）。
+            nemesis_web::handlers::forge::set_forge_test_runner(test_runner);
+            // B 线画像 sweep（OnceLock 一次守卫；enabled=false 时 sweep 内部 no-op）。
+            crate::profile_service::ensure_sweep_spawned(shared.home.clone());
             info!(
                 "[AgentFactory] Forge provider updated to model {}",
                 model_name
