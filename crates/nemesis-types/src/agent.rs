@@ -159,6 +159,17 @@ pub enum AgentEvent {
         /// 其余=完整 target；前端按钮回显确认串）。空串=不适用（如空
         /// target / run_script 无 target 提取）。
         pattern: String,
+        /// 行动代理 P0（2026-10-14）授权卡自解释三字段（感知层 §5）：
+        /// why=为什么要人工确认（force/connector 声明原文）；impact=影响
+        /// 面（操作会碰什么）；reject_note=拒绝后果。展示层程序化派生
+        /// （web_approval::approval_card_fields 单一真相源），serde default
+        /// 兼容旧事件流。
+        #[serde(default)]
+        why: Option<String>,
+        #[serde(default)]
+        impact: Option<String>,
+        #[serde(default)]
+        reject_note: Option<String>,
     },
     /// 审批已裁决事件（F6，devtool-upgrade 阶段 5）。任一前端 respond 成功
     /// 或服务端超时自动 deny 后由 WebApprovalManager 发布；web pump 转 SSE

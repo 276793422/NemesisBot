@@ -465,6 +465,9 @@ fn test_agent_event_approval_requested_serde_tag_shape() {
         reason: "rule: exec-publish".to_string(),
         timeout_secs: 300,
         pattern: "cargo publish *".to_string(),
+        why: Some("为什么".to_string()),
+        impact: Some("影响".to_string()),
+        reject_note: Some("拒绝后果".to_string()),
     };
     let v = serde_json::to_value(&ev).unwrap();
     // serde(tag = "kind", content = "data") 形状——web pump 原样转 SSE/WS。
@@ -487,6 +490,9 @@ fn test_agent_event_approval_requested_serde_tag_shape() {
             reason,
             timeout_secs,
             pattern,
+            why,
+            impact,
+            reject_note,
         } => {
             assert_eq!(session_key, "agent:main:session:s1");
             assert_eq!(chat_id, "web:abc");
@@ -497,6 +503,9 @@ fn test_agent_event_approval_requested_serde_tag_shape() {
             assert_eq!(reason, "rule: exec-publish");
             assert_eq!(timeout_secs, 300);
             assert_eq!(pattern, "cargo publish *");
+            assert_eq!(why.as_deref(), Some("为什么"));
+            assert_eq!(impact.as_deref(), Some("影响"));
+            assert_eq!(reject_note.as_deref(), Some("拒绝后果"));
         }
         other => panic!("wrong variant: {:?}", other),
     }
@@ -515,6 +524,9 @@ fn test_agent_event_approval_requested_accessors() {
         reason: "why".to_string(),
         timeout_secs: 60,
         pattern: String::new(),
+        why: None,
+        impact: None,
+        reject_note: None,
     };
     assert_eq!(ev.chat_id(), "web:x");
     assert_eq!(ev.kind(), "ApprovalRequested");

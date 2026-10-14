@@ -210,6 +210,7 @@ impl AgentLoop {
             #[cfg(feature = "workflow")]
             workflow_engine: parking_lot::RwLock::new(None),
             config_mtime: parking_lot::RwLock::new(None),
+            user_profile_cache: parking_lot::RwLock::new((None, String::new())),
             warm_candidates: parking_lot::Mutex::new(HashMap::new()),
             small_model: parking_lot::RwLock::new(None),
             spawn_slot: parking_lot::RwLock::new(None),
@@ -427,6 +428,38 @@ impl AgentLoop {
             if let Err(e) = tx.send(outbound).await {
                 warn!("[AgentLoop] Failed to send outbound message: {}", e);
             }
+        }
+    }
+
+    /// 行动代理 P0（2026-10-14）：connector 回执 IM 文本卡推送。写类/资金
+    /// 类 op 执行后由 connector 工具经本方法把固定格式凭条卡投递回**发起
+    /// 对话**（感知层合同 §3.5/§5：写类必现身，读类只入账本不推——推送
+    /// 裁决在工具侧，这里只管投递）。绕过 `finish_message` 的
+    /// sent-in-round 去重（凭条卡不是回合回复，不能被 message-tool 已回复
+    /// 检查吞掉）；bus 模式无 outbound 泵（standalone/headless）时静默跳过。
+    pub async fn push_connector_receipt_card(
+        &self,
+        channel: &str,
+        chat_id: &str,
+        session_key: &str,
+        card: String,
+    ) {
+        let Some(ref tx) = self.outbound_tx else {
+            return;
+        };
+        let outbound = nemesis_types::channel::OutboundMessage {
+            channel: channel.to_string(),
+            chat_id: chat_id.to_string(),
+            content: card,
+            message_type: String::new(),
+            meta: nemesis_types::channel::OutboundMeta {
+                model: Some(self.current_display_model()),
+                session_key: (!session_key.is_empty()).then(|| session_key.to_string()),
+                source_node: None,
+            },
+        };
+        if let Err(e) = tx.send(outbound).await {
+            warn!("[AgentLoop] Failed to send connector receipt card: {}", e);
         }
     }
 

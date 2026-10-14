@@ -28,6 +28,10 @@ path = "provider_stream.rs"
 name = "preexec_scan"
 path = "preexec_scan.rs"
 
+[[test]]
+name = "connector_flow"
+path = "connector_flow.rs"
+
 [dependencies]
 test-harness = { path = "../test-harness" }
 reqwest = { workspace = true }

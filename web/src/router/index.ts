@@ -25,6 +25,9 @@ const routes: RouteRecordRaw[] = [
   { path: '/plugins', name: 'plugins', component: () => import('../views/PluginsView.vue') },
   { path: '/subagents', name: 'subagents', component: () => import('../views/SubagentView.vue') },
   { path: '/channels', name: 'channels', component: () => import('../views/ChannelsView.vue') },
+  // 行动连接器（2026-10-14 AI 原生行动代理）：只读面——连接器注册表 +
+  // 行动回执（行动账本）+ 纸面券商模拟账本（WSAPI connectors 模块）。
+  { path: '/connectors', name: 'connectors', component: () => import('../views/ConnectorsView.vue') },
   // P2-1 (2026-08-24 UI entry gap): 「代码开发」页（LSP/CLI 委派配置）。
   { path: '/coding', name: 'coding', component: () => import('../views/CodingView.vue') },
   ...(import.meta.env.VITE_FEATURE_WORKFLOW !== 'false' ? [{ path: '/workflows', name: 'workflows', component: () => import('../views/WorkflowView.vue') }] : []),

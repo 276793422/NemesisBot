@@ -86,6 +86,12 @@ mod common;
 /// 重派原 worker→离线三轮接触→换人；budget 保险丝打满回落 human 档）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod conflict_resolver;
+/// 行动代理 P0（2026-10-14）：connector_find / connector_invoke 动态工具
+/// 对——注册表发现 + 按 connector.toml 声明执行（op_override 投影风险、
+/// 统一回执、预算护栏、三绑定 http/tool/action）。装配随 security feature
+/// 门控（无 security 组合无 connector 工具供给面）。
+#[cfg(feature = "security")]
+mod connector_tools;
 mod embedded;
 /// 跨进程 estop 跟随器：独立装配入口（mcp-serve / acp）镜像 gateway 的
 /// 急停态（/api/internal estop_status 轮询，gateway 唯一权威源）——堵住
@@ -377,6 +383,11 @@ enum Commands {
     Profile {
         #[command(subcommand)]
         action: commands::profile::ProfileAction,
+    },
+    /// Query the connector registry / receipts / paper ledger (read-only)
+    Connector {
+        #[command(subcommand)]
+        action: commands::connector::ConnectorAction,
     },
     /// Manage the managed-agent board (issues)
     #[cfg(feature = "board")]
@@ -880,6 +891,10 @@ async fn run_command(cli: Cli) -> Result<()> {
         Commands::Profile { action } => {
             common::ensure_default_logger();
             commands::profile::run(action, cli.local)?;
+        }
+        Commands::Connector { action } => {
+            common::ensure_default_logger();
+            commands::connector::run(action, cli.local)?;
         }
         #[cfg(feature = "board")]
         Commands::Issue { action } => {

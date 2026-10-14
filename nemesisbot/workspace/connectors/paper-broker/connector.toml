@@ -1,0 +1,53 @@
+# 纸面券商 connector（行动代理 P0 demo，域 C）
+# 混合型：quote 走 http（行情原例），下单/持仓走内置 action（纸面账本，
+# 零真实资金——账本落 <workspace>/data/paper_broker.json）。
+#
+# place_order 声明 confirm="required"：每次下单必弹人工审批卡；
+# budget="finance"：受 config connectors.finance 限额约束（缺省全 0 =
+# fail-closed 拒绝所有资金 op，需显式配置限额才可成交）。
+
+[connector]
+id = "paper-broker"
+name = "纸面券商（模拟盘）"
+version = "0.1.0"
+kind = "rest"
+description = "零账号纸面下单 demo：行情 + 模拟买卖 + 持仓查询。全链路凭条入行动账本。"
+
+[connector.http]
+# demo 占位：改成你的行情源（如本地起 TestAIServer 后 http://127.0.0.1:8080；
+# 注意 SSRF 防护默认拦回环/内网地址）。
+base = "https://quotes.example.com"
+
+[[op]]
+id = "quote"
+intent = ["查询行情", "现在多少钱", "报价"]
+risk = "low"
+class = "network"
+http = { method = "GET", path = "/quote?symbol={symbol}" }
+args_schema = { type = "object", required = ["symbol"], properties = { symbol = { type = "string", description = "标的代码，如 AAPL" } } }
+
+[[op]]
+id = "place_order"
+intent = ["买入", "卖出", "下单"]
+risk = "critical"
+class = "write"
+confirm = "required"
+budget = "finance"
+receipt = "order_id"
+action = "builtin.paper_order"
+args_schema = { type = "object", required = ["side", "symbol", "qty", "price"], properties = { side = { type = "string", description = "buy 或 sell" }, symbol = { type = "string" }, qty = { type = "number", description = "股数（受 max_order_qty 限额）" }, price = { type = "number", description = "成交价——先调 quote 取价，纸面下单按显式价格成交" } } }
+
+[[op]]
+id = "positions"
+intent = ["查持仓", "余额多少", "账户情况"]
+risk = "low"
+class = "read"
+action = "builtin.paper_positions"
+
+[[op]]
+id = "cancel_order"
+intent = ["撤单", "取消订单"]
+risk = "medium"
+class = "write"
+action = "builtin.paper_cancel"
+args_schema = { type = "object", required = ["order_id"], properties = { order_id = { type = "string" } } }

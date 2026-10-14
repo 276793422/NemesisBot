@@ -18,6 +18,14 @@
     "enabled": false,
     "sandbox": false
   },
+  "connectors": {
+    "enabled": true,
+    "max_ops_per_hour": 0,
+    "finance": {
+      "max_order_qty": 0,
+      "max_orders_per_day": 0
+    }
+  },
   "terminal": {
     "enabled": false,
     "max_sessions": 4
