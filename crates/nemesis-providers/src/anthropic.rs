@@ -1074,6 +1074,12 @@ impl LLMProvider for AnthropicProvider {
         AnthropicProvider::chat_stream(self, messages, tools, model, options)
     }
 
+    fn stream_preferred(&self, _model: &str) -> bool {
+        // 与 chat() 的内部切换同判据（986 行）：anthropic lane auto = 非流式
+        // （2026-10-13 stream 键语义），显式 yes 才流式。
+        self.config.stream_mode == "yes"
+    }
+
     fn default_model(&self) -> &str {
         &self.config.default_model
     }
