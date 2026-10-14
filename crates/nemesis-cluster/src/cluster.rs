@@ -4177,6 +4177,13 @@ impl ClusterPeerResolver {
     /// server，dispatch 报成功实际本节点执行、交付作者身份漂移）。剔除
     /// 后全空 = 该对端在非自端点意义上不可解析，返回 `None`（诚实失败，
     /// 上层派发失败路径照常留痕），同时 WARN 留诊断现场。
+    ///
+    /// 自派豁免：条目 id 与本节点 id **全等** = 显式自投递（file: 锚点单
+    /// 「只能自派」拓扑约束的合法形态），端点自碰撞是预期而非池污染——
+    /// 原样放行全部候选，拨回本节点 RPC server 走正常 peer_chat 语义
+    /// （作者=执行者，无身份漂移；任务完成回调按 source_node_id 回程，
+    /// 同一豁免覆盖）。防护的真实目标是「别人的单子误投给自己」（id
+    /// 不等但候选全撞本地端点），豁免只钉住 id 全等这一条路。
     fn resolve_dial_candidates(&self, info: &ExtendedNodeInfo) -> Option<(Vec<String>, u16, bool)> {
         let is_online = info.status == NodeStatus::Online;
         let (host, port) = parse_host_port(&info.base.address);
@@ -4187,6 +4194,16 @@ impl ClusterPeerResolver {
                 .any(|a| a.split(':').next() == Some(host.as_str()))
         {
             addresses.push(host);
+        }
+
+        if info.base.id == self.node_id {
+            tracing::info!(
+                peer_id = %info.base.id,
+                own_rpc_port = self.rpc_port,
+                candidates = ?addresses,
+                "[Cluster] Self-entry dial exemption: explicit self-dispatch, keeping all candidates"
+            );
+            return Some((addresses, port, is_online));
         }
 
         let own_ips = network::get_all_local_ips();
