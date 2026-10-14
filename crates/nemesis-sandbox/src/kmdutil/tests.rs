@@ -180,11 +180,11 @@ fn set_ini_path_errors_without_elevation() {
 
 #[cfg(windows)]
 #[test]
-fn set_sbiesvc_service_key_dwounds_errors_without_elevation() {
+fn set_sbiesvc_service_key_dwords_errors_without_elevation() {
     if crate::elevation::is_elevated() {
         return; // 同上：提权会真写 SbieSvc 服务键
     }
-    let err = set_sbiesvc_service_key_dwounds().unwrap_err();
+    let err = set_sbiesvc_service_key_dwords().unwrap_err();
     let msg = format!("{err:#}");
     assert!(msg.contains("reg add"), "{msg}");
     assert!(

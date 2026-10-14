@@ -99,7 +99,7 @@ pub fn start(paths: &SandboxPaths) -> Result<()> {
         false,
     )
     .context("install SbieSvc")?;
-    kmdutil::set_sbiesvc_service_key_dwounds().context("set SbieSvc service-key DWORDs")?;
+    kmdutil::set_sbiesvc_service_key_dwords().context("set SbieSvc service-key DWORDs")?;
 
     ini::write_sandboxie_ini(
         &paths.ini_path,
@@ -228,7 +228,7 @@ pub fn ensure_installed(paths: &SandboxPaths) -> Result<()> {
         kmdutil::install_service(&paths.kmdutil(), &paths.sbiesvc_exe(), &paths.sbiemsg_dll()),
         true,
     );
-    let _ = kmdutil::set_sbiesvc_service_key_dwounds();
+    let _ = kmdutil::set_sbiesvc_service_key_dwords();
 
     ini::write_sandboxie_ini(
         &paths.ini_path,
