@@ -304,6 +304,8 @@ fn test_resolve_artifact_path_skill() {
         last_degraded_at: None,
         success_rate: 0.0,
         consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
     };
     let path = resolve_artifact_path(forge_dir, &artifact);
     assert_eq!(
@@ -1225,6 +1227,8 @@ fn test_resolve_artifact_path_script() {
         last_degraded_at: None,
         success_rate: 0.0,
         consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
     };
     let path = resolve_artifact_path(forge_dir, &artifact);
     assert!(path.to_string_lossy().contains("scripts"));
@@ -1248,6 +1252,8 @@ fn test_resolve_artifact_path_mcp() {
         last_degraded_at: None,
         success_rate: 0.0,
         consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
     };
     let path = resolve_artifact_path(forge_dir, &artifact);
     assert_eq!(
@@ -1787,6 +1793,8 @@ fn s8_ft_artifact(id: &str, kind: ArtifactKind) -> nemesis_types::forge::Artifac
         last_degraded_at: None,
         success_rate: 0.0,
         consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
     }
 }
 

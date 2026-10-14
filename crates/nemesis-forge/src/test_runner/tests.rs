@@ -15,6 +15,8 @@ fn make_artifact(kind: ArtifactKind, content: &str) -> Artifact {
         last_degraded_at: None,
         success_rate: 0.0,
         consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
     }
 }
 

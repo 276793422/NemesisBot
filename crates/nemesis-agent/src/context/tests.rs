@@ -1004,3 +1004,95 @@ fn pro_mode_heartbeat_skip_bootstrap_keeps_segments() {
         "skip_bootstrap 不进 BOOTSTRAP 初始化模式"
     );
 }
+
+// --- E 线 tier 档位 + B 线画像注入快照（自进化升级 2026-10-14） ---
+
+#[test]
+fn prompt_profile_standard_default_is_zero_byte_injection() {
+    // Standard（缺省）与显式设置产出逐字节一致——不破坏 prompt cache。
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("IDENTITY.md"), "身份内容。").unwrap();
+    let default_prompt = ContextBuilder::new(tmp.path()).build_system_prompt(false);
+    let standard_prompt = ContextBuilder::new(tmp.path())
+        .set_prompt_profile(PromptProfile::Standard)
+        .build_system_prompt(false);
+    assert_eq!(default_prompt, standard_prompt);
+    assert!(!default_prompt.contains("能力档"), "Standard 零注入");
+}
+
+#[test]
+fn prompt_profile_concise_full_byte_stable_snapshot() {
+    // 三档模板组装快照（byte-stable）：Concise/Full 各追加固定风格段。
+    let tmp = TempDir::new().unwrap();
+
+    let concise = ContextBuilder::new(tmp.path())
+        .set_prompt_profile(PromptProfile::Concise)
+        .build_system_prompt(false);
+    assert!(concise.contains(
+        "# 回复风格（当前模型能力档：精简）\n\n回复简洁直接、结论先行；避免冗长铺垫与重复确认；行动优先于解释。\n"
+    ));
+
+    let full = ContextBuilder::new(tmp.path())
+        .set_prompt_profile(PromptProfile::Full)
+        .build_system_prompt(false);
+    assert!(full.contains(
+        "# 执行风格（当前模型能力档：完整）\n\n复杂任务先给出简要方案再动手；充分利用可用工具自主多步执行；完成后附简短说明。\n"
+    ));
+
+    // 确定性：同输入同字节。
+    let full_again = ContextBuilder::new(tmp.path())
+        .set_prompt_profile(PromptProfile::Full)
+        .build_system_prompt(false);
+    assert_eq!(full, full_again);
+}
+
+#[test]
+fn prompt_profile_from_tier_mapping() {
+    // mini→Concise / normal→Standard / big→Full / Auto→Standard（不猜）。
+    use nemesis_types::capability::ModelTier;
+    assert_eq!(
+        PromptProfile::from_tier(ModelTier::Mini),
+        PromptProfile::Concise
+    );
+    assert_eq!(
+        PromptProfile::from_tier(ModelTier::Normal),
+        PromptProfile::Standard
+    );
+    assert_eq!(
+        PromptProfile::from_tier(ModelTier::Big),
+        PromptProfile::Full
+    );
+    assert_eq!(
+        PromptProfile::from_tier(ModelTier::Auto),
+        PromptProfile::Standard
+    );
+}
+
+#[test]
+fn user_profile_empty_section_is_zero_byte() {
+    // 空画像零注入：与未设置逐字节一致。
+    let tmp = TempDir::new().unwrap();
+    let bare = ContextBuilder::new(tmp.path()).build_system_prompt(false);
+    let with_empty = ContextBuilder::new(tmp.path())
+        .set_user_profile_section(String::new())
+        .build_system_prompt(false);
+    assert_eq!(bare, with_empty);
+    assert!(!bare.contains("用户画像"));
+}
+
+#[test]
+fn user_profile_section_renders_after_persona_before_tools() {
+    // 画像段渲染在人格文件之后、Tools 段之前；空 = 零字节。
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("IDENTITY.md"), "身份内容。").unwrap();
+    let prompt = ContextBuilder::new(tmp.path())
+        .set_user_profile_section("- [style] 用户偏好简洁回复".into())
+        .build_system_prompt(false);
+
+    let profile_header = prompt
+        .find("# 用户画像（自动学习，Dashboard 可管理）")
+        .expect("画像段标题");
+    let identity = prompt.find("身份内容。").expect("人格内容");
+    assert!(identity < profile_header, "画像在人格之后");
+    assert!(prompt.contains("- [style] 用户偏好简洁回复"));
+}

@@ -63,7 +63,13 @@ fn test_set_channel_config_new_channel() {
 
     let data: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
-    assert_eq!(data["channels"]["discord"]["enabled"], "true");
+    // 布尔键强制转 JSON bool（BUG #41 同族根修）：写成字符串 "true" 会让
+    // typed Config 的 `enabled: bool` 解析整份 config 直接炸
+    // （IT profile/cli 实证：invalid type: string "true", expected a boolean）。
+    assert_eq!(
+        data["channels"]["discord"]["enabled"],
+        serde_json::json!(true)
+    );
 }
 
 #[test]

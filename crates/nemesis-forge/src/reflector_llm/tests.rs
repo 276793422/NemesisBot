@@ -158,6 +158,8 @@ fn test_build_full_analysis_prompt_with_artifacts() {
         last_degraded_at: None,
         success_rate: 0.0,
         consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
         created_at: chrono::Local::now().to_rfc3339(),
         updated_at: chrono::Local::now().to_rfc3339(),
     }];

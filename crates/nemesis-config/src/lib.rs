@@ -161,6 +161,10 @@ pub struct Config {
     pub skills: Option<SkillsConfig>,
     #[serde(default)]
     pub forge: Option<ForgeFlagConfig>,
+    /// 用户习惯画像（自进化升级 B 线）：enabled 默认关；阈值/上限/衰减
+    /// 可调（缺省见 user_profile 模块常量）。全本地采集，仅向前不回溯。
+    #[serde(default)]
+    pub user_profile: Option<UserProfileConfig>,
     #[serde(default)]
     pub cluster: Option<ClusterFlagConfig>,
     #[serde(default)]
@@ -2622,6 +2626,55 @@ pub struct SecurityFlagConfig {
     #[serde(default)]
     pub enabled: bool,
 }
+/// 用户习惯画像配置（B 线）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UserProfileConfig {
+    /// 默认关：开启后画像自动学习并注入（仅向前，不回溯）。
+    #[serde(default)]
+    pub enabled: bool,
+    /// 置信度阈值（缺省 0.7）。
+    #[serde(default)]
+    pub confidence_threshold: Option<f64>,
+    /// 注入条目上限（缺省 10）。
+    #[serde(default)]
+    pub max_entries: Option<usize>,
+    /// 衰减天数（缺省 30：active→decaying；再 30 天→expired，两段同值）。
+    #[serde(default)]
+    pub decay_days: Option<i64>,
+    /// 统计扫描间隔秒数（缺省 3600 = 每小时）。
+    #[serde(default)]
+    pub stats_scan_interval_secs: Option<u64>,
+    /// 反思通道触发间隔（每 N 次扫描一次，缺省 20）。
+    #[serde(default)]
+    pub reflect_every_sweeps: Option<u32>,
+}
+
+impl UserProfileConfig {
+    /// 置信度阈值（缺省回落 user_profile 模块常量）。
+    pub fn confidence_threshold_or(&self, default: f64) -> f64 {
+        self.confidence_threshold.unwrap_or(default)
+    }
+    /// 注入条目上限（缺省 10；0 = 回落缺省，上限不允许关闭）。
+    pub fn max_entries_or(&self, default: usize) -> usize {
+        self.max_entries.filter(|m| *m > 0).unwrap_or(default)
+    }
+    /// 衰减天数（缺省 30）。
+    pub fn decay_days_or(&self, default: i64) -> i64 {
+        self.decay_days.filter(|d| *d > 0).unwrap_or(default)
+    }
+    /// 扫描间隔秒数（缺省 3600；非法值 0/负 = 回落缺省）。
+    pub fn stats_scan_interval_secs_or(&self, default: u64) -> u64 {
+        self.stats_scan_interval_secs
+            .filter(|s| *s > 0)
+            .unwrap_or(default)
+    }
+    /// 反思间隔 sweep 数（缺省 20；0 = 回落缺省，不允许关掉反思闸）。
+    pub fn reflect_every_sweeps_or(&self, default: u32) -> u32 {
+        self.reflect_every_sweeps
+            .filter(|n| *n > 0)
+            .unwrap_or(default)
+    }
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ForgeFlagConfig {
@@ -4070,6 +4123,7 @@ pub fn default_config() -> Config {
         }),
         security: Some(SecurityFlagConfig { enabled: false }),
         forge: Some(ForgeFlagConfig { enabled: false }),
+        user_profile: None,
         cluster: None,
         memory: None,
         skills: None,
