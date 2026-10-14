@@ -6398,30 +6398,41 @@ fn grep_recursive(
 }
 
 // ===========================================================================
-// Hardware tools (I2C / SPI)
+// Hardware tools (I2C / SPI) — 薄适配器，委托 nemesis-tools 真实实现
 // ===========================================================================
+
+// nemesis-tools 侧 Tool trait 以 `_` 导入（仅方法解析用，不占名字——
+// 与本文件的 loop 侧 `Tool` 不冲突，两个 trait 的实现类型不相交）。
+use nemesis_tools::registry::Tool as _;
 
 /// I2C bus tool - interacts with I2C devices (Linux only).
 ///
-/// P8（2026-09-25 三批合并）GPIO 白名单：地址访问过 `HardwarePolicy`
-/// 校验——与 nemesis-tools::hardware 的真实实现共用同一策略单一真相源
-/// （本结构当前是回显桩，真实 I/O 在 nemesis-tools；两路径同源校验，
-/// 杜绝桩路径放行保留段/黑名单地址）。
+/// BUG-13（2026-10-14）根修：此前是回显桩（假成功、无真实 I/O——模型以为
+/// 写入成功而硬件什么都没发生）。真实实现（ioctl 扫描/读写、参数校验、
+/// P8 地址策略、非 Linux 平台诚实报错）全在
+/// [`nemesis_tools::hardware::I2CTool`]，本层只做 `&str`→`Value` 解析与
+/// `ToolResult` 折叠（is_error→Err(for_llm)）；description/parameters
+/// 直接透传真实实现（单一真相源，随之获得 confirm/bus 等完整 schema
+/// 字段——一次性 prompt 文案漂移，接受）。P8 地址策略仍从注册点
+/// `with_policy` 注入（config `tools.hardware` 段），校验在真实实现内
+/// 执行，与本路径同源。
 pub struct I2CTool {
-    policy: nemesis_tools::hardware::HardwarePolicy,
+    inner: nemesis_tools::hardware::I2CTool,
 }
 
 impl I2CTool {
     /// 内置默认策略（可自由寻址空间 0x08-0x77）。
     pub fn new() -> Self {
         Self {
-            policy: nemesis_tools::hardware::HardwarePolicy::builtin(),
+            inner: nemesis_tools::hardware::I2CTool::new(),
         }
     }
 
     /// 注入 config 侧策略（`tools.hardware` 段）。
     pub fn with_policy(policy: nemesis_tools::hardware::HardwarePolicy) -> Self {
-        Self { policy }
+        Self {
+            inner: nemesis_tools::hardware::I2CTool::with_policy(policy),
+        }
     }
 }
 
@@ -6434,106 +6445,50 @@ impl Default for I2CTool {
 #[async_trait]
 impl Tool for I2CTool {
     fn description(&self) -> String {
-        "Interact with I2C bus devices for reading sensors and controlling peripherals. Actions: detect, scan, read, write. Linux only.".to_string()
+        self.inner.description().to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
-        // schema 与 nemesis-tools::hardware 真实实现同文案（bus=字符串数字、
-        // address=7 位整数；解析器另兼容 "0x38" 形态字符串，fail-closed）。
-        serde_json::json!({"type":"object","properties":{"action":{"type":"string","description":"Action: detect, scan, read, write"},"bus":{"type":"string","description":"I2C bus number (e.g. \"1\")"},"address":{"type":"integer","description":"7-bit device address (default allowed: 0x08-0x77; reserved segments rejected)"}}})
+        self.inner.parameters()
     }
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
-        if !cfg!(target_os = "linux") {
-            return Err(
-                "I2C is only supported on Linux. This tool requires /dev/i2c-* device files."
-                    .to_string(),
-            );
-        }
         let val: serde_json::Value =
             serde_json::from_str(args).map_err(|_| "Invalid JSON arguments".to_string())?;
-        let action = val["action"].as_str().unwrap_or("");
-        // P8：读/写动作的地址必填且先过策略校验（保留段/黑名单拒绝，理由
-        // 面向模型可自纠——与真实实现共用 parse_i2c_address + HardwarePolicy
-        // 同源校验，fail-closed）。2026-09-26 复查修复：此前地址只在
-        // as_u64() 命中时才校验——schema 自己推荐的 hex 字符串形态（"0x38"）
-        // 会整个跳过白名单，回显成功。
-        if matches!(action, "read" | "write") {
-            let addr = nemesis_tools::hardware::parse_i2c_address(&val)?;
-            self.policy.validate_i2c_address(addr)?;
-        }
-        match action {
-            "detect" => Ok("[I2C] Detect: scanning for I2C buses...".to_string()),
-            "scan" => Ok(format!(
-                "[I2C] Scan on bus {}",
-                val["bus"].as_str().unwrap_or("?")
-            )),
-            "read" => Ok(format!(
-                "[I2C] Read from device at address 0x{:02x}",
-                nemesis_tools::hardware::parse_i2c_address(&val).unwrap_or(0)
-            )),
-            "write" => {
-                if val["confirm"].as_bool().unwrap_or(false) {
-                    Ok(format!(
-                        "[I2C] Write to device at address 0x{:02x}",
-                        nemesis_tools::hardware::parse_i2c_address(&val).unwrap_or(0)
-                    ))
-                } else {
-                    Err("confirm must be true for write operations (safety guard)".to_string())
-                }
-            }
-            _ => Err(format!(
-                "Unknown I2C action: {} (valid: detect, scan, read, write)",
-                action
-            )),
+        let result = self.inner.execute(&val).await;
+        if result.is_error {
+            Err(result.for_llm)
+        } else {
+            Ok(result.for_llm)
         }
     }
 }
 
 /// SPI bus tool - interacts with SPI devices (Linux only).
+///
+/// 薄适配器同 [`I2CTool`]：委托 [`nemesis_tools::hardware::SPITool`] 真实
+/// 实现（ZST，按调用临时构造；保持单元结构体形态，兼容既有
+/// `let tool = SPITool;` 构造点）。
 pub struct SPITool;
 
 #[async_trait]
 impl Tool for SPITool {
     fn description(&self) -> String {
-        "Interact with SPI bus devices for high-speed peripheral communication. Actions: list, transfer, read. Linux only.".to_string()
+        nemesis_tools::hardware::SPITool.description().to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({"type":"object","properties":{"action":{"type":"string","description":"Action: list, transfer, read"},"device":{"type":"string","description":"SPI device path"}}})
+        nemesis_tools::hardware::SPITool.parameters()
     }
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
-        if !cfg!(target_os = "linux") {
-            return Err(
-                "SPI is only supported on Linux. This tool requires /dev/spidev* device files."
-                    .to_string(),
-            );
-        }
         let val: serde_json::Value =
             serde_json::from_str(args).map_err(|_| "Invalid JSON arguments".to_string())?;
-        let action = val["action"].as_str().unwrap_or("");
-        match action {
-            "list" => Ok("[SPI] Listing SPI devices...".to_string()),
-            "transfer" => {
-                if val["confirm"].as_bool().unwrap_or(false) {
-                    Ok(format!(
-                        "[SPI] Transfer on device {}",
-                        val["device"].as_str().unwrap_or("?")
-                    ))
-                } else {
-                    Err("confirm must be true for transfer operations (safety guard)".to_string())
-                }
-            }
-            "read" => Ok(format!(
-                "[SPI] Read {} bytes from device {}",
-                val["length"].as_u64().unwrap_or(1),
-                val["device"].as_str().unwrap_or("?")
-            )),
-            _ => Err(format!(
-                "Unknown SPI action: {} (valid: list, transfer, read)",
-                action
-            )),
+        let result = nemesis_tools::hardware::SPITool.execute(&val).await;
+        if result.is_error {
+            Err(result.for_llm)
+        } else {
+            Ok(result.for_llm)
         }
     }
 }
