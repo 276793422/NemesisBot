@@ -211,6 +211,8 @@ fn test_format_existing_artifacts() {
         last_degraded_at: None,
         success_rate: 0.0,
         consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
     }];
 
     let output = format_existing_artifacts(&artifacts);
@@ -369,6 +371,8 @@ fn test_format_existing_artifacts_multiple() {
             last_degraded_at: None,
             success_rate: 0.0,
             consecutive_observing_rounds: 0,
+            deployed_at: None,
+            last_efficacy: None,
         },
         Artifact {
             id: "a2".into(),
@@ -384,6 +388,8 @@ fn test_format_existing_artifacts_multiple() {
             last_degraded_at: None,
             success_rate: 0.0,
             consecutive_observing_rounds: 0,
+            deployed_at: None,
+            last_efficacy: None,
         },
     ];
     let output = format_existing_artifacts(&artifacts);

@@ -10,10 +10,12 @@ nemesis-path = { workspace = true }
 nemesis-types = { workspace = true }
 nemesis-prompts = { workspace = true }
 nemesis-plugin = { workspace = true }
+nemesis-utils = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }

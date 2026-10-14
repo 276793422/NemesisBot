@@ -15,6 +15,8 @@ fn make_artifact(id: &str, usage: u64, status: ArtifactStatus) -> Artifact {
         last_degraded_at: None,
         success_rate: 0.0,
         consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
     }
 }
 
@@ -352,6 +354,7 @@ fn test_handle_verdict_positive_resets_counter() {
         artifact_id: id.clone(),
         measured_at: chrono::Local::now().to_rfc3339(),
         sample_size: 10,
+        sample_size_before: 8,
         rounds_before_avg: 5.0,
         rounds_after_avg: 3.0,
         success_before: 0.6,
@@ -606,6 +609,7 @@ fn test_handle_verdict_negative_triggers_deprecation() {
         artifact_id: id.clone(),
         measured_at: chrono::Local::now().to_rfc3339(),
         sample_size: 10,
+        sample_size_before: 8,
         rounds_before_avg: 5.0,
         rounds_after_avg: 8.0,
         success_before: 0.9,
@@ -632,6 +636,7 @@ fn test_handle_verdict_observing_increments() {
         artifact_id: id.clone(),
         measured_at: chrono::Local::now().to_rfc3339(),
         sample_size: 10,
+        sample_size_before: 8,
         rounds_before_avg: 5.0,
         rounds_after_avg: 5.5,
         success_before: 0.8,
@@ -658,6 +663,7 @@ fn test_handle_verdict_neutral_no_change() {
         artifact_id: id.clone(),
         measured_at: chrono::Local::now().to_rfc3339(),
         sample_size: 10,
+        sample_size_before: 8,
         rounds_before_avg: 5.0,
         rounds_after_avg: 5.0,
         success_before: 0.8,
@@ -690,6 +696,7 @@ fn test_action_outcome_fields() {
         artifact_id: "test-artifact".to_string(),
         measured_at: "2026-05-09T00:00:00Z".to_string(),
         sample_size: 10,
+        sample_size_before: 8,
         rounds_before_avg: 5.0,
         rounds_after_avg: 3.0,
         success_before: 0.6,

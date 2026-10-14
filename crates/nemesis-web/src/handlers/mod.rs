@@ -48,6 +48,7 @@ pub mod models;
 pub mod outbox;
 pub mod persona;
 pub mod plugins;
+pub mod profile;
 // W6（2026-09-29）：WASM 插件管理面（`plugins.wasm.*` 命令实现在此，由
 // plugins 模块代理分发；宿主运行时整槽静态注入，槽空诚实报错）。
 #[cfg(feature = "plugins-wasm")]
@@ -194,6 +195,8 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(approval::ApprovalHandler));
     // F7：提问响应端点（dashboard 提问卡 → WebQuestionBroker）。
     router.register(Arc::new(question::QuestionHandler));
+    // 自进化 B 线：用户习惯画像（后门动作 + 开关）。
+    router.register(Arc::new(profile::ProfileHandler::new()));
     router.register(Arc::new(chat::ChatHandler));
     router.register(Arc::new(config::ConfigHandler::new()));
     router.register(Arc::new(models::ModelsHandler::new()));

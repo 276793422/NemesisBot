@@ -196,6 +196,14 @@
   "forge": {
     "enabled": false
   },
+  "user_profile": {
+    "enabled": false,
+    "confidence_threshold": 0.7,
+    "max_entries": 10,
+    "decay_days": 30,
+    "stats_scan_interval_secs": 3600,
+    "reflect_every_sweeps": 20
+  },
   "cluster": {
     "enabled": false
   },
