@@ -58,6 +58,7 @@ fn f1_config() -> AgentConfig {
         max_turns: 5,
         tools: vec!["read_file".to_string(), "write_file".to_string()],
         models: std::collections::HashMap::new(),
+        tool_fence_profession: None,
     }
 }
 

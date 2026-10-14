@@ -103,6 +103,7 @@ fn pp_config() -> AgentConfig {
         max_turns: 6,
         tools: vec!["present_plan".to_string()],
         models: std::collections::HashMap::new(),
+        tool_fence_profession: None,
     }
 }
 

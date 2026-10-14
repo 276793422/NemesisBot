@@ -11,10 +11,13 @@
 //!   min_tier 元数据（tier 口径同 [`crate::subagents::role_tier`]）；
 //! - [`render`]：任务职能后缀渲染（诚实注记三臂，无 I/O——用户档案由
 //!   消费方从磁盘加载后传入）；
+//! - [`fence`]：职能工具围栏（B2）——契约文本内 `nemesis-tool-fence` 块
+//!   的解析/剥除（fail-open：无块不围）；
 //! - [`CLUSTER_WORKER_CONTRACT`]：B 端稳定前缀的行为契约段（D5）；
 //! - [`planner_method`]：planner 系统提示词的方法论段（经
 //!   [`crate::board::planner_system_prompt`] 拼装）。
 
+pub mod fence;
 pub mod meta;
 pub mod render;
 

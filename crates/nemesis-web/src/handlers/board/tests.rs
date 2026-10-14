@@ -2339,7 +2339,6 @@ async fn test_board_config_set_unknown_key_loud_rejects() {
         err.contains("unlimited_mode"),
         "错误信息应列出允许键: {err}"
     );
-
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2361,6 +2360,113 @@ async fn test_board_config_set_wrong_type_rejects() {
         let raw: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(raw["board"]["auto_accept"], false, "拒绝后不得半写");
     }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// B1（职能→评审预设查表）：review.professions.<slug>.<field> 白名单键。
+// 写入 → get 回读 + 盘上真实落盘；非法 slug/未知维度 loud 拒绝。
+#[tokio::test]
+async fn test_board_config_set_profession_preset_roundtrip() {
+    let dir = unique_dir("config-profession-preset");
+    let ctx = make_ctx_with_board(&dir);
+
+    // 写两个 slug × 不同维度（部分维度缺省=Option None 语义）。
+    for (key, value) in [
+        ("review.professions.Product.max_turns", serde_json::json!(0)),
+        ("review.professions.Product.checkers", serde_json::json!(2)),
+        (
+            "review.professions.Product.selfcheck",
+            serde_json::json!(true),
+        ),
+        ("review.professions.dev:cuda.checkers", serde_json::json!(3)),
+    ] {
+        let out = dispatch(
+            &ctx,
+            "config.set",
+            serde_json::json!({ "key": key, "value": value }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(out["updated"], true, "{key}");
+    }
+
+    // get 回读：slug 大小写归一（Product → product），嵌套结构完整。
+    let out = dispatch(&ctx, "config.get", serde_json::json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    let product = &out["review"]["professions"]["product"];
+    assert_eq!(product["max_turns"], 0);
+    assert_eq!(product["checkers"], 2);
+    assert_eq!(product["selfcheck"], true);
+    assert_eq!(out["review"]["professions"]["dev:cuda"]["checkers"], 3);
+
+    // 盘上真实落盘。
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+    assert_eq!(
+        raw["board"]["review"]["professions"]["product"]["selfcheck"],
+        true
+    );
+
+    // 非法 slug loud 拒绝（含空格/大写归一后仍非法的形态）。
+    let err = dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "review.professions.BAD SLUG.checkers", "value": 1 }),
+    )
+    .await
+    .expect_err("非法 slug 必须拒绝");
+    assert!(err.contains("非法"), "got: {err}");
+
+    // 未知维度 loud 拒绝。
+    let err = dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "review.professions.dev.tier", "value": "big" }),
+    )
+    .await
+    .expect_err("未知维度必须拒绝");
+    assert!(err.contains("未知职能预设维度"), "got: {err}");
+
+    // checkers 越界拒绝（消费侧 1..=5 收敛的前置镜像）。
+    let err = dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "review.professions.dev.checkers", "value": 9 }),
+    )
+    .await
+    .expect_err("checkers 越界必须拒绝");
+    assert!(err.contains("1..=5"), "got: {err}");
+
+    // null = 清除维度覆盖；三维度全空条目顺手删除（幂等，重复 null 不报错）。
+    for key in [
+        "review.professions.product.max_turns",
+        "review.professions.product.checkers",
+        "review.professions.product.selfcheck",
+        "review.professions.dev:cuda.checkers",
+        "review.professions.dev:cuda.checkers",
+    ] {
+        dispatch(
+            &ctx,
+            "config.set",
+            serde_json::json!({ "key": key, "value": null }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    }
+    let out = dispatch(&ctx, "config.get", serde_json::json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        out["review"]["professions"].as_object().unwrap().is_empty(),
+        "null 清除后 professions map 应为空: {:?}",
+        out["review"]["professions"]
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -6152,6 +6258,74 @@ impl LlmProvider for AgtDownProvider {
     }
 }
 
+/// 捕获全部 user 消息文本的 provider（D2 等待预算注入断言；恒回合法计划）。
+#[cfg(feature = "cluster")]
+struct AgtPromptCaptureProvider(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+#[cfg(feature = "cluster")]
+#[async_trait::async_trait]
+impl LlmProvider for AgtPromptCaptureProvider {
+    async fn chat(
+        &self,
+        _: &str,
+        messages: Vec<LlmMessage>,
+        _: Option<nemesis_agent::types::ChatOptions>,
+        _: Vec<nemesis_agent::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        if let Some(m) = messages.iter().rfind(|m| m.role == "user") {
+            self.0.lock().unwrap().push(m.content.clone());
+        }
+        Ok(LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
+            content: AGT_PLAN_JSON.to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+}
+
+/// D2 等待预算注入（run_planner 新参）：Some(secs) → user prompt 带
+/// 「讨论评审等待预算」段与具体值；None → 段不渲染（字节与历史一致）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn agt_run_planner_discussion_wait_hint_injected() {
+    let dir = unique_dir("agt-wait-hint");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let parent = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "预算注入父单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let al = Arc::new(AgentLoop::new(
+        Box::new(AgtPromptCaptureProvider(seen.clone())),
+        AgentConfig::default(),
+    ));
+    super::run_planner(&al, &parent, Vec::new(), None, Some(600), None)
+        .await
+        .unwrap();
+    let first = seen.lock().unwrap()[0].clone();
+    assert!(first.contains("讨论评审等待预算"), "{first}");
+    assert!(first.contains("review_wait_secs = 600"), "{first}");
+    assert!(first.contains("0=不等直接裁决"), "{first}");
+
+    // None = 不渲染（无该段——传导面关断时不污染既有 prompt 字节）。
+    super::run_planner(&al, &parent, Vec::new(), None, None, None)
+        .await
+        .unwrap();
+    let second = seen.lock().unwrap()[1].clone();
+    assert!(!second.contains("讨论评审等待预算"), "{second}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn agt_run_planner_surrender_llm_fail_and_success() {
@@ -6170,7 +6344,7 @@ async fn agt_run_planner_surrender_llm_fail_and_success() {
         Box::new(AgtBadPlannerProvider),
         AgentConfig::default(),
     ));
-    let err = super::run_planner(&al, &parent, Vec::new(), None)
+    let err = super::run_planner(&al, &parent, Vec::new(), None, None, None)
         .await
         .unwrap_err();
     assert!(err.contains("连续 3 轮无法解析"), "{err}");
@@ -6180,7 +6354,7 @@ async fn agt_run_planner_surrender_llm_fail_and_success() {
         Box::new(AgtDownProvider),
         AgentConfig::default(),
     ));
-    let err2 = super::run_planner(&al_down, &parent, Vec::new(), None)
+    let err2 = super::run_planner(&al_down, &parent, Vec::new(), None, None, None)
         .await
         .unwrap_err();
     assert!(err2.contains("planner LLM 调用失败"), "{err2}");
@@ -6190,10 +6364,16 @@ async fn agt_run_planner_surrender_llm_fail_and_success() {
         Box::new(AgtGoodPlannerProvider),
         AgentConfig::default(),
     ));
-    let (subs, downgrades) =
-        super::run_planner(&al_ok, &parent, vec!["过往经验: 先补测试".into()], None)
-            .await
-            .unwrap();
+    let (subs, downgrades) = super::run_planner(
+        &al_ok,
+        &parent,
+        vec!["过往经验: 先补测试".into()],
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     assert_eq!(subs.len(), 2);
     assert_eq!(subs[1].depends_on, vec![0]);
     assert!(downgrades.is_empty(), "严格可过的计划零降级");
@@ -7205,6 +7385,8 @@ async fn w5_run_planner_retry_appends_cluster_profile() {
         &parent,
         Vec::new(),
         Some("- PyWorker [role=worker tags=python]".to_string()),
+        None,
+        None,
     )
     .await
     .unwrap_err();
@@ -10220,4 +10402,61 @@ async fn pick_send_failure_target_prefers_last_worker_then_best_online() {
         "末次 worker 消失 + 无在线节点 → None"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// BUG 2026-10-08 `board.plan.model` dead-key 修复回归：覆盖解析 helper 的
+/// 三臂（解析成功 / 未配置·空别名回落 None / 未知别名回落 None——不
+/// fail-closed，warn 留痕）。
+#[cfg(feature = "cluster")]
+#[test]
+fn board_plan_model_swap_resolution_arms() {
+    // ① home 无 config.json → None（无覆盖 = 主模型，安静回落）。
+    let dir = unique_dir("plan-swap-empty");
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(super::board_plan_model_swap(Some(&dir)).is_none());
+
+    // ② 合法别名 → Some，模型名是解析后的裸名（provider 前缀剥掉）。
+    let dir = unique_dir("plan-swap-ok");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("config.json"),
+        r#"{
+            "model_list": [
+                {"model_name": "planner-model", "model": "openai/planner-x", "api_key": "k"}
+            ],
+            "board": {"plan": {"model": "planner-model"}}
+        }"#,
+    )
+    .unwrap();
+    let swap = super::board_plan_model_swap(Some(&dir)).expect("alias resolves");
+    assert_eq!(swap.1, "planner-x");
+
+    // ③ 显式空串 = 显式不覆盖 → None。
+    let dir = unique_dir("plan-swap-blank");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("config.json"),
+        r#"{"board": {"plan": {"model": ""}}}"#,
+    )
+    .unwrap();
+    assert!(super::board_plan_model_swap(Some(&dir)).is_none());
+
+    // ④ 未知别名 → None（warn + 回落主模型，不 panic 不 fail-closed）。
+    let dir = unique_dir("plan-swap-unknown");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("config.json"),
+        r#"{"board": {"plan": {"model": "no-such-alias"}}}"#,
+    )
+    .unwrap();
+    assert!(super::board_plan_model_swap(Some(&dir)).is_none());
+
+    for d in [
+        unique_dir("plan-swap-empty"),
+        unique_dir("plan-swap-ok"),
+        unique_dir("plan-swap-blank"),
+        unique_dir("plan-swap-unknown"),
+    ] {
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

@@ -12,6 +12,7 @@ fn test_config() -> AgentConfig {
         max_turns: 5,
         tools: vec!["search".to_string()],
         models: std::collections::HashMap::new(),
+        tool_fence_profession: None,
     }
 }
 

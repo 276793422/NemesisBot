@@ -94,6 +94,29 @@ fn catalog_contracts_declare_artifacts() {
     }
 }
 
+#[test]
+fn catalog_contracts_carry_base_annotation_second_line() {
+    // A1/D5 基线注记同步纪律：每个内置契约文件在定位行之后的机器可查版
+    // 本行，与 render::BUILTIN_BASE_ANNOTATION 一致（改版本 = 改常量 +
+    // 六个契约文件 + 本测试，一处漂移即红）。首行必须是定位行（机器核
+    // 验契约），注记不得抢首行。
+    use crate::professions::render::{BUILTIN_BASE_ANNOTATION, extract_base_annotation};
+    for m in CATALOG {
+        let first = m.contract.lines().next().unwrap_or_default();
+        assert!(
+            first.contains("执行职能："),
+            "{} 契约首行必须是定位行，实际：{first}",
+            m.slug
+        );
+        assert_eq!(
+            extract_base_annotation(m.contract),
+            Some(BUILTIN_BASE_ANNOTATION),
+            "{} 契约缺基线注记或注记不匹配",
+            m.slug
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // slug 语法与往返
 // ---------------------------------------------------------------------------
@@ -416,4 +439,140 @@ fn render_dev_cpp_prepends_precise_locator_before_family_header() {
         1,
         "裸 family 全文只应有契约自带的一处定位"
     );
+}
+
+// ---------------------------------------------------------------------------
+// B2 职能工具围栏：解析器（parse_tool_fence / strip_tool_fence）
+// ---------------------------------------------------------------------------
+
+use crate::professions::fence::{TOOL_FENCE_MARKER, parse_tool_fence, strip_tool_fence};
+
+#[test]
+fn fence_parse_happy_path_with_comments_and_quotes() {
+    let text = "正文第一段\n\n```nemesis-tool-fence\n# 注释\n- read_file\n- \"write_file\"\n- git  # 行尾注释\n\n- read_file\n```\n正文尾段\n";
+    let list = parse_tool_fence(text).expect("fence block present");
+    assert_eq!(
+        list,
+        vec![
+            "read_file".to_string(),
+            "write_file".to_string(),
+            "git".to_string()
+        ],
+        "去重 + 去引号 + 去行尾注释 + 保序"
+    );
+}
+
+#[test]
+fn fence_parse_absent_is_none_fail_open() {
+    assert_eq!(parse_tool_fence("普通契约文本，无围栏块"), None);
+    assert_eq!(parse_tool_fence(""), None);
+    // 围栏语言但不是本标记（普通代码块）不算围栏。
+    assert_eq!(parse_tool_fence("```toml\n- x\n```"), None);
+}
+
+#[test]
+fn fence_parse_empty_list_is_explicit_all_deny() {
+    let text = format!("A\n{TOOL_FENCE_MARKER}\n# 只有注释\n```");
+    let list = parse_tool_fence(&text).expect("present");
+    assert!(list.is_empty(), "Some(空) = 显式全禁，消费方照办");
+}
+
+#[test]
+fn fence_parse_multiple_blocks_first_wins() {
+    let text = format!("{TOOL_FENCE_MARKER}\n- alpha\n```\n中段\n{TOOL_FENCE_MARKER}\n- beta\n```");
+    assert_eq!(
+        parse_tool_fence(&text),
+        Some(vec!["alpha".to_string()]),
+        "多块取第一"
+    );
+}
+
+#[test]
+fn fence_parse_unterminated_extends_to_eof() {
+    // 无闭栏 = 块延伸到文末（诚实消费，不做启发式截断）：列表行之后的
+    // 普通文本行同样收进白名单——契约作者漏写闭栏的代价是显性的。
+    let text = format!("{TOOL_FENCE_MARKER}\n- read_file\n- grep\n（无闭栏）");
+    assert_eq!(
+        parse_tool_fence(&text),
+        Some(vec![
+            "read_file".to_string(),
+            "grep".to_string(),
+            "（无闭栏）".to_string(),
+        ]),
+    );
+}
+
+#[test]
+fn fence_strip_removes_block_keeps_rest_bytes() {
+    let text = "头\n```nemesis-tool-fence\n- exec\n```\n尾\n";
+    // 闭栏行（含其换行）整体剥除，其余字节原样拼接——不补空行。
+    assert_eq!(strip_tool_fence(text), "头\n尾\n");
+    // 无块 = 原样（Cow::Borrowed 快路径）。
+    let plain = "普通文本";
+    assert!(matches!(
+        strip_tool_fence(plain),
+        std::borrow::Cow::Borrowed(_)
+    ));
+    // 剥除后 parse 落 None（消费方先 parse 后 strip 的顺序由实现保证，
+    // 这里钉住两个函数对同一文本的互补性）。
+    assert_eq!(parse_tool_fence(strip_tool_fence(text).as_ref()), None);
+}
+
+#[test]
+fn fence_builtin_design_contracts_carry_expected_fence() {
+    // 内置三设计职能契约自带默认围栏（D3：能力边界跟契约文本一处）；
+    // dev/test 契约不围（fail-open = 全量）。
+    // 公共白名单（三契约同构基线）：只读族 + write/edit + 看板三工具
+    // + sleep（D2 有界等待：定稿单评审轮询，纯等待零副作用）。
+    let common: &[&str] = &[
+        "read_file",
+        "list_dir",
+        "file_exists",
+        "grep",
+        "git",
+        "web_fetch",
+        "web_search",
+        "lsp",
+        "write_file",
+        "edit_file",
+        "board_issue",
+        "board_discuss",
+        "sleep",
+    ];
+    // ui-design 独有：图像交付链（generate_image 产出 + board_asset
+    // publish——U5 全链的工具面，缺一条则图像线在围栏内诚实拒绝）。
+    let ui_expected: Vec<&str> = {
+        let mut v = common.to_vec();
+        v.extend_from_slice(&["generate_image", "board_asset"]);
+        v
+    };
+    for slug in ["product", "architecture"] {
+        let meta = find_builtin(slug).unwrap_or_else(|| panic!("{slug} 必须在目录"));
+        let list =
+            parse_tool_fence(meta.contract).unwrap_or_else(|| panic!("{slug} 契约必须带围栏块"));
+        assert_eq!(list, common, "{slug} 默认围栏漂移");
+        // 围栏块剥除后正文不含标记（渲染前消费方剥除，yaml 不进 prompt）。
+        assert!(
+            !strip_tool_fence(meta.contract).contains(TOOL_FENCE_MARKER),
+            "{slug} 剥除后仍残留围栏标记"
+        );
+    }
+    {
+        let meta = find_builtin("ui-design").unwrap_or_else(|| panic!("ui-design 必须在目录"));
+        let list =
+            parse_tool_fence(meta.contract).unwrap_or_else(|| panic!("ui-design 契约必须带围栏块"));
+        assert_eq!(list, ui_expected, "ui-design 默认围栏漂移");
+        assert!(
+            !strip_tool_fence(meta.contract).contains(TOOL_FENCE_MARKER),
+            "ui-design 剥除后仍残留围栏标记"
+        );
+    }
+    for slug in ["dev", "dev:cpp", "test-whitebox", "test-blackbox"] {
+        let meta = find_builtin(slug).unwrap();
+        assert_eq!(
+            parse_tool_fence(meta.contract),
+            None,
+            "{slug} 不应围（fail-open = 全量）"
+        );
+    }
 }

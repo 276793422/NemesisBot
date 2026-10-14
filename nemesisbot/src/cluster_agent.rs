@@ -764,57 +764,114 @@ fn self_declared_professions(agent_loop: &AgentLoop) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// B2（profession-capability-evolution 2026-10-14）：讨论唤醒轮的工具围栏
+/// 收窄。DiscussionEvent 无职能字段——讨论轮不是单一职能任务，按**本节点
+/// 宣告职能的契约围栏交集**收窄（D 裁决）：讨论是节点以自己的专业身份参
+/// 与，能力面 = 宣告职能围栏的公共部分。
+///
+/// - 无宣告职能 / 宣告职能契约都无围栏块 = 幺元跳过（None，不围）；
+/// - 交集为空 = **不围**（fail-open，D 裁决——空交集是宣告组合的偶然形
+///   态，不是契约作者的显式全禁意志，与任务装配的 Some(空) 语义刻意分
+///   流）；讨论轮没有单一职能来源，也没有 Some(空) 哨兵形态；
+/// - 总开关 `agents.profession_tool_fence` fresh-read 关 = 不围。
+///
+/// 返回 `Some(list)` 非空 = 讨论轮可用工具白名单（写 [`AgentConfig::tools`]，
+/// `tool_fence_profession` 留 None——派发拒绝文案走无职能的通用措辞）。
+fn discussion_tool_fence(agent_loop: &AgentLoop) -> Option<Vec<String>> {
+    if !agent_loop.current_profession_tool_fence() {
+        return None;
+    }
+    let declared = self_declared_professions(agent_loop);
+    if declared.is_empty() {
+        return None;
+    }
+    let ws = agent_loop.workspace_root();
+    let mut acc: Option<Vec<String>> = None;
+    for p in &declared {
+        let slug = nemesis_prompts::professions::meta::normalize_slug(p);
+        let (contract, _) = load_profession_assets(ws.as_deref(), &slug);
+        let Some(fence) = contract
+            .as_deref()
+            .and_then(nemesis_prompts::professions::fence::parse_tool_fence)
+        else {
+            continue; // 幺元：该宣告职能无围栏块，不参与收窄
+        };
+        acc = Some(match acc {
+            None => fence,
+            Some(prev) => prev.into_iter().filter(|t| fence.contains(t)).collect(),
+        });
+    }
+    let fence = acc.filter(|f| !f.is_empty())?;
+    Some(fence)
+}
+
 /// 职能资产解析：内置目录优先（契约+专业方法论编译期内嵌），用户工作区
 /// 扩展兜底（`<workspace>/cluster/professions/<family>/<spec>.md` 单文件，
 /// 正文即契约+方法论）。内置命中时用户同名档案 WARN 忽略（内置赢）。
 ///
 /// 安全闸：slug 先过 `validate_slug`（`^[a-z0-9_-]+(:[a-z0-9_-]+)?$`），
-/// 非法（含 `..`/路径分隔符）一律落未知臂——绝不拼路径。裸 family 用户
-/// 扩展不存在（只能来自内置目录）→ 无 spec = 未知臂。
+/// 非法（含 `..`/路径分隔符）一律落未知臂——绝不拼路径。
+///
+/// 优先级（A1 翻转，2026-10-14 D5）：**用户同名档案赢过内置**——提示词
+/// 可编辑、部署后可热改（改完下个任务生效，与用户自定义职能同链路）。
+/// 路径约定：`cluster/professions/<family>/<spec>.md`；裸 family（无
+/// spec 段）用 family 名作文件名（如 `product` → `product/product.md`）。
+/// 遮蔽 WARN：提示遮蔽事实 + 基线注记对照（档案首部 `<!-- base: … -->`
+/// vs 内置当前基线），删除用户文件即回内置；不做自动合并（诚实边界：
+/// 版本漂移靠人）。
+///
 /// 返回 (契约, 方法论)；契约 None = 未知 slug（渲染端诚实注记）。
+/// 用户档案遮蔽内置 slug 时方法论仍取内置（专业知识与角色契约正交，
+/// 用户要换方法论直接写进档案正文）。
 fn load_profession_assets(
     workspace: Option<&std::path::Path>,
     slug: &str,
 ) -> (Option<String>, Option<String>) {
+    use nemesis_prompts::professions::meta::find_builtin;
     use nemesis_prompts::professions::meta::split_slug;
     use nemesis_prompts::professions::meta::validate_slug;
     if validate_slug(slug).is_err() {
         return (None, None);
     }
-    if let Some(meta) = nemesis_prompts::professions::meta::find_builtin(slug) {
-        if let (Some(ws), Some(spec)) = (workspace, meta.spec) {
-            let user_file = ws
-                .join("cluster")
-                .join("professions")
-                .join(meta.family)
-                .join(format!("{spec}.md"));
-            if user_file.exists() {
+    // 统一的用户档案查找：内置 slug（遮蔽臂）与非内置 slug（自定义臂）
+    // 走同一条读盘路径，一次读盘定优先级。
+    if let Some(ws) = workspace
+        && let Some((family, spec)) = split_slug(slug)
+    {
+        let file_name = format!("{}.md", spec.unwrap_or(family));
+        let user_file = ws
+            .join("cluster")
+            .join("professions")
+            .join(family)
+            .join(file_name);
+        let content = std::fs::read_to_string(&user_file).ok();
+        if let Some(content) = content
+            && !content.trim().is_empty()
+        {
+            if find_builtin(slug).is_some() {
+                let user_base =
+                    nemesis_prompts::professions::render::extract_base_annotation(&content)
+                        .unwrap_or("未注记");
                 tracing::warn!(
                     slug,
                     file = %user_file.display(),
-                    "[ClusterAgent] 用户职能档案与内置职能同名，内置赢（用户档案忽略）"
+                    user_base,
+                    builtin_base = nemesis_prompts::professions::render::BUILTIN_BASE_ANNOTATION,
+                    "[ClusterAgent] 用户职能档案遮蔽内置（删除该文件即回内置）；若基于旧内置副本定制，请对照内置最新版核对差异"
                 );
             }
+            return (
+                Some(content),
+                nemesis_prompts::professions::render::builtin_method(slug).map(str::to_string),
+            );
         }
-        return (
+    }
+    match find_builtin(slug) {
+        Some(meta) => (
             Some(meta.contract.to_string()),
             nemesis_prompts::professions::render::builtin_method(slug).map(str::to_string),
-        );
-    }
-    let Some(ws) = workspace else {
-        return (None, None);
-    };
-    let Some((family, Some(spec))) = split_slug(slug) else {
-        return (None, None);
-    };
-    let user_file = ws
-        .join("cluster")
-        .join("professions")
-        .join(family)
-        .join(format!("{spec}.md"));
-    match std::fs::read_to_string(&user_file) {
-        Ok(content) if !content.trim().is_empty() => (Some(content), None),
-        _ => (None, None),
+        ),
+        None => (None, None),
     }
 }
 
@@ -825,6 +882,17 @@ fn load_profession_assets(
 /// 渲染臂（诚实注记三臂，见 professions::render）：内置/用户契约 → 契约
 /// 正文（未宣告节点加 fallback 注记）；未知 slug → 契约缺席 + 通用纪律，
 /// 绝不空串。
+///
+/// B2（profession-capability-evolution 2026-10-14）：职能工具围栏装配——
+/// 契约文本内的 ` ```nemesis-tool-fence ` 块（D3：能力边界跟职能文本放一
+/// 处，用户自定义档案天然同款）解析为该任务的实例级工具白名单，写进
+/// [`AgentConfig::tools`]（非空 = 供给/派发双闸的权威判据）。纪律：
+/// **先 parse（原文）后 strip（渲染用）**——围栏块是装配元数据不是提示词，
+/// yaml 永不进 LLM 上下文（开关关也剥）。开关 `agents.profession_tool_fence`
+/// fresh-read（缺省 true）；`Some(空)` = 显式全禁，落成 `tools=["question"]`
+/// 哨兵形态（豁免通道之外全禁的最小可表示集——AgentConfig 以「非空白名单」
+/// 表达「围了」，空表是「没围」，两者不可混同）。无围栏块的职能（dev:*/
+/// test-* fail-open）不写 tools = 不围，零行为变化。
 fn task_system_prompt(
     config: &AgentConfig,
     agent_loop: &AgentLoop,
@@ -850,10 +918,17 @@ fn task_system_prompt(
         declared,
         "[ClusterAgent] Rendering profession suffix"
     );
+    // B2：围栏先解析（原文），渲染用剥除后的正文（yaml 永不进 prompt）。
+    let fence_tools = contract
+        .as_deref()
+        .and_then(nemesis_prompts::professions::fence::parse_tool_fence);
+    let contract_rendered = contract
+        .as_deref()
+        .map(nemesis_prompts::professions::fence::strip_tool_fence);
     let suffix = nemesis_prompts::professions::render::render_profession_suffix(
         nemesis_prompts::professions::render::SuffixRender {
             slug: &slug,
-            contract: contract.as_deref(),
+            contract: contract_rendered.as_deref(),
             method: method.as_deref(),
             declared,
         },
@@ -863,6 +938,18 @@ fn task_system_prompt(
         Some(prefix) if !prefix.trim().is_empty() => format!("{prefix}\n\n---\n\n{suffix}"),
         _ => suffix,
     });
+    // B2：围栏写入（fresh-read 开关；白名单是闸的权威判据，职能标注只管
+    // 拒绝文案）。显式全禁（Some(空)）→ question 哨兵形态，见 fn 纪律注。
+    if let Some(allowed) = fence_tools
+        && agent_loop.current_profession_tool_fence()
+    {
+        cfg.tools = if allowed.is_empty() {
+            vec![nemesis_agent::r#loop::FENCE_EXEMPT_TOOLS[0].to_string()]
+        } else {
+            allowed
+        };
+        cfg.tool_fence_profession = Some(slug);
+    }
     cfg
 }
 
@@ -1391,7 +1478,15 @@ async fn handle_discussion(
     // Per-round AgentInstance：与 work queue 任务同款（吃集群身份 system
     // prompt）。会话不落 SessionStore——讨论状态真相源在 master 台账，每轮
     // 上下文由 wake 包随带（幂等重放安全：同 seq 不重复入队）。
-    let instance = AgentInstance::new(config.clone());
+    // B2 工具围栏（profession-capability-evolution 2026-10-14）：讨论轮按
+    // 本节点宣告职能的契约围栏交集收窄工具面（D 裁决）。tool_fence_
+    // profession 留 None——派发拒绝文案走无职能的通用措辞（讨论无单一职
+    // 能来源）。
+    let mut cfg = config.clone();
+    if let Some(allowed) = discussion_tool_fence(agent_loop) {
+        cfg.tools = allowed;
+    }
+    let instance = AgentInstance::new(cfg);
     let prompt = build_discussion_prompt(self_node_id, event);
     let session_key = format!("board:discussion:{thread_key}");
     let trace_id = format!("board-disc-{}-{}", event.thread_id, event.seq);
@@ -1521,6 +1616,28 @@ pub(crate) fn build_comment_post_envelope(
             "content": content,
             "reply_to": event.reply_to,
             "kind_tag": kind_tag,
+        }),
+    )
+    .to_json()
+}
+
+/// D2 读取臂：`board.comment.list` 上行信封（线程纯读——无幂等键、无
+/// 额度记账；limit 缺省由 master 侧收敛）。
+pub(crate) fn build_comment_list_envelope(
+    thread_kind: &str,
+    thread_id: i64,
+    limit: i64,
+) -> serde_json::Value {
+    EnvelopeResponse::success(
+        &Envelope {
+            ns: "board".to_string(),
+            op: "comment.list".to_string(),
+            corr_id: uuid::Uuid::new_v4().to_string(),
+            ..Envelope::default()
+        },
+        serde_json::json!({
+            "thread": {"kind": thread_kind, "id": thread_id},
+            "limit": limit,
         }),
     )
     .to_json()

@@ -18,6 +18,7 @@ fn local_test_config() -> AgentConfig {
         max_turns: 5,
         tools: vec!["calculator".to_string()],
         models: std::collections::HashMap::new(),
+        tool_fence_profession: None,
     }
 }
 

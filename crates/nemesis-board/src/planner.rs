@@ -25,7 +25,21 @@ pub use nemesis_prompts::board::PLANNER_SYSTEM_PROMPT;
 /// planner 系统提示词完整形态（基础契约 + 职能化拆解方法论；`&'static str`
 /// 驻留缓存）。派发消费方（nemesis-web issue.plan）用本函数——直接用
 /// [`PLANNER_SYSTEM_PROMPT`] 常量会缺职能方法论段。
-pub use nemesis_prompts::board::planner_system_prompt;
+///
+/// 首调拼装结果恒定，软预算告警挂在包装层：超 [`PLANNER_SOFT_BUDGET_BYTES`]
+/// 时 WARN 不截断（提示词资产失控的治理信号，对齐主 prompt `check_budget`
+/// 先例；资产 crate 零运行时依赖，tracing 消费点住本 crate）。
+pub fn planner_system_prompt() -> &'static str {
+    let p = nemesis_prompts::board::planner_system_prompt();
+    if p.len() > nemesis_prompts::board::PLANNER_SOFT_BUDGET_BYTES {
+        tracing::warn!(
+            "[prompt] planner 系统提示词共 {} 字节，超过软预算 {} 字节（检查 PLANNER_SYSTEM_PROMPT 或 PLANNER_METHOD 是否失控）",
+            p.len(),
+            nemesis_prompts::board::PLANNER_SOFT_BUDGET_BYTES
+        );
+    }
+    p
+}
 
 /// planner 输出的单个子单（§3.1 schema；serde 宽容：缺字段用默认值）。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

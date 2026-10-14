@@ -142,6 +142,14 @@ func (m *TestAIPlanner) Process(messages []Message) string {
 		return plannerMarshal(plannerProfPlan(title, "dev;cpp", "<PLAN_PROF_BAD>"))
 	case strings.Contains(input, "<PLAN_PROF>"):
 		return plannerMarshal(plannerProfChainPlan(title))
+	case strings.Contains(input, "<PLAN_VARIANT>"):
+		// D2 多变体 + 定稿链（profession-capability-evolution U9）：4 子任务
+		// ——①a/①b/①c product 变体（无依赖，confirm 波并行派出）+ ①z
+		// 定稿单（deps [0,1,2]，依赖闸等全部变体 done 后补派）。变体 AC =
+		// 职能回显锚点（B 端回显机产物，客观且跨节点安全）；定稿单描述带
+		// <UAT_D2_FINALIZE> 激活 board_model 的定稿对话机（发帖→sleep→
+		// 读线程→裁决汇报），AC 用 re: 锚点钉「需求评审记录」与「定稿」。
+		return plannerMarshal(plannerVariantPlan(title))
 	case strings.Contains(input, "<PLAN_PROF_USER>"):
 		return plannerMarshal(plannerProfSinglePlan(title, "myfamily:myspec",
 			"U7 用户自定义职能子单：按本节点职能档案交付。",
@@ -420,6 +428,43 @@ func plannerProfChainPlan(parentTitle string) []plannerSub {
 			DependsOn:          deps,
 		}
 	}
+	return subs
+}
+
+// plannerVariantPlan D2 多变体 + 定稿链计划（<PLAN_VARIANT>，U9）：
+// 4 子任务——①a/①b/①c product 变体（无依赖，confirm 波并行派出，分歧轴
+// 在描述里显式声明——不指定轴的变体会收敛相似）+ ①z 定稿单（deps
+// [0,1,2]，依赖闸等全部变体 done 后补派）。变体 AC = 职能回显锚点（B 端
+// 回显机产物，客观且跨节点安全）；定稿单描述带 <UAT_D2_FINALIZE> 激活
+// board_model 的定稿对话机（发帖→sleep→读线程→裁决汇报），AC 用 re:
+// 锚点钉「需求评审记录」与「定稿」。
+func plannerVariantPlan(parentTitle string) []plannerSub {
+	variants := []struct{ tag, axis string }{
+		{"A", "最保守解读——最小实现范围，字面需求，零外推"},
+		{"B", "字面最大化解读——按需求文本最大覆盖，接受外推风险"},
+		{"C", "重新框定——挑战背景假设：这个问题真正要解决的是什么"},
+	}
+	subs := make([]plannerSub, 0, 4)
+	for _, v := range variants {
+		subs = append(subs, plannerSub{
+			Title:              parentTitle + " · 变体" + v.tag + "：PRD 竞争解读",
+			Description:        "D2 变体子单（" + v.axis + "）。产出 docs/prd-variant-" + strings.ToLower(v.tag) + ".md，头部含分歧声明节。",
+			RequiredRole:       "worker",
+			RequiredTags:       []string{},
+			RequiredProfession: "product",
+			AcceptanceCriteria: "回复包含：职能=product\n[CHECK] re:职能=product",
+			DependsOn:          []int{},
+		})
+	}
+	subs = append(subs, plannerSub{
+		Title:              parentTitle + " · 定稿单：集群需求评审",
+		Description:        "D2 定稿单。<UAT_D2_FINALIZE> 主持集群需求评审：向本单讨论线程发变体摘要与 @all 邀请，等待应答并读取线程，按实质意见形成裁决记录（各变体 接受/拒绝/修改意见 + 择优结论 + 理由），胜者定稿 docs/prd.md。",
+		RequiredRole:       "worker",
+		RequiredTags:       []string{},
+		RequiredProfession: "product",
+		AcceptanceCriteria: "回复包含：需求评审记录\n[CHECK] re:需求评审记录\n[CHECK] re:定稿",
+		DependsOn:          []int{0, 1, 2},
+	})
 	return subs
 }
 

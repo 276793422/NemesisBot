@@ -17,6 +17,8 @@ fn agent_config_serialization_roundtrip() {
         max_turns: 5,
         tools: vec!["search".to_string(), "calculator".to_string()],
         models: std::collections::HashMap::new(),
+
+        tool_fence_profession: None,
     };
     let json = serde_json::to_string(&config).unwrap();
     let deserialized: AgentConfig = serde_json::from_str(&json).unwrap();
@@ -119,6 +121,8 @@ fn agent_config_with_empty_tools() {
         max_turns: 1,
         tools: vec![],
         models: std::collections::HashMap::new(),
+
+        tool_fence_profession: None,
     };
     assert!(config.tools.is_empty());
     let json = serde_json::to_string(&config).unwrap();
@@ -137,6 +141,8 @@ fn agent_config_models_serde_roundtrip() {
         max_turns: 10,
         tools: vec![],
         models,
+
+        tool_fence_profession: None,
     };
     let json = serde_json::to_string(&config).unwrap();
     let back: AgentConfig = serde_json::from_str(&json).unwrap();

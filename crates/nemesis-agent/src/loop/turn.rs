@@ -87,10 +87,12 @@ pub struct DetachedOpts<'a> {
     /// `agents.subagent.max_depth` 深度限制（`parent+1 > max_depth` 拒绝）；
     /// G4 后台化续行时同值透传。
     pub depth: usize,
-    /// 模型覆盖。**v1 边界：暂未实现切换**——子代理沿用主 loop 当前
-    /// active model（provider 选择在 run_llm_loop 深处，覆盖需独立
-    /// 通道；字段先占位，实现留 G4/后续）。
-    pub model: Option<String>,
+    /// 模型覆盖：ready-made (provider, 模型名) 对。Some = 本回合 LLM 调用
+    /// 走该 provider/模型（BUG 2026-10-08 `board.plan.model` dead-key 修复：
+    /// 之前字段是 `Option<String>` 占位从未消费，planner 永远用主模型）。
+    /// provider 解析在调用侧完成（Adapter 桥在消费 crate，agent crate 不建
+    /// provider）；None = 主模型字节不变。
+    pub model_swap: Option<&'a (std::sync::Arc<dyn LlmProvider>, String)>,
     /// 工具轮预算（>0 时作为 `turn_budget` 传入，REPLACE
     /// `config.max_turns`；0 = 用主配置默认）。
     pub max_turns: u32,
@@ -182,6 +184,7 @@ impl AgentLoop {
             system_prompt: self.config.system_prompt.clone(),
             max_turns: self.config.max_turns,
             tools: self.config.tools.clone(),
+            tool_fence_profession: self.config.tool_fence_profession.clone(),
             models: self.config.models.clone(),
         };
         let instance = AgentInstance::new(config);
@@ -635,6 +638,13 @@ impl AgentLoop {
         // dispatch reads it back (instance.detached_depth()) and injects it
         // into depth-aware tools so `agents.subagent.max_depth` is enforced.
         instance.set_detached_depth(opts.depth);
+        // 模型覆盖（BUG 2026-10-08 `board.plan.model` dead-key 修复）：
+        // ready-made (provider, 模型名) 对直接注入 instance——本回合
+        // effective_model / call_llm_with_recovery / chat_opts per-model 键
+        // 都经它消费；None 时零动作（主模型路径字节不变）。
+        if let Some((provider, model)) = opts.model_swap {
+            instance.set_detached_model(Some((std::sync::Arc::clone(provider), model.clone())));
+        }
         // 注：workspace 继承由 agent_factory 的 SpawnConfig 提供（与主
         // instance 同目录）；standalone loop（无 workspace 概念）留空。
         let context = RequestContext {

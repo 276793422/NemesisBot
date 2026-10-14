@@ -388,6 +388,21 @@ fn planner_prompt_declares_profession_field_and_full_slug_catalog() {
     );
 }
 
+/// planner 提示词软预算钉（对齐 nemesis-prompts 对主 prompt
+/// `SOFT_BUDGET_BYTES` 的测试先例）：完整形态必须低于预算——lens/变体规则
+/// 等新增段落叠加把体量推过线时，本测试红出来强制治理（超限运行期只 WARN
+/// 不截断；这里是防患闸门）。
+#[test]
+fn planner_prompt_under_soft_budget() {
+    let p = super::super::planner_system_prompt();
+    assert!(
+        p.len() < nemesis_prompts::board::PLANNER_SOFT_BUDGET_BYTES,
+        "planner 提示词 {} 字节超过软预算 {} 字节——提示词资产失控，检查新增长度",
+        p.len(),
+        nemesis_prompts::board::PLANNER_SOFT_BUDGET_BYTES
+    );
+}
+
 /// R-10（goal P4）：集群画像注入——有画像时渲染专用段+约束语，无则不渲染。
 #[test]
 fn planner_user_prompt_renders_cluster_profile() {
@@ -600,4 +615,53 @@ fn lenient_is_superset_of_strict() {
     let lenient = parse_plan_lenient(raw).unwrap();
     assert_eq!(strict, lenient.plan);
     assert!(lenient.downgraded.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// C1/D2（profession-capability-evolution 2026-10-14）：方法论段落内容钉
+// ---------------------------------------------------------------------------
+
+/// C1：dev 子单禁令→锚点翻译规则必须出现在完整 planner prompt（方法论段）。
+/// 同一禁令在开发前置必读、拆解锚点、评审分镜三处同源生效——拆解侧缺文
+/// 本条规则，翻译链就断在第一环。
+#[test]
+fn system_prompt_declares_dev_ban_anchor_translation() {
+    let p = super::super::planner_system_prompt();
+    // 规则 7 三要素：读哪（架构工件禁令节）、译成什么（引用编号的
+    // [CHECK] re: 锚点）、缺席语义（跳过不造空锚点）。
+    assert!(p.contains("禁令与约束清单"), "缺「禁令与约束清单」出处声明");
+    assert!(
+        p.contains("翻译为该子单 acceptance_criteria 里的锚点行"),
+        "缺禁令→锚点翻译规则"
+    );
+    assert!(
+        p.contains("引用禁令编号"),
+        "锚点必须引用禁令编号（评审分镜核对的抓手）"
+    );
+    assert!(
+        p.contains("禁令清单缺席时跳过"),
+        "禁令清单缺席语义必须是跳过（不造空锚点）"
+    );
+}
+
+/// D2：多变体规则（分歧轴三分 + 分歧声明 + 定稿单裁决工件）必须出现在
+/// 完整 planner prompt——变体拆解形态是方法论段的编排规则，不在基础
+/// 契约里（基础契约只管 JSON schema）。
+#[test]
+fn system_prompt_declares_variant_and_finalize_rules() {
+    let p = super::super::planner_system_prompt();
+    // 三条分歧轴（D7：定向不采样——少任何一条，变体退化为随机文档）。
+    for axis in ["最保守解读", "字面最大化解读", "重新框定"] {
+        assert!(p.contains(axis), "变体分歧轴缺「{axis}」");
+    }
+    // 分歧声明节（变体的自我声明——没有它讨论无从聚焦）。
+    assert!(p.contains("分歧声明"), "变体头部强制分歧声明节未声明");
+    // 定稿单裁决工件：「需求评审记录」节 + 胜者定稿路径。
+    assert!(
+        p.contains("需求评审记录"),
+        "定稿单「需求评审记录」工件未声明"
+    );
+    assert!(p.contains("docs/prd.md"), "胜者定稿路径 docs/prd.md 未声明");
+    // 需求模糊触发条件（何时拆变体——不拆变体的判据也要传达）。
+    assert!(p.contains("需求模糊"), "变体触发条件（需求模糊判定）未声明");
 }

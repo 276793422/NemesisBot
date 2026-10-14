@@ -2945,17 +2945,80 @@ fn task_prompt_user_workspace_extension_loaded() {
 }
 
 #[test]
-fn load_profession_assets_builtin_wins_over_user_override() {
+fn load_profession_assets_user_override_wins_over_builtin() {
+    // A1 翻转（2026-10-14 D5）：用户同名档案赢过内置，部署后可热改。
     let tmp = tempfile::tempdir().unwrap();
     let prof_dir = tmp.path().join("cluster").join("professions").join("dev");
     std::fs::create_dir_all(&prof_dir).unwrap();
-    std::fs::write(prof_dir.join("cpp.md"), "USER-OVERRIDE-SHOULD-LOSE").unwrap();
+    std::fs::write(
+        prof_dir.join("cpp.md"),
+        "USER-OVERRIDE-WINS 自研 C/C++ 纪律",
+    )
+    .unwrap();
 
     let (contract, method) = super::load_profession_assets(Some(tmp.path()), "dev:cpp");
     let contract = contract.unwrap_or_default();
-    assert!(contract.contains("# 执行职能：开发工程师"));
-    assert!(!contract.contains("USER-OVERRIDE-SHOULD-LOSE"));
+    assert!(
+        contract.contains("USER-OVERRIDE-WINS 自研 C/C++ 纪律"),
+        "用户档案应赢：{contract}"
+    );
+    assert!(
+        !contract.contains("# 执行职能：开发工程师"),
+        "内置契约正文应被遮蔽：{contract}"
+    );
+    // 方法论仍取内置（与角色契约正交的专业知识，见 load_profession_assets 契约注释）。
     assert!(method.unwrap_or_default().contains("专业方法论：C/C++"));
+
+    // 删除用户文件即回内置（热改回滚链路）。
+    std::fs::remove_file(prof_dir.join("cpp.md")).unwrap();
+    let (contract, _) = super::load_profession_assets(Some(tmp.path()), "dev:cpp");
+    assert!(
+        contract
+            .unwrap_or_default()
+            .contains("# 执行职能：开发工程师")
+    );
+}
+
+#[test]
+fn load_profession_assets_bare_family_override_wins() {
+    // 裸 family（无 spec 段）遮蔽：文件名 = family 名（product → product/product.md）。
+    let tmp = tempfile::tempdir().unwrap();
+    let prof_dir = tmp
+        .path()
+        .join("cluster")
+        .join("professions")
+        .join("product");
+    std::fs::create_dir_all(&prof_dir).unwrap();
+    std::fs::write(prof_dir.join("product.md"), "PM-CUSTOM-CONTRACT").unwrap();
+
+    let (contract, method) = super::load_profession_assets(Some(tmp.path()), "product");
+    assert_eq!(contract.unwrap_or_default(), "PM-CUSTOM-CONTRACT");
+    assert!(method.is_none(), "product 无内置方法论");
+
+    // 空白用户文件不遮蔽（回内置）。
+    std::fs::write(prof_dir.join("product.md"), "   \n").unwrap();
+    let (contract, _) = super::load_profession_assets(Some(tmp.path()), "product");
+    assert!(
+        contract
+            .unwrap_or_default()
+            .contains("# 执行职能：产品经理"),
+        "空白档案应回内置"
+    );
+}
+
+#[test]
+fn extract_base_annotation_finds_version_note() {
+    use nemesis_prompts::professions::render::{BUILTIN_BASE_ANNOTATION, extract_base_annotation};
+    // 内置契约自身携带注记（同步纪律的提取侧验证）。
+    let contract = nemesis_prompts::professions::meta::find_builtin("product").unwrap();
+    assert_eq!(
+        extract_base_annotation(contract.contract),
+        Some(BUILTIN_BASE_ANNOTATION)
+    );
+    // 未注记 → None（不猜）。
+    assert_eq!(extract_base_annotation("没有任何注记的档案"), None);
+    // 形态不完整不算注记。
+    assert_eq!(extract_base_annotation("<!-- base: 缺右括号"), None);
 }
 
 #[test]
@@ -2968,6 +3031,319 @@ fn load_profession_assets_invalid_slug_never_touches_disk() {
     // 大写/空格同样落非法臂。
     let (contract, _) = super::load_profession_assets(Some(tmp.path()), "My Fam");
     assert!(contract.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// B2 职能工具围栏（profession-capability-evolution 2026-10-14）：
+// 任务装配（task_system_prompt 写 cfg.tools）+ 讨论唤醒轮交集（discussion_
+// tool_fence）。解析器单测在 nemesis-prompts professions/tests.rs，此处测
+// 装配语义与开关。
+// ---------------------------------------------------------------------------
+
+fn expected_default_fence() -> Vec<String> {
+    [
+        "read_file",
+        "list_dir",
+        "file_exists",
+        "grep",
+        "git",
+        "web_fetch",
+        "web_search",
+        "lsp",
+        "write_file",
+        "edit_file",
+        "board_issue",
+        "board_discuss",
+        // sleep（D2 有界等待：定稿单评审轮询）2026-10-14 入围栏；与
+        // nemesis-prompts professions/tests.rs 的 common 白名单同步。
+        "sleep",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+#[test]
+fn task_prompt_builtin_fence_sets_tools_and_strips_yaml() {
+    let agent_loop = make_loop_without_session_store();
+    let cfg = super::task_system_prompt(
+        &make_test_config(),
+        &agent_loop,
+        &prof_task(Some("product")),
+    );
+    assert_eq!(
+        cfg.tools,
+        expected_default_fence(),
+        "product 默认围栏 12 工具"
+    );
+    assert_eq!(
+        cfg.tool_fence_profession.as_deref(),
+        Some("product"),
+        "职能标注随围栏写入（拒绝文案 who 子句）"
+    );
+    let prompt = cfg.system_prompt.as_deref().expect("Some");
+    // 契约正文照常渲染，围栏 yaml 永不进 prompt。
+    assert!(prompt.contains("# 执行职能：产品经理"), "{prompt}");
+    assert!(prompt.contains("不越职能边界"), "{prompt}");
+    assert!(
+        !prompt.contains("nemesis-tool-fence"),
+        "围栏标记泄漏进 prompt：{prompt}"
+    );
+    assert!(
+        !prompt.contains("白名单外工具在派发闸诚实拒绝"),
+        "围栏 yaml 注释泄漏进 prompt：{prompt}"
+    );
+    // 稳定前缀不受影响。
+    assert!(prompt.starts_with("test\n\n---\n\n"), "{prompt}");
+}
+
+#[test]
+fn task_prompt_no_profession_or_fenceless_slug_not_fenced() {
+    let agent_loop = make_loop_without_session_store();
+    let cfg = super::task_system_prompt(&make_test_config(), &agent_loop, &prof_task(None));
+    assert!(cfg.tools.is_empty(), "无职能任务零成本路径，绝不写 tools");
+    assert!(cfg.tool_fence_profession.is_none());
+
+    // dev:cpp 契约无围栏块 → fail-open（不写 tools = 全量），零行为变化。
+    let cfg = super::task_system_prompt(
+        &make_test_config(),
+        &agent_loop,
+        &prof_task(Some("dev:cpp")),
+    );
+    assert!(cfg.tools.is_empty(), "dev:cpp fail-open");
+    assert!(cfg.tool_fence_profession.is_none());
+    assert!(
+        cfg.system_prompt
+            .as_deref()
+            .unwrap_or("")
+            .contains("# 执行职能：开发工程师"),
+        "fail-open 不影响契约渲染"
+    );
+}
+
+fn write_switch_config(dir: &std::path::Path, json: &str) -> std::path::PathBuf {
+    let path = dir.join("config.json");
+    std::fs::write(&path, json).unwrap();
+    path
+}
+
+#[test]
+fn task_prompt_fence_switch_off_disables_but_yaml_still_stripped() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent_loop = make_loop_without_session_store();
+    agent_loop.set_config_path(write_switch_config(
+        tmp.path(),
+        r#"{"agents":{"profession_tool_fence":false}}"#,
+    ));
+    let cfg = super::task_system_prompt(
+        &make_test_config(),
+        &agent_loop,
+        &prof_task(Some("product")),
+    );
+    assert!(cfg.tools.is_empty(), "开关关 = 不写 tools（不围）");
+    assert!(cfg.tool_fence_profession.is_none());
+    // 剥除是无条件的——开关只管装配，yaml 在任何开关态都不进 prompt。
+    let prompt = cfg.system_prompt.as_deref().expect("Some");
+    assert!(!prompt.contains("nemesis-tool-fence"), "{prompt}");
+    assert!(prompt.contains("# 执行职能：产品经理"), "{prompt}");
+}
+
+#[test]
+fn task_prompt_fence_switch_default_on_and_explicit_on() {
+    let tmp = tempfile::tempdir().unwrap();
+    // 键缺失 = 缺省 true（围栏开）。
+    let agent_loop = make_loop_without_session_store();
+    agent_loop.set_config_path(write_switch_config(tmp.path(), r#"{}"#));
+    let cfg = super::task_system_prompt(
+        &make_test_config(),
+        &agent_loop,
+        &prof_task(Some("product")),
+    );
+    assert_eq!(cfg.tools, expected_default_fence(), "键缺失按缺省 true");
+
+    // 显式 true 同样生效。
+    let tmp2 = tempfile::tempdir().unwrap();
+    let agent_loop = make_loop_without_session_store();
+    agent_loop.set_config_path(write_switch_config(
+        tmp2.path(),
+        r#"{"agents":{"profession_tool_fence":true}}"#,
+    ));
+    let cfg = super::task_system_prompt(
+        &make_test_config(),
+        &agent_loop,
+        &prof_task(Some("product")),
+    );
+    assert_eq!(cfg.tools, expected_default_fence());
+}
+
+#[test]
+fn task_prompt_user_contract_fence_applies() {
+    let tmp = tempfile::tempdir().unwrap();
+    let prof_dir = tmp.path().join("cluster").join("professions").join("myfam");
+    std::fs::create_dir_all(&prof_dir).unwrap();
+    std::fs::write(
+        prof_dir.join("myspec.md"),
+        "USER-FENCED-CONTRACT\n\n```nemesis-tool-fence\n- read_file\n- grep\n- write_file\n```\n",
+    )
+    .unwrap();
+
+    let agent_loop = make_loop_without_session_store();
+    agent_loop.set_workspace_root(tmp.path().to_path_buf());
+    let cfg = super::task_system_prompt(
+        &make_test_config(),
+        &agent_loop,
+        &prof_task(Some("myfam:myspec")),
+    );
+    assert_eq!(
+        cfg.tools,
+        vec![
+            "read_file".to_string(),
+            "grep".to_string(),
+            "write_file".to_string()
+        ],
+        "用户自定义契约围栏天然同款（D3：能力边界跟职能文本一处）"
+    );
+    assert_eq!(cfg.tool_fence_profession.as_deref(), Some("myfam:myspec"));
+    let prompt = cfg.system_prompt.as_deref().expect("Some");
+    assert!(prompt.contains("USER-FENCED-CONTRACT"), "{prompt}");
+    assert!(!prompt.contains("nemesis-tool-fence"), "{prompt}");
+}
+
+#[test]
+fn task_prompt_explicit_all_deny_becomes_question_sentinel() {
+    // Some(空) = 显式全禁 → tools=["question"] 哨兵形态（AgentConfig 以
+    // 「非空白名单」表达「围了」，空表是「没围」，不可混同）。
+    let tmp = tempfile::tempdir().unwrap();
+    let prof_dir = tmp.path().join("cluster").join("professions").join("myfam");
+    std::fs::create_dir_all(&prof_dir).unwrap();
+    std::fs::write(
+        prof_dir.join("deny.md"),
+        "DENY-ALL-CONTRACT\n\n```nemesis-tool-fence\n# 本职能纯思考，无任何工具\n```\n",
+    )
+    .unwrap();
+
+    let agent_loop = make_loop_without_session_store();
+    agent_loop.set_workspace_root(tmp.path().to_path_buf());
+    let cfg = super::task_system_prompt(
+        &make_test_config(),
+        &agent_loop,
+        &prof_task(Some("myfam:deny")),
+    );
+    assert_eq!(
+        cfg.tools,
+        vec![nemesis_agent::r#loop::FENCE_EXEMPT_TOOLS[0].to_string()],
+        "显式全禁 = question 哨兵（豁免通道之外全禁的最小可表示集）"
+    );
+    assert_eq!(cfg.tool_fence_profession.as_deref(), Some("myfam:deny"));
+}
+
+fn loop_with_declared(professions: &[&str]) -> AgentLoop {
+    let cluster = std::sync::Arc::new(nemesis_cluster::cluster::Cluster::new(
+        nemesis_cluster::types::ClusterConfig {
+            node_id: "self-node".into(),
+            bind_address: "127.0.0.1:0".into(),
+            peers: vec![],
+            node_name: String::new(),
+        },
+    ));
+    cluster.set_professions(professions.iter().map(|s| s.to_string()).collect());
+    let mut agent_loop = make_loop_without_session_store();
+    agent_loop.set_cluster(cluster as std::sync::Arc<dyn std::any::Any + Send + Sync>);
+    agent_loop
+}
+
+#[test]
+fn discussion_fence_none_without_declared_professions() {
+    // 无 cluster 引用（未宣告）→ 不围。
+    let agent_loop = make_loop_without_session_store();
+    assert_eq!(super::discussion_tool_fence(&agent_loop), None);
+    // cluster 在场但宣告为空 → 同样不围。
+    let agent_loop = loop_with_declared(&[]);
+    assert_eq!(super::discussion_tool_fence(&agent_loop), None);
+}
+
+#[test]
+fn discussion_fence_declared_builtin_profession() {
+    let agent_loop = loop_with_declared(&["product"]);
+    assert_eq!(
+        super::discussion_tool_fence(&agent_loop),
+        Some(expected_default_fence()),
+        "宣告 product 的节点讨论轮 = product 契约围栏"
+    );
+}
+
+#[test]
+fn discussion_fence_intersects_across_declared_professions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path().join("cluster").join("professions");
+    for (fam, spec, tools) in [
+        ("mya", "one", "- read_file\n- grep\n"),
+        ("myb", "two", "- grep\n- write_file\n"),
+    ] {
+        let dir = base.join(fam);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(format!("{spec}.md")),
+            format!("CONTRACT {fam}\n\n```nemesis-tool-fence\n{tools}```\n"),
+        )
+        .unwrap();
+    }
+    let agent_loop = loop_with_declared(&["mya:one", "myb:two"]);
+    agent_loop.set_workspace_root(tmp.path().to_path_buf());
+    assert_eq!(
+        super::discussion_tool_fence(&agent_loop),
+        Some(vec!["grep".to_string()]),
+        "讨论轮能力面 = 宣告职能围栏的交集"
+    );
+}
+
+#[test]
+fn discussion_fence_disjoint_intersection_fails_open() {
+    // 交集空 = 不围（fail-open：空交集是宣告组合的偶然形态，不是契约作者
+    // 的显式全禁意志——与任务装配 Some(空) 哨兵语义刻意分流）。
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path().join("cluster").join("professions");
+    for (fam, spec, tools) in [
+        ("mya", "one", "- read_file\n"),
+        ("myb", "two", "- write_file\n"),
+    ] {
+        let dir = base.join(fam);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(format!("{spec}.md")),
+            format!("CONTRACT {fam}\n\n```nemesis-tool-fence\n{tools}```\n"),
+        )
+        .unwrap();
+    }
+    let agent_loop = loop_with_declared(&["mya:one", "myb:two"]);
+    agent_loop.set_workspace_root(tmp.path().to_path_buf());
+    assert_eq!(super::discussion_tool_fence(&agent_loop), None);
+}
+
+#[test]
+fn discussion_fence_unfenced_declared_is_identity_element() {
+    // 宣告含无围栏职能（dev:cpp）→ 幺元跳过，只按有围栏的交集。
+    let agent_loop = loop_with_declared(&["dev:cpp", "product"]);
+    assert_eq!(
+        super::discussion_tool_fence(&agent_loop),
+        Some(expected_default_fence()),
+        "无围栏块职能不参与收窄（幺元）"
+    );
+}
+
+#[test]
+fn discussion_fence_switch_off_disables() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent_loop = loop_with_declared(&["product"]);
+    agent_loop.set_config_path(write_switch_config(
+        tmp.path(),
+        r#"{"agents":{"profession_tool_fence":false}}"#,
+    ));
+    assert_eq!(
+        super::discussion_tool_fence(&agent_loop),
+        None,
+        "总开关关 = 讨论轮同样不围"
+    );
 }
 
 // claim 竞速重试判定（T43 实证的 D0b 竞态）：master 派发行未落库时回

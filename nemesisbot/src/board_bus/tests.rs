@@ -2045,6 +2045,9 @@ async fn sweep_spawn_worker_sync_loop_first_tick_backfills() {
     let ev = got.expect("常驻补拉任务首拍必须把 @ 提名事件补进 inbox");
     assert_eq!(ev.event, "sync_backfill");
     assert_eq!(ev.seq, 3);
+    // reply_to 必须是台账 message id——sync 投影只有线程 seq，冒充 id 会
+    // 与全局评论 id 空间相撞（parent_id 跨单错挂，run4 实录）。补拉恒 None。
+    assert_eq!(ev.reply_to, None);
     assert_eq!(wdeps.wake_state.watermark(), 3);
 }
 
@@ -2659,4 +2662,115 @@ mod m5_approval {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+// ---------------------------------------------------------------------------
+// D2 读取臂：comment.list（worker 轮询线程；纯查表不占额度）
+// ---------------------------------------------------------------------------
+
+fn list_payload(thread_kind: &str, thread_id: i64) -> serde_json::Value {
+    serde_json::json!({
+        "v": 1, "ns": "board", "op": "comment.list", "corr_id": "cl-1",
+        "body": {"thread": {"kind": thread_kind, "id": thread_id}}
+    })
+}
+
+#[tokio::test]
+async fn test_comment_list_happy_empty_and_validation() {
+    let (store, dir) = temp_store("list");
+    let deps = make_deps(store.clone(), quota(8));
+
+    // 空线程 = ok + 空数组（不是错误——轮询等待中的正常中间态）。
+    let (ok, code, body) = parse_reply(handle_nb_bus(&deps, list_payload("issue", 999)));
+    assert!(ok, "code={code:?}");
+    assert_eq!(body.pointer("/body/messages"), Some(&serde_json::json!([])));
+    assert_eq!(
+        body.pointer("/body/thread/id"),
+        Some(&serde_json::json!(999))
+    );
+
+    // 建单 + 上行两条评论 → list 回全量（ORDER BY id ASC，含 sender/content）。
+    let issue = store
+        .create_issue(nemesis_board::models::NewIssue {
+            title: "D2 读取臂".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+    let _ = handle_nb_bus(
+        &deps,
+        post_payload("l-1", "issue", issue.id, "变体 A 风险：依赖 X"),
+    );
+    let _ = handle_nb_bus(
+        &deps,
+        post_payload("l-2", "issue", issue.id, "变体 B 可测性更好"),
+    );
+    let (ok, code, body) = parse_reply(handle_nb_bus(&deps, list_payload("issue", issue.id)));
+    assert!(ok, "code={code:?}");
+    let messages = body
+        .pointer("/body/messages")
+        .and_then(|m| m.as_array())
+        .expect("messages array");
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["content"], "变体 A 风险：依赖 X");
+    assert_eq!(messages[1]["content"], "变体 B 可测性更好");
+    assert_eq!(messages[0]["sender"]["id"], "node-b");
+    // issue 线程 kind_tag 落库为 comment（text 是频道专属类型，issue 侧归一）。
+    assert_eq!(messages[0]["kind_tag"], "comment");
+
+    // 频道线程同构（经 ensure_default_channels 的 #dev）。
+    let ch = store.get_channel_by_name("#dev").unwrap().unwrap();
+    let _ = handle_nb_bus(&deps, post_payload("l-3", "channel", ch.id, "频道消息"));
+    let (ok, _, body) = parse_reply(handle_nb_bus(&deps, list_payload("channel", ch.id)));
+    assert!(ok);
+    assert_eq!(
+        body.pointer("/body/messages/0/content"),
+        Some(&serde_json::json!("频道消息"))
+    );
+
+    // 校验错误同 comment.post 先例：缺 thread 字段 = validation。
+    let (ok, code, _) = parse_reply(handle_nb_bus(
+        &deps,
+        serde_json::json!({"v": 1, "ns": "board", "op": "comment.list", "body": {}}),
+    ));
+    assert!(!ok);
+    assert_eq!(
+        code.as_deref(),
+        Some(nemesis_cluster::envelope::error_code::VALIDATION)
+    );
+    // 词表外 thread_kind = validation（handler 侧词表分支，非 store 错误）。
+    let (ok, code, _) = parse_reply(handle_nb_bus(&deps, list_payload("file", 1)));
+    assert!(!ok);
+    assert_eq!(
+        code.as_deref(),
+        Some(nemesis_cluster::envelope::error_code::VALIDATION)
+    );
+
+    // 读不占额度：同线程写满额度后读仍 ok（额度管写侧噪声，读是廉价操作）。
+    let q1 = quota(1);
+    let (store2, dir2) = temp_store("list-quota");
+    let deps2 = make_deps(store2.clone(), q1);
+    let issue2 = store2
+        .create_issue(nemesis_board::models::NewIssue {
+            title: "额度不涉读".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+    let (ok, _, _) = parse_reply(handle_nb_bus(
+        &deps2,
+        post_payload("lq-1", "issue", issue2.id, "占满"),
+    ));
+    assert!(ok);
+    let (ok, _, _) = parse_reply(handle_nb_bus(
+        &deps2,
+        post_payload("lq-2", "issue", issue2.id, "被拒"),
+    ));
+    assert!(!ok, "第二条写必须被额度拒");
+    let (ok, code, body) = parse_reply(handle_nb_bus(&deps2, list_payload("issue", issue2.id)));
+    assert!(ok, "额度拒写不波及读：code={code:?}");
+    assert_eq!(
+        body.pointer("/body/messages/0/content"),
+        Some(&serde_json::json!("占满"))
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&dir2);
 }

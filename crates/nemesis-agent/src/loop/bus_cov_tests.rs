@@ -45,6 +45,7 @@ fn cov_config() -> crate::types::AgentConfig {
         max_turns: 5,
         tools: vec![],
         models: HashMap::new(),
+        tool_fence_profession: None,
     }
 }
 

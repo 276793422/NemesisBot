@@ -1642,12 +1642,28 @@ fn plan_get(_data: Option<serde_json::Value>) -> Result<Option<serde_json::Value
 ///
 /// pub（全自动流转 P3/D1）：WSAPI `issue.plan` 与 agent 工具 `board_issue
 /// plan` 共用同一实现（单一真相源）。
+///
+/// `discussion_wait_secs`（D2）：master config 的
+/// `board.discussion.review_wait_secs` 现读值；Some 时向 planner user
+/// prompt 注入「讨论评审等待预算」段——planner 把该值写进定稿单
+/// description，随派发描述传给 worker（worker 本地 config 不作数，唯一
+/// 传导面就是这条链）。None = 不渲染该段（prompt 字节与历史一致）。
+///
+/// `model_swap`（BUG 2026-10-08 `board.plan.model` dead-key 修复）：调用方
+/// 经 [`board_plan_model_swap`] 解析好的 (provider, 模型名) 对；Some 时本
+/// 次拆解全部 LLM 轮走该模型（per-model effort/max_tokens 同步按覆盖名
+/// 查 config），None = 主模型（字节不变）。
 #[cfg(feature = "cluster")]
 pub async fn run_planner(
     agent_loop: &Arc<nemesis_agent::r#loop::AgentLoop>,
     parent: &nemesis_board::Issue,
     team_experience: Vec<String>,
     cluster_profile: Option<String>,
+    discussion_wait_secs: Option<u32>,
+    model_swap: Option<&(
+        std::sync::Arc<dyn nemesis_agent::r#loop::LlmProvider>,
+        String,
+    )>,
 ) -> Result<(Vec<nemesis_board::PlannedSubIssue>, Vec<(usize, String)>), String> {
     let mut prompt = nemesis_board::build_planner_user_prompt(
         &parent.title,
@@ -1656,6 +1672,15 @@ pub async fn run_planner(
         &team_experience,
         cluster_profile.as_deref(),
     );
+    if let Some(secs) = discussion_wait_secs {
+        prompt.push_str(&format!(
+            "\n# 讨论评审等待预算\n\
+             board.discussion.review_wait_secs = {secs}s（0=不等直接裁决）。\
+             需求模糊拆多变体时：定稿单 description 写明该等待预算与 \
+             「board_discuss 发帖 @all 邀请 → sleep → 无 content 读取臂轮询本单线程」节奏；\
+             预算耗尽按已有信息定稿，交付注记「评审不足」。\n"
+        ));
+    }
     let mut last_err = String::new();
     for round in 0..=2 {
         let raw = match agent_loop
@@ -1666,6 +1691,7 @@ pub async fn run_planner(
                     no_tools: true,
                     max_turns: 1,
                     label: Some("board-planner"),
+                    model_swap,
                     ..Default::default()
                 },
             )
@@ -1794,6 +1820,91 @@ fn plan_chain_cfg(home: Option<&std::path::Path>) -> nemesis_config::BoardPlanCo
     })
     .map(|c| c.board.unwrap_or_default().plan)
     .unwrap_or_default()
+}
+
+/// D2 等待预算现读（`board.discussion.review_wait_secs`；home 缺失/读取
+/// 失败 = 缺省 1800——与 [`plan_chain_cfg`] 同款缺省方向：等待节奏是
+/// 提示词纪律，读不到配置走保守默认，不 fail-closed）。
+#[cfg(feature = "cluster")]
+fn board_discussion_wait_secs(home: Option<&std::path::Path>) -> u32 {
+    home.and_then(|h| {
+        nemesis_config::load_config(&std::path::Path::new(h).join("config.json")).ok()
+    })
+    .and_then(|c| c.board)
+    .map(|b| b.discussion.review_wait_secs)
+    .unwrap_or(1800)
+}
+
+/// BUG 2026-10-08 `board.plan.model` dead-key 修复：planner 模型覆盖解析。
+/// `board.plan.model`（BoardPlanConfig.model，「planner 拆解用模型别名
+/// （None = 主模型）」）此前 typed+writable 但零消费——字段一直是死键，
+/// planner 恒用主模型。本函数把它解析成 ready-made (provider, 模型名) 对
+/// （DetachedOpts.model_swap 契约），注入 [`run_planner`] 的 detached 调用。
+///
+/// 解析链与热切/启动同源：`load_config` → `board.plan.model` → trim 非空 →
+/// `resolve_model_config`（别名直查）→ `create_provider` → `ProviderAdapter`
+/// 桥（实现 loop 的 LlmProvider）。任何一步失败 = warn + None（回落主模型
+/// ——拆解是看板主流程，覆盖模型配置坏了不应瘫痪拆解；与
+/// `board_discussion_wait_secs` 的不 fail-closed 同方向）。
+#[cfg(feature = "cluster")]
+fn board_plan_model_swap(
+    home: Option<&std::path::Path>,
+) -> Option<(
+    std::sync::Arc<dyn nemesis_agent::r#loop::LlmProvider>,
+    String,
+)> {
+    let alias = home
+        .and_then(|h| {
+            nemesis_config::load_config(&std::path::Path::new(h).join("config.json")).ok()
+        })
+        .and_then(|c| c.board)
+        .and_then(|b| b.plan.model)?;
+    let alias = alias.trim();
+    if alias.is_empty() {
+        return None;
+    }
+    let cfg = match home.and_then(|h| {
+        nemesis_config::load_config(&std::path::Path::new(h).join("config.json")).ok()
+    }) {
+        Some(c) => c,
+        None => {
+            tracing::warn!(
+                "[Board] board.plan.model='{alias}' 解析失败：config.json 不可读，回落主模型"
+            );
+            return None;
+        }
+    };
+    let resolution = match nemesis_config::resolve_model_config(&cfg, alias) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("[Board] board.plan.model='{alias}' 解析失败：{e}，回落主模型");
+            return None;
+        }
+    };
+    let factory_cfg = nemesis_providers::factory::FactoryConfig {
+        proxy: resolution.proxy.clone(),
+        llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
+        api_key: resolution.api_key.clone(),
+        api_base: resolution.api_base.clone(),
+        workspace: resolution.workspace.clone(),
+        connect_mode: resolution.connect_mode.clone(),
+        protocol: resolution.protocol.clone(),
+        timeout_secs: resolution.timeout_secs,
+        stream_mode: resolution.stream_mode.clone(),
+        account_id: String::new(),
+        headers: std::collections::HashMap::new(),
+    };
+    let provider = match nemesis_providers::factory::create_provider(&factory_cfg) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("[Board] board.plan.model='{alias}' provider 构造失败：{e}，回落主模型");
+            return None;
+        }
+    };
+    let adapter: std::sync::Arc<dyn nemesis_agent::r#loop::LlmProvider> = std::sync::Arc::new(
+        crate::llm_bridge::ProviderAdapter::new(provider, resolution.model_name.clone()),
+    );
+    Some((adapter, resolution.model_name))
 }
 
 /// 拆解链 spawn 单点（超时重拆 §1.1 / §5#1 配置化）：= panic 留痕监视壳
@@ -2222,11 +2333,16 @@ pub async fn execute_plan_chain(
             .collect();
         (!lines.is_empty()).then(|| lines.join("\n"))
     });
+    // BUG 2026-10-08 `board.plan.model` dead-key 修复：覆盖模型解析（None =
+    // 未配置/解析失败回落主模型——warn 已在 helper 内留痕）。
+    let plan_model_swap = board_plan_model_swap(home);
     let (subs, downgrades) = match run_planner(
         &agent_loop,
         &issue,
         team_experience,
         cluster_profile,
+        Some(board_discussion_wait_secs(home)),
+        plan_model_swap.as_ref(),
     )
     .await
     {
@@ -6033,6 +6149,79 @@ fn board_config_set(
                 )
                 .map_err(|_| "超出 u32 范围")?;
             }
+            "discussion.review_wait_secs" => {
+                board.discussion.review_wait_secs = u32::try_from(
+                    value
+                        .as_u64()
+                        .ok_or("discussion.review_wait_secs 需要非负整数")?,
+                )
+                .map_err(|_| "超出 u32 范围")?;
+            }
+            // B1（职能→评审预设查表）：review.professions.<slug>.<field>
+            // （slug 大小写归一后写入 map，与查表侧 to_ascii_lowercase 对齐；
+            // slug 语法走 nemesis-prompts 单一校验源）。逐维度 Option 覆盖：
+            // 只写显式提供的维度，其余沿用内置/全局。
+            k if let Some(rest) = k.strip_prefix("review.professions.") => {
+                let (slug, field) = rest.rsplit_once('.').ok_or_else(|| {
+                    format!("职能预设键形态为 review.professions.<slug>.<field>（field: max_turns/checkers/selfcheck），收到：{k}")
+                })?;
+                let slug = slug.trim().to_ascii_lowercase();
+                if let Err(e) = nemesis_prompts::professions::meta::validate_slug(&slug) {
+                    return Err(format!("职能 slug 非法：{e}"));
+                }
+                let preset = board.review.professions.entry(slug.clone()).or_default();
+                match field {
+                    "max_turns" => {
+                        // null = 清除该维度覆盖（全空条目顺手删除，防 map 积灰）。
+                        if value.is_null() {
+                            preset.max_turns = None;
+                            drop_if_empty(&mut board.review.professions, &slug);
+                        } else {
+                            preset.max_turns =
+                                Some(
+                                    u32::try_from(value.as_u64().ok_or(
+                                        "review.professions.<slug>.max_turns 需要非负整数",
+                                    )?)
+                                    .map_err(|_| "超出 u32 范围")?,
+                                );
+                        }
+                    }
+                    "checkers" => {
+                        if value.is_null() {
+                            preset.checkers = None;
+                            drop_if_empty(&mut board.review.professions, &slug);
+                        } else {
+                            let v = u32::try_from(
+                                value
+                                    .as_u64()
+                                    .ok_or("review.professions.<slug>.checkers 需要非负整数")?,
+                            )
+                            .map_err(|_| "超出 u32 范围")?;
+                            // 消费侧（run_review_panel）同样收敛，这里前置拒绝给出明确文案。
+                            if !(1..=5).contains(&v) {
+                                return Err(
+                                    "review.professions.<slug>.checkers 需要在 1..=5 范围内"
+                                        .to_string(),
+                                );
+                            }
+                            preset.checkers = Some(v);
+                        }
+                    }
+                    "selfcheck" => {
+                        if value.is_null() {
+                            preset.selfcheck = None;
+                            drop_if_empty(&mut board.review.professions, &slug);
+                        } else {
+                            preset.selfcheck = Some(need_bool(value)?);
+                        }
+                    }
+                    other => {
+                        return Err(format!(
+                            "未知职能预设维度：{other}（允许：max_turns / checkers / selfcheck；null=清除维度）"
+                        ));
+                    }
+                }
+            }
             _ => {
                 return Err(format!(
                     "未知或不允许的 board 配置键：{key}（允许：auto_review / auto_accept / \
@@ -6041,7 +6230,8 @@ fn board_config_set(
                  max_redispatch / dispatch_timeout_secs / worker_max_inflight / \
                  plan.auto_confirm / plan.model / review.max_turns / review.selfcheck / \
                  review.exec_anchors_enabled / review.exec_anchor_timeout_secs / \
-                 review.auto_close_project / review.checkers / budget.max_subissues_per_parent / \
+                 review.auto_close_project / review.checkers / review.professions.<slug>.* / \
+                 budget.max_subissues_per_parent / \
                  budget.max_total_redispatch / budget.max_send_retries / budget.wall_clock_budget_secs / \
                  budget.max_tokens_per_parent / discussion.*）"
                 ));
@@ -6056,18 +6246,36 @@ fn board_config_set(
             return Err("board 段 round-trip 丢失（typed 结构漂移）".to_string());
         };
         let leaf = key.rsplit('.').next().unwrap_or(key);
-        let persisted = match leaf {
-            "plan" | "discussion" | "backup" | "review" | "budget" => board_json.get(leaf),
-            _ => {
-                // plan.x / discussion.x 嵌套键到子对象里核。
-                if let Some((parent, _)) = key.split_once('.') {
-                    board_json.get(parent).and_then(|p| p.get(leaf))
-                } else {
-                    board_json.get(leaf)
+        // B1：review.professions.<slug>.<field> 四段键 → 嵌套四跳定位
+        // （slug 与写入侧同样归一小写后再核）。
+        let persisted = if let Some(rest) = key.strip_prefix("review.professions.") {
+            let mut seg = rest.rsplit('.');
+            let field = seg.next();
+            let slug = seg.next().map(|s| s.trim().to_ascii_lowercase());
+            match (slug, field) {
+                (Some(s), Some(f)) => board_json
+                    .get("review")
+                    .and_then(|r| r.get("professions"))
+                    .and_then(|p| p.get(&s))
+                    .and_then(|e| e.get(f)),
+                _ => None,
+            }
+        } else {
+            match leaf {
+                "plan" | "discussion" | "backup" | "review" | "budget" => board_json.get(leaf),
+                _ => {
+                    // plan.x / discussion.x 嵌套键到子对象里核。
+                    if let Some((parent, _)) = key.split_once('.') {
+                        board_json.get(parent).and_then(|p| p.get(leaf))
+                    } else {
+                        board_json.get(leaf)
+                    }
                 }
             }
         };
         match persisted {
+            // null 清除语义：条目/维度已不在 = 清除成功（幂等）。
+            None if value.is_null() => {}
             None => return Err(format!("配置键 {key} round-trip 丢失（typed 结构漂移）")),
             // 值不一致且布尔/数值维度也不等价（排除 serde 归一化等价形态）才报错。
             Some(actual)
@@ -6093,6 +6301,17 @@ fn board_config_set(
     })?;
     tracing::info!("[Board] board.config.set key={key}");
     Ok(Some(serde_json::json!({ "updated": true, "key": key })))
+}
+
+/// B1：职能预设条目三维度全空时顺手删除（null 清除维度的收尾；防
+/// `professions` map 积灰全空条目）。
+fn drop_if_empty(
+    map: &mut std::collections::HashMap<String, nemesis_config::BoardProfessionReviewPreset>,
+    slug: &str,
+) {
+    if map.get(slug).is_some_and(|p| *p == Default::default()) {
+        map.remove(slug);
+    }
 }
 
 /// M6-2 rebase（P5 clobber 根修）：以磁盘最新 config.json 为底、只保留
