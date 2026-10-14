@@ -576,6 +576,7 @@ pub fn build_agent_loop(
             cfg.agents.defaults.max_tool_iterations as u32
         },
         tools: Vec::new(),
+        tool_fence_profession: None,
         models: std::collections::HashMap::new(),
     };
 
@@ -2518,6 +2519,7 @@ pub fn build_project_agent_loop(
             cfg.agents.defaults.max_tool_iterations as u32
         },
         tools: Vec::new(),
+        tool_fence_profession: None,
         models: std::collections::HashMap::new(),
     };
 

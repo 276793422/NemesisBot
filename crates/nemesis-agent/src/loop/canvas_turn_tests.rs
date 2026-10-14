@@ -91,6 +91,7 @@ fn canvas_config() -> AgentConfig {
         max_turns: 8,
         tools: Vec::new(),
         models: std::collections::HashMap::new(),
+        tool_fence_profession: None,
     }
 }
 

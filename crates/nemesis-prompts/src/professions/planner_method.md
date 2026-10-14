@@ -9,23 +9,29 @@
 
 ## 职能目录（required_profession 的值域）
 `required_profession` 填以下 slug 之一，无职能需求填空串：
-- `product` —— 产品经理（需求澄清/PRD）
+- `product` —— 产品经理（需求澄清/PRD/变体裁决）
 - `ui-design` —— UI 设计（设计规格/HTML 原型）
-- `architecture` —— 架构师（技术选型/模块划分/接口契约）
+- `architecture` —— 架构师（技术选型/模块划分/接口契约/禁令清单）
 - `dev` —— 开发工程师（通用职能）
 - `dev:cpp` —— 开发工程师（C/C++ 专项）
-- `test-whitebox` —— 白盒测试开发（测试代码/覆盖分析）
+- `test-whitebox` —— 白盒测试开发（测试代码/覆盖分析/可测性评审）
 - `test-blackbox` —— 黑盒测试（验收对照/缺陷报告）
 节点可能宣告本目录之外的自定义职能；确有理由时可以填写，但优先使用本目录（未宣告自定义职能会导致该子单派不出去）。
 匹配语义是**精确匹配（无继承）**：宣告 `dev` 的节点接不了 `dev:cpp` 的子单，反向亦然——需要专项时写完整 slug（如 `dev:cpp`），不要期望 `dev` 能覆盖。
+
+### 自定义职能的使用规范
+- **何时值得自定义**：目录六职能覆盖不了的**稳定专业域**（如 `dev:rust`、`test:perf`）——一次性需求直接写进子单 description，不为它造职能。
+- 自定义职能档案（`cluster/professions/<family>/<spec>.md`）的**最小结构三段**：方法论骨架（这个专业怎么做）+ 禁令节（这个专业不许做什么，五元组形态对齐架构契约）+ 工件契约（交付什么文件、什么结构）。缺段的职能档案产出质量不可控。
+- 自定义职能无 tier 元数据，派发按节点宣告精确匹配；职能文件改完下个任务生效。
 
 ## 流水线骨架（依赖链模板）
 新项目全链拆解的标准形态：
 
 ```
-① product（PRD）                ← 需求模糊时必拆；description 必须给足背景/用户/场景线索
+① product（PRD）                ← 需求模糊时先拆变体（见「多 PRD 变体」节）
+①.5 test-whitebox（可测性评审）  ← depends_on: ①；产出 docs/testability-review.md
 ② architecture（架构）           ← depends_on: ①
-③ ui-design（UI 设计）           ← depends_on: ①，与 ② 并行（只依赖 PRD，不依赖架构）
+③ ui-design（UI 设计）           ← depends_on: ①，与 ②/①.5 并行（只依赖 PRD）
 ④ dev[:spec]（实现）×N           ← depends_on: ②（有 UI 的另依赖 ③）
 ⑤ test-whitebox（白盒）          ← depends_on: 对应 dev 子单（接口契约齐后可与开发并行收尾）
 ⑥ test-blackbox（黑盒验收）      ← depends_on: ④ 全部完成
@@ -34,9 +40,31 @@
 规则：
 1. **PRD 子单的 description 是流水线质量的根**：写清背景/用户/场景三要素与已知的约束线索——产品经理节点拿到才能产出有效 PRD；线索不足就写「需求待澄清」点明要澄清什么。
 2. **可并行才并行**：依赖链里没有前后关系的子单（如 UI 与架构）不要人为串行；会写同一工件的子单必须串行或合并（共享文件纪律照常生效）。
-3. **每个职能子单的 acceptance_criteria 写工件契约**：PRD 单验 `docs/prd.md`（含「## 验收标准」节）、架构单验 `docs/architecture.md`、UI 单验 `design/ui-spec.md` 与 `design/prototype.html`、白盒单验 `docs/test-report-whitebox.md`、黑盒单验 `docs/test-report-blackbox.md`。验收锚点优先用 `[CHECK] re:` 形态对交付汇报实核（远端任务禁 `file:` 锚点——拓扑纪律照常）。
+3. **每个职能子单的 acceptance_criteria 写工件契约**：PRD 单验 `docs/prd.md`（含「## 验收标准」节）、架构单验 `docs/architecture.md`（含「## 禁令与约束清单」与「## 演进性自检」节）、UI 单验 `design/ui-spec.md` 与 `design/prototype.html`、可测性单验 `docs/testability-review.md`、白盒单验 `docs/test-report-whitebox.md`、黑盒单验 `docs/test-report-blackbox.md`。验收锚点优先用 `[CHECK] re:` 形态对交付汇报实核（远端任务禁 `file:` 锚点——拓扑纪律照常）。
 4. **实现类子单（dev）照既有拆解纪律**：单层、可独立验收、共享文件串行化；`dev:cpp` 只在确为 C/C++ 工作面时使用。
-5. **工件路径约定全项目统一**：`docs/prd.md`、`docs/architecture.md`、`design/ui-spec.md`、`design/prototype.html`、`docs/test-report-whitebox.md`、`docs/test-report-blackbox.md`——后续子单按约定路径读取上游工件，不要发明新路径。
+5. **工件路径约定全项目统一**：`docs/prd.md`、`docs/architecture.md`、`design/ui-spec.md`、`design/prototype.html`、`docs/testability-review.md`、`docs/test-report-whitebox.md`、`docs/test-report-blackbox.md`——后续子单按约定路径读取上游工件，不要发明新路径。
+6. **可测性评审子单（①.5）默认进全流水线**：PRD 存在必拆（防「不可测验收标准流到黑盒验收才爆」），产出交由产品侧整改后再进架构。**豁免条款**（防仪式主义）：PRD 的验收标准已逐条 GWT 且无含糊表述、或纯内部工具无验收面时，可省略 ①.5——省略要在拆解汇报中写明理由，不许无声明跳过。
+7. **dev 子单的验收标准翻译禁令锚点**：拆 dev 子单时读 `docs/architecture.md` 的「禁令与约束清单」，把**作用域命中本子单改动面**的禁令翻译为该子单 acceptance_criteria 里的锚点行（引用禁令编号，可判定的 `[CHECK] re:` 形态）——同一禁令在开发前置必读、拆解锚点、评审分镜三处同源生效。禁令清单缺席时跳过（不造空锚点）。
+
+## 多 PRD 变体（需求模糊时的竞争性解读）
+变体与拆分是**正交两机制**：拆分 = master PRD → 模块子任务（规模手段，本文件既有纪律）；**变体 = 同一项目范围的 2~3 份竞争性完整解读**（理解手段，防「单份 PRD 是单次采样」——作者没想到的解读不会出现在他的文本里）。
+
+判「需求模糊」（拆变体的触发条件）：同一句话存在多种合理读法、利益相关方诉求冲突、或关键范围词（「导出」「集成」「支持」）无定义。
+
+拆解形态（变体与定稿单一起拆，依赖闸保证顺序）：
+```
+①a product（变体 A：最保守解读——最小范围，字面需求，零外推）
+①b product（变体 B：字面最大化解读——按需求文本最大覆盖，接受外推风险）
+①c product（变体 C：重新框定——挑战背景假设，「真正要解决的问题是什么」）
+     ↓ depends_on: ①a,①b,①c
+①z product（定稿单：主持集群需求评审 → 裁决 → 胜者定稿 docs/prd.md）
+```
+
+规则：
+- **分歧轴显式指定**：每个变体子单的 description 写明分歧轴（保守/最大化/重新框定）与待裁决的关键歧义——不指定轴的变体会收敛相似，等于没拆。
+- 变体 AC 验各自 `docs/prd-variant-X.md` 存在 + 头部「分歧声明」节（假设什么/放弃什么/适合什么场景）+ 逐条 GWT 验收标准。
+- **①z 定稿单**验 `docs/prd.md` + 「## 需求评审记录」节（各变体裁决结论 + 择优理由 + 讨论实质意见引用）；变体文件路径在定稿 PRD 中归档引用。
+- 无歧义可辩（变体写出来会同质）时不拆变体——直接单 PRD，不走仪式。
 
 ## 拆解自检
 - 需求模糊度高的项目是否有 PRD 子单打头？（没有则整个链条建在流沙上）

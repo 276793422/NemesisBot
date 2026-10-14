@@ -149,6 +149,45 @@ const READONLY_REVIEW_TOOLS: &[&str] = &[
     "run_checks",
 ];
 
+/// B3（profession-capability-evolution 2026-10-14）：架构工件禁令节的节头
+/// 前缀（与 architecture 契约的强制工件节对齐；匹配按前缀找，容许标题
+/// 尾缀差异）。
+const ARCH_BAN_SECTION_HEADER: &str = "## 禁令与约束清单";
+
+/// B3 服务端预取：抽取架构工件的禁令节文本（节 = 从节头到下一个 `## `
+/// 或文末）。节缺席 → None（不造空节，lens 清单自带「无法核对」诚实臂）。
+fn extract_ban_section(text: &str) -> Option<String> {
+    let start = text.find(ARCH_BAN_SECTION_HEADER)?;
+    let rest = &text[start..];
+    let end = rest[ARCH_BAN_SECTION_HEADER.len()..]
+        .find("\n## ")
+        .map(|off| ARCH_BAN_SECTION_HEADER.len() + off + 1)
+        .unwrap_or(rest.len());
+    Some(rest[..end].trim_end().to_string())
+}
+
+/// B3 服务端预取：读架构工件（`docs/architecture.md`）禁令节，作为引用
+/// 文本段拼进评审 prompt——**不依赖评审 agent 自己去读**（三机部署下评审
+/// 通常是 NoTools 纯文本形态，「让评审员自己读」在这条路上没有牙齿）。
+/// 双根解析与 [`nemesis_board::run_anchors_dual`] 同源：主根 workspace 优先，
+/// 项目目录 fallback（NB-22 同款：档案管线交付集合并在项目目录）。
+/// 双根都读不到/节缺席 → None（评审照常，无禁令可核由 lens 清单诚实声明）。
+fn prefetch_ban_section(
+    workspace: &std::path::Path,
+    project_fallback: Option<&std::path::Path>,
+) -> Option<String> {
+    for root in [Some(workspace), project_fallback] {
+        let Some(root) = root else { continue };
+        let path = root.join("docs").join("architecture.md");
+        if let Ok(text) = std::fs::read_to_string(&path)
+            && let Some(section) = extract_ban_section(&text)
+        {
+            return Some(section);
+        }
+    }
+    None
+}
+
 /// B2a 评审工具模式：`NoTools` 与历史行为字节等价（max_turns=1 纯文本）；
 /// `ReadOnly` 允许只读白名单多轮取证（`u32::MAX` = 配置 0=不限的哨兵映射）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -757,6 +796,13 @@ async fn review_issue(
         return review_parent_issue(deps, issue_id).await;
     }
 
+    // B1（职能→评审预设查表）：评审参数按本单职能解析（职能预设 > 全局
+    // board.review.* > 内置默认；无职能单 = 全局值，行为不变）。后续消费点
+    // 只读解析结果，不再直读 cfg.review 同名字段。
+    let eff_review = cfg
+        .review
+        .resolve_for_profession(issue.required_profession.as_deref());
+
     // ---- 组装评审输入：worker 汇报 + 线程争议点 ----
     let comments = store.list_comments(issue_id)?;
     let dispatches = store.list_dispatches(issue_id)?;
@@ -1093,9 +1139,22 @@ async fn review_issue(
     let tool_mode = pick_review_tool_mode(
         dispatches.last().map(|d| d.worker_id.as_str()),
         deps.cluster.node_id(),
-        cfg.review.max_turns,
+        eff_review.max_turns,
     );
     prompt.push_str(&render_review_budget_block(tool_mode));
+    // B3 评审分镜（profession-capability-evolution 2026-10-14）：按任务职能
+    // 选 lens；禁令节文本服务端预取（vision/文本两路共用；NoTools 形态下
+    // 评审员没有读文件工具，注入是唯一有牙齿的通路）。多检查员面板（>1）
+    // 走 C2 异构三镜，镜 1（constraint）消费同一份预取文本——一并预取。
+    // 职能无分镜且单检查员 = 历史形态，零读取。
+    let review_lens = nemesis_prompts::board::review_lens_for_profession(
+        issue.required_profession.as_deref().unwrap_or(""),
+    );
+    let lens_reference = if review_lens.is_some() || eff_review.checkers > 1 {
+        prefetch_ban_section(resolve_anchor_root(deps), project_fallback.as_deref())
+    } else {
+        None
+    };
     // ---- M5 vision 路径：交付/线程评论带图像资产引用束 → 程序化取回 →
     // base64 image part 进评审裸调用（单跑不走多检查员 panel——panel v1
     // 保持纯文本；计划 §2.7）。无图 = 零改动走既有文本路径；锚点已 FAIL
@@ -1122,10 +1181,17 @@ async fn review_issue(
             match nemesis_providers::default_slot::current() {
                 Some((provider, model, _)) => {
                     let mut vision_prompt = prompt.clone();
+                    // vision 单跑 = B3 职能分镜同款（panel v1 保持纯文本）。
+                    let vision_system =
+                        nemesis_prompts::board::render_review_system_prompt_with_lens(
+                            review_tier,
+                            review_lens,
+                            lens_reference.as_deref(),
+                        );
                     match crate::board_review_assets::run_review_llm_vision(
                         provider,
                         &model,
-                        nemesis_prompts::board::render_review_system_prompt(review_tier),
+                        &vision_system,
                         &mut vision_prompt,
                         &review_images,
                     )
@@ -1222,8 +1288,10 @@ async fn review_issue(
             agent_loop,
             &prompt,
             tool_mode,
-            cfg.review.checkers,
+            eff_review.checkers,
             review_tier,
+            review_lens,
+            lens_reference.as_deref(),
         )
         .await
         {
@@ -1360,7 +1428,7 @@ async fn review_issue(
             issue.acceptance_criteria.as_deref().unwrap_or(""),
         );
     if ctx.allow_selfcheck
-        && (cfg.review.selfcheck || anchor_forced)
+        && (eff_review.selfcheck || anchor_forced)
         && let Some(request) = nemesis_board::selfcheck_request_text(&output).or_else(|| {
             anchor_forced.then(|| {
                 format!(
@@ -2069,22 +2137,29 @@ async fn run_review_llm(
     prompt: &mut String,
     mode: ReviewToolMode,
     tier: nemesis_prompts::board::ReviewTier,
+    // B3/C2（profession-capability-evolution 2026-10-14）：评审分镜 + 服务
+    // 端预取的禁令节引用（只进 constraint 镜；None = 历史行为字节等价）。
+    lens: Option<&'static nemesis_prompts::board::ReviewLens>,
+    lens_reference: Option<&str>,
 ) -> Result<nemesis_board::ReviewOutput, String> {
     // 评审分层（gap ②）：Thorough = 历史 REVIEW_SYSTEM_PROMPT 字节一致；
     // Fast = 精简档（保留注入防线与三态 JSON 契约，关取证/经验）。
-    let system_prompt = nemesis_prompts::board::render_review_system_prompt(tier);
+    // B3：带分镜走 with_lens（无分镜时 String 与原文同字节；借用进
+    // DetachedOpts——无分镜路径经 with_lens 也返回 String，行为不变）。
+    let system_prompt =
+        nemesis_prompts::board::render_review_system_prompt_with_lens(tier, lens, lens_reference);
     let mut last_err = String::new();
     for _ in 0..=2 {
         let opts = match mode {
             ReviewToolMode::NoTools => nemesis_agent::r#loop::DetachedOpts {
-                system_prompt: Some(system_prompt),
+                system_prompt: Some(system_prompt.as_str()),
                 no_tools: true,
                 max_turns: 1,
                 label: Some("board-review"),
                 ..Default::default()
             },
             ReviewToolMode::ReadOnly { max_turns } => nemesis_agent::r#loop::DetachedOpts {
-                system_prompt: Some(system_prompt),
+                system_prompt: Some(system_prompt.as_str()),
                 no_tools: false,
                 allowed_tools: Some(READONLY_REVIEW_TOOLS),
                 max_turns,
@@ -2147,21 +2222,43 @@ pub(crate) const MAX_REVIEW_CHECKERS: u32 = 5;
 /// 保序），`aggregate_verdicts` 多数票聚合。`checkers = 1`（默认）直接单路
 /// 调用，与历史行为字节等价。全路解析失败 → 返回末路错误（与单路 3 轮
 /// 全败语义一致）。
+///
+/// B3/C2（profession-capability-evolution 2026-10-14）：单路 = B3 职能分镜
+/// （`profession_lens`，按 issue.required_profession 选）；多路 = C2 异构
+/// 三镜按 index 轮换（`checker_lens_for_index`，不再 N 个同质评委，「第
+/// N 号检查员」编号去相关保留）——预取的禁令节引用只注入 constraint 镜
+/// （[`nemesis_prompts::board::CONSTRAINT_LENS_ID`]）。
 async fn run_review_panel(
     agent_loop: &Arc<nemesis_agent::r#loop::AgentLoop>,
     base_prompt: &str,
     mode: ReviewToolMode,
     checkers: u32,
     tier: nemesis_prompts::board::ReviewTier,
+    profession_lens: Option<&'static nemesis_prompts::board::ReviewLens>,
+    lens_reference: Option<&str>,
 ) -> Result<nemesis_board::ReviewOutput, String> {
     let checkers = checkers.clamp(1, MAX_REVIEW_CHECKERS) as usize;
     if checkers == 1 {
         let mut prompt = base_prompt.to_string();
-        return run_review_llm(agent_loop, &mut prompt, mode, tier).await;
+        return run_review_llm(
+            agent_loop,
+            &mut prompt,
+            mode,
+            tier,
+            profession_lens,
+            lens_reference,
+        )
+        .await;
     }
     let sem = Arc::new(tokio::sync::Semaphore::new(PANEL_CONCURRENCY));
     let mut futs = Vec::with_capacity(checkers);
     for i in 0..checkers {
+        let lens = nemesis_prompts::board::checker_lens_for_index(i);
+        let reference = if lens.id == nemesis_prompts::board::CONSTRAINT_LENS_ID {
+            lens_reference
+        } else {
+            None
+        };
         let mut prompt = format!(
             "{base_prompt}\n\n（你是第 {} 号检查员：请独立评审，不受其他检查员意见影响）",
             i + 1
@@ -2170,7 +2267,7 @@ async fn run_review_panel(
         let agent_loop = Arc::clone(agent_loop);
         futs.push(async move {
             let _permit = sem.acquire_owned().await;
-            run_review_llm(&agent_loop, &mut prompt, mode, tier).await
+            run_review_llm(&agent_loop, &mut prompt, mode, tier, Some(lens), reference).await
         });
     }
     let results = futures::future::join_all(futs).await;
@@ -2905,6 +3002,11 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
     if parent.status != IssueStatus::InReview {
         return Ok(false);
     }
+    // B1（职能→评审预设查表）：收口评审参数按父单职能解析（父单通常无
+    // 职能 = 全局值，行为不变）。
+    let eff_review = cfg
+        .review
+        .resolve_for_profession(parent.required_profession.as_deref());
     // U-B（§9.2）：LLM 端点不可用封存闸——父单收口挂起（pending=review，
     // resume 走 spawn_board_review → review_issue 分流回本函数）。
     if nemesis_web::handlers::board_unavailable::frozen_now() {
@@ -3174,12 +3276,24 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
         prompt.push_str(&render_review_budget_block(ReviewToolMode::NoTools));
         // 父单收口恒纯文本（B2a 执行型验收只适用子单——父单工件分散在
         // 多个子单的 worker 会话，master 就地读文件无从对应）。
+        // B3/C2：父单职能分镜（父单通常无职能 = None）+ 预取禁令节（镜 1
+        // 多检查员时消费）。
+        let review_lens = nemesis_prompts::board::review_lens_for_profession(
+            parent.required_profession.as_deref().unwrap_or(""),
+        );
+        let lens_reference = if review_lens.is_some() || eff_review.checkers > 1 {
+            prefetch_ban_section(resolve_anchor_root(deps), parent_fallback.as_deref())
+        } else {
+            None
+        };
         match run_review_panel(
             agent_loop,
             &prompt,
             ReviewToolMode::NoTools,
-            cfg.review.checkers,
+            eff_review.checkers,
             nemesis_prompts::board::parse_review_tier(&cfg.review.tier),
+            review_lens,
+            lens_reference.as_deref(),
         )
         .await
         {
@@ -3872,12 +3986,21 @@ async fn review_project_completion(
         // PR4：项目收口预算块（恒纯文本单轮——同父单边界）。
         prompt.push_str(&render_review_budget_block(ReviewToolMode::NoTools));
         // 项目级恒纯文本（同父单边界：工件分散在各 worker 会话）。
+        // C2：项目收口无职能分镜（lens=None），多检查员镜 1 消费预取禁令节
+        // （项目目录 fallback 优先——架构工件就住在项目档案里）。
+        let lens_reference = if cfg.review.checkers > 1 {
+            prefetch_ban_section(resolve_anchor_root(deps), project_fallback.as_deref())
+        } else {
+            None
+        };
         match run_review_panel(
             agent_loop,
             &prompt,
             ReviewToolMode::NoTools,
             cfg.review.checkers,
             nemesis_prompts::board::parse_review_tier(&cfg.review.tier),
+            None,
+            lens_reference.as_deref(),
         )
         .await
         {

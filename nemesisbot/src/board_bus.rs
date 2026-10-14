@@ -125,6 +125,7 @@ fn handle_nb_bus(
 
     let reply = match env.op.as_str() {
         "comment.post" => handle_comment_post(deps, &env),
+        "comment.list" => handle_comment_list(deps, &env),
         "sync" => handle_sync(deps, &env),
         other => EnvelopeResponse::failure(
             &env,
@@ -912,6 +913,104 @@ impl nemesis_board::service::DiscussionIngress for LocalDiscussionIngress {
             reply_to,
             kind_tag,
         )
+    }
+}
+
+/// `board.comment.list`（D2 读取臂）：worker 轮询讨论线程——纯查表回
+/// 消息清单，不落库、不占额度三闸（额度管的是写侧噪声，读是廉价操作）。
+/// 错误处理沿 comment.post 的 envelope 先例：字段缺失 = VALIDATION，
+/// 存储失败 = INTERNAL。limit 收敛 1..=500（防单次全量拖库；线程本身
+/// 受写侧额度约束不会大，收敛是防御性的）。
+fn handle_comment_list(deps: &MasterBusDeps, env: &Envelope) -> EnvelopeResponse {
+    let body = &env.body;
+    let Some(thread_kind) = body
+        .get("thread")
+        .and_then(|t| t.get("kind"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+    else {
+        return EnvelopeResponse::failure(
+            env,
+            EnvelopeError::new(envelope::error_code::VALIDATION, "missing thread.kind"),
+        );
+    };
+    let Some(thread_id) = body
+        .get("thread")
+        .and_then(|t| t.get("id"))
+        .and_then(|v| v.as_i64())
+    else {
+        return EnvelopeResponse::failure(
+            env,
+            EnvelopeError::new(envelope::error_code::VALIDATION, "missing thread.id"),
+        );
+    };
+    let limit = body
+        .get("limit")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(200)
+        .clamp(1, 500);
+
+    let listed = match thread_kind.as_str() {
+        "issue" => deps.store.list_comments(thread_id).map(|comments| {
+            comments
+                .into_iter()
+                .map(|c| {
+                    serde_json::json!({
+                        "id": c.id,
+                        "sender": {"type": c.author.kind, "id": c.author.id},
+                        "content": c.content,
+                        "reply_to": c.parent_id,
+                        "kind_tag": c.ctype.as_str(),
+                        "created_at": c.created_at,
+                    })
+                })
+                .collect::<Vec<_>>()
+        }),
+        "channel" => deps
+            .store
+            .list_channel_messages(thread_id, 0, limit)
+            .map(|msgs| {
+                msgs.into_iter()
+                    .map(|m| {
+                        serde_json::json!({
+                            "id": m.id,
+                            "sender": {"type": m.sender.kind, "id": m.sender.id},
+                            "content": m.content,
+                            "reply_to": m.parent_id,
+                            "kind_tag": m.mtype,
+                            "created_at": m.created_at,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            }),
+        other => {
+            return EnvelopeResponse::failure(
+                env,
+                EnvelopeError::new(
+                    envelope::error_code::VALIDATION,
+                    format!("unknown thread kind: {other}"),
+                ),
+            );
+        }
+    };
+    match listed {
+        Ok(mut messages) => {
+            // issue 线程查表无 limit 参数（历史 API），取回后统一截断——
+            // 新消息在尾部（ORDER BY id/seq ASC），保尾部 = 保最新。
+            if messages.len() > limit as usize {
+                messages.drain(..messages.len() - limit as usize);
+            }
+            EnvelopeResponse::success(
+                env,
+                serde_json::json!({
+                    "thread": {"kind": thread_kind, "id": thread_id},
+                    "messages": messages,
+                }),
+            )
+        }
+        Err(e) => {
+            EnvelopeResponse::failure(env, EnvelopeError::new(envelope::error_code::INTERNAL, e))
+        }
     }
 }
 
@@ -1788,6 +1887,12 @@ async fn worker_sync_once(
         // 补拉事件不带线程历史（master 台账里查不到 per-thread 投影）——
         // agent 拿到的就是补投到醒为止的最小信息，过时与否自行判断
         // （impl-plan §5.2③）。
+        // reply_to 必须是 master 台账 message id（DiscussionEvent 契约）；
+        // sync 台账投影里只有线程 seq，冒充 id 会与全局评论 id 空间相撞
+        // ——worker 原样回传 post，parent_id 错挂到别的单子的评论上
+        // （run4 实录 2026-10-14：NB-43 讨论回帖 parent=2/3/4/5 全是
+        // NB-1 时代的评论 id）。补拉是批量追赶形态，回复落根评论
+        // （reply_to=None）即诚实且无碰撞。
         let event = DiscussionEvent {
             thread_kind: kind.to_string(),
             thread_id: tid,
@@ -1798,7 +1903,7 @@ async fn worker_sync_once(
             new_sender: sender.to_string(),
             new_content: content.to_string(),
             new_at: at,
-            reply_to: Some(seq),
+            reply_to: None,
             max_turns_left: u32::MAX,
             seq,
         };

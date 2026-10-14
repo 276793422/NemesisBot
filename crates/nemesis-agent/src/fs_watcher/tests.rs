@@ -102,6 +102,8 @@ fn test_loop() -> std::sync::Arc<crate::r#loop::AgentLoop> {
         max_turns: 3,
         tools: vec![],
         models: std::collections::HashMap::new(),
+
+        tool_fence_profession: None,
     };
     std::sync::Arc::new(crate::r#loop::AgentLoop::new(
         Box::new(IdleProvider),

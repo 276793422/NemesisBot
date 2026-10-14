@@ -52,6 +52,8 @@ fn role_loop() -> AgentLoop {
             max_turns: 5,
             tools: vec!["echo".to_string()],
             models: std::collections::HashMap::new(),
+
+            tool_fence_profession: None,
         },
     )
 }

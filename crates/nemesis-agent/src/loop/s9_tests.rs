@@ -98,8 +98,9 @@ fn test_config() -> AgentConfig {
         model: "test-model".to_string(),
         system_prompt: Some("You are a test assistant.".to_string()),
         max_turns: 5,
-        tools: vec!["calculator".to_string()],
+        tools: vec![],
         models: std::collections::HashMap::new(),
+        tool_fence_profession: None,
     }
 }
 
@@ -403,7 +404,7 @@ async fn precompute_parallel_batch_validation_arms() {
         },
     ];
     let out = agent_loop
-        .precompute_parallel_batch(&calls, &ctx, 0, false, None)
+        .precompute_parallel_batch(&calls, &ctx, 0, false, None, None, Vec::new())
         .await;
     assert_eq!(out.len(), 3, "one PrecomputedTool per call");
     assert!(out[0].result.contains("echo:"), "valid arm executes");

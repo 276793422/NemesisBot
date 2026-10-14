@@ -63,6 +63,7 @@ fn d3_config() -> AgentConfig {
         max_turns: 5,
         tools: vec!["preview_tool".to_string()],
         models: std::collections::HashMap::new(),
+        tool_fence_profession: None,
     }
 }
 

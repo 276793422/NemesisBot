@@ -87,6 +87,7 @@ fn l2_config() -> AgentConfig {
         max_turns: 5,
         tools: Vec::new(),
         models: std::collections::HashMap::new(),
+        tool_fence_profession: None,
     }
 }
 
