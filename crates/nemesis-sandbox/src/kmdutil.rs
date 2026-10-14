@@ -113,7 +113,7 @@ pub fn set_ini_path(ini_path: &Path) -> Result<()> {
 
 /// Write the two SbieSvc service-key DWORDs the NSIS installer writes
 /// (`SandboxieVS.nsi:1571-1573`): `Language=0`, `PreferExternalManifest=1`.
-pub fn set_sbiesvc_service_key_dwounds() -> Result<()> {
+pub fn set_sbiesvc_service_key_dwords() -> Result<()> {
     let key = format!(r"HKLM\SYSTEM\CurrentControlSet\Services\{USERMODE_SERVICE}");
     reg_add_dword(&key, "Language", "0")?;
     reg_add_dword(&key, "PreferExternalManifest", "1")?;

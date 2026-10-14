@@ -53,7 +53,7 @@ if not exist "%CONFIG_FILE%" (
     echo   [ERROR] sign.json not found.
     echo   Copy sign.json.example to sign.json and fill in real passwords:
     echo     copy /y sign.json.example sign.json
-    echo   sign.json is git-ignored (S2: real passwords must not be committed).
+    echo   sign.json is git-ignored ^(S2: real passwords must not be committed^).
     exit /b 1
 )
 
@@ -235,16 +235,7 @@ for %%A in ("%OUT_DIR%\%OUTPUT_NAME%") do (
 )
 echo.
 
-REM ============================================
-REM Phase 6: Cleanup
-REM ============================================
-:cleanup
-echo [Phase 6/6] Cleanup...
-if exist "%PROP_FILE%" (
-    del /q "%PROP_FILE%" 2>nul
-    echo   Removed keystore.properties
-)
-echo.
+call :cleanup
 
 REM ============================================
 REM Done
@@ -266,6 +257,18 @@ goto :eof
 REM ============================================
 REM Subroutines
 REM ============================================
+
+REM S6（2026-10-14 审计）：cleanup 收成真子程序（goto :eof 收尾）——旧形态
+REM 失败路径 call :cleanup 后贯穿进「Release Signing Complete」横幅再返回，
+REM gradle 失败也打成功横幅 + 不存在的 APK 路径。
+:cleanup
+echo [Phase 6/6] Cleanup...
+if exist "%PROP_FILE%" (
+    del /q "%PROP_FILE%" 2>nul
+    echo   Removed keystore.properties
+)
+echo.
+goto :eof
 
 :do_copy_bin
 set "JNI_DIR=%APP_DIR%\src\main\jniLibs\arm64-v8a"
@@ -304,22 +307,25 @@ set "V=!V:}=!"
 set "V=!V:]=!"
 set "V=!V:}=!"
 
-REM Trim whitespace from key
+REM S6 冒烟（2026-10-14）：键比较原为 \"key\" 形态——cmd 无反斜杠转义，字面
+REM 反斜杠使 12 个键永不匹配，解析器从未生效（全部走缺省 + 密码必空报错）。
+REM 键先去引号再裸名比较。
+set "L=!L:"=!"
 set "L=!L: =!"
 
 REM Match known keys
-if "!L!"=="\"key_alias\"" set "KEY_ALIAS=!V!"
-if "!L!"=="\"key_password\"" set "KEY_PASSWORD=!V!"
-if "!L!"=="\"store_password\"" set "STORE_PASSWORD=!V!"
-if "!L!"=="\"validity_years\"" set "VALIDITY_YEARS=!V!"
-if "!L!"=="\"CN\"" set "DNAME_CN=!V!"
-if "!L!"=="\"OU\"" set "DNAME_OU=!V!"
-if "!L!"=="\"O\"" set "DNAME_O=!V!"
-if "!L!"=="\"L\"" set "DNAME_L=!V!"
-if "!L!"=="\"ST\"" set "DNAME_ST=!V!"
-if "!L!"=="\"C\"" set "DNAME_C=!V!"
-if "!L!"=="\"output_dir\"" set "OUTPUT_DIR=!V!"
-if "!L!"=="\"output_name\"" set "OUTPUT_NAME=!V!"
+if "!L!"=="key_alias" set "KEY_ALIAS=!V!"
+if "!L!"=="key_password" set "KEY_PASSWORD=!V!"
+if "!L!"=="store_password" set "STORE_PASSWORD=!V!"
+if "!L!"=="validity_years" set "VALIDITY_YEARS=!V!"
+if "!L!"=="CN" set "DNAME_CN=!V!"
+if "!L!"=="OU" set "DNAME_OU=!V!"
+if "!L!"=="O" set "DNAME_O=!V!"
+if "!L!"=="L" set "DNAME_L=!V!"
+if "!L!"=="ST" set "DNAME_ST=!V!"
+if "!L!"=="C" set "DNAME_C=!V!"
+if "!L!"=="output_dir" set "OUTPUT_DIR=!V!"
+if "!L!"=="output_name" set "OUTPUT_NAME=!V!"
 exit /b 0
 
 :check_only
