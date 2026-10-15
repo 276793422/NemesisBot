@@ -1,0 +1,17 @@
+{
+  "task_id": "CODE-MEMFORGET",
+  "path": "A",
+  "group": "bug",
+  "mother": "{{MOTHERS}}/pathA",
+  "target_cache": "{{CACHE}}/targetA",
+  "node_modules_cache": "{{CACHE}}/node_modules",
+  "split": "dev",
+  "arm": "main",
+  "model": "openai/gpt-6-sol",
+  "user_request": "增强内存的 forget 接口存在一个缺陷：删除某条事实后，向量存储里的对应条目（向量镜像）没有被同步删除，导致后续语义搜索仍能检索到已经忘掉的内容。请修复：forget 删除事实时必须同步删除向量存储镜像中的对应条目（向量存储已有删除接口可复用），并补一个回归测试钉住该行为（store 一条事实 → forget → get 必须为 None）。",
+  "allowed_paths": [
+    "crates/nemesis-memory/"
+  ],
+  "max_turns": 30,
+  "time_limit_minutes": 45
+}

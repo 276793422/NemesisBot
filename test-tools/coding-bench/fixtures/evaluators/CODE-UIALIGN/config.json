@@ -1,0 +1,11 @@
+{
+  "inject": [],
+  "commands": [
+    { "argv": ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{{EVAL}}/check_uicontract.ps1", "-SrcRoot", "web/src", "-Symbols", "user_bubble_align", "nb_user_bubble_align"] },
+    { "argv": ["npx.cmd", "vue-tsc", "--noEmit"], "cwd": "web" },
+    { "argv": ["npx.cmd", "vitest", "run", "--exclude", "**/bot-package.spec.ts", "--exclude", "**/coralduskFullScript.spec.ts"], "cwd": "web" }
+  ],
+  "fail_patterns": [],
+  "runtime_paths": ["logs/"],
+  "require_diff": true
+}

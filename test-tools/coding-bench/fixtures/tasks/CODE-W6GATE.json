@@ -1,0 +1,17 @@
+{
+  "task_id": "CODE-W6GATE",
+  "path": "A",
+  "group": "bug",
+  "mother": "{{MOTHERS}}/pathA",
+  "target_cache": "{{CACHE}}/targetA",
+  "node_modules_cache": "{{CACHE}}/node_modules",
+  "split": "dev",
+  "arm": "main",
+  "model": "openai/gpt-6-sol",
+  "user_request": "Dashboard 聊天面板（ChatPanel）存在两个相关缺陷：1) 向上翻页加载更早历史时，如果 watchdog（保活）或 resync 的响应恰好先于翻页响应返回，会把「翻页加载中」的闸提前抬起，滚动处理器随即对同一位置再发一次翻页请求，两个响应各过各的栅栏，同一批历史消息被前置两遍（界面出现重复消息）；2) 组件卸载后残留的定时器仍会开火——@ 补全 debounce 的回包写进已卸载的组件实例，watchdog 定时器误触发 reloadLatest 重灌消息。请修复这两个问题：翻页闸只由翻页响应清理；卸载时清理 watchdog 定时器与 @ 补全 debounce；并补上回归测试。",
+  "allowed_paths": [
+    "web/src/"
+  ],
+  "max_turns": 30,
+  "time_limit_minutes": 45
+}

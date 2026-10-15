@@ -1,0 +1,18 @@
+{
+  "task_id": "B-HTTPARSE",
+  "path": "B",
+  "group": "bug",
+  "mother": "{{MOTHERS}}/B-HTTPARSE",
+  "target_cache": "{{CACHE}}/targetB-HTTPARSE",
+  "node_modules_cache": null,
+  "split": "holdout",
+  "arm": "main",
+  "model": "openai/gpt-6-sol",
+  "user_request": "本仓库是 httparse 库。一个严格性缺陷：解析请求行带前导空白字符（如空格）的 HTTP 请求时，解析器会静默接受并正常解析成功。按 HTTP 规范这是非法形态，解析器应当拒绝。请修复：请求行前出现任何前导空白必须使 parse 返回 Err；规范形态的请求必须照常完整解析（方法/路径/版本不受影响）；并补一个回归测试（前导空白请求断言 Err + 规范请求断言 Complete 且 method 正确）。",
+  "allowed_paths": [
+    "src/",
+    "tests/"
+  ],
+  "max_turns": 30,
+  "time_limit_minutes": 45
+}

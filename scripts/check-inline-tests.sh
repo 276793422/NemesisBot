@@ -12,6 +12,8 @@
 #   - `#[cfg(test)] mod xxx;`（分号结尾的声明，指向独立测试文件）
 #   - 文件本身就是测试文件：tests.rs / *_tests.rs / 位于 tests/ 目录下
 #   - Cargo.toml 里 [[test]] path = "..." 显式声明的测试 target 文件
+#   - *_acceptance.rs（coding-bench 隐藏验收测试载荷——数据性质，注入被测夹具
+#     由验收流程编译，不进本仓任何编译单元；2026-10-15）
 #
 # 用法：bash scripts/check-inline-tests.sh
 # 退出码：0 = 无违规；1 = 有违规（输出逐条违规供人工确认）
@@ -22,6 +24,7 @@ is_test_file() {
   case "$1" in
     */tests/*) return 0 ;;
     *tests.rs|*_tests.rs) return 0 ;;
+    *_acceptance.rs) return 0 ;;
     *) return 1 ;;
   esac
 }

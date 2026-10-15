@@ -1,0 +1,18 @@
+{
+  "task_id": "CODE-USAGECSV",
+  "path": "C",
+  "group": "small",
+  "mother": "{{MOTHERS}}/pathC",
+  "target_cache": "{{CACHE}}/targetC",
+  "node_modules_cache": "{{CACHE}}/node_modules",
+  "split": "dev",
+  "arm": "main",
+  "model": "openai/gpt-6-sol",
+  "user_request": "给 nemesisbot 增加使用统计导出 CLI：子命令 usage export，把本工作区的使用账本导出为 CSV。契约：nemesisbot [--local] usage export --out <path> 把账本逐行写入指定文件（父目录不存在则创建）；不带 --out 时打印到 stdout。CSV 表头固定为：task_id,session_key,model,input_tokens,output_tokens,total_cost_usd,created_utc ；数据行按账本记录逐条输出（字段直接取账本聚合数据，total_cost_usd 保留 6 位小数）；账本为空（全新 home）时输出仅含表头的文件、退出码 0。账本数据可从现有 data_store 的使用聚合接口读取。补上单元测试（聚合数据 → CSV 行格式）。",
+  "allowed_paths": [
+    "nemesisbot/",
+    "crates/nemesis-data/"
+  ],
+  "max_turns": 30,
+  "time_limit_minutes": 45
+}

@@ -1,0 +1,18 @@
+{
+  "task_id": "B-QUICKXML",
+  "path": "B",
+  "group": "hardening",
+  "mother": "{{MOTHERS}}/B-QUICKXML",
+  "target_cache": "{{CACHE}}/targetB-QUICKXML",
+  "node_modules_cache": null,
+  "split": "holdout",
+  "arm": "main",
+  "model": "openai/gpt-6-sol",
+  "user_request": "本仓库是 quick-xml 解析库。一个健壮性缺陷：使用小容量 BufReader 逐事件解析（read_event_into）含 DOCTYPE 内部子集的 XML 文档时，如果内部子集里出现紧随 `<!` 的较长的未知标记声明，解析器会直接 panic（越界），而不是返回错误。请修复：任何非法或未知的 DTD 声明形态都必须以 Err 形式报告，绝不允许 panic；并补一个回归测试（小缓冲 BufReader + DOCTYPE 内部子集 + 长未知声明，断言不 panic）。",
+  "allowed_paths": [
+    "src/",
+    "tests/"
+  ],
+  "max_turns": 30,
+  "time_limit_minutes": 45
+}

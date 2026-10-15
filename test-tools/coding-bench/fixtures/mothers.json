@@ -1,0 +1,94 @@
+{
+  "version": 1,
+  "comment": "编码基准母夹具规格（单一真相源）。仓库内只存规格不存字节：母夹具由 scripts/prep-mothers.ps1 按 pin 物化到 gitignored 缓存（.coding-bench/mothers/），物化后按 tree_sha256 验内容。来源两族：github = 上游仓库冻结 SHA 经 codeload tarball 拉取；main-repo = 本仓 git 历史 SHA 经 git archive 物化（基准随本仓走，本仓历史即源）。",
+  "fingerprint_method": "sha256( `git -C <mother> ls-files -s` 输出原文, UTF-8 )——内容寻址（blob 哈希只依赖文件内容与 mode），与 git 版本/提交时间戳无关；重建后指纹不符 = 物化链有缺陷，loud 拒绝。",
+  "baseline_source": "pval-20261015-01（首轮产品验证，2026-10-15 冻结；24 槽 21 pass / 3 fail）",
+  "mothers": {
+    "B-HTTPARSE": {
+      "source": "github",
+      "repo": "https://github.com/seanmonstar/httparse",
+      "pin": "97c7e6e23672df1482930bdcd5ff1eae3dbecf16",
+      "fix_target": "9f6702be571b19ac84e19678b0c4f7eefd2a11b7",
+      "patch": "patches/B-HTTPARSE.patch",
+      "tree_sha256": "035e7f50342606a880bb52268d5d6be89d40ba297a11f5170c181e87e7d7b239",
+      "note": "任务：leading_whitespace 请求解析；方向 pin→fix_target"
+    },
+    "B-NUMINT": {
+      "source": "github",
+      "repo": "https://github.com/rust-num/num-integer",
+      "pin": "d5267dc842ea730b87cb4610f7ff39adacd81a2f",
+      "fix_target": "cde58ee7e1caf581a313ada70d322f1d4dc42cf6",
+      "patch": "patches/B-NUMINT.patch",
+      "tree_sha256": "ab90b1eaab271f3a6d393be5d622cc13eeb4af09248a55b501aef7ea21f9bb73",
+      "note": "patch 含两段 fixture：空 [workspace]（脱离父 workspace 探测）+ is_multiple_of 限定（新工具链 std 固有方法遮蔽）；任务：signum 负零/负数分支"
+    },
+    "B-QUICKXML": {
+      "source": "github",
+      "repo": "https://github.com/tafia/quick-xml",
+      "pin": "2c46d248e07a8375d7ae7109379fba06728af54e",
+      "fix_target": "0672dfa16d1fcbd712edf53234994204b5d1b315",
+      "patch": "patches/B-QUICKXML.patch",
+      "tree_sha256": "88fb826a8f20f3462405c8acf005a4c06207317e18bd80e745b0718a6d87168a",
+      "note": "hardening 型：pin 已含上游部分修复（DtdParser 切片越界第一段），fix_target 是更完整修复；隐藏验收测的是剩余缺口"
+    },
+    "B-UNISEG": {
+      "source": "github",
+      "repo": "https://github.com/unicode-rs/unicode-segmentation",
+      "pin": "091fb72c5e9cd1f06f4d3df1315ed7011a201084",
+      "fix_target": "68c127e52156690d061b54e2ccb25a58bc46c6de",
+      "patch": "patches/B-UNISEG.patch",
+      "tree_sha256": "fbc27ec525929f4bb29fc6ee43c1bd3b32a4afb59f542f2403a0668dcd7cf004",
+      "note": "任务：空句子 split_sentence_boundaries size_hint"
+    },
+    "B-UUIDV7": {
+      "source": "github",
+      "repo": "https://github.com/uuid-rs/uuid",
+      "pin": "9f927126c89892ddfed6cd2f92df16852f3f9aa6",
+      "fix_target": "4639d67b0f117a94cf0add01e4c68e674691b49c",
+      "patch": null,
+      "tree_sha256": "f2f30b7a34730d41efef12ab18f9fa695dc8a6e5f3f729b5c3732fd07b3536f8",
+      "note": "纯快照无 fixture commit（uuid 的 Cargo.toml 本身是 workspace 根，无需脱离）；任务：v7 上下文排序"
+    },
+    "B-YAMLRUST": {
+      "source": "github",
+      "repo": "https://github.com/chyh1990/yaml-rust",
+      "pin": "1d29d211e9214f2fe0efaf9379efd998fafdb2de",
+      "fix_target": "7b7762e918ac8f9b0ce411ad8f846312f6a0cef0",
+      "patch": "patches/B-YAMLRUST.patch",
+      "tree_sha256": "13632c9d011befecbf6c9343b48c890f40cd4d6f7101d42a0d7625a5dd0cc744",
+      "note": "任务：hex 字符串 roundtrip"
+    },
+    "pathA": {
+      "source": "main-repo",
+      "pin": "4ba2efc241bae6334c5552c50c32bbee09925895",
+      "patch": null,
+      "tree_sha256": "75962a9f1b9c77a0e60d305e3eab4ee3a558fc376fd99ba71569a9ff897c6d0f",
+      "note": "本仓修复前一版快照（git archive 物化）；CODE-FSTREE / CODE-MEMFORGET / CODE-W6GATE / CODE-W7SOCKET 用"
+    },
+    "pathC": {
+      "source": "main-repo",
+      "pin": "b9141580402a649968be95db8a48a79e4862a242",
+      "patch": null,
+      "tree_sha256": "9b6fef0654c16f3f0d3f6fd27cc351360c26bc256ed70faccc221e17b17cf38f",
+      "note": "本仓修复后基线快照（git archive 物化）；CODE-CKPTGC / CODE-FEATCFG / CODE-UIALIGN / CODE-UITHEME / CODE-USAGECSV / CODE-WHOOKFAIL 用"
+    }
+  },
+  "task_to_mother": {
+    "B-HTTPARSE": "B-HTTPARSE",
+    "B-NUMINT": "B-NUMINT",
+    "B-QUICKXML": "B-QUICKXML",
+    "B-UNISEG": "B-UNISEG",
+    "B-UUIDV7": "B-UUIDV7",
+    "B-YAMLRUST": "B-YAMLRUST",
+    "CODE-CKPTGC": "pathC",
+    "CODE-FEATCFG": "pathC",
+    "CODE-FSTREE": "pathA",
+    "CODE-MEMFORGET": "pathA",
+    "CODE-UIALIGN": "pathC",
+    "CODE-UITHEME": "pathC",
+    "CODE-USAGECSV": "pathC",
+    "CODE-W6GATE": "pathA",
+    "CODE-W7SOCKET": "pathA",
+    "CODE-WHOOKFAIL": "pathC"
+  }
+}
