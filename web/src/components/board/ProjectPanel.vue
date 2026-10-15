@@ -73,6 +73,7 @@ interface ProjectPlanning {
   elapsedSecs: number
   attempt: number
   abnormal: boolean
+  dispatching: boolean
 }
 const planningByProject = ref<Record<number, ProjectPlanning[]>>({})
 
@@ -84,11 +85,15 @@ function planningRows(rows: any[]): Record<number, ProjectPlanning[]> {
     const secs = planningById.value.has(row.id)
       ? elapsed(row.id)
       : Number(row.planning.elapsed_secs ?? 0)
+    // dispatching = 拆解完成、发车派发在途（子单已可见），非异常。
+    const dispatching =
+      (planningById.value.get(row.id)?.phase ?? row.planning.phase) === 'dispatching'
     ;(map[row.project_id] ||= []).push({
       issueNumber: String(row.number ?? ''),
       elapsedSecs: secs,
       attempt: Number(row.planning.attempt ?? 1) || 1,
-      abnormal: secs > ABNORMAL_SECS,
+      abnormal: !dispatching && secs > ABNORMAL_SECS,
+      dispatching,
     })
   }
   return map
@@ -333,14 +338,15 @@ useBoardChanged(() => load(true))
                   style="margin-left: var(--space-1);"
                   :title="'档案缺失块：\n' + missingBlocks(p).join('\n')"
                 >⚠ 缺 {{ missingBlocks(p).length }} 块</span>
-                <!-- 拆解在途行（§1.2B）：每条在途计划一行；异常超时黄字。 -->
+                <!-- 拆解在途行（§1.2B）：每条在途计划一行；异常超时黄字
+                     （仅 planning 阶段；dispatching=发车派发，非异常）。 -->
                 <div
                   v-for="pp in planningByProject[p.id] || []"
                   :key="pp.issueNumber"
                   class="planning-row"
                   :class="{ abnormal: pp.abnormal }"
                   data-test="project-planning-row"
-                >🧩 {{ pp.issueNumber }} AI 拆解中（已 {{ fmtElapsed(pp.elapsedSecs) }}<template v-if="pp.attempt > 1">，第 {{ pp.attempt }} 次尝试</template>）<template v-if="pp.abnormal">— 异常超时</template></div>
+                ><template v-if="pp.dispatching">🚗 {{ pp.issueNumber }} 拆解完成，发车派发中（已 {{ fmtElapsed(pp.elapsedSecs) }}）</template><template v-else>🧩 {{ pp.issueNumber }} AI 拆解中（已 {{ fmtElapsed(pp.elapsedSecs) }}<template v-if="pp.attempt > 1">，第 {{ pp.attempt }} 次尝试</template>）<template v-if="pp.abnormal">— 异常超时</template></template></div>
               </td>
               <td style="font-size: var(--text-sm); color: var(--text-muted);">{{ p.description || '—' }}</td>
               <td>

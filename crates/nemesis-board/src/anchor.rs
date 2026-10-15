@@ -1046,18 +1046,47 @@ pub fn validate_anchor_path_shape(raw: &str) -> Result<(), String> {
 /// workspace 前缀校验（拦符号链接越界）。失败 = 锚点未通过（保守——
 /// 运行期到达此处的都是形态合法的锚点，失败即真实环境意外）。
 fn resolve_anchor_path(root: &Path, raw: &str) -> Result<PathBuf, String> {
+    resolve_subtree_path_impl(
+        root,
+        raw,
+        "锚点文件",
+        "workspace 根",
+        "锚点路径越出 workspace 子树",
+    )
+}
+
+/// 评审取证工具（`board_evidence_read`）的读路径安全裁决：与锚点实核
+/// [`resolve_anchor_path`] 同一逻辑单点（形态闸 + canonicalize + 子树强制，
+/// 拒绝对象完全一致），仅错误文案不带「锚点」语境——评审 LLM 看到的报错
+/// 说的是「档案文件」，不是它没见过的「锚点」概念。
+pub fn resolve_subtree_path(root: &Path, raw: &str) -> Result<PathBuf, String> {
+    resolve_subtree_path_impl(root, raw, "档案文件", "档案根", "路径越出档案根子树")
+}
+
+/// 共享实现（[`resolve_anchor_path`] / [`resolve_subtree_path`] 的逻辑
+/// 单点）：三段错误文案由调用方按语境给（`missing` = 目标不存在/不可达
+/// 名词，`root_label` = 根目录解析失败名词，`escape` = 越界整句）。形态
+/// 闸复用 [`validate_anchor_path_shape`]——其「锚点路径拒绝…」文案是策略
+/// 描述（子树内相对路径字面形态），对取证读路径同样成立，不另造第二张闸。
+fn resolve_subtree_path_impl(
+    root: &Path,
+    raw: &str,
+    missing: &str,
+    root_label: &str,
+    escape: &str,
+) -> Result<PathBuf, String> {
     validate_anchor_path_shape(raw)?;
     let raw = raw.trim();
     let rel = Path::new(raw);
     let joined = root.join(rel);
     let canonical = joined
         .canonicalize()
-        .map_err(|e| format!("锚点文件不存在或不可达（{raw}）：{e}"))?;
+        .map_err(|e| format!("{missing}不存在或不可达（{raw}）：{e}"))?;
     let root_canonical = root
         .canonicalize()
-        .map_err(|e| format!("workspace 根解析失败：{e}"))?;
+        .map_err(|e| format!("{root_label}解析失败：{e}"))?;
     if !canonical.starts_with(&root_canonical) {
-        return Err(format!("锚点路径越出 workspace 子树：{raw}"));
+        return Err(format!("{escape}：{raw}"));
     }
     Ok(canonical)
 }

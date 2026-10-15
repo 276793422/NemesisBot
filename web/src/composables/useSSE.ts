@@ -47,6 +47,12 @@ export function connectEvents() {
 
     eventSource.onopen = () => {
       console.log('[NemesisAPI] SSE connected')
+      // board-changed 是 fire-and-forget 通知（无 id/seq，不参与服务端重放）：
+      // 断线窗口内的事件永久丢失，board 面板会停在旧数据直到下一次无关
+      // 写入（实证 2026-10-15：gateway 重启后派发链全程列表冻结）。连接
+      // 成功（含浏览器自动重连）即补发一次本地合成事件，各面板静默换新
+      // 兜底——与 L2 resync 同思路，只是该事件本身无游标可补拉。
+      dispatch('board-changed', { ts: new Date().toISOString(), reconnect: true })
     }
 
     eventSource.onerror = (e) => {

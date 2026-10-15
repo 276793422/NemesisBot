@@ -95,4 +95,22 @@ describe('BoardView 拆解在途横幅（§1.2C）', () => {
     expect(w.find('[data-test="planning-banner"]').exists()).toBe(false)
     w.unmount()
   })
+
+  it('plan_ready 带 auto_confirm → 「发车派发中」横幅；超时不转异常（dispatching 非拆解）', async () => {
+    const w = await mountView()
+    dispatch('board.plan_started', { plan_id: 'p1', issue_id: 5, issue_number: 'NB-5', attempt: 1 })
+    await flushPromises()
+    dispatch('board.plan_ready', { plan_id: 'p1', issue_id: 5, subs: [], auto_confirm: true })
+    await flushPromises()
+    const line = w.find('[data-test="planning-line-NB-5"]')
+    expect(line.exists()).toBe(true)
+    expect(line.text()).toContain('自动发车派发中')
+    expect(line.text()).not.toContain('拆解异常')
+    // dispatching 超 ABNORMAL_SECS 不得转异常黄态。
+    vi.advanceTimersByTime(ABNORMAL_SECS * 1000 + 2000)
+    await flushPromises()
+    expect(line.classes()).not.toContain('abnormal')
+    expect(line.text()).toContain('自动发车派发中')
+    w.unmount()
+  })
 })

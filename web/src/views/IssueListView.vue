@@ -83,6 +83,20 @@ function planningAbnormal(issue: IssueRow): boolean {
   return planningSecs(issue) > ABNORMAL_SECS
 }
 
+/** dispatching = 拆解完成、auto_confirm 发车派发在途（子单已可见），非异常。 */
+function planningDispatching(issue: IssueRow): boolean {
+  const live = planningById.value.get(issue.id)
+  if (live) return live.phase === 'dispatching'
+  return issue.planning?.phase === 'dispatching'
+}
+
+// 需求①（2026-10-15）：未完成上游依赖徽标——「🔒 等 NB-x」。done 上游不显示
+// （已满足）；已取消上游单独示警（永远无法完成 = 本单死等，级联取消的正常
+// 情况下本单也已取消、列表默认不可见，能看到即异常残留）。
+function pendingDeps(issue: IssueRow): Array<{ id: number; number: string; status: string }> {
+  return (issue.depends_on ?? []).filter((d) => d.status !== 'done')
+}
+
 async function loadWorkerNodes() {
   try {
     const r = await request('cluster', 'nodes.list', {})
@@ -374,14 +388,27 @@ onMounted(refresh)
         <tbody>
           <tr v-for="issue in issues" :key="issue.id" class="issue-row" @click="openDetail(issue)">
             <td><code>{{ issue.number }}</code></td>
-            <td style="font-weight: 500;">{{ issue.title }}</td>
+            <td style="font-weight: 500;">
+              {{ issue.title }}
+              <span
+                v-for="d in pendingDeps(issue)"
+                :key="d.id"
+                class="badge dep-badge"
+                :class="d.status === 'cancelled' ? 'badge-error' : 'badge-warning'"
+                :title="d.status === 'cancelled'
+                  ? `上游 ${d.number} 已取消：本单将永远无法开工（正常应已被级联取消，能看到即异常残留）`
+                  : `上游 ${d.number} 未完成（${statusLabel(d.status)}），完成后本单才可派发`"
+              >{{ d.status === 'cancelled' ? `⚠ ${d.number} 已取消` : `🔒 等 ${d.number}` }}</span>
+            </td>
             <td>
               <span
                 v-if="planningBadge(issue)"
                 class="badge planning-badge"
-                :class="planningAbnormal(issue) ? 'badge-warning' : 'badge-info'"
-                title="AI 正在拆解该单为子任务（通常 3~8 分钟，完成后自动发车）；结束或失败会自动恢复原状态徽章"
-              >🧩 拆解中 {{ planningBadge(issue) }}<template v-if="planningAttempt(issue) > 1"> · 重试 {{ planningAttempt(issue) }}</template></span>
+                :class="!planningDispatching(issue) && planningAbnormal(issue) ? 'badge-warning' : 'badge-info'"
+                :title="planningDispatching(issue)
+                  ? '拆解完成，自动发车派发中（子单已在看板可见，逐个送达 worker）'
+                  : 'AI 正在拆解该单为子任务（通常 3~8 分钟，完成后自动发车）；结束或失败会自动恢复原状态徽章'"
+              ><template v-if="planningDispatching(issue)">🚗 发车中 {{ planningBadge(issue) }}</template><template v-else>🧩 拆解中 {{ planningBadge(issue) }}<template v-if="planningAttempt(issue) > 1"> · 重试 {{ planningAttempt(issue) }}</template></template></span>
               <span v-else class="badge" :class="STATUS_BADGE[issue.status]" :title="statusTitle(issue.status)">{{ statusLabel(issue.status) }}</span>
             </td>
             <td><span class="badge" :class="PRIORITY_BADGE[issue.priority] || 'badge-neutral'">P{{ issue.priority }} {{ PRIORITY_LABEL[issue.priority] || '' }}</span></td>
@@ -533,6 +560,11 @@ onMounted(refresh)
 /* 拆解在途徽标（§1.2A）：自计时动态徽标。 */
 .planning-badge {
   font-variant-numeric: tabular-nums;
+}
+/* 上游依赖徽标（2026-10-15 需求①）：「🔒 等 NB-x」。 */
+.dep-badge {
+  margin-left: var(--space-1);
+  font-size: var(--text-xs, 11px);
 }
 .assign-row {
   display: flex;

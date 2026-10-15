@@ -58,6 +58,8 @@ interface Issue {
   origin: { origin_type: string; origin_id: string } | null
   created_at: number
   updated_at: number
+  /** 依赖上游投影（2026-10-15 需求①）：issue.get 附带。旧后端无此键。 */
+  depends_on?: Array<{ id: number; number: string; status: string }>
   comments?: CommentRow[]
   activity?: ActivityRow[]
   subscribers?: any[]
@@ -93,6 +95,9 @@ interface AttachmentRow {
 const detail = ref<Issue | null>(null)
 const attachments = ref<AttachmentRow[]>([])
 const busy = ref(false)
+
+// 上游依赖投影（2026-10-15 需求①）：详情页「上游依赖」区块数据源。
+const detailDeps = computed(() => detail.value?.depends_on ?? [])
 
 // U-C（2026-10-12 §9.3）：单子全链路时间线页签——活动/评论/派发/任务结果
 // 统一投影（后端单一真相源 nemesis-board::timeline，与 dossier timeline.md
@@ -315,18 +320,49 @@ interface PlannedSub {
   acceptance_criteria: string
   depends_on: number[]
 }
-type PlanState = 'idle' | 'planning' | 'ready' | 'failed'
+type PlanState = 'idle' | 'planning' | 'dispatching' | 'ready' | 'failed'
 const planState = ref<PlanState>('idle')
 const planId = ref('')
 const planSubs = ref<PlannedSub[]>([])
 const planError = ref('')
 const planBusy = ref(false)
 
+// BUG-①（2026-10-15 NB-1 事故）：重开详情页恢复未确认计划——此前 ready
+// 态只能靠拆解完成瞬间的 plan_ready SSE（要求模态恰开着），错过即没有
+// 任何确认入口，只能干等 TTL 过期或误触直接派发。board.plan.list 过滤
+// 本单：ready → 恢复预览 + 确认按钮；running → planning 态（后续
+// plan_ready SSE 仍会落状态）。失败 = 保持 idle（不阻塞详情页打开）。
+const planRecovered = ref(false)
+async function recoverPlan() {
+  const id = props.issueId
+  if (id == null) return
+  try {
+    const r = await request('board', 'plan.list', { issue_id: id })
+    const plans: any[] = r?.plans || []
+    const ready = plans.find((p) => p.status === 'ready')
+    const running = plans.find((p) => p.status === 'running')
+    if (ready && Array.isArray(ready.subs)) {
+      planId.value = ready.plan_id
+      planSubs.value = ready.subs
+      planRecovered.value = true
+      planState.value = ready.subs.length ? 'ready' : 'failed'
+      if (planState.value === 'failed') planError.value = '拆解结果为空'
+    } else if (running) {
+      planId.value = running.plan_id
+      planRecovered.value = true
+      planState.value = running.phase === 'dispatching' ? 'dispatching' : 'planning'
+    }
+  } catch {
+    // 无发现面（集群未启用）/查询失败 → 无可恢复，保持 idle
+  }
+}
+
 function dismissPlan() {
   planState.value = 'idle'
   planId.value = ''
   planSubs.value = []
   planError.value = ''
+  planRecovered.value = false
 }
 
 // F5 件①前端：AC 含 `[CHECK] re:` 锚点的黄条提示——本单日后被 AI 拆解
@@ -365,6 +401,13 @@ function onPlanReady(data: any) {
   if (!detail.value || data?.issue_id !== detail.value.id) return
   planSubs.value = data.subs || []
   planId.value = data.plan_id || planId.value
+  planRecovered.value = false // 现场推送落定，恢复态标记失效
+  // auto_confirm 链：确认面板无从参与（派发已在途），直接进「发车中」态；
+  // 人工确认模式维持 ready 预览等点按钮。
+  if (data?.auto_confirm) {
+    planState.value = 'dispatching'
+    return
+  }
   planState.value = planSubs.value.length ? 'ready' : 'failed'
   if (planState.value === 'failed') planError.value = '拆解结果为空'
 }
@@ -434,6 +477,7 @@ watch(
       loadDetail()
       loadAttachments()
       loadWorkerNodes()
+      recoverPlan() // BUG-①：打开即查未确认计划（ready 恢复确认入口 / running 转 planning）
     } else {
       // 关闭（父组件置空 issueId）→ 清 detail 让根 v-if="detail" 收起弹层。
       detail.value = null
@@ -567,6 +611,23 @@ async function dispatchIssue() {
   }
 }
 
+// 评审重触发（review.retrigger，M5-1）：仅 in_review；重入评审链
+// （评审会按需重新取证——锚点/执行档案直读/LLM 评审）。
+async function retriggerReview() {
+  if (!detail.value || busy.value) return
+  busy.value = true
+  try {
+    await request('board', 'review.retrigger', { number: detail.value.number })
+    toast.success(`评审已重触发（${detail.value.number}）：正在重跑自动验收`)
+    await loadDetail()
+    changed()
+  } catch (e: any) {
+    toast.error('重触发失败: ' + e)
+  } finally {
+    busy.value = false
+  }
+}
+
 // 任务档案（2026-09-29 goal）：本单 + 全部后代记录导出为自包含目录。
 async function exportDossier() {
   if (!detail.value || busy.value) return
@@ -689,6 +750,25 @@ async function downloadAttachment(a: AttachmentRow) {
           <span class="muted">更新：{{ fmtTime(detail.updated_at) }}</span>
         </div>
 
+        <!-- 上游依赖（2026-10-15 需求①）：✓ = 已满足；🔒 = 未完成（派发闸会等）；
+             ⚠ 已取消 = 死等异常残留。点击不了（只读投影），管理依赖走 CLI。 -->
+        <div class="form-group" v-if="detailDeps.length">
+          <label class="form-label">上游依赖（{{ detailDeps.length }}）</label>
+          <div class="assign-row">
+            <span
+              v-for="d in detailDeps"
+              :key="d.id"
+              class="badge"
+              :class="d.status === 'done' ? 'badge-success' : d.status === 'cancelled' ? 'badge-error' : 'badge-warning'"
+              :title="d.status === 'done'
+                ? `${d.number} 已完成，依赖已满足`
+                : d.status === 'cancelled'
+                  ? `${d.number} 已取消：本单将永远无法开工（正常应已被级联取消）`
+                  : `${d.number} 未完成（${statusLabel(d.status)}），完成后本单才可派发`"
+            >{{ d.status === 'done' ? `✓ ${d.number}` : d.status === 'cancelled' ? `⚠ ${d.number} 已取消` : `🔒 等 ${d.number}（${statusLabel(d.status)}）` }}</span>
+          </div>
+        </div>
+
         <!-- 状态转移 -->
         <div class="form-group" v-if="allowedTargets(detail.status).length">
           <label class="form-label">状态转移</label>
@@ -704,6 +784,15 @@ async function downloadAttachment(a: AttachmentRow) {
         </div>
         <div class="form-group" v-else>
           <p class="muted">终态 issue 不可再转移。</p>
+        </div>
+
+        <!-- 评审重触发（review.retrigger）：卡 in_review 的单子人工一键重入验收 -->
+        <div class="form-group" v-if="detail.status === 'in_review'">
+          <label class="form-label">评审重触发</label>
+          <div class="assign-row">
+            <button class="btn btn-sm" :disabled="busy" @click="retriggerReview()">🔄 重触发评审</button>
+            <span class="muted">按当前材料重跑自动验收（锚点 → 执行档案直读 → LLM 评审）</span>
+          </div>
         </div>
 
         <!-- 优先级 -->
@@ -803,6 +892,10 @@ async function downloadAttachment(a: AttachmentRow) {
             <span class="muted">⏳ 拆解中…（后台运行，完成后自动展示预览）</span>
             <button class="btn btn-xs btn-ghost" @click="dismissPlan">取消等待</button>
           </div>
+          <div v-else-if="planState === 'dispatching'" class="assign-row">
+            <span class="muted">🚗 拆解完成，自动发车派发中…（子单已在看板可见，逐个送达 worker）</span>
+            <button class="btn btn-xs btn-ghost" @click="dismissPlan">收起</button>
+          </div>
           <div v-else-if="planState === 'failed'">
             <p class="plan-error">⛔ 拆解失败：{{ planError }}</p>
             <div class="assign-row">
@@ -811,6 +904,9 @@ async function downloadAttachment(a: AttachmentRow) {
             </div>
           </div>
           <template v-else>
+            <div v-if="planRecovered && planState === 'ready'" class="muted" style="margin-bottom: var(--space-1);">
+              ♻ 已恢复上次未确认的拆解计划（预览有效期 10 分钟，过期需重拆）
+            </div>
             <div v-if="planAnchorGap" class="anchor-warn-bar">
               ⚠ 锚点下放检查：本单验收标准含 [CHECK] re: 锚点，但下方子单均未继承——确认发车后父单收口时该锚点将无法核验。
             </div>

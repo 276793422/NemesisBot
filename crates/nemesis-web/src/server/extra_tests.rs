@@ -268,6 +268,45 @@ async fn test_serve_embedded_static_root_path_serves_index() {
     assert_eq!(resp.status(), 200);
 }
 
+// 2026-10-15 部署旧壳缓存根修：HTML 壳恒带 Cache-Control: no-cache——前端
+// 每次构建资产文件名换哈希，浏览器缓存的旧 index.html 指向已删 chunk =
+// 懒加载路由 404（设置页打不开/新页签消失）。覆盖四条 HTML 出口：精确匹配
+// / SPA fallback / chat 壳；带 hash 的资产（js/css）不加头维持启发式缓存。
+#[tokio::test]
+async fn test_serve_embedded_static_html_shell_has_no_cache() {
+    let files = make_mock_static(&[
+        ("index.html", "<html>hi</html>"),
+        ("chat/index.html", "<html>CHAT</html>"),
+    ]);
+    for uri in ["/", "/index.html", "/some/spa/route", "/chat"] {
+        let req: axum::extract::Request = axum::http::Request::builder()
+            .uri(uri)
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = serve_embedded_static(files.clone(), req).await;
+        assert_eq!(resp.status(), 200, "uri={uri}");
+        let cc = resp.headers().get(http::header::CACHE_CONTROL);
+        assert_eq!(
+            cc.map(|v| v.to_str().unwrap()),
+            Some("no-cache"),
+            "uri={uri}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_serve_embedded_static_hashed_asset_has_no_cache_header() {
+    let files = make_mock_static(&[("assets/app-ABC123.js", "console.log()")]);
+    let req: axum::extract::Request = axum::http::Request::builder()
+        .uri("/assets/app-ABC123.js")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let resp = serve_embedded_static(files, req).await;
+    assert_eq!(resp.status(), 200);
+    // 内容寻址资产不加头：启发式缓存安全且省重验。
+    assert!(resp.headers().get(http::header::CACHE_CONTROL).is_none());
+}
+
 // LO2（2026-09-04 四轮盲审）：`/chat` 与 `/chat/` 直达 standalone chat 壳；
 // 旧行为两者都落到 SPA fallback 的 Dashboard index.html。
 #[tokio::test]

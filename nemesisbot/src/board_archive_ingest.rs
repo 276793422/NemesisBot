@@ -699,6 +699,7 @@ pub fn merge_and_maybe_review_with(deps: &BoardReviewDeps, task_id: &str) -> Mer
             &format!("合并前工作集 commit 失败: {e}"),
         );
     }
+    let skipped = changeset_skipped_note(&manifest);
     let input = nemesis_board::git_repo::MergeInput {
         baseline_commit: manifest.base_commit,
         upserts: contents
@@ -740,8 +741,9 @@ pub fn merge_and_maybe_review_with(deps: &BoardReviewDeps, task_id: &str) -> Mer
                 store,
                 &issue,
                 &format!(
-                    "🔀 变更集已合并（commit {}），进入验收评审。",
-                    &commit_oid[..12.min(commit_oid.len())]
+                    "🔀 变更集已合并（commit {}），进入验收评审。{}",
+                    &commit_oid[..12.min(commit_oid.len())],
+                    skipped,
                 ),
                 Some(&root),
             )
@@ -1168,6 +1170,7 @@ fn replay_one_pending(
     ) {
         return PendingReplay::Parked(format!("补合并前工作集 commit 失败: {e}"));
     }
+    let skipped = changeset_skipped_note(&manifest);
     let input = nemesis_board::git_repo::MergeInput {
         baseline_commit: manifest.base_commit,
         upserts: contents
@@ -1203,8 +1206,9 @@ fn replay_one_pending(
                 store,
                 &issue,
                 &format!(
-                    "🔀 解冻补合并完成（commit {}），进入验收评审。",
-                    &commit_oid[..12.min(commit_oid.len())]
+                    "🔀 解冻补合并完成（commit {}），进入验收评审。{}",
+                    &commit_oid[..12.min(commit_oid.len())],
+                    skipped,
                 ),
                 Some(root),
             );
@@ -1239,6 +1243,25 @@ fn replay_one_pending(
         }
         Err(e) => PendingReplay::Parked(format!("补合并执行失败: {e}")),
     }
+}
+
+/// B（BUG-2026-10-15）：worker 申报的 skipped 清单回显注记（两个合并臂
+/// 共用）。空清单 = 空串（评论字节不变，保既有形态）；非空 = WARN + 评论
+/// 追加明细——合并后档案与 worker 工作副本的已知差异必须留在单据面上，
+/// 绝不静默（评审/人工据此判断交付完整性）。
+fn changeset_skipped_note(manifest: &nemesis_cluster::changeset::ChangesetManifest) -> String {
+    if manifest.skipped.is_empty() {
+        return String::new();
+    }
+    tracing::warn!(
+        count = manifest.skipped.len(),
+        "[BoardArchive] 变更集含 worker 侧不可读跳过文件（未合入，随交付评论申报）"
+    );
+    format!(
+        "\n\n⚠ {} 个文件在 worker 侧不可读被跳过（未合入，需人工补齐）：{}",
+        manifest.skipped.len(),
+        manifest.skipped.join("；")
+    )
 }
 
 /// 合并收口：系统评论 + 转 in_review + spawn 评审（正常合并与空集宽容

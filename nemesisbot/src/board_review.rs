@@ -139,6 +139,8 @@ pub(crate) fn resolve_anchor_root(deps: &BoardReviewDeps) -> &std::path::Path {
 /// B2a 执行型验收的只读工具白名单（评审 agent 取证轮可用工具；全部是
 /// 现网注册工具名）。写类/网络副作用类不进名单——评审 agent 是只读角色，
 /// 安全 8 层照常在 dispatch 闸拦截（纵深防御，白名单是第一道）。
+/// `board_evidence_read`（evidence-on-demand）：档案围栏只读，本机/远端
+/// worker 评审都可用（档案已合并到 master 本机，无张冠李戴面）。
 const READONLY_REVIEW_TOOLS: &[&str] = &[
     "read_file",
     "list_dir",
@@ -147,7 +149,12 @@ const READONLY_REVIEW_TOOLS: &[&str] = &[
     "web_fetch",
     "lsp",
     "run_checks",
+    crate::board_evidence_tool::TOOL_NAME,
 ];
+
+/// EvidenceOnly 模式的工具面：只给档案取证读（远端 worker 评审——本机
+/// 工作区工具无意义还可能误读，档案围栏工具是唯一有牙齿的通路）。
+const EVIDENCE_ONLY_TOOLS: &[&str] = &[crate::board_evidence_tool::TOOL_NAME];
 
 /// B3（profession-capability-evolution 2026-10-14）：架构工件禁令节的节头
 /// 前缀（与 architecture 契约的强制工件节对齐；匹配按前缀找，容许标题
@@ -189,21 +196,30 @@ fn prefetch_ban_section(
 }
 
 /// B2a 评审工具模式：`NoTools` 与历史行为字节等价（max_turns=1 纯文本）；
-/// `ReadOnly` 允许只读白名单多轮取证（`u32::MAX` = 配置 0=不限的哨兵映射）。
+/// `ReadOnly` 允许只读白名单多轮取证（`u32::MAX` = 配置 0=不限的哨兵映射）；
+/// `EvidenceOnly`（evidence-on-demand，2026-10-15）：远端 worker 评审的取证
+/// 面——只有档案围栏工具 [`crate::board_evidence_tool::TOOL_NAME`]。历史
+/// 约束「远端 worker 一律纯文本」的理由是张冠李戴（就地读文件只会读到
+/// master 工作区）；交付档案已由系统合并到 master 本机
+///（`board-projects/<项目>/`），档案围栏工具按单号解析档案根，读到的就是
+/// 本次交付——顾虑不成立，注入节选不再需要独自承担正确性。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReviewToolMode {
     NoTools,
     ReadOnly { max_turns: u32 },
+    EvidenceOnly { max_turns: u32 },
 }
 
-/// B2a 模式选择（纯函数；单测钉死）：仅当「最近一次派发的 worker 就是
-/// 本机节点」且配置轮数 >1（或 **0=不限**）时才开执行型取证——远端 worker
-/// 的工件不在本机，评审 agent 就地读文件只会读到 master 自己的工作区（张
-/// 冠李戴），一律纯文本。`max_turns=1` 恒为 `NoTools`（与历史行为字节等价）。
+/// B2a 模式选择（纯函数；单测钉死）：仅当配置轮数 >1（或 **0=不限**）才开
+/// 执行型取证。最近派发 worker 是本机节点 → `ReadOnly`（全只读白名单）；
+/// 远端 worker → `EvidenceOnly`（档案围栏工具单件——工件虽在远端执行，
+/// 交付档案已合并到本机，可取证）；无派发历史（人工转入 in_review 的手工
+/// 单）保持 `NoTools` 历史形态（零派发=零档案合并记录，工具无输入）。
+/// `max_turns=1` 恒为 `NoTools`（与历史行为字节等价）。
 ///
 /// `cfg_max_turns=0` = 不限取证轮数（对齐 max_tool_iterations /
 /// llm_timeout_secs 的 0=不限惯例；2026-10-09 web-FPS C1 评审预算耗尽事故
-/// 根修②）：本机 worker 映射 `u32::MAX` 哨兵——`DetachedOpts.max_turns` 的
+/// 根修②）：映射 `u32::MAX` 哨兵——`DetachedOpts.max_turns` 的
 /// 0 语义是「回落主配置默认」而非不限（`loop/turn.rs`），不能直传。不限档
 /// 下 agent 层守卫照常生效（turn_guard doom-loop 检测 / estop / 取消），
 /// 摘掉的只是人为轮数顶棚。
@@ -213,12 +229,14 @@ pub(crate) fn pick_review_tool_mode(
     cfg_max_turns: u32,
 ) -> ReviewToolMode {
     let unlimited = cfg_max_turns == 0;
-    if (cfg_max_turns > 1 || unlimited) && last_worker == Some(local_node) {
-        ReviewToolMode::ReadOnly {
-            max_turns: if unlimited { u32::MAX } else { cfg_max_turns },
-        }
-    } else {
-        ReviewToolMode::NoTools
+    if !(cfg_max_turns > 1 || unlimited) {
+        return ReviewToolMode::NoTools;
+    }
+    let max_turns = if unlimited { u32::MAX } else { cfg_max_turns };
+    match last_worker {
+        Some(w) if w == local_node => ReviewToolMode::ReadOnly { max_turns },
+        Some(_) => ReviewToolMode::EvidenceOnly { max_turns },
+        None => ReviewToolMode::NoTools,
     }
 }
 
@@ -234,6 +252,26 @@ pub(crate) fn render_review_budget_block(tool_mode: ReviewToolMode) -> String {
         ReviewToolMode::ReadOnly { max_turns } => format!(
             "\n## 评审预算（重要）\n本次评审为执行型：你可用只读工具就地取证，预算 **{max_turns} 轮**。请把预算花在验收标准里最关键、可客观判定的点上，边取证边收敛；预算内证据仍不足以定案时，结论只能是 UNSURE（转人工裁决），严禁在预算将尽时凭推测抢答 PASS。\n"
         ),
+        ReviewToolMode::EvidenceOnly { max_turns } if max_turns == u32::MAX => "\n## 评审预算（重要）\n本次评审为执行型：交付档案已由系统合并到本机，你可用 board_evidence_read 工具按档案内相对路径读取交付文件内容取证，轮数不限（但仍须克制，证据足够即定案，不得为取证而取证）。穷尽合理取证仍无法客观判定时，结论只能是 UNSURE（转人工裁决），严禁凭推测给出 PASS。\n".to_string(),
+        ReviewToolMode::EvidenceOnly { max_turns } => format!(
+            "\n## 评审预算（重要）\n本次评审为执行型：交付档案已由系统合并到本机，你可用 board_evidence_read 工具按档案内相对路径读取交付文件内容取证，预算 **{max_turns} 轮**。请把预算花在验收标准里最关键、可客观判定的点上，边取证边收敛；预算内证据仍不足以定案时，结论只能是 UNSURE（转人工裁决），严禁在预算将尽时凭推测抢答 PASS。\n"
+        ),
+    }
+}
+
+/// 未附内容文件的注记（纯函数，单测钉死；两臂分流 2026-10-15
+/// evidence-on-demand）。有工具时指路 `board_evidence_read`（快路径没覆盖
+/// 到的内容由评审员自取——正确性通路），NoTools 保持历史文本（测试
+/// ：4188 钉「未附内容」子串）。
+pub(crate) fn render_unattached_note(unattached: usize, tool_available: bool) -> String {
+    if tool_available {
+        format!(
+            "（其余 {unattached} 个文件未附内容：二进制 / 超大 / 内容节选名额耗尽——清单仅证实落盘；需要内容时用 board_evidence_read 工具自行读取：issue 传本单单号，path 传档案内相对路径（上面清单里的路径原样），支持 offset/limit 字符分段）\n"
+        )
+    } else {
+        format!(
+            "（其余 {unattached} 个文件未附内容：二进制 / 超大 / 单文件节选名额耗尽——仅以清单证实落盘）\n"
+        )
     }
 }
 
@@ -806,6 +844,14 @@ async fn review_issue(
     // ---- 组装评审输入：worker 汇报 + 线程争议点 ----
     let comments = store.list_comments(issue_id)?;
     let dispatches = store.list_dispatches(issue_id)?;
+    // PR4/evidence-on-demand：评审工具模式（纯函数）。计算提到最前——变更集
+    // 注入块的「未附内容」注记按模式分流取证指引（EvidenceOnly/ReadOnly 提
+    // 工具通路，NoTools 保持历史文案）；预算块与 run_review_panel 消费同值。
+    let tool_mode = pick_review_tool_mode(
+        dispatches.last().map(|d| d.worker_id.as_str()),
+        deps.cluster.node_id(),
+        eff_review.max_turns,
+    );
     // worker 汇报 = **最新**一次交付（重派轮次取新汇报，不拿首轮旧账）；
     // 无结构化汇报时退「最新派发执行者」的最近 agent 文本评论（诚实降级
     // 路径），再没有就空串（评审 agent 见「未提供」自判）。
@@ -926,15 +972,31 @@ async fn review_issue(
                     // 对「产物内容是否达标」只能 UNSURE 转人工。注入 commit
                     // 内实际 blob 内容节选（非 worker 自述）：小文本全文
                     // 截断呈现，二进制/超限/条数超预算的诚实注记跳过。
+                    // 2026-10-15 NB-102 真机实证加宽：2000 字符节选把 PRD 截
+                    // 在「核心玩法循环」开头，评审员以「未展示功能需求/
+                    // 非功能需求/逐条验收标准，无法对照验收标准确认」确定性
+                    // UNSURE（阈值 2 轮即停车）——节选截断本身就是假证据不足。
+                    // evidence-on-demand 重构（2026-10-15）：注入层降级为
+                    // **快路径**（省轮次的优化，不再承担正确性）——单文件
+                    // 12000 字符 × 最多 4 个文件（总量上界 ~48K 字符，防多
+                    // 文件交付撑爆 prompt）；快路径没覆盖到的内容，评审员用
+                    // board_evidence_read 工具按档案围栏自取（模式分流见
+                    // render_unattached_note）。正确性不再由任意硬编码预算
+                    // 决定（用户 2026-10-15 拍板）。
                     const BLOB_READ_MAX_BYTES: usize = 64 * 1024;
-                    const BLOB_SNIPPET_CHARS: usize = 2000;
-                    const BLOB_CONTENT_MAX_FILES: usize = 8;
+                    const BLOB_SNIPPET_CHARS: usize = 12_000;
+                    const BLOB_CONTENT_MAX_FILES: usize = 4;
                     let mut listing = String::new();
                     let mut content_budget = BLOB_CONTENT_MAX_FILES;
                     let mut with_content = 0usize;
                     for (path, status) in &files {
                         listing.push_str(&format!("- {path}（{status}）\n"));
-                        if content_budget > 0
+                        let allow = if content_budget == 0 {
+                            0
+                        } else {
+                            BLOB_SNIPPET_CHARS
+                        };
+                        if allow > 0
                             && let Ok(Some(text)) = nemesis_board::commit_blob_text(
                                 &root,
                                 &commit_oid,
@@ -942,7 +1004,7 @@ async fn review_issue(
                                 BLOB_READ_MAX_BYTES,
                             )
                         {
-                            let snippet = nemesis_utils::truncate(text.trim(), BLOB_SNIPPET_CHARS);
+                            let snippet = nemesis_utils::truncate(text.trim(), allow);
                             listing.push_str(&format!(
                                 "  内容节选（commit 内 blob 原文）：\n```text\n{snippet}\n```\n"
                             ));
@@ -951,14 +1013,18 @@ async fn review_issue(
                         }
                     }
                     if files.len() > with_content {
-                        listing.push_str(&format!(
-                            "（其余 {} 个文件未附内容：二进制 / 超大 / 节选预算耗尽——仅以清单证实落盘）\n",
-                            files.len() - with_content
+                        listing.push_str(&render_unattached_note(
+                            files.len() - with_content,
+                            tool_mode != ReviewToolMode::NoTools,
                         ));
                     }
                     prompt.push_str(&format!(
-                        "\n## 变更集合并结果（系统客观数据）\n交付变更集已由系统合并进项目工作区（commit {}）。合并实际落盘的文件清单与内容节选：\n{listing}\n以上为系统合并记录的客观证据（清单=落盘证实；内容节选=commit 内 blob 原文，非 worker 自述）。任务验收标准涉及产物内容时，直接对照节选核对，不要因「内容未随报提供」而判证据不足。\n",
-                        &commit_oid[..12.min(commit_oid.len())]
+                        "\n## 变更集合并结果（系统客观数据）\n交付变更集已由系统合并进项目工作区（commit {}）。合并实际落盘的文件清单与内容节选：\n{listing}\n以上为系统合并记录的客观证据（清单=落盘证实；内容节选=commit 内 blob 原文，非 worker 自述）。任务验收标准涉及产物内容时，直接对照节选核对{}，不要因「内容未随报提供」而判证据不足。\n",
+                        &commit_oid[..12.min(commit_oid.len())],
+                        match tool_mode {
+                            ReviewToolMode::NoTools => "",
+                            _ => "；节选没覆盖到的文件用 board_evidence_read 取证",
+                        }
                     ));
                     // 组件5（件4 评审注入，F-U3 同族）：变更集携带
                     // `.discipline/` 时追加纪律闭环证据段（None=非纪律任务
@@ -1133,14 +1199,9 @@ async fn review_issue(
     // system prompt）。先例注入只走 Thorough——fast 档追求精简，参考性
     // 历史数据不进 prompt。
     let review_tier = nemesis_prompts::board::parse_review_tier(&cfg.review.tier);
-    // PR4（2026-10-10 机制加固）：评审预算感知注入。工具模式是纯函数，提前
-    // 到 vision 分支之前算——预算块进 prompt 后 vision/文本两路都拿到（锚点
-    // 失败短路分支不消费 prompt，多注入无副作用）。
-    let tool_mode = pick_review_tool_mode(
-        dispatches.last().map(|d| d.worker_id.as_str()),
-        deps.cluster.node_id(),
-        eff_review.max_turns,
-    );
+    // PR4（2026-10-10 机制加固）：评审预算感知注入——预算块进 prompt 后
+    // vision/文本两路都拿到（锚点失败短路分支不消费 prompt，多注入无副作
+    // 用）。tool_mode 已在注入块之前算好（函数前段）。
     prompt.push_str(&render_review_budget_block(tool_mode));
     // B3 评审分镜（profession-capability-evolution 2026-10-14）：按任务职能
     // 选 lens；禁令节文本服务端预取（vision/文本两路共用；NoTools 形态下
@@ -1450,6 +1511,21 @@ async fn review_issue(
             // estop 检查点（发车前）：急停中不发自检，停车等释放。
             if estop_fuse_engaged(deps, issue_id, ParkedKind::Issue) {
                 return Ok(false);
+            }
+            // 取证软件化（2026-10-15）：执行档案直读优先于向 worker 发 LLM
+            // 自检。worker 的执行记录已随交付回灌在项目 records/<编号>/
+            // execution/，master 本地直读 = 零 token、零 RPC、零 worker 依赖
+            // （上游 LLM 链路故障时评审取证不被卡死）；证据走与 worker 回报
+            // 同一条二段评审管线（allow_selfcheck=false，只带一程）。档案
+            // 缺失/为空 = 诚实回落 dispatch_selfcheck（旧行为不变）。
+            if let Some(evidence) = gather_execution_evidence(deps, &issue) {
+                let note = "🔎 执行档案直读取证：评审需要更多证据，已从项目执行档案本地读取 worker 执行记录（免 worker 取证轮），自动进行二段验收。";
+                let _ = post_review_comment(store, issue_id, &deps.cluster, note);
+                spawn_selfcheck_second_stage(deps.clone(), issue_id, "ok".to_string(), evidence);
+                info!(
+                    "[BoardReview] issue {issue_id} 执行档案直读取证完成，二段验收已发起（免 worker 取证轮）"
+                );
+                return Ok(true);
             }
             let target_worker = dispatches
                 .last()
@@ -2162,6 +2238,17 @@ async fn run_review_llm(
                 system_prompt: Some(system_prompt.as_str()),
                 no_tools: false,
                 allowed_tools: Some(READONLY_REVIEW_TOOLS),
+                max_turns,
+                label: Some("board-review"),
+                ..Default::default()
+            },
+            // evidence-on-demand（2026-10-15）：远端 worker 评审的取证面 =
+            // 档案围栏工具单件。工具未注册（store 缺席等装配残缺态）时白名
+            // 单过滤为零供给——诚实退化为多轮纯文本，不会放大工具面。
+            ReviewToolMode::EvidenceOnly { max_turns } => nemesis_agent::r#loop::DetachedOpts {
+                system_prompt: Some(system_prompt.as_str()),
+                no_tools: false,
+                allowed_tools: Some(EVIDENCE_ONLY_TOOLS),
                 max_turns,
                 label: Some("board-review"),
                 ..Default::default()
@@ -3601,6 +3688,97 @@ async fn dispatch_selfcheck(
     Ok(task_id)
 }
 
+/// 取证软件化（2026-10-15）：执行档案直读取证。档案管线
+/// （[`crate::board_archive_ingest`]）把 worker 的执行记录（`00.request.md`
+/// / `NN.AI.Response.md` 等）随交付回灌安置在
+/// `<项目目录>/records/<编号>/execution/<ts>/`——评审取证优先从这份本地
+/// 档案直读（零 token、零 RPC、零 worker 依赖；上游 LLM 链路故障时评审
+/// 取证不被卡死），档案缺失/为空才回落向 worker 发 LLM 自检。
+///
+/// 纯函数（只读不写）：最新一轮 ts 目录优先（重派后旧轮次不代表当前
+/// 交付）；`.raw.json` 线材件跳过（体积大且人不可读），取任务请求头 +
+/// 最新一轮 AI 回复头作为证据主体；总输出有界。
+///
+/// 清单路径形态（NB-105 真机实证 2026-10-15）：评审员照清单用
+/// `board_evidence_read` 逐个读取，path 以项目档案根为基准解析
+/// （[`crate::board_evidence_tool`]）——清单必须列档案根相对路径
+/// （`records/<编号>/execution/<ts>/<name>`）；裸文件名会让评审员的全部
+/// 读取落空（「档案文件不存在或不可达」×N）→ UNSURE×3 熔断转人工。
+fn collect_execution_evidence(root: &std::path::Path, issue_number: &str) -> Option<String> {
+    let exec_dir = root.join("records").join(issue_number).join("execution");
+    // 目录名 = 安置时间戳（字典序=时间序，同 retry_merge_for_issue 口径）。
+    let mut rounds: Vec<std::path::PathBuf> = std::fs::read_dir(&exec_dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    rounds.sort();
+    let dir = rounds.pop()?;
+
+    let mut files: Vec<(String, u64)> = std::fs::read_dir(&dir)
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            let size = e.metadata().ok()?.len();
+            Some((e.file_name().to_string_lossy().into_owned(), size))
+        })
+        .collect();
+    files.sort();
+    if files.is_empty() {
+        return None;
+    }
+    let read_head = |name: &str, cap: usize| -> Option<String> {
+        let raw = std::fs::read_to_string(dir.join(name)).ok()?;
+        let text = raw.trim();
+        // 空文件与盒内数据丢失标记都不算证据。
+        (!text.is_empty() && text != "_NEMESIS_UNREADABLE_")
+            .then(|| nemesis_utils::truncate(text, cap))
+    };
+    let request_head = read_head("00.request.md", 1200);
+    // 最新一轮 AI 回复 = 序号最大的 `NN.AI.Response.md`（raw.json 不匹配后缀）。
+    let response_head = files
+        .iter()
+        .filter_map(|(name, _)| {
+            name.strip_suffix(".AI.Response.md")
+                .and_then(|idx| idx.parse::<usize>().ok())
+        })
+        .max()
+        .and_then(|idx| read_head(&format!("{idx:02}.AI.Response.md"), 4000));
+    if request_head.is_none() && response_head.is_none() {
+        return None;
+    }
+    let ts = dir.file_name()?.to_string_lossy().into_owned();
+    let prefix = format!("records/{issue_number}/execution/{ts}/");
+    let inventory = files
+        .iter()
+        .map(|(name, size)| format!("- {prefix}{name}（{size} B）"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut out = format!(
+        "执行档案（最新一轮 {ts}，共 {} 个文件；清单为档案内相对路径，可用 board_evidence_read 原样读取）：\n{inventory}",
+        files.len()
+    );
+    if let Some(r) = request_head {
+        out.push_str(&format!("\n\n## 任务请求（00.request.md 头部）\n{r}"));
+    }
+    if let Some(r) = response_head {
+        out.push_str(&format!("\n\n## worker 最终回复（AI.Response 头部）\n{r}"));
+    }
+    Some(nemesis_utils::truncate(&out, 7600))
+}
+
+/// 从 deps 解析单据的项目档案根并直读取证：单据未绑项目 / 项目无档案
+/// 目录 / 目录被手删 → None（诚实回落 LLM 自检，旧行为不变）。
+fn gather_execution_evidence(
+    deps: &BoardReviewDeps,
+    issue: &nemesis_board::Issue,
+) -> Option<String> {
+    let project = deps.store.get_project(issue.project_id?).ok()?;
+    let root = project_archive_root(project.directory.as_deref()).ok()?;
+    collect_execution_evidence(&root, &issue.number)
+}
+
 /// F3 项目收口汇总验收（fire-and-forget）：gateway 注册到
 /// `nemesis_web::handlers::board::set_project_review_hook`；触发前置
 /// （全部顶层父单 done + 项目非空 + 状态 active/in_progress）在 web 侧
@@ -4749,8 +4927,9 @@ fn summarize_fail_note(deps: &BoardReviewDeps, project_id: i64, err: &str) {
 }
 
 /// 档案目录解析：Project.directory（绝对路径）存在才可用；缺失 = 存量
-/// 项目/目录被手删——诚实跳过（None 语义）。
-fn project_archive_root(directory: Option<&str>) -> Result<std::path::PathBuf, String> {
+/// 项目/目录被手删——诚实跳过（None 语义）。pub(crate)：board_evidence_read
+/// 工具按单号解析档案根共用此单点（根语义漂移一处改）。
+pub(crate) fn project_archive_root(directory: Option<&str>) -> Result<std::path::PathBuf, String> {
     let raw = directory.ok_or("项目未绑定档案目录（存量项目不参与档案管线）")?;
     let root = std::path::PathBuf::from(raw);
     if !root.is_dir() {

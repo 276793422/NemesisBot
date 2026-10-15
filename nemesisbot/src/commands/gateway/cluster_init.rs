@@ -677,9 +677,11 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     // E3 顺序强制：exec 残留清扫必须先于 outbox sweep_startup
                     // ——后者会对 cluster_logs 残留补纯记录入队，条目一旦先建，
                     // 带变更集的入队就被幂等挡死（模块头注释钦定）。
+                    // 启动清扫无活跃任务（进程刚起）→ 恒不跳过。
                     let swept = nemesis_cluster::exec_workspace::sweep_exec_residual(
                         &home.join("workspace"),
                         &outbox,
+                        &|_| false,
                     );
                     if swept > 0 {
                         info!(
@@ -688,6 +690,15 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     }
                     outbox.sweep_startup();
                     outbox.spawn_push_loop();
+                    // BUG-2026-10-15 D：周期残留清扫（30min）。任务进行中的
+                    // 工作副本不可触碰——按 result_store 的在跑标记跳过，
+                    // 只收拾真崩溃残留（重启前已由上方 startup sweep 兜底）。
+                    let result_store = cluster.result_store().clone();
+                    nemesis_cluster::exec_workspace::spawn_periodic_residual_sweep(
+                        home.join("workspace"),
+                        outbox.clone(),
+                        std::sync::Arc::new(move |id: &str| result_store.is_running(id)),
+                    );
                     info!("[Gateway] Transfer stack armed (archive inbox+outbox+5 handlers)");
                 }
                 Err(e) => warn!("[Gateway] Transfer handler registration skipped: {}", e),
@@ -772,6 +783,23 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 Ok(()) => info!("[Gateway] Registered nb_bus handler (board envelope protocol)"),
                 Err(e) => warn!("[Gateway] nb_bus handler registration skipped: {}", e),
             }
+            // BUG-2026-10-15 C：档案停摆哨兵（60s 周期，master 侧）。交付
+            // 评论后 15min 变更集仍未合并 → WARN + 单据警示评论（NB-120
+            // 实证双端「正常」死等 1.5h——停摆必须自己冒头）。
+            let stall_store = board_store.clone().expect("board_store checked above");
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    ticker.tick().await;
+                    super::board_dispatch::sweep_archive_stalls(
+                        &stall_store,
+                        super::board_dispatch::ARCHIVE_STALL_WARN_SECS,
+                        chrono::Utc::now().timestamp(),
+                    );
+                }
+            });
+            info!("[Gateway] Board archive stall sentinel armed (interval=60s)");
         } else {
             let inbox = Arc::new(crate::cluster_agent::DiscussionInbox::new());
             let deps = crate::board_bus::WorkerBusDeps {

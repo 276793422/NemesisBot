@@ -672,6 +672,7 @@ fn make_changeset_dir(name: &str, base_commit: &str) -> PathBuf {
             executable: false,
         }],
         deletions: vec![],
+        skipped: Vec::new(),
     };
     let contents = vec![changeset::ChangesetContent {
         path: "src/common.h".into(),

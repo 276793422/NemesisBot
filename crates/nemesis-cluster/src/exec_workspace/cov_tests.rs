@@ -119,7 +119,7 @@ fn sweep_skips_files_and_cs_dirs_and_sidecarless() {
     let sidecarless = root.join("t-noside");
     std::fs::create_dir_all(&sidecarless).unwrap();
 
-    let done = sweep_exec_residual(&ws.root, &ws.outbox());
+    let done = sweep_exec_residual(&ws.root, &ws.outbox(), &|_| false);
     assert_eq!(done, 0, "全跳过零处理");
     assert!(sidecarless.exists(), "无 sidecar 残留保留现场");
     assert!(root.join("loose-file").exists());
@@ -135,7 +135,7 @@ fn sweep_finish_err_warns_and_keeps_scene() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join(BASELINE_SIDECAR_NAME), "{corrupt json").unwrap();
 
-    let done = sweep_exec_residual(&ws.root, &ws.outbox());
+    let done = sweep_exec_residual(&ws.root, &ws.outbox(), &|_| false);
     assert_eq!(done, 0);
     assert!(dir.exists(), "失败现场必须保留");
 }
@@ -161,7 +161,7 @@ fn sweep_happy_zero_diff_enqueues_via_logs_lookup() {
     std::fs::create_dir_all(&rec).unwrap();
     std::fs::write(rec.join("log.md"), b"execution log").unwrap();
 
-    let done = sweep_exec_residual(&ws.root, &ws.outbox());
+    let done = sweep_exec_residual(&ws.root, &ws.outbox(), &|_| false);
     assert_eq!(done, 1, "零差异 → 纯记录入队成功");
     assert!(!dir.exists(), "入队成功后工作副本清理");
 }

@@ -96,6 +96,11 @@ fn test_tool_to_operation_inventory_complete() {
         tool_to_operation("board_issue"),
         Some(OperationType::FileWrite)
     );
+    // 评审取证读（evidence-on-demand）：档案围栏只读，FileRead 档。
+    assert_eq!(
+        tool_to_operation("board_evidence_read"),
+        Some(OperationType::FileRead)
+    );
     // B4 例外语义显式化（不再靠未知名兜底）。
     assert_eq!(
         tool_to_operation("background_start"),

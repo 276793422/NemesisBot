@@ -92,6 +92,22 @@ fn issue_to_view(
     let comments = store.list_comments(issue.id)?;
     let activity = store.list_activity(issue.id)?;
     let subscribers = store.list_subscribers(issue.id)?;
+    // 依赖上游投影（2026-10-15 用户需求：列表/详情可见「等 NB-x」徽标）：
+    // 每上游 {id, number, status}——前端渲染阻塞态（非 done = 等待）与
+    // 跳转文案。单数场景上游 ≤ 拆解上限，逐点查无感；FK 保证上游存在，
+    // 查询失败（防御性）降级 unknown 占位不炸视图。
+    let mut depends_on = Vec::new();
+    for dep_id in store.dependencies_of(issue.id)? {
+        let (number, status) = match store.get_issue(dep_id) {
+            Ok(up) => (up.number, up.status.as_str().to_string()),
+            Err(_) => ("?".to_string(), "unknown".to_string()),
+        };
+        depends_on.push(serde_json::json!({
+            "id": dep_id,
+            "number": number,
+            "status": status,
+        }));
+    }
     let mut v = serde_json::to_value(issue).map_err(|e| format!("serialize issue: {e}"))?;
     if let Some(obj) = v.as_object_mut() {
         obj.insert(
@@ -106,6 +122,7 @@ fn issue_to_view(
             "subscribers".to_string(),
             serde_json::to_value(subscribers).unwrap_or_default(),
         );
+        obj.insert("depends_on".to_string(), serde_json::json!(depends_on));
     }
     Ok(v)
 }
@@ -708,6 +725,44 @@ pub fn dispatch_issue_core(
     // 已有未完结派发 → 拒绝重复派发。
     if store.has_active_dispatch(issue.id)? {
         return Err("该 issue 已有进行中的派发（等 worker 回报或超时后再试）".to_string());
+    }
+
+    // BUG-②（2026-10-15 NB-1 事故）：挂有未确认计划的父单不可直接派发
+    // ——子单只在 confirm_plan 时刻物化，直接派发 = 父单本体当单任务
+    // 派出（绕过拆解）。running（拆解进行中）同拦——等确认或等失败，
+    // 不与拆解链赛跑。过期/失败计划不拦（TTL 惰性清理与 plan.list 同
+    // 判据；confirm 成功即摘除，都不在缓存里）。
+    #[cfg(feature = "cluster")]
+    {
+        let now = std::time::Instant::now();
+        let running = RUNNING_PLANS
+            .lock()
+            .values()
+            .any(|r| r.issue_id == issue.id);
+        let ready_ids: Vec<String> = {
+            let mut cache = PLAN_CACHE.lock();
+            cache.retain(|_, p| now.duration_since(p.created_at) <= PLAN_TTL);
+            cache
+                .iter()
+                .filter(|(_, p)| p.issue_id == issue.id)
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        if running || !ready_ids.is_empty() {
+            let state_word = if running {
+                "拆解进行中"
+            } else {
+                "待确认"
+            };
+            let id_hint = ready_ids
+                .first()
+                .map(|id| format!("（plan {id}）"))
+                .unwrap_or_default();
+            return Err(format!(
+                "该单挂有未确认的拆解计划（{state_word}{id_hint}）：到任务详情确认该计划，或等其过期（{}s）后重试",
+                PLAN_TTL.as_secs()
+            ));
+        }
     }
 
     // 派发 = 给远端 worker 发 peer_chat，集群必需。
@@ -1472,6 +1527,12 @@ struct RunningPlan {
     /// 第几次尝试（1 起）。超时重拆链（§1.1）每次 +1；列表投影/横幅
     /// 「第 N 次尝试」文案数据源。
     pub(super) attempt: u32,
+    /// 链阶段（2026-10-15 NB-101 观察窗口）：`planning`=planner LLM 运行中；
+    /// `dispatching`=auto_confirm 发车派发中（子单已物化，首个可能已在
+    /// worker 上执行——派发窗口实测可达分钟级）。plan.list / plan.get /
+    /// issue.list 三处投影据此让前端区分「拆解中」与「发车中」，不再把
+    /// 派发窗口误报成还在拆解。
+    pub(super) phase: &'static str,
 }
 
 #[cfg(feature = "cluster")]
@@ -1533,6 +1594,7 @@ fn plan_list(
                 "plan_id": plan_id,
                 "issue_id": r.issue_id,
                 "status": "running",
+                "phase": r.phase,
                 "attempt": r.attempt,
                 "created_ms": 0u64,
                 "elapsed_secs": now.duration_since(r.started_at).as_secs(),
@@ -1566,6 +1628,7 @@ fn plan_get(data: Option<serde_json::Value>) -> Result<Option<serde_json::Value>
             "plan_id": plan_id,
             "issue_id": r.issue_id,
             "status": "running",
+            "phase": r.phase,
             "attempt": r.attempt,
             "elapsed_secs": now.duration_since(r.started_at).as_secs(),
         })));
@@ -1599,13 +1662,19 @@ fn plan_preview_json(plan_id: &str, p: &PlanPreview, now: std::time::Instant) ->
         // 的 in-flight 条目）——查询方不再需要靠字段缺省猜状态。
         "status": "ready",
         "sub_count": p.subs.len(),
+        // 全字段投影（BUG-① 2026-10-15）：重开模态经 plan.list 恢复的预览
+        // 与 plan_ready SSE 载荷同形——description/acceptance_criteria/
+        // required_tags 缺位会让前端锚点继承黄条误报（无从核验）。
         "subs": p.subs
             .iter()
             .map(|s| {
                 serde_json::json!({
                     "title": s.title,
+                    "description": s.description,
                     "required_role": s.required_role,
                     "required_profession": s.required_profession,
+                    "required_tags": s.required_tags,
+                    "acceptance_criteria": s.acceptance_criteria,
                     "depends_on": s.depends_on,
                 })
             })
@@ -2269,6 +2338,7 @@ pub async fn execute_plan_chain(
             issue_id: issue.id,
             started_at: started,
             attempt,
+            phase: "planning",
         },
     );
     let _running_guard = RunningPlanGuard {
@@ -2437,7 +2507,17 @@ pub async fn execute_plan_chain(
         }));
     }
     let count = subs.len();
-    {
+    // A1 旗标前置：plan_ready 载荷要带 auto_confirm（前端据此直接进
+    // 「发车中」态而不是渲染确认按钮），故先读后发。
+    let auto_confirm = home
+        .and_then(|h| {
+            nemesis_config::load_config(&std::path::Path::new(h).join("config.json")).ok()
+        })
+        .map(|c| c.board.unwrap_or_default().plan.auto_confirm)
+        .unwrap_or(false);
+    // 人工确认模式才落缓存（auto_confirm 链随后直接消费，落了立刻摘 =
+    // 白写；且不落才能保证派发窗口内 plan.list 永远无 ready 预览）。
+    if !auto_confirm {
         let mut cache = PLAN_CACHE.lock();
         cache.retain(|_, p| p.created_at.elapsed() <= PLAN_TTL);
         cache.insert(
@@ -2462,20 +2542,22 @@ pub async fn execute_plan_chain(
                 "plan_id": plan_id,
                 "issue_id": issue.id,
                 "subs": subs.clone(),
+                "auto_confirm": auto_confirm,
             }),
         );
     }
     // ---- A1：board.plan.auto_confirm=true → 跳过人工确认闸直接发车。
     // 旗标每次拆解现读（config.json 热改即时生效）；读取失败 fail-closed
-    // 回人工确认。plan_id 缓存条目留在原处（未消费）——人工此时再点确认
-    // 会撞「plan_id 已存在但 issue 已有子单」的重复建单风险，故发车成功
-    // 后移除。
-    let auto_confirm = home
-        .and_then(|h| {
-            nemesis_config::load_config(&std::path::Path::new(h).join("config.json")).ok()
-        })
-        .map(|c| c.board.unwrap_or_default().plan.auto_confirm)
-        .unwrap_or(false);
+    // 回人工确认。
+    // 2026-10-15 NB-101 观察窗口双修：
+    // ① 预览不落缓存（上方 if）——派发窗口（逐子单 RPC 送达，实测可达
+    //   分钟级）内 plan.list 无 ready 预览，前端确认面板无从渲染；此间
+    //   人工走 WSAPI 点确认得到「plan_id 不存在或已被消费」诚实报错，而
+    //   不是把同一套子单再物化一遍（重复建单）。旧形态「发车成功后移除」
+    //   只保护窗口之后，保护不了窗口之中。
+    // ② 阶段翻转为 dispatching——issue.list/plan.list 投影让前端横幅
+    //   显示「发车中」而非「拆解中」（子单已可见、首个已在 worker 上跑，
+    //   顶部还挂「拆解中」是误报）。
     // P11 观测面：拆解成功评论留痕（含 plan_id；措辞按发车模式分支——
     // 人工模式附 TTL 提示，自动发车臂随后另有发车评论，不重复诱导确认）。
     let _ = store.add_comment(NewComment {
@@ -2501,9 +2583,13 @@ pub async fn execute_plan_chain(
             "note": "已生成拆解预览，等待人工确认发车（board.plan.auto_confirm 未开启）",
         }));
     }
+    // 阶段翻转 planning→dispatching：confirm_plan 内部逐子单 RPC 送达可
+    // 阻断数分钟，投影面（issue.list/plan.list）须立刻改挂「发车中」。
+    if let Some(rp) = RUNNING_PLANS.lock().get_mut(plan_id) {
+        rp.phase = "dispatching";
+    }
     match confirm_plan(store, cluster.as_ref(), &issue, subs, &actor, &downgrades) {
         Ok(mut out) => {
-            PLAN_CACHE.lock().remove(plan_id);
             let _ = store.add_comment(NewComment {
                 issue_id: issue.id,
                 author: Actor::system("board"),
@@ -4919,11 +5005,15 @@ impl ModuleHandler for BoardHandler {
                 // goal P1/C2：逐单附环节（issue_stage 单一真相源）——前端
                 // 子单行环节徽标数据源；加法变更，旧前端兼容。
                 // §1.1 拆解运行期投影（cluster 编译时）：命中 RUNNING_PLANS
-                // 的单附 `planning: {elapsed_secs, attempt}`（纯展示叠加，
-                // 不改 issue 状态机——backlog 语义不变）。前端列表徽标/
-                // 项目卡片行「🧩 拆解中」数据源。
+                // 的单附 `planning: {elapsed_secs, attempt, phase}`（纯展示叠
+                // 加，不改 issue 状态机——backlog 语义不变）。phase=
+                // planning（planner LLM 运行中）/ dispatching（auto_confirm
+                // 发车派发中——子单已可见，前端徽标应显示「发车中」）。
                 #[cfg(feature = "cluster")]
-                let planning_now: std::collections::HashMap<i64, (u64, u32)> = {
+                let planning_now: std::collections::HashMap<
+                    i64,
+                    (u64, u32, &'static str),
+                > = {
                     let now = std::time::Instant::now();
                     RUNNING_PLANS
                         .lock()
@@ -4931,27 +5021,60 @@ impl ModuleHandler for BoardHandler {
                         .map(|r| {
                             (
                                 r.issue_id,
-                                (now.duration_since(r.started_at).as_secs(), r.attempt),
+                                (
+                                    now.duration_since(r.started_at).as_secs(),
+                                    r.attempt,
+                                    r.phase,
+                                ),
                             )
                         })
                         .collect()
                 };
                 let mut rows = Vec::with_capacity(issues.len());
+                // 依赖徽标批量投影（2026-10-15）：边集 + 轻投影各一次查询，
+                // 不逐单 dependencies_of（N+1；规模不设限——全表读千行毫秒级）。
+                // briefs 是全表（不带 filter），上游被 exclude 过滤掉也照常投影。
+                let briefs = store.issue_briefs()?;
+                let mut deps_by_issue: std::collections::HashMap<i64, Vec<i64>> =
+                    std::collections::HashMap::new();
+                for (issue_id, dep_id) in store.all_dependency_edges()? {
+                    deps_by_issue.entry(issue_id).or_default().push(dep_id);
+                }
                 for issue in &issues {
                     let mut v =
                         serde_json::to_value(issue).map_err(|e| format!("serialize issue: {e}"))?;
                     if let Some(obj) = v.as_object_mut() {
+                        let depends_on: Vec<serde_json::Value> = deps_by_issue
+                            .get(&issue.id)
+                            .map(|deps| {
+                                deps.iter()
+                                    .map(|dep_id| {
+                                        let (number, status) = briefs
+                                            .get(dep_id)
+                                            .cloned()
+                                            .unwrap_or(("?".to_string(), "unknown".to_string()));
+                                        serde_json::json!({
+                                            "id": dep_id,
+                                            "number": number,
+                                            "status": status,
+                                        })
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        obj.insert("depends_on".to_string(), serde_json::json!(depends_on));
                         obj.insert(
                             "stage".to_string(),
                             serde_json::json!(issue_stage(&store, issue)?),
                         );
                         #[cfg(feature = "cluster")]
-                        if let Some((elapsed, attempt)) = planning_now.get(&issue.id) {
+                        if let Some((elapsed, attempt, phase)) = planning_now.get(&issue.id) {
                             obj.insert(
                                 "planning".to_string(),
                                 serde_json::json!({
                                     "elapsed_secs": elapsed,
                                     "attempt": attempt,
+                                    "phase": phase,
                                 }),
                             );
                         }
@@ -6072,6 +6195,15 @@ fn board_config_set(
                     u32::try_from(value.as_u64().ok_or("review.max_turns 需要非负整数")?)
                         .map_err(|_| "review.max_turns 超出 u32 范围")?;
             }
+            // 连续 UNSURE 停车阈值（0=不限；用户 2026-10-15：设置页缺旋钮）。
+            "review.max_unsure_streak" => {
+                board.review.max_unsure_streak = u32::try_from(
+                    value
+                        .as_u64()
+                        .ok_or("review.max_unsure_streak 需要非负整数")?,
+                )
+                .map_err(|_| "review.max_unsure_streak 超出 u32 范围")?;
+            }
             "review.checkers" => {
                 board.review.checkers =
                     u32::try_from(value.as_u64().ok_or("review.checkers 需要非负整数")?)
@@ -6228,7 +6360,8 @@ fn board_config_set(
                  auto_close_parent / unlimited_mode / conflict_auto_resolve / dispatch_fallback / \
                  dispatch_fallback_target / fingerprint_weighting / \
                  max_redispatch / dispatch_timeout_secs / worker_max_inflight / \
-                 plan.auto_confirm / plan.model / review.max_turns / review.selfcheck / \
+                 plan.auto_confirm / plan.model / review.max_turns / \
+                 review.max_unsure_streak / review.selfcheck / \
                  review.exec_anchors_enabled / review.exec_anchor_timeout_secs / \
                  review.auto_close_project / review.checkers / review.professions.<slug>.* / \
                  budget.max_subissues_per_parent / \

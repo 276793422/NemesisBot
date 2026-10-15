@@ -43,6 +43,10 @@ mod board_bus;
 mod board_discuss_tool;
 // M3 同因失败签名熔断账本已移 nemesis-board 公开（§6.4D：nemesis-web 手动
 // 重派清账与评审链共用同一 JSON，nemesis_board::fail_streak 消费）。
+/// 评审取证自取（evidence-on-demand）：board_evidence_read 工具（仅注册进
+/// 主 agent——评审链 EvidenceOnly/ReadOnly 白名单消费；档案根围栏只读）。
+#[cfg(all(feature = "board", feature = "cluster"))]
+mod board_evidence_tool;
 /// 全自动流转 P3/D1：board_issue 工具（仅注册进主 agent——「对 master 说
 /// 一句话建单」入口；create 复用 WSAPI issue.create 解析，plan 复用
 /// execute_plan_chain 四入口单一真相源）。
