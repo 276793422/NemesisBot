@@ -549,9 +549,12 @@ async fn demo_acts(ws: &std::path::Path) -> Result<DemoEvidence> {
     #[cfg(feature = "security")]
     let strict_error = {
         write_demo_connector(ws, "demo-strict", DEMO_STRICT_MANIFEST)?;
-        use nemesis_security::vault::VaultStore;
+        use nemesis_security::vault::{VaultMode, VaultStore};
         let vault_path = nemesis_path::resolve_vault_path_in_workspace(ws);
-        let mut store = VaultStore::create(&vault_path, VaultStore::default_mode(), None)
+        // 显式 Argon2id + 演示口令：default_mode 在非 Windows 落 Argon2id
+        // 且 create(None) 缺口令直接报错（Linux ET 三连红的根因）；demo vault
+        // 生命周期 = tempdir，固定演示口令无安全面，三平台行为一致。
+        let mut store = VaultStore::create(&vault_path, VaultMode::Argon2id, Some("nemesis-demo"))
             .map_err(|e| anyhow::anyhow!("创建演示 vault 失败: {e}"))?;
         store
             .set(
@@ -565,6 +568,11 @@ async fn demo_acts(ws: &std::path::Path) -> Result<DemoEvidence> {
             .save()
             .map_err(|e| anyhow::anyhow!("保存演示 vault 失败: {e}"))?;
         drop(store);
+        // 读侧 invoke 凭据注入走 vault_runtime::open_unlocked（argon2 vault 需
+        // env 解锁；DPAPI 平台 open 即解锁、不消费 env）。demo 进程短命，就地
+        // 设 env 不摘：CLI demo 走完即退；tests 侧 nextest 每测试独立进程，
+        // 无交叉污染面。
+        unsafe { std::env::set_var("NEMESISBOT_VAULT_PASSPHRASE", "nemesis-demo") };
         tool.execute(
             r#"{"connector":"demo-strict","op":"ping","args":{}}"#,
             &demo_ctx(),

@@ -537,6 +537,12 @@ fn test_merge_request_headers_credential_wins_and_folds_case() {
 async fn test_http_static_headers_patch_and_vault_prefix_end_to_end() {
     use nemesis_security::vault::VaultStore;
 
+    // env 口令是进程单例：与 vault_runtime / commands::vault 的 env 触及测试群
+    // 经 crate::GLOBAL_STATE_LOCK 互斥（本地 cargo test 并行防互踩；nextest
+    // 每测试独立进程，锁无竞争直通）。
+    let _env_guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let server = wiremock::MockServer::start().await;
     wiremock::Mock::given(wiremock::matchers::method("PATCH"))
         .and(wiremock::matchers::path("/repos/octocat/demo/issues/1"))
@@ -586,10 +592,18 @@ http = { method = "PATCH", path = "/repos/{owner}/{repo}/issues/{index}" }
         .replace("{BASE}", &server.uri()),
     );
 
-    // 临时 vault 写入 connector/gitea/pat（default_mode：Windows=DPAPI 免口令）
+    // 读侧 invoke 凭据注入走 vault_runtime::open_unlocked（argon2 vault 需 env
+    // 解锁）；CI/ET 为 nextest 每测试独立进程天然隔离，本地 cargo test 并行用后即摘。
+    unsafe { std::env::set_var("NEMESISBOT_VAULT_PASSPHRASE", "test-passphrase") };
+    // 临时 vault 写入 connector/gitea/pat（显式 Argon2id 跨平台一致：
+    // default_mode 在非 Windows 需口令而 None 直接报错，Linux ET 假红根因）
     let vault_path = nemesis_path::resolve_vault_path_in_workspace(ws);
-    let mut store =
-        VaultStore::create(&vault_path, VaultStore::default_mode(), None).expect("create vault");
+    let mut store = VaultStore::create(
+        &vault_path,
+        nemesis_security::vault::VaultMode::Argon2id,
+        Some("test-passphrase"),
+    )
+    .expect("create vault");
     store
         .set(
             "connector/gitea/pat",
@@ -614,6 +628,7 @@ http = { method = "PATCH", path = "/repos/{owner}/{repo}/issues/{index}" }
     let receipts = list_receipts(ws, 50, None).expect("receipts");
     assert_eq!(receipts.len(), 1);
     assert_eq!(receipts[0].outcome, "executed");
+    unsafe { std::env::remove_var("NEMESISBOT_VAULT_PASSPHRASE") };
 }
 
 /// required 凭据缺失 = 诚实报错（不动手），不带 vault 文件的全新环境直触发。
@@ -787,6 +802,12 @@ fn test_workspace_template_webui_manifest_is_valid_and_disabled_by_default() {
 async fn test_gitea_template_ops_against_mock_gitea() {
     use nemesis_security::vault::VaultStore;
 
+    // env 口令是进程单例：与 vault_runtime / commands::vault 的 env 触及测试群
+    // 经 crate::GLOBAL_STATE_LOCK 互斥（本地 cargo test 并行防互踩；nextest
+    // 每测试独立进程，锁无竞争直通）。
+    let _env_guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let server = wiremock::MockServer::start().await;
     let auth = || wiremock::matchers::header("authorization", "token mock-pat");
     for (method_m, path_m, body) in [
@@ -845,9 +866,16 @@ async fn test_gitea_template_ops_against_mock_gitea() {
         ),
     );
 
+    // 读侧 invoke 凭据注入走 vault_runtime::open_unlocked（argon2 vault 需 env
+    // 解锁）；CI/ET 为 nextest 每测试独立进程天然隔离，本地 cargo test 并行用后即摘。
+    unsafe { std::env::set_var("NEMESISBOT_VAULT_PASSPHRASE", "test-passphrase") };
     let vault_path = nemesis_path::resolve_vault_path_in_workspace(ws);
-    let mut store =
-        VaultStore::create(&vault_path, VaultStore::default_mode(), None).expect("vault");
+    let mut store = VaultStore::create(
+        &vault_path,
+        nemesis_security::vault::VaultMode::Argon2id,
+        Some("test-passphrase"),
+    )
+    .expect("vault");
     store
         .set("connector/gitea/pat", "mock-pat", "connector", "mock")
         .expect("set");
@@ -916,6 +944,7 @@ async fn test_gitea_template_ops_against_mock_gitea() {
     assert_eq!(close.outcome, "executed");
     assert_eq!(close.receipt_key.as_deref(), Some("number"));
     assert_eq!(close.receipt_value.as_deref(), Some("1"));
+    unsafe { std::env::remove_var("NEMESISBOT_VAULT_PASSPHRASE") };
 }
 
 // ---- 收官批 A2：Gitea 真实链路 e2e（scripts/test-gitea-e2e.sh 拉起真实实例后跑）----
@@ -965,6 +994,12 @@ async fn gitea_invoke(
 async fn gitea_real_chain_e2e() {
     use nemesis_security::vault::VaultStore;
 
+    // env 口令是进程单例：与 vault_runtime / commands::vault 的 env 触及测试群
+    // 经 crate::GLOBAL_STATE_LOCK 互斥（本地 cargo test 并行防互踩；nextest
+    // 每测试独立进程，锁无竞争直通）。
+    let _env_guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let Some(url) = std::env::var("GITEA_E2E_URL").ok() else {
         println!(
             "SKIP: GITEA_E2E_URL 未设置（真实链路层缺席；scripts/test-gitea-e2e.sh 可拉起实例）"
@@ -988,9 +1023,16 @@ async fn gitea_real_chain_e2e() {
         &template.replace("http://127.0.0.1:3000/api/v1", &format!("{url}/api/v1")),
     );
 
+    // 读侧 invoke 凭据注入走 vault_runtime::open_unlocked（argon2 vault 需 env
+    // 解锁）；CI/ET 为 nextest 每测试独立进程天然隔离，本地 cargo test 并行用后即摘。
+    unsafe { std::env::set_var("NEMESISBOT_VAULT_PASSPHRASE", "test-passphrase") };
     let vault_path = nemesis_path::resolve_vault_path_in_workspace(ws);
-    let mut store =
-        VaultStore::create(&vault_path, VaultStore::default_mode(), None).expect("create vault");
+    let mut store = VaultStore::create(
+        &vault_path,
+        nemesis_security::vault::VaultMode::Argon2id,
+        Some("test-passphrase"),
+    )
+    .expect("create vault");
     store
         .set("connector/gitea/pat", &token, "connector", "e2e PAT")
         .expect("set pat");
@@ -1120,6 +1162,8 @@ async fn gitea_real_chain_e2e() {
     // 8) 凭据轮换立即生效：坏 token → 401 诚实失败；set 回好 token → 恢复
     //    （resolve_alias_at 每次现开 vault，无缓存——rotation 不重启即生效）
     let mut v = VaultStore::open(&vault_path).expect("reopen vault");
+    // argon2 文件 open 即锁定态，set/save 需先 unlock（DPAPI 平台已解锁，幂等成功）
+    v.unlock("test-passphrase").expect("unlock vault");
     v.set(
         "connector/gitea/pat",
         "deadbeef-invalid-token",
@@ -1160,6 +1204,7 @@ async fn gitea_real_chain_e2e() {
             f.display()
         );
     }
+    unsafe { std::env::remove_var("NEMESISBOT_VAULT_PASSPHRASE") };
 }
 
 // ===========================================================================
