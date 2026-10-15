@@ -638,6 +638,67 @@ fn resolve_max_output_ceiling_defaulting() {
     assert_eq!(MAX_OUTPUT_CEILING_DEFAULT, 262_144);
 }
 
+/// E5（2026-10-15 收尾保障）：`agents.defaults.pre_pause_probe` 解析——
+/// 缺席 = 默认开 + 默认墙钟（用户拍板默认开）；只有显式 `enabled: false`
+/// 关闭；timeout 0 / 负数 / 非数字 / 段缺席全部回落默认。
+#[test]
+fn resolve_pre_pause_probe_defaulting() {
+    let dflt = PrePauseProbeSettings {
+        enabled: true,
+        timeout_secs: PRE_PAUSE_PROBE_DEFAULT_TIMEOUT_SECS,
+    };
+
+    // 全缺席（最常见形态）= 默认开。
+    let empty: serde_json::Value = serde_json::json!({});
+    assert_eq!(resolve_pre_pause_probe(&empty), dflt);
+
+    // 空对象也 = 默认开（enabled 缺席不是关）。
+    let bare: serde_json::Value = serde_json::json!({
+        "agents": {"defaults": {"pre_pause_probe": {}}}
+    });
+    assert_eq!(resolve_pre_pause_probe(&bare), dflt);
+
+    // 显式关闭。
+    let off: serde_json::Value = serde_json::json!({
+        "agents": {"defaults": {"pre_pause_probe": {"enabled": false}}}
+    });
+    assert_eq!(
+        resolve_pre_pause_probe(&off),
+        PrePauseProbeSettings {
+            enabled: false,
+            timeout_secs: PRE_PAUSE_PROBE_DEFAULT_TIMEOUT_SECS
+        }
+    );
+
+    // timeout 覆盖生效。
+    let custom: serde_json::Value = serde_json::json!({
+        "agents": {"defaults": {"pre_pause_probe": {"enabled": true, "timeout_secs": 600}}}
+    });
+    assert_eq!(
+        resolve_pre_pause_probe(&custom),
+        PrePauseProbeSettings {
+            enabled: true,
+            timeout_secs: 600
+        }
+    );
+
+    // timeout 0 / 负数 / 非数字 → 回落默认（探针必须中止有界，没有不限形态）。
+    for bad in [0, -5] {
+        let v: serde_json::Value = serde_json::json!({
+            "agents": {"defaults": {"pre_pause_probe": {"timeout_secs": bad}}}
+        });
+        assert_eq!(
+            resolve_pre_pause_probe(&v),
+            dflt,
+            "timeout={bad} 须回落默认"
+        );
+    }
+    let non_number: serde_json::Value = serde_json::json!({
+        "agents": {"defaults": {"pre_pause_probe": {"timeout_secs": "none"}}}
+    });
+    assert_eq!(resolve_pre_pause_probe(&non_number), dflt);
+}
+
 /// N6（2026-10-13）：模型角色声明——canonical 值集 + 对话谓词。
 /// 守卫语义：三个 default 槽写入点 + factory 装配点消费 is_conversation_role。
 #[test]
