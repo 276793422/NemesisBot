@@ -247,8 +247,11 @@ impl AgentLoop {
             .read()
             .get(&tool_call.name)
             .and_then(|t| t.operation_override(&tool_call.arguments));
+        // security 关形态无任何消费点（全在 cfg(security) 块内），下划线
+        // 防_unused_variable——nemesis-web 单独构建（workspace 依赖
+        // default-features = false，agent 不带 security）时该臂会编译。
         #[cfg(not(feature = "security"))]
-        let op_override: Option<OperationOverride> = None;
+        let _op_override: Option<OperationOverride> = None;
 
         // F1 (devtool-upgrade 阶段 4): Plan 模式分发闸——供给侧
         // （build_tool_defs 白名单过滤）之外的第二道闸，与 F8 同一防御模型：

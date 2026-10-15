@@ -1209,6 +1209,12 @@ pub fn build_agent_loop(
             invoke_tool.clone(),
         );
         invoke_tool.set_loop(Arc::downgrade(&agent_loop));
+        // E1（收官批）：远程执行面——集群 RPC 通道在场时注入 remote_call_fn
+        // （与 cluster_rpc 工具同源闭包；cluster 关闭 = None = target_node
+        // 诚实报错）。凭据不跨节点：payload 无凭据，对端用自己的 vault。
+        if let Some(ref call_fn) = shared.cluster_rpc_call_fn {
+            invoke_tool.set_remote_call_fn(call_fn.clone());
+        }
         info!("[AgentFactory] connector tools registered (find + invoke, P0)");
     }
     // I1 (devtool-upgrade 阶段 3)：workspace fs watcher——外部编辑下一轮

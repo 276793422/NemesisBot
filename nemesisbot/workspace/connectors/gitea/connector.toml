@@ -1,0 +1,75 @@
+# Gitea connector —— 行动代理第一个真实域（自托管 Git 服务，零外部账号）。
+#
+# 书写规范见 docs/INFO/2026-10-14_connector三方开发指南.md。
+# 凭据：PAT 存 vault 别名 connector/gitea/pat（`nemesisbot vault set connector/gitea/pat`）。
+# base 指向你的 Gitea 实例 API 根（含 /api/v1 前缀——连接器按 base + path 原样拼接）。
+#
+# 刻意不声明：repo 删除 / force push / 任何不可逆 op——manifest 不声明即不可
+# 调用（不存在即安全）。issue_close 的 state 参数 enum 钉死 "closed"（此 op
+# 只关不开；重开请直接用平台界面或另声明 op）。
+
+[connector]
+id = "gitea"
+name = "Gitea"
+version = "0.1.0"
+kind = "rest"
+description = "自托管 Gitea 仓库的 issue/PR 只读与受限写动作"
+
+[connector.http]
+base = "http://127.0.0.1:3000/api/v1"
+[connector.http.headers]
+Content-Type = "application/json"
+
+[connector.credentials]
+pat = { required = true, into = "header:Authorization", prefix = "token " }
+
+[[op]]
+id = "issues_list"
+intent = ["列出 issue", "仓库有哪些问题", "看看 issue"]
+risk = "low"
+class = "network"
+http = { method = "GET", path = "/repos/{owner}/{repo}/issues" }
+args_schema = { type = "object", required = ["owner", "repo"], properties = { owner = { type = "string" }, repo = { type = "string" }, state = { type = "string", enum = ["open", "closed", "all"], description = "缺省 open" }, limit = { type = "integer", description = "分页大小" } } }
+
+[[op]]
+id = "issue_get"
+intent = ["查看 issue", "issue 详情"]
+risk = "low"
+class = "network"
+http = { method = "GET", path = "/repos/{owner}/{repo}/issues/{index}" }
+args_schema = { type = "object", required = ["owner", "repo", "index"], properties = { owner = { type = "string" }, repo = { type = "string" }, index = { type = "integer" } } }
+
+[[op]]
+id = "issue_comment"
+intent = ["评论 issue", "在 issue 上留言"]
+risk = "medium"
+class = "write"
+receipt = "id"
+http = { method = "POST", path = "/repos/{owner}/{repo}/issues/{index}/comments" }
+args_schema = { type = "object", required = ["owner", "repo", "index", "body"], properties = { owner = { type = "string" }, repo = { type = "string" }, index = { type = "integer" }, body = { type = "string", description = "评论正文（Markdown）" } } }
+
+[[op]]
+id = "issue_close"
+intent = ["关闭 issue", "关掉这个问题"]
+risk = "high"
+class = "write"
+confirm = "required"
+receipt = "number"
+http = { method = "PATCH", path = "/repos/{owner}/{repo}/issues/{index}" }
+args_schema = { type = "object", required = ["owner", "repo", "index", "state"], properties = { owner = { type = "string" }, repo = { type = "string" }, index = { type = "integer" }, state = { type = "string", enum = ["closed"] } } }
+
+[[op]]
+id = "pr_list"
+intent = ["列出 PR", "有哪些合并请求"]
+risk = "low"
+class = "network"
+http = { method = "GET", path = "/repos/{owner}/{repo}/pulls" }
+args_schema = { type = "object", required = ["owner", "repo"], properties = { owner = { type = "string" }, repo = { type = "string" }, state = { type = "string", enum = ["open", "closed", "all"], description = "缺省 open" }, limit = { type = "integer" } } }
+
+[[op]]
+id = "pr_get"
+intent = ["查看 PR", "PR 详情"]
+risk = "low"
+class = "network"
+http = { method = "GET", path = "/repos/{owner}/{repo}/pulls/{index}" }
+args_schema = { type = "object", required = ["owner", "repo", "index"], properties = { owner = { type = "string" }, repo = { type = "string" }, index = { type = "integer" } } }

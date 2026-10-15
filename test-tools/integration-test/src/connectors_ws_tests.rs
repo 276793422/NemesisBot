@@ -8,7 +8,9 @@
 //! - 损坏条目诚实投影（id=目录名、enabled=false、error 非空）；
 //! - 回执新→旧排序 + limit 截断 + connector 过滤；
 //! - 账本缺文件 = 默认纸面资金 1_000_000（不创建文件）；
-//! - 未知命令诚实报错。
+//! - 未知命令诚实报错；
+//! - E3 undo 全链（live loop）：域 C 反向 op 经真 loop 瀑布执行成功 +
+//!   撤销动作留痕新凭条 + read 类诚实说明 + 非 executed 拒撤。
 //!
 //! 运行位置：main.rs 排尾（vault 套件之后、cleanup 之前）——写工作区
 //! `connectors/`（demo fixture，套件结束删除）+ `data/receipts/` +
@@ -54,6 +56,38 @@ budget = "finance"
 [op.http]
 method = "POST"
 path = "/order"
+"#;
+
+/// undo 全链 fixture（undo-broker：place 声明 undo→void）。机制测试用
+/// `builtin.paper_positions` 当反向动作替身——v1 paper_cancel 恒 Err（即时
+/// 成交无挂单，demo 幕三契约），成功路径需要一个能真实执行成功的动作；
+/// class 仍声明 write 走域 C 闸，语义见套件内注释。
+const UNDO_TOML: &str = r#"
+[connector]
+id = "undo-broker"
+name = "Undo 机制 fixture"
+version = "1.0.0"
+kind = "rest"
+description = "IT undo 全链 fixture"
+
+[connector.http]
+base = "http://127.0.0.1:1"
+
+[[op]]
+id = "place"
+intent = ["纸面下单"]
+risk = "medium"
+class = "write"
+receipt = "order_id"
+undo = { op = "void", arg = "order_id" }
+action = "builtin.paper_order"
+
+[[op]]
+id = "void"
+intent = ["撤销留痕"]
+risk = "medium"
+class = "write"
+action = "builtin.paper_positions"
 "#;
 
 /// 手写一条回执 jsonl 行（绕开执行面，只验数据面读路径）。
@@ -393,6 +427,155 @@ pub async fn test_connectors_data_plane(ws: &TestWorkspace, _bin: &Path) -> Vec<
             results.push(pass(&format!("{suite}/unknown_command"), "未知命令报错"));
         }
         _ => results.push(fail(&format!("{suite}/unknown_command"), "未知命令未报错")),
+    }
+
+    // 9. E3 undo 全链（live loop）：域 C 反向 op 经真 gateway loop 的
+    //    handle_tool_call 完整瀑布执行成功 + 撤销动作自身落新凭条（留痕）。
+    //    反向动作用 paper_positions 替身（可真实执行成功；v1 paper_cancel
+    //    恒 Err 的诚实边界归 demo 幕三契约）。
+    let undo_dir = ws_dir.join("connectors").join("undo-broker");
+    let mut undo_ok = std::fs::create_dir_all(&undo_dir).is_ok()
+        && std::fs::write(undo_dir.join("connector.toml"), UNDO_TOML).is_ok();
+    let undo_receipt = json!({
+        "receipt_id": "RCPT-UNDO-1",
+        "ts": "2026-10-14T08:00:00Z",
+        "connector": "undo-broker",
+        "op": "place",
+        "risk": "medium",
+        "class": "write",
+        "outcome": "executed",
+        "args_digest": "abcdef0123456789",
+        "summary": "IT undo fixture 纸面下单",
+        "receipt_key": "order_id",
+        "receipt_value": "NB-ORD-1",
+        "undoable": true,
+    })
+    .to_string();
+    undo_ok = undo_ok
+        && std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&jsonl)
+            .and_then(|mut f| {
+                std::io::Write::write_all(&mut f, format!("{undo_receipt}\n").as_bytes())
+            })
+            .is_ok();
+    if !undo_ok {
+        results.push(fail(
+            &format!("{suite}/undo_setup"),
+            "写 undo fixture/凭条失败",
+        ));
+    } else {
+        // 9a. 域 C：反向 op 执行成功（凭条主键值回填 order_id，真 loop 瀑布）。
+        let (dat, err) = api
+            .call(
+                "connectors",
+                "undo",
+                Some(json!({ "receipt_id": "RCPT-UNDO-1" })),
+            )
+            .await;
+        match &dat {
+            Some(d) if err.is_none() => {
+                let rt = d["result_text"].as_str().unwrap_or_default();
+                let ok = d["undone"] == true
+                    && d["via"] == "reverse_op"
+                    && d["undo_op"] == "void"
+                    && rt.contains("850000");
+                if ok {
+                    results.push(pass(
+                        &format!("{suite}/undo_reverse_op"),
+                        "域 C 撤销：反向 op 经真 loop 执行成功（undone=true/via=reverse_op）",
+                    ));
+                } else {
+                    results.push(fail(
+                        &format!("{suite}/undo_reverse_op"),
+                        format!("投影不符: {d}"),
+                    ));
+                }
+            }
+            _ => results.push(fail(
+                &format!("{suite}/undo_reverse_op"),
+                format!("{err:?}"),
+            )),
+        }
+        // 9b. 撤销动作自身留痕：void 凭条落账（executed）。
+        let (dat, err) = api
+            .call(
+                "connectors",
+                "receipts.list",
+                Some(json!({ "limit": 50, "connector": "undo-broker" })),
+            )
+            .await;
+        match &dat {
+            Some(d) if err.is_none() => {
+                let arr = d["receipts"].as_array().cloned().unwrap_or_default();
+                let voided = arr.iter().any(|r| {
+                    r["op"] == "void"
+                        && r["outcome"] == "executed"
+                        && r["args_digest"]
+                            .as_str()
+                            .map(|s| !s.is_empty())
+                            .unwrap_or(false)
+                });
+                if voided {
+                    results.push(pass(
+                        &format!("{suite}/undo_receipt_trail"),
+                        "撤销动作留痕：反向 op 凭条落账（executed + args_digest）",
+                    ));
+                } else {
+                    results.push(fail(
+                        &format!("{suite}/undo_receipt_trail"),
+                        format!("void 凭条未落账: {arr:?}"),
+                    ));
+                }
+            }
+            _ => results.push(fail(
+                &format!("{suite}/undo_receipt_trail"),
+                format!("{err:?}"),
+            )),
+        }
+    }
+
+    // 10. read 类凭条撤销 = 诚实说明（undone=false，不算错）。
+    let (dat, err) = api
+        .call(
+            "connectors",
+            "undo",
+            Some(json!({ "receipt_id": "RCPT-1000-1" })),
+        )
+        .await;
+    match &dat {
+        Some(d) if err.is_none() && d["undone"] == false && d["via"] == "none" => {
+            results.push(pass(
+                &format!("{suite}/undo_read_class"),
+                "read 类凭条诚实说明（undone=false/via=none）",
+            ));
+        }
+        _ => results.push(fail(
+            &format!("{suite}/undo_read_class"),
+            format!("意外: {dat:?} {err:?}"),
+        )),
+    }
+
+    // 11. 非 executed 凭条拒撤（budget_blocked 未真实生效）。
+    let (_, err) = api
+        .call(
+            "connectors",
+            "undo",
+            Some(json!({ "receipt_id": "RCPT-3000-2" })),
+        )
+        .await;
+    match err {
+        Some(e) if e.contains("未真实生效") => {
+            results.push(pass(
+                &format!("{suite}/undo_non_executed"),
+                "非 executed 凭条拒撤（诚实报错）",
+            ));
+        }
+        other => results.push(fail(
+            &format!("{suite}/undo_non_executed"),
+            format!("意外: {other:?}"),
+        )),
     }
 
     // ── 清理：恢复工作区原状（fixture/回执/账本全是本套件写入）。

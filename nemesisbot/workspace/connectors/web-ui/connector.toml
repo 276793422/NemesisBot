@@ -1,0 +1,66 @@
+# web-ui connector —— 执行第二档：浏览器兜底（经 playwright-mcp，零本地依赖）。
+#
+# 定位：没有 API 的站点走浏览器动作。op 不带 http 绑定，全部 tool 绑定到
+# playwright-mcp 的同名工具——前置是 config.mcp.json 注册了 name = "playwright"
+# 的 server（npx @playwright/mcp@latest；无头/登录态隔离等接线细节见
+# docs/INFO/2026-10-14_connector三方开发指南.md 附录）。
+#
+# **默认停用（enabled = false）**：浏览器兜底是用户显式开启的能力——先完成
+# playwright-mcp 注册，再把 enabled 改回 true。工具名前缀 mcp_playwright_
+# 对应 config.mcp.json 的 server name，改了名字要同步改下面各 op 的 tool 绑定。
+#
+# 填字段现状（2026-10 核实 playwright-mcp 工具面）：单字段填入 = browser_type；
+# 多字段表单 = browser_fill_form。本模板绑 browser_type 作代表，需要批量表单
+# 时照抄形态自加（建议保持 confirm = "required"）。
+#
+# 凭条说明：MCP adapter 把工具结果扁平化成纯文本（content parts join），不是
+# JSON——receipt 主键解析拿不到值，凭条结果栏走结果首行 summary。所以各 op
+# 刻意不声明 receipt 字段。
+#
+# 刻意不声明（manifest 不声明即不可调用，不存在即安全）：
+#   browser_evaluate / browser_run_code_unsafe（页面内任意 JS / 任意 Playwright
+#   代码——等价于把执行权交出去）、browser_file_upload（本机文件上行）、
+#   browser_pdf_save / snapshot|screenshot 的 filename 落盘形态（文件写入
+#   不受本 connector 工作区围栏约束）。
+
+[connector]
+id = "web-ui"
+name = "Web UI"
+version = "0.1.0"
+kind = "local"
+enabled = false
+description = "浏览器兜底动作（经 playwright-mcp）：读低危直通，写强授权卡"
+
+[[op]]
+id = "browser_navigate"
+intent = ["打开网页", "访问页面", "导航到"]
+risk = "low"
+class = "read"
+tool = "mcp_playwright_browser_navigate"
+args_schema = { type = "object", required = ["url"], properties = { url = { type = "string", description = "目标 URL" } } }
+
+[[op]]
+id = "browser_snapshot"
+intent = ["看页面内容", "页面快照", "读一下页面"]
+risk = "low"
+class = "read"
+tool = "mcp_playwright_browser_snapshot"
+args_schema = { type = "object", properties = { target = { type = "string", description = "只取某元素的子树（快照 ref 或选择器）" }, depth = { type = "number", description = "限制快照树深度" } } }
+
+[[op]]
+id = "browser_click"
+intent = ["点击", "点按钮", "点链接"]
+risk = "high"
+class = "write"
+confirm = "required"
+tool = "mcp_playwright_browser_click"
+args_schema = { type = "object", required = ["target"], properties = { element = { type = "string", description = "人类可读的元素描述" }, target = { type = "string", description = "快照里的元素 ref 或唯一选择器" }, button = { type = "string", enum = ["left", "right", "middle"] } } }
+
+[[op]]
+id = "browser_type"
+intent = ["填写", "输入文本", "填表单字段"]
+risk = "high"
+class = "write"
+confirm = "required"
+tool = "mcp_playwright_browser_type"
+args_schema = { type = "object", required = ["target", "text"], properties = { element = { type = "string", description = "人类可读的元素描述" }, target = { type = "string", description = "快照里的元素 ref 或唯一选择器" }, text = { type = "string", description = "要输入的文本" }, submit = { type = "boolean", description = "输完按回车提交" } } }

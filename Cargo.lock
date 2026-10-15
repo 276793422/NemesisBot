@@ -4277,7 +4277,9 @@ name = "nemesis-connectors"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "ed25519-dalek",
  "hex",
+ "nemesis-security",
  "parking_lot",
  "serde",
  "serde_json",
