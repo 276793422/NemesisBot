@@ -3777,3 +3777,22 @@ fn test_skills_config_ws4_keys_defaults_and_roundtrip() {
     assert_eq!(out["allow_unsigned"], false);
     assert_eq!(out["min_age_policy"], "block");
 }
+
+#[test]
+fn test_connectors_remote_invoke_enabled_default_true_and_roundtrip() {
+    // 缺省：老 config.json 无 `connectors.remote_invoke_enabled` 键 = true
+    //（E1 集群分发默认开；关=worker 侧 handler 诚实拒绝）。
+    let cfg: crate::ConnectorsConfig = serde_json::from_value(serde_json::json!({})).unwrap();
+    assert!(cfg.enabled);
+    assert!(cfg.remote_invoke_enabled);
+
+    // 显式 false round-trip（typed save 不得静默回弹 true）。
+    let cfg2: crate::ConnectorsConfig =
+        serde_json::from_value(serde_json::json!({ "remote_invoke_enabled": false })).unwrap();
+    assert!(!cfg2.remote_invoke_enabled);
+    let out = serde_json::to_value(&cfg2).unwrap();
+    assert_eq!(out["remote_invoke_enabled"], false);
+
+    // Default 手工实现与 serde 缺省同源。
+    assert!(crate::ConnectorsConfig::default().remote_invoke_enabled);
+}

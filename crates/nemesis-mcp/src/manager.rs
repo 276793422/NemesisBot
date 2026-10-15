@@ -198,8 +198,13 @@ impl McpManager {
                         server.name
                     ));
                 }
-                Box::new(crate::http_transport::HttpTransport::new(
+                // 收官批 B 段：消费 McpServerConfig.headers（"KEY: VALUE"
+                // 行，值可含 vault:/env: 引用——头凭据化，vault 真值只进
+                // HTTP 请求）。探测路径 discover_server_metadata_http 无
+                // headers 语境，保持 new(url)。
+                Box::new(crate::http_transport::HttpTransport::with_headers(
                     server.url.clone(),
+                    server.headers.clone(),
                 ))
             }
             _ => Box::new(crate::stdio_transport::StdioTransport::from_config(server)),
