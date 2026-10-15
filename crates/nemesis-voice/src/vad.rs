@@ -9,8 +9,13 @@ pub struct VadEngine {
     vad: *const sherpa::SherpaOnnxVoiceActivityDetector,
 }
 
+// SAFETY（审计表 C-5）：vad 为 owning 裸指针，随实例移动安全；不实现
+// Sync——上游对 VoiceActivityDetector 无线程安全承诺（沉默 → 按非线程
+// 安全对待，内部检测缓冲有状态），而全部消费路径（voice_detect 的
+// SileroVoiceDetector → Box<dyn VoiceDetector> fn-local、run_stt_pipeline
+// 单线程循环）均为单线程作用域，无并发 &self 共享面。串行需求由调用方
+// 作用域类型化保证；若未来需跨线程共享，必须外层加锁而非恢复 Sync。
 unsafe impl Send for VadEngine {}
-unsafe impl Sync for VadEngine {}
 
 impl VadEngine {
     pub fn new(

@@ -16,8 +16,12 @@
 //!   都要能清残留现场）。
 //! - 版本身份 = **git commit**（nightly-build tag 恒定，semver 无意义）：
 //!   当前进程短 commit（build.rs 注入）vs Release body 表行 / 包内 version.txt
-//!   的全量 sha，`starts_with` 匹配。当前 commit 未知（开发构建）→ 降级闸
-//!   要求显式 allow_downgrade。
+//!   的全量 sha，`starts_with` 匹配。降级判定：版本单调性以 GitHub 发布列表
+//!   created_at 降序为构建序列依据（CI 的 version.txt 无 Version 行、tag 恒定
+//!   ——数字版本比较在该发布模型下不可行，列表顺序是天然单调序列）——目标
+//!   排在当前之后 = 旧包拒绝；包内无 commit 身份 / 当前身份未知同样默认拒绝；
+//!   全部可用 `allow_downgrade` 整体豁免（v4 验签与审批卡永不豁免）。任一
+//!   身份不在列表窗口内 = Unknown，放行 + 审计（诚实边界）。
 //! - staging rename dance 与 Chrome/VS Code 同款：Windows 允许 rename 运行中
 //!   的 PE、不允许覆盖——exe→.old、.new→exe 两步，窗口毫秒级；journal 先于
 //!   rename 落盘，启动期 [`recover_on_boot`] 按相位收口。
@@ -89,30 +93,44 @@ pub fn load_journal(workspace: &Path) -> Option<UpdateJournal> {
 
 pub fn save_journal(workspace: &Path, journal: &UpdateJournal) -> Result<(), String> {
     let path = journal_path(workspace);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("创建 state 目录失败：{e}"))?;
-    }
     let bytes =
         serde_json::to_vec_pretty(journal).map_err(|e| format!("journal 序列化失败：{e}"))?;
-    // 原子写（临时文件 + rename，防断电半行 JSON——boot 收口读半行 = None =
-    // 当无事发生，staging 现场无人认领；原子写消掉这个缝）。
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, &bytes).map_err(|e| format!("journal 写入失败：{e}"))?;
-    std::fs::rename(&tmp, &path).map_err(|e| format!("journal 落盘失败：{e}"))
+    // 原子写走项目权威 helper（唯一临时名 + flush + sync_all + rename + unix
+    // 父目录同步）。此前自制 tmp+rename 没有 sync：注释宣称的「防断电半行
+    // JSON」防不住断电丢页，且固定 tmp 名在并发实例下互踩。boot 收口读半行
+    // = None = 当无事发生，staging 现场无人认领；原子 + 同步写消掉这个缝。
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), &bytes, 0o644)
+        .map_err(|e| format!("journal 落盘失败：{e}"))
 }
 
-pub fn clear_journal(workspace: &Path) {
-    let _ = std::fs::remove_file(journal_path(workspace));
+/// journal 清除。true = 已不在（含本就不存在）；false = 删除失败有残留，
+/// 调用方记日志/审计——boot 收口幂等，下次启动可再收，不阻塞主流程。
+pub fn clear_journal(workspace: &Path) -> bool {
+    match std::fs::remove_file(journal_path(workspace)) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        Err(_) => false,
+    }
+}
+
+/// 带日志的清除（boot 收口等无审计插件的路径用）。
+fn clear_journal_logged(workspace: &Path) {
+    if !clear_journal(workspace) {
+        tracing::warn!("[SelfUpdate] journal 清理失败（残留仍在；boot 收口幂等，下次启动可再收）");
+    }
 }
 
 /// 频率保险丝记账（上次 apply 尝试时刻）。独立于 journal——journal 成功路径
-/// 会清，fuse 不可忘。
-pub fn stamp_fuse(workspace: &Path) {
+/// 会清，fuse 不可忘。**fail-closed**：记账失败返回 Err，调用方（apply 审批
+/// 通过后）必须拒绝继续——state 目录写失败意味着磁盘/权限异常，此刻继续
+/// staging 的风险远大于中断更新。
+pub fn stamp_fuse(workspace: &Path) -> Result<(), String> {
     let path = fuse_path(workspace);
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::write(&path, now_ms().to_string());
+    nemesis_utils::write_file_atomic(
+        &path.to_string_lossy(),
+        now_ms().to_string().as_bytes(),
+        0o644,
+    )
 }
 
 pub fn last_attempt_ms(workspace: &Path) -> Option<u64> {
@@ -170,6 +188,92 @@ pub fn extract_commit_from_release_body(body: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// 降级判定（nightly 模型的单调基准 = 发布列表顺序）
+// ---------------------------------------------------------------------------
+
+/// 降级判定结论。nightly-build tag 恒定、semver 无意义（模块头注释），版本
+/// 单调性以 GitHub 发布列表 created_at 降序为构建序列依据。
+#[cfg(feature = "selfupdate")]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))] // 生产消费方=Windows-only apply；测试跨平台
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DowngradeVerdict {
+    /// 目标比当前新（列表序：目标在当前之前）。
+    Upgrade,
+    /// 目标即当前（同版闸已拦，此处防御性表达）。
+    Same,
+    /// 目标比当前旧（列表序：目标在当前之后）。
+    Downgrade,
+    /// 无法证明（任一身份不在列表/列表不可得）→ 放行 + 审计，不算升级。
+    Unknown,
+}
+
+/// 纯函数：按 body commit 在列表（新→旧）中的位次判序。身份匹配双向 sha
+/// 前缀（当前进程是短 sha、列表是全量，兼容两者互为前缀）；列表中的空条目
+/// （body 无 sha）不参与匹配。任一身份缺位 = Unknown。
+#[cfg(feature = "selfupdate")]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn downgrade_verdict(
+    commits_newest_first: &[&str],
+    current: &str,
+    target: &str,
+) -> DowngradeVerdict {
+    if current.is_empty() || target.is_empty() {
+        return DowngradeVerdict::Unknown;
+    }
+    let find = |id: &str| {
+        commits_newest_first
+            .iter()
+            .position(|c| !c.is_empty() && (*c == id || c.starts_with(id) || id.starts_with(c)))
+    };
+    match (find(current), find(target)) {
+        (Some(ci), Some(ti)) => match ci.cmp(&ti) {
+            // 列表新→旧：目标位次更靠前（索引更小）= 比当前新。
+            std::cmp::Ordering::Greater => DowngradeVerdict::Upgrade,
+            std::cmp::Ordering::Equal => DowngradeVerdict::Same,
+            std::cmp::Ordering::Less => DowngradeVerdict::Downgrade,
+        },
+        _ => DowngradeVerdict::Unknown,
+    }
+}
+
+/// 结论 → 拒绝文案（None = 放行）。Downgrade 且未显式豁免才拦；allow_downgrade
+/// 是整体豁免——但 v4 验签与审批卡在任何路径都不豁免。
+#[cfg(feature = "selfupdate")]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn downgrade_gate_error(v: DowngradeVerdict, allow_downgrade: bool) -> Option<String> {
+    match v {
+        DowngradeVerdict::Downgrade if !allow_downgrade => Some(
+            "检测到降级：目标更新包在发布序列中比当前运行的版本更旧（发布列表顺序\
+             判定）。确认要回退请带 --allow-downgrade 重试。"
+                .to_string(),
+        ),
+        _ => None,
+    }
+}
+
+/// 降级判定的序列供给：优先复用 1d 早闸已拉的发布列表；当时拉取失败则补拉
+/// 一次（仍失败 = 空表 → verdict Unknown 诚实边界）。条目 body 无 sha 的
+/// 位置留空串（downgrade_verdict 的匹配会跳过）。
+#[cfg(all(feature = "selfupdate", target_os = "windows"))]
+async fn release_commits_for_verdict(
+    resolved_list: &mut Option<Vec<crate::handlers::release_fetch::ReleaseMeta>>,
+) -> Vec<String> {
+    if resolved_list.is_none() {
+        *resolved_list = crate::handlers::release_fetch::fetch_release_list()
+            .await
+            .ok();
+    }
+    resolved_list
+        .as_deref()
+        .map(|list| {
+            list.iter()
+                .map(|r| r.body_commit().unwrap_or_default())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
 // check（只读，全平台可用；不下载主包）
 // ---------------------------------------------------------------------------
 
@@ -191,7 +295,10 @@ pub struct UpdateCheck {
 }
 
 pub async fn check(current_version: &str, current_commit: &str) -> Result<UpdateCheck, String> {
-    let meta = crate::handlers::release_fetch::fetch_latest_release_meta().await?;
+    // 同源解析：与 apply 的下载对象一致（首个含主包资产的 release），消除旧
+    // 实现「check 读列表第一条 / apply 下载首个含资产的」双路径分裂——最新
+    // 条目尚未产出资产时，展示与安装可能跨版本错位。
+    let meta = crate::handlers::release_fetch::fetch_release_for_asset(TARGET_ASSET).await?;
     let asset_present = meta.has_asset(TARGET_ASSET);
     let latest_commit = meta.body_commit().unwrap_or_default();
     let current_known = !current_commit.is_empty();
@@ -317,7 +424,7 @@ fn recover_on_boot_in(workspace: &Path, current_commit: &str, exe: &Path) -> Boo
     match journal.phase.as_str() {
         "restarting" => {
             if commit_matches(current_commit, &journal.target_commit) {
-                clear_journal(workspace);
+                clear_journal_logged(workspace);
                 tracing::info!(
                     "[SelfUpdate] 启动自检通过：当前 commit 命中目标 {}，更新收口",
                     &journal.target_commit[..journal.target_commit.len().min(12)]
@@ -328,7 +435,7 @@ fn recover_on_boot_in(workspace: &Path, current_commit: &str, exe: &Path) -> Boo
                 }
             } else {
                 let detail = rollback_old_exe_to(&journal.old_path, exe);
-                clear_journal(workspace);
+                clear_journal_logged(workspace);
                 tracing::warn!(
                     "[SelfUpdate] 启动自检失败：当前 commit 未命中目标，已回滚（{detail}）"
                 );
@@ -340,7 +447,7 @@ fn recover_on_boot_in(workspace: &Path, current_commit: &str, exe: &Path) -> Boo
         }
         "staging" => {
             let detail = rollback_old_exe_to(&journal.old_path, exe);
-            clear_journal(workspace);
+            clear_journal_logged(workspace);
             tracing::warn!("[SelfUpdate] staging 中断现场收口（{detail}）");
             BootRecovery {
                 action: "rolled_back".to_string(),
@@ -348,7 +455,7 @@ fn recover_on_boot_in(workspace: &Path, current_commit: &str, exe: &Path) -> Boo
             }
         }
         other => {
-            clear_journal(workspace);
+            clear_journal_logged(workspace);
             tracing::warn!("[SelfUpdate] 未知 journal phase {other:?}，已清除");
             BootRecovery {
                 action: "rolled_back".to_string(),
@@ -447,12 +554,21 @@ impl SelfUpdateManager {
                 ));
             }
         }
-        // ── 步骤 1d（早闸）：Release body commit 已命中 → 免下 300MB 主包 ──
-        //（body 缺 sha / 格式变 = 跳过早闸，下载后按包内 version.txt 权威判定）
-        if !current_commit.is_empty() {
-            // 元信息拉取失败不早停——下载路径会给真实错误（含 CI 未产出包）。
-            if let Ok(meta) = crate::handlers::release_fetch::fetch_latest_release_meta().await
-                && let Some(latest) = meta.body_commit()
+        // ── 步骤 1d（早闸）：发布列表同源解析——含主包资产的 release 的 body
+        //    commit 已命中 → 免下 300MB 主包。列表留在此作用域供 1e 顺序降级闸
+        //    复用（一次拉取两用；body 缺 sha/格式变 = 跳过早闸，下载后按包内
+        //    version.txt 权威判定；列表拉取失败不早停——下载路径会给真实错误，
+        //    降级判定退化为 Unknown + 审计）。
+        let mut resolved_list = crate::handlers::release_fetch::fetch_release_list()
+            .await
+            .ok();
+        if !current_commit.is_empty()
+            && let Some(list) = resolved_list.as_deref()
+        {
+            let early =
+                crate::handlers::release_fetch::resolve_release_for_asset(list, TARGET_ASSET)
+                    .and_then(|meta| meta.body_commit());
+            if let Some(latest) = early
                 && commit_matches(current_commit, &latest)
             {
                 self.audit_event("selfupdate", "denied", "already at target commit");
@@ -490,6 +606,39 @@ impl SelfUpdateManager {
                     .to_string(),
             );
         }
+        if target_commit.is_empty() && !allow_downgrade {
+            self.audit_event("selfupdate", "denied", "target commit unknown");
+            return Err(
+                "更新包内无 commit 身份（version.txt 缺失或非 CI 构建）：无法证明这次\
+                 不是降级。确认要切换请带 --allow-downgrade 重试。"
+                    .to_string(),
+            );
+        }
+        // 顺序降级闸：nightly 模型 tag 恒定、semver 无意义（模块头注释），版本
+        // 单调性以 GitHub 发布列表 created_at 降序为构建序列依据——目标在列表
+        // 中位于当前之后 = 旧包，拒绝；任一身份不在列表（窗口外/格式变/列表
+        // 不可得）= Unknown，按诚实边界放行 + 审计留痕。allow_downgrade 整体
+        // 豁免顺序判定；v4 验签与审批卡对任何路径都不豁免。
+        if !current_commit.is_empty() && !target_commit.is_empty() {
+            let commits = release_commits_for_verdict(&mut resolved_list).await;
+            let refs: Vec<&str> = commits.iter().map(String::as_str).collect();
+            let verdict = downgrade_verdict(&refs, current_commit, &target_commit);
+            if let Some(err) = downgrade_gate_error(verdict, allow_downgrade) {
+                self.audit_event(
+                    "selfupdate",
+                    "denied",
+                    &format!("downgrade gate: {verdict:?}"),
+                );
+                return Err(err);
+            }
+            if matches!(verdict, DowngradeVerdict::Unknown) {
+                self.audit_event(
+                    "selfupdate",
+                    "allowed",
+                    "downgrade verdict unknown（列表不可得/身份不在窗口内），按边界放行",
+                );
+            }
+        }
         // ── 步骤 2：CRITICAL 审批卡（版本切换永不免审——respond 侧 always-allow
         //    对 CRITICAL 恒忽略，见 web_approval rule_permitted_for）──
         let req_id = format!("selfupdate-{}", now_ms());
@@ -523,7 +672,12 @@ impl SelfUpdateManager {
         }
         // 审批即承诺：此后所有失败计入 24h 保险丝（防坏包重试风暴）。
         self.audit_event("approval", "allowed", &target_desc);
-        stamp_fuse(&self.workspace);
+        if let Err(e) = stamp_fuse(&self.workspace) {
+            self.audit_event("selfupdate", "denied", &format!("fuse stamp: {e}"));
+            return Err(format!(
+                "频率保险丝记账失败（{e}）：state 目录不可写，拒绝继续自更新（fail-closed）。"
+            ));
+        }
 
         // ── 步骤 4：v4 验签（Valid-only；锚 = 编译期固化，不依赖包内证书）──
         let anchors = nemesis_verify::builtin_root_anchors();
@@ -554,8 +708,17 @@ impl SelfUpdateManager {
         let _ = std::fs::remove_file(&old_path);
         let new_path = exe_path.with_extension("new");
         let _ = std::fs::remove_file(&new_path);
-        std::fs::write(&new_path, &extracted.exe_bytes)
+        // .new 先落盘再 fsync（sync_all 之后才轮到 journal 与 rename dance）：
+        // 崩溃窗口不再留下「新二进制内容空/半截」的现场；磁盘满等写错误也在
+        // staging 之前暴露。
+        let mut new_file = std::fs::File::create(&new_path)
+            .map_err(|e| format!("新二进制创建失败（{}）：{e}", new_path.display()))?;
+        std::io::Write::write_all(&mut new_file, &extracted.exe_bytes)
             .map_err(|e| format!("新二进制落盘失败（{}）：{e}", new_path.display()))?;
+        new_file
+            .sync_all()
+            .map_err(|e| format!("新二进制落盘同步失败（{}）：{e}", new_path.display()))?;
+        drop(new_file);
         let journal = UpdateJournal {
             phase: "staging".to_string(),
             target_commit: target_commit.clone(),
@@ -570,7 +733,9 @@ impl SelfUpdateManager {
         if let Err(e) = std::fs::rename(&new_path, &exe_path) {
             // 回手：.old 归位，journal 清除——现场不留半套。
             let _ = std::fs::rename(&old_path, &exe_path);
-            clear_journal(&self.workspace);
+            if !clear_journal(&self.workspace) {
+                self.audit_event("staging", "denied", "journal 清理失败，残留仍在");
+            }
             let reason = format!(".new→exe rename 失败：{e}（已回滚 .old）");
             self.audit_event("staging", "denied", &reason);
             return Err(reason);

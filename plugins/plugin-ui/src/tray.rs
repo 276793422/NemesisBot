@@ -233,10 +233,6 @@ fn prepare_icon(config: &TrayConfigJson) -> Option<(String, String)> {
     }
 }
 
-/// 更新菜单项启用/禁用状态。
-#[no_mangle]
-pub extern "C" fn plugin_tray_set_menu_enabled(_id: *const c_char, _enabled: i32) {}
-
 /// 销毁托盘指示器。
 #[no_mangle]
 pub extern "C" fn plugin_tray_destroy() {

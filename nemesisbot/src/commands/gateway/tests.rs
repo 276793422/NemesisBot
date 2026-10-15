@@ -1501,7 +1501,8 @@ fn test_forge_provider_bridge_construction() {
 }
 
 // -------------------------------------------------------------------------
-// ClusterForgeBridgeAdapter tests
+// ClusterForgeBridgeAdapter tests（P2-3 诚实语义：未实现 = 明确 Err，
+// is_cluster_enabled=false——不伪装成「启用但无数据」）
 // -------------------------------------------------------------------------
 
 #[cfg(all(feature = "cluster", feature = "forge"))]
@@ -1509,11 +1510,11 @@ fn test_forge_provider_bridge_construction() {
 async fn test_cluster_forge_bridge_adapter_share_reflection() {
     let bridge = ClusterForgeBridgeAdapter::new("node-1".to_string());
     let bridge_ref: &dyn nemesis_forge::bridge::ClusterForgeBridge = &bridge;
-    let count = bridge_ref
+    let err = bridge_ref
         .share_reflection(serde_json::json!({"test": true}))
         .await
-        .unwrap();
-    assert_eq!(count, 0);
+        .expect_err("unimplemented bridge must Err, not fake Ok(0)");
+    assert!(err.contains("not implemented"), "got: {err}");
 }
 
 #[cfg(all(feature = "cluster", feature = "forge"))]
@@ -1521,8 +1522,11 @@ async fn test_cluster_forge_bridge_adapter_share_reflection() {
 async fn test_cluster_forge_bridge_adapter_get_remote_reflections() {
     let bridge = ClusterForgeBridgeAdapter::new("node-1".to_string());
     let bridge_ref: &dyn nemesis_forge::bridge::ClusterForgeBridge = &bridge;
-    let reflections = bridge_ref.get_remote_reflections().await.unwrap();
-    assert!(reflections.is_empty());
+    let err = bridge_ref
+        .get_remote_reflections()
+        .await
+        .expect_err("unimplemented bridge must Err, not fake empty vec");
+    assert!(err.contains("not implemented"), "got: {err}");
 }
 
 #[cfg(all(feature = "cluster", feature = "forge"))]
@@ -1530,8 +1534,11 @@ async fn test_cluster_forge_bridge_adapter_get_remote_reflections() {
 async fn test_cluster_forge_bridge_adapter_get_online_peers() {
     let bridge = ClusterForgeBridgeAdapter::new("node-1".to_string());
     let bridge_ref: &dyn nemesis_forge::bridge::ClusterForgeBridge = &bridge;
-    let peers = bridge_ref.get_online_peers().await.unwrap();
-    assert!(peers.is_empty());
+    let err = bridge_ref
+        .get_online_peers()
+        .await
+        .expect_err("unimplemented bridge must Err, not fake empty vec");
+    assert!(err.contains("not implemented"), "got: {err}");
 }
 
 #[cfg(all(feature = "cluster", feature = "forge"))]
@@ -1547,7 +1554,10 @@ fn test_cluster_forge_bridge_adapter_local_node_id() {
 fn test_cluster_forge_bridge_adapter_is_enabled() {
     let bridge = ClusterForgeBridgeAdapter::new("node-1".to_string());
     let bridge_ref: &dyn nemesis_forge::bridge::ClusterForgeBridge = &bridge;
-    assert!(bridge_ref.is_cluster_enabled());
+    assert!(
+        !bridge_ref.is_cluster_enabled(),
+        "reflection bridge not implemented → must report disabled (NoOpBridge semantics)"
+    );
 }
 
 // -------------------------------------------------------------------------
@@ -2143,16 +2153,9 @@ fn test_provider_adapter_model_fallback_nonempty() {
 
 // -------------------------------------------------------------------------
 // DirectLlmChannel construction tests
-// TODO: DirectLlmChannel type not yet implemented — re-enable when available.
+// （P2-3：引用不存在类型 DirectLlmChannel 的 #[ignore] 占位测试已删除——
+// 空占位只会稀释测试统计，不代表任何被验证的行为。）
 // -------------------------------------------------------------------------
-
-#[test]
-// Ignored (unimplemented): placeholder — DirectLlmChannel type does not exist yet.
-// Re-enable and write real assertions once DirectLlmChannel is implemented.
-#[ignore]
-fn test_direct_llm_channel_new() {
-    // Placeholder: will be implemented when DirectLlmChannel is introduced.
-}
 
 #[test]
 fn test_direct_llm_channel_url_format() {

@@ -37,10 +37,10 @@ async fn inbound_send_error_increments_dropped() {
         // drop 前 receiver_count = 1
     } // _rx 在此 drop → receiver_count 归 0
     bus.publish_inbound(inbound());
-    assert_eq!(bus.dropped_inbound(), 1);
+    assert_eq!(bus.no_receiver_dropped_inbound(), 1);
 }
 
-/// outbound：同型路径（send Err → warn + dropped_outbound 递增）。
+/// outbound：同型路径（send Err → warn + no_receiver_dropped_outbound 递增）。
 #[tokio::test]
 async fn outbound_send_error_increments_dropped() {
     let bus = MessageBus::new();
@@ -48,7 +48,7 @@ async fn outbound_send_error_increments_dropped() {
         let _rx = bus.subscribe_outbound();
     }
     bus.publish_outbound(outbound());
-    assert_eq!(bus.dropped_outbound(), 1);
+    assert_eq!(bus.no_receiver_dropped_outbound(), 1);
 }
 
 /// 无接收者直接发布 → no-receiver 分支（不进 channel）。
@@ -57,8 +57,8 @@ fn publish_without_receivers_counts_dropped() {
     let bus = MessageBus::new();
     bus.publish_inbound(inbound());
     bus.publish_outbound(outbound());
-    assert_eq!(bus.dropped_inbound(), 1);
-    assert_eq!(bus.dropped_outbound(), 1);
+    assert_eq!(bus.no_receiver_dropped_inbound(), 1);
+    assert_eq!(bus.no_receiver_dropped_outbound(), 1);
 }
 
 /// 关闭后发布被拒（closed 分支）。
@@ -72,8 +72,8 @@ fn closed_bus_rejects_publish() {
     assert!(bus.is_closed());
     bus.publish_inbound(inbound());
     bus.publish_outbound(outbound());
-    assert_eq!(bus.dropped_inbound(), 0);
-    assert_eq!(bus.dropped_outbound(), 0);
+    assert_eq!(bus.no_receiver_dropped_inbound(), 0);
+    assert_eq!(bus.no_receiver_dropped_outbound(), 0);
 }
 
 /// 订阅者计数与 fan-out warn-once 旗标（第二次订阅触发 warned）。
