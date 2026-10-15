@@ -254,20 +254,27 @@ impl Forge {
             learning_cycle = Some(cycle);
         }
 
-        // Step 2: Reflect（统计 + LLM 语义分析）。语义反思带：全量 artifacts
+        // Step 2: Reflect（统计 + use_llm 时 LLM 语义分析）。语义反思带：全量 artifacts
         // （旧调用面只传统计不传产物——LLM 看不到已部署技能会重复提名）、
         // 本轮 learning_cycle、统一杂务预算（thinking 系防烧穿）。桥接护栏
         // 空输出 → Err → warn+skip，报告无 insights 节，诚实降级不炸循环。
-        let report = reflector
-            .reflect_with_llm(
-                &experiences,
-                &self.registry().list(None, None),
-                learning_cycle.as_ref(),
-                "today",
-                "all",
-                Some(crate::reflector_llm::AUX_FORGE_MAX_TOKENS),
-            )
-            .await;
+        // use_llm=false = 纯统计反思（2026-10-15 第十一轮修复：该键文档契约
+        // 「是否用 LLM 做语义分析」，此前 gateway 无条件走 LLM、键只在 CLI
+        // 被消费——用户设 false 省成本的意图被静默无视）。
+        let report = if self.config.reflection.use_llm {
+            reflector
+                .reflect_with_llm(
+                    &experiences,
+                    &self.registry().list(None, None),
+                    learning_cycle.as_ref(),
+                    "today",
+                    "all",
+                    Some(crate::reflector_llm::AUX_FORGE_MAX_TOKENS),
+                )
+                .await
+        } else {
+            reflector.reflect(&experiences, learning_cycle.as_ref(), "today", "all")
+        };
 
         // Step 3: Write report
         if let Ok(path) = reflector.write_report(&report) {
@@ -291,27 +298,39 @@ impl Forge {
         // 保持关（自动部署闭环风险面不动）；本步只产出 **draft** 状态草稿
         // （落 forge skills 目录 + 注册表），不自动启用——启用/部署是人工
         // 评审后的显式动作。Arc 锁内取即放（guard 不跨 await，F-M7 同款）。
+        // use_llm=false 时蒸馏一并关（2026-10-15 第十一轮）：蒸馏是 LLM 工作，
+        // 与 CLI 同语义（CLI use_llm=false 不挂 provider → 蒸馏诚实报
+        // no LLM provider）——语义分析关而蒸馏开会自相矛盾；caller=None
+        // 从静默跳过改诚实 WARN（配置陷阱此前不可见）。
         let caller = self.reflector.as_ref().and_then(|r| r.llm_caller().clone());
-        if self.config.artifacts.auto_skill
-            && let Some(caller) = caller
-        {
-            match crate::reflector_llm::distill_skill_draft(
-                caller.as_ref(),
-                &experiences,
-                &self.registry().list(None, None),
-                Some(crate::reflector_llm::AUX_FORGE_MAX_TOKENS),
-            )
-            .await
-            {
-                Ok(Some(distilled)) => {
-                    self.store_distilled_draft(&distilled);
+        if self.config.artifacts.auto_skill {
+            if !self.config.reflection.use_llm {
+                tracing::warn!(
+                    "[Forge] auto_skill enabled but reflection.use_llm=false — distillation requires LLM, skipping"
+                );
+            } else if let Some(caller) = caller {
+                match crate::reflector_llm::distill_skill_draft(
+                    caller.as_ref(),
+                    &experiences,
+                    &self.registry().list(None, None),
+                    Some(crate::reflector_llm::AUX_FORGE_MAX_TOKENS),
+                )
+                .await
+                {
+                    Ok(Some(distilled)) => {
+                        self.store_distilled_draft(&distilled);
+                    }
+                    Ok(None) => {
+                        tracing::info!("[Forge] auto_skill: no distillable pattern this cycle");
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "[Forge] auto_skill distillation failed, skipping");
+                    }
                 }
-                Ok(None) => {
-                    tracing::info!("[Forge] auto_skill: no distillable pattern this cycle");
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "[Forge] auto_skill distillation failed, skipping");
-                }
+            } else {
+                tracing::warn!(
+                    "[Forge] auto_skill enabled but reflector has no LLM provider — skipping distillation"
+                );
             }
         }
     }

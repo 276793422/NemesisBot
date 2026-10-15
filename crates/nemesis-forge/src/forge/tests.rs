@@ -1823,3 +1823,95 @@ async fn test_reflection_cycle_auto_skill_off_writes_no_draft() {
         "auto_skill=false must not produce drafts"
     );
 }
+
+// ---------------------------------------------------------------------------
+// use_llm 接线咬合（2026-10-15 第十一轮）：该键此前只在 CLI 消费，gateway
+// 的 run_reflection_cycle 无条件走 reflect_with_llm / 蒸馏——设 false 省
+// 成本的意图被静默无视。修复后 false = 循环内零 LLM 调用（统计反思照跑、
+// 报告照落盘但无 LLM Insights 节；auto_skill 蒸馏一并关）。
+// ---------------------------------------------------------------------------
+
+/// 计数 mock：每次 LLM 调用 +1，返回 has_skill=false（Step 5 安全形态）。
+struct CountingMockLLM(Arc<std::sync::atomic::AtomicUsize>);
+
+#[async_trait::async_trait]
+impl crate::reflector_llm::LLMCaller for CountingMockLLM {
+    async fn chat(
+        &self,
+        _system_prompt: &str,
+        _user_prompt: &str,
+        _max_tokens: Option<i64>,
+    ) -> Result<String, String> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(r#"{"has_skill": false, "name": "", "skill_md": ""}"#.to_string())
+    }
+}
+
+#[tokio::test]
+async fn test_reflection_cycle_use_llm_false_makes_no_llm_calls() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = ForgeConfig::default();
+    config.reflection.use_llm = false;
+    let mut forge = Forge::new(config, dir.path().to_path_buf());
+    let reflections_dir = dir.path().join("forge").join("reflections");
+    std::fs::create_dir_all(&reflections_dir).unwrap();
+    forge.init_reflector(Reflector::with_reflections_dir(reflections_dir.clone()));
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // provider 在场（旧实现会无条件调它）——计数必须保持 0
+    forge.set_provider(Arc::new(CountingMockLLM(Arc::clone(&calls))));
+    let forge = Arc::new(forge);
+
+    write_test_experiences(forge.forge_dir(), 3).await;
+    forge.run_reflection_cycle().await;
+
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "use_llm=false must make zero LLM calls in the cycle (provider present)"
+    );
+
+    // 统计反思照常产出报告，但无 LLM Insights 节（统计分支 llm_insights=None）
+    let mut reports: Vec<std::path::PathBuf> = std::fs::read_dir(&reflections_dir)
+        .expect("statistical reflection must still write a report")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map(|ext| ext == "md").unwrap_or(false))
+        .map(|e| e.path())
+        .collect();
+    reports.sort();
+    assert!(!reports.is_empty(), "expected at least one report file");
+    let content = std::fs::read_to_string(&reports[0]).unwrap();
+    assert!(
+        !content.contains("## LLM Insights"),
+        "use_llm=false report must not carry LLM Insights; got:\n{content}"
+    );
+}
+
+#[tokio::test]
+async fn test_auto_skill_skipped_when_use_llm_false() {
+    // auto_skill=true 但 use_llm=false → Step 5 蒸馏关（LLM 工作随语义分析
+    // 一并停），即使 provider 在场——skills 目录都不该被创建。
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = ForgeConfig::default();
+    config.artifacts.auto_skill = true;
+    config.reflection.use_llm = false;
+    let mut forge = Forge::new(config, dir.path().to_path_buf());
+    let reflections_dir = dir.path().join("forge").join("reflections");
+    std::fs::create_dir_all(&reflections_dir).unwrap();
+    forge.init_reflector(Reflector::with_reflections_dir(reflections_dir));
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    forge.set_provider(Arc::new(CountingMockLLM(Arc::clone(&calls))));
+    let forge = Arc::new(forge);
+
+    write_test_experiences(forge.forge_dir(), 3).await;
+    forge.run_reflection_cycle().await;
+
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "distillation must not invoke the LLM when use_llm=false"
+    );
+    assert!(
+        !forge.forge_dir().join("skills").exists(),
+        "use_llm=false must skip Step 5 distillation entirely (no skills dir)"
+    );
+}
