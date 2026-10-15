@@ -533,6 +533,10 @@ pub fn build_agent_loop(
         // 入口形态变体（gap ⑤）：Interactive 恒空（gateway 字节不变）；
         // headless/ACP 由各自入口在 SharedResources 上显式设置。
         context_builder.set_entrance(shared.entrance);
+        // B 线画像 / E 线 tier 档位不再在此注入（2026-10-14 动态注入迁移）：
+        // 两段迁入 build_messages_inner 的 merged snapshot 每轮重渲染
+        // （mtime/live-tier 门控），sweep 学习、veto、tier 热切、pro 体系
+        // 全部即时生效——build 时冻结形态（classic-only + 重启才更新）已废。
         let skills_dir = workspace_dir.join("skills");
         if skills_dir.exists() {
             context_builder.load_skills(&skills_dir);
@@ -1086,6 +1090,22 @@ pub fn build_agent_loop(
         if let Some(ref forge) = shared.forge {
             let bridge = ForgeProviderBridge::new(provider_arc.clone(), model_name.clone());
             forge.set_provider(Arc::new(bridge));
+            // A 线行为回归执行器注入（同点级联到 pipeline 的回归闸）。
+            let test_runner: Arc<dyn nemesis_forge::skill_tests::SkillTestRunner> = Arc::new(
+                crate::forge_test_runner::BotSkillTestRunner::new(shared.home.clone()),
+            );
+            forge.set_skill_test_runner(test_runner.clone());
+            // Stage 2 judge 层杂务模型回落链（与 CLI/WSAPI 的 judge 口径
+            // 同源：judge_model → small_model → 主模型；chat 现场解析，
+            // 模型热切即时生效）。
+            forge.set_judge_caller(Arc::new(crate::forge_test_runner::ChainJudgeCaller::new(
+                shared.home.clone(),
+                crate::common::workspace_path(&shared.home),
+            )));
+            // web 槽（forge.test WSAPI 消费；PROJECTS_BRIDGE 同款槽模式）。
+            nemesis_web::handlers::forge::set_forge_test_runner(test_runner);
+            // B 线画像 sweep（OnceLock 一次守卫；enabled=false 时 sweep 内部 no-op）。
+            crate::profile_service::ensure_sweep_spawned(shared.home.clone());
             info!(
                 "[AgentFactory] Forge provider updated to model {}",
                 model_name
@@ -1169,6 +1189,44 @@ pub fn build_agent_loop(
             Arc::new(crate::selfupdate_tool::SelfupdateApplyTool),
         );
         info!("[AgentFactory] selfupdate tools registered (check + apply, L9)");
+    }
+    // 行动代理 P0（2026-10-14）：connector_find / connector_invoke 动态工具
+    // 对。总闸 config.connectors.enabled（缺省开）。注册期静态声明只给
+    // connector_find（纯读编排面 → Internal LOW）；connector_invoke **不
+    // 静态声明**——per-op 风险经 Tool::operation_override 每次调用投影
+    // （dispatch 嗅探写 metadata 三键，管线按 op_type 裁决），清单解析不出
+    // = 未知名 fail-closed CRITICAL 兜底。主 loop 独占（项目 loop 固定子集
+    // 不含插件工具的同一决策；集群 worker v1 不开行动面）。
+    #[cfg(feature = "security")]
+    if cfg.connectors.as_ref().map(|c| c.enabled).unwrap_or(true) {
+        nemesis_security::types::declare_tool_operation(
+            crate::connector_tools::FIND_TOOL_NAME,
+            nemesis_security::types::OperationType::Internal,
+        );
+        let connector_ws = shared.workspace_dir();
+        agent_loop.register_plugin_tool(
+            crate::connector_tools::FIND_TOOL_NAME.to_string(),
+            Arc::new(crate::connector_tools::ConnectorFindTool::new(
+                connector_ws.clone(),
+            )),
+        );
+        let invoke_tool = Arc::new(crate::connector_tools::ConnectorInvokeTool::new(
+            connector_ws,
+            config_path.clone(),
+            shared.security_plugin.clone(),
+        ));
+        agent_loop.register_plugin_tool(
+            crate::connector_tools::INVOKE_TOOL_NAME.to_string(),
+            invoke_tool.clone(),
+        );
+        invoke_tool.set_loop(Arc::downgrade(&agent_loop));
+        // E1（收官批）：远程执行面——集群 RPC 通道在场时注入 remote_call_fn
+        // （与 cluster_rpc 工具同源闭包；cluster 关闭 = None = target_node
+        // 诚实报错）。凭据不跨节点：payload 无凭据，对端用自己的 vault。
+        if let Some(ref call_fn) = shared.cluster_rpc_call_fn {
+            invoke_tool.set_remote_call_fn(call_fn.clone());
+        }
+        info!("[AgentFactory] connector tools registered (find + invoke, P0)");
     }
     // I1 (devtool-upgrade 阶段 3)：workspace fs watcher——外部编辑下一轮
     // 以 <external_changes> 注记浮出（指令链文件走 digest 失效锚点）。句柄

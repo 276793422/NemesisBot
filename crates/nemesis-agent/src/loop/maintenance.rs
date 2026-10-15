@@ -11,6 +11,9 @@ pub enum SessionMaintenance {
     Compact,
     /// 清空会话历史（chat_log 截断 + SessionStore 清除，key 保留可用）。
     Clear,
+    /// 行动代理 P0（2026-10-14）撤销一等动词：回退上一用户轮（对话截断 +
+    /// 文件还原到该轮开始前的 checkpoint 态，`rewind_last_turn`）。
+    Undo,
 }
 
 /// E6: parse a session-maintenance slash command (`/compact` / `/clear`).
@@ -21,6 +24,10 @@ pub(crate) fn parse_maintenance_command(content: &str) -> Option<(SessionMainten
     match name {
         "/compact" => Some((SessionMaintenance::Compact, "⏳ 正在压缩会话…".to_string())),
         "/clear" => Some((SessionMaintenance::Clear, "⏳ 正在清空会话…".to_string())),
+        // 撤销一等动词（感知层 §5.1）：与 /compact 同款首词法（首词命中即
+        // 接管，尾随参数忽略）——「撤销」「撤销 一下」都算，连写「撤销一下」
+        // 不算（落普通轮由 agent 自行理解）。
+        "撤销" | "/undo" => Some((SessionMaintenance::Undo, "⏳ 正在撤销上一轮…".to_string())),
         _ => None,
     }
 }
@@ -115,6 +122,35 @@ impl AgentLoop {
             SessionMaintenance::Clear => match self.clear_session(session_key).await {
                 Ok(receipt) => receipt,
                 Err(e) => format!("⚠ 清空未完成：{e}"),
+            },
+            SessionMaintenance::Undo => match self.rewind_last_turn(session_key).await {
+                Ok(v) => {
+                    let removed = v["removed_count"].as_u64().unwrap_or(0);
+                    let mut s = format!("✓ 已撤销上一轮：移除 {removed} 条消息");
+                    match v["file_restore"].as_str() {
+                        Some("applied") => {
+                            let written = v["restored_files"]["written"]
+                                .as_array()
+                                .map_or(0, |a| a.len());
+                            let deleted = v["restored_files"]["deleted"]
+                                .as_array()
+                                .map_or(0, |a| a.len());
+                            s.push_str(&format!(
+                                "；文件已还原（恢复 {written} 个、删除 {deleted} 个）"
+                            ));
+                        }
+                        _ => {
+                            if let Some(note) =
+                                v["file_restore_note"].as_str().filter(|n| !n.is_empty())
+                            {
+                                s.push_str(&format!("；{note}"));
+                            }
+                        }
+                    }
+                    s.push('。');
+                    s
+                }
+                Err(e) => format!("⚠ 撤销未完成：{e}"),
             },
         }
     }

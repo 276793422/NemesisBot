@@ -1,0 +1,11 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 9a5ab98..c123761 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -38,3 +38,6 @@ unexpected_cfgs = { level = "warn", check-cfg = [
+     'cfg(httparse_simd_target_feature_sse42)',
+     'cfg(httparse_simd_neon_intrinsics)',
+ ] }
++
++# fixture accommodation: detach from any parent workspace discovery
++[workspace]

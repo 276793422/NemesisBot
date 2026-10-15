@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { testConnection, connect, disconnect } from '../composables/useWebSocket'
 import { connectEvents, disconnectEvents } from '../composables/useSSE'
+import { useChatStore } from './chat'
 
 export const useAuthStore = defineStore('auth', () => {
   const token = ref('')
@@ -38,6 +39,9 @@ export const useAuthStore = defineStore('auth', () => {
   function logout() {
     disconnect()
     disconnectEvents()
+    // W3（2026-10-14 审计）：登出清掉全部会话的 busy/在飞 turn 登记——
+    // 旧会话的轮次状态不该带进下个登录周期。
+    useChatStore().dropAllSessionState()
     localStorage.removeItem('nemesisbot_auth_token')
     authenticated.value = false
     token.value = ''

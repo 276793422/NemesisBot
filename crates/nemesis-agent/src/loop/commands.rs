@@ -430,7 +430,7 @@ impl AgentLoop {
 
         match parts[0] {
             "/help" => Some(
-                "Commands: /show [model|channel|agents], /list [tools|models], /model <alias>, /plan (计划模式: 停用文件修改), /build (切回构建模式), /compact (压缩会话上下文), /clear (清空会话历史), /help".to_string(),
+                "Commands: /show [model|channel|agents], /list [tools|models], /model <alias>, /plan (计划模式: 停用文件修改), /build (切回构建模式), /compact (压缩会话上下文), /clear (清空会话历史), /undo (撤销上一轮), /help".to_string(),
             ),
             "/model" => {
                 if parts.len() < 2 {

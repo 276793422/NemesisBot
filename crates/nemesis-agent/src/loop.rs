@@ -128,6 +128,11 @@ mod observer;
 pub use observer::*;
 #[allow(unused_imports)]
 pub(crate) use observer::*;
+// E5（2026-10-15 收尾保障）：预算暂停前收尾编译探针（触发闸/探针执行/
+// 诚实注记；计划 docs/PLAN/2026-10-15_编码基准固化与E5收尾保障计划.md 项②）。
+mod pre_pause_probe;
+#[allow(unused_imports)]
+pub(crate) use pre_pause_probe::*;
 mod provider_stream;
 #[allow(unused_imports)]
 pub use provider_stream::*;
@@ -644,6 +649,13 @@ pub struct AgentLoop {
     /// Last-seen mtime of config.json; `check_config_reload` compares against
     /// this each round to detect on-disk changes without re-reading every turn.
     config_mtime: parking_lot::RwLock<Option<std::time::SystemTime>>,
+    /// 用户画像注入段缓存（B 线动态注入，2026-10-14）：`(profile_mtime_ns,
+    /// 渲染段)`。build_messages 每轮按 `<workspace>/config/user_profile.json`
+    /// mtime 门控重读——sweep 学习 / veto / disable 即时生效，文件未变时
+    /// 走缓存（零磁盘 IO、字节稳定）。mtime 读取失败（文件不存在）缓存
+    /// `None`。config 侧 `user_profile.enabled` 开关每次门控未命中时现读
+    /// （config.json mtime 已有独立检测，开关热生效路径经它兜底）。
+    user_profile_cache: parking_lot::RwLock<(Option<u128>, String)>,
     /// P32（cache-warmer）：会话 → 最近一次成功 LLM 请求的字节级快照（warm
     /// 重放候选）。仅 `agents.cache_warmer.enabled=true` 时被写入（默认关 =
     /// 永空）；逻辑全在 cache_warmer.rs（计划 §冲突面登记：warmer 域改动
@@ -791,6 +803,7 @@ impl AgentLoop {
             #[cfg(feature = "workflow")]
             workflow_engine: parking_lot::RwLock::new(None),
             config_mtime: parking_lot::RwLock::new(None),
+            user_profile_cache: parking_lot::RwLock::new((None, String::new())),
             warm_candidates: parking_lot::Mutex::new(HashMap::new()),
             small_model: parking_lot::RwLock::new(None),
             spawn_slot: parking_lot::RwLock::new(None),
@@ -1000,6 +1013,9 @@ mod turn_wal_loop_tests;
 // S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;
+// E5（2026-10-15 收尾保障）：预算暂停前编译探针测试（纯函数 + loop 级咬合锁）。
+#[cfg(test)]
+mod pre_pause_probe_tests;
 // G4 (devtool-upgrade 阶段 3)：subagent 后台化 + 完成回灌测试。
 #[cfg(test)]
 mod g4_background_spawn_tests;

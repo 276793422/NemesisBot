@@ -1,0 +1,17 @@
+{
+  "task_id": "CODE-UITHEME",
+  "path": "C",
+  "group": "cross",
+  "mother": "{{MOTHERS}}/pathC",
+  "target_cache": "{{CACHE}}/targetC",
+  "node_modules_cache": "{{CACHE}}/node_modules",
+  "split": "dev",
+  "arm": "main",
+  "model": "openai/gpt-6-sol",
+  "user_request": "前端外观配置补充两项消息显示设置：appearance.chat.show_timestamps（布尔，默认 true，控制聊天消息是否显示时间戳）与 appearance.theme.follow_system（布尔，默认 false，控制主题是否跟随系统深浅色）。两项均持久化到 localStorage（键名以 nb_ 前缀：nb_show_timestamps / nb_follow_system）；show_timestamps=false 时聊天面板消息不渲染时间戳；follow_system=true 时主题跟随系统 prefers-color-scheme 变化。补上前端测试。",
+  "allowed_paths": [
+    "web/"
+  ],
+  "max_turns": 30,
+  "time_limit_minutes": 45
+}

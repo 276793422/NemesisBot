@@ -887,11 +887,23 @@ fn sanitize_value(value: &mut serde_json::Value) {
 // ---------------------------------------------------------------------------
 
 /// Verify auth token from query or header.
+///
+/// F6（2026-10-14）：比较换手写 XOR 折叠常数时间形态（不引 `subtle`
+/// 依赖；理论时序侧信道现实门槛高，纵深防御）。空期望=放行是文档化
+/// 约定（旧配置合法形态；新装已由 onboard 落引导令牌 + 回环绑定，
+/// 空 token 家族的消灭归 F1 方案 3，不在此处改语义）。
 pub fn verify_token(token: &str, expected: &str) -> bool {
     if expected.is_empty() {
         return true;
     }
-    token == expected
+    if token.len() != expected.len() {
+        return false;
+    }
+    token
+        .bytes()
+        .zip(expected.bytes())
+        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+        == 0
 }
 
 /// Write a JSON response body from a serializable value.

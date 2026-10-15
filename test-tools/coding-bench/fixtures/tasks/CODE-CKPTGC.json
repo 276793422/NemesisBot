@@ -1,0 +1,17 @@
+{
+  "task_id": "CODE-CKPTGC",
+  "path": "C",
+  "group": "small",
+  "mother": "{{MOTHERS}}/pathC",
+  "target_cache": "{{CACHE}}/targetC",
+  "node_modules_cache": "{{CACHE}}/node_modules",
+  "split": "dev",
+  "arm": "main",
+  "model": "openai/gpt-6-sol",
+  "user_request": "checkpoint 影子库（CheckpointStore，crates/nemesis-agent/src/checkpoint.rs）目前只增不减：每个 turn 的快照条目永久累积，长会话下影子库与元数据无限膨胀。请新增按保留条数 gc 的能力：在 CheckpointStore 上新增 pub fn prune_keep_last(&self, keep: usize) -> usize —— 按 turn 新旧保留最新 keep 条 checkpoint，清理更老的条目，返回被清理的条数；重复调用幂等（无可清返回 0）；Git 后端下清理后影子库必须保持可打开、最新 tree 仍可读；JSON 后端做同样语义（删最老条目）。补上回归测试（构造 25 个 turn、prune_keep_last(20) 应清 5 条且最老保留为 turn 6、再清返回 0）。",
+  "allowed_paths": [
+    "crates/nemesis-agent/"
+  ],
+  "max_turns": 30,
+  "time_limit_minutes": 45
+}

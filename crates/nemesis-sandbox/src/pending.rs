@@ -74,7 +74,17 @@ fn walk(
     }
     let rd = match std::fs::read_dir(dir) {
         Ok(r) => r,
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return Ok(()),
+        // BUG-8（2026-10-14）根修：此前静默吞掉（return Ok），枚举截断
+        // 伪装成「没有待提交」。WARN 留痕 + 跳过该目录继续——Windows 上
+        // AV/索引器瞬时句柄是常态不是异常，fail-loud 会把 `sandbox pending`
+        // 变脆；诚实可观测优于静默截断。
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            tracing::warn!(
+                "sandbox pending walk: read_dir {} denied, subtree skipped",
+                dir.display()
+            );
+            return Ok(());
+        }
         Err(e) => return Err(e).with_context(|| format!("read_dir {}", dir.display())),
     };
     for entry in rd {

@@ -1,0 +1,37 @@
+# 网页监控 connector（行动代理 P0 demo，域 A；E4 收官批升级为成品剧本）
+#
+# 两个 op：
+# - watch（P0 原语，保留）：只抓页面，变化检测/快照/通知全由 agent 推理
+#   驱动（cron 触发 → fetch → 自行比对 workspace 里的旧快照）。
+# - check（E4 成品剧本动作，推荐）：抓取 + 快照 diff + 变化时 LLM 语义
+#   摘要一步完成。快照落在 workspace/data/monitor_snapshots/<name>.txt，
+#   首跑建基线；语义摘要走 agents.small_model 杂务通道（未配置回主模型），
+#   args.semantic=false 可关掉摘要只做机械比对（P0 旧行为）。
+#   诚实边界：变化检测是启发式（比对在截断文本上进行），纯布局/时间戳
+#   噪声可能误报；摘要只压缩信息，不保证覆盖每一处差异。
+#
+# check 内部经 web_fetch 工具绑定取页面：完整 dispatch 瀑布照跑（SSRF
+# 闸照常生效，回环/内网地址默认被拦）。
+
+[connector]
+id = "monitor"
+name = "网页监控"
+version = "0.2.0"
+kind = "local"
+description = "盯网页变化的 connector：watch 原语（agent 自行比对）+ check 成品剧本（快照 diff + 语义摘要，配合 cron 工具定时运行）。"
+
+[[op]]
+id = "watch"
+intent = ["看看网页", "抓一下页面", "监控的页面现在什么内容"]
+risk = "low"
+class = "network"
+tool = "web_fetch"
+args_schema = { type = "object", required = ["url"], properties = { url = { type = "string", description = "要抓取的完整 URL" } } }
+
+[[op]]
+id = "check"
+intent = ["检查网页有没有更新", "页面变了什么", "盯一下这个页面"]
+risk = "low"
+class = "network"
+action = "builtin.monitor_check"
+args_schema = { type = "object", required = ["url", "name"], properties = { url = { type = "string", description = "要监控的完整 URL" }, name = { type = "string", description = "监控项名称（快照标识，同一 URL 固定同名）" }, semantic = { type = "boolean", description = "变化时是否生成 LLM 语义摘要（缺省 true；false = 只做机械比对）" } } }

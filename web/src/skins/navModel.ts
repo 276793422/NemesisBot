@@ -72,6 +72,8 @@ export const NAV_GROUPS: NavGroupModel[] = [
       { id: 'plugins', label: '插件', route: '/plugins', icon: 'M12 22v-5M9 8V2M15 8V2M6 8h12v4a6 6 0 0 1-12 0V8z' },
       { id: 'subagents', label: '子Agent', route: '/subagents', icon: 'M12 8V4M8 4h8M5 8h14a1 1 0 0 1 1 1v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V9a1 1 0 0 1 1-1zM9 13h.01M15 13h.01' },
       { id: 'channels', label: '通道', route: '/channels', icon: 'M22 12h-4l-3 9L9 3l-3 9H2' },
+      // 行动连接器（2026-10-14 AI 原生行动代理）：注册表/回执/纸面账本只读面。
+      { id: 'connectors', label: 'Connectors', route: '/connectors', icon: 'M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71' },
       { id: 'coding', label: '代码开发', route: '/coding', icon: 'M16 18l6-6-6-6M8 6l-6 6 6 6' },
       { id: 'workflows', label: '工作流', route: '/workflows', icon: 'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7zM10 6.5h4M10 17.5h4M6.5 10v4M17.5 10v4' },
     ],
@@ -80,6 +82,8 @@ export const NAV_GROUPS: NavGroupModel[] = [
     title: '自进化',
     items: [
       { id: 'forge', label: 'Forge', route: '/forge', icon: 'M13 10V3L4 14h7v7l9-11h-7z' },
+      // B 线用户习惯画像（2026-10-14）：运行期 config 闸，非 cargo feature。
+      { id: 'profile', label: '用户习惯', route: '/profile', icon: 'M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z M9 5l3 3 3-3' },
     ],
   },
   {

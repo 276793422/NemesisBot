@@ -1,0 +1,7 @@
+{
+  "inject": [{ "src": "v7_context_ordering_acceptance.rs", "dst": "tests/v7_context_ordering_acceptance.rs" }],
+  "commands": [{ "argv": ["cargo", "test", "--features", "v7", "--test", "v7_context_ordering_acceptance"] }],
+  "fail_patterns": ["test result: FAILED"],
+  "runtime_paths": [],
+  "require_diff": true
+}

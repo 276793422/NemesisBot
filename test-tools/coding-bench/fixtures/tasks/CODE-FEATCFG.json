@@ -1,0 +1,17 @@
+{
+  "task_id": "CODE-FEATCFG",
+  "path": "C",
+  "group": "cross",
+  "mother": "{{MOTHERS}}/pathC",
+  "target_cache": "{{CACHE}}/targetC",
+  "node_modules_cache": "{{CACHE}}/node_modules",
+  "split": "dev",
+  "arm": "main",
+  "model": "openai/gpt-6-sol",
+  "user_request": "nemesis-channels 的三个 feature（web / webhook / rpc，见 crates/nemesis-channels/Cargo.toml 的 [features]）目前是装饰性的：lib.rs 里对应模块（web、webhook_inbound、rpc）没有任何 cfg 门控，feature 关了模块照样编译，IoT 裁剪场景下这三个模块无法被裁掉。请把这三个 feature 接上真实的 cfg 闸：lib.rs 的模块声明按 feature 条件编译（写法对齐库内已有 feature 闸的通道模块），feature 关闭时模块整体不进编译；所有跨模块引用点（如 manager、re-export）也要相应门控，保证以下四种组合全部编译通过：--no-default-features、--no-default-features --features web、--no-default-features --features webhook、--no-default-features --features rpc。",
+  "allowed_paths": [
+    "crates/nemesis-channels/"
+  ],
+  "max_turns": 30,
+  "time_limit_minutes": 45
+}

@@ -251,6 +251,28 @@ fn repeat_success_nudges_on_identical_writes() {
     }
 }
 
+/// E5（2026-10-15 收尾保障）：写类成功置位 `had_writes`（预算暂停探针
+/// 触发闸）；读类不置位；新 guard 初始 false。
+#[test]
+fn had_writes_tracks_write_like_successes_only() {
+    let mut g = TurnGuard::new();
+    assert!(!g.had_writes(), "新 guard 未写");
+
+    // 读类成功不置位。
+    assert!(
+        g.record_write_success("read_file", r#"{"path":"a.rs"}"#)
+            .is_none()
+    );
+    assert!(!g.had_writes(), "read_file 不算写");
+
+    // 写类成功置位（且重复写 nudge 不影响置位语义）。
+    assert!(
+        g.record_write_success("edit_file", r#"{"path":"a.rs"}"#)
+            .is_none()
+    );
+    assert!(g.had_writes(), "edit_file 成功即写");
+}
+
 /// ⑤ Whitespace-only differences in args do not bypass the guard.
 #[test]
 fn repeat_success_canonicalizes_whitespace() {

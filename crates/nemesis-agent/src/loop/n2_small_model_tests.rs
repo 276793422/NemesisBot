@@ -212,3 +212,51 @@ async fn force_compression_opts_false_explicitly_uses_main() {
     );
     assert!(small_log.models().is_empty());
 }
+
+// ---------- chore_completion（E4 杂务文本补全单一入口） ----------
+
+#[tokio::test]
+async fn chore_completion_routes_to_small_model_when_configured() {
+    let main_log = std::sync::Arc::new(CallLog::default());
+    let al = AgentLoop::new(
+        Box::new(RecordingProvider::new(main_log.clone(), "MAIN")),
+        test_config(),
+    );
+    let small_log = std::sync::Arc::new(CallLog::default());
+    let small = Arc::new(RecordingProvider::new(
+        small_log.clone(),
+        "SMALL CHORE OUTPUT",
+    ));
+    al.set_small_model(Some(small_slot(small, "cheap-mini")));
+
+    let out = al
+        .chore_completion("monitor-summary", "总结这批变化".to_string(), 256)
+        .await
+        .expect("chore_completion ok");
+    assert_eq!(out, "SMALL CHORE OUTPUT");
+    // 摘要落小 provider（模型名随槽位），主模型零调用。
+    assert_eq!(small_log.models(), vec!["cheap-mini".to_string()]);
+    assert!(
+        main_log.models().is_empty(),
+        "main provider must not be called when small_model configured"
+    );
+}
+
+#[tokio::test]
+async fn chore_completion_falls_back_to_main_without_small() {
+    let main_log = std::sync::Arc::new(CallLog::default());
+    let al = AgentLoop::new(
+        Box::new(RecordingProvider::new(
+            main_log.clone(),
+            "MAIN CHORE OUTPUT",
+        )),
+        test_config(),
+    );
+
+    let out = al
+        .chore_completion("monitor-summary", "总结这批变化".to_string(), 256)
+        .await
+        .expect("chore_completion ok");
+    assert_eq!(out, "MAIN CHORE OUTPUT");
+    assert_eq!(main_log.models(), vec!["main-model".to_string()]);
+}

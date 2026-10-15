@@ -45,6 +45,7 @@ members = [
     "crates/nemesis-ui",
     "crates/nemesis-lsp",
     "crates/nemesis-board",
+    "crates/nemesis-connectors",
     "nemesisbot",
     "test-tools/integration-test",
     "test-tools/agent-bench",
@@ -235,6 +236,7 @@ nemesis-eval-proxy = { path = "crates/nemesis-eval-proxy" }
 nemesis-voice = { path = "crates/nemesis-voice" }
 nemesis-ui = { path = "crates/nemesis-ui" }
 nemesis-board = { path = "crates/nemesis-board" }
+nemesis-connectors = { path = "crates/nemesis-connectors" }
 nemesis-plugins-wasm = { path = "crates/nemesis-plugins-wasm" }
 nemesis-plugin-sdk = { path = "crates/nemesis-plugin-sdk" }
 

@@ -924,12 +924,26 @@ fn set_channel_config(
     key: &str,
     value: &str,
 ) -> Result<()> {
-    set_channel_config_value(
-        cfg_path,
-        channel,
-        key,
-        serde_json::Value::String(value.into()),
-    )
+    // 布尔键强制转 JSON bool（BUG #41 数字同族第二例，IT profile/cli 实证）：
+    // CLI set 的一切入参都是字符串，`enabled` 写成 "true"（字符串）会让
+    // typed Config 的 `enabled: bool` 字段解析整份 config 直接炸
+    // （invalid type: string "true", expected a boolean）。
+    // 仅对**已知布尔键**做强制（四路评审 E-F4 根修：此前对一切键无差别
+    // 强制，token/auth_token 等字符串键的合法值恰好是 "true"/"1" 时会被
+    // 毒化成 JSON bool）。布尔键值集限定 true/false/yes/no/on/off/1/0
+    // （大小写不敏感）；布尔键命中但值不在值集 → 原样落串，typed 读侧
+    // loud 报错，不做静默猜值纠偏。
+    const BOOL_KEYS: &[&str] = &["enabled", "sync_to_web", "cors"];
+    let coerced = if BOOL_KEYS.contains(&key) {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "true" | "yes" | "on" | "1" => serde_json::Value::Bool(true),
+            "false" | "no" | "off" | "0" => serde_json::Value::Bool(false),
+            _ => serde_json::Value::String(value.into()),
+        }
+    } else {
+        serde_json::Value::String(value.into())
+    };
+    set_channel_config_value(cfg_path, channel, key, coerced)
 }
 
 /// Value-typed variant of [`set_channel_config`]: numeric keys (ports) must be

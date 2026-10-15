@@ -53,3 +53,48 @@ pub const SKILL_GENERATOR_SYSTEM_PROMPT: &str =
 /// 技能修复 system prompt（`learning_engine::refine_skill_draft`）。
 pub const SKILL_FIXER_SYSTEM_PROMPT: &str =
     "你是技能定义生成器。修复未通过校验的技能，返回完整修正后的 SKILL.md。";
+
+/// 程序性知识蒸馏 system prompt（`reflector_llm::distill_skill_draft`，
+/// artifacts.auto_skill 生成面）。
+pub const SKILL_DISTILLATION_SYSTEM_PROMPT: &str = "你是程序性知识蒸馏器。从工具使用经验序列中识别\
+        「同场景下工具序列多次成功收敛」的模式，产出可直接执行的步骤化 SKILL.md 草稿——\
+        不是泛化建议，是别人拿着就能一步步照做的操作配方。只回复合法 JSON。";
+
+/// 程序性知识蒸馏 user prompt 构造（`artifacts.auto_skill` 生成面）。
+///
+/// 输入是已脱敏的时序经验摘要（`build_experience_digest` 产出）与现有
+/// Forge 产物清单；输出 JSON 契约（解析端按 `has_skill`/`name`/`skill_md`
+/// 取数，任何一侧不得单方面改动）：
+/// `{"has_skill": bool, "name": "...", "skill_md": "...", "rationale": "..."}`
+pub fn skill_distillation_prompt(experiences_digest: &str, artifacts_list: &str) -> String {
+    let mut sb = String::new();
+    sb.push_str("以下是一段时间内按时间排序的工具使用经验（已脱敏）。\n\n");
+    sb.push_str("## 经验序列\n");
+    sb.push_str(experiences_digest);
+    sb.push_str("\n\n## 已有 Forge 产物（勿重复产出同题材）\n");
+    if artifacts_list.trim().is_empty() {
+        sb.push_str("（无）\n");
+    } else {
+        sb.push_str(artifacts_list);
+        sb.push('\n');
+    }
+    sb.push_str(
+        "\n请判断：是否存在某个「同场景工具序列多次成功收敛」的模式，值得沉淀为\
+         可复用的程序性技能（操作配方）？判断标准：\n\
+         - 该序列在同场景中反复出现且最终成功（失败-修正-成功的收敛也算，\
+         修正经验本身就是配方的一部分）；\n\
+         - 步骤可泛化到其他机器/工作区（不绑定特定路径或一次性环境）；\n\
+         - 是程序性知识（怎么做），不是统计观察（用了多少）。\n\n\
+         若存在，生成完整 SKILL.md 草稿。形式要求：\n\
+         - 以 --- 定界的 YAML frontmatter（字段：name、description、version:\"1.0\"）；\n\
+         - 步骤直接可执行（具体命令/具体判断），不写「建议」「可以考虑」；\n\
+         - 路径一律相对/占位符形态（如 <workspace>），不出现真实机器路径；\n\
+         - 不含任何真实凭据（引用凭据时写「通过 vault/环境变量注入」）；\n\
+         - 失败学费写成显式禁忌/注意事项，让读者不再付一遍。\n\n\
+         若不存在（或已有产物覆盖同题材），has_skill 填 false，name/skill_md 留空串。\n\n\
+         只回复一个 JSON 对象：\n\
+         {\"has_skill\": true, \"name\": \"kebab-case-技能名\", \"skill_md\": \"完整SKILL.md内容\", \
+         \"rationale\": \"一句话说明沉淀理由\"}",
+    );
+    sb
+}

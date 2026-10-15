@@ -32,7 +32,7 @@
           "tool_calls": null
         },
         {
-          "content": "<system-reminder>\n# Current Time / Environment snapshot\n<TIME_SNAPSHOT>\n# Environment\nplatform: windows\ndefault_shell: cmd\ntime_cmd: use `date /t` or `echo %date% %time%` or PowerShell `Get-Date`\n(本快照取代之前的时间/环境快照)\n\n# Runtime Policy\napproval: off（无交互审批，ask 规则按默认策略处理）\nguardian: off\nmodel_tier: big\nmode: build（正常全量工具）\n(当前审批/守护/模型档位/工作模式运行时策略快照；策略变更后下一次构建生效。)\n</system-reminder>",
+          "content": "<system-reminder>\n# Current Time / Environment snapshot\n<TIME_SNAPSHOT>\n# Environment\nplatform: windows\ndefault_shell: cmd\ntime_cmd: use `date /t` or `echo %date% %time%` or PowerShell `Get-Date`\n(本快照取代之前的时间/环境快照)\n\n# 执行风格（当前模型能力档：完整）\n\n复杂任务先给出简要方案再动手；充分利用可用工具自主多步执行；完成后附简短说明。\n\n\n# Runtime Policy\napproval: off（无交互审批，ask 规则按默认策略处理）\nguardian: off\nmodel_tier: big\nmode: build（正常全量工具）\n(当前审批/守护/模型档位/工作模式运行时策略快照；策略变更后下一次构建生效。)\n</system-reminder>",
           "role": "user",
           "tool_call_id": null,
           "tool_calls": null
@@ -78,7 +78,7 @@
           "tool_calls": null
         },
         {
-          "content": "<system-reminder>\n# Current Time / Environment snapshot\n<TIME_SNAPSHOT>\n# Environment\nplatform: windows\ndefault_shell: cmd\ntime_cmd: use `date /t` or `echo %date% %time%` or PowerShell `Get-Date`\n(本快照取代之前的时间/环境快照)\n\n# Runtime Policy\napproval: off（无交互审批，ask 规则按默认策略处理）\nguardian: off\nmodel_tier: big\nmode: build（正常全量工具）\n(当前审批/守护/模型档位/工作模式运行时策略快照；策略变更后下一次构建生效。)\n</system-reminder>",
+          "content": "<system-reminder>\n# Current Time / Environment snapshot\n<TIME_SNAPSHOT>\n# Environment\nplatform: windows\ndefault_shell: cmd\ntime_cmd: use `date /t` or `echo %date% %time%` or PowerShell `Get-Date`\n(本快照取代之前的时间/环境快照)\n\n# 执行风格（当前模型能力档：完整）\n\n复杂任务先给出简要方案再动手；充分利用可用工具自主多步执行；完成后附简短说明。\n\n\n# Runtime Policy\napproval: off（无交互审批，ask 规则按默认策略处理）\nguardian: off\nmodel_tier: big\nmode: build（正常全量工具）\n(当前审批/守护/模型档位/工作模式运行时策略快照；策略变更后下一次构建生效。)\n</system-reminder>",
           "role": "user",
           "tool_call_id": null,
           "tool_calls": null
@@ -207,7 +207,7 @@
             "tool_calls": null
           },
           {
-            "content": "<system-reminder>\n# Current Time / Environment snapshot\n<TIME_SNAPSHOT>\n# Environment\nplatform: windows\ndefault_shell: cmd\ntime_cmd: use `date /t` or `echo %date% %time%` or PowerShell `Get-Date`\n(本快照取代之前的时间/环境快照)\n\n# Runtime Policy\napproval: off（无交互审批，ask 规则按默认策略处理）\nguardian: off\nmodel_tier: big\nmode: build（正常全量工具）\n(当前审批/守护/模型档位/工作模式运行时策略快照；策略变更后下一次构建生效。)\n</system-reminder>",
+            "content": "<system-reminder>\n# Current Time / Environment snapshot\n<TIME_SNAPSHOT>\n# Environment\nplatform: windows\ndefault_shell: cmd\ntime_cmd: use `date /t` or `echo %date% %time%` or PowerShell `Get-Date`\n(本快照取代之前的时间/环境快照)\n\n# 执行风格（当前模型能力档：完整）\n\n复杂任务先给出简要方案再动手；充分利用可用工具自主多步执行；完成后附简短说明。\n\n\n# Runtime Policy\napproval: off（无交互审批，ask 规则按默认策略处理）\nguardian: off\nmodel_tier: big\nmode: build（正常全量工具）\n(当前审批/守护/模型档位/工作模式运行时策略快照；策略变更后下一次构建生效。)\n</system-reminder>",
             "role": "user",
             "tool_call_id": null,
             "tool_calls": null
@@ -293,7 +293,7 @@
             "tool_calls": null
           },
           {
-            "content": "<system-reminder>\n# Current Time / Environment snapshot\n<TIME_SNAPSHOT>\n# Environment\nplatform: windows\ndefault_shell: cmd\ntime_cmd: use `date /t` or `echo %date% %time%` or PowerShell `Get-Date`\n(本快照取代之前的时间/环境快照)\n\n# Runtime Policy\napproval: off（无交互审批，ask 规则按默认策略处理）\nguardian: off\nmodel_tier: big\nmode: build（正常全量工具）\n(当前审批/守护/模型档位/工作模式运行时策略快照；策略变更后下一次构建生效。)\n</system-reminder>",
+            "content": "<system-reminder>\n# Current Time / Environment snapshot\n<TIME_SNAPSHOT>\n# Environment\nplatform: windows\ndefault_shell: cmd\ntime_cmd: use `date /t` or `echo %date% %time%` or PowerShell `Get-Date`\n(本快照取代之前的时间/环境快照)\n\n# 执行风格（当前模型能力档：完整）\n\n复杂任务先给出简要方案再动手；充分利用可用工具自主多步执行；完成后附简短说明。\n\n\n# Runtime Policy\napproval: off（无交互审批，ask 规则按默认策略处理）\nguardian: off\nmodel_tier: big\nmode: build（正常全量工具）\n(当前审批/守护/模型档位/工作模式运行时策略快照；策略变更后下一次构建生效。)\n</system-reminder>",
             "role": "user",
             "tool_call_id": null,
             "tool_calls": null

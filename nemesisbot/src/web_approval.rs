@@ -37,8 +37,57 @@ struct PendingEntry {
     timeout_secs: u64,
     chat_id: String,
     session_key: String,
+    /// 授权卡自解释三字段（感知层 §5；`approval_card_fields` 派生）。
+    why: String,
+    impact: String,
+    reject_note: String,
     created_at: std::time::Instant,
     tx: mpsc::Sender<nemesis_security::auditor::ApprovalVerdict>,
+}
+
+/// 授权卡自解释三字段派生（单一真相源；channel_approval 的 IM 文本卡同源
+/// 消费）。why 优先用触发原因原文（preexec 扫描/connector 强审批声明的
+/// 理由已自解释），缺失回落风险级固定文案；impact 按 op_type 推导操作
+/// 会碰什么；reject_note 固定口径（拒绝=零效果，agent 继续对话）。
+pub fn approval_card_fields(
+    operation: &str,
+    target: &str,
+    risk_level: &str,
+    reason: &str,
+) -> (String, String, String) {
+    let why = if reason.trim().is_empty() {
+        match risk_level.to_ascii_uppercase().as_str() {
+            "CRITICAL" => "CRITICAL 级操作按安全策略必须人工确认".to_string(),
+            "HIGH" => "HIGH 级操作按安全策略需要人工确认".to_string(),
+            _ => "该操作按安全策略需要人工确认".to_string(),
+        }
+    } else {
+        reason.to_string()
+    };
+    let impact = match operation {
+        "process_exec" | "process_spawn" => format!("将在本机执行命令/进程：{target}"),
+        "file_write" | "file_edit" | "file_append" | "dir_create" => {
+            format!("将写入/修改文件系统：{target}")
+        }
+        "file_delete" | "dir_delete" => format!("将删除文件系统内容：{target}"),
+        "network_request" | "network_download" | "network_upload" => {
+            format!("将发起网络访问：{target}")
+        }
+        "registry_write" => format!("将修改注册表：{target}"),
+        "system_install" | "system_shutdown" | "system_reboot" | "system_config" => {
+            format!("将变更系统状态：{target}")
+        }
+        _ => {
+            if target.is_empty() {
+                "操作目标见操作类型".to_string()
+            } else {
+                format!("操作目标：{target}")
+            }
+        }
+    };
+    let reject_note =
+        "拒绝后本动作不执行、不产生任何效果；agent 会收到拒绝通知并继续对话。".to_string();
+    (why, impact, reject_note)
 }
 
 pub struct WebApprovalManager {
@@ -94,6 +143,9 @@ impl WebApprovalManager {
                 reason: entry.reason.clone(),
                 timeout_secs: entry.timeout_secs,
                 pattern: entry.pattern.clone(),
+                why: Some(entry.why.clone()),
+                impact: Some(entry.impact.clone()),
+                reject_note: Some(entry.reject_note.clone()),
             };
             let _ = tx.send(event);
         }
@@ -122,6 +174,9 @@ impl WebApprovalManager {
             "pattern": entry.pattern,
             "chat_id": entry.chat_id,
             "session_key": entry.session_key,
+            "why": entry.why,
+            "impact": entry.impact,
+            "reject_note": entry.reject_note,
             "age_secs": entry.created_at.elapsed().as_secs(),
         })
     }
@@ -142,6 +197,8 @@ impl nemesis_security::auditor::ApprovalManager for WebApprovalManager {
         timeout_secs: u64,
     ) -> Result<nemesis_security::auditor::ApprovalVerdict, String> {
         let (tx, rx) = mpsc::channel::<nemesis_security::auditor::ApprovalVerdict>();
+        let (why, impact, reject_note) =
+            approval_card_fields(operation, target, risk_level, reason);
         let entry = PendingEntry {
             operation: operation.to_string(),
             target: target.to_string(),
@@ -151,6 +208,9 @@ impl nemesis_security::auditor::ApprovalManager for WebApprovalManager {
             timeout_secs,
             chat_id: String::new(),
             session_key: String::new(),
+            why,
+            impact,
+            reject_note,
             created_at: std::time::Instant::now(),
             tx,
         };

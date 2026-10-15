@@ -296,6 +296,53 @@ async fn test_delete_alias() {
 }
 
 #[tokio::test]
+async fn test_forget_removes_vector_mirror() {
+    // BUG-2 回归锁（2026-10-14）：forget/delete 此前只删 keyword store，
+    // 向量镜像残留 → get 落 keyword→vector fallback 仍召回已「遗忘」条目。
+    // 桩 embed（恒值向量，相似度恒 1.0）免 ONNX 插件依赖，非忽略可跑。
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config::new(dir.path());
+    let mgr = MemoryManager::new(&config);
+
+    let embed: crate::vector::EmbeddingFunc = Box::new(|_: &str| Ok(vec![0.1_f32; 8]));
+    let vs_config = crate::vector::StoreConfig {
+        storage_path: dir
+            .path()
+            .join("vector")
+            .join("vs.jsonl")
+            .to_string_lossy()
+            .to_string(),
+        ..Default::default()
+    };
+    mgr.init_vector_store_with_embed(embed, vs_config).unwrap();
+    // 镜像写入总开关必须显式打开：init_*_with_embed 只装 store 不置 flag，
+    // 生产形态由 init_vector_store_from_config 置位；测试显式对齐生产形态，
+    // 否则镜像从未写入、断言空转（对快照无判别力）。
+    mgr.set_vector_enabled(true);
+
+    let id = mgr
+        .store_fact("Berlin is the capital of Germany", vec![])
+        .await
+        .unwrap();
+
+    // 前置（自验）：语义搜索（vector 优先）能召回 = 镜像确实在；
+    // 前置不成立时此处响亮失败，杜绝空转通过。
+    let pre = mgr.search("Berlin", None, 10).await.unwrap();
+    assert!(
+        pre.entries.iter().any(|e| e.entry.id == id),
+        "precondition: vector mirror must be searchable before forget"
+    );
+    assert!(mgr.get(&id).await.unwrap().is_some());
+
+    // forget：必须双删（keyword 主删 + 向量镜像清理）。
+    assert!(mgr.forget(&id).await.unwrap());
+
+    // 核心断言：keyword 已删后 get 走向量 fallback 不得再召回
+    // （修复前此处 Some = BUG-2 症状）。
+    assert!(mgr.get(&id).await.unwrap().is_none());
+}
+
+#[tokio::test]
 // Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
 // AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
 // test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't

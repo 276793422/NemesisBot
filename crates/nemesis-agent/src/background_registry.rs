@@ -472,7 +472,13 @@ pub(crate) fn build_platform_shell(command: &str) -> tokio::process::Command {
 /// 指令丢失（进程已退/PID 复用/kill 不存在）一律忽略错误——调用方随后
 /// 的 try_wait 收尸才是真相源。PID 复用窗口（进程退出→树杀之间）是平台
 /// 固有竞态，量级为毫秒且后果止于误杀同名树，不做缓解。
-async fn tree_kill(pid: u32) {
+///
+/// `pub(crate)`（2026-10-15）：exec/run_checks/run_script 的超时收尸共用
+/// 同一树杀（此前 start_kill 只杀 shell 本体，cargo/rustc 等整棵子树存活
+/// ——产品验证实验 #1 实证：run_checks 声明 600s 超时后 cargo 树继续跑了
+/// 25 分钟直到手工杀树）。Unix 侧前提是 spawn 时 `process_group(0)`
+/// （`make_piped_shell_command` / run_script 同款）。
+pub(crate) async fn tree_kill(pid: u32) {
     #[cfg(target_os = "windows")]
     let mut cmd = {
         let mut c = tokio::process::Command::new("taskkill");

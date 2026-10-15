@@ -90,6 +90,14 @@ mod common;
 /// 重派原 worker→离线三轮接触→换人；budget 保险丝打满回落 human 档）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod conflict_resolver;
+/// 行动代理 P0（2026-10-14）：connector_find / connector_invoke 动态工具
+/// 对——注册表发现 + 按 connector.toml 声明执行（op_override 投影风险、
+/// 统一回执、预算护栏、三绑定 http/tool/action）。模块本体零 security
+/// 依赖（SecurityPlugin 槽位 cfg 内联，security 关 = None = 无闸直连），
+/// 可独立编译——`connector demo` 在无 security 构建下照常四幕（幕 1 诚实
+/// 跳过语义）；**agent 工具供给**的 security 闸在 agent_factory 注册点
+/// （无 security 组合无 connector 工具供给面）。
+mod connector_tools;
 mod embedded;
 /// 跨进程 estop 跟随器：独立装配入口（mcp-serve / acp）镜像 gateway 的
 /// 急停态（/api/internal estop_status 轮询，gateway 唯一权威源）——堵住
@@ -105,6 +113,9 @@ mod exec_worker;
 /// U10 统一执行世界：executor 通道装配单一真相源 + workflow 引擎的
 /// ExecutionWorld 桥（world 部分 `sandbox` feature 门控）。
 mod exec_world;
+/// Forge A 线行为回归执行器（SkillTestRunner 实现 + C 线重放执行面，feature=forge）。
+#[cfg(feature = "forge")]
+mod forge_test_runner;
 /// 集群专业职能框架 M4：generate_image 工具（images-openai lane 唯一消费
 /// 点；prompt→b64→落盘 workspace/images/，路径 sanitization 钉死输出根）。
 mod image_gen_tool;
@@ -117,6 +128,11 @@ mod mcp_serve;
 /// （该 feature implies security——信任/审计/扫描机制依赖 nemesis-security）。
 #[cfg(feature = "plugins-wasm")]
 mod plugin_bridge;
+/// 用户习惯画像周期任务（自进化升级 B 线）。唯一消费者 = agent_factory
+/// 的 forge 闸装配块（反思通道依赖 nemesis-forge）——随 forge feature
+/// 同闸，无 forge 构建整模块缺席。
+#[cfg(feature = "forge")]
+mod profile_service;
 /// L6++（2026-09-08）：项目注册表（config/projects.json）+ 项目常驻
 /// AgentLoop 管理（对话/项目双分组；注册不拥有——删项目只解除分组）。
 /// M1 中间态：registry API 尚无二进制消费方（M2 manager / G4 WSAPI 接线），
@@ -371,6 +387,16 @@ enum Commands {
     Forge {
         #[command(subcommand)]
         action: commands::forge::ForgeAction,
+    },
+    /// Manage user habit profile (自进化 B 线)
+    Profile {
+        #[command(subcommand)]
+        action: commands::profile::ProfileAction,
+    },
+    /// Query the connector registry / receipts / paper ledger (read-only)
+    Connector {
+        #[command(subcommand)]
+        action: commands::connector::ConnectorAction,
     },
     /// Manage the managed-agent board (issues)
     #[cfg(feature = "board")]
@@ -870,6 +896,14 @@ async fn run_command(cli: Cli) -> Result<()> {
         Commands::Forge { action } => {
             common::ensure_default_logger();
             commands::forge::run(action, cli.local)?;
+        }
+        Commands::Profile { action } => {
+            common::ensure_default_logger();
+            commands::profile::run(action, cli.local)?;
+        }
+        Commands::Connector { action } => {
+            common::ensure_default_logger();
+            commands::connector::run(action, cli.local)?;
         }
         #[cfg(feature = "board")]
         Commands::Issue { action } => {

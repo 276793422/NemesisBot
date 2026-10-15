@@ -24,6 +24,7 @@ fn builtin_display_meta(name: &str) -> (&'static str, &'static str) {
         "switch" => ("切换目标", "[model|channel] to <name>"),
         "compact" => ("压缩会话上下文", ""),
         "clear" => ("清空会话历史", ""),
+        "undo" => ("撤销上一轮（对话截断+文件还原）", ""),
         "plan" => ("计划模式（停用文件修改）", ""),
         "build" => ("切回构建模式", ""),
         _ => ("内置命令", ""),

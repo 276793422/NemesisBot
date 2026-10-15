@@ -1,0 +1,31 @@
+# 本地文件整理 connector（行动代理 P0 demo，域 B）
+# 原语型：scan（列目录）+ move（移动文件）。分类与整理计划由 agent 推理
+# 生成（读文件名/内容自行归类），move 是唯一写动作且强制人工确认——
+# 「先看计划再动手」是文件整理场景的信任底线。
+#
+# move 走 exec 工具绑定：args 即 exec 工具入参（command 等），完整
+# dispatch 瀑布照跑（命令守卫/审批/审计链全部生效）。
+
+[connector]
+id = "local-fs"
+name = "本地文件整理"
+version = "0.1.0"
+kind = "local"
+description = "扫描目录 + 移动文件的 demo 原语：分类方案由 agent 生成，落盘前必过人工审批。"
+
+[[op]]
+id = "scan"
+intent = ["扫一下目录", "看看有什么文件", "列一下文件"]
+risk = "low"
+class = "read"
+tool = "exec"
+args_schema = { type = "object", required = ["command"], properties = { command = { type = "string", description = "列目录命令，如 ls <目录>" } } }
+
+[[op]]
+id = "move"
+intent = ["移动文件", "整理到子目录", "按计划归档"]
+risk = "high"
+class = "write"
+confirm = "required"
+tool = "exec"
+args_schema = { type = "object", required = ["command"], properties = { command = { type = "string", description = "移动命令，如 mv <源> <目标>" } } }

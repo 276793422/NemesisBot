@@ -1236,8 +1236,249 @@ async fn b_switch_model(ws_b: &TestWorkspace, gateway_bin: &Path, model: &str) -
 }
 
 // ---------------------------------------------------------------------------
+// T-CONN-1 connector 集群分发 UAT 辅助（收官批验收⑦⑧）
+// ---------------------------------------------------------------------------
+
+/// 读节点 connector 凭条流水（新→旧；connector 过滤，上限 100）。与 Dashboard
+/// 行动账本同源（connectors.receipts.list 直读存储，单点不双写）。
+async fn conn_receipts(ws: &mut WsStream, connector: &str) -> Result<Vec<Value>> {
+    let v = ws_api_request(
+        ws,
+        "connectors",
+        "receipts.list",
+        json!({ "connector": connector, "limit": 100 }),
+        15,
+    )
+    .await?;
+    Ok(v.get("receipts")
+        .and_then(|r| r.as_array())
+        .cloned()
+        .unwrap_or_default())
+}
+
+/// A 侧聊天驱动一轮远程派发：CONN 标记 → testai-conn-1.0 状态机（标记轮发
+/// 真实工具调用）→ 工具结果回灌轮给 CONN_DEMO_DONE 终端文本收口。150s 覆盖
+/// 双 LLM 轮 + RPC + worker 本地执行（TestAIServer 即时回复，实测远低于此）。
+async fn conn_dispatch(stream: &mut WsStream, marker_msg: &str) -> Result<String> {
+    ws_send_recv_until(stream, marker_msg, 150, |c| c.contains("CONN_DEMO_DONE")).await
+}
+
+/// 递归扫描目录全部文件的字节内容，返回命中 needle 的文件（cap 上限）。
+/// 凭据泄露面断言用：真值字节不得出现在任一 workspace 文件（凭条/审计
+/// hash-only、vault.enc 密文、模型请求不落盘）。
+fn scan_tree_for_needle(root: &Path, needle: &str, cap: usize) -> Vec<std::path::PathBuf> {
+    let needle_b = needle.as_bytes();
+    let mut hits = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if hits.len() < cap
+                && std::fs::read(&path)
+                    .map(|b| b.windows(needle_b.len()).any(|w| w == needle_b))
+                    .unwrap_or(false)
+            {
+                hits.push(path);
+            }
+        }
+    }
+    hits
+}
+
+/// 写 cred-proof connector manifest（凭据不上线证明专用；T-CONN-1 编排写入
+/// 而非 workspace 模板——两节点同文，真值只进 B 本地 vault）。
+fn write_cred_proof_manifest(home: &Path) -> Result<()> {
+    let dir = home.join("workspace").join("connectors").join("cred-proof");
+    std::fs::create_dir_all(&dir)?;
+    // base 指向必炸回环地址：本用例关心的是「凭据缺失 → SSRF 闸」的错误
+    // 形态变化（worker 用自己 vault 解锁的行为级证明），不真连。
+    std::fs::write(
+        dir.join("connector.toml"),
+        r#"[connector]
+id = "cred-proof"
+name = "Cred Proof"
+version = "0.1.0"
+kind = "rest"
+description = "T-CONN-1 凭据不上线证明专用（编排写入，非模板）"
+
+[connector.http]
+base = "http://127.0.0.1:1/api"
+
+[connector.credentials]
+tok = { required = true, into = "header:X-Proof" }
+
+[[op]]
+id = "ping"
+intent = ["连通性证明"]
+risk = "low"
+class = "network"
+http = { method = "GET", path = "/ping" }
+"#,
+    )?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // P5 冲突漏斗 UAT 辅助（T-MRG-2~7 共用）
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// T-MONITOR-1 monitor 语义摘要三态 UAT 辅助（收官批验收⑩）
+// ---------------------------------------------------------------------------
+
+/// config.json 写/删 `agents.small_model`（RMW；None=删键）。small_model 槽
+/// 仅在 gateway 启动装配期消费（agent_factory），运行中改配置不生效——三态
+/// 测试用「改 config → 重启」驱动。
+fn set_small_model_config(config_path: &Path, model: Option<&str>) -> Result<()> {
+    let raw = std::fs::read_to_string(config_path)?;
+    let mut cfg: Value = serde_json::from_str(&raw)?;
+    let obj = cfg
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("config.json 顶层不是对象"))?;
+    let agents = obj.entry("agents").or_insert_with(|| json!({}));
+    let amap = agents
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("config.json agents 段不是对象"))?;
+    match model {
+        Some(m) => {
+            amap.insert("small_model".to_string(), json!(m));
+        }
+        None => {
+            amap.remove("small_model");
+        }
+    }
+    std::fs::write(config_path, serde_json::to_string_pretty(&cfg)?)?;
+    Ok(())
+}
+
+/// 关 SSRF 层（monitor check 内部 web_fetch 目标是 127.0.0.1 本地页面服务
+/// 器，会被 Layer 6 拦；agent-bench disable_ssrf_layer 同款 pre-gateway 写）。
+fn disable_ssrf_for_monitor(home: &Path) -> Result<()> {
+    let path = home
+        .join("workspace")
+        .join("config")
+        .join("config.security.json");
+    let mut cfg: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+    cfg["layers"]["ssrf"] = json!({ "enabled": false });
+    std::fs::write(&path, serde_json::to_string_pretty(&cfg)?)?;
+    Ok(())
+}
+
+/// 本地双页面 HTTP 服务器（std TcpListener + 独立线程，顺序应答）：GET /a →
+/// 页面 A、GET /b → 页面 B（内容不同制造「变化」）。HTTP/1.1 + Content-Length
+/// + Connection: close；随进程退出回收（UAT runner 生命周期内常驻无害）。
+fn spawn_page_server() -> Result<(u16, std::thread::JoinHandle<()>)> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let handle = std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut stream) = conn else { continue };
+            // 读请求头（GET 无 body；读到空行即完整）。
+            let mut buf = [0u8; 4096];
+            let mut req = Vec::new();
+            loop {
+                match std::io::Read::read(&mut stream, &mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        req.extend_from_slice(&buf[..n]);
+                        if req.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                }
+            }
+            let head = String::from_utf8_lossy(&req);
+            let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
+            let body = match path.as_str() {
+                "/a" => "<html><body>monitor page A v1 baseline-content</body></html>",
+                "/b" => "<html><body>monitor page B v2 changed-content</body></html>",
+                _ => "<html><body>not found</body></html>",
+            };
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = std::io::Write::write_all(&mut stream, resp.as_bytes());
+            let _ = std::io::Write::flush(&mut stream);
+        }
+    });
+    Ok((port, handle))
+}
+
+/// 8.5 `<TOOL>` 驱动消息：connector_invoke monitor/check（semantic 三态：
+/// None=缺省 true 走语义摘要、Some(false)=机械比对）。
+fn monitor_drive_msg(name: &str, path: &str, page_port: u16, semantic: Option<bool>) -> String {
+    let mut margs = json!({
+        "url": format!("http://127.0.0.1:{}{}", page_port, path),
+        "name": name,
+    });
+    if let Some(s) = semantic {
+        margs["semantic"] = json!(s);
+    }
+    format!(
+        "<TOOL>{}</TOOL> 监控检查",
+        json!({
+            "name": "connector_invoke",
+            "args": { "connector": "monitor", "op": "check", "args": margs }
+        })
+    )
+}
+
+/// 驱动一轮 monitor check（8.5 标签轮 → connector_invoke 真执行 → 工具结果
+/// 轮 TOOL_DRIVE_DONE 收口）并取最新 monitor 凭条（凭条在工具执行期落账，
+/// 先于收口文本，读时必在）。
+async fn monitor_check_receipt(stream: &mut WsStream, msg: &str) -> Result<Value> {
+    ws_send_recv_until(stream, msg, 120, |c| c.contains("TOOL_DRIVE_DONE")).await?;
+    let receipts = conn_receipts(stream, "monitor").await?;
+    receipts
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("monitor 凭条缺失（receipts.list connector=monitor 空）"))
+}
+
+/// 凭条状态断言：outcome=executed + receipt_value + summary 内容面（need 全含
+/// / ban 全不含）。返回 Some(错误描述) = 断言失败。
+fn expect_monitor_receipt(
+    step: &str,
+    r: &Value,
+    value: &str,
+    need: &[&str],
+    ban: &[&str],
+) -> Option<String> {
+    let outcome = r.get("outcome").and_then(|v| v.as_str()).unwrap_or("");
+    let val = r
+        .get("receipt_value")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let summary = r.get("summary").and_then(|v| v.as_str()).unwrap_or("");
+    if outcome != "executed" {
+        return Some(format!(
+            "{step}: outcome={outcome}（期望 executed）: {summary}"
+        ));
+    }
+    if val != value {
+        return Some(format!(
+            "{step}: receipt_value={val}（期望 {value}）: {summary}"
+        ));
+    }
+    for n in need {
+        if !summary.contains(n) {
+            return Some(format!("{step}: summary 缺「{n}」: {summary}"));
+        }
+    }
+    for b in ban {
+        if summary.contains(b) {
+            return Some(format!("{step}: summary 不应有「{b}」: {summary}"));
+        }
+    }
+    None
+}
 
 /// 读项目冻结态与待补合并队列长度（project.list 单一投影；Project serde
 /// 直出 conflict_frozen / pending_merges）。返回 (frozen, pending 数)。
@@ -12757,6 +12998,664 @@ async fn main() {
             "T48",
             "M5 审批桥全链：ask 上行注册 + remote_list 关联 + 审批等待评论 + \
              approve 臂（文件真删）+ deny 臂（文件存活 + SECURITY BLOCKED 回灌）",
+        )
+    })
+    .await,
+);
+
+    // ---- T-CONN-1：connector 集群分发双节点 e2e（收官批验收⑦⑧⑪）----
+    // 真机双节点五子例（A coordinator / B worker，均为常驻 gateway）：
+    //   ①远程执行 + 双边凭条一致：A 聊天派 paper-broker/positions 到 B →
+    //     A 镜像凭条（[远程@Node-B · {worker_id}] 署名前缀 + undoable=false），
+    //     B 侧按 id 命中 worker 凭条且 args_digest 两边相等；
+    //   ②estop 冻结诚实拒：B 急停 → 再派 → A error 镜像（· ?] 署名特征 =
+    //     worker 凭条回读空）+ B 零新凭条 + release 复原；
+    //   ③凭据不上线：B 无 vault = 「凭据槽位缺失」错误；B vault set 后同一
+    //     派发错误形态推进到 SSRF 闸（worker 已越过凭据解析走到网络闸——
+    //     行为级证明 worker 用自己的 vault 解锁，master 从未持有真值）；
+    //     双侧全 workspace 字节级扫描零真值；
+    //   ④master 聚合闸：A max_ops_per_hour=1（①已记 1 账）→ 派发不出线
+    //     （A budget_blocked 镜像 + B 零新凭条）；
+    //   ⑤worker 本地闸传播：B max_ops_per_hour=1 → B 本地拒落账 → 凭条
+    //     回读传播回 A 镜像（outcome=budget_blocked，对端限流可见）。
+    // 确定性设计：仅 executed 记账（error/blocked 不占预算）——①记 1 账后，
+    // ②③全 error 不动账，④⑤各设 1 次派发即确定性触发，零时序依赖。
+    // A 热切 CONN 桩模型不重启：CLI model add（落盘）+ WSAPI set_default
+    // （运行时热切；T48/agent-bench 同款；载荷按别名 = `/` 后段，传全名
+    // 会 not found）。
+    all_results.push(
+    run_test("T-CONN-1: connector 集群分发双节点 e2e（远程执行双边凭条/estop 冻结/凭据不上线/聚合闸双向传播）", || async {
+        let out = ws_a
+            .run_cli(
+                &gateway_bin,
+                &[
+                    "model", "add", "--model", "test/testai-conn-1.0",
+                    "--base", &format!("http://127.0.0.1:{}/v1", ai_server_port()),
+                    "--key", "test-key",
+                ],
+            )
+            .await;
+        if !out.success() {
+            return fail("T-CONN-1", format!("A model add failed: {}", out.stderr));
+        }
+        let mut ws_a_stream = match ws_connect_gateway(NODES[0].web_port).await {
+            Ok(s) => s,
+            Err(e) => return fail("T-CONN-1", format!("WS connect to A failed: {e}")),
+        };
+        if let Err(e) = ws_api_request(
+            &mut ws_a_stream,
+            "models",
+            "set_default",
+            json!({ "name": "testai-conn-1.0" }),
+            15,
+        )
+        .await
+        {
+            return fail("T-CONN-1", format!("A set_default failed: {e}"));
+        }
+        let mut ws_b_stream = match ws_connect_gateway(NODES[1].web_port).await {
+            Ok(s) => s,
+            Err(e) => return fail("T-CONN-1", format!("WS connect to B failed: {e}")),
+        };
+
+        // ---------- ① 远程执行 + 双边凭条一致 ----------
+        if let Err(e) = conn_dispatch(&mut ws_a_stream, "<CONN_REMOTE> 第一轮：远程查持仓").await {
+            return fail("T-CONN-1", format!("① 远程派发未收口: {e}"));
+        }
+        let mirror = match conn_receipts(&mut ws_a_stream, "paper-broker").await {
+            Ok(v) => v.into_iter().next(),
+            Err(e) => return fail("T-CONN-1", format!("① A receipts.list failed: {e}")),
+        };
+        let Some(mirror) = mirror else {
+            return fail("T-CONN-1", "① A 侧无 paper-broker 镜像凭条");
+        };
+        let outcome = mirror.get("outcome").and_then(|v| v.as_str()).unwrap_or("");
+        let summary = mirror.get("summary").and_then(|v| v.as_str()).unwrap_or("");
+        if outcome != "executed" {
+            return fail(
+                "T-CONN-1",
+                format!("① A 镜像凭条 outcome={outcome}（期望 executed）: {summary}"),
+            );
+        }
+        let Some(worker_rid) = summary
+            .strip_prefix("[远程@Node-B · ")
+            .and_then(|s| s.split(']').next())
+        else {
+            return fail("T-CONN-1", format!("① A 镜像凭条缺远程署名前缀: {summary}"));
+        };
+        if mirror.get("undoable").and_then(|v| v.as_bool()) != Some(false) {
+            return fail("T-CONN-1", "① 镜像凭条 undoable 应为 false（跨节点撤销 v1 挂账）");
+        }
+        let a_digest = mirror
+            .get("args_digest")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let b_receipts = match conn_receipts(&mut ws_b_stream, "paper-broker").await {
+            Ok(v) => v,
+            Err(e) => return fail("T-CONN-1", format!("① B receipts.list failed: {e}")),
+        };
+        let Some(worker) = b_receipts
+            .iter()
+            .find(|r| r.get("receipt_id").and_then(|v| v.as_str()) == Some(worker_rid))
+        else {
+            return fail(
+                "T-CONN-1",
+                format!("① B 侧无凭条 {worker_rid}（对端执行面未落账）"),
+            );
+        };
+        if worker.get("outcome").and_then(|v| v.as_str()) != Some("executed") {
+            return fail("T-CONN-1", format!("① B 凭条 {worker_rid} outcome 非 executed"));
+        }
+        if worker.get("args_digest").and_then(|v| v.as_str()) != Some(a_digest.as_str()) {
+            return fail(
+                "T-CONN-1",
+                format!(
+                    "① args_digest 两边不一致: A={a_digest} B={}",
+                    worker.get("args_digest").and_then(|v| v.as_str()).unwrap_or("")
+                ),
+            );
+        }
+
+        // ---------- ② estop 冻结诚实拒 ----------
+        if let Err(e) = ws_api_request(&mut ws_b_stream, "estop", "trigger", json!({}), 10).await {
+            return fail("T-CONN-1", format!("② B estop trigger failed: {e}"));
+        }
+        let b_before = conn_receipts(&mut ws_b_stream, "paper-broker")
+            .await
+            .map(|v| v.len())
+            .unwrap_or(0);
+        if let Err(e) = conn_dispatch(&mut ws_a_stream, "<CONN_REMOTE> 第二轮：急停期再查").await {
+            let _ = ws_api_request(&mut ws_b_stream, "estop", "release", json!({}), 10).await;
+            return fail("T-CONN-1", format!("② 急停期派发未收口: {e}"));
+        }
+        let m2 = conn_receipts(&mut ws_a_stream, "paper-broker")
+            .await
+            .ok()
+            .and_then(|v| v.into_iter().next());
+        let b_after = conn_receipts(&mut ws_b_stream, "paper-broker")
+            .await
+            .map(|v| v.len())
+            .unwrap_or(0);
+        let _ = ws_api_request(&mut ws_b_stream, "estop", "release", json!({}), 10).await;
+        let Some(m2) = m2 else {
+            return fail("T-CONN-1", "② 急停期派发未落 A 镜像凭条");
+        };
+        if m2.get("outcome").and_then(|v| v.as_str()) != Some("error") {
+            return fail(
+                "T-CONN-1",
+                format!(
+                    "② 急停期 A 镜像 outcome 应为 error，实际 {:?}",
+                    m2.get("outcome")
+                ),
+            );
+        }
+        if m2.get("receipt_id").and_then(|v| v.as_str())
+            == mirror.get("receipt_id").and_then(|v| v.as_str())
+        {
+            return fail("T-CONN-1", "② 急停期未铸新凭条（镜像未写）");
+        }
+        // worker 凭条回读空的署名特征：`[远程@Node-B · ?]`（estop 在 dispatch
+        // 层拒绝，worker 从未执行也从未落账）。
+        if !m2
+            .get("summary")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .contains("· ?]")
+        {
+            return fail(
+                "T-CONN-1",
+                format!(
+                    "② 急停期镜像凭条缺「对端无凭条」署名特征（· ?]）: {}",
+                    m2.get("summary").and_then(|v| v.as_str()).unwrap_or("")
+                ),
+            );
+        }
+        if b_after != b_before {
+            return fail(
+                "T-CONN-1",
+                format!("② 急停期 B 落了新凭条（{b_before}→{b_after}）——冻结泄漏"),
+            );
+        }
+
+        // ---------- ③ 凭据不上线 ----------
+        if let Err(e) = write_cred_proof_manifest(&ws_a.home()) {
+            return fail("T-CONN-1", format!("③ 写 A cred-proof manifest failed: {e}"));
+        }
+        if let Err(e) = write_cred_proof_manifest(&ws_b.home()) {
+            return fail("T-CONN-1", format!("③ 写 B cred-proof manifest failed: {e}"));
+        }
+        // ③a B 无 vault：worker 本地凭据解析失败的诚实面。
+        if let Err(e) = conn_dispatch(&mut ws_a_stream, "<CONN_CRED> 第三轮：凭据证明").await {
+            return fail("T-CONN-1", format!("③a 凭据缺失轮未收口: {e}"));
+        }
+        let m3a = conn_receipts(&mut ws_a_stream, "cred-proof")
+            .await
+            .ok()
+            .and_then(|v| v.into_iter().next());
+        let Some(m3a) = m3a else {
+            return fail("T-CONN-1", "③a A 侧无 cred-proof 镜像凭条");
+        };
+        let s3a = m3a.get("summary").and_then(|v| v.as_str()).unwrap_or("");
+        if m3a.get("outcome").and_then(|v| v.as_str()) != Some("error")
+            || !s3a.contains("凭据槽位")
+            || !s3a.contains("缺失")
+        {
+            return fail(
+                "T-CONN-1",
+                format!(
+                    "③a 错误形态非「凭据缺失」: outcome={:?} summary={s3a}",
+                    m3a.get("outcome")
+                ),
+            );
+        }
+        // ③b B vault set（Windows 默认 DPAPI 模式 --stdin 免交互）→ 同一
+        //     派发的错误形态推进到 SSRF 闸 = worker 已越过凭据解析走到网络
+        //     闸（run_http 凭据解析先于 SSRF build_http_client——顺序即证
+        //     据）。
+        const TCONN_TOKEN: &str = "tconn-proof-secret-9f2e7a1c4b6d";
+        let out = ws_b
+            .run_cli_with_stdin(
+                &gateway_bin,
+                &["vault", "set", "connector/cred-proof/tok", "--stdin"],
+                &format!("{TCONN_TOKEN}\n"),
+                20,
+            )
+            .await;
+        if !out.success() {
+            return fail(
+                "T-CONN-1",
+                format!("③b B vault set failed: {} | {}", out.stdout, out.stderr),
+            );
+        }
+        if let Err(e) = conn_dispatch(&mut ws_a_stream, "<CONN_CRED> 第四轮：凭据证明再试").await {
+            return fail("T-CONN-1", format!("③b vault 后派发未收口: {e}"));
+        }
+        let m3b = conn_receipts(&mut ws_a_stream, "cred-proof")
+            .await
+            .ok()
+            .and_then(|v| v.into_iter().next());
+        let Some(m3b) = m3b else {
+            return fail("T-CONN-1", "③b A 侧无 cred-proof 镜像凭条");
+        };
+        let s3b = m3b.get("summary").and_then(|v| v.as_str()).unwrap_or("");
+        if s3b.contains("凭据槽位") || s3b.contains("缺失") {
+            return fail(
+                "T-CONN-1",
+                format!("③b vault 后仍报凭据缺失（worker 未用本地 vault 解锁）: {s3b}"),
+            );
+        }
+        if !s3b.contains("SSRF") {
+            return fail(
+                "T-CONN-1",
+                format!("③b 错误形态应推进到 SSRF 闸（worker 已越过凭据解析）: {s3b}"),
+            );
+        }
+        // ③c 双侧全 workspace 字节级扫描：真值不得出现在任何文件。
+        for (side, root) in [("A", ws_a.path()), ("B", ws_b.path())] {
+            let hits = scan_tree_for_needle(root, TCONN_TOKEN, 5);
+            if !hits.is_empty() {
+                let list = hits
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return fail(
+                    "T-CONN-1",
+                    format!("③c {side} workspace 泄露真值字节: {list}"),
+                );
+            }
+        }
+
+        // ---------- ④ master 聚合闸（请求不出线） ----------
+        if let Err(e) = ws_api_request(
+            &mut ws_a_stream,
+            "config",
+            "set_field",
+            json!({ "path": "connectors.max_ops_per_hour", "value": 1 }),
+            15,
+        )
+        .await
+        {
+            return fail("T-CONN-1", format!("④ A config.set_field failed: {e}"));
+        }
+        let b_before4 = conn_receipts(&mut ws_b_stream, "paper-broker")
+            .await
+            .map(|v| v.len())
+            .unwrap_or(0);
+        if let Err(e) = conn_dispatch(&mut ws_a_stream, "<CONN_REMOTE> 第五轮：聚合闸").await {
+            let _ = ws_api_request(
+                &mut ws_a_stream,
+                "config",
+                "set_field",
+                json!({ "path": "connectors.max_ops_per_hour", "value": 0 }),
+                15,
+            )
+            .await;
+            return fail("T-CONN-1", format!("④ master 闸派发未收口: {e}"));
+        }
+        let m4 = conn_receipts(&mut ws_a_stream, "paper-broker")
+            .await
+            .ok()
+            .and_then(|v| v.into_iter().next());
+        let b_after4 = conn_receipts(&mut ws_b_stream, "paper-broker")
+            .await
+            .map(|v| v.len())
+            .unwrap_or(0);
+        let _ = ws_api_request(
+            &mut ws_a_stream,
+            "config",
+            "set_field",
+            json!({ "path": "connectors.max_ops_per_hour", "value": 0 }),
+            15,
+        )
+        .await;
+        let Some(m4) = m4 else {
+            return fail("T-CONN-1", "④ master 闸派发未落 A 凭条");
+        };
+        if m4.get("outcome").and_then(|v| v.as_str()) != Some("budget_blocked") {
+            return fail(
+                "T-CONN-1",
+                format!(
+                    "④ A 镜像 outcome 应为 budget_blocked，实际 {:?}: {}",
+                    m4.get("outcome"),
+                    m4.get("summary").and_then(|v| v.as_str()).unwrap_or("")
+                ),
+            );
+        }
+        if b_after4 != b_before4 {
+            return fail(
+                "T-CONN-1",
+                format!("④ master 闸后 B 落了新凭条（{b_before4}→{b_after4}）——请求出线"),
+            );
+        }
+
+        // ---------- ⑤ worker 本地闸传播 ----------
+        if let Err(e) = ws_api_request(
+            &mut ws_b_stream,
+            "config",
+            "set_field",
+            json!({ "path": "connectors.max_ops_per_hour", "value": 1 }),
+            15,
+        )
+        .await
+        {
+            return fail("T-CONN-1", format!("⑤ B config.set_field failed: {e}"));
+        }
+        if let Err(e) = conn_dispatch(&mut ws_a_stream, "<CONN_REMOTE> 第六轮：worker 本地闸").await
+        {
+            let _ = ws_api_request(
+                &mut ws_b_stream,
+                "config",
+                "set_field",
+                json!({ "path": "connectors.max_ops_per_hour", "value": 0 }),
+                15,
+            )
+            .await;
+            return fail("T-CONN-1", format!("⑤ worker 闸派发未收口: {e}"));
+        }
+        let m5 = conn_receipts(&mut ws_a_stream, "paper-broker")
+            .await
+            .ok()
+            .and_then(|v| v.into_iter().next());
+        let b_last5 = conn_receipts(&mut ws_b_stream, "paper-broker")
+            .await
+            .ok()
+            .and_then(|v| v.into_iter().next());
+        let _ = ws_api_request(
+            &mut ws_b_stream,
+            "config",
+            "set_field",
+            json!({ "path": "connectors.max_ops_per_hour", "value": 0 }),
+            15,
+        )
+        .await;
+        let Some(m5) = m5 else {
+            return fail("T-CONN-1", "⑤ worker 闸派发未落 A 镜像凭条");
+        };
+        if m5.get("outcome").and_then(|v| v.as_str()) != Some("budget_blocked") {
+            return fail(
+                "T-CONN-1",
+                format!(
+                    "⑤ A 镜像 outcome 应为 budget_blocked（对端限流传播），实际 {:?}: {}",
+                    m5.get("outcome"),
+                    m5.get("summary").and_then(|v| v.as_str()).unwrap_or("")
+                ),
+            );
+        }
+        // B 侧本地拒也落账：最新凭条 = budget_blocked（执行面凭条）。
+        let b_blocked = b_last5
+            .map(|r| r.get("outcome").and_then(|v| v.as_str()) == Some("budget_blocked"))
+            .unwrap_or(false);
+        if !b_blocked {
+            return fail(
+                "T-CONN-1",
+                "⑤ B 侧最新凭条非 budget_blocked（worker 本地闸未落账）",
+            );
+        }
+
+        pass(
+            "T-CONN-1",
+            "connector 集群分发全链：远程执行双边凭条一致 + estop 冻结诚实拒 + \
+             凭据不上线（缺失→SSRF 行为级证明 + 双盘零真值）+ master 聚合闸不出线 + \
+             worker 本地闸凭条传播",
+        )
+    })
+    .await,
+);
+
+    // ---- T-MONITOR-1：monitor 语义摘要三态 live（收官批验收⑩）----
+    // 独立 workspace + 独立 gateway（不进四节点常驻集群——避免 UDP discovery
+    // 污染成员断言；复用共享 TestAIServer，全零外网依赖）。三态断言面 =
+    // monitor 凭条 receipt_value/summary + gateway.log WARN：
+    //   ①基线建立 + 变化 + small_model=testai-1.1 → 摘要经小模型通道（固定
+    //     回复「好的，我知道了」作 marker 出现在变化摘要里，主模型零参与）；
+    //   ②semantic=false → 机械比对零 LLM（summary 无「变化摘要」字样）；
+    //   ③重启并删 small_model → 摘要回落主模型（8.5 无标签 fallback 文本）
+    //     + log 落「agents.small_model 未配置，回落主模型」WARN。
+    all_results.push(
+    run_test("T-MONITOR-1: monitor 语义摘要三态 live（小模型通道/机械比对/主模型回落+WARN）", || async {
+        let ws_m = match TestWorkspace::new() {
+            Ok(w) => w,
+            Err(e) => return fail("T-MONITOR-1", format!("workspace 创建失败: {e}")),
+        };
+        let out = ws_m.run_cli(&gateway_bin, &["onboard", "default"]).await;
+        if !out.success() {
+            return fail("T-MONITOR-1", format!("onboard failed: {}", out.stderr));
+        }
+        // 端口避开 NODES 常驻四节点（web 37300/37305/37306/37303、health
+        // 18791-18794）与共享 TestAIServer（37105）。
+        const MON_WEB: u16 = 37307;
+        const MON_HEALTH: u16 = 18795;
+        if let Err(e) = configure_ports(&ws_m.home(), MON_WEB, MON_HEALTH) {
+            return fail("T-MONITOR-1", format!("configure_ports failed: {e}"));
+        }
+        // 主模型 = testai-8.5（<TOOL> 标签驱动 + 无标签 fallback 文本），
+        // 小模型 = testai-1.1（固定回复「好的，我知道了」= 通道 marker）。
+        let base = format!("http://127.0.0.1:{}/v1", ai_server_port());
+        for (model, is_default) in [("test/testai-8.5", true), ("test/testai-1.1", false)] {
+            let mut args: Vec<&str> = vec![
+                "model", "add", "--model", model, "--base", &base, "--key", "test-key",
+            ];
+            if is_default {
+                args.push("--default");
+            }
+            let out = ws_m.run_cli(&gateway_bin, &args).await;
+            if !out.success() {
+                return fail("T-MONITOR-1", format!("model add {model} failed: {}", out.stderr));
+            }
+        }
+        if let Err(e) = set_small_model_config(&ws_m.config_path(), Some("test/testai-1.1")) {
+            return fail("T-MONITOR-1", format!("写 agents.small_model 失败: {e}"));
+        }
+        if let Err(e) = disable_ssrf_for_monitor(&ws_m.home()) {
+            return fail("T-MONITOR-1", format!("关 SSRF 层失败: {e}"));
+        }
+        let (page_port, _page_srv) = match spawn_page_server() {
+            Ok(v) => v,
+            Err(e) => return fail("T-MONITOR-1", format!("页面服务器启动失败: {e}")),
+        };
+
+        let mut mon_gw = match GatewayProcess::spawn("Gateway-MON", &gateway_bin, ws_m.path()) {
+            Ok(g) => g,
+            Err(e) => return fail("T-MONITOR-1", format!("gateway spawn failed: {e}")),
+        };
+        if let Err(e) = test_harness::wait_for_http(
+            // wait_for_http 只认 2xx——健康端点在 /health 路径（根路径 404），
+            // 与 start_gateway_and_wait 的 NODES 等法同源。
+            &format!("http://127.0.0.1:{MON_HEALTH}/health"),
+            Duration::from_secs(60),
+        )
+        .await
+        {
+            let _ = mon_gw.kill().await;
+            return fail("T-MONITOR-1", format!("gateway health 未就绪: {e}"));
+        }
+        // WS 连接重试（health 就绪到 WS 路由可用的亚秒窗口）。
+        let mut connected = Err(anyhow::anyhow!("未尝试"));
+        for _ in 0..15 {
+            if let Ok(s) = ws_connect_gateway(MON_WEB).await {
+                connected = Ok(s);
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        let mut stream = match connected {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = mon_gw.kill().await;
+                return fail("T-MONITOR-1", format!("WS 连接失败: {e}"));
+            }
+        };
+
+        // ---------- ① 基线 + 变化 + 小模型摘要 ----------
+        let r = match monitor_check_receipt(
+            &mut stream,
+            &monitor_drive_msg("demo", "/a", page_port, None),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = mon_gw.kill().await;
+                return fail("T-MONITOR-1", format!("① 基线轮失败: {e}"));
+            }
+        };
+        if let Some(msg) = expect_monitor_receipt("① 基线", &r, "baseline", &["已建立基线快照"], &[]) {
+            let _ = mon_gw.kill().await;
+            return fail("T-MONITOR-1", msg);
+        }
+        let r = match monitor_check_receipt(
+            &mut stream,
+            &monitor_drive_msg("demo", "/b", page_port, None),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = mon_gw.kill().await;
+                return fail("T-MONITOR-1", format!("① 变化轮失败: {e}"));
+            }
+        };
+        if let Some(msg) = expect_monitor_receipt(
+            "① 变化",
+            &r,
+            "changed",
+            &["变化摘要", "好的，我知道了"],
+            &[],
+        ) {
+            let _ = mon_gw.kill().await;
+            return fail("T-MONITOR-1", msg);
+        }
+
+        // ---------- ② semantic=false 机械比对（零 LLM） ----------
+        let r = match monitor_check_receipt(
+            &mut stream,
+            &monitor_drive_msg("demo-mech", "/a", page_port, None),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = mon_gw.kill().await;
+                return fail("T-MONITOR-1", format!("② 机械基线轮失败: {e}"));
+            }
+        };
+        if let Some(msg) = expect_monitor_receipt("② 机械基线", &r, "baseline", &["已建立基线快照"], &[])
+        {
+            let _ = mon_gw.kill().await;
+            return fail("T-MONITOR-1", msg);
+        }
+        let r = match monitor_check_receipt(
+            &mut stream,
+            &monitor_drive_msg("demo-mech", "/b", page_port, Some(false)),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = mon_gw.kill().await;
+                return fail("T-MONITOR-1", format!("② 机械变化轮失败: {e}"));
+            }
+        };
+        if let Some(msg) = expect_monitor_receipt(
+            "② 机械变化",
+            &r,
+            "changed",
+            &["机械比对", "semantic=false"],
+            &["变化摘要"],
+        ) {
+            let _ = mon_gw.kill().await;
+            return fail("T-MONITOR-1", msg);
+        }
+
+        // ---------- ③ 重启删 small_model → 主模型回落 + WARN ----------
+        drop(stream);
+        mon_gw.kill().await;
+        if let Err(e) = set_small_model_config(&ws_m.config_path(), None) {
+            return fail("T-MONITOR-1", format!("删 agents.small_model 失败: {e}"));
+        }
+        let mut mon_gw = match GatewayProcess::spawn("Gateway-MON", &gateway_bin, ws_m.path()) {
+            Ok(g) => g,
+            Err(e) => return fail("T-MONITOR-1", format!("gateway 重启失败: {e}")),
+        };
+        if let Err(e) = test_harness::wait_for_http(
+            &format!("http://127.0.0.1:{MON_HEALTH}/health"),
+            Duration::from_secs(60),
+        )
+        .await
+        {
+            let _ = mon_gw.kill().await;
+            return fail("T-MONITOR-1", format!("gateway 重启后 health 未就绪: {e}"));
+        }
+        let mut connected = Err(anyhow::anyhow!("未尝试"));
+        for _ in 0..15 {
+            if let Ok(s) = ws_connect_gateway(MON_WEB).await {
+                connected = Ok(s);
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        let mut stream = match connected {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = mon_gw.kill().await;
+                return fail("T-MONITOR-1", format!("重启后 WS 连接失败: {e}"));
+            }
+        };
+        let r = match monitor_check_receipt(
+            &mut stream,
+            &monitor_drive_msg("demo-mainfall", "/a", page_port, None),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = mon_gw.kill().await;
+                return fail("T-MONITOR-1", format!("③ 回落基线轮失败: {e}"));
+            }
+        };
+        if let Some(msg) = expect_monitor_receipt("③ 回落基线", &r, "baseline", &["已建立基线快照"], &[])
+        {
+            let _ = mon_gw.kill().await;
+            return fail("T-MONITOR-1", msg);
+        }
+        let r = match monitor_check_receipt(
+            &mut stream,
+            &monitor_drive_msg("demo-mainfall", "/b", page_port, None),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = mon_gw.kill().await;
+                return fail("T-MONITOR-1", format!("③ 回落变化轮失败: {e}"));
+            }
+        };
+        if let Some(msg) = expect_monitor_receipt(
+            "③ 回落变化",
+            &r,
+            "changed",
+            &["变化摘要", "to drive any tool call"],
+            &[],
+        ) {
+            let _ = mon_gw.kill().await;
+            return fail("T-MONITOR-1", msg);
+        }
+        mon_gw.kill().await;
+        // WARN 断言：两次窗口共用的追加日志里落「agents.small_model 未配置」。
+        let log = std::fs::read_to_string(ws_m.path().join("gateway.log")).unwrap_or_default();
+        if !log.contains("agents.small_model 未配置") {
+            return fail(
+                "T-MONITOR-1",
+                "gateway.log 缺「agents.small_model 未配置，回落主模型」WARN（主模型回落未留痕）",
+            );
+        }
+
+        pass(
+            "T-MONITOR-1",
+            "monitor 语义摘要三态：小模型摘要通道（1.1 marker 进变化摘要）+ \
+             semantic=false 机械比对零 LLM + 无 small_model 回落主模型（8.5 fallback 文本）+ WARN 留痕",
         )
     })
     .await,

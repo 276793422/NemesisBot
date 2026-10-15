@@ -154,7 +154,9 @@ impl ChannelApprovalManager {
         tokio::spawn(mgr.watcher_with_rx(rx))
     }
 
-    /// 审批卡文本（纯函数便于测试）。
+    /// 审批卡文本（纯函数便于测试）。自解释三字段（why/impact/reject_note）
+    /// 与 Web 审批卡同源派生（`web_approval::approval_card_fields` 单一
+    /// 真相源）——IM 用户看到的「为什么/影响/拒绝后果」与 Dashboard 一致。
     fn render_card(
         id: &str,
         operation: &str,
@@ -163,8 +165,11 @@ impl ChannelApprovalManager {
         reason: &str,
         timeout: u64,
     ) -> String {
+        let (why, impact, reject_note) =
+            crate::web_approval::approval_card_fields(operation, target, risk, reason);
         format!(
-            "🔐 编码审批请求\n编号: {id}\n操作: {operation}\n目标: {target}\n风险: {risk}\n原因: {reason}\n\n\
+            "🔐 编码审批请求\n编号: {id}\n操作: {operation}\n目标: {target}\n风险: {risk}\n\
+             为什么: {why}\n影响: {impact}\n拒绝后果: {reject_note}\n\n\
              回复 /approve {id} 批准，/deny {id} 拒绝（{timeout} 秒内有效，超时自动拒绝）。"
         )
     }
