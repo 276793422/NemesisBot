@@ -52,6 +52,8 @@ fn test_ff1_adjust_confidence_uses_success_rate_not_usage_count() {
         last_degraded_at: None,
         success_rate: 0.5,
         consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
     });
     let cycle_store = CycleStore::new(dir.path());
     let engine = LearningEngine::new(ForgeConfig::default(), registry.clone(), cycle_store);
@@ -98,6 +100,8 @@ fn test_ff2_disable_degraded_skill_hides_deployed_file() {
         last_degraded_at: None,
         success_rate: 0.0,
         consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
     });
     let cycle_store = CycleStore::new(&forge_dir);
     let engine =
@@ -357,6 +361,8 @@ fn test_fm2a_classify_verdict_respects_configured_threshold() {
         last_degraded_at: None,
         success_rate: 0.0,
         consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
     };
     // improvement=-0.15: with threshold=0.5 → "negative" (new, respects config);
     // old code forced -0.2 → "observing" (ignored user config).
@@ -655,6 +661,8 @@ fn test_evaluate_outcomes() {
         last_degraded_at: None,
         success_rate: 0.0,
         consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
     };
     registry.add(artifact);
 
@@ -1192,6 +1200,8 @@ fn test_find_artifact_by_fingerprint_exists() {
         last_degraded_at: None,
         success_rate: 0.0,
         consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
     };
     registry.add(artifact);
     let cycle_store = CycleStore::new(dir.path().join("cycles.jsonl"));
@@ -1298,6 +1308,8 @@ fn test_adjust_confidence_for_test_positive() {
         last_degraded_at: None,
         success_rate: 0.0,
         consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
     };
     registry.add(artifact);
     let cycle_store = CycleStore::new(dir.path().join("cycles.jsonl"));
@@ -1349,6 +1361,8 @@ fn test_evaluate_outcomes_unknown_verdict() {
         last_degraded_at: None,
         success_rate: 0.0,
         consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
     };
     registry.add(artifact);
     let cycle_store = CycleStore::new(dir.path().join("cycles.jsonl"));
@@ -1469,6 +1483,8 @@ fn test_set_skill_creator() {
                 last_degraded_at: None,
                 success_rate: 0.0,
                 consecutive_observing_rounds: 0,
+                deployed_at: None,
+                last_efficacy: None,
             })
         }
     }
@@ -1550,6 +1566,8 @@ fn test_evaluate_result_positive_verdict() {
         last_degraded_at: None,
         success_rate: 0.5,
         consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
     };
     registry.add(artifact);
     let cycle_store = CycleStore::new(dir.path().join("cycles.jsonl"));
@@ -1584,6 +1602,8 @@ fn test_evaluate_result_negative_verdict() {
         last_degraded_at: None,
         success_rate: 0.5,
         consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
     };
     registry.add(artifact);
     let cycle_store = CycleStore::new(dir.path().join("cycles.jsonl"));
@@ -1691,6 +1711,8 @@ async fn test_execute_create_skill_action_already_exists() {
         last_degraded_at: None,
         success_rate: 0.0,
         consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
     };
     registry.add(artifact);
     let cycle_store = CycleStore::new(dir.path().join("cycles.jsonl"));
@@ -2195,6 +2217,8 @@ fn s8_artifact(
         last_degraded_at: None,
         success_rate: 0.0,
         consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
     }
 }
 

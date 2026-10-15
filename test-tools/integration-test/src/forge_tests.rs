@@ -424,3 +424,184 @@ pub async fn test_forge_sanitizer(ws: &TestWorkspace) -> Vec<TestResult> {
 
     results
 }
+
+// ---------------------------------------------------------------------------
+// 自进化升级（2026-10-14）：A 线 forge test / C 线 replay CLI 断言面
+// ---------------------------------------------------------------------------
+
+/// `forge test`（无 tests 段 = 诚实跳过）与 `forge replay-list`（空集 =
+/// 退出零）出口契约。执行面（真跑行为测试）需要 LLM 后端，这里只钉 CLI
+/// 契约形态——闸语义归单测（pipeline fail-closed 有专测）。
+pub async fn test_forge_behavior_replay_cli(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult> {
+    let suite = "forge/selfevo_cli";
+    let mut results = Vec::new();
+    print_suite_header(suite);
+
+    // forge test：对不存在 skill = 诚实报错（非零退出 + skill not found）。
+    let output = ws
+        .run_cli(bin, &["forge", "test", "__no_such_skill__"])
+        .await;
+    if !output.success() && output.stdout_contains("skill not found") {
+        results.push(pass(
+            &format!("{}/test_missing_skill", suite),
+            "forge test on missing skill fails honestly",
+        ));
+    } else if !output.success() {
+        // stderr 承载错误时的形态（stdout 只承载结果）。
+        results.push(pass(
+            &format!("{}/test_missing_skill", suite),
+            format!("exit={} (non-zero)", output.exit_code),
+        ));
+    } else {
+        results.push(fail(
+            &format!("{}/test_missing_skill", suite),
+            "missing skill should fail, got success",
+        ));
+    }
+
+    // forge replay-list：空集也是零退出 + 两区标题。
+    let output = ws.run_cli(bin, &["forge", "replay-list"]).await;
+    if output.success() && output.stdout_contains("pending") && output.stdout_contains("confirmed")
+    {
+        results.push(pass(
+            &format!("{}/replay_list", suite),
+            "replay-list shows pending/confirmed sections",
+        ));
+    } else {
+        results.push(fail(
+            &format!("{}/replay_list", suite),
+            format!(
+                "exit={}, stdout='{}'",
+                output.exit_code,
+                output.stdout.trim()
+            ),
+        ));
+    }
+
+    results
+}
+
+// ---------------------------------------------------------------------------
+// 自进化升级（2026-10-14）：B 线 profile CLI 断言面
+// ---------------------------------------------------------------------------
+
+/// `profile` 子命令生命周期：enable（config + enabled_at 锚点）/ list /
+/// veto / forget / disable。全盘上真相断言（config.json + user_profile.json）。
+pub async fn test_profile_cli(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult> {
+    let suite = "profile/cli";
+    let mut results = Vec::new();
+    print_suite_header(suite);
+
+    // enable：config 开关 + 锚点双双落盘。
+    let output = ws.run_cli(bin, &["profile", "enable"]).await;
+    if output.success() {
+        results.push(pass(&format!("{}/enable", suite), "profile enable ok"));
+    } else {
+        // 失败信息自带现场：stderr tail（错误落 stderr，stdout 只有 banner）。
+        let stderr_tail: String = output
+            .stderr
+            .lines()
+            .rev()
+            .take(5)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join(" | ");
+        results.push(fail(
+            &format!("{}/enable", suite),
+            format!(
+                "exit={}, stdout='{}', stderr_tail='{}'",
+                output.exit_code,
+                output.stdout.trim(),
+                stderr_tail
+            ),
+        ));
+    }
+    let profile_path = ws.workspace().join("config").join("user_profile.json");
+    let anchored = std::fs::read_to_string(&profile_path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .map(|v| v.get("enabled_at").map(|a| a.is_string()).unwrap_or(false))
+        .unwrap_or(false);
+    if anchored {
+        results.push(pass(
+            &format!("{}/anchor", suite),
+            "user_profile.json enabled_at recorded",
+        ));
+    } else {
+        results.push(fail(
+            &format!("{}/anchor", suite),
+            "enabled_at anchor missing after enable",
+        ));
+    }
+
+    // list：零退出 + habits 标题。
+    let output = ws.run_cli(bin, &["profile", "list"]).await;
+    if output.success() && output.stdout_contains("habits") {
+        results.push(pass(&format!("{}/list", suite), "profile list ok"));
+    } else {
+        results.push(fail(
+            &format!("{}/list", suite),
+            format!(
+                "exit={}, stdout='{}'",
+                output.exit_code,
+                output.stdout.trim()
+            ),
+        ));
+    }
+
+    // veto/forget：无匹配 = 零退出 + no matching（诚实不炸）。
+    for (cmd, arg) in [("veto", "不存在的习惯"), ("forget", "不存在的习惯")] {
+        let output = ws.run_cli(bin, &["profile", cmd, arg]).await;
+        if output.success() {
+            results.push(pass(&format!("{}/{}/no_match", suite, cmd), "honest no-op"));
+        } else {
+            results.push(fail(
+                &format!("{}/{}/no_match", suite, cmd),
+                format!("exit={}", output.exit_code),
+            ));
+        }
+    }
+
+    // disable：config 开关回 false。
+    let output = ws.run_cli(bin, &["profile", "disable"]).await;
+    let config_enabled = std::fs::read_to_string(ws.config_path())
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| {
+            v.get("user_profile")
+                .and_then(|u| u.get("enabled"))
+                .and_then(|e| e.as_bool())
+        });
+    // 段缺失 = 未曾 enable 成功（前面 enable 已报 FAIL，这里诚实跳过不连坐）。
+    let disabled = !config_enabled.unwrap_or(true);
+    if output.success() && disabled {
+        results.push(pass(&format!("{}/disable", suite), "profile disable ok"));
+    } else if config_enabled.is_none() {
+        results.push(skip(
+            &format!("{}/disable", suite),
+            "SKIP: user_profile section absent (enable failed upstream)",
+        ));
+    } else {
+        let stderr_tail: String = output
+            .stderr
+            .lines()
+            .rev()
+            .take(5)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join(" | ");
+        results.push(fail(
+            &format!("{}/disable", suite),
+            format!(
+                "exit={}, config.enabled={:?}, stderr_tail='{}'",
+                output.exit_code, config_enabled, stderr_tail
+            ),
+        ));
+    }
+
+    results
+}

@@ -41,6 +41,36 @@ pub enum ForgeAction {
         #[command(subcommand)]
         action: Option<LearningAction>,
     },
+    /// Run behavior regression tests for a skill (A 线回归网)
+    Test {
+        /// Skill name (directory under workspace/skills)
+        name: String,
+        /// Run a single test case (omit = all)
+        #[arg(long)]
+        test: Option<String>,
+    },
+    /// Extract failures from turn WAL into replay cases (C 线)
+    ReplayExtract,
+    /// List replay cases (pending / confirmed)
+    ReplayList,
+    /// Confirm pending replay cases into the regression set
+    ReplayConfirm {
+        /// Case name (omit = all pending)
+        name: Option<String>,
+    },
+    /// Replay confirmed failure cases (重跑断言零错误)
+    ReplayRun,
+    /// Generate a micro-optimization candidate for a skill (D 线)
+    Optimize {
+        /// Skill name (directory under workspace/skills)
+        name: String,
+        /// Operator: reorder_constraints | add_example | clarify_constraints | inject_failure_case
+        #[arg(long)]
+        op: String,
+        /// Parameter text (add_example / inject_failure_case)
+        #[arg(long)]
+        param: Option<String>,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -864,6 +894,124 @@ pub fn run(action: ForgeAction, local: bool) -> Result<()> {
                 .unwrap_or_else(|| "forge_export.json".to_string());
             cmd_export(&forge_dir, Some(&effective_output), all, id.as_deref())?
         }
+        ForgeAction::ReplayExtract => {
+            let workspace = common::workspace_path(&home);
+            let recs =
+                nemesis_forge::replay::extract_failures(&workspace).map_err(anyhow::Error::msg)?;
+            let cases: Vec<_> = recs
+                .iter()
+                .map(nemesis_forge::replay::to_test_case)
+                .collect();
+            let auto = forge_replay_auto_ingest(&home);
+            let (dest, total) = nemesis_forge::replay::ingest(&workspace, &cases, auto)
+                .map_err(anyhow::Error::msg)?;
+            println!(
+                "▶ 提取 {} 条失败记录 → {}（当前共 {} 条）",
+                cases.len(),
+                dest,
+                total
+            );
+        }
+        ForgeAction::ReplayList => {
+            let workspace = common::workspace_path(&home);
+            let (pending, confirmed) =
+                nemesis_forge::replay::list(&workspace).map_err(anyhow::Error::msg)?;
+            println!("pending ({}):", pending.len());
+            for n in &pending {
+                println!("  - {n}");
+            }
+            println!("confirmed ({}):", confirmed.len());
+            for n in &confirmed {
+                println!("  - {n}");
+            }
+        }
+        ForgeAction::ReplayConfirm { name } => {
+            let workspace = common::workspace_path(&home);
+            let n = nemesis_forge::replay::confirm(&workspace, name.as_deref())
+                .map_err(anyhow::Error::msg)?;
+            println!("✓ confirmed {n} case(s)");
+        }
+        ForgeAction::ReplayRun => {
+            let home_path = home.clone();
+            let workspace = common::workspace_path(&home);
+            let results = block_on_async(crate::forge_test_runner::run_replay_all(
+                &home_path, &workspace,
+            ))
+            .map_err(anyhow::Error::msg)?;
+            let mut failed = 0usize;
+            for (name, ok, failures) in &results {
+                if *ok {
+                    println!("  ✓ {name}");
+                } else {
+                    failed += 1;
+                    println!("  ✗ {name}: {}", failures.join("; "));
+                }
+            }
+            println!("结果: {}/{} passed", results.len() - failed, results.len());
+            if failed > 0 {
+                anyhow::bail!("replay regression failed: {failed} case(s)");
+            }
+        }
+        ForgeAction::Optimize { name, op, param } => {
+            let workspace = common::workspace_path(&home);
+            let skill_md = workspace.join("skills").join(&name).join("SKILL.md");
+            let content = std::fs::read_to_string(&skill_md)
+                .map_err(|e| anyhow::anyhow!("read {}: {e}", skill_md.display()))?;
+            let operator = nemesis_forge::optimize::Operator::parse(&op)
+                .ok_or_else(|| anyhow::anyhow!("unknown operator '{op}'"))?;
+            // D 线 token 预算（forge.optimize.budget_tokens，缺省 2000）。
+            let budget = forge_optimize_budget(&home);
+            let candidate =
+                nemesis_forge::optimize::apply(operator, &content, param.as_deref(), budget)
+                    .map_err(anyhow::Error::msg)?;
+            // 闸：候选必须过行为回归（带 tests 时；judge 层走回落链——与
+            // pipeline 部署闸同语义：声明了就评，无 caller = fail-closed）。
+            block_on_async(async {
+                // 进程内装配 pipeline 过闸：复用 agent loop 链的执行器。
+                use nemesis_forge::skill_tests::SkillTestRunner as _;
+                let runner = crate::forge_test_runner::BotSkillTestRunner::new(home.clone());
+                let spec = nemesis_forge::skill_tests::parse_skill_tests(&candidate.content)
+                    .map_err(anyhow::Error::msg)?;
+                if let Some(spec) = spec {
+                    let caller = nemesis_web::handlers::forge::resolve_judge_caller(
+                        &home.to_string_lossy(),
+                        &workspace.to_string_lossy(),
+                    )
+                    .map_err(anyhow::Error::msg)?;
+                    let threshold = forge_judge_threshold(&home);
+                    for case in &spec.tests {
+                        let transcript = runner
+                            .run_case(&candidate.content, case)
+                            .await
+                            .map_err(anyhow::Error::msg)?;
+                        let r = nemesis_forge::skill_tests::evaluate_case_full(
+                            case,
+                            &transcript,
+                            caller.clone(),
+                            threshold,
+                        )
+                        .await;
+                        if !r.passed {
+                            anyhow::bail!(
+                                "candidate failed behavior tests: {}",
+                                r.failures.join("; ")
+                            );
+                        }
+                    }
+                }
+                Ok::<(), anyhow::Error>(())
+            })?;
+            let out_dir = common::workspace_path(&home).join("forge").join("optimize");
+            std::fs::create_dir_all(&out_dir)?;
+            let out = out_dir.join(format!("{name}-{}.md", op));
+            std::fs::write(&out, &candidate.content)?;
+            println!("✓ 候选已生成（回归闸通过）: {}", out.display());
+            println!("  摘要: {}", candidate.summary);
+            println!("  应用：人工确认后以候选内容覆盖 skill 的 SKILL.md");
+        }
+        ForgeAction::Test { name, test } => {
+            block_on_async(cmd_test(&home, &name, test.as_deref()))?
+        }
         ForgeAction::Learning { action } => match action {
             None => cmd_learning_status(&forge_dir)?,
             Some(LearningAction::Status) => cmd_learning_status(&forge_dir)?,
@@ -875,5 +1023,144 @@ pub fn run(action: ForgeAction, local: bool) -> Result<()> {
     Ok(())
 }
 
+/// 在 main 的 `#[tokio::main]` 运行时内安全驱动 async 段：已有运行时 =
+/// block_in_place 桥接（不允许从运行时线程再起 Runtime）；无运行时（测试
+/// / 裸线程）= 现场建一个。三处（forge test / replay-run / optimize 闸）
+/// 同款——直接 `Runtime::new().block_on` 会在 tokio 上下文 panic
+/// （"Cannot start a runtime from within a runtime"，IT 实证 exit=101）。
+fn block_on_async<F: std::future::Future>(fut: F) -> F::Output {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(fut)),
+        Err(_) => {
+            // 无 tokio 上下文（裸线程）：现场建运行时。创建失败 = 进程级
+            // 环境崩溃，expect 合理。
+            let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
+            rt.block_on(fut)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;
+
+// ---------------------------------------------------------------------------
+// A 线行为回归（forge test，2026-10-14）
+// ---------------------------------------------------------------------------
+
+/// `forge test <name>`：对 workspace/skills/<name> 执行 frontmatter `tests`
+/// 段声明的行为用例（无 tests 段 = 诚实提示跳过）。judge 层走杂务模型
+/// 回落链（judge_model → agents.small_model → 主模型，实现单一真相源在
+/// nemesis-web handlers::forge）。
+async fn cmd_test(home: &std::path::Path, name: &str, test_filter: Option<&str>) -> Result<()> {
+    use nemesis_forge::skill_tests as st;
+
+    let workspace = common::workspace_path(home);
+    let skill_md = workspace.join("skills").join(name).join("SKILL.md");
+    if !skill_md.exists() {
+        anyhow::bail!("skill not found: {}", skill_md.display());
+    }
+    let content = std::fs::read_to_string(&skill_md)?;
+
+    let Some(spec) = st::parse_skill_tests(&content).map_err(anyhow::Error::msg)? else {
+        println!("○ skill '{name}' has no behavior tests (nothing to run)");
+        return Ok(());
+    };
+
+    let cases: Vec<_> = spec
+        .tests
+        .iter()
+        .filter(|c| test_filter.is_none() || Some(c.name.as_str()) == test_filter)
+        .collect();
+    if cases.is_empty() {
+        anyhow::bail!("no test matching filter '{:?}'", test_filter);
+    }
+
+    // judge caller：回落链解析（web 侧单一真相源实现）。
+    let caller = nemesis_web::handlers::forge::resolve_judge_caller(
+        &home.to_string_lossy(),
+        &workspace.to_string_lossy(),
+    )
+    .map_err(anyhow::Error::msg)?;
+    // 执行层缺省阈值（forge.test.judge_threshold，用例未显式声明时生效）。
+    let default_threshold =
+        nemesis_web::handlers::forge::load_forge_config(&workspace.to_string_lossy())
+            .test
+            .judge_threshold;
+
+    let runner: std::sync::Arc<dyn st::SkillTestRunner> = std::sync::Arc::new(
+        crate::forge_test_runner::BotSkillTestRunner::new(home.to_path_buf()),
+    );
+
+    println!("▶ forge test: {name} ({} case(s))", cases.len());
+    let mut passed = 0usize;
+    let mut failed = 0usize;
+    for case in &cases {
+        print!("  ○ {} ... ", case.name);
+        let transcript = runner
+            .run_case(&content, case)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let result =
+            st::evaluate_case_full(case, &transcript, caller.clone(), default_threshold).await;
+        if result.passed {
+            passed += 1;
+            println!("✓ pass");
+        } else {
+            failed += 1;
+            println!("✗ FAIL");
+            for f in &result.failures {
+                println!("      - {f}");
+            }
+        }
+        if let Some(j) = &result.judge {
+            println!(
+                "      judge: {:.2}/{} ({})",
+                j.score, j.threshold, j.summary
+            );
+        }
+    }
+
+    println!();
+    println!(
+        "结果: {}/{} passed{}",
+        passed,
+        passed + failed,
+        if failed > 0 {
+            " — 部署闸不通过"
+        } else {
+            ""
+        }
+    );
+    if failed > 0 {
+        anyhow::bail!("behavior regression failed: {failed} case(s)");
+    }
+    Ok(())
+}
+
+/// 失败重放入库开关（config.forge.json ForgeConfig.replay_auto_ingest）。
+/// 统一走 forge crate loader（缺文件/解析失败 = 缺省 + warn，与 WSAPI 同源）。
+fn forge_replay_auto_ingest(home: &std::path::Path) -> bool {
+    forge_config_of(home).replay_auto_ingest
+}
+
+/// D 线改写 token 预算（config.forge.json ForgeConfig.optimize.budget_tokens，
+/// 缺省 2000）。
+fn forge_optimize_budget(home: &std::path::Path) -> u32 {
+    forge_config_of(home).optimize.budget_tokens
+}
+
+/// judge 缺省分阈值（config.forge.json ForgeConfig.test.judge_threshold，
+/// 缺省 0.7）。
+fn forge_judge_threshold(home: &std::path::Path) -> f64 {
+    forge_config_of(home).test.judge_threshold
+}
+
+/// workspace 的 ForgeConfig（workspace/config/config.forge.json；loader 缺
+/// 文件/解析失败 = 全缺省）。
+fn forge_config_of(home: &std::path::Path) -> nemesis_forge::config::ForgeConfig {
+    nemesis_forge::config::load_forge_config(
+        &common::workspace_path(home)
+            .join("config")
+            .join("config.forge.json"),
+    )
+}

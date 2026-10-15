@@ -224,6 +224,65 @@ async fn e3_edge_cases_empty_out_of_range_and_noop() {
     delete_chat_log(&empty_key);
 }
 
+// —— 行动代理 P0（2026-10-14）撤销一等动词：rewind_last_turn ——
+
+/// 撤销最后一轮：两轮会话 undo → turn 2 整轮移除（user 行一并，与
+/// `rewind_to_message` 的「保留 index 所在轮」语义不同）、文件回 turn 2
+/// begin 前的 v2、redoable=true。
+#[tokio::test]
+async fn e3_undo_last_turn_removes_last_turn_and_restores_files() {
+    let (al, key, dir) = stage_two_turns("undo").await;
+    let file = dir.path().join("ws").join("code.txt");
+
+    let out = al.rewind_last_turn(&key).await.unwrap();
+    assert_eq!(out["kept_count"], 2, "turn 1 保留: {out}");
+    assert_eq!(out["removed_count"], 2, "turn 2 user 行一并移除: {out}");
+    assert_eq!(out["restore_turn"], 2);
+    assert_eq!(out["file_restore"], "applied");
+    assert_eq!(out["redoable"], true);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "v2");
+
+    let (rows, total, _, _) = read_chat_log(&key, 100, None);
+    assert_eq!(total, 2);
+    assert_eq!(rows[0]["content"], "turn 1 q");
+    assert_eq!(rows[1]["content"], "turn 1 a");
+
+    delete_chat_log(&key);
+}
+
+/// 单轮会话撤销：cut=0 合法（截到空）——「下单→撤销」剧本的主路径，也是
+/// `rewind_to_message` 契约表达不了的形态。连续 undo 两轮 → 空会话；redo
+/// 按 LIFO 弹最后一笔（turn 1）回填。无 user 行的会话诚实拒绝。
+#[tokio::test]
+async fn e3_undo_last_turn_single_turn_cut_to_zero_and_redo() {
+    let (al, key, _dir) = stage_two_turns("undo0").await;
+
+    // 第一笔：撤 turn 2。
+    let out = al.rewind_last_turn(&key).await.unwrap();
+    assert_eq!(out["removed_count"], 2, "{out}");
+
+    // 第二笔：剩 turn 1 → cut=0 截到空，redoable 恒 true（removed 永不空）。
+    let out = al.rewind_last_turn(&key).await.unwrap();
+    assert_eq!(out["kept_count"], 0, "{out}");
+    assert_eq!(out["removed_count"], 2);
+    assert_eq!(out["redoable"], true);
+    let (_, total, _, _) = read_chat_log(&key, 100, None);
+    assert_eq!(total, 0, "会话截到空");
+
+    // 空/无 user 行会话：诚实拒绝。
+    let err = al.rewind_last_turn(&key).await.unwrap_err();
+    assert!(err.contains("没有可撤销"), "{err}");
+
+    // redo LIFO：先回 turn 1（最后一笔 undo 的行）。
+    let out = al.redo_rewind(&key).await.unwrap();
+    assert_eq!(out["restored_count"], 2, "{out}");
+    let (rows, total, _, _) = read_chat_log(&key, 100, None);
+    assert_eq!(total, 2);
+    assert_eq!(rows[0]["content"], "turn 1 q");
+
+    delete_chat_log(&key);
+}
+
 // —— git 影子形态：redo 前向恢复目标 = rewind 时刻实时树 ——
 
 /// git 形态的两轮摆法（root 带 .git 目录 → store 构造期选 git backend）。

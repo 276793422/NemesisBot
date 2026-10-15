@@ -25,6 +25,9 @@ const routes: RouteRecordRaw[] = [
   { path: '/plugins', name: 'plugins', component: () => import('../views/PluginsView.vue') },
   { path: '/subagents', name: 'subagents', component: () => import('../views/SubagentView.vue') },
   { path: '/channels', name: 'channels', component: () => import('../views/ChannelsView.vue') },
+  // 行动连接器（2026-10-14 AI 原生行动代理）：只读面——连接器注册表 +
+  // 行动回执（行动账本）+ 纸面券商模拟账本（WSAPI connectors 模块）。
+  { path: '/connectors', name: 'connectors', component: () => import('../views/ConnectorsView.vue') },
   // P2-1 (2026-08-24 UI entry gap): 「代码开发」页（LSP/CLI 委派配置）。
   { path: '/coding', name: 'coding', component: () => import('../views/CodingView.vue') },
   ...(import.meta.env.VITE_FEATURE_WORKFLOW !== 'false' ? [{ path: '/workflows', name: 'workflows', component: () => import('../views/WorkflowView.vue') }] : []),
@@ -33,6 +36,9 @@ const routes: RouteRecordRaw[] = [
   // not as a Vue Router route. The dashboard SPA never renders this path;
   // WorkflowList opens it via window.open to a fresh tab.
   ...(import.meta.env.VITE_FEATURE_FORGE !== 'false' ? [{ path: '/forge', name: 'forge', component: () => import('../views/ForgeView.vue') }] : []),
+  // B 线用户习惯画像（2026-10-14）：运行期 config 闸（user_profile.enabled），
+  // 非 cargo feature——路由恒在，页面内诚实展示开关态。
+  { path: '/profile', name: 'profile', component: () => import('../views/ProfileView.vue') },
   { path: '/persona-shop', name: 'persona-shop', component: () => import('../views/PersonaShopView.vue') },
   // Configuration
   { path: '/settings', name: 'settings', component: () => import('../views/SettingsView.vue') },

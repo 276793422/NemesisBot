@@ -437,6 +437,27 @@ impl Forge {
         self.reflector.as_ref()
     }
 
+    /// Set the skill behavior-test runner (A 线回归闸执行器，2026-10-14)。
+    /// Pipeline 在 Skill artifact 校验时调用；未注入 = 带 tests 段的
+    /// artifact 诚实失败（fail-closed，不允许无执行器的静默跳过）。
+    pub fn set_skill_test_runner(
+        &self,
+        runner: std::sync::Arc<dyn crate::skill_tests::SkillTestRunner>,
+    ) {
+        if let Some(ref pipeline) = self.pipeline {
+            pipeline.set_skill_test_runner(runner);
+        }
+    }
+
+    /// Set the Stage 2 judge-layer caller（杂务模型回落链注入点，2026-10-14
+    /// 三轮复查对齐 CLI/WSAPI/部署闸三入口口径）。级联到 pipeline 的
+    /// judge 专用槽；Stage 3 质量评估维持主模型语义不受影响。
+    pub fn set_judge_caller(&self, caller: std::sync::Arc<dyn crate::reflector_llm::LLMCaller>) {
+        if let Some(ref pipeline) = self.pipeline {
+            pipeline.set_judge_caller(caller);
+        }
+    }
+
     /// Get the pipeline (if initialized).
     pub fn pipeline(&self) -> Option<&Pipeline> {
         self.pipeline.as_deref()
@@ -650,6 +671,8 @@ impl Forge {
             last_degraded_at: None,
             success_rate: 0.0,
             consecutive_observing_rounds: 0,
+            deployed_at: None,
+            last_efficacy: None,
         };
 
         self.registry.add(artifact.clone());

@@ -91,7 +91,8 @@ func main() {
 	registry.Register(models.NewTestAISum())
 	registry.Register(models.NewTestAIDocsLift())
 	registry.Register(models.NewTestAISpawn())
-	fmt.Println("测试模型已注册: testai-1.1, testai-1.2, testai-1.3, testai-1.4, testai-2.0, testai-2.1, testai-3.0, testai-3.1, testai-4.2, testai-4.3, testai-5.0, testai-6.0, testai-7.0, testai-8.0, testai-9.0, testai-9.1, testai-9.2, testai-9.3, testai-8.5, testai-10.0, testai-vision-1.0, testai-planner-1.0, testai-review-1.0, testai-board-1.0, testai-board-edit-1.0, testai-board-edit-slow-1.0, testai-conflict-solver-1.0, testai-wasm-1.0, testai-codemode-1.0, testai-wal-1.0, testai-sum-1.0, testai-docslift-1.0, testai-spawn-1.0")
+	registry.Register(models.NewTestAIConn())
+	fmt.Println("测试模型已注册: testai-1.1, testai-1.2, testai-1.3, testai-1.4, testai-2.0, testai-2.1, testai-3.0, testai-3.1, testai-4.2, testai-4.3, testai-5.0, testai-6.0, testai-7.0, testai-8.0, testai-9.0, testai-9.1, testai-9.2, testai-9.3, testai-8.5, testai-10.0, testai-vision-1.0, testai-planner-1.0, testai-review-1.0, testai-board-1.0, testai-board-edit-1.0, testai-board-edit-slow-1.0, testai-conflict-solver-1.0, testai-wasm-1.0, testai-codemode-1.0, testai-wal-1.0, testai-sum-1.0, testai-docslift-1.0, testai-spawn-1.0, testai-conn-1.0")
 
 	// 别名表（W1.5）：TESTAI_ALIASES="gpt-4o-mini=testai-1.1,..." 把价目表内
 	// 已知的真实模型名映射到测试模型，使计价管线断言不依赖真实模型环境。
@@ -146,6 +147,22 @@ func main() {
 		}
 		time.Sleep(time.Duration(secs) * time.Second)
 		c.String(200, fmt.Sprintf("slept %d seconds", secs))
+	})
+
+	// /quote?symbol=AAPL —— 回环行情端点，给 connector 注册表 e2e 里
+	// rest 型 connector 的 http 绑定当目标：price 固定 123.45，symbol
+	// 原样回显；缺 symbol 参数返回 400。
+	router.GET("/quote", func(c *gin.Context) {
+		symbol := c.Query("symbol")
+		if symbol == "" {
+			c.JSON(400, gin.H{"error": "missing required query parameter: symbol"})
+			return
+		}
+		c.JSON(200, gin.H{
+			"symbol": symbol,
+			"price":  123.45,
+			"ts":     "2026-10-14T08:00:00Z",
+		})
 	})
 
 	// 启动信息

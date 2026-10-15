@@ -135,6 +135,62 @@ export interface ChainSegment {
 }
 
 // ============================================================================
+// 行动账本 (connectors.receipts) — ConnectorsView 回执区块 / Logs 行动账本
+// 页签共享类型与徽标映射（后端契约已冻结；未知 risk/outcome 值诚实降级，
+// 不猜不崩）
+// ============================================================================
+
+export type ConnectorRisk = 'low' | 'medium' | 'high' | 'critical'
+export type ConnectorOutcome = 'executed' | 'denied_approval' | 'budget_blocked' | 'disabled' | 'error'
+
+export interface ConnectorReceipt {
+  receipt_id: string
+  ts: string // RFC3339
+  connector: string
+  op: string
+  risk: ConnectorRisk
+  class: string
+  outcome: ConnectorOutcome
+  args_digest: string
+  summary?: string
+  receipt_key?: string
+  receipt_value?: string
+  budget_consumed?: Record<string, number>
+  approval_ref?: string
+  session_key?: string
+  undoable?: boolean
+}
+
+/** risk → 徽标色类（low=绿 medium=黄 high=橙 critical=红）。 */
+export function connectorRiskClass(risk: string): string {
+  switch (risk) {
+    case 'low': return 'risk-low'
+    case 'medium': return 'risk-medium'
+    case 'high': return 'risk-high'
+    case 'critical': return 'risk-critical'
+    default: return 'risk-unknown'
+  }
+}
+
+const OUTCOME_META: Record<string, { cls: string; label: string }> = {
+  executed: { cls: 'badge-success', label: '已执行' },
+  denied_approval: { cls: 'badge-error', label: '审批拒绝' },
+  budget_blocked: { cls: 'badge-warning', label: '限额拦截' },
+  disabled: { cls: 'badge-neutral', label: '已停用' },
+  error: { cls: 'badge-error', label: '错误' },
+}
+
+/** outcome → 全局 badge 色类（未知值灰色）。 */
+export function connectorOutcomeClass(outcome: string): string {
+  return OUTCOME_META[outcome]?.cls ?? 'badge-neutral'
+}
+
+/** outcome → 中文标签（未知值原样回显）。 */
+export function connectorOutcomeLabel(outcome: string): string {
+  return OUTCOME_META[outcome]?.label ?? outcome
+}
+
+// ============================================================================
 // 工具函数
 // ============================================================================
 

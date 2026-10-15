@@ -60,6 +60,15 @@ pub struct QualityValidationResult {
     pub dimensions: std::collections::HashMap<String, u32>,
 }
 
+/// A 线行为回归结果（可折入 Stage 2 计数与错误面）。
+#[derive(Debug, Default)]
+struct BehaviorOutcome {
+    passed: bool,
+    tests_run: u32,
+    tests_passed: u32,
+    errors: Vec<String>,
+}
+
 /// Combined validation result across all three stages.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArtifactValidation {
@@ -82,6 +91,13 @@ pub struct Pipeline {
     #[allow(dead_code)]
     config: ForgeConfig,
     llm_caller: parking_lot::RwLock<Option<Arc<dyn crate::reflector_llm::LLMCaller>>>,
+    /// A 线行为回归执行器（Skill artifact 带 tests 段时调用）。
+    /// 未注入 + 带 tests = Stage 2 fail-closed（诚实报错，不静默跳过）。
+    skill_test_runner: parking_lot::RwLock<Option<Arc<dyn crate::skill_tests::SkillTestRunner>>>,
+    /// Stage 2 judge 层专用 caller（杂务模型回落链注入点，2026-10-14 三轮
+    /// 复查对齐三入口口径）：None = 回落 `llm_caller`（主模型，测试注入
+    /// 旧形态）。Stage 3 质量评估不受此槽影响（维持主模型语义）。
+    judge_caller: parking_lot::RwLock<Option<Arc<dyn crate::reflector_llm::LLMCaller>>>,
 }
 
 impl Pipeline {
@@ -91,6 +107,8 @@ impl Pipeline {
             config,
             registry,
             llm_caller: parking_lot::RwLock::new(None),
+            skill_test_runner: parking_lot::RwLock::new(None),
+            judge_caller: parking_lot::RwLock::new(None),
         }
     }
 
@@ -99,37 +117,31 @@ impl Pipeline {
         *self.llm_caller.write() = Some(caller);
     }
 
+    /// Set the skill behavior-test runner (A 线回归闸，2026-10-14)。
+    pub fn set_skill_test_runner(&self, runner: Arc<dyn crate::skill_tests::SkillTestRunner>) {
+        *self.skill_test_runner.write() = Some(runner);
+    }
+
+    /// Set the Stage 2 judge-layer caller（杂务模型回落链注入点）。未注入 =
+    /// judge 层回落 `llm_caller`（主模型）。
+    pub fn set_judge_caller(&self, caller: Arc<dyn crate::reflector_llm::LLMCaller>) {
+        *self.judge_caller.write() = Some(caller);
+    }
+
     /// Run the full validation pipeline on content (synchronous wrapper).
     ///
     /// This is the primary API used by forge.rs and learning_engine.rs.
     /// Internally uses `validate_async` with `block_on` for LLM calls.
     pub fn validate(&self, kind: ArtifactKind, name: &str, content: &str) -> ArtifactValidation {
-        let mut validation = ArtifactValidation {
-            stage1_static: None,
-            stage2_functional: None,
-            stage3_quality: None,
-            last_validated: chrono::Local::now().to_rfc3339(),
-        };
-
-        // Stage 1: Static validation
-        let stage1 = self.validate_static(kind, name, content);
-        validation.stage1_static = Some(stage1.clone());
-        if !stage1.stage.passed {
-            return validation;
+        let future = self.validate_async(kind, name, content);
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => tokio::task::block_in_place(|| handle.block_on(future)),
+            Err(_) => {
+                let rt = tokio::runtime::Runtime::new()
+                    .expect("Failed to create tokio runtime for validation");
+                rt.block_on(future)
+            }
         }
-
-        // Stage 2: Functional validation
-        let stage2 = self.validate_functional(kind, content);
-        validation.stage2_functional = Some(stage2.clone());
-        if !stage2.stage.passed {
-            return validation;
-        }
-
-        // Stage 3: Quality evaluation (LLM-as-Judge or default)
-        let stage3 = self.evaluate_quality_sync(kind, name, content);
-        validation.stage3_quality = Some(stage3);
-
-        validation
     }
 
     /// Async version of validate for use in async contexts.
@@ -153,8 +165,37 @@ impl Pipeline {
             return validation;
         }
 
-        // Stage 2: Functional validation
-        let stage2 = self.validate_functional(kind, content);
+        // Stage 2: Functional validation（含 A 线行为回归闸）
+        let mut stage2 = self.validate_functional(kind, content);
+        if matches!(kind, ArtifactKind::Skill) {
+            match crate::skill_tests::parse_skill_tests(content) {
+                Ok(Some(spec)) => {
+                    match self.run_behavior_tests(&spec, content).await {
+                        Ok(behavior) => {
+                            stage2.tests_run += behavior.tests_run;
+                            stage2.tests_passed += behavior.tests_passed;
+                            if !behavior.passed {
+                                stage2.stage.passed = false;
+                                stage2.stage.errors.extend(behavior.errors);
+                            }
+                        }
+                        Err(e) => {
+                            // fail-closed：runner 缺失或执行器报错 = 闸不通过
+                            stage2.stage.passed = false;
+                            stage2.stage.errors.push(format!("behavior tests: {e}"));
+                        }
+                    }
+                }
+                Ok(None) => {} // 存量无 tests 段：诚实跳过
+                Err(e) => {
+                    stage2.stage.passed = false;
+                    stage2
+                        .stage
+                        .errors
+                        .push(format!("tests section invalid: {e}"));
+                }
+            }
+        }
         validation.stage2_functional = Some(stage2.clone());
         if !stage2.stage.passed {
             return validation;
@@ -165,6 +206,51 @@ impl Pipeline {
         validation.stage3_quality = Some(stage3);
 
         validation
+    }
+
+    /// A 线行为回归执行（Skill 带 tests 段）。返回可折入 Stage 2 的结果。
+    async fn run_behavior_tests(
+        &self,
+        spec: &crate::skill_tests::SkillTestsSpec,
+        content: &str,
+    ) -> Result<BehaviorOutcome, String> {
+        let runner = self.skill_test_runner.read().clone();
+        let Some(runner) = runner else {
+            return Err(
+                "behavior tests declared but no test runner configured (fail-closed)".into(),
+            );
+        };
+        // judge 层 caller：专用槽（杂务回落链）优先，回落主模型槽。
+        let caller = match self.judge_caller.read().clone() {
+            Some(c) => Some(c),
+            None => self.llm_caller.read().clone(),
+        };
+
+        let mut outcome = BehaviorOutcome::default();
+        let default_threshold = self.config.test.judge_threshold;
+        for case in &spec.tests {
+            outcome.tests_run += 1;
+            let transcript = runner.run_case(content, case).await?;
+            let result = crate::skill_tests::evaluate_case_full(
+                case,
+                &transcript,
+                caller.clone(),
+                default_threshold,
+            )
+            .await;
+
+            if result.passed {
+                outcome.tests_passed += 1;
+            } else {
+                outcome.errors.push(format!(
+                    "case '{}': {}",
+                    case.name,
+                    result.failures.join("; ")
+                ));
+            }
+        }
+        outcome.passed = outcome.errors.is_empty();
+        Ok(outcome)
     }
 
     /// Execute the full validation pipeline for an artifact by ID.
@@ -312,30 +398,6 @@ impl Pipeline {
             },
             tests_run,
             tests_passed,
-        }
-    }
-
-    /// Synchronous wrapper for evaluate_quality that blocks on the async LLM call.
-    fn evaluate_quality_sync(
-        &self,
-        kind: ArtifactKind,
-        name: &str,
-        content: &str,
-    ) -> QualityValidationResult {
-        // Try to use an existing tokio runtime, or fall back to a new one
-        let future = self.evaluate_quality(kind, name, content);
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                // We're inside a tokio runtime. Use block_in_place to avoid
-                // deadlocking the runtime when calling block_on from an async context.
-                tokio::task::block_in_place(|| handle.block_on(future))
-            }
-            Err(_) => {
-                // No runtime available, create a new one
-                let rt = tokio::runtime::Runtime::new()
-                    .expect("Failed to create tokio runtime for quality evaluation");
-                rt.block_on(future)
-            }
         }
     }
 
