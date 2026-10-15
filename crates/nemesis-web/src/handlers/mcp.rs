@@ -212,6 +212,15 @@ impl McpHandler {
                 return Err(format!("{label} 含掩码值（****），新建时请输入完整值"));
             }
         }
+        // 头行语法闸（2026-10-15 第十二轮）：与 CLI `mcp add` 同源（规则
+        // 单一真相源 nemesis_config::validate_mcp_header_line）——此前
+        // Dashboard 放行运行期必跳过/必失败的行（缺冒号、保留头、引用名带
+        // 空格），失败延迟到挂载期 401 且 WARN 对用户不可见。
+        for line in &server.headers {
+            if let Err(reason) = nemesis_config::validate_mcp_header_line(line) {
+                return Err(format!("headers 校验失败：{reason}"));
+            }
+        }
         // Legacy compat: if url empty but command provided, use command as url
         server.normalize();
         // 锁在 update_mcp_config 内：权威去重 + push 全程串行（source_add
@@ -252,8 +261,27 @@ impl McpHandler {
                 server.description = v.to_string();
             }
             if let Some(mut v) = parse_string_list(data, "headers") {
+                // 先记掩码条目下标（restore 会原位替换成存量原值，之后无法
+                // 再区分新行与透传的存量行）。
+                let masked: Vec<usize> = v
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, l)| l.contains("****"))
+                    .map(|(i, _)| i)
+                    .collect();
                 // 回显是脱敏形态：掩码条目按键还原存量原值，找不到 = loud 拒绝。
                 restore_masked_entries(&mut v, &server.headers)?;
+                // 头行语法闸（2026-10-15 第十二轮）：只验**新/改动**行——
+                // 掩码透传的存量行放行（老条目可能先于校验存在，不许因
+                // 无关字段的更新被连带拒绝）；规则与 CLI/server.add 同源。
+                for (i, line) in v.iter().enumerate() {
+                    if masked.contains(&i) {
+                        continue;
+                    }
+                    if let Err(reason) = nemesis_config::validate_mcp_header_line(line) {
+                        return Err(format!("headers 校验失败：{reason}"));
+                    }
+                }
                 server.headers = v;
             }
             if let Some(v) = parse_string_list(data, "args") {

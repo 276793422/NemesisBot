@@ -358,3 +358,127 @@ async fn r10_transport_type_case_variants_canonicalized_on_disk() {
     assert_eq!(get_type("case-srv"), "http", "HTTP → http 盘上归一");
     assert_eq!(get_type("case-stdio"), "stdio", "Stdio → stdio 盘上归一");
 }
+
+// R12（2026-10-15）：头行语法闸——server.add / server.update 写入面与 CLI
+// `mcp add` 同源（单一真相源 nemesis_config::validate_mcp_header_line）。
+// 此前 Dashboard 放行运行期必跳过/必失败的行（缺冒号、保留头、引用名带
+// 空格），失败延迟到挂载期 401 且 WARN 对用户不可见。
+
+fn r12_bad_header_lines() -> Vec<&'static str> {
+    vec![
+        "Authorization",          // 缺冒号
+        "Mcp-Session-Id: forged", // 协议保留头
+        "X-Key: vault: name",     // 引用名带首尾空格
+        "X-Key: vault:",          // 引用名为空
+    ]
+}
+
+#[tokio::test]
+async fn r12_server_add_rejects_illegal_header_line_without_disk_write() {
+    let handler = McpHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(
+        dir.path().join("config/config.mcp.json"),
+        serde_json::to_string_pretty(&nemesis_config::McpConfig::default()).unwrap(),
+    )
+    .unwrap();
+    let ctx = make_ctx(&dir);
+
+    for bad in r12_bad_header_lines() {
+        let data = serde_json::json!({
+            "name": "h-srv", "transport_type": "http", "url": "http://x/mcp",
+            "headers": ["X-Ok: 1", bad],
+        });
+        let err = match handler.handle_cmd("server.add", Some(data), &ctx).await {
+            Ok(v) => panic!("bad header '{bad}' must be rejected, got: {v:?}"),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("headers 校验失败"),
+            "'{bad}' → wrong error: {err}"
+        );
+    }
+
+    // 拒绝后盘上无残留条目
+    let raw: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("config/config.mcp.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        raw["servers"]
+            .as_array()
+            .map(|a| a.is_empty())
+            .unwrap_or(true),
+        "rejected entries must not persist: {raw}"
+    );
+}
+
+#[tokio::test]
+async fn r12_server_update_rejects_new_illegal_header_line() {
+    let handler = McpHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    seed_mcp_config(
+        &dir,
+        serde_json::json!([{
+            "name": "s1", "transport_type": "http", "url": "http://x",
+            "headers": ["Authorization: b"],
+        }]),
+    );
+    let ctx = make_ctx(&dir);
+
+    let data = serde_json::json!({
+        "name": "s1",
+        "headers": ["Authorization: b", "X-Bad: vault: x"],
+    });
+    let err = match handler.handle_cmd("server.update", Some(data), &ctx).await {
+        Ok(v) => panic!("new bad header must be rejected, got: {v:?}"),
+        Err(e) => e,
+    };
+    assert!(err.contains("headers 校验失败"), "actual: {err}");
+
+    // 拒绝后盘上 headers 保持原值（事务 abort 语义）
+    let raw: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("config/config.mcp.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        raw["servers"][0]["headers"],
+        serde_json::json!(["Authorization: b"]),
+        "rejected update must not persist: {raw}"
+    );
+}
+
+#[tokio::test]
+async fn r12_server_update_tolerates_masked_legacy_plus_new_good_line() {
+    let handler = McpHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    seed_mcp_config(
+        &dir,
+        serde_json::json!([{
+            "name": "s1", "transport_type": "http", "url": "http://x",
+            "headers": ["Authorization: b"],
+        }]),
+    );
+    let ctx = make_ctx(&dir);
+
+    // UI 回显形态：掩码行（透传存量）+ 新增合法行——掩码行不进校验面，
+    // 更新必须成功且盘上 = 存量原值 + 新行。
+    let data = serde_json::json!({
+        "name": "s1",
+        "headers": ["Authorization: ****", "X-Extra: ok"],
+    });
+    let out = handler
+        .handle_cmd("server.update", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["updated"], true);
+
+    let raw = std::fs::read_to_string(dir.path().join("config/config.mcp.json")).unwrap();
+    assert!(
+        raw.contains("Authorization: b"),
+        "掩码行须还原存量原值: {raw}"
+    );
+    assert!(raw.contains("X-Extra: ok"), "新合法行须落盘: {raw}");
+}
