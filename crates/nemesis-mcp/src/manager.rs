@@ -190,26 +190,12 @@ impl McpManager {
         // 按 transport_type 分派：stdio（默认）| http（Streamable HTTP）。
         // HTTP 型 MCP 服务器（如 desktop-pet2 的 8808/mcp 端点）不再需要
         // stdio bridge 脚本——直接注册（2026-08-30）。
-        let transport: Box<dyn crate::transport::Transport> = match server.transport_type.as_str() {
-            "http" | "streamable_http" | "streamable-http" => {
-                if server.url.is_empty() {
-                    return Err(format!(
-                        "MCP server '{}' uses http transport but has no url",
-                        server.name
-                    ));
-                }
-                // 收官批 B 段：消费 McpServerConfig.headers（"KEY: VALUE"
-                // 行，值可含 vault:/env: 引用——头凭据化，vault 真值只进
-                // HTTP 请求）。探测路径 discover_server_metadata_http 无
-                // headers 语境，保持 new(url)。
-                Box::new(crate::http_transport::HttpTransport::with_headers(
-                    server.url.clone(),
-                    server.headers.clone(),
-                ))
-            }
-            _ => Box::new(crate::stdio_transport::StdioTransport::from_config(server)),
+        // 2026-10-15 收敛：分派逻辑上移到 McpClient::from_server_config
+        // （单一真相源），与 CLI `mcp test/tools/...` 连接路径共用。
+        let mut client: Box<dyn Client> = match McpClient::from_server_config(server) {
+            Ok(c) => Box::new(c),
+            Err(e) => return Err(e.to_string()),
         };
-        let mut client: Box<dyn Client> = Box::new(McpClient::new(transport));
 
         let timeout = std::time::Duration::from_secs(if server.timeout_secs > 0 {
             server.timeout_secs
@@ -349,7 +335,18 @@ pub async fn discover_server_metadata_http(
     url: &str,
     timeout_secs: u64,
 ) -> Result<DiscoveryResult, String> {
-    let transport = HttpTransport::new(url);
+    discover_server_metadata_http_with_headers(url, Vec::new(), timeout_secs).await
+}
+
+/// One-shot HTTP discovery with configured header lines（"KEY: VALUE"，
+/// 值可含 vault:/env:/yaml: 引用——带认证探测与运行时头消费化同源，
+/// 消除「探测能通、安装后 401」的断层；2026-10-15 W1）。
+pub async fn discover_server_metadata_http_with_headers(
+    url: &str,
+    header_lines: Vec<String>,
+    timeout_secs: u64,
+) -> Result<DiscoveryResult, String> {
+    let transport = HttpTransport::with_headers(url, header_lines);
     let mut client: Box<dyn Client> = Box::new(McpClient::new(Box::new(transport)));
 
     let duration = std::time::Duration::from_secs(if timeout_secs > 0 { timeout_secs } else { 15 });

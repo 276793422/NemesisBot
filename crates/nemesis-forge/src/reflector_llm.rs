@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 
 use crate::reflector::{ReflectionStats, TraceStats};
-use crate::types::{Artifact, ExperienceStats};
+use crate::types::{Artifact, CollectedExperience, ExperienceStats};
 
 /// Forge 侧杂务 LLM 输出预算的统一真相源（aux 杂务三层治理 2026-09-28，
 /// 用户裁决统一 8192：预算是防失控上限不是支出；thinking 系模型把思考
@@ -204,6 +204,127 @@ pub async fn semantic_analysis(
     let system_prompt = nemesis_prompts::forge::SEMANTIC_ANALYSIS_SYSTEM_PROMPT;
 
     caller.chat(system_prompt, &user_prompt, max_tokens).await
+}
+
+/// 蒸馏提示单行单元格的截断上限（字符）：输入/输出摘要超长截尾，防止
+/// 个别大载荷经验把提示词预算吃穿。行数上限 [`MAX_DISTILL_ROWS`]。
+const MAX_DISTILL_CELL: usize = 220;
+
+/// 蒸馏提示的最多经验行数（按时序取最近的 N 条）：86 条全量经验在 220
+/// 字符截断下约 20KB，thinking 系模型也吃得下；再多收益递减。
+const MAX_DISTILL_ROWS: usize = 120;
+
+/// Build a sanitized chronological digest of experiences for distillation.
+///
+/// 每行一条经验（时序、工具、成败、耗时、会话、输入/输出摘要），先过
+/// [`crate::sanitizer::Sanitizer`] 脱敏再进提示词——经验层虽有采集期
+/// 脱敏，这里做第二道（防御纵深：蒸馏提示词是明文进 LLM 的面）。
+pub fn build_experience_digest(experiences: &[CollectedExperience]) -> String {
+    let sanitizer = crate::sanitizer::Sanitizer::new();
+    let start = experiences.len().saturating_sub(MAX_DISTILL_ROWS);
+    let mut sb = String::new();
+    for (i, ce) in experiences[start..].iter().enumerate() {
+        let e = &ce.experience;
+        let input = truncate_cell(&sanitizer.sanitize(&e.input_summary));
+        let output = truncate_cell(&sanitizer.sanitize(&e.output_summary));
+        sb.push_str(&format!(
+            "#{} [{}] {} {}ms session={} input={} output={}\n",
+            start + i,
+            e.tool_name,
+            if e.success { "OK" } else { "FAIL" },
+            e.duration_ms,
+            e.session_key,
+            input,
+            output,
+        ));
+    }
+    sb
+}
+
+fn truncate_cell(s: &str) -> String {
+    if s.chars().count() <= MAX_DISTILL_CELL {
+        return s.to_string();
+    }
+    let cut: String = s.chars().take(MAX_DISTILL_CELL).collect();
+    format!("{cut}…[truncated]")
+}
+
+/// 蒸馏产物（`distill_skill_draft` 成功形态）。
+pub struct DistilledSkill {
+    /// 技能名（kebab-case，LLM 产出，落盘前由调用方再过 slug 校验）。
+    pub name: String,
+    /// 完整 SKILL.md 内容（含 YAML frontmatter）。
+    pub skill_md: String,
+    /// 一句话沉淀理由。
+    pub rationale: String,
+}
+
+/// Distill a step-by-step SKILL.md draft from experiences via LLM.
+///
+/// `artifacts.auto_skill` 生成面（2026-10-15 MCP-HTTP 安装闭环 W2）：对
+/// 「同工具序列多次成功收敛」的模式产出步骤化技能草稿。返回 `Ok(None)`
+/// 表示「无可蒸馏模式 / LLM 回复不合契约」（两者对调用方等价：本轮不出
+/// 草稿，诚实降级）；`Err` 是调用面故障（网络/预算烧穿）。
+pub async fn distill_skill_draft(
+    caller: &dyn LLMCaller,
+    experiences: &[CollectedExperience],
+    artifacts: &[Artifact],
+    max_tokens: Option<i64>,
+) -> Result<Option<DistilledSkill>, String> {
+    if experiences.is_empty() {
+        return Ok(None);
+    }
+    let digest = build_experience_digest(experiences);
+    let artifacts_list = artifacts
+        .iter()
+        .map(|a| format!("- [{:?}] {} v{}", a.kind, a.name, a.version))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let user_prompt = nemesis_prompts::forge::skill_distillation_prompt(&digest, &artifacts_list);
+    let raw = caller
+        .chat(
+            nemesis_prompts::forge::SKILL_DISTILLATION_SYSTEM_PROMPT,
+            &user_prompt,
+            max_tokens,
+        )
+        .await?;
+    Ok(parse_distill_response(&raw))
+}
+
+/// Parse the distillation LLM response (JSON contract in
+/// `nemesis_prompts::forge::skill_distillation_prompt`).
+///
+/// 严格契约：`has_skill` 为真且 `name`/`skill_md` 均非空、`skill_md` 带
+/// `---` frontmatter——任一不满足按「无可蒸馏」处理（不猜、不救）。
+fn parse_distill_response(raw: &str) -> Option<DistilledSkill> {
+    let json = extract_json(raw)?;
+    let has_skill = json.get("has_skill").and_then(|v| v.as_bool())?;
+    if !has_skill {
+        return None;
+    }
+    let name = json
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    let skill_md = json
+        .get("skill_md")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    if !skill_md.starts_with("---") {
+        return None;
+    }
+    let rationale = json
+        .get("rationale")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    Some(DistilledSkill {
+        name: name.to_string(),
+        skill_md: skill_md.to_string(),
+        rationale,
+    })
 }
 
 /// Forge 产物质量评审 user prompt 构造（LLM-as-Judge 单一真相源）：
