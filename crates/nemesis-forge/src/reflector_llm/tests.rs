@@ -454,3 +454,221 @@ fn test_extract_json_end_before_start_returns_none() {
     assert!(extract_json("}{").is_none());
     assert!(extract_json("no braces at all").is_none());
 }
+
+// =========================================================================
+// auto_skill 蒸馏（2026-10-15 W2）：digest 构造 / 响应解析 / 蒸馏入口
+// =========================================================================
+
+fn make_distill_experience(
+    tool: &str,
+    success: bool,
+    input: &str,
+    output: &str,
+) -> CollectedExperience {
+    CollectedExperience {
+        dedup_hash: format!("dh-{tool}"),
+        experience: crate::types::Experience {
+            id: format!("exp-{tool}"),
+            tool_name: tool.to_string(),
+            input_summary: input.to_string(),
+            output_summary: output.to_string(),
+            success,
+            duration_ms: 42,
+            timestamp: "2026-10-15T00:00:00+08:00".to_string(),
+            session_key: "sess:1".to_string(),
+        },
+    }
+}
+
+/// 返回固定合法蒸馏 JSON 的 mock（满足 parse_distill_response 契约）。
+struct DistillOkMockLLM;
+
+#[async_trait]
+impl LLMCaller for DistillOkMockLLM {
+    async fn chat(
+        &self,
+        _system_prompt: &str,
+        _user_prompt: &str,
+        _max_tokens: Option<i64>,
+    ) -> Result<String, String> {
+        Ok(
+            r#"{"has_skill": true, "name": "distill-entry", "skill_md": "---\nname: distill-entry\n---\nsteps", "rationale": "r"}"#
+                .to_string(),
+        )
+    }
+}
+
+#[test]
+fn test_parse_distill_response_valid() {
+    let raw = r#"{"has_skill": true, "name": "install-http-mcp", "skill_md": "---\nname: install-http-mcp\n---\n1. discover\n2. add", "rationale": "收敛序列"}"#;
+    let d = parse_distill_response(raw).expect("valid response must parse");
+    assert_eq!(d.name, "install-http-mcp");
+    assert!(d.skill_md.starts_with("---\n"));
+    assert_eq!(d.rationale, "收敛序列");
+}
+
+#[test]
+fn test_parse_distill_response_has_skill_false() {
+    let raw = r#"{"has_skill": false, "name": "", "skill_md": ""}"#;
+    assert!(parse_distill_response(raw).is_none());
+}
+
+#[test]
+fn test_parse_distill_response_missing_frontmatter() {
+    let raw = r#"{"has_skill": true, "name": "x", "skill_md": "no frontmatter body"}"#;
+    assert!(parse_distill_response(raw).is_none());
+}
+
+#[test]
+fn test_parse_distill_response_empty_fields() {
+    let raw = r#"{"has_skill": true, "name": "", "skill_md": "---\nx"}"#;
+    assert!(parse_distill_response(raw).is_none());
+    let raw2 = r#"{"has_skill": true, "name": "x", "skill_md": "  "}"#;
+    assert!(parse_distill_response(raw2).is_none());
+}
+
+#[test]
+fn test_parse_distill_response_malformed() {
+    assert!(parse_distill_response("not json at all").is_none());
+    // has_skill 类型错（字符串非布尔）→ 不猜不救
+    assert!(
+        parse_distill_response(r#"{"has_skill": "yes", "name": "x", "skill_md": "---"}"#).is_none()
+    );
+}
+
+#[test]
+fn test_parse_distill_response_rationale_optional() {
+    let raw = r#"{"has_skill": true, "name": "n1", "skill_md": "---\nbody"}"#;
+    let d = parse_distill_response(raw).unwrap();
+    assert_eq!(d.rationale, "");
+    assert_eq!(d.name, "n1");
+}
+
+#[test]
+fn test_parse_distill_response_wrapped_in_prose() {
+    // thinking 系模型偶尔带前后缀文本——extract_json 兜底提取
+    let raw = r#"好的：{"has_skill": true, "name": "wrap", "skill_md": "---\nbody"} 以上"#;
+    let d = parse_distill_response(raw).unwrap();
+    assert_eq!(d.name, "wrap");
+}
+
+#[test]
+fn test_build_experience_digest_row_format() {
+    let exps = vec![make_distill_experience(
+        "exec",
+        true,
+        "run pet.exe",
+        "started",
+    )];
+    let digest = build_experience_digest(&exps);
+    assert!(
+        digest.contains("#0 [exec] OK 42ms session=sess:1 input=run pet.exe output=started"),
+        "row format mismatch; got: {digest}"
+    );
+    let exps2 = vec![make_distill_experience("mcp_add", false, "in", "err")];
+    assert!(
+        build_experience_digest(&exps2).contains("#0 [mcp_add] FAIL 42ms"),
+        "failed rows must be marked FAIL"
+    );
+}
+
+#[test]
+fn test_build_experience_digest_sanitizes_secrets() {
+    // data_1 实录形态：MCP 安装经验里带裸 hex token——第二道脱敏必须拦住
+    let exps = vec![make_distill_experience(
+        "mcp_add",
+        true,
+        r#"header "Authorization: Bearer 86c3d6290123456789abcdef0123456789""#,
+        "added",
+    )];
+    let digest = build_experience_digest(&exps);
+    assert!(
+        digest.contains("[REDACTED]"),
+        "hex secret must be redacted; got: {digest}"
+    );
+    assert!(
+        !digest.contains("86c3d629"),
+        "raw secret must not survive into the prompt"
+    );
+}
+
+#[test]
+fn test_build_experience_digest_truncates_long_cells() {
+    let long = "x".repeat(300);
+    let exps = vec![make_distill_experience("write_file", true, &long, "ok")];
+    let digest = build_experience_digest(&exps);
+    assert!(
+        digest.contains("…[truncated]"),
+        "oversized cell must be truncated"
+    );
+    assert!(
+        !digest.contains(&"x".repeat(221)),
+        "cell must be cut at 220 chars"
+    );
+}
+
+#[test]
+fn test_build_experience_digest_rows_window() {
+    // >120 条时只取最近 MAX_DISTILL_ROWS 条，行号保留全局序号
+    let exps: Vec<_> = (0..130)
+        .map(|i| make_distill_experience(&format!("t{i}"), true, "i", "o"))
+        .collect();
+    let digest = build_experience_digest(&exps);
+    assert!(digest.contains("#10 [t10]"), "oldest kept row is #10");
+    assert!(digest.contains("#129 [t129]"));
+    assert!(
+        !digest.contains("#0 [t0]"),
+        "rows beyond the window must be dropped"
+    );
+}
+
+#[tokio::test]
+async fn test_distill_skill_draft_success() {
+    let exps = vec![make_distill_experience("exec", true, "i", "o")];
+    let d = distill_skill_draft(&DistillOkMockLLM, &exps, &[], Some(8192))
+        .await
+        .unwrap()
+        .expect("valid contract must yield a draft");
+    assert_eq!(d.name, "distill-entry");
+}
+
+#[tokio::test]
+async fn test_distill_skill_draft_empty_experiences_no_llm_call() {
+    // ErrorMockLLMCaller：若实现真的发起调用就会 Err——Ok(None) 证明空序列在调用前短路
+    let r = distill_skill_draft(&ErrorMockLLMCaller, &[], &[], None)
+        .await
+        .unwrap();
+    assert!(r.is_none());
+}
+
+#[tokio::test]
+async fn test_distill_skill_draft_llm_error_is_err() {
+    let exps = vec![make_distill_experience("exec", true, "i", "o")];
+    let r = distill_skill_draft(&ErrorMockLLMCaller, &exps, &[], None).await;
+    assert!(r.is_err(), "call-face failure must surface as Err");
+}
+
+#[tokio::test]
+async fn test_distill_skill_draft_contract_violation_is_none() {
+    // has_skill=true 但 skill_md 无 frontmatter → 按无可蒸馏处理（Ok(None)）
+    struct BadMockLLM;
+    #[async_trait]
+    impl LLMCaller for BadMockLLM {
+        async fn chat(
+            &self,
+            _system_prompt: &str,
+            _user_prompt: &str,
+            _max_tokens: Option<i64>,
+        ) -> Result<String, String> {
+            Ok(
+                r#"{"has_skill": true, "name": "x", "skill_md": "plain text no frontmatter"}"#
+                    .to_string(),
+            )
+        }
+    }
+    let exps = vec![make_distill_experience("exec", true, "i", "o")];
+    let r = distill_skill_draft(&BadMockLLM, &exps, &[], None)
+        .await
+        .unwrap();
+    assert!(r.is_none(), "contract violation must degrade to no-draft");
+}
