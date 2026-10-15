@@ -24,7 +24,7 @@ use crate::sanitizer::Sanitizer;
 use crate::syncer::Syncer;
 use crate::trace::TraceCollector;
 use crate::trace_store::TraceStore;
-use crate::types::{CollectorConfig, RegistryConfig};
+use crate::types::{CollectedExperience, CollectorConfig, RegistryConfig};
 
 /// The main Forge struct that owns and coordinates all subsystems.
 pub struct Forge {
@@ -286,6 +286,113 @@ impl Forge {
                 }
             }
         }
+
+        // Step 5: auto_skill 蒸馏（2026-10-15 W2 生成面）。`learning.enabled`
+        // 保持关（自动部署闭环风险面不动）；本步只产出 **draft** 状态草稿
+        // （落 forge skills 目录 + 注册表），不自动启用——启用/部署是人工
+        // 评审后的显式动作。Arc 锁内取即放（guard 不跨 await，F-M7 同款）。
+        let caller = self.reflector.as_ref().and_then(|r| r.llm_caller().clone());
+        if self.config.artifacts.auto_skill
+            && let Some(caller) = caller
+        {
+            match crate::reflector_llm::distill_skill_draft(
+                caller.as_ref(),
+                &experiences,
+                &self.registry().list(None, None),
+                Some(crate::reflector_llm::AUX_FORGE_MAX_TOKENS),
+            )
+            .await
+            {
+                Ok(Some(distilled)) => {
+                    self.store_distilled_draft(&distilled);
+                }
+                Ok(None) => {
+                    tracing::info!("[Forge] auto_skill: no distillable pattern this cycle");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "[Forge] auto_skill distillation failed, skipping");
+                }
+            }
+        }
+    }
+
+    /// Run the auto_skill distillation standalone and return the draft slug.
+    ///
+    /// CLI `forge reflect` 消费（网关外重放通道）：与
+    /// [`Self::run_reflection_cycle`] Step 5 同一蒸馏+落盘路径，但要求
+    /// reflector 已挂 LLM provider（未挂 = Err 诚实报因）。
+    pub async fn distill_and_store_draft(
+        &self,
+        experiences: &[CollectedExperience],
+    ) -> Result<Option<String>, String> {
+        let caller = self.reflector.as_ref().and_then(|r| r.llm_caller().clone());
+        let Some(caller) = caller else {
+            return Err("forge reflector has no LLM provider configured".into());
+        };
+        match crate::reflector_llm::distill_skill_draft(
+            caller.as_ref(),
+            experiences,
+            &self.registry().list(None, None),
+            Some(crate::reflector_llm::AUX_FORGE_MAX_TOKENS),
+        )
+        .await?
+        {
+            Some(distilled) => Ok(self.store_distilled_draft(&distilled)),
+            None => Ok(None),
+        }
+    }
+
+    /// Persist a distilled skill draft: write `{forge_dir}/skills/<slug>/SKILL.md`
+    /// + register as Draft (dedup by name, slug-normalized). Returns the slug.
+    ///
+    /// 落盘/注册失败只 warn 不炸反思循环（产物是本轮增益，不是关键路径）；
+    /// 返回 None 表示被跳过（名字非法或同题材已存在）。
+    fn store_distilled_draft(
+        &self,
+        distilled: &crate::reflector_llm::DistilledSkill,
+    ) -> Option<String> {
+        let slug = slugify_skill_name(&distilled.name);
+        if slug.is_empty() {
+            tracing::warn!(name = %distilled.name, "[Forge] auto_skill: draft name slugified to empty, skipping");
+            return None;
+        }
+        // dedup：同名非降级产物已存在则跳过（反思 6h 一轮，同题材不重复出草稿）
+        if self
+            .registry()
+            .find_by_name(&slug, nemesis_types::forge::ArtifactKind::Skill)
+            .is_some()
+        {
+            tracing::info!(name = %slug, "[Forge] auto_skill: artifact already exists, skipping");
+            return None;
+        }
+        let artifact_dir = self.forge_dir.join("skills").join(&slug);
+        if let Err(e) = std::fs::create_dir_all(&artifact_dir)
+            .and_then(|_| std::fs::write(artifact_dir.join("SKILL.md"), &distilled.skill_md))
+        {
+            tracing::warn!(error = %e, name = %slug, "[Forge] auto_skill: failed to write draft SKILL.md");
+            return None;
+        }
+        let artifact_id = format!("skill-{}", slug);
+        let now = chrono::Local::now().to_rfc3339();
+        self.registry().add(nemesis_types::forge::Artifact {
+            id: artifact_id.clone(),
+            name: slug.clone(),
+            kind: nemesis_types::forge::ArtifactKind::Skill,
+            version: "1.0".to_string(),
+            status: nemesis_types::forge::ArtifactStatus::Draft,
+            content: distilled.skill_md.clone(),
+            tool_signature: Vec::new(),
+            created_at: now.clone(),
+            updated_at: now,
+            usage_count: 0,
+            last_degraded_at: None,
+            success_rate: 0.0,
+            consecutive_observing_rounds: 0,
+            deployed_at: None,
+            last_efficacy: None,
+        });
+        tracing::info!(name = %slug, rationale = %distilled.rationale, "[Forge] auto_skill: draft skill created");
+        Some(slug)
     }
 
     /// Run a single cleanup cycle for old data.
@@ -761,6 +868,39 @@ impl SkillCreator for Forge {
     ) -> Result<nemesis_types::forge::Artifact, String> {
         Forge::create_skill(self, name, content, description, tool_signature)
     }
+}
+
+/// Normalize an LLM-produced skill name to a filesystem-safe kebab-case slug.
+///
+/// 蒸馏草稿名是 LLM 自由文本，落盘前归一：小写、非 `[a-z0-9_-]` 折叠为
+/// `-`、压缩连续 `-`、去首尾 `-`、截断 48 字符。空名/全非法字符返回空串
+/// （调用方据以跳过，不猜不救）。
+fn slugify_skill_name(name: &str) -> String {
+    let mut slug = String::new();
+    let mut last_dash = false;
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+            let c = c.to_ascii_lowercase();
+            let is_dash = c == '-' || c == '_';
+            if is_dash && (slug.is_empty() || last_dash) {
+                continue;
+            }
+            slug.push(if is_dash { '-' } else { c });
+            last_dash = is_dash;
+        } else {
+            if !slug.is_empty() && !last_dash {
+                slug.push('-');
+                last_dash = true;
+            }
+        }
+        if slug.len() >= 48 {
+            break;
+        }
+    }
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    slug
 }
 
 #[cfg(test)]

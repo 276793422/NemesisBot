@@ -30,6 +30,21 @@ fn make_empty_mcp_config(tmp: &TempDir) -> std::path::PathBuf {
     cfg_path
 }
 
+/// stdio 快捷构造（W1 HTTP 化前 `cmd_add` 七参形态的测试等价物——
+/// cmd_add 收敛为 AddRequest 后，stdio 用例经此走同一校验入口）。
+fn add_stdio(
+    cfg: &std::path::Path,
+    main_cfg: &std::path::Path,
+    name: &str,
+    command: &str,
+    args: Option<&str>,
+    env: &[String],
+    timeout: u64,
+) -> anyhow::Result<()> {
+    let req = super::AddRequest::build(name, Some(command), None, None, &[], args, env, timeout)?;
+    super::cmd_add(cfg, main_cfg, &req)
+}
+
 #[test]
 fn test_find_server_found() {
     let tmp = TempDir::new().unwrap();
@@ -90,7 +105,7 @@ fn test_cmd_add_new_server() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_empty_mcp_config(&tmp);
 
-    cmd_add(
+    add_stdio(
         &cfg,
         &main_cfg_of(&tmp),
         "new-server",
@@ -115,7 +130,7 @@ fn test_cmd_add_duplicate_server() {
     let cfg = make_mcp_config(&tmp);
 
     // Should succeed but not add duplicate
-    cmd_add(
+    add_stdio(
         &cfg,
         &main_cfg_of(&tmp),
         "test-server",
@@ -139,7 +154,7 @@ fn test_cmd_add_creates_new_config() {
     std::fs::create_dir_all(&dir).unwrap();
     let cfg = dir.join("config.mcp.json");
 
-    cmd_add(
+    add_stdio(
         &cfg,
         &main_cfg_of(&tmp),
         "fresh-server",
@@ -233,7 +248,7 @@ fn test_cmd_add_args_parsing() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_empty_mcp_config(&tmp);
 
-    cmd_add(
+    add_stdio(
         &cfg,
         &main_cfg_of(&tmp),
         "test",
@@ -346,7 +361,7 @@ fn test_cmd_add_with_env_vars() {
     let cfg = make_empty_mcp_config(&tmp);
 
     let env = vec!["API_KEY=secret123".to_string(), "DEBUG=true".to_string()];
-    cmd_add(
+    add_stdio(
         &cfg,
         &main_cfg_of(&tmp),
         "env-server",
@@ -494,7 +509,7 @@ fn test_mcp_cmd_add_with_env_vars() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_empty_mcp_config(&tmp);
 
-    cmd_add(
+    add_stdio(
         &cfg,
         &main_cfg_of(&tmp),
         "env-server",
@@ -517,7 +532,7 @@ fn test_mcp_cmd_add_with_args_and_env() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_empty_mcp_config(&tmp);
 
-    cmd_add(
+    add_stdio(
         &cfg,
         &main_cfg_of(&tmp),
         "full-server",
@@ -813,13 +828,13 @@ async fn test_s11b_cmd_prompts_not_found_and_python_fake() {
 #[tokio::test]
 async fn test_s11b_cmd_discover_no_args_errors() {
     // (None, None) → 打印用法错误后 Ok（614-617）
-    cmd_discover(None, None, None, 5).await.unwrap();
+    cmd_discover(None, None, &[], None, 5).await.unwrap();
 }
 
 #[tokio::test]
 async fn test_s11b_cmd_discover_bad_command_err_arm() {
     // 命令不存在 → spawn 失败 → Err 分支打印 "Discovery failed"（702-704）
-    cmd_discover(Some("/definitely/missing/cmd/s11b"), None, None, 5)
+    cmd_discover(Some("/definitely/missing/cmd/s11b"), None, &[], None, 5)
         .await
         .unwrap();
 }
@@ -827,7 +842,7 @@ async fn test_s11b_cmd_discover_bad_command_err_arm() {
 #[tokio::test]
 async fn test_s11b_cmd_discover_dead_url_err_arm() {
     // URL 连不上（本机拒绝端口）→ Err 分支；不经外网（602-604 入口行）
-    cmd_discover(None, Some("http://127.0.0.1:1/mcp"), None, 5)
+    cmd_discover(None, Some("http://127.0.0.1:1/mcp"), &[], None, 5)
         .await
         .unwrap();
 }
@@ -845,7 +860,7 @@ async fn test_s11b_cmd_discover_stdio_python_fake_ok_arm() {
     let args_str = script.to_str().unwrap();
     assert!(!args_str.contains(','), "路径含逗号会被 args 切分破坏");
     // Ok 分支全量格式化：server_info + tools + resources + prompts 区段
-    cmd_discover(Some("python"), None, Some(args_str), 15)
+    cmd_discover(Some("python"), None, &[], Some(args_str), 15)
         .await
         .unwrap();
 }
@@ -890,7 +905,10 @@ fn test_s11b_run_sync_arms() {
     run(
         McpAction::Add {
             name: "srv".into(),
-            command: "python".into(),
+            command: Some("python".into()),
+            url: None,
+            transport: None,
+            header: vec![],
             args: Some("-c,print(1)".into()),
             env: vec![],
             timeout: 5,
@@ -950,6 +968,7 @@ async fn test_s11b_run_async_dispatch_arms() {
         McpAction::Discover {
             command: None,
             url: None,
+            header: vec![],
             args: None,
             timeout: 5,
         },
@@ -1063,7 +1082,7 @@ mod wave_b {
         .unwrap();
 
         // 相位1：追加新名
-        cmd_add(&cfg, &main_cfg_of(&tmp), "second", "python", None, &[], 9).unwrap();
+        add_stdio(&cfg, &main_cfg_of(&tmp), "second", "python", None, &[], 9).unwrap();
         let data: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
         let servers = data["servers"].as_array().unwrap();
@@ -1075,7 +1094,7 @@ mod wave_b {
 
         // 相位2：重名短路（快照对比整份文件不变）
         let before = std::fs::read_to_string(&cfg).unwrap();
-        cmd_add(
+        add_stdio(
             &cfg,
             &main_cfg_of(&tmp),
             "second",
@@ -1304,7 +1323,7 @@ for line in sys.stdin:
         std::fs::write(&script_path, WB_MIN_SERVER).unwrap();
         let args_str = script_path.to_str().unwrap();
         assert!(!args_str.contains(','));
-        cmd_discover(Some("python"), None, Some(args_str), 15)
+        cmd_discover(Some("python"), None, &[], Some(args_str), 15)
             .await
             .unwrap();
     }
@@ -1323,7 +1342,7 @@ for line in sys.stdin:
         std::fs::write(&script_path, WB_RICH_SERVER).unwrap();
         let args_str = script_path.to_str().unwrap();
         assert!(!args_str.contains(','));
-        cmd_discover(Some("python"), None, Some(args_str), 15)
+        cmd_discover(Some("python"), None, &[], Some(args_str), 15)
             .await
             .unwrap();
     }
@@ -1344,7 +1363,7 @@ fn test_cmd_add_missing_servers_key_still_persists() {
     // 有文件但没有 servers 数组 —— 修复前这里静默丢服务器。
     std::fs::write(&cfg, r#"{"enabled": false}"#).unwrap();
 
-    cmd_add(
+    add_stdio(
         &cfg,
         &main_cfg_of(&tmp),
         "late-server",
@@ -1374,7 +1393,7 @@ fn test_cmd_add_non_array_servers_is_repaired_not_dropped() {
     let cfg = dir.join("config.mcp.json");
     std::fs::write(&cfg, r#"{"enabled": true, "servers": {}}"#).unwrap();
 
-    cmd_add(
+    add_stdio(
         &cfg,
         &main_cfg_of(&tmp),
         "healed-server",
@@ -1430,4 +1449,666 @@ fn r10_cmd_list_without_enabled_key_renders_servers_fully() {
 
     // 无 enabled 键：不得被当作 disabled 早退，必须完整渲染 servers 列表。
     cmd_list(&cfg).unwrap();
+}
+
+// =========================================================================
+// W1（2026-10-15）mcp add HTTP 化：
+// - 互斥校验（command/url 恰给其一、形态专属参数、transport 一致性）
+// - header 行语法闸（缺冒号 / 空名 / 保留头 / 空引用名；内嵌引用是字面量）
+// - http 写盘形态 + serde round-trip；stdio 旧形态键集不变（红槽）
+// - run() 分发 http arm；header_vault_aliases / embedded_ref_headers
+// - wiremock e2e：cmd_test HTTP 直连（header 真注入）+ 401 诊断分支
+// =========================================================================
+
+mod w1_http_add {
+    use super::*;
+
+    fn build(
+        command: Option<&str>,
+        url: Option<&str>,
+        transport: Option<&str>,
+        headers: &[&str],
+        args: Option<&str>,
+        env: &[&str],
+    ) -> anyhow::Result<super::AddRequest> {
+        let h: Vec<String> = headers.iter().map(|s| s.to_string()).collect();
+        let e: Vec<String> = env.iter().map(|s| s.to_string()).collect();
+        super::AddRequest::build("pet", command, url, transport, &h, args, &e, 30)
+    }
+
+    // ------------------------- 互斥与推断 -------------------------
+
+    #[test]
+    fn w1_command_url_mutually_exclusive() {
+        let err = build(Some("python"), Some("http://x/mcp"), None, &[], None, &[]).unwrap_err();
+        assert!(err.to_string().contains("只能给一个"), "实际: {err}");
+    }
+
+    #[test]
+    fn w1_command_url_both_missing() {
+        let err = build(None, None, None, &[], None, &[]).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--command") && msg.contains("--url"),
+            "实际: {msg}"
+        );
+        assert!(
+            msg.contains("mcp add -n pet --url"),
+            "错误文案自带 HTTP 示例: {msg}"
+        );
+    }
+
+    #[test]
+    fn w1_empty_string_flags_treated_as_absent() {
+        // 空串旗标 = 未给（trim + filter 语义）
+        assert!(build(Some("  "), None, None, &[], None, &[]).is_err());
+        assert!(build(None, Some(" "), None, &[], None, &[]).is_err());
+    }
+
+    #[test]
+    fn w1_http_rejects_args_and_env() {
+        let e1 = build(None, Some("http://x/mcp"), None, &[], Some("a,b"), &[]).unwrap_err();
+        assert!(e1.to_string().contains("--args"), "实际: {e1}");
+        let e2 = build(None, Some("http://x/mcp"), None, &[], None, &["K=V"]).unwrap_err();
+        assert!(e2.to_string().contains("--env"), "实际: {e2}");
+    }
+
+    #[test]
+    fn w1_header_rejected_for_stdio() {
+        let err = build(Some("python"), None, None, &["A: b"], None, &[]).unwrap_err();
+        assert!(err.to_string().contains("--header"), "实际: {err}");
+    }
+
+    #[test]
+    fn w1_transport_conflicts_and_redundant_consistency() {
+        assert!(build(Some("python"), None, Some("http"), &[], None, &[]).is_err());
+        assert!(build(None, Some("http://x/mcp"), Some("stdio"), &[], None, &[]).is_err());
+        // 显式值与形态一致（冗余）→ OK
+        assert!(build(None, Some("http://x/mcp"), Some("http"), &[], None, &[]).is_ok());
+        assert!(build(Some("python"), None, Some("stdio"), &[], None, &[]).is_ok());
+        // 大小写不敏感
+        assert!(build(None, Some("http://x/mcp"), Some("HTTP"), &[], None, &[]).is_ok());
+        assert!(build(Some("python"), None, Some("Stdio"), &[], None, &[]).is_ok());
+    }
+
+    #[test]
+    fn w1_transport_unknown_value_rejected() {
+        let err = build(None, Some("http://x/mcp"), Some("sse"), &[], None, &[]).unwrap_err();
+        // v1 拍板：sse 不放，错误文案列出支持值
+        assert!(err.to_string().contains("sse"), "实际: {err}");
+        assert!(err.to_string().contains("http"), "实际: {err}");
+    }
+
+    #[test]
+    fn w1_transport_inferred_from_form() {
+        assert_eq!(
+            build(None, Some("http://x/mcp"), None, &[], None, &[])
+                .unwrap()
+                .transport,
+            "http"
+        );
+        assert_eq!(
+            build(Some("python"), None, None, &[], None, &[])
+                .unwrap()
+                .transport,
+            "stdio"
+        );
+    }
+
+    // ------------------------- header 行语法闸 -------------------------
+
+    #[test]
+    fn w1_header_line_validation() {
+        // 合法：字面量值
+        assert!(build(None, Some("http://x/mcp"), None, &["X-A: v1"], None, &[]).is_ok());
+        // 合法：整值引用（语法放行；绝不解引用真值）
+        assert!(
+            build(
+                None,
+                Some("http://x/mcp"),
+                None,
+                &["Authorization: vault:pet-token"],
+                None,
+                &[]
+            )
+            .is_ok()
+        );
+        assert!(
+            build(
+                None,
+                Some("http://x/mcp"),
+                None,
+                &["Authorization: env:PET_TOKEN"],
+                None,
+                &[]
+            )
+            .is_ok()
+        );
+        assert!(
+            build(
+                None,
+                Some("http://x/mcp"),
+                None,
+                &["Authorization: yaml:creds.pet"],
+                None,
+                &[]
+            )
+            .is_ok()
+        );
+        // 缺冒号
+        assert!(build(None, Some("http://x/mcp"), None, &["no-colon"], None, &[]).is_err());
+        // 空头名
+        assert!(build(None, Some("http://x/mcp"), None, &[" : v"], None, &[]).is_err());
+        // 头名含空白
+        assert!(build(None, Some("http://x/mcp"), None, &["Ba d: v"], None, &[]).is_err());
+        // 协议保留头
+        assert!(
+            build(
+                None,
+                Some("http://x/mcp"),
+                None,
+                &["Mcp-Session-Id: forged"],
+                None,
+                &[]
+            )
+            .is_err()
+        );
+        // 引用名为空
+        assert!(
+            build(
+                None,
+                Some("http://x/mcp"),
+                None,
+                &["Authorization: vault:"],
+                None,
+                &[]
+            )
+            .is_err()
+        );
+        // 内嵌引用（如 'Bearer vault:x'）：语法上合法（is_secret_reference 只认
+        // 整值前缀，内嵌按字面量发送）——由 embedded_ref_headers 警告提示。
+        assert!(
+            build(
+                None,
+                Some("http://x/mcp"),
+                None,
+                &["Authorization: Bearer vault:x"],
+                None,
+                &[]
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn w1_header_error_message_redacts_value() {
+        // 非法头行的错误文案只接头名，不回显值段（值段可能夹带真凭据）
+        // 形态一：名含空白（非法），值段带疑似凭据 → 名可见、值被 <redacted>
+        let err = build(
+            None,
+            Some("http://x/mcp"),
+            None,
+            &["Auth Orization: Bearer sk-live-abc123def456"],
+            None,
+            &[],
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("sk-live-abc123def456"),
+            "值不得进错误文案: {msg}"
+        );
+        assert!(msg.contains("Auth Orization"), "实际: {msg}");
+        // 形态二：缺冒号 → 整行 <redacted>（无值段可截，名字也不回显）
+        let err2 = build(
+            None,
+            Some("http://x/mcp"),
+            None,
+            &["Authorization sk-live-abc123def456"],
+            None,
+            &[],
+        )
+        .unwrap_err();
+        let msg2 = err2.to_string();
+        assert!(
+            !msg2.contains("sk-live-abc123def456"),
+            "值不得进错误文案: {msg2}"
+        );
+        assert!(msg2.contains("<redacted>"), "实际: {msg2}");
+    }
+
+    // ------------------------- 写盘形态 -------------------------
+
+    #[test]
+    fn w1_cmd_add_http_writes_http_shape() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = make_empty_mcp_config(&tmp);
+        let req = build(
+            None,
+            Some("http://127.0.0.1:8808/mcp"),
+            None,
+            &["Authorization: vault:pet-token"],
+            None,
+            &[],
+        )
+        .unwrap();
+        super::cmd_add(&cfg, &main_cfg_of(&tmp), &req).unwrap();
+
+        let data: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(data["enabled"], true, "自动 enabled");
+        let s = &data["servers"][0];
+        assert_eq!(s["name"], "pet");
+        assert_eq!(s["transport_type"], "http");
+        assert_eq!(s["url"], "http://127.0.0.1:8808/mcp");
+        assert_eq!(
+            s["headers"][0], "Authorization: vault:pet-token",
+            "header 原样落盘"
+        );
+        assert_eq!(s["timeout_secs"], 30);
+        // HTTP 形态不携带 stdio 专属键
+        assert!(s.get("command").is_none(), "http 形态不写 command");
+        assert!(s.get("args").is_none());
+        assert!(s.get("env").is_none());
+    }
+
+    #[test]
+    fn w1_cmd_add_stdio_shape_key_set_unchanged() {
+        // 红槽：stdio 旧写盘形态键集逐字节不变（存量用户零迁移）
+        let tmp = TempDir::new().unwrap();
+        let cfg = make_empty_mcp_config(&tmp);
+        add_stdio(
+            &cfg,
+            &main_cfg_of(&tmp),
+            "legacy",
+            "python",
+            Some("-m,srv"),
+            &[],
+            30,
+        )
+        .unwrap();
+
+        let data: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        let s = &data["servers"][0];
+        let mut keys: Vec<&str> = s.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec!["args", "command", "env", "name", "timeout_secs"],
+            "stdio 键集不变（无 transport_type/url/headers 新键）"
+        );
+        assert_eq!(s["command"], "python");
+        assert_eq!(s["args"][0], "-m");
+        assert_eq!(s["timeout_secs"], 30);
+    }
+
+    #[test]
+    fn w1_cmd_add_http_roundtrip_serde() {
+        // 写盘条目 → McpServerConfig serde 反序列化：与运行时（manager 注册
+        // /CLI 连接路径）同一真相源消费
+        let tmp = TempDir::new().unwrap();
+        let cfg = make_empty_mcp_config(&tmp);
+        let req = build(
+            None,
+            Some("http://127.0.0.1:8808/mcp"),
+            Some("http"),
+            &["Authorization: vault:pet-token", "X-Trace: t1"],
+            None,
+            &[],
+        )
+        .unwrap();
+        super::cmd_add(&cfg, &main_cfg_of(&tmp), &req).unwrap();
+
+        let data: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        let config: nemesis_config::McpServerConfig =
+            serde_json::from_value(data["servers"][0].clone()).unwrap();
+        assert_eq!(config.transport_type, "http");
+        assert_eq!(config.url, "http://127.0.0.1:8808/mcp");
+        assert_eq!(
+            config.headers,
+            vec![
+                "Authorization: vault:pet-token".to_string(),
+                "X-Trace: t1".to_string()
+            ]
+        );
+        assert_eq!(config.timeout_secs, 30);
+    }
+
+    // ------------------------- 提示辅助 -------------------------
+
+    #[test]
+    fn w1_header_vault_aliases_extraction() {
+        let headers = vec![
+            serde_json::json!("Authorization: vault:pet-token"),
+            serde_json::json!("X-A: literal"),
+            serde_json::json!("X-B: Bearer vault:embedded"),
+            serde_json::json!("X-C: vault:"),
+        ];
+        let aliases = super::header_vault_aliases(&headers);
+        // 只认整值前缀；内嵌与空别名不算
+        assert_eq!(aliases, vec!["pet-token".to_string()]);
+    }
+
+    #[test]
+    fn w1_embedded_ref_headers_detection() {
+        let headers = vec![
+            "Authorization: Bearer vault:x".to_string(), // 内嵌 → 命中
+            "X-Env: prefix env:VAR".to_string(),         // 内嵌 → 命中
+            "Authorization: vault:ok".to_string(),       // 整值 → 不算
+            "X-Literal: plain value".to_string(),        // 无引用 → 不算
+        ];
+        let flagged = super::embedded_ref_headers(&headers);
+        assert_eq!(flagged.len(), 2);
+        assert!(flagged[0].starts_with("Authorization: Bearer"));
+        assert!(flagged[1].starts_with("X-Env:"));
+    }
+
+    // ------------------------- run() 分发 -------------------------
+
+    /// RAII 守卫复用 s11b 模式（NEMESISBOT_HOME → 临时根）。
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    struct W1TempHomeEnv {
+        _tmp: TempDir,
+    }
+
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    impl Drop for W1TempHomeEnv {
+        fn drop(&mut self) {
+            unsafe { std::env::remove_var("NEMESISBOT_HOME") };
+        }
+    }
+
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    fn w1_temp_home_env() -> (W1TempHomeEnv, std::path::PathBuf) {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        std::fs::create_dir_all(home.join("workspace").join("config")).unwrap();
+        unsafe { std::env::set_var("NEMESISBOT_HOME", tmp.path()) };
+        (W1TempHomeEnv { _tmp: tmp }, home)
+    }
+
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[test]
+    fn w1_run_add_http_dispatch_arm() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let (_th, home) = w1_temp_home_env();
+        let mcp_cfg = crate::common::mcp_config_path(&home);
+        // master switch 同步跳过不存在的 config.json（静默），先种最小主配置
+        std::fs::write(crate::common::config_path(&home), "{}").unwrap();
+
+        run(
+            McpAction::Add {
+                name: "pet".into(),
+                command: None,
+                url: Some("http://127.0.0.1:8808/mcp".into()),
+                transport: None,
+                header: vec!["Authorization: vault:pet-token".into()],
+                args: None,
+                env: vec![],
+                timeout: 30,
+            },
+            false,
+        )
+        .unwrap();
+
+        let data: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&mcp_cfg).unwrap()).unwrap();
+        let s = &data["servers"][0];
+        assert_eq!(s["transport_type"], "http");
+        assert_eq!(s["url"], "http://127.0.0.1:8808/mcp");
+        assert_eq!(s["headers"][0], "Authorization: vault:pet-token");
+        // master switch 同步（home 根 config.json，非 workspace/config）
+        let main: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(crate::common::config_path(&home)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(main["mcp"]["enabled"], true);
+    }
+
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[test]
+    fn w1_run_add_validation_error_propagates() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let (_th, _home) = w1_temp_home_env();
+        // command/url 双给 → run() Err 传播（互斥校验在分发层生效）
+        let err = run(
+            McpAction::Add {
+                name: "bad".into(),
+                command: Some("python".into()),
+                url: Some("http://x/mcp".into()),
+                transport: None,
+                header: vec![],
+                args: None,
+                env: vec![],
+                timeout: 30,
+            },
+            false,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("只能给一个"), "实际: {err}");
+    }
+
+    // ------------------------- wiremock e2e（真实连通） -------------------------
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn w1_cmd_test_http_e2e_header_injected_ok() {
+        let server = wiremock::MockServer::start().await;
+
+        // 带 Bearer 头的请求 → 200（header 匹配失败落到 catch-all 401）
+        let init_ok = wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": {"protocolVersion": "2024-11-05", "capabilities": {},
+                        "serverInfo": {"name": "w1fake", "version": "0.1.0"}}
+        }));
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            // 精确到 "method":"initialize"：裸 "initialize" 子串会把
+            // notifications/initialized 也匹配进来（expect(1) 撞 2 假红）
+            .and(wiremock::matchers::body_string_contains(
+                "\"method\":\"initialize\"",
+            ))
+            .and(wiremock::matchers::header("authorization", "Bearer tok123"))
+            .respond_with(init_ok)
+            .expect(1)
+            .mount(&server)
+            .await;
+        let tools_ok = wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "jsonrpc": "2.0", "id": 2,
+            "result": {"tools": [{"name": "echo", "description": "e",
+                                    "inputSchema": {"type": "object", "properties": {}}}]}
+        }));
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::body_string_contains("tools/list"))
+            .and(wiremock::matchers::header("authorization", "Bearer tok123"))
+            .respond_with(tools_ok)
+            .expect(1)
+            .mount(&server)
+            .await;
+        // catch-all：缺/错鉴权头 → 401
+        wiremock::Mock::given(wiremock::matchers::any())
+            .respond_with(wiremock::ResponseTemplate::new(401).set_body_string("unauthorized"))
+            .mount(&server)
+            .await;
+
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("config");
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config.mcp.json");
+        let config = serde_json::json!({
+            "enabled": true,
+            "servers": [{
+                "name": "w1pet",
+                "transport_type": "http",
+                "url": server.uri(),
+                "headers": ["Authorization: Bearer tok123"],
+                "timeout_secs": 10,
+            }]
+        });
+        std::fs::write(&cfg, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+
+        // http 直连 + header 注入：全绿（401 catch-all 未命中）
+        super::cmd_test(&cfg, "w1pet").await.unwrap();
+        server.verify().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn w1_cmd_test_http_e2e_vault_ref_unresolved_401_hint_branch() {
+        // vault 引用（本测试进程无解析器 → WARN 跳过 → 头未注入）→ 401：
+        // 覆盖案例设备的真实失败形态与诊断分支（cmd_test 打印提示后 Ok）
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::any())
+            .respond_with(wiremock::ResponseTemplate::new(401).set_body_string("no auth"))
+            .mount(&server)
+            .await;
+
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("config");
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config.mcp.json");
+        let config = serde_json::json!({
+            "enabled": true,
+            "servers": [{
+                "name": "w1vault",
+                "transport_type": "http",
+                "url": server.uri(),
+                "headers": ["Authorization: vault:w1-missing-alias"],
+                "timeout_secs": 10,
+            }]
+        });
+        std::fs::write(&cfg, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+
+        super::cmd_test(&cfg, "w1vault").await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn w1_cmd_discover_http_with_header_e2e() {
+        // discover --url --header 带认证探测：头匹配 mock 命中 = 注入成立
+        let server = wiremock::MockServer::start().await;
+        let init_ok = wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": {"protocolVersion": "2024-11-05", "capabilities": {},
+                        "serverInfo": {"name": "w1disc", "version": "0.2.0"}}
+        }));
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            // 同 header_injected_ok：裸子串会误吞 notifications/initialized
+            .and(wiremock::matchers::body_string_contains(
+                "\"method\":\"initialize\"",
+            ))
+            .and(wiremock::matchers::header(
+                "authorization",
+                "Bearer disc-tok",
+            ))
+            .respond_with(init_ok)
+            .expect(1)
+            .mount(&server)
+            .await;
+        for method_marker in ["tools/list", "resources/list", "prompts/list"] {
+            wiremock::Mock::given(wiremock::matchers::method("POST"))
+                .and(wiremock::matchers::body_string_contains(method_marker))
+                .and(wiremock::matchers::header(
+                    "authorization",
+                    "Bearer disc-tok",
+                ))
+                .respond_with(
+                    wiremock::ResponseTemplate::new(200).set_body_json(
+                        serde_json::json!({"jsonrpc": "2.0", "id": 0, "result": {}}),
+                    ),
+                )
+                .mount(&server)
+                .await;
+        }
+
+        super::cmd_discover(
+            None,
+            Some(server.uri().as_str()),
+            &["Authorization: Bearer disc-tok".to_string()],
+            None,
+            10,
+        )
+        .await
+        .unwrap();
+        server.verify().await;
+    }
+
+    // ------------------------- test 形态判定（2026-10-15 复查修复） ---------
+
+    #[test]
+    fn w1_server_entry_is_http_matches_dispatch_aliases() {
+        // 别名集与 McpClient::from_server_config 同源（大小写敏感语义一致）
+        let mk = |v: serde_json::Value| v;
+        assert!(super::server_entry_is_http(&mk(serde_json::json!({
+            "name": "a", "transport_type": "http", "url": "http://x/mcp"
+        }))));
+        // 修复目标：streamable_http / streamable-http 别名此前被误判 stdio
+        assert!(super::server_entry_is_http(&mk(serde_json::json!({
+            "name": "b", "transport_type": "streamable_http", "url": "http://x/mcp"
+        }))));
+        assert!(super::server_entry_is_http(&mk(serde_json::json!({
+            "name": "c", "transport_type": "streamable-http", "url": "http://x/mcp"
+        }))));
+        // 旧手写兼容：裸 url 无 command 无 transport_type
+        assert!(super::server_entry_is_http(&mk(serde_json::json!({
+            "name": "d", "url": "http://x/mcp"
+        }))));
+        // 大写 "HTTP"：运行时分派（大小写敏感）落 stdio 分支——test 同口径，
+        // 诚实走 PATH 探测分支，不做两套判定
+        assert!(!super::server_entry_is_http(&mk(serde_json::json!({
+            "name": "e", "transport_type": "HTTP", "url": "http://x/mcp"
+        }))));
+        // stdio 形态
+        assert!(!super::server_entry_is_http(&mk(serde_json::json!({
+            "name": "f", "command": "python", "args": ["-m", "srv"]
+        }))));
+        // 显式 stdio + url（畸形混写）：分派按 stdio，test 同口径
+        assert!(!super::server_entry_is_http(&mk(serde_json::json!({
+            "name": "g", "transport_type": "stdio", "url": "http://x/mcp"
+        }))));
+        // command + url 混写、无 transport_type：分派按 stdio
+        assert!(!super::server_entry_is_http(&mk(serde_json::json!({
+            "name": "h", "command": "python", "url": "http://x/mcp"
+        }))));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn w1_cmd_test_streamable_http_alias_takes_http_branch() {
+        // 咬合测试：streamable_http 条目必须走 HTTP 直连（mock 收到请求）；
+        // 修复前掉 stdio 分支被 which::which("?") 跳过 → verify() 零请求红。
+        let server = wiremock::MockServer::start().await;
+        let init_ok = wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": {"protocolVersion": "2024-11-05", "capabilities": {},
+                        "serverInfo": {"name": "w1alias", "version": "0.1.0"}}
+        }));
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::body_string_contains(
+                "\"method\":\"initialize\"",
+            ))
+            .respond_with(init_ok)
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("config");
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config.mcp.json");
+        let config = serde_json::json!({
+            "enabled": true,
+            "servers": [{
+                "name": "w1alias",
+                "transport_type": "streamable_http",
+                "url": server.uri(),
+                "timeout_secs": 10,
+            }]
+        });
+        std::fs::write(&cfg, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+
+        super::cmd_test(&cfg, "w1alias").await.unwrap();
+        server.verify().await;
+    }
 }

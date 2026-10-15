@@ -5,6 +5,7 @@
 
 use crate::common;
 use anyhow::Result;
+use std::sync::Arc;
 
 #[derive(clap::Subcommand)]
 pub enum ForgeAction {
@@ -374,7 +375,11 @@ fn cmd_disable(cfg_path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_reflect(cfg_path: &std::path::Path, forge_dir: &std::path::Path) -> Result<()> {
+fn cmd_reflect(
+    home: &std::path::Path,
+    cfg_path: &std::path::Path,
+    forge_dir: &std::path::Path,
+) -> Result<()> {
     // Check if forge is enabled in main config
     if cfg_path.exists()
         && let Ok(data) = std::fs::read_to_string(cfg_path)
@@ -417,60 +422,83 @@ fn cmd_reflect(cfg_path: &std::path::Path, forge_dir: &std::path::Path) -> Resul
     println!("  Found {} experience file(s) to reflect on.", exp_count);
     println!();
 
-    // Create a real Forge instance
+    // Create a real Forge instance（forge 配置读 workspace/config/config.forge.json，
+    // 与 WSAPI load_forge_config 同源——CLI 反思尊重用户 artifacts.auto_skill 开关）
     let workspace = forge_dir.parent().unwrap_or(forge_dir).to_path_buf();
-    let forge_cfg = nemesis_forge::config::ForgeConfig::default();
-    let mut forge = nemesis_forge::forge::Forge::new(forge_cfg, workspace);
+    let forge_cfg = nemesis_forge::config::load_forge_config(
+        &workspace.join("config").join("config.forge.json"),
+    );
+    let use_llm = forge_cfg.reflection.use_llm;
+    let auto_skill = forge_cfg.artifacts.auto_skill;
+    let exp_limit = forge_cfg.collection.max_experiences.max(1);
+    let mut forge = nemesis_forge::forge::Forge::new(forge_cfg, workspace.clone());
+    // F-D3 同款：注册表先从盘回载再消费——Registry::new 是空内存注册表，
+    // 不回载则 find_by_name 去重失效、add 会往 registry.json 追加同 id
+    // 重复条目（CLI 每次新起进程必踩；gateway 路径 ctx.rs 启动即 load）。
+    let _ = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(forge.registry().load())
+    });
 
     // Initialize a real Reflector with the reflections directory
     let reflect_dir = forge_dir.join("reflections");
     let reflector = nemesis_forge::reflector::Reflector::with_reflections_dir(reflect_dir.clone());
+    // LLM 语义分析接线（2026-10-15 W2 重放通道）：ChainJudgeCaller 每次调用
+    // 现场解析杂务链（judge_model → small_model → 主模型），CLI 无网关也能
+    // 跑反思——此前 CLI 路径只出统计报表，LLM 洞察只在网关 6h 循环里发生。
+    if use_llm {
+        reflector.set_provider(Arc::new(crate::forge_test_runner::ChainJudgeCaller::new(
+            home.to_path_buf(),
+            workspace.clone(),
+        )));
+    }
     forge.init_reflector(reflector);
 
-    // Read experiences from the experience store
+    // Read RAW experiences from the experience store（2026-10-15 W2：改读
+    // 原始经验并保留输入/输出摘要——聚合路径把摘要清空，LLM 蒸馏拿到的
+    // 只是频次骨架，程序性知识无从谈起；时序摘要本身就是蒸馏的原材料）。
     let store = nemesis_forge::experience_store::ExperienceStore::from_forge_dir(forge_dir);
     let experiences = match tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(store.read_aggregated())
+        tokio::runtime::Handle::current().block_on(store.read_recent(exp_limit))
     }) {
-        Ok(exps) => {
-            // Convert AggregatedExperience to CollectedExperience for the reflector
-            exps.iter()
-                .map(|ae| {
-                    let success = ae.success_rate >= 0.5;
-                    nemesis_forge::types::CollectedExperience {
-                        experience: nemesis_forge::types::Experience {
-                            id: ae.pattern_hash.clone(),
-                            tool_name: ae.tool_name.clone(),
-                            input_summary: String::new(),
-                            output_summary: String::new(),
-                            success,
-                            duration_ms: ae.avg_duration_ms as u64,
-                            timestamp: ae.last_seen.clone(),
-                            session_key: String::new(),
-                        },
-                        dedup_hash: ae.pattern_hash.clone(),
-                    }
-                })
-                .collect::<Vec<_>>()
+        Ok(exps) if !exps.is_empty() => exps,
+        Ok(_) => {
+            println!("  No experiences loaded. Nothing to reflect on.");
+            return Ok(());
         }
-        Err(_) => {
-            println!("  No aggregated experiences found. Nothing to reflect on.");
+        Err(e) => {
+            println!("  Failed to read experiences: {}", e);
             return Ok(());
         }
     };
 
-    if experiences.is_empty() {
-        println!("  No experiences loaded. Nothing to reflect on.");
-        return Ok(());
-    }
+    println!("  Loaded {} raw experience(s).", experiences.len());
 
-    println!("  Loaded {} aggregated experience(s).", experiences.len());
-
-    // Run the real reflector (Stages 1-4: statistical + trace analysis)
-    let report = forge
-        .reflector()
-        .expect("reflector initialized above")
-        .reflect(&experiences, None, "today", "all");
+    // Run the real reflector（Stages 1-4 统计 + use_llm 时 LLM 语义分析）
+    let report = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            if use_llm {
+                forge
+                    .reflector()
+                    .expect("reflector initialized above")
+                    .reflect_with_llm(
+                        &experiences,
+                        // 与网关反思循环同源：带全量 artifacts，LLM 看到
+                        // 已部署技能不重复提名（注册表已从盘回载）。
+                        &forge.registry().list(None, None),
+                        None,
+                        "today",
+                        "all",
+                        Some(nemesis_forge::reflector_llm::AUX_FORGE_MAX_TOKENS),
+                    )
+                    .await
+            } else {
+                forge
+                    .reflector()
+                    .expect("reflector initialized above")
+                    .reflect(&experiences, None, "today", "all")
+            }
+        })
+    });
 
     // Write the reflection report to disk
     let reflector_ref = forge.reflector().expect("reflector initialized above");
@@ -480,6 +508,37 @@ fn cmd_reflect(cfg_path: &std::path::Path, forge_dir: &std::path::Path) -> Resul
         }
         Err(e) => {
             println!("  Warning: Failed to write report file: {}", e);
+        }
+    }
+
+    // auto_skill 蒸馏（2026-10-15 W2 生成面，重放通道）：config.forge.json
+    // 的 artifacts.auto_skill=true 时对经验做程序性知识蒸馏，draft 落
+    // <forge>/skills/<slug>/SKILL.md（不自动启用）。
+    if auto_skill {
+        match tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(forge.distill_and_store_draft(&experiences))
+        }) {
+            Ok(Some(slug)) => {
+                println!();
+                println!("  auto_skill: distilled draft skill '{}'", slug);
+                println!(
+                    "    Location: {}",
+                    forge_dir
+                        .join("skills")
+                        .join(&slug)
+                        .join("SKILL.md")
+                        .display()
+                );
+                println!("    Status: draft（未启用；评审合格后手动部署）");
+            }
+            Ok(None) => {
+                println!();
+                println!("  auto_skill: no distillable pattern this cycle.");
+            }
+            Err(e) => {
+                println!();
+                println!("  auto_skill: distillation failed: {}", e);
+            }
         }
     }
 
@@ -885,7 +944,7 @@ pub fn run(action: ForgeAction, local: bool) -> Result<()> {
         ForgeAction::Status => cmd_status(&home, &cfg_path, &forge_dir)?,
         ForgeAction::Enable => cmd_enable(&cfg_path, &forge_dir)?,
         ForgeAction::Disable => cmd_disable(&cfg_path)?,
-        ForgeAction::Reflect => cmd_reflect(&cfg_path, &forge_dir)?,
+        ForgeAction::Reflect => cmd_reflect(&home, &cfg_path, &forge_dir)?,
         ForgeAction::List { r#type } => cmd_list(&forge_dir, &r#type)?,
         ForgeAction::Evaluate { id } => cmd_evaluate(&forge_dir, &id)?,
         ForgeAction::Export { id, output, all } => {
