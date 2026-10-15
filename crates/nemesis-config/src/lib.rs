@@ -3141,6 +3141,47 @@ pub fn validate_mcp_header_line(line: &str) -> std::result::Result<(), String> {
     Ok(())
 }
 
+/// MCP stdio env 行语法校验（"KEY=VALUE"；2026-10-15 第十三轮单一真相源——
+/// CLI `mcp add` 写入面 / Dashboard server.add·update / 运行期
+/// `resolved_env` WARN 跳过同源）：缺 `=` / 键名空 / 键名含空白 / 整值
+/// `vault:`/`env:`/`yaml:` 引用名为空或带首尾空格。与
+/// [`validate_mcp_header_line`] 同款 trim-后检查（值部首尾空格在校验与
+/// 运行期解析两侧都剥掉——字面量值带首尾空格的场景让位于两侧一致性）。
+/// 只验语法，值原样落盘，绝不解引用。
+pub fn validate_mcp_env_line(line: &str) -> std::result::Result<(), String> {
+    let Some((raw_name, raw_value)) = line.split_once('=') else {
+        return Err("env 行缺 '='（应为 \"KEY=VALUE\"）".to_string());
+    };
+    let name = raw_name.trim();
+    if name.is_empty() {
+        return Err("env 键名为空".to_string());
+    }
+    if name.chars().any(|c| c.is_whitespace()) {
+        return Err(format!("env 键名含空白：{name}"));
+    }
+    let value = raw_value.trim();
+    for (prefix, what) in [
+        ("env:", "环境变量名"),
+        ("yaml:", "凭据别名"),
+        ("vault:", "vault 别名"),
+    ] {
+        if let Some(rest) = value.strip_prefix(prefix) {
+            if rest.is_empty() {
+                return Err(format!(
+                    "env 值 {what} 引用名为空——写作 {prefix}<name>（如 vault:pet-token）"
+                ));
+            }
+            if rest.trim() != rest {
+                return Err(format!(
+                    "env 值 {what} 引用名带首尾空格（运行期按原样解析，必失败）——\
+                     写作 {prefix}{rest}（'=' 后不带空格）"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// 宽容字符串列表反序列化（单一真相源收敛配套）：`null` → 空表；
 /// `{"K":"V"}` → `["K=V"]`（LLM/外部生态最常见的 env 写法）；`["a","b"]`
 /// → 原样；标量 → 单元素表。元素非字符串时尽力转字符串。

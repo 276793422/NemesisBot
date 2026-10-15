@@ -43,6 +43,12 @@ pub enum ClientError {
 
     #[error("MCP list pagination aborted: {0}")]
     PaginationAborted(String),
+
+    /// 服务器响应形状非法（第十五轮缺陷 19）：此前 list/call/get 的结果
+    /// 反序列化失败一律 `unwrap_or_default()` 静默吞——空工具表/空输出
+    /// 比失败更难排查（J3 分页注释同款纪律），现响亮报错。
+    #[error("MCP server response parse error: {0}")]
+    ResponseParse(String),
 }
 
 /// Result alias for client operations.
@@ -414,7 +420,15 @@ impl McpClient {
             }
             let result = resp.result.unwrap_or(serde_json::Value::Null);
             if let Some(batch) = result.get(items_key) {
-                items.append(&mut serde_json::from_value(batch.clone()).unwrap_or_default());
+                // 第十五轮缺陷 19：批量形状非法（如工具条目缺 name /
+                // inputSchema）此前整批静默清空 → 上层把「解析失败」误当
+                // 「服务器就这些工具」。响亮报错，与 J3 分页防失控同纪律。
+                let parsed: Vec<T> = serde_json::from_value(batch.clone()).map_err(|e| {
+                    ClientError::ResponseParse(format!(
+                        "{method}: '{items_key}' batch parse failed: {e}"
+                    ))
+                })?;
+                items.extend(parsed);
             }
             let next = result
                 .get("nextCursor")
@@ -473,10 +487,14 @@ impl Client for McpClient {
             return Err(ClientError::Server(err.clone()));
         }
 
-        let result: ToolCallResult = resp
-            .result
-            .map(|v| serde_json::from_value(v).unwrap_or_default())
-            .unwrap_or_default();
+        // 第十五轮缺陷 19：结果形状非法此前静默成空成功（content 空 +
+        // is_error=false），LLM 拿到空工具输出无从排查。响亮报错。
+        let result: ToolCallResult = match resp.result {
+            Some(v) => serde_json::from_value(v).map_err(|e| {
+                ClientError::ResponseParse(format!("tools/call result parse failed: {e}"))
+            })?,
+            None => ToolCallResult::default(),
+        };
 
         Ok(result)
     }
@@ -537,10 +555,13 @@ impl Client for McpClient {
             return Err(ClientError::Server(err.clone()));
         }
 
-        let result: PromptResult = resp
-            .result
-            .map(|v| serde_json::from_value(v).unwrap_or_default())
-            .unwrap_or_default();
+        // 第十五轮缺陷 19：同 tools/call——形状非法响亮报错不静默。
+        let result: PromptResult = match resp.result {
+            Some(v) => serde_json::from_value(v).map_err(|e| {
+                ClientError::ResponseParse(format!("prompts/get result parse failed: {e}"))
+            })?,
+            None => PromptResult::default(),
+        };
 
         Ok(result)
     }

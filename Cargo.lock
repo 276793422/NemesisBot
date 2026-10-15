@@ -4912,6 +4912,7 @@ dependencies = [
  "nemesis-data",
  "nemesis-forge",
  "nemesis-lsp",
+ "nemesis-mcp",
  "nemesis-memory",
  "nemesis-path",
  "nemesis-plugins-wasm",

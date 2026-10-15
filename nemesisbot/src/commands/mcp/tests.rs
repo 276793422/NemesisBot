@@ -129,8 +129,9 @@ fn test_cmd_add_duplicate_server() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_mcp_config(&tmp);
 
-    // Should succeed but not add duplicate
-    add_stdio(
+    // make_mcp_config 已种 test-server → 重复名 = 刻意响亮失败
+    // （第十四轮：失败路径退码非零，不再打印后 Ok）
+    let err = add_stdio(
         &cfg,
         &main_cfg_of(&tmp),
         "test-server",
@@ -139,7 +140,8 @@ fn test_cmd_add_duplicate_server() {
         &[],
         30,
     )
-    .unwrap();
+    .unwrap_err();
+    assert!(err.to_string().contains("already exists"));
 
     let data: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
@@ -191,8 +193,9 @@ fn test_cmd_remove_nonexistent_server() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_mcp_config(&tmp);
 
-    cmd_remove(&cfg, "nonexistent").unwrap();
-    // Should succeed without error, server count unchanged
+    // 第十四轮：不存在 = 响亮失败；磁盘保持不变
+    let err = cmd_remove(&cfg, "nonexistent").unwrap_err();
+    assert!(err.to_string().contains("not found"));
     let data: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
     assert_eq!(data["servers"].as_array().unwrap().len(), 1);
@@ -202,7 +205,9 @@ fn test_cmd_remove_nonexistent_server() {
 fn test_cmd_remove_no_file() {
     let tmp = TempDir::new().unwrap();
     let cfg = tmp.path().join("nonexistent.json");
-    cmd_remove(&cfg, "test").unwrap();
+    // 第十四轮：无文件 = 响亮失败（不再打印后 Ok）
+    let err = cmd_remove(&cfg, "test").unwrap_err();
+    assert!(err.to_string().contains("not found"));
 }
 
 #[test]
@@ -240,7 +245,9 @@ fn test_cmd_inspect_found() {
 fn test_cmd_inspect_not_found() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_mcp_config(&tmp);
-    cmd_inspect(&cfg, "nonexistent").unwrap();
+    // 第十四轮：不存在 = 响亮失败
+    let err = cmd_inspect(&cfg, "nonexistent").unwrap_err();
+    assert!(err.to_string().contains("not found"));
 }
 
 #[test]
@@ -422,7 +429,9 @@ fn test_cmd_list_with_timeout_and_env() {
 fn test_cmd_inspect_no_file() {
     let tmp = TempDir::new().unwrap();
     let cfg = tmp.path().join("nonexistent.json");
-    cmd_inspect(&cfg, "anything").unwrap();
+    // 第十四轮：无文件 = 响亮失败
+    let err = cmd_inspect(&cfg, "anything").unwrap_err();
+    assert!(err.to_string().contains("not found"));
 }
 
 // -------------------------------------------------------------------------
@@ -555,7 +564,9 @@ fn test_mcp_cmd_remove_nonexistent_v2() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_mcp_config(&tmp);
 
-    cmd_remove(&cfg, "nonexistent").unwrap();
+    // 第十四轮：不存在 = 响亮失败；磁盘保持不变
+    let err = cmd_remove(&cfg, "nonexistent").unwrap_err();
+    assert!(err.to_string().contains("not found"));
 
     let data: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
@@ -756,9 +767,10 @@ fn test_s11b_sync_master_switch_flips_real_production_layout() {
 async fn test_s11b_cmd_test_not_found_and_missing_command() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_mcp_config(&tmp);
-    // 服务器不存在 → 打印后 Ok
-    cmd_test(&cfg, "nope").await.unwrap();
-    // 服务器存在但命令不在 PATH → 跳过连接测试
+    // 服务器不存在 → 响亮失败（第十四轮：退码非零契约）
+    let err = cmd_test(&cfg, "nope").await.unwrap_err();
+    assert!(err.to_string().contains("not found"));
+    // 服务器存在但命令不在 PATH → 响亮失败（不再跳过后 Ok）
     let dir = tmp.path().join("config2");
     std::fs::create_dir_all(&dir).unwrap();
     let cfg2 = dir.join("config.mcp.json");
@@ -767,7 +779,8 @@ async fn test_s11b_cmd_test_not_found_and_missing_command() {
         r#"{"enabled": true, "servers": [{"name": "ghost", "command": "definitely-missing-cmd-s11b", "args": [], "timeout": 5}]}"#,
     )
     .unwrap();
-    cmd_test(&cfg2, "ghost").await.unwrap();
+    let err = cmd_test(&cfg2, "ghost").await.unwrap_err();
+    assert!(err.to_string().contains("NOT found in PATH"));
 }
 
 #[tokio::test]
@@ -785,7 +798,9 @@ async fn test_s11b_cmd_test_python_fake_full_pass() {
 async fn test_s11b_cmd_tools_not_found_and_python_fake() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_mcp_config(&tmp);
-    cmd_tools(&cfg, "nope").await.unwrap();
+    // 第十四轮：不存在 = 响亮失败
+    let err = cmd_tools(&cfg, "nope").await.unwrap_err();
+    assert!(err.to_string().contains("not found"));
     if !s11b_have_python() {
         eprintln!("Skipping python part: python not available");
         return;
@@ -799,7 +814,9 @@ async fn test_s11b_cmd_tools_not_found_and_python_fake() {
 async fn test_s11b_cmd_resources_not_found_and_python_fake() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_mcp_config(&tmp);
-    cmd_resources(&cfg, "nope").await.unwrap();
+    // 第十四轮：不存在 = 响亮失败
+    let err = cmd_resources(&cfg, "nope").await.unwrap_err();
+    assert!(err.to_string().contains("not found"));
     if !s11b_have_python() {
         eprintln!("Skipping python part: python not available");
         return;
@@ -813,7 +830,9 @@ async fn test_s11b_cmd_resources_not_found_and_python_fake() {
 async fn test_s11b_cmd_prompts_not_found_and_python_fake() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_mcp_config(&tmp);
-    cmd_prompts(&cfg, "nope").await.unwrap();
+    // 第十四轮：不存在 = 响亮失败
+    let err = cmd_prompts(&cfg, "nope").await.unwrap_err();
+    assert!(err.to_string().contains("not found"));
     if !s11b_have_python() {
         eprintln!("Skipping python part: python not available");
         return;
@@ -827,24 +846,27 @@ async fn test_s11b_cmd_prompts_not_found_and_python_fake() {
 
 #[tokio::test]
 async fn test_s11b_cmd_discover_no_args_errors() {
-    // (None, None) → 打印用法错误后 Ok（614-617）
-    cmd_discover(None, None, &[], None, 5).await.unwrap();
+    // (None, None) → 响亮失败（第十四轮：用法错误退码非零，不再打印后 Ok）
+    let err = cmd_discover(None, None, &[], None, 5).await.unwrap_err();
+    assert!(err.to_string().contains("provide either --command"));
 }
 
 #[tokio::test]
 async fn test_s11b_cmd_discover_bad_command_err_arm() {
-    // 命令不存在 → spawn 失败 → Err 分支打印 "Discovery failed"（702-704）
-    cmd_discover(Some("/definitely/missing/cmd/s11b"), None, &[], None, 5)
+    // 命令不存在 → spawn 失败 → Err 分支响亮失败（第十四轮退码契约）
+    let err = cmd_discover(Some("/definitely/missing/cmd/s11b"), None, &[], None, 5)
         .await
-        .unwrap();
+        .unwrap_err();
+    assert!(err.to_string().contains("Discovery failed"));
 }
 
 #[tokio::test]
 async fn test_s11b_cmd_discover_dead_url_err_arm() {
-    // URL 连不上（本机拒绝端口）→ Err 分支；不经外网（602-604 入口行）
-    cmd_discover(None, Some("http://127.0.0.1:1/mcp"), &[], None, 5)
+    // URL 连不上（本机拒绝端口）→ Err 分支响亮失败；不经外网
+    let err = cmd_discover(None, Some("http://127.0.0.1:1/mcp"), &[], None, 5)
         .await
-        .unwrap();
+        .unwrap_err();
+    assert!(err.to_string().contains("Discovery failed"));
 }
 
 #[tokio::test]
@@ -936,35 +958,40 @@ async fn test_s11b_run_async_dispatch_arms() {
     let _ = &th.home;
     // block_in_place 分发 arm 用「服务器不存在」的快路径逐个覆盖：
     // Test / Tools / Resources / Prompts / Discover。
-    run(
+    // 第十四轮：不存在 = 响亮失败，逐臂断言错误文案。
+    let err = run(
         McpAction::Test {
             name: "nope".into(),
         },
         false,
     )
-    .unwrap();
-    run(
+    .unwrap_err();
+    assert!(err.to_string().contains("not found"));
+    let err = run(
         McpAction::Tools {
             name: "nope".into(),
         },
         false,
     )
-    .unwrap();
-    run(
+    .unwrap_err();
+    assert!(err.to_string().contains("not found"));
+    let err = run(
         McpAction::Resources {
             name: "nope".into(),
         },
         false,
     )
-    .unwrap();
-    run(
+    .unwrap_err();
+    assert!(err.to_string().contains("not found"));
+    let err = run(
         McpAction::Prompts {
             name: "nope".into(),
         },
         false,
     )
-    .unwrap();
-    run(
+    .unwrap_err();
+    assert!(err.to_string().contains("not found"));
+    let err = run(
         McpAction::Discover {
             command: None,
             url: None,
@@ -974,7 +1001,8 @@ async fn test_s11b_run_async_dispatch_arms() {
         },
         false,
     )
-    .unwrap();
+    .unwrap_err();
+    assert!(err.to_string().contains("provide either --command"));
 }
 
 // =========================================================================
@@ -1049,7 +1077,7 @@ mod wave_b {
     /// test_cmd_add_missing_servers_key_still_persists / non_array 回归钉住。
     ///
     /// cmd_remove：config 存在但无 "servers" 键 → if-let None（336 区），
-    /// found=false 走 not-found 提示且不回写。
+    /// 第十四轮 = 响亮失败且不回写。
     #[test]
     fn wave_b_cmd_remove_on_config_without_servers_key_reports_not_found() {
         let tmp = TempDir::new().unwrap();
@@ -1057,7 +1085,8 @@ mod wave_b {
         std::fs::create_dir_all(&dir).unwrap();
         let cfg = dir.join("config.mcp.json");
         std::fs::write(&cfg, r#"{"enabled": true}"#).unwrap();
-        cmd_remove(&cfg, "ghost").unwrap();
+        let err = cmd_remove(&cfg, "ghost").unwrap_err();
+        assert!(err.to_string().contains("not found"));
         let data: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
         assert!(data.get("servers").is_none(), "未找到时不新增键");
@@ -1092,9 +1121,9 @@ mod wave_b {
         assert_eq!(servers[1]["timeout_secs"], 9);
         assert_eq!(data["enabled"], true, "主开关翻转落盘");
 
-        // 相位2：重名短路（快照对比整份文件不变）
+        // 相位2：重名短路（快照对比整份文件不变；第十四轮 = 响亮失败）
         let before = std::fs::read_to_string(&cfg).unwrap();
-        add_stdio(
+        let err = add_stdio(
             &cfg,
             &main_cfg_of(&tmp),
             "second",
@@ -1103,7 +1132,8 @@ mod wave_b {
             &[],
             77,
         )
-        .unwrap();
+        .unwrap_err();
+        assert!(err.to_string().contains("already exists"));
         assert_eq!(
             std::fs::read_to_string(&cfg).unwrap(),
             before,
@@ -1242,7 +1272,9 @@ for line in sys.stdin:
         }
         let tmp = TempDir::new().unwrap();
         let cfg = wb_fake_server(&tmp, "dead", WB_DEAD_SERVER, 15);
-        cmd_test(&cfg, "wb-dead").await.unwrap();
+        // 第十四轮：连接失败 = 退码非零（不再打印后 Ok）
+        let err = cmd_test(&cfg, "wb-dead").await.unwrap_err();
+        assert!(err.to_string().contains("connection test failed"));
     }
 
     /// cmd_test：tools/list 返回 JSON-RPC error 对象 → list_tools Err →
@@ -1995,7 +2027,7 @@ mod w1_http_add {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn w1_cmd_test_http_e2e_vault_ref_unresolved_401_hint_branch() {
         // vault 引用（本测试进程无解析器 → WARN 跳过 → 头未注入）→ 401：
-        // 覆盖案例设备的真实失败形态与诊断分支（cmd_test 打印提示后 Ok）
+        // 覆盖案例设备的真实失败形态与诊断分支（第十四轮：打印提示后退码非零）
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::any())
             .respond_with(wiremock::ResponseTemplate::new(401).set_body_string("no auth"))
@@ -2018,7 +2050,9 @@ mod w1_http_add {
         });
         std::fs::write(&cfg, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 
-        super::cmd_test(&cfg, "w1vault").await.unwrap();
+        let err = super::cmd_test(&cfg, "w1vault").await.unwrap_err();
+        assert!(err.to_string().contains("connection test failed"));
+        assert!(err.to_string().contains("401"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2196,4 +2230,76 @@ fn r8_server_entry_is_http_empty_command_key_matches_dispatch() {
     assert!(super::server_entry_is_http(&serde_json::json!({
         "name": "e", "command": "", "url": "http://x/mcp"
     })));
+}
+
+// ------------------------- env 行语法闸（R13，2026-10-15）---------
+
+#[test]
+fn r13_env_line_syntax_gates() {
+    let build = |env: &[&str]| -> anyhow::Result<()> {
+        let e: Vec<String> = env.iter().map(|s| s.to_string()).collect();
+        super::AddRequest::build("pet", Some("python"), None, None, &[], None, &e, 30).map(|_| ())
+    };
+    // 缺 '='
+    let err = build(&["API_KEY"]).unwrap_err();
+    assert!(err.to_string().contains("env 行缺"), "实际: {err}");
+    // 键名含空白
+    let err = build(&["MY KEY=v"]).unwrap_err();
+    assert!(err.to_string().contains("键名含空白"), "实际: {err}");
+    // 引用名为空 / 带空格
+    let err = build(&["K=vault:"]).unwrap_err();
+    assert!(err.to_string().contains("引用名为空"), "实际: {err}");
+    let err = build(&["K=vault: name"]).unwrap_err();
+    assert!(err.to_string().contains("引用名带首尾空格"), "实际: {err}");
+    // 错误文案脱敏：失败行的值段不回显（键名保留、值段换 <redacted>）
+    let err = build(&["BAD KEY=sk-secret-value"]).unwrap_err();
+    assert!(
+        !err.to_string().contains("sk-secret-value"),
+        "值段必须脱敏: {err}"
+    );
+    assert!(
+        err.to_string().contains("BAD KEY=<redacted>"),
+        "实际: {err}"
+    );
+    let err = build(&["API_KEY"]).unwrap_err();
+    assert!(
+        err.to_string().contains("<redacted>"),
+        "无 '=' 行也脱敏: {err}"
+    );
+    // 合法形态放行
+    assert!(build(&["K=V", "T=vault:alias"]).is_ok());
+}
+
+// ------------------------- R14（2026-10-16）：失败路径退出码契约 ---------
+
+/// 失败 = 非零退出（自动化契约）：add 重名不再 println+Ok 假成功——
+/// agent/exec 工具靠退出码判断成败（W1 agent 驱动安装的核心通路）。
+#[test]
+fn r14_add_duplicate_is_loud_error() {
+    let tmp = TempDir::new().unwrap();
+    let cfg = make_empty_mcp_config(&tmp);
+    let root_cfg = tmp.path().join("config.json");
+    let req = AddRequest::build("pet", Some("python"), None, None, &[], None, &[], 30).unwrap();
+    cmd_add(&cfg, &root_cfg, &req).unwrap(); // 首次成功
+    let err = cmd_add(&cfg, &root_cfg, &req).unwrap_err(); // 重名 = Err
+    assert!(err.to_string().contains("already exists"), "实际: {err}");
+    // 同名条目未被重复追加。
+    let data = std::fs::read_to_string(&cfg).unwrap();
+    assert_eq!(data.matches("\"pet\"").count(), 1);
+}
+
+#[test]
+fn r14_remove_missing_is_loud_error() {
+    let tmp = TempDir::new().unwrap();
+    let cfg = make_empty_mcp_config(&tmp);
+    let err = cmd_remove(&cfg, "ghost").unwrap_err();
+    assert!(err.to_string().contains("not found"), "实际: {err}");
+}
+
+#[tokio::test]
+async fn r14_test_missing_server_is_loud_error() {
+    let tmp = TempDir::new().unwrap();
+    let cfg = make_empty_mcp_config(&tmp);
+    let err = cmd_test(&cfg, "ghost").await.unwrap_err();
+    assert!(err.to_string().contains("not found"), "实际: {err}");
 }
