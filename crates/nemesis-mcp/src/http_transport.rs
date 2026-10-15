@@ -253,6 +253,13 @@ impl Transport for HttpTransport {
 /// 不中——响应提取拖到流 EOF，保活型长连接直接撞总超时假死）；② 无
 /// `data:` 的事件（keepalive 注释等）跳过继续读，不再硬报错——此前流里
 /// 先到一条注释事件就整体失败。
+///
+/// 2026-10-16 第十四轮加固：③ JSON-RPC **通知**事件（无 `id` 字段——
+/// `notifications/progress`、`notifications/message` 等，服务器响应前先推
+/// 进度/日志是 MCP 标准行为）跳过继续读。此前对首个 data 载荷直接
+/// `from_str::<TransportResponse>`：`id` 是必填字段，通知事件反序列化必炸
+/// "missing field `id`"，整个请求硬失败——stdio 侧 J3 分类器
+/// （`classify_line`）已修的同类问题，HTTP SSE 路径漏配。
 async fn parse_sse_response(
     mut response: reqwest::Response,
 ) -> Result<TransportResponse, TransportError> {
@@ -261,9 +268,14 @@ async fn parse_sse_response(
     loop {
         if let Some((event_text, rest)) = take_complete_event(&buffer) {
             if let Some(json_str) = sse_data_payload(&event_text) {
-                return serde_json::from_str(&json_str).map_err(|e| {
-                    TransportError::send_failed(format!("Failed to parse SSE data: {}", e))
-                });
+                match response_payload(&json_str)? {
+                    SsePayload::Response(resp) => return Ok(resp),
+                    SsePayload::Skipped => {
+                        // 通知/垃圾事件：跳过，继续读下一事件。
+                        buffer = rest;
+                        continue;
+                    }
+                }
             }
             // 无 data 的事件（keepalive 注释等）：跳过，继续读下一事件。
             buffer = rest;
@@ -278,14 +290,54 @@ async fn parse_sse_response(
         match chunk {
             Some(bytes) => buffer.push_str(&String::from_utf8_lossy(&bytes)),
             None => {
+                // EOF：残留内容按完整事件尽力提取（服务器最后事件不带空行
+                // 结尾的宽容路径）。残留是通知/垃圾/无 data = 流已结束且
+                // 没有响应——诚实报结束，不再把通知硬解析成
+                // "missing field `id`" 的伪失败。
                 let trimmed = buffer.trim();
-                if !trimmed.is_empty() {
-                    return extract_sse_data(trimmed);
+                if !trimmed.is_empty()
+                    && let Some(json_str) = sse_data_payload(trimmed)
+                {
+                    match response_payload(&json_str)? {
+                        SsePayload::Response(resp) => return Ok(resp),
+                        SsePayload::Skipped => {}
+                    }
                 }
                 return Err(TransportError::send_failed("SSE stream ended without data"));
             }
         }
     }
+}
+
+/// SSE `data:` 载荷的判定结果。
+#[derive(Debug)]
+enum SsePayload {
+    /// 带 `id` 的 JSON-RPC 响应（含错误响应）。
+    Response(TransportResponse),
+    /// JSON-RPC 通知（无 `id`）或非 JSON 垃圾载荷——跳过（trace 已记）。
+    Skipped,
+}
+
+/// 判定 SSE `data:` 载荷类别（第十四轮）：无 `id` 字段 = 通知，跳过；
+/// 非 JSON = 垃圾，跳过（与 stdio 侧 J3 `classify_line` 的
+/// Notification/Garbage 分类同语义）；带 `id` 但形状非法 = 协议违例，
+/// 硬报错（保留旧失败面）。
+fn response_payload(json_str: &str) -> Result<SsePayload, TransportError> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json_str) else {
+        tracing::trace!("[mcp.http] SSE data 非 JSON，跳过");
+        return Ok(SsePayload::Skipped);
+    };
+    if value.get("id").is_none() {
+        let method = value
+            .get("method")
+            .and_then(|m| m.as_str())
+            .unwrap_or("unknown");
+        tracing::trace!(method = %method, "[mcp.http] SSE JSON-RPC notification skipped");
+        return Ok(SsePayload::Skipped);
+    }
+    serde_json::from_value(value)
+        .map(SsePayload::Response)
+        .map_err(|e| TransportError::send_failed(format!("Failed to parse SSE data: {}", e)))
 }
 
 /// Take one complete event from the head of the buffer (returns the event
@@ -323,20 +375,6 @@ fn sse_data_payload(event_text: &str) -> Option<String> {
     } else {
         Some(data_lines.join("\n"))
     }
-}
-
-/// Extract the JSON-RPC response from an SSE event text.
-///
-/// Handles both single-line and multi-line `data:` fields (concatenated with
-/// `\n`). Ignores `event:`, `id:`, `retry:`, and comment lines.
-fn extract_sse_data(event_text: &str) -> Result<TransportResponse, TransportError> {
-    let Some(json_str) = sse_data_payload(event_text) else {
-        return Err(TransportError::send_failed(
-            "SSE event contains no data field",
-        ));
-    };
-    serde_json::from_str(&json_str)
-        .map_err(|e| TransportError::send_failed(format!("Failed to parse SSE data: {}", e)))
 }
 
 // ===========================================================================

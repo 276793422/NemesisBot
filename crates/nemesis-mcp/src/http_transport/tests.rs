@@ -37,10 +37,25 @@ async fn test_http_transport_send_not_connected() {
 // SSE parsing unit tests
 // ---------------------------------------------------------------------------
 
+/// 旧 `extract_sse_data` 的测试替身（第十四轮：生产解析拆成
+/// `sse_data_payload` + `response_payload`，后者过滤无 `id` 的 JSON-RPC
+/// 通知）。本替身保持旧测试的提取语义钉死不变：无 data 报错、响应照常
+/// 提取、通知/垃圾载荷同样报错（旧测试面没有通知形态输入）。
+fn sse_response_for_test(event_text: &str) -> Result<TransportResponse, TransportError> {
+    let json_str = sse_data_payload(event_text)
+        .ok_or_else(|| TransportError::send_failed("SSE event contains no data field"))?;
+    match response_payload(&json_str)? {
+        SsePayload::Response(r) => Ok(r),
+        SsePayload::Skipped => Err(TransportError::send_failed(
+            "SSE event contains no data field",
+        )),
+    }
+}
+
 #[test]
 fn test_extract_sse_data_single_line() {
     let event = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}";
-    let result = extract_sse_data(event).unwrap();
+    let result = sse_response_for_test(event).unwrap();
     assert_eq!(result.jsonrpc, "2.0");
     assert_eq!(result.id, serde_json::Value::Number(1.into()));
     assert!(result.result.is_some());
@@ -49,7 +64,7 @@ fn test_extract_sse_data_single_line() {
 #[test]
 fn test_extract_sse_data_no_event_type() {
     let event = "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}";
-    let result = extract_sse_data(event).unwrap();
+    let result = sse_response_for_test(event).unwrap();
     assert_eq!(result.jsonrpc, "2.0");
     assert_eq!(result.id, serde_json::Value::Number(2.into()));
 }
@@ -57,14 +72,14 @@ fn test_extract_sse_data_no_event_type() {
 #[test]
 fn test_extract_sse_data_no_space_after_colon() {
     let event = "data:{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":null}";
-    let result = extract_sse_data(event).unwrap();
+    let result = sse_response_for_test(event).unwrap();
     assert_eq!(result.id, serde_json::Value::Number(3.into()));
 }
 
 #[test]
 fn test_extract_sse_data_multi_line() {
     let event = "data: {\"jsonrpc\":\"2.0\",\ndata: \"id\":4,\"result\":{}}";
-    let result = extract_sse_data(event).unwrap();
+    let result = sse_response_for_test(event).unwrap();
     assert_eq!(result.jsonrpc, "2.0");
     // Multi-line data is joined with \n → valid JSON
     assert!(result.result.is_some());
@@ -74,7 +89,7 @@ fn test_extract_sse_data_multi_line() {
 fn test_extract_sse_data_error_response() {
     let event =
         "data: {\"jsonrpc\":\"2.0\",\"id\":5,\"error\":{\"code\":-32600,\"message\":\"bad\"}}";
-    let result = extract_sse_data(event).unwrap();
+    let result = sse_response_for_test(event).unwrap();
     assert!(result.error.is_some());
     assert_eq!(result.error.unwrap().code, -32600);
 }
@@ -82,7 +97,7 @@ fn test_extract_sse_data_error_response() {
 #[test]
 fn test_extract_sse_data_no_data_field() {
     let event = "event: message\nid: 123";
-    let result = extract_sse_data(event);
+    let result = sse_response_for_test(event);
     assert!(result.is_err());
     assert!(result.unwrap_err().message.contains("no data field"));
 }
@@ -90,7 +105,7 @@ fn test_extract_sse_data_no_data_field() {
 #[test]
 fn test_extract_sse_data_ignores_comments() {
     let event = ": this is a comment\ndata: {\"jsonrpc\":\"2.0\",\"id\":6,\"result\":true}";
-    let result = extract_sse_data(event).unwrap();
+    let result = sse_response_for_test(event).unwrap();
     assert_eq!(result.id, serde_json::Value::Number(6.into()));
 }
 
@@ -117,7 +132,7 @@ fn test_extract_sse_data_skips_empty_data_line() {
     // A "data:" line with only whitespace must be ignored, leaving no usable
     // data field → error rather than an empty-string parse.
     let event = "data:   \ndata: {\"jsonrpc\":\"2.0\",\"id\":7,\"result\":true}";
-    let result = extract_sse_data(event).unwrap();
+    let result = sse_response_for_test(event).unwrap();
     assert_eq!(result.id, serde_json::Value::Number(7.into()));
 }
 
@@ -125,7 +140,7 @@ fn test_extract_sse_data_skips_empty_data_line() {
 fn test_extract_sse_data_only_empty_data_is_error() {
     // Every data line is empty/whitespace → treated as no data field.
     let event = "data:\ndata:   ";
-    let result = extract_sse_data(event);
+    let result = sse_response_for_test(event);
     assert!(result.is_err());
     assert!(result.unwrap_err().message.contains("no data field"));
 }
@@ -134,7 +149,7 @@ fn test_extract_sse_data_only_empty_data_is_error() {
 fn test_extract_sse_data_ignores_retry_and_id_lines() {
     // SSE control fields retry: and id: must be silently ignored.
     let event = "retry: 5000\nid: abc-123\ndata: {\"jsonrpc\":\"2.0\",\"id\":8,\"result\":{}}";
-    let result = extract_sse_data(event).unwrap();
+    let result = sse_response_for_test(event).unwrap();
     assert_eq!(result.id, serde_json::Value::Number(8.into()));
     assert!(result.result.is_some());
 }
@@ -143,7 +158,7 @@ fn test_extract_sse_data_ignores_retry_and_id_lines() {
 fn test_extract_sse_data_multi_field_concatenation() {
     // Multiple data lines are joined with '\n' to form one JSON document.
     let event = "data: {\"jsonrpc\":\"2.0\",\ndata: \"id\":9,\ndata: \"result\":{\"v\":1}}";
-    let result = extract_sse_data(event).unwrap();
+    let result = sse_response_for_test(event).unwrap();
     assert_eq!(result.jsonrpc, "2.0");
     assert_eq!(result.id, serde_json::Value::Number(9.into()));
 }
@@ -152,7 +167,7 @@ fn test_extract_sse_data_multi_field_concatenation() {
 fn test_extract_sse_data_trims_whitespace_around_data() {
     // Leading/trailing whitespace on each data line is trimmed.
     let event = "data:   {\"jsonrpc\":\"2.0\",\"id\":10,\"result\":{}}   ";
-    let result = extract_sse_data(event).unwrap();
+    let result = sse_response_for_test(event).unwrap();
     assert_eq!(result.id, serde_json::Value::Number(10.into()));
 }
 
@@ -160,14 +175,14 @@ fn test_extract_sse_data_trims_whitespace_around_data() {
 fn test_extract_sse_data_string_id() {
     // JSON-RPC id can be a string (MCP allows string|number|null).
     let event = "data: {\"jsonrpc\":\"2.0\",\"id\":\"req-xyz\",\"result\":{\"ok\":true}}";
-    let result = extract_sse_data(event).unwrap();
+    let result = sse_response_for_test(event).unwrap();
     assert_eq!(result.id, serde_json::Value::String("req-xyz".to_string()));
 }
 
 #[test]
 fn test_extract_sse_data_empty_event_text_is_error() {
-    assert!(extract_sse_data("").is_err());
-    assert!(extract_sse_data("   ").is_err());
+    assert!(sse_response_for_test("").is_err());
+    assert!(sse_response_for_test("   ").is_err());
 }
 
 #[test]
@@ -175,7 +190,7 @@ fn test_extract_sse_data_blank_lines_between_fields() {
     // Real SSE can have blank separators; lines() drops empty lines, and the
     // data: field is still extracted.
     let event = "\nevent: message\n\ndata: {\"jsonrpc\":\"2.0\",\"id\":11,\"result\":{}}\n";
-    let result = extract_sse_data(event).unwrap();
+    let result = sse_response_for_test(event).unwrap();
     assert_eq!(result.id, serde_json::Value::Number(11.into()));
 }
 
@@ -183,7 +198,7 @@ fn test_extract_sse_data_blank_lines_between_fields() {
 fn test_extract_sse_data_comment_only_is_error() {
     // A comment line (starting with ':') and nothing else → no data field.
     let event = ": keep-alive comment";
-    let result = extract_sse_data(event);
+    let result = sse_response_for_test(event);
     assert!(result.is_err());
 }
 
@@ -192,7 +207,7 @@ fn test_extract_sse_data_case_sensitive_prefix() {
     // The "data:" prefix is case-sensitive — "Data:" must not be treated as a
     // data field, so this event has no usable data.
     let event = "Data: {\"jsonrpc\":\"2.0\",\"id\":12,\"result\":{}}";
-    let result = extract_sse_data(event);
+    let result = sse_response_for_test(event);
     assert!(result.is_err());
 }
 
@@ -201,7 +216,7 @@ fn test_extract_sse_data_error_with_data_field() {
     // A data field carrying a JSON-RPC error should parse successfully and
     // expose the error object.
     let event = "data: {\"jsonrpc\":\"2.0\",\"id\":13,\"error\":{\"code\":-32700,\"message\":\"parse error\"}}";
-    let result = extract_sse_data(event).unwrap();
+    let result = sse_response_for_test(event).unwrap();
     let err = result.error.expect("error should be present");
     assert_eq!(err.code, -32700);
     assert_eq!(err.message, "parse error");
@@ -877,5 +892,85 @@ async fn test_w4c_http_sse_crlf_comment_then_data() {
     let resp = t.send(&w4c_request("x", 6), 5000).await.unwrap();
     assert_eq!(resp.id, serde_json::Value::Number(6.into()));
     assert_eq!(resp.result.unwrap()["ok"], 2);
+    t.close().await.unwrap();
+}
+
+// ------------------------- R14（2026-10-16）：JSON-RPC 通知过滤 ---------
+
+#[test]
+fn r14_response_payload_classification() {
+    // 无 id 的通知 → Skipped（MCP 标准行为：响应前先推 progress/log）
+    let notification = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{}}";
+    assert!(matches!(
+        response_payload(notification).unwrap(),
+        SsePayload::Skipped
+    ));
+    let progress = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{}}";
+    assert!(matches!(
+        response_payload(progress).unwrap(),
+        SsePayload::Skipped
+    ));
+    // 非 JSON 垃圾 → Skipped
+    assert!(matches!(
+        response_payload("not json").unwrap(),
+        SsePayload::Skipped
+    ));
+    // 带 id 的响应 → Response（错误响应也算）
+    let ok = "{\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{}}";
+    assert!(matches!(
+        response_payload(ok).unwrap(),
+        SsePayload::Response(_)
+    ));
+    // id 在但形状非法（缺 jsonrpc）→ 硬报错（协议违例保留旧失败面）
+    let malformed = "{\"id\":9,\"result\":{}}";
+    let err = response_payload(malformed).unwrap_err();
+    assert!(
+        err.message.contains("Failed to parse SSE data"),
+        "实际: {}",
+        err.message
+    );
+}
+
+#[tokio::test]
+async fn r14_test_w4c_http_sse_notification_then_data() {
+    let server = MockServer::start().await;
+    // 服务器响应前先推一条 notifications/message（MCP 标准 progress/log 行为）。
+    let body = "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{\"level\":\"info\",\"data\":\"starting\"}}\n\ndata: {\"jsonrpc\":\"2.0\",\"id\":11,\"result\":{\"ok\":11}}\n\n";
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+        .mount(&server)
+        .await;
+
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    t.connect().await.unwrap();
+    // 旧实现：首个 data 载荷直接 from_str::<TransportResponse>，通知无 id
+    // → "missing field `id`" 整个请求硬失败；新实现：通知跳过 → 取到响应。
+    let resp = t.send(&w4c_request("x", 11), 5000).await.unwrap();
+    assert_eq!(resp.id, serde_json::Value::Number(11.into()));
+    assert_eq!(resp.result.unwrap()["ok"], 11);
+    t.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn r14_test_w4c_http_sse_notification_only_ended_without_data() {
+    let server = MockServer::start().await;
+    // 流里只有通知（响应永不到来，如服务器崩在处理中）：EOF 后诚实报
+    // "ended without data"，不再是通知反序列化的 "missing field id" 伪失败。
+    let body = "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{}}\n\n";
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+        .mount(&server)
+        .await;
+
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    t.connect().await.unwrap();
+    let err = t.send(&w4c_request("x", 12), 5000).await.unwrap_err();
+    assert!(
+        err.message.contains("SSE stream ended without data"),
+        "实际: {}",
+        err.message
+    );
     t.close().await.unwrap();
 }

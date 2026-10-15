@@ -1074,3 +1074,29 @@ async fn test_discover_http_without_matching_header_fails() {
         "HTTP status must be visible in the error chain: {err}"
     );
 }
+
+// --- 第十四轮缺陷 17：前缀碰撞加载面 warn（可观测，不拒载）-----------
+
+#[test]
+fn r17_load_config_with_colliding_names_succeeds_intact() {
+    // pet.v2 / pet-v2 同前缀：load_config 走 warn 臂但名单完整保留
+    // （碰撞是可观测问题，不升级为拒载——配置本身合法）。
+    let tmp = TempDir::new().unwrap();
+    let path = make_config_path(&tmp);
+    let mut config = McpConfig::default();
+    config.enabled = true;
+    config.servers.push(ServerConfig::new("pet.v2", "python"));
+    config.servers.push(ServerConfig::new("pet-v2", "python"));
+    write_config(&path, &config);
+
+    let mgr = McpManager::new(path);
+    assert_eq!(mgr.list_servers().len(), 2, "warn 不删条目");
+    assert!(mgr.get_server("pet.v2").is_some());
+    assert!(mgr.get_server("pet-v2").is_some());
+    // 检测真相源确实判撞（与 warn 臂同一 helper）
+    let groups = crate::adapter::sanitize_prefix_collisions(
+        mgr.list_servers().iter().map(|s| s.name.as_str()),
+    );
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].0, "mcp_pet_v2_");
+}

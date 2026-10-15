@@ -63,15 +63,27 @@ impl StdioTransport {
 /// P0 vault（B3）：解析 "KEY=VALUE" 列表中可含引用的 VALUE
 /// （vault:/env:/yaml: 前缀经 nemesis-config 全局解析器现查；字面量原样）。
 /// 解析失败的变量跳过（error! 带键名与根因），其余原序返回。
+///
+/// 2026-10-15 第十三轮：语法规则单一真相源 =
+/// `nemesis_config::validate_mcp_env_line`（CLI `mcp add` 写入面与
+/// Dashboard server.add·update 同源）——非法行 loud WARN + 跳过（原文不
+/// 落日志），不再静默丢弃（此前无 `=` 的行无声消失，用户以为变量已注入）；
+/// 值部 trim 后解析（与 headers 侧 `resolved_header_pairs` 对齐，写入面
+/// 校验同款 trim-后检查）。
 pub(crate) fn resolved_env(env: &[String]) -> Vec<(String, String)> {
     let mut out = Vec::with_capacity(env.len());
     for pair in env {
-        if let Some((k, v)) = pair.split_once('=') {
-            match nemesis_config::resolve_secret_field(v, &format!("mcp.env.{k}")) {
-                Ok(value) => out.push((k.to_string(), value)),
-                Err(e) => {
-                    tracing::error!("[mcp] env {k}: 引用解析失败: {e}（变量未注入）");
-                }
+        if let Err(reason) = nemesis_config::validate_mcp_env_line(pair) {
+            tracing::warn!("[mcp] env 行非法，跳过（{reason}；原文不落日志）");
+            continue;
+        }
+        let Some((k, v)) = pair.split_once('=') else {
+            continue; // 校验已保证有 '='；防御臂
+        };
+        match nemesis_config::resolve_secret_field(v.trim(), &format!("mcp.env.{}", k.trim())) {
+            Ok(value) => out.push((k.trim().to_string(), value)),
+            Err(e) => {
+                tracing::error!("[mcp] env {k}: 引用解析失败: {e}（变量未注入）");
             }
         }
     }
@@ -157,6 +169,28 @@ impl Transport for StdioTransport {
             .stdout
             .take()
             .ok_or_else(|| TransportError::send_failed("failed to get stdout pipe"))?;
+
+        // 第十五轮缺陷 18：stderr 管道必须持续排水——此前 `Stdio::piped()`
+        // 捕获后无人读：话痨型 server（node/python 的运行日志走 stderr 是
+        // 常态）写满 OS 管道缓冲后会阻塞在 stderr 写上，进程整体挂死，
+        // 表现为「跑得好好的，一阵之后全部请求神秘超时」。排水任务逐行读
+        // stderr 转 debug 日志（默认级别不刷屏，排障时开 debug 可见服务器
+        // 侧输出）；EOF / 读错误静默退出（close 杀进程后必然走这）。
+        if let Some(stderr) = child.stderr.take() {
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(stderr);
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    match reader.read_line(&mut line).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {
+                            tracing::debug!(target: "mcp_stdio_stderr", "{}", line.trim_end());
+                        }
+                    }
+                }
+            });
+        }
 
         self.child = Some(child);
         self.stdin = Some(Mutex::new(stdin));
