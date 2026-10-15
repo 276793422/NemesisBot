@@ -45,32 +45,33 @@ fn live_scratch_project() -> Option<(tempfile::TempDir, std::path::PathBuf)> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn live_session_spawn_query_and_shutdown_with_rust_analyzer() {
-    if registry::find_command("rust-analyzer").is_none() {
-        eprintln!("SKIP: rust-analyzer not on PATH");
+    let Some((dir, lib)) = live_scratch_project() else {
+        eprintln!("SKIP: tempdir unavailable");
         return;
-    }
-    // PATH 上存在 ≠ 可用：Windows 上 ~/.cargo/bin 的 rust-analyzer 常是
-    // rustup 代理 shim，工具链未装该 component 时一跑就退出（stderr 报
-    // Unknown binary）→ 假红而非 SKIP。探活 --version，失败按 SKIP 约定
-    // 诚实跳过（与「不在 PATH」同面）。
+    };
+    // PATH 上存在 ≠ 可用，且探活必须与实跑同 resolve 上下文：spawn_session
+    // 以 scratch 项目根为 current_dir 启动服务器，而 PATH 上的 rust-analyzer
+    // 常是 rustup 代理 shim——shim 的 toolchain 解析顺序是 RUSTUP_TOOLCHAIN
+    // 环境变量 > cwd 向上找 rust-toolchain.toml > default。nextest 不把
+    // rustup 注入的 RUSTUP_TOOLCHAIN 传给测试进程（cargo test 会传），探活
+    // 若用测试进程 cwd，两 harness 会得出不同结论（cargo test 绿 / nextest
+    // 挂在 spawn 后 Unknown binary 假红）。用 scratch 根当探活 cwd = 与实跑
+    // 完全同源；失败按 SKIP 约定诚实跳过。
     {
         let probe = std::process::Command::new("rust-analyzer")
             .arg("--version")
+            .current_dir(dir.path())
             .output();
         match probe {
             Ok(out) if out.status.success() => {}
             _ => {
                 eprintln!(
-                    "SKIP: rust-analyzer on PATH but not functional (rustup shim without component?)"
+                    "SKIP: rust-analyzer on PATH but not functional from scratch-project cwd (rustup shim without component?)"
                 );
                 return;
             }
         }
     }
-    let Some((_dir, lib)) = live_scratch_project() else {
-        eprintln!("SKIP: tempdir unavailable");
-        return;
-    };
 
     let mgr = LspManager::new(Some(Duration::from_secs(60)), Some(Duration::from_secs(60)));
     assert_eq!(mgr.session_count().await, 0);

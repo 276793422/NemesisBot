@@ -68,7 +68,7 @@ pub const INTERNAL_CHANNELS: &[&str] = &["cli", "system", "subagent"];
 /// match 臂）与 dashboard `commands.list` 下发给前端补全菜单的 `builtins`
 /// 都从这里读，防止两处清单漂移。
 pub const BUILTIN_SLASH_COMMANDS: &[&str] = &[
-    "help", "model", "show", "list", "switch", "compact", "clear", "plan", "build",
+    "help", "model", "show", "list", "switch", "compact", "clear", "plan", "build", "undo",
 ];
 
 /// Check if a channel is an internal channel.

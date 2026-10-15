@@ -731,7 +731,11 @@ pub fn install_bytes(dir: &str, bytes: &[u8], overwrite: bool) -> Result<Install
         return Err(format!("皮肤 {id} 已存在（确认覆盖请带 overwrite=true）"));
     }
     std::fs::create_dir_all(dir_path).map_err(|e| format!("创建皮肤目录失败: {e}"))?;
-    let tmp = dir_path.join(format!(".{id}.nbskin.tmp{}", std::process::id()));
+    // tmp 名带自增计数（SessionStore SAVE_COUNTER 同款）：同进程并发安装
+    // 同一包时 pid 后缀不够区分，固定名会让两次写互踩出坏包。
+    static TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = dir_path.join(format!(".{id}.nbskin.tmp{}_{n}", std::process::id()));
     std::fs::write(&tmp, bytes).map_err(|e| format!("写入临时文件失败: {e}"))?;
     if overwritten && let Err(e) = std::fs::remove_file(&path) {
         let _ = std::fs::remove_file(&tmp);

@@ -224,6 +224,51 @@ impl AgentLoop {
         )
     }
 
+    /// E4（收官批 2026-10-15）：杂务文本补全单一入口——`agents.small_model`
+    /// 槽位优先，未配置 WARN 回主模型（槽位/主模型解析复用
+    /// [`Self::resolve_summary_provider`]，锁序纪律同一处）；调用治理（墙钟
+    /// 超时 + 空输出拒绝 + 单次重试 + 显式禁思考）与标题/摘要杂务同走
+    /// bypass_llm 护栏。首个 nemesisbot 侧消费点 = connector monitor 语义
+    /// 变化摘要（E4 收官批）。无工具、单条 user 消息、非流式。
+    pub async fn chore_completion(
+        &self,
+        label: &str,
+        prompt: String,
+        max_tokens: u32,
+    ) -> Result<String, String> {
+        if self.small_model_slot().is_none() {
+            tracing::warn!(
+                "[chore:{label}] agents.small_model 未配置，回落主模型生成（预算 {} tokens）",
+                max_tokens
+            );
+        }
+        let (provider, model) = self.resolve_summary_provider(true);
+        guarded_llm_call_retrying(label, AUX_SUMMARY_TIMEOUT, || {
+            let prompt = prompt.clone();
+            let model = model.clone();
+            let provider = provider.clone();
+            async move {
+                provider
+                    .chat(
+                        &model,
+                        vec![LlmMessage {
+                            role: "user".to_string(),
+                            content: prompt,
+                            tool_calls: None,
+                            tool_call_id: None,
+                            reasoning_content: None,
+                            images: Vec::new(),
+                        }],
+                        Some(aux_chat_options(max_tokens)),
+                        Vec::new(),
+                    )
+                    .await
+                    .map(|r| r.content)
+            }
+        })
+        .await
+    }
+
     /// Swap the LLM provider and model at runtime. Takes effect immediately
     /// for the next LLM call. In-flight requests continue with the old provider.
     pub fn set_provider_and_model(&self, provider: Arc<dyn LlmProvider>, model: String) {
@@ -854,6 +899,28 @@ impl AgentLoop {
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .map(|v| nemesis_types::capability::resolve_max_output_ceiling(&v))
             .unwrap_or(nemesis_types::capability::MAX_OUTPUT_CEILING_DEFAULT)
+    }
+
+    /// E5（2026-10-15 收尾保障）：`agents.defaults.pre_pause_probe` 的
+    /// 每次新鲜读（同 [`Self::current_max_output_ceiling`] 模式——config.json
+    /// 是唯一真相源）。standalone（无 config_path）/ 读盘失败 → 解析器
+    /// 默认值（开 + 240s）。在预算暂停路径消费（`loop/pre_pause_probe`）。
+    pub(crate) fn current_pre_pause_probe(
+        &self,
+    ) -> nemesis_types::capability::PrePauseProbeSettings {
+        let dflt = nemesis_types::capability::PrePauseProbeSettings {
+            enabled: true,
+            timeout_secs: nemesis_types::capability::PRE_PAUSE_PROBE_DEFAULT_TIMEOUT_SECS,
+        };
+        let path = match self.config_path.read().clone() {
+            Some(p) => p,
+            None => return dflt,
+        };
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .map(|v| nemesis_types::capability::resolve_pre_pause_probe(&v))
+            .unwrap_or(dflt)
     }
 
     /// U16 (sixth batch) + N1 (devtool-upgrade 阶段 1)：active 模型的

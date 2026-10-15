@@ -197,7 +197,12 @@ fn no_redirect_client() -> &'static reqwest::Client {
 // 唯一调用点在 security 布防分支（S2 钉死路径）；feature 裁掉 security 时
 // 本函数随之裁掉，不留 dead-code 警告。
 #[cfg(feature = "security")]
-pub(crate) fn build_pinned_no_redirect_client(
+/// 构造「DNS 钉死 + 禁重定向」的 reqwest client（SSRF 防 rebinding TOCTOU
+/// 的另一半——校验过的 IP 直接做 resolve，后续连接不再走 DNS）。
+///
+/// 行动代理 P0（2026-10-14）起 `pub`：connector_invoke 的 http 绑定是第二
+/// 消费点（nemesisbot/connector_tools.rs）——同源实现不复制。
+pub fn build_pinned_no_redirect_client(
     url: &str,
     ips: &[std::net::IpAddr],
     user_agent: &str,

@@ -1,0 +1,7 @@
+{
+  "inject": [{ "src": "leading_whitespace_request_acceptance.rs", "dst": "tests/leading_whitespace_request_acceptance.rs" }],
+  "commands": [{ "argv": ["cargo", "test", "--test", "leading_whitespace_request_acceptance"] }],
+  "fail_patterns": ["test result: FAILED"],
+  "runtime_paths": [],
+  "require_diff": true
+}

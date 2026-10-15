@@ -1660,3 +1660,166 @@ async fn test_s8_background_loops_interval_ladder() {
         "collector flush tick should have written aggregates.jsonl"
     );
 }
+
+// =========================================================================
+// auto_skill 蒸馏（2026-10-15 W2）：slugify / 落盘注册 / CLI 独立入口 / cycle Step 5
+// =========================================================================
+
+/// 返回固定合法蒸馏 JSON 的 mock（frontmatter 契约满足 parse_distill_response）。
+struct DistillMockLLM;
+
+#[async_trait::async_trait]
+impl crate::reflector_llm::LLMCaller for DistillMockLLM {
+    async fn chat(
+        &self,
+        _system_prompt: &str,
+        _user_prompt: &str,
+        _max_tokens: Option<i64>,
+    ) -> Result<String, String> {
+        Ok(
+            r#"{"has_skill": true, "name": "Install HTTP MCP", "skill_md": "---\nname: install-http-mcp\ndescription: 安装 HTTP MCP 服务器\nversion: \"1.0\"\n---\n\n1. mcp_discover\n2. mcp add --url ... --header ...", "rationale": "安装序列反复收敛"}"#
+                .to_string(),
+        )
+    }
+}
+
+/// 返回 has_skill=false 的 mock（无可蒸馏模式）。
+struct NoSkillMockLLM;
+
+#[async_trait::async_trait]
+impl crate::reflector_llm::LLMCaller for NoSkillMockLLM {
+    async fn chat(
+        &self,
+        _system_prompt: &str,
+        _user_prompt: &str,
+        _max_tokens: Option<i64>,
+    ) -> Result<String, String> {
+        Ok(r#"{"has_skill": false, "name": "", "skill_md": ""}"#.to_string())
+    }
+}
+
+#[test]
+fn test_slugify_skill_name_normalization() {
+    assert_eq!(
+        slugify_skill_name("Install MCP Server (HTTP)"),
+        "install-mcp-server-http"
+    );
+    // 连续分隔符压缩 + 首尾剥离
+    assert_eq!(slugify_skill_name("__Weird--Name__"), "weird-name");
+    // 全非法字符（中文）→ 空串，调用方跳过
+    assert_eq!(slugify_skill_name("中文技能名"), "");
+    assert_eq!(slugify_skill_name(""), "");
+    // 48 字符截断
+    assert_eq!(slugify_skill_name(&"a".repeat(60)).len(), 48);
+}
+
+#[tokio::test]
+async fn test_distill_and_store_draft_success_and_dedup() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
+    forge.init_reflector(Reflector::new());
+    forge.set_provider(Arc::new(DistillMockLLM));
+
+    let exps = vec![make_collected_experience("exec", true, 10)];
+    let slug = forge
+        .distill_and_store_draft(&exps)
+        .await
+        .unwrap()
+        .expect("收敛模式应产出草稿");
+    assert_eq!(slug, "install-http-mcp");
+
+    let skill_path = forge
+        .forge_dir()
+        .join("skills")
+        .join(&slug)
+        .join("SKILL.md");
+    assert!(
+        skill_path.exists(),
+        "draft SKILL.md must be written to the forge skills dir"
+    );
+
+    let artifact = forge
+        .registry()
+        .find_by_name(&slug, nemesis_types::forge::ArtifactKind::Skill)
+        .expect("draft must be registered");
+    assert_eq!(artifact.status, nemesis_types::forge::ArtifactStatus::Draft);
+    assert_eq!(artifact.id, format!("skill-{slug}"));
+
+    // 同名再蒸馏 → dedup 跳过（不重复注册、不覆盖）
+    let second = forge.distill_and_store_draft(&exps).await.unwrap();
+    assert!(second.is_none(), "duplicate slug must be skipped");
+}
+
+#[tokio::test]
+async fn test_distill_and_store_draft_no_provider_is_err() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
+    let err = forge.distill_and_store_draft(&[]).await.unwrap_err();
+    assert!(err.contains("no LLM provider"), "got: {err}");
+}
+
+#[tokio::test]
+async fn test_distill_and_store_draft_no_pattern_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
+    forge.init_reflector(Reflector::new());
+    forge.set_provider(Arc::new(NoSkillMockLLM));
+
+    let exps = vec![make_collected_experience("exec", true, 10)];
+    let r = forge.distill_and_store_draft(&exps).await.unwrap();
+    assert!(r.is_none(), "has_skill=false must yield no draft");
+    assert!(
+        !forge.forge_dir().join("skills").exists(),
+        "no skills dir should be created when there is no pattern"
+    );
+}
+
+#[tokio::test]
+async fn test_reflection_cycle_auto_skill_step5_writes_draft() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = ForgeConfig::default();
+    config.artifacts.auto_skill = true;
+    let mut forge = Forge::new(config, dir.path().to_path_buf());
+    let reflections_dir = dir.path().join("forge").join("reflections");
+    std::fs::create_dir_all(&reflections_dir).unwrap();
+    forge.init_reflector(Reflector::with_reflections_dir(reflections_dir));
+    forge.set_provider(Arc::new(DistillMockLLM));
+    let forge = Arc::new(forge);
+
+    write_test_experiences(forge.forge_dir(), 3).await;
+    forge.run_reflection_cycle().await;
+
+    let skill_path = forge
+        .forge_dir()
+        .join("skills")
+        .join("install-http-mcp")
+        .join("SKILL.md");
+    assert!(
+        skill_path.exists(),
+        "cycle Step 5 must persist the distilled draft when auto_skill is on"
+    );
+}
+
+#[tokio::test]
+async fn test_reflection_cycle_auto_skill_off_writes_no_draft() {
+    // auto_skill=false（默认）→ Step 5 不蒸馏，即使 provider 在场
+    let dir = tempfile::tempdir().unwrap();
+    let mut forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
+    let reflections_dir = dir.path().join("forge").join("reflections");
+    std::fs::create_dir_all(&reflections_dir).unwrap();
+    forge.init_reflector(Reflector::with_reflections_dir(reflections_dir));
+    forge.set_provider(Arc::new(DistillMockLLM));
+    let forge = Arc::new(forge);
+
+    write_test_experiences(forge.forge_dir(), 3).await;
+    forge.run_reflection_cycle().await;
+
+    assert!(
+        !forge
+            .forge_dir()
+            .join("skills")
+            .join("install-http-mcp")
+            .exists(),
+        "auto_skill=false must not produce drafts"
+    );
+}

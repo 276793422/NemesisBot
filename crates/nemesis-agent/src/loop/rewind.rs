@@ -113,6 +113,61 @@ impl AgentLoop {
             .position(|r| r.get("role").and_then(|v| v.as_str()) == Some("user"))
             .map(|p| p + message_index + 1)
             .unwrap_or(rows.len());
+        self.rewind_from_cut(session_key, &rows, cut, message_index, force)
+            .await
+    }
+
+    /// 行动代理 P0（2026-10-14）撤销一等动词后端：回退**最后一个用户轮**。
+    /// 语义 = 把 jsonl 截到最后一个 user 行之前（该 user 行及其回复一并移
+    /// 除）+ 文件还原到该轮开始前的 checkpoint 态 + 压 undo 栈（redo 可反
+    /// 向）。与 [`Self::rewind_to_message`] 共享 [`Self::rewind_from_cut`]
+    /// 机体；差异只在截断点计算——本入口允许 cut=0（首轮即可撤销，单轮会
+    /// 话「下单→撤销」剧本的主路径，`rewind_to_message` 的「保留 index 所
+    /// 在轮」契约表达不了这个形态）。
+    ///
+    /// busy 检查省略：唯一调用方是会话维护尾巴（gate 已获取会话 = 串行保
+    /// 证，会话正忙根本进不到这里）；WSAPI 面的同语义入口走
+    /// [`Self::undo_last_turn`]（busy 闸 + 委托本方法）。
+    pub(crate) async fn rewind_last_turn(
+        &self,
+        session_key: &str,
+    ) -> Result<serde_json::Value, String> {
+        let (rows, _total, _, _) = crate::chat_log::read_chat_log(session_key, usize::MAX, None);
+        // 截断点 = 最后一个 user 行（turn 边界，user 行即轮首）。没有 user
+        // 行 = 没有可撤销的轮次（诚实拒绝）。
+        let cut = rows
+            .iter()
+            .rposition(|r| r.get("role").and_then(|v| v.as_str()) == Some("user"))
+            .ok_or_else(|| "会话没有可撤销的轮次".to_string())?;
+        // 回执/谱系引用的下标 = cut 本身（被撤销轮的 user 行原下标）。
+        self.rewind_from_cut(session_key, &rows, cut, cut, false)
+            .await
+    }
+
+    /// 行动代理 E3（收官批 2026-10-15）WSAPI 撤销入口：busy 闸 +
+    /// [`Self::rewind_last_turn`]。会话正在处理消息时零副作用诚实拒绝
+    /// （对话与文件都不动）——`connectors.undo` 的域 B（write 无 undo 声
+    /// 明）走此入口回退最后一轮。维护尾巴调用方不经此入口（gate 已持会
+    /// 话），直接走内部方法。
+    pub async fn undo_last_turn(&self, session_key: &str) -> Result<serde_json::Value, String> {
+        if self.is_session_busy(session_key) {
+            return Err("会话正在处理消息，请等当前回合完成后再撤销".to_string());
+        }
+        self.rewind_last_turn(session_key).await
+    }
+
+    /// rewind 共享机体（`rewind_to_message` / `rewind_last_turn` 两入口的
+    /// 单一真相源）：`rows` 是全量行快照、`cut` 是保留/截断分界（
+    /// `rows[..cut]` 保留、`rows[cut..]` 移除）、`report_index` 是回执与
+    /// 回退谱系引用的消息下标。调用方负责 busy 检查与边界检查。
+    async fn rewind_from_cut(
+        &self,
+        session_key: &str,
+        rows: &[serde_json::Value],
+        cut: usize,
+        report_index: usize,
+        force: bool,
+    ) -> Result<serde_json::Value, String> {
         // 文件恢复锚：cut 起第一个带 checkpoint_turn 标记的行（第一个仍在
         // 的 checkpoint turn）——恢复到它 begin 之前 = index 所在 turn 完成
         // 时的文件态。None = 之后没有 checkpoint turn（或全是无标记旧行）。
@@ -140,7 +195,7 @@ impl AgentLoop {
                     "blocked": true,
                     "reason": "conflict",
                     "session_key": session_key,
-                    "message_index": message_index,
+                    "message_index": report_index,
                     "restore_turn": t,
                     "conflicts": report.conflicts,
                     "unchecked_paths": report.unchecked_paths,
@@ -221,7 +276,7 @@ impl AgentLoop {
                     "rewind_to_message",
                     "user",
                     "wsapi",
-                    &format!("{session_key}#idx={message_index}"),
+                    &format!("{session_key}#idx={report_index}"),
                     "forced",
                     &format!(
                         "rewind force 覆盖 {} 个外部修改冲突（restore_turn={restore_turn:?}）",
@@ -250,7 +305,7 @@ impl AgentLoop {
             let dropped_turns = crate::session_fork::row_user_turn_count(&removed);
             crate::chat_log::write_session_rewind(
                 session_key,
-                message_index,
+                report_index,
                 rows.len() - cut,
                 dropped_turns,
             );
@@ -280,7 +335,7 @@ impl AgentLoop {
 
         Ok(serde_json::json!({
             "session_key": session_key,
-            "message_index": message_index,
+            "message_index": report_index,
             "kept_count": cut,
             "removed_count": rows.len() - cut,
             "restore_turn": restore_turn,

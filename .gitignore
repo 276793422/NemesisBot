@@ -96,3 +96,10 @@ test-tools/mcp/server/mcp-test-server.exe
 # llvm-cov 覆盖率摘要落盘目录
 /root_anchor.hex
 /baselines/
+
+# product-validation 实验区（2026-10-15 产品验证首轮计划）
+.product-validation/
+test-tools/product-validation/evaluators/
+
+# coding-bench 运行产物 + 母夹具物化缓存（仓库内只存规格 fixtures/mothers.json，不存字节）
+.coding-bench/

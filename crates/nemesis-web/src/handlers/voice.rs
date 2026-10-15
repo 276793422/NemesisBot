@@ -1016,13 +1016,20 @@ impl VoiceHandler {
         let cancel = CancellationToken::new();
         {
             let mut guard = setup_cancel().lock().unwrap();
+            // 单飞闸（横扫十期）：并发双跑 bootstrap 会把同一安装目录装坏
+            //（归档缓存/venv 操作无内部串行）。槽非空 = 安装进行中，拒绝。
+            if guard.is_some() {
+                return Err("语音环境安装已在进行中（等待完成或先停止安装）".to_string());
+            }
             *guard = Some(cancel.clone());
         }
 
         let dir = voice_dir.to_path_buf();
         let hub = ctx.state.event_hub.clone();
 
-        let result = tokio::task::spawn_blocking(move || {
+        // panic 安全：JoinError 也必须清槽（此前 `?` 提前返回会把槽永久
+        // 挂住，闸从此卡死）。
+        let joined = tokio::task::spawn_blocking(move || {
             std::fs::create_dir_all(&dir)
                 .map_err(|e| format!("failed to create voice dir: {}", e))?;
 
@@ -1069,16 +1076,14 @@ impl VoiceHandler {
                 }
             }
         })
-        .await
-        .map_err(|e| format!("setup task panicked: {}", e))?;
+        .await;
 
-        // Clear cancel token
+        // 先清槽再处理 JoinError（panic 路径也必须释放闸）。
         {
             let mut guard = setup_cancel().lock().unwrap();
             *guard = None;
         }
-
-        result
+        joined.map_err(|e| format!("setup task panicked: {}", e))?
     }
 
     fn cmd_stop_setup(&self) -> Result<Option<serde_json::Value>, String> {
@@ -1100,13 +1105,18 @@ impl VoiceHandler {
         let cancel = CancellationToken::new();
         {
             let mut guard = setup_cancel().lock().unwrap();
+            // 单飞闸（同 cmd_setup）：并发双跑装坏同一目录。
+            if guard.is_some() {
+                return Err("语音环境安装已在进行中（等待完成或先停止安装）".to_string());
+            }
             *guard = Some(cancel.clone());
         }
 
         let dir = voice_dir.to_path_buf();
         let hub = ctx.state.event_hub.clone();
 
-        let result = tokio::task::spawn_blocking(move || {
+        // panic 安全：JoinError 也必须清槽。
+        let joined = tokio::task::spawn_blocking(move || {
             std::fs::create_dir_all(&dir)
                 .map_err(|e| format!("failed to create voice dir: {}", e))?;
 
@@ -1159,15 +1169,14 @@ impl VoiceHandler {
                 }
             }
         })
-        .await
-        .map_err(|e| format!("install task panicked: {}", e))?;
+        .await;
 
+        // 先清槽再处理 JoinError（panic 路径也必须释放闸）。
         {
             let mut guard = setup_cancel().lock().unwrap();
             *guard = None;
         }
-
-        result
+        joined.map_err(|e| format!("install task panicked: {}", e))?
     }
 
     async fn cmd_install_aec(

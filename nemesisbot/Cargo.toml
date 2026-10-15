@@ -121,6 +121,11 @@ nemesis-types = { workspace = true }
 nemesis-prompts = { workspace = true }
 nemesis-config = { workspace = true }
 nemesis-security = { workspace = true, optional = true }
+# 行动代理 P0（2026-10-14）：connector 注册表核心（清单/registry/回执/预算/
+# 纸面账本）。非 optional——connector_find/connector_invoke 随 security
+# feature 门控注册，但 WSAPI 数据面（connectors.* handlers）与 CLI 查询
+# （connector list/receipts）在无 security 组合也要能读回执/账本。
+nemesis-connectors = { workspace = true }
 tokio-util = { version = "0.7", features = ["rt"] }
 nemesis-bus = { workspace = true }
 nemesis-agent = { workspace = true }
@@ -194,6 +199,10 @@ async-trait = { workspace = true }
 parking_lot = { workspace = true }
 rustyline = "15"
 include_dir = "0.7"
+# 临时工作区目录（bin 主路径：forge_test_runner 行为回归/重放装配；CI 教训：
+# 只声明在 dev-deps/cfg(windows) 会让 Linux bin 编译 E0433——bin 跨平台代码
+# 引用的 crate 必须在主 [dependencies]）
+tempfile = "3"
 
 [build-dependencies]
 chrono = { workspace = true }
@@ -207,7 +216,6 @@ toml = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
 # generate_image 工具落盘链路假端点（集群专业职能框架 M4）。
 wiremock = "0.6"
 # R9：子进程级测试（REPL 管道 stdin / eval 探测式真链路 / main 短路退码断言）
@@ -217,7 +225,6 @@ test-harness = { path = "../test-tools/test-harness" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Console"] }
-tempfile = "3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

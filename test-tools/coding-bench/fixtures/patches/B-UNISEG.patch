@@ -1,0 +1,11 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index ffcb6ed..5db83df 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -52,3 +52,6 @@ harness = false
+ name = "unicode_word_indices"
+ harness = false
+ 
++
++# fixture accommodation: detach from any parent workspace discovery
++[workspace]

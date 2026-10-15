@@ -648,7 +648,7 @@ fn test_cmd_reflect_forge_not_enabled() {
 
     // Should print "not enabled" and return Ok
     // This doesn't need tokio runtime since it returns early
-    cmd_reflect(&cfg_path, &forge_dir).unwrap();
+    cmd_reflect(&home, &cfg_path, &forge_dir).unwrap();
 }
 
 #[test]
@@ -661,7 +661,7 @@ fn test_cmd_reflect_forge_dir_not_exists() {
     let cfg = serde_json::json!({"forge": {"enabled": true}});
     std::fs::write(&cfg_path, serde_json::to_string(&cfg).unwrap()).unwrap();
     // forge_dir doesn't exist - should print error and return Ok
-    cmd_reflect(&cfg_path, &forge_dir).unwrap();
+    cmd_reflect(&home, &cfg_path, &forge_dir).unwrap();
 }
 
 // -------------------------------------------------------------------------
@@ -892,26 +892,39 @@ mod r7_cmd_paths {
     }
 
     fn seed_experiences(forge_dir: &std::path::Path) {
-        let dir = forge_dir.join("experiences").join("202608");
-        std::fs::create_dir_all(&dir).unwrap();
+        // 2026-10-15 W2 起 cmd_reflect 读 canonical flat store（
+        // experiences/experiences.jsonl，与 Collector 持久化/网关反思循环
+        // 同源）；旧聚合月度文件不再是 CLI 反思输入。
         let rows = [
             serde_json::json!({
-                "pattern_hash": "r7hash1", "tool_name": "read_file", "count": 10,
-                "avg_duration_ms": 12, "success_rate": 0.9,
-                "last_seen": "2026-08-27T00:00:00+08:00"
+                "experience": {
+                    "id": "r7e1", "tool_name": "read_file",
+                    "input_summary": "read config.json", "output_summary": "ok",
+                    "success": true, "duration_ms": 12,
+                    "timestamp": "2026-08-27T00:00:00+08:00",
+                    "session_key": "r7:session"
+                },
+                "dedup_hash": "r7hash1"
             }),
             serde_json::json!({
-                "pattern_hash": "r7hash2", "tool_name": "exec", "count": 4,
-                "avg_duration_ms": 340, "success_rate": 0.25,
-                "last_seen": "2026-08-27T01:00:00+08:00"
+                "experience": {
+                    "id": "r7e2", "tool_name": "exec",
+                    "input_summary": "run build", "output_summary": "failed",
+                    "success": false, "duration_ms": 340,
+                    "timestamp": "2026-08-27T01:00:00+08:00",
+                    "session_key": "r7:session"
+                },
+                "dedup_hash": "r7hash2"
             }),
         ];
+        let dir = forge_dir.join("experiences");
+        std::fs::create_dir_all(&dir).unwrap();
         let body: String = rows
             .iter()
             .map(|r| serde_json::to_string(r).unwrap())
             .collect::<Vec<_>>()
             .join("\n");
-        std::fs::write(dir.join("20260827.jsonl"), body + "\n").unwrap();
+        std::fs::write(dir.join("experiences.jsonl"), body + "\n").unwrap();
     }
 
     fn seed_registry(forge_dir: &std::path::Path) {
@@ -1105,6 +1118,153 @@ mod r7_cmd_paths {
             has_report,
             "reflection report must be written to {:?}",
             reflect_dir
+        );
+    }
+
+    /// W2 回归锁（2026-10-15 自查修复）：cmd_reflect 消费注册表前必须先从盘
+    /// 回载——Registry::new 是空内存注册表，不回载则 find_by_name 去重失效、
+    /// registry.add 会往 registry.json **追加同 id 重复条目**（CLI 每次新起
+    /// 进程必踩；gateway 路径 ctx.rs 启动即 load 无此问题）。本用例：预置同名
+    /// Skill 草稿 + mock LLM 返回同名蒸馏产物 → 断言注册表不出现第二条、
+    /// 既有 SKILL.md 哨兵不被覆盖（修复前双红：2 条同 id + 哨兵被蒸馏稿覆盖）。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_reflect_auto_skill_dedup_uses_registry_loaded_from_disk() {
+        // mock LLM（openai 协议 chat/completions）：所有 POST 都回同一条
+        // 合法蒸馏 JSON——语义反思解析不合契约走诚实降级，蒸馏解析命中。
+        // 起服/挂桩在 GLOBAL_STATE_LOCK 之外（同步锁不得跨 await，clippy
+        // await_holding_lock）；锁内只做纯同步的环境写盘与 CLI 调用。
+        let server = wiremock::MockServer::start().await;
+        let distill_json = serde_json::json!({
+            "has_skill": true,
+            "name": "install-http-mcp",
+            "skill_md": "---\nname: install-http-mcp\ndescription: distilled\nversion: \"1.0\"\n---\n\n# 配方\n1. 步骤\n",
+            "rationale": "converged sequence"
+        })
+        .to_string();
+        let content_json = serde_json::json!({
+            "id": "chatcmpl-1",
+            "choices": [
+                {"index": 0, "message": {"role": "assistant", "content": distill_json}, "finish_reason": "stop"}
+            ]
+        });
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/v1/chat/completions"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(content_json))
+            .mount(&server)
+            .await;
+        let server_uri = server.uri();
+
+        let (dupes, on_disk) = {
+            let _g = crate::GLOBAL_STATE_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let (_tmp, home) = env_home();
+
+            // config.json：forge 开 + 默认模型指 mock（judge 链臂 3 默认模型解析到它）。
+            std::fs::write(
+                home.join("config.json"),
+                serde_json::json!({
+                    "version": "1.0",
+                    "forge": {"enabled": true},
+                    "model_list": [{
+                        "model": "mock/distill-model",
+                        "api_base": format!("{server_uri}/v1"),
+                        "api_key": "test-key",
+                        "protocol": "openai",
+                        "model_tier": "big"
+                    }],
+                    "agents": {"defaults": {"llm": "mock/distill-model"}}
+                })
+                .to_string(),
+            )
+            .unwrap();
+            // config.forge.json：LLM 反思 + auto_skill 开（其余字段 serde 默认）。
+            let forge_dir = home.join("workspace").join("forge");
+            std::fs::create_dir_all(home.join("workspace").join("config")).unwrap();
+            std::fs::write(
+                home.join("workspace")
+                    .join("config")
+                    .join("config.forge.json"),
+                serde_json::json!({
+                    "reflection": {"use_llm": true},
+                    "artifacts": {"auto_skill": true}
+                })
+                .to_string(),
+            )
+            .unwrap();
+            seed_experiences(&forge_dir);
+
+            // 预置注册表（registry.json，serde 全字段形态）+ 磁盘 SKILL.md 哨兵。
+            let sentinel = "SENTINEL-EXISTING-DRAFT";
+            std::fs::create_dir_all(forge_dir.join("skills").join("install-http-mcp")).unwrap();
+            std::fs::write(
+                forge_dir
+                    .join("skills")
+                    .join("install-http-mcp")
+                    .join("SKILL.md"),
+                sentinel,
+            )
+            .unwrap();
+            let seeded = serde_json::json!([{
+                "id": "skill-install-http-mcp",
+                "name": "install-http-mcp",
+                "kind": "Skill",
+                "version": "1.0",
+                "status": "Draft",
+                "content": sentinel,
+                "tool_signature": [],
+                "created_at": "2026-10-15T00:00:00+08:00",
+                "updated_at": "2026-10-15T00:00:00+08:00",
+                "usage_count": 0,
+                "success_rate": 0.0,
+                "last_degraded_at": null,
+                "consecutive_observing_rounds": 0
+            }]);
+            std::fs::write(
+                forge_dir.join("registry.json"),
+                serde_json::to_string_pretty(&seeded).unwrap(),
+            )
+            .unwrap();
+
+            let r = run(ForgeAction::Reflect, false);
+            clear_env();
+            r.expect("reflect with auto_skill + preexisting draft ok");
+
+            let reg: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(forge_dir.join("registry.json")).unwrap(),
+            )
+            .unwrap();
+            let dupes = reg
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|a| a["kind"] == "Skill" && a["name"] == "install-http-mcp")
+                .count();
+            let on_disk = std::fs::read_to_string(
+                forge_dir
+                    .join("skills")
+                    .join("install-http-mcp")
+                    .join("SKILL.md"),
+            )
+            .unwrap();
+            (dupes, on_disk)
+        };
+
+        // LLM 链路必须真被走过（防空转绿：蒸馏失败/未触发时下面的去重断言
+        // 会因「无写入」假绿）。
+        let reqs = server.received_requests().await.unwrap_or_default();
+        assert!(
+            !reqs.is_empty(),
+            "mock LLM must receive at least one chat request (use_llm + auto_skill path)"
+        );
+        assert_eq!(
+            dupes, 1,
+            "dedup must not append a duplicate registry entry (registry loaded from disk)"
+        );
+        assert_eq!(
+            on_disk, "SENTINEL-EXISTING-DRAFT",
+            "dedup must not overwrite the existing draft file"
         );
     }
 
@@ -1438,22 +1598,28 @@ mod wave_b {
     /// 当前月的 experiences/<yyyymm>/wb.jsonl 播种（时间取运行时刻，
     /// 不依赖固定日期，避免跨月漂移失效）。
     fn wb_seed_experience_rows(forge_dir: &std::path::Path, rows: &[serde_json::Value]) {
-        let month = chrono::Local::now().format("%Y%m").to_string();
-        let dir = forge_dir.join("experiences").join(month);
+        // W2 起 CLI 反思读 canonical flat store（experiences/experiences.jsonl）。
+        let dir = forge_dir.join("experiences");
         std::fs::create_dir_all(&dir).unwrap();
         let body: String = rows
             .iter()
             .map(|r| serde_json::to_string(r).unwrap())
             .collect::<Vec<_>>()
             .join("\n");
-        std::fs::write(dir.join("wb.jsonl"), body + "\n").unwrap();
+        std::fs::write(dir.join("experiences.jsonl"), body + "\n").unwrap();
     }
 
-    fn wb_row(hash: &str, tool: &str, count: u32, ms: i64, sr: f64) -> serde_json::Value {
+    /// 原始经验行（CollectedExperience flat 形态；success 口径布尔非聚合率）。
+    fn wb_row(id: &str, tool: &str, success: bool, ms: i64) -> serde_json::Value {
         serde_json::json!({
-            "pattern_hash": hash, "tool_name": tool, "count": count,
-            "avg_duration_ms": ms, "success_rate": sr,
-            "last_seen": chrono::Local::now().to_rfc3339()
+            "experience": {
+                "id": id, "tool_name": tool,
+                "input_summary": "wb input", "output_summary": "wb output",
+                "success": success, "duration_ms": ms,
+                "timestamp": chrono::Local::now().to_rfc3339(),
+                "session_key": "wb:session"
+            },
+            "dedup_hash": format!("wb-{id}")
         })
     }
 
@@ -1561,25 +1727,18 @@ mod wave_b {
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn wave_b_reflect_empty_aggregation_stops_early() {
+    async fn wave_b_reflect_empty_raw_store_stops_early() {
         let _g = crate::GLOBAL_STATE_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let g = WbEnvGuard::new();
         wb_write_config(&g.home, true);
-        // experiences/<month>/ 存在但没有任何 .jsonl → read_aggregated 返回
-        // Ok(vec![]) → “No experiences loaded.” 早退臂（区别于 store 层 Err）。
-        let month = chrono::Local::now().format("%Y%m").to_string();
-        std::fs::create_dir_all(g.forge_dir().join("experiences").join(&month)).unwrap();
-        std::fs::write(
-            g.forge_dir()
-                .join("experiences")
-                .join(&month)
-                .join("keep.txt"),
-            "-",
-        )
-        .unwrap(); // 非 .jsonl，保证不被扫描
-        run(ForgeAction::Reflect, false).expect("empty aggregation early-return ok");
+        // experiences/ 目录在但 canonical flat store（experiences.jsonl）缺席
+        // → read_recent 返回 Ok(vec![]) → “No experiences loaded.” 早退臂
+        //（区别于 store 层 Err）。keep.txt 保证目录非空、能过第一道存在性闸。
+        std::fs::create_dir_all(g.forge_dir().join("experiences")).unwrap();
+        std::fs::write(g.forge_dir().join("experiences").join("keep.txt"), "-").unwrap();
+        run(ForgeAction::Reflect, false).expect("empty raw store early-return ok");
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
@@ -1590,15 +1749,15 @@ mod wave_b {
             .unwrap_or_else(|e| e.into_inner());
         let g = WbEnvGuard::new();
         wb_write_config(&g.home, true);
-        // 三条独立记录同一工具全败（sr=0.0）：low_success 的 count 口径是
-        // 记录条数（>=3）且均值 <0.7 → 触发打印臂；外加一条健康记录扰动。
+        // 三条独立记录同一工具全败：low_success 的口径是聚合后记录条数
+        //（>=3）且成功率均值 <0.7 → 触发打印臂；外加一条健康记录扰动。
         wb_seed_experience_rows(
             &g.forge_dir(),
             &[
-                wb_row("wbh1", "exec", 1, 10, 0.0),
-                wb_row("wbh2", "exec", 1, 20, 0.0),
-                wb_row("wbh3", "exec", 1, 30, 0.0),
-                wb_row("wbh4", "read_file", 5, 5, 1.0),
+                wb_row("wbh1", "exec", false, 10),
+                wb_row("wbh2", "exec", false, 20),
+                wb_row("wbh3", "exec", false, 30),
+                wb_row("wbh4", "read_file", true, 5),
             ],
         );
         run(ForgeAction::Reflect, false).expect("reflect with failing tool ok");
@@ -1622,7 +1781,7 @@ mod wave_b {
             .unwrap_or_else(|e| e.into_inner());
         let g = WbEnvGuard::new();
         wb_write_config(&g.home, true);
-        wb_seed_experience_rows(&g.forge_dir(), &[wb_row("wbh1", "exec", 2, 15, 1.0)]);
+        wb_seed_experience_rows(&g.forge_dir(), &[wb_row("wbh1", "exec", true, 15)]);
         // reflections 被一个普通文件占位 → Reflector 的 create_dir_all 失败
         // → write_report Err → 只告警，统计照常打印，整体 Ok。
         std::fs::create_dir_all(g.forge_dir()).unwrap();

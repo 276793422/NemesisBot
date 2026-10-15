@@ -73,6 +73,11 @@ pub struct SecurityPluginConfig {
     /// when scraping arbitrary web content — its footer numbers trigger FPs).
     pub dlp_inbound_action: String,
     pub ssrf_enabled: bool,
+    /// SSRF 主机白名单（命中即跳过全部检查，含回环/私网/元数据）。接线自
+    /// `config.security.json` 的 `layers.ssrf.allowed_hosts`（构造期，与
+    /// dlp_enabled_rules 同款；reload 不重建守卫）。典型用途：显式放行
+    /// 本机自建服务（如回环测试端点）。
+    pub ssrf_allowed_hosts: Vec<String>,
     pub audit_chain_enabled: bool,
     pub audit_chain_path: Option<String>,
     pub audit_log_enabled: bool,
@@ -114,6 +119,7 @@ impl Default for SecurityPluginConfig {
             dlp_low_confidence_action: "log".to_string(),
             dlp_inbound_action: "log".to_string(),
             ssrf_enabled: true,
+            ssrf_allowed_hosts: Vec::new(),
             audit_chain_enabled: false,
             audit_chain_path: None,
             audit_log_enabled: false,
@@ -222,7 +228,10 @@ impl SecurityPlugin {
         };
 
         let ssrf_guard = if config.ssrf_enabled {
-            Some(SsrfGuard::from_enabled(true))
+            Some(SsrfGuard::from_enabled_with_allowlist(
+                true,
+                config.ssrf_allowed_hosts.clone(),
+            ))
         } else {
             None
         };
@@ -633,11 +642,43 @@ impl SecurityPlugin {
     /// Returns (allowed, deny info). `DenyInfo` carries layer / policy /
     /// summary (original free text) / per-layer suggestion (F5).
     pub fn execute(&self, invocation: &ToolInvocation) -> (bool, Option<DenyInfo>) {
+        self.execute_inner(invocation, &std::cell::Cell::new(None))
+    }
+
+    /// 行动代理 P0（PLAN §6.2 凭条 `approval_ref` 契约字段）：同
+    /// [`Self::execute`]，但多返回审批引用——ABAC 层 RequireApproval 经
+    /// 交互审批管理器**人工批准**时 `Some(request_id)`（= 审批卡 id），
+    /// 其余全分支（直通/规则表/免打扰/拒绝/无管理器）None。调用方
+    /// （agent loop dispatch）把它注入工具 RequestContext，connector
+    /// 工具写进 executed 凭条——「这张凭条背后是谁批的」可回查。
+    pub fn execute_tracked(
+        &self,
+        invocation: &ToolInvocation,
+    ) -> (bool, Option<DenyInfo>, Option<String>) {
+        let slot = std::cell::Cell::new(None);
+        let (allowed, deny) = self.execute_inner(invocation, &slot);
+        (allowed, deny, slot.into_inner())
+    }
+
+    /// 单一管线体：`execute` / `execute_tracked` 共用；`approval_slot`
+    /// 只在交互审批真实批准时被写入（见 [`Self::execute_tracked`]）。
+    fn execute_inner(
+        &self,
+        invocation: &ToolInvocation,
+        approval_slot: &std::cell::Cell<Option<String>>,
+    ) -> (bool, Option<DenyInfo>) {
         if !*self.enabled.read() {
             return (true, None);
         }
 
-        let op_type = self.effective_tool_operation(&invocation.tool_name);
+        // op_type 裁决：metadata 显式投影（override_op_type slug，connector
+        // 动态工具的 per-op 风险管线静态表无法感知）优先；slug 未知/缺失 =
+        // 旧行为（静态表 lookup，未知名 fail-closed CRITICAL）。
+        let op_type = invocation
+            .metadata
+            .get("override_op_type")
+            .and_then(|slug| crate::types::operation_type_from_slug(slug))
+            .unwrap_or_else(|| self.effective_tool_operation(&invocation.tool_name));
 
         let target = extract_target(&invocation.tool_name, &invocation.args);
 
@@ -738,6 +779,18 @@ impl SecurityPlugin {
         }
 
         // Layer 3: ABAC (Auditor)
+        // 强审批合并：override_force_approval（connector op `confirm =
+        // "required"` 声明）与 preexec 命中理由并存时都保留（审批卡多因
+        // 展示）；两者皆缺 = None。
+        let override_force = invocation
+            .metadata
+            .get("override_force_approval")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let force_approval = match (preexec_force, override_force) {
+            (Some(a), Some(b)) => Some(format!("{a}; {b}")),
+            (a, b) => a.or(b),
+        };
         let req = OperationRequest {
             id: uuid::Uuid::new_v4().to_string(),
             op_type,
@@ -749,7 +802,7 @@ impl SecurityPlugin {
             approver: None,
             approved_at: None,
             denied_reason: None,
-            force_approval: preexec_force,
+            force_approval,
         };
         // K4 (b): 从 invocation metadata 提取审批来源上下文（loop 构造
         // invocation 时填入）——RequireApproval 时审批卡按它路由回发起
@@ -767,9 +820,12 @@ impl SecurityPlugin {
                 .cloned()
                 .unwrap_or_default(),
         };
-        let (allowed, err, _) = self
+        let (allowed, err, approval_id) = self
             .auditor
-            .request_permission_with_ctx(&req, Some(&approval_ctx));
+            .request_permission_tracked(&req, Some(&approval_ctx));
+        // 审批引用出槽：仅交互审批批准臂 Some（见 request_permission_tracked
+        // 契约）；直通/规则表/免打扰/拒绝全 None，槽保持空。
+        approval_slot.set(approval_id);
         if !allowed {
             self.log_audit_event(
                 "denied",
@@ -1135,11 +1191,29 @@ impl SecurityPlugin {
     ///   该模式的哲学是「审破坏形态」而非「审全部 CRITICAL」，规则层
     ///   （8 层管线）始终是地板，预筛只影响语义增益层。
     pub fn guardian_should_review(&self, tool_name: &str, args_json: &str) -> bool {
-        let critical = self.is_critical_tool(tool_name);
+        self.guardian_should_review_with_danger(
+            tool_name,
+            args_json,
+            &self.tool_danger_level(tool_name),
+        )
+    }
+
+    /// [`Self::guardian_should_review`] 的 override-aware 变体：危级由调用方
+    /// 传入（connector 动态工具的 per-op 危级无法从静态表解析，dispatch 侧
+    /// 按 metadata override slug 计算）。`critical` 模式按危级是否为
+    /// CRITICAL 裁决，`high` 模式按 HIGH+CRITICAL——与静态路径
+    /// （is_critical_tool/is_high_tool + tool_danger_level）完全同口径。
+    pub fn guardian_should_review_with_danger(
+        &self,
+        tool_name: &str,
+        args_json: &str,
+        danger: &str,
+    ) -> bool {
+        let critical = danger == "CRITICAL";
         match self.guardian_mode.read().trim().to_lowercase().as_str() {
             "critical" => critical,
             "high" => {
-                (critical || self.is_high_tool(tool_name))
+                (critical || danger == "HIGH")
                     && crate::guardian::destructive_shaped(tool_name, args_json)
             }
             _ => false,

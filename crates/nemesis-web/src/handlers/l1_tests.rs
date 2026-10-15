@@ -101,9 +101,10 @@ fn cmds_of<'a>(reg: &'a [(String, Vec<&'static str>)], module: &str) -> &'a [&'s
         .unwrap_or(&[])
 }
 
-/// 无 feature 闸的 27 个模块（register_all 的无条件注册段；L6++ G4 起
+/// 无 feature 闸的 29 个模块（register_all 的无条件注册段；L6++ G4 起
 /// 含 projects，P30（WS14）起含 canvas，2026-09-28 起含 roles——角色目录
-/// WSAPI，2026-10-13 起含 selfupdate——L9 版本自切换通道）。
+/// WSAPI，2026-10-13 起含 selfupdate——L9 版本自切换通道，2026-10-14 起
+/// 含 connectors/paperbroker——行动代理 P0 数据面）。
 const UNCONDITIONAL_MODULES: &[&str] = &[
     "system",
     "estop",
@@ -132,6 +133,8 @@ const UNCONDITIONAL_MODULES: &[&str] = &[
     "canvas",
     "roles",
     "selfupdate",
+    "connectors",
+    "paperbroker",
 ];
 
 // ---------------------------------------------------------------------------

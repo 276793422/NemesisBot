@@ -305,5 +305,7 @@ impl Drop for StdioTransport {
 // Tests
 // ===========================================================================
 
+// pub(crate)：http_transport/tests.rs 复用 VAULT_SLOT_LOCK——全局 vault
+// 解析器槽位是进程单例，两个测试文件必须共用同一把锁才真的互斥。
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

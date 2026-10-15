@@ -797,6 +797,32 @@ fn test_apply_security_layer_switches_absent_keys_keep_defaults() {
 }
 
 #[test]
+fn test_apply_security_layer_switches_ssrf_allowed_hosts() {
+    // 白名单接线（2026-10-14 connector e2e 实需）：allowed_hosts 是放行
+    // 内网端点的正道（层关 = guard None = connector fail-closed 全拒）。
+    let json = serde_json::json!({
+        "layers": {
+            "ssrf": {"enabled": true, "allowed_hosts": ["127.0.0.1", "localhost"]}
+        }
+    });
+    let mut cfg = nemesis_security::pipeline::SecurityPluginConfig::default();
+    crate::security_setup::apply_security_layer_switches(&json, &mut cfg);
+    assert!(cfg.ssrf_enabled, "层保活");
+    assert_eq!(
+        cfg.ssrf_allowed_hosts,
+        vec!["127.0.0.1".to_string(), "localhost".to_string()]
+    );
+
+    // 非法形状（非数组/非字符串元素）不炸、不污染默认空表
+    let mut cfg = nemesis_security::pipeline::SecurityPluginConfig::default();
+    crate::security_setup::apply_security_layer_switches(
+        &serde_json::json!({"layers": {"ssrf": {"allowed_hosts": "127.0.0.1"}}}),
+        &mut cfg,
+    );
+    assert!(cfg.ssrf_allowed_hosts.is_empty());
+}
+
+#[test]
 fn test_apply_security_layer_switches_no_layers_section() {
     // 完全没有 layers 段（最小配置文件）：不 panic、不改任何值
     let json = serde_json::json!({"default_action": "allow"});

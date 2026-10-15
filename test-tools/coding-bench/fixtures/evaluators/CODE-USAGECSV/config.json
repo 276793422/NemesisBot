@@ -1,0 +1,12 @@
+{
+  "inject": [],
+  "commands": [
+    { "argv": ["cargo", "run", "-p", "nemesisbot", "--", "--local", "usage", "export", "--out", "logs/acceptance_usage.csv"] }
+  ],
+  "fail_patterns": [],
+  "expect_files": [
+    { "path": "logs/acceptance_usage.csv", "contains": ["task_id,session_key,model,input_tokens,output_tokens,total_cost_usd,created_utc"] }
+  ],
+  "runtime_paths": ["logs/", ".nemesisbot/"],
+  "require_diff": true
+}

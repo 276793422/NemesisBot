@@ -15,6 +15,8 @@ fn make_artifact(name: &str, kind: ArtifactKind) -> Artifact {
         last_degraded_at: None,
         success_rate: 0.0,
         consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
     }
 }
 
@@ -361,6 +363,8 @@ async fn test_fd3_registry_load_restores_artifacts() {
         last_degraded_at: None,
         success_rate: 0.0,
         consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
     };
     std::fs::write(
         &path,

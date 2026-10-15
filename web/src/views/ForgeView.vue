@@ -2,6 +2,8 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
+import BehaviorTestPanel from '../components/forge/BehaviorTestPanel.vue'
+import ReplayPanel from '../components/forge/ReplayPanel.vue'
 
 const { request } = useWSAPI()
 const toast = useToast()
@@ -111,6 +113,27 @@ function cycleStatusClass(status: string): string {
     Failed: 'badge-error',
   }
   return map[status] || 'badge-neutral'
+}
+
+// F 线实效快照（2026-10-14）：verdict → 展示色/文案。
+function efficacyColor(verdict: string): string {
+  const map: Record<string, string> = {
+    positive: 'var(--color-success)',
+    negative: 'var(--color-error)',
+    observing: 'var(--color-info)',
+    insufficient_data: 'var(--text-muted)',
+  }
+  return map[verdict] || 'var(--text-muted)'
+}
+
+function efficacyLabel(verdict: string): string {
+  const map: Record<string, string> = {
+    positive: '↑正向',
+    negative: '↓负向',
+    observing: '观察中',
+    insufficient_data: '数据不足',
+  }
+  return map[verdict] || verdict
 }
 
 // ---------------------------------------------------------------------------
@@ -340,6 +363,7 @@ onUnmounted(() => {
           <button class="tab" :class="{ active: activeTab === 'reflections' }" @click="switchTab('reflections')">反思</button>
           <button class="tab" :class="{ active: activeTab === 'cycles' }" @click="switchTab('cycles')">学习循环</button>
           <button class="tab" :class="{ active: activeTab === 'artifacts' }" @click="switchTab('artifacts')">Artifacts</button>
+          <button class="tab" :class="{ active: activeTab === 'regression' }" @click="switchTab('regression')">回归</button>
           <button class="tab" :class="{ active: activeTab === 'config' }" @click="switchTab('config')">配置</button>
         </div>
 
@@ -722,6 +746,7 @@ onUnmounted(() => {
                     <th>版本</th>
                     <th>使用次数</th>
                     <th>成功率</th>
+                    <th>实效（部署前→后）</th>
                     <th>更新时间</th>
                     <th>操作</th>
                   </tr>
@@ -734,6 +759,15 @@ onUnmounted(() => {
                     <td>{{ a.version || '--' }}</td>
                     <td>{{ a.usage_count || 0 }}</td>
                     <td>{{ a.success_rate ? (a.success_rate * 100).toFixed(1) + '%' : '--' }}</td>
+                    <!-- F 线实效快照（2026-10-14）：monitor 评估写回 last_efficacy；
+                         未评估 = '--'（诚实缺省，不做无数据编造）。 -->
+                    <td style="font-size: var(--text-xs);" :data-testid="'efficacy-' + idx">
+                      <template v-if="a.last_efficacy">
+                        <span :style="{ color: efficacyColor(a.last_efficacy.verdict) }">{{ efficacyLabel(a.last_efficacy.verdict) }}</span>
+                        {{ (a.last_efficacy.success_before * 100).toFixed(0) }}% → {{ (a.last_efficacy.success_after * 100).toFixed(0) }}%
+                      </template>
+                      <span v-else>--</span>
+                    </td>
                     <td style="font-size: var(--text-xs); color: var(--text-secondary);">{{ formatDate(a.updated_at) }}</td>
                     <td>
                       <select
@@ -778,6 +812,14 @@ onUnmounted(() => {
               </table>
             </div>
           </div>
+        </div>
+      </div>
+
+      <!-- ==================== Regression（A/C 线，2026-10-14） ==================== -->
+      <div v-if="activeTab === 'regression'">
+        <BehaviorTestPanel />
+        <div style="margin-top: var(--space-4);">
+          <ReplayPanel />
         </div>
       </div>
 

@@ -123,6 +123,50 @@ pub fn get_danger_level(op: OperationType) -> DangerLevel {
     }
 }
 
+/// Display slug 的逆解析（connector 动态工具把清单 per-op 风险投影成
+/// slug 经 metadata 传给管线的唯一通道；静态表无法感知动态 op 风险）。
+/// 全 variant 显式 match——OperationType 加 variant 时此处漏臂编译报错。
+pub fn operation_type_from_slug(slug: &str) -> Option<OperationType> {
+    Some(match slug {
+        "file_read" => OperationType::FileRead,
+        "file_write" => OperationType::FileWrite,
+        "file_delete" => OperationType::FileDelete,
+        "dir_read" => OperationType::DirRead,
+        "dir_create" => OperationType::DirCreate,
+        "dir_delete" => OperationType::DirDelete,
+        "process_exec" => OperationType::ProcessExec,
+        "process_spawn" => OperationType::ProcessSpawn,
+        "process_kill" => OperationType::ProcessKill,
+        "process_suspend" => OperationType::ProcessSuspend,
+        "network_download" => OperationType::NetworkDownload,
+        "network_upload" => OperationType::NetworkUpload,
+        "network_request" => OperationType::NetworkRequest,
+        "hardware_i2c" => OperationType::HardwareI2C,
+        "hardware_spi" => OperationType::HardwareSPI,
+        "hardware_gpio" => OperationType::HardwareGPIO,
+        "system_shutdown" => OperationType::SystemShutdown,
+        "system_reboot" => OperationType::SystemReboot,
+        "system_config" => OperationType::SystemConfig,
+        "system_service" => OperationType::SystemService,
+        "system_install" => OperationType::SystemInstall,
+        "registry_read" => OperationType::RegistryRead,
+        "registry_write" => OperationType::RegistryWrite,
+        "registry_delete" => OperationType::RegistryDelete,
+        "internal" => OperationType::Internal,
+        _ => return None,
+    })
+}
+
+/// slug 的危级标签（"LOW"/"MEDIUM"/"HIGH"/"CRITICAL"）。未知名 fail-closed
+/// 返回 "CRITICAL"——与管线 [`crate::pipeline::SecurityPlugin::
+/// effective_tool_operation`] 的未知名姿态同口径。
+pub fn danger_level_of_slug(slug: &str) -> String {
+    match operation_type_from_slug(slug) {
+        Some(op) => get_danger_level(op).to_string(),
+        None => "CRITICAL".to_string(),
+    }
+}
+
 /// Security rule for ABAC evaluation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityRule {

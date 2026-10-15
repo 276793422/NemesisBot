@@ -233,6 +233,42 @@ pub fn resolve_max_output_ceiling(cfg: &serde_json::Value) -> u64 {
         .unwrap_or(MAX_OUTPUT_CEILING_DEFAULT)
 }
 
+/// E5（2026-10-15 收尾保障）：`agents.defaults.pre_pause_probe.timeout_secs`
+/// 缺席 / 0 / 非法时的默认墙钟（240s——热缓存 cargo check 数秒级，冷启动
+/// 大仓留足余量；不设上限内「不限」形态，探针必须中止有界）。
+pub const PRE_PAUSE_PROBE_DEFAULT_TIMEOUT_SECS: u64 = 240;
+
+/// E5（2026-10-15 收尾保障）：预算暂停前编译探针的解析结果（单一真相源
+/// [`resolve_pre_pause_probe`] 的返回类型）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PrePauseProbeSettings {
+    /// 默认开（用户拍板 2026-10-15：诚实树状态注记是默认体验）。
+    pub enabled: bool,
+    /// 单次探针墙钟上限（秒）。0 / 非法 → 默认 240。
+    pub timeout_secs: u64,
+}
+
+/// E5：`agents.defaults.pre_pause_probe` 解析（nemesis-agent loop 暂停路径
+/// 的单一真相源）。对象缺席 = 默认开 + 默认墙钟；`enabled` 缺席 = 开
+/// （只有显式 `false` 关闭）；`timeout_secs` 0 / 负数 / 非数字 → 默认。
+pub fn resolve_pre_pause_probe(cfg: &serde_json::Value) -> PrePauseProbeSettings {
+    let node = cfg
+        .get("agents")
+        .and_then(|v| v.get("defaults"))
+        .and_then(|v| v.get("pre_pause_probe"));
+    PrePauseProbeSettings {
+        enabled: node
+            .and_then(|v| v.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true),
+        timeout_secs: node
+            .and_then(|v| v.get("timeout_secs"))
+            .and_then(|v| v.as_u64())
+            .filter(|n| *n > 0)
+            .unwrap_or(PRE_PAUSE_PROBE_DEFAULT_TIMEOUT_SECS),
+    }
+}
+
 /// H4 (U16 half): resolve the per-model `reasoning_effort` tier for the
 /// active model alias. Mirrors [`resolve_max_output_tokens`]: finds the
 /// matching `model_list[]` entry and returns its `reasoning_effort` string

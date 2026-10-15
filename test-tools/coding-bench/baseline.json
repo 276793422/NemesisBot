@@ -1,0 +1,148 @@
+{
+  "baseline_id": "pval-20261015-01",
+  "created_utc": "2026-10-15",
+  "model": "openai/gpt-6-sol (high effort)",
+  "model_endpoint_shape": "LAN cc-switch 代理, responses 协议（无鉴权；地址不冻结——换端点/模型=换基线，不可与本基线直接对比）",
+  "bot_code_sha": "b9141580402a649968be95db8a48a79e4862a242",
+  "slot_shape": "holdout x3 + dev x1 = 24 槽",
+  "summary": {
+    "slots": 24,
+    "pass": 21,
+    "fail": 3
+  },
+  "fail_notes": {
+    "B-HTTPARSE": "run3：最后一轮编辑打坏 expect! 宏、库不编译（预算暂停截断自验证循环——催生 E5 收尾探针）",
+    "CODE-CKPTGC": "写了必红测试从未跑过（同上族）；修复后已在后续批次收口",
+    "CODE-USAGECSV": "首轮真实 FAIL（CLI 导出 CSV 列序与验收契约不符）"
+  },
+  "tasks": {
+    "B-HTTPARSE": {
+      "split": "holdout",
+      "slots": 3,
+      "pass": 2,
+      "run_status": "completed+completed+completed",
+      "pass_rate": 0.6667,
+      "wall_seconds_max": 336
+    },
+    "B-NUMINT": {
+      "split": "holdout",
+      "slots": 3,
+      "pass": 3,
+      "run_status": "completed+completed+completed",
+      "pass_rate": 1.0,
+      "wall_seconds_max": 160
+    },
+    "B-QUICKXML": {
+      "split": "holdout",
+      "slots": 3,
+      "pass": 3,
+      "run_status": "completed+completed+completed",
+      "pass_rate": 1.0,
+      "wall_seconds_max": 266
+    },
+    "B-UNISEG": {
+      "split": "holdout",
+      "slots": 3,
+      "pass": 3,
+      "run_status": "completed+completed+completed",
+      "pass_rate": 1.0,
+      "wall_seconds_max": 165
+    },
+    "B-UUIDV7": {
+      "split": "dev",
+      "slots": 1,
+      "pass": 1,
+      "run_status": "completed",
+      "pass_rate": 1.0,
+      "wall_seconds_max": 226
+    },
+    "B-YAMLRUST": {
+      "split": "dev",
+      "slots": 1,
+      "pass": 1,
+      "run_status": "completed",
+      "pass_rate": 1.0,
+      "wall_seconds_max": 85
+    },
+    "CODE-CKPTGC": {
+      "split": "dev",
+      "slots": 1,
+      "pass": 0,
+      "run_status": "completed",
+      "pass_rate": 0.0,
+      "wall_seconds_max": 566
+    },
+    "CODE-FEATCFG": {
+      "split": "dev",
+      "slots": 1,
+      "pass": 1,
+      "run_status": "completed",
+      "pass_rate": 1.0,
+      "wall_seconds_max": 261
+    },
+    "CODE-FSTREE": {
+      "split": "dev",
+      "slots": 1,
+      "pass": 1,
+      "run_status": "completed",
+      "pass_rate": 1.0,
+      "wall_seconds_max": 451
+    },
+    "CODE-MEMFORGET": {
+      "split": "dev",
+      "slots": 1,
+      "pass": 1,
+      "run_status": "completed",
+      "pass_rate": 1.0,
+      "wall_seconds_max": 486
+    },
+    "CODE-UIALIGN": {
+      "split": "dev",
+      "slots": 1,
+      "pass": 1,
+      "run_status": "completed",
+      "pass_rate": 1.0,
+      "wall_seconds_max": 231
+    },
+    "CODE-UITHEME": {
+      "split": "dev",
+      "slots": 1,
+      "pass": 1,
+      "run_status": "completed",
+      "pass_rate": 1.0,
+      "wall_seconds_max": 276
+    },
+    "CODE-USAGECSV": {
+      "split": "dev",
+      "slots": 1,
+      "pass": 0,
+      "run_status": "completed",
+      "pass_rate": 0.0,
+      "wall_seconds_max": 230
+    },
+    "CODE-W6GATE": {
+      "split": "dev",
+      "slots": 1,
+      "pass": 1,
+      "run_status": "completed",
+      "pass_rate": 1.0,
+      "wall_seconds_max": 256
+    },
+    "CODE-W7SOCKET": {
+      "split": "dev",
+      "slots": 1,
+      "pass": 1,
+      "run_status": "completed",
+      "pass_rate": 1.0,
+      "wall_seconds_max": 827
+    },
+    "CODE-WHOOKFAIL": {
+      "split": "dev",
+      "slots": 1,
+      "pass": 1,
+      "run_status": "completed",
+      "pass_rate": 1.0,
+      "wall_seconds_max": 140
+    }
+  }
+}

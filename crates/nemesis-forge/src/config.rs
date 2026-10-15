@@ -18,6 +18,19 @@ pub struct ForgeConfig {
     #[serde(default)]
     pub enabled: bool,
 
+    /// 失败重放自动入库开关（自进化升级 C 线，2026-10-14）：false（默认）
+    /// = 重放用例进待审区需确认；true = 自动进回归集。
+    #[serde(default)]
+    pub replay_auto_ingest: bool,
+
+    /// A 线行为回归可调键（自进化升级，2026-10-14）。
+    #[serde(default)]
+    pub test: TestConfig,
+
+    /// D 线微优化可调键（SPO 精简版，2026-10-14）。
+    #[serde(default)]
+    pub optimize: OptimizeConfig,
+
     /// Collection configuration.
     #[serde(default)]
     pub collection: CollectionConfig,
@@ -298,6 +311,53 @@ fn default_llm_max_tokens() -> u32 {
 
 fn default_timeout() -> u64 {
     60
+}
+
+/// A 线行为回归可调键（自进化升级，2026-10-14）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestConfig {
+    /// judge 层缺省分阈值（用例未显式声明 threshold 时生效；0.0-1.0）。
+    #[serde(default = "default_judge_threshold")]
+    pub judge_threshold: f64,
+
+    /// judge 模型：缺省 None = `agents.small_model` 通道（未配置回落主
+    /// 模型）；显式别名 = 钉死该模型。回落链任一臂失败自动降下一臂，
+    /// 绝不因缺配置失败。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge_model: Option<String>,
+}
+
+impl Default for TestConfig {
+    fn default() -> Self {
+        Self {
+            judge_threshold: default_judge_threshold(),
+            judge_model: None,
+        }
+    }
+}
+
+fn default_judge_threshold() -> f64 {
+    0.7
+}
+
+/// D 线微优化可调键（SPO 精简版）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OptimizeConfig {
+    /// 单次改写输出 token 预算（CJK 保守 ×2 折算字符数做上限）。
+    #[serde(default = "default_optimize_budget")]
+    pub budget_tokens: u32,
+}
+
+impl Default for OptimizeConfig {
+    fn default() -> Self {
+        Self {
+            budget_tokens: default_optimize_budget(),
+        }
+    }
+}
+
+fn default_optimize_budget() -> u32 {
+    2000
 }
 
 /// Trace collection configuration (Phase 5: conversation-level traces).

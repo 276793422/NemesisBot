@@ -1,0 +1,17 @@
+{
+  "task_id": "CODE-UIALIGN",
+  "path": "C",
+  "group": "cross",
+  "mother": "{{MOTHERS}}/pathC",
+  "target_cache": "{{CACHE}}/targetC",
+  "node_modules_cache": "{{CACHE}}/node_modules",
+  "split": "dev",
+  "arm": "main",
+  "model": "openai/gpt-6-sol",
+  "user_request": "前端外观配置缺失气泡对齐设置：请在设置体系里新增 appearance.chat.user_bubble_align（可选值 left / right，默认 right），控制聊天面板中用户消息气泡的对齐方向；设置值持久化到 localStorage（键名以 nb_ 前缀：nb_user_bubble_align）；ChatPanel 渲染用户气泡时读取该设置并应用对应样式（left 时用户气泡靠左，right 时保持现状靠右）。补上前端测试。",
+  "allowed_paths": [
+    "web/"
+  ],
+  "max_turns": 30,
+  "time_limit_minutes": 45
+}

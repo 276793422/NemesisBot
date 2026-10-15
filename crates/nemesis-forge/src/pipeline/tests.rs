@@ -429,6 +429,8 @@ fn test_run_with_registered_artifact() {
         last_degraded_at: None,
         success_rate: 0.0,
         consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
     };
     registry.add(artifact);
 
@@ -600,6 +602,8 @@ fn test_run_from_content() {
         last_degraded_at: None,
         success_rate: 0.0,
         consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
     };
     let content = "---\nname: test\n---\nThis is a test skill content that is long enough to pass validation.";
     let validation = pipeline.run_from_content(&artifact, content);
@@ -781,4 +785,92 @@ async fn test_s8_validate_async_stage2_failure_skips_stage3() {
     assert!(validation.stage1_static.as_ref().unwrap().stage.passed);
     assert!(!validation.stage2_functional.as_ref().unwrap().stage.passed);
     assert!(validation.stage3_quality.is_none());
+}
+
+// 三轮复查（2026-10-14）：Stage 2 judge 层 caller 槽优先级——judge_caller
+// （杂务回落链）优先于 llm_caller（主模型）；judge_caller 缺席回落主模型。
+
+#[tokio::test]
+async fn behavior_gate_prefers_judge_caller_over_main_caller() {
+    use crate::reflector_llm::LLMCaller;
+    use async_trait::async_trait;
+
+    struct ScriptedCaller {
+        response: &'static str,
+    }
+
+    #[async_trait]
+    impl LLMCaller for ScriptedCaller {
+        async fn chat(
+            &self,
+            _system_prompt: &str,
+            _user_prompt: &str,
+            _max_tokens: Option<i64>,
+        ) -> Result<String, String> {
+            Ok(self.response.to_string())
+        }
+    }
+
+    struct StubRunner;
+
+    #[async_trait]
+    impl crate::skill_tests::SkillTestRunner for StubRunner {
+        async fn run_case(
+            &self,
+            _skill_content: &str,
+            _case: &crate::skill_tests::TestCase,
+        ) -> Result<crate::skill_tests::ExecutionTranscript, String> {
+            Ok(crate::skill_tests::ExecutionTranscript {
+                finals: vec!["done".into()],
+                ..Default::default()
+            })
+        }
+    }
+
+    let content = "---\nname: test\ntests:\n  - name: judge-case\n    turns:\n      - user: hello\n    judge:\n      rubric: 回复得体\n---\nA test skill content that is sufficient for validation.";
+
+    // 两个 caller 给出相反裁决：主模型判 fail，杂务链判 pass——
+    // gate 必须采信 judge_caller。
+    let failing_judge = r#"{"score": 0.1, "summary": "fail"}"#;
+    let passing_judge = r#"{"score": 0.9, "summary": "pass"}"#;
+
+    let pipeline = Pipeline::new(
+        ForgeConfig::default(),
+        Arc::new(Registry::new(crate::types::RegistryConfig::default())),
+    );
+    pipeline.set_skill_test_runner(Arc::new(StubRunner));
+    pipeline.set_provider(Arc::new(ScriptedCaller {
+        response: failing_judge,
+    }));
+    pipeline.set_judge_caller(Arc::new(ScriptedCaller {
+        response: passing_judge,
+    }));
+    let v = pipeline
+        .validate_async(ArtifactKind::Skill, "t", content)
+        .await;
+    let s2 = v.stage2_functional.as_ref().unwrap();
+    assert!(
+        s2.stage.passed,
+        "judge_caller 应优先: {:?}",
+        s2.stage.errors
+    );
+
+    // judge_caller 缺席 = 回落主模型槽（fail 裁决生效）。
+    let pipeline2 = Pipeline::new(
+        ForgeConfig::default(),
+        Arc::new(Registry::new(crate::types::RegistryConfig::default())),
+    );
+    pipeline2.set_skill_test_runner(Arc::new(StubRunner));
+    pipeline2.set_provider(Arc::new(ScriptedCaller {
+        response: failing_judge,
+    }));
+    let v2 = pipeline2
+        .validate_async(ArtifactKind::Skill, "t", content)
+        .await;
+    let s2b = v2.stage2_functional.as_ref().unwrap();
+    assert!(
+        !s2b.stage.passed,
+        "judge_caller 缺席应回落主模型: {:?}",
+        s2b.stage.errors
+    );
 }

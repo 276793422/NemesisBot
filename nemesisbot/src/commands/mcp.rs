@@ -11,18 +11,36 @@ use nemesis_mcp::client::Client;
 pub enum McpAction {
     /// List configured MCP servers
     List,
-    /// Add a new MCP server
+    /// Add a new MCP server (stdio: --command；HTTP: --url [+ --header])
+    ///
+    /// HTTP 服务直连示例（无需桥接脚本）：
+    ///   nemesisbot mcp add -n pet --url http://127.0.0.1:8808/mcp \
+    ///     -H "Authorization: vault:pet-token"
+    ///
+    /// header 值支持 vault:/env:/yaml: 凭据引用（整值前缀，每次连接现查；
+    /// 不支持 'Bearer vault:<别名>' 内嵌写法）。vault 值存完整头值
+    /// （如 'Bearer <token>'），需先交互式写入：nemesisbot vault set pet-token
+    /// （exec 工具无 stdin，无法代写）。
     Add {
         /// Server name
         #[arg(short, long)]
         name: String,
-        /// Command to start server
+        /// Command to start server (stdio 形态；与 --url 互斥，恰给其一)
         #[arg(short, long)]
-        command: String,
-        /// Arguments for command (comma-separated)
+        command: Option<String>,
+        /// URL of the MCP server (HTTP 形态，如 'http://localhost:8808/mcp'；与 --command 互斥)
+        #[arg(short, long)]
+        url: Option<String>,
+        /// Transport type override (http|stdio；缺省按 --command/--url 推断)
+        #[arg(long)]
+        transport: Option<String>,
+        /// HTTP request header, "KEY: VALUE" (HTTP 专用，可多次；值支持 vault:/env: 引用)
+        #[arg(short = 'H', long)]
+        header: Vec<String>,
+        /// Arguments for command (stdio 专用，comma-separated)
         #[arg(short, long)]
         args: Option<String>,
-        /// Environment variables (KEY=VALUE)
+        /// Environment variables (stdio 专用，KEY=VALUE)
         #[arg(short, long)]
         env: Vec<String>,
         /// Timeout in seconds
@@ -67,6 +85,9 @@ pub enum McpAction {
         /// URL of the MCP server (for HTTP-based servers, e.g. 'http://localhost:8080/mcp')
         #[arg(short, long)]
         url: Option<String>,
+        /// HTTP request header, "KEY: VALUE" (HTTP 专用，可多次；带认证探测)
+        #[arg(short = 'H', long)]
+        header: Vec<String>,
         /// Arguments for the command (stdio only, comma-separated)
         #[arg(short, long)]
         args: Option<String>,
@@ -106,7 +127,10 @@ fn find_server(mcp_cfg_path: &std::path::Path, name: &str) -> Result<Option<serd
 async fn connect_to_server(server: &serde_json::Value) -> Result<nemesis_mcp::client::McpClient> {
     let config: nemesis_config::McpServerConfig = serde_json::from_value(server.clone())
         .map_err(|e| anyhow::anyhow!("Invalid MCP server config: {}", e))?;
-    let mut client = nemesis_mcp::client::McpClient::from_config(&config)
+    // W1（2026-10-15）：from_config 只认 stdio（HTTP 条目空 command 直接
+    // 报错）；改用 from_server_config 按 transport_type 分派（与 manager
+    // 注册路径同源），HTTP 型服务 test/tools/resources/prompts 直连。
+    let mut client = nemesis_mcp::client::McpClient::from_server_config(&config)
         .map_err(|e| anyhow::anyhow!("Failed to create MCP client: {}", e))?;
     client
         .initialize()
@@ -118,6 +142,229 @@ async fn connect_to_server(server: &serde_json::Value) -> Result<nemesis_mcp::cl
 // ---------------------------------------------------------------------------
 // Command implementations
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// mcp add 的请求校验（W1 HTTP 化，2026-10-15）
+// ---------------------------------------------------------------------------
+
+/// `mcp add` 的一次请求（校验后的形态）。
+///
+/// stdio（`--command`）与 HTTP（`--url`）两形态互斥，恰给其一；`--header`
+/// 仅 HTTP 合法，`--args`/`--env` 仅 stdio 合法。校验规则单一真相源 =
+/// [`AddRequest::build`]（CLI 分发与单测共用）；本结构只承载语法校验，
+/// 绝不解引用任何 `vault:`/`env:` 值（凭据真值只在连接期由
+/// `nemesis-mcp` 现查）。
+#[derive(Debug, Clone)]
+struct AddRequest {
+    name: String,
+    /// "stdio" | "http"（已推断/已校验一致）
+    transport: &'static str,
+    command: Option<String>,
+    url: Option<String>,
+    headers: Vec<String>,
+    args: Vec<String>,
+    env: Vec<String>,
+    timeout: u64,
+}
+
+impl AddRequest {
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        name: &str,
+        command: Option<&str>,
+        url: Option<&str>,
+        transport: Option<&str>,
+        headers: &[String],
+        args: Option<&str>,
+        env: &[String],
+        timeout: u64,
+    ) -> Result<Self> {
+        let command = command.map(str::trim).filter(|s| !s.is_empty());
+        let url = url.map(str::trim).filter(|s| !s.is_empty());
+
+        // 恰给其一
+        match (command, url) {
+            (Some(_), Some(_)) => anyhow::bail!(
+                "--command 与 --url 只能给一个：stdio 服务用 --command，HTTP 服务用 --url"
+            ),
+            (None, None) => anyhow::bail!(
+                "必须提供 --command <stdio 启动命令> 或 --url <HTTP 端点> 之一；\
+                 HTTP 示例：nemesisbot mcp add -n pet --url http://127.0.0.1:8808/mcp \
+                 -H \"Authorization: vault:pet-token\""
+            ),
+            _ => {}
+        }
+
+        // transport 显式值校验 + 与形态一致性；缺省按 command/url 推断
+        let transport: &'static str = match transport.map(str::trim).filter(|s| !s.is_empty()) {
+            None => {
+                if url.is_some() {
+                    "http"
+                } else {
+                    "stdio"
+                }
+            }
+            Some(t) => match t.to_ascii_lowercase().as_str() {
+                "http" => {
+                    if command.is_some() {
+                        anyhow::bail!(
+                            "--transport http 与 --command 冲突（stdio 服务请用 --transport stdio 或省略）"
+                        );
+                    }
+                    "http"
+                }
+                "stdio" => {
+                    if url.is_some() {
+                        anyhow::bail!(
+                            "--transport stdio 与 --url 冲突（HTTP 服务请用 --transport http 或省略）"
+                        );
+                    }
+                    "stdio"
+                }
+                other => anyhow::bail!("未知 transport '{}'（支持：http、stdio）", other),
+            },
+        };
+
+        // 形态专属参数
+        if transport == "http" {
+            if args.map(str::trim).filter(|s| !s.is_empty()).is_some() {
+                anyhow::bail!("--args 是 stdio 专用参数，HTTP 服务（--url）不支持");
+            }
+            if !env.is_empty() {
+                anyhow::bail!("--env 是 stdio 专用参数，HTTP 服务（--url）不支持");
+            }
+        } else if !headers.is_empty() {
+            anyhow::bail!("--header 是 HTTP 专用参数，stdio 服务（--command）不支持");
+        }
+
+        // header 行格式校验：只验语法与引用形态，绝不解析值
+        for h in headers {
+            validate_header_line(h)?;
+        }
+
+        // 与旧版逐字节一致：split(',') + trim，不过滤空段
+        let args: Vec<String> = args
+            .map(|a| a.split(',').map(|s| s.trim().to_string()).collect())
+            .unwrap_or_default();
+
+        Ok(Self {
+            name: name.to_string(),
+            transport,
+            command: command.map(str::to_string),
+            url: url.map(str::to_string),
+            headers: headers.to_vec(),
+            args,
+            env: env.to_vec(),
+            timeout,
+        })
+    }
+}
+
+/// 校验一行 `"KEY: VALUE"` 头（CLI 侧语法闸，与
+/// `nemesis-mcp::http_transport::resolved_header_pairs` 的运行期规则同源：
+/// 缺冒号 / 头名为空或含空白控制字符 / `Mcp-Session-Id` 保留头 / 整值
+/// `vault:`/`env:`/`yaml:` 引用名为空——只验语法，值原样落盘，绝不解引用）。
+fn validate_header_line(line: &str) -> Result<()> {
+    let Some((raw_name, raw_value)) = line.split_once(':') else {
+        anyhow::bail!(
+            "header 行缺冒号（应为 \"KEY: VALUE\"）：{:?}",
+            redact_header_for_error(line)
+        );
+    };
+    let name = raw_name.trim();
+    if name.is_empty() || name.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        anyhow::bail!(
+            "header 名非法（空 / 含空白或控制字符）：{:?}",
+            redact_header_for_error(line)
+        );
+    }
+    if name.eq_ignore_ascii_case("mcp-session-id") {
+        anyhow::bail!("Mcp-Session-Id 是协议保留头（server 指派），不能配置");
+    }
+    let value = raw_value.trim();
+    // 整值引用语法（与 nemesis_config::resolve_secret_field 同一前缀语义）：
+    // 引用名非空即可，绝不查询真值。
+    for (prefix, what) in [
+        ("env:", "环境变量名"),
+        ("yaml:", "凭据别名"),
+        ("vault:", "vault 别名"),
+    ] {
+        if let Some(rest) = value.strip_prefix(prefix) {
+            if rest.is_empty() {
+                anyhow::bail!(
+                    "header 值 {} 引用名为空——写作 {}<name>（如 vault:pet-token）",
+                    what,
+                    prefix
+                );
+            }
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// 错误消息里的头行脱敏：截掉冒号后的值段（值可能含凭据字面量）。
+fn redact_header_for_error(line: &str) -> String {
+    match line.split_once(':') {
+        Some((name, _)) => format!("{}: <redacted>", name.trim()),
+        None => "<redacted>".to_string(),
+    }
+}
+
+/// 收集 header 行中引用的 vault 别名（整值 `vault:<alias>` 前缀形态），
+/// 用于 add 成功后的「凭据需交互式写入」提示与 test 401 诊断。
+fn header_vault_aliases(headers: &[serde_json::Value]) -> Vec<String> {
+    headers
+        .iter()
+        .filter_map(|v| v.as_str())
+        .filter_map(|line| line.split_once(':').map(|(_, v)| v.trim()))
+        .filter_map(|value| {
+            value
+                .strip_prefix("vault:")
+                .filter(|alias| !alias.is_empty())
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+/// header 值内嵌引用前缀但非整值形态（如 `Bearer vault:x`）——运行期
+/// `is_secret_reference` 只认整值前缀，内嵌形态按字面量整值发送，鉴权
+/// 几乎必坏（外部设备实盘案例的隐性坑）。返回可疑行（仅用于提示；
+/// 打印时只接头名，不回显值）。
+fn embedded_ref_headers(headers: &[String]) -> Vec<String> {
+    headers
+        .iter()
+        .filter(|h| match h.split_once(':') {
+            Some((_, v)) => {
+                let v = v.trim();
+                ["vault:", "env:", "yaml:"]
+                    .iter()
+                    .any(|p| v.contains(p) && !v.starts_with(p))
+            }
+            None => false,
+        })
+        .cloned()
+        .collect()
+}
+
+/// `mcp test` 的 HTTP 形态判定。
+///
+/// 与 [`nemesis_mcp::client::McpClient::from_server_config`] 的分派**同源**：
+/// 同一别名集（`http` / `streamable_http` / `streamable-http`）、同大小写
+/// 敏感语义，外加旧手写条目兼容（无 transport_type、无 command、有 url）。
+/// 判定为 HTTP 才走直连测试分支；其余形态按 stdio 走 PATH 探测——与
+/// 运行时分派一致，避免「test 一套口径、连接另一套口径」的断层。
+fn server_entry_is_http(server: &serde_json::Value) -> bool {
+    let transport_type = server
+        .get("transport_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let url = server.get("url").and_then(|v| v.as_str()).unwrap_or("");
+    matches!(
+        transport_type,
+        "http" | "streamable_http" | "streamable-http"
+    ) || (transport_type.is_empty() && server.get("command").is_none() && !url.is_empty())
+}
 
 /// Sync the master MCP switch in the home-root config.json.
 ///
@@ -236,6 +483,10 @@ fn cmd_list(mcp_cfg_path: &std::path::Path) -> Result<()> {
         println!("Configured MCP Servers (0):");
         println!("  No MCP configuration found.");
         println!("  Add a server with: nemesisbot mcp add -n <name> -c <command>");
+        println!(
+            "  HTTP server example: nemesisbot mcp add -n <name> --url http://127.0.0.1:8808/mcp \
+             -H \"Authorization: vault:<alias>\""
+        );
     }
     Ok(())
 }
@@ -243,11 +494,7 @@ fn cmd_list(mcp_cfg_path: &std::path::Path) -> Result<()> {
 fn cmd_add(
     mcp_cfg_path: &std::path::Path,
     config_json_path: &std::path::Path,
-    name: &str,
-    command: &str,
-    args: Option<&str>,
-    env: &[String],
-    timeout: u64,
+    req: &AddRequest,
 ) -> Result<()> {
     let dir = mcp_cfg_path.parent().unwrap();
     let _ = std::fs::create_dir_all(dir);
@@ -261,26 +508,34 @@ fn cmd_add(
     // Check for duplicate
     if let Some(servers) = cfg.get("servers").and_then(|v| v.as_array()) {
         for s in servers {
-            if s.get("name").and_then(|v| v.as_str()) == Some(name) {
-                println!("Error: Server '{}' already exists.", name);
-                println!("Remove it first: nemesisbot mcp remove {}", name);
+            if s.get("name").and_then(|v| v.as_str()) == Some(req.name.as_str()) {
+                println!("Error: Server '{}' already exists.", req.name);
+                println!("Remove it first: nemesisbot mcp remove {}", req.name);
                 return Ok(());
             }
         }
     }
 
-    let args_array: Vec<String> = args
-        .map(|a| a.split(',').map(|s| s.trim().to_string()).collect())
-        .unwrap_or_default();
-
-    let server = serde_json::json!({
-        "name": name,
-        "command": command,
-        "args": args_array,
-        "env": env,
-        // 2026-08-31 收敛：写规范键 timeout_secs（读取侧双键兼容）
-        "timeout_secs": timeout,
-    });
+    // W1（2026-10-15）：stdio 旧写盘形态逐字节不变；HTTP 新形态带
+    // transport_type/url/headers（headers 值原样落盘，凭据引用在连接期现查）。
+    let server = if req.transport == "http" {
+        serde_json::json!({
+            "name": req.name,
+            "transport_type": "http",
+            "url": req.url,
+            "headers": req.headers,
+            "timeout_secs": req.timeout,
+        })
+    } else {
+        serde_json::json!({
+            "name": req.name,
+            "command": req.command,
+            "args": req.args,
+            "env": req.env,
+            // 2026-08-31 收敛：写规范键 timeout_secs（读取侧双键兼容）
+            "timeout_secs": req.timeout,
+        })
+    };
 
     // servers 数组缺失（旧 schema / 手工编辑）时补建，否则下面 push 静默
     // 跳过仍报成功 —— 用户以为已添加，实际文件里没有该服务器。
@@ -310,12 +565,49 @@ fn cmd_add(
     // Sync master switch in the real home-root config.json: mcp.enabled = true
     sync_mcp_master_switch(config_json_path, true)?;
 
-    println!("🔌 MCP server '{}' added.", name);
+    println!("🔌 MCP server '{}' added.", req.name);
     println!("Configuration saved to: {}", mcp_cfg_path.display());
+    if req.transport == "http" {
+        println!("  Transport: HTTP");
+        println!("  URL: {}", req.url.as_deref().unwrap_or("?"));
+        if !req.headers.is_empty() {
+            println!("  Headers: {} line(s)", req.headers.len());
+        }
+        println!("  Note: 运行中的 gateway 需重启后才会挂载新 server。");
+        // 机制教训产品化（案例学费 → 内建提示）：vault 凭据只能交互式写入。
+        let aliases = header_vault_aliases(
+            &req.headers
+                .iter()
+                .map(|h| serde_json::json!(h))
+                .collect::<Vec<_>>(),
+        );
+        if !aliases.is_empty() {
+            println!();
+            println!("🔐 Header 使用 vault 凭据引用（{}）。", aliases.join(", "));
+            println!("   凭据需先交互式写入（exec 工具无 stdin，无法代写）：");
+            for alias in &aliases {
+                println!("     nemesisbot vault set {}", alias);
+            }
+            println!("   vault 值应为完整头值（如 'Bearer <token>'）——引用是整值形态，");
+            println!("   不支持 'Bearer vault:<别名>' 内嵌写法（会按字面量发送）。");
+        }
+        // 内嵌引用形态 loud 提示（字面量发送，鉴权大概率失败）。
+        for h in embedded_ref_headers(&req.headers) {
+            let name = h.split_once(':').map(|(n, _)| n.trim()).unwrap_or("?");
+            println!(
+                "  ⚠ Header '{}' 的值内嵌 vault:/env: 引用——运行期按字面量发送，鉴权大概率失败；",
+                name
+            );
+            println!(
+                "    正确形态：'{}: vault:<别名>'，vault 值存完整头值（如 'Bearer <token>'）。",
+                name
+            );
+        }
+    }
     println!();
     println!("Next steps:");
-    println!("  1. Test the connection: nemesisbot mcp test {}", name);
-    println!("  2. List tools: nemesisbot mcp tools {}", name);
+    println!("  1. Test the connection: nemesisbot mcp test {}", req.name);
+    println!("  2. List tools: nemesisbot mcp tools {}", req.name);
     Ok(())
 }
 
@@ -361,19 +653,30 @@ async fn cmd_test(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()> {
         }
     };
 
-    let command = server
-        .get("command")
-        .and_then(|v| v.as_str())
-        .unwrap_or("?");
-    println!("  Command: {}", command);
-
-    // Check if command exists
-    if which::which(command).is_ok() {
-        println!("  Command found in PATH: OK");
+    // W1（2026-10-15）：HTTP 型条目跳过 PATH 探测直连；stdio 条目保持原路径。
+    // 2026-10-15 复查修复：别名集与大小写语义对齐 McpClient::from_server_config
+    // （分派单一真相源）——此前只认 "http"（且大小写不敏感），手写
+    // streamable_http 条目会掉进 stdio 分支被 which::which("?") 误判
+    // 「NOT found in PATH」跳过测试。
+    if server_entry_is_http(&server) {
+        let url = server.get("url").and_then(|v| v.as_str()).unwrap_or("");
+        println!("  Transport: HTTP");
+        println!("  URL: {}", url);
     } else {
-        println!("  Command NOT found in PATH.");
-        println!("  Skipping connection test.");
-        return Ok(());
+        let command = server
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+        println!("  Command: {}", command);
+
+        // Check if command exists
+        if which::which(command).is_ok() {
+            println!("  Command found in PATH: OK");
+        } else {
+            println!("  Command NOT found in PATH.");
+            println!("  Skipping connection test.");
+            return Ok(());
+        }
     }
 
     println!("  Connecting...");
@@ -401,7 +704,30 @@ async fn cmd_test(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()> {
         }
         Err(e) => {
             println!("❌ Connection: FAILED");
-            println!("  Error: {}", e);
+            println!("  Error: {:#}", e);
+            // 机制教训产品化（W1 连带小项 2）：401 且 header 含 vault 引用
+            // → 指向 vault 条目检查（解析失败 WARN 跳过 = 头未注入，表现即 401）。
+            let err_text = format!("{:#}", e);
+            if err_text.contains("HTTP 401") {
+                let aliases = header_vault_aliases(
+                    server
+                        .get("headers")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.as_slice())
+                        .unwrap_or(&[]),
+                );
+                if !aliases.is_empty() {
+                    println!(
+                        "  诊断提示：服务端返回 401，且 header 使用 vault 凭据引用（{}）。",
+                        aliases.join(", ")
+                    );
+                    println!("  检查凭据是否已写入：nemesisbot vault list；");
+                    println!(
+                        "  缺则交互式执行 nemesisbot vault set <别名>（exec 工具无 stdin，无法代写）；"
+                    );
+                    println!("  vault 值须为完整头值（如 'Bearer <token>'，引用不支持内嵌写法）。");
+                }
+            }
         }
     }
     Ok(())
@@ -595,13 +921,24 @@ fn cmd_inspect(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()> {
 async fn cmd_discover(
     command: Option<&str>,
     url: Option<&str>,
+    headers: &[String],
     args: Option<&str>,
     timeout: u64,
 ) -> Result<()> {
     let result = match (url, command) {
         (Some(url), _) => {
             println!("Discovering MCP HTTP server: {}", url);
-            nemesis_mcp::manager::discover_server_metadata_http(url, timeout).await
+            // W1（2026-10-15）：--header 带认证探测（值可含 vault:/env: 引用，
+            // 与运行时头消费化同源；CLI 侧只验语法不解引用）。
+            for h in headers {
+                validate_header_line(h)?;
+            }
+            nemesis_mcp::manager::discover_server_metadata_http_with_headers(
+                url,
+                headers.to_vec(),
+                timeout,
+            )
+            .await
         }
         (None, Some(command)) => {
             println!("Discovering MCP server: {}", command);
@@ -719,18 +1056,25 @@ pub fn run(action: McpAction, local: bool) -> Result<()> {
         McpAction::Add {
             name,
             command,
+            url,
+            transport,
+            header,
             args,
             env,
             timeout,
-        } => cmd_add(
-            &mcp_cfg_path,
-            &common::config_path(&home),
-            &name,
-            &command,
-            args.as_deref(),
-            &env,
-            timeout,
-        )?,
+        } => {
+            let req = AddRequest::build(
+                &name,
+                command.as_deref(),
+                url.as_deref(),
+                transport.as_deref(),
+                &header,
+                args.as_deref(),
+                &env,
+                timeout,
+            )?;
+            cmd_add(&mcp_cfg_path, &common::config_path(&home), &req)?;
+        }
         McpAction::Remove { name } => cmd_remove(&mcp_cfg_path, &name)?,
         McpAction::Test { name } => {
             tokio::task::block_in_place(|| {
@@ -756,6 +1100,7 @@ pub fn run(action: McpAction, local: bool) -> Result<()> {
         McpAction::Discover {
             command,
             url,
+            header,
             args,
             timeout,
         } => {
@@ -763,6 +1108,7 @@ pub fn run(action: McpAction, local: bool) -> Result<()> {
                 tokio::runtime::Handle::current().block_on(cmd_discover(
                     command.as_deref(),
                     url.as_deref(),
+                    &header,
                     args.as_deref(),
                     timeout,
                 ))
