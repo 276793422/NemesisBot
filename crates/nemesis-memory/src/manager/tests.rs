@@ -315,13 +315,23 @@ async fn test_forget_removes_vector_mirror() {
         ..Default::default()
     };
     mgr.init_vector_store_with_embed(embed, vs_config).unwrap();
+    // 镜像写入总开关必须显式打开：init_*_with_embed 只装 store 不置 flag，
+    // 生产形态由 init_vector_store_from_config 置位；测试显式对齐生产形态，
+    // 否则镜像从未写入、断言空转（对快照无判别力）。
+    mgr.set_vector_enabled(true);
 
     let id = mgr
         .store_fact("Berlin is the capital of Germany", vec![])
         .await
         .unwrap();
 
-    // 前置：keyword + 向量双写生效（delete 前可达）。
+    // 前置（自验）：语义搜索（vector 优先）能召回 = 镜像确实在；
+    // 前置不成立时此处响亮失败，杜绝空转通过。
+    let pre = mgr.search("Berlin", None, 10).await.unwrap();
+    assert!(
+        pre.entries.iter().any(|e| e.entry.id == id),
+        "precondition: vector mirror must be searchable before forget"
+    );
     assert!(mgr.get(&id).await.unwrap().is_some());
 
     // forget：必须双删（keyword 主删 + 向量镜像清理）。
