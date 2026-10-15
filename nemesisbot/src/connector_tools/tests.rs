@@ -112,6 +112,9 @@ fn test_connectors_config_missing_file_falls_back_to_default() {
     assert!(cfg.finance.is_none()); // 资金 fail-closed（全 0）
 }
 
+/// ConnectorFindTool 随 security 闸（唯一消费者 = agent_factory 注册块）——
+/// 测试同闸；无 security 构建该类型整体缺席。
+#[cfg(feature = "security")]
 #[tokio::test]
 async fn test_find_lists_connectors_with_ops_and_errors() {
     let tmp = tempfile::tempdir().expect("tempdir");

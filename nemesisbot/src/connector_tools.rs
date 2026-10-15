@@ -28,8 +28,12 @@ use nemesis_connectors::manifest::{OpClass, RiskLevel, ValidatedConnector, Valid
 use nemesis_connectors::receipt::{
     BudgetConsumed, Receipt, append_receipt, args_digest, new_receipt_id,
 };
-use nemesis_connectors::registry::{find_connector, find_op, search_connectors};
+#[cfg(feature = "security")]
+use nemesis_connectors::registry::search_connectors;
+use nemesis_connectors::registry::{find_connector, find_op};
 
+/// 工具名（消费者 = agent_factory 的 security 闸注册块——同闸单一形态）。
+#[cfg(feature = "security")]
 pub const FIND_TOOL_NAME: &str = "connector_find";
 pub use nemesis_connectors::INVOKE_TOOL_NAME;
 
@@ -217,17 +221,22 @@ fn merge_request_headers(
 
 /// 注册表发现工具：`{query?: string}`——空 query 列出全部可用 connector
 /// （含 ops 全量元数据 + args_schema），非空按词元匹配。损坏 connector
-/// 诚实进 `errors` 数组（不静默）。
+/// 诚实进 `errors` 数组（不静默）。消费者 = agent_factory security 闸
+/// 注册块——随 security feature 同闸（无 security 构建无工具供给面，
+/// demo 也不用 find）。
+#[cfg(feature = "security")]
 pub struct ConnectorFindTool {
     workspace: PathBuf,
 }
 
+#[cfg(feature = "security")]
 impl ConnectorFindTool {
     pub fn new(workspace: PathBuf) -> Self {
         Self { workspace }
     }
 }
 
+#[cfg(feature = "security")]
 #[async_trait::async_trait]
 impl Tool for ConnectorFindTool {
     fn description(&self) -> String {
@@ -297,6 +306,8 @@ impl Tool for ConnectorFindTool {
 }
 
 /// 单 op 元数据 → LLM 可见 JSON（含 args_schema——invoke 入参的权威契约）。
+/// 唯一消费者 = ConnectorFindTool（同闸）。
+#[cfg(feature = "security")]
 fn op_json(o: &ValidatedOp) -> serde_json::Value {
     let binding = match &o.binding {
         nemesis_connectors::manifest::OpBinding::Http { method, path, .. } => {
@@ -364,11 +375,15 @@ impl ConnectorInvokeTool {
     }
 
     /// Arc 定型后注入（agent_factory 调用；Weak 不延长 loop 生命周期）。
+    /// 消费者 = security 闸注册块——同闸。
+    #[cfg(feature = "security")]
     pub fn set_loop(&self, loop_weak: Weak<AgentLoop>) {
         *self.loop_ref.write() = Some(loop_weak);
     }
 
     /// 注入集群 RPC 通道（agent_factory；与 cluster_rpc 工具同源闭包）。
+    /// 消费者 = security 闸注册块——同闸。
+    #[cfg(feature = "security")]
     pub fn set_remote_call_fn(&self, f: RemoteCallFn) {
         *self.remote_call_fn.write() = Some(f);
     }
@@ -971,30 +986,51 @@ impl ConnectorInvokeTool {
 
         // 凭据注入：别名 connector/<id>/<slot>，真值只进请求，不进回执/日志。
         // header 形态支持 prefix（认证头惯用形态：Gitea `token <PAT>`）。
+        // vault 解析器随 security feature 门控（vault_runtime 模块同闸）——
+        // 无 security 构建 = 必填槽位诚实报「解析器未安装」，可选槽位跳过
+        // 注入（与缺凭据同路：无 key 走公开路径）。
+        #[cfg_attr(not(feature = "security"), allow(unused_mut))]
         let mut cred_headers: Vec<(String, String)> = Vec::new();
+        #[cfg_attr(not(feature = "security"), allow(unused_mut))]
         let mut query_pairs: Vec<(String, String)> = Vec::new();
+        #[cfg(feature = "security")]
         let vault_path = nemesis_path::resolve_vault_path_in_workspace(&self.workspace);
         for (slot, binding) in &c.credentials {
-            let alias = format!("connector/{}/{}", c.id, slot);
-            let secret = match crate::vault_runtime::resolve_alias_at(&vault_path, &alias) {
-                Ok(s) => s,
-                Err(e) => {
-                    if binding.required {
-                        return Err(format!("凭据槽位 `{slot}` 缺失: {e}"));
+            // 无 security 构建：vault 解析器缺席（vault_runtime 模块同闸）——
+            // 必填槽位诚实报「解析器未安装」，可选槽位跳过注入（与缺凭据
+            // 同路：无 key 走公开路径）。
+            #[cfg(not(feature = "security"))]
+            {
+                if binding.required {
+                    return Err(format!(
+                        "凭据槽位 `{slot}` 缺失: vault 解析器未安装（security feature 未编译）"
+                    ));
+                }
+                continue; // 可选槽位 = 跳过注入（无 key 走公开路径）
+            }
+            #[cfg(feature = "security")]
+            {
+                let alias = format!("connector/{}/{}", c.id, slot);
+                let secret = match crate::vault_runtime::resolve_alias_at(&vault_path, &alias) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        if binding.required {
+                            return Err(format!("凭据槽位 `{slot}` 缺失: {e}"));
+                        }
+                        continue; // 可选槽位缺 = 跳过注入（无 key 走公开路径）
                     }
-                    continue; // 可选槽位缺 = 跳过注入（无 key 走公开路径）
-                }
-            };
-            match &binding.into {
-                nemesis_connectors::manifest::CredentialInto::Header(h) => {
-                    let value = match &binding.prefix {
-                        Some(p) => format!("{p}{secret}"),
-                        None => secret,
-                    };
-                    cred_headers.push((h.clone(), value));
-                }
-                nemesis_connectors::manifest::CredentialInto::Query(q) => {
-                    query_pairs.push((q.clone(), secret));
+                };
+                match &binding.into {
+                    nemesis_connectors::manifest::CredentialInto::Header(h) => {
+                        let value = match &binding.prefix {
+                            Some(p) => format!("{p}{secret}"),
+                            None => secret,
+                        };
+                        cred_headers.push((h.clone(), value));
+                    }
+                    nemesis_connectors::manifest::CredentialInto::Query(q) => {
+                        query_pairs.push((q.clone(), secret));
+                    }
                 }
             }
         }
