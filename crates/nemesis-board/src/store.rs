@@ -306,6 +306,46 @@ impl BoardStore {
             .map_err(|e| e.to_string())
     }
 
+    /// 全表依赖边 (issue_id, depends_on)——DAG 全景图/列表批量徽标的单查询
+    /// 数据源（替代逐单 dependencies_of 的 N+1；两个索引都建在依赖表上）。
+    pub fn all_dependency_edges(&self) -> Result<Vec<(i64, i64)>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT issue_id, depends_on FROM issue_dependency ORDER BY issue_id, depends_on",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
+    /// 全表轻投影 id → (number, status)——依赖徽标要展示上游编号与状态，
+    /// 但不需要整行；三列全表读，千行毫秒级（issue.list 单查询配套）。
+    pub fn issue_briefs(&self) -> Result<std::collections::HashMap<i64, (String, String)>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT id, number, status FROM issue")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut map = std::collections::HashMap::new();
+        for row in rows {
+            let (id, number, status) = row.map_err(|e| e.to_string())?;
+            map.insert(id, (number, status));
+        }
+        Ok(map)
+    }
+
     /// 列出某父单的全部子单（创建顺序；无子单返回空 vec）。
     pub fn list_children(&self, parent_id: i64) -> Result<Vec<Issue>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;

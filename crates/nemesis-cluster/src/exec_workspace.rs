@@ -33,8 +33,7 @@ use crate::changeset::{
 };
 use crate::outbox::TransferOutbox;
 use crate::transfer::{
-    TRANSFER_KIND_PROJECT_BASELINE, TransferFileEntry, collect_dir_files, copy_dir_recursive,
-    sanitize_transfer_id,
+    TRANSFER_KIND_PROJECT_BASELINE, TransferFileEntry, copy_dir_recursive, sanitize_transfer_id,
 };
 
 /// 工作副本根目录名（`<workspace>/cluster/exec`）。
@@ -206,13 +205,30 @@ pub fn finish_task_exec(
         // 无 sidecar = 非档案管线（或解包失败的诚实降级形态）。
         return Ok(false);
     }
+    // BUG-2026-10-15 NB-120（A 治本）：任务派生但未被树杀覆盖的残留进程
+    // （浏览器实测的 Edge/crashpad 等）会占住工作副本内文件锁，让全树 diff
+    // 与清扫整体失败。组装变更集**之前**按命令行清扫（best-effort，护栏见
+    // kill_task_leftover_processes；非档案任务不走到这里，零开销）。
+    if kill_task_leftover_processes(task_id) > 0 {
+        // 强杀后内核释放句柄有毫秒级窗口——小睡一拍，尽量不让可交付文件
+        // 沦为 skipped 注记。
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
     let raw = std::fs::read_to_string(exec_dir.join(BASELINE_SIDECAR_NAME))
         .map_err(|e| format!("读基线 sidecar 失败: {e}"))?;
     let sidecar: BaselineSidecar =
         serde_json::from_str(&raw).map_err(|e| format!("基线 sidecar 解析失败: {e}"))?;
 
     // 全树扫描（排除 sidecar 自身）对基线清单 hash diff。
-    let (upserts, contents, deletions) = diff_tree(&exec_dir, &sidecar.files)?;
+    let (upserts, contents, deletions, skipped) = diff_tree(&exec_dir, &sidecar.files)?;
+    if !skipped.is_empty() {
+        tracing::warn!(
+            task_id = %task_id,
+            count = skipped.len(),
+            skipped = ?skipped,
+            "[Exec] 变更集含不可读跳过文件（已随 manifest 申报 master，不影响其余交付）"
+        );
+    }
 
     if upserts.is_empty() && deletions.is_empty() {
         // 零差异：纯记录交付（master 空集宽容），不产变更集省传输。
@@ -223,6 +239,7 @@ pub fn finish_task_exec(
             base_commit: sidecar.baseline_commit,
             upserts,
             deletions,
+            skipped,
         };
         let cs_dir = exec_root_in_workspace(workspace)
             .join(format!(".cs-{}", sanitize_transfer_id(task_id)));
@@ -255,13 +272,24 @@ fn is_debug_artifact(path: &str) -> bool {
 fn diff_tree(
     exec_dir: &Path,
     baseline_files: &[TransferFileEntry],
-) -> Result<(Vec<ChangesetUpsert>, Vec<ChangesetContent>, Vec<String>), String> {
-    let mut current: Vec<TransferFileEntry> = collect_dir_files(exec_dir)?
-        .into_iter()
-        .filter(|f| f.path != BASELINE_SIDECAR_NAME)
-        .filter(|f| !is_debug_artifact(&f.path))
-        .collect();
-    // collect 已按 path 字典序；显式再排一次防上游语义变化（变更集声明序 =
+) -> Result<
+    (
+        Vec<ChangesetUpsert>,
+        Vec<ChangesetContent>,
+        Vec<String>,
+        Vec<String>,
+    ),
+    String,
+> {
+    let mut skipped = Vec::new();
+    let mut current: Vec<TransferFileEntry> = {
+        let mut out = Vec::new();
+        diff_walk(exec_dir, exec_dir, &mut out, &mut skipped);
+        out.into_iter()
+            .filter(|f| f.path != BASELINE_SIDECAR_NAME)
+            .collect()
+    };
+    // diff_walk 已按 path 字典序；显式再排一次防上游语义变化（变更集声明序 =
     // contents 序的契约依据）。
     current.sort_by(|a, b| a.path.cmp(&b.path));
 
@@ -282,8 +310,16 @@ fn diff_tree(
         if unchanged {
             continue;
         }
-        let data = std::fs::read(exec_dir.join(crate::transfer::safe_relative_path(&f.path)?))
-            .map_err(|e| format!("读工作副本文件 {} 失败: {e}", f.path))?;
+        // 收集与读取之间文件可能被进程重新锁住（竞态窗口）——同样跳过申报，
+        // 不废整个变更集。
+        let data = match std::fs::read(exec_dir.join(crate::transfer::safe_relative_path(&f.path)?))
+        {
+            Ok(d) => d,
+            Err(e) => {
+                skipped.push(format!("{}（读取失败: {e}）", f.path));
+                continue;
+            }
+        };
         upserts.push(ChangesetUpsert {
             path: f.path.clone(),
             sha256: f.sha256.clone(),
@@ -302,17 +338,91 @@ fn diff_tree(
         .filter(|b| !current_paths.contains(b.path.as_str()))
         .map(|b| b.path.clone())
         .collect();
-    Ok((upserts, contents, deletions))
+    Ok((upserts, contents, deletions, skipped))
+}
+
+/// 工作副本容错收集（BUG-2026-10-15 NB-120 韧性修复）。与
+/// `transfer::collect_dir_files` 同规则（`/` 相对路径、字典序、噪声目录/文件
+/// 排除、符号链接跳过），差异三点：
+/// 1. `_debug/` 整树**在下降时剪枝**——调试产物本就双向排除（不哈希不收
+///    集），其中浏览器 profile 等活文件正是锁停摆源头；
+/// 2. 单文件读失败（Windows 共享冲突 os error 32/33 等）= 跳过 + 记入
+///    skipped，不废整个变更集；
+/// 3. 子目录枚举失败 = 跳过该子树 + 记入 skipped。
+///
+/// 收集失败不构成错误，跳过清单随变更集 manifest 申报 master。
+fn diff_walk(root: &Path, dir: &Path, out: &mut Vec<TransferFileEntry>, skipped: &mut Vec<String>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => {
+            let rel = if dir == root {
+                "_root_".to_string()
+            } else {
+                dir.strip_prefix(root)
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_else(|_| dir.display().to_string())
+            };
+            skipped.push(format!("{rel}/（目录枚举失败: {e}）"));
+            return;
+        }
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(rel) = path.strip_prefix(root) else {
+            continue;
+        };
+        let Some(rel_str) = rel.to_str() else {
+            skipped.push(format!("{}（非 UTF-8 路径）", path.display()));
+            continue;
+        };
+        let normalized = rel_str.replace('\\', "/");
+        // 围栏自检：收集器自身产物也必须过围栏（畸形路径宁可不传）。
+        if crate::transfer::safe_relative_path(&normalized).is_err() {
+            continue;
+        }
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if meta.is_symlink() {
+            continue;
+        }
+        if meta.is_dir() {
+            // `_debug/` 下降剪枝（活文件锁源头）；噪声目录同 collect 规则。
+            if is_debug_artifact(&normalized) || crate::transfer::is_noise_dir(&normalized) {
+                continue;
+            }
+            diff_walk(root, &path, out, skipped);
+        } else if meta.is_file() {
+            if crate::transfer::is_noise_file(&normalized) {
+                continue;
+            }
+            match std::fs::read(&path) {
+                Ok(data) => out.push(TransferFileEntry {
+                    path: normalized,
+                    size: data.len() as u64,
+                    sha256: crate::transfer::sha256_hex(&data),
+                }),
+                Err(e) => skipped.push(format!("{normalized}（读取失败: {e}）")),
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
-// 3. 启动清扫（崩溃兜底）
+// 3. 启动清扫（崩溃兜底）+ 周期兜底（BUG-2026-10-15 D）
 // ---------------------------------------------------------------------------
 
 /// 残留工作副本清扫（**必须在 `TransferOutbox::sweep_startup` 之前调用**，
 /// 见模块头注释的幂等挡死问题）。每个带 sidecar 的 exec 目录重新走
-/// [`finish_task_exec`]；成功入队的目录被清理。返回处理成功数。
-pub fn sweep_exec_residual(workspace: &Path, outbox: &TransferOutbox) -> usize {
+/// [`finish_task_exec`]；成功入队的目录被清理。`skip_running` 返回 true 的
+/// 任务**跳过**（周期兜底用：活跃任务的工作副本不可触碰；启动清扫传
+/// `|_| false`——启动时无活跃任务）。返回处理成功数。
+pub fn sweep_exec_residual(
+    workspace: &Path,
+    outbox: &TransferOutbox,
+    skip_running: &dyn Fn(&str) -> bool,
+) -> usize {
     let root = exec_root_in_workspace(workspace);
     let Ok(entries) = std::fs::read_dir(&root) else {
         return 0;
@@ -343,6 +453,11 @@ pub fn sweep_exec_residual(workspace: &Path, outbox: &TransferOutbox) -> usize {
         let Some(task_id) = dir.file_name().map(|n| n.to_string_lossy().to_string()) else {
             continue;
         };
+        // 周期兜底护栏：活跃任务的工作副本正在被 agent 使用，提前终结 =
+        // 交付被拦腰斩断。
+        if skip_running(&task_id) {
+            continue;
+        }
         // source_node 现场无法还原（目录名不含设备段）→ 从 cluster_logs 反查
         // 执行记录所属设备；查无记录 = 空来源（enqueue 诚实拒绝保现场 WARN）。
         let source = find_source_node_in_logs(workspace, &task_id).unwrap_or_default();
@@ -356,6 +471,178 @@ pub fn sweep_exec_residual(workspace: &Path, outbox: &TransferOutbox) -> usize {
         }
     }
     done
+}
+
+/// 周期残留清扫间隔（30 分钟）。
+pub const RESIDUAL_SWEEP_PERIOD_SECS: u64 = 1800;
+
+/// 周期残留清扫线程（BUG-2026-10-15 D，NB-120 实证 1.5h 死等）：残留 exec
+/// 目录此前只有 worker 启动清扫一条路——终态钩子组装失败后「必须重启
+/// worker」才能恢复。30 分钟周期兜底；活跃任务经 `is_running` 跳过。
+/// 独立 std::thread（清扫是纯阻塞 fs 工作，不依赖 tokio 运行时存活）。
+pub fn spawn_periodic_residual_sweep(
+    workspace: PathBuf,
+    outbox: std::sync::Arc<TransferOutbox>,
+    is_running: std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>,
+) {
+    let spawned = std::thread::Builder::new()
+        .name("exec-residual-sweep".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(RESIDUAL_SWEEP_PERIOD_SECS));
+                let swept = sweep_exec_residual(&workspace, &outbox, &|id| is_running(id));
+                if swept > 0 {
+                    tracing::info!("[Exec] 周期残留清扫: {swept} task(s) re-enqueued");
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        tracing::warn!("[Exec] 周期残留清扫线程启动失败（启动清扫仍在，无周期兜底）: {e}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 4. 残留进程清扫（BUG-2026-10-15 NB-120 A 治本）
+// ---------------------------------------------------------------------------
+
+/// 任务残留进程清扫：任务派生但未被 background_registry 树杀覆盖的
+/// detached 进程（agent 起浏览器实测时的 Edge / crashpad 等）会占住工作
+/// 副本内文件锁（os error 32/33），让全树 diff 整体失败、变更集永不入队。
+/// 按「命令行含任务标识」匹配强杀（自进程除外），best-effort：任何失败只
+/// WARN，绝不阻塞档案管线。返回杀掉的进程数。
+///
+/// 护栏：标识长度 <16 或含非 `[A-Za-z0-9._-]` 字符直接跳过（短通用名误伤
+/// 无关进程；生产 task id 是 uuid ≥36 字符）。Windows 单次 PowerShell CIM
+/// 查询（10s 超时防 CIM 服务卡死拖住任务终结）。
+pub fn kill_task_leftover_processes(task_id: &str) -> usize {
+    let needle = sanitize_transfer_id(task_id);
+    if needle.len() < 16
+        || !needle
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    {
+        return 0;
+    }
+    let self_pid = std::process::id();
+    match kill_matching_cmdline(&needle, self_pid) {
+        Ok(pids) => {
+            if !pids.is_empty() {
+                tracing::warn!(
+                    task_id = %task_id,
+                    pids = ?pids,
+                    "[Exec] 已清扫持有任务工作副本的残留进程（防档案锁停摆）"
+                );
+            }
+            pids.len()
+        }
+        Err(e) => {
+            tracing::warn!(task_id = %task_id, "[Exec] 残留进程清扫失败（继续档案管线）: {e}");
+            0
+        }
+    }
+}
+
+#[cfg(windows)]
+fn kill_matching_cmdline(needle: &str, self_pid: u32) -> Result<Vec<u32>, String> {
+    // 单次 PowerShell：CIM 枚举命令行 → 匹配（排除 Rust 自进程与查询进程
+    // 自身——查询脚本文本里就含 needle，不排除会自杀）→ 强杀 → 回显 PID。
+    let script = format!(
+        "Get-CimInstance Win32_Process | Where-Object {{ $_.CommandLine -like '*{needle}*' \
+         -and $_.ProcessId -ne {self_pid} -and $_.ProcessId -ne $PID }} \
+         | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $_.ProcessId }}"
+    );
+    let mut cmd = std::process::Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+    let out = run_with_timeout(cmd, std::time::Duration::from_secs(10))?;
+    if !out.status.success() {
+        return Err(format!(
+            "powershell 查询失败: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .filter_map(|t| t.parse::<u32>().ok())
+        .collect())
+}
+
+#[cfg(unix)]
+fn kill_matching_cmdline(needle: &str, self_pid: u32) -> Result<Vec<u32>, String> {
+    let entries = std::fs::read_dir("/proc").map_err(|e| format!("read /proc: {e}"))?;
+    let needle_bytes = needle.as_bytes();
+    let mut matched = Vec::new();
+    for e in entries.flatten() {
+        let fname = e.file_name(); // 先绑 OsString（rustc 1.98 的临时生命周期更紧）
+        let Some(name) = fname.to_str() else {
+            continue;
+        };
+        let Ok(pid) = name.parse::<u32>() else {
+            continue;
+        };
+        if pid == self_pid {
+            continue;
+        }
+        let Ok(cmd) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+            continue; // 内核线程/已退出/权限不足——跳过
+        };
+        if cmd.windows(needle_bytes.len()).any(|w| w == needle_bytes) {
+            matched.push(pid);
+        }
+    }
+    if matched.is_empty() {
+        return Ok(Vec::new());
+    }
+    let pids: Vec<String> = matched.iter().map(|p| p.to_string()).collect();
+    let out = std::process::Command::new("kill")
+        .arg("-9")
+        .args(&pids)
+        .output()
+        .map_err(|e| format!("spawn kill: {e}"))?;
+    if !out.status.success() {
+        // 逐个 kill 的部分失败（目标已退出等）不整体失败——回显实际杀到的。
+        tracing::warn!("[Exec] kill 批量退出非零（部分目标可能已自行退出）");
+    }
+    Ok(matched)
+}
+
+/// 带超时的同步子进程运行（stdout/stderr 捕获；超时强杀）。
+fn run_with_timeout(
+    mut cmd: std::process::Command,
+    timeout: std::time::Duration,
+) -> Result<std::process::Output, String> {
+    use std::io::Read;
+    use std::process::Stdio;
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| format!("spawn: {e}"))?;
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut stdout = Vec::new();
+                if let Some(mut s) = child.stdout.take() {
+                    let _ = s.read_to_end(&mut stdout);
+                }
+                let mut stderr = Vec::new();
+                if let Some(mut s) = child.stderr.take() {
+                    let _ = s.read_to_end(&mut stderr);
+                }
+                return Ok(std::process::Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
+            }
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("子进程超时被强杀".into());
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+            Err(e) => return Err(format!("wait: {e}")),
+        }
+    }
 }
 
 /// cluster_logs 反查：遍历设备目录找 `…_{task_id}` 执行记录，返回设备名。
