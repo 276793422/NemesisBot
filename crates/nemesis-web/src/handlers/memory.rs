@@ -512,6 +512,17 @@ impl MemoryHandler {
         let config_dir_clone = config_dir.to_path_buf();
         let home_owned = home.to_string();
 
+        // 单飞闸（横扫十期）：一键安装是全量流程（下载模型 + 写配置），
+        // 并发双跑互踩下载产物与配置。专用键与 install_model 的 per-tier
+        // 键共用同一把锁但互不冲突。
+        {
+            let mut locks = install_locks().lock().unwrap();
+            if locks.contains("env_setup") {
+                return Err("一键安装正在进行中，请等待完成".to_string());
+            }
+            locks.insert("env_setup".to_string());
+        }
+
         let result = tokio::task::spawn_blocking(move || {
             // 1. Check plugin
             let _plugin_path = detect_plugin_path().ok_or_else(|| {
@@ -577,8 +588,14 @@ impl MemoryHandler {
 
             Ok::<(), String>(())
         })
-        .await
-        .map_err(|e| format!("setup task panicked: {}", e))?;
+        .await;
+
+        // 先释放闸再处理 JoinError（panic 路径早退会把闸永久卡死）。
+        {
+            let mut locks = install_locks().lock().unwrap();
+            locks.remove("env_setup");
+        }
+        let result = result.map_err(|e| format!("setup task panicked: {}", e))?;
 
         result?;
 
@@ -1217,14 +1234,16 @@ impl MemoryHandler {
                 }
             }
         })
-        .await
-        .map_err(|e| format!("install task panicked: {}", e))?;
+        .await;
 
-        // Release lock
+        // Release lock——先释放再处理 JoinError（panic 路径 `?` 早退会把
+        // per-tier 闸永久卡死，横扫十期）。
         {
             let mut locks = install_locks().lock().unwrap();
             locks.remove(tier);
         }
+
+        let result = result.map_err(|e| format!("install task panicked: {}", e))?;
 
         result.map(Some)
     }

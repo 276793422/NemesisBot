@@ -645,6 +645,7 @@ impl AgentLoop {
             correlation_id: None,
             async_callback: None,
             tool_path_base: None,
+            approval_ref: None,
         };
         let trace_id = format!("subagent-{}", uuid::Uuid::new_v4().simple());
         // Swarm G13：detached 路径补合成 ConversationStart/End。run_llm_loop

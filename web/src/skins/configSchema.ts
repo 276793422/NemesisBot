@@ -96,6 +96,18 @@ const FIELDS: Record<string, Omit<SchemaField, 'key' | 'default'>> = {
   'memory.dreaming.cron': { label: '整理计划（cron）', type: 'string' },
   'memory.dreaming.top_k': { label: '整理检索条数', type: 'number', range: { min: 1, max: 64, step: 1 } },
   'mcp.enabled': { label: '启用 MCP', type: 'boolean' },
+  // ---- 用户习惯画像（自进化升级 B 线，2026-10-14）----
+  'user_profile.enabled': { label: '启用用户习惯画像', type: 'boolean' },
+  'user_profile.confidence_threshold': { label: '上榜置信度阈值', type: 'number', range: { min: 0, max: 1, step: 0.05 } },
+  'user_profile.max_entries': { label: '注入条目上限', type: 'number', range: { min: 1, max: 50, step: 1 } },
+  'user_profile.decay_days': { label: '衰减天数（两段）', type: 'number', range: { min: 1, max: 365, step: 1 } },
+  'user_profile.stats_scan_interval_secs': { label: '统计扫描间隔（秒）', type: 'number', range: { min: 60, max: 86400, step: 60 } },
+  'user_profile.reflect_every_sweeps': { label: '反思间隔（每 N 次扫描）', type: 'number', range: { min: 1, max: 200, step: 1 } },
+  // ---- connectors（行动连接器，2026-10-14 AI 原生行动代理）----
+  'connectors.enabled': { label: '启用行动连接器', type: 'boolean' },
+  'connectors.max_ops_per_hour': { label: '每小时操作上限（0=不限）', type: 'number', range: { min: 0, max: 10_000, step: 1 } },
+  'connectors.finance.max_order_qty': { label: '单笔下单数量上限（0=拒绝所有）', type: 'number', range: { min: 0, max: 1_000_000, step: 1 } },
+  'connectors.finance.max_orders_per_day': { label: '每日下单笔数上限（0=拒绝所有）', type: 'number', range: { min: 0, max: 10_000, step: 1 } },
 }
 
 /** 通道显示名（`channels.<id>.*` 分组标题用）。 */
@@ -148,7 +160,7 @@ const PAGE_TITLES: Record<string, string> = {
   agents: 'Agent 默认', executor: '执行体隔离', terminal: '内嵌终端', gateway: '网关',
   tools: '工具', heartbeat: '心跳', devices: '设备', logging: '日志', security: '安全',
   skills: '技能', forge: 'Forge', cluster: '集群', memory: '记忆', mcp: 'MCP',
-  channels: '通道',
+  channels: '通道', connectors: '行动连接器',
 }
 
 /** 编译期默认值按路径查找（drift 测试同时保证此查找不落空）。 */

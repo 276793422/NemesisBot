@@ -350,6 +350,8 @@ fn test_artifact_basic() {
         usage_count: 100,
         success_rate: 0.95,
         last_degraded_at: None,
+        deployed_at: None,
+        last_efficacy: None,
         consecutive_observing_rounds: 0,
     };
 
@@ -373,6 +375,8 @@ fn test_artifact_with_degradation() {
         usage_count: 50,
         success_rate: 0.7,
         last_degraded_at: Some("2024-01-01T00:00:00Z".to_string()),
+        deployed_at: None,
+        last_efficacy: None,
         consecutive_observing_rounds: 3,
     };
 
@@ -396,6 +400,8 @@ fn test_artifact_serialization() {
         usage_count: 10,
         success_rate: 0.8,
         last_degraded_at: None,
+        deployed_at: None,
+        last_efficacy: None,
         consecutive_observing_rounds: 0,
     };
 

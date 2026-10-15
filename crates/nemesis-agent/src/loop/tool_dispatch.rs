@@ -21,6 +21,24 @@ pub(crate) fn tail_char_safe(s: &str, budget: usize) -> &str {
     &s[start..]
 }
 
+/// denied_approval 凭条上下文（行动代理 P0）：connector 工具经
+/// `operation_override.receipt_ctx` 投影、JSON 形态存 metadata
+/// `connector_receipt_ctx`；dispatch 的 ABAC deny 分支代写凭条时反序列化。
+/// workspace 是工具装配时钉死的工作区根（凭条落 `<workspace>/data/receipts/`）。
+#[cfg(feature = "security")]
+#[derive(Debug, serde::Deserialize)]
+struct ConnectorReceiptCtx {
+    workspace: String,
+    connector: String,
+    op: String,
+    /// low | medium | high | critical
+    risk: String,
+    /// read | write | exec | network
+    class: String,
+    /// sha256(canonical args) 前 16 hex（工具侧已算好，args 原文不透传）。
+    args_digest: String,
+}
+
 /// 压测①a（2026-09-30 三设备）：dispatch 层 detached 工具闸。供给层
 /// （`effective_tool_defs`）只决定工具 defs 可见性——上游端点注入工具调用
 /// 时（NB-54 实证：请求 0 tools、响应却带 2 个 tool call），模型照样带出
@@ -217,6 +235,21 @@ impl AgentLoop {
             return err;
         }
 
+        // 行动代理 P0（2026-10-14）：connector 动态工具的操作投影。dispatch
+        // 嗅探工具的 operation_override——(a) 写类 slug 在 Plan 闸同拦（下方
+        // declared_write 第三臂），(b) 全量键写进 invocation metadata，管线层
+        // 读键裁决 op_type / 强审批（见 pipeline.rs execute），(c) 被拒时
+        // deny 分支按 receipt_ctx 代写 denied_approval 凭条（工具不运行，
+        // 凭条只能由 dispatch 代写）。
+        #[cfg(feature = "security")]
+        let op_override = self
+            .tools
+            .read()
+            .get(&tool_call.name)
+            .and_then(|t| t.operation_override(&tool_call.arguments));
+        #[cfg(not(feature = "security"))]
+        let op_override: Option<OperationOverride> = None;
+
         // F1 (devtool-upgrade 阶段 4): Plan 模式分发闸——供给侧
         // （build_tool_defs 白名单过滤）之外的第二道闸，与 F8 同一防御模型：
         // 陈旧 prompt cache / 子代理 full 档（其 defs 也被 loop 级过滤，但
@@ -233,7 +266,7 @@ impl AgentLoop {
         // 白名单工具排除在此外——它们的 plans/ 放行例外由第一臂承载）。
         #[cfg(feature = "security")]
         let declared_write = !Self::PLAN_MODE_WRITE_TOOLS.contains(&tool_call.name.as_str())
-            && matches!(
+            && (matches!(
                 nemesis_security::types::tool_to_operation(&tool_call.name),
                 Some(
                     nemesis_security::types::OperationType::FileWrite
@@ -244,7 +277,21 @@ impl AgentLoop {
                         | nemesis_security::types::OperationType::ProcessSpawn
                         | nemesis_security::types::OperationType::RegistryWrite
                 ),
-            );
+            )
+            // connector 投影臂（行动代理 P0）：op_override 的 op_type slug
+            // 落写类即拦——投影是管线裁决依据，Plan 闸必须同源消费（否则
+            // connector_invoke 的写类 op 在 Plan 模式漏过管线前的免费闸）。
+            // 未知 slug 不在此拦：管线层按静态表/fail-closed 裁决。
+            || op_override.as_ref().is_some_and(|ov| matches!(
+                ov.op_type.as_str(),
+                "file_write"
+                    | "file_delete"
+                    | "dir_create"
+                    | "dir_delete"
+                    | "process_exec"
+                    | "process_spawn"
+                    | "registry_write"
+            )));
         #[cfg(not(feature = "security"))]
         let declared_write = false;
         if *self.mode.read() == crate::types::AgentMode::Plan
@@ -271,6 +318,13 @@ impl AgentLoop {
         let mut script_advisory: Option<String> = None;
         #[cfg(not(feature = "security"))]
         let script_advisory: Option<String> = None;
+        // 行动代理 P0：审批引用（execute_tracked 在下方 security 块内回填；
+        // security 关 = None——凭条契约字段随安全基座同生同灭）。声明在块外
+        // 供 ctx 注入点使用（script_advisory 同款 cfg 双声明惯例）。
+        #[cfg(feature = "security")]
+        let mut approval_ref: Option<String> = None;
+        #[cfg(not(feature = "security"))]
+        let approval_ref: Option<String> = None;
         #[cfg(feature = "security")]
         {
             if let Some(ref security) = self.security.security_plugin {
@@ -355,10 +409,37 @@ impl AgentLoop {
                         let mut m = std::collections::HashMap::new();
                         m.insert("approval_chat_id".to_string(), context.chat_id.clone());
                         m.insert("approval_sender_id".to_string(), context.user.clone());
+                        // 行动代理 P0：connector 动态工具投影三键——管线层
+                        // 读键裁决 op_type（override_op_type）/ 强审批
+                        // （override_force_approval）；deny 分支读
+                        // connector_receipt_ctx 代写 denied_approval 凭条。
+                        if let Some(ref ov) = op_override {
+                            m.insert("override_op_type".to_string(), ov.op_type.clone());
+                            if let Some(fa) = ov
+                                .force_approval
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty())
+                            {
+                                m.insert("override_force_approval".to_string(), fa.to_string());
+                            }
+                            if let Some(rc) = ov
+                                .receipt_ctx
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty())
+                            {
+                                m.insert("connector_receipt_ctx".to_string(), rc.to_string());
+                            }
+                        }
                         m
                     },
                 };
-                let (allowed, deny) = security.execute(&invocation);
+                // 行动代理 P0：execute_tracked 带回审批引用（仅 ABAC
+                // RequireApproval 经人工批准时 Some = 审批卡 request_id），
+                // 出块后注入工具 ctx——connector 工具写进凭条 approval_ref。
+                let (allowed, deny, tracked_ref) = security.execute_tracked(&invocation);
+                approval_ref = tracked_ref;
                 if !allowed {
                     // F5: 结构化 deny 反馈——回灌带 layer/policy/suggestion
                     // 三要素（summary 是各层原文），并明示模型不要原样重试。
@@ -368,6 +449,46 @@ impl AgentLoop {
                         summary: "operation denied by security policy".to_string(),
                         suggestion: None,
                     });
+                    // 行动代理 P0：connector op 被拒（审批拒绝/策略拒绝）→
+                    // dispatch 代写 denied_approval 凭条。工具没运行——凭条
+                    // 只能在这里写；receipt_ctx 缺（非 connector 工具）= 零
+                    // 增项。凭条写失败不吞拦截结果（warn 留痕，拦截照常生效）。
+                    if let Some(ctx_raw) = invocation.metadata.get("connector_receipt_ctx") {
+                        match serde_json::from_str::<ConnectorReceiptCtx>(ctx_raw) {
+                            Ok(rc) => {
+                                let now = chrono::Utc::now();
+                                let receipt = nemesis_connectors::receipt::Receipt {
+                                    receipt_id: nemesis_connectors::receipt::new_receipt_id(
+                                        now.timestamp_millis(),
+                                    ),
+                                    ts: now.to_rfc3339(),
+                                    connector: rc.connector,
+                                    op: rc.op,
+                                    risk: rc.risk,
+                                    class: rc.class,
+                                    outcome: "denied_approval".to_string(),
+                                    args_digest: rc.args_digest,
+                                    summary: format!(
+                                        "操作被拒绝（{}: {}）",
+                                        info.layer, info.summary
+                                    ),
+                                    receipt_key: None,
+                                    receipt_value: None,
+                                    budget_consumed: None,
+                                    approval_ref: None,
+                                    session_key: Some(context.session_key.clone()),
+                                    undoable: false,
+                                };
+                                if let Err(e) = nemesis_connectors::receipt::append_receipt(
+                                    std::path::Path::new(&rc.workspace),
+                                    &receipt,
+                                ) {
+                                    warn!("[AgentLoop] denied_approval 回执写入失败: {e}");
+                                }
+                            }
+                            Err(e) => warn!("[AgentLoop] connector_receipt_ctx 解析失败: {e}"),
+                        }
+                    }
                     warn!(
                         "[AgentLoop] Security blocked tool {}: [{}:{}] {}",
                         tool_call.name, info.layer, info.policy, info.summary
@@ -418,12 +539,25 @@ impl AgentLoop {
                 // （fail-open 曾是裸奔面——guardian 挂了 CRITICAL 操作全放行），
                 // 按 `guardian_failure_policy` 分支：allow=显式放行 / ask=审批
                 // 直通车（fail-closed：无审批管理器=拒）/ 未配置=旧行为放行。
-                if security.guardian_should_review(&tool_call.name, &tool_call.arguments)
-                    && let Some(judge) = security.judge()
-                {
+                // 行动代理 P0：connector 投影 op 的危级静态表解析不出——有
+                // 投影时按 slug 计算（未知 slug fail-closed CRITICAL，与管线
+                // 同口径）；无投影走原静态路径（行为不变）。
+                let guardian_danger = match op_override.as_ref() {
+                    Some(ov) => nemesis_security::types::danger_level_of_slug(&ov.op_type),
+                    None => security.tool_danger_level(&tool_call.name),
+                };
+                let should_review = match op_override.as_ref() {
+                    Some(_) => security.guardian_should_review_with_danger(
+                        &tool_call.name,
+                        &tool_call.arguments,
+                        &guardian_danger,
+                    ),
+                    None => security.guardian_should_review(&tool_call.name, &tool_call.arguments),
+                };
+                if should_review && let Some(judge) = security.judge() {
                     let req = nemesis_security::guardian::JudgeRequest {
                         action: tool_call.name.clone(),
-                        risk_level: security.tool_danger_level(&tool_call.name),
+                        risk_level: guardian_danger.clone(),
                         command: tool_call.arguments.clone(),
                     };
                     match judge.judge(&req).await {
@@ -637,7 +771,12 @@ impl AgentLoop {
             let hooks = self.hooks.tool_hooks.read().snapshot();
             hooks.into_iter().filter(|h| h.scope().is_none()).collect()
         };
-        let ctx_arc = std::sync::Arc::new(context.clone());
+        // 行动代理 P0：审批引用随 ctx 下行（PLAN §6.2 契约字段）——仅
+        // 交互审批真实批准时 Some；connector 工具读它写进凭条。逐调用
+        // 克隆携带（RequestContext 惯例），非共享工具槽位——无跨调用串号。
+        let mut ctx_owned = (*context).clone();
+        ctx_owned.approval_ref = approval_ref;
+        let ctx_arc = std::sync::Arc::new(ctx_owned);
         let tools_snapshot = std::sync::Arc::new(self.tools.read().clone());
         let checkpoint_arc =
             std::sync::Arc::new(self.security.checkpoint_store.read().as_ref().cloned());

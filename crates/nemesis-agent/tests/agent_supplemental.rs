@@ -654,6 +654,7 @@ fn test_request_context_format_rpc_empty_correlation() {
         correlation_id: Some(String::new()),
         async_callback: None,
         tool_path_base: None,
+        approval_ref: None,
     };
     assert_eq!(ctx.format_rpc_message("Hello"), "Hello");
 }

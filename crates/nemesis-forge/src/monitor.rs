@@ -43,6 +43,9 @@ pub struct ActionOutcome {
     pub measured_at: String,
     /// Number of traces used for evaluation.
     pub sample_size: usize,
+    /// Traces before deployment (F 线实效快照 samples_before 数据源——
+    /// `sample_size` 是 after 侧样本数，两者不同源不可混填）。
+    pub sample_size_before: usize,
     /// Average rounds before deployment.
     pub rounds_before_avg: f64,
     /// Average rounds after deployment.
@@ -200,6 +203,18 @@ impl DeploymentMonitor {
             if let Some(outcome) = self.evaluate_artifact(artifact, &recent_traces) {
                 // Handle auto-deprecation
                 self.handle_verdict(artifact, &outcome);
+                // F 线：实效快照写回 registry（Dashboard/裁决数据源）。
+                let snapshot = nemesis_types::forge::EfficacySnapshot {
+                    measured_at: outcome.measured_at.clone(),
+                    success_before: outcome.success_before,
+                    success_after: outcome.success_after,
+                    samples_before: outcome.sample_size_before,
+                    samples_after: outcome.sample_size,
+                    verdict: outcome.verdict.clone(),
+                };
+                self.registry.update(&artifact.id, |a| {
+                    a.last_efficacy = Some(snapshot.clone());
+                });
                 outcomes.push(outcome);
             }
         }
@@ -216,7 +231,12 @@ impl DeploymentMonitor {
         artifact: &Artifact,
         traces: &[&ConversationTrace],
     ) -> Option<ActionOutcome> {
-        let deploy_time = artifact.created_at.as_str();
+        // F 线：显式 deployed_at 优先（SPO 迭代重部署独立实效窗）；
+        // None = 回落 created_at（旧行为零变化）。
+        let deploy_time = artifact
+            .deployed_at
+            .as_deref()
+            .unwrap_or(artifact.created_at.as_str());
 
         let mut before_traces: Vec<&ConversationTrace> = Vec::new();
         let mut after_traces: Vec<&ConversationTrace> = Vec::new();
@@ -243,6 +263,7 @@ impl DeploymentMonitor {
                 artifact_id: artifact.id.clone(),
                 measured_at: chrono::Local::now().to_rfc3339(),
                 sample_size: after_traces.len(),
+                sample_size_before: before_traces.len(),
                 rounds_before_avg: 0.0,
                 rounds_after_avg: 0.0,
                 success_before: 0.0,
@@ -275,6 +296,7 @@ impl DeploymentMonitor {
             artifact_id: artifact.id.clone(),
             measured_at: chrono::Local::now().to_rfc3339(),
             sample_size: after_traces.len(),
+            sample_size_before: before_traces.len(),
             rounds_before_avg: before_rounds,
             rounds_after_avg: after_rounds,
             success_before: before_success,

@@ -3847,6 +3847,7 @@ async fn test_handle_tool_call_with_security_block() {
         dlp_low_confidence_action: "log".to_string(),
         dlp_inbound_action: "log".to_string(),
         ssrf_enabled: false,
+        ssrf_allowed_hosts: vec![],
         audit_chain_enabled: false,
         audit_chain_path: None,
         audit_log_enabled: false,
