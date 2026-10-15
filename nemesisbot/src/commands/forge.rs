@@ -16,7 +16,12 @@ pub enum ForgeAction {
     /// Disable forge module
     Disable,
     /// Trigger manual reflection
-    Reflect,
+    Reflect {
+        /// 当次强制跑 auto_skill 技能蒸馏（覆盖 config.forge.json 的
+        /// artifacts.auto_skill；缺省按该配置开关）
+        #[arg(long)]
+        auto_skill: bool,
+    },
     /// List forge artifacts
     List {
         #[arg(long, default_value = "all")]
@@ -379,6 +384,7 @@ fn cmd_reflect(
     home: &std::path::Path,
     cfg_path: &std::path::Path,
     forge_dir: &std::path::Path,
+    auto_skill_flag: bool,
 ) -> Result<()> {
     // Check if forge is enabled in main config
     if cfg_path.exists()
@@ -423,13 +429,14 @@ fn cmd_reflect(
     println!();
 
     // Create a real Forge instance（forge 配置读 workspace/config/config.forge.json，
-    // 与 WSAPI load_forge_config 同源——CLI 反思尊重用户 artifacts.auto_skill 开关）
+    // 与 WSAPI load_forge_config 同源——CLI 反思尊重用户 artifacts.auto_skill 开关；
+    // --auto-skill flag 是当次意志，显式给时覆盖配置（与 model add --stream 惯例同款）。
     let workspace = forge_dir.parent().unwrap_or(forge_dir).to_path_buf();
     let forge_cfg = nemesis_forge::config::load_forge_config(
         &workspace.join("config").join("config.forge.json"),
     );
     let use_llm = forge_cfg.reflection.use_llm;
-    let auto_skill = forge_cfg.artifacts.auto_skill;
+    let auto_skill = auto_skill_flag || forge_cfg.artifacts.auto_skill;
     let exp_limit = forge_cfg.collection.max_experiences.max(1);
     let mut forge = nemesis_forge::forge::Forge::new(forge_cfg, workspace.clone());
     // F-D3 同款：注册表先从盘回载再消费——Registry::new 是空内存注册表，
@@ -944,7 +951,9 @@ pub fn run(action: ForgeAction, local: bool) -> Result<()> {
         ForgeAction::Status => cmd_status(&home, &cfg_path, &forge_dir)?,
         ForgeAction::Enable => cmd_enable(&cfg_path, &forge_dir)?,
         ForgeAction::Disable => cmd_disable(&cfg_path)?,
-        ForgeAction::Reflect => cmd_reflect(&home, &cfg_path, &forge_dir)?,
+        ForgeAction::Reflect {
+            auto_skill: auto_skill_flag,
+        } => cmd_reflect(&home, &cfg_path, &forge_dir, auto_skill_flag)?,
         ForgeAction::List { r#type } => cmd_list(&forge_dir, &r#type)?,
         ForgeAction::Evaluate { id } => cmd_evaluate(&forge_dir, &id)?,
         ForgeAction::Export { id, output, all } => {

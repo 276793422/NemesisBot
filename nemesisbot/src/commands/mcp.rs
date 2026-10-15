@@ -13,9 +13,8 @@ pub enum McpAction {
     List,
     /// Add a new MCP server (stdio: --command；HTTP: --url [+ --header])
     ///
-    /// HTTP 服务直连示例（无需桥接脚本）：
-    ///   nemesisbot mcp add -n pet --url http://127.0.0.1:8808/mcp \
-    ///     -H "Authorization: vault:pet-token"
+    /// HTTP 服务直连示例（无需桥接脚本，一行复制即可执行）：
+    ///   nemesisbot mcp add -n pet --url http://127.0.0.1:8808/mcp -H "Authorization: vault:pet-token"
     ///
     /// header 值支持 vault:/env:/yaml: 凭据引用（整值前缀，每次连接现查；
     /// 不支持 'Bearer vault:<别名>' 内嵌写法）。vault 值存完整头值
@@ -297,6 +296,19 @@ fn validate_header_line(line: &str) -> Result<()> {
                     prefix
                 );
             }
+            // 2026-10-15 第五轮复查：引用名带首尾空格（如 "vault: pet-token"）
+            // 运行期按原样解析（resolve_vault_reference / std::env::var 均不
+            // trim），必然解析失败 → WARN 跳过头 → 401。add 时就挡住，
+            // 省一轮学费；引用名本身非秘密，可回显。
+            if rest.trim() != rest {
+                anyhow::bail!(
+                    "header 值 {} 引用名带首尾空格（运行期按原样解析，必失败）——\
+                     写作 {}{}（冒号后不带空格）",
+                    what,
+                    prefix,
+                    rest.trim()
+                );
+            }
             break;
         }
     }
@@ -354,6 +366,22 @@ fn embedded_ref_headers(headers: &[String]) -> Vec<String> {
 /// 敏感语义，外加旧手写条目兼容（无 transport_type、无 command、有 url）。
 /// 判定为 HTTP 才走直连测试分支；其余形态按 stdio 走 PATH 探测——与
 /// 运行时分派一致，避免「test 一套口径、连接另一套口径」的断层。
+/// `mcp list` 的命令显示值：与分派真相源的 stdio 回落同款（`command`
+/// 空而 `url` 非空时显示 `url`——Dashboard stdio 约定命令存 url 字段），
+/// 两者皆空回 "?"。
+fn display_command_for(server: &serde_json::Value) -> String {
+    let command = server.get("command").and_then(|v| v.as_str()).unwrap_or("");
+    if !command.is_empty() {
+        return command.to_string();
+    }
+    let url = server.get("url").and_then(|v| v.as_str()).unwrap_or("");
+    if !url.is_empty() {
+        url.to_string()
+    } else {
+        "?".to_string()
+    }
+}
+
 fn server_entry_is_http(server: &serde_json::Value) -> bool {
     let transport_type = server
         .get("transport_type")
@@ -363,7 +391,13 @@ fn server_entry_is_http(server: &serde_json::Value) -> bool {
     matches!(
         transport_type,
         "http" | "streamable_http" | "streamable-http"
-    ) || (transport_type.is_empty() && server.get("command").is_none() && !url.is_empty())
+    ) || (transport_type.is_empty()
+        && !url.is_empty()
+        && server
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .is_empty())
 }
 
 /// Sync the master MCP switch in the home-root config.json.
@@ -437,10 +471,7 @@ fn cmd_list(mcp_cfg_path: &std::path::Path) -> Result<()> {
             } else {
                 for server in servers {
                     let name = server.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                    let command = server
-                        .get("command")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
+                    let command = display_command_for(server);
                     let args = server
                         .get("args")
                         .and_then(|v| v.as_array())
@@ -464,7 +495,23 @@ fn cmd_list(mcp_cfg_path: &std::path::Path) -> Result<()> {
                         .unwrap_or(0);
 
                     println!("  {}", name);
-                    println!("    Command: {} {}", command, args);
+                    if server_entry_is_http(server) {
+                        // W1（2026-10-15）：HTTP 条目显示 URL——无 command 键，
+                        // 走旧分支会打出误导性的 "Command: ?"。
+                        let url = server.get("url").and_then(|v| v.as_str()).unwrap_or("?");
+                        println!("    Transport: HTTP");
+                        println!("    URL: {}", url);
+                        let header_count = server
+                            .get("headers")
+                            .and_then(|v| v.as_array())
+                            .map(|a| a.len())
+                            .unwrap_or(0);
+                        if header_count > 0 {
+                            println!("    Headers: {} line(s)", header_count);
+                        }
+                    } else {
+                        println!("    Command: {} {}", command, args);
+                    }
                     if timeout > 0 {
                         println!("    Timeout: {} seconds", timeout);
                     }
@@ -663,10 +710,9 @@ async fn cmd_test(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()> {
         println!("  Transport: HTTP");
         println!("  URL: {}", url);
     } else {
-        let command = server
-            .get("command")
-            .and_then(|v| v.as_str())
-            .unwrap_or("?");
+        // 与分派真相源 stdio 回落同源（R8）：web 形态 stdio 条目命令存
+        // url 字段——直读 command 键会探测 which("?") 误导跳过连接测试。
+        let command = display_command_for(&server);
         println!("  Command: {}", command);
 
         // Check if command exists
