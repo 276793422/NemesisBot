@@ -1309,7 +1309,13 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                         );
                         // P1：error 回调的文本在 error 字段——注入合并文本，
                         // 父任务 LLM 才能看到真实失败原因。
-                        task_list_for_cb.inject_callback(&parent_task_id, fail_text);
+                        if let Err(e) = task_list_for_cb.inject_callback(&parent_task_id, fail_text)
+                        {
+                            error!(
+                                "[Gateway] inject_callback disk persist failed for parent task {}: {}",
+                                parent_task_id, e
+                            );
+                        }
                         if let Err(e) = work_queue_for_cb.submit(parent_task_id) {
                             warn!("[Gateway] Failed to submit resumed task to work queue: {}", e);
                         }

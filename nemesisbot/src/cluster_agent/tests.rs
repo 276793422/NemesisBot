@@ -704,7 +704,9 @@ mod loop_e2e {
         assert!(saved.conversation.is_some(), "conversation 快照必须已保存");
 
         // 模拟远端回调：inject_callback → Pending → 重新入队 → resume 路径。
-        rig.task_list.inject_callback("t2", "remote-node answer");
+        rig.task_list
+            .inject_callback("t2", "remote-node answer")
+            .expect("inject_callback should succeed");
         rig.work_queue.submit("t2".to_string()).unwrap();
 
         // resume_execution 后不再 async → complete（任务被移除）。
@@ -747,7 +749,8 @@ mod loop_e2e {
         // 回调本身又带 __CLUSTER_ASYNC__ → replace_tool_result 后 marker 仍在
         // 会话里 → resume 走「二次异步」分支（save_async_state，不完成）。
         rig.task_list
-            .inject_callback("t3", "__CLUSTER_ASYNC__{\"task_id\":\"child-3\"}");
+            .inject_callback("t3", "__CLUSTER_ASYNC__{\"task_id\":\"child-3\"}")
+            .expect("inject_callback should succeed");
         rig.work_queue.submit("t3".to_string()).unwrap();
 
         wait_until(10_000, || {
@@ -1427,7 +1430,8 @@ mod wave_b {
 
         // 第二段：纯文本回调 → replace_tool_result 抹掉 marker → 同步完成。
         rig.task_list
-            .inject_callback("t-wb-resume-obs", "plain remote answer");
+            .inject_callback("t-wb-resume-obs", "plain remote answer")
+            .expect("inject_callback should succeed");
         rig.work_queue
             .submit("t-wb-resume-obs".to_string())
             .unwrap();
@@ -2489,7 +2493,8 @@ mod wave_d {
         .await;
         // 注入回调 → 重新入队 → resume 轮 LLM 挂起。
         rig.task_list
-            .inject_callback("t-d-res-cancel", "remote answer");
+            .inject_callback("t-d-res-cancel", "remote answer")
+            .expect("inject_callback should succeed");
         rig.work_queue.submit("t-d-res-cancel".to_string()).unwrap();
         d_wait_until(10_000, || gate.entered.load(Ordering::SeqCst)).await;
         assert!(matches!(
@@ -2607,7 +2612,9 @@ mod wave_d {
             )
         })
         .await;
-        rig.task_list.inject_callback("t-d-res-esc", "answer");
+        rig.task_list
+            .inject_callback("t-d-res-esc", "answer")
+            .expect("inject_callback should succeed");
         rig.work_queue.submit("t-d-res-esc".to_string()).unwrap();
         d_wait_until(10_000, || rig.task_list.get_task("t-d-res-esc").is_none()).await;
         rig.stop().await;
@@ -2653,7 +2660,9 @@ mod wave_d {
             )
         })
         .await;
-        rig.task_list.inject_callback("t-d-res-empty", "answer");
+        rig.task_list
+            .inject_callback("t-d-res-empty", "answer")
+            .expect("inject_callback should succeed");
         rig.work_queue.submit("t-d-res-empty".to_string()).unwrap();
         d_wait_until(10_000, || rig.task_list.get_task("t-d-res-empty").is_none()).await;
         rig.stop().await;

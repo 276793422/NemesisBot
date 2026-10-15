@@ -1121,3 +1121,180 @@ fn test_s4_cleanup_completed_deletes_old_completed_task() {
     assert!(store.get("s4-old-done").is_err(), "3h-old task deleted");
     assert!(store.get("s4-fresh-done").is_ok(), "fresh task kept");
 }
+
+// ---- 整改回归（2026-10-15 可靠性加固计划 §四）----------------------------
+
+fn make_store_task(id: &str, status: TaskStatus, created_at: String) -> Task {
+    Task {
+        id: id.to_string(),
+        status,
+        action: "action".to_string(),
+        peer_id: String::new(),
+        payload: serde_json::json!({}),
+        result: None,
+        original_channel: "rpc".to_string(),
+        original_chat_id: "ch".to_string(),
+        created_at,
+        completed_at: None,
+    }
+}
+
+/// NB-CODE-003 家族：InMemoryTaskStore::create 并发同 id 恰一成功（Entry 原子）。
+#[test]
+fn test_concurrent_create_same_id_only_one_succeeds() {
+    let store = Arc::new(InMemoryTaskStore::new());
+    let template = make_store_task(
+        "dup-1",
+        TaskStatus::Pending,
+        chrono::Local::now().to_rfc3339(),
+    );
+
+    let handles: Vec<_> = (0..8)
+        .map(|_| {
+            let store = store.clone();
+            let task = template.clone();
+            std::thread::spawn(move || store.create(task))
+        })
+        .collect();
+    let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+    let ok = results.iter().filter(|r| r.is_ok()).count();
+    assert_eq!(ok, 1, "并发 create 同 id 必须恰一成功: {results:?}");
+}
+
+/// NB-CODE-001：并发 assign 恰一线程成功（update_result_if_status 单临界区
+/// 原子），未抢到的线程拿到 Ok(false) 而不是覆盖状态。
+#[test]
+fn test_concurrent_assign_only_one_succeeds() {
+    let tm = Arc::new(TaskManager::new());
+    let task = tm.create_task("ping", serde_json::json!({}), "rpc", "ch");
+
+    let handles: Vec<_> = (0..8)
+        .map(|i| {
+            let tm = tm.clone();
+            let task_id = task.id.clone();
+            std::thread::spawn(move || tm.assign_task(&task_id, &format!("node-{i}")))
+        })
+        .collect();
+    let wins: usize = handles
+        .into_iter()
+        .map(|h| usize::from(h.join().unwrap()))
+        .sum();
+
+    assert_eq!(wins, 1, "并发 assign 必须恰一成功");
+    let updated = tm.get_task(&task.id).unwrap();
+    assert_eq!(updated.status, TaskStatus::Running);
+}
+
+/// NB-CODE-002：重复 settle 同终态幂等成功（首个结果保留、callback 恰一次）；
+/// 冲突终态（Completed 后再 fail）拒绝且结果不被覆盖。
+#[test]
+fn test_settle_idempotent_and_conflict_refusal() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let count_clone = count.clone();
+    let tm = TaskManager::with_callback(Box::new(move |_t: &Task| {
+        count_clone.fetch_add(1, Ordering::SeqCst);
+    }));
+
+    let task = tm.create_task("action", serde_json::json!({}), "rpc", "ch");
+
+    assert!(tm.complete_task(&task.id, serde_json::json!("first")));
+    // 迟到的重复结果：幂等成功，但不覆盖、不重复 fire callback。
+    assert!(tm.complete_task(&task.id, serde_json::json!("second")));
+    // 冲突终态：已完成后再 fail → 拒绝。
+    assert!(!tm.fail_task(&task.id, "late failure"));
+
+    let updated = tm.get_task(&task.id).unwrap();
+    assert_eq!(updated.status, TaskStatus::Completed);
+    assert_eq!(updated.result, Some(serde_json::json!("first")));
+    assert_eq!(count.load(Ordering::SeqCst), 1, "callback 不得重复 fire");
+}
+
+/// 终态语义：中间态转移（Pending→Running）不写 completed_at；状态不匹配
+/// 返回 Ok(false) 且不动；终态转移写 completed_at。
+#[test]
+fn test_completed_at_only_written_on_terminal() {
+    let store: Arc<dyn TaskStore> = Arc::new(InMemoryTaskStore::new());
+    store
+        .create(make_store_task(
+            "t-cat",
+            TaskStatus::Pending,
+            chrono::Local::now().to_rfc3339(),
+        ))
+        .unwrap();
+
+    // 中间态：Pending → Running，不写 completed_at。
+    assert!(
+        store
+            .update_result_if_status("t-cat", &[TaskStatus::Pending], TaskStatus::Running, None)
+            .unwrap()
+    );
+    let running = store.get("t-cat").unwrap();
+    assert_eq!(running.status, TaskStatus::Running);
+    assert!(running.completed_at.is_none());
+
+    // 状态不匹配：已 Running，期望 Pending → Ok(false) 且不动。
+    assert!(
+        !store
+            .update_result_if_status("t-cat", &[TaskStatus::Pending], TaskStatus::Failed, None)
+            .unwrap()
+    );
+    assert_eq!(store.get("t-cat").unwrap().status, TaskStatus::Running);
+
+    // 终态：Running → Completed → completed_at 落值。
+    assert!(
+        store
+            .update_result_if_status(
+                "t-cat",
+                &[TaskStatus::Running],
+                TaskStatus::Completed,
+                Some(serde_json::json!("done"))
+            )
+            .unwrap()
+    );
+    let done = store.get("t-cat").unwrap();
+    assert_eq!(done.status, TaskStatus::Completed);
+    assert!(done.completed_at.is_some());
+}
+
+/// NB-CODE-006：卡死 Running 与 Pending 同口径——超安全网 → Failed(timeout)
+/// + completed_at + fire callback；新近 Running 不受影响。
+#[test]
+fn test_cleanup_running_timeout() {
+    let store: Arc<dyn TaskStore> = Arc::new(InMemoryTaskStore::new());
+    let callback_count = Arc::new(AtomicUsize::new(0));
+    let callback_count_clone = callback_count.clone();
+    let on_complete: Option<Arc<OnCompleteCallback>> =
+        Some(Arc::new(Box::new(move |_task: &Task| {
+            callback_count_clone.fetch_add(1, Ordering::SeqCst);
+        })));
+
+    let old_time = (chrono::Local::now() - chrono::Duration::hours(25)).to_rfc3339();
+    store
+        .create(make_store_task(
+            "old-running",
+            TaskStatus::Running,
+            old_time,
+        ))
+        .unwrap();
+    store
+        .create(make_store_task(
+            "recent-running",
+            TaskStatus::Running,
+            chrono::Local::now().to_rfc3339(),
+        ))
+        .unwrap();
+
+    cleanup_completed(&store, &on_complete, &test_pending_timeout());
+
+    let old = store.get("old-running").unwrap();
+    assert_eq!(old.status, TaskStatus::Failed);
+    let err = old.result.unwrap()["error"].as_str().unwrap().to_string();
+    assert!(err.contains("timed out in Running"), "got: {err}");
+    assert!(old.completed_at.is_some(), "终态超时必须写 completed_at");
+
+    let recent = store.get("recent-running").unwrap();
+    assert_eq!(recent.status, TaskStatus::Running);
+
+    assert_eq!(callback_count.load(Ordering::SeqCst), 1);
+}

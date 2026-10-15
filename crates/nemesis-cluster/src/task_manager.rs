@@ -32,12 +32,39 @@ pub trait TaskStore: Send + Sync {
     fn get(&self, task_id: &str) -> Result<Task, String>;
 
     /// Update a task's result and status.
+    ///
+    /// Terminal target states (Completed/Failed/Cancelled) also stamp
+    /// `completed_at`; intermediate states must not carry a completion
+    /// timestamp (NB-CODE-005).
     fn update_result(
         &self,
         task_id: &str,
         status: TaskStatus,
         result: Option<serde_json::Value>,
     ) -> Result<(), String>;
+
+    /// Conditionally update a task only if its current status is in `expected`.
+    ///
+    /// Returns `Ok(true)` when the transition happened, `Ok(false)` when the
+    /// task exists but its status does not match `expected` (no-op), and
+    /// `Err` when the task is not found. The default implementation is a
+    /// non-atomic get-check-update fallback — store implementations with a
+    /// single-critical-section primitive (e.g. `DashMap::get_mut`) should
+    /// override it (NB-CODE-001/002).
+    fn update_result_if_status(
+        &self,
+        task_id: &str,
+        expected: &[TaskStatus],
+        status: TaskStatus,
+        result: Option<serde_json::Value>,
+    ) -> Result<bool, String> {
+        let task = self.get(task_id)?;
+        if !expected.contains(&task.status) {
+            return Ok(false);
+        }
+        self.update_result(task_id, status, result)?;
+        Ok(true)
+    }
 
     /// Delete a task by ID.
     fn delete(&self, task_id: &str) -> Result<(), String>;
@@ -52,6 +79,18 @@ pub trait TaskStore: Send + Sync {
 // ---------------------------------------------------------------------------
 // InMemoryTaskStore (Phase 1 implementation)
 // ---------------------------------------------------------------------------
+
+/// Terminal states of the TaskManager lifecycle（Completed/Failed/Cancelled）。
+///
+/// 本地辅助而非 `TaskStatus` 方法：types crate 保持纯数据枚举，终态集合是
+/// TaskManager 生命周期的语义（ClusterTaskList 另有一套含 WaitingRemote 的
+/// 终态过滤，两处口径独立演化）。
+fn is_terminal_status(status: &TaskStatus) -> bool {
+    matches!(
+        status,
+        TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled
+    )
+}
 
 /// In-memory task store backed by a DashMap.
 ///
@@ -77,11 +116,16 @@ impl Default for InMemoryTaskStore {
 
 impl TaskStore for InMemoryTaskStore {
     fn create(&self, task: Task) -> Result<(), String> {
-        if self.tasks.contains_key(&task.id) {
-            return Err(format!("task already exists: {}", task.id));
+        // DashMap entry API：检查与插入同一临界区（contains_key+insert 两步
+        // 之间存在并发窗口，NB-CODE-004）。
+        use dashmap::mapref::entry::Entry;
+        match self.tasks.entry(task.id.clone()) {
+            Entry::Occupied(_) => Err(format!("task already exists: {}", task.id)),
+            Entry::Vacant(v) => {
+                v.insert(task);
+                Ok(())
+            }
         }
-        self.tasks.insert(task.id.clone(), task);
-        Ok(())
     }
 
     fn get(&self, task_id: &str) -> Result<Task, String> {
@@ -103,8 +147,35 @@ impl TaskStore for InMemoryTaskStore {
             .ok_or_else(|| format!("task not found: {}", task_id))?;
         task.status = status;
         task.result = result;
-        task.completed_at = Some(chrono::Local::now().to_rfc3339());
+        // 仅终态写完结时间：中间态任务带 completed_at 是语义谎言
+        // （NB-CODE-005），且会误导 cleanup 的 2h 清理分支。
+        if is_terminal_status(&status) {
+            task.completed_at = Some(chrono::Local::now().to_rfc3339());
+        }
         Ok(())
+    }
+
+    fn update_result_if_status(
+        &self,
+        task_id: &str,
+        expected: &[TaskStatus],
+        status: TaskStatus,
+        result: Option<serde_json::Value>,
+    ) -> Result<bool, String> {
+        // 单临界区原子检查-转移：并发 assign/settle 恰一方成功（NB-CODE-001/002）。
+        let mut entry = self
+            .tasks
+            .get_mut(task_id)
+            .ok_or_else(|| format!("task not found: {}", task_id))?;
+        if !expected.contains(&entry.status) {
+            return Ok(false);
+        }
+        entry.status = status;
+        entry.result = result;
+        if is_terminal_status(&entry.status) {
+            entry.completed_at = Some(chrono::Local::now().to_rfc3339());
+        }
+        Ok(true)
     }
 
     fn delete(&self, task_id: &str) -> Result<(), String> {
@@ -320,63 +391,116 @@ impl TaskManager {
             created_at: chrono::Local::now().to_rfc3339(),
             completed_at: None,
         };
-        let _ = self.store.create(task.clone());
+        // store.create 失败（uuid 碰撞面≈0，但静默分叉内存态不可接受，
+        // NB-CODE-003）——error 日志留痕后继续返回任务。
+        if let Err(e) = self.store.create(task.clone()) {
+            tracing::error!(
+                "[TaskManager] store.create failed for task {} (action={}): {e}",
+                task.id,
+                task.action
+            );
+        }
         task
     }
 
     /// Assign a task to a node, transitioning it to Running.
     /// Returns `false` if the task was not found or not in Pending state.
+    ///
+    /// 原子检查-转移（NB-CODE-001）：get 检查 + update 两步之间存在并发
+    /// 窗口，双认领会双 Running；`update_result_if_status` 单临界区裁决。
     pub fn assign_task(&self, task_id: &str, node_id: &str) -> bool {
-        match self.store.get(task_id) {
-            Ok(task) if task.status == TaskStatus::Pending => {
-                let _ = self
-                    .store
-                    .update_result(task_id, TaskStatus::Running, task.result);
+        match self.store.update_result_if_status(
+            task_id,
+            &[TaskStatus::Pending],
+            TaskStatus::Running,
+            None,
+        ) {
+            Ok(true) => {
                 crate::logger::log_task("assigned", task_id, node_id);
                 true
             }
-            _ => false,
+            Ok(false) => {
+                tracing::warn!(
+                    "[TaskManager] assign {task_id}: task not in Pending state (already claimed?)"
+                );
+                false
+            }
+            Err(e) => {
+                tracing::warn!("[TaskManager] assign {task_id}: {e}");
+                false
+            }
         }
     }
 
     /// Complete a task with a result.
-    /// Returns `false` if the task was not found.
+    /// Returns `false` if the task was not found, or the task is in a
+    /// conflicting state.
+    ///
+    /// 终态幂等（NB-CODE-002）：重复回调（F2 送达重试/B 端重发）对已 Completed
+    /// 的任务是幂等成功——结果保留首次值、callback 不重复 fire。
     pub fn complete_task(&self, task_id: &str, result: serde_json::Value) -> bool {
-        if self
-            .store
-            .update_result(task_id, TaskStatus::Completed, Some(result))
-            .is_err()
-        {
-            return false;
-        }
-
-        if let Ok(task) = self.store.get(task_id) {
-            self.fire_callback(&task);
-        }
-
-        true
+        self.settle_task(task_id, TaskStatus::Completed, Some(result))
     }
 
     /// Fail a task with an error message.
-    /// Returns `false` if the task was not found.
+    /// Returns `false` if the task was not found, or the task is in a
+    /// conflicting state.
     pub fn fail_task(&self, task_id: &str, error: &str) -> bool {
-        if self
-            .store
-            .update_result(
-                task_id,
-                TaskStatus::Failed,
-                Some(serde_json::json!({ "error": error })),
-            )
-            .is_err()
-        {
-            return false;
-        }
+        self.settle_task(
+            task_id,
+            TaskStatus::Failed,
+            Some(serde_json::json!({ "error": error })),
+        )
+    }
 
-        if let Ok(task) = self.store.get(task_id) {
-            self.fire_callback(&task);
+    /// Settle a task into a terminal state, idempotently.
+    ///
+    /// - 首次转移（Pending/Running → 终态）：写结果 + completed_at + fire callback。
+    /// - 重复 settle 同一终态：幂等成功（返回 true），结果 first-write-wins，
+    ///   callback 不重复 fire——重复回调不产生重复续行。
+    /// - 冲突（对 Failed 再 complete 等）：返回 false。
+    fn settle_task(
+        &self,
+        task_id: &str,
+        status: TaskStatus,
+        result: Option<serde_json::Value>,
+    ) -> bool {
+        match self.store.update_result_if_status(
+            task_id,
+            &[TaskStatus::Pending, TaskStatus::Running],
+            status,
+            result,
+        ) {
+            Err(e) => {
+                tracing::debug!("[TaskManager] settle {task_id}: {e}");
+                false
+            }
+            Ok(true) => {
+                if let Ok(task) = self.store.get(task_id) {
+                    self.fire_callback(&task);
+                }
+                true
+            }
+            Ok(false) => match self.store.get(task_id) {
+                // 已是同一终态：幂等成功（本次调用未做任何变更）。
+                Ok(t) if t.status == status => {
+                    tracing::info!(
+                        "[TaskManager] task {task_id} already {:?}; idempotent no-op (first result kept)",
+                        status
+                    );
+                    true
+                }
+                Ok(t) => {
+                    tracing::warn!(
+                        "[TaskManager] task {task_id} in state {:?}, refusing settle to {:?}",
+                        t.status,
+                        status
+                    );
+                    false
+                }
+                Err(_) => false,
+            },
         }
-
-        true
     }
 
     /// Get a task by ID.
@@ -503,40 +627,50 @@ fn cleanup_completed(
         }
     }
 
-    // H4: Time out pending tasks past the safety-net timeout
-    // （G4: 每 tick 读一次当前配置，set_pending_timeout 即时生效）
+    // H4: Time out pending/running tasks past the safety-net timeout
+    // （G4: 每 tick 读一次当前配置，set_pending_timeout 即时生效）。
+    // NB-CODE-006：卡死的 Running 与 Pending 同口径回收（超出同一安全网
+    // 即判死 + fire callback），不再永久滞留。判定用 created_at：A 端
+    // create→assign 同函数连续调用，时间差可忽略；不为此新增 updated_at
+    // 字段（Task 字面量构造散布 40+ 处，波及面不成比例）。
     let pending_limit = *pending_timeout.read();
-    let pending_tasks = store.list_by_status(TaskStatus::Pending);
-    for task in pending_tasks {
-        if let Ok(created) = chrono::DateTime::parse_from_rfc3339(&task.created_at) {
-            let created_utc = created.with_timezone(&chrono::Local);
-            if chrono::Local::now() - created_utc > pending_limit {
-                // Mark as failed with timeout error
-                let _ = store.update_result(
-                    &task.id,
-                    TaskStatus::Failed,
-                    Some(serde_json::json!({
-                        "error": format!(
-                            "task timed out: no response received within {} seconds",
-                            pending_limit.num_seconds()
-                        )
-                    })),
-                );
+    for status in [TaskStatus::Pending, TaskStatus::Running] {
+        let tasks = store.list_by_status(status);
+        for task in tasks {
+            if let Ok(created) = chrono::DateTime::parse_from_rfc3339(&task.created_at) {
+                let created_utc = created.with_timezone(&chrono::Local);
+                if chrono::Local::now() - created_utc > pending_limit {
+                    // Mark as failed with timeout error（条件转移防与并发
+                    // settle 竞态覆盖已定终态）。
+                    let _ = store.update_result_if_status(
+                        &task.id,
+                        &[status],
+                        TaskStatus::Failed,
+                        Some(serde_json::json!({
+                            "error": format!(
+                                "task timed out in {:?} state: no response received within {} seconds",
+                                status,
+                                pending_limit.num_seconds()
+                            )
+                        })),
+                    );
 
-                crate::logger::log_task(
-                    "timeout",
-                    &task.id,
-                    &format!(
-                        "age={}s",
-                        (chrono::Local::now() - created_utc).num_seconds()
-                    ),
-                );
+                    crate::logger::log_task(
+                        "timeout",
+                        &task.id,
+                        &format!(
+                            "state={:?} age={}s",
+                            status,
+                            (chrono::Local::now() - created_utc).num_seconds()
+                        ),
+                    );
 
-                // Fire callback if set
-                if let Some(cb) = on_complete
-                    && let Ok(updated_task) = store.get(&task.id)
-                {
-                    cb(&updated_task);
+                    // Fire callback if set
+                    if let Some(cb) = on_complete
+                        && let Ok(updated_task) = store.get(&task.id)
+                    {
+                        cb(&updated_task);
+                    }
                 }
             }
         }
