@@ -131,6 +131,7 @@ fn make_placed_with_changeset(
             executable: false,
         }],
         deletions: vec![],
+        skipped: Vec::new(),
     };
     write_changeset(
         &placed.join("changeset"),
@@ -480,6 +481,7 @@ fn ingest_registers_and_merge_converges() {
             executable: false,
         }],
         deletions: vec![],
+        skipped: Vec::new(),
     };
     write_changeset(
         &files.join("changeset"),
@@ -590,6 +592,7 @@ fn place_ts_dir(
             executable: false,
         }],
         deletions: vec![],
+        skipped: Vec::new(),
     };
     write_changeset(
         &placed.join("changeset"),

@@ -6,10 +6,13 @@ import { on as sseOn } from './useSSE'
 // ProjectPanel（项目卡片行）共享同一份在途表，任何视图挂载与否不影响数据面。
 //
 // 数据通道：
-// - SSE board.plan_started → 立条目（实时起点）；
-// - SSE board.plan_ready / board.plan_failed → 撤条目（plan_id 匹配闸）；
-// - issue.list 的 planning 投影（{elapsed_secs, attempt}）→ reconcile()
-//   回填/撤下兜底（页面加载、断线期间错过 SSE、SSE 丢失）。
+// - SSE board.plan_started → 立条目（实时起点，phase=planning）；
+// - SSE board.plan_ready → auto_confirm 链翻 phase=dispatching（发车派发
+//   在途，子单已可见）；无 auto_confirm → 撤条目（等人工确认，无在途）；
+// - SSE board.plan_failed → 撤条目（plan_id 匹配闸）；
+// - issue.list 的 planning 投影（{elapsed_secs, attempt, phase}）→
+//   reconcile() 回填/校正 phase/撤下兜底（页面加载、断线期间错过 SSE、
+//   SSE 丢失；dispatching 条目在拆解链退出、投影消失时由这里撤下）。
 //
 // plan_id 匹配闸（superseded 防误撤）：A 计划失败 → 立刻发起第 2 次尝试
 // （plan_started 覆盖条目）→ 迟到的 A 失败事件不得撤掉第 2 次尝试的在途
@@ -21,6 +24,8 @@ export interface PlanningEntry {
   issueId: number
   issueNumber: string
   attempt: number
+  /** planning=planner LLM 运行中；dispatching=auto_confirm 发车派发中。 */
+  phase: 'planning' | 'dispatching'
   /** 毫秒时间戳：SSE 起源 = 事件到达时刻；投影回填 = now - elapsed_secs。 */
   startedAt: number
   /** true = issue.list planning 投影回填（非 SSE 实时起点，plan_id 未知）。 */
@@ -57,18 +62,34 @@ function onPlanStarted(data: any) {
     issueId: data.issue_id,
     issueNumber: String(data.issue_number ?? ''),
     attempt: Number(data.attempt ?? 1) || 1,
+    phase: 'planning',
     startedAt: Date.now(),
     seeded: false,
   })
   ensureTicker()
 }
 
-function onPlanSettled(data: any) {
+function onPlanReady(data: any) {
   if (!data || typeof data.issue_id !== 'number') return
   const cur = entries.get(data.issue_id)
   if (!cur) return
-  // plan_id 匹配闸：live 条目只在 plan_id 相等时撤；seeded 条目（plan_id
+  // plan_id 匹配闸：live 条目只在 plan_id 相等时处理；seeded 条目（plan_id
   // 未知）该单任何 ready/failed 都可信。
+  if (cur.planId && cur.planId !== String(data.plan_id ?? '')) return
+  if (data.auto_confirm) {
+    // 发车派发仍在途（子单逐个 RPC 送达可达分钟级）：翻「发车中」，撤下
+    // 交给 reconcile（拆解链退出、投影消失时）。
+    cur.phase = 'dispatching'
+    return
+  }
+  entries.delete(data.issue_id)
+  maybeStopTicker()
+}
+
+function onPlanFailed(data: any) {
+  if (!data || typeof data.issue_id !== 'number') return
+  const cur = entries.get(data.issue_id)
+  if (!cur) return
   if (cur.planId && cur.planId !== String(data.plan_id ?? '')) return
   entries.delete(data.issue_id)
   maybeStopTicker()
@@ -79,16 +100,19 @@ function ensureRegistered() {
   if (registered) return
   registered = true
   sseOn('board.plan_started', onPlanStarted)
-  sseOn('board.plan_ready', onPlanSettled)
-  sseOn('board.plan_failed', onPlanSettled)
+  sseOn('board.plan_ready', onPlanReady)
+  sseOn('board.plan_failed', onPlanFailed)
 }
 
 /**
  * issue.list 刷新链回调（loadIssues / load 成功后调用）：按行快照校正在途表。
  * - 撤下：在途条目对应行已终态（done/cancelled）或 planning 投影消失（SSE
- *   ready/failed 丢失的兜底；board-changed 静默刷新链都会路过这里）；
+ *   ready/failed 丢失的兜底；dispatching 条目撤下的主通道——拆解链退出时
+ *   board-changed 静默刷新链都会路过这里）；
  * - 回填：行带 planning 投影且无 live 条目 → 种条目（页面加载/断线期间
- *   错过 SSE，用投影 elapsed_secs 反推 startedAt）。
+ *   错过 SSE，用投影 elapsed_secs 反推 startedAt，phase 随投影）；
+ * - 校正：live 条目 phase 落后于投影（断线错过 plan_ready 的 auto_confirm
+ *   翻转）→ 跟随投影更新。
  * 只触碰 rows 里出现过的行——过滤视图（按状态/项目过滤后的子集）不得
  * 误撤未入列单子的在途标记。
  */
@@ -99,6 +123,8 @@ function reconcile(rows: any[]) {
     if (cur) {
       if (row.status === 'done' || row.status === 'cancelled' || !row.planning) {
         entries.delete(row.id)
+      } else if (row.planning.phase === 'dispatching' && cur.phase !== 'dispatching') {
+        cur.phase = 'dispatching'
       }
     } else if (row.planning) {
       entries.set(row.id, {
@@ -106,6 +132,7 @@ function reconcile(rows: any[]) {
         issueId: row.id,
         issueNumber: String(row.number ?? ''),
         attempt: Number(row.planning.attempt ?? 1) || 1,
+        phase: row.planning.phase === 'dispatching' ? 'dispatching' : 'planning',
         startedAt: Date.now() - Number(row.planning.elapsed_secs ?? 0) * 1000,
         seeded: true,
       })

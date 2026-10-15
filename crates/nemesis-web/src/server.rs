@@ -1099,6 +1099,20 @@ impl WebServer {
                             }
                         },
                     ))
+                    // HTML 壳恒 no-cache（与嵌入路径 apply_html_no_cache 同语义）：
+                    // 旧壳引用已删 chunk = 升级后懒加载路由 404。
+                    .layer(tower_http::set_header::SetResponseHeaderLayer::overriding(
+                        http::header::CACHE_CONTROL,
+                        |response: &http::Response<_>| {
+                            let ct = response
+                                .headers()
+                                .get(http::header::CONTENT_TYPE)
+                                .and_then(|v| v.to_str().ok())
+                                .unwrap_or("");
+                            ct.starts_with("text/html")
+                                .then(|| http::header::HeaderValue::from_static("no-cache"))
+                        },
+                    ))
                     .service(serve_dir);
                 router = router.fallback_service(layered);
             } else {
@@ -1344,6 +1358,33 @@ fn cors_origin_value(req: &axum::extract::Request) -> String {
 /// standalone chat page shell (`chat/index.html`) rather than the dashboard
 /// fallback (L2b). Deeper `/chat/<x>` paths keep the SPA fallback.
 async fn serve_embedded_static(
+    files: Arc<dyn StaticFiles>,
+    req: axum::extract::Request,
+) -> axum::response::Response {
+    apply_html_no_cache(serve_embedded_static_inner(files, req).await)
+}
+
+/// HTML 壳响应统一补 `Cache-Control: no-cache`（2026-10-15 部署旧壳缓存三撞
+/// 墙根修）：前端每次构建资产文件名换哈希，浏览器启发式缓存的旧 index.html
+/// 指向已删除 chunk → 懒加载路由 404（设置页打不开/新页签消失），只能
+/// Ctrl+F5 自救。带 hash 的资产内容寻址、缓存安全，不加头维持启发式缓存；
+/// 404 等无 Content-Type 的响应不受影响。
+fn apply_html_no_cache(mut resp: axum::response::Response) -> axum::response::Response {
+    let is_html = resp
+        .headers()
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.starts_with("text/html"));
+    if is_html {
+        resp.headers_mut().insert(
+            http::header::CACHE_CONTROL,
+            http::header::HeaderValue::from_static("no-cache"),
+        );
+    }
+    resp
+}
+
+async fn serve_embedded_static_inner(
     files: Arc<dyn StaticFiles>,
     req: axum::extract::Request,
 ) -> axum::response::Response {

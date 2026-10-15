@@ -428,6 +428,10 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         "spi" => Some(OperationType::HardwareSPI),
         // 看板数据面（workspace 内 SQLite 建单/流转/评论 + 拆解派发）。
         "board_issue" => Some(OperationType::FileWrite),
+        // 评审取证读（board 评审链 evidence-on-demand）：项目档案根围栏内
+        // 的只读文本读取（resolve_subtree_path 单点收紧，与锚点同闸）——
+        // FileRead=LOW 让 8 层全跑（注入检测/凭据扫描/DLP/审计链）。
+        "board_evidence_read" => Some(OperationType::FileRead),
         // 技能文件写（agent 自写 procedural memory）。
         "skill_manage" => Some(OperationType::FileWrite),
         "complete_bootstrap" => Some(OperationType::FileDelete),
@@ -451,7 +455,12 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
 /// Extract target from tool arguments.
 pub fn extract_target(tool_name: &str, args: &serde_json::Value) -> String {
     match tool_name {
-        "read_file" | "write_file" | "edit_file" | "append_file" | "delete_file" => args
+        "read_file"
+        | "write_file"
+        | "edit_file"
+        | "append_file"
+        | "delete_file"
+        | "board_evidence_read" => args
             .get("path")
             .and_then(|v| v.as_str())
             .unwrap_or("")

@@ -106,6 +106,42 @@ describe('usePlanning', () => {
     expect(list.value.length).toBe(0)
   })
 
+  it('plan_ready 带 auto_confirm → 翻 dispatching 不撤；reconcile 投影消失时撤下', () => {
+    const { list, elapsed, reconcile } = usePlanning()
+    dispatch('board.plan_started', { plan_id: 'p1', issue_id: 5, issue_number: 'NB-5', attempt: 1 })
+    vi.advanceTimersByTime(180_000)
+
+    // auto_confirm 发车：条目保留翻「发车中」（派发在途可达分钟级）。
+    dispatch('board.plan_ready', { plan_id: 'p1', issue_id: 5, subs: [], auto_confirm: true })
+    expect(list.value.length).toBe(1)
+    expect(list.value[0].phase).toBe('dispatching')
+    expect(elapsed(5)).toBe(180)
+
+    // reconcile 跟随投影（断线错过 SSE 的 live 条目 phase 校正）。
+    reconcile([{ id: 5, number: 'NB-5', status: 'backlog', planning: { elapsed_secs: 200, attempt: 1, phase: 'dispatching' } }])
+    expect(list.value[0].phase).toBe('dispatching')
+
+    // 拆解链退出、投影消失 → dispatching 条目撤下。
+    reconcile([{ id: 5, number: 'NB-5', status: 'backlog' }])
+    expect(list.value.length).toBe(0)
+  })
+
+  it('reconcile 回填 phase：dispatching 投影种 dispatching 条目；无 phase 视为 planning', () => {
+    const { list, reconcile } = usePlanning()
+    reconcile([{ id: 7, number: 'NB-7', status: 'backlog', planning: { elapsed_secs: 60, attempt: 1, phase: 'dispatching' } }])
+    expect(list.value[0].phase).toBe('dispatching')
+    reconcile([{ id: 8, number: 'NB-8', status: 'backlog', planning: { elapsed_secs: 60, attempt: 1 } }])
+    expect(list.value.find((e) => e.issueId === 8)!.phase).toBe('planning')
+  })
+
+  it('seeded 条目收到带 auto_confirm 的 ready 同样翻 dispatching（不撤）', () => {
+    const { list, reconcile } = usePlanning()
+    reconcile([{ id: 7, number: 'NB-7', status: 'backlog', planning: { elapsed_secs: 30, attempt: 1 } }])
+    dispatch('board.plan_ready', { plan_id: 'whatever', issue_id: 7, auto_confirm: true })
+    expect(list.value.length).toBe(1)
+    expect(list.value[0].phase).toBe('dispatching')
+  })
+
   it('seeded 条目（plan_id 未知）任何该单 ready/failed 都可信', () => {
     const { list, reconcile } = usePlanning()
     reconcile([{ id: 7, number: 'NB-7', status: 'backlog', planning: { elapsed_secs: 30, attempt: 1 } }])

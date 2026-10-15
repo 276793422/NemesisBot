@@ -757,24 +757,32 @@ async fn parent_anchor_pass_falls_through_to_semantic_gate() {
 
 #[test]
 fn b2a_tool_mode_only_for_local_worker_with_multi_turns() {
-    // 本机 worker + 轮数 >1 → 只读取证。
+    // 本机 worker + 轮数 >1 → 只读取证（全只读白名单）。
     assert_eq!(
         pick_review_tool_mode(Some("node-a"), "node-a", 3),
         ReviewToolMode::ReadOnly { max_turns: 3 }
     );
-    // 远端 worker：工件不在本机，一律纯文本（防张冠李戴读错工作区）。
+    // 远端 worker → EvidenceOnly（evidence-on-demand，2026-10-15）：交付
+    // 档案已由系统合并到本机（board-projects/<项目>/），档案围栏工具按
+    // 单号解析档案根读到的就是本次交付——旧「工件不在本机一律纯文本」
+    // 的张冠李戴顾虑对档案根工具不成立。
     assert_eq!(
         pick_review_tool_mode(Some("node-b"), "node-a", 3),
-        ReviewToolMode::NoTools
+        ReviewToolMode::EvidenceOnly { max_turns: 3 }
     );
-    // 无派发历史（如人工转入 in_review）→ 纯文本。
+    // 无派发历史（如人工转入 in_review）→ 纯文本（零派发=零档案合并
+    // 记录，档案工具无输入，保持历史形态）。
     assert_eq!(
         pick_review_tool_mode(None, "node-a", 3),
         ReviewToolMode::NoTools
     );
-    // max_turns=1：与历史行为字节等价（即便 worker 是本机也不开工具）。
+    // max_turns=1：与历史行为字节等价（预算不达标恒 NoTools）。
     assert_eq!(
         pick_review_tool_mode(Some("node-a"), "node-a", 1),
+        ReviewToolMode::NoTools
+    );
+    assert_eq!(
+        pick_review_tool_mode(Some("node-b"), "node-a", 1),
         ReviewToolMode::NoTools
     );
     // max_turns=0 = 不限取证轮数（2026-10-09 C1 预算耗尽根修②）：本机
@@ -786,10 +794,13 @@ fn b2a_tool_mode_only_for_local_worker_with_multi_turns() {
             max_turns: u32::MAX
         }
     );
-    // 不限档不改拓扑闸：远端 worker / 无派发历史仍纯文本（工件不在本机）。
+    // 不限档不改拓扑分流：远端 worker → EvidenceOnly 不限；无派发历史
+    // 仍纯文本。
     assert_eq!(
         pick_review_tool_mode(Some("node-b"), "node-a", 0),
-        ReviewToolMode::NoTools
+        ReviewToolMode::EvidenceOnly {
+            max_turns: u32::MAX
+        }
     );
     assert_eq!(
         pick_review_tool_mode(None, "node-a", 0),
@@ -821,17 +832,50 @@ fn review_budget_block_matches_tool_mode() {
     assert!(unlimited.contains("UNSURE"), "{unlimited}");
     assert!(!unlimited.contains("轮**"), "{unlimited}");
 
-    // 三臂都不泄漏「猜测 PASS」的口子（纪律底线恒在场）。
+    // EvidenceOnly（evidence-on-demand）：档案取证工具名在场（远端评审员
+    // 的取证通路就是它）+ 有限/不限两形态预算纪律。
+    let evidence = render_review_budget_block(ReviewToolMode::EvidenceOnly { max_turns: 4 });
+    assert!(evidence.contains("board_evidence_read"), "{evidence}");
+    assert!(evidence.contains("4 轮"), "{evidence}");
+    assert!(evidence.contains("UNSURE"), "{evidence}");
+    let evidence_unlimited = render_review_budget_block(ReviewToolMode::EvidenceOnly {
+        max_turns: u32::MAX,
+    });
+    assert!(
+        evidence_unlimited.contains("board_evidence_read")
+            && evidence_unlimited.contains("轮数不限"),
+        "{evidence_unlimited}"
+    );
+
+    // 四臂都不泄漏「猜测 PASS」的口子（纪律底线恒在场）。
     for (name, block) in [
         ("no_tools", &no_tools),
         ("limited", &limited),
         ("unlimited", &unlimited),
+        ("evidence", &evidence),
+        ("evidence_unlimited", &evidence_unlimited),
     ] {
         assert!(
             block.contains("UNSURE") && block.contains("严禁"),
             "{name} 臂必须有 UNSURE + 严禁纪律: {block}"
         );
     }
+}
+
+// ---------- evidence-on-demand：未附内容注记两臂 ----------
+
+#[test]
+fn unattached_note_gives_tool_pointer_only_when_available() {
+    // 有工具（ReadOnly/EvidenceOnly）：指路 board_evidence_read + 参数形态。
+    let with_tool = render_unattached_note(3, true);
+    assert!(with_tool.contains("3 个文件未附内容"), "{with_tool}");
+    assert!(with_tool.contains("board_evidence_read"), "{with_tool}");
+    assert!(with_tool.contains("offset/limit"), "{with_tool}");
+    // NoTools：保持历史形态（「未附内容」子串是注入块测试的钉子），
+    // 不许提工具（没工具还指路=误导）。
+    let no_tool = render_unattached_note(2, false);
+    assert!(no_tool.contains("未附内容"), "{no_tool}");
+    assert!(!no_tool.contains("board_evidence_read"), "{no_tool}");
 }
 
 // ---------- D3：pick_redispatch_target 决策表 ----------
@@ -4196,6 +4240,111 @@ async fn sweep_merged_changeset_and_discipline_evidence_injected() {
         "证伪记录须按结构化呈现通过态"
     );
     assert!(prompts.contains("waive 审计"), "waive 留痕须呈现");
+}
+
+// NB-102 真机实证（2026-10-15）：旧节选上限 2000 字符把 PRD 截在「核心玩法
+// 循环」开头，评审员以「未展示功能需求/非功能需求/逐条验收标准，无法对照
+// 验收标准确认」确定性 UNSURE → max_unsure_streak 2 轮即停车。回归锁：
+// 单文件 12000 字符预算内的交付文本全文呈现（2000 字之后的段落必须在场）。
+#[tokio::test]
+async fn sweep_merged_changeset_content_beyond_old_snippet_cap_is_injected() {
+    use nemesis_board::NewIssue;
+    let (deps, _ws) = review_deps("sweep-blob-cap");
+    let (root, _base) = git_project_root("blob-cap");
+    let project = deps
+        .store
+        .create_project("p", "d", None, "", "", Some(root.to_str().unwrap()))
+        .unwrap();
+
+    let mut body =
+        String::from("# PRD 变体 A\n\n## 核心玩法循环\n开头的玩法描述。\n\n## 功能需求\n");
+    while body.chars().count() < 3000 {
+        body.push_str("- 需求条目：系统应支持网格建造与拆除。\n");
+    }
+    body.push_str("\n\n## 非功能需求\n渲染 60fps。\n\n## 验收标准\nGiven 玩家点击网格 When 放置建筑 Then 建筑出现在网格上。\n");
+    assert!(body.chars().count() > 2000, "夹具须超过旧 2000 上限");
+    // 生产同形：工作集 seed commit（gitignore 尊重 /docs/，走 commit_worktree）
+    // + worker 变更集经 merge_changeset 合入（内存 index 绕 gitignore——真实
+    // NB-102 的 docs/prd-variant-A.md 正是经此路径入库）。
+    std::fs::write(root.join("README.md"), "# demo\n").unwrap();
+    let baseline = nemesis_board::git_repo::commit_worktree(&root, "工作集 seed")
+        .unwrap()
+        .expect("seed 工作集必有首笔 commit");
+    let merged = nemesis_board::git_repo::merge_changeset(
+        &root,
+        &nemesis_board::git_repo::MergeInput {
+            baseline_commit: baseline.clone(),
+            upserts: vec![nemesis_board::git_repo::ChangesetFile {
+                path: "docs/prd-variant-A.md".to_string(),
+                content: body.into_bytes(),
+                executable: false,
+            }],
+            deletions: vec![],
+        },
+    )
+    .unwrap();
+    let oid = match merged {
+        nemesis_board::git_repo::MergeOutcome::Merged { commit_oid } => commit_oid,
+        other => panic!("夹具合入须无冲突，实得 {other:?}"),
+    };
+
+    let issue = deps
+        .store
+        .create_issue(NewIssue {
+            title: "长文档节选回归".to_string(),
+            description: String::new(),
+            priority: 2,
+            creator: nemesis_board::Actor::agent("node-a"),
+            project_id: Some(project.id),
+            ..Default::default()
+        })
+        .unwrap();
+    let reviewer = nemesis_board::Actor::agent("node-a");
+    deps.store
+        .transition_issue(issue.id, nemesis_board::IssueStatus::InProgress, &reviewer)
+        .unwrap();
+    deps.store
+        .transition_issue(issue.id, nemesis_board::IssueStatus::InReview, &reviewer)
+        .unwrap();
+    deps.store
+        .add_comment(nemesis_board::NewComment {
+            issue_id: issue.id,
+            author: nemesis_board::Actor::agent("node-b"),
+            content: "## 结论\n交付完成".to_string(),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::Delivery,
+        })
+        .unwrap();
+    deps.store
+        .add_activity(
+            issue.id,
+            &nemesis_board::Actor::system("board"),
+            crate::board_archive_ingest::ACTION_MERGED,
+            Some(&serde_json::json!({ "commit": oid }).to_string()),
+        )
+        .unwrap();
+
+    let provider = Arc::new(CapturingLlm {
+        prompts: std::sync::Mutex::new(Vec::new()),
+        reply: review_json("PASS", ""),
+    });
+    attach_loop(&deps, provider.clone());
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("评审闭环");
+    assert!(reviewed);
+    let prompts = provider.prompts.lock().unwrap().join("\n");
+    assert!(prompts.contains("docs/prd-variant-A.md"), "清单含交付文件");
+    assert!(
+        prompts.contains("## 功能需求") && prompts.contains("网格建造与拆除"),
+        "旧 2000 上限之后的功能需求段必须注入: {}",
+        &prompts[prompts.len().saturating_sub(3000)..]
+    );
+    assert!(
+        prompts.contains("Then 建筑出现在网格上"),
+        "文档尾部验收标准段必须注入"
+    );
 }
 
 // ---------- render_discipline_evidence 退化形态（miss 1695-1696,1725-1742） ----------
@@ -7630,4 +7779,133 @@ fn prefetch_ban_section_prefers_main_root_then_falls_back() {
     // fallback 槽位为 None + 主根缺 → None（无 panic）。
     std::fs::remove_file(ws_docs.join("architecture.md")).unwrap();
     assert_eq!(prefetch_ban_section(ws.path(), None), None);
+}
+
+// ---------- 取证软件化：执行档案直读取证（collect_execution_evidence）----------
+//
+// 纯函数（root/编号 → Option<String>），零 LLM 零 RPC；钉死：目录缺席 /
+// 空轮目录 / 全空件 → None（诚实回落 LLM 自检）；最新一轮优先；raw.json
+// 不作证据主体；输出有界。I/O 链路（selfcheck else 臂接线、二段验收）由
+// cluster-uat 真流覆盖。
+
+#[test]
+fn execution_evidence_missing_dir_is_none() {
+    let root = tempfile::tempdir().expect("root");
+    assert_eq!(collect_execution_evidence(root.path(), "NB-404"), None);
+}
+
+#[test]
+fn execution_evidence_empty_round_dir_is_none() {
+    let root = tempfile::tempdir().expect("root");
+    let round = root
+        .path()
+        .join("records")
+        .join("NB-1")
+        .join("execution")
+        .join("20261015_100000000");
+    std::fs::create_dir_all(&round).unwrap();
+    assert_eq!(collect_execution_evidence(root.path(), "NB-1"), None);
+}
+
+#[test]
+fn execution_evidence_only_empty_or_lost_files_is_none() {
+    let root = tempfile::tempdir().expect("root");
+    let round = root
+        .path()
+        .join("records")
+        .join("NB-2")
+        .join("execution")
+        .join("20261015_100000000");
+    std::fs::create_dir_all(&round).unwrap();
+    std::fs::write(round.join("00.request.md"), "  \n\t").unwrap();
+    std::fs::write(round.join("01.AI.Response.md"), "_NEMESIS_UNREADABLE_").unwrap();
+    std::fs::write(round.join("01.AI.Response.raw.json"), "{\"x\":1}").unwrap();
+    assert_eq!(collect_execution_evidence(root.path(), "NB-2"), None);
+}
+
+#[test]
+fn execution_evidence_reads_newest_round_and_skips_raw_json() {
+    let root = tempfile::tempdir().expect("root");
+    let exec = root.path().join("records").join("NB-3").join("execution");
+    let old = exec.join("20261015_100000000");
+    let new = exec.join("20261015_110000000");
+    std::fs::create_dir_all(&old).unwrap();
+    std::fs::create_dir_all(&new).unwrap();
+    std::fs::write(old.join("00.request.md"), "旧轮次任务请求").unwrap();
+    std::fs::write(old.join("01.AI.Response.md"), "旧轮次回复").unwrap();
+    std::fs::write(new.join("00.request.md"), "新轮次任务请求").unwrap();
+    std::fs::write(new.join("02.AI.Response.md"), "新轮次最终回复").unwrap();
+    std::fs::write(new.join("02.AI.Response.raw.json"), "{\"huge\":true}").unwrap();
+    std::fs::write(new.join("manifest.json"), "{\"task_id\":\"t1\"}").unwrap();
+
+    let ev = collect_execution_evidence(root.path(), "NB-3").expect("证据在场");
+    assert!(ev.contains("20261015_110000000"), "取最新一轮: {ev}");
+    assert!(ev.contains("新轮次最终回复"), "AI 回复头在场: {ev}");
+    assert!(ev.contains("新轮次任务请求"), "任务请求头在场: {ev}");
+    assert!(
+        ev.contains("records/NB-3/execution/20261015_110000000/manifest.json"),
+        "清单为档案根相对路径（board_evidence_read 可原样消费）: {ev}"
+    );
+    assert!(!ev.contains("旧轮次"), "旧轮次不得混入: {ev}");
+    assert!(!ev.contains("\"huge\""), "raw.json 不作证据主体: {ev}");
+}
+
+#[test]
+fn execution_evidence_bounded() {
+    let root = tempfile::tempdir().expect("root");
+    let round = root
+        .path()
+        .join("records")
+        .join("NB-4")
+        .join("execution")
+        .join("20261015_100000000");
+    std::fs::create_dir_all(&round).unwrap();
+    std::fs::write(round.join("01.AI.Response.md"), "长".repeat(50_000)).unwrap();
+    let ev = collect_execution_evidence(root.path(), "NB-4").expect("证据在场");
+    assert!(
+        ev.chars().count() <= 7600,
+        "输出有界: {}",
+        ev.chars().count()
+    );
+    assert!(ev.ends_with("..."), "截断带省略号注记");
+}
+
+// NB-105 真机熔断回归锁（2026-10-15）：评审员照清单逐个 board_evidence_read，
+// 裸文件名清单让全部读取落空（「档案文件不存在或不可达」）→ UNSURE×3 转
+// 人工、整条依赖链一宿不动。钉死：清单行 = 档案根相对路径，且该路径能
+// 原样过取证工具读回原文（往返闭环）。
+#[test]
+fn execution_evidence_inventory_paths_roundtrip_through_evidence_tool() {
+    let root = tempfile::tempdir().expect("root");
+    let round = root
+        .path()
+        .join("records")
+        .join("NB-5")
+        .join("execution")
+        .join("20261015_120000000");
+    std::fs::create_dir_all(&round).unwrap();
+    std::fs::write(round.join("manifest.json"), "{\"task_id\":\"t5\"}").unwrap();
+    std::fs::write(round.join("00.request.md"), "任务请求全文").unwrap();
+
+    let ev = collect_execution_evidence(root.path(), "NB-5").expect("证据在场");
+    let line = ev
+        .lines()
+        .find(|l| l.contains("manifest.json"))
+        .expect("清单含 manifest.json 行");
+    let path = line
+        .trim_start_matches("- ")
+        .split("（")
+        .next()
+        .expect("路径段");
+    assert_eq!(
+        path, "records/NB-5/execution/20261015_120000000/manifest.json",
+        "清单必须是档案根相对路径: {line}"
+    );
+    // 往返：清单路径直接过取证工具（与评审员同一解析单点）读取成功。
+    let content = crate::board_evidence_tool::read_archive_file(root.path(), path, None, None)
+        .expect("清单路径可读取");
+    assert!(
+        content.contains("\"task_id\":\"t5\""),
+        "读回原文: {content}"
+    );
 }

@@ -144,6 +144,20 @@ impl TaskResultStore {
         self.results.lock().is_empty()
     }
 
+    /// 该任务是否处于「running 占位」态（worker 侧任务在跑的内存标记）。
+    ///
+    /// `TaskResultPersister::set_running` 落 `{"status":"running"}` 占位，
+    /// `set_result` 换真结果、`delete` 送达后清理——三者之后本查询即 false。
+    /// BUG-2026-10-15 D：exec 残留周期清扫以它跳过**进行中**任务的工作副本
+    /// （活跃任务的 exec 目录不可触碰；真崩溃残留无占位、照常收拾）。
+    pub fn is_running(&self, task_id: &str) -> bool {
+        self.results
+            .lock()
+            .get(task_id)
+            .map(|r| r.result.get("status").and_then(|v| v.as_str()) == Some("running"))
+            .unwrap_or(false)
+    }
+
     /// Clear all stored results from memory (disk files are **not** removed).
     pub fn clear(&self) {
         self.results.lock().clear();

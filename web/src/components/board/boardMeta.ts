@@ -26,6 +26,43 @@ export const STATUS_BADGE: Record<string, string> = {
   cancelled: 'badge-neutral',
 }
 
+// DAG 全景图节点配色（2026-10-15 需求③）：badge 语义的图形化投影——
+// 色相沿用 STATUS_BADGE 同族 CSS 变量（双主题自动适配），同色相内用
+// 空心/实心与图标消歧（todo 空心 vs in_progress 实心；backlog 灰空心
+// vs cancelled 灰+✕）。图标冗余兼顾色觉障碍（compact 模式色是唯一编码，
+// 图标必须保留）。
+export interface StatusNodeStyle {
+  fill: string
+  fillOpacity: number
+  stroke: string
+  strokeWidth: number
+  /** 节点内图标（色觉冗余编码）。 */
+  icon: string
+}
+
+export const STATUS_NODE: Record<string, StatusNodeStyle> = {
+  backlog: { fill: 'var(--surface)', fillOpacity: 0.45, stroke: 'var(--text-muted)', strokeWidth: 1, icon: '' },
+  todo: { fill: 'var(--info)', fillOpacity: 0.12, stroke: 'var(--info)', strokeWidth: 1.2, icon: '' },
+  in_progress: { fill: 'var(--info)', fillOpacity: 0.4, stroke: 'var(--info)', strokeWidth: 2.2, icon: '▶' },
+  in_review: { fill: 'var(--warning)', fillOpacity: 0.32, stroke: 'var(--warning)', strokeWidth: 1.8, icon: '👁' },
+  done: { fill: 'var(--success)', fillOpacity: 0.35, stroke: 'var(--success)', strokeWidth: 1.8, icon: '✓' },
+  blocked: { fill: 'var(--error)', fillOpacity: 0.35, stroke: 'var(--error)', strokeWidth: 2.2, icon: '⛔' },
+  cancelled: { fill: 'var(--surface)', fillOpacity: 0.6, stroke: 'var(--text-muted)', strokeWidth: 1, icon: '✕' },
+}
+
+/** 未知状态兜底（后端新增状态先于前端发布时不炸渲染）。 */
+export const STATUS_NODE_FALLBACK: StatusNodeStyle = {
+  fill: 'var(--surface)',
+  fillOpacity: 0.5,
+  stroke: 'var(--text-muted)',
+  strokeWidth: 1,
+  icon: '?',
+}
+
+export function statusNodeStyle(s: string): StatusNodeStyle {
+  return STATUS_NODE[s] || STATUS_NODE_FALLBACK
+}
+
 export const PRIORITY_LABEL: Record<number, string> = {
   0: '低',
   1: '中',
@@ -95,8 +132,16 @@ export interface IssueRow {
    *  issue.list 恒排除 hidden 单，此字段只在详情/CLI 全量面可见。 */
   hidden?: boolean
   /** 拆解运行期可观测（2026-10-11 Part 1）：planner 在途投影——
-   *  issue.list 行附 {elapsed_secs, attempt}，不在途无此键。 */
-  planning?: { elapsed_secs: number; attempt: number }
+   *  issue.list 行附 {elapsed_secs, attempt, phase}（phase：
+   *  planning=planner 运行中 / dispatching=auto_confirm 发车派发中），
+   *  不在途无此键。旧后端无 phase 时视为 planning。 */
+  planning?: { elapsed_secs: number; attempt: number; phase?: 'planning' | 'dispatching' }
+  /** 依赖上游投影（2026-10-15）：每上游 {id, number, status}——列表行
+   *  「🔒 等 NB-x」徽标 + DAG 全景图边数据源。旧后端无此键（可选）。 */
+  depends_on?: Array<{ id: number; number: string; status: string }>
+  /** 父单 id（拆解关系）：DAG 分层下界（子 ≥ 父层+1，根需求独占首行）+
+   *  拆解边渲染。issue.list 走 Issue 全量序列化自带，无需后端投影。 */
+  parent_issue_id?: number | null
   comments?: any[]
   activity?: any[]
   subscribers?: any[]
