@@ -1,0 +1,18 @@
+{
+  "task_id": "B-UNISEG",
+  "path": "B",
+  "group": "hardening",
+  "mother": "{{MOTHERS}}/B-UNISEG",
+  "target_cache": "{{CACHE}}/targetB-UNISEG",
+  "node_modules_cache": null,
+  "split": "holdout",
+  "arm": "main",
+  "model": "openai/gpt-6-sol",
+  "user_request": "本仓库是 unicode-segmentation 库。一个健壮性缺陷：句子边界迭代器 split_sentence_bound_indices / split_sentence_bounds 对空输入（或仅空白输入）调用 size_hint() 时会 panic（size_hint 下溢）。请修复：空输入的 size_hint 必须满足 lower == 0 且 lower <= upper 的不变式，绝不 panic；并补一个回归测试（空字符串与仅空白字符串的 size_hint 断言）。",
+  "allowed_paths": [
+    "src/",
+    "tests/"
+  ],
+  "max_turns": 30,
+  "time_limit_minutes": 45
+}

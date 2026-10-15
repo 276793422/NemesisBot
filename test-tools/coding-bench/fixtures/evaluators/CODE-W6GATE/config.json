@@ -1,0 +1,11 @@
+{
+  "inject": [
+    { "src": "ChatPanel.history-loading-gate.spec.ts", "dst": "web/src/components/__tests__/ChatPanel.history-loading-gate.spec.ts" }
+  ],
+  "commands": [
+    { "argv": ["npx.cmd", "vitest", "run", "src/components/__tests__/ChatPanel.history-loading-gate.spec.ts"], "cwd": "web" }
+  ],
+  "fail_patterns": [],
+  "runtime_paths": ["logs/"],
+  "require_diff": true
+}

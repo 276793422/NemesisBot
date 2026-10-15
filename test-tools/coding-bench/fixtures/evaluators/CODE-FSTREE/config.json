@@ -1,0 +1,11 @@
+{
+  "inject": [
+    { "src": "tests.rs", "dst": "crates/nemesis-web/src/handlers/fs/tests.rs" }
+  ],
+  "commands": [
+    { "argv": ["cargo", "test", "-p", "nemesis-web", "--features", "workflow", "--lib", "fs::"] }
+  ],
+  "fail_patterns": ["test result: FAILED"],
+  "runtime_paths": ["logs/"],
+  "require_diff": true
+}
