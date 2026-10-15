@@ -1333,3 +1333,121 @@ async fn test_request_timeout_reaches_transport_send() {
         "initialize request must carry the configured timeout, got: {recorded:?}"
     );
 }
+
+// --- 第十五轮缺陷 19：响应形状非法响亮报错（不再静默吞成空结果）-------
+
+#[tokio::test]
+async fn r15_list_tools_malformed_batch_is_loud() {
+    let mut mock = crate::transport::MockTransport::new_connected();
+    mock.add_success(
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "capabilities": {},
+            "serverInfo": { "name": "test-server", "version": "1.0" }
+        }),
+    );
+    mock.add_success("notifications/initialized", serde_json::json!({}));
+    // 工具条目缺 name 与 inputSchema（协议违例）——旧实现整批静默清空，
+    // 上层把「解析失败」误当「服务器就这些工具」。
+    mock.add_success(
+        "tools/list",
+        serde_json::json!({ "tools": [ { "description": "no name, no schema" } ] }),
+    );
+
+    let mut client = McpClient::new(Box::new(mock));
+    client.initialize().await.unwrap();
+
+    let err = client.list_tools().await.unwrap_err();
+    assert!(err.to_string().contains("batch parse failed"), "{err}");
+    assert!(err.to_string().contains("tools/list"), "{err}");
+}
+
+#[tokio::test]
+async fn r15_list_resources_malformed_batch_is_loud() {
+    let mut mock = crate::transport::MockTransport::new_connected();
+    mock.add_success(
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "capabilities": {},
+            "serverInfo": { "name": "test-server", "version": "1.0" }
+        }),
+    );
+    mock.add_success("notifications/initialized", serde_json::json!({}));
+    mock.add_success(
+        "resources/list",
+        serde_json::json!({ "resources": [ { "uri": "file:///no-name" } ] }),
+    );
+
+    let mut client = McpClient::new(Box::new(mock));
+    client.initialize().await.unwrap();
+
+    let err = client.list_resources().await.unwrap_err();
+    assert!(err.to_string().contains("batch parse failed"), "{err}");
+}
+
+#[tokio::test]
+async fn r15_call_tool_malformed_result_is_loud() {
+    let mut mock = crate::transport::MockTransport::new_connected();
+    mock.add_success(
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "capabilities": {},
+            "serverInfo": { "name": "test-server", "version": "1.0" }
+        }),
+    );
+    mock.add_success("notifications/initialized", serde_json::json!({}));
+    // content 是字符串非数组（协议违例）——旧实现静默成空成功输出。
+    mock.add_success(
+        "tools/call",
+        serde_json::json!({ "content": "not-an-array" }),
+    );
+
+    let mut client = McpClient::new(Box::new(mock));
+    client.initialize().await.unwrap();
+
+    let err = client
+        .call_tool("echo", serde_json::json!({}))
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("tools/call result parse failed"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn r15_call_tool_well_formed_result_still_ok() {
+    // 放行面回归：合法形状（含未知附加字段）照常成功——响亮化不误伤。
+    let mut mock = crate::transport::MockTransport::new_connected();
+    mock.add_success(
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "capabilities": {},
+            "serverInfo": { "name": "test-server", "version": "1.0" }
+        }),
+    );
+    mock.add_success("notifications/initialized", serde_json::json!({}));
+    mock.add_success(
+        "tools/call",
+        serde_json::json!({
+            "content": [ { "type": "text", "text": "hello" } ],
+            "isError": false,
+            "structuredContent": { "extra": "ignored" }
+        }),
+    );
+
+    let mut client = McpClient::new(Box::new(mock));
+    client.initialize().await.unwrap();
+
+    let result = client
+        .call_tool("echo", serde_json::json!({}))
+        .await
+        .unwrap();
+    assert!(!result.is_error);
+    assert_eq!(result.content.len(), 1);
+    assert_eq!(result.content[0].text.as_deref(), Some("hello"));
+}
