@@ -12,8 +12,11 @@
 //! description = "..."
 //! [connector.http]                    # rest 型必填
 //! base = "https://example.com"
+//! [connector.http.headers]            # 可选：静态自定义头（非敏感用途；
+//! User-Agent = "my-agent/1.0"         #  头名冲突时 vault 凭据胜）
 //! [connector.credentials]             # 凭据槽位 → vault 别名 connector/<id>/<key>
 //! api_key = { required = false, into = "header:X-API-Key" }
+//! pat = { required = true, into = "header:Authorization", prefix = "token " }
 //!
 //! [[op]]
 //! id = "get_quote"
@@ -29,6 +32,7 @@
 //! confirm = "required"                # 强授权卡
 //! budget = "finance"                  # 资金预算维
 //! receipt = "order_id"                # 回执主键字段
+//! undo = { op = "cancel_order", arg = "order_id" }  # E3 撤销声明
 //! tool = "exec"                       # local/script 型用 tool / action 绑定
 //! ```
 //!
@@ -86,6 +90,11 @@ pub enum ConnectorKind {
 #[serde(deny_unknown_fields)]
 pub struct HttpBaseRaw {
     pub base: String,
+    /// 静态自定义请求头（非敏感用途：User-Agent/Accept 等声明形态）。
+    /// 与 credentials 注入共存；头名冲突时 vault 凭据胜（执行面
+    /// `merge_request_headers` 裁决——凭据是显式意图，静态头是缺省形态）。
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +105,11 @@ pub struct CredentialSlotRaw {
     /// 注入形态：`"header:<头名>"` 或 `"query:<参数名>"`；缺省 `header:<槽位名>`。
     #[serde(default)]
     pub into: Option<String>,
+    /// 注入值前缀（认证头惯用形态：Gitea `Authorization: token <PAT>`、
+    /// GitHub `Authorization: Bearer <PAT>`）。仅 header 形态消费；最终值
+    /// = `prefix + secret`。禁止 CRLF（头注入防线，validate 兜底）。
+    #[serde(default)]
+    pub prefix: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,6 +130,11 @@ pub struct OpDefRaw {
     /// 回执主键字段名（如 `order_id`）。
     #[serde(default)]
     pub receipt: Option<String>,
+    /// E3（收官批）撤销声明：`{ op = "cancel_order", arg = "order_id" }` —
+    /// 本 op 可用 `op`（同 connector 内的另一 op）以凭条主键值填 `arg` 参
+    /// 反向。校验三规则见 [`validate`]。
+    #[serde(default)]
+    pub undo: Option<OpUndoRaw>,
     /// rest 型绑定：`{ method, path }`。
     #[serde(default)]
     pub http: Option<HttpOpRaw>,
@@ -136,12 +155,23 @@ pub struct HttpOpRaw {
     pub path: String,
 }
 
+/// E3（收官批）撤销声明原始形态：`undo = { op = "cancel_order", arg = "order_id" }`。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpUndoRaw {
+    /// 反向 op id（同 connector 内已声明的另一个 op）。
+    pub op: String,
+    /// 反向 op 的参数名——执行撤销时以源 op 凭条主键值（receipt_value）填入。
+    pub arg: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum HttpMethod {
     Get,
     Post,
     Put,
+    Patch,
     Delete,
 }
 
@@ -214,6 +244,9 @@ pub struct ValidatedConnector {
     pub description: Option<String>,
     /// `[connector.http].base`（rest 型必有）。
     pub base_url: Option<String>,
+    /// `[connector.http].headers` 静态自定义头（非敏感缺省形态；凭据头
+    /// 冲突时被 vault 凭据覆盖——执行面 merge 裁决）。
+    pub static_headers: BTreeMap<String, String>,
     pub credentials: BTreeMap<String, CredentialBinding>,
     /// ops（保清单书写序）。
     pub ops: Vec<ValidatedOp>,
@@ -224,6 +257,8 @@ pub struct CredentialBinding {
     pub slot: String,
     pub required: bool,
     pub into: CredentialInto,
+    /// header 形态的值前缀（如 `"token "` / `"Bearer "`）。
+    pub prefix: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -241,8 +276,19 @@ pub struct ValidatedOp {
     pub confirm_required: bool,
     pub finance_budget: bool,
     pub receipt_key: Option<String>,
+    /// E3（收官批）撤销声明（校验通过后形态）。
+    pub undo: Option<OpUndo>,
     pub binding: OpBinding,
     pub args_schema: Option<serde_json::Value>,
+}
+
+/// E3（收官批）撤销声明（校验后形态）。
+#[derive(Debug, Clone)]
+pub struct OpUndo {
+    /// 反向 op id。
+    pub op: String,
+    /// 反向 op 的参数名（填源 op 凭条主键值）。
+    pub arg: String,
 }
 
 #[derive(Debug, Clone)]
@@ -277,13 +323,23 @@ fn validate(raw: ConnectorManifestRaw) -> Result<ValidatedConnector, String> {
 
     validate_id(&meta.id, "connector id")?;
 
-    // http base
+    // http base + 静态头
     let base_url = meta.http.as_ref().map(|h| h.base.trim().to_string());
     if base_url.as_deref().is_some_and(str::is_empty) {
         return Err(format!(
             "connector `{}`: [connector.http].base 不能为空",
             meta.id
         ));
+    }
+    let mut static_headers = BTreeMap::new();
+    if let Some(h) = &meta.http {
+        for (name, value) in &h.headers {
+            validate_header_name(name)
+                .map_err(|e| format!("connector `{}`: 静态头 `{name}` {e}", meta.id))?;
+            validate_header_value(value)
+                .map_err(|e| format!("connector `{}`: 静态头 `{name}` 的值 {e}", meta.id))?;
+            static_headers.insert(name.clone(), value.clone());
+        }
     }
 
     // credentials `into` 解析
@@ -303,12 +359,25 @@ fn validate(raw: ConnectorManifestRaw) -> Result<ValidatedConnector, String> {
                         )
                     })?,
             };
+            // prefix 仅 header 形态消费；query 串带前缀几乎必是笔误，loud 拒。
+            if raw_slot.prefix.is_some() && matches!(into, CredentialInto::Query(_)) {
+                return Err(format!(
+                    "connector `{meta}`: 凭据槽位 `{slot}` 的 prefix 只支持 header 注入形态",
+                    meta = meta.id
+                ));
+            }
+            if let Some(p) = &raw_slot.prefix {
+                validate_header_value(p).map_err(|e| {
+                    format!("connector `{}`: 凭据槽位 `{slot}` 的 prefix {e}", meta.id)
+                })?;
+            }
             credentials.insert(
                 slot.clone(),
                 CredentialBinding {
                     slot,
                     required: raw_slot.required,
                     into,
+                    prefix: raw_slot.prefix,
                 },
             );
         }
@@ -417,9 +486,52 @@ fn validate(raw: ConnectorManifestRaw) -> Result<ValidatedConnector, String> {
             confirm_required,
             finance_budget,
             receipt_key: op.receipt,
+            undo: op.undo.map(|u| OpUndo {
+                op: u.op.trim().to_string(),
+                arg: u.arg.trim().to_string(),
+            }),
             binding,
             args_schema: op.args_schema,
         });
+    }
+
+    // E3（收官批）：undo 声明二次校验——引用完整性跨 op（前向引用合法：
+    // cancel_order 可声明在 place_order 之前），需全部 op 收集后统一检。
+    // 规则：① undo.op 存在于本 connector ② undo.op ≠ 自身 ③ 源 op 已声明
+    // receipt（撤销靠凭条主键回填，无主键的 op 谈不上撤销）+ 附带守卫：
+    // 目标 op 不得再声明 undo（撤销链禁止嵌套——「撤销撤销」无语义）。
+    for v in &ops {
+        let Some(u) = &v.undo else { continue };
+        if u.op.is_empty() || u.arg.is_empty() {
+            return Err(format!(
+                "connector `{}` op `{}`: undo 的 op/arg 不能为空",
+                meta.id, v.id
+            ));
+        }
+        if u.op == v.id {
+            return Err(format!(
+                "connector `{}` op `{}`: undo.op 不能指向自身",
+                meta.id, v.id
+            ));
+        }
+        let target = ops.iter().find(|o| o.id == u.op).ok_or_else(|| {
+            format!(
+                "connector `{}` op `{}`: undo.op `{}` 未在本 connector 声明",
+                meta.id, v.id, u.op
+            )
+        })?;
+        if target.undo.is_some() {
+            return Err(format!(
+                "connector `{}` op `{}`: undo.op `{}` 自身也声明了 undo（撤销链禁止嵌套）",
+                meta.id, v.id, u.op
+            ));
+        }
+        if v.receipt_key.is_none() {
+            return Err(format!(
+                "connector `{}` op `{}`: 声明 undo 前必须声明 receipt（撤销凭条主键）",
+                meta.id, v.id
+            ));
+        }
     }
 
     Ok(ValidatedConnector {
@@ -430,6 +542,7 @@ fn validate(raw: ConnectorManifestRaw) -> Result<ValidatedConnector, String> {
         enabled: meta.enabled,
         description: meta.description,
         base_url,
+        static_headers,
         credentials,
         ops,
     })
@@ -463,6 +576,30 @@ fn parse_credential_into(s: &str) -> Option<CredentialInto> {
         "query" => Some(CredentialInto::Query(name.to_string())),
         _ => None,
     }
+}
+
+/// 头名校验：非空、无空白/冒号/控制字符（HTTP 头名 token 字符集的务实
+/// 子集——拼错的头名 loud 拒，不静默发坏请求）。
+fn validate_header_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("名字不能为空".into());
+    }
+    if name
+        .chars()
+        .any(|c| c.is_whitespace() || c == ':' || c.is_control() || (c as u32) > 0x7e)
+    {
+        return Err("名字含非法字符（空白/冒号/控制字符/非 ASCII）".into());
+    }
+    Ok(())
+}
+
+/// 头值校验：禁止 CR/LF（头注入防线——静态头与凭据 prefix 都走这里，
+/// 带换行的值可拆行注入任意头）。
+fn validate_header_value(value: &str) -> Result<(), String> {
+    if value.contains('\r') || value.contains('\n') {
+        return Err("含换行（头注入防线：值必须是单行）".into());
+    }
+    Ok(())
 }
 
 /// 校验 http path 占位符语法，返回占位符名列表。

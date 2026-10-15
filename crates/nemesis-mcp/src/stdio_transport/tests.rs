@@ -664,7 +664,8 @@ time.sleep(5)
 
 /// 字面量原样、vault:/env:/yaml: 引用现查、失败变量跳过（不毒化其余变量）。
 /// 触及全局 vault 解析器槽位的测试互斥（进程单例）。
-static VAULT_SLOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// pub(crate)：http_transport/tests.rs 的头解析测试共用本锁（同一全局槽位）。
+pub(crate) static VAULT_SLOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
 fn resolved_env_literals_references_and_skip() {
