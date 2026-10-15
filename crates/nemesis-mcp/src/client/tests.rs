@@ -1058,3 +1058,218 @@ async fn list_prompts_follows_next_cursor() {
     assert_eq!(prompts.len(), 2);
     assert_eq!(prompts[1].name, "farewell");
 }
+
+// =========================================================================
+// from_server_config 分派（2026-10-15 W1 分派收敛 + 第六轮复查兼容臂）
+// =========================================================================
+
+/// initialize 请求 → 合法 InitializeResult（wiremock 形态与 nemesisbot
+/// 侧 e2e 同款；matcher 精确到 "method":"initialize"——裸子串会把
+/// notifications/initialized 也匹配进来）。
+async fn mount_initialize(server: &wiremock::MockServer) {
+    mount_initialize_expect(server, 1).await;
+}
+
+/// `expect_count`：正例传 1（咬合锁：请求必须真实到达）；负例传 0
+/// （std never-touches-http 证明零请求，expect(0) 使任何到达都红）。
+async fn mount_initialize_expect(server: &wiremock::MockServer, expect_count: u64) {
+    let init_ok = wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1,
+        "result": {"protocolVersion": "2024-11-05", "capabilities": {},
+                    "serverInfo": {"name": "dispatch-fake", "version": "0.1.0"}}
+    }));
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::body_string_contains(
+            "\"method\":\"initialize\"",
+        ))
+        .respond_with(init_ok)
+        .expect(expect_count)
+        .mount(server)
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_from_server_config_url_only_entry_takes_http_branch() {
+    // 手写 {name, url}（transport_type/command 缺失）= HTTP 意图。
+    // 修复前：真相源掉进 stdio 臂 → 空 command spawn 必败，而 CLI 诊断
+    // 面按 HTTP 报告——诊断与行为分裂。咬合锁：修复前本测试红（stdio
+    // spawn 错误 + wiremock 零请求）。
+    let server = wiremock::MockServer::start().await;
+    mount_initialize(&server).await;
+
+    let config = serde_json::from_value(serde_json::json!({
+        "name": "handwritten",
+        "url": server.uri()
+    }))
+    .unwrap();
+    let mut client =
+        McpClient::from_server_config(&config).expect("url-only entry must dispatch to HTTP");
+    client
+        .initialize()
+        .await
+        .expect("handwritten url entry must connect over HTTP");
+    assert_eq!(
+        client.server_info().map(|i| i.name.as_str()),
+        Some("dispatch-fake")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_from_server_config_explicit_http_alias_connects() {
+    // 显式三别名（大小写敏感）走 HTTP——真连通证明。
+    for alias in ["http", "streamable_http", "streamable-http"] {
+        let server = wiremock::MockServer::start().await;
+        mount_initialize(&server).await;
+        let config = serde_json::from_value(serde_json::json!({
+            "name": "explicit", "transport_type": alias, "url": server.uri()
+        }))
+        .unwrap();
+        let mut client = McpClient::from_server_config(&config)
+            .unwrap_or_else(|e| panic!("alias {alias} must dispatch to HTTP: {e}"));
+        client
+            .initialize()
+            .await
+            .unwrap_or_else(|e| panic!("alias {alias} must connect: {e}"));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_from_server_config_explicit_http_empty_url_is_invalid_config() {
+    let config = serde_json::from_value(serde_json::json!({
+        "name": "no-url", "transport_type": "http"
+    }))
+    .unwrap();
+    let err = match McpClient::from_server_config(&config) {
+        Ok(_) => panic!("http entry without url must be rejected"),
+        Err(e) => e,
+    };
+    assert!(err.to_string().contains("no url"), "got: {err}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_from_server_config_stdio_entry_never_touches_http() {
+    // 显式 stdio（有 command）即使带 url（normalize legacy：url=command）
+    // 也走 stdio——spawn 假命令失败，wiremock 零请求证明未走 HTTP。
+    let server = wiremock::MockServer::start().await;
+    // expect(0)：任何到达的请求即红，与下方 received_requests 断言双保险。
+    mount_initialize_expect(&server, 0).await;
+
+    let config = serde_json::from_value(serde_json::json!({
+        "name": "legacy", "command": "definitely-not-a-real-binary-xyz",
+        "url": server.uri()
+    }))
+    .unwrap();
+    let mut client =
+        McpClient::from_server_config(&config).expect("stdio dispatch is construction-only");
+    let err = client
+        .initialize()
+        .await
+        .expect_err("fake command must fail to spawn");
+    let text = format!("{err:#}");
+    assert!(
+        !text.contains("HTTP"),
+        "stdio entry must not produce HTTP-shaped errors: {text}"
+    );
+    assert!(
+        server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .is_empty(),
+        "stdio entry must not send any HTTP request"
+    );
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_from_server_config_web_stdio_url_field_acts_as_command() {
+    // Dashboard MCP 管理页 stdio 约定：命令存 url 字段（前端 payload 不发
+    // command，web server_add 硬编码 command 空）。运行期只读 command——
+    // 无回落则 Dashboard 新建 stdio 条目 spawn 空命令必败。
+    // 差分断言：同一假命令分别放 command / url 字段，spawn 错误文本必须
+    // 一致（spawn 错误文本不含程序名，直接相等比对最稳）。
+    let fake = "definitely-not-a-real-binary-xyz";
+    let via_command = serde_json::from_value(serde_json::json!({
+        "name": "web-stdio", "transport_type": "stdio", "command": fake
+    }))
+    .unwrap();
+    let via_url = serde_json::from_value(serde_json::json!({
+        "name": "web-stdio", "transport_type": "stdio", "url": fake
+    }))
+    .unwrap();
+
+    let err_command = McpClient::from_server_config(&via_command)
+        .expect("dispatch construction ok")
+        .initialize()
+        .await
+        .expect_err("fake command must fail to spawn");
+    let err_url = McpClient::from_server_config(&via_url)
+        .expect("dispatch construction ok")
+        .initialize()
+        .await
+        .expect_err("url-as-command fallback must reach spawn");
+
+    assert_eq!(
+        err_command.to_string(),
+        err_url.to_string(),
+        "url field must act as command for stdio dispatch: command={err_command} url={err_url}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_from_server_config_stdio_command_field_wins_over_url() {
+    // command 与 url 同时非空（normalize legacy 形态）：command 优先，
+    // url 不顶替——保证存量盘上条目行为不变。
+    let server = wiremock::MockServer::start().await;
+    mount_initialize_expect(&server, 0).await;
+
+    let config = serde_json::from_value(serde_json::json!({
+        "name": "both", "transport_type": "stdio",
+        "command": "definitely-not-a-real-binary-xyz",
+        "url": server.uri()
+    }))
+    .unwrap();
+    let mut client = McpClient::from_server_config(&config).expect("dispatch construction ok");
+    let err = client
+        .initialize()
+        .await
+        .expect_err("command field must win and fail to spawn");
+    let text = err.to_string();
+    assert!(
+        !text.contains("HTTP"),
+        "command field must win over url (no HTTP dispatch): {text}"
+    );
+    assert!(
+        server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .is_empty(),
+        "url must not be consumed as HTTP when command present"
+    );
+}
+
+#[test]
+fn test_from_server_config_unknown_transport_type_loud_rejected() {
+    // R9：未知 transport_type（Dashboard 曾可写 "sse"）loud 拒绝——静默掉
+    // stdio 臂会把 url 当程序名 spawn，报出与实际问题无关的错误。
+    for tt in ["sse", "SSE", "websocket", "HTTP"] {
+        let config = serde_json::from_value(serde_json::json!({
+            "name": "bad", "transport_type": tt, "url": "http://x/mcp"
+        }))
+        .unwrap();
+        let err = match McpClient::from_server_config(&config) {
+            Ok(_) => panic!("transport_type '{tt}' must be rejected"),
+            Err(e) => e,
+        };
+        let text = err.to_string();
+        assert!(
+            text.contains("unsupported transport_type") && text.contains(tt),
+            "error must name the unsupported value: {text}"
+        );
+    }
+    // 空串（手写条目兼容形态）与大写小写敏感已知值不受拒绝臂影响
+    let ok_stdio = serde_json::from_value(serde_json::json!({
+        "name": "s", "transport_type": "stdio", "command": "x"
+    }))
+    .unwrap();
+    assert!(McpClient::from_server_config(&ok_stdio).is_ok());
+}

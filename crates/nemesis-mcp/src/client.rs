@@ -161,25 +161,56 @@ impl McpClient {
     ///
     /// config→transport 分派的单一真相源（McpManager::discover_tools 与 CLI
     /// `mcp test/tools/resources/prompts` 共用）：
-    /// - `"http"` / `"streamable_http"` / `"streamable-http"` →
+    /// - `"http"` / `"streamable_http"` / `"streamable-http"`（大小写敏感）→
     ///   [`HttpTransport`](crate::http_transport::HttpTransport)（headers
     ///   "KEY: VALUE" 行消费化，值支持 vault:/env:/yaml: 引用现查）；
-    /// - 其他 → `StdioTransport`。
+    /// - 手写条目兼容（2026-10-15 第六轮复查修复）：`transport_type` 缺省
+    ///   且无 `command` 且有 `url` → 按 HTTP 意图处理——stdio 无 url 语义，
+    ///   此前这类条目掉进 stdio 臂空 command 必败，而 CLI 诊断面
+    ///   （`server_entry_is_http`）按 HTTP 报告，诊断与行为分裂；
+    /// - 其他 → `StdioTransport`，且 `command` 空而 `url` 非空时以 `url`
+    ///   充当命令（2026-10-15 第八轮复查修复）：Dashboard MCP 管理页的
+    ///   stdio 约定是命令存 `url` 字段（前端 payload 不发 `command`，
+    ///   web `server_add` 也硬编码 `command` 为空）——运行期只读
+    ///   `command`，无此回落则 Dashboard 新建的 stdio 条目 spawn 空
+    ///   命令必败。存量盘上条目一并痊愈。
+    ///
+    /// 未知 `transport_type`（非空且不在 stdio/http 已知集，如 Dashboard
+    /// 曾可写的 `"sse"`）loud 拒绝（2026-10-15 第九轮复查修复）：静默掉
+    /// stdio 臂会把 url 当程序名 spawn，报出与实际问题无关的错误；与
+    /// protocol/stream 归一「未知值 loud 拒绝」的项目惯例对齐。空串不拒
+    /// （手写条目兼容形态）。
     pub fn from_server_config(config: &ServerConfig) -> ClientResult<Self> {
-        let transport: Box<dyn Transport> = match config.transport_type.as_str() {
-            "http" | "streamable_http" | "streamable-http" => {
-                if config.url.is_empty() {
-                    return Err(ClientError::InvalidConfig(format!(
-                        "MCP server '{}' uses http transport but has no url",
-                        config.name
-                    )));
-                }
-                Box::new(crate::http_transport::HttpTransport::with_headers(
-                    config.url.clone(),
-                    config.headers.clone(),
-                ))
+        let is_http = matches!(
+            config.transport_type.as_str(),
+            "http" | "streamable_http" | "streamable-http"
+        ) || (config.transport_type.is_empty()
+            && config.command.is_empty()
+            && !config.url.is_empty());
+        if !is_http && !config.transport_type.is_empty() && config.transport_type != "stdio" {
+            return Err(ClientError::InvalidConfig(format!(
+                "MCP server '{}' has unsupported transport_type '{}' \
+                 (supported: stdio, http, streamable_http, streamable-http)",
+                config.name, config.transport_type
+            )));
+        }
+        let transport: Box<dyn Transport> = if is_http {
+            if config.url.is_empty() {
+                return Err(ClientError::InvalidConfig(format!(
+                    "MCP server '{}' uses http transport but has no url",
+                    config.name
+                )));
             }
-            _ => Box::new(crate::stdio_transport::StdioTransport::from_config(config)),
+            Box::new(crate::http_transport::HttpTransport::with_headers(
+                config.url.clone(),
+                config.headers.clone(),
+            ))
+        } else {
+            let mut cfg = config.clone();
+            if cfg.command.is_empty() && !cfg.url.is_empty() {
+                cfg.command = cfg.url.clone();
+            }
+            Box::new(crate::stdio_transport::StdioTransport::from_config(&cfg))
         };
         Ok(Self::new(transport))
     }

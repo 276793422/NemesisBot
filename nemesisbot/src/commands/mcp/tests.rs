@@ -1625,6 +1625,42 @@ mod w1_http_add {
             )
             .is_err()
         );
+        // 2026-10-15 第五轮复查：引用名带首尾空格——运行期按原样解析
+        // （resolve_vault_reference / std::env::var 不 trim），必然失败 →
+        // WARN 跳过头 → 401。add 时 loud 拒绝，三前缀同闸。
+        assert!(
+            build(
+                None,
+                Some("http://x/mcp"),
+                None,
+                &["Authorization: vault: pet-token"],
+                None,
+                &[]
+            )
+            .is_err()
+        );
+        assert!(
+            build(
+                None,
+                Some("http://x/mcp"),
+                None,
+                &["Authorization: env: PET_TOKEN"],
+                None,
+                &[]
+            )
+            .is_err()
+        );
+        assert!(
+            build(
+                None,
+                Some("http://x/mcp"),
+                None,
+                &["Authorization: yaml: creds.pet"],
+                None,
+                &[]
+            )
+            .is_err()
+        );
         // 内嵌引用（如 'Bearer vault:x'）：语法上合法（is_secret_reference 只认
         // 整值前缀，内嵌按字面量发送）——由 embedded_ref_headers 警告提示。
         assert!(
@@ -2111,4 +2147,53 @@ mod w1_http_add {
         super::cmd_test(&cfg, "w1alias").await.unwrap();
         server.verify().await;
     }
+}
+
+#[test]
+fn r8_display_command_mirrors_stdio_url_fallback() {
+    // mcp list 命令显示与分派真相源 stdio 回落同源（Dashboard stdio 约定
+    // 命令存 url 字段，无 command 键）。
+    // web 形态：command 键缺省，url 即命令
+    assert_eq!(
+        super::display_command_for(&serde_json::json!({
+            "name": "web", "transport_type": "stdio", "url": "python -m srv"
+        })),
+        "python -m srv"
+    );
+    // 传统形态：command 键在
+    assert_eq!(
+        super::display_command_for(&serde_json::json!({
+            "name": "cli", "command": "python"
+        })),
+        "python"
+    );
+    // command 与 url 并存：command 优先（与分派 command-wins 一致）
+    assert_eq!(
+        super::display_command_for(&serde_json::json!({
+            "name": "both", "command": "python", "url": "python"
+        })),
+        "python"
+    );
+    // 显式空 command + 有 url（畸形）：回落 url（与真相源 is_empty 口径一致）
+    assert_eq!(
+        super::display_command_for(&serde_json::json!({
+            "name": "empty-cmd", "command": "", "url": "python"
+        })),
+        "python"
+    );
+    // 双空：占位
+    assert_eq!(
+        super::display_command_for(&serde_json::json!({ "name": "blank" })),
+        "?"
+    );
+}
+
+#[test]
+fn r8_server_entry_is_http_empty_command_key_matches_dispatch() {
+    // 第八轮对齐：显式 "command": ""（键在但空串）+ 裸 url 无 transport_type
+    // ——真相源按 command.is_empty() 判 HTTP 意图，CLI 镜像不得用 is_none()
+    // 造成诊断/行为分裂。
+    assert!(super::server_entry_is_http(&serde_json::json!({
+        "name": "e", "command": "", "url": "http://x/mcp"
+    })));
 }
