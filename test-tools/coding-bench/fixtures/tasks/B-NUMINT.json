@@ -1,0 +1,18 @@
+{
+  "task_id": "B-NUMINT",
+  "path": "B",
+  "group": "bug",
+  "mother": "{{MOTHERS}}/B-NUMINT",
+  "target_cache": "{{CACHE}}/targetB-NUMINT",
+  "node_modules_cache": null,
+  "split": "holdout",
+  "arm": "main",
+  "model": "openai/gpt-6-sol",
+  "user_request": "本仓库是 num-integer 库。一个溢出缺陷：Integer trait 的 next_multiple_of / prev_multiple_of 方法，当 lhs 为有符号整数的最小值（i32::MIN / i64::MIN）、rhs 为 -1 时，内部取模运算在 debug 构建下溢出 panic（MIN % -1）。数学上 MIN 本身就是 -1 的倍数，正确结果应为 lhs 自身。请修复：rhs == -1 时（包括 lhs 为 MIN 的情形）不得 panic，next_multiple_of 与 prev_multiple_of 都返回 lhs 自身；并补一个回归测试（MIN/-1 与普通值/-1 两个维度断言）。",
+  "allowed_paths": [
+    "src/",
+    "tests/"
+  ],
+  "max_turns": 30,
+  "time_limit_minutes": 45
+}

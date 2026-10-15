@@ -1,0 +1,17 @@
+{
+  "task_id": "CODE-WHOOKFAIL",
+  "path": "C",
+  "group": "bug",
+  "mother": "{{MOTHERS}}/pathC",
+  "target_cache": "{{CACHE}}/targetC",
+  "node_modules_cache": "{{CACHE}}/node_modules",
+  "split": "dev",
+  "arm": "main",
+  "model": "openai/gpt-6-sol",
+  "user_request": "Webhook 入站通道存在未鉴权后门：config 里 api_key 留空（未配置）时，validate_api_key 对任意请求一律放行——部署者不知道需要显式配置 key，端点就处于无鉴权状态。请修复为 fail-closed 语义：api_key 未配置（空）时拒绝所有请求；配置了 api_key 时保持精确匹配（区分大小写）。注意：现有测试中有断言旧的无鉴权放行行为的用例，修复时请一并更新为新语义；并补上 fail-closed 的回归测试。",
+  "allowed_paths": [
+    "crates/nemesis-channels/"
+  ],
+  "max_turns": 30,
+  "time_limit_minutes": 45
+}

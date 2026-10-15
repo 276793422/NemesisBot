@@ -1,0 +1,11 @@
+{
+  "inject": [
+    { "src": "tests.rs", "dst": "crates/nemesis-memory/src/manager/tests.rs" }
+  ],
+  "commands": [
+    { "argv": ["cargo", "test", "-p", "nemesis-memory", "--lib", "manager"] }
+  ],
+  "fail_patterns": ["test result: FAILED"],
+  "runtime_paths": ["logs/", "memory/"],
+  "require_diff": true
+}

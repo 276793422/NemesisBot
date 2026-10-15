@@ -1,0 +1,7 @@
+{
+  "inject": [{ "src": "dtd_long_markup_acceptance.rs", "dst": "tests/dtd_long_markup_acceptance.rs" }],
+  "commands": [{ "argv": ["cargo", "test", "--test", "dtd_long_markup_acceptance"] }],
+  "fail_patterns": ["test result: FAILED"],
+  "runtime_paths": [],
+  "require_diff": true
+}

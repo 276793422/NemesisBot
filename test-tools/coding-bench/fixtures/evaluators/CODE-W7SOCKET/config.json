@@ -1,0 +1,11 @@
+{
+  "inject": [
+    { "src": "useWebSocket.reconnect.spec.ts", "dst": "web/src/composables/__tests__/useWebSocket.reconnect.spec.ts" }
+  ],
+  "commands": [
+    { "argv": ["npx.cmd", "vitest", "run", "src/composables/__tests__/useWebSocket.reconnect.spec.ts"], "cwd": "web" }
+  ],
+  "fail_patterns": [],
+  "runtime_paths": ["logs/"],
+  "require_diff": true
+}

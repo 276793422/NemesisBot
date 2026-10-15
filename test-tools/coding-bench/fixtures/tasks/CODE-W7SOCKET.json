@@ -1,0 +1,17 @@
+{
+  "task_id": "CODE-W7SOCKET",
+  "path": "A",
+  "group": "bug",
+  "mother": "{{MOTHERS}}/pathA",
+  "target_cache": "{{CACHE}}/targetA",
+  "node_modules_cache": "{{CACHE}}/node_modules",
+  "split": "dev",
+  "arm": "main",
+  "model": "openai/gpt-6-sol",
+  "user_request": "前端 useWebSocket 组合式函数存在旧连接事件串扰缺陷：重连或换连之后，旧 socket 迟到的 onclose / onerror 回调仍会执行，直接清空当前连接变量、停止心跳、把状态报成断线——误杀刚建立的新连接（后续发送永久入队、出现双活 socket 帧双发、状态假断线）。请修复：每个 socket 的回调只在自己仍是当前连接时才允许改动模块级状态；补上回归测试。",
+  "allowed_paths": [
+    "web/src/"
+  ],
+  "max_turns": 30,
+  "time_limit_minutes": 45
+}

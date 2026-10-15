@@ -1,0 +1,18 @@
+{
+  "task_id": "CODE-FSTREE",
+  "path": "A",
+  "group": "bug",
+  "mother": "{{MOTHERS}}/pathA",
+  "target_cache": "{{CACHE}}/targetA",
+  "node_modules_cache": "{{CACHE}}/node_modules",
+  "split": "dev",
+  "arm": "main",
+  "model": "openai/gpt-6-sol",
+  "user_request": "Web 服务的 fs.tree 接口（列目录树）存在越权读取漏洞：path 参数传入绝对路径（如 C:/Windows 或 C:\\\\Windows 这类盘符形态）时，内部 PathBuf::join 会替换整个工作区根，导致工作区外的任意目录被列举。请修复：解析后指向工作区之外的任何路径形态（绝对路径、盘符形态、.. 逃逸等）都必须被拒绝并报错（错误信息指明越出 workspace），正常相对路径完全不受影响；补上回归测试。",
+  "allowed_paths": [
+    "crates/nemesis-web/src/handlers/fs.rs",
+    "crates/nemesis-web/src/handlers/fs/"
+  ],
+  "max_turns": 30,
+  "time_limit_minutes": 45
+}

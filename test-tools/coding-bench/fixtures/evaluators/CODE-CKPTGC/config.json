@@ -1,0 +1,11 @@
+{
+  "inject": [
+    { "src": "tests.rs", "dst": "crates/nemesis-agent/src/checkpoint/tests.rs" }
+  ],
+  "commands": [
+    { "argv": ["cargo", "test", "-p", "nemesis-agent", "--lib", "checkpoint"] }
+  ],
+  "fail_patterns": ["test result: FAILED"],
+  "runtime_paths": ["logs/"],
+  "require_diff": true
+}

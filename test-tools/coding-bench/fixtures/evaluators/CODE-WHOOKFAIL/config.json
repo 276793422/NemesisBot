@@ -1,0 +1,11 @@
+{
+  "inject": [
+    { "src": "tests.rs", "dst": "crates/nemesis-channels/src/webhook_inbound/tests.rs" }
+  ],
+  "commands": [
+    { "argv": ["cargo", "test", "-p", "nemesis-channels", "--lib", "webhook"] }
+  ],
+  "fail_patterns": ["test result: FAILED"],
+  "runtime_paths": ["logs/"],
+  "require_diff": true
+}

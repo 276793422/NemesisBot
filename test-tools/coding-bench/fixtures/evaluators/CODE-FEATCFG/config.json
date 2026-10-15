@@ -1,0 +1,13 @@
+{
+  "inject": [],
+  "commands": [
+    { "argv": ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{{EVAL}}/CODE-FEATCFG/check_gates.ps1", "-LibPath", "crates/nemesis-channels/src/lib.rs"] },
+    { "argv": ["cargo", "check", "-p", "nemesis-channels", "--no-default-features"] },
+    { "argv": ["cargo", "check", "-p", "nemesis-channels", "--no-default-features", "--features", "web"] },
+    { "argv": ["cargo", "check", "-p", "nemesis-channels", "--no-default-features", "--features", "webhook"] },
+    { "argv": ["cargo", "check", "-p", "nemesis-channels", "--no-default-features", "--features", "rpc"] }
+  ],
+  "fail_patterns": ["error\\[", "^error:"],
+  "runtime_paths": ["logs/"],
+  "require_diff": true
+}

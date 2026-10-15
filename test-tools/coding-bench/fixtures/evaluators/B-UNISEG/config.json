@@ -1,0 +1,7 @@
+{
+  "inject": [{ "src": "empty_sentence_size_hint_acceptance.rs", "dst": "tests/empty_sentence_size_hint_acceptance.rs" }],
+  "commands": [{ "argv": ["cargo", "test", "--test", "empty_sentence_size_hint_acceptance"] }],
+  "fail_patterns": ["test result: FAILED"],
+  "runtime_paths": [],
+  "require_diff": true
+}
