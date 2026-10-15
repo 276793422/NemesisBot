@@ -12,7 +12,11 @@ async fn test_demo_four_acts_evidence() {
     let ev = demo_acts(tmp.path()).await.expect("demo acts ok");
 
     // 幕 1：凭据注入后 127.0.0.1:9 connect refused 诚实报错 + 零泄露
+    // （无 security 构建幕 1 诚实跳过：strict_error=跳过文案、扫描零文件、
+    // 零命中平凡成立——覆盖文件数断言随 security 同闸，与下方
+    // strict_receipt_outcome 断言同款先例）。
     assert!(!ev.strict_error.is_empty(), "幕1 应有诚实报错");
+    #[cfg(feature = "security")]
     assert!(ev.leak_files_scanned > 0, "泄露扫描应覆盖文件");
     assert_eq!(ev.leak_hits, 0, "凭据铁律：密钥字节零命中");
     #[cfg(feature = "security")]

@@ -509,6 +509,8 @@ fn demo_walk_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
 
 /// 幕 1 清单：rest 型 + 必填凭据槽位（header 注入 + Bearer 前缀）。base 指向
 /// 127.0.0.1:9（discard 端口，connect refused 必然诚实失败——零外网出网）。
+/// 消费者 = 幕 1（security 闸）——同闸。
+#[cfg(feature = "security")]
 const DEMO_STRICT_MANIFEST: &str = r#"
 [connector]
 id = "demo-strict"
