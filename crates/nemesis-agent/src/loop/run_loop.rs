@@ -144,11 +144,18 @@ impl AgentLoop {
         loop {
             // 器官 1（§4.2）：MCP/config 热重载 + cancel/estop 顶检 +
             // max_turns/grace/cron 预算判定。Some = (终局事件, 终端原因)。
-            if let Some((ev, reason)) =
+            if let Some((mut ev, reason)) =
                 self.prepare_round(turn_budget, cancel_token, &mut st, context.user == "cron")
             {
                 if let Some(r) = reason {
                     st.terminal_reason = Some(r);
+                }
+                // E5（2026-10-15 收尾保障）：预算暂停前的收尾编译探针——
+                // 本轮写过代码时跑一次快速编译检查，把树状态诚实注记进
+                // 暂停消息（只报告不回滚；无写操作/配置关/无生态标记全部
+                // 静默直通，暂停消息一字不动）。
+                if matches!(reason, Some("budget_exhausted") | Some("max_turns")) {
+                    self.attach_pre_pause_probe_note(&mut ev, &st).await;
                 }
                 events.push(ev);
                 break;

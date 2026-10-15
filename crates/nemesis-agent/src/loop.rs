@@ -128,6 +128,11 @@ mod observer;
 pub use observer::*;
 #[allow(unused_imports)]
 pub(crate) use observer::*;
+// E5（2026-10-15 收尾保障）：预算暂停前收尾编译探针（触发闸/探针执行/
+// 诚实注记；计划 docs/PLAN/2026-10-15_编码基准固化与E5收尾保障计划.md 项②）。
+mod pre_pause_probe;
+#[allow(unused_imports)]
+pub(crate) use pre_pause_probe::*;
 mod provider_stream;
 #[allow(unused_imports)]
 pub use provider_stream::*;
@@ -1008,6 +1013,9 @@ mod turn_wal_loop_tests;
 // S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;
+// E5（2026-10-15 收尾保障）：预算暂停前编译探针测试（纯函数 + loop 级咬合锁）。
+#[cfg(test)]
+mod pre_pause_probe_tests;
 // G4 (devtool-upgrade 阶段 3)：subagent 后台化 + 完成回灌测试。
 #[cfg(test)]
 mod g4_background_spawn_tests;
