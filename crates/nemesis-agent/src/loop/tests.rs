@@ -903,7 +903,8 @@ fn tool_loop_response() -> LlmResponse {
 /// A budget override REPLACES the global max_turns for the turn: with
 /// max_turns=100 but budget=2, the turn stops after 2 tool rounds (+1 grace
 /// round reusing the existing semantics) with the budget-specific message —
-/// not after 100.
+/// not after 100. Cron origin (context.user == "cron", set by
+/// run_agent_loop_internal from cron_job_id) gets the resumable wording.
 #[tokio::test]
 async fn cron_budget_override_stops_turn() {
     // Plenty of tool-requesting responses — the budget must cut the turn
@@ -923,7 +924,9 @@ async fn cron_budget_override_stops_turn() {
     );
 
     let instance = AgentInstance::new(config);
-    let context = RequestContext::new("web", "chat1", "user1", "session-budget");
+    // user="cron"：与生产 cron 路径一致（run_agent_loop_internal 按
+    // cron_job_id 设置）——预算暂停文案按来源分岔的 cron 臂。
+    let context = RequestContext::new("web", "chat1", "cron", "session-budget");
 
     let trace_id = "budget-test".to_string();
     let token = tokio_util::sync::CancellationToken::new();
@@ -956,6 +959,59 @@ async fn cron_budget_override_stops_turn() {
         .filter(|e| matches!(e, AgentEvent::ToolCall(_)))
         .count();
     assert_eq!(tool_rounds, 3, "2 budget rounds + 1 grace round");
+}
+
+/// 预算暂停文案按来源分岔（2026-10-15 产品验证实验 #2 回归锁）：非 cron
+/// 来源的预算（detached：headless run 的 --max-turns / 子代理 spawn
+/// max_turns）不可续——文案不得再谎称「下次触发时会重新获得预算」。
+#[tokio::test]
+async fn detached_budget_pause_does_not_promise_cron_resume() {
+    let responses: Vec<LlmResponse> = (0..20).map(|_| tool_loop_response()).collect();
+    let provider = MockLlmProvider::new(responses);
+    let mut config = test_config();
+    config.max_turns = 100;
+
+    let mut agent_loop = AgentLoop::new(Box::new(provider), config.clone());
+    agent_loop.register_tool(
+        "calculator".to_string(),
+        Box::new(MockTool {
+            result: "0".to_string(),
+        }),
+    );
+
+    let instance = AgentInstance::new(config);
+    // 普通（非 cron）用户来源：run_detached_events / run 模式即此形态。
+    let context = RequestContext::new("web", "chat1", "user1", "session-budget-detached");
+
+    let trace_id = "budget-detached-test".to_string();
+    let token = tokio_util::sync::CancellationToken::new();
+    let events = agent_loop
+        .run_with_trace(
+            &instance,
+            "loop forever",
+            &context,
+            &trace_id,
+            false,
+            &token,
+            Some(2),
+            &[],
+        )
+        .await;
+
+    let done = events.iter().find_map(|e| match e {
+        AgentEvent::Done(msg) => Some(msg.clone()),
+        _ => None,
+    });
+    let done = done.expect("budget stop emits a Done");
+    assert!(done.contains("任务预算 2 轮"), "done: {done}");
+    assert!(
+        done.contains("不会自动续跑") && done.contains("--max-turns"),
+        "detached 暂停必须给重跑指引: {done}"
+    );
+    assert!(
+        !done.contains("定时任务"),
+        "非 cron 来源不得出现定时任务文案: {done}"
+    );
 }
 
 /// No budget (None) → the global max_turns applies with its usual message

@@ -241,6 +241,79 @@ async fn run_one_stage_timeout_kills_and_reports() {
     assert_eq!(code, None, "超时收尸后无退出码");
 }
 
+/// 超时收尸**树杀**回归锁（2026-10-15 产品验证实验 #1）：timeout 到点后
+/// 不仅 shell 本体，shell 派生的孙进程也必须死——旧 start_kill 只杀
+/// cmd/sh，cargo/rustc 等真实工作进程整棵存活（实证：run_checks 声明
+/// 600s 超时后 cargo 又跑了 25 分钟直到手工杀树）。孙进程先落自身 PID
+/// 再长眠，超时回收后验尸。
+#[tokio::test]
+async fn run_one_stage_timeout_kills_grandchild_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    let pidfile = dir.path().join("gc.pid");
+    let pidfile_str = pidfile.to_string_lossy().to_string();
+    let cmd = if cfg!(windows) {
+        // 孙进程 = powershell：先落自身 PID 再长眠（自报 PID 免 tasklist
+        // 镜像名扫描歧义）。
+        format!(
+            "powershell -NoProfile -Command \"$PID | Set-Content -LiteralPath '{}'; Start-Sleep -Seconds 300\"",
+            pidfile_str
+        )
+    } else {
+        // 孙进程 = 后台 sleep；$! 即其 PID。
+        format!("sleep 300 & echo $! > '{}'; wait", pidfile_str)
+    };
+    let (code, _stdout, _stderr, timed_out) = run_one_stage(&cmd, None, 8).await;
+    assert!(timed_out, "长眠孙进程必须在 8s 预算内被判超时");
+    assert_eq!(code, None);
+
+    // 等孙进程把 PID 落盘（powershell 冷启动可到秒级；拿不到 = 环境问题，
+    // 诚实报错不做假绿）。
+    let mut pid: Option<u32> = None;
+    for _ in 0..30 {
+        if let Ok(s) = std::fs::read_to_string(&pidfile) {
+            pid = s.trim().parse().ok();
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let gc_pid = pid.unwrap_or_else(|| {
+        panic!(
+            "孙进程 PID 未落盘（{:?} 不存在）——解释器未在预算内启动，环境不具备该测试前提",
+            pidfile
+        )
+    });
+
+    // 树杀后孙进程必须死（轮询给 taskkill/kill 一点传播时间）。
+    let mut dead = false;
+    for _ in 0..50 {
+        if !process_alive(gc_pid) {
+            dead = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(dead, "超时后孙进程 pid={} 仍存活——树杀未落地", gc_pid);
+}
+
+/// 平台进程存活检查（locale 无关；同 background_registry::tests 模式）。
+#[cfg(target_os = "windows")]
+fn process_alive(pid: u32) -> bool {
+    let out = std::process::Command::new("tasklist")
+        .args(["/FO", "CSV", "/NH", "/FI", &format!("PID eq {}", pid)])
+        .output()
+        .expect("tasklist");
+    String::from_utf8_lossy(&out.stdout).contains(&format!("\"{}\"", pid))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn process_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 // ---------------------------------------------------------------------------
 // WebSearchTool：无 key 早退 + 全关错误臂（零网络）
 // ---------------------------------------------------------------------------

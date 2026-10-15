@@ -275,6 +275,77 @@ async fn grep_tool_finds_pattern_in_temp_tree() {
     assert!(err.contains("invalid regex"), "got: {}", err);
 }
 
+/// path=单文件此前是假阴性黑洞（2026-10-15 产品验证实验 #1 回归锁）：
+/// grep_recursive 对文件先 read_dir → Err 静默吞 → 裸「No matches」且
+/// ok=true（USAGCSV 轮实证：Cargo.toml 连查 5 次烧 6+ 轮）。修复后文件
+/// 路径直接扫；glob 不匹配/不存在/非 UTF-8 一律诚实，绝不裸 No matches。
+#[tokio::test]
+async fn grep_tool_explicit_single_file_is_scanned() {
+    let ws = tempfile::tempdir().unwrap();
+    let cargo_toml = ws.path().join("Cargo.toml");
+    std::fs::write(
+        &cargo_toml,
+        "[dependencies]\nnemesis-data = { path = \"crates/nemesis-data\" }\n",
+    )
+    .unwrap();
+
+    let t = super::GrepTool::new(ws.path().to_string_lossy().to_string());
+
+    // ① 显式文件命中：这就是实验里烧掉 6 轮的形态（path=具体文件）。
+    let out = t
+        .execute(
+            &serde_json::json!({
+                "pattern": "nemesis-data",
+                "path": cargo_toml.to_string_lossy()
+            })
+            .to_string(),
+            &ctx(),
+        )
+        .await
+        .expect("grep on explicit file must execute");
+    assert!(out.contains("Found 1 match"), "got: {}", out);
+    assert!(out.contains("Cargo.toml:2"), "got: {}", out);
+
+    // ② 显式文件无命中：注明「在哪个文件里没搜到」，仍是无谎话的 No matches。
+    let out = t
+        .execute(
+            &serde_json::json!({"pattern": "clap", "path": cargo_toml.to_string_lossy()})
+                .to_string(),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    assert!(out.contains("No matches"), "got: {}", out);
+    assert!(out.contains("Cargo.toml"), "got: {}", out);
+
+    // ③ glob 与显式文件不匹配：诚实 Skipped，不是 No matches。
+    let out = t
+        .execute(
+            &serde_json::json!({
+                "pattern": "nemesis-data",
+                "path": cargo_toml.to_string_lossy(),
+                "glob": "*.rs"
+            })
+            .to_string(),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    assert!(out.contains("Skipped"), "got: {}", out);
+    assert!(out.contains("does not match glob"), "got: {}", out);
+
+    // ④ 路径不存在：诚实 Err，不是 No matches。
+    let missing = ws.path().join("no_such_dir_xyz");
+    let err = t
+        .execute(
+            &serde_json::json!({"pattern": "x", "path": missing.to_string_lossy()}).to_string(),
+            &ctx(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("does not exist"), "got: {}", err);
+}
+
 /// GitTool：未知 action / 非 git 目录 / 真仓库 status（3495-3550）。
 #[tokio::test]
 async fn git_tool_status_and_unknown_action() {
