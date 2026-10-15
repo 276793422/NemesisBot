@@ -147,7 +147,7 @@ impl AgentLoop {
                             }
                         }
                     }
-                    s.push_str("。");
+                    s.push('。');
                     s
                 }
                 Err(e) => format!("⚠ 撤销未完成：{e}"),
