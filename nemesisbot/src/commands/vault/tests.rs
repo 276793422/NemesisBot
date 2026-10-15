@@ -5,6 +5,10 @@ use super::*;
 /// argon2 模式：环境变量存在 → 直接使用（不触发交互输入）。
 #[test]
 fn passphrase_from_env_var() {
+    // env 是进程单例：持 crate 级串行锁防踩其他 env 触及测试群（横向同款纪律）。
+    let _env_guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     // 本测试进程内设置环境变量，验证取用路径（临时键避免污染）。
     unsafe {
         std::env::set_var("NEMESISBOT_VAULT_PASSPHRASE", "env-passphrase-test");
