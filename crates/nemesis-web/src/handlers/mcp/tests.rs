@@ -242,3 +242,119 @@ fn mcp_update_entry_closure_err_leaves_disk_untouched() {
     .unwrap();
     assert_eq!(raw["servers"][0]["url"], "", "abort 后盘上保持事务前状态");
 }
+
+// ---------------------------------------------------------------------------
+// R9（2026-10-15）：transport_type 入参值集闸——runtime 不支持的值（如
+// "sse"）此前 server.add/server.update 原样落盘，挂载时才由分派真相源
+// 拒绝。API 输入面收紧为 loud 拒绝，语义与 CLI `mcp add` 同源。
+// R10（2026-10-15）：值集闸升级为归一闸——大小写变体（"HTTP"）此前原样
+// 落盘，而分派真相源别名匹配大小写敏感，挂载期同样 loud 拒绝。现在规范
+// 小写落盘（CLI `mcp add` 写盘同款语义）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn r9_canonical_transport_type_value_set() {
+    use super::canonical_transport_type;
+    // 合法值返回规范小写形态
+    assert_eq!(canonical_transport_type("http").unwrap(), "http");
+    assert_eq!(canonical_transport_type("stdio").unwrap(), "stdio");
+    // 大小写变体归一（与 CLI build 同源匹配、规范落盘）
+    assert_eq!(canonical_transport_type("HTTP").unwrap(), "http");
+    assert_eq!(canonical_transport_type("Stdio").unwrap(), "stdio");
+    // 未知值 loud 拒绝，错误信息保留用户原值
+    for bad in ["sse", "SSE", "websocket", ""] {
+        let err = canonical_transport_type(bad).unwrap_err();
+        assert!(err.contains("不支持的 transport_type"), "actual: {err}");
+        assert!(err.contains(bad), "错误信息应含用户原值 '{bad}': {err}");
+    }
+}
+
+#[tokio::test]
+async fn r9_server_add_rejects_unsupported_transport_without_disk_write() {
+    let handler = McpHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    let cfg = nemesis_config::McpConfig::default();
+    std::fs::write(
+        dir.path().join("config/config.mcp.json"),
+        serde_json::to_string_pretty(&cfg).unwrap(),
+    )
+    .unwrap();
+    let ctx = make_ctx(&dir);
+
+    let data = serde_json::json!({
+        "name": "sse-srv", "transport_type": "sse", "url": "http://x/sse"
+    });
+    let err = match handler.handle_cmd("server.add", Some(data), &ctx).await {
+        Ok(v) => panic!("sse add must be loudly rejected, got: {v:?}"),
+        Err(e) => e,
+    };
+    assert!(err.contains("不支持的 transport_type"), "actual: {err}");
+
+    // 拒绝后盘上无残留条目
+    let raw: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("config/config.mcp.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        raw["servers"]
+            .as_array()
+            .map(|a| a.is_empty())
+            .unwrap_or(true),
+        "rejected entry must not persist: {raw}"
+    );
+}
+
+// R10（2026-10-15）：大小写变体规范小写落盘——分派真相源别名匹配大小写
+// 敏感，"HTTP" 原样落盘会在挂载期被 loud 拒绝（API 接受 runtime 消费不
+// 了的值，失败延迟到挂载）。server.add 与 server.update 两臂都归一。
+#[tokio::test]
+async fn r10_transport_type_case_variants_canonicalized_on_disk() {
+    let handler = McpHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(
+        dir.path().join("config/config.mcp.json"),
+        serde_json::to_string_pretty(&nemesis_config::McpConfig::default()).unwrap(),
+    )
+    .unwrap();
+    let ctx = make_ctx(&dir);
+
+    // server.add "HTTP" → 盘上 "http"
+    let add = serde_json::json!({
+        "name": "case-srv", "transport_type": "HTTP", "url": "http://x/mcp"
+    });
+    handler
+        .handle_cmd("server.add", Some(add), &ctx)
+        .await
+        .expect("HTTP variant must be accepted and canonicalized");
+
+    // server.update 补一个 stdio 条目再改 "Stdio" → 盘上 "stdio"
+    let add2 = serde_json::json!({
+        "name": "case-stdio", "transport_type": "http", "url": "http://y/mcp"
+    });
+    handler
+        .handle_cmd("server.add", Some(add2), &ctx)
+        .await
+        .expect("canonical http add must succeed");
+    let upd = serde_json::json!({ "name": "case-stdio", "transport_type": "Stdio" });
+    handler
+        .handle_cmd("server.update", Some(upd), &ctx)
+        .await
+        .expect("Stdio variant must be accepted and canonicalized");
+
+    let raw: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("config/config.mcp.json")).unwrap(),
+    )
+    .unwrap();
+    let servers = raw["servers"].as_array().expect("servers array");
+    let get_type = |name: &str| {
+        servers
+            .iter()
+            .find(|s| s["name"] == name)
+            .map(|s| s["transport_type"].as_str().unwrap_or("?"))
+            .unwrap_or("missing")
+    };
+    assert_eq!(get_type("case-srv"), "http", "HTTP → http 盘上归一");
+    assert_eq!(get_type("case-stdio"), "stdio", "Stdio → stdio 盘上归一");
+}

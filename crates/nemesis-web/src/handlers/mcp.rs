@@ -117,6 +117,24 @@ fn parse_string_list(data: &serde_json::Value, key: &str) -> Option<Vec<String>>
         .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
 }
 
+/// transport_type 入参归一（2026-10-15 第九轮值集闸 + 第十轮大小写归一）：
+/// 大小写不敏感接受、**规范小写落盘**——CLI `mcp add` 写盘同款语义
+/// （`AddRequest::build` 按 `to_ascii_lowercase` 匹配后存规范形态）；而
+/// 分派真相源（`McpClient::from_server_config`）的别名匹配是大小写敏感
+/// 的，非规范形态（如 "HTTP"）落盘会在挂载期被 loud 拒绝——API 输入面
+/// 必须产出运行期能消费的字节。未知值（如 runtime 不支持的 "sse"）loud
+/// 拒绝不落盘（兜底手写配置），此处收紧 API 输入面；错误信息保留用户
+/// 原值便于定位。
+fn canonical_transport_type(v: &str) -> Result<&'static str, String> {
+    match v.to_ascii_lowercase().as_str() {
+        "http" => Ok("http"),
+        "stdio" => Ok("stdio"),
+        _ => Err(format!(
+            "不支持的 transport_type '{v}'（支持: http, stdio）"
+        )),
+    }
+}
+
 impl McpHandler {
     fn status(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
         let config = load_mcp_config(workspace)?;
@@ -164,10 +182,16 @@ impl McpHandler {
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
         let name = crate::handlers::get_str(data, "name")?;
+        // transport_type 入参归一（2026-10-15 第九/十轮）：runtime 不支持
+        // 的值（如 "sse"）loud 拒绝不落盘——此前原样写盘，挂载时才由分派
+        // 真相源拒绝；大小写变体（"HTTP"）规范为小写落盘（CLI `mcp add`
+        // 写盘同款语义），否则分派真相源（大小写敏感别名匹配）挂载期拒绝。
+        let transport_raw = crate::handlers::get_opt_str(data, "transport_type")
+            .unwrap_or_else(|| "stdio".to_string());
+        let transport_type = canonical_transport_type(&transport_raw)?;
         let mut server = nemesis_config::McpServerConfig {
             name: name.clone(),
-            transport_type: crate::handlers::get_opt_str(data, "transport_type")
-                .unwrap_or_else(|| "stdio".to_string()),
+            transport_type: transport_type.to_string(),
             url: crate::handlers::get_opt_str(data, "url").unwrap_or_default(),
             description: crate::handlers::get_opt_str(data, "description").unwrap_or_default(),
             headers: parse_string_list(data, "headers").unwrap_or_default(),
@@ -218,7 +242,8 @@ impl McpHandler {
                 .ok_or_else(|| format!("MCP server '{}' not found", name))?;
 
             if let Some(v) = data.get("transport_type").and_then(|v| v.as_str()) {
-                server.transport_type = v.to_string();
+                // 规范小写落盘（与 server.add 同源，2026-10-15 第十轮）。
+                server.transport_type = canonical_transport_type(v)?.to_string();
             }
             if let Some(v) = data.get("url").and_then(|v| v.as_str()) {
                 server.url = v.to_string();
