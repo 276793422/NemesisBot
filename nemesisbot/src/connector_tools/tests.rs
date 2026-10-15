@@ -533,16 +533,27 @@ fn test_merge_request_headers_credential_wins_and_folds_case() {
 /// 端到端（`Authorization: token <PAT>` 认证头形态），同时钉死同名冲突
 /// 裁决——静态头 `Authorization` 被 vault 凭据覆盖。
 #[cfg(feature = "security")]
-#[tokio::test]
-async fn test_http_static_headers_patch_and_vault_prefix_end_to_end() {
-    use nemesis_security::vault::VaultStore;
-
+#[test]
+fn test_http_static_headers_patch_and_vault_prefix_end_to_end() {
     // env 口令是进程单例：与 vault_runtime / commands::vault 的 env 触及测试群
     // 经 crate::GLOBAL_STATE_LOCK 互斥（本地 cargo test 并行防互踩；nextest
-    // 每测试独立进程，锁无竞争直通）。
+    // 每测试独立进程，锁无竞争直通）。std 锁 guard 不得活过 await（clippy
+    // await_holding_lock，CI -D warnings 红）——锁在同步外壳持有，async 体经
+    // block_on 执行（commands/vault run_arms 同款形态）。
     let _env_guard = crate::GLOBAL_STATE_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(test_http_static_headers_patch_and_vault_prefix_end_to_end_inner());
+}
+
+#[cfg(feature = "security")]
+async fn test_http_static_headers_patch_and_vault_prefix_end_to_end_inner() {
+    use nemesis_security::vault::VaultStore;
+
     let server = wiremock::MockServer::start().await;
     wiremock::Mock::given(wiremock::matchers::method("PATCH"))
         .and(wiremock::matchers::path("/repos/octocat/demo/issues/1"))
@@ -798,16 +809,27 @@ fn test_workspace_template_webui_manifest_is_valid_and_disabled_by_default() {
 /// 6 op 对 wiremock（Gitea 同形态 API）全跑通：认证头注入 / GET query /
 /// POST+PATCH body / 回执主键（issue_comment→id、issue_close→number）。
 #[cfg(feature = "security")]
-#[tokio::test]
-async fn test_gitea_template_ops_against_mock_gitea() {
-    use nemesis_security::vault::VaultStore;
-
+#[test]
+fn test_gitea_template_ops_against_mock_gitea() {
     // env 口令是进程单例：与 vault_runtime / commands::vault 的 env 触及测试群
     // 经 crate::GLOBAL_STATE_LOCK 互斥（本地 cargo test 并行防互踩；nextest
-    // 每测试独立进程，锁无竞争直通）。
+    // 每测试独立进程，锁无竞争直通）。std 锁 guard 不得活过 await（clippy
+    // await_holding_lock，CI -D warnings 红）——锁在同步外壳持有，async 体经
+    // block_on 执行（commands/vault run_arms 同款形态）。
     let _env_guard = crate::GLOBAL_STATE_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(test_gitea_template_ops_against_mock_gitea_inner());
+}
+
+#[cfg(feature = "security")]
+async fn test_gitea_template_ops_against_mock_gitea_inner() {
+    use nemesis_security::vault::VaultStore;
+
     let server = wiremock::MockServer::start().await;
     let auth = || wiremock::matchers::header("authorization", "token mock-pat");
     for (method_m, path_m, body) in [
@@ -990,16 +1012,27 @@ async fn gitea_invoke(
 /// security=None：SSRF 闸默认拦回环而真实 Gitea 就在回环——闸行为已由
 /// 独立单测覆盖（test_connector_outbound_ssrf_blocked）。
 #[cfg(feature = "security")]
-#[tokio::test]
-async fn gitea_real_chain_e2e() {
-    use nemesis_security::vault::VaultStore;
-
+#[test]
+fn gitea_real_chain_e2e() {
     // env 口令是进程单例：与 vault_runtime / commands::vault 的 env 触及测试群
     // 经 crate::GLOBAL_STATE_LOCK 互斥（本地 cargo test 并行防互踩；nextest
-    // 每测试独立进程，锁无竞争直通）。
+    // 每测试独立进程，锁无竞争直通）。std 锁 guard 不得活过 await（clippy
+    // await_holding_lock，CI -D warnings 红）——锁在同步外壳持有，async 体经
+    // block_on 执行（commands/vault run_arms 同款形态）。
     let _env_guard = crate::GLOBAL_STATE_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(gitea_real_chain_e2e_inner());
+}
+
+#[cfg(feature = "security")]
+async fn gitea_real_chain_e2e_inner() {
+    use nemesis_security::vault::VaultStore;
+
     let Some(url) = std::env::var("GITEA_E2E_URL").ok() else {
         println!(
             "SKIP: GITEA_E2E_URL 未设置（真实链路层缺席；scripts/test-gitea-e2e.sh 可拉起实例）"
