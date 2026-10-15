@@ -5970,7 +5970,8 @@ async fn test_set_cluster_task_queue_routes_callback_to_work_queue() {
         "child-9".into(),
         "tool-9".into(),
         serde_json::json!({"messages": []}),
-    );
+    )
+    .expect("save_async_state should succeed");
 
     let resp = cluster
         .rpc_server
@@ -6039,7 +6040,8 @@ async fn test_callback_routing_with_full_work_queue_logs_error() {
         "child-10".into(),
         "tool-10".into(),
         serde_json::json!({"messages": []}),
-    );
+    )
+    .expect("save_async_state should succeed");
 
     let resp = cluster
         .rpc_server

@@ -225,13 +225,17 @@ impl ClusterTaskList {
     ///
     /// Sets conversation snapshot, waiting_for_task_id, waiting_tool_call_id,
     /// and status to WaitingRemote in a single DashMap entry update.
+    ///
+    /// 内存态更新是真相源、照常先行；磁盘持久化（会话快照 + 任务索引）失败
+    /// 聚合进返回值（NB-CODE-008）——恢复面静默失效必须让调用方可感知。
     pub fn save_async_state(
         &self,
         task_id: &str,
         child_task_id: String,
         tool_call_id: String,
         conversation: serde_json::Value,
-    ) {
+    ) -> Result<(), String> {
+        let mut persist_errors: Vec<String> = Vec::new();
         // Update task state and persist conversation in a single DashMap entry lock.
         // IMPORTANT: the persist_to_disk() call must happen AFTER the get_mut guard
         // is dropped, because persist_to_disk() calls self.tasks.iter() internally.
@@ -248,7 +252,11 @@ impl ClusterTaskList {
                     "[ClusterTaskList] Saved async state"
                 );
                 // Persist conversation snapshot to disk (single file for large payload).
-                self.persist_conversation(task_id, task.conversation.as_ref().unwrap());
+                if let Err(e) =
+                    self.persist_conversation(task_id, task.conversation.as_ref().unwrap())
+                {
+                    persist_errors.push(format!("conversation snapshot: {e}"));
+                }
             }
         }
         // Guard is dropped here — safe to iterate DashMap now.
@@ -261,6 +269,13 @@ impl ClusterTaskList {
                 "[ClusterTaskList] Failed to persist task index after save_async_state: {}",
                 e
             );
+            persist_errors.push(format!("task index: {e}"));
+        }
+
+        if persist_errors.is_empty() {
+            Ok(())
+        } else {
+            Err(persist_errors.join("; "))
         }
     }
 
@@ -285,7 +300,13 @@ impl ClusterTaskList {
     /// 2. If resume_execution triggers another __ASYNC__, save_async_state will set a
     ///    new waiting_for_task_id for the next hop (e.g., B→C→D chain).
     /// 3. Prevents a stale child_task_id from matching future callbacks with the same ID.
-    pub fn inject_callback(&self, task_id: &str, response: &str) {
+    ///
+    /// 注入后立即落盘（NB-CODE-007）：内存态 Pending + callback_result 若只存在于
+    /// 内存，父任务 resume（LLM 分钟级）窗口内崩溃 → 重启恢复成 WaitingRemote →
+    /// 回调结果丢失 → 父任务重跑、子任务重复执行。落盘把该窗口收窄到 resume
+    /// 执行中崩溃（走 G5 快照链的固有窗口）。失败透传给调用方（NB-CODE-008 同款
+    /// 诚实化）。
+    pub fn inject_callback(&self, task_id: &str, response: &str) -> Result<(), String> {
         // 取消守卫（W2 P4）：任务已被 task_cancel 下行取消（终态）→ 迟到的
         // 回调不得把它复活回 Pending（防多跳回调链重新入队）；直接回收清理。
         // 注意先读再清理——不能在 get_mut guard 持有期间调 complete_task
@@ -301,7 +322,7 @@ impl ClusterTaskList {
                 "[ClusterTaskList] Late callback for cancelled task — dropping and cleaning up"
             );
             self.complete_task(task_id);
-            return;
+            return Ok(());
         }
         if let Some(mut task) = self.tasks.get_mut(task_id) {
             task.callback_result = Some(response.to_string());
@@ -312,6 +333,15 @@ impl ClusterTaskList {
                 "[ClusterTaskList] Injected callback, status → Pending"
             );
         }
+        // Guard is dropped — safe to iterate DashMap（persist_to_disk 内部 iter）。
+        self.persist_to_disk().map_err(|e| {
+            tracing::warn!(
+                task_id = %task_id,
+                error = %e,
+                "[ClusterTaskList] Failed to persist task index after inject_callback"
+            );
+            format!("persist after inject_callback: {e}")
+        })
     }
 
     // -- per-task cancel（W2 P4）-------------------------------------------
@@ -408,7 +438,11 @@ impl ClusterTaskList {
             .join(format!("{}.json", task_id))
     }
 
-    fn persist_conversation(&self, task_id: &str, conversation: &serde_json::Value) {
+    fn persist_conversation(
+        &self,
+        task_id: &str,
+        conversation: &serde_json::Value,
+    ) -> Result<(), String> {
         let path = self.conversation_path(task_id);
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -416,17 +450,15 @@ impl ClusterTaskList {
         match serde_json::to_string_pretty(conversation) {
             Ok(json) => {
                 // REL-002：统一原子写入。
-                if let Err(e) = nemesis_utils::write_file_atomic(
-                    &path.to_string_lossy(),
-                    json.as_bytes(),
-                    0o600,
-                ) {
-                    tracing::warn!(
-                        path = %path.display(),
-                        error = %e,
-                        "[ClusterTaskList] Failed to persist conversation"
-                    );
-                }
+                nemesis_utils::write_file_atomic(&path.to_string_lossy(), json.as_bytes(), 0o600)
+                    .map_err(|e| {
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %e,
+                            "[ClusterTaskList] Failed to persist conversation"
+                        );
+                        format!("write {}: {e}", path.display())
+                    })
             }
             Err(e) => {
                 tracing::warn!(
@@ -434,6 +466,7 @@ impl ClusterTaskList {
                     error = %e,
                     "[ClusterTaskList] Failed to serialize conversation"
                 );
+                Err(format!("serialize conversation: {e}"))
             }
         }
     }
@@ -458,8 +491,12 @@ impl ClusterTaskList {
             let status = task.status;
 
             // Try to restore conversation from disk if needed.
+            // Pending 也要补：inject_callback 落盘（NB-CODE-007）后崩溃恢复的
+            // 任务是 Pending + callback_result——resume 执行同样需要 conversation。
             let mut task = task;
-            if task.conversation.is_none() && matches!(status, TaskStatus::WaitingRemote) {
+            if task.conversation.is_none()
+                && matches!(status, TaskStatus::Pending | TaskStatus::WaitingRemote)
+            {
                 let conv_path = self.conversation_path(&task_id);
                 if conv_path.exists()
                     && let Ok(conv_data) = std::fs::read_to_string(&conv_path)

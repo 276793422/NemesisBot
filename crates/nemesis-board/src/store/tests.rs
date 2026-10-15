@@ -4027,3 +4027,71 @@ fn grant_tags_concurrent_writers_do_not_lose_grants() {
     );
     cleanup(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// NB-CODE-012：人工跳过评审直达 done 的审计评论
+// ---------------------------------------------------------------------------
+
+/// 人工（非 agent）从非 InReview 状态直达 done → 必须落 system 审计评论；
+/// InReview→done（正常验收链）与 agent 链的 done 都不产生。
+#[test]
+fn test_skip_review_done_leaves_audit_comment() {
+    let (store, dir) = temp_store("skip-review-audit");
+
+    // ① 人工 backlog → done（跳过评审链）→ 审计评论必须存在。
+    let a = store.create_issue(new_issue("跳链直达")).unwrap();
+    store
+        .transition_issue(a.id, IssueStatus::Done, &admin())
+        .unwrap();
+    let comments = store.list_comments(a.id).unwrap();
+    let audit = comments
+        .iter()
+        .find(|c| c.content.contains("跳过评审直达完成"));
+    assert!(audit.is_some(), "人工跳链必须落审计评论: {comments:?}");
+    let audit = audit.unwrap();
+    assert_eq!(audit.ctype, CommentType::System);
+    assert_eq!(audit.author.kind, "system");
+    assert!(
+        audit.content.contains("backlog → done"),
+        "评论须含转移来源: {}",
+        audit.content
+    );
+
+    // ② 正常验收链 InReview → done → 不产生审计评论。
+    let b = store.create_issue(new_issue("正常验收")).unwrap();
+    store
+        .transition_issue(b.id, IssueStatus::InProgress, &admin())
+        .unwrap();
+    store
+        .transition_issue(b.id, IssueStatus::InReview, &admin())
+        .unwrap();
+    store
+        .transition_issue(b.id, IssueStatus::Done, &admin())
+        .unwrap();
+    assert!(
+        !store
+            .list_comments(b.id)
+            .unwrap()
+            .iter()
+            .any(|c| c.content.contains("跳过评审直达完成")),
+        "InReview→done 是正常验收链，不落审计评论"
+    );
+
+    // ③ agent 链（auto_accept）非 InReview 直达 done → 不产生审计评论
+    //    （已有「✅ agent 验收通过」留痕，不重复告警）。
+    let c = store.create_issue(new_issue("agent 验收")).unwrap();
+    let agent = Actor::agent("mgr");
+    store
+        .transition_issue(c.id, IssueStatus::Done, &agent)
+        .unwrap();
+    assert!(
+        !store
+            .list_comments(c.id)
+            .unwrap()
+            .iter()
+            .any(|c| c.content.contains("跳过评审直达完成")),
+        "agent 链不落跳链审计评论"
+    );
+
+    cleanup(&dir);
+}

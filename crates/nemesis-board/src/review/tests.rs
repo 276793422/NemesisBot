@@ -250,3 +250,28 @@ fn strip_directive_lines_all_directives_degrades_to_unprovided() {
     );
     assert!(p.contains("（未提供）"));
 }
+
+/// NB-CODE-010/011：验收标准缺失（未提供 / 全指令行被剥离）时，提示词必须
+/// 带防「凭标题脑补通过」的谨慎判定注记；标准在场时不注入。
+#[test]
+fn prompt_warns_when_criteria_missing() {
+    let missing = build_review_user_prompt("NB-1", "t", "d", None, "report", &[]);
+    assert!(missing.contains("验收标准未提供"), "缺标准必须注入注记");
+    assert!(missing.contains("不得默认通过"));
+
+    let stripped = build_review_user_prompt(
+        "NB-2",
+        "t",
+        "d",
+        Some("[CHECK] x\n[TOUCH] y"),
+        "report",
+        &[],
+    );
+    assert!(
+        stripped.contains("验收标准未提供"),
+        "全指令行剥离后等同缺失，必须注入注记"
+    );
+
+    let present = build_review_user_prompt("NB-3", "t", "d", Some("明示标准"), "report", &[]);
+    assert!(!present.contains("验收标准未提供"), "标准在场不注入注记");
+}
