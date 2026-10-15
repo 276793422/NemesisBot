@@ -224,6 +224,51 @@ impl AgentLoop {
         )
     }
 
+    /// E4（收官批 2026-10-15）：杂务文本补全单一入口——`agents.small_model`
+    /// 槽位优先，未配置 WARN 回主模型（槽位/主模型解析复用
+    /// [`Self::resolve_summary_provider`]，锁序纪律同一处）；调用治理（墙钟
+    /// 超时 + 空输出拒绝 + 单次重试 + 显式禁思考）与标题/摘要杂务同走
+    /// bypass_llm 护栏。首个 nemesisbot 侧消费点 = connector monitor 语义
+    /// 变化摘要（E4 收官批）。无工具、单条 user 消息、非流式。
+    pub async fn chore_completion(
+        &self,
+        label: &str,
+        prompt: String,
+        max_tokens: u32,
+    ) -> Result<String, String> {
+        if self.small_model_slot().is_none() {
+            tracing::warn!(
+                "[chore:{label}] agents.small_model 未配置，回落主模型生成（预算 {} tokens）",
+                max_tokens
+            );
+        }
+        let (provider, model) = self.resolve_summary_provider(true);
+        guarded_llm_call_retrying(label, AUX_SUMMARY_TIMEOUT, || {
+            let prompt = prompt.clone();
+            let model = model.clone();
+            let provider = provider.clone();
+            async move {
+                provider
+                    .chat(
+                        &model,
+                        vec![LlmMessage {
+                            role: "user".to_string(),
+                            content: prompt,
+                            tool_calls: None,
+                            tool_call_id: None,
+                            reasoning_content: None,
+                            images: Vec::new(),
+                        }],
+                        Some(aux_chat_options(max_tokens)),
+                        Vec::new(),
+                    )
+                    .await
+                    .map(|r| r.content)
+            }
+        })
+        .await
+    }
+
     /// Swap the LLM provider and model at runtime. Takes effect immediately
     /// for the next LLM call. In-flight requests continue with the old provider.
     pub fn set_provider_and_model(&self, provider: Arc<dyn LlmProvider>, model: String) {

@@ -528,3 +528,260 @@ async fn test_s1_http_send_truncated_body_maps_read_failure() {
     );
     server_thread.join().unwrap();
 }
+
+// ===========================================================================
+// 收官批 B 段（2026-10-15）：McpServerConfig.headers 消费化——解析规则 /
+// vault:/env: 引用现查 / 保留头过滤 / Debug 掩码 / wiremock 头实发。
+// 全局 vault 解析器槽位是进程单例：与 stdio 测试共用 VAULT_SLOT_LOCK。
+// ===========================================================================
+
+use crate::stdio_transport::tests::VAULT_SLOT_LOCK;
+
+#[test]
+fn test_b_header_pairs_parse_rules() {
+    let _guard = VAULT_SLOT_LOCK.lock().unwrap();
+    // 字面量原样 + 值两侧 trim + 头名 trim。
+    let out = resolved_header_pairs(&["Authorization: Bearer abc".into(), "X-A:  v1  ".into()]);
+    assert_eq!(
+        out,
+        vec![
+            ("Authorization".into(), "Bearer abc".into()),
+            ("X-A".into(), "v1".into())
+        ]
+    );
+
+    // 非法行跳过：缺冒号 / 头名空 / 头名含空白。
+    let out = resolved_header_pairs(&[
+        "no-colon-line".into(),
+        ": value-only".into(),
+        "Bad Name: v".into(),
+        "Good: v".into(),
+    ]);
+    assert_eq!(out, vec![("Good".into(), "v".into())]);
+}
+
+#[test]
+fn test_b_header_pairs_same_name_later_wins() {
+    let _guard = VAULT_SLOT_LOCK.lock().unwrap();
+    // 同名头（大小写不敏感）后行胜——reqwest 追加语义下鉴权头两行必坏，
+    // 必须在列表里归一为单条。
+    let out = resolved_header_pairs(&[
+        "authorization: old".into(),
+        "Authorization: new".into(),
+        "X-Other: keep".into(),
+    ]);
+    assert_eq!(
+        out,
+        vec![
+            ("authorization".into(), "new".into()),
+            ("X-Other".into(), "keep".into())
+        ],
+        "鉴权头必须只剩一条且取后值"
+    );
+}
+
+#[test]
+fn test_b_header_pairs_reserved_session_id_skipped() {
+    let _guard = VAULT_SLOT_LOCK.lock().unwrap();
+    // Mcp-Session-Id 是协议保留头（server 指派）——配置行 WARN 跳过。
+    let out = resolved_header_pairs(&[
+        "Mcp-Session-Id: forged".into(),
+        "mcp-session-id: forged2".into(),
+        "X-Keep: v".into(),
+    ]);
+    assert_eq!(out, vec![("X-Keep".into(), "v".into())]);
+}
+
+#[test]
+fn test_b_header_pairs_failed_reference_skips_row_only() {
+    let _guard = VAULT_SLOT_LOCK.lock().unwrap();
+    // 引用解析失败只跳过该行，不毒化其余行（语义同 stdio env）。
+    let out = resolved_header_pairs(&[
+        "X-Bad: vault:definitely-missing-alias-b1".into(),
+        "X-Good: plain".into(),
+    ]);
+    assert_eq!(out, vec![("X-Good".into(), "plain".into())]);
+}
+
+#[test]
+fn test_b_header_pairs_vault_reference_resolved() {
+    let _guard = VAULT_SLOT_LOCK.lock().unwrap();
+    // vault: 引用：装测试解析器后现查（镜像 stdio resolved_env 先例）。
+    nemesis_config::set_global_vault_resolver(std::sync::Arc::new(|alias| {
+        if alias == "mcp-hdr-token" {
+            Ok("vaulted-hdr-value".into())
+        } else {
+            Err(format!("别名不存在: {alias}"))
+        }
+    }));
+    let out = resolved_header_pairs(&["X-Auth: vault:mcp-hdr-token".into()]);
+    nemesis_config::clear_global_vault_resolver();
+    assert_eq!(out, vec![("X-Auth".into(), "vaulted-hdr-value".into())]);
+}
+
+#[tokio::test]
+// 锁必须横跨 await（serialize 的正是 connect/send 期间的进程 env 态）；
+// 锁内只 await 自方 wiremock/transport，无其他测试会反向等这把锁——无死锁面。
+#[allow(clippy::await_holding_lock)]
+async fn test_b_headers_env_reference_e2e_wiremock() {
+    // env: 引用全链路：解析 → connect 现查 → send 实发 → wiremock 断言头到达。
+    // 进程 env 是全局态：唯一变量名 + VAULT_SLOT_LOCK 串行（set_var 在
+    // edition 2024 是 unsafe——先例 s9_tests.rs 同款）。
+    let _guard = VAULT_SLOT_LOCK.lock().unwrap();
+    const VAR: &str = "NB_MCP_HDR_E2E_KEY";
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .and(header("X-Api-Key", "e2e-hdr-secret"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"jsonrpc":"2.0","id":41,"result":{"ok":true}})),
+        )
+        .mount(&server)
+        .await;
+
+    // SAFETY: 锁内唯一变量名设/还原；并行测试不读该变量。
+    unsafe {
+        std::env::set_var(VAR, "e2e-hdr-secret");
+    }
+    let mut t = HttpTransport::with_headers(
+        format!("{}/mcp", server.uri()),
+        vec![format!("X-Api-Key: env:{VAR}")],
+    );
+    // connect 现查发生在 env 变量仍在场时——时序即语义。
+    t.connect().await.unwrap();
+    let result = t.send(&w4c_request("ping", 41), 5000).await;
+    unsafe {
+        std::env::remove_var(VAR);
+    }
+
+    let resp = result.expect("env: 引用的头应实发并拿到 200");
+    assert_eq!(resp.result.unwrap()["ok"], true);
+    t.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_b_headers_literal_e2e_and_session_id_not_forged() {
+    // 字面量头实发 + 保留头不伪造会话身份：配置里写 Mcp-Session-Id 必须被
+    // 过滤，第二跳只带 server 指派的真 session id（received_requests 全量
+    // 校验，防 reqwest 追加语义产出重复头）。
+    let server = MockServer::start().await;
+    // 挂载顺序即优先级（wiremock 取第一个匹配）：带会话头的第二跳 mock 先挂，
+    // 通用 mock（指派 session id）后挂——否则第二跳也落进通用 mock。
+    // 第一跳：回 set-cookie 式指派 session id。
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .and(header("X-Tenant", "acme"))
+        .and(header("Mcp-Session-Id", "sid-real"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"jsonrpc":"2.0","id":2,"result":{"echo":true}})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .and(header("X-Tenant", "acme"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("mcp-session-id", "sid-real")
+                .set_body_json(serde_json::json!({"jsonrpc":"2.0","id":1,"result":{}})),
+        )
+        .mount(&server)
+        .await;
+
+    let mut t = HttpTransport::with_headers(
+        format!("{}/mcp", server.uri()),
+        vec![
+            "X-Tenant: acme".into(),
+            "Mcp-Session-Id: forged-by-config".into(),
+        ],
+    );
+    t.connect().await.unwrap();
+    let r1 = t.send(&w4c_request("initialize", 1), 5000).await.unwrap();
+    assert!(r1.result.is_some());
+    let r2 = t.send(&w4c_request("tools/list", 2), 5000).await.unwrap();
+    assert_eq!(r2.result.unwrap()["echo"], true);
+    t.close().await.unwrap();
+
+    // 全量校验：每个请求的 Mcp-Session-Id 头值都只能是 server 指派的真值。
+    let received = server.received_requests().await.expect("received requests");
+    assert_eq!(received.len(), 2, "两跳都应到达");
+    for (i, req) in received.iter().enumerate() {
+        let values: Vec<String> = req
+            .headers
+            .get_all("mcp-session-id")
+            .iter()
+            .filter_map(|v| std::str::from_utf8(v.as_bytes()).ok())
+            .map(|s| s.to_ascii_lowercase())
+            .collect();
+        if i == 0 {
+            assert!(values.is_empty(), "第一跳不该带会话头: {values:?}");
+        } else {
+            assert_eq!(values, vec!["sid-real"], "第二跳只带真会话 id");
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_b_debug_masks_resolved_header_values() {
+    // 掩码锁：解析后的头值（凭据真值）永不进 Debug 输出——日志/错误路径
+    // 即使 {:?} 整个 transport 也不泄露字节。
+    let mut t = HttpTransport::with_headers(
+        "http://127.0.0.1:9/mcp",
+        vec!["Authorization: Bearer super-secret-value".into()],
+    );
+    t.connect().await.unwrap();
+    let dbg = format!("{:?}", t);
+    assert!(
+        !dbg.contains("super-secret-value"),
+        "Debug 不得含头值: {dbg}"
+    );
+    assert!(dbg.contains("<redacted:"), "Debug 应显式掩码: {dbg}");
+    assert!(dbg.contains("Authorization"), "头名可以出现（值掩码）");
+    t.close().await.unwrap();
+    // close 后 resolved_headers 清空——Debug 亦无残留。
+    let dbg2 = format!("{:?}", t);
+    assert!(!dbg2.contains("<redacted:"), "close 应清空解析头");
+}
+
+#[tokio::test]
+// 锁必须横跨 await（serialize 的正是 connect 期间的进程级全局解析器槽位）；
+// 锁内只 await 自方 transport，无其他测试会反向等这把锁——无死锁面。
+#[allow(clippy::await_holding_lock)]
+async fn test_b_close_clears_resolved_headers_and_reconnect_refreshes() {
+    // close 清空解析值；重连现查——引用轮换后重连拿到新值（现查语义）。
+    let _guard = VAULT_SLOT_LOCK.lock().unwrap();
+    let mut t = HttpTransport::with_headers(
+        "http://127.0.0.1:9/mcp",
+        vec!["X-Token: vault:b-refresh-alias".into()],
+    );
+    nemesis_config::set_global_vault_resolver(std::sync::Arc::new(|alias| {
+        if alias == "b-refresh-alias" {
+            Ok("v1".into())
+        } else {
+            Err(format!("别名不存在: {alias}"))
+        }
+    }));
+    t.connect().await.unwrap();
+    assert_eq!(t.resolved_headers, vec![("X-Token".into(), "v1".into())]);
+
+    // 轮换 vault 值 → close → 重连 → 新值。
+    nemesis_config::set_global_vault_resolver(std::sync::Arc::new(|alias| {
+        if alias == "b-refresh-alias" {
+            Ok("v2-rotated".into())
+        } else {
+            Err(format!("别名不存在: {alias}"))
+        }
+    }));
+    t.close().await.unwrap();
+    assert!(t.resolved_headers.is_empty(), "close 应清空解析头");
+    t.connect().await.unwrap();
+    assert_eq!(
+        t.resolved_headers,
+        vec![("X-Token".into(), "v2-rotated".into())],
+        "重连必须现查到轮换后的新值"
+    );
+    nemesis_config::clear_global_vault_resolver();
+    t.close().await.unwrap();
+}

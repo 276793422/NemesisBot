@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::manifest::{ValidatedConnector, ValidatedOp, parse_connector_manifest};
+use crate::signing::ConnectorTrust;
 
 pub const CONNECTORS_DIR: &str = "connectors";
 pub const MANIFEST_FILE: &str = "connector.toml";
@@ -17,6 +18,9 @@ pub struct LoadedConnector {
     pub dir: PathBuf,
     pub connector: Option<ValidatedConnector>,
     pub error: Option<String>,
+    /// 签名徽标（D6.1）：verified / community / unsigned。验签失败的条目
+    /// 走 `error` 拒收路径，不落条目。
+    pub trust: ConnectorTrust,
 }
 
 /// 按 connector id 查找失败原因。
@@ -49,6 +53,20 @@ impl std::fmt::Display for ConnectorLookupError {
     }
 }
 
+/// 目录签名评估（scan/find 共用；feature 门在 signing 侧）。
+fn assess_dir_trust(dir: &Path, workspace: &Path) -> Result<ConnectorTrust, String> {
+    #[cfg(feature = "security")]
+    {
+        let store = crate::signing::workspace_trust_store(workspace);
+        crate::signing::assess_connector_signature(dir, &store).map(|a| a.trust)
+    }
+    #[cfg(not(feature = "security"))]
+    {
+        let _ = workspace;
+        crate::signing::assess_connector_signature(dir).map(|a| a.trust)
+    }
+}
+
 /// 扫描 workspace 注册表（目录名升序，确定性）。
 pub fn scan_connectors(workspace: &Path) -> Vec<LoadedConnector> {
     let dir = workspace.join(CONNECTORS_DIR);
@@ -70,26 +88,40 @@ pub fn scan_connectors(workspace: &Path) -> Vec<LoadedConnector> {
                 dir: path,
                 connector: None,
                 error: Some(format!("缺少 {MANIFEST_FILE}")),
+                trust: ConnectorTrust::Unsigned,
             });
             continue;
         }
         match std::fs::read_to_string(&manifest_path) {
             Ok(text) => match parse_connector_manifest(&text) {
-                Ok(c) => out.push(LoadedConnector {
-                    dir: path,
-                    connector: Some(c),
-                    error: None,
-                }),
+                Ok(c) => match assess_dir_trust(&path, workspace) {
+                    // D6.1：带签名且验签失败（篡改/调换/吊销）→ 拒收，
+                    // corrupt 形态诚实入列（不静默跳过也不过带）。
+                    Err(err) => out.push(LoadedConnector {
+                        dir: path,
+                        connector: None,
+                        error: Some(err),
+                        trust: ConnectorTrust::Unsigned,
+                    }),
+                    Ok(trust) => out.push(LoadedConnector {
+                        dir: path,
+                        connector: Some(c),
+                        error: None,
+                        trust,
+                    }),
+                },
                 Err(err) => out.push(LoadedConnector {
                     dir: path,
                     connector: None,
                     error: Some(err),
+                    trust: ConnectorTrust::Unsigned,
                 }),
             },
             Err(err) => out.push(LoadedConnector {
                 dir: path,
                 connector: None,
                 error: Some(format!("读取失败: {err}")),
+                trust: ConnectorTrust::Unsigned,
             }),
         }
     }
@@ -119,6 +151,12 @@ pub fn find_connector(
             error: format!("读取失败: {e}"),
         })?;
     let c = parse_connector_manifest(&text).map_err(|error| ConnectorLookupError::Invalid {
+        id: id.to_string(),
+        error,
+    })?;
+    // D6.1：带签名且验签失败（篡改/调换/吊销）→ 执行面拒用——即使清单
+    // parse 仍然合法（改动后的清单可能语义完好，但签名不再对得上）。
+    assess_dir_trust(&dir, workspace).map_err(|error| ConnectorLookupError::Invalid {
         id: id.to_string(),
         error,
     })?;

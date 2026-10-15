@@ -406,6 +406,7 @@ pub fn onboard_default(home: &Path, local: bool, mode: OnboardMode) -> anyhow::R
             );
             println!();
             println!("  查询: nemesisbot connector list | connector receipts | connector ledger");
+            println!("  试试: nemesisbot connector demo   # 30 秒四承诺演示（临时目录，零污染）");
         }
         OnboardMode::Seed => {
             // auto-init：调用方（gateway）随即继续启动，无需再教 CLI 命令。

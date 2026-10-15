@@ -4,6 +4,10 @@ version.workspace = true
 license.workspace = true
 edition.workspace = true
 
+[features]
+default = ["security"]
+security = ["dep:nemesis-security"]
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -14,6 +18,8 @@ chrono = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 parking_lot = { workspace = true }
+nemesis-security = { workspace = true, optional = true }
+ed25519-dalek = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

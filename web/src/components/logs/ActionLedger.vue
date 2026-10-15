@@ -3,14 +3,20 @@
 // connectors.receipts.list 只读视图。进入页签（组件挂载，v-else-if 链）时经
 // WSAPI 拉最近 100 条回执；connector 过滤下拉选项来自回执去重。
 // 与 ConnectorsView 的回执区块同一数据源，两处都只读互不写。
+// E3（收官批 2026-10-15）页内撤销：executed + write 类凭条行内「撤销」
+// 入口（denied/error/限额拦截等未生效凭条不显示——无效果可撤；read/network
+// 类不显示——无通用撤销语义）。二次确认模态；撤销动作本身走
+// connectors.undo → handle_tool_call 完整 dispatch 瀑布（安全 8 层+审计）。
 import { ref, computed, onMounted } from 'vue'
 import { useWSAPI } from '../../composables/useWSAPI'
+import { useToast } from '../../composables/useToast'
 import {
   connectorRiskClass, connectorOutcomeClass, connectorOutcomeLabel,
   type ConnectorReceipt,
 } from './mockData'
 
 const { request } = useWSAPI()
+const toast = useToast()
 
 const receipts = ref<ConnectorReceipt[]>([])
 const loading = ref(false)
@@ -43,6 +49,45 @@ async function load() {
     loadError.value = String(e?.message ?? e)
   } finally {
     loading.value = false
+  }
+}
+
+// ---------------------------------------------------------------------------
+// E3 页内撤销
+// ---------------------------------------------------------------------------
+
+/** 撤销入口可见性：只对已执行的写类凭条开放（域 C 反向 op / 域 B 会话级
+ * 回退都在后端 `connectors.undo` 按当下清单裁决——这里只做第一道显示闸）。 */
+function canUndo(r: ConnectorReceipt): boolean {
+  return r.outcome === 'executed' && r.class === 'write'
+}
+
+const confirmUndo = ref<ConnectorReceipt | null>(null)
+const undoBusy = ref(false)
+
+function askUndo(r: ConnectorReceipt) {
+  confirmUndo.value = r
+}
+
+async function doUndo() {
+  const r = confirmUndo.value
+  if (!r) return
+  undoBusy.value = true
+  try {
+    const res = await request('connectors', 'undo', {
+      receipt_id: r.receipt_id,
+      ...(r.session_key ? { session_key: r.session_key } : {}),
+    })
+    const via = res?.via === 'reverse_op'
+      ? `反向操作 ${res.undo_op}`
+      : res?.via === 'rewind_last_turn' ? '会话级回退' : '完成'
+    toast.success(`${r.connector}.${r.op} 撤销完成（${via}）`)
+    confirmUndo.value = null
+    await load()
+  } catch (e: any) {
+    toast.error('撤销失败: ' + String(e?.message ?? e))
+  } finally {
+    undoBusy.value = false
   }
 }
 
@@ -84,6 +129,7 @@ onMounted(load)
             <th style="width: 100px;">结果</th>
             <th>摘要</th>
             <th style="width: 180px;">回执值</th>
+            <th style="width: 90px;">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -98,12 +144,42 @@ onMounted(load)
               <template v-if="r.receipt_value">{{ r.receipt_key ? r.receipt_key + ': ' : '' }}{{ r.receipt_value }}</template>
               <span v-if="r.undoable" class="badge badge-info undo-badge">可撤销</span>
             </td>
+            <td>
+              <button
+                v-if="canUndo(r)"
+                class="btn btn-sm btn-danger"
+                data-test="ledger-undo-btn"
+                :disabled="undoBusy"
+                @click="askUndo(r)"
+              >撤销</button>
+            </td>
           </tr>
           <tr v-if="filtered.length === 0">
-            <td colspan="7" class="empty-state"><p>该 connector 暂无回执</p></td>
+            <td colspan="8" class="empty-state"><p>该 connector 暂无回执</p></td>
           </tr>
         </tbody>
       </table>
+    </div>
+
+    <!-- E3 撤销二次确认模态 -->
+    <div v-if="confirmUndo" class="modal-backdrop" data-test="ledger-undo-modal" @click.self="confirmUndo = null">
+      <div class="modal" style="max-width: 480px;">
+        <div class="modal-header"><h3>确认撤销</h3></div>
+        <div class="modal-body">
+          <p>
+            将撤销 <strong>{{ confirmUndo.connector }}.{{ confirmUndo.op }}</strong>
+            （{{ confirmUndo.summary || '无摘要' }}）的执行效果：
+          </p>
+          <p v-if="confirmUndo.undoable">清单声明了反向操作，将调用反向 op 撤销（撤销本身过安全管线并落审计）。</p>
+          <p v-else>该操作未声明反向 op，将回退会话最后一轮（对话与文件变更一并还原）。</p>
+        </div>
+        <div class="modal-footer">
+          <button class="btn" data-test="ledger-undo-cancel" @click="confirmUndo = null">取消</button>
+          <button class="btn btn-danger" data-test="ledger-undo-confirm" :disabled="undoBusy" @click="doUndo">
+            {{ undoBusy ? '撤销中…' : '确认撤销' }}
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
