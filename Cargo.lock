@@ -4082,6 +4082,7 @@ dependencies = [
  "image",
  "mockall",
  "nemesis-config",
+ "nemesis-connectors",
  "nemesis-cron",
  "nemesis-data",
  "nemesis-forge",
@@ -4272,6 +4273,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "nemesis-connectors"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hex",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml 0.8.2",
+ "tracing",
+]
+
+[[package]]
 name = "nemesis-cron"
 version = "0.1.0"
 dependencies = [
@@ -4365,10 +4382,12 @@ dependencies = [
  "nemesis-plugin",
  "nemesis-prompts",
  "nemesis-types",
+ "nemesis-utils",
  "parking_lot",
  "regex",
  "serde",
  "serde_json",
+ "serde_yaml",
  "sha2",
  "tempfile",
  "thiserror 2.0.18",
@@ -4886,6 +4905,7 @@ dependencies = [
  "nemesis-bus",
  "nemesis-cluster",
  "nemesis-config",
+ "nemesis-connectors",
  "nemesis-cron",
  "nemesis-data",
  "nemesis-forge",
@@ -4977,6 +4997,7 @@ dependencies = [
  "nemesis-channels",
  "nemesis-cluster",
  "nemesis-config",
+ "nemesis-connectors",
  "nemesis-cron",
  "nemesis-data",
  "nemesis-desktop",
@@ -6769,9 +6790,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "log",
  "once_cell",

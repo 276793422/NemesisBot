@@ -8,6 +8,19 @@ use crate::handlers::{list_workspace_dir, require_home, require_workspace};
 use crate::ws_router::{ModuleHandler, RequestContext};
 use std::path::{Path, PathBuf};
 
+/// A 线行为回归执行器槽（bot 注入；PROJECTS_BRIDGE 同款静态槽模式）。
+/// 未注入 = `forge.test` 诚实报「未装配」。
+static FORGE_TEST_RUNNER: parking_lot::RwLock<
+    Option<std::sync::Arc<dyn nemesis_forge::skill_tests::SkillTestRunner>>,
+> = parking_lot::RwLock::new(None);
+
+/// gateway 装配点注入执行器。
+pub fn set_forge_test_runner(
+    runner: std::sync::Arc<dyn nemesis_forge::skill_tests::SkillTestRunner>,
+) {
+    *FORGE_TEST_RUNNER.write() = Some(runner);
+}
+
 pub struct ForgeHandler {
     _priv: (),
 }
@@ -44,6 +57,10 @@ impl ModuleHandler for ForgeHandler {
             "registry.update",
             "learning.toggle",
             "artifacts",
+            "test",
+            "replay_list",
+            "replay_confirm",
+            "replay_extract",
         ]
     }
 
@@ -63,6 +80,36 @@ impl ModuleHandler for ForgeHandler {
                 self.config_save(home, &data, ctx)
             }
             "reflect" => self.reflect(workspace),
+            "test" => {
+                let data = data.ok_or("missing data")?;
+                forge_test_cmd(home, workspace, &data)
+            }
+
+            // 失败重放（C 线）：提取/待审列表/确认入库（执行面归 CLI）。
+            "replay_list" => forge_replay_list(workspace),
+            "replay_confirm" => {
+                let name = data
+                    .as_ref()
+                    .and_then(|d| d.get("name"))
+                    .and_then(|v| v.as_str());
+                let n = nemesis_forge::replay::confirm(Path::new(workspace), name)?;
+                Ok(Some(serde_json::json!({ "confirmed": n })))
+            }
+            "replay_extract" => {
+                let recs = nemesis_forge::replay::extract_failures(Path::new(workspace))?;
+                let cases: Vec<_> = recs
+                    .iter()
+                    .map(nemesis_forge::replay::to_test_case)
+                    .collect();
+                let auto = load_forge_config(workspace).replay_auto_ingest;
+                let (dest, total) =
+                    nemesis_forge::replay::ingest(Path::new(workspace), &cases, auto)?;
+                Ok(Some(serde_json::json!({
+                    "extracted": cases.len(),
+                    "dest": dest,
+                    "total": total,
+                })))
+            }
 
             // Experiences
             "experiences.stats" => self.experiences_stats(workspace),
@@ -995,3 +1042,212 @@ mod s10b_tests;
 // 见 agt_tests 文件头注。
 #[cfg(test)]
 mod agt_tests;
+
+/// `forge.test`：对 workspace/skills/<name> 执行 frontmatter tests 段。
+/// judge 层走杂务模型回落链（resolve_judge_caller）。
+fn forge_test_cmd(
+    home: &str,
+    workspace: &str,
+    data: &serde_json::Value,
+) -> Result<Option<serde_json::Value>, String> {
+    use nemesis_forge::skill_tests as st;
+
+    let name = data
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or("missing 'name'")?;
+    let filter = data.get("test").and_then(|v| v.as_str());
+
+    let runner = FORGE_TEST_RUNNER.read().clone();
+    let Some(runner) = runner else {
+        return Err("forge test runner not wired (gateway 未注入执行器)".into());
+    };
+
+    let skill_md = Path::new(workspace)
+        .join("skills")
+        .join(name)
+        .join("SKILL.md");
+    if !skill_md.exists() {
+        return Err(format!("skill not found: {}", skill_md.display()));
+    }
+    let content = std::fs::read_to_string(&skill_md).map_err(|e| e.to_string())?;
+
+    let Some(spec) = st::parse_skill_tests(&content)? else {
+        return Ok(Some(serde_json::json!({
+            "skipped": true,
+            "reason": "no behavior tests declared",
+        })));
+    };
+    let cases: Vec<_> = spec
+        .tests
+        .iter()
+        .filter(|c| filter.is_none() || Some(c.name.as_str()) == filter)
+        .collect();
+    if cases.is_empty() {
+        return Err(format!("no test matching filter '{filter:?}'"));
+    }
+
+    // judge caller：回落链解析（judge_model → small_model → 主模型）。
+    let caller = resolve_judge_caller(home, workspace)?;
+    // 执行层缺省阈值（forge.test.judge_threshold，用例未显式声明时生效）。
+    let forge_cfg = nemesis_forge::config::load_forge_config(
+        &Path::new(workspace)
+            .join("config")
+            .join("config.forge.json"),
+    );
+    let default_threshold = forge_cfg.test.judge_threshold;
+
+    // 同步包装（handler 是 async 上下文——block_in_place 桥接）。
+    let fut = async {
+        let mut results = Vec::new();
+        let mut passed = 0u32;
+        let mut failed = 0u32;
+        for case in &cases {
+            let transcript = runner.run_case(&content, case).await?;
+            let r =
+                st::evaluate_case_full(case, &transcript, caller.clone(), default_threshold).await;
+            if r.passed {
+                passed += 1;
+            } else {
+                failed += 1;
+            }
+            results.push(serde_json::to_value(&r).unwrap_or_default());
+        }
+        Ok::<_, String>((results, passed, failed))
+    };
+    let (results, passed, failed) = match tokio::runtime::Handle::try_current() {
+        Ok(h) => tokio::task::block_in_place(|| h.block_on(fut))?,
+        Err(_) => {
+            let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+            rt.block_on(fut)?
+        }
+    };
+
+    Ok(Some(serde_json::json!({
+        "skill": name,
+        "passed": passed,
+        "failed": failed,
+        "gate": failed == 0,
+        "results": results,
+    })))
+}
+
+/// forge 配置加载（workspace/config/config.forge.json；缺失 = 全缺省）。
+pub fn load_forge_config(workspace: &str) -> nemesis_forge::config::ForgeConfig {
+    nemesis_forge::config::load_forge_config(
+        &Path::new(workspace)
+            .join("config")
+            .join("config.forge.json"),
+    )
+}
+
+/// `forge.replay_list`：失败重放待审区 + 已入库回归集全量。
+fn forge_replay_list(workspace: &str) -> Result<Option<serde_json::Value>, String> {
+    let (pending, confirmed) = nemesis_forge::replay::list_full(Path::new(workspace))?;
+    let to_json = |cases: Vec<nemesis_forge::skill_tests::TestCase>| {
+        cases
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "name": c.name,
+                    "turns": c.turns.iter().map(|t| t.user.clone()).collect::<Vec<_>>(),
+                    "expect": serde_json::to_value(&c.expect).unwrap_or_default(),
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    Ok(Some(serde_json::json!({
+        "pending": to_json(pending),
+        "confirmed": to_json(confirmed),
+    })))
+}
+
+/// judge / B 线反思共用的杂务模型回落链（v3.1 计划 §四/§五：small_model →
+/// 主模型）。臂序：
+///
+/// 1. `forge.test.judge_model` 显式别名（非 "small_model"）= 钉死该模型；
+/// 2. `agents.small_model` 通道；
+/// 3. 当前默认模型。
+///
+/// 任一臂解析/构造失败 = warn 留痕自动降下一臂，绝不因缺配置失败；
+/// 全部失败 = `Ok(None)`（调用方诚实跳过 / fail-closed）。
+pub fn resolve_judge_caller(
+    home: &str,
+    workspace: &str,
+) -> Result<Option<std::sync::Arc<dyn nemesis_forge::reflector_llm::LLMCaller>>, String> {
+    let cfg = crate::handlers::config::load_config(home)?;
+    let forge_cfg = load_forge_config(workspace);
+
+    let mut arms: Vec<String> = Vec::new();
+    if let Some(a) = forge_cfg
+        .test
+        .judge_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "small_model")
+    {
+        arms.push(a.to_string());
+    }
+    if let Some(s) = cfg
+        .agents
+        .small_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        arms.push(s.to_string());
+    }
+    arms.push(String::new()); // 臂 3：默认模型（resolve 语义见下）
+
+    for arm in &arms {
+        match build_caller_for_ref(&cfg, arm, workspace) {
+            Ok(Some(caller)) => return Ok(Some(caller)),
+            Ok(None) => {
+                // 解析失败降下一臂——warn 留痕（臂名空串 = 默认模型）。
+                let shown = if arm.is_empty() { "default" } else { arm };
+                tracing::warn!("[Forge] judge caller arm '{shown}' unresolved; falling back");
+            }
+            Err(e) => {
+                tracing::warn!("[Forge] judge caller arm '{arm}' failed: {e}; falling back");
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// 按模型引用构造 LLMCaller（空串 = 当前默认模型）。解析/构造失败 =
+/// `Ok(None)`（回落链消费）。
+fn build_caller_for_ref(
+    cfg: &nemesis_config::Config,
+    model_ref: &str,
+    workspace: &str,
+) -> Result<Option<std::sync::Arc<dyn nemesis_forge::reflector_llm::LLMCaller>>, String> {
+    let llm_ref = if model_ref.is_empty() {
+        nemesis_config::get_effective_llm(Some(cfg))
+    } else {
+        model_ref.to_string()
+    };
+    let Ok(resolution) = nemesis_config::resolve_model_config(cfg, &llm_ref) else {
+        return Ok(None);
+    };
+    let factory_cfg = nemesis_providers::factory::FactoryConfig {
+        proxy: resolution.proxy.clone(),
+        stream_mode: resolution.stream_mode.clone(),
+        llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
+        api_key: resolution.api_key.clone(),
+        api_base: resolution.api_base.clone(),
+        workspace: workspace.to_string(),
+        connect_mode: resolution.connect_mode,
+        protocol: resolution.protocol.clone(),
+        timeout_secs: resolution.timeout_secs,
+        account_id: String::new(),
+        headers: std::collections::HashMap::new(),
+    };
+    match nemesis_providers::factory::create_provider(&factory_cfg) {
+        Ok(provider) => Ok(Some(std::sync::Arc::new(crate::ForgeProviderBridge::new(
+            provider,
+            resolution.model_name.clone(),
+        )))),
+        Err(_) => Ok(None),
+    }
+}

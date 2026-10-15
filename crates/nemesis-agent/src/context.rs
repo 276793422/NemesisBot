@@ -46,6 +46,12 @@ pub struct RequestContext {
     /// 会话恒 None，零行为变化。
     #[serde(skip)]
     pub tool_path_base: Option<PathBuf>,
+    /// 行动代理 P0（PLAN §6.2 凭条 `approval_ref` 契约字段）：dispatch 过
+    /// `execute_tracked` 拿到的交互审批引用（= 审批卡 request_id）。仅
+    /// ABAC RequireApproval 经人工批准时 Some；直通/规则表/免打扰/拒绝
+    /// 恒 None——凭条不伪造背书。connector 工具把它写进本次调用的凭条。
+    #[serde(skip)]
+    pub approval_ref: Option<String>,
 }
 
 impl std::fmt::Debug for RequestContext {
@@ -61,6 +67,7 @@ impl std::fmt::Debug for RequestContext {
                 &self.async_callback.as_ref().map(|_| "..."),
             )
             .field("tool_path_base", &self.tool_path_base)
+            .field("approval_ref", &self.approval_ref)
             .finish()
     }
 }
@@ -76,6 +83,7 @@ impl RequestContext {
             correlation_id: None,
             async_callback: None,
             tool_path_base: None,
+            approval_ref: None,
         }
     }
 
@@ -95,6 +103,7 @@ impl RequestContext {
             correlation_id: Some(correlation_id.to_string()),
             async_callback: None,
             tool_path_base: None,
+            approval_ref: None,
         }
     }
 
@@ -111,6 +120,7 @@ impl RequestContext {
             correlation_id: Some(correlation_id.to_string()),
             async_callback: None,
             tool_path_base: None,
+            approval_ref: None,
         }
     }
 
@@ -206,6 +216,53 @@ pub struct SkillInfo {
     pub description: String,
     /// Whether the skill is active.
     pub active: bool,
+}
+
+/// tier→prompt 档位（E 线）：映射自 `resolve_active_tier`（mini→Concise、
+/// normal→Standard、big→Full）。Standard = 缺省不注入字节。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PromptProfile {
+    Concise,
+    #[default]
+    Standard,
+    Full,
+}
+
+impl PromptProfile {
+    pub fn from_tier(tier: nemesis_types::capability::ModelTier) -> Self {
+        use nemesis_types::capability::ModelTier;
+        match tier {
+            ModelTier::Mini => Self::Concise,
+            ModelTier::Normal => Self::Standard,
+            ModelTier::Big => Self::Full,
+            // Auto 档（解析前形态）走 Standard = 零注入，不猜。
+            ModelTier::Auto => Self::Standard,
+        }
+    }
+}
+
+/// tier 档位段渲染（每轮消费，**纯状态派生**：两次变更之间字节稳定——
+/// prompt cache 前缀不受损）。Standard = 零字节。
+///
+/// 归属说明（2026-10-14 动态注入迁移）：画像段 + 档位段原挂
+/// `ContextBuilder`（build 时冻结、仅 classic 路径），现由
+/// `loop::messages::build_messages_inner` 的 merged snapshot 每轮重渲染
+/// ——tier 热切（`check_config_reload`）与画像 sweep 学习即时生效，且
+/// classic/pro 双体系统一覆盖。段文本经此处自由函数字节保留迁移。
+pub fn prompt_profile_section(profile: PromptProfile) -> String {
+    match profile {
+        PromptProfile::Standard => String::new(),
+        PromptProfile::Concise => "# 回复风格（当前模型能力档：精简）
+
+回复简洁直接、结论先行；避免冗长铺垫与重复确认；行动优先于解释。
+"
+        .into(),
+        PromptProfile::Full => "# 执行风格（当前模型能力档：完整）
+
+复杂任务先给出简要方案再动手；充分利用可用工具自主多步执行；完成后附简短说明。
+"
+        .into(),
+    }
 }
 
 impl ContextBuilder {

@@ -395,6 +395,17 @@ pub fn onboard_default(home: &Path, local: bool, mode: OnboardMode) -> anyhow::R
                 "    1. Add your API key: nemesisbot model add --model <vendor/model> --key <key> --default"
             );
             println!("    2. Start gateway:     nemesisbot gateway");
+            println!();
+            // 信任契约（行动代理 P0 感知层 §5）：初始化时讲清四承诺。
+            println!("  Trust contract (action agent):");
+            println!("    1. 凭据不泄露 —— API key 等秘密进加密 vault，永不出现在模型上下文/日志");
+            println!("    2. 动手前先问 —— 高危操作先弹授权卡，写明影响面与拒绝后果");
+            println!("    3. 做错能反悔 —— 聊天说「撤销」回退上一轮（对话+文件一起还原）");
+            println!(
+                "    4. 出事有账 —— 每个动作带编号凭条，connector receipts / 行动账本随时回查"
+            );
+            println!();
+            println!("  查询: nemesisbot connector list | connector receipts | connector ledger");
         }
         OnboardMode::Seed => {
             // auto-init：调用方（gateway）随即继续启动，无需再教 CLI 命令。

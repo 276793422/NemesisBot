@@ -3083,3 +3083,116 @@ fn force_approval_escalates_default_allow_decision() {
     assert!(!allowed, "flagged request must escalate over default-allow");
     assert!(err.unwrap().contains("approval required"));
 }
+
+// ---- 行动代理 P0（PLAN §6.2 凭条 approval_ref）：request_permission_tracked 语义回归锁 ----
+// 契约：第三值（approval_ref）仅在「RequireApproval 经交互审批管理器人工批准」时为
+// Some(req.id)；直通 / 规则表 auto_by_rule / 免打扰 auto / 策略拒绝 / 拒绝 / 无管理器
+// pending 恒 None——凭条不伪造背书。
+
+#[test]
+fn tracked_interactive_approval_returns_request_id() {
+    struct ApprovingMgr;
+    impl ApprovalManager for ApprovingMgr {
+        fn is_running(&self) -> bool {
+            true
+        }
+        fn request_approval_sync(
+            &self,
+            _request_id: &str,
+            _operation: &str,
+            _target: &str,
+            _risk_level: &str,
+            _reason: &str,
+            _timeout_secs: u64,
+        ) -> Result<ApprovalVerdict, String> {
+            Ok(ApprovalVerdict::approved())
+        }
+    }
+    let auditor = ask_auditor();
+    auditor.set_approval_manager(std::sync::Arc::new(ApprovingMgr));
+
+    let (allowed, err, approval_ref) = auditor.request_permission_tracked(
+        &OperationRequest {
+            op_type: OperationType::FileWrite,
+            ..exec_request("ref-approve-1", "/tmp/test.txt")
+        },
+        None,
+    );
+    assert!(allowed);
+    assert!(err.is_none());
+    assert_eq!(
+        approval_ref.as_deref(),
+        Some("ref-approve-1"),
+        "interactive approval must yield the request id as approval_ref"
+    );
+}
+
+#[test]
+fn tracked_interactive_deny_returns_none() {
+    struct DenyingMgr;
+    impl ApprovalManager for DenyingMgr {
+        fn is_running(&self) -> bool {
+            true
+        }
+        fn request_approval_sync(
+            &self,
+            _request_id: &str,
+            _operation: &str,
+            _target: &str,
+            _risk_level: &str,
+            _reason: &str,
+            _timeout_secs: u64,
+        ) -> Result<ApprovalVerdict, String> {
+            Ok(ApprovalVerdict::denied())
+        }
+    }
+    let auditor = ask_auditor();
+    auditor.set_approval_manager(std::sync::Arc::new(DenyingMgr));
+
+    let (allowed, err, approval_ref) = auditor.request_permission_tracked(
+        &OperationRequest {
+            op_type: OperationType::FileWrite,
+            ..exec_request("ref-deny-1", "/tmp/test.txt")
+        },
+        None,
+    );
+    assert!(!allowed);
+    assert!(err.is_some());
+    assert!(
+        approval_ref.is_none(),
+        "denied operation must never carry an approval_ref"
+    );
+}
+
+#[test]
+fn tracked_direct_allow_returns_none() {
+    // 直通（规则命中 default allow 语义）= 无人看过卡 → None。
+    let config = AuditorConfig {
+        enabled: true,
+        default_action: "allow".to_string(),
+        ..Default::default()
+    };
+    let auditor = SecurityAuditor::new(config);
+    let (allowed, _, approval_ref) =
+        auditor.request_permission_tracked(&exec_request("ref-allow-1", "ls"), None);
+    assert!(allowed);
+    assert!(
+        approval_ref.is_none(),
+        "straight-through allow must not fabricate an approval_ref"
+    );
+}
+
+#[test]
+fn tracked_auto_by_rule_returns_none() {
+    // 规则表自动放行（auto_by_rule）= 无人看过卡 → None。
+    let auditor = ask_auditor();
+    let dir = tempfile::tempdir().unwrap();
+    auditor.set_approval_rules(rules_hot(&dir, &[cargo_rule()]));
+    let (allowed, _, approval_ref) = auditor
+        .request_permission_tracked(&exec_request("ref-rule-1", "cargo test --release"), None);
+    assert!(allowed);
+    assert!(
+        approval_ref.is_none(),
+        "auto_by_rule allow must not fabricate an approval_ref"
+    );
+}

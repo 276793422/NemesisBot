@@ -220,6 +220,9 @@ async fn approval_requested_sse_payload_flattened() {
         reason: "exec rule matched".into(),
         timeout_secs: 300,
         pattern: "python".into(),
+        why: Some("exec rule matched".into()),
+        impact: Some("将在本机执行命令/进程：python --version".into()),
+        reject_note: Some("拒绝后本动作不执行、不产生任何效果".into()),
     })
     .unwrap();
 

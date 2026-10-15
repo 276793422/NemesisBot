@@ -28,6 +28,7 @@ fn ctx() -> RequestContext {
         correlation_id: None,
         async_callback: None,
         tool_path_base: None,
+        approval_ref: None,
     }
 }
 
