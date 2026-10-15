@@ -130,6 +130,12 @@ pub struct TurnGuard {
     /// 真实执行的 registry 结果入账；结果文本自称成功但无收据 → 合成
     /// 失败签名喂 escalation。防幻觉执行证明，不进 LLM 上下文不落盘。
     receipts: std::collections::VecDeque<(String, u64)>,
+    /// E5（2026-10-15 收尾保障）：本轮是否发生过写类工具成功——预算暂停
+    /// 前编译探针的触发闸（见 `loop/pre_pause_probe`）。只在
+    /// [`Self::record_write_success`] 的写类门内置位（失败不算：edit 原子、
+    /// 失败即未落；exec 类副作用刻意不在触发集合——exec 同时承载只读
+    /// 命令，纳入会退化成逢 exec 必探针）。
+    had_writes: bool,
 }
 
 impl TurnGuard {
@@ -287,6 +293,8 @@ impl TurnGuard {
         if !is_write_like_tool(tool) {
             return None;
         }
+        // E5：写类成功即置位（预算暂停探针触发闸；详情见字段注记）。
+        self.had_writes = true;
         let sig = format!("{}\x00{}", tool, canonical_args(args));
         let count = self.success_counts.entry(sig).or_insert(0);
         *count += 1;
@@ -298,6 +306,12 @@ impl TurnGuard {
         } else {
             None
         }
+    }
+
+    /// E5（2026-10-15 收尾保障）：本轮是否发生过写类工具成功——预算暂停
+    /// 前编译探针的触发闸（消费方 `loop/pre_pause_probe`）。
+    pub(crate) fn had_writes(&self) -> bool {
+        self.had_writes
     }
 
     /// ⑤′ Record a successful READ-like tool call; returns a nudge when this

@@ -811,6 +811,28 @@ impl AgentLoop {
             .unwrap_or(nemesis_types::capability::MAX_OUTPUT_CEILING_DEFAULT)
     }
 
+    /// E5（2026-10-15 收尾保障）：`agents.defaults.pre_pause_probe` 的
+    /// 每次新鲜读（同 [`Self::current_max_output_ceiling`] 模式——config.json
+    /// 是唯一真相源）。standalone（无 config_path）/ 读盘失败 → 解析器
+    /// 默认值（开 + 240s）。在预算暂停路径消费（`loop/pre_pause_probe`）。
+    pub(crate) fn current_pre_pause_probe(
+        &self,
+    ) -> nemesis_types::capability::PrePauseProbeSettings {
+        let dflt = nemesis_types::capability::PrePauseProbeSettings {
+            enabled: true,
+            timeout_secs: nemesis_types::capability::PRE_PAUSE_PROBE_DEFAULT_TIMEOUT_SECS,
+        };
+        let path = match self.config_path.read().clone() {
+            Some(p) => p,
+            None => return dflt,
+        };
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .map(|v| nemesis_types::capability::resolve_pre_pause_probe(&v))
+            .unwrap_or(dflt)
+    }
+
     /// U16 (sixth batch) + N1 (devtool-upgrade 阶段 1)：active 模型的
     /// context_window（input token capacity）**三级解析链**：
     /// L1 config.json 显式 `context_window`（用户最大）→ L2 价目表
