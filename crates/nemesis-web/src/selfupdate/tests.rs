@@ -4,6 +4,7 @@
 //! 的在线路径归集成验证（见 docs/REPORT 交付记录的诚实边界节）。
 
 use super::*;
+use crate::handlers::release_fetch::{parse_release_list, resolve_release_for_asset};
 use std::path::PathBuf;
 
 fn tmp_dir(tag: &str) -> PathBuf {
@@ -43,9 +44,19 @@ fn journal_roundtrip_and_clear() {
     assert_eq!(loaded.phase, "staging");
     assert_eq!(loaded.target_commit, "abc123def456");
     assert_eq!(loaded.old_path, "C:\\x\\nemesisbot.old");
-    // 原子写不留 tmp 残留。
-    assert!(!journal_path(&ws).with_extension("json.tmp").exists());
-    clear_journal(&ws);
+    // 原子写不留 tmp 残留（write_file_atomic 成功路径把唯一临时名 rename 走，
+    // state 目录里只剩 journal 本体）。
+    let names: Vec<String> = std::fs::read_dir(journal_path(&ws).parent().expect("state dir"))
+        .expect("read state dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["selfupdate.json".to_string()],
+        "原子写成功后 state 目录无 tmp 残留"
+    );
+    assert!(clear_journal(&ws), "clear 成功");
     assert!(load_journal(&ws).is_none(), "clear 后 = None");
     let _ = std::fs::remove_dir_all(&ws);
 }
@@ -66,9 +77,34 @@ fn journal_corrupt_json_reads_none() {
 fn fuse_stamp_and_read() {
     let ws = tmp_dir("fuse");
     assert!(last_attempt_ms(&ws).is_none());
-    stamp_fuse(&ws);
+    stamp_fuse(&ws).expect("fuse stamp ok");
     let last = last_attempt_ms(&ws).expect("stamped");
     assert!(now_ms() >= last && now_ms() - last < 60_000, "fuse ≈ now");
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+/// fail-closed 前提：state 目录不可写（存在同名常规文件）时记账必须报错
+/// 而不是吞掉——apply 审批后的 fail-closed 闸依赖这个 Err。
+#[test]
+fn stamp_fuse_fail_closed_when_state_unwritable() {
+    let ws = tmp_dir("fuse-fail");
+    std::fs::write(ws.join("state"), b"x").expect("make state a file");
+    assert!(
+        stamp_fuse(&ws).is_err(),
+        "state 不可写 = Err（fail-closed 前提）"
+    );
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+/// 同理：journal 原子写在 state 目录不可写时诚实报错（不静默丢现场）。
+#[test]
+fn save_journal_err_when_state_unwritable() {
+    let ws = tmp_dir("journal-fail");
+    std::fs::write(ws.join("state"), b"x").expect("make state a file");
+    assert!(
+        save_journal(&ws, &journal("staging", "x", "y")).is_err(),
+        "journal 落盘失败必须上抛"
+    );
     let _ = std::fs::remove_dir_all(&ws);
 }
 
@@ -111,6 +147,67 @@ fn release_body_commit_extraction() {
     // 非全量 40 hex 的反引号段不命中。
     let short = "| Commit | `abc123` |\n";
     assert_eq!(extract_commit_from_release_body(short), None);
+}
+
+// ---------------------------------------------------------------------------
+// 发布列表同源解析（check / apply 单一权威源）
+// ---------------------------------------------------------------------------
+
+/// 复评整改 B1b 回归锁：首条 release 无主包资产、更旧的第二条有 →
+/// resolve 落在第二条，meta（tag/body commit/下载 URL）同源——check 展示
+/// 与 apply 实际下载从此指向同一对象。
+#[test]
+fn release_list_resolution_same_source() {
+    let json = serde_json::json!([
+        {
+            "tag_name": "nightly-build",
+            "name": "Nightly（主包未产出）",
+            "body": "| Commit | `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` |",
+            "assets": [
+                { "name": "nightly-windows-plugins.zip",
+                  "browser_download_url": "https://example.com/plugins.zip" }
+            ]
+        },
+        {
+            "tag_name": "nightly-build",
+            "name": "Nightly（含主包）",
+            "body": "| Commit | `bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb` |",
+            "assets": [
+                { "name": "nightly-windows.zip",
+                  "browser_download_url": "https://example.com/pkg.zip" },
+                { "name": "nightly-linux.tar.gz",
+                  "browser_download_url": "https://example.com/pkg.tar.gz" }
+            ]
+        }
+    ]);
+    let list = parse_release_list(&json).expect("parse ok");
+    assert_eq!(list.len(), 2, "顺序保留（新→旧）");
+
+    let resolved =
+        resolve_release_for_asset(&list, "nightly-windows.zip").expect("落在含资产的第二条");
+    assert_eq!(
+        resolved.body_commit().as_deref(),
+        Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        "body commit 来自含资产的 release（非列表首条）"
+    );
+    assert_eq!(
+        resolved.asset_url("nightly-windows.zip"),
+        Some("https://example.com/pkg.zip"),
+        "下载 URL 同源"
+    );
+    assert!(resolved.has_asset("nightly-windows.zip"));
+
+    assert!(
+        resolve_release_for_asset(&list, "nightly-missing.zip").is_none(),
+        "无资产命中 = None（调用方诚实回落）"
+    );
+}
+
+#[test]
+fn parse_release_list_rejects_non_array() {
+    let err = parse_release_list(&serde_json::json!({"message": "Not Found"}))
+        .expect_err("非列表响应必须报错");
+    assert!(err.contains("不是列表"), "诚实报错: {err}");
 }
 
 // ---------------------------------------------------------------------------
@@ -277,6 +374,86 @@ mod gated {
         assert!(err.contains("nemesisbot.exe"), "诚实报包结构异常: {err}");
     }
 
+    // -----------------------------------------------------------------------
+    // 降级判定（复评整改 B1a：nightly 单调基准 = 发布列表顺序）
+    // -----------------------------------------------------------------------
+
+    use crate::selfupdate::{DowngradeVerdict, downgrade_gate_error, downgrade_verdict};
+
+    /// 列表序新→旧三条全量 sha 的判定矩阵：Upgrade / Downgrade / Same /
+    /// 双向前缀兼容 / 身份缺位 Unknown / 空条目跳过 / 空列表。
+    #[test]
+    fn downgrade_verdict_matrix() {
+        let c = "cccccccccccccccccccccccccccccccccccccccc"; // 最新
+        let b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; // 最旧
+        let list = [c, b, a];
+
+        // 基本三态（全量 sha 身份）。
+        assert_eq!(
+            downgrade_verdict(&list, a, b),
+            DowngradeVerdict::Upgrade,
+            "目标在当前之前 = 更新"
+        );
+        assert_eq!(
+            downgrade_verdict(&list, b, a),
+            DowngradeVerdict::Downgrade,
+            "目标在当前之后 = 降级（B1a 主断言）"
+        );
+        assert_eq!(downgrade_verdict(&list, b, b), DowngradeVerdict::Same);
+
+        // 前缀兼容：短 sha 身份命中全量列表条目（当前进程注入的是短 commit）。
+        assert_eq!(
+            downgrade_verdict(&list, "bbbbbbbb", a),
+            DowngradeVerdict::Downgrade
+        );
+        // 反向：身份全量、列表条目短（列表格式变化的容错面）。
+        assert_eq!(
+            downgrade_verdict(&["bbbbbbbb"], b, "bbbbbbbb"),
+            DowngradeVerdict::Same
+        );
+
+        // 任一身份不在列表 = Unknown（不猜）。
+        assert_eq!(
+            downgrade_verdict(&list, "dddddddd", a),
+            DowngradeVerdict::Unknown
+        );
+        assert_eq!(downgrade_verdict(&list, "", a), DowngradeVerdict::Unknown);
+        assert_eq!(downgrade_verdict(&list, a, ""), DowngradeVerdict::Unknown);
+
+        // 列表空条目（body 无 sha）不参与匹配；目标被空位缺席时仍 Unknown。
+        let sparse = ["", b];
+        assert_eq!(
+            downgrade_verdict(&sparse, b, a),
+            DowngradeVerdict::Unknown,
+            "目标不在列表 = Unknown"
+        );
+
+        // 空列表 = Unknown（列表不可得诚实边界）。
+        assert_eq!(downgrade_verdict(&[], a, b), DowngradeVerdict::Unknown);
+    }
+
+    /// 闸语义：仅 Downgrade 且未显式豁免才拒；allow_downgrade 整体豁免；
+    /// Upgrade/Same/Unknown 恒放行（Unknown 由调用方审计留痕）。
+    #[test]
+    fn downgrade_gate_error_matrix() {
+        assert!(
+            downgrade_gate_error(DowngradeVerdict::Downgrade, false).is_some(),
+            "降级未豁免 = 拒"
+        );
+        assert!(
+            downgrade_gate_error(DowngradeVerdict::Downgrade, true).is_none(),
+            "显式豁免 = 放行"
+        );
+        for v in [
+            DowngradeVerdict::Upgrade,
+            DowngradeVerdict::Same,
+            DowngradeVerdict::Unknown,
+        ] {
+            assert!(downgrade_gate_error(v, false).is_none(), "{v:?} 恒放行");
+        }
+    }
+
     fn manager_for(
         ws: PathBuf,
         estop: std::sync::Arc<nemesis_agent::estop::EstopState>,
@@ -343,7 +520,7 @@ mod gated {
     #[tokio::test]
     async fn apply_denied_by_frequency_fuse() {
         let ws = tmp_dir("gate-fuse");
-        stamp_fuse(&ws);
+        stamp_fuse(&ws).expect("fuse stamp ok");
         let m = manager_for(
             ws.clone(),
             std::sync::Arc::new(nemesis_agent::estop::EstopState::new()),

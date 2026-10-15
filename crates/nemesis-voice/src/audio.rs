@@ -1,7 +1,7 @@
 //! Audio capture, playback, and resampling
 //!
-//! Uses cpal for cross-platform audio I/O and sherpa-onnx LinearResampler for
-//! proper resampling (no aliased 3:1 averaging).
+//! Uses cpal for cross-platform audio I/O; resampling is a pure-Rust linear
+//! interpolator (see `Resampler` below — not sherpa-onnx FFI).
 
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -306,16 +306,16 @@ impl StopHandle {
 }
 
 // =============================================================================
-// Resampler (sherpa-onnx LinearResampler)
+// Resampler（纯 Rust 线性插值；无 FFI——模块历史注释曾误标「sherpa-onnx
+// LinearResampler」，sherpa.rs 的 FFI resampler 绑定全仓无消费者）
 // =============================================================================
 
+/// 线性插值重采样器（纯 Rust：字段仅两个 `f32`，自动 Send+Sync，无裸指针、
+/// 无 native 资源——无需手工 unsafe impl 与 Drop）。
 pub struct Resampler {
     rate_in: f32,
     rate_out: f32,
 }
-
-unsafe impl Send for Resampler {}
-unsafe impl Sync for Resampler {}
 
 impl Resampler {
     pub fn new(rate_in: u32, rate_out: u32) -> Result<Self> {
@@ -355,10 +355,6 @@ impl Resampler {
     pub fn ratio(&self) -> f32 {
         self.rate_out / self.rate_in
     }
-}
-
-impl Drop for Resampler {
-    fn drop(&mut self) {}
 }
 
 #[cfg(test)]

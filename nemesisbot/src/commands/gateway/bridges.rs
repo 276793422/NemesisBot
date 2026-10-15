@@ -291,8 +291,17 @@ impl nemesis_security::auditor::ApprovalManager for ApprovalPopupAdapter {
 
 /// Bridge adapter connecting Cluster to Forge's ClusterForgeBridge trait.
 ///
-/// Enables Forge to share reflections with and receive reflections from
-/// cluster peers. Mirrors Go's `forge.NewClusterForgeBridge(cluster)`.
+/// **P2-3 诚实形态**：集群侧 reflection 分享/拉取的 RPC 通路至今未实现
+/// ——此前本 adapter 把「未实现」伪装成「启用但无数据」：`share_reflection`
+/// 返回 `Ok(0)`（0 个对端）、远端查询返回空数组、`is_cluster_enabled()` 恒
+/// `true`。上层据此把静默失败当成功（forge.rs share 循环连 warn 都不打），
+/// 运维无法区分「对端没有 reflection」与「桥根本不通」。现各方法返回明确
+/// `Err`、`is_cluster_enabled()` 如实 `false`——上层全部有现成处理路径：
+/// share Err → forge.rs 循环 `warn!` 继续；forge_tools 上浮「Share failed」；
+/// syncer fetch 透传 Err。语义对齐 forge disabled 形态的 `NoOpBridge`。
+///
+/// 真实双节点 reflection 流（cluster RPC handler + 远端 store 读写）作为
+/// 独立 feature 另行排期；实现时把下面的 TODO 落地为真实调用。
 #[cfg(all(feature = "cluster", feature = "forge"))]
 pub(crate) struct ClusterForgeBridgeAdapter {
     node_id: String,
@@ -309,20 +318,21 @@ impl ClusterForgeBridgeAdapter {
 #[async_trait::async_trait]
 impl nemesis_forge::bridge::ClusterForgeBridge for ClusterForgeBridgeAdapter {
     async fn share_reflection(&self, report_json: serde_json::Value) -> Result<usize, String> {
-        // TODO: When cluster has a share_reflection method, call it here.
-        // For now, store locally only (matches Go's early implementation).
+        // TODO(cluster-reflection): 集群 RPC 通路实现后在此调用远端
+        // reflection 写入，返回实际接收节点数。当前未实现 → 诚实 Err，
+        // 不伪装成「已分享给 0 个对端」。
         let _ = report_json;
-        Ok(0)
+        Err("cluster reflection bridge is not implemented (report not shared)".to_string())
     }
 
     async fn get_remote_reflections(&self) -> Result<Vec<serde_json::Value>, String> {
-        // TODO: When cluster has get_reflection_reports, call it here.
-        Ok(Vec::new())
+        // TODO(cluster-reflection): 实现后转发远端 reflection 查询。
+        Err("cluster reflection bridge is not implemented".to_string())
     }
 
     async fn get_online_peers(&self) -> Result<Vec<String>, String> {
-        // TODO: When cluster has get_online_peers with node IDs, call it here.
-        Ok(Vec::new())
+        // TODO(cluster-reflection): 实现后返回在线对端节点 ID 列表。
+        Err("cluster reflection bridge is not implemented".to_string())
     }
 
     fn local_node_id(&self) -> &str {
@@ -330,7 +340,10 @@ impl nemesis_forge::bridge::ClusterForgeBridge for ClusterForgeBridgeAdapter {
     }
 
     fn is_cluster_enabled(&self) -> bool {
-        true
+        // reflection 桥不通 = 对 forge 而言集群分享能力不可用（与
+        // NoOpBridge 同语义）；集群本身（RPC/任务派发/续行）不受此
+        // 字段影响——它只被 forge 侧消费。
+        false
     }
 }
 

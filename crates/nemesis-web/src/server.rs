@@ -2341,6 +2341,8 @@ pub async fn dispatch_outbound(bus: Arc<MessageBus>, session_manager: Arc<Sessio
                 }
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                // P2-1：接收侧真实丢失计入 bus 指标。
+                bus.record_outbound_lagged(n);
                 tracing::warn!("[WebServer] Outbound dispatch lagged by {} messages", n);
                 continue;
             }

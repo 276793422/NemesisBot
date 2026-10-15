@@ -981,6 +981,8 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        // P2-1：接收侧真实丢失计入 bus 指标。
+                        bus_for_cm.record_outbound_lagged(n);
                         tracing::warn!(
                             "[Gateway] ChannelManager outbound bridge lagged {} messages",
                             n

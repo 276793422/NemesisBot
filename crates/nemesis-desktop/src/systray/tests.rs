@@ -408,31 +408,6 @@ fn test_set_tooltip_and_menu_together() {
 }
 
 // ============================================================
-// enable/disable_cluster_menu_items - safe no-ops off the tray thread.
-// On non-Linux these touch a thread-local that is None here; on Linux
-// they are empty bodies. Either way they must not panic.
-// ============================================================
-
-#[test]
-fn test_enable_cluster_menu_items_no_panic() {
-    // Called from the test thread (no tray thread running); the
-    // thread-local storage is None so this is a safe no-op.
-    enable_cluster_menu_items();
-}
-
-#[test]
-fn test_disable_cluster_menu_items_no_panic() {
-    disable_cluster_menu_items();
-}
-
-#[test]
-fn test_enable_then_disable_cluster_menu_items_no_panic() {
-    enable_cluster_menu_items();
-    disable_cluster_menu_items();
-    enable_cluster_menu_items();
-}
-
-// ============================================================
 // PlatformTray tests (desktop only — requires tray-icon)
 // ============================================================
 
@@ -629,55 +604,6 @@ mod extra_platform_tray_tests {
         let _ = tray;
         // None of the callbacks run without a real event loop.
         assert_eq!(counter.load(Ordering::SeqCst), 0);
-    }
-}
-
-/// Exercise the `Some` branch of `enable_cluster_menu_items` /
-/// `disable_cluster_menu_items` by populating the thread-local with real
-/// (unattached) menu items. `MenuItem` state manipulation works without a
-/// window — this mirrors how production creates the items before the tray
-/// loop attaches them.
-#[cfg(all(not(target_os = "android"), not(target_os = "linux")))]
-mod extra_cluster_menu_tests {
-    use super::*;
-
-    fn read_enabled(which: usize) -> bool {
-        CLUSTER_MENU_ITEMS.with(|items| {
-            let b = items.borrow();
-            let (start, stop) = b.as_ref().expect("menu items not set");
-            if which == 0 {
-                start.is_enabled()
-            } else {
-                stop.is_enabled()
-            }
-        })
-    }
-
-    #[test]
-    fn test_cluster_menu_items_enable_disable_some_branch() {
-        CLUSTER_MENU_ITEMS.with(|items| {
-            *items.borrow_mut() = Some((
-                tray_icon::menu::MenuItem::with_id("cluster_start", "cluster-start", false, None),
-                tray_icon::menu::MenuItem::with_id("cluster_stop", "cluster-stop", false, None),
-            ));
-        });
-
-        // Created disabled.
-        assert!(!read_enabled(0));
-        assert!(!read_enabled(1));
-
-        enable_cluster_menu_items();
-        assert!(read_enabled(0), "start item not enabled");
-        assert!(read_enabled(1), "stop item not enabled");
-
-        disable_cluster_menu_items();
-        assert!(!read_enabled(0), "start item not disabled");
-        assert!(!read_enabled(1), "stop item not disabled");
-
-        // Reset the thread-local so other tests see None.
-        CLUSTER_MENU_ITEMS.with(|items| {
-            *items.borrow_mut() = None;
-        });
     }
 }
 

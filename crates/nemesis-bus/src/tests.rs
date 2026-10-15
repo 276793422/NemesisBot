@@ -380,8 +380,8 @@ fn test_publish_inbound_no_receivers_no_panic() {
         voice_playback: None,
     });
     // Should have incremented the dropped counter
-    assert_eq!(bus.dropped_inbound(), 1);
-    assert_eq!(bus.dropped_outbound(), 0);
+    assert_eq!(bus.no_receiver_dropped_inbound(), 1);
+    assert_eq!(bus.no_receiver_dropped_outbound(), 0);
 }
 
 #[test]
@@ -395,14 +395,14 @@ fn test_publish_outbound_no_receivers_no_panic() {
         message_type: String::new(),
         meta: Default::default(),
     });
-    assert_eq!(bus.dropped_outbound(), 1);
-    assert_eq!(bus.dropped_inbound(), 0);
+    assert_eq!(bus.no_receiver_dropped_outbound(), 1);
+    assert_eq!(bus.no_receiver_dropped_inbound(), 0);
 }
 
 #[test]
-fn test_dropped_inbound_counter_multiple() {
+fn test_no_receiver_dropped_inbound_counter_multiple() {
     let bus = MessageBus::new();
-    assert_eq!(bus.dropped_inbound(), 0);
+    assert_eq!(bus.no_receiver_dropped_inbound(), 0);
 
     // Publish 3 messages with no receivers
     for i in 0..3 {
@@ -418,13 +418,13 @@ fn test_dropped_inbound_counter_multiple() {
             voice_playback: None,
         });
     }
-    assert_eq!(bus.dropped_inbound(), 3);
+    assert_eq!(bus.no_receiver_dropped_inbound(), 3);
 }
 
 #[test]
-fn test_dropped_outbound_counter_multiple() {
+fn test_no_receiver_dropped_outbound_counter_multiple() {
     let bus = MessageBus::new();
-    assert_eq!(bus.dropped_outbound(), 0);
+    assert_eq!(bus.no_receiver_dropped_outbound(), 0);
 
     for i in 0..4 {
         bus.publish_outbound(OutboundMessage {
@@ -435,7 +435,7 @@ fn test_dropped_outbound_counter_multiple() {
             meta: Default::default(),
         });
     }
-    assert_eq!(bus.dropped_outbound(), 4);
+    assert_eq!(bus.no_receiver_dropped_outbound(), 4);
 }
 
 #[tokio::test]
@@ -454,7 +454,7 @@ async fn test_dropped_counter_resets_after_subscribe() {
         metadata: std::collections::HashMap::new(),
         voice_playback: None,
     });
-    assert_eq!(bus.dropped_inbound(), 1);
+    assert_eq!(bus.no_receiver_dropped_inbound(), 1);
 
     // Subscribe, now messages should not be dropped
     let mut rx = bus.subscribe_inbound();
@@ -473,7 +473,7 @@ async fn test_dropped_counter_resets_after_subscribe() {
     let msg = rx.recv().await.unwrap();
     assert_eq!(msg.content, "delivered");
     // Counter should still be 1 (only the first was dropped)
-    assert_eq!(bus.dropped_inbound(), 1);
+    assert_eq!(bus.no_receiver_dropped_inbound(), 1);
 }
 
 #[tokio::test]
@@ -531,7 +531,7 @@ async fn test_publish_inbound_after_close_drops_silently() {
     });
 
     // Closed bus should not increment dropped counter (it returns early)
-    assert_eq!(bus.dropped_inbound(), 0);
+    assert_eq!(bus.no_receiver_dropped_inbound(), 0);
 }
 
 #[tokio::test]
@@ -548,7 +548,7 @@ async fn test_publish_outbound_after_close_drops_silently() {
         meta: Default::default(),
     });
 
-    assert_eq!(bus.dropped_outbound(), 0);
+    assert_eq!(bus.no_receiver_dropped_outbound(), 0);
 }
 
 // =========================================================================
@@ -591,8 +591,8 @@ async fn test_close_prevents_both_inbound_and_outbound() {
     assert!(out_result.is_err() || out_result.unwrap().is_err());
 
     // Dropped counters must remain 0 because close returns early.
-    assert_eq!(bus.dropped_inbound(), 0);
-    assert_eq!(bus.dropped_outbound(), 0);
+    assert_eq!(bus.no_receiver_dropped_inbound(), 0);
+    assert_eq!(bus.no_receiver_dropped_outbound(), 0);
 }
 
 #[test]
@@ -640,7 +640,7 @@ async fn test_publish_inbound_all_receivers_dropped() {
         voice_playback: None,
     });
 
-    assert_eq!(bus.dropped_inbound(), 1);
+    assert_eq!(bus.no_receiver_dropped_inbound(), 1);
     assert_eq!(bus.inbound_subscriber_count(), 0);
 }
 
@@ -662,7 +662,7 @@ async fn test_publish_outbound_all_receivers_dropped() {
         meta: Default::default(),
     });
 
-    assert_eq!(bus.dropped_outbound(), 1);
+    assert_eq!(bus.no_receiver_dropped_outbound(), 1);
     assert_eq!(bus.outbound_subscriber_count(), 0);
 }
 
@@ -696,7 +696,7 @@ async fn test_publish_inbound_some_receivers_dropped() {
         .expect("timeout waiting for message on surviving receiver")
         .expect("recv error on surviving receiver");
     assert_eq!(msg.content, "partial");
-    assert_eq!(bus.dropped_inbound(), 0);
+    assert_eq!(bus.no_receiver_dropped_inbound(), 0);
 }
 
 #[tokio::test]
@@ -917,8 +917,8 @@ fn test_publish_inbound_no_receivers_multiple_messages_drops_all() {
             voice_playback: None,
         });
     }
-    assert_eq!(bus.dropped_inbound(), 10);
-    assert_eq!(bus.dropped_outbound(), 0);
+    assert_eq!(bus.no_receiver_dropped_inbound(), 10);
+    assert_eq!(bus.no_receiver_dropped_outbound(), 0);
 }
 
 #[test]
@@ -933,8 +933,8 @@ fn test_publish_outbound_no_receivers_multiple_messages_drops_all() {
             meta: Default::default(),
         });
     }
-    assert_eq!(bus.dropped_outbound(), 10);
-    assert_eq!(bus.dropped_inbound(), 0);
+    assert_eq!(bus.no_receiver_dropped_outbound(), 10);
+    assert_eq!(bus.no_receiver_dropped_inbound(), 0);
 }
 
 #[tokio::test]
@@ -953,7 +953,7 @@ async fn test_publish_no_receivers_then_subscribe_delivers_new_messages() {
         metadata: std::collections::HashMap::new(),
         voice_playback: None,
     });
-    assert_eq!(bus.dropped_inbound(), 1);
+    assert_eq!(bus.no_receiver_dropped_inbound(), 1);
 
     // Subscribe and publish again.
     let mut rx = bus.subscribe_inbound();
@@ -975,7 +975,7 @@ async fn test_publish_no_receivers_then_subscribe_delivers_new_messages() {
         .expect("should receive message after subscribing");
     assert_eq!(msg.content, "delivered");
     assert_eq!(
-        bus.dropped_inbound(),
+        bus.no_receiver_dropped_inbound(),
         1,
         "only the first message should be dropped"
     );
@@ -992,7 +992,7 @@ async fn test_publish_outbound_no_receivers_then_subscribe_delivers_new_messages
         message_type: String::new(),
         meta: Default::default(),
     });
-    assert_eq!(bus.dropped_outbound(), 1);
+    assert_eq!(bus.no_receiver_dropped_outbound(), 1);
 
     let mut rx = bus.subscribe_outbound();
     bus.publish_outbound(OutboundMessage {
@@ -1008,7 +1008,7 @@ async fn test_publish_outbound_no_receivers_then_subscribe_delivers_new_messages
         .await
         .expect("should receive message after subscribing");
     assert_eq!(msg.content, "delivered");
-    assert_eq!(bus.dropped_outbound(), 1);
+    assert_eq!(bus.no_receiver_dropped_outbound(), 1);
 }
 
 #[tokio::test]
@@ -1034,7 +1034,7 @@ async fn test_publish_inbound_subscribe_then_unsubscribe_all() {
         metadata: std::collections::HashMap::new(),
         voice_playback: None,
     });
-    assert_eq!(bus.dropped_inbound(), 1);
+    assert_eq!(bus.no_receiver_dropped_inbound(), 1);
 }
 
 // =========================================================================
@@ -1326,12 +1326,17 @@ async fn test_with_capacity_overflow_drops_oldest() {
 // =========================================================================
 
 #[tokio::test]
-async fn test_publish_inbound_lagged_receiver_increments_dropped() {
-    // Test the error path when inbound_tx.send() fails due to lagged receiver
+async fn test_publish_inbound_no_receivers_after_dropping_receiver_increments_no_receiver_dropped()
+{
+    // 语义澄清（P2-1）：lagged 与发布侧 dropped 是两个不同维度的丢失——
+    // 慢消费者 lag 不影响发布侧计数（send 成功），只有「无接收者时发布」
+    // 才计入 no_receiver_dropped。真实 lag 记账见
+    // test_lagged_receiver_loss_recorded_via_record_lagged。
     let bus = MessageBus::with_capacity(2);
-    let mut rx = bus.subscribe_inbound();
+    let rx = bus.subscribe_inbound();
 
-    // Publish messages without receiving to overflow the buffer
+    // Publish messages without receiving to overflow the buffer (receiver
+    // becomes lagged; publish-side counter must stay untouched).
     for i in 0..10 {
         bus.publish_inbound(InboundMessage {
             channel: "test".to_string(),
@@ -1346,21 +1351,19 @@ async fn test_publish_inbound_lagged_receiver_increments_dropped() {
         });
     }
 
-    // Now try to receive - receiver is lagged, some messages may be lost
-    // This will trigger RecvError::Lagged or skip to latest message
-    let result = rx.recv().await;
+    // 发布侧计数不受 lag 影响（send 全部成功）。
+    assert_eq!(bus.no_receiver_dropped_inbound(), 0);
+    assert_eq!(
+        bus.lagged_inbound(),
+        0,
+        "接收侧记账是显式入口，不会自动累计"
+    );
 
-    // The receiver should get either a message or a lagged error
-    // Both cases indicate the error path was exercised
-    assert!(result.is_ok() || result.is_err(), "recv should complete");
-
-    // Drop the receiver and publish more to trigger send errors
+    // Drop the receiver and publish more — now the no-receiver path counts.
     drop(rx);
 
-    let initial_dropped = bus.dropped_inbound();
+    let initial_dropped = bus.no_receiver_dropped_inbound();
 
-    // Publish with no receivers - this should increment dropped counter
-    // via the error path in publish_inbound
     for i in 0..5 {
         bus.publish_inbound(InboundMessage {
             channel: "test".to_string(),
@@ -1375,17 +1378,15 @@ async fn test_publish_inbound_lagged_receiver_increments_dropped() {
         });
     }
 
-    // Verify that messages were dropped (counter incremented)
-    assert_eq!(bus.dropped_inbound(), initial_dropped + 5);
+    assert_eq!(bus.no_receiver_dropped_inbound(), initial_dropped + 5);
 }
 
 #[tokio::test]
-async fn test_publish_outbound_lagged_receiver_increments_dropped() {
-    // Test the error path when outbound_tx.send() fails due to lagged receiver
+async fn test_publish_outbound_no_receivers_after_dropping_receiver_increments_no_receiver_dropped()
+{
     let bus = MessageBus::with_capacity(2);
-    let mut rx = bus.subscribe_outbound();
+    let rx = bus.subscribe_outbound();
 
-    // Publish messages without receiving to overflow the buffer
     for i in 0..10 {
         bus.publish_outbound(OutboundMessage {
             channel: "test".to_string(),
@@ -1396,17 +1397,12 @@ async fn test_publish_outbound_lagged_receiver_increments_dropped() {
         });
     }
 
-    // Try to receive - may get lagged error
-    let result = rx.recv().await;
-    assert!(result.is_ok() || result.is_err(), "recv should complete");
+    assert_eq!(bus.no_receiver_dropped_outbound(), 0);
 
-    // Drop the receiver and publish more to trigger send errors
     drop(rx);
 
-    let initial_dropped = bus.dropped_outbound();
+    let initial_dropped = bus.no_receiver_dropped_outbound();
 
-    // Publish with no receivers - this should increment dropped counter
-    // via the error path in publish_outbound
     for i in 0..5 {
         bus.publish_outbound(OutboundMessage {
             channel: "test".to_string(),
@@ -1417,8 +1413,73 @@ async fn test_publish_outbound_lagged_receiver_increments_dropped() {
         });
     }
 
-    // Verify that messages were dropped (counter incremented)
-    assert_eq!(bus.dropped_outbound(), initial_dropped + 5);
+    assert_eq!(bus.no_receiver_dropped_outbound(), initial_dropped + 5);
+}
+
+/// 接收侧真实丢失记账（P2-1 新增）：容量 2 灌 10 条 → 接收端 `recv()`
+/// 返回 `Lagged(8)`（2 条缓冲 + 8 条被覆盖跳过）；发布侧计数不动；显式
+/// `record_inbound_lagged(8)` 后 lagged 计数 = 8。出站同型。
+#[tokio::test]
+async fn test_lagged_receiver_loss_recorded_via_record_lagged() {
+    use tokio::sync::broadcast::error::RecvError;
+
+    let bus = MessageBus::with_capacity(2);
+    let mut rx = bus.subscribe_inbound();
+
+    for i in 0..10 {
+        bus.publish_inbound(InboundMessage {
+            channel: "test".to_string(),
+            sender_id: "u".to_string(),
+            chat_id: "c".to_string(),
+            content: format!("msg{}", i),
+            media: vec![],
+            session_key: "t:c".to_string(),
+            correlation_id: String::new(),
+            metadata: std::collections::HashMap::new(),
+            voice_playback: None,
+        });
+    }
+
+    match rx.recv().await {
+        Err(RecvError::Lagged(n)) => {
+            assert_eq!(n, 8, "容量 2 灌 10 条：首帧 recv 必报 Lagged(8)");
+            bus.record_inbound_lagged(n);
+        }
+        other => panic!("expected Lagged(8), got {other:?}"),
+    }
+
+    assert_eq!(bus.lagged_inbound(), 8);
+    assert_eq!(
+        bus.no_receiver_dropped_inbound(),
+        0,
+        "发布侧计数不受 lag 影响"
+    );
+
+    // record 的 n=0 防呆：不增计数。
+    bus.record_inbound_lagged(0);
+    assert_eq!(bus.lagged_inbound(), 8);
+
+    // 出站同型。
+    let bus = MessageBus::with_capacity(2);
+    let mut rx = bus.subscribe_outbound();
+    for i in 0..10 {
+        bus.publish_outbound(OutboundMessage {
+            channel: "test".to_string(),
+            chat_id: "c".to_string(),
+            content: format!("out{}", i),
+            message_type: String::new(),
+            meta: Default::default(),
+        });
+    }
+    match rx.recv().await {
+        Err(RecvError::Lagged(n)) => {
+            assert_eq!(n, 8);
+            bus.record_outbound_lagged(n);
+        }
+        other => panic!("expected Lagged(8), got {other:?}"),
+    }
+    assert_eq!(bus.lagged_outbound(), 8);
+    assert_eq!(bus.no_receiver_dropped_outbound(), 0);
 }
 
 #[tokio::test]
@@ -1663,7 +1724,7 @@ async fn test_publish_inbound_drops_message_when_all_receivers_dropped_concurren
     publisher_handle.await.unwrap();
 
     // Verify some messages were dropped due to no receivers
-    let dropped = bus.dropped_inbound();
+    let dropped = bus.no_receiver_dropped_inbound();
     assert!(
         dropped > 0,
         "Expected some messages to be dropped due to receiver contention, got {}",
@@ -1710,7 +1771,7 @@ async fn test_publish_outbound_drops_message_when_all_receivers_dropped_concurre
     }
     publisher_handle.await.unwrap();
 
-    let dropped = bus.dropped_outbound();
+    let dropped = bus.no_receiver_dropped_outbound();
     assert!(
         dropped > 0,
         "Expected some outbound messages to be dropped, got {}",

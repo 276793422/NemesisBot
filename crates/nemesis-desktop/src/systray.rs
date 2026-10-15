@@ -240,57 +240,14 @@ impl SystemTray {
 // Platform tray implementation
 // ---------------------------------------------------------------------------
 
-// Thread-local storage for cluster menu items.
-//
-// `tray_icon::menu::MenuItem` is not `Send` (internally uses `Rc`), so it
-// cannot be stored in `PlatformTray` (which must be `Send`). Instead, the
-// items are created in `run_event_loop()` on the tray thread and stored here.
-// The enable/disable functions below access them from callbacks that also run
-// on the tray thread.
-#[cfg(not(target_os = "linux"))]
-thread_local! {
-    static CLUSTER_MENU_ITEMS: std::cell::RefCell<Option<(
-        tray_icon::menu::MenuItem,
-        tray_icon::menu::MenuItem,
-    )>> = const { std::cell::RefCell::new(None) };
-}
-
-/// Enable the "集群启动" and "集群停止" tray menu items.
-///
-/// Safe to call from any thread; no-ops when called off the tray thread
-/// (the thread-local will be `None`).
-#[cfg(not(target_os = "linux"))]
-pub fn enable_cluster_menu_items() {
-    CLUSTER_MENU_ITEMS.with(|items| {
-        if let Some((start, stop)) = items.borrow().as_ref() {
-            start.set_enabled(true);
-            stop.set_enabled(true);
-            tracing::debug!("[Desktop] Cluster menu items enabled");
-        }
-    });
-}
-
-/// Disable the "集群启动" and "集群停止" tray menu items.
-#[cfg(not(target_os = "linux"))]
-pub fn disable_cluster_menu_items() {
-    CLUSTER_MENU_ITEMS.with(|items| {
-        if let Some((start, stop)) = items.borrow().as_ref() {
-            start.set_enabled(false);
-            stop.set_enabled(false);
-            tracing::debug!("[Desktop] Cluster menu items disabled");
-        }
-    });
-}
-
-#[cfg(target_os = "linux")]
-pub fn enable_cluster_menu_items() {
-    // TODO: 通过 plugin-ui bridge 实现
-}
-
-#[cfg(target_os = "linux")]
-pub fn disable_cluster_menu_items() {
-    // TODO: 通过 plugin-ui bridge 实现
-}
+// P3-4a（复评修正）：`enable/disable_cluster_menu_items` 运行时切换 API 已
+// 整体删除。理由：全仓零生产调用者（Windows/macOS 实现体 + Linux 空桩都
+// 是死代码）；配套的 plugin-ui `plugin_tray_set_menu_enabled` C ABI 也是空
+// 桩（tray-gtk-migration-impl 已记录「当前没有调用者」）。诚实原则 = 不暴
+// 露不可用控制：Linux 托盘的「集群启动/停止」菜单项本身功能完整（点击回
+// 调经 run_via_plugin_ui 真实接线），保留；只有这块从未被使用的动态开关
+// 面被移除。若未来需要运行时置灰（如集群 feature 关闭时），应连同
+// plugin-ui 侧真实实现一起立项，而非留空桩伪装能力。
 
 /// User event types forwarded from tray-icon to the winit event loop.
 #[cfg(not(target_os = "linux"))]
@@ -903,11 +860,6 @@ impl PlatformTray {
         let _ = menu.append(&version_item);
         let _ = menu.append(&sep3);
         let _ = menu.append(&quit_item);
-
-        // Populate thread-local so enable/disable functions can reach these items
-        CLUSTER_MENU_ITEMS.with(|items| {
-            *items.borrow_mut() = Some((cluster_start_menu, cluster_stop_menu));
-        });
 
         // Create tray icon with menu bound, but disable left-click popup.
         // Only right-click shows the menu; left-double-click opens Dashboard.
