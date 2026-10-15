@@ -125,6 +125,16 @@ pub struct McpClient {
     capabilities: Option<ServerCapabilities>,
     /// Protocol version negotiated during initialization.
     protocol_version: Option<String>,
+    /// Per-request inner transport timeout (ms)（2026-10-15 第十二轮复查）：
+    /// 此前硬编码 30s，config `timeout` > 30 会被内层静默截断——adapter 的
+    /// 外层超时放宽形同虚设，且外层报错文案（timed out after 120s）与实际
+    /// 死因（内层 30s）不符。构造时从 `from_server_config` 的 config 取值
+    /// 并**加 1s 让位宽限**（内层恒大于外层——超时阶梯纪律：外层必须大于
+    /// 内层，否则外层先死、内层超时形同虚设；这里外层= adapter/manager 的
+    /// config 预算、内层=逐请求传输超时，同源自 config，不平齐就让位 1s，
+    /// 外层确定性先到，`timed out after Ns` 语义保持）。manager 注册 /
+    /// CLI test·tools 直连 / agent loop 发现三条路径同源生效。
+    request_timeout_ms: u64,
 }
 
 impl McpClient {
@@ -140,7 +150,21 @@ impl McpClient {
             server_info: None,
             capabilities: None,
             protocol_version: None,
+            request_timeout_ms: 30_000,
         }
+    }
+
+    /// Effective per-request inner transport timeout (ms)。测试与诊断用
+    /// （config `timeout` 接线咬合断言面）。
+    pub fn request_timeout_ms(&self) -> u64 {
+        self.request_timeout_ms
+    }
+
+    /// Override the per-request inner transport timeout (ms)。测试注入用
+    /// （生产路径由 [`Self::from_server_config`] 从 config `timeout` 接线）。
+    pub fn with_request_timeout_ms(mut self, ms: u64) -> Self {
+        self.request_timeout_ms = ms;
+        self
     }
 
     /// Create a new client from a server configuration using stdio transport.
@@ -212,7 +236,20 @@ impl McpClient {
             }
             Box::new(crate::stdio_transport::StdioTransport::from_config(&cfg))
         };
-        Ok(Self::new(transport))
+        let mut client = Self::new(transport);
+        // config `timeout`（秒）→ 内层逐请求超时 = 外层预算 + 1s 让位宽限
+        // （超时阶梯：内层必须大于外层，外层——manager init / adapter
+        // per-call——确定性先到并报 `timed out after Ns`；内层只兜住
+        // 「config > 30 旧硬编码截断」的洞）。0/缺省 = 默认外层 30s →
+        // 内层 31s（`new()` 裸构造默认 30s 不变：测试/直连无外层配对）。
+        client.request_timeout_ms = std::time::Duration::from_secs(if config.timeout_secs > 0 {
+            config.timeout_secs
+        } else {
+            30
+        })
+        .as_millis() as u64
+            + 1_000;
+        Ok(client)
     }
 
     // -- Connection lifecycle ------------------------------------------------
@@ -311,7 +348,10 @@ impl McpClient {
             params,
         };
 
-        let transport_resp = self.transport.send(&request, 30_000).await?;
+        let transport_resp = self
+            .transport
+            .send(&request, self.request_timeout_ms)
+            .await?;
         let mcp_resp = transport::from_transport_response(&transport_resp);
 
         Ok(mcp_resp)

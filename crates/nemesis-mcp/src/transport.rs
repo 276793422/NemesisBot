@@ -185,6 +185,9 @@ pub struct MockTransport {
     closed: bool,
     responses: Vec<MockResponse>,
     requests: Vec<RecordedRequest>,
+    /// 每次 send() 收到的 timeout_ms（2026-10-15 第十二轮：config `timeout`
+    /// 内层接线咬合断言面，与 requests 同序）。
+    timeouts_ms: Vec<u64>,
 }
 
 impl MockTransport {
@@ -196,6 +199,7 @@ impl MockTransport {
             closed: false,
             responses: Vec::new(),
             requests: Vec::new(),
+            timeouts_ms: Vec::new(),
         }
     }
 
@@ -207,6 +211,7 @@ impl MockTransport {
             closed: false,
             responses: Vec::new(),
             requests: Vec::new(),
+            timeouts_ms: Vec::new(),
         }
     }
 
@@ -273,6 +278,12 @@ impl MockTransport {
     pub fn clear_requests(&mut self) {
         self.requests.clear();
     }
+
+    /// Return the recorded per-send timeout_ms values（与 take_requests 同序；
+    /// 2026-10-15 第十二轮：config `timeout` 内层接线咬合断言面）。
+    pub fn take_timeouts_ms(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.timeouts_ms)
+    }
 }
 
 impl Default for MockTransport {
@@ -299,7 +310,7 @@ impl Transport for MockTransport {
     async fn send(
         &mut self,
         request: &TransportRequest,
-        _timeout_ms: u64,
+        timeout_ms: u64,
     ) -> Result<TransportResponse, TransportError> {
         if !self.connected {
             return Err(TransportError::not_connected());
@@ -310,6 +321,7 @@ impl Transport for MockTransport {
             method: request.method.clone(),
             params: request.params.clone(),
         });
+        self.timeouts_ms.push(timeout_ms);
 
         // Find the next matching response.
         let idx = self
@@ -374,11 +386,51 @@ impl SharedMockTransport {
     pub async fn request_count(&self) -> usize {
         self.inner.lock().await.request_count()
     }
+
+    /// Return the recorded per-send timeout_ms values（与 take_requests 同序）。
+    pub async fn take_timeouts_ms(&self) -> Vec<u64> {
+        self.inner.lock().await.take_timeouts_ms()
+    }
 }
 
 impl Default for SharedMockTransport {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// `Transport` 实现（2026-10-15 第十二轮补装）：让共享 mock 能直接作为
+/// `Box<dyn Transport>` 塞进 [`crate::client::McpClient`]，同时保留 Clone
+/// 侧把手在客户端外断言 recorded 状态（connect/close/send 委托内层锁）。
+#[async_trait]
+impl Transport for SharedMockTransport {
+    async fn connect(&mut self) -> Result<(), TransportError> {
+        self.inner.lock().await.connect().await
+    }
+
+    async fn close(&mut self) -> Result<(), TransportError> {
+        self.inner.lock().await.close().await
+    }
+
+    async fn send(
+        &mut self,
+        request: &TransportRequest,
+        timeout_ms: u64,
+    ) -> Result<TransportResponse, TransportError> {
+        self.inner.lock().await.send(request, timeout_ms).await
+    }
+
+    fn is_connected(&self) -> bool {
+        // 同步 trait 方法 + 异步锁：try_lock 失败（正被某次 send 持锁）视为
+        // 已连接——测试支撑语义，不阻塞调用线程。
+        match self.inner.try_lock() {
+            Ok(inner) => inner.is_connected(),
+            Err(_) => true,
+        }
+    }
+
+    fn name(&self) -> &str {
+        "mock"
     }
 }
 

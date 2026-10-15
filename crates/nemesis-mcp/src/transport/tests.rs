@@ -504,9 +504,10 @@ fn s1_mock_transport_name_returns_mock() {
 
 #[tokio::test]
 async fn s1_shared_mock_transport_take_requests_drains_empty() {
-    // SharedMockTransport has no Transport impl in this crate, so requests
-    // can only be recorded through the inner MockTransport; from the shared
-    // wrapper take_requests() must return (and drain) the empty vec.
+    // 未发送任何请求时 take_requests() 必须返回（并排空）空 vec。
+    // （2026-10-15 第十二轮起 SharedMockTransport 有了 Transport 实现，
+    // 请求既可经内层 MockTransport 也可经 trait 入口记录——本测试两头都不
+    // 发送，断言面不变。）
     let t = SharedMockTransport::new();
     assert!(t.take_requests().await.is_empty());
     assert_eq!(t.request_count().await, 0);

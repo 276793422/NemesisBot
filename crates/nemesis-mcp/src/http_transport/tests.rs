@@ -785,3 +785,97 @@ async fn test_b_close_clears_resolved_headers_and_reconnect_refreshes() {
     nemesis_config::clear_global_vault_resolver();
     t.close().await.unwrap();
 }
+
+// ===========================================================================
+// 第十二轮复查（2026-10-15）：SSE 事件边界 CRLF + 无 data 事件跳过
+// ===========================================================================
+
+// -- take_complete_event 单元（边界逻辑直接钉死）--
+
+#[test]
+fn test_take_complete_event_lf_boundary() {
+    let (event, rest) = take_complete_event("data: 1\n\nrest").unwrap();
+    assert_eq!(event, "data: 1");
+    assert_eq!(rest, "rest");
+}
+
+#[test]
+fn test_take_complete_event_crlf_boundary() {
+    let (event, rest) = take_complete_event("data: 1\r\n\r\nrest").unwrap();
+    assert_eq!(event, "data: 1");
+    assert_eq!(rest, "rest");
+}
+
+#[test]
+fn test_take_complete_event_none_when_incomplete() {
+    assert!(take_complete_event("data: 1\n").is_none());
+    assert!(take_complete_event("data: 1\r\n\r").is_none());
+    assert!(take_complete_event("").is_none());
+}
+
+#[test]
+fn test_take_complete_event_earliest_boundary_wins() {
+    // CRLF 边界在前 → CRLF 胜（否则 LF 匹配会切在 CRLF 边界之后）
+    let (event, rest) = take_complete_event("a\r\n\r\nb\n\nc").unwrap();
+    assert_eq!(event, "a");
+    assert_eq!(rest, "b\n\nc");
+    // LF 边界在前 → LF 胜
+    let (event, rest) = take_complete_event("a\n\nb\r\n\r\nc").unwrap();
+    assert_eq!(event, "a");
+    assert_eq!(rest, "b\r\n\r\nc");
+}
+
+// -- sse_data_payload 单元 --
+
+#[test]
+fn test_sse_data_payload_comment_only_is_none() {
+    assert!(sse_data_payload(": keepalive").is_none());
+    assert!(sse_data_payload("event: ping\r\n: x").is_none());
+}
+
+#[test]
+fn test_sse_data_payload_data_lines_joined() {
+    assert_eq!(sse_data_payload("data: a").unwrap(), "a");
+    assert_eq!(sse_data_payload("data: a\ndata: b").unwrap(), "a\nb");
+}
+
+// -- wiremock 端到端（差异咬合：旧实现首个事件是注释时硬报 "no data field"）--
+
+#[tokio::test]
+async fn test_w4c_http_sse_keepalive_comment_then_data_lf() {
+    let server = MockServer::start().await;
+    let body = ": keepalive\n\ndata: {\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{\"ok\":1}}\n\n";
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+        .mount(&server)
+        .await;
+
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    t.connect().await.unwrap();
+    // 旧实现：find("\n\n") 命中注释事件 → extract_sse_data 硬报错整体失败；
+    // 新实现：跳过无 data 事件继续读 → 取到 data 事件。
+    let resp = t.send(&w4c_request("x", 5), 5000).await.unwrap();
+    assert_eq!(resp.id, serde_json::Value::Number(5.into()));
+    assert_eq!(resp.result.unwrap()["ok"], 1);
+    t.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_w4c_http_sse_crlf_comment_then_data() {
+    let server = MockServer::start().await;
+    let body = ": ping\r\n\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":6,\"result\":{\"ok\":2}}\r\n\r\n";
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+        .mount(&server)
+        .await;
+
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    t.connect().await.unwrap();
+    // 回归锁：CRLF 行尾的事件边界照常切分 + 注释事件照常跳过。
+    let resp = t.send(&w4c_request("x", 6), 5000).await.unwrap();
+    assert_eq!(resp.id, serde_json::Value::Number(6.into()));
+    assert_eq!(resp.result.unwrap()["ok"], 2);
+    t.close().await.unwrap();
+}

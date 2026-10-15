@@ -1273,3 +1273,63 @@ fn test_from_server_config_unknown_transport_type_loud_rejected() {
     .unwrap();
     assert!(McpClient::from_server_config(&ok_stdio).is_ok());
 }
+
+// ---------------------------------------------------------------------------
+// R12（2026-10-15）：config `timeout` → 内层逐请求超时接线。此前 client
+// 硬编码 30s——config > 30 被内层静默截断（adapter 外层超时放宽形同虚设，
+// 报错文案与实际死因不符）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_from_server_config_timeout_wires_inner_request_timeout() {
+    // config timeout=120 → 内层 120_000 + 1s 让位宽限 = 121_000ms
+    // （http 与 stdio 两臂同源；内层恒大于外层，外层确定性先到）
+    for tt in [
+        serde_json::json!({"name": "h", "transport_type": "http", "url": "http://x/mcp", "timeout": 120}),
+        serde_json::json!({"name": "s", "transport_type": "stdio", "command": "x", "timeout": 120}),
+    ] {
+        let config: nemesis_config::McpServerConfig = serde_json::from_value(tt).unwrap();
+        let client = McpClient::from_server_config(&config).unwrap();
+        assert_eq!(
+            client.request_timeout_ms(),
+            121_000,
+            "config timeout must wire the inner per-request cap (+1s yield grace over the outer budget)"
+        );
+    }
+    // 0/缺省 → 默认外层 30s + 1s = 31_000（`new()` 裸构造默认 30s 不变）
+    let zero: nemesis_config::McpServerConfig =
+        serde_json::from_value(serde_json::json!({"name": "z", "command": "x", "timeout": 0}))
+            .unwrap();
+    assert_eq!(
+        McpClient::from_server_config(&zero)
+            .unwrap()
+            .request_timeout_ms(),
+        31_000
+    );
+}
+
+#[tokio::test]
+async fn test_request_timeout_reaches_transport_send() {
+    // 全链咬合：字段 → send_request → transport.send 的 timeout 参数。
+    let shared = crate::transport::SharedMockTransport::new();
+    shared
+        .add_success(
+            "initialize",
+            serde_json::json!({
+                "protocolVersion": PROTOCOL_VERSION,
+                "capabilities": {},
+                "serverInfo": {"name": "t", "version": "0"}
+            }),
+        )
+        .await;
+    let mut client = McpClient::new(Box::new(shared.clone())).with_request_timeout_ms(120_000);
+    client.initialize().await.unwrap();
+    let recorded = shared.take_timeouts_ms().await;
+    assert!(!recorded.is_empty(), "initialize must have sent a request");
+    // 首条 = initialize 请求（带配置超时）；随后 notifications/initialized
+    // 是 fire-and-forget，设计上恒 1s 短超时，不在此断言面内。
+    assert_eq!(
+        recorded[0], 120_000,
+        "initialize request must carry the configured timeout, got: {recorded:?}"
+    );
+}
