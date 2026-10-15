@@ -402,11 +402,15 @@ async fn handler_contract_and_unknown_command() {
 
     let h = ConnectorsHandler;
     assert_eq!(h.module_name(), "connectors");
-    assert_eq!(h.commands(), &["list", "receipts.list"]);
+    assert_eq!(h.commands(), &["list", "receipts.list", "undo"]);
     let out = h.handle_cmd("list", None, &ctx).await.unwrap().unwrap();
     assert!(out["connectors"].is_array());
     let err = h.handle_cmd("nope", None, &ctx).await.unwrap_err();
     assert!(err.contains("unknown command: connectors.nope"), "{err}");
+
+    // undo 路由可达：缺 receipt_id 走到参数校验（而非 unknown command）。
+    let err = h.handle_cmd("undo", None, &ctx).await.unwrap_err();
+    assert!(err.contains("receipt_id"), "{err}");
 
     let p = PaperBrokerHandler;
     assert_eq!(p.module_name(), "paperbroker");
@@ -415,4 +419,222 @@ async fn handler_contract_and_unknown_command() {
     assert_eq!(out["cash"], 1_000_000.0);
     let err = p.handle_cmd("nope", None, &ctx).await.unwrap_err();
     assert!(err.contains("unknown command: paperbroker.nope"), "{err}");
+}
+
+// ---------------------------------------------------------------------------
+// connectors.undo（E3 页内撤销）
+// ---------------------------------------------------------------------------
+
+/// 带撤销声明矩阵的 connector：read（quote）/ write+undo（place_order ←
+/// cancel_order）/ write 无 undo（post_note）/ network 无 undo（ping_net）。
+fn write_undo_connector(ws: &Path) {
+    let dir = ws
+        .join(nemesis_connectors::registry::CONNECTORS_DIR)
+        .join("u-broker");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join(nemesis_connectors::registry::MANIFEST_FILE),
+        r#"[connector]
+id = "u-broker"
+name = "撤销测试"
+version = "0.1.0"
+kind = "rest"
+description = "E3 undo 矩阵"
+
+[[op]]
+id = "quote"
+intent = ["查询"]
+risk = "low"
+class = "read"
+action = "builtin.demo_read"
+
+[[op]]
+id = "place_order"
+intent = ["下单"]
+risk = "critical"
+class = "write"
+confirm = "required"
+receipt = "order_id"
+undo = { op = "cancel_order", arg = "order_id" }
+action = "builtin.demo_order"
+
+[[op]]
+id = "cancel_order"
+intent = ["撤单"]
+risk = "medium"
+class = "write"
+action = "builtin.demo_cancel"
+
+[[op]]
+id = "post_note"
+intent = ["发帖"]
+risk = "high"
+class = "write"
+action = "builtin.demo_post"
+
+[[op]]
+id = "ping_net"
+intent = ["探活"]
+risk = "low"
+class = "network"
+action = "builtin.demo_net"
+"#,
+    )
+    .unwrap();
+}
+
+fn undo_receipt(connector: &str, op: &str, outcome: &str) -> Receipt {
+    let mut r = mk_receipt(connector, op, 5_000, outcome);
+    r.receipt_id = format!("RCPT-UNDO-{}", op);
+    r
+}
+
+/// 缺 receipt_id / 凭条不存在 / 非 executed 三道前置闸。
+#[tokio::test]
+async fn undo_front_gates() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    write_undo_connector(ws);
+    let ctx = make_ctx(ws);
+
+    let err = cmd_undo(&ctx, None).await.unwrap_err();
+    assert!(err.contains("receipt_id"), "{err}");
+
+    let err = cmd_undo(&ctx, Some(&json!({ "receipt_id": "RCPT-NOPE" })))
+        .await
+        .unwrap_err();
+    assert!(err.contains("不存在"), "{err}");
+
+    let r = undo_receipt("u-broker", "place_order", "denied");
+    receipt::append_receipt(ws, &r).unwrap();
+    let err = cmd_undo(&ctx, Some(&json!({ "receipt_id": r.receipt_id })))
+        .await
+        .unwrap_err();
+    assert!(err.contains("未真实生效"), "{err}");
+}
+
+/// connector 从注册表消失 / op 从清单移除：按当下裁决诚实拒。
+#[tokio::test]
+async fn undo_rejects_stale_registry() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    let ctx = make_ctx(ws);
+
+    // connector 不在注册表（未写清单）。
+    let r = undo_receipt("ghost", "place_order", "executed");
+    receipt::append_receipt(ws, &r).unwrap();
+    let err = cmd_undo(&ctx, Some(&json!({ "receipt_id": r.receipt_id })))
+        .await
+        .unwrap_err();
+    assert!(err.contains("不在注册表"), "{err}");
+
+    // op 已从清单移除（凭条 op = removed_op，清单里没有）。
+    write_undo_connector(ws);
+    let r = undo_receipt("u-broker", "removed_op", "executed");
+    receipt::append_receipt(ws, &r).unwrap();
+    let err = cmd_undo(&ctx, Some(&json!({ "receipt_id": r.receipt_id })))
+        .await
+        .unwrap_err();
+    assert!(err.contains("清单移除"), "{err}");
+}
+
+/// read 类凭条：诚实说明无需撤销（不算错）。
+#[tokio::test]
+async fn undo_read_class_is_honest_noop() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    write_undo_connector(ws);
+    let ctx = make_ctx(ws);
+
+    let r = undo_receipt("u-broker", "quote", "executed");
+    receipt::append_receipt(ws, &r).unwrap();
+    let out = cmd_undo(&ctx, Some(&json!({ "receipt_id": r.receipt_id })))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["undone"], false);
+    assert_eq!(out["via"], "none");
+    assert!(out["reason"].as_str().unwrap().contains("read"), "{out}");
+}
+
+/// 域 C 两分支：receipt_value 缺失拒；有值但测试 harness 无 loop = 诚实拒
+/// （resolve_session_loop 落主槽 None）——撤销必须经完整 dispatch 瀑布，
+/// 拿不到执行体就不撤。
+#[tokio::test]
+async fn undo_domain_c_receipt_value_and_loop_gates() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    write_undo_connector(ws);
+    let ctx = make_ctx(ws);
+
+    // receipt_value 空 → 无法回填撤销参数。
+    let r = undo_receipt("u-broker", "place_order", "executed");
+    receipt::append_receipt(ws, &r).unwrap();
+    let err = cmd_undo(&ctx, Some(&json!({ "receipt_id": r.receipt_id })))
+        .await
+        .unwrap_err();
+    assert!(err.contains("主键值"), "{err}");
+
+    // receipt_value 有值 → resolve_session_loop 诚实失败（harness 无 loop）。
+    let mut r = undo_receipt("u-broker", "place_order", "executed");
+    r.receipt_value = Some("NB-ORD-42".to_string());
+    r.session_key = Some("web:test-chat".to_string());
+    receipt::append_receipt(ws, &r).unwrap();
+    let err = cmd_undo(&ctx, Some(&json!({ "receipt_id": r.receipt_id })))
+        .await
+        .unwrap_err();
+    assert!(err.contains("agent loop not running"), "{err}");
+}
+
+/// 域 B：write 无 undo 声明 → 会话级撤销。session_key 双源（入参 >
+/// 凭条）都空 = 拒；有 session_key 但 harness 无 loop = 诚实拒。
+#[tokio::test]
+async fn undo_domain_b_session_key_and_loop_gates() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    write_undo_connector(ws);
+    let ctx = make_ctx(ws);
+
+    // 双源皆空 → 拒。
+    let r = undo_receipt("u-broker", "post_note", "executed");
+    receipt::append_receipt(ws, &r).unwrap();
+    let err = cmd_undo(&ctx, Some(&json!({ "receipt_id": r.receipt_id })))
+        .await
+        .unwrap_err();
+    assert!(err.contains("session_key"), "{err}");
+
+    // 入参 session_key 有值 → resolve 诚实失败（harness 无 loop）。
+    let err = cmd_undo(
+        &ctx,
+        Some(&json!({ "receipt_id": r.receipt_id, "session_key": "web:u1" })),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("agent loop not running"), "{err}");
+
+    // 凭条 session_key 兜底同样被读取（同款诚实拒）。
+    let mut r2 = undo_receipt("u-broker", "post_note", "executed");
+    r2.receipt_id = "RCPT-UNDO-post_note2".to_string();
+    r2.session_key = Some("web:u2".to_string());
+    receipt::append_receipt(ws, &r2).unwrap();
+    let err = cmd_undo(&ctx, Some(&json!({ "receipt_id": r2.receipt_id })))
+        .await
+        .unwrap_err();
+    assert!(err.contains("agent loop not running"), "{err}");
+}
+
+/// network/exec 类无 undo 声明：无通用撤销语义，诚实拒（引导补清单声明）。
+#[tokio::test]
+async fn undo_network_class_without_undo_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    write_undo_connector(ws);
+    let ctx = make_ctx(ws);
+
+    let r = undo_receipt("u-broker", "ping_net", "executed");
+    receipt::append_receipt(ws, &r).unwrap();
+    let err = cmd_undo(&ctx, Some(&json!({ "receipt_id": r.receipt_id })))
+        .await
+        .unwrap_err();
+    assert!(err.contains("无通用撤销语义"), "{err}");
 }

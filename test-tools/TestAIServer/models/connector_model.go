@@ -26,6 +26,11 @@ import (
 //	<CONN_NOBUDGET> → connector_invoke paper-broker/place_order
 //	                  {"side": "buy", "symbol": "MSFT", "qty": 999999999, "price": 500.0}
 //	                  （超资金限额拒绝路径）
+//	<CONN_REMOTE>   → connector_invoke paper-broker/positions + target_node=Node-B
+//	                  （收官批 E1 集群分发：read/low 零闸 op 干净走远程执行面）
+//	<CONN_CRED>     → connector_invoke cred-proof/ping + target_node=Node-B
+//	                  （凭据不上线证明：manifest 声明 required 凭据，worker
+//	                  用自己的 vault 解锁——master 永不持有真值）
 //
 // price 用 json.Number 字面量（"150.0"/"500.0"）：json.Marshal(float64)
 // 会把 150.0 压成 150，serde_json 的 Number 相等比较区分整数/浮点形态，
@@ -97,6 +102,20 @@ func (m *TestAIConn) Process(messages []Message) string {
 					"qty":    999999999,
 					"price":  json.Number("500.0"),
 				},
+			})
+		case strings.Contains(c, "<CONN_REMOTE>"):
+			return buildSingleToolCall("connector_invoke", map[string]interface{}{
+				"connector":   "paper-broker",
+				"op":          "positions",
+				"target_node": "Node-B",
+				"args":        map[string]interface{}{},
+			})
+		case strings.Contains(c, "<CONN_CRED>"):
+			return buildSingleToolCall("connector_invoke", map[string]interface{}{
+				"connector":   "cred-proof",
+				"op":          "ping",
+				"target_node": "Node-B",
+				"args":        map[string]interface{}{},
 			})
 		}
 	}

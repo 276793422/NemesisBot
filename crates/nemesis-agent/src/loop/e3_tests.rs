@@ -283,6 +283,33 @@ async fn e3_undo_last_turn_single_turn_cut_to_zero_and_redo() {
     delete_chat_log(&key);
 }
 
+// —— E3（收官批 2026-10-15）：WSAPI 撤销入口 undo_last_turn 的 busy 闸 ——
+
+/// 会话处理中（busy）诚实拒绝且零副作用（对话行数/文件都不动）；释放后
+/// 放行直达 rewind_last_turn 语义。
+#[tokio::test]
+async fn e3_undo_public_entry_rejects_busy_session() {
+    let (al, key, dir) = stage_two_turns("undo-busy").await;
+    let file = dir.path().join("ws").join("code.txt");
+
+    // 占住会话（模拟 turn 处理中）。
+    assert!(al.try_acquire_session(&key));
+    let err = al.undo_last_turn(&key).await.unwrap_err();
+    assert!(err.contains("正在处理"), "{err}");
+    // 零副作用：日志与文件都不动。
+    let (_, total, _, _) = read_chat_log(&key, 100, None);
+    assert_eq!(total, 4);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "v3");
+
+    // 释放后放行（维护尾巴同款 gate 语义下，撤销动词正常出效果）。
+    al.release_session(&key);
+    let out = al.undo_last_turn(&key).await.unwrap();
+    assert_eq!(out["removed_count"], 2, "{out}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "v2");
+
+    delete_chat_log(&key);
+}
+
 // —— git 影子形态：redo 前向恢复目标 = rewind 时刻实时树 ——
 
 /// git 形态的两轮摆法（root 带 .git 目录 → store 构造期选 git backend）。
