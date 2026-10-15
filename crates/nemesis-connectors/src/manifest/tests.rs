@@ -288,3 +288,233 @@ fn risk_level_rank_is_total_order() {
     assert_eq!(RiskLevel::Critical.as_str(), "critical");
     assert_eq!(OpClass::Network.as_str(), "network");
 }
+
+// ---- 收官批 A 段：HttpMethod::Patch / 静态头 / 凭据 prefix ----
+
+#[test]
+fn parses_patch_method_and_static_headers() {
+    let toml_text = r#"
+[connector]
+id = "gitea"
+name = "Gitea"
+version = "0.1.0"
+kind = "rest"
+
+[connector.http]
+base = "http://127.0.0.1:3000"
+[connector.http.headers]
+User-Agent = "nemesisbot-connector/0.1"
+Accept = "application/json"
+
+[connector.credentials]
+pat = { required = true, into = "header:Authorization", prefix = "token " }
+
+[[op]]
+id = "issue_close"
+risk = "high"
+class = "write"
+confirm = "required"
+http = { method = "PATCH", path = "/repos/{owner}/{repo}/issues/{index}" }
+"#;
+    let c = parse_connector_manifest(toml_text).expect("gitea-ish manifest");
+    match &c.ops[0].binding {
+        OpBinding::Http { method, .. } => assert_eq!(*method, HttpMethod::Patch),
+        other => panic!("expected http binding, got {other:?}"),
+    }
+    assert_eq!(c.static_headers.len(), 2);
+    assert_eq!(
+        c.static_headers.get("User-Agent").map(String::as_str),
+        Some("nemesisbot-connector/0.1")
+    );
+    let pat = c.credentials.get("pat").expect("pat slot");
+    assert_eq!(pat.prefix.as_deref(), Some("token "));
+    assert!(matches!(pat.into, CredentialInto::Header(ref h) if h == "Authorization"));
+}
+
+#[test]
+fn rejects_crlf_in_static_headers_and_prefix() {
+    let base = |headers_block: &str, prefix_line: &str| {
+        format!(
+            r#"
+[connector]
+id = "gitea"
+name = "Gitea"
+version = "0.1.0"
+kind = "rest"
+
+[connector.http]
+base = "http://127.0.0.1:3000"
+{headers_block}
+
+[connector.credentials]
+pat = {{ into = "header:Authorization", prefix = "{prefix_line}" }}
+
+[[op]]
+id = "x"
+risk = "low"
+class = "read"
+http = {{ method = "GET", path = "/x" }}
+"#
+        )
+    };
+    // 静态头名带空白 = 头注入面，loud 拒（TOML 引号键形态可携带空白）
+    let bad = base("[connector.http.headers]\n\"X- Evil\" = \"a\"\n", "token ");
+    let err = parse_connector_manifest(&bad).expect_err("bad header name");
+    assert!(err.contains("静态头"), "got: {err}");
+
+    // prefix 带 CR = 头注入，loud 拒（value 内 \r 用 TOML 转义形态写入）
+    let bad = base("", "token \\r X-Evil: 1");
+    let err = parse_connector_manifest(&bad).expect_err("crlf prefix");
+    assert!(err.contains("prefix"), "got: {err}");
+}
+
+#[test]
+fn rejects_prefix_on_query_into() {
+    let toml_text = r#"
+[connector]
+id = "m"
+name = "M"
+version = "0.1.0"
+kind = "rest"
+
+[connector.http]
+base = "https://m.example.com"
+
+[connector.credentials]
+key = { into = "query:key", prefix = "Bearer " }
+
+[[op]]
+id = "fetch"
+risk = "low"
+class = "network"
+http = { method = "GET", path = "/rss" }
+"#;
+    let err = parse_connector_manifest(toml_text).expect_err("prefix+query");
+    assert!(err.contains("prefix 只支持 header"), "got: {err}");
+}
+
+#[test]
+fn http_base_unknown_field_still_loud() {
+    // deny_unknown_fields 纪律不因 headers 扩展而破
+    let bad = VALID_REST.replace(
+        "[connector.http]\nbase = \"https://quotes.example.com\"",
+        "[connector.http]\nbase = \"https://quotes.example.com\"\ntimeout = 30",
+    );
+    let err = parse_connector_manifest(&bad).expect_err("unknown field in http base");
+    assert!(err.contains("TOML 解析失败"), "got: {err}");
+}
+
+// —— E3（收官批 2026-10-15）：undo 撤销声明 ——
+
+fn undo_manifest(undo_line: &str, extra_ops: &str) -> String {
+    format!(
+        r#"
+[connector]
+id = "paper-broker"
+name = "纸面券商"
+version = "0.1.0"
+kind = "rest"
+
+[connector.http]
+base = "https://quotes.example.com"
+
+[[op]]
+id = "place_order"
+risk = "critical"
+class = "write"
+receipt = "order_id"
+{undo_line}
+action = "builtin.paper_order"
+
+{extra_ops}
+"#,
+        undo_line = undo_line,
+        extra_ops = extra_ops
+    )
+}
+
+const CANCEL_OP_PLAIN: &str = r#"[[op]]
+id = "cancel_order"
+risk = "medium"
+class = "write"
+action = "builtin.paper_cancel"
+"#;
+
+#[test]
+fn undo_declaration_parses_with_forward_reference() {
+    // 前向引用合法：cancel_order 声明在 place_order 之后（undo_manifest
+    // 模板即此形态）；parsed undo 字段带出。
+    let c = parse_connector_manifest(&undo_manifest(
+        "undo = { op = \"cancel_order\", arg = \"order_id\" }",
+        CANCEL_OP_PLAIN,
+    ))
+    .expect("valid undo manifest");
+    let po = c.ops.iter().find(|o| o.id == "place_order").unwrap();
+    let undo = po.undo.as_ref().expect("undo parsed");
+    assert_eq!(undo.op, "cancel_order");
+    assert_eq!(undo.arg, "order_id");
+    assert!(
+        c.ops
+            .iter()
+            .find(|o| o.id == "cancel_order")
+            .unwrap()
+            .undo
+            .is_none()
+    );
+}
+
+#[test]
+fn rejects_undo_op_not_declared() {
+    let err = parse_connector_manifest(&undo_manifest(
+        "undo = { op = \"nope\", arg = \"order_id\" }",
+        CANCEL_OP_PLAIN,
+    ))
+    .expect_err("undo.op 未声明");
+    assert!(err.contains("未在本 connector 声明"), "got: {err}");
+}
+
+#[test]
+fn rejects_undo_self_reference() {
+    let err = parse_connector_manifest(&undo_manifest(
+        "undo = { op = \"place_order\", arg = \"order_id\" }",
+        CANCEL_OP_PLAIN,
+    ))
+    .expect_err("undo.op 指向自身");
+    assert!(err.contains("不能指向自身"), "got: {err}");
+}
+
+#[test]
+fn rejects_undo_without_receipt() {
+    let err = parse_connector_manifest(
+        &undo_manifest(
+            "undo = { op = \"cancel_order\", arg = \"order_id\" }",
+            CANCEL_OP_PLAIN,
+        )
+        .replace("receipt = \"order_id\"\n", ""),
+    )
+    .expect_err("无 receipt 声明 undo");
+    assert!(err.contains("必须声明 receipt"), "got: {err}");
+}
+
+#[test]
+fn rejects_chained_undo() {
+    // 目标 op 自身也声明 undo = 撤销链嵌套，禁止。
+    let chained =
+        format!("{CANCEL_OP_PLAIN}undo = {{ op = \"place_order\", arg = \"order_id\" }}\n");
+    let err = parse_connector_manifest(&undo_manifest(
+        "undo = { op = \"cancel_order\", arg = \"order_id\" }",
+        &chained,
+    ))
+    .expect_err("撤销链嵌套");
+    assert!(err.contains("禁止嵌套"), "got: {err}");
+}
+
+#[test]
+fn rejects_undo_empty_op_or_arg() {
+    let err = parse_connector_manifest(&undo_manifest(
+        "undo = { op = \"\", arg = \"order_id\" }",
+        CANCEL_OP_PLAIN,
+    ))
+    .expect_err("undo.op 空串");
+    assert!(err.contains("不能为空"), "got: {err}");
+}

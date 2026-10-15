@@ -126,8 +126,8 @@ impl AgentLoop {
     /// 在轮」契约表达不了这个形态）。
     ///
     /// busy 检查省略：唯一调用方是会话维护尾巴（gate 已获取会话 = 串行保
-    /// 证，会话正忙根本进不到这里）；未来若暴露 WSAPI 同语义入口，必须先补
-    /// busy 闸再放开。
+    /// 证，会话正忙根本进不到这里）；WSAPI 面的同语义入口走
+    /// [`Self::undo_last_turn`]（busy 闸 + 委托本方法）。
     pub(crate) async fn rewind_last_turn(
         &self,
         session_key: &str,
@@ -142,6 +142,18 @@ impl AgentLoop {
         // 回执/谱系引用的下标 = cut 本身（被撤销轮的 user 行原下标）。
         self.rewind_from_cut(session_key, &rows, cut, cut, false)
             .await
+    }
+
+    /// 行动代理 E3（收官批 2026-10-15）WSAPI 撤销入口：busy 闸 +
+    /// [`Self::rewind_last_turn`]。会话正在处理消息时零副作用诚实拒绝
+    /// （对话与文件都不动）——`connectors.undo` 的域 B（write 无 undo 声
+    /// 明）走此入口回退最后一轮。维护尾巴调用方不经此入口（gate 已持会
+    /// 话），直接走内部方法。
+    pub async fn undo_last_turn(&self, session_key: &str) -> Result<serde_json::Value, String> {
+        if self.is_session_busy(session_key) {
+            return Err("会话正在处理消息，请等当前回合完成后再撤销".to_string());
+        }
+        self.rewind_last_turn(session_key).await
     }
 
     /// rewind 共享机体（`rewind_to_message` / `rewind_last_turn` 两入口的

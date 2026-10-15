@@ -212,6 +212,16 @@ pub struct ConnectorsConfig {
     /// 资金类限额（None = 全 0 = fail-closed 拒绝所有资金 op）。
     #[serde(default)]
     pub finance: Option<ConnectorsFinanceConfig>,
+    /// 远程执行面总闸（集群 E1：worker 节点是否接受 master 经 RPC 派发的
+    /// `connector_invoke`；false = worker 侧 handler 诚实拒绝。缺省 true）。
+    /// 凭据铁律不变：派发载荷只含 op+args，凭据永不上 RPC 线——worker 用
+    /// 自己的 vault 解锁。
+    #[serde(default = "default_remote_invoke_enabled")]
+    pub remote_invoke_enabled: bool,
+}
+
+fn default_remote_invoke_enabled() -> bool {
+    true
 }
 
 impl Default for ConnectorsConfig {
@@ -220,6 +230,7 @@ impl Default for ConnectorsConfig {
             enabled: true,
             max_ops_per_hour: 0,
             finance: None,
+            remote_invoke_enabled: true,
         }
     }
 }
