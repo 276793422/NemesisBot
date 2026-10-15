@@ -259,60 +259,15 @@ impl AddRequest {
     }
 }
 
-/// 校验一行 `"KEY: VALUE"` 头（CLI 侧语法闸，与
-/// `nemesis-mcp::http_transport::resolved_header_pairs` 的运行期规则同源：
-/// 缺冒号 / 头名为空或含空白控制字符 / `Mcp-Session-Id` 保留头 / 整值
-/// `vault:`/`env:`/`yaml:` 引用名为空——只验语法，值原样落盘，绝不解引用）。
+/// 校验一行 `"KEY: VALUE"` 头（CLI 侧语法闸）。规则单一真相源 =
+/// `nemesis_config::validate_mcp_header_line`（运行期 `resolved_header_pairs`
+/// 与 Dashboard server.add/update 同源）：缺冒号 / 头名为空或含空白控制
+/// 字符 / `Mcp-Session-Id` 保留头 / 整值 `vault:`/`env:`/`yaml:` 引用名为
+/// 空或带首尾空格——只验语法，值原样落盘，绝不解引用。错误文案附加脱敏
+/// 后的行（截掉值段），校验器本体不回显值段。
 fn validate_header_line(line: &str) -> Result<()> {
-    let Some((raw_name, raw_value)) = line.split_once(':') else {
-        anyhow::bail!(
-            "header 行缺冒号（应为 \"KEY: VALUE\"）：{:?}",
-            redact_header_for_error(line)
-        );
-    };
-    let name = raw_name.trim();
-    if name.is_empty() || name.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        anyhow::bail!(
-            "header 名非法（空 / 含空白或控制字符）：{:?}",
-            redact_header_for_error(line)
-        );
-    }
-    if name.eq_ignore_ascii_case("mcp-session-id") {
-        anyhow::bail!("Mcp-Session-Id 是协议保留头（server 指派），不能配置");
-    }
-    let value = raw_value.trim();
-    // 整值引用语法（与 nemesis_config::resolve_secret_field 同一前缀语义）：
-    // 引用名非空即可，绝不查询真值。
-    for (prefix, what) in [
-        ("env:", "环境变量名"),
-        ("yaml:", "凭据别名"),
-        ("vault:", "vault 别名"),
-    ] {
-        if let Some(rest) = value.strip_prefix(prefix) {
-            if rest.is_empty() {
-                anyhow::bail!(
-                    "header 值 {} 引用名为空——写作 {}<name>（如 vault:pet-token）",
-                    what,
-                    prefix
-                );
-            }
-            // 2026-10-15 第五轮复查：引用名带首尾空格（如 "vault: pet-token"）
-            // 运行期按原样解析（resolve_vault_reference / std::env::var 均不
-            // trim），必然解析失败 → WARN 跳过头 → 401。add 时就挡住，
-            // 省一轮学费；引用名本身非秘密，可回显。
-            if rest.trim() != rest {
-                anyhow::bail!(
-                    "header 值 {} 引用名带首尾空格（运行期按原样解析，必失败）——\
-                     写作 {}{}（冒号后不带空格）",
-                    what,
-                    prefix,
-                    rest.trim()
-                );
-            }
-            break;
-        }
-    }
-    Ok(())
+    nemesis_config::validate_mcp_header_line(line)
+        .map_err(|reason| anyhow::anyhow!("{reason}：{}", redact_header_for_error(line)))
 }
 
 /// 错误消息里的头行脱敏：截掉冒号后的值段（值可能含凭据字面量）。
