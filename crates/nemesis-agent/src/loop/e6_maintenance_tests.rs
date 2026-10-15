@@ -148,6 +148,30 @@ fn parse_maintenance_extra_args_ignored() {
     assert_eq!(kind, SessionMaintenance::Clear);
 }
 
+/// 行动代理 P0（2026-10-14）撤销一等动词：「撤销」/「/undo」首词命中即接
+/// 管（尾随参数忽略）；连写「撤销一下」不命中（落普通轮由 agent 自行理
+/// 解——与 /compact 同款首词法）。
+#[test]
+fn parse_undo_verb() {
+    let (kind, receipt) = parse_maintenance_command("撤销").unwrap();
+    assert_eq!(kind, SessionMaintenance::Undo);
+    assert!(receipt.contains("撤销"));
+    let (kind, _) = parse_maintenance_command("/undo").unwrap();
+    assert_eq!(kind, SessionMaintenance::Undo);
+    // 尾随参数忽略（首词法）。
+    let (kind, _) = parse_maintenance_command("撤销  刚才那个改动").unwrap();
+    assert_eq!(kind, SessionMaintenance::Undo);
+    // 连写不命中：不是首词。
+    assert!(parse_maintenance_command("撤销一下").is_none());
+    assert!(parse_maintenance_command("请撤销").is_none());
+}
+
+#[test]
+fn builtin_slash_commands_include_undo() {
+    // 防回归：/undo 与 /compact /clear 同款——自定义命令表不得遮蔽。
+    assert!(AgentLoop::BUILTIN_SLASH_COMMANDS.contains(&"undo"));
+}
+
 #[test]
 fn parse_non_commands_return_none() {
     assert!(parse_maintenance_command("/unknown").is_none());

@@ -68,13 +68,15 @@ execute_command() {
     fi
 
     # 执行命令
+    # S9（2026-10-14 审计）：`|| exit_code=$?` 接住失败——set -e 下裸 eval
+    # 会在命令非零时直接中止脚本，红色 ✗ 诊断/耗时/日志分支全部不可达。
+    local exit_code=0
     local start_time=$(date +%s)
     if [ "$verbose" = "true" ]; then
-        eval "$wsl_cmd"
+        eval "$wsl_cmd" || exit_code=$?
     else
-        eval "$wsl_cmd" 2>&1
+        eval "$wsl_cmd" 2>&1 || exit_code=$?
     fi
-    local exit_code=$?
     local end_time=$(date +%s)
     local duration=$((end_time - start_time))
 

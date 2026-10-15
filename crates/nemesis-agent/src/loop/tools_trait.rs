@@ -132,6 +132,31 @@ pub trait Tool: Send + Sync {
     fn min_tier(&self) -> Option<&str> {
         None
     }
+
+    /// connector 动态工具的操作投影（行动代理 P0，2026-10-14）：dispatch
+    /// 嗅探本方法的返回值，把 op_type slug / 强审批文案 / 回执上下文写进
+    /// invocation metadata（`override_op_type` / `override_force_approval` /
+    /// `connector_receipt_ctx`），管线层读键裁决——静态表无法感知动态 op 的
+    /// per-op 风险，投影是管线与工具之间的唯一桥。默认 None（机制零侵入，
+    /// 内置工具不投影）。
+    fn operation_override(&self, _args: &str) -> Option<OperationOverride> {
+        None
+    }
+}
+
+/// [`Tool::operation_override`] 的投影载荷。
+#[derive(Debug, Clone)]
+pub struct OperationOverride {
+    /// op_type Display slug（如 `"process_exec"`；管线经
+    /// `operation_type_from_slug` 逆解析，未知 slug 忽略 = 静态表/fail-closed
+    /// 旧行为）。
+    pub op_type: String,
+    /// 非空 = ABAC 强制人工审批（跳过「总是允许」规则表；connector op
+    /// `confirm = "required"` 声明的强授权卡语义）。
+    pub force_approval: Option<String>,
+    /// 被拒绝（审批拒绝/策略拒绝）时 dispatch 代写 denied_approval 凭条的
+    /// 上下文 JSON（workspace/connector/op/risk/class/args_digest）。
+    pub receipt_ctx: Option<String>,
 }
 
 impl AgentLoop {

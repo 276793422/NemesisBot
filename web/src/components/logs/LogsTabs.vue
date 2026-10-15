@@ -14,6 +14,8 @@ const tabs = [
   { id: 'search',   label: '会话检索',   icon: '🔍' },
   { id: 'audit',    label: '安全审计',   icon: '🔒' },
   { id: 'chain',    label: '审计链',     icon: '🔗' },
+  // 行动账本（2026-10-14 AI 原生行动代理）：connectors.receipts 只读视图。
+  { id: 'ledger',   label: '行动账本',   icon: '📒' },
 ]
 </script>
 

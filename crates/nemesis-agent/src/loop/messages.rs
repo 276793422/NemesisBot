@@ -313,6 +313,69 @@ impl AgentLoop {
             .0
     }
 
+    /// B 线动态注入（2026-10-14）：用户画像段（mtime 门控每轮重渲染）。
+    ///
+    /// - 门控：`<workspace>/config/user_profile.json` mtime 未变 → 走缓存
+    ///   （零磁盘 IO，字节稳定）；变了 → 重读文件并重渲染。config.json 的
+    ///   `user_profile.enabled` 开关在门控未命中时现读（enabled=false →
+    ///   空 section，disable 即时生效）；config mtime 变化本身另有
+    ///   `check_config_reload` 独立检测兜底。
+    /// - 失败语义：workspace 未设 / profile 文件不存在 / config 读取失败
+    ///   → 空 section（诚实降级，不炸构建）；profile 解析失败 → 空 +
+    ///   warn（损坏画像不注入，等用户修复或 sweep 重建）。
+    /// - 内容纯状态派生（文件内容渲染）：两次变更之间字节稳定 → prompt
+    ///   cache 前缀不受损；随 InjectionRecord 台账回放一致（同 I5 机制）。
+    fn user_profile_section_now(&self) -> String {
+        let Some(ref root) = *self.workspace_root.read() else {
+            return String::new();
+        };
+        let profile_path = crate::user_profile::profile_path(root);
+        let mtime = std::fs::metadata(&profile_path)
+            .and_then(|m| m.modified())
+            .ok()
+            .map(|t| {
+                t.duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            });
+        {
+            let cache = self.user_profile_cache.read();
+            if cache.0 == mtime {
+                return cache.1.clone();
+            }
+        }
+        // 门控未命中：重渲染。
+        let section = (|| -> String {
+            // enabled 开关：config 现读（读失败 = 当关处理，不注入）。
+            let enabled = self
+                .config_path
+                .read()
+                .as_ref()
+                .and_then(|p| nemesis_config::load_config(p).ok())
+                .and_then(|cfg| cfg.user_profile)
+                .is_some_and(|u| u.enabled);
+            if !enabled {
+                return String::new();
+            }
+            let profile = match crate::user_profile::try_load_profile(root) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!("[UserProfile] profile load failed, skip injection: {e}");
+                    return String::new();
+                }
+            };
+            let rendered = crate::user_profile::render_section(&profile);
+            if rendered.is_empty() {
+                return String::new();
+            }
+            format!(
+                "# 用户画像（自动学习，Dashboard 可管理）\n\n{rendered}\n\n(以上是系统从近期交互中自动学习的用户偏好——仅供调整交流姿态，与安全/审批策略无关，如有出入以用户当轮指示为准。)"
+            )
+        })();
+        *self.user_profile_cache.write() = (mtime, section.clone());
+        section
+    }
+
     /// 对话生成（2026-09-22）：渲染 workflow_edit 会话的 merged-digest section。
     ///
     /// - `_new`（workflow_name=None）：能力表 + 两阶段引导（先查
@@ -690,6 +753,24 @@ impl AgentLoop {
                 sections.push(
                     "# Voice Dialogue Mode（语音对话）\n当前处于语音对话模式：你的回复将被朗读给用户听。\n- 用口语化的短句回复，避免书面腔和长段落\n- 不要使用 markdown（标题、列表、粗体、表格等符号念不出来）\n- 代码、链接、长列表用一句话概括（例如「完整代码我放在了回复里，请在屏幕上查看」）\n(以上是宿主按语音对话开关注入的模式提示，非用户发言。)".to_string(),
                 );
+            }
+            // B 线动态注入（2026-10-14）：用户画像段——mtime 门控每轮重渲染，
+            // sweep 学习 / veto / disable 即时生效（原挂 ContextBuilder build
+            // 时冻结，仅 classic 路径覆盖；迁入 snapshot 后 classic/pro 与所有
+            // loop 统一）。内容纯状态派生 → 字节稳定；随 InjectionRecord 台账
+            // 回放一致（同 I5 机制）；空 = 无 section。
+            let profile_section = self.user_profile_section_now();
+            if !profile_section.is_empty() {
+                sections.push(profile_section);
+            }
+            // E 线动态注入（2026-10-14）：tier 档位段——每轮从 live tier 渲染
+            // （`check_config_reload` 热切后下轮即生效，原 build 时冻结会滞后
+            // 到重启）。纯状态派生字节稳定；Standard 档 = 零字节无 section。
+            let tier_section = crate::context::prompt_profile_section(
+                crate::context::PromptProfile::from_tier(tier_now),
+            );
+            if !tier_section.is_empty() {
+                sections.push(tier_section);
             }
             sections.push(format!(
                 "# Runtime Policy\napproval: {}\nguardian: {}\nmodel_tier: {}\nmode: {}\n(当前审批/守护/模型档位/工作模式运行时策略快照；策略变更后下一次构建生效。)",

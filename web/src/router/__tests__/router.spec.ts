@@ -23,8 +23,16 @@ describe('router 批次新增路由', () => {
     expect(typeof r!.components!.default).toBe('function')
   })
 
+  // 行动连接器（2026-10-14 AI 原生行动代理）：注册表/回执/纸面账本只读面。
+  it('/connectors 存在，name=connectors，懒加载组件', () => {
+    const r = router.getRoutes().find(r => r.path === '/connectors')
+    expect(r).toBeTruthy()
+    expect(r!.name).toBe('connectors')
+    expect(typeof r!.components!.default).toBe('function')
+  })
+
   it('懒加载组件工厂解析到真实模块（import 不抛）', async () => {
-    for (const path of ['/coding', '/sdk']) {
+    for (const path of ['/coding', '/sdk', '/connectors']) {
       const r = router.getRoutes().find(r => r.path === path)!
       const mod = await (r.components!.default as () => Promise<unknown>)()
       expect(mod).toBeTruthy()

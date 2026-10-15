@@ -2205,37 +2205,45 @@ async fn test_i2c_tool_invalid_json() {
     assert!(result.is_err());
 }
 
-/// 桩路径地址校验 fail-closed（2026-09-26 复查修复回归锁）：read/write 缺
-/// 地址或垃圾地址必须报错（此前静默回显 0）；hex 字符串形态过白名单
-/// （"0x05" 保留段拒绝、"0x38" 放行回显）。纯函数面跨平台覆盖见
+/// 地址校验 fail-closed 回归锁（2026-09-26 复查修复；2026-10-14 BUG-13
+/// 接线真实实现后沿用）：read/write 缺 bus/缺地址或垃圾地址必须报错
+/// （真实实现校验先于真实 I/O，消息跨平台确定性）；hex 字符串形态过
+/// 白名单（"0x05" 保留段拒绝）。纯函数面跨平台覆盖见
 /// nemesis-tools hardware::tests::test_i2c_parse_address_string_forms；
-/// 本用例验 execute() 接线（execute 首行是平台闸，故 Linux 门控）。
+/// 本用例验 execute() 接线（真实实现首行是平台闸，故 Linux 门控）。
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn test_i2c_stub_address_validation_fail_closed() {
     let tool = I2CTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    // 缺地址 → 报错而非回显 0
+    // 缺 bus → 报错（真实实现 read 先验 bus）
     let r = tool.execute(r#"{"action":"read"}"#, &ctx).await;
+    assert!(r.is_err());
+    assert!(r.unwrap_err().contains("bus is required"));
+    // 缺地址（bus 已给）→ 报错而非回显 0
+    let r = tool.execute(r#"{"action":"read","bus":"1"}"#, &ctx).await;
     assert!(r.is_err());
     assert!(r.unwrap_err().contains("address is required"));
     // 垃圾地址 → 报错
     let r = tool
-        .execute(r#"{"action":"read","address":"xyz"}"#, &ctx)
+        .execute(r#"{"action":"read","bus":"1","address":"xyz"}"#, &ctx)
         .await;
     assert!(r.is_err());
     // hex 字符串形态：保留段拒绝（策略校验真正跑到字符串形态上）
     let r = tool
-        .execute(r#"{"action":"read","address":"0x05"}"#, &ctx)
+        .execute(r#"{"action":"read","bus":"1","address":"0x05"}"#, &ctx)
         .await;
     assert!(r.is_err());
     assert!(r.unwrap_err().contains("rejected"));
-    // 白名单内 hex 字符串 → 放行且回显解析后的地址
+    // 白名单内 hex 字符串 → 校验放行进入真实 I/O：无 /dev/i2c-1 的环境
+    // 诚实报设备错误；有真实总线的机器 read 非破坏性可成功。唯一不可
+    // 接受的是旧桩回显文案（[I2C] Read from）——两态都不得出现。
     let r = tool
-        .execute(r#"{"action":"read","address":"0x38"}"#, &ctx)
+        .execute(r#"{"action":"read","bus":"1","address":"0x38"}"#, &ctx)
         .await;
-    assert!(r.is_ok());
-    assert!(r.unwrap().contains("0x38"));
+    if let Ok(text) = r {
+        assert!(!text.contains("[I2C] Read from"));
+    }
 }
 
 #[tokio::test]

@@ -43,6 +43,7 @@ fn format_rpc_message() {
         correlation_id: Some(String::new()),
         async_callback: None,
         tool_path_base: None,
+        approval_ref: None,
     };
     assert_eq!(rpc_no_cid.format_rpc_message("Hello"), "Hello");
 }
@@ -1003,4 +1004,69 @@ fn pro_mode_heartbeat_skip_bootstrap_keeps_segments() {
         !prompt.contains("Initialization Bootstrap Mode"),
         "skip_bootstrap 不进 BOOTSTRAP 初始化模式"
     );
+}
+
+// --- E 线 tier 档位 + B 线画像注入（自进化升级 2026-10-14） ---
+//
+// 2026-10-14 动态注入迁移：画像/档位两段从 ContextBuilder（build 时冻结、
+// classic-only）迁到 loop::messages 的 merged snapshot 每轮重渲染。这里
+// retarget 为自由函数级测试（段模板字节契约 + from_tier 映射）；snapshot
+// 路径的注入行为回归锁在 loop/messages 测试与 user_profile/tests.rs。
+
+#[test]
+fn prompt_profile_standard_is_zero_byte() {
+    // Standard = 零字节（byte-stable 缺省，不破坏 prompt cache）。
+    assert_eq!(super::prompt_profile_section(PromptProfile::Standard), "");
+}
+
+#[test]
+fn prompt_profile_concise_full_byte_stable_snapshot() {
+    // 三档模板字节快照：Concise/Full 各自固定风格段，确定性同字节。
+    let concise = super::prompt_profile_section(PromptProfile::Concise);
+    assert!(concise.contains(
+        "# 回复风格（当前模型能力档：精简）\n\n回复简洁直接、结论先行；避免冗长铺垫与重复确认；行动优先于解释。\n"
+    ));
+    let full = super::prompt_profile_section(PromptProfile::Full);
+    assert!(full.contains(
+        "# 执行风格（当前模型能力档：完整）\n\n复杂任务先给出简要方案再动手；充分利用可用工具自主多步执行；完成后附简短说明。\n"
+    ));
+    // 确定性：同输入同字节。
+    assert_eq!(full, super::prompt_profile_section(PromptProfile::Full));
+}
+
+#[test]
+fn prompt_profile_from_tier_mapping() {
+    // mini→Concise / normal→Standard / big→Full / Auto→Standard（不猜）。
+    use nemesis_types::capability::ModelTier;
+    assert_eq!(
+        PromptProfile::from_tier(ModelTier::Mini),
+        PromptProfile::Concise
+    );
+    assert_eq!(
+        PromptProfile::from_tier(ModelTier::Normal),
+        PromptProfile::Standard
+    );
+    assert_eq!(
+        PromptProfile::from_tier(ModelTier::Big),
+        PromptProfile::Full
+    );
+    assert_eq!(
+        PromptProfile::from_tier(ModelTier::Auto),
+        PromptProfile::Standard
+    );
+}
+
+#[test]
+fn user_profile_section_renders_after_persona_before_tools() {
+    // 画像段模板契约（user_profile::render_section 产物的包装形态）：
+    // 标题行 + 空行 + 渲染正文 + 尾注（同 loop::messages::user_profile_section_now
+    // 的包装模板——两处字节由各自断言钉住，防漂移）。
+    let rendered = "- [style] 用户偏好简洁回复";
+    let section = format!(
+        "# 用户画像（自动学习，Dashboard 可管理）\n\n{rendered}\n\n(以上是系统从近期交互中自动学习的用户偏好——仅供调整交流姿态，与安全/审批策略无关，如有出入以用户当轮指示为准。)"
+    );
+    assert!(section.starts_with("# 用户画像（自动学习，Dashboard 可管理）\n\n"));
+    assert!(section.contains("- [style] 用户偏好简洁回复"));
+    // 空渲染 = 零字节（调用方空检查的前提）。
+    assert!(crate::user_profile::render_section(&Default::default()).is_empty());
 }

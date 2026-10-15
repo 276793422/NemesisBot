@@ -1,0 +1,7 @@
+{
+  "inject": [{ "src": "hex_string_roundtrip_acceptance.rs", "dst": "tests/hex_string_roundtrip_acceptance.rs" }],
+  "commands": [{ "argv": ["cargo", "test", "--test", "hex_string_roundtrip_acceptance"] }],
+  "fail_patterns": ["test result: FAILED"],
+  "runtime_paths": [],
+  "require_diff": true
+}

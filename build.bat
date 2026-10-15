@@ -31,10 +31,13 @@ if /i "%~1"=="win" (
 exit /b %errorlevel%
 
 :show_help
-echo Usage: build.bat [win^|lin^|and^|run]
+echo Usage: build.bat [win^|lin^|and^|apk^|run^|onlyrun^|iot^|cls]
 echo.
-echo   win  - Build Windows release
-echo   lin  - Build Linux release (WSL)
-echo   and  - Build Android release
-echo   run  - Clean build + run gateway (Windows)
-echo   cls  - Delete folders that both target and bin
+echo   win     - Build Windows release
+echo   lin     - Build Linux release (WSL)
+echo   and     - Build Android release
+echo   apk     - Build Android shell APK
+echo   run     - Clean build + run gateway (Windows)
+echo   onlyrun - Run existing Windows gateway binary
+echo   iot     - Minimal IoT build (feature-trimmed)
+echo   cls     - Delete target and bin folders

@@ -330,7 +330,8 @@ fn tree_lazy_expand_subdir() {
     assert_eq!(names, vec!["main.rs", "util.rs"], "{v}");
 }
 
-/// 越权/不存在诚实拒绝：`..` 逃逸、绝对路径（含盘符形态）、缺失目录。
+/// 越权/不存在诚实拒绝：`..` 逃逸、绝对路径（含盘符形态——F7：join 遇
+/// 绝对路径替换整个 root，显式拒绝）、缺失目录。
 #[test]
 fn tree_rejects_traversal_and_missing() {
     let ws = setup_workspace();
@@ -349,6 +350,33 @@ fn tree_rejects_traversal_and_missing() {
 
     let err = h.tree_in("Z:/definitely/not/here", "", 1).unwrap_err();
     assert!(err.contains("workspace not found"), "{err}");
+}
+
+/// F7（2026-10-14）回归锁：绝对路径（含 Windows 盘符形态）显式拒绝——
+/// `PathBuf::join` 遇绝对路径替换整个 root，此前只拒 `..` 时
+/// `fs.tree {path: "C:/Windows"}` 可列举任意目录。盘符形态是 Windows
+/// 语义（Unix 上归一化剥前导 `/` 后无绝对形态存活，闸不可达）。
+#[test]
+fn tree_rejects_absolute_paths() {
+    let ws = setup_workspace();
+    let h = FsHandler::new();
+    let ws_str = ws.path().to_str().unwrap();
+
+    if cfg!(windows) {
+        for bad in ["C:/Windows", "C:\\Windows", "c:/windows/system32"] {
+            let err = h.tree_in(ws_str, bad, 1).unwrap_err();
+            assert!(err.contains("越出 workspace"), "bad={bad} err={err}");
+        }
+    } else {
+        // Unix 同形态输入按相对路径处理（诚实报目录不存在，不越界）。
+        let err = h.tree_in(ws_str, "C:/Windows", 1).unwrap_err();
+        assert!(err.contains("目录不存在"), "{err}");
+    }
+
+    // 相对合法输入不受纵深闸影响（join 恒在 root 下）。
+    let v = h.tree_in(ws_str, "src", 1).unwrap();
+    assert_eq!(v["path"], "src");
+    assert_eq!(v["entries"].as_array().unwrap().len(), 2);
 }
 
 /// 条目上限 500（所有层级合计）+ truncated 诚实标记。

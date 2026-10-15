@@ -56,7 +56,11 @@ fn render_card_contains_all_fields() {
     assert!(card.contains("操作: file_write"));
     assert!(card.contains("目标: /etc/hosts"));
     assert!(card.contains("风险: HIGH"));
-    assert!(card.contains("原因: policy: outside workspace"));
+    // 自解释三字段（感知层 §5）：why 用 reason 原文、impact 按 op 推导、
+    // reject_note 固定口径——与 web_approval::approval_card_fields 同源。
+    assert!(card.contains("为什么: policy: outside workspace"));
+    assert!(card.contains("影响: 将写入/修改文件系统：/etc/hosts"));
+    assert!(card.contains("拒绝后果: 拒绝后本动作不执行"));
     assert!(card.contains("/approve ab12cd34"));
     assert!(card.contains("/deny ab12cd34"));
     assert!(card.contains("300 秒"));

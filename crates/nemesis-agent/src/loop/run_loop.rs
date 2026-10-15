@@ -150,9 +150,18 @@ impl AgentLoop {
         loop {
             // 器官 1（§4.2）：MCP/config 热重载 + cancel/estop 顶检 +
             // max_turns/grace/cron 预算判定。Some = (终局事件, 终端原因)。
-            if let Some((ev, reason)) = self.prepare_round(turn_budget, cancel_token, &mut st) {
+            if let Some((mut ev, reason)) =
+                self.prepare_round(turn_budget, cancel_token, &mut st, context.user == "cron")
+            {
                 if let Some(r) = reason {
                     st.terminal_reason = Some(r);
+                }
+                // E5（2026-10-15 收尾保障）：预算暂停前的收尾编译探针——
+                // 本轮写过代码时跑一次快速编译检查，把树状态诚实注记进
+                // 暂停消息（只报告不回滚；无写操作/配置关/无生态标记全部
+                // 静默直通，暂停消息一字不动）。
+                if matches!(reason, Some("budget_exhausted") | Some("max_turns")) {
+                    self.attach_pre_pause_probe_note(&mut ev, &st).await;
                 }
                 events.push(ev);
                 break;
@@ -650,12 +659,18 @@ impl AgentLoop {
     /// 器官 1：MCP/config 热重载 + cancel/estop 顶检 + ①/② max_turns cap +
     /// grace round + T3 cron 预算判定。`Some((终局事件, 终端原因))` = 结束
     /// 本 turn（骨架 push + 记 terminal_reason + break）；grace 授予写回
-    /// `st.grace_round`；其余 = `None` 继续。
+    /// `st.grace_round`；其余 = `None` 继续。`is_cron_turn` 取
+    /// `context.user == "cron"`（run_agent_loop_internal 按 cron_job_id
+    /// 设置，同 log_boundaries 的判定惯例）——预算暂停文案随来源分岔：
+    /// cron 延续可续（job 未删下次 fire 重获预算），派生执行（headless
+    /// run / 子代理）不可续（2026-10-15 产品验证实验 #2：run 模式撞预算
+    /// 却收到 cron 文案「下次触发时会重新获得预算」，误导）。
     fn prepare_round(
         &self,
         turn_budget: Option<u32>,
         cancel_token: &tokio_util::sync::CancellationToken,
         st: &mut TurnState,
+        is_cron_turn: bool,
     ) -> Option<(AgentEvent, Option<&'static str>)> {
         let turns_used = st.turns_used;
         let grace_round = &mut st.grace_round;
@@ -715,15 +730,27 @@ impl AgentLoop {
                 // Fall through: this iteration runs as the grace round.
             } else if turn_budget.is_some() {
                 warn!(
-                    "[AgentLoop] paused after {} tool-call rounds (per-turn budget exhausted, grace round spent)",
-                    effective_max_turns
+                    "[AgentLoop] paused after {} tool-call rounds (per-turn budget exhausted, grace round spent, cron={})",
+                    effective_max_turns, is_cron_turn
                 );
-                // T3 (U12): budget-driven stop. The job that fired this
-                // turn is NOT deleted — the next fire re-budgets, so the
-                // message says so instead of suggesting a config change.
+                // T3 (U12): budget-driven stop, message keyed by budget
+                // ORIGIN (2026-10-15): cron continuation is resumable (the
+                // job that fired this turn is NOT deleted — the next fire
+                // re-budgets), but a detached run (headless `run` /
+                // subagent) is not — promising a "next trigger" there is a
+                // lie.
+                if is_cron_turn {
+                    return Some((
+                        AgentEvent::Done(format!(
+                            "已在定时任务预算 {} 轮工具调用后暂停，已完成的工作已保存。定时任务未被删除，下次触发时会重新获得预算。",
+                            effective_max_turns
+                        )),
+                        Some("budget_exhausted"),
+                    ));
+                }
                 return Some((
                     AgentEvent::Done(format!(
-                        "已在定时任务预算 {} 轮工具调用后暂停，已完成的工作已保存。定时任务未被删除，下次触发时会重新获得预算。",
+                        "已在任务预算 {} 轮工具调用后暂停，已完成的工作已保存。本轮任务不会自动续跑——需要继续时请以更大的轮数预算重跑（run 模式：--max-turns；子代理：spawn max_turns）。",
                         effective_max_turns
                     )),
                     Some("budget_exhausted"),

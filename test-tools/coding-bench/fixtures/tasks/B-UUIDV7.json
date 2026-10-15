@@ -1,0 +1,18 @@
+{
+  "task_id": "B-UUIDV7",
+  "path": "B",
+  "group": "bug",
+  "mother": "{{MOTHERS}}/B-UUIDV7",
+  "target_cache": "{{CACHE}}/targetB-UUIDV7",
+  "node_modules_cache": null,
+  "split": "dev",
+  "arm": "main",
+  "model": "openai/gpt-6-sol",
+  "user_request": "本仓库是 uuid 库（v7 特性）。一个正确性缺陷：使用 ContextV7 生成 UUIDv7 时，如果调用方传入的时间戳发生跨毫秒回退（后一次调用的秒数小于前一次，但纳秒更大），生成的 UUID 顺序会被破坏——后生成的 UUID 排在先生成的之前，违反了同一上下文内 v7 按生成顺序单调递增的契约。请修复：同一 ContextV7 下，无论传入时间戳如何回退，生成的 UUIDv7 都必须与生成顺序保持单调递增；并补一个回归测试（同上下文、乱序时间戳、断言生成顺序与排序一致）。测试需要 v7 特性（cargo test --features v7）。",
+  "allowed_paths": [
+    "src/",
+    "tests/"
+  ],
+  "max_turns": 30,
+  "time_limit_minutes": 45
+}

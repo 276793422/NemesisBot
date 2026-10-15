@@ -150,6 +150,28 @@ export const useChatStore = defineStore('chat', () => {
     return sessionId ? inflightTurns.value[sessionId] : undefined
   }
 
+  // W3（2026-10-14 审计）：按会话清账。busy 与在飞 turn 登记都刻意不被
+  // reset() 清、靠各会话自己的收尾帧（assistant/error/sync/stop/cancel）
+  // 清除——会话被删除/清空或登出后永无收尾帧，条目就成了永久泄漏
+  // （inflightTurns 还会让会话 id 复用时出幽灵占位）。调用点：session
+  // remove/clear、auth logout（dropAllSessionState）、ChatPanel watchdog
+  // 放弃分支。
+  function dropSessionState(sessionId: string | null) {
+    if (!sessionId) return
+    if (busyBySid.value[sessionId] !== undefined) {
+      const next = { ...busyBySid.value }
+      delete next[sessionId]
+      busyBySid.value = next
+    }
+    clearInflightTurn(sessionId)
+  }
+
+  /** W3：登出等「一次清掉所有会话」场景的全量版。 */
+  function dropAllSessionState() {
+    busyBySid.value = {}
+    inflightTurns.value = {}
+  }
+
   // M6（devtool-upgrade 阶段 7）：下一行 live 消息的后端 chat_log 行号锚。
   // null = 尚无锚（历史未加载），此时 live 消息不编号（诚实降级）。派生式
   // 见 recomputeNextRowIndex——历史批次与 live 行都只含 user/assistant，
@@ -357,6 +379,8 @@ export const useChatStore = defineStore('chat', () => {
     markInflightTurn,
     clearInflightTurn,
     inflightTurnOf,
+    dropSessionState,
+    dropAllSessionState,
     isBusy,
     setBusy,
     appendToolEvent,

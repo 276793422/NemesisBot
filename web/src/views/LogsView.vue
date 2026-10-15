@@ -6,6 +6,9 @@ import SessionExplorer from '../components/logs/SessionExplorer.vue'
 import SecurityAudit from '../components/logs/SecurityAudit.vue'
 import IntegrityChain from '../components/logs/IntegrityChain.vue'
 import HistorySearch from '../components/logs/HistorySearch.vue'
+// 行动账本（2026-10-14 AI 原生行动代理）：connectors.receipts 只读视图，
+// 自拉数据（挂载即拉取，进入页签触发）。
+import ActionLedger from '../components/logs/ActionLedger.vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import type {
   SessionEntry, LlmRequestEntry, ClusterTaskEntry,
@@ -158,6 +161,7 @@ async function onLocate(sessionKey: string) {
           @verify="verifyChain"
           @reload="loadChainTab"
         />
+        <ActionLedger v-else-if="activeTab === 'ledger'" />
       </div>
     </div>
   </div>

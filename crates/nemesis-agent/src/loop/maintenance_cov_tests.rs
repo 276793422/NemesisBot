@@ -144,6 +144,57 @@ async fn handle_maintenance_clear_ok_receipt() {
     crate::chat_log::delete_chat_log(&key);
 }
 
+/// 行动代理 P0（2026-10-14）Undo 臂：✓ 回执带移除条数 + 文件还原注记
+/// （checkpoint store 未挂载 → file_restore_note 兜底文案）；上一用户轮
+/// 从 chat_log 截掉。
+#[tokio::test]
+async fn handle_maintenance_undo_rewinds_last_turn() {
+    let mut al = AgentLoop::new(
+        Box::new(CovLlmProvider::new(vec![resp("unused")])),
+        cov_config(),
+    );
+    al.set_session_store(std::sync::Arc::new(
+        crate::session::SessionStore::new_in_memory(),
+    ));
+    let key = unique_key("undo_ok");
+    crate::chat_log::delete_chat_log(&key);
+    crate::chat_log::append_chat_log(&key, "user", "帮我下单 100 股");
+    crate::chat_log::append_chat_log(&key, "assistant", "已下单（纸面）");
+
+    let reply = al
+        .handle_maintenance(super::maintenance::SessionMaintenance::Undo, &key)
+        .await;
+    assert!(reply.contains("已撤销上一轮"), "got: {reply}");
+    assert!(reply.contains("移除 2 条消息"), "got: {reply}");
+    // 无 checkpoint store → 文件步注记兜底（诚实不装成功）。
+    assert!(reply.contains("只截断对话不回滚文件"), "got: {reply}");
+
+    let (rows, total, _, _) = crate::chat_log::read_chat_log(&key, 10, None);
+    assert_eq!(total, 0, "上一轮（user+assistant）整轮截掉: {rows:?}");
+
+    crate::chat_log::delete_chat_log(&key);
+}
+
+/// Undo 错误臂：无可撤销轮次（空会话）→ `⚠ 撤销未完成：<原因>`。
+#[tokio::test]
+async fn handle_maintenance_undo_error_reports_failure() {
+    let mut al = AgentLoop::new(Box::new(CovLlmProvider::new(vec![])), cov_config());
+    al.set_session_store(std::sync::Arc::new(
+        crate::session::SessionStore::new_in_memory(),
+    ));
+    let key = unique_key("undo_err");
+    crate::chat_log::delete_chat_log(&key);
+
+    let reply = al
+        .handle_maintenance(super::maintenance::SessionMaintenance::Undo, &key)
+        .await;
+    assert!(reply.contains("撤销未完成"), "got: {reply}");
+    assert!(
+        reply.contains("没有可撤销"),
+        "root cause rides along: {reply}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // process_user_dispatch：无集群的同步错误路径（① 收据 ② 落盘 ⑤ 直复）
 // ---------------------------------------------------------------------------

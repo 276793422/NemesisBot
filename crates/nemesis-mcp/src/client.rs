@@ -157,6 +157,33 @@ impl McpClient {
         Ok(Self::new(Box::new(stdio)))
     }
 
+    /// Create a client from a server config, dispatching on `transport_type`.
+    ///
+    /// config→transport 分派的单一真相源（McpManager::discover_tools 与 CLI
+    /// `mcp test/tools/resources/prompts` 共用）：
+    /// - `"http"` / `"streamable_http"` / `"streamable-http"` →
+    ///   [`HttpTransport`](crate::http_transport::HttpTransport)（headers
+    ///   "KEY: VALUE" 行消费化，值支持 vault:/env:/yaml: 引用现查）；
+    /// - 其他 → `StdioTransport`。
+    pub fn from_server_config(config: &ServerConfig) -> ClientResult<Self> {
+        let transport: Box<dyn Transport> = match config.transport_type.as_str() {
+            "http" | "streamable_http" | "streamable-http" => {
+                if config.url.is_empty() {
+                    return Err(ClientError::InvalidConfig(format!(
+                        "MCP server '{}' uses http transport but has no url",
+                        config.name
+                    )));
+                }
+                Box::new(crate::http_transport::HttpTransport::with_headers(
+                    config.url.clone(),
+                    config.headers.clone(),
+                ))
+            }
+            _ => Box::new(crate::stdio_transport::StdioTransport::from_config(config)),
+        };
+        Ok(Self::new(transport))
+    }
+
     // -- Connection lifecycle ------------------------------------------------
 
     /// Connect the transport and perform the MCP initialization handshake.

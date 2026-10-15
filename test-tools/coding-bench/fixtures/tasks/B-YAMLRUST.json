@@ -1,0 +1,18 @@
+{
+  "task_id": "B-YAMLRUST",
+  "path": "B",
+  "group": "bug",
+  "mother": "{{MOTHERS}}/B-YAMLRUST",
+  "target_cache": "{{CACHE}}/targetB-YAMLRUST",
+  "node_modules_cache": null,
+  "split": "dev",
+  "arm": "main",
+  "model": "openai/gpt-6-sol",
+  "user_request": "本仓库是 yaml-rust 库。一个 round-trip 保真缺陷：YamlEmitter dump 一个形如十六进制字面量的字符串值（如 \"0xFF\"）时不加引号，产物 `--- 0xFF` 再经 YamlLoader 加载会被解析成整数 255，字符串类型丢失。请修复：emitter 遇到可能被解析器误读为非字符串标量（整数/浮点/布尔/null 等）的字符串值时必须加引号，保证 dump → load round-trip 类型与值完全保真；并补一个回归测试（dump \"0xFF\" 字符串 → 重新加载 → 断言仍是同一字符串）。",
+  "allowed_paths": [
+    "src/",
+    "tests/"
+  ],
+  "max_turns": 30,
+  "time_limit_minutes": 45
+}

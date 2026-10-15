@@ -1470,6 +1470,13 @@ impl Tool for ExecTool {
                 // EOF，任务收尾。任务 await 兜 5s 上限：若命令 fork 了继承
                 // 管道的后台孙进程，EOF 要等孙进程死——此时如实返回已读不到
                 // 的空残余（旧实现同场景连收尸都没有，此处严格更优）。
+                // 2026-10-15：收尸升级为树杀（背景见 `tree_kill` 注记）——
+                // start_kill 只杀 cmd.exe/sh 本体，cargo/rustc 等真实工作
+                // 进程整棵存活，超时后继续烧 CPU/占 target 锁。树杀后仍
+                // start_kill + wait 兜底直杀 shell 本体并收尸。
+                if let Some(pid) = child.id() {
+                    crate::background_registry::tree_kill(pid).await;
+                }
                 let _ = child.start_kill();
                 let _ = child.wait().await;
                 let (stdout, stderr) = read_shell_output(capture, out_task, err_task).await;
@@ -1713,6 +1720,11 @@ fn make_piped_shell_command(command: &str) -> tokio::process::Command {
         c.stdout(std::process::Stdio::piped());
         c.stderr(std::process::Stdio::piped());
         c.kill_on_drop(true);
+        // 树杀前提（2026-10-15，与 background_registry::build_platform_shell
+        // 同款）：子进程自成一进程组（pgid == pid），超时收尸的
+        // `tree_kill` 才能用 `kill -TERM -- -PGID` 一锅端 shell 的孙进程
+        // （cargo/rustc 等），否则进程组号不存在、树杀静默落空。
+        c.process_group(0);
         let stripped = nemesis_utils::env_sanitize::sanitize_tokio_command(&mut c);
         if stripped > 0 {
             debug!("[Tools] env sanitized: {stripped} vars stripped");
@@ -2181,6 +2193,13 @@ pub(crate) async fn run_one_stage(
         Err(_) => {
             // 超时：先收尸再读残余输出（B2 同款——管道任务持所有权不受
             // 取消影响，kill 后 EOF 收尾；文件形态读回被杀前已写内容）。
+            // 2026-10-15：收尸升级为树杀（背景见 `tree_kill` 注记）——
+            // 本工具声明 timeout 参数，cargo 树不真死 = 参数没落地（产品
+            // 验证实验 #1：声明 600s，超时后 cargo 又跑了 25 分钟）。树杀
+            // 后仍 start_kill + wait 兜底直杀 shell 本体并收尸。
+            if let Some(pid) = child.id() {
+                crate::background_registry::tree_kill(pid).await;
+            }
             let _ = child.start_kill();
             let _ = child.wait().await;
             let (stdout, stderr) = read_shell_output(capture, out_task, err_task).await;
@@ -2312,6 +2331,13 @@ impl Tool for RunScriptTool {
         cmd.arg(script)
             .stdin(std::process::Stdio::null())
             .kill_on_drop(true);
+        // 树杀前提（2026-10-15，Unix；同 make_piped_shell_command）：子进程
+        // 自成一进程组（pgid == pid），超时收尸的 tree_kill 才能一锅端
+        // 脚本派生的工作进程。
+        #[cfg(not(target_os = "windows"))]
+        {
+            cmd.process_group(0);
+        }
         // 脚本解释器（bash/python 等）是 console 程序。普通模式压 CREATE_NO_
         // WINDOW（gateway 托盘/无控制台运行（release windows 子系统，
         // 2026-09-21）时不弹窗；输出经读回收集，不受影响）。D4（2026-09-28
@@ -2337,16 +2363,19 @@ impl Tool for RunScriptTool {
             .map_err(|e| format!("Failed to prepare executor output capture: {e}"))?;
         if let Some(c) = capture.as_mut() {
             c.apply_to(&mut cmd);
+            // 2026-10-15：spawn 前置到 timeout 之外——超时收尸要有 pid 才能
+            // 树杀（spawn 藏在 timed future 里 = 取消时句柄一并丢弃，只剩
+            // kill_on_drop 直杀解释器本体，脚本派生的工作进程全部存活）。
+            let mut child = cmd
+                .current_dir(cwd)
+                .spawn()
+                .map_err(|e| format!("Failed to execute script: {}", e))?;
             let waited =
-                tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
-                    let mut child = cmd.current_dir(cwd).spawn()?;
-                    let status = child.wait().await?;
-                    Ok::<_, std::io::Error>(status)
-                })
-                .await;
+                tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), child.wait())
+                    .await;
             return match waited {
                 Ok(Ok(status)) => {
-                    let (stdout, stderr) = capture.unwrap().read_back();
+                    let (stdout, stderr) = capture.take().expect("capture present").read_back();
                     Ok(serde_json::json!({
                         "stdout": stdout,
                         "stderr": stderr,
@@ -2355,25 +2384,42 @@ impl Tool for RunScriptTool {
                     .to_string())
                 }
                 Ok(Err(e)) => Err(format!("Failed to execute script: {}", e)),
-                Err(_) => Err(format!(
-                    "Script timed out after {} seconds (interpreter: {}). It may be \
-                 waiting for input (e.g. an interactive prompt).",
-                    timeout_secs, interpreter
-                )),
+                Err(_) => {
+                    if let Some(pid) = child.id() {
+                        crate::background_registry::tree_kill(pid).await;
+                    }
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                    let _ = capture.take().expect("capture present").read_back();
+                    Err(format!(
+                        "Script timed out after {} seconds (interpreter: {}). It may be \
+                     waiting for input (e.g. an interactive prompt).",
+                        timeout_secs, interpreter
+                    ))
+                }
             };
         }
 
-        let output = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
-            cmd.current_dir(cwd).output(),
-        )
-        .await;
+        // 2026-10-15：output() → spawn + 并发排水 + wait（exec/run_checks 同
+        // 款 B2 形态）。output() 的隐式 future 取消时只剩 kill_on_drop 直杀
+        // 解释器本体；结构化出 pid 后超时走树杀。命令形态字节不变
+        // （interpreter [flag] script 直 spawn 契约保持），只换捕获管道。
+        let mut child = cmd
+            .current_dir(cwd)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Failed to execute script: {}", e))?;
+        let out_task = tokio::spawn(drain_pipe(child.stdout.take()));
+        let err_task = tokio::spawn(drain_pipe(child.stderr.take()));
+        let waited =
+            tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), child.wait()).await;
 
-        match output {
-            Ok(Ok(out)) => {
-                let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-                let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-                let exit_code = out.status.code().unwrap_or(-1);
+        match waited {
+            Ok(Ok(status)) => {
+                let stdout = String::from_utf8_lossy(&join_pipe_task(out_task).await).to_string();
+                let stderr = String::from_utf8_lossy(&join_pipe_task(err_task).await).to_string();
+                let exit_code = status.code().unwrap_or(-1);
                 // Always Ok: encode success/failure in exit_code so the caller
                 // (workflow script node) keeps its structured contract. Only
                 // spawn/timeout failures are Err.
@@ -2385,11 +2431,20 @@ impl Tool for RunScriptTool {
                 .to_string())
             }
             Ok(Err(e)) => Err(format!("Failed to execute script: {}", e)),
-            Err(_) => Err(format!(
-                "Script timed out after {} seconds (interpreter: {}). It may be \
-                 waiting for input (e.g. an interactive prompt).",
-                timeout_secs, interpreter
-            )),
+            Err(_) => {
+                if let Some(pid) = child.id() {
+                    crate::background_registry::tree_kill(pid).await;
+                }
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                let _ = join_pipe_task(out_task).await;
+                let _ = join_pipe_task(err_task).await;
+                Err(format!(
+                    "Script timed out after {} seconds (interpreter: {}). It may be \
+                     waiting for input (e.g. an interactive prompt).",
+                    timeout_secs, interpreter
+                ))
+            }
         }
     }
 }
@@ -6009,7 +6064,7 @@ impl Tool for GrepTool {
             "type": "object",
             "properties": {
                 "pattern": {"type": "string", "description": "Regex pattern to search for"},
-                "path": {"type": "string", "description": "Directory to search (default: workspace root)"},
+                "path": {"type": "string", "description": "Directory or single file to search (default: workspace root)"},
                 "glob": {"type": "string", "description": "File-name filter, e.g. *.rs (simple suffix match)"},
                 "max_results": {"type": "integer", "description": "Max matches (default 50)"}
             },
@@ -6039,16 +6094,66 @@ impl Tool for GrepTool {
         };
         let glob = v["glob"].as_str();
         let max = v["max_results"].as_u64().unwrap_or(50) as usize;
-        let mut out: Vec<String> = Vec::new();
-        grep_recursive(Path::new(&root), &re, glob, max, &mut out);
-        if out.is_empty() {
-            Ok(format!("No matches for pattern /{}/", pattern))
+        let root_path = Path::new(&root);
+        // 2026-10-15（产品验证实验发现）：path=单文件此前落 grep_recursive 的
+        // read_dir → Err 静默吞 → 假「No matches」且 ok=true，模型反复换
+        // pattern 重试烧轮次（USAGCSV 轮实证：Cargo.toml 连查 5 次）。文件
+        // 路径升为一等公民：直接扫该文件；glob 不匹配 / 超限 / 非 UTF-8
+        // 一律诚实注明，绝不裸「No matches」掩盖「根本没搜」。
+        if root_path.is_file() {
+            if let Some(g) = glob {
+                let suffix = g.trim_start_matches('*');
+                let matched = root_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|f| f.ends_with(suffix))
+                    .unwrap_or(false);
+                if !matched {
+                    return Ok(format!("Skipped {}: does not match glob '{}'.", root, g));
+                }
+            }
+            if let Ok(meta) = std::fs::metadata(root_path)
+                && meta.len() > MAX_GREP_SINGLE_FILE_BYTES
+            {
+                return Ok(format!(
+                    "Skipped {}: {} bytes exceeds the single-file scan limit ({} bytes); \
+                     use read_file with offsets instead.",
+                    root,
+                    meta.len(),
+                    MAX_GREP_SINGLE_FILE_BYTES
+                ));
+            }
+            let mut out: Vec<String> = Vec::new();
+            if grep_file(root_path, &re, max, &mut out) {
+                if out.is_empty() {
+                    Ok(format!("No matches for pattern /{}/ in {}", pattern, root))
+                } else {
+                    Ok(format!(
+                        "Found {} match(es):\n{}",
+                        out.len(),
+                        out.join("\n")
+                    ))
+                }
+            } else {
+                Ok(format!(
+                    "Skipped {}: not valid UTF-8 (binary file?) — not scanned.",
+                    root
+                ))
+            }
+        } else if root_path.is_dir() {
+            let mut out: Vec<String> = Vec::new();
+            grep_recursive(root_path, &re, glob, max, &mut out);
+            if out.is_empty() {
+                Ok(format!("No matches for pattern /{}/", pattern))
+            } else {
+                Ok(format!(
+                    "Found {} match(es):\n{}",
+                    out.len(),
+                    out.join("\n")
+                ))
+            }
         } else {
-            Ok(format!(
-                "Found {} match(es):\n{}",
-                out.len(),
-                out.join("\n")
-            ))
+            Err(format!("path '{}' does not exist", root))
         }
     }
 
@@ -6366,62 +6471,88 @@ fn grep_recursive(
             {
                 continue;
             }
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                for (i, line) in content.lines().enumerate() {
-                    if out.len() >= max {
-                        return;
-                    }
-                    if re.is_match(line) {
-                        let display = line.trim();
-                        if display.len() > 300 {
-                            // Truncate at the nearest char boundary ≤ 300 bytes.
-                            // Slicing at a fixed byte index can land inside a
-                            // multibyte UTF-8 char (e.g. Chinese) and panic.
-                            let mut end = 300;
-                            while !display.is_char_boundary(end) {
-                                end -= 1;
-                            }
-                            out.push(format!(
-                                "{}:{}: {}…",
-                                path.display(),
-                                i + 1,
-                                &display[..end]
-                            ));
-                        } else {
-                            out.push(format!("{}:{}: {}", path.display(), i + 1, display));
-                        }
-                    }
-                }
-            }
+            grep_file(&path, re, max, out);
         }
     }
 }
 
+/// 单文件逐行扫描（glob 过滤与 1MB 走查帽归调用方——目录走查里它们是噪声
+/// 过滤，显式单文件路径是明确意图，门槛不同：见 `MAX_GREP_SINGLE_FILE_BYTES`）。
+/// 返回是否真正扫描了内容（非 UTF-8 → false；调用方据此诚实注记，不以
+/// 「No matches」掩盖「根本没搜」——2026-10-15 假阴性缺陷的根修拆分）。
+fn grep_file(path: &Path, re: &regex::Regex, max: usize, out: &mut Vec<String>) -> bool {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    for (i, line) in content.lines().enumerate() {
+        if out.len() >= max {
+            return true;
+        }
+        if re.is_match(line) {
+            let display = line.trim();
+            if display.len() > 300 {
+                // Truncate at the nearest char boundary ≤ 300 bytes.
+                // Slicing at a fixed byte index can land inside a
+                // multibyte UTF-8 char (e.g. Chinese) and panic.
+                let mut end = 300;
+                while !display.is_char_boundary(end) {
+                    end -= 1;
+                }
+                out.push(format!(
+                    "{}:{}: {}…",
+                    path.display(),
+                    i + 1,
+                    &display[..end]
+                ));
+            } else {
+                out.push(format!("{}:{}: {}", path.display(), i + 1, display));
+            }
+        }
+    }
+    true
+}
+
+/// 显式单文件扫描上限。目录走查的 1MB 帽是走查噪声过滤；显式路径是明确
+/// 意图，放宽到 20MB——read_to_string 全量入内存，仍需有界。超限诚实报
+/// 告（不静默跳过），指路 read_file 分段。
+const MAX_GREP_SINGLE_FILE_BYTES: u64 = 20_000_000;
+
 // ===========================================================================
-// Hardware tools (I2C / SPI)
+// Hardware tools (I2C / SPI) — 薄适配器，委托 nemesis-tools 真实实现
 // ===========================================================================
+
+// nemesis-tools 侧 Tool trait 以 `_` 导入（仅方法解析用，不占名字——
+// 与本文件的 loop 侧 `Tool` 不冲突，两个 trait 的实现类型不相交）。
+use nemesis_tools::registry::Tool as _;
 
 /// I2C bus tool - interacts with I2C devices (Linux only).
 ///
-/// P8（2026-09-25 三批合并）GPIO 白名单：地址访问过 `HardwarePolicy`
-/// 校验——与 nemesis-tools::hardware 的真实实现共用同一策略单一真相源
-/// （本结构当前是回显桩，真实 I/O 在 nemesis-tools；两路径同源校验，
-/// 杜绝桩路径放行保留段/黑名单地址）。
+/// BUG-13（2026-10-14）根修：此前是回显桩（假成功、无真实 I/O——模型以为
+/// 写入成功而硬件什么都没发生）。真实实现（ioctl 扫描/读写、参数校验、
+/// P8 地址策略、非 Linux 平台诚实报错）全在
+/// [`nemesis_tools::hardware::I2CTool`]，本层只做 `&str`→`Value` 解析与
+/// `ToolResult` 折叠（is_error→Err(for_llm)）；description/parameters
+/// 直接透传真实实现（单一真相源，随之获得 confirm/bus 等完整 schema
+/// 字段——一次性 prompt 文案漂移，接受）。P8 地址策略仍从注册点
+/// `with_policy` 注入（config `tools.hardware` 段），校验在真实实现内
+/// 执行，与本路径同源。
 pub struct I2CTool {
-    policy: nemesis_tools::hardware::HardwarePolicy,
+    inner: nemesis_tools::hardware::I2CTool,
 }
 
 impl I2CTool {
     /// 内置默认策略（可自由寻址空间 0x08-0x77）。
     pub fn new() -> Self {
         Self {
-            policy: nemesis_tools::hardware::HardwarePolicy::builtin(),
+            inner: nemesis_tools::hardware::I2CTool::new(),
         }
     }
 
     /// 注入 config 侧策略（`tools.hardware` 段）。
     pub fn with_policy(policy: nemesis_tools::hardware::HardwarePolicy) -> Self {
-        Self { policy }
+        Self {
+            inner: nemesis_tools::hardware::I2CTool::with_policy(policy),
+        }
     }
 }
 
@@ -6434,106 +6565,50 @@ impl Default for I2CTool {
 #[async_trait]
 impl Tool for I2CTool {
     fn description(&self) -> String {
-        "Interact with I2C bus devices for reading sensors and controlling peripherals. Actions: detect, scan, read, write. Linux only.".to_string()
+        self.inner.description().to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
-        // schema 与 nemesis-tools::hardware 真实实现同文案（bus=字符串数字、
-        // address=7 位整数；解析器另兼容 "0x38" 形态字符串，fail-closed）。
-        serde_json::json!({"type":"object","properties":{"action":{"type":"string","description":"Action: detect, scan, read, write"},"bus":{"type":"string","description":"I2C bus number (e.g. \"1\")"},"address":{"type":"integer","description":"7-bit device address (default allowed: 0x08-0x77; reserved segments rejected)"}}})
+        self.inner.parameters()
     }
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
-        if !cfg!(target_os = "linux") {
-            return Err(
-                "I2C is only supported on Linux. This tool requires /dev/i2c-* device files."
-                    .to_string(),
-            );
-        }
         let val: serde_json::Value =
             serde_json::from_str(args).map_err(|_| "Invalid JSON arguments".to_string())?;
-        let action = val["action"].as_str().unwrap_or("");
-        // P8：读/写动作的地址必填且先过策略校验（保留段/黑名单拒绝，理由
-        // 面向模型可自纠——与真实实现共用 parse_i2c_address + HardwarePolicy
-        // 同源校验，fail-closed）。2026-09-26 复查修复：此前地址只在
-        // as_u64() 命中时才校验——schema 自己推荐的 hex 字符串形态（"0x38"）
-        // 会整个跳过白名单，回显成功。
-        if matches!(action, "read" | "write") {
-            let addr = nemesis_tools::hardware::parse_i2c_address(&val)?;
-            self.policy.validate_i2c_address(addr)?;
-        }
-        match action {
-            "detect" => Ok("[I2C] Detect: scanning for I2C buses...".to_string()),
-            "scan" => Ok(format!(
-                "[I2C] Scan on bus {}",
-                val["bus"].as_str().unwrap_or("?")
-            )),
-            "read" => Ok(format!(
-                "[I2C] Read from device at address 0x{:02x}",
-                nemesis_tools::hardware::parse_i2c_address(&val).unwrap_or(0)
-            )),
-            "write" => {
-                if val["confirm"].as_bool().unwrap_or(false) {
-                    Ok(format!(
-                        "[I2C] Write to device at address 0x{:02x}",
-                        nemesis_tools::hardware::parse_i2c_address(&val).unwrap_or(0)
-                    ))
-                } else {
-                    Err("confirm must be true for write operations (safety guard)".to_string())
-                }
-            }
-            _ => Err(format!(
-                "Unknown I2C action: {} (valid: detect, scan, read, write)",
-                action
-            )),
+        let result = self.inner.execute(&val).await;
+        if result.is_error {
+            Err(result.for_llm)
+        } else {
+            Ok(result.for_llm)
         }
     }
 }
 
 /// SPI bus tool - interacts with SPI devices (Linux only).
+///
+/// 薄适配器同 [`I2CTool`]：委托 [`nemesis_tools::hardware::SPITool`] 真实
+/// 实现（ZST，按调用临时构造；保持单元结构体形态，兼容既有
+/// `let tool = SPITool;` 构造点）。
 pub struct SPITool;
 
 #[async_trait]
 impl Tool for SPITool {
     fn description(&self) -> String {
-        "Interact with SPI bus devices for high-speed peripheral communication. Actions: list, transfer, read. Linux only.".to_string()
+        nemesis_tools::hardware::SPITool.description().to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({"type":"object","properties":{"action":{"type":"string","description":"Action: list, transfer, read"},"device":{"type":"string","description":"SPI device path"}}})
+        nemesis_tools::hardware::SPITool.parameters()
     }
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
-        if !cfg!(target_os = "linux") {
-            return Err(
-                "SPI is only supported on Linux. This tool requires /dev/spidev* device files."
-                    .to_string(),
-            );
-        }
         let val: serde_json::Value =
             serde_json::from_str(args).map_err(|_| "Invalid JSON arguments".to_string())?;
-        let action = val["action"].as_str().unwrap_or("");
-        match action {
-            "list" => Ok("[SPI] Listing SPI devices...".to_string()),
-            "transfer" => {
-                if val["confirm"].as_bool().unwrap_or(false) {
-                    Ok(format!(
-                        "[SPI] Transfer on device {}",
-                        val["device"].as_str().unwrap_or("?")
-                    ))
-                } else {
-                    Err("confirm must be true for transfer operations (safety guard)".to_string())
-                }
-            }
-            "read" => Ok(format!(
-                "[SPI] Read {} bytes from device {}",
-                val["length"].as_u64().unwrap_or(1),
-                val["device"].as_str().unwrap_or("?")
-            )),
-            _ => Err(format!(
-                "Unknown SPI action: {} (valid: list, transfer, read)",
-                action
-            )),
+        let result = nemesis_tools::hardware::SPITool.execute(&val).await;
+        if result.is_error {
+            Err(result.for_llm)
+        } else {
+            Ok(result.for_llm)
         }
     }
 }
