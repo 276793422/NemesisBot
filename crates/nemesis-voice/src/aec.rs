@@ -160,7 +160,12 @@ pub struct SpeexAec {
     out_s16: Vec<i16>,
 }
 
-// 句柄由单一 STT pipeline 线程独占使用；跨线程不共享。
+// SAFETY（审计表 C-9）：handle 为 owning 裸指针（dlopen shim 的 speexdsp
+// AecState），随实例移动安全；不实现 Sync——speexdsp 无线程安全文档（沉默
+// → 按非线程安全对待），且全部消费路径本就以 &mut 独占使用：唯一持有槽 =
+// web handlers/voice.rs 的 `Mutex<Option<SpeexAec>>`（`guard.as_mut()` 取
+// &mut），`EchoCanceller` trait 的 `process(&mut self)` 签名同样强制独占。
+// 单一 STT pipeline 线程逐帧驱动，无跨线程共享。
 unsafe impl Send for SpeexAec {}
 
 impl SpeexAec {

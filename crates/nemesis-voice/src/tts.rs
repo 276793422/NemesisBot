@@ -74,6 +74,11 @@ struct TtsInner {
     tts: *const sherpa::SherpaOnnxOfflineTts,
 }
 
+// SAFETY（审计表 C-8）：native 指针封存在 `Mutex<TtsInner>` 内，全部 FFI
+// 访问（generate 的 safe_tts_generate_audio、recreate_engine 的销毁+重建、
+// Drop 的销毁）都在锁段内串行执行——该锁是 kokoro C++ 异常自愈设计的既有
+// 组成（异常后引擎状态可能损坏，重建必须在无并发访问下进行），恰使 Sync
+// 声明真实成立。上游对 OfflineTts 无线程安全承诺；engine 指针随 inner 移动。
 unsafe impl Send for TtsEngine {}
 unsafe impl Sync for TtsEngine {}
 
@@ -283,8 +288,9 @@ impl TtsEngine {
 
     /// Destroy the current engine and recreate it from stored params.
     fn recreate_engine(&self) -> Result<()> {
+        // 先建新引擎再动旧指针：创建失败时旧引擎原样保留（服务继续可用）。
         let new_tts = Self::create_engine(&self.model_dir, self.num_threads, self.is_kokoro)?;
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         unsafe { sherpa::SherpaOnnxDestroyOfflineTts(guard.tts) };
         guard.tts = new_tts;
         tracing::warn!("[TTS] Engine recreated after C++ exception");
@@ -295,18 +301,22 @@ impl TtsEngine {
         let normalized = normalize_tts_text(text);
         let text_c = sherpa::to_cstr(&normalized);
 
-        let tts_ptr = {
-            let guard = self.inner.lock().unwrap();
-            guard.tts
-        };
-
-        let audio_result = unsafe {
-            sherpa::safe_tts_generate_audio(
-                tts_ptr,
-                text_c.as_ptr(),
-                speaker_id as libc::c_int,
-                speed,
-            )
+        // SAFETY（审计表 C-8）：FFI 调用全程持锁——与 recreate_engine 的销毁、
+        // Drop 的销毁串行。若快照指针后放锁再调 FFI，Sync 允许的两路并发
+        // generate 会对同一非线程安全 native 引擎裸奔，且一路失败触发
+        // recreate_engine 销毁指针时另一路正解引用它 = use-after-free。
+        // 毒化忽略：锁保护 native 线程亲和而非 Rust 不变量，panic 穿不透 FFI，
+        // 持毒拒后续调用会把瞬态故障放大成引擎永久不可用。
+        let audio_result = {
+            let guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+            unsafe {
+                sherpa::safe_tts_generate_audio(
+                    guard.tts,
+                    text_c.as_ptr(),
+                    speaker_id as libc::c_int,
+                    speed,
+                )
+            }
         };
 
         match audio_result {
@@ -485,7 +495,9 @@ fn build_model_config_with_kokoro(
 
 impl Drop for TtsEngine {
     fn drop(&mut self) {
-        let guard = self.inner.lock().unwrap();
+        // 毒化忽略：&mut self 已排除并发访问，锁只约束字段访问形态；若在
+        // unwind 路径中 Drop，.unwrap() 的持毒 panic 会变成 double-panic abort。
+        let guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         unsafe { sherpa::SherpaOnnxDestroyOfflineTts(guard.tts) };
     }
 }

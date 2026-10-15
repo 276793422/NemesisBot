@@ -20,10 +20,19 @@ pub struct MessageBus {
     inbound_tx: broadcast::Sender<InboundMessage>,
     outbound_tx: broadcast::Sender<OutboundMessage>,
     closed: AtomicBool,
-    /// Number of inbound messages dropped because no receivers or buffer full.
-    inbound_dropped: AtomicU64,
-    /// Number of outbound messages dropped because no receivers or buffer full.
-    outbound_dropped: AtomicU64,
+    /// 发布侧丢失（入站）：发布时**无任何接收者**。tokio broadcast 的
+    /// `send` 只在接收者数为 0 时失败——「buffer full 导致 send 丢消息」
+    /// 不存在（缓冲满 = 覆盖最旧，丢帧发生在接收端以 `Lagged(n)` 上报，
+    /// 经 [`MessageBus::record_inbound_lagged`] 记入下方 lagged 计数）。
+    inbound_no_receiver_dropped: AtomicU64,
+    /// 发布侧丢失（出站）：语义同上。
+    outbound_no_receiver_dropped: AtomicU64,
+    /// 接收侧真实丢失（入站）：订阅端 `recv()` 返回 `Lagged(n)` 时经
+    /// [`MessageBus::record_inbound_lagged`] 累计（n = 该接收者被覆盖
+    /// 跳过的消息数；广播扇出下各接收者独立计数）。
+    inbound_lagged: AtomicU64,
+    /// 接收侧真实丢失（出站）：语义同上。
+    outbound_lagged: AtomicU64,
     /// P6a（2026-09-11 日志降噪）：fan-out 警告每方向只发一次——gateway 启动
     /// 期固定多订阅者（agent loop / web dispatch / cluster 桥各订一份）属正常
     /// 形态，逐订阅 WARN 只是每世代 3 条启动噪音。
@@ -45,8 +54,10 @@ impl MessageBus {
             inbound_tx,
             outbound_tx,
             closed: AtomicBool::new(false),
-            inbound_dropped: AtomicU64::new(0),
-            outbound_dropped: AtomicU64::new(0),
+            inbound_no_receiver_dropped: AtomicU64::new(0),
+            outbound_no_receiver_dropped: AtomicU64::new(0),
+            inbound_lagged: AtomicU64::new(0),
+            outbound_lagged: AtomicU64::new(0),
             inbound_fanout_warned: AtomicBool::new(false),
             outbound_fanout_warned: AtomicBool::new(false),
         }
@@ -54,9 +65,9 @@ impl MessageBus {
 
     /// Publish an inbound message (from channel to agent).
     ///
-    /// Unlike Go which blocks when the channel buffer is full, Rust's broadcast
-    /// silently drops messages. This method logs a warning when the send fails
-    /// (e.g., no receivers or buffer full) and increments a dropped counter.
+    /// Tokio broadcast 的 `send` 只在无接收者时失败（缓冲满不丢发布、覆盖
+    /// 最旧；慢消费者的丢帧在接收端以 `Lagged` 上报）。无接收者时本方法
+    /// 记 warn 并累计发布侧丢失计数。
     pub fn publish_inbound(&self, msg: InboundMessage) {
         if self.closed.load(Ordering::Relaxed) {
             warn!("[Bus] Publish inbound rejected: bus is closed");
@@ -68,12 +79,14 @@ impl MessageBus {
                 "[Bus] publish_inbound: no inbound receivers, message will be dropped (channel={}, chat_id={})",
                 msg.channel, msg.chat_id
             );
-            self.inbound_dropped.fetch_add(1, Ordering::Relaxed);
+            self.inbound_no_receiver_dropped
+                .fetch_add(1, Ordering::Relaxed);
             return;
         }
         let channel_name = msg.channel.clone();
         if let Err(err) = self.inbound_tx.send(msg) {
-            self.inbound_dropped.fetch_add(1, Ordering::Relaxed);
+            self.inbound_no_receiver_dropped
+                .fetch_add(1, Ordering::Relaxed);
             warn!(
                 "[Bus] publish_inbound: failed to send inbound message: {}",
                 err
@@ -85,9 +98,8 @@ impl MessageBus {
 
     /// Publish an outbound message (from agent to channel).
     ///
-    /// Unlike Go which blocks when the channel buffer is full, Rust's broadcast
-    /// silently drops messages. This method logs a warning when the send fails
-    /// (e.g., no receivers or buffer full) and increments a dropped counter.
+    /// 语义同 [`MessageBus::publish_inbound`]：`send` 只在无接收者时失败，
+    /// 慢消费者丢帧走接收侧 `record_outbound_lagged`。
     pub fn publish_outbound(&self, msg: OutboundMessage) {
         if self.closed.load(Ordering::Relaxed) {
             warn!("[Bus] Publish outbound rejected: bus is closed");
@@ -99,12 +111,14 @@ impl MessageBus {
                 "[Bus] publish_outbound: no outbound receivers, message will be dropped (channel={}, chat_id={})",
                 msg.channel, msg.chat_id
             );
-            self.outbound_dropped.fetch_add(1, Ordering::Relaxed);
+            self.outbound_no_receiver_dropped
+                .fetch_add(1, Ordering::Relaxed);
             return;
         }
         let channel_name = msg.channel.clone();
         if let Err(err) = self.outbound_tx.send(msg) {
-            self.outbound_dropped.fetch_add(1, Ordering::Relaxed);
+            self.outbound_no_receiver_dropped
+                .fetch_add(1, Ordering::Relaxed);
             warn!(
                 "[Bus] publish_outbound: failed to send outbound message: {}",
                 err
@@ -184,14 +198,43 @@ impl MessageBus {
         self.outbound_tx.receiver_count()
     }
 
-    /// Returns the total number of inbound messages dropped since bus creation.
-    pub fn dropped_inbound(&self) -> u64 {
-        self.inbound_dropped.load(Ordering::Relaxed)
+    /// Returns the total number of inbound messages dropped at publish time
+    /// because no receiver existed（发布侧丢失，语义见字段注释）。
+    pub fn no_receiver_dropped_inbound(&self) -> u64 {
+        self.inbound_no_receiver_dropped.load(Ordering::Relaxed)
     }
 
-    /// Returns the total number of outbound messages dropped since bus creation.
-    pub fn dropped_outbound(&self) -> u64 {
-        self.outbound_dropped.load(Ordering::Relaxed)
+    /// Returns the total number of outbound messages dropped at publish time
+    /// because no receiver existed（发布侧丢失，语义见字段注释）。
+    pub fn no_receiver_dropped_outbound(&self) -> u64 {
+        self.outbound_no_receiver_dropped.load(Ordering::Relaxed)
+    }
+
+    /// 接收侧真实丢失记账入口（入站）：订阅端 `recv()` 返回
+    /// `RecvError::Lagged(n)` 时调用（n = 该接收者被覆盖跳过的消息数）。
+    /// 广播扇出下各接收者独立丢帧，n 直接累加（不按接收者去重——指标语义
+    /// 是「消息实际未能送达的次数」）。
+    pub fn record_inbound_lagged(&self, n: u64) {
+        if n > 0 {
+            self.inbound_lagged.fetch_add(n, Ordering::Relaxed);
+        }
+    }
+
+    /// 接收侧真实丢失记账入口（出站），语义同 [`MessageBus::record_inbound_lagged`]。
+    pub fn record_outbound_lagged(&self, n: u64) {
+        if n > 0 {
+            self.outbound_lagged.fetch_add(n, Ordering::Relaxed);
+        }
+    }
+
+    /// Returns the total inbound messages reported lost by lagged receivers.
+    pub fn lagged_inbound(&self) -> u64 {
+        self.inbound_lagged.load(Ordering::Relaxed)
+    }
+
+    /// Returns the total outbound messages reported lost by lagged receivers.
+    pub fn lagged_outbound(&self) -> u64 {
+        self.outbound_lagged.load(Ordering::Relaxed)
     }
 
     /// Close the bus. No more messages can be published.

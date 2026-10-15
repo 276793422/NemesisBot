@@ -8,7 +8,8 @@ name: Extended Tests
 #      首次上 Linux 可能暴露平台性失败，红了按 bug 修——这正是它的价值）；
 #   2. feature 裁剪矩阵抽查：default / minimal-iot / desktop 三构建配置
 #      （对应 scripts/customize/profiles/，裁剪完度回归，防 feature 泄漏编译坏）；
-#   3. 集成测试工具：integration-test（492 断言 CLI）+ cluster-uat（T1-T18 E2E）。
+#   3. 集成测试工具：integration-test（492 断言 CLI）+ cluster-uat（T1-T48 主链
+#      + T-XFER/T-MRG/T-CONN/T-MONITOR + U 职能系列，70+ 场景 E2E）。
 #      这两个是纯 bin runner（须 cargo run，不是 cargo test——Cargo.toml 只有
 #      [[bin]] 没有 [[test]]），依赖 test-harness 拉起真实 gateway + TestAIServer。
 #      test-harness 的二进制解析硬编码 Windows 形态（target/debug/nemesisbot.exe、

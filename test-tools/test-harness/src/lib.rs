@@ -370,24 +370,60 @@ pub async fn graceful_shutdown_gateway(port: u16, token: &str) -> Result<()> {
 
 /// An isolated test workspace with a .nemesisbot directory.
 pub struct TestWorkspace {
+    /// 仅保活：Drop 时递归删除临时目录（路径读取一律走 [`Self::root`]）。
+    #[allow(dead_code)]
     temp_dir: tempfile::TempDir,
+    /// 长名形态的工作区根（无 8.3 短名组件、无 `\\?\` 前缀）。
+    ///
+    /// 本机 TEMP 常见 8.3 短名形态（`C:\Users\LOCALA~1\AppData\Local\Temp`），
+    /// tempfile 原样继承 → gateway cwd / CLI 委派 cwd 全是短名。claude CLI
+    /// 子进程的安全检查把 8.3 短名路径判为「可疑路径模式、需人工批准」，
+    /// 非交互 `-p` 模式无人批准 → 一切写入被拒（V4 委派 e2e 真机实录
+    /// 2026-10-15：DELEGATION 文本声称完成而 cli_probe.txt 全工作区不存在）。
+    /// 所有 getter 一律走 [`Self::path`]，禁止再摸 `temp_dir.path()`。
+    root: PathBuf,
+}
+
+/// 长名化：canonicalize（消解 8.3 短名组件）后剥掉 Windows verbatim 前缀
+/// `\\?\`（子进程对 verbatim 路径的兼容面更差，普通长名形态最稳）。
+/// canonicalize 失败（目录尚不存在等）回落原路径——尽力而为，不添堵。
+fn long_form_path(p: &Path) -> PathBuf {
+    match std::fs::canonicalize(p) {
+        Ok(canon) => PathBuf::from(strip_verbatim(&canon.to_string_lossy())),
+        Err(_) => p.to_path_buf(),
+    }
+}
+
+/// 剥 canonicalize 的 verbatim 前缀还原常规形态（纯函数，单测直测）。
+/// 本地盘：`\\?\C:\...` → `C:\...`；UNC 目标：verbatim 形态是
+/// `\\?\UNC\host\share\...`，直接剥前缀会得到非法的 `UNC\host\share\...`
+/// ——先映射回 `\\host\share`；无前缀原样返回。
+fn strip_verbatim(s: &str) -> String {
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        s.to_string()
+    }
 }
 
 impl TestWorkspace {
     /// Create a new isolated test workspace.
     pub fn new() -> Result<Self> {
         let temp_dir = tempfile::TempDir::new()?;
-        Ok(Self { temp_dir })
+        let root = long_form_path(temp_dir.path());
+        Ok(Self { temp_dir, root })
     }
 
     /// Path to the workspace root (where nemesisbot commands run).
     pub fn path(&self) -> &Path {
-        self.temp_dir.path()
+        &self.root
     }
 
     /// Path to the .nemesisbot home directory.
     pub fn home(&self) -> PathBuf {
-        self.temp_dir.path().join(".nemesisbot")
+        self.path().join(".nemesisbot")
     }
 
     /// Path to config.json.
