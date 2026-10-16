@@ -120,6 +120,7 @@ async fn history_unknown_index_reports_not_found_without_failing() {
             "history_request",
             serde_json::json!({ "index": "deadbeef", "request_id": "r1" }),
         ),
+        None,
     )
     .await;
     assert!(
@@ -152,6 +153,7 @@ async fn history_happy_path_reads_chat_log_and_surfaces_broadcast_failure() {
             "history_request",
             serde_json::json!({ "index": index, "request_id": "r2", "limit": 2 }),
         ),
+        None,
     )
     .await;
     // The read + encode succeeded; the queue-less broadcast is the only
@@ -177,6 +179,7 @@ async fn send_unknown_index_reports_not_found_without_failing() {
             "send",
             serde_json::json!({ "index": "deadbeef", "content": "你好" }),
         ),
+        None,
     )
     .await;
     assert!(

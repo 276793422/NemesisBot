@@ -15,6 +15,7 @@ fn base_config(listen_addr: &str) -> WebServerConfig {
         listen_addr: listen_addr.to_string(),
         auth_token: String::new(),
         cors_origins: vec![],
+        cors_allow_all: false,
         ws_path: "/ws".to_string(),
         workspace: None,
         home: None,

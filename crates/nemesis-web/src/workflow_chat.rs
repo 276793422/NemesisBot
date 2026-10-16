@@ -29,6 +29,11 @@ use std::sync::Arc;
 
 /// Top-level dispatch for `module == "workflow_chat"` messages.
 ///
+/// `bound_workflow` is the workflow a workflow-chat session was bound to at
+/// WS upgrade time (2026-10-16 hardening). When set, the client-supplied
+/// `index` is ignored — the session can only ever talk to its own workflow.
+/// Dashboard-originated sessions pass `None` and keep resolving `index`.
+///
 /// Returns `Ok(Some(IncomingMessage))` is never produced here — workflow_chat
 /// never forwards to the bus. Returns `Ok(())` on successful handling (whether
 /// or not the workflow has finished — that's async via the observer) and
@@ -38,10 +43,11 @@ pub async fn handle_workflow_chat_message(
     session_id: String,
     chat_id: String,
     pm: ProtocolMessage,
+    bound_workflow: Option<String>,
 ) -> Result<(), String> {
     match pm.cmd.as_str() {
-        "send" => handle_send(state, session_id, chat_id, pm).await,
-        "history_request" => handle_history_request(state, session_id, pm).await,
+        "send" => handle_send(state, session_id, chat_id, pm, bound_workflow).await,
+        "history_request" => handle_history_request(state, session_id, pm, bound_workflow).await,
         other => Err(format!("unknown workflow_chat cmd: {}", other)),
     }
 }
@@ -51,10 +57,13 @@ async fn handle_send(
     session_id: String,
     chat_id: String,
     pm: ProtocolMessage,
+    bound_workflow: Option<String>,
 ) -> Result<(), String> {
     #[derive(serde::Deserialize)]
     struct SendData {
-        index: String,
+        // Optional so bound workflow-chat sessions may omit it; resolved
+        // from the bound workflow when absent/ignored.
+        index: Option<String>,
         content: String,
     }
     let data: SendData = pm
@@ -72,11 +81,22 @@ async fn handle_send(
         }
     };
 
-    let workflow_name = match engine.workflow_by_chat_index(&data.index) {
-        Some(n) => n,
+    // Resolve the target workflow: a bound workflow-chat session is pinned to
+    // its own workflow; dashboard sessions resolve the client-supplied index.
+    let (workflow_name, index_for_record) = match &bound_workflow {
+        Some(w) => {
+            let idx = nemesis_workflow::engine::WorkflowEngine::chat_index(w);
+            (w.clone(), idx)
+        }
         None => {
-            log_send_error(&state, &session_id, "未找到工作流").await;
-            return Ok(());
+            let index = data.index.clone().unwrap_or_default();
+            match engine.workflow_by_chat_index(&index) {
+                Some(n) => (n, index),
+                None => {
+                    log_send_error(&state, &session_id, "未找到工作流").await;
+                    return Ok(());
+                }
+            }
         }
     };
 
@@ -111,7 +131,7 @@ async fn handle_send(
         chat_id: chat_id.clone(),
         session_id: session_id.clone(),
         workflow_name: workflow_name.clone(),
-        index: data.index.clone(),
+        index: index_for_record,
         session_key: session_key.clone(),
     };
 
@@ -176,10 +196,13 @@ async fn handle_history_request(
     state: Arc<AppState>,
     session_id: String,
     pm: ProtocolMessage,
+    bound_workflow: Option<String>,
 ) -> Result<(), String> {
     #[derive(serde::Deserialize)]
     struct HistoryReq {
-        index: String,
+        // Optional so bound workflow-chat sessions may omit it; resolved
+        // from the bound workflow when absent/ignored.
+        index: Option<String>,
         request_id: String,
         #[serde(default)]
         limit: Option<usize>,
@@ -198,16 +221,24 @@ async fn handle_history_request(
         }
     };
 
-    let workflow_name = match engine.workflow_by_chat_index(&req.index) {
-        Some(n) => n,
+    // Same binding rule as send: a workflow-chat session only ever reads its
+    // own workflow's history — the client-supplied index is ignored.
+    let workflow_name = match &bound_workflow {
+        Some(w) => w.clone(),
         None => {
-            log_send_error(&state, &session_id, "未找到工作流").await;
-            return Ok(());
+            let index = req.index.clone().unwrap_or_default();
+            match engine.workflow_by_chat_index(&index) {
+                Some(n) => n,
+                None => {
+                    log_send_error(&state, &session_id, "未找到工作流").await;
+                    return Ok(());
+                }
+            }
         }
     };
 
     let session_key = format!("wf_chat:{}", workflow_name);
-    let limit = req.limit.unwrap_or(50);
+    let limit = clamp_history_limit(req.limit);
     // chat_log::read_chat_log_async returns (page, total, has_more, oldest_index)
     // — same shape we need to forward to the client. _async（BUG 2026-09-22）：
     // 阻塞读移出 tokio worker。
@@ -236,6 +267,18 @@ async fn handle_history_request(
         .map_err(|e| format!("failed to broadcast history response: {}", e))?;
 
     Ok(())
+}
+
+/// Protocol-level hard cap for `history_request` page size (2026-10-16
+/// hardening): chat_log switches to whole-file mode at limit >= 100_000, so
+/// an unbounded client value let any chat client force a full-log scan + a
+/// giant page allocation. Missing or 0 → default 50; anything above 200 is
+/// clamped to 200.
+pub(crate) fn clamp_history_limit(limit: Option<usize>) -> usize {
+    match limit {
+        None | Some(0) => 50usize,
+        Some(n) => n.clamp(1, 200),
+    }
 }
 
 /// Emit a `workflow_chat.error` message to the client so the UI can surface

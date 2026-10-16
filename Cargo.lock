@@ -4963,6 +4963,7 @@ dependencies = [
  "nemesis-sandbox",
  "nemesis-tools",
  "nemesis-types",
+ "nemesis-utils",
  "parking_lot",
  "rand 0.8.6",
  "regex",

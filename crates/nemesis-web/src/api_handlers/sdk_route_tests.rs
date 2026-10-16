@@ -108,6 +108,7 @@ async fn test_sdk_routes_registered_in_full_router() {
         listen_addr: "127.0.0.1:0".to_string(),
         auth_token: String::new(),
         cors_origins: vec![],
+        cors_allow_all: false,
         ws_path: "/ws".to_string(),
         workspace: None,
         home: None,
