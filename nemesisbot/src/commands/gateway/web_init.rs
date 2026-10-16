@@ -94,7 +94,11 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
         .map_err(anyhow::Error::msg)?;
     }
     let web_port = cfg.channels.web.port;
-    let cors_origins = {
+    // CORS 三态（2026-10-16 hardening）：development_mode → 显式 allow-all；
+    // 显式 origin 列表 → 生产层；配置缺失/加载失败 → restrictive（同源限定，
+    // fail-closed——旧「空列表 = allow-all」缺省把配置缺失静默变成 `*`）。
+    // dashboard 与 API 同源服务，restrictive 不影响内建流。
+    let (cors_origins, cors_allow_all) = {
         let cors_path = common::cors_config_path(&home);
         if cors_path.exists() {
             match nemesis_web::cors::CORSManager::new(&cors_path) {
@@ -102,7 +106,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                     let mgr_cfg = mgr.config();
                     if mgr_cfg.development_mode {
                         info!("[Gateway] CORS: development_mode enabled, allowing all origins");
-                        vec![]
+                        (vec![], true)
                     } else {
                         let origins = mgr.list_origins();
                         info!(
@@ -110,19 +114,19 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                             origins.len(),
                             cors_path.display()
                         );
-                        origins
+                        (origins, false)
                     }
                 }
                 Err(e) => {
                     warn!(
-                        "[Gateway] Failed to load CORS config: {}, using permissive defaults",
+                        "[Gateway] Failed to load CORS config: {} — CORS stays restrictive (same-origin only)",
                         e
                     );
-                    vec![]
+                    (vec![], false)
                 }
             }
         } else {
-            vec![]
+            (vec![], false)
         }
     };
     let static_files = crate::embedded::resolve_static_files();
@@ -136,6 +140,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
             "channels.web.auth_token",
         ),
         cors_origins,
+        cors_allow_all,
         ws_path: "/ws".to_string(),
         workspace: Some(home.join("workspace").to_string_lossy().to_string()),
         home: Some(home.to_string_lossy().to_string()),

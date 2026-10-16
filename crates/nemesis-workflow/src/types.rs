@@ -164,7 +164,8 @@ pub enum TriggerSource {
         /// up the workflow def (terminal agent nodes etc.) without re-resolving
         /// from index.
         workflow_name: String,
-        /// Logical index, first 8 hex chars of `sha256(name)`. Same value
+        /// Logical index, first 16 hex chars of `sha256(name)` (64 bit;
+        /// legacy 8-hex values still resolve via prefix match). Same value
         /// as the URL path segment. Mostly for logging/diagnostics.
         index: String,
         /// Logical session_key, format `"wf_chat:<workflow_name>"`. Memory

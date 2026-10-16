@@ -234,24 +234,36 @@ pub struct WsQuery {
     /// Authentication token (dashboard path).
     pub token: Option<String>,
     /// Workflow chat index (standalone `/workflow/chat/<index>` path).
-    /// When present, the session is treated as a workflow-chat session and
-    /// `pwd` must match the per-workflow password configured via
-    /// `workflow.set_chat_password`.
+    /// When present, the session is treated as a workflow-chat session,
+    /// bound to the workflow the index resolves to (empty/unknown index →
+    /// the upgrade is rejected), and `pwd` must match the per-workflow
+    /// password configured via `workflow.set_chat_password`.
     pub workflow_chat: Option<String>,
     /// Password for the workflow-chat session (paired with `workflow_chat`).
     #[cfg_attr(not(feature = "workflow"), allow(dead_code))]
     pub pwd: Option<String>,
 }
 
+/// Protocol-level cap on a single WebSocket message (2026-10-16 hardening).
+/// 4 MB comfortably covers any legitimate chat frame (text + base64 images
+/// go through the HTTP upload endpoint, not raw WS), against axum's 64 MB
+/// default.
+const WS_MAX_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
+/// Protocol-level cap on a single WebSocket frame. A message may be split
+/// into fragments; each fragment is bounded by this (1 MB).
+const WS_MAX_FRAME_SIZE: usize = 1024 * 1024;
+
 /// Handle WebSocket upgrade requests.
 ///
 /// This is the entry point for the WebSocket route. It performs:
 /// 1. Auth validation — either dashboard token or workflow-chat password
-/// 2. WebSocket upgrade
+///    (workflow-chat sessions are **bound to the resolved workflow** at this
+///    point; empty / unknown indexes are rejected outright)
+/// 2. WebSocket upgrade (with protocol-level message/frame caps)
 /// 3. Session creation
 /// 4. Handoff to the WebSocket connection handler
 pub async fn handle_websocket_upgrade(
-    ws: WebSocketUpgrade,
+    mut ws: WebSocketUpgrade,
     Query(query): Query<WsQuery>,
     State(state): State<Arc<crate::api_handlers::AppState>>,
 ) -> axum::response::Response {
@@ -263,17 +275,58 @@ pub async fn handle_websocket_upgrade(
         // a password is needed and only prompts the user when it is.
         #[cfg(feature = "workflow")]
         {
+            // Resolve the index to its workflow FIRST — the session is bound
+            // to that workflow for its whole lifetime. Empty and unknown
+            // indexes are rejected here so they can never become (weakly
+            // authenticated) dashboard-like sessions.
+            if index.trim().is_empty() {
+                tracing::warn!("[WebSocket] workflow_chat connect with empty index rejected");
+                return axum::http::StatusCode::NOT_FOUND.into_response();
+            }
+            let engine = match state.workflow_engine.as_ref() {
+                Some(e) => e,
+                None => {
+                    tracing::warn!("[WebSocket] workflow_chat connect but engine missing");
+                    return axum::http::StatusCode::NOT_FOUND.into_response();
+                }
+            };
+            let workflow_name = match engine.workflow_by_chat_index(index) {
+                Some(n) => n,
+                None => {
+                    tracing::warn!(index = %index, "[WebSocket] workflow_chat connect with unknown index rejected");
+                    return axum::http::StatusCode::NOT_FOUND.into_response();
+                }
+            };
+            // Password gates are keyed by the canonical index (the store
+            // falls back to the legacy 8-hex key on its own).
+            let canonical = nemesis_workflow::engine::WorkflowEngine::chat_index(&workflow_name);
             let pwd = query.pwd.unwrap_or_default();
             let store = state.chat_secret_store.clone();
-            let needs_pwd = store.has_password(index);
-            if needs_pwd && !store.verify_password(index, &pwd) {
+            if store.is_poisoned() {
+                // Fail-closed with an honest status: the secrets file failed
+                // to load, so no password can be verified right now. A bare
+                // 401 would invite password retry against a store that can
+                // never accept one.
+                tracing::error!(
+                    "[WebSocket] workflow_chat connect refused: chat secret store poisoned"
+                );
+                return (
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    "chat password store is locked (corrupt on disk); contact the operator",
+                )
+                    .into_response();
+            }
+            let needs_pwd = store.has_password(&canonical);
+            if needs_pwd && !store.verify_password(&canonical, &pwd) {
                 tracing::warn!(
                     index = %index,
                     "[WebSocket] workflow_chat authentication failed (password required)"
                 );
                 return axum::http::StatusCode::UNAUTHORIZED.into_response();
             }
-            crate::session::AuthMethod::WorkflowChat
+            crate::session::AuthMethod::WorkflowChat {
+                workflow: workflow_name,
+            }
         }
         #[cfg(not(feature = "workflow"))]
         {
@@ -293,6 +346,13 @@ pub async fn handle_websocket_upgrade(
         }
         crate::session::AuthMethod::Dashboard
     };
+
+    // Protocol-level caps (2026-10-16 hardening): axum's defaults are 64 MB
+    // per message / 16 MB per frame — far beyond any legitimate chat frame
+    // and a cheap DoS amplifier (full-buffer read + JSON parse per frame).
+    // Oversized frames fail at the transport layer and never reach handlers.
+    ws = ws.max_message_size(WS_MAX_MESSAGE_SIZE);
+    ws = ws.max_frame_size(WS_MAX_FRAME_SIZE);
 
     ws.on_upgrade(move |socket| handle_websocket(socket, state, auth_method))
 }
@@ -317,7 +377,7 @@ pub async fn handle_websocket(
 ) {
     let session = state
         .session_manager_ref()
-        .create_session_with_method(auth_method);
+        .create_session_with_method(auth_method.clone());
     let session_id = session.id.clone();
     let sender_id = session.sender_id.clone();
     let chat_id = session.chat_id.clone();
@@ -384,7 +444,7 @@ pub async fn handle_websocket(
                                         workspace: state.workspace.clone(),
                                         home: state.home.clone(),
                                         state: state.clone(),
-                                        auth_method,
+                                        auth_method: auth_method.clone(),
                                     };
                                     let router = router.clone();
                                     let sq = send_queue.clone();
@@ -408,16 +468,24 @@ pub async fn handle_websocket(
                             // workflow_chat module: dedicated chat page for testing
                             // workflows. Handled entirely async, never forwarded
                             // to the bus. Spawned so the WS loop stays responsive.
+                            // Workflow-chat sessions pass their bound workflow so
+                            // the client-supplied index is ignored.
                             #[cfg(feature = "workflow")]
                             {
                                 if pm.msg_type == "message" && pm.module == "workflow_chat" {
+                                    let bound_workflow = match &auth_method {
+                                        crate::session::AuthMethod::WorkflowChat { workflow } => {
+                                            Some(workflow.clone())
+                                        }
+                                        _ => None,
+                                    };
                                     let state2 = state.clone();
                                     let sid = session_id.clone();
                                     let cid = chat_id.clone();
                                     let pm2 = pm.clone();
                                     tokio::spawn(async move {
                                         if let Err(e) = crate::workflow_chat::handle_workflow_chat_message(
-                                            state2, sid, cid, pm2,
+                                            state2, sid, cid, pm2, bound_workflow,
                                         )
                                         .await
                                         {
@@ -430,9 +498,54 @@ pub async fn handle_websocket(
                                     continue;
                                 }
                             }
+
+                            // Workflow-chat sessions are capability-bound to their
+                            // workflow's chat — any other module (main-agent chat,
+                            // system frames) is out of scope and never reaches the
+                            // legacy bus path. (Router `request` frames are denied
+                            // in WsRouter::dispatch.)
+                            #[cfg(feature = "workflow")]
+                            {
+                                if matches!(
+                                    auth_method,
+                                    crate::session::AuthMethod::WorkflowChat { .. }
+                                ) {
+                                    let err = ProtocolMessage::response_err(
+                                        &pm.module,
+                                        &pm.cmd,
+                                        pm.req_id.as_deref().unwrap_or(""),
+                                        "permission_denied: workflow-chat sessions are limited to the workflow_chat module",
+                                    );
+                                    if let Ok(bytes) = err.to_json() {
+                                        let _ = send_queue.send(bytes).await;
+                                    }
+                                    tracing::warn!(
+                                        session_id = %session_id,
+                                        module = %pm.module,
+                                        "[WebSocket] workflow_chat session denied non-workflow_chat frame"
+                                    );
+                                    continue;
+                                }
+                            }
                         }
 
-                        // Legacy path: message / system types
+                        // Legacy path: message / system types. Workflow-chat
+                        // sessions never reach it — unparseable or not, their
+                        // frames must not land in the main-agent chat.
+                        #[cfg(feature = "workflow")]
+                        {
+                            if matches!(
+                                auth_method,
+                                crate::session::AuthMethod::WorkflowChat { .. }
+                            ) {
+                                let err =
+                                    ProtocolMessage::response_err("chat", "send", "", "permission_denied: workflow-chat sessions are limited to the workflow_chat module");
+                                if let Ok(bytes) = err.to_json() {
+                                    let _ = send_queue.send(bytes).await;
+                                }
+                                continue;
+                            }
+                        }
                         match handle_text_message(&session_id, &sender_id, &chat_id, raw) {
                             Ok(Some(incoming)) => {
                                 // Forward to the bus bridge via the inbound channel
