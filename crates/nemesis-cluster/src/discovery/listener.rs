@@ -603,6 +603,7 @@ fn message_to_node_info(msg: &DiscoveryMessage) -> ExtendedNodeInfo {
         addresses: msg.addresses.clone(),
         professions: msg.professions.clone(),
         tier: msg.tier.clone(),
+        agents: msg.agents.clone(),
         node_type: msg.node_type.clone(),
     }
 }

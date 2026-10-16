@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use nemesis_services::LifecycleService;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 // M5（2026-10-10 集群无人值守硬化）：RPC 下行 handler 闭包内直调 trait 方法
 // （approval.respond/pending 捕获 web_mgr）。
@@ -375,6 +375,28 @@ pub(crate) async fn run_runtime(
             // 存在回执丢失窗口——窗口内的 /approve 被 broadcast 静默丢弃，
             // 用户批复等满超时被误拒（2026-09-08 全量实证根因）。
             channel_mgr.spawn_watcher();
+            // P1 审批台账：tasks.db 打开一次，web + IM 两个审批 broker 共享
+            // 同库同幂等契约（重启补裁「可裁决且只生效一次」）。开失败 =
+            // 台账关闭（审批照常内存态工作，仅丢重启补裁能力）——响亮
+            // error 留痕，不静默假装持久化。
+            match nemesis_taskstore::TaskDb::open(
+                &nemesis_path::resolve_tasks_db_path_in_workspace(
+                    &shared_resources.workspace_dir(),
+                ),
+            ) {
+                Ok(db) => {
+                    let journal: Arc<dyn nemesis_types::approval_journal::ApprovalJournal> =
+                        Arc::new(nemesis_taskstore::SqliteApprovalJournal::from_db(db));
+                    web_mgr.set_journal(journal.clone());
+                    channel_mgr.set_journal(journal);
+                    info!("[Gateway] approval journal armed (tasks.db; restart-resume enabled)");
+                }
+                Err(e) => {
+                    error!(
+                        "[Gateway] tasks.db unavailable, approval journal disabled (approvals stay memory-only, restart-resume lost): {e}"
+                    );
+                }
+            }
             let composite = crate::channel_approval::CompositeApprovalManager::new(
                 web_mgr.clone(),
                 channel_mgr,

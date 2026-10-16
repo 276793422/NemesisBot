@@ -986,6 +986,7 @@ mod loop_e2e {
             "done-work",
             "",
             None,
+            None,
         )
         .await;
 

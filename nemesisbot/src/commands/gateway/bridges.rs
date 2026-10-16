@@ -470,6 +470,11 @@ impl nemesis_cluster::cluster::MessageBus for BusToClusterAdapter {
         };
         self.bus.publish_inbound(inbound);
     }
+
+    // T19 二层根修：透传真实总线的入站订阅者计数（publish 前就绪探测）。
+    fn inbound_receiver_count(&self) -> usize {
+        self.bus.inbound_receiver_count()
+    }
 }
 
 // ---------------------------------------------------------------------------

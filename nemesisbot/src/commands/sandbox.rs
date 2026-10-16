@@ -34,8 +34,13 @@ pub enum SandboxCommand {
     /// Show Sandboxie install / service status.
     Status,
     /// List pending workspace files in the box (written by the sandboxed executor,
-    /// not yet committed to real disk).
-    Pending,
+    /// not yet committed to real disk). Default box = NemesisBox;
+    /// --box-name NemesisAgent_<id> inspects a per-agent persistent box (P3 ②).
+    Pending {
+        /// Inspect this box instead of the default NemesisBox.
+        #[arg(long)]
+        box_name: Option<String>,
+    },
     /// Commit pending files from the box to the real workspace.
     Commit {
         /// Commit ALL pending workspace files.
@@ -44,6 +49,10 @@ pub enum SandboxCommand {
         /// Commit only files whose real path contains one of these (case-insensitive).
         /// Ignored when --all is set.
         files: Vec<String>,
+        /// Commit from this box instead of the default NemesisBox
+        /// (NemesisAgent_<id> = per-agent persistent box, commits to its home).
+        #[arg(long)]
+        box_name: Option<String>,
     },
     /// Delete the box's contents (discard pending). Asks before discarding if
     /// there are pending workspace files; --force skips the prompt.
@@ -54,10 +63,11 @@ pub enum SandboxCommand {
     /// Force-terminate ALL processes inside a box and discard its contents —
     /// the engine (driver + SbieSvc) keeps running and other boxes are
     /// untouched. Use when an eval / executor run goes rogue.
-    /// No args = all NemesisEvalBox_* boxes (eval leftovers);
+    /// No args = all NemesisEvalBox_* boxes (eval leftovers) + all
+    /// NemesisAgent_* boxes (per-agent persistent boxes, P3 ②);
     /// --box-name NAME for a specific box (e.g. NemesisBox, the executor box).
     Kill {
-        /// Kill this specific box instead of all eval boxes.
+        /// Kill this specific box instead of all eval + agent boxes.
         #[arg(long)]
         box_name: Option<String>,
     },
@@ -94,8 +104,12 @@ pub async fn run(action: SandboxCommand, local: bool) -> Result<()> {
         SandboxCommand::Install => install(&paths).await,
         SandboxCommand::Stop { internal, purge } => stop(&paths, local, internal, purge),
         SandboxCommand::Status => status(&paths, &home),
-        SandboxCommand::Pending => pending(&paths, local),
-        SandboxCommand::Commit { all, files } => commit(&paths, local, all, files),
+        SandboxCommand::Pending { box_name } => pending(&paths, local, box_name),
+        SandboxCommand::Commit {
+            all,
+            files,
+            box_name,
+        } => commit(&paths, local, all, files, box_name),
         SandboxCommand::Clear { force } => clear(&paths, local, force),
         SandboxCommand::Kill { box_name } => kill(&paths, box_name),
         SandboxCommand::Start { internal } => start(&paths, local, internal),
@@ -210,20 +224,72 @@ fn format_size(n: u64) -> String {
     }
 }
 
-fn pending(paths: &nemesis_sandbox::SandboxPaths, local: bool) -> Result<()> {
+/// pending/commit 的盒作用域（P3 ②：agent 盒的提交作用域 = agent home，
+/// 非主工作区——盒内 %USERPROFILE% 被重定向到 agent home，`user/<marker>/
+/// <rest>` 镜像映射回 agent home/<rest>；工作区围栏 backstop 随之收窄到
+/// agent home 子树，主工作区其余部分永不出现在提交清单）。
+struct BoxScope {
+    box_root: std::path::PathBuf,
+    workspace: std::path::PathBuf,
+    user_profile: std::path::PathBuf,
+}
+
+fn resolve_box_scope(
+    paths: &nemesis_sandbox::SandboxPaths,
+    local: bool,
+    box_name: Option<&str>,
+) -> Result<BoxScope> {
     let ws = workspace_dir(local);
-    let up = user_profile();
-    let pending = nemesis_sandbox::pending::pending_workspace(&paths.box_root, &ws, &up)?;
+    match box_name {
+        // 缺省 / 显式 NemesisBox = 执行体主盒（旧行为字节不变）。
+        None | Some(nemesis_sandbox::DEFAULT_BOX_NAME) => Ok(BoxScope {
+            box_root: paths.box_root.clone(),
+            workspace: ws.clone(),
+            user_profile: user_profile(),
+        }),
+        // per-agent 常驻盒：作用域整体切到 agent home。
+        Some(b) if b.starts_with(nemesis_sandbox::ini::AGENT_BOX_PREFIX) => {
+            let agent_id = &b[nemesis_sandbox::ini::AGENT_BOX_PREFIX.len()..];
+            let home = nemesis_path::resolve_agent_home_in_workspace(&ws, agent_id);
+            let box_root = box_file_root(&paths.ini_path, b)
+                .unwrap_or_else(|| paths.base_dir.join("box").join(b));
+            Ok(BoxScope {
+                box_root,
+                workspace: home.clone(),
+                user_profile: home,
+            })
+        }
+        Some(other) => bail!(
+            "unknown box '{other}': pending/commit reads NemesisBox (default) and \
+             NemesisAgent_* boxes only — eval boxes have their own flow"
+        ),
+    }
+}
+
+fn pending(
+    paths: &nemesis_sandbox::SandboxPaths,
+    local: bool,
+    box_name: Option<String>,
+) -> Result<()> {
+    let scope = resolve_box_scope(paths, local, box_name.as_deref())?;
+    let pending = nemesis_sandbox::pending::pending_workspace(
+        &scope.box_root,
+        &scope.workspace,
+        &scope.user_profile,
+    )?;
     if pending.is_empty() {
         println!(
             "No pending workspace files in box {}.",
-            paths.box_root.display()
+            scope.box_root.display()
         );
         return Ok(());
     }
     println!("Pending workspace files ({}):", pending.len());
     for p in &pending {
-        let rel = p.real_path.strip_prefix(&ws).unwrap_or(&p.real_path);
+        let rel = p
+            .real_path
+            .strip_prefix(&scope.workspace)
+            .unwrap_or(&p.real_path);
         println!("  {:>8}  {}", format_size(p.size), rel.display());
     }
     println!("\nCommit with: nemesisbot sandbox commit --all");
@@ -235,10 +301,14 @@ fn commit(
     local: bool,
     all: bool,
     files: Vec<String>,
+    box_name: Option<String>,
 ) -> Result<()> {
-    let ws = workspace_dir(local);
-    let up = user_profile();
-    let pending = nemesis_sandbox::pending::pending_workspace(&paths.box_root, &ws, &up)?;
+    let scope = resolve_box_scope(paths, local, box_name.as_deref())?;
+    let pending = nemesis_sandbox::pending::pending_workspace(
+        &scope.box_root,
+        &scope.workspace,
+        &scope.user_profile,
+    )?;
     if pending.is_empty() {
         println!("No pending workspace files to commit.");
         return Ok(());
@@ -324,6 +394,8 @@ fn clear(paths: &nemesis_sandbox::SandboxPaths, local: bool, force: bool) -> Res
 
 /// Force-terminate every process inside the box(es) and discard box contents.
 /// The engine (driver + SbieSvc) keeps running; other boxes untouched.
+/// No arg = all NemesisEvalBox_* + NemesisAgent_* sections (eval leftovers +
+/// per-agent persistent boxes, P3 ②).
 ///
 /// Call pattern is deliberately the one VERIFIED in eval.rs's clean_box since
 /// 2026-08-16 (delete_sandbox_silent + null stdio + box-root-exists guard —
@@ -366,17 +438,21 @@ fn kill(paths: &nemesis_sandbox::SandboxPaths, box_name: Option<String>) -> Resu
             vec![b.clone()]
         }
         None => {
-            // All eval boxes: sections named NemesisEvalBox_* in the real ini.
+            // All nemesis-managed boxes: eval leftovers (NemesisEvalBox_*) +
+            // per-agent persistent boxes (NemesisAgent_*, P3 ②).
             ini_sections
                 .iter()
-                .filter(|s| s.starts_with("NemesisEvalBox_"))
+                .filter(|s| {
+                    s.starts_with("NemesisEvalBox_")
+                        || s.starts_with(nemesis_sandbox::ini::AGENT_BOX_PREFIX)
+                })
                 .cloned()
                 .collect()
         }
     };
     if boxes.is_empty() {
         println!(
-            "No NemesisEvalBox_* sections in ini — nothing to kill. (Use --box <name> for a specific box.)"
+            "No NemesisEvalBox_* / NemesisAgent_* sections in ini — nothing to kill. (Use --box <name> for a specific box.)"
         );
         return Ok(());
     }

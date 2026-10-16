@@ -172,6 +172,7 @@ fn node(id: &str, name: &str, role: NodeRole, online: bool, address: &str) -> Ex
         addresses: vec![address.to_string()],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".to_string(),
     }
 }

@@ -199,6 +199,70 @@ impl TaskStore for InMemoryTaskStore {
 }
 
 // ---------------------------------------------------------------------------
+// PoisonedTaskStore (fail-closed fallback: tasks.db unavailable)
+// ---------------------------------------------------------------------------
+
+/// 损坏熔断兜底存储：所有操作恒 Err。
+///
+/// tasks.db 打不开/损坏时 `Cluster::with_workspace` 以本存储装配
+/// TaskManager——gateway 存活、其余集群功能照常，任务操作诚实报错，
+/// 绝不静默退回内存假装持久化（ChatSecretStore poisoned 同款纪律）。
+pub struct PoisonedTaskStore {
+    reason: String,
+}
+
+impl PoisonedTaskStore {
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+}
+
+impl TaskStore for PoisonedTaskStore {
+    fn create(&self, _task: Task) -> Result<(), String> {
+        Err(self.unavailable())
+    }
+
+    fn get(&self, task_id: &str) -> Result<Task, String> {
+        let _ = task_id;
+        Err(self.unavailable())
+    }
+
+    fn update_result(
+        &self,
+        task_id: &str,
+        _status: TaskStatus,
+        _result: Option<serde_json::Value>,
+    ) -> Result<(), String> {
+        let _ = task_id;
+        Err(self.unavailable())
+    }
+
+    fn delete(&self, task_id: &str) -> Result<(), String> {
+        let _ = task_id;
+        Err(self.unavailable())
+    }
+
+    fn list_by_status(&self, _status: TaskStatus) -> Vec<Task> {
+        Vec::new()
+    }
+
+    fn list_all(&self) -> Vec<Task> {
+        Vec::new()
+    }
+}
+
+impl PoisonedTaskStore {
+    fn unavailable(&self) -> String {
+        format!(
+            "task store unavailable (tasks.db poisoned): {}",
+            self.reason
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
 // OnComplete callback type
 // ---------------------------------------------------------------------------
 

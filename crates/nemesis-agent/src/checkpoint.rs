@@ -130,6 +130,34 @@ pub struct CheckpointBase {
     pub content: Option<String>,
 }
 
+/// P4（交付门）：一次交付分支捕获的结果——可审分支的寻址面。
+///
+/// 影子库本无 commit 流（只有 tree 流）：capture = 写当前工作区 tree →
+/// 以其为根建单个 commit → `refs/heads/nemesis/<branch>` force 指向它。
+/// diff 与统计对 `(base_tree, tree)` 二元组计算，与 commit 链无关——
+/// base None 时 diff 以 canonical 空树为基线（全部文件计新增）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DeliveryBranchCapture {
+    /// 完整 ref 名（`refs/heads/nemesis/<branch>`）。
+    pub ref_name: String,
+    /// 捕获 commit 的 sha（可审交付点）。
+    pub commit: String,
+    /// 捕获时刻工作区 tree hex。
+    pub tree: String,
+    /// diff 基线 tree hex（调用方未指定时 = canonical 空树）。
+    pub base_tree: String,
+    pub files_changed: usize,
+    pub insertions: usize,
+    pub deletions: usize,
+    /// unified diff（相对 `base_tree`）；超 `PATCH_MAX_BYTES` 截断。
+    pub patch: String,
+    pub patch_truncated: bool,
+}
+
+/// 交付 patch 的字节上限（截断保护——异常巨大的交付 diff 不进账本
+/// payload；完整 patch 由调用方落盘，账本只引用路径）。
+pub const PATCH_MAX_BYTES: usize = 1_000_000;
+
 /// Which persistence backend the store selected at construction (D4：
 /// 诊断/测试用——`backend()` 返回 "git" 或 "json"）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -466,6 +494,213 @@ impl CheckpointStore {
             }
         }
         (written, deleted)
+    }
+
+    // ------------------------------------------------------------------
+    // P4 交付门：交付分支捕获 / patch 重算 / 列举（git 形态专用）
+    // ------------------------------------------------------------------
+
+    /// 交付分支名校验：`[A-Za-z0-9._/-]`、无 `..`、无前导 `-`、≤80 字符。
+    fn validate_branch_name(branch: &str) -> Result<(), String> {
+        if branch.is_empty() {
+            return Err("交付分支名为空".to_string());
+        }
+        if branch.len() > 80 {
+            return Err(format!(
+                "交付分支名过长（{} 字符 > 80）：{branch}",
+                branch.len()
+            ));
+        }
+        if branch.starts_with('-') || branch.contains("..") {
+            return Err(format!("交付分支名含危险前缀/段（- 或 ..）：{branch}"));
+        }
+        if !branch
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '-'))
+        {
+            return Err(format!(
+                "交付分支名含非法字符（只允许 A-Za-z0-9._/-）：{branch}"
+            ));
+        }
+        Ok(())
+    }
+
+    fn empty_tree_hex(repo: &git2::Repository) -> Result<String, String> {
+        let tb = repo
+            .treebuilder(None)
+            .map_err(|e| format!("影子库空树构造失败: {e}"))?;
+        Ok(tb
+            .write()
+            .map_err(|e| format!("影子库空树写入失败: {e}"))?
+            .to_string())
+    }
+
+    /// `(base_tree, tree)` → unified diff + 统计（P4 capture 与 patch 重算
+    /// 共用）。base None = canonical 空树（全部文件计新增）。
+    fn diff_patch(
+        repo: &git2::Repository,
+        base_hex: &str,
+        tree_hex: &str,
+    ) -> Result<(String, usize, usize, usize, bool), String> {
+        let base_oid =
+            git2::Oid::from_str(base_hex).map_err(|e| format!("base tree hex 解析失败: {e}"))?;
+        let tree_oid =
+            git2::Oid::from_str(tree_hex).map_err(|e| format!("tree hex 解析失败: {e}"))?;
+        let base_tree = repo
+            .find_tree(base_oid)
+            .map_err(|e| format!("影子 base tree 不可达 {base_hex}: {e}"))?;
+        let tree = repo
+            .find_tree(tree_oid)
+            .map_err(|e| format!("影子 tree 不可达 {tree_hex}: {e}"))?;
+        let diff = repo
+            .diff_tree_to_tree(Some(&base_tree), Some(&tree), None)
+            .map_err(|e| format!("影子 tree diff 失败: {e}"))?;
+        let stats = diff
+            .stats()
+            .map_err(|e| format!("影子 diff 统计失败: {e}"))?;
+        let mut buf = Vec::new();
+        // git2 0.21 无 Diff::format——patch 输出走 print 回调（line.content()
+        // 已含 +/-/@@ 前缀字节，逐行拼接即 unified diff 全文）。
+        diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
+            buf.extend_from_slice(line.content());
+            true
+        })
+        .map_err(|e| format!("影子 diff 格式化失败: {e}"))?;
+        let truncated = buf.len() > PATCH_MAX_BYTES;
+        if truncated {
+            buf.truncate(PATCH_MAX_BYTES);
+        }
+        let patch = String::from_utf8_lossy(&buf).into_owned();
+        Ok((
+            patch,
+            stats.files_changed(),
+            stats.insertions(),
+            stats.deletions(),
+            truncated,
+        ))
+    }
+
+    /// P4 交付门：把当前工作区捕获为**可审交付分支**（git 形态专用）。
+    ///
+    /// - `base_tree`：diff 基线（通常传任务开始时的影子 tree——
+    ///   `checkpoint_store().current_tree_hex()` 在 usage_before 旁记的
+    ///   值）；`None` = 空树基线（全部文件计新增）。
+    /// - `branch`：短名（如 `run-<task_id>`）；完整 ref =
+    ///   `refs/heads/nemesis/<branch>`。同名重捕获 force 覆盖（调用方
+    ///   用唯一名，重放场景覆盖同 id 的旧捕获是安全语义）。
+    /// - JSON 形态（工作区无真实 `.git`）诚实 Err——可审分支只有在有
+    ///   真实 .git 可合入时才有行动意义，不为无 .git 工作区造 standalone
+    ///   影子（构造期后端选型契约不变）。
+    pub fn capture_delivery_branch(
+        &self,
+        base_tree: Option<&str>,
+        branch: &str,
+    ) -> Result<DeliveryBranchCapture, String> {
+        Self::validate_branch_name(branch)?;
+        let gb = self
+            .git
+            .as_ref()
+            .ok_or_else(|| "影子库不可用（JSON 形态），无法捕获交付分支".to_string())?;
+        let mut repo = gb.repo.lock();
+        // 先做可变操作（index 写入 + commit + ref），再取 immutable 句柄——
+        // git2 的 Tree/Diff 借用 repo，顺序不能反（同 git_restore 纪律）。
+        let tree_hex = Self::write_current_tree(&mut repo)?;
+        let base_hex = match base_tree {
+            Some(h) => {
+                // 校验可解析 + 影子可达（写坏 hex 提前响亮失败，不留半截 ref）。
+                let oid =
+                    git2::Oid::from_str(h).map_err(|e| format!("base tree hex 解析失败: {e}"))?;
+                repo.find_tree(oid)
+                    .map_err(|e| format!("base tree 不可达 {h}: {e}"))?;
+                h.to_string()
+            }
+            None => Self::empty_tree_hex(&repo)?,
+        };
+        let (patch, files_changed, insertions, deletions, patch_truncated) =
+            Self::diff_patch(&repo, &base_hex, &tree_hex)?;
+
+        let tree_oid =
+            git2::Oid::from_str(&tree_hex).map_err(|e| format!("tree hex 解析失败: {e}"))?;
+        let tree = repo
+            .find_tree(tree_oid)
+            .map_err(|e| format!("影子 tree 不可达 {tree_hex}: {e}"))?;
+        let sig = git2::Signature::now("nemesisbot", "nemesisbot@local")
+            .map_err(|e| format!("影子 commit 签名构造失败: {e}"))?;
+        let ref_name = format!("refs/heads/nemesis/{branch}");
+        // commit（root commit——影子库无 commit 链，单点快照语义）。不带
+        // ref 名建 commit（带 ref 名时 git2 校验 first-parent，重捕获同名
+        // 分支会炸），ref 由下一步 force 写。
+        let commit_oid = repo
+            .commit(
+                None,
+                &sig,
+                &sig,
+                &format!("nemesis delivery: {branch}"),
+                &tree,
+                &[],
+            )
+            .map_err(|e| format!("影子交付 commit 写入失败: {e}"))?;
+        repo.reference(&ref_name, commit_oid, true, "nemesis delivery capture")
+            .map_err(|e| format!("影子交付 ref 写入失败 {ref_name}: {e}"))?;
+        Ok(DeliveryBranchCapture {
+            ref_name,
+            commit: commit_oid.to_string(),
+            tree: tree_hex,
+            base_tree: base_hex,
+            files_changed,
+            insertions,
+            deletions,
+            patch,
+            patch_truncated,
+        })
+    }
+
+    /// P4 交付门：从交付分支重算 patch（不重写工作区——审计/补拉查看面）。
+    /// 返回 `(patch, truncated)`；分支不存在 = Err。
+    pub fn delivery_branch_patch(
+        &self,
+        branch: &str,
+        base_tree: Option<&str>,
+    ) -> Result<(String, bool), String> {
+        Self::validate_branch_name(branch)?;
+        let gb = self
+            .git
+            .as_ref()
+            .ok_or_else(|| "影子库不可用（JSON 形态），无法读取交付分支".to_string())?;
+        let repo = gb.repo.lock();
+        let ref_name = format!("nemesis/{branch}");
+        let commit = repo
+            .find_branch(&ref_name, git2::BranchType::Local)
+            .map_err(|e| format!("交付分支不存在 refs/heads/{ref_name}: {e}"))?
+            .get()
+            .peel_to_commit()
+            .map_err(|e| format!("交付分支 {ref_name} 无法定位 commit: {e}"))?;
+        let tree_hex = commit.tree_id().to_string();
+        let base_hex = match base_tree {
+            Some(h) => h.to_string(),
+            None => Self::empty_tree_hex(&repo)?,
+        };
+        let (patch, _, _, _, truncated) = Self::diff_patch(&repo, &base_hex, &tree_hex)?;
+        Ok((patch, truncated))
+    }
+
+    /// P4 交付门：列举全部交付分支（`refs/heads/nemesis/*` 短名，字典序）。
+    pub fn delivery_branch_refs(&self) -> Result<Vec<String>, String> {
+        let gb = self
+            .git
+            .as_ref()
+            .ok_or_else(|| "影子库不可用（JSON 形态），无交付分支".to_string())?;
+        let repo = gb.repo.lock();
+        let prefix = "refs/heads/nemesis/";
+        let mut names: Vec<String> = repo
+            .references()
+            .map_err(|e| format!("影子库引用枚举失败: {e}"))?
+            .names()
+            .flatten()
+            .filter_map(|n| n.strip_prefix(prefix).map(|s| s.to_string()))
+            .collect();
+        names.sort();
+        Ok(names)
     }
 
     fn load(&self) {
@@ -1205,3 +1440,8 @@ mod cov_tests;
 // （last-declared 规则）+ 影子库自愈（幂等清扫）测试。
 #[cfg(test)]
 mod p20_tests;
+
+// P4 (2026-10-17 交付门): 交付分支捕获 / patch 重算 / 列举 + 分支名校验
+// 测试。
+#[cfg(test)]
+mod p4_tests;

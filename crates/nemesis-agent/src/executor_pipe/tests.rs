@@ -6,6 +6,21 @@ fn pipe_name_format() {
     assert_eq!(pipe_name(""), r"\\.\pipe\NemesisBox_");
 }
 
+/// P3 T5 per-agent 常驻执行体管道名：`NemesisAgent_` 前缀与
+/// `nemesis_sandbox::ini::AGENT_BOX_PREFIX` 互钉（那边的 ini `OpenPipePath`
+/// 允许清单 `\Device\NamedPipe\NemesisAgent_<id>_*` 必须持续匹配这里的
+/// Win32 名形态，否则盒内子进程永远连不上——nemesis-agent 不依赖
+/// nemesis-sandbox，前缀在两 crate 各自测试钉字面量）。
+#[test]
+fn agent_pipe_name_format_pinned_against_ini_openpipepath() {
+    assert_eq!(
+        agent_pipe_name("w1", "4242_0"),
+        r"\\.\pipe\NemesisAgent_w1_4242_0"
+    );
+    // 前缀必须与 ini 侧 NT 形态的通配骨架同源（NemesisAgent_<agent_id>_）
+    assert!(agent_pipe_name("w1", "x").starts_with(r"\\.\pipe\NemesisAgent_w1_"));
+}
+
 #[test]
 fn unique_pipe_id_increments_and_contains_pid() {
     let a = unique_pipe_id();

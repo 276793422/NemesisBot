@@ -243,11 +243,14 @@ async fn test_s11b_run_pending_and_commit_paths() {
     let paths = s11b_paths(&th.home);
 
     // 空盒 → "No pending workspace files"
-    run(SandboxCommand::Pending, false).await.unwrap();
+    run(SandboxCommand::Pending { box_name: None }, false)
+        .await
+        .unwrap();
     run(
         SandboxCommand::Commit {
             all: true,
             files: vec![],
+            box_name: None,
         },
         false,
     )
@@ -268,13 +271,16 @@ async fn test_s11b_run_pending_and_commit_paths() {
     std::fs::write(&outside, "evil").unwrap();
 
     // pending：只列工作区子树那 1 个
-    run(SandboxCommand::Pending, false).await.unwrap();
+    run(SandboxCommand::Pending { box_name: None }, false)
+        .await
+        .unwrap();
 
     // commit：needle 不匹配 → 无操作
     run(
         SandboxCommand::Commit {
             all: false,
             files: vec!["no-match-xyz".into()],
+            box_name: None,
         },
         false,
     )
@@ -287,6 +293,7 @@ async fn test_s11b_run_pending_and_commit_paths() {
         SandboxCommand::Commit {
             all: false,
             files: vec!["NOTES".into()],
+            box_name: None,
         },
         false,
     )
@@ -299,6 +306,7 @@ async fn test_s11b_run_pending_and_commit_paths() {
         SandboxCommand::Commit {
             all: true,
             files: vec![],
+            box_name: None,
         },
         false,
     )
@@ -312,7 +320,9 @@ async fn test_s11b_run_pending_and_commit_paths() {
 
     // 清掉盒 → 恢复空态
     std::fs::remove_dir_all(&paths.box_root).unwrap();
-    run(SandboxCommand::Pending, false).await.unwrap();
+    run(SandboxCommand::Pending { box_name: None }, false)
+        .await
+        .unwrap();
 }
 
 // -------------------------------- clear -----------------------------------
@@ -513,6 +523,7 @@ mod wave_b {
             SandboxCommand::Commit {
                 all: true,
                 files: vec![],
+                box_name: None,
             },
             false,
         )

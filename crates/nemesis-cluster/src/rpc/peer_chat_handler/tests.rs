@@ -1094,6 +1094,7 @@ async fn test_send_callback_or_persist_no_source() {
         "",
         None,
         None,
+        None,
     )
     .await;
 }
@@ -1516,6 +1517,7 @@ async fn test_w3b_send_callback_real_server_success_and_error_field() {
         "",
         None,
         None,
+        None,
     )
     .await;
     assert!(ok, "callback should succeed against the live server");
@@ -1548,6 +1550,7 @@ async fn test_w3b_send_callback_real_server_success_and_error_field() {
         "boom-detail",
         None,
         None,
+        None,
     )
     .await;
     assert!(ok2);
@@ -1573,6 +1576,7 @@ async fn test_w3b_send_callback_retries_exhausted_when_peer_unreachable() {
         "success",
         "r",
         "",
+        None,
         None,
         None,
     )
@@ -1608,6 +1612,7 @@ async fn test_w3b_send_callback_or_persist_deletes_after_successful_callback() {
         "success",
         "answer",
         "",
+        None,
         None,
         None,
     )
@@ -1763,6 +1768,7 @@ async fn test_s4_send_callback_or_persist_delete_failure_logs() {
         "",
         None,
         None,
+        None,
     )
     .await;
 
@@ -1808,6 +1814,7 @@ async fn test_s4_send_callback_or_persist_set_result_failure_logs() {
         "boom",
         None,
         None,
+        None,
     )
     .await;
 
@@ -1835,6 +1842,7 @@ async fn test_s4_send_callback_retry_warn_field_line() {
         "success",
         "r",
         "",
+        None,
         None,
         None,
     )
@@ -1877,6 +1885,7 @@ async fn test_p2a_fail_class_field_wire_contract() {
         "工具参数校验连续失败 1 次，已停止重试。最近工具：'exec'。",
         None,
         Some("validation_budget"),
+        None,
     )
     .await;
     assert!(ok);
@@ -1890,6 +1899,7 @@ async fn test_p2a_fail_class_field_wire_contract() {
         "success",
         "done",
         "",
+        None,
         None,
         None,
     )
@@ -1906,6 +1916,90 @@ async fn test_p2a_fail_class_field_wire_contract() {
         assert!(
             cap[1].get("fail_class").is_none(),
             "fail_class=None 时字段必须整个省略（wire 兼容）"
+        );
+    }
+
+    server.stop().unwrap();
+}
+
+// -- P4 交付门：delivery 字段 wire 契约 --------------------------------------
+
+/// P4（2026-10-17 交付门）：delivery 字段 wire 契约——`Some` 时整个 JSON
+/// 原样落 payload["delivery"]；`None` 时字段整个不落（旧 master 忽略未知
+/// 字段，兼容面与 usage/fail_class 同款）。
+#[tokio::test]
+async fn test_p4_delivery_field_wire_contract() {
+    use crate::rpc::server::{RpcServer, RpcServerConfig};
+
+    let server = Arc::new(RpcServer::new(RpcServerConfig {
+        bind_address: "127.0.0.1:0".into(),
+        ..Default::default()
+    }));
+    let captured = Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+    let cap2 = captured.clone();
+    server.register_handler(
+        "peer_chat_callback",
+        Box::new(move |payload| {
+            cap2.lock().unwrap().push(payload.clone());
+            Ok(serde_json::json!({"status": "accepted"}))
+        }),
+    );
+    server.start().await.unwrap();
+    let port = server.port();
+
+    let client = RpcClient::with_resolver(Arc::new(StaticResolverW3b { port }));
+
+    // Some(delivery) → payload 携带结构化交付证据。
+    let ok = send_callback(
+        Some(&client),
+        "origin-node",
+        "node-self-p4",
+        "p4-cb-1",
+        "success",
+        "delivered",
+        "",
+        None,
+        None,
+        Some(serde_json::json!({
+            "branch": "run-p4-cb-1",
+            "ref_name": "refs/heads/nemesis/run-p4-cb-1",
+            "commit": "abc123",
+            "base_tree": "def456",
+            "files_changed": 2,
+            "patch_path": "logs/deliveries/p4-cb-1.patch",
+            "patch_truncated": false
+        })),
+    )
+    .await;
+    assert!(ok);
+
+    // None → 字段不落。
+    let ok2 = send_callback(
+        Some(&client),
+        "origin-node",
+        "node-self-p4",
+        "p4-cb-2",
+        "success",
+        "done",
+        "",
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert!(ok2);
+
+    {
+        let cap = captured.lock().unwrap();
+        assert_eq!(cap.len(), 2);
+        assert_eq!(
+            cap[0]["delivery"]["branch"], "run-p4-cb-1",
+            "delivery JSON 必须原样落 payload"
+        );
+        assert_eq!(cap[0]["delivery"]["files_changed"], 2);
+        assert!(
+            cap[1].get("delivery").is_none(),
+            "delivery=None 时字段必须整个省略（wire 兼容）"
         );
     }
 
@@ -2014,6 +2108,7 @@ async fn test_send_callback_dials_through_offline_registry() {
         "success",
         "echo-back",
         "",
+        None,
         None,
         None,
     )

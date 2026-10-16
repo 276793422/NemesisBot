@@ -391,6 +391,7 @@ fn test_message_to_node_info_from_message() {
         node_type: "agent".into(),
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         timestamp: 1700000000,
     };
     let info = message_to_node_info(&msg);
@@ -417,6 +418,7 @@ fn test_handle_discovery_message_own_node_ignored() {
         node_type: "agent".into(),
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         timestamp: 1700000000,
     };
     let action = handle_discovery_message(&msg, "local-node", &registry);
@@ -442,6 +444,7 @@ fn test_handle_discovery_message_remote_announce() {
         node_type: "agent".into(),
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         timestamp: 1700000000,
     };
     let action = handle_discovery_message(&msg, "local-node", &registry);
@@ -468,6 +471,7 @@ fn test_handle_discovery_message_bye() {
         node_type: "agent".into(),
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         timestamp: 1700000000,
     };
     handle_discovery_message(&announce, "local-node", &registry);
@@ -487,6 +491,7 @@ fn test_handle_discovery_message_bye() {
         node_type: "agent".into(),
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         timestamp: 1700000001,
     };
     let action = handle_discovery_message(&bye, "local-node", &registry);
@@ -549,6 +554,7 @@ fn test_message_to_node_info_empty_name_and_category_fallbacks() {
         node_type: "agent".into(),
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         timestamp: 1700000000,
     };
     let info = message_to_node_info(&msg);

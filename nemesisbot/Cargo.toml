@@ -121,6 +121,12 @@ nemesis-types = { workspace = true }
 nemesis-prompts = { workspace = true }
 nemesis-config = { workspace = true }
 nemesis-security = { workspace = true, optional = true }
+# P1 统一任务层：tasks.db（审批台账 SqliteApprovalJournal 挂 security 面，
+# 集群侧 SqliteTaskStore 适配在 nemesis-cluster 内）。P2 起 agents 表成为
+# 核心子系统（AgentManager 无 feature 门），依赖升级为必选——统一任务层
+# 是全局地基，IoT 裁剪关不掉（与 board.db 的看板闸不同：agents 身份是
+# 对话组的基础设施）。
+nemesis-taskstore = { workspace = true }
 # 行动代理 P0（2026-10-14）：connector 注册表核心（清单/registry/回执/预算/
 # 纸面账本）。非 optional——connector_find/connector_invoke 随 security
 # feature 门控注册，但 WSAPI 数据面（connectors.* handlers）与 CLI 查询
@@ -218,6 +224,9 @@ serde = { workspace = true }
 [dev-dependencies]
 # generate_image 工具落盘链路假端点（集群专业职能框架 M4）。
 wiremock = "0.6"
+# P4 交付门测试夹具：真 git 仓 workspace（git2 已在依赖图内——nemesis-agent
+# 影子库；此处只为测试可命名，不进 bin 依赖面）。
+git2 = { workspace = true }
 # R9：子进程级测试（REPL 管道 stdin / eval 探测式真链路 / main 短路退码断言）
 # 需要 resolve_nemesisbot_bin + run_cli_with_stdin + MockAiServer（scripted
 # OpenAI 兼容回环服务器——TestAIServer 回复内容钉死，测不了工具选择/精确文本）。

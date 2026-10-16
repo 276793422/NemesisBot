@@ -799,9 +799,8 @@ fn handle_merge_conflict(
         tracing::warn!("[BoardArchive] 项目 {pid} 冻结置位失败（继续停车，冻结缺位人工兜底）: {e}");
     }
     crate::board_review::record_auto_decide(
-        store,
+        deps,
         issue.id,
-        deps.cluster.node_id(),
         "conflict",
         "parked",
         serde_json::json!({
@@ -1219,9 +1218,8 @@ fn replay_one_pending(
             }
             let detail = render_conflict_detail(&files);
             crate::board_review::record_auto_decide(
-                store,
+                deps,
                 issue.id,
-                deps.cluster.node_id(),
                 "conflict",
                 "parked",
                 serde_json::json!({

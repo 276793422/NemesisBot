@@ -472,6 +472,48 @@ pub fn resolve_cluster_results_dir_in_workspace(workspace: &Path) -> PathBuf {
     resolve_cluster_rpc_cache_dir_in_workspace(workspace).join("results")
 }
 
+// --- 统一任务层（tasks.db；写方 nemesis-taskstore / nemesis-cluster / gateway 审批台账） ---
+
+/// `<workspace>/tasks.db` —— 统一任务编排层单库（runs/attempts/approvals/
+/// deliveries 四表；集群任务真相源 + 审批台账）。路径唯一真相源挂此，
+/// 禁止消费方各自 `workspace.join("tasks.db")`。
+pub fn resolve_tasks_db_path_in_workspace(workspace: &Path) -> PathBuf {
+    workspace.join("tasks.db")
+}
+
+// --- Agent 持久实体区（P2：agents 记录在 tasks.db；home/记忆命名空间在此） ---
+
+/// `<workspace>/agents` —— Agent 实体根目录（每 agent 一个 `<id>/` 子目录，
+/// home 物化在 `<id>/home/`）。`agent_id` 必须是受控生成的 uuid（创建点
+/// 校验），禁止把用户输入直接拼进本路径。
+pub fn resolve_agents_root_in_workspace(workspace: &Path) -> PathBuf {
+    workspace.join("agents")
+}
+
+/// `<workspace>/agents/<id>/home` —— Agent home（记忆/浏览器 profile/
+/// 凭据引用锚点；自建 agent 的 exec_root 亦指此处；项目 agent 的
+/// exec_root=项目目录、home 元数据仍在此）。
+pub fn resolve_agent_home_in_workspace(workspace: &Path, agent_id: &str) -> PathBuf {
+    resolve_agents_root_in_workspace(workspace)
+        .join(agent_id)
+        .join("home")
+}
+
+/// `<workspace>/agents/<id>/home/browser-profile` —— Agent 浏览器身份目录
+/// （P3 T6：常驻执行体 spawn 时经 `NEMESISBOT_BROWSER_PROFILE` 注入，
+/// MCP browser 工具消费为 Chromium `--user-data-dir`——登录态/cookie 跨
+/// 任务与跨执行体重建保持，宿主与 agent 间、agent 相互间身份隔离）。
+pub fn resolve_agent_browser_profile_in_workspace(workspace: &Path, agent_id: &str) -> PathBuf {
+    resolve_agent_home_in_workspace(workspace, agent_id).join("browser-profile")
+}
+
+/// `<workspace>/memory/agents/<id>` —— Agent 记忆命名空间物理目录
+/// （增强内存 jsonl 分域；记录里的 `memory_namespace` 是逻辑键
+/// `agents/<id>`，物理位置由本函数派生）。
+pub fn resolve_agent_memory_dir_in_workspace(workspace: &Path, agent_id: &str) -> PathBuf {
+    workspace.join("memory").join("agents").join(agent_id)
+}
+
 // --- 看板数据区（board.db + 每日备份；写方 nemesis-board / gateway 维护循环） ---
 
 /// `<workspace>/backups` —— board.db 每日备份目录（`board-YYYYMMDD.db`，

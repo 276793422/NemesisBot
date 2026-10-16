@@ -114,6 +114,19 @@ impl SandboxPaths {
     pub fn start_exe(&self) -> PathBuf {
         self.runtime_dir.join("Start.exe")
     }
+
+    /// 盒引擎就绪判定（P3 ② 常驻盒 + exec_world 通道装配同源）：Start.exe
+    /// 在场 + SbieSvc Running + 引擎（驱动/服务）归属本方安装。三元组单一
+    /// 真相源——`exec_world::build_executor_channel` 的 `will_attach` 收口
+    /// 到这里，勿在调用点重抄条件。
+    pub fn engine_ready(&self) -> bool {
+        self.start_exe().exists()
+            && matches!(
+                status::service_state(USERMODE_SERVICE),
+                status::ServiceState::Running
+            )
+            && status::engine_owned(self)
+    }
     pub fn sbiedrv_sys(&self) -> PathBuf {
         self.runtime_dir.join("SbieDrv.sys")
     }

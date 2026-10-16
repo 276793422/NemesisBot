@@ -288,7 +288,7 @@ async fn project_factory_rejects_missing_project_dir() {
         Err(e) => e,
     };
     assert!(
-        err.to_string().contains("项目目录不存在"),
+        err.to_string().contains("执行根目录不存在"),
         "error should name the missing dir, got: {err}"
     );
 }
@@ -538,4 +538,71 @@ async fn project_factory_resolves_instruction_trust_from_entry_and_policy() {
         annotate_loop.instruction_trust(),
         nemesis_agent::workspace_instructions::InstructionTrust::Annotate
     );
+}
+
+// ---------------------------------------------------------------------------
+// P2：AgentLoopSpec 记录路径（agents 表记录 → 统一工厂）
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn record_spec_builds_loop_and_checkpoints_keyed_by_agent_id() {
+    let home = unique_home("recspec");
+    write_mini_model_config(&home);
+    let shared = shared_for(&home);
+    let main_loop = build_agent_loop(&shared).expect("main loop builds");
+    let session_store = main_loop.session_store().cloned().unwrap();
+
+    // 自建记录：exec_root 带 .git（Git 影子后端在 store 构造期急切初始化
+    // repo.git——键挂载的直接证据；JSON 后端惰性落盘无急切观察面）。
+    let exec_root = home.join("agents").join("rec01").join("home");
+    std::fs::create_dir_all(exec_root.join(".git")).unwrap();
+    let mut record = nemesis_taskstore::AgentRecord::new_provisioning(
+        "0123456789abcdef0123456789abcdef",
+        "self-agent",
+        "selfbuilt",
+    );
+    record.exec_root = exec_root.to_string_lossy().to_string();
+    let spec = super::AgentLoopSpec::from_record(&record);
+    assert_eq!(
+        spec.checkpoint_key, record.agent_id,
+        "自建形态 checkpoint 键=agent_id"
+    );
+
+    let built = super::build_agent_loop_from_spec(&shared, &spec, session_store)
+        .expect("record loop builds");
+    assert!(built.tool_count() > 0);
+    // checkpoint 影子库键=agent_id：影子库在 store 构造期即初始化于主
+    // workspace 的 project_checkpoints/<agent_id>/（同项目形态急切语义）。
+    let cp_dir = project_checkpoint_dir(&shared.workspace_dir(), &record.agent_id);
+    let shadow = cp_dir.join("repo.git");
+    assert!(
+        shadow.is_dir(),
+        "checkpoint 影子库应按 agent_id 建键: {}",
+        shadow.display()
+    );
+    assert_eq!(
+        built
+            .checkpoint_store()
+            .expect("checkpoint store wired")
+            .backend(),
+        CheckpointBackend::Git
+    );
+}
+
+#[test]
+fn record_spec_project_mirror_keeps_project_id_checkpoint_key() {
+    // 项目镜像记录（kind=project 带 project_id）→ checkpoint 键=project_id
+    // （L6++ 存量影子库连续性；from_record 的键选择规则钉死）。
+    let mut record = nemesis_taskstore::AgentRecord::new_provisioning(
+        "ffffffffffffffffffffffffffffffff",
+        "mirrored",
+        "project",
+    );
+    record.project_id = Some("p_legacy0001".to_string());
+    record.exec_root = "/tmp/whatever".to_string();
+    let spec = super::AgentLoopSpec::from_record(&record);
+    assert_eq!(spec.checkpoint_key, "p_legacy0001");
+    assert_eq!(spec.exec_root, PathBuf::from("/tmp/whatever"));
+    assert_eq!(spec.display_name, "mirrored");
+    assert!(spec.instructions_trusted, "记录形态默认 verbatim");
 }

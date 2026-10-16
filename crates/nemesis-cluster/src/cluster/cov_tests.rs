@@ -81,6 +81,7 @@ fn node(id: &str, name: &str, addr: &str, status: NodeStatus) -> ExtendedNodeInf
         addresses: Vec::new(),
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "gateway".into(),
     }
 }
@@ -317,6 +318,7 @@ fn merge_real_node_matches_full_address_candidates() {
         tags: Vec::new(),
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "gateway".into(),
     });
     assert_eq!(got, "real-b");
@@ -366,6 +368,7 @@ fn upgrade_removes_legacy_sanitized_key() {
         tags: Vec::new(),
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "gateway".into(),
     });
     assert_eq!(got, "real-dot");
@@ -556,6 +559,10 @@ impl MessageBus for MockBus {
     fn publish_inbound(&self, msg: BusInboundMessage) {
         self.messages.lock().unwrap().push(msg);
     }
+    // T19 二层根修：Mock 恒「就位」（不模拟订阅时序，等待逻辑归 publish 侧）。
+    fn inbound_receiver_count(&self) -> usize {
+        1
+    }
 }
 
 fn stale_task(tm: &Arc<TaskManager>, id: &str, age: chrono::Duration) {
@@ -584,14 +591,20 @@ async fn poll_stale_times_out_past_safety_net_publishes_bus() {
     let bus = Arc::new(MockBus {
         messages: StdMutex::new(Vec::new()),
     });
+    // G5+P1（T19 根修）：bus / delivery_cb 收句柄（分支内取用时现读）。
+    let bus_handle: Arc<Mutex<Option<Arc<dyn MessageBus>>>> =
+        Arc::new(Mutex::new(Some(bus.clone())));
+    let no_cb: Arc<
+        Mutex<Option<Arc<dyn Fn(&str, &str, &str, Option<&str>) -> bool + Send + Sync>>>,
+    > = Arc::new(Mutex::new(None));
     poll_stale_pending_tasks(
         &tm,
         &None,
         None,
         chrono::Duration::hours(24),
-        Some(bus.as_ref()),
+        &bus_handle,
         false,
-        None,
+        &no_cb,
     )
     .await;
 

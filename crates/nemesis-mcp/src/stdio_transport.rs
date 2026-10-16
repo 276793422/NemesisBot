@@ -128,6 +128,33 @@ fn classify_line(line: &str) -> LineKind {
     }
 }
 
+// ---------------------------------------------------------------------------
+// P3 T6: per-agent browser profile injection
+// ---------------------------------------------------------------------------
+
+/// P3 T6（浏览器身份）：执行体上下文内的 MCP spawn 注入 per-agent Chromium
+/// profile。`NEMESISBOT_BROWSER_PROFILE` 由常驻执行体监督器 spawn 子进程时
+/// 设置（nemesisbot `agents/runtime.rs` 的 `base_executor_env`），是「本进程
+/// 处于 agent 执行体上下文」的标记：gateway 进程不设它——共享 MCP server
+/// 的 spawn 行为零变化；执行体上下文内 spawn 的浏览器类 MCP server
+/// （playwright / chrome-devtools 等）由此拿到 per-agent `--user-data-dir`
+/// （登录态/cookie 全落 agent home 的 browser-profile/，跨任务跨重建保持、
+/// 不出 home——P3 ④ 纪律；Sandboxie 盒路径另有 OpenFilePath 写穿透）。
+///
+/// server 配置里已显式带 `--user-data-dir` = 用户配置优先，不重复注入。
+/// 纯函数便于单测（进程级 env 无法在并行测试里安全改写）。
+pub(crate) fn args_with_browser_profile(args: &[String], profile: Option<&str>) -> Vec<String> {
+    match profile {
+        Some(dir) if !dir.trim().is_empty() && !args.iter().any(|a| a == "--user-data-dir") => {
+            let mut v = args.to_vec();
+            v.push("--user-data-dir".to_string());
+            v.push(dir.to_string());
+            v
+        }
+        _ => args.to_vec(),
+    }
+}
+
 #[async_trait]
 impl Transport for StdioTransport {
     async fn connect(&mut self) -> Result<(), TransportError> {
@@ -136,10 +163,13 @@ impl Transport for StdioTransport {
         }
 
         let mut cmd = Command::new(&self.command);
-        cmd.args(&self.args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        cmd.args(args_with_browser_profile(
+            &self.args,
+            std::env::var("NEMESISBOT_BROWSER_PROFILE").ok().as_deref(),
+        ))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
         // MCP server 多为 console 程序(node/python 等)；gateway 以托盘/
         // 无控制台运行（release windows 子系统，2026-09-21）时，不压

@@ -545,3 +545,108 @@ fn save_always_rule_is_exclusive_with_config_family_lock() {
         "外部写者的 5 条 marker 不得被 RMW 写回冲掉（实际 {markers}）"
     );
 }
+
+// ---------------------------------------------------------------------------
+// P1 统一任务层：审批台账（tasks.db approvals 表）
+// ---------------------------------------------------------------------------
+
+fn journal_at(
+    path: &std::path::Path,
+) -> std::sync::Arc<dyn nemesis_types::approval_journal::ApprovalJournal> {
+    let db = nemesis_taskstore::TaskDb::open(path).expect("open tasks.db");
+    std::sync::Arc::new(nemesis_taskstore::SqliteApprovalJournal::from_db(db))
+}
+
+#[test]
+fn journal_records_pending_and_live_decision() {
+    let dir = tempfile::tempdir().unwrap();
+    let journal = journal_at(&dir.path().join("tasks.db"));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
+    mgr.set_journal(journal.clone());
+
+    let result_rx = request_async(mgr.clone(), "req-jl", 300);
+    wait_pending(&mgr, 1);
+    // pending 已落库（broker=web、status=pending）。
+    let e = journal.entry("req-jl").unwrap();
+    assert_eq!(e.broker, "web");
+    assert_eq!(e.status, nemesis_types::approval_journal::status::PENDING);
+
+    assert!(mgr.respond("req-jl", true, false, None).unwrap());
+    let e = journal.entry("req-jl").unwrap();
+    assert_eq!(e.status, nemesis_types::approval_journal::status::APPROVED);
+    assert_eq!(e.decided_by.as_deref(), Some("web-user"));
+    let _ = result_rx.recv_timeout(Duration::from_secs(2));
+
+    // 晚到的二次 respond：map-miss → 重启补裁路径撞「已裁决」= 诚实报错
+    // （幂等条件更新先到先得，裁决只生效一次）。
+    assert!(mgr.respond("req-jl", true, false, None).is_err());
+}
+
+#[test]
+fn journal_timeout_records_expired() {
+    let dir = tempfile::tempdir().unwrap();
+    let journal = journal_at(&dir.path().join("tasks.db"));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
+    mgr.set_journal(journal.clone());
+
+    let result_rx = request_async(mgr.clone(), "req-jt", 1);
+    let v = result_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    assert!(!v.approved, "timeout must deny");
+    let e = journal.entry("req-jt").unwrap();
+    assert_eq!(e.status, nemesis_types::approval_journal::status::EXPIRED);
+    assert_eq!(e.decided_by.as_deref(), Some("timeout"));
+    // 超时后晚到 respond 走补裁 → 撞 expired → 诚实报错（不二次生效）。
+    assert!(mgr.respond("req-jt", true, false, None).is_err());
+}
+
+#[test]
+fn journal_restart_resume_stale_card_decidable_exactly_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("tasks.db");
+
+    // 「重启前」：pending 记账后进程死亡（无活 ask 线程——记账与等待解耦，
+    // 直接走记账入口；内存 pending 随 mgr drop 消失）。
+    {
+        let mgr = WebApprovalManager::new(None, None);
+        mgr.set_journal(journal_at(&db_path));
+        let entry = WebApprovalManager::journal_entry(
+            "req-stale-1",
+            "process_exec",
+            "cargo publish",
+            "HIGH",
+            "rule: exec-publish",
+            "cargo publish *",
+            "",
+            "",
+        );
+        mgr.journal_record_pending(&entry);
+        // drop = 进程死亡。
+    }
+
+    // 「重启后」：新进程从盘上重开 tasks.db（真重开验证落盘耐久，非同
+    // 连接句柄自证）。
+    let mgr = WebApprovalManager::new(None, None);
+    mgr.set_journal(journal_at(&db_path));
+
+    // stale 卡片可见（stale: true 供前端注记「原操作已失效」）。
+    let pending_cards = mgr.pending();
+    let stale: Vec<&serde_json::Value> = pending_cards
+        .iter()
+        .filter(|c| c["request_id"] == "req-stale-1")
+        .collect();
+    assert_eq!(stale.len(), 1, "restarted gateway must surface stale card");
+    assert_eq!(stale[0]["stale"], true);
+    assert_eq!(stale[0]["operation"], "process_exec");
+
+    // 补裁恰好生效一次（记账性质；二次 = already decided 诚实报错）。
+    assert!(mgr.respond("req-stale-1", true, false, None).unwrap());
+    assert!(
+        mgr.respond("req-stale-1", true, false, None).is_err(),
+        "second stale respond must see already-decided"
+    );
+    // 终态落账；二次 pending() 不再出卡。
+    assert_eq!(mgr.pending().len(), 0);
+}

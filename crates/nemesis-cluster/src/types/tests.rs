@@ -22,6 +22,7 @@ fn make_test_node(
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     }
 }
@@ -51,6 +52,7 @@ fn test_extended_node_info_serialization() {
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     };
     let json = serde_json::to_string(&node).unwrap();
@@ -87,6 +89,7 @@ fn test_extended_node_info_get_uptime() {
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     };
     let uptime = node.get_uptime();
@@ -165,6 +168,7 @@ fn test_to_peer_config() {
         addresses: vec!["10.0.0.1".into(), "192.168.1.1".into()],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     };
     let config = node.to_peer_config();
@@ -210,6 +214,7 @@ fn test_addresses_field_preserved() {
         addresses: vec!["10.0.0.1".into(), "192.168.1.1".into()],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     };
     let json = serde_json::to_string(&node).unwrap();
@@ -270,6 +275,7 @@ fn test_extended_node_info_getters() {
         addresses: vec!["10.0.0.1".into()],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     };
     assert_eq!(node.get_id(), "node-42");
@@ -295,6 +301,7 @@ fn test_to_peer_config_coordinator_role() {
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     };
     let config = node.to_peer_config();
@@ -416,6 +423,7 @@ fn test_content_eq_different_addresses() {
         addresses: vec!["10.0.0.1".into()],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     };
     let b = ExtendedNodeInfo {
@@ -433,6 +441,7 @@ fn test_content_eq_different_addresses() {
         addresses: vec!["10.0.0.1".into(), "192.168.1.1".into()],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     };
     assert!(!a.content_eq(&b));
@@ -507,6 +516,7 @@ fn content_eq_distinguishes_professions_and_tier() {
         tags: vec![],
         professions: vec!["dev".into()],
         tier: Some("big".into()),
+        agents: vec![],
         addresses: vec![],
         node_type: "agent".into(),
     };
@@ -538,6 +548,8 @@ fn to_peer_config_preserves_professions_and_tier() {
         tags: vec![],
         professions: vec!["test-whitebox".into()],
         tier: Some("normal".into()),
+        // agents 是运行时清单（不落 state.toml/PeerConfig），字面量给空。
+        agents: vec![],
         addresses: vec![],
         node_type: "agent".into(),
     };

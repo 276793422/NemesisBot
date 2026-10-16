@@ -63,6 +63,14 @@ impl MessageBus {
         }
     }
 
+    /// Inbound 订阅者计数（发布侧就绪探测）。
+    ///
+    /// cluster 恢复链路（T19 二层根修）在 publish 前用本方法等待
+    /// AgentLoop 订阅就位——broadcast send 对无接收者是静默丢弃。
+    pub fn inbound_receiver_count(&self) -> usize {
+        self.inbound_tx.receiver_count()
+    }
+
     /// Publish an inbound message (from channel to agent).
     ///
     /// Tokio broadcast 的 `send` 只在无接收者时失败（缓冲满不丢发布、覆盖

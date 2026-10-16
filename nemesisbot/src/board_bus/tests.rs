@@ -886,6 +886,7 @@ fn register_node(cluster: &Cluster, id: &str, role: NodeRole, category: &str, on
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".to_string(),
     });
 }
@@ -1904,6 +1905,7 @@ async fn worker_sync_env(
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".to_string(),
     });
     let client = Arc::new(RpcClient::with_resolver(Arc::new(FixedPeerResolver {

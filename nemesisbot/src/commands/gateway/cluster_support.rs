@@ -71,3 +71,96 @@ pub(crate) fn parse_host_port(addr: &str) -> (String, u16) {
         (addr.to_string(), 0)
     }
 }
+
+// ---------------------------------------------------------------------------
+// P4 交付门（持久 Agent 实体，2026-10-17）：A 端交付分支记账
+// ---------------------------------------------------------------------------
+
+/// 记账内核（只做 DB 写，审计在 audited shim——inner 不引用 optional
+/// 依赖类型，cluster 单门可编译）。诚实边界对齐 `record_cluster_usage`：
+/// 无台账（`Cluster::new` 测试路径）/ 无交付（error/取消回调）/ 空
+/// task_id → `Ok(false)` 静默；落库失败 → Err 由调用方决定 warn。
+#[cfg(feature = "cluster")]
+fn branch_delivery_inner(
+    task_db: Option<&std::sync::Arc<nemesis_taskstore::TaskDb>>,
+    task_id: &str,
+    source_node: &str,
+    delivery: Option<&serde_json::Value>,
+) -> Result<bool, String> {
+    let Some(db) = task_db else {
+        return Ok(false);
+    };
+    let Some(delivery) = delivery.filter(|v| v.is_object()) else {
+        return Ok(false);
+    };
+    if task_id.is_empty() {
+        return Ok(false);
+    }
+    db.record_delivery(
+        "branch",
+        Some(task_id),
+        &format!("{task_id}:branch"),
+        delivery,
+    )
+    .map_err(|e| {
+        tracing::warn!(
+            task_id = %task_id,
+            source_node = %source_node,
+            error = %e,
+            "[Gateway] 交付分支记账失败（回调路由不受影响）"
+        );
+        e
+    })
+}
+
+/// A 端交付分支记账（cluster 门；security 关闭形态）：deliveries 表入账，
+/// 不做审计链留痕。
+#[cfg(all(feature = "cluster", not(feature = "security")))]
+pub(crate) fn record_branch_delivery(
+    task_db: Option<&std::sync::Arc<nemesis_taskstore::TaskDb>>,
+    source_node: &str,
+    task_id: &str,
+    delivery: Option<&serde_json::Value>,
+) {
+    let _ = branch_delivery_inner(task_db, task_id, source_node, delivery);
+}
+
+/// A 端交付分支记账 + 审计留痕（all(cluster, security) 门）：deliveries 入
+/// 账后 `append_direct_audit_event`（F8 先例——非工具管线的直接审计记账，
+/// Merkle append-only；审计链未启用 = None，tracing 兜底可见）。
+#[cfg(all(feature = "cluster", feature = "security"))]
+pub(crate) fn record_branch_delivery_audited(
+    task_db: Option<&std::sync::Arc<nemesis_taskstore::TaskDb>>,
+    plugin: Option<&std::sync::Arc<nemesis_security::pipeline::SecurityPlugin>>,
+    source_node: &str,
+    task_id: &str,
+    delivery: Option<&serde_json::Value>,
+) {
+    let recorded = branch_delivery_inner(task_db, task_id, source_node, delivery);
+    let Some(plugin) = plugin else { return };
+    let (decision, reason) = match recorded {
+        Ok(true) => ("allow", "delivery branch recorded to ledger"),
+        Ok(false) => (
+            "allow",
+            "delivery branch skipped (no ledger / no payload / duplicate)",
+        ),
+        Err(ref e) => ("deny", e.as_str()),
+    };
+    if plugin
+        .append_direct_audit_event(
+            "delivery_record",
+            "delivery_gate",
+            "system",
+            "cluster_callback",
+            &format!("{source_node}/{task_id}"),
+            decision,
+            reason,
+        )
+        .is_none()
+    {
+        tracing::debug!(
+            task_id = %task_id,
+            "[Gateway] 审计链未启用，交付记账仅 tracing 可见"
+        );
+    }
+}
