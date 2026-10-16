@@ -1015,7 +1015,34 @@ impl AgentLoop {
                 None,
             );
         }
-        let result = chain(hook_call_owned).await;
+        // NB-122 批 ④（2026-10-16）：单次工具调用墙钟看门狗。fresh-read
+        // `agents.executor_tool_timeout_secs`（0=关）。只包执行链
+        // （工具体 + around hooks + format-on-save）——审批/提问等待在更早
+        // 的同步 security 段，天然不在闸内（看门狗不得杀人工审批）。
+        // 诚实边界：超时放弃的是 future，已 spawn 的子进程可能成为孤儿
+        // （B4 后台注册表/停摆清扫兜底）；错误以 "Error:" 开头，与
+        // `tool_result_indicates_error` / WAL ok 判定 / doom-loop 签名同刻度。
+        let watchdog = self.current_executor_tool_timeout();
+        let result = match watchdog {
+            Some(limit) => match tokio::time::timeout(limit, chain(hook_call_owned)).await {
+                Ok(result) => result,
+                Err(_) => {
+                    error!(
+                        "[AgentLoop] Tool {} exceeded wall-clock watchdog ({}s) — aborted",
+                        tool_call.name,
+                        limit.as_secs()
+                    );
+                    format!(
+                        "Error: tool '{}' timed out after {}s (agents.executor_tool_timeout_secs wall-clock watchdog). \
+                         The call was aborted — do NOT retry it unchanged; report progress so far, \
+                         or split the work into smaller steps (e.g. background_start + polling).",
+                        tool_call.name,
+                        limit.as_secs()
+                    )
+                }
+            },
+            None => chain(hook_call_owned).await,
+        };
         // S2②（2026-10-09 高优差距批次一）：出侧复扫。8 层管线只看工具
         // 入参，输出侧此前零检查（eval 沙盒 worker 除外）——read_file 读
         // 到明文 key / exec 回显秘钥会原文进上下文与历史。脱敏式：命中即

@@ -97,6 +97,7 @@ useBoardChanged(() => loadIssues(true))
 
 function onProjectChange() {
   highlightStatus.value = ''
+  highlightDecision.value = false
   void loadIssues()
 }
 
@@ -120,15 +121,46 @@ const statusCounts = computed(() => {
   return c
 })
 
+// 决策可见性（2026-10-15 批）：「✋ 待决策 N」chip——点击压暗其余节点，
+// 一眼圈出等裁决的单（statusCounts 同款交互语言）。
+const decisionCount = computed(() => issues.value.filter((i) => !!i.needs_user).length)
+const highlightDecision = ref(false)
+
 function toggleHighlight(s: string) {
   highlightStatus.value = highlightStatus.value === s ? '' : s
 }
 
+function toggleDecisionHighlight() {
+  highlightDecision.value = !highlightDecision.value
+}
+
 // --- 渲染辅助 ---
 function nodeOpacity(n: DagNode): number {
+  if (highlightDecision.value && !n.needsUser) return 0.12
   if (highlightStatus.value && n.status !== highlightStatus.value) return 0.12
   if (n.status === 'cancelled') return 0.5
   return 1
+}
+
+/** 决策可见性节点覆盖（2026-10-15 批）：needs_user 最高权重——amber 加粗
+ *  描边 + ✋ 图标压状态图标；次之 plan_ready——📋 图标压状态图标（描边不动，
+ *  与 in_review amber 底色消歧靠图标）。 */
+function nodeStroke(n: DagNode): string {
+  if (n.unlayered) return 'var(--error)'
+  if (n.needsUser) return 'var(--warning)'
+  return statusNodeStyle(n.status).stroke
+}
+
+function nodeStrokeWidth(n: DagNode): number {
+  if (n.unlayered) return 1.6
+  if (n.needsUser) return 3
+  return statusNodeStyle(n.status).strokeWidth
+}
+
+function nodeIcon(n: DagNode): string {
+  if (n.needsUser) return '✋'
+  if (n.planReady) return '📋'
+  return statusNodeStyle(n.status).icon
 }
 
 function edgeOpacity(e: DagEdge): number {
@@ -167,6 +199,8 @@ function edgeMarker(e: DagEdge): string {
 
 function nodeTitle(n: DagNode): string {
   const lines = [`${n.number} ${n.title}`, `状态: ${statusLabel(n.status)}`]
+  if (n.needsUser) lines.push('✋ 停车待你决策——点开查看决策面板')
+  else if (n.planReady) lines.push('📋 拆解完成待确认发车')
   if (n.assigneeId) lines.push(`执行: ${n.assigneeId}`)
   // 传递约简省画的上游（+N 徽标的展开）：可达性语义仍在，只是线并入链路。
   if (n.indirectDeps.length)
@@ -247,6 +281,16 @@ const fmtPercent = computed(() => Math.round(zoom.value * 100) + '%')
       >
         未知 {{ statusCounts.__other }}
       </button>
+      <button
+        class="dag-stat-chip chip-decision"
+        :class="{ active: highlightDecision }"
+        :disabled="!decisionCount"
+        data-test="dag-decision-chip"
+        title="只显示停车等你裁决的节点"
+        @click="toggleDecisionHighlight"
+      >
+        ✋ 待决策 {{ decisionCount }}
+      </button>
     </div>
 
     <!-- 图例（常驻：compact 模式色+图标是唯一编码） -->
@@ -265,6 +309,8 @@ const fmtPercent = computed(() => Math.round(zoom.value * 100) + '%')
         {{ s.label }}
       </span>
       <span class="legend-sep"></span>
+      <span class="legend-item"><svg width="22" height="15"><rect x="1" y="1" width="20" height="13" rx="2.5" fill="none" stroke="var(--warning)" stroke-width="3"/><text x="11" y="10.5" text-anchor="middle" font-size="8" fill="var(--text)">✋</text></svg> 待你决策</span>
+      <span class="legend-item"><svg width="22" height="15"><rect x="1" y="1" width="20" height="13" rx="2.5" fill="var(--info)" fill-opacity="0.12" stroke="var(--info)" stroke-width="1.2"/><text x="11" y="10.5" text-anchor="middle" font-size="8" fill="var(--text)">📋</text></svg> 计划待确认</span>
       <span class="legend-item"><svg width="8" height="26"><line x1="4" y1="1" x2="4" y2="25" stroke="var(--text)" stroke-width="1.5" opacity="0.55"/></svg> 已满足</span>
       <span class="legend-item"><svg width="8" height="26"><line x1="4" y1="1" x2="4" y2="25" stroke="var(--warning)" stroke-width="2" opacity="0.9"/></svg> 阻塞中</span>
       <span class="legend-item"><svg width="8" height="26"><line x1="4" y1="1" x2="4" y2="25" stroke="var(--text-muted)" stroke-width="1.5" stroke-dasharray="4 3"/></svg> 外部依赖</span>
@@ -370,12 +416,12 @@ const fmtPercent = computed(() => Math.round(zoom.value * 100) + '%')
               :width="dims.w" :height="dims.h" rx="7"
               :fill="statusNodeStyle(n.status).fill"
               :fill-opacity="statusNodeStyle(n.status).fillOpacity"
-              :stroke="n.unlayered ? 'var(--error)' : statusNodeStyle(n.status).stroke"
-              :stroke-width="n.unlayered ? 1.6 : statusNodeStyle(n.status).strokeWidth"
+              :stroke="nodeStroke(n)"
+              :stroke-width="nodeStrokeWidth(n)"
               :stroke-dasharray="n.unlayered ? '4 3' : undefined"
             />
             <text class="dag-num" x="10" y="21">{{ n.number }}</text>
-            <text class="dag-icon" :x="dims.w - 12" y="21" text-anchor="middle">{{ statusNodeStyle(n.status).icon }}</text>
+            <text class="dag-icon" :x="dims.w - 12" y="21" text-anchor="middle">{{ nodeIcon(n) }}</text>
             <!-- +N 徽标：传递约简省画的上游数（线并入链路，语义在 tooltip）。 -->
             <text
               v-if="n.indirectDeps.length"
@@ -404,11 +450,11 @@ const fmtPercent = computed(() => Math.round(zoom.value * 100) + '%')
               :width="dims.w" :height="dims.h" rx="4"
               :fill="statusNodeStyle(n.status).fill"
               :fill-opacity="statusNodeStyle(n.status).fillOpacity"
-              :stroke="n.unlayered ? 'var(--error)' : statusNodeStyle(n.status).stroke"
-              :stroke-width="n.unlayered ? 1.4 : statusNodeStyle(n.status).strokeWidth"
+              :stroke="nodeStroke(n)"
+              :stroke-width="n.needsUser ? 2.4 : (n.unlayered ? 1.4 : statusNodeStyle(n.status).strokeWidth)"
               :stroke-dasharray="n.unlayered ? '3 2' : undefined"
             />
-            <text class="dag-icon-sm" :x="dims.w / 2" :y="dims.h / 2 + 4" text-anchor="middle">{{ statusNodeStyle(n.status).icon }}</text>
+            <text class="dag-icon-sm" :x="dims.w / 2" :y="dims.h / 2 + 4" text-anchor="middle">{{ nodeIcon(n) }}</text>
             <title>{{ nodeTitle(n) }}</title>
           </g>
           <g
@@ -526,6 +572,17 @@ const fmtPercent = computed(() => Math.round(zoom.value * 100) + '%')
 .dag-stat-chip.chip-in_progress:not(:disabled),
 .dag-stat-chip.chip-todo:not(:disabled) {
   color: var(--info);
+}
+/* 决策可见性（2026-10-15 批）：✋ chip amber 语义 + active 实底。 */
+.dag-stat-chip.chip-decision:not(:disabled) {
+  color: var(--warning);
+  font-weight: 600;
+}
+.dag-stat-chip.chip-decision.active {
+  background: var(--warning);
+  color: #1a1206;
+  border-color: var(--warning);
+  box-shadow: none;
 }
 
 .dag-legend {

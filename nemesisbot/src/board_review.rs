@@ -46,6 +46,14 @@ use nemesis_board::assignment::Actor;
 use nemesis_board::models::{CommentType, IssueStatus, NewComment};
 use tracing::{debug, error, info, warn};
 
+/// 收口评审（父单/项目）worker_report 内联字节上限（2026-10-17 NB-101
+/// 三轮误升级根修）：收口 worker_report 携带实物证据段（清单 201 条 +
+/// 最终报告全文节选，实测 ~70-120KB），默认 `MAX_INLINE_BYTES` 64KB 上限
+/// 把节选段整体截掉——三轮评审 prompt 全部停在文件清单中段，「看不到最终
+/// 报告正文」的 UNSURE 全是对残缺输入的诚实反应。证据段自带 60K 字符节选
+/// 总预算，此处 4 倍只是不再二次截伤；子单评审仍走默认 64KB。
+const CLOSURE_WORKER_REPORT_MAX_BYTES: usize = 256 * 1024;
+
 /// estop 停车种类（释放 watcher 据此选复评入口；P4 加 Project 维度）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ParkedKind {
@@ -933,6 +941,20 @@ async fn review_issue(
         &worker_report,
         &thread,
     );
+    // 父单口径注入（2026-10-17 NB-123 误升级根修）：返工单/子单被派的差距
+    // 常引用父单验收标准的语义（如某条 AC「以台账+待人工签核清单为口径，
+    // 不阻塞自动验收」），但该口径行只存在于父单 acceptance_criteria——
+    // 子单评审 prompt 此前看不到，评审 LLM 只能按差距清单的字面（或 worker
+    // 自我结论）裁决，把口径已豁免的人工后续事项误判成 FAIL（再被
+    // REDISPATCH_LOOP 标记放大成升级人工）。注入父单验收标准作为**待审
+    // 参照数据**（非指令），让「按父单口径裁决」有据可依。父单缺失/读取
+    // 失败/AC 为空 = 诚实跳过（孤儿子单照常评审）。
+    if let Some(parent_id) = issue.parent_issue_id
+        && let Ok(parent) = store.get_issue(parent_id)
+        && let Some(section) = render_parent_ac_section(&parent)
+    {
+        prompt.push_str(&section);
+    }
     // B2b 二段评审：worker 取证回报作为待审数据拼入（证据是 worker LLM
     // 的输出，同样受数据/指令分离声明约束）。
     if let Some(ev) = ctx
@@ -1687,9 +1709,15 @@ async fn review_issue(
             // 自己声明同问题反复重派无解 → 不再重派直接转人工。worker 喊停
             // 是比失败签名计数更强的信号；unlimited 放大的是「系统侧重派
             // 次数不设限」，不是「无视执行方喊停」。
-            if let Some(marker) =
-                detect_worker_loop_marker(store, issue_id, deps.cluster.node_id())?
-            {
+            if let Some(marker) = detect_worker_loop_marker(
+                store,
+                issue_id,
+                deps.cluster.node_id(),
+                // 轮次绑定：标记只认最新派发（含）之后写入的评论——旧轮喊停
+                // 已由重派动作答复，历史标记不得阻塞换条件后的新轮（NB-121
+                // 死循环根修，语义见 fn 文档）。
+                dispatches.last().map(|d| d.dispatched_at),
+            )? {
                 fail_streaks.clear(issue_id);
                 // U-A：停车现场落盘。
                 let handoff_note = park_with_handoff(
@@ -2567,7 +2595,9 @@ pub(crate) fn park_with_handoff(
         chain,
     ) {
         Ok(path) => format!(
-            "\n\n📋 停车现场已存档：{}（对本节点说「继续 {issue_number}」可读档续做）",
+            "\n\n📋 停车现场已存档：{}（人工续做：对本节点说「继续 {issue_number}」；\
+             自动化续做：WSAPI `board.resume {{\"number\": \"{issue_number}\"}}`——\
+             独立 ops 会话读档执行，不落用户聊天，结论回贴本单）",
             path.display()
         ),
         Err(e) => {
@@ -2697,14 +2727,22 @@ pub(crate) fn spawn_parent_review(deps: BoardReviewDeps, parent_id: i64) {
 /// symlink 不跟随（SAN-09：防外部树拉进评审 prompt）。内容条数 / 总条数
 /// 双上限防 prompt 爆炸，超出诚实注记。目录不可读时诚实注记（不炸评审）。
 fn render_project_artifacts_evidence(dir: &std::path::Path) -> String {
-    /// 内容节选的文件大小上限（字节）。
-    const CONTENT_MAX_BYTES: u64 = 8 * 1024;
-    /// 附内容节选的文件数上限。
-    const CONTENT_MAX_FILES: usize = 12;
-    /// 清单总条目上限（超出诚实截断）。
-    const LISTING_MAX_ENTRIES: usize = 200;
-    /// 单文件内容节选字符上限。
-    const CONTENT_SNIPPET_CHARS: usize = 2000;
+    /// 内容节选的文件大小上限（字节）。2026-10-17 NB-101 项目收口误升级
+    /// 根修：旧值 8KB 把最终验收报告（白盒 12.9KB）整文件排除在节选外。
+    const CONTENT_MAX_BYTES: u64 = 64 * 1024;
+    /// 附内容节选的文件数上限（prompt 爆炸硬帽）。
+    const CONTENT_MAX_FILES: usize = 24;
+    /// 清单展示条目上限（超出诚实截断注记）。2026-10-17 四轮根修：200 在
+    /// 真实项目（docs 122 件 + src/styles/test）上把 walk 掐断在 test/ 第 3
+    /// 个文件——评审员以「报告引用的测试源文件不在清单」为据判交付不一致，
+    /// 实为清单残缺。提到 400 覆盖真实项目全树；超过仍有诚实注记兜底。
+    const LISTING_MAX_ENTRIES: usize = 400;
+    /// walk 收集硬帽（安全阀：异常巨树不炸评审 prompt；命中即整体注记）。
+    const WALK_MAX_ENTRIES: usize = 2000;
+    /// 单文件内容节选字符上限（AC 复放矩阵/测试报告全文级）。
+    const CONTENT_SNIPPET_CHARS: usize = 14_000;
+    /// 内容节选总字符预算（所有文件共享；防多文件挤爆评审 prompt）。
+    const CONTENT_TOTAL_CHARS: usize = 60_000;
 
     /// 看板执行档案目录（transfer walk 不知道的看板专属管线产物）。
     fn is_board_pipeline_dir(name: &str) -> bool {
@@ -2776,7 +2814,12 @@ fn render_project_artifacts_evidence(dir: &std::path::Path) -> String {
                 let size = meta.len();
                 out.push((child_rel, size));
             }
-            if out.len() > LISTING_MAX_ENTRIES {
+            // WALK_MAX_ENTRIES 是安全阀不是展示预算：清单展示另有
+            // LISTING_MAX_ENTRIES 截断注记，但候选池必须吃满全树——
+            // 2026-10-17 四轮根修：旧实现用清单上限 200 早停 walk，mtime
+            // 倒序节选的候选池也被掐在同一处，路径序靠后的 test/src 文件
+            // 既不进清单也不进节选，评审员据此误判「文件缺失」。
+            if out.len() > WALK_MAX_ENTRIES {
                 return Ok(());
             }
         }
@@ -2797,26 +2840,59 @@ fn render_project_artifacts_evidence(dir: &std::path::Path) -> String {
         out.push_str("（项目目录为空：无任何交付产物）\n");
         return out;
     }
-
     let truncated_listing = files.len() > LISTING_MAX_ENTRIES;
+    // 清单段（路径序，可读盘点=存在性与大小证明）。
+    out.push_str(&format!("共 {} 个文件：\n", files.len()));
+    for (rel, size) in files.iter().take(LISTING_MAX_ENTRIES) {
+        out.push_str(&format!("- {rel}（{size} 字节）\n"));
+    }
+    // 内容节选候选按**修改时间倒序**（2026-10-17 NB-101 项目收口误升级
+    // 根修）：旧实现按路径字母序消耗 12 文件 × 2K 字符预算，design/* 与
+    // evidence/*.json 等外围产物吃光预算，最终验收报告/AC 复放矩阵/README
+    // 从未进入评审视野（实录：评审员看到的「README」是 evidence/ 子目录
+    // 的同名文件）——「缺少最终证据正文」误升级的直接根因。收口期返工
+    // 反复触碰的文件 mtime 最新，倒序天然让最终证据优先。mtime 读不到的
+    // 文件排最后（Reverse(None) > Reverse(Some(_))）。
+    let mut candidates: Vec<(String, u64)> = files.clone();
+    candidates.sort_by_cached_key(|(rel, _)| {
+        std::cmp::Reverse(
+            std::fs::metadata(dir.join(rel))
+                .and_then(|m| m.modified())
+                .ok(),
+        )
+    });
+    let mut remaining_total = CONTENT_TOTAL_CHARS;
     let mut content_budget = CONTENT_MAX_FILES;
     let mut with_content = 0usize;
-    for (rel, size) in &files {
-        out.push_str(&format!("- {rel}（{size} 字节）\n"));
-        if content_budget > 0
-            && *size <= CONTENT_MAX_BYTES
-            && is_texty(rel)
-            && let Ok(text) = std::fs::read_to_string(dir.join(rel))
-        {
-            let snippet = nemesis_utils::truncate(text.trim(), CONTENT_SNIPPET_CHARS);
-            out.push_str(&format!("  内容节选：\n```text\n{snippet}\n```\n"));
+    let mut excerpts = String::new();
+    for (rel, size) in &candidates {
+        if content_budget == 0 || remaining_total == 0 {
+            break;
+        }
+        if *size > CONTENT_MAX_BYTES || !is_texty(rel) {
+            continue;
+        }
+        if let Ok(text) = std::fs::read_to_string(dir.join(rel)) {
+            let snippet =
+                nemesis_utils::truncate(text.trim(), CONTENT_SNIPPET_CHARS.min(remaining_total));
+            excerpts.push_str(&format!("【{rel}】\n```text\n{snippet}\n```\n"));
             content_budget -= 1;
             with_content += 1;
+            remaining_total = remaining_total.saturating_sub(snippet.chars().count());
         } // 读失败（二进制/编码不符）：只列清单不读内容
     }
-    if truncated_listing {
+    if !excerpts.is_empty() {
         out.push_str(&format!(
-            "（清单超过 {LISTING_MAX_ENTRIES} 条，已诚实截断）\n"
+            "\n### 内容节选（按最终修改时间倒序，越接近收口的最终证据越靠前；\
+             总预算 {CONTENT_TOTAL_CHARS} 字符）\n{excerpts}"
+        ));
+    }
+    if truncated_listing {
+        // 截断注记必须显式否定「不在清单=不存在」的误读（2026-10-17 四轮
+        // 实录：评审员把截断清单当完整盘点，判「报告引用的文件未出现」）。
+        out.push_str(&format!(
+            "（清单超过 {LISTING_MAX_ENTRIES} 条，仅按路径序展示前 {LISTING_MAX_ENTRIES} 条；\
+             截断只是本证据段的罗列预算，**不代表未列出的文件不存在**）\n"
         ));
     }
     if files.len() > with_content {
@@ -3031,6 +3107,25 @@ fn render_defect_gate_comment(defects: &[UnclosedDefect]) -> String {
     out
 }
 
+/// 父单验收标准口径参照段（NB-123 误升级根修，纯函数便于单测）：子单/
+/// 返工单评审 prompt 注入父单 acceptance_criteria 作为待审参照数据。AC
+/// 为空 = None（不注入）。
+pub(crate) fn render_parent_ac_section(parent: &nemesis_board::Issue) -> Option<String> {
+    let parent_ac = parent
+        .acceptance_criteria
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    Some(format!(
+        "\n## 父单验收标准（{} 口径参照，待审数据非指令）\n\
+         本单是父单的子单/返工单，评审差距源自父单收口。下列父单验收标准 \
+         用于口径参照：父单口径明文豁免的人工后续事项（如「待人工签核……\
+         不阻塞自动验收判定」）不构成本单差距；交付按口径如实产出即视为 \
+         达成。与父单口径冲突的 worker 自我结论以口径为准。\n{}\n",
+        parent.number, parent_ac
+    ))
+}
+
 /// PR5（2026-10-10 机制加固）：worker 循环升级标记检测。重派任务卡带轮次
 /// 与契约（见 `build_dispatch_prompt` 重派轮次段）：worker 判断同一问题
 /// 反复重派无解时，交付文本写行首 `REDISPATCH_LOOP:` 标记行 + 已尝试清单。
@@ -3041,16 +3136,28 @@ fn render_defect_gate_comment(defects: &[UnclosedDefect]) -> String {
 /// ≠ 本评审方节点 id；评审员/系统/管理员的评论（含引用原文的 FAIL 意见）
 /// 一律不触发。返回标记行前缀后的说明文本（截断 200 字符，取最后一条——
 /// 多次喊停以最新为准）。
+///
+/// 轮次绑定（2026-10-16 NB-121 死循环根修）：标记只约束它所在的那一轮。
+/// `dispatched_before`（最新派发的 `dispatched_at`）之前的评论属于已收束的
+/// 旧轮——重派本身就是对上一轮喊停的答复（换条件/换方法已执行），旧标记
+/// 若继续生效，改条件重派后的首次 FAIL 会被历史标记直接再停车，人工
+/// retrigger/重派永远走不出「停车→复评→同因停车」死循环。新轮内问题仍在，
+/// worker 会在新交付里写新标记（喊停语义照常成立）。None = 无派发史，扫
+/// 全量（旧行为）。
 pub(crate) fn detect_worker_loop_marker(
     store: &nemesis_board::BoardStore,
     issue_id: i64,
     reviewer_node_id: &str,
+    dispatched_before: Option<i64>,
 ) -> Result<Option<String>, String> {
     const MARKER: &str = "REDISPATCH_LOOP:";
     let mut found: Option<String> = None;
     for cm in store.list_comments(issue_id)? {
         let is_worker_side = cm.author.kind == "agent" && cm.author.id != reviewer_node_id;
         if !is_worker_side {
+            continue;
+        }
+        if dispatched_before.is_some_and(|cut| cm.created_at < cut) {
             continue;
         }
         for line in cm.content.lines() {
@@ -3067,11 +3174,147 @@ pub(crate) fn detect_worker_loop_marker(
     Ok(found)
 }
 
+/// [`try_parent_remediation`] 结果：Taken = 已承接（父单不转人工）；
+/// Declined = 不承接（原因随转人工评论注记）。
+enum ParentRemediation {
+    Taken(ParentRemediationTaken),
+    Declined(String),
+}
+
+struct ParentRemediationTaken {
+    issue_id: i64,
+    number: String,
+    round: u32,
+    max: u32,
+    dispatched: bool,
+}
+
+/// 父单收口 FAIL 自动返工承接（2026-10-16，NB-101「FAIL 弹回人工」根修）：
+/// 差距具体（verdict=FAIL 且 gap 非空）→ 自动创建「返工：」子单承接差距并
+/// 走子单自动派发单一入口（匹配器/兜底/在途上限/停车场审计全闸同源）。
+/// 返工单挂父单名下，落定（done）后 on_issue_settled → sync_parent_status
+/// 全 done 路径触发 PARENT_REVIEW_HOOK 自动复评父单（父单保持 in_review）
+/// ——闭环不新增任何触发器。预算 = `board.review.parent_remediation_max`
+///（按既有「返工：」前缀子单累计数计轮，含 cancelled——按尝试计不按存活
+/// 计；打回重开：`review.retrigger` 升级停车单时写 board_meta 纪元键，
+/// 只数纪元后的返工单——人工重新决策 = 预算重置自动验收重新开始）；0 = 关
+///（旧行为恒转人工）。estop 生效中不新建工作。派发硬失败（集群缺失/窗口
+/// 竞态）= 返工单保留（评论注明原因），按 Declined 交回转人工。
+/// 承接范围（2026-10-16 用户裁决放宽）：FAIL 带具体差距照旧；UNSURE 证据
+/// 不足也承接——「无法核实」的证据缺口（归档缺失/取证不全）本身是可派发
+/// 的工作（补证据 = 补差距），不再一刀切弹人工；承接任务文本 = gap（FAIL）
+/// 或 reasons 渲染（UNSURE）。仅当无人力所能及的差距（gap 与 reasons 双空）
+/// 才落转人工。
+fn try_parent_remediation(
+    deps: &BoardReviewDeps,
+    cfg: &nemesis_config::BoardFlagConfig,
+    parent: &nemesis_board::Issue,
+    output: &nemesis_board::ReviewOutput,
+) -> Result<ParentRemediation, String> {
+    const REMEDIATION_TITLE_PREFIX: &str = "返工：";
+    let max = cfg.review.parent_remediation_max;
+    if max == 0 {
+        return Ok(ParentRemediation::Declined(
+            "自动返工未开启（board.review.parent_remediation_max=0）".to_string(),
+        ));
+    }
+    // estop 窗口闸：评审进行中挂急停 → 不再新建工作（释放后既有复评链接管）。
+    if deps.estop.is_engaged() {
+        return Ok(ParentRemediation::Declined(
+            "急停（E-STOP）生效中，自动返工挂起".to_string(),
+        ));
+    }
+    let store = &deps.store;
+    let gap = output.gap.trim();
+    // 承接任务文本：FAIL 用差距原文；UNSURE（gap 常空）用评审理由渲染——
+    // 理由里就是「哪些证据缺失/哪些产物未归档」的可行动清单。
+    let task_text = if gap.is_empty() {
+        render_reasons(&output.reasons)
+    } else {
+        gap.to_string()
+    };
+    let reset_epoch = store.remediation_reset_epoch(parent.id);
+    let round = store
+        .list_children(parent.id)?
+        .iter()
+        .filter(|c| c.title.starts_with(REMEDIATION_TITLE_PREFIX))
+        .filter(|c| c.created_at >= reset_epoch)
+        .count() as u32
+        + 1;
+    if round > max {
+        return Ok(ParentRemediation::Declined(format!(
+            "自动返工已用满轮数预算（{max} 轮）"
+        )));
+    }
+    let title = format!(
+        "{REMEDIATION_TITLE_PREFIX}{}（第 {round}/{max} 轮）",
+        nemesis_utils::truncate(parent.title.trim(), 40)
+    );
+    let description = format!(
+        "父单 {num} 收口评审未通过，本单为第 {round}/{max} 轮自动返工承接——逐条闭合下列评审差距/证据缺口，不要扩大范围：\n\n{task_text}",
+        num = parent.number,
+    );
+    let acceptance = format!(
+        "- 父单 {num} 收口评审差距逐条闭合（差距清单见任务描述），每条附验证证据\n- 交付评论逐条列出：差距 → 修复动作 → 验证结果，不得有未闭合残留",
+        num = parent.number
+    );
+    let rem = store.create_issue(nemesis_board::NewIssue {
+        title,
+        description,
+        priority: parent.priority,
+        creator: nemesis_board::Actor::system("board-review"),
+        parent_issue_id: Some(parent.id),
+        project_id: parent.project_id,
+        acceptance_criteria: Some(acceptance),
+        required_role: parent.required_role.clone(),
+        required_tags: parent.required_tags.clone(),
+        required_profession: parent.required_profession.clone(),
+        required_capabilities: parent.required_capabilities.clone(),
+        ..Default::default()
+    })?;
+    let dispatched = match nemesis_web::handlers::board::dispatch_subissue_auto(
+        store,
+        Some(&deps.cluster),
+        rem.id,
+        &nemesis_board::Actor::system("board-review"),
+        true,
+    ) {
+        Ok(Some(_)) => true,
+        // 暂缓（无匹配节点/在途上限等）：返工单已带 ⏸ 停车审计，停车场
+        // sweep 在节点可用时自动接力——父单不必为此弹回人工。
+        Ok(None) => false,
+        Err(e) => {
+            let _ = store.add_comment(nemesis_board::NewComment {
+                issue_id: rem.id,
+                author: nemesis_board::Actor::system("board-review"),
+                content: format!(
+                    "⏸ 自动派发失败：{e}；可人工派发（issue.dispatch）或等环境恢复后 sweep 重试"
+                ),
+                parent_id: None,
+                ctype: nemesis_board::CommentType::System,
+            });
+            return Ok(ParentRemediation::Declined(format!(
+                "返工子单 {} 已创建但自动派发失败：{e}",
+                rem.number
+            )));
+        }
+    };
+    Ok(ParentRemediation::Taken(ParentRemediationTaken {
+        issue_id: rem.id,
+        number: rem.number.clone(),
+        round,
+        max,
+        dispatched,
+    }))
+}
+
 /// 父单收口汇总验收：输入=父单目标/验收标准 + 全部子单状态与最新交付摘要
-/// （P1 阶段 LLM 汇总单判；P2 锚点检查器建成后自动升级双检）。三态简化：
+/// （P1 阶段 LLM 汇总单判；P2 锚点检查器建成后自动升级双检）。三态：
 /// PASS → done（auto_close_parent 本身即收货授权，评论注明）；FAIL/UNSURE
-/// → 转人工保持 in_review（父单不派发，无重派承接单位——无限模式也不
-/// 盲转，复审边界）。返回 `Ok(false)` = 未评审即跳过。
+/// → 先试自动返工承接（差距/证据缺口可派发时，见 try_parent_remediation）
+/// ——承接被拒（预算用满/配置关/双空无差距）才转人工保持 in_review。
+/// 循环升级防抖：升级停车后人工未表态期间钩子复评一律跳过（出口 =
+/// review.retrigger 打回重开）。返回 `Ok(false)` = 未评审即跳过。
 async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<bool, String> {
     // estop 保险丝检查点 ①：父单收口同样是自动 agent 活动，挂起即冻结。
     if estop_fuse_engaged(deps, parent_id, ParkedKind::Parent) {
@@ -3087,6 +3330,22 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
     let parent = store.get_issue(parent_id)?;
     // 只有 in_review 才收口评审：与人工操作竞态时让位人工，不覆盖。
     if parent.status != IssueStatus::InReview {
+        return Ok(false);
+    }
+    // 循环升级防抖（2026-10-16 用户裁决：除崩溃性问题外不让用户反复验收）：
+    // 最近一条 auto_decide = parent_escalate_human 且其后无任何 admin 活动
+    // = 已停车等人工、人工尚未表态——子单噪音（评论/善后事件）触发的钩子
+    // 复评一律跳过。此前每次钩子触发都重跑收口评审再升级一次（NB-101 实证
+    // 20:45/20:50/22:01 三连升级），就是用户看到的「循环出错、循环人工」。
+    // 出口 = 人工 review.retrigger（打回：先落 admin 评论再发车，此处放行
+    // + 返工预算重置，自动验收重新开始）或人工直接处置状态。
+    if let Some((esc_id, decision)) = store.latest_auto_decide(parent_id)?
+        && decision == "parent_escalate_human"
+        && !store.has_admin_activity_after(parent_id, esc_id)?
+    {
+        info!(
+            "[BoardReview] 父单 {parent_id} 已停车等人工裁决（升级在案、人工未表态），跳过钩子复评防循环升级"
+        );
         return Ok(false);
     }
     // B1（职能→评审预设查表）：收口评审参数按父单职能解析（父单通常无
@@ -3173,7 +3432,21 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
     }
 
     // ---- 组装汇总输入：每子单状态 + 最新交付摘要（截断防 prompt 爆炸）----
-    let mut summary = format!("## 子任务完成情况汇总（共 {} 个子任务）\n", children.len());
+    // 段序（2026-10-17 NB-101 项目收口三轮误升级根修同款，横向扫同类）：
+    // 实物证据段在最前、子单交付摘要（worker 自述）垫后——worker_report
+    // 有字节内联上限，超限截断从尾部吃起：截断时先牺牲转述保实物。
+    let mut summary = if let Some(pid) = parent.project_id
+        && let Ok(project) = store.get_project(pid)
+        && let Some(dir) = project.directory.as_deref()
+    {
+        render_project_artifacts_evidence(std::path::Path::new(dir))
+    } else {
+        String::new()
+    };
+    summary.push_str(&format!(
+        "## 子任务完成情况汇总（共 {} 个子任务）\n",
+        children.len()
+    ));
     for c in &children {
         let latest_delivery = store
             .list_comments(c.id)?
@@ -3188,22 +3461,13 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
         ));
     }
 
-    // ---- F-U3-6（2026-09-15 U3 真机）：项目目录产物证据段 ----
-    // 父单验收标准的核心一条 = 「产物齐全于项目目录」，但此前评审输入只有
-    // 子单 Delivery 声明摘要（worker 自述）——U3 实证：report.md /
-    // pytest_output.txt 等产物全部真实在项目目录，评审员却因「取证文件
-    // 内容未随报提供、无法客观确认产物齐全」判 UNSURE 转人工。注入真实
-    // 清单 + 内容节选后，声明 vs 实物可对照（无绑定目录的存量项目诚实跳过）。
-    if let Some(pid) = parent.project_id
-        && let Ok(project) = store.get_project(pid)
-        && let Some(dir) = project.directory.as_deref()
-    {
-        summary.push_str(&render_project_artifacts_evidence(std::path::Path::new(
-            dir,
-        )));
-    }
+    // （实物证据段已前置到 summary 开头——2026-10-17 段序根修，见上方说明；
+    // 此处不再重复注入。）
 
-    let mut prompt = nemesis_board::build_review_user_prompt(
+    // 2026-10-17 NB-101 三轮误升级根修（父单同款）：收口 worker_report 携带
+    // 实物证据段，默认 64KB 内联上限会把节选段截掉——用与项目收口一致的
+    // 大预算（证据段自带 60K 字符节选总预算，此处只是不再二次截伤）。
+    let mut prompt = nemesis_board::build_review_user_prompt_with_limits(
         &parent.number,
         &parent.title,
         &parent.description,
@@ -3212,6 +3476,7 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
         // 父单线程评论以 status_change/system 机械记录为主（子单结论已在
         // 汇总段），不带入。
         &[],
+        CLOSURE_WORKER_REPORT_MAX_BYTES,
     );
 
     // ---- 客观锚点双检（P2/B1，父单同款）：先便宜后昂贵 ----
@@ -3497,8 +3762,85 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
             } else {
                 String::new()
             };
+            // 父单 FAIL 自动返工承接（2026-10-16）：差距具体（gap 非空）时
+            // 先试自动承接——建「返工：」子单 + 子单自动派发单一入口发车，
+            // 返工单落定后 sync 链经 PARENT_REVIEW_HOOK 自动复评本单（父单
+            // 保持 in_review，不再无差别弹回人工）。UNSURE（证据不足）带
+            // 可行动证据缺口（gap 或 reasons 非空）同样承接——补证据 = 补
+            // 差距（2026-10-16 用户裁决：除崩溃性问题外不让用户反复验收）；
+            // 双空（真无事可做）才落下方转人工路径。承接被拒/失败 → 落下方
+            // 既有转人工路径（原因注记进评论）。
+            let remediable = match verdict {
+                nemesis_board::ReviewVerdict::Fail => !output.gap.trim().is_empty(),
+                nemesis_board::ReviewVerdict::Unsure => {
+                    !output.gap.trim().is_empty() || !output.reasons.is_empty()
+                }
+                _ => false,
+            };
+            let mut remediation_declined: Option<String> = None;
+            if remediable {
+                match try_parent_remediation(deps, &cfg, &parent, &output) {
+                    Ok(ParentRemediation::Taken(t)) => {
+                        let dispatch_word = if t.dispatched {
+                            "已派发"
+                        } else {
+                            "暂未派出（当前无可匹配节点，停车场 sweep 会在节点可用时自动接力）"
+                        };
+                        let lead = if verdict == nemesis_board::ReviewVerdict::Fail {
+                            "父单收口验收未过（fail），差距具体可返工"
+                        } else {
+                            "父单收口验收证据不足（unsure），证据缺口可自动补齐"
+                        };
+                        let mut comment = format!(
+                            "🔁 {lead}——已自动创建返工子单 {num}（第 {round}/{max} 轮，{dispatch_word}）承接；返工单落定后系统自动复评本单，无需人工裁决。\n\n差距：\n{gap}\n",
+                            num = t.number,
+                            round = t.round,
+                            max = t.max,
+                            gap = if output.gap.trim().is_empty() {
+                                render_reasons(&output.reasons)
+                            } else {
+                                output.gap.trim().to_string()
+                            },
+                        );
+                        append_reasons_unless_gapped(&mut comment, &output);
+                        store.add_comment(NewComment {
+                            issue_id: parent_id,
+                            author: reviewer.clone(),
+                            content: comment,
+                            parent_id: None,
+                            ctype: CommentType::Comment,
+                        })?;
+                        record_auto_decide(
+                            store,
+                            parent_id,
+                            deps.cluster.node_id(),
+                            "parent_auto_remediate",
+                            output.verdict.as_str(),
+                            serde_json::json!({
+                                "round": t.round,
+                                "max": t.max,
+                                "remediation_issue": t.number,
+                                "remediation_id": t.issue_id,
+                                "dispatched": t.dispatched,
+                                "reasons": render_reasons(&output.reasons),
+                            }),
+                        );
+                        info!(
+                            "[BoardReview] 父单 {parent_id} 收口 FAIL → 自动返工承接 {}（第 {}/{} 轮，dispatched={}）",
+                            t.number, t.round, t.max, t.dispatched
+                        );
+                        return Ok(true);
+                    }
+                    Ok(ParentRemediation::Declined(note)) => remediation_declined = Some(note),
+                    Err(e) => {
+                        warn!("[BoardReview] 父单 {parent_id} 自动返工承接失败：{e}（转人工兜底）");
+                        remediation_declined = Some(format!("自动返工承接执行失败：{e}"));
+                    }
+                }
+            }
             // U-A：父单无重派承接单位，FAIL/UNSURE = 收口停车（父单结论
-            // 需要人核查子单后定夺）。
+            // 需要人核查子单后定夺）。FAIL 且承接被拒（配置关/预算用满/
+            // 派发失败）时评论注记拒绝原因。
             let handoff_note = park_with_handoff(
                 deps,
                 &parent.number,
@@ -3526,8 +3868,32 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
                 comment.push_str(&format!("\n差距：\n{}\n", output.gap.trim()));
             }
             append_reasons_unless_gapped(&mut comment, &output);
+            // 说清楚（2026-10-16 用户裁决）：升级必须带自动返工全程账目
+            //（试了几轮、哪些返工单）——不是一句「未定案」就让用户盲裁。
+            let rem_children: Vec<&nemesis_board::Issue> = children
+                .iter()
+                .filter(|c| c.title.starts_with("返工："))
+                .collect();
+            if !rem_children.is_empty() {
+                let nums: Vec<&str> = rem_children.iter().map(|c| c.number.as_str()).collect();
+                comment.push_str(&format!(
+                    "\n已自动返工 {} 轮（预算 {max}）：{}\n",
+                    rem_children.len(),
+                    nums.join("、"),
+                    max = cfg.review.parent_remediation_max,
+                ));
+            }
+            if let Some(note) = &remediation_declined {
+                comment.push_str(&format!(
+                    "\n（{note}——请检查各子单结论后人工定 done 或重开子单）"
+                ));
+            } else {
+                comment.push_str(
+                    "\n（父单不派发、无重派承接单位——请检查各子单结论后人工定 done 或重开子单）",
+                );
+            }
             comment.push_str(
-                "\n（父单不派发、无重派承接单位——请检查各子单结论后人工定 done 或重开子单）",
+                "\n（打回重开：决策面板「复评」/ review.retrigger —— 打回后自动验收重新开始，返工轮数预算重置）",
             );
             comment.push_str(&handoff_note);
             store.add_comment(NewComment {
@@ -3960,7 +4326,29 @@ async fn review_project_completion(
     // （双端真机 S2 实证：三条 re: 锚点全败，子单真实交付从未进入实核
     // 文本）。聚合深度对齐 review_parent_issue（单层子单——planner 拆解
     // 纪律即单层），不引入新的嵌套深度语义。
-    let mut summary = format!("## 顶层任务完成情况汇总（共 {} 个）\n", parents.len());
+    //
+    // 段序（2026-10-17 NB-101 三轮误升级根修的一部分）：**实物证据段在最
+    // 前**、子单交付摘要（worker 自述）垫后——worker_report 有字节内联上
+    // 限，超限截断从尾部吃起：实物证据（清单+最终报告节选）是不可再生的
+    // 评审输入，交付摘要是已被独立验收过的转述（每张子单都有自己的
+    // auto_decide），截断时先牺牲转述保实物。
+    // ---- F-U6-2（2026-09-15 U6 真机）：项目目录实物证据段（review_parent_issue
+    // 的 F-U3-6 同款——横向扫同类补齐）。项目收口验收标准与父单同形（「项目
+    // 目录含 xxx」），但此前评审输入只有各子单 Delivery 声明摘要（worker 自述，
+    // 且 exec 工作副本路径 Linux/Windows 混杂）——U6 实证：父单收口评审凭
+    // 实物证据四条标准全过 PASS，项目收口评审却因「无项目目录实物直接取证 /
+    // 子单仅有自评」判 UNSURE 转人工，两道评审同一标准结论矛盾。注入真实
+    // 清单 + 内容节选后与父单收口同源对照（无绑定目录的存量项目诚实跳过）。
+    // 无绑定目录时从空串起头（下层 push 汇总标题，行为同旧）。
+    let mut summary = if let Some(dir) = project.directory.as_deref() {
+        render_project_artifacts_evidence(std::path::Path::new(dir))
+    } else {
+        String::new()
+    };
+    summary.push_str(&format!(
+        "## 顶层任务完成情况汇总（共 {} 个）\n",
+        parents.len()
+    ));
     for p in &parents {
         let children = store.list_children(p.id)?;
         summary.push_str(&format!(
@@ -4018,31 +4406,24 @@ async fn review_project_completion(
         }
     }
 
-    // ---- F-U6-2（2026-09-15 U6 真机）：项目目录实物证据段（review_parent_issue
-    // 的 F-U3-6 同款——横向扫同类补齐）。项目收口验收标准与父单同形（「项目
-    // 目录含 xxx」），但此前评审输入只有各子单 Delivery 声明摘要（worker 自述，
-    // 且 exec 工作副本路径 Linux/Windows 混杂）——U6 实证：父单收口评审凭
-    // 实物证据四条标准全过 PASS，项目收口评审却因「无项目目录实物直接取证 /
-    // 子单仅有自评」判 UNSURE 转人工，两道评审同一标准结论矛盾。注入真实
-    // 清单 + 内容节选后与父单收口同源对照（无绑定目录的存量项目诚实跳过）。
-    if let Some(dir) = project.directory.as_deref() {
-        summary.push_str(&render_project_artifacts_evidence(std::path::Path::new(
-            dir,
-        )));
-    }
+    // （实物证据段已前置到 summary 开头——见上方段序说明；此处不再重复
+    // 注入。旧位置在交付摘要之后，64KB 内联截断会把节选段整体切掉，
+    // 实录：2026-10-17 三轮项目评审 prompt 全部停在文件清单中段。）
 
     // 验收标准聚合（F3 项目收口判定依据）：项目级 AC 在前（v10 列——此前
     // 只聚合父单 AC，project.create 存的项目级标准被静默丢弃），各顶层父单
     // 非空 AC 依序拼接；锚点行照常参与客观双检。
     let joined_ac = join_project_review_ac(Some(&project.acceptance_criteria), &parents);
 
-    let mut prompt = nemesis_board::build_review_user_prompt(
+    // 内联上限：见模块级 CLOSURE_WORKER_REPORT_MAX_BYTES（2026-10-17 根修）。
+    let mut prompt = nemesis_board::build_review_user_prompt_with_limits(
         &format!("PROJECT-{}", project.id),
         &project.name,
         &project.description,
         Some(&joined_ac),
         &summary,
         &[],
+        CLOSURE_WORKER_REPORT_MAX_BYTES,
     );
 
     // ---- 客观锚点双检（父单/子单同款）：workspace 根，先便宜后昂贵 ----
@@ -4381,7 +4762,10 @@ fn apply_project_review_outcome(
                             project.name,
                             verdict.as_str()
                         ),
-                        resume_entry: "review.retrigger（number=NB-x，处置后复评）".into(),
+                        resume_entry: format!(
+                            "review.retrigger（project_id={}，处置后复评）",
+                            project.id
+                        ),
                         environment: serde_json::json!({
                             "project_id": project.id,
                             "project_name": project.name,

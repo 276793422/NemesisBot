@@ -43,6 +43,13 @@ pub const SEND_FAILURE_MARK: &str = "⛔ 派发失败";
 /// 常量同款惯例）。
 pub const PARK_NOTICE_MARK: &str = "自动派发暂缓";
 
+/// 停摆哨兵标记（决策可见性批 2026-10-15 从 nemesisbot board_dispatch 上移）：
+/// 哨兵对「交付已收、执行档案迟迟未落地」的 in_progress 单写
+/// `{STALL_MARKER}：...` 系统评论；issue.list 的 attention 弱信号投影按本
+/// 前缀识别（写入侧 nemesisbot 与读取侧 nemesis-web 同源消费，字面量漂移
+/// = 停滞徽标静默失效）。
+pub const STALL_MARKER: &str = "⚠ 执行档案迟迟未落地";
+
 /// 送达失败重试退避阶梯（F2）：第 n 次失败后等 `min(1800, 60 * 2^(n-1))`
 /// 秒再重试——1m→2m→4m→8m→16m→30m 封顶。0 次失败 = 0（尚未失败立即可试）。
 /// 纯函数单测钉死；调用方（sweep）拿 DB 派生的失败次数喂入。
@@ -117,7 +124,7 @@ impl BoardStore {
     // -----------------------------------------------------------------------
 
     /// 建 issue：事务内分配编号 + 写 created 活动 + 订阅创建者（及被指派者）。
-    pub fn create_issue(&self, new: NewIssue) -> Result<Issue, String> {
+    pub fn create_issue(&self, mut new: NewIssue) -> Result<Issue, String> {
         if new.title.trim().is_empty() {
             return Err("issue title must not be empty".to_string());
         }
@@ -125,6 +132,23 @@ impl BoardStore {
             && new.assignee_id.as_deref().unwrap_or("").trim().is_empty()
         {
             return Err(format!("assignee {} requires assignee_id", at));
+        }
+        // 验收标准自动生成（2026-10-17 NB-125 根修，用户裁决：验收标准本
+        // 身就应该自动生成——「我说了有 BUG，验收标准就是 BUG 被解决」）。
+        // 未填 AC → 按标题/背景推导判定基准（BUG 形态=问题被修复并验证）。
+        // 单一真相源在 store：WSAPI/CLI/autopilot 全创建路径生效；planner
+        // 子单自带 AC 不触发。空字符串/全空白视同未填。
+        let ac_blank = new
+            .acceptance_criteria
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty();
+        if ac_blank {
+            new.acceptance_criteria = crate::ac_gen::generate_acceptance_criteria(
+                new.title.trim(),
+                new.description.trim(),
+            );
         }
 
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
@@ -161,13 +185,20 @@ impl BoardStore {
         } else {
             Some(serde_json::to_string(&new.required_tags).map_err(|e| e.to_string())?)
         };
+        // 环境能力硬条件（NB-122 批）：同 required_tags 的 JSON TEXT 形态。
+        let required_capabilities_json = if new.required_capabilities.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(&new.required_capabilities).map_err(|e| e.to_string())?)
+        };
         tx.execute(
             "INSERT INTO issue (number, title, description, status, priority,
                 assignee_type, assignee_id, creator_type, creator_id,
                 parent_issue_id, project_id, due_date, position,
                 acceptance_criteria, origin_type, origin_id,
-                required_role, required_tags, required_profession, created_at, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?20)",
+                required_role, required_tags, required_profession, required_capabilities,
+                created_at, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?21)",
             params![
                 number,
                 new.title,
@@ -192,6 +223,7 @@ impl BoardStore {
                 new.required_profession
                     .as_deref()
                     .filter(|s| !s.trim().is_empty()),
+                required_capabilities_json,
                 now,
             ],
         )
@@ -1157,6 +1189,66 @@ impl BoardStore {
     ) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         insert_activity(&conn, issue_id, actor, action, details, Self::now())
+    }
+
+    /// 最近一条 `auto_decide` 活动（打回/循环升级防抖判定用，2026-10-16）。
+    /// 返回 (activity 行 id, details JSON 里的 decision 词)。决策词缺席或
+    /// details 非 JSON = 空串。无任何 auto_decide = None。
+    pub fn latest_auto_decide(&self, issue_id: i64) -> Result<Option<(i64, String)>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, details FROM activity_log
+                 WHERE issue_id = ?1 AND action = 'auto_decide'
+                 ORDER BY id DESC LIMIT 1",
+            )
+            .map_err(|e| e.to_string())?;
+        let row = stmt
+            .query_row(params![issue_id], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
+            })
+            .optional()
+            .map_err(|e| e.to_string())?;
+        Ok(row.map(|(id, details)| {
+            let decision = details
+                .as_deref()
+                .and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+                .and_then(|v| {
+                    v.get("decision")
+                        .and_then(|d| d.as_str())
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or_default();
+            (id, decision)
+        }))
+    }
+
+    /// 指定活动之后是否有人工（admin kind）活动（循环升级防抖的打回放行
+    /// 判定：review.retrigger 落 admin 评论先于评审发车，此处可观测）。
+    pub fn has_admin_activity_after(&self, issue_id: i64, after_id: i64) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM activity_log
+                 WHERE issue_id = ?1 AND id > ?2 AND actor_type = 'admin'",
+                params![issue_id, after_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(n > 0)
+    }
+
+    /// 返工轮数预算重置纪元（打回重开，2026-10-16 用户裁决）：`review.
+    /// retrigger` 打回升级停车单时写入 board_meta，`try_parent_remediation`
+    /// 计轮只数纪元后的「返工：」子单——人工重新决策 = 自动验收重新开始。
+    /// 无纪元键 = 0（计全部历史，旧行为）。
+    pub fn remediation_reset_epoch(&self, issue_id: i64) -> i64 {
+        let key = format!("remediation_reset:{issue_id}");
+        self.get_meta(&key)
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(0)
     }
 
     /// 最近活动流（P5/E2 决策视图数据源）：按 id 降序（插入序，不受同秒
@@ -3769,6 +3861,11 @@ fn row_to_issue(row: &rusqlite::Row<'_>) -> rusqlite::Result<Issue> {
     let required_tags = required_tags_json
         .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
         .unwrap_or_default();
+    // 环境能力硬条件（NB-122 批）：同 required_tags 的宽容解析。
+    let required_capabilities_json: Option<String> = row.get("required_capabilities")?;
+    let required_capabilities = required_capabilities_json
+        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+        .unwrap_or_default();
     Ok(Issue {
         id: row.get("id")?,
         number: row.get("number")?,
@@ -3801,6 +3898,7 @@ fn row_to_issue(row: &rusqlite::Row<'_>) -> rusqlite::Result<Issue> {
         required_profession: row
             .get::<_, Option<String>>("required_profession")?
             .filter(|s| !s.trim().is_empty()),
+        required_capabilities,
         hidden: row.get::<_, i64>("hidden")? != 0,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,

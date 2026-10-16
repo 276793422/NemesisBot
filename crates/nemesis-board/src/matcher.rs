@@ -9,6 +9,10 @@
 //! - **硬条件 4（tier 门槛，D3）**：职能有 min_tier 且节点 tier 已知但
 //!   低于门槛 → 排除；tier 未知（None，旧节点）fail-open 放行。tier
 //!   门槛**不参与松弛**（D13）——有职能的松弛级照常带门槛；
+//! - **硬条件 5（能力硬闸，NB-122 批 2026-10-16）**：`required_capabilities`
+//!   非空则节点必须**全量命中**所列能力词（大小写不敏感、trim 后精确词
+//!   匹配）。**不参与松弛**——环境缺口松弛不出来，D13 阶梯每一级都带本
+//!   条件（无节点具备 = 诚实停车，不硬塞给装不出环境的节点）；
 //! - capabilities 对描述的词面覆盖是**加分项**（+5/命中，封顶 15）；
 //! - 排序：(分数↓, 负载↑, name 字典序) —— 同分时选最闲的节点。
 //!
@@ -43,6 +47,9 @@ pub struct MatchInput<'a> {
     pub required_tags: &'a [String],
     /// 需求职能 slug；None/空 = 不限职能（硬条件 3/4 跳过）。
     pub required_profession: Option<&'a str>,
+    /// 需求能力词（硬条件 5，NB-122 批）：非空则必须全量命中节点
+    /// capabilities；**不参与松弛**。空 = 不限能力。
+    pub required_capabilities: &'a [String],
     /// 子单描述（capabilities 词面覆盖加分用；小写比较）。
     pub description: &'a str,
 }
@@ -111,6 +118,20 @@ pub fn rank_peers(
             {
                 return None;
             }
+            // 硬条件 5：能力全量命中（NB-122 批；大小写不敏感、trim 精确词
+            // 匹配）。不参与松弛——pick_relaxed 各级 make() 原样携带本条件。
+            if !input.required_capabilities.is_empty()
+                && !input.required_capabilities.iter().all(|need| {
+                    let need = need.trim();
+                    !need.is_empty()
+                        && peer
+                            .capabilities
+                            .iter()
+                            .any(|c| c.trim().eq_ignore_ascii_case(need))
+                })
+            {
+                return None;
+            }
             // 加分：capabilities 词面覆盖描述（大小写不敏感包含）。
             let mut cap_bonus = 0i64;
             for cap in &peer.capabilities {
@@ -159,7 +180,9 @@ pub fn pick_peer(
 ///
 /// tier 门槛**不参与松弛**（D13）：门槛是 required_profession 的函数，
 /// 有职能的松弛级照常带门槛，职能被丢掉后门槛自然随行——不存在「保留
-/// 门槛要求但放开职能」的中间态。
+/// 门槛要求但放开职能」的中间态。required_capabilities 同样**不参与松弛**
+/// （硬条件 5，NB-122 批）：能力是环境事实，缺口松弛不出来——各级原样
+/// 携带，无节点具备 = 全阶梯走完仍 None = 调用方诚实停车。
 ///
 /// 无职能子单：② 蜕化为「保角色丢标签」（与旧 fallback 一级等价），③
 /// 跳过，④ 等价旧末级（角色也放开）——旧行为完全保留。
@@ -183,6 +206,9 @@ pub fn pick_relaxed<'a>(
             required_role: role,
             required_profession: prof,
             required_tags: tags,
+            // 硬条件 5 不参与松弛（NB-122 批）：能力是环境事实，松弛各级
+            // 原样携带——无节点具备 = 全阶梯走完仍 None = 调用方诚实停车。
+            required_capabilities: base.required_capabilities,
             description: base.description,
         }
     }

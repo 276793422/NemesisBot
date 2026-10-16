@@ -104,3 +104,45 @@ fn non_in_progress_issues_not_flagged() {
     let now = chrono::Utc::now().timestamp();
     assert_eq!(sweep_archive_stalls(&store, 0, now), 0);
 }
+
+/// 旧在途锚已收口不误报（NB-122 实录回归，2026-10-16）：评审 FAIL 重派回
+/// in_progress 后，上一轮「在途→合并」评论对仍在评论流、新一轮未交付——
+/// 旧在途锚不得判成本轮停摆；新一轮在途评论成为锚后警示照常（不过度抑制）。
+#[test]
+fn merged_inflight_not_flagged_after_redispatch() {
+    let store = fixture("merged");
+    let id = in_progress_issue(&store, "reworked");
+    let now = chrono::Utc::now().timestamp();
+
+    // 第 1 轮：在途 → 合并成功（31s 合入形态）。
+    add_inflight(&store, id);
+    store
+        .add_comment(NewComment {
+            issue_id: id,
+            author: Actor::system("board-archive"),
+            content: "🔀 变更集已合并（commit 287d4e6e8a32），进入验收评审。".into(),
+            parent_id: None,
+            ctype: CommentType::System,
+        })
+        .unwrap();
+
+    // 评审 FAIL → 重派回 in_progress（状态本就 in_progress，无需转移），
+    // 第 2 轮执行中：旧在途锚 + 旧合并评论 → 不得警示。
+    assert_eq!(
+        sweep_archive_stalls(&store, 0, now),
+        0,
+        "上一轮已合入的在途锚不得误报停摆"
+    );
+
+    // 第 2 轮真实停摆形态：新在途评论（变更集在途）→ 警示照常触发。
+    add_inflight(&store, id);
+    assert_eq!(sweep_archive_stalls(&store, 0, now), 1, "新在途锚警示照常");
+
+    let stall = store
+        .list_comments(id)
+        .unwrap()
+        .into_iter()
+        .filter(|c| c.content.contains("⚠ 执行档案迟迟未落地"))
+        .count();
+    assert_eq!(stall, 1);
+}

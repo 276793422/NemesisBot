@@ -42,6 +42,7 @@ fn no_constraints_prefers_least_loaded() {
             required_role: None,
             required_tags: &[],
             required_profession: None,
+            required_capabilities: &[],
             description: "",
         },
         &peers,
@@ -63,6 +64,7 @@ fn required_role_is_a_hard_filter() {
             required_role: Some("qa"),
             required_tags: &[],
             required_profession: None,
+            required_capabilities: &[],
             description: "",
         },
         &peers,
@@ -79,6 +81,7 @@ fn required_role_matches_case_insensitively() {
             required_role: Some("worker"),
             required_tags: &[],
             required_profession: None,
+            required_capabilities: &[],
             description: "",
         },
         &peers,
@@ -99,6 +102,7 @@ fn required_tags_are_a_hard_filter() {
             required_role: None,
             required_tags: &tags,
             required_profession: None,
+            required_capabilities: &[],
             description: "",
         },
         &peers,
@@ -130,6 +134,7 @@ fn tag_hits_outrank_capability_bonus() {
             required_role: None,
             required_tags: &tags,
             required_profession: None,
+            required_capabilities: &[],
             description: "用 rust 重写 cli 工具并打 docker 镜像",
         },
         &peers,
@@ -153,6 +158,7 @@ fn capability_bonus_is_capped() {
             required_role: None,
             required_tags: &[],
             required_profession: None,
+            required_capabilities: &[],
             description: "aa bb cc dd ee 全命中",
         },
         &peers,
@@ -173,6 +179,7 @@ fn same_score_prefers_lighter_node() {
             required_role: None,
             required_tags: &tags,
             required_profession: None,
+            required_capabilities: &[],
             description: "",
         },
         &peers,
@@ -185,6 +192,7 @@ fn same_score_prefers_lighter_node() {
             required_role: None,
             required_tags: &tags,
             required_profession: None,
+            required_capabilities: &[],
             description: "",
         },
         &peers,
@@ -200,6 +208,7 @@ fn empty_peers_yields_empty_result() {
             required_role: None,
             required_tags: &[],
             required_profession: None,
+            required_capabilities: &[],
             description: "x",
         },
         &[],
@@ -212,6 +221,7 @@ fn empty_peers_yields_empty_result() {
                 required_role: None,
                 required_tags: &[],
                 required_profession: None,
+                required_capabilities: &[],
                 description: "x"
             },
             &[],
@@ -229,6 +239,7 @@ fn missing_load_entry_defaults_to_zero() {
             required_role: None,
             required_tags: &[],
             required_profession: None,
+            required_capabilities: &[],
             description: "",
         },
         &peers,
@@ -248,6 +259,7 @@ fn ranking_is_deterministic_for_full_ties() {
         required_role: None,
         required_tags: &[],
         required_profession: None,
+        required_capabilities: &[],
         description: "",
     };
     let empty = load(&[]);
@@ -273,6 +285,7 @@ fn required_profession_exact_match_is_a_hard_filter() {
             required_role: None,
             required_tags: &[],
             required_profession: Some("dev:cpp"),
+            required_capabilities: &[],
             description: "",
         },
         &peers,
@@ -286,6 +299,7 @@ fn required_profession_exact_match_is_a_hard_filter() {
             required_role: None,
             required_tags: &[],
             required_profession: Some("dev"),
+            required_capabilities: &[],
             description: "",
         },
         &peers,
@@ -310,6 +324,7 @@ fn required_profession_matches_case_insensitively() {
             required_role: None,
             required_tags: &[],
             required_profession: Some("dev:cpp"),
+            required_capabilities: &[],
             description: "",
         },
         &peers,
@@ -326,6 +341,7 @@ fn required_profession_empty_string_means_unconstrained() {
             required_role: None,
             required_tags: &[],
             required_profession: Some("  "),
+            required_capabilities: &[],
             description: "",
         },
         &peers,
@@ -343,6 +359,7 @@ fn unknown_profession_slug_blocks_everyone() {
             required_role: None,
             required_tags: &[],
             required_profession: Some("dev:cuda"),
+            required_capabilities: &[],
             description: "",
         },
         &peers,
@@ -371,6 +388,7 @@ fn tier_gate_blocks_known_lower_tier_and_fails_open_on_unknown() {
             required_role: None,
             required_tags: &[],
             required_profession: Some("architecture"),
+            required_capabilities: &[],
             description: "",
         },
         &peers,
@@ -389,6 +407,7 @@ fn tier_gate_does_not_apply_without_profession() {
             required_role: None,
             required_tags: &[],
             required_profession: None,
+            required_capabilities: &[],
             description: "",
         },
         &peers,
@@ -417,6 +436,7 @@ fn relaxed_ladder_rung2_keeps_profession_drops_tags() {
         required_role: Some("worker"),
         required_tags: &tags,
         required_profession: Some("dev:cpp"),
+        required_capabilities: &[],
         description: "",
     };
     // 严格匹配落空（windrv 标签与节点 rust 无交集；tags 硬条件是交集
@@ -442,6 +462,7 @@ fn relaxed_ladder_rung3_drops_profession_keeps_role_tags() {
         required_role: Some("worker"),
         required_tags: &tags,
         required_profession: Some("dev:cpp"),
+        required_capabilities: &[],
         description: "",
     };
     // 严格（职能未宣告）与②（②也需要职能命中）都落空 → ③丢职能保角色/标签。
@@ -458,6 +479,7 @@ fn relaxed_ladder_rung4_full_relaxation() {
         required_role: Some("worker"),
         required_tags: &tags,
         required_profession: Some("dev:cpp"),
+        required_capabilities: &[],
         description: "",
     };
     // Role 档（2026-09-29 三档化）④不可达：只有④能救的局诚实返回 None。
@@ -478,6 +500,7 @@ fn relaxed_ladder_without_profession_preserves_old_behavior() {
         required_role: Some("worker"),
         required_tags: &tags,
         required_profession: None,
+        required_capabilities: &[],
         description: "",
     };
     // 无职能：②蜕化为旧「保角色丢标签」一级，③ 跳过。
@@ -503,6 +526,7 @@ fn relaxed_ladder_never_relaxes_profession_via_tier() {
         required_role: Some("worker"),
         required_tags: &[],
         required_profession: Some("architecture"),
+        required_capabilities: &[],
         description: "",
     };
     let (id, label) =
@@ -520,7 +544,119 @@ fn relaxed_ladder_returns_none_when_nothing_matches() {
         required_role: None,
         required_tags: &[],
         required_profession: None,
+        required_capabilities: &[],
         description: "",
     };
     assert!(pick_relaxed(&base, &[], &load(&[]), RelaxDepth::Full).is_none());
+}
+
+// -----------------------------------------------------------------------
+// 环境能力硬条件 5（NB-122 批 2026-10-16）：全量命中硬闸、大小写不敏感、
+// **不参与松弛**（环境缺口松弛不出来）。
+// -----------------------------------------------------------------------
+
+#[test]
+fn required_capabilities_all_hit_is_a_hard_filter() {
+    let peers = vec![
+        peer("has", "worker", &[], &["chrome", "docker"]),
+        peer("half", "worker", &[], &["chrome"]),
+    ];
+    let caps = vec!["chrome".to_string(), "docker".to_string()];
+    let ranked = rank_peers(
+        &MatchInput {
+            required_role: None,
+            required_tags: &[],
+            required_profession: None,
+            required_capabilities: &caps,
+            description: "",
+        },
+        &peers,
+        &load(&[]),
+    );
+    assert_eq!(ranked.len(), 1, "全量命中：缺任何一项都被硬闸排除");
+    assert_eq!(ranked[0].0, "has");
+}
+
+#[test]
+fn required_capabilities_matches_case_insensitively() {
+    let peers = vec![peer("n", "worker", &[], &["Chrome"])];
+    let caps = vec!["chrome".to_string()];
+    let ranked = rank_peers(
+        &MatchInput {
+            required_role: None,
+            required_tags: &[],
+            required_profession: None,
+            required_capabilities: &caps,
+            description: "",
+        },
+        &peers,
+        &load(&[]),
+    );
+    assert_eq!(ranked.len(), 1, "大小写不敏感精确词命中");
+}
+
+#[test]
+fn required_capabilities_empty_means_unconstrained() {
+    let peers = vec![peer("n", "worker", &[], &[])];
+    let ranked = rank_peers(
+        &MatchInput {
+            required_role: None,
+            required_tags: &[],
+            required_profession: None,
+            required_capabilities: &[],
+            description: "",
+        },
+        &peers,
+        &load(&[]),
+    );
+    assert_eq!(ranked.len(), 1, "空能力清单 = 条件跳过");
+}
+
+#[test]
+fn required_capabilities_never_relaxed_even_at_full_depth() {
+    // 能力缺口松弛不出来：唯一候选不具能力 → 全阶梯走完仍 None（诚实停车）。
+    let peers = vec![prof_peer(
+        "anyone",
+        "worker",
+        &[],
+        &["docker"],
+        &["dev:cpp"],
+        Some("big"),
+    )];
+    let caps = vec!["chrome".to_string()];
+    let base = MatchInput {
+        required_role: Some("worker"),
+        required_tags: &["nobody-has-this".to_string()],
+        required_profession: Some("dev:cpp"),
+        required_capabilities: &caps,
+        description: "",
+    };
+    assert!(
+        pick_relaxed(&base, &peers, &load(&[]), RelaxDepth::Full).is_none(),
+        "能力硬条件不得被松弛阶梯放行（②③④任意级都不行）"
+    );
+}
+
+#[test]
+fn relaxed_ladder_works_normally_when_caps_satisfied() {
+    // 能力满足时阶梯行为不变：严格命中落空（标签无交集）→ ②保职能丢标签。
+    let peers = vec![prof_peer(
+        "prof",
+        "worker",
+        &["rust"],
+        &["chrome"],
+        &["dev:cpp"],
+        Some("big"),
+    )];
+    let caps = vec!["chrome".to_string()];
+    let base = MatchInput {
+        required_role: Some("worker"),
+        required_tags: &["windrv".to_string()],
+        required_profession: Some("dev:cpp"),
+        required_capabilities: &caps,
+        description: "",
+    };
+    let (id, label) = pick_relaxed(&base, &peers, &load(&[]), RelaxDepth::Role).expect("②级应命中");
+    assert_eq!(id, "prof");
+    assert_eq!(label, "保职能松弛标签兜底");
 }

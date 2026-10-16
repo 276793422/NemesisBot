@@ -426,3 +426,74 @@ fn test_migration_v16_to_v17_adds_required_profession() {
     assert_eq!(set, "dev:cpp");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// v18（NB-122 批 2026-10-16）：v17 旧库迁移补 `issue.required_capabilities`
+/// 列；存量行 NULL（= 无能力需求），新列可写可读（迁移 round-trip）。
+#[test]
+fn test_migration_v17_to_v18_adds_required_capabilities() {
+    let dir = unique_dir("migrate-v17-v18");
+    let path = dir.join("board.db");
+    std::fs::create_dir_all(&dir).unwrap();
+    {
+        let conn = Connection::open(&path).unwrap();
+        // 手工把库钉在 v17（跑全部中间迁移再回写版本，模拟真实存量库）。
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(SCHEMA_V2).unwrap();
+        conn.execute_batch(SCHEMA_V3).unwrap();
+        conn.execute_batch(SCHEMA_V4).unwrap();
+        conn.execute_batch(SCHEMA_V5).unwrap();
+        conn.execute_batch(SCHEMA_V6).unwrap();
+        conn.execute_batch(SCHEMA_V7).unwrap();
+        conn.execute_batch(SCHEMA_V8).unwrap();
+        conn.execute_batch(SCHEMA_V9).unwrap();
+        conn.execute_batch(SCHEMA_V10).unwrap();
+        conn.execute_batch(SCHEMA_V11).unwrap();
+        conn.execute_batch(SCHEMA_V12).unwrap();
+        conn.execute_batch(SCHEMA_V13).unwrap();
+        conn.execute_batch(SCHEMA_V14).unwrap();
+        conn.execute_batch(SCHEMA_V15).unwrap();
+        conn.execute_batch(SCHEMA_V16).unwrap();
+        conn.execute_batch(SCHEMA_V17).unwrap();
+        conn.pragma_update(None, "user_version", 17).unwrap();
+        conn.execute(
+            "INSERT INTO board_meta(key, value) VALUES('number_prefix', 'NB')",
+            [],
+        )
+        .unwrap();
+    }
+    let conn = init_db(&path).unwrap();
+    let v: i32 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, SCHEMA_VERSION, "迁移到 v18");
+    // 存量行：新列读出 NULL。
+    conn.execute(
+        "INSERT INTO issue (number, title, creator_type, creator_id, position, created_at, updated_at)
+         VALUES ('NB-1', 'legacy', 'admin', 'admin', 1, 1, 1)",
+        [],
+    )
+    .unwrap();
+    let legacy: Option<String> = conn
+        .query_row(
+            "SELECT required_capabilities FROM issue WHERE number='NB-1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(legacy, None, "存量行新列 = NULL（无能力需求）");
+    // 新列可写可读（JSON 数组形态，store 层契约）。
+    conn.execute(
+        "UPDATE issue SET required_capabilities='[\"chrome\",\"docker\"]' WHERE number='NB-1'",
+        [],
+    )
+    .unwrap();
+    let set: String = conn
+        .query_row(
+            "SELECT required_capabilities FROM issue WHERE number='NB-1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(set, r#"["chrome","docker"]"#);
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -9,6 +9,7 @@
 //! （P1-P4 任务分解）。crate 自包含 SQLite（不与 nemesis-data 的 usage.db 混），
 //! 遵循 `nemesis-data/src/db.rs` 的 WAL + `user_version` 迁移模式。
 
+pub mod ac_gen;
 pub mod anchor;
 pub mod arbitrator;
 pub mod archive;
@@ -36,6 +37,7 @@ pub mod team_memory;
 pub mod timeline;
 pub mod watcher;
 
+pub use ac_gen::generate_acceptance_criteria;
 pub use anchor::{
     ANCHOR_PREFIX, AnchorCheck, AnchorKind, AnchorResult, EXEC_ANCHOR_DEFAULT_TIMEOUT_SECS,
     ExecAnchorPolicy, RejectedAnchor, all_passed, has_content_regex_anchor, parse_anchors,
@@ -88,11 +90,14 @@ pub use planner::{
 pub use report::{DeliveryReport, REPORT_FORMAT_SECTION, TASK_CARD_HEADER, parse_delivery_report};
 pub use review::{
     ExperienceNote, REVIEW_SYSTEM_PROMPT, ReviewOutput, ReviewParseError, ReviewVerdict,
-    build_review_user_prompt, parse_review, selfcheck_request_text, strip_directive_lines,
+    build_review_user_prompt, build_review_user_prompt_with_limits, parse_review,
+    selfcheck_request_text, strip_directive_lines,
 };
 pub use service::BoardService;
 pub use state_machine::{can_transition, validate_transition};
-pub use store::{BoardStore, PARK_NOTICE_MARK, SEND_FAILURE_MARK, send_failure_backoff_secs};
+pub use store::{
+    BoardStore, PARK_NOTICE_MARK, SEND_FAILURE_MARK, STALL_MARKER, send_failure_backoff_secs,
+};
 pub use team_memory::{
     MAX_MATCHED_EXPERIENCES, match_experiences, render_dispatch_experience_section,
     render_planner_experience_strings,
