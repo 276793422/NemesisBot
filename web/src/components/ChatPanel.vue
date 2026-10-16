@@ -921,6 +921,7 @@ function onSSEResync() {
   inFlightHistory.clear()
   chatStore.reset()
   lastChatSeq = 0
+  resetActivityLag() // 全量重载后挂着的 activity 补拉已无意义（游标归零重拉）
   loadHistory()
 }
 
@@ -937,23 +938,67 @@ function onSSEResync() {
 let activityLagSeq = 0
 let activityDebounce: number | null = null
 let activityLastRefreshAt = 0
+let activityStreamRetries = 0
+// 会话边界 / 全量重载链共用：清掉挂着的 activity 补拉状态（lag 游标、
+// 重试预算、在途防抖 timer）。不清理的话旧会话积压的 fire() 会在新会话
+// 上空转（activityLagSeq 是旧会话 seq 空间的值，> 归零后的游标 → 触发
+// 一次对新会话的多余 syncMissedChat）或最多 20×1.5s 空转重试。
+function resetActivityLag() {
+  if (activityDebounce !== null) {
+    clearTimeout(activityDebounce)
+    activityDebounce = null
+  }
+  activityLagSeq = 0
+  activityStreamRetries = 0
+}
 function onChatActivity(payload: any) {
   if (!isDefaultChat.value) return
   if (payload?.session_id !== effectiveSid.value) return
   const seq = typeof payload?.seq === 'number' ? payload.seq : 0
   if (seq <= lastChatSeq) return
   activityLagSeq = Math.max(activityLagSeq, seq)
+  activityStreamRetries = 0 // 新信号=新 lag 事件：重置本事件的重试预算（防上一事件耗尽后链永久死亡）
   // 防抖：高频信号合并为一次响应；5s 冷却防风暴循环。
   if (activityDebounce !== null) clearTimeout(activityDebounce)
-  activityDebounce = window.setTimeout(() => {
-    activityDebounce = null
-    if (activityLagSeq <= lastChatSeq) return // 响应间隙实时帧已追平
+  const fire = () => {
+    if (activityLagSeq <= lastChatSeq) {
+      activityStreamRetries = 0
+      return // 响应间隙实时帧已追平
+    }
+    if (streaming.value) {
+      // 本端发送中：流式态自管理，不打断。pending 保留 + 有界自重试——
+      // 流式窗口内的多端写入在流式结束后的第一个重试 tick 补拉（回灌帧
+      // 自然推进 lastChatSeq → 重试空转 → 链自灭）。此前直接 return 且无
+      // 重调度：若之后无新信号，pending 永不消费（流式版冷却吞尾）。
+      if (activityStreamRetries < 20) {
+        activityStreamRetries++
+        activityDebounce = window.setTimeout(() => {
+          activityDebounce = null
+          fire()
+        }, 1500)
+      }
+      return
+    }
+    activityStreamRetries = 0
     activityLagSeq = 0
-    if (streaming.value) return // 本端发送中：流式态自管理，不打断
-    if (Date.now() - activityLastRefreshAt < 5000) return
     activityLastRefreshAt = Date.now()
     // 增量补齐（user/assistant/tool 同通道）；gap → 全量兜底在函数内部。
     syncMissedChat()
+  }
+  activityDebounce = window.setTimeout(() => {
+    activityDebounce = null
+    if (Date.now() - activityLastRefreshAt < 5000) {
+      // 冷却窗内到达的信号不丢：保留 pending，冷却到期补跑一次。此前直接
+      // return 丢弃——断线重连场景 SSE 重连补发旧信号写满冷却窗后，尾端
+      // 多端写入的 activity 落在窗内被吞，之后无新信号则该批写入永不补拉
+      //（断线恢复 e2e 实测：B 补拉后 2s 的 C 恰落冷却窗，DOM 永缺）。
+      activityDebounce = window.setTimeout(() => {
+        activityDebounce = null
+        fire()
+      }, 5000 - (Date.now() - activityLastRefreshAt) + 50)
+      return
+    }
+    fire()
   }, 800)
 }
 
@@ -2259,6 +2304,7 @@ const unwatchSession = watch(
     resetHistoryLoadFailure()
     chatStore.reset()
     lastChatSeq = 0 // L2：换会话 → 补拉游标归零（seq 是会话内单调的）
+    resetActivityLag() // 旧会话的 activity 残留状态（lag 游标/重试链/在途 timer）不带到新会话
     if (newId && wsStatus.value === 'connected') {
       loadHistory()
     }

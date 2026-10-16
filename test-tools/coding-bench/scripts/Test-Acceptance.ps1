@@ -29,41 +29,64 @@ $runtime = @(Arr $cfg.runtime_paths) + @('target/', '.git/', 'config/', 'session
 # tracked diff, never as untracked files inside these dirs.
 $card = Get-Content -Raw -Encoding UTF8 (Join-Path $ExperimentDir "tasks\$TaskId.json") | ConvertFrom-Json
 $allowed = Arr $card.allowed_paths
-$diffPaths = @(git -C $copy diff --name-only)
+
+# R8: directory-boundary prefix match. `-like "$p*"` has no boundary — allowed
+# "src" would also accept "srcfoo/x". A match requires the whole path equal to
+# the prefix or a '/' boundary right after it (both sides normalized to '/').
+function Test-PathUnder([string]$f, [string]$p) {
+    $fn = ($f -replace '\\', '/')
+    $pn = ($p -replace '\\', '/').TrimEnd('/')
+    if ($pn -eq '') { return $true }
+    return ($fn -eq $pn -or $fn.StartsWith($pn + '/'))
+}
+
+# R8: base freeze. The run driver (Invoke-ValidationRun.ps1) records base_sha
+# (pre-run HEAD) in run.json. Full change set = `git diff --name-only <base>`
+# (committed + staged + unstaged together) — the old bare `git diff --name-only`
+# only saw unstaged edits, so staged or committed out-of-bounds changes were
+# invisible to the allowed_paths guard. Standalone invocation without run.json
+# base falls back to the copy's current HEAD (old shape, no committed coverage).
+$baseSha = if ($run.base_sha) { $run.base_sha } else { (git -C $copy rev-parse HEAD) }
+$headAfter = (git -C $copy rev-parse HEAD)
+# Full evidence patch vs base (committed edits included; the old bare `git diff`
+# evidence file silently missed anything the agent committed).
+git -C $copy diff $baseSha | Set-Content -Encoding UTF8 (Join-Path $evDir 'evidence.patch')
+$diffPaths = @(git -C $copy diff --name-only $baseSha)
 # Untracked != junk: a NEW source file the agent created is a legitimate deliverable
 # (pilot UIALIGN run1: web/src/composables/useUserBubbleAlign.ts untracked, real work).
 # stray = untracked non-runtime AND (outside allowed_paths when declared, else not
 # sharing a >=2-segment path prefix with any tracked-diff path => repo-root litter).
+# R8: collected via `ls-files --others` (clean paths) — the old `status --porcelain`
+# + `-notlike '??*'` filter was dead code: in PowerShell wildcards `?` matches any
+# single char, so `??*` accepted EVERY porcelain line (M/A/D/R included), feeding
+# modified/deleted entries into the stray scan.
 $stray = @()
-foreach ($line in @(git -C $copy status --porcelain -uall)) {
-    if ($line -notlike '??*') { continue }
-    $f = $line.Substring(3).Trim()
+foreach ($f in @(git -C $copy ls-files --others --exclude-standard)) {
     $isRuntime = $false
-    foreach ($r in $runtime) { if ($f -like "$r*") { $isRuntime = $true; break } }
+    foreach ($r in $runtime) { if (Test-PathUnder $f $r) { $isRuntime = $true; break } }
     if ($isRuntime) { continue }
     $isDeliverable = $false
     if ($allowed.Count -gt 0) {
-        foreach ($p in $allowed) { if ($f -like "$p*") { $isDeliverable = $true; break } }
+        foreach ($p in $allowed) { if (Test-PathUnder $f $p) { $isDeliverable = $true; break } }
     } elseif ($diffPaths.Count -gt 0) {
         $segs = ($f -replace '\\', '/') -split '/'
         if ($segs.Count -ge 2) {
             $pref = ($segs[0..1] -join '/')
             foreach ($d in $diffPaths) {
-                $dn = $d -replace '\\', '/'
-                if ($dn -like "$pref/*" -or $dn -eq $pref) { $isDeliverable = $true; break }
+                if (Test-PathUnder $d $pref) { $isDeliverable = $true; break }
             }
         }
     }
     if (-not $isDeliverable) { $stray += $f }
 }
 $complete = ($stray.Count -eq 0)
-# allowed_paths guard on the tracked diff (diff paths must live under allowed prefixes, if declared)
+# allowed_paths guard on the full change set vs base (must live under allowed prefixes, if declared)
 if ($cfg.require_diff -and $diffPaths.Count -eq 0) { $complete = $false }
 $outOfBounds = @()
 if ($allowed.Count -gt 0) {
     foreach ($f in $diffPaths) {
         $ok = $false
-        foreach ($p in $allowed) { if ($f -like "$p*") { $ok = $true; break } }
+        foreach ($p in $allowed) { if (Test-PathUnder $f $p) { $ok = $true; break } }
         if (-not $ok) { $outOfBounds += $f }
     }
 }
@@ -132,6 +155,9 @@ if ($outOfBounds.Count -gt 0) { $verdict = 'fail' }
     task_id = $TaskId; run_no = $RunNo
     acceptance = $verdict
     complete = $complete
+    base_sha = $baseSha
+    head_after = $headAfter
+    base_frozen = [bool]$run.base_sha
     stray_untracked = $stray
     out_of_bounds = $outOfBounds
     commands_ok = $cmdsOk

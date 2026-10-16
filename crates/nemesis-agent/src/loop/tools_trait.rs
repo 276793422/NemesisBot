@@ -1,6 +1,7 @@
 //! Tool trait 与 FileChange(Kind)、工具注册/移除/枚举、MCP reload/refresh/snapshot 族、校验统计与重试预算。
 //!
 //! P1 自 `loop.rs` 物理搬迁（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）；语义零变化。
+#[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
 

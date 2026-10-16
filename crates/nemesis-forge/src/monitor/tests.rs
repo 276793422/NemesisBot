@@ -138,6 +138,11 @@ fn test_evaluate_all_auto_upgrade_consecutive_observing() {
 
     let mut artifact = make_artifact("upgrade1", 10, ArtifactStatus::Observing);
     artifact.consecutive_observing_rounds = 3;
+    // 用健康工件（success_rate 0.8 → 普通分类 = positive）让 auto-upgrade
+    // 路径可判别：旧版 success_rate 0.0 时普通分类本来就出 negative，
+    // 删掉 auto-upgrade 代码测试照样绿（恒绿死测试）。断言升级签名值
+    // （verdict=negative + improvement=-0.3）双重钉死。
+    artifact.success_rate = 0.8;
     registry.add(artifact.clone());
 
     let monitor = DeploymentMonitor::new(ForgeConfig::default(), registry);
@@ -145,6 +150,11 @@ fn test_evaluate_all_auto_upgrade_consecutive_observing() {
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].verdict, "negative"); // Auto-upgraded
+    assert!(
+        (results[0].improvement_score + 0.3).abs() < f64::EPSILON,
+        "auto-upgrade must stamp the -0.3 signature score, got {}",
+        results[0].improvement_score
+    );
 }
 
 #[test]
@@ -153,17 +163,23 @@ fn test_evaluate_all_no_upgrade_few_rounds() {
 
     let mut artifact = make_artifact("upgrade2", 10, ArtifactStatus::Observing);
     artifact.consecutive_observing_rounds = 2;
+    // 健康工件：普通分类 = positive（improvement 0.3）。rounds<3 时
+    // auto-upgrade 不得触发——若错误触发，verdict 会被强改为 negative。
+    artifact.success_rate = 0.8;
     registry.add(artifact.clone());
 
     let monitor = DeploymentMonitor::new(ForgeConfig::default(), registry);
     let results = monitor.evaluate_all();
 
     assert_eq!(results.len(), 1);
-    // Should not have been force-set to "negative" by auto-upgrade
-    // since consecutive_observing_rounds < 3
-    if results[0].verdict == "observing" {
-        // Good: stayed as observing
-    }
+    // 旧版此处是空 if 体（零断言死测试），且旧样张 success_rate=0.0 时
+    // verdict 本来就是 negative，测不出 auto-upgrade 是否误触发。
+    assert_eq!(results[0].verdict, "positive");
+    assert!(
+        (results[0].improvement_score - 0.3).abs() < f64::EPSILON,
+        "improvement must be the un-tampered 0.3, got {}",
+        results[0].improvement_score
+    );
 }
 
 #[test]

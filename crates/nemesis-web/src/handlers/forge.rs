@@ -79,7 +79,7 @@ impl ModuleHandler for ForgeHandler {
                 let data = data.ok_or("missing data")?;
                 self.config_save(home, &data, ctx)
             }
-            "reflect" => self.reflect(workspace),
+            "reflect" => self.reflect(home, workspace).await,
             "test" => {
                 let data = data.ok_or("missing data")?;
                 forge_test_cmd(home, workspace, &data)
@@ -475,6 +475,20 @@ impl ForgeHandler {
             .get("status")
             .and_then(|v| v.as_str())
             .ok_or("missing 'status' field")?;
+        // 状态值必须能反序列化为 ArtifactStatus（R17，单一真相源校验）：
+        // 此前任意字符串直写 registry.json，而 Registry::load 用
+        // Vec<Artifact> 严格反序列化——一个毒值让整个注册表加载必炸
+        // 且无自愈（web 统计静默归零、CLI 反思去重失效会追加重复条目）。
+        if serde_json::from_value::<nemesis_types::forge::ArtifactStatus>(
+            serde_json::Value::String(status.to_string()),
+        )
+        .is_err()
+        {
+            return Err(format!(
+                "invalid status '{}': allowed values are Draft/Active/Observing/Degraded/Negative/Archived",
+                status
+            ));
+        }
 
         // registry.json 是 load→改→写 RMW（并发 registry_update 后写覆盖先写
         // 丢状态翻转），与 config 同族文件共用写串行锁（2026-10-13）。
@@ -553,7 +567,11 @@ impl ForgeHandler {
         Ok(Some(serde_json::json!({ "artifacts": artifacts })))
     }
 
-    fn reflect(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+    async fn reflect(
+        &self,
+        home: &str,
+        workspace: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
         let fd = forge_dir(workspace);
         let exp_file = fd.join("experiences").join("experiences.jsonl");
 
@@ -584,17 +602,65 @@ impl ForgeHandler {
         let reflections_dir = fd.join("reflections");
         let reflector = nemesis_forge::reflector::Reflector::with_reflections_dir(reflections_dir);
 
-        let report = reflector.reflect(&experiences, None, "today", "all");
+        // use_llm 消费（2026-10-16 R16 缺陷 21）：R11 契约「use_llm = 是否用
+        // LLM 做语义分析，gateway 与 CLI 同语义」的第三入口——此前本命令
+        // 无条件纯统计反思，Dashboard 手动反思在默认配置（use_llm=true）下
+        // 永远拿不到 LLM 洞察，静默缺失。接线与 CLI `forge reflect` 同源：
+        // 杂务链（resolve_judge_caller 单一真相源：judge_model → small_model
+        // → 主模型）挂 reflector，带全量 artifacts（LLM 看到已部署技能不重复
+        // 提名，注册表先从盘回载）+ 统一杂务预算；use_llm=false 或无可用模型
+        // = 统计反思，响应 `llm_insights` 字段诚实标注（LLM 调用失败也落
+        // false，不假报）。
+        let forge_cfg = load_forge_config(workspace);
+        let caller = if forge_cfg.reflection.use_llm {
+            resolve_judge_caller(home, workspace)?
+        } else {
+            None
+        };
+        if let Some(caller) = caller {
+            reflector.set_provider(caller);
+        }
+        let llm_requested = forge_cfg.reflection.use_llm;
+
+        let registry =
+            nemesis_forge::registry::Registry::new(nemesis_forge::types::RegistryConfig {
+                index_path: fd.join("registry.json").to_string_lossy().to_string(),
+            });
+        let _ = registry.load().await;
+        let artifacts = registry.list(None, None);
+
+        let report = if llm_requested {
+            reflector
+                .reflect_with_llm(
+                    &experiences,
+                    &artifacts,
+                    None,
+                    "today",
+                    "all",
+                    Some(nemesis_forge::reflector_llm::AUX_FORGE_MAX_TOKENS),
+                )
+                .await
+        } else {
+            reflector.reflect(&experiences, None, "today", "all")
+        };
+        let llm_insights = report.llm_insights.is_some();
 
         // Write report to disk
         match reflector.write_report(&report) {
             Ok(path) => {
                 tracing::info!(path = %path.display(), "[Forge] Manual reflection report written");
+                let mut message = format!(
+                    "反思完成，发现 {} 条洞察，{} 条建议",
+                    report.stats.total_records,
+                    report.stats.top_patterns.len() + report.stats.low_success.len(),
+                );
+                if llm_requested && !llm_insights {
+                    message.push_str("（LLM 语义分析未产出：无可用模型或调用失败）");
+                }
                 Ok(Some(serde_json::json!({
                     "triggered": true,
-                    "message": format!("反思完成，发现 {} 条洞察，{} 条建议",
-                        report.stats.total_records,
-                        report.stats.top_patterns.len() + report.stats.low_success.len()),
+                    "message": message,
+                    "llm_insights": llm_insights,
                     "insights_count": report.stats.top_patterns.len() + report.stats.low_success.len(),
                     "total_records": report.stats.total_records,
                     "unique_patterns": report.stats.unique_patterns,
@@ -606,6 +672,7 @@ impl ForgeHandler {
                 Ok(Some(serde_json::json!({
                     "triggered": true,
                     "message": format!("反思分析完成（报告写入失败: {}）", e),
+                    "llm_insights": llm_insights,
                     "insights_count": report.stats.top_patterns.len() + report.stats.low_success.len(),
                     "total_records": report.stats.total_records,
                 })))
@@ -1000,12 +1067,21 @@ fn read_learning_cycles(dir: &PathBuf) -> Vec<serde_json::Value> {
     }
     let mut results = Vec::new();
     if let Ok(month_entries) = std::fs::read_dir(dir) {
-        for month_entry in month_entries.flatten() {
+        // 月目录按名排序（R18）：read_dir 顺序是平台实现细节（NTFS 字典序
+        // vs ext4 哈希序），无序基上「取尾/倒序截尾」=任意子集。升序迭代
+        // 保持本函数「旧→新」返回契约（消费方 `cycles.last()` 取最新、
+        // `.rev().take(100)` 取最新 100）。
+        let mut months: Vec<_> = month_entries.flatten().collect();
+        months.sort_by_key(|e| e.file_name());
+        for month_entry in months {
             if !month_entry.path().is_dir() {
                 continue;
             }
             if let Ok(file_entries) = std::fs::read_dir(month_entry.path()) {
-                for file_entry in file_entries.flatten() {
+                // 同批日文件同样升序（老日→新日）。
+                let mut files: Vec<_> = file_entries.flatten().collect();
+                files.sort_by_key(|e| e.file_name());
+                for file_entry in files {
                     let name = file_entry.file_name().to_string_lossy().to_string();
                     if !name.ends_with(".jsonl") {
                         continue;
@@ -1056,6 +1132,10 @@ fn forge_test_cmd(
         .get("name")
         .and_then(|v| v.as_str())
         .ok_or("missing 'name'")?;
+    // name 围栏（R17 引入，R18 起走 forge crate 单一真相源）：单段目录名，
+    // 拒 `../x` 穿越读面与 `C:evil` 盘符相对形态（is_absolute()==false 但
+    // join 整段换基座）。合法技能目录名是 kebab/单段（slugify 产物）。
+    nemesis_forge::forge::valid_skill_dir_name(name)?;
     let filter = data.get("test").and_then(|v| v.as_str());
 
     let runner = FORGE_TEST_RUNNER.read().clone();

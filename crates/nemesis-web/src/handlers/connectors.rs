@@ -172,12 +172,17 @@ fn cmd_ledger(ctx: &RequestContext) -> Result<Option<Value>, String> {
 /// - read 类 → 诚实说明（不改变外部状态，无需撤销）；
 /// - write + 清单声明 undo（域 C）→ 反向 op：凭条主键值回填 arg，经
 ///   [`resolve_session_loop`] → `handle_tool_call` 完整 dispatch 瀑布
-///   （安全 8 层/审批/审计照常——撤销本身也是账）；
+///   （安全 8 层/审批/审计照常——撤销本身也是账）；**结果按行动账本
+///   新凭条结构化判定**（R5）：反向 op 的凭条 `outcome == "executed"`
+///   才 `undone: true`，不嗅探文本；
 /// - write 无 undo 声明（域 B）→ 会话级 `undo_last_turn`（E3a busy 闸
-///   守门；需要 session_key——凭条有记录用凭条的，否则取入参）。
+///   守门；需要 session_key——凭条有记录用凭条的，否则取入参）。**只
+///   回退本地会话**，外部副作用未被撤销——`undone: false` 如实标注。
 ///
 /// 仅 `executed` 凭条可撤销；registry 按当下裁决（op 已删/清单已改 =
-/// 诚实拒，不凭旧行为猜）。
+/// 诚实拒，不凭旧行为猜）。响应统一 `{receipt_id, undone, via,
+/// capability, reason?}`（R5 能力建模：`capability = reverse_op |
+/// local_rewind | none`）。
 async fn cmd_undo(ctx: &RequestContext, data: Option<&Value>) -> Result<Option<Value>, String> {
     let ws = workspace_of(ctx)?;
     let receipt_id = data
@@ -198,10 +203,16 @@ async fn cmd_undo(ctx: &RequestContext, data: Option<&Value>) -> Result<Option<V
         .find(|x| x.receipt_id == receipt_id)
         .ok_or_else(|| format!("凭条 {receipt_id} 不存在（近 500 条内）"))?;
 
-    // 只有 executed 才有可撤销的效果（denied/blocked/error 本身未生效）。
+    // 只有 executed 才有可撤销的效果；unknown（结果未知——超时/回执缺失）
+    // 保守拒撤但措辞必须区分：不是「未生效」而是「无法确认是否已生效」。
     if r.outcome != "executed" {
+        let reason = if r.outcome == "unknown" {
+            "结果未知（操作可能已在对端生效），撤销被保守拒绝"
+        } else {
+            "未真实生效"
+        };
         return Err(format!(
-            "凭条 {receipt_id} 的 outcome 是 `{}`（未真实生效），无可撤销",
+            "凭条 {receipt_id} 的 outcome 是 `{}`（{reason}），无可撤销",
             r.outcome
         ));
     }
@@ -225,11 +236,13 @@ async fn cmd_undo(ctx: &RequestContext, data: Option<&Value>) -> Result<Option<V
             "receipt_id": receipt_id,
             "undone": false,
             "via": "none",
+            "capability": "none",
             "reason": "read 类操作不改变外部状态，无需撤销",
         })));
     }
 
-    // 域 C：清单声明 undo → 反向 op（凭条主键值回填）。
+    // 域 C：清单声明 undo → 反向 op（凭条主键值回填）。R5：结果按行动
+    // 账本新凭条结构化判定——不嗅探文本。
     if let Some(undo) = &op.undo {
         let key_value = r.receipt_value.clone().ok_or_else(|| {
             format!("凭条 {receipt_id} 缺主键值（receipt_value 空），无法回填撤销参数")
@@ -238,6 +251,11 @@ async fn cmd_undo(ctx: &RequestContext, data: Option<&Value>) -> Result<Option<V
             .or_else(|| r.session_key.clone())
             .unwrap_or_default();
         let loop_ref = resolve_session_loop(ctx, &sk)?;
+        // 派发前快照在册凭条 id：派发后新增的 = 本次反向 op 产生的账。
+        let before: std::collections::HashSet<String> = receipt::list_receipts(&ws, 500, None)?
+            .into_iter()
+            .map(|x| x.receipt_id)
+            .collect();
         let call = nemesis_agent::types::ToolCallInfo {
             id: format!("undo-{receipt_id}"),
             name: nemesis_connectors::INVOKE_TOOL_NAME.to_string(),
@@ -251,16 +269,38 @@ async fn cmd_undo(ctx: &RequestContext, data: Option<&Value>) -> Result<Option<V
         let tool_ctx =
             nemesis_agent::context::RequestContext::new("web", &ctx.chat_id, "dashboard-undo", &sk);
         let result_text = loop_ref.handle_tool_call(&call, &tool_ctx).await;
-        return Ok(Some(json!({
+        let after = receipt::list_receipts(&ws, 500, None)?;
+        let base = json!({
             "receipt_id": receipt_id,
-            "undone": true,
             "via": "reverse_op",
+            "capability": "reverse_op",
             "undo_op": undo.op,
             "result_text": result_text,
-        })));
+        });
+        return Ok(Some(
+            match undo_ledger_verdict(&before, &after, &c.id, &undo.op) {
+                Ok(undo_rid) => json!({
+                    "receipt_id": receipt_id,
+                    "undone": true,
+                    "via": "reverse_op",
+                    "capability": "reverse_op",
+                    "undo_op": undo.op,
+                    "undo_receipt_id": undo_rid,
+                    "result_text": result_text,
+                }),
+                Err(reason) => {
+                    let mut v = base;
+                    v["undone"] = json!(false);
+                    v["reason"] = json!(reason);
+                    v
+                }
+            },
+        ));
     }
 
-    // 域 B：write 无 undo 声明 → 会话级 rewind_last_turn。
+    // 域 B：write 无 undo 声明 → 会话级 rewind_last_turn。R5：只回退
+    // 本地会话，外部副作用未被撤销——undone=false 如实标注（不宣称
+    // 「撤销完成」）。
     if op.class == OpClass::Write {
         let sk = session_key_in
             .or(r.session_key.clone())
@@ -270,19 +310,61 @@ async fn cmd_undo(ctx: &RequestContext, data: Option<&Value>) -> Result<Option<V
         let report = loop_ref.undo_last_turn(&sk).await?;
         return Ok(Some(json!({
             "receipt_id": receipt_id,
-            "undone": true,
-            "via": "rewind_last_turn",
+            "undone": false,
+            "via": "local_rewind",
+            "capability": "local_rewind",
             "session_key": sk,
+            "reason": "外部副作用未被撤销，仅本地会话回退",
             "report": report,
         })));
     }
 
-    // exec/network 无 undo 声明：无通用撤销语义，诚实拒。
-    Err(format!(
-        "op `{}`（{} 类）未声明 undo 且非 write 类——无通用撤销语义；如需撤销请在清单为它声明 undo 反向 op",
-        op.id,
-        op.class.as_str()
-    ))
+    // exec/network 无 undo 声明：无通用撤销语义（能力建模 = none，诚实
+    // 说明而非报错——前端按 capability 隐藏/明示）。
+    Ok(Some(json!({
+        "receipt_id": receipt_id,
+        "undone": false,
+        "via": "none",
+        "capability": "none",
+        "reason": format!(
+            "op `{}`（{} 类）未声明 undo 且非 write 类——无通用撤销语义；如需撤销请在清单为它声明 undo 反向 op",
+            op.id,
+            op.class.as_str()
+        ),
+    })))
+}
+
+/// R5 撤销判定（纯函数，便于三臂单测）：对比反向 op 派发前后的行动账本
+/// 快照，只认「新增凭条 + `outcome == "executed"`」为撤销成功。不嗅探
+/// 文本——派发回显是给人看的，账才是结构化真相。
+///
+/// - `Ok(undo_receipt_id)`：新凭条已 executed，`undone: true`；
+/// - `Err(reason)`：新凭条 outcome 非 executed（被拦/失败），或压根没落
+///   新凭条——外部状态未撤销，`undone: false`。
+fn undo_ledger_verdict(
+    before: &std::collections::HashSet<String>,
+    after: &[nemesis_connectors::receipt::Receipt],
+    connector: &str,
+    undo_op: &str,
+) -> Result<String, String> {
+    after
+        .iter()
+        .find(|x| !before.contains(&x.receipt_id) && x.connector == connector && x.op == undo_op)
+        .map(|nr| {
+            if nr.outcome == "executed" {
+                Ok(nr.receipt_id.clone())
+            } else {
+                // 措辞与 cmd_undo 前置闸同纪律：unknown 是「结果未知（可能
+                // 已生效）」不是「未生效」——同函数族内不破口径。
+                let note = if nr.outcome == "unknown" {
+                    "结果未知，外部状态可能未被撤销"
+                } else {
+                    "未真实生效，外部状态未撤销"
+                };
+                Err(format!("反向 op 凭条 outcome=`{}`（{note}）", nr.outcome))
+            }
+        })
+        .unwrap_or_else(|| Err("反向 op 未落新凭条（被拦或执行失败）——外部状态未撤销".to_string()))
 }
 
 /// connector 数据面 handler（`connectors.list` / `connectors.receipts.list` /

@@ -61,11 +61,15 @@ async fn test_append_uses_month_directory() {
     let dir = tempfile::tempdir().unwrap();
     let store = CycleStore::from_base(dir.path());
 
-    let cycle = make_cycle("month-test");
+    // 单一 now() 同源：cycle 的 started_at 与断言用的目录/文件名取自同一
+    // 时间戳——两个独立 now() 跨月/跨日边界时，断言目录会与实际写入
+    // 目录分叉（append 按 started_at 定文件名）。
+    let now = chrono::Local::now();
+    let mut cycle = make_cycle("month-test");
+    cycle.started_at = now.to_rfc3339();
     store.append(&cycle).await.unwrap();
 
     // Verify month directory structure was created
-    let now = chrono::Local::now();
     let month_dir = dir.path().join(now.format("%Y%m").to_string());
     assert!(month_dir.exists());
 
@@ -208,7 +212,9 @@ async fn test_new_adds_learning_suffix() {
 
 #[tokio::test]
 async fn test_read_nonexistent_dir() {
-    let store = CycleStore::from_base("/nonexistent/path/for/testing");
+    // tempdir 内的不存在目录——裸 `/nonexistent/...` 在 Windows 上解析到盘根。
+    let dir = tempfile::tempdir().unwrap();
+    let store = CycleStore::from_base(dir.path().join("nonexistent"));
     let cycles = store.read_all().await.unwrap();
     assert!(cycles.is_empty());
 }

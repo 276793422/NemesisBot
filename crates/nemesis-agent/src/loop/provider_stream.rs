@@ -22,6 +22,7 @@
 //! 新流的 start 帧重置前端缓冲、终答回复覆盖收口；cancel/estop 两臂在
 //! recovery.rs 显式补 error 帧（sink 引用另持一份）。观测 lane 语义，最终
 //! 状态以正常 receive 回复帧为准。
+#[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -1,6 +1,7 @@
 //! 单轮驱动：CHANGES_SUMMARY_CAP/render_turn_changes_summary、ProcessOptions、DetachedOpts、spawn_session_title_job、get_or_create_instance、run(_with_trace/_detached/_detached_events)、resume_execution(_with_token)、drain_turn_file_changes、drain_turn_deliverables。
 //!
 //! P1 自 `loop.rs` 物理搬迁（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）；语义零变化。
+#[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
 
