@@ -55,3 +55,12 @@ fn rules_reference_existing_workspace_crates() {
         assert!(found, "规则引用的 crate '{name}' 不在 workspace 成员里");
     }
 }
+
+#[test]
+fn rule_count_at_least_ten() {
+    // §四.4（2026-10-16）：R1-R7 基础矩阵 + R8-R12 扩展（connectors/web/
+    // board/forge/cluster 方向约束）——规则被悄悄删到 10 条以下 = 门禁
+    // 缩水，测试红出提醒（新增规则请连本断言一起抬）。
+    let n = rules().len();
+    assert!(n >= 10, "架构规则数 {n} < 10：门禁规则被删除或未注册？");
+}

@@ -31,7 +31,9 @@ pub struct Receipt {
     pub risk: String,
     /// read | write | exec | network
     pub class: String,
-    /// executed | denied_approval | budget_blocked | disabled | error
+    /// executed | denied_approval | budget_blocked | disabled | error |
+    /// unknown（结果未知——远程回执 envelope 缺 outcome 时 master 侧落此值，
+    /// 预算占用保留不回吐，见 R3 决策表第四臂）
     pub outcome: String,
     /// sha256(canonical args json) 前 16 hex（args 原文不落盘）。
     pub args_digest: String,

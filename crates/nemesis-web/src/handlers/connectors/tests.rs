@@ -554,6 +554,7 @@ async fn undo_read_class_is_honest_noop() {
         .unwrap();
     assert_eq!(out["undone"], false);
     assert_eq!(out["via"], "none");
+    assert_eq!(out["capability"], "none");
     assert!(out["reason"].as_str().unwrap().contains("read"), "{out}");
 }
 
@@ -623,9 +624,10 @@ async fn undo_domain_b_session_key_and_loop_gates() {
     assert!(err.contains("agent loop not running"), "{err}");
 }
 
-/// network/exec 类无 undo 声明：无通用撤销语义，诚实拒（引导补清单声明）。
+/// network/exec 类无 undo 声明：能力建模 = none（R5）——结构化响应诚实
+/// 说明无通用撤销语义（前端按 capability 隐藏撤销按钮/点击明示）。
 #[tokio::test]
-async fn undo_network_class_without_undo_rejected() {
+async fn undo_network_class_without_undo_reports_no_capability() {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path();
     write_undo_connector(ws);
@@ -633,8 +635,90 @@ async fn undo_network_class_without_undo_rejected() {
 
     let r = undo_receipt("u-broker", "ping_net", "executed");
     receipt::append_receipt(ws, &r).unwrap();
-    let err = cmd_undo(&ctx, Some(&json!({ "receipt_id": r.receipt_id })))
+    let out = cmd_undo(&ctx, Some(&json!({ "receipt_id": r.receipt_id })))
         .await
-        .unwrap_err();
-    assert!(err.contains("无通用撤销语义"), "{err}");
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["undone"], false);
+    assert_eq!(out["capability"], "none");
+    assert!(
+        out["reason"].as_str().unwrap().contains("无通用撤销语义"),
+        "{out}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// undo_ledger_verdict（R5 结构化判定纯函数，三臂）
+// ---------------------------------------------------------------------------
+
+/// 三臂：新凭条 executed → Ok(新凭条 id)；新凭条非 executed → Err（含
+/// outcome）；无新凭条 → Err。外加两条钉死不误判：派发前在册（before
+/// 快照内）的旧 executed 凭条不算撤销成功；connector/op 不匹配的新凭条
+/// 不算（比如并发其他 op 也落了账）。
+#[test]
+fn undo_ledger_verdict_three_arms() {
+    let mut before = std::collections::HashSet::new();
+    let old = undo_receipt("u-broker", "cancel_order", "executed");
+    before.insert(old.receipt_id.clone());
+
+    // 臂 1：新增 executed 凭条 → Ok(id)。
+    let mut ok_new = undo_receipt("u-broker", "cancel_order", "executed");
+    ok_new.receipt_id = "RCPT-AFTER-OK".to_string();
+    let after = vec![old.clone(), ok_new.clone()];
+    let v = undo_ledger_verdict(&before, &after, "u-broker", "cancel_order");
+    assert_eq!(
+        v.unwrap().as_str(),
+        "RCPT-AFTER-OK",
+        "新 executed 凭条 = 撤销成功"
+    );
+
+    // 臂 2：新增凭条但 outcome 非 executed（如 budget_blocked）→ Err 含 outcome。
+    let mut blocked = undo_receipt("u-broker", "cancel_order", "budget_blocked");
+    blocked.receipt_id = "RCPT-AFTER-BLOCKED".to_string();
+    let after = vec![old.clone(), blocked];
+    let err = undo_ledger_verdict(&before, &after, "u-broker", "cancel_order").unwrap_err();
+    assert!(err.contains("budget_blocked"), "{err}");
+    assert!(err.contains("未真实生效"), "{err}");
+
+    // F3（2026-10-16 二轮复查）：unknown 措辞与前缀闸同口径——「结果未知，
+    // 可能未被撤销」，不出现「未真实生效」的假确定性。
+    let mut unknown = undo_receipt("u-broker", "cancel_order", "unknown");
+    unknown.receipt_id = "RCPT-AFTER-UNKNOWN".to_string();
+    let after = vec![old.clone(), unknown];
+    let err = undo_ledger_verdict(&before, &after, "u-broker", "cancel_order").unwrap_err();
+    assert!(err.contains("结果未知"), "{err}");
+    assert!(!err.contains("未真实生效"), "unknown 不得断言未生效: {err}");
+
+    // 臂 3：无新凭条（被拦在凭条前/执行体不可达）→ Err。
+    let err = undo_ledger_verdict(
+        &before,
+        std::slice::from_ref(&old),
+        "u-broker",
+        "cancel_order",
+    )
+    .unwrap_err();
+    assert!(err.contains("未落新凭条"), "{err}");
+
+    // before 内旧 executed 凭条不误判为撤销成功。
+    let v = undo_ledger_verdict(
+        &before,
+        std::slice::from_ref(&old),
+        "u-broker",
+        "cancel_order",
+    );
+    assert!(v.is_err(), "旧凭条不算新账");
+
+    // connector/op 不匹配的新凭条不算（并发他 op 落账不背锅）。
+    let mut other_op = undo_receipt("u-broker", "quote", "executed");
+    other_op.receipt_id = "RCPT-OTHER-OP".to_string();
+    let mut other_conn = undo_receipt("other-conn", "cancel_order", "executed");
+    other_conn.receipt_id = "RCPT-OTHER-CONN".to_string();
+    let err = undo_ledger_verdict(
+        &before,
+        &[old, other_op, other_conn],
+        "u-broker",
+        "cancel_order",
+    )
+    .unwrap_err();
+    assert!(err.contains("未落新凭条"), "{err}");
 }

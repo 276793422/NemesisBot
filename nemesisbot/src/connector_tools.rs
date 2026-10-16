@@ -13,8 +13,12 @@
 //! - 全 outcome 落统一回执（executed/error/budget_blocked/disabled；
 //!   denied_approval 由 dispatch 的 ABAC deny 分支代写——审批拒绝发生在
 //!   execute 之前，工具自身写不了，工具侧见 ⛔ 前缀即跳过不双写）；
+//! - 执行前强制（R4，本地/远程单点覆盖）：args_schema 校验 + 资金参数形态
+//!   （finance op 的 qty 必须在场且为有限正数）在出网前拒绝，不消耗额度；
 //! - 预算护栏（限频 + 资金 fail-closed）在 execute 内、dispatch 审批之后
-//!   ——先过人工卡再过限额，两道闸各自留痕；
+//!   ——先过人工卡再过限额，两道闸各自留痕；R3 起 reserve/commit/release
+//!   三段原子占用（裁决即记账，收口按 outcome 决策表，RPC 未知结果保留
+//!   账目），workspace 级共享单例（agent/loop 重建不清零）；
 //! - 凭据注入：vault 别名 `connector/<id>/<slot>` 现开现解锁，真值只进
 //!   HTTP 请求头/查询串，回执/日志只见别名与 digest。
 
@@ -23,14 +27,14 @@ use std::sync::{Arc, Weak};
 
 use nemesis_agent::context::RequestContext;
 use nemesis_agent::r#loop::{AgentLoop, OperationOverride, Tool};
-use nemesis_connectors::budget::{BudgetGuard, Limits};
+use nemesis_connectors::budget::{BudgetGuard, Limits, shared_budget_guard};
 use nemesis_connectors::manifest::{OpClass, RiskLevel, ValidatedConnector, ValidatedOp};
 use nemesis_connectors::receipt::{
     BudgetConsumed, Receipt, append_receipt, args_digest, new_receipt_id,
 };
 #[cfg(feature = "security")]
 use nemesis_connectors::registry::search_connectors;
-use nemesis_connectors::registry::{find_connector, find_op};
+use nemesis_connectors::registry::{find_connector, find_op, validate_op_args};
 
 /// 工具名（消费者 = agent_factory 的 security 闸注册块——同闸单一形态）。
 #[cfg(feature = "security")]
@@ -125,6 +129,44 @@ fn budget_limits(cfg: &nemesis_config::ConnectorsConfig) -> Limits {
     }
 }
 
+/// 资金类 op 的数量参数提取（R4 强制）：`finance_budget=true` 时 `qty`
+/// **必须在场且为有限正数**——缺失/null/字符串/负数/0/非有限值一律拒绝。
+/// 旧形态 `qty 缺失 → None → 跳过资金闸` 是免检旁路（声明了资金类的 op
+/// 却能不带数量过闸），fail-closed 语义不容许。
+fn finance_qty_of(op: &ValidatedOp, op_args: &serde_json::Value) -> Result<Option<f64>, String> {
+    if !op.finance_budget {
+        return Ok(None);
+    }
+    let Some(q) = op_args.get("qty") else {
+        return Err("资金类 op 缺少必填数量参数 `qty`（number，>0）".to_string());
+    };
+    let Some(qty) = q.as_f64() else {
+        return Err(format!(
+            "资金类参数 `qty` 必须是 number，实际为 {}",
+            json_type_name(q)
+        ));
+    };
+    if !qty.is_finite() {
+        return Err(format!("资金类参数 `qty` 非有限值（{qty}）"));
+    }
+    if qty <= 0.0 {
+        return Err(format!("资金类参数 `qty` 必须为正数，实际为 {qty}"));
+    }
+    Ok(Some(qty))
+}
+
+/// 人读 JSON 类型名（错误文案用）。
+fn json_type_name(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
 /// 统一回执落盘 + summary 截断（写失败只 warn——回执是增值账目，不反压
 /// 工具结果；与 dispatch 代写臂同纪律）。`approval_ref` 来自工具 ctx
 /// （dispatch 经 execute_tracked 注入的交互审批引用；直通/规则表 = None
@@ -213,6 +255,22 @@ fn merge_request_headers(
         merged.insert(name.to_ascii_lowercase(), (name, value));
     }
     merged.into_values().collect()
+}
+
+/// GET 剩余 args + 凭据 query 对合并（R6）：普通参数在前、**凭据 query 同名
+/// 时凭据胜**（与 merge_request_headers 同一裁决——args 不得覆盖凭据）。
+/// 顺序保持（普通参数按 args 出现序在前，凭据对在后），reqwest `.query()`
+/// 按 Vec 序列化为重复 k=v 对并统一 percent-encoding。
+fn merge_query_pairs(
+    extra_query: Vec<(String, String)>,
+    credential_query: &[(String, String)],
+) -> Vec<(String, String)> {
+    let mut merged: Vec<(String, String)> = extra_query
+        .into_iter()
+        .filter(|(k, _)| !credential_query.iter().any(|(ck, _)| ck == k))
+        .collect();
+    merged.extend(credential_query.iter().cloned());
+    merged
 }
 
 // ---------------------------------------------------------------------------
@@ -351,6 +409,11 @@ pub struct ConnectorInvokeTool {
     /// 集群 RPC 通道（agent_factory 注入，与 cluster_rpc 工具同源闭包；
     /// 缺省 None = target_node 诚实报错）。
     remote_call_fn: parking_lot::RwLock<Option<RemoteCallFn>>,
+    /// R7：本次调用的父深度（`set_invocation_depth` 注入，0 = 顶层 agent）。
+    /// tool 绑定回灌时透传给 `handle_tool_call_at_depth`——经 connector
+    /// 绑定的 spawn 嵌套限制照常生效（SharedTool AtomicUsize 同模式；
+    /// 共享实例 set-then-read 的并发边际误归属与 SpawnTool 同类已接受）。
+    invocation_depth: std::sync::atomic::AtomicUsize,
 }
 
 impl ConnectorInvokeTool {
@@ -362,15 +425,19 @@ impl ConnectorInvokeTool {
             Arc<nemesis_security::pipeline::SecurityPlugin>,
         >,
     ) -> Self {
+        // R3：workspace 级共享预算单例——agent/loop 重建走同一 Arc，
+        // 滑窗与日累计不清零（per-instance 计数器让重启即重置额度）。
+        let budget = shared_budget_guard(&workspace);
         Self {
             workspace,
             config_path,
             #[cfg(feature = "security")]
             security,
-            budget: Arc::new(BudgetGuard::default()),
+            budget,
             loop_ref: parking_lot::RwLock::new(None),
             order_lock: parking_lot::Mutex::new(()),
             remote_call_fn: parking_lot::RwLock::new(None),
+            invocation_depth: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -389,14 +456,23 @@ impl ConnectorInvokeTool {
     }
 
     /// 推送条件：写/exec/网络资金类执行面动作（读类静默只入账本——§3.5）。
+    /// unknown（结果未知）是**最**需要推送的结局——恰恰因为它需要人核账
+    /// （外部写可能已生效而账目被保留），漏推 = 用户无从发现需人工对账。
     fn should_push(class: OpClass, finance_budget: bool, outcome: &str) -> bool {
         (class != OpClass::Read || finance_budget)
-            && matches!(outcome, "executed" | "error" | "budget_blocked")
+            && matches!(outcome, "executed" | "error" | "budget_blocked" | "unknown")
     }
 }
 
 #[async_trait::async_trait]
 impl Tool for ConnectorInvokeTool {
+    // R7：dispatch 注入父深度（tool_dispatch.rs set_context 同点），tool
+    // 绑定回灌时透传——经 connector 绑定的工具链 spawn 嵌套限制不重置。
+    fn set_invocation_depth(&self, depth: usize) {
+        self.invocation_depth
+            .store(depth, std::sync::atomic::Ordering::Relaxed);
+    }
+
     fn description(&self) -> String {
         "Execute a connector op declared in the local registry (connector.toml). \
          Requires connector id + op id + args object — discover them via \
@@ -563,49 +639,73 @@ impl ConnectorInvokeTool {
             }
         };
 
+        // R4 执行前强制（单点，本地/远程同覆盖）：args_schema 校验 + 资金
+        // 参数形态强制——必须在出网（本地 dispatch / 远程 RPC）之前拒绝，
+        // 且不消耗任何额度（reserve 之前）。
+        if let Err(e) = validate_op_args(op.args_schema.as_ref(), &op_args) {
+            return (
+                Err(honest_err(format!(
+                    "⛔ INVALID ARGS: {e}（未执行，未消耗额度）"
+                ))),
+                None,
+            );
+        }
+        let finance_qty = match finance_qty_of(op, &op_args) {
+            Ok(q) => q,
+            Err(e) => {
+                return (
+                    Err(honest_err(format!(
+                        "⛔ INVALID ARGS: {e}（未执行，未消耗额度）"
+                    ))),
+                    None,
+                );
+            }
+        };
+
         // 远程分支（E1）：target_node 指定 → master 闸 + 集群派发 +
         // 镜像凭条（对端还有完整 dispatch 瀑布与本地预算，双闸是刻意的）。
         if let Some(target) = target_node {
             return self
-                .run_remote(&c, op, &op_args, &digest, &target, context)
+                .run_remote(&c, op, &op_args, &digest, &target, context, finance_qty)
                 .await;
         }
 
         // 预算闸（fail-closed；审批已在 dispatch 过完——先人工后限额）。
+        // R3：reserve 原子占用（裁决即记账），收口按 outcome 决策表：
+        // DispatchRejected/Failed/Err → release（确定性未出网/本地失败）；
+        // Done → commit（既成事实）。
         let cfg = connectors_config(&self.config_path);
         let limits = budget_limits(&cfg);
-        let finance_qty = op
-            .finance_budget
-            .then(|| op_args.get("qty").and_then(|q| q.as_f64()))
-            .flatten();
         let now_ms = chrono::Utc::now().timestamp_millis();
-        let verdict = self.budget.check(&limits, &c.id, now_ms, finance_qty);
-        if !verdict.is_allow() {
-            let r = write_receipt(
-                &self.workspace,
-                &c.id,
-                &op.id,
-                op.risk.as_str(),
-                op.class.as_str(),
-                "budget_blocked",
-                &digest,
-                &verdict.denial_message(),
-                None,
-                None,
-                None,
-                Some(&context.session_key),
-                context.approval_ref.clone(),
-                false,
-            );
-            self.maybe_push_card(context, &c, op, &r, &cfg).await;
-            return (
-                Err(honest_err(format!(
-                    "⛔ RATE LIMIT: {}",
-                    verdict.denial_message()
-                ))),
-                Some(r),
-            );
-        }
+        let reservation = match self.budget.reserve(&limits, &c.id, now_ms, finance_qty) {
+            Ok(r) => r,
+            Err(verdict) => {
+                let r = write_receipt(
+                    &self.workspace,
+                    &c.id,
+                    &op.id,
+                    op.risk.as_str(),
+                    op.class.as_str(),
+                    "budget_blocked",
+                    &digest,
+                    &verdict.denial_message(),
+                    None,
+                    None,
+                    None,
+                    Some(&context.session_key),
+                    context.approval_ref.clone(),
+                    false,
+                );
+                self.maybe_push_card(context, &c, op, &r, &cfg).await;
+                return (
+                    Err(honest_err(format!(
+                        "⛔ RATE LIMIT: {}",
+                        verdict.denial_message()
+                    ))),
+                    Some(r),
+                );
+            }
+        };
 
         // 按绑定分派。⛔ 前缀（dispatch 安全层拒绝族）= denied_approval
         // 回执已由 dispatch 的 ABAC deny 分支代写——工具侧跳过不双写，原文
@@ -613,14 +713,19 @@ impl ConnectorInvokeTool {
         // = dispatch 未代写凭条，走 error 回执（错误也是账）。
         let exec = self.dispatch_binding(&c, op, &op_args, context).await;
         match exec {
-            Ok(InvocationOutcome::DispatchRejected(raw)) => (Ok(raw), None),
+            // 安全闸拒绝 = 确定未出网 → 回吐额度（R3 决策表）
+            Ok(InvocationOutcome::DispatchRejected(raw)) => {
+                self.budget.release(&reservation);
+                (Ok(raw), None)
+            }
             Ok(InvocationOutcome::Done {
                 summary,
                 receipt_key,
                 receipt_value,
                 result_text,
             }) => {
-                self.budget.record(&limits, &c.id, now_ms, finance_qty);
+                // 既成事实 → 预备转正式（幂等；记账在 reserve 已落）
+                self.budget.commit(&reservation);
                 let rate_used = self
                     .budget
                     .rate_used(&c.id, chrono::Utc::now().timestamp_millis());
@@ -655,6 +760,8 @@ impl ConnectorInvokeTool {
                 summary,
                 result_text,
             }) => {
+                // 本地绑定确定性失败（未产生外部效果）→ 回吐额度
+                self.budget.release(&reservation);
                 let r = write_receipt(
                     &self.workspace,
                     &c.id,
@@ -674,7 +781,45 @@ impl ConnectorInvokeTool {
                 self.maybe_push_card(context, &c, op, &r, &cfg).await;
                 (Err(honest_err(result_text)), Some(r))
             }
+            Ok(InvocationOutcome::UnknownOutcome {
+                summary,
+                result_text,
+            }) => {
+                // R3 决策表第四臂（复查补口；F1 扩面：超时或传输中途断开）=
+                // 结果未知——请求可能已送达并被对端处理（外部写可能已生效）。
+                // 保留账目不回吐（release 会放行额度 = 绕过限额），与
+                // run_remote 的 RPC Err 臂同语义。
+                tracing::warn!(
+                    connector = %c.id,
+                    op = %op.id,
+                    "[Connector] 本地 HTTP 执行结果未知（超时/传输中断），预算占用保留（不回吐）"
+                );
+                let r = write_receipt(
+                    &self.workspace,
+                    &c.id,
+                    &op.id,
+                    op.risk.as_str(),
+                    op.class.as_str(),
+                    // 词表与远程路径同源：unknown（结果未知）不是 error——
+                    // 审计账本必须能区分「对端明确报错（未执行）」与「超时
+                    // 结果未知（可能已执行）」；undo 闸对两者都拒撤，但文案
+                    // 语义不同。
+                    "unknown",
+                    &digest,
+                    &summary,
+                    None,
+                    None,
+                    None,
+                    Some(&context.session_key),
+                    context.approval_ref.clone(),
+                    false,
+                );
+                self.maybe_push_card(context, &c, op, &r, &cfg).await;
+                (Err(honest_err(result_text)), Some(r))
+            }
             Err(e) => {
+                // 本地绑定异常（未产生外部效果）→ 回吐额度
+                self.budget.release(&reservation);
                 let r = write_receipt(
                     &self.workspace,
                     &c.id,
@@ -704,10 +849,14 @@ impl ConnectorInvokeTool {
     /// 凭据铁律跨节点不变：payload 只含 `connector/op/args/session_key`，
     /// **凭据永不上 RPC 线**——对端用自己的 vault 解锁。master 侧闸照跑：
     /// operation_override 投影在 dispatch 已裁决（审批卡在 master 出），
-    /// budget.check 在派发前 fail-closed（E2 聚合记账第二道闸；对端还有
-    /// 自己的一套本地限额）。对端 `executed` 才记 master 额度；镜像凭条
+    /// budget.reserve 在派发前 fail-closed（E2 聚合记账第二道闸；对端还有
+    /// 自己的一套本地限额）。R3 收口决策表：对端 `executed` → commit；
+    /// 其他 outcome（denied/error/budget_blocked/disabled，对端明确回执）
+    /// → release；**RPC 本身 Err（超时/传输错误）→ 保留账目不回吐**——
+    /// 结果未知（外部写可能已生效），放行额度 = 绕过限额。镜像凭条
     /// 新铸 receipt_id（非对端的）、`undoable=false`（跨节点撤销 v1 挂账
     /// ——LLM 可手动带 target_node 调 undo op）。
+    #[allow(clippy::too_many_arguments)]
     async fn run_remote(
         &self,
         c: &ValidatedConnector,
@@ -716,6 +865,7 @@ impl ConnectorInvokeTool {
         digest: &str,
         target: &str,
         context: &RequestContext,
+        finance_qty: Option<f64>,
     ) -> (Result<String, String>, Option<Receipt>) {
         let f = self.remote_call_fn.read().clone();
         let Some(f) = f else {
@@ -729,41 +879,40 @@ impl ConnectorInvokeTool {
         };
 
         // master 侧预算闸（fail-closed；审批卡在 master dispatch 已出——
-        // 这里是派发前的第二道闸，被拒 = 请求不出线）。
+        // 这里是派发前的第二道闸，被拒 = 请求不出线）。R3：reserve 原子
+        // 占用，收口见下方决策表。
         let cfg = connectors_config(&self.config_path);
         let limits = budget_limits(&cfg);
-        let finance_qty = op
-            .finance_budget
-            .then(|| op_args.get("qty").and_then(|q| q.as_f64()))
-            .flatten();
         let now_ms = chrono::Utc::now().timestamp_millis();
-        let verdict = self.budget.check(&limits, &c.id, now_ms, finance_qty);
-        if !verdict.is_allow() {
-            let r = write_receipt(
-                &self.workspace,
-                &c.id,
-                &op.id,
-                op.risk.as_str(),
-                op.class.as_str(),
-                "budget_blocked",
-                digest,
-                &verdict.denial_message(),
-                None,
-                None,
-                None,
-                Some(&context.session_key),
-                context.approval_ref.clone(),
-                false,
-            );
-            self.maybe_push_card(context, c, op, &r, &cfg).await;
-            return (
-                Err(honest_err(format!(
-                    "⛔ RATE LIMIT: {}",
-                    verdict.denial_message()
-                ))),
-                Some(r),
-            );
-        }
+        let reservation = match self.budget.reserve(&limits, &c.id, now_ms, finance_qty) {
+            Ok(r) => r,
+            Err(verdict) => {
+                let r = write_receipt(
+                    &self.workspace,
+                    &c.id,
+                    &op.id,
+                    op.risk.as_str(),
+                    op.class.as_str(),
+                    "budget_blocked",
+                    digest,
+                    &verdict.denial_message(),
+                    None,
+                    None,
+                    None,
+                    Some(&context.session_key),
+                    context.approval_ref.clone(),
+                    false,
+                );
+                self.maybe_push_card(context, c, op, &r, &cfg).await;
+                return (
+                    Err(honest_err(format!(
+                        "⛔ RATE LIMIT: {}",
+                        verdict.denial_message()
+                    ))),
+                    Some(r),
+                );
+            }
+        };
 
         // 派发载荷：无凭据（铁律），session_key 随行供对端会话归属。
         let payload = serde_json::json!({
@@ -775,15 +924,28 @@ impl ConnectorInvokeTool {
         let resp = match f(target, INVOKE_TOOL_NAME, payload).await {
             Ok(resp) => resp,
             Err(e) => {
+                // R3：RPC 失败（超时/传输错误）= 结果未知——外部写可能已
+                // 生效，**保留账目不回吐**（release 会放行额度 = 绕过限额）。
+                // 凭条词表与本地 UnknownOutcome 臂同源：落 "unknown" 不是
+                // "error"——审计账本必须能区分「对端明确报错（未执行）」与
+                // 「RPC 超时结果未知（可能已执行）」；undo 前置闸对两者的
+                // 拒撤措辞也不同（未真实生效 vs 结果未知可能已生效）。
+                tracing::warn!(
+                    connector = %c.id,
+                    op = %op.id,
+                    target = %target,
+                    error = %e,
+                    "[Connector] 远程执行 RPC 失败，预算占用保留（结果未知，不回吐）"
+                );
                 let r = write_receipt(
                     &self.workspace,
                     &c.id,
                     &op.id,
                     op.risk.as_str(),
                     op.class.as_str(),
-                    "error",
+                    "unknown",
                     digest,
-                    &format!("[远程@{target}] RPC 失败: {e}"),
+                    &format!("[远程@{target}] RPC 失败（结果未知）: {e}"),
                     None,
                     None,
                     None,
@@ -809,11 +971,14 @@ impl ConnectorInvokeTool {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let worker_outcome = worker_receipt
-            .get("outcome")
-            .and_then(|v| v.as_str())
-            .unwrap_or("error")
-            .to_string();
+        // 对端回执缺 outcome（或非字符串）= envelope 不完整 = 结果未知——
+        // 请求可能已送达并在 B 端执行（外部写可能已生效），不能按 "error"
+        // 兜底（error 会走 release 回吐预算 = R3 语义旁路）。落 "unknown"
+        // 凭条，决策表保留账目（与 RPC Err 臂同语义）。
+        let worker_outcome = match worker_receipt.get("outcome") {
+            Some(serde_json::Value::String(s)) => s.clone(),
+            _ => "unknown".to_string(),
+        };
         let worker_receipt_id = worker_receipt
             .get("receipt_id")
             .and_then(|v| v.as_str())
@@ -825,10 +990,22 @@ impl ConnectorInvokeTool {
             .unwrap_or("")
             .to_string();
 
-        // E2 聚合记账：仅对端真实执行才记 master 额度（deny/blocked 不占）。
+        // E2 聚合记账 + R3 收口决策表：对端明确回执 = 确定性结论——
+        // executed → commit（既成事实）；denied/error/budget_blocked/disabled
+        // → release（对端确认未执行，回吐额度）；unknown（envelope 缺
+        // outcome，结果未知）→ 保留账目不回吐（同 RPC Err 臂）。（RPC Err
+        // 分支不走到这——上方已提前 return 且保留账目。）
         let executed = worker_outcome == "executed";
-        if executed {
-            self.budget.record(&limits, &c.id, now_ms, finance_qty);
+        if worker_outcome == "unknown" {
+            tracing::warn!(
+                connector = %c.id,
+                op = %op.id,
+                "[Connector] 远程回执缺 outcome 字段，预算占用保留（结果未知，不回吐）"
+            );
+        } else if executed {
+            self.budget.commit(&reservation);
+        } else {
+            self.budget.release(&reservation);
         }
         let rate_used = self
             .budget
@@ -1061,6 +1238,11 @@ impl ConnectorInvokeTool {
             }
         }
 
+        // R6：剩余 args（GET）与凭据 query 对合并发送——普通参数在前、
+        // 凭据同名时凭据胜；全部经 reqwest `.query()` percent-encoding，
+        // 已有 query 串的 URL 用 `&` 追加（reqwest 追加语义）。
+        let merged_query = merge_query_pairs(extra_query, &query_pairs);
+
         // SSRF 闸：resolve+校验 → 钉死 IP client（防 rebinding TOCTOU）。
         let client = self.build_http_client(&url)?;
 
@@ -1075,16 +1257,47 @@ impl ConnectorInvokeTool {
             req = req.header(h, v);
         }
         // Vec<(String, String)> 经 serde 序列化为重复 k=v 对（reqwest 惯例）。
-        if !query_pairs.is_empty() {
-            req = req.query(&query_pairs);
+        if !merged_query.is_empty() {
+            req = req.query(&merged_query);
         }
         if let Some(b) = body {
             req = req.json(&b);
         }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| format!("HTTP 请求失败: {e}"))?;
+        let resp = match req.send().await {
+            Ok(r) => r,
+            Err(e) if e.is_timeout() => {
+                // 客户端超时 = 结果未知（请求可能已送达并被对端处理，外部
+                // 写可能已生效）→ UnknownOutcome 臂保留账目（R3 决策表第四
+                // 臂，与 run_remote 的 RPC Err 臂同语义），不当普通失败串。
+                return Ok(InvocationOutcome::UnknownOutcome {
+                    summary: "HTTP 客户端超时（结果未知）".to_string(),
+                    result_text: format!(
+                        "HTTP 请求超时（30s）：结果未知——请求可能已送达并被对端\
+                         处理，外部写可能已生效；预算占用保留。错误: {e}"
+                    ),
+                });
+            }
+            Err(e) if e.is_connect() || e.is_request() => {
+                // 连接建立失败 / 请求构造错误（reqwest 语义：connect=TCP/
+                // TLS 握手期失败，request=发送前构造失败）= 请求**未发出**，
+                // 确定性未生效 → 普通失败串（上层 Failed 臂 release 回吐
+                // 额度，R3 决策表 Failed 臂）。
+                return Err(format!("HTTP 请求失败: {e}"));
+            }
+            Err(e) => {
+                // 其余传输层失败（body 写入中途断开、连接 reset 等）= 请求
+                // 可能已完整送达并被对端处理——结果未知，同超时语义保留账目
+                // （release 会放行额度 = R3 超买旁路，2026-10-16 二轮复查
+                // F1 补口）。
+                return Ok(InvocationOutcome::UnknownOutcome {
+                    summary: "HTTP 传输错误（结果未知）".to_string(),
+                    result_text: format!(
+                        "HTTP 传输层失败（非超时）：结果未知——请求可能已送达并\
+                         被对端处理，外部写可能已生效；预算占用保留。错误: {e}"
+                    ),
+                });
+            }
+        };
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         let capped: String = text.chars().take(HTTP_BODY_CAP).collect();
@@ -1155,19 +1368,28 @@ impl ConnectorInvokeTool {
             arguments: serde_json::to_string(op_args)
                 .map_err(|e| format!("args 序列化失败: {e}"))?,
         };
-        // user 字段标 connector 供审计溯源；channel/chat/session 全随行
-        // （bound tool 若发消息/写会话，落到发起对话）。
-        let ctx = RequestContext::new(
-            "connector-invoke",
-            &context.chat_id,
-            &context.user,
-            &context.session_key,
-        );
-        let result = loop_arc.handle_tool_call_at_depth(&call, &ctx, 0).await;
+        // R7：clone 原 ctx 只改审计标签（channel→"connector-binding" 供
+        // 溯源），tool_path_base / correlation_id / async_callback 原样
+        // 保留——档案管线任务的工作副本路径基准、RPC 关联 ID、异步回调跨
+        // 桥不丢（此前 new() 把四者全置 None）。approval_ref 例外：dispatch
+        // 层刻意覆盖（tool_dispatch.rs「凭条不伪造背书」——只信本次调用
+        // 真实发生的交互审批），透传上游引用反而是伪造背书。原 ctx 不被
+        // 修改。chat/session/user 随行（bound tool 发消息/写会话落到发起
+        // 对话）。
+        let mut ctx = context.clone();
+        ctx.channel = "connector-binding".to_string();
+        let depth = self
+            .invocation_depth
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let result = loop_arc.handle_tool_call_at_depth(&call, &ctx, depth).await;
         let summary = result.lines().next().unwrap_or("").to_string();
         Ok(match classify_tool_result(&result) {
             ToolBindingClass::DispatchRejected => InvocationOutcome::DispatchRejected(result),
             ToolBindingClass::Failed => InvocationOutcome::Failed {
+                summary,
+                result_text: result,
+            },
+            ToolBindingClass::UnknownOutcome => InvocationOutcome::UnknownOutcome {
                 summary,
                 result_text: result,
             },
@@ -1259,6 +1481,13 @@ impl ConnectorInvokeTool {
             InvocationOutcome::Failed { result_text, .. } => {
                 return Ok(InvocationOutcome::Failed {
                     summary: "抓取失败".to_string(),
+                    result_text,
+                });
+            }
+            // monitor 抓取无预算语义（不 reserve），超时按失败透传。
+            InvocationOutcome::UnknownOutcome { result_text, .. } => {
+                return Ok(InvocationOutcome::Failed {
+                    summary: "抓取超时".to_string(),
                     result_text,
                 });
             }
@@ -1541,6 +1770,11 @@ enum ToolBindingClass {
     /// `Exit code:` 前缀）或 Plan 闸拦截（`Plan mode:` 前缀，此前落 Done
     /// 分支产生假 executed 凭条）。工具侧落 error 回执——错误也是账。
     Failed,
+    /// 绑定工具执行超时（R3 决策表第四臂，2026-10-16 二轮复查补口）：
+    /// 错误形态文本含 "timed out" 且非 `Exit code:` 前缀——工具可能已在
+    /// 目标上生效后才被掐断（外部写可能已发生）。**保留账目不回吐**，
+    /// unknown 凭条（与 run_http / run_remote 超时臂同语义）。
+    UnknownOutcome,
     /// 执行成功 → executed 回执。
     Done,
 }
@@ -1549,6 +1783,13 @@ enum ToolBindingClass {
 /// ok 判定）；错误形态复用 `turn_guard::tool_result_indicates_error`
 /// （Error:/Tool error:/Exit code: 三前缀，单一真相源）；`Plan mode:` 是
 /// dispatch Plan 闸的拒绝文本（工具成功输出不以它开头）。
+///
+/// 超时特判（F2，二轮复查）：错误形态 + 含 "timed out" → unknown。只对
+/// `Error:`/`Tool error:` 前缀生效——`Exit code:` 前缀是进程**跑完后**
+/// 退出非零（确定性失败），即便输出恰好含 "timed out" 字样（如测试二进
+/// 制的超时失败输出）也是确定性结果，不误判（executor/shell 的真实超时
+/// 文本形态见 executor.rs:81/107、shell.rs:661，均为单行独立错误非进程
+/// 输出混入）。
 fn classify_tool_result(result: &str) -> ToolBindingClass {
     if result.starts_with('⛔') {
         return ToolBindingClass::DispatchRejected;
@@ -1556,6 +1797,9 @@ fn classify_tool_result(result: &str) -> ToolBindingClass {
     if nemesis_agent::turn_guard::tool_result_indicates_error(result)
         || result.starts_with("Plan mode:")
     {
+        if !result.starts_with("Exit code:") && result.contains("timed out") {
+            return ToolBindingClass::UnknownOutcome;
+        }
         return ToolBindingClass::Failed;
     }
     ToolBindingClass::Done
@@ -1575,6 +1819,13 @@ enum InvocationOutcome {
     },
     /// 执行面失败（error 回执 + 诚实错误回模型）。
     Failed {
+        summary: String,
+        result_text: String,
+    },
+    /// 结果未知（R3 决策表第四臂，2026-10-16 复查补口）：客户端超时——
+    /// 请求可能已送达并被对端处理（外部写可能已生效）。**保留账目不回吐**
+    /// （与 run_remote 的 RPC Err 臂同语义），落 error 回执 + WARN。
+    UnknownOutcome {
         summary: String,
         result_text: String,
     },

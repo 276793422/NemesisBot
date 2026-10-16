@@ -7,6 +7,9 @@
 // 入口（denied/error/限额拦截等未生效凭条不显示——无效果可撤；read/network
 // 类不显示——无通用撤销语义）。二次确认模态；撤销动作本身走
 // connectors.undo → handle_tool_call 完整 dispatch 瀑布（安全 8 层+审计）。
+// R5（2026-10-16）诚实化：toast 按 undone 结构化分臂——true=撤销完成；
+// false+local_rewind=warn（外部副作用未被撤销，仅本地会话回退）；
+// false+其余=error（带 reason）。绝不显示假「撤销完成」。
 import { ref, computed, onMounted } from 'vue'
 import { useWSAPI } from '../../composables/useWSAPI'
 import { useToast } from '../../composables/useToast'
@@ -78,10 +81,16 @@ async function doUndo() {
       receipt_id: r.receipt_id,
       ...(r.session_key ? { session_key: r.session_key } : {}),
     })
-    const via = res?.via === 'reverse_op'
-      ? `反向操作 ${res.undo_op}`
-      : res?.via === 'rewind_last_turn' ? '会话级回退' : '完成'
-    toast.success(`${r.connector}.${r.op} 撤销完成（${via}）`)
+    // R5 结构化判定：`undone` 是唯一真值（后端按行动账本新凭条裁决，不嗅探
+    // 文本）。false = 外部副作用未被撤销——按能力分臂如实展示，绝不显示
+    // 「撤销完成」。
+    if (res?.undone === true) {
+      toast.success(`${r.connector}.${r.op} 撤销完成（反向操作 ${res.undo_op ?? ''}）`)
+    } else if (res?.capability === 'local_rewind') {
+      toast.warn(`已回退本地会话，但 ${r.connector}.${r.op} 的外部副作用未被撤销。${res.reason ?? ''}`)
+    } else {
+      toast.error(`${r.connector}.${r.op} 撤销未生效。${res?.reason ?? ''}`)
+    }
     confirmUndo.value = null
     await load()
   } catch (e: any) {
@@ -170,8 +179,8 @@ onMounted(load)
             将撤销 <strong>{{ confirmUndo.connector }}.{{ confirmUndo.op }}</strong>
             （{{ confirmUndo.summary || '无摘要' }}）的执行效果：
           </p>
-          <p v-if="confirmUndo.undoable">清单声明了反向操作，将调用反向 op 撤销（撤销本身过安全管线并落审计）。</p>
-          <p v-else>该操作未声明反向 op，将回退会话最后一轮（对话与文件变更一并还原）。</p>
+          <p v-if="confirmUndo.undoable">清单声明了反向操作，将调用反向 op 撤销（撤销本身过安全管线并落审计）。反向操作若未真实生效，会如实告知而非谎报成功。</p>
+          <p v-else>该操作未声明反向 op：将回退本地会话最后一轮（对话与文件变更一并还原），<strong>外部副作用不会被撤销</strong>。</p>
         </div>
         <div class="modal-footer">
           <button class="btn" data-test="ledger-undo-cancel" @click="confirmUndo = null">取消</button>
