@@ -971,12 +971,27 @@ impl ConnectorInvokeTool {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        // 对端回执缺 outcome（或非字符串）= envelope 不完整 = 结果未知——
-        // 请求可能已送达并在 B 端执行（外部写可能已生效），不能按 "error"
-        // 兜底（error 会走 release 回吐预算 = R3 语义旁路）。落 "unknown"
-        // 凭条，决策表保留账目（与 RPC Err 臂同语义）。
+        // 对端回执缺 outcome（或非字符串）分两臂：
+        // ① result_text 带 ⛔ 前缀 = 对端 dispatch 层明确拒绝（estop/hidden/
+        //    Plan/tier 闸——工具从未执行、凭条从未落账，worker 回执面诚实
+        //    不造假 = null）。与本地 classify_tool_result 同一裁决标记：
+        //    确定性「未执行」落 "error"（下方决策表 release 回吐预算，R3：
+        //    对端确认未执行），不是 unknown。
+        // ② 其余形态（执行后凭条读回失败等真未知）= 请求可能已送达并在
+        //    B 端执行（外部写可能已生效），不能按 "error" 兜底（error 会
+        //    走 release 回吐预算 = R3 语义旁路）。落 "unknown" 凭条，决策
+        //    表保留账目（与 RPC Err 臂同语义）。
         let worker_outcome = match worker_receipt.get("outcome") {
             Some(serde_json::Value::String(s)) => s.clone(),
+            _ if worker_text.starts_with('⛔') => {
+                tracing::warn!(
+                    connector = %c.id,
+                    op = %op.id,
+                    target = %target,
+                    "[Connector] 对端 dispatch 层拒绝（无凭条回执），镜像 error + 预算回吐"
+                );
+                "error".to_string()
+            }
             _ => "unknown".to_string(),
         };
         let worker_receipt_id = worker_receipt
@@ -1015,6 +1030,14 @@ impl ConnectorInvokeTool {
                 .finance_today(chrono::Utc::now().timestamp_millis())
                 .0
         });
+        // 对端无凭条（worker_summary 空）时把对端文本拒因带进账本——审计
+        // 凭条自解释，不逼人回查 gateway 日志（截 160 字符防爆账）。
+        let mirror_summary = if worker_summary.is_empty() && !worker_text.is_empty() {
+            let reason: String = worker_text.chars().take(160).collect();
+            format!("[远程@{target} · {worker_receipt_id}] {reason}")
+        } else {
+            format!("[远程@{target} · {worker_receipt_id}] {worker_summary}")
+        };
         let r = write_receipt(
             &self.workspace,
             &c.id,
@@ -1023,7 +1046,7 @@ impl ConnectorInvokeTool {
             op.class.as_str(),
             &worker_outcome,
             digest,
-            &format!("[远程@{target} · {worker_receipt_id}] {worker_summary}"),
+            &mirror_summary,
             worker_receipt.get("receipt_key").and_then(|v| v.as_str()),
             worker_receipt.get("receipt_value").and_then(|v| v.as_str()),
             executed.then_some(BudgetConsumed {
