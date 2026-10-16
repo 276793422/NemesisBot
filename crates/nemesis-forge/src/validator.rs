@@ -104,7 +104,35 @@ impl StaticValidator {
     }
 
     fn check_security(&self, content: &str, result: &mut StaticValidationResult) {
-        // Check for hardcoded secrets
+        // Check for hardcoded secrets（表单一真相源 = hardcoded_secret_errors）
+        for desc in self.hardcoded_secret_errors(content) {
+            result.stage.errors.push(desc);
+        }
+    }
+
+    /// Check for dangerous shell patterns. Applied to ALL artifact kinds (not
+    /// just Scripts) so a learned/generated Skill can't deploy `rm -rf /` /
+    /// `curl|bash` as an agent instruction. (F-S1)
+    fn check_dangerous_commands(&self, content: &str, result: &mut StaticValidationResult) {
+        // 表单一真相源 = dangerous_command_errors
+        for desc in self.dangerous_command_errors(content) {
+            result.stage.errors.push(desc);
+        }
+    }
+
+    /// Return ONLY security errors (dangerous commands + hardcoded secrets),
+    /// ignoring quality checks (length, frontmatter). Used as the write gate
+    /// for skill/script/mcp creation so a short-but-safe skill isn't rejected,
+    /// while dangerous / secret-laden content is blocked before it is written
+    /// to disk and becomes an agent instruction. (F-S1)
+    pub fn security_errors(&self, content: &str) -> Vec<String> {
+        let mut errors = self.hardcoded_secret_errors(content);
+        errors.extend(self.dangerous_command_errors(content));
+        errors
+    }
+
+    /// Hardcoded-secret regex errors (api_key/secret_key assignments).
+    fn hardcoded_secret_errors(&self, content: &str) -> Vec<String> {
         let patterns: [(Regex, &str); 2] = [
             (
                 Regex::new("(?i)api[_-]?key\\s*[:=]\\s*[\"'][^\"']{8,}").unwrap(),
@@ -115,18 +143,17 @@ impl StaticValidator {
                 "Contains potential secret key",
             ),
         ];
-
-        for (re, desc) in &patterns {
-            if re.is_match(content) {
-                result.stage.errors.push(desc.to_string());
-            }
-        }
+        patterns
+            .iter()
+            .filter(|(re, _)| re.is_match(content))
+            .map(|(_, desc)| desc.to_string())
+            .collect()
     }
 
-    /// Check for dangerous shell patterns. Applied to ALL artifact kinds (not
-    /// just Scripts) so a learned/generated Skill can't deploy `rm -rf /` /
-    /// `curl|bash` as an agent instruction. (F-S1)
-    fn check_dangerous_commands(&self, content: &str, result: &mut StaticValidationResult) {
+    /// Dangerous shell pattern errors (`rm -rf /` / `curl|bash`). pub(crate)
+    /// so `pipeline::validate_static`（learning_engine refine 循环的唯一静态
+    /// 闸）能只取危险命令面、不与既有密钥子串检查重复计错。(F-S1)
+    pub(crate) fn dangerous_command_errors(&self, content: &str) -> Vec<String> {
         static DANGEROUS: LazyLock<Vec<(Regex, &str)>> = LazyLock::new(|| {
             vec![
                 (
@@ -139,30 +166,11 @@ impl StaticValidator {
                 ),
             ]
         });
-        for (pattern, desc) in DANGEROUS.iter() {
-            if pattern.is_match(content) {
-                result.stage.errors.push(desc.to_string());
-            }
-        }
-    }
-
-    /// Return ONLY security errors (dangerous commands + hardcoded secrets),
-    /// ignoring quality checks (length, frontmatter). Used as the write gate
-    /// for skill/script/mcp creation so a short-but-safe skill isn't rejected,
-    /// while dangerous / secret-laden content is blocked before it is written
-    /// to disk and becomes an agent instruction. (F-S1)
-    pub fn security_errors(&self, content: &str) -> Vec<String> {
-        let mut result = StaticValidationResult {
-            stage: ValidationStage {
-                passed: false,
-                timestamp: chrono::Local::now().to_rfc3339(),
-                errors: Vec::new(),
-            },
-            warnings: Vec::new(),
-        };
-        self.check_security(content, &mut result);
-        self.check_dangerous_commands(content, &mut result);
-        result.stage.errors
+        DANGEROUS
+            .iter()
+            .filter(|(pattern, _)| pattern.is_match(content))
+            .map(|(_, desc)| desc.to_string())
+            .collect()
     }
 }
 
@@ -183,6 +191,13 @@ impl Default for StaticValidator {
 /// - quality (20%): Code/text quality, clarity, documentation
 /// - security (20%): Security considerations, no dangerous patterns
 /// - reusability (20%): Can this be reused in other contexts?
+///
+/// ⚠ legacy（2026-10-16 R18 注记）：本类型当前**无生产调用方**（仅
+/// validator/tests.rs 消费）——生产 Stage 3 评审走 `pipeline::Pipeline`
+/// 内嵌实现（提示词同源，预算 `AUX_FORGE_MAX_TOKENS`）。保留作测试与
+/// 演进基线；新调用方请优先接 pipeline。max_tokens 缺省同步拉齐
+/// `AUX_FORGE_MAX_TOKENS`（此前 2000 与单一真相源分裂，对 thinking 型
+/// 非 anthropic lane 不受控）。
 pub struct QualityEvaluator {
     caller: Option<Box<dyn LLMCaller>>,
     max_tokens: i64,
@@ -196,7 +211,7 @@ impl QualityEvaluator {
     pub fn new() -> Self {
         Self {
             caller: None,
-            max_tokens: 2000,
+            max_tokens: crate::reflector_llm::AUX_FORGE_MAX_TOKENS,
             min_score: 60,
         }
     }
@@ -205,7 +220,7 @@ impl QualityEvaluator {
     pub fn with_caller(caller: Box<dyn LLMCaller>) -> Self {
         Self {
             caller: Some(caller),
-            max_tokens: 2000,
+            max_tokens: crate::reflector_llm::AUX_FORGE_MAX_TOKENS,
             min_score: 60,
         }
     }
@@ -283,10 +298,13 @@ impl QualityEvaluator {
             Ok(response) => {
                 // Parse JSON from LLM response
                 if let Some(json) = super::reflector_llm::extract_json(&response) {
-                    // Extract dimension scores
+                    // Extract dimension scores（钳制 0-100，单一真相源
+                    // parse_dimension_score；此前 as_u64 直取无界）。
                     for key in &["correctness", "quality", "security", "reusability"] {
-                        if let Some(val) = json.get(key).and_then(|v| v.as_u64()) {
-                            result.dimensions.insert(key.to_string(), val as u32);
+                        if let Some(val) = json.get(key)
+                            && let Some(n) = super::reflector_llm::parse_dimension_score(val)
+                        {
+                            result.dimensions.insert(key.to_string(), n);
                         }
                     }
 

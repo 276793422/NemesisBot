@@ -28,18 +28,12 @@ use crate::registry::Registry;
 use crate::types::CollectedExperience;
 use nemesis_types::forge::LearningCycle;
 
-/// Skill creation delegate. Mirrors Go's `le.forge.CreateSkill()`.
-/// The Forge struct implements this trait and injects it via `set_skill_creator()`.
-pub trait SkillCreator: Send + Sync {
-    /// Create a skill artifact. Mirrors Go's `Forge.CreateSkill()`.
-    fn create_skill(
-        &self,
-        name: &str,
-        content: &str,
-        description: &str,
-        tool_signature: Vec<String>,
-    ) -> Result<nemesis_types::forge::Artifact, String>;
-}
+// 2026-10-16 复查（LE3）：`SkillCreator` trait 整体删除——它是 write-only
+// 死接线：`set_skill_creator()` 有注入点（gateway ctx.rs + 测试），但字段
+// 从未被读取，技能创建实际走 `execute_create_skill_action` →
+// `Forge::create_skill` 的直接调用路径（pipeline 臂）或本文件内联注册
+// （no-pipeline 臂）。保留一个「看起来已接线」的死委托只会误导读者以为
+// 有第三条创建路径。同类先例：A5 restrict_to_workspace 只声名未读取。
 
 /// Detected pattern from experience analysis.
 #[derive(Debug, Clone)]
@@ -85,6 +79,11 @@ pub struct LearningAction {
     pub created_at: Option<String>,
     /// Execution timestamp (ISO 8601).
     pub executed_at: Option<String>,
+    /// Associated tool names from the triggering pattern（2026-10-16 复查
+    /// LE4：部署时 tool_signature 的直接来源——此前从 description 散文
+    /// 按 `→` 反解析，而 pattern 描述是英文散文不含箭头，落库的是垃圾
+    /// 尾词。pattern.tools 由检测器结构化携带，不再二次解析）。
+    pub tools: Vec<String>,
 }
 
 impl LearningAction {
@@ -111,6 +110,7 @@ impl LearningAction {
             artifact_id: None,
             created_at: Some(chrono::Local::now().to_rfc3339()),
             executed_at: None,
+            tools: Vec::new(),
         }
     }
 }
@@ -167,7 +167,6 @@ pub struct LearningEngine {
     pipeline: Mutex<Option<Arc<Pipeline>>>,
     monitor: Mutex<Option<Arc<DeploymentMonitor>>>,
     provider: Mutex<Option<Arc<dyn crate::reflector_llm::LLMCaller>>>,
-    skill_creator: Mutex<Option<Arc<dyn SkillCreator>>>,
     latest_cycle: Mutex<Option<LearningCycle>>,
 }
 
@@ -183,7 +182,6 @@ impl LearningEngine {
             pipeline: Mutex::new(None),
             monitor: Mutex::new(None),
             provider: Mutex::new(None),
-            skill_creator: Mutex::new(None),
             latest_cycle: Mutex::new(None),
         }
     }
@@ -207,7 +205,6 @@ impl LearningEngine {
             pipeline: Mutex::new(None),
             monitor: Mutex::new(None),
             provider: Mutex::new(None),
-            skill_creator: Mutex::new(None),
             latest_cycle: Mutex::new(None),
         }
     }
@@ -247,13 +244,6 @@ impl LearningEngine {
     pub fn set_monitor(&self, monitor: Arc<DeploymentMonitor>) {
         tracing::info!("[Forge/LearningEngine] Deployment monitor set");
         *self.monitor.lock() = Some(monitor);
-    }
-
-    /// Set the skill creator delegate. Mirrors Go's `SetForge(f *Forge)`.
-    /// The Forge instance implements SkillCreator and is injected here.
-    pub fn set_skill_creator(&self, creator: Arc<dyn SkillCreator>) {
-        tracing::info!("[Forge/LearningEngine] Skill creator delegate set");
-        *self.skill_creator.lock() = Some(creator);
     }
 
     /// Run a single learning cycle.
@@ -445,6 +435,7 @@ impl LearningEngine {
                         action.confidence = pattern.confidence;
                         action.pattern_id = Some(pattern_id.clone());
                         action.draft_name = Some(generate_skill_name(&pattern.tools.join("->")));
+                        action.tools = pattern.tools.clone();
                         action.rationale = Some(format!(
                             "High-confidence tool chain ({:.2}) with frequency {}",
                             pattern.confidence, pattern.frequency
@@ -456,6 +447,7 @@ impl LearningEngine {
                         action.confidence = pattern.confidence;
                         action.pattern_id = Some(pattern_id.clone());
                         action.draft_name = Some(generate_skill_name(&pattern.tools.join("->")));
+                        action.tools = pattern.tools.clone();
                         action.rationale = Some(format!(
                             "Tool chain below threshold ({:.2} < {:.2}), suggest prompt",
                             pattern.confidence, high_conf
@@ -473,6 +465,7 @@ impl LearningEngine {
                         "{}-error-handler",
                         pattern.tools.first().unwrap_or(&"unknown".to_string())
                     ));
+                    action.tools = pattern.tools.clone();
                     action.rationale = Some(format!(
                         "High-confidence error recovery ({:.2}): {}",
                         pattern.confidence, pattern.description
@@ -486,6 +479,7 @@ impl LearningEngine {
                     action.confidence = pattern.confidence;
                     action.pattern_id = Some(pattern_id.clone());
                     action.draft_name = Some(generate_skill_name(&pattern.tools.join("->")));
+                    action.tools = pattern.tools.clone();
                     action.rationale = Some(format!(
                         "Efficiency issue ({:.2} confidence), suggest optimization",
                         pattern.confidence
@@ -499,6 +493,7 @@ impl LearningEngine {
                     action.confidence = pattern.confidence;
                     action.pattern_id = Some(pattern_id.clone());
                     action.draft_name = Some(generate_skill_name(&pattern.tools.join("->")));
+                    action.tools = pattern.tools.clone();
                     action.rationale = Some(format!(
                         "Success template ({:.2} confidence), automate as Skill",
                         pattern.confidence
@@ -618,6 +613,18 @@ impl LearningEngine {
                 return;
             }
         };
+        // 落盘名统一过 slug 化（R17 防御纵深，与 store_distilled_draft 同一
+        // 规则单一真相源）：draft_name 源自经验聚合的工具链（generate_skill_name
+        // 只 replace+lowercase，无字符白名单；error_recovery 分支直拼
+        // tools.first()），下游有 3 个路径 join 点（forge/skills 落盘、
+        // workspace/skills 部署、degraded 回滚 rename）。上游工具名当前
+        // 受控（内置工具名 + MCP 名已过 sanitize_name），此处不依赖上游
+        // 纪律——slugify 对合法 kebab 名是恒等变换，对穿越序列消解。
+        let draft_name = crate::forge::slugify_skill_name(&draft_name);
+        if draft_name.is_empty() {
+            tracing::warn!("[LearningEngine] draft name slugified to empty, skipping");
+            return;
+        }
 
         // Check if already exists in registry (dedup by name)
         if self.find_artifact_by_fingerprint(&draft_name) {
@@ -660,8 +667,21 @@ impl LearningEngine {
                 if new_status == nemesis_types::forge::ArtifactStatus::Active
                     || new_status == nemesis_types::forge::ArtifactStatus::Observing
                 {
+                    // F-S1 安全闸（2026-10-16 R16 同类扫）：部署前终态内容过
+                    // security_errors——refine 循环每轮产物都是 LLM 输出（不可
+                    // 信输入），pipeline.validate_static 现已含危险命令面，此
+                    // 处是纵深防御第二道（拦住未过 pipeline 的部署路径）。
+                    // 拦下 = 本轮放弃部署（下轮经验可能产出不同草稿）。
+                    let sec_errors =
+                        crate::validator::StaticValidator::new().security_errors(&content);
+                    if !sec_errors.is_empty() {
+                        tracing::warn!(name = %draft_name, errors = ?sec_errors, "[LearningEngine] skill draft failed security gate, not deploying");
+                        return;
+                    }
+
                     // Passed — deploy by writing skill file and registering artifact
-                    let tool_sig = extract_tool_signature_from_chain(&action.description);
+                    // LE4：签名取结构化 pattern.tools（无则回落旧解析）
+                    let tool_sig = deploy_tool_signature(action);
 
                     // Write content to forge skills directory
                     let artifact_dir = self.forge_dir.join("skills").join(&draft_name);
@@ -726,6 +746,14 @@ impl LearningEngine {
                     }
                 }
             }
+
+            // 2026-10-16 复查（LE1）：耗尽 refine 轮数的失败注记只属于
+            // pipeline 臂——此前挂在 if/else 之后，no-pipeline 成功注册
+            // draft 的路径也会穿透过来打「validation failed」说谎 warn。
+            tracing::warn!(
+                max_refine = max_refine,
+                "[LearningEngine] Skill validation failed after all refinement rounds"
+            );
         } else {
             // No pipeline configured — just register as draft
             let artifact_id = format!("skill-{}", draft_name);
@@ -736,7 +764,7 @@ impl LearningEngine {
                 version: "1.0".to_string(),
                 status: nemesis_types::forge::ArtifactStatus::Draft,
                 content,
-                tool_signature: extract_tool_signature_from_chain(&action.description),
+                tool_signature: deploy_tool_signature(action),
                 created_at: chrono::Local::now().to_rfc3339(),
                 updated_at: chrono::Local::now().to_rfc3339(),
                 usage_count: 0,
@@ -748,11 +776,6 @@ impl LearningEngine {
             };
             self.registry.add(artifact);
         }
-
-        tracing::warn!(
-            max_refine = max_refine,
-            "[LearningEngine] Skill validation failed after all refinement rounds"
-        );
     }
 
     /// Execute suggest_prompt action: write a prompt suggestion to workspace/prompts/.
@@ -979,10 +1002,13 @@ impl LearningEngine {
 
             if let Some(delta) = delta {
                 self.registry.update(&outcome.artifact_id, |a| {
-                    // Adjust success rate
-                    let new_rate = (a.usage_count as f64 * 0.01 + delta).clamp(0.0, 1.0);
-                    // We adjust using a simpler heuristic since SuccessRate field may not exist
-                    let _ = new_rate;
+                    // 2026-10-16 复查（LE2）：原实现算出 new_rate 后 `let _ =`
+                    // 丢弃——空转假成功（调用方以为反馈闭环生效，实际什么都没
+                    // 改）。现真正落字段：正评 +0.1 / 负评 -0.2，钳制 0-1，
+                    // 与 monitor 的 adjust_confidence_from_outcomes 同语义
+                    // （那里调 success_rate，此处同字段收口，两处不冲突：
+                    // monitor 走周期度量，这里走部署验收事件）。
+                    a.success_rate = (a.success_rate + delta).clamp(0.0, 1.0);
                 });
             }
         }
@@ -1089,7 +1115,11 @@ impl LearningEngine {
 
             if ratio > 2.0 {
                 // More than 2x slower than average
-                let confidence = (ratio - 1.0).min(1.0);
+                // 置信度随严重度单调上升（ratio 2→0.5，越大越趋近 1）。
+                // 2026-10-16 R18：原 `(ratio - 1.0).min(1.0)` 在 ratio>2 的
+                // 入场过滤下恒饱和为 1.0——所有效率问题都顶格置信度，排序
+                // 与 FF1 调整失去区分度。
+                let confidence = (1.0 - 1.0 / ratio).max(0.0);
                 patterns.push(DetectedPattern {
                     pattern_type: "efficiency_issue".into(),
                     frequency: durations.len() as u32,
@@ -1156,6 +1186,15 @@ impl LearningEngine {
                 return result;
             }
         };
+        // 落盘名统一过 slug 化（R17 防御纵深）：与 execute_create_skill 同款
+        // 同一规则单一真相源——本函数是平行的 create 实现（自身 refine 循环
+        // + forge/skills 落盘面），漏掉即同一穿越面复活。
+        let draft_name = crate::forge::slugify_skill_name(&draft_name);
+        if draft_name.is_empty() {
+            result.status = "failed".to_string();
+            result.error_msg = Some("Draft name slugified to empty".to_string());
+            return result;
+        }
 
         // Check if already exists in registry (dedup by name)
         if self.find_artifact_by_fingerprint_public(&draft_name) {
@@ -1212,7 +1251,24 @@ impl LearningEngine {
                 if new_status == nemesis_types::forge::ArtifactStatus::Active
                     || new_status == nemesis_types::forge::ArtifactStatus::Observing
                 {
-                    let tool_sig = extract_tool_signature_from_chain_public(&action.description);
+                    // F-S1 安全闸（2026-10-16 R16 同类扫）：与 execute_create_skill
+                    // 部署点同款——refine 终态内容过 security_errors，拦下则本轮
+                    // 诚实失败（不落盘不注册）。
+                    let sec_errors =
+                        crate::validator::StaticValidator::new().security_errors(&current_content);
+                    if !sec_errors.is_empty() {
+                        result.status = "failed".to_string();
+                        result.error_msg = Some(format!(
+                            "security gate rejected skill draft: {}",
+                            sec_errors.join("; ")
+                        ));
+                        return result;
+                    }
+
+                    // LE4：签名取结构化 pattern.tools（无则回落旧解析）——
+                    // 与 execute_create_skill 私有实现同一规则（两条平行
+                    // create 路径必须同步演进，见 R17 同款纪律）。
+                    let tool_sig = deploy_tool_signature(action);
 
                     // Write content to forge skills directory
                     let artifact_dir = self.forge_dir.join("skills").join(&draft_name);
@@ -1282,7 +1338,8 @@ impl LearningEngine {
                 version: "1.0".to_string(),
                 status: nemesis_types::forge::ArtifactStatus::Draft,
                 content,
-                tool_signature: extract_tool_signature_from_chain_public(&action.description),
+                // LE4：与部署臂同一规则（结构化 tools 优先，回落旧解析）。
+                tool_signature: deploy_tool_signature(action),
                 created_at: chrono::Local::now().to_rfc3339(),
                 updated_at: chrono::Local::now().to_rfc3339(),
                 usage_count: 0,
@@ -1404,6 +1461,20 @@ fn extract_tool_signature_from_chain(description: &str) -> Vec<String> {
         }
     }
     tools
+}
+
+/// 部署期 tool_signature 单一来源（2026-10-16 复查 LE4）：优先取
+/// `action.tools`（检测器结构化携带，generate_actions 填充），空则回落
+/// description 按 `→` 解析（兼容手工构造的 action 与其既有测试语义）。
+/// 此前两个部署点都直接走 description 解析，而 pattern 描述是英文散文
+/// （如 "High-frequency tool usage: exec (12 times, 40%)"）不含箭头，
+/// 落库的是垃圾尾词（如 `["40%)"]`）——artifact.tool_signature 从此失真。
+fn deploy_tool_signature(action: &LearningAction) -> Vec<String> {
+    if action.tools.is_empty() {
+        extract_tool_signature_from_chain(&action.description)
+    } else {
+        action.tools.clone()
+    }
 }
 
 /// Build a diagnosis string from validation results (mirrors Go's buildDiagnosis).
