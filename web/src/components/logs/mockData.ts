@@ -141,7 +141,7 @@ export interface ChainSegment {
 // ============================================================================
 
 export type ConnectorRisk = 'low' | 'medium' | 'high' | 'critical'
-export type ConnectorOutcome = 'executed' | 'denied_approval' | 'budget_blocked' | 'disabled' | 'error'
+export type ConnectorOutcome = 'executed' | 'denied_approval' | 'budget_blocked' | 'disabled' | 'error' | 'unknown'
 
 export interface ConnectorReceipt {
   receipt_id: string
@@ -178,6 +178,7 @@ const OUTCOME_META: Record<string, { cls: string; label: string }> = {
   budget_blocked: { cls: 'badge-warning', label: '限额拦截' },
   disabled: { cls: 'badge-neutral', label: '已停用' },
   error: { cls: 'badge-error', label: '错误' },
+  unknown: { cls: 'badge-warning', label: '结果未知' },
 }
 
 /** outcome → 全局 badge 色类（未知值灰色）。 */

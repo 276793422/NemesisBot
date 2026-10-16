@@ -82,6 +82,14 @@ struct TtsInner {
 unsafe impl Send for TtsEngine {}
 unsafe impl Sync for TtsEngine {}
 
+// §四.2 编译期边界断言（形态与 [`SttEngine`] 同）：**弱 tripwire**——只
+// 验证 unsafe impl 仍在场（删除即编译失败），不验证锁纪律本身；真实安全
+// 依据是锁纪律 + 审计文档，不是本断言。
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<TtsEngine>();
+};
+
 impl TtsEngine {
     pub fn new(model_dir: &Path, num_threads: u32) -> Result<Self> {
         let is_kokoro = model_dir.join("voices.bin").exists();

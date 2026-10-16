@@ -25,6 +25,14 @@ pub struct PunctEngine {
 unsafe impl Send for PunctEngine {}
 unsafe impl Sync for PunctEngine {}
 
+// §四.2 编译期边界断言（形态与 [`SttEngine`] 同）：**弱 tripwire**——只
+// 验证 unsafe impl 仍在场（删除即编译失败），不验证锁纪律本身；真实安全
+// 依据是上方 SAFETY 注释的锁论证 + 审计文档，不是本断言。
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<PunctEngine>();
+};
+
 impl PunctEngine {
     pub fn new(model_path: &Path, num_threads: u32) -> Result<Self> {
         if !model_path.exists() {

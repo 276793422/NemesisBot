@@ -10,7 +10,9 @@
 //! - 账本缺文件 = 默认纸面资金 1_000_000（不创建文件）；
 //! - 未知命令诚实报错；
 //! - E3 undo 全链（live loop）：域 C 反向 op 经真 loop 瀑布执行成功 +
-//!   撤销动作留痕新凭条 + read 类诚实说明 + 非 executed 拒撤。
+//!   撤销动作留痕新凭条 + 失败路径诚实判定（R5：反向 op 恒 Err →
+//!   undone=false + reason，绝不假报「撤销完成」）+ read 类诚实说明 +
+//!   非 executed 拒撤。
 //!
 //! 运行位置：main.rs 排尾（vault 套件之后、cleanup 之前）——写工作区
 //! `connectors/`（demo fixture，套件结束删除）+ `data/receipts/` +
@@ -88,6 +90,37 @@ intent = ["撤销留痕"]
 risk = "medium"
 class = "write"
 action = "builtin.paper_positions"
+"#;
+
+/// undo 失败路径 fixture（undo-bad：place2 声明 undo→cancel_order，反向
+/// 动作绑 `builtin.paper_cancel`——v1 恒 Err 诚实边界）。R5 结构化判定
+/// 用它钉死：反向 op 失败 → undone=false + reason，绝不假报「撤销完成」。
+const UNDO_BAD_TOML: &str = r#"
+[connector]
+id = "undo-bad"
+name = "Undo 失败路径 fixture"
+version = "1.0.0"
+kind = "rest"
+description = "IT undo 失败路径 fixture"
+
+[connector.http]
+base = "http://127.0.0.1:1"
+
+[[op]]
+id = "place2"
+intent = ["纸面下单"]
+risk = "medium"
+class = "write"
+receipt = "order_id"
+undo = { op = "cancel_order", arg = "order_id" }
+action = "builtin.paper_order"
+
+[[op]]
+id = "cancel_order"
+intent = ["撤单"]
+risk = "medium"
+class = "write"
+action = "builtin.paper_cancel"
 "#;
 
 /// 手写一条回执 jsonl 行（绕开执行面，只验数据面读路径）。
@@ -460,6 +493,35 @@ pub async fn test_connectors_data_plane(ws: &TestWorkspace, _bin: &Path) -> Vec<
                 std::io::Write::write_all(&mut f, format!("{undo_receipt}\n").as_bytes())
             })
             .is_ok();
+    // 失败路径 fixture（undo-bad：反向动作 = paper_cancel 恒 Err）+ 其凭条。
+    let bad_dir = ws_dir.join("connectors").join("undo-bad");
+    undo_ok = undo_ok
+        && std::fs::create_dir_all(&bad_dir).is_ok()
+        && std::fs::write(bad_dir.join("connector.toml"), UNDO_BAD_TOML).is_ok();
+    let undo_bad_receipt = json!({
+        "receipt_id": "RCPT-UNDO-2",
+        "ts": "2026-10-14T08:01:00Z",
+        "connector": "undo-bad",
+        "op": "place2",
+        "risk": "medium",
+        "class": "write",
+        "outcome": "executed",
+        "args_digest": "abcdef0123456789",
+        "summary": "IT undo 失败路径 fixture 纸面下单",
+        "receipt_key": "order_id",
+        "receipt_value": "NB-ORD-2",
+        "undoable": true,
+    })
+    .to_string();
+    undo_ok = undo_ok
+        && std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&jsonl)
+            .and_then(|mut f| {
+                std::io::Write::write_all(&mut f, format!("{undo_bad_receipt}\n").as_bytes())
+            })
+            .is_ok();
     if !undo_ok {
         results.push(fail(
             &format!("{suite}/undo_setup"),
@@ -531,6 +593,40 @@ pub async fn test_connectors_data_plane(ws: &TestWorkspace, _bin: &Path) -> Vec<
             }
             _ => results.push(fail(
                 &format!("{suite}/undo_receipt_trail"),
+                format!("{err:?}"),
+            )),
+        }
+        // 9c. R5 失败路径：反向 op = paper_cancel（v1 恒 Err 诚实边界）→
+        //    undone=false + reason 非空，绝不假报「撤销完成」。反向 op 的
+        //    失败凭条（outcome=error）落账即结构化判定的证据。
+        let (dat, err) = api
+            .call(
+                "connectors",
+                "undo",
+                Some(json!({ "receipt_id": "RCPT-UNDO-2" })),
+            )
+            .await;
+        match &dat {
+            Some(d) if err.is_none() => {
+                let reason = d["reason"].as_str().unwrap_or_default();
+                let ok = d["undone"] == false
+                    && d["via"] == "reverse_op"
+                    && d["capability"] == "reverse_op"
+                    && !reason.is_empty();
+                if ok {
+                    results.push(pass(
+                        &format!("{suite}/undo_reverse_fail"),
+                        "反向 op 失败诚实判定（undone=false + reason，不假报撤销完成）",
+                    ));
+                } else {
+                    results.push(fail(
+                        &format!("{suite}/undo_reverse_fail"),
+                        format!("投影不符: {d}"),
+                    ));
+                }
+            }
+            _ => results.push(fail(
+                &format!("{suite}/undo_reverse_fail"),
                 format!("{err:?}"),
             )),
         }

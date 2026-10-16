@@ -36,10 +36,13 @@ pub fn ai_server_port() -> u16 {
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(37105)
 }
-/// 37xxx 隔离段（<49152，动态端口范围外）：脱离他人 49000/49001 实例与
-/// ghost socket 集（49001/18790）。
-pub const WEB_PORT: u16 = 37300;
-pub const WS_PORT: u16 = 37300;
+/// 41300（<49152，动态端口范围外）：2026-10-16 撞口实录后从 37300 迁出——
+/// cluster-uat 的常驻/临时节点 web 口规划占 37300-37306 段，两套件并行跑时
+/// cluster-uat 节点重启会在 IT 的 precheck 之后、bind 之前的秒级窗口抢占 37300
+/// （IT 的 WS 全打到 cluster-uat 节点 = 6 个假 FAIL）。41300 与 cluster-uat
+/// 全段（373xx/484xx/1879x/37105）不相交，并行跑也不再撞。
+pub const WEB_PORT: u16 = 41300;
+pub const WS_PORT: u16 = WEB_PORT;
 /// Gateway/health port for spawned gateways. NOT 18790 — that value is the
 /// production gateway default (GatewayConfig.port) and this dev machine has a
 /// ghost socket orphaned on it (kernel LISTEN with no owning PID; TCP connect
@@ -159,6 +162,41 @@ pub fn precheck_ports(ports: &[u16]) -> Result<(), String> {
     ))
 }
 
+/// Post-bind 身份核验：网关报告就绪后，核对 web 端口的 LISTEN 持有者确实是
+/// 自己 spawn 的那个进程。
+///
+/// `precheck_ports` 只能拦「启动前已被占」；「precheck 之后、bind 之前的
+/// 秒级窗口被别的套件节点抢跑」只有事后核验能拦（2026-10-16 实录：
+/// cluster-uat 长跑中节点重启在 IT 预检后抢占 37300，IT 网关 web bind
+/// 静默失败而 health 照常 200，全部 WS 套件跟幽灵节点说话 = 6 个假 FAIL）。
+/// LISTEN 持有者 = bind 成功者，netstat 不会撒谎；gateway.json 的
+/// pid/web_port **不能**当身份证据——bind 失败时 fallback 仍把期望端口写进
+/// json（`services.rs` 的 `real_port = web_port` 臂），json 会自证清白。
+pub fn verify_gateway_web_identity(port: u16, expected_pid: Option<u32>) -> Result<(), String> {
+    let Some(pid) = expected_pid else {
+        return Err("gateway 子进程无 PID（可能已退场）".to_string());
+    };
+    let occ = scan_port_occupants(&[port]);
+    // 只认 LISTEN 行：ESTABLISHED 行的 PID 是连接方（任何客户端连上都会
+    // 出现外进程 PID 行），不代表 bind 持有者。
+    let listeners: Vec<&PortOccupant> = occ.iter().filter(|o| o.state == "LISTENING").collect();
+    // 判「全部 LISTEN 行都是本 PID」而非「恰好一行」：Windows 上双栈绑定
+    // （0.0.0.0 与 [::] 各一行）会出两行 LISTENING，按行数==1 会误报。
+    let owned = !listeners.is_empty() && listeners.iter().all(|o| o.pid == pid.to_string());
+    if owned {
+        return Ok(());
+    }
+    let detail = if occ.is_empty() {
+        "端口上无任何占用（gateway web bind 失败且未持有端口）".to_string()
+    } else {
+        port_occupant_report(&occ)
+    };
+    Err(format!(
+        "web 端口 {port} 身份核验失败：LISTEN 持有者不是本次 spawn 的 gateway（期望 PID {pid}）。\
+         另一实例/ghost 抢占了端口，本次 gateway 的 web 面已废（health 200 不代表 web 可用）。\n{detail}"
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // Process management
 // ---------------------------------------------------------------------------
@@ -266,6 +304,11 @@ impl ManagedProcess {
             child: Some(child),
             name,
         })
+    }
+
+    /// OS PID of the managed child（[`verify_gateway_web_identity`] 的期望方）。
+    pub fn id(&self) -> Option<u32> {
+        self.child.as_ref().and_then(|c| c.id())
     }
 
     /// Check if the process is still running.

@@ -642,6 +642,8 @@ pub(crate) async fn run_runtime(
                         #[cfg(not(target_os = "android"))]
                         trigger_global_shutdown();
                     }),
+                    // R2 进程内单飞闸（与安装目录跨进程锁两层互补）。
+                    flight: tokio::sync::Mutex::new(()),
                 });
                 nemesis_web::handlers::selfupdate::set_manager(mgr);
                 info!("[Gateway] selfupdate manager wired (L9)");
