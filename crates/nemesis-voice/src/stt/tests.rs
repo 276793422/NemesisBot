@@ -119,6 +119,7 @@ fn decode_recognizer_null_recognizer_panics_at_symbol_lookup() {
 /// pub(crate)：供跨模块测试（channel_bridge 的白盒）复用。
 pub(crate) fn null_stt_engine() -> SttEngine {
     SttEngine {
+        lock: std::sync::Mutex::new(()),
         recognizer: std::ptr::null(),
         restriction: None,
     }

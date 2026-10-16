@@ -379,9 +379,14 @@ fn test_filter_by_period() {
     assert_eq!(filtered.len(), 2);
 
     let filtered = reflector.filter_by_period(&experiences, "today");
-    // All test experiences have timestamp 2026-04-29, so they may or may not
-    // be filtered depending on when the test runs. Just verify no panic.
-    let _ = filtered.len();
+    // 夹具时间戳固定 2026-04-29（make_collected），已永久处于过去；"today"
+    // 截止点 = 本地今天零点 → 两条必然被过滤。旧版只跑不断言——「可能过滤
+    // 可能不过滤」的注释写于 2026-04-29 尚可能是今天时，现已确定性成立。
+    assert!(
+        filtered.is_empty(),
+        "2026-04-29 fixture timestamps must fall outside today's window, got {}",
+        filtered.len()
+    );
 }
 
 #[test]
@@ -854,6 +859,26 @@ fn test_resolve_period_today() {
 }
 
 #[test]
+fn test_resolve_period_today_carries_local_offset() {
+    // R18 修复钉：today 截止点必须带**真实本地偏移**（旧实现 naive.and_utc()
+    // 误贴 +00:00，东八区实际截到昨天 16:00）。断言偏移秒数 == 本机 Local
+    // 偏移（UTC 机器上两者同为 0，钉不误伤；非 UTC 机器上回退旧行为必红）。
+    let cutoff = Reflector::resolve_period("today").expect("today cutoff");
+    let parsed =
+        chrono::DateTime::parse_from_rfc3339(&cutoff).expect("cutoff must parse as RFC3339");
+    let local_off = chrono::Local::now().offset().local_minus_utc();
+    assert_eq!(
+        parsed.offset().local_minus_utc(),
+        local_off,
+        "cutoff offset {cutoff} must be local ({local_off}s), not forced UTC"
+    );
+    // 且时刻就是本地今天零点：换回本地时区后日期 == 今天、时钟 00:00。
+    let local = parsed.with_timezone(&chrono::Local);
+    assert_eq!(local.date_naive(), chrono::Local::now().date_naive());
+    assert_eq!(local.format("%H:%M:%S").to_string(), "00:00:00");
+}
+
+#[test]
 fn test_filter_by_period_all() {
     let reflector = Reflector::new();
     let experiences = vec![
@@ -942,10 +967,25 @@ fn test_generate_reflection_frequent_tool_pattern() {
         experiences.push(make_collected("popular_tool", "x", true, 100));
     }
     let reflection = reflector.generate_reflection(&experiences);
-    // The tool should appear in insights, recommendations, or statistics
-    let _all_text = format!("{:?} {:?}", reflection.insights, reflection.recommendations);
-    // Just check that the reflection was generated successfully with the right number of insights
-    assert!(!reflection.insights.is_empty());
+    // count>=5 触发「frequently used」pattern（generate_reflection 的
+    // per-tool 分支），落在 statistics["patterns"] 数组里。旧版只断言
+    // insights 非空——用例名钉的行为（高频工具 pattern）完全没被验证。
+    let patterns: Vec<String> = reflection
+        .statistics
+        .get("patterns")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        patterns
+            .iter()
+            .any(|p| p.contains("popular_tool") && p.contains("frequently used")),
+        "6-call tool must produce a 'frequently used' pattern, got {patterns:?}"
+    );
 }
 
 #[test]
@@ -1105,7 +1145,9 @@ fn test_cleanup_reports_result_no_dir_configured() {
 
 #[test]
 fn test_cleanup_reports_result_nonexistent_dir() {
-    let reflector = Reflector::with_reflections_dir(PathBuf::from("/nonexistent/path/reflections"));
+    // tempdir 内的不存在目录（Windows 上裸 `/nonexistent/...` 解析到盘根）。
+    let dir = tempfile::tempdir().unwrap();
+    let reflector = Reflector::with_reflections_dir(dir.path().join("nonexistent"));
     let result = reflector.cleanup_reports_result(30);
     assert!(result.is_ok());
 }
@@ -1129,10 +1171,18 @@ fn test_merge_remote_reflections_with_report_file() {
     let reflector = Reflector::new();
     let experiences = vec![make_collected("read_file", "x", true, 100)];
     let merged = reflector.merge_remote_reflections(&[report_path], &experiences);
-    // read_file should be in common_tools (present in both local and remote)
+    // read_file 本地也在场（top_patterns 取前 10、无准入阈值）→ common_tools；
+    // write_file 仅远端 → unique_remote_tools。两侧判定都是确定性的，旧版
+    // 用 || 只要任一命中就过——单侧分桶回归不会红。
     assert!(
-        merged.common_tools.contains_key("read_file")
-            || merged.unique_remote_tools.iter().any(|t| t == "write_file")
+        merged.common_tools.contains_key("read_file"),
+        "read_file must land in common_tools (local + remote), got {:?}",
+        merged.common_tools
+    );
+    assert!(
+        merged.unique_remote_tools.iter().any(|t| t == "write_file"),
+        "write_file must land in unique_remote_tools, got {:?}",
+        merged.unique_remote_tools
     );
 }
 
@@ -1273,11 +1323,27 @@ fn test_cleanup_reports_keeps_recent() {
 fn test_merge_remote_reflections_unreadable_file() {
     let reflector = Reflector::new();
     let experiences = vec![make_collected("tool_a", "x", true, 100)];
-    // Non-existent file path should be handled gracefully
-    let merged = reflector
-        .merge_remote_reflections(&[PathBuf::from("/nonexistent/report.md")], &experiences);
-    // Should not panic, just skip the file
-    assert!(merged.remote_patterns.is_empty() || merged.merged_patterns.is_empty());
+    // Non-existent file path (inside a tempdir; bare "/nonexistent/..." hits
+    // the drive root on Windows) should be handled gracefully
+    let dir = tempfile::tempdir().unwrap();
+    let merged =
+        reflector.merge_remote_reflections(&[dir.path().join("nonexistent.md")], &experiences);
+    // 读不到的报告=跳过：远端侧空；本地 pattern 原样保留（tool_a 必进
+    // top_patterns 前 10）。旧版 `remote_patterns.is_empty() || merged.is_empty()`
+    // 左臂恒真、右臂恒假——纯凑数的永真断言。
+    assert!(
+        merged.remote_patterns.is_empty(),
+        "unreadable report must yield no remote patterns, got {:?}",
+        merged.remote_patterns
+    );
+    assert!(
+        merged
+            .merged_patterns
+            .iter()
+            .any(|p| p.tool_name == "tool_a"),
+        "local patterns must survive the merge, got {:?}",
+        merged.merged_patterns
+    );
 }
 
 // --- reflect_with_llm (Stage 4 LLM) coverage ---

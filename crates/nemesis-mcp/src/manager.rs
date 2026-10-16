@@ -64,6 +64,19 @@ impl McpManager {
             .map_err(|e| format!("Failed to read MCP config: {}", e))?;
         self.config = serde_json::from_str(&data)
             .map_err(|e| format!("Failed to parse MCP config: {}", e))?;
+        // 第十四轮缺陷 17：sanitize 前缀碰撞可观测（加载面单一 warn 点，
+        // 启动 + 热重载都经此处）。挂载语义：热重载只挂首个（其余被
+        // find_new_servers 静默过滤），启动全量挂载但工具键后到者覆盖。
+        for (prefix, names) in crate::adapter::sanitize_prefix_collisions(
+            self.config.servers.iter().map(|s| s.name.as_str()),
+        ) {
+            warn!(
+                "[McpManager] Server names {} collide on tool prefix '{}' — hot-reload mounts only the first, startup mount overwrites tool keys; rename one (config: {})",
+                names.join(", "),
+                prefix,
+                self.config_path.display()
+            );
+        }
         Ok(())
     }
 

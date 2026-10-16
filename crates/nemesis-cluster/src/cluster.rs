@@ -3369,7 +3369,13 @@ impl Cluster {
                     parent_task_id = %parent_id,
                     "[Cluster] Routing callback to cluster agent task"
                 );
-                tl.inject_callback(&parent_id, response);
+                if let Err(e) = tl.inject_callback(&parent_id, response) {
+                    tracing::error!(
+                        parent_task_id = %parent_id,
+                        error = %e,
+                        "[Cluster] inject_callback persisted to memory but disk persist failed — crash before resume loses the callback result"
+                    );
+                }
                 if let Err(e) = wq.submit(parent_id) {
                     tracing::error!(error = %e, "[Cluster] Failed to re-submit task to work queue");
                 }

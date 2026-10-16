@@ -122,6 +122,11 @@ jobs:
       - name: Provider-bake discipline gate
         run: bash scripts/check-provider-bake.sh
 
+      # 公开文档版本一致性闸（README Rust 版本 vs rust-toolchain.toml，
+      # 防文档漂移——复评整改批次 A 加固项）
+      - name: Doc version consistency gate
+        run: bash scripts/check-doc-version.sh
+
       # H2 已清零（2026-08-31），此步为阻塞门禁；见文件头 clippy 门禁说明
       - name: cargo clippy -D warnings（阻塞门禁）
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -438,3 +443,80 @@ jobs:
 
       - name: Build (vite)
         run: npm run build
+
+  web-e2e:
+    # Web 端到端回归（Playwright + TestAIServer 同族 mock LLM + 本地 gateway 全链路）。
+    # 11 个自足 spec：auth / chat / approval / board / board-ui / model-switch / resync /
+    # disconnect-recovery / project-history / workflow-diff / workflow-gen（迁移自
+    # scripts/verify-*.mjs 手工脚本；board-ui=看板页面 DOM 路径、disconnect-recovery=
+    # 断线恢复（整改复核 §四.3 补覆盖））。
+    #
+    # ⚠️ 观察期 job（continue-on-error：红不阻塞 CI）：首期观察真实性/稳定性
+    # （runner 音频/浏览器/端口环境差异）。摘除条件（写死）：自本批起**连续 10
+    # 轮 CI 全绿**且上述 11 个 spec 全部在场（spec 数缩水不算达成）——两条件
+    # 同时满足才摘 continue-on-error 翻红。失败现场：test-results/ +
+    # playwright-report/ artifact always() 上传。
+    name: Web e2e (Playwright, 观察期)
+    runs-on: windows-2022
+    timeout-minutes: 40
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Environment fingerprint
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/dump-env.sh"
+
+      - name: Install Rust toolchain (rust-toolchain.toml 钉 stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      # 前端必须先于 cargo build：nemesisbot 经 include_dir! 嵌入 static/，
+      # e2e 测的是当前 UI（编译期嵌入，运行期 exe 旁无 static/ 目录）
+      - name: Build Vue frontend (include_dir! 前置)
+        shell: bash
+        run: |
+          npm ci
+          rm -rf ../crates/nemesis-web/static/assets
+          npm run build
+
+      # e2e 夹具 spawn target/debug/nemesisbot.exe（E2E.bin 解析序 release→debug）
+      - name: Build nemesisbot (debug, embeds fresh static)
+        run: cargo build -p nemesisbot
+
+      - name: Install Playwright chromium
+        run: npx playwright install chromium
+
+      # e2e/ 不在 tsconfig.json include 内（vue-tsc 只查 src/**），Playwright 的
+      # esbuild 转译剥类型不报错——类型门禁单独跑（supervisor ReferenceError 实录）。
+      - name: Typecheck e2e suite
+        run: npx tsc --noEmit -p tsconfig.e2e.json
+
+      - name: Run e2e suite
+        run: npx playwright test
+
+      - name: Upload e2e failure artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: web-e2e-artifacts
+          path: |
+            web/test-results/
+            web/playwright-report/
+          retention-days: 7
+          if-no-files-found: ignore

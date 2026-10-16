@@ -8,18 +8,39 @@
 use anyhow::Result;
 use std::ffi::{CStr, CString};
 use std::path::Path;
+use std::sync::Mutex;
 
 use crate::lang_restriction::{self, LangRestriction};
 use crate::sherpa;
 
 pub struct SttEngine {
+    /// 串行化 recognizer（主 + 补救 fallback）上的一切 FFI 调用。上游对
+    /// offline recognizer 无线程安全承诺（沉默 → 按非线程安全对待），而
+    /// channel_bridge 的 `VoiceTranscriber: Send + Sync` 契约允许并发
+    /// `transcribe`（&self 共享）——按处置规则加锁，宁慢不炸。
+    /// 依据：`docs/INFO/2026-10-15_voice-ffi-safety-audit.md` C-1。
+    lock: Mutex<()>,
     recognizer: *const sherpa::SherpaOnnxOfflineRecognizer,
     /// 语言补救策略 + fallback 识别器。模型未声明补救、或总开关关闭时为 `None`。
     restriction: Option<LangRestriction>,
 }
 
+// SAFETY（审计表 C-1）：recognizer 指向的 native 对象本身按非线程安全对待，
+// 但所有 FFI 访问都在 `lock` 互斥段内串行执行（recognize_detail 持锁覆盖
+// 主解码 + LangRestriction::apply 的 fallback 重解）；指针为 owning 裸指针，
+// 随实例移动（Send）不产生别名。Sync 由此锁真实成立。
 unsafe impl Send for SttEngine {}
 unsafe impl Sync for SttEngine {}
+
+// §四.2 编译期边界断言：**弱 tripwire**——只验证 unsafe impl 仍在场（被悄悄
+// 删除时定义处立即编译失败，下游 `SttEngine: Send + Sync` bound 亦会报错）。
+// 它**不能**验证锁纪律本身：unsafe impl 是无条件声明，锁前提被重构破坏
+// （如 Mutex 换成非同步原语）时此断言依旧绿——线程安全的真实依据是上方
+// SAFETY 注释的锁纪律论证 + 审计文档（2026-10-15 C-1/C-3/C-8），不是本断言。
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<SttEngine>();
+};
 
 impl SttEngine {
     /// Create an STT engine.
@@ -79,6 +100,7 @@ impl SttEngine {
         };
 
         Ok(Self {
+            lock: Mutex::new(()),
             recognizer,
             restriction,
         })
@@ -264,6 +286,13 @@ impl SttEngine {
         samples: &[f32],
         sample_rate: u32,
     ) -> Result<(String, Option<String>)> {
+        // 审计表 C-1：持锁覆盖主解码 + 补救 fallback 重解（同一 native 对象
+        // 族按非线程安全对待，串行执行；fallback 重解本来就依赖主解码结果，
+        // 同锁段无额外语义代价）。
+        // 毒化忽略：本锁只串行化 native 调用（线程亲和），不保护 Rust 不变量——
+        // Rust 侧 panic 无法穿透 FFI 破坏 native 对象，持毒拒绝后续调用会把
+        // 一次瞬态 panic 放大成引擎永久不可用（直到进程重启）。
+        let _serial = self.lock.lock().unwrap_or_else(|p| p.into_inner());
         let (text, lang) = decode_recognizer(self.recognizer, samples, sample_rate)?;
 
         if let Some(r) = &self.restriction

@@ -242,3 +242,477 @@ fn mcp_update_entry_closure_err_leaves_disk_untouched() {
     .unwrap();
     assert_eq!(raw["servers"][0]["url"], "", "abort 后盘上保持事务前状态");
 }
+
+// ---------------------------------------------------------------------------
+// R9（2026-10-15）：transport_type 入参值集闸——runtime 不支持的值（如
+// "sse"）此前 server.add/server.update 原样落盘，挂载时才由分派真相源
+// 拒绝。API 输入面收紧为 loud 拒绝，语义与 CLI `mcp add` 同源。
+// R10（2026-10-15）：值集闸升级为归一闸——大小写变体（"HTTP"）此前原样
+// 落盘，而分派真相源别名匹配大小写敏感，挂载期同样 loud 拒绝。现在规范
+// 小写落盘（CLI `mcp add` 写盘同款语义）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn r9_canonical_transport_type_value_set() {
+    use super::canonical_transport_type;
+    // 合法值返回规范小写形态
+    assert_eq!(canonical_transport_type("http").unwrap(), "http");
+    assert_eq!(canonical_transport_type("stdio").unwrap(), "stdio");
+    // 大小写变体归一（与 CLI build 同源匹配、规范落盘）
+    assert_eq!(canonical_transport_type("HTTP").unwrap(), "http");
+    assert_eq!(canonical_transport_type("Stdio").unwrap(), "stdio");
+    // 未知值 loud 拒绝，错误信息保留用户原值
+    for bad in ["sse", "SSE", "websocket", ""] {
+        let err = canonical_transport_type(bad).unwrap_err();
+        assert!(err.contains("不支持的 transport_type"), "actual: {err}");
+        assert!(err.contains(bad), "错误信息应含用户原值 '{bad}': {err}");
+    }
+}
+
+#[tokio::test]
+async fn r9_server_add_rejects_unsupported_transport_without_disk_write() {
+    let handler = McpHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    let cfg = nemesis_config::McpConfig::default();
+    std::fs::write(
+        dir.path().join("config/config.mcp.json"),
+        serde_json::to_string_pretty(&cfg).unwrap(),
+    )
+    .unwrap();
+    let ctx = make_ctx(&dir);
+
+    let data = serde_json::json!({
+        "name": "sse-srv", "transport_type": "sse", "url": "http://x/sse"
+    });
+    let err = match handler.handle_cmd("server.add", Some(data), &ctx).await {
+        Ok(v) => panic!("sse add must be loudly rejected, got: {v:?}"),
+        Err(e) => e,
+    };
+    assert!(err.contains("不支持的 transport_type"), "actual: {err}");
+
+    // 拒绝后盘上无残留条目
+    let raw: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("config/config.mcp.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        raw["servers"]
+            .as_array()
+            .map(|a| a.is_empty())
+            .unwrap_or(true),
+        "rejected entry must not persist: {raw}"
+    );
+}
+
+// R10（2026-10-15）：大小写变体规范小写落盘——分派真相源别名匹配大小写
+// 敏感，"HTTP" 原样落盘会在挂载期被 loud 拒绝（API 接受 runtime 消费不
+// 了的值，失败延迟到挂载）。server.add 与 server.update 两臂都归一。
+#[tokio::test]
+async fn r10_transport_type_case_variants_canonicalized_on_disk() {
+    let handler = McpHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(
+        dir.path().join("config/config.mcp.json"),
+        serde_json::to_string_pretty(&nemesis_config::McpConfig::default()).unwrap(),
+    )
+    .unwrap();
+    let ctx = make_ctx(&dir);
+
+    // server.add "HTTP" → 盘上 "http"
+    let add = serde_json::json!({
+        "name": "case-srv", "transport_type": "HTTP", "url": "http://x/mcp"
+    });
+    handler
+        .handle_cmd("server.add", Some(add), &ctx)
+        .await
+        .expect("HTTP variant must be accepted and canonicalized");
+
+    // server.update 补一个 stdio 条目再改 "Stdio" → 盘上 "stdio"
+    let add2 = serde_json::json!({
+        "name": "case-stdio", "transport_type": "http", "url": "http://y/mcp"
+    });
+    handler
+        .handle_cmd("server.add", Some(add2), &ctx)
+        .await
+        .expect("canonical http add must succeed");
+    let upd = serde_json::json!({ "name": "case-stdio", "transport_type": "Stdio" });
+    handler
+        .handle_cmd("server.update", Some(upd), &ctx)
+        .await
+        .expect("Stdio variant must be accepted and canonicalized");
+
+    let raw: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("config/config.mcp.json")).unwrap(),
+    )
+    .unwrap();
+    let servers = raw["servers"].as_array().expect("servers array");
+    let get_type = |name: &str| {
+        servers
+            .iter()
+            .find(|s| s["name"] == name)
+            .map(|s| s["transport_type"].as_str().unwrap_or("?"))
+            .unwrap_or("missing")
+    };
+    assert_eq!(get_type("case-srv"), "http", "HTTP → http 盘上归一");
+    assert_eq!(get_type("case-stdio"), "stdio", "Stdio → stdio 盘上归一");
+}
+
+// R12（2026-10-15）：头行语法闸——server.add / server.update 写入面与 CLI
+// `mcp add` 同源（单一真相源 nemesis_config::validate_mcp_header_line）。
+// 此前 Dashboard 放行运行期必跳过/必失败的行（缺冒号、保留头、引用名带
+// 空格），失败延迟到挂载期 401 且 WARN 对用户不可见。
+
+fn r12_bad_header_lines() -> Vec<&'static str> {
+    vec![
+        "Authorization",          // 缺冒号
+        "Mcp-Session-Id: forged", // 协议保留头
+        "X-Key: vault: name",     // 引用名带首尾空格
+        "X-Key: vault:",          // 引用名为空
+    ]
+}
+
+#[tokio::test]
+async fn r12_server_add_rejects_illegal_header_line_without_disk_write() {
+    let handler = McpHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(
+        dir.path().join("config/config.mcp.json"),
+        serde_json::to_string_pretty(&nemesis_config::McpConfig::default()).unwrap(),
+    )
+    .unwrap();
+    let ctx = make_ctx(&dir);
+
+    for bad in r12_bad_header_lines() {
+        let data = serde_json::json!({
+            "name": "h-srv", "transport_type": "http", "url": "http://x/mcp",
+            "headers": ["X-Ok: 1", bad],
+        });
+        let err = match handler.handle_cmd("server.add", Some(data), &ctx).await {
+            Ok(v) => panic!("bad header '{bad}' must be rejected, got: {v:?}"),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("headers 校验失败"),
+            "'{bad}' → wrong error: {err}"
+        );
+    }
+
+    // 拒绝后盘上无残留条目
+    let raw: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("config/config.mcp.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        raw["servers"]
+            .as_array()
+            .map(|a| a.is_empty())
+            .unwrap_or(true),
+        "rejected entries must not persist: {raw}"
+    );
+}
+
+#[tokio::test]
+async fn r12_server_update_rejects_new_illegal_header_line() {
+    let handler = McpHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    seed_mcp_config(
+        &dir,
+        serde_json::json!([{
+            "name": "s1", "transport_type": "http", "url": "http://x",
+            "headers": ["Authorization: b"],
+        }]),
+    );
+    let ctx = make_ctx(&dir);
+
+    let data = serde_json::json!({
+        "name": "s1",
+        "headers": ["Authorization: b", "X-Bad: vault: x"],
+    });
+    let err = match handler.handle_cmd("server.update", Some(data), &ctx).await {
+        Ok(v) => panic!("new bad header must be rejected, got: {v:?}"),
+        Err(e) => e,
+    };
+    assert!(err.contains("headers 校验失败"), "actual: {err}");
+
+    // 拒绝后盘上 headers 保持原值（事务 abort 语义）
+    let raw: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("config/config.mcp.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        raw["servers"][0]["headers"],
+        serde_json::json!(["Authorization: b"]),
+        "rejected update must not persist: {raw}"
+    );
+}
+
+#[tokio::test]
+async fn r12_server_update_tolerates_masked_legacy_plus_new_good_line() {
+    let handler = McpHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    seed_mcp_config(
+        &dir,
+        serde_json::json!([{
+            "name": "s1", "transport_type": "http", "url": "http://x",
+            "headers": ["Authorization: b"],
+        }]),
+    );
+    let ctx = make_ctx(&dir);
+
+    // UI 回显形态：掩码行（透传存量）+ 新增合法行——掩码行不进校验面，
+    // 更新必须成功且盘上 = 存量原值 + 新行。
+    let data = serde_json::json!({
+        "name": "s1",
+        "headers": ["Authorization: ****", "X-Extra: ok"],
+    });
+    let out = handler
+        .handle_cmd("server.update", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["updated"], true);
+
+    let raw = std::fs::read_to_string(dir.path().join("config/config.mcp.json")).unwrap();
+    assert!(
+        raw.contains("Authorization: b"),
+        "掩码行须还原存量原值: {raw}"
+    );
+    assert!(raw.contains("X-Extra: ok"), "新合法行须落盘: {raw}");
+}
+
+// R13（2026-10-15）：结构闸 + command 入参消费化——此前 server_add 硬编码
+// command 空串，`{"command": ...}` 载荷被静默丢弃产出双空死条目；且
+// http 无 url / stdio 双空直接落盘，挂载期才炸。
+
+#[tokio::test]
+async fn r13_server_add_consumes_command_payload() {
+    let handler = McpHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(
+        dir.path().join("config/config.mcp.json"),
+        serde_json::to_string_pretty(&nemesis_config::McpConfig::default()).unwrap(),
+    )
+    .unwrap();
+    let ctx = make_ctx(&dir);
+
+    let data = serde_json::json!({
+        "name": "c1", "command": "node", "args": ["server.js"],
+    });
+    let out = handler
+        .handle_cmd("server.add", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["added"], true);
+
+    // 落盘回读：command 消费 + normalize 抄到 url——运行期 stdio 臂
+    // （command 直读）与展示层（url 优先）两侧都拿到命令。
+    let raw: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("config/config.mcp.json")).unwrap(),
+    )
+    .unwrap();
+    let s = &raw["servers"][0];
+    assert_eq!(s["command"], "node", "command 入参必须落盘: {raw}");
+    assert_eq!(s["url"], "node", "normalize 须把 command 抄到 url: {raw}");
+}
+
+#[tokio::test]
+async fn r13_server_add_rejects_http_without_url() {
+    let handler = McpHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(
+        dir.path().join("config/config.mcp.json"),
+        serde_json::to_string_pretty(&nemesis_config::McpConfig::default()).unwrap(),
+    )
+    .unwrap();
+    let ctx = make_ctx(&dir);
+
+    let data = serde_json::json!({ "name": "h1", "transport_type": "http" });
+    let err = match handler.handle_cmd("server.add", Some(data), &ctx).await {
+        Ok(v) => panic!("http without url must be rejected, got: {v:?}"),
+        Err(e) => e,
+    };
+    assert!(err.contains("需要 url"), "actual: {err}");
+
+    let raw: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("config/config.mcp.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        raw["servers"]
+            .as_array()
+            .map(|a| a.is_empty())
+            .unwrap_or(true),
+        "rejected entry must not persist: {raw}"
+    );
+}
+
+#[tokio::test]
+async fn r13_server_add_rejects_stdio_without_command() {
+    let handler = McpHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(
+        dir.path().join("config/config.mcp.json"),
+        serde_json::to_string_pretty(&nemesis_config::McpConfig::default()).unwrap(),
+    )
+    .unwrap();
+    let ctx = make_ctx(&dir);
+
+    let data = serde_json::json!({ "name": "s1" });
+    let err = match handler.handle_cmd("server.add", Some(data), &ctx).await {
+        Ok(v) => panic!("stdio without command must be rejected, got: {v:?}"),
+        Err(e) => e,
+    };
+    assert!(err.contains("启动命令"), "actual: {err}");
+
+    let raw: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("config/config.mcp.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        raw["servers"]
+            .as_array()
+            .map(|a| a.is_empty())
+            .unwrap_or(true),
+        "rejected entry must not persist: {raw}"
+    );
+}
+
+#[tokio::test]
+async fn r13_server_update_rejects_blanking_url_on_http() {
+    let handler = McpHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    seed_mcp_config(
+        &dir,
+        serde_json::json!([{
+            "name": "s1", "transport_type": "http", "url": "http://x/mcp",
+        }]),
+    );
+    let ctx = make_ctx(&dir);
+
+    let data = serde_json::json!({ "name": "s1", "url": "" });
+    let err = match handler.handle_cmd("server.update", Some(data), &ctx).await {
+        Ok(v) => panic!("blanking url on http must be rejected, got: {v:?}"),
+        Err(e) => e,
+    };
+    assert!(err.contains("不可挂载"), "actual: {err}");
+
+    // 事务 abort：盘上 url 保持原值
+    let raw: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("config/config.mcp.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(raw["servers"][0]["url"], "http://x/mcp", "actual: {raw}");
+}
+
+#[tokio::test]
+async fn r13_server_update_tolerates_command_only_stdio() {
+    let handler = McpHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    // 手写存量形态：command 直填、无 url（CLI 写盘同款）——不受结构闸连带。
+    seed_mcp_config(
+        &dir,
+        serde_json::json!([{ "name": "legacy", "command": "python" }]),
+    );
+    let ctx = make_ctx(&dir);
+
+    let out = handler
+        .handle_cmd(
+            "server.update",
+            Some(serde_json::json!({ "name": "legacy", "description": "d" })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["updated"], true);
+}
+
+// R13-env（2026-10-15）：env 行语法闸——与 headers 同纪律（单一真相源
+// nemesis_config::validate_mcp_env_line），坏行写入面 loud 拒绝，不再
+// 静默落盘等挂载期无声消失。
+
+#[tokio::test]
+async fn r13_server_add_rejects_illegal_env_line() {
+    let handler = McpHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(
+        dir.path().join("config/config.mcp.json"),
+        serde_json::to_string_pretty(&nemesis_config::McpConfig::default()).unwrap(),
+    )
+    .unwrap();
+    let ctx = make_ctx(&dir);
+
+    for bad in ["API_KEY", "MY KEY=v", "K=vault:", "K=vault: name"] {
+        let data = serde_json::json!({
+            "name": "e1", "command": "node", "env": ["GOOD=1", bad],
+        });
+        let err = match handler.handle_cmd("server.add", Some(data), &ctx).await {
+            Ok(v) => panic!("bad env '{bad}' must be rejected, got: {v:?}"),
+            Err(e) => e,
+        };
+        assert!(err.contains("env 校验失败"), "'{bad}' → wrong error: {err}");
+    }
+
+    // 合法 env 正常落盘
+    let ok = serde_json::json!({
+        "name": "e2", "command": "node", "env": ["GOOD=1", "T=vault:alias"],
+    });
+    handler
+        .handle_cmd("server.add", Some(ok), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn r13_server_update_env_new_line_rejected_masked_tolerated() {
+    let handler = McpHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    seed_mcp_config(
+        &dir,
+        serde_json::json!([{
+            "name": "s1", "command": "node", "env": ["TOKEN=real-value"],
+        }]),
+    );
+    let ctx = make_ctx(&dir);
+
+    // 新坏行 loud 拒绝，事务 abort 盘上原值
+    let bad = serde_json::json!({
+        "name": "s1", "env": ["TOKEN=****", "BROKEN"],
+    });
+    let err = match handler.handle_cmd("server.update", Some(bad), &ctx).await {
+        Ok(v) => panic!("new bad env must be rejected, got: {v:?}"),
+        Err(e) => e,
+    };
+    assert!(err.contains("env 校验失败"), "actual: {err}");
+    let raw: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("config/config.mcp.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        raw["servers"][0]["env"],
+        serde_json::json!(["TOKEN=real-value"]),
+        "rejected update must not persist: {raw}"
+    );
+
+    // 掩码透传 + 新合法行成功
+    let good = serde_json::json!({
+        "name": "s1", "env": ["TOKEN=****", "EXTRA=1"],
+    });
+    handler
+        .handle_cmd("server.update", Some(good), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    let raw = std::fs::read_to_string(dir.path().join("config/config.mcp.json")).unwrap();
+    assert!(raw.contains("TOKEN=real-value"), "掩码须还原原值: {raw}");
+    assert!(raw.contains("EXTRA=1"), "新合法行须落盘: {raw}");
+}

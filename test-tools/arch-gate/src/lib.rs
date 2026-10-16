@@ -60,6 +60,60 @@ pub fn rules() -> Vec<(&'static str, Rule)> {
             "nemesis-channels",
             Rule::Forbidden(&["nemesis-agent", "nemesis-web"]),
         ),
+        // R8（§四.4）：connectors 是连接器域逻辑层，不得依赖呈现/通道/
+        // 桌面/看板/服务编排层——经 web handler 与 nemesisbot connector_tools
+        // 上行。实测（cargo tree --edges normal）：只依赖 nemesis-security。
+        (
+            "nemesis-connectors",
+            Rule::Forbidden(&[
+                "nemesis-web",
+                "nemesis-channels",
+                "nemesis-desktop",
+                "nemesis-board",
+                "nemesis-services",
+            ]),
+        ),
+        // R9（§四.4）：呈现层不反噬通道层——web 是 handler 集合，通道
+        // 经 bus 出站；desktop 是桌面集成。实测：两者均不在 web 依赖里。
+        (
+            "nemesis-web",
+            Rule::Forbidden(&["nemesis-channels", "nemesis-desktop"]),
+        ),
+        // R10：看板数据层（issue/评论/项目模型 + SQLite 存储）不得依赖
+        // 引擎/呈现/通道/桌面——board 的消费方是 web handler 与 bot 命令。
+        // 实测：path/prompts/types。
+        (
+            "nemesis-board",
+            Rule::Forbidden(&[
+                "nemesis-agent",
+                "nemesis-web",
+                "nemesis-channels",
+                "nemesis-desktop",
+            ]),
+        ),
+        // R11：Forge 自学习框架不得依赖引擎/呈现/通道/桌面——经 forge_bridge
+        // 工具与 bot forge 命令上行。实测：path/plugin/prompts/types/utils。
+        (
+            "nemesis-forge",
+            Rule::Forbidden(&[
+                "nemesis-agent",
+                "nemesis-web",
+                "nemesis-channels",
+                "nemesis-desktop",
+            ]),
+        ),
+        // R12：集群编排层不得依赖引擎/呈现/通道/桌面——节点侧 agent 由
+        // bot 装配（cluster_agent），cluster 本体只做发现/RPC/快照。
+        // 实测：config/path/prompts/types/utils。
+        (
+            "nemesis-cluster",
+            Rule::Forbidden(&[
+                "nemesis-agent",
+                "nemesis-web",
+                "nemesis-channels",
+                "nemesis-desktop",
+            ]),
+        ),
     ]
 }
 

@@ -1,6 +1,7 @@
 //! 上下文压缩：CompactState、三级 context_window 解析链、summarize 失效判定、maybe_update_summary、force_compression(_opts)、compact_session、session_context_status、请求历史投影。
 //!
 //! P1 自 `loop.rs` 物理搬迁（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）；语义零变化。
+#[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
 

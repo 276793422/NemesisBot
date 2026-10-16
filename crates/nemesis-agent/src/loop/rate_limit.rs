@@ -1,6 +1,7 @@
 //! 轮内预算/限流重试常量与 429 退避梯子（裁决②③④⑧）、RateLimitStatus、限流状态 set/clear/retry_status/send_retry_progress。
 //!
 //! P1 自 `loop.rs` 物理搬迁（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）；语义零变化。
+#[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
 

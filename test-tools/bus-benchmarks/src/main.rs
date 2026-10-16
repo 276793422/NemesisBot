@@ -134,7 +134,7 @@ async fn bench_concurrent_publishing() -> BenchResult {
             "expected={}, received={}, dropped={}",
             TOTAL,
             received,
-            bus.dropped_inbound()
+            bus.no_receiver_dropped_inbound()
         ),
     }
 }
@@ -414,7 +414,7 @@ async fn bench_stress_test() -> BenchResult {
             "publish_only={:.3}ms, total={:.3}ms, dropped={}",
             publish_elapsed.as_secs_f64() * 1000.0,
             total_elapsed.as_secs_f64() * 1000.0,
-            bus.dropped_inbound()
+            bus.no_receiver_dropped_inbound()
         ),
     }
 }
@@ -481,7 +481,7 @@ async fn bench_burst_traffic() -> BenchResult {
             "publish_only={:.3}ms, total={:.3}ms, dropped={}",
             publish_elapsed.as_secs_f64() * 1000.0,
             total_elapsed.as_secs_f64() * 1000.0,
-            bus.dropped_inbound()
+            bus.no_receiver_dropped_inbound()
         ),
     }
 }
@@ -531,7 +531,7 @@ async fn bench_outbound_throughput() -> BenchResult {
         detail: format!(
             "throughput={:.0} msg/s, dropped={}",
             received_count as f64 / elapsed.as_secs_f64().max(f64::EPSILON),
-            bus.dropped_outbound()
+            bus.no_receiver_dropped_outbound()
         ),
     }
 }
@@ -625,8 +625,8 @@ async fn bench_bidirectional() -> BenchResult {
             INBOUND_COUNT,
             out_count,
             OUTBOUND_COUNT,
-            bus.dropped_inbound(),
-            bus.dropped_outbound()
+            bus.no_receiver_dropped_inbound(),
+            bus.no_receiver_dropped_outbound()
         ),
     }
 }

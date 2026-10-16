@@ -602,6 +602,32 @@ fn test_cmd_learning_disable() {
 // cmd_learning_history tests
 // -------------------------------------------------------------------------
 
+/// 播种一条 LearningCycle 到 CycleStore 真相源布局
+///（learning/YYYYMM/YYYYMMDD.jsonl，同 pipeline append 形态）。
+fn seed_cycle(forge_dir: &std::path::Path, started_at: &str, patterns: u32, actions: u32) {
+    let date = started_at[..10].replace('-', "");
+    let path = forge_dir
+        .join("learning")
+        .join(&date[..6])
+        .join(format!("{date}.jsonl"));
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let line = serde_json::json!({
+        "id": format!("cycle-{}", started_at),
+        "started_at": started_at,
+        "completed_at": started_at,
+        "patterns_found": patterns,
+        "actions_taken": actions,
+        "status": "Completed",
+    });
+    use std::io::Write as _;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .unwrap();
+    writeln!(f, "{line}").unwrap();
+}
+
 #[test]
 fn test_cmd_learning_history_no_file() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -614,22 +640,21 @@ fn test_cmd_learning_history_no_file() {
 fn test_cmd_learning_history_with_entries() {
     let tmp = tempfile::TempDir::new().unwrap();
     let forge_dir = tmp.path().join("forge");
-    let learning_dir = forge_dir.join("learning");
-    std::fs::create_dir_all(&learning_dir).unwrap();
-    let entries = serde_json::json!([
-        {"timestamp": "2026-01-01T00:00:00Z", "patterns_found": 5, "actions_generated": 3, "actions_deployed": 2},
-        {"timestamp": "2026-01-02T00:00:00Z", "patterns_found": 8, "actions_generated": 6, "actions_deployed": 4}
-    ]);
-    let jsonl: String = entries
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|e| serde_json::to_string(e).unwrap())
-        .collect::<Vec<_>>()
-        .join("\n");
-    std::fs::write(learning_dir.join("learning_cycles.jsonl"), jsonl).unwrap();
+    std::fs::create_dir_all(&forge_dir).unwrap();
+    // 播种顺序故意乱序（02 文件先写、01 文件后写）——真相源读取必须
+    // 按 started_at 升序返回（R18：幻影路径根修 + 排序纪律）。
+    seed_cycle(&forge_dir, "2026-01-02T00:00:00Z", 8, 6);
+    seed_cycle(&forge_dir, "2026-01-01T00:00:00Z", 5, 3);
 
     cmd_learning_history(&forge_dir, 10).unwrap();
+
+    // 断言读取面（旧实现读幻影 learning_cycles.jsonl → 这里必空 → 红）。
+    let cycles = learning_history_cycles(&forge_dir).unwrap();
+    assert_eq!(cycles.len(), 2);
+    assert_eq!(cycles[0].started_at, "2026-01-01T00:00:00Z");
+    assert_eq!(cycles[1].started_at, "2026-01-02T00:00:00Z");
+    assert_eq!(cycles[0].patterns_found, 5);
+    assert_eq!(cycles[1].actions_taken, 6);
 }
 
 // -------------------------------------------------------------------------
@@ -648,7 +673,7 @@ fn test_cmd_reflect_forge_not_enabled() {
 
     // Should print "not enabled" and return Ok
     // This doesn't need tokio runtime since it returns early
-    cmd_reflect(&home, &cfg_path, &forge_dir).unwrap();
+    cmd_reflect(&home, &cfg_path, &forge_dir, false).unwrap();
 }
 
 #[test]
@@ -661,7 +686,7 @@ fn test_cmd_reflect_forge_dir_not_exists() {
     let cfg = serde_json::json!({"forge": {"enabled": true}});
     std::fs::write(&cfg_path, serde_json::to_string(&cfg).unwrap()).unwrap();
     // forge_dir doesn't exist - should print error and return Ok
-    cmd_reflect(&home, &cfg_path, &forge_dir).unwrap();
+    cmd_reflect(&home, &cfg_path, &forge_dir, false).unwrap();
 }
 
 // -------------------------------------------------------------------------
@@ -783,44 +808,52 @@ fn test_cmd_list_fallback_specific_type() {
 fn test_cmd_learning_history_with_limit() {
     let tmp = tempfile::TempDir::new().unwrap();
     let forge_dir = tmp.path().join("forge");
-    let learning_dir = forge_dir.join("learning");
-    std::fs::create_dir_all(&learning_dir).unwrap();
+    std::fs::create_dir_all(&forge_dir).unwrap();
 
-    // Create 5 entries, limit to 2
-    let entries: Vec<String> = (0..5)
-        .map(|i| {
-            serde_json::json!({
-                "timestamp": format!("2026-01-0{}T00:00:00Z", i + 1),
-                "patterns_found": i,
-                "actions_generated": i * 2,
-                "actions_deployed": i
-            })
-            .to_string()
-        })
-        .collect();
-    std::fs::write(
-        learning_dir.join("learning_cycles.jsonl"),
-        entries.join("\n"),
-    )
-    .unwrap();
+    // 5 条（跨两日两文件），limit=2 取最新 2 条。
+    for i in 0..5 {
+        seed_cycle(
+            &forge_dir,
+            &format!("2026-01-0{}T00:00:00Z", i + 1),
+            i,
+            i * 2,
+        );
+    }
 
     cmd_learning_history(&forge_dir, 2).unwrap();
+
+    let cycles = learning_history_cycles(&forge_dir).unwrap();
+    assert_eq!(cycles.len(), 5);
+    // limit 语义 = 升序全量取尾：最新两条是 01-05、01-04。
+    assert_eq!(cycles.last().unwrap().started_at, "2026-01-05T00:00:00Z");
+    assert_eq!(cycles[cycles.len() - 2].started_at, "2026-01-04T00:00:00Z");
 }
 
 #[test]
 fn test_cmd_learning_history_invalid_jsonl_line() {
     let tmp = tempfile::TempDir::new().unwrap();
     let forge_dir = tmp.path().join("forge");
-    let learning_dir = forge_dir.join("learning");
-    std::fs::create_dir_all(&learning_dir).unwrap();
+    std::fs::create_dir_all(&forge_dir).unwrap();
 
-    // Mix of valid and invalid JSON lines
-    let jsonl = r#"{"timestamp":"2026-01-01","patterns_found":1,"actions_generated":1,"actions_deployed":1}
-invalid json line
-{"timestamp":"2026-01-02","patterns_found":2,"actions_generated":2,"actions_deployed":2}"#;
-    std::fs::write(learning_dir.join("learning_cycles.jsonl"), jsonl).unwrap();
+    // 合法行（走 seed_cycle）+ 追加一条非法行：非法行被读取面静默跳过，
+    // 合法行照常返回（与 cycle_store read_cycles 容错语义一致）。
+    seed_cycle(&forge_dir, "2026-01-01T00:00:00Z", 1, 1);
+    seed_cycle(&forge_dir, "2026-01-02T00:00:00Z", 2, 2);
+    {
+        use std::io::Write as _;
+        let date = "20260102";
+        let path = forge_dir
+            .join("learning")
+            .join("202601")
+            .join(format!("{date}.jsonl"));
+        let mut f = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+        writeln!(f, "not-json-line").unwrap();
+    }
 
     cmd_learning_history(&forge_dir, 10).unwrap();
+
+    let cycles = learning_history_cycles(&forge_dir).unwrap();
+    assert_eq!(cycles.len(), 2, "invalid line must be skipped, valid kept");
 }
 
 #[test]
@@ -1074,13 +1107,13 @@ mod r7_cmd_paths {
         // 臂 1：config 存在但 forge.enabled=false → 提示先 enable。
         let (_t1, h1) = env_home();
         write_config(&h1, Some(false));
-        let r1 = run(ForgeAction::Reflect, false);
+        let r1 = run(ForgeAction::Reflect { auto_skill: false }, false);
         clear_env();
 
         // 臂 2：enabled=true 但 forge 目录不存在。
         let (_t2, h2) = env_home();
         write_config(&h2, Some(true));
-        let r2 = run(ForgeAction::Reflect, false);
+        let r2 = run(ForgeAction::Reflect { auto_skill: false }, false);
         clear_env();
 
         // 臂 3：目录在但 experiences 空（0 文件）。
@@ -1088,7 +1121,7 @@ mod r7_cmd_paths {
         write_config(&h3, Some(true));
         let forge_dir = h3.join("workspace").join("forge");
         std::fs::create_dir_all(forge_dir.join("experiences")).unwrap();
-        let r3 = run(ForgeAction::Reflect, false);
+        let r3 = run(ForgeAction::Reflect { auto_skill: false }, false);
         clear_env();
 
         r1.expect("reflect disabled-guard returns Ok");
@@ -1106,7 +1139,7 @@ mod r7_cmd_paths {
         write_config(&home, Some(true));
         let forge_dir = home.join("workspace").join("forge");
         seed_experiences(&forge_dir);
-        let r = run(ForgeAction::Reflect, false);
+        let r = run(ForgeAction::Reflect { auto_skill: false }, false);
         clear_env();
         r.expect("reflect with seeded experiences ok");
         // 报告写入 reflections 目录（write_report 成功臂）。
@@ -1227,7 +1260,7 @@ mod r7_cmd_paths {
             )
             .unwrap();
 
-            let r = run(ForgeAction::Reflect, false);
+            let r = run(ForgeAction::Reflect { auto_skill: false }, false);
             clear_env();
             r.expect("reflect with auto_skill + preexisting draft ok");
 
@@ -1454,14 +1487,23 @@ mod r7_cmd_paths {
         )
         .expect("learning history (no file) ok");
 
-        // 播种 cycles（好行 + 坏行 + 空行）→ 解析打印臂。
-        let cycles = "{\"timestamp\":\"2026-08-27T01:00:00+08:00\",\"patterns_found\":2,\"actions_generated\":1,\"actions_deployed\":1}\n\nnot-json-line\n";
-        std::fs::create_dir_all(forge_dir.join("learning")).unwrap();
-        std::fs::write(
-            forge_dir.join("learning").join("learning_cycles.jsonl"),
-            cycles,
-        )
-        .unwrap();
+        // 播种 cycles（真相源月目录形态；含合法行 + 追加坏行 + 空行）→
+        // 读取解析打印臂（R18：幻影 learning_cycles.jsonl 路径退役）。
+        seed_cycle(&forge_dir, "2026-08-27T01:00:00+08:00", 2, 1);
+        {
+            use std::io::Write as _;
+            let path = forge_dir
+                .join("learning")
+                .join("202608")
+                .join("20260827.jsonl");
+            let mut f = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+            writeln!(f, "\nnot-json-line").unwrap();
+        }
+        assert_eq!(
+            learning_history_cycles(&forge_dir).unwrap().len(),
+            1,
+            "invalid lines skipped"
+        );
         run(
             ForgeAction::Learning {
                 action: Some(LearningAction::History { limit: 10 }),
@@ -1485,6 +1527,92 @@ mod r7_cmd_paths {
         assert_eq!(cfg2["learning"]["enabled"], false);
         clear_env();
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_reflect_auto_skill_flag_overrides_config_off() {
+        // R10：--auto-skill flag 是当次意志——config.forge.json 的
+        // artifacts.auto_skill 缺省（false）时 flag=true 仍必须跑蒸馏
+        // （交付报告口径：forge reflect --auto-skill）。
+        let server = wiremock::MockServer::start().await;
+        let distill_json = serde_json::json!({
+        "has_skill": true,
+        "name": "flag-distilled-skill",
+        "skill_md": "---\nname: flag-distilled-skill\ndescription: flag distilled\nversion: \"1.0\"\n---\n\n# 配方\n1. 步骤\n",
+        "rationale": "converged sequence"
+    })
+    .to_string();
+        let content_json = serde_json::json!({
+            "id": "chatcmpl-1",
+            "choices": [
+                {"index": 0, "message": {"role": "assistant", "content": distill_json}, "finish_reason": "stop"}
+            ]
+        });
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/v1/chat/completions"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(content_json))
+            .mount(&server)
+            .await;
+        let server_uri = server.uri();
+
+        let draft_on_disk = {
+            let _g = crate::GLOBAL_STATE_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let (_tmp, home) = env_home();
+
+            std::fs::write(
+                home.join("config.json"),
+                serde_json::json!({
+                    "version": "1.0",
+                    "forge": {"enabled": true},
+                    "model_list": [{
+                        "model": "mock/distill-model",
+                        "api_base": format!("{server_uri}/v1"),
+                        "api_key": "test-key",
+                        "protocol": "openai",
+                        "model_tier": "big"
+                    }],
+                    "agents": {"defaults": {"llm": "mock/distill-model"}}
+                })
+                .to_string(),
+            )
+            .unwrap();
+            // config.forge.json：LLM 反思开但 auto_skill 缺省（serde default false）
+            // ——蒸馏只能由 flag 触发。
+            let forge_dir = home.join("workspace").join("forge");
+            std::fs::create_dir_all(home.join("workspace").join("config")).unwrap();
+            std::fs::write(
+                home.join("workspace")
+                    .join("config")
+                    .join("config.forge.json"),
+                serde_json::json!({"reflection": {"use_llm": true}}).to_string(),
+            )
+            .unwrap();
+            seed_experiences(&forge_dir);
+
+            let r = run(ForgeAction::Reflect { auto_skill: true }, false);
+            clear_env();
+            r.expect("reflect with flag override ok");
+
+            std::fs::read_to_string(
+                forge_dir
+                    .join("skills")
+                    .join("flag-distilled-skill")
+                    .join("SKILL.md"),
+            )
+            .unwrap_or_default()
+        };
+
+        let reqs = server.received_requests().await.unwrap_or_default();
+        assert!(
+            !reqs.is_empty(),
+            "flag must force the distillation LLM call despite config auto_skill off"
+        );
+        assert!(
+            draft_on_disk.contains("flag-distilled-skill"),
+            "flag-triggered draft must be persisted to disk"
+        );
+    }
 }
 
 // ===========================================================================
@@ -1502,9 +1630,9 @@ mod r7_cmd_paths {
 //    forge 对象臂）→ wave_b_disable_inserts_forge_key_when_missing；
 //  - 384-386 experiences 子目录缺席 => exp_count=0 早退提示 →
 //    wave_b_reflect_without_experiences_subdir_returns_hint；
-//  - 434-437 read_aggregated Err 臂——月目录下放名为 x.jsonl 的【目录】逼
-//    walk 的 read_to_string 失败传播 →
-//    wave_b_reflect_aggregate_read_error_on_jsonl_as_directory；
+//  - 434-437 read_aggregated Err 臂——W2（2026-10-15）该路径退役（cmd_reflect
+//    只读 flat store）；对应用例已改钉现行为
+//    wave_b_reflect_monthly_layout_junk_does_not_block_flat_store；
 //  - 440-443 Ok 但空聚合早退臂——月目录存在且无任何 .jsonl →
 //    wave_b_reflect_empty_aggregation_stops_early；
 //  - 459-461 write_report Err 警告臂——把 reflections 预建成普通【文件】逼
@@ -1701,19 +1829,24 @@ mod wave_b {
         // forge 目录本身存在（过 uninitialized 守卫），但没有 experiences 子目录
         // → exp_count 走 else 0 值臂 → 提示采集为空后返回。
         std::fs::create_dir_all(g.forge_dir()).unwrap();
-        run(ForgeAction::Reflect, false).expect("reflect without experiences ok");
+        run(ForgeAction::Reflect { auto_skill: false }, false)
+            .expect("reflect without experiences ok");
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn wave_b_reflect_aggregate_read_error_on_jsonl_as_directory() {
+    async fn wave_b_reflect_monthly_layout_junk_does_not_block_flat_store() {
         let _g = crate::GLOBAL_STATE_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let g = WbEnvGuard::new();
         wb_write_config(&g.home, true);
-        // 月目录下的“数据文件”实际是个目录 → walk 的 read_to_string 失败并
-        // 传播为 read_aggregated 的 Err → cmd_reflect 走 Err 提示臂。
+        // W2（2026-10-15）起 cmd_reflect 只读 canonical flat store
+        //（experiences/experiences.jsonl，store.read_recent），月度聚合布局
+        // 不再是输入——旧 read_aggregated 路径已退役。旧版此用例钉「月目录
+        // 下 jsonl 名为目录 → read_aggregated Err 提示臂」；该路径删除后
+        // 改钉现行为：月目录残留垃圾（连 jsonl 名字的目录）不得影响
+        // flat-store 反思全链路（报告照常落盘=没走空仓早退）。
         let month = chrono::Local::now().format("%Y%m").to_string();
         std::fs::create_dir_all(
             g.forge_dir()
@@ -1722,7 +1855,18 @@ mod wave_b {
                 .join("x.jsonl"),
         )
         .unwrap();
-        run(ForgeAction::Reflect, false).expect("aggregate error arm returns Ok with hint");
+        wb_seed_experience_rows(&g.forge_dir(), &[wb_row("wbj1", "exec", true, 10)]);
+        run(ForgeAction::Reflect { auto_skill: false }, false)
+            .expect("reflect succeeds despite monthly-layout junk");
+        assert!(
+            g.forge_dir()
+                .join("reflections")
+                .read_dir()
+                .map(|d| d.count())
+                .unwrap_or(0)
+                > 0,
+            "reflection report must be written from the flat store (junk must not divert to early-return)"
+        );
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
@@ -1738,7 +1882,8 @@ mod wave_b {
         //（区别于 store 层 Err）。keep.txt 保证目录非空、能过第一道存在性闸。
         std::fs::create_dir_all(g.forge_dir().join("experiences")).unwrap();
         std::fs::write(g.forge_dir().join("experiences").join("keep.txt"), "-").unwrap();
-        run(ForgeAction::Reflect, false).expect("empty raw store early-return ok");
+        run(ForgeAction::Reflect { auto_skill: false }, false)
+            .expect("empty raw store early-return ok");
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
@@ -1760,7 +1905,8 @@ mod wave_b {
                 wb_row("wbh4", "read_file", true, 5),
             ],
         );
-        run(ForgeAction::Reflect, false).expect("reflect with failing tool ok");
+        run(ForgeAction::Reflect { auto_skill: false }, false)
+            .expect("reflect with failing tool ok");
         // 报告仍应正常落盘（write_report 成功臂并行自证）。
         assert!(
             g.forge_dir()
@@ -1786,7 +1932,8 @@ mod wave_b {
         // → write_report Err → 只告警，统计照常打印，整体 Ok。
         std::fs::create_dir_all(g.forge_dir()).unwrap();
         std::fs::write(g.forge_dir().join("reflections"), "not a dir").unwrap();
-        run(ForgeAction::Reflect, false).expect("report failure must degrade to warning");
+        run(ForgeAction::Reflect { auto_skill: false }, false)
+            .expect("report failure must degrade to warning");
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
@@ -1889,14 +2036,15 @@ mod wave_b {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let g = WbEnvGuard::new();
-        // cycles 文件存在但内容全是空白行 → 过滤后 lines 为空 → 内层
-        // “No learning history found.” 臂（区别于文件不存在的外层臂）。
-        std::fs::create_dir_all(g.forge_dir().join("learning")).unwrap();
-        std::fs::write(
-            g.forge_dir().join("learning").join("learning_cycles.jsonl"),
-            "\n \n\t\n",
-        )
-        .unwrap();
+        // cycles 文件存在但内容全是空白行 → 读取面过滤后为空 →
+        // “No learning history found.” 臂（R18：真相源月目录形态）。
+        let path = g
+            .forge_dir()
+            .join("learning")
+            .join("202601")
+            .join("20260101.jsonl");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "\n \n\t\n").unwrap();
         run(
             ForgeAction::Learning {
                 action: Some(LearningAction::History { limit: 5 }),
@@ -1908,22 +2056,31 @@ mod wave_b {
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
-    fn wave_b_history_cycles_as_directory_skips_silently() {
+    fn wave_b_history_non_month_junk_tolerated() {
         let _g = crate::GLOBAL_STATE_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let g = WbEnvGuard::new();
-        // cycles 路径是目录：exists() 通过、read_to_string 失败 → 外层
-        // if-let Ok 静默跳过，函数仍返回 Ok（该容错语义的行为钉死）。
+        // 读取面容错语义钉死（R18 重写）：learning/ 下的旧幻影路径目录
+        //（learning_cycles.jsonl/，非月目录形态）与非 jsonl 文件都不阻塞
+        // 读取——合法月目录 cycles 照常返回，函数 Ok 不报错。
         std::fs::create_dir_all(g.forge_dir().join("learning").join("learning_cycles.jsonl"))
             .unwrap();
+        std::fs::write(g.forge_dir().join("learning").join("README.txt"), "junk").unwrap();
+        super::seed_cycle(&g.forge_dir(), "2026-01-01T00:00:00Z", 3, 2);
         run(
             ForgeAction::Learning {
                 action: Some(LearningAction::History { limit: 5 }),
             },
             false,
         )
-        .expect("cycles-as-directory is silently skipped, not an error");
+        .expect("non-month junk in learning/ is tolerated, not an error");
+        assert_eq!(
+            super::learning_history_cycles(&g.forge_dir())
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }
 
@@ -1984,4 +2141,24 @@ fn r10_fresh_enable_writes_default_config_empty_registry_then_disable_roundtrip(
         cfg["agents"]["defaults"]["llm"], "r10-x",
         "非 forge 键不得被 disable 触碰"
     );
+}
+
+// -------------------------------------------------------------------------
+// R18 围栏接线钉：cmd_test / Optimize 的 name 必须过 valid_skill_dir_name
+//（穿越 + 盘符相对形态在触碰文件系统前 loud 拒绝）。
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn cmd_test_rejects_traversal_name_before_fs_access() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+    for bad in ["../evil", "..\\evil", "C:evil", "a/b", "", ".", ".."] {
+        let err = cmd_test(&home, bad, None)
+            .await
+            .expect_err("fence must reject");
+        assert!(
+            err.to_string().contains("invalid skill name"),
+            "{bad}: {err}"
+        );
+    }
 }

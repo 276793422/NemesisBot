@@ -135,6 +135,12 @@ pub struct WebServerConfig {
     pub listen_addr: String,
     pub auth_token: String,
     pub cors_origins: Vec<String>,
+    /// Explicit allow-all switch (2026-10-16 hardening). CORS is resolved
+    /// three-state in `build_router`: non-empty `cors_origins` → production
+    /// layer; else `cors_allow_all` → dev layer (`*`); else restrictive
+    /// (no cross-origin). The old "empty list = allow-all" default is gone
+    /// — a missing config must not silently become `*`.
+    pub cors_allow_all: bool,
     /// WebSocket endpoint path (default: "/ws").
     pub ws_path: String,
     /// Optional workspace path for config/log access.
@@ -166,6 +172,7 @@ impl std::fmt::Debug for WebServerConfig {
                 },
             )
             .field("cors_origins", &self.cors_origins)
+            .field("cors_allow_all", &self.cors_allow_all)
             .field("ws_path", &self.ws_path)
             .field("workspace", &self.workspace)
             .field("home", &self.home)
@@ -182,6 +189,7 @@ impl Default for WebServerConfig {
             listen_addr: "127.0.0.1:8080".to_string(),
             auth_token: String::new(),
             cors_origins: vec![],
+            cors_allow_all: false,
             ws_path: "/ws".to_string(),
             workspace: None,
             home: None,
@@ -1007,11 +1015,27 @@ impl WebServer {
         // 其路由面（/bridge、/d/*、/relay、/relay/login、/api/relay/status、
         // /health）是 relay 自有信任边界（设备/管理侧鉴权在 relay 模块内），
         // dashboard token 对其无意义，挂上会把 relay 整体 401。
-        let cors = if self.config.cors_origins.is_empty() {
+        // CORS three-state（2026-10-16 hardening）：显式 origin 列表 → 生产
+        // 层；显式 allow_all → dev 层（`*`）；二者皆无 → restrictive（拒绝
+        // 跨域）。旧「空列表 = allow-all」缺省已废除——配置缺失不再静默
+        // 变成 `*`。dashboard/独立页/share 都是同源服务，restrictive 不影响
+        // 内建流；跨端开发场景走 development_mode 显式放开。
+        let cors_mode = if !self.config.cors_origins.is_empty() {
+            tracing::info!(
+                origins = self.config.cors_origins.len(),
+                "[WebServer] CORS: production (explicit allowlist)"
+            );
+            crate::cors::production_cors_layer(&self.config.cors_origins)
+        } else if self.config.cors_allow_all {
+            tracing::warn!(
+                "[WebServer] CORS: allow-all enabled explicitly (development_mode) — do not expose to untrusted networks"
+            );
             dev_cors_layer()
         } else {
-            crate::cors::production_cors_layer(&self.config.cors_origins)
+            tracing::info!("[WebServer] CORS: restrictive (same-origin only)");
+            crate::cors::restrictive_cors_layer()
         };
+        let cors = cors_mode;
         let mut router = if self.relay_only {
             router.layer(cors).with_state(state.clone())
         } else {
@@ -2382,6 +2406,8 @@ pub async fn dispatch_outbound(bus: Arc<MessageBus>, session_manager: Arc<Sessio
                 }
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                // P2-1：接收侧真实丢失计入 bus 指标。
+                bus.record_outbound_lagged(n);
                 tracing::warn!("[WebServer] Outbound dispatch lagged by {} messages", n);
                 continue;
             }

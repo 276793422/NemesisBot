@@ -43,6 +43,12 @@ pub enum ClientError {
 
     #[error("MCP list pagination aborted: {0}")]
     PaginationAborted(String),
+
+    /// 服务器响应形状非法（第十五轮缺陷 19）：此前 list/call/get 的结果
+    /// 反序列化失败一律 `unwrap_or_default()` 静默吞——空工具表/空输出
+    /// 比失败更难排查（J3 分页注释同款纪律），现响亮报错。
+    #[error("MCP server response parse error: {0}")]
+    ResponseParse(String),
 }
 
 /// Result alias for client operations.
@@ -125,6 +131,16 @@ pub struct McpClient {
     capabilities: Option<ServerCapabilities>,
     /// Protocol version negotiated during initialization.
     protocol_version: Option<String>,
+    /// Per-request inner transport timeout (ms)（2026-10-15 第十二轮复查）：
+    /// 此前硬编码 30s，config `timeout` > 30 会被内层静默截断——adapter 的
+    /// 外层超时放宽形同虚设，且外层报错文案（timed out after 120s）与实际
+    /// 死因（内层 30s）不符。构造时从 `from_server_config` 的 config 取值
+    /// 并**加 1s 让位宽限**（内层恒大于外层——超时阶梯纪律：外层必须大于
+    /// 内层，否则外层先死、内层超时形同虚设；这里外层= adapter/manager 的
+    /// config 预算、内层=逐请求传输超时，同源自 config，不平齐就让位 1s，
+    /// 外层确定性先到，`timed out after Ns` 语义保持）。manager 注册 /
+    /// CLI test·tools 直连 / agent loop 发现三条路径同源生效。
+    request_timeout_ms: u64,
 }
 
 impl McpClient {
@@ -140,7 +156,21 @@ impl McpClient {
             server_info: None,
             capabilities: None,
             protocol_version: None,
+            request_timeout_ms: 30_000,
         }
+    }
+
+    /// Effective per-request inner transport timeout (ms)。测试与诊断用
+    /// （config `timeout` 接线咬合断言面）。
+    pub fn request_timeout_ms(&self) -> u64 {
+        self.request_timeout_ms
+    }
+
+    /// Override the per-request inner transport timeout (ms)。测试注入用
+    /// （生产路径由 [`Self::from_server_config`] 从 config `timeout` 接线）。
+    pub fn with_request_timeout_ms(mut self, ms: u64) -> Self {
+        self.request_timeout_ms = ms;
+        self
     }
 
     /// Create a new client from a server configuration using stdio transport.
@@ -161,27 +191,71 @@ impl McpClient {
     ///
     /// config→transport 分派的单一真相源（McpManager::discover_tools 与 CLI
     /// `mcp test/tools/resources/prompts` 共用）：
-    /// - `"http"` / `"streamable_http"` / `"streamable-http"` →
+    /// - `"http"` / `"streamable_http"` / `"streamable-http"`（大小写敏感）→
     ///   [`HttpTransport`](crate::http_transport::HttpTransport)（headers
     ///   "KEY: VALUE" 行消费化，值支持 vault:/env:/yaml: 引用现查）；
-    /// - 其他 → `StdioTransport`。
+    /// - 手写条目兼容（2026-10-15 第六轮复查修复）：`transport_type` 缺省
+    ///   且无 `command` 且有 `url` → 按 HTTP 意图处理——stdio 无 url 语义，
+    ///   此前这类条目掉进 stdio 臂空 command 必败，而 CLI 诊断面
+    ///   （`server_entry_is_http`）按 HTTP 报告，诊断与行为分裂；
+    /// - 其他 → `StdioTransport`，且 `command` 空而 `url` 非空时以 `url`
+    ///   充当命令（2026-10-15 第八轮复查修复）：Dashboard MCP 管理页的
+    ///   stdio 约定是命令存 `url` 字段（前端 payload 不发 `command`，
+    ///   web `server_add` 也硬编码 `command` 为空）——运行期只读
+    ///   `command`，无此回落则 Dashboard 新建的 stdio 条目 spawn 空
+    ///   命令必败。存量盘上条目一并痊愈。
+    ///
+    /// 未知 `transport_type`（非空且不在 stdio/http 已知集，如 Dashboard
+    /// 曾可写的 `"sse"`）loud 拒绝（2026-10-15 第九轮复查修复）：静默掉
+    /// stdio 臂会把 url 当程序名 spawn，报出与实际问题无关的错误；与
+    /// protocol/stream 归一「未知值 loud 拒绝」的项目惯例对齐。空串不拒
+    /// （手写条目兼容形态）。
     pub fn from_server_config(config: &ServerConfig) -> ClientResult<Self> {
-        let transport: Box<dyn Transport> = match config.transport_type.as_str() {
-            "http" | "streamable_http" | "streamable-http" => {
-                if config.url.is_empty() {
-                    return Err(ClientError::InvalidConfig(format!(
-                        "MCP server '{}' uses http transport but has no url",
-                        config.name
-                    )));
-                }
-                Box::new(crate::http_transport::HttpTransport::with_headers(
-                    config.url.clone(),
-                    config.headers.clone(),
-                ))
+        let is_http = matches!(
+            config.transport_type.as_str(),
+            "http" | "streamable_http" | "streamable-http"
+        ) || (config.transport_type.is_empty()
+            && config.command.is_empty()
+            && !config.url.is_empty());
+        if !is_http && !config.transport_type.is_empty() && config.transport_type != "stdio" {
+            return Err(ClientError::InvalidConfig(format!(
+                "MCP server '{}' has unsupported transport_type '{}' \
+                 (supported: stdio, http, streamable_http, streamable-http)",
+                config.name, config.transport_type
+            )));
+        }
+        let transport: Box<dyn Transport> = if is_http {
+            if config.url.is_empty() {
+                return Err(ClientError::InvalidConfig(format!(
+                    "MCP server '{}' uses http transport but has no url",
+                    config.name
+                )));
             }
-            _ => Box::new(crate::stdio_transport::StdioTransport::from_config(config)),
+            Box::new(crate::http_transport::HttpTransport::with_headers(
+                config.url.clone(),
+                config.headers.clone(),
+            ))
+        } else {
+            let mut cfg = config.clone();
+            if cfg.command.is_empty() && !cfg.url.is_empty() {
+                cfg.command = cfg.url.clone();
+            }
+            Box::new(crate::stdio_transport::StdioTransport::from_config(&cfg))
         };
-        Ok(Self::new(transport))
+        let mut client = Self::new(transport);
+        // config `timeout`（秒）→ 内层逐请求超时 = 外层预算 + 1s 让位宽限
+        // （超时阶梯：内层必须大于外层，外层——manager init / adapter
+        // per-call——确定性先到并报 `timed out after Ns`；内层只兜住
+        // 「config > 30 旧硬编码截断」的洞）。0/缺省 = 默认外层 30s →
+        // 内层 31s（`new()` 裸构造默认 30s 不变：测试/直连无外层配对）。
+        client.request_timeout_ms = std::time::Duration::from_secs(if config.timeout_secs > 0 {
+            config.timeout_secs
+        } else {
+            30
+        })
+        .as_millis() as u64
+            + 1_000;
+        Ok(client)
     }
 
     // -- Connection lifecycle ------------------------------------------------
@@ -280,7 +354,10 @@ impl McpClient {
             params,
         };
 
-        let transport_resp = self.transport.send(&request, 30_000).await?;
+        let transport_resp = self
+            .transport
+            .send(&request, self.request_timeout_ms)
+            .await?;
         let mcp_resp = transport::from_transport_response(&transport_resp);
 
         Ok(mcp_resp)
@@ -343,7 +420,15 @@ impl McpClient {
             }
             let result = resp.result.unwrap_or(serde_json::Value::Null);
             if let Some(batch) = result.get(items_key) {
-                items.append(&mut serde_json::from_value(batch.clone()).unwrap_or_default());
+                // 第十五轮缺陷 19：批量形状非法（如工具条目缺 name /
+                // inputSchema）此前整批静默清空 → 上层把「解析失败」误当
+                // 「服务器就这些工具」。响亮报错，与 J3 分页防失控同纪律。
+                let parsed: Vec<T> = serde_json::from_value(batch.clone()).map_err(|e| {
+                    ClientError::ResponseParse(format!(
+                        "{method}: '{items_key}' batch parse failed: {e}"
+                    ))
+                })?;
+                items.extend(parsed);
             }
             let next = result
                 .get("nextCursor")
@@ -402,10 +487,14 @@ impl Client for McpClient {
             return Err(ClientError::Server(err.clone()));
         }
 
-        let result: ToolCallResult = resp
-            .result
-            .map(|v| serde_json::from_value(v).unwrap_or_default())
-            .unwrap_or_default();
+        // 第十五轮缺陷 19：结果形状非法此前静默成空成功（content 空 +
+        // is_error=false），LLM 拿到空工具输出无从排查。响亮报错。
+        let result: ToolCallResult = match resp.result {
+            Some(v) => serde_json::from_value(v).map_err(|e| {
+                ClientError::ResponseParse(format!("tools/call result parse failed: {e}"))
+            })?,
+            None => ToolCallResult::default(),
+        };
 
         Ok(result)
     }
@@ -466,10 +555,13 @@ impl Client for McpClient {
             return Err(ClientError::Server(err.clone()));
         }
 
-        let result: PromptResult = resp
-            .result
-            .map(|v| serde_json::from_value(v).unwrap_or_default())
-            .unwrap_or_default();
+        // 第十五轮缺陷 19：同 tools/call——形状非法响亮报错不静默。
+        let result: PromptResult = match resp.result {
+            Some(v) => serde_json::from_value(v).map_err(|e| {
+                ClientError::ResponseParse(format!("prompts/get result parse failed: {e}"))
+            })?,
+            None => PromptResult::default(),
+        };
 
         Ok(result)
     }

@@ -299,13 +299,19 @@ jobs:
       # 未签名的锁定版二进制（接入计划 §2.2）。
       # Secrets 未配置 → ci-sign-artifacts.sh WARN + exit 0（构建绿，fork 零门槛）；
       # Secrets 在但签后自检失败 → 脚本 exit 1（构建红，防止静默发坏链产物）。
+      # R1 自更新清单：三 env 仅传主 staging（exe 名 / run_number 单调序列 /
+      # 构建 commit）→ manifest.json 生成+签名+入 zip；其余 staging 不传 = 无
+      # 清单（客户端自更新按顺序 Unknown 诚实拒绝）。
       - name: Sign artifacts (v4)
         shell: bash
         env:
           NMB_ISSUING_SK: ${{ secrets.NMB_ISSUING_SK_HEX }}
           NMB_ISSUING_CERT: ${{ secrets.NMB_ISSUING_CERT_HEX }}
         run: |
-          bash scripts/ci-sign-artifacts.sh staging
+          NMB_MANIFEST_EXE="${{ matrix.binary }}" \
+          NMB_UPDATE_SEQUENCE="${{ github.run_number }}" \
+          NMB_UPDATE_COMMIT="${{ github.sha }}" \
+            bash scripts/ci-sign-artifacts.sh staging
           if [ "${LOCKED_BUILT:-}" = "1" ]; then
             bash scripts/ci-sign-artifacts.sh staging-locked
           fi

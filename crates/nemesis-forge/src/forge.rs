@@ -14,7 +14,7 @@ use crate::collector::Collector;
 use crate::config::ForgeConfig;
 use crate::cycle_store::CycleStore;
 use crate::exporter::Exporter;
-use crate::learning_engine::{LearningEngine, SkillCreator};
+use crate::learning_engine::LearningEngine;
 use crate::mcp_installer::MCPInstaller;
 use crate::monitor::DeploymentMonitor;
 use crate::pipeline::Pipeline;
@@ -146,7 +146,21 @@ impl Forge {
         let reflect_interval = self.config.reflection.interval_secs;
         let cleanup_interval = self.config.storage.cleanup_interval_secs;
 
-        // collector_loop
+        // 0=关 惯例（2026-10-16 R16 缺陷 22）：reflector/cleanup 循环对
+        // interval=0 不 spawn——旧实现 `elapsed >= 0` 恒真，反思（use_llm
+        // =true 时含 LLM 调用）与清理每秒各跑一轮，成本与磁盘 churn 失控；
+        // 本仓 0=关 惯例（board.budget/sweep 等同款）下用户设 0 的意图是
+        // 关闭循环，旧行为恰好相反。
+        if reflect_interval == 0 {
+            tracing::warn!("[Forge] reflection.interval_secs = 0，反思循环已关闭（0=关）");
+        }
+        if cleanup_interval == 0 {
+            tracing::warn!("[Forge] storage.cleanup_interval_secs = 0，清理循环已关闭（0=关）");
+        }
+
+        // collector_loop（刻意不受 0=关 约束）：record() 是写穿直落盘，
+        // flush 只排空缓冲通道——0 → 每秒空排是无害 no-op；若照 0=关 禁掉
+        // flush，缓冲通道将永不排空直至 stop()，打满后 record 丢数据。
         {
             let forge = Arc::clone(&self);
             let flag = self.bg_running.clone();
@@ -171,8 +185,8 @@ impl Forge {
             self.bg_tasks.lock().push(handle);
         }
 
-        // reflector_loop
-        {
+        // reflector_loop（interval=0 = 关闭，不 spawn）
+        if reflect_interval > 0 {
             let forge = Arc::clone(&self);
             let flag = self.bg_running.clone();
 
@@ -194,8 +208,8 @@ impl Forge {
             self.bg_tasks.lock().push(handle);
         }
 
-        // cleanup_loop
-        {
+        // cleanup_loop（interval=0 = 关闭，不 spawn）
+        if cleanup_interval > 0 {
             let forge = Arc::clone(&self);
             let flag = self.bg_running.clone();
 
@@ -254,20 +268,27 @@ impl Forge {
             learning_cycle = Some(cycle);
         }
 
-        // Step 2: Reflect（统计 + LLM 语义分析）。语义反思带：全量 artifacts
+        // Step 2: Reflect（统计 + use_llm 时 LLM 语义分析）。语义反思带：全量 artifacts
         // （旧调用面只传统计不传产物——LLM 看不到已部署技能会重复提名）、
         // 本轮 learning_cycle、统一杂务预算（thinking 系防烧穿）。桥接护栏
         // 空输出 → Err → warn+skip，报告无 insights 节，诚实降级不炸循环。
-        let report = reflector
-            .reflect_with_llm(
-                &experiences,
-                &self.registry().list(None, None),
-                learning_cycle.as_ref(),
-                "today",
-                "all",
-                Some(crate::reflector_llm::AUX_FORGE_MAX_TOKENS),
-            )
-            .await;
+        // use_llm=false = 纯统计反思（2026-10-15 第十一轮修复：该键文档契约
+        // 「是否用 LLM 做语义分析」，此前 gateway 无条件走 LLM、键只在 CLI
+        // 被消费——用户设 false 省成本的意图被静默无视）。
+        let report = if self.config.reflection.use_llm {
+            reflector
+                .reflect_with_llm(
+                    &experiences,
+                    &self.registry().list(None, None),
+                    learning_cycle.as_ref(),
+                    "today",
+                    "all",
+                    Some(crate::reflector_llm::AUX_FORGE_MAX_TOKENS),
+                )
+                .await
+        } else {
+            reflector.reflect(&experiences, learning_cycle.as_ref(), "today", "all")
+        };
 
         // Step 3: Write report
         if let Ok(path) = reflector.write_report(&report) {
@@ -285,33 +306,49 @@ impl Forge {
                     tracing::warn!(error = %e, "[Forge] cluster share failed");
                 }
             }
+        } else {
+            // P2 诚实化（2026-10-16）：报告落盘失败此前静默——反思明明跑完，
+            // 盘上却无新报告，用户只看到「latest report 停在旧日期」。loud warn。
+            tracing::warn!("[Forge] failed to write reflection report (see prior errors)");
         }
 
         // Step 5: auto_skill 蒸馏（2026-10-15 W2 生成面）。`learning.enabled`
         // 保持关（自动部署闭环风险面不动）；本步只产出 **draft** 状态草稿
         // （落 forge skills 目录 + 注册表），不自动启用——启用/部署是人工
         // 评审后的显式动作。Arc 锁内取即放（guard 不跨 await，F-M7 同款）。
+        // use_llm=false 时蒸馏一并关（2026-10-15 第十一轮）：蒸馏是 LLM 工作，
+        // 与 CLI 同语义（CLI use_llm=false 不挂 provider → 蒸馏诚实报
+        // no LLM provider）——语义分析关而蒸馏开会自相矛盾；caller=None
+        // 从静默跳过改诚实 WARN（配置陷阱此前不可见）。
         let caller = self.reflector.as_ref().and_then(|r| r.llm_caller().clone());
-        if self.config.artifacts.auto_skill
-            && let Some(caller) = caller
-        {
-            match crate::reflector_llm::distill_skill_draft(
-                caller.as_ref(),
-                &experiences,
-                &self.registry().list(None, None),
-                Some(crate::reflector_llm::AUX_FORGE_MAX_TOKENS),
-            )
-            .await
-            {
-                Ok(Some(distilled)) => {
-                    self.store_distilled_draft(&distilled);
+        if self.config.artifacts.auto_skill {
+            if !self.config.reflection.use_llm {
+                tracing::warn!(
+                    "[Forge] auto_skill enabled but reflection.use_llm=false — distillation requires LLM, skipping"
+                );
+            } else if let Some(caller) = caller {
+                match crate::reflector_llm::distill_skill_draft(
+                    caller.as_ref(),
+                    &experiences,
+                    &self.registry().list(None, None),
+                    Some(crate::reflector_llm::AUX_FORGE_MAX_TOKENS),
+                )
+                .await
+                {
+                    Ok(Some(distilled)) => {
+                        self.store_distilled_draft(&distilled);
+                    }
+                    Ok(None) => {
+                        tracing::info!("[Forge] auto_skill: no distillable pattern this cycle");
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "[Forge] auto_skill distillation failed, skipping");
+                    }
                 }
-                Ok(None) => {
-                    tracing::info!("[Forge] auto_skill: no distillable pattern this cycle");
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "[Forge] auto_skill distillation failed, skipping");
-                }
+            } else {
+                tracing::warn!(
+                    "[Forge] auto_skill enabled but reflector has no LLM provider — skipping distillation"
+                );
             }
         }
     }
@@ -356,13 +393,46 @@ impl Forge {
             tracing::warn!(name = %distilled.name, "[Forge] auto_skill: draft name slugified to empty, skipping");
             return None;
         }
-        // dedup：同名非降级产物已存在则跳过（反思 6h 一轮，同题材不重复出草稿）
-        if self
+        // dedup：同名**非降级**产物已存在则跳过（反思 6h 一轮，同题材不
+        // 重复出草稿）。2026-10-16 复查（F-R4）：此前 find_by_name 匹配任意
+        // 状态——Degraded/Archived 的旧产物也会挡住重蒸馏，与
+        // disable_degraded_skills 的「降级产物应能被替代品顶替」语义矛盾
+        // （旧技能已被禁用却永远阻止新版本诞生）。现对齐
+        // LearningEngine::find_artifact_by_fingerprint 口径：只挡
+        // Draft/Active/Observing/Negative 活跃产物。
+        if let Some(existing) = self
             .registry()
             .find_by_name(&slug, nemesis_types::forge::ArtifactKind::Skill)
-            .is_some()
         {
-            tracing::info!(name = %slug, "[Forge] auto_skill: artifact already exists, skipping");
+            use nemesis_types::forge::ArtifactStatus;
+            if !matches!(
+                existing.status,
+                ArtifactStatus::Degraded | ArtifactStatus::Archived
+            ) {
+                tracing::info!(name = %slug, "[Forge] auto_skill: artifact already exists, skipping");
+                return None;
+            }
+            tracing::info!(
+                name = %slug,
+                status = ?existing.status,
+                "[Forge] auto_skill: existing artifact is {} — allowing re-distillation",
+                if existing.status == ArtifactStatus::Degraded {
+                    "degraded"
+                } else {
+                    "archived"
+                }
+            );
+        }
+        // F-S1 安全闸（2026-10-16 R16 缺陷 20）：LLM 蒸馏产物写盘前过
+        // security_errors——蒸馏提示词喂的是经验摘要（外部交互的衍生物，
+        // 潜在注入面），产出的 SKILL.md 可能被引导写入危险命令/硬编码密钥。
+        // 与 `create_skill` 同一闸同一规则（F-S1 承诺覆盖所有 artifact kind
+        // 的写盘点，此前本路径漏配）。拦下 = 本轮放弃（与名字非法/skip 同面，
+        // 6h 后下轮反思可能产出不同草稿）。
+        let sec_errors =
+            crate::validator::StaticValidator::new().security_errors(&distilled.skill_md);
+        if !sec_errors.is_empty() {
+            tracing::warn!(name = %slug, errors = ?sec_errors, "[Forge] auto_skill: draft failed security gate, skipping");
             return None;
         }
         let artifact_dir = self.forge_dir.join("skills").join(&slug);
@@ -652,8 +722,8 @@ impl Forge {
     ) {
         // Inject pipeline + monitor into the learning engine so the Phase 6
         // closed loop (learn -> validate -> deploy -> monitor -> feedback)
-        // actually runs. Previously never injected (F-C1). skill_creator is
-        // injected later by the gateway once Forge is wrapped in Arc.
+        // actually runs. Previously never injected (F-C1).（LE3：skill_creator
+        // 注入已随 write-only 死接线删除，无需补线。）
         if let Some(p) = &self.pipeline {
             engine.set_pipeline(p.clone());
         }
@@ -726,6 +796,15 @@ impl Forge {
     ) -> Result<nemesis_types::forge::Artifact, String> {
         use nemesis_types::forge::{Artifact, ArtifactKind, ArtifactStatus};
 
+        // 防御纵深（2026-10-16 R18 路径穿越修复）：name 是路径段
+        // （`skills/{name}` 与下方 `skills/{name}-forge` 两处 join），在
+        // 本体入口归一，覆盖所有调用方（工具执行器已在入口 slugify，这里
+        // 兜底 learning_engine 等其余 caller 与历史回归）。空名诚实报错。
+        let name = slugify_skill_name(name);
+        if name.is_empty() {
+            return Err("skill name contains no usable characters (need [a-z0-9_-])".into());
+        }
+
         // F-M11: frontmatter must be at the very start — `contains("---")`
         // treated any Markdown horizontal rule as existing frontmatter and
         // skipped adding the wrapper.
@@ -752,7 +831,7 @@ impl Forge {
         }
 
         // 1. Write content to forge skills directory
-        let artifact_dir = self.forge_dir.join("skills").join(name);
+        let artifact_dir = self.forge_dir.join("skills").join(&name);
         let artifact_path = artifact_dir.join("SKILL.md");
         std::fs::create_dir_all(&artifact_dir).map_err(|e| format!("create dir failed: {}", e))?;
         std::fs::write(&artifact_path, &skill_content)
@@ -798,7 +877,7 @@ impl Forge {
         if self.config.validation.auto_validate
             && let Some(ref pipeline) = self.pipeline
         {
-            let validation = pipeline.validate(ArtifactKind::Skill, name, &skill_content);
+            let validation = pipeline.validate(ArtifactKind::Skill, &name, &skill_content);
             let new_status = pipeline.determine_status(&validation);
             self.registry.update(&artifact_id, |a| {
                 a.status = new_status;
@@ -855,27 +934,13 @@ impl Forge {
     }
 }
 
-/// Implement `SkillCreator` for `Forge` so the `LearningEngine` can
-/// delegate skill creation back to the parent `Forge` instance.
-/// Mirrors Go's `le.forge.CreateSkill()` pattern.
-impl SkillCreator for Forge {
-    fn create_skill(
-        &self,
-        name: &str,
-        content: &str,
-        description: &str,
-        tool_signature: Vec<String>,
-    ) -> Result<nemesis_types::forge::Artifact, String> {
-        Forge::create_skill(self, name, content, description, tool_signature)
-    }
-}
-
 /// Normalize an LLM-produced skill name to a filesystem-safe kebab-case slug.
 ///
 /// 蒸馏草稿名是 LLM 自由文本，落盘前归一：小写、非 `[a-z0-9_-]` 折叠为
 /// `-`、压缩连续 `-`、去首尾 `-`、截断 48 字符。空名/全非法字符返回空串
-/// （调用方据以跳过，不猜不救）。
-fn slugify_skill_name(name: &str) -> String {
+/// （调用方据以跳过，不猜不救）。pub(crate)：learning_engine 的
+/// execute_create_skill 落盘点共用同一规则（R17 防御纵深）。
+pub(crate) fn slugify_skill_name(name: &str) -> String {
     let mut slug = String::new();
     let mut last_dash = false;
     for c in name.chars() {
@@ -901,6 +966,24 @@ fn slugify_skill_name(name: &str) -> String {
         slug.pop();
     }
     slug
+}
+
+/// 技能目录名合法性围栏（跨入口单一真相源，R18）：必须是单段 kebab 目录
+/// 名。`../x` 直拼 join 有穿越面；`C:evil` 盘符相对形态 `is_absolute()==false`
+/// 且无分隔符，但 join 会整段换基座（Windows）；`.`/`..`/空串同理拒。
+/// 合法域 = `slugify_skill_name` 的产物域。web `forge.test` 与 CLI
+/// `forge test` / `forge optimize` 三入口共用同一判定。
+pub fn valid_skill_dir_name(name: &str) -> Result<(), String> {
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains(':')
+        || name == "."
+        || name == ".."
+    {
+        return Err(format!("invalid skill name: {name}"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

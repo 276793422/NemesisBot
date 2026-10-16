@@ -59,10 +59,16 @@ impl SkillTestRunner for BotSkillTestRunner {
         std::fs::write(skill_dir.join("SKILL.md"), skill_content)
             .map_err(|e| format!("write SKILL.md: {e}"))?;
 
-        // 4. 写 fixtures（路径已在 schema 校验层拒过 `..`；这里再拒绝对路径）。
+        // 4. 写 fixtures（路径已在 schema 校验层拒过 `..`/盘符/绝对形态；
+        //    这里纵深兜底：再拒绝对路径 + Windows 盘符相对形态——`C:evil`
+        //    is_absolute()==false 但 join 会整段换基座写出临时区）。
         for fx in &case.fixtures {
             let rel = Path::new(&fx.path);
-            if rel.is_absolute() {
+            let has_prefix_or_root = matches!(
+                rel.components().next(),
+                Some(std::path::Component::Prefix(_)) | Some(std::path::Component::RootDir)
+            );
+            if rel.is_absolute() || has_prefix_or_root {
                 return Err(format!("fixture path must be relative: {}", fx.path));
             }
             let dest = workspace.join(rel);

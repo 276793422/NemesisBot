@@ -7,6 +7,7 @@ async fn test_build_router() {
         listen_addr: "127.0.0.1:0".to_string(),
         auth_token: String::new(),
         cors_origins: vec![],
+        cors_allow_all: false,
         ws_path: "/ws".to_string(),
         workspace: None,
         home: None,
@@ -26,6 +27,7 @@ async fn test_build_router_with_static_dir() {
         listen_addr: "127.0.0.1:0".to_string(),
         auth_token: String::new(),
         cors_origins: vec![],
+        cors_allow_all: false,
         ws_path: "/ws".to_string(),
         workspace: None,
         home: None,
@@ -44,6 +46,7 @@ async fn test_build_router_with_nonexistent_static_dir() {
         listen_addr: "127.0.0.1:0".to_string(),
         auth_token: String::new(),
         cors_origins: vec![],
+        cors_allow_all: false,
         ws_path: "/ws".to_string(),
         workspace: None,
         home: None,
@@ -280,6 +283,7 @@ fn test_config_custom_values() {
         listen_addr: "0.0.0.0:9090".to_string(),
         auth_token: "secret".to_string(),
         cors_origins: vec!["https://example.com".to_string()],
+        cors_allow_all: false,
         ws_path: "/websocket".to_string(),
         workspace: Some("/data".to_string()),
         home: None,
@@ -458,6 +462,7 @@ fn test_web_server_config_default_version() {
 fn test_web_server_config_cors_origins() {
     let config = WebServerConfig {
         cors_origins: vec!["http://localhost:3000".to_string()],
+        cors_allow_all: false,
         ..Default::default()
     };
     assert_eq!(config.cors_origins.len(), 1);
@@ -470,6 +475,7 @@ fn test_web_server_new_custom_config() {
         listen_addr: "0.0.0.0:9090".to_string(),
         auth_token: "mytoken".to_string(),
         cors_origins: vec![],
+        cors_allow_all: false,
         ws_path: "/websocket".to_string(),
         workspace: Some("/tmp/ws".to_string()),
         home: None,
@@ -741,6 +747,7 @@ fn test_web_server_config_clone() {
         listen_addr: "127.0.0.1:8080".to_string(),
         auth_token: "token".to_string(),
         cors_origins: vec!["https://example.com".to_string()],
+        cors_allow_all: false,
         ws_path: "/ws".to_string(),
         workspace: Some("/tmp".to_string()),
         home: None,

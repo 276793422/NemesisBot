@@ -827,7 +827,7 @@ async fn test_estop_blocks_dispatch_family_entries() {
         workspace: ctx.workspace.clone(),
         home: ctx.home.clone(),
         state: Arc::new(estopped),
-        auth_method: ctx.auth_method,
+        auth_method: ctx.auth_method.clone(),
     };
 
     // issue.dispatch → 拒（护栏先于一切校验，连 data 都不解析）。
@@ -8678,7 +8678,7 @@ async fn w5_handler_misc_arms() {
         workspace: ctx.workspace.clone(),
         home: ctx.home.clone(),
         state: Arc::new(estopped),
-        auth_method: ctx.auth_method,
+        auth_method: ctx.auth_method.clone(),
     };
     let err = dispatch(
         &ctx_e,

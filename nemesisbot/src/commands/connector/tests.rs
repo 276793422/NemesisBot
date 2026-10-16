@@ -6,14 +6,24 @@
 
 use super::*;
 
-#[tokio::test]
-async fn test_demo_four_acts_evidence() {
+#[test]
+fn test_demo_four_acts_evidence() {
     // demo_acts 就地设 NEMESISBOT_VAULT_PASSPHRASE（argon2 读侧解锁）——env 是
     // 进程单例，与 vault_runtime / commands::vault 的 env 触及测试群经
-    // crate::GLOBAL_STATE_LOCK 互斥（nextest 独立进程下无竞争直通）。
+    // crate::GLOBAL_STATE_LOCK 互斥（nextest 独立进程下无竞争直通）。std 锁
+    // guard 不得活过 await（clippy await_holding_lock）——锁在同步外壳持有，
+    // async 体经 block_on 执行（commands/vault run_arms 同款形态）。
     let _env_guard = crate::GLOBAL_STATE_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(test_demo_four_acts_evidence_inner());
+}
+
+async fn test_demo_four_acts_evidence_inner() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ev = demo_acts(tmp.path()).await.expect("demo acts ok");
 

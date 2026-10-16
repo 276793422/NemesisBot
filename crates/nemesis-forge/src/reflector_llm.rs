@@ -376,6 +376,22 @@ pub fn extract_json(response: &str) -> Option<serde_json::Value> {
     }
 }
 
+/// 质量评审维度分数解析（单一真相源，2026-10-16 R18 钳制修复）：从 LLM
+/// 回复 JSON 取一个维度分并**钳制到 0-100**。三个评审调用点（pipeline /
+/// validator / evaluator）共用。
+///
+/// 此前三处各自 `as_u64()`/`as_f64()` 直取——LLM 回 `correctness: 1000`
+/// 时加权分 400 恒过阈值（fail-open），且 pipeline 的 `c * 40 / 100` 在
+/// u32 上可算术溢出（debug panic / release 回绕）。钳制后越界分诚实收
+/// 到 100，加权恒在 0-100。
+pub fn parse_dimension_score(val: &serde_json::Value) -> Option<u32> {
+    let raw = val.as_u64().map(|n| n as f64).or_else(|| val.as_f64())?;
+    if !raw.is_finite() {
+        return None;
+    }
+    Some(raw.clamp(0.0, 100.0) as u32)
+}
+
 // ---------------------------------------------------------------------------
 // ProviderBridge: wraps LlmProvider into the LLMCaller interface
 // ---------------------------------------------------------------------------

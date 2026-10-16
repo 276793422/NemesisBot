@@ -106,14 +106,18 @@ async fn agt_rate_limiter_window_expiry_pops_stale_hits() {
 #[tokio::test]
 async fn agt_clear_chat_password_persist_error_surfaces() {
     let dir = tempfile::tempdir().unwrap();
-    // 父目录位置放一个普通文件 → create_dir_all 必败。
-    let blocker = dir.path().join("blocker");
-    std::fs::write(&blocker, b"not a dir").unwrap();
-    let store = std::sync::Arc::new(SecretStore::open(blocker.join("secrets.json")));
-    // 先落一个密码（磁盘写失败不影响内存表插入——失败被忽略）。
-    let _ = store.set_password("agtdead01", "pw");
+    let path = dir.path().join("secrets.json");
+    let store = std::sync::Arc::new(SecretStore::open(path.clone()));
+    // persist-then-swap：写失败即内存未变，无法在写入期注入失败——
+    // 先让密码成功落盘，再破坏持久化目标。
+    store
+        .set_password("agtdead01", "pw")
+        .expect("seed password");
+    // 把 secrets.json 从文件换成目录 → 原子写 rename 必败。
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
 
-    let ctx = agt_ctx(Some(WfEngine::new_arc()), Some(store));
+    let ctx = agt_ctx(Some(WfEngine::new_arc()), Some(store.clone()));
 
     let err = WorkflowHandler
         .handle_cmd(
@@ -127,6 +131,9 @@ async fn agt_clear_chat_password_persist_error_surfaces() {
         err.contains("clear_chat_password failed"),
         "持久化失败必须诚实上抛: {err}"
     );
+    // persist-then-swap 的另一半：写失败时内存保持旧账（与磁盘一致），
+    // 密码不被误清除。
+    assert!(store.has_password("agtdead01"), "失败清除不得动内存账本");
 }
 
 // ---------------------------------------------------------------------------

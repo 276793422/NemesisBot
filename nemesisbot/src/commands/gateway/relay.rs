@@ -46,6 +46,7 @@ pub(crate) async fn run_relay(home: &std::path::Path, cfg: &nemesis_config::Conf
             "channels.web.auth_token",
         ),
         cors_origins: vec![],
+        cors_allow_all: false,
         ws_path: "/ws".to_string(),
         workspace: Some(home.join("workspace").to_string_lossy().to_string()),
         home: Some(home.to_string_lossy().to_string()),

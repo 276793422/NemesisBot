@@ -2,13 +2,17 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { useToast } from '../../../composables/useToast'
 
-// 行动账本页内撤销（E3 收官批 2026-10-15）dispatch 级 spec：
+// 行动账本页内撤销（E3 收官批 2026-10-15；R5 诚实化 2026-10-16）dispatch 级 spec：
 // - 撤销按钮可见性：只对 executed + write 类凭条开放；denied/read/network
 //   不显示（无效果可撤 / 无通用撤销语义）；
-// - 二次确认模态（带凭条信息；域 C/域 B 说明分支）；
-// - 确认 → connectors.undo 带 receipt_id + session_key；成功 toast + 凭条重拉；
-// - 失败 → error toast，模态退 busy 可重试/取消。
-// 后端分派语义（read 诚实说明 / 域 C 反向 op / 域 B rewind_last_turn /
+// - 二次确认模态（带凭条信息；域 C/域 B 说明分支——域 B 明示外部副作用不会被撤销）；
+// - 确认 → connectors.undo 带 receipt_id + session_key；undone=true → 成功
+//   toast + 凭条重拉；
+// - R5 三臂：undone=false + reverse_op → error toast（带 reason）；undone=false
+//   + local_rewind → warn toast（外部副作用未被撤销）；绝不在 undone=false 时
+//   显示「撤销完成」；
+// - 请求失败 → error toast，模态退 busy 可重试/取消。
+// 后端分派语义（read 诚实说明 / 域 C 反向 op 结构化判定 / 域 B local_rewind /
 // registry 按当下裁决）由 crates/nemesis-web/src/handlers/connectors/tests.rs 钉住。
 
 const requestMock = vi.fn()
@@ -47,6 +51,10 @@ function defaultImpl() {
           receipt({ receipt_id: 'RCPT-5', op: 'ping', class: 'network', undoable: false }), // network → 无按钮
         ],
       })
+    }
+    // R5：撤销成功响应 = undone:true（后端按行动账本新凭条结构化判定）。
+    if (cmd === 'undo') {
+      return Promise.resolve({ undone: true, via: 'reverse_op', capability: 'reverse_op', undo_op: 'cancel_order' })
     }
     return Promise.resolve({})
   })
@@ -93,15 +101,16 @@ describe('ActionLedger 页内撤销（E3）', () => {
     w.unmount()
   })
 
-  it('域 B（undoable=false）模态显示会话级回退说明', async () => {
+  it('域 B（undoable=false）模态明示：回退本地会话，外部副作用不会被撤销（R5 诚实文案）', async () => {
     const w = await mountView()
     await w.findAll('[data-test="ledger-undo-btn"]')[1].trigger('click')
     const modal = w.find('[data-test="ledger-undo-modal"]')
-    expect(modal.text()).toContain('回退会话最后一轮')
+    expect(modal.text()).toContain('回退本地会话最后一轮')
+    expect(modal.text()).toContain('外部副作用不会被撤销')
     w.unmount()
   })
 
-  it('确认 → connectors.undo 带 receipt_id + session_key；成功 toast + 凭条重拉', async () => {
+  it('确认 → connectors.undo 带 receipt_id + session_key；undone=true → 成功 toast + 凭条重拉', async () => {
     const w = await mountView()
     const listCallsBefore = requestMock.mock.calls.filter(c => c[1] === 'receipts.list').length
     await w.findAll('[data-test="ledger-undo-btn"]')[0].trigger('click')
@@ -141,6 +150,51 @@ describe('ActionLedger 页内撤销（E3）', () => {
     expect((modal.find('[data-test="ledger-undo-confirm"]').element as HTMLButtonElement).disabled).toBe(false)
     await modal.find('[data-test="ledger-undo-cancel"]').trigger('click')
     expect(w.find('[data-test="ledger-undo-modal"]').exists()).toBe(false)
+    w.unmount()
+  })
+
+  // R5 三臂：undone=false 绝不显示「撤销完成」。
+  it('R5: undone=false + reverse_op → error toast 带 reason，绝无「撤销完成」', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'receipts.list') return Promise.resolve({ receipts: [receipt()] })
+      if (cmd === 'undo') {
+        return Promise.resolve({
+          undone: false, via: 'reverse_op', capability: 'reverse_op', undo_op: 'cancel_order',
+          reason: '反向 op 凭条 outcome=`error`（未真实生效，外部状态未撤销）',
+        })
+      }
+      return Promise.resolve({})
+    })
+    const w = await mountView()
+    await w.find('[data-test="ledger-undo-btn"]').trigger('click')
+    await w.find('[data-test="ledger-undo-confirm"]').trigger('click')
+    await flushPromises()
+
+    const toasts = useToast().toasts
+    expect(toasts.some(t => t.type === 'error' && t.message.includes('未真实生效'))).toBe(true)
+    expect(toasts.some(t => t.message.includes('撤销完成'))).toBe(false)
+    w.unmount()
+  })
+
+  it('R5: undone=false + local_rewind → warn toast（外部副作用未被撤销），绝无「撤销完成」', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'receipts.list') return Promise.resolve({ receipts: [receipt({ undoable: false })] })
+      if (cmd === 'undo') {
+        return Promise.resolve({
+          undone: false, via: 'local_rewind', capability: 'local_rewind',
+          reason: '外部副作用未被撤销，仅本地会话回退',
+        })
+      }
+      return Promise.resolve({})
+    })
+    const w = await mountView()
+    await w.find('[data-test="ledger-undo-btn"]').trigger('click')
+    await w.find('[data-test="ledger-undo-confirm"]').trigger('click')
+    await flushPromises()
+
+    const toasts = useToast().toasts
+    expect(toasts.some(t => t.type === 'warn' && t.message.includes('外部副作用未被撤销'))).toBe(true)
+    expect(toasts.some(t => t.message.includes('撤销完成'))).toBe(false)
     w.unmount()
   })
 })

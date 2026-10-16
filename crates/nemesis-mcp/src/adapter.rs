@@ -417,6 +417,28 @@ pub fn sanitize_name(name: &str) -> String {
         .collect()
 }
 
+/// 检测 server 名单中 sanitize 后工具前缀相撞的分组（2026-10-16 第十四轮
+/// 缺陷 17）：`pet.v2` 与 `pet-v2` 都归一为 `mcp_pet_v2_`——热重载
+/// `find_new_servers` 会把第二个当「已注册」静默过滤（永不挂载），启动
+/// 全量挂载则工具键互相覆盖（后注册者胜）。检测单一真相源：加载面
+/// （`McpManager::load_config`，覆盖启动 + 热重载）与写面（CLI `mcp add`
+/// / Dashboard server_add）共用本函数。吃名字迭代器（manager 传类型化
+/// 名单、CLI/web 传 raw JSON 名字，免 serde 往返）。返回只含冲突组的
+/// `(prefix, colliding names)` 列表。
+pub fn sanitize_prefix_collisions<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+) -> Vec<(String, Vec<String>)> {
+    let mut groups: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for name in names {
+        let prefix = format!("mcp_{}_", sanitize_name(name));
+        groups.entry(prefix).or_default().push(name.to_string());
+    }
+    groups
+        .into_iter()
+        .filter(|(_, names)| names.len() > 1)
+        .collect()
+}
+
 /// Sanitize an MCP input_schema for use as a function-calling parameters schema.
 ///
 /// Some MCP servers return schemas with constructs that certain LLM providers

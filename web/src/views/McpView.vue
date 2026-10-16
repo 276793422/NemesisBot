@@ -33,7 +33,9 @@ const confirmDeleteName = ref('')
 const TRANSPORT_TYPES = [
   { id: 'stdio', name: 'STDIO', desc: '本地命令行进程' },
   { id: 'http', name: 'HTTP', desc: 'HTTP POST 接口' },
-  { id: 'sse', name: 'SSE', desc: 'Server-Sent Events' },
+  // sse 选项已摘除（2026-10-15）：运行时 transport 分派不支持 SSE，
+  // 提供必败选项只会把用户引进「探测能通、挂载即报错」的死胡同；
+  // runtime 支持 SSE 后再随 CLI 一并暴露。
 ]
 
 const defaultForm = () => ({

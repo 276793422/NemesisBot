@@ -1,6 +1,7 @@
 //! 工具表构建（build_tool_defs/effective_tool_defs）、文档折叠、并行安全预计算、PrecomputedTool、current_tool_doc_folding/hidden_tools。
 //!
 //! P1 自 `loop.rs` 物理搬迁（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）；语义零变化。
+#[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
 

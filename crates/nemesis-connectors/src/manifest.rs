@@ -478,6 +478,10 @@ fn validate(raw: ConnectorManifestRaw) -> Result<ValidatedConnector, String> {
             }
         };
 
+        // R4：args_schema 形态扫描（加载期）——只认本方校验器支持的关键词，
+        // 超出白名单 loud 拒收（诚实拒绝假装支持：装得进去 ≠ 校验得住）。
+        validate_args_schema_shape(&meta.id, &op.id, op.args_schema.as_ref())?;
+
         ops.push(ValidatedOp {
             id: op.id,
             intent: op.intent,
@@ -560,6 +564,130 @@ fn validate_id(id: &str, what: &str) -> Result<(), String> {
         return Err(format!(
             "{what} `{id}` 含非法字符（只允许小写字母/数字/-/_）"
         ));
+    }
+    Ok(())
+}
+
+/// args_schema 顶层白名单（R4 加载期 shape 扫描）：registry::validate_op_args
+/// 消费的关键词全集。清单作者用了白名单外的 JSON Schema 关键词（pattern /
+/// items / oneOf…）时**加载即拒**——运行期校验器不认它们，装作支持 =
+/// 非法参数漏进出网。
+const SCHEMA_OBJECT_KEYWORDS: &[&str] = &["type", "required", "properties"];
+/// property 级白名单（description 是描述性文本，registry 校验器不消费但
+/// 全仓清单大量使用，必须放行）。
+const SCHEMA_PROPERTY_KEYWORDS: &[&str] = &["type", "enum", "description", "minimum", "maximum"];
+
+/// 加载期 args_schema 形态扫描（R4）：顶层必须是 `type: "object"`；property
+/// type 限 string|number|integer|boolean（array/object 本方校验器不递归，不
+/// 放行）；required 必须是全字符串数组（registry 消费侧对形态坏**静默跳过**
+/// ——`as_array()` None / `as_str()` None 双重兜空，required 闸整体失效）；
+/// properties 缺席合法、**在场但非 object loud 拒**（同因：字段级校验整体
+/// 失效，不能与「缺席 = 只有 required 闸」混为一谈）；enum 必须是字符串数
+/// 组；minimum/maximum 必须是数字且**只允许声明在 number/integer 型
+/// property 上**（registry 校验器对其他类型静默跳过边界，装作支持 = 非法
+/// 参数漏进出网）；白名单外关键词 loud 报错。
+fn validate_args_schema_shape(
+    connector_id: &str,
+    op_id: &str,
+    schema: Option<&serde_json::Value>,
+) -> Result<(), String> {
+    let Some(schema) = schema else {
+        return Ok(());
+    };
+    let err = |msg: String| -> String {
+        format!("connector `{connector_id}` op `{op_id}`: args_schema 非法: {msg}")
+    };
+    let Some(obj) = schema.as_object() else {
+        return Err(err("顶层必须是 object（JSON Schema 形态）".to_string()));
+    };
+    for key in obj.keys() {
+        if !SCHEMA_OBJECT_KEYWORDS.contains(&key.as_str()) {
+            return Err(err(format!(
+                "不支持的关键词 `{key}`（本方校验器只认 {SCHEMA_OBJECT_KEYWORDS:?}；不支持的关键词装作支持会让非法参数漏过执行前校验）"
+            )));
+        }
+    }
+    match obj.get("type").and_then(|v| v.as_str()) {
+        Some("object") => {}
+        other => {
+            return Err(err(format!(
+                "顶层 type 必须是 \"object\"，实际为 {:?}",
+                other.unwrap_or("(缺失)")
+            )));
+        }
+    }
+    // required 形态闸：必须是全字符串数组。registry 消费侧 `as_array()` /
+    // `as_str()` 都是静默跳过——形态坏 = 必填闸无声失效，加载期 loud 拒。
+    if let Some(required) = obj.get("required") {
+        let Some(arr) = required.as_array() else {
+            return Err(err(
+                "required 必须是数组（非数组会让必填闸整体失效）".to_string()
+            ));
+        };
+        if let Some(idx) = arr.iter().position(|v| !v.is_string()) {
+            return Err(err(format!(
+                "required 成员必须全为字符串，第 {idx} 项非字符串（非字符串成员会被运行期校验静默跳过）"
+            )));
+        }
+    }
+    // properties 缺席 = 只有 required 闸，形态合法；在场但非 object = 字段
+    // 级校验（type/enum/min-max）整体静默失效，loud 拒——不与缺席混同。
+    let properties = match obj.get("properties") {
+        None => return Ok(()),
+        Some(v) => v.as_object().ok_or_else(|| {
+            err("properties 必须是 object（非 object 会让全部字段级校验静默失效）".to_string())
+        })?,
+    };
+    for (name, spec) in properties {
+        let Some(spec_obj) = spec.as_object() else {
+            return Err(err(format!("property `{name}` 必须是 object")));
+        };
+        for key in spec_obj.keys() {
+            if !SCHEMA_PROPERTY_KEYWORDS.contains(&key.as_str()) {
+                return Err(err(format!(
+                    "property `{name}` 不支持的关键词 `{key}`（只认 {SCHEMA_PROPERTY_KEYWORDS:?}）"
+                )));
+            }
+        }
+        match spec_obj.get("type").and_then(|v| v.as_str()) {
+            Some("string" | "number" | "integer" | "boolean") => {}
+            other => {
+                return Err(err(format!(
+                    "property `{name}` type 必须是 string|number|integer|boolean，实际为 {:?}（array/object 本方校验器不递归校验，不冒充支持）",
+                    other.unwrap_or("(缺失)")
+                )));
+            }
+        }
+        if let Some(allowed) = spec_obj.get("enum") {
+            if !allowed.is_array() {
+                return Err(err(format!("property `{name}` enum 必须是数组")));
+            }
+            if spec_obj.get("type").and_then(|v| v.as_str()) == Some("string")
+                && allowed.as_array().unwrap().iter().any(|v| !v.is_string())
+            {
+                return Err(err(format!(
+                    "property `{name}` enum（string 型）成员必须全为字符串"
+                )));
+            }
+        }
+        for bound in ["minimum", "maximum"] {
+            if let Some(v) = spec_obj.get(bound) {
+                if !v.is_number() {
+                    return Err(err(format!("property `{name}` {bound} 必须是数字")));
+                }
+                // 边界只对数值型有意义：registry 校验器只对 number/integer
+                // 消费 min/max，string/boolean 上声明会被运行期静默跳过——
+                // 同「装作支持」防线，加载期 loud 拒（2026-10-16 四轮复查）。
+                if !matches!(
+                    spec_obj.get("type").and_then(|v| v.as_str()),
+                    Some("number" | "integer")
+                ) {
+                    return Err(err(format!(
+                        "property `{name}` {bound} 只对 number/integer 型有意义（其他类型上会被运行期校验静默跳过）"
+                    )));
+                }
+            }
+        }
     }
     Ok(())
 }

@@ -8,7 +8,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "typecheck": "vue-tsc --noEmit"
+    "test:e2e": "playwright test",
+    "typecheck": "vue-tsc --noEmit",
+    "typecheck:e2e": "tsc --noEmit -p tsconfig.e2e.json"
   },
   "dependencies": {
     "@codemirror/commands": "^6.10.4",
@@ -35,6 +37,7 @@
     "vue-router": "^4.5.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.56.0",
     "@types/dompurify": "^3.0.5",
     "@types/node": "^26.6.3",
     "@vitejs/plugin-vue": "^5.2.3",

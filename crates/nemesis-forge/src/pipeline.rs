@@ -341,6 +341,15 @@ impl Pipeline {
             errors.push("Content contains potential secret/key".into());
         }
 
+        // 危险命令检查（F-S1 同类扫，2026-10-16 R16）：本函数是 learning_engine
+        // refine 循环的唯一静态闸，此前只有密钥子串检查——含 `rm -rf /` /
+        // `curl|bash` 的 LLM 产物能通过校验并部署为 agent 指令。规则与
+        // StaticValidator 同源（dangerous_command_errors 单一真相源）；密钥
+        // 正则面不重复接入（上方子串检查更宽，两套都报会重复计错）。
+        for e in crate::validator::StaticValidator::new().dangerous_command_errors(content) {
+            errors.push(e);
+        }
+
         StaticValidationResult {
             stage: ValidationStage {
                 passed: errors.is_empty(),
@@ -448,14 +457,15 @@ impl Pipeline {
                             Some(parsed) => {
                                 let mut dimensions = std::collections::HashMap::new();
 
-                                // Extract dimension scores
+                                // Extract dimension scores（钳制 0-100，单一真
+                                // 相源 parse_dimension_score；此前 as_u64 直取，
+                                // LLM 回 1000 分时加权 400 恒过 + u32 溢出面）。
                                 for key in &["correctness", "quality", "security", "reusability"] {
-                                    if let Some(val) = parsed.get(*key) {
-                                        if let Some(n) = val.as_u64() {
-                                            dimensions.insert(key.to_string(), n as u32);
-                                        } else if let Some(n) = val.as_f64() {
-                                            dimensions.insert(key.to_string(), n as u32);
-                                        }
+                                    if let Some(val) = parsed.get(*key)
+                                        && let Some(n) =
+                                            crate::reflector_llm::parse_dimension_score(val)
+                                    {
+                                        dimensions.insert(key.to_string(), n);
                                     }
                                 }
 

@@ -118,6 +118,14 @@ async fn ws_wait_reply_containing(
                     continue;
                 };
                 if v["type"] == "message" && v["module"] == "chat" && v["cmd"] == "receive" {
+                    // 用户回声帧（server 把 chat.send 原样回显给会话，
+                    // data.role="user"）不是回复——只认 assistant 帧。否则
+                    // 查询文本含等待词时（v2 的 <MEM_CHECK> ⊃ "MEM_"）回声
+                    // 先到先匹配，断言拿到的是测试自己发的内容（V2 首跑
+                    // 实录 2026-10-15；provider_stream.rs 同款教训横扫）。
+                    if v["data"]["role"].as_str() == Some("user") {
+                        continue;
+                    }
                     let c = v["data"]["content"].as_str().unwrap_or("");
                     if c.contains(expect) {
                         return Ok(c.to_string());
