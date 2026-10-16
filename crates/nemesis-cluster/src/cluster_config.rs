@@ -51,6 +51,14 @@ pub struct NodeInfo {
     /// matcher tier 闸 fail-open。
     #[serde(default)]
     pub tier: Option<String>,
+    /// 环境能力声明（NB-122 批 ③ 数据面 2026-10-16）：节点环境事实能力词
+    /// （如 browser/chrome/firefox），set_capabilities 时与 AgentLoop 工具
+    /// 名并集进宣告面，作 matcher `required_capabilities` 硬条件的数据源。
+    /// 缺省空 = 无环境能力声明。历史注记：`[peers.X]` 静态 capabilities 曾
+    /// 因「配置了也不生效」被整体删除（见 PeerConfig 注记）——本字段只认
+    /// `[node]` 自报段，经 set_capabilities 并集进宣告，不再无效。
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 impl Default for NodeInfo {
@@ -64,6 +72,7 @@ impl Default for NodeInfo {
             tags: Vec::new(),
             professions: Vec::new(),
             tier: None,
+            capabilities: Vec::new(),
         }
     }
 }
@@ -319,6 +328,7 @@ pub fn create_static_config(node_id: &str, node_name: &str, address: &str) -> St
             tags: Vec::new(),
             professions: Vec::new(),
             tier: None,
+            capabilities: Vec::new(),
         },
     }
 }

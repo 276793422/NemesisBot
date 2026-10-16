@@ -397,6 +397,7 @@ impl AnthropicProvider {
         body["stream"] = serde_json::json!(true);
 
         let client = self.client.clone();
+        let stream_timeout_secs = self.config.timeout_secs;
         let (tx, rx) = tokio::sync::mpsc::channel(64);
 
         tokio::spawn(async move {
@@ -514,7 +515,44 @@ impl AnthropicProvider {
             let mut stop_reason: Option<String> = None;
             let mut accumulated_reasoning = String::new();
 
-            while let Some(chunk_result) = stream.next().await {
+            // 墙钟约束（2026-10-16 NB-123 实证根修，与 http_provider 同门）：
+            // reqwest client 级 `.timeout()` 在 `bytes_stream()` 读路径不兜底
+            // ——上游静默停流时整个任务在 `stream.next()` 挂死。以「请求起点
+            // + timeout_secs」为绝对墙钟线，到线即 Timeout（可重试/可故障
+            // 转移）。timeout_secs == 0 = 不限（显式逃生口）。
+            let deadline = if stream_timeout_secs == 0 {
+                None
+            } else {
+                Some(
+                    tokio::time::Instant::now()
+                        + std::time::Duration::from_secs(stream_timeout_secs),
+                )
+            };
+            loop {
+                let next = match deadline {
+                    Some(dl) => match tokio::time::timeout_at(dl, stream.next()).await {
+                        Ok(v) => v,
+                        Err(_) => {
+                            tracing::error!(
+                                provider = "anthropic",
+                                model = %model,
+                                timeout_secs = stream_timeout_secs,
+                                "[Provider] Anthropic SSE stream exceeded total wall-clock deadline"
+                            );
+                            let _ = tx
+                                .send(Err(FailoverError::Timeout {
+                                    provider: "anthropic".to_string(),
+                                    model: model.clone(),
+                                }))
+                                .await;
+                            return;
+                        }
+                    },
+                    None => stream.next().await,
+                };
+                let Some(chunk_result) = next else {
+                    break;
+                };
                 let bytes = match chunk_result {
                     Ok(b) => b,
                     Err(e) => {

@@ -373,6 +373,27 @@ impl AgentLoop {
         .unwrap_or_default()
     }
 
+    /// NB-122 批 ④（2026-10-16）：工具调用墙钟看门狗——fresh-read
+    /// `agents.executor_tool_timeout_secs`（秒）。缺键/无 config_path/不可读
+    /// = 默认 1800s；0 = 关（返回 None）。这是**卡死兜底闸不是提速闸**：
+    /// 阈值要放得过合法长活（cargo build --release 10-20 分钟量级）。
+    pub(crate) fn current_executor_tool_timeout(&self) -> Option<std::time::Duration> {
+        const DEFAULT_SECS: u64 = 1800;
+        let secs = match self.config_path.read().clone() {
+            Some(p) => std::fs::read_to_string(&p)
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .and_then(|v| {
+                    v.get("agents")
+                        .and_then(|a| a.get("executor_tool_timeout_secs"))
+                        .and_then(|n| n.as_u64())
+                })
+                .unwrap_or(DEFAULT_SECS),
+            None => DEFAULT_SECS,
+        };
+        (secs > 0).then(|| std::time::Duration::from_secs(secs))
+    }
+
     /// 角色供给的**单一裁决**：当前 tier 分档可见集 − 配置隐藏集（保持目录
     /// 顺序）。dispatch 闸与 `roles.list` 消费同一函数——两处口径永不漂移。
     /// tier → 线格式映射在本地（nemesis-prompts 零依赖不引 nemesis-types）；

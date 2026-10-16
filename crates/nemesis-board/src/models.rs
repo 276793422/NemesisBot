@@ -194,6 +194,11 @@ pub struct Issue {
     /// 匹配无继承；None/空 = 不限职能）。
     #[serde(default)]
     pub required_profession: Option<String>,
+    /// 环境能力硬条件（NB-122 批 2026-10-16）：派发需求节点能力词（与
+    /// 节点宣告的 capabilities 同词表；匹配是全量硬闸、不参与松弛，见
+    /// matcher 硬条件 5）；空 = 无能力需求。
+    #[serde(default)]
+    pub required_capabilities: Vec<String>,
     /// 取消单「永久收起」标记（P1/A2b 清理出口）：任何前端表面都不再出现，
     /// 即使「显示已取消」开关打开。board.db 仍保留行（审计链完整）。
     #[serde(default)]
@@ -460,6 +465,9 @@ pub struct NewIssue {
     pub required_tags: Vec<String>,
     /// 集群专业职能框架（M2）：派发需求职能 slug（None/空 = 不限）。
     pub required_profession: Option<String>,
+    /// 环境能力硬条件（NB-122 批 2026-10-16）：派发需求节点能力词
+    /// （匹配硬闸、不参与松弛）；空 = 无能力需求。
+    pub required_capabilities: Vec<String>,
 }
 
 impl Default for NewIssue {
@@ -479,6 +487,7 @@ impl Default for NewIssue {
             required_role: None,
             required_tags: Vec::new(),
             required_profession: None,
+            required_capabilities: Vec::new(),
         }
     }
 }

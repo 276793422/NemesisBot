@@ -37,6 +37,81 @@ fn cleanup(dir: &PathBuf) {
 }
 
 // ---------------------------------------------------------------------------
+// AC 自动生成（NB-125 根修，2026-10-17 用户裁决：验收标准就应该自动生成）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn create_issue_generates_bug_form_ac_when_missing() {
+    let (store, dir) = temp_store("acgen-bug");
+    let issue = store
+        .create_issue(NewIssue {
+            title: "项目代码无法正确启动，无法看到游戏主界面".to_string(),
+            description: "打开就是白屏。你自己试试。".to_string(),
+            ..new_issue("x")
+        })
+        .unwrap();
+    let ac = issue
+        .acceptance_criteria
+        .as_deref()
+        .expect("BUG 形态必须自动生成 AC");
+    assert!(ac.starts_with("（系统自动生成）"), "{ac}");
+    assert!(ac.contains("已被修复并验证"), "{ac}");
+    assert!(ac.contains("可重放的客观证据"), "{ac}");
+    assert!(ac.contains("仅定位或分析问题不算完成"), "{ac}");
+    cleanup(&dir);
+}
+
+#[test]
+fn create_issue_generates_task_form_ac_when_missing() {
+    let (store, dir) = temp_store("acgen-task");
+    let issue = store.create_issue(new_issue("上线部署新版网关")).unwrap();
+    let ac = issue
+        .acceptance_criteria
+        .as_deref()
+        .expect("任务形态也必须有推导 AC");
+    assert!(ac.starts_with("（系统自动生成）"), "{ac}");
+    assert!(ac.contains("目标已达成并验证"), "{ac}");
+    assert!(ac.contains("仅分析或给出方案不算完成"), "{ac}");
+    cleanup(&dir);
+}
+
+#[test]
+fn create_issue_preserves_explicit_ac() {
+    let (store, dir) = temp_store("acgen-explicit");
+    let issue = store
+        .create_issue(NewIssue {
+            title: "实现登录".to_string(),
+            acceptance_criteria: Some("必须包含回归测试与 branch 名".to_string()),
+            ..new_issue("x")
+        })
+        .unwrap();
+    assert_eq!(
+        issue.acceptance_criteria.as_deref(),
+        Some("必须包含回归测试与 branch 名"),
+        "用户显式 AC 是最大意志，不得被覆盖"
+    );
+    cleanup(&dir);
+}
+
+#[test]
+fn create_issue_treats_blank_ac_as_missing() {
+    let (store, dir) = temp_store("acgen-blank");
+    let issue = store
+        .create_issue(NewIssue {
+            title: "修复崩溃".to_string(),
+            acceptance_criteria: Some("   ".to_string()),
+            ..new_issue("x")
+        })
+        .unwrap();
+    let ac = issue
+        .acceptance_criteria
+        .as_deref()
+        .expect("空白 AC 视同缺失");
+    assert!(ac.starts_with("（系统自动生成）"), "{ac}");
+    cleanup(&dir);
+}
+
+// ---------------------------------------------------------------------------
 // 编号 + 创建
 // ---------------------------------------------------------------------------
 
@@ -3398,6 +3473,34 @@ fn test_required_profession_roundtrip_and_blank_to_none() {
     let plain = store.create_issue(new_issue("无职能")).unwrap();
     let back = store.get_issue(plain.id).unwrap();
     assert_eq!(back.required_profession, None);
+
+    cleanup(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// 环境能力硬条件（NB-122 批 2026-10-16）：required_capabilities 落库 round-trip
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_required_capabilities_roundtrip_and_empty_to_null() {
+    let (store, dir) = temp_store("caps-roundtrip");
+    let mut ni = new_issue("能力子单");
+    ni.required_capabilities = vec!["chrome".into(), "docker".into()];
+    let issue = store.create_issue(ni).unwrap();
+    let back = store.get_issue(issue.id).unwrap();
+    assert_eq!(back.required_capabilities, vec!["chrome", "docker"]);
+
+    // 空数组 → NULL（行上不落 "[]"），读回空 = 无能力需求。
+    let mut ni = new_issue("空能力");
+    ni.required_capabilities = Vec::new();
+    let issue = store.create_issue(ni).unwrap();
+    let back = store.get_issue(issue.id).unwrap();
+    assert!(back.required_capabilities.is_empty());
+
+    // 未带能力的 issue 读回空（v18 迁移存量行同形态）。
+    let plain = store.create_issue(new_issue("无能力")).unwrap();
+    let back = store.get_issue(plain.id).unwrap();
+    assert!(back.required_capabilities.is_empty());
 
     cleanup(&dir);
 }

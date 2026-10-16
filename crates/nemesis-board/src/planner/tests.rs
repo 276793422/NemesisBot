@@ -244,6 +244,20 @@ fn system_prompt_declares_the_schema_fields() {
     );
 }
 
+/// 验收标准自主可达纪律（2026-10-16 NB-121 三道人工门禁根修）防误删快照：
+/// planner prompt 必须携带「AC 每条须自主 agent 可达成并留证」硬约束 +
+/// 三类禁止形态（人工签字/外部资源/长时实测）+ 等价证据改写指引。
+/// 删段则拆解器再次发明自主链路永远无法闭环的门禁，验收阶段必然弹人工。
+#[test]
+fn system_prompt_declares_ac_autonomous_reachability() {
+    for marker in ["自主可达", "人工签字", "等价证据", "待人工签核"] {
+        assert!(
+            PLANNER_SYSTEM_PROMPT.contains(marker),
+            "system prompt 必须含验收标准自主可达纪律标记 {marker}"
+        );
+    }
+}
+
 /// P2（B1）防误删快照：planner prompt 必须携带 `[CHECK]` 锚点指令段
 /// （与 `crate::anchor::ANCHOR_PREFIX` 及 anchor 解析器同步演化——删段
 /// 则 planner 不再产出锚点，P2 双检退化回纯语义）。
@@ -615,6 +629,87 @@ fn lenient_is_superset_of_strict() {
     let lenient = parse_plan_lenient(raw).unwrap();
     assert_eq!(strict, lenient.plan);
     assert!(lenient.downgraded.is_empty());
+}
+
+// -----------------------------------------------------------------------
+// required_capabilities（NB-122 批 2026-10-16，环境能力硬闸）
+// -----------------------------------------------------------------------
+
+/// 严格臂：能力词形态非法（含空格/空串/超 64 字符）→ PlanParseError 回灌。
+#[test]
+fn capabilities_format_invalid_rejected_in_strict_parse() {
+    // 含空格（节点宣告的 capabilities 都是单段词，含空格永不命中）。
+    let err =
+        parse_plan(r#"[{"title":"子甲","required_capabilities":["chrome browser"]}]"#).unwrap_err();
+    assert!(err.message.contains("required_capabilities"), "{err}");
+    // 空串项。
+    let err = parse_plan(r#"[{"title":"子甲","required_capabilities":[""]}]"#).unwrap_err();
+    assert!(err.message.contains("required_capabilities"), "{err}");
+    // 超 64 字符。
+    let long = "x".repeat(65);
+    let raw = format!(r#"[{{"title":"子甲","required_capabilities":["{long}"]}}]"#);
+    let err = parse_plan(&raw).unwrap_err();
+    assert!(err.message.contains("required_capabilities"), "{err}");
+}
+
+/// 缺字段 / 空数组 / 合法短词 = 零摩擦（serde default；合法词原样保留）。
+#[test]
+fn capabilities_absent_or_empty_means_none() {
+    let plan = parse_plan(r#"[{"title":"子甲"}]"#).unwrap();
+    assert!(plan[0].required_capabilities.is_empty());
+    let plan = parse_plan(r#"[{"title":"子甲","required_capabilities":[]}]"#).unwrap();
+    assert!(plan[0].required_capabilities.is_empty());
+    let plan =
+        parse_plan(r#"[{"title":"子甲","required_capabilities":["chrome","docker"]}]"#).unwrap();
+    assert_eq!(plan[0].required_capabilities, vec!["chrome", "docker"]);
+}
+
+/// 宽和臂：非法项剔除、合法项保留；不记 downgrades（该台账是
+/// required_profession 专属）；其余校验照常严校。
+#[test]
+fn lenient_final_round_drops_invalid_capabilities() {
+    let raw = r#"[
+        {"title":"子甲","required_capabilities":["chrome","bad word","","docker","LONGWORD_PLACEHOLDER"]},
+        {"title":"子乙","required_capabilities":["rust"]}
+    ]"#;
+    let raw = raw.replace("LONGWORD_PLACEHOLDER", &"x".repeat(65));
+    let lp = parse_plan_lenient(&raw).unwrap();
+    assert_eq!(
+        lp.plan[0].required_capabilities,
+        vec!["chrome", "docker"],
+        "非法项剔除（空/含空白/超长），合法项保留"
+    );
+    assert_eq!(lp.plan[1].required_capabilities, vec!["rust"]);
+    assert!(lp.downgraded.is_empty(), "能力词不进职能降级台账");
+}
+
+/// 提示词同步钉：完整 planner prompt 必须声明 `required_capabilities`
+/// 字段（schema）+ 硬条件语义 + 词表纪律（拆解纪律第 9 条）；user 段集群
+/// 画像约束行带 caps 词表来源。缺任一段，拆解端就不知道这个词表的存在。
+#[test]
+fn planner_prompt_declares_required_capabilities_contract() {
+    let p = super::super::planner_system_prompt();
+    assert!(p.contains("required_capabilities"), "schema 必须声明字段");
+    assert!(
+        p.contains("环境能力硬闸"),
+        "拆解纪律必须声明硬条件语义（无节点具备=无法派发）"
+    );
+    assert!(p.contains("caps="), "词表纪律必须指向集群画像 caps= 词源");
+    assert!(
+        p.contains("改按第 8 条拆「装配环境」前置子任务"),
+        "普遍缺能力时必须走装配前置子单路径（第 8 条联动）"
+    );
+    let user = crate::planner::build_planner_user_prompt(
+        "标题",
+        "描述",
+        None,
+        &[],
+        Some("节点甲 role=worker tags=rust caps=chrome,docker"),
+    );
+    assert!(
+        user.contains("required_capabilities 只能从上述节点 caps="),
+        "user 段约束必须声明能力词表来源"
+    );
 }
 
 // ---------------------------------------------------------------------------

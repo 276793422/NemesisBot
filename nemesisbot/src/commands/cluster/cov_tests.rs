@@ -145,6 +145,7 @@ mod wave5 {
                 address: None,
                 professions: None,
                 tier: None,
+                capabilities: None,
             },
             false,
         )

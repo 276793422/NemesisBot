@@ -39,6 +39,10 @@ export interface DagIssue {
   parent_issue_id?: number | null
   /** 后端 issue.list/get 投影：每上游 {id, number, status}。 */
   depends_on?: Array<{ id: number; number: string; status: string }>
+  /** 决策可见性投影（2026-10-15 批）穿透：needs_user=停车待裁决（amber
+   *  加粗描边+✋）；plan_ready=拆解完成待发车（📋）。 */
+  needs_user?: { stop_kind: string; stop_kind_label: string; hint: string } | null
+  plan_ready?: { plan_id: string; subs_count: number } | null
 }
 
 export interface DagNode {
@@ -58,6 +62,10 @@ export interface DagNode {
   /** 间接上游编号（传递约简后未画线的上游，按编号序）：渲染 +N 徽标与
    *  tooltip——线不画，信息不丢。 */
   indirectDeps: string[]
+  /** 决策可见性穿透（2026-10-15 批）：needs_user=停车待裁决（amber 加粗
+   *  描边 + ✋ 图标覆盖，最高视觉权重）；plan_ready=拆解完成待确认（📋）。 */
+  needsUser: boolean
+  planReady: boolean
 }
 
 export interface DagEdge {
@@ -532,6 +540,8 @@ export function computeLayout(issues: DagIssue[]): DagLayout {
       unlayered: !kahnLayered.has(it.id),
       folded: foldedIds.has(it.id),
       indirectDeps: hiddenIndirect.get(it.id) ?? [],
+      needsUser: !!it.needs_user,
+      planReady: !!it.plan_ready,
     }
   })
 

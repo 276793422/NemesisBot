@@ -649,6 +649,12 @@ pub struct BoardReviewConfig {
     /// 缺键零迁移（`#[serde(default)]`，空 map = 全部走全局/内置）。
     #[serde(default)]
     pub professions: std::collections::HashMap<String, BoardProfessionReviewPreset>,
+    /// 父单收口 FAIL 自动返工承接轮数上限（2026-10-16；默认 **2**，**0 = 关**
+    /// = 旧行为恒转人工）。FAIL（差距具体）时自动创建「返工：」子单承接差距
+    /// 并派发，返工单落定后 sync 链自动复评父单；UNSURE（证据不足）不在此列
+    /// 恒转人工（返工修不了「无法判定」）。轮数按「返工：」前缀子单累计数计
+    /// （含 cancelled——按尝试计不按存活计），超限保持转人工。
+    pub parent_remediation_max: u32,
 }
 
 impl BoardReviewConfig {
@@ -771,6 +777,7 @@ impl Default for BoardReviewConfig {
             failure_retries: 1,
             max_unsure_streak: 2,
             professions: std::collections::HashMap::new(),
+            parent_remediation_max: 2,
         }
     }
 }
@@ -1236,6 +1243,18 @@ pub struct AgentsConfig {
     /// 静默抹掉）。
     #[serde(default)]
     pub cache_warmer: CacheWarmerConfig,
+    /// NB-122 批（2026-10-16）④：单次工具调用墙钟看门狗（秒）。0 = 关。
+    /// 默认 1800s（合法长活如 cargo build --release 10-20 分钟要放得过；
+    /// 卡死调用的兜底闸而非提速闸）。loop 侧 fresh-read（每次 dispatch 现
+    /// 读 config.json），运行时改键下一轮生效。诚实边界：超时放弃的是
+    /// future，已 spawn 的子进程可能成为孤儿（B4 后台注册表/停摆清扫兜底）。
+    #[serde(default = "default_executor_tool_timeout_secs")]
+    pub executor_tool_timeout_secs: u64,
+}
+
+/// `agents.executor_tool_timeout_secs` 缺键默认（30 分钟）。
+fn default_executor_tool_timeout_secs() -> u64 {
+    1800
 }
 
 /// `agents.discipline` 配置节。
@@ -4197,6 +4216,7 @@ pub fn default_config() -> Config {
             codemode: CodeModeConfig::default(),
             turn_wal: true,
             provider_stream_events: true,
+            executor_tool_timeout_secs: default_executor_tool_timeout_secs(),
             defaults: AgentDefaults {
                 workspace: ws,
                 restrict_to_workspace: true,

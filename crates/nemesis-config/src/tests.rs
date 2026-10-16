@@ -687,6 +687,7 @@ fn test_full_config_roundtrip() {
             codemode: crate::CodeModeConfig::default(),
             turn_wal: true,
             provider_stream_events: true,
+            executor_tool_timeout_secs: 1800,
             defaults: AgentDefaults {
                 max_tokens: 256000,
                 temperature: 0.5,
