@@ -42,6 +42,26 @@ pub enum NodeStatus {
     Connecting,
 }
 
+/// 节点自报 agent 实体清单条目（P2 2026-10-16）。wire 最小面：只带身份
+/// 与档位——host 路径（exec_root/home_path）绝不出网。
+///
+/// `state` 词汇表（P3 T8）：`running`（常驻执行体存活）/
+/// `active`（记录就绪、常驻未在跑）/ `provisioning` / `failed`（后两者=
+/// agents 表记录生命周期态）。空串 = 未宣告（旧 wire 兼容——serde
+/// default，旧节点/Go 节点缺字段不炸，Go json.Unmarshal 忽略未知键）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentAnnouncement {
+    pub agent_id: String,
+    pub name: String,
+    /// `main` / `project` / `selfbuilt`。
+    pub kind: String,
+    /// `auto`（空串归一）/ `mini` / `normal` / `big`。
+    pub tier: String,
+    /// P3 T8 运行态：常驻执行体存活 → `running`，否则回记录生命周期态。
+    #[serde(default)]
+    pub state: String,
+}
+
 /// Extended node info including status and capabilities.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtendedNodeInfo {
@@ -61,6 +81,11 @@ pub struct ExtendedNodeInfo {
     /// matcher tier 闸 fail-open 放行）。
     #[serde(default)]
     pub tier: Option<String>,
+    /// 自报 agent 实体清单（P2 2026-10-16；announce/get_info 携带）。
+    /// 旧节点 wire 无此字段 → serde default 空 = 未宣告（兼容 professions
+    /// 先例）。不持久化到 state.toml（运行时清单，周期 announce 自会重学）。
+    #[serde(default)]
+    pub agents: Vec<AgentAnnouncement>,
     /// All known addresses for this node (for multi-address failover).
     /// The primary address is stored in `base.address`.
     #[serde(default)]
@@ -172,6 +197,7 @@ impl ExtendedNodeInfo {
             && self.tags == other.tags
             && self.professions == other.professions
             && self.tier == other.tier
+            && self.agents == other.agents
             && self.addresses == other.addresses
             && self.node_type == other.node_type
     }

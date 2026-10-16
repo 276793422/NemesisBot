@@ -291,16 +291,11 @@ pub fn build_executor_channel(
     // nemesis-sandbox backend 模块决策表）。读代码者勿把「显式 acl 被盒
     // 压制」当 bug——降级选型语义本就如此。
     #[cfg(feature = "sandbox")]
-    let (start_exe, sbiesvc_running, engine_owned_now): (std::path::PathBuf, bool, bool) = {
+    let (start_exe, will_attach): (std::path::PathBuf, bool) = {
         let paths = nemesis_sandbox::SandboxPaths::new(home);
-        (
-            paths.start_exe(),
-            matches!(
-                nemesis_sandbox::status::service_state(nemesis_sandbox::USERMODE_SERVICE),
-                nemesis_sandbox::status::ServiceState::Running
-            ),
-            nemesis_sandbox::status::engine_owned(&paths),
-        )
+        // 就绪三元组（Start.exe 在场 + SbieSvc Running + 引擎归属）单一真
+        // 相源 = SandboxPaths::engine_ready（P3 ② 常驻盒监督器共用）。
+        (paths.start_exe(), paths.engine_ready())
     };
 
     // ── P5-2 strict gate, per platform (see fn docs) ─────────────────────────
@@ -308,8 +303,6 @@ pub fn build_executor_channel(
     // construction actually attaches, not just the path on disk (an engine that
     // came up AFTER this agent started leaves the channel box-less even though
     // Start.exe now exists; strict must refuse that, not wave it through).
-    #[cfg(feature = "sandbox")]
-    let will_attach: bool = start_exe.exists() && sbiesvc_running && engine_owned_now;
 
     #[cfg(all(feature = "sandbox", windows))]
     let strict_gate: nemesis_agent::StrictGate = {
@@ -420,7 +413,10 @@ pub fn build_executor_channel(
              executor.sandbox is still honoured live via the ConfigStore probe, but \
              without Start.exe the box is not applied{}.",
             start_exe.exists(),
-            sbiesvc_running,
+            matches!(
+                nemesis_sandbox::status::service_state(nemesis_sandbox::USERMODE_SERVICE),
+                nemesis_sandbox::status::ServiceState::Running
+            ),
             if nemesis_config::load_live()
                 .map(|c| c.executor.is_some_and(|e| e.strict))
                 .unwrap_or(false)

@@ -350,6 +350,10 @@ impl PermissionGate {
 #[cfg(feature = "security")]
 pub struct AcpApprovalManager {
     gate: Arc<PermissionGate>,
+    /// P1 审批台账（tasks.db approvals 表；broker="acp"）。None = 本工作区
+    /// tasks.db 打不开（open 失败已 loud warn）——审批照常走编辑器，仅丢
+    /// 重启补裁记账能力（诚实降级）。
+    journal: Option<std::sync::Arc<dyn nemesis_types::approval_journal::ApprovalJournal>>,
 }
 
 #[cfg(feature = "security")]
@@ -360,13 +364,36 @@ impl nemesis_security::auditor::ApprovalManager for AcpApprovalManager {
 
     fn request_approval_sync(
         &self,
-        _request_id: &str,
+        request_id: &str,
         operation: &str,
         target: &str,
         risk_level: &str,
         reason: &str,
         timeout_secs: u64,
     ) -> Result<nemesis_security::auditor::ApprovalVerdict, String> {
+        // P1：pending 记账（尽力而为，失败 loud error 不阻断审批主链路）。
+        if let Some(j) = self.journal.as_ref() {
+            let entry = nemesis_types::approval_journal::ApprovalJournalEntry {
+                id: request_id.to_string(),
+                broker: "acp".to_string(),
+                short_id: None,
+                operation: operation.to_string(),
+                target: target.to_string(),
+                risk_level: risk_level.to_string(),
+                reason: reason.to_string(),
+                payload: serde_json::json!({ "timeout_secs": timeout_secs }),
+                status: nemesis_types::approval_journal::status::PENDING.to_string(),
+                created_at: chrono::Local::now().to_rfc3339(),
+                decided_at: None,
+                decision_note: None,
+                decided_by: None,
+            };
+            if let Err(e) = j.record_pending(&entry) {
+                tracing::error!(
+                    "[AcpApproval] approval journal record_pending failed for {request_id}: {e}"
+                );
+            }
+        }
         let handle = tokio::runtime::Handle::current();
         let gate = Arc::clone(&self.gate);
         let outcome = tokio::task::block_in_place(|| {
@@ -381,6 +408,22 @@ impl nemesis_security::auditor::ApprovalManager for AcpApprovalManager {
                 .await
             })
         });
+        // P1：裁决记账（幂等条件更新；失败 warn 不阻断——裁决已生效）。
+        if let Some(j) = self.journal.as_ref() {
+            let decision = match outcome {
+                PermissionOutcome::Allowed => {
+                    nemesis_types::approval_journal::ApprovalDecision::Approved
+                }
+                PermissionOutcome::Denied => {
+                    nemesis_types::approval_journal::ApprovalDecision::Denied
+                }
+            };
+            if let Err(e) = j.record_decision(request_id, decision, None, "acp-editor") {
+                tracing::warn!(
+                    "[AcpApproval] approval journal decision record failed for {request_id}: {e}"
+                );
+            }
+        }
         Ok(match outcome {
             PermissionOutcome::Allowed => nemesis_security::auditor::ApprovalVerdict {
                 approved: true,
@@ -806,8 +849,32 @@ impl SessionFactory for RealSessionFactory {
             // security feature 关闭时槽是 () 占位，审批整层不存在。
             #[cfg(feature = "security")]
             {
+                // P1：审批台账（本会话工作区的 tasks.db；开失败诚实降级为
+                // None——审批照常，仅丢重启补裁记账）。
+                let journal = {
+                    let db_path = nemesis_path::resolve_tasks_db_path_in_workspace(
+                        shared.workspace_dir().as_path(),
+                    );
+                    match nemesis_taskstore::TaskDb::open(&db_path) {
+                        Ok(db) => Some(std::sync::Arc::new(
+                            nemesis_taskstore::SqliteApprovalJournal::from_db(db),
+                        )
+                            as std::sync::Arc<
+                                dyn nemesis_types::approval_journal::ApprovalJournal,
+                            >),
+                        Err(e) => {
+                            tracing::warn!(
+                                "[AcpApproval] tasks.db unavailable at {}, approval journal \
+                                 disabled (approvals stay memory-only): {e}",
+                                db_path.display()
+                            );
+                            None
+                        }
+                    }
+                };
                 *shared.approval_slot.write() = Some(Arc::new(AcpApprovalManager {
                     gate: Arc::clone(&gate),
+                    journal,
                 }));
             }
             let _ = &gate; // no-security 编译下 gate 仍被 session 持有语义引用

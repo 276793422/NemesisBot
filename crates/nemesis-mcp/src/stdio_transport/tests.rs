@@ -752,3 +752,54 @@ for line in sys.stdin:
 
     t.close().await.unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// P3 T6: per-agent browser profile injection（args_with_browser_profile）
+// ---------------------------------------------------------------------------
+
+/// agent 执行体上下文（profile 有值）：追加 `--user-data-dir <dir>`。
+#[test]
+fn browser_profile_args_appended_in_executor_context() {
+    let args = args_with_browser_profile(
+        &["server.js".to_string()],
+        Some(r"C:\ws\agents\a1\home\browser-profile"),
+    );
+    assert_eq!(
+        args,
+        vec![
+            "server.js",
+            "--user-data-dir",
+            r"C:\ws\agents\a1\home\browser-profile"
+        ]
+    );
+}
+
+/// gateway 上下文（env 缺席）：args 原样——共享 MCP server 零变化。
+#[test]
+fn browser_profile_args_untouched_in_gateway_context() {
+    let args = vec![
+        "server.js".to_string(),
+        "--port".to_string(),
+        "9".to_string(),
+    ];
+    let out = args_with_browser_profile(&args, None);
+    assert_eq!(out, args);
+}
+
+/// 空串 profile（防御臂）与已显式配置 `--user-data-dir`（用户优先）都
+/// 不注入、不重复。
+#[test]
+fn browser_profile_args_skip_on_empty_or_user_configured() {
+    let args = vec!["server.js".to_string()];
+    assert_eq!(args_with_browser_profile(&args, Some("  ")), args);
+
+    let configured = vec![
+        "node".to_string(),
+        "--user-data-dir".to_string(),
+        "/mine".to_string(),
+    ];
+    assert_eq!(
+        args_with_browser_profile(&configured, Some(r"C:\agent\profile")),
+        configured
+    );
+}

@@ -1735,6 +1735,7 @@ fn sample_node(id: &str, name: &str, role: NodeRole, online: bool) -> ExtendedNo
         addresses: vec!["10.0.0.1".to_string()],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".to_string(),
     }
 }

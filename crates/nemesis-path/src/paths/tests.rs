@@ -2727,3 +2727,37 @@ fn test_board_wake_state_path_layout() {
     // 必须在 data 区内（workspace/data = 派生数据统一目录约定）。
     assert!(board_wake_state_path(&home).starts_with(workspace_data_dir(&home)));
 }
+
+#[test]
+fn test_agent_paths_layout() {
+    // P2：agent 实体区布局单一真相源。home 钉死 <workspace>/agents/<id>/home/，
+    // 记忆命名空间 <workspace>/memory/agents/<id>/；布局不得再漂移。
+    let ws = std::path::PathBuf::from("/tmp/home_x/workspace");
+    assert_eq!(resolve_agents_root_in_workspace(&ws), ws.join("agents"));
+    assert_eq!(
+        resolve_agent_home_in_workspace(&ws, "a1b2c3d4"),
+        ws.join("agents").join("a1b2c3d4").join("home")
+    );
+    assert_eq!(
+        resolve_agent_memory_dir_in_workspace(&ws, "a1b2c3d4"),
+        ws.join("memory").join("agents").join("a1b2c3d4")
+    );
+    // P3 T6：浏览器身份目录钉死 home 内（cookies/登录态不出 home）。
+    let browser = resolve_agent_browser_profile_in_workspace(&ws, "a1b2c3d4");
+    assert_eq!(
+        browser,
+        ws.join("agents")
+            .join("a1b2c3d4")
+            .join("home")
+            .join("browser-profile")
+    );
+    // 等价契约：从 home 出发（监督器只持 home）与从 workspace+id 出发
+    // （Manager/测试）派生同一路径——两处消费不会漂移。
+    assert_eq!(
+        browser,
+        resolve_agent_home_in_workspace(&ws, "a1b2c3d4").join("browser-profile")
+    );
+    // home 与记忆目录都必须在 workspace 内（restrict 纵深的第一道边界）。
+    assert!(resolve_agent_home_in_workspace(&ws, "x").starts_with(&ws));
+    assert!(resolve_agent_memory_dir_in_workspace(&ws, "x").starts_with(&ws));
+}

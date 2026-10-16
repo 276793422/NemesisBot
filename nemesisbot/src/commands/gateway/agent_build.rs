@@ -209,6 +209,25 @@ pub(crate) async fn init_agent(
     // background_start); Drop raises kill flags so no spawned job outlives
     // the gateway.
     let background_registry = std::sync::Arc::new(nemesis_agent::BackgroundProcessRegistry::new());
+    // P3 T7：常驻执行体监督器单例（进程无关构造，execute 按需 spawn 子进程）。
+    // exe/布局解析与 exec_world 通道装配同源（current_exe + common 路径单一
+    // 真相源）；watchdog 是 manager 级任务，init_agent 一次性启动（死槽清理
+    // + idle 自动睡眠，持弱引用——SharedResources 释放后自行退出）。
+    // persistent.enabled=false 时零子进程（execute 诚实 Unavailable → per-call
+    // 回落），构造无代价。
+    let agent_runtime = {
+        let exe_path = std::env::current_exe()
+            .map_err(|e| anyhow::anyhow!("resolve current_exe for persistent supervisor: {e}"))?;
+        let sup = Arc::new(crate::agents::runtime::AgentRuntimeSupervisor::new(
+            exe_path,
+            home.clone(),
+            common::workspace_path(&home),
+            common::config_path(&home),
+        ));
+        let _watchdog = sup.start_watchdog();
+        info!("[Gateway] persistent executor supervisor ready (watchdog started)");
+        sup
+    };
     let shared_resources = crate::agent_factory::SharedResources {
         home: home.clone(),
         // K1：gateway 固定 canonical 布局（显式写出，不依赖 fallback）。
@@ -247,6 +266,9 @@ pub(crate) async fn init_agent(
         mcp_config_path: common::mcp_config_path(&home),
         mcp_enabled,
         estop,
+        // P3 T7：常驻执行体监督器槽（None = headless run/acp 等无 supervisor
+        // 形态；gateway 恒 Some）。工厂据此挂 RemoteExecutorTool 常驻路由。
+        agent_runtime: Some(agent_runtime),
         config_store: config_store.clone(),
         lsp_manager,
         agent_event_tx: Some(agent_event_tx),

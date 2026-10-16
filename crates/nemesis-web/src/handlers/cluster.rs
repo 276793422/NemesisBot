@@ -562,6 +562,7 @@ impl ClusterHandler {
                     "capabilities": n.capabilities,
                     "professions": n.professions,
                     "tier": n.tier,
+                    "agents": n.agents,
                     "online": n.is_online(),
                     "lastSeen": n.base.last_seen,
                     "taskCount": task_count,
@@ -681,6 +682,7 @@ impl ClusterHandler {
                 addresses: Vec::new(),
                 professions: Vec::new(),
                 tier: None,
+                agents: Vec::new(),
                 node_type: String::new(),
             };
             cluster.register_node(info);
@@ -742,6 +744,7 @@ impl ClusterHandler {
                 addresses: outcome.addresses.clone(),
                 professions: Vec::new(),
                 tier: None,
+                agents: Vec::new(),
                 node_type: String::new(),
             };
             cluster.register_node(info);
@@ -869,6 +872,15 @@ impl ClusterHandler {
             })
             .unwrap_or_default();
         let tier = resp["tier"].as_str().map(String::from);
+        // P2：自报 agent 清单（旧节点 get_info 无此键 → 空 = 未宣告）。
+        let agents: Vec<nemesis_cluster::types::AgentAnnouncement> = resp["agents"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
 
         let primary_address = if !addresses.is_empty() && rpc_port > 0 {
             format!("{}:{}", addresses[0], rpc_port)
@@ -894,6 +906,7 @@ impl ClusterHandler {
             tags,
             professions,
             tier,
+            agents,
             node_type,
         };
         let canonical_id = cluster.merge_real_node_info(&info);

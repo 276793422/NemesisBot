@@ -4,6 +4,7 @@
 //! used across the NemesisBot system.
 
 pub mod agent;
+pub mod approval_journal;
 pub mod capability;
 pub mod channel;
 pub mod cluster;

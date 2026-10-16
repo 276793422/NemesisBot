@@ -100,6 +100,10 @@ pub struct DiscoveryMessage {
     /// 节点自报档位（role_tier 口径：mini/normal/big；None = 未宣告）。
     #[serde(default)]
     pub tier: Option<String>,
+    /// 自报 agent 实体清单（P2 2026-10-16）。旧节点 / Go 节点的 announce
+    /// 无此字段 → serde default 空 = 未宣告（wire 兼容，同 professions 先例）。
+    #[serde(default)]
+    pub agents: Vec<crate::types::AgentAnnouncement>,
     /// Unix timestamp (seconds since epoch).
     pub timestamp: i64,
 }
@@ -135,6 +139,7 @@ impl DiscoveryMessage {
             node_type: node_type.into(),
             professions: Vec::new(),
             tier: None,
+            agents: Vec::new(),
             timestamp: now_unix(),
         }
     }
@@ -145,6 +150,14 @@ impl DiscoveryMessage {
     pub fn with_professions(mut self, professions: Vec<String>, tier: Option<String>) -> Self {
         self.professions = professions;
         self.tier = tier;
+        self
+    }
+
+    /// 附自报 agent 实体清单（P2 2026-10-16；生产 announce 构造点
+    /// `build_announce_from_callbacks` 链式调用——UDP 广播与 ping-probe
+    /// TCP 回退共用该单一真相源，两通道字段集必须一致）。
+    pub fn with_agents(mut self, agents: Vec<crate::types::AgentAnnouncement>) -> Self {
+        self.agents = agents;
         self
     }
 
@@ -164,6 +177,7 @@ impl DiscoveryMessage {
             node_type: String::new(),
             professions: Vec::new(),
             tier: None,
+            agents: Vec::new(),
             timestamp: now_unix(),
         }
     }

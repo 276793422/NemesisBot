@@ -28,6 +28,19 @@ pub fn pipe_name(id: &str) -> String {
     format!(r"\\.\pipe\NemesisBox_{id}")
 }
 
+/// Build the Win32 pipe path for a per-agent persistent-executor child
+/// (P3 T5): `\\.\pipe\NemesisAgent_<agent_id>_<unique>`.
+///
+/// The `NemesisAgent_` prefix is pinned by tests in both crates against
+/// `nemesis_sandbox::ini::AGENT_BOX_PREFIX` — the ini `OpenPipePath`
+/// allowlist (`\Device\NamedPipe\NemesisAgent_<id>_*`) must keep matching
+/// this name form or the boxed child can never connect. (nemesis-agent does
+/// not depend on nemesis-sandbox, so the constant is test-pinned, not
+/// imported.)
+pub fn agent_pipe_name(agent_id: &str, id: &str) -> String {
+    format!(r"\\.\pipe\NemesisAgent_{agent_id}_{id}")
+}
+
 static PIPE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Process-unique pipe id (`<pid>_<counter>`).

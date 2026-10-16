@@ -110,6 +110,7 @@ async fn rig_with_fake_peer(
         addresses: vec!["127.0.0.1".into()],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "gateway".into(),
     };
     peer.base.address = format!("127.0.0.1:{port}");
@@ -216,14 +217,19 @@ async fn poll_stale_rpc_error_and_null_result_keep_pending() {
         tm.submit(task).unwrap();
     }
 
+    // G5+P1（T19 根修）：bus / delivery_cb 收句柄（分支内取用时现读）。
+    let no_bus: Arc<Mutex<Option<Arc<dyn MessageBus>>>> = Arc::new(Mutex::new(None));
+    let no_cb: Arc<
+        Mutex<Option<Arc<dyn Fn(&str, &str, &str, Option<&str>) -> bool + Send + Sync>>>,
+    > = Arc::new(Mutex::new(None));
     poll_stale_pending_tasks(
         &tm,
         &None,
         Some(client.as_ref()),
         chrono::Duration::hours(24),
-        None,
+        &no_bus,
         false,
-        None,
+        &no_cb,
     )
     .await;
 

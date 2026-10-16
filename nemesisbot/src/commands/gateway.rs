@@ -85,6 +85,10 @@ pub(crate) use self::bridges::{BusToClusterAdapter, ClusterResultPersisterAdapte
 pub(crate) use self::cluster_init::{ClusterWiring, init_cluster};
 #[cfg(any(feature = "cluster", test))]
 pub(crate) use self::cluster_support::parse_host_port;
+#[cfg(all(feature = "cluster", not(feature = "security")))]
+pub(crate) use self::cluster_support::record_branch_delivery;
+#[cfg(all(feature = "cluster", feature = "security"))]
+pub(crate) use self::cluster_support::record_branch_delivery_audited;
 #[cfg(feature = "cluster")]
 pub(crate) use self::cluster_support::record_cluster_usage;
 pub(crate) use self::ctx::GatewayCtx;

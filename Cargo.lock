@@ -4235,6 +4235,7 @@ dependencies = [
  "nemesis-config",
  "nemesis-path",
  "nemesis-prompts",
+ "nemesis-taskstore",
  "nemesis-types",
  "nemesis-utils",
  "parking_lot",
@@ -4780,6 +4781,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nemesis-taskstore"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "nemesis-types",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "nemesis-tools"
 version = "0.1.0"
 dependencies = [
@@ -4992,6 +5007,7 @@ dependencies = [
  "dirs 5.0.1",
  "futures",
  "getrandom 0.2.17",
+ "git2",
  "include_dir",
  "libc",
  "nemesis-agent",
@@ -5027,6 +5043,7 @@ dependencies = [
  "nemesis-services",
  "nemesis-skills",
  "nemesis-state",
+ "nemesis-taskstore",
  "nemesis-tools",
  "nemesis-types",
  "nemesis-utils",

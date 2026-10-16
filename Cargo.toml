@@ -38,6 +38,7 @@ members = [
     "crates/nemesis-routing",
     "crates/nemesis-session",
     "crates/nemesis-state",
+    "crates/nemesis-taskstore",
     "crates/nemesis-utils",
     "crates/nemesis-injector",
     "crates/nemesis-eval-proxy",
@@ -134,6 +135,7 @@ parking_lot = "0.12"
 # Time
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
+rusqlite = { version = "0.34", features = ["bundled"] }
 
 # UUID
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -230,6 +232,7 @@ nemesis-plugin = { path = "crates/nemesis-plugin" }
 nemesis-routing = { path = "crates/nemesis-routing" }
 nemesis-session = { path = "crates/nemesis-session" }
 nemesis-state = { path = "crates/nemesis-state" }
+nemesis-taskstore = { path = "crates/nemesis-taskstore" }
 nemesis-utils = { path = "crates/nemesis-utils" }
 nemesis-injector = { path = "crates/nemesis-injector" }
 nemesis-eval-proxy = { path = "crates/nemesis-eval-proxy" }

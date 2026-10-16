@@ -69,9 +69,26 @@ fn assert_no_tmp_leftovers(dir: &std::path::Path, what: &str) {
     assert!(leftovers.is_empty(), "{what}: {leftovers:?}");
 }
 
-/// G4/G5: poll_stale_pending_tasks 第 4/5 参 —— 默认 24h 安全网 + 无总线。
+/// G4/G5: poll_stale_pending_tasks 第 4 参 —— 默认 24h 安全网。
 fn poll_defaults() -> chrono::Duration {
     chrono::Duration::hours(24)
+}
+
+// G5+P1（T19 根修）：bus / delivery_cb 改收句柄（分支内取用时现读）后的
+// 测试助手。空句柄 = 「未注入总线 / 未注册回调」；包装句柄供注入场景。
+
+fn poll_no_bus() -> Arc<Mutex<Option<Arc<dyn MessageBus>>>> {
+    Arc::new(Mutex::new(None))
+}
+
+type PollDeliveryCb = Arc<dyn Fn(&str, &str, &str, Option<&str>) -> bool + Send + Sync>;
+
+fn poll_no_cb() -> Arc<Mutex<Option<PollDeliveryCb>>> {
+    Arc::new(Mutex::new(None))
+}
+
+fn poll_cb_handle(cb: PollDeliveryCb) -> Arc<Mutex<Option<PollDeliveryCb>>> {
+    Arc::new(Mutex::new(Some(cb)))
 }
 
 fn make_config() -> ClusterConfig {
@@ -117,6 +134,7 @@ fn test_register_and_list_nodes() {
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     };
     cluster.register_node(remote);
@@ -355,6 +373,7 @@ fn test_get_capabilities() {
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
 
@@ -451,6 +470,10 @@ struct MockBus {
 impl MessageBus for MockBus {
     fn publish_inbound(&self, msg: BusInboundMessage) {
         self.messages.lock().push(msg);
+    }
+    // T19 二层根修：Mock 恒「就位」（不模拟订阅时序，等待逻辑归 publish 侧）。
+    fn inbound_receiver_count(&self) -> usize {
+        1
     }
 }
 
@@ -726,6 +749,7 @@ fn test_cluster_peer_resolver_returns_peer_info() {
         addresses: vec!["203.0.113.10".into(), "203.0.113.11".into()],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
 
@@ -774,6 +798,7 @@ fn test_cluster_peer_resolver_offline_peer() {
         addresses: vec!["10.0.0.1".into()],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
 
@@ -1359,6 +1384,7 @@ fn test_find_peers_by_capability() {
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
 
@@ -1600,6 +1626,7 @@ fn test_sync_to_disk_includes_discovered_nodes() {
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
 
@@ -1629,6 +1656,7 @@ fn test_register_node_updates_existing() {
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
 
@@ -1648,6 +1676,7 @@ fn test_register_node_updates_existing() {
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
 
@@ -1681,6 +1710,7 @@ fn test_get_online_peers_includes_online_nodes() {
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
 
@@ -1699,6 +1729,7 @@ fn test_get_online_peers_includes_online_nodes() {
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
 
@@ -1730,6 +1761,7 @@ fn test_get_capabilities_dedup() {
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
 
@@ -1748,6 +1780,7 @@ fn test_get_capabilities_dedup() {
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
 
@@ -1946,6 +1979,7 @@ fn test_find_peers_by_capability_offline_excluded() {
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
 
@@ -2117,7 +2151,16 @@ async fn test_poll_stale_pending_tasks_young_task_skipped() {
     let tm = Arc::new(TaskManager::new());
     // Create a brand new task (< 2 minutes old) - should be skipped
     let _task = tm.create_task("action", serde_json::json!({}), "rpc", "ch");
-    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None, false, None).await;
+    poll_stale_pending_tasks(
+        &tm,
+        &None,
+        None,
+        poll_defaults(),
+        &poll_no_bus(),
+        false,
+        &poll_no_cb(),
+    )
+    .await;
     // Task should still be pending
     let pending = tm.list_pending_tasks();
     assert_eq!(pending.len(), 1);
@@ -2158,7 +2201,16 @@ async fn test_poll_stale_pending_tasks_include_young_queries_young_task() {
         }
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, true, None).await;
+    poll_stale_pending_tasks(
+        &tm,
+        &call_fn,
+        None,
+        poll_defaults(),
+        &poll_no_bus(),
+        true,
+        &poll_no_cb(),
+    )
+    .await;
     let t = tm.get_task(&task_id).expect("task should exist");
     assert_eq!(
         t.status,
@@ -2186,7 +2238,16 @@ async fn test_poll_stale_pending_tasks_old_task_timed_out() {
     };
     tm.submit(task).unwrap();
 
-    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None, false, None).await;
+    poll_stale_pending_tasks(
+        &tm,
+        &None,
+        None,
+        poll_defaults(),
+        &poll_no_bus(),
+        false,
+        &poll_no_cb(),
+    )
+    .await;
     let t = tm.get_task("stale-24h").unwrap();
     assert_eq!(t.status, TaskStatus::Failed);
 }
@@ -2218,7 +2279,16 @@ async fn test_poll_stale_pending_tasks_stale_with_call_fn() {
         Ok(serde_json::to_vec(&resp).unwrap())
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false, None).await;
+    poll_stale_pending_tasks(
+        &tm,
+        &call_fn,
+        None,
+        poll_defaults(),
+        &poll_no_bus(),
+        false,
+        &poll_no_cb(),
+    )
+    .await;
     let t = tm.get_task("stale-5m").unwrap();
     assert_eq!(t.status, TaskStatus::Failed);
 }
@@ -2260,7 +2330,16 @@ async fn test_poll_stale_pending_tasks_stale_with_done_response() {
         }
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false, None).await;
+    poll_stale_pending_tasks(
+        &tm,
+        &call_fn,
+        None,
+        poll_defaults(),
+        &poll_no_bus(),
+        false,
+        &poll_no_cb(),
+    )
+    .await;
     let t = tm.get_task("stale-done").unwrap();
     assert_eq!(t.status, TaskStatus::Completed);
 }
@@ -2338,9 +2417,9 @@ async fn test_poll_recovered_delivery_cb_true_confirms() {
         &call_fn,
         None,
         poll_defaults(),
-        None,
+        &poll_no_bus(),
         false,
-        Some(&delivery_cb),
+        &poll_cb_handle(delivery_cb),
     )
     .await;
 
@@ -2376,9 +2455,9 @@ async fn test_poll_recovered_delivery_cb_false_skips_confirm() {
         &call_fn,
         None,
         poll_defaults(),
-        None,
+        &poll_no_bus(),
         false,
-        Some(&delivery_cb),
+        &poll_cb_handle(delivery_cb),
     )
     .await;
 
@@ -2399,7 +2478,16 @@ async fn test_poll_recovered_delivery_cb_none_keeps_legacy_confirm() {
     let (tm, call_fn, confirm_calls) = cd3_done_fixture("cd3-none");
 
     // 未注册回调 = 旧行为：无条件 confirm。
-    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false, None).await;
+    poll_stale_pending_tasks(
+        &tm,
+        &call_fn,
+        None,
+        poll_defaults(),
+        &poll_no_bus(),
+        false,
+        &poll_no_cb(),
+    )
+    .await;
 
     assert_eq!(
         confirm_calls.lock().len(),
@@ -2464,9 +2552,9 @@ async fn test_poll_not_found_invokes_delivery_cb_without_confirm() {
         &call_fn,
         None,
         poll_defaults(),
-        None,
+        &poll_no_bus(),
         false,
-        Some(&delivery_cb),
+        &poll_cb_handle(delivery_cb),
     )
     .await;
 
@@ -2515,7 +2603,16 @@ async fn test_poll_stale_pending_tasks_stale_with_running_response() {
         Ok(serde_json::to_vec(&resp).unwrap())
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false, None).await;
+    poll_stale_pending_tasks(
+        &tm,
+        &call_fn,
+        None,
+        poll_defaults(),
+        &poll_no_bus(),
+        false,
+        &poll_no_cb(),
+    )
+    .await;
     let t = tm.get_task("stale-running").unwrap();
     assert_eq!(t.status, TaskStatus::Pending);
 }
@@ -2539,7 +2636,16 @@ async fn test_poll_stale_pending_tasks_no_peer_id() {
     };
     tm.submit(task).unwrap();
 
-    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None, false, None).await;
+    poll_stale_pending_tasks(
+        &tm,
+        &None,
+        None,
+        poll_defaults(),
+        &poll_no_bus(),
+        false,
+        &poll_no_cb(),
+    )
+    .await;
     let t = tm.get_task("no-peer").unwrap();
     assert_eq!(t.status, TaskStatus::Pending); // still pending
 }
@@ -2569,7 +2675,16 @@ async fn test_poll_stale_pending_tasks_call_fn_error() {
         Err("connection refused".to_string())
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false, None).await;
+    poll_stale_pending_tasks(
+        &tm,
+        &call_fn,
+        None,
+        poll_defaults(),
+        &poll_no_bus(),
+        false,
+        &poll_no_cb(),
+    )
+    .await;
     let t = tm.get_task("call-error").unwrap();
     assert_eq!(t.status, TaskStatus::Pending);
 }
@@ -2788,6 +2903,7 @@ fn test_cluster_peer_resolver_empty_addresses() {
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
 
@@ -2826,6 +2942,7 @@ fn test_cluster_peer_resolver_empty_primary_address() {
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
 
@@ -3122,6 +3239,7 @@ fn test_get_peer_after_register() {
         addresses: vec!["10.0.0.10".into()],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
 
@@ -3233,6 +3351,7 @@ fn test_cluster_peer_resolver_with_empty_primary_address() {
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
 
@@ -3272,6 +3391,7 @@ fn test_discovered_node_empty_addresses_known_peer_identity_merge_preserves_addr
         addresses: vec!["127.0.0.1".into()],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
 
@@ -3287,7 +3407,8 @@ fn test_discovered_node_empty_addresses_known_peer_identity_merge_preserves_addr
         "agent",
         Vec::new(),
         Some("big".into()),
-        None, // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
+        Vec::new(), // 自报 agent 清单：未宣告
+        None,       // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
     );
     assert!(
         changed,
@@ -3327,7 +3448,8 @@ fn test_discovered_node_empty_addresses_unknown_peer_still_registered_bridge_sem
         "agent",
         Vec::new(),
         None,
-        None, // 桥接成员登记：无 source_addr
+        Vec::new(), // 自报 agent 清单：未宣告
+        None,       // 桥接成员登记：无 source_addr
     );
     assert!(changed, "bridge member with empty addresses must register");
     let node = cluster.registry.get("ghost-peer").expect("registered");
@@ -3355,6 +3477,7 @@ fn test_cluster_peer_resolver_uses_stored_addresses() {
         addresses: vec!["203.0.113.21".into(), "203.0.113.20".into()],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
 
@@ -3731,6 +3854,7 @@ fn test_sync_to_disk_with_connecting_status() {
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
 
@@ -3838,7 +3962,16 @@ async fn test_poll_stale_pending_tasks_malformed_created_at() {
     };
     tm.submit(task).unwrap();
 
-    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None, false, None).await;
+    poll_stale_pending_tasks(
+        &tm,
+        &None,
+        None,
+        poll_defaults(),
+        &poll_no_bus(),
+        false,
+        &poll_no_cb(),
+    )
+    .await;
     // Task should still be pending (skipped due to malformed date)
     let t = tm.get_task("bad-date").unwrap();
     assert_eq!(t.status, TaskStatus::Pending);
@@ -3872,7 +4005,16 @@ async fn test_poll_stale_pending_tasks_unknown_status_response() {
         Ok(serde_json::to_vec(&resp).unwrap())
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false, None).await;
+    poll_stale_pending_tasks(
+        &tm,
+        &call_fn,
+        None,
+        poll_defaults(),
+        &poll_no_bus(),
+        false,
+        &poll_no_cb(),
+    )
+    .await;
     let t = tm.get_task("weird-status").unwrap();
     // Unknown status -> continue -> task stays pending
     assert_eq!(t.status, TaskStatus::Pending);
@@ -3905,7 +4047,16 @@ async fn test_poll_stale_pending_tasks_invalid_json_response() {
         Ok(b"this is not valid json {{{".to_vec())
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false, None).await;
+    poll_stale_pending_tasks(
+        &tm,
+        &call_fn,
+        None,
+        poll_defaults(),
+        &poll_no_bus(),
+        false,
+        &poll_no_cb(),
+    )
+    .await;
     let t = tm.get_task("invalid-json").unwrap();
     // Invalid JSON -> continue -> task stays pending
     assert_eq!(t.status, TaskStatus::Pending);
@@ -3950,7 +4101,16 @@ async fn test_poll_stale_pending_tasks_done_with_error_status() {
         }
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false, None).await;
+    poll_stale_pending_tasks(
+        &tm,
+        &call_fn,
+        None,
+        poll_defaults(),
+        &poll_no_bus(),
+        false,
+        &poll_no_cb(),
+    )
+    .await;
     let t = tm.get_task("done-err").unwrap();
     // result_status "error" -> complete_callback with "error" -> should be completed (callback handled)
     assert_eq!(t.status, TaskStatus::Failed);
@@ -4329,6 +4489,7 @@ fn test_cluster_peer_resolver_fallback_scan_by_name() {
         addresses: vec!["203.0.113.30".into()],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
 
@@ -4377,6 +4538,7 @@ fn test_cluster_peer_resolver_offline_peer_is_online_false() {
         addresses: vec!["203.0.113.40".into()],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
 
@@ -4537,6 +4699,7 @@ fn make_real_node_info(id: &str, name: &str, addr: &str) -> RealNodeInfo {
         tags: Vec::new(),
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     }
 }
@@ -4595,6 +4758,7 @@ fn test_merge_real_node_info_updates_existing_entry_with_real_id() {
         tags: Vec::new(),
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "new_type".into(),
     });
 
@@ -4646,6 +4810,7 @@ fn test_merge_real_node_info_keeps_static_peer_address() {
         tags: Vec::new(),
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
 
@@ -4691,6 +4856,7 @@ fn test_merge_real_node_info_updates_address_for_dynamic_peer() {
         tags: Vec::new(),
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
 
@@ -4721,6 +4887,7 @@ fn test_merge_real_node_info_upgrades_placeholder_by_address() {
         addresses: Vec::new(),
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: String::new(),
     });
 
@@ -4839,6 +5006,7 @@ fn test_merge_placeholder_upgrade_matches_secondary_address() {
         addresses: Vec::new(),
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: String::new(),
     });
 
@@ -4877,6 +5045,7 @@ fn test_handle_discovered_node_placeholder_upgrade_matches_secondary_address() {
         addresses: Vec::new(),
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: String::new(),
     });
 
@@ -4935,6 +5104,7 @@ fn test_merge_real_node_info_upgrades_placeholder_in_toml() {
         addresses: Vec::new(),
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: String::new(),
     });
 
@@ -4984,6 +5154,7 @@ fn test_handle_discovered_node_upgrades_placeholder_via_udp() {
         addresses: Vec::new(),
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: String::new(),
     });
     assert!(cluster.get_peer("ManualPeer").is_some());
@@ -5035,6 +5206,7 @@ fn test_mark_peer_online_for_refresh_flips_offline_to_online() {
         addresses: Vec::new(),
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: String::new(),
     });
 
@@ -5071,6 +5243,7 @@ fn test_set_peer_status_restores_offline() {
         addresses: Vec::new(),
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: String::new(),
     });
 
@@ -5264,6 +5437,7 @@ fn make_w3b_node(id: &str, name: &str, address: &str, status: NodeStatus) -> Ext
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     }
 }
@@ -5657,6 +5831,7 @@ fn test_upgrade_peer_in_peers_toml_same_sanitized_key_writes_real_id() {
             tags: Vec::new(),
             professions: Vec::new(),
             tier: None,
+            agents: Vec::new(),
             node_type: "agent".into(),
         },
     );
@@ -5692,6 +5867,7 @@ fn test_upgrade_peer_in_peers_toml_read_error_skips() {
             tags: Vec::new(),
             professions: Vec::new(),
             tier: None,
+            agents: Vec::new(),
             node_type: "agent".into(),
         },
     );
@@ -5727,6 +5903,7 @@ fn test_upgrade_peer_in_peers_toml_without_peers_table_persists_directly() {
             tags: Vec::new(),
             professions: Vec::new(),
             tier: None,
+            agents: Vec::new(),
             node_type: "agent".into(),
         },
     );
@@ -5769,6 +5946,7 @@ fn test_upgrade_peer_in_peers_toml_write_error_after_removal() {
             tags: Vec::new(),
             professions: Vec::new(),
             tier: None,
+            agents: Vec::new(),
             node_type: "agent".into(),
         },
     );
@@ -5801,6 +5979,7 @@ fn test_merge_real_node_info_master_role_with_write_error() {
         tags: Vec::new(),
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
     assert_eq!(merged, "master-1");
@@ -6260,9 +6439,9 @@ async fn test_poll_stale_pending_tasks_real_client_running_done_notfound_and_dea
         &None,
         Some(client.as_ref()),
         poll_defaults(),
-        None,
+        &poll_no_bus(),
         false,
-        None,
+        &poll_no_cb(),
     )
     .await;
     assert_eq!(
@@ -6288,9 +6467,9 @@ async fn test_poll_stale_pending_tasks_real_client_running_done_notfound_and_dea
         &None,
         Some(client.as_ref()),
         poll_defaults(),
-        None,
+        &poll_no_bus(),
         false,
-        None,
+        &poll_no_cb(),
     )
     .await;
     assert_eq!(
@@ -6309,9 +6488,9 @@ async fn test_poll_stale_pending_tasks_real_client_running_done_notfound_and_dea
         &None,
         Some(client.as_ref()),
         poll_defaults(),
-        None,
+        &poll_no_bus(),
         false,
-        None,
+        &poll_no_cb(),
     )
     .await;
     assert_eq!(tm.get_task("stale-nf").unwrap().status, TaskStatus::Failed);
@@ -6323,9 +6502,9 @@ async fn test_poll_stale_pending_tasks_real_client_running_done_notfound_and_dea
         &None,
         Some(client.as_ref()),
         poll_defaults(),
-        None,
+        &poll_no_bus(),
         false,
-        None,
+        &poll_no_cb(),
     )
     .await;
     assert_eq!(
@@ -6651,6 +6830,7 @@ fn test_upgrade_peer_in_peers_toml_no_file_and_missing_key() {
         tags: Vec::new(),
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     };
 
@@ -6693,6 +6873,7 @@ fn test_upgrade_peer_in_peers_toml_no_file_and_missing_key() {
         tags: Vec::new(),
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     };
     cluster2.upgrade_peer_in_peers_toml("ph-b", "real-b", &info_b);
@@ -6862,7 +7043,16 @@ async fn test_poll_stale_24h_timeout_logs_age_under_subscriber() {
     };
     tm.submit(task).unwrap();
 
-    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None, false, None).await;
+    poll_stale_pending_tasks(
+        &tm,
+        &None,
+        None,
+        poll_defaults(),
+        &poll_no_bus(),
+        false,
+        &poll_no_cb(),
+    )
+    .await;
     assert_eq!(
         tm.get_task("stale-24h-s4").unwrap().status,
         TaskStatus::Failed
@@ -6890,7 +7080,16 @@ async fn test_poll_stale_no_client_no_call_fn_continues() {
     };
     tm.submit(task).unwrap();
 
-    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None, false, None).await;
+    poll_stale_pending_tasks(
+        &tm,
+        &None,
+        None,
+        poll_defaults(),
+        &poll_no_bus(),
+        false,
+        &poll_no_cb(),
+    )
+    .await;
     assert_eq!(
         tm.get_task("stale-5m-noclient").unwrap().status,
         TaskStatus::Pending,
@@ -7409,6 +7608,7 @@ fn restore_skips_self_banned_existing_and_unusable() {
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
     // 预置一个黑名单节点。
@@ -7467,6 +7667,7 @@ fn restore_skips_address_shadow_of_existing_entry() {
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
     // state.toml 里留着占位名条目（升级前形态）：id=名字、同地址。
@@ -7517,6 +7718,7 @@ fn restore_skips_name_shadow_of_existing_entry() {
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
     // id=占位名、地址不同（对端换了地址），但名字相同 → 同节点，不种。
@@ -7583,6 +7785,7 @@ async fn health_probe_loop_probes_offline_every_fifth_tick() {
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
     // 探针循环要求 RPC client 已初始化（None 直接 return）。
@@ -7631,6 +7834,7 @@ fn mark_peer_healthy_recovery_fires_node_discovered() {
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
 
@@ -7694,6 +7898,7 @@ fn canonical_peer_id_resolves_name_and_id() {
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
 
@@ -7731,6 +7936,7 @@ fn canonical_peer_id_case_insensitive_fallback() {
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
 
@@ -8207,6 +8413,7 @@ fn make_addr_chain_peer(
         addresses,
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     }
 }
@@ -8242,6 +8449,7 @@ fn test_announce_refresh_preserves_static_pin_addresses() {
         "agent",
         vec![],
         None,
+        Vec::new(), // 自报 agent 清单：未宣告
         None,
     );
     assert!(changed);
@@ -8273,6 +8481,7 @@ fn test_announce_refresh_preserves_static_pin_addresses() {
         "agent",
         vec![],
         None,
+        Vec::new(), // 自报 agent 清单：未宣告
         None,
     );
     assert!(
@@ -8308,6 +8517,7 @@ fn test_announce_refresh_replaces_addresses_for_dynamic_peer() {
         "agent",
         vec![],
         None,
+        Vec::new(), // 自报 agent 清单：未宣告
         None,
     );
     assert!(changed);
@@ -8346,6 +8556,7 @@ fn test_merge_real_node_info_merges_addresses_for_static_peer() {
         tags: vec![],
         professions: vec![],
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     });
 
@@ -8514,6 +8725,7 @@ fn test_announce_source_addr_appended_lowest_priority() {
         "agent",
         vec![],
         None,
+        Vec::new(), // 自报 agent 清单：未宣告
         Some("203.0.113.99"),
     );
     assert!(changed);
@@ -8537,6 +8749,7 @@ fn test_announce_source_addr_appended_lowest_priority() {
         "agent",
         vec![],
         None,
+        Vec::new(), // 自报 agent 清单：未宣告
         Some("203.0.113.96"),
     );
     let info = cluster.registry.get("src-2").unwrap();
@@ -8611,6 +8824,7 @@ fn test_pool_order_pin_then_payload_then_source() {
         "agent",
         vec![],
         None,
+        Vec::new(), // 自报 agent 清单：未宣告
         Some("203.0.113.29"),
     );
     let info = cluster.registry.get("order-1").unwrap();
@@ -8623,4 +8837,321 @@ fn test_pool_order_pin_then_payload_then_source() {
         ],
         "池序必须为 pin → 载荷 → 源地址"
     );
+}
+
+// -- P2 agent 清单宣告（AgentAnnouncement，2026-10-16）--
+
+/// roster provider → ping announce 子对象活读（professions M2 同形）。
+/// provider 热改（模拟运行期建删 agent）→ 下一次 ping 反映，无需重启。
+#[test]
+fn test_agent_roster_stamped_into_ping_announce() {
+    let cluster = Arc::new(make_cluster_with_rpc_server());
+    cluster.install_self_weak();
+    cluster
+        .register_basic_handlers()
+        .expect("register_basic_handlers should succeed");
+    let rpc_server = cluster.rpc_server.as_ref().unwrap();
+
+    cluster.set_agent_roster_provider(Some(std::sync::Arc::new(|| {
+        vec![
+            crate::types::AgentAnnouncement {
+                agent_id: "main".into(),
+                name: "Main Agent".into(),
+                kind: "main".into(),
+                tier: "big".into(),
+                state: String::new(),
+            },
+            crate::types::AgentAnnouncement {
+                agent_id: "proj-alpha".into(),
+                name: "Alpha".into(),
+                kind: "project".into(),
+                tier: "normal".into(),
+                state: String::new(),
+            },
+        ]
+    })));
+
+    let resp = rpc_server
+        .handle_request_sync("ping", serde_json::json!({}))
+        .expect("ping should succeed");
+    let ann = resp.get("announce").expect("ping 响应必须携带 announce");
+    let agents = ann["agents"].as_array().expect("agents 数组");
+    assert_eq!(agents.len(), 2);
+    assert_eq!(agents[0]["agent_id"], "main");
+    assert_eq!(agents[0]["kind"], "main");
+    assert_eq!(agents[1]["tier"], "normal");
+
+    // 运行期换 provider（建删 agent 等价形态）→ 无重启活读。
+    cluster.set_agent_roster_provider(Some(std::sync::Arc::new(Vec::new)));
+    let resp2 = rpc_server
+        .handle_request_sync("ping", serde_json::json!({}))
+        .unwrap();
+    let ann2 = resp2.get("announce").unwrap();
+    assert!(
+        ann2["agents"].as_array().unwrap().is_empty(),
+        "provider 返回空 = 未宣告语义（空清单）"
+    );
+
+    // provider 未装 = 优雅降级空清单（旧节点形态）。
+    cluster.set_agent_roster_provider(None);
+    let resp3 = rpc_server
+        .handle_request_sync("ping", serde_json::json!({}))
+        .unwrap();
+    assert!(
+        resp3.get("announce").unwrap()["agents"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// get_info 顶层 agents 字段（nodes_refresh 解析源）：provider 活读，
+/// 与 professions/tier 同层。
+#[test]
+fn test_get_info_carries_agent_roster() {
+    let cluster = make_cluster_with_rpc_server();
+    cluster
+        .register_basic_handlers()
+        .expect("register_basic_handlers should succeed");
+    let rpc_server = cluster.rpc_server.as_ref().unwrap();
+
+    cluster.set_agent_roster_provider(Some(std::sync::Arc::new(|| {
+        vec![crate::types::AgentAnnouncement {
+            agent_id: "main".into(),
+            name: "Main Agent".into(),
+            kind: "main".into(),
+            tier: "auto".into(),
+            state: String::new(),
+        }]
+    })));
+
+    let info = rpc_server
+        .handle_request_sync("get_info", serde_json::json!({}))
+        .unwrap();
+    let agents = info["agents"].as_array().expect("get_info 顶层 agents");
+    assert_eq!(agents.len(), 1);
+    assert_eq!(agents[0]["agent_id"], "main");
+    assert_eq!(agents[0]["name"], "Main Agent");
+    assert_eq!(agents[0]["tier"], "auto");
+
+    // 未装 provider → 空数组（不缺键，消费方解析稳定）。
+    cluster.set_agent_roster_provider(None);
+    let info2 = rpc_server
+        .handle_request_sync("get_info", serde_json::json!({}))
+        .unwrap();
+    assert!(info2["agents"].as_array().unwrap().is_empty());
+    cluster.stop();
+}
+
+/// 收端：roster 随 handle_discovered_node_ex 入注册表；roster 变化经
+/// content_eq 触发 changed=true（否则周期广播携带的清单更新会被当冗余
+/// upsert 跳过）；同清单重复宣告 = 冗余（changed=false）。
+///
+/// 隔离用 with_workspace + tempdir（apply 命中变更会 sync_to_disk，裸
+/// 构造落 CWD 的 state.toml 污染后续测试——apply_probe_announce 测试
+/// 同款纪律）。
+#[test]
+fn test_discovered_node_roster_lands_and_change_detection() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    let roster_a = vec![crate::types::AgentAnnouncement {
+        agent_id: "main".into(),
+        name: "Main".into(),
+        kind: "main".into(),
+        tier: "big".into(),
+        state: String::new(),
+    }];
+    let roster_b = vec![
+        crate::types::AgentAnnouncement {
+            agent_id: "main".into(),
+            name: "Main".into(),
+            kind: "main".into(),
+            tier: "big".into(),
+            state: String::new(),
+        },
+        crate::types::AgentAnnouncement {
+            agent_id: "proj-x".into(),
+            name: "X".into(),
+            kind: "project".into(),
+            tier: "mini".into(),
+            state: String::new(),
+        },
+    ];
+
+    let changed = cluster.handle_discovered_node_ex(
+        "roster-peer",
+        "roster-peer",
+        vec!["203.0.113.50".into()],
+        21950,
+        "worker",
+        "test",
+        Vec::new(),
+        Vec::new(),
+        "agent",
+        Vec::new(),
+        None,
+        roster_a.clone(),
+        None,
+    );
+    assert!(changed, "首次入册必 changed");
+    let node = cluster.registry.get("roster-peer").expect("入册");
+    assert_eq!(node.agents, roster_a);
+
+    // 同清单重复宣告 → content_eq 相等 → 冗余跳过。
+    let changed = cluster.handle_discovered_node_ex(
+        "roster-peer",
+        "roster-peer",
+        vec!["203.0.113.50".into()],
+        21950,
+        "worker",
+        "test",
+        Vec::new(),
+        Vec::new(),
+        "agent",
+        Vec::new(),
+        None,
+        roster_a.clone(),
+        None,
+    );
+    assert!(!changed, "同清单重复宣告不得算内容变化");
+
+    // 清单变化（对端新建 agent）→ changed=true + 注册表更新。
+    let changed = cluster.handle_discovered_node_ex(
+        "roster-peer",
+        "roster-peer",
+        vec!["203.0.113.50".into()],
+        21950,
+        "worker",
+        "test",
+        Vec::new(),
+        Vec::new(),
+        "agent",
+        Vec::new(),
+        None,
+        roster_b.clone(),
+        None,
+    );
+    assert!(changed, "roster 变化必须算内容变化");
+    let node = cluster.registry.get("roster-peer").unwrap();
+    assert_eq!(node.agents, roster_b);
+}
+
+/// G14 空地址已知节点身份合并：agents 与 tier/professions 同族——地址
+/// 保留原值的同时清单照常合并（探针回传身份不因空地址丢失）。
+#[test]
+fn test_empty_addresses_known_peer_roster_merge_preserves_address() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "static-roster-peer".into(),
+            name: "static-roster-peer".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "127.0.0.1:50592".into(),
+            category: "development".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status: NodeStatus::Online,
+        capabilities: vec![],
+        tags: Vec::new(),
+        addresses: vec!["127.0.0.1".into()],
+        professions: Vec::new(),
+        tier: None,
+        agents: Vec::new(),
+        node_type: "agent".into(),
+    });
+
+    let roster = vec![crate::types::AgentAnnouncement {
+        agent_id: "main".into(),
+        name: "M".into(),
+        kind: "main".into(),
+        tier: String::new(),
+        state: String::new(),
+    }];
+    let changed = cluster.handle_discovered_node_ex(
+        "static-roster-peer",
+        "static-roster-peer",
+        Vec::new(), // 空地址载荷
+        50592,
+        "worker",
+        "development",
+        Vec::new(),
+        Vec::new(),
+        "agent",
+        Vec::new(),
+        None,
+        roster.clone(),
+        None,
+    );
+    assert!(changed, "roster None->A 是内容变化");
+
+    let node = cluster.registry.get("static-roster-peer").unwrap();
+    assert_eq!(
+        node.base.address, "127.0.0.1:50592",
+        "usable address must survive"
+    );
+    assert_eq!(node.agents, roster, "清单随身份合并进注册表");
+}
+
+/// merge_real_node_info（nodes_refresh 路径）：agents 与 professions/tier
+/// 同臂合并——既有条目身份更新不丢清单（补合并语义与 professions 一致）。
+#[test]
+fn test_merge_real_node_info_merges_agent_roster() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    // 先入一个无清单占位条目。
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "merge-peer".into(),
+            name: "merge-peer".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "203.0.113.60:21960".into(),
+            category: "test".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status: NodeStatus::Online,
+        capabilities: vec![],
+        tags: Vec::new(),
+        addresses: vec!["203.0.113.60".into()],
+        professions: Vec::new(),
+        tier: None,
+        agents: Vec::new(),
+        node_type: "agent".into(),
+    });
+
+    let roster = vec![crate::types::AgentAnnouncement {
+        agent_id: "proj-y".into(),
+        name: "Y".into(),
+        kind: "project".into(),
+        tier: "normal".into(),
+        state: String::new(),
+    }];
+    let info = crate::cluster::RealNodeInfo {
+        id: "merge-peer".into(),
+        name: "merge-peer-renamed".into(),
+        address: "203.0.113.60:21960".into(),
+        rpc_port: 21960,
+        addresses: vec!["203.0.113.60".into()],
+        role: nemesis_types::cluster::NodeRole::Worker,
+        category: "test".into(),
+        capabilities: vec![],
+        tags: vec![],
+        professions: vec!["dev".into()],
+        tier: Some("big".into()),
+        agents: roster.clone(),
+        node_type: "agent".into(),
+    };
+    cluster.merge_real_node_info(&info);
+
+    let node = cluster.registry.get("merge-peer").expect("merge 后仍在册");
+    assert_eq!(node.agents, roster);
+    assert_eq!(node.professions, vec!["dev".to_string()]);
+    assert_eq!(node.tier.as_deref(), Some("big"));
+    assert_eq!(node.base.name, "merge-peer-renamed");
 }

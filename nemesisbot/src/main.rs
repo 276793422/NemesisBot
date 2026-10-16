@@ -20,6 +20,12 @@
 mod acp;
 mod adapters;
 mod agent_factory;
+/// P2（2026-10-16）：Agent 持久实体管理器——两阶段创建 / main 幂等 seed /
+/// 启动 sweep 收敛 / 项目镜像。记录真相源 = tasks.db agents 表；home/
+/// 记忆布局单一真相源 = nemesis-path。无 feature 门（对话组身份是核心
+/// 基础设施）；gateway boot 装配（post_agent seed 块）+ 进程槽供 WSAPI /
+/// 集群宣告消费。
+mod agents;
 /// 看板项目档案 goal P3（D3/D4 master 侧）：执行档案落地回灌 + 超限出卡
 /// （TransferSink on_landed/on_overlimit 回调入口）。
 #[cfg(all(feature = "board", feature = "cluster"))]
@@ -94,6 +100,14 @@ mod conflict_resolver;
 /// 跳过语义）；**agent 工具供给**的 security 闸在 agent_factory 注册点
 /// （无 security 组合无 connector 工具供给面）。
 mod connector_tools;
+/// P4 交付门（持久 Agent 实体，2026-10-17）：worker 侧交付分支捕获——
+/// 仅 cluster 形态消费（execute_new_task/resume_task 成功收口）。
+#[cfg(feature = "cluster")]
+mod delivery_gate;
+/// P4-c（2026-10-17）：A 端交付账本 web 面（deliveries bridge 实现）——
+/// 真相源 tasks.db deliveries 表无 feature 依赖，裁剪形态下查空账本诚实
+/// 可用（写入面只在 cluster 回调/评审里产生）。
+mod delivery_ledger;
 mod embedded;
 /// 跨进程 estop 跟随器：独立装配入口（mcp-serve / acp）镜像 gateway 的
 /// 急停态（/api/internal estop_status 轮询，gateway 唯一权威源）——堵住
@@ -138,6 +152,11 @@ mod projects;
 /// F7（devtool-upgrade 阶段 5）：Dashboard 结构化提问 broker——question
 /// 工具的阻塞端 + WSAPI question.respond/pending 端（同审批 broker 形态）。
 mod question_broker;
+/// P4-d（2026-10-17）：评审结论 → 交付账本闭环——record_auto_decide 漏斗
+/// 尾同步落 deliveries `review` 行 + auto_accept/redispatch 分支裁决 +
+/// 项目档案自动导出 `dossier` 行。
+#[cfg(all(feature = "board", feature = "cluster"))]
+mod review_ledger;
 /// K1（devtool-upgrade 阶段 4）：SecurityPlugin 构造单一真相源（gateway /
 /// headless `run` 共用，安全 9 层在无端口形态不降级）。
 mod security_setup;

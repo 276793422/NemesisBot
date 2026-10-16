@@ -231,9 +231,8 @@ async fn run_resolver(
             );
             let store = deps.store.as_ref();
             crate::board_review::record_auto_decide(
-                store,
+                &deps,
                 issue.id,
-                deps.cluster.node_id(),
                 "conflict_auto_resolve",
                 "resolved",
                 serde_json::json!({
@@ -345,9 +344,8 @@ async fn redispatch_after_failed_resolve(
     }
     let target = if online {
         crate::board_review::record_auto_decide(
-            store,
+            &deps,
             issue.id,
-            deps.cluster.node_id(),
             "conflict_redispatch",
             "redispatch",
             serde_json::json!({
@@ -398,9 +396,8 @@ async fn redispatch_after_failed_resolve(
         };
         if switched {
             crate::board_review::record_auto_decide(
-                store,
+                &deps,
                 issue.id,
-                deps.cluster.node_id(),
                 "conflict_switch_worker",
                 "redispatch",
                 serde_json::json!({
@@ -421,9 +418,8 @@ async fn redispatch_after_failed_resolve(
             });
         } else {
             crate::board_review::record_auto_decide(
-                store,
+                &deps,
                 issue.id,
-                deps.cluster.node_id(),
                 "conflict_redispatch",
                 "redispatch",
                 serde_json::json!({
@@ -477,9 +473,8 @@ fn fallback_freeze(
         warn!("[ConflictResolver] 项目 {pid} 冻结置位失败: {e}");
     }
     crate::board_review::record_auto_decide(
-        store,
+        deps,
         issue.id,
-        deps.cluster.node_id(),
         "conflict",
         "parked",
         serde_json::json!({

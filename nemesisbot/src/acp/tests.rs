@@ -557,7 +557,10 @@ async fn approval_manager_maps_verdicts_and_fails_closed() {
         tx,
         Arc::clone(&pending),
     ));
-    let mgr = AcpApprovalManager { gate };
+    let mgr = AcpApprovalManager {
+        gate,
+        journal: None,
+    };
 
     // 批准路径：后台 100ms 后回 allow_once。
     let p2 = Arc::clone(&pending);
@@ -860,7 +863,10 @@ fn approval_manager_is_running_reports_true() {
         tx,
         Arc::new(PendingPermissions::new()),
     ));
-    let mgr = AcpApprovalManager { gate };
+    let mgr = AcpApprovalManager {
+        gate,
+        journal: None,
+    };
     assert!(mgr.is_running());
 }
 

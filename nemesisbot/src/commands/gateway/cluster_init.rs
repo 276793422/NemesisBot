@@ -939,6 +939,10 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 let sweep_estop = estop.clone();
                 let sweep_estop_parked = board_estop_parked.clone();
                 let sweep_selfcheck = board_selfcheck_registry.clone();
+                // P4-d：评审结论→交付账本闭环的审计插件槽（同回调侧
+                // security_slot_for_cb 的惰性 get() 语义）。
+                #[cfg(feature = "security")]
+                let security_slot_for_sweep = ctx.outbound_dlp_slot.clone();
                 let sweep_workspace = home.join("workspace");
                 tokio::spawn(async move {
                     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
@@ -996,6 +1000,8 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                                     estop: sweep_estop.clone(),
                                     estop_parked: sweep_estop_parked.clone(),
                                     selfcheck: sweep_selfcheck.clone(),
+                                    #[cfg(feature = "security")]
+                                    security_slot: Some(security_slot_for_sweep.clone()),
                                 },
                                 review_issue_id,
                             );
@@ -1069,6 +1075,14 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             //（session_key=cluster_rpc:{worker}/{task_id}，E1 token 预算闸
             // 按派发行精确聚合）。未装配 DataStore = 记账静默跳过。
             let ds_for_usage_cb = data_store.clone();
+            // P4 交付门：A 端 deliveries 台账（生产 `Cluster::with_workspace`
+            // 路径 Some；`Cluster::new` 测试路径 None = 记账静默跳过）。
+            let task_db_for_cb = cluster.task_db();
+            // P4 交付门审计（security 形态）：安全插件槽此刻还空着（
+            // init_agent 之后才 set）——只 clone Arc 槽位，回调执行时惰性
+            // get()，插件装配前到达的交付只记账不审计（诚实降级）。
+            #[cfg(feature = "security")]
+            let security_slot_for_cb = ctx.outbound_dlp_slot.clone();
             // W2 P2 派发写回：board 派发的 task_id 命中 issue_dispatch →
             // 写回看板。board feature 未编译时占位（拦截整体被 cfg 掉）。
             #[cfg(feature = "board")]
@@ -1112,6 +1126,9 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             let delivery_estop_parked = estop_parked_for_cb.clone();
             #[cfg(all(feature = "board", feature = "cluster"))]
             let delivery_selfcheck = selfcheck_for_cb.clone();
+            // P4-d：交付账本闭环的审计插件槽（同族惰性 get() 语义）。
+            #[cfg(all(feature = "board", feature = "cluster", feature = "security"))]
+            let delivery_security_slot = security_slot_for_cb.clone();
             let _ = cluster.register_rpc_handler("peer_chat_callback", Box::new(move |payload| {
                 let task_id = payload
                     .get("task_id")
@@ -1162,6 +1179,26 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     task_id,
                     usage,
                 );
+                // P4 交付门：worker 交付分支证据（可选字段，serde 兼容——
+                // 旧 worker 无此字段不炸；只认 object 形态）→ deliveries
+                // 台账入账（幂等键 `{task_id}:branch`，G5 恢复轮询重复回调
+                // = 幂等静默）。Ok(false) 不重复记账，Err warn 不阻断路由。
+                let delivery = payload.get("delivery").filter(|v| v.is_object());
+                #[cfg(feature = "security")]
+                super::record_branch_delivery_audited(
+                    task_db_for_cb.as_ref(),
+                    security_slot_for_cb.get().and_then(|p| p.as_ref()),
+                    source_node,
+                    task_id,
+                    delivery,
+                );
+                #[cfg(not(feature = "security"))]
+                super::record_branch_delivery(
+                    task_db_for_cb.as_ref(),
+                    source_node,
+                    task_id,
+                    delivery,
+                );
                 // P2A（2026-09-12 NB-15）：结构化失败分类（可选字段，旧
                 // worker 无此字段不炸；只认字符串形态）。随写回落到 ⛔
                 // 失败评论，验收重派决策据此避免同 worker 同模型盲重派。
@@ -1203,6 +1240,8 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                             estop: estop_for_cb.clone(),
                             estop_parked: estop_parked_for_cb.clone(),
                             selfcheck: selfcheck_for_cb.clone(),
+                            #[cfg(feature = "security")]
+                            security_slot: Some(security_slot_for_cb.clone()),
                         },
                         sc_issue_id,
                         status.to_string(),
@@ -1259,6 +1298,8 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                             estop: estop_for_cb.clone(),
                             estop_parked: estop_parked_for_cb.clone(),
                             selfcheck: selfcheck_for_cb.clone(),
+                            #[cfg(feature = "security")]
+                            security_slot: Some(security_slot_for_cb.clone()),
                         },
                         review_issue_id,
                     );
@@ -1423,6 +1464,8 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                                     estop: delivery_estop.clone(),
                                     estop_parked: delivery_estop_parked.clone(),
                                     selfcheck: delivery_selfcheck.clone(),
+                                    #[cfg(feature = "security")]
+                                    security_slot: Some(delivery_security_slot.clone()),
                                 },
                                 review_issue_id,
                             );

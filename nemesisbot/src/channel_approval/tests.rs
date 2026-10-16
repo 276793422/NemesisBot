@@ -625,6 +625,7 @@ async fn watcher_silently_skips_when_waiter_already_gave_up() {
             channel: "telegram".to_string(),
             chat_id: "chat-9".to_string(),
             sender_id: "u1".to_string(),
+            request_id: "deadc0de-full".to_string(),
             created_at: std::time::Instant::now(),
             tx,
         },
@@ -704,5 +705,108 @@ mod w5b2 {
         bus.publish_inbound(inbound("telegram", "chat-9", "今天天气不错"));
         tokio::time::sleep(Duration::from_millis(400)).await;
         assert!(out_rx.try_recv().is_err(), "噪声不得触发任何出站卡片/通知");
+    }
+}
+
+// ===========================================================================
+// P1 统一任务层：审批台账（tasks.db approvals 表）——重启补裁
+// ===========================================================================
+
+mod journal {
+    use super::*; // inbound / ChannelApprovalManager / MessageBus / Arc / Duration 同源
+
+    fn journal_at(
+        path: &std::path::Path,
+    ) -> std::sync::Arc<dyn nemesis_types::approval_journal::ApprovalJournal> {
+        let db = nemesis_taskstore::TaskDb::open(path).expect("open tasks.db");
+        std::sync::Arc::new(nemesis_taskstore::SqliteApprovalJournal::from_db(db))
+    }
+
+    /// 重启补裁全链：台账 pending（重启前）→ 重开库 + 新 manager → IM 回执
+    /// watcher map-miss → 台账裁决落账恰好一次 + 「仅记账留痕」回执；二次
+    /// 回执 find_pending miss → 诚实「未找到」（不二次生效）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stale_reply_after_restart_decides_exactly_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("tasks.db");
+
+        // 「重启前」：记账入口直录 pending（无活 ask 线程；内存 pending 随
+        // mgr drop 消失）。
+        {
+            let mgr = ChannelApprovalManager::new(Arc::new(MessageBus::new()));
+            mgr.set_journal(journal_at(&db_path));
+            mgr.journal_record_pending(
+                "req-stale-uuid-0001",
+                "req-stal",
+                &ctx_of("telegram", "chat-9"),
+                "file_write",
+                "/tmp/x",
+                "HIGH",
+                "test reason",
+                300,
+            );
+            // drop = 进程死亡。
+        }
+
+        // 「重启后」：新进程从盘上重开 tasks.db（真重开验证落盘耐久）。
+        let bus = Arc::new(MessageBus::new());
+        let mgr = Arc::new(ChannelApprovalManager::new(bus.clone()));
+        mgr.set_journal(journal_at(&db_path));
+        mgr.spawn_watcher();
+        let mut out_rx = bus.subscribe_outbound();
+
+        // 同对话回执 → 补裁生效（诚实告知仅记账、原操作已失效）。
+        bus.publish_inbound(inbound("telegram", "chat-9", "/approve req-stal"));
+        let notice = next_outbound(&mut out_rx).await;
+        assert!(
+            notice.content.contains("仅记账留痕"),
+            "notice: {}",
+            notice.content
+        );
+        // 台账终态 approved + decided_by=im 回执人。
+        let e = mgr.journal().unwrap().entry("req-stale-uuid-0001").unwrap();
+        assert_eq!(e.status, nemesis_types::approval_journal::status::APPROVED);
+        assert_eq!(e.decided_by.as_deref(), Some("im:user-1"));
+
+        // 二次回执 → find_pending miss → 「未找到」（不二次生效）。
+        bus.publish_inbound(inbound("telegram", "chat-9", "/approve req-stal"));
+        let notice2 = next_outbound(&mut out_rx).await;
+        assert!(
+            notice2.content.contains("未找到"),
+            "notice2: {}",
+            notice2.content
+        );
+    }
+
+    /// 异对话回执 → 「不属于本对话」，台账原样 pending（不越权补裁）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stale_reply_from_other_chat_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let bus = Arc::new(MessageBus::new());
+        let mgr = Arc::new(ChannelApprovalManager::new(bus.clone()));
+        mgr.set_journal(journal_at(&dir.path().join("tasks.db")));
+        mgr.journal_record_pending(
+            "req-other-uuid-1",
+            "req-othe",
+            &ctx_of("telegram", "chat-9"),
+            "file_write",
+            "/tmp/x",
+            "HIGH",
+            "r",
+            300,
+        );
+        mgr.spawn_watcher();
+        let mut out_rx = bus.subscribe_outbound();
+
+        bus.publish_inbound(inbound("telegram", "chat-OTHER", "/approve req-othe"));
+        let notice = next_outbound(&mut out_rx).await;
+        assert!(
+            notice.content.contains("不属于本对话"),
+            "notice: {}",
+            notice.content
+        );
+        // 台账仍 pending（未被越权裁决）。
+        let e = mgr.journal().unwrap().entry("req-other-uuid-1").unwrap();
+        assert_eq!(e.status, nemesis_types::approval_journal::status::PENDING);
     }
 }

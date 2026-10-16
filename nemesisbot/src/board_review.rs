@@ -82,6 +82,12 @@ pub struct BoardReviewDeps {
     /// B2b 自检取证路由表（gateway 装配一份，callback 闭包与评审任务
     /// 共享）：task_id → issue_id。
     pub selfcheck: SelfcheckRegistry,
+    /// P4-d：评审结论 → 交付账本闭环的审计插件槽（cfg security；None =
+    /// headless/测试形态）。槽位惰性 get()——装配期安全插件可能还没 set，
+    /// 评审运行时才解析。
+    #[cfg(feature = "security")]
+    pub security_slot:
+        Option<Arc<std::sync::OnceLock<Option<Arc<nemesis_security::pipeline::SecurityPlugin>>>>>,
 }
 
 /// B2b 自检在途注册表：task_id → issue_id。selfcheck 派发**不写**
@@ -1002,9 +1008,8 @@ async fn review_issue(
             ctype: CommentType::System,
         })?;
         record_auto_decide(
-            store,
+            deps,
             issue_id,
-            deps.cluster.node_id(),
             "escalate_human",
             "indeterminate",
             serde_json::json!({ "reason": "anchor_root_missing", "detail": root_err }),
@@ -1255,13 +1260,7 @@ async fn review_issue(
                 }
                 // S-O2 迟到评审守卫（评审自身失败路径）：评审期间单据已被
                 // 人工改状态 → 不落评论不重派，让位人工（无 verdict 可留痕）。
-                if !review_still_relevant(
-                    store,
-                    issue_id,
-                    deps.cluster.node_id(),
-                    "parse_failed",
-                    "子单验收",
-                ) {
+                if !review_still_relevant(deps, issue_id, "parse_failed", "子单验收") {
                     return Ok(false);
                 }
                 // N2（2026-10-12）：评审自身失败 ≠ verdict——评审侧基础设施
@@ -1336,13 +1335,7 @@ async fn review_issue(
     // S-O2 迟到评审守卫：LLM 评审期间单据被人工改状态（reopen/取消等）
     // 则结论整体让位——取证挂起与下方任何处置分支（含最危险的迟到重派）
     // 都不再执行。
-    if !review_still_relevant(
-        store,
-        issue_id,
-        deps.cluster.node_id(),
-        output.verdict.as_str(),
-        "子单验收",
-    ) {
+    if !review_still_relevant(deps, issue_id, output.verdict.as_str(), "子单验收") {
         return Ok(false);
     }
 
@@ -1454,9 +1447,8 @@ async fn review_issue(
             // 将发生的事。
             auto_accept_and_settle(deps, issue_id, &output.reasons)?;
             record_auto_decide(
-                store,
+                deps,
                 issue_id,
-                deps.cluster.node_id(),
                 "auto_accept",
                 output.verdict.as_str(),
                 serde_json::json!({
@@ -1468,9 +1460,8 @@ async fn review_issue(
         ReviewAction::SuggestManual => {
             fail_streaks.clear(issue_id);
             record_auto_decide(
-                store,
+                deps,
                 issue_id,
-                deps.cluster.node_id(),
                 "suggest_manual",
                 output.verdict.as_str(),
                 serde_json::json!({
@@ -1526,9 +1517,8 @@ async fn review_issue(
                     ctype: CommentType::Comment,
                 })?;
                 record_auto_decide(
-                    store,
+                    deps,
                     issue_id,
-                    deps.cluster.node_id(),
                     "escalate_human",
                     output.verdict.as_str(),
                     serde_json::json!({
@@ -1579,9 +1569,8 @@ async fn review_issue(
                     ctype: CommentType::Comment,
                 })?;
                 record_auto_decide(
-                    store,
+                    deps,
                     issue_id,
-                    deps.cluster.node_id(),
                     "escalate_human",
                     output.verdict.as_str(),
                     serde_json::json!({
@@ -1644,9 +1633,8 @@ async fn review_issue(
                     ctype: CommentType::Comment,
                 })?;
                 record_auto_decide(
-                    store,
+                    deps,
                     issue_id,
-                    deps.cluster.node_id(),
                     "escalate_human",
                     output.verdict.as_str(),
                     serde_json::json!({
@@ -1700,9 +1688,8 @@ async fn review_issue(
                     },
                 );
                 record_auto_decide(
-                    store,
+                    deps,
                     issue_id,
-                    deps.cluster.node_id(),
                     "escalate_human",
                     output.verdict.as_str(),
                     serde_json::json!({
@@ -1787,9 +1774,8 @@ async fn review_issue(
                         ctype: CommentType::Comment,
                     })?;
                     record_auto_decide(
-                        store,
+                        deps,
                         issue_id,
-                        deps.cluster.node_id(),
                         "escalate_human",
                         output.verdict.as_str(),
                         serde_json::json!({
@@ -1829,9 +1815,8 @@ async fn review_issue(
                 ctype: CommentType::Comment,
             })?;
             record_auto_decide(
-                store,
+                deps,
                 issue_id,
-                deps.cluster.node_id(),
                 "redispatch",
                 output.verdict.as_str(),
                 serde_json::json!({
@@ -2014,9 +1999,8 @@ async fn review_issue(
                 },
             );
             record_auto_decide(
-                store,
+                deps,
                 issue_id,
-                deps.cluster.node_id(),
                 "escalate_human",
                 output.verdict.as_str(),
                 serde_json::json!({
@@ -2332,14 +2316,17 @@ fn append_reasons_unless_gapped(comment: &mut String, output: &nemesis_board::Re
 /// `{decision, verdict, ..extra}`。失败只 warn（审计是增值动作，不炸验收）。
 /// P5/F7 冲突四审计（conflict/conflict_auto_resolve/conflict_redispatch/
 /// conflict_switch_worker）同走本漏斗——board 冲突防线与验收共用单一审计。
+/// P4-d：同一漏斗同步落交付账本（review 行 + issue scope 分支闭环，
+/// [`crate::review_ledger`]）——审计漏斗单一，证据链同步不漂移。
 pub(crate) fn record_auto_decide(
-    store: &nemesis_board::BoardStore,
+    deps: &BoardReviewDeps,
     issue_id: i64,
-    node_id: &str,
     decision: &str,
     verdict: &str,
     extra: serde_json::Value,
 ) {
+    let store = deps.store.as_ref();
+    let node_id = deps.cluster.node_id();
     let mut details = serde_json::json!({ "decision": decision, "verdict": verdict });
     if let (Some(obj), Some(ex)) = (details.as_object_mut(), extra.as_object()) {
         for (k, v) in ex {
@@ -2361,6 +2348,16 @@ pub(crate) fn record_auto_decide(
             store, &issue, node_id, decision, verdict, &details,
         );
     }
+    // P4-d：交付账本闭环（review 行 + auto_accept/redispatch 分支裁决）。
+    // 失败容错——证据面缺席不停评审。
+    crate::review_ledger::review_outcome_delivery(
+        deps,
+        deps.cluster.task_db().as_ref(),
+        issue_id,
+        decision,
+        verdict,
+        &details,
+    );
 }
 
 /// U-A（2026-10-12 停车现场工程 §9.1）：停车现场落盘（机器可读侧车
@@ -2414,12 +2411,12 @@ fn last_dispatch_env(dispatches: &[nemesis_board::models::DispatchRecord]) -> se
 /// 自动结论整体让位：丢弃 + 审计留痕 + WARN。返回 false = 结论已丢弃
 /// （调用方按「未处置」收尾，与 estop 冻结同语义）。
 fn review_still_relevant(
-    store: &nemesis_board::BoardStore,
+    deps: &BoardReviewDeps,
     issue_id: i64,
-    node_id: &str,
     verdict: &str,
     phase: &str,
 ) -> bool {
+    let store = deps.store.as_ref();
     let current = match store.get_issue(issue_id) {
         Ok(issue) => issue.status,
         Err(e) => {
@@ -2437,9 +2434,8 @@ fn review_still_relevant(
         current
     );
     record_auto_decide(
-        store,
+        deps,
         issue_id,
-        node_id,
         "stale_review_discarded",
         verdict,
         serde_json::json!({
@@ -2973,9 +2969,8 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
             ctype: CommentType::System,
         })?;
         record_auto_decide(
-            store,
+            deps,
             parent_id,
-            deps.cluster.node_id(),
             "parent_defect_gate",
             "escalate",
             serde_json::json!({ "unclosed_defects": defects.len() }),
@@ -3245,13 +3240,7 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
     let reviewer = Actor::agent(deps.cluster.node_id());
     // S-O2 迟到评审守卫（同子单验收）：收口评审期间父单被人工改状态则
     // 结论整体让位（PASS 直推 done 是 backlog→done 合法边的同型竞态面）。
-    if !review_still_relevant(
-        store,
-        parent_id,
-        deps.cluster.node_id(),
-        output.verdict.as_str(),
-        "父单收口",
-    ) {
+    if !review_still_relevant(deps, parent_id, output.verdict.as_str(), "父单收口") {
         return Ok(false);
     }
     match output.verdict {
@@ -3267,9 +3256,8 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
                 ctype: CommentType::Comment,
             })?;
             record_auto_decide(
-                store,
+                deps,
                 parent_id,
-                deps.cluster.node_id(),
                 "parent_auto_close",
                 output.verdict.as_str(),
                 serde_json::json!({ "reasons": render_reasons(&output.reasons) }),
@@ -3337,9 +3325,8 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
                 ctype: CommentType::Comment,
             })?;
             record_auto_decide(
-                store,
+                deps,
                 parent_id,
-                deps.cluster.node_id(),
                 "parent_escalate_human",
                 verdict.as_str(),
                 serde_json::json!({ "reasons": render_reasons(&output.reasons) }),
@@ -3646,9 +3633,8 @@ async fn review_project_completion(
                 ctype: CommentType::Comment,
             })?;
             record_auto_decide(
-                store,
+                deps,
                 p.id,
-                deps.cluster.node_id(),
                 "project_defect_gate",
                 "escalate",
                 serde_json::json!({
@@ -4008,9 +3994,8 @@ fn apply_project_review_outcome(
             );
             for p in parents {
                 record_auto_decide(
-                    store,
+                    deps,
                     p.id,
-                    deps.cluster.node_id(),
                     "project_complete",
                     output.verdict.as_str(),
                     serde_json::json!({
@@ -4106,9 +4091,8 @@ fn apply_project_review_outcome(
             );
             for p in parents {
                 record_auto_decide(
-                    store,
+                    deps,
                     p.id,
-                    deps.cluster.node_id(),
                     "project_escalate_human",
                     verdict.as_str(),
                     serde_json::json!({
@@ -4552,13 +4536,16 @@ fn export_project_dossier(
         })
     };
     let out_root = deps.workspace.join("logs").join("dossiers");
-    nemesis_board::dossier::export_project(
+    let outcome = nemesis_board::dossier::export_project(
         deps.store.as_ref(),
         project_id,
         resolve_anchor_root(deps),
         &out_root,
         &usage_of,
-    )
+    )?;
+    // P4-d：自动导出凭证入交付账本（dossier 行，run_id=None 项目级）。
+    crate::review_ledger::dossier_delivery(deps.cluster.task_db().as_ref(), project_id, &outcome);
+    Ok(outcome)
 }
 
 /// dossier 失败留痕：档案 timeline 能写则写 + 顶层父单系统评论（同

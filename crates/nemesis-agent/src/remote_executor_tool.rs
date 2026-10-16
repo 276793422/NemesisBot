@@ -20,16 +20,14 @@
 //! See `docs/PLAN/2026-07-08_executor-separation.md` (Layer 1) and
 //! `docs/PLAN/2026-07-09_sandboxie-integration.md` (Layer 2).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tracing::debug;
 
 use crate::context::RequestContext;
 use crate::r#loop::{FileChange, Tool};
@@ -79,27 +77,10 @@ pub const MOVE_TOOLS: &[&str] = &[
 // Wire protocol — one JSON line per direction (newline-delimited)
 // ---------------------------------------------------------------------------
 
-/// Gateway → executor request. Mirrored on the child side by `exec_worker`.
-#[derive(Serialize)]
-struct ExecutorRequest<'a> {
-    tool: &'a str,
-    /// Raw tool-args JSON string — exactly what the LLM produced and what the
-    /// local `Tool::execute` expects as `args: &str`.
-    args: &'a str,
-    /// Serialized [`RequestContext`] (`async_callback` is dropped via
-    /// `#[serde(skip)]` on the field).
-    context: serde_json::Value,
-}
-
-/// Executor → gateway response.
-#[derive(Deserialize)]
-struct ExecutorResponse {
-    ok: bool,
-    #[serde(default)]
-    result: String,
-    #[serde(default)]
-    error: String,
-}
+// P3 T1：wire 结构收编到 [`crate::executor_transport`]（gateway / exec_worker
+// 两侧单一真相源；per-call 路径产出 v1 字节形态不变——`ExecutorRequestRef`
+// 空 `v`/`call_id` 跳序列化）。
+use crate::executor_transport::{ExecutorRequestRef, ExecutorResponseWire, StderrTail};
 
 // ---------------------------------------------------------------------------
 // ExecutorChannel — spawns a fresh child per call, one request → one response
@@ -425,7 +406,10 @@ impl ExecutorChannel {
     ) -> Result<String, String> {
         let context_value =
             serde_json::to_value(ctx).map_err(|e| format!("serialize context: {e}"))?;
-        let request = ExecutorRequest {
+        // per-call = v1 线形态（v/call_id 空值跳序列化，字节与历史一致）。
+        let request = ExecutorRequestRef {
+            v: 0,
+            call_id: "",
             tool,
             args,
             context: context_value,
@@ -437,7 +421,7 @@ impl ExecutorChannel {
     }
 
     fn parse_response(resp_line: &str) -> Result<String, String> {
-        let resp: ExecutorResponse =
+        let resp: ExecutorResponseWire =
             serde_json::from_str(resp_line).map_err(|e| format!("parse executor response: {e}"))?;
         if resp.ok {
             Ok(resp.result)
@@ -448,43 +432,11 @@ impl ExecutorChannel {
         }
     }
 
-    /// Drain child stderr in the background (prevents a ~4KB pipe block) and
-    /// retain the tail for failure diagnostics. 子进程静默死亡（panic/OOM/
-    /// 启动失败）时 stdout 直接 EOF，此前 stdio 路径的 no-response 错误不带
-    /// 任何 stderr 上下文，Linux CI 上无从定位——与 DACL 路径的 stderr_tail
-    /// 同款诊断面。返回的句柄只在失败臂消费；行仍照旧 debug! 全量落日志。
-    fn drain_stderr(
-        child: &mut tokio::process::Child,
-    ) -> std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>> {
-        let tail: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>> =
-            std::sync::Arc::default();
-        if let Some(stderr) = child.stderr.take() {
-            let tail = tail.clone();
-            tokio::spawn(async move {
-                let mut lines = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    debug!("[executor stderr] {line}");
-                    let mut buf = tail.lock().unwrap_or_else(|e| e.into_inner());
-                    if buf.len() >= 20 {
-                        buf.pop_front();
-                    }
-                    buf.push_back(line);
-                }
-            });
-        }
-        tail
-    }
-
-    /// 快照 stderr tail（单行拼接；空 = 子进程没写 stderr）。
-    fn stderr_snapshot(
-        tail: &std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
-    ) -> String {
-        let buf = tail.lock().unwrap_or_else(|e| e.into_inner());
-        if buf.is_empty() {
-            "<empty>".to_string()
-        } else {
-            buf.iter().cloned().collect::<Vec<_>>().join(" | ")
-        }
+    /// Drain child stderr in the background and retain the tail for failure
+    /// diagnostics. 实现收编到 [`StderrTail`]（P3 T1：per-call 与 persistent
+    /// 会话共用单一真相源）。
+    fn drain_stderr(child: &mut tokio::process::Child) -> StderrTail {
+        StderrTail::spawn(child.stderr.take())
     }
 
     /// stdio transport (sandbox=false, or non-Windows userland sandbox): write
@@ -542,7 +494,7 @@ impl ExecutorChannel {
                     "executor child exited without a response (tool={tool}, \
                      exit={:?}); stderr: {}",
                     status.map(|s| s.to_string()),
-                    Self::stderr_snapshot(&stderr_tail)
+                    stderr_tail.snapshot()
                 ));
             }
             Ok(Ok(Some(line))) => line,
@@ -691,6 +643,159 @@ impl ExecutorChannel {
 }
 
 // ---------------------------------------------------------------------------
+// P3 T3：persistent 子进程的 env 白名单 + home 重定向
+// ---------------------------------------------------------------------------
+
+/// persistent（常驻）执行体子进程的 env 白名单——常驻 spawn 走
+/// `Command::env_clear()` 后只回填本表内的宿主变量 + 显式注入项（workspace /
+/// home / agent id / browser profile 等），宿主凭据（`*_API_KEY` / `*_TOKEN`
+/// 及其余一切不在表内的变量）对常驻 agent 不可见。per-call 路径不消费本表
+/// （env_clear 是 persistent 专属形态，v1 线零变化）。
+///
+/// 白名单只收「OS 运行时基线」：shell / 编译器 / 解释器能启动的最低需求 +
+/// 本机身份定位符。刻意**不收**：
+/// - 凭据类（`*_API_KEY` / `*_TOKEN` / `*_SECRET`——白名单语义本身即闸：
+///   不在表内即剥，不依赖名字模式猜测）；
+/// - `NEMESISBOT_*`（workspace / home / role 等由 spawn 侧显式注入；宿主的
+///   `NEMESISBOT_HOME` 语义指向宿主工作区，对 agent home 是错的，必须剥）；
+/// - home 族（`USERPROFILE` / `HOME` / `APPDATA` / `LOCALAPPDATA` / `XDG_*`
+///   ——persistent 模式重定向到 agent home，见 [`home_redirect_env_pairs`]，
+///   不从宿主继承宿主值）。
+pub const EXECUTOR_ENV_ALLOWLIST: &[&str] = &[
+    // 可执行定位器
+    "PATH",
+    "PATHEXT",
+    // Windows 系统基线（工具链 / 子进程探测最低需求）
+    "SYSTEMROOT",
+    "SYSTEMDRIVE",
+    "WINDIR",
+    "COMSPEC",
+    "PROGRAMDATA",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "COMMONPROGRAMFILES",
+    "COMMONPROGRAMFILES(X86)",
+    "PROCESSOR_ARCHITECTURE",
+    "NUMBER_OF_PROCESSORS",
+    "OS",
+    // 本机身份定位符（主机名输出 / 工具链探测需要）
+    "USERNAME",
+    "USERDOMAIN",
+    "COMPUTERNAME",
+    // 临时目录（OS 惯例跨进程共享，非凭据面；持久模式不重定向）
+    "TEMP",
+    "TMP",
+    // Unix 基线
+    "LANG",
+    "LC_ALL",
+    "TERM",
+];
+
+/// 单个 env 键是否在白名单内。Windows env 名大小写不敏感（`Path`/`path`/
+/// `PathExt` 都是同一个变量），按忽略大小写匹配；非 Windows 精确匹配。
+pub fn env_allowlisted(key: &str) -> bool {
+    #[cfg(windows)]
+    {
+        EXECUTOR_ENV_ALLOWLIST
+            .iter()
+            .any(|a| a.eq_ignore_ascii_case(key))
+    }
+    #[cfg(not(windows))]
+    {
+        EXECUTOR_ENV_ALLOWLIST.contains(&key)
+    }
+}
+
+/// 从宿主 env 迭代里过白名单（persistent spawn 的 `env_clear()` 回填面）。
+/// 纯函数（消费任意迭代器）——测试无需进程级 env 竞态。
+pub fn filter_env_allowlist<I>(vars: I) -> Vec<(String, String)>
+where
+    I: IntoIterator<Item = (String, String)>,
+{
+    vars.into_iter()
+        .filter(|(k, _)| env_allowlisted(k))
+        .collect()
+}
+
+/// persistent 模式的 home 族重定向对：agent home 就是子进程的「家」——
+/// `HOME` / `USERPROFILE` 直指 agent home，应用配置/数据目录（APPDATA、
+/// XDG_*）落进 home 的常规子目录。浏览器身份（T6）由此天然隔离在 home 内。
+pub fn home_redirect_env_pairs(home: &Path) -> Vec<(String, String)> {
+    let home_str = home.to_string_lossy().into_owned();
+    let mut v = vec![("HOME".to_string(), home_str.clone())];
+    #[cfg(windows)]
+    {
+        let join = |rel: &str| home.join(rel).to_string_lossy().into_owned();
+        v.push(("USERPROFILE".to_string(), home_str));
+        v.push(("APPDATA".to_string(), join("AppData/Roaming")));
+        v.push(("LOCALAPPDATA".to_string(), join("AppData/Local")));
+    }
+    #[cfg(not(windows))]
+    {
+        let join = |rel: &str| home.join(rel).to_string_lossy().into_owned();
+        v.push(("XDG_CONFIG_HOME".to_string(), join(".config")));
+        v.push(("XDG_DATA_HOME".to_string(), join(".local/share")));
+        v.push(("XDG_CACHE_HOME".to_string(), join(".cache")));
+    }
+    v
+}
+
+// ---------------------------------------------------------------------------
+// Persistent route (P3 T7) — resident executor attachment point
+// ---------------------------------------------------------------------------
+
+/// 常驻执行体调用的分型错误（T7）。语义边界只有一条线：**调用有没有发生**。
+/// `Unavailable` = 调用未发生（实体未就绪 / 槽满 / spawn 失败在握手前），调用
+/// 方可安全回落 per-call 路径；`ToolFailed` = 调用已送达执行体（可能已有副
+/// 作用），回落会造成重复执行——必须原样上抛。这是 supervisor 侧
+/// `SupervisorError` 的 agent crate 侧镜像（nemesis-agent 不依赖 nemesisbot，
+/// 依赖倒置：trait 定义在本 crate，bot 侧实现）。
+#[derive(Debug, Clone)]
+pub enum PersistentCallError {
+    /// 调用未发生——可安全回落 per-call 执行路径。
+    Unavailable(String),
+    /// 调用已尝试（可能已有副作用）——绝不回落，原样上抛。
+    ToolFailed(String),
+}
+
+impl std::fmt::Display for PersistentCallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unavailable(m) => write!(f, "persistent executor unavailable: {m}"),
+            Self::ToolFailed(m) => write!(f, "persistent executor call failed: {m}"),
+        }
+    }
+}
+
+/// 常驻执行体的抽象（T7 依赖倒置）。生产实现 = nemesisbot 侧
+/// `AgentRuntimeSupervisor`（按 agent_id 复用常驻子进程 + journal 语义）。
+#[async_trait]
+pub trait PersistentExecutor: Send + Sync {
+    /// 在 `agent_id` 的常驻执行体内执行一次工具调用。`exec_root` 是本次
+    /// 调用的工作区锚（main=workspace / project=项目目录 / selfbuilt=home，
+    /// 来自 agents 表记录——单一真相源），监督器 spawn 时写进子进程 env。
+    async fn execute_persistent(
+        &self,
+        agent_id: &str,
+        exec_root: &std::path::Path,
+        tool: &str,
+        args: &str,
+        context: &RequestContext,
+    ) -> Result<String, PersistentCallError>;
+}
+
+/// 挂在 [`RemoteExecutorTool`] 上的常驻路由（T7）：agent 身份惰性解析 +
+/// 常驻执行体句柄。`resolve` 在**每次工具调用时**执行（loop 建成早于实体
+/// seed——首次 boot 时装配完成时 agents 表还没种，静态绑定必空）；返回
+/// `None` = 实体未就绪，调用方回落 per-call 路径。
+#[derive(Clone)]
+pub struct PersistentRoute {
+    /// 返回 `(agent_id, exec_root)`；None = 实体未就绪 → per-call 回落。
+    pub resolve: std::sync::Arc<dyn Fn() -> Option<(String, std::path::PathBuf)> + Send + Sync>,
+    pub executor: std::sync::Arc<dyn PersistentExecutor>,
+}
+
+// ---------------------------------------------------------------------------
 // RemoteExecutorTool — the Tool the agent loop sees
 // ---------------------------------------------------------------------------
 
@@ -698,10 +803,15 @@ impl ExecutorChannel {
 /// proxied to an executor child. Metadata + `preview` delegate to the wrapped
 /// local impl, so the LLM sees identical schemas and the checkpoint safety net
 /// still snapshots file writes.
+///
+/// P3 T7：`persistent` 有值时 execute 先询问常驻路由（身份解析成功 → 常驻
+/// 执行体；`Unavailable` → 回落本通道 per-call 链；`ToolFailed` → 原样上抛
+/// 不回落）。per-call 路径行为与 T7 前逐字节一致（回落即兼容）。
 pub struct RemoteExecutorTool {
     name: String,
     local: Box<dyn Tool>,
     channel: std::sync::Arc<ExecutorChannel>,
+    persistent: Option<PersistentRoute>,
 }
 
 impl RemoteExecutorTool {
@@ -714,13 +824,49 @@ impl RemoteExecutorTool {
             name,
             local,
             channel,
+            persistent: None,
         }
+    }
+
+    /// P3 T7：挂常驻路由（gateway 装配期调用；不挂 = 纯 per-call，行为与
+    /// 既有 Layer 1/2 一致）。
+    pub fn with_persistent(mut self, route: PersistentRoute) -> Self {
+        self.persistent = Some(route);
+        self
     }
 }
 
 #[async_trait]
 impl Tool for RemoteExecutorTool {
     async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
+        // T7 常驻路由前置询问：身份解析成功 → 常驻执行体优先。安全 8 层 /
+        // estop / plan 模式闸全部在 loop dispatch 层先于本函数执行（构造性
+        // 覆盖），常驻调用不构成旁路。
+        if let Some(route) = &self.persistent
+            && let Some((agent_id, exec_root)) = (route.resolve)()
+        {
+            match route
+                .executor
+                .execute_persistent(&agent_id, &exec_root, &self.name, args, context)
+                .await
+            {
+                Ok(out) => return Ok(out),
+                Err(PersistentCallError::ToolFailed(e)) => {
+                    // 调用已发生（可能已有副作用）——回落会重复执行，原样上抛。
+                    return Err(e);
+                }
+                Err(PersistentCallError::Unavailable(e)) => {
+                    // 调用未发生——诚实降级到 per-call 路径（兼容回退是 PLAN
+                    // P3 验收门明文；info 留痕不 warn——回落是设计内形态）。
+                    tracing::info!(
+                        tool = %self.name,
+                        agent_id = %agent_id,
+                        reason = %e,
+                        "persistent executor unavailable; falling back to per-call"
+                    );
+                }
+            }
+        }
         self.channel
             .spawn_and_call(&self.name, args, context)
             .await

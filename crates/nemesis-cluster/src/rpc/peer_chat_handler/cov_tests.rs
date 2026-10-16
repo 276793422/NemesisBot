@@ -59,6 +59,7 @@ async fn send_callback_usage_field_and_retry_exhaustion() {
         "",
         Some(serde_json::json!({"input": 1, "output": 2})),
         None,
+        None,
     )
     .await;
 

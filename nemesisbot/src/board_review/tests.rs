@@ -190,6 +190,7 @@ fn settle_deps_with_store(
             tags: Vec::new(),
             professions: Vec::new(),
             tier: None,
+            agents: Vec::new(),
             node_type: "agent".to_string(),
         });
     }
@@ -239,6 +240,8 @@ fn settle_deps_with_store(
         estop: Arc::new(nemesis_agent::estop::EstopState::new()),
         estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
         selfcheck: SelfcheckRegistry::new(),
+        #[cfg(feature = "security")]
+        security_slot: None,
     };
     (deps, parent, sub1, sub2)
 }
@@ -353,6 +356,8 @@ fn review_deps_ex(name: &str, seed_worker_nodes: bool) -> (BoardReviewDeps, std:
             estop: Arc::new(nemesis_agent::estop::EstopState::new()),
             estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
             selfcheck: SelfcheckRegistry::new(),
+            #[cfg(feature = "security")]
+            security_slot: None,
         };
         return (deps, workspace);
     }
@@ -372,6 +377,7 @@ fn review_deps_ex(name: &str, seed_worker_nodes: bool) -> (BoardReviewDeps, std:
             tags: Vec::new(),
             professions: Vec::new(),
             tier: None,
+            agents: Vec::new(),
             node_type: "agent".to_string(),
         });
     }
@@ -385,6 +391,8 @@ fn review_deps_ex(name: &str, seed_worker_nodes: bool) -> (BoardReviewDeps, std:
         estop: Arc::new(nemesis_agent::estop::EstopState::new()),
         estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
         selfcheck: SelfcheckRegistry::new(),
+        #[cfg(feature = "security")]
+        security_slot: None,
     };
     (deps, workspace)
 }
@@ -1922,11 +1930,9 @@ fn join_project_ac_empty_project_ac_skipped() {
 #[test]
 fn record_auto_decide_writes_action_word_and_details_shape() {
     use nemesis_board::NewIssue;
-    let dir =
-        std::env::temp_dir().join(format!("nemesis-board-review-audit-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let store = nemesis_board::BoardStore::open(&dir.join("board.db"), "NB").expect("open store");
-    let issue = store
+    let (deps, _ws) = review_deps("audit-word");
+    let issue = deps
+        .store
         .create_issue(NewIssue {
             title: "词表断言".into(),
             ..Default::default()
@@ -1934,38 +1940,30 @@ fn record_auto_decide_writes_action_word_and_details_shape() {
         .unwrap();
 
     record_auto_decide(
-        &store,
+        &deps,
         issue.id,
-        "node-review",
         "auto_accept",
         "PASS",
         serde_json::json!({ "gap": "", "note": "锚点全过" }),
     );
     // 失败静默（warn）不炸验收：不存在的 issue_id 不 panic。
-    record_auto_decide(
-        &store,
-        999_999,
-        "node-review",
-        "redispatch",
-        "FAIL",
-        serde_json::json!({}),
-    );
+    record_auto_decide(&deps, 999_999, "redispatch", "FAIL", serde_json::json!({}));
 
-    let rows = store
+    let rows = deps
+        .store
         .list_recent_activity(500, Some("auto_decide"))
         .unwrap();
     assert_eq!(rows.len(), 1, "失败调用不落行");
     let row = &rows[0];
     assert_eq!(row.activity.action, "auto_decide");
     assert_eq!(row.activity.actor.kind, "agent");
-    assert_eq!(row.activity.actor.id, "node-review");
+    assert_eq!(row.activity.actor.id, "node-a");
     let details: serde_json::Value =
         serde_json::from_str(row.activity.details.as_deref().unwrap()).unwrap();
     assert_eq!(details["decision"], "auto_accept");
     assert_eq!(details["verdict"], "PASS");
     assert_eq!(details["note"], "锚点全过");
     assert!(details.get("gap").is_some(), "extra 键合并进 details");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---------- E1 二期：token 预算维度（board.budget.max_tokens_per_parent）----------
@@ -3182,6 +3180,8 @@ async fn summary_generation_failure_leaves_trace_and_keeps_completed() {
         estop: Arc::new(nemesis_agent::estop::EstopState::new()),
         estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
         selfcheck: SelfcheckRegistry::new(),
+        #[cfg(feature = "security")]
+        security_slot: None,
     };
 
     let err = super::run_project_summary(&deps, project.id)
@@ -3602,17 +3602,10 @@ fn discipline_evidence_renders_declaration_and_falsification_from_commit() {
 fn stale_review_guard_passes_in_review_and_discards_after_manual_move() {
     let (deps, _ws) = review_deps("s-o2-guard");
     let issue = issue_in_review(&deps.store, "守卫单测", "", "交付内容");
-    let node = deps.cluster.node_id();
 
     // 单据仍在 in_review → 结论有效。
     assert!(
-        super::review_still_relevant(
-            &deps.store,
-            issue.id,
-            node,
-            ReviewVerdict::Pass.as_str(),
-            "子单验收"
-        ),
+        super::review_still_relevant(&deps, issue.id, ReviewVerdict::Pass.as_str(), "子单验收"),
         "in_review 单据的评审结论应放行"
     );
 
@@ -3625,13 +3618,7 @@ fn stale_review_guard_passes_in_review_and_discards_after_manual_move() {
         .transition_issue(issue.id, IssueStatus::Backlog, &reviewer)
         .unwrap();
     assert!(
-        !super::review_still_relevant(
-            &deps.store,
-            issue.id,
-            node,
-            ReviewVerdict::Pass.as_str(),
-            "子单验收"
-        ),
+        !super::review_still_relevant(&deps, issue.id, ReviewVerdict::Pass.as_str(), "子单验收"),
         "非 in_review 单据的迟到结论必须丢弃"
     );
     // 状态未被守卫副作用改动。
@@ -5481,9 +5468,8 @@ async fn replay_stuck_reviews_skips_concluded_and_undelivered() {
     // 已有结论的叶子：sticky 不重放。
     let concluded = delivered_issue(&deps.store, "已有结论叶子", "t-replay-done");
     record_auto_decide(
-        &deps.store,
+        &deps,
         concluded.id,
-        "node-a",
         "suggest_manual",
         "PASS",
         serde_json::json!({ "reasons": "历史结论" }),
@@ -6277,6 +6263,8 @@ mod w5r2parent {
             estop: Arc::new(nemesis_agent::estop::EstopState::new()),
             estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
             selfcheck: SelfcheckRegistry::new(),
+            #[cfg(feature = "security")]
+            security_slot: None,
         };
         (deps, workspace)
     }
@@ -6701,6 +6689,8 @@ mod w5r2parent {
             estop: Arc::new(nemesis_agent::estop::EstopState::new()),
             estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
             selfcheck: SelfcheckRegistry::new(),
+            #[cfg(feature = "security")]
+            security_slot: None,
         };
         attach_loop(
             &deps2,

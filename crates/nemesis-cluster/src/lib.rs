@@ -23,6 +23,7 @@ pub mod registry;
 pub mod rpc_types;
 pub mod task_manager;
 pub mod task_result_store;
+mod task_store_sqlite;
 pub mod transfer;
 pub mod types;
 
