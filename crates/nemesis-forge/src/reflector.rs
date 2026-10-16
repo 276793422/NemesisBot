@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use chrono::TimeZone as _;
 use uuid::Uuid;
 
 use nemesis_types::forge::Reflection;
@@ -650,13 +651,27 @@ impl Reflector {
     ///
     /// Supported values: "today", "week", "all" (default: "today").
     /// Returns `None` for "all" (meaning no time filter).
+    ///
+    /// 2026-10-16 R18：`today` 分支此前把 naive 本地午夜 `.and_utc()` 误贴
+    /// UTC 偏移（东八区 = 实际截到昨天 16:00），与 filter_by_period 的字符
+    /// 串序比较凑成「双重 bug 相消」才表现为正确（本地日期段 >= 今天）。
+    /// 两侧同时修正：截止点带真实本地偏移，比较走时刻解析（与
+    /// trace_store::read_since 同一形态），未来任何一侧单独变动不再静默
+    /// 破坏语义。
     pub fn resolve_period(period: &str) -> Option<String> {
-        match period {
-            "today" => {
-                let now = chrono::Local::now();
-                let start_of_day = now.date_naive().and_hms_opt(0, 0, 0).unwrap_or_default();
-                Some(start_of_day.and_utc().to_rfc3339())
+        let local_midnight_rfc3339 = || {
+            let now = chrono::Local::now();
+            let naive = now.date_naive().and_hms_opt(0, 0, 0).unwrap_or_default();
+            match chrono::Local.from_local_datetime(&naive) {
+                chrono::LocalResult::Single(dt) => dt.to_rfc3339(),
+                // DST 春跳等本地午夜不存在的罕见时区：取最早可行时刻兜底，
+                // 再不行退回旧 UTC 形态（宁可用旧语义也不 panic）。
+                chrono::LocalResult::Ambiguous(dt, _) => dt.to_rfc3339(),
+                chrono::LocalResult::None => naive.and_utc().to_rfc3339(),
             }
+        };
+        match period {
+            "today" => Some(local_midnight_rfc3339()),
             "week" => {
                 let cutoff = chrono::Local::now() - chrono::Duration::days(7);
                 Some(cutoff.to_rfc3339())
@@ -664,9 +679,7 @@ impl Reflector {
             "all" => None,
             _ => {
                 // Default: today
-                let now = chrono::Local::now();
-                let start_of_day = now.date_naive().and_hms_opt(0, 0, 0).unwrap_or_default();
-                Some(start_of_day.and_utc().to_rfc3339())
+                Some(local_midnight_rfc3339())
             }
         }
     }
@@ -674,6 +687,11 @@ impl Reflector {
     /// Filter experiences by period string.
     ///
     /// Returns only experiences whose timestamp is after the resolved cutoff.
+    ///
+    /// 2026-10-16 R18：比较从 RFC3339 字符串序改为时刻解析（不同偏移的
+    /// 字符串序与时刻序不一致，`+00:00` 截止点配 `+08:00` 时间戳此前靠
+    /// 双重 bug 相消才正确；解析失败 = 不入本期视图，与
+    /// trace_store::read_since 同一纪律）。
     pub fn filter_by_period<'a>(
         &self,
         experiences: &'a [CollectedExperience],
@@ -682,10 +700,20 @@ impl Reflector {
         let cutoff = Self::resolve_period(period);
         match cutoff {
             None => experiences.iter().collect(),
-            Some(cutoff_str) => experiences
-                .iter()
-                .filter(|ce| ce.experience.timestamp >= cutoff_str)
-                .collect(),
+            Some(cutoff_str) => {
+                let cutoff_dt = chrono::DateTime::parse_from_rfc3339(&cutoff_str)
+                    .map(|dt| dt.with_timezone(&chrono::Local));
+                experiences
+                    .iter()
+                    .filter(|ce| {
+                        chrono::DateTime::parse_from_rfc3339(&ce.experience.timestamp)
+                            .map(|dt| {
+                                cutoff_dt.is_ok_and(|c| dt.with_timezone(&chrono::Local) >= c)
+                            })
+                            .unwrap_or(false)
+                    })
+                    .collect()
+            }
         }
     }
 

@@ -4380,6 +4380,7 @@ dependencies = [
  "dashmap",
  "filetime",
  "mockall",
+ "nemesis-config",
  "nemesis-path",
  "nemesis-plugin",
  "nemesis-prompts",

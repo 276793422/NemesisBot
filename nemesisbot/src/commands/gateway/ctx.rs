@@ -941,13 +941,11 @@ impl GatewayCtx {
 
             // F-D3: reload Forge's manual-create registry so prior artifacts survive restart.
             let _ = forge.registry().load().await;
-            // F-C1: inject skill_creator into the learning engine (needs Arc<Forge>,
-            // which implements SkillCreator). pipeline+monitor were injected in
-            // init_learning; this completes the Phase 6 wiring.
-            if let Some(le) = forge.learning_engine() {
-                le.set_skill_creator(forge.clone());
-                info!("[Gateway] Forge learning engine wired: skill_creator injected");
-            }
+            // 2026-10-16 复查（LE3）：原 skill_creator 注入已随死接线删除——
+            // `set_skill_creator` 有注入无读取（write-only）。生产技能创建
+            // 走 run_cycle → execute_create_skill（pipeline 臂直写
+            // forge/skills + registry）；agent 工具面 forge_create →
+            // Forge::create_skill。pipeline+monitor 仍在 init_learning 注入。
 
             // LearningEngine dependency injection is now handled by the factory function.
 

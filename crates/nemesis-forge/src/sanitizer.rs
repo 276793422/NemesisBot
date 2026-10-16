@@ -7,7 +7,41 @@
 //! `[HOME]`/`[WORKSPACE]`) and public IP address replacement (replacing
 //! non-private IPs with `[IP]`).
 
+use std::sync::LazyLock;
+
 use regex::Regex;
+
+// 编译期静态正则（2026-10-16 R18）：Sanitizer 此前在 new()/clean_paths()/
+// clean_public_ips() 里各处现场 Regex::new——collector 每条经验构造一个
+// Sanitizer，反思循环里 sanitize 逐条调用，10 个正则每次全量重编译。
+// 正则全部是字面量常量，提为 LazyLock 单次编译全局复用。
+static RE_API_KEY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)(api[_-]?key|apikey|bearer|token|secret|authorization)\s*[:=]\s*['"]?[A-Za-z0-9_.\-]{20,}['"]?"#)
+        .expect("invalid api key regex")
+});
+static RE_AWS_KEY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"AKIA[0-9A-Z]{16}").expect("invalid aws key regex"));
+static RE_HEX_SECRET: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\b[0-9a-f]{32,}\b").expect("invalid hex secret regex"));
+static RE_WIN_PATH: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)[A-Z]:\\[^\s"')\]]+"#).expect("invalid windows path regex"));
+static RE_UNIX_PATH: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?:/home/|/etc/|/var/|/tmp/|/root/)[^\s"')\]]+"#)
+        .expect("invalid unix path regex")
+});
+static RE_EMAIL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b").expect("invalid email regex")
+});
+static RE_WIN_USER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)[A-Za-z]:\\Users\\[^\\]+\\").expect("invalid win user regex")
+});
+static RE_UNIX_HOME: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"/home/[^/]+/").expect("invalid unix home regex"));
+static RE_WIN_GENERAL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[A-Za-z]:\\").expect("invalid win general regex"));
+static RE_IP: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b").expect("invalid ip regex")
+});
 
 /// The sanitizer scrubs sensitive information from strings.
 pub struct Sanitizer {
@@ -29,38 +63,32 @@ impl Sanitizer {
         let patterns = vec![
             // API keys: various formats (AWS, generic Bearer tokens, etc.)
             SanitizerPattern {
-                regex: Regex::new(r#"(?i)(api[_-]?key|apikey|bearer|token|secret|authorization)\s*[:=]\s*['"]?[A-Za-z0-9_.\-]{20,}['"]?"#)
-                    .expect("invalid api key regex"),
+                regex: RE_API_KEY.clone(),
                 label: "api_key",
             },
             // AWS-style keys
             SanitizerPattern {
-                regex: Regex::new(r"AKIA[0-9A-Z]{16}")
-                    .expect("invalid aws key regex"),
+                regex: RE_AWS_KEY.clone(),
                 label: "aws_key",
             },
             // Generic hex secrets (32+ hex chars)
             SanitizerPattern {
-                regex: Regex::new(r"(?i)\b[0-9a-f]{32,}\b")
-                    .expect("invalid hex secret regex"),
+                regex: RE_HEX_SECRET.clone(),
                 label: "hex_secret",
             },
             // Windows file paths (C:\Users\... etc.)
             SanitizerPattern {
-                regex: Regex::new(r#"(?i)[A-Z]:\\[^\s"')\]]+"#)
-                    .expect("invalid windows path regex"),
+                regex: RE_WIN_PATH.clone(),
                 label: "file_path",
             },
             // Unix file paths (/home/..., /etc/..., /var/...)
             SanitizerPattern {
-                regex: Regex::new(r#"(?:/home/|/etc/|/var/|/tmp/|/root/)[^\s"')\]]+"#)
-                    .expect("invalid unix path regex"),
+                regex: RE_UNIX_PATH.clone(),
                 label: "file_path",
             },
             // Email addresses
             SanitizerPattern {
-                regex: Regex::new(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
-                    .expect("invalid email regex"),
+                regex: RE_EMAIL.clone(),
                 label: "email",
             },
         ];
@@ -162,17 +190,13 @@ impl Sanitizer {
         }
 
         // Windows user paths: C:\Users\username\... -> ~/...
-        let win_user_re =
-            Regex::new(r"(?i)[A-Za-z]:\\Users\\[^\\]+\\").expect("invalid win user regex");
-        result = win_user_re.replace_all(&result, "~/").to_string();
+        result = RE_WIN_USER.replace_all(&result, "~/").to_string();
 
         // Unix user paths: /home/username/... -> ~/...
-        let unix_home_re = Regex::new(r"/home/[^/]+/").expect("invalid unix home regex");
-        result = unix_home_re.replace_all(&result, "~/").to_string();
+        result = RE_UNIX_HOME.replace_all(&result, "~/").to_string();
 
         // General Windows absolute paths (non-Users): C:\ -> /
-        let win_general_re = Regex::new(r"[A-Za-z]:\\").expect("invalid win general regex");
-        result = win_general_re.replace_all(&result, "/").to_string();
+        result = RE_WIN_GENERAL.replace_all(&result, "/").to_string();
 
         result
     }
@@ -182,9 +206,7 @@ impl Sanitizer {
     /// Private/internal IPs (10.x, 172.16-31.x, 192.168.x, 127.x) are preserved.
     /// This follows Go's `cleanPublicIPs` logic.
     pub fn clean_public_ips(&self, content: &str) -> String {
-        let ip_re =
-            Regex::new(r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b").expect("invalid ip regex");
-        ip_re
+        RE_IP
             .replace_all(content, |caps: &regex::Captures| {
                 let ip = &caps[1];
                 if is_private_ip(ip) {
