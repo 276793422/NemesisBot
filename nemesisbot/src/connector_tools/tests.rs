@@ -1854,6 +1854,66 @@ async fn test_remote_invoke_missing_outcome_retains_budget() {
     assert!((qty - 1.0).abs() < 1e-9, "资金类数量保留，实际 {qty}");
 }
 
+/// 对端 dispatch 层拒绝（estop 冻结族，T-CONN-1 ② 单测形态，2026-10-16
+/// ET 根修）：worker 从未执行、凭条从未落账（receipt=null 诚实不造假），
+/// result_text 带 ⛔ 前缀 = 确定性「未执行」——镜像 outcome=error（决策
+/// 表 release 回吐预算），summary 带 `· ?]` 署名特征 + 拒因入账。与上一
+/// 测试构成对照：缺 outcome 且无 ⛔ 标记 = unknown 保留，⛔ 标记 = error
+/// 回吐。
+#[tokio::test]
+async fn test_remote_invoke_estop_refusal_no_receipt_maps_to_error() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(ws, "paper-broker", MIXED_MANIFEST);
+    let config = ws.join("config.json");
+    write_finance_config(&config);
+    let tool = invoke_tool(ws, &config);
+
+    tool.set_remote_call_fn(mock_remote_fn(
+        Arc::new(std::sync::Mutex::new(Vec::new())),
+        |_peer, _action, _payload| {
+            // 急停期对端真实回包形态（gateway runtime.rs worker handler）：
+            // 工具在 dispatch 层被拒（⛔ 前缀），凭条面无账（receipt=null）。
+            Ok(serde_json::json!({
+                "receipt": serde_json::Value::Null,
+                "result_text": "⛔ ESTOP: 已急停，工具调用已拒绝",
+            }))
+        },
+    ));
+
+    let err = tool
+        .execute(
+            r#"{"connector":"paper-broker","op":"positions","target_node":"node-b"}"#,
+            &ctx(),
+        )
+        .await
+        .expect_err("对端明确拒绝 = 诚实失败回模型");
+    assert!(err.contains("ESTOP"), "refusal text passthrough: {err}");
+
+    let receipts = list_receipts(ws, 50, None).expect("receipts");
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0].outcome, "error");
+    assert!(
+        receipts[0].summary.contains("· ?]"),
+        "summary 无凭条署名特征: {}",
+        receipts[0].summary
+    );
+    assert!(
+        receipts[0].summary.contains("ESTOP"),
+        "拒因入账（审计自解释）: {}",
+        receipts[0].summary
+    );
+    assert!(receipts[0].budget_consumed.is_none(), "error 不记额度");
+
+    // 预算回吐：error = 对端确认未执行（R3），rate_used 归 0。
+    assert_eq!(
+        tool.budget
+            .rate_used("paper-broker", chrono::Utc::now().timestamp_millis()),
+        0,
+        "⛔ 拒绝 = 确定未执行，必须回吐（保留 = unknown 语义串臂）"
+    );
+}
+
 /// F1（2026-10-16 二轮复查）回归：连接建立失败（connection refused）=
 /// 请求**未发出** = 确定性未生效 → `is_connect()` 臂保持 Err → 决策表
 /// Err 臂 release 回吐额度（rate_used 归 0）+ error 凭条。与上一测试
