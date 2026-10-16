@@ -620,9 +620,9 @@ async fn main() -> Result<()> {
                 }
             ],
             "channels": {
-                "web": {"enabled": true, "host": "127.0.0.1", "port": 37300, "auth_token": "276793422"},
+                "web": {"enabled": true, "host": "127.0.0.1", "port": WEB_PORT, "auth_token": "276793422"},
                 // Standalone websocket channel stays OFF: runtime tests all go
-                // through the web channel's /ws (port 37300, same token). With
+                // through the web channel's /ws (WEB_PORT, same token). With
                 // `enabled: true` and no host/token here, the channel bound
                 // 0.0.0.0:49001 with NO auth on every run — SEC-001 now
                 // honestly refuses that boot (loopback + real-token or off).
@@ -766,13 +766,38 @@ async fn main() -> Result<()> {
         ws.path(),
     )?;
 
+    // spawn 后秒死检测（对齐上方 AI Server 先例）：bind 失败立即退场的
+    // gateway 不再等 health 超时 15s 才发现。
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    if !gateway.is_running().await {
+        gateway.kill().await;
+        ai_server.kill().await;
+        bail!(
+            "Gateway process exited immediately (web port {} may be in use)",
+            WEB_PORT
+        );
+    }
+
     match wait_for_http(
         &format!("http://127.0.0.1:{}/health", HEALTH_PORT),
         Duration::from_secs(15),
     )
     .await
     {
-        Ok(_) => println!("  Gateway ready on health port {}", HEALTH_PORT),
+        Ok(_) => {
+            // Post-bind 身份核验（2026-10-16 撞口实录）：precheck 之后、bind
+            // 之前的秒级窗口可能被其他套件的节点抢跑 web 端口——health 200
+            // 来自自家 gateway，但 web 面已是别人的。核对 LISTEN 持有者 PID。
+            if let Err(msg) = verify_gateway_web_identity(WEB_PORT, gateway.id()) {
+                ai_server.kill().await;
+                gateway.kill().await;
+                bail!("Gateway identity check failed: {msg}");
+            }
+            println!(
+                "  Gateway ready on health port {} (web {} LISTEN identity verified)",
+                HEALTH_PORT, WEB_PORT
+            );
+        }
         Err(e) => {
             ai_server.kill().await;
             gateway.kill().await;

@@ -503,12 +503,20 @@ async fn execute_new_task(
             &format!("child={}", child_task_id),
         );
 
-        task_list.save_async_state(
+        // NB-CODE-008：磁盘恢复面静默失效必须可观测——内存态已就绪、任务继续
+        // 异步挂起，但崩溃后该任务无法恢复。
+        if let Err(e) = task_list.save_async_state(
             &task.task_id,
             child_task_id,
             tool_call_id,
             conversation_json,
-        );
+        ) {
+            tracing::error!(
+                task_id = %task.task_id,
+                error = %e,
+                "[ClusterAgent] save_async_state disk persist failed — task continues in memory but will be lost on restart"
+            );
+        }
         return Ok(());
     }
 
@@ -689,12 +697,18 @@ async fn resume_task(
             &format!("child={}", child_task_id),
         );
 
-        task_list.save_async_state(
+        if let Err(e) = task_list.save_async_state(
             &task.task_id,
             child_task_id,
             new_tool_call_id,
             conversation_json,
-        );
+        ) {
+            tracing::error!(
+                task_id = %task.task_id,
+                error = %e,
+                "[ClusterAgent] save_async_state disk persist failed (resumed task) — task continues in memory but will be lost on restart"
+            );
+        }
         return Ok(());
     }
 

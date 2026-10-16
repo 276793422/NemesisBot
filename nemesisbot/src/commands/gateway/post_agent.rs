@@ -949,6 +949,7 @@ pub(crate) async fn init_post_agent(
         // "trigger type X has no runtime driver" no longer applies as of P3.
         let msg_engine = workflow_engine.clone();
         let mut inbound_rx_for_wf = bus.subscribe_inbound();
+        let bus_for_wf_lag = std::sync::Arc::clone(&bus);
         let _inbound_wf_handle = tokio::spawn(async move {
             loop {
                 match inbound_rx_for_wf.recv().await {
@@ -1007,6 +1008,8 @@ pub(crate) async fn init_post_agent(
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        // P2-1：接收侧真实丢失计入 bus 指标。
+                        bus_for_wf_lag.record_inbound_lagged(n);
                         warn!(
                             n,
                             "[Workflow] message-trigger subscriber lagged (some triggerable messages dropped)"

@@ -529,3 +529,160 @@ describe('P8：SSE chat.activity 落后端防抖全量刷新', () => {
     w.unmount()
   })
 })
+
+// ---------------------------------------------------------------------------
+// chat.activity 冷却/流式/重试状态机（2026-10-16 回检补口回归钉）：观察期
+// e2e disconnect-recovery Test A 对时序概率敏感（多端写入须恰落 5s 冷却窗
+// 内），以下四则用 fake timers 确定性钉死三支路——①冷却窗内信号保留
+// pending 到期补跑（旧代码窗内丢弃=永不补拉）；②流式窗口有界自重试、流式
+// 结束后第一个 tick 补拉（旧代码裸 return=永不补拉）；③重试预算随新信号
+// 重置（防上一次事件耗尽预算后链永久死亡）；④会话切换清理残留（lag 游标/
+// 重试链/在途 timer 不带进新会话）。
+describe('chat.activity 冷却/流式/重试状态机（2026-10-16 回检补口）', () => {
+  function fireActivity(payload: any) {
+    for (const h of sseHandlers()['chat.activity'] ?? []) h(payload)
+  }
+
+  /** sync 响应可控的 requestMock：返回当前 sync 调用次数。 */
+  function syncMock() {
+    let syncN = 0
+    requestMock.mockImplementation((_mod: string, cmd: string) => {
+      if (cmd === 'inbox_status') return Promise.resolve({ available: true, busy: true })
+      if (cmd === 'sync') {
+        syncN += 1
+        return Promise.resolve({})
+      }
+      return Promise.resolve({})
+    })
+    return () => syncN
+  }
+
+  function primeHistory() {
+    feedHistory(lastRequestId(), [
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: 'a' },
+    ])
+    return flushPromises()
+  }
+
+  it('①冷却窗内信号保留 pending → 冷却到期补跑（旧代码窗内丢弃=永不补拉）', async () => {
+    prepareSession()
+    const getSyncN = syncMock()
+    vi.useFakeTimers()
+    const w = mount(ChatPanel)
+    await flushPromises()
+    await primeHistory()
+    expect(getSyncN()).toBe(1) // mount 基线 sync
+
+    // 第一次落后信号 → 800ms 防抖到期 → 不在冷却窗（上次刷新=0）→ sync#2。
+    fireActivity({ session_id: 's1', seq: 42, kind: 'chat' })
+    await vi.advanceTimersByTimeAsync(900)
+    await flushPromises()
+    expect(getSyncN()).toBe(2)
+
+    // 第二次信号落 5s 冷却窗内：旧代码直接丢弃；修复后保留 pending，
+    // 冷却到期补跑 sync#3。
+    fireActivity({ session_id: 's1', seq: 43, kind: 'chat' })
+    await vi.advanceTimersByTimeAsync(1000) // 防抖到期 → 命中冷却窗
+    await flushPromises()
+    expect(getSyncN()).toBe(2)
+    await vi.advanceTimersByTimeAsync(4500) // 冷却到期 → 补跑
+    await flushPromises()
+    expect(getSyncN()).toBe(3)
+    w.unmount()
+  })
+
+  it('②流式窗口内信号有界自重试 → 流式结束后的第一个 tick 补拉（旧代码裸 return=永不补拉）', async () => {
+    prepareSession()
+    const { useChatStore } = await import('../../stores/chat')
+    const getSyncN = syncMock()
+    vi.useFakeTimers()
+    const w = mount(ChatPanel)
+    await flushPromises()
+    await primeHistory()
+
+    // 本端发送中（流式态）：信号到达 → 防抖后进入流式分支自重试，不 sync。
+    useChatStore().setBusy('s1', true)
+    fireActivity({ session_id: 's1', seq: 42, kind: 'chat' })
+    await vi.advanceTimersByTimeAsync(800)
+    await flushPromises()
+    expect(getSyncN()).toBe(1)
+    await vi.advanceTimersByTimeAsync(3000) // 若干重试 tick，仍 busy
+    expect(getSyncN()).toBe(1)
+
+    // 流式结束：无需新信号，下一个重试 tick 补拉（旧代码此处置裸 return）。
+    useChatStore().setBusy('s1', false)
+    await vi.advanceTimersByTimeAsync(1600)
+    await flushPromises()
+    expect(getSyncN()).toBe(2)
+    w.unmount()
+  })
+
+  it('③重试预算耗尽链死亡后，新信号重置预算复活（防链永久死亡）', async () => {
+    prepareSession()
+    const { useChatStore } = await import('../../stores/chat')
+    const getSyncN = syncMock()
+    vi.useFakeTimers()
+    const w = mount(ChatPanel)
+    await flushPromises()
+    await primeHistory()
+
+    // 烧完 20 次重试预算（防抖 800ms + 20×1.5s）→ 链死亡，不再调度。
+    useChatStore().setBusy('s1', true)
+    fireActivity({ session_id: 's1', seq: 42, kind: 'chat' })
+    await vi.advanceTimersByTimeAsync(800 + 20 * 1500 + 500)
+    await flushPromises()
+    expect(getSyncN()).toBe(1)
+    await vi.advanceTimersByTimeAsync(10_000) // 死亡链无 timer，确认不再动
+    expect(getSyncN()).toBe(1)
+
+    // 新信号 = 新预算（重置重试计数）：复活并最终补拉。若缺重置，
+    // 预算残留 20 → 流式分支 <20 判false 裸 return → busy 释放后无链可补。
+    fireActivity({ session_id: 's1', seq: 43, kind: 'chat' })
+    await vi.advanceTimersByTimeAsync(800) // 防抖 → 流式分支重新武装
+    useChatStore().setBusy('s1', false)
+    await vi.advanceTimersByTimeAsync(1600)
+    await flushPromises()
+    expect(getSyncN()).toBe(2)
+    w.unmount()
+  })
+
+  it('④会话切换清理 activity 残留：挂着的重试链不带到新会话空转', async () => {
+    const sessionStore = useSessionStore()
+    sessionStore.sessions = [
+      { id: 's1', channel: 'web', startTime: '', lastTime: '', messageCount: 0, firstMessage: 'A', model: '' },
+      { id: 's2', channel: 'web', startTime: '', lastTime: '', messageCount: 0, firstMessage: 'B', model: '' },
+    ] as any
+    sessionStore.currentId = 's1'
+    const { useChatStore } = await import('../../stores/chat')
+    const getSyncN = syncMock()
+    vi.useFakeTimers()
+    const w = mount(ChatPanel)
+    await flushPromises()
+    await primeHistory()
+    expect(getSyncN()).toBe(1)
+
+    // s1 流式中收到信号 → 防抖后重试链挂上。
+    useChatStore().setBusy('s1', true)
+    fireActivity({ session_id: 's1', seq: 42, kind: 'chat' })
+    await vi.advanceTimersByTimeAsync(800)
+    await flushPromises()
+    expect(getSyncN()).toBe(1)
+
+    // 切会话：残留清理（timer 取消 + lag/重试归零）——旧会话积压不再对
+    // s2 触发多余 sync（activityLagSeq 是旧会话 seq 空间的值）。
+    sessionStore.currentId = 's2'
+    await flushPromises()
+    // 喂 s2 的 history 响应：清 historyLoading（否则 syncMissedChat 的
+    // :824 守卫把一切补拉闸掉，测试空转无区分度）；s2 基线 sync（若有）
+    // 也落在这之后，n 从这里起算。
+    feedHistory(lastRequestId(), [])
+    await flushPromises()
+    const n = getSyncN()
+    useChatStore().setBusy('s1', false)
+    await vi.advanceTimersByTimeAsync(10_000)
+    await flushPromises()
+    expect(getSyncN()).toBe(n)
+    w.unmount()
+  })
+})

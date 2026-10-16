@@ -14,6 +14,7 @@
 //!
 //! 诚实边界：探针只验「编译可过」，不等价「验收会过」（能编译的语义错误
 //! 抓不到）；探针在暂停事件推送前同步执行，Done 晚到最多 timeout_secs。
+#[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
 use std::path::Path;

@@ -8,6 +8,7 @@
 //! 器官出口约定（§4.3 对照表）：原 `events.push(..) + break/ break 'turn`
 //! 的六个终局出口统一改为 `Err(终局事件)` 返回，骨架（run_llm_loop）统一
 //! `push + break`——事件向量与文案逐字节不变，golden transcript 把关。
+#[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
 

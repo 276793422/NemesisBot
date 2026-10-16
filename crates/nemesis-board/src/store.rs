@@ -664,6 +664,30 @@ impl BoardStore {
 
         let note = format!("{} → {}", old.status, to);
         insert_comment(&tx, id, actor, &note, None, CommentType::StatusChange, now)?;
+
+        // NB-CODE-012：人工操作者跳过评审直达 done（Backlog/Todo/InProgress →
+        // Done）追加系统审计评论留痕——绕过验收链的收货必须可回查。agent 自动
+        // 链（auto_accept_and_settle 等）已有「agent 验收通过」评论，不重复。
+        // 审计评论失败不回滚转移（对齐 reopen_issue 的附加动作口径）。
+        if to == IssueStatus::Done
+            && old.status != IssueStatus::InReview
+            && actor.kind != "agent"
+            && let Err(e) = insert_comment(
+                &tx,
+                id,
+                &Actor::system("audit"),
+                &format!(
+                    "⚠ 跳过评审直达完成：{} → done（操作者 {}/{}）。本单未经验收链，如需正式验收请走 in_review。",
+                    old.status, actor.kind, actor.id
+                ),
+                None,
+                CommentType::System,
+                now,
+            )
+        {
+            tracing::warn!("issue {id}: failed to insert skip-review audit comment: {e}");
+        }
+
         insert_activity(
             &tx,
             id,

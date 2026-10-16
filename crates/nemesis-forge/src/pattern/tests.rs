@@ -581,20 +581,31 @@ fn test_detect_efficiency_issues_no_slow_sessions() {
 
 #[test]
 fn test_detect_efficiency_issues_slow_session_detected() {
-    // Create sessions where some are much slower than others
+    // R18 数值钉（修复语义：效率分 = 1 - actual_rounds/(2×全局平均轮数)）。
+    // 构造：3 个快会话（1 轮 @10ms）+ 1 个慢会话（2 轮 @1000ms）。
+    // - global_avg_dur = 406 → 慢会话 avg 1000 > 2×406 ✓ 入选，快会话过滤；
+    // - global_avg_rounds = 5/4 = 1.25，actual_rounds = 2；
+    // - eff_score = 1 - 2/(2×1.25) = 0.2（旧丢变量公式 actual/2.0 → 0.0）。
     let mut exps = Vec::new();
-    // Fast sessions
-    for i in 0..5 {
+    for i in 0..3 {
         exps.push(make_exp_session("fast", true, 10, &format!("fast-{}", i)));
     }
-    // Slow session (10x average)
-    for _ in 0..3 {
-        exps.push(make_exp_session("slow", true, 10000, "slow-1"));
-        exps.push(make_exp_session("slow", true, 10000, "slow-1"));
-    }
-    let _patterns = detect_conversation_efficiency_issues(&exps, 1);
-    // The slow session should be detected if its chain length <= 3
-    // This depends on exact thresholds
+    exps.push(make_exp_session("slow", true, 1000, "slow-1"));
+    exps.push(make_exp_session("slow", true, 1000, "slow-1"));
+
+    let patterns = detect_conversation_efficiency_issues(&exps, 1);
+    assert_eq!(patterns.len(), 1, "exactly the slow session qualifies");
+    let p = &patterns[0];
+    assert_eq!(p.pattern_type, ConversationPatternType::EfficiencyIssue);
+    assert_eq!(p.avg_rounds, Some(2.0));
+    // avg_duration_ms 按模式出现（会话）均值：单会话 total_dur=2000/count=1。
+    assert_eq!(p.avg_duration_ms, Some(2000));
+    assert!(
+        (p.confidence - 0.2).abs() < 1e-9,
+        "eff score must be 0.2 (rounds ratio form), got {}",
+        p.confidence
+    );
+    assert_eq!(p.efficiency_score, Some(p.confidence));
 }
 
 #[test]
@@ -732,9 +743,15 @@ fn test_extract_conversation_patterns_returns_combined() {
     let patterns = extract_conversation_patterns(&exps, 2);
     assert!(!patterns.is_empty());
     // Should contain at least tool_chain and error_recovery patterns
+    //（err-1/err-2 两会话满足 min_freq=2，error_recovery 是确定性产出——
+    // 旧版注释承诺两种类型但只断言了 tool_chain 一半）。
     let types: std::collections::HashSet<&str> =
         patterns.iter().map(|p| p.pattern_type.as_str()).collect();
-    assert!(types.contains("tool_chain"));
+    assert!(types.contains("tool_chain"), "types: {types:?}");
+    assert!(
+        types.contains("error_recovery"),
+        "2 fail→recover sessions must yield error_recovery, types: {types:?}"
+    );
 }
 
 // ---- S8 coverage batch ---- (quality-hardening goal 冲刺 S8)

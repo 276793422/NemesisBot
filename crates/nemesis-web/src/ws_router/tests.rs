@@ -224,3 +224,41 @@ async fn test_dispatch_req_id_roundtrip() {
     let resp: serde_json::Value = serde_json::from_slice(&response_bytes).unwrap();
     assert_eq!(resp["reqId"], custom_id);
 }
+
+// 2026-10-16 hardening (P1-1): workflow_chat sessions are bound to the
+// chat surface only. Even though dispatch no longer trusts the auth check
+// happening elsewhere, the router itself must refuse every module access —
+// here the handler IS registered and reachable, and must still be denied.
+#[tokio::test]
+async fn test_dispatch_denies_workflow_chat_auth_method() {
+    let mut router = WsRouter::new();
+    router.register(Arc::new(TestHandler::new("test")));
+    let state = make_test_state();
+    let ctx = RequestContext {
+        session_id: "s1".to_string(),
+        chat_id: "test-chat".to_string(),
+        workspace: None,
+        home: None,
+        state,
+        auth_method: crate::session::AuthMethod::WorkflowChat {
+            workflow: "myflow".to_string(),
+        },
+    };
+
+    let (send_queue, mut rx, _lo_rx, _done_tx) = SendQueue::test_channels(16);
+
+    let msg = ProtocolMessage::request("test", "ping", "req-wc-1", None);
+    router.dispatch(&msg, &ctx, &send_queue).await;
+
+    let response_bytes = rx.recv().await.unwrap();
+    let resp: serde_json::Value = serde_json::from_slice(&response_bytes).unwrap();
+    assert_eq!(resp["reqId"], "req-wc-1");
+    let err = resp["error"].as_str().unwrap();
+    assert!(
+        err.starts_with("permission_denied"),
+        "expected permission_denied, got: {}",
+        err
+    );
+    // The handler must never have run — no data leaked through.
+    assert!(resp["data"].is_null());
+}

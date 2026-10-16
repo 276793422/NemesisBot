@@ -1,8 +1,8 @@
-//! GitHub Release 资产下载管线（skins 与 WASM 插件开发包共用的单一来源）。
+//! GitHub Release 资产下载管线（skins / WASM 插件开发包 / selfupdate 自更新
+//! 共用的单一来源）。
 //!
-//! 自 handlers/skins.rs 公共化抽出的下载链（skins feature 关闭时
-//! plugins-wasm 的 devkit 下载仍可用——此前管线整个锁在
-//! `#![cfg(feature = "skins")]` 模块内）：https-only + 每跳独立过 SSRF 闸
+//! 自 handlers/skins.rs 公共化抽出的下载链（模块不再整体门控——zip 解包等
+//! 重依赖留在各消费方的 feature 闸内）：https-only + 每跳独立过 SSRF 闸
 //! （拦 = 诚实失败）+ 手动重定向循环（≤[`FETCH_MAX_HOPS`] 跳，相对
 //! Location 走 `Url::join`；重定向降级到非 https 拒绝）+ 流式上限。
 //!
@@ -13,7 +13,7 @@
 //! SSRF 闸槽经 [`set_ssrf_guard`] 由 gateway 注入（原 skins 槽位迁移至此，
 //! 顺序解耦语义不变：init_web 早于 init_agent 的安全插件构建；None = 直通）。
 //!
-//! 模块闸 = `any(skins, plugins-wasm)`（随消费方：两者全关不编译）。
+//! SSRF 槽本体随 `security` feature（security 关时无消费）。
 
 // `RwLock` 仅 SSRF 闸槽使用（槽本体 cfg(security)，security 关时无消费）。
 #[cfg(feature = "security")]
@@ -157,42 +157,52 @@ async fn read_capped(resp: reqwest::Response, max_bytes: usize) -> Result<Vec<u8
     Ok(out)
 }
 
-/// 官方发布源 Release 的列表 API 址。
+/// 官方发布源 Release 的列表 API 址。per_page=100：发布列表同时是自更新
+/// 降级闸的单调序列依据（GitHub created_at 降序），窗口尽量放宽——日更节奏
+/// 100 条 ≈ 3 个月，窗口外条目降级判定诚实 Unknown（selfupdate 侧审计）。
 const RELEASE_LIST_API: &str =
-    "https://api.github.com/repos/276793422/NemesisBot/releases?per_page=10";
+    "https://api.github.com/repos/276793422/NemesisBot/releases?per_page=100";
 
-/// 官方 Release 指定附件下载：列表 API → 首个含 `asset_name` 附件的
-/// Release → SSRF 闸逐跳下载。找不到附件 = 诚实报错（CI 尚未产出）。
-/// 消费方全在 feature 门（skins / plugins-wasm / selfupdate）内——裸构建
-/// 无人调用，条件放行 dead_code；selfupdate 的 apply 主体又是
-/// Windows-only（v1 平台边界），非 Windows+selfupdate 组合同样无人调用。
+/// Release 单个附件（名 + 下载 URL）。
 #[cfg_attr(
     not(any(feature = "skins", feature = "plugins-wasm", feature = "selfupdate")),
     allow(dead_code)
 )]
-#[cfg_attr(
-    all(feature = "selfupdate", not(target_os = "windows")),
-    allow(dead_code)
-)]
-pub(crate) async fn fetch_release_asset(
-    asset_name: &str,
-    max_bytes: usize,
-) -> Result<Vec<u8>, String> {
-    let url = latest_release_asset_url(asset_name).await?;
-    fetch_bytes(&url, max_bytes).await
+#[derive(Debug, Clone)]
+pub(crate) struct ReleaseAsset {
+    pub name: String,
+    pub url: String,
 }
 
-/// Release 元信息（L9 check 用：免下主包即可读 tag/名/body commit/附件在场）。
+/// Release 元信息（L9 check / apply 同源解析：免下主包即可读 tag/名/body
+/// commit/附件）。字段集即列表 API 单条的最小投影。
+#[cfg_attr(
+    not(any(feature = "skins", feature = "plugins-wasm", feature = "selfupdate")),
+    allow(dead_code)
+)]
+#[derive(Debug, Clone)]
 pub(crate) struct ReleaseMeta {
     pub tag_name: String,
     pub name: String,
     pub body: String,
-    pub asset_names: Vec<String>,
+    pub assets: Vec<ReleaseAsset>,
 }
 
+#[cfg_attr(
+    not(any(feature = "skins", feature = "plugins-wasm", feature = "selfupdate")),
+    allow(dead_code)
+)]
 impl ReleaseMeta {
     pub fn has_asset(&self, name: &str) -> bool {
-        self.asset_names.iter().any(|a| a == name)
+        self.assets.iter().any(|a| a.name == name)
+    }
+
+    /// 指定附件的下载 URL（无 = None）。
+    pub fn asset_url(&self, name: &str) -> Option<&str> {
+        self.assets
+            .iter()
+            .find(|a| a.name == name)
+            .map(|a| a.url.as_str())
     }
 
     /// body 表行 `` | Commit | `<sha>` | `` 里的全量 sha。
@@ -201,54 +211,56 @@ impl ReleaseMeta {
     }
 }
 
-/// 列表 API 首条 Release 的元信息（不下载主包资产）。
-pub(crate) async fn fetch_latest_release_meta() -> Result<ReleaseMeta, String> {
-    // 元信息很小，25MB 上限同口径防异常。
-    let api_bytes = fetch_bytes(RELEASE_LIST_API, 25 * 1024 * 1024).await?;
-    let api: serde_json::Value = serde_json::from_slice(&api_bytes)
-        .map_err(|e| format!("Release API 响应不是合法 JSON：{e}"))?;
+/// 列表 API 响应解析（纯函数，单测钉住；顺序保留 = GitHub created_at 降序
+/// 新→旧，自更新降级闸的单调序列依据）。
+#[cfg_attr(
+    not(any(feature = "skins", feature = "plugins-wasm", feature = "selfupdate")),
+    allow(dead_code)
+)]
+pub(crate) fn parse_release_list(api: &serde_json::Value) -> Result<Vec<ReleaseMeta>, String> {
     let releases = api
         .as_array()
         .ok_or_else(|| "Release API 响应不是列表（仓库不存在或 API 限流）".to_string())?;
-    let first = releases
-        .first()
-        .ok_or_else(|| "Release 列表为空（CI 尚未产出任何发布）".to_string())?;
-    let tag_name = first
-        .get("tag_name")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-    let name = first
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-    let body = first
-        .get("body")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-    let asset_names = first
-        .get("assets")
-        .and_then(|v| v.as_array())
-        .map(|assets| {
-            assets
-                .iter()
-                .filter_map(|a| a.get("name").and_then(|v| v.as_str()))
-                .map(str::to_string)
-                .collect()
+    Ok(releases
+        .iter()
+        .map(|r| ReleaseMeta {
+            tag_name: r
+                .get("tag_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            name: r
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            body: r
+                .get("body")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            assets: r
+                .get("assets")
+                .and_then(|v| v.as_array())
+                .map(|assets| {
+                    assets
+                        .iter()
+                        .filter_map(|a| {
+                            let name = a.get("name").and_then(|v| v.as_str())?;
+                            let url = a.get("browser_download_url").and_then(|v| v.as_str())?;
+                            Some(ReleaseAsset {
+                                name: name.to_string(),
+                                url: url.to_string(),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
         })
-        .unwrap_or_default();
-    Ok(ReleaseMeta {
-        tag_name,
-        name,
-        body,
-        asset_names,
-    })
+        .collect())
 }
 
-/// 列表 API → 首个含 `asset_name` 附件的 Release 的下载 URL。（唯一调用方
-/// fetch_release_asset 的 dead_code 门随它——它活则此活。）
+/// 拉取并解析发布列表（新→旧序）。
 #[cfg_attr(
     not(any(feature = "skins", feature = "plugins-wasm", feature = "selfupdate")),
     allow(dead_code)
@@ -257,27 +269,68 @@ pub(crate) async fn fetch_latest_release_meta() -> Result<ReleaseMeta, String> {
     all(feature = "selfupdate", not(target_os = "windows")),
     allow(dead_code)
 )]
-async fn latest_release_asset_url(asset_name: &str) -> Result<String, String> {
+pub(crate) async fn fetch_release_list() -> Result<Vec<ReleaseMeta>, String> {
     // 元信息很小，25MB 上限同口径防异常。
     let api_bytes = fetch_bytes(RELEASE_LIST_API, 25 * 1024 * 1024).await?;
     let api: serde_json::Value = serde_json::from_slice(&api_bytes)
         .map_err(|e| format!("Release API 响应不是合法 JSON：{e}"))?;
-    let releases = api
-        .as_array()
-        .ok_or_else(|| "Release API 响应不是列表（仓库不存在或 API 限流）".to_string())?;
-    releases
-        .iter()
-        .filter_map(|r| r.get("assets").and_then(|v| v.as_array()))
-        .find_map(|assets| {
-            assets.iter().find_map(|a| {
-                let name = a.get("name").and_then(|v| v.as_str())?;
-                (name == asset_name)
-                    .then(|| a.get("browser_download_url").and_then(|v| v.as_str()))
-                    .flatten()
-            })
-        })
-        .map(str::to_string)
-        .ok_or_else(|| format!("近期 Release 均未找到 {asset_name} 附件（CI 尚未产出该包）"))
+    parse_release_list(&api)
+}
+
+/// **同源解析**（纯函数）：列表中首个含 `asset_name` 附件的 Release。check
+/// 展示的元信息与 apply 实际下载的包必须出自同一对象——修复旧实现「check
+/// 读列表第一条、apply 下载首个含资产的」双路径分裂（两者可能指向不同
+/// Release：最新条目尚未产出资产时，展示与安装会跨版本错位）。
+#[cfg_attr(
+    not(any(feature = "skins", feature = "plugins-wasm", feature = "selfupdate")),
+    allow(dead_code)
+)]
+pub(crate) fn resolve_release_for_asset<'a>(
+    list: &'a [ReleaseMeta],
+    asset_name: &str,
+) -> Option<&'a ReleaseMeta> {
+    list.iter().find(|r| r.has_asset(asset_name))
+}
+
+/// 同源解析网络入口：列表 → 首个含 `asset_name` 的 Release。无任何 release
+/// 含该资产 → 回落列表首条（`has_asset`=false，check 诚实报「发布在但包未
+/// 产出」；apply 下载步对 URL 缺失给明确错误）。
+#[cfg_attr(
+    not(any(feature = "skins", feature = "plugins-wasm", feature = "selfupdate")),
+    allow(dead_code)
+)]
+#[cfg_attr(
+    all(feature = "selfupdate", not(target_os = "windows")),
+    allow(dead_code)
+)]
+pub(crate) async fn fetch_release_for_asset(asset_name: &str) -> Result<ReleaseMeta, String> {
+    let list = fetch_release_list().await?;
+    if let Some(resolved) = resolve_release_for_asset(&list, asset_name) {
+        return Ok(resolved.clone());
+    }
+    list.first()
+        .cloned()
+        .ok_or_else(|| "Release 列表为空（CI 尚未产出任何发布）".to_string())
+}
+
+/// 官方 Release 指定附件下载：同源解析 → SSRF 闸逐跳下载。找不到附件 =
+/// 诚实报错（CI 尚未产出）。消费方=skins / plugins-wasm devkit（selfupdate
+/// apply 的 R1 单候选链已改为复用早闸解析的列表直连 `fetch_bytes`，不再经
+/// 此函数）——裸构建无人调用，条件放行 dead_code。
+#[cfg_attr(
+    not(any(feature = "skins", feature = "plugins-wasm")),
+    allow(dead_code)
+)]
+pub(crate) async fn fetch_release_asset(
+    asset_name: &str,
+    max_bytes: usize,
+) -> Result<Vec<u8>, String> {
+    const NOT_FOUND_SUFFIX: &str = "附件（CI 尚未产出该包）";
+    let meta = fetch_release_for_asset(asset_name).await?;
+    let url = meta
+        .asset_url(asset_name)
+        .ok_or_else(|| format!("近期 Release 均未找到 {asset_name}{NOT_FOUND_SUFFIX}"))?;
+    fetch_bytes(url, max_bytes).await
 }
 
 /// 带退避重试的目录树删除（nemesis-cluster::fsutil 同款模式——Windows 上

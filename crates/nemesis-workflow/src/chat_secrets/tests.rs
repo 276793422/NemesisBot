@@ -84,18 +84,46 @@ fn persists_across_reopen() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn w4a_open_corrupt_json_starts_empty_and_self_heals() {
+fn w4a_open_corrupt_json_poisons_fail_closed() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("secrets.json");
     std::fs::write(&path, b"{ this is not json !!!").unwrap();
-    // Corrupt load: starts empty (warn path), writes still attempted
+    // Corrupt load: the store poisons (fail-closed, 2026-10-16 hardening).
     let store = ChatSecretStore::open(path.clone());
-    assert!(!store.has_password("abc12345"));
-    // Self-heal: a fresh set_password rewrites valid JSON over the garbage
-    store.set_password("abc12345", "hunter2").unwrap();
-    let reopened = ChatSecretStore::open(path);
-    assert!(reopened.has_password("abc12345"));
-    assert!(reopened.verify_password("abc12345", "hunter2"));
+    assert!(store.is_poisoned());
+    // Reads fail closed: state is unknown, so it must look password-
+    // protected and verification must deny.
+    assert!(store.has_password("abc12345"));
+    assert!(!store.verify_password("abc12345", "hunter2"));
+    // Writes are refused — the unreadable file may hold recoverable data.
+    let err = store.set_password("abc12345", "hunter2").unwrap_err();
+    assert!(err.contains("locked"), "unexpected error: {}", err);
+    assert!(store.clear_password("abc12345").is_err());
+    // The original file is preserved untouched for manual recovery.
+    assert_eq!(std::fs::read(&path).unwrap(), b"{ this is not json !!!");
+    // ...and a diagnostic copy exists alongside it.
+    let copies: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().contains(".corrupt-"))
+        .collect();
+    assert_eq!(
+        copies.len(),
+        1,
+        "expected one .corrupt-<ts> diagnostic copy"
+    );
+}
+
+#[test]
+fn w4a_open_unreadable_path_poisons() {
+    // Reading a directory as a file errors with a non-NotFound kind,
+    // hitting the generic read-failure arm — state unknown → poisoned
+    // (fail-closed), same contract as corrupt JSON.
+    let dir = tempfile::tempdir().unwrap();
+    let store = ChatSecretStore::open(dir.path().to_path_buf());
+    assert!(store.is_poisoned());
+    assert!(store.has_password("anything"));
+    assert!(store.set_password("abc", "pw").is_err());
 }
 
 #[test]
@@ -109,19 +137,12 @@ fn w4a_open_empty_file_starts_empty() {
 }
 
 #[test]
-fn w4a_open_unreadable_path_starts_empty() {
-    // Reading a directory as a file errors with a non-NotFound kind,
-    // hitting the generic read-failure arm (not first-run, not corrupt).
-    let dir = tempfile::tempdir().unwrap();
-    let store = ChatSecretStore::open(dir.path().to_path_buf());
-    assert!(!store.has_password("anything"));
-}
-
-#[test]
 fn w4a_in_memory_store_full_lifecycle_without_disk() {
     let store = ChatSecretStore::in_memory();
+    assert!(!store.is_poisoned());
     assert!(!store.has_password("abc12345"));
-    // set/clear/verify all work; persist_locked short-circuits Ok (no path)
+    // set/clear/verify all work; persist_candidate_locked short-circuits
+    // (no path → pure swap)
     store.set_password("abc12345", "hunter2").unwrap();
     assert!(store.has_password("abc12345"));
     assert!(store.verify_password("abc12345", "hunter2"));
@@ -139,7 +160,7 @@ fn w4a_set_password_rejects_blank_index() {
 }
 
 #[test]
-fn w4a_set_password_create_dir_failure_returns_err() {
+fn w4a_set_password_create_dir_failure_leaves_memory_untouched() {
     // Parent of the target path is a regular file -> create_dir_all fails
     let dir = tempfile::tempdir().unwrap();
     let blocker = dir.path().join("blocker");
@@ -147,11 +168,16 @@ fn w4a_set_password_create_dir_failure_returns_err() {
     let path = blocker.join("nested").join("secrets.json");
     let store = ChatSecretStore::open(path);
     let err = store.set_password("abc12345", "hunter2").unwrap_err();
-    assert!(err.starts_with("create dir"), "unexpected error: {}", err);
-    // Note actual behavior: the entry IS inserted into the in-memory map
-    // before persist is attempted, so it stays visible despite the error.
-    // The Err return is the failure signal; disk state is unchanged.
-    assert!(store.has_password("abc12345"));
+    assert!(
+        err.contains("persist chat secrets"),
+        "unexpected error: {}",
+        err
+    );
+    // Persist-then-swap (2026-10-16 hardening): the in-memory map is only
+    // swapped after a successful write — a failed persist must NOT leave
+    // the password visible in memory while disk has nothing.
+    assert!(!store.has_password("abc12345"));
+    assert!(!store.verify_password("abc12345", "hunter2"));
     // ...and nothing landed on disk under the blocked parent
     assert!(!blocker.join("nested").join("secrets.json").exists());
 }
@@ -168,4 +194,78 @@ fn w4a_verify_against_invalid_stored_hash_returns_false() {
     let store = ChatSecretStore::open(path);
     assert!(store.has_password("abc12345"));
     assert!(!store.verify_password("abc12345", "hunter2"));
+}
+
+// ---------------------------------------------------------------------------
+// 2026-10-16 hardening: canonical 16-hex keys + legacy 8-hex compat
+// ---------------------------------------------------------------------------
+
+#[test]
+fn canonical_index_password_roundtrip_and_legacy_fallback() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("secrets.json");
+    let store = ChatSecretStore::open(path.clone());
+    let canonical = "0123456789abcdef"; // 16 hex chars
+    store.set_password(canonical, "hunter2").unwrap();
+    assert!(store.has_password(canonical));
+    assert!(store.verify_password(canonical, "hunter2"));
+
+    // A second store opened over the same file must see the entry.
+    drop(store);
+    let reopened = ChatSecretStore::open(path);
+    assert!(reopened.has_password(canonical));
+    assert!(reopened.verify_password(canonical, "hunter2"));
+
+    // Now hand-write a LEGACY 8-hex entry (pre-hardening layout) and check
+    // the canonical key resolves it via the prefix fallback.
+    let dir2 = tempfile::tempdir().unwrap();
+    let path2 = dir2.path().join("secrets.json");
+    let mut map = std::collections::HashMap::new();
+    map.insert(canonical[..8].to_string(), hash_password("oldpw").unwrap());
+    std::fs::write(&path2, serde_json::to_string(&map).unwrap()).unwrap();
+    let legacy_store = ChatSecretStore::open(path2);
+    assert!(legacy_store.has_password(canonical));
+    assert!(legacy_store.verify_password(canonical, "oldpw"));
+    assert!(!legacy_store.verify_password(canonical, "hunter2"));
+}
+
+#[test]
+fn canonical_set_password_removes_legacy_twin() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("secrets.json");
+    let canonical = "fedcba9876543210";
+    // Seed with a legacy 8-hex entry.
+    let mut map = std::collections::HashMap::new();
+    map.insert(canonical[..8].to_string(), hash_password("oldpw").unwrap());
+    std::fs::write(&path, serde_json::to_string(&map).unwrap()).unwrap();
+    let store = ChatSecretStore::open(path.clone());
+    assert!(store.verify_password(canonical, "oldpw"));
+
+    // Setting a new password under the canonical key removes the legacy
+    // twin in the same write (self-healing convergence).
+    store.set_password(canonical, "newpw").unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    let map: HashMap<String, String> = serde_json::from_str(&text).unwrap();
+    assert!(
+        map.contains_key(canonical) && !map.contains_key(&canonical[..8]),
+        "expected canonical key only, got keys: {:?}",
+        map.keys().collect::<Vec<_>>()
+    );
+    assert!(store.verify_password(canonical, "newpw"));
+    assert!(!store.verify_password(canonical, "oldpw"));
+}
+
+#[test]
+fn clear_password_accepts_legacy_form() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("secrets.json");
+    // Password written under the legacy 8-hex key; clearing with the
+    // LEGACY form must still find and remove it.
+    let mut map = std::collections::HashMap::new();
+    map.insert("abcd1234".to_string(), hash_password("pw").unwrap());
+    std::fs::write(&path, serde_json::to_string(&map).unwrap()).unwrap();
+    let store = ChatSecretStore::open(path);
+    assert!(store.has_password("abcd1234"));
+    store.clear_password("abcd1234").unwrap();
+    assert!(!store.has_password("abcd1234"));
 }

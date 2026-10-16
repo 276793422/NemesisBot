@@ -86,6 +86,10 @@ impl ChannelApprovalManager {
             let msg = match rx.recv().await {
                 Ok(msg) => msg,
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    // P2-1：接收侧真实丢失计入 bus 指标。丢的可能是审批
+                    // /deny 回执——watcher 侧只能继续（审批最终由超时
+                    // 自动拒绝兜底），但丢失必须可观测。
+                    self.bus.record_inbound_lagged(n);
                     tracing::warn!(
                         "[ChannelApproval] inbound lagged: {n} messages lost, watcher continues"
                     );

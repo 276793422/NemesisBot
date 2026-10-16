@@ -1,6 +1,7 @@
 //! 配置热载与访问器：set_config_path/config_mtime/check_config_reload、refresh_active_tier、current_* 访问器族、tier/mode/set_mode_with_event、set_provider_and_model、SmallModelSlot/小模型槽、E7 标题生成、诊断回灌（C3）。
 //!
 //! P1 自 `loop.rs` 物理搬迁（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）；语义零变化。
+#[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
 

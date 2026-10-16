@@ -17,6 +17,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
+use std::path::Path;
+
 /// 单文件 fixture 大小上限（64KB）。
 pub const FIXTURE_MAX_BYTES: usize = 65536;
 /// fixtures 数量上限。
@@ -109,7 +111,6 @@ pub struct TestJudge {
     pub threshold: Option<f64>,
 }
 
-/// 单条行为用例。
 /// 单条行为用例。`deny_unknown_fields` 钉拼写（`jduge:` 这类 typo 静默
 /// 丢弃 judge 层 = 断言悄悄少跑一层，与 TestExpectations 同纪律）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -267,7 +268,18 @@ fn validate_spec(spec: &SkillTestsSpec) -> Result<(), String> {
             ));
         }
         for fx in &case.fixtures {
-            if fx.path.trim().is_empty() || fx.path.contains("..") {
+            // 路径闸（R18 收紧）：拒绝 `..`、绝对路径与 Windows 盘符形态。
+            // 此前只挡 `..`——`C:evil` 这类盘符相对路径 is_absolute()==false
+            // 且无 `..`，但 Path::join 会整段换基座（写出到盘符当前目录），
+            // 沙盒夹具越出临时工作区。合法夹具一律是沙盒内的相对段。
+            let p = Path::new(fx.path.trim());
+            if fx.path.trim().is_empty()
+                || fx.path.contains("..")
+                || p.is_absolute()
+                || fx.path.contains(':')
+                || fx.path.starts_with('\\')
+                || fx.path.starts_with('/')
+            {
                 return Err(format!(
                     "test '{}': invalid fixture path {:?}",
                     case.name, fx.path

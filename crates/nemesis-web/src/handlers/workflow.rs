@@ -287,6 +287,14 @@ pub async fn handle_workflow_webhook(
         return Err(rate_limited(retry_after));
     }
 
+    // The URL must map to a workflow that explicitly declares a webhook
+    // trigger — a workflow without one (manual/cron/event-only) is not
+    // reachable over the public webhook route at all.
+    if !workflow_has_webhook_trigger(&state, &name).await {
+        audit_webhook(&state, &name, client_ip, "no_webhook_trigger", None);
+        return Err(webhook_target_not_found());
+    }
+
     // Signature: only enforced when the workflow defines a webhook `secret`.
     // Look up workflow → find webhook trigger → read `config.secret`.
     let secret = workflow_webhook_secret(&state, &name).await;
@@ -312,11 +320,17 @@ pub async fn handle_workflow_webhook(
     })))
 }
 
-/// `GET /api/workflow/webhook/:name` — same as POST but the payload comes
-/// from the query string. Some external services (e.g. Slack's URL
-/// verification flow) use GET webhooks. Signed workflows skip signature
-/// verification here because GET has no body to HMAC — the `secret`
-/// config is ignored on GET.
+/// `GET /api/workflow/webhook/:name` — trigger an **unsigned** webhook
+/// workflow with the payload taken from the query string (some external
+/// services, e.g. Slack's URL verification flow, use GET).
+///
+/// Hardening (2026-10-16):
+/// - Workflows without a webhook trigger are not reachable (404), same as POST.
+/// - Workflows that define a webhook `secret` reject GET entirely (405):
+///   GET has no body to HMAC, so a signed workflow can never be triggered
+///   without credentials — silently ignoring the secret (the old behavior)
+///   turned the signature requirement into decoration. Callers must switch
+///   to POST + `X-Signature`.
 pub async fn handle_workflow_webhook_get(
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
@@ -328,6 +342,23 @@ pub async fn handle_workflow_webhook_get(
     if let Err(retry_after) = state.webhook_rate_limiter.check(client_ip).await {
         audit_webhook(&state, &name, client_ip, "rate_limited", None);
         return Err(rate_limited(retry_after));
+    }
+
+    if !workflow_has_webhook_trigger(&state, &name).await {
+        audit_webhook(&state, &name, client_ip, "no_webhook_trigger", None);
+        return Err(webhook_target_not_found());
+    }
+
+    // Signed workflow → GET is not a valid trigger method.
+    if workflow_webhook_secret(&state, &name).await.is_some() {
+        audit_webhook(&state, &name, client_ip, "get_on_signed", None);
+        return Err((
+            StatusCode::METHOD_NOT_ALLOWED,
+            Json(serde_json::json!({
+                "error": "signed webhook workflows cannot be triggered via GET",
+                "reason": "this workflow requires an HMAC signature over the request body; use POST with the X-Signature header",
+            })),
+        ));
     }
 
     let payload = query;
@@ -393,6 +424,35 @@ async fn workflow_webhook_secret(state: &AppState, name: &str) -> Option<String>
         }
     }
     None
+}
+
+/// True when the named workflow exists AND declares at least one webhook
+/// trigger. The public webhook route only reaches workflows that opt in —
+/// manual/cron/event-only workflows are invisible here (404, same response
+/// as an unknown name so existence isn't leaked).
+async fn workflow_has_webhook_trigger(state: &AppState, name: &str) -> bool {
+    let Some(engine) = state.workflow_engine.as_ref() else {
+        return false;
+    };
+    let Some(workflow) = engine.get_workflow(name) else {
+        return false;
+    };
+    workflow
+        .triggers
+        .iter()
+        .any(|t| t.trigger_type == "webhook")
+}
+
+/// 404 shared by both webhook methods for "unknown workflow" and "workflow
+/// without a webhook trigger" — identical response, no existence oracle.
+fn webhook_target_not_found() -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({
+            "error": "workflow_not_found",
+            "reason": "no webhook-triggered workflow with this name",
+        })),
+    )
 }
 
 /// Verify `X-Signature: <hex HMAC-SHA256(secret, body)>`. Returns
@@ -473,14 +533,32 @@ fn hex_nibble(b: u8) -> Result<u8, &'static str> {
 /// Keeps a `VecDeque<Instant>` per IP, drops timestamps older than the
 /// window on each `check`, and rejects once the queue length exceeds
 /// `WEBHOOK_RATE_MAX`. Mutex is held for microseconds; no awaits inside.
+///
+/// Bound (2026-10-16 hardening): the IP table itself is capped at
+/// [`DEFAULT_MAX_TRACKED_IPS`] entries. A public endpoint fed spoofed or
+/// high-cardinality proxy addresses used to grow the map monotonically —
+/// each first-time IP cost one entry forever. When the table is full, the
+/// expired entries are swept first; if the table is still full the request
+/// is rejected (429) rather than silently evicting a live entry (eviction
+/// would let an attacker crowd out legitimate clients).
 pub struct WebhookRateLimiter {
     hits: tokio::sync::Mutex<HashMap<IpAddr, VecDeque<Instant>>>,
+    max_ips: usize,
 }
+
+/// Default cap on tracked IPs (64 Ki entries × small VecDeque ≈ low MiBs).
+const DEFAULT_MAX_TRACKED_IPS: usize = 65_536;
 
 impl WebhookRateLimiter {
     pub fn new() -> Self {
+        Self::with_max_ips(DEFAULT_MAX_TRACKED_IPS)
+    }
+
+    /// Test-friendly constructor with a small IP-table cap.
+    pub fn with_max_ips(max_ips: usize) -> Self {
         Self {
             hits: tokio::sync::Mutex::new(HashMap::new()),
+            max_ips,
         }
     }
 
@@ -489,6 +567,20 @@ impl WebhookRateLimiter {
     pub async fn check(&self, ip: IpAddr) -> Result<(), Duration> {
         let mut hits = self.hits.lock().await;
         let now = Instant::now();
+        if !hits.contains_key(&ip) && hits.len() >= self.max_ips {
+            // Table full with a new IP incoming — sweep expired entries
+            // (whole map) and drop the emptied queues. Cheap enough at the
+            // cap size and only runs when the table is actually full.
+            hits.retain(|_, queue| {
+                queue.retain(|t| now.duration_since(*t) < WEBHOOK_RATE_WINDOW);
+                !queue.is_empty()
+            });
+            if hits.len() >= self.max_ips {
+                // Still full of live windows — reject honestly instead of
+                // evicting someone else's live entry.
+                return Err(WEBHOOK_RATE_WINDOW);
+            }
+        }
         let queue = hits.entry(ip).or_insert_with(VecDeque::new);
         // Drop timestamps outside the window.
         while let Some(&front) = queue.front() {
@@ -741,16 +833,27 @@ pub async fn handle_workflow_checkpoint_load(
 // and the WS upgrade needs to know whether a password is required before
 // accepting the connection. HTTP endpoints break that chicken-and-egg.
 //
-// Information disclosure: indices are 8-hex chars (sha256(workflow_name)
-// truncated), so enumerating them is impractical (2^32 search space). The
-// metadata returned (name + description + chat_eligible) is what the page
-// needs to render the password form.
+// Information disclosure: indices are 16-hex chars (sha256(workflow_name)
+// truncated to 64 bit), so enumerating them is impractical. The metadata
+// returned (name + description + chat_eligible) is what the page needs to
+// render the password form. Legacy 8-hex links keep resolving (prefix match).
 // ---------------------------------------------------------------------------
 
 /// Query params for `GET /api/workflow/chat/info`.
 #[derive(Debug, serde::Deserialize)]
 pub struct ChatInfoQuery {
     pub index: String,
+}
+
+/// Canonicalize a client-supplied chat index (16-hex current or 8-hex legacy)
+/// to the current 16-hex form by resolving it to a workflow first. Returns
+/// the input unchanged when it doesn't resolve — write paths then store under
+/// the client key, which the read paths still find via the legacy fallback.
+fn canonical_chat_index(engine: &WorkflowEngine, index: &str) -> String {
+    engine
+        .workflow_by_chat_index(index)
+        .map(|name| WorkflowEngine::chat_index(&name))
+        .unwrap_or_else(|| index.to_string())
 }
 
 /// `GET /api/workflow/chat/info?index=<8hex>` — public metadata used by the
@@ -765,7 +868,12 @@ pub async fn handle_workflow_chat_info(
         Some(e) => e,
         None => return Err(engine_missing()),
     };
-    let needs_password = state.chat_secret_store.has_password(&q.index);
+    // Canonicalize before consulting the secret store so legacy 8-hex links
+    // see the same password state as the canonical 16-hex form (a re-set
+    // password lives only under the canonical key — its legacy twin is
+    // dropped by the store). Unresolvable indexes pass through unchanged.
+    let canonical_index = canonical_chat_index(&engine, &q.index);
+    let needs_password = state.chat_secret_store.has_password(&canonical_index);
     match engine.workflow_by_chat_index(&q.index) {
         None => Ok(Json(serde_json::json!({
             "found": false,
@@ -832,10 +940,16 @@ pub async fn handle_workflow_chat_verify(
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
+    // Canonicalize before verify so legacy 8-hex links keep working after a
+    // password re-set (stored under the canonical 16-hex key; legacy twin
+    // dropped). Unresolvable indexes pass through — verify still runs (the
+    // constant-time decoy keeps timing honest) and the resolve below 404s.
+    let index = canonical_chat_index(&engine, index);
+
     // Always run verify (constant-time on configured indexes; consumes time
     // on missing ones via DECOY_HASH) so the response time doesn't leak
     // whether an index is known.
-    if !state.chat_secret_store.verify_password(index, password) {
+    if !state.chat_secret_store.verify_password(&index, password) {
         return Err((
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({
@@ -845,7 +959,7 @@ pub async fn handle_workflow_chat_verify(
         ));
     }
 
-    let name = engine.workflow_by_chat_index(index).ok_or_else(|| {
+    let name = engine.workflow_by_chat_index(&index).ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({
@@ -1293,9 +1407,12 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
                 if password.is_empty() {
                     return Err("password must not be empty".to_string());
                 }
+                // Store under the canonical 16-hex key regardless of whether
+                // the client sent the current or the legacy 8-hex form.
+                let index = canonical_chat_index(engine, index);
                 let store = ctx.state.chat_secret_store.clone();
                 store
-                    .set_password(index, password)
+                    .set_password(&index, password)
                     .map_err(|e| format!("set_chat_password failed: {}", e))?;
                 Ok(Some(serde_json::json!({
                     "index": index,
@@ -1315,9 +1432,12 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
                     .get("index")
                     .and_then(|v| v.as_str())
                     .ok_or("missing field: index")?;
+                // Clear both the canonical key and its legacy twin via
+                // canonicalization (the store clears both for 16-hex keys).
+                let index = canonical_chat_index(engine, index);
                 let store = ctx.state.chat_secret_store.clone();
                 store
-                    .clear_password(index)
+                    .clear_password(&index)
                     .map_err(|e| format!("clear_chat_password failed: {}", e))?;
                 Ok(Some(serde_json::json!({
                     "index": index,
@@ -1338,11 +1458,15 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
                     .get("password")
                     .and_then(|v| v.as_str())
                     .ok_or("missing field: password")?;
+                // Canonicalize so legacy 8-hex links verify against the
+                // canonical key (or its legacy twin fallback) — same rule as
+                // the HTTP chat/verify endpoint.
+                let index = canonical_chat_index(engine, index);
                 let store = ctx.state.chat_secret_store.clone();
-                if !store.verify_password(index, password) {
+                if !store.verify_password(&index, password) {
                     return Err("unauthorized".to_string());
                 }
-                let name = engine.workflow_by_chat_index(index);
+                let name = engine.workflow_by_chat_index(&index);
                 match name {
                     Some(name) => {
                         let wf = engine.get_workflow(&name);

@@ -16,7 +16,12 @@ pub enum ForgeAction {
     /// Disable forge module
     Disable,
     /// Trigger manual reflection
-    Reflect,
+    Reflect {
+        /// 当次强制跑 auto_skill 技能蒸馏（覆盖 config.forge.json 的
+        /// artifacts.auto_skill；缺省按该配置开关）
+        #[arg(long)]
+        auto_skill: bool,
+    },
     /// List forge artifacts
     List {
         #[arg(long, default_value = "all")]
@@ -33,7 +38,7 @@ pub enum ForgeAction {
         id: Option<String>,
         #[arg(long)]
         output: Option<String>,
-        /// Export all artifacts (not just active)
+        /// Export all artifacts (现实现与默认范围一致，CLI 兼容保留)
         #[arg(long)]
         all: bool,
     },
@@ -379,6 +384,7 @@ fn cmd_reflect(
     home: &std::path::Path,
     cfg_path: &std::path::Path,
     forge_dir: &std::path::Path,
+    auto_skill_flag: bool,
 ) -> Result<()> {
     // Check if forge is enabled in main config
     if cfg_path.exists()
@@ -423,13 +429,14 @@ fn cmd_reflect(
     println!();
 
     // Create a real Forge instance（forge 配置读 workspace/config/config.forge.json，
-    // 与 WSAPI load_forge_config 同源——CLI 反思尊重用户 artifacts.auto_skill 开关）
+    // 与 WSAPI load_forge_config 同源——CLI 反思尊重用户 artifacts.auto_skill 开关；
+    // --auto-skill flag 是当次意志，显式给时覆盖配置（与 model add --stream 惯例同款）。
     let workspace = forge_dir.parent().unwrap_or(forge_dir).to_path_buf();
     let forge_cfg = nemesis_forge::config::load_forge_config(
         &workspace.join("config").join("config.forge.json"),
     );
     let use_llm = forge_cfg.reflection.use_llm;
-    let auto_skill = forge_cfg.artifacts.auto_skill;
+    let auto_skill = auto_skill_flag || forge_cfg.artifacts.auto_skill;
     let exp_limit = forge_cfg.collection.max_experiences.max(1);
     let mut forge = nemesis_forge::forge::Forge::new(forge_cfg, workspace.clone());
     // F-D3 同款：注册表先从盘回载再消费——Registry::new 是空内存注册表，
@@ -887,47 +894,37 @@ fn cmd_learning_disable(forge_dir: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+/// 学习周期读取（真相源 CycleStore 月目录 JSONL；按 started_at 升序——
+/// read_dir 顺序是平台实现细节，R18）。独立成函数供测试断言排序/计数，
+/// 旧实现读的 learning/learning_cycles.jsonl 无生产写入方（幻影路径）。
+fn learning_history_cycles(
+    forge_dir: &std::path::Path,
+) -> Result<Vec<nemesis_types::forge::LearningCycle>> {
+    let mut cycles =
+        block_on_async(nemesis_forge::cycle_store::CycleStore::new(forge_dir).read_all())
+            .map_err(anyhow::Error::msg)?;
+    cycles.sort_by(|a, b| a.started_at.cmp(&b.started_at));
+    Ok(cycles)
+}
+
 fn cmd_learning_history(forge_dir: &std::path::Path, limit: usize) -> Result<()> {
     println!("Learning History (last {} cycles)", limit);
     println!("==================================");
 
-    let cycle_store = forge_dir.join("learning").join("learning_cycles.jsonl");
-    if cycle_store.exists() {
-        if let Ok(data) = std::fs::read_to_string(&cycle_store) {
-            let lines: Vec<&str> = data.lines().filter(|l| !l.trim().is_empty()).collect();
-            if lines.is_empty() {
-                println!("  No learning history found.");
-            } else {
-                for line in lines.iter().rev().take(limit) {
-                    if let Ok(evt) = serde_json::from_str::<serde_json::Value>(line) {
-                        let ts = evt.get("timestamp").and_then(|v| v.as_str()).unwrap_or("?");
-                        let patterns = evt
-                            .get("patterns_found")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
-                        let actions = evt
-                            .get("actions_generated")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
-                        let deployed = evt
-                            .get("actions_deployed")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
-                        println!(
-                            "  [{}] patterns={} actions={} deployed={}",
-                            ts, patterns, actions, deployed
-                        );
-                    } else {
-                        println!("  {}", line);
-                    }
-                }
-                println!();
-                println!("  Total cycles: {}", lines.len());
-            }
-        }
-    } else {
+    let cycles = learning_history_cycles(forge_dir)?;
+    if cycles.is_empty() {
         println!("  No learning history found.");
+        return Ok(());
     }
+    let total = cycles.len();
+    for cycle in cycles.iter().rev().take(limit) {
+        println!(
+            "  [{}] {} patterns={} actions={} status={:?}",
+            cycle.started_at, cycle.id, cycle.patterns_found, cycle.actions_taken, cycle.status
+        );
+    }
+    println!();
+    println!("  Total cycles: {total}");
     Ok(())
 }
 
@@ -944,7 +941,9 @@ pub fn run(action: ForgeAction, local: bool) -> Result<()> {
         ForgeAction::Status => cmd_status(&home, &cfg_path, &forge_dir)?,
         ForgeAction::Enable => cmd_enable(&cfg_path, &forge_dir)?,
         ForgeAction::Disable => cmd_disable(&cfg_path)?,
-        ForgeAction::Reflect => cmd_reflect(&home, &cfg_path, &forge_dir)?,
+        ForgeAction::Reflect {
+            auto_skill: auto_skill_flag,
+        } => cmd_reflect(&home, &cfg_path, &forge_dir, auto_skill_flag)?,
         ForgeAction::List { r#type } => cmd_list(&forge_dir, &r#type)?,
         ForgeAction::Evaluate { id } => cmd_evaluate(&forge_dir, &id)?,
         ForgeAction::Export { id, output, all } => {
@@ -1012,6 +1011,8 @@ pub fn run(action: ForgeAction, local: bool) -> Result<()> {
             }
         }
         ForgeAction::Optimize { name, op, param } => {
+            // name 围栏（R18）：`forge test` 同款穿越/盘符面，单一真相源。
+            nemesis_forge::forge::valid_skill_dir_name(&name).map_err(anyhow::Error::msg)?;
             let workspace = common::workspace_path(&home);
             let skill_md = workspace.join("skills").join(&name).join("SKILL.md");
             let content = std::fs::read_to_string(&skill_md)
@@ -1112,6 +1113,10 @@ mod tests;
 /// nemesis-web handlers::forge）。
 async fn cmd_test(home: &std::path::Path, name: &str, test_filter: Option<&str>) -> Result<()> {
     use nemesis_forge::skill_tests as st;
+
+    // name 围栏（R18）：与 web forge_test_cmd 同一单一真相源——`../x`
+    // 穿越读面 + `C:evil` 盘符相对形态（join 整段换基座）。
+    nemesis_forge::forge::valid_skill_dir_name(name).map_err(anyhow::Error::msg)?;
 
     let workspace = common::workspace_path(home);
     let skill_md = workspace.join("skills").join(name).join("SKILL.md");

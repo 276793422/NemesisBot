@@ -338,6 +338,9 @@ impl ProjectLoopManager {
                 match rx.recv().await {
                     Ok(msg) => mgr.route_one(&msg).await,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        // P2-1：接收侧真实丢失计入 bus 指标（丢的是项目
+                        // 会话消息，用户侧表现为项目 loop 未响应）。
+                        mgr.bus.record_inbound_lagged(n);
                         warn!("[ProjectLoops] 项目调度 lagged by {n} message(s)");
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,

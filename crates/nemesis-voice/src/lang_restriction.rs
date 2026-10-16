@@ -88,8 +88,12 @@ pub struct LangRestriction {
     fallback_recognizer: *const sherpa::SherpaOnnxOfflineRecognizer,
 }
 
+// SAFETY（审计表 C-2）：fallback_recognizer 为 owning 裸指针，随实例移动安全；
+// 不实现 Sync——上游对 offline recognizer 无线程安全承诺，而本类型唯一的
+// 访问入口 `apply()` 只被持有者 `SttEngine` 在其内部互斥锁段内调用
+// （`SttEngine` 的 `restriction` 字段私有、无 getter，实例无法脱离持有者被
+// 并发共享）。串行化由持有者的锁类型化表达，而非本类型的注释承诺。
 unsafe impl Send for LangRestriction {}
-unsafe impl Sync for LangRestriction {}
 
 impl Remedy {
     /// 检测结果是否需要补救（纯逻辑，可单测，不碰识别器）。

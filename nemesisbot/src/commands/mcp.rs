@@ -13,9 +13,8 @@ pub enum McpAction {
     List,
     /// Add a new MCP server (stdio: --command；HTTP: --url [+ --header])
     ///
-    /// HTTP 服务直连示例（无需桥接脚本）：
-    ///   nemesisbot mcp add -n pet --url http://127.0.0.1:8808/mcp \
-    ///     -H "Authorization: vault:pet-token"
+    /// HTTP 服务直连示例（无需桥接脚本，一行复制即可执行）：
+    ///   nemesisbot mcp add -n pet --url http://127.0.0.1:8808/mcp -H "Authorization: vault:pet-token"
     ///
     /// header 值支持 vault:/env:/yaml: 凭据引用（整值前缀，每次连接现查；
     /// 不支持 'Bearer vault:<别名>' 内嵌写法）。vault 值存完整头值
@@ -242,6 +241,13 @@ impl AddRequest {
             validate_header_line(h)?;
         }
 
+        // env 行格式校验（2026-10-15 第十三轮）：与 headers 同纪律——单一
+        // 真相源 nemesis_config::validate_mcp_env_line，坏行在写入面 loud
+        // 拒绝（此前静默落盘，挂载期被运行期跳过，变量无声消失）。
+
+        for e in env {
+            validate_env_line(e)?;
+        }
         // 与旧版逐字节一致：split(',') + trim，不过滤空段
         let args: Vec<String> = args
             .map(|a| a.split(',').map(|s| s.trim().to_string()).collect())
@@ -260,47 +266,32 @@ impl AddRequest {
     }
 }
 
-/// 校验一行 `"KEY: VALUE"` 头（CLI 侧语法闸，与
-/// `nemesis-mcp::http_transport::resolved_header_pairs` 的运行期规则同源：
-/// 缺冒号 / 头名为空或含空白控制字符 / `Mcp-Session-Id` 保留头 / 整值
-/// `vault:`/`env:`/`yaml:` 引用名为空——只验语法，值原样落盘，绝不解引用）。
+/// 校验一行 `"KEY: VALUE"` 头（CLI 侧语法闸）。规则单一真相源 =
+/// `nemesis_config::validate_mcp_header_line`（运行期 `resolved_header_pairs`
+/// 与 Dashboard server.add/update 同源）：缺冒号 / 头名为空或含空白控制
+/// 字符 / `Mcp-Session-Id` 保留头 / 整值 `vault:`/`env:`/`yaml:` 引用名为
+/// 空或带首尾空格——只验语法，值原样落盘，绝不解引用。错误文案附加脱敏
+/// 后的行（截掉值段），校验器本体不回显值段。
 fn validate_header_line(line: &str) -> Result<()> {
-    let Some((raw_name, raw_value)) = line.split_once(':') else {
-        anyhow::bail!(
-            "header 行缺冒号（应为 \"KEY: VALUE\"）：{:?}",
-            redact_header_for_error(line)
-        );
-    };
-    let name = raw_name.trim();
-    if name.is_empty() || name.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        anyhow::bail!(
-            "header 名非法（空 / 含空白或控制字符）：{:?}",
-            redact_header_for_error(line)
-        );
+    nemesis_config::validate_mcp_header_line(line)
+        .map_err(|reason| anyhow::anyhow!("{reason}：{}", redact_header_for_error(line)))
+}
+
+/// env 行校验（2026-10-15 第十三轮）：规则单一真相源 =
+/// `nemesis_config::validate_mcp_env_line`（Dashboard server.add/update
+/// 与运行期 `resolved_env` 同源）。错误文案附加脱敏后的行（截掉 '=' 后
+/// 值段），校验器本体不回显值段。
+fn validate_env_line(line: &str) -> Result<()> {
+    nemesis_config::validate_mcp_env_line(line)
+        .map_err(|reason| anyhow::anyhow!("{reason}：{}", redact_env_for_error(line)))
+}
+
+/// 错误消息里的 env 行脱敏：截掉 '=' 后的值段（值可能含凭据字面量）。
+fn redact_env_for_error(line: &str) -> String {
+    match line.split_once('=') {
+        Some((name, _)) => format!("{}=<redacted>", name.trim()),
+        None => "<redacted>".to_string(),
     }
-    if name.eq_ignore_ascii_case("mcp-session-id") {
-        anyhow::bail!("Mcp-Session-Id 是协议保留头（server 指派），不能配置");
-    }
-    let value = raw_value.trim();
-    // 整值引用语法（与 nemesis_config::resolve_secret_field 同一前缀语义）：
-    // 引用名非空即可，绝不查询真值。
-    for (prefix, what) in [
-        ("env:", "环境变量名"),
-        ("yaml:", "凭据别名"),
-        ("vault:", "vault 别名"),
-    ] {
-        if let Some(rest) = value.strip_prefix(prefix) {
-            if rest.is_empty() {
-                anyhow::bail!(
-                    "header 值 {} 引用名为空——写作 {}<name>（如 vault:pet-token）",
-                    what,
-                    prefix
-                );
-            }
-            break;
-        }
-    }
-    Ok(())
 }
 
 /// 错误消息里的头行脱敏：截掉冒号后的值段（值可能含凭据字面量）。
@@ -354,6 +345,22 @@ fn embedded_ref_headers(headers: &[String]) -> Vec<String> {
 /// 敏感语义，外加旧手写条目兼容（无 transport_type、无 command、有 url）。
 /// 判定为 HTTP 才走直连测试分支；其余形态按 stdio 走 PATH 探测——与
 /// 运行时分派一致，避免「test 一套口径、连接另一套口径」的断层。
+/// `mcp list` 的命令显示值：与分派真相源的 stdio 回落同款（`command`
+/// 空而 `url` 非空时显示 `url`——Dashboard stdio 约定命令存 url 字段），
+/// 两者皆空回 "?"。
+fn display_command_for(server: &serde_json::Value) -> String {
+    let command = server.get("command").and_then(|v| v.as_str()).unwrap_or("");
+    if !command.is_empty() {
+        return command.to_string();
+    }
+    let url = server.get("url").and_then(|v| v.as_str()).unwrap_or("");
+    if !url.is_empty() {
+        url.to_string()
+    } else {
+        "?".to_string()
+    }
+}
+
 fn server_entry_is_http(server: &serde_json::Value) -> bool {
     let transport_type = server
         .get("transport_type")
@@ -363,7 +370,13 @@ fn server_entry_is_http(server: &serde_json::Value) -> bool {
     matches!(
         transport_type,
         "http" | "streamable_http" | "streamable-http"
-    ) || (transport_type.is_empty() && server.get("command").is_none() && !url.is_empty())
+    ) || (transport_type.is_empty()
+        && !url.is_empty()
+        && server
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .is_empty())
 }
 
 /// Sync the master MCP switch in the home-root config.json.
@@ -437,10 +450,7 @@ fn cmd_list(mcp_cfg_path: &std::path::Path) -> Result<()> {
             } else {
                 for server in servers {
                     let name = server.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                    let command = server
-                        .get("command")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
+                    let command = display_command_for(server);
                     let args = server
                         .get("args")
                         .and_then(|v| v.as_array())
@@ -464,7 +474,23 @@ fn cmd_list(mcp_cfg_path: &std::path::Path) -> Result<()> {
                         .unwrap_or(0);
 
                     println!("  {}", name);
-                    println!("    Command: {} {}", command, args);
+                    if server_entry_is_http(server) {
+                        // W1（2026-10-15）：HTTP 条目显示 URL——无 command 键，
+                        // 走旧分支会打出误导性的 "Command: ?"。
+                        let url = server.get("url").and_then(|v| v.as_str()).unwrap_or("?");
+                        println!("    Transport: HTTP");
+                        println!("    URL: {}", url);
+                        let header_count = server
+                            .get("headers")
+                            .and_then(|v| v.as_array())
+                            .map(|a| a.len())
+                            .unwrap_or(0);
+                        if header_count > 0 {
+                            println!("    Headers: {} line(s)", header_count);
+                        }
+                    } else {
+                        println!("    Command: {} {}", command, args);
+                    }
                     if timeout > 0 {
                         println!("    Timeout: {} seconds", timeout);
                     }
@@ -509,9 +535,12 @@ fn cmd_add(
     if let Some(servers) = cfg.get("servers").and_then(|v| v.as_array()) {
         for s in servers {
             if s.get("name").and_then(|v| v.as_str()) == Some(req.name.as_str()) {
-                println!("Error: Server '{}' already exists.", req.name);
-                println!("Remove it first: nemesisbot mcp remove {}", req.name);
-                return Ok(());
+                anyhow::bail!(
+                    "Server '{}' already exists.
+Remove it first: nemesisbot mcp remove {}",
+                    req.name,
+                    req.name
+                );
             }
         }
     }
@@ -605,6 +634,24 @@ fn cmd_add(
         }
     }
     println!();
+    // 第十四轮缺陷 17：sanitize 前缀碰撞写面 warn（与加载面
+    // McpManager::load_config 同源 helper）——碰撞名在热重载下第二个
+    // 永不挂载、启动挂载工具键互相覆盖。
+    if let Some(servers) = cfg["servers"].as_array() {
+        let names: Vec<&str> = servers
+            .iter()
+            .filter_map(|s| s.get("name").and_then(|v| v.as_str()))
+            .collect();
+        for (prefix, group) in nemesis_mcp::adapter::sanitize_prefix_collisions(names) {
+            if group.iter().any(|n| n == &req.name) {
+                println!(
+                    "  ⚠ 名字 [{}] 归一后共用工具前缀 '{}'——热重载只挂首个，建议改名其中一个（remove + add）。",
+                    group.join(", "),
+                    prefix
+                );
+            }
+        }
+    }
     println!("Next steps:");
     println!("  1. Test the connection: nemesisbot mcp test {}", req.name);
     println!("  2. List tools: nemesisbot mcp tools {}", req.name);
@@ -634,10 +681,10 @@ fn cmd_remove(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()> {
             println!("MCP server '{}' removed.", name);
             println!("Restart agent/gateway to apply changes.");
         } else {
-            println!("Server '{}' not found.", name);
+            anyhow::bail!("Server '{}' not found.", name);
         }
     } else {
-        println!("Server '{}' not found.", name);
+        anyhow::bail!("Server '{}' not found.", name);
     }
     Ok(())
 }
@@ -648,8 +695,7 @@ async fn cmd_test(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()> {
     let server = match find_server(mcp_cfg_path, name)? {
         Some(s) => s,
         None => {
-            println!("  Server '{}' not found in configuration.", name);
-            return Ok(());
+            anyhow::bail!("Server '{}' not found in configuration.", name);
         }
     };
 
@@ -663,19 +709,19 @@ async fn cmd_test(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()> {
         println!("  Transport: HTTP");
         println!("  URL: {}", url);
     } else {
-        let command = server
-            .get("command")
-            .and_then(|v| v.as_str())
-            .unwrap_or("?");
+        // 与分派真相源 stdio 回落同源（R8）：web 形态 stdio 条目命令存
+        // url 字段——直读 command 键会探测 which("?") 误导跳过连接测试。
+        let command = display_command_for(&server);
         println!("  Command: {}", command);
 
         // Check if command exists
-        if which::which(command).is_ok() {
+        if which::which(&command).is_ok() {
             println!("  Command found in PATH: OK");
         } else {
-            println!("  Command NOT found in PATH.");
-            println!("  Skipping connection test.");
-            return Ok(());
+            anyhow::bail!(
+                "Command '{}' NOT found in PATH — connection test cannot pass.",
+                command
+            );
         }
     }
 
@@ -728,6 +774,8 @@ async fn cmd_test(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()> {
                     println!("  vault 值须为完整头值（如 'Bearer <token>'，引用不支持内嵌写法）。");
                 }
             }
+            // 失败 = 非零退出（自动化契约：agent/exec 工具靠退出码判断成败）。
+            return Err(anyhow::anyhow!("connection test failed: {:#}", e));
         }
     }
     Ok(())
@@ -738,10 +786,7 @@ async fn cmd_tools(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()> {
 
     let server = match find_server(mcp_cfg_path, name)? {
         Some(s) => s,
-        None => {
-            println!("  Server '{}' not found.", name);
-            return Ok(());
-        }
+        None => anyhow::bail!("Server '{}' not found.", name),
     };
 
     let mut client = connect_to_server(&server).await?;
@@ -804,10 +849,7 @@ async fn cmd_resources(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()>
 
     let server = match find_server(mcp_cfg_path, name)? {
         Some(s) => s,
-        None => {
-            println!("  Server '{}' not found.", name);
-            return Ok(());
-        }
+        None => anyhow::bail!("Server '{}' not found.", name),
     };
 
     let mut client = connect_to_server(&server).await?;
@@ -850,10 +892,7 @@ async fn cmd_prompts(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()> {
 
     let server = match find_server(mcp_cfg_path, name)? {
         Some(s) => s,
-        None => {
-            println!("  Server '{}' not found.", name);
-            return Ok(());
-        }
+        None => anyhow::bail!("Server '{}' not found.", name),
     };
 
     let mut client = connect_to_server(&server).await?;
@@ -913,7 +952,7 @@ fn cmd_inspect(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()> {
             serde_json::to_string_pretty(&server).unwrap_or_default()
         );
     } else {
-        println!("  Server '{}' not found.", name);
+        anyhow::bail!("Server '{}' not found.", name);
     }
     Ok(())
 }
@@ -949,8 +988,7 @@ async fn cmd_discover(
                 .await
         }
         (None, None) => {
-            println!("Error: provide either --command <path> or --url <url>");
-            return Ok(());
+            anyhow::bail!("provide either --command <path> or --url <url>");
         }
     };
 
@@ -1037,7 +1075,7 @@ async fn cmd_discover(
             println!("\nDiscovery complete.");
         }
         Err(e) => {
-            println!("Discovery failed: {}", e);
+            anyhow::bail!("Discovery failed: {}", e);
         }
     }
     Ok(())

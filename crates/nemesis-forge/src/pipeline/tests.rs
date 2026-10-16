@@ -569,18 +569,29 @@ fn test_validate_skill_boundary_50_chars() {
         ForgeConfig::default(),
         Arc::new(Registry::new(crate::types::RegistryConfig::default())),
     );
-    // Exactly 50 chars should pass
-    let content = "---\nname: test\n---\n123456789012345678901234567890123456789012345678";
-    if content.len() >= 50 {
-        let validation = pipeline.validate(ArtifactKind::Skill, "test", content);
-        assert!(validation.stage1_static.as_ref().unwrap().stage.passed);
-    }
-    // 49 chars should fail
-    let short_content = "---\nname: test\n---\n12345678901234567890123456789012345678901234567";
-    if short_content.len() < 50 {
-        let validation = pipeline.validate(ArtifactKind::Skill, "test", short_content);
-        assert!(!validation.stage1_static.as_ref().unwrap().stage.passed);
-    }
+    // 生产闸（validate_static）是字节长度严格 `< 50`。旧版用 if 护栏包断言，
+    // 但「49 字符」样实为 66 字节——护栏恒假，失败分支从未执行（死测试）。
+    // 现按真实边界构造 49/50 字节两样，无护栏直接断言两侧。
+    let prefix = "---\nname: test\n---\n";
+    let exact_50 = format!("{}{}", prefix, "5".repeat(50 - prefix.len()));
+    let short_49 = format!("{}{}", prefix, "4".repeat(49 - prefix.len()));
+    assert_eq!(exact_50.len(), 50);
+    assert_eq!(short_49.len(), 49);
+
+    let ok = pipeline.validate(ArtifactKind::Skill, "test", &exact_50);
+    assert!(ok.stage1_static.as_ref().unwrap().stage.passed);
+
+    let short = pipeline.validate(ArtifactKind::Skill, "test", &short_49);
+    let stage1 = short.stage1_static.as_ref().unwrap();
+    assert!(!stage1.stage.passed);
+    assert!(
+        stage1.stage.errors.iter().any(|e| e.contains("too short")),
+        "expected too-short error, got {:?}",
+        stage1.stage.errors
+    );
+    // stage1 失败必须短路：stage2/3 不执行。
+    assert!(short.stage2_functional.is_none());
+    assert!(short.stage3_quality.is_none());
 }
 
 #[test]
