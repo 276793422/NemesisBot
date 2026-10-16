@@ -1,6 +1,7 @@
 //! 文件系统监视与注入：start_fs_watcher、push/drain_external_changes、note_self_write、workspace/spill 根、set_snapshot_role/interactive_approval/skills_loader/commands_path/cc_hooks_bridge、run_session_end_hooks。
 //!
 //! P1 自 `loop.rs` 物理搬迁（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）；语义零变化。
+#[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
 
