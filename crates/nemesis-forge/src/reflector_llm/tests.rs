@@ -672,3 +672,22 @@ async fn test_distill_skill_draft_contract_violation_is_none() {
         .unwrap();
     assert!(r.is_none(), "contract violation must degrade to no-draft");
 }
+
+#[test]
+fn test_parse_dimension_score_clamps_and_rejects() {
+    use super::parse_dimension_score;
+    // 越界钳位（R18：u32 溢出/溢出分直接进加权会 panic 或回绕）。
+    assert_eq!(parse_dimension_score(&serde_json::json!(1000)), Some(100));
+    assert_eq!(parse_dimension_score(&serde_json::json!(-5)), Some(0));
+    assert_eq!(parse_dimension_score(&serde_json::json!(87.6)), Some(87));
+    // f64 形态 + 边界。
+    assert_eq!(parse_dimension_score(&serde_json::json!(100.0)), Some(100));
+    assert_eq!(parse_dimension_score(&serde_json::json!(0.0)), Some(0));
+    // 非数值 / 非有限 = 拒绝（None），调用方 fail-open 到该维缺省。
+    assert_eq!(parse_dimension_score(&serde_json::json!("92")), None);
+    assert_eq!(parse_dimension_score(&serde_json::json!(null)), None);
+    let nan = serde_json::from_str::<serde_json::Value>("{\"x\": NaN}")
+        .ok()
+        .and_then(|v| parse_dimension_score(v.get("x").unwrap()));
+    assert_eq!(nan, None, "NaN must be rejected, not clamped");
+}

@@ -78,7 +78,9 @@ fn test_load_save_config() {
 
 #[test]
 fn test_load_missing_file_returns_default() {
-    let config = load_forge_config(std::path::Path::new("/nonexistent/forge.json"));
+    // tempdir 内的不存在路径——裸 `/nonexistent/...` 在 Windows 上解析到盘根。
+    let dir = tempfile::tempdir().unwrap();
+    let config = load_forge_config(&dir.path().join("nonexistent.json"));
     assert!(!config.enabled);
 }
 

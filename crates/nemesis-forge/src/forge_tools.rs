@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use nemesis_types::utils;
 
 use crate::forge::Forge;
+use crate::mcp_installer::MCPInstaller;
 
 // ---------------------------------------------------------------------------
 // Tool definition types
@@ -335,6 +336,24 @@ fn static_validation(content: &str, kind: &ArtifactKind) -> StaticValidationResu
         all_passed = false;
     }
 
+    // Check 5: Security scan（F-S1 同类扫，2026-10-16 R16）——危险命令 +
+    // 硬编码密钥拦在晋升闸前。本函数是 forge_evaluate 的 Stage 1，此前纯
+    // 结构检查：手工编辑/历史落盘/未设闸时期写入的危险内容可 Draft→Active
+    // 晋升为 agent 指令。规则与写盘闸同源（StaticValidator::security_errors）。
+    let sec_errors = crate::validator::StaticValidator::new().security_errors(content);
+    checks.push(StaticCheck {
+        name: "Security scan".into(),
+        passed: sec_errors.is_empty(),
+        detail: if sec_errors.is_empty() {
+            None
+        } else {
+            Some(sec_errors.join("; "))
+        },
+    });
+    if !sec_errors.is_empty() {
+        all_passed = false;
+    }
+
     StaticValidationResult {
         passed: all_passed,
         checks,
@@ -610,8 +629,18 @@ impl ForgeToolExecutor {
             }
         }
 
-        // Sanitize name
-        let name = name.to_lowercase().replace(' ', "-");
+        // Sanitize name（2026-10-16 R18 路径穿越修复）：旧实现只
+        // `to_lowercase().replace(' ', "-")`——`../`、`..\`、`C:x` 全部透传，
+        // 下游 `forge/skills/{name}`、`scripts/{category}/{name}`、
+        // `mcp/{name}` 三处 join 全是可穿越写面（agent 可直接调本工具）。
+        // 与 learning_engine 蒸馏名同一规则（slugify_skill_name 单一真相
+        // 源）：折叠为安全 kebab 段，全非法名诚实报错。
+        let name = crate::forge::slugify_skill_name(&name);
+        if name.is_empty() {
+            return ForgeToolResult::err(
+                "name contains no usable characters after sanitization (need [a-z0-9_-])",
+            );
+        }
 
         // Use shared CreateSkill method for skill type (matching Go's behavior:
         // t.forge.CreateSkill(ctx, name, content, description, nil))
@@ -660,7 +689,16 @@ impl ForgeToolExecutor {
         let forge_dir = self.forge.workspace().join("forge");
         let artifact_path = match artifact_type.as_str() {
             "script" => {
-                let category = args["category"].as_str().unwrap_or("utils");
+                // category 同样是路径段（R18：此前完全未消毒，`../` 可越出
+                // scripts/ 目录），同一 slug 规则。
+                let category =
+                    crate::forge::slugify_skill_name(args["category"].as_str().unwrap_or("utils"));
+                let category = if category.is_empty() {
+                    "utils"
+                } else {
+                    &category
+                };
+                let category = category.to_string();
                 forge_dir.join("scripts").join(category).join(&name)
             }
             "mcp" => {
@@ -775,17 +813,17 @@ impl ForgeToolExecutor {
                 } else {
                     "uv".to_string()
                 };
-                // `go run <file>` and `uv run <file>` share the same args;
+                // `go run <file>` 和 `uv run <file>` share the same args;
                 // the command itself (see above) carries the difference.
+                // 2026-10-16 复查（FT1）：必须传**绝对路径**——此前传裸文件名，
+                // MCP server 进程以 gateway 的 CWD 启动，`uv run server.py`
+                // 只有在 CWD 恰好等于 mcp 目录时才能命中；与 execute_build_mcp
+                // 安装臂（同文件下方，绝对路径）口径对齐。
                 let cmd_args = vec![
                     "run".to_string(),
-                    artifact_path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string(),
+                    artifact_path.to_string_lossy().to_string(),
                 ];
-                match installer.install(&name, &command, cmd_args).await {
+                match installer.install(&name, &command, cmd_args) {
                     Ok(()) => {
                         validation_info.push_str("\n- MCP auto-registered to config.mcp.json");
                     }
@@ -797,6 +835,23 @@ impl ForgeToolExecutor {
                     }
                 }
             }
+        }
+
+        // R18 诚实化：installer 未注入时 Active MCP 不会落 config.mcp.json。
+        // 此前静默——create 报告「成功」而用户等一个不存在的注册。当前
+        // init_mcp_installer 无生产接线点（gateway 不构造），该臂是常态
+        // 而非异常，必须让调用方（LLM/用户）知道要手动注册。
+        if artifact_type == "mcp"
+            && self
+                .forge
+                .registry()
+                .get(&artifact_id)
+                .is_some_and(|a| matches!(a.status, nemesis_types::forge::ArtifactStatus::Active))
+            && self.forge.mcp_installer().is_none()
+        {
+            validation_info.push_str(
+                "\n- MCP auto-registration unavailable: no installer wired in this context (register manually in config.mcp.json)",
+            );
         }
 
         // Determine final status
@@ -857,6 +912,18 @@ impl ForgeToolExecutor {
             return ForgeToolResult::err("content or rollback_version is required");
         }
 
+        // F-S1 安全闸（2026-10-16 R16 同类扫）：agent 可调的更新面在写盘前
+        // 过 security_errors——content 直写 forge 文件且 Skill 类同步到活
+        // workspace/skills/（agent 指令面），比 create 路径更需要闸。回滚
+        // 快照同样过闸（快照可能出自未设闸时期的落盘内容）。
+        let sec_errors = crate::validator::StaticValidator::new().security_errors(&content);
+        if !sec_errors.is_empty() {
+            return ForgeToolResult::err(format!(
+                "security gate rejected update: {}",
+                sec_errors.join("; ")
+            ));
+        }
+
         // Save version snapshot before updating
         let forge_dir = self.forge.workspace().join("forge");
         let artifact_path = resolve_artifact_path(&forge_dir, &artifact);
@@ -876,11 +943,22 @@ impl ForgeToolExecutor {
 
         // Update skill copy if it's a skill type
         if artifact.kind == ArtifactKind::Skill {
+            // 2026-10-16 复查（FT2）：目录段必须 slug——registry 可能装着
+            // 历史污染名（`../x` 等，R18 的 resolve_artifact_path 只护了
+            // forge/ 主副本），这里拼 workspace/skills/ 同样是名字当路径段。
+            // slugify 对合法 kebab 名恒等，对穿越序列消解。
+            let skill_slug = crate::forge::slugify_skill_name(&artifact.name);
+            if skill_slug.is_empty() {
+                return ForgeToolResult::err(format!(
+                    "Artifact {} has an unusable name (slugifies to empty); skill copy skipped",
+                    id
+                ));
+            }
             let skills_dir = self
                 .forge
                 .workspace()
                 .join("skills")
-                .join(format!("{}-forge", artifact.name));
+                .join(format!("{}-forge", skill_slug));
             let _ = tokio::fs::create_dir_all(&skills_dir).await;
             let _ = tokio::fs::write(skills_dir.join("SKILL.md"), &content).await;
         }
@@ -890,23 +968,42 @@ impl ForgeToolExecutor {
             let updated = self.forge.registry().get(&id);
             if let Some(ref a) = updated
                 && matches!(a.status, nemesis_types::forge::ArtifactStatus::Active)
-                && let Some(installer) = self.forge.mcp_installer()
             {
-                let _mcp_dir = artifact_path.parent().unwrap_or(&artifact_path);
-                let _ = installer
-                    .install(
-                        &artifact.name,
-                        "uv",
-                        vec![
+                match self.forge.mcp_installer() {
+                    Some(installer) => {
+                        // FT1 同类收口（2026-10-16 全文复查）：与 create 臂同
+                        // 口径——绝对路径 + 按入口扩展名选 command（main.go →
+                        // go，server.py → uv）+ 安装失败诚实 warn。此前传裸
+                        // file_name（`uv run server.py` 只有 gateway CWD 恰好
+                        // 等于 mcp 目录才命中）且 `let _ =` 吞掉写盘失败。
+                        let command = if artifact_path
+                            .extension()
+                            .map(|e| e == "go")
+                            .unwrap_or(false)
+                        {
+                            "go"
+                        } else {
+                            "uv"
+                        };
+                        let cmd_args = vec![
                             "run".to_string(),
-                            artifact_path
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .to_string(),
-                        ],
-                    )
-                    .await;
+                            artifact_path.to_string_lossy().to_string(),
+                        ];
+                        if let Err(e) = installer.install(&artifact.name, command, cmd_args) {
+                            tracing::warn!(
+                                "[Forge] MCP '{}' re-registration failed: {} (register manually)",
+                                artifact.name,
+                                e
+                            );
+                        }
+                    }
+                    // R18 诚实化：installer 未注入 = 热注册跳过，warn 不静默
+                    //（与 create 侧「unavailable」注记同语义）。
+                    None => tracing::warn!(
+                        "[Forge] MCP '{}' is Active but no installer is wired; auto re-registration skipped",
+                        artifact.name
+                    ),
+                }
             }
         }
 
@@ -1199,97 +1296,48 @@ impl ForgeToolExecutor {
                     )
                 };
 
-                // Read or create the MCP config file
-                let config_dir = nemesis_path::workspace_config_dir(self.forge.workspace());
-                let mcp_config_path =
-                    nemesis_path::resolve_mcp_config_path_in_workspace(self.forge.workspace());
-
-                let _ = tokio::fs::create_dir_all(&config_dir).await;
-
-                let mut config: serde_json::Value = if mcp_config_path.exists() {
-                    match tokio::fs::read_to_string(&mcp_config_path).await {
-                        Ok(content) => serde_json::from_str(&content)
-                            .unwrap_or_else(|_| serde_json::json!({"mcpServers": {}})),
-                        Err(_) => serde_json::json!({"mcpServers": {}}),
-                    }
-                } else {
-                    serde_json::json!({"mcpServers": {}})
-                };
-
-                // Ensure mcpServers object exists
-                if !config.get("mcpServers").is_some_and(|v| v.is_object()) {
-                    config["mcpServers"] = serde_json::json!({});
-                }
-
-                // Add the new MCP server entry
-                config["mcpServers"][&entry_name] = serde_json::json!({
-                    "command": command,
-                    "args": args_vec,
-                    "env": {}
-                });
-
-                // Write back to disk
-                match serde_json::to_string_pretty(&config) {
-                    Ok(pretty) => {
-                        if let Err(e) = tokio::fs::write(&mcp_config_path, &pretty).await {
-                            ForgeToolResult::err(format!("Failed to write MCP config: {}", e))
-                        } else {
-                            ForgeToolResult::ok(format!(
-                                "MCP server '{}' installed to config.mcp.json\n- Command: {}\n- Args: {:?}\n- Path: {}",
-                                entry_name,
-                                command,
-                                args_vec,
-                                mcp_config_path.display()
-                            ))
-                        }
-                    }
-                    Err(e) => {
-                        ForgeToolResult::err(format!("Failed to serialize MCP config: {}", e))
-                    }
+                // P1 单一真相源对齐（2026-10-16）：注册走 MCPInstaller（标准
+                // `servers` 形状 + 写串行锁 + 更新保字段）。此前裸写
+                // `mcpServers` map 形状——若文件已是标准 `servers` 数组形态，
+                // 宽容解析只认 `servers` 键，这份注册整段隐形（装了等于没装）。
+                let installer = MCPInstaller::new(self.forge.workspace());
+                match installer.install(&entry_name, &command, args_vec.clone()) {
+                    Ok(()) => ForgeToolResult::ok(format!(
+                        "MCP server '{}' installed to config.mcp.json\n- Command: {}\n- Args: {:?}\n- Path: {}",
+                        entry_name,
+                        command,
+                        args_vec,
+                        installer.config_path().display()
+                    )),
+                    Err(e) => ForgeToolResult::err(format!("Failed to write MCP config: {}", e)),
                 }
             }
             "uninstall" => {
-                // Remove MCP from config.mcp.json
+                // Remove MCP from config.mcp.json（同走 MCPInstaller 单一真相源）。
                 let entry_name = format!("forge-{}", artifact.name);
-                let mcp_config_path =
-                    nemesis_path::resolve_mcp_config_path_in_workspace(self.forge.workspace());
+                let installer = MCPInstaller::new(self.forge.workspace());
 
-                if mcp_config_path.exists() {
-                    match tokio::fs::read_to_string(&mcp_config_path).await {
-                        Ok(content) => {
-                            let mut config: serde_json::Value = serde_json::from_str(&content)
-                                .unwrap_or_else(|_| serde_json::json!({"mcpServers": {}}));
-                            if let Some(servers) =
-                                config.get_mut("mcpServers").and_then(|v| v.as_object_mut())
-                            {
-                                if servers.remove(&entry_name).is_some() {
-                                    if let Ok(pretty) = serde_json::to_string_pretty(&config) {
-                                        let _ = tokio::fs::write(&mcp_config_path, &pretty).await;
-                                    }
-                                    ForgeToolResult::ok(format!(
-                                        "MCP server '{}' removed from config.mcp.json",
-                                        entry_name
-                                    ))
-                                } else {
-                                    ForgeToolResult::ok(format!(
-                                        "MCP server '{}' was not in config.mcp.json (already uninstalled)",
-                                        entry_name
-                                    ))
-                                }
-                            } else {
-                                ForgeToolResult::ok(format!(
-                                    "MCP server '{}' was not in config.mcp.json (no mcpServers section)",
-                                    entry_name
-                                ))
-                            }
-                        }
-                        Err(e) => ForgeToolResult::err(format!("Failed to read MCP config: {}", e)),
-                    }
-                } else {
-                    ForgeToolResult::ok(format!(
+                if !installer.config_path().exists() {
+                    return ForgeToolResult::ok(format!(
                         "MCP server '{}' was not installed (config.mcp.json does not exist)",
                         entry_name
-                    ))
+                    ));
+                }
+
+                // 配置文件在但条目不在（含文件只有无 `servers` 键的顶层字段）：
+                // 宽容解析得空表 → 按已卸载诚实回话。装载/写盘失败 loud 报错，
+                // 不静默当成功。
+                let was_installed = installer.is_installed(&entry_name);
+                match installer.uninstall(&entry_name) {
+                    Ok(()) if was_installed => ForgeToolResult::ok(format!(
+                        "MCP server '{}' removed from config.mcp.json",
+                        entry_name
+                    )),
+                    Ok(()) => ForgeToolResult::ok(format!(
+                        "MCP server '{}' was not in config.mcp.json (already uninstalled)",
+                        entry_name
+                    )),
+                    Err(e) => ForgeToolResult::err(format!("Failed to update MCP config: {}", e)),
                 }
             }
             _ => ForgeToolResult::err(format!(
@@ -1443,19 +1491,31 @@ impl ForgeToolExecutor {
 use nemesis_types::forge::ArtifactKind;
 
 /// Resolve the on-disk path for an artifact based on its type and name.
+///
+/// 2026-10-16 R18：name 在使用点再次 slug——注册表是磁盘态数据，历史
+/// 遗留的中毒名（旧 create 弱消毒时期写入的 `../x` 等）从这里流进
+/// execute_update/evaluate/build_mcp 的读写路径仍可越出 forge 目录。
+/// 合法名（slug 产物）经 slugify 后逐字节不变，零行为差异。
 fn resolve_artifact_path(
     forge_dir: &std::path::Path,
     artifact: &nemesis_types::forge::Artifact,
 ) -> PathBuf {
+    let name = crate::forge::slugify_skill_name(&artifact.name);
+    // 空 slug = 纯符号中毒名（`..`、`../..` 等穿越序列，旧 create 弱消毒
+    // 时期可落库）——此处回落原始名等于把穿越序列原样交还给 join，正是
+    // 本函数要堵的洞。改用受控占位段：读路径诚实未命中，写路径关在 forge
+    // 子目录内（合法名 slugify 恒非空，占位段永不命中正常产物）。
+    let name = if name.is_empty() {
+        "_unnamed_".to_string()
+    } else {
+        name
+    };
     match artifact.kind {
-        ArtifactKind::Skill => forge_dir
-            .join("skills")
-            .join(&artifact.name)
-            .join("SKILL.md"),
-        ArtifactKind::Script => forge_dir.join("scripts").join(&artifact.name),
+        ArtifactKind::Skill => forge_dir.join("skills").join(name).join("SKILL.md"),
+        ArtifactKind::Script => forge_dir.join("scripts").join(name),
         ArtifactKind::Mcp => {
             // Try both Python and Go entry points
-            let mcp_dir = forge_dir.join("mcp").join(&artifact.name);
+            let mcp_dir = forge_dir.join("mcp").join(name);
             if mcp_dir.join("server.py").exists() {
                 mcp_dir.join("server.py")
             } else if mcp_dir.join("main.go").exists() {

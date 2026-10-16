@@ -82,19 +82,33 @@ impl CycleStore {
 
         let since_date_str = since.map(|s| s.format("%Y%m%d").to_string());
 
+        // 2026-10-16 P5：月份目录与文件枚举先排序再消费（NTFS 字典序 vs
+        // ext4 哈希序，read_dir 顺序是平台实现细节）。不排序时返回序列
+        // 跨平台不稳定——下游 load_latest_cycle 已自排序（F-M10），但
+        // learning_engine 聚合与 CLI 列表直接消费本序列。
+        let mut month_names: Vec<String> = Vec::new();
         let mut month_entries = tokio::fs::read_dir(&self.base_dir).await?;
         while let Some(month_entry) = month_entries.next_entry().await? {
-            if !month_entry.file_type().await?.is_dir() {
-                continue;
+            if month_entry.file_type().await?.is_dir() {
+                month_names.push(month_entry.file_name().to_string_lossy().to_string());
             }
-            let mut file_entries = tokio::fs::read_dir(month_entry.path()).await?;
+        }
+        month_names.sort();
+
+        for month_name in &month_names {
+            let month_path = self.base_dir.join(month_name);
+            let mut file_names: Vec<String> = Vec::new();
+            let mut file_entries = tokio::fs::read_dir(&month_path).await?;
             while let Some(file_entry) = file_entries.next_entry().await? {
                 let name = file_entry.file_name();
-                let name_str = name.to_string_lossy();
-                if !name_str.ends_with(".jsonl") {
-                    continue;
+                let name_str = name.to_string_lossy().to_string();
+                if name_str.ends_with(".jsonl") {
+                    file_names.push(name_str);
                 }
+            }
+            file_names.sort();
 
+            for name_str in &file_names {
                 // Filter by since date using filename
                 if let Some(ref since_str) = since_date_str {
                     let date_part = name_str.trim_end_matches(".jsonl");
@@ -103,7 +117,7 @@ impl CycleStore {
                     }
                 }
 
-                let content = tokio::fs::read_to_string(file_entry.path()).await?;
+                let content = tokio::fs::read_to_string(month_path.join(name_str)).await?;
                 for line in content.lines() {
                     let line = line.trim();
                     if line.is_empty() {

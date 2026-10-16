@@ -284,8 +284,8 @@ fn test_session_positions() {
     assert_eq!(positions.get("session-1"), 0);
 }
 
-#[test]
-fn test_forge_plugin_on_tool_call() {
+#[tokio::test]
+async fn test_forge_plugin_on_tool_call() {
     let plugin = ForgePlugin::new(CollectorConfig::default());
     plugin.on_tool_call(
         "sess-1",
@@ -295,7 +295,12 @@ fn test_forge_plugin_on_tool_call() {
         None,
         42,
     );
-    // Should not panic; input channel has the experience
+    // on_tool_call 同步聚合一次（process_record），并把经验排进 input channel。
+    // 旧版零断言，两条腿都没被验证。
+    assert_eq!(plugin.collector().pattern_count(), 1);
+    let processed = plugin.process_pending().await;
+    assert_eq!(processed, 1, "input channel must hold the experience");
+    assert_eq!(plugin.collector().len(), 1);
 }
 
 #[test]
@@ -338,6 +343,13 @@ fn test_forge_plugin_on_tool_call_channel_full() {
     );
     // Key assertion: no panic. The in-memory pattern counts should still
     // reflect all calls (including the overflow one).
+    // （on_tool_call 对每次调用都同步 process_record——channel 满只影响
+    // 异步持久化队列，不影响聚合。旧版注释声称此断言但从未写下。）
+    assert_eq!(
+        plugin.collector().pattern_count(),
+        301,
+        "all 301 calls (300 fill + 1 overflow) must be aggregated in-memory"
+    );
 }
 
 #[test]
@@ -461,9 +473,12 @@ async fn test_flush_no_persistence_path() {
 
 #[tokio::test]
 async fn test_load_from_nonexistent_file() {
+    // 指到 tempdir 内的不存在文件——裸 `/nonexistent/...` 在 Windows 上会
+    // 解析到当前盘根（C:\nonexistent\...），测试不该依赖盘根状态。
+    let dir = tempfile::tempdir().unwrap();
     let collector = Collector::new(CollectorConfig::default());
     let result = collector
-        .load_from_file(PathBuf::from("/nonexistent/file.jsonl"))
+        .load_from_file(dir.path().join("nonexistent.jsonl"))
         .await;
     assert!(result.is_err());
 }
@@ -563,12 +578,19 @@ fn test_sanitize_args_nested_object() {
     let sanitized = Collector::sanitize_args(&args, &["api_key"]);
     // Only top-level keys are sanitized
     assert_eq!(sanitized["name"], "test");
+    // 钉住边界：嵌套对象里的同名键不脱敏（文档化限制——若未来加深层递归，
+    // 这里按新语义改断言，而不是静默漂移）。
+    assert_eq!(
+        sanitized["config"]["api_key"], "secret",
+        "nested api_key must survive unchanged (top-level-only sanitize)"
+    );
 }
 
 #[test]
-fn test_max_size_zero_means_unlimited() {
-    // max_size = 0 actually means "capacity of 0" - items get evicted immediately.
-    // To test "unlimited", use a very large max_size instead.
+fn test_max_size_large_holds_all_records() {
+    // max_size = 0 实际语义是「容量 0」——记录即刻被逐出，**不是**不限量；
+    // 「不限量」要用足够大的 max_size 表达。旧名
+    // test_max_size_zero_means_unlimited 与注释/断言正好相反，会误导读者。
     let mut config = CollectorConfig::default();
     config.max_size = 1000;
     let collector = Collector::new(config);
@@ -629,6 +651,32 @@ async fn test_process_pending_with_items() {
     plugin.input_channel().send(exp).await.unwrap();
     let count = plugin.process_pending().await;
     assert_eq!(count, 1);
+}
+
+/// P4 回归钉（2026-10-16）：on_tool_call 已按原始 args hash 聚合一次，
+/// process_pending 只落库不再聚合——同一次调用在 pattern_counts 里必须
+/// 恰好一条（旧路径经 record() 按合成 input_summary hash 再记一笔 =
+/// 计数膨胀 + 错误 hash 重复条目）。
+#[tokio::test]
+async fn test_process_pending_no_double_aggregation() {
+    let plugin = ForgePlugin::new(CollectorConfig::default());
+    plugin.on_tool_call(
+        "sess-dup",
+        "file_read",
+        &serde_json::json!({"path": "/tmp/a.txt"}),
+        Some(&serde_json::json!({"ok": true})),
+        None,
+        7,
+    );
+    let processed = plugin.process_pending().await;
+    assert_eq!(processed, 1);
+    assert_eq!(
+        plugin.collector().pattern_count(),
+        1,
+        "同一次调用只允许一条聚合（双重聚合路径会出 2）"
+    );
+    // 内存入库照常（experiences 面不受拆分影响）
+    assert_eq!(plugin.collector().len(), 1);
 }
 
 #[test]

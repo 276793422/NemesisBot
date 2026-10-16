@@ -100,6 +100,23 @@ fn parse_rejects_fixture_path_traversal() {
 }
 
 #[test]
+fn parse_rejects_fixture_path_windows_drive_and_root_forms() {
+    // R18 收紧的拒绝面：`C:evil` 盘符相对形态 is_absolute()==false 且无
+    // `..`，但 join 整段换基座（夹具写出沙盒）；绝对路径与根相对
+    //（`\x`、`/x`）同理拒。
+    for bad in ["C:evil.txt", "/abs.txt", "\\root.txt", "a/../b.txt"] {
+        let content = format!(
+            "---\nname: d\ntests:\n  - name: t\n    fixtures:\n      - path: {bad}\n        content: x\n    expect:\n      max_llm_turns: 1\n---\nbody"
+        );
+        let err = parse_skill_tests(&content).unwrap_err();
+        assert!(err.contains("invalid fixture path"), "{bad}: {err}");
+    }
+    // 合法相对段不受影响。
+    let ok = "---\nname: d\ntests:\n  - name: t\n    fixtures:\n      - path: data/input.txt\n        content: x\n    expect:\n      max_llm_turns: 1\n---\nbody";
+    assert!(parse_skill_tests(ok).is_ok());
+}
+
+#[test]
 fn parse_judge_threshold_optional_and_range_checked() {
     // threshold 缺省 = None（执行层配置默认注入）。
     let content = "---\nname: d\ntests:\n  - name: t\n    judge:\n      rubric: 判据\n    expect:\n      max_llm_turns: 1\n---\nbody";
