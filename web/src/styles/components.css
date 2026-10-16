@@ -299,6 +299,39 @@
   color: var(--text-muted);
 }
 
+/* 决策可见性三徽标（2026-10-15 批）：✋ 待你决策 = 实底 amber + 脉冲，
+ * 全页最高视觉权重（needs_user 强信号）；📋 计划待确认 = info 系描边强化
+ * （plan_ready 中信号）；⚠ 停滞 = 中性灰描边（attention 弱信号，只提示
+ * 不给按钮）。 */
+.badge-decision {
+  background: var(--warning);
+  color: #1a1206;
+  font-weight: 700;
+  animation: decision-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes decision-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 5px rgba(245, 158, 11, 0);
+  }
+}
+
+.badge-plan {
+  background: var(--info-bg);
+  color: var(--info);
+  box-shadow: inset 0 0 0 1px var(--info);
+}
+
+.badge-attention {
+  background: var(--surface);
+  color: var(--text-secondary);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
 /* ===== Toast Notifications ===== */
 .toast-container {
   position: fixed;

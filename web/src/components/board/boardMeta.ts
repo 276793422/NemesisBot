@@ -145,4 +145,62 @@ export interface IssueRow {
   comments?: any[]
   activity?: any[]
   subscribers?: any[]
+  /** 决策可见性投影（2026-10-15 批，issue.list 附带）：
+   *  needs_user = 停车强信号（活档案 + in_review/in_progress 状态闸）——
+   *  「✋ 待你决策」徽标与详情页决策面板数据源；
+   *  plan_ready = 拆解完成等确认发车（PLAN_CACHE 快照）——「📋 计划待确认」；
+   *  attention = 执行档案停滞弱信号（in_progress + 停摆哨兵评论）——只提示。 */
+  needs_user?: {
+    stop_kind: string
+    stop_kind_label: string
+    suggested_action: string
+    hint: string
+    stopped_at: string | null
+  } | null
+  plan_ready?: { plan_id: string; subs_count: number; created_age_secs: number } | null
+  attention?: boolean
+}
+
+// ---- 决策可见性 helper（镜像 crates/nemesis-board/src/handoff.rs
+// stop_kind_label 兜底；正常路径后端已投影 label，此处只补旧后端缺字段）----
+
+/** 停车类型 → 人话标签（与后端 stop_kind_label 同表；未知兜底「停车待处理」）。 */
+export const STOP_KIND_LABEL: Record<string, string> = {
+  unsure_streak: '连续不确定',
+  fail_streak: '连续失败熔断',
+  budget: '预算耗尽',
+  retry_exhausted: '重试耗尽',
+  worker_loop: 'worker 循环异常',
+  capability_fail: '能力不足',
+  infra: '基础设施故障',
+  defect_gate: '缺陷闸拦截',
+  parent_unresolved: '父单收口未决',
+  project_unresolved: '项目收口未决',
+  no_match: '无匹配节点',
+  plan_exhausted: '拆解重试耗尽',
+  llm_unavailable: 'LLM 不可用',
+}
+
+export function stopKindLabel(stopKind: string | undefined | null): string {
+  return (stopKind && STOP_KIND_LABEL[stopKind]) || '停车待处理'
+}
+
+/** suggested_action → 人话（决策面板按钮组预设依据）。 */
+export const SUGGESTED_ACTION_LABEL: Record<string, string> = {
+  manual_check: '人工核查后裁决',
+  retry: '重试/复评',
+  redispatch: '重新派发',
+}
+
+export function suggestedActionLabel(a: string | undefined | null): string {
+  return (a && SUGGESTED_ACTION_LABEL[a]) || '人工核查后裁决'
+}
+
+/** needs_user 行内徽标文案：「✋ 待你决策」+ 停车类型（title 悬浮用）。 */
+export function needsUserBadge(nu: IssueRow['needs_user']): { text: string; title: string } {
+  const label = nu?.stop_kind_label || stopKindLabel(nu?.stop_kind)
+  return {
+    text: '✋ 待你决策',
+    title: `停车待裁决：${label}${nu?.hint ? ' — ' + nu.hint : ''}`,
+  }
 }

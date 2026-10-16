@@ -131,3 +131,81 @@ fn test_write_failure_on_file_workspace_path() {
     assert!(write_handoff(&blocker, "NB-1", 1, &spec(), Vec::new()).is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// 归档生命周期（决策可见性批 2026-10-15）：恢复类动作成功后 archive_handoff
+// 把活跃档案移入 archive/ ——「在等人」集合清空、追溯保留。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_archive_moves_file_into_archive_dir() {
+    let ws = temp_dir("archive");
+    let rec = spec();
+    write_handoff(&ws, "NB-9", 9, &rec, Vec::new()).expect("write");
+    assert!(handoff_path(&ws, "NB-9").is_file());
+
+    let dest = archive_handoff(&ws, "NB-9")
+        .expect("archive")
+        .expect("moved");
+    let dest_name = dest.file_name().unwrap().to_string_lossy().to_string();
+    assert!(
+        dest_name.starts_with("NB-9.") && dest_name.ends_with(".json"),
+        "归档名带单号前缀与时间戳：{dest_name}"
+    );
+    assert!(
+        dest.starts_with(ws.join("board").join("handoffs").join("archive")),
+        "必须落在 archive/ 子目录：{}",
+        dest.display()
+    );
+    // 活跃位消失（issue.list needs_user 徽标熄灭的数据前提）。
+    assert!(!handoff_path(&ws, "NB-9").exists());
+    // 归档件可读、内容保留（追溯面）。
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&dest).unwrap()).unwrap();
+    assert_eq!(doc["issue"], "NB-9");
+    assert_eq!(doc["stop_kind"], "fail_streak");
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+#[test]
+fn test_archive_missing_handoff_is_ok_none() {
+    let ws = temp_dir("archive-miss");
+    // 无档案（从未停车 / 已归档）：Ok(None) 幂等，best-effort 调用方零分支。
+    assert!(matches!(archive_handoff(&ws, "NB-404"), Ok(None)));
+    // 二次归档同样幂等。
+    write_handoff(&ws, "NB-2", 2, &spec(), Vec::new()).unwrap();
+    assert!(archive_handoff(&ws, "NB-2").unwrap().is_some());
+    assert!(matches!(archive_handoff(&ws, "NB-2"), Ok(None)));
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+#[test]
+fn test_archive_never_touches_other_issues_files() {
+    let ws = temp_dir("archive-isolation");
+    write_handoff(&ws, "NB-3", 3, &spec(), Vec::new()).unwrap();
+    write_handoff(&ws, "NB-4", 4, &spec(), Vec::new()).unwrap();
+    archive_handoff(&ws, "NB-3").unwrap().unwrap();
+    assert!(!handoff_path(&ws, "NB-3").exists());
+    assert!(handoff_path(&ws, "NB-4").exists(), "他单档案不受牵连");
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+#[test]
+fn test_stop_kind_label_covers_catalog_and_falls_back() {
+    // 12 个 stop_kind 全目录 + 未知兜底。
+    assert_eq!(stop_kind_label("unsure_streak"), "连续不确定");
+    assert_eq!(stop_kind_label("fail_streak"), "连续失败熔断");
+    assert_eq!(stop_kind_label("budget"), "预算耗尽");
+    assert_eq!(stop_kind_label("retry_exhausted"), "重试耗尽");
+    assert_eq!(stop_kind_label("worker_loop"), "worker 循环异常");
+    assert_eq!(stop_kind_label("capability_fail"), "能力不足");
+    assert_eq!(stop_kind_label("infra"), "基础设施故障");
+    assert_eq!(stop_kind_label("defect_gate"), "缺陷闸拦截");
+    assert_eq!(stop_kind_label("parent_unresolved"), "父单收口未决");
+    assert_eq!(stop_kind_label("project_unresolved"), "项目收口未决");
+    assert_eq!(stop_kind_label("no_match"), "无匹配节点");
+    assert_eq!(stop_kind_label("plan_exhausted"), "拆解重试耗尽");
+    assert_eq!(stop_kind_label("llm_unavailable"), "LLM 不可用");
+    assert_eq!(stop_kind_label(""), "停车待处理");
+    assert_eq!(stop_kind_label("whatever_new"), "停车待处理");
+}

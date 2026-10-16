@@ -495,7 +495,7 @@ async fn test_comments_activity_subscribers() {
     .unwrap()
     .unwrap();
     let subs = out["subscribers"].as_array().unwrap();
-    // 创建者（admin/test-session）+ 手动订阅（同一 admin 身份 → 幂等一条）。
+    // 创建者（admin/dashboard，固定身份）+ 手动订阅（同一 admin 身份 → 幂等一条）。
     assert!(subs.iter().any(|s| s["subscriber"]["kind"] == "admin"));
     dispatch(
         &ctx,
@@ -1683,6 +1683,7 @@ fn sub(title: &str, deps: Vec<usize>) -> nemesis_board::PlannedSubIssue {
         required_role: String::new(),
         required_tags: Vec::new(),
         required_profession: String::new(),
+        required_capabilities: vec![],
         acceptance_criteria: format!("- [ ] {title} 验收"),
         depends_on: deps,
     }
@@ -2235,7 +2236,7 @@ async fn test_channel_post_routes_through_ingress() {
     {
         let calls = fake.0.lock().unwrap();
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].0, "admin/test-session");
+        assert_eq!(calls[0].0, "admin/dashboard");
         assert_eq!(calls[0].2, cid);
         assert_eq!(calls[0].3, "帮我看看这个报错");
     }
@@ -2637,9 +2638,17 @@ async fn test_fire_autopilot_passes_acceptance_criteria_to_issue() {
     let ap_empty = p3_ap(&store, "不填", false);
     let out2 = fire_autopilot(&store, None, &ap_empty, &actor, None).unwrap();
     let issue2 = store.get_issue(out2["issue_id"].as_i64().unwrap()).unwrap();
-    assert_eq!(
-        issue2.acceptance_criteria, None,
-        "规则不填 → issue 验收标准为空"
+    // 2026-10-17 契约更新（NB-125 根修）：规则不填 → issue 萭 store 自动
+    // 生成 AC（任务形态）——此前「为空保守转人工」语义被自动生成取代，
+    // 定时建单同样不再裸奔进评审。
+    assert!(
+        issue2
+            .acceptance_criteria
+            .as_deref()
+            .map(|ac| ac.starts_with("（系统自动生成）") && ac.contains("目标已达成并验证"))
+            .unwrap_or(false),
+        "规则不填 → 自动生成 AC: {:?}",
+        issue2.acceptance_criteria
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -2844,6 +2853,7 @@ async fn test_confirm_plan_subs_inherit_parent_project_id() {
             required_role: String::new(),
             required_tags: Vec::new(),
             required_profession: String::new(),
+            required_capabilities: vec![],
             acceptance_criteria: String::new(),
             depends_on: Vec::new(),
         }],
@@ -4808,6 +4818,7 @@ fn bare_issue(role: Option<&str>, tags: &[&str]) -> nemesis_board::Issue {
         required_role: role.map(str::to_string),
         required_tags: tags.iter().map(|s| s.to_string()).collect(),
         required_profession: None,
+        required_capabilities: vec![],
         created_at: 0,
         updated_at: 0,
     }
@@ -5586,13 +5597,16 @@ fn agt_assignee_pairing_sanitize_and_filter_arms() {
 fn agt_dispatch_prompt_renders_all_optional_sections() {
     let dir = unique_dir("agt-prompt");
     let store = store_of(&make_ctx_with_board(&dir));
-    let issue = store
+    // 2026-10-17 契约更新（NB-125 根修）：store 创建时自动生成 AC——要测
+    // None 臂（兜底文案 231-232）必须显式抹掉生成值，模拟存量缺 AC 单。
+    let mut issue = store
         .create_issue(nemesis_board::NewIssue {
             title: "提示词装配单".into(),
             description: "  ".into(), // 空白背景 → 「（未提供）」臂（225）
             ..Default::default()
         })
         .unwrap();
+    issue.acceptance_criteria = None;
     // 验收标准 None → 兜底文案（231-232）；assets/experience/feedback 全 Some（247/252/236-243）
     let p = build_dispatch_prompt(
         &issue,
@@ -6211,6 +6225,110 @@ async fn agt_review_retrigger_gate_hook_and_trace() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// --- 项目收口复评臂（2026-10-17 NB-101 project_escalate_human 死路根修）---
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn agt_project_retrigger_arm_gates_hook_and_trace() {
+    let dir = unique_dir("agt-proj-retrig");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("agt");
+    let pid = store
+        .create_project("复评项目", "", None, "", "", None)
+        .unwrap()
+        .id;
+    let parent = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "项目父单".into(),
+            project_id: Some(pid),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .transition_issue(parent.id, IssueStatus::InProgress, &actor)
+        .unwrap();
+    store
+        .transition_issue(parent.id, IssueStatus::InReview, &actor)
+        .unwrap();
+    store
+        .transition_issue(parent.id, IssueStatus::Done, &actor)
+        .unwrap();
+
+    // ① 项目不存在 → 诚实报错。
+    let err = dispatch(
+        &ctx,
+        "review.retrigger",
+        serde_json::json!({ "project_id": 987654 }),
+    )
+    .await
+    .unwrap_err();
+    assert!(!err.is_empty(), "{err}");
+
+    // ② 钩子未安装 → 诚实报错（PROJECT_REVIEW_RETRIGGER_HOOK 唯一安装点
+    //    在本测试；装之前的 get() 恒 None）。
+    let err = dispatch(
+        &ctx,
+        "review.retrigger",
+        serde_json::json!({ "project_id": pid }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("钩子未安装"), "{err}");
+
+    // ③ 安装钩子 → project_id 寻址命中、按 project_id 触发、父单留痕。
+    let fired = std::sync::Arc::new(std::sync::Mutex::new(Vec::<i64>::new()));
+    let fired2 = fired.clone();
+    let _ = set_project_review_retrigger_hook(std::sync::Arc::new(move |project_id: i64| {
+        fired2.lock().unwrap().push(project_id);
+    }));
+    let out = dispatch(
+        &ctx,
+        "review.retrigger",
+        serde_json::json!({ "project_id": pid }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["retriggered"], serde_json::json!(true));
+    assert_eq!(out["project_id"], serde_json::json!(pid));
+    assert_eq!(
+        fired.lock().unwrap().as_slice(),
+        &[pid],
+        "钩子按 project_id 触发"
+    );
+    let comments = store.list_comments(parent.id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("人工触发项目收口复评")),
+        "父单必须留系统注记：{:?}",
+        comments.iter().map(|c| &c.content).collect::<Vec<_>>()
+    );
+
+    // ④ 非 done 顶层父单 → 诚实拒绝（先收口父单再复评项目）。
+    let pid2 = store
+        .create_project("复评项目2", "", None, "", "", None)
+        .unwrap()
+        .id;
+    let _parent2 = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "未完成父单".into(),
+            project_id: Some(pid2),
+            ..Default::default()
+        })
+        .unwrap();
+    let err = dispatch(
+        &ctx,
+        "review.retrigger",
+        serde_json::json!({ "project_id": pid2 }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("非 done"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // --- 附录一：autopilot cron 装配 / 同步 / 摘除（3279-3390）---
 
 #[cfg(feature = "cluster")]
@@ -6695,6 +6813,291 @@ async fn agt_execute_plan_chain_planned_failure_and_auto_confirm() {
     );
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&home);
+}
+
+/// 按提示词分流的 provider：起草形态（user prompt 含「起草」）回可配置
+/// 的 AC 文本；planner 形态回合法计划 JSON。`draft_reply: None` = 起草
+/// 形态也回 JSON 数组（护栏拒绝臂——模型误入拆解角色）。
+#[cfg(feature = "cluster")]
+struct AgtAcDraftProvider {
+    draft_reply: Option<&'static str>,
+}
+
+#[cfg(feature = "cluster")]
+#[async_trait::async_trait]
+impl LlmProvider for AgtAcDraftProvider {
+    async fn chat(
+        &self,
+        _: &str,
+        messages: Vec<LlmMessage>,
+        _: Option<nemesis_agent::types::ChatOptions>,
+        _: Vec<nemesis_agent::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        let drafting = messages
+            .iter()
+            .rfind(|m| m.role == "user")
+            .map(|m| m.content.contains("起草"))
+            .unwrap_or(false);
+        let content = if drafting {
+            self.draft_reply
+                .unwrap_or(r#"[{"title":"误入拆解形态"}]"#)
+                .to_string()
+        } else {
+            AGT_PLAN_JSON.to_string()
+        };
+        Ok(LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
+            content,
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+}
+
+/// 预防层（NB-101 AC 缺失根修）：父单 AC 为空 → 拆解链自动起草落库 +
+/// 系统评论留痕；已有基线不动（用户显式 AC 最大）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn agt_execute_plan_chain_drafts_parent_ac_when_empty() {
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
+    let dir = unique_dir("agt-ac-draft");
+    std::fs::create_dir_all(&dir).unwrap();
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("agt");
+    let hub = EventHub::new();
+    let al = Arc::new(AgentLoop::new(
+        Box::new(AgtAcDraftProvider {
+            draft_reply: Some("- 游戏可打开\n- 无脚本错误"),
+        }),
+        AgentConfig::default(),
+    ));
+
+    // 空基线父单：起草落库 + 评论留痕。2026-10-17 契约更新：store 建单
+    // 自动生成 AC——LLM 起草闸只在 AC 真空时触发（存量单形态），本地抹掉
+    // 生成值保持该路径覆盖。
+    let mut parent = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "无基线父单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    parent.acceptance_criteria = None;
+    let out = super::execute_plan_chain(
+        &store,
+        None,
+        al.clone(),
+        parent.clone(),
+        actor.clone(),
+        "agt-ac-draft-1",
+        None,
+        Some(&hub),
+        1,
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["status"], serde_json::json!("planned"), "{out}");
+    let reloaded = store.get_issue(parent.id).unwrap();
+    assert_eq!(
+        reloaded.acceptance_criteria.as_deref(),
+        Some("- 游戏可打开\n- 无脚本错误"),
+        "父单 AC 已起草落库"
+    );
+    let comments = store.list_comments(parent.id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("已依据子单计划自动起草")),
+        "起草评论留痕: {comments:?}"
+    );
+
+    // 已有基线父单：不动（起草只补空，不覆盖用户显式 AC）
+    let parent2 = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "有基线父单".into(),
+            acceptance_criteria: Some("用户基线".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    super::execute_plan_chain(
+        &store,
+        None,
+        al,
+        parent2.clone(),
+        actor,
+        "agt-ac-draft-2",
+        None,
+        Some(&hub),
+        1,
+    )
+    .await
+    .unwrap();
+    let reloaded2 = store.get_issue(parent2.id).unwrap();
+    assert_eq!(
+        reloaded2.acceptance_criteria.as_deref(),
+        Some("用户基线"),
+        "已有基线不被起草覆盖"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 预防层失败臂：起草产物为 JSON 形态（护栏拒绝）/ LLM 失败都不阻塞
+/// 发车——链照常 planned，父单 AC 保持空，失败评论指路 AI 起草。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn agt_execute_plan_chain_ac_draft_failure_does_not_block() {
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
+    let dir = unique_dir("agt-ac-draft-fail");
+    std::fs::create_dir_all(&dir).unwrap();
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    // 2026-10-17 契约更新：本地抹掉 store 生成值，保持「AC 真空 → 起草失败
+    // 不落坏草稿」路径覆盖。
+    let mut parent = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "起草失败父单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    parent.acceptance_criteria = None;
+    let al = Arc::new(AgentLoop::new(
+        Box::new(AgtAcDraftProvider { draft_reply: None }),
+        AgentConfig::default(),
+    ));
+    let out = super::execute_plan_chain(
+        &store,
+        None,
+        al,
+        parent.clone(),
+        Actor::admin("agt"),
+        "agt-ac-draft-fail",
+        None,
+        Some(&EventHub::new()),
+        1,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        out["status"],
+        serde_json::json!("planned"),
+        "起草失败不阻塞: {out}"
+    );
+    // 2026-10-17 契约更新：起草失败不落坏草稿——store 基线（建单自动生成
+    // AC）逐字节不变，没有被失败产物污染。
+    let ac_baseline = store
+        .get_issue(parent.id)
+        .unwrap()
+        .acceptance_criteria
+        .clone();
+    assert!(
+        ac_baseline.is_some(),
+        "建单自动生成 AC 已在场（新契约基线）"
+    );
+    assert_eq!(
+        store.get_issue(parent.id).unwrap().acceptance_criteria,
+        ac_baseline,
+        "护栏拒绝后父单 AC 基线不变（不落库坏草稿）"
+    );
+    let comments = store.list_comments(parent.id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("自动起草失败") && c.content.contains("AI 起草")),
+        "失败评论指路: {comments:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// WSAPI `issue.draft_ac`：草稿回前端、不落库；父单 prompt 汇总子单材料。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn agt_issue_draft_ac_returns_draft_without_persisting() {
+    let dir = unique_dir("agt-draft-ac-ws");
+    let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").expect("open store"));
+    let al = Arc::new(AgentLoop::new(
+        Box::new(AgtAcDraftProvider {
+            draft_reply: Some("- 草稿条目一\n- 草稿条目二"),
+        }),
+        AgentConfig::default(),
+    ));
+    let ctx = agt_make_ctx_ex(
+        &dir,
+        nemesis_board::BoardService::new(store.clone(), NodeRole::Coordinator),
+        None,
+        Some(al),
+        None,
+    );
+    let parent = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "待起草父单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let child = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "已交付子单".into(),
+            parent_issue_id: Some(parent.id),
+            acceptance_criteria: Some("子基线".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .add_comment(nemesis_board::NewComment {
+            issue_id: child.id,
+            author: Actor::agent("w"),
+            content: "交付完成".to_string(),
+            parent_id: None,
+            ctype: CommentType::Delivery,
+        })
+        .unwrap();
+
+    // 草稿不落库（保存决定权在用户）。2026-10-17 契约更新：store 建单已
+    // 自动生成 AC——「不落库」的正确断言 = 起草前后 AC 逐字节不变。
+    let ac_before = store.get_issue(parent.id).unwrap().acceptance_criteria;
+    assert!(ac_before.is_some(), "建单自动生成 AC 已在场（新契约基线）");
+    let out = dispatch(
+        &ctx,
+        "issue.draft_ac",
+        serde_json::json!({ "id": parent.id }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["issue"], serde_json::json!(parent.number), "{out}");
+    assert_eq!(
+        out["draft"],
+        serde_json::json!("- 草稿条目一\n- 草稿条目二")
+    );
+    assert_eq!(
+        store.get_issue(parent.id).unwrap().acceptance_criteria,
+        ac_before,
+        "起草只回前端预填，不改 store"
+    );
+
+    // agent 未运行 → 诚实报错（不是 panic / 静默空）。
+    let dir2 = unique_dir("agt-draft-ac-noagent");
+    let ctx2 = make_ctx_with_board(&dir2);
+    let err = dispatch(&ctx2, "issue.draft_ac", serde_json::json!({ "id": 1 }))
+        .await
+        .unwrap_err();
+    assert!(err.contains("agent 未运行"), "{err}");
+
+    // commands() 注册（L1 契约：system.commands 汇总发布）。
+    let cmds = super::BoardHandler.commands();
+    assert!(
+        cmds.contains(&"issue.draft_ac"),
+        "issue.draft_ac 未注册: {cmds:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&dir2);
 }
 
 #[cfg(feature = "cluster")]
@@ -7630,6 +8033,7 @@ async fn w5_confirm_plan_empty_title_err_and_dispatch_wave() {
         required_role: String::new(),
         required_tags: Vec::new(),
         required_profession: String::new(),
+        required_capabilities: vec![],
         acceptance_criteria: String::new(),
         depends_on: Vec::new(),
     };
@@ -8594,11 +8998,13 @@ fn confirm_plan_writes_downgrade_comments_and_keeps_valid_professions() {
         nemesis_board::PlannedSubIssue {
             title: "被降级子单".to_string(),
             required_profession: "BAD SLUG".to_string(),
+            required_capabilities: vec![],
             ..nemesis_board::PlannedSubIssue::default()
         },
         nemesis_board::PlannedSubIssue {
             title: "合法职能子单".to_string(),
             required_profession: "dev:cpp".to_string(),
+            required_capabilities: vec![],
             ..nemesis_board::PlannedSubIssue::default()
         },
     ];
@@ -10815,6 +11221,473 @@ async fn test_issue_depends_on_projection() {
     let rows = out["issues"].as_array().unwrap();
     let down = rows.iter().find(|r| r["id"] == b).unwrap();
     assert_eq!(down["depends_on"][0]["status"], "done");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+// ---------------------------------------------------------------------------
+// 决策可见性投影（2026-10-15 批）：needs_user（停车强信号）/ attention
+// （停滞弱信号）/ plan_ready（计划待发车中信号）三投影 + issue.decision
+// 面板数据源。HANDOFF_WORKSPACE 是进程级 OnceLock（ua 测试唯一装配）——
+// 全局侧走 scan_live_handoffs_in 纯内核，装配路径由 dispatch 级「无信号
+// 形态」钉住（未装配 = 空档案集，诚实降级）。
+// ---------------------------------------------------------------------------
+
+fn handoff_map_entry(number: &str, stop_kind: &str) -> serde_json::Value {
+    serde_json::json!({
+        "schema": 1,
+        "issue": number,
+        "issue_id": 42,
+        "stop_kind": stop_kind,
+        "suggested_action": "manual_check",
+        "hint": "先修 worker 环境再复评",
+        "stopped_at": "2026-10-15T07:38:00Z",
+    })
+}
+
+/// 状态闸：活档案只对 in_review / in_progress 亮牌——done/cancelled/backlog
+/// 即使有漏归档旧档案也不得点亮（正确性兜底，归档只是时效优化）。
+#[test]
+fn needs_user_projection_gates_by_status() {
+    let mut handoffs = std::collections::HashMap::new();
+    handoffs.insert(
+        "NB-5".to_string(),
+        handoff_map_entry("NB-5", "unsure_streak"),
+    );
+
+    // 底座单走 store 构造（Issue 无 Default）；测试只消费 status/number，
+    // 其余字段直接在 owned 副本上变异。
+    let dir = unique_dir("needs-user-gate");
+    let store = BoardStore::open(&dir.join("board.db"), "NB").unwrap();
+    let base = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "闸门测试".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let mk = |status| nemesis_board::Issue {
+        status,
+        number: "NB-5".to_string(),
+        ..base.clone()
+    };
+
+    // 闸内两态：亮牌 + 字段形态（stop_kind_label 映射、hint/stopped_at 透传）。
+    let nu = super::needs_user_projection(&handoffs, &mk(IssueStatus::InReview)).unwrap();
+    assert_eq!(nu["stop_kind"], "unsure_streak");
+    assert_eq!(nu["stop_kind_label"], "连续不确定");
+    assert_eq!(nu["suggested_action"], "manual_check");
+    assert_eq!(nu["hint"], "先修 worker 环境再复评");
+    assert_eq!(nu["stopped_at"], "2026-10-15T07:38:00Z");
+    assert!(super::needs_user_projection(&handoffs, &mk(IssueStatus::InProgress)).is_some());
+
+    // 闸外：有档案也不亮。
+    for status in [
+        IssueStatus::Backlog,
+        IssueStatus::Todo,
+        IssueStatus::Done,
+        IssueStatus::Blocked,
+        IssueStatus::Cancelled,
+    ] {
+        assert!(
+            super::needs_user_projection(&handoffs, &mk(status)).is_none(),
+            "status={status:?} 不得亮牌"
+        );
+    }
+
+    // 无档案：闸内也不亮。
+    let empty: std::collections::HashMap<String, serde_json::Value> =
+        std::collections::HashMap::new();
+    assert!(super::needs_user_projection(&empty, &mk(IssueStatus::InReview)).is_none());
+
+    // 未知 stop_kind：标签兜底「停车待处理」，不炸投影。
+    let mut odd = std::collections::HashMap::new();
+    odd.insert("NB-5".to_string(), handoff_map_entry("NB-5", "future_kind"));
+    let nu = super::needs_user_projection(&odd, &mk(IssueStatus::InReview)).unwrap();
+    assert_eq!(nu["stop_kind_label"], "停车待处理");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 可测内核扫描：合法档案进 map（按 issue 字段建键）；坏 JSON / 非 json
+/// 后缀 / archive/ 子目录 / 缺 issue 字段 / 目录缺席 = 跳过（诚实无信号）。
+#[test]
+fn scan_live_handoffs_in_scans_valid_and_skips_dirty() {
+    let dir = unique_dir("scan-handoffs");
+    let handoffs = dir.join("board").join("handoffs");
+    std::fs::create_dir_all(&handoffs).unwrap();
+    std::fs::write(
+        handoffs.join("NB-5.json"),
+        serde_json::to_string(&handoff_map_entry("NB-5", "no_match")).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        handoffs.join("NB-6.json"),
+        serde_json::to_string(&handoff_map_entry("NB-6", "budget")).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(handoffs.join("broken.json"), "{not json").unwrap();
+    std::fs::write(handoffs.join("note.txt"), "x").unwrap();
+    std::fs::create_dir_all(handoffs.join("archive")).unwrap();
+    std::fs::write(
+        handoffs.join("archive").join("NB-7.json"),
+        serde_json::to_string(&handoff_map_entry("NB-7", "budget")).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(handoffs.join("NB-8.json"), r#"{"schema":1}"#).unwrap(); // 缺 issue 字段
+
+    let map = super::scan_live_handoffs_in(&dir);
+    assert_eq!(map.len(), 2, "只有 NB-5/NB-6 入册：{:?}", map.keys());
+    assert_eq!(map["NB-5"]["stop_kind"], "no_match");
+    assert_eq!(map["NB-6"]["stop_kind"], "budget");
+
+    // 目录缺席 → 空 map（未装配/未停过车的常态路径）。
+    let empty_dir = unique_dir("scan-handoffs-empty");
+    assert!(super::scan_live_handoffs_in(&empty_dir).is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&empty_dir);
+}
+
+/// 停滞弱信号：in_progress 且最后一条 system 评论命中 STALL_MARKER → true；
+/// 普通 system 评论 / 非 in_progress / 无评论 = false。
+#[cfg(feature = "cluster")]
+#[test]
+fn issue_needs_attention_gates_by_stall_marker_and_status() {
+    let dir = unique_dir("attention");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("t");
+    let mk = |title: &str| {
+        store
+            .create_issue(nemesis_board::NewIssue {
+                title: title.to_string(),
+                ..Default::default()
+            })
+            .unwrap()
+    };
+
+    let stalled = mk("停摆单");
+    store
+        .add_comment(nemesis_board::NewComment {
+            issue_id: stalled.id,
+            author: actor.clone(),
+            content: format!("{}：交付已收 900s 仍未合入。", nemesis_board::STALL_MARKER),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::System,
+        })
+        .unwrap();
+    store
+        .transition_issue(stalled.id, IssueStatus::InProgress, &actor)
+        .unwrap();
+    let stalled = store.get_issue(stalled.id).unwrap();
+    assert!(super::issue_needs_attention(&store, &stalled));
+
+    // 最新 system 评论无标记（停摆后被新一轮派发评论覆盖）→ 熄灭。
+    store
+        .add_comment(nemesis_board::NewComment {
+            issue_id: stalled.id,
+            author: actor.clone(),
+            content: "正常系统评论".to_string(),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::System,
+        })
+        .unwrap();
+    let stalled = store.get_issue(stalled.id).unwrap();
+    assert!(!super::issue_needs_attention(&store, &stalled));
+
+    // 状态闸：in_review 带 STALL_MARKER 也不算（那是 needs_user 的领域）。
+    let review = mk("送审单");
+    store
+        .add_comment(nemesis_board::NewComment {
+            issue_id: review.id,
+            author: actor,
+            content: format!("{}：x", nemesis_board::STALL_MARKER),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::System,
+        })
+        .unwrap();
+    let mut review = store.get_issue(review.id).unwrap();
+    review.status = IssueStatus::InReview;
+    assert!(!super::issue_needs_attention(&store, &review));
+
+    // 无评论：false。
+    let quiet = mk("安静单");
+    assert!(!super::issue_needs_attention(&store, &quiet));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// dispatch 级接线（无信号形态 + plan_ready 种入形态）：HANDOFF_WORKSPACE
+/// 未装配 = needs_user 恒缺席（诚实降级，不炸列表）；plan_ready 走
+/// PLAN_CACHE 全局——按 PLAN_TEST_LOCK 纪律串行 + 开场清残留。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn decision_visibility_projections_via_list_and_decision() {
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
+    let dir = unique_dir("decision-visibility");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("t");
+
+    // 三单：parked(in_review 停车形态——无档案故 needs_user 不亮，钉诚实
+    // 降级)、stalled(in_progress + 停摆哨兵)、plain(backlog 无事)。
+    let parked = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "停车单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .transition_issue(parked.id, IssueStatus::InProgress, &actor)
+        .unwrap();
+    store
+        .transition_issue(parked.id, IssueStatus::InReview, &actor)
+        .unwrap();
+
+    let stalled = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "停滞单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .add_comment(nemesis_board::NewComment {
+            issue_id: stalled.id,
+            author: actor.clone(),
+            content: format!("{}：交付已收 900s 仍未合入。", nemesis_board::STALL_MARKER),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::System,
+        })
+        .unwrap();
+    store
+        .transition_issue(stalled.id, IssueStatus::InProgress, &actor)
+        .unwrap();
+
+    let plain = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "安静单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    // issue.list：attention 只落在停滞单；needs_user 无档案恒缺席。
+    let out = dispatch(&ctx, "issue.list", serde_json::json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    let rows = out["issues"].as_array().unwrap().clone();
+    let row = |num: &str| {
+        rows.iter()
+            .find(|r| r["number"] == num)
+            .unwrap_or_else(|| panic!("row {num} missing"))
+            .clone()
+    };
+    assert_eq!(row(&parked.number)["attention"], serde_json::Value::Null);
+    assert_eq!(row(&stalled.number)["attention"], serde_json::json!(true));
+    assert_eq!(row(&plain.number)["attention"], serde_json::Value::Null);
+    assert_eq!(
+        row(&parked.number)["needs_user"],
+        serde_json::Value::Null,
+        "未装配档案根 = 无信号，不得假亮"
+    );
+    assert_eq!(row(&parked.number)["plan_ready"], serde_json::Value::Null);
+
+    // plan_ready 投影：缓存种入 → list 与 decision 同构带出。
+    seed_plan("plan-dv-1", parked.id, vec![sub("子单", vec![])]);
+    let out = dispatch(&ctx, "issue.list", serde_json::json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    let rows = out["issues"].as_array().unwrap();
+    let pr = rows.iter().find(|r| r["number"] == parked.number).unwrap()["plan_ready"].clone();
+    assert_eq!(pr["plan_id"], "plan-dv-1");
+    assert_eq!(pr["subs_count"], 1);
+    assert!(pr["created_age_secs"].is_u64());
+
+    // issue.decision：无参/未知单诚实报错。
+    assert!(
+        dispatch(&ctx, "issue.decision", serde_json::json!({}))
+            .await
+            .is_err()
+    );
+    assert!(
+        dispatch(
+            &ctx,
+            "issue.decision",
+            serde_json::json!({ "number": "NB-999" })
+        )
+        .await
+        .is_err()
+    );
+
+    // decision 面板形态：needs_user/plan_ready/attention/handoff 全字段在
+    // 场（online_nodes 无集群装配 = 空数组）；档案缺席 = handoff null。
+    let out = dispatch(
+        &ctx,
+        "issue.decision",
+        serde_json::json!({ "number": parked.number }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["issue"], parked.number);
+    assert_eq!(out["issue_id"], parked.id);
+    assert_eq!(out["status"], "in_review");
+    assert_eq!(out["needs_user"], serde_json::Value::Null);
+    assert_eq!(out["handoff"], serde_json::Value::Null);
+    assert_eq!(out["plan_ready"]["plan_id"], "plan-dv-1");
+    assert_eq!(out["attention"], false);
+    assert_eq!(out["online_nodes"], serde_json::json!([]));
+
+    // 停滞单走 decision：attention true。
+    let out = dispatch(
+        &ctx,
+        "issue.decision",
+        serde_json::json!({ "id": stalled.id }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["status"], "in_progress");
+    assert_eq!(out["attention"], true);
+    assert_eq!(out["plan_ready"], serde_json::Value::Null);
+
+    // commands() 清单含 issue.decision（L1 注册表漂移闸）。
+    assert!(BoardHandler.commands().contains(&"issue.decision"));
+
+    // 清残留（plan 链纪律：持锁期间摘自己的条目）。
+    super::PLAN_CACHE.lock().remove("plan-dv-1");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --- board.resume（停车续做正门，2026-10-16 主会话污染根修） ---
+
+#[test]
+fn test_board_resume_prompt_contract() {
+    let archive = r#"{"issue":"NB-9","reason":"UNSURE"}"#;
+    let p = super::build_resume_prompt(
+        "NB-9",
+        "标题甲",
+        "in_review",
+        archive,
+        Some("先复核锚点证据"),
+    );
+    assert!(p.contains("# 停车续做任务：NB-9"));
+    assert!(p.contains("标题：标题甲"));
+    assert!(p.contains("当前状态：in_review"));
+    assert!(p.contains(archive), "档案 JSON 原文必须整体内联");
+    assert!(p.contains("handoffs/NB-9.json"));
+    assert!(p.contains("board_issue"), "必须点名 board_issue 工具落评论");
+    assert!(p.contains("## 操作员附加指令\n先复核锚点证据"));
+
+    // 无附加指令 / 纯空白指令 → 不出现操作员段（不造空段落）。
+    let p2 = super::build_resume_prompt("NB-9", "标题甲", "in_review", archive, None);
+    assert!(!p2.contains("操作员附加指令"));
+    let p3 = super::build_resume_prompt("NB-9", "标题甲", "in_review", archive, Some("  \n "));
+    assert!(!p3.contains("操作员附加指令"));
+}
+
+#[test]
+fn test_board_resume_archive_path_shape() {
+    let p = super::handoff_archive_path("C:/ws", "NB-12");
+    let s = p.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
+    assert!(s.ends_with("board/handoffs/NB-12.json"), "actual: {s}");
+}
+
+#[tokio::test]
+async fn test_board_resume_surface_contract() {
+    let dir = unique_dir("board-resume");
+    let ctx = make_ctx_with_board(&dir);
+
+    // 测试 ctx 无 agent_loop：装配性错误优先于数据错误（对齐 issue.draft_ac
+    // 闸序）——缺参与有单两种入参都先撞「agent 未运行」。
+    let e = dispatch(&ctx, "board.resume", serde_json::json!({}))
+        .await
+        .unwrap_err();
+    assert!(e.contains("agent 未运行"), "actual: {e}");
+
+    let store = ctx.state.board.as_ref().unwrap().store().clone();
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "停车单样例".into(),
+            creator: nemesis_board::Actor::system("board"),
+            ..nemesis_board::NewIssue::default()
+        })
+        .unwrap();
+    let e = dispatch(
+        &ctx,
+        "board.resume",
+        serde_json::json!({ "number": issue.number }),
+    )
+    .await
+    .unwrap_err();
+    assert!(e.contains("agent 未运行"), "actual: {e}");
+
+    // L1 注册表：commands() 清单含 board.resume（漂移闸）。
+    assert!(BoardHandler.commands().contains(&"board.resume"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// 2026-10-16 收件箱重复根修回归钉：dashboard 操作者身份必须是固定
+// "dashboard"，不得随 WS session 每连必换——否则每个页面会话以新 admin id
+// 落订阅表（唯一键含 subscriber_id，去重失效）并永久累积，通知按订阅者扇出
+// 同一事件 N 份（实录：NB-121 一次验收失败收件箱 6 份、全库 18 个历史
+// admin 身份）。钉两层：ctx_actor 纯函数契约 + 端到端（同 ctx 不同 session
+// 两次评论 → 订阅表仍只有一个 admin 行）。
+#[tokio::test]
+async fn test_ctx_actor_fixed_dashboard_identity() {
+    let dir = unique_dir("ctx-actor-fixed");
+    let mut ctx = make_ctx_with_board(&dir);
+    ctx.session_id = "rotating-session-abc".into();
+    let actor = super::ctx_actor(&ctx);
+    assert_eq!(actor.kind, "admin");
+    assert_eq!(
+        actor.id, "dashboard",
+        "admin id 必须固定，不得用 session_id"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn test_admin_subscriber_dedup_across_sessions() {
+    let dir = unique_dir("admin-sub-dedup");
+    let ctx = make_ctx_with_board(&dir);
+    let store = require_board(&ctx).unwrap();
+
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "订阅去重样例".into(),
+            creator: nemesis_board::Actor::system("board"),
+            ..nemesis_board::NewIssue::default()
+        })
+        .unwrap();
+
+    // 同一 operator 两个不同 WS 会话各评论一次。
+    let mut ctx_b = make_ctx_with_board(&dir);
+    ctx_b.session_id = "another-session-xyz".into();
+    for c in [&ctx, &ctx_b] {
+        dispatch(
+            c,
+            "comment.add",
+            serde_json::json!({ "issue_id": issue.id, "content": "op comment" }),
+        )
+        .await
+        .unwrap();
+    }
+
+    let subs = store.list_subscribers(issue.id).unwrap();
+    let admin_rows: Vec<_> = subs
+        .iter()
+        .filter(|s| s.subscriber.kind == "admin")
+        .collect();
+    assert_eq!(
+        admin_rows.len(),
+        1,
+        "两个会话评论后 admin 订阅必须收敛为一行（固定身份），actual: {:?}",
+        admin_rows
+            .iter()
+            .map(|s| &s.subscriber.id)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(admin_rows[0].subscriber.id, "dashboard");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

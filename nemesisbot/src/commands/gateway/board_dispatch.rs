@@ -341,7 +341,8 @@ fn floor_char_boundary(s: &str, max: usize) -> &str {
 /// 分支落）。停摆判定锚点。
 const INFLIGHT_MARKER: &str = "📦 交付已收，变更集在途";
 /// 停摆警示评论前缀（本 sweep 落；幂等：最新在途评论之后已有警示 = 不重复）。
-const STALL_MARKER: &str = "⚠ 执行档案迟迟未落地";
+/// 单一真相源在 nemesis-board（issue.list attention 投影同源消费，2026-10-15 上移）。
+const STALL_MARKER: &str = nemesis_board::STALL_MARKER;
 /// 在途警示阈值（秒）：交付评论后超过此值仍未合并 = 停摆。生产 15 分钟。
 pub(crate) const ARCHIVE_STALL_WARN_SECS: i64 = 900;
 
@@ -381,6 +382,18 @@ pub(crate) fn sweep_archive_stalls(
             continue;
         };
         if now - comments[idx].created_at < threshold_secs {
+            continue;
+        }
+        // 在途锚已收口排除：在途评论之后已有合并成功评论（🔀）= 该轮交付
+        // 已正常合并。评审 FAIL 重派回 in_progress 的单，上一轮「在途→合并」
+        // 评论对仍在评论流，且新一轮尚未交付（无新在途评论）——旧锚不得判
+        // 成本轮停摆（NB-122 实录：第 1 轮 31s 合入，第 2 轮执行中被误报
+        // 「955s 未合入」）。新一轮交付会落新在途评论成为锚点，旧合并评论
+        // 在锚点之前、不进判定窗口。
+        if comments[idx + 1..].iter().any(|c| {
+            c.content
+                .contains(crate::board_archive_ingest::MERGE_NOTICE_MARKER)
+        }) {
             continue;
         }
         // 幂等：在途评论之后已有警示（新一轮派发会有新在途评论，自然重置）。
