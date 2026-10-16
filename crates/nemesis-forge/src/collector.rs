@@ -102,9 +102,18 @@ impl Collector {
             &experience.timestamp,
         );
 
-        // Track the hash for capacity management
-        let _is_new = !self.seen_hashes.lock().contains(&hash);
+        self.persist_and_store(experience, hash).await;
+        true
+    }
 
+    /// Persist to JSONL + insert into the in-memory store（不聚合）。
+    ///
+    /// P4 拆分（2026-10-16）：聚合与落库是两个独立关注点。process_pending
+    /// 消费的 experience 在 `on_tool_call` 里已按**原始 args** hash 聚合过
+    /// 一次——若走 `record()`（按合成的 input_summary hash）再聚合，同一
+    /// 次调用会在 pattern_counts 里多出一条错误 hash 的重复计数（计数
+    /// 膨胀 + 形状漂移）。本函数只承担落盘 + 内存入库。
+    async fn persist_and_store(&self, experience: Experience, hash: String) {
         let ce = CollectedExperience {
             experience,
             dedup_hash: hash.clone(),
@@ -131,8 +140,6 @@ impl Collector {
             exps.push_back(ce);
         }
         self.seen_hashes.lock().insert(hash);
-
-        true
     }
 
     /// Record a new experience using input_summary for backward compatibility.
@@ -537,7 +544,15 @@ impl ForgePlugin {
         }
         let mut count = 0;
         for exp in batch {
-            self.collector.record(exp).await;
+            // P4：只落库不再聚合——on_tool_call 已按原始 args hash 聚合过，
+            // 这里若走 record() 会按合成 hash 再记一笔（双重计数）。dedup_hash
+            // 用与 record() 相同的合成规则，保持内存/持久化面的 bookkeeping
+            // 语义不变。
+            let hash = Collector::dedup_hash(
+                &exp.tool_name,
+                &serde_json::json!({ "input_summary": exp.input_summary }),
+            );
+            self.collector.persist_and_store(exp, hash).await;
             count += 1;
         }
         count

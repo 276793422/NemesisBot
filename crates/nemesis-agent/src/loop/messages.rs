@@ -1,6 +1,7 @@
 //! 消息组装：shell 注入族（K3）、expand_shell_injections、build_messages*、prefetch_memory_context、note_read_for_instructions、invalidate_context_digests、render_workflow_edit_section。
 //!
 //! P1 自 `loop.rs` 物理搬迁（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）；语义零变化。
+#[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
 

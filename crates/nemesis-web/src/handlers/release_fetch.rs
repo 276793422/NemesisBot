@@ -314,16 +314,11 @@ pub(crate) async fn fetch_release_for_asset(asset_name: &str) -> Result<ReleaseM
 }
 
 /// 官方 Release 指定附件下载：同源解析 → SSRF 闸逐跳下载。找不到附件 =
-/// 诚实报错（CI 尚未产出）。消费方全在 feature 门（skins / plugins-wasm /
-/// selfupdate）内——裸构建无人调用，条件放行 dead_code；selfupdate 的
-/// apply 主体又是 Windows-only（v1 平台边界），非 Windows+selfupdate 组合
-/// 同样无人调用。
+/// 诚实报错（CI 尚未产出）。消费方=skins / plugins-wasm devkit（selfupdate
+/// apply 的 R1 单候选链已改为复用早闸解析的列表直连 `fetch_bytes`，不再经
+/// 此函数）——裸构建无人调用，条件放行 dead_code。
 #[cfg_attr(
-    not(any(feature = "skins", feature = "plugins-wasm", feature = "selfupdate")),
-    allow(dead_code)
-)]
-#[cfg_attr(
-    all(feature = "selfupdate", not(target_os = "windows")),
+    not(any(feature = "skins", feature = "plugins-wasm")),
     allow(dead_code)
 )]
 pub(crate) async fn fetch_release_asset(

@@ -10,6 +10,11 @@
 #                                       issuing_sk / issuing_cert 字段 hex 原文）。
 #                                       GitHub Actions 自动掩盖 Secrets 值的日志回显。
 #   GITHUB_SHA                          构建 commit（叶证书 CN 标识用）
+#   NMB_MANIFEST_EXE / NMB_UPDATE_SEQUENCE / NMB_UPDATE_COMMIT
+#                                       三者齐备才生成签名更新清单（R1）——仅主
+#                                       staging 调用传齐（exe 名 / run_number /
+#                                       commit，commit 缺席回落 staging/version.txt
+#                                       解析）；其余分发 staging 不传 = 无清单。
 #
 # 降级语义（三层，全部诚实、不静默）:
 #   1. Secrets 未配置      → WARN + exit 0（产物无签名，构建绿——fork/新仓库零门槛，
@@ -101,6 +106,44 @@ for t in "${TARGETS[@]}"; do
     # --out "$t" 原地签：CLI 缺省写 {target}.signed 新文件，不传会留原文件未签
     "$TOOL" sign --keys "$WORK/ci-keys.json" --target "$t" --out "$t"
 done
+
+# --- R1 签名更新清单（manifest.json；仅主 staging 传 env 时生成）-------------
+# 身份与顺序的单一权威：{commit, sequence(=run_number 单调), exe_sha256(已签名
+# exe 摘要), built_at}。「JSON 字节 + CMS + v4 footer」单文件载体，与 exe 同密
+# 钥体系；客户端 apply 以其 commit/sequence 为降级闸权威，exe_sha256 为安装
+# 硬闸。env 缺席（非主 staging / 无 Secrets 提前退出）= 不生成 → 客户端按顺
+# 序 Unknown 诚实拒绝（fail-closed）。
+if [ -n "${NMB_MANIFEST_EXE:-}" ] && [ -n "${NMB_UPDATE_SEQUENCE:-}" ]; then
+    echo "==> 生成签名更新清单（manifest.json，sequence=$NMB_UPDATE_SEQUENCE）"
+    MANIFEST_EXE=""
+    for cand in "$STAGING/$NMB_MANIFEST_EXE.exe" "$STAGING/$NMB_MANIFEST_EXE"; do
+        [ -f "$cand" ] && MANIFEST_EXE="$cand" && break
+    done
+    [ -n "$MANIFEST_EXE" ] || { echo "❌ NMB_MANIFEST_EXE=$NMB_MANIFEST_EXE 在 staging 无对应文件"; exit 1; }
+    if [ -z "${NMB_UPDATE_COMMIT:-}" ] && [ -f "$STAGING/version.txt" ]; then
+        # version.txt 可能带 CRLF：\r 计入可选尾匹配
+        NMB_UPDATE_COMMIT="$(sed -n 's/^Commit[[:space:]]*:[[:space:]]*\([0-9a-fA-F]\{40\}\)\r\?$/\1/p' "$STAGING/version.txt" | head -1)"
+    fi
+    [ -n "${NMB_UPDATE_COMMIT:-}" ] || { echo "❌ 更新清单缺 commit（NMB_UPDATE_COMMIT 与 staging/version.txt 均未提供）"; exit 1; }
+    # 紧凑无空白 JSON：字节即签名覆盖面，客户端剥 footer 后原样 serde 解析
+    "$PY" - "$MANIFEST_EXE" "$STAGING/manifest.json" \
+        "$(printf '%s' "${NMB_UPDATE_COMMIT}" | tr 'A-F' 'a-f')" "$NMB_UPDATE_SEQUENCE" <<'PYEOF'
+import hashlib, json, sys, datetime
+exe_path, out_path, commit, seq = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+manifest = {
+    "commit": commit,
+    "sequence": seq,
+    "exe_sha256": hashlib.sha256(open(exe_path, "rb").read()).hexdigest(),
+    "built_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+}
+open(out_path, "wb").write(json.dumps(manifest, separators=(",", ":")).encode())
+PYEOF
+    # 原地签（raw → v4 footer 载体），纳入 signatures.json + 签后自检
+    "$TOOL" sign --keys "$WORK/ci-keys.json" --target "$STAGING/manifest.json" --out "$STAGING/manifest.json"
+    TARGETS+=("$STAGING/manifest.json")
+else
+    echo "==> ⚠️ 未提供 NMB_MANIFEST_EXE/NMB_UPDATE_SEQUENCE——本 staging 不含更新清单（客户端自更新将诚实拒绝）"
+fi
 
 # --- 根证书公开部分随包分发（先拷入，signatures.json 要引用它的指纹）---------
 mkdir -p "$STAGING/certs"

@@ -176,14 +176,37 @@ fn gate_and_write_without_security_writes_all_files() {
 
 // ===========================================================================
 // Wave4 覆盖批次：真实 rust-analyzer 端到端（execute_rename 全链路 /
-// code_action 渲染 / hover 格式化）。rust-analyzer 不在 PATH、冷启动失败
-// 或总预算（RA_TOTAL_BUDGET=90s）内未就绪时按 SKIP 约定跳过（eprintln +
-// return），套件保持绿。CI（nextest）下三用例由 .config/nextest.toml 的
-// ra-serialize 组跨进程串行；本文件内 Semaphore 只对本地 cargo test 生效。
+// code_action 渲染 / hover 格式化）。SKIP 仅限「预检确认 rust-analyzer
+// 不在」（--version 实跑探针，二进制在场 ≠ 可用）；预检通过后的就绪
+// 失败、总预算耗尽、真实操作错误一律 fail（§四.1：真实错误不能全当
+// SKIP）。CI（nextest）下三用例由 .config/nextest.toml 的 ra-serialize
+// 组跨进程串行（CI 未预配 RA → 走合法 SKIP 臂）；本文件内 Semaphore
+// 只对本地 cargo test 生效。
 // ===========================================================================
 
 /// 一次性 cargo 脚手架：零依赖，rust-analyzer 冷启动无需网络。
 const RA_LIB_SRC: &str = "pub fn cov_target_fn() -> i32 {\n    42\n}\n\npub fn cov_caller() -> i32 {\n    cov_target_fn()\n}\n";
+
+/// 预检：rust-analyzer 用自身实跑 trivial 探针（`--version`），不是纯
+/// PATH 字符串匹配——二进制在场 ≠ 可用。缺席 = 唯一合法 SKIP 条件。
+fn rust_analyzer_available() -> bool {
+    std::process::Command::new("rust-analyzer")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// 三个真实 rust-analyzer 用例共用的 SKIP 前置（唯一合法 SKIP）。
+fn skip_unless_ra_available() -> bool {
+    if rust_analyzer_available() {
+        return true;
+    }
+    eprintln!("SKIP: rust-analyzer not available (--version probe failed)");
+    false
+}
 
 fn scratch_ra_project() -> Option<(tempfile::TempDir, std::path::PathBuf)> {
     let dir = tempfile::tempdir().ok()?;
@@ -206,18 +229,40 @@ static RA_SERIAL: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
 /// 重试总预算（重试循环的墙钟总闸，P2-2）：旧实现 120 次循环名义「60s 预算」，
 /// 实际单次 execute 自身可拖 60s（LspTool 内层超时），最坏总墙钟
-/// 120×60s+60s——RA 卡死时套件挂半小时级。总闸一次包全程：每次尝试的
-/// 等待钳制为剩余预算，耗尽即 Err（调用方按既有约定 SKIP）。
-/// 诚实边界：循环外的首次装配 touch_file 在闸外（自带 60s 内层超时），
-/// 病理最坏总墙钟 ≈ 90s+60s，非严格 90s。
+/// 120×60s+60s——RA 卡死时套件挂半小时级。总闸一次包全程：每次尝试
+/// （含 didOpen/touch_file）的等待钳制为剩余预算，耗尽即 Err（调用方
+/// fail-closed，不再 SKIP）。§四.1：首次装配与重试的 touch_file 同样
+/// 纳入本闸——初始化/didOpen/重试/清理全部受同一 deadline 约束。
 const RA_TOTAL_BUDGET: std::time::Duration = std::time::Duration::from_secs(90);
 const RA_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// RA 就绪重试：先 didOpen 把文档注册进 vfs（touch_file 尽力而为语义），
+/// didOpen 注册（touch_file）受总闸约束的包裹：等待钳制为剩余预算。
+async fn touch_within_budget(
+    tool: &LspTool,
+    lib: &std::path::Path,
+    deadline: tokio::time::Instant,
+) -> Result<(), String> {
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    if remaining.is_zero() {
+        return Err(format!(
+            "rust-analyzer never became ready within {}s total budget",
+            RA_TOTAL_BUDGET.as_secs()
+        ));
+    }
+    match tokio::time::timeout(remaining, tool.manager().touch_file(lib)).await {
+        Ok(_) => Ok(()),
+        Err(_) => Err(format!(
+            "rust-analyzer never became ready within {}s total budget (didOpen hit the wall)",
+            RA_TOTAL_BUDGET.as_secs()
+        )),
+    }
+}
+
+/// RA 就绪重试：先 didOpen 把文档注册进 vfs（touch_file，同受总闸），
 /// 再执行 op；「file not found」/「No references found」/ null WorkspaceEdit /
 /// null hover 都是工作区尚未分析完成的瞬态 → 500ms 后重试，总预算
-/// （[`RA_TOTAL_BUDGET`]，循环内墙钟总闸）耗尽 → Err（调用方 SKIP）。真实
-/// 错误立即透传。
+/// （[`RA_TOTAL_BUDGET`]，全流程墙钟总闸）耗尽 → Err（调用方 fail-closed）。
+/// 真实错误立即透传。
 async fn ra_execute_with_retry(
     tool: &LspTool,
     lib: &std::path::Path,
@@ -225,7 +270,7 @@ async fn ra_execute_with_retry(
 ) -> Result<String, String> {
     let deadline = tokio::time::Instant::now() + RA_TOTAL_BUDGET;
     let args_str = args.to_string();
-    let _ = tool.manager().touch_file(lib).await;
+    touch_within_budget(tool, lib, deadline).await?;
     loop {
         // 每次尝试的可用时间 = 剩余总预算（内层 LspTool 60s 只是单请求
         // 护栏；真正的上限由这里钳制——任何一次尝试都不许越过总闸）。
@@ -267,7 +312,7 @@ async fn ra_execute_with_retry(
         if !retry {
             return outcome;
         }
-        let _ = tool.manager().touch_file(lib).await;
+        touch_within_budget(tool, lib, deadline).await?;
         // 退避间隔钳制在剩余预算内（剩余不足时立即回到总闸判定收口）。
         let pause =
             RA_RETRY_INTERVAL.min(deadline.saturating_duration_since(tokio::time::Instant::now()));
@@ -286,6 +331,9 @@ async fn execute_rename_end_to_end_with_rust_analyzer() {
         .acquire()
         .await
         .expect("RA_SERIAL semaphore closed");
+    if !skip_unless_ra_available() {
+        return;
+    }
     let Some((_dir, lib)) = scratch_ra_project() else {
         eprintln!("SKIP: tempdir unavailable");
         return;
@@ -298,13 +346,10 @@ async fn execute_rename_end_to_end_with_rust_analyzer() {
         "character": 10,
         "new_name": "cov_renamed_fn",
     });
-    let out = match ra_execute_with_retry(&tool, &lib, &args).await {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("SKIP: rust-analyzer rename unavailable: {e}");
-            return;
-        }
-    };
+    // 预检已确认 RA 在场：就绪失败/预算耗尽/操作错误 = 测试失败（fail-closed）。
+    let out = ra_execute_with_retry(&tool, &lib, &args)
+        .await
+        .unwrap_or_else(|e| panic!("rust-analyzer rename failed after precheck: {e}"));
     assert!(out.contains("Renamed to"), "{out}");
     assert!(out.contains("1 file(s) written"), "{out}");
     let after = std::fs::read_to_string(&lib).unwrap();
@@ -328,6 +373,9 @@ async fn execute_code_action_reports_honestly_with_rust_analyzer() {
         .acquire()
         .await
         .expect("RA_SERIAL semaphore closed");
+    if !skip_unless_ra_available() {
+        return;
+    }
     let Some((_dir, lib)) = scratch_ra_project() else {
         eprintln!("SKIP: tempdir unavailable");
         return;
@@ -339,13 +387,9 @@ async fn execute_code_action_reports_honestly_with_rust_analyzer() {
         "line": 0,
         "character": 10,
     });
-    let out = match ra_execute_with_retry(&tool, &lib, &args).await {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("SKIP: rust-analyzer code_action unavailable: {e}");
-            return;
-        }
-    };
+    let out = ra_execute_with_retry(&tool, &lib, &args)
+        .await
+        .unwrap_or_else(|e| panic!("rust-analyzer code_action failed after precheck: {e}"));
     assert!(
         out.contains("no quickfix code actions") || out.contains("code action(s) available"),
         "{out}"
@@ -365,6 +409,9 @@ async fn execute_hover_formats_real_server_response_with_rust_analyzer() {
         .acquire()
         .await
         .expect("RA_SERIAL semaphore closed");
+    if !skip_unless_ra_available() {
+        return;
+    }
     let Some((_dir, lib)) = scratch_ra_project() else {
         eprintln!("SKIP: tempdir unavailable");
         return;
@@ -376,13 +423,9 @@ async fn execute_hover_formats_real_server_response_with_rust_analyzer() {
         "line": 0,
         "character": 10,
     });
-    let out = match ra_execute_with_retry(&tool, &lib, &args).await {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("SKIP: rust-analyzer hover unavailable: {e}");
-            return;
-        }
-    };
+    let out = ra_execute_with_retry(&tool, &lib, &args)
+        .await
+        .unwrap_or_else(|e| panic!("rust-analyzer hover failed after precheck: {e}"));
     assert!(!out.trim().is_empty(), "hover 不得为空：{out}");
     assert!(
         out.contains("cov_target_fn") || out.contains("i32") || out.contains("Hover"),

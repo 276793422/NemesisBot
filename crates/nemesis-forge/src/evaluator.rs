@@ -1,5 +1,10 @@
 //! Quality evaluator - Stage 3 quality evaluation using LLM-as-Judge.
 //!
+//! ⚠ legacy（2026-10-16 R18 注记）：本模块当前**无任何调用方**（生产与
+//! 测试均未接线）——生产 Stage 3 评审走 `pipeline::Pipeline` 内嵌实现
+//! （提示词同源，预算 `AUX_FORGE_MAX_TOKENS`），validator::QualityEvaluator
+//! 为测试消费的姊妹实现。本模块保留作演进基线；删除前先裁决。
+//!
 //! Evaluates forge artifacts on four dimensions:
 //! - correctness (40%): Does the content correctly implement its stated purpose?
 //! - quality (20%): Code/text quality, clarity, documentation
@@ -97,11 +102,13 @@ impl QualityEvaluator {
     ) -> QualityEvaluationResult {
         match self.provider.as_ref() {
             Some(provider) => {
+                // 预算对齐单一真相源 AUX_FORGE_MAX_TOKENS（2026-10-16 R18：
+                // 此前 fallback 2000 与 pipeline/validator 口径分裂）。
                 let max_tokens = self
                     .forge_config
                     .as_ref()
                     .map(|c| c.validation.llm_max_tokens as i64)
-                    .unwrap_or(2000);
+                    .unwrap_or(crate::reflector_llm::AUX_FORGE_MAX_TOKENS);
 
                 // 评审提示走 forge 内单一真相源（与 validator/pipeline 共用）。
                 let prompt =
@@ -117,14 +124,15 @@ impl QualityEvaluator {
                             Some(parsed) => {
                                 let mut dimensions = HashMap::new();
 
-                                // Extract dimension scores
+                                // Extract dimension scores（钳制 0-100，单一真
+                                // 相源 parse_dimension_score；此前 as_u64 直取
+                                // 无界，1000 分加权 400 恒过）。
                                 for key in &["correctness", "quality", "security", "reusability"] {
-                                    if let Some(val) = parsed.get(*key) {
-                                        if let Some(n) = val.as_u64() {
-                                            dimensions.insert(key.to_string(), n as u32);
-                                        } else if let Some(n) = val.as_f64() {
-                                            dimensions.insert(key.to_string(), n as u32);
-                                        }
+                                    if let Some(val) = parsed.get(*key)
+                                        && let Some(n) =
+                                            crate::reflector_llm::parse_dimension_score(val)
+                                    {
+                                        dimensions.insert(key.to_string(), n);
                                     }
                                 }
 

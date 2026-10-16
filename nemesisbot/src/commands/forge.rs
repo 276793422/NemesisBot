@@ -38,7 +38,7 @@ pub enum ForgeAction {
         id: Option<String>,
         #[arg(long)]
         output: Option<String>,
-        /// Export all artifacts (not just active)
+        /// Export all artifacts (现实现与默认范围一致，CLI 兼容保留)
         #[arg(long)]
         all: bool,
     },
@@ -894,47 +894,37 @@ fn cmd_learning_disable(forge_dir: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+/// 学习周期读取（真相源 CycleStore 月目录 JSONL；按 started_at 升序——
+/// read_dir 顺序是平台实现细节，R18）。独立成函数供测试断言排序/计数，
+/// 旧实现读的 learning/learning_cycles.jsonl 无生产写入方（幻影路径）。
+fn learning_history_cycles(
+    forge_dir: &std::path::Path,
+) -> Result<Vec<nemesis_types::forge::LearningCycle>> {
+    let mut cycles =
+        block_on_async(nemesis_forge::cycle_store::CycleStore::new(forge_dir).read_all())
+            .map_err(anyhow::Error::msg)?;
+    cycles.sort_by(|a, b| a.started_at.cmp(&b.started_at));
+    Ok(cycles)
+}
+
 fn cmd_learning_history(forge_dir: &std::path::Path, limit: usize) -> Result<()> {
     println!("Learning History (last {} cycles)", limit);
     println!("==================================");
 
-    let cycle_store = forge_dir.join("learning").join("learning_cycles.jsonl");
-    if cycle_store.exists() {
-        if let Ok(data) = std::fs::read_to_string(&cycle_store) {
-            let lines: Vec<&str> = data.lines().filter(|l| !l.trim().is_empty()).collect();
-            if lines.is_empty() {
-                println!("  No learning history found.");
-            } else {
-                for line in lines.iter().rev().take(limit) {
-                    if let Ok(evt) = serde_json::from_str::<serde_json::Value>(line) {
-                        let ts = evt.get("timestamp").and_then(|v| v.as_str()).unwrap_or("?");
-                        let patterns = evt
-                            .get("patterns_found")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
-                        let actions = evt
-                            .get("actions_generated")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
-                        let deployed = evt
-                            .get("actions_deployed")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
-                        println!(
-                            "  [{}] patterns={} actions={} deployed={}",
-                            ts, patterns, actions, deployed
-                        );
-                    } else {
-                        println!("  {}", line);
-                    }
-                }
-                println!();
-                println!("  Total cycles: {}", lines.len());
-            }
-        }
-    } else {
+    let cycles = learning_history_cycles(forge_dir)?;
+    if cycles.is_empty() {
         println!("  No learning history found.");
+        return Ok(());
     }
+    let total = cycles.len();
+    for cycle in cycles.iter().rev().take(limit) {
+        println!(
+            "  [{}] {} patterns={} actions={} status={:?}",
+            cycle.started_at, cycle.id, cycle.patterns_found, cycle.actions_taken, cycle.status
+        );
+    }
+    println!();
+    println!("  Total cycles: {total}");
     Ok(())
 }
 
@@ -1021,6 +1011,8 @@ pub fn run(action: ForgeAction, local: bool) -> Result<()> {
             }
         }
         ForgeAction::Optimize { name, op, param } => {
+            // name 围栏（R18）：`forge test` 同款穿越/盘符面，单一真相源。
+            nemesis_forge::forge::valid_skill_dir_name(&name).map_err(anyhow::Error::msg)?;
             let workspace = common::workspace_path(&home);
             let skill_md = workspace.join("skills").join(&name).join("SKILL.md");
             let content = std::fs::read_to_string(&skill_md)
@@ -1121,6 +1113,10 @@ mod tests;
 /// nemesis-web handlers::forge）。
 async fn cmd_test(home: &std::path::Path, name: &str, test_filter: Option<&str>) -> Result<()> {
     use nemesis_forge::skill_tests as st;
+
+    // name 围栏（R18）：与 web forge_test_cmd 同一单一真相源——`../x`
+    // 穿越读面 + `C:evil` 盘符相对形态（join 整段换基座）。
+    nemesis_forge::forge::valid_skill_dir_name(name).map_err(anyhow::Error::msg)?;
 
     let workspace = common::workspace_path(home);
     let skill_md = workspace.join("skills").join(name).join("SKILL.md");

@@ -1,6 +1,7 @@
 //! slash 命令：handle_command(_with_context)、rewrite_custom_command/skill_fallback、process_system_message、历史请求与发布、record_last_channel/chat_id、get_startup_info、set_chat_seq_lookup。
 //!
 //! P1 自 `loop.rs` 物理搬迁（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）；语义零变化。
+#[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
 
