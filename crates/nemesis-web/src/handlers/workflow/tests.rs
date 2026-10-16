@@ -115,6 +115,55 @@ async fn rate_limiter_separates_ips() {
     assert!(limiter.check(ip_a).await.is_err());
 }
 
+// 2026-10-16 hardening: the IP table itself is bounded (P2-2) — a spoofed-
+// source flood must not grow the map without limit. When the table is full:
+//   - expired entries are swept globally to admit a new IP;
+//   - a table full of LIVE entries rejects the new IP (429) instead of
+//     silently evicting a live peer, and the rejected IP is not admitted.
+#[tokio::test]
+async fn rate_limiter_never_evicts_live_entries_when_table_full() {
+    let limiter = WebhookRateLimiter::with_max_ips(2);
+    let a: IpAddr = "10.8.0.1".parse().unwrap();
+    let b: IpAddr = "10.8.0.2".parse().unwrap();
+    limiter.check(a).await.unwrap();
+    limiter.check(b).await.unwrap();
+
+    // Full of live entries — a third IP must be rejected with the window
+    // as retry_after, never admitted by evicting a or b.
+    let c: IpAddr = "10.8.0.3".parse().unwrap();
+    let err = limiter.check(c).await.unwrap_err();
+    assert_eq!(err, WEBHOOK_RATE_WINDOW);
+    assert!(limiter.check(a).await.is_ok(), "live peer a must survive");
+    assert!(limiter.check(b).await.is_ok(), "live peer b must survive");
+    // The rejected IP never entered the table.
+    assert!(!limiter.hits.lock().await.contains_key(&c));
+}
+
+#[tokio::test]
+async fn rate_limiter_sweeps_expired_entries_to_admit_new_ip() {
+    let limiter = WebhookRateLimiter::with_max_ips(2);
+    // Hand-age two entries beyond the window (child module: private field
+    // access is fine in tests; avoids a 60s sleep).
+    let old = std::time::Instant::now() - WEBHOOK_RATE_WINDOW - std::time::Duration::from_secs(1);
+    {
+        let mut hits = limiter.hits.lock().await;
+        hits.insert(
+            "10.9.0.1".parse().unwrap(),
+            std::collections::VecDeque::from([old]),
+        );
+        hits.insert(
+            "10.9.0.2".parse().unwrap(),
+            std::collections::VecDeque::from([old]),
+        );
+    }
+    // Table is "full" of expired entries — a new IP must succeed via sweep.
+    let fresh: IpAddr = "10.9.0.3".parse().unwrap();
+    assert!(limiter.check(fresh).await.is_ok());
+    let hits = limiter.hits.lock().await;
+    assert_eq!(hits.len(), 1, "expired entries should be swept");
+    assert!(hits.contains_key(&fresh));
+}
+
 // ---- handle_workflow_run auth + timeout (1c-E6) -------------------
 
 /// Build a minimal AppState for workflow handler tests. Most fields
@@ -1034,7 +1083,9 @@ async fn wsapi_get_checkpoint_no_store_configured() {
 async fn wsapi_set_chat_password_requires_dashboard() {
     // WorkflowChat auth (standalone page) must NOT mutate passwords.
     let mut ctx = make_ctx_with_engine(build_test_engine());
-    ctx.auth_method = crate::session::AuthMethod::WorkflowChat;
+    ctx.auth_method = crate::session::AuthMethod::WorkflowChat {
+        workflow: "some_wf".to_string(),
+    };
     let err = WorkflowHandler
         .handle_cmd(
             "set_chat_password",
@@ -1132,7 +1183,9 @@ async fn wsapi_verify_chat_password_correct_but_no_workflow() {
 #[tokio::test]
 async fn wsapi_clear_chat_password_requires_dashboard() {
     let mut ctx = make_ctx_with_engine(build_test_engine());
-    ctx.auth_method = crate::session::AuthMethod::WorkflowChat;
+    ctx.auth_method = crate::session::AuthMethod::WorkflowChat {
+        workflow: "some_wf".to_string(),
+    };
     let err = WorkflowHandler
         .handle_cmd(
             "clear_chat_password",
@@ -1477,11 +1530,16 @@ async fn rest_executions_filters_state_and_applies_limit() {
 
 #[tokio::test]
 async fn webhook_rate_limit_returns_429_on_61st_call_same_ip() {
-    // engine 缺失：前 60 次通过限流后在 trigger 阶段 500（InvalidState 经
-    // engine_error 兜底臂），第 61 次被限流先拦截 → 429（限流先于签名）。
-    let state = make_test_state(""); // 每个 state 一把新限流器
+    // 注册一个真 webhook 工作流（0 秒 delay，无 secret）：前 60 次在窗口内
+    // 通过限流并 accepted（200），第 61 次被限流先拦截 → 429（限流先于
+    // 签名与目标解析）。
+    let engine = build_test_engine();
+    engine
+        .register_workflow(webhook_workflow("hookwf", None))
+        .unwrap();
+    let state = state_with_engine(engine); // 每个 state 一把新限流器
     for i in 0..60 {
-        let (status, _) = handle_workflow_webhook(
+        let Json(_) = handle_workflow_webhook(
             axum::extract::State(state.clone()),
             ConnectInfo(local_addr()),
             HeaderMap::new(),
@@ -1489,8 +1547,7 @@ async fn webhook_rate_limit_returns_429_on_61st_call_same_ip() {
             axum::body::Bytes::from_static(b"{}"),
         )
         .await
-        .unwrap_err();
-        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "call {i}");
+        .unwrap_or_else(|(status, _)| panic!("call {i} should be accepted, got {status}"));
     }
     let (status, body) = handle_workflow_webhook(
         axum::extract::State(state),
@@ -1597,6 +1654,86 @@ async fn webhook_get_variant_triggers_via_query_params() {
     .unwrap();
     assert_eq!(json["workflow_name"], "hookget");
     assert_eq!(json["state"], "Running");
+}
+
+// 2026-10-16 hardening (P1-2): a signed workflow can never be triggered via
+// GET — there is no body to HMAC, so the old silently-ignore-secret behavior
+// turned the signature into decoration. GET must answer 405 with a pointer
+// to POST + X-Signature.
+#[tokio::test]
+async fn webhook_get_on_signed_workflow_returns_405() {
+    let engine = build_test_engine();
+    engine
+        .register_workflow(webhook_workflow("hooksigned", Some("topsecret")))
+        .unwrap();
+    let state = state_with_engine(engine.clone());
+    let (status, body) = handle_workflow_webhook_get(
+        axum::extract::State(state.clone()),
+        ConnectInfo(local_addr()),
+        Path("hooksigned".to_string()),
+        Query(serde_json::json!({ "challenge": "abc" })),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("cannot be triggered via GET"),
+        "unexpected error: {}",
+        body["error"]
+    );
+    // Nothing was started — the 405 must not have side effects.
+    let (status_post, _) = handle_workflow_webhook(
+        axum::extract::State(state.clone()),
+        ConnectInfo(local_addr()),
+        HeaderMap::new(), // missing signature → 401 proves POST still gated
+        Path("hooksigned".to_string()),
+        axum::body::Bytes::from_static(b"{}"),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(status_post, StatusCode::UNAUTHORIZED);
+}
+
+// 2026-10-16 hardening (P1-3): the public webhook URL only reaches workflows
+// that declare a webhook trigger. Manual/cron/event-only workflows — and
+// unknown names — answer the same 404 for both HTTP methods, so the route
+// can't be used as a workflow-existence oracle either.
+#[tokio::test]
+async fn webhook_target_without_trigger_or_unknown_returns_404_both_methods() {
+    let engine = build_test_engine();
+    // Registered but WITHOUT any webhook trigger (manual-only).
+    engine
+        .register_workflow(instant_workflow("manualonly"))
+        .unwrap();
+    let state = state_with_engine(engine);
+
+    for name in ["manualonly", "no-such-workflow"] {
+        let (status_post, body_post) = handle_workflow_webhook(
+            axum::extract::State(state.clone()),
+            ConnectInfo(local_addr()),
+            HeaderMap::new(),
+            Path(name.to_string()),
+            axum::body::Bytes::from_static(b"{}"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(status_post, StatusCode::NOT_FOUND, "POST {name}");
+        let (status_get, body_get) = handle_workflow_webhook_get(
+            axum::extract::State(state.clone()),
+            ConnectInfo(local_addr()),
+            Path(name.to_string()),
+            Query(serde_json::json!({})),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(status_get, StatusCode::NOT_FOUND, "GET {name}");
+        // Identical body for both methods and both cases — no oracle.
+        assert_eq!(body_post.0, body_get.0, "404 body must not differ ({name})");
+        assert_eq!(body_post["error"], "workflow_not_found");
+    }
 }
 
 #[tokio::test]
@@ -2099,6 +2236,169 @@ async fn chat_verify_missing_index_wrong_password_orphan_and_success() {
     assert_eq!(json["workflow_name"], "chatverifiable");
 }
 
+#[tokio::test]
+async fn chat_info_legacy_link_reports_password_across_migration_states() {
+    // 2026-10-16 复查回归锁：chat/info 曾直接用客户端原始 index 查
+    // has_password——旧 8-hex 链接在密码重设（canonical 16-hex 落库、legacy
+    // 孪生键被清）后会误报 needs_password:false，页面免密连 WS 再被升级闸
+    // 401。两条读路径必须同一 canonical 口径。
+    let engine = build_test_engine();
+    engine
+        .register_workflow(instant_workflow("legacyinfo"))
+        .unwrap();
+    let canonical = WorkflowEngine::chat_index("legacyinfo");
+    let legacy8 = canonical[..8].to_string();
+    let state = state_with_engine(engine);
+
+    // 迁移前（旧账本只有 8-hex 键）：两种形态都报 true。
+    state
+        .chat_secret_store
+        .set_password(&legacy8, "old")
+        .unwrap();
+    for idx in [&legacy8, &canonical] {
+        let Json(json) = handle_workflow_chat_info(
+            axum::extract::State(state.clone()),
+            Query(ChatInfoQuery { index: idx.clone() }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(json["found"], true, "idx={idx}");
+        assert_eq!(json["workflow_name"], "legacyinfo");
+        assert_eq!(json["needs_password"], true, "idx={idx}");
+    }
+
+    // 迁移后（重设：canonical 键落库，legacy 孪生键被清）：旧 8-hex 链接
+    // 也必须报 true（修复前此处为 false → 页面免密连接 → 401）。
+    state
+        .chat_secret_store
+        .set_password(&canonical, "new")
+        .unwrap();
+    for idx in [&legacy8, &canonical] {
+        let Json(json) = handle_workflow_chat_info(
+            axum::extract::State(state.clone()),
+            Query(ChatInfoQuery { index: idx.clone() }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(json["needs_password"], true, "post-reset idx={idx}");
+    }
+
+    // 未设密码时两种形态都报 false。
+    state.chat_secret_store.clear_password(&canonical).unwrap();
+    for idx in [&legacy8, &canonical] {
+        let Json(json) = handle_workflow_chat_info(
+            axum::extract::State(state.clone()),
+            Query(ChatInfoQuery { index: idx.clone() }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(json["needs_password"], false, "cleared idx={idx}");
+    }
+}
+
+#[tokio::test]
+async fn chat_verify_legacy_link_works_across_migration_states() {
+    // 同类回归锁（HTTP verify）：旧 8-hex 链接在新旧两种账本形态下都能验过；
+    // 重设后旧密码失效、新密码在旧链接上可用。
+    let engine = build_test_engine();
+    engine
+        .register_workflow(instant_workflow("legacyverify"))
+        .unwrap();
+    let canonical = WorkflowEngine::chat_index("legacyverify");
+    let legacy8 = canonical[..8].to_string();
+
+    // 迁移前：旧链接 + 旧密码 → 200。
+    let state = state_with_engine(engine);
+    state
+        .chat_secret_store
+        .set_password(&legacy8, "old")
+        .unwrap();
+    let Json(json) = handle_workflow_chat_verify(
+        axum::extract::State(state.clone()),
+        Json(serde_json::json!({ "index": legacy8, "password": "old" })),
+    )
+    .await
+    .unwrap();
+    assert_eq!(json["verified"], true);
+    assert_eq!(json["workflow_name"], "legacyverify");
+
+    // 重设（canonical 落库、孪生键清）：新密码在旧链接上 → 200；旧密码 → 401。
+    state
+        .chat_secret_store
+        .set_password(&canonical, "new")
+        .unwrap();
+    let Json(json) = handle_workflow_chat_verify(
+        axum::extract::State(state.clone()),
+        Json(serde_json::json!({ "index": legacy8, "password": "new" })),
+    )
+    .await
+    .unwrap();
+    assert_eq!(json["verified"], true);
+    let (status, body) = handle_workflow_chat_verify(
+        axum::extract::State(state.clone()),
+        Json(serde_json::json!({ "index": legacy8, "password": "old" })),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["verified"], false);
+
+    // canonical 形态同样可验。
+    let Json(json) = handle_workflow_chat_verify(
+        axum::extract::State(state),
+        Json(serde_json::json!({ "index": canonical, "password": "new" })),
+    )
+    .await
+    .unwrap();
+    assert_eq!(json["verified"], true);
+}
+
+#[tokio::test]
+async fn wsapi_verify_chat_password_legacy_link() {
+    // 同类回归锁（WSAPI verify_chat_password）：旧 8-hex 链接在密码重设后
+    // 仍可验；成功响应回 canonical index。
+    let engine = build_test_engine();
+    reg_workflow(&engine, "legacyws", "delay");
+    let canonical = nemesis_workflow::engine::WorkflowEngine::chat_index("legacyws");
+    let legacy8 = canonical[..8].to_string();
+    let ctx = ctx_with_dashboard(engine);
+
+    WorkflowHandler
+        .handle_cmd(
+            "set_chat_password",
+            Some(serde_json::json!({"index": canonical, "password": "s3cret"})),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+    // 错密码 → unauthorized。
+    let err = WorkflowHandler
+        .handle_cmd(
+            "verify_chat_password",
+            Some(serde_json::json!({"index": legacy8, "password": "nope"})),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err, "unauthorized");
+
+    // 正确密码经旧链接 → verified，响应带 canonical index。
+    let r = WorkflowHandler
+        .handle_cmd(
+            "verify_chat_password",
+            Some(serde_json::json!({"index": legacy8, "password": "s3cret"})),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(r["verified"], true);
+    assert_eq!(r["workflow_name"], "legacyws");
+    assert_eq!(r["index"], canonical);
+}
+
 // ---- WSAPI 成功路径残差 ----------------------------------------------
 
 #[tokio::test]
@@ -2535,7 +2835,9 @@ async fn wsapi_chat_password_set_and_clear_require_dashboard_auth() {
 
     // AuthMethod::default() 是 Dashboard；用 WorkflowChat（独立聊天页会话）
     // 才会命中 permission_denied 闸。
-    ctx.auth_method = crate::session::AuthMethod::WorkflowChat;
+    ctx.auth_method = crate::session::AuthMethod::WorkflowChat {
+        workflow: "some_wf".to_string(),
+    };
     let err = handler
         .handle_cmd(
             "set_chat_password",

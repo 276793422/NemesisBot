@@ -48,9 +48,9 @@ pub struct WorkflowSummary {
     pub trigger_count: usize,
     pub triggers: Vec<TriggerSummary>,
     /// Opaque short ID used by the workflow-chat URL (`/workflow/chat/<chat_index>`).
-    /// Computed as the first 8 chars of `sha256(name)` hex. Stable across
-    /// restarts, not enumerable from outside, and unique enough to avoid
-    /// collisions for any realistic workflow count.
+    /// Computed as the first 16 chars of `sha256(name)` hex (64 bit). Stable
+    /// across restarts, not enumerable from outside, and unique enough to
+    /// avoid collisions for any realistic workflow count.
     pub chat_index: String,
 }
 
@@ -1387,7 +1387,7 @@ impl WorkflowEngine {
 
     /// Compute the workflow-chat URL index for a workflow name.
     ///
-    /// Returns the first 8 hex chars of `sha256(name.to_lowercase())` —
+    /// Returns the first 16 hex chars (64 bit) of `sha256(name.to_lowercase())` —
     /// stable, opaque, not enumerable. Used by:
     /// - `WorkflowSummary::chat_index` (UI list response)
     /// - `workflow_by_chat_index` (resolving an incoming chat URL back to a workflow)
@@ -1395,29 +1395,53 @@ impl WorkflowEngine {
     ///
     /// Lowercasing the name first lets users type the URL case-insensitively
     /// without changing the canonical workflow name.
+    ///
+    /// History: this used to be the first 8 hex chars (32 bit); the 64-bit form
+    /// landed with the 2026-10-16 security hardening (32-bit collisions would
+    /// misroute URLs and share chat passwords). 8-hex legacy links keep working
+    /// via prefix matching in [`Self::workflow_by_chat_index`].
     pub fn chat_index(workflow_name: &str) -> String {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(workflow_name.to_lowercase().as_bytes());
         let hash = hasher.finalize();
-        let mut out = String::with_capacity(8);
-        for b in hash.iter().take(4) {
+        let mut out = String::with_capacity(16);
+        for b in hash.iter().take(8) {
             out.push_str(&format!("{:02x}", b));
         }
         out
     }
 
     /// Resolve a chat URL index back to a workflow name. O(n) scan — fine for
-    /// realistic workflow counts (chat_index collisions matter at ~65k entries).
-    /// Returns None if no registered workflow's chat_index matches.
+    /// realistic workflow counts. 16-hex (current) indexes match exactly;
+    /// legacy 8-hex indexes match by prefix — and an ambiguous prefix
+    /// (multiple registered workflows share those 8 hex chars) refuses the
+    /// resolution instead of silently picking one: a wrong pick would route
+    /// chat messages and passwords to the wrong workflow. Returns None if no
+    /// registered workflow's chat_index matches (or the prefix is ambiguous).
     pub fn workflow_by_chat_index(&self, index: &str) -> Option<String> {
         let lower = index.to_lowercase();
+        if lower.len() == 16 {
+            // Canonical form: exact match only.
+            return self
+                .workflows
+                .iter()
+                .find(|e| Self::chat_index(e.key()) == lower)
+                .map(|e| e.key().clone());
+        }
+        if lower.len() != 8 {
+            return None;
+        }
+        let mut matched: Option<String> = None;
         for entry in self.workflows.iter() {
-            if Self::chat_index(entry.key()) == lower {
-                return Some(entry.key().clone());
+            if Self::chat_index(entry.key()).starts_with(&lower) {
+                if matched.is_some() {
+                    return None;
+                }
+                matched = Some(entry.key().clone());
             }
         }
-        None
+        matched
     }
 
     /// Register + persist a workflow to disk (UI create/update path).

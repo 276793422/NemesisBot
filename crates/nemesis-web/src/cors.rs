@@ -303,6 +303,20 @@ pub fn production_cors_layer(allowed_origins: &[String]) -> CorsLayer {
         .allow_headers(Any)
 }
 
+/// Build a restrictive CORS layer: NO cross-origin access at all.
+///
+/// A bare [`CorsLayer`] emits no `Access-Control-Allow-Origin` header, so
+/// browsers deny every cross-origin read; same-origin requests (the served
+/// dashboard, standalone pages, share view) are unaffected — CORS is a
+/// browser-enforced contract they never enter.
+///
+/// This is the default when no CORS config exists and `cors_allow_all` is
+/// off (2026-10-16 hardening): the previous mapping "empty origin list →
+/// allow-all" silently turned a missing config file into `*`.
+pub fn restrictive_cors_layer() -> CorsLayer {
+    CorsLayer::new()
+}
+
 /// Build a CORS layer from a [`CORSManager`], respecting its configuration.
 ///
 /// When `development_mode` is enabled, this is equivalent to [`dev_cors_layer`].

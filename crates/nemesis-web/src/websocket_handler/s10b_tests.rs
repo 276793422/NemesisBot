@@ -34,7 +34,10 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-fn make_state(inbound_tx: Option<mpsc::UnboundedSender<IncomingMessage>>) -> Arc<AppState> {
+fn make_state(
+    inbound_tx: Option<mpsc::UnboundedSender<IncomingMessage>>,
+    engine: Option<Arc<nemesis_workflow::engine::WorkflowEngine>>,
+) -> Arc<AppState> {
     Arc::new(AppState {
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
@@ -59,7 +62,7 @@ fn make_state(inbound_tx: Option<mpsc::UnboundedSender<IncomingMessage>>) -> Arc
         cluster: None,
         cluster_service: None,
         cluster_log_dir: None,
-        workflow_engine: None,
+        workflow_engine: engine,
         chat_secret_store: std::sync::Arc::new(
             nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
         ),
@@ -71,6 +74,34 @@ fn make_state(inbound_tx: Option<mpsc::UnboundedSender<IncomingMessage>>) -> Arc
         cron: None,
         board: None,
     })
+}
+
+/// 注册一个可聊天测试工作流（单个 0 秒 delay 节点），返回其规范 chat index。
+/// workflow-chat 升级闸要求 index 能解析到已注册工作流（2026-10-16 加固）。
+fn register_chat_wf(engine: &nemesis_workflow::engine::WorkflowEngine, name: &str) -> String {
+    use std::collections::HashMap;
+    let mut cfg = HashMap::new();
+    cfg.insert("seconds".to_string(), serde_json::json!(0));
+    let wf = nemesis_workflow::types::Workflow {
+        name: name.to_string(),
+        description: String::new(),
+        version: "1.0.0".to_string(),
+        triggers: vec![],
+        nodes: vec![nemesis_workflow::types::NodeDef {
+            id: "n1".to_string(),
+            node_type: "delay".to_string(),
+            config: cfg,
+            depends_on: vec![],
+            retry_count: 0,
+            timeout: None,
+            is_terminal: false,
+        }],
+        edges: vec![],
+        variables: HashMap::new(),
+        metadata: HashMap::new(),
+    };
+    engine.register_workflow(wf).expect("register workflow");
+    nemesis_workflow::engine::WorkflowEngine::chat_index(name)
 }
 
 async fn start_server(state: Arc<AppState>) -> std::net::SocketAddr {
@@ -126,18 +157,25 @@ async fn assert_loop_alive(ws: &mut WsStream) {
 
 #[tokio::test]
 async fn workflow_chat_wrong_password_rejects_upgrade_with_401() {
-    let state = make_state(None);
+    // 升级闸要求 index 能解析到已注册工作流（engine 缺失/未知 index 都在
+    // 密码检查之前就被拒），所以这里必须先注册一个真工作流拿规范 index。
+    let engine = Arc::new(nemesis_workflow::engine::WorkflowEngine::new());
+    let index = register_chat_wf(&engine, "PwdWf");
+    let state = make_state(None, Some(engine));
     state
         .chat_secret_store
-        .set_password("wfidx", "s3cret")
+        .set_password(&index, "s3cret")
         .expect("set password");
     let addr = start_server(state).await;
 
     // Raw HTTP upgrade probe (same technique as extra_tests) to see the 401.
     let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let req = b"GET /ws?workflow_chat=wfidx&pwd=wrong HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
-    stream.write_all(req).await.unwrap();
+    let req = format!(
+        "GET /ws?workflow_chat={}&pwd=wrong HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        index
+    );
+    stream.write_all(req.as_bytes()).await.unwrap();
     let mut buf = [0u8; 1024];
     let n = stream.read(&mut buf).await.unwrap();
     let resp = String::from_utf8_lossy(&buf[..n]);
@@ -150,17 +188,33 @@ async fn workflow_chat_wrong_password_rejects_upgrade_with_401() {
 
 #[tokio::test]
 async fn workflow_chat_correct_password_allows_upgrade() {
-    let state = make_state(None);
+    // 同上：先注册真工作流拿规范 index，升级闸才能通过解析进入密码检查。
+    let engine = Arc::new(nemesis_workflow::engine::WorkflowEngine::new());
+    let index = register_chat_wf(&engine, "PwdOkWf");
+    let state = make_state(None, Some(engine));
     state
         .chat_secret_store
-        .set_password("wfidx", "s3cret")
+        .set_password(&index, "s3cret")
         .expect("set password");
     let addr = start_server(state).await;
 
-    let mut ws = connect_url(&addr, "?workflow_chat=wfidx&pwd=s3cret").await;
-    // Upgrade succeeded; the session is a workflow-chat session. Round-trip
-    // a heartbeat to prove the live loop works under this auth method.
-    assert_loop_alive(&mut ws).await;
+    let mut ws = connect_url(&addr, &format!("?workflow_chat={index}&pwd=s3cret")).await;
+    // Upgrade succeeded; the session is a workflow-chat session. Probe the
+    // loop with a workflow_chat-module frame (heartbeat and every other
+    // module is capability-denied for this auth method) — the bound session
+    // resolves history_request against its own workflow without an index.
+    ws.send(WsMessage::Text(
+        r#"{"type":"message","module":"workflow_chat","cmd":"history_request","data":{"request_id":"up1"}}"#.into(),
+    ))
+    .await
+    .unwrap();
+    let resp = next_text(&mut ws).await;
+    let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    assert_eq!(
+        v["cmd"], "history_response",
+        "workflow-chat loop must respond on its own module, got: {resp}"
+    );
+    assert_eq!(v["data"]["request_id"], "up1");
     ws.send(WsMessage::Close(None)).await.unwrap();
 }
 
@@ -170,7 +224,7 @@ async fn workflow_chat_correct_password_allows_upgrade() {
 
 #[tokio::test]
 async fn request_without_router_gets_error_response() {
-    let state = make_state(None); // ws_router = None
+    let state = make_state(None, None); // ws_router = None
     let addr = start_server(state).await;
     let mut ws = connect_url(&addr, "").await;
 
@@ -194,7 +248,7 @@ async fn request_without_router_gets_error_response() {
 
 #[tokio::test]
 async fn workflow_chat_module_message_is_spawned_and_loop_survives() {
-    let state = make_state(None); // workflow_engine = None
+    let state = make_state(None, None); // workflow_engine = None
     let addr = start_server(state).await;
     let mut ws = connect_url(&addr, "").await;
 
@@ -215,7 +269,7 @@ async fn workflow_chat_module_message_is_spawned_and_loop_survives() {
 
 #[tokio::test]
 async fn chat_send_with_no_inbound_channel_is_dropped_with_warning() {
-    let state = make_state(None); // inbound_tx = None
+    let state = make_state(None, None); // inbound_tx = None
     let addr = start_server(state).await;
     let mut ws = connect_url(&addr, "").await;
 
@@ -232,7 +286,7 @@ async fn chat_send_with_no_inbound_channel_is_dropped_with_warning() {
 async fn chat_send_with_closed_inbound_channel_warns_and_survives() {
     let (tx, rx) = mpsc::unbounded_channel::<IncomingMessage>();
     drop(rx); // channel closed → tx.send fails
-    let state = make_state(Some(tx));
+    let state = make_state(Some(tx), None);
     let addr = start_server(state).await;
     let mut ws = connect_url(&addr, "").await;
 
@@ -251,7 +305,7 @@ async fn chat_send_with_closed_inbound_channel_warns_and_survives() {
 
 #[tokio::test]
 async fn protocol_ping_frame_receives_text_pong() {
-    let state = make_state(None);
+    let state = make_state(None, None);
     let addr = start_server(state).await;
     let mut ws = connect_url(&addr, "").await;
 
@@ -266,7 +320,7 @@ async fn protocol_ping_frame_receives_text_pong() {
 
 #[tokio::test]
 async fn abrupt_client_drop_ends_stream_and_cleans_up_session() {
-    let state = make_state(None);
+    let state = make_state(None, None);
     let addr = start_server(state.clone()).await;
     let mut ws = connect_url(&addr, "").await;
 

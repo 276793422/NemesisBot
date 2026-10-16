@@ -2031,9 +2031,11 @@ async fn restore_skips_executions_with_config_drift() {
 // ============================================================
 
 #[test]
-fn chat_index_is_stable_and_lowercase_hex_8chars() {
+fn chat_index_is_stable_and_lowercase_hex_16chars() {
     let idx = WorkflowEngine::chat_index("hello-bot");
-    assert_eq!(idx.len(), 8);
+    // 16 hex chars (sha256 truncated to 64 bit) — the extra width vs the
+    // historical 8 hardens the chat URL against index collision guessing.
+    assert_eq!(idx.len(), 16);
     assert!(
         idx.chars()
             .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
@@ -2081,6 +2083,107 @@ async fn workflow_by_chat_index_resolves_registered_workflow() {
 async fn workflow_by_chat_index_returns_none_for_unknown() {
     let engine = WorkflowEngine::new_arc();
     assert!(engine.workflow_by_chat_index("deadbeef").is_none());
+}
+
+#[tokio::test]
+async fn workflow_by_chat_index_legacy_prefix_resolves_unique() {
+    // A legacy 8-hex link still resolves when the prefix unambiguously
+    // identifies one registered workflow; wrong lengths and unknown prefixes
+    // stay None.
+    let engine = WorkflowEngine::new_arc();
+    engine
+        .register_workflow(make_workflow(
+            "legacy-link-wf",
+            vec![make_node("n1", "start", vec![])],
+        ))
+        .unwrap();
+    let canonical = WorkflowEngine::chat_index("legacy-link-wf");
+    let legacy8 = &canonical[..8];
+
+    assert_eq!(
+        engine.workflow_by_chat_index(legacy8).as_deref(),
+        Some("legacy-link-wf")
+    );
+    assert_eq!(
+        engine
+            .workflow_by_chat_index(&legacy8.to_uppercase())
+            .as_deref(),
+        Some("legacy-link-wf")
+    );
+
+    // Same 8-hex length, different content → no match (single registered
+    // workflow, so a differing prefix cannot match it).
+    let mut other = legacy8.to_string();
+    let last = other.pop().unwrap();
+    other.push(if last == '0' { '1' } else { '0' });
+    assert!(engine.workflow_by_chat_index(&other).is_none());
+
+    // Non-8/16 lengths are never matched.
+    assert!(engine.workflow_by_chat_index(&canonical[..4]).is_none());
+    assert!(engine.workflow_by_chat_index(&canonical[..12]).is_none());
+    assert!(engine.workflow_by_chat_index("").is_none());
+}
+
+#[tokio::test]
+async fn workflow_by_chat_index_legacy_prefix_ambiguous_refuses() {
+    // If two registered workflows' canonical indexes share the same 8-hex
+    // prefix, a legacy link must NOT silently resolve to whichever entry the
+    // registry yields first — that would route chat and passwords to the
+    // wrong workflow. Refuse (None) instead. The 16-hex exact form still
+    // resolves each workflow.
+    //
+    // Find a colliding pair by birthday search over sha256 prefixes (~2^16
+    // draws expected; bounded well above the 99.9% quantile).
+    let (name_a, name_b, shared_prefix) = {
+        let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut found = None;
+        for i in 0..2_000_000u64 {
+            let name = format!("ambig-coll-{i}");
+            let idx = WorkflowEngine::chat_index(&name);
+            let prefix = idx[..8].to_string();
+            if let Some(prev) = seen.get(&prefix) {
+                found = Some((prev.clone(), name, prefix));
+                break;
+            }
+            seen.insert(prefix, name);
+        }
+        found.expect("8-hex prefix collision not found within 2M draws — implausible")
+    };
+
+    let engine = WorkflowEngine::new_arc();
+    engine
+        .register_workflow(make_workflow(
+            &name_a,
+            vec![make_node("n1", "start", vec![])],
+        ))
+        .unwrap();
+    engine
+        .register_workflow(make_workflow(
+            &name_b,
+            vec![make_node("n1", "start", vec![])],
+        ))
+        .unwrap();
+
+    // Ambiguous legacy link refuses.
+    assert_eq!(engine.workflow_by_chat_index(&shared_prefix), None);
+    assert_eq!(
+        engine.workflow_by_chat_index(&shared_prefix.to_uppercase()),
+        None
+    );
+
+    // Canonical 16-hex still resolves each side exactly.
+    assert_eq!(
+        engine
+            .workflow_by_chat_index(&WorkflowEngine::chat_index(&name_a))
+            .as_deref(),
+        Some(name_a.as_str())
+    );
+    assert_eq!(
+        engine
+            .workflow_by_chat_index(&WorkflowEngine::chat_index(&name_b))
+            .as_deref(),
+        Some(name_b.as_str())
+    );
 }
 
 #[tokio::test]
@@ -3147,7 +3250,7 @@ async fn w4a_chat_index_roundtrip() {
         .unwrap();
 
     let idx = WorkflowEngine::chat_index("WfX_Chat");
-    assert_eq!(idx.len(), 8);
+    assert_eq!(idx.len(), 16);
     assert!(idx.chars().all(|c| c.is_ascii_hexdigit()));
 
     // Exact and case-flipped lookups both resolve.
