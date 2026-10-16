@@ -26,6 +26,7 @@ use nemesis_cluster::rpc_types::{ActionType, RPCRequest};
 use nemesis_types::cluster::DiscussionEvent;
 
 use crate::cluster_request_logger_observer::ClusterRequestLoggerObserver;
+use crate::delivery_gate::{capture_task_delivery, delivery_base_tree};
 
 /// turn_guard 退化三判 GiveUp 的兜底告知文案（`turn_guard::check_final_answer`
 /// 在空答复重试耗尽时构造、以 Done 终局）。nemesis-agent 不导出该常量（crate
@@ -397,6 +398,7 @@ async fn execute_new_task(
             "",
             &notice,
             None,
+            None,
         )
         .await;
         task_list.complete_task(&task.task_id);
@@ -433,6 +435,9 @@ async fn execute_new_task(
     }
     // E1 二期：执行前快照 session 用量（成功回调时取差值 = 本任务消耗）。
     let usage_before = snapshot_session_usage(agent_loop, &task.source.session_key);
+    // P4 交付门：执行前快照基线 tree（git 形态才有；成功收口时按此 diff
+    // ——先执行后快照会把任务自己的改动算进基线，diff 恒空证据失真）。
+    let delivery_base = delivery_base_tree(agent_loop);
     let events = agent_loop
         .run_with_trace(
             &instance,
@@ -477,6 +482,7 @@ async fn execute_new_task(
             "error",
             "",
             "cancelled",
+            None,
             None,
         )
         .await;
@@ -558,6 +564,18 @@ async fn execute_new_task(
     if status.1 == "error" {
         nemesis_cluster::logger::log_task("exec_failed", &task.task_id, &status.0);
     }
+    // P4 交付门：成功交付才捕获分支（error/取消没有交付物可捕获）。
+    // 失败 = None（交付门是增强证据面，绝不阻断回调主链路）。
+    let delivery = if status.1 == "success" {
+        capture_task_delivery(
+            agent_loop,
+            &task.task_id,
+            delivery_base.as_deref(),
+            self_node_id,
+        )
+    } else {
+        None
+    };
     send_task_callback(
         rpc_client,
         result_persister,
@@ -567,6 +585,7 @@ async fn execute_new_task(
         &result,
         &status.0,
         usage,
+        delivery,
     )
     .await;
     task_list.complete_task(&task.task_id);
@@ -638,6 +657,8 @@ async fn resume_task(
     // E1 二期：续行前快照（差值 = 本续行轮消耗；原任务用量已在
     // execute_new_task 成功回调时报过，不重复计）。
     let usage_before = snapshot_session_usage(agent_loop, &task.source.session_key);
+    // P4 交付门：续行同样先记基线（本续行轮的改动才是本轮交付）。
+    let delivery_base = delivery_base_tree(agent_loop);
     let events = agent_loop
         .resume_execution_with_token(&instance, &context, &trace_id, &token)
         .await;
@@ -671,6 +692,7 @@ async fn resume_task(
             "error",
             "",
             "cancelled",
+            None,
             None,
         )
         .await;
@@ -743,6 +765,18 @@ async fn resume_task(
     if status.1 == "error" {
         nemesis_cluster::logger::log_task("exec_failed", &task.task_id, &status.0);
     }
+    // P4 交付门：同 execute_new_task——成功才捕获（diff 基线 = 本轮续行前
+    // 快照）；失败 = None 不阻断回调主链路。
+    let delivery = if status.1 == "success" {
+        capture_task_delivery(
+            agent_loop,
+            &task.task_id,
+            delivery_base.as_deref(),
+            self_node_id,
+        )
+    } else {
+        None
+    };
     send_task_callback(
         rpc_client,
         result_persister,
@@ -752,6 +786,7 @@ async fn resume_task(
         &result,
         &status.0,
         usage,
+        delivery,
     )
     .await;
     task_list.complete_task(&task.task_id);
@@ -1147,6 +1182,7 @@ async fn send_task_callback(
     response: &str,
     error: &str,
     usage: Option<serde_json::Value>,
+    delivery: Option<serde_json::Value>,
 ) {
     // P2A（2026-09-12 NB-15）：终结失败分类随 error 回调上行（success =
     // None，字段不落），A 端验收重派决策据此避免同 worker 同模型盲重派。
@@ -1155,6 +1191,7 @@ async fn send_task_callback(
         task_id = %task.task_id,
         status = %status,
         fail_class = ?fail_class,
+        has_delivery = delivery.is_some(),
         target_node = %task.source.node_id,
         "[ClusterAgent] Sending callback"
     );
@@ -1171,6 +1208,7 @@ async fn send_task_callback(
         error,
         usage,
         fail_class,
+        delivery,
     )
     .await;
 
@@ -1369,6 +1407,7 @@ async fn handle_task_error(
         "error",
         "",
         error_msg,
+        None,
         None,
     )
     .await;

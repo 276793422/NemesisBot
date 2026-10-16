@@ -32,10 +32,25 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use super::{AgentWiring, ClusterWiring, GatewayCtx};
 use crate::adapters;
+
+/// P3 T8：roster 条目 `state` 判定（纯函数，单测钉死）。常驻执行体存活
+/// → `running`；否则回记录生命周期态（active/provisioning/failed）。
+/// 词汇表契约见 `nemesis_cluster::types::AgentAnnouncement::state`。
+pub(crate) fn roster_state(
+    alive_ids: &std::collections::HashSet<String>,
+    agent_id: &str,
+    record_status: &str,
+) -> String {
+    if alive_ids.contains(agent_id) {
+        "running".to_string()
+    } else {
+        record_status.to_string()
+    }
+}
 
 /// PB-5 产物 struct（§4.2 B5）。
 pub(crate) struct PostAgentWiring {
@@ -158,6 +173,9 @@ pub(crate) async fn init_post_agent(
                 estop: shared_resources.estop.clone(),
                 estop_parked: board_estop_parked.clone(),
                 selfcheck: board_selfcheck_registry.clone(),
+                // P4-d：评审结论→交付账本闭环的审计插件槽。
+                #[cfg(feature = "security")]
+                security_slot: Some(ctx.outbound_dlp_slot.clone()),
             };
             let hook_deps = std::sync::Arc::new(deps);
             // 启动重放（R4-BUG-2 根修）用快照——hook_deps 本体随后 move 进
@@ -243,6 +261,9 @@ pub(crate) async fn init_post_agent(
                 estop: shared_resources.estop.clone(),
                 estop_parked: board_estop_parked.clone(),
                 selfcheck: board_selfcheck_registry.clone(),
+                // P4-d：同上——项目收口钩子的审计插件槽。
+                #[cfg(feature = "security")]
+                security_slot: Some(ctx.outbound_dlp_slot.clone()),
             });
             let proj_home = home.clone();
             let proj_cluster = cluster.clone();
@@ -489,6 +510,120 @@ pub(crate) async fn init_post_agent(
         let projects_bridge: std::sync::Arc<dyn nemesis_web::handlers::projects::ProjectsBridge> =
             projects_manager.clone();
         nemesis_web::handlers::projects::install_projects_bridge(projects_bridge);
+    }
+
+    // --- P2（2026-10-16）：Agent 持久实体 seed（tasks.db agents 表）---
+    // main 身份投影（幂等）+ 项目 agent 镜像 + 半创建 sweep 收敛。三类
+    // 失败都 warn 降级不炸 gateway（agents 记录是增强面，不是启动硬依赖；
+    // tasks.db 打不开 = agents.* WSAPI 诚实报错）。装进进程槽供 WSAPI 与
+    // 集群节点宣告读取。与 P1 审批台账各持独立连接（多连接 WAL 是既定
+    // 形态，TaskDb::open 自带并发首开纪律）。
+    {
+        match nemesis_taskstore::TaskDb::open(&nemesis_path::resolve_tasks_db_path_in_workspace(
+            &shared_resources.workspace_dir(),
+        )) {
+            Ok(db) => {
+                // P4-c：交付账本 bridge 用独立连接（db 本体随 mgr move；
+                // 多连接 WAL 是既定形态）。
+                let deliveries_db = std::sync::Arc::clone(&db);
+                let mgr = std::sync::Arc::new(crate::agents::AgentManager::from_db(
+                    shared_resources.workspace_dir(),
+                    db,
+                ));
+                if let Err(e) = mgr.ensure_main_agent() {
+                    warn!("[Gateway] main agent seed 失败（对话组身份投影缺位）: {e}");
+                }
+                let entries: Vec<(String, String, std::path::PathBuf)> =
+                    crate::projects::registry::list_projects(projects_manager.registry_path())
+                        .into_iter()
+                        .map(|p| (p.id, p.name, p.path))
+                        .collect();
+                match mgr.sync_project_agents(&entries) {
+                    Ok(created) if !created.is_empty() => {
+                        info!("[Gateway] 项目 agent 镜像同步: +{} 条", created.len());
+                    }
+                    Ok(_) => {}
+                    Err(e) => warn!("[Gateway] 项目 agent 镜像同步失败: {e}"),
+                }
+                match mgr.sweep() {
+                    Ok(report) if !report.activated.is_empty() || !report.failed.is_empty() => {
+                        info!(
+                            "[Gateway] agents sweep: 续建 {} 条, 失败 {} 条",
+                            report.activated.len(),
+                            report.failed.len()
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(e) => warn!("[Gateway] agents sweep 失败: {e}"),
+                }
+                crate::agents::install_manager(std::sync::Arc::clone(&mgr));
+                // T9：常驻监督器注入 manager（agents.sleep/wake/slots 生命
+                // 周期面经 bridge 走到 supervisor；supervisor 构造在
+                // agent_build（早于本块），此刻恒在场）。
+                if let Some(rt) = shared_resources.agent_runtime.as_ref() {
+                    mgr.set_runtime(std::sync::Arc::clone(rt));
+                }
+                // WSAPI agents.* 同点接线（同一 Manager 实例；web 侧 trait
+                // + 槽，实现落本 crate——依赖方向 nemesisbot→nemesis-web）。
+                let bridge: std::sync::Arc<dyn nemesis_web::handlers::agents::AgentsBridge> =
+                    mgr.clone();
+                nemesis_web::handlers::agents::install_agents_bridge(bridge);
+                // P4-c（2026-10-17）：交付账本 WSAPI 同点接线（deliveries.*
+                // 查询/裁决面；审计插件槽惰性取法同 cluster_init 回闭——
+                // 此刻槽还空着，回调执行时 get() 解析）。
+                #[cfg(feature = "security")]
+                crate::delivery_ledger::DeliveryLedgerBridge::install(
+                    std::sync::Arc::clone(&deliveries_db),
+                    Some(ctx.outbound_dlp_slot.clone()),
+                );
+                #[cfg(not(feature = "security"))]
+                crate::delivery_ledger::DeliveryLedgerBridge::install(std::sync::Arc::clone(
+                    &deliveries_db,
+                ));
+                // 节点宣告带 agent 清单（P2）：provider 闭包每次现读实体
+                // 注册表（UDP announce / TCP 探针回退 / get_info 三路同源），
+                // 运行期建删 agent 无需回写或重启。cluster 关 = 不装（roster
+                // 缺位与 professions 同语义：对端看到空清单=未宣告）。
+                // P3 T8：state 现读常驻监督器槽位——存活 → `running`，否则
+                // 回记录生命周期态（active/provisioning/failed）。闭包捕获
+                // supervisor Arc（manager 级单例，与 SharedResources 同寿）。
+                #[cfg(feature = "cluster")]
+                if let Some(cluster) = cluster_arc_ref.as_ref() {
+                    let mgr_for_roster = mgr.clone();
+                    let runtime_for_roster = shared_resources.agent_runtime.clone();
+                    cluster.set_agent_roster_provider(Some(std::sync::Arc::new(move || {
+                        let running: std::collections::HashSet<String> = runtime_for_roster
+                            .as_ref()
+                            .map(|rt| {
+                                rt.slot_states()
+                                    .into_iter()
+                                    .filter(|s| s.alive)
+                                    .map(|s| s.agent_id)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        mgr_for_roster
+                            .list()
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|r| nemesis_cluster::types::AgentAnnouncement {
+                                state: roster_state(&running, &r.agent_id, &r.status),
+                                agent_id: r.agent_id,
+                                name: r.name,
+                                kind: r.kind,
+                                tier: r.tier,
+                            })
+                            .collect()
+                    })));
+                }
+                info!("[Gateway] agent 实体注册表 armed (tasks.db agents 表)");
+            }
+            Err(e) => {
+                error!(
+                    "[Gateway] tasks.db unavailable, agent 实体注册表关闭（agents.* WSAPI 将诚实报错）: {e}"
+                );
+            }
+        }
     }
 
     // Step 10: Wire up WebServer (created early for WebChannel injection)

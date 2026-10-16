@@ -38,30 +38,22 @@
 //! the 2026-08-23 remaining-goal plan doc (W2 / U11, local archive).
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::debug;
 
 use nemesis_agent::context::RequestContext;
+use nemesis_agent::executor_transport::{ExecutorRequestOwned, ExecutorResponseWire};
 use nemesis_agent::r#loop::Tool;
 use nemesis_agent::{SharedToolConfig, register_shared_tools};
 
-/// Wire request from the gateway (mirror of the gateway-side `ExecutorRequest`).
-#[derive(serde::Deserialize)]
-struct ExecutorRequest {
-    tool: String,
-    args: String,
-    context: serde_json::Value,
-}
+mod journal;
 
-/// Wire response to the gateway (mirror of `ExecutorResponse`).
-#[derive(serde::Serialize)]
-struct ExecutorResponse {
-    ok: bool,
-    result: String,
-    error: String,
-}
+// P3 T1：wire 结构收编到 nemesis_agent::executor_transport（两侧单一真相源，
+// 镜像 struct 删除）。子进程侧消费 `ExecutorRequestOwned`（v1/v2 双兼容
+// 反序列化）+ `ExecutorResponseWire`（call_id 回显 + v1 字节形态不变）。
 
 /// Executor entrypoint. Reads stdin OR a named pipe, dispatches one tool per
 /// line, writes responses, exits on EOF (gateway closed the channel).
@@ -162,12 +154,10 @@ fn executor_main() -> Result<()> {
 /// 原因就能干净地回到模型/用户面前。同步 IO（专用线程上、runtime 建好之前）。
 #[cfg_attr(not(feature = "sandbox"), allow(dead_code))] // 唯一调用点在 feature 门内
 fn emit_error_response(error: &str) {
-    let resp = ExecutorResponse {
-        ok: false,
-        result: String::new(),
-        error: error.to_string(),
-    };
-    let mut line = serde_json::to_string(&resp).unwrap_or_else(|_| {
+    let mut line = serde_json::to_string(
+        &nemesis_agent::executor_transport::ExecutorResponseWire::error(error),
+    )
+    .unwrap_or_else(|_| {
         r#"{"ok":false,"result":"","error":"executor failed before tool loop"}"#.to_string()
     });
     line.push('\n');
@@ -212,6 +202,11 @@ async fn run_loop(workspace: &str) -> Result<()> {
     let tools: HashMap<String, Box<dyn Tool>> = register_shared_tools(&cfg);
     debug!("[executor] registered {} tools", tools.len());
 
+    // P3 T2：幂等账（journal）。persistent 模式（NEMESISBOT_EXECUTOR_AGENT_ID
+    // 在场）才启用——per-call 子进程每次一调用即退，账本无意义，保持 v1
+    // 行为零变化。
+    let mut journal = journal::Journal::open(Path::new(workspace));
+
     // Transport: named pipe if the gateway gave us one, else stdio (Layer 1).
     #[cfg(windows)]
     if let Ok(pipe_name) = std::env::var("NEMESISBOT_EXECUTOR_PIPE") {
@@ -219,10 +214,10 @@ async fn run_loop(workspace: &str) -> Result<()> {
             .await
             .context("connect executor pipe")?;
         debug!("[executor] connected to pipe {pipe_name}");
-        return pipe_loop(stream, &tools).await;
+        return pipe_loop(stream, &tools, &mut journal).await;
     }
 
-    stdio_loop(&tools).await
+    stdio_loop(&tools, &mut journal).await
 }
 
 // ---------------------------------------------------------------------------
@@ -541,6 +536,7 @@ mod sandbox_denial {
 async fn pipe_loop(
     stream: nemesis_agent::executor_pipe::NamedPipeClient,
     tools: &HashMap<String, Box<dyn Tool>>,
+    journal: &mut journal::Journal,
 ) -> Result<()> {
     // BufReader 必须活过整个循环：内部缓冲跨请求保留（每请求新建 reader 会
     // 把缓冲里已收到的后续请求字节随旧 reader 一起丢弃——多行一次到达时
@@ -554,15 +550,11 @@ async fn pipe_loop(
             Ok(_) => {}
             Err(e) => return Err(anyhow::anyhow!("pipe read: {e}")),
         };
-        let line = line.trim_end_matches(['\n', '\r']);
-        let resp = dispatch(tools, line).await;
-        let mut out = serde_json::to_string(&resp).unwrap_or_else(|_| {
-            r#"{"ok":false,"result":"","error":"response serialize failed"}"#.to_string()
-        });
-        out.push('\n');
+        let line = line.trim_end_matches(['\n', '\r']).to_string();
+        let resp_line = serve_line(&line, tools, journal).await;
         let stream = reader.get_mut();
         stream
-            .write_all(out.as_bytes())
+            .write_all(resp_line.as_bytes())
             .await
             .context("pipe write")?;
         stream.flush().await.context("pipe flush")?;
@@ -570,61 +562,116 @@ async fn pipe_loop(
 }
 
 /// stdio transport loop (Layer 1).
-async fn stdio_loop(tools: &HashMap<String, Box<dyn Tool>>) -> Result<()> {
+async fn stdio_loop(
+    tools: &HashMap<String, Box<dyn Tool>>,
+    journal: &mut journal::Journal,
+) -> Result<()> {
     let stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
     let mut reader = BufReader::new(stdin).lines();
 
     while let Ok(Some(line)) = reader.next_line().await {
-        let resp = dispatch(tools, &line).await;
-        let mut out = serde_json::to_string(&resp).unwrap_or_else(|_| {
-            r#"{"ok":false,"result":"","error":"response serialize failed"}"#.to_string()
-        });
-        out.push('\n');
-        let _ = stdout.write_all(out.as_bytes()).await;
+        let resp_line = serve_line(&line, tools, journal).await;
+        let _ = stdout.write_all(resp_line.as_bytes()).await;
         let _ = stdout.flush().await;
     }
     Ok(())
 }
 
-/// Dispatch one request line to the tool registry.
-async fn dispatch(tools: &HashMap<String, Box<dyn Tool>>, line: &str) -> ExecutorResponse {
-    let req: ExecutorRequest = match serde_json::from_str(line) {
+/// 服务一行请求（两个传输循环共用的协议主体）：解析 → journal replay 命中
+/// 回缓存行 → 否则 dispatch → （v2 请求）journal 记账 → 序列化响应行。
+/// 返回值恒带换行。
+async fn serve_line(
+    line: &str,
+    tools: &HashMap<String, Box<dyn Tool>>,
+    journal: &mut journal::Journal,
+) -> String {
+    // 行级解析失败（坏 JSON）：call_id 提不出来，replay 与记账都无从谈起，
+    // 直接回 v1 形态错误行（transport 层损坏行的语义归 gateway 侧判定）。
+    let req: ExecutorRequestOwned = match serde_json::from_str(line) {
         Ok(r) => r,
         Err(e) => {
-            return ExecutorResponse {
-                ok: false,
-                result: String::new(),
-                error: format!("bad request line: {e}"),
-            };
+            let mut err_line = serialize_response(&ExecutorResponseWire::error(&format!(
+                "bad request line: {e}"
+            )));
+            err_line.push('\n');
+            return err_line;
         }
+    };
+
+    // 幂等 replay（P3）：call_id 在账 → 该调用曾在先前进程内**执行完成**
+    // （journal 只在执行完成后记账），直接回缓存结果，不重复执行——
+    // 杀进程/杀 gateway 语义对齐 kill -9：已提交且完成的调用 at-most-once。
+    if let Some(cached) = journal.lookup(&req.call_id) {
+        debug!("[executor] journal replay hit: call_id={}", req.call_id);
+        let mut cached = cached.to_string();
+        cached.push('\n');
+        return cached;
+    }
+
+    let resp = dispatch(tools, req).await;
+    let resp_line = serialize_response(&resp);
+    // 记账先于回线：crash 窗口落在「已记账未回线」时，supervisor replay
+    // 能拿到缓存结果（at-most-once 的关键排序）；反向排序会变成
+    // 「回线成功但账没记」→ replay 重执行 → 双执行。
+    journal.record(&resp_line);
+    let mut resp_line = resp_line;
+    resp_line.push('\n');
+    resp_line
+}
+
+fn serialize_response(resp: &ExecutorResponseWire) -> String {
+    serde_json::to_string(resp).unwrap_or_else(|_| {
+        r#"{"ok":false,"result":"","error":"response serialize failed"}"#.to_string()
+    })
+}
+
+/// Dispatch one parsed request to the tool registry. 所有臂（含 bad context /
+/// unknown tool 错误）都按请求的协议版本回响应——v2 请求恒回显 call_id，
+/// 否则 gateway 侧 `read_response` 的 call_id 校验会把子进程的干净错误判成
+/// protocol 串话。
+async fn dispatch(
+    tools: &HashMap<String, Box<dyn Tool>>,
+    req: ExecutorRequestOwned,
+) -> ExecutorResponseWire {
+    // 先拆解出协议头（v/call_id）再消费 context/args/tool——context 会被
+    // from_value move，协议头要活到所有错误臂。
+    let ExecutorRequestOwned {
+        v,
+        call_id,
+        tool,
+        args,
+        context,
+    } = req;
+    // 响应的 v 字段：v2 请求回 v2（协议对齐），v1 请求回 0（不写键——响应
+    // 字节与历史一致）。
+    let resp_v = if v == nemesis_agent::executor_transport::PROTOCOL_V2 && !call_id.is_empty() {
+        nemesis_agent::executor_transport::PROTOCOL_V2
+    } else {
+        0
+    };
+    let respond = |error: String| ExecutorResponseWire {
+        v: resp_v,
+        call_id: call_id.clone(),
+        ok: false,
+        result: String::new(),
+        error,
     };
 
     // Reconstruct RequestContext (async_callback is `#[serde(skip)]` → None).
-    let ctx: RequestContext = match serde_json::from_value(req.context) {
+    let ctx: RequestContext = match serde_json::from_value(context) {
         Ok(c) => c,
-        Err(e) => {
-            return ExecutorResponse {
-                ok: false,
-                result: String::new(),
-                error: format!("bad context: {e}"),
-            };
-        }
+        Err(e) => return respond(format!("bad context: {e}")),
     };
 
-    let tool = match tools.get(&req.tool) {
-        Some(t) => t,
-        None => {
-            return ExecutorResponse {
-                ok: false,
-                result: String::new(),
-                error: format!("unknown tool: {}", req.tool),
-            };
-        }
+    let Some(tool_impl) = tools.get(&tool) else {
+        return respond(format!("unknown tool: {tool}"));
     };
 
-    match tool.execute(&req.args, &ctx).await {
-        Ok(result) => ExecutorResponse {
+    match tool_impl.execute(&args, &ctx).await {
+        Ok(result) => ExecutorResponseWire {
+            v: resp_v,
+            call_id,
             ok: true,
             result,
             error: String::new(),
@@ -634,12 +681,8 @@ async fn dispatch(tools: &HashMap<String, Box<dyn Tool>>, line: &str) -> Executo
             // 改写为面向模型的可自纠文案；普通错误原样透传（trim 构建无沙盒
             // → 无台账面，feature 门控）。
             #[cfg(feature = "sandbox")]
-            let error = sandbox_denial::on_tool_error(&req.tool, &req.args, &error);
-            ExecutorResponse {
-                ok: false,
-                result: String::new(),
-                error,
-            }
+            let error = sandbox_denial::on_tool_error(&tool, &args, &error);
+            respond(error)
         }
     }
 }

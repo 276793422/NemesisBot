@@ -7,6 +7,9 @@ edition.workspace = true
 [dependencies]
 nemesis-config = { workspace = true }
 nemesis-types = { workspace = true }
+# 统一任务层（P1）：生产任务真相源换 tasks.db（SqliteTaskStore 适配 +
+# 审批台账共享同库）。trait 适配 impl 在本 crate（task_store_sqlite.rs）。
+nemesis-taskstore = { workspace = true }
 # 集群专业职能框架（M3）：peer_chat 载荷 slug 归一（零依赖提示词资产层）。
 nemesis-prompts = { workspace = true }
 # 集群路径（peers.toml/state.toml/rpc_cache/config.cluster.json）唯一真相源在

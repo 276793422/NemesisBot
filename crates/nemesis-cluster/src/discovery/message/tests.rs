@@ -664,3 +664,78 @@ fn bye_message_defaults_professions() {
     assert!(parsed.professions.is_empty());
     assert_eq!(parsed.tier, None);
 }
+
+// -- P2 agent 清单（AgentAnnouncement，2026-10-16）--
+
+/// 旧节点 UDP 载荷无 agents 字段 → serde default 空 = 未宣告（不炸、
+/// 与 professions 缺字段同语义）；新载荷 to_bytes/from_bytes 往返保全。
+#[test]
+fn announce_agents_default_and_roundtrip() {
+    // 旧形态：JSON 无 agents 键。
+    let old_json = r#"{
+        "version": "1.0", "type": "announce",
+        "node_id": "n-old", "name": "OldNode",
+        "addresses": ["10.0.0.9"], "rpc_port": 9000,
+        "role": "worker", "category": "development",
+        "tags": [], "capabilities": [],
+        "node_type": "agent", "timestamp": 0
+    }"#;
+    let parsed: DiscoveryMessage = serde_json::from_str(old_json).unwrap();
+    assert!(parsed.agents.is_empty(), "缺 agents 键 = 未宣告");
+
+    // 半旧形态：条目在但无 state 键（T8 前的 P2 wire）→ serde default 空。
+    let legacy_entry_json = r#"{
+        "version": "1.0", "type": "announce",
+        "node_id": "n-p2", "name": "P2Node",
+        "addresses": ["10.0.0.8"], "rpc_port": 9001,
+        "role": "worker", "category": "development",
+        "tags": [], "capabilities": [],
+        "node_type": "agent", "timestamp": 0,
+        "agents": [
+            {"agent_id": "main", "name": "Main", "kind": "main", "tier": "big"}
+        ]
+    }"#;
+    let legacy: DiscoveryMessage = serde_json::from_str(legacy_entry_json).unwrap();
+    assert_eq!(legacy.agents.len(), 1);
+    assert!(
+        legacy.agents[0].state.is_empty(),
+        "缺 state 键 = 未宣告运行态（serde default）"
+    );
+
+    // 新形态：with_agents 构造 → 往返保全（含 state）。
+    let msg = DiscoveryMessage::new_announce(
+        "node-4",
+        "RosterNode",
+        vec!["10.0.0.4".into()],
+        9002,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+    )
+    .with_agents(vec![crate::types::AgentAnnouncement {
+        agent_id: "main".into(),
+        name: "Main".into(),
+        kind: "main".into(),
+        tier: "big".into(),
+        state: "running".into(),
+    }]);
+
+    let bytes = msg.to_bytes().expect("serialize");
+    let back = DiscoveryMessage::from_bytes(&bytes).expect("deserialize");
+    assert_eq!(back.agents.len(), 1);
+    assert_eq!(back.agents[0].agent_id, "main");
+    assert_eq!(back.agents[0].kind, "main");
+    assert_eq!(back.agents[0].tier, "big");
+    assert_eq!(back.agents[0].state, "running", "state 往返保全");
+}
+
+/// bye 消息不带清单（缺席即走 serde default），序列化不炸。
+#[test]
+fn bye_message_defaults_agents() {
+    let msg = DiscoveryMessage::new_bye("node-5");
+    let bytes = msg.to_bytes().expect("serialize");
+    let parsed = DiscoveryMessage::from_bytes(&bytes).expect("deserialize");
+    assert!(parsed.agents.is_empty());
+}

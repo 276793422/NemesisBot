@@ -58,6 +58,33 @@ fn executor_acl_defaults_converge_across_serde_and_default_paths() {
     );
 }
 
+/// P3 T4（executor.persistent）：serde 双路径收敛回归钉——executor 段缺
+/// persistent 键 = 全关 + 缺省配额（enabled=false，与升级前 per-call 现状
+/// 字节一致）；显式段缺字段 = 字段级 default 生效。
+#[test]
+fn executor_persistent_defaults_converge_across_serde_and_default_paths() {
+    // 路径 1：结构体级 Default。
+    let d = ExecutorSeparationConfig::default();
+    assert!(!d.persistent.enabled);
+    assert_eq!(d.persistent.max_slots, 4);
+    assert_eq!(d.persistent.idle_shutdown_secs, 300);
+    assert_eq!(d.persistent.call_timeout_secs, 600);
+
+    // 路径 2：executor 段存在但无 persistent 键（老 config.json 形态）。
+    let e: ExecutorSeparationConfig =
+        serde_json::from_str(r#"{ "enabled": true }"#).expect("deserialize");
+    assert!(!e.persistent.enabled, "缺键必须落全关——per-call 现状不变");
+    assert_eq!(e.persistent.max_slots, 4);
+
+    // 路径 3：显式 persistent 段，缺字段走字段级 default，显式值覆盖。
+    let e2: ExecutorSeparationConfig =
+        serde_json::from_str(r#"{ "persistent": { "enabled": true, "max_slots": 8 } }"#)
+            .expect("deserialize");
+    assert!(e2.persistent.enabled);
+    assert_eq!(e2.persistent.max_slots, 8);
+    assert_eq!(e2.persistent.idle_shutdown_secs, 300);
+}
+
 #[test]
 fn handle_sees_update_live() {
     let (_dir, store) = tmp_store();

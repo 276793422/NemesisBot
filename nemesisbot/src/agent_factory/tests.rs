@@ -1534,7 +1534,7 @@ async fn project_factory_bails_when_project_dir_missing() {
         Err(e) => e,
         Ok(_) => panic!("missing project dir must bail"),
     };
-    assert!(err.to_string().contains("项目目录不存在"), "err: {err}");
+    assert!(err.to_string().contains("执行根目录不存在"), "err: {err}");
 }
 
 /// 主 config.json 损坏 → bail（与主工厂的 NullProvider 降级不同：项目工厂
@@ -1859,6 +1859,8 @@ fn anchor_root_contract_single_source() {
         estop: Arc::new(nemesis_agent::estop::EstopState::new()),
         estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
         selfcheck: crate::board_review::SelfcheckRegistry::new(),
+        #[cfg(feature = "security")]
+        security_slot: None,
     };
 
     // ① 锚点主根 == SharedResources 解析根。

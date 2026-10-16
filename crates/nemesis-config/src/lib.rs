@@ -905,6 +905,54 @@ pub struct ExecutorSeparationConfig {
     /// = 现状字节不变）。见 [`ExecutorAclConfig`]。
     #[serde(default)]
     pub acl: ExecutorAclConfig,
+    /// P3 T4：常驻执行体开关组（`executor.persistent` 段，缺省全关 =
+    /// per-call 现状）。见 [`ExecutorPersistentConfig`]。
+    #[serde(default)]
+    pub persistent: ExecutorPersistentConfig,
+}
+
+/// `executor.persistent` 段：常驻执行体（per-agent 长驻子进程，P3 T4）的
+/// 细粒度开关。缺省全关 = per-call 形态字节不变——常驻是增强档不是替换
+/// 闸，不可用（满员/spawn 失败/传输不可恢复）时全量回落 per-call Layer1/2。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutorPersistentConfig {
+    /// 常驻执行体总开关（默认 false；true 时高危工具优先路由到常驻子进程）。
+    #[serde(default)]
+    pub enabled: bool,
+    /// 本节点常驻执行体槽位上限（满员时新调用回落 per-call，不排队不拒绝）。
+    #[serde(default = "default_persistent_max_slots")]
+    pub max_slots: u32,
+    /// 空闲自动 sleep 秒数（watchdog 扫描；0 = 不自动睡，由显式 sleep 托管）。
+    #[serde(default = "default_persistent_idle_secs")]
+    pub idle_shutdown_secs: u64,
+    /// 单次工具调用的传输超时秒数（子进程活着但没回话）。
+    #[serde(default = "default_persistent_call_timeout_secs")]
+    pub call_timeout_secs: u64,
+}
+
+fn default_persistent_max_slots() -> u32 {
+    4
+}
+
+fn default_persistent_idle_secs() -> u64 {
+    300
+}
+
+fn default_persistent_call_timeout_secs() -> u64 {
+    600
+}
+
+impl Default for ExecutorPersistentConfig {
+    /// 手写而非 derive（ExecutorAclConfig 同款 serde 双路径陷阱——结构体级
+    /// Default 不经过字段级 serde 缺省）：缺键 = enabled 关 + 满配额缺省。
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_slots: default_persistent_max_slots(),
+            idle_shutdown_secs: default_persistent_idle_secs(),
+            call_timeout_secs: default_persistent_call_timeout_secs(),
+        }
+    }
 }
 
 /// `executor.acl` 段：DACL 定向档（write-restricted 受限令牌 + workspace
@@ -964,6 +1012,7 @@ impl Default for ExecutorSeparationConfig {
             strict: false,
             backend: default_executor_backend(),
             acl: ExecutorAclConfig::default(),
+            persistent: ExecutorPersistentConfig::default(),
         }
     }
 }

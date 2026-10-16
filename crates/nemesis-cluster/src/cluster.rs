@@ -48,6 +48,11 @@ pub struct BusInboundMessage {
 /// Trait for publishing messages to the message bus.
 pub trait MessageBus: Send + Sync {
     fn publish_inbound(&self, msg: BusInboundMessage);
+    /// G5+P1（T19 二层根修）：入站接收者计数。broadcast send 对「无接收
+    /// 者」是静默丢弃（publish_inbound 返回 ()），恢复链路 publish 前需
+    /// 探测订阅是否就位（gateway 装配顺序里 AgentLoop 订阅晚于
+    /// cluster.start() 的首 tick，实测晚 ~131ms）。
+    fn inbound_receiver_count(&self) -> usize;
 }
 
 // ---------------------------------------------------------------------------
@@ -58,6 +63,12 @@ pub trait MessageBus: Send + Sync {
 pub const DEFAULT_UDP_PORT: u16 = 11949;
 pub const DEFAULT_RPC_PORT: u16 = 21949;
 pub const DEFAULT_BROADCAST_INTERVAL: Duration = Duration::from_secs(30);
+
+/// agent 实体清单提供者（P2 2026-10-16）：nemesisbot 装配期注入，闭包内
+/// 现读 AgentManager（fresh read）。放 Cluster 侧只依赖本 crate 类型，
+/// 不反向依赖 nemesisbot。
+pub type AgentRosterProvider =
+    std::sync::Arc<dyn Fn() -> Vec<crate::types::AgentAnnouncement> + Send + Sync>;
 
 /// The cluster manages a set of nodes and distributes tasks.
 pub struct Cluster {
@@ -78,6 +89,12 @@ pub struct Cluster {
     professions: parking_lot::RwLock<Vec<String>>,
     /// 节点档位（role_tier 口径；peers.toml `[node].tier` 种入，手工声明）。
     tier: parking_lot::RwLock<Option<String>>,
+    /// 自报 agent 实体清单提供者（P2 2026-10-16）。闭包每次现读实体注册
+    /// 表（fresh read，不缓存快照）——announce / get_info 拿到的都是当前
+    /// 值，运行期增删 agent 无需回写。`None` = 未宣告（announce 不带
+    /// agents，对端 serde default 兼容）。Arc 包装：get_info 的静态捕获
+    /// 闭包持 Arc 读活值（后 set 的提供者也能被看到）。
+    agent_roster: std::sync::Arc<parking_lot::RwLock<Option<AgentRosterProvider>>>,
     /// Dynamic capabilities reported by the AgentLoop (tool names).
     /// Set via `set_capabilities()` after the agent is built.
     /// Wrapped in Arc for sharing with RPC handler closures (real-time reads).
@@ -92,6 +109,10 @@ pub struct Cluster {
     // -- Components --
     registry: Arc<PeerRegistry>,
     task_manager: Arc<TaskManager>,
+    /// P1 统一任务层：tasks.db 连接（None = `Cluster::new` 测试路径内存态；
+    /// 打不开/损坏 = 同样 None 但 task_manager 挂 PoisonedTaskStore——
+    /// fail-closed 响亮报错，不静默回内存）。
+    task_db: Option<Arc<nemesis_taskstore::TaskDb>>,
     cont_store: Arc<ContinuationStore>,
     result_store: Arc<TaskResultStore>,
     rpc_client: Mutex<Option<Arc<RpcClient>>>,
@@ -188,12 +209,15 @@ impl Cluster {
             tags: parking_lot::RwLock::new(Vec::new()),
             professions: parking_lot::RwLock::new(Vec::new()),
             tier: parking_lot::RwLock::new(None),
+            agent_roster: std::sync::Arc::new(parking_lot::RwLock::new(None)),
             capabilities: Arc::new(std::sync::Mutex::new(Vec::new())),
             workspace: workspace.clone(),
             static_config_path: cluster_dir_path.join("peers.toml"),
             dynamic_state_path: cluster_dir_path.join("state.toml"),
             registry: Arc::new(PeerRegistry::new(HealthConfig::default())),
             task_manager: Arc::new(TaskManager::new()),
+            // 测试路径（cwd 工作区）：内存态保留——tasks.db 属生产路径换装。
+            task_db: None,
             cont_store: Arc::new(ContinuationStore::new(cluster_dir_path.join("rpc_cache"))),
             result_store: Arc::new(TaskResultStore::new(1000)),
             rpc_client: Mutex::new(None),
@@ -290,6 +314,31 @@ impl Cluster {
             .unwrap_or_default();
         let tier_default = sc.as_ref().and_then(|s| s.node.tier.clone());
 
+        // P1 统一任务层：生产路径任务真相源换 tasks.db（SQLite）——内存态根除，
+        // gateway 重启后在途任务/审批可恢复。打不开/损坏 = fail-closed（挂
+        // PoisonedTaskStore，任务操作响亮报错，不静默退回内存假装持久化；
+        // ChatSecretStore 损坏熔断同款纪律）。`Cluster::new` 测试路径保持内存态。
+        let tasks_db_path = nemesis_path::resolve_tasks_db_path_in_workspace(&workspace);
+        let (task_db, task_manager) = match nemesis_taskstore::TaskDb::open(&tasks_db_path) {
+            Ok(db) => {
+                let store = nemesis_taskstore::SqliteTaskStore::from_db(db.clone());
+                (Some(db), Arc::new(TaskManager::with_store(Arc::new(store))))
+            }
+            Err(e) => {
+                tracing::error!(
+                    "[Cluster] tasks.db unavailable at {}, task persistence fail-closed \
+                     (task ops will error honestly): {e}",
+                    tasks_db_path.display()
+                );
+                (
+                    None,
+                    Arc::new(TaskManager::with_store(Arc::new(
+                        crate::task_manager::PoisonedTaskStore::new(e.clone()),
+                    ))),
+                )
+            }
+        };
+
         Self {
             node_id: node_id.clone(),
             node_name: parking_lot::RwLock::new(node_name_default),
@@ -301,12 +350,14 @@ impl Cluster {
             tags: parking_lot::RwLock::new(tags_default),
             professions: parking_lot::RwLock::new(professions_default),
             tier: parking_lot::RwLock::new(tier_default),
+            agent_roster: std::sync::Arc::new(parking_lot::RwLock::new(None)),
             capabilities: Arc::new(std::sync::Mutex::new(Vec::new())),
             workspace: workspace.clone(),
             static_config_path: nemesis_path::resolve_cluster_peers_path_in_workspace(&workspace),
             dynamic_state_path: nemesis_path::resolve_cluster_state_path_in_workspace(&workspace),
             registry: Arc::new(PeerRegistry::new(HealthConfig::default())),
-            task_manager: Arc::new(TaskManager::new()),
+            task_manager,
+            task_db,
             cont_store: Arc::new(ContinuationStore::new(
                 nemesis_path::resolve_cluster_rpc_cache_dir_in_workspace(&workspace),
             )),
@@ -393,6 +444,7 @@ impl Cluster {
             addresses: vec![],
             professions: self.professions.read().clone(),
             tier: self.tier.read().clone(),
+            agents: self.current_agent_roster(),
             node_type: self.node_type.clone(),
         };
         self.registry.upsert(local_node);
@@ -547,6 +599,9 @@ impl Cluster {
                 addresses: pc.addresses.clone(),
                 professions: pc.professions.clone(),
                 tier: pc.tier.clone(),
+                // agents 不持久化到 state.toml（运行时清单，周期 announce
+                // 自会重学——空 = 未宣告，绝不因回读假造清单）。
+                agents: Vec::new(),
                 node_type: String::new(),
             });
             seeded += 1;
@@ -817,19 +872,18 @@ impl Cluster {
                         return;
                     }
                     _ = interval.tick() => {
-                        // G5: 每 tick 重新读 bus —— set_message_bus 可能在
-                        // start() 之后才被调用（gateway 装配顺序）。
-                        let bus_snapshot: Option<Arc<dyn MessageBus>> = bus.lock().clone();
-                        // CD3: 交付回调同款每 tick 快照。
-                        let delivery_cb = on_recovered_delivery.lock().clone();
+                        // G5+P1（T19 根修）：bus / delivery_cb 以句柄传入，
+                        // poll 内部分支取用时现读——不再做 tick 级快照
+                        //（首 tick 快照必早于 set_message_bus 注入窗口，
+                        // 见 poll_stale_pending_tasks 签名注释）。
                         poll_stale_pending_tasks(
                             &task_manager,
                             &call_fn,
                             rpc_client.as_deref(),
                             safety_net,
-                            bus_snapshot.as_deref(),
+                            &bus,
                             first_tick,
-                            delivery_cb.as_ref(),
+                            &on_recovered_delivery,
                         ).await;
                         first_tick = false;
                     }
@@ -1156,13 +1210,15 @@ impl Cluster {
             node_type,
             Vec::new(),
             None,
+            Vec::new(),
             None,
         )
     }
 
-    /// [`Self::handle_discovered_node`] 扩展形态：带对端自报职能与档位
-    /// （集群专业职能框架 M2）。生产 UDP 发现路径（announce 接收）走本
-    /// 方法；其余路径（桥接/静态）无职能数据，走旧签名。
+    /// [`Self::handle_discovered_node`] 扩展形态：带对端自报职能、档位与
+    /// agent 实体清单（集群专业职能框架 M2 + P2 agent roster）。生产 UDP
+    /// 发现路径（announce 接收）走本方法；其余路径（桥接/静态）无扩展
+    /// 数据，走旧签名。
     ///
     /// `source_addr`：R5 源地址收割——UDP announce 的包源 IP（发现层亲眼
     /// 可见的可达性证据；载荷地址可能因对端枚举缺口缺失，如 if_addrs 的
@@ -1182,6 +1238,7 @@ impl Cluster {
         node_type: &str,
         professions: Vec<String>,
         tier: Option<String>,
+        agents: Vec<crate::types::AgentAnnouncement>,
         source_addr: Option<&str>,
     ) -> bool {
         self.handle_discovered_node_impl(
@@ -1196,6 +1253,7 @@ impl Cluster {
             node_type,
             professions,
             tier,
+            agents,
             source_addr,
         )
     }
@@ -1214,6 +1272,7 @@ impl Cluster {
         node_type: &str,
         professions: Vec<String>,
         tier: Option<String>,
+        agents: Vec<crate::types::AgentAnnouncement>,
         source_addr: Option<&str>,
     ) -> bool {
         // Skip blacklisted nodes
@@ -1284,6 +1343,7 @@ impl Cluster {
             merged.tags = tags.clone();
             merged.professions = professions.clone();
             merged.tier = tier.clone();
+            merged.agents = agents.clone();
             merged.node_type = node_type.to_string();
             return self.registry.upsert_if_changed(merged);
         }
@@ -1364,9 +1424,10 @@ impl Cluster {
             tags: tags.clone(),
             // Preserve all addresses for multi-address failover。
             addresses: pool,
-            // clone：下方占位升级块（RealNodeInfo）仍要用 professions/tier。
+            // clone：下方占位升级块（RealNodeInfo）仍要用 professions/tier/agents。
             professions: professions.clone(),
             tier: tier.clone(),
+            agents: agents.clone(),
             node_type: node_type.to_string(),
         };
         let changed = self.registry.upsert_if_changed(node);
@@ -1499,6 +1560,7 @@ impl Cluster {
                         tags: tags.to_vec(),
                         professions: professions.clone(),
                         tier: tier.clone(),
+                        agents: agents.clone(),
                         node_type: node_type.into(),
                     },
                 );
@@ -1665,6 +1727,9 @@ impl Cluster {
             existing.base.last_seen = chrono::Local::now().to_rfc3339();
             existing.capabilities = info.capabilities.clone();
             existing.tags = info.tags.clone();
+            existing.professions = info.professions.clone();
+            existing.tier = info.tier.clone();
+            existing.agents = info.agents.clone();
             existing.node_type = info.node_type.clone();
             self.registry.upsert(existing);
             self.persist_real_peer_to_toml(&info.id, info);
@@ -1715,6 +1780,7 @@ impl Cluster {
             addresses: info.addresses.clone(),
             professions: info.professions.clone(),
             tier: info.tier.clone(),
+            agents: info.agents.clone(),
             node_type: info.node_type.clone(),
         };
         self.registry.upsert(node);
@@ -1968,6 +2034,13 @@ impl Cluster {
         &self.task_manager
     }
 
+    /// tasks.db 连接（P1 统一任务层）。`None` = `Cluster::new` 测试路径
+    /// 内存态（无台账可记）；交付门（P4）A 端据此把 worker 交付分支
+    /// 证据入 deliveries 表。
+    pub fn task_db(&self) -> Option<Arc<nemesis_taskstore::TaskDb>> {
+        self.task_db.clone()
+    }
+
     /// Get the continuation store.
     pub fn continuation_store(&self) -> &Arc<ContinuationStore> {
         &self.cont_store
@@ -2209,6 +2282,22 @@ impl Cluster {
             None => return,
         };
 
+        // P1 统一任务层：结果回传 delivery 记账（deliveries 表首个消费者；
+        // idempotency_key=task_id 天然去重——G5 恢复轮询/重复回调不重复记账）。
+        // 记账失败只留痕不阻断回传（记账是辅助台账，回传是主链路）。
+        if let Some(db) = &self.task_db {
+            let payload = task.result.clone().unwrap_or(serde_json::Value::Null);
+            match db.record_delivery("cluster_result", Some(task_id), task_id, &payload) {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::debug!("[Cluster] delivery already recorded for task {task_id}")
+                }
+                Err(e) => {
+                    tracing::warn!("[Cluster] delivery record failed for task {task_id}: {e}")
+                }
+            }
+        }
+
         if task.original_channel.is_empty() {
             return;
         }
@@ -2290,6 +2379,22 @@ impl Cluster {
     pub fn set_professions(&self, professions: Vec<String>) {
         *self.professions.write() = professions;
         self.sync_local_node_to_registry();
+    }
+
+    /// 注入 agent 实体清单提供者（P2 2026-10-16；gateway 装配期一次）。
+    /// 闭包每次现读 AgentManager——announce / get_info 恒拿当前清单。
+    /// 注入 `None` = 回到未宣告（测试形态）。
+    pub fn set_agent_roster_provider(&self, provider: Option<AgentRosterProvider>) {
+        *self.agent_roster.write() = provider;
+    }
+
+    /// 当前 agent 清单（未注入提供者 = 空清单 = 未宣告）。
+    fn current_agent_roster(&self) -> Vec<crate::types::AgentAnnouncement> {
+        self.agent_roster
+            .read()
+            .as_ref()
+            .map(|p| p())
+            .unwrap_or_default()
     }
 
     /// 节点档位（role_tier 口径；真相源 peers.toml `[node].tier`）。
@@ -2747,6 +2852,7 @@ impl Cluster {
             addresses: vec![],
             professions: self.professions.read().clone(),
             tier: self.tier.read().clone(),
+            agents: self.current_agent_roster(),
             node_type: self.node_type.clone(),
         };
         self.registry.upsert(info);
@@ -3029,6 +3135,9 @@ impl Cluster {
         let tags = self.tags.read().clone();
         let professions = self.professions.read().clone();
         let tier = self.tier.read().clone();
+        // P2 agent roster：Arc 过闭包读活值（提供者每次现读 AgentManager，
+        // 运行期增删 agent 无需重启即反映）。
+        let roster_slot = self.agent_roster.clone();
         let node_type = self.node_type.clone();
         let rpc_port = self.rpc_port;
         // Dynamic fields (real-time):
@@ -3038,6 +3147,7 @@ impl Cluster {
             Box::new(move |_payload| {
                 let addresses = network::get_all_local_ips();
                 let capabilities = caps_arc.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let agents = roster_slot.read().as_ref().map(|p| p()).unwrap_or_default();
                 Ok(serde_json::json!({
                     "version": "1.0",
                     "node_id": node_id,
@@ -3051,6 +3161,8 @@ impl Cluster {
                     // 职能框架 M2：自报职能/档位（旧对端不读未知键，兼容）。
                     "professions": professions,
                     "tier": tier,
+                    // P2：自报 agent 实体清单（announce 子对象同源携带）。
+                    "agents": agents,
                     "node_type": node_type,
                     "status": "online",
                 }))
@@ -3475,18 +3587,17 @@ impl Cluster {
     pub async fn poll_stale_pending_tasks(&self) {
         let call_fn = self.call_with_context_fn.lock().clone();
         let rpc_client = self.rpc_client.lock().clone();
-        let bus_snapshot: Option<Arc<dyn MessageBus>> = self.bus.lock().clone();
         let safety_net = self.task_manager.pending_timeout();
-        // CD3: 交付回调快照（set 可发生在 start 之后，同 bus 语义）。
-        let delivery_cb = self.on_recovered_delivery.lock().clone();
+        // CD3: 交付回调与 bus 均以句柄传入（T19 根修：分支内现读，
+        // set 可发生在 start 之后，同 gateway 装配顺序语义）。
         poll_stale_pending_tasks(
             &self.task_manager,
             &call_fn,
             rpc_client.as_deref(),
             safety_net,
-            bus_snapshot.as_deref(),
+            &self.bus,
             false,
-            delivery_cb.as_ref(),
+            &self.on_recovered_delivery,
         )
         .await;
     }
@@ -3578,6 +3689,7 @@ impl Cluster {
             &msg.node_type,
             msg.professions,
             msg.tier,
+            msg.agents,
             None,
         );
         if changed {
@@ -3687,11 +3799,20 @@ async fn poll_stale_pending_tasks(
     >,
     rpc_client: Option<&RpcClient>,
     safety_net: chrono::Duration,
-    bus: Option<&dyn MessageBus>,
+    // G5+P1（T19 根修）：bus / delivery_cb 传句柄不传快照——publish 与交付
+    // 回调在分支内**取用时现读**。此前每 tick 开头快照一次，而首 tick 快照
+    // 必早于 set_message_bus / set_on_recovered_delivery（gateway 装配顺序
+    // cluster.start() 先于二者），秒级 RPC 查询跨越注入窗口后 done 分支拿
+    // 过期 None 静默跳过 publish。P1 sqlite 持久化使在途任务直接出现在首
+    // tick（此前 in-memory store 重启为空、G5 重建注册只能赶上第二 tick），
+    // 该竞态被 T19 实证暴露。
+    bus: &Arc<Mutex<Option<Arc<dyn MessageBus>>>>,
     include_young: bool,
     // CD3（2026-09-17）：恢复交付回调——done 分支 confirm 前置闸，见
-    // Cluster::set_on_recovered_delivery。None = 旧行为（无条件 confirm）。
-    delivery_cb: Option<&Arc<dyn Fn(&str, &str, &str, Option<&str>) -> bool + Send + Sync>>,
+    // Cluster::set_on_recovered_delivery。未注册 = 旧行为（无条件 confirm）。
+    delivery_cb: &Arc<
+        Mutex<Option<Arc<dyn Fn(&str, &str, &str, Option<&str>) -> bool + Send + Sync>>>,
+    >,
 ) {
     let tasks = task_manager.list_pending_tasks();
 
@@ -3735,15 +3856,18 @@ async fn poll_stale_pending_tasks(
             // 形态，形状对齐下方 not_found 分支）。此前只 complete_callback
             // 不 publish——任务状态标 Failed 了，但等回复的 agent 永远不知
             // 道，续行快照悬挂到永远。
-            if let Some(bus) = bus {
+            // 先落绑再判：MutexGuard 临时值不得跨 await（非 Send）。
+            let bus_snapshot = bus.lock().clone();
+            if let Some(bus) = bus_snapshot {
                 publish_continuation_to_bus(
-                    bus,
+                    bus.as_ref(),
                     &task.id,
                     "",
                     "error",
                     &task.peer_id,
                     Some(&timeout_error),
-                );
+                )
+                .await;
             }
             continue;
         }
@@ -3820,21 +3944,26 @@ async fn poll_stale_pending_tasks(
                 );
                 task_manager.complete_callback(&task.id, &result_status, &response, &error);
                 // G5: 唤醒 A 端主 agent（形状对齐 gateway Route 2）。
-                if let Some(bus) = bus {
+                // 句柄现读（T19 根修）：RPC 查询跨越 set_message_bus 注入
+                // 窗口时，tick 开头的旧快照是 None——必须在 publish 前重读。
+                // 先落绑再判：MutexGuard 临时值不得跨 await（非 Send）。
+                let bus_snapshot = bus.lock().clone();
+                if let Some(bus) = bus_snapshot {
                     publish_continuation_to_bus(
-                        bus,
+                        bus.as_ref(),
                         &task.id,
                         &response,
                         &result_status,
                         &task.peer_id,
                         if error.is_empty() { None } else { Some(&error) },
-                    );
+                    )
+                    .await;
                 }
                 // CD3（2026-09-17）：交付回调成功（或未注册回调 = 旧行为）才
                 // confirm——写回成功才删 worker 端副本，宁留勿丢。回调返回
                 // false（如看板写回失败）时跳过 confirm + WARN，副本走 worker
                 // 端 7 天 TTL 兜底（TaskManager 已完成，下轮 poll 不会再查）。
-                let delivery_ok = match delivery_cb {
+                let delivery_ok = match delivery_cb.lock().clone() {
                     Some(cb) => {
                         let ok = cb(
                             &task.id,
@@ -3872,7 +4001,7 @@ async fn poll_stale_pending_tasks(
                 //（否则任务已死、派发行悬 dispatched、评审链最长空转 3600s）。
                 // worker 端已无副本，无需 confirm；回调失败（写回竞态）时
                 // 派发行仍 dispatched，sweep 照常兜底，宁留勿丢语义不变。
-                if let Some(cb) = delivery_cb {
+                if let Some(cb) = delivery_cb.lock().clone() {
                     let ok = cb(&task.id, "error", "", Some("remote task not found"));
                     if !ok {
                         tracing::warn!(
@@ -3883,16 +4012,19 @@ async fn poll_stale_pending_tasks(
                     }
                 }
                 // G5: not_found 同样要唤醒 agent（带 error metadata），
-                // 否则续行快照永远悬着直到安全网清理。
-                if let Some(bus) = bus {
+                // 否则续行快照永远悬着直到安全网清理。句柄现读（T19 根修）。
+                // 先落绑再判：MutexGuard 临时值不得跨 await（非 Send）。
+                let bus_snapshot = bus.lock().clone();
+                if let Some(bus) = bus_snapshot {
                     publish_continuation_to_bus(
-                        bus,
+                        bus.as_ref(),
                         &task.id,
                         "",
                         "error",
                         &task.peer_id,
                         Some("remote task not found"),
-                    );
+                    )
+                    .await;
                 }
             }
             _ => {
@@ -3909,7 +4041,15 @@ async fn poll_stale_pending_tasks(
 /// - `sender_id` = `cluster_continuation:{task_id}`（AgentLoop 拦截前缀）
 /// - `content` = B 端真实响应（恢复的 LLM 回复）
 /// - `metadata` = status / source_node / error（与 Route 2 字段一致）
-fn publish_continuation_to_bus(
+///
+/// T19 二层根修（2026-10-16）：恢复首 tick 的 publish 可能早于 AgentLoop
+/// 订阅总线（gateway 装配顺序 cluster.start() → … → AgentLoop，实测订阅
+/// 晚 ~131ms；P1 sqlite 持久化把恢复动作从第二 tick 提到首 tick 后暴露
+/// ——此前动作落 120s 后的第二 tick，订阅早已就位，两层竞态同被掩盖）。
+/// broadcast send 对无接收者是**静默丢弃**（publish_inbound 返回 ()），
+/// 故发布前等待接收者就位，上界 15s（150×100ms 轮询）——超时照发不吞
+/// （宁试勿丢；总线侧仍有 no-receiver WARN 可观测）。
+async fn publish_continuation_to_bus(
     bus: &dyn MessageBus,
     task_id: &str,
     content: &str,
@@ -3917,6 +4057,10 @@ fn publish_continuation_to_bus(
     source_node: &str,
     error: Option<&str>,
 ) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while bus.inbound_receiver_count() == 0 && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     let mut metadata = std::collections::HashMap::new();
     metadata.insert("status".to_string(), status.to_string());
     metadata.insert("source_node".to_string(), source_node.to_string());
@@ -4033,6 +4177,10 @@ impl ClusterCallbacks for Cluster {
         self.tier.read().clone()
     }
 
+    fn agent_roster(&self) -> Vec<crate::types::AgentAnnouncement> {
+        self.current_agent_roster()
+    }
+
     fn handle_discovered_node(
         &self,
         node_id: &str,
@@ -4071,6 +4219,7 @@ impl ClusterCallbacks for Cluster {
         node_type: &str,
         professions: &[String],
         tier: Option<&str>,
+        agents: &[crate::types::AgentAnnouncement],
         source_addr: Option<&str>,
     ) -> bool {
         self.handle_discovered_node_ex(
@@ -4085,6 +4234,7 @@ impl ClusterCallbacks for Cluster {
             node_type,
             professions.to_vec(),
             tier.map(|s| s.to_string()),
+            agents.to_vec(),
             source_addr,
         )
     }
@@ -4378,6 +4528,9 @@ pub struct RealNodeInfo {
     pub professions: Vec<String>,
     /// 对端自报档位（role_tier 口径；None = 未宣告）。
     pub tier: Option<String>,
+    /// 对端自报 agent 实体清单（P2 2026-10-16；get_info 携带；merge 进
+    /// 注册表 ExtendedNodeInfo）。
+    pub agents: Vec<crate::types::AgentAnnouncement>,
     pub node_type: String,
 }
 

@@ -135,15 +135,24 @@ mod engage_strict {
 }
 
 // ---------------------------------------------------------------------------
-// dispatch 协议分发（一行 JSON 请求 → ExecutorResponse）——纯逻辑 + mock 工具，
-// 不 spawn 任何进程。stdio/pipe 两个 transport loop 只是对 dispatch 的包装，
-// 它们本身需要真 stdio/管道（结构性，见 tests/executor.rs 的真链路 e2e）。
+// serve_line 协议主体（一行 JSON 请求 → 一行响应）——纯逻辑 + mock 工具 +
+// 禁用 journal（per-call 形态），不 spawn 任何进程。stdio/pipe 两个 transport
+// loop 只是对 serve_line 的包装，它们本身需要真 stdio/管道（结构性，见
+// tests/executor.rs 的真链路 e2e）。journal 语义见下方 serve_journal。
 // ---------------------------------------------------------------------------
 mod dispatch_protocol {
     use super::*;
+    use crate::exec_worker::journal::Journal;
     use nemesis_agent::context::RequestContext;
     use nemesis_agent::r#loop::Tool;
     use std::collections::HashMap;
+
+    /// serve_line 测试壳：禁用 journal → 去换行 → 解析 JSON。
+    async fn serve(tools: &HashMap<String, Box<dyn Tool>>, line: &str) -> serde_json::Value {
+        let mut j = Journal::disabled();
+        let out = serve_line(line, tools, &mut j).await;
+        serde_json::from_str(out.trim_end_matches(['\n', '\r'])).expect("response line json")
+    }
 
     /// 恒 Ok 的哑工具：回显 args + 记录收到的 args/ctx 供透传断言。
     struct EchoTool {
@@ -197,14 +206,16 @@ mod dispatch_protocol {
     async fn malformed_line_is_rejected_without_panicking() {
         let (tools, _) = registry_with_echo();
         for bad in ["", "not json", "{", r#"{"tool": 123}"#, "[]"] {
-            let resp = dispatch(&tools, bad).await;
-            assert!(!resp.ok, "line {bad:?} must not pass");
+            let v = serve(&tools, bad).await;
+            assert_eq!(v["ok"], serde_json::json!(false), "line {bad:?}: {v}");
             assert!(
-                resp.error.starts_with("bad request line"),
-                "line {bad:?}: {}",
-                resp.error
+                v["error"]
+                    .as_str()
+                    .unwrap_or("")
+                    .starts_with("bad request line"),
+                "line {bad:?}: {v}"
             );
-            assert!(resp.result.is_empty());
+            assert_eq!(v["result"], "", "line {bad:?}: {v}");
         }
     }
 
@@ -213,9 +224,12 @@ mod dispatch_protocol {
         let (tools, _) = registry_with_echo();
         // tool/args 合法但 context 不是 RequestContext 形状（类型错）。
         let line = r#"{"tool":"echo","args":"","context":123}"#;
-        let resp = dispatch(&tools, line).await;
-        assert!(!resp.ok);
-        assert!(resp.error.starts_with("bad context"), "err: {}", resp.error);
+        let v = serve(&tools, line).await;
+        assert_eq!(v["ok"], serde_json::json!(false), "{v}");
+        assert!(
+            v["error"].as_str().unwrap_or("").starts_with("bad context"),
+            "{v}"
+        );
     }
 
     #[tokio::test]
@@ -223,28 +237,31 @@ mod dispatch_protocol {
         let (tools, _) = registry_with_echo();
         // context 是 JSON 对象但缺 required 字段（channel 等 String 无 default）。
         let line = r#"{"tool":"echo","args":"","context":{"channel":"web"}}"#;
-        let resp = dispatch(&tools, line).await;
-        assert!(!resp.ok);
-        assert!(resp.error.starts_with("bad context"), "err: {}", resp.error);
+        let v = serve(&tools, line).await;
+        assert_eq!(v["ok"], serde_json::json!(false), "{v}");
+        assert!(
+            v["error"].as_str().unwrap_or("").starts_with("bad context"),
+            "{v}"
+        );
     }
 
     #[tokio::test]
     async fn unknown_tool_is_rejected_by_name() {
         let (tools, _) = registry_with_echo();
         let line = format!(r#"{{"tool":"nope","args":"","context":{CTX_JSON}}}"#);
-        let resp = dispatch(&tools, &line).await;
-        assert!(!resp.ok);
-        assert_eq!(resp.error, "unknown tool: nope");
+        let v = serve(&tools, &line).await;
+        assert_eq!(v["ok"], serde_json::json!(false), "{v}");
+        assert_eq!(v["error"], "unknown tool: nope", "{v}");
     }
 
     #[tokio::test]
     async fn ok_tool_result_round_trips_with_args_passthrough() {
         let (tools, echo) = registry_with_echo();
         let line = format!(r#"{{"tool":"echo","args":"{{\"x\":1}}","context":{CTX_JSON}}}"#);
-        let resp = dispatch(&tools, &line).await;
-        assert!(resp.ok, "err: {}", resp.error);
-        assert_eq!(resp.result, r#"ok:{"x":1}"#);
-        assert!(resp.error.is_empty());
+        let v = serve(&tools, &line).await;
+        assert_eq!(v["ok"], serde_json::json!(true), "{v}");
+        assert_eq!(v["result"], r#"ok:{"x":1}"#, "{v}");
+        assert_eq!(v["error"], "", "{v}");
         let seen = echo.seen.lock().unwrap();
         assert_eq!(seen.len(), 1, "tool executed exactly once");
         assert_eq!(seen[0].0, r#"{"x":1}"#, "args passed through verbatim");
@@ -257,10 +274,10 @@ mod dispatch_protocol {
     async fn err_tool_maps_to_error_response() {
         let (tools, _) = registry_with_echo();
         let line = format!(r#"{{"tool":"boom","args":"","context":{CTX_JSON}}}"#);
-        let resp = dispatch(&tools, &line).await;
-        assert!(!resp.ok);
-        assert_eq!(resp.error, "boom");
-        assert!(resp.result.is_empty());
+        let v = serve(&tools, &line).await;
+        assert_eq!(v["ok"], serde_json::json!(false), "{v}");
+        assert_eq!(v["error"], "boom", "{v}");
+        assert_eq!(v["result"], "", "{v}");
     }
 
     #[tokio::test]
@@ -268,10 +285,133 @@ mod dispatch_protocol {
         // correlation_id 缺省 → None；async_callback serde(skip) → None（重建语义）。
         let (tools, echo) = registry_with_echo();
         let line = r#"{"tool":"echo","args":"a","context":{"channel":"rpc","chat_id":"c","user":"u","session_key":"s","correlation_id":"corr-42"}}"#;
-        let resp = dispatch(&tools, line).await;
-        assert!(resp.ok, "err: {}", resp.error);
+        let v = serve(&tools, line).await;
+        assert_eq!(v["ok"], serde_json::json!(true), "{v}");
         let seen = echo.seen.lock().unwrap();
         assert_eq!(seen[0].1, "rpc");
+    }
+}
+
+// =========================================================================
+// P3 T2：serve_line × journal 幂等语义（协议主体层）。
+// - v2 请求：响应回显 v=2 + call_id，dispatch 结果记账；重发同 call_id =
+//   replay 命中（工具不重执行、结果逐字节一致）
+// - v1 请求：响应保持 v1 字节形态（无 v/call_id 键），journal 不记空 id
+// - 崩溃重建形态：预置历史账（上一进程记录）→ replay 命中不执行工具
+// =========================================================================
+mod serve_journal {
+    use super::*;
+    use crate::exec_worker::journal::Journal;
+    use nemesis_agent::context::RequestContext;
+    use nemesis_agent::executor_transport::{ExecutorResponseWire, PROTOCOL_V2};
+    use nemesis_agent::r#loop::Tool;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    /// 计数工具：每次真实执行 +1（replay 命中不得执行——结果停在 run-1）。
+    struct CountTool(Mutex<u32>);
+
+    #[async_trait::async_trait]
+    impl Tool for CountTool {
+        async fn execute(&self, _args: &str, _ctx: &RequestContext) -> Result<String, String> {
+            let mut n = self.0.lock().unwrap();
+            *n += 1;
+            Ok(format!("run-{n}"))
+        }
+    }
+
+    fn registry() -> HashMap<String, Box<dyn Tool>> {
+        let mut m: HashMap<String, Box<dyn Tool>> = HashMap::new();
+        m.insert("count".to_string(), Box::new(CountTool(Mutex::new(0))));
+        m
+    }
+
+    const CTX: &str = r#"{"channel":"web","chat_id":"c1","user":"u1","session_key":"s1"}"#;
+
+    fn v2_req(call_id: &str) -> String {
+        format!(r#"{{"v":2,"call_id":"{call_id}","tool":"count","args":"{{}}","context":{CTX}}}"#)
+    }
+
+    #[tokio::test]
+    async fn v2_response_echoes_call_id_and_journals_execution() {
+        let tools = registry();
+        let ws = tempfile::tempdir().unwrap();
+        let mut j = Journal::with_agent_id(ws.path(), "agent-a");
+        let req = v2_req("c-7-1");
+
+        let out1 = serve_line(&req, &tools, &mut j).await;
+        let v1: serde_json::Value = serde_json::from_str(out1.trim()).unwrap();
+        assert_eq!(v1["v"], 2, "{v1}");
+        assert_eq!(v1["call_id"], "c-7-1", "{v1}");
+        assert_eq!(v1["result"], "run-1", "{v1}");
+        // 执行结果已入账（at-most-once 的前提）。
+        assert!(j.lookup("c-7-1").is_some(), "dispatch 结果必须记账");
+
+        // 重发同 call_id：replay 命中——逐字节一致、工具不重执行。
+        let out2 = serve_line(&req, &tools, &mut j).await;
+        assert_eq!(out1, out2, "replay 必须回缓存行");
+        let v2: serde_json::Value = serde_json::from_str(out2.trim()).unwrap();
+        assert_eq!(v2["result"], "run-1", "重发不得重执行（否则 run-2）: {v2}");
+    }
+
+    #[tokio::test]
+    async fn v1_request_response_stays_v1_and_journal_stays_untouched() {
+        let tools = registry();
+        let ws = tempfile::tempdir().unwrap();
+        // journal 启用也要对 v1（无 call_id）保持零记账——per-call 字节不变。
+        let mut j = Journal::with_agent_id(ws.path(), "agent-a");
+        let req = format!(r#"{{"tool":"count","args":"{{}}","context":{CTX}}}"#);
+
+        let out = serve_line(&req, &tools, &mut j).await;
+        assert!(!out.contains("\"v\""), "v1 响应不得带 v 键: {out}");
+        assert!(!out.contains("call_id"), "v1 响应不得带 call_id: {out}");
+        let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+        assert_eq!(v["result"], "run-1", "{v}");
+        // 空 call_id 不入账：journal 文件根本不落。
+        assert!(
+            !ws.path().join(".runtime/journal.jsonl").exists(),
+            "v1 调用不得记账"
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_hit_serves_cached_line_without_executing() {
+        let tools = registry();
+        let ws = tempfile::tempdir().unwrap();
+        let mut j = Journal::with_agent_id(ws.path(), "agent-a");
+        // 预置历史账（模拟崩溃前进程完成的调用）。
+        let cached = serde_json::to_string(&ExecutorResponseWire {
+            v: PROTOCOL_V2,
+            call_id: "c-8-1".into(),
+            ok: true,
+            result: "from-dead-process".into(),
+            error: String::new(),
+        })
+        .unwrap();
+        j.record(&cached);
+
+        let out = serve_line(&v2_req("c-8-1"), &tools, &mut j).await;
+        assert_eq!(out.trim(), cached, "必须原样回缓存行");
+        let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+        assert_eq!(v["result"], "from-dead-process", "{v}");
+    }
+
+    #[tokio::test]
+    async fn v2_error_response_also_echoes_call_id() {
+        // v2 请求打未知工具：错误臂也必须回显 call_id（gateway 侧
+        // read_response 按它做匹配校验，缺回显会被判 protocol 串话）。
+        let mut m: HashMap<String, Box<dyn Tool>> = HashMap::new();
+        m.insert("count".to_string(), Box::new(CountTool(Mutex::new(0))));
+        let tools = m;
+        let ws = tempfile::tempdir().unwrap();
+        let mut j = Journal::with_agent_id(ws.path(), "agent-a");
+        let req =
+            format!(r#"{{"v":2,"call_id":"c-9-1","tool":"nope","args":"{{}}","context":{CTX}}}"#);
+        let out = serve_line(&req, &tools, &mut j).await;
+        let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+        assert_eq!(v["v"], 2, "{v}");
+        assert_eq!(v["call_id"], "c-9-1", "{v}");
+        assert_eq!(v["error"], "unknown tool: nope", "{v}");
     }
 }
 

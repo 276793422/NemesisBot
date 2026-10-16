@@ -309,6 +309,8 @@ mod layer0_and_live_probe {
                     backend: "auto".to_string(),
                     // D4 新段；本用例与 DACL 定向档无关，取缺省（全关）。
                     acl: Default::default(),
+                    // P3 T4 新段；本用例与常驻档无关，取缺省（全关）。
+                    persistent: Default::default(),
                 })
             })
             .expect("update store");

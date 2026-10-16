@@ -7937,3 +7937,44 @@ mod w5bdisp {
         );
     }
 }
+
+// -------------------------------------------------------------------------
+// roster_state tests（P3 T8：announce 清单 state 判定，纯函数钉死）
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_roster_state_alive_wins_over_record_status() {
+    let alive: std::collections::HashSet<String> = ["main".to_string()].into_iter().collect();
+    // 记录态是 active，但常驻执行体存活 → running（存活优先）。
+    assert_eq!(
+        post_agent::roster_state(&alive, "main", "active"),
+        "running"
+    );
+    // 记录态是 failed 也一样：槽位活着说明执行体在跑，以现查为准。
+    assert_eq!(
+        post_agent::roster_state(&alive, "main", "failed"),
+        "running"
+    );
+}
+
+#[test]
+fn test_roster_state_not_alive_falls_back_to_record_status() {
+    let alive: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // 记录就绪、常驻未在跑 → active。
+    assert_eq!(post_agent::roster_state(&alive, "main", "active"), "active");
+    // provisioning / failed 原样透传（记录生命周期态词汇表）。
+    assert_eq!(
+        post_agent::roster_state(&alive, "a1", "provisioning"),
+        "provisioning"
+    );
+    assert_eq!(post_agent::roster_state(&alive, "a2", "failed"), "failed");
+    // 记录态空串（异常记录）→ 空串透传 = 未宣告，不造 running 假象。
+    assert_eq!(post_agent::roster_state(&alive, "a3", ""), "");
+}
+
+#[test]
+fn test_roster_state_other_agent_alive_does_not_leak() {
+    // 别的 agent 存活不能让本条变 running。
+    let alive: std::collections::HashSet<String> = ["other".to_string()].into_iter().collect();
+    assert_eq!(post_agent::roster_state(&alive, "main", "active"), "active");
+}

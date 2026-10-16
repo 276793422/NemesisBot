@@ -425,3 +425,270 @@ fn p24_userland_fallback_channel_selection() {
     engaged.start_exe = Some(PathBuf::from("/x/Start.exe"));
     assert!(!engaged.picks_stdio_userland_fallback());
 }
+
+// ---------------------------------------------------------------------------
+// P3 T3：persistent env 白名单 + home 重定向（纯函数，无进程 env 竞态）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn allowlist_covers_runtime_baseline_and_blocks_credentials() {
+    // 基线在表内（路径/系统/身份/临时/locale）。
+    for k in [
+        "PATH",
+        "SYSTEMROOT",
+        "COMSPEC",
+        "USERNAME",
+        "COMPUTERNAME",
+        "TEMP",
+        "LANG",
+    ] {
+        assert!(env_allowlisted(k), "{k} 应在白名单内");
+    }
+    // 凭据/令牌类一律不在表内——白名单语义即闸。
+    for k in [
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GITHUB_TOKEN",
+        "AWS_SECRET_ACCESS_KEY",
+        "MY_SERVICE_SECRET",
+    ] {
+        assert!(!env_allowlisted(k), "{k} 不得进白名单");
+    }
+    // NEMESISBOT_* 配置面（含 HOME）必须剥——workspace/home/role 由 spawn
+    // 侧显式注入，宿主语义对 agent home 是错的。
+    for k in [
+        "NEMESISBOT_HOME",
+        "NEMESISBOT_EXECUTOR_WORKSPACE",
+        "NEMESISBOT_ROLE",
+        "NEMESISBOT_EXECUTOR_AGENT_ID",
+    ] {
+        assert!(!env_allowlisted(k), "{k} 必须由显式注入而非继承");
+    }
+    // home 族不继承（persistent 重定向到 agent home）。
+    for k in [
+        "USERPROFILE",
+        "HOME",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "XDG_CONFIG_HOME",
+    ] {
+        assert!(!env_allowlisted(k), "{k} 走重定向不走继承");
+    }
+}
+
+#[test]
+#[cfg(windows)]
+fn allowlist_match_is_case_insensitive_on_windows() {
+    assert!(env_allowlisted("Path"));
+    assert!(env_allowlisted("path"));
+    assert!(env_allowlisted("SystemRoot"));
+    assert!(!env_allowlisted("PATH_X"));
+}
+
+#[test]
+fn filter_env_allowlist_keeps_baseline_drops_the_rest() {
+    let host = vec![
+        ("PATH".to_string(), "/bin".to_string()),
+        ("SYSTEMROOT".to_string(), r"C:\Windows".to_string()),
+        ("OPENAI_API_KEY".to_string(), "sk-leak".to_string()),
+        ("NEMESISBOT_HOME".to_string(), "/host/ws".to_string()),
+        ("APPDATA".to_string(), r"C:\Users\host\AppData".to_string()),
+        ("TERM".to_string(), "xterm".to_string()),
+    ];
+    let kept = filter_env_allowlist(host);
+    let names: Vec<&str> = kept.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["PATH", "SYSTEMROOT", "TERM"],
+        "顺序保持且只留基线"
+    );
+    assert!(!serde_json::to_string(&kept).unwrap().contains("sk-leak"));
+}
+
+#[test]
+fn home_redirect_points_every_home_family_var_into_agent_home() {
+    let home = Path::new("/agent-homes/a1");
+    let pairs = home_redirect_env_pairs(home);
+    let get = |k: &str| {
+        pairs
+            .iter()
+            .find(|(key, _)| key == k)
+            .map(|(_, v)| v.clone())
+    };
+    // HOME 恒在（两平台）且直指 agent home。
+    assert_eq!(get("HOME").as_deref(), Some("/agent-homes/a1"));
+    #[cfg(windows)]
+    {
+        assert_eq!(get("USERPROFILE").as_deref(), Some("/agent-homes/a1"));
+        assert_eq!(
+            get("APPDATA").as_deref(),
+            Some(r"/agent-homes/a1\AppData/Roaming")
+        );
+        assert_eq!(
+            get("LOCALAPPDATA").as_deref(),
+            Some(r"/agent-homes/a1\AppData/Local")
+        );
+    }
+    #[cfg(not(windows))]
+    {
+        assert_eq!(
+            get("XDG_CONFIG_HOME").as_deref(),
+            Some("/agent-homes/a1/.config")
+        );
+        assert_eq!(
+            get("XDG_DATA_HOME").as_deref(),
+            Some("/agent-homes/a1/.local/share")
+        );
+        assert_eq!(
+            get("XDG_CACHE_HOME").as_deref(),
+            Some("/agent-homes/a1/.cache")
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// P3 T7：常驻路由四臂（mock executor，无子进程）。回落锚 = 通道 exe 不存在
+// （回落必产 "executor unavailable: … failed to spawn" 形态）；错误分型纪律
+// 的行为面钉死——Ok 短路 / ToolFailed 原样上抛不回落 / Unavailable 回落 /
+// resolve=None 不触碰常驻执行体。
+// ---------------------------------------------------------------------------
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+struct MockExecutor {
+    calls: AtomicUsize,
+    /// Some = 首调按配置回分型错误；None = 回 Ok("persistent-ok")。
+    reply: Mutex<Option<Result<String, PersistentCallError>>>,
+    /// 收到的调用参数透传锚：(agent_id, exec_root, tool)。
+    seen: Mutex<Vec<(String, String, String)>>,
+}
+
+#[async_trait::async_trait]
+impl PersistentExecutor for MockExecutor {
+    async fn execute_persistent(
+        &self,
+        agent_id: &str,
+        exec_root: &std::path::Path,
+        tool: &str,
+        _args: &str,
+        _context: &RequestContext,
+    ) -> Result<String, PersistentCallError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.seen.lock().unwrap().push((
+            agent_id.to_string(),
+            exec_root.to_string_lossy().to_string(),
+            tool.to_string(),
+        ));
+        match self.reply.lock().unwrap().take() {
+            Some(r) => r,
+            None => Ok("persistent-ok".to_string()),
+        }
+    }
+}
+
+fn mock_executor(reply: Option<Result<String, PersistentCallError>>) -> Arc<MockExecutor> {
+    Arc::new(MockExecutor {
+        calls: AtomicUsize::new(0),
+        reply: Mutex::new(reply),
+        seen: Mutex::new(Vec::new()),
+    })
+}
+
+fn bogus_channel() -> Arc<ExecutorChannel> {
+    Arc::new(
+        ExecutorChannel::new(
+            PathBuf::from("/definitely/not/a/real/nemesisbot.exe"),
+            "/ws".into(),
+            Arc::new(|| false),
+        )
+        .with_timeout(Duration::from_secs(5)),
+    )
+}
+
+fn routing_tool(
+    resolve: Option<(String, PathBuf)>,
+    executor: Arc<MockExecutor>,
+) -> RemoteExecutorTool {
+    let local = RecordingTool {
+        ctx: Mutex::new((String::new(), String::new())),
+    };
+    RemoteExecutorTool::new("exec".to_string(), Box::new(local), bogus_channel()).with_persistent(
+        PersistentRoute {
+            resolve: Arc::new(move || resolve.clone()),
+            executor,
+        },
+    )
+}
+
+#[tokio::test]
+async fn persistent_route_ok_short_circuits_channel() {
+    let executor = mock_executor(None);
+    let tool = routing_tool(
+        Some(("ag-1".to_string(), PathBuf::from("/root/ws"))),
+        executor.clone(),
+    );
+    let out = tool.execute("{}", &req_ctx()).await.expect("persistent ok");
+    assert_eq!(out, "persistent-ok", "常驻结果直接返回");
+    assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
+    let seen = executor.seen.lock().unwrap();
+    assert_eq!(seen[0].0, "ag-1", "agent_id 透传");
+    assert_eq!(seen[0].1, "/root/ws", "exec_root 透传");
+    assert_eq!(seen[0].2, "exec", "工具名透传");
+}
+
+#[tokio::test]
+async fn persistent_route_tool_failed_propagates_without_fallback() {
+    let executor = mock_executor(Some(Err(PersistentCallError::ToolFailed(
+        "side effect happened".into(),
+    ))));
+    let tool = routing_tool(
+        Some(("ag-1".to_string(), PathBuf::from("/root/ws"))),
+        executor.clone(),
+    );
+    let err = tool
+        .execute("{}", &req_ctx())
+        .await
+        .expect_err("ToolFailed 必须上抛");
+    assert_eq!(err, "side effect happened", "原样上抛——回落会造成重复执行");
+    assert!(!err.contains("failed to spawn"), "绝不能走到 per-call 通道");
+    assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn persistent_route_unavailable_falls_back_to_percall() {
+    let executor = mock_executor(Some(Err(PersistentCallError::Unavailable(
+        "slots full".into(),
+    ))));
+    let tool = routing_tool(
+        Some(("ag-1".to_string(), PathBuf::from("/root/ws"))),
+        executor.clone(),
+    );
+    let err = tool
+        .execute("{}", &req_ctx())
+        .await
+        .expect_err("回落通道 exe 不存在，必产错误");
+    assert!(
+        err.starts_with("executor unavailable:") && err.contains("failed to spawn"),
+        "Unavailable 必须回落到 per-call 通道: {err}"
+    );
+    assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn persistent_route_resolve_none_skips_executor_and_falls_back() {
+    let executor = mock_executor(None);
+    let tool = routing_tool(None, executor.clone());
+    let err = tool
+        .execute("{}", &req_ctx())
+        .await
+        .expect_err("回落通道 exe 不存在，必产错误");
+    assert!(
+        err.starts_with("executor unavailable:") && err.contains("failed to spawn"),
+        "resolve=None 必须直接走 per-call: {err}"
+    );
+    assert_eq!(
+        executor.calls.load(Ordering::SeqCst),
+        0,
+        "实体未就绪 = 常驻执行体一次都不被触碰"
+    );
+}

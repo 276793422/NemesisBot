@@ -43,6 +43,9 @@ struct ChannelPendingEntry {
     chat_id: String,
     /// 发起人（v1 仅记录，群聊任一成员可批复）。
     sender_id: String,
+    /// P1 审批台账用：全量 request_id（表键 `id` 是短编号/冲突加长编号，
+    /// 台账按全量 id 记账、short_id 存表键供 IM 回执重启补裁反查）。
+    request_id: String,
     created_at: std::time::Instant,
     tx: mpsc::Sender<ApprovalVerdict>,
 }
@@ -51,6 +54,10 @@ struct ChannelPendingEntry {
 pub struct ChannelApprovalManager {
     bus: std::sync::Arc<MessageBus>,
     pending: Mutex<HashMap<String, ChannelPendingEntry>>,
+    /// P1 审批台账（tasks.db approvals 表）。OnceLock 晚绑（web 管理器同
+    /// 款时序）；未注入 = 台账关闭（审批照常，仅丢重启补裁能力）。
+    journal:
+        std::sync::OnceLock<std::sync::Arc<dyn nemesis_types::approval_journal::ApprovalJournal>>,
 }
 
 impl ChannelApprovalManager {
@@ -58,6 +65,78 @@ impl ChannelApprovalManager {
         Self {
             bus,
             pending: Mutex::new(HashMap::new()),
+            journal: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// P1：注入审批台账（幂等失败 = 重复注入，静默忽略，首个胜出）。
+    pub fn set_journal(
+        &self,
+        journal: std::sync::Arc<dyn nemesis_types::approval_journal::ApprovalJournal>,
+    ) {
+        let _ = self.journal.set(journal);
+    }
+
+    fn journal(
+        &self,
+    ) -> Option<&std::sync::Arc<dyn nemesis_types::approval_journal::ApprovalJournal>> {
+        self.journal.get()
+    }
+
+    /// P1：pending 记账（尽力而为，失败 loud error 不阻断审批主链路）。
+    fn journal_record_pending(
+        &self,
+        request_id: &str,
+        short_id: &str,
+        ctx: &ApprovalContext,
+        operation: &str,
+        target: &str,
+        risk_level: &str,
+        reason: &str,
+        timeout_secs: u64,
+    ) {
+        if let Some(j) = self.journal() {
+            let entry = nemesis_types::approval_journal::ApprovalJournalEntry {
+                id: request_id.to_string(),
+                broker: "channel".to_string(),
+                short_id: Some(short_id.to_string()),
+                operation: operation.to_string(),
+                target: target.to_string(),
+                risk_level: risk_level.to_string(),
+                reason: reason.to_string(),
+                payload: serde_json::json!({
+                    "channel": ctx.channel,
+                    "chat_id": ctx.chat_id,
+                    "sender_id": ctx.sender_id,
+                    "timeout_secs": timeout_secs,
+                }),
+                status: nemesis_types::approval_journal::status::PENDING.to_string(),
+                created_at: chrono::Local::now().to_rfc3339(),
+                decided_at: None,
+                decision_note: None,
+                decided_by: None,
+            };
+            if let Err(e) = j.record_pending(&entry) {
+                tracing::error!(
+                    "[ChannelApproval] approval journal record_pending failed for {request_id}: {e}"
+                );
+            }
+        }
+    }
+
+    /// P1：裁决记账（幂等——超时分支先记 expired 时条件更新必败 warn 留痕）。
+    fn journal_record_decision(&self, request_id: &str, approved: bool, decided_by: &str) {
+        if let Some(j) = self.journal() {
+            let decision = if approved {
+                nemesis_types::approval_journal::ApprovalDecision::Approved
+            } else {
+                nemesis_types::approval_journal::ApprovalDecision::Denied
+            };
+            if let Err(e) = j.record_decision(request_id, decision, None, decided_by) {
+                tracing::warn!(
+                    "[ChannelApproval] approval journal decision record failed for {request_id}: {e}"
+                );
+            }
         }
     }
 
@@ -103,8 +182,10 @@ impl ChannelApprovalManager {
             let Some((verb, id)) = parse_reply(&msg.content) else {
                 continue;
             };
-            // (是否摘牌, 通知文案)。Race=false：等待方已弃等，摘牌归超时方。
-            let (resolved, notice) = {
+            // (是否摘牌, 通知文案, 重启补裁动作)。Race=false：等待方已弃等，
+            // 摘牌归超时方。`stale_respond = Some(approved)` = 内存无此编号、
+            // 可能是重启前遗留——锁外走台账补裁（记账性质，见 respond_stale_im）。
+            let (resolved, notice, stale_respond) = {
                 let map = match self.pending.lock() {
                     Ok(m) => m,
                     Err(_) => continue,
@@ -122,30 +203,106 @@ impl ChannelApprovalManager {
                             _ => ApprovalVerdict::denied(),
                         };
                         if entry.tx.send(verdict).is_ok() {
+                            // P1：裁决记账（全量 request_id；decided_by 记
+                            // 回执人——群聊任一成员可批复，台账如实留名）。
+                            self.journal_record_decision(
+                                &entry.request_id,
+                                verb == "approve",
+                                &format!("im:{}", msg.sender_id),
+                            );
                             let action = if verb == "approve" {
                                 "已批准"
                             } else {
                                 "已拒绝"
                             };
-                            (true, format!("🔐 审批 {id}：用户{action}，操作继续。"))
+                            (
+                                true,
+                                format!("🔐 审批 {id}：用户{action}，操作继续。"),
+                                None,
+                            )
                         } else {
                             // 等待方已超时弃等（recv_timeout 侧负责摘牌，
                             // 这里竞态兜底）——不回执。
                             continue;
                         }
                     }
-                    Some(_) => (false, format!("⚠ 审批 {id} 不属于本对话，无法在此批复。")),
-                    None => (
+                    Some(_) => (
                         false,
-                        format!("⚠ 未找到待审批请求 {id}（可能已超时或已处理）。"),
+                        format!("⚠ 审批 {id} 不属于本对话，无法在此批复。"),
+                        None,
                     ),
+                    None => (false, String::new(), Some(verb == "approve")),
                 }
             };
+            if let Some(approved) = stale_respond {
+                let notice = self.respond_stale_im(id, &msg, approved);
+                self.bus.publish_outbound(OutboundMessage::new(
+                    &msg.channel,
+                    &msg.chat_id,
+                    &notice,
+                ));
+                continue;
+            }
             if resolved && let Ok(mut map) = self.pending.lock() {
                 map.remove(id);
             }
             self.bus
                 .publish_outbound(OutboundMessage::new(&msg.channel, &msg.chat_id, &notice));
+        }
+    }
+
+    /// P1 重启补裁（watcher 的 map-miss 兜底）：内存无此编号 → 台账查
+    /// pending。命中且 channel/chat_id 与回执来源一致 → 台账裁决落账
+    /// （幂等条件更新先到先得），并诚实告知「原操作已随重启失效，仅记账」；
+    /// 不一致维持「不属于本对话」；未命中/已裁决维持原「未找到或已处理」。
+    /// 持有 pending 锁期间**不调用**（锁外执行——台账写不阻塞其他回执）。
+    fn respond_stale_im(
+        &self,
+        short_id: &str,
+        msg: &nemesis_types::channel::InboundMessage,
+        approved: bool,
+    ) -> String {
+        let Some(j) = self.journal() else {
+            return format!("⚠ 未找到待审批请求 {short_id}（可能已超时或已处理）。");
+        };
+        let Some(entry) = j.find_pending(short_id) else {
+            return format!("⚠ 未找到待审批请求 {short_id}（可能已超时或已处理）。");
+        };
+        let (ch, chat) = match (
+            entry.payload.get("channel").and_then(|v| v.as_str()),
+            entry.payload.get("chat_id").and_then(|v| v.as_str()),
+        ) {
+            (Some(c), Some(k)) => (c.to_string(), k.to_string()),
+            _ => {
+                return format!("⚠ 未找到待审批请求 {short_id}（可能已超时或已处理）。");
+            }
+        };
+        if ch != msg.channel || chat != msg.chat_id {
+            return format!("⚠ 审批 {short_id} 不属于本对话，无法在此批复。");
+        }
+        let decision = if approved {
+            nemesis_types::approval_journal::ApprovalDecision::Approved
+        } else {
+            nemesis_types::approval_journal::ApprovalDecision::Denied
+        };
+        match j.record_decision(&entry.id, decision, None, &format!("im:{}", msg.sender_id)) {
+            Ok(true) => {
+                tracing::warn!(
+                    "[ChannelApproval] stale reply for {} ({}): gateway restarted since this \
+                     approval was raised; decision recorded for audit, original operation is gone",
+                    short_id,
+                    entry.id
+                );
+                let action = if approved { "批准" } else { "拒绝" };
+                format!("🔐 审批 {short_id}：已{action}（重启前请求，原操作已失效，仅记账留痕）。")
+            }
+            Ok(false) => format!("⚠ 审批 {short_id} 已处理过。"),
+            Err(e) => {
+                tracing::error!(
+                    "[ChannelApproval] stale reply journal record failed for {short_id}: {e}"
+                );
+                format!("⚠ 审批 {short_id} 记账失败，请稍后重试或改用 Dashboard。")
+            }
         }
     }
 
@@ -244,12 +401,25 @@ impl ApprovalManager for ChannelApprovalManager {
                     channel: ctx.channel.clone(),
                     chat_id: ctx.chat_id.clone(),
                     sender_id: ctx.sender_id.clone(),
+                    request_id: request_id.to_string(),
                     created_at: std::time::Instant::now(),
                     tx,
                 },
             );
             (id, rx)
         };
+
+        // P1：审批台账记账（entry 已入表；尽力而为失败 loud error 不阻断）。
+        self.journal_record_pending(
+            request_id,
+            &id,
+            ctx,
+            operation,
+            target,
+            risk_level,
+            reason,
+            timeout_secs,
+        );
 
         // 审批卡送达发起对话（entry 已入表，快回执可被 watcher 正确裁决）。
         let card = Self::render_card(&id, operation, target, risk_level, reason, timeout_secs);
@@ -296,6 +466,20 @@ impl ApprovalManager for ChannelApprovalManager {
                     operation,
                     timeout_secs
                 );
+                // P1：超时也是一次裁决——台账记 expired（幂等：晚到回执撞
+                // pending 条件更新必败，先到先得）。
+                if let Some(j) = self.journal()
+                    && let Err(e) = j.record_decision(
+                        request_id,
+                        nemesis_types::approval_journal::ApprovalDecision::Expired,
+                        Some("审批超时自动拒绝"),
+                        "timeout",
+                    )
+                {
+                    tracing::error!(
+                        "[ChannelApproval] approval journal timeout record failed for {request_id}: {e}"
+                    );
+                }
                 // 超时自动拒绝也是一次裁决——通知对话摘牌（诚实不悬挂）。
                 self.bus.publish_outbound(OutboundMessage::new(
                     &ctx.channel,

@@ -39,6 +39,7 @@ pub mod discipline;
 pub mod estop;
 pub mod event_ledger;
 pub mod executor_pipe;
+pub mod executor_transport;
 pub mod formatter;
 pub mod fs_watcher;
 pub mod history;
@@ -129,7 +130,8 @@ pub use memory::ConversationMemory;
 pub use registry::AgentRegistry;
 pub use remote_executor_tool::{
     DaclSpawnFn, DaclSpawnHook, DaclSpawnOutcome, DaclSpawnRequest, ExecutorChannel, MOVE_TOOLS,
-    RemoteExecutorTool, StrictGate, UserlandFallback,
+    PersistentCallError, PersistentExecutor, PersistentRoute, RemoteExecutorTool, StrictGate,
+    UserlandFallback,
 };
 pub use request_logger::RequestLogger;
 pub use request_logger_observer::RequestLoggerObserver;

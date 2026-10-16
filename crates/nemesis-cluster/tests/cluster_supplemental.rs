@@ -1218,6 +1218,7 @@ fn make_test_extended_node(
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     }
 }
@@ -1937,6 +1938,7 @@ fn test_extended_node_info_with_addresses() {
         addresses: vec!["10.0.0.1".to_string(), "192.168.1.1".to_string()],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     };
     let json = serde_json::to_string(&node).unwrap();
@@ -1975,6 +1977,7 @@ fn test_extended_node_info_to_peer_config_role_mapping() {
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     };
     let config = coordinator.to_peer_config();
@@ -1996,6 +1999,7 @@ fn test_extended_node_info_to_peer_config_role_mapping() {
         addresses: vec![],
         professions: Vec::new(),
         tier: None,
+        agents: Vec::new(),
         node_type: "agent".into(),
     };
     let config = worker.to_peer_config();

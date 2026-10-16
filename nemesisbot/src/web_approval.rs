@@ -96,6 +96,12 @@ pub struct WebApprovalManager {
     /// F3:「总是允许」规则表路径（`<workspace>/config/approval_rules.json`）。
     /// None = 未配置（respond always 诚实报错，不静默吞）。
     rules_path: Option<std::path::PathBuf>,
+    /// P1 审批台账（tasks.db approvals 表）。OnceLock 晚绑：manager 先于
+    /// tasks.db 装配（与 LateWebSkillsGate 同款时序），runtime.rs 装配块
+    /// `set_journal()` 注入；未注入 = 台账关闭（审批照常工作，仅丢重启
+    /// 补裁能力——诚实降级，非静默：装配失败有 loud error）。
+    journal:
+        std::sync::OnceLock<std::sync::Arc<dyn nemesis_types::approval_journal::ApprovalJournal>>,
 }
 
 impl WebApprovalManager {
@@ -107,7 +113,22 @@ impl WebApprovalManager {
             agent_event_tx,
             pending: Mutex::new(HashMap::new()),
             rules_path,
+            journal: std::sync::OnceLock::new(),
         }
+    }
+
+    /// P1：注入审批台账（tasks.db）。幂等失败 = 重复注入，静默忽略（首个胜出）。
+    pub fn set_journal(
+        &self,
+        journal: std::sync::Arc<dyn nemesis_types::approval_journal::ApprovalJournal>,
+    ) {
+        let _ = self.journal.set(journal);
+    }
+
+    fn journal(
+        &self,
+    ) -> Option<&std::sync::Arc<dyn nemesis_types::approval_journal::ApprovalJournal>> {
+        self.journal.get()
     }
 
     /// F3:「总是允许」规则落盘。pattern 由 B5 归约生成（单一真相源
@@ -180,6 +201,80 @@ impl WebApprovalManager {
             "age_secs": entry.created_at.elapsed().as_secs(),
         })
     }
+
+    /// P1：构造台账条目（pending/decision 共用同一定位字段）。
+    fn journal_entry(
+        request_id: &str,
+        operation: &str,
+        target: &str,
+        risk_level: &str,
+        reason: &str,
+        pattern: &str,
+        chat_id: &str,
+        session_key: &str,
+    ) -> nemesis_types::approval_journal::ApprovalJournalEntry {
+        nemesis_types::approval_journal::ApprovalJournalEntry {
+            id: request_id.to_string(),
+            broker: "web".to_string(),
+            short_id: None,
+            operation: operation.to_string(),
+            target: target.to_string(),
+            risk_level: risk_level.to_string(),
+            reason: reason.to_string(),
+            payload: serde_json::json!({
+                "pattern": pattern,
+                "chat_id": chat_id,
+                "session_key": session_key,
+            }),
+            status: nemesis_types::approval_journal::status::PENDING.to_string(),
+            created_at: chrono::Local::now().to_rfc3339(),
+            decided_at: None,
+            decision_note: None,
+            decided_by: None,
+        }
+    }
+
+    /// P1：pending 记账（尽力而为——台账失败 loud error 留痕，不阻断审批
+    /// 主链路；审批可用性不绑 tasks.db 可用性）。
+    fn journal_record_pending(
+        &self,
+        entry: &nemesis_types::approval_journal::ApprovalJournalEntry,
+    ) {
+        if let Some(j) = self.journal()
+            && let Err(e) = j.record_pending(entry)
+        {
+            tracing::error!(
+                "[WebApproval] approval journal record_pending failed for {}: {e}",
+                entry.id
+            );
+        }
+    }
+
+    /// P1 重启补裁（respond 的 map-miss 兜底）：台账记一笔裁决，前端卡片
+    /// 得以摘除。原操作进程已死、不恢复执行——纯记账性质，响应里由前端
+    /// 注记提示。幂等：台账已裁决（超时/先到 respond）= Err already decided。
+    fn respond_stale(&self, request_id: &str, approved: bool) -> Result<bool, String> {
+        let Some(j) = self.journal() else {
+            return Err(format!("unknown approval request: {request_id}"));
+        };
+        let decision = if approved {
+            nemesis_types::approval_journal::ApprovalDecision::Approved
+        } else {
+            nemesis_types::approval_journal::ApprovalDecision::Denied
+        };
+        match j.record_decision(request_id, decision, None, "web-user-stale") {
+            Ok(true) => {
+                tracing::warn!(
+                    "[WebApproval] stale respond for {request_id}: gateway restarted since this \
+                     approval was raised; decision recorded for audit, original operation is gone"
+                );
+                self.broadcast_resolved(request_id, if approved { "approved" } else { "denied" });
+                Ok(approved)
+            }
+            Ok(false) => Err(format!("approval already decided: {request_id}")),
+            Err(e) => Err(format!("approval journal respond failed: {e}")),
+        }
+    }
 }
 
 impl nemesis_security::auditor::ApprovalManager for WebApprovalManager {
@@ -199,10 +294,11 @@ impl nemesis_security::auditor::ApprovalManager for WebApprovalManager {
         let (tx, rx) = mpsc::channel::<nemesis_security::auditor::ApprovalVerdict>();
         let (why, impact, reject_note) =
             approval_card_fields(operation, target, risk_level, reason);
+        let pattern = nemesis_security::approval_rules::pattern_for(operation, target);
         let entry = PendingEntry {
             operation: operation.to_string(),
             target: target.to_string(),
-            pattern: nemesis_security::approval_rules::pattern_for(operation, target),
+            pattern: pattern.clone(),
             risk_level: risk_level.to_string(),
             reason: reason.to_string(),
             timeout_secs,
@@ -229,6 +325,16 @@ impl nemesis_security::auditor::ApprovalManager for WebApprovalManager {
             if let Some(registered) = map.get(request_id) {
                 self.broadcast_requested(registered, request_id);
             }
+        }
+
+        // P1：审批台账记账（tasks.db approvals 表；尽力而为，失败 loud
+        // error 不阻断）。gateway 重启后 pending 条目仍在库中——重启前的
+        // 卡片可被裁决且只生效一次（幂等条件更新），记账性质=审计留痕。
+        {
+            let journal_entry = Self::journal_entry(
+                request_id, operation, target, risk_level, reason, &pattern, "", "",
+            );
+            self.journal_record_pending(&journal_entry);
         }
 
         // 阻塞等裁决。tokio 上下文（agent loop 工具调度链）用 block_in_place
@@ -267,6 +373,20 @@ impl nemesis_security::auditor::ApprovalManager for WebApprovalManager {
                     operation,
                     timeout_secs
                 );
+                // P1：超时也是一次裁决——台账记 expired（幂等：晚到的用户
+                // respond 撞 pending 条件更新必败，先到先得）。
+                if let Some(j) = self.journal()
+                    && let Err(e) = j.record_decision(
+                        request_id,
+                        nemesis_types::approval_journal::ApprovalDecision::Expired,
+                        Some("审批超时自动拒绝"),
+                        "timeout",
+                    )
+                {
+                    tracing::error!(
+                        "[WebApproval] approval journal timeout record failed for {request_id}: {e}"
+                    );
+                }
                 // F6: 超时自动拒绝也是一次裁决——广播出去让所有前端摘卡。
                 self.broadcast_resolved(request_id, "timeout");
                 Ok(nemesis_security::auditor::ApprovalVerdict {
@@ -294,23 +414,44 @@ impl ApprovalResponder for WebApprovalManager {
                 .pending
                 .lock()
                 .map_err(|e| format!("pending map poisoned: {}", e))?;
-            map.remove(request_id)
-                .ok_or_else(|| format!("unknown approval request: {}", request_id))?
+            match map.remove(request_id) {
+                Some(entry) => entry,
+                // P1 重启补裁：pending 表里还有、内存 map 已丢（gateway
+                // 重启窗口内的卡片）→ 台账裁决落账（幂等条件更新先到先得），
+                // 原操作进程已死不继续执行——记账性质，卡片可以摘了。
+                None => return self.respond_stale(request_id, approved),
+            }
         };
         // 先到先得：remove 已把请求移出 pending，第二个 respond 天然 unknown。
         // F6: 拒绝备注只在 denied 时携带（空串/纯空白视同无备注）。
+        let note = note.filter(|n| !n.trim().is_empty());
         let verdict = if approved {
             nemesis_security::auditor::ApprovalVerdict::approved()
         } else {
             nemesis_security::auditor::ApprovalVerdict {
                 approved: false,
-                note: note.filter(|n| !n.trim().is_empty()),
+                note: note.clone(),
             }
         };
         entry
             .tx
             .send(verdict)
             .map_err(|_| "approval waiter already gone".to_string())?;
+        // P1：裁决记账（tasks.db；幂等——超时分支先记 expired 时，这里
+        // 的条件更新必败 warn 留痕，先到先得）。失败 loud error 不阻断
+        // （裁决已送达等待方，记账是审计面）。
+        if let Some(j) = self.journal() {
+            let decision = if approved {
+                nemesis_types::approval_journal::ApprovalDecision::Approved
+            } else {
+                nemesis_types::approval_journal::ApprovalDecision::Denied
+            };
+            if let Err(e) = j.record_decision(request_id, decision, note.as_deref(), "web-user") {
+                tracing::warn!(
+                    "[WebApproval] approval journal decision record failed for {request_id}: {e}"
+                );
+            }
+        }
         // F6: 裁决已送达 → 广播 resolved，竞速败方窗口摘卡。在 always 规则
         // 写盘之前发（写失败不影响「卡已处理」事实）。
         self.broadcast_resolved(request_id, if approved { "approved" } else { "denied" });
@@ -342,10 +483,50 @@ impl ApprovalResponder for WebApprovalManager {
     }
 
     fn pending(&self) -> Vec<serde_json::Value> {
-        match self.pending.lock() {
-            Ok(map) => map.iter().map(|(id, e)| Self::entry_json(id, e)).collect(),
+        let mut out = match self.pending.lock() {
+            Ok(map) => map
+                .iter()
+                .map(|(id, e)| Self::entry_json(id, e))
+                .collect::<Vec<_>>(),
             Err(_) => Vec::new(),
+        };
+        // P1：台账里仍 pending、内存已丢（重启前遗留）→ 作为 stale 卡片
+        // 一并下发（前端可裁决，respond 走重启补裁记账路径；stale: true
+        // 供前端注记「原操作已失效」）。字段对齐 entry_json 形态。
+        if let Some(j) = self.journal() {
+            let live_ids: std::collections::HashSet<String> = match self.pending.lock() {
+                Ok(map) => map.keys().cloned().collect(),
+                Err(_) => std::collections::HashSet::new(),
+            };
+            for e in j.pending_entries() {
+                if live_ids.contains(&e.id) {
+                    continue;
+                }
+                let payload_pattern = e
+                    .payload
+                    .get("pattern")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                out.push(serde_json::json!({
+                    "request_id": e.id,
+                    "operation": e.operation,
+                    "target": e.target,
+                    "risk_level": e.risk_level,
+                    "reason": e.reason,
+                    "timeout_secs": serde_json::Value::Null,
+                    "pattern": payload_pattern,
+                    "chat_id": serde_json::Value::Null,
+                    "session_key": serde_json::Value::Null,
+                    "why": e.reason,
+                    "impact": e.target,
+                    "reject_note": "重启前的审批请求：原操作已随进程终止，裁决仅记账留痕。",
+                    "age_secs": serde_json::Value::Null,
+                    "stale": true,
+                }));
+            }
         }
+        out
     }
 }
 

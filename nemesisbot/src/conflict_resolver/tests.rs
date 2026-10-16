@@ -238,6 +238,8 @@ pub(crate) fn resolver_deps(name: &str) -> crate::board_review::BoardReviewDeps 
         estop: Arc::new(nemesis_agent::estop::EstopState::new()),
         estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
         selfcheck: crate::board_review::SelfcheckRegistry::new(),
+        #[cfg(feature = "security")]
+        security_slot: None,
     }
 }
 

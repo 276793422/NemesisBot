@@ -134,6 +134,11 @@ pub struct SharedResources {
     /// 后自动保持——这才是真急停（不会一重启自己解除）。
     pub estop: Arc<nemesis_agent::estop::EstopState>,
 
+    /// P3 T7：常驻执行体监督器槽。gateway（agent_build）恒 Some；headless
+    /// run / acp / 测试等无常驻形态 None（工厂跳过常驻路由挂接，per-call
+    /// 行为零变化——RemoteExecutorTool 不挂 persistent 即旧形态）。
+    pub agent_runtime: Option<Arc<crate::agents::runtime::AgentRuntimeSupervisor>>,
+
     /// Runtime config cache (single source of truth). Consumers read the live
     /// config via `config_store.handle()`; dashboard handlers mutate via
     /// `config_store.update(...)` (in-memory + persist). Lets executor.sandbox
@@ -232,6 +237,7 @@ impl Default for SharedResources {
             mcp_config_path: PathBuf::default(),
             mcp_enabled: false,
             estop: Arc::new(nemesis_agent::estop::EstopState::new()),
+            agent_runtime: None,
             config_store: Arc::new(nemesis_config::ConfigStore::from_config(
                 nemesis_config::Config::default(),
                 PathBuf::default(),
@@ -923,11 +929,18 @@ pub fn build_agent_loop(
         &workspace_dir,
         shared.config_store.handle(),
     )?;
+    // P3 T7：主 loop 常驻路由——解析闭包按 kind=main 现查 agents 表
+    // （main 记录 exec_root=workspace，与 per-call 通道同一 cwd 锚语义）。
+    let persistent_route = persistent_route_for(
+        shared,
+        persistent_resolve_by(|rec| rec.kind == nemesis_taskstore::agents::kind::MAIN),
+    );
     register_tools_and_mcp(
         &mut agent_loop,
         shared,
         &tool_config,
         executor_channel.as_ref(),
+        persistent_route.as_ref(),
     );
 
     // Stash the memory executor so the gateway can attach an approval gate
@@ -1725,6 +1738,44 @@ pub(crate) fn resolve_image_model(
     Ok((m.api_base.clone(), m.api_key.clone(), m.model.clone()))
 }
 
+/// P3 T7：常驻路由的 agent 身份解析闭包（单一真相源 = tasks.db agents 表
+/// 经进程槽 manager 现读——loop 建成早于实体 seed（首次 boot 时序：
+/// build_agent_loop 先于 agents 桥 seed），静态绑定必空，只能调用时解析）。
+/// 谓词选中记录 → `(agent_id, exec_root)`（exec_root 来自记录——main=
+/// workspace / project=项目目录 / selfbuilt=home，supervisor spawn 时写进
+/// 子进程 env）；manager 未装 / 记录缺席 / 读库失败 = `None`（工具调用时
+/// 诚实回落 per-call 路径）。
+fn persistent_resolve_by(
+    pred: impl Fn(&nemesis_taskstore::AgentRecord) -> bool + Send + Sync + 'static,
+) -> std::sync::Arc<dyn Fn() -> Option<(String, std::path::PathBuf)> + Send + Sync> {
+    std::sync::Arc::new(move || {
+        let mgr = crate::agents::manager()?;
+        mgr.list()
+            .ok()?
+            .into_iter()
+            .find(|rec| pred(rec))
+            .map(|rec| {
+                (
+                    rec.agent_id.clone(),
+                    std::path::PathBuf::from(&rec.exec_root),
+                )
+            })
+    })
+}
+
+/// P3 T7：常驻路由构造（supervisor 在场 + 解析闭包 → PersistentRoute）。
+/// None = 无 supervisor 形态（headless run / acp / 测试），工厂跳过挂接。
+fn persistent_route_for(
+    shared: &SharedResources,
+    resolve: std::sync::Arc<dyn Fn() -> Option<(String, std::path::PathBuf)> + Send + Sync>,
+) -> Option<nemesis_agent::PersistentRoute> {
+    let executor = shared.agent_runtime.as_ref()?;
+    Some(nemesis_agent::PersistentRoute {
+        resolve,
+        executor: executor.clone(),
+    })
+}
+
 /// Register all tools and enable MCP on the given AgentLoop.
 ///
 /// Shared between main agent and cluster agent. The caller is responsible for
@@ -1734,6 +1785,7 @@ fn register_tools_and_mcp(
     shared: &Arc<SharedResources>,
     tool_config: &nemesis_agent::SharedToolConfig,
     executor_channel: Option<&Arc<nemesis_agent::ExecutorChannel>>,
+    persistent: Option<&nemesis_agent::PersistentRoute>,
 ) {
     let mut all_tools = nemesis_agent::register_shared_tools(tool_config);
 
@@ -1742,17 +1794,21 @@ fn register_tools_and_mcp(
     // Metadata (description / parameters / preview) delegates to the local
     // impl, so the LLM sees byte-identical schemas and the checkpoint safety
     // net still snapshots file writes.
+    //
+    // P3 T7：常驻路由在场时每个桥挂 persistent 询问（身份解析成功 → 常驻
+    // 执行体；Unavailable → 本通道 per-call 回落；ToolFailed → 原样上抛）。
     if let Some(channel) = executor_channel {
         for name in nemesis_agent::MOVE_TOOLS {
             if let Some(local) = all_tools.remove(*name) {
-                all_tools.insert(
+                let mut bridge = nemesis_agent::RemoteExecutorTool::new(
                     (*name).to_string(),
-                    Box::new(nemesis_agent::RemoteExecutorTool::new(
-                        (*name).to_string(),
-                        local,
-                        channel.clone(),
-                    )),
+                    local,
+                    channel.clone(),
                 );
+                if let Some(route) = persistent {
+                    bridge = bridge.with_persistent(route.clone());
+                }
+                all_tools.insert((*name).to_string(), Box::new(bridge));
             }
         }
     }
@@ -2247,8 +2303,9 @@ pub fn build_cluster_agent_loop(
         restrict: true,
     }));
     // Cluster agent does not use executor separation yet (B.0 scope: main agent
-    // only). Pass None → all tools stay local.
-    register_tools_and_mcp(&mut agent_loop, shared, &tool_config, None);
+    // only). Pass None → all tools stay local. 常驻路由同不理（T7：worker 执行
+    // 语境是任务级一次性装配，无 tasks.db 持久实体可解析）。
+    register_tools_and_mcp(&mut agent_loop, shared, &tool_config, None, None);
 
     // Swarm M3（G4 主动发言通道）：board_discuss 仅注册进 cluster agent
     // ——被动唤醒（第三 select 臂）之外，worker 干活途中可主动向看板线程
@@ -2475,15 +2532,129 @@ pub fn build_project_agent_loop(
     project: &crate::projects::registry::ProjectEntry,
     session_store: Arc<nemesis_agent::session::SessionStore>,
 ) -> Result<Arc<nemesis_agent::r#loop::AgentLoop>> {
+    build_agent_loop_from_spec(shared, &AgentLoopSpec::from_project(project), session_store)
+}
+
+/// P2（2026-10-16）：常驻 AgentLoop 统一工厂的最小差异面。
+///
+/// L6++ 项目 loop 与 agents 表记录（自建/main）loop 的装配体完全同源
+/// （安全 8 层/estop/围栏/discipline 全生效），差异收敛为四个字段：
+/// - `exec_root`：工作区锚（项目目录 / agent home / 主 workspace）
+/// - `display_name`：日志与事件可观测名
+/// - `checkpoint_key`：影子库键（logs/project_checkpoints/<key>）——项目
+///   形态=project_id（L6++ 存量连续性），记录形态=agent_id
+/// - `instructions_trusted`：指令信任起点（注册表受信态 / 记录形态默认
+///   verbatim——信任策略的运行时热更新仍锚各 loop 既有通道）
+pub struct AgentLoopSpec {
+    pub exec_root: std::path::PathBuf,
+    pub display_name: String,
+    pub checkpoint_key: String,
+    pub instructions_trusted: bool,
+    /// P2 记忆命名空间：空 = 主 workspace 域（main/项目镜像，增强内存
+    /// G2 剥离维持）；`agents/<id>` = 自建 agent 独占域（增强内存挂本域
+    /// manager，jsonl/向量库落 `memory/<ns>/`）。
+    pub memory_namespace: String,
+    /// P3 T7：常驻路由身份解析闭包（None = 该形态不挂常驻——当前全部
+    /// 形态都有解析谓词，None 仅出现在测试手搓 spec）。闭包在每次工具
+    /// 调用时现查 agents 表（boot 时序：loop 建成早于实体 seed）。
+    pub persistent_resolve:
+        Option<std::sync::Arc<dyn Fn() -> Option<(String, std::path::PathBuf)> + Send + Sync>>,
+}
+
+impl AgentLoopSpec {
+    /// 项目注册表条目 → 规格（L6++ 语义零变化；checkpoint 键=project_id
+    /// 保存量影子库连续）。
+    pub fn from_project(project: &crate::projects::registry::ProjectEntry) -> Self {
+        // 项目镜像记录（kind=project + project_id 匹配）——记录由
+        // sync_project_agents 物化，exec_root=项目目录。字段先克隆进
+        // 'static 闭包（借用不能跨出工厂函数）。
+        let project_id = project.id.clone();
+        Self {
+            exec_root: project.path.clone(),
+            display_name: project.name.clone(),
+            checkpoint_key: project.id.clone(),
+            instructions_trusted: project.instructions_trusted,
+            memory_namespace: String::new(),
+            persistent_resolve: Some(persistent_resolve_by(move |rec| {
+                rec.kind == nemesis_taskstore::agents::kind::PROJECT
+                    && rec.project_id.as_deref() == Some(project_id.as_str())
+            })),
+        }
+    }
+
+    /// agents 表记录 → 规格。checkpoint 键=project_id（项目镜像形态保
+    /// 连续）否则 agent_id；`instructions_trusted` 默认 verbatim（记录是
+    /// bot 管理的身份，home 由本系统物化；项目注册表的信任策略不经本
+    /// 路径——那由 from_project 承载）。记忆命名空间按记录走（selfbuilt
+    /// = `agents/<id>`，project 镜像 = 空）。
+    pub fn from_record(record: &nemesis_taskstore::AgentRecord) -> Self {
+        // 记录形态按 agent_id 精确解析（记录即身份真相源）。id 先克隆
+        // 进 'static 闭包（同 from_project）。
+        let agent_id = record.agent_id.clone();
+        Self {
+            exec_root: std::path::PathBuf::from(&record.exec_root),
+            display_name: record.name.clone(),
+            checkpoint_key: record
+                .project_id
+                .clone()
+                .unwrap_or_else(|| record.agent_id.clone()),
+            instructions_trusted: true,
+            memory_namespace: record.memory_namespace.clone(),
+            persistent_resolve: Some(persistent_resolve_by(move |rec| rec.agent_id == agent_id)),
+        }
+    }
+}
+
+/// P2 记忆分域 layout 单一真相源：namespace → 增强内存 data_dir。
+/// 自建 agent 独占域 = `workspace/memory/<namespace>/memory_vector`
+/// （episodic jsonl / 向量库 / graph 全部落域内，主 corpus 不可见）。
+#[cfg(feature = "memory")]
+fn namespaced_memory_data_dir(workspace: &std::path::Path, namespace: &str) -> std::path::PathBuf {
+    workspace
+        .join("memory")
+        .join(namespace)
+        .join("memory_vector")
+}
+
+/// P2 记忆分域选域决策单一真相源。空 namespace（main/项目镜像）= None
+/// （G2 剥离，增强内存是主 workspace 资产，行为零变化）；非空且增强内存
+/// 总开关开 = 本域 manager；总开关关 = None（全域一致关闭，自建域不旁路）。
+#[cfg(feature = "memory")]
+fn memory_manager_for_namespace(
+    shared: &SharedResources,
+    namespace: &str,
+) -> Option<Arc<nemesis_memory::manager::MemoryManager>> {
+    if namespace.is_empty() {
+        return None;
+    }
+    shared.memory_manager.as_ref()?;
+    Some(Arc::new(
+        nemesis_memory::manager::MemoryManager::with_config_dir(
+            &namespaced_memory_data_dir(&shared.workspace_dir(), namespace),
+            &shared.workspace_dir().join("config"),
+        ),
+    ))
+}
+
+/// 统一常驻 loop 工厂（L6++ 项目 loop 与 P2 agent 记录 loop 同源）。
+///
+/// 差异面全部来自 [`AgentLoopSpec`]；其余装配（config 解析、安全 8 层、
+/// estop、围栏强制 restrict、discipline、checkpoint 影子库、事件 hook）
+/// 与主 loop 同一构造链。
+pub fn build_agent_loop_from_spec(
+    shared: &Arc<SharedResources>,
+    spec: &AgentLoopSpec,
+    session_store: Arc<nemesis_agent::session::SessionStore>,
+) -> Result<Arc<nemesis_agent::r#loop::AgentLoop>> {
     use nemesis_agent::r#loop::AgentLoop;
     use nemesis_agent::types::AgentConfig;
 
     // R3：路径注册时已 canonicalize，这里只做存在性防御——目录消失诚实报错
     // （manager 侧 warn + skip，不炸 gateway）。
-    if !project.path.is_dir() {
-        anyhow::bail!("项目目录不存在或不可用: {}", project.path.display());
+    if !spec.exec_root.is_dir() {
+        anyhow::bail!("执行根目录不存在或不可用: {}", spec.exec_root.display());
     }
-    let project_dir = project.path.clone();
+    let project_dir = spec.exec_root.clone();
 
     // 1. config.json + 模型解析：与主 loop 同源（同一 config.json 唯一真相源）。
     //    模型热切（BUG 2026-09-21 修订）：spawn 后不再"重启才生效"——
@@ -2551,7 +2722,7 @@ pub fn build_project_agent_loop(
         context_builder.build_system_prompt(false)
     };
     info!(
-        project = %project.name,
+        project = %spec.display_name,
         "[AgentFactory] project system prompt built ({} chars, prompt_system={:?})",
         system_prompt.len(),
         prompt_system
@@ -2655,7 +2826,7 @@ pub fn build_project_agent_loop(
     // （主循环行为）；未受信按 config projects.instruction_trust 全局策略
     // 降级（annotate=横幅 / isolated=整段跳过）。运行中 `projects.trust`
     // 经 ProjectsBridge 热更新本 loop，装配值只是起点。
-    let instruction_trust = if project.instructions_trusted {
+    let instruction_trust = if spec.instructions_trusted {
         nemesis_agent::workspace_instructions::InstructionTrust::Trusted
     } else {
         nemesis_agent::workspace_instructions::InstructionTrust::from_policy(
@@ -2799,27 +2970,49 @@ pub fn build_project_agent_loop(
         workspace: project_dir.clone(),
         event_tx: shared.agent_event_tx.clone(),
     });
-    // G2 剥离：skills/memory/forge 不挂项目 loop（None 覆盖对 cfg 双臂类型
+    // G2 剥离：skills/forge 不挂项目 loop（None 覆盖对 cfg 双臂类型
     // 都成立——字段在 feature 关闭时本就是 Option<()>）。工具集差异 =
     // 项目 prompt 更短 + 两 loop 共有工具 schema 交集字节一致（测试钉死）。
     tool_config.skills_loader = None;
     tool_config.skills_registry = None;
     tool_config.forge = None;
     tool_config.forge_executor = None;
-    tool_config.memory_executor = None;
+    // 记忆分域（P2）：namespace 空（main/项目镜像）维持 G2 剥离——增强
+    // 内存是主 workspace 资产，行为零变化；非空（自建 agent `agents/<id>`）
+    // 挂本域 manager（jsonl 与向量库都落自己域），主 corpus 不可见。增强
+    // 内存总开关关（shared.memory_manager=None）= 全域一致关闭，自建域
+    // 不旁路。选域决策单一真相源 = [`memory_manager_for_namespace`]。
+    tool_config.memory_executor = {
+        #[cfg(feature = "memory")]
+        {
+            memory_manager_for_namespace(shared, &spec.memory_namespace)
+                .map(|mgr| Arc::new(nemesis_memory::memory_tools::MemoryToolExecutor::new(mgr)))
+        }
+        #[cfg(not(feature = "memory"))]
+        {
+            None
+        }
+    };
 
     // executor 分离通道锚项目目录（项目会话的 exec/MOVE 工具经子进程在项目
-    // cwd 执行；enabled/sandbox 开关与主 loop 同源 config）。
+    // cwd 执行；enabled/sandbox 开关与主 loop 同源 config）。P3 T7：常驻
+    // 路由按 spec 的解析闭包挂接（项目=kind+project_id 记录匹配；记录缺
+    // 席时调用时诚实回落 per-call）。
     let executor_channel = crate::exec_world::build_executor_channel(
         &shared.home,
         &project_dir,
         shared.config_store.handle(),
     )?;
+    let persistent_route = spec
+        .persistent_resolve
+        .as_ref()
+        .and_then(|resolve| persistent_route_for(shared, resolve.clone()));
     register_tools_and_mcp(
         &mut agent_loop,
         shared,
         &tool_config,
         executor_channel.as_ref(),
+        persistent_route.as_ref(),
     );
 
     // Checkpoint 影子库：turn 记录 + git 影子库都落主 workspace
@@ -2827,7 +3020,7 @@ pub fn build_project_agent_loop(
     // 时 CheckpointStore 默认影子位置从 root 派生会落进项目目录，必须
     // new_with_shadow 显式指定；root=项目目录仅作 .git 后端探测锚）。
     {
-        let cp_dir = project_checkpoint_dir(&shared.workspace_dir(), &project.id);
+        let cp_dir = project_checkpoint_dir(&shared.workspace_dir(), &spec.checkpoint_key);
         if let Some(parent) = cp_dir.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -2855,7 +3048,7 @@ pub fn build_project_agent_loop(
     info!(
         model = %model_name,
         tools = agent_loop.tool_count(),
-        project = %project.name,
+        project = %spec.display_name,
         "[AgentFactory] project AgentLoop built"
     );
 

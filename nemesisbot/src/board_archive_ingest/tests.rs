@@ -84,6 +84,8 @@ fn fixture(name: &str) -> Fixture {
         estop: Arc::new(nemesis_agent::estop::EstopState::new()),
         estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
         selfcheck: SelfcheckRegistry::new(),
+        #[cfg(feature = "security")]
+        security_slot: None,
     };
     Fixture {
         deps,

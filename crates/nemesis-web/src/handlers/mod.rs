@@ -8,8 +8,12 @@ pub mod agent;
 // M7（devtool-upgrade 阶段 5）：dashboard 审批卡 WSAPI（approval.respond /
 // approval.pending）。无 feature 闸——responder 槽在 nemesis-types，未装配时
 // handler 诚实报「未装配」。
+pub mod agents;
 pub mod approval;
 pub mod board;
+// P4-c（2026-10-17）：交付账本 WSAPI（deliveries.list/by_run/get/confirm/
+// reject/patch；bridge 未装配时诚实报错——headless/独立 web 测试形态）。
+pub mod deliveries;
 // U-B（2026-10-12 无人值守）：LLM 端点不可用本地封存——检测/封存/中断档案
 // 数据面 + WSAPI status/release（恢复探针在 nemesisbot 侧，见
 // nemesisbot/src/board_unavailable.rs）。
@@ -283,6 +287,12 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(outbox::OutboxHandler));
     // L6++ G4（2026-09-08）：项目注册表 WSAPI（bridge 未装配时诚实报错）。
     router.register(Arc::new(projects::ProjectsHandler));
+    // P2（2026-10-16）：Agent 持久实体 WSAPI（agents.list/get/create/remove；
+    // bridge 未装配时诚实报错——headless/独立 web 测试形态）。
+    router.register(Arc::new(agents::AgentsHandler));
+    // P4-c（2026-10-17）：交付账本 WSAPI（deliveries.*；bridge 未装配时诚实
+    // 报错——headless/独立 web 测试形态）。
+    router.register(Arc::new(deliveries::DeliveriesHandler));
     // 角色目录（2026-09-28 角色目录与分档供给）：roles.list。
     router.register(Arc::new(roles::RolesHandler));
     #[cfg(feature = "workflow")]
