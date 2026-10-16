@@ -361,13 +361,15 @@ fn strip_directive_lines_all_directives_degrades_to_unprovided() {
     assert!(p.contains("（未提供）"));
 }
 
-/// NB-CODE-010/011：验收标准缺失（未提供 / 全指令行被剥离）时，提示词必须
-/// 带防「凭标题脑补通过」的谨慎判定注记；标准在场时不注入。
+/// NB-CODE-010/011：验收标准真缺失（全指令行被剥离 / 标题背景全空）时，
+/// 提示词必须带防「凭标题脑补通过」的谨慎判定注记；可推导（NB-125 根修
+/// 合流：自动推导基准在场）或标准在场时不注入。
 #[test]
 fn prompt_warns_when_criteria_missing() {
+    // AC 缺失但标题/背景可推导 → 判据在场（推导基准），不注入注记。
     let missing = build_review_user_prompt("NB-1", "t", "d", None, "report", &[]);
-    assert!(missing.contains("验收标准未提供"), "缺标准必须注入注记");
-    assert!(missing.contains("不得默认通过"));
+    assert!(missing.contains("自动推导的判定基准"), "{missing}");
+    assert!(!missing.contains("验收标准未提供"), "{missing}");
 
     let stripped = build_review_user_prompt(
         "NB-2",
@@ -380,6 +382,14 @@ fn prompt_warns_when_criteria_missing() {
     assert!(
         stripped.contains("验收标准未提供"),
         "全指令行剥离后等同缺失，必须注入注记"
+    );
+    assert!(stripped.contains("不得默认通过"));
+
+    // 标题/背景全空 → 无从推导 → 谨慎注记必须在场（真无判据的最后防线）。
+    let nothing = build_review_user_prompt("NB-4", "  ", "  ", None, "report", &[]);
+    assert!(
+        nothing.contains("验收标准未提供") && nothing.contains("不得默认通过"),
+        "无从推导形态必须注入注记: {nothing}"
     );
 
     let present = build_review_user_prompt("NB-3", "t", "d", Some("明示标准"), "report", &[]);
