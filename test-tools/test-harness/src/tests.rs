@@ -158,3 +158,38 @@ fn suite_header_prints() {
     // Just ensure it doesn't panic.
     print_suite_header("My Suite");
 }
+
+#[test]
+fn strip_verbatim_local_drive_prefix() {
+    assert_eq!(
+        strip_verbatim(r"\\?\C:\Users\foo\AppData\Local\Temp\x"),
+        r"C:\Users\foo\AppData\Local\Temp\x"
+    );
+}
+
+#[test]
+fn strip_verbatim_unc_maps_back_to_share_form() {
+    // canonicalize 对 UNC 目标返回 \\?\UNC\host\share\...——直接剥前缀会
+    // 得到非法的 UNC\host\share（回归锁：企业锁定环境 TEMP 指网络盘）。
+    assert_eq!(
+        strip_verbatim(r"\\?\UNC\fileserver\share\tmp\ws"),
+        r"\\fileserver\share\tmp\ws"
+    );
+}
+
+#[test]
+fn strip_verbatim_passthrough_without_prefix() {
+    assert_eq!(strip_verbatim(r"C:\plain\path"), r"C:\plain\path");
+    assert_eq!(strip_verbatim("/tmp/plain"), "/tmp/plain");
+}
+
+#[test]
+fn long_form_path_resolves_short_name_via_verbatim_strip() {
+    // 8.3 短名环境（如 LOCALA~1）：canonicalize 得到 verbatim 长名，剥前缀
+    // 后必须是存在的常规路径（真实 canonicalize 往返，覆盖纯函数测试之外
+    // 的组合路径）。
+    let ws = TestWorkspace::new().unwrap();
+    let root = ws.root;
+    assert!(root.exists(), "root must exist: {}", root.display());
+    assert!(!root.as_os_str().to_string_lossy().starts_with(r"\\?\"));
+}

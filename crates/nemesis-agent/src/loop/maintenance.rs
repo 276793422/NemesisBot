@@ -1,6 +1,7 @@
 //! 会话维护：SessionMaintenance/parse_maintenance_command、parse_user_dispatch、build_dispatch_snapshot_messages、handle_maintenance、process_user_dispatch、clear_session。
 //!
 //! P1 自 `loop.rs` 物理搬迁（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）；语义零变化。
+#[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
 

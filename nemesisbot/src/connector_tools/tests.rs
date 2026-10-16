@@ -208,7 +208,10 @@ async fn test_paper_order_happy_path_writes_ledger_and_receipt() {
 }
 
 #[tokio::test]
-async fn test_paper_order_without_price_is_honest_error_with_receipt() {
+async fn test_paper_order_without_price_rejected_by_schema_gate() {
+    // R4：place_order args_schema required 含 price → 缺价在出网前的
+    // schema 闸被拒，不触达 builtin（quote 引导自查保留给直连路径），
+    // 无回执（动作从未发生）、账本零变动。
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path();
     write_connector(ws, "paper-broker", MIXED_MANIFEST);
@@ -223,11 +226,11 @@ async fn test_paper_order_without_price_is_honest_error_with_receipt() {
         )
         .await
         .expect_err("missing price must error");
-    assert!(err.contains("price"), "guides to quote op: {err}");
-    // error 回执在册（动作发生过）
+    assert!(err.contains("⛔ INVALID ARGS"), "msg: {err}");
+    assert!(err.contains("price"), "{err}");
+    // schema 拒绝无回执（动作从未发生）
     let receipts = list_receipts(ws, 50, None).expect("receipts");
-    assert_eq!(receipts.len(), 1);
-    assert_eq!(receipts[0].outcome, "error");
+    assert!(receipts.is_empty(), "schema 拒绝无回执");
     // 账本零变动
     let ledger = nemesis_connectors::ledger::load_ledger(ws).expect("ledger");
     assert!(ledger.orders.is_empty());
@@ -533,16 +536,27 @@ fn test_merge_request_headers_credential_wins_and_folds_case() {
 /// 端到端（`Authorization: token <PAT>` 认证头形态），同时钉死同名冲突
 /// 裁决——静态头 `Authorization` 被 vault 凭据覆盖。
 #[cfg(feature = "security")]
-#[tokio::test]
-async fn test_http_static_headers_patch_and_vault_prefix_end_to_end() {
-    use nemesis_security::vault::VaultStore;
-
+#[test]
+fn test_http_static_headers_patch_and_vault_prefix_end_to_end() {
     // env 口令是进程单例：与 vault_runtime / commands::vault 的 env 触及测试群
     // 经 crate::GLOBAL_STATE_LOCK 互斥（本地 cargo test 并行防互踩；nextest
-    // 每测试独立进程，锁无竞争直通）。
+    // 每测试独立进程，锁无竞争直通）。std 锁 guard 不得活过 await（clippy
+    // await_holding_lock，CI -D warnings 红）——锁在同步外壳持有，async 体经
+    // block_on 执行（commands/vault run_arms 同款形态）。
     let _env_guard = crate::GLOBAL_STATE_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(test_http_static_headers_patch_and_vault_prefix_end_to_end_inner());
+}
+
+#[cfg(feature = "security")]
+async fn test_http_static_headers_patch_and_vault_prefix_end_to_end_inner() {
+    use nemesis_security::vault::VaultStore;
+
     let server = wiremock::MockServer::start().await;
     wiremock::Mock::given(wiremock::matchers::method("PATCH"))
         .and(wiremock::matchers::path("/repos/octocat/demo/issues/1"))
@@ -798,16 +812,27 @@ fn test_workspace_template_webui_manifest_is_valid_and_disabled_by_default() {
 /// 6 op 对 wiremock（Gitea 同形态 API）全跑通：认证头注入 / GET query /
 /// POST+PATCH body / 回执主键（issue_comment→id、issue_close→number）。
 #[cfg(feature = "security")]
-#[tokio::test]
-async fn test_gitea_template_ops_against_mock_gitea() {
-    use nemesis_security::vault::VaultStore;
-
+#[test]
+fn test_gitea_template_ops_against_mock_gitea() {
     // env 口令是进程单例：与 vault_runtime / commands::vault 的 env 触及测试群
     // 经 crate::GLOBAL_STATE_LOCK 互斥（本地 cargo test 并行防互踩；nextest
-    // 每测试独立进程，锁无竞争直通）。
+    // 每测试独立进程，锁无竞争直通）。std 锁 guard 不得活过 await（clippy
+    // await_holding_lock，CI -D warnings 红）——锁在同步外壳持有，async 体经
+    // block_on 执行（commands/vault run_arms 同款形态）。
     let _env_guard = crate::GLOBAL_STATE_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(test_gitea_template_ops_against_mock_gitea_inner());
+}
+
+#[cfg(feature = "security")]
+async fn test_gitea_template_ops_against_mock_gitea_inner() {
+    use nemesis_security::vault::VaultStore;
+
     let server = wiremock::MockServer::start().await;
     let auth = || wiremock::matchers::header("authorization", "token mock-pat");
     for (method_m, path_m, body) in [
@@ -990,16 +1015,27 @@ async fn gitea_invoke(
 /// security=None：SSRF 闸默认拦回环而真实 Gitea 就在回环——闸行为已由
 /// 独立单测覆盖（test_connector_outbound_ssrf_blocked）。
 #[cfg(feature = "security")]
-#[tokio::test]
-async fn gitea_real_chain_e2e() {
-    use nemesis_security::vault::VaultStore;
-
+#[test]
+fn gitea_real_chain_e2e() {
     // env 口令是进程单例：与 vault_runtime / commands::vault 的 env 触及测试群
     // 经 crate::GLOBAL_STATE_LOCK 互斥（本地 cargo test 并行防互踩；nextest
-    // 每测试独立进程，锁无竞争直通）。
+    // 每测试独立进程，锁无竞争直通）。std 锁 guard 不得活过 await（clippy
+    // await_holding_lock，CI -D warnings 红）——锁在同步外壳持有，async 体经
+    // block_on 执行（commands/vault run_arms 同款形态）。
     let _env_guard = crate::GLOBAL_STATE_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(gitea_real_chain_e2e_inner());
+}
+
+#[cfg(feature = "security")]
+async fn gitea_real_chain_e2e_inner() {
+    use nemesis_security::vault::VaultStore;
+
     let Some(url) = std::env::var("GITEA_E2E_URL").ok() else {
         println!(
             "SKIP: GITEA_E2E_URL 未设置（真实链路层缺席；scripts/test-gitea-e2e.sh 可拉起实例）"
@@ -1213,10 +1249,13 @@ async fn gitea_real_chain_e2e() {
 
 /// C4 分类矩阵：⛔ 家族 = 安全层已裁决（透传不双写）；错误形态文本
 /// （Error:/Tool error:/Exit code:/Plan mode:）= dispatch 未代写凭条 →
-/// error 回执；其余 = 成功。
+/// error 回执；其余 = 成功。F2 超时特判（2026-10-16 二轮复查）：错误形态
+/// 且含 "timed out" 且非 `Exit code:` 前缀 = 结果未知（UnknownOutcome，
+/// 保留账目不回吐）——`Exit code:` 是进程跑完的确定性失败，即便输出里
+/// 恰好含 "timed out" 字样（测试二进制超时输出混入）也保持 Failed。
 #[test]
 fn test_classify_tool_result_receipt_semantics() {
-    use ToolBindingClass::{DispatchRejected, Done, Failed};
+    use ToolBindingClass::{DispatchRejected, Done, Failed, UnknownOutcome};
     // ⛔ 家族（dispatch 各安全分支的真实前缀形态）
     assert_eq!(
         classify_tool_result("⛔ SECURITY BLOCKED [layer:abac|policy:deny] no"),
@@ -1247,9 +1286,54 @@ fn test_classify_tool_result_receipt_semantics() {
         classify_tool_result("Plan mode: file modifications are denied."),
         Failed
     );
+    // F2 超时特判：真实超时文本形态（executor.rs/shell.rs）→ UnknownOutcome
+    assert_eq!(
+        classify_tool_result("Tool error: tool exec timed out after 300s"),
+        UnknownOutcome
+    );
+    assert_eq!(
+        classify_tool_result("Tool error: command timed out after 60s"),
+        UnknownOutcome
+    );
+    // F2 误判防线：`Exit code:` 前缀 = 进程跑完退出非零（确定性失败），
+    // 输出含 "timed out" 字样也不误判为 unknown
+    assert_eq!(
+        classify_tool_result(
+            "Exit code: 1\ntest result: FAILED. 1 passed; 1 failed\n---- name stdout ----\nbenchmark timed out"
+        ),
+        Failed
+    );
     // 成功（含多行首行为空形态）
     assert_eq!(classify_tool_result("page title: Example"), Done);
     assert_eq!(classify_tool_result("{\"status\":\"ok\"}"), Done);
+}
+
+/// F4（2026-10-16 二轮复查）：unknown 是最需要推送的结局（结果未知 →
+/// 需人核账），必须进推送白名单；读类非资金仍静默只入账本。
+#[test]
+fn test_should_push_covers_unknown_outcome() {
+    // 写/exec/网络类：四种执行面结局全推送（含 unknown）
+    for outcome in ["executed", "error", "budget_blocked", "unknown"] {
+        assert!(
+            ConnectorInvokeTool::should_push(OpClass::Write, false, outcome),
+            "write 类 outcome={outcome} 必须推送"
+        );
+    }
+    // 读类：executed 非资金静默；资金类照常推送；unknown 资金类必推
+    assert!(!ConnectorInvokeTool::should_push(
+        OpClass::Read,
+        false,
+        "executed"
+    ));
+    assert!(ConnectorInvokeTool::should_push(
+        OpClass::Read,
+        true,
+        "executed"
+    ));
+    assert!(
+        ConnectorInvokeTool::should_push(OpClass::Read, true, "unknown"),
+        "读+资金类 unknown 必须推送（最需人核账的结局）"
+    );
 }
 
 /// tool 绑定 e2e（真 AgentLoop + 注册桩工具）：成功路径走完整 dispatch
@@ -1562,7 +1646,7 @@ async fn test_remote_invoke_without_cluster_channel_is_honest_error() {
 }
 
 #[tokio::test]
-async fn test_remote_invoke_rpc_failure_writes_error_receipt() {
+async fn test_remote_invoke_rpc_failure_writes_unknown_receipt() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path();
     write_connector(ws, "paper-broker", MIXED_MANIFEST);
@@ -1586,11 +1670,13 @@ async fn test_remote_invoke_rpc_failure_writes_error_receipt() {
 
     let receipts = list_receipts(ws, 50, None).expect("receipts");
     assert_eq!(receipts.len(), 1);
-    assert_eq!(receipts[0].outcome, "error");
+    // RPC 失败 = 结果未知（请求可能已送达并在 B 端执行），凭条词表与本地
+    // 超时臂同源落 "unknown" 而非 "error"（undo 拒撤措辞依赖此区分）。
+    assert_eq!(receipts[0].outcome, "unknown");
     assert!(
         receipts[0]
             .summary
-            .contains("[远程@node-b] RPC 失败: connection refused"),
+            .contains("[远程@node-b] RPC 失败（结果未知）: connection refused"),
         "summary: {}",
         receipts[0].summary
     );
@@ -1709,6 +1795,343 @@ async fn test_remote_invoke_worker_error_text_prefix_stripped() {
     assert_eq!(receipts.len(), 1);
     assert_eq!(receipts[0].outcome, "error");
     assert!(receipts[0].budget_consumed.is_none(), "error 不记额度");
+}
+
+/// 回执 envelope 缺 outcome = 结果未知（R3 决策表第四臂，2026-10-16 回检
+/// 补口）：请求可能已送达并在 B 端执行——不得按 "error" 兜底走 release
+/// 回吐预算（R3 语义旁路）。落 "unknown" 镜像凭条 + 预算占用保留。
+#[tokio::test]
+async fn test_remote_invoke_missing_outcome_retains_budget() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(ws, "paper-broker", MIXED_MANIFEST);
+    let config = ws.join("config.json");
+    write_finance_config(&config);
+    let tool = invoke_tool(ws, &config);
+
+    tool.set_remote_call_fn(mock_remote_fn(
+        Arc::new(std::sync::Mutex::new(Vec::new())),
+        |_peer, _action, _payload| {
+            // envelope 不完整：worker 侧漏写 outcome 字段（同形态：旧节点 /
+            // 手工构造的回执）。master 无法得知请求是否已被执行。
+            let mut r = worker_receipt_json("executed", "ord-unknown-1");
+            r.as_object_mut()
+                .expect("receipt is object")
+                .remove("outcome");
+            Ok(serde_json::json!({
+                "receipt": r,
+                "result_text": "买入 1 股 AAPL",
+            }))
+        },
+    ));
+
+    // unknown 落决策表 `_` 臂 = 诚实失败回模型（不带 executed/denied_approval 语义）。
+    let err = tool
+        .execute(
+            r#"{"connector":"paper-broker","op":"place_order","target_node":"node-b","args":{"side":"buy","symbol":"AAPL","qty":1,"price":1.0}}"#,
+            &ctx(),
+        )
+        .await
+        .expect_err("missing outcome must error honestly");
+    assert!(err.contains("买入 1 股 AAPL"), "worker summary: {err}");
+
+    let receipts = list_receipts(ws, 50, None).expect("receipts");
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0].outcome, "unknown");
+    assert!(receipts[0].budget_consumed.is_none());
+
+    // 预算占用保留：rate_used 记 1（release 会归 0）、资金类占用不回吐。
+    assert_eq!(
+        tool.budget
+            .rate_used("paper-broker", chrono::Utc::now().timestamp_millis()),
+        1,
+        "unknown 不得回吐（release = R3 语义旁路）"
+    );
+    let (orders, qty) = tool
+        .budget
+        .finance_today(chrono::Utc::now().timestamp_millis());
+    assert_eq!(orders, 1, "资金类笔数保留");
+    assert!((qty - 1.0).abs() < 1e-9, "资金类数量保留，实际 {qty}");
+}
+
+/// 对端 dispatch 层拒绝（estop 冻结族，T-CONN-1 ② 单测形态，2026-10-16
+/// ET 根修）：worker 从未执行、凭条从未落账（receipt=null 诚实不造假），
+/// result_text 带 ⛔ 前缀 = 确定性「未执行」——镜像 outcome=error（决策
+/// 表 release 回吐预算），summary 带 `· ?]` 署名特征 + 拒因入账。与上一
+/// 测试构成对照：缺 outcome 且无 ⛔ 标记 = unknown 保留，⛔ 标记 = error
+/// 回吐。
+#[tokio::test]
+async fn test_remote_invoke_estop_refusal_no_receipt_maps_to_error() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(ws, "paper-broker", MIXED_MANIFEST);
+    let config = ws.join("config.json");
+    write_finance_config(&config);
+    let tool = invoke_tool(ws, &config);
+
+    tool.set_remote_call_fn(mock_remote_fn(
+        Arc::new(std::sync::Mutex::new(Vec::new())),
+        |_peer, _action, _payload| {
+            // 急停期对端真实回包形态（gateway runtime.rs worker handler）：
+            // 工具在 dispatch 层被拒（⛔ 前缀），凭条面无账（receipt=null）。
+            Ok(serde_json::json!({
+                "receipt": serde_json::Value::Null,
+                "result_text": "⛔ ESTOP: 已急停，工具调用已拒绝",
+            }))
+        },
+    ));
+
+    let err = tool
+        .execute(
+            r#"{"connector":"paper-broker","op":"positions","target_node":"node-b"}"#,
+            &ctx(),
+        )
+        .await
+        .expect_err("对端明确拒绝 = 诚实失败回模型");
+    assert!(err.contains("ESTOP"), "refusal text passthrough: {err}");
+
+    let receipts = list_receipts(ws, 50, None).expect("receipts");
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0].outcome, "error");
+    assert!(
+        receipts[0].summary.contains("· ?]"),
+        "summary 无凭条署名特征: {}",
+        receipts[0].summary
+    );
+    assert!(
+        receipts[0].summary.contains("ESTOP"),
+        "拒因入账（审计自解释）: {}",
+        receipts[0].summary
+    );
+    assert!(receipts[0].budget_consumed.is_none(), "error 不记额度");
+
+    // 预算回吐：error = 对端确认未执行（R3），rate_used 归 0。
+    assert_eq!(
+        tool.budget
+            .rate_used("paper-broker", chrono::Utc::now().timestamp_millis()),
+        0,
+        "⛔ 拒绝 = 确定未执行，必须回吐（保留 = unknown 语义串臂）"
+    );
+}
+
+/// F1（2026-10-16 二轮复查）回归：连接建立失败（connection refused）=
+/// 请求**未发出** = 确定性未生效 → `is_connect()` 臂保持 Err → 决策表
+/// Err 臂 release 回吐额度（rate_used 归 0）+ error 凭条。与上一测试
+/// 构成对照：超时/传输中断 = unknown 保留占用，连接拒绝 = error 回吐。
+/// 端口取法：bind(0) 拿端口后立即 drop listener → 内核释放端口 →
+/// connect 立即被拒（非超时路径）。
+#[tokio::test]
+async fn test_connect_refused_releases_budget_and_writes_error_receipt() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().expect("local addr").port();
+    drop(listener);
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(
+        ws,
+        "dead-endpoint",
+        &r#"
+[connector]
+id = "dead-endpoint"
+name = "死端点"
+version = "0.1.0"
+kind = "rest"
+
+[connector.http]
+base = "http://127.0.0.1:{PORT}"
+
+[[op]]
+id = "push_thing"
+risk = "high"
+class = "write"
+http = { method = "POST", path = "/things" }
+"#
+        .replace("{PORT}", &port.to_string()),
+    );
+    let config = ws.join("config.json");
+    let tool = invoke_tool(ws, &config);
+
+    let err = tool
+        .execute(
+            r#"{"connector":"dead-endpoint","op":"push_thing","args":{}}"#,
+            &ctx(),
+        )
+        .await
+        .expect_err("connection refused must error honestly");
+    assert!(
+        err.contains("HTTP 请求失败") || err.contains("connect"),
+        "诚实错误文本: {err}"
+    );
+
+    // error 凭条 + 额度回吐（rate_used 归 0——误落 unknown 臂会是 1）。
+    let receipts = list_receipts(ws, 50, None).expect("receipts");
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0].outcome, "error");
+    assert_eq!(
+        tool.budget
+            .rate_used("dead-endpoint", chrono::Utc::now().timestamp_millis()),
+        0,
+        "连接未建立 = 确定性未生效，release 必须回吐（对照 unknown 臂的保留）"
+    );
+}
+
+// ===========================================================================
+// R4：执行前 args 校验（出网前拒绝 + 零额度 + 零 HTTP + 资金形态强制）
+// ===========================================================================
+
+/// enum/required 越界在出网前拒绝：wiremock 零请求、零凭据依赖（闸在
+/// 凭据解析之前）、无回执（动作从未发生——与 budget_blocked 的「发生过
+/// 被拦」回执语义相区分）。
+#[tokio::test]
+async fn test_invalid_args_rejected_before_outbound_wiremock_zero_requests() {
+    let server = wiremock::MockServer::start().await;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    let template = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/workspace/connectors/gitea/connector.toml"
+    ))
+    .expect("template");
+    write_connector(
+        ws,
+        "gitea",
+        &template.replace(
+            "http://127.0.0.1:3000/api/v1",
+            &format!("{}/api/v1", server.uri()),
+        ),
+    );
+    // 无 vault：闸在凭据解析之前，拒绝不依赖凭据在场。
+    let tool = invoke_tool(ws, &ws.join("config.json"));
+
+    // enum 越界（state 只许 "closed"）
+    let err = tool
+        .execute(
+            r#"{"connector":"gitea","op":"issue_close","args":{"owner":"o","repo":"r","index":1,"state":"open"}}"#,
+            &ctx(),
+        )
+        .await
+        .expect_err("enum 越界必须拒");
+    assert!(err.contains("⛔ INVALID ARGS"), "prefix: {err}");
+    assert!(err.contains("state"), "指认字段: {err}");
+    assert!(err.contains("允许范围"), "指认原因: {err}");
+    assert!(err.contains("未执行，未消耗额度"), "诚实注记: {err}");
+
+    // required 缺失
+    let err = tool
+        .execute(
+            r#"{"connector":"gitea","op":"issue_close","args":{"owner":"o","repo":"r","state":"closed"}}"#,
+            &ctx(),
+        )
+        .await
+        .expect_err("required 缺失必须拒");
+    assert!(err.contains("index"), "指认缺失字段: {err}");
+
+    // 零 HTTP + 零回执：动作从未发生
+    let received = server.received_requests().await;
+    assert!(
+        received.as_ref().is_none_or(|v| v.is_empty()),
+        "非法参数不得出网"
+    );
+    assert!(
+        list_receipts(ws, 50, Some("gitea"))
+            .expect("receipts")
+            .is_empty(),
+        "未发生的动作无回执"
+    );
+}
+
+/// 资金参数形态强制（R4）：finance op 的 qty 必须在场且为有限正数——
+/// 缺失/null 由 required 闸拒，字符串/零/负数由形态闸拒；全部发生在
+/// 预算 reserve 之前 = 零额度消耗 + 零资金动作 + 零回执。
+#[tokio::test]
+async fn test_finance_qty_forms_rejected_before_budget() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(ws, "paper-broker", MIXED_MANIFEST);
+    let config = ws.join("config.json");
+    write_finance_config(&config);
+    let tool = invoke_tool(ws, &config);
+
+    // (args JSON 片段, 期望错误里指认的内容)
+    let cases: Vec<(&str, &str)> = vec![
+        (r#"{"side":"buy","symbol":"AAPL","price":1.0}"#, "qty"), // 缺失 → required
+        (
+            r#"{"side":"buy","symbol":"AAPL","qty":null,"price":1.0}"#,
+            "qty",
+        ), // null 视为缺席
+        (
+            r#"{"side":"buy","symbol":"AAPL","qty":"10","price":1.0}"#,
+            "number",
+        ), // 字符串 → 形态闸
+        (
+            r#"{"side":"buy","symbol":"AAPL","qty":0,"price":1.0}"#,
+            "正数",
+        ),
+        (
+            r#"{"side":"buy","symbol":"AAPL","qty":-5,"price":1.0}"#,
+            "正数",
+        ),
+    ];
+    for (args, want) in cases {
+        let call = format!(r#"{{"connector":"paper-broker","op":"place_order","args":{args}}}"#);
+        let err = tool
+            .execute(&call, &ctx())
+            .await
+            .expect_err("qty 非法形态必须拒");
+        assert!(err.contains("⛔ INVALID ARGS"), "{args}: {err}");
+        assert!(err.contains(want), "{args}: want `{want}` in {err}");
+    }
+
+    // 零额度 + 零资金动作 + 零回执
+    let ledger = nemesis_connectors::ledger::load_ledger(ws).expect("ledger");
+    assert!(ledger.orders.is_empty(), "无外部资金动作");
+    assert!(list_receipts(ws, 50, None).expect("receipts").is_empty());
+    assert_eq!(
+        tool.budget
+            .rate_used("paper-broker", chrono::Utc::now().timestamp_millis()),
+        0,
+        "拒绝发生在 reserve 之前，零额度消耗"
+    );
+}
+
+/// R4 单点在远程分支之前：非法参数的远程调用不出线（mock RPC 零捕获）、
+/// 零额度、零回执——与本地路径同覆盖。
+#[tokio::test]
+async fn test_remote_invoke_invalid_args_never_leaves_master() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(ws, "paper-broker", MIXED_MANIFEST);
+    let config = ws.join("config.json");
+    write_finance_config(&config);
+    let tool = invoke_tool(ws, &config);
+
+    let calls: CapturedCalls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured = calls.clone();
+    tool.set_remote_call_fn(mock_remote_fn(calls, |_peer, _action, _payload| {
+        panic!("非法参数不得出线")
+    }));
+
+    // qty 字符串形态（required 在场、schema 无 properties → 类型闸不设限，
+    // 资金形态闸兜底）
+    let err = tool
+        .execute(
+            r#"{"connector":"paper-broker","op":"place_order","target_node":"node-b","args":{"side":"buy","symbol":"AAPL","qty":"10","price":1.0}}"#,
+            &ctx(),
+        )
+        .await
+        .expect_err("must reject before remote dispatch");
+    assert!(err.contains("⛔ INVALID ARGS"), "msg: {err}");
+    assert!(
+        captured.lock().expect("calls lock").is_empty(),
+        "非法参数不得出线"
+    );
+    assert!(list_receipts(ws, 50, None).expect("receipts").is_empty());
+    assert_eq!(
+        tool.budget
+            .rate_used("paper-broker", chrono::Utc::now().timestamp_millis()),
+        0
+    );
 }
 
 // ---- E4（收官批 2026-10-15）monitor 语义变化检测 ----
@@ -1860,8 +2283,9 @@ fn test_monitor_slug_no_traversal_and_no_ascii_collision() {
 
 #[tokio::test]
 async fn test_monitor_check_execute_arg_gates_and_no_loop_honest_error() {
-    // 经 execute 全链（清单→预算→dispatch→action）：缺 url / 缺 name 的
-    // 参数闸；带全参但无 loop（停机窗口）→ fetch 诚实失败。错误也是账。
+    // 经 execute 全链：缺 url / 缺 name 在 R4 schema 闸（出网前）被拒——
+    // 不触达 builtin、不消耗额度、不落回执（动作从未发生）；带全参但无
+    // loop（停机窗口）→ fetch 诚实失败，错误也是账。
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path();
     write_connector(ws, "monitor", MONITOR_MANIFEST);
@@ -1872,7 +2296,8 @@ async fn test_monitor_check_execute_arg_gates_and_no_loop_honest_error() {
         .execute(r#"{"connector":"monitor","op":"check","args":{}}"#, &ctx())
         .await
         .expect_err("缺 url 必须报错");
-    assert!(err.contains("缺少 url"), "{err}");
+    assert!(err.contains("⛔ INVALID ARGS"), "{err}");
+    assert!(err.contains("url"), "{err}");
 
     let err = tool
         .execute(
@@ -1881,7 +2306,8 @@ async fn test_monitor_check_execute_arg_gates_and_no_loop_honest_error() {
         )
         .await
         .expect_err("缺 name 必须报错");
-    assert!(err.contains("缺少 name"), "{err}");
+    assert!(err.contains("⛔ INVALID ARGS"), "{err}");
+    assert!(err.contains("name"), "{err}");
 
     let err = tool
         .execute(
@@ -1892,10 +2318,10 @@ async fn test_monitor_check_execute_arg_gates_and_no_loop_honest_error() {
         .expect_err("无 loop（停机窗口）必须诚实失败");
     assert!(err.contains("agent loop unavailable"), "{err}");
 
-    // 三笔全部落 error 回执（错误也是账——行动账本可见）。
+    // schema 拒绝无回执（未发生）；loop 失败落 error 回执（错误也是账）。
     let receipts = list_receipts(ws, 10, Some("monitor")).expect("receipts");
-    assert_eq!(receipts.len(), 3);
-    assert!(receipts.iter().all(|r| r.outcome == "error"));
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0].outcome, "error");
 }
 
 #[tokio::test]
@@ -1928,4 +2354,450 @@ action = "builtin.no_such_action"
         .await
         .expect_err("未知动作必须报错");
     assert!(err.contains("builtin.monitor_check"), "{err}");
+}
+
+// ---------------------------------------------------------------------------
+// R6：GET 剩余 args 合并发送（extra_query 此前收集后从未消费）
+// ---------------------------------------------------------------------------
+
+/// merge 纯函数五形态：普通参数在前保序、凭据同名时凭据胜（普通 args 不
+/// 得覆盖凭据）、非同名凭据对追加在尾、无凭据 = 原样透传、凭据同名多对
+/// 全部胜出。
+#[test]
+fn test_merge_query_pairs_credential_wins_and_preserves_order() {
+    // 普通参数在前 + 凭据同名胜出 + 非同名凭据追加。
+    let merged = merge_query_pairs(
+        vec![
+            ("state".to_string(), "closed".to_string()),
+            ("api_key".to_string(), "from-args".to_string()),
+            ("limit".to_string(), "5".to_string()),
+        ],
+        &[("api_key".to_string(), "vault-secret".to_string())],
+    );
+    assert_eq!(
+        merged,
+        vec![
+            ("state".to_string(), "closed".to_string()),
+            ("limit".to_string(), "5".to_string()),
+            ("api_key".to_string(), "vault-secret".to_string()),
+        ],
+        "普通参数保序在前，同名 api_key 被剔除，凭据对胜出"
+    );
+
+    // 无凭据 = 原样透传（含重复键形态）。
+    let merged = merge_query_pairs(
+        vec![
+            ("tag".to_string(), "a".to_string()),
+            ("tag".to_string(), "b".to_string()),
+        ],
+        &[],
+    );
+    assert_eq!(merged.len(), 2, "无凭据不去重");
+
+    // 凭据多对全胜（多个同名槽位极端形态）。
+    let merged = merge_query_pairs(
+        vec![("k".to_string(), "x".to_string())],
+        &[
+            ("k".to_string(), "v1".to_string()),
+            ("k".to_string(), "v2".to_string()),
+        ],
+    );
+    assert_eq!(
+        merged,
+        vec![
+            ("k".to_string(), "v1".to_string()),
+            ("k".to_string(), "v2".to_string()),
+        ],
+    );
+}
+
+/// wiremock e2e：剩余 args 进请求 query——中文 / 空格 / `&` 值（decode 后
+/// 完整到达 = percent-encoding 正确）+ 既有查询串 URL 用 `&` 追加（src 与
+/// tag 同时到达）。无凭据依赖，plain tokio::test。
+#[tokio::test]
+async fn test_http_get_extra_query_merged_and_encoded() {
+    let server = wiremock::MockServer::start().await;
+    // 匹配器宽松（method+path），严格断言放在 received URL 上——避免
+    // query_param 匹配器对 form 编码（空格→+）的解码歧义，URL 原始字节
+    // 才是唯一真相。
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/search"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({"hit": true})),
+        )
+        .mount(&server)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/feed"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({"items": [1]})),
+        )
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(
+        ws,
+        "search-api",
+        &r#"
+[connector]
+id = "search-api"
+name = "Search"
+version = "0.1.0"
+kind = "rest"
+
+[connector.http]
+base = "{BASE}"
+
+[[op]]
+id = "search"
+intent = ["搜索"]
+risk = "low"
+class = "read"
+http = { method = "GET", path = "/search" }
+
+[[op]]
+id = "feed"
+intent = ["订阅"]
+risk = "low"
+class = "read"
+http = { method = "GET", path = "/feed?src=manifest" }
+"#
+        .replace("{BASE}", &server.uri()),
+    );
+    let config = ws.join("config.json");
+    let tool = invoke_tool(ws, &config);
+
+    let out = tool
+        .execute(
+            r#"{"connector":"search-api","op":"search","args":{"q":"中文 空格 & 符号","limit":5}}"#,
+            &ctx(),
+        )
+        .await
+        .expect("search ok");
+    assert!(out.contains("hit"), "result: {out}");
+
+    let out = tool
+        .execute(
+            r#"{"connector":"search-api","op":"feed","args":{"tag":"rust"}}"#,
+            &ctx(),
+        )
+        .await
+        .expect("feed ok");
+    assert!(out.contains("items"), "result: {out}");
+
+    // mock 宽松收下，严格断言在收到 URL 上：percent-encoding 正确（值内
+    // `&` 编码不拆对、中文 UTF-8 percent 形态）、既有查询串用 `&` 追加。
+    let received = server.received_requests().await.expect("received requests");
+    assert_eq!(received.len(), 2, "两笔请求都到齐");
+    let search_url = received[0].url.as_str();
+    assert!(search_url.contains("limit=5"), "limit 在 URI: {search_url}");
+    // 中文「中」= E4 B8 AD；空格 = +（form 编码）；值内 `&` = %26。
+    assert!(
+        search_url.contains("q=%E4%B8%AD%E6%96%87+%E7%A9%BA%E6%A0%BC+%26+%E7%AC%A6%E5%8F%B7"),
+        "q 值三形态编码完整: {search_url}"
+    );
+    assert!(
+        !search_url.contains("%2B"),
+        "空格按 form 编码为 + 非 %20: {search_url}"
+    );
+    let feed_url = received[1].url.as_str();
+    assert!(
+        feed_url.contains("src=manifest") && feed_url.contains("tag=rust"),
+        "既有查询串保留 + 追加参数: {feed_url}"
+    );
+    assert!(feed_url.contains('&'), "追加用 & 连接: {feed_url}");
+}
+
+/// R6 同名冲突端到端：凭据 query（vault 注入 `into = "query:api_key"`）
+/// 与 args 同名 `api_key` 同场——wiremock 收到的必须只有 vault 值（普通
+/// args 不得覆盖/伴随凭据出现）。GLOBAL_STATE_LOCK 形态同既有 vault e2e。
+#[cfg(feature = "security")]
+#[test]
+fn test_http_query_credential_wins_over_same_name_arg() {
+    let _env_guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(test_http_query_credential_wins_over_same_name_arg_inner());
+}
+
+#[cfg(feature = "security")]
+async fn test_http_query_credential_wins_over_same_name_arg_inner() {
+    use nemesis_security::vault::VaultStore;
+
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/data"))
+        .and(wiremock::matchers::query_param(
+            "api_key",
+            "vault-secret-999",
+        ))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})),
+        )
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(
+        ws,
+        "kv-api",
+        &r#"
+[connector]
+id = "kv-api"
+name = "KV"
+version = "0.1.0"
+kind = "rest"
+
+[connector.http]
+base = "{BASE}"
+
+[connector.credentials]
+key = { required = true, into = "query:api_key" }
+
+[[op]]
+id = "fetch"
+intent = ["拉数据"]
+risk = "low"
+class = "read"
+http = { method = "GET", path = "/data" }
+"#
+        .replace("{BASE}", &server.uri()),
+    );
+
+    unsafe { std::env::set_var("NEMESISBOT_VAULT_PASSPHRASE", "test-passphrase") };
+    let vault_path = nemesis_path::resolve_vault_path_in_workspace(ws);
+    let mut store = VaultStore::create(
+        &vault_path,
+        nemesis_security::vault::VaultMode::Argon2id,
+        Some("test-passphrase"),
+    )
+    .expect("create vault");
+    store
+        .set(
+            "connector/kv-api/key",
+            "vault-secret-999",
+            "connector",
+            "测试 key",
+        )
+        .expect("set key");
+    store.save().expect("save vault");
+
+    let config = ws.join("config.json");
+    let tool = invoke_tool(ws, &config);
+    // args 带同名 api_key=from-args：merge 后凭据胜——唯一 api_key 对必须是
+    // vault 值。
+    let out = tool
+        .execute(
+            r#"{"connector":"kv-api","op":"fetch","args":{"api_key":"from-args","page":2}}"#,
+            &ctx(),
+        )
+        .await
+        .expect("fetch ok");
+    // mock 的 query_param 匹配器即断言：只有 vault 值的 api_key 才命中 200。
+    assert!(out.contains("ok"), "result: {out}");
+
+    let received = server.received_requests().await.expect("received requests");
+    assert_eq!(received.len(), 1);
+    let url = received[0].url.as_str();
+    assert!(
+        url.contains("api_key=vault-secret-999"),
+        "凭据在 URI: {url}"
+    );
+    assert!(
+        !url.contains("from-args"),
+        "普通 args 同名不得出现（凭据胜）: {url}"
+    );
+    assert!(url.contains("page=2"), "非同名普通参数照常发送: {url}");
+    unsafe { std::env::remove_var("NEMESISBOT_VAULT_PASSPHRASE") };
+}
+
+// ---------------------------------------------------------------------------
+// R7：工具桥上下文透传（ctx.clone 只改审计标签 + depth 透传）
+// ---------------------------------------------------------------------------
+
+/// R7 e2e：tool 绑定回灌的 ctx 必须是原 ctx 的 clone（只改审计标签
+/// channel="connector-binding"）——correlation_id / tool_path_base /
+/// async_callback 原样保留（此前 RequestContext::new 全置 None：档案管线
+/// 任务经 connector 绑定调 write_file，相对 path 静默落工作副本之外）；
+/// approval_ref 由桥内 dispatch 既有安全语义接管（tool_dispatch.rs 刻意
+/// 覆盖——凭条只信本次调用真实发生的审批，透传 = 伪造背书）；原 ctx 不被
+/// 修改；`set_invocation_depth` 注入的父深度透传给桥内 dispatch（经
+/// connector 绑定的 spawn 嵌套限制不重置）；tool_path_base 的相对 path
+/// 重写与直接执行同形（同一工作副本）。
+#[tokio::test]
+async fn test_tool_binding_preserves_context_and_propagates_depth() {
+    use nemesis_agent::r#loop::{LlmMessage, LlmProvider, LlmResponse};
+    use nemesis_agent::types::{AgentConfig, ChatOptions, ToolDefinition};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct NullProvider;
+    #[async_trait::async_trait]
+    impl LlmProvider for NullProvider {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<ChatOptions>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
+            unreachable!("tool binding 不触发 LLM")
+        }
+    }
+
+    /// 桩 write_file（dispatch 的 PATH_ARG_TOOLS 名单认名不认实现——
+    /// 重写照跑）：记录收到的 ctx / args / 注入深度。
+    struct SpyWriteFile {
+        seen_ctx: Arc<std::sync::Mutex<Option<RequestContext>>>,
+        seen_args: Arc<std::sync::Mutex<String>>,
+        seen_depth: Arc<AtomicUsize>,
+    }
+    #[async_trait::async_trait]
+    impl Tool for SpyWriteFile {
+        fn set_invocation_depth(&self, depth: usize) {
+            self.seen_depth.store(depth, Ordering::SeqCst);
+        }
+        async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
+            *self.seen_ctx.lock().unwrap() = Some(context.clone());
+            *self.seen_args.lock().unwrap() = args.to_string();
+            Ok("done".to_string())
+        }
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    let workcopy = ws.join("workcopy");
+    std::fs::create_dir_all(&workcopy).expect("workcopy");
+    write_connector(
+        ws,
+        "archiver",
+        r#"
+[connector]
+id = "archiver"
+name = "Archiver"
+version = "0.1.0"
+kind = "local"
+
+[[op]]
+id = "snapshot_file"
+intent = ["写快照"]
+risk = "low"
+class = "write"
+tool = "write_file"
+"#,
+    );
+
+    let seen_ctx = Arc::new(std::sync::Mutex::new(None));
+    let seen_args = Arc::new(std::sync::Mutex::new(String::new()));
+    let seen_depth = Arc::new(AtomicUsize::new(usize::MAX));
+    let mut agent_loop = nemesis_agent::r#loop::AgentLoop::new(
+        Box::new(NullProvider),
+        AgentConfig {
+            model: "test-model".to_string(),
+            max_turns: 1,
+            ..Default::default()
+        },
+    );
+    agent_loop.register_tool(
+        "write_file".to_string(),
+        Box::new(SpyWriteFile {
+            seen_ctx: seen_ctx.clone(),
+            seen_args: seen_args.clone(),
+            seen_depth: seen_depth.clone(),
+        }),
+    );
+    let loop_arc = Arc::new(agent_loop);
+
+    let tool = invoke_tool(ws, &ws.join("config.json"));
+    tool.set_loop(Arc::downgrade(&loop_arc));
+
+    // 原 ctx：带全量四字段（档案管线任务形态）。
+    let mut original = RequestContext::new("web", "chat-1", "user-1", "session-1");
+    original.correlation_id = Some("cid-R7".to_string());
+    original.tool_path_base = Some(workcopy.clone());
+    original.approval_ref = Some("appr-R7".to_string());
+
+    // depth 注入（模拟 dispatch set_invocation_depth 形态，spawn_detached_tests 同先例）。
+    tool.set_invocation_depth(2);
+
+    let out = tool
+        .execute(
+            r#"{"connector":"archiver","op":"snapshot_file","args":{"path":"out.txt","content":"x"}}"#,
+            &original,
+        )
+        .await
+        .expect("tool binding ok");
+    assert!(out.contains("done"), "result: {out}");
+
+    // 桥内 spy 收到的 ctx：审计标签换位 + 四字段全保留。
+    let ctx_seen = seen_ctx.lock().unwrap().clone().expect("spy saw ctx");
+    assert_eq!(ctx_seen.channel, "connector-binding", "审计标签换位");
+    assert_eq!(ctx_seen.chat_id, "chat-1");
+    assert_eq!(ctx_seen.session_key, "session-1");
+    assert_eq!(
+        ctx_seen.correlation_id.as_deref(),
+        Some("cid-R7"),
+        "correlation_id 跨桥保留"
+    );
+    assert_eq!(
+        ctx_seen.tool_path_base.as_deref(),
+        Some(workcopy.as_path()),
+        "tool_path_base 跨桥保留"
+    );
+    // approval_ref 不透传是 dispatch 既有安全语义（tool_dispatch.rs L781
+    // 刻意覆盖：凭条只信「本次调用真实发生的交互审批」，透传上游引用 =
+    // 伪造背书）——桥内调用未触发审批 → spy 收到 None。
+    assert!(
+        ctx_seen.approval_ref.is_none(),
+        "approval_ref 由桥内 dispatch 语义接管（防伪造背书），不透传上游引用"
+    );
+
+    // 相对 path 被重写进工作副本（与直接执行同形）。
+    let args_seen = seen_args.lock().unwrap().clone();
+    let args_v: serde_json::Value = serde_json::from_str(&args_seen).expect("spy args json");
+    let rewritten = args_v["path"].as_str().expect("path str");
+    assert!(
+        std::path::Path::new(rewritten).is_absolute()
+            && rewritten.contains("workcopy")
+            && rewritten.contains("out.txt"),
+        "相对 path 重写进工作副本: {rewritten}"
+    );
+
+    // depth 透传：桥内 dispatch 收到 depth=2。
+    assert_eq!(seen_depth.load(Ordering::SeqCst), 2, "父深度透传桥内");
+
+    // 原 ctx 不被修改。
+    assert_eq!(original.channel, "web", "原 ctx channel 不变");
+    assert_eq!(original.correlation_id.as_deref(), Some("cid-R7"));
+    assert_eq!(original.tool_path_base.as_deref(), Some(workcopy.as_path()));
+    assert_eq!(original.approval_ref.as_deref(), Some("appr-R7"));
+
+    // 对照臂：直接执行（不经 connector 桥）同 ctx 同 args——重写落点一致。
+    *seen_ctx.lock().unwrap() = None;
+    *seen_args.lock().unwrap() = String::new();
+    let direct = loop_arc
+        .handle_tool_call_at_depth(
+            &nemesis_agent::ToolCallInfo {
+                id: "direct-1".to_string(),
+                name: "write_file".to_string(),
+                arguments: r#"{"path":"out.txt","content":"x"}"#.to_string(),
+            },
+            &original,
+            0,
+        )
+        .await;
+    assert!(direct.contains("done"), "direct result: {direct}");
+    let direct_args = seen_args.lock().unwrap().clone();
+    let direct_v: serde_json::Value = serde_json::from_str(&direct_args).expect("direct args json");
+    assert_eq!(
+        direct_v["path"].as_str(),
+        args_v["path"].as_str(),
+        "直接执行与经桥执行落同一工作副本"
+    );
 }

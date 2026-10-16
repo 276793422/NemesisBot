@@ -438,7 +438,7 @@ async fn start_gateway_and_wait_with_env(
     node: &NodeConfig,
     envs: &[(&str, &str)],
 ) -> Result<GatewayProcess, String> {
-    let gw = GatewayProcess::spawn_with_env(name, bin, ws_path, envs)
+    let mut gw = GatewayProcess::spawn_with_env(name, bin, ws_path, envs)
         .map_err(|e| format!("Cannot start {}: {}", name, e))?;
 
     // Wait for HTTP health check (gateway web server up)
@@ -448,6 +448,14 @@ async fn start_gateway_and_wait_with_env(
     wait_for_http(&health_url, Duration::from_secs(30))
         .await
         .map_err(|e| format!("{} not healthy after start: {}", name, e))?;
+
+    // health 200 ≠ web 口是自己人：并行工具若在 health 绿灯后、web bind 前抢注
+    // web 端口，本节点 gateway 会静默失去 web 面（IT 幽灵网关事故同款暴露面）。
+    // 用 netstat LISTEN 持有者 PID 核验 web 口归属，被顶替时诚实失败。
+    if let Err(msg) = verify_gateway_web_identity(node.web_port, gw.pid()) {
+        gw.kill().await;
+        return Err(format!("{} web identity check failed: {}", name, msg));
+    }
 
     // Wait for the RPC server to be listening
     let rpc_addr = format!("127.0.0.1:{}", node.rpc_port);

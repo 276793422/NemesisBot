@@ -27,10 +27,14 @@ pub struct StreamSttEngine {
     _keep: Vec<CString>,
 }
 
-// recognizer/stream 是 sherpa-onnx 内部自带锁的独立对象，跨线程移动安全；
-// 调用方负责同一实例不并发调用（run_stt_pipeline 单线程消费）。
+// SAFETY（审计表 C-4）：上游维护者明文（sherpa-onnx Discussion #980）——
+// OnlineRecognizer 线程安全，但 **OnlineStream 非线程安全**（每线程必须用
+// 自己的 stream）。本类型持有一条共享 stream 且所有方法（accept_waveform /
+// decode / partial / is_endpoint / reset）都打同一 stream，因此 **不实现
+// Sync**：并发 &self 共享在类型系统上不可表达，跨线程移动（Send）安全。
+// 唯一消费路径 run_stt_pipeline（web handlers/voice.rs）为 fn-local 单线程
+// 循环驱动；若未来需跨线程共享，必须外层加锁而非恢复 Sync。
 unsafe impl Send for StreamSttEngine {}
-unsafe impl Sync for StreamSttEngine {}
 
 impl StreamSttEngine {
     /// 约定文件名构造（生产路径；管线直接传 cfg.stt_stream 的端点参数）。

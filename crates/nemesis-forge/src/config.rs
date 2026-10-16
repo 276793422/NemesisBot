@@ -149,6 +149,8 @@ pub struct StorageConfig {
     pub max_experience_age_days: u64,
 
     /// Maximum age of reflection reports before cleanup (days).
+    ///
+    /// ⚠ 保留键（2026-10-15 核实未消费）：报告清理尚未实施，改它无效果。
     #[serde(default = "default_max_report_age")]
     pub max_report_age_days: u64,
 
@@ -187,18 +189,31 @@ pub struct ReflectionConfig {
     pub interval_secs: u64,
 
     /// Minimum number of experiences required before running reflection.
+    ///
+    /// ⚠ 保留键（2026-10-15 核实未消费）：反思循环对 ≥1 条经验即运行，
+    /// 此闸未实施——且默认值 10 已被 auto-create 序列化进存量盘上配置，
+    /// 接线会让存量部署 cycle 停摆到攒够条数，动它需连默认值一起重估。
     #[serde(default = "default_min_experiences")]
     pub min_experiences: usize,
 
-    /// Whether to use LLM for semantic analysis.
+    /// Whether to use LLM in the reflection cycle (semantic analysis AND
+    /// auto_skill distillation). `false` = 纯统计反思，循环内零 LLM 调用；
+    /// gateway 与 CLI 同语义（CLI 侧该键决定是否挂 provider）。
     #[serde(default = "default_true")]
     pub use_llm: bool,
 
     /// LLM budget tokens per reflection.
+    ///
+    /// ⚠ 保留键（2026-10-15 核实未消费）：实际预算统一走
+    /// `reflector_llm::AUX_FORGE_MAX_TOKENS`（8192，2026-09-28 事故后上调
+    /// ——低预算被 thinking 系模型烧穿、真机草稿全空），接线会重引该风险。
     #[serde(default = "default_llm_budget")]
     pub llm_budget_tokens: u32,
 
     /// Maximum age of reflection reports (days).
+    ///
+    /// ⚠ 保留键（2026-10-15 核实未消费）：与 `storage.max_report_age_days`
+    /// 重复且同样未实施，报告清理落地时二者需去重。
     #[serde(default = "default_max_report_age")]
     pub max_report_age_days: u64,
 }
@@ -434,6 +449,10 @@ pub struct LearningConfig {
     pub degradation_cooldown_days: u32,
 
     /// Token budget for Skill draft generation (default 2000).
+    ///
+    /// ⚠ 保留键（2026-10-15 核实未消费）：实际预算统一走
+    /// `reflector_llm::AUX_FORGE_MAX_TOKENS`（8192，2026-09-28 事故后上调
+    /// ——低预算被 thinking 系模型烧穿、真机两稿全空），接线会重引该风险。
     #[serde(default = "default_learning_llm_budget")]
     pub llm_budget_tokens: u32,
 }

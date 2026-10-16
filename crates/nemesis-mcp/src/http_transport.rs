@@ -64,29 +64,25 @@ impl HttpTransport {
 
 /// 解析 "KEY: VALUE" 头行 → (name, resolved_value)。
 ///
-/// - 非法行 loud WARN + 跳过：缺冒号 / 头名为空 / 头名含空白或控制字符；
-/// - `Mcp-Session-Id` 是协议保留头（server 指派、transport 自管）——配置
-///   里写它只有伪造会话身份一种效果，WARN 跳过；
-/// - 值经 `nemesis_config::resolve_secret_field` 现查（vault:/env:/yaml:
-///   引用 + 字面量原样），解析失败 WARN + 跳过该行（不毒化其余行）；
-/// - 同名头（大小写不敏感）**后行胜**：reqwest `.header()` 是追加语义，
-///   鉴权头出现两行必坏——先在列表里归一。
+/// 语法规则单一真相源 = `nemesis_config::validate_mcp_header_line`（CLI
+/// `mcp add`、Dashboard server.add/update 写入面同源）：缺冒号 / 头名空 /
+/// 头名含空白控制字符 / `Mcp-Session-Id` 保留头 / 整值引用名空或带首尾
+/// 空格——非法行 loud WARN + 跳过（原文不落日志）。值经
+/// `nemesis_config::resolve_secret_field` 现查（vault:/env:/yaml: 引用 +
+/// 字面量原样），解析失败 WARN + 跳过该行（不毒化其余行）；同名头（大小
+/// 写不敏感）**后行胜**：reqwest `.header()` 是追加语义，鉴权头出现两行
+/// 必坏——先在列表里归一。
 pub(crate) fn resolved_header_pairs(lines: &[String]) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     for line in lines {
-        let Some((raw_name, raw_value)) = line.split_once(':') else {
-            tracing::warn!("[mcp.http] 头行缺冒号，跳过（原文不落日志）");
+        if let Err(reason) = nemesis_config::validate_mcp_header_line(line) {
+            tracing::warn!("[mcp.http] 头行非法，跳过（{reason}；原文不落日志）");
             continue;
+        }
+        let Some((raw_name, raw_value)) = line.split_once(':') else {
+            continue; // 校验已保证有冒号；防御臂
         };
         let name = raw_name.trim();
-        if name.is_empty() || name.chars().any(|c| c.is_whitespace() || c.is_control()) {
-            tracing::warn!("[mcp.http] 头名非法（空 / 含空白或控制字符），跳过（原文不落日志）");
-            continue;
-        }
-        if name.eq_ignore_ascii_case("mcp-session-id") {
-            tracing::warn!("[mcp.http] Mcp-Session-Id 是协议保留头（server 指派），配置行跳过");
-            continue;
-        }
         let field = format!("mcp.headers.{name}");
         match nemesis_config::resolve_secret_field(raw_value.trim(), &field) {
             Ok(value) => {
@@ -249,33 +245,63 @@ impl Transport for HttpTransport {
 // SSE parsing
 // ---------------------------------------------------------------------------
 
-/// Read the first SSE event from an HTTP response and extract the JSON-RPC
+/// Read SSE events from an HTTP response and extract the first JSON-RPC
 /// data payload.
+///
+/// 2026-10-15 第十二轮复查加固：① 事件边界同时识别 `\n\n` 与 `\r\n\r\n`
+/// （SSE 规范允许两种行尾；此前只认前者，CRLF 服务器的完成事件永远匹配
+/// 不中——响应提取拖到流 EOF，保活型长连接直接撞总超时假死）；② 无
+/// `data:` 的事件（keepalive 注释等）跳过继续读，不再硬报错——此前流里
+/// 先到一条注释事件就整体失败。
+///
+/// 2026-10-16 第十四轮加固：③ JSON-RPC **通知**事件（无 `id` 字段——
+/// `notifications/progress`、`notifications/message` 等，服务器响应前先推
+/// 进度/日志是 MCP 标准行为）跳过继续读。此前对首个 data 载荷直接
+/// `from_str::<TransportResponse>`：`id` 是必填字段，通知事件反序列化必炸
+/// "missing field `id`"，整个请求硬失败——stdio 侧 J3 分类器
+/// （`classify_line`）已修的同类问题，HTTP SSE 路径漏配。
 async fn parse_sse_response(
     mut response: reqwest::Response,
 ) -> Result<TransportResponse, TransportError> {
     let mut buffer = String::new();
 
     loop {
+        if let Some((event_text, rest)) = take_complete_event(&buffer) {
+            if let Some(json_str) = sse_data_payload(&event_text) {
+                match response_payload(&json_str)? {
+                    SsePayload::Response(resp) => return Ok(resp),
+                    SsePayload::Skipped => {
+                        // 通知/垃圾事件：跳过，继续读下一事件。
+                        buffer = rest;
+                        continue;
+                    }
+                }
+            }
+            // 无 data 的事件（keepalive 注释等）：跳过，继续读下一事件。
+            buffer = rest;
+            continue;
+        }
+
         let chunk = response
             .chunk()
             .await
             .map_err(|e| TransportError::send_failed(format!("SSE read error: {}", e)))?;
 
         match chunk {
-            Some(bytes) => {
-                buffer.push_str(&String::from_utf8_lossy(&bytes));
-
-                // Complete event = data block followed by blank line.
-                if let Some(idx) = buffer.find("\n\n") {
-                    let event_text = &buffer[..idx];
-                    return extract_sse_data(event_text);
-                }
-            }
+            Some(bytes) => buffer.push_str(&String::from_utf8_lossy(&bytes)),
             None => {
+                // EOF：残留内容按完整事件尽力提取（服务器最后事件不带空行
+                // 结尾的宽容路径）。残留是通知/垃圾/无 data = 流已结束且
+                // 没有响应——诚实报结束，不再把通知硬解析成
+                // "missing field `id`" 的伪失败。
                 let trimmed = buffer.trim();
-                if !trimmed.is_empty() {
-                    return extract_sse_data(trimmed);
+                if !trimmed.is_empty()
+                    && let Some(json_str) = sse_data_payload(trimmed)
+                {
+                    match response_payload(&json_str)? {
+                        SsePayload::Response(resp) => return Ok(resp),
+                        SsePayload::Skipped => {}
+                    }
                 }
                 return Err(TransportError::send_failed("SSE stream ended without data"));
             }
@@ -283,13 +309,57 @@ async fn parse_sse_response(
     }
 }
 
-/// Extract the JSON-RPC response from an SSE event text.
-///
-/// Handles both single-line and multi-line `data:` fields (concatenated with
-/// `\n`). Ignores `event:`, `id:`, `retry:`, and comment lines.
-fn extract_sse_data(event_text: &str) -> Result<TransportResponse, TransportError> {
-    let mut data_lines: Vec<&str> = Vec::new();
+/// SSE `data:` 载荷的判定结果。
+#[derive(Debug)]
+enum SsePayload {
+    /// 带 `id` 的 JSON-RPC 响应（含错误响应）。
+    Response(TransportResponse),
+    /// JSON-RPC 通知（无 `id`）或非 JSON 垃圾载荷——跳过（trace 已记）。
+    Skipped,
+}
 
+/// 判定 SSE `data:` 载荷类别（第十四轮）：无 `id` 字段 = 通知，跳过；
+/// 非 JSON = 垃圾，跳过（与 stdio 侧 J3 `classify_line` 的
+/// Notification/Garbage 分类同语义）；带 `id` 但形状非法 = 协议违例，
+/// 硬报错（保留旧失败面）。
+fn response_payload(json_str: &str) -> Result<SsePayload, TransportError> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json_str) else {
+        tracing::trace!("[mcp.http] SSE data 非 JSON，跳过");
+        return Ok(SsePayload::Skipped);
+    };
+    if value.get("id").is_none() {
+        let method = value
+            .get("method")
+            .and_then(|m| m.as_str())
+            .unwrap_or("unknown");
+        tracing::trace!(method = %method, "[mcp.http] SSE JSON-RPC notification skipped");
+        return Ok(SsePayload::Skipped);
+    }
+    serde_json::from_value(value)
+        .map(SsePayload::Response)
+        .map_err(|e| TransportError::send_failed(format!("Failed to parse SSE data: {}", e)))
+}
+
+/// Take one complete event from the head of the buffer (returns the event
+/// text and the remaining buffer); None when no complete event exists.
+///
+/// Event terminators `\n\n` and `\r\n\r\n` are both recognized; when both
+/// are present, whichever appears first wins (within a pure CRLF boundary,
+/// `\n\n` cannot match falsely — `\r\n\r\n` has no two consecutive `\n`).
+fn take_complete_event(buffer: &str) -> Option<(String, String)> {
+    let lf = buffer.find("\n\n");
+    let crlf = buffer.find("\r\n\r\n");
+    match (lf, crlf) {
+        (Some(a), Some(b)) if b < a => Some((buffer[..b].to_string(), buffer[b + 4..].to_string())),
+        (Some(a), _) => Some((buffer[..a].to_string(), buffer[a + 2..].to_string())),
+        _ => crlf.map(|b| (buffer[..b].to_string(), buffer[b + 4..].to_string())),
+    }
+}
+
+/// Join an SSE event's `data:` fields (multi-line concatenated with `\n`);
+/// None = the event contains no data field.
+fn sse_data_payload(event_text: &str) -> Option<String> {
+    let mut data_lines: Vec<&str> = Vec::new();
     for line in event_text.lines() {
         let line = line.trim();
         if let Some(data) = line.strip_prefix("data:") {
@@ -300,16 +370,11 @@ fn extract_sse_data(event_text: &str) -> Result<TransportResponse, TransportErro
         }
         // Silently ignore event:/id:/retry:/comment lines.
     }
-
     if data_lines.is_empty() {
-        return Err(TransportError::send_failed(
-            "SSE event contains no data field",
-        ));
+        None
+    } else {
+        Some(data_lines.join("\n"))
     }
-
-    let json_str = data_lines.join("\n");
-    serde_json::from_str(&json_str)
-        .map_err(|e| TransportError::send_failed(format!("Failed to parse SSE data: {}", e)))
 }
 
 // ===========================================================================

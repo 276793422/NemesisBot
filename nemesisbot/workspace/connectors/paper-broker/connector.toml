@@ -34,7 +34,9 @@ class = "write"
 confirm = "required"
 budget = "finance"
 receipt = "order_id"
-undo = { op = "cancel_order", arg = "order_id" }
+# 无 undo 声明（R5）：纸面账本即时成交、无挂单可撤——声明反向 op 与
+# 实现自相矛盾（cancel 恒 Err）。撤销走会话级回退（域 B），外部效果
+# 诚实标注「未被撤销」。
 action = "builtin.paper_order"
 args_schema = { type = "object", required = ["side", "symbol", "qty", "price"], properties = { side = { type = "string", description = "buy 或 sell" }, symbol = { type = "string" }, qty = { type = "number", description = "股数（受 max_order_qty 限额）" }, price = { type = "number", description = "成交价——先调 quote 取价，纸面下单按显式价格成交" } } }
 

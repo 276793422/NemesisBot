@@ -1021,3 +1021,44 @@ async fn test_s1_adapter_execute_unknown_content_type_falls_back_to_raw_text() {
     // Unknown content types fall through with their raw text, no decoration.
     assert_eq!(result.content, "raw-audio-marker");
 }
+
+// --- 第十四轮缺陷 17：sanitize 前缀碰撞检测（单一真相源 helper）-------
+
+#[test]
+fn r17_colliding_names_share_prefix_group() {
+    // pet.v2 / pet-v2 / PET_V2 都归一为 mcp_pet_v2_ → 一组三撞
+    let groups = super::sanitize_prefix_collisions(["pet.v2", "pet-v2", "PET_V2", "other"]);
+    assert_eq!(groups.len(), 1, "只有 pet 族相撞：{:?}", groups);
+    let (prefix, names) = &groups[0];
+    assert_eq!(prefix, "mcp_pet_v2_");
+    assert_eq!(names.len(), 3);
+    for expected in ["pet.v2", "pet-v2", "PET_V2"] {
+        assert!(names.iter().any(|n| n == expected), "缺 {}", expected);
+    }
+}
+
+#[test]
+fn r17_distinct_names_no_collision() {
+    let groups = super::sanitize_prefix_collisions(["desktop-pet", "web_search", "fs_bridge"]);
+    assert!(groups.is_empty(), "无撞不该出组：{:?}", groups);
+}
+
+#[test]
+fn r17_two_independent_collision_groups() {
+    let groups = super::sanitize_prefix_collisions(["a.b", "a-b", "x/y", "x_y"]);
+    assert_eq!(groups.len(), 2, "两组各自独立：{:?}", groups);
+    assert!(groups.iter().any(|(p, n)| p == "mcp_a_b_" && n.len() == 2));
+    assert!(groups.iter().any(|(p, n)| p == "mcp_x_y_" && n.len() == 2));
+}
+
+#[test]
+fn r17_helper_matches_find_new_servers_prefix_shape() {
+    // 咬合钉：helper 的前缀形态必须与热重载过滤真相源一致——
+    // 相撞名会让 find_new_servers 把第二个静默过滤（永不挂载）。
+    let server_a = ServerConfig::new("pet.v2", "python");
+    let server_b = ServerConfig::new("pet-v2", "python");
+    let prefix = format!("mcp_{}_", super::sanitize_name(&server_b.name));
+    let registered = [format!("mcp_{}_", super::sanitize_name(&server_a.name))];
+    // manager 层语义复算：b 的前缀已被 a 占位 → b 会被过滤
+    assert!(registered.contains(&prefix));
+}

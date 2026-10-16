@@ -11,6 +11,7 @@
 //! transcript 把关。P2-5：批循环本体（中间消息落账 + 并行预计算 + 批次
 //! for）亦收编为 [`AgentLoop::execute_tool_batch`]，返回 `TurnFlow`；原
 //! `force_stop`/`hit_async` 两补偿闩随方法化退役。
+#[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
 

@@ -9,7 +9,7 @@
 （这句话是人写的）以下内容大部分都是AI胡掰，可信可不信，凡是AI说“稳定”的地方，可靠度都和投硬币差不多。
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![Rust Version](https://img.shields.io/badge/Rust-1.85+-000000?logo=rust)](https://www.rust-lang.org/)
+[![Rust Version](https://img.shields.io/badge/Rust-1.95.0-000000?logo=rust)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Android-lightgrey)](https://github.com/276793422/NemesisBot)
 
 </div>
@@ -95,7 +95,7 @@
 
 ### 环境要求
 
-- Rust 1.85+（edition 2024）+ Cargo
+- Rust 1.95.0（`rust-toolchain.toml` 钉死精确版本，rustup 自动安装；edition 2024）+ Cargo
 - Windows 上还需 **MSVC C++ 构建工具**（Rust MSVC 工具链的链接器，`cargo build` 必需）
 - Node.js（编译 Vue 前端，LTS 即可）
 - Go（仅编译 `test-tools/TestAIServer` 测试模拟器用，可选）
@@ -183,9 +183,11 @@ cargo run -p cluster-test
 
 质量证据清单（每项附复现命令）见 **[docs/INFO/2026-09-24_公开基准.md](docs/INFO/2026-09-24_公开基准.md)**。
 摘要：agent 单 crate lib 测试 2359、CLI 集成 589 断言/22 命令、集群 UAT
-T1-T37 双节点端到端、全 workspace 行覆盖 87.85%（cargo-llvm-cov 实测，
-CI `--fail-under-lines` 硬门槛防倒退）、测试/生产代码行数比 164%、架构依赖
-矩阵 7 规则 CI 强制、内联测试纪律门禁 1537 文件 0 违规、模型能力评估 8 题
+70+ 场景双节点端到端（T1-T48 主链 + T-XFER/T-MRG/T-CONN/T-MONITOR +
+U 职能系列）、全 workspace 行覆盖 CI 硬门槛 84%（cargo-llvm-cov
+`--fail-under-lines` 防倒退；2026-09 实测 87.85%）、测试/生产代码行数比 164%、
+架构依赖矩阵 7 规则 CI 强制、内联测试纪律门禁 1537 文件 0 违规、模型能力
+评估 8 题
 探针 + 12 题 × 3 档 battery、自建任务基准 agent-bench 6 场景 × 15 轮
 100% 通过（真实 gateway 链路 + 确定性模型 oracle，baseline 防倒退门禁）。
 
@@ -658,7 +660,7 @@ NemesisBot_Rust/
 │   ├── test-harness/                # 共享测试辅助库（进程生命周期/WS/断言）
 │   ├── integration-test/            # CLI 集成测试（22 命令，589 断言；纯 bin runner 用 cargo run）
 │   ├── cluster-test/                # P2P 集群测试（12+6）
-│   ├── cluster-uat/                 # 集群 UAT（T1-T18 端到端）
+│   ├── cluster-uat/                 # 集群 UAT（T1-T48 主链 + T-XFER/T-MRG/T-CONN/T-MONITOR + U 职能系列，70+ 场景端到端）
 │   ├── e2e-tests/                   # 端到端 AI 管线测试
 │   ├── memory-test/                 # 内存系统集成测试
 │   ├── approval-test/               # 安全审批流程测试
@@ -697,7 +699,7 @@ NemesisBot_Rust/
 - **病毒扫描** - 内置 ClamAV 引擎，文件操作自动扫描
 - **执行体隔离** - LLM 高危操作（exec/文件/grep/git）剥离到 per-call 子进程，安全层仍在 gateway 执行前跑（config: `executor.enabled`）
 - **Sandboxie 沙盒（安全第 9 层）** - 最终防御红线：子进程套进 Sandboxie 盒（断网+降权+全隔离），前 8 层放行的操作在盒里也动不了真盘，工作区写入手动审阅提交（config: `executor.sandbox`，Windows）
-- **可执行文件签名验证（v4，独立子系统）** - 「借微软的格式，不借微软的信任」：ECDSA P-256 + SHA-256 + X.509 三级证书链 + CMS/PKCS#7，Windows Authenticode 格式对齐（微软工具可解析自产签名）。`nemesis-verify` crate（产物 `nemesis_verify.dll` 导出 C ABI `nv_*`）+ `revoke-server`（云端签发/吊销）+ `exe-sign-tool`/`verify-loader`（签发与验签 CLI）。核心已完成、端到端跑通，**尚未接入主程序**（防篡改/防替换，抬高攻击成本；诚实边界：纯软件自检，防绕过有物理上限）
+- **可执行文件签名验证（v4）** - 「借微软的格式，不借微软的信任」：ECDSA P-256 + SHA-256 + X.509 三级证书链 + CMS/PKCS#7，Windows Authenticode 格式对齐（微软工具可解析自产签名）。`nemesis-verify` crate（产物 `nemesis_verify.dll` 导出 C ABI `nv_*`）+ `revoke-server`（云端签发/吊销）+ `exe-sign-tool`/`verify-loader`（签发与验签 CLI）。**已接入主程序**：启动自验（`verify_policy.rs`，锚定编译期根）+ 自更新仅接受 `VerifyOutcome::Valid`（防篡改/防替换，抬高攻击成本；诚实边界：纯软件自检，防绕过有物理上限）
 - **分布式集群** - 多节点协同，异步 RPC + 续行快照 + Dashboard 6-Tab 管理
 - **集群请求日志** - 按对端设备 ID + 任务 ID 分目录隔离（`cluster_logs/{device}/{ts}_{task_id}/`），双向视角查看
 - **集群 Session Key 隔离** - 复合键 `{node_id}/{chat_id}` 避免跨节点会话串扰

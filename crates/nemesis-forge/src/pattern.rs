@@ -442,6 +442,13 @@ pub fn detect_conversation_efficiency_issues(
             .push(exp);
     }
 
+    // 全局平均轮数（每会话经验条数均值）。2026-10-16 R18 修复：效率分公式
+    // 分母原为 `2.0 * global_avg_dur / global_avg_dur`（Go 移植丢变量，恒
+    // 等于常数 2.0）——实际语义是「2 × 全局平均轮数」；丢变量后轮数被拿
+    // 去除以常数，confidence 恒 ≤0.5（轮数 >2 的会话直接 0 分），且描述
+    // 文案把时长打进了轮数槽位。
+    let global_avg_rounds = experiences.len() as f64 / sessions.len() as f64;
+
     for exps in sessions.values() {
         let total_dur: i64 = exps.iter().map(|e| e.experience.duration_ms as i64).sum();
         let avg_dur = total_dur as f64 / exps.len() as f64;
@@ -491,8 +498,10 @@ pub fn detect_conversation_efficiency_issues(
         .filter(|(_, a)| a.count >= min_freq)
         .map(|(fp, a)| {
             let actual_rounds = a.total_rounds / a.count as f64;
-            let eff_score =
-                (1.0 - actual_rounds / (2.0 * global_avg_dur / global_avg_dur)).max(0.0);
+            // 效率分：相对全局平均轮数的比值（≤2× 全局平均轮数 → 分数线性
+            // 衰减，全局平均处 0.5、半程 1.0、2× 处 0）。修复语义见上方
+            // global_avg_rounds 注记。
+            let eff_score = (1.0 - actual_rounds / (2.0 * global_avg_rounds)).max(0.0);
             let mut p = ConversationPattern::new(ConversationPatternType::EfficiencyIssue, &fp);
             p.frequency = a.count;
             p.confidence = eff_score;
@@ -504,7 +513,7 @@ pub fn detect_conversation_efficiency_issues(
             p.efficiency_score = Some(eff_score);
             p.description = format!(
                 "Efficiency issue: {} ({:.1} avg rounds vs {:.1} global avg)",
-                a.chain, actual_rounds, global_avg_dur
+                a.chain, actual_rounds, global_avg_rounds
             );
             p
         })

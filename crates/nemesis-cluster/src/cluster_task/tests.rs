@@ -40,7 +40,8 @@ fn test_save_async_state_and_find() {
         "child-123".to_string(),
         "tc_abc".to_string(),
         serde_json::json!([{"role": "user", "content": "hi"}]),
-    );
+    )
+    .expect("save_async_state should succeed");
 
     let found = list.find_by_child_task_id("child-123").unwrap();
     assert_eq!(found, "t1");
@@ -62,9 +63,11 @@ fn test_inject_callback() {
         "child-123".to_string(),
         "tc_abc".to_string(),
         serde_json::json!([{"role": "user", "content": "hi"}]),
-    );
+    )
+    .expect("save_async_state should succeed");
 
-    list.inject_callback("t1", "response from remote");
+    list.inject_callback("t1", "response from remote")
+        .expect("inject_callback should succeed");
 
     let task = list.get_task("t1").unwrap();
     assert_eq!(task.status, TaskStatus::Pending);
@@ -94,7 +97,8 @@ fn test_persist_and_restore() {
             "child-1".to_string(),
             "tc_1".to_string(),
             serde_json::json!([{"role": "user", "content": "hello"}]),
-        );
+        )
+        .expect("save_async_state should succeed");
         list.persist_to_disk().unwrap();
     }
 
@@ -126,7 +130,8 @@ fn test_recover_resets_waiting_remote() {
         "child-x".to_string(),
         "tc_x".to_string(),
         serde_json::json!([{"role": "user", "content": "test"}]),
-    );
+    )
+    .expect("save_async_state should succeed");
 
     let task = list.get_task("t-wr").unwrap();
     assert_eq!(task.status, TaskStatus::WaitingRemote);
@@ -182,10 +187,12 @@ fn test_save_async_state_clears_old_child() {
         "child-1".to_string(),
         "tc-1".to_string(),
         serde_json::json!([{"role": "user", "content": "hop1"}]),
-    );
+    )
+    .expect("save_async_state should succeed");
     assert_eq!(list.find_by_child_task_id("child-1").unwrap(), "t-chain");
 
-    list.inject_callback("t-chain", "result-1");
+    list.inject_callback("t-chain", "result-1")
+        .expect("inject_callback should succeed");
     assert!(list.find_by_child_task_id("child-1").is_none());
 
     list.save_async_state(
@@ -193,7 +200,8 @@ fn test_save_async_state_clears_old_child() {
         "child-2".to_string(),
         "tc-2".to_string(),
         serde_json::json!([{"role": "user", "content": "hop2"}]),
-    );
+    )
+    .expect("save_async_state should succeed");
 
     assert!(list.find_by_child_task_id("child-1").is_none());
     assert_eq!(list.find_by_child_task_id("child-2").unwrap(), "t-chain");
@@ -338,7 +346,8 @@ fn test_crash_recovery_restores_conversation() {
             "child-crash".to_string(),
             "tc_crash".to_string(),
             conversation.clone(),
-        );
+        )
+        .expect("save_async_state should succeed");
     }
 
     let list2 = ClusterTaskList::new(&dir);
@@ -407,13 +416,14 @@ fn test_w3b_persistence_failures_when_data_dir_is_file() {
     let list = ClusterTaskList::new(&blocker);
     list.create_task(make_task("t-w3b", TaskStatus::Running));
 
-    // save_async_state: in-memory update succeeds, both disk writes warn
-    list.save_async_state(
+    // save_async_state: in-memory update succeeds, both disk writes fail → Err
+    let res = list.save_async_state(
         "t-w3b",
         "child-w3b".to_string(),
         "tc_w3b".to_string(),
         serde_json::json!([{"role": "user", "content": "x"}]),
     );
+    assert!(res.is_err(), "双持久化全败必须诚实返回 Err: {:?}", res);
     let task = list.get_task("t-w3b").unwrap();
     assert_eq!(task.status, TaskStatus::WaitingRemote);
     assert_eq!(task.waiting_for_task_id.as_deref(), Some("child-w3b"));
@@ -569,7 +579,8 @@ fn test_s4_save_async_state_persists_conversation_file() {
         "child-s4".to_string(),
         "tc_s4".to_string(),
         conversation.clone(),
-    );
+    )
+    .expect("save_async_state should succeed");
 
     let conv_path = dir.path().join("cluster").join("t-s4-a.json");
     assert!(conv_path.exists(), "conversation file must be persisted");
@@ -594,9 +605,11 @@ fn test_s4_inject_callback_fields() {
         "child-b".to_string(),
         "tc_b".to_string(),
         serde_json::json!([]),
-    );
+    )
+    .expect("save_async_state should succeed");
 
-    list.inject_callback("t-s4-b", "s4 callback payload");
+    list.inject_callback("t-s4-b", "s4 callback payload")
+        .expect("inject_callback should succeed");
 
     let task = list.get_task("t-s4-b").unwrap();
     assert_eq!(task.status, TaskStatus::Pending);
@@ -605,7 +618,7 @@ fn test_s4_inject_callback_fields() {
 }
 
 /// persist_conversation with the target path blocked by a directory hits the
-/// write-failure warn with field expressions (cluster_task.rs 281-287).
+/// write-failure Err with field expressions (cluster_task.rs 281-287).
 #[test]
 fn test_s4_persist_conversation_write_failure_warns() {
     s4_tracing_subscriber();
@@ -614,7 +627,8 @@ fn test_s4_persist_conversation_write_failure_warns() {
     std::fs::create_dir_all(&conv_path).unwrap(); // directory blocks the write
 
     let list = ClusterTaskList::new(dir.path());
-    list.persist_conversation("t-s4-c", &serde_json::json!([{"role": "user"}]));
+    let res = list.persist_conversation("t-s4-c", &serde_json::json!([{"role": "user"}]));
+    assert!(res.is_err(), "写盘失败必须诚实返回 Err: {:?}", res);
 
     // Path is still the blocking directory (nothing overwrote it).
     assert!(conv_path.is_dir());
@@ -722,7 +736,8 @@ fn test_p4_cancel_waiting_remote_and_late_callback_dropped() {
         "child-p4".to_string(),
         "tc_p4".to_string(),
         serde_json::json!([{"role": "user", "content": "x"}]),
-    );
+    )
+    .expect("save_async_state should succeed");
     assert_eq!(
         list.get_task("t-p4-w").unwrap().status,
         TaskStatus::WaitingRemote
@@ -732,7 +747,8 @@ fn test_p4_cancel_waiting_remote_and_late_callback_dropped() {
     assert_eq!(list.cancel_task("t-p4-w"), CancelOutcome::QueuedCancelled);
 
     // 迟到的子任务回调：不得复活回 Pending——取消守卫直接回收任务。
-    list.inject_callback("t-p4-w", "late child result");
+    list.inject_callback("t-p4-w", "late child result")
+        .expect("inject_callback should succeed");
     assert!(
         list.get_task("t-p4-w").is_none(),
         "late callback on cancelled task must clean it up, not revive it"
@@ -780,5 +796,39 @@ fn test_p4_cancel_terminal_and_missing_tasks() {
         CancelOutcome::AlreadyTerminal {
             status: "failed".to_string()
         }
+    );
+}
+
+/// NB-CODE-007：inject_callback 落盘后，崩溃恢复（新实例 restore_from_disk）
+/// 拿到 Pending + callback_result + conversation——回调结果不再因重启丢失。
+#[test]
+fn test_inject_callback_persist_survives_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let list = ClusterTaskList::new(dir.path());
+    list.create_task(make_task("t-persist", TaskStatus::Running));
+    list.save_async_state(
+        "t-persist",
+        "child-1".to_string(),
+        "call-1".to_string(),
+        serde_json::json!([{"role": "user", "content": "go"}]),
+    )
+    .expect("save_async_state should succeed");
+
+    list.inject_callback("t-persist", "the remote answer")
+        .expect("inject_callback should succeed");
+
+    // 模拟崩溃重启：全新实例从磁盘恢复。
+    let revived = ClusterTaskList::new(dir.path());
+    revived.restore_from_disk().unwrap();
+    let task = revived.get_task("t-persist").expect("任务应从磁盘恢复");
+    assert_eq!(task.status, TaskStatus::Pending);
+    assert_eq!(task.callback_result.as_deref(), Some("the remote answer"));
+    assert!(task.waiting_for_task_id.is_none());
+    assert!(
+        task.conversation
+            .as_ref()
+            .is_some_and(|c| c.to_string().contains("\"go\"")),
+        "resume 所需 conversation 必须随恢复回来: {:?}",
+        task.conversation
     );
 }

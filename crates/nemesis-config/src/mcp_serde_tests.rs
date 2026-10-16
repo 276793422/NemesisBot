@@ -252,3 +252,94 @@ fn load_mcp_config_claude_desktop_shape_via_loader() {
     assert_eq!(cfg.servers.len(), 1);
     assert_eq!(cfg.servers[0].name, "fs");
 }
+
+// ---------------------------------------------------------------------------
+// validate_mcp_header_line（2026-10-15 第十二轮：头行语法单一真相源——
+// CLI `mcp add` / Dashboard server.add·update 写入面 / HTTP transport
+// 运行期 WARN 跳过同源）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn header_line_accepts_valid_forms() {
+    validate_mcp_header_line("Authorization: Bearer x").unwrap();
+    validate_mcp_header_line("X-Api-Key: vault:pet-token").unwrap();
+    validate_mcp_header_line("X-Trace: env:TRACE_ID").unwrap();
+    validate_mcp_header_line("X-Yaml: yaml:alias").unwrap();
+    // 值中段的 "vault:" 字样是字面量的一部分，不属引用校验面
+    validate_mcp_header_line("Authorization: Bearer vault:x").unwrap();
+    // 值可为空（发送空值头）
+    validate_mcp_header_line("X-1: ").unwrap();
+}
+
+#[test]
+fn header_line_rejects_missing_colon() {
+    assert!(validate_mcp_header_line("Authorization").is_err());
+}
+
+#[test]
+fn header_line_rejects_bad_name() {
+    // 空名
+    assert!(validate_mcp_header_line(": v").is_err());
+    // 名含空白（"X Api" 不是合法头名——运行期 reqwest 也必拒）
+    assert!(validate_mcp_header_line("X Api: v").is_err());
+    // 名含控制字符
+    assert!(validate_mcp_header_line("X\tApi: v").is_err());
+}
+
+#[test]
+fn header_line_rejects_reserved_session_header() {
+    assert!(validate_mcp_header_line("Mcp-Session-Id: forged").is_err());
+    // 大小写不敏感（运行期按名字面比对头名）
+    assert!(validate_mcp_header_line("mcp-session-id: x").is_err());
+}
+
+#[test]
+fn header_line_rejects_empty_or_padded_reference_names() {
+    // 引用名为空
+    assert!(validate_mcp_header_line("X-Key: vault:").is_err());
+    assert!(validate_mcp_header_line("X-Key: env: ").is_err());
+    // 引用名带首尾空格（运行期按原样解析必失败）
+    assert!(validate_mcp_header_line("X-Key: vault: name").is_err());
+    assert!(validate_mcp_header_line("X-Key: yaml: a").is_err());
+}
+
+// ---------------------------------------------------------------------------
+// validate_mcp_env_line（2026-10-15 第十三轮：env 行语法单一真相源——
+// CLI `mcp add` / Dashboard server.add·update 写入面 / stdio 运行期
+// resolved_env WARN 跳过同源）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn env_line_accepts_valid_forms() {
+    validate_mcp_env_line("API_KEY=sk-123").unwrap();
+    validate_mcp_env_line("TOKEN=vault:pet-token").unwrap();
+    validate_mcp_env_line("TRACE=env:TRACE_ID").unwrap();
+    validate_mcp_env_line("A=yaml:alias").unwrap();
+    // 值中段的 "vault:" 字样是字面量的一部分
+    validate_mcp_env_line("PREFIX=vault:x-suffix").unwrap();
+    // 空值合法（显式空变量）
+    validate_mcp_env_line("EMPTY=").unwrap();
+    // 值部首尾空格 trim 后解析（两侧一致），非引用值直接放行
+    validate_mcp_env_line("K= padded-literal ").unwrap();
+}
+
+#[test]
+fn env_line_rejects_missing_equals() {
+    assert!(validate_mcp_env_line("API_KEY").is_err());
+}
+
+#[test]
+fn env_line_rejects_bad_name() {
+    // 空键名
+    assert!(validate_mcp_env_line("=value").is_err());
+    // 键名含空白
+    assert!(validate_mcp_env_line("MY KEY=value").is_err());
+}
+
+#[test]
+fn env_line_rejects_empty_or_padded_reference_names() {
+    assert!(validate_mcp_env_line("K=vault:").is_err());
+    assert!(validate_mcp_env_line("K=env: ").is_err());
+    assert!(validate_mcp_env_line("K=vault: name").is_err());
+    assert!(validate_mcp_env_line("K=yaml: a").is_err());
+}

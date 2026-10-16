@@ -34,6 +34,7 @@
 //! 静默记录，绝不打扰用户、绝不重试风暴（失败同样推进锚点 = 每个 TTL
 //! 窗口至多一次尝试）。
 
+#[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
 

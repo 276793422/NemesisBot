@@ -16,10 +16,15 @@ pub struct SpeakerManager {
     dim: i32,
 }
 
+// SAFETY（审计表 C-6/C-7）：两个指针均为 owning 裸指针，随实例移动安全；
+// 不实现 Sync——上游对 SpeakerEmbeddingExtractor/Manager 均无线程安全承诺
+// （沉默 → 按非线程安全对待；Manager 的 register/remove 是内部 C++ 容器的
+// 变更操作）。唯一消费路径 = web handlers/voice.rs 的
+// `OnceLock<Mutex<Option<E>>>` 静态槽（外层 Mutex 串行化，对类型只要求
+// Send）。串行需求由外层 Mutex 类型化表达；若未来需无锁共享，必须先补
+// 上游依据而非恢复 Sync。
 unsafe impl Send for SpeakerEngine {}
-unsafe impl Sync for SpeakerEngine {}
 unsafe impl Send for SpeakerManager {}
-unsafe impl Sync for SpeakerManager {}
 
 impl SpeakerEngine {
     pub fn new(model_dir: &Path, num_threads: u32) -> Result<Self> {

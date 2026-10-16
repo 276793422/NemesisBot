@@ -197,7 +197,18 @@ impl ExperienceStore {
         since: Option<chrono::DateTime<chrono::Local>>,
         top_n: usize,
     ) -> std::io::Result<Vec<AggregatedExperience>> {
-        let records = self.read_aggregated_since(since).await?;
+        let mut records = self.read_aggregated_since(since).await?;
+
+        // P3 确定性（2026-10-16）：合并用的滑动平均不可结合（(a+b)/2 再
+        // (c+d)/2 ≠ 按别的顺序并），而 JSONL 文件枚举顺序是平台实现细节
+        // （NTFS 字典序 vs ext4 哈希序）——不先排序，同盘数据跨平台/跨
+        // 重跑会得到不同的 avg/success_rate。按 (pattern_hash, last_seen)
+        // 排序后，同一 pattern 的记录恒按 last_seen 升序合并，结果唯一。
+        records.sort_by(|a, b| {
+            a.pattern_hash
+                .cmp(&b.pattern_hash)
+                .then_with(|| a.last_seen.cmp(&b.last_seen))
+        });
 
         // Merge by pattern hash
         let mut merged: HashMap<String, AggregatedExperience> = HashMap::new();

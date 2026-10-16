@@ -352,6 +352,7 @@ impl LifecycleService for AgentLoopServiceAdapter {
 
         // Bridge: bus inbound broadcast → agent inbound mpsc
         let bus_inbound = self.bus.subscribe_inbound();
+        let bus_for_lag = Arc::clone(&self.bus);
         let skip = self.skip_predicate.get().cloned();
         let rt = self.rt.clone();
         let bridge = rt.spawn(async move {
@@ -373,6 +374,9 @@ impl LifecycleService for AgentLoopServiceAdapter {
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         total_dropped += n;
+                        // P2-1：接收侧真实丢失计入 bus 指标（发布侧
+                        // no_receiver_dropped 不含 lag 丢帧——两者语义不同）。
+                        bus_for_lag.record_inbound_lagged(n);
                         tracing::warn!(
                             "[Main] Agent inbound bridge lagged by {} messages (total dropped: {})",
                             n, total_dropped

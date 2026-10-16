@@ -46,6 +46,7 @@ fn punct_engine_new_with_model_builds_config_until_ffi() {
 #[test]
 fn punct_add_punctuation_empty_text_returns_empty_without_ffi() {
     let engine = PunctEngine {
+        lock: std::sync::Mutex::new(()),
         punct: std::ptr::null(),
     };
     let out = engine.add_punctuation("").unwrap();
@@ -56,6 +57,7 @@ fn punct_add_punctuation_empty_text_returns_empty_without_ffi() {
 #[test]
 fn punct_add_punctuation_nonempty_panics_at_symbol_lookup() {
     let engine = PunctEngine {
+        lock: std::sync::Mutex::new(()),
         punct: std::ptr::null(),
     };
     let msg = crate::test_util::catch_panic_msg(|| engine.add_punctuation("你好世界"));
@@ -67,6 +69,7 @@ fn punct_add_punctuation_nonempty_panics_at_symbol_lookup() {
 #[should_panic(expected = "sherpa-onnx not initialized")]
 fn punct_drop_null_engine_panics_at_destroy() {
     let _ = PunctEngine {
+        lock: std::sync::Mutex::new(()),
         punct: std::ptr::null(),
     };
 }

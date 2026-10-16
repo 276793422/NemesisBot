@@ -694,9 +694,61 @@ fn resolved_env_literals_references_and_skip() {
     );
 }
 
-/// 无 '=' 的坏行直接忽略（现状语义保持）。
+/// 第十三轮语法闸后的运行期语义：非法行（缺 '=' / 键含空白）loud WARN +
+/// 跳过（不再静默消失）；合法行的键值两侧 trim（与 headers 侧及写入面
+/// 校验同源）；字面量值不受影响。
 #[test]
 fn resolved_env_ignores_malformed_pair() {
+    // 缺 '='：跳过（走 validate_mcp_env_line 的 WARN 分支）
     let out = super::resolved_env(&["NOSEPARATOR".into()]);
     assert!(out.is_empty());
+    // 键名含空白：跳过
+    let out = super::resolved_env(&["MY KEY=v".into()]);
+    assert!(out.is_empty());
+    // 合法行：键值两侧 trim
+    let out = super::resolved_env(&["  K = v  ".into()]);
+    assert_eq!(out, vec![("K".into(), "v".into())]);
+}
+
+// --- 第十五轮缺陷 18：stderr 管道必须排水（话痨 server 不挂死）---------
+
+#[tokio::test]
+async fn r15_stderr_chatty_server_does_not_deadlock() {
+    // 缺陷 18：stderr 无人排水时，server 写满 OS 管道缓冲后会阻塞在
+    // stderr 写上、永远答不上来（本测在修复前撞 10s 超时红）。脚本先灌
+    // ~256KB stderr 再进入应答循环——排水存在 = 秒过。
+    let script = r#"
+import sys, json
+for _ in range(4096):
+    sys.stderr.write("x" * 64 + "\n")
+sys.stderr.flush()
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        req = json.loads(line)
+        resp = {"jsonrpc": "2.0", "id": req.get("id"), "result": {"ok": True}}
+        sys.stdout.write(json.dumps(resp) + "\n")
+        sys.stdout.flush()
+    except Exception:
+        break
+"#;
+    let mut t = StdioTransport::new("python", vec!["-c".to_string(), script.to_string()], vec![]);
+    if t.connect().await.is_err() {
+        eprintln!("Skipping e2e test: python not available");
+        return;
+    }
+
+    let req = TransportRequest {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: Some(serde_json::Value::Number(7.into())),
+        method: "test/method".to_string(),
+        params: None,
+    };
+    let resp = t.send(&req, 10_000).await.unwrap();
+    assert_eq!(resp.id, serde_json::Value::Number(7.into()));
+    assert_eq!(resp.result.unwrap()["ok"], true);
+
+    t.close().await.unwrap();
 }

@@ -646,6 +646,7 @@ function relTime(ts: string): string {
             v-for="s in visibleItems(grp)"
             :key="s.id"
             class="session-item"
+            :data-session-id="s.id"
             :class="{ active: s.id === currentId, orphaned: grp.header?.orphan }"
             :style="s.lineageDepth > 0 ? { paddingLeft: `${10 + s.lineageDepth * 14}px` } : undefined"
             @click="select(s.id)"

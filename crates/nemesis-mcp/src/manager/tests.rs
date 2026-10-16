@@ -1000,3 +1000,103 @@ fn test_s1_save_config_root_drive_parent_none() {
         "unexpected error: {err}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// W1（2026-10-15）discover --header 到线 e2e（R9 补锁：此前 43 测试零
+// header 覆盖——传递链断裂会静默变成裸探测，「探测能通、安装后 401」
+// 断层复活而无测试报警）
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_discover_http_with_headers_sends_auth_header() {
+    // 咬合锁：mock 只接受带正确 Authorization 头的 initialize 请求且
+    // .expect(1)——header 不发/发错则请求不匹配，验证期即红。
+    let server = wiremock::MockServer::start().await;
+    let init_ok = wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1,
+        "result": {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "hdr-fake", "version": "0.1.0"}}
+    }));
+    // 收窄到 initialize：5 个外发请求（init/notify/tools/resources/prompts）
+    // 都带同一认证头，不限 method 会超额命中 expect(1)。
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::header(
+            "authorization",
+            "Bearer test-token-123",
+        ))
+        .and(wiremock::matchers::body_string_contains(
+            "\"method\":\"initialize\"",
+        ))
+        .respond_with(init_ok)
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let result = match discover_server_metadata_http_with_headers(
+        &server.uri(),
+        vec!["Authorization: Bearer test-token-123".to_string()],
+        5,
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => panic!("authenticated discovery must succeed: {e}"),
+    };
+
+    assert_eq!(
+        result.server_info.as_ref().map(|i| i.name.as_str()),
+        Some("hdr-fake")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_discover_http_without_matching_header_fails() {
+    // 反向臂：服务端要求认证而客户端裸探测 → initialize 失败（诚实报错，
+    // 不是「探测成功、安装后 401」的静默断层）。
+    let server = wiremock::MockServer::start().await;
+    let unauthorized = wiremock::ResponseTemplate::new(401).set_body_string("unauthorized");
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(unauthorized)
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let err = match discover_server_metadata_http_with_headers(&server.uri(), vec![], 5).await {
+        Ok(_) => panic!("bare probe against auth server must fail"),
+        Err(e) => e,
+    };
+    assert!(
+        err.contains("initialization failed"),
+        "error must surface initialize failure: {err}"
+    );
+    assert!(
+        err.contains("401"),
+        "HTTP status must be visible in the error chain: {err}"
+    );
+}
+
+// --- 第十四轮缺陷 17：前缀碰撞加载面 warn（可观测，不拒载）-----------
+
+#[test]
+fn r17_load_config_with_colliding_names_succeeds_intact() {
+    // pet.v2 / pet-v2 同前缀：load_config 走 warn 臂但名单完整保留
+    // （碰撞是可观测问题，不升级为拒载——配置本身合法）。
+    let tmp = TempDir::new().unwrap();
+    let path = make_config_path(&tmp);
+    let mut config = McpConfig::default();
+    config.enabled = true;
+    config.servers.push(ServerConfig::new("pet.v2", "python"));
+    config.servers.push(ServerConfig::new("pet-v2", "python"));
+    write_config(&path, &config);
+
+    let mgr = McpManager::new(path);
+    assert_eq!(mgr.list_servers().len(), 2, "warn 不删条目");
+    assert!(mgr.get_server("pet.v2").is_some());
+    assert!(mgr.get_server("pet-v2").is_some());
+    // 检测真相源确实判撞（与 warn 臂同一 helper）
+    let groups = crate::adapter::sanitize_prefix_collisions(
+        mgr.list_servers().iter().map(|s| s.name.as_str()),
+    );
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].0, "mcp_pet_v2_");
+}

@@ -110,6 +110,14 @@ impl WsRouter {
     /// Dispatch a request message to the appropriate handler and send the response.
     ///
     /// If no handler is found for the module, sends an error response.
+    ///
+    /// Capability gate (2026-10-16 hardening): workflow-chat sessions get
+    /// **nothing** from this router. Their `workflow_chat` module frames are
+    /// handled before the router in the WS message loop; every routed module
+    /// here is dashboard scope (workflow create/delete/run, board, connectors,
+    /// sessions, …), so a weakly-authenticated chat session must never reach
+    /// any of them — deny wholesale rather than maintaining a per-command
+    /// allowlist that silently rots as modules grow.
     pub async fn dispatch(
         &self,
         msg: &ProtocolMessage,
@@ -117,6 +125,32 @@ impl WsRouter {
         send_queue: &SendQueue,
     ) {
         let req_id = msg.req_id.as_deref().unwrap_or("");
+
+        if let crate::session::AuthMethod::WorkflowChat { workflow } = &ctx.auth_method {
+            tracing::warn!(
+                session_id = %ctx.session_id,
+                module = %msg.module,
+                cmd = %msg.cmd,
+                workflow = %workflow,
+                "[WSAPI] workflow_chat session denied router access"
+            );
+            let response = ProtocolMessage::response_err(
+                &msg.module,
+                &msg.cmd,
+                req_id,
+                "permission_denied: workflow-chat sessions cannot use dashboard WSAPI modules",
+            );
+            if let Ok(bytes) = response.to_json()
+                && let Err(e) = send_queue.send(bytes).await
+            {
+                tracing::warn!(
+                    req_id = %req_id,
+                    error = %e,
+                    "[WebSocket] Failed to send WS API response"
+                );
+            }
+            return;
+        }
 
         let result = match self.handlers.get(&msg.module) {
             Some(handler) => {

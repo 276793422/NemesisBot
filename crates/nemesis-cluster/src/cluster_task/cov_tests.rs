@@ -55,7 +55,8 @@ fn save_async_state_persists_conversation_and_index() {
         serde_json::json!([
             {"role": "user", "content": "hi"}
         ]),
-    );
+    )
+    .expect("save_async_state should succeed");
 
     let task = list.get_task("t-async").unwrap();
     assert_eq!(task.status, TaskStatus::WaitingRemote);
@@ -80,7 +81,8 @@ fn inject_callback_moves_waiting_to_pending() {
     let list = ClusterTaskList::new(&dir);
     list.create_task(make_task("t-inj", TaskStatus::WaitingRemote));
 
-    list.inject_callback("t-inj", "child result payload");
+    list.inject_callback("t-inj", "child result payload")
+        .expect("inject_callback should succeed");
 
     let task = list.get_task("t-inj").unwrap();
     assert_eq!(task.status, TaskStatus::Pending);
@@ -106,7 +108,8 @@ fn complete_task_conv_file_undeletable_warns_and_removes() {
         "child".into(),
         "call".into(),
         serde_json::json!([]),
-    );
+    )
+    .expect("save_async_state should succeed");
 
     let conv = dir.join("cluster").join("t-done.json");
     assert!(conv.exists());
@@ -125,7 +128,7 @@ fn complete_task_conv_file_undeletable_warns_and_removes() {
 }
 
 /// persist_conversation 写盘失败（cluster 位是文件 → 父目录建不出）
-/// → warn 不 panic（380）。
+/// → 诚实返回 Err（380；内存态照常更新）。
 #[test]
 fn persist_conversation_write_failure_warns() {
     let dir = temp_dir("persist-fail");
@@ -134,13 +137,14 @@ fn persist_conversation_write_failure_warns() {
     let list = ClusterTaskList::new(&dir);
     list.create_task(make_task("t-wfail", TaskStatus::Running));
 
-    // 只需不 panic（warn 臂留痕）；任务状态照常更新。
-    list.save_async_state(
+    // 磁盘双写全败（conversation + 索引）→ Err；任务状态照常更新。
+    let res = list.save_async_state(
         "t-wfail",
         "child".into(),
         "call".into(),
         serde_json::json!([]),
     );
+    assert!(res.is_err(), "conversation+索引双败应返回 Err: {:?}", res);
     assert_eq!(
         list.get_task("t-wfail").unwrap().status,
         TaskStatus::WaitingRemote

@@ -1258,3 +1258,157 @@ async fn test_unknown_command_with_data() {
         .unwrap_err();
     assert_eq!(err, "unknown command: forge.enable");
 }
+
+// -----------------------------------------------------------------------
+// reflect：use_llm 消费（2026-10-16 R16 缺陷 21）
+// -----------------------------------------------------------------------
+
+/// use_llm=false（用户显式关闭）→ 统计反思，llm_insights=false，且**不带**
+/// 「未产出」注记（用户主动关的，不是失败）。
+/// 回归钉咬合：摘掉 reflect 的 use_llm 分支（无条件走 LLM 形态），本测试
+/// 的无模型环境下行为恰好一致——咬合靠 use_llm=true 对照测试（下方）：
+/// 摘掉分支后 true 路径同样静默无注记，对照断言翻红。
+#[tokio::test]
+async fn test_reflect_use_llm_false_stats_only_without_note() {
+    let handler = forge::ForgeHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path());
+    write_forge_config(
+        dir.path(),
+        serde_json::json!({ "reflection": { "use_llm": false } }),
+    );
+
+    write_experience_line(dir.path(), &sample_experience("e1", true));
+    write_experience_line(dir.path(), &sample_experience("e2", false));
+
+    let ctx = make_ctx(&dir);
+    let result = handler
+        .handle_cmd("reflect", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(result["triggered"].as_bool().unwrap());
+    assert_eq!(result["llm_insights"].as_bool(), Some(false));
+    let message = result["message"].as_str().unwrap();
+    assert!(
+        !message.contains("LLM 语义分析未产出"),
+        "用户显式关闭时不应带失败注记: {message}"
+    );
+}
+
+/// use_llm=true（默认）+ 无可用模型 → 统计反思照跑，llm_insights=false，
+/// message 带「未产出」诚实注记（旧实现静默缺失，用户无从得知洞察没生成）。
+/// 回归钉咬合：摘掉 resolve_judge_caller 接线（退回纯统计、永不注记），
+/// 本断言翻红。
+#[tokio::test]
+async fn test_reflect_use_llm_true_without_models_reports_honest_note() {
+    let handler = forge::ForgeHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    // config.json 存在但无任何模型条目 → judge 链全臂失败 = Ok(None)
+    write_config(dir.path());
+
+    write_experience_line(dir.path(), &sample_experience("e1", true));
+    write_experience_line(dir.path(), &sample_experience("e2", false));
+
+    let ctx = make_ctx(&dir);
+    let result = handler
+        .handle_cmd("reflect", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(result["triggered"].as_bool().unwrap());
+    assert_eq!(result["llm_insights"].as_bool(), Some(false));
+    let message = result["message"].as_str().unwrap();
+    assert!(
+        message.contains("LLM 语义分析未产出"),
+        "use_llm=true 且无模型时应带诚实注记: {message}"
+    );
+    // 统计面不受影响
+    assert!(result["total_records"].as_u64().unwrap() >= 2);
+}
+
+/// registry.update 状态值白名单（R17）：非法 status 必须 loud 拒绝且**不改
+/// 写 registry.json**——该文件是 Vec<Artifact> 严格反序列化，一个毒值让
+/// Registry::load 整体失败且无自愈（web 统计静默归零、CLI 反思去重失效会
+/// 追加重复条目）。回归钉咬合：摘掉 ArtifactStatus 反序列化校验，本测试
+/// 翻红（"haha" 直写盘上文件）。
+#[tokio::test]
+async fn test_registry_update_rejects_invalid_status() {
+    let handler = forge::ForgeHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    let fd = forge_dir(dir.path());
+    std::fs::create_dir_all(&fd).unwrap();
+    let registry_path = fd.join("registry.json");
+    let registry = nemesis_forge::registry::Registry::new(nemesis_forge::types::RegistryConfig {
+        index_path: registry_path.to_string_lossy().to_string(),
+    });
+    let id = registry.add(nemesis_types::forge::Artifact {
+        id: "skill-x".into(),
+        name: "x".into(),
+        kind: nemesis_types::forge::ArtifactKind::Skill,
+        version: "1.0".into(),
+        status: nemesis_types::forge::ArtifactStatus::Draft,
+        content: "content".into(),
+        tool_signature: vec![],
+        created_at: "t".into(),
+        updated_at: "t".into(),
+        usage_count: 0,
+        last_degraded_at: None,
+        success_rate: 0.0,
+        consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
+    });
+    let before = std::fs::read_to_string(&registry_path).unwrap();
+
+    let ctx = make_ctx(&dir);
+    let err = handler
+        .handle_cmd(
+            "registry.update",
+            Some(serde_json::json!({ "id": id, "status": "haha" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        err.contains("invalid status"),
+        "非法状态应 loud 拒绝: {err}"
+    );
+    let after = std::fs::read_to_string(&registry_path).unwrap();
+    assert_eq!(before, after, "被拒请求不得改写 registry.json");
+
+    // 合法状态照常更新（白名单不误伤现有前端 Draft/Active/Observing 契约）。
+    handler
+        .handle_cmd(
+            "registry.update",
+            Some(serde_json::json!({ "id": id, "status": "Active" })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let updated = std::fs::read_to_string(&registry_path).unwrap();
+    assert!(
+        updated.contains("\"Active\""),
+        "合法状态应成功落盘: {updated}"
+    );
+}
+
+/// forge.test 的 name 围栏（R17）：`name` 直拼 skills/{name}/SKILL.md，
+/// 分隔符/父引用可读 workspace 外任意同名文件并送进沙盒执行面。回归钉
+/// 咬合：摘掉围栏校验，本测试翻红（"../outside" 走到 runner 未装配错误）。
+#[tokio::test]
+async fn test_forge_test_cmd_rejects_traversal_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    for bad in ["../outside", "..\\outside", "..", "."] {
+        let err = forge::ForgeHandler::new()
+            .handle_cmd("test", Some(serde_json::json!({ "name": bad })), &ctx)
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("invalid skill name"),
+            "name={bad} 应被围栏拒绝: {err}"
+        );
+    }
+}

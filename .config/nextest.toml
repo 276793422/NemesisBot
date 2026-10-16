@@ -20,6 +20,12 @@
 #   另两个测试断言「插件必不在场」——跨进程并发撞进哑 DLL 存活窗口即假红
 #   （测试注释里 2026-09-02 就实录过一次，当时用 GLOBAL_STATE_LOCK 修，
 #   nextest 下该锁失效）。
+# - ra-serialize（2026-10-15）：nemesis-agent lsp cov_tests 的三个真实
+#   rust-analyzer 用例（名字都带 with_rust_analyzer 尾段——命名约定，
+#   新增真实 RA 用例必须沿用否则 CI 下不入组）用进程内 Semaphore(1)
+#   串行——nextest 每 test 一进程，该信号量在 CI 下失效，三路并发各拉一个
+#   rust-analyzer（数百 MB 内存 + 全量分析 CPU），慢机互相抢资源全部超时
+#   SKIP。组内 max-threads=1 才是跨进程的真串行（进程内闸留给本地 cargo test）。
 
 [test-groups.live-gateway]
 max-threads = 1
@@ -28,6 +34,9 @@ max-threads = 1
 max-threads = 1
 
 [test-groups.memory-plugin-detect]
+max-threads = 1
+
+[test-groups.ra-serialize]
 max-threads = 1
 
 [[profile.default.overrides]]
@@ -55,3 +64,8 @@ test-group = 'memory-plugin-detect'
 # 未来未知挂法——120s 硬杀把挂死变快速红）。本地全程秒级，120s = 12x 余量。
 filter = 'package(nemesis-web) and test(estop_engage_kills_session)'
 slow-timeout = { period = '60s', terminate-after = 2 }
+
+[[profile.default.overrides]]
+# 子串谓词：三用例名共享 with_rust_analyzer 尾段且 crate 内唯一。
+filter = 'package(nemesis-agent) and test(with_rust_analyzer)'
+test-group = 'ra-serialize'
