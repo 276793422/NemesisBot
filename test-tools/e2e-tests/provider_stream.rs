@@ -24,7 +24,7 @@ use futures::{SinkExt, StreamExt};
 use std::time::Duration;
 use test_harness::{
     ManagedProcess, TestWorkspace, cleanup_ports, resolve_ai_server_bin, resolve_nemesisbot_bin,
-    wait_for_http, ws_connect,
+    verify_gateway_web_identity, wait_for_http, ws_connect,
 };
 use tokio_tungstenite::tungstenite::Message;
 
@@ -102,6 +102,9 @@ async fn provider_stream_push_frame_shape_e2e() -> Result<()> {
     )
     .await
     .context("gateway failed to start (web port)")?;
+    // web 口 HTTP 200 ≠ 自己人（IT 幽灵网关事故同款暴露面）：核对 LISTEN 持有者 PID。
+    verify_gateway_web_identity(WEB_PORT, gw.id())
+        .map_err(|e| anyhow::anyhow!("gateway web identity check failed: {e}"))?;
 
     let result = run_stream_flow(&cfg).await;
     let _ = gw.kill().await;

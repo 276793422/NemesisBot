@@ -32,6 +32,16 @@ pub struct SttEngine {
 unsafe impl Send for SttEngine {}
 unsafe impl Sync for SttEngine {}
 
+// §四.2 编译期边界断言：**弱 tripwire**——只验证 unsafe impl 仍在场（被悄悄
+// 删除时定义处立即编译失败，下游 `SttEngine: Send + Sync` bound 亦会报错）。
+// 它**不能**验证锁纪律本身：unsafe impl 是无条件声明，锁前提被重构破坏
+// （如 Mutex 换成非同步原语）时此断言依旧绿——线程安全的真实依据是上方
+// SAFETY 注释的锁纪律论证 + 审计文档（2026-10-15 C-1/C-3/C-8），不是本断言。
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<SttEngine>();
+};
+
 impl SttEngine {
     /// Create an STT engine.
     ///

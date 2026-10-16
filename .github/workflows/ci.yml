@@ -446,12 +446,16 @@ jobs:
 
   web-e2e:
     # Web 端到端回归（Playwright + TestAIServer 同族 mock LLM + 本地 gateway 全链路）。
-    # 9 个自足 spec：auth / chat / approval / board / model-switch / resync /
-    # project-history / workflow-diff / workflow-gen（迁移自 scripts/verify-*.mjs 手工脚本）。
+    # 11 个自足 spec：auth / chat / approval / board / board-ui / model-switch / resync /
+    # disconnect-recovery / project-history / workflow-diff / workflow-gen（迁移自
+    # scripts/verify-*.mjs 手工脚本；board-ui=看板页面 DOM 路径、disconnect-recovery=
+    # 断线恢复（整改复核 §四.3 补覆盖））。
     #
     # ⚠️ 观察期 job（continue-on-error：红不阻塞 CI）：首期观察真实性/稳定性
-    # （runner 音频/浏览器/端口环境差异），建议观察 10 轮全绿后摘掉翻红。
-    # 失败现场：test-results/ + playwright-report/ artifact always() 上传。
+    # （runner 音频/浏览器/端口环境差异）。摘除条件（写死）：自本批起**连续 10
+    # 轮 CI 全绿**且上述 11 个 spec 全部在场（spec 数缩水不算达成）——两条件
+    # 同时满足才摘 continue-on-error 翻红。失败现场：test-results/ +
+    # playwright-report/ artifact always() 上传。
     name: Web e2e (Playwright, 观察期)
     runs-on: windows-2022
     timeout-minutes: 40
