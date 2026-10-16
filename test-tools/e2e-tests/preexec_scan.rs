@@ -34,8 +34,8 @@ use std::path::Path;
 use std::time::Duration;
 use test_harness::{
     ManagedProcess, TestWorkspace, WsStream, chat_receive_match, cleanup_ports,
-    resolve_ai_server_bin, resolve_nemesisbot_bin, wait_for_http, ws_connect, ws_recv_matching,
-    ws_send_json,
+    resolve_ai_server_bin, resolve_nemesisbot_bin, verify_gateway_web_identity, wait_for_http,
+    ws_connect, ws_recv_matching, ws_send_json,
 };
 
 const AI_PORT: u16 = 18099;
@@ -277,6 +277,9 @@ async fn preexec_scan_approval_flow_e2e() -> Result<()> {
     )
     .await
     .context("gateway failed to start (web port)")?;
+    // web 口 HTTP 200 ≠ 自己人（IT 幽灵网关事故同款暴露面）：核对 LISTEN 持有者 PID。
+    verify_gateway_web_identity(WEB_PORT, gw.id())
+        .map_err(|e| anyhow::anyhow!("gateway web identity check failed: {e}"))?;
 
     let token = cfg["channels"]["web"]["auth_token"]
         .as_str()

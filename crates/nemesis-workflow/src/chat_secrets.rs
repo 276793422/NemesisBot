@@ -86,6 +86,15 @@ impl ChatSecretStore {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 // first run — file doesn't exist yet
             }
+            Err(err) if err.kind() == std::io::ErrorKind::NotADirectory => {
+                // A parent component is a regular file — the target file
+                // structurally cannot exist, so there is no unknown
+                // on-disk state to protect. Windows reports this shape as
+                // NotFound (ERROR_PATH_NOT_FOUND); Linux reports ENOTDIR —
+                // treat both as "missing" so the store starts empty and a
+                // broken path surfaces honestly at persist time instead
+                // of poisoning on open.
+            }
             Err(err) => {
                 tracing::warn!(
                     path = %path.display(),

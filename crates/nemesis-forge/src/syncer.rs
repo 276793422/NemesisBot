@@ -271,6 +271,9 @@ fn read_md_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
             paths.push(path);
         }
     }
+    // 列表面是返回给展示/分享消费的有序产物——read_dir 顺序是平台实现
+    // 细节（NTFS 字典序 vs ext4 哈希序），显式排序保证跨平台稳定。
+    paths.sort();
     Ok(paths)
 }
 

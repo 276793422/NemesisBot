@@ -39,6 +39,12 @@ $copy = Join-Path $ExperimentDir "runs\$TaskId-run$RunNo"
 # 2. env fingerprint BEFORE (shared-device contention evidence)
 & (Join-Path $PSScriptRoot 'Dump-ExperimentEnv.ps1') -OutFile (Join-Path $evDir 'env_before.json') | Out-Null
 
+# 2.5 R8: freeze base HEAD right after the run copy exists, BEFORE the agent
+# starts. The agent may commit inside the run copy — acceptance must diff the
+# full change set against the pre-run base, not against whatever HEAD the
+# agent left behind (diff-vs-HEAD would silently under-report committed edits).
+$baseSha = (git -C $copy rev-parse HEAD)
+
 # 3. run the bot (cwd = runtime home so --local pins home under it)
 $startUtc = (Get-Date).ToUniversalTime().ToString('o')
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -101,9 +107,13 @@ $exitCode = if ($timedOut) { -1 } else {
 }
 $endUtc = (Get-Date).ToUniversalTime().ToString('o')
 
-# 4. post-run capture: diff + untracked (completeness evidence, BEFORE acceptance injects tests)
+# 4. post-run capture: full change set vs frozen base + untracked (completeness
+# evidence, BEFORE acceptance injects tests). R8: diff against $baseSha (covers
+# committed + staged + unstaged) instead of bare `git diff` (working tree vs
+# index only — committed agent edits were invisible to both this capture and
+# acceptance's tracked-diff scan).
 $diffFile = Join-Path $evDir 'workspace.diff'
-git -C $copy diff | Set-Content -Encoding UTF8 $diffFile
+git -C $copy diff $baseSha | Set-Content -Encoding UTF8 $diffFile
 $dirty = @(git -C $copy status --porcelain)
 $dirty | Set-Content -Encoding UTF8 (Join-Path $evDir 'dirty.txt')
 & (Join-Path $PSScriptRoot 'Dump-ExperimentEnv.ps1') -OutFile (Join-Path $evDir 'env_after.json') | Out-Null
@@ -127,6 +137,8 @@ $armLabel = if ($Arm) { $Arm } else { $card.arm }
     exit_code     = $exitCode
     run_status    = $runStatus
     run_copy      = $copy
+    base_sha      = $baseSha
+    head_after    = (git -C $copy rev-parse HEAD)
     dirty_files   = $dirty
     cost_usd      = $null
     notes         = ''

@@ -171,6 +171,128 @@ pub fn find_op<'a>(c: &'a ValidatedConnector, op_id: &str) -> Option<&'a Validat
     c.ops.iter().find(|o| o.id == op_id)
 }
 
+/// 执行前 args 校验（R4）：按 op 声明的 `args_schema` 检查
+/// required / type / enum / minimum / maximum。schema 缺省（None）= 不设限；
+/// 多余字段忽略（JSON Schema 缺省语义，对齐 agent 侧 args_validator 惯例）。
+/// 返回 Err = 人读拒绝原因（回执/回灌用），**必须在出网（本地 dispatch /
+/// 远程 RPC）之前拒绝**。
+pub fn validate_op_args(
+    schema: Option<&serde_json::Value>,
+    args: &serde_json::Value,
+) -> Result<(), String> {
+    let Some(schema) = schema else {
+        return Ok(());
+    };
+    let Some(obj) = schema.as_object() else {
+        return Ok(()); // 加载期 shape 扫描已保证顶层是 object；防御性放行
+    };
+    // required：缺失即拒
+    if let Some(required) = obj.get("required").and_then(|v| v.as_array()) {
+        for field in required {
+            if let Some(name) = field.as_str()
+                && args.get(name).map(|v| v.is_null()).unwrap_or(true)
+            {
+                return Err(format!("缺少必填参数 `{name}`"));
+            }
+        }
+    }
+    // properties：逐字段 type/enum/minimum/maximum
+    let Some(properties) = obj.get("properties").and_then(|v| v.as_object()) else {
+        return Ok(());
+    };
+    for (name, spec) in properties {
+        let Some(value) = args.get(name) else {
+            continue;
+        };
+        if value.is_null() {
+            continue; // null 已由 required 闸裁决；非必填 null 视为缺席
+        }
+        if let Some(expected) = spec.get("type").and_then(|v| v.as_str())
+            && !value_matches_type(value, expected)
+        {
+            return Err(format!(
+                "参数 `{name}` 类型错误：应为 {expected}，实际为 {}",
+                type_name_of(value)
+            ));
+        }
+        // enum：类型无关的成员判定（数值统一按 f64 比较——`5` 与 `5.0`
+        // 同值；其余类型 serde 深等值）。
+        if let Some(allowed) = spec.get("enum").and_then(|v| v.as_array())
+            && !allowed.iter().any(|a| enum_member_eq(a, value))
+        {
+            return Err(format!(
+                "参数 `{name}` 取值 `{value}` 不在允许范围 [{}] 内",
+                allowed
+                    .iter()
+                    .map(|a| a.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        // 数值边界（number / integer 共用；JSON 数值统一按 f64 比较）
+        if matches!(
+            spec.get("type").and_then(|v| v.as_str()),
+            Some("number") | Some("integer")
+        ) {
+            let Some(num) = value_as_number(value) else {
+                continue; // 类型闸已拒
+            };
+            if let Some(min) = spec.get("minimum").and_then(|v| v.as_f64())
+                && num < min
+            {
+                return Err(format!("参数 `{name}` = {num} 低于下限 {min}"));
+            }
+            if let Some(max) = spec.get("maximum").and_then(|v| v.as_f64())
+                && num > max
+            {
+                return Err(format!("参数 `{name}` = {num} 超过上限 {max}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// JSON Schema type 判定。integer 接受整值浮点（`2.0` 合法 integer）；
+/// serde `is_number` 不含 bool，boolean 单独判。
+fn value_matches_type(value: &serde_json::Value, expected: &str) -> bool {
+    match expected {
+        "string" => value.is_string(),
+        "number" => value.is_number(),
+        "integer" => {
+            value.is_i64()
+                || value.is_u64()
+                || value.as_f64().map(|f| f.fract() == 0.0).unwrap_or(false)
+        }
+        "boolean" => value.is_boolean(),
+        "array" => value.is_array(),
+        "object" => value.is_object(),
+        _ => true, // 未知 type 声明不设限（加载期 shape 扫描已拦非法声明）
+    }
+}
+
+fn value_as_number(value: &serde_json::Value) -> Option<f64> {
+    value.as_f64()
+}
+
+/// enum 成员判定：数值双方向 f64 归一（`5` ≡ `5.0`），其余 serde 深等值。
+fn enum_member_eq(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+    if let (Some(x), Some(y)) = (a.as_f64(), b.as_f64()) {
+        return x == y;
+    }
+    a == b
+}
+
+fn type_name_of(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
 /// 检索命中条目。
 #[derive(Debug, Clone)]
 pub struct ConnectorSearchHit {

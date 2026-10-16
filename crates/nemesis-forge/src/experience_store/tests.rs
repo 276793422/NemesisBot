@@ -557,11 +557,13 @@ async fn test_append_multiple_same_day() {
 }
 
 #[tokio::test]
-async fn test_read_aggregated_merges_same_hash() {
+async fn test_read_aggregated_keeps_same_hash_entries_separate() {
     let dir = tempfile::tempdir().unwrap();
     let store = ExperienceStore::from_forge_dir(dir.path());
 
-    // Same hash, different tool names - should be merged
+    // Same hash, different tool names - stored as-is by the read path
+    //（合并只发生在 get_top_patterns 聚合层，read_aggregated 返回原始行）。
+    // 旧名 test_read_aggregated_merges_same_hash 与断言（len==2 不合并）相反。
     let agg1 = AggregatedExperience {
         pattern_hash: "shared-hash".into(),
         tool_name: "tool_a".into(),
@@ -715,7 +717,7 @@ async fn test_append_immediately_visible_to_read_all() {
 }
 
 #[tokio::test]
-async fn test_append_experience_deduplication() {
+async fn test_append_keeps_duplicate_hashes() {
     let dir = tempfile::tempdir().unwrap();
     let store = ExperienceStore::from_forge_dir(dir.path());
 
@@ -726,11 +728,12 @@ async fn test_append_experience_deduplication() {
     };
     // First append should succeed
     store.append(&ce).await.unwrap();
-    // Second with same hash should be deduplicated
+    // Second with same hash should also succeed
     store.append(&ce).await.unwrap();
 
     let all = store.read_all().await.unwrap();
-    // append() does not deduplicate — both are stored
+    // append() does not deduplicate — both are stored（旧名
+    // test_append_experience_deduplication 暗示去重，与断言相反）。
     assert_eq!(all.len(), 2);
 }
 
@@ -1030,8 +1033,11 @@ async fn test_s8_cleanup_flat_file_skips_blank_and_legacy_lines() {
 async fn test_s8_append_empty_base_dir_takes_no_parent_branch() {
     // base_dir "" has no parent component → the `if let Some(parent)`
     // fall-through in append() runs. create_dir_all("") is a no-op, and the
-    // open may create experiences.jsonl in the CWD — remove it afterwards so
-    // the working tree stays clean either way.
+    // open creates experiences.jsonl in the CWD (cargo test 的 cwd = crate 根)。
+    // 只清理自己创建的文件：若 crate 根碰巧已有同名文件（上次崩溃残留等），
+    // 不得替别人收拾——先记录存在性，append 后按需删除。
+    let cwd_file = std::path::Path::new("experiences.jsonl");
+    let pre_existing = cwd_file.exists();
     let store = ExperienceStore::new("");
     let exp = Experience {
         id: "e1".into(),
@@ -1047,6 +1053,14 @@ async fn test_s8_append_empty_base_dir_takes_no_parent_branch() {
         experience: exp,
         dedup_hash: "sha256:x".into(),
     };
-    let _ = store.append(&ce).await;
-    let _ = tokio::fs::remove_file(std::path::Path::new("experiences.jsonl")).await;
+    // 空 base_dir 的 append 应当成功（CWD 落盘），失败同样要响亮暴露——
+    // 旧版 `let _ =` 吞掉结果，整测退化成纯「不 panic」。
+    let res = store.append(&ce).await;
+    assert!(
+        res.is_ok(),
+        "append with empty base_dir must succeed: {res:?}"
+    );
+    if !pre_existing {
+        let _ = tokio::fs::remove_file(cwd_file).await;
+    }
 }

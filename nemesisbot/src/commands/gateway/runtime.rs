@@ -551,8 +551,10 @@ pub(crate) async fn run_runtime(
                         let started = chrono::Utc::now().to_rfc3339();
                         let digest = nemesis_connectors::receipt::args_digest(&op_args);
                         // ③ 完整 dispatch 瀑布。返回值恒为文本（错误以
-                        // "Tool error: "/⛔ 前缀形态携带——分类由 master 端
-                        // 凭条 outcome 驱动，不在文本上猜）。
+                        // "Tool error: "/⛔ 前缀形态携带）：有凭条时分类由
+                        // master 端凭条 outcome 驱动；dispatch 层拒绝（estop/
+                        // hidden/Plan/tier 闸）不落凭条（回执面诚实不造假 =
+                        // null），master 按 ⛔ 前缀识别「未执行」镜像 error。
                         let result_text = tokio::task::block_in_place(|| {
                             invoke_handle.block_on(async {
                                 let call = nemesis_agent::types::ToolCallInfo {
@@ -664,6 +666,8 @@ pub(crate) async fn run_runtime(
                         #[cfg(not(target_os = "android"))]
                         trigger_global_shutdown();
                     }),
+                    // R2 进程内单飞闸（与安装目录跨进程锁两层互补）。
+                    flight: tokio::sync::Mutex::new(()),
                 });
                 nemesis_web::handlers::selfupdate::set_manager(mgr);
                 info!("[Gateway] selfupdate manager wired (L9)");
