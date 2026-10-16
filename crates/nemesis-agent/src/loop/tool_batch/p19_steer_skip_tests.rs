@@ -15,6 +15,7 @@
 
 use super::STEER_SKIP_TOOL_RESULT;
 use crate::inbox::QueuedMessage;
+#[cfg(not(target_os = "linux"))]
 use crate::r#loop::prelude::*;
 use crate::r#loop::*;
 use crate::types::repair_tool_message_pairs;

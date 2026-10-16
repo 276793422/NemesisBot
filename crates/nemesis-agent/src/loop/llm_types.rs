@@ -1,6 +1,7 @@
 //! LLM 消息/响应/Provider trait（LlmMessage/LlmResponse/LlmProvider）、观察者消息值提取、chat_call_bounded、wait_estop_engaged。
 //!
 //! P1 自 `loop.rs` 物理搬迁（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）；语义零变化。
+#[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
 

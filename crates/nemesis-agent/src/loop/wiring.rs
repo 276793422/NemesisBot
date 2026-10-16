@@ -1,6 +1,7 @@
 //! 其余装配 setter 与访问器：observer/cluster/security/session_store/data_store/forge/route_resolver/channel_manager/state_manager/continuation/estop/approval/question/memory 族/workflow_engine/agent_event_tx、wiring_status、get_registry/get_cluster/provider_arc/config_mut。
 //!
 //! P1 自 `loop.rs` 物理搬迁（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）；语义零变化。
+#[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
 
