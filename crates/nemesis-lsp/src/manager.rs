@@ -14,6 +14,13 @@ use tokio::sync::Mutex;
 use crate::proto;
 use crate::registry::{self, Lang};
 
+/// 单条 LSP 消息 body 上限（read_message 的 `vec![0u8; len]` 直分配闸）。
+/// Content-Length 来自子进程 stdout——崩溃/被替换的语言服务器宣告巨型
+/// 长度会让分配直接失败 abort 进程。64 MiB 锚定 LSP 消息合理量级
+/// （hover/completion/diagnostics 实测 KB~MB 级），超限按会话致命错误走
+/// 既有 Err 链收口（读循环把 Err 视为会话结束）。
+const MAX_LSP_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+
 /// The operations this crate exposes. Four are read-only queries; C7 adds
 /// the write-capable pair — `Rename` produces file edits that the CALLER
 /// (the agent tool) must push through the security pipeline before any
@@ -289,6 +296,11 @@ async fn read_message(inner: &mut Inner) -> Result<Value, String> {
         }
     }
     let len = content_length.ok_or("message without Content-Length header")?;
+    if len > MAX_LSP_MESSAGE_BYTES {
+        return Err(format!(
+            "Content-Length {len} exceeds cap {MAX_LSP_MESSAGE_BYTES}"
+        ));
+    }
     let mut body = vec![0u8; len];
     inner
         .stdout

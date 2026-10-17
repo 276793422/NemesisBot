@@ -74,11 +74,17 @@ impl FrameDecoder {
         let Some(len) = content_length else {
             return Err("message without Content-Length header".to_string());
         };
-        if self.buf.len() < body_start + len {
+        // Content-Length 来自线上字节——body_start+len 先 checked（极端
+        // 长度 debug 溢出 panic / release 回绕骗过闸后切片错位）。溢出=
+        // 畸形帧，诚实报错。
+        let Some(body_end) = body_start.checked_add(len) else {
+            return Err(format!("bad Content-Length {len}: length overflow"));
+        };
+        if self.buf.len() < body_end {
             return Ok(None); // body still arriving
         }
-        let body = self.buf[body_start..body_start + len].to_vec();
-        self.buf.drain(..body_start + len);
+        let body = self.buf[body_start..body_end].to_vec();
+        self.buf.drain(..body_end);
         let msg: Value =
             serde_json::from_slice(&body).map_err(|e| format!("bad JSON body: {e}"))?;
         Ok(Some(msg))
