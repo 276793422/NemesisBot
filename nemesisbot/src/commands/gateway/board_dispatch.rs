@@ -339,11 +339,20 @@ fn floor_char_boundary(s: &str, max: usize) -> &str {
 
 /// 「📦 交付已收，变更集在途」评论前缀（上方 WaitingChangeset/WaitingDispatch
 /// 分支落）。停摆判定锚点。
+// 唯一消费点在下方 gate 内的 sweep_archive_stalls——随其一起按 board+cluster
+// 裁剪（同 STALL_MARKER，board 关时常量留场 = dead_code）。
+#[cfg(all(feature = "board", feature = "cluster"))]
 const INFLIGHT_MARKER: &str = "📦 交付已收，变更集在途";
 /// 停摆警示评论前缀（本 sweep 落；幂等：最新在途评论之后已有警示 = 不重复）。
 /// 单一真相源在 nemesis-board（issue.list attention 投影同源消费，2026-10-15 上移）。
+// 唯一消费点在下方 gate 内的 sweep_archive_stalls——随其一起按 board+cluster
+// 裁剪（board 关时 nemesis_board 不在依赖图，常量留场 = E0433）。
+#[cfg(all(feature = "board", feature = "cluster"))]
 const STALL_MARKER: &str = nemesis_board::STALL_MARKER;
 /// 在途警示阈值（秒）：交付评论后超过此值仍未合并 = 停摆。生产 15 分钟。
+// 消费点：下方 sweep_archive_stalls（gate 内）+ cluster_init.rs 哨兵挂载块
+//（同 gate）+ 本文件 tests——三处全在 board+cluster 门内，随门裁剪。
+#[cfg(all(feature = "board", feature = "cluster"))]
 pub(crate) const ARCHIVE_STALL_WARN_SECS: i64 = 900;
 
 /// 档案停摆哨兵 sweep（master 侧，60s 周期）：in_progress 单据的最新「变更
@@ -426,5 +435,7 @@ pub(crate) fn sweep_archive_stalls(
     flagged
 }
 
-#[cfg(test)]
+// tests 消费 gate 内的 sweep_archive_stalls/ARCHIVE_STALL_WARN_SECS——随门
+// 裁剪（board 关时 --tests 不进编译，避免 E0433；对齐 bridges.rs cov_tests 先例）。
+#[cfg(all(test, feature = "board", feature = "cluster"))]
 mod tests;
