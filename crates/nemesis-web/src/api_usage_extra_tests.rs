@@ -484,6 +484,17 @@ async fn pricing_returns_embedded_table() {
     // 无 DataStore → 仅内置表 + meta null。
     assert!(v["meta"].is_null());
     let entries = v["data"].as_array().expect("data array");
+    // pricing-embed 关（IoT 裁剪，workspace default-features=false + 消费方
+    // opt-in）：内置层为空表是诚实契约（成本恒 0.0，绝不瞎猜）——断言空面
+    // 后提前返回；开 = 走全量表断言。两态都跑，无 cfg 静默消失。
+    if nemesis_data::embedded_source().contains("not embedded") {
+        assert!(
+            entries.is_empty(),
+            "pricing-embed off → built-in layer must be empty, got {}",
+            entries.len()
+        );
+        return;
+    }
     // 全量精简表（LiteLLM 派生，~2800 条）：钉下限防快照意外缩水，不钉
     // 精确数（上游增减是常态）——与 nemesis-data pricing/tests.rs 的
     // embedded_table_loads_and_is_sane 同一约定。
@@ -581,12 +592,19 @@ async fn pricing_layered_view_with_store_and_custom_override() {
     let Json(v) = handle_api_usage_pricing(State(state)).await;
     assert_eq!(v["status"], "success");
     let entries = v["data"].as_array().unwrap();
-    // 自定义只覆盖了内置 gpt-4o 条目 → 合并视图条数与纯内置表一致。
-    assert_eq!(
-        entries.len(),
-        baseline,
-        "override must not duplicate the entry"
-    );
+    // 自定义只覆盖了内置 gpt-4o 条目 → 合并视图条数与纯内置表一致
+    // （「覆盖不新增」真不变量）。pricing-embed 关（IoT 裁剪）时内置层
+    // 为空表、gpt-4o 不在其中 → 自定义是新增一条（baseline + 1），
+    // 同样诚实。
+    if nemesis_data::embedded_source().contains("not embedded") {
+        assert_eq!(entries.len(), baseline + 1, "empty built-in + custom = +1");
+    } else {
+        assert_eq!(
+            entries.len(),
+            baseline,
+            "override must not duplicate the entry"
+        );
+    }
     let gpt = entries.iter().find(|e| e["modelId"] == "gpt-4o").unwrap();
     assert_eq!(gpt["source"], "custom");
     assert_eq!(gpt["inputCostPerMillion"], 123.0);

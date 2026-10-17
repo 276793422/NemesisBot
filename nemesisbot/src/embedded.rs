@@ -14,6 +14,10 @@ use std::sync::Arc;
 /// At compile time this pulls in all Web UI files (HTML, CSS, JS, fonts).
 /// At runtime, if files exist on disk next to the executable, those are
 /// preferred (allows updating without recompiling).
+///
+/// web-static 关：整段前端不进二进制（IoT/纯 API 形态省 ~1.2-2.9MB）——
+/// 只剩 exe 旁 `static/` 目录的运行期磁盘兜底。
+#[cfg(feature = "web-static")]
 static EMBEDDED_STATIC: Dir = include_dir!("$CARGO_MANIFEST_DIR/../crates/nemesis-web/static");
 
 /// Embedded workspace templates from `nemesisbot/workspace/`.
@@ -35,14 +39,17 @@ pub const FEATURES_MANIFEST_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "
 /// Static file provider backed by compile-time embedded `include_dir::Dir`.
 ///
 /// Files are served directly from the binary — zero disk IO.
+#[cfg(feature = "web-static")]
 pub struct EmbeddedStaticFiles(&'static Dir<'static>);
 
+#[cfg(feature = "web-static")]
 impl EmbeddedStaticFiles {
     pub fn new(dir: &'static Dir<'static>) -> Self {
         Self(dir)
     }
 }
 
+#[cfg(feature = "web-static")]
 impl nemesis_web::StaticFiles for EmbeddedStaticFiles {
     fn get_file(&self, path: &str) -> Option<Vec<u8>> {
         let path = path.trim_start_matches('/');
@@ -56,6 +63,22 @@ impl nemesis_web::StaticFiles for EmbeddedStaticFiles {
         let mut files = Vec::new();
         collect_files(self.0, &mut files);
         files
+    }
+}
+
+/// web-static 关的空 provider：内嵌面不存在，get_file 恒 None（磁盘
+/// 兜底在 [`resolve_static_files`] 的目录探测层，先于本类型被命中）。
+#[cfg(not(feature = "web-static"))]
+struct NoEmbeddedStatic;
+
+#[cfg(not(feature = "web-static"))]
+impl nemesis_web::StaticFiles for NoEmbeddedStatic {
+    fn get_file(&self, _path: &str) -> Option<Vec<u8>> {
+        None
+    }
+
+    fn list_files(&self) -> Vec<String> {
+        Vec::new()
     }
 }
 
@@ -80,8 +103,18 @@ pub fn resolve_static_files() -> Arc<dyn nemesis_web::StaticFiles> {
     }
 
     // Production: serve directly from embedded memory
-    tracing::info!("[Main] Serving static files from embedded memory (zero disk IO)");
-    Arc::new(EmbeddedStaticFiles::new(&EMBEDDED_STATIC))
+    #[cfg(feature = "web-static")]
+    {
+        tracing::info!("[Main] Serving static files from embedded memory (zero disk IO)");
+        Arc::new(EmbeddedStaticFiles::new(&EMBEDDED_STATIC))
+    }
+    #[cfg(not(feature = "web-static"))]
+    {
+        tracing::warn!(
+            "[Main] 前端静态资源未编译进本构建（web-static 关）——Dashboard 仅当 exe 旁存在 static/ 目录时可用"
+        );
+        Arc::new(NoEmbeddedStatic)
+    }
 }
 
 /// Resolve the static files directory for the web server (legacy).
@@ -132,6 +165,7 @@ fn extract_dir(dir: &Dir, base: &std::path::Path) -> std::io::Result<()> {
 
 /// Get a specific embedded file by path.
 #[allow(dead_code)]
+#[cfg(feature = "web-static")]
 pub fn get_embedded_file(path: &str) -> Option<&'static [u8]> {
     EMBEDDED_STATIC.get_file(path).map(|f| f.contents())
 }
@@ -177,6 +211,7 @@ fn extract_dir_skip_existing(dir: &Dir, base: &std::path::Path) -> std::io::Resu
 
 /// List all embedded file paths.
 #[allow(dead_code)]
+#[cfg(feature = "web-static")]
 pub fn list_embedded_files() -> Vec<String> {
     let mut files = Vec::new();
     collect_files(&EMBEDDED_STATIC, &mut files);
@@ -184,6 +219,7 @@ pub fn list_embedded_files() -> Vec<String> {
 }
 
 #[allow(dead_code)]
+#[cfg(feature = "web-static")]
 fn collect_files(dir: &Dir, files: &mut Vec<String>) {
     for file in dir.files() {
         files.push(file.path().to_string_lossy().replace('\\', "/"));

@@ -17,15 +17,23 @@
 //! - 启动时验一次，运行期间磁盘 exe 可被换（周期复验 = 远期项）；
 //! - v1 只验主程序自身，插件不强制验（第三方插件无我方根签证书）。
 
-use nemesis_verify::hex_util::hex_decode_32;
-use nemesis_verify::verify::{self, VerifyOutcome};
 use std::sync::OnceLock;
+
+// verify feature 关：nemesis-verify 不参与编译，验签执行体（verify_current_exe）
+// 以诚实跳过的空实现替代——裁决类型/快照通道照常（消费方零改动），
+// start_check() 恒 None（从未执行过自验，WSAPI/审计链自然不注入）。
+#[cfg(feature = "verify")]
+use nemesis_verify::hex_util::hex_decode_32;
+#[cfg(feature = "verify")]
+use nemesis_verify::verify::{self, VerifyOutcome};
 
 /// 锁定版旗标：cargo feature `verify-enforce-lock`（空 feature，纯编译期
 /// cfg）。feature 指纹原生跟踪——同 target 目录先消费后锁定绝无 stale
 /// （一稿 option_env! 方案的缓存复用坑，见计划 §2.1）。
+#[cfg_attr(not(feature = "verify"), allow(dead_code))]
 #[cfg(feature = "verify-enforce-lock")]
 pub const VERIFY_ENFORCE_LOCKED: bool = true;
+#[cfg_attr(not(feature = "verify"), allow(dead_code))]
 #[cfg(not(feature = "verify-enforce-lock"))]
 pub const VERIFY_ENFORCE_LOCKED: bool = false;
 
@@ -33,6 +41,7 @@ pub const VERIFY_ENFORCE_LOCKED: bool = false;
 /// env `NEMESIS_BUILD_ROOT_ANCHOR` > 仓库 `certs/root_cert.der` 现算 > None。
 /// build.rs 无锚时显式 emit 空值压掉 ambient 同名变量，空串按 None 处理
 /// （const 上下文不能 match str 模式，走 `str::is_empty` 判空）。
+#[cfg_attr(not(feature = "verify"), allow(dead_code))]
 const fn anchor_from_env(v: Option<&'static str>) -> Option<&'static str> {
     match v {
         None => None,
@@ -46,12 +55,15 @@ const fn anchor_from_env(v: Option<&'static str>) -> Option<&'static str> {
     }
 }
 
+#[cfg_attr(not(feature = "verify"), allow(dead_code))]
 pub const ROOT_ANCHOR: Option<&'static str> = anchor_from_env(option_env!("NEMESIS_ROOT_ANCHOR"));
 
 /// enforce 拒启退出码（计划决策 6）。
+#[cfg_attr(not(feature = "verify"), allow(dead_code))]
 pub const EXIT_ENFORCE_REJECTED: i32 = 86;
 
 /// 生效模式（§1 矩阵输出）。
+#[cfg_attr(not(feature = "verify"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerifyMode {
     Off,
@@ -70,6 +82,7 @@ impl VerifyMode {
 }
 
 /// 裁决结果。
+#[cfg_attr(not(feature = "verify"), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub struct Resolution {
     /// 生效模式（矩阵裁决后）。
@@ -88,6 +101,7 @@ pub struct Resolution {
 /// 3. 非锁定：off→Off / 缺省或 warn→Warn / enforce→Enforce；
 /// 4. 无锚修正：锁定 → 维持 Enforce（启动自验必失败 → 拒启 86，构建错误
 ///    诚实暴露）；非锁定 → 降级 Off（`degraded = true` 当原请求非 off）。
+#[cfg_attr(not(feature = "verify"), allow(dead_code))]
 pub fn resolve_mode(config_value: Option<&str>) -> Result<Resolution, String> {
     let requested = match config_value {
         None | Some("") => VerifyMode::Warn,
@@ -158,6 +172,16 @@ pub fn start_check() -> Option<&'static StartCheck> {
 ///
 /// 控制台输出走 `eprintln!`——调用点早于 lazy logger 初始化，tracing 全局
 /// subscriber 尚未装配；gateway 稍后会从 [`start_check`] 补正式日志与审计链。
+///
+/// verify feature 关：签名验证子系统未编译，无可验之物——响亮声明后跳过
+/// （缺检不是静默：IoT/极小镜像构建的可见取舍）。
+#[cfg(not(feature = "verify"))]
+pub fn self_check_and_enforce(_local_mode: bool) {
+    eprintln!("[verify] 签名验证子系统未编译进本构建（verify feature 关）——跳过启动自验");
+}
+
+/// 启动自验单一入口（verify feature 开：完整矩阵裁决 + 自验 + enforce）。
+#[cfg(feature = "verify")]
 pub fn self_check_and_enforce(local_mode: bool) {
     let config_value = read_config_value(local_mode);
     let resolution = match resolve_mode(config_value.as_deref()) {
@@ -242,6 +266,7 @@ pub fn self_check_and_enforce(local_mode: bool) {
 /// 与 security_setup.rs 同文件同姿态）。文件缺席 = 未配置（None）；
 /// JSON 解析失败 / 键存在但非字符串 = None + 响亮提示（值合法性仍由
 /// [`resolve_mode`] 把关，这里不做二次裁决）。
+#[cfg(feature = "verify")]
 fn read_config_value(local_mode: bool) -> Option<String> {
     let home = crate::common::resolve_home(local_mode);
     let path = crate::common::security_config_path(&home);
@@ -280,6 +305,7 @@ fn read_config_value(local_mode: bool) -> Option<String> {
 }
 
 /// 验证当前进程 exe（lib 直接验签，不走 DLL；编译期锚单锚集）。
+#[cfg(feature = "verify")]
 fn verify_current_exe(anchor_hex: &str) -> OutcomeSummary {
     let run = || -> Result<VerifyOutcome, String> {
         let anchor = hex_decode_32(anchor_hex).map_err(|e| format!("锚指纹解码失败: {e}"))?;
@@ -352,6 +378,7 @@ fn verify_current_exe(anchor_hex: &str) -> OutcomeSummary {
     }
 }
 
+#[cfg(feature = "verify")]
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

@@ -16,14 +16,18 @@ nemesis-types = { workspace = true }
 nemesis-bus = { workspace = true }
 nemesis-providers = { workspace = true }
 nemesis-config = { workspace = true }
-nemesis-connectors = { workspace = true }
 nemesis-cluster = { workspace = true, optional = true }
+# 行动代理连接器数据面（handlers/connectors.rs；`connectors` feature 门控——
+# 它无条件依赖 nemesis-security，关 = security 一并退出依赖图）。
+nemesis-connectors = { workspace = true, optional = true }
 nemesis-forge = { workspace = true, optional = true }
 nemesis-skills = { workspace = true }
 nemesis-security = { workspace = true, optional = true }
 nemesis-sandbox = { workspace = true, optional = true }
 nemesis-cron = { workspace = true }
-nemesis-board = { workspace = true }
+# 看板存储（board.* WSAPI / team.* / 看板资产端点；`board` feature 门控——
+# rusqlite bundled 随它进出，iotsmall 里最后一个 SQLite 来源）。
+nemesis-board = { workspace = true, optional = true }
 nemesis-services = { workspace = true }
 nemesis-voice = { workspace = true, optional = true }
 nemesis-memory = { workspace = true, optional = true }
@@ -46,7 +50,7 @@ nemesis-prompts = { workspace = true }
 # P2-1 (2026-08-24 UI entry gap): coding.lsp_status probes the language-server
 # registry table (SERVERS / server_available). Unconditional, mirroring
 # nemesis-agent's own non-optional dependency on nemesis-lsp.
-nemesis-lsp = { workspace = true }
+nemesis-lsp = { workspace = true, optional = true }
 # L8 PTY 内嵌终端（dashboard 终端 tab；`terminal` feature 门控）
 portable-pty = { workspace = true, optional = true }
 serde = { workspace = true }
@@ -105,9 +109,27 @@ skins = ["dep:zip", "dep:nemesis-verify"]
 # L9 版本自切换通道（selfupdate.rs apply 编排：v4 验签 + zip 解包 + 审批 +
 # 审计链，implies security）。check/status/journal/boot 收口不门控。
 selfupdate = ["security", "dep:zip", "dep:nemesis-verify"]
+# LSP 语义代码管理面（coding.lsp_status/lsp_install WSAPI + server 持有的
+# LspManager 单例槽；由 nemesisbot 的 lsp feature 穿透）。关 = 两条命令
+# 诚实报未编译，coding.config（纯 config 读写）照常。
+lsp = ["dep:nemesis-lsp"]
+# U20 会话全文检索管理面（logs.history_search / logs.history_reindex
+# WSAPI；消费 nemesis-agent 的 history_search FTS 模块，随其 feature 进出；
+# 由 nemesisbot 的 history-search feature 穿透）。关 = 两条命令诚实报未编译。
+history-search = ["nemesis-agent/history-search"]
+# 看板管理面（board.* WSAPI + team_memory + 看板资产下载端点 + server/board
+# 注入槽）。由 nemesisbot 的 board feature 穿透；关 =nemesis-board 整包退出
+# 依赖图（rusqlite bundled 随之消失），board 命令从注册表面消失。
+board = ["dep:nemesis-board"]
+# 行动代理连接器管理面（connectors.* / paperbroker.* WSAPI；由 nemesisbot
+# 的 connectors feature 穿透）。关 = handler 整体退出注册表面。
+connectors = ["dep:nemesis-connectors"]
 
 [dev-dependencies]
 tempfile = "3"
+# usage-store 行为测试经 dev-dependencies 带回真 SQLite 账本（resolver 2：
+# dev-dep features 不泄漏到正常构建——正常构建按需编译空账本 stub）。
+nemesis-data = { workspace = true, features = ["usage-store"] }
 # 资产下载端点 oneshot 请求测试（board_asset/tests.rs）：tower util
 # feature 提供 .oneshot()；http-body-util 收集响应 body；bytes 是其产物类型。
 tower = { workspace = true, features = ["util"] }

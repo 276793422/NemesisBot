@@ -24,6 +24,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+#[cfg(feature = "cluster")]
 use tracing::{error, info, warn};
 
 #[cfg(all(feature = "cluster", feature = "forge"))]
@@ -37,6 +38,7 @@ use super::record_cluster_usage;
 use super::{BusToClusterAdapter, ClusterResultPersisterAdapter};
 #[cfg(all(feature = "board", feature = "cluster"))]
 use super::{sweep_dispatch_timeouts, write_back_board_dispatch};
+#[cfg(feature = "cluster")]
 use crate::common;
 
 /// PB-2 产物 struct（§4.2 B2）。无门 trio 由 SharedResources（PB-4）无门
@@ -89,6 +91,7 @@ pub(crate) struct ClusterWiring {
 /// Step 9a：集群基础设施装配（计划 §4.2 B2）。Cluster 对象与 adapter refs
 /// 恒建（动态 start/stop 支持）；网络组件（RPC server/discovery）仅在
 /// master + app config 双开时启动。
+#[cfg_attr(not(feature = "cluster"), allow(unused_variables))]
 pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
     // ctx 影子重绑（B1 同款）：块内原文引用局部名不变，所有权拓扑不变。
     // 门控取各名字在本函数内的实际消费门（全部落在 cfg(cluster) 块内），
@@ -97,7 +100,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
     let home = ctx.home.clone();
     #[cfg(feature = "cluster")]
     let cfg = ctx.cfg.clone();
-    #[cfg(feature = "cluster")]
+    #[cfg(all(feature = "board", feature = "cluster"))]
     let estop = ctx.estop.clone();
     #[cfg(feature = "cluster")]
     let bus = ctx.bus.clone();
@@ -616,10 +619,10 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             None => (None, None),
         };
         #[cfg(not(all(feature = "board", feature = "cluster")))]
-        let (transfer_sink, transfer_outbox): (
+        let (_transfer_sink, transfer_outbox): (
             Option<std::sync::Arc<nemesis_cluster::transfer::TransferSink>>,
             Option<std::sync::Arc<nemesis_cluster::outbox::TransferOutbox>>,
-        ) = (None, None);
+        ) = (None, None); // sink 只在 @all(board,cluster) 消费；@not 臂占位
 
         // Set result persister for fallback when callback fails.
         // 2026-09-08 G1 收口：同一份 persister 同时交给 peer_chat_handler
@@ -1193,6 +1196,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 // P2A（2026-09-12 NB-15）：结构化失败分类（可选字段，旧
                 // worker 无此字段不炸；只认字符串形态）。随写回落到 ⛔
                 // 失败评论，验收重派决策据此避免同 worker 同模型盲重派。
+                #[cfg_attr(not(all(feature = "board", feature = "cluster")), allow(unused_variables))]
                 let fail_class = payload
                     .get("fail_class")
                     .and_then(|v| v.as_str())
@@ -1212,7 +1216,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     selfcheck_for_cb.take(task_id)
                 };
                 #[cfg(any(not(feature = "board"), not(feature = "cluster")))]
-                let selfcheck_issue_id: Option<i64> = None;
+                let _selfcheck_issue_id: Option<i64> = None;
                 #[cfg(all(feature = "board", feature = "cluster"))]
                 if let Some(sc_issue_id) = selfcheck_issue_id {
                     info!(

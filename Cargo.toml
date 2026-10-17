@@ -198,7 +198,10 @@ nemesis-types = { path = "crates/nemesis-types" }
 nemesis-prompts = { path = "crates/nemesis-prompts" }
 nemesis-bus = { path = "crates/nemesis-bus" }
 nemesis-config = { path = "crates/nemesis-config" }
-nemesis-data = { path = "crates/nemesis-data" }
+# default-features=false：价目表编译期内嵌（pricing-embed）改为显式 opt-in——
+# IoT/极小镜像可裁掉 ~0.6MB 内嵌 JSON（关后空表降级，cost=0 诚实口径）；
+# 全量构建经 nemesisbot 的 pricing-embed feature 带回。
+nemesis-data = { path = "crates/nemesis-data", default-features = false }
 nemesis-observer = { path = "crates/nemesis-observer" }
 nemesis-security = { path = "crates/nemesis-security", default-features = false }
 nemesis-verify = { path = "crates/nemesis-verify" }

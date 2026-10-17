@@ -124,6 +124,7 @@ fn checks_commands_filter_trim_and_whitespace() {
 fn default_impls_for_stateless_tools() {
     let _ = McpDiscoverTool::default();
     let _ = CliReferenceTool::default();
+    #[cfg(feature = "history-search")]
     let _ = HistorySearchTool::default();
 }
 

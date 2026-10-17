@@ -6,9 +6,12 @@
 //!           model.install
 
 use crate::handlers::{
-    get_opt_bool_loud, get_opt_str, get_opt_str_loud, get_opt_u64_loud, read_workspace_file,
-    require_home, require_workspace, resolve_path, write_workspace_file,
+    get_opt_bool_loud, get_opt_str_loud, get_opt_u64_loud, read_workspace_file, require_home,
+    require_workspace, resolve_path, write_workspace_file,
 };
+// team.list 的 scope 提取是 get_opt_str 唯一消费点（team.* 随 board 进出）。
+#[cfg(feature = "board")]
+use crate::handlers::get_opt_str;
 use crate::ws_router::{ModuleHandler, RequestContext};
 use std::collections::HashSet;
 use std::io::Write;
@@ -18,7 +21,9 @@ use std::sync::OnceLock;
 pub struct MemoryHandler;
 
 /// team_memory 命令的 store 取用（M4.5：team_memory 表在 master board.db，
-/// 由 gateway 装配注入；board 服务缺席时诚实报错）。
+/// 由 gateway 装配注入；board 服务缺席时诚实报错）。board 关 = 随 nemesis-board
+/// 整体退出编译，team.* 四臂走未编译诚实分支。
+#[cfg(feature = "board")]
 fn require_team_memory_store(
     ctx: &RequestContext,
 ) -> Result<std::sync::Arc<nemesis_board::BoardStore>, String> {
@@ -153,53 +158,82 @@ impl ModuleHandler for MemoryHandler {
             }
 
             // --- Swarm M4.5：团队经验（team_memory 表，master board.db）---
+            // board 关 = team_memory 存储随 nemesis-board 退出编译，四臂诚实报未编译。
             "team.list" => {
-                let store = require_team_memory_store(ctx)?;
-                let scope = data.as_ref().and_then(|d| get_opt_str(d, "scope"));
-                let include_deprecated = data
-                    .as_ref()
-                    .and_then(|d| d.get("include_deprecated"))
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let entries = store.list_team_memory(scope.as_deref(), include_deprecated)?;
-                Ok(Some(
-                    serde_json::json!({ "entries": entries, "total": entries.len() }),
-                ))
+                #[cfg(feature = "board")]
+                {
+                    let store = require_team_memory_store(ctx)?;
+                    let scope = data.as_ref().and_then(|d| get_opt_str(d, "scope"));
+                    let include_deprecated = data
+                        .as_ref()
+                        .and_then(|d| d.get("include_deprecated"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let entries = store.list_team_memory(scope.as_deref(), include_deprecated)?;
+                    Ok(Some(
+                        serde_json::json!({ "entries": entries, "total": entries.len() }),
+                    ))
+                }
+                #[cfg(not(feature = "board"))]
+                {
+                    Err("team_memory 未编译进本构建（board 关）".to_string())
+                }
             }
             "team.search" => {
-                let store = require_team_memory_store(ctx)?;
-                let data = data.ok_or("missing data")?;
-                let query = crate::handlers::get_str(&data, "query")?;
-                let entries = store.search_team_memory(&query)?;
-                Ok(Some(
-                    serde_json::json!({ "entries": entries, "total": entries.len() }),
-                ))
+                #[cfg(feature = "board")]
+                {
+                    let store = require_team_memory_store(ctx)?;
+                    let data = data.ok_or("missing data")?;
+                    let query = crate::handlers::get_str(&data, "query")?;
+                    let entries = store.search_team_memory(&query)?;
+                    Ok(Some(
+                        serde_json::json!({ "entries": entries, "total": entries.len() }),
+                    ))
+                }
+                #[cfg(not(feature = "board"))]
+                {
+                    Err("team_memory 未编译进本构建（board 关）".to_string())
+                }
             }
             "team.remove" => {
-                let store = require_team_memory_store(ctx)?;
-                let data = data.ok_or("missing data")?;
-                let id = data
-                    .get("id")
-                    .and_then(|v| v.as_i64())
-                    .ok_or("missing field: id")?;
-                store.remove_team_memory(id)?;
-                Ok(Some(serde_json::json!({ "removed": true, "id": id })))
+                #[cfg(feature = "board")]
+                {
+                    let store = require_team_memory_store(ctx)?;
+                    let data = data.ok_or("missing data")?;
+                    let id = data
+                        .get("id")
+                        .and_then(|v| v.as_i64())
+                        .ok_or("missing field: id")?;
+                    store.remove_team_memory(id)?;
+                    Ok(Some(serde_json::json!({ "removed": true, "id": id })))
+                }
+                #[cfg(not(feature = "board"))]
+                {
+                    Err("team_memory 未编译进本构建（board 关）".to_string())
+                }
             }
             "team.set_deprecated" => {
-                let store = require_team_memory_store(ctx)?;
-                let data = data.ok_or("missing data")?;
-                let id = data
-                    .get("id")
-                    .and_then(|v| v.as_i64())
-                    .ok_or("missing field: id")?;
-                let deprecated = data
-                    .get("deprecated")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(true);
-                store.set_team_memory_deprecated(id, deprecated)?;
-                Ok(Some(
-                    serde_json::json!({ "updated": true, "id": id, "deprecated": deprecated }),
-                ))
+                #[cfg(feature = "board")]
+                {
+                    let store = require_team_memory_store(ctx)?;
+                    let data = data.ok_or("missing data")?;
+                    let id = data
+                        .get("id")
+                        .and_then(|v| v.as_i64())
+                        .ok_or("missing field: id")?;
+                    let deprecated = data
+                        .get("deprecated")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true);
+                    store.set_team_memory_deprecated(id, deprecated)?;
+                    Ok(Some(
+                        serde_json::json!({ "updated": true, "id": id, "deprecated": deprecated }),
+                    ))
+                }
+                #[cfg(not(feature = "board"))]
+                {
+                    Err("team_memory 未编译进本构建（board 关）".to_string())
+                }
             }
 
             // --- Legacy (kept for compatibility) ---
@@ -1383,6 +1417,7 @@ mod s10b_tests;
 // AGT 覆盖率批次（2026-09-24）：team_memory 命令组（board 注入）、
 // legacy 向量库一次性迁移拷贝、entries.get/delete 的 store 缺失与空行臂、
 // test-fixture 嵌入注入的语义 search/get/delete 全链。结构性豁免见
-// agt_tests 文件头注。
-#[cfg(all(test, feature = "memory"))]
+// agt_tests 文件头注。board 关 = team_memory 组随 nemesis-board 退出编译，
+// 整个测试文件（硬依赖 BoardService 槽）一起退出。
+#[cfg(all(test, feature = "memory", feature = "board"))]
 mod agt_tests;

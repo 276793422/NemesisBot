@@ -26,6 +26,7 @@ fn open_store(tag: &str) -> (DataStore, PathBuf) {
 }
 
 /// compute_cost_usd 包装层：已知模型走分层查表算出正成本。
+#[cfg(feature = "pricing-embed")]
 #[test]
 fn compute_cost_usd_known_model_matches_layered_table() {
     let (store, path) = open_store("cost_known");
@@ -459,6 +460,7 @@ fn retention_sweep_rollups_trims_and_noops() {
 }
 
 /// compute_cost_breakdown 包装：已知模型 Some（分项齐全）、未知模型 None。
+#[cfg(feature = "pricing-embed")]
 #[test]
 fn cost_breakdown_wrapper_some_and_none() {
     let (store, path) = open_store("w4_breakdown");
