@@ -455,7 +455,7 @@ impl RpcServer {
             let success = result.is_ok();
             let mut fields = serde_json::json!({
                 "direction": "inbound",
-                "action": action,
+                "action": crate::cluster_log::audit_action_name(action),
                 "source": wire_msg.from,
                 "target": wire_msg.to,
                 "request_id": wire_msg.id,
