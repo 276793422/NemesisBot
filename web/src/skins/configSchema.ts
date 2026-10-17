@@ -56,6 +56,11 @@ const FIELDS: Record<string, Omit<SchemaField, 'key' | 'default'>> = {
   // ---- executor ----
   'executor.enabled': { label: '执行体隔离（Layer 1）', type: 'boolean' },
   'executor.sandbox': { label: '沙盒隔离（Layer 2）', type: 'boolean' },
+  // ---- executor.persistent（持久执行体，P3）----
+  'executor.persistent.enabled': { label: '持久执行体进程池', type: 'boolean' },
+  'executor.persistent.max_slots': { label: '常驻槽位上限', type: 'number', range: { min: 1, max: 16, step: 1 } },
+  'executor.persistent.idle_shutdown_secs': { label: '空闲回收（秒，0=不回收）', type: 'number', range: { min: 0, max: 3600, step: 30 } },
+  'executor.persistent.call_timeout_secs': { label: '单次调用超时（秒）', type: 'number', range: { min: 30, max: 3600, step: 30 } },
   // ---- terminal ----
   'terminal.enabled': { label: '启用内嵌终端', type: 'boolean' },
   'terminal.max_sessions': { label: '最大会话数', type: 'number', range: { min: 1, max: 32, step: 1 } },
