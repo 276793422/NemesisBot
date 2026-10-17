@@ -16,7 +16,8 @@
  *   - GET  /v1/models → 模型列表
  *
  * 证据面：每收到一次请求，把「messages 里是否含 Workflow Editor Session
- * 注入区」追加写进 --evidence 文件（V4 验证 = 后端注入链真实生效）。
+ * 注入区」与「是否含 Open Files (client-reported) 注入节（I5 上下文文件）」
+ * 追加写进 --evidence 文件（V4/I5 验证 = 后端注入链真实生效）。
  *
  * 用法：node scripts/verify-mock-llm.mjs [--port 18901] [--evidence <file>]
  */
@@ -83,14 +84,15 @@ function recordEvidence(body) {
   const hasSection = text.includes('Workflow Editor Session')
   const hasCapabilities = text.includes('workflow_capabilities') || text.includes('node_type')
   const hasTargetYaml = text.includes('trigger_type')
-  const line = `${new Date().toISOString()} last_role=${lastRole(body)} route=${routeRequest(body)} wf_edit_section=${hasSection} yaml_like=${hasTargetYaml} caps_like=${hasCapabilities} msgs=${(body?.messages ?? []).length}\n`
+  const hasOpenFiles = text.includes('Open Files (client-reported)')
+  const line = `${new Date().toISOString()} last_role=${lastRole(body)} route=${routeRequest(body)} wf_edit_section=${hasSection} yaml_like=${hasTargetYaml} caps_like=${hasCapabilities} open_files=${hasOpenFiles} msgs=${(body?.messages ?? []).length}\n`
   try {
     fs.appendFileSync(EVIDENCE, line)
   } catch {
     /* 证据文件写不进不影响服务 */
   }
-  // 把完整首轮请求 dump 下来（V4/V8 人工核对注入内容）
-  if (hasSection) {
+  // 把完整请求 dump 下来（V4/V8/I5 人工核对注入内容）
+  if (hasSection || hasOpenFiles) {
     try {
       fs.writeFileSync(EVIDENCE.replace(/\.log$/, '.last-request.json'), JSON.stringify(body, null, 2))
     } catch {
