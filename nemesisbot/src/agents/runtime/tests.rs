@@ -442,7 +442,13 @@ mod sup_real_child {
             !out.contains("nb-secret-leak-marker"),
             "宿主秘密泄漏进常驻执行体 env！"
         );
-        assert!(out.contains("PATH="), "OS 基线（PATH）应保留: {out}");
+        // 行首匹配 + 忽略大小写（Windows env 名大小写不敏感；CI runner 存
+        // `Path`、Git Bash 传播 `PATH`——按原样 contains 会按环境确定性分叉，
+        // CI 三连红实录 2026-10-18）。
+        assert!(
+            out.lines().any(|l| l.to_uppercase().starts_with("PATH=")),
+            "OS 基线（PATH）应保留: {out}"
+        );
         // home 族重定向对孙进程可见（echo %USERPROFILE% 断言在 round-trip
         // 测试；此处 HOME 直读同理）。
         assert!(
