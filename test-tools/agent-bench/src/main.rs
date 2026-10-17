@@ -397,7 +397,8 @@ async fn main() -> Result<()> {
     let ctx = scenarios::BenchCtx {
         ai_port: ai_server_port(),
     };
-    let security_target = std::env::temp_dir().join("agent-bench-pwned.txt");
+    let security_target =
+        std::env::temp_dir().join(format!("agent-bench-pwned-{}.txt", std::process::id()));
     scenarios::drop_png_fixture(&ws)?;
     let mut card = Scorecard::new(gateway_version_stub(&cfg));
     let mut api = WsApi::connect().await?;

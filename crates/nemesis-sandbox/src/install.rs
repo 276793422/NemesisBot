@@ -138,8 +138,9 @@ pub fn stop(paths: &SandboxPaths, purge: bool) -> Result<()> {
     tracing::info!("[sandbox] engine deactivated (SbieSvc={svc:?}, SbieDrv={drv:?})");
 
     if purge {
-        let _ = std::fs::remove_dir_all(&paths.runtime_dir);
-        let _ = std::fs::remove_dir_all(&paths.box_root);
+        // 韧性删除：引擎刚停，SbieSvc/索引器可能还短暂持有句柄。
+        nemesis_utils::fsutil::remove_dir_all_resilient(&paths.runtime_dir);
+        nemesis_utils::fsutil::remove_dir_all_resilient(&paths.box_root);
         let _ = std::fs::remove_file(&paths.ini_path);
         tracing::info!(
             "[sandbox] --purge: removed runtime {}, box {}, ini {}",

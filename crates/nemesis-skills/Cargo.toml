@@ -14,6 +14,7 @@ security = ["dep:nemesis-security"]
 
 [dependencies]
 nemesis-types = { workspace = true }
+nemesis-utils = { workspace = true }
 nemesis-security = { workspace = true, optional = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }

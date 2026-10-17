@@ -152,9 +152,9 @@ pub fn ingest_landed(store: &BoardStore, task_id: &str, inbox_dir: &Path) -> Opt
     ) {
         tracing::warn!("[BoardArchive] timeline 写入失败（不阻塞）: {e}");
     }
-    if let Err(e) = std::fs::remove_dir_all(inbox_dir) {
-        tracing::warn!("[BoardArchive] 收件箱清理失败 task {task_id}: {e}");
-    }
+    // 韧性删除：收件箱刚被资产管线写过，瞬时句柄常见；重试耗尽由包装内部
+    // warn 留痕（残留交启动清扫兜底）。
+    nemesis_utils::fsutil::remove_dir_all_resilient(inbox_dir);
     tracing::info!(
         task_id = %task_id,
         issue = %issue.number,

@@ -228,7 +228,8 @@ fn cmd_remove(workspace: &std::path::Path, name: &str) -> Result<()> {
         }
     }
 
-    std::fs::remove_dir_all(&dir)?;
+    // 韧性删除：用户点名的 remove 操作，瞬时句柄单发会假失败报错。
+    nemesis_utils::fsutil::remove_dir_all_retry(&dir)?;
     println!("已删除人格: {}", name);
     Ok(())
 }
