@@ -112,6 +112,11 @@ fn user_profile_matches_env() {
 #[test]
 fn workspace_dir_local_flag_points_at_cwd_dotdir() {
     // --local → {cwd}/.nemesisbot/workspace（不经 env，确定性形状）。
+    // 两次 cwd 读取（函数内 + 断言处）——持锁防并行 set_current_dir mutator
+    // 在读取之间穿插导致假红。
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let ws = workspace_dir(true);
     let cwd = std::env::current_dir().unwrap();
     assert_eq!(ws, cwd.join(".nemesisbot").join("workspace"));
