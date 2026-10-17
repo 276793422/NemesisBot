@@ -1,7 +1,8 @@
 //! AgentRuntimeSupervisor 测试。
 //!
-//! 两层：config 现读纯逻辑（无进程）+ 真子进程链路（resolve_nemesisbot_bin，
-//! 缺二进制 panic 提示先构建——与 exec_worker/tests.rs wave_r10 同门）。
+//! 两层：config 现读纯逻辑（无进程）+ 真子进程链路（resolve_test_bin：
+//! debug 槽专用解析，缺二进制 panic 提示先构建——与 exec_worker/tests.rs
+//! wave_r10 同门）。
 //! 真子进程组仅 Windows（.exe 解析 + taskkill 形态）。
 //
 // 真子进程组用 GLOBAL_STATE_LOCK（std Mutex）跨 await 持有做测试串行——
@@ -272,10 +273,39 @@ mod sup_real_child {
     use crate::agents::runtime::AgentRuntimeSupervisor;
     use nemesis_agent::context::RequestContext;
     use nemesis_path::resolve_agent_home_in_workspace;
-    use test_harness::resolve_nemesisbot_bin;
 
     fn ctx() -> RequestContext {
         RequestContext::new("web", "chat-sup", "tester", "sess-sup")
+    }
+
+    /// 测试二进制解析：debug 槽专用，不走 test-harness 的 release 优先序。
+    /// 本组测试断言 v2 wire 契约（call_id 回显）——被测二进制必须与源码
+    /// 同代；release 槽是任意旧产物（CI 缓存实录：pre-v2 的 release exe
+    /// 不回显 call_id → 全组 deterministic 红，debug 二进制钉入即全绿）。
+    /// debug 槽由 `cargo test -p nemesisbot`（自动构建本包 bin 目标）与
+    /// nextest 纪律的前置 `cargo build -p nemesisbot` 维持新鲜。
+    /// `NEMESISBOT_TEST_BIN` 覆盖仍尊重（llvm-cov 独立 target dir 同链）。
+    fn resolve_test_bin() -> anyhow::Result<PathBuf> {
+        if let Ok(bin) = std::env::var("NEMESISBOT_TEST_BIN") {
+            let bin = PathBuf::from(bin);
+            if bin.exists() {
+                return Ok(bin);
+            }
+            anyhow::bail!("NEMESISBOT_TEST_BIN={} 不存在；拒绝静默回落", bin.display());
+        }
+        let bin = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("manifest dir has parent")
+            .join("target")
+            .join("debug")
+            .join(format!("nemesisbot{}", std::env::consts::EXE_SUFFIX));
+        if bin.exists() {
+            return Ok(bin);
+        }
+        anyhow::bail!(
+            "target/debug/nemesisbot{} 不存在——先 cargo build -p nemesisbot（nextest 不构建常规 bin 目标）",
+            std::env::consts::EXE_SUFFIX
+        );
     }
 
     /// 组装一个指向真二进制的 supervisor（config 写入 tempdir）。
@@ -285,9 +315,9 @@ mod sup_real_child {
         tmp: &tempfile::TempDir,
         cfg_json: &str,
     ) -> (Arc<AgentRuntimeSupervisor>, PathBuf, PathBuf) {
-        let bin = match resolve_nemesisbot_bin() {
+        let bin = match resolve_test_bin() {
             Ok(p) => p,
-            Err(e) => panic!("nemesisbot.exe 未找到（先构建或设 NEMESISBOT_TEST_BIN）: {e}"),
+            Err(e) => panic!("nemesisbot 二进制未找到: {e}"),
         };
         let cfg_path = tmp.path().join("config.json");
         std::fs::write(&cfg_path, cfg_json).unwrap();
