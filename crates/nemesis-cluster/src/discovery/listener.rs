@@ -237,7 +237,15 @@ impl UdpListener {
         let handle = std::thread::Builder::new()
             .name("discovery-udp-listen".into())
             .spawn(move || {
-                let mut buf = [0u8; 4096];
+                // BUG-4（2026-10-17）：4K → 16K。超长 announce（多网卡 +
+                // APIPA 补齐 + 大 capabilities/professions 载荷）此前被
+                // 静默截断（Windows WSAEMSGSIZE 按截断 / Linux 静默）→
+                // 解密或解析失败仅 DEBUG 线，形成「对端在发、本端永收」。
+                // 缓冲是接收线程单个复用的栈缓冲（非每包分配），扩容零
+                // 运行时成本；UDP 报文理论上限 64KB，近场大载荷 16K 留
+                // 4 倍余量。
+                const RECV_BUFFER_SIZE: usize = 16 * 1024;
+                let mut buf = [0u8; RECV_BUFFER_SIZE];
                 while running.load(Ordering::SeqCst) {
                     match socket.recv_from(&mut buf) {
                         Ok((n, addr)) => {

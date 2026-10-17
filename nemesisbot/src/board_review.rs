@@ -4158,10 +4158,16 @@ async fn dispatch_selfcheck(
         source: source_node_id,
         target: Some(worker.to_string()),
     };
-    rpc_client
+    let resp = rpc_client
         .call_with_timeout(worker, request_rpc, std::time::Duration::from_secs(30))
         .await
         .map_err(|e| format!("取证 RPC 送达失败：{e}"))?;
+    // BUG-1（2026-10-17）：B 端拒单（工作队列满，ACK status=error）=
+    // 任务从未开始，不能当派发成功——返回 Err 走调用方既有取证失败
+    // 路径，评审链不被悬挂等待一个永不会来的回调。
+    if nemesis_cluster::rpc::peer_chat_handler::peer_chat_ack_rejected(resp.result.as_ref()) {
+        return Err("取证派发被 worker 拒单（B 端工作队列满，ACK status=error）".into());
+    }
     Ok(task_id)
 }
 

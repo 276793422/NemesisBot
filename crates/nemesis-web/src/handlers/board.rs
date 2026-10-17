@@ -1101,50 +1101,66 @@ pub fn dispatch_issue_core(
     let prev_assignee_id_for_rpc = dispatch_prev_assignee_id.clone();
     tokio::spawn(async move {
         let timeout = std::time::Duration::from_secs(30);
-        match rpc_client
+        // 统一失败收尾：传输失败与 B 端拒单（BUG-1，2026-10-17——ACK
+        // status=error = 工作队列满，任务从未开始）同走 F2 路径
+        // （finish FAILED + 回退 + ⛔ 留痕，sweep 按 MARK 前缀识别重试候选）。
+        let failure: Option<(&'static str, String)> = match rpc_client
             .call_with_timeout(&target_for_rpc, request, timeout)
             .await
         {
-            Ok(_) => {
-                tracing::info!("[Board] dispatch RPC ACK received (task_id={task_id_for_rpc})");
-            }
-            Err(e) => {
-                tracing::warn!("[Board] dispatch RPC send failed (task_id={task_id_for_rpc}): {e}");
-                let _ = store_for_rpc.finish_dispatch(
-                    &task_id_for_rpc,
-                    nemesis_board::models::dispatch_state::FAILED,
-                );
-                // F2（2026-09-30）：送达失败 = 任务从未开始 → 状态回退到
-                // 派发前值 + 指派恢复（守卫内部自含：人工同刻挪过状态就让
-                // 位）。失败仅留日志（⛔ 评论与审计已在下面/rollback 内落）。
-                match store_for_rpc.rollback_dispatch_failure(
-                    issue_id,
-                    prev_status_for_rpc,
-                    prev_assignee_for_rpc,
-                    prev_assignee_id_for_rpc,
-                    &nemesis_board::Actor::system("board"),
+            Ok(resp) => {
+                if nemesis_cluster::rpc::peer_chat_handler::peer_chat_ack_rejected(
+                    resp.result.as_ref(),
                 ) {
-                    Ok(true) => tracing::info!(
-                        "[Board] 送达失败回退完成（issue={issue_id} → {}）",
-                        prev_status_for_rpc
-                    ),
-                    Ok(false) => {}
-                    Err(re) => tracing::warn!("[Board] 送达失败回退未执行（让位或异常）：{re}"),
+                    Some((
+                        "worker 拒单",
+                        "B 端工作队列满，任务未被接受（ACK status=error）".into(),
+                    ))
+                } else {
+                    tracing::info!("[Board] dispatch RPC ACK received (task_id={task_id_for_rpc})");
+                    None
                 }
-                let _ = store_for_rpc.add_comment(nemesis_board::models::NewComment {
-                    issue_id,
-                    author: nemesis_board::Actor::system("board"),
-                    content: format!(
-                        // F2：前缀走单一真相源常量（sweep 重试候选按前缀识别，
-                        // 字面量漂移 = 重试静默失效）。
-                        "{}: [{}] RPC 送达失败（{e}）",
-                        nemesis_board::SEND_FAILURE_MARK,
-                        e.failure_category()
-                    ),
-                    parent_id: None,
-                    ctype: nemesis_board::CommentType::System,
-                });
             }
+            Err(e) => Some((e.failure_category(), e.to_string())),
+        };
+        if let Some((category, detail)) = failure {
+            tracing::warn!(
+                "[Board] dispatch send failed (task_id={task_id_for_rpc}): [{category}] {detail}"
+            );
+            let _ = store_for_rpc.finish_dispatch(
+                &task_id_for_rpc,
+                nemesis_board::models::dispatch_state::FAILED,
+            );
+            // F2（2026-09-30）：送达失败 = 任务从未开始 → 状态回退到
+            // 派发前值 + 指派恢复（守卫内部自含：人工同刻挪过状态就让
+            // 位）。失败仅留日志（⛔ 评论与审计已在下面/rollback 内落）。
+            match store_for_rpc.rollback_dispatch_failure(
+                issue_id,
+                prev_status_for_rpc,
+                prev_assignee_for_rpc,
+                prev_assignee_id_for_rpc,
+                &nemesis_board::Actor::system("board"),
+            ) {
+                Ok(true) => tracing::info!(
+                    "[Board] 送达失败回退完成（issue={issue_id} → {}）",
+                    prev_status_for_rpc
+                ),
+                Ok(false) => {}
+                Err(re) => tracing::warn!("[Board] 送达失败回退未执行（让位或异常）：{re}"),
+            }
+            let _ = store_for_rpc.add_comment(nemesis_board::models::NewComment {
+                issue_id,
+                author: nemesis_board::Actor::system("board"),
+                content: format!(
+                    // F2：前缀走单一真相源常量（sweep 重试候选按前缀识别，
+                    // 字面量漂移 = 重试静默失效）。
+                    "{}: [{}] RPC 送达失败（{detail}）",
+                    nemesis_board::SEND_FAILURE_MARK,
+                    category
+                ),
+                parent_id: None,
+                ctype: nemesis_board::CommentType::System,
+            });
         }
     });
 
