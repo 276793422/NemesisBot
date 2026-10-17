@@ -78,6 +78,21 @@ pub struct PeerChatAck {
     pub task_id: String,
 }
 
+/// 判定 peer_chat 的 RPC 响应载荷是否为 B 端拒单（BUG-1，2026-10-17）。
+///
+/// B 端工作队列满等场景同步返回 `{status:"error"}` ACK——传输层成功、
+/// 载荷层拒单。A 端调用方（board 派发 / 评审取证 / Dashboard 手动
+/// peer_chat）必须检查本形态并按送达失败收尾，否则任务悬挂等一个
+/// 永不会来的回调（看板层吊到 dispatch_timeout sweep，Dashboard 吊到
+/// stale 安全网）。ACK JSON 位于 `RPCResponse.result`（server 把 handler
+/// 返回值经 `WireMessage::new_response` 包进 result 字段）。
+pub fn peer_chat_ack_rejected(result: Option<&serde_json::Value>) -> bool {
+    result
+        .and_then(|v| v.get("status"))
+        .and_then(|s| s.as_str())
+        .is_some_and(|s| s == "error")
+}
+
 /// Result of the peer chat callback.
 #[derive(Debug, Clone)]
 pub struct PeerChatResult {
@@ -377,6 +392,22 @@ impl PeerChatHandler {
                     error = %e,
                     "[PeerChat] Failed to submit to work queue"
                 );
+                // BUG-1（2026-10-17）：拒单即回滚先行的两处登记——
+                // set_running 占位会对 A 端 query_task_result 持续回答
+                // running（任务从未开始却吊住恢复轮询）；task_list 条目
+                // 没有执行出口，complete_task 是唯一移除点，不回滚就是
+                // 连同完整 prompt 永久驻留内存的 ghost Pending。
+                if !source_node_id.is_empty()
+                    && let Some(ref persister) = self.result_persister
+                    && let Err(de) = persister.delete(&task_id)
+                {
+                    tracing::warn!(
+                        task_id = %task_id,
+                        error = %de,
+                        "[PeerChat] Failed to roll back running placeholder"
+                    );
+                }
+                task_list.complete_task(&task_id);
                 return PeerChatAck {
                     status: "error".into(),
                     task_id: String::new(),

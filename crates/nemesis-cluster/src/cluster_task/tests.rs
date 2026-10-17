@@ -833,3 +833,39 @@ fn test_inject_callback_persist_survives_restart() {
         task.conversation
     );
 }
+
+// ---------------------------------------------------------------------------
+// remove_terminal_tasks（BUG-3，2026-10-17）：终态残留防御清扫
+// ---------------------------------------------------------------------------
+
+// 终态（Completed/Failed/Cancelled）条目被清扫，非终态（Pending/Running/
+// WaitingRemote）原样保留；空表返回 0。
+#[test]
+fn test_remove_terminal_tasks_sweeps_only_terminal() {
+    let list = ClusterTaskList::new(std::env::temp_dir());
+    list.create_task(make_task("t-done", TaskStatus::Completed));
+    list.create_task(make_task("t-fail", TaskStatus::Failed));
+    list.create_task(make_task("t-cancel", TaskStatus::Cancelled));
+    list.create_task(make_task("t-pending", TaskStatus::Pending));
+    list.create_task(make_task("t-running", TaskStatus::Running));
+    list.create_task(make_task("t-waiting", TaskStatus::WaitingRemote));
+
+    let swept = list.remove_terminal_tasks();
+    assert_eq!(swept, 3, "恰好三条终态被清扫");
+    assert!(list.get_task("t-done").is_none());
+    assert!(list.get_task("t-fail").is_none());
+    assert!(list.get_task("t-cancel").is_none());
+    assert!(list.get_task("t-pending").is_some(), "Pending 保留");
+    assert!(list.get_task("t-running").is_some(), "Running 保留");
+    assert!(list.get_task("t-waiting").is_some(), "WaitingRemote 保留");
+
+    // 幂等：再扫一遍无事可做。
+    assert_eq!(list.remove_terminal_tasks(), 0);
+}
+
+// 空表清扫返回 0（周期调用的常态路径）。
+#[test]
+fn test_remove_terminal_tasks_empty_is_zero() {
+    let list = ClusterTaskList::new(std::env::temp_dir());
+    assert_eq!(list.remove_terminal_tasks(), 0);
+}

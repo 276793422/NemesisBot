@@ -2118,3 +2118,115 @@ async fn test_send_callback_dials_through_offline_registry() {
         "回调必须穿透 offline registry 拨号送达（must-reach 语义）"
     );
 }
+
+// ---------------------------------------------------------------------------
+// peer_chat_ack_rejected（BUG-1，2026-10-17）：A 端拒单判定单一真相源
+// ---------------------------------------------------------------------------
+
+// B 端拒单 ACK（工作队列满）→ true。
+#[test]
+fn test_ack_rejected_detects_error_status() {
+    let ack = serde_json::json!({"status": "error", "task_id": ""});
+    assert!(peer_chat_ack_rejected(Some(&ack)));
+}
+
+// 正常受理 ACK → false（三个 A 端调用点的主路径零扰动）。
+#[test]
+fn test_ack_rejected_accepts_ok_status() {
+    let ack = serde_json::json!({"status": "ok", "task_id": "t-1"});
+    assert!(!peer_chat_ack_rejected(Some(&ack)));
+}
+
+// result 缺失 / 非对象 / 无 status 键：保守判不拒单（不把畸形载荷误当
+// 拒单走失败收尾——传输层成功且无 error 字段时，悬挂由既有超时面兜）。
+#[test]
+fn test_ack_rejected_conservative_on_malformed_payload() {
+    assert!(!peer_chat_ack_rejected(None));
+    assert!(!peer_chat_ack_rejected(Some(&serde_json::json!("ok"))));
+    assert!(!peer_chat_ack_rejected(Some(
+        &serde_json::json!({"task_id": "t"})
+    )));
+    assert!(!peer_chat_ack_rejected(Some(
+        &serde_json::json!({"status": 42})
+    )));
+}
+
+// ---------------------------------------------------------------------------
+// BUG-1（2026-10-17）B 端拒单回滚：队列满 → error ACK + 两处登记回滚
+// ---------------------------------------------------------------------------
+
+// 队列满拒单时：ACK status=error；set_running 占位被 delete 回滚（A 端
+// query_task_result 不再被吊住）；task_list ghost Pending 被移除
+// （complete_task 是唯一移除点）。
+#[tokio::test]
+async fn test_queue_full_rejection_rolls_back_running_and_task_list() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut handler = PeerChatHandler::new("node-b".into());
+    let tl = Arc::new(ClusterTaskList::new(tmp.path().join("tasks")));
+    let wq = Arc::new(ClusterWorkQueue::new(1));
+    handler.set_cluster_queue(tl.clone(), wq.clone());
+    let persister = Arc::new(recording_persister_w3b());
+    handler.set_result_persister(persister.clone());
+
+    // 占满容量 1 的普通通道。
+    wq.submit("pre-existing".into()).unwrap();
+
+    let ack = handler.handle(
+        serde_json::json!({"content": "will be rejected", "task_id": "rej-1"}),
+        Some(RpcMeta {
+            from: Some("origin-node".into()),
+        }),
+    );
+    assert_eq!(ack.status, "error", "队列满必须同步拒单");
+    assert_eq!(ack.task_id, "");
+
+    // 回滚 ①：running 占位被 delete（而非留存吊住恢复轮询）。
+    assert_eq!(
+        persister.running.lock().unwrap().as_slice(),
+        ["rej-1"],
+        "set_running 先行发生（被测现状不变）"
+    );
+    assert_eq!(
+        persister.deleted.lock().unwrap().as_slice(),
+        ["rej-1"],
+        "占位必须被 delete 回滚"
+    );
+
+    // 回滚 ②：ghost Pending 不驻留 task_list。
+    assert!(
+        tl.get_task("rej-1").is_none(),
+        "拒单任务必须从 task_list 移除"
+    );
+
+    // 队列里只有占位的 pre-existing，被拒任务没有入队。
+    let next = tokio::time::timeout(Duration::from_millis(500), wq.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(next, "pre-existing");
+}
+
+// 空 source_node_id（rpc_meta.from 缺失）拒单：不触碰 persister（
+// set_running 本就没发生），task_list 照常回滚。
+#[tokio::test]
+async fn test_queue_full_rejection_without_source_node_skips_persister() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut handler = PeerChatHandler::new("node-b".into());
+    let tl = Arc::new(ClusterTaskList::new(tmp.path().join("tasks")));
+    let wq = Arc::new(ClusterWorkQueue::new(1));
+    handler.set_cluster_queue(tl.clone(), wq.clone());
+    let persister = Arc::new(recording_persister_w3b());
+    handler.set_result_persister(persister.clone());
+
+    wq.submit("pre-existing".into()).unwrap();
+    let ack = handler.handle(
+        serde_json::json!({"content": "no source", "task_id": "rej-2"}),
+        None,
+    );
+    assert_eq!(ack.status, "error");
+    assert!(
+        persister.deleted.lock().unwrap().is_empty(),
+        "无 source 节点时 set_running 未发生，delete 也不该发生"
+    );
+    assert!(tl.get_task("rej-2").is_none(), "ghost 照常移除");
+}
