@@ -437,6 +437,68 @@ async fn test_issue_assign_and_update() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// 嵌套 patch 形态 loud 拒绝（gw36 实录回归锁）：`{id, patch:{...}}` 此前
+// 静默不生效还回 updated:true——三个 update 命令都必须报错而不是假成功。
+#[tokio::test]
+async fn test_update_commands_reject_nested_patch_form() {
+    let dir = unique_dir("nested-patch-reject");
+    let ctx = make_ctx_with_board(&dir);
+    let out = dispatch(
+        &ctx,
+        "issue.create",
+        serde_json::json!({ "title": "形态守卫" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let id = out["issue"]["id"].as_i64().unwrap();
+
+    let err = dispatch(
+        &ctx,
+        "issue.update",
+        serde_json::json!({ "id": id, "patch": { "title": "嵌套" } }),
+    )
+    .await
+    .expect_err("nested patch form must be rejected");
+    assert!(err.contains("嵌套 patch"), "{err}");
+    // 确认拒绝发生在写库前：title 未被改动。
+    let out = dispatch(&ctx, "issue.get", serde_json::json!({ "id": id }))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["issue"]["title"], "形态守卫");
+
+    let err = dispatch(
+        &ctx,
+        "autopilot.update",
+        serde_json::json!({ "id": 1, "patch": { "enabled": true } }),
+    )
+    .await
+    .expect_err("autopilot.update nested form must be rejected");
+    assert!(err.contains("嵌套 patch"), "{err}");
+
+    let err = dispatch(
+        &ctx,
+        "project.update",
+        serde_json::json!({ "id": 1, "patch": { "name": "x" } }),
+    )
+    .await
+    .expect_err("project.update nested form must be rejected");
+    assert!(err.contains("嵌套 patch"), "{err}");
+
+    // 非对象的 patch 字段（null）不算嵌套形态，不误伤扁平更新。
+    dispatch(
+        &ctx,
+        "issue.update",
+        serde_json::json!({ "id": id, "description": "ok", "patch": null }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test]
 async fn test_comments_activity_subscribers() {
     let dir = unique_dir("social");
@@ -3183,6 +3245,61 @@ fn offline_cluster(dir: &std::path::Path, node_id: &str) -> Arc<nemesis_cluster:
     ))
 }
 
+/// 派发同步断言用的「哑对端」地址：进程内 loopback listener（永不 accept/
+/// 响应，进程存活期常驻）。connect 在 OS backlog 即刻完成、ACK 永不到来
+/// ——派发 spawn 内的 send 挂在外层超时上，同步断言窗口内 claim 行保持
+/// 在途（不可路由地址的 connect 失败快慢随主机路由环境漂移，竞态不可
+/// 接受；自备端口不进固定端口表）。
+#[cfg(feature = "cluster")]
+fn silent_peer_addr() -> String {
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind silent peer");
+    let addr = listener.local_addr().expect("local addr");
+    std::mem::forget(listener); // 常驻：close 会让后续 connect 立刻被拒
+    format!("127.0.0.1:{}", addr.port())
+}
+
+/// 节点 → 哑对端地址的静态 [`PeerResolver`]（裸 `RpcClient::new()` 无
+/// resolver，send 秒败 "peer unresolvable" → 回退路径抢跑——同步断言
+/// 竞态；本解析器让 send 真解析到哑 listener，ACK 挂外层超时）。
+#[cfg(feature = "cluster")]
+struct TestStaticResolver {
+    node_id: String,
+    targets: std::collections::HashMap<String, String>,
+}
+
+#[cfg(feature = "cluster")]
+impl nemesis_cluster::rpc::client::PeerResolver for TestStaticResolver {
+    fn get_peer_info(&self, peer_id: &str) -> Option<(Vec<String>, u16, bool)> {
+        self.targets
+            .get(peer_id)
+            .map(|a| (vec![a.clone()], 0, true))
+    }
+    fn get_local_interfaces(&self) -> Vec<nemesis_cluster::rpc::client::LocalNetworkInterface> {
+        Vec::new()
+    }
+    fn get_node_id(&self) -> String {
+        self.node_id.clone()
+    }
+}
+
+/// 注入「可解析到哑对端」的 RPC client（map：节点 id → silent listener）。
+#[cfg(feature = "cluster")]
+fn inject_silent_peer_client(
+    cluster: &nemesis_cluster::cluster::Cluster,
+    targets: &[(&str, String)],
+) {
+    let client =
+        nemesis_cluster::rpc::client::RpcClient::with_resolver(Arc::new(TestStaticResolver {
+            node_id: cluster.node_id().to_string(),
+            targets: targets
+                .iter()
+                .map(|(id, a)| (id.to_string(), a.clone()))
+                .collect(),
+        }));
+    cluster.set_rpc_client(Arc::new(client));
+}
+
 #[cfg(feature = "cluster")]
 fn planner_child(
     store: &Arc<BoardStore>,
@@ -5084,6 +5201,10 @@ async fn test_dispatch_rejects_unknown_target_upfront() {
     let cluster = Arc::new(nemesis_cluster::cluster::Cluster::new(
         nemesis_cluster::types::ClusterConfig::default(),
     ));
+    // 注入空 client（2026-10-17 起 rpc client 前置检查先于 F1 归一化拒绝
+    // ——裸 Cluster::new 会先撞「RPC client 未就绪」，走不到本测试要钉的
+    // 「未知节点」臂；归一化拒绝发生在任何 send 之前，裸 client 足够）。
+    cluster.set_rpc_client(Arc::new(nemesis_cluster::rpc::client::RpcClient::new()));
     let issue = store
         .create_issue(nemesis_board::NewIssue {
             title: "幽灵目标单".into(),
@@ -5109,10 +5230,12 @@ async fn test_dispatch_rejects_unknown_target_upfront() {
     );
 }
 
-/// 派发回填 assignee=worker/目标节点；换目标重派时同点位改指。用纯内存
-/// `Cluster::new`（无 RPC client）——派发在 rpc_client_arc 诚实返回 Err，
-/// 但此刻 claim/状态转移/指派回填均已落库，正好钉住回填位置：状态转移
-/// 成功之后、RPC 依赖之前（Err 路径不回滚已提交的派发，与现行为一致）。
+/// 派发回填 assignee=worker/目标节点；换目标重派时同点位改指。注入可解析
+/// 到哑对端的 client（connect 即刻完成、ACK 永不到来——spawn 内 send 挂在
+/// 外层超时上，同步断言窗口内回退路径不触发）：2026-10-17 rpc client 前置
+/// 检查后，裸 `Cluster::new` 会在一切状态变更之前零副作用诚实拒绝——回填
+/// 只在派发同步管线成功路径上观察（claim/状态转移/指派回填均在
+/// submit_peer_chat 之后、fire-and-forget 发送之前落库）。
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn test_dispatch_backfills_assignee() {
@@ -5125,15 +5248,23 @@ async fn test_dispatch_backfills_assignee() {
     let cluster = Arc::new(nemesis_cluster::cluster::Cluster::new(
         nemesis_cluster::types::ClusterConfig::default(),
     ));
+    inject_silent_peer_client(
+        &cluster,
+        &[
+            ("node-b", silent_peer_addr()),
+            ("node-c", silent_peer_addr()),
+        ],
+    );
     // F1 派发目标校验前置（2026-09-30）：未知 target 在归一化处即被拒绝，
-    // 本测试意图是回填点位（状态转移后、RPC 前）——target 必须是注册表
-    // 已知节点才能走到 RPC client 缺失臂。
+    // 本测试意图是回填点位（同步成功路径）——target 必须是注册表已知节点，
+    // 且地址用哑对端（connect 即刻完成、ACK 永不到来，spawn 内 send 挂在
+    // 外层超时上——同步断言窗口内回退路径不会触发）。
     cluster.register_node(nemesis_cluster::types::ExtendedNodeInfo {
         base: nemesis_cluster::types::NodeInfo {
             id: "node-b".into(),
             name: "Node-B".into(),
             role: nemesis_cluster::types::NodeRole::Worker,
-            address: "10.0.0.2:9000".into(),
+            address: silent_peer_addr(),
             category: "development".into(),
             last_seen: chrono::Local::now().to_rfc3339(),
         },
@@ -5150,7 +5281,7 @@ async fn test_dispatch_backfills_assignee() {
             id: "node-c".into(),
             name: "Node-C".into(),
             role: nemesis_cluster::types::NodeRole::Worker,
-            address: "10.0.0.3:9000".into(),
+            address: silent_peer_addr(),
             category: "development".into(),
             last_seen: chrono::Local::now().to_rfc3339(),
         },
@@ -5163,14 +5294,15 @@ async fn test_dispatch_backfills_assignee() {
         node_type: "agent".into(),
     });
 
-    // 未指派 → 派发给 node-b：走到 RPC client 缺失诚实失败，回填已发生。
+    // 未指派 → 派发给 node-b：同步管线全程成功（submit → 转移 → 回填 →
+    // claim），连接失败留给 spawn 内异步终结，不影响同步断言。
     let issue = store
         .create_issue(nemesis_board::NewIssue {
             title: "回填指派的单".into(),
             ..Default::default()
         })
         .unwrap();
-    let err = super::dispatch_issue_core(
+    super::dispatch_issue_core(
         &store,
         Some(&cluster),
         issue.id,
@@ -5178,11 +5310,7 @@ async fn test_dispatch_backfills_assignee() {
         &Actor::admin("t"),
         None,
     )
-    .unwrap_err();
-    assert!(
-        err.contains("RPC client"),
-        "纯内存集群应走到 RPC client 缺失：{err}"
-    );
+    .unwrap();
     let after = store.get_issue(issue.id).unwrap();
     assert_eq!(
         after.assignee,
@@ -5211,7 +5339,7 @@ async fn test_dispatch_backfills_assignee() {
             &Actor::admin("t"),
         )
         .unwrap();
-    let err = super::dispatch_issue_core(
+    super::dispatch_issue_core(
         &store,
         Some(&cluster),
         issue2.id,
@@ -5219,8 +5347,7 @@ async fn test_dispatch_backfills_assignee() {
         &Actor::admin("t"),
         None,
     )
-    .unwrap_err();
-    assert!(err.contains("RPC client"), "{err}");
+    .unwrap();
     let after2 = store.get_issue(issue2.id).unwrap();
     assert_eq!(after2.assignee_id.as_deref(), Some("node-c"));
 
@@ -7172,14 +7299,17 @@ async fn agt_dispatch_gates_matrix() {
     let cluster = Arc::new(nemesis_cluster::cluster::Cluster::new(
         nemesis_cluster::types::ClusterConfig::default(),
     ));
-    // F1 派发目标校验前置（2026-09-30）：本矩阵测状态/重复/冻结等闸，
-    // target 须是注册表已知节点才能走到 RPC client 缺失臂。
+    // 注入可解析到哑对端的 client（2026-10-17 rpc client 前置检查先于各
+    // 状态闸后的派发管线——裸 Cluster::new 会零副作用早拒，走不到注册表
+    // 归一化/拓扑闸/完整派发管线；哑 listener 让 send 挂在外层超时，同步
+    // 断言窗口内 claim 行保持在途）。
+    inject_silent_peer_client(&cluster, &[("node-b", silent_peer_addr())]);
     cluster.register_node(nemesis_cluster::types::ExtendedNodeInfo {
         base: nemesis_cluster::types::NodeInfo {
             id: "node-b".into(),
             name: "Node-B".into(),
             role: nemesis_cluster::types::NodeRole::Worker,
-            address: "10.0.0.2:9000".into(),
+            address: silent_peer_addr(),
             category: "development".into(),
             last_seen: chrono::Local::now().to_rfc3339(),
         },
@@ -7308,8 +7438,9 @@ async fn agt_dispatch_gates_matrix() {
     .unwrap_err();
     assert!(err.contains("缺少派发目标"), "{err}");
 
-    // worker 指派 → target 解析自 assignee_id → 走完整派发管线到 RPC
-    // client 缺失；途中 backlog → in_progress 派发转移已发生。
+    // worker 指派 → target 解析自 assignee_id → 走完整派发管线到同步成功
+    //（submit → backlog → in_progress 派发转移 → 回填 → claim；连接失败在
+    // spawn 内异步终结，不进同步断言窗口）。
     let resolved = store
         .create_issue(nemesis_board::NewIssue {
             title: "指派解析单".into(),
@@ -7324,14 +7455,13 @@ async fn agt_dispatch_gates_matrix() {
             &actor,
         )
         .unwrap();
-    let err = dispatch(
+    dispatch(
         &ctx,
         "issue.dispatch",
         serde_json::json!({ "id": resolved.id }),
     )
     .await
-    .unwrap_err();
-    assert!(err.contains("RPC client"), "{err}");
+    .unwrap();
     assert_eq!(
         store.get_issue(resolved.id).unwrap().status,
         IssueStatus::InProgress,
@@ -7387,29 +7517,37 @@ async fn agt_dispatch_gates_matrix() {
     .unwrap_err();
     assert!(err.contains("拒绝派发") && err.contains("file:"), "{err}");
 
-    // project_id 指向不存在项目：两个诚实降级点，命中哪个取决于
-    // BASELINE_PUSHER OnceLock 的装配赢家（基线测试同进程并行）——
-    // 基线装配先跑 = push_dispatch_baseline 的 get_project Err 弃派
-    // （「派发中止」）；未装配先跑 = 联动 link_project_on_dispatch 只
-    // warn，派发照走终至 RPC client 缺失。两臂都是诚实路径。
+    // project_id 指向已删除项目（存量幽灵行——引用完整性闸 2026-10-17 后
+    // create 不再接受，直连 SQLite 删行复刻存量形态）：两个诚实降级点，
+    // 命中哪个取决于 BASELINE_PUSHER OnceLock 的装配赢家（基线测试同进程
+    // 并行）——基线装配先跑 = push_dispatch_baseline 的 get_project Err
+    // 弃派（「派发中止」）；未装配先跑 = 联动 link_project_on_dispatch 只
+    // warn，派发照走（注入 client 后同步成功）。两臂都是诚实路径。
+    let ghost_project = store
+        .create_project("矩阵幽灵项目", "", None, "", "", None)
+        .unwrap();
     let ghost_proj = store
         .create_issue(nemesis_board::NewIssue {
             title: "幽灵项目单".into(),
-            project_id: Some(424242),
+            project_id: Some(ghost_project.id),
             ..Default::default()
         })
         .unwrap();
-    let err = dispatch(
+    {
+        let conn = rusqlite::Connection::open(dir.join("board.db")).unwrap();
+        conn.execute("DELETE FROM project WHERE id = ?1", [ghost_project.id])
+            .unwrap();
+    }
+    // 基线 pusher 未装配：联动只 warn，派发照走完整同步管线。
+    if let Err(e) = dispatch(
         &ctx,
         "issue.dispatch",
         serde_json::json!({ "id": ghost_proj.id, "target": "node-b" }),
     )
     .await
-    .unwrap_err();
-    assert!(
-        err.contains("RPC client") || err.contains("project 424242 not found"),
-        "{err}"
-    );
+    {
+        assert!(e.contains("派发中止") || e.contains("not found"), "{e}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -7772,7 +7910,21 @@ async fn agt_push_dispatch_baseline_paths() {
     };
     let with_proj = store.create_issue(mk("带项目", Some(proj.id))).unwrap();
     let no_proj = store.create_issue(mk("无项目", None)).unwrap();
-    let ghost_proj = store.create_issue(mk("幽灵项目", Some(424242))).unwrap();
+    // 「幽灵项目」引用（存量态）：引用完整性闸（2026-10-17）后 create 已
+    // 不接受不存在的 project_id——先建真实项目再直连 SQLite 删行复刻存量
+    // 数据形态（push_dispatch_baseline 的 get_project Err 防御臂只对存量
+    // 幽灵行有意义）。
+    let ghost_proj = store
+        .create_project("将被删的项目", "", None, "", "", None)
+        .unwrap();
+    let ghost_issue = store
+        .create_issue(mk("幽灵项目", Some(ghost_proj.id)))
+        .unwrap();
+    {
+        let conn = rusqlite::Connection::open(dir.join("board.db")).unwrap();
+        conn.execute("DELETE FROM project WHERE id = ?1", [ghost_proj.id])
+            .unwrap();
+    }
 
     // ① pusher 未安装（OnceLock 先装先赢——本测试必须在安装前覆盖此臂）
     let out = super::push_dispatch_baseline(&store, &with_proj, "agt-baseline-0", "node-b");
@@ -7795,8 +7947,8 @@ async fn agt_push_dispatch_baseline_paths() {
     let out = super::push_dispatch_baseline(&store, &no_proj, "agt-baseline-1", "node-b");
     assert_eq!(out.unwrap(), None);
 
-    // ③ project_id 指向不存在项目 → get_project Err 中止派发
-    let out = super::push_dispatch_baseline(&store, &ghost_proj, "agt-baseline-2", "node-b");
+    // ③ project_id 指向已删除项目（存量幽灵行）→ get_project Err 中止派发
+    let out = super::push_dispatch_baseline(&store, &ghost_issue, "agt-baseline-2", "node-b");
     assert!(out.is_err(), "幽灵项目必须中止: {out:?}");
 
     // ④ 项目无 directory → 直通
@@ -7841,18 +7993,19 @@ async fn agt_push_dispatch_baseline_paths() {
     let err = out.unwrap_err();
     assert!(err.contains("boom") && !err.contains("版本过旧"), "{err}");
 
-    // ⑩ 完整派发管线带基线：dedup 模式恢复 → 基线成功后照走到 RPC client
-    //    缺失（基线不是派发终点，也不吞后续错误）；途中 claim + 状态推进
-    //    已落定。
+    // ⑩ 完整派发管线带基线：dedup 模式恢复 → 基线成功后照走同步管线
+    //    （submit → claim + 状态推进；连接失败在 spawn 内异步终结）。
     let cluster = offline_cluster(&dir, "node-a");
-    // F1 派发目标校验前置：node-b 须在注册表（否则归一化处被拒，走不到
-    // RPC client 缺失臂）。
+    // F1 派发目标校验前置：node-b 须在注册表（否则归一化处被拒）。RPC
+    // client 前置检查（2026-10-17）要求注入可用 client 才能走到完整管线。
     cluster.register_node(nemesis_cluster::types::ExtendedNodeInfo {
         base: nemesis_cluster::types::NodeInfo {
             id: "node-b".into(),
             name: "Node-B".into(),
             role: nemesis_cluster::types::NodeRole::Worker,
-            address: "10.0.0.2:9000".into(),
+            // 哑对端 listener：同步断言窗口内 connect/ACK 都不终结（不可
+            // 路由地址的 connect 失败快慢随主机路由环境漂移，竞态不可接受）。
+            address: silent_peer_addr(),
             category: "development".into(),
             last_seen: chrono::Local::now().to_rfc3339(),
         },
@@ -7865,10 +8018,11 @@ async fn agt_push_dispatch_baseline_paths() {
         node_type: "agent".into(),
     });
     mode.store(0, std::sync::atomic::Ordering::SeqCst);
-    let err =
-        super::dispatch_issue_core(&store, Some(&cluster), with_proj.id, "node-b", &actor, None)
-            .unwrap_err();
-    assert!(err.contains("RPC client"), "{err}");
+    // 哑 client 会派生「peer unresolvable」瞬时 Err → spawn 内回滚与同步
+    // 断言竞态——本测试是 multi_thread，必须给可解析到哑对端的 client。
+    inject_silent_peer_client(&cluster, &[("node-b", silent_peer_addr())]);
+    super::dispatch_issue_core(&store, Some(&cluster), with_proj.id, "node-b", &actor, None)
+        .unwrap();
     assert!(
         store.get_active_dispatch(with_proj.id).unwrap().is_some(),
         "基线成功后 claim 已落定"
@@ -7884,9 +8038,7 @@ async fn agt_push_dispatch_baseline_paths() {
     store
         .transition_issue(second.id, IssueStatus::InProgress, &actor)
         .unwrap();
-    let err = super::dispatch_issue_core(&store, Some(&cluster), second.id, "node-b", &actor, None)
-        .unwrap_err();
-    assert!(err.contains("RPC client"), "{err}");
+    super::dispatch_issue_core(&store, Some(&cluster), second.id, "node-b", &actor, None).unwrap();
     assert_eq!(
         store.get_issue(second.id).unwrap().status,
         IssueStatus::InProgress,
@@ -7904,8 +8056,11 @@ async fn agt_push_dispatch_baseline_paths() {
 // 既有纪律一致。
 // ===========================================================================
 
-/// 给离线 cluster 注入空 RPC client（对端不可达的 connect 失败在 spawn
-/// 体内终结，不影响同步断言；同 sweep_redispatches 先例）。
+/// 给离线 cluster 注入空 RPC client（resolver:None → spawn 体内 dispatch()
+/// 瞬时「peer unresolvable」Err → 回滚）。**只用于 current_thread 测试**：
+/// spawn 体在断言窗口内不被调度（运行时关闭时丢弃未执行任务），同步断言
+/// 看到的都是 pre-rollback 状态；multi_thread 测试必须改用
+/// `inject_silent_peer_client`（回滚会并发跑，哑 client 会竞态）。
 #[cfg(feature = "cluster")]
 fn w5_inject_rpc(cluster: &nemesis_cluster::cluster::Cluster) {
     cluster.set_rpc_client(Arc::new(nemesis_cluster::rpc::client::RpcClient::new()));

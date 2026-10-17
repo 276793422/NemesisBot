@@ -139,6 +139,7 @@ fn make_pending_task(task_id: &str) -> ClusterTask {
         waiting_tool_call_id: None,
         callback_result: None,
         required_profession: None,
+        async_usage_stash: None,
     }
 }
 

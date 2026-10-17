@@ -360,6 +360,7 @@ impl PeerChatHandler {
                 waiting_tool_call_id: None,
                 callback_result: None,
                 required_profession: required_profession_from_payload(&payload),
+                async_usage_stash: None,
             };
             task_list.create_task(cluster_task);
             // 压测②（2026-09-30 三设备）：取证任务（board 评审链的

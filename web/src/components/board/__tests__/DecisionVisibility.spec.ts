@@ -636,7 +636,8 @@ describe('IssueDetailModal 父单中间档（2026-10-15 用户反馈：复评死
     await card.find('[data-test="sendback-run"]').trigger('click')
     await flushPromises()
     const createCall = requestMock.mock.calls.find((c) => c[1] === 'issue.create')!
-    expect(createCall[2]).toMatchObject({ title: '返工: 渲染循环卡顿', parent_issue_id: 1, project_id: 7, priority: 2 })
+    // 全角冒号前缀（与后端 REMEDIATION_TITLE_PREFIX 对齐，见 IssueDetailModal.vue :738 注释）
+    expect(createCall[2]).toMatchObject({ title: '返工：渲染循环卡顿', parent_issue_id: 1, project_id: 7, priority: 2 })
     expect(String(createCall[2].description)).toContain('人工打回 NB-55')
     const dispCall = requestMock.mock.calls.find((c) => c[1] === 'issue.dispatch')!
     expect(dispCall[2]).toEqual({ id: 99, target: 'node-b' })

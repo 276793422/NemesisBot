@@ -1523,7 +1523,12 @@ async fn test_s4_send_and_receive_breaks_after_three_fallbacks() {
         "127.0.0.1:5".into(), // fifth other: attempts already 3 → break
     ];
     let result = client
-        .send_and_receive(&best, &all, &s4_make_request("s4-brk"))
+        .send_and_receive(
+            &best,
+            &all,
+            &s4_make_request("s4-brk"),
+            Duration::from_secs(30),
+        )
         .await;
     match result {
         Err(RpcClientError::Connection(msg)) => {

@@ -169,6 +169,21 @@ fn build_filter(data: &serde_json::Value) -> Result<IssueFilter, String> {
     Ok(filter)
 }
 
+/// 拒绝嵌套 patch 形态（`{id, patch:{...}}`）。本模块所有 update 命令只认
+/// 扁平形态（字段直接放 data 顶层）；嵌套形态下空 patch 静默不生效还回
+/// `updated:true`（gw36 实录：前端发嵌套形态排障近一小时，后端必须 loud
+/// 拒绝而不是靠调用方自觉）。
+fn reject_nested_patch(data: &serde_json::Value) -> Result<(), String> {
+    if data.get("patch").is_some_and(|v| v.is_object()) {
+        return Err(
+            "不支持嵌套 patch 形态：把要更新的字段直接放在 data 顶层（扁平形态），\
+             例如 {\"id\":1,\"title\":\"新标题\"}；{\"id\":1,\"patch\":{...}} 不会生效"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 fn build_patch(data: &serde_json::Value) -> IssuePatch {
     IssuePatch {
         title: get_opt_str(data, "title"),
@@ -293,7 +308,7 @@ fn build_dispatch_prompt(
     // 只在重派时渲染（首派 prompt 字节与历史一致）。
     if let Some(n) = attempt {
         p.push_str(&format!(
-            "\n## 重派轮次（第 {n} 次派发）\n本单此前已被派发 {} 次、验收未通过。若你判断同一问题按已有方法继续整改仍无法通过验收（连续多轮重派无解），不要再静默重写一轮：在最终回复正文里**单独一行**写行首标记 `REDISPATCH_LOOP:` 加一句话说明卡点，并在汇报的「偏差与疑点」节列出已尝试方案清单（每项一行：试了什么、结果如何）。主控端识别该标记后会停止自动重派、转人工裁决——这是升级通道，不是失败污点；诚实升级好过无限重写。\n",
+            "\n## 重派轮次（第 {n} 次派发）\n本单此前已被派发 {} 次、验收未通过。若你判断同一问题按已有方法继续整改仍无法通过验收（连续多轮重派无解），不要再静默重写一轮：在最终回复正文里**单独一行**写行首标记 `REDISPATCH_LOOP:` 加一句话说明卡点，并在汇报的「风险与未尽事项」节列出已尝试方案清单（每项一行：试了什么、结果如何）。主控端识别该标记后会停止自动重派、转人工裁决——这是升级通道，不是失败污点；诚实升级好过无限重写。\n",
             n - 1
         ));
     }
@@ -876,6 +891,15 @@ pub fn dispatch_issue_core(
     // 派发 = 给远端 worker 发 peer_chat，集群必需。
     let cluster = cluster.ok_or("集群未运行，无法派发（issue.dispatch 需要集群）")?;
 
+    // RPC client 前置检查（2026-10-17 根修）：此前检查在 try_claim_dispatch /
+    // 状态推进 / 指派回填之后——「集群在册但 RPC client 槽位未填」的启动窗口
+    // 内派发会 Err 上抛且不清理，留下幽灵 dispatched 行 + in_progress 卡死
+    // （该窗口内 sweep 尚未 armed，需人工恢复）。前置到一切状态变更之前：
+    // 无 client = 无副作用诚实拒绝。
+    if cluster.rpc_client_arc().is_none() {
+        return Err("集群 RPC client 未就绪（启动窗口），请稍后重试派发".to_string());
+    }
+
     // 单一真相源（T37 双身份失配第三处落点，2026-09-13）：账本 worker_id
     // 必须与 worker 上报的传输层身份（_rpc.from = 运行时节点 id）同形态
     // ——人工指派/兜底可能给 peer 名（"Alex"），不归一化则 task.started /
@@ -1035,7 +1059,8 @@ pub fn dispatch_issue_core(
 
     // 4. 发 RPC（fire-and-forget）：ACK 后 worker 异步处理，回报走
     //    peer_chat_callback。目标不可达时立刻终结派发 + 系统评论留痕
-    //    （callback 不会再来，不留悬挂 dispatched 态）。
+    //    （callback 不会再来，不留悬挂 dispatched 态）。（RPC client 槽位
+    //    已在函数头前置检查；此处 unwrap 失败理论上不可达，防御性保留。）
     let issue_id = issue.id;
     let rpc_client = cluster.rpc_client_arc().ok_or("RPC client not available")?;
     // E2：档案管线派发带基线 commit（worker 侧以收件箱基线为起点开跑）。
@@ -1949,13 +1974,14 @@ pub async fn run_planner(
         match nemesis_board::parse_plan(&raw) {
             Ok(subs) => return Ok((subs, Vec::new())),
             Err(e) => {
-                prompt = nemesis_board::build_retry_prompt(&raw, &e);
-                // 重试不丢集群画像约束（R-10：拆解必须与可执行者对齐）。
-                if let Some(p) = &cluster_profile {
-                    prompt.push_str(&format!(
-                        "\n# 可用执行节点（集群画像，拆解必须与此对齐）\n{p}\n"
-                    ));
-                }
+                // 重试轮在基提示词**之后追加**回灌段（任务卡/等待预算/R-9
+                // 约束/集群画像全部保留）——此前整段替换成 build_retry_prompt
+                // 输出，重试轮模型看不到原始任务（只剩错误 + 上次输出），
+                // 拆解质量骤降且丢 cluster_profile 之外的全部注入段。
+                prompt.push_str(&format!(
+                    "\n\n---\n\n{}",
+                    nemesis_board::build_retry_prompt(&raw, &e)
+                ));
                 last_err = e.message;
             }
         }
@@ -3725,7 +3751,16 @@ pub fn dispatch_subissue_auto_with_config(
             IssueStatus::Backlog | IssueStatus::Todo | IssueStatus::Blocked
         )
     {
-        store.transition_issue(pid, IssueStatus::InProgress, actor)?;
+        // 父单联动 best-effort：并发双派窗口内两路都读到 Todo、都过闸，
+        // 第二个 transition（InProgress→InProgress）被状态机拒绝——此时
+        // 本单派发已成功，联动失败不得用 `?` 反噬整个派发结果（否则
+        // 调用方按派发失败重试=同单双派风险）。降级 warn 留痕。
+        if let Err(e) = store.transition_issue(pid, IssueStatus::InProgress, actor) {
+            tracing::warn!(
+                "[Board] 父单联动转 in_progress 失败（并发窗口/状态机拒绝）parent={pid} issue={} err={e}",
+                issue.id
+            );
+        }
     }
     Ok(Some(out))
 }
@@ -4233,17 +4268,10 @@ pub async fn rebalance_queued_to_worker(
         ) {
             continue;
         }
-        let (required_role, required_tags) = match issue.required_role.as_deref().map(str::trim) {
-            Some(r) if !r.is_empty() && r != "worker" && r != "coordinator" => {
-                let mut tags = issue.required_tags.clone();
-                tags.push(r.to_string());
-                (None, tags)
-            }
-            Some(r) if !r.is_empty() => (Some(r), issue.required_tags.clone()),
-            _ => (None, issue.required_tags.clone()),
-        };
+        let (required_role, required_tags) =
+            normalize_dispatch_role(issue.required_role.as_deref(), &issue.required_tags);
         let input = nemesis_board::MatchInput {
-            required_role,
+            required_role: required_role.as_deref(),
             required_tags: &required_tags,
             required_profession: issue.required_profession.as_deref(),
             required_capabilities: &issue.required_capabilities,
@@ -4359,6 +4387,31 @@ fn project_dispatch_candidates(
         .collect()
 }
 
+/// required_role 归一（单一真相源）：角色词表（worker/coordinator）外的
+/// 非空词转标签语义（追加进 required_tags）——词表内原样保留。四个派发
+/// 匹配面共用（rank_dispatch_candidates / rebalance_queued_to_worker /
+/// pick_fallback_target / match_failure_detail）。此前 pick_fallback_target
+/// 独家丢弃词表外角色词（其余三处转 tags），兜底松弛丢标签后零约束、
+/// 任意在线节点可接单（2026-10-17 根修）。
+/// （cfg 随调用面走：四个调用方全部 cluster-gated，本函数不裸挂——此前
+/// cfg 错位挂到本函数、rank_dispatch_candidates 反而裸奔，IoT 裁剪构建
+/// （无 cluster）四处 E0433/E0425；修正后两者同闸，裁剪构建零死代码。）
+#[cfg(feature = "cluster")]
+fn normalize_dispatch_role(
+    required_role: Option<&str>,
+    required_tags: &[String],
+) -> (Option<String>, Vec<String>) {
+    match required_role.map(str::trim) {
+        Some(r) if !r.is_empty() && r != "worker" && r != "coordinator" => {
+            let mut tags = required_tags.to_vec();
+            tags.push(r.to_string());
+            (None, tags)
+        }
+        Some(r) if !r.is_empty() => (Some(r.to_string()), required_tags.to_vec()),
+        _ => (None, required_tags.to_vec()),
+    }
+}
+
 /// 匹配器全量排序（D3 换节点重派的候选来源 + [`pick_target_by_matcher`]
 /// 的单一真相源）：在线节点（不含本机）→ 投影 →
 /// [`nemesis_board::rank_peers`] 匹配度降序全量返回。节点角色词表只有
@@ -4372,15 +4425,8 @@ pub fn rank_dispatch_candidates(
     issue: &nemesis_board::Issue,
 ) -> Vec<String> {
     // required_role 归一：角色词表外的词转标签语义（进 required_tags）。
-    let (required_role, required_tags) = match issue.required_role.as_deref().map(str::trim) {
-        Some(r) if !r.is_empty() && r != "worker" && r != "coordinator" => {
-            let mut tags = issue.required_tags.clone();
-            tags.push(r.to_string());
-            (None, tags)
-        }
-        Some(r) if !r.is_empty() => (Some(r), issue.required_tags.clone()),
-        _ => (None, issue.required_tags.clone()),
-    };
+    let (required_role, required_tags) =
+        normalize_dispatch_role(issue.required_role.as_deref(), &issue.required_tags);
 
     let load = store.count_active_dispatch_by_worker().unwrap_or_default();
     // 拓扑约束（2026-10-08 NB-4/NB-5/NB-6 根修③）：file: 锚点单只能本节点
@@ -4392,7 +4438,7 @@ pub fn rank_dispatch_candidates(
         return Vec::new();
     }
     let input = nemesis_board::MatchInput {
-        required_role,
+        required_role: required_role.as_deref(),
         required_tags: &required_tags,
         required_profession: issue.required_profession.as_deref(),
         required_capabilities: &issue.required_capabilities,
@@ -4472,14 +4518,16 @@ fn pick_fallback_target(
     //    已在严格匹配里转 tags，这里只需认 worker/coordinator）。
     let candidates = merge_granted_tags(store, project_dispatch_candidates(cluster));
     let load = store.count_active_dispatch_by_worker().unwrap_or_default();
-    let role = issue
-        .required_role
-        .as_deref()
-        .map(str::trim)
-        .filter(|r| !r.is_empty() && (*r == "worker" || *r == "coordinator"));
+    // 2. 松弛排序（D13 阶梯 = matcher::pick_relaxed：②保职能丢标签 →
+    //    ③丢职能（保角色/标签）→ ④全松弛；无职能子单 ② 蜕化为旧「保
+    //    角色丢标签」，行为不变）。角色归一走单一真相源
+    //    normalize_dispatch_role（词表外角色词转 tags——此前这里独家丢词，
+    //    松弛丢标签后零约束，任意在线节点可接单）。
+    let (role, tags) =
+        normalize_dispatch_role(issue.required_role.as_deref(), &issue.required_tags);
     let base = nemesis_board::MatchInput {
-        required_role: role,
-        required_tags: &issue.required_tags,
+        required_role: role.as_deref(),
+        required_tags: &tags,
         required_profession: issue.required_profession.as_deref(),
         required_capabilities: &issue.required_capabilities,
         description: &issue.description,
@@ -4518,16 +4566,9 @@ fn match_failure_detail(
     issue: &nemesis_board::Issue,
     candidates: &[nemesis_board::PeerCandidate],
 ) -> String {
-    // 角色归一（与 rank_dispatch_candidates 同一规则）：词表外角色词转标签。
-    let (required_role, required_tags) = match issue.required_role.as_deref().map(str::trim) {
-        Some(r) if !r.is_empty() && r != "worker" && r != "coordinator" => {
-            let mut tags = issue.required_tags.clone();
-            tags.push(r.to_string());
-            (None, tags)
-        }
-        Some(r) if !r.is_empty() => (Some(r.to_string()), issue.required_tags.clone()),
-        _ => (None, issue.required_tags.clone()),
-    };
+    // 角色归一（单一真相源 normalize_dispatch_role）：词表外角色词转标签。
+    let (required_role, required_tags) =
+        normalize_dispatch_role(issue.required_role.as_deref(), &issue.required_tags);
     if candidates.is_empty() {
         return "无在线候选节点".to_string();
     }
@@ -5093,8 +5134,11 @@ fn autopilot_new_issue(ap: &nemesis_board::Autopilot, actor: &Actor) -> NewIssue
     let mut ni = NewIssue {
         title: ap.title.replace("{date}", &date),
         description: ap.description.clone(),
-        // F-U5-1：验收标准透传——定时任务也要能全自动验收（空 = 不填，
-        // 评审保持「验收标准（未提供）」保守转人工语义）。
+        // F-U5-1：验收标准透传——定时任务也要能全自动验收。空 = 不填，
+        // 由 store.create_issue 的 ac_gen 创建时自动生成（NB-125 单一真相点，
+        // 模板/规则作者不填也会得到自动推导的验收基准）；**不存在**旧语义
+        // 「留空 = 保守转人工」——ac_gen 落地后留空不再是安全阀，规则作者
+        // 想强制人工评判应显式写不可自动核验的验收标准或在收口时人工干预。
         acceptance_criteria: ap
             .acceptance_criteria
             .clone()
@@ -5853,6 +5897,7 @@ impl ModuleHandler for BoardHandler {
             }
             "issue.update" => {
                 let data = data.ok_or("missing data")?;
+                reject_nested_patch(&data)?;
                 let id = data
                     .get("id")
                     .and_then(|v| v.as_i64())
@@ -6074,6 +6119,7 @@ impl ModuleHandler for BoardHandler {
             }
             "autopilot.update" => {
                 let data = data.ok_or("missing data")?;
+                reject_nested_patch(&data)?;
                 let id = data
                     .get("id")
                     .and_then(|v| v.as_i64())
@@ -6434,6 +6480,7 @@ impl ModuleHandler for BoardHandler {
             // 项目字段级更新（W2 P3）：归档走 status="archived"（软删除）。
             "project.update" => {
                 let data = data.ok_or("missing data")?;
+                reject_nested_patch(&data)?;
                 let id = data
                     .get("id")
                     .and_then(|v| v.as_i64())

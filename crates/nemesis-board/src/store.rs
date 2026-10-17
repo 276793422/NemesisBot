@@ -179,6 +179,10 @@ impl BoardStore {
 
         let now = Self::now();
         let status = IssueStatus::Backlog.as_str();
+        // 引用完整性（2026-10-17 系统性检查）：parent_issue_id / project_id
+        // 两列无 REFERENCES 约束（schema 仅依赖表带 FK），建单时不校验 =
+        // 悬空引用直接落库（下游父链遍历/项目归组/档案导出全会踩空）。
+        validate_issue_refs_on(&tx, new.parent_issue_id, new.project_id, None)?;
         // Swarm M1：required_tags 落 JSON TEXT（空 = NULL，行上少一坨 "[]"）。
         let required_tags_json = if new.required_tags.is_empty() {
             None
@@ -598,6 +602,15 @@ impl BoardStore {
         );
 
         let now = Self::now();
+        // 引用完整性（同 create_issue）：只对本 patch 实际改动的引用列校验
+        // （存量数据可能带历史悬空引用，不改就不拦——校验合并值会误伤
+        // 「只改标题」的普通更新）。
+        if changes
+            .iter()
+            .any(|c| c == "parent_issue_id" || c == "project_id")
+        {
+            validate_issue_refs_on(&tx, parent_issue_id, project_id, Some(id))?;
+        }
         tx.execute(
             "UPDATE issue SET title=?1, description=?2, priority=?3, project_id=?4,
                 due_date=?5, position=?6, acceptance_criteria=?7, parent_issue_id=?8,
@@ -3529,6 +3542,67 @@ fn apply_set_opt<T: PartialEq + Clone>(
         }
         _ => old.clone(),
     }
+}
+
+/// parent_issue_id / project_id 引用完整性校验（2026-10-17 系统性检查：
+/// issue 表这两列无 REFERENCES 约束，靠这里显式把关）。规则：
+/// - project 存在；
+/// - parent issue 存在；`self_id = Some(id)` 时禁自引用；并沿 parent 链
+///   上溯做环检测（A→B→A）——上限 64 步防存量数据已成环时死循环；
+/// - `create_issue` 传 `self_id=None`（新单尚无 id，环不可能成立）。
+fn validate_issue_refs_on(
+    tx: &rusqlite::Transaction<'_>,
+    parent_issue_id: Option<i64>,
+    project_id: Option<i64>,
+    self_id: Option<i64>,
+) -> Result<(), String> {
+    if let Some(pid) = parent_issue_id {
+        if Some(pid) == self_id {
+            return Err(format!("parent_issue_id 不能指向自身（issue {pid}）"));
+        }
+        let exists: Option<i64> = tx
+            .query_row("SELECT id FROM issue WHERE id = ?1", params![pid], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if exists.is_none() {
+            return Err(format!("parent_issue_id {pid} 不存在"));
+        }
+        let mut cursor = pid;
+        for _ in 0..64 {
+            let next: Option<Option<i64>> = tx
+                .query_row(
+                    "SELECT parent_issue_id FROM issue WHERE id = ?1",
+                    params![cursor],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            match next.flatten() {
+                None => break,
+                Some(n) if Some(n) == self_id => {
+                    return Err(format!(
+                        "parent_issue_id {pid} 会构成父子环（链路回到 issue {}）",
+                        self_id.unwrap_or_default()
+                    ));
+                }
+                Some(n) => cursor = n,
+            }
+        }
+    }
+    if let Some(proj) = project_id {
+        let exists: Option<i64> = tx
+            .query_row("SELECT id FROM project WHERE id = ?1", params![proj], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if exists.is_none() {
+            return Err(format!("project_id {proj} 不存在"));
+        }
+    }
+    Ok(())
 }
 
 /// 发频道消息的内核（不加锁）：空白内容拒绝 + 空 mtype 归一为 text +

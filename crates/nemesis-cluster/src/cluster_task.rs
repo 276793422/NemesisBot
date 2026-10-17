@@ -89,6 +89,15 @@ pub struct ClusterTask {
     /// 职能文本从不跨越 RPC：A 端只传 slug，B 端从本节点磁盘/内置目录渲染。
     #[serde(default)]
     pub required_profession: Option<String>,
+    /// E1 二期用量账（2026-10-17 异步多跳根修）：async 挂起前已消耗的
+    /// token 用量差值（`task_usage_delta` JSON 形态：input_tokens/output_tokens/
+    /// requests/cost_usd）。此前首跳用量在 `execute_new_task` 检出 __ASYNC__
+    /// 后随 `usage_before` 局部变量一起丢失，`resume_task` 重新快照后最终
+    /// 回调只报续行轮差值——多跳任务的首跳消耗从未回传 A 端记账（注释还
+    /// 谎称「已在 execute_new_task 成功回调时报过」——异步路径根本没有
+    /// 成功回调）。resume 完成时合并（饱和加法）上报。
+    #[serde(default)]
+    pub async_usage_stash: Option<serde_json::Value>,
 }
 
 // ---------------------------------------------------------------------------
@@ -288,6 +297,15 @@ impl ClusterTaskList {
             }
         }
         None
+    }
+
+    /// 写入 async 挂起前的用量暂存（E1 二期多跳账，2026-10-17）。调用方
+    /// （cluster_agent）紧跟着调 [`Self::save_async_state`]——落盘的任务
+    /// 索引自然带上本字段，崩溃恢复后 resume 仍能合并首跳用量。
+    pub fn set_async_usage_stash(&self, task_id: &str, usage: Option<serde_json::Value>) {
+        if let Some(mut task) = self.tasks.get_mut(task_id) {
+            task.async_usage_stash = usage;
+        }
     }
 
     /// Atomically inject a callback result into a waiting task.
