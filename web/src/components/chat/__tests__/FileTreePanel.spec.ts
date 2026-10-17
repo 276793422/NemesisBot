@@ -150,4 +150,55 @@ describe('FileTreePanel', () => {
 
     expect(wrapper.find('.filetree-truncated').text()).toContain('500')
   })
+
+  // I5（2026-10-17）：📌 上下文文件——设定/切换/取消 + 头部 chip + 不串 insertRef。
+  it('📌 设为上下文 → chip 显示、再点同文件取消、异文件切换', async () => {
+    requestMock.mockResolvedValue(rootTree())
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    const tree = useFileTreePanel()
+    expect(tree.currentFile.value).toBeNull()
+    expect(wrapper.find('.filetree-context').exists()).toBe(false)
+
+    // 设定 README.md
+    await wrapper.findAll('.filetree-row')[1].find('.filetree-pin').trigger('click')
+    expect(tree.currentFile.value).toBe('README.md')
+    const chip = wrapper.find('.filetree-context')
+    expect(chip.exists()).toBe(true)
+    expect(chip.text()).toContain('README.md')
+
+    // 切换到另一文件（懒展开 src 后 pin main.rs）
+    requestMock.mockResolvedValue({
+      path: 'src',
+      truncated: false,
+      entries: [{ name: 'main.rs', path: 'src/main.rs', type: 'file' }],
+    })
+    await wrapper.findAll('.filetree-row')[0].trigger('click')
+    await flushPromises()
+    const mainRow = wrapper.findAll('.filetree-row').find(r => r.text().includes('main.rs'))!
+    await mainRow.find('.filetree-pin').trigger('click')
+    expect(tree.currentFile.value).toBe('src/main.rs')
+
+    // 同路径再点 = 取消
+    await wrapper.findAll('.filetree-row').find(r => r.text().includes('main.rs'))!.find('.filetree-pin').trigger('click')
+    expect(tree.currentFile.value).toBeNull()
+    expect(wrapper.find('.filetree-context').exists()).toBe(false)
+  })
+
+  it('chip × 清除；📌 点击不触发 insertRef（@path 不进输入框）', async () => {
+    requestMock.mockResolvedValue(rootTree())
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    const chat = useChatStore()
+    chat.input = ''
+    const readmePin = wrapper.findAll('.filetree-row')[1].find('.filetree-pin')
+    await readmePin.trigger('click')
+    // 📌 点击被 .stop 拦住，行 click（insertRef）不触发
+    expect(chat.input).toBe('')
+
+    await wrapper.find('.filetree-context .filetree-btn').trigger('click')
+    expect(useFileTreePanel().currentFile.value).toBeNull()
+  })
 })
