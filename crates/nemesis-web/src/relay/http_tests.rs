@@ -783,6 +783,88 @@ async fn ws_tunnel_upgrade_and_bidirectional_frames() {
 }
 
 // ---------------------------------------------------------------------------
+// ⑤+ 上行缓冲内存闸：宣告不可能帧长 → 泵断连而非无界累积
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn ws_tunnel_up_buf_cap_closes_connection_on_impossible_frame_flood() {
+    let (addr, relay, _shutdown) = spawn_relay_server("tok").await;
+    let mut dev = connect_device(addr, "node-a", "A 机", "tok")
+        .await
+        .expect("接入");
+    let cookie = make_device_cookie(relay.as_ref(), "node-a");
+
+    // 升级穿透（与 ws_tunnel_upgrade_and_bidirectional_frames 同流程）。
+    let mut browser =
+        raw_ws_connect_write(addr, "/d/node-a/ws", &format!("{AUTH_COOKIE}={cookie}")).await;
+    let open = recv_business_frame(&mut dev).await;
+    let BridgeFrame::ConnOpen { conn_id, .. } = open else {
+        panic!("期望 ConnOpen，得到 {open:?}");
+    };
+    let _upgrade_req = recv_business_frame(&mut dev).await;
+    let resp_101 = b"HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-accept: s3pPLMBiTxaQ9kYGzzhZRbK+xO=\r\n\r\n";
+    send_frame(
+        &mut dev,
+        &BridgeFrame::ConnData {
+            conn_id,
+            seq: 0,
+            data_b64: base64::engine::general_purpose::STANDARD.encode(resp_101),
+            fin: false,
+        },
+    )
+    .await;
+    let head = raw_ws_read_head(&mut browser).await;
+    assert!(head.starts_with("HTTP/1.1 101"), "期望 101，得到：{head}");
+
+    // 设备持续喂「宣告 1<<40 字节帧长」的帧头字节——解析器诚实 None
+    // （等待臂），残余永远滞留 up_buf；超过 MAX_BRIDGE_UP_BUF 后泵必须
+    // 断连（ConnClose）而非无界累积（R5-1 伴生内存闸回归锁）。
+    let evil = {
+        let mut head = vec![0x82u8, 127];
+        head.extend_from_slice(&(1u64 << 40).to_be_bytes());
+        head.repeat(400_000) // ~4 MB/块
+    };
+    let dev_sender = tokio::spawn(async move {
+        for _ in 0..20 {
+            // 内联 send（send_frame 的 expect 会 panic——泵断连关闭 ws 是
+            // 本测试的预期路径，必须感知失败而非炸掉 sender 任务）。
+            let frame = BridgeFrame::ConnData {
+                conn_id,
+                seq: 0,
+                data_b64: base64::engine::general_purpose::STANDARD.encode(&evil),
+                fin: false,
+            };
+            let sent = dev
+                .send(TungMessage::Text(encode_frame(&frame).unwrap().into()))
+                .await;
+            if sent.is_err() {
+                break; // 泵断连后设备侧 ws 关闭，停止灌入
+            }
+        }
+        dev
+    });
+    let mut dev = dev_sender.await.unwrap();
+    let close = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        recv_business_frame(&mut dev),
+    )
+    .await
+    .expect("等 ConnClose 超时（泵未断连=内存闸失效）");
+    let BridgeFrame::ConnClose { reason, .. } = close else {
+        panic!("期望 ConnClose，得到 {close:?}");
+    };
+    assert!(!reason.is_empty(), "断连必须带原因：{reason}");
+
+    // 浏览器侧 socket 随泵收口关闭。
+    let mut chunk = [0u8; 64];
+    let n = tokio::time::timeout(std::time::Duration::from_secs(10), browser.read(&mut chunk))
+        .await
+        .expect("读浏览器关闭超时")
+        .expect("读失败");
+    assert_eq!(n, 0, "浏览器连接应已关闭");
+}
+
+// ---------------------------------------------------------------------------
 // ⑥ 状态页 ws token 门
 // ---------------------------------------------------------------------------
 

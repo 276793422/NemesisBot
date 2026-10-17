@@ -77,6 +77,27 @@ fn agt_parse_len127_truncated_returns_none() {
 }
 
 #[test]
+fn agt_parse_extreme_len64_rejected_without_overflow() {
+    // R5-1 回归锁：8 字节长度来自线上字节，裸 `pos + len` 对极端值在
+    // debug 算术溢出 panic、release 回绕骗过长度检查。两种极端都必须
+    // 诚实 None：
+    // - 近 u64::MAX：checked_add 溢出臂（64-bit 上加法即溢出）；
+    // - 1<<40：不溢出但永不可能凑齐（None 等待臂，泵侧 up_buf 闸兜底）。
+    let mut f = vec![0x82u8, 127];
+    f.extend_from_slice(&u64::MAX.to_be_bytes());
+    f.extend_from_slice(b"payload");
+    assert!(parse_server_frame(&f).is_none(), "u64::MAX 长度必须拒绝");
+
+    let mut f = vec![0x82u8, 127];
+    f.extend_from_slice(&(1u64 << 40).to_be_bytes());
+    f.extend_from_slice(b"payload");
+    assert!(
+        parse_server_frame(&f).is_none(),
+        "1<<40 长度必须等待而非错切"
+    );
+}
+
+#[test]
 fn agt_parse_fin0_fragment_yields_placeholder_text() {
     // 中间分片（FIN=0）：占位空 Text + 完整消耗（78，流不卡死）。
     let f = server_frame(0x1, false, b"hello");

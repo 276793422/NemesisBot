@@ -120,7 +120,7 @@ impl DeliveriesBridge for FakeBridge {
     fn list(&self, limit: usize) -> Vec<DeliveryInfo> {
         self.note("list");
         assert!(
-            limit >= 1 && limit <= 500,
+            (1..=500).contains(&limit),
             "handler 必须钳制 limit: {limit}"
         );
         vec![fake_info("k1", false), fake_info("k2", true)]
