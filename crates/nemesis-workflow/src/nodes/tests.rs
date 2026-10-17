@@ -62,6 +62,20 @@ async fn test_delay_node_executor() {
 }
 
 #[tokio::test]
+async fn test_delay_node_negative_seconds_is_honest_err_not_panic() {
+    // JSON 承载不了 NaN（serde_json 序列化为 null → as_f64 None → 默认 0），
+    // 可达 panic 面 = 负数与超 u64 秒溢出两类。
+    let exec = DelayNodeExecutor;
+    for bad in [-5.0f64, 1e300] {
+        let mut config = HashMap::new();
+        config.insert("seconds".to_string(), serde_json::json!(bad));
+        let node = make_node("n1", "delay", config);
+        let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await;
+        assert!(result.is_err(), "seconds={bad} 必须是 Err 而非 panic/Ok");
+    }
+}
+
+#[tokio::test]
 async fn test_parallel_node_executor_with_registry() {
     let registry = NodeExecutorRegistry::new_with_composite();
     let exec = registry.get("parallel").unwrap();
