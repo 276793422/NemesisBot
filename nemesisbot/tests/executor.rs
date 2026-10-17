@@ -53,9 +53,10 @@ fn ctx() -> RequestContext {
 ///      `nemesisbot sandbox start` is typically run on Windows — auto-detected
 ///      so the tests hit the real box without env hand-holding),
 ///   3. `~/.nemesisbot` (default-home fallback).
-// 仅被下方 cfg(windows) 的 Sandboxie 测试调用——非 Windows 编译出来是死码，
-// 且 Linux rustc 1.95 渲染死码警告会 ICE，故随调用方一起按平台裁剪。
-#[cfg(windows)]
+// 仅被下方 cfg(all(windows, feature = "sandbox")) 的 Sandboxie 测试调用——
+// 非 Windows 或 sandbox 裁剪（iotsmall）编译出来是死码，
+// 且 Linux rustc 1.95 渲染死码警告会 ICE，故随调用方一起裁剪。
+#[cfg(all(windows, feature = "sandbox"))]
 fn sandbox_home() -> PathBuf {
     if let Ok(h) = std::env::var("NEMESISBOT_HOME") {
         return PathBuf::from(h);
@@ -83,8 +84,8 @@ fn sandbox_home() -> PathBuf {
 /// write sees a not-yet-flushed box. Both race the session teardown. In
 /// production the LLM latency between tool calls masks this; the L2.2 tests
 /// run back-to-back, so they must let the box settle.
-// 同 sandbox_home：仅 cfg(windows) 测试调用，随调用方按平台裁剪。
-#[cfg(windows)]
+// 同 sandbox_home：仅 cfg(all(windows, feature = "sandbox")) 测试调用，随调用方裁剪。
+#[cfg(all(windows, feature = "sandbox"))]
 async fn settle_sandbox_box() {
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 }
@@ -189,7 +190,7 @@ async fn spawn_and_call_via_pipe_round_trips() {
     );
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "sandbox"))]
 #[tokio::test]
 #[ignore = "requires Sandboxie started (SbieDrv + SbieSvc + NemesisBox drivable); run via the sandbox e2e workflow or `cargo test -p nemesisbot --test executor -- --ignored`"]
 async fn spawn_and_call_via_startexe_crosses_box() {
@@ -221,7 +222,7 @@ async fn spawn_and_call_via_startexe_crosses_box() {
     );
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "sandbox"))]
 #[tokio::test]
 #[ignore = "requires Sandboxie started (SbieDrv + SbieSvc + NemesisBox drivable); run via the sandbox e2e workflow or `cargo test -p nemesisbot --test executor -- --ignored`"]
 async fn spawn_and_call_via_startexe_outside_write_rejected_inside_box() {
@@ -278,7 +279,7 @@ async fn spawn_and_call_via_startexe_outside_write_rejected_inside_box() {
     );
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "sandbox"))]
 #[tokio::test]
 #[ignore = "requires Sandboxie started (SbieDrv + SbieSvc + NemesisBox drivable); run via the sandbox e2e workflow or `cargo test -p nemesisbot --test executor -- --ignored`"]
 async fn l23_pending_commit_brings_boxed_workspace_write_to_real_disk() {
@@ -400,7 +401,7 @@ fn remote_executor_tool_delegates_schema_byte_identically() {
 // U11 用户态沙盒 e2e（Linux：landlock 自装；B7 验收本体）
 // ---------------------------------------------------------------------------
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "sandbox"))]
 #[tokio::test]
 async fn u11_userland_sandbox_write_outside_denied_inside_allowed() {
     // U11/B7 验收：sandbox probe=true → gateway 以 stdio + SANDBOX 标记 spawn

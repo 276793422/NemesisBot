@@ -149,9 +149,17 @@ struct Inner {
 /// git2 `Repository` is Send but !Sync — Mutex 使其可跨 await 共享。
 /// 锁纪律：repo 锁与 inner 锁绝不互相嵌套持有（先 repo 操作、放锁、再
 /// inner，反之亦然），杜绝双锁排序死锁。
+#[cfg(feature = "checkpoint-git")]
 struct GitBackend {
     repo: Mutex<git2::Repository>,
 }
+
+/// checkpoint-git 关：git2（libgit2 ~1.5MB）不编译。空形态**刻意保留**
+/// `git: Option<GitBackend>` 字段形与全部 `self.git` 读点的编译面；
+/// `try_git_backend` 恒 None → JSON 快照回落（D4）自然接管，行为与
+/// 「无 .git」完全一致（逐 turn JSON 文件、rewind/undo 照常）。
+#[cfg(not(feature = "checkpoint-git"))]
+struct GitBackend {}
 
 /// Holds a session's checkpoints in memory and, when `dir` is set, persists one
 /// JSON file per turn under it. All methods are safe for concurrent use.
@@ -214,6 +222,7 @@ impl CheckpointStore {
     // git 影子库初始化 / 打开
     // ------------------------------------------------------------------
 
+    #[cfg(feature = "checkpoint-git")]
     fn try_git_backend(root: &Path, shadow: &Path) -> Option<GitBackend> {
         let real_git = root.join(".git");
         // 只认目录形态的 .git；文件形态（linked worktree / submodule）→ JSON 回落。
@@ -247,6 +256,13 @@ impl CheckpointStore {
         }
     }
 
+    /// checkpoint-git 关：恒 None（JSON 快照回落，D4）。
+    #[cfg(not(feature = "checkpoint-git"))]
+    fn try_git_backend(_root: &Path, _shadow: &Path) -> Option<GitBackend> {
+        None
+    }
+
+    #[cfg(feature = "checkpoint-git")]
     fn init_shadow(shadow: &Path, root: &Path) -> Result<git2::Repository, String> {
         // 以 bare 形态初始化（gitdir = shadow），再 attach 工作区。不能用
         // no_dotgit_dir + workdir_path 直接 init——工作区里已有真实 .git 时
@@ -260,6 +276,7 @@ impl CheckpointStore {
         Ok(repo)
     }
 
+    #[cfg(feature = "checkpoint-git")]
     fn open_shadow(shadow: &Path, root: &Path) -> Result<git2::Repository, String> {
         let repo = git2::Repository::open_ext(
             shadow,
@@ -274,6 +291,7 @@ impl CheckpointStore {
 
     /// 确保 repo 的 workdir 解析到工作区（init 的 workdir_path / 老库的
     /// config 都只是尽力而为，这里统一钉死）。
+    #[cfg(feature = "checkpoint-git")]
     fn ensure_workdir(repo: &git2::Repository, root: &Path) -> Result<(), String> {
         let ok = repo.workdir().is_some_and(|w| w.starts_with(root));
         if !ok {
@@ -284,6 +302,7 @@ impl CheckpointStore {
 
     /// `objects/info/alternates` 指向真实仓库 objects → 已提交 blob 零拷贝
     /// 复用。幂等：内容一致不重写。
+    #[cfg(feature = "checkpoint-git")]
     fn ensure_alternates(shadow: &Path, root: &Path) -> std::io::Result<()> {
         let info_dir = shadow.join("objects").join("info");
         let file = info_dir.join("alternates");
@@ -304,6 +323,7 @@ impl CheckpointStore {
     /// 形态 = `tmp_obj_*` / `tmp_pack_*` / 各类 `*.lock`）。幂等：重复启动
     /// 或无残留都安全（返回清扫条数）。只删已知安全形态，绝不触碰
     /// refs / objects 本体 / packed-refs / alternates。
+    #[cfg(feature = "checkpoint-git")]
     pub fn heal_shadow_repo(shadow: &Path) -> usize {
         let mut removed = 0usize;
         let mut stack = vec![shadow.to_path_buf()];
@@ -342,6 +362,7 @@ impl CheckpointStore {
     /// `matched_pathspec`（pathspec.c:209-211）→ 回调收到 NULL → git2-rs
     /// shim `CStr::from_ptr(NULL)` 段错误（STATUS_ACCESS_VIOLATION）。必须传
     /// 非空全匹配 spec（`**` 递归匹配含子目录），不能用空数组表示「全部」。
+    #[cfg(feature = "checkpoint-git")]
     fn write_current_tree(repo: &mut git2::Repository) -> Result<String, String> {
         let mut index = repo.index().map_err(|e| e.to_string())?;
         index
@@ -365,6 +386,7 @@ impl CheckpointStore {
 
     /// restore（git 模式）核心：diff target..current 分类出要恢复/要删除的
     /// 路径集，然后 checkout_tree（按路径）+ 逐文件删除。
+    #[cfg(feature = "checkpoint-git")]
     fn git_restore(
         root: &Path,
         repo: &mut git2::Repository,
@@ -510,6 +532,7 @@ impl CheckpointStore {
         let prompt = prompt.into();
 
         // git track 先行（repo 锁独立短区间，不与 inner 锁嵌套）。
+        #[cfg(feature = "checkpoint-git")]
         let tree_hex = match self.git.as_ref() {
             Some(gb) => {
                 let mut repo = gb.repo.lock();
@@ -525,6 +548,8 @@ impl CheckpointStore {
             }
             None => None,
         };
+        #[cfg(not(feature = "checkpoint-git"))]
+        let tree_hex: Option<String> = None;
 
         let cp = Checkpoint {
             turn,
@@ -766,6 +791,7 @@ impl CheckpointStore {
         // unchecked 身份重复出现）；补进时对既有 unchecked 去重。
         // from_turn 后无 checkpoint（restore no-op）或无 target tree（hybrid
         // 兜底路径）时 restore 不做 tree 恢复，这里同样不报。
+        #[cfg(feature = "checkpoint-git")]
         if has_post
             && let Some(gb) = self.git.as_ref()
             && let (Some(target_hex), Some(reference_hex)) = (
@@ -787,6 +813,9 @@ impl CheckpointStore {
                 }
             }
         }
+        // checkpoint-git 关：全树 diff 段不编译，has_post 消费面消失。
+        #[cfg(not(feature = "checkpoint-git"))]
+        let _ = (has_post, declared);
         report
     }
 
@@ -796,6 +825,7 @@ impl CheckpointStore {
     /// = 回退区间内变更（agent 本意）。任何失败 = 空集（预检降级，不误
     /// 报）。libgit2 借用规则同 git_restore：先可变（write_current_tree）
     /// 再拿 immutable Tree 句柄。
+    #[cfg(feature = "checkpoint-git")]
     fn tree_diff_unchecked(
         repo: &mut git2::Repository,
         target_hex: &str,
@@ -914,6 +944,7 @@ impl CheckpointStore {
         };
 
         // ---- 第二段：repo 锁内做 tree diff + checkout，随即放锁 ----
+        #[cfg(feature = "checkpoint-git")]
         let mut result = match self.git.as_ref() {
             Some(gb) => {
                 let mut repo = gb.repo.lock();
@@ -925,6 +956,14 @@ impl CheckpointStore {
                 warn!("[checkpoint] 目标 tree {target_hex} 存在但影子库不可用，跳过工作区内恢复");
                 (Vec::new(), Vec::new())
             }
+        };
+        // checkpoint-git 关：git 时代索引（tree Some）诚实 no-op，不误删。
+        #[cfg(not(feature = "checkpoint-git"))]
+        let mut result: (Vec<String>, Vec<String>) = {
+            warn!(
+                "[checkpoint] 目标 tree {target_hex} 存在但影子库未编译（checkpoint-git 关），跳过工作区内恢复"
+            );
+            (Vec::new(), Vec::new())
         };
 
         // ---- 第三段：hybrid 工作区外内容恢复 ----
@@ -1038,6 +1077,7 @@ impl CheckpointStore {
     /// 副作用）不在任何 begin 树里，redo 的前向恢复目标必须是 rewind 时刻
     /// 的实况，否则 redo 后文件停在「最后 turn 开始前」，与已回填的对话行
     /// 不一致。JSON 形态返回 None（redo 文件步诚实跳过，语义不变）。
+    #[cfg(feature = "checkpoint-git")]
     pub fn current_tree_hex(&self) -> Option<String> {
         let gb = self.git.as_ref()?;
         let mut repo = gb.repo.lock();
@@ -1048,6 +1088,12 @@ impl CheckpointStore {
                 None
             }
         }
+    }
+
+    /// checkpoint-git 关：JSON 形态语义——恒 None（redo 文件步诚实跳过）。
+    #[cfg(not(feature = "checkpoint-git"))]
+    pub fn current_tree_hex(&self) -> Option<String> {
+        None
     }
 
     /// 共享实现：`turn <= bound` 里最后一个带 tree 的。
@@ -1069,12 +1115,19 @@ impl CheckpointStore {
     /// gc，tree 仍然有效）。仅 git 形态；JSON 形态诚实报错（无 tree 可
     /// 言）。只覆盖工作区内（tree 覆盖范围）；工作区外的 hybrid 内容快照
     /// 不参与（redo 诚实边界）。
+    #[cfg(feature = "checkpoint-git")]
     pub fn restore_to_tree(&self, tree_hex: &str) -> Result<(Vec<String>, Vec<String>), String> {
         let Some(gb) = self.git.as_ref() else {
             return Err("影子库不可用（JSON 形态），无法按 tree 恢复文件".to_string());
         };
         let mut repo = gb.repo.lock();
         Ok(Self::git_restore(&self.root, &mut repo, tree_hex))
+    }
+
+    /// checkpoint-git 关：诚实报未编译（无 tree 可言）。
+    #[cfg(not(feature = "checkpoint-git"))]
+    pub fn restore_to_tree(&self, _tree_hex: &str) -> Result<(Vec<String>, Vec<String>), String> {
+        Err("影子库未编译（checkpoint-git 关），无法按 tree 恢复文件".to_string())
     }
 
     /// M3：工作区根（`session_file_diff` 读现盘文件用——checkpoint 的
@@ -1113,6 +1166,7 @@ impl CheckpointStore {
 
     /// M3：从影子 tree 读单文件内容（git 形态专用）。文件不在 tree 里 →
     /// `Ok(None)`（基线时刻尚不存在=新增文件语义）；真实 git 错误 → Err。
+    #[cfg(feature = "checkpoint-git")]
     pub fn read_file_from_tree(
         &self,
         tree_hex: &str,
@@ -1136,6 +1190,16 @@ impl CheckpointStore {
             Err(e) if e.code() == git2::ErrorCode::NotFound => Ok(None),
             Err(e) => Err(format!("tree 内路径查找失败: {e}")),
         }
+    }
+
+    /// checkpoint-git 关：诚实报未编译。
+    #[cfg(not(feature = "checkpoint-git"))]
+    pub fn read_file_from_tree(
+        &self,
+        _tree_hex: &str,
+        _path: &str,
+    ) -> Result<Option<String>, String> {
+        Err("影子库未编译（checkpoint-git 关），无法按 tree 读文件".to_string())
     }
 
     fn persist(&self, cp: &Checkpoint) {
@@ -1182,26 +1246,26 @@ mod tests;
 mod s9_tests;
 
 // D2 (devtool-upgrade 阶段 5): git 影子库双形态回归（D4 验收）。
-#[cfg(test)]
+#[cfg(all(test, feature = "checkpoint-git"))]
 mod d2_tests;
 
 // E3 (devtool-upgrade 阶段 5): tree 查询 + restore_to_tree（消息级回退
 // redo 的文件原语）测试。
-#[cfg(test)]
+#[cfg(all(test, feature = "checkpoint-git"))]
 mod e3_tests;
 
 // M3 (devtool-upgrade 阶段 5): base_for_path + read_file_from_tree（会话级
 // diff 查看器的基线原语）测试。
-#[cfg(test)]
+#[cfg(all(test, feature = "checkpoint-git"))]
 mod m3_tests;
 
 // 覆盖率补充批次：影子库失败回落 / alternates 降级 / restore_to_tree 坏
 // hex / checkout·删除失败面 / read_file_from_tree 错误面 / hybrid 失败 /
 // 影子库外力消失降级。
-#[cfg(test)]
+#[cfg(all(test, feature = "checkpoint-git"))]
 mod cov_tests;
 
 // P20 (2026-09-25 能力扩展 WS7): turn 收尾封印（after 指纹）+ 冲突预检
 // （last-declared 规则）+ 影子库自愈（幂等清扫）测试。
-#[cfg(test)]
+#[cfg(all(test, feature = "checkpoint-git"))]
 mod p20_tests;

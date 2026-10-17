@@ -10,6 +10,9 @@ pub mod autopilot;
 pub mod channel;
 #[cfg(feature = "cluster")]
 pub mod cluster;
+// 行动代理连接器 CLI（`nemesisbot connector`；connectors feature 门控，
+// nemesis-connectors 整包随它进出——连带 nemesis-security）。
+#[cfg(feature = "connectors")]
 pub mod connector;
 pub mod cors;
 pub mod credentials;
@@ -26,6 +29,7 @@ pub mod eval_rules;
 #[cfg(feature = "forge")]
 pub mod forge;
 pub mod gateway;
+#[cfg(feature = "history-search")]
 pub mod history;
 #[cfg(feature = "board")]
 pub mod issue;

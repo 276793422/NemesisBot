@@ -78,10 +78,12 @@ pub(crate) fn sanitize_generated_title(raw: &str) -> Option<String> {
 /// 序 = 首次采集序（重采集移到尾部，cap 淘汰最旧）。纯内存不落盘，
 /// 生命周期 = 所属 AgentLoop 实例（实例销毁随之消失，无跨实例共享）。
 #[derive(Default)]
+#[cfg_attr(not(feature = "lsp"), allow(dead_code))]
 pub(crate) struct DiagnosticsTouchRegistry {
     sessions: std::collections::HashMap<String, Vec<(std::path::PathBuf, std::time::SystemTime)>>,
 }
 
+#[cfg_attr(not(feature = "lsp"), allow(dead_code))]
 impl DiagnosticsTouchRegistry {
     /// 单会话登记上限（长会话无界写文件防护；超限淘汰最旧登记）。
     const MAX_FILES_PER_SESSION: usize = 64;
@@ -128,6 +130,7 @@ impl DiagnosticsTouchRegistry {
 /// stat 失败）= 诊断早于最后一次写入 → 丢弃。mtime 粒度极粗的文件系统
 /// （FAT 2s）理论上存在同 tick 假新鲜窗口——best-effort 竞速防护，取
 /// 计划首选 mtime 路线（内容 hash 需整文件读，热路径上不划算）。
+#[cfg_attr(not(feature = "lsp"), allow(dead_code))]
 fn diag_is_fresh(path: &std::path::Path, collected_at: std::time::SystemTime) -> bool {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
@@ -140,6 +143,7 @@ fn diag_is_fresh(path: &std::path::Path, collected_at: std::time::SystemTime) ->
 /// - 其余（write_file/edit_file/append_file）：顶层 `path` 单文件。
 ///
 /// path 缺失/形态不符 → 空表（调用方诚实跳过回灌）。纯函数，不碰 IO。
+#[cfg_attr(not(feature = "lsp"), allow(dead_code))]
 pub(crate) fn extract_diag_feedback_paths(
     tool_name: &str,
     args: &serde_json::Value,
@@ -526,6 +530,7 @@ impl AgentLoop {
     /// C3（devtool-upgrade 阶段 2）：注入共享 LspManager 单例（与 LspTool
     /// 同一实例——SharedResources.lsp_manager，见 C5）。编辑后诊断回灌
     /// （修复闭环）消费；`None`（未注入 / standalone）→ 反馈静默跳过。
+    #[cfg(feature = "lsp")]
     pub fn set_lsp_manager(&self, mgr: Arc<nemesis_lsp::LspManager>) {
         *self.lsp_manager.write() = Some(mgr);
     }
@@ -536,6 +541,7 @@ impl AgentLoop {
     /// 钦定放 config_watch.rs，规避 loop.rs 主体的同文件冲突（Wave 2 的
     /// P19/P33）。multiedit 的 args 形态是 `edits[].path`（非顶层 path），
     /// 路径提取见 [`extract_diag_feedback_paths`]。
+    #[cfg_attr(not(feature = "lsp"), allow(dead_code))]
     pub(crate) const DIAGNOSTICS_WRITE_TOOLS: &'static [&'static str] =
         &["write_file", "edit_file", "append_file", "multiedit"];
 
@@ -544,6 +550,7 @@ impl AgentLoop {
     /// 运行中翻转开关）。缺段 / standalone → 全默认（P2 能力扩展 WS3 起
     /// 默认 `enabled=true`；standalone 无 manager 注入时反馈链路自幂等
     /// 跳过，不受默认翻转影响）。
+    #[cfg(feature = "lsp")]
     pub(crate) fn current_diagnostics_loop(&self) -> nemesis_config::DiagnosticsLoopConfig {
         let path = match self.config_path.read().clone() {
             Some(p) => p,
@@ -597,6 +604,7 @@ impl AgentLoop {
     /// **先全量 touch、再单轮 drain**（等首个编辑文件）——`drain_pushes`
     /// 收割的是 session 全部 uri 的推送，逐文件串行等会让干净文件各吃满
     /// `wait_max_ms`（multiedit 多文件时等待税线性放大）。
+    #[cfg(feature = "lsp")]
     pub(crate) async fn apply_diagnostics_feedback(
         mgr: Option<&nemesis_lsp::LspManager>,
         cfg: nemesis_config::DiagnosticsLoopConfig,
@@ -728,6 +736,7 @@ impl AgentLoop {
     /// C3：dispatch 现场包装——读共享 manager + 新鲜 config + 会话级
     /// touched 登记（P3）后委托核心。锁纪律：parking_lot guard 绝不跨
     /// await——登记快照先短锁取出，采集完成后短锁回写锚点。
+    #[cfg(feature = "lsp")]
     pub(crate) async fn diagnostics_feedback(
         &self,
         session_key: &str,

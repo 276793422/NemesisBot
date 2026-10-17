@@ -31,6 +31,7 @@ fn fresh_store(name: &str) -> (PathBuf, PricingStore) {
     (dir, store)
 }
 
+#[cfg(feature = "pricing-embed")]
 #[test]
 fn empty_store_falls_through_to_embedded() {
     let (_dir, store) = fresh_store("empty");
@@ -41,6 +42,7 @@ fn empty_store_falls_through_to_embedded() {
     assert!(store.list_custom().is_empty());
 }
 
+#[cfg(feature = "pricing-embed")]
 #[test]
 fn custom_overrides_downloaded_and_embedded() {
     let (_dir, store) = fresh_store("priority");
@@ -107,6 +109,7 @@ fn cost_math_matches_cost_from_pricing() {
     assert_eq!(store.compute_cost_usd("unknown-model", 100, 100, 0, 0), 0.0);
 }
 
+#[cfg(feature = "pricing-embed")]
 #[test]
 fn corrupt_custom_file_degrades_and_survives() {
     let (dir, store) = fresh_store("corrupt");

@@ -552,11 +552,13 @@ pub struct AgentLoop {
     /// 实例，见 SharedResources.lsp_manager / C5）。编辑后诊断回灌（修复
     /// 闭环）用它同步文档 + 等诊断。`None`（未注入 / standalone）→ 反馈
     /// 静默跳过。Set via `set_lsp_manager` by the agent factory.
+    #[cfg(feature = "lsp")]
     lsp_manager: parking_lot::RwLock<Option<Arc<nemesis_lsp::LspManager>>>,
     /// P3（能力扩展 WS3）：会话级诊断采集登记（跨文件聚合 + stale 过滤
     /// 状态面）。语义与生命周期见 `config_watch::DiagnosticsTouchRegistry`
     /// ——仅声明/初始化挂靠于此（结构体字段），逻辑全在 config_watch.rs
     /// （计划 §冲突面登记：诊断域改动不进 loop.rs 主体）。
+    #[cfg(feature = "lsp")]
     diagnostics_touched: parking_lot::Mutex<config_watch::DiagnosticsTouchRegistry>,
     /// 自定义 slash 命令表路径（`config.commands.json`；主 agent 专用，集群
     /// agent 不接——命令不该跨节点复制，同 hooks 挂账决策）。
@@ -777,7 +779,9 @@ impl AgentLoop {
             config_path: parking_lot::RwLock::new(None),
             prompt_system: parking_lot::RwLock::new(crate::prompt::PromptSystem::Classic),
             pricing_store: parking_lot::RwLock::new(None),
+            #[cfg(feature = "lsp")]
             lsp_manager: parking_lot::RwLock::new(None),
+            #[cfg(feature = "lsp")]
             diagnostics_touched: parking_lot::Mutex::new(
                 config_watch::DiagnosticsTouchRegistry::default(),
             ),
@@ -1023,10 +1027,10 @@ mod g4_background_spawn_tests;
 #[cfg(test)]
 mod e6_maintenance_tests;
 // C3 (devtool-upgrade 阶段 2)：编辑后诊断回灌测试（fake LSP server）。
-#[cfg(test)]
+#[cfg(all(test, feature = "lsp"))]
 mod diagnostics_feedback_tests;
 // P2/P3 (能力扩展 WS3)：诊断回灌触发臂扩展 + 跨文件聚合 + stale 过滤测试。
-#[cfg(test)]
+#[cfg(all(test, feature = "lsp"))]
 mod diagnostics_session_tests;
 // G0 (devtool-upgrade 阶段 3)：SpawnTool 生产化 + run_detached 测试。
 #[cfg(test)]
@@ -1090,8 +1094,9 @@ mod deliverables_tests;
 #[cfg(test)]
 mod e3_tests;
 // M3 (devtool-upgrade 阶段 5)：会话级 diff 查看器测试（git/JSON 双形态
-// 基线对比 + 未挂载/未知路径诚实报错）。
-#[cfg(test)]
+// 基线对比 + 未挂载/未知路径诚实报错）。stage_two_turns 内含 git init
+// 分支 → 随 checkpoint-git 进出。
+#[cfg(all(test, feature = "checkpoint-git"))]
 mod m3_tests;
 // E7 (devtool-upgrade 阶段 5)：会话标题自动生成测试（清洗规则 / 端到端
 // spawn 落盘 / 无小模型与手动改名跳过）。
@@ -1170,8 +1175,9 @@ mod tool_dispatch_sec_cov_tests;
 mod provider_stream_tests;
 
 // P20 (2026-09-25 能力扩展 WS7): rewind 冲突预检（外部修改拒绝 + force 强
-// 过 + redo 往返）编排测试。
-#[cfg(test)]
+// 过 + redo 往返）编排测试。用例全部 git 形态（stage_sealed_two_turns
+// git init）→ 随 checkpoint-git 进出。
+#[cfg(all(test, feature = "checkpoint-git"))]
 mod p20_tests;
 
 // WS9（能力扩展 P17+P18）：rewind 谱系落盘（last_rewind）+ 分支摘要生成

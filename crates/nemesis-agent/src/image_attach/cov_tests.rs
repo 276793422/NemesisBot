@@ -1,7 +1,9 @@
 //! image_attach 覆盖率补充测试（URL 预取失败面 / 钉死 DNS client /
 //! 降采样闸接入两来源 / D6 溢出与 data: 注记 / 水合降级）。
 
-use std::io::{Cursor, Read, Write};
+#[cfg(feature = "image-process")]
+use std::io::Cursor;
+use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -28,6 +30,7 @@ fn png_bytes() -> Vec<u8> {
 }
 
 /// 编码一张纯色 PNG（真实可解码，供降采样闸走 Replaced 路径）。
+#[cfg(feature = "image-process")]
 fn solid_png(w: u32, h: u32) -> Vec<u8> {
     let img = image::RgbImage::from_pixel(w, h, image::Rgb([120, 130, 140]));
     let mut cursor = Cursor::new(Vec::new());
@@ -278,6 +281,7 @@ async fn uploads_dir_creation_failure_gets_note() {
 
 /// 文本来源：超分辨率图先降采样 → 注记 + 产物（uploads down_*.jpg）附加。
 #[test]
+#[cfg(feature = "image-process")]
 fn text_source_oversize_image_downsampled_then_attached() {
     let dir = tempfile::tempdir().expect("dir");
     let uploads = tempfile::tempdir().expect("uploads");
@@ -307,6 +311,7 @@ fn text_source_oversize_image_downsampled_then_attached() {
 
 /// media 来源：同型降采样路径（Replaced → 产物替代原图走附加链）。
 #[test]
+#[cfg(feature = "image-process")]
 fn media_source_oversize_image_downsampled_then_attached() {
     let dir = tempfile::tempdir().expect("dir");
     let uploads = tempfile::tempdir().expect("uploads");
@@ -439,6 +444,7 @@ fn pick_url_ext_no_dotted_segment_falls_to_content_type_then_jpg() {
 
 /// 文本来源：小图（Keep 判定）附加一次；同一路径第二次出现走 dedup continue。
 #[test]
+#[cfg(feature = "image-process")]
 fn text_source_duplicate_file_dedups_and_small_image_keeps() {
     let dir = tempfile::tempdir().unwrap();
     let img = dir.path().join("keep.png");
@@ -461,6 +467,7 @@ fn text_source_duplicate_file_dedups_and_small_image_keeps() {
 
 /// 文本来源：超过 MAX_IMAGES_PER_MESSAGE 的候选进溢出（不再附加）。
 #[test]
+#[cfg(feature = "image-process")]
 fn text_source_overflow_beyond_max_is_dropped() {
     let dir = tempfile::tempdir().unwrap();
     let max = crate::image_path_detector::MAX_IMAGES_PER_MESSAGE;

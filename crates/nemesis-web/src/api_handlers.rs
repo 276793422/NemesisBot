@@ -129,11 +129,16 @@ pub struct AppState {
     /// scheduler (add/list/update/delete/toggle/run) instead of raw file I/O.
     /// nemesis-cron is an unconditional dependency, so no cfg gate.
     pub cron: Option<Arc<std::sync::Mutex<nemesis_cron::CronService>>>,
-    /// Managed-agent board service (W2 P1). nemesis-board is an unconditional
-    /// dependency (cron precedent); gateway injects `Some` only when the
+    /// Managed-agent board service (W2 P1). `board` feature 门控（nemesis-board
+    /// 是本 crate 的 optional 依赖）；gateway 注入 `Some` only when the
     /// `board` feature is enabled and the store opened successfully. Carries
     /// the node role (goal 硬约束①：复用 NodeRole) — worker 节点 board 只读。
+    /// `Option<()>` 占位形态让 `board: None` 初始化器在关态照常编译。
+    #[cfg(feature = "board")]
     pub board: Option<nemesis_board::BoardService>,
+    #[cfg(not(feature = "board"))]
+    #[allow(dead_code)]
+    pub board: Option<()>,
     /// 签名验证启动自验状态（接入计划 §4，2026-09-23）。gateway 启动时从
     /// verify_policy 快照映射注入；None = 未注入（`--relay` 纯中继 / 测试
     /// 装配），`security.signature_verify_status` 回 `injected: false`。

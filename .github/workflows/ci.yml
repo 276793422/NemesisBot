@@ -108,6 +108,14 @@ jobs:
       - name: cargo check --workspace --all-targets
         run: cargo check --workspace --all-targets
 
+      # 功能清单同步闸（features.toml ↔ nemesisbot/Cargo.toml [features]；
+      # 新增 Cargo feature 不登记清单 = 定制构建 TUI 勾不到 = 静默裁不掉，
+      # 防再犯——channels-wecom 四通道漏登记同类事故的 CI 兜底）
+      - name: Feature-manifest sync gate
+        run: |
+          cargo build -p nemesis-build-config
+          target/debug/nemesis-build-config check
+
       # 内联测试防回归闸（四形态禁止；独立测试文件才合法）
       - name: Inline-tests discipline gate
         run: bash scripts/check-inline-tests.sh

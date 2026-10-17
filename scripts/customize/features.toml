@@ -336,14 +336,27 @@ desc = "prompt/skill 沙盒内行为评估（`nemesisbot eval`，仅数据采集
 category = "subsystems"
 default = true
 
-# NOTE: `board` 可裁剪（W2 P1 managed-agent 看板）。nemesis-web 无条件依赖
-# nemesis-board（cron 先例）；此 gate 只罩 `nemesisbot issue` CLI + gateway
-# 注入（store 未注入时 board.* WSAPI 统一报 "board service not available"）。
-# 前端看板页由 VITE_FEATURE_BOARD 单独门控。
+# NOTE: `board` 可裁剪（W2 P1 managed-agent 看板）。feature = 注入 +
+# nemesis-web/board 管理面双开——nemesis-board 是 web 的 optional 依赖，
+# 关 = `nemesisbot issue` CLI、board.* WSAPI、team.*、看板资产端点与
+# nemesis-board 整包退出依赖图（内嵌 rusqlite bundled 随之消失——iotsmall
+# 里最后一个 SQLite 来源）。前端看板页由 VITE_FEATURE_BOARD 单独门控。
 [[feature]]
 id = "board"
 label = "托管 Agent 看板"
-desc = "manager 看板（issue/项目/评论/指派，`nemesisbot issue` + Dashboard 看板页）。单机/无任务编排场景建议关"
+desc = "manager 看板（issue/项目/评论/指派，`nemesisbot issue` + Dashboard 看板页）。单机/无任务编排场景建议关；关后整包退出依赖图（内嵌 SQLite 随它进出）"
+category = "subsystems"
+default = true
+
+# NOTE: `connectors`（行动代理 P0 数据面，2026-10-14）。connector_find/invoke
+# 工具 + `nemesisbot connector` CLI + connectors.*/paperbroker.* WSAPI。
+# **nemesis-security 被本 crate 无条件依赖**（Ed25519 签名/信任库复用）——
+# 关 = connectors 与 security 整包一并退出依赖图（iotsmall 白编译清零：
+# security=false 时 8 层管线本就不接线，crate 本体此前却恒在场）。
+[[feature]]
+id = "connectors"
+label = "行动代理连接器"
+desc = "connector_find/invoke 工具 + `nemesisbot connector` CLI + connectors.*/paperbroker.* WSAPI（只读数据面）。关后 connectors 与 security 整包一并退出依赖图（无安全管线场景省密码学栈）。IoT/单机建议关"
 category = "subsystems"
 default = true
 
@@ -383,7 +396,10 @@ category = "subsystems"
 default = false
 
 # NOTE: `plugins-wasm` 可裁剪（WASM 组件插件框架，2026-09-29）。wasmtime 运行时
-# 体积可观；iotsmall panic=abort 相容性未验证（预设显式关）。关闭后
+# 体积可观（iotsmall 真形态实测 +9.35MB：19.83→29.18）；panic=abort 相容性已实证（2026-10-17
+# 四路径探针 trap/mem_bomb/fuel_bomb/echo 全接住 + 真 gateway 启动装载过；
+# 复跑：crates/nemesis-plugins-wasm/examples/iotsmall_abort_probe.rs）——
+# IoT 预设仍默认关是体积取舍非兼容性。关闭后
 # nemesis-plugins-wasm / nemesis-plugin-sdk 整包不编译，plugin.<slug> 工具、
 # plugins.wasm.* WSAPI、`nemesisbot plugin` CLI、Dashboard 插件页 WASM 分节随之
 # 消失（诚实报未编译）。
@@ -391,6 +407,78 @@ default = false
 id = "plugins-wasm"
 label = "WASM 组件插件（沙盒化）"
 desc = "wasmtime 组件插件（plugin.<slug> 工具/观察者，fuel/内存/墙钟三重限制 + egress deny-by-default，`nemesisbot plugin` + Dashboard 插件页 WASM 分节）。IoT/低资源建议关；裁后整包不编译"
+category = "subsystems"
+default = true
+
+# NOTE: `selfupdate`（L9 版本自切换通道，`nemesisbot selfupdate
+# check/apply/status` CLI + gateway 九步 apply 编排）。implies security
+# （审批 manager + 审计链是九步的两步）。关闭后自切换通道整体消失。
+[[feature]]
+id = "selfupdate"
+label = "版本自切换（selfupdate）"
+desc = "版本自更新通道（`nemesisbot selfupdate` + gateway apply 编排，v4 验签 + zip 解包 + 审批 + 审计链）。IoT/受控环境建议关"
+category = "subsystems"
+default = true
+
+# NOTE: 八个「构建体积细粒度」feature（2026-10-17 重新评估，全默认开 =
+# 全量构建不变）：pricing-embed（内嵌价目表）/ verify（启动签名自验）/
+# web-static（前端静态资源内嵌）/ lsp（LSP 语义代码查询）/
+# checkpoint-git（checkpoint 影子库）/ image-process（图片降采样）/
+# history-search（FTS 会话检索）/ usage-store（SQLite 用量账本）。
+# IoT/极小镜像预设全关（合计约省 3-4MB），消费版保持默认。
+[[feature]]
+id = "pricing-embed"
+label = "内嵌价目表"
+desc = "编译期内嵌 ~2800 条模型价目（LiteLLM 派生，+0.6MB），usage 成本核算数据源。关后成本恒 0.0（诚实降级），运行期下载层与自定义价目照常。IoT/极小镜像建议关"
+category = "subsystems"
+default = true
+
+[[feature]]
+id = "verify"
+label = "启动签名自验"
+desc = "启动时验证自身签名（v4 Authenticode，锁定版强制链基础；WSAPI signature status 随它进出）。皮肤验签与版本自切换验签不受影响。IoT/可信环境建议关"
+category = "subsystems"
+default = true
+
+[[feature]]
+id = "web-static"
+label = "内嵌前端资源"
+desc = "编译期内嵌 Dashboard 前端（裁剪后 ~1.2MB），零磁盘 IO 服务。关后只剩 exe 旁 static/ 目录磁盘兜底（没有则页面 404）。IoT/纯 API 形态建议关"
+category = "subsystems"
+default = true
+
+[[feature]]
+id = "lsp"
+label = "LSP 语义代码查询"
+desc = "只读 LSP 客户端（lsp 工具 definition/references/implementation/hover + 诊断回灌 + coding.lsp_install）。运行闸 config agents.lsp_tool 默认关，编译内含 ~0.2MB。IoT 建议关"
+category = "subsystems"
+default = true
+
+[[feature]]
+id = "checkpoint-git"
+label = "Checkpoint 影子库（git）"
+desc = "D2 checkpoint git 影子库（libgit2 ~1.5MB）：turn 边界全工作区快照，shell 副作用也覆盖。关后 checkpoint 恒走 JSON 快照回落（逐 turn JSON 文件，rewind/undo 照常，工具声明外的 exec 副作用不覆盖）。IoT 建议关"
+category = "subsystems"
+default = true
+
+[[feature]]
+id = "image-process"
+label = "图片降采样"
+desc = "J6 多模态超限图片自动降采样（image crate ~0.8MB：4096→2048→1024 阶梯 + JPEG q85）。关后超限图按原图链路走，>25MB 照旧被验真链诚实拒绝。IoT/无多模态建议关"
+category = "subsystems"
+default = true
+
+[[feature]]
+id = "history-search"
+label = "会话全文检索（FTS）"
+desc = "U20 跨会话聊天记录全文检索（SQLite FTS5）：history_search 工具 + CLI + Dashboard 日志页。关后三处诚实报未编译。与 usage-store 一起构成 SQLite 拆分两半（账本本体随 usage-store 进出）。IoT 建议关"
+category = "subsystems"
+default = true
+
+[[feature]]
+id = "usage-store"
+label = "用量账本（SQLite）"
+desc = "LLM 用量账本（nemesis-data DataStore，rusqlite bundled ~1MB）：usage 统计/请求明细/模型健康/会话成本随它进出。关后写入 no-op、查询恒空（价目层 JSON 照常，open 时 warn 一次），生产调用方零改动。IoT/极小镜像建议关（省 iotsmall 里最后一个 SQLite）"
 category = "subsystems"
 default = true
 

@@ -185,7 +185,9 @@ impl AgentLoop {
             config_path: parking_lot::RwLock::new(None),
             prompt_system: parking_lot::RwLock::new(crate::prompt::PromptSystem::Classic),
             pricing_store: parking_lot::RwLock::new(None),
+            #[cfg(feature = "lsp")]
             lsp_manager: parking_lot::RwLock::new(None),
+            #[cfg(feature = "lsp")]
             diagnostics_touched: parking_lot::Mutex::new(
                 config_watch::DiagnosticsTouchRegistry::default(),
             ),
