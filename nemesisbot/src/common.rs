@@ -342,6 +342,55 @@ pub fn print_help() {
 // Logger initialization
 // =========================================================================
 
+/// Install a global panic hook that routes panic information through
+/// `tracing::error!` (file log + SSE dashboard + console) in addition to
+/// the default stderr output.
+///
+/// Why: panics don't go through tracing — the default hook only writes to
+/// stderr, which is lost when the gateway runs with a hidden window. Worse,
+/// a panic inside a `tokio::spawn` task only kills that task (the process
+/// keeps running), so the crash would otherwise be invisible in the
+/// persistent logs. Real precedent: an axum router build panic in the web
+/// task left only a stderr trace (docs/INFO/2026-09-30_test-case-library.md).
+///
+/// The previous hook is preserved and invoked after the tracing record, so
+/// stderr behaviour is unchanged. Idempotent via `OnceLock` — both logger
+/// init paths call this; the first one wins.
+fn install_panic_hook() {
+    use std::sync::OnceLock;
+
+    static INSTALLED: OnceLock<()> = OnceLock::new();
+    if INSTALLED.set(()).is_err() {
+        return;
+    }
+
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread_name = std::thread::current()
+            .name()
+            .unwrap_or("<unnamed>")
+            .to_string();
+        let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "<non-string panic payload>".to_string()
+        };
+        let location = match info.location() {
+            Some(loc) => format!("{}:{}:{}", loc.file(), loc.line(), loc.column()),
+            None => "<unknown location>".to_string(),
+        };
+        tracing::error!(
+            "[Panic] thread '{}' panicked at {}: {}",
+            thread_name,
+            location,
+            payload
+        );
+        prev_hook(info);
+    }));
+}
+
 /// Initialize a default console logger for simple CLI commands.
 ///
 /// Uses `std::sync::OnceLock` to ensure the subscriber is only installed once.
@@ -353,6 +402,7 @@ pub fn ensure_default_logger() {
 
     static INIT: OnceLock<()> = OnceLock::new();
     INIT.get_or_init(|| {
+        install_panic_hook();
         let _ = tracing_subscriber::fmt()
             .event_format(nemesis_logger::GoStyleFormatter)
             .with_max_level(tracing::Level::INFO)
@@ -376,6 +426,11 @@ pub const LOG_NO_CONSOLE: u32 = 4;
 /// - bit 1 (`LOG_QUIET`): `--quiet` was used
 /// - bit 2 (`LOG_NO_CONSOLE`): `--no-console` was used
 pub fn init_logger_from_config(config_path: &Path, check_args: &[String]) -> u32 {
+    // Panic hook first (idempotent): even the --quiet early-return below
+    // should not leave panics unwired — the hook degrades to the default
+    // stderr behaviour when no subscriber is present.
+    install_panic_hook();
+
     let mut level = tracing::Level::INFO;
     let mut enable_console = true;
     let mut file_path: Option<String> = None;

@@ -230,13 +230,56 @@ fn test_cmd_status_specific_id_not_found() {
     cmd_status(tmp.path(), Some("nonexistent-id")).unwrap();
 }
 
+/// NEMESISBOT_HOME 重定向守卫（指向空 tempdir）：构造时持 GLOBAL_STATE_LOCK
+/// 并设 env，Drop 按 Option 还原后再按声明序还锁、删目录。get_templates 的
+/// 磁盘扫描走进程级 home，且语义是「磁盘有任一模板 → 整组替换默认集」
+/// （workflow.rs get_templates）——凡依赖内置默认集的测试必须用它隔离
+/// （同 cov_tests/board_bus/verify_policy 的 GLOBAL_STATE_LOCK + 守卫纪律；
+/// 读侧不加锁 = 读到 mutator 测试篡改的中间态，2026-10-17 全量跑实证 2 挂
+/// 的根因）。持锁失败不连坐：poison-aware。
+struct EnvHomeGuard {
+    orig: Option<std::ffi::OsString>,
+    _lock: std::sync::MutexGuard<'static, ()>,
+    _tmp: tempfile::TempDir,
+}
+
+impl EnvHomeGuard {
+    fn new() -> Self {
+        let _lock = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let orig = std::env::var_os("NEMESISBOT_HOME");
+        let _tmp = tempfile::TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("NEMESISBOT_HOME", _tmp.path());
+        }
+        Self { orig, _lock, _tmp }
+    }
+}
+
+impl Drop for EnvHomeGuard {
+    fn drop(&mut self) {
+        // 先还原 env，再按声明序自动还锁 → 删目录。
+        unsafe {
+            match self.orig.clone() {
+                Some(v) => std::env::set_var("NEMESISBOT_HOME", v),
+                None => std::env::remove_var("NEMESISBOT_HOME"),
+            }
+        }
+    }
+}
+
 #[test]
 fn test_cmd_template_show_not_found() {
+    let _home = EnvHomeGuard::new();
     cmd_template_show("nonexistent_template").unwrap();
 }
 
 #[test]
 fn test_cmd_template_show_found() {
+    // 依赖默认集里的 researcher：撞上设 env 的 mutator 测试窗口时磁盘模板
+    // 整组替换默认集 → 假红（与 cmd_template_create 系列同根因）。
+    let _home = EnvHomeGuard::new();
     cmd_template_show("researcher").unwrap();
 }
 
@@ -458,6 +501,11 @@ fn test_cmd_status_with_specific_execution() {
 
 #[test]
 fn test_cmd_template_create_yaml() {
+    // cmd_template_create -> get_templates -> load_templates_from_disk 读
+    // NEMESISBOT_HOME（进程级全局）——守卫=持全局锁+钉空 tmp，隔离 mutator
+    // 测试的磁盘模板（整组替换默认集会让内置 researcher 找不到）。
+    let _home = EnvHomeGuard::new();
+
     let tmp = tempfile::TempDir::new().unwrap();
     let workflow_dir = tmp.path().join("workflow");
     std::fs::create_dir_all(&workflow_dir).unwrap();
@@ -470,6 +518,9 @@ fn test_cmd_template_create_yaml() {
 
 #[test]
 fn test_cmd_template_create_json_explicit() {
+    // 同上：守卫持全局锁 + NEMESISBOT_HOME 钉空 tmp。
+    let _home = EnvHomeGuard::new();
+
     let tmp = tempfile::TempDir::new().unwrap();
     let workflow_dir = tmp.path().join("workflow");
     std::fs::create_dir_all(&workflow_dir).unwrap();
@@ -482,11 +533,15 @@ fn test_cmd_template_create_json_explicit() {
 
 #[test]
 fn test_cmd_template_create_not_found() {
+    // 同上：守卫持全局锁 + NEMESISBOT_HOME 钉空 tmp。
+    let _home = EnvHomeGuard::new();
+
     let tmp = tempfile::TempDir::new().unwrap();
     let workflow_dir = tmp.path().join("workflow");
     std::fs::create_dir_all(&workflow_dir).unwrap();
 
     cmd_template_create(&workflow_dir, "nonexistent_template", None).unwrap();
+
     // Should print error but not create file
     assert!(std::fs::read_dir(&workflow_dir).unwrap().count() == 0);
 }
@@ -629,11 +684,10 @@ fn test_cmd_status_with_input_and_vars() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_cmd_template_show_all_defaults() {
-    // get_templates() 经 load_templates_from_disk 读 NEMESISBOT_HOME——必须
-    // 持全局锁，否则与设置 env 的其他测试（如 template_list_picks_up_*）竞态。
-    let _guard = crate::GLOBAL_STATE_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    // get_templates() 经 load_templates_from_disk 读 NEMESISBOT_HOME——守卫
+    // 隔离（持锁+钉空 tmp）：磁盘模板会整组替换默认集，仅持锁挡不住真实
+    // home 有用户模板的场景。
+    let _home = EnvHomeGuard::new();
     let templates = get_default_templates();
     for (name, _, _) in &templates {
         cmd_template_show(name).unwrap();
@@ -647,12 +701,10 @@ fn test_cmd_template_show_all_defaults() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_cmd_template_create_all_defaults() {
-    // 同上：get_templates() 读 NEMESISBOT_HOME（env 测试竞争锁纪律）。
+    // get_templates() 读 NEMESISBOT_HOME（守卫纪律：持锁+钉空 tmp）。
     // 另注：get_templates 语义是"磁盘有任一模板 → 整组替换默认集"（Go 行为，
-    // workflow.rs:318-324），本测试必须保证 env home 下无模板目录。
-    let _guard = crate::GLOBAL_STATE_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    // workflow.rs:318-324），守卫保证 env home 下无模板目录。
+    let _home = EnvHomeGuard::new();
     let templates = get_default_templates();
     for (name, _, _) in &templates {
         let tmp = tempfile::TempDir::new().unwrap();
