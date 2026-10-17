@@ -10,6 +10,10 @@ pub mod agent;
 // handler 诚实报「未装配」。
 pub mod agents;
 pub mod approval;
+// 看板三模块（board.* WSAPI / U-B 本地封存数据面 / Swarm M3 资产下载端点）
+// 随 `board` feature 进出——nemesis-board 是 optional 依赖（rusqlite bundled
+// 随它退出 iotsmall 依赖图）。关 = board.* 命令从注册表面消失（诚实体裁）。
+#[cfg(feature = "board")]
 pub mod board;
 // P4-c（2026-10-17）：交付账本 WSAPI（deliveries.list/by_run/get/confirm/
 // reject/patch；bridge 未装配时诚实报错——headless/独立 web 测试形态）。
@@ -17,8 +21,10 @@ pub mod deliveries;
 // U-B（2026-10-12 无人值守）：LLM 端点不可用本地封存——检测/封存/中断档案
 // 数据面 + WSAPI status/release（恢复探针在 nemesisbot 侧，见
 // nemesisbot/src/board_unavailable.rs）。
+#[cfg(feature = "board")]
 pub mod board_unavailable;
 // Swarm M3（§5.4/D6）：看板资产下载端点（HTTP，非 WSAPI；token 即凭据）。
+#[cfg(feature = "board")]
 pub mod board_asset;
 pub mod channels;
 pub mod chat;
@@ -31,7 +37,10 @@ pub mod commands;
 pub mod config;
 // 行动代理 P0（2026-10-14）：connector 数据面（connectors.list /
 // connectors.receipts.list / paperbroker.ledger，只读——执行入口是 agent
-// 的 connector_invoke 工具，走完整安全管线）。
+// 的 connector_invoke 工具，走完整安全管线）。`connectors` feature 门控——
+// nemesis-connectors 是 optional 依赖，被它无条件依赖的 nemesis-security
+// （Ed25519 签名/信任库复用）随之进出。
+#[cfg(feature = "connectors")]
 pub mod connectors;
 // Full Access 编辑器放行开关 WSAPI（2026-09-20 用户裁决）——
 // editor.get/set。security 闸：EditorAccessState 在 nemesis-security。
@@ -206,8 +215,11 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     // 自进化 B 线：用户习惯画像（后门动作 + 开关）。
     router.register(Arc::new(profile::ProfileHandler::new()));
     // 行动代理 P0：connector 数据面（registry 状态 / 凭条流水 / 纸面账本）。
-    router.register(Arc::new(connectors::ConnectorsHandler));
-    router.register(Arc::new(connectors::PaperBrokerHandler));
+    #[cfg(feature = "connectors")]
+    {
+        router.register(Arc::new(connectors::ConnectorsHandler));
+        router.register(Arc::new(connectors::PaperBrokerHandler));
+    }
     router.register(Arc::new(chat::ChatHandler));
     router.register(Arc::new(config::ConfigHandler::new()));
     router.register(Arc::new(models::ModelsHandler::new()));
@@ -243,8 +255,8 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     }
     router.register(Arc::new(tasks::TasksHandler));
     // P2-1 (2026-08-24 UI entry gap): 「代码开发」页 read-only status commands
-    // (LSP PATH probe + tool config sections). No feature gate — nemesis-lsp
-    // is an unconditional agent dependency (lsp tool itself is config-gated).
+    // (LSP PATH probe + tool config sections). lsp_status/lsp_install 随 lsp
+    // feature 进出（关 = unknown command 诚实报错）；config（纯 config 读写）恒在。
     router.register(Arc::new(coding::CodingHandler));
     // P4 (2026-08-24 UI entry gap): 设置页「Hooks」Tab — hooks.json 读写
     // (hooks.json 方言, nemesis-agent cc_hooks)。No feature gate — cc_hooks 无条件编译。
@@ -261,9 +273,10 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     // W6（2026-09-29）：WASM 插件管理面命令（`plugins.wasm.*`）同挂在上方
     // plugins 模块下（实现在 plugins_wasm.rs；无需独立注册——宿主运行时
     // 整槽静态注入，槽空诚实报错）。
-    // W2 P1 (2026-08-31): managed-agent 看板。No feature gate — nemesis-board
-    // 是 nemesis-web 无条件依赖（cron 先例）；store 未注入时命令统一报
-    // "board service not available"（gateway 仅在 board feature 开启时注入）。
+    // W2 P1 (2026-08-31): managed-agent 看板。`board` feature 门控——
+    // nemesis-board 是 optional 依赖；关 = handler 整体不注册（board.*
+    // 命令从 system.commands 表面消失）。
+    #[cfg(feature = "board")]
     router.register(Arc::new(board::BoardHandler));
     #[cfg(feature = "cluster")]
     {

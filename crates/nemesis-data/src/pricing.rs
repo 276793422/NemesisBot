@@ -38,10 +38,16 @@ use std::sync::OnceLock;
 use crate::models::ModelPricing;
 
 /// Compile-time embedded price table (written by `build.rs`; LiteLLM shape).
+/// pricing-embed 关时不编译（build.rs 同步跳过 OUT_DIR 产物生成）。
+#[cfg(feature = "pricing-embed")]
 static PRICES_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/model_prices_embedded.json"));
 
 /// Provenance of the embedded table (injected by `build.rs`).
+#[cfg(feature = "pricing-embed")]
 static EMBED_SOURCE: &str = env!("NEMESIS_PRICES_EMBED_SOURCE");
+/// pricing-embed 关的诚实来源标记（CLI / usage API 原样展示）。
+#[cfg(not(feature = "pricing-embed"))]
+const EMBED_SOURCE: &str = "not embedded (pricing-embed off)";
 
 /// In-memory lookup index over the embedded pricing entries.
 pub struct PricingTable {
@@ -53,6 +59,7 @@ pub struct PricingTable {
 }
 
 impl PricingTable {
+    #[cfg(feature = "pricing-embed")]
     fn from_embedded_json() -> Self {
         // 内嵌表与下载层同格式同解析（parse_litellm_json 单一路径）；失败
         // 只可能是 build.rs 产出了坏文件——编译期即panic暴露，不留到运行时。
@@ -76,10 +83,23 @@ impl PricingTable {
         }
     }
 
+    /// pricing-embed 关的空表（lookup 恒 None → cost 恒 0.0 诚实降级）。
+    #[cfg(not(feature = "pricing-embed"))]
+    fn empty() -> Self {
+        Self {
+            entries: Vec::new(),
+            by_id: HashMap::new(),
+            by_alias: HashMap::new(),
+        }
+    }
+
     /// The process-wide embedded table (parsed once).
     pub fn embedded() -> &'static PricingTable {
         static TABLE: OnceLock<PricingTable> = OnceLock::new();
-        TABLE.get_or_init(PricingTable::from_embedded_json)
+        #[cfg(feature = "pricing-embed")]
+        return TABLE.get_or_init(PricingTable::from_embedded_json);
+        #[cfg(not(feature = "pricing-embed"))]
+        return TABLE.get_or_init(PricingTable::empty);
     }
 
     /// Look up pricing for a configured model name.

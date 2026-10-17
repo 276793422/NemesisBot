@@ -125,12 +125,20 @@ pub fn run_in_dir(config_path: &Path, lib_dir: &Path) -> Result<bool> {
     if all_present {
         tracing::info!("[setup] Runtime libraries found.");
     } else {
-        tracing::info!(
-            "[setup] Downloading sherpa-onnx v{} runtime ...",
-            SHERPA_VERSION
-        );
-        download_runtime_libs(lib_dir, &proxy_url, &sherpa_staging_dir())?;
-        tracing::info!("[setup] Runtime libraries ready.");
+        // download feature 关：无下载能力，诚实 bail（2 参 stub），不静默。
+        #[cfg(feature = "download")]
+        {
+            tracing::info!(
+                "[setup] Downloading sherpa-onnx v{} runtime ...",
+                SHERPA_VERSION
+            );
+            download_runtime_libs(lib_dir, &proxy_url, &sherpa_staging_dir())?;
+            tracing::info!("[setup] Runtime libraries ready.");
+        }
+        #[cfg(not(feature = "download"))]
+        {
+            download_runtime_libs(lib_dir, &proxy_url)?;
+        }
     }
 
     let main_lib = lib_dir.join(REQUIRED_LIBS[0]);

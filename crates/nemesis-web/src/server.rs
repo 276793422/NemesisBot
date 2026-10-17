@@ -283,8 +283,13 @@ pub struct WebServer {
     /// Runtime cron service (set by gateway; flows into AppState for tasks.cron.*).
     cron: Option<Arc<std::sync::Mutex<nemesis_cron::CronService>>>,
     /// Managed-agent board service (set by gateway when the `board` feature is on;
-    /// flows into AppState for board.* WSAPI commands).
+    /// flows into AppState for board.* WSAPI commands). `Option<()>` 占位形态
+    /// 让 `board: None` 结构体初始化器在关态照常编译。
+    #[cfg(feature = "board")]
     board: Option<nemesis_board::BoardService>,
+    #[cfg(not(feature = "board"))]
+    #[allow(dead_code)]
+    board: Option<()>,
     /// Conversation→WS router for cron-initiated live delivery (Opt 2).
     /// Populated on inbound in `process_messages`; read by the gateway cron
     /// fire handler to pick a live `chat_id` for the targeted conversation.
@@ -293,6 +298,7 @@ pub struct WebServer {
     /// registers with). Held for the Phase-2 diagnostics loop (C1-C3) and
     /// any dashboard-driven LSP operations; gateway shutdown_all lives in
     /// gateway.rs Step 24.
+    #[cfg(feature = "lsp")]
     lsp_manager: Option<Arc<nemesis_lsp::LspManager>>,
     /// M1a (2026-09-05): receiving end of the agent tool-event broadcast
     /// channel. gateway injects after creating the channel; `start` spawns
@@ -376,6 +382,7 @@ impl WebServer {
             cron: None,
             board: None,
             conv_router: None,
+            #[cfg(feature = "lsp")]
             lsp_manager: None,
             agent_event_rx: None,
             relay: None,
@@ -560,6 +567,7 @@ impl WebServer {
 
     /// Set the managed-agent board service (gateway injects when the `board`
     /// feature is enabled and the store opened successfully).
+    #[cfg(feature = "board")]
     pub fn set_board(&mut self, board: nemesis_board::BoardService) {
         self.board = Some(board);
     }
@@ -588,11 +596,13 @@ impl WebServer {
     /// C5 (2026-09-04): hold the shared LSP manager singleton (same Arc as
     /// the registered LspTool). Consumers: Phase-2 diagnostics loop (C1-C3);
     /// process teardown stays in gateway.rs Step 24 (`shutdown_all`).
+    #[cfg(feature = "lsp")]
     pub fn set_lsp_manager(&mut self, mgr: Arc<nemesis_lsp::LspManager>) {
         self.lsp_manager = Some(mgr);
     }
 
     /// The held LSP manager, if injected (C5).
+    #[cfg(feature = "lsp")]
     pub fn lsp_manager(&self) -> Option<Arc<nemesis_lsp::LspManager>> {
         self.lsp_manager.clone()
     }
@@ -634,6 +644,11 @@ impl WebServer {
         let memory_manager = self.memory_manager.clone();
         #[cfg(not(feature = "memory"))]
         let memory_manager = self.memory_manager;
+        // board 槽同款：off 态 Option<()> 是 Copy，直接移动避 clippy::clone_on_copy。
+        #[cfg(feature = "board")]
+        let board = self.board.clone();
+        #[cfg(not(feature = "board"))]
+        let board = self.board;
         #[cfg(feature = "forge")]
         let forge = self.forge.clone();
         #[cfg(not(feature = "forge"))]
@@ -691,7 +706,7 @@ impl WebServer {
             signature_verify: self.signature_verify.clone(),
             skills_install_gate: self.skills_install_gate.clone(),
             cron: self.cron.clone(),
-            board: self.board.clone(),
+            board,
         };
 
         let state = Arc::new(state);
@@ -815,13 +830,16 @@ impl WebServer {
             // L4 会话分享（2026-09-07）：公开只读端点。**故意不过
             // verify_token** —— token 即凭据（分享链接发给无凭据的接收方），
             // 未知/撤销/会话已删一律 404；见 crate::share 模块头。
-            .route("/api/share/{token}", get(crate::share::handle_api_share))
-            // Swarm M3（§5.4/D6）：看板资产下载——公开端点（asset_token 即
-            // 凭据，不认 dashboard token；token 随引用走，见 handlers/board_asset）。
-            .route(
-                "/api/board/asset/{ref}",
-                get(crate::handlers::board_asset::handle_board_asset_download),
-            );
+            .route("/api/share/{token}", get(crate::share::handle_api_share));
+
+        // Swarm M3（§5.4/D6）：看板资产下载——公开端点（asset_token 即
+        // 凭据，不认 dashboard token；token 随引用走，见 handlers/board_asset）。
+        // board 关：路由与 handlers/board_asset 模块整体退出编译。
+        #[cfg(feature = "board")]
+        let router = router.route(
+            "/api/board/asset/{ref}",
+            get(crate::handlers::board_asset::handle_board_asset_download),
+        );
 
         // 皮肤本地导入（P2 第三入口；raw body，落盘走 install_bytes 同一
         // 管线——WSAPI skins.install 覆盖不到浏览器文件选择的形态）。

@@ -20,7 +20,10 @@ default = [
     "channels-websocket", "channels-external", "channels-maixcam", "channels-line",
     "migrate", "devices", "desktop", "health", "heartbeat", "auth", "voice", "voice-capture", "cluster",
     "forge", "memory", "workflow", "security", "scanner", "sandbox", "eval", "usage", "board",
+    "connectors",
     "terminal", "skins", "plugins-wasm", "codemode", "selfupdate",
+    "pricing-embed", "verify", "web-static", "lsp",
+    "checkpoint-git", "image-process", "history-search", "usage-store",
 ]
 
 # Optional subsystems (on by default = current full build; drop with --no-default-features)
@@ -47,9 +50,16 @@ scanner = ["security", "nemesis-security/scanner", "nemesis-web/scanner"]
 # Sandboxie integration (executor.sandbox=true + `nemesisbot sandbox` install/use/uninstall).
 # Optional — off in minimal-iot/IoT (Sandboxie is Windows-driver-based, not used on IoT).
 sandbox = ["dep:nemesis-sandbox", "nemesis-web/sandbox"]
-# Managed-agent board (W2 P1). nemesis-web depends on nemesis-board
-# unconditionally (cron precedent); this gate covers the CLI + gateway wiring.
-board = ["dep:nemesis-board"]
+# Managed-agent board (W2 P1). board = 注入 + nemesis-web/board 管理面双开：
+# nemesis-board 是 web 的 optional 依赖（rusqlite bundled 随它进出——iotsmall
+# 里最后一个 SQLite 来源）；关 = `nemesisbot issue` CLI、board.* WSAPI、
+# 看板资产端点与 nemesis-board 整包全部退出依赖图。
+board = ["dep:nemesis-board", "nemesis-web/board"]
+# 行动代理连接器数据面（2026-10-14 P0：connector_find/invoke 工具 +
+# `nemesisbot connector` CLI + connectors.*/paperbroker.* WSAPI）。
+# nemesis-security 被本 crate 无条件依赖（Ed25519 签名/信任库复用）——
+# 关 = connectors 与 security 整包一并退出依赖图（iotsmall 白编译清零）。
+connectors = ["dep:nemesis-connectors", "nemesis-web/connectors"]
 # `nemesisbot eval` — prompt/skill behaviour assessment (needs the sandbox +
 # security layers, the injector and the LLM proxy).
 eval = ["sandbox", "security", "dep:nemesis-injector", "dep:nemesis-eval-proxy"]
@@ -76,10 +86,48 @@ codemode = ["nemesis-agent/codemode"]
 # implies security（审批 manager + 审计链是九步的两步）。
 selfupdate = ["security", "nemesis-web/selfupdate"]
 
-# 锁定版旗标（签名验证接入计划 §2.1）：空 feature，纯编译期 cfg——verify_policy
-# 据此把 enforce 烧死（config 任意值被忽略）。cargo feature 指纹原生跟踪，
-# 同 target 先消费后锁定无 stale（option_env! 方案的同 target 缓存复用坑）。
-verify-enforce-lock = []
+# 锁定版旗标（签名验证接入计划 §2.1）：纯编译期 cfg——verify_policy
+# 据此把 enforce 烧死（config 任意值被忽略，启动自验失败 exit 86）。
+# 锁定版必须能自验 → implies verify（无 verify 的构建没有可强制之物）。
+# cargo feature 指纹原生跟踪，同 target 先消费后锁定无 stale（option_env!
+# 方案的同 target 缓存复用坑）。
+verify-enforce-lock = ["verify"]
+
+# 启动签名自验（v4 Authenticode，verify_policy.rs + nemesis-verify 随它进出）。
+# 关 = 启动自验消失（诚实 eprintln 跳过），WSAPI signature status 不注入；
+# 皮肤验签（nemesis-web/skins 自带 nemesis-verify）与自切换验签不受影响。
+# IoT/可信环境可关；锁定版（verify-enforce-lock）自动带回。
+verify = ["dep:nemesis-verify"]
+
+# 编译期内嵌价目表（~2800 条 LiteLLM 派生，+0.6MB）。关后价目查询/成本核算
+# 空表降级（cost 恒 0.0 诚实口径），运行期下载层与自定义价目照常。
+# IoT/极小镜像建议关。
+pricing-embed = ["nemesis-data/pricing-embed"]
+
+# 前端静态资源内嵌（include_dir，全量 ~2.9MB / 按 feature 裁剪前端后 ~1.2MB）。
+# 关 = 只剩 exe 旁 static/ 目录的运行期磁盘兜底（没有则 Dashboard 页面 404）。
+# IoT/无 Dashboard/纯 API 形态建议关。
+web-static = []
+
+# LSP 只读语义查询（definition/references/implementation/hover；lsp 工具 +
+# 诊断回灌 diagnostics_loop + coding.lsp_install 随它进出，三 crate 穿透：
+# nemesisbot/nemesis-agent/nemesis-web）。运行闸 config agents.lsp_tool
+# （默认关）+ PATH 探测本来就关着，编译内含 ~0.2MB；IoT 建议关。
+lsp = ["dep:nemesis-lsp", "nemesis-agent/lsp", "nemesis-web/lsp"]
+# 2026-10-17 体积细粒度三件套（nemesis-agent 重依赖拆分）：
+# checkpoint-git：D2 影子库（libgit2 ~1.5MB）；关 = checkpoint 恒 JSON 快照回落
+# image-process：J6 图片降采样（~0.8MB）；关 = 超限图按原图链路（验真链照常把关）
+# history-search：U20 FTS 会话检索；关 = 工具/CLI/WSAPI 诚实报未编译
+#   （与 usage-store 一起构成 SQLite 拆分两半：账本本体随 usage-store 进出）
+checkpoint-git = ["nemesis-agent/checkpoint-git"]
+image-process = ["nemesis-agent/image-process"]
+history-search = ["nemesis-agent/history-search", "nemesis-web/history-search"]
+
+# SQLite 用量账本（nemesis-data 的 rusqlite bundled ~1MB，iotsmall 里最后
+# 一个 SQLite 来源；history-search 只拆 FTS 检索面）。关 = DataStore 空账本
+# stub（写入 no-op、查询恒空、JSON 价目层照常，open() warn 一次），生产
+# 调用方零改动。测试构建经各消费 crate 的 [dev-dependencies] 带回真账本。
+usage-store = ["nemesis-data/usage-store"]
 
 # WASM 插件框架（`plugin` CLI + Dashboard 插件页 + agent 工具桥；guest 侧
 # wasmtime 运行时随它进出）。关 = 无 WASM 插件子系统，`plugin.*` 工具与
@@ -131,7 +179,7 @@ nemesis-taskstore = { workspace = true }
 # 纸面账本）。非 optional——connector_find/connector_invoke 随 security
 # feature 门控注册，但 WSAPI 数据面（connectors.* handlers）与 CLI 查询
 # （connector list/receipts）在无 security 组合也要能读回执/账本。
-nemesis-connectors = { workspace = true }
+nemesis-connectors = { workspace = true, optional = true }
 tokio-util = { version = "0.7", features = ["rt"] }
 nemesis-bus = { workspace = true }
 nemesis-agent = { workspace = true }
@@ -151,7 +199,8 @@ nemesis-cluster = { workspace = true, optional = true }
 nemesis-web = { workspace = true }
 # C5 (2026-09-04): LSP manager singleton lives in SharedResources — gateway
 # shutdown_all + web server share the same Arc the LspTool registers with.
-nemesis-lsp = { workspace = true }
+# LSP 只读语义查询（lsp feature 门控；穿透 nemesis-agent/lsp + nemesis-web/lsp）
+nemesis-lsp = { workspace = true, optional = true }
 nemesis-health = { workspace = true, optional = true }
 nemesis-data = { workspace = true }
 nemesis-heartbeat = { workspace = true, optional = true }
@@ -169,7 +218,9 @@ nemesis-path = { workspace = true }
 # Swarm M3（§5.4/D-5）：board_asset 工具的 HTTP 拉取走共享连接池。
 nemesis-http-pool = { workspace = true }
 # 签名验证接入（P0）：启动自验走 lib 直接验签（不走 DLL）。
-nemesis-verify = { workspace = true }
+# 签名验证（verify feature 门控：启动自验 verify_policy；skins/selfupdate
+# 的验签走 nemesis-web 各自 feature 的 nemesis-verify，不受本门影响）
+nemesis-verify = { workspace = true, optional = true }
 # WASM 插件框架宿主运行时（plugins-wasm feature 门控；implies security，
 # 并转发 nemesis-web 同名 feature 装配 plugins.wasm.* WSAPI 管理面）。
 nemesis-plugins-wasm = { workspace = true, optional = true }
@@ -227,6 +278,9 @@ wiremock = "0.6"
 # P4 交付门测试夹具：真 git 仓 workspace（git2 已在依赖图内——nemesis-agent
 # 影子库；此处只为测试可命名，不进 bin 依赖面）。
 git2 = { workspace = true }
+# usage-store 行为测试经 dev-dependencies 带回真 SQLite 账本（resolver 2：
+# dev-dep features 不泄漏到正常构建——正常构建按需编译空账本 stub）。
+nemesis-data = { workspace = true, features = ["usage-store"] }
 # R9：子进程级测试（REPL 管道 stdin / eval 探测式真链路 / main 短路退码断言）
 # 需要 resolve_nemesisbot_bin + run_cli_with_stdin + MockAiServer（scripted
 # OpenAI 兼容回环服务器——TestAIServer 回复内容钉死，测不了工具选择/精确文本）。

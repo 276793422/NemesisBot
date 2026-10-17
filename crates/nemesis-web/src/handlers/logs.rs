@@ -1240,22 +1240,38 @@ impl LogsHandler {
         // Fresh-first: mtime-incremental reindex so messages appended since
         // the last index pass are findable (search_fts does NOT fall back to
         // a linear scan on a working-but-stale index).
-        let _ = nemesis_agent::history_search::reindex_session_logs();
-        let hits = nemesis_agent::history_search::search(query, limit);
-        let count = hits.len();
-        Ok(Some(serde_json::json!({
-            "hits": hits,
-            "count": count,
-            "query": query,
-            "limit": limit,
-        })))
+        // history-search 关：FTS 模块未编译——诚实报错（不冒充「无结果」）。
+        #[cfg(feature = "history-search")]
+        {
+            let _ = nemesis_agent::history_search::reindex_session_logs();
+            let hits = nemesis_agent::history_search::search(query, limit);
+            let count = hits.len();
+            Ok(Some(serde_json::json!({
+                "hits": hits,
+                "count": count,
+                "query": query,
+                "limit": limit,
+            })))
+        }
+
+        #[cfg(not(feature = "history-search"))]
+        {
+            let _ = (query, limit);
+            Err("会话全文检索未编译进本构建（history-search 关）".to_string())
+        }
     }
 
     fn history_reindex(&self) -> Result<Option<serde_json::Value>, String> {
-        let reindexed_sessions = nemesis_agent::history_search::reindex_session_logs();
-        Ok(Some(serde_json::json!({
-            "reindexed_sessions": reindexed_sessions,
-        })))
+        #[cfg(feature = "history-search")]
+        {
+            let reindexed_sessions = nemesis_agent::history_search::reindex_session_logs();
+            Ok(Some(serde_json::json!({
+                "reindexed_sessions": reindexed_sessions,
+            })))
+        }
+
+        #[cfg(not(feature = "history-search"))]
+        Err("会话全文检索未编译进本构建（history-search 关）".to_string())
     }
 
     #[cfg_attr(not(feature = "memory"), allow(unused_variables))]
@@ -2483,8 +2499,9 @@ fn parse_local_tool_results(content: &str) -> Vec<serde_json::Value> {
 mod tests;
 
 // T6 (U20) history_search/history_reindex tests. Deliberately NOT
-// security-gated: these commands depend only on nemesis-agent (non-optional).
-#[cfg(test)]
+// security-gated: these commands depend only on nemesis-agent (non-optional)
+// ——但 FTS 本体随 history-search feature 进出（rusqlite），测试随之门控。
+#[cfg(all(test, feature = "history-search"))]
 mod history_tests;
 
 // Phase 3 覆盖率（2026-08-25）：requests/cluster_task/session 浏览面

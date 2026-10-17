@@ -61,6 +61,7 @@ fn custom_alias_lookup_hits_custom_layer() {
 }
 
 /// 下载层文件损坏（非法 JSON）→ 打开成功、下载层静默降级为空。
+#[cfg(feature = "pricing-embed")]
 #[test]
 fn corrupted_downloaded_file_degrades_to_none() {
     let dir = temp_dir("corrupt_downloaded");
