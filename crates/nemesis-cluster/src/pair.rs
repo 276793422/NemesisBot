@@ -187,6 +187,7 @@ pub async fn pair_with_peer(
     if let Err(detail) = assert_pair_written(peers_path, &peer_id, &udp_address, &name, rpc_port) {
         // 回滚：恢复写前内容；原本无文件则删除半成品。
         // REL-002：回滚恢复也走原子写入（撕裂的回滚=最需要原子性的场景）。
+        // LOW-5：删除走韧性包装（半成品刚落盘即删，AV 瞬时句柄同理）。
         let rollback = if let Some(content) = &pre_content {
             nemesis_utils::write_file_atomic(
                 &peers_path.to_string_lossy(),
@@ -195,7 +196,7 @@ pub async fn pair_with_peer(
             )
             .is_err()
         } else {
-            std::fs::remove_file(peers_path).is_err()
+            !crate::fsutil::remove_file_resilient(peers_path)
         };
         return Err(PairError::AssertFailed {
             detail: if rollback {
@@ -307,6 +308,17 @@ async fn probe_get_info(addr: &str, token: Option<&str>) -> Result<serde_json::V
     std_stream
         .set_nonblocking(false)
         .map_err(|e| format!("set blocking: {}", e))?;
+    // F-NEW-4（2026-10-17 四轮审计）：读写超时——spawn_blocking 里的阻塞
+    // recv/send **不可取消**，黑洞对端（可达但不回帧）会让阻塞线程无限期
+    // 泊车（外层 tokio timeout 只把 Err 还给调用方，线程收不回来），反复
+    // pair 尝试可累积线程泄漏。设 PROBE_TIMEOUT 上限：线程最长占用有界
+    // （拨号 ≤5s + 读写各 ≤8s），超时以 io error 形态走既有错误链。
+    std_stream
+        .set_read_timeout(Some(PROBE_TIMEOUT))
+        .map_err(|e| format!("set read timeout: {}", e))?;
+    std_stream
+        .set_write_timeout(Some(PROBE_TIMEOUT))
+        .map_err(|e| format!("set write timeout: {}", e))?;
 
     let cipher_key = token
         .filter(|t| !t.is_empty())

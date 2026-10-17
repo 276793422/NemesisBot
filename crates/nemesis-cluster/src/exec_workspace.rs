@@ -397,11 +397,13 @@ fn diff_walk(root: &Path, dir: &Path, out: &mut Vec<TransferFileEntry>, skipped:
             if crate::transfer::is_noise_file(&normalized) {
                 continue;
             }
-            match std::fs::read(&path) {
-                Ok(data) => out.push(TransferFileEntry {
+            // LOW-8（2026-10-17 四轮审计）：流式哈希（256 KiB 缓冲）——
+            // 大工件（浏览器 profile/日志等）不再整文件读进内存做哈希。
+            match crate::transfer::sha256_file_streaming(&path) {
+                Ok((size, hash)) => out.push(TransferFileEntry {
                     path: normalized,
-                    size: data.len() as u64,
-                    sha256: crate::transfer::sha256_hex(&data),
+                    size,
+                    sha256: hash,
                 }),
                 Err(e) => skipped.push(format!("{normalized}（读取失败: {e}）")),
             }

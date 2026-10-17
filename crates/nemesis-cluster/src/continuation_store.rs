@@ -160,17 +160,22 @@ impl ContinuationStore {
     pub async fn remove(&self, task_id: &str) -> bool {
         let removed = self.snapshots.lock().remove(task_id).is_some();
 
-        // Also delete from disk
+        // Also delete from disk.
+        // LOW-5（2026-10-17 四轮审计）：韧性删除（spawn_blocking 包裹退避
+        // 重试——Windows 瞬时句柄对单文件同理成立）。
         let path = self.snapshot_path(task_id);
-        if path.exists()
-            && let Err(e) = tokio::fs::remove_file(&path).await
-        {
-            tracing::warn!(
-                task_id,
-                path = %path.display(),
-                error = %e,
-                "[ContinuationStore] Failed to delete continuation snapshot from disk"
-            );
+        if path.exists() {
+            let p = path.clone();
+            let ok = tokio::task::spawn_blocking(move || crate::fsutil::remove_file_resilient(&p))
+                .await
+                .unwrap_or(false);
+            if !ok {
+                tracing::warn!(
+                    task_id,
+                    path = %path.display(),
+                    "[ContinuationStore] Failed to delete continuation snapshot from disk（重试耗尽，残留）"
+                );
+            }
         }
 
         removed
@@ -222,7 +227,19 @@ impl ContinuationStore {
                 // Extract task ID from filename
                 if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                     self.snapshots.lock().remove(stem);
-                    tokio::fs::remove_file(&path).await?;
+                    // LOW-5：韧性删除（同 remove()）。
+                    let p = path.clone();
+                    let ok = tokio::task::spawn_blocking(move || {
+                        crate::fsutil::remove_file_resilient(&p)
+                    })
+                    .await
+                    .unwrap_or(false);
+                    if !ok {
+                        return Err(ContinuationError::Io(std::io::Error::other(format!(
+                            "删除超龄快照失败（重试耗尽）: {}",
+                            path.display()
+                        ))));
+                    }
                     removed += 1;
                 }
             }

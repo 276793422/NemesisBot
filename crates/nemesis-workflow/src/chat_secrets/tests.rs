@@ -269,3 +269,26 @@ fn clear_password_accepts_legacy_form() {
     store.clear_password("abcd1234").unwrap();
     assert!(!store.has_password("abcd1234"));
 }
+
+// 非 16-hex canonical 形态但字节数恰为 16、字节 8 落在多字节字符中间的
+// 串（web 层 canonical_chat_index 对解析不到的 index 原样透传，客户端
+// 可构造）——四个入口都不得 panic，且按普通键完整工作（2026-10-17 全仓
+// 横扫：legacy_key_of 裸 [..8] 曾在字节 8 非边界时崩；仅边界安全化又会
+// 让 set_password 的孪生清理把刚写入的条目立即删掉=静默 no-op，故闸门
+// 升级为 is_canonical_form（字节长+ASCII），多字节串根本不进 legacy 分支）。
+#[test]
+fn sixteen_byte_multibyte_index_never_panics() {
+    // 7 ASCII + 「中」(3B, 占 7..10) + 6 ASCII = 16 字节，字节 8 是续字节。
+    let evil = format!("{}中{}", "a".repeat(7), "b".repeat(6));
+    assert_eq!(evil.len(), 16);
+    let store = ChatSecretStore::in_memory();
+    assert!(!store.has_password(&evil));
+    assert!(!store.verify_password(&evil, "pw"));
+
+    // 按普通键完整往返（is_canonical_form 门：不走 legacy 孪生分支）。
+    store.set_password(&evil, "pw").unwrap();
+    assert!(store.has_password(&evil));
+    assert!(store.verify_password(&evil, "pw"));
+    store.clear_password(&evil).unwrap();
+    assert!(!store.has_password(&evil));
+}

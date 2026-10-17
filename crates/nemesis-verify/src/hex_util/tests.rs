@@ -58,3 +58,20 @@ fn hex_decode_vec_errors() {
     // 空串 = 空向量
     assert_eq!(hex_decode_vec("").unwrap(), Vec::<u8>::new());
 }
+
+// 非 ASCII 输入诚实拒绝（2026-10-17 全仓横扫）：字节长度门挡不住多字节
+// 字符，裸字节切片曾会落在字符中间 panic——现为 Err 而非进程崩溃。
+#[test]
+fn hex_decode_rejects_non_ascii() {
+    // hex_decode_32：64 字节但含多字节字符（字节 8 落在「中」的续字节上）。
+    let mut s = "0".repeat(7);
+    s.push('中'); // 3 字节，7..10
+    s.push_str(&"0".repeat(64 - 10));
+    assert_eq!(s.len(), 64);
+    let err = hex_decode_32(&s).unwrap_err();
+    assert_eq!(err, "non-ascii hex");
+
+    // hex_decode_vec：偶数字节长度但多字节字符跨字节 2。
+    let err = hex_decode_vec("0中0").unwrap_err();
+    assert_eq!(err, "non-ascii hex");
+}

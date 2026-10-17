@@ -79,18 +79,25 @@ impl FileForgeProvider {
 }
 
 /// Redact common API key patterns from content.
+///
+/// F-NEW-1（2026-10-17 四轮审计）：`find` 返回字节下标，`pos+20` 可能落在
+/// 多字节 UTF-8 字符中间——旧写法先切片后校验，长度检查只防越界不防
+/// boundary，远端可控内容（forge_share 报告，`receive_reflection` →
+/// `do_sanitize`）可构造 panic 杀死 handler。改为**逐字节预检**（`get`
+/// 出界/跨字符返回 None + 全 ASCII 字母数字才通过），通过后切片必然
+/// 安全且确为 AWS key 形态。
 fn redact_api_keys(content: &str) -> String {
     let mut result = content.to_string();
 
     // Redact AWS access keys
-    if let Some(pos) = result.find("AKIA")
-        && pos + 20 <= result.len()
-    {
-        let is_valid = result[pos..pos + 20]
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric());
+    if let Some(pos) = result.find("AKIA") {
+        let is_valid = result
+            .as_bytes()
+            .get(pos + 4..pos + 20)
+            .is_some_and(|bytes| bytes.iter().all(|b| b.is_ascii_alphanumeric()));
         if is_valid {
-            result = result.replace(&result[pos..pos + 20], "[REDACTED_AWS_KEY]");
+            let key: String = result[pos..pos + 20].to_string();
+            result = result.replace(&key, "[REDACTED_AWS_KEY]");
         }
     }
 
@@ -193,35 +200,42 @@ impl ForgeDataProvider for FileForgeProvider {
     }
 
     fn get_reflections_list_payload(&self) -> serde_json::Value {
+        // LOW-14（2026-10-17 四轮审计）：read_dir 顺序是平台实现细节
+        // （NTFS 字典序 vs ext4 哈希序）——先收集后显式排序，列表顺序跨
+        // 平台确定（对端按序消费/展示不漂）。
         let mut reflections = Vec::new();
 
         // Read local reflections
         if let Ok(entries) = std::fs::read_dir(&self.reflections_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("json")
-                    && let Some(name) = path.file_name().and_then(|n| n.to_str())
-                {
-                    reflections.push(serde_json::json!({
-                        "filename": name,
-                        "remote": false,
-                    }));
-                }
+            let mut names: Vec<String> = entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
+                .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(String::from))
+                .collect();
+            names.sort();
+            for name in names {
+                reflections.push(serde_json::json!({
+                    "filename": name,
+                    "remote": false,
+                }));
             }
         }
 
         // Read remote reflections
         if let Ok(entries) = std::fs::read_dir(&self.remote_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("json")
-                    && let Some(name) = path.file_name().and_then(|n| n.to_str())
-                {
-                    reflections.push(serde_json::json!({
-                        "filename": name,
-                        "remote": true,
-                    }));
-                }
+            let mut names: Vec<String> = entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
+                .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(String::from))
+                .collect();
+            names.sort();
+            for name in names {
+                reflections.push(serde_json::json!({
+                    "filename": name,
+                    "remote": true,
+                }));
             }
         }
 

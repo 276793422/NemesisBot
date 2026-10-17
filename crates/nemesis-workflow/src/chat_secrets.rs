@@ -35,6 +35,17 @@ const DECOY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$ZGVjb3ltYW5kcmFuZG9tc2F
 /// Length of the canonical (64-bit) chat index in hex chars.
 const CANONICAL_INDEX_LEN: usize = 16;
 
+/// True when `index` is the genuine canonical 16-hex form.
+///
+/// 门必须是「字节长 == 16 **且全 ASCII**」（2026-10-17 全仓横扫）：web 层
+/// `canonical_chat_index` 对解析不到的 index 原样透传，客户端可构造 16
+/// 字节但字节 8 落在多字节字符中间的串——只查字节长会让 legacy 孪生分支
+/// 对这种串做字节切片（panic 面），或以输入自身为「孪生」把 set 刚写入
+/// 的条目立即删掉（静默 no-op 面）。ASCII 门一并关死两条路。
+fn is_canonical_form(index: &str) -> bool {
+    index.len() == CANONICAL_INDEX_LEN && index.is_ascii()
+}
+
 /// Per-workflow chat password store. In-memory cache backed by a JSON file
 /// on disk. Safe to share via `Arc` across handlers.
 pub struct ChatSecretStore {
@@ -153,7 +164,7 @@ impl ChatSecretStore {
         }
         let mut candidate = guard.secrets.clone();
         candidate.insert(index.to_string(), hash);
-        if index.len() == CANONICAL_INDEX_LEN {
+        if is_canonical_form(index) {
             // Self-healing: drop the legacy 8-hex twin so the map converges
             // on canonical keys.
             candidate.remove(legacy_key_of(index));
@@ -171,7 +182,7 @@ impl ChatSecretStore {
         }
         let mut candidate = guard.secrets.clone();
         let mut removed = candidate.remove(index).is_some();
-        if index.len() == CANONICAL_INDEX_LEN {
+        if is_canonical_form(index) {
             removed |= candidate.remove(legacy_key_of(index)).is_some();
         }
         if !removed {
@@ -192,7 +203,7 @@ impl ChatSecretStore {
         if guard.secrets.contains_key(index) {
             return true;
         }
-        if index.len() == CANONICAL_INDEX_LEN {
+        if is_canonical_form(index) {
             return guard.secrets.contains_key(legacy_key_of(index));
         }
         false
@@ -213,7 +224,7 @@ impl ChatSecretStore {
             return false;
         }
         let mut hash_to_check = guard.secrets.get(index).cloned();
-        if hash_to_check.is_none() && index.len() == CANONICAL_INDEX_LEN {
+        if hash_to_check.is_none() && is_canonical_form(index) {
             hash_to_check = guard.secrets.get(legacy_key_of(index)).cloned();
         }
         drop(guard);
@@ -284,8 +295,14 @@ fn persist_candidate_locked(
 
 /// The legacy 32-bit key that a canonical 16-hex index was written under
 /// before the 2026-10-16 hardening (first 8 hex chars of the same digest).
+///
+/// 边界安全（2026-10-17 全仓横扫，双保险后手）：调用方闸门已升级为
+/// [`is_canonical_form`]（字节长 + ASCII），多字节串不再进 legacy 分支；
+/// 此处 `get(..8).unwrap_or(canonical)` 兜底防御未来调用点绕过闸门——
+/// 退化语义是以输入自身作 legacy 键探测（调用点此前已用该键探测过，
+/// miss 再探一次无害）。
 fn legacy_key_of(canonical: &str) -> &str {
-    &canonical[..8]
+    canonical.get(..8).unwrap_or(canonical)
 }
 
 fn hash_password(password: &str) -> Result<String, String> {

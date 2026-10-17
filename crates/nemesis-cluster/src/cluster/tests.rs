@@ -1828,13 +1828,8 @@ fn test_get_rpc_channel_initially_none() {
     assert!(cluster.get_rpc_channel().is_none());
 }
 
-#[test]
-fn test_config_returns_default() {
-    let cluster = Cluster::new(make_config());
-    let config = cluster.config();
-    // config() returns a static default
-    assert_eq!(config.bind_address, "0.0.0.0:9000");
-}
+// 注：test_config_returns_default 已随 config() 死 API 一并删除
+// （LOW-19，2026-10-17 四轮审计）。
 
 #[test]
 fn test_handle_discovered_node_with_multiple_addresses() {

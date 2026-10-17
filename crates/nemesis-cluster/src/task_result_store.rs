@@ -200,7 +200,7 @@ impl TaskResultStore {
                         // 网，用户既拿不到结果也拿不到诚实报错。加载时丢弃
                         // 占位并删除残file，重启后的 B 诚实回答 not_found。
                         if result.result.get("status").and_then(|v| v.as_str()) == Some("running") {
-                            let _ = std::fs::remove_file(&path);
+                            crate::fsutil::remove_file_resilient(&path);
                             tracing::info!(
                                 task_id = %result.task_id,
                                 "[TaskResultStore] dropped stale running placeholder from disk"
@@ -265,7 +265,7 @@ impl TaskResultStore {
                     .and_then(|r| chrono::DateTime::parse_from_rfc3339(&r.stored_at).ok())
                     .map(|stored| stored.with_timezone(&chrono::Local) >= cutoff)
                     .unwrap_or(true); // unparsable -> keep (fail-open)
-                if !keep && std::fs::remove_file(&path).is_ok() {
+                if !keep && crate::fsutil::remove_file_resilient(&path) {
                     removed += 1;
                 }
             }
@@ -293,16 +293,15 @@ impl TaskResultStore {
     fn store(&self, result: TaskResult) {
         let mut results = self.results.lock();
         // Evict oldest if at capacity
-        if results.len() >= self.max_size {
-            // Simple eviction: remove a random entry
-            if let Some(key) = results.keys().next().cloned() {
-                let evicted = results.remove(&key);
-                // Delete evicted entry from disk as well
-                if let Some(evicted) = evicted {
-                    drop(results); // release lock before disk I/O
-                    self.delete_from_disk(&evicted.task_id);
-                    results = self.results.lock();
-                }
+        if results.len() >= self.max_size
+            && let Some(key) = oldest_stored_key(&results)
+        {
+            let evicted = results.remove(&key);
+            // Delete evicted entry from disk as well
+            if let Some(evicted) = evicted {
+                drop(results); // release lock before disk I/O
+                self.delete_from_disk(&evicted.task_id);
+                results = self.results.lock();
             }
         }
         results.insert(result.task_id.clone(), result.clone());
@@ -348,16 +347,32 @@ impl TaskResultStore {
     fn delete_from_disk(&self, task_id: &str) {
         if let Some(dir) = &self.cache_dir {
             let path = dir.join(format!("{}.json", safe_task_file_name(task_id)));
-            if path.exists()
-                && let Err(e) = std::fs::remove_file(&path)
-            {
+            if path.exists() && !crate::fsutil::remove_file_resilient(&path) {
                 tracing::warn!(
-                    "[TaskResultStore] failed to delete result file {:?}: {}",
-                    path,
-                    e
+                    "[TaskResultStore] failed to delete result file {:?}（重试耗尽，残留文件）",
+                    path
                 );
             }
         }
+    }
+}
+
+/// LOW-6（2026-10-17 四轮审计）：满容量逐出选 `stored_at` **最旧**者——
+/// 旧「HashMap 首键」是任意序（RandomState），可逐出刚写入未送达的新结果；
+/// 最旧者按 TTL 语义本来就该最先走。全部解析失败（理论不可达，写入侧恒
+/// RFC3339 now）回落首键保前进。
+fn oldest_stored_key(results: &HashMap<String, TaskResult>) -> Option<String> {
+    let mut oldest: Option<(&String, chrono::DateTime<chrono::FixedOffset>)> = None;
+    for (k, r) in results {
+        if let Ok(t) = chrono::DateTime::parse_from_rfc3339(&r.stored_at)
+            && oldest.is_none_or(|(_, ot)| t < ot)
+        {
+            oldest = Some((k, t));
+        }
+    }
+    match oldest {
+        Some((k, _)) => Some(k.clone()),
+        None => results.keys().next().cloned(),
     }
 }
 
@@ -481,7 +496,13 @@ impl AsyncTaskResultStore {
                         // 恢复轮询被吊到 24h 安全网。加载时丢弃占位并删除
                         // 残file，重启后的 B 诚实回答 not_found。
                         if result.result.get("status").and_then(|v| v.as_str()) == Some("running") {
-                            let _ = fs::remove_file(&path).await;
+                            // LOW-5：韧性删除（spawn_blocking 包裹——退避重试
+                            // 不阻塞 runtime；目录树版同款语义）。
+                            let p = path.clone();
+                            let _ = tokio::task::spawn_blocking(move || {
+                                crate::fsutil::remove_file_resilient(&p)
+                            })
+                            .await;
                             tracing::info!(
                                 task_id = %result.task_id,
                                 "[TaskResultStore] dropped stale running placeholder from disk"
@@ -522,11 +543,12 @@ impl AsyncTaskResultStore {
         //    deleted AFTER the lock scope — the parking_lot guard must not
         //    cross the async fs call (the old drop-guard/re-lock dance around
         //    the await was both hard to read and a clippy false-positive trap).
+        //    LOW-6：逐出选 stored_at 最旧者（与同步版同源 oldest_stored_key）。
         let evicted_path = {
             let mut results = self.inner.results.lock();
             let mut evicted_path = None;
             if results.len() >= self.inner.max_size
-                && let Some(key) = results.keys().next().cloned()
+                && let Some(key) = oldest_stored_key(&results)
                 && let Some(evicted) = results.remove(&key)
                 && let Some(dir) = self.inner.cache_dir.clone()
             {
@@ -537,7 +559,10 @@ impl AsyncTaskResultStore {
             evicted_path
         };
         if let Some(path) = evicted_path {
-            let _ = fs::remove_file(path).await;
+            // LOW-5：韧性删除（spawn_blocking 包裹，退避重试不阻塞 runtime）。
+            let _ =
+                tokio::task::spawn_blocking(move || crate::fsutil::remove_file_resilient(&path))
+                    .await;
         }
 
         // 2. Write to disk asynchronously (result was cloned before move)
@@ -584,14 +609,18 @@ impl AsyncTaskResultStore {
     async fn delete_from_disk_async(&self, task_id: &str) {
         if let Some(dir) = &self.inner.cache_dir {
             let path = dir.join(format!("{}.json", safe_task_file_name(task_id)));
-            if Path::new(&path).exists()
-                && let Err(e) = fs::remove_file(&path).await
-            {
-                tracing::warn!(
-                    "[TaskResultStore] failed to delete async result file {:?}: {}",
-                    path,
-                    e
-                );
+            if Path::new(&path).exists() {
+                // LOW-5：韧性删除（spawn_blocking 包裹，退避重试不阻塞 runtime）。
+                let ok = tokio::task::spawn_blocking(move || {
+                    crate::fsutil::remove_file_resilient(&path)
+                })
+                .await
+                .unwrap_or(false);
+                if !ok {
+                    tracing::warn!(
+                        "[TaskResultStore] failed to delete async result file（重试耗尽，残留文件）"
+                    );
+                }
             }
         }
     }

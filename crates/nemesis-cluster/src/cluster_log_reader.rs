@@ -395,8 +395,11 @@ fn format_event(entry: &ClusterLogEvent) -> Option<FormattedEvent> {
         dt.with_timezone(&chrono::Local)
             .format("%H:%M:%S")
             .to_string()
-    } else if ts.len() >= 19 {
-        ts[11..19].to_string()
+    // LOW-1（2026-10-17 四轮审计）：字节切片 boundary 安全——len≥19 守卫
+    // 不保证 [11..19] 是 char boundary，畸形 ts 行（本地写坏才可能出现，
+    // 但 WSAPI handler panic 不可接受）走 get() 安全切片，None 回落原文。
+    } else if let Some(slice) = ts.get(11..19) {
+        slice.to_string()
     } else {
         ts.clone()
     };

@@ -143,12 +143,43 @@ pub fn safe_relative_path(rel: &str) -> Result<PathBuf, String> {
 pub fn sha256_hex(data: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(data);
-    let out = h.finalize();
+    sha256_digest_hex(&h.finalize())
+}
+
+/// 摘要 → 小写 hex（单一编码点：sha256_hex 与流式哈希共用，杜绝
+/// hash-of-hash 形态的错位——2026-10-17 LOW-8 回归实测抓出）。
+fn sha256_digest_hex(digest: &[u8]) -> String {
     let mut s = String::with_capacity(64);
-    for b in out {
+    for b in digest {
         s.push_str(&format!("{b:02x}"));
     }
     s
+}
+
+/// 流式文件哈希：返回 (size, sha256_hex)。固定 256 KiB 缓冲逐块喂，
+/// 不整文件进内存。
+///
+/// LOW-8（2026-10-17 四轮审计）：收集路径此前 `read` 整文件再哈希——
+/// 大工件=单文件级内存尖峰，且 D4 总量护栏要收集完才算得出。exec 侧
+/// diff_walk 同规则复用本函数（同 crate 单一实现）。
+pub fn sha256_file_streaming(path: &Path) -> Result<(u64, String), String> {
+    use std::io::Read;
+    let mut file =
+        std::fs::File::open(path).map_err(|e| format!("打开 {}: {e}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 256 * 1024];
+    let mut size = 0u64;
+    loop {
+        let n = file
+            .read(&mut buf)
+            .map_err(|e| format!("读 {}: {e}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+        size += n as u64;
+    }
+    Ok((size, sha256_digest_hex(&hasher.finalize())))
 }
 
 // ---------------------------------------------------------------------------
@@ -290,13 +321,15 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<TransferFileEntry>) -> Result<(),
             if is_noise_file(&normalized) {
                 continue;
             }
-            let data =
-                std::fs::read(&path).map_err(|e| format!("读文件 {}: {e}", path.display()))?;
-            out.push(TransferFileEntry {
-                path: normalized,
-                size: data.len() as u64,
-                sha256: sha256_hex(&data),
-            });
+            // 流式哈希（LOW-8）：不整文件进内存。
+            match sha256_file_streaming(&path) {
+                Ok((size, sha)) => out.push(TransferFileEntry {
+                    path: normalized,
+                    size,
+                    sha256: sha,
+                }),
+                Err(e) => return Err(e),
+            }
         }
     }
     Ok(())
@@ -371,9 +404,18 @@ pub fn plan_chunks(files: &[TransferFileEntry], chunk_size: usize) -> Vec<(usize
     plan
 }
 
-/// 总块数（plan 长度，供 begin.chunk_count）。
+/// 总块数——**算术式**（Σ ceil(size/chunk_size)，O(files) 不物化计划）。
+///
+/// F-NEW-2（2026-10-17 四轮审计）：validate 路径此前走 [`plan_chunks`]
+/// 逐块物化，远端 manifest 的 `f.size=u64::MAX`（total 绕加匹配可过校验）
+/// = 无界循环 + OOM DoS；校验只需要数量，计划物化留给真正组装的位置
+/// （`end`/推送——那里的 manifest 已过本函数校验 + D4 护栏）。
 pub fn chunk_count(files: &[TransferFileEntry], chunk_size: usize) -> usize {
-    plan_chunks(files, chunk_size).len()
+    debug_assert!(chunk_size > 0);
+    files
+        .iter()
+        .map(|f| f.size.div_ceil(chunk_size as u64) as usize)
+        .fold(0usize, usize::saturating_add)
 }
 
 /// base64 编解码薄封装（统一 engine，收发两侧不漂移）。
@@ -500,17 +542,12 @@ impl TransferSink {
         self.dedup.read().get(task_id).cloned()
     }
 
-    /// begin：校验 → 去重/超限/续传三分支。
+    /// begin：护栏 → 校验 → 去重/超限/续传三分支。
     pub fn begin(&self, req: &TransferBegin) -> TransferBeginReply {
-        // 1. manifest 结构校验（路径围栏 + 总量一致 + 计划一致）。
-        if let Err(e) = validate_manifest(req) {
-            return TransferBeginReply {
-                status: "error".into(),
-                have: vec![],
-                error: Some(e),
-            };
-        }
-        // 2. D4 护栏（接收侧诚实拒绝；0 = 不限）。
+        // 1. D4 护栏**先行**（F-NEW-2，2026-10-17 四轮审计）：远端声明
+        //    的 total_bytes 超限直接诚实拒绝——此前 validate_manifest 在
+        //    前，攻击载荷先撞进校验逻辑（chunk_count 物化）才轮到护栏。
+        //    0 = 不限。
         let limit = self.max_bytes();
         if limit > 0 && req.total_bytes > limit {
             return TransferBeginReply {
@@ -520,6 +557,15 @@ impl TransferSink {
                     "传输体积 {} 字节超护栏 {limit}（诚实拒绝，不截断）",
                     req.total_bytes
                 )),
+            };
+        }
+        // 2. manifest 结构校验（路径围栏 + 总量一致 + 计划一致——块数走
+        //    算术式 chunk_count，不物化计划，见 F-NEW-2）。
+        if let Err(e) = validate_manifest(req) {
+            return TransferBeginReply {
+                status: "error".into(),
+                have: vec![],
+                error: Some(e),
             };
         }
         // 3. D3 去重：(task_id, content_hash) 已落地 **且档案实体仍在收件箱**
@@ -601,6 +647,25 @@ impl TransferSink {
         if !st.exists() {
             return Err("staging 不存在（begin 未到达或已被清理）".into());
         }
+        // LOW-7（2026-10-17 四轮审计）：按 staging manifest 闸块序号与块
+        // 大小——认证对端不再能写任意多/任意大块文件进 staging（磁盘填充
+        // 面）。manifest 缺失（begin manifest 落盘前的窄窗口）诚实拒绝，
+        // sender 重试即可。
+        let manifest = read_staging_manifest(&st)
+            .ok_or_else(|| "staging manifest 缺失（begin 未完成）".to_string())?;
+        if req.seq >= manifest.chunk_count {
+            return Err(format!(
+                "块序号 {} 超出计划 {}（chunk_count）",
+                req.seq, manifest.chunk_count
+            ));
+        }
+        if data.len() > manifest.chunk_size {
+            return Err(format!(
+                "块大小 {} 超出计划 {}（chunk_size）",
+                data.len(),
+                manifest.chunk_size
+            ));
+        }
         // 块文件名固定宽度：字典序 = 数值序。
         let path = st.join(format!("chunk_{:06}.bin", req.seq));
         std::fs::write(&path, &data).map_err(|e| format!("写 staging 块失败: {e}"))?;
@@ -677,20 +742,17 @@ impl TransferSink {
             f.write_all(&data)
                 .map_err(|e| format!("写 {}: {e}", dest.display()))?;
         }
-        // 2. 逐文件 SHA-256 核验（D6 端到端完整性）。
+        // 2. 逐文件 SHA-256 核验（D6 端到端完整性；流式读，不整文件进内存）。
         for file in &begin.files {
             let rel = safe_relative_path(&file.path)?;
-            let data = std::fs::read(files_root.join(&rel))
+            let (size, got) = sha256_file_streaming(&files_root.join(&rel))
                 .map_err(|e| format!("组装后读 {} 失败: {e}", file.path))?;
-            if data.len() as u64 != file.size {
+            if size != file.size {
                 return Err(format!(
                     "文件 {} 长度 {} ≠ manifest {}",
-                    file.path,
-                    data.len(),
-                    file.size
+                    file.path, size, file.size
                 ));
             }
-            let got = sha256_hex(&data);
             if got != file.sha256 {
                 return Err(format!(
                     "文件 {} SHA-256 核验失败（期望 {} 实得 {got}）",
@@ -817,7 +879,10 @@ fn validate_manifest(req: &TransferBegin) -> Result<(), String> {
     let mut total = 0u64;
     for f in &req.files {
         safe_relative_path(&f.path)?;
-        total += f.size;
+        // F-NEW-2（2026-10-17 四轮审计）：饱和加法——release 下旧 `+=`
+        // 溢出回绕可让伪造总量绕过一致校验（debug 直接 panic，更糟）。
+        // 回绕后 ≠ 声明总量 → 诚实拒绝；真实传输总量远离 u64 上界不触达。
+        total = total.saturating_add(f.size);
     }
     if total != req.total_bytes {
         return Err(format!("manifest 总量 {total} ≠ 声明 {}", req.total_bytes));
