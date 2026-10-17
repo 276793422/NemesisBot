@@ -441,6 +441,46 @@ impl TransferSink {
         self.max_bytes.store(max_bytes, Ordering::Relaxed);
     }
 
+    /// `.staging/<transfer_id>/` 按龄清扫（BUG-2，2026-10-17）。
+    ///
+    /// 永不续传的传输（发送端死亡 / 任务取消 / 内容变更换 transfer_id）
+    /// 留下的孤儿分块目录没有别的清理路径（旧同 id 清理只覆盖「同 id
+    /// 重传且 hash 不同」分支）。只动 mtime 早于 `max_age` 的目录：分块
+    /// 写入会持续刷新目录 mtime，进行中的传输不受影响。删除走 fsutil
+    /// 韧性包装（尽力而为，残留交下轮）；非目录条目不碰。返回清除数。
+    pub fn sweep_stale_staging(&self, max_age: std::time::Duration) -> usize {
+        let Ok(entries) = std::fs::read_dir(&self.staging_root) else {
+            return 0;
+        };
+        let now = std::time::SystemTime::now();
+        let mut removed = 0usize;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            // 无 mtime / 未来时间戳（时钟偏斜）= 保守视为新鲜，跳过。
+            let fresh = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| now.duration_since(t).ok())
+                .map(|age| age < max_age)
+                .unwrap_or(true);
+            if fresh {
+                continue;
+            }
+            tracing::info!(
+                dir = %path.display(),
+                "[Transfer] sweeping stale staging dir (transfer never resumed)"
+            );
+            if crate::fsutil::remove_dir_all_resilient(&path) {
+                removed += 1;
+            }
+        }
+        removed
+    }
+
     pub fn max_bytes(&self) -> u64 {
         self.max_bytes.load(Ordering::Relaxed)
     }

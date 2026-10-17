@@ -1362,13 +1362,31 @@ impl ClusterHandler {
             // Send in background — don't block the WS response.
             // The task status will be updated when the callback arrives.
             let timeout = std::time::Duration::from_secs(30);
+            let cluster_for_ack = cluster.clone();
+            let task_id_for_ack = task_id.clone();
             tokio::spawn(async move {
                 match rpc_client
                     .call_with_timeout(&target_owned, request, timeout)
                     .await
                 {
-                    Ok(_ack) => {
-                        tracing::info!("[Cluster] peer_chat RPC ACK received");
+                    Ok(resp) => {
+                        // BUG-1（2026-10-17）：B 端拒单（工作队列满）=
+                        // 任务从未开始——A 端任务立即置失败，任务列表
+                        // 即时可见，不等 stale 安全网（24h+）。
+                        if nemesis_cluster::rpc::peer_chat_handler::peer_chat_ack_rejected(
+                            resp.result.as_ref(),
+                        ) {
+                            tracing::warn!(
+                                task_id = %task_id_for_ack,
+                                "[Cluster] peer_chat rejected by worker (work queue full)"
+                            );
+                            cluster_for_ack.fail_task(
+                                &task_id_for_ack,
+                                "worker 拒单：B 端工作队列满，任务未被接受",
+                            );
+                        } else {
+                            tracing::info!("[Cluster] peer_chat RPC ACK received");
+                        }
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "[Cluster] peer_chat RPC send failed");

@@ -662,3 +662,58 @@ fn sanitize_transfer_id_and_chunk_size_resolution() {
     );
     assert_eq!(resolve_chunk_bytes(None), DEFAULT_CHUNK_BYTES);
 }
+
+// ---------------------------------------------------------------------------
+// sweep_stale_staging（BUG-2，2026-10-17）：孤儿分块目录按龄清扫
+// ---------------------------------------------------------------------------
+
+// max_age=0：所有分块目录视为过期，全部清除；非目录条目不碰；
+// staging 根自身保留（下轮传输还要用）。
+#[test]
+fn test_sweep_stale_staging_zero_age_clears_all_dirs() {
+    let root = temp_root("sweep-all");
+    let sink = TransferSink::new(&root.join("ws"), 0);
+    let staging = sink.inbox_root().join(".staging");
+    for id in ["tr-a", "tr-b"] {
+        std::fs::create_dir_all(staging.join(id)).unwrap();
+        std::fs::write(staging.join(id).join("chunk_0001"), b"payload").unwrap();
+    }
+    std::fs::write(staging.join("stray-file.tmp"), b"not a dir").unwrap();
+
+    let removed = sink.sweep_stale_staging(std::time::Duration::ZERO);
+    assert_eq!(removed, 2, "两个孤儿目录都被清除");
+    assert!(!staging.join("tr-a").exists());
+    assert!(!staging.join("tr-b").exists());
+    assert!(staging.join("stray-file.tmp").exists(), "非目录条目不碰");
+    assert!(staging.exists(), "staging 根保留");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// max_age 超大：进行中/新鲜目录一律保留（返回 0）。
+#[test]
+fn test_sweep_stale_staging_large_age_keeps_everything() {
+    let root = temp_root("sweep-keep");
+    let sink = TransferSink::new(&root.join("ws"), 0);
+    let staging = sink.inbox_root().join(".staging");
+    std::fs::create_dir_all(staging.join("tr-live")).unwrap();
+    std::fs::write(staging.join("tr-live").join("chunk_0000"), b"x").unwrap();
+
+    let removed = sink.sweep_stale_staging(std::time::Duration::from_secs(100 * 24 * 3600));
+    assert_eq!(removed, 0, "新鲜目录不被清扫");
+    assert!(staging.join("tr-live").exists());
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// staging 根不存在（传输栈未用过）→ 静默 0，不 panic。
+#[test]
+fn test_sweep_stale_staging_missing_root_is_zero() {
+    let root = temp_root("sweep-missing");
+    let sink = TransferSink::new(&root.join("ws"), 0);
+    // TransferSink::new 会建 staging 根——删掉模拟未初始化盘面。
+    let staging = sink.inbox_root().join(".staging");
+    std::fs::remove_dir_all(&staging).unwrap();
+    assert_eq!(sink.sweep_stale_staging(std::time::Duration::ZERO), 0);
+    let _ = std::fs::remove_dir_all(&root);
+}

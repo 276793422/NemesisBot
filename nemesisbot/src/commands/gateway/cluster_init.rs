@@ -502,6 +502,21 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
         let cluster_work_queue = Arc::new(nemesis_cluster::ClusterWorkQueue::new(64));
         handler.set_cluster_queue(cluster_task_list.clone(), cluster_work_queue.clone());
 
+        // BUG-3（2026-10-17）：终态任务防御清扫（60s 周期）。正常路径
+        // complete_task 在所有执行出口移除条目；本清扫兜退化残留（拒绝
+        // 回滚遗漏 / 未来路径忘记清理），终态条目见即清、常态零开销。
+        {
+            let task_list_for_sweep = cluster_task_list.clone();
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    ticker.tick().await;
+                    task_list_for_sweep.remove_terminal_tasks();
+                }
+            });
+        }
+
         // Set RPC client for callbacks (after cluster.start() creates the client).
         let rpc_client = cluster.rpc_client_arc();
         if let Some(client) = rpc_client.clone() {
@@ -598,6 +613,12 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     let cell = limit_cell.clone();
                     let cfg_path = std::path::Path::new(&home).join("config.json");
                     tokio::spawn(async move {
+                        // BUG-2（2026-10-17）：孤儿分块暂存按龄清扫 TTL
+                        // （对齐 task_result / outbox 死信 / 续行快照 7 天
+                        // 口径）；进行中传输的分块写入持续刷新目录 mtime，
+                        // TTL 内不受影响。
+                        const STAGING_STALE_TTL: std::time::Duration =
+                            std::time::Duration::from_secs(7 * 24 * 3600);
                         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
                         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                         loop {
@@ -611,6 +632,9 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                                 cell.store(v, std::sync::atomic::Ordering::Relaxed);
                                 sink_ref.set_max_bytes(v);
                             }
+                            // 只动 mtime 早于 TTL 的目录；常态空目录一次
+                            // read_dir，开销可忽略。
+                            sink_ref.sweep_stale_staging(STAGING_STALE_TTL);
                         }
                     });
                 }

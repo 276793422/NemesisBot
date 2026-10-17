@@ -448,6 +448,39 @@ impl ClusterTaskList {
         }
     }
 
+    /// 防御性清扫内存中残留的终态任务（BUG-3，2026-10-17）。
+    ///
+    /// 正常路径 [`Self::complete_task`] 在所有执行出口移除条目（成功/失败/
+    /// 取消-出队），终态条目本不应驻留内存——磁盘持久化同样过滤终态。
+    /// 残留只可能来自退化情形（如拒绝回滚遗漏、未来路径忘记清理），
+    /// 见即清扫、无需时间戳。逐条走 `complete_task`（连带删除会话快照
+    /// 文件 + 单次索引落盘）。返回清扫条数。
+    pub fn remove_terminal_tasks(&self) -> usize {
+        let stale: Vec<String> = self
+            .tasks
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.value().status,
+                    TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled
+                )
+            })
+            .map(|e| e.key().clone())
+            .collect();
+        let n = stale.len();
+        for task_id in &stale {
+            self.complete_task(task_id);
+        }
+        if n > 0 {
+            tracing::info!(
+                count = n,
+                "[ClusterTaskList] Swept {} leftover terminal task(s)",
+                n
+            );
+        }
+        n
+    }
+
     // -- Persistence helpers ------------------------------------------------
 
     fn conversation_path(&self, task_id: &str) -> PathBuf {
