@@ -52,3 +52,34 @@ pub(crate) fn remove_dir_all_resilient(dir: &std::path::Path) -> bool {
     );
     false
 }
+
+/// 带退避重试的**单文件**删除，返回是否删除成功（LOW-5，2026-10-17 四轮
+/// 审计）：Windows 瞬时句柄（AV/索引器）对单文件同样成立——裸
+/// `std::fs::remove_file` 单发必胜假设与目录树版同理不成立，影响 = 残留
+/// 文件 + WARN（清理类调用点维持「尽力而为」语义：NotFound 视为成功，
+/// 不向上传播错误）。
+pub(crate) fn remove_file_resilient(path: &std::path::Path) -> bool {
+    let mut last_err = None;
+    for attempt in 0..10u32 {
+        match std::fs::remove_file(path) {
+            Ok(()) => return true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return true,
+            Err(e) => {
+                tracing::debug!(
+                    path = %path.display(),
+                    attempt,
+                    error = %e,
+                    "[FsUtil] 文件删除失败，退避重试"
+                );
+                last_err = Some(e);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(80 * (attempt as u64 + 1)));
+    }
+    tracing::warn!(
+        path = %path.display(),
+        last_error = ?last_err,
+        "[FsUtil] 文件删除重试耗尽（残留文件留存）"
+    );
+    false
+}

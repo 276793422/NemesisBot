@@ -98,14 +98,21 @@ fn temp_ws(name: &str) -> PathBuf {
     dir
 }
 
-/// 在 workspace 的 cluster_logs 里伪造一份 worker 执行记录。
-fn make_task_records(ws: &Path, device: &str, task_id: &str, content: &str) {
+/// 在 workspace 的 cluster_logs 里伪造一份 worker 执行记录（返回创建的
+/// 记录目录）。目录名时间戳用当前时刻——F-NEW-3 年龄闸（24h）之后，
+/// 硬编码历史日期会被启动清扫正确地判为超龄跳过（生产行为符合设计，
+/// 夹具必须模拟「新近崩溃残留」才是被测对象）。
+fn make_task_records(ws: &Path, device: &str, task_id: &str, content: &str) -> PathBuf {
     let dir = nemesis_path::resolve_cluster_logs_dir_in_workspace(ws)
         .join(device)
-        .join(format!("2026-09-14_10-30-00-123_{task_id}"));
+        .join(format!(
+            "{}_{task_id}",
+            chrono::Local::now().format("%Y-%m-%d_%H-%M-%S-%3f")
+        ));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("00.request.md"), content).unwrap();
     std::fs::write(dir.join("01.AI.Response.raw.json"), br#"{"x":1}"#).unwrap();
+    dir
 }
 
 fn outbox_dir(ws: &Path) -> PathBuf {
@@ -130,7 +137,7 @@ fn make_outbox(ws: &Path, transport: Arc<FakeTransport>, limit: LimitFn) -> Arc<
 #[tokio::test]
 async fn enqueue_copies_records_and_is_idempotent() {
     let ws = temp_ws("enqueue");
-    make_task_records(&ws, "node-m", "task-1", "# 内容 hello");
+    let src = make_task_records(&ws, "node-m", "task-1", "# 内容 hello");
     let ob = make_outbox(
         &ws,
         FakeTransport::new(),
@@ -150,14 +157,8 @@ async fn enqueue_copies_records_and_is_idempotent() {
     // payload 复制在场。
     assert!(dir.join("payload").join("00.request.md").exists());
     assert!(dir.join("payload").join("01.AI.Response.raw.json").exists());
-    // 源记录未被移动/删除。
-    assert!(
-        nemesis_path::resolve_cluster_logs_dir_in_workspace(&ws)
-            .join("node-m")
-            .join("2026-09-14_10-30-00-123_task-1")
-            .join("00.request.md")
-            .exists()
-    );
+    // 源记录未被移动/删除（目录名时间戳是运行期生成的，用夹具返回路径）。
+    assert!(src.join("00.request.md").exists());
     // 未知任务诚实失败。
     assert!(ob.enqueue("no-such-task", "node-m").is_err());
 }
@@ -748,4 +749,34 @@ fn task_dir_name_derivation_matches_logger_format() {
     // 非 ts 前缀形态 → None（宁缺毋错键）。
     assert!(derive_task_id_from_dir("short").is_none());
     assert!(derive_task_id_from_dir("2026-09-14_10-30-00-123").is_none());
+}
+
+// F-NEW-3 年龄闸（2026-10-17 四轮审计）：目录名 ts 前缀距今超龄判定。
+#[test]
+fn residual_age_gate_classifies_dir_names() {
+    let now = chrono::Local::now();
+    // 年轻目录（2h 前）→ 不超龄（崩溃窗口兜底语义：照常补入队）。
+    let young = (now - chrono::Duration::hours(2)).format("%Y-%m-%d_%H-%M-%S-%3f");
+    assert!(!residual_dir_older_than(
+        &format!("{young}_task-a"),
+        now,
+        24 * 3600
+    ));
+    // 老目录（25h 前）→ 超龄（历史不自动重推）。
+    let old = (now - chrono::Duration::hours(25)).format("%Y-%m-%d_%H-%M-%S-%3f");
+    assert!(residual_dir_older_than(
+        &format!("{old}_task-b"),
+        now,
+        24 * 3600
+    ));
+    // 畸形/外来目录名 → 一律视为超龄跳过（宁缺毋错键）。
+    assert!(residual_dir_older_than("short", now, 24 * 3600));
+    assert!(residual_dir_older_than(
+        "not-a-timestamp_directory",
+        now,
+        24 * 3600
+    ));
+    // 多字节字符跨前缀字节边界：不 panic，视为超龄。
+    let multibyte = format!("{}{}", "中".repeat(8), "_task");
+    assert!(residual_dir_older_than(&multibyte, now, 24 * 3600));
 }

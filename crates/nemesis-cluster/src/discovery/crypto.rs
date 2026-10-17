@@ -59,57 +59,6 @@ pub fn decrypt_data(key: &[u8; 32], data: &[u8]) -> Result<Vec<u8>, aes_gcm::Err
 }
 
 // ---------------------------------------------------------------------------
-// HMAC-based CryptoService (existing, kept for backward compat)
-// ---------------------------------------------------------------------------
-
-/// Simple HMAC-based crypto service for discovery messages.
-pub struct CryptoService {
-    secret: String,
-}
-
-impl CryptoService {
-    /// Create a new crypto service with the given shared secret.
-    pub fn new(secret: String) -> Self {
-        Self { secret }
-    }
-
-    /// Create a crypto service with no secret (no authentication).
-    pub fn no_auth() -> Self {
-        Self {
-            secret: String::new(),
-        }
-    }
-
-    /// Sign a message payload and return the HMAC hex digest.
-    pub fn sign(&self, payload: &[u8]) -> String {
-        if self.secret.is_empty() {
-            return String::new();
-        }
-        let mut hasher = Sha256::new();
-        hasher.update(self.secret.as_bytes());
-        hasher.update(payload);
-        format!("{:x}", hasher.finalize())
-    }
-
-    /// Verify a message signature.
-    pub fn verify(&self, payload: &[u8], signature: &str) -> bool {
-        if self.secret.is_empty() {
-            return true; // No auth mode
-        }
-        let expected = self.sign(payload);
-        expected == signature
-    }
-
-    /// Generate a node ID hash from a node name and address.
-    pub fn node_id_hash(name: &str, address: &str) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(format!("{}|{}", name, address).as_bytes());
-        let result = format!("{:x}", hasher.finalize());
-        result[..16].to_string()
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

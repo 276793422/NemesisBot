@@ -327,29 +327,36 @@ impl ClusterTaskList {
     pub fn inject_callback(&self, task_id: &str, response: &str) -> Result<(), String> {
         // 取消守卫（W2 P4）：任务已被 task_cancel 下行取消（终态）→ 迟到的
         // 回调不得把它复活回 Pending（防多跳回调链重新入队）；直接回收清理。
-        // 注意先读再清理——不能在 get_mut guard 持有期间调 complete_task
-        // （其内部 remove/iter 同一把 DashMap）。
-        let cancelled = self
-            .tasks
-            .get(task_id)
-            .map(|t| t.status == TaskStatus::Cancelled)
-            .unwrap_or(false);
-        if cancelled {
+        // LOW-4（2026-10-17 四轮审计）：取消判定放进 get_mut guard **内**
+        // 原子完成——旧「先 get 读状态、drop 后再 get_mut 写」与 cancel_task
+        // 的 update_status 交错（读在取消前、写在取消后）可把刚取消的任务
+        // 复活回 Pending（重跑一次）。注意不能在 guard 持有期间调
+        // complete_task（其内部 remove/iter 同一把 DashMap）——取消分支先
+        // 记录、guard 归还后再清理。
+        let was_cancelled = match self.tasks.get_mut(task_id) {
+            Some(mut task) => {
+                if task.status == TaskStatus::Cancelled {
+                    true
+                } else {
+                    task.callback_result = Some(response.to_string());
+                    task.waiting_for_task_id = None;
+                    task.status = TaskStatus::Pending;
+                    tracing::info!(
+                        task_id = %task_id,
+                        "[ClusterTaskList] Injected callback, status → Pending"
+                    );
+                    false
+                }
+            }
+            None => false,
+        };
+        if was_cancelled {
             tracing::info!(
                 task_id = %task_id,
                 "[ClusterTaskList] Late callback for cancelled task — dropping and cleaning up"
             );
             self.complete_task(task_id);
             return Ok(());
-        }
-        if let Some(mut task) = self.tasks.get_mut(task_id) {
-            task.callback_result = Some(response.to_string());
-            task.waiting_for_task_id = None;
-            task.status = TaskStatus::Pending;
-            tracing::info!(
-                task_id = %task_id,
-                "[ClusterTaskList] Injected callback, status → Pending"
-            );
         }
         // Guard is dropped — safe to iterate DashMap（persist_to_disk 内部 iter）。
         self.persist_to_disk().map_err(|e| {
@@ -420,14 +427,14 @@ impl ClusterTaskList {
     /// then updates the task index on disk so stale entries don't accumulate across restarts.
     pub fn complete_task(&self, task_id: &str) {
         // Delete conversation file from disk.
+        // LOW-5（2026-10-17 四轮审计）：韧性删除——Windows 瞬时句柄对单文件
+        // 同理成立，裸 remove_file 单发失败 = 残留文件（AV/索引器释放后无人
+        // 再清）。
         let conv_path = self.conversation_path(task_id);
-        if conv_path.exists()
-            && let Err(e) = std::fs::remove_file(&conv_path)
-        {
+        if conv_path.exists() && !crate::fsutil::remove_file_resilient(&conv_path) {
             tracing::warn!(
                 path = %conv_path.display(),
-                error = %e,
-                "[ClusterTaskList] Failed to delete conversation file"
+                "[ClusterTaskList] Failed to delete conversation file（重试耗尽，残留）"
             );
         }
         self.tasks.remove(task_id);

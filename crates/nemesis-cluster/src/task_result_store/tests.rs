@@ -1263,3 +1263,31 @@ async fn test_async_load_from_disk_drops_running_placeholder() {
     );
     assert!(tmp.path().join("task-real.json").exists());
 }
+
+// LOW-6（2026-10-17 四轮审计）：容量逐出锚定 stored_at 最老条目——HashMap
+// 迭代序不定，此前 keys().next() 随机逐出；时间戳全解析失败回落首键保底。
+#[test]
+fn oldest_stored_key_anchors_on_stored_at() {
+    let mk = |id: &str, ts: &str| TaskResult {
+        task_id: id.to_string(),
+        action: "peer_chat".to_string(),
+        result: serde_json::json!(null),
+        success: true,
+        stored_at: ts.to_string(),
+    };
+    let mut results = HashMap::new();
+    results.insert("mid".to_string(), mk("mid", "2026-10-17T12:00:00+08:00"));
+    results.insert("old".to_string(), mk("old", "2026-10-17T08:00:00+08:00"));
+    results.insert("new".to_string(), mk("new", "2026-10-17T18:00:00+08:00"));
+    assert_eq!(oldest_stored_key(&results).as_deref(), Some("old"));
+
+    // 全部解析失败（畸形时间戳）→ 回落首键（不 panic、不返回 None）。
+    let mut bad = HashMap::new();
+    bad.insert("b1".to_string(), mk("b1", "not-a-timestamp"));
+    bad.insert("b2".to_string(), mk("b2", "also-bad"));
+    let got = oldest_stored_key(&bad).expect("全失败须回落首键");
+    assert!(got == "b1" || got == "b2", "回落首键，得到 {got}");
+
+    // 空表 → None（调用方 no-op 分支）。
+    assert!(oldest_stored_key(&HashMap::new()).is_none());
+}

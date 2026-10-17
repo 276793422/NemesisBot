@@ -1042,6 +1042,11 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 fn hex_decode_32(hex: &str) -> Result<[u8; 32], String> {
     let hex = hex.trim();
+    if !hex.is_ascii() {
+        // 长度门只数字节；非 ASCII 输入（远端技能签名字段可控行）会让
+        // 下面的字节切片落在多字节字符中间直接 panic——先诚实拒绝。
+        return Err("non-ascii hex".to_string());
+    }
     if hex.len() != 64 {
         return Err(format!("expected 64 hex chars, got {}", hex.len()));
     }
@@ -1054,6 +1059,10 @@ fn hex_decode_32(hex: &str) -> Result<[u8; 32], String> {
 
 fn hex_decode_vec(hex: &str) -> Result<Vec<u8>, String> {
     let hex = hex.trim();
+    if !hex.is_ascii() {
+        // 偶数长度门同样只数字节——见 hex_decode_32 注记。
+        return Err("non-ascii hex".to_string());
+    }
     if !hex.len().is_multiple_of(2) {
         return Err("odd hex length".to_string());
     }
