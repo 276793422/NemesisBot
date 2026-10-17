@@ -759,8 +759,10 @@ impl AgentRuntimeSupervisor {
         }
     }
 
-    /// 测试观测面：槽内子进程 pid（无槽 = None）。
-    #[cfg(test)]
+    /// 测试观测面：槽内子进程 pid（无槽 = None）。消费者全在
+    /// `#[cfg(windows)]` 真子进程测试组——Linux 测试编译面无引用，随
+    /// windows+test 门裁剪（CI Linux clippy -D warnings dead_code 实录）。
+    #[cfg(all(test, windows))]
     pub async fn slot_pid(&self, agent_id: &str) -> Option<u32> {
         let slot = {
             let map = self.slots.lock().unwrap_or_else(|e| e.into_inner());
