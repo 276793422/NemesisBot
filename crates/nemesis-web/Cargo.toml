@@ -132,6 +132,10 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # `init_vector_store_with_embed` 门在 nemesis-memory 的 `test-fixture` feature
 # 后（与 nemesis-agent dev-deps 同款模式；仅测试用，不进生产依赖图）。
 nemesis-memory = { workspace = true, features = ["test-fixture"] }
+# board 测试造「存量幽灵引用」行（引用完整性闸 2026-10-17 后 create/update
+# 不再接受不存在的 project/parent，防御臂只能以直接 SQL 复刻存量态）。
+# 仅测试用；feature 与 nemesis-board 声明合并（bundled 加法统一，单次编译）。
+rusqlite = "0.34"
 
 [lints]
 workspace = true

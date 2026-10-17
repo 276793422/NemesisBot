@@ -1034,6 +1034,9 @@ mod spawn_detached_tests;
 // F8 (devtool-upgrade 阶段 3)：hidden_tools 双闸（供给过滤 + dispatch 拦截）测试。
 #[cfg(test)]
 mod f8_hidden_tools_tests;
+// B2（profession-capability-evolution 2026-10-14）：职能工具围栏双闸测试。
+#[cfg(test)]
+mod tool_fence_tests;
 // WASM 插件 min-tier 双闸（2026-09-30 插件体系复查 #2：秩刻度 + 供给绕白名单
 // 按秩过滤 + dispatch 拦截）测试。
 #[cfg(test)]

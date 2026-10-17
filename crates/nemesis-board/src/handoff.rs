@@ -93,6 +93,46 @@ pub fn read_handoff(workspace: &Path, issue_number: &str) -> Result<serde_json::
     serde_json::from_str(&body).map_err(|e| format!("handoff JSON 解析失败: {e}"))
 }
 
+/// 归档停车档案（恢复类动作成功后调用）：移入 `handoffs/archive/<NB-x>.<ts>.json`
+/// 保留追溯、清空「在等人」集合。档案不存在 = Ok(None)（幂等——大多数恢复
+/// 动作本就发生在无档案的单上，不报错）；调用方 best-effort，失败只 WARN。
+pub fn archive_handoff(workspace: &Path, issue_number: &str) -> Result<Option<PathBuf>, String> {
+    let path = handoff_path(workspace, issue_number);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("handoff 路径异常：{}", path.display()))?;
+    let archive_dir = parent.join("archive");
+    std::fs::create_dir_all(&archive_dir).map_err(|e| format!("建 handoff 归档目录失败: {e}"))?;
+    let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S%3f");
+    let dest = archive_dir.join(format!("{issue_number}.{ts}.json"));
+    std::fs::rename(&path, &dest).map_err(|e| format!("归档 handoff 失败: {e}"))?;
+    Ok(Some(dest))
+}
+
+/// stop_kind → 人话标签（决策面板/徽标 tooltip 用；前端只渲染不翻译，
+/// 单一真相源在后端——13 种停车类型 + 未知兜底）。
+pub fn stop_kind_label(stop_kind: &str) -> &'static str {
+    match stop_kind {
+        "unsure_streak" => "连续不确定",
+        "fail_streak" => "连续失败熔断",
+        "budget" => "预算耗尽",
+        "retry_exhausted" => "重试耗尽",
+        "worker_loop" => "worker 循环异常",
+        "capability_fail" => "能力不足",
+        "infra" => "基础设施故障",
+        "defect_gate" => "缺陷闸拦截",
+        "parent_unresolved" => "父单收口未决",
+        "project_unresolved" => "项目收口未决",
+        "no_match" => "无匹配节点",
+        "plan_exhausted" => "拆解重试耗尽",
+        "llm_unavailable" => "LLM 不可用",
+        _ => "停车待处理",
+    }
+}
+
 /// verdict_chain 提取（单一真相源 = U-C timeline 聚合）：auto_decide 活动
 /// 行 = 每轮决策（决策词 + verdict + reasons 全程链，不只最后一轮）。
 pub fn verdict_chain_from(store: &BoardStore, issue_id: i64) -> Vec<serde_json::Value> {

@@ -279,6 +279,7 @@ impl HttpProvider {
         let headers = self.config.headers.clone();
         let client = self.client.clone();
         let provider_name = self.config.name.clone();
+        let stream_timeout_secs = self.config.timeout_secs;
 
         let (tx, rx) = tokio::sync::mpsc::channel(64);
 
@@ -459,6 +460,21 @@ impl HttpProvider {
 
             // Parse the SSE stream from the response body.
             let mut stream = resp.bytes_stream();
+            // 墙钟约束（2026-10-16 NB-123 实证根修）：reqwest client 级
+            // `.timeout()` 在 `bytes_stream()` 读路径不兜底（0.12.28 实测：
+            // 上游静默停流时整个任务在 `stream.next()` 挂死，1800s 配置形同
+            // 虚设，直到 B 端 2h 兜底才解）。以「请求起点 + timeout_secs」为
+            // 绝对墙钟线，SSE 每次读都在线内——到线即 Timeout（可重试/可
+            // 故障转移），超时阶梯「provider 单请求墙钟」在流式 lane 真正
+            // 落地。timeout_secs == 0 = 不限（显式逃生口）。
+            let deadline = if stream_timeout_secs == 0 {
+                None
+            } else {
+                Some(
+                    tokio::time::Instant::now()
+                        + std::time::Duration::from_secs(stream_timeout_secs),
+                )
+            };
             let mut buffer = String::new();
             // Accumulated tool calls across chunks (index -> partial ToolCall).
             let mut pending_tool_calls: std::collections::HashMap<usize, (String, String, String)> =
@@ -471,7 +487,31 @@ impl HttpProvider {
             // 轮被判成空终答）。
             let mut finish_emitted = false;
 
-            while let Some(chunk_result) = stream.next().await {
+            loop {
+                let next = match deadline {
+                    Some(dl) => match tokio::time::timeout_at(dl, stream.next()).await {
+                        Ok(v) => v,
+                        Err(_) => {
+                            tracing::error!(
+                                provider = %provider_name,
+                                model = %model,
+                                timeout_secs = stream_timeout_secs,
+                                "[Provider] SSE stream exceeded total wall-clock deadline"
+                            );
+                            let _ = tx
+                                .send(Err(FailoverError::Timeout {
+                                    provider: provider_name.clone(),
+                                    model: model.clone(),
+                                }))
+                                .await;
+                            return;
+                        }
+                    },
+                    None => stream.next().await,
+                };
+                let Some(chunk_result) = next else {
+                    break;
+                };
                 let bytes = match chunk_result {
                     Ok(b) => b,
                     Err(e) => {

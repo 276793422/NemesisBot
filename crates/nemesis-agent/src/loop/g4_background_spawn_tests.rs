@@ -120,6 +120,7 @@ fn g4_config() -> AgentConfig {
         max_turns: 5,
         tools: vec!["spawn".to_string()],
         models: std::collections::HashMap::new(),
+        tool_fence_profession: None,
     }
 }
 

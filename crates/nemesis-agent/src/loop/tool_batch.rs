@@ -697,6 +697,10 @@ impl AgentLoop {
                     instance.detached_depth(),
                     instance.detached_no_tools(),
                     instance.detached_allowed_tools(),
+                    // B2 职能工具围栏随行（serial 路径同款裁决；空白名单 =
+                    // 未围，parallel batch 内恒放行）。
+                    instance.config().tool_fence_profession.clone(),
+                    instance.config().tools.clone(),
                 )
                 .await;
             Some(pc)
@@ -779,7 +783,14 @@ impl AgentLoop {
                 }
                 (p.result.clone(), p.duration_ms)
             } else {
-                let r = match super::tool_dispatch::detached_tool_refusal(instance, &tc.name) {
+                let r = match super::tool_dispatch::detached_tool_refusal(instance, &tc.name)
+                    .or_else(|| {
+                        // B2 职能工具围栏派发闸——任务装配白名单外的调用在
+                        // 派发现场权威拒绝（与 detached 闸同位同形：供给层
+                        // 只管 defs 可见性）。文案单一真相源
+                        // [`profession_fence_refusal_for`]。
+                        super::tool_dispatch::profession_fence_refusal(instance, &tc.name)
+                    }) {
                     // 压测①a（2026-09-30）：detached 工具闸——no_tools/白名单外
                     // 在派发现场权威拒绝（供给层只管 defs 可见性，上游端点
                     // 注入的调用不经供给层）。拒绝串回灌当工具结果，下游

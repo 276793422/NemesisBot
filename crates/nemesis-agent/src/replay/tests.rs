@@ -22,8 +22,9 @@ fn test_config() -> AgentConfig {
         model: "test-model".to_string(),
         system_prompt: Some("You are a test assistant.".to_string()),
         max_turns: 5,
-        tools: vec!["calculator".to_string()],
+        tools: vec![],
         models: std::collections::HashMap::new(),
+        tool_fence_profession: None,
     }
 }
 

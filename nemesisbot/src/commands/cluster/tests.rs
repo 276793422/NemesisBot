@@ -2272,6 +2272,7 @@ async fn test_run_init_fresh_home() {
             address: Some("127.0.0.1:21949".into()),
             professions: None,
             tier: None,
+            capabilities: None,
         },
         false,
     )
@@ -2310,6 +2311,7 @@ async fn test_run_init_defaults_and_reinit_nontty() {
             address: None,
             professions: None,
             tier: None,
+            capabilities: None,
         },
         false,
     )
@@ -2329,6 +2331,7 @@ async fn test_run_init_defaults_and_reinit_nontty() {
             address: None,
             professions: None,
             tier: None,
+            capabilities: None,
         },
         false,
     )
@@ -2943,6 +2946,7 @@ mod wave_b {
                 address: None,
                 professions: None,
                 tier: None,
+                capabilities: None,
             },
             false,
         )

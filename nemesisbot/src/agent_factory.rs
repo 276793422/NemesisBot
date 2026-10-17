@@ -586,6 +586,7 @@ pub fn build_agent_loop(
             cfg.agents.defaults.max_tool_iterations as u32
         },
         tools: Vec::new(),
+        tool_fence_profession: None,
         models: std::collections::HashMap::new(),
     };
 
@@ -1009,7 +1010,17 @@ pub fn build_agent_loop(
                 shared.board_event_hub.clone(),
             )),
         );
+        // 评审取证自取（evidence-on-demand）：档案根围栏只读。评审链的
+        // EvidenceOnly/ReadOnly 白名单按名收窄供给；注册在这里意味着主对话
+        // （big 档全量供给）也能按单号读项目档案——只读且围栏内，无害。
+        agent_loop.register_tool(
+            crate::board_evidence_tool::TOOL_NAME.to_string(),
+            Box::new(crate::board_evidence_tool::BoardEvidenceTool::new(
+                board_store.clone(),
+            )),
+        );
         info!("[AgentFactory] board_issue tool registered (master main agent)");
+        info!("[AgentFactory] board_evidence_read tool registered (master main agent)");
     }
 
     // 8c. W5-3（WASM 插件框架）：插件工具桥注册（主 agent 专属——项目 loop
@@ -2747,6 +2758,7 @@ pub fn build_agent_loop_from_spec(
             cfg.agents.defaults.max_tool_iterations as u32
         },
         tools: Vec::new(),
+        tool_fence_profession: None,
         models: std::collections::HashMap::new(),
     };
 

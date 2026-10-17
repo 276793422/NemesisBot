@@ -49,6 +49,13 @@ pub struct ChangesetManifest {
     pub upserts: Vec<ChangesetUpsert>,
     #[serde(default)]
     pub deletions: Vec<String>,
+    /// worker 侧不可读而**跳过**的文件清单（`/` 相对路径 + 失败原因注记）。
+    /// 这些文件不在 upserts 里——master 合并后档案与 worker 工作副本存在
+    /// 已知差异，如实申报让 master WARN + 交付评论留痕，绝不静默丢。
+    /// （BUG-2026-10-15 NB-120：单文件锁不再废掉整个变更集。旧清单无此键
+    /// = 空 vec，serde default 双向兼容。）
+    #[serde(default)]
+    pub skipped: Vec<String>,
 }
 
 /// 变更集单文件 upsert 声明（内容在 `files/<path>`，此处只带指纹）。

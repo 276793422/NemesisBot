@@ -399,6 +399,7 @@ async fn execute_new_task(
             &notice,
             None,
             None,
+            None,
         )
         .await;
         task_list.complete_task(&task.task_id);
@@ -484,6 +485,7 @@ async fn execute_new_task(
             "cancelled",
             None,
             None,
+            None,
         )
         .await;
         task_list.complete_task(&task.task_id);
@@ -511,6 +513,11 @@ async fn execute_new_task(
 
         // NB-CODE-008：磁盘恢复面静默失效必须可观测——内存态已就绪、任务继续
         // 异步挂起，但崩溃后该任务无法恢复。
+        // E1 二期多跳账（2026-10-17 根修）：async 挂起前已消耗的首跳用量随
+        // usage_before 局部变量一起丢失——暂存进任务记录，resume 完成时
+        // 合并上报（否则多跳任务的 A 端记账只含末跳差值）。
+        let first_leg = extract_task_usage(agent_loop, &task.source.session_key, &usage_before);
+        task_list.set_async_usage_stash(&task.task_id, first_leg);
         if let Err(e) = task_list.save_async_state(
             &task.task_id,
             child_task_id,
@@ -586,6 +593,7 @@ async fn execute_new_task(
         &status.0,
         usage,
         delivery,
+        context.tool_path_base.as_deref(),
     )
     .await;
     task_list.complete_task(&task.task_id);
@@ -654,8 +662,11 @@ async fn resume_task(
             "(resume)",
         );
     }
-    // E1 二期：续行前快照（差值 = 本续行轮消耗；原任务用量已在
-    // execute_new_task 成功回调时报过，不重复计）。
+    // E1 二期：续行前快照（差值 = 本续行轮消耗）。旧注释「原任务用量已在
+    // execute_new_task 成功回调时报过」是假的——async 挂起路径没有成功回调，
+    // 首跳用量自 2026-10-17 起由 async_usage_stash 随任务记录暂存，最终
+    // 回调时合并上报（此前多跳任务的首跳消耗从未回传 A 端）。
+    let carried_usage = task.async_usage_stash.clone();
     let usage_before = snapshot_session_usage(agent_loop, &task.source.session_key);
     // P4 交付门：续行同样先记基线（本续行轮的改动才是本轮交付）。
     let delivery_base = delivery_base_tree(agent_loop);
@@ -694,6 +705,7 @@ async fn resume_task(
             "cancelled",
             None,
             None,
+            None,
         )
         .await;
         task_list.complete_task(&task.task_id);
@@ -719,6 +731,14 @@ async fn resume_task(
             &format!("child={}", child_task_id),
         );
 
+        // 二次 async：暂存更新为 已承接首跳 + 本续行轮 的累计（逐跳累加，
+        // 最终回调一次合并上报）。本轮差值取不到（未装配 data_store）时
+        // 保留已有暂存，不吞账。
+        let merged = match extract_task_usage(agent_loop, &task.source.session_key, &usage_before) {
+            Some(leg) => Some(task_usage_merge(carried_usage.as_ref(), &leg)),
+            None => carried_usage.clone(),
+        };
+        task_list.set_async_usage_stash(&task.task_id, merged);
         if let Err(e) = task_list.save_async_state(
             &task.task_id,
             child_task_id,
@@ -744,7 +764,9 @@ async fn resume_task(
     // the resumed turn's tool result / final response are all in the instance
     // history already, so no separate content args are needed.
     persist_session_history(agent_loop, &instance, &task.source.session_key);
-    let usage = extract_task_usage(agent_loop, &task.source.session_key, &usage_before);
+    // E1 二期多跳账：本续行轮差值 + async 暂存的此前各跳累计 = 全程用量。
+    let usage = extract_task_usage(agent_loop, &task.source.session_key, &usage_before)
+        .map(|leg| task_usage_merge(carried_usage.as_ref(), &leg));
     // P1：续行轮同样按终态判定（与 execute_new_task 同一映射，见其注释）。
     // P2A：升级硬停（Done 终止 + 稳定前缀交付文本）同样改判 error——
     // 停止告知不是工作交付（详见 execute_new_task 同段注释）。
@@ -787,6 +809,7 @@ async fn resume_task(
         &status.0,
         usage,
         delivery,
+        context.tool_path_base.as_deref(),
     )
     .await;
     task_list.complete_task(&task.task_id);
@@ -813,57 +836,114 @@ fn self_declared_professions(agent_loop: &AgentLoop) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// B2（profession-capability-evolution 2026-10-14）：讨论唤醒轮的工具围栏
+/// 收窄。DiscussionEvent 无职能字段——讨论轮不是单一职能任务，按**本节点
+/// 宣告职能的契约围栏交集**收窄（D 裁决）：讨论是节点以自己的专业身份参
+/// 与，能力面 = 宣告职能围栏的公共部分。
+///
+/// - 无宣告职能 / 宣告职能契约都无围栏块 = 幺元跳过（None，不围）；
+/// - 交集为空 = **不围**（fail-open，D 裁决——空交集是宣告组合的偶然形
+///   态，不是契约作者的显式全禁意志，与任务装配的 Some(空) 语义刻意分
+///   流）；讨论轮没有单一职能来源，也没有 Some(空) 哨兵形态；
+/// - 总开关 `agents.profession_tool_fence` fresh-read 关 = 不围。
+///
+/// 返回 `Some(list)` 非空 = 讨论轮可用工具白名单（写 [`AgentConfig::tools`]，
+/// `tool_fence_profession` 留 None——派发拒绝文案走无职能的通用措辞）。
+fn discussion_tool_fence(agent_loop: &AgentLoop) -> Option<Vec<String>> {
+    if !agent_loop.current_profession_tool_fence() {
+        return None;
+    }
+    let declared = self_declared_professions(agent_loop);
+    if declared.is_empty() {
+        return None;
+    }
+    let ws = agent_loop.workspace_root();
+    let mut acc: Option<Vec<String>> = None;
+    for p in &declared {
+        let slug = nemesis_prompts::professions::meta::normalize_slug(p);
+        let (contract, _) = load_profession_assets(ws.as_deref(), &slug);
+        let Some(fence) = contract
+            .as_deref()
+            .and_then(nemesis_prompts::professions::fence::parse_tool_fence)
+        else {
+            continue; // 幺元：该宣告职能无围栏块，不参与收窄
+        };
+        acc = Some(match acc {
+            None => fence,
+            Some(prev) => prev.into_iter().filter(|t| fence.contains(t)).collect(),
+        });
+    }
+    let fence = acc.filter(|f| !f.is_empty())?;
+    Some(fence)
+}
+
 /// 职能资产解析：内置目录优先（契约+专业方法论编译期内嵌），用户工作区
 /// 扩展兜底（`<workspace>/cluster/professions/<family>/<spec>.md` 单文件，
 /// 正文即契约+方法论）。内置命中时用户同名档案 WARN 忽略（内置赢）。
 ///
 /// 安全闸：slug 先过 `validate_slug`（`^[a-z0-9_-]+(:[a-z0-9_-]+)?$`），
-/// 非法（含 `..`/路径分隔符）一律落未知臂——绝不拼路径。裸 family 用户
-/// 扩展不存在（只能来自内置目录）→ 无 spec = 未知臂。
+/// 非法（含 `..`/路径分隔符）一律落未知臂——绝不拼路径。
+///
+/// 优先级（A1 翻转，2026-10-14 D5）：**用户同名档案赢过内置**——提示词
+/// 可编辑、部署后可热改（改完下个任务生效，与用户自定义职能同链路）。
+/// 路径约定：`cluster/professions/<family>/<spec>.md`；裸 family（无
+/// spec 段）用 family 名作文件名（如 `product` → `product/product.md`）。
+/// 遮蔽 WARN：提示遮蔽事实 + 基线注记对照（档案首部 `<!-- base: … -->`
+/// vs 内置当前基线），删除用户文件即回内置；不做自动合并（诚实边界：
+/// 版本漂移靠人）。
+///
 /// 返回 (契约, 方法论)；契约 None = 未知 slug（渲染端诚实注记）。
+/// 用户档案遮蔽内置 slug 时方法论仍取内置（专业知识与角色契约正交，
+/// 用户要换方法论直接写进档案正文）。
 fn load_profession_assets(
     workspace: Option<&std::path::Path>,
     slug: &str,
 ) -> (Option<String>, Option<String>) {
+    use nemesis_prompts::professions::meta::find_builtin;
     use nemesis_prompts::professions::meta::split_slug;
     use nemesis_prompts::professions::meta::validate_slug;
     if validate_slug(slug).is_err() {
         return (None, None);
     }
-    if let Some(meta) = nemesis_prompts::professions::meta::find_builtin(slug) {
-        if let (Some(ws), Some(spec)) = (workspace, meta.spec) {
-            let user_file = ws
-                .join("cluster")
-                .join("professions")
-                .join(meta.family)
-                .join(format!("{spec}.md"));
-            if user_file.exists() {
+    // 统一的用户档案查找：内置 slug（遮蔽臂）与非内置 slug（自定义臂）
+    // 走同一条读盘路径，一次读盘定优先级。
+    if let Some(ws) = workspace
+        && let Some((family, spec)) = split_slug(slug)
+    {
+        let file_name = format!("{}.md", spec.unwrap_or(family));
+        let user_file = ws
+            .join("cluster")
+            .join("professions")
+            .join(family)
+            .join(file_name);
+        let content = std::fs::read_to_string(&user_file).ok();
+        if let Some(content) = content
+            && !content.trim().is_empty()
+        {
+            if find_builtin(slug).is_some() {
+                let user_base =
+                    nemesis_prompts::professions::render::extract_base_annotation(&content)
+                        .unwrap_or("未注记");
                 tracing::warn!(
                     slug,
                     file = %user_file.display(),
-                    "[ClusterAgent] 用户职能档案与内置职能同名，内置赢（用户档案忽略）"
+                    user_base,
+                    builtin_base = nemesis_prompts::professions::render::BUILTIN_BASE_ANNOTATION,
+                    "[ClusterAgent] 用户职能档案遮蔽内置（删除该文件即回内置）；若基于旧内置副本定制，请对照内置最新版核对差异"
                 );
             }
+            return (
+                Some(content),
+                nemesis_prompts::professions::render::builtin_method(slug).map(str::to_string),
+            );
         }
-        return (
+    }
+    match find_builtin(slug) {
+        Some(meta) => (
             Some(meta.contract.to_string()),
             nemesis_prompts::professions::render::builtin_method(slug).map(str::to_string),
-        );
-    }
-    let Some(ws) = workspace else {
-        return (None, None);
-    };
-    let Some((family, Some(spec))) = split_slug(slug) else {
-        return (None, None);
-    };
-    let user_file = ws
-        .join("cluster")
-        .join("professions")
-        .join(family)
-        .join(format!("{spec}.md"));
-    match std::fs::read_to_string(&user_file) {
-        Ok(content) if !content.trim().is_empty() => (Some(content), None),
-        _ => (None, None),
+        ),
+        None => (None, None),
     }
 }
 
@@ -874,6 +954,17 @@ fn load_profession_assets(
 /// 渲染臂（诚实注记三臂，见 professions::render）：内置/用户契约 → 契约
 /// 正文（未宣告节点加 fallback 注记）；未知 slug → 契约缺席 + 通用纪律，
 /// 绝不空串。
+///
+/// B2（profession-capability-evolution 2026-10-14）：职能工具围栏装配——
+/// 契约文本内的 ` ```nemesis-tool-fence ` 块（D3：能力边界跟职能文本放一
+/// 处，用户自定义档案天然同款）解析为该任务的实例级工具白名单，写进
+/// [`AgentConfig::tools`]（非空 = 供给/派发双闸的权威判据）。纪律：
+/// **先 parse（原文）后 strip（渲染用）**——围栏块是装配元数据不是提示词，
+/// yaml 永不进 LLM 上下文（开关关也剥）。开关 `agents.profession_tool_fence`
+/// fresh-read（缺省 true）；`Some(空)` = 显式全禁，落成 `tools=["question"]`
+/// 哨兵形态（豁免通道之外全禁的最小可表示集——AgentConfig 以「非空白名单」
+/// 表达「围了」，空表是「没围」，两者不可混同）。无围栏块的职能（dev:*/
+/// test-* fail-open）不写 tools = 不围，零行为变化。
 fn task_system_prompt(
     config: &AgentConfig,
     agent_loop: &AgentLoop,
@@ -899,10 +990,17 @@ fn task_system_prompt(
         declared,
         "[ClusterAgent] Rendering profession suffix"
     );
+    // B2：围栏先解析（原文），渲染用剥除后的正文（yaml 永不进 prompt）。
+    let fence_tools = contract
+        .as_deref()
+        .and_then(nemesis_prompts::professions::fence::parse_tool_fence);
+    let contract_rendered = contract
+        .as_deref()
+        .map(nemesis_prompts::professions::fence::strip_tool_fence);
     let suffix = nemesis_prompts::professions::render::render_profession_suffix(
         nemesis_prompts::professions::render::SuffixRender {
             slug: &slug,
-            contract: contract.as_deref(),
+            contract: contract_rendered.as_deref(),
             method: method.as_deref(),
             declared,
         },
@@ -912,6 +1010,18 @@ fn task_system_prompt(
         Some(prefix) if !prefix.trim().is_empty() => format!("{prefix}\n\n---\n\n{suffix}"),
         _ => suffix,
     });
+    // B2：围栏写入（fresh-read 开关；白名单是闸的权威判据，职能标注只管
+    // 拒绝文案）。显式全禁（Some(空)）→ question 哨兵形态，见 fn 纪律注。
+    if let Some(allowed) = fence_tools
+        && agent_loop.current_profession_tool_fence()
+    {
+        cfg.tools = if allowed.is_empty() {
+            vec![nemesis_agent::r#loop::FENCE_EXEMPT_TOOLS[0].to_string()]
+        } else {
+            allowed
+        };
+        cfg.tool_fence_profession = Some(slug);
+    }
     cfg
 }
 
@@ -934,6 +1044,24 @@ fn truncate_str(s: &str, max_len: usize) -> String {
     }
 }
 
+/// F-U3-2（U3 实证）路径基准判定：档案管线任务（工作副本有基线 sidecar）
+/// → Some(exec_dir)，否则 None。`build_context`（dispatch 层文件工具/执行
+/// cwd 的相对路径基准）与 `deliver_files_back`（交付回传相对路径解析）
+/// 共用——两处口径必须一致，否则 worker 按 tool_path_base 写对的相对
+/// 路径，回传时却按进程 cwd 读不到（2026-10-17 根修：交付回传面此前
+/// 对相对路径形同虚设）。
+fn cluster_task_path_base(
+    agent_loop: &AgentLoop,
+    task: &nemesis_cluster::cluster_task::ClusterTask,
+) -> Option<std::path::PathBuf> {
+    let ws = agent_loop.workspace_root()?;
+    let exec_dir = nemesis_cluster::exec_workspace::exec_dir_for(&ws, &task.task_id);
+    (exec_dir
+        .join(nemesis_cluster::exec_workspace::BASELINE_SIDECAR_NAME)
+        .exists())
+    .then_some(exec_dir)
+}
+
 /// Build a RequestContext for a cluster task.
 ///
 /// `chat_id` 用稳定的 `session_key`（而不是 `node_id:task_id`），让同一对端节点的多次
@@ -953,15 +1081,7 @@ fn build_context(
     // 层文件工具/执行 cwd 的相对路径基准 = 工作副本目录。worker 误用相对路径
     // 不再静默落到工作副本之外（变更集只扫 exec 目录——落外面=成果丢失）。
     // 非档案任务（无 sidecar）与普通会话一样 base 为空，零行为变化。
-    if let Some(ws) = agent_loop.workspace_root() {
-        let exec_dir = nemesis_cluster::exec_workspace::exec_dir_for(&ws, &task.task_id);
-        if exec_dir
-            .join(nemesis_cluster::exec_workspace::BASELINE_SIDECAR_NAME)
-            .exists()
-        {
-            ctx.tool_path_base = Some(exec_dir);
-        }
-    }
+    ctx.tool_path_base = cluster_task_path_base(agent_loop, task);
     ctx
 }
 
@@ -1183,6 +1303,7 @@ async fn send_task_callback(
     error: &str,
     usage: Option<serde_json::Value>,
     delivery: Option<serde_json::Value>,
+    path_base: Option<&std::path::Path>,
 ) {
     // P2A（2026-09-12 NB-15）：终结失败分类随 error 回调上行（success =
     // None，字段不落），A 端验收重派决策据此避免同 worker 同模型盲重派。
@@ -1214,8 +1335,10 @@ async fn send_task_callback(
 
     // G（goal P3）：成功交付 → 解析交付文本中的文件路径回传 master
     // （失败/取消不回传；解析/读取失败诚实降级——交付评论内联源码兜底）。
+    // 相对路径按 path_base（= dispatch 层 tool_path_base 同源）解析，
+    // 绝对路径原样。
     if status == "success" {
-        deliver_files_back(rpc_client, task, self_node_id, response).await;
+        deliver_files_back(rpc_client, task, self_node_id, response, path_base).await;
     }
 }
 
@@ -1223,11 +1346,15 @@ async fn send_task_callback(
 /// 文件路径」清单），逐个（≤20 个、单文件 ≤8MB、需存在）base64 后经
 /// nb_bus ns="task" op="delivery.files" 推给 master 落资产。fire-and-forget：
 /// 失败只 debug（master 侧溯源线索=交付评论里的内联源码与路径）。
+/// 相对路径按 path_base 解析（与 dispatch 层 tool_path_base 同源——
+/// [`cluster_task_path_base`]；绝对路径原样），否则档案管线里 worker 按
+/// 工作副本根写的相对路径全部落空（metadata 失败被静默 continue）。
 async fn deliver_files_back(
     rpc_client: Option<&RpcClient>,
     task: &nemesis_cluster::cluster_task::ClusterTask,
     self_node_id: &str,
     delivery_text: &str,
+    path_base: Option<&std::path::Path>,
 ) {
     use base64::Engine as _;
     const MAX_FILES: usize = 20;
@@ -1257,13 +1384,18 @@ async fn deliver_files_back(
 
     let mut files = Vec::new();
     for p in &paths {
-        let Ok(meta) = std::fs::metadata(p) else {
+        // 相对路径 → path_base 拼接（与 dispatch 层工具同一基准）；绝对路径原样。
+        let resolved = match path_base {
+            Some(base) if !std::path::Path::new(p).is_absolute() => base.join(p),
+            _ => std::path::PathBuf::from(p),
+        };
+        let Ok(meta) = std::fs::metadata(&resolved) else {
             continue;
         };
         if !meta.is_file() || meta.len() as usize > MAX_FILE_BYTES {
             continue;
         }
-        let Ok(bytes) = std::fs::read(p) else {
+        let Ok(bytes) = std::fs::read(&resolved) else {
             continue;
         };
         let name = p.rsplit(['/', '\\']).next().unwrap_or("file").to_string();
@@ -1376,6 +1508,26 @@ fn task_usage_delta(
     })
 }
 
+/// 多跳用量合并（2026-10-17 异步多跳根修）：async 暂存的此前各跳累计 +
+/// 本轮差值，逐字段饱和加法。`carried` 缺失/字段缺失按 0 处理（旧任务
+/// 记录无 stash、旧 delta 形态缺字段都兼容）。
+fn task_usage_merge(
+    carried: Option<&serde_json::Value>,
+    leg: &serde_json::Value,
+) -> serde_json::Value {
+    let num = |v: &serde_json::Value, k: &str| v.get(k).and_then(|x| x.as_i64()).unwrap_or(0);
+    let fnum = |v: &serde_json::Value, k: &str| v.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
+    let empty = serde_json::Value::Null;
+    let c = carried.unwrap_or(&empty);
+    let sat_add = |a: i64, b: i64| a.saturating_add(b);
+    serde_json::json!({
+        "input_tokens": sat_add(num(c, "input_tokens"), num(leg, "input_tokens")),
+        "output_tokens": sat_add(num(c, "output_tokens"), num(leg, "output_tokens")),
+        "requests": sat_add(num(c, "requests"), num(leg, "requests")),
+        "cost_usd": fnum(c, "cost_usd") + fnum(leg, "cost_usd"),
+    })
+}
+
 /// 执行前快照 session 用量（[`extract_task_usage`] 的前半；未装配 = 全零）。
 fn snapshot_session_usage(
     agent_loop: &AgentLoop,
@@ -1407,6 +1559,7 @@ async fn handle_task_error(
         "error",
         "",
         error_msg,
+        None,
         None,
         None,
     )
@@ -1444,7 +1597,15 @@ async fn handle_discussion(
     // Per-round AgentInstance：与 work queue 任务同款（吃集群身份 system
     // prompt）。会话不落 SessionStore——讨论状态真相源在 master 台账，每轮
     // 上下文由 wake 包随带（幂等重放安全：同 seq 不重复入队）。
-    let instance = AgentInstance::new(config.clone());
+    // B2 工具围栏（profession-capability-evolution 2026-10-14）：讨论轮按
+    // 本节点宣告职能的契约围栏交集收窄工具面（D 裁决）。tool_fence_
+    // profession 留 None——派发拒绝文案走无职能的通用措辞（讨论无单一职
+    // 能来源）。
+    let mut cfg = config.clone();
+    if let Some(allowed) = discussion_tool_fence(agent_loop) {
+        cfg.tools = allowed;
+    }
+    let instance = AgentInstance::new(cfg);
     let prompt = build_discussion_prompt(self_node_id, event);
     let session_key = format!("board:discussion:{thread_key}");
     let trace_id = format!("board-disc-{}-{}", event.thread_id, event.seq);
@@ -1574,6 +1735,28 @@ pub(crate) fn build_comment_post_envelope(
             "content": content,
             "reply_to": event.reply_to,
             "kind_tag": kind_tag,
+        }),
+    )
+    .to_json()
+}
+
+/// D2 读取臂：`board.comment.list` 上行信封（线程纯读——无幂等键、无
+/// 额度记账；limit 缺省由 master 侧收敛）。
+pub(crate) fn build_comment_list_envelope(
+    thread_kind: &str,
+    thread_id: i64,
+    limit: i64,
+) -> serde_json::Value {
+    EnvelopeResponse::success(
+        &Envelope {
+            ns: "board".to_string(),
+            op: "comment.list".to_string(),
+            corr_id: uuid::Uuid::new_v4().to_string(),
+            ..Envelope::default()
+        },
+        serde_json::json!({
+            "thread": {"kind": thread_kind, "id": thread_id},
+            "limit": limit,
         }),
     )
     .to_json()

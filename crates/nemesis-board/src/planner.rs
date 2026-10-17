@@ -25,7 +25,21 @@ pub use nemesis_prompts::board::PLANNER_SYSTEM_PROMPT;
 /// planner 系统提示词完整形态（基础契约 + 职能化拆解方法论；`&'static str`
 /// 驻留缓存）。派发消费方（nemesis-web issue.plan）用本函数——直接用
 /// [`PLANNER_SYSTEM_PROMPT`] 常量会缺职能方法论段。
-pub use nemesis_prompts::board::planner_system_prompt;
+///
+/// 首调拼装结果恒定，软预算告警挂在包装层：超 [`PLANNER_SOFT_BUDGET_BYTES`]
+/// 时 WARN 不截断（提示词资产失控的治理信号，对齐主 prompt `check_budget`
+/// 先例；资产 crate 零运行时依赖，tracing 消费点住本 crate）。
+pub fn planner_system_prompt() -> &'static str {
+    let p = nemesis_prompts::board::planner_system_prompt();
+    if p.len() > nemesis_prompts::board::PLANNER_SOFT_BUDGET_BYTES {
+        tracing::warn!(
+            "[prompt] planner 系统提示词共 {} 字节，超过软预算 {} 字节（检查 PLANNER_SYSTEM_PROMPT 或 PLANNER_METHOD 是否失控）",
+            p.len(),
+            nemesis_prompts::board::PLANNER_SOFT_BUDGET_BYTES
+        );
+    }
+    p
+}
 
 /// planner 输出的单个子单（§3.1 schema；serde 宽容：缺字段用默认值）。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -41,6 +55,13 @@ pub struct PlannedSubIssue {
     /// 空串 = 无职能需求。格式校验见 [`parse_plan`]（D9 三臂）。
     #[serde(default)]
     pub required_profession: String,
+    /// 环境能力硬条件（NB-122 批 2026-10-16）：执行所需节点能力词（小写
+    /// 短词，与节点宣告的 capabilities 同词表）。匹配是**全量硬闸**——每项
+    /// 都必须命中，且不参与松弛（环境缺口松弛不出来）；空 = 无能力需求。
+    /// 词表纪律（只能写集群画像 caps 里出现过的词）在提示词侧约束；本侧只
+    /// 校验形态（非空单段短词，见 [`capabilities_format_error`]）。
+    #[serde(default)]
+    pub required_capabilities: Vec<String>,
     #[serde(default)]
     pub acceptance_criteria: String,
     #[serde(default)]
@@ -97,6 +118,9 @@ pub fn parse_plan(raw: &str) -> Result<Vec<PlannedSubIssue>, PlanParseError> {
         if let Some(err) = profession_format_error(i, &sub.required_profession) {
             return Err(err);
         }
+        if let Some(err) = capabilities_format_error(i, &sub.required_capabilities) {
+            return Err(err);
+        }
         for &dep in &sub.depends_on {
             if dep >= plan.len() {
                 return Err(PlanParseError {
@@ -136,6 +160,26 @@ fn profession_format_error(index: usize, raw: &str) -> Option<PlanParseError> {
             "第 {index} 个子任务的 required_profession=\"{trimmed}\" 格式非法：{e}。职能 slug 形如 dev、dev:cpp（小写字母/数字/连字符/下划线，至多一个冒号分段）；无职能需求填空串。"
         ),
     })
+}
+
+/// 能力词校验臂（NB-122 批）：每项必须是非空单段短词（不含空白；节点
+/// 宣告的 capabilities 都是单段词，含空格的项永远无法命中=变相停车）。
+/// 返回 `Some(PlanParseError)` = 任一项非法（挂进回灌重试）。
+fn capabilities_format_error(index: usize, caps: &[String]) -> Option<PlanParseError> {
+    for cap in caps {
+        let trimmed = cap.trim();
+        if trimmed.is_empty()
+            || trimmed.chars().any(char::is_whitespace)
+            || trimmed.chars().count() > 64
+        {
+            return Some(PlanParseError {
+                message: format!(
+                    "第 {index} 个子任务的 required_capabilities 含非法项 \"{cap}\"。能力词必须是非空单段短词（如 chrome、docker，不含空格）；无能力需求用空数组。"
+                ),
+            });
+        }
+    }
+    None
 }
 
 /// 宽和解析结果（[`parse_plan_lenient`] 专用）：计划 + 降级清单。
@@ -188,6 +232,14 @@ pub fn parse_plan_lenient(raw: &str) -> Result<LenientPlan, PlanParseError> {
         if profession_format_error(i, &sub.required_profession).is_some() {
             downgraded.push((i, std::mem::take(&mut sub.required_profession)));
         }
+        // 宽和臂能力词处理（NB-122 批）：非法项（空/trim 后含空白/超长）直接
+        // 剔除、合法项保留——非法能力词在匹配端永远无法命中，剔除比整字段
+        // 降级更贴近意图；不记 downgrades（该台账语义是 required_profession
+        // 专属，confirm_plan 按它写职能降级评论）。
+        sub.required_capabilities.retain(|cap| {
+            let t = cap.trim();
+            !t.is_empty() && !t.chars().any(char::is_whitespace) && t.chars().count() <= 64
+        });
         for &dep in &sub.depends_on {
             if dep >= sub_count {
                 return Err(PlanParseError {
@@ -348,7 +400,9 @@ pub fn build_planner_user_prompt(
     {
         prompt.push_str(&format!(
             "\n# 可用执行节点（集群画像——拆解必须与此对齐）\n{profile}\n\
-             约束：required_tags 只能从上述节点的 tags/category 中选；技术选型\
+             约束：required_tags 只能从上述节点的 tags/category 中选；\
+             required_capabilities 只能从上述节点 caps= 里出现过的词选（硬条件：\
+             无节点具备=该子单无法派发）；技术选型\
              （语言/运行时/工具）必须落在节点具备的能力内；每个子单的描述里\
              写明运行环境假设。\n"
         ));

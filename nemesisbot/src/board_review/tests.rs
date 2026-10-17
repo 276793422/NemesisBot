@@ -599,10 +599,11 @@ async fn parent_anchor_fail_blocks_auto_close_without_llm() {
 
     let (deps, _ws) = review_deps("parent-anchor-fail");
     // 父单收口臂要求 auto_close_parent=true（BoardFlagConfig 全字段
-    // serde(default)，最小配置即可）。
+    // serde(default)，最小配置即可）。parent_remediation_max=0：本测钉
+    // 「锚点 FAIL → 转人工」语义（默认开时带差距 FAIL 先走自动返工承接）。
     std::fs::write(
         deps.home.join("config.json"),
-        r#"{"board":{"auto_close_parent":true}}"#,
+        r#"{"board":{"auto_close_parent":true,"review":{"parent_remediation_max":0}}}"#,
     )
     .unwrap();
     let parent = issue_in_review(
@@ -765,24 +766,32 @@ async fn parent_anchor_pass_falls_through_to_semantic_gate() {
 
 #[test]
 fn b2a_tool_mode_only_for_local_worker_with_multi_turns() {
-    // 本机 worker + 轮数 >1 → 只读取证。
+    // 本机 worker + 轮数 >1 → 只读取证（全只读白名单）。
     assert_eq!(
         pick_review_tool_mode(Some("node-a"), "node-a", 3),
         ReviewToolMode::ReadOnly { max_turns: 3 }
     );
-    // 远端 worker：工件不在本机，一律纯文本（防张冠李戴读错工作区）。
+    // 远端 worker → EvidenceOnly（evidence-on-demand，2026-10-15）：交付
+    // 档案已由系统合并到本机（board-projects/<项目>/），档案围栏工具按
+    // 单号解析档案根读到的就是本次交付——旧「工件不在本机一律纯文本」
+    // 的张冠李戴顾虑对档案根工具不成立。
     assert_eq!(
         pick_review_tool_mode(Some("node-b"), "node-a", 3),
-        ReviewToolMode::NoTools
+        ReviewToolMode::EvidenceOnly { max_turns: 3 }
     );
-    // 无派发历史（如人工转入 in_review）→ 纯文本。
+    // 无派发历史（如人工转入 in_review）→ 纯文本（零派发=零档案合并
+    // 记录，档案工具无输入，保持历史形态）。
     assert_eq!(
         pick_review_tool_mode(None, "node-a", 3),
         ReviewToolMode::NoTools
     );
-    // max_turns=1：与历史行为字节等价（即便 worker 是本机也不开工具）。
+    // max_turns=1：与历史行为字节等价（预算不达标恒 NoTools）。
     assert_eq!(
         pick_review_tool_mode(Some("node-a"), "node-a", 1),
+        ReviewToolMode::NoTools
+    );
+    assert_eq!(
+        pick_review_tool_mode(Some("node-b"), "node-a", 1),
         ReviewToolMode::NoTools
     );
     // max_turns=0 = 不限取证轮数（2026-10-09 C1 预算耗尽根修②）：本机
@@ -794,10 +803,13 @@ fn b2a_tool_mode_only_for_local_worker_with_multi_turns() {
             max_turns: u32::MAX
         }
     );
-    // 不限档不改拓扑闸：远端 worker / 无派发历史仍纯文本（工件不在本机）。
+    // 不限档不改拓扑分流：远端 worker → EvidenceOnly 不限；无派发历史
+    // 仍纯文本。
     assert_eq!(
         pick_review_tool_mode(Some("node-b"), "node-a", 0),
-        ReviewToolMode::NoTools
+        ReviewToolMode::EvidenceOnly {
+            max_turns: u32::MAX
+        }
     );
     assert_eq!(
         pick_review_tool_mode(None, "node-a", 0),
@@ -829,17 +841,50 @@ fn review_budget_block_matches_tool_mode() {
     assert!(unlimited.contains("UNSURE"), "{unlimited}");
     assert!(!unlimited.contains("轮**"), "{unlimited}");
 
-    // 三臂都不泄漏「猜测 PASS」的口子（纪律底线恒在场）。
+    // EvidenceOnly（evidence-on-demand）：档案取证工具名在场（远端评审员
+    // 的取证通路就是它）+ 有限/不限两形态预算纪律。
+    let evidence = render_review_budget_block(ReviewToolMode::EvidenceOnly { max_turns: 4 });
+    assert!(evidence.contains("board_evidence_read"), "{evidence}");
+    assert!(evidence.contains("4 轮"), "{evidence}");
+    assert!(evidence.contains("UNSURE"), "{evidence}");
+    let evidence_unlimited = render_review_budget_block(ReviewToolMode::EvidenceOnly {
+        max_turns: u32::MAX,
+    });
+    assert!(
+        evidence_unlimited.contains("board_evidence_read")
+            && evidence_unlimited.contains("轮数不限"),
+        "{evidence_unlimited}"
+    );
+
+    // 四臂都不泄漏「猜测 PASS」的口子（纪律底线恒在场）。
     for (name, block) in [
         ("no_tools", &no_tools),
         ("limited", &limited),
         ("unlimited", &unlimited),
+        ("evidence", &evidence),
+        ("evidence_unlimited", &evidence_unlimited),
     ] {
         assert!(
             block.contains("UNSURE") && block.contains("严禁"),
             "{name} 臂必须有 UNSURE + 严禁纪律: {block}"
         );
     }
+}
+
+// ---------- evidence-on-demand：未附内容注记两臂 ----------
+
+#[test]
+fn unattached_note_gives_tool_pointer_only_when_available() {
+    // 有工具（ReadOnly/EvidenceOnly）：指路 board_evidence_read + 参数形态。
+    let with_tool = render_unattached_note(3, true);
+    assert!(with_tool.contains("3 个文件未附内容"), "{with_tool}");
+    assert!(with_tool.contains("board_evidence_read"), "{with_tool}");
+    assert!(with_tool.contains("offset/limit"), "{with_tool}");
+    // NoTools：保持历史形态（「未附内容」子串是注入块测试的钉子），
+    // 不许提工具（没工具还指路=误导）。
+    let no_tool = render_unattached_note(2, false);
+    assert!(no_tool.contains("未附内容"), "{no_tool}");
+    assert!(!no_tool.contains("board_evidence_read"), "{no_tool}");
 }
 
 // ---------- D3：pick_redispatch_target 决策表 ----------
@@ -1316,7 +1361,8 @@ fn selfcheck_prompt_carries_marker_request_and_ac() {
         prompt.contains("不要下验收结论"),
         "执行 worker 不得越权下结论"
     );
-    // AC 缺失 → 诚实占位，不出现空段。
+    // 2026-10-17 契约更新（NB-125 根修）：store 创建时自动生成 AC——
+    // 「无 AC」单如今带推导判据，取证 prompt 直接拿它当对照。
     let bare = store
         .create_issue(NewIssue {
             title: "无 AC".to_string(),
@@ -1325,7 +1371,18 @@ fn selfcheck_prompt_carries_marker_request_and_ac() {
         })
         .unwrap();
     let prompt = build_selfcheck_prompt(&bare, "贴日志");
-    assert!(prompt.contains("（未提供）"), "无 AC 必须占位: {prompt}");
+    assert!(
+        prompt.contains("（系统自动生成）") && prompt.contains("目标已达成并验证"),
+        "创建时生成的 AC 必须随取证 prompt 下发: {prompt}"
+    );
+    // 真·AC 缺失（存量单形态）仍诚实占位。
+    let mut legacy = bare.clone();
+    legacy.acceptance_criteria = None;
+    let prompt = build_selfcheck_prompt(&legacy, "贴日志");
+    assert!(
+        prompt.contains("（未提供）"),
+        "存量缺 AC 必须占位: {prompt}"
+    );
     let _ = std::fs::remove_dir_all(
         std::env::temp_dir().join(format!("nb-selfcheck-prompt-{}", std::process::id())),
     );
@@ -1867,9 +1924,13 @@ fn parent_with_ac(number: &str, ac: Option<&str>) -> nemesis_board::Issue {
 
 #[test]
 fn join_project_ac_project_first_then_parents() {
+    // 2026-10-17 契约更新：store 建单自动生成 AC——要测聚合函数的 None 臂
+    // （空 AC 父单不产生空段）必须显式抹掉生成值，模拟存量缺 AC 单。
+    let mut nb2 = parent_with_ac("NB-2", None);
+    nb2.acceptance_criteria = None;
     let parents = vec![
         parent_with_ac("NB-1", Some("标准一")),
-        parent_with_ac("NB-2", None),
+        nb2,
         parent_with_ac("NB-3", Some("  标准三  ")),
     ];
     let joined = join_project_review_ac(Some("项目级标准"), &parents);
@@ -2705,7 +2766,7 @@ fn worker_loop_marker_detection_semantics() {
 
     // 无评论 → None。
     assert_eq!(
-        super::detect_worker_loop_marker(&store, issue.id, "node-a").unwrap(),
+        super::detect_worker_loop_marker(&store, issue.id, "node-a", None).unwrap(),
         None
     );
 
@@ -2730,7 +2791,7 @@ fn worker_loop_marker_detection_semantics() {
         })
         .unwrap();
     assert_eq!(
-        super::detect_worker_loop_marker(&store, issue.id, "node-a").unwrap(),
+        super::detect_worker_loop_marker(&store, issue.id, "node-a", None).unwrap(),
         None,
         "评审员/系统评论不得触发"
     );
@@ -2746,7 +2807,7 @@ fn worker_loop_marker_detection_semantics() {
         })
         .unwrap();
     assert_eq!(
-        super::detect_worker_loop_marker(&store, issue.id, "node-a").unwrap(),
+        super::detect_worker_loop_marker(&store, issue.id, "node-a", None).unwrap(),
         None,
         "行中提及不算"
     );
@@ -2764,7 +2825,7 @@ fn worker_loop_marker_detection_semantics() {
         })
         .unwrap();
     assert_eq!(
-        super::detect_worker_loop_marker(&store, issue.id, "node-a").unwrap(),
+        super::detect_worker_loop_marker(&store, issue.id, "node-a", None).unwrap(),
         Some("并发窗口无法收敛".to_string()),
         "行首/缩进算，取最后一条说明"
     );
@@ -2787,9 +2848,56 @@ fn worker_loop_marker_detection_semantics() {
         })
         .unwrap();
     assert_eq!(
-        super::detect_worker_loop_marker(&store, issue2.id, "node-a").unwrap(),
+        super::detect_worker_loop_marker(&store, issue2.id, "node-a", None).unwrap(),
         Some("（无说明）".to_string())
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 轮次绑定语义（2026-10-16 NB-121 死循环根修）：`dispatched_before` 之后
+/// 写入的 worker 标记才生效；最新派发之前的旧轮标记已由重派动作答复，
+/// 不得阻塞换条件后的新轮（cutoff 用哨兵值验证，不依赖真实时钟）。
+#[test]
+fn worker_loop_marker_stale_after_redispatch() {
+    let dir = std::env::temp_dir().join(format!("nb-pr5-marker-stale-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = nemesis_board::BoardStore::open(&dir.join("board.db"), "NB").unwrap();
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "旧标记轮次绑定单".into(),
+            creator: nemesis_board::Actor::agent("node-a"),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .add_comment(nemesis_board::NewComment {
+            issue_id: issue.id,
+            author: nemesis_board::Actor::agent("node-b"),
+            content: "REDISPATCH_LOOP: 旧轮喊停".into(),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::Delivery,
+        })
+        .unwrap();
+    // 无派发史（cutoff=None）→ 旧行为：标记生效。
+    assert_eq!(
+        super::detect_worker_loop_marker(&store, issue.id, "node-a", None).unwrap(),
+        Some("旧轮喊停".to_string())
+    );
+    // cutoff=极早（0）→ 全部评论都比派发新 → 生效。
+    assert_eq!(
+        super::detect_worker_loop_marker(&store, issue.id, "node-a", Some(0)).unwrap(),
+        Some("旧轮喊停".to_string())
+    );
+    // cutoff=极晚（i64::MAX）→ 最新派发之后无新评论 → 旧轮标记不再生效。
+    assert_eq!(
+        super::detect_worker_loop_marker(&store, issue.id, "node-a", Some(i64::MAX)).unwrap(),
+        None,
+        "最新派发之前的旧轮标记已由重派答复，不得阻塞新轮"
+    );
+    // 新轮内 worker 再喊停（时间在 cutoff 之后）→ 新标记生效。
+    // 注：store 层 created_at 取真实时钟，必然 > 0；用 cutoff=0 代表
+    // 「派发发生在任意评论之前」的极端形态已覆盖过滤分支本身。
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3358,6 +3466,16 @@ fn replay_guard_project_conclusion_probe() {
     let store =
         Arc::new(nemesis_board::BoardStore::open(&dir.join("board.db"), "NB").expect("open store"));
     let actor = Actor::agent("node-a");
+    // 引用完整性闸（2026-10-17 系统性检查）后 create_issue 校验 project 存在——
+    // fixture 必须先建真实项目再用其 id。
+    let proj7 = store
+        .create_project("重放项目7", "", None, "📌", "", None)
+        .unwrap()
+        .id;
+    let proj9 = store
+        .create_project("重放项目9", "", None, "📌", "", None)
+        .unwrap()
+        .id;
     let mk = |title: &str, pid: i64| -> i64 {
         store
             .create_issue(NewIssue {
@@ -3371,13 +3489,13 @@ fn replay_guard_project_conclusion_probe() {
             .unwrap()
             .id
     };
-    let p1 = mk("父单1", 7);
-    let p2 = mk("父单2", 7);
+    let p1 = mk("父单1", proj7);
+    let p2 = mk("父单2", proj7);
     // 无项目级结论 → 重放。
     assert!(!super::project_review_already_concluded(
         &store,
         &[p1, p2],
-        7
+        proj7
     ));
     // 父单2 带项目 7 的收口结论（escalate sticky 同样算）→ 不重放。
     store
@@ -3385,25 +3503,37 @@ fn replay_guard_project_conclusion_probe() {
             p2,
             &actor,
             "auto_decide",
-            Some(r#"{"decision":"project_escalate_human","verdict":"fail","project_id":7}"#),
+            Some(
+                format!(r#"{{"decision":"project_escalate_human","verdict":"fail","project_id":{proj7}}}"#)
+                    .as_str(),
+            ),
         )
         .unwrap();
     assert!(super::project_review_already_concluded(
         &store,
         &[p1, p2],
-        7
+        proj7
     ));
-    // 结论挂在其他项目名下（project_id=9）→ 项目 7 仍视为未结论。
-    let p3 = mk("父单3", 9);
+    // 结论挂在其他项目名下（项目9）→ 项目 7 仍视为未结论。
+    let p3 = mk("父单3", proj9);
     store
         .add_activity(
             p3,
             &actor,
             "auto_decide",
-            Some(r#"{"decision":"project_complete","verdict":"pass","project_id":9}"#),
+            Some(
+                format!(
+                    r#"{{"decision":"project_complete","verdict":"pass","project_id":{proj9}}}"#
+                )
+                .as_str(),
+            ),
         )
         .unwrap();
-    assert!(!super::project_review_already_concluded(&store, &[p1], 7));
+    assert!(!super::project_review_already_concluded(
+        &store,
+        &[p1],
+        proj7
+    ));
 }
 
 // ---------- render_project_artifacts_evidence（F-U3-6，2026-09-15 U3）----------
@@ -3505,20 +3635,87 @@ fn artifacts_evidence_skips_large_and_binary_files_from_content_but_lists_them()
     let root = std::env::temp_dir().join(format!("u3f6-d-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
-    // 大文本（> 8KB）：列清单不附内容。
-    let big = "x".repeat(9 * 1024);
+    // 大文本（> 64KB 节选上限）：列清单不附内容。2026-10-17 上限 8KB→64KB
+    // （NB-101 项目收口误升级根修：白盒验收报告 12.9KB 被旧上限整文件排除）。
+    let big = "x".repeat(70 * 1024);
     std::fs::write(root.join("big.txt"), &big).unwrap();
     // 二进制扩展名：列清单不附内容。
     std::fs::write(root.join("model.bin"), b"\x00\x01\x02").unwrap();
 
     let out = super::render_project_artifacts_evidence(&root);
     assert!(
-        out.contains("big.txt") && out.contains("9216 字节"),
+        out.contains("big.txt") && out.contains("71680 字节"),
         "{out}"
     );
     assert!(!out.contains("xxxxx"), "大文件不附内容节选");
     assert!(out.contains("model.bin"), "二进制也在清单");
     assert!(out.contains("未附内容节选"), "诚实披露哪些文件没有节选");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn artifacts_evidence_excerpts_follow_mtime_desc_final_evidence_first() {
+    // NB-101 项目收口误升级根修（2026-10-17）：旧实现按路径字母序消耗节选
+    // 预算，外围产物（design/*、evidence/*.json）吃光 12 文件预算，最终
+    // 验收报告从未进入评审视野。节选必须按修改时间倒序——收口期最后触碰
+    // 的文件（最终证据）排最前；「early.md」路径序在前但 mtime 更早。
+    let root = std::env::temp_dir().join(format!("u3f6-e-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("design")).unwrap();
+    std::fs::write(root.join("design/ui-spec.md"), "design doc body").unwrap();
+    std::fs::write(root.join("early.md"), "EARLY_MARKER 旧产物").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    std::fs::write(root.join("zz-final-report.md"), "FINAL_MARKER 最终验收报告").unwrap();
+
+    let out = super::render_project_artifacts_evidence(&root);
+    assert!(
+        out.contains("FINAL_MARKER"),
+        "最终证据必须有内容节选: {out}"
+    );
+    assert!(out.contains("EARLY_MARKER"), "预算充足时旧产物也有节选");
+    let final_pos = out
+        .find("【zz-final-report.md】")
+        .expect("final excerpt header");
+    let early_pos = out.find("【early.md】").expect("early excerpt header");
+    assert!(
+        final_pos < early_pos,
+        "节选按 mtime 倒序：最终证据在前（final@{final_pos} < early@{early_pos}）"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn artifacts_evidence_walk_not_amputated_by_listing_cap() {
+    // NB-101 项目收口四轮误升级根修（2026-10-17）：旧实现用清单上限 200
+    // 早停 walk——清单展示与节选候选池共用同一截断，路径序靠后的文件既
+    // 不进清单也不进节选池，评审员据「报告引用的测试源文件不在清单」误判
+    // 交付不一致（实录：清单停在 test/ 第 3 个文件，integration/regression/
+    // sim/ui/world 测试全缺席）。修后：候选池吃满全树，清单截断只是展示
+    // 预算且注记显式否定「不在清单=不存在」。
+    let root = std::env::temp_dir().join(format!("u3f6-walk-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    // 造 250 个路径序靠前的旧文件（filler-000..249），把「新文件」挤到
+    // 清单展示位之后。
+    for i in 0..250 {
+        std::fs::write(root.join(format!("filler-{i:03}.md")), "filler").unwrap();
+    }
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    std::fs::write(root.join("zz-late-test-file.test.js"), "LATE_TEST_MARKER").unwrap();
+
+    let out = super::render_project_artifacts_evidence(&root);
+    // 节选候选池不受清单展示上限影响：路径序最末、mtime 最新的文件必须有节选。
+    assert!(
+        out.contains("LATE_TEST_MARKER"),
+        "路径序靠后的最新文件必须进节选池: {}",
+        &out[..out.len().min(400)]
+    );
+    // 全树 251 个文件：清单展示上限内不截断（400 > 251），总数如实。
+    assert!(
+        out.contains("共 251 个文件："),
+        "{out_first}",
+        out_first = &out[..out.len().min(400)]
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -4185,6 +4382,111 @@ async fn sweep_merged_changeset_and_discipline_evidence_injected() {
     assert!(prompts.contains("waive 审计"), "waive 留痕须呈现");
 }
 
+// NB-102 真机实证（2026-10-15）：旧节选上限 2000 字符把 PRD 截在「核心玩法
+// 循环」开头，评审员以「未展示功能需求/非功能需求/逐条验收标准，无法对照
+// 验收标准确认」确定性 UNSURE → max_unsure_streak 2 轮即停车。回归锁：
+// 单文件 12000 字符预算内的交付文本全文呈现（2000 字之后的段落必须在场）。
+#[tokio::test]
+async fn sweep_merged_changeset_content_beyond_old_snippet_cap_is_injected() {
+    use nemesis_board::NewIssue;
+    let (deps, _ws) = review_deps("sweep-blob-cap");
+    let (root, _base) = git_project_root("blob-cap");
+    let project = deps
+        .store
+        .create_project("p", "d", None, "", "", Some(root.to_str().unwrap()))
+        .unwrap();
+
+    let mut body =
+        String::from("# PRD 变体 A\n\n## 核心玩法循环\n开头的玩法描述。\n\n## 功能需求\n");
+    while body.chars().count() < 3000 {
+        body.push_str("- 需求条目：系统应支持网格建造与拆除。\n");
+    }
+    body.push_str("\n\n## 非功能需求\n渲染 60fps。\n\n## 验收标准\nGiven 玩家点击网格 When 放置建筑 Then 建筑出现在网格上。\n");
+    assert!(body.chars().count() > 2000, "夹具须超过旧 2000 上限");
+    // 生产同形：工作集 seed commit（gitignore 尊重 /docs/，走 commit_worktree）
+    // + worker 变更集经 merge_changeset 合入（内存 index 绕 gitignore——真实
+    // NB-102 的 docs/prd-variant-A.md 正是经此路径入库）。
+    std::fs::write(root.join("README.md"), "# demo\n").unwrap();
+    let baseline = nemesis_board::git_repo::commit_worktree(&root, "工作集 seed")
+        .unwrap()
+        .expect("seed 工作集必有首笔 commit");
+    let merged = nemesis_board::git_repo::merge_changeset(
+        &root,
+        &nemesis_board::git_repo::MergeInput {
+            baseline_commit: baseline.clone(),
+            upserts: vec![nemesis_board::git_repo::ChangesetFile {
+                path: "docs/prd-variant-A.md".to_string(),
+                content: body.into_bytes(),
+                executable: false,
+            }],
+            deletions: vec![],
+        },
+    )
+    .unwrap();
+    let oid = match merged {
+        nemesis_board::git_repo::MergeOutcome::Merged { commit_oid } => commit_oid,
+        other => panic!("夹具合入须无冲突，实得 {other:?}"),
+    };
+
+    let issue = deps
+        .store
+        .create_issue(NewIssue {
+            title: "长文档节选回归".to_string(),
+            description: String::new(),
+            priority: 2,
+            creator: nemesis_board::Actor::agent("node-a"),
+            project_id: Some(project.id),
+            ..Default::default()
+        })
+        .unwrap();
+    let reviewer = nemesis_board::Actor::agent("node-a");
+    deps.store
+        .transition_issue(issue.id, nemesis_board::IssueStatus::InProgress, &reviewer)
+        .unwrap();
+    deps.store
+        .transition_issue(issue.id, nemesis_board::IssueStatus::InReview, &reviewer)
+        .unwrap();
+    deps.store
+        .add_comment(nemesis_board::NewComment {
+            issue_id: issue.id,
+            author: nemesis_board::Actor::agent("node-b"),
+            content: "## 结论\n交付完成".to_string(),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::Delivery,
+        })
+        .unwrap();
+    deps.store
+        .add_activity(
+            issue.id,
+            &nemesis_board::Actor::system("board"),
+            crate::board_archive_ingest::ACTION_MERGED,
+            Some(&serde_json::json!({ "commit": oid }).to_string()),
+        )
+        .unwrap();
+
+    let provider = Arc::new(CapturingLlm {
+        prompts: std::sync::Mutex::new(Vec::new()),
+        reply: review_json("PASS", ""),
+    });
+    attach_loop(&deps, provider.clone());
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("评审闭环");
+    assert!(reviewed);
+    let prompts = provider.prompts.lock().unwrap().join("\n");
+    assert!(prompts.contains("docs/prd-variant-A.md"), "清单含交付文件");
+    assert!(
+        prompts.contains("## 功能需求") && prompts.contains("网格建造与拆除"),
+        "旧 2000 上限之后的功能需求段必须注入: {}",
+        &prompts[prompts.len().saturating_sub(3000)..]
+    );
+    assert!(
+        prompts.contains("Then 建筑出现在网格上"),
+        "文档尾部验收标准段必须注入"
+    );
+}
+
 // ---------- render_discipline_evidence 退化形态（miss 1695-1696,1725-1742） ----------
 
 #[test]
@@ -4343,6 +4645,8 @@ async fn sweep_run_review_llm_call_failure_fails_immediately() {
         &mut prompt,
         ReviewToolMode::NoTools,
         nemesis_prompts::board::ReviewTier::Thorough,
+        None,
+        None,
     )
     .await
     .expect_err("调用失败必须报错");
@@ -4373,6 +4677,8 @@ async fn sweep_run_review_llm_exhausts_three_parse_rounds() {
         &mut prompt,
         ReviewToolMode::NoTools,
         nemesis_prompts::board::ReviewTier::Thorough,
+        None,
+        None,
     )
     .await
     .expect_err("3 轮解析全败必须报错");
@@ -4403,6 +4709,8 @@ async fn sweep_run_review_llm_retries_then_succeeds_and_readonly_mode() {
         &mut prompt,
         ReviewToolMode::ReadOnly { max_turns: 3 },
         nemesis_prompts::board::ReviewTier::Thorough,
+        None,
+        None,
     )
     .await
     .expect("重试后必须成功");
@@ -4430,6 +4738,8 @@ async fn sweep_run_review_panel_single_delegates_and_multi_aggregates() {
         ReviewToolMode::NoTools,
         1,
         nemesis_prompts::board::ReviewTier::Thorough,
+        None,
+        None,
     )
     .await
     .expect("单路必须成功");
@@ -4455,6 +4765,8 @@ async fn sweep_run_review_panel_single_delegates_and_multi_aggregates() {
         ReviewToolMode::NoTools,
         3,
         nemesis_prompts::board::ReviewTier::Thorough,
+        None,
+        None,
     )
     .await
     .expect("多数票聚合必须成功");
@@ -4476,6 +4788,8 @@ async fn sweep_run_review_panel_single_delegates_and_multi_aggregates() {
         ReviewToolMode::NoTools,
         2,
         nemesis_prompts::board::ReviewTier::Thorough,
+        None,
+        None,
     )
     .await
     .expect_err("全路解析失败必须报错");
@@ -5034,7 +5348,12 @@ async fn parent_llm_pass_auto_closes_and_settles() {
 async fn parent_llm_fail_escalates_with_gap_comment() {
     use nemesis_board::IssueStatus;
     let (deps, _ws) = review_deps("parent-llm-fail");
-    write_board_config(&deps.home, r#"{"auto_close_parent":true}"#);
+    // parent_remediation_max=0（关自动返工）= 本测钉「FAIL → 转人工」旧行为；
+    // 默认开（2 轮）下的 FAIL 承接见 parent_llm_fail_auto_remediates_via_rework_child。
+    write_board_config(
+        &deps.home,
+        r#"{"auto_close_parent":true,"review":{"parent_remediation_max":0}}"#,
+    );
     let parent = issue_in_review(&deps.store, "父单语义未过", "", "（父单验收输入=子单汇总）");
     attach_loop(
         &deps,
@@ -5066,6 +5385,152 @@ async fn parent_llm_fail_escalates_with_gap_comment() {
         esc.content.contains("差距：") && esc.content.contains("子单结论互相矛盾"),
         "父单 FAIL 评论必须带差距: {}",
         esc.content
+    );
+    assert!(
+        esc.content.contains("自动返工未开启"),
+        "承接被拒（配置关）必须在转人工评论注记原因: {}",
+        esc.content
+    );
+    assert!(
+        !deps
+            .store
+            .list_children(parent.id)
+            .unwrap()
+            .iter()
+            .any(|c| c.title.starts_with("返工：")),
+        "配置关闭时不得创建返工子单"
+    );
+}
+
+/// 父单收口 FAIL 自动返工承接（2026-10-16 NB-101「FAIL 弹回人工」根修）：
+/// 差距具体（gap 非空）+ 默认配置（parent_remediation_max=2）→ 自动创建
+/// 「返工：」子单（挂父单名下、差距原文进描述、继承项目/职能），父单保持
+/// in_review 不弹人工，决策词 parent_auto_remediate，评论带返工单号与差距。
+#[tokio::test]
+async fn parent_llm_fail_auto_remediates_via_rework_child() {
+    use nemesis_board::IssueStatus;
+    let (deps, _ws) = review_deps("parent-llm-remediate");
+    write_board_config(&deps.home, r#"{"auto_close_parent":true}"#);
+    let parent = issue_in_review(
+        &deps.store,
+        "父单语义未过待返工",
+        "",
+        "（父单验收输入=子单汇总）",
+    );
+    attach_loop(
+        &deps,
+        Arc::new(CapturingLlm {
+            prompts: std::sync::Mutex::new(Vec::new()),
+            reply: review_json("FAIL", "黑盒用例存在失败与阻塞未闭合"),
+        }),
+    );
+
+    let reviewed = review_parent_issue(&deps, parent.id)
+        .await
+        .expect("父单 FAIL 承接闭环");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.get_issue(parent.id).unwrap().status,
+        IssueStatus::InReview,
+        "承接成功后父单保持 in_review（不转人工）"
+    );
+    assert_eq!(
+        decided_word(&deps.store, parent.id).as_deref(),
+        Some("parent_auto_remediate"),
+        "承接路径决策词 = parent_auto_remediate"
+    );
+    let children = deps.store.list_children(parent.id).unwrap();
+    let rem = children
+        .iter()
+        .find(|c| c.title.starts_with("返工："))
+        .expect("必须自动创建返工子单");
+    assert!(
+        rem.title.contains("第 1/2 轮"),
+        "返工单标题带轮次: {}",
+        rem.title
+    );
+    assert!(
+        rem.description.contains("黑盒用例存在失败与阻塞未闭合"),
+        "差距原文必须进返工单描述: {}",
+        rem.description
+    );
+    assert_eq!(
+        rem.acceptance_criteria.as_deref(),
+        Some(format!(
+            "- 父单 {} 收口评审差距逐条闭合（差距清单见任务描述），每条附验证证据\n- 交付评论逐条列出：差距 → 修复动作 → 验证结果，不得有未闭合残留",
+            parent.number
+        ))
+        .as_deref(),
+        "返工单 AC = 差距闭合判据"
+    );
+    let comments = deps.store.list_comments(parent.id).unwrap();
+    let note = comments
+        .iter()
+        .find(|c| c.content.contains("已自动创建返工子单"))
+        .expect("必须落承接评论");
+    assert!(
+        note.content.contains(&rem.number) && note.content.contains("黑盒用例存在失败与阻塞未闭合"),
+        "承接评论必须带返工单号与差距: {}",
+        note.content
+    );
+}
+
+/// 返工轮数预算（parent_remediation_max=2）：已有 2 个「返工：」子单（按
+/// 尝试计轮，含 cancelled）→ 再 FAIL 不建第三单，落既有转人工（评论注记
+/// 预算用满）。
+#[tokio::test]
+async fn parent_llm_fail_remediation_cap_exhausted_escalates() {
+    use nemesis_board::NewIssue;
+    let (deps, _ws) = review_deps("parent-llm-remediate-cap");
+    write_board_config(&deps.home, r#"{"auto_close_parent":true}"#);
+    let parent = issue_in_review(
+        &deps.store,
+        "父单返工预算耗尽",
+        "",
+        "（父单验收输入=子单汇总）",
+    );
+    for round in 1..=2 {
+        deps.store
+            .create_issue(NewIssue {
+                title: format!("返工：父单返工预算耗尽（第 {round}/2 轮）"),
+                description: "历史返工单".to_string(),
+                priority: 2,
+                creator: nemesis_board::Actor::system("board-review"),
+                parent_issue_id: Some(parent.id),
+                ..Default::default()
+            })
+            .unwrap();
+    }
+    attach_loop(
+        &deps,
+        Arc::new(CapturingLlm {
+            prompts: std::sync::Mutex::new(Vec::new()),
+            reply: review_json("FAIL", "仍有差距"),
+        }),
+    );
+
+    let reviewed = review_parent_issue(&deps, parent.id)
+        .await
+        .expect("预算耗尽 FAIL 闭环");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.list_children(parent.id).unwrap().len(),
+        2,
+        "预算用满不得再建返工子单"
+    );
+    assert_eq!(
+        decided_word(&deps.store, parent.id).as_deref(),
+        Some("parent_escalate_human"),
+        "预算用满落既有转人工"
+    );
+    assert!(
+        deps.store
+            .list_comments(parent.id)
+            .unwrap()
+            .iter()
+            .any(|c| c.content.contains("父单收口验收未定案（FAIL）")
+                && c.content.contains("自动返工已用满轮数预算（2 轮）")),
+        "转人工评论必须注记预算用满"
     );
 }
 
@@ -5106,12 +5571,16 @@ async fn parent_llm_parse_failure_posts_honest_comment() {
 /// 「有子单」并分流 review_parent_issue（收口汇总语义），不得跑子单式
 /// 评审（父单自身无交付汇报，跑出来的是无依据结论；PASS 臂还会错误
 /// auto-done 父单绕过收口评审）。分流证据 = 决策词走 parent_escalate_human
-/// （子单式评审 FAIL 无派发记录不会产出该决策词）。
+/// （子单式评审 FAIL 无派发记录不会产出该决策词）。parent_remediation_max=0
+/// （本测钉路由语义，不测承接——默认开时承接见 parent_llm_fail_auto_）。
 #[tokio::test]
 async fn review_issue_diverts_parent_with_children_to_parent_review() {
     use nemesis_board::{IssueStatus, NewIssue};
     let (deps, _ws) = review_deps("divert-parent");
-    write_board_config(&deps.home, r#"{"auto_close_parent":true}"#);
+    write_board_config(
+        &deps.home,
+        r#"{"auto_close_parent":true,"review":{"parent_remediation_max":0}}"#,
+    );
     let parent = issue_in_review(
         &deps.store,
         "父单分流",
@@ -6415,7 +6884,13 @@ mod w5r2parent {
     #[tokio::test]
     async fn w5_parent_anchor_fail_short_circuits_to_human() {
         let (deps, _ws) = w5_deps("anchor-fail");
-        write_board_config(&deps.home, r#"{"auto_close_parent":true}"#);
+        // parent_remediation_max=0：本测钉「锚点 FAIL → 转人工」语义（默认
+        // 开启时 FAIL 带差距会先走自动返工承接，见 parent_llm_fail_auto_
+        // remediates_via_rework_child）。
+        write_board_config(
+            &deps.home,
+            r#"{"auto_close_parent":true,"review":{"parent_remediation_max":0}}"#,
+        );
         let parent = w5_issue(
             &deps.store,
             "父单-锚点必败",
@@ -7531,4 +8006,506 @@ async fn ua_defect_gate_park_writes_handoff_archive() {
     assert_eq!(doc["stop_kind"], "defect_gate");
     assert_eq!(doc["suggested_action"], "manual_check");
     assert_eq!(doc["environment"]["unclosed_defects"], 1);
+}
+
+// ---------- B3 禁令节预取（extract_ban_section / prefetch_ban_section）----------
+
+#[test]
+fn extract_ban_section_stops_at_next_section() {
+    let text = "# 架构\n\nintro\n\n## 禁令与约束清单\nC1 禁止在接收层调用 poll()\nC2 禁止持锁跨 await\n\n## 其他节\nbody";
+    let section = extract_ban_section(text).expect("有节必抽出");
+    assert!(section.starts_with("## 禁令与约束清单"));
+    assert!(section.contains("C1 禁止在接收层调用 poll()"));
+    assert!(section.contains("C2 禁止持锁跨 await"));
+    assert!(!section.contains("其他节"), "下一节头起整体截断");
+    assert!(!section.contains("body"));
+    // 尾部换行被 trim_end 收掉。
+    assert!(!section.ends_with('\n'));
+}
+
+#[test]
+fn extract_ban_section_extends_to_eof_when_last() {
+    let text = "前文\n\n## 禁令与约束清单\nC1 禁止裸指针\n";
+    let section = extract_ban_section(text).expect("文末节也抽出");
+    assert!(section.contains("C1 禁止裸指针"));
+}
+
+#[test]
+fn extract_ban_section_absent_header_is_none() {
+    assert_eq!(extract_ban_section("# 架构\n只有普通内容"), None);
+    assert_eq!(extract_ban_section(""), None);
+    // 同形但非节头的文字不命中（find 的是整行节头子串——出现即命中，
+    // 这里钉住「必须带 ## 前缀」的形态才抽得出）。
+    assert!(extract_ban_section("## 禁令与约束清单").is_some());
+}
+
+#[test]
+fn prefetch_ban_section_prefers_main_root_then_falls_back() {
+    let ws = tempfile::tempdir().expect("ws");
+    let proj = tempfile::tempdir().expect("proj");
+
+    // 双根都缺 → None。
+    assert_eq!(prefetch_ban_section(ws.path(), Some(proj.path())), None);
+
+    // 仅 fallback 有 → 走 fallback（NB-22 双根形态：交付集合并在项目目录）。
+    let proj_docs = proj.path().join("docs");
+    std::fs::create_dir_all(&proj_docs).unwrap();
+    std::fs::write(
+        proj_docs.join("architecture.md"),
+        "## 禁令与约束清单\nC9 禁止同步 IO\n",
+    )
+    .unwrap();
+    assert_eq!(
+        prefetch_ban_section(ws.path(), Some(proj.path())).expect("fallback 命中"),
+        "## 禁令与约束清单\nC9 禁止同步 IO"
+    );
+
+    // 主根也有 → 主根优先（不是拼接、不是 fallback 抢答）。
+    let ws_docs = ws.path().join("docs");
+    std::fs::create_dir_all(&ws_docs).unwrap();
+    std::fs::write(
+        ws_docs.join("architecture.md"),
+        "## 禁令与约束清单\nC1 主根禁令\n",
+    )
+    .unwrap();
+    assert_eq!(
+        prefetch_ban_section(ws.path(), Some(proj.path())).expect("主根命中"),
+        "## 禁令与约束清单\nC1 主根禁令"
+    );
+
+    // 主根有文件但节缺席 → 穿透到 fallback（不是拿到文件就停）。
+    std::fs::write(ws_docs.join("architecture.md"), "# 架构无禁令节\n").unwrap();
+    assert_eq!(
+        prefetch_ban_section(ws.path(), Some(proj.path())).expect("主根缺节穿透 fallback"),
+        "## 禁令与约束清单\nC9 禁止同步 IO"
+    );
+
+    // fallback 槽位为 None + 主根缺 → None（无 panic）。
+    std::fs::remove_file(ws_docs.join("architecture.md")).unwrap();
+    assert_eq!(prefetch_ban_section(ws.path(), None), None);
+}
+
+// ---------- 取证软件化：执行档案直读取证（collect_execution_evidence）----------
+//
+// 纯函数（root/编号 → Option<String>），零 LLM 零 RPC；钉死：目录缺席 /
+// 空轮目录 / 全空件 → None（诚实回落 LLM 自检）；最新一轮优先；raw.json
+// 不作证据主体；输出有界。I/O 链路（selfcheck else 臂接线、二段验收）由
+// cluster-uat 真流覆盖。
+
+#[test]
+fn execution_evidence_missing_dir_is_none() {
+    let root = tempfile::tempdir().expect("root");
+    assert_eq!(collect_execution_evidence(root.path(), "NB-404"), None);
+}
+
+#[test]
+fn execution_evidence_empty_round_dir_is_none() {
+    let root = tempfile::tempdir().expect("root");
+    let round = root
+        .path()
+        .join("records")
+        .join("NB-1")
+        .join("execution")
+        .join("20261015_100000000");
+    std::fs::create_dir_all(&round).unwrap();
+    assert_eq!(collect_execution_evidence(root.path(), "NB-1"), None);
+}
+
+#[test]
+fn execution_evidence_only_empty_or_lost_files_is_none() {
+    let root = tempfile::tempdir().expect("root");
+    let round = root
+        .path()
+        .join("records")
+        .join("NB-2")
+        .join("execution")
+        .join("20261015_100000000");
+    std::fs::create_dir_all(&round).unwrap();
+    std::fs::write(round.join("00.request.md"), "  \n\t").unwrap();
+    std::fs::write(round.join("01.AI.Response.md"), "_NEMESIS_UNREADABLE_").unwrap();
+    std::fs::write(round.join("01.AI.Response.raw.json"), "{\"x\":1}").unwrap();
+    assert_eq!(collect_execution_evidence(root.path(), "NB-2"), None);
+}
+
+#[test]
+fn execution_evidence_reads_newest_round_and_skips_raw_json() {
+    let root = tempfile::tempdir().expect("root");
+    let exec = root.path().join("records").join("NB-3").join("execution");
+    let old = exec.join("20261015_100000000");
+    let new = exec.join("20261015_110000000");
+    std::fs::create_dir_all(&old).unwrap();
+    std::fs::create_dir_all(&new).unwrap();
+    std::fs::write(old.join("00.request.md"), "旧轮次任务请求").unwrap();
+    std::fs::write(old.join("01.AI.Response.md"), "旧轮次回复").unwrap();
+    std::fs::write(new.join("00.request.md"), "新轮次任务请求").unwrap();
+    std::fs::write(new.join("02.AI.Response.md"), "新轮次最终回复").unwrap();
+    std::fs::write(new.join("02.AI.Response.raw.json"), "{\"huge\":true}").unwrap();
+    std::fs::write(new.join("manifest.json"), "{\"task_id\":\"t1\"}").unwrap();
+
+    let ev = collect_execution_evidence(root.path(), "NB-3").expect("证据在场");
+    assert!(ev.contains("20261015_110000000"), "取最新一轮: {ev}");
+    assert!(ev.contains("新轮次最终回复"), "AI 回复头在场: {ev}");
+    assert!(ev.contains("新轮次任务请求"), "任务请求头在场: {ev}");
+    assert!(
+        ev.contains("records/NB-3/execution/20261015_110000000/manifest.json"),
+        "清单为档案根相对路径（board_evidence_read 可原样消费）: {ev}"
+    );
+    assert!(!ev.contains("旧轮次"), "旧轮次不得混入: {ev}");
+    assert!(!ev.contains("\"huge\""), "raw.json 不作证据主体: {ev}");
+}
+
+#[test]
+fn execution_evidence_bounded() {
+    let root = tempfile::tempdir().expect("root");
+    let round = root
+        .path()
+        .join("records")
+        .join("NB-4")
+        .join("execution")
+        .join("20261015_100000000");
+    std::fs::create_dir_all(&round).unwrap();
+    std::fs::write(round.join("01.AI.Response.md"), "长".repeat(50_000)).unwrap();
+    let ev = collect_execution_evidence(root.path(), "NB-4").expect("证据在场");
+    assert!(
+        ev.chars().count() <= 7600,
+        "输出有界: {}",
+        ev.chars().count()
+    );
+    assert!(ev.ends_with("..."), "截断带省略号注记");
+}
+
+// NB-105 真机熔断回归锁（2026-10-15）：评审员照清单逐个 board_evidence_read，
+// 裸文件名清单让全部读取落空（「档案文件不存在或不可达」）→ UNSURE×3 转
+// 人工、整条依赖链一宿不动。钉死：清单行 = 档案根相对路径，且该路径能
+// 原样过取证工具读回原文（往返闭环）。
+#[test]
+fn execution_evidence_inventory_paths_roundtrip_through_evidence_tool() {
+    let root = tempfile::tempdir().expect("root");
+    let round = root
+        .path()
+        .join("records")
+        .join("NB-5")
+        .join("execution")
+        .join("20261015_120000000");
+    std::fs::create_dir_all(&round).unwrap();
+    std::fs::write(round.join("manifest.json"), "{\"task_id\":\"t5\"}").unwrap();
+    std::fs::write(round.join("00.request.md"), "任务请求全文").unwrap();
+
+    let ev = collect_execution_evidence(root.path(), "NB-5").expect("证据在场");
+    let line = ev
+        .lines()
+        .find(|l| l.contains("manifest.json"))
+        .expect("清单含 manifest.json 行");
+    let path = line
+        .trim_start_matches("- ")
+        .split("（")
+        .next()
+        .expect("路径段");
+    assert_eq!(
+        path, "records/NB-5/execution/20261015_120000000/manifest.json",
+        "清单必须是档案根相对路径: {line}"
+    );
+    // 往返：清单路径直接过取证工具（与评审员同一解析单点）读取成功。
+    let content = crate::board_evidence_tool::read_archive_file(root.path(), path, None, None)
+        .expect("清单路径可读取");
+    assert!(
+        content.contains("\"task_id\":\"t5\""),
+        "读回原文: {content}"
+    );
+}
+
+/// 循环升级防抖（2026-10-16 用户裁决）：升级停车（最近 auto_decide =
+/// parent_escalate_human）且其后无 admin 活动 = 人工未表态——钩子触发的
+/// 复评必须跳过：不烧 LLM、不落新评论、决策词不被反复覆盖。NB-101 实证
+/// 的 20:45/20:50/22:01 三连升级就是本测钉死的病灶。
+#[tokio::test]
+async fn parent_escalated_park_blocks_hook_rereview_until_admin() {
+    let (deps, _ws) = review_deps("parent-escalate-sticky");
+    write_board_config(&deps.home, r#"{"auto_close_parent":true}"#);
+    let parent = issue_in_review(&deps.store, "升级停车父单", "", "（父单验收输入=子单汇总）");
+    record_auto_decide(
+        &deps.store,
+        parent.id,
+        "node-a",
+        "parent_escalate_human",
+        "unsure",
+        serde_json::json!({ "reasons": "证据不足" }),
+    );
+    let llm = Arc::new(CapturingLlm {
+        prompts: std::sync::Mutex::new(Vec::new()),
+        reply: review_json("FAIL", "不该被调用的差距"),
+    });
+    attach_loop(&deps, llm.clone());
+
+    let reviewed = review_parent_issue(&deps, parent.id)
+        .await
+        .expect("防抖跳过是正常返回");
+    assert!(!reviewed, "升级停车 + 人工未表态 = 跳过复评");
+    assert!(
+        llm.prompts
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_empty(),
+        "防抖跳过不得烧 LLM"
+    );
+    assert_eq!(
+        decided_word(&deps.store, parent.id).as_deref(),
+        Some("parent_escalate_human"),
+        "决策词不被钩子复评覆盖"
+    );
+    assert!(
+        deps.store.list_children(parent.id).unwrap().is_empty(),
+        "防抖跳过不得新建返工子单"
+    );
+}
+
+/// 打回放行：升级停车后落一条 admin 活动（review.retrigger 的留痕评论
+/// 即此形态）→ 防抖解除、复评真实执行（FAIL 回复 → 承接返工子单创建）。
+#[tokio::test]
+async fn parent_admin_activity_after_escalation_unblocks_rereview() {
+    use nemesis_board::{Actor, CommentType, NewComment};
+    let (deps, _ws) = review_deps("parent-escalate-reopen");
+    write_board_config(&deps.home, r#"{"auto_close_parent":true}"#);
+    let parent = issue_in_review(&deps.store, "打回重开父单", "", "（父单验收输入=子单汇总）");
+    record_auto_decide(
+        &deps.store,
+        parent.id,
+        "node-a",
+        "parent_escalate_human",
+        "unsure",
+        serde_json::json!({}),
+    );
+    deps.store
+        .add_comment(NewComment {
+            issue_id: parent.id,
+            author: Actor::admin("dashboard"),
+            content: "🔁 人工打回升级停车（review.retrigger）——自动验收重新开始，返工预算已重置"
+                .to_string(),
+            parent_id: None,
+            ctype: CommentType::System,
+        })
+        .unwrap();
+    attach_loop(
+        &deps,
+        Arc::new(CapturingLlm {
+            prompts: std::sync::Mutex::new(Vec::new()),
+            reply: review_json("FAIL", "归档缺口"),
+        }),
+    );
+
+    let reviewed = review_parent_issue(&deps, parent.id)
+        .await
+        .expect("打回后复评闭环");
+    assert!(reviewed, "admin 活动晚于升级 = 复评放行");
+    assert_eq!(
+        decided_word(&deps.store, parent.id).as_deref(),
+        Some("parent_auto_remediate"),
+        "打回后评审真实执行（FAIL 承接）"
+    );
+    assert!(
+        deps.store
+            .list_children(parent.id)
+            .unwrap()
+            .iter()
+            .any(|c| c.title.starts_with("返工：")),
+        "打回后 FAIL 承接返工子单"
+    );
+}
+
+/// UNSURE 带可行动证据缺口（gap 空、reasons 非空）→ 自动承接返工（理由
+/// 渲染进返工单描述），父单保持 in_review 不弹人工（2026-10-16 放宽：
+/// 补证据 = 补差距，「无法核实」的归档/取证缺口是可派发的工作）。
+#[tokio::test]
+async fn parent_unsure_with_reasons_auto_remediates() {
+    let (deps, _ws) = review_deps("parent-unsure-remediate");
+    write_board_config(&deps.home, r#"{"auto_close_parent":true}"#);
+    let parent = issue_in_review(&deps.store, "证据不足父单", "", "（父单验收输入=子单汇总）");
+    attach_loop(
+        &deps,
+        Arc::new(CapturingLlm {
+            prompts: std::sync::Mutex::new(Vec::new()),
+            reply: r#"{"verdict":"UNSURE","reasons":["交付物未统一归档主工作区"],"gap":""}"#
+                .to_string(),
+        }),
+    );
+
+    let reviewed = review_parent_issue(&deps, parent.id)
+        .await
+        .expect("UNSURE 承接闭环");
+    assert!(reviewed);
+    assert_eq!(
+        decided_word(&deps.store, parent.id).as_deref(),
+        Some("parent_auto_remediate"),
+        "UNSURE 带证据缺口 = 承接不弹人工"
+    );
+    let rem = deps
+        .store
+        .list_children(parent.id)
+        .unwrap()
+        .into_iter()
+        .find(|c| c.title.starts_with("返工："))
+        .expect("UNSURE 必须承接返工子单");
+    assert!(
+        rem.description.contains("交付物未统一归档主工作区"),
+        "评审理由（证据缺口清单）必须进返工单描述: {}",
+        rem.description
+    );
+}
+
+/// UNSURE 双空（gap 与 reasons 双空 = 真无事可做）→ 才落转人工；升级评论
+/// 必须说清楚（带打回重开指引——retrigger 打回后自动验收重新开始）。
+#[tokio::test]
+async fn parent_unsure_no_actionable_gap_escalates_with_reopen_hint() {
+    let (deps, _ws) = review_deps("parent-unsure-escalate");
+    write_board_config(&deps.home, r#"{"auto_close_parent":true}"#);
+    let parent = issue_in_review(&deps.store, "无事可做父单", "", "（父单验收输入=子单汇总）");
+    attach_loop(
+        &deps,
+        Arc::new(CapturingLlm {
+            prompts: std::sync::Mutex::new(Vec::new()),
+            reply: r#"{"verdict":"UNSURE","reasons":[],"gap":""}"#.to_string(),
+        }),
+    );
+
+    let reviewed = review_parent_issue(&deps, parent.id)
+        .await
+        .expect("双空 UNSURE 闭环");
+    assert!(reviewed);
+    assert_eq!(
+        decided_word(&deps.store, parent.id).as_deref(),
+        Some("parent_escalate_human"),
+        "双空 UNSURE 落转人工（无人力可承接）"
+    );
+    assert!(
+        deps.store
+            .list_comments(parent.id)
+            .unwrap()
+            .iter()
+            .any(|c| c.content.contains("打回重开") && c.content.contains("review.retrigger")),
+        "升级评论必须带打回重开指引"
+    );
+}
+
+/// 打回重开（2026-10-16）：预算耗尽（2 个历史返工单）+ retrigger 写入
+/// 纪元键 → 历史返工单不再计轮，复评 FAIL 重新承接「第 1/2 轮」——人工
+/// 重新决策 = 自动验收重新开始，不再死锁在转人工。
+#[tokio::test]
+async fn parent_retrigger_resets_remediation_budget() {
+    use nemesis_board::NewIssue;
+    let (deps, _ws) = review_deps("parent-remediate-reset");
+    write_board_config(&deps.home, r#"{"auto_close_parent":true}"#);
+    let parent = issue_in_review(&deps.store, "预算重置父单", "", "（父单验收输入=子单汇总）");
+    for round in 1..=2 {
+        deps.store
+            .create_issue(NewIssue {
+                title: format!("返工：预算重置父单（第 {round}/2 轮）"),
+                description: "历史返工单（纪元前）".to_string(),
+                priority: 2,
+                creator: nemesis_board::Actor::system("board-review"),
+                parent_issue_id: Some(parent.id),
+                ..Default::default()
+            })
+            .unwrap();
+    }
+    // retrigger 同款打回动作：写预算重置纪元（+1s 保证晚于历史子单
+    // created_at，规避同秒写库时间戳打平）。
+    let epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+        + 1;
+    deps.store
+        .set_meta(
+            &format!("remediation_reset:{}", parent.id),
+            &epoch.to_string(),
+        )
+        .unwrap();
+    attach_loop(
+        &deps,
+        Arc::new(CapturingLlm {
+            prompts: std::sync::Mutex::new(Vec::new()),
+            reply: review_json("FAIL", "归档缺口仍在"),
+        }),
+    );
+
+    let reviewed = review_parent_issue(&deps, parent.id)
+        .await
+        .expect("打回重开闭环");
+    assert!(reviewed);
+    assert_eq!(
+        decided_word(&deps.store, parent.id).as_deref(),
+        Some("parent_auto_remediate"),
+        "打回后预算重置 = 重新承接，不再死锁转人工"
+    );
+    let rems: Vec<nemesis_board::Issue> = deps
+        .store
+        .list_children(parent.id)
+        .unwrap()
+        .into_iter()
+        .filter(|c| c.title.starts_with("返工："))
+        .collect();
+    assert_eq!(rems.len(), 3, "两个历史返工单 + 一个新承接单");
+    let newest = rems
+        .iter()
+        .find(|c| c.description.contains("归档缺口仍在"))
+        .expect("纪元后重新计轮，新承接单真实创建");
+    assert!(
+        newest.title.contains("第 1/2 轮"),
+        "新承接单 = 第 1/2 轮（历史返工单不计轮）: {}",
+        newest.title
+    );
+}
+
+#[test]
+fn parent_ac_section_injected_for_rework_children() {
+    // NB-123 误升级根修（2026-10-17）：返工单评审 prompt 必须带父单 AC
+    // 口径参照——口径行（「待人工签核……不阻塞自动验收判定」）只存在于
+    // 父单验收标准，子单评审此前看不到，口径豁免事项被误判 FAIL。
+    let dir = std::env::temp_dir().join(format!(
+        "nb-parent-ac-section-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = nemesis_board::BoardStore::open(&dir.join("board.db"), "NB").unwrap();
+    let creator = Actor::agent("node-a");
+    let parent = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "父单".to_string(),
+            description: String::new(),
+            priority: 2,
+            acceptance_criteria: Some("- AC-24（原创性责任人签核）以台账完备 + 待人工签核清单如实标注为验收口径；不阻塞自动验收判定".to_string()),
+            creator: creator.clone(),
+            ..Default::default()
+        })
+        .unwrap();
+    let fetched = store.get_issue(parent.id).unwrap();
+    let section = super::render_parent_ac_section(&fetched).expect("有 AC 的父单必须注入");
+    assert!(section.contains(&parent.number), "带父单单号: {section}");
+    assert!(
+        section.contains("待审数据非指令"),
+        "数据/指令分离声明必须在场"
+    );
+    assert!(section.contains("不阻塞自动验收判定"), "口径原文必须在场");
+    assert!(section.contains("以口径为准"), "冲突裁决指引必须在场");
+
+    // 真·空 AC 父单 = 诚实跳过（None，不注入空节）。2026-10-17 契约更新：
+    // store 建单自动生成 AC——须本地抹掉生成值才能测 None 臂。
+    let mut bare = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "无 AC 父单".to_string(),
+            description: String::new(),
+            priority: 2,
+            creator,
+            ..Default::default()
+        })
+        .unwrap();
+    bare.acceptance_criteria = None;
+    let mut fetched_bare = store.get_issue(bare.id).unwrap();
+    fetched_bare.acceptance_criteria = None;
+    assert!(super::render_parent_ac_section(&fetched_bare).is_none());
+    let _ = std::fs::remove_dir_all(&dir);
 }

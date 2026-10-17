@@ -6143,6 +6143,7 @@ async fn test_set_cluster_task_queue_routes_callback_to_work_queue() {
         waiting_tool_call_id: None,
         callback_result: None,
         required_profession: None,
+        async_usage_stash: None,
     });
     tl.save_async_state(
         "parent-1",
@@ -6213,6 +6214,7 @@ async fn test_callback_routing_with_full_work_queue_logs_error() {
         waiting_tool_call_id: None,
         callback_result: None,
         required_profession: None,
+        async_usage_stash: None,
     });
     tl.save_async_state(
         "parent-2",
@@ -9154,4 +9156,46 @@ fn test_merge_real_node_info_merges_agent_roster() {
     assert_eq!(node.professions, vec!["dev".to_string()]);
     assert_eq!(node.tier.as_deref(), Some("big"));
     assert_eq!(node.base.name, "merge-peer-renamed");
+}
+/// NB-122 批 ③ 数据面（2026-10-16）：`set_capabilities` 与 peers.toml
+/// `[node].capabilities` 自报段取**并集**——环境能力词（browser 等）与
+/// 工具名同进宣告面，作 matcher required_capabilities 硬条件数据源；
+/// 重叠词去重；静态段在前顺序稳定（重调幂等）。
+#[test]
+fn test_set_capabilities_unions_static_identity_caps() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().to_path_buf();
+    let peers_path = workspace.join("cluster").join("peers.toml");
+    std::fs::create_dir_all(peers_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &peers_path,
+        "[node]\nid = \"cap-node\"\nname = \"CapNode\"\nrole = \"worker\"\n\
+         capabilities = [\"browser\", \"chrome\"]\n",
+    )
+    .unwrap();
+
+    let cluster = Cluster::with_workspace(make_config(), workspace);
+    // 注入工具名；chrome 与自报段重叠（模拟某工具恰好同名）。
+    cluster.set_capabilities(vec!["grep".into(), "chrome".into()]);
+
+    let caps = cluster.local_capabilities();
+    assert!(
+        caps.contains(&"browser".to_string()),
+        "静态自报能力必须存活：{caps:?}"
+    );
+    assert!(
+        caps.contains(&"grep".to_string()),
+        "工具能力必须在：{caps:?}"
+    );
+    assert_eq!(
+        caps.iter().filter(|c| c.as_str() == "chrome").count(),
+        1,
+        "重叠能力必须去重：{caps:?}"
+    );
+    // 自报段在前（顺序稳定）。
+    assert_eq!(caps.first().map(String::as_str), Some("browser"));
+
+    // registry 本节点条目同步携带并集（nodes.list 数据源）。
+    let entry = cluster.get_node_info("cap-node").expect("local entry");
+    assert!(entry.capabilities.contains(&"browser".to_string()));
 }

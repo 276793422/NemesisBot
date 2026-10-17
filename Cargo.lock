@@ -4947,6 +4947,7 @@ dependencies = [
  "parking_lot",
  "portable-pty",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",

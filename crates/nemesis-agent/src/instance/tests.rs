@@ -7,6 +7,7 @@ fn test_config() -> AgentConfig {
         max_turns: 5,
         tools: vec!["search".to_string()],
         models: std::collections::HashMap::new(),
+        tool_fence_profession: None,
     }
 }
 
@@ -145,6 +146,8 @@ fn new_instance_without_system_prompt() {
         max_turns: 5,
         tools: vec![],
         models: std::collections::HashMap::new(),
+
+        tool_fence_profession: None,
     };
     let instance = AgentInstance::new(config);
     assert!(instance.get_history().is_empty());
@@ -403,6 +406,8 @@ fn instance_clear_history_no_system_prompt() {
         max_turns: 5,
         tools: vec![],
         models: std::collections::HashMap::new(),
+
+        tool_fence_profession: None,
     };
     let instance = AgentInstance::new(config);
     instance.add_user_message("Hello");
@@ -559,6 +564,8 @@ fn replace_tool_result_overwrites_async_placeholder() {
         max_turns: 5,
         tools: vec![],
         models: std::collections::HashMap::new(),
+
+        tool_fence_profession: None,
     };
     let instance = AgentInstance::new(config);
     instance.set_history(make_history_with_async_placeholder());
@@ -581,6 +588,8 @@ fn replace_tool_result_falls_back_to_push_when_no_match() {
         max_turns: 5,
         tools: vec![],
         models: std::collections::HashMap::new(),
+
+        tool_fence_profession: None,
     };
     let instance = AgentInstance::new(config);
     instance.set_history(make_history_with_async_placeholder());
@@ -611,6 +620,8 @@ fn replace_tool_result_dedupes_multiple_matches() {
         max_turns: 5,
         tools: vec![],
         models: std::collections::HashMap::new(),
+
+        tool_fence_profession: None,
     };
     let instance = AgentInstance::new(config);
     instance.set_history(make_history_with_async_placeholder());
@@ -665,4 +676,54 @@ fn compress_history_all_system_turns_is_noop() {
             .any(|t| t.content.contains("Session compressed")),
         "no compression note for empty non-system set"
     );
+}
+
+// —— detached 模型覆盖（BUG 2026-10-08 `board.plan.model` dead-key 修复）——
+
+struct MarkerProvider;
+
+#[async_trait::async_trait]
+impl crate::r#loop::LlmProvider for MarkerProvider {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<crate::r#loop::LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<crate::r#loop::LlmResponse, String> {
+        Ok(crate::r#loop::LlmResponse {
+            content: "override-hit".to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            finish_reason: None,
+            escalated_to: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+}
+
+#[test]
+fn detached_model_swap_roundtrip() {
+    let instance = AgentInstance::new(test_config());
+    // 默认态：无覆盖（主模型路径）。
+    assert!(instance.detached_model_name().is_none());
+    assert!(instance.detached_model_provider().is_none());
+
+    // 注入 → 名称与 provider 均可读回。
+    let provider: std::sync::Arc<dyn crate::r#loop::LlmProvider> =
+        std::sync::Arc::new(MarkerProvider);
+    instance.set_detached_model(Some((provider.clone(), "board-model-x".to_string())));
+    assert_eq!(
+        instance.detached_model_name().as_deref(),
+        Some("board-model-x")
+    );
+    assert!(instance.detached_model_provider().is_some());
+
+    // 覆盖是 instance 级一次性值：清除后回到主模型路径。
+    instance.set_detached_model(None);
+    assert!(instance.detached_model_name().is_none());
+    assert!(instance.detached_model_provider().is_none());
 }

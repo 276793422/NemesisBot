@@ -96,3 +96,22 @@ pub fn builtin_method(slug: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+
+/// 内置契约基线注记（A1/D5，2026-10-14）：全部内置契约文件定位行之后的
+/// 机器可查版本行。用户定制副本应保留该行（copy-then-edit 工作流），
+/// 遮蔽 WARN 时提示基线差；删除用户文件即回内置。单一真相源=本常量，
+/// 契约文件由 professions 同步测试钉住与本值一致（改版本 = 改这里 +
+/// 六个契约文件 + 同步测试，一处漂移即红）。
+pub const BUILTIN_BASE_ANNOTATION: &str = "<!-- base: builtin@2026-10-14 -->";
+
+/// 从职能档案文本头部提取 `<!-- base: … -->` 基线注记（前 8 行内逐行找，
+/// trim 后整行返回）。
+///
+/// 用户档案未注记 → `None`（WARN 显示「未注记」，不猜）。
+pub fn extract_base_annotation(text: &str) -> Option<&str> {
+    text.lines().take(8).map(str::trim).find_map(|line| {
+        line.strip_prefix("<!-- base:")
+            .and_then(|rest| rest.strip_suffix("-->"))
+            .map(|_| line)
+    })
+}

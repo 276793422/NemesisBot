@@ -245,6 +245,9 @@ async fn test_project_create_anchor_warning_field() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn test_confirm_plan_anchor_downgrade_check_three_states() {
+    // 写/读进程级 plan 全局——串行持锁 + 开场清残留（与派发闸测试同纪律）。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     // F5 件③：父单 AC 含 re: 锚点但子单均未继承 → 父单系统评论提醒人工
     //（不阻塞发车）；子单已继承 / 父单无锚点 → 不评论。三态钉死。
     let dir = unique_dir("confirm-anchor-check");
@@ -434,6 +437,68 @@ async fn test_issue_assign_and_update() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// 嵌套 patch 形态 loud 拒绝（gw36 实录回归锁）：`{id, patch:{...}}` 此前
+// 静默不生效还回 updated:true——三个 update 命令都必须报错而不是假成功。
+#[tokio::test]
+async fn test_update_commands_reject_nested_patch_form() {
+    let dir = unique_dir("nested-patch-reject");
+    let ctx = make_ctx_with_board(&dir);
+    let out = dispatch(
+        &ctx,
+        "issue.create",
+        serde_json::json!({ "title": "形态守卫" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let id = out["issue"]["id"].as_i64().unwrap();
+
+    let err = dispatch(
+        &ctx,
+        "issue.update",
+        serde_json::json!({ "id": id, "patch": { "title": "嵌套" } }),
+    )
+    .await
+    .expect_err("nested patch form must be rejected");
+    assert!(err.contains("嵌套 patch"), "{err}");
+    // 确认拒绝发生在写库前：title 未被改动。
+    let out = dispatch(&ctx, "issue.get", serde_json::json!({ "id": id }))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["issue"]["title"], "形态守卫");
+
+    let err = dispatch(
+        &ctx,
+        "autopilot.update",
+        serde_json::json!({ "id": 1, "patch": { "enabled": true } }),
+    )
+    .await
+    .expect_err("autopilot.update nested form must be rejected");
+    assert!(err.contains("嵌套 patch"), "{err}");
+
+    let err = dispatch(
+        &ctx,
+        "project.update",
+        serde_json::json!({ "id": 1, "patch": { "name": "x" } }),
+    )
+    .await
+    .expect_err("project.update nested form must be rejected");
+    assert!(err.contains("嵌套 patch"), "{err}");
+
+    // 非对象的 patch 字段（null）不算嵌套形态，不误伤扁平更新。
+    dispatch(
+        &ctx,
+        "issue.update",
+        serde_json::json!({ "id": id, "description": "ok", "patch": null }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test]
 async fn test_comments_activity_subscribers() {
     let dir = unique_dir("social");
@@ -492,7 +557,7 @@ async fn test_comments_activity_subscribers() {
     .unwrap()
     .unwrap();
     let subs = out["subscribers"].as_array().unwrap();
-    // 创建者（admin/test-session）+ 手动订阅（同一 admin 身份 → 幂等一条）。
+    // 创建者（admin/dashboard，固定身份）+ 手动订阅（同一 admin 身份 → 幂等一条）。
     assert!(subs.iter().any(|s| s["subscriber"]["kind"] == "admin"));
     dispatch(
         &ctx,
@@ -632,6 +697,10 @@ async fn test_worker_role_has_full_write_access() {
 /// 进入参数校验阶段（有错也只能是业务校验错，绝不允许再出现 "403:" 语义）。
 #[tokio::test]
 async fn test_worker_role_never_403() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("worker-no-403");
     let ctx = make_ctx_with_role(&dir, NodeRole::Worker);
 
@@ -703,6 +772,10 @@ async fn test_coordinator_role_writes_allowed() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn test_issue_dispatch_validation_without_cluster() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("dispatch-validation");
     let ctx = make_ctx_with_board(&dir);
 
@@ -786,6 +859,10 @@ async fn test_issue_dispatch_validation_without_cluster() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn test_estop_blocks_dispatch_family_entries() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("estop-dispatch-gate");
     let ctx = make_ctx_with_board(&dir);
 
@@ -1557,6 +1634,10 @@ async fn assign_worker_default_stays_pending_no_dispatch() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn auto_dispatch_on_without_cluster_leaves_trace_comment() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     // 开关开 + 无集群：内核函数直接调用（config 显式入参，不碰进程级全局
     // config store——OnceLock 不可清除，全局态操作是并行 flake 源）。断言
     // ① 返回 false（未派发）② ⛔ 系统评论留痕（「配置生效但能力缺失」
@@ -1664,6 +1745,7 @@ fn sub(title: &str, deps: Vec<usize>) -> nemesis_board::PlannedSubIssue {
         required_role: String::new(),
         required_tags: Vec::new(),
         required_profession: String::new(),
+        required_capabilities: vec![],
         acceptance_criteria: format!("- [ ] {title} 验收"),
         depends_on: deps,
     }
@@ -1672,6 +1754,9 @@ fn sub(title: &str, deps: Vec<usize>) -> nemesis_board::PlannedSubIssue {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn issue_plan_missing_id_rejected() {
+    // 写/读进程级 plan 全局——串行持锁 + 开场清残留（与派发闸测试同纪律）。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("plan-miss-id");
     let ctx = make_ctx_with_board(&dir);
     let err = dispatch(&ctx, "issue.plan", serde_json::json!({}))
@@ -1684,6 +1769,9 @@ async fn issue_plan_missing_id_rejected() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn issue_plan_planning_requires_agent() {
+    // 写/读进程级 plan 全局——串行持锁 + 开场清残留（与派发闸测试同纪律）。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("plan-no-agent");
     let ctx = make_ctx_with_board(&dir);
     let out = dispatch(
@@ -1706,6 +1794,9 @@ async fn issue_plan_planning_requires_agent() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn issue_plan_confirm_unknown_plan_id_rejected() {
+    // 写/读进程级 plan 全局——串行持锁 + 开场清残留（与派发闸测试同纪律）。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("plan-unknown-id");
     let ctx = make_ctx_with_board(&dir);
     let out = dispatch(
@@ -1731,6 +1822,9 @@ async fn issue_plan_confirm_unknown_plan_id_rejected() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn issue_plan_confirm_wrong_issue_preserves_cache_and_consumes_once() {
+    // 写/读进程级 plan 全局——串行持锁 + 开场清残留（与派发闸测试同纪律）。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("plan-mismatch");
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
@@ -1783,6 +1877,9 @@ async fn issue_plan_confirm_wrong_issue_preserves_cache_and_consumes_once() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn issue_plan_confirm_creates_children_with_deps_origin_and_honest_degrade() {
+    // 写/读进程级 plan 全局——串行持锁 + 开场清残留（与派发闸测试同纪律）。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("plan-confirm");
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
@@ -2201,7 +2298,7 @@ async fn test_channel_post_routes_through_ingress() {
     {
         let calls = fake.0.lock().unwrap();
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].0, "admin/test-session");
+        assert_eq!(calls[0].0, "admin/dashboard");
         assert_eq!(calls[0].2, cid);
         assert_eq!(calls[0].3, "帮我看看这个报错");
     }
@@ -2322,6 +2419,63 @@ async fn test_board_config_set_conflict_auto_resolve_roundtrip() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// 连续 UNSURE 停车阈值（2026-10-15 用户：设置页缺旋钮）：白名单 + 回读 +
+// 盘上落盘 roundtrip；0=不限合法。
+#[tokio::test]
+async fn test_board_config_set_max_unsure_streak_roundtrip() {
+    let dir = unique_dir("config-max-unsure-streak");
+    let ctx = make_ctx_with_board(&dir);
+
+    // 初始 get：缺省 2（BoardReviewConfig::default 同源）。
+    let out = dispatch(&ctx, "config.get", serde_json::json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["review"]["max_unsure_streak"], 2);
+
+    // set 11 → get 回读 + 盘上真实落盘（用户实测改 11 的场景）。
+    let out = dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "review.max_unsure_streak", "value": 11 }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["updated"], true);
+    let out = dispatch(&ctx, "config.get", serde_json::json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["review"]["max_unsure_streak"], 11);
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+    assert_eq!(raw["board"]["review"]["max_unsure_streak"], 11);
+
+    // 0=不限合法。
+    let out = dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "review.max_unsure_streak", "value": 0 }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["updated"], true);
+
+    // 非整数 loud 拒绝。
+    let err = dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "review.max_unsure_streak", "value": "many" }),
+    )
+    .await
+    .expect_err("非整数必须拒绝");
+    assert!(err.contains("非负整数"), "got: {err}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test]
 async fn test_board_config_set_unknown_key_loud_rejects() {
     let dir = unique_dir("config-unknown-key");
@@ -2339,7 +2493,6 @@ async fn test_board_config_set_unknown_key_loud_rejects() {
         err.contains("unlimited_mode"),
         "错误信息应列出允许键: {err}"
     );
-
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2361,6 +2514,113 @@ async fn test_board_config_set_wrong_type_rejects() {
         let raw: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(raw["board"]["auto_accept"], false, "拒绝后不得半写");
     }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// B1（职能→评审预设查表）：review.professions.<slug>.<field> 白名单键。
+// 写入 → get 回读 + 盘上真实落盘；非法 slug/未知维度 loud 拒绝。
+#[tokio::test]
+async fn test_board_config_set_profession_preset_roundtrip() {
+    let dir = unique_dir("config-profession-preset");
+    let ctx = make_ctx_with_board(&dir);
+
+    // 写两个 slug × 不同维度（部分维度缺省=Option None 语义）。
+    for (key, value) in [
+        ("review.professions.Product.max_turns", serde_json::json!(0)),
+        ("review.professions.Product.checkers", serde_json::json!(2)),
+        (
+            "review.professions.Product.selfcheck",
+            serde_json::json!(true),
+        ),
+        ("review.professions.dev:cuda.checkers", serde_json::json!(3)),
+    ] {
+        let out = dispatch(
+            &ctx,
+            "config.set",
+            serde_json::json!({ "key": key, "value": value }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(out["updated"], true, "{key}");
+    }
+
+    // get 回读：slug 大小写归一（Product → product），嵌套结构完整。
+    let out = dispatch(&ctx, "config.get", serde_json::json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    let product = &out["review"]["professions"]["product"];
+    assert_eq!(product["max_turns"], 0);
+    assert_eq!(product["checkers"], 2);
+    assert_eq!(product["selfcheck"], true);
+    assert_eq!(out["review"]["professions"]["dev:cuda"]["checkers"], 3);
+
+    // 盘上真实落盘。
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+    assert_eq!(
+        raw["board"]["review"]["professions"]["product"]["selfcheck"],
+        true
+    );
+
+    // 非法 slug loud 拒绝（含空格/大写归一后仍非法的形态）。
+    let err = dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "review.professions.BAD SLUG.checkers", "value": 1 }),
+    )
+    .await
+    .expect_err("非法 slug 必须拒绝");
+    assert!(err.contains("非法"), "got: {err}");
+
+    // 未知维度 loud 拒绝。
+    let err = dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "review.professions.dev.tier", "value": "big" }),
+    )
+    .await
+    .expect_err("未知维度必须拒绝");
+    assert!(err.contains("未知职能预设维度"), "got: {err}");
+
+    // checkers 越界拒绝（消费侧 1..=5 收敛的前置镜像）。
+    let err = dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "review.professions.dev.checkers", "value": 9 }),
+    )
+    .await
+    .expect_err("checkers 越界必须拒绝");
+    assert!(err.contains("1..=5"), "got: {err}");
+
+    // null = 清除维度覆盖；三维度全空条目顺手删除（幂等，重复 null 不报错）。
+    for key in [
+        "review.professions.product.max_turns",
+        "review.professions.product.checkers",
+        "review.professions.product.selfcheck",
+        "review.professions.dev:cuda.checkers",
+        "review.professions.dev:cuda.checkers",
+    ] {
+        dispatch(
+            &ctx,
+            "config.set",
+            serde_json::json!({ "key": key, "value": null }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    }
+    let out = dispatch(&ctx, "config.get", serde_json::json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        out["review"]["professions"].as_object().unwrap().is_empty(),
+        "null 清除后 professions map 应为空: {:?}",
+        out["review"]["professions"]
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -2440,9 +2700,17 @@ async fn test_fire_autopilot_passes_acceptance_criteria_to_issue() {
     let ap_empty = p3_ap(&store, "不填", false);
     let out2 = fire_autopilot(&store, None, &ap_empty, &actor, None).unwrap();
     let issue2 = store.get_issue(out2["issue_id"].as_i64().unwrap()).unwrap();
-    assert_eq!(
-        issue2.acceptance_criteria, None,
-        "规则不填 → issue 验收标准为空"
+    // 2026-10-17 契约更新（NB-125 根修）：规则不填 → issue 萭 store 自动
+    // 生成 AC（任务形态）——此前「为空保守转人工」语义被自动生成取代，
+    // 定时建单同样不再裸奔进评审。
+    assert!(
+        issue2
+            .acceptance_criteria
+            .as_deref()
+            .map(|ac| ac.starts_with("（系统自动生成）") && ac.contains("目标已达成并验证"))
+            .unwrap_or(false),
+        "规则不填 → 自动生成 AC: {:?}",
+        issue2.acceptance_criteria
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -2616,6 +2884,9 @@ async fn test_link_project_on_dispatch_transitions_and_guards() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn test_confirm_plan_subs_inherit_parent_project_id() {
+    // 写/读进程级 plan 全局——串行持锁 + 开场清残留（与派发闸测试同纪律）。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     // F2 回归（T32 实证缺口）：confirm_plan 落库的子单必须继承父单
     // project_id——派发联动 link_project_on_dispatch 读的是子单自己的
     // project_id，缺继承则项目永远停在 active。
@@ -2644,6 +2915,7 @@ async fn test_confirm_plan_subs_inherit_parent_project_id() {
             required_role: String::new(),
             required_tags: Vec::new(),
             required_profession: String::new(),
+            required_capabilities: vec![],
             acceptance_criteria: String::new(),
             depends_on: Vec::new(),
         }],
@@ -2671,6 +2943,9 @@ async fn test_confirm_plan_subs_inherit_parent_project_id() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn test_issue_plan_via_handler_one_shot_planning() {
+    // 写/读进程级 plan 全局——串行持锁 + 开场清残留（与派发闸测试同纪律）。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     // pub 化回归保护：WSAPI issue.plan 一段入口行为不变（async 规划中，
     // agent 未运行时诚实报错——报错文案带「agent 未运行」）。
     let dir = unique_dir("issue-plan-regression");
@@ -2968,6 +3243,61 @@ fn offline_cluster(dir: &std::path::Path, node_id: &str) -> Arc<nemesis_cluster:
         },
         dir.join("ws"),
     ))
+}
+
+/// 派发同步断言用的「哑对端」地址：进程内 loopback listener（永不 accept/
+/// 响应，进程存活期常驻）。connect 在 OS backlog 即刻完成、ACK 永不到来
+/// ——派发 spawn 内的 send 挂在外层超时上，同步断言窗口内 claim 行保持
+/// 在途（不可路由地址的 connect 失败快慢随主机路由环境漂移，竞态不可
+/// 接受；自备端口不进固定端口表）。
+#[cfg(feature = "cluster")]
+fn silent_peer_addr() -> String {
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind silent peer");
+    let addr = listener.local_addr().expect("local addr");
+    std::mem::forget(listener); // 常驻：close 会让后续 connect 立刻被拒
+    format!("127.0.0.1:{}", addr.port())
+}
+
+/// 节点 → 哑对端地址的静态 [`PeerResolver`]（裸 `RpcClient::new()` 无
+/// resolver，send 秒败 "peer unresolvable" → 回退路径抢跑——同步断言
+/// 竞态；本解析器让 send 真解析到哑 listener，ACK 挂外层超时）。
+#[cfg(feature = "cluster")]
+struct TestStaticResolver {
+    node_id: String,
+    targets: std::collections::HashMap<String, String>,
+}
+
+#[cfg(feature = "cluster")]
+impl nemesis_cluster::rpc::client::PeerResolver for TestStaticResolver {
+    fn get_peer_info(&self, peer_id: &str) -> Option<(Vec<String>, u16, bool)> {
+        self.targets
+            .get(peer_id)
+            .map(|a| (vec![a.clone()], 0, true))
+    }
+    fn get_local_interfaces(&self) -> Vec<nemesis_cluster::rpc::client::LocalNetworkInterface> {
+        Vec::new()
+    }
+    fn get_node_id(&self) -> String {
+        self.node_id.clone()
+    }
+}
+
+/// 注入「可解析到哑对端」的 RPC client（map：节点 id → silent listener）。
+#[cfg(feature = "cluster")]
+fn inject_silent_peer_client(
+    cluster: &nemesis_cluster::cluster::Cluster,
+    targets: &[(&str, String)],
+) {
+    let client =
+        nemesis_cluster::rpc::client::RpcClient::with_resolver(Arc::new(TestStaticResolver {
+            node_id: cluster.node_id().to_string(),
+            targets: targets
+                .iter()
+                .map(|(id, a)| (id.to_string(), a.clone()))
+                .collect(),
+        }));
+    cluster.set_rpc_client(Arc::new(client));
 }
 
 #[cfg(feature = "cluster")]
@@ -4615,6 +4945,7 @@ fn bare_issue(role: Option<&str>, tags: &[&str]) -> nemesis_board::Issue {
         required_role: role.map(str::to_string),
         required_tags: tags.iter().map(|s| s.to_string()).collect(),
         required_profession: None,
+        required_capabilities: vec![],
         created_at: 0,
         updated_at: 0,
     }
@@ -4672,6 +5003,10 @@ fn match_detail_reports_role_and_tag_gaps_per_candidate() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn project_resume_no_match_carries_b1_detail() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("resume-b1-detail");
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
@@ -4746,6 +5081,10 @@ async fn project_resume_no_match_carries_b1_detail() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn test_dispatch_issue_core_rejects_frozen_project() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("dispatch-frozen-gate");
     let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
     let pid = store
@@ -4786,6 +5125,75 @@ async fn test_dispatch_issue_core_rejects_frozen_project() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// BUG-②（2026-10-15 NB-1 事故）：挂有未确认计划的父单不可直接派发。
+// ready（待确认）与 running（拆解进行中）都拦，错误指引确认或等 TTL；
+// 过期计划不拦（TTL 惰性清理，派发闸自身 retain 同 plan.list 判据）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn test_dispatch_issue_core_rejects_issue_with_pending_plan() {
+    // 本测试自己写 PLAN_CACHE/RUNNING_PLANS 进程级全局——与其他派发测试
+    // 按 issue id 撞库（每 store 的 issue.id 都从 1 起），串行同纪律。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
+    let dir = unique_dir("dispatch-plan-guard");
+    let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "挂着计划的单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    // ready 计划在缓存 → 拦截且错误带 plan id + 确认指引（先于集群
+    // 缺失报错——具体指引优先于泛化报错）。
+    seed_plan("plan-guard-1", issue.id, vec![sub("子单A", vec![])]);
+    let err =
+        super::dispatch_issue_core(&store, None, issue.id, "node-b", &Actor::admin("t"), None)
+            .unwrap_err();
+    assert!(err.contains("未确认的拆解计划"), "{err}");
+    assert!(err.contains("待确认"), "{err}");
+    assert!(
+        err.contains("plan-guard-1"),
+        "错误应带 plan id 便于定位：{err}"
+    );
+    assert!(err.contains("确认"), "{err}");
+
+    // 计划过期 → 不拦（走集群缺失报错）。
+    {
+        let mut cache = super::PLAN_CACHE.lock();
+        if let Some(p) = cache.get_mut("plan-guard-1") {
+            p.created_at = Instant::now() - super::PLAN_TTL - std::time::Duration::from_secs(1);
+        }
+    }
+    let err =
+        super::dispatch_issue_core(&store, None, issue.id, "node-b", &Actor::admin("t"), None)
+            .unwrap_err();
+    assert!(
+        err.contains("集群未运行"),
+        "过期计划不拦（TTL 惰性清理同 plan.list）：{err}"
+    );
+
+    // running（拆解进行中）也拦。
+    super::PLAN_CACHE.lock().remove("plan-guard-1");
+    super::RUNNING_PLANS.lock().insert(
+        "plan-guard-2".to_string(),
+        super::RunningPlan {
+            issue_id: issue.id,
+            started_at: Instant::now(),
+            attempt: 1,
+            phase: "planning",
+        },
+    );
+    let err =
+        super::dispatch_issue_core(&store, None, issue.id, "node-b", &Actor::admin("t"), None)
+            .unwrap_err();
+    assert!(err.contains("拆解进行中"), "{err}");
+
+    // 清场（进程级共享注册表，防污染其他用例）。
+    super::RUNNING_PLANS.lock().remove("plan-guard-2");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---------------------------------------------------------------------------
 // 派发即指派回填（2026-09-17）：dispatch_issue_core 单一入口回填 assignee
 // ---------------------------------------------------------------------------
@@ -4795,11 +5203,19 @@ async fn test_dispatch_issue_core_rejects_frozen_project() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn test_dispatch_rejects_unknown_target_upfront() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("dispatch-ghost-target");
     let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
     let cluster = Arc::new(nemesis_cluster::cluster::Cluster::new(
         nemesis_cluster::types::ClusterConfig::default(),
     ));
+    // 注入空 client（2026-10-17 起 rpc client 前置检查先于 F1 归一化拒绝
+    // ——裸 Cluster::new 会先撞「RPC client 未就绪」，走不到本测试要钉的
+    // 「未知节点」臂；归一化拒绝发生在任何 send 之前，裸 client 足够）。
+    cluster.set_rpc_client(Arc::new(nemesis_cluster::rpc::client::RpcClient::new()));
     let issue = store
         .create_issue(nemesis_board::NewIssue {
             title: "幽灵目标单".into(),
@@ -4825,27 +5241,41 @@ async fn test_dispatch_rejects_unknown_target_upfront() {
     );
 }
 
-/// 派发回填 assignee=worker/目标节点；换目标重派时同点位改指。用纯内存
-/// `Cluster::new`（无 RPC client）——派发在 rpc_client_arc 诚实返回 Err，
-/// 但此刻 claim/状态转移/指派回填均已落库，正好钉住回填位置：状态转移
-/// 成功之后、RPC 依赖之前（Err 路径不回滚已提交的派发，与现行为一致）。
+/// 派发回填 assignee=worker/目标节点；换目标重派时同点位改指。注入可解析
+/// 到哑对端的 client（connect 即刻完成、ACK 永不到来——spawn 内 send 挂在
+/// 外层超时上，同步断言窗口内回退路径不触发）：2026-10-17 rpc client 前置
+/// 检查后，裸 `Cluster::new` 会在一切状态变更之前零副作用诚实拒绝——回填
+/// 只在派发同步管线成功路径上观察（claim/状态转移/指派回填均在
+/// submit_peer_chat 之后、fire-and-forget 发送之前落库）。
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn test_dispatch_backfills_assignee() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("dispatch-assignee-backfill");
     let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
     let cluster = Arc::new(nemesis_cluster::cluster::Cluster::new(
         nemesis_cluster::types::ClusterConfig::default(),
     ));
+    inject_silent_peer_client(
+        &cluster,
+        &[
+            ("node-b", silent_peer_addr()),
+            ("node-c", silent_peer_addr()),
+        ],
+    );
     // F1 派发目标校验前置（2026-09-30）：未知 target 在归一化处即被拒绝，
-    // 本测试意图是回填点位（状态转移后、RPC 前）——target 必须是注册表
-    // 已知节点才能走到 RPC client 缺失臂。
+    // 本测试意图是回填点位（同步成功路径）——target 必须是注册表已知节点，
+    // 且地址用哑对端（connect 即刻完成、ACK 永不到来，spawn 内 send 挂在
+    // 外层超时上——同步断言窗口内回退路径不会触发）。
     cluster.register_node(nemesis_cluster::types::ExtendedNodeInfo {
         base: nemesis_cluster::types::NodeInfo {
             id: "node-b".into(),
             name: "Node-B".into(),
             role: nemesis_cluster::types::NodeRole::Worker,
-            address: "10.0.0.2:9000".into(),
+            address: silent_peer_addr(),
             category: "development".into(),
             last_seen: chrono::Local::now().to_rfc3339(),
         },
@@ -4863,7 +5293,7 @@ async fn test_dispatch_backfills_assignee() {
             id: "node-c".into(),
             name: "Node-C".into(),
             role: nemesis_cluster::types::NodeRole::Worker,
-            address: "10.0.0.3:9000".into(),
+            address: silent_peer_addr(),
             category: "development".into(),
             last_seen: chrono::Local::now().to_rfc3339(),
         },
@@ -4877,14 +5307,15 @@ async fn test_dispatch_backfills_assignee() {
         node_type: "agent".into(),
     });
 
-    // 未指派 → 派发给 node-b：走到 RPC client 缺失诚实失败，回填已发生。
+    // 未指派 → 派发给 node-b：同步管线全程成功（submit → 转移 → 回填 →
+    // claim），连接失败留给 spawn 内异步终结，不影响同步断言。
     let issue = store
         .create_issue(nemesis_board::NewIssue {
             title: "回填指派的单".into(),
             ..Default::default()
         })
         .unwrap();
-    let err = super::dispatch_issue_core(
+    super::dispatch_issue_core(
         &store,
         Some(&cluster),
         issue.id,
@@ -4892,11 +5323,7 @@ async fn test_dispatch_backfills_assignee() {
         &Actor::admin("t"),
         None,
     )
-    .unwrap_err();
-    assert!(
-        err.contains("RPC client"),
-        "纯内存集群应走到 RPC client 缺失：{err}"
-    );
+    .unwrap();
     let after = store.get_issue(issue.id).unwrap();
     assert_eq!(
         after.assignee,
@@ -4925,7 +5352,7 @@ async fn test_dispatch_backfills_assignee() {
             &Actor::admin("t"),
         )
         .unwrap();
-    let err = super::dispatch_issue_core(
+    super::dispatch_issue_core(
         &store,
         Some(&cluster),
         issue2.id,
@@ -4933,8 +5360,7 @@ async fn test_dispatch_backfills_assignee() {
         &Actor::admin("t"),
         None,
     )
-    .unwrap_err();
-    assert!(err.contains("RPC client"), "{err}");
+    .unwrap();
     let after2 = store.get_issue(issue2.id).unwrap();
     assert_eq!(after2.assignee_id.as_deref(), Some("node-c"));
 
@@ -5311,13 +5737,16 @@ fn agt_assignee_pairing_sanitize_and_filter_arms() {
 fn agt_dispatch_prompt_renders_all_optional_sections() {
     let dir = unique_dir("agt-prompt");
     let store = store_of(&make_ctx_with_board(&dir));
-    let issue = store
+    // 2026-10-17 契约更新（NB-125 根修）：store 创建时自动生成 AC——要测
+    // None 臂（兜底文案 231-232）必须显式抹掉生成值，模拟存量缺 AC 单。
+    let mut issue = store
         .create_issue(nemesis_board::NewIssue {
             title: "提示词装配单".into(),
             description: "  ".into(), // 空白背景 → 「（未提供）」臂（225）
             ..Default::default()
         })
         .unwrap();
+    issue.acceptance_criteria = None;
     // 验收标准 None → 兜底文案（231-232）；assets/experience/feedback 全 Some（247/252/236-243）
     let p = build_dispatch_prompt(
         &issue,
@@ -5626,6 +6055,8 @@ async fn agt_board_config_get_set_all_keys_and_rejections() {
         ("plan.model", serde_json::json!(null)),
         ("max_redispatch", serde_json::json!(7)),
         ("review.max_turns", serde_json::json!(4)),
+        ("review.max_unsure_streak", serde_json::json!(11)),
+        ("review.max_unsure_streak", serde_json::json!(0)),
         ("review.checkers", serde_json::json!(3)),
         ("budget.max_subissues_per_parent", serde_json::json!(9)),
         ("budget.max_total_redispatch", serde_json::json!(11)),
@@ -5669,6 +6100,11 @@ async fn agt_board_config_get_set_all_keys_and_rejections() {
         ),
         ("max_redispatch", serde_json::json!(-2), "非负整数"),
         ("review.max_turns", serde_json::json!(1.5), "非负整数"),
+        (
+            "review.max_unsure_streak",
+            serde_json::json!(-1),
+            "非负整数",
+        ),
         ("review.checkers", serde_json::json!(9), "1..=5"),
         ("budget.max_send_retries", serde_json::json!(-3), "非负整数"),
         (
@@ -5929,6 +6365,110 @@ async fn agt_review_retrigger_gate_hook_and_trace() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// --- 项目收口复评臂（2026-10-17 NB-101 project_escalate_human 死路根修）---
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn agt_project_retrigger_arm_gates_hook_and_trace() {
+    let dir = unique_dir("agt-proj-retrig");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("agt");
+    let pid = store
+        .create_project("复评项目", "", None, "", "", None)
+        .unwrap()
+        .id;
+    let parent = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "项目父单".into(),
+            project_id: Some(pid),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .transition_issue(parent.id, IssueStatus::InProgress, &actor)
+        .unwrap();
+    store
+        .transition_issue(parent.id, IssueStatus::InReview, &actor)
+        .unwrap();
+    store
+        .transition_issue(parent.id, IssueStatus::Done, &actor)
+        .unwrap();
+
+    // ① 项目不存在 → 诚实报错。
+    let err = dispatch(
+        &ctx,
+        "review.retrigger",
+        serde_json::json!({ "project_id": 987654 }),
+    )
+    .await
+    .unwrap_err();
+    assert!(!err.is_empty(), "{err}");
+
+    // ② 钩子未安装 → 诚实报错（PROJECT_REVIEW_RETRIGGER_HOOK 唯一安装点
+    //    在本测试；装之前的 get() 恒 None）。
+    let err = dispatch(
+        &ctx,
+        "review.retrigger",
+        serde_json::json!({ "project_id": pid }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("钩子未安装"), "{err}");
+
+    // ③ 安装钩子 → project_id 寻址命中、按 project_id 触发、父单留痕。
+    let fired = std::sync::Arc::new(std::sync::Mutex::new(Vec::<i64>::new()));
+    let fired2 = fired.clone();
+    let _ = set_project_review_retrigger_hook(std::sync::Arc::new(move |project_id: i64| {
+        fired2.lock().unwrap().push(project_id);
+    }));
+    let out = dispatch(
+        &ctx,
+        "review.retrigger",
+        serde_json::json!({ "project_id": pid }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["retriggered"], serde_json::json!(true));
+    assert_eq!(out["project_id"], serde_json::json!(pid));
+    assert_eq!(
+        fired.lock().unwrap().as_slice(),
+        &[pid],
+        "钩子按 project_id 触发"
+    );
+    let comments = store.list_comments(parent.id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("人工触发项目收口复评")),
+        "父单必须留系统注记：{:?}",
+        comments.iter().map(|c| &c.content).collect::<Vec<_>>()
+    );
+
+    // ④ 非 done 顶层父单 → 诚实拒绝（先收口父单再复评项目）。
+    let pid2 = store
+        .create_project("复评项目2", "", None, "", "", None)
+        .unwrap()
+        .id;
+    let _parent2 = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "未完成父单".into(),
+            project_id: Some(pid2),
+            ..Default::default()
+        })
+        .unwrap();
+    let err = dispatch(
+        &ctx,
+        "review.retrigger",
+        serde_json::json!({ "project_id": pid2 }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("非 done"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // --- 附录一：autopilot cron 装配 / 同步 / 摘除（3279-3390）---
 
 #[cfg(feature = "cluster")]
@@ -6165,6 +6705,74 @@ impl LlmProvider for AgtDownProvider {
     }
 }
 
+/// 捕获全部 user 消息文本的 provider（D2 等待预算注入断言；恒回合法计划）。
+#[cfg(feature = "cluster")]
+struct AgtPromptCaptureProvider(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+#[cfg(feature = "cluster")]
+#[async_trait::async_trait]
+impl LlmProvider for AgtPromptCaptureProvider {
+    async fn chat(
+        &self,
+        _: &str,
+        messages: Vec<LlmMessage>,
+        _: Option<nemesis_agent::types::ChatOptions>,
+        _: Vec<nemesis_agent::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        if let Some(m) = messages.iter().rfind(|m| m.role == "user") {
+            self.0.lock().unwrap().push(m.content.clone());
+        }
+        Ok(LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
+            content: AGT_PLAN_JSON.to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+}
+
+/// D2 等待预算注入（run_planner 新参）：Some(secs) → user prompt 带
+/// 「讨论评审等待预算」段与具体值；None → 段不渲染（字节与历史一致）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn agt_run_planner_discussion_wait_hint_injected() {
+    let dir = unique_dir("agt-wait-hint");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let parent = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "预算注入父单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let al = Arc::new(AgentLoop::new(
+        Box::new(AgtPromptCaptureProvider(seen.clone())),
+        AgentConfig::default(),
+    ));
+    super::run_planner(&al, &parent, Vec::new(), None, Some(600), None)
+        .await
+        .unwrap();
+    let first = seen.lock().unwrap()[0].clone();
+    assert!(first.contains("讨论评审等待预算"), "{first}");
+    assert!(first.contains("review_wait_secs = 600"), "{first}");
+    assert!(first.contains("0=不等直接裁决"), "{first}");
+
+    // None = 不渲染（无该段——传导面关断时不污染既有 prompt 字节）。
+    super::run_planner(&al, &parent, Vec::new(), None, None, None)
+        .await
+        .unwrap();
+    let second = seen.lock().unwrap()[1].clone();
+    assert!(!second.contains("讨论评审等待预算"), "{second}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn agt_run_planner_surrender_llm_fail_and_success() {
@@ -6183,7 +6791,7 @@ async fn agt_run_planner_surrender_llm_fail_and_success() {
         Box::new(AgtBadPlannerProvider),
         AgentConfig::default(),
     ));
-    let err = super::run_planner(&al, &parent, Vec::new(), None)
+    let err = super::run_planner(&al, &parent, Vec::new(), None, None, None)
         .await
         .unwrap_err();
     assert!(err.contains("连续 3 轮无法解析"), "{err}");
@@ -6193,7 +6801,7 @@ async fn agt_run_planner_surrender_llm_fail_and_success() {
         Box::new(AgtDownProvider),
         AgentConfig::default(),
     ));
-    let err2 = super::run_planner(&al_down, &parent, Vec::new(), None)
+    let err2 = super::run_planner(&al_down, &parent, Vec::new(), None, None, None)
         .await
         .unwrap_err();
     assert!(err2.contains("planner LLM 调用失败"), "{err2}");
@@ -6203,10 +6811,16 @@ async fn agt_run_planner_surrender_llm_fail_and_success() {
         Box::new(AgtGoodPlannerProvider),
         AgentConfig::default(),
     ));
-    let (subs, downgrades) =
-        super::run_planner(&al_ok, &parent, vec!["过往经验: 先补测试".into()], None)
-            .await
-            .unwrap();
+    let (subs, downgrades) = super::run_planner(
+        &al_ok,
+        &parent,
+        vec!["过往经验: 先补测试".into()],
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     assert_eq!(subs.len(), 2);
     assert_eq!(subs[1].depends_on, vec![0]);
     assert!(downgrades.is_empty(), "严格可过的计划零降级");
@@ -6216,6 +6830,9 @@ async fn agt_run_planner_surrender_llm_fail_and_success() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn agt_execute_plan_chain_planned_failure_and_auto_confirm() {
+    // 写/读进程级 plan 全局——串行持锁 + 开场清残留（与派发闸测试同纪律）。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("agt-chain");
     std::fs::create_dir_all(&dir).unwrap();
     let ctx = make_ctx_with_board(&dir);
@@ -6338,9 +6955,297 @@ async fn agt_execute_plan_chain_planned_failure_and_auto_confirm() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+/// 按提示词分流的 provider：起草形态（user prompt 含「起草」）回可配置
+/// 的 AC 文本；planner 形态回合法计划 JSON。`draft_reply: None` = 起草
+/// 形态也回 JSON 数组（护栏拒绝臂——模型误入拆解角色）。
+#[cfg(feature = "cluster")]
+struct AgtAcDraftProvider {
+    draft_reply: Option<&'static str>,
+}
+
+#[cfg(feature = "cluster")]
+#[async_trait::async_trait]
+impl LlmProvider for AgtAcDraftProvider {
+    async fn chat(
+        &self,
+        _: &str,
+        messages: Vec<LlmMessage>,
+        _: Option<nemesis_agent::types::ChatOptions>,
+        _: Vec<nemesis_agent::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        let drafting = messages
+            .iter()
+            .rfind(|m| m.role == "user")
+            .map(|m| m.content.contains("起草"))
+            .unwrap_or(false);
+        let content = if drafting {
+            self.draft_reply
+                .unwrap_or(r#"[{"title":"误入拆解形态"}]"#)
+                .to_string()
+        } else {
+            AGT_PLAN_JSON.to_string()
+        };
+        Ok(LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
+            content,
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+}
+
+/// 预防层（NB-101 AC 缺失根修）：父单 AC 为空 → 拆解链自动起草落库 +
+/// 系统评论留痕；已有基线不动（用户显式 AC 最大）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn agt_execute_plan_chain_drafts_parent_ac_when_empty() {
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
+    let dir = unique_dir("agt-ac-draft");
+    std::fs::create_dir_all(&dir).unwrap();
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("agt");
+    let hub = EventHub::new();
+    let al = Arc::new(AgentLoop::new(
+        Box::new(AgtAcDraftProvider {
+            draft_reply: Some("- 游戏可打开\n- 无脚本错误"),
+        }),
+        AgentConfig::default(),
+    ));
+
+    // 空基线父单：起草落库 + 评论留痕。2026-10-17 契约更新：store 建单
+    // 自动生成 AC——LLM 起草闸只在 AC 真空时触发（存量单形态），本地抹掉
+    // 生成值保持该路径覆盖。
+    let mut parent = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "无基线父单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    parent.acceptance_criteria = None;
+    let out = super::execute_plan_chain(
+        &store,
+        None,
+        al.clone(),
+        parent.clone(),
+        actor.clone(),
+        "agt-ac-draft-1",
+        None,
+        Some(&hub),
+        1,
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["status"], serde_json::json!("planned"), "{out}");
+    let reloaded = store.get_issue(parent.id).unwrap();
+    assert_eq!(
+        reloaded.acceptance_criteria.as_deref(),
+        Some("- 游戏可打开\n- 无脚本错误"),
+        "父单 AC 已起草落库"
+    );
+    let comments = store.list_comments(parent.id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("已依据子单计划自动起草")),
+        "起草评论留痕: {comments:?}"
+    );
+
+    // 已有基线父单：不动（起草只补空，不覆盖用户显式 AC）
+    let parent2 = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "有基线父单".into(),
+            acceptance_criteria: Some("用户基线".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    super::execute_plan_chain(
+        &store,
+        None,
+        al,
+        parent2.clone(),
+        actor,
+        "agt-ac-draft-2",
+        None,
+        Some(&hub),
+        1,
+    )
+    .await
+    .unwrap();
+    let reloaded2 = store.get_issue(parent2.id).unwrap();
+    assert_eq!(
+        reloaded2.acceptance_criteria.as_deref(),
+        Some("用户基线"),
+        "已有基线不被起草覆盖"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 预防层失败臂：起草产物为 JSON 形态（护栏拒绝）/ LLM 失败都不阻塞
+/// 发车——链照常 planned，父单 AC 保持空，失败评论指路 AI 起草。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn agt_execute_plan_chain_ac_draft_failure_does_not_block() {
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
+    let dir = unique_dir("agt-ac-draft-fail");
+    std::fs::create_dir_all(&dir).unwrap();
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    // 2026-10-17 契约更新：本地抹掉 store 生成值，保持「AC 真空 → 起草失败
+    // 不落坏草稿」路径覆盖。
+    let mut parent = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "起草失败父单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    parent.acceptance_criteria = None;
+    let al = Arc::new(AgentLoop::new(
+        Box::new(AgtAcDraftProvider { draft_reply: None }),
+        AgentConfig::default(),
+    ));
+    let out = super::execute_plan_chain(
+        &store,
+        None,
+        al,
+        parent.clone(),
+        Actor::admin("agt"),
+        "agt-ac-draft-fail",
+        None,
+        Some(&EventHub::new()),
+        1,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        out["status"],
+        serde_json::json!("planned"),
+        "起草失败不阻塞: {out}"
+    );
+    // 2026-10-17 契约更新：起草失败不落坏草稿——store 基线（建单自动生成
+    // AC）逐字节不变，没有被失败产物污染。
+    let ac_baseline = store
+        .get_issue(parent.id)
+        .unwrap()
+        .acceptance_criteria
+        .clone();
+    assert!(
+        ac_baseline.is_some(),
+        "建单自动生成 AC 已在场（新契约基线）"
+    );
+    assert_eq!(
+        store.get_issue(parent.id).unwrap().acceptance_criteria,
+        ac_baseline,
+        "护栏拒绝后父单 AC 基线不变（不落库坏草稿）"
+    );
+    let comments = store.list_comments(parent.id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("自动起草失败") && c.content.contains("AI 起草")),
+        "失败评论指路: {comments:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// WSAPI `issue.draft_ac`：草稿回前端、不落库；父单 prompt 汇总子单材料。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn agt_issue_draft_ac_returns_draft_without_persisting() {
+    let dir = unique_dir("agt-draft-ac-ws");
+    let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").expect("open store"));
+    let al = Arc::new(AgentLoop::new(
+        Box::new(AgtAcDraftProvider {
+            draft_reply: Some("- 草稿条目一\n- 草稿条目二"),
+        }),
+        AgentConfig::default(),
+    ));
+    let ctx = agt_make_ctx_ex(
+        &dir,
+        nemesis_board::BoardService::new(store.clone(), NodeRole::Coordinator),
+        None,
+        Some(al),
+        None,
+    );
+    let parent = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "待起草父单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let child = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "已交付子单".into(),
+            parent_issue_id: Some(parent.id),
+            acceptance_criteria: Some("子基线".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .add_comment(nemesis_board::NewComment {
+            issue_id: child.id,
+            author: Actor::agent("w"),
+            content: "交付完成".to_string(),
+            parent_id: None,
+            ctype: CommentType::Delivery,
+        })
+        .unwrap();
+
+    // 草稿不落库（保存决定权在用户）。2026-10-17 契约更新：store 建单已
+    // 自动生成 AC——「不落库」的正确断言 = 起草前后 AC 逐字节不变。
+    let ac_before = store.get_issue(parent.id).unwrap().acceptance_criteria;
+    assert!(ac_before.is_some(), "建单自动生成 AC 已在场（新契约基线）");
+    let out = dispatch(
+        &ctx,
+        "issue.draft_ac",
+        serde_json::json!({ "id": parent.id }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["issue"], serde_json::json!(parent.number), "{out}");
+    assert_eq!(
+        out["draft"],
+        serde_json::json!("- 草稿条目一\n- 草稿条目二")
+    );
+    assert_eq!(
+        store.get_issue(parent.id).unwrap().acceptance_criteria,
+        ac_before,
+        "起草只回前端预填，不改 store"
+    );
+
+    // agent 未运行 → 诚实报错（不是 panic / 静默空）。
+    let dir2 = unique_dir("agt-draft-ac-noagent");
+    let ctx2 = make_ctx_with_board(&dir2);
+    let err = dispatch(&ctx2, "issue.draft_ac", serde_json::json!({ "id": 1 }))
+        .await
+        .unwrap_err();
+    assert!(err.contains("agent 未运行"), "{err}");
+
+    // commands() 注册（L1 契约：system.commands 汇总发布）。
+    let cmds = super::BoardHandler.commands();
+    assert!(
+        cmds.contains(&"issue.draft_ac"),
+        "issue.draft_ac 未注册: {cmds:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&dir2);
+}
+
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn agt_issue_plan_stage_one_spawns_chain_when_agent_ready() {
+    // 写/读进程级 plan 全局——串行持锁 + 开场清残留（与派发闸测试同纪律）。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("agt-plan1");
     let store = BoardStore::open(&dir.join("board.db"), "NB").unwrap();
     let al = Arc::new(AgentLoop::new(
@@ -6398,19 +7303,26 @@ async fn agt_issue_plan_stage_one_spawns_chain_when_agent_ready() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn agt_dispatch_gates_matrix() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("agt-dispatch");
     let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
     let cluster = Arc::new(nemesis_cluster::cluster::Cluster::new(
         nemesis_cluster::types::ClusterConfig::default(),
     ));
-    // F1 派发目标校验前置（2026-09-30）：本矩阵测状态/重复/冻结等闸，
-    // target 须是注册表已知节点才能走到 RPC client 缺失臂。
+    // 注入可解析到哑对端的 client（2026-10-17 rpc client 前置检查先于各
+    // 状态闸后的派发管线——裸 Cluster::new 会零副作用早拒，走不到注册表
+    // 归一化/拓扑闸/完整派发管线；哑 listener 让 send 挂在外层超时，同步
+    // 断言窗口内 claim 行保持在途）。
+    inject_silent_peer_client(&cluster, &[("node-b", silent_peer_addr())]);
     cluster.register_node(nemesis_cluster::types::ExtendedNodeInfo {
         base: nemesis_cluster::types::NodeInfo {
             id: "node-b".into(),
             name: "Node-B".into(),
             role: nemesis_cluster::types::NodeRole::Worker,
-            address: "10.0.0.2:9000".into(),
+            address: silent_peer_addr(),
             category: "development".into(),
             last_seen: chrono::Local::now().to_rfc3339(),
         },
@@ -6541,8 +7453,9 @@ async fn agt_dispatch_gates_matrix() {
     .unwrap_err();
     assert!(err.contains("缺少派发目标"), "{err}");
 
-    // worker 指派 → target 解析自 assignee_id → 走完整派发管线到 RPC
-    // client 缺失；途中 backlog → in_progress 派发转移已发生。
+    // worker 指派 → target 解析自 assignee_id → 走完整派发管线到同步成功
+    //（submit → backlog → in_progress 派发转移 → 回填 → claim；连接失败在
+    // spawn 内异步终结，不进同步断言窗口）。
     let resolved = store
         .create_issue(nemesis_board::NewIssue {
             title: "指派解析单".into(),
@@ -6557,14 +7470,13 @@ async fn agt_dispatch_gates_matrix() {
             &actor,
         )
         .unwrap();
-    let err = dispatch(
+    dispatch(
         &ctx,
         "issue.dispatch",
         serde_json::json!({ "id": resolved.id }),
     )
     .await
-    .unwrap_err();
-    assert!(err.contains("RPC client"), "{err}");
+    .unwrap();
     assert_eq!(
         store.get_issue(resolved.id).unwrap().status,
         IssueStatus::InProgress,
@@ -6620,29 +7532,37 @@ async fn agt_dispatch_gates_matrix() {
     .unwrap_err();
     assert!(err.contains("拒绝派发") && err.contains("file:"), "{err}");
 
-    // project_id 指向不存在项目：两个诚实降级点，命中哪个取决于
-    // BASELINE_PUSHER OnceLock 的装配赢家（基线测试同进程并行）——
-    // 基线装配先跑 = push_dispatch_baseline 的 get_project Err 弃派
-    // （「派发中止」）；未装配先跑 = 联动 link_project_on_dispatch 只
-    // warn，派发照走终至 RPC client 缺失。两臂都是诚实路径。
+    // project_id 指向已删除项目（存量幽灵行——引用完整性闸 2026-10-17 后
+    // create 不再接受，直连 SQLite 删行复刻存量形态）：两个诚实降级点，
+    // 命中哪个取决于 BASELINE_PUSHER OnceLock 的装配赢家（基线测试同进程
+    // 并行）——基线装配先跑 = push_dispatch_baseline 的 get_project Err
+    // 弃派（「派发中止」）；未装配先跑 = 联动 link_project_on_dispatch 只
+    // warn，派发照走（注入 client 后同步成功）。两臂都是诚实路径。
+    let ghost_project = store
+        .create_project("矩阵幽灵项目", "", None, "", "", None)
+        .unwrap();
     let ghost_proj = store
         .create_issue(nemesis_board::NewIssue {
             title: "幽灵项目单".into(),
-            project_id: Some(424242),
+            project_id: Some(ghost_project.id),
             ..Default::default()
         })
         .unwrap();
-    let err = dispatch(
+    {
+        let conn = rusqlite::Connection::open(dir.join("board.db")).unwrap();
+        conn.execute("DELETE FROM project WHERE id = ?1", [ghost_project.id])
+            .unwrap();
+    }
+    // 基线 pusher 未装配：联动只 warn，派发照走完整同步管线。
+    if let Err(e) = dispatch(
         &ctx,
         "issue.dispatch",
         serde_json::json!({ "id": ghost_proj.id, "target": "node-b" }),
     )
     .await
-    .unwrap_err();
-    assert!(
-        err.contains("RPC client") || err.contains("project 424242 not found"),
-        "{err}"
-    );
+    {
+        assert!(e.contains("派发中止") || e.contains("not found"), "{e}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -6762,6 +7682,10 @@ async fn agt_project_resume_frozen_replay_refreeze_and_candidate_filter() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn agt_sweep_and_rebalance_offline_arms() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("agt-sweep");
     let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
     let cluster = offline_cluster(&dir, "node-a");
@@ -6972,6 +7896,10 @@ impl nemesis_cluster::outbox::TransferTransport for AgtPushTransport {
 #[cfg(feature = "cluster")]
 #[tokio::test(flavor = "multi_thread")]
 async fn agt_push_dispatch_baseline_paths() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("agt-baseline");
     let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
     let actor = Actor::admin("agt");
@@ -6997,7 +7925,21 @@ async fn agt_push_dispatch_baseline_paths() {
     };
     let with_proj = store.create_issue(mk("带项目", Some(proj.id))).unwrap();
     let no_proj = store.create_issue(mk("无项目", None)).unwrap();
-    let ghost_proj = store.create_issue(mk("幽灵项目", Some(424242))).unwrap();
+    // 「幽灵项目」引用（存量态）：引用完整性闸（2026-10-17）后 create 已
+    // 不接受不存在的 project_id——先建真实项目再直连 SQLite 删行复刻存量
+    // 数据形态（push_dispatch_baseline 的 get_project Err 防御臂只对存量
+    // 幽灵行有意义）。
+    let ghost_proj = store
+        .create_project("将被删的项目", "", None, "", "", None)
+        .unwrap();
+    let ghost_issue = store
+        .create_issue(mk("幽灵项目", Some(ghost_proj.id)))
+        .unwrap();
+    {
+        let conn = rusqlite::Connection::open(dir.join("board.db")).unwrap();
+        conn.execute("DELETE FROM project WHERE id = ?1", [ghost_proj.id])
+            .unwrap();
+    }
 
     // ① pusher 未安装（OnceLock 先装先赢——本测试必须在安装前覆盖此臂）
     let out = super::push_dispatch_baseline(&store, &with_proj, "agt-baseline-0", "node-b");
@@ -7020,8 +7962,8 @@ async fn agt_push_dispatch_baseline_paths() {
     let out = super::push_dispatch_baseline(&store, &no_proj, "agt-baseline-1", "node-b");
     assert_eq!(out.unwrap(), None);
 
-    // ③ project_id 指向不存在项目 → get_project Err 中止派发
-    let out = super::push_dispatch_baseline(&store, &ghost_proj, "agt-baseline-2", "node-b");
+    // ③ project_id 指向已删除项目（存量幽灵行）→ get_project Err 中止派发
+    let out = super::push_dispatch_baseline(&store, &ghost_issue, "agt-baseline-2", "node-b");
     assert!(out.is_err(), "幽灵项目必须中止: {out:?}");
 
     // ④ 项目无 directory → 直通
@@ -7066,18 +8008,19 @@ async fn agt_push_dispatch_baseline_paths() {
     let err = out.unwrap_err();
     assert!(err.contains("boom") && !err.contains("版本过旧"), "{err}");
 
-    // ⑩ 完整派发管线带基线：dedup 模式恢复 → 基线成功后照走到 RPC client
-    //    缺失（基线不是派发终点，也不吞后续错误）；途中 claim + 状态推进
-    //    已落定。
+    // ⑩ 完整派发管线带基线：dedup 模式恢复 → 基线成功后照走同步管线
+    //    （submit → claim + 状态推进；连接失败在 spawn 内异步终结）。
     let cluster = offline_cluster(&dir, "node-a");
-    // F1 派发目标校验前置：node-b 须在注册表（否则归一化处被拒，走不到
-    // RPC client 缺失臂）。
+    // F1 派发目标校验前置：node-b 须在注册表（否则归一化处被拒）。RPC
+    // client 前置检查（2026-10-17）要求注入可用 client 才能走到完整管线。
     cluster.register_node(nemesis_cluster::types::ExtendedNodeInfo {
         base: nemesis_cluster::types::NodeInfo {
             id: "node-b".into(),
             name: "Node-B".into(),
             role: nemesis_cluster::types::NodeRole::Worker,
-            address: "10.0.0.2:9000".into(),
+            // 哑对端 listener：同步断言窗口内 connect/ACK 都不终结（不可
+            // 路由地址的 connect 失败快慢随主机路由环境漂移，竞态不可接受）。
+            address: silent_peer_addr(),
             category: "development".into(),
             last_seen: chrono::Local::now().to_rfc3339(),
         },
@@ -7091,10 +8034,11 @@ async fn agt_push_dispatch_baseline_paths() {
         node_type: "agent".into(),
     });
     mode.store(0, std::sync::atomic::Ordering::SeqCst);
-    let err =
-        super::dispatch_issue_core(&store, Some(&cluster), with_proj.id, "node-b", &actor, None)
-            .unwrap_err();
-    assert!(err.contains("RPC client"), "{err}");
+    // 哑 client 会派生「peer unresolvable」瞬时 Err → spawn 内回滚与同步
+    // 断言竞态——本测试是 multi_thread，必须给可解析到哑对端的 client。
+    inject_silent_peer_client(&cluster, &[("node-b", silent_peer_addr())]);
+    super::dispatch_issue_core(&store, Some(&cluster), with_proj.id, "node-b", &actor, None)
+        .unwrap();
     assert!(
         store.get_active_dispatch(with_proj.id).unwrap().is_some(),
         "基线成功后 claim 已落定"
@@ -7110,9 +8054,7 @@ async fn agt_push_dispatch_baseline_paths() {
     store
         .transition_issue(second.id, IssueStatus::InProgress, &actor)
         .unwrap();
-    let err = super::dispatch_issue_core(&store, Some(&cluster), second.id, "node-b", &actor, None)
-        .unwrap_err();
-    assert!(err.contains("RPC client"), "{err}");
+    super::dispatch_issue_core(&store, Some(&cluster), second.id, "node-b", &actor, None).unwrap();
     assert_eq!(
         store.get_issue(second.id).unwrap().status,
         IssueStatus::InProgress,
@@ -7130,8 +8072,11 @@ async fn agt_push_dispatch_baseline_paths() {
 // 既有纪律一致。
 // ===========================================================================
 
-/// 给离线 cluster 注入空 RPC client（对端不可达的 connect 失败在 spawn
-/// 体内终结，不影响同步断言；同 sweep_redispatches 先例）。
+/// 给离线 cluster 注入空 RPC client（resolver:None → spawn 体内 dispatch()
+/// 瞬时「peer unresolvable」Err → 回滚）。**只用于 current_thread 测试**：
+/// spawn 体在断言窗口内不被调度（运行时关闭时丢弃未执行任务），同步断言
+/// 看到的都是 pre-rollback 状态；multi_thread 测试必须改用
+/// `inject_silent_peer_client`（回滚会并发跑，哑 client 会竞态）。
 #[cfg(feature = "cluster")]
 fn w5_inject_rpc(cluster: &nemesis_cluster::cluster::Cluster) {
     cluster.set_rpc_client(Arc::new(nemesis_cluster::rpc::client::RpcClient::new()));
@@ -7204,6 +8149,9 @@ fn w5_estop_slot_install_and_prompt_description_arm() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn w5_run_planner_retry_appends_cluster_profile() {
+    // 写/读进程级 plan 全局——串行持锁 + 开场清残留（与派发闸测试同纪律）。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("w5-planner-profile");
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
@@ -7222,6 +8170,8 @@ async fn w5_run_planner_retry_appends_cluster_profile() {
         &parent,
         Vec::new(),
         Some("- PyWorker [role=worker tags=python]".to_string()),
+        None,
+        None,
     )
     .await
     .unwrap_err();
@@ -7235,6 +8185,9 @@ async fn w5_run_planner_retry_appends_cluster_profile() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn w5_confirm_plan_empty_title_err_and_dispatch_wave() {
+    // 写/读进程级 plan 全局——串行持锁 + 开场清残留（与派发闸测试同纪律）。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("w5-confirm");
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
@@ -7252,6 +8205,7 @@ async fn w5_confirm_plan_empty_title_err_and_dispatch_wave() {
         required_role: String::new(),
         required_tags: Vec::new(),
         required_profession: String::new(),
+        required_capabilities: vec![],
         acceptance_criteria: String::new(),
         depends_on: Vec::new(),
     };
@@ -7360,6 +8314,10 @@ fn w5_rank_out_of_vocab_role_and_empty_tags_detail() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn w5_auto_dispatch_without_id_false_then_ok_true() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("w5-autodisp");
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
@@ -7484,6 +8442,10 @@ fn w5_disarm_ghost_job_and_poisoned_lock() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn w5_issue_dispatch_success_via_handler() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("w5-dispatch-ok");
     let cluster = offline_cluster(&dir, "w5-d-c");
     w5_inject_rpc(&cluster);
@@ -7577,6 +8539,10 @@ async fn w5_issue_dispatch_success_via_handler() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn w5_rebalance_moves_queued_from_overloaded_worker() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("w5-rebalance");
     let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
     let actor = Actor::admin("w5");
@@ -7933,6 +8899,9 @@ async fn w5_handler_misc_arms() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn w5_plan_chain_renders_cluster_profile() {
+    // 写/读进程级 plan 全局——串行持锁 + 开场清残留（与派发闸测试同纪律）。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("w5-chain-profile");
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
@@ -7975,6 +8944,9 @@ async fn w5_plan_chain_renders_cluster_profile() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn w5_spawned_plan_chain_failure_publishes_event() {
+    // 写/读进程级 plan 全局——串行持锁 + 开场清残留（与派发闸测试同纪律）。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("w5-plan1-fail");
     let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
     let al = Arc::new(AgentLoop::new(
@@ -8025,6 +8997,9 @@ async fn w5_spawned_plan_chain_failure_publishes_event() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn w5_project_auto_start_with_agent_and_empty_name() {
+    // 写/读进程级 plan 全局——串行持锁 + 开场清残留（与派发闸测试同纪律）。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("w5-autostart");
     let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
     let al = Arc::new(AgentLoop::new(
@@ -8089,6 +9064,9 @@ async fn w5_project_auto_start_with_agent_and_empty_name() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn w5_fire_autopilot_plan_chain_filled_slot() {
+    // 写/读进程级 plan 全局——串行持锁 + 开场清残留（与派发闸测试同纪律）。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("w5-ap-slot");
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
@@ -8134,6 +9112,10 @@ async fn w5_fire_autopilot_plan_chain_filled_slot() {
 #[cfg(feature = "cluster")]
 #[test]
 fn w5_render_assets_section_with_signing_context() {
+    // 写/读进程级 plan 全局——串行持锁 + 开场清残留（与派发闸测试同纪律；
+    // 同步测试走 blocking_lock，无 runtime 不炸）。
+    let _serial = PLAN_TEST_LOCK.blocking_lock();
+    clear_plan_globals();
     let dir = unique_dir("w5-assets");
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
@@ -8170,6 +9152,10 @@ fn w5_render_assets_section_with_signing_context() {
 #[cfg(feature = "cluster")]
 #[test]
 fn confirm_plan_writes_downgrade_comments_and_keeps_valid_professions() {
+    // 写/读进程级 plan 全局——串行持锁 + 开场清残留（与派发闸测试同纪律；
+    // 同步测试走 blocking_lock，无 runtime 不炸）。
+    let _serial = PLAN_TEST_LOCK.blocking_lock();
+    clear_plan_globals();
     let dir = unique_dir("confirm-downgrade-comments");
     let ctx = make_ctx_with_board(&dir);
     let store = ctx.state.board.as_ref().unwrap().store().clone();
@@ -8184,11 +9170,13 @@ fn confirm_plan_writes_downgrade_comments_and_keeps_valid_professions() {
         nemesis_board::PlannedSubIssue {
             title: "被降级子单".to_string(),
             required_profession: "BAD SLUG".to_string(),
+            required_capabilities: vec![],
             ..nemesis_board::PlannedSubIssue::default()
         },
         nemesis_board::PlannedSubIssue {
             title: "合法职能子单".to_string(),
             required_profession: "dev:cpp".to_string(),
+            required_capabilities: vec![],
             ..nemesis_board::PlannedSubIssue::default()
         },
     ];
@@ -8244,6 +9232,10 @@ fn confirm_plan_writes_downgrade_comments_and_keeps_valid_professions() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn w5_rebalance_skips_file_anchor_queued_but_moves_plain() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("w5-rb-file");
     let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
     let actor = Actor::admin("w5");
@@ -8322,6 +9314,10 @@ async fn w5_rebalance_skips_file_anchor_queued_but_moves_plain() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn w5_rebalance_failure_leaves_compensation_comment() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("w5-rb-comp");
     let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
     let actor = Actor::admin("w5");
@@ -8571,6 +9567,9 @@ impl nemesis_agent::r#loop::LlmProvider for PlanChainMockProvider {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn plan_query_list_and_get_full_fields() {
+    // 写/读进程级 plan 全局——串行持锁 + 开场清残留（与派发闸测试同纪律）。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("plan-query-full");
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
@@ -8678,6 +9677,9 @@ async fn plan_query_list_and_get_full_fields() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn plan_query_missing_and_expired_states() {
+    // 写/读进程级 plan 全局——串行持锁 + 开场清残留（与派发闸测试同纪律）。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("plan-query-states");
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
@@ -8756,6 +9758,9 @@ async fn plan_query_missing_and_expired_states() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn planner_chain_success_comment_trace() {
+    // 写/读进程级 plan 全局——串行持锁 + 开场清残留（与派发闸测试同纪律）。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     // 一段拆解成功（mock provider 输出合法 plan JSON，home 无 config.json →
     // auto_confirm fail-closed 关）→ 预览在缓存 + 完成系统评论带 plan_id/
     // 子单数/TTL 提示。
@@ -8866,6 +9871,9 @@ async fn planner_chain_success_comment_trace() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn planner_chain_failure_comment_trace() {
+    // 写/读进程级 plan 全局——串行持锁 + 开场清残留（与派发闸测试同纪律）。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     // LLM 调用失败（mock 恒 Err）→ 失败系统评论带原因，缓存不残留。
     let dir = unique_dir("planner-fail-comment");
     let ctx = make_ctx_with_board(&dir);
@@ -8917,6 +9925,9 @@ async fn planner_chain_failure_comment_trace() {
 #[cfg(feature = "cluster")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn plan_chain_panic_leaves_issue_comment_and_event() {
+    // 写/读进程级 plan 全局——串行持锁 + 开场清残留（与派发闸测试同纪律）。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("plan-chain-panic-watch");
     std::fs::create_dir_all(&dir).unwrap();
     let ctx = make_ctx_with_board(&dir);
@@ -8999,6 +10010,7 @@ async fn plan_list_includes_running_entries() {
             issue_id: 42,
             started_at: std::time::Instant::now() - std::time::Duration::from_secs(65),
             attempt: 1,
+            phase: "planning",
         },
     );
     let out = dispatch(&ctx, "plan.list", serde_json::json!({}))
@@ -9107,7 +10119,25 @@ async fn project_create_duplicate_name_friendly_error() {
 /// BoardStore 里 issue id 都从 1 起——并行跑会跨 store 误匹配 issue_id
 ///（让恢复扫描误判「在途链」/ issue.list 投影串台）。background_registry
 /// TEST_LOCK 同款纪律。
+///
+/// BUG-② 派发闸（2026-10-15）后**读侧也入册**：`dispatch_issue_core` 会
+/// 读 PLAN_CACHE/RUNNING_PLANS 拦「挂有未确认计划的父单」——所有走到
+/// 派发路径的测试（含只读负例）必须持本锁，否则其他测试的残留条目按
+/// issue id 撞库误拦（实录：9 个派发测试并行假红）。
 static PLAN_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// 派发闸读的两个进程级全局的开场清残留（cluster 门控；无 feature 编译为
+/// 空调用）。持 PLAN_TEST_LOCK 期间调用——plan 链测试按设计会留条目
+///（superseded mock 中途摘除后不回填等），不清则后续派发测试按 issue id
+/// 撞库确定性误拦（实录：首批 9 个派发测试假红）。
+#[cfg(feature = "cluster")]
+fn clear_plan_globals() {
+    super::PLAN_CACHE.lock().clear();
+    super::RUNNING_PLANS.lock().clear();
+}
+
+#[cfg(not(feature = "cluster"))]
+fn clear_plan_globals() {}
 
 /// superseded 双闸专用 mock：LLM 返回前先摘 RUNNING_PLANS 条目——模拟超时
 /// 监视已判定超时并摘除、旧链 LLM future 不可取消仍在飞的形态。
@@ -9220,6 +10250,7 @@ async fn plan_timeout_watch_replans_with_next_attempt() {
             issue_id: issue.id,
             started_at: std::time::Instant::now() - std::time::Duration::from_secs(1201),
             attempt: 1,
+            phase: "planning",
         },
     );
     let env = Arc::new(super::PlanChainEnv {
@@ -9299,6 +10330,7 @@ async fn plan_timeout_watch_parks_when_attempts_exhausted() {
             issue_id: issue.id,
             started_at: std::time::Instant::now(),
             attempt: 1,
+            phase: "planning",
         },
     );
     let env = Arc::new(super::PlanChainEnv {
@@ -9362,6 +10394,7 @@ async fn plan_timeout_watch_parks_when_reattempt_disabled() {
             issue_id: issue.id,
             started_at: std::time::Instant::now(),
             attempt: 1,
+            phase: "planning",
         },
     );
     let env = Arc::new(super::PlanChainEnv {
@@ -9421,6 +10454,7 @@ async fn plan_timeout_watch_disabled_when_zero() {
             issue_id: issue.id,
             started_at: std::time::Instant::now(),
             attempt: 1,
+            phase: "planning",
         },
     );
     let env = Arc::new(super::PlanChainEnv {
@@ -9472,6 +10506,7 @@ async fn plan_chain_superseded_success_path_is_silent() {
             issue_id: issue.id,
             started_at: std::time::Instant::now(),
             attempt: 1,
+            phase: "planning",
         },
     );
     let agent_loop = Arc::new(nemesis_agent::r#loop::AgentLoop::new(
@@ -9547,6 +10582,7 @@ async fn plan_chain_superseded_failure_path_is_silent() {
             issue_id: issue.id,
             started_at: std::time::Instant::now(),
             attempt: 1,
+            phase: "planning",
         },
     );
     let agent_loop = Arc::new(nemesis_agent::r#loop::AgentLoop::new(
@@ -9621,6 +10657,7 @@ async fn issue_list_includes_planning_projection() {
             issue_id: a.id,
             started_at: std::time::Instant::now() - std::time::Duration::from_secs(65),
             attempt: 2,
+            phase: "planning",
         },
     );
     let out = dispatch(&ctx, "issue.list", serde_json::json!({}))
@@ -10237,5 +11274,593 @@ async fn pick_send_failure_target_prefers_last_worker_then_best_online() {
         None,
         "末次 worker 消失 + 无在线节点 → None"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// BUG 2026-10-08 `board.plan.model` dead-key 修复回归：覆盖解析 helper 的
+/// 三臂（解析成功 / 未配置·空别名回落 None / 未知别名回落 None——不
+/// fail-closed，warn 留痕）。
+#[cfg(feature = "cluster")]
+#[test]
+fn board_plan_model_swap_resolution_arms() {
+    // ① home 无 config.json → None（无覆盖 = 主模型，安静回落）。
+    let dir = unique_dir("plan-swap-empty");
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(super::board_plan_model_swap(Some(&dir)).is_none());
+
+    // ② 合法别名 → Some，模型名是解析后的裸名（provider 前缀剥掉）。
+    let dir = unique_dir("plan-swap-ok");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("config.json"),
+        r#"{
+            "model_list": [
+                {"model_name": "planner-model", "model": "openai/planner-x", "api_key": "k"}
+            ],
+            "board": {"plan": {"model": "planner-model"}}
+        }"#,
+    )
+    .unwrap();
+    let swap = super::board_plan_model_swap(Some(&dir)).expect("alias resolves");
+    assert_eq!(swap.1, "planner-x");
+
+    // ③ 显式空串 = 显式不覆盖 → None。
+    let dir = unique_dir("plan-swap-blank");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("config.json"),
+        r#"{"board": {"plan": {"model": ""}}}"#,
+    )
+    .unwrap();
+    assert!(super::board_plan_model_swap(Some(&dir)).is_none());
+
+    // ④ 未知别名 → None（warn + 回落主模型，不 panic 不 fail-closed）。
+    let dir = unique_dir("plan-swap-unknown");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("config.json"),
+        r#"{"board": {"plan": {"model": "no-such-alias"}}}"#,
+    )
+    .unwrap();
+    assert!(super::board_plan_model_swap(Some(&dir)).is_none());
+
+    for d in [
+        unique_dir("plan-swap-empty"),
+        unique_dir("plan-swap-ok"),
+        unique_dir("plan-swap-blank"),
+        unique_dir("plan-swap-unknown"),
+    ] {
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+// 2026-10-15 依赖徽标投影：issue.list / issue.get 都带 depends_on
+// [{id, number, status}]；status 变化后投影跟随（前端阻塞态判断数据源）。
+#[tokio::test]
+async fn test_issue_depends_on_projection() {
+    let dir = unique_dir("depends-on-projection");
+    let ctx = make_ctx_with_board(&dir);
+    let store = ctx.state.board.as_ref().unwrap().store().clone();
+
+    // 两个单：NB-1 上游、NB-2 依赖 NB-1。
+    let a = dispatch(&ctx, "issue.create", serde_json::json!({ "title": "上游" }))
+        .await
+        .unwrap()
+        .unwrap()["issue"]["id"]
+        .as_i64()
+        .unwrap();
+    let b = dispatch(&ctx, "issue.create", serde_json::json!({ "title": "下游" }))
+        .await
+        .unwrap()
+        .unwrap()["issue"]["id"]
+        .as_i64()
+        .unwrap();
+    store.set_issue_dependencies(b, &[a]).unwrap();
+
+    // list：下游行带 depends_on，上游行空数组（加法投影，无依赖也输出键）。
+    let out = dispatch(&ctx, "issue.list", serde_json::json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    let rows = out["issues"].as_array().unwrap();
+    let down = rows.iter().find(|r| r["id"] == b).unwrap();
+    let ups = down["depends_on"].as_array().unwrap();
+    assert_eq!(ups.len(), 1);
+    assert_eq!(ups[0]["id"], a);
+    assert_eq!(ups[0]["number"], "NB-1");
+    assert_eq!(ups[0]["status"], "backlog");
+    let up = rows.iter().find(|r| r["id"] == a).unwrap();
+    assert!(up["depends_on"].as_array().unwrap().is_empty());
+
+    // get：同投影存在。
+    let out = dispatch(&ctx, "issue.get", serde_json::json!({ "id": b }))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["issue"]["depends_on"][0]["number"], "NB-1");
+
+    // 上游 done 后投影跟随（前端据此解除阻塞徽标）。
+    store
+        .transition_issue(
+            a,
+            nemesis_board::models::IssueStatus::Done,
+            &nemesis_board::Actor::system("board"),
+        )
+        .unwrap();
+    let out = dispatch(&ctx, "issue.list", serde_json::json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    let rows = out["issues"].as_array().unwrap();
+    let down = rows.iter().find(|r| r["id"] == b).unwrap();
+    assert_eq!(down["depends_on"][0]["status"], "done");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+// ---------------------------------------------------------------------------
+// 决策可见性投影（2026-10-15 批）：needs_user（停车强信号）/ attention
+// （停滞弱信号）/ plan_ready（计划待发车中信号）三投影 + issue.decision
+// 面板数据源。HANDOFF_WORKSPACE 是进程级 OnceLock（ua 测试唯一装配）——
+// 全局侧走 scan_live_handoffs_in 纯内核，装配路径由 dispatch 级「无信号
+// 形态」钉住（未装配 = 空档案集，诚实降级）。
+// ---------------------------------------------------------------------------
+
+fn handoff_map_entry(number: &str, stop_kind: &str) -> serde_json::Value {
+    serde_json::json!({
+        "schema": 1,
+        "issue": number,
+        "issue_id": 42,
+        "stop_kind": stop_kind,
+        "suggested_action": "manual_check",
+        "hint": "先修 worker 环境再复评",
+        "stopped_at": "2026-10-15T07:38:00Z",
+    })
+}
+
+/// 状态闸：活档案只对 in_review / in_progress 亮牌——done/cancelled/backlog
+/// 即使有漏归档旧档案也不得点亮（正确性兜底，归档只是时效优化）。
+#[test]
+fn needs_user_projection_gates_by_status() {
+    let mut handoffs = std::collections::HashMap::new();
+    handoffs.insert(
+        "NB-5".to_string(),
+        handoff_map_entry("NB-5", "unsure_streak"),
+    );
+
+    // 底座单走 store 构造（Issue 无 Default）；测试只消费 status/number，
+    // 其余字段直接在 owned 副本上变异。
+    let dir = unique_dir("needs-user-gate");
+    let store = BoardStore::open(&dir.join("board.db"), "NB").unwrap();
+    let base = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "闸门测试".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let mk = |status| nemesis_board::Issue {
+        status,
+        number: "NB-5".to_string(),
+        ..base.clone()
+    };
+
+    // 闸内两态：亮牌 + 字段形态（stop_kind_label 映射、hint/stopped_at 透传）。
+    let nu = super::needs_user_projection(&handoffs, &mk(IssueStatus::InReview)).unwrap();
+    assert_eq!(nu["stop_kind"], "unsure_streak");
+    assert_eq!(nu["stop_kind_label"], "连续不确定");
+    assert_eq!(nu["suggested_action"], "manual_check");
+    assert_eq!(nu["hint"], "先修 worker 环境再复评");
+    assert_eq!(nu["stopped_at"], "2026-10-15T07:38:00Z");
+    assert!(super::needs_user_projection(&handoffs, &mk(IssueStatus::InProgress)).is_some());
+
+    // 闸外：有档案也不亮。
+    for status in [
+        IssueStatus::Backlog,
+        IssueStatus::Todo,
+        IssueStatus::Done,
+        IssueStatus::Blocked,
+        IssueStatus::Cancelled,
+    ] {
+        assert!(
+            super::needs_user_projection(&handoffs, &mk(status)).is_none(),
+            "status={status:?} 不得亮牌"
+        );
+    }
+
+    // 无档案：闸内也不亮。
+    let empty: std::collections::HashMap<String, serde_json::Value> =
+        std::collections::HashMap::new();
+    assert!(super::needs_user_projection(&empty, &mk(IssueStatus::InReview)).is_none());
+
+    // 未知 stop_kind：标签兜底「停车待处理」，不炸投影。
+    let mut odd = std::collections::HashMap::new();
+    odd.insert("NB-5".to_string(), handoff_map_entry("NB-5", "future_kind"));
+    let nu = super::needs_user_projection(&odd, &mk(IssueStatus::InReview)).unwrap();
+    assert_eq!(nu["stop_kind_label"], "停车待处理");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 可测内核扫描：合法档案进 map（按 issue 字段建键）；坏 JSON / 非 json
+/// 后缀 / archive/ 子目录 / 缺 issue 字段 / 目录缺席 = 跳过（诚实无信号）。
+#[test]
+fn scan_live_handoffs_in_scans_valid_and_skips_dirty() {
+    let dir = unique_dir("scan-handoffs");
+    let handoffs = dir.join("board").join("handoffs");
+    std::fs::create_dir_all(&handoffs).unwrap();
+    std::fs::write(
+        handoffs.join("NB-5.json"),
+        serde_json::to_string(&handoff_map_entry("NB-5", "no_match")).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        handoffs.join("NB-6.json"),
+        serde_json::to_string(&handoff_map_entry("NB-6", "budget")).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(handoffs.join("broken.json"), "{not json").unwrap();
+    std::fs::write(handoffs.join("note.txt"), "x").unwrap();
+    std::fs::create_dir_all(handoffs.join("archive")).unwrap();
+    std::fs::write(
+        handoffs.join("archive").join("NB-7.json"),
+        serde_json::to_string(&handoff_map_entry("NB-7", "budget")).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(handoffs.join("NB-8.json"), r#"{"schema":1}"#).unwrap(); // 缺 issue 字段
+
+    let map = super::scan_live_handoffs_in(&dir);
+    assert_eq!(map.len(), 2, "只有 NB-5/NB-6 入册：{:?}", map.keys());
+    assert_eq!(map["NB-5"]["stop_kind"], "no_match");
+    assert_eq!(map["NB-6"]["stop_kind"], "budget");
+
+    // 目录缺席 → 空 map（未装配/未停过车的常态路径）。
+    let empty_dir = unique_dir("scan-handoffs-empty");
+    assert!(super::scan_live_handoffs_in(&empty_dir).is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&empty_dir);
+}
+
+/// 停滞弱信号：in_progress 且最后一条 system 评论命中 STALL_MARKER → true；
+/// 普通 system 评论 / 非 in_progress / 无评论 = false。
+#[cfg(feature = "cluster")]
+#[test]
+fn issue_needs_attention_gates_by_stall_marker_and_status() {
+    let dir = unique_dir("attention");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("t");
+    let mk = |title: &str| {
+        store
+            .create_issue(nemesis_board::NewIssue {
+                title: title.to_string(),
+                ..Default::default()
+            })
+            .unwrap()
+    };
+
+    let stalled = mk("停摆单");
+    store
+        .add_comment(nemesis_board::NewComment {
+            issue_id: stalled.id,
+            author: actor.clone(),
+            content: format!("{}：交付已收 900s 仍未合入。", nemesis_board::STALL_MARKER),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::System,
+        })
+        .unwrap();
+    store
+        .transition_issue(stalled.id, IssueStatus::InProgress, &actor)
+        .unwrap();
+    let stalled = store.get_issue(stalled.id).unwrap();
+    assert!(super::issue_needs_attention(&store, &stalled));
+
+    // 最新 system 评论无标记（停摆后被新一轮派发评论覆盖）→ 熄灭。
+    store
+        .add_comment(nemesis_board::NewComment {
+            issue_id: stalled.id,
+            author: actor.clone(),
+            content: "正常系统评论".to_string(),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::System,
+        })
+        .unwrap();
+    let stalled = store.get_issue(stalled.id).unwrap();
+    assert!(!super::issue_needs_attention(&store, &stalled));
+
+    // 状态闸：in_review 带 STALL_MARKER 也不算（那是 needs_user 的领域）。
+    let review = mk("送审单");
+    store
+        .add_comment(nemesis_board::NewComment {
+            issue_id: review.id,
+            author: actor,
+            content: format!("{}：x", nemesis_board::STALL_MARKER),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::System,
+        })
+        .unwrap();
+    let mut review = store.get_issue(review.id).unwrap();
+    review.status = IssueStatus::InReview;
+    assert!(!super::issue_needs_attention(&store, &review));
+
+    // 无评论：false。
+    let quiet = mk("安静单");
+    assert!(!super::issue_needs_attention(&store, &quiet));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// dispatch 级接线（无信号形态 + plan_ready 种入形态）：HANDOFF_WORKSPACE
+/// 未装配 = needs_user 恒缺席（诚实降级，不炸列表）；plan_ready 走
+/// PLAN_CACHE 全局——按 PLAN_TEST_LOCK 纪律串行 + 开场清残留。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn decision_visibility_projections_via_list_and_decision() {
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
+    let dir = unique_dir("decision-visibility");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("t");
+
+    // 三单：parked(in_review 停车形态——无档案故 needs_user 不亮，钉诚实
+    // 降级)、stalled(in_progress + 停摆哨兵)、plain(backlog 无事)。
+    let parked = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "停车单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .transition_issue(parked.id, IssueStatus::InProgress, &actor)
+        .unwrap();
+    store
+        .transition_issue(parked.id, IssueStatus::InReview, &actor)
+        .unwrap();
+
+    let stalled = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "停滞单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .add_comment(nemesis_board::NewComment {
+            issue_id: stalled.id,
+            author: actor.clone(),
+            content: format!("{}：交付已收 900s 仍未合入。", nemesis_board::STALL_MARKER),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::System,
+        })
+        .unwrap();
+    store
+        .transition_issue(stalled.id, IssueStatus::InProgress, &actor)
+        .unwrap();
+
+    let plain = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "安静单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    // issue.list：attention 只落在停滞单；needs_user 无档案恒缺席。
+    let out = dispatch(&ctx, "issue.list", serde_json::json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    let rows = out["issues"].as_array().unwrap().clone();
+    let row = |num: &str| {
+        rows.iter()
+            .find(|r| r["number"] == num)
+            .unwrap_or_else(|| panic!("row {num} missing"))
+            .clone()
+    };
+    assert_eq!(row(&parked.number)["attention"], serde_json::Value::Null);
+    assert_eq!(row(&stalled.number)["attention"], serde_json::json!(true));
+    assert_eq!(row(&plain.number)["attention"], serde_json::Value::Null);
+    assert_eq!(
+        row(&parked.number)["needs_user"],
+        serde_json::Value::Null,
+        "未装配档案根 = 无信号，不得假亮"
+    );
+    assert_eq!(row(&parked.number)["plan_ready"], serde_json::Value::Null);
+
+    // plan_ready 投影：缓存种入 → list 与 decision 同构带出。
+    seed_plan("plan-dv-1", parked.id, vec![sub("子单", vec![])]);
+    let out = dispatch(&ctx, "issue.list", serde_json::json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    let rows = out["issues"].as_array().unwrap();
+    let pr = rows.iter().find(|r| r["number"] == parked.number).unwrap()["plan_ready"].clone();
+    assert_eq!(pr["plan_id"], "plan-dv-1");
+    assert_eq!(pr["subs_count"], 1);
+    assert!(pr["created_age_secs"].is_u64());
+
+    // issue.decision：无参/未知单诚实报错。
+    assert!(
+        dispatch(&ctx, "issue.decision", serde_json::json!({}))
+            .await
+            .is_err()
+    );
+    assert!(
+        dispatch(
+            &ctx,
+            "issue.decision",
+            serde_json::json!({ "number": "NB-999" })
+        )
+        .await
+        .is_err()
+    );
+
+    // decision 面板形态：needs_user/plan_ready/attention/handoff 全字段在
+    // 场（online_nodes 无集群装配 = 空数组）；档案缺席 = handoff null。
+    let out = dispatch(
+        &ctx,
+        "issue.decision",
+        serde_json::json!({ "number": parked.number }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["issue"], parked.number);
+    assert_eq!(out["issue_id"], parked.id);
+    assert_eq!(out["status"], "in_review");
+    assert_eq!(out["needs_user"], serde_json::Value::Null);
+    assert_eq!(out["handoff"], serde_json::Value::Null);
+    assert_eq!(out["plan_ready"]["plan_id"], "plan-dv-1");
+    assert_eq!(out["attention"], false);
+    assert_eq!(out["online_nodes"], serde_json::json!([]));
+
+    // 停滞单走 decision：attention true。
+    let out = dispatch(
+        &ctx,
+        "issue.decision",
+        serde_json::json!({ "id": stalled.id }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["status"], "in_progress");
+    assert_eq!(out["attention"], true);
+    assert_eq!(out["plan_ready"], serde_json::Value::Null);
+
+    // commands() 清单含 issue.decision（L1 注册表漂移闸）。
+    assert!(BoardHandler.commands().contains(&"issue.decision"));
+
+    // 清残留（plan 链纪律：持锁期间摘自己的条目）。
+    super::PLAN_CACHE.lock().remove("plan-dv-1");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --- board.resume（停车续做正门，2026-10-16 主会话污染根修） ---
+
+#[test]
+fn test_board_resume_prompt_contract() {
+    let archive = r#"{"issue":"NB-9","reason":"UNSURE"}"#;
+    let p = super::build_resume_prompt(
+        "NB-9",
+        "标题甲",
+        "in_review",
+        archive,
+        Some("先复核锚点证据"),
+    );
+    assert!(p.contains("# 停车续做任务：NB-9"));
+    assert!(p.contains("标题：标题甲"));
+    assert!(p.contains("当前状态：in_review"));
+    assert!(p.contains(archive), "档案 JSON 原文必须整体内联");
+    assert!(p.contains("handoffs/NB-9.json"));
+    assert!(p.contains("board_issue"), "必须点名 board_issue 工具落评论");
+    assert!(p.contains("## 操作员附加指令\n先复核锚点证据"));
+
+    // 无附加指令 / 纯空白指令 → 不出现操作员段（不造空段落）。
+    let p2 = super::build_resume_prompt("NB-9", "标题甲", "in_review", archive, None);
+    assert!(!p2.contains("操作员附加指令"));
+    let p3 = super::build_resume_prompt("NB-9", "标题甲", "in_review", archive, Some("  \n "));
+    assert!(!p3.contains("操作员附加指令"));
+}
+
+#[test]
+fn test_board_resume_archive_path_shape() {
+    let p = super::handoff_archive_path("C:/ws", "NB-12");
+    let s = p.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
+    assert!(s.ends_with("board/handoffs/NB-12.json"), "actual: {s}");
+}
+
+#[tokio::test]
+async fn test_board_resume_surface_contract() {
+    let dir = unique_dir("board-resume");
+    let ctx = make_ctx_with_board(&dir);
+
+    // 测试 ctx 无 agent_loop：装配性错误优先于数据错误（对齐 issue.draft_ac
+    // 闸序）——缺参与有单两种入参都先撞「agent 未运行」。
+    let e = dispatch(&ctx, "board.resume", serde_json::json!({}))
+        .await
+        .unwrap_err();
+    assert!(e.contains("agent 未运行"), "actual: {e}");
+
+    let store = ctx.state.board.as_ref().unwrap().store().clone();
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "停车单样例".into(),
+            creator: nemesis_board::Actor::system("board"),
+            ..nemesis_board::NewIssue::default()
+        })
+        .unwrap();
+    let e = dispatch(
+        &ctx,
+        "board.resume",
+        serde_json::json!({ "number": issue.number }),
+    )
+    .await
+    .unwrap_err();
+    assert!(e.contains("agent 未运行"), "actual: {e}");
+
+    // L1 注册表：commands() 清单含 board.resume（漂移闸）。
+    assert!(BoardHandler.commands().contains(&"board.resume"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// 2026-10-16 收件箱重复根修回归钉：dashboard 操作者身份必须是固定
+// "dashboard"，不得随 WS session 每连必换——否则每个页面会话以新 admin id
+// 落订阅表（唯一键含 subscriber_id，去重失效）并永久累积，通知按订阅者扇出
+// 同一事件 N 份（实录：NB-121 一次验收失败收件箱 6 份、全库 18 个历史
+// admin 身份）。钉两层：ctx_actor 纯函数契约 + 端到端（同 ctx 不同 session
+// 两次评论 → 订阅表仍只有一个 admin 行）。
+#[tokio::test]
+async fn test_ctx_actor_fixed_dashboard_identity() {
+    let dir = unique_dir("ctx-actor-fixed");
+    let mut ctx = make_ctx_with_board(&dir);
+    ctx.session_id = "rotating-session-abc".into();
+    let actor = super::ctx_actor(&ctx);
+    assert_eq!(actor.kind, "admin");
+    assert_eq!(
+        actor.id, "dashboard",
+        "admin id 必须固定，不得用 session_id"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn test_admin_subscriber_dedup_across_sessions() {
+    let dir = unique_dir("admin-sub-dedup");
+    let ctx = make_ctx_with_board(&dir);
+    let store = require_board(&ctx).unwrap();
+
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "订阅去重样例".into(),
+            creator: nemesis_board::Actor::system("board"),
+            ..nemesis_board::NewIssue::default()
+        })
+        .unwrap();
+
+    // 同一 operator 两个不同 WS 会话各评论一次。
+    let mut ctx_b = make_ctx_with_board(&dir);
+    ctx_b.session_id = "another-session-xyz".into();
+    for c in [&ctx, &ctx_b] {
+        dispatch(
+            c,
+            "comment.add",
+            serde_json::json!({ "issue_id": issue.id, "content": "op comment" }),
+        )
+        .await
+        .unwrap();
+    }
+
+    let subs = store.list_subscribers(issue.id).unwrap();
+    let admin_rows: Vec<_> = subs
+        .iter()
+        .filter(|s| s.subscriber.kind == "admin")
+        .collect();
+    assert_eq!(
+        admin_rows.len(),
+        1,
+        "两个会话评论后 admin 订阅必须收敛为一行（固定身份），actual: {:?}",
+        admin_rows
+            .iter()
+            .map(|s| &s.subscriber.id)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(admin_rows[0].subscriber.id, "dashboard");
+
     let _ = std::fs::remove_dir_all(&dir);
 }

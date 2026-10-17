@@ -126,6 +126,8 @@ fn mcp_reload_loop() -> AgentLoop {
             max_turns: 5,
             tools: Vec::new(),
             models: std::collections::HashMap::new(),
+
+            tool_fence_profession: None,
         },
     )
 }

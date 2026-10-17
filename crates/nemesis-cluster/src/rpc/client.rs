@@ -329,6 +329,15 @@ pub(crate) fn peer_in_same_subnet(
 /// Default RPC timeout: 60 minutes (outermost timeout, matching Go implementation).
 pub const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
+/// Socket read/write timeout margin（2026-10-17 线程泄漏根修）：blocking
+/// 线程内 `Connection::recv()` 的 socket 超时 = 外层 timeout + 此余量。
+/// 对端 accept 后静默（断电/VM 暂停/网络黑洞）时，外层 async timeout 先
+/// 放弃调用，但 blocking 线程会永久卡死在 read_exact——tokio blocking
+/// 池默认 512 线程，探针/派发重试反复命中黑洞对端会逐渐耗尽。socket
+/// 超时恒大于外层 timeout：语义边界仍归外层（超时分类/重试判定不变），
+/// socket 超时只负责在外层放弃后回收阻塞线程。
+const SOCKET_IO_TIMEOUT_MARGIN: Duration = Duration::from_secs(30);
+
 /// RPC client for communicating with remote cluster nodes.
 pub struct RpcClient {
     /// Connection pool for TCP connections.
@@ -548,10 +557,12 @@ impl RpcClient {
             // 5. Execute with timeout（仲裁执行整体包在外层 timeout 内——
             // 首选失败兜备选的总耗时仍受同一 deadline 约束）
             time::timeout(timeout, async {
-                // 无桥出口：纯直连（一期行为，零变化）。
+                // 无桥出口：纯直连（一期行为，零变化）。socket I/O 超时 =
+                // 外层 timeout + 余量（只回收阻塞线程，语义仍归外层）。
+                let io_timeout = timeout + SOCKET_IO_TIMEOUT_MARGIN;
                 let Some(bridge_impl) = bridge_impl else {
                     return self
-                        .send_and_receive(&best_addr, &full_addresses, &request)
+                        .send_and_receive(&best_addr, &full_addresses, &request, io_timeout)
                         .await;
                 };
 
@@ -569,7 +580,7 @@ impl RpcClient {
                     // 同网段：直连优先。RemoteError = 对端已应答业务错误，
                     // 换路径重发无意义（对端 handler 会给出同样结果），不兜。
                     match self
-                        .send_and_receive(&best_addr, &full_addresses, &request)
+                        .send_and_receive(&best_addr, &full_addresses, &request, io_timeout)
                         .await
                     {
                         Ok(resp) => Ok(resp),
@@ -606,7 +617,7 @@ impl RpcClient {
                                 error = %bridge_err,
                                 "[RpcClient] Bridge path failed, falling back to direct"
                             );
-                            self.send_and_receive(&best_addr, &full_addresses, &request)
+                            self.send_and_receive(&best_addr, &full_addresses, &request, io_timeout)
                                 .await
                         }
                     }
@@ -683,11 +694,15 @@ impl RpcClient {
     // -- Internal helpers -----------------------------------------------------
 
     /// Try connecting to the best address first, then fall back to others.
+    ///
+    /// `io_timeout`：单地址阻塞 I/O 的 socket 读写超时（外层 timeout + 余量，
+    /// 见 [`SOCKET_IO_TIMEOUT_MARGIN`]）——黑洞对端不再永久占用 blocking 线程。
     async fn send_and_receive(
         &self,
         best_addr: &str,
         all_addresses: &[String],
         request: &RPCRequest,
+        io_timeout: Duration,
     ) -> Result<RPCResponse, RpcClientError> {
         // Remember the last underlying failure so the final generic error can
         // carry it. Without this, a single-address peer that WAS reached but
@@ -700,7 +715,10 @@ impl RpcClient {
         let mut last_err: String;
 
         // Try best address first
-        match self.try_connect_and_send(best_addr, request).await {
+        match self
+            .try_connect_and_send(best_addr, request, io_timeout)
+            .await
+        {
             Ok(resp) => return Ok(resp),
             // The peer was reached and returned a handler-level error
             // response. Retrying other addresses of the SAME peer cannot
@@ -737,7 +755,7 @@ impl RpcClient {
             }
             attempts += 1;
 
-            match self.try_connect_and_send(addr, request).await {
+            match self.try_connect_and_send(addr, request, io_timeout).await {
                 Ok(resp) => {
                     tracing::info!(addr = addr, "[RpcClient] Connected to fallback address");
                     return Ok(resp);
@@ -774,6 +792,7 @@ impl RpcClient {
         &self,
         addr: &str,
         request: &RPCRequest,
+        io_timeout: Duration,
     ) -> Result<RPCResponse, RpcClientError> {
         // Dial TCP with 10-second timeout (matching Go's net.DialTimeout)
         let stream = time::timeout(Duration::from_secs(10), TcpStream::connect(addr))
@@ -808,7 +827,13 @@ impl RpcClient {
 
         // Run synchronous frame I/O on the blocking thread pool
         tokio::task::spawn_blocking(move || {
-            Self::sync_send_and_recv(std_stream, &request_clone, &addr_owned, cipher_key)
+            Self::sync_send_and_recv(
+                std_stream,
+                &request_clone,
+                &addr_owned,
+                cipher_key,
+                io_timeout,
+            )
         })
         .await
         .map_err(|e| RpcClientError::Connection(format!("blocking task join: {}", e)))?
@@ -824,8 +849,18 @@ impl RpcClient {
         request: &RPCRequest,
         addr: &str,
         cipher_key: Option<[u8; crate::transport::frame::AES_KEY_SIZE]>,
+        io_timeout: Duration,
     ) -> Result<RPCResponse, RpcClientError> {
         use crate::transport::frame::{decrypt_frame, encrypt_frame};
+
+        // Socket read/write 超时（黑洞对端线程回收，见 SOCKET_IO_TIMEOUT_MARGIN）。
+        // 失败不致命（个别平台不支持）——外层 timeout 语义仍在。
+        if let Err(e) = std_stream.set_read_timeout(Some(io_timeout)) {
+            tracing::debug!(addr = addr, error = %e, "[RpcClient] set_read_timeout unsupported");
+        }
+        if let Err(e) = std_stream.set_write_timeout(Some(io_timeout)) {
+            tracing::debug!(addr = addr, error = %e, "[RpcClient] set_write_timeout unsupported");
+        }
 
         let mut conn = Connection::new(std_stream);
 
