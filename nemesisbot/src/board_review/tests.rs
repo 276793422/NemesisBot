@@ -8224,9 +8224,8 @@ async fn parent_escalated_park_blocks_hook_rereview_until_admin() {
     write_board_config(&deps.home, r#"{"auto_close_parent":true}"#);
     let parent = issue_in_review(&deps.store, "升级停车父单", "", "（父单验收输入=子单汇总）");
     record_auto_decide(
-        &deps.store,
+        &deps,
         parent.id,
-        "node-a",
         "parent_escalate_human",
         "unsure",
         serde_json::json!({ "reasons": "证据不足" }),
@@ -8268,9 +8267,8 @@ async fn parent_admin_activity_after_escalation_unblocks_rereview() {
     write_board_config(&deps.home, r#"{"auto_close_parent":true}"#);
     let parent = issue_in_review(&deps.store, "打回重开父单", "", "（父单验收输入=子单汇总）");
     record_auto_decide(
-        &deps.store,
+        &deps,
         parent.id,
-        "node-a",
         "parent_escalate_human",
         "unsure",
         serde_json::json!({}),
