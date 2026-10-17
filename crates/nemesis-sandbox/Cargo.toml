@@ -17,7 +17,7 @@ tracing = { workspace = true }
 reqwest = { workspace = true }
 sha2 = { workspace = true }
 bytes = "1"
-zip = "2"
+zip = { version = "9", default-features = false, features = ["deflate"] }
 # P21（2026-09-25）：沙盒拒绝台账的时间戳（RFC3339 UTC，毫秒精度）。
 chrono = { workspace = true }
 
