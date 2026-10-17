@@ -170,10 +170,15 @@ fn export_core(
 
     // 收件箱补收：派发行 task_id 在收件箱里 = 执行档案未安置（无处安置/
     // 存量项目/落地竞态）——拷进档案诚实可见。
+    // T8 读侧（2026-10-17 三轮审计）：收件箱目录名由 transfer 落地侧消毒
+    // （nemesis-cluster fsutil::safe_task_file_name → sanitize_path_segment，
+    // 单一真相源），读侧必须同源同函数——否则「写入消毒名、读取裸名」
+    // 错位漏收，且裸拼 task_id 可逃导出树。
     for (number, d) in &all_dispatches {
-        let src = inbox_root.join(&d.task_id);
+        let safe_task_id = nemesis_utils::sanitize::sanitize_path_segment(&d.task_id);
+        let src = inbox_root.join(&safe_task_id);
         if src.is_dir() {
-            copy_dir_sorted(&src, &root.join("inbox-unplaced").join(&d.task_id))?;
+            copy_dir_sorted(&src, &root.join("inbox-unplaced").join(&safe_task_id))?;
         }
         let _ = number; // 目录按 task_id 组织（与 cluster_logs 目录名同源）
     }
@@ -197,7 +202,10 @@ fn export_core(
     for (number, d) in &all_dispatches {
         let landed = records_base.join(number).join("execution").is_dir()
             || walk_has_dir(&records_base.join(number), "execution")
-            || unplaced_base.join(&d.task_id).is_dir();
+            // T8 读侧同源消毒（见上方收件箱补收）。
+            || unplaced_base
+                .join(nemesis_utils::sanitize::sanitize_path_segment(&d.task_id))
+                .is_dir();
         if !landed {
             notes.push(format!(
                 "执行档案未落地：{} 的任务 {} → {}（状态 {}）——节点可能离线未推送，等补拉后重新导出",

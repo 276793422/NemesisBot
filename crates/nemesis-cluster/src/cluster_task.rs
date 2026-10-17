@@ -484,9 +484,15 @@ impl ClusterTaskList {
     // -- Persistence helpers ------------------------------------------------
 
     fn conversation_path(&self, task_id: &str) -> PathBuf {
-        self.data_dir
-            .join("cluster")
-            .join(format!("{}.json", task_id))
+        // T9（2026-10-17 三轮审计）：task_id 在 B 端来自远端载荷——路径
+        // 成分前消毒（crate 单一包装），否则 `data_dir/cluster/{task_id}.json`
+        // 裸拼让认证对端可任意路径写（persist_conversation）/删
+        // （complete_task）。写入（persist）与恢复（restore_from_disk 按
+        // tasks.json 索引里的原 id 反查）都走本函数，映射自动对称。
+        self.data_dir.join("cluster").join(format!(
+            "{}.json",
+            crate::fsutil::safe_task_file_name(task_id)
+        ))
     }
 
     fn persist_conversation(

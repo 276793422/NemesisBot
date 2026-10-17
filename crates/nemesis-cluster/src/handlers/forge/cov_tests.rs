@@ -1,16 +1,16 @@
-// handlers/forge.rs 覆盖率补充测试（远端反思报告落盘写失败上抛臂）。
+// handlers/forge.rs 覆盖率补充测试（远端反思报告落盘）。
 //
 // 豁免：无。
 //
-// 【疑似缺陷记录，仅记录不修】receive_reflection 的文件名由对端可控的
-// source_node 直接拼入（forge.rs:170 `format!("remote-{}-{}.json", ...)`，
-// 未消毒）：含平台非法字符时写盘必然失败（本测试即借此驱动 182 的错误
-// 上抛臂）；含 `..` / 路径分隔符时更可写出 remote_dir 之外（路径穿越面）。
-// 建议对 source_node 做文件名消毒。
+// 【T10 已修（2026-10-17 三轮审计）】receive_reflection 的文件名由对端可控
+// 的 source_node 拼入，现已经 sanitize_path_segment 消毒（路径字符 1:1 映射
+// `_`）。本文件保留消毒后合法落盘线：跨平台非法字符 NUL 亦被映射为 `_`，
+// 写盘不再失败上抛；「不得逃出 remote_dir」由 tests.rs 的
+// hostile_source_node_stays_in_remote_dir 钉住。
 //
-// 测试驱动字符用 **NUL**（跨平台非法——std 路径转 CString 必拒，Linux 上
-// `< > : | ?` 等只是 Windows 非法、在 Linux 是合法文件名字符，写过一次
-// 假红）。
+// 测试驱动字符用 **NUL**（跨平台非法——修复前 std 路径转 CString 必拒，
+// 写盘必然失败，借此驱动 182 的错误上抛臂；Linux 上 `< > : | ?` 等只是
+// Windows 非法、在 Linux 是合法文件名字符，写过一次假红）。
 
 use super::*;
 use std::path::PathBuf;
@@ -26,18 +26,30 @@ fn temp_forge(tag: &str) -> PathBuf {
     dir
 }
 
-/// source_node 含 NUL 字节（跨平台非法文件名字符）→ 拼出的文件名不可
-/// 创建 → fs::write 失败上抛（182）。
+/// source_node 含跨平台非法文件名字符（NUL）→ 消毒映射 `_` 后正常落盘，
+/// 不再走写失败上抛臂（T10 修复前此处 unwrap_err）。
 #[test]
-fn receive_reflection_invalid_filename_propagates_error() {
-    let provider = FileForgeProvider::new(temp_forge("bad-name"));
+fn receive_reflection_invalid_filename_sanitized_and_stored() {
+    let base = temp_forge("bad-name");
+    let provider = FileForgeProvider::new(&base);
 
-    let err = provider
+    provider
         .receive_reflection(&serde_json::json!({
             "source_node": "co\u{0}v",
             "report": {"findings": ["x"]},
         }))
-        .unwrap_err();
+        .expect("消毒后 NUL 映射 `_`，写盘不应失败");
 
-    assert!(!err.is_empty(), "写失败必须带错误信息上抛：{err}");
+    let list = provider.get_reflections_list_payload();
+    let names: Vec<&str> = list["reflections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r["filename"].as_str())
+        .collect();
+    assert_eq!(names.len(), 1, "实际: {names:?}");
+    assert!(
+        names[0].starts_with("remote-co_v-") && names[0].ends_with(".json"),
+        "文件名 = 消毒段（NUL → _）: {names:?}"
+    );
 }

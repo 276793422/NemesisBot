@@ -88,10 +88,24 @@ impl ContinuationStore {
             }
         }
 
-        // Check if a save might be in progress (tmp file exists).
-        // If not, the snapshot simply doesn't exist -- fail immediately.
-        let tmp_path = self.snapshot_path(task_id).with_extension("json.tmp");
-        let might_be_saving = tmp_path.exists();
+        // Check if a save might be in progress. write_file_atomic 的临时名
+        // 形如 `.tmp-{pid}-{seq}-{nanos}`（nemesis-utils），与目标文件同
+        // 目录且不含目标信息——旧实现探测 `<task_id>.json.tmp` 与实际临时
+        // 名永不相交，barrier 是死代码（T7，2026-10-17 三轮审计）。改为扫
+        // 目录 `.tmp-` 前缀：任何原子写在场即视为可能有一场针对本 id 的
+        // 保存（保守方向正确——误判只多等一轮重试窗口，漏判才会读到半
+        // 成品；崩溃残留的 `.tmp-` 代价 = 缺失快照的 load 多等 5s 才
+        // NotFound，无正确性影响）。
+        let might_be_saving = self.cache_dir.exists()
+            && std::fs::read_dir(&self.cache_dir)
+                .map(|entries| {
+                    entries.flatten().any(|e| {
+                        e.file_name()
+                            .to_str()
+                            .is_some_and(|n| n.starts_with(".tmp-"))
+                    })
+                })
+                .unwrap_or(false);
 
         if !might_be_saving {
             // No save in progress, try disk once and return
@@ -365,7 +379,14 @@ impl ContinuationStore {
     }
 
     fn snapshot_path(&self, task_id: &str) -> PathBuf {
-        self.cache_dir.join(format!("{}.json", task_id))
+        // T7（2026-10-17 三轮审计）：task_id 远端可控，路径成分前消毒
+        // （crate 单一包装，与 task_result_store / cluster_task / transfer
+        // 同源）。save/load/remove 都走本函数，映射自动对称；内存索引仍用
+        // 原 id（load 先查内存再落盘，两把钥匙各开各的锁）。
+        self.cache_dir.join(format!(
+            "{}.json",
+            crate::fsutil::safe_task_file_name(task_id)
+        ))
     }
 }
 

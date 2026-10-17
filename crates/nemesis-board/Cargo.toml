@@ -18,6 +18,7 @@ regex = { workspace = true }
 nemesis-path = { workspace = true }
 nemesis-types = { workspace = true }
 nemesis-prompts = { workspace = true }
+nemesis-utils = { workspace = true }
 
 [lints]
 workspace = true
