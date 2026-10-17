@@ -247,12 +247,17 @@ fn create_agent_rejects_foreign_credential_ref_without_residue() {
 
 /// 解析全链路：真实 VaultStore 落盘 → resolve_agent_credential 出真值；
 /// 缺别名 fail loud。直连 resolve_alias_at 不触全局解析器（与
-/// vault_runtime 测试的全局槽互不干扰）；argon2 模式的 env 口令与
-/// vault_runtime 测试同值（并发互踩时值一致，良性）。
+/// vault_runtime 测试的全局槽互不干扰）；argon2 模式的 env 口令是
+/// 进程级全局——持 GLOBAL_STATE_LOCK 与 vault_runtime 系测试互斥
+/// （vault 测试纪律四件套之一；无锁时 wrong-pw 用例可在 set/读窗口
+/// 内穿插改值导致假红），尾部按平台默认态恢复。
 /// security 裁剪形态整个消失（vault 本体在 nemesis-security 里）。
 #[cfg(all(test, feature = "security"))]
 #[test]
 fn agent_credential_resolution_roundtrip_via_real_vault() {
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path().join("workspace");
     std::fs::create_dir_all(&ws).unwrap();
@@ -290,4 +295,12 @@ fn agent_credential_resolution_roundtrip_via_real_vault() {
     // 缺别名 fail loud（带 vault set 指引）。
     let err = super::resolve_agent_credential(&ws, agent_id, "absent").unwrap_err();
     assert!(err.contains("vault set"), "got: {err}");
+
+    // 尾部按平台默认态恢复口令 env（对齐 vault_runtime::restore_passphrase_env：
+    // Argon2id 平台留惯例 seed 值、DPAPI 平台清除，不向后续测试泄漏）。
+    if mode == nemesis_security::vault::VaultMode::Argon2id {
+        unsafe { std::env::set_var("NEMESISBOT_VAULT_PASSPHRASE", passphrase) };
+    } else {
+        unsafe { std::env::remove_var("NEMESISBOT_VAULT_PASSPHRASE") };
+    }
 }

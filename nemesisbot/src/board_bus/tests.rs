@@ -11,6 +11,7 @@ use nemesis_cluster::cluster::Cluster;
 use nemesis_cluster::types::ClusterConfig;
 
 fn make_deps(store: Arc<nemesis_board::BoardStore>, quota: Arc<QuotaLedger>) -> MasterBusDeps {
+    static WS_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let cluster = Cluster::new(ClusterConfig {
         node_id: "node-master".to_string(),
         bind_address: "127.0.0.1:0".to_string(),
@@ -19,7 +20,15 @@ fn make_deps(store: Arc<nemesis_board::BoardStore>, quota: Arc<QuotaLedger>) -> 
     });
     MasterBusDeps {
         store,
-        workspace: std::env::temp_dir().join("board-bus-test-ws"),
+        // workspace 唯一名防御：delivery.files 是该字段唯一落盘点
+        // （board_bus.rs create_dir_all+write），当前 make_deps 消费者不触
+        // 它，但固定名一旦被未来测试真写即同 pid 内并行互踩——对齐
+        // unique_home 的 pid+seq 惯例消雷。
+        workspace: std::env::temp_dir().join(format!(
+            "board-bus-test-ws-{}-{}",
+            std::process::id(),
+            WS_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )),
         quota,
         cluster: Arc::new(cluster),
         moderator_loop: Arc::new(OnceLock::new()),

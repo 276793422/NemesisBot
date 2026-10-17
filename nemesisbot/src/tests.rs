@@ -542,6 +542,8 @@ fn test_version_info_format() {
 
 #[test]
 fn test_home_dir_resolution() {
+    // 读 NEMESISBOT_HOME env/cwd（resolve_home(false)）——持锁防并行 mutator。
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let local = false;
     // Just test the logic doesn't panic
     let _ = crate::common::resolve_home(local);
@@ -549,6 +551,8 @@ fn test_home_dir_resolution() {
 
 #[test]
 fn test_home_dir_resolution_local() {
+    // 读 cwd（local 分支）——持锁防并行 set_current_dir mutator 窗口穿插。
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let local = true;
     let home = crate::common::resolve_home(local);
     assert!(home.to_str().unwrap().contains(".nemesisbot"));
