@@ -419,6 +419,9 @@ async fn cmd_run(
     name: &str,
     input_args: &[String],
 ) -> Result<()> {
+    // home 仅被下方 sandbox 闸块消费——sandbox 关（desktop 等形态）时无引用。
+    #[cfg(not(feature = "sandbox"))]
+    let _ = home;
     println!("Running workflow: {}", name);
 
     // Find the workflow file

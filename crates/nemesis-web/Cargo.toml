@@ -9,7 +9,7 @@ edition.workspace = true
 # `zip` crate the rest of the workspace already uses (nemesis-utils/skills/
 # sandbox/security); deflate-only keeps the build script light.
 [build-dependencies]
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [dependencies]
 nemesis-types = { workspace = true }
@@ -73,7 +73,7 @@ url = "2"
 # 同一 crate 同一 feature 集（deflate-only）。`skins` feature 门控——关掉
 # 后 zip + nemesis-verify 整体退出依赖图（verify 是本功能的实现依赖，
 # 随 skins 进出，见计划 §3.7）。
-zip = { version = "2", default-features = false, features = ["deflate"], optional = true }
+zip = { version = "9", default-features = false, features = ["deflate"], optional = true }
 # v4 签名验证（.nbskin 来源徽标；管理面按需验签，见 skins.rs）。
 nemesis-verify = { workspace = true, optional = true }
 async-trait = { workspace = true }
@@ -149,7 +149,7 @@ nemesis-tools = { workspace = true }
 wiremock = "0.6"
 # P2-2: sdk_embed tests open the embedded bytes as a real archive (structural
 # round-trip — the guarantee that unzip/pip install work, not just non-empty).
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 # memory handler agt_tests 用共享 ONNX fixture 喂真实 MemoryManager——
 # `init_vector_store_with_embed` 门在 nemesis-memory 的 `test-fixture` feature
 # 后（与 nemesis-agent dev-deps 同款模式；仅测试用，不进生产依赖图）。

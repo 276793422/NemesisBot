@@ -40,7 +40,12 @@ pub fn extract_zip(zip_path: &str, dest_dir: &str) -> Result<(), String> {
             .by_index(idx)
             .map_err(|e| format!("failed to read zip entry {}: {}", idx, e))?;
 
-        let entry_name = entry.name().to_string();
+        // zip 9：name() 解码可失败（非 UTF-8/未知编码条目名）——诚实报错拒绝
+        // 整个解压（安全敏感提取器，畸形名字不允许静默转写）。
+        let entry_name = entry
+            .name()
+            .map_err(|e| format!("failed to decode zip entry {} name: {}", idx, e))?
+            .to_string();
         let entry_path = dest_dir.join(&entry_name);
 
         // Security check: ensure the resolved path is within the destination directory.
