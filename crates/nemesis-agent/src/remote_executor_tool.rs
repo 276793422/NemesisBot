@@ -455,6 +455,10 @@ impl ExecutorChannel {
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // 异常路径兜底：future 被取消（estop 中断/调用方 drop）时 Child 随
+        // 之 drop——kill_on_drop 保证不留活孤儿进程（有序路径已在收尾
+        // start_kill + wait，此开关不生效，无副作用）。
+        cmd.kill_on_drop(true);
 
         let mut child = cmd
             .spawn()
@@ -578,6 +582,8 @@ impl ExecutorChannel {
         if self.start_exe.is_some() {
             cmd.env("NEMESISBOT_SANDBOX_BACKEND", "sandboxie");
         }
+        // 同上：异常 drop 兜底杀子进程（有序路径显式 kill+wait 不受影响）。
+        cmd.kill_on_drop(true);
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("failed to spawn executor child: {e}"))?;
