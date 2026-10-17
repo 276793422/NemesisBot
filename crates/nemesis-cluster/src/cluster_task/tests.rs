@@ -114,6 +114,52 @@ fn test_persist_and_restore() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// T9（2026-10-17 三轮审计）：B 端 conversation 路径成分消毒——远端可控
+/// task_id（含 `../`）落盘/删除都必须留在 data_dir/cluster/ 内，且恢复
+/// 路径（tasks.json 索引原 id 反查）与写入对称。
+#[test]
+fn test_hostile_task_id_conversation_stays_in_cluster_dir() {
+    let dir = std::env::temp_dir().join("cluster_test_t9_hostile");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let hostile = "../../t9_escape";
+    let list = ClusterTaskList::new(&dir);
+    list.create_task(make_task(hostile, TaskStatus::Pending));
+    list.save_async_state(
+        hostile,
+        "child-1".to_string(),
+        "tc_1".to_string(),
+        serde_json::json!([{"role": "user", "content": "hello"}]),
+    )
+    .expect("save_async_state should succeed");
+
+    // 落盘文件 = 消毒名；`../../t9_escape` 前缀是 `. . / . . /` 共 6 个
+    // 非白名单字符（`../` × 2），1:1 映射 = 6 个 `_` → `______t9_escape`；
+    // 裸名/逃逸位置都不存在。
+    let cluster_dir = dir.join("cluster");
+    let safe_file = cluster_dir.join("______t9_escape.json");
+    assert!(safe_file.exists(), "会话快照必须落消毒名: {:?}", safe_file);
+    assert!(
+        !dir.join("t9_escape.json").exists(),
+        "不得逃出 cluster 目录"
+    );
+
+    // 恢复对称：新实例按 tasks.json 索引里的原 id 反查同一消毒名。
+    drop(list);
+    let list2 = ClusterTaskList::new(&dir);
+    list2.restore_from_disk().unwrap();
+    let task = list2.get_task(hostile).expect("原 id 恢复");
+    assert!(task.conversation.is_some(), "会话快照按同源消毒名找回");
+
+    // complete_task 删除也走消毒名。
+    list2.complete_task(hostile);
+    assert!(!safe_file.exists(), "complete_task 必须删掉消毒名文件");
+    assert!(list2.get_task(hostile).is_none());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // -------------------------------------------------------------------------
 // Additional unit tests
 // -------------------------------------------------------------------------

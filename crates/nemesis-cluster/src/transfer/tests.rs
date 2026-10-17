@@ -542,6 +542,43 @@ fn landed_callback_fires_with_task_and_dir() {
     assert!(got[0].1.ends_with("task-11"));
 }
 
+/// T8（2026-10-17 三轮审计）：远端可控 task_id 落地目录消毒——`../` 形态
+/// 不得逃出 inbox；去重探针与落地同源（重传命中 dedup）。
+#[test]
+fn hostile_task_id_lands_inside_inbox() {
+    let root = temp_root("t8");
+    let src = root.join("src");
+    make_source(&src, &[("r/x.md", b"data")]);
+    let sink = TransferSink::new(&root.join("ws"), 0);
+    let begin = prepare_begin(&src, "xf-t8", "../escape", 64);
+    push_all(&sink, &begin, &src, &[]);
+
+    let inbox = root.join("ws").join("cluster").join("inbox");
+    // 旧实现裸拼会落到 inbox/../escape = cluster/escape。
+    assert!(
+        !root.join("ws").join("cluster").join("escape").exists(),
+        "task_id 路径逃逸必须被消毒拦截"
+    );
+    // 落地目录 = 白名单消毒段（`../escape` → `___escape`），恰一个。
+    let mut landed: Vec<String> = std::fs::read_dir(&inbox)
+        .unwrap()
+        .flatten()
+        .filter_map(|e| e.file_name().to_str().map(String::from))
+        .filter(|n| !n.starts_with('.'))
+        .collect();
+    landed.sort();
+    assert_eq!(landed, vec!["___escape".to_string()], "实际: {landed:?}");
+
+    // 落地目录内容完整（files + 回执）。
+    let landed_dir = inbox.join("___escape");
+    assert!(landed_dir.join("landed.json").exists());
+    assert!(landed_dir.join("files").join("r").join("x.md").exists());
+
+    // 去重探针同源：同 (task_id, content_hash) 重传命中 dedup。
+    let reply = sink.begin(&prepare_begin(&src, "xf-t8-2", "../escape", 64));
+    assert_eq!(reply.status, "dedup", "消毒名探针必须命中已落地档案");
+}
+
 #[test]
 fn overlimit_callback_fires() {
     let root = temp_root("ol");

@@ -166,9 +166,15 @@ impl ForgeDataProvider for FileForgeProvider {
 
         let report = payload.get("report").ok_or("report field is required")?;
 
-        // Generate a filename from source node and timestamp
+        // Generate a filename from source node and timestamp.
+        // T10（2026-10-17 三轮审计）：source_node 是远端可控标识符——文件
+        // 名成分前消毒（仓内单一真相源白名单段消毒，`../` 等映射 `_`，真
+        // 实节点名逐字节不变），否则 `remote-{source_node}-{ts}.json` 可逃
+        // remote_dir 任意路径写（T7/T8/T9 同族）。读侧 read_reflection_content
+        // 已有 `file_name()` 围栏，本修只补写侧。
+        let safe_name = nemesis_utils::sanitize::sanitize_path_segment(source_node);
         let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-        let filename = format!("remote-{}-{}.json", source_node, timestamp);
+        let filename = format!("remote-{safe_name}-{}.json", timestamp);
         let path = self.remote_dir.join(&filename);
 
         // Sanitize the report before storing

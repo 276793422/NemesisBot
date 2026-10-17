@@ -323,3 +323,46 @@ fn test_timeline_md_shares_aggregation_source() {
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&ws);
 }
+
+/// T8 读侧（2026-10-17 三轮审计）：收件箱补收按落地侧同源消毒名探测——
+/// 异形 task_id（含 `..`）不得逃出导出树，消毒名目录正常补收、落位核对
+/// 不再误报未落地。
+#[test]
+fn test_inbox_unplaced_hostile_task_id_sanitized() {
+    let (store, dir) = temp_store("t8");
+    let ws = temp_dir("ws");
+    let issue = store.create_issue(new_issue("补收")).expect("create");
+    let hostile = "../t8escape";
+    store
+        .insert_dispatch(hostile, issue.id, "node-w", &admin())
+        .expect("dispatch");
+
+    // 收件箱里放一个消毒名落地目录（transfer 落地侧的实际形态）。
+    let inbox = ws.join("cluster").join("inbox");
+    let safe = nemesis_utils::sanitize::sanitize_path_segment(hostile);
+    std::fs::create_dir_all(inbox.join(&safe).join("files")).unwrap();
+    std::fs::write(inbox.join(&safe).join("files").join("a.md"), b"x").unwrap();
+
+    let out_root = ws.join("logs").join("dossiers");
+    let outcome =
+        export_issue_tree(&store, &issue.number, &ws, &out_root, &NO_USAGE).expect("export");
+
+    // 补收成功：消毒名目录拷进导出树 inbox-unplaced/。
+    let unplaced = outcome.root.join("inbox-unplaced");
+    assert!(
+        unplaced.join(&safe).join("files").join("a.md").is_file(),
+        "消毒名目录必须被补收"
+    );
+    // 无逃逸：旧形态裸拼会落 root/inbox-unplaced/../t8escape = root/t8escape。
+    assert!(!outcome.root.join("t8escape").exists(), "不得逃出导出树");
+
+    // 落位核对（unplaced 探针同源消毒）不再误报未落地。
+    assert!(
+        !outcome.notes.iter().any(|n| n.contains("执行档案未落地")),
+        "notes: {:?}",
+        outcome.notes
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&ws);
+}

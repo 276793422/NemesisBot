@@ -17,18 +17,10 @@ use tokio::fs;
 use tracing;
 
 /// SAN-02：task_id 可能来自远端对端（A 端可传任意串）——落盘路径成分前
-/// 白名单消毒（`nemesis_utils::sanitize::sanitize_path_segment`，兜 `..` /
-/// 路径分隔符 / 超长）；消毒改变原值时 WARN 留痕（内存索引仍用原 id，
-/// 真实 `task_*`/`bg_*` id 映射不变）。
-fn safe_task_file_name(task_id: &str) -> String {
-    let safe = nemesis_utils::sanitize::sanitize_path_segment(task_id);
-    if safe != task_id {
-        tracing::warn!(
-            "[TaskResultStore] task_id 含不安全字符，已消毒落盘: {task_id:?} -> {safe:?}"
-        );
-    }
-    safe
-}
+/// 白名单消毒。实现已上收 `crate::fsutil::safe_task_file_name`（T7/T8/T9
+/// 同族修复，2026-10-17：cluster_task / continuation_store / transfer /
+/// forge handler 全部同源复用，本 store 不再私有一份）。
+use crate::fsutil::safe_task_file_name;
 
 /// A stored task result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
