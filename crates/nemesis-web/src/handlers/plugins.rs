@@ -176,7 +176,11 @@ fn extract_zip_root_stripped(bytes: &[u8], dest: &std::path::Path) -> Result<usi
         let mut entry = archive
             .by_index(i)
             .map_err(|e| format!("ZIP 条目 {i} 不可读：{e}"))?;
-        let raw = entry.name().to_string();
+        // zip 9：条目名解码可失败——诚实报错拒绝（zip-slip 检查前不允许含糊名字）。
+        let raw = entry
+            .name()
+            .map_err(|e| format!("ZIP 条目 {i} 名字不可解码：{e}"))?
+            .to_string();
         // 剥首段根目录；无 '/' 的散条目（不存在于本包形态）按原名落。
         let rel = raw.split_once('/').map(|(_, r)| r).unwrap_or(&raw);
         if rel.is_empty() {

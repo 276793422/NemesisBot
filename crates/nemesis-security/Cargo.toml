@@ -46,7 +46,7 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Securit
 reqwest = { workspace = true }
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 tokio-util = { version = "0.7", features = ["rt"] }
-zip = { version = "2", optional = true }
+zip = { version = "9", optional = true }
 base64 = "0.22"
 walkdir = "2"
 

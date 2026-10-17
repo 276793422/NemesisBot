@@ -1310,7 +1310,11 @@ fn extract_update_bundle(zip_bytes: &[u8]) -> Result<ExtractedBundle, String> {
         let mut entry = archive
             .by_index(i)
             .map_err(|e| format!("更新包条目 {i} 不可读：{e}"))?;
-        let name = entry.name().to_string();
+        // zip 9：条目名解码可失败——诚实报错拒绝（更新包条目名必须可判读）。
+        let name = entry
+            .name()
+            .map_err(|e| format!("更新包条目 {i} 名字不可解码：{e}"))?
+            .to_string();
         if name == "nemesisbot.exe" || name.ends_with("/nemesisbot.exe") {
             let mut buf = Vec::with_capacity(entry.size() as usize);
             std::io::Read::read_to_end(&mut entry, &mut buf)
