@@ -513,7 +513,8 @@ pub fn spawn_periodic_residual_sweep(
 ///
 /// 护栏：标识长度 <16 或含非 `[A-Za-z0-9._-]` 字符直接跳过（短通用名误伤
 /// 无关进程；生产 task id 是 uuid ≥36 字符）。Windows 单次 PowerShell CIM
-/// 查询（10s 超时防 CIM 服务卡死拖住任务终结）。
+/// 查询、unix /proc 扫描后 kill(1) 批量强杀，两侧各 10s 超时（查询/强杀
+/// 卡死不拖住任务终结）。
 pub fn kill_task_leftover_processes(task_id: &str) -> usize {
     let needle = sanitize_transfer_id(task_id);
     if needle.len() < 16
@@ -593,11 +594,10 @@ fn kill_matching_cmdline(needle: &str, self_pid: u32) -> Result<Vec<u32>, String
         return Ok(Vec::new());
     }
     let pids: Vec<String> = matched.iter().map(|p| p.to_string()).collect();
-    let out = std::process::Command::new("kill")
-        .arg("-9")
-        .args(&pids)
-        .output()
-        .map_err(|e| format!("spawn kill: {e}"))?;
+    let mut cmd = std::process::Command::new("kill");
+    cmd.arg("-9").args(&pids);
+    // 同 10s 超时护栏（与 Windows CIM 查询对称）：kill(1) 卡死不拖住任务终结。
+    let out = run_with_timeout(cmd, std::time::Duration::from_secs(10))?;
     if !out.status.success() {
         // 逐个 kill 的部分失败（目标已退出等）不整体失败——回显实际杀到的。
         tracing::warn!("[Exec] kill 批量退出非零（部分目标可能已自行退出）");

@@ -2604,6 +2604,11 @@ impl AgentLoopSpec {
     /// bot 管理的身份，home 由本系统物化；项目注册表的信任策略不经本
     /// 路径——那由 from_project 承载）。记忆命名空间按记录走（selfbuilt
     /// = `agents/<id>`，project 镜像 = 空）。
+    ///
+    /// `#[allow(dead_code)]`：P5 消费面（自建 agent → 统一工厂的 loop
+    /// 构建入口，P4 交付报告挂起记录在案）；当前无生产调用方，键选择
+    /// 规则由 projects_factory_tests 的 `spec_from_record` 两则钉住。
+    #[allow(dead_code)]
     pub fn from_record(record: &nemesis_taskstore::AgentRecord) -> Self {
         // 记录形态按 agent_id 精确解析（记录即身份真相源）。id 先克隆
         // 进 'static 闭包（同 from_project）。

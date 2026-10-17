@@ -163,6 +163,12 @@ pub struct AgentRuntimeSupervisor {
     exe_path: PathBuf,
     /// 宿主 APP home（`<home>/workspace/tools/sandboxie/` 的定位锚——P3 ②
     /// 常驻盒的 SandboxPaths 从这里派生，与 exec_world 通道装配同源）。
+    ///
+    /// `#[allow(dead_code)]`：唯一读取点在 `try_spawn_boxed_session`
+    /// （`cfg(all(feature = "sandbox", windows))`——Sandboxie 引擎本身
+    /// Windows-only）；非 Windows 构建无读取点，字段保留是为了单形态
+    /// 跨平台结构（cfg 拆字段会裂构造签名）。
+    #[allow(dead_code)]
     home: PathBuf,
     workspace: PathBuf,
     config_path: PathBuf,
