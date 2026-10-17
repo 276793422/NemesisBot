@@ -5,6 +5,7 @@
 
 pub mod env_sanitize;
 pub mod file;
+pub mod fsutil;
 pub mod http_retry;
 pub mod llm_error_class;
 pub mod media;

@@ -230,7 +230,9 @@ pub fn export_head_tree(root: &Path, dest: &Path) -> Result<(usize, u64), String
     let repo =
         Repository::open(root).map_err(|e| format!("打开项目仓库 {} 失败: {e}", root.display()))?;
     if dest.exists() {
-        std::fs::remove_dir_all(dest).map_err(|e| format!("清空导出目录失败: {e}"))?;
+        // 韧性删除：导出目录可能刚被档案管线/索引器碰过，单发会瞬时假失败。
+        nemesis_utils::fsutil::remove_dir_all_retry(dest)
+            .map_err(|e| format!("清空导出目录失败: {e}"))?;
     }
     std::fs::create_dir_all(dest).map_err(|e| format!("建导出目录失败: {e}"))?;
     let Some(commit) = head_commit(&repo) else {

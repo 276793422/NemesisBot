@@ -359,7 +359,7 @@ impl SkillInstaller {
 
         // 下载到 staging（SHA 同时充当 trees API 与 raw URL 的 ref）。
         let staging = self.staging_dir(&slug);
-        let _ = std::fs::remove_dir_all(&staging);
+        nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
         if let Err(e) = crate::github_tree::download_skill_tree_from_github(
             &client,
             &self.github_api_url,
@@ -372,7 +372,7 @@ impl SkillInstaller {
         )
         .await
         {
-            let _ = std::fs::remove_dir_all(&staging);
+            nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
             return Err(e);
         }
 
@@ -381,7 +381,7 @@ impl SkillInstaller {
         let trust = match self.enforce_trust(&outcome) {
             Ok(t) => t,
             Err(e) => {
-                let _ = std::fs::remove_dir_all(&staging);
+                nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
                 return Err(e);
             }
         };
@@ -401,20 +401,20 @@ impl SkillInstaller {
         // 脚本形态）——藏在 scripts/ 里的恶意载荷不再绕过检查。
         let skill_md_path = staging.join("SKILL.md");
         if !skill_md_path.exists() {
-            let _ = std::fs::remove_dir_all(&staging);
+            nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
             return Err(NemesisError::Validation(format!(
                 "skill '{}' has no SKILL.md at repo root",
                 slug
             )));
         }
         let content = std::fs::read_to_string(&skill_md_path).map_err(|e| {
-            let _ = std::fs::remove_dir_all(&staging);
+            nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
             NemesisError::Io(e)
         })?;
         let security = check_skill_security_dir(&staging, &content, &slug, "");
         self.set_last_security_check(security.clone());
         if security.blocked {
-            let _ = std::fs::remove_dir_all(&staging);
+            nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
             return Err(NemesisError::Security(format!(
                 "skill '{}' blocked by security check: {}",
                 slug, security.block_reason
@@ -433,7 +433,7 @@ impl SkillInstaller {
         let (age_days, age_decision) = match self.check_age(published_at, &mut warnings) {
             Ok(v) => v,
             Err(e) => {
-                let _ = std::fs::remove_dir_all(&staging);
+                nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
                 return Err(e);
             }
         };
@@ -442,7 +442,7 @@ impl SkillInstaller {
         let files_map = match SkillsLockfile::compute_dir_hashes(&staging) {
             Ok(h) => h,
             Err(e) => {
-                let _ = std::fs::remove_dir_all(&staging);
+                nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
                 return Err(e);
             }
         };
@@ -484,7 +484,7 @@ impl SkillInstaller {
         match gate.decide(&plan).await {
             InstallDecision::Approve => {}
             InstallDecision::Deny { reason } => {
-                let _ = std::fs::remove_dir_all(&staging);
+                nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
                 return Err(NemesisError::Security(format!(
                     "install denied by approval gate ({}): {}",
                     gate.name(),
@@ -500,7 +500,7 @@ impl SkillInstaller {
         let target = self.workspace.join("skills").join(&plan.slug);
         // plan 阶段已检查不存在；二次防御（并发竞态兜底）。
         if target.exists() {
-            let _ = std::fs::remove_dir_all(&staging);
+            nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
             return Err(NemesisError::Validation(format!(
                 "skill '{}' already exists",
                 plan.slug
@@ -511,7 +511,7 @@ impl SkillInstaller {
             std::fs::create_dir_all(parent).map_err(NemesisError::Io)?;
         }
         std::fs::rename(&staging, &target).map_err(|e| {
-            let _ = std::fs::remove_dir_all(&staging);
+            nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
             NemesisError::Io(e)
         })?;
 
@@ -686,21 +686,21 @@ impl SkillInstaller {
 
         // 下载到 staging（审批通过前不落 skills/）。
         let staging = self.staging_dir(slug);
-        let _ = std::fs::remove_dir_all(&staging);
+        nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
         let dl_result = match registry
             .download_and_install(slug, version, &staging.to_string_lossy())
             .await
         {
             Ok(r) => r,
             Err(e) => {
-                let _ = std::fs::remove_dir_all(&staging);
+                nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
                 return Err(e);
             }
         };
 
         // Check if the download result indicates malware or suspicious content.
         if dl_result.is_malware_blocked {
-            let _ = std::fs::remove_dir_all(&staging);
+            nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
             return Err(NemesisError::Security(format!(
                 "skill '{}' was blocked as malware",
                 slug
@@ -716,7 +716,7 @@ impl SkillInstaller {
         // 不得残留（plan_github_install 同场景本就有清理，此处对齐）。
         let outcome = self.verify_signature_state(&staging);
         if let Err(e) = self.enforce_trust(&outcome) {
-            let _ = std::fs::remove_dir_all(&staging);
+            nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
             return Err(e);
         }
 
@@ -745,7 +745,7 @@ impl SkillInstaller {
             }
 
             if check_result.blocked {
-                let _ = std::fs::remove_dir_all(&staging);
+                nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
                 return Err(NemesisError::Security(format!(
                     "skill '{}' blocked by security check: {}",
                     slug, check_result.block_reason
@@ -781,7 +781,7 @@ impl SkillInstaller {
             match SkillsLockfile::compute_dir_hashes(&staging) {
                 Ok(h) => h,
                 Err(e) => {
-                    let _ = std::fs::remove_dir_all(&staging);
+                    nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
                     return Err(e);
                 }
             }
@@ -822,7 +822,7 @@ impl SkillInstaller {
         };
         let gate = self.gate_or_default();
         if let InstallDecision::Deny { reason } = gate.decide(&plan).await {
-            let _ = std::fs::remove_dir_all(&staging);
+            nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
             return Err(NemesisError::Security(format!(
                 "install denied by approval gate ({}): {}",
                 gate.name(),
@@ -838,13 +838,13 @@ impl SkillInstaller {
         // staging 不存在 = registry 没写任何文件——建空目录落位，保持历史行为）。
         if let Some(parent) = skill_dir.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
-                let _ = std::fs::remove_dir_all(&staging);
+                nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
                 NemesisError::Io(e)
             })?;
         }
         if staging.exists() {
             if let Err(e) = std::fs::rename(&staging, &skill_dir) {
-                let _ = std::fs::remove_dir_all(&staging);
+                nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
                 return Err(NemesisError::Io(e));
             }
         } else {
@@ -934,7 +934,7 @@ impl SkillInstaller {
         let skill_path = skill_dir.join("SKILL.md");
         std::fs::write(&skill_path, &body).map_err(|e| {
             // Clean up on failure.
-            let _ = std::fs::remove_dir_all(&skill_dir);
+            nemesis_utils::fsutil::remove_dir_all_resilient(&skill_dir);
             NemesisError::Io(e)
         })?;
 
@@ -946,7 +946,7 @@ impl SkillInstaller {
         }
 
         if check_result.blocked {
-            let _ = std::fs::remove_dir_all(&skill_dir);
+            nemesis_utils::fsutil::remove_dir_all_resilient(&skill_dir);
             return Err(NemesisError::Security(format!(
                 "skill '{}' blocked by security check: {}",
                 skill_name, check_result.block_reason
@@ -998,7 +998,8 @@ impl SkillInstaller {
             )));
         }
 
-        std::fs::remove_dir_all(&skill_dir).map_err(NemesisError::Io)?;
+        // 韧性删除：用户点名的 uninstall 操作，瞬时句柄单发会假失败报错。
+        nemesis_utils::fsutil::remove_dir_all_retry(&skill_dir).map_err(NemesisError::Io)?;
 
         // P14：lockfile 同步移除（失败只 warn——目录已删，记账滞后可被 verify 检出）。
         let _serial = LOCKFILE_WRITE_LOCK.lock();

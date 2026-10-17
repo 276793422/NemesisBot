@@ -522,7 +522,9 @@ impl TransferSink {
                 error: None,
             };
         }
-        if let Err(e) = std::fs::remove_dir_all(&st)
+        // 旧状态目录清理走韧性删除（对端可能刚写入，瞬时句柄常见）；
+        // 重试耗尽才对端报错。
+        if let Err(e) = nemesis_utils::fsutil::remove_dir_all_retry(&st)
             && st.exists()
         {
             return TransferBeginReply {
@@ -659,7 +661,7 @@ impl TransferSink {
         //    以最新为准）。含 files/ + manifest.json + landed.json 回执。
         let landed = self.inbox_root.join(&begin.task_id);
         if landed.exists()
-            && let Err(e) = std::fs::remove_dir_all(&landed)
+            && let Err(e) = nemesis_utils::fsutil::remove_dir_all_retry(&landed)
         {
             return Err(format!("清理旧收件目录失败: {e}"));
         }
