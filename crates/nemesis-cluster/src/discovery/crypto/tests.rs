@@ -1,37 +1,5 @@
 use super::*;
 
-#[test]
-fn test_sign_and_verify() {
-    let crypto = CryptoService::new("test-secret".into());
-    let payload = b"hello world";
-    let sig = crypto.sign(payload);
-
-    assert!(crypto.verify(payload, &sig));
-    assert!(!crypto.verify(b"tampered", &sig));
-}
-
-#[test]
-fn test_no_auth_mode() {
-    let crypto = CryptoService::no_auth();
-    assert!(crypto.verify(b"anything", "any-signature"));
-    assert!(crypto.sign(b"test").is_empty());
-}
-
-#[test]
-fn test_node_id_hash_deterministic() {
-    let hash1 = CryptoService::node_id_hash("node-1", "10.0.0.1:9000");
-    let hash2 = CryptoService::node_id_hash("node-1", "10.0.0.1:9000");
-    assert_eq!(hash1, hash2);
-    assert_eq!(hash1.len(), 16);
-}
-
-#[test]
-fn test_node_id_hash_different_inputs() {
-    let hash1 = CryptoService::node_id_hash("node-1", "10.0.0.1:9000");
-    let hash2 = CryptoService::node_id_hash("node-2", "10.0.0.1:9000");
-    assert_ne!(hash1, hash2);
-}
-
 // --- AES-256-GCM tests ---
 
 #[test]

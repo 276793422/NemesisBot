@@ -754,3 +754,64 @@ fn test_sweep_stale_staging_missing_root_is_zero() {
     assert_eq!(sink.sweep_stale_staging(std::time::Duration::ZERO), 0);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// LOW-7（2026-10-17 四轮审计）：chunk 按 staging 计划双闸——序号越界与
+// 单块超尺寸在写盘前诚实拒绝（此前远端可控 seq/len 可写任意多/任意大的
+// 块文件进 staging = 磁盘填充面）。
+#[test]
+fn chunk_rejects_seq_and_size_beyond_staging_plan() {
+    let root = temp_root("plan");
+    let src = root.join("src");
+    make_source(&src, &[("f.bin", &vec![7u8; 1500])]);
+    let sink = TransferSink::new(&root.join("ws"), 0);
+    let begin = prepare_begin(&src, "xf-plan", "task-plan", 1000); // 2 块
+    let data = vec![7u8; 1000];
+    let mk = |seq: usize, payload: &[u8]| TransferChunk {
+        transfer_id: begin.transfer_id.clone(),
+        seq,
+        total: begin.chunk_count,
+        data_b64: b64_encode(payload),
+        sha256: sha256_hex(payload),
+    };
+
+    // begin 前（staging 目录都不在）：诚实拒绝。
+    let err = sink.chunk(&mk(0, &data)).unwrap_err();
+    assert!(err.contains("staging 不存在"), "{err}");
+
+    // staging 在场但 manifest 未落（begin 窄窗口）：诚实拒绝，sender 重试。
+    std::fs::create_dir_all(sink.staging_dir(&begin.transfer_id)).unwrap();
+    let err = sink.chunk(&mk(0, &data)).unwrap_err();
+    assert!(err.contains("begin 未完成"), "{err}");
+
+    // begin 后：越界 seq 拒绝（chunk_count=2，seq=2 越界）。
+    assert_eq!(sink.begin(&begin).status, "ok");
+    let err = sink.chunk(&mk(2, &data)).unwrap_err();
+    assert!(err.contains("块序号 2 超出计划"), "{err}");
+
+    // 单块超尺寸拒绝（计划 1000B，推 1001B）。
+    let big = vec![7u8; 1001];
+    let err = sink.chunk(&mk(0, &big)).unwrap_err();
+    assert!(err.contains("块大小 1001 超出计划"), "{err}");
+
+    // 计划内合法块照常收（闸不误伤）。
+    push_chunk(&sink, &begin, &src, 0);
+    push_chunk(&sink, &begin, &src, 1);
+    let end = sink.end(&begin.transfer_id).expect("计划内块必须正常收全");
+    assert_eq!(end.status, "ok");
+}
+
+// LOW-8 回归锁（hash-of-hash 事故，2026-10-17）：流式哈希必须与整读
+// sha256_hex 同值——首版实现把 finalize 摘要又哈希了一遍，收发两侧同错
+// 自洽互证通过，跨函数比较（diff_walk 声明 vs 变更集写侧重验）当场现形。
+#[test]
+fn streaming_hash_matches_whole_read_hash() {
+    let root = temp_root("sh");
+    std::fs::create_dir_all(&root).unwrap();
+    let p = root.join("blob.bin");
+    // 30 万字节 > 256KiB 单缓冲，强制多块路径。
+    let payload: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&p, &payload).unwrap();
+    let (size, hash) = sha256_file_streaming(&p).unwrap();
+    assert_eq!(size, payload.len() as u64);
+    assert_eq!(hash, sha256_hex(&payload), "流式与整读必须同值");
+}

@@ -93,6 +93,35 @@ fn entry_age_secs(entry: &OutboxEntry) -> Option<i64> {
 /// （ts 格式由 cluster_request_logger_observer 决定；变更须同步这里。）
 const TASK_DIR_TS_PREFIX: usize = 24;
 
+/// F-NEW-3（2026-10-17 四轮审计）：启动清扫补入队的**年龄闸**。已送达任务
+/// 的发件箱条目被双删而 cluster_logs 原件保留，「已送达」与「崩溃残留」在
+/// 磁盘上不可区分——无闸时每次 worker 重启把保留期内全部历史重新入队重推
+/// （master ingest 搬走落地实体后 dedup 放行，T8 刻意语义）。年龄闸语义：
+/// 只补「新近」目录（崩溃窗口兜底的本来意图），更早的历史不自动重推——
+/// master 侧 D5 `request_pull` 兜底拉取语义不变，仍可点名救取。
+const RESIDUAL_BACKFILL_MAX_AGE_SECS: i64 = 24 * 3600;
+
+/// 目录名 ts 前缀（`%Y-%m-%d_%H-%M-%S-%3f`，本地时区）距今是否超龄。
+/// 解析失败（含字节切片非 char boundary——畸形/外来目录名）= 视为超龄
+/// 跳过：真实执行记录目录恒带 logger 时间戳前缀，解析不出的形态不是
+/// 崩溃残留，「宁缺毋错键」与 derive_task_id_from_dir 同哲学。
+pub(crate) fn residual_dir_older_than(
+    dir_name: &str,
+    now: chrono::DateTime<chrono::Local>,
+    max_age_secs: i64,
+) -> bool {
+    let Some(prefix) = dir_name.get(..TASK_DIR_TS_PREFIX - 1) else {
+        return true;
+    };
+    let Ok(naive) = chrono::NaiveDateTime::parse_from_str(prefix, "%Y-%m-%d_%H-%M-%S-%3f") else {
+        return true;
+    };
+    match chrono::TimeZone::from_local_datetime(&chrono::Local, &naive).single() {
+        Some(created) => now.signed_duration_since(created).num_seconds() > max_age_secs,
+        None => true, // 本地时区歧义/不存在时刻（DST）——同解析失败处理
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 传输抽象（可注入：单测用 fake，生产用 RpcClient）
 // ---------------------------------------------------------------------------
@@ -495,6 +524,18 @@ impl TransferOutbox {
                     let Some(task_id) = derive_task_id_from_dir(&name) else {
                         continue;
                     };
+                    // F-NEW-3（2026-10-17 四轮审计）：年龄闸——只补「新近」
+                    // 目录（崩溃窗口兜底本来意图）；更早的历史不自动重推，
+                    // 否则每次重启全量重放保留期内所有已送达任务（master
+                    // ingest 搬走落地实体后 dedup 放行）。超龄仍可由 master
+                    // D5 `request_pull` 点名救取。
+                    if residual_dir_older_than(
+                        &name,
+                        chrono::Local::now(),
+                        RESIDUAL_BACKFILL_MAX_AGE_SECS,
+                    ) {
+                        continue;
+                    }
                     if self.entry_dir(&task_id).join("entry.json").exists() {
                         continue;
                     }

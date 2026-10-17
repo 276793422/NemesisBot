@@ -74,6 +74,17 @@ impl Connection {
     /// Send a framed message (4-byte length prefix + payload).
     pub fn send(&mut self, data: &[u8]) -> Result<(), ConnectionError> {
         let stream = self.stream.as_mut().ok_or(ConnectionError::NotConnected)?;
+        // LOW-9（2026-10-17 四轮审计）：发送侧帧长预检——`as u32` 截断 >
+        // 4GiB 载荷会写出假长度前缀，对端 recv 按 MAX_FRAME_SIZE 拒收并断
+        // 链（双方都进入难排查的不一致态）。现有调用方不可能产生超限帧，
+        // 这是护栏不是修复。
+        if data.len() > MAX_FRAME_SIZE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Frame too large to send: {} bytes", data.len()),
+            )
+            .into());
+        }
         let len = data.len() as u32;
         stream.write_all(&len.to_be_bytes())?;
         stream.write_all(data)?;

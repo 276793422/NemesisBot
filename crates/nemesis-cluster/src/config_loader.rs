@@ -42,7 +42,18 @@ pub fn save_config(path: &Path, config: &ClusterConfig) -> Result<(), ConfigErro
 /// Load configuration from an optional path, falling back to defaults.
 pub fn load_or_default(path: Option<&Path>) -> ClusterConfig {
     match path {
-        Some(p) => load_config(p).unwrap_or_default(),
+        // LOW-13（2026-10-17 四轮审计）：回落默认前 WARN 留痕——旧实现
+        // `unwrap_or_default` 静默吞掉读取/解析失败，配置文件损坏时用户
+        // 看到的是「默认值生效」却无从知道为什么（legacy 便捷面，调用方
+        // 不检查 Result，日志是唯一可观测面）。
+        Some(p) => load_config(p).unwrap_or_else(|e| {
+            tracing::warn!(
+                path = %p.display(),
+                error = %e,
+                "[ConfigLoader] 配置读取失败，回落默认值"
+            );
+            ClusterConfig::default()
+        }),
         None => ClusterConfig::default(),
     }
 }

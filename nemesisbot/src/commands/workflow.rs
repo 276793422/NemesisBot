@@ -761,12 +761,11 @@ fn cmd_status(workflow_dir: &std::path::Path, id: Option<&str>) -> Result<()> {
                             .get("started_at")
                             .and_then(|v| v.as_str())
                             .unwrap_or("?");
-                        // Trim the timestamp for display
-                        let started_short = if started.len() > 19 {
-                            &started[..19]
-                        } else {
-                            started
-                        };
+                        // Trim the timestamp for display. get() 边界安全横扫
+                        // （2026-10-17）：裸 [..19] 只被字节数门保护，记录里
+                        // 的 started_at 一旦出现字节 19 落在多字节字符中间
+                        // 的形态（手工编辑/异常数据）会 panic——退化取全串。
+                        let started_short = started.get(..19).unwrap_or(started);
                         println!("  {:<38} {:<20} {:<12} {}", id, wf, state, started_short);
                     }
                 }

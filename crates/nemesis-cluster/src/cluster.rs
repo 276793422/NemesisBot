@@ -2340,17 +2340,10 @@ impl Cluster {
 
     // -- Accessors ------------------------------------------------------------
 
-    /// Get the cluster configuration.
-    pub fn config(&self) -> &ClusterConfig {
-        // This is a static reference; in practice we'd store it
-        static DEFAULT: std::sync::OnceLock<ClusterConfig> = std::sync::OnceLock::new();
-        DEFAULT.get_or_init(|| ClusterConfig {
-            node_id: String::new(),
-            bind_address: "0.0.0.0:9000".into(),
-            peers: Vec::new(),
-            node_name: String::new(),
-        })
-    }
+    // 注：config() 已删除（LOW-19，2026-10-17 四轮审计）——返回 OnceLock
+    // 静态 DEFAULT 的死 API，与实例真实配置（config.cluster.json / peers.toml
+    // 装载态）零关联，唯一「调用方」是断言其返回假默认值的测试；留着只会
+    // 误导读者以为能拿到运行时配置。
 
     /// Get the node ID.
     pub fn node_id(&self) -> &str {

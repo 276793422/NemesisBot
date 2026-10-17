@@ -445,7 +445,15 @@ impl PeerChatHandler {
                 )
                 .await;
             });
-            self.active_tasks.lock().push(handle);
+            // LOW-17（2026-10-17 四轮审计）：入队前清一遍已完成 handle
+            // （is_finished 无消费副作用）——旧写法只增不清，legacy LLM
+            // 路径长驻进程时 Vec 无界慢漏（每任务一个死 handle ≈ 几十字节
+            // + 内核句柄残留到进程退出）。
+            {
+                let mut tasks = self.active_tasks.lock();
+                tasks.retain(|h| !h.is_finished());
+                tasks.push(handle);
+            }
             tracing::info!(
                 task_id = %task_id,
                 source_node = %source_node_id,

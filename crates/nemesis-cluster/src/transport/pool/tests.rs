@@ -293,17 +293,6 @@ async fn test_pool_get_with_timeout() {
 }
 
 #[tokio::test]
-async fn test_pool_get_with_context_timeout() {
-    let pool = Pool::new(AsyncPoolConfig {
-        dial_timeout: Duration::from_millis(50),
-        ..Default::default()
-    });
-
-    let result = pool.get_with_context("node-1", "10.255.255.1:9999").await;
-    assert!(result.is_err());
-}
-
-#[tokio::test]
 async fn test_pool_remove_nonexistent_key() {
     let pool = Pool::with_defaults();
     pool.remove("nonexistent-key");

@@ -1715,3 +1715,21 @@ fn test_compute_directory_hash_signature_file_excluded_roundtrip() {
     assert_eq!(count_after, 2);
     assert_eq!(h_before, h_after);
 }
+
+// 非 ASCII hex 输入诚实拒绝（2026-10-17 全仓横扫）：远端技能清单的签名/
+// 公钥字段可控行——字节长度门挡不住多字节字符，裸字节切片曾会落在字符
+// 中间 panic，现为 Err。
+#[test]
+fn test_hex_decode_rejects_non_ascii() {
+    // hex_decode_32：64 字节但字节 7..10 是多字节字符（字节 8 = 续字节）。
+    let mut s = "0".repeat(7);
+    s.push('中');
+    s.push_str(&"0".repeat(64 - 10));
+    assert_eq!(s.len(), 64);
+    let err = hex_decode_32(&s).unwrap_err();
+    assert_eq!(err, "non-ascii hex");
+
+    // hex_decode_vec：偶数字节长度但含多字节字符。
+    let err = hex_decode_vec("0中0").unwrap_err();
+    assert_eq!(err, "non-ascii hex");
+}

@@ -200,6 +200,11 @@ pub struct Pool {
     semaphore: std::sync::Arc<Semaphore>,
     node_counts: Mutex<HashMap<String, usize>>,
     active_count: AtomicUsize,
+    /// LOW-10（2026-10-17 四轮审计）：close() 幕帘——close 后迟到的
+    /// return_connection 不再触碰三账（active_count 已归零，fetch_sub 会
+    /// 下溢、add_permits 会与 close 的归还需重新校准），只关连接 + 补还
+    /// 许可，保持信号量与「池内全空」世界一致。
+    closed: std::sync::atomic::AtomicBool,
 }
 
 impl Pool {
@@ -212,6 +217,7 @@ impl Pool {
             semaphore: std::sync::Arc::new(Semaphore::new(max)),
             node_counts: Mutex::new(HashMap::new()),
             active_count: AtomicUsize::new(0),
+            closed: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -327,20 +333,9 @@ impl Pool {
         Ok((key, conn))
     }
 
-    /// Get a connection with cancellation support and semaphore wait timeout.
-    pub async fn get_with_context(
-        &self,
-        node_id: &str,
-        address: &str,
-    ) -> Result<(String, TcpConn), String> {
-        // Use tokio::select for cancellation
-        tokio::select! {
-            result = self.get_with_timeout(node_id, address) => result,
-            _ = tokio::time::sleep(self.config.dial_timeout) => {
-                Err(format!("dial timeout for {}:{}", node_id, address))
-            }
-        }
-    }
+    // 注：get_with_context 已删除（2026-10-17 四轮审计）——生产零调用方
+    // 的 test-only API，select 双 ready 竞态漏许可的分析结论见四轮审计
+    // 报告 §3；其测试语义由 get_with_timeout + 调用方超时覆盖。
 
     /// Remove and close a connection by key.
     pub fn remove(&self, key: &str) {
@@ -380,6 +375,15 @@ impl Pool {
     /// If the connection is still active, it is stored for future reuse.
     /// Otherwise it is closed and the resources are released.
     pub fn return_connection(&self, key: String, mut conn: TcpConn) {
+        // LOW-10：close() 后迟到的归还——三账已被 close 归零/清空，任何
+        // fetch_sub 都会下溢（debug panic / release 回绕）、节点计数是幻影
+        // 键；只关连接 + 补还许可（该连接的许可在 dial 时 forget 消耗），
+        // 不复活池内条目。
+        if self.closed.load(Ordering::SeqCst) {
+            conn.close();
+            self.semaphore.add_permits(1);
+            return;
+        }
         if conn.is_active() {
             let entry = PoolEntry {
                 node_id: conn.node_id().to_string(),
@@ -400,6 +404,8 @@ impl Pool {
 
     /// Close all connections in the pool.
     pub fn close(&self) {
+        // 先落幕帘再清账：幕帘后的 return_connection 走守卫分支。
+        self.closed.store(true, Ordering::SeqCst);
         let mut conns = self.conns.lock();
         let count = conns.len();
         conns.clear(); // TcpConn::Drop handles closing
