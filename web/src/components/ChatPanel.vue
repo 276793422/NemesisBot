@@ -11,6 +11,8 @@ import { useInboxStatus } from '../composables/useInboxStatus'
 // P4（能力扩展 WS8）：chat.queue_status 徽标（steer/followUp 分队列计数）。
 import { useQueueStatus } from '../composables/useQueueStatus'
 import { useSlashCommands, filterSlashCommands, type SlashCommand } from '../composables/useSlashCommands'
+// I5（2026-10-17）：文件树 📌 上下文文件——发送时随 chat.send 上报。
+import { useFileTreePanel } from '../composables/useFileTreePanel'
 import { useSessionStore } from '../stores/session'
 import { uploadImage, validateImageFile, type UploadedImage } from '../composables/useImageUpload'
 import { useToast } from '../composables/useToast'
@@ -156,6 +158,9 @@ const {
   followUpCount,
   hasQueued,
 } = useQueueStatus()
+
+// I5：文件树 📌 上下文文件单例（设定在 FileTreePanel，本组件只在发送时读）。
+const fileTree = useFileTreePanel()
 
 /** Re-fetch the inbox mode snapshot (mount / session switch / reconnect). */
 function syncInboxMode() {
@@ -1841,9 +1846,18 @@ async function sendValidated(content: string, media: { id: string }[]) {
   if (chatInput.value) chatInput.value.style.height = 'auto'
 
   // Send with voice_playback flag if playback is enabled
+  // I5：📌 上下文文件（文件树设定）随发送上报 chat.send data.open_files——
+  // 后端清洗后注入每轮快照节，模型可见路径、真读仍走 read_file + 安全 8 层。
+  // 仅默认聊天模块携带（workflow 等模块 send 语义不同）；未设定不带字段，
+  // 老协议零影响。activeModuleData 是发送/历史共用水桶，open_files 只属于
+  // 发送——在此单点附加，不进 activeModuleData。
+  const sendModuleData = activeModuleData()
+  if (isDefaultChat.value && fileTree.currentFile.value) {
+    sendModuleData.open_files = [fileTree.currentFile.value]
+  }
   send(content, voicePlayback.value, {
     module: props.module,
-    moduleData: activeModuleData(),
+    moduleData: sendModuleData,
     media,
   })
 
