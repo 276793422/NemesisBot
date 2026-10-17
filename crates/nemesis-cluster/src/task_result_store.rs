@@ -4,12 +4,9 @@
 //! retrieve them asynchronously. Supports optional disk persistence so that
 //! results survive process restarts (matching the Go implementation).
 //!
-//! # Go-compatible types
-//!
-//! The module also provides [`GoTaskResultEntry`], [`GoTaskResultIndex`],
-//! and [`GoTaskResultStore`] which mirror Go's `TaskResultEntry`,
-//! `TaskResultIndex`, and `TaskResultStore` types. These track in-memory
-//! "running" state and on-disk "done" state with atomic index persistence.
+//! T4（2026-10-17）：Go 兼容镜像类型（GoTaskResultEntry/Index/Store，
+//! ~200 行）已整体删除——生产零调用方的死代码，与主 store 并存误导读者；
+//! 历史形态见 git。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -188,12 +185,18 @@ impl TaskResultStore {
             }
         };
 
+        // T6③（2026-10-17）：显式排序——read_dir 顺序是平台实现细节
+        //（NTFS 字典序 vs ext4 哈希序），max_size 限额加载时截哪部分
+        // 必须确定性，不能跟着平台目录序漂。
+        let mut paths: Vec<std::path::PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
+            .collect();
+        paths.sort();
+
         let mut loaded = 0usize;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                continue;
-            }
+        for path in paths {
             match std::fs::read_to_string(&path) {
                 Ok(data) => match serde_json::from_str::<TaskResult>(&data) {
                     Ok(result) => {
@@ -462,15 +465,37 @@ impl AsyncTaskResultStore {
             }
         };
 
-        let mut loaded = 0usize;
+        // T6③（2026-10-17）：显式排序——read_dir 顺序是平台实现细节，
+        // max_size 限额加载时截哪部分必须确定性（与同步版同源纪律）。
+        let mut paths: Vec<PathBuf> = Vec::new();
         while let Ok(Some(entry)) = read_dir.next_entry().await {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
             }
+            paths.push(path);
+        }
+        paths.sort();
+
+        let mut loaded = 0usize;
+        for path in paths {
             match fs::read_to_string(&path).await {
                 Ok(data) => match serde_json::from_str::<TaskResult>(&data) {
                     Ok(result) => {
+                        // Bug D 同款修复（T4，2026-10-17；同步版 2026-09-08
+                        // 真机 R1c 发现）：set_running 占位条目是运行时暂态
+                        // ——它代表的在途工作随进程死亡而消失，占位若随盘
+                        // 复活，query_task_result 会永远回答 "running"，A 端
+                        // 恢复轮询被吊到 24h 安全网。加载时丢弃占位并删除
+                        // 残file，重启后的 B 诚实回答 not_found。
+                        if result.result.get("status").and_then(|v| v.as_str()) == Some("running") {
+                            let _ = fs::remove_file(&path).await;
+                            tracing::info!(
+                                task_id = %result.task_id,
+                                "[TaskResultStore] dropped stale running placeholder from disk"
+                            );
+                            continue;
+                        }
                         let mut results = self.inner.results.lock();
                         if results.len() >= self.inner.max_size {
                             break;
@@ -577,238 +602,6 @@ impl AsyncTaskResultStore {
                 );
             }
         }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Go-compatible task result types (mirrors Go's TaskResultEntry/Index/Store)
-// ---------------------------------------------------------------------------
-
-/// A task result entry in the Go-compatible format.
-///
-/// Mirrors Go's `TaskResultEntry` struct. Tracks both "running" (in-memory)
-/// and "done" (persisted to disk) task states. The B-side (worker node)
-/// uses this to track task lifecycle.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GoTaskResultEntry {
-    /// Task identifier.
-    pub task_id: String,
-    /// Current status: "running" or "done".
-    pub status: String,
-    /// Result status when done: "success" or "error".
-    /// Only meaningful when `status == "done"`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub result_status: Option<String>,
-    /// Response content on success.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub response: Option<String>,
-    /// Error message on failure.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    /// Source node that handled the task.
-    pub source_node: String,
-    /// When the entry was created (RFC3339).
-    pub created_at: String,
-    /// When the entry was last updated (RFC3339).
-    pub updated_at: String,
-}
-
-/// On-disk index for Go-style task results.
-///
-/// Mirrors Go's `TaskResultIndex`. Maps task IDs to their result entries.
-/// Only contains "done" entries; "running" entries are tracked in memory only.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct GoTaskResultIndex {
-    /// Map of task ID to result entry.
-    pub tasks: HashMap<String, GoTaskResultEntry>,
-}
-
-/// Go-compatible task result store.
-///
-/// Mirrors Go's `TaskResultStore`. Tracks:
-/// - **Running** state: in-memory only (lost on process restart; the A-side
-///   will re-query).
-/// - **Done** state: persisted to disk (`{data_dir}/{task_id}.json`) with an
-///   atomic index file (`{data_dir}/index.json`).
-///
-/// This is the B-side store for task results, used by worker nodes to
-/// persist results that the A-side can later query.
-pub struct GoTaskResultStore {
-    data_dir: PathBuf,
-    index_path: PathBuf,
-    /// In-memory tracking of which tasks are currently running.
-    running: Mutex<HashMap<String, bool>>,
-    /// In-memory cache of the disk index.
-    index: Mutex<GoTaskResultIndex>,
-}
-
-impl GoTaskResultStore {
-    /// Creates a new `GoTaskResultStore` rooted at `{workspace}/cluster/task_results/`.
-    ///
-    /// The directory is created if it does not exist. The index is loaded from
-    /// disk if present; otherwise an empty index is used.
-    pub fn new(workspace: &Path) -> std::result::Result<Self, String> {
-        let data_dir = nemesis_path::cluster_dir_in_workspace(workspace).join("task_results");
-        std::fs::create_dir_all(&data_dir)
-            .map_err(|e| format!("failed to create task_results directory: {e}"))?;
-
-        let index_path = data_dir.join("index.json");
-
-        let store = Self {
-            data_dir,
-            index_path,
-            running: Mutex::new(HashMap::new()),
-            index: Mutex::new(GoTaskResultIndex::default()),
-        };
-
-        // Load index from disk; failure is non-fatal
-        if let Err(e) = store.load_index() {
-            tracing::warn!(
-                "[TaskResultStore] failed to load task result index (starting fresh): {e}"
-            );
-            *store.index.lock() = GoTaskResultIndex::default();
-        }
-
-        Ok(store)
-    }
-
-    /// Marks a task as running (in-memory only).
-    ///
-    /// Mirrors Go's `TaskResultStore.SetRunning()`. Running state is not
-    /// persisted; if the process restarts, the A-side will re-query and
-    /// find the task missing.
-    pub fn set_running(&self, task_id: &str, source_node: &str) {
-        self.running.lock().insert(task_id.to_string(), true);
-        let _ = source_node; // stored only on done
-    }
-
-    /// Writes a completed result (data file + index + disk).
-    ///
-    /// Mirrors Go's `TaskResultStore.SetResult()`. Also clears the running
-    /// marker for this task.
-    pub fn set_result(
-        &self,
-        task_id: &str,
-        result_status: &str,
-        response: &str,
-        error_msg: &str,
-        source_node: &str,
-    ) -> std::result::Result<(), String> {
-        let now = chrono::Local::now().to_rfc3339();
-        let entry = GoTaskResultEntry {
-            task_id: task_id.to_string(),
-            status: "done".to_string(),
-            result_status: Some(result_status.to_string()),
-            response: if response.is_empty() {
-                None
-            } else {
-                Some(response.to_string())
-            },
-            error: if error_msg.is_empty() {
-                None
-            } else {
-                Some(error_msg.to_string())
-            },
-            source_node: source_node.to_string(),
-            created_at: now.clone(),
-            updated_at: now,
-        };
-
-        // Write data file (atomic: tmp + rename)
-        let json = serde_json::to_string_pretty(&entry)
-            .map_err(|e| format!("failed to marshal task result: {e}"))?;
-        let file_name = safe_task_file_name(task_id);
-        let file_path = self.data_dir.join(format!("{file_name}.json"));
-        let tmp_path = self.data_dir.join(format!("{file_name}.json.tmp"));
-        std::fs::write(&tmp_path, &json).map_err(|e| format!("failed to write tmp file: {e}"))?;
-        std::fs::rename(&tmp_path, &file_path)
-            .map_err(|e| format!("failed to rename tmp file: {e}"))?;
-
-        // Update in-memory index
-        self.index.lock().tasks.insert(task_id.to_string(), entry);
-
-        // Clear running marker
-        self.running.lock().remove(task_id);
-
-        // Persist index to disk
-        self.save_index_locked()
-    }
-
-    /// Retrieves a task result by ID.
-    ///
-    /// Mirrors Go's `TaskResultStore.Get()`. Checks running state first,
-    /// then the index. Returns `None` if the task is unknown.
-    pub fn get(&self, task_id: &str) -> Option<GoTaskResultEntry> {
-        // Check running first
-        if self.running.lock().contains_key(task_id) {
-            return Some(GoTaskResultEntry {
-                task_id: task_id.to_string(),
-                status: "running".to_string(),
-                result_status: None,
-                response: None,
-                error: None,
-                source_node: String::new(),
-                created_at: String::new(),
-                updated_at: String::new(),
-            });
-        }
-
-        // Check index
-        self.index.lock().tasks.get(task_id).cloned()
-    }
-
-    /// Deletes a task result (data file + index entry + disk).
-    ///
-    /// Mirrors Go's `TaskResultStore.Delete()`.
-    pub fn delete(&self, task_id: &str) -> std::result::Result<(), String> {
-        // Delete data file (ignore errors, may not exist)
-        let file_path = self
-            .data_dir
-            .join(format!("{}.json", safe_task_file_name(task_id)));
-        let _ = std::fs::remove_file(&file_path);
-
-        // Update index
-        self.index.lock().tasks.remove(task_id);
-        self.running.lock().remove(task_id);
-
-        self.save_index_locked()
-    }
-
-    /// Returns the number of "done" entries in the index.
-    pub fn done_count(&self) -> usize {
-        self.index.lock().tasks.len()
-    }
-
-    /// Returns whether a task is currently in "running" state.
-    pub fn is_running(&self, task_id: &str) -> bool {
-        self.running.lock().contains_key(task_id)
-    }
-
-    // ---- Internal helpers ----
-
-    fn load_index(&self) -> std::result::Result<(), String> {
-        if !self.index_path.exists() {
-            return Ok(());
-        }
-
-        let data = std::fs::read_to_string(&self.index_path)
-            .map_err(|e| format!("failed to read index: {e}"))?;
-
-        let idx: GoTaskResultIndex =
-            serde_json::from_str(&data).map_err(|e| format!("failed to parse index: {e}"))?;
-
-        *self.index.lock() = idx;
-        Ok(())
-    }
-
-    fn save_index_locked(&self) -> std::result::Result<(), String> {
-        let json = serde_json::to_string_pretty(&*self.index.lock())
-            .map_err(|e| format!("failed to marshal index: {e}"))?;
-        let tmp_path = self.index_path.with_extension("json.tmp");
-        std::fs::write(&tmp_path, &json).map_err(|e| format!("failed to write index tmp: {e}"))?;
-        std::fs::rename(&tmp_path, &self.index_path)
-            .map_err(|e| format!("failed to rename index tmp: {e}"))?;
-        Ok(())
     }
 }
 

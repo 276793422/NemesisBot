@@ -562,13 +562,14 @@ impl TransferSink {
                 error: None,
             };
         }
-        if let Err(e) = std::fs::remove_dir_all(&st)
-            && st.exists()
-        {
+        // 韧性删除（T3，2026-10-17）：Windows AV/索引器瞬时句柄是常态，
+        // 裸 remove_dir_all 单发必胜假设在 CI runner 实证不成立（T-MRG-1
+        // 先例）——退避重试窗口内仍失败才报错，由 create_dir_all 兜底。
+        if !crate::fsutil::remove_dir_all_resilient(&st) {
             return TransferBeginReply {
                 status: "error".into(),
                 have: vec![],
-                error: Some(format!("清理旧 staging 失败: {e}")),
+                error: Some("清理旧 staging 失败：目录重试后仍被占用".into()),
             };
         }
         if let Err(e) = std::fs::create_dir_all(&st) {
@@ -698,10 +699,9 @@ impl TransferSink {
         // 3. 落地：inbox/<task_id>/（已存在则整体替换——同 task_id 新内容
         //    以最新为准）。含 files/ + manifest.json + landed.json 回执。
         let landed = self.inbox_root.join(&begin.task_id);
-        if landed.exists()
-            && let Err(e) = std::fs::remove_dir_all(&landed)
-        {
-            return Err(format!("清理旧收件目录失败: {e}"));
+        // 韧性删除（T3，2026-10-17）：同 begin 侧，AV/索引器瞬时句柄退避重试。
+        if landed.exists() && !crate::fsutil::remove_dir_all_resilient(&landed) {
+            return Err("清理旧收件目录失败：目录重试后仍被占用".into());
         }
         std::fs::create_dir_all(self.inbox_root.parent().unwrap_or(&landed))
             .map_err(|e| format!("创建 inbox 父目录失败: {e}"))?;

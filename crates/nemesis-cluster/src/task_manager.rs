@@ -705,8 +705,11 @@ fn cleanup_completed(
                 let created_utc = created.with_timezone(&chrono::Local);
                 if chrono::Local::now() - created_utc > pending_limit {
                     // Mark as failed with timeout error（条件转移防与并发
-                    // settle 竞态覆盖已定终态）。
-                    let _ = store.update_result_if_status(
+                    // settle 竞态覆盖已定终态）。T6①（2026-10-17）：只有
+                    // 条件转移真正落地（Ok(true)）才记 timeout 日志 + fire
+                    // callback——并发 settle 已定终态时返回 Ok(false)，旧
+                    // 代码无视结果照发，下游续行快照单消费者会收到重复事件。
+                    let settled = store.update_result_if_status(
                         &task.id,
                         &[status],
                         TaskStatus::Failed,
@@ -719,21 +722,23 @@ fn cleanup_completed(
                         })),
                     );
 
-                    crate::logger::log_task(
-                        "timeout",
-                        &task.id,
-                        &format!(
-                            "state={:?} age={}s",
-                            status,
-                            (chrono::Local::now() - created_utc).num_seconds()
-                        ),
-                    );
+                    if settled == Ok(true) {
+                        crate::logger::log_task(
+                            "timeout",
+                            &task.id,
+                            &format!(
+                                "state={:?} age={}s",
+                                status,
+                                (chrono::Local::now() - created_utc).num_seconds()
+                            ),
+                        );
 
-                    // Fire callback if set
-                    if let Some(cb) = on_complete
-                        && let Ok(updated_task) = store.get(&task.id)
-                    {
-                        cb(&updated_task);
+                        // Fire callback if set
+                        if let Some(cb) = on_complete
+                            && let Ok(updated_task) = store.get(&task.id)
+                        {
+                            cb(&updated_task);
+                        }
                     }
                 }
             }

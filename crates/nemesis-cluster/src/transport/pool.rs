@@ -258,9 +258,16 @@ impl Pool {
                     self.dec_node_count(node_id);
                     return Ok((key, entry.conn));
                 }
-                // Connection is dead, remove it
+                // Connection is dead, remove it（T5，2026-10-17）：拨号时
+                // permit.forget() 消耗的许可在此归还 + 节点计数回落——旧
+                // 代码只减 active_count，注释声称「许可留作复用」是谎话
+                //（forget 掉的许可拿不回来，随后的 dial 取的是新许可），
+                // 每轮死连接轮换永久漏 1 槽 + node_count 漂移，最终
+                // "connection limit reached" / "per-node limit reached"
+                // 假限流。与 remove()/cleanup_dead() 的释放路径对齐。
+                self.dec_node_count(&entry.node_id);
                 self.active_count.fetch_sub(1, Ordering::SeqCst);
-                // Semaphore permit stays consumed, we'll reuse it
+                self.semaphore.add_permits(1);
             }
         }
 
@@ -381,8 +388,11 @@ impl Pool {
             };
             self.conns.lock().insert(key, entry);
         } else {
-            // Connection is dead, release resources
+            // Connection is dead, release resources（T5：节点计数与许可、
+            // active_count 三账对齐回落，镜像 dial 的消耗）。
+            let node_id = conn.node_id().to_string();
             conn.close();
+            self.dec_node_count(&node_id);
             self.active_count.fetch_sub(1, Ordering::SeqCst);
             self.semaphore.add_permits(1);
         }

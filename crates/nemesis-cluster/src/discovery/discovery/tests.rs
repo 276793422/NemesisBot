@@ -347,6 +347,37 @@ fn test_set_broadcast_interval() {
 
     service.set_broadcast_interval(Duration::from_secs(60));
     // Verify interval was updated (no panic)
+    assert_eq!(service.config.interval, Duration::from_secs(60));
+}
+
+/// T6② 回归（2026-10-17）：set_broadcast_interval 必须落到广播线程读取的
+/// 共享秒数上（旧实现只改 config，线程 spawn 时按值捕获——运行中改动
+/// 无效，文档 "next broadcast cycle" 是谎话）。亚秒值按 1s 下限。
+#[test]
+fn test_set_broadcast_interval_updates_shared_secs() {
+    let registry = PeerRegistry::new(HealthConfig::default());
+    let config = DiscoveryConfig {
+        port: 0,
+        interval: Duration::from_secs(30),
+        secret: String::new(),
+        announce_expiry_secs: 120,
+        enc_key: None,
+    };
+    let mut service =
+        DiscoveryService::with_registry("interval-secs-node", 9000, registry, config).unwrap();
+
+    assert_eq!(service.broadcast_interval_secs.load(Ordering::Relaxed), 30);
+
+    service.set_broadcast_interval(Duration::from_secs(7));
+    assert_eq!(
+        service.broadcast_interval_secs.load(Ordering::Relaxed),
+        7,
+        "运行中改动必须落到共享秒数（广播线程每 tick 重读）"
+    );
+
+    // 亚秒值按 1s 下限（线程 tick 粒度 1s，既有语义）。
+    service.set_broadcast_interval(Duration::from_millis(50));
+    assert_eq!(service.broadcast_interval_secs.load(Ordering::Relaxed), 1);
 }
 
 #[test]
