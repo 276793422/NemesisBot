@@ -18,8 +18,18 @@
 //! 给调用方，账本只收自动链证据）。
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::board_review::BoardReviewDeps;
+
+/// 事件键进程内单调序列号。毫秒时间戳单独做幂等键在亚毫秒连发下会
+/// 碰撞——`INSERT OR IGNORE` 静默吞行=审计记录丢失（合并缝实测）；
+/// tasks.db 单写者权威（评审漏斗只在本进程写），序列号拼接即全局唯一。
+static EVENT_KEY_SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn next_event_key_seq() -> u64 {
+    EVENT_KEY_SEQ.fetch_add(1, Ordering::Relaxed)
+}
 
 /// 决策 → 账本 scope。分支闭环动作只对 `issue` scope 生效。
 fn scope_of(decision: &str) -> &'static str {
@@ -126,7 +136,11 @@ pub(crate) fn review_outcome_delivery(
         "task_id": task_id,
         "details": details,
     });
-    let key = format!("issue-{issue_number}:review:{}", unix_millis());
+    let key = format!(
+        "issue-{issue_number}:review:{}:{}",
+        unix_millis(),
+        next_event_key_seq()
+    );
     if let Err(e) = db.record_delivery("review", task_id.as_deref(), &key, &payload) {
         tracing::warn!(
             issue_id = issue_id,
@@ -206,7 +220,11 @@ pub(crate) fn dossier_delivery(
         "issue_numbers": outcome.issue_numbers.clone(),
         "notes": outcome.notes.clone(),
     });
-    let key = format!("project-{project_id}:dossier:{}", unix_millis());
+    let key = format!(
+        "project-{project_id}:dossier:{}:{}",
+        unix_millis(),
+        next_event_key_seq()
+    );
     if let Err(e) = db.record_delivery("dossier", None, &key, &payload) {
         tracing::warn!(
             project_id = project_id,
