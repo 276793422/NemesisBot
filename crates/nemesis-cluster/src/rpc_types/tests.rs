@@ -41,6 +41,17 @@ fn test_frame_decode_partial_buffer() {
 }
 
 #[test]
+fn test_frame_decode_extreme_len_rejected_without_overflow() {
+    // R5-3 回归锁：4 字节头长度近 u32::MAX 时 HEADER_SIZE+len 在 32-bit
+    // 目标（usize=u32）溢出——debug panic / release 回绕小值骗过闸。修复
+    // 后 checked_add 溢出臂诚实 None。64-bit 上此用例走的是「total 正常
+    // 但 buf.len() < total → None」等待臂（同一入口，行为一致）。
+    let mut buf = u32::MAX.to_be_bytes().to_vec();
+    buf.extend_from_slice(b"trailing");
+    assert!(Frame::decode(&buf).is_none(), "u32::MAX 长度必须拒绝");
+}
+
+#[test]
 fn test_encode_decode_rpc_request() {
     let req = RPCRequest {
         id: "req-42".into(),

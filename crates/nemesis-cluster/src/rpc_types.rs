@@ -129,7 +129,12 @@ impl Frame {
             return None;
         }
         let len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
-        let total = Self::HEADER_SIZE + len;
+        // 32-bit 目标（armeabi-v7a 是受支持的 Android 交叉编译目标）上
+        // usize=u32：近满 len 时 HEADER_SIZE+len 溢出——debug panic /
+        // release 回绕成小值骗过下面的长度闸后切片错位（start>end panic
+        // 或错位载荷+消费计数错）。checked_add 在 64-bit 恒成功（零行为
+        // 变化），32-bit 对溢出帧诚实拒绝。
+        let total = Self::HEADER_SIZE.checked_add(len)?;
         if buf.len() < total {
             return None;
         }

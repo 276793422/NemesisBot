@@ -19,10 +19,17 @@ use nemesis_agent::r#loop::AgentLoop;
 /// 调用方在 `run_with_trace`/`resume_execution_with_token` **之前**取值，
 /// 成功收口时原样传给 [`capture_task_delivery`]——先执行后快照会把任务
 /// 自己的改动算进基线（diff 恒空，证据失真）。
+#[cfg(feature = "checkpoint-git")]
 pub(crate) fn delivery_base_tree(agent_loop: &AgentLoop) -> Option<String> {
     agent_loop
         .checkpoint_store()
         .and_then(|store| store.current_tree_hex())
+}
+
+/// checkpoint-git 关：无影子库，基线恒 None（D4 JSON 形态语义）。
+#[cfg(not(feature = "checkpoint-git"))]
+pub(crate) fn delivery_base_tree(_agent_loop: &AgentLoop) -> Option<String> {
+    None
 }
 
 /// 成功收口时的交付分支捕获（B 端）：capture + patch 落盘 + wire JSON。
@@ -33,6 +40,7 @@ pub(crate) fn delivery_base_tree(agent_loop: &AgentLoop) -> Option<String> {
 ///
 /// 返回 payload["delivery"] 值：`DeliveryBranchCapture` 序列化 + `branch`
 /// /`task_id`/`node`/`patch_path` 上下文字段。任何失败 = None + warn。
+#[cfg(feature = "checkpoint-git")]
 pub(crate) fn capture_task_delivery(
     agent_loop: &AgentLoop,
     task_id: &str,
@@ -43,8 +51,21 @@ pub(crate) fn capture_task_delivery(
     capture_task_delivery_with_store(&store, task_id, base_tree, self_node_id)
 }
 
+/// checkpoint-git 关：交付门是 git 影子库增强证据面——恒 None。模块头
+/// 诚实边界语义不变：证据缺席可观测但不停摆（回调主链路照常）。
+#[cfg(not(feature = "checkpoint-git"))]
+pub(crate) fn capture_task_delivery(
+    _agent_loop: &AgentLoop,
+    _task_id: &str,
+    _base_tree: Option<&str>,
+    _self_node_id: &str,
+) -> Option<serde_json::Value> {
+    None
+}
+
 /// [`capture_task_delivery`] 的可测内核：直接收影子库句柄（测试用
 /// `CheckpointStore::new(None, root)` + 真实 git 夹具驱动，不必造 AgentLoop）。
+#[cfg(feature = "checkpoint-git")]
 pub(crate) fn capture_task_delivery_with_store(
     store: &std::sync::Arc<nemesis_agent::checkpoint::CheckpointStore>,
     task_id: &str,
@@ -132,5 +153,5 @@ pub(crate) fn capture_task_delivery_with_store(
     Some(value)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "checkpoint-git"))]
 mod tests;

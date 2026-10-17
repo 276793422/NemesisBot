@@ -66,11 +66,16 @@ pub fn parse_server_frame(buf: &[u8]) -> Option<(Message, usize)> {
     } else {
         None
     };
-    if buf.len() < pos + len {
+    // 长度来自线上字节（127 形态可达 u64::MAX）——加法先 checked：
+    // 裸 `pos + len` 在 debug 对极端值算术溢出 panic、release 回绕成小值
+    // 骗过长度检查后切片错位（流失步/串读）。checked 失败=畸形帧，按
+    // 「不完整」返回 None（调用方泵有 up_buf 上限闸兜底，见 handlers）。
+    let frame_end = pos.checked_add(len)?;
+    if buf.len() < frame_end {
         return None;
     }
-    let mut payload = buf[pos..pos + len].to_vec();
-    let consumed = pos + len;
+    let mut payload = buf[pos..frame_end].to_vec();
+    let consumed = frame_end;
     if !fin {
         // 分片帧：dashboard 无分片大帧场景（axum ws 单帧上限内），不完整
         // 支持分片重组——遇中间分片按整体丢弃 + 上层 WARN（由调用方记录）。

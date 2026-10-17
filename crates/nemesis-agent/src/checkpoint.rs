@@ -523,6 +523,9 @@ impl CheckpointStore {
     // ------------------------------------------------------------------
 
     /// 交付分支名校验：`[A-Za-z0-9._/-]`、无 `..`、无前导 `-`、≤80 字符。
+    // 纯字符串校验不依赖 git2，但唯一消费方是交付门 git 形态——随门
+    // 一起 cfg（避免 checkpoint-git 关时 dead_code 警告）。
+    #[cfg(feature = "checkpoint-git")]
     fn validate_branch_name(branch: &str) -> Result<(), String> {
         if branch.is_empty() {
             return Err("交付分支名为空".to_string());
@@ -547,6 +550,7 @@ impl CheckpointStore {
         Ok(())
     }
 
+    #[cfg(feature = "checkpoint-git")]
     fn empty_tree_hex(repo: &git2::Repository) -> Result<String, String> {
         let tb = repo
             .treebuilder(None)
@@ -559,6 +563,7 @@ impl CheckpointStore {
 
     /// `(base_tree, tree)` → unified diff + 统计（P4 capture 与 patch 重算
     /// 共用）。base None = canonical 空树（全部文件计新增）。
+    #[cfg(feature = "checkpoint-git")]
     fn diff_patch(
         repo: &git2::Repository,
         base_hex: &str,
@@ -613,6 +618,7 @@ impl CheckpointStore {
     /// - JSON 形态（工作区无真实 `.git`）诚实 Err——可审分支只有在有
     ///   真实 .git 可合入时才有行动意义，不为无 .git 工作区造 standalone
     ///   影子（构造期后端选型契约不变）。
+    #[cfg(feature = "checkpoint-git")]
     pub fn capture_delivery_branch(
         &self,
         base_tree: Option<&str>,
@@ -679,6 +685,7 @@ impl CheckpointStore {
 
     /// P4 交付门：从交付分支重算 patch（不重写工作区——审计/补拉查看面）。
     /// 返回 `(patch, truncated)`；分支不存在 = Err。
+    #[cfg(feature = "checkpoint-git")]
     pub fn delivery_branch_patch(
         &self,
         branch: &str,
@@ -707,6 +714,7 @@ impl CheckpointStore {
     }
 
     /// P4 交付门：列举全部交付分支（`refs/heads/nemesis/*` 短名，字典序）。
+    #[cfg(feature = "checkpoint-git")]
     pub fn delivery_branch_refs(&self) -> Result<Vec<String>, String> {
         let gb = self
             .git
@@ -1507,5 +1515,5 @@ mod p20_tests;
 
 // P4 (2026-10-17 交付门): 交付分支捕获 / patch 重算 / 列举 + 分支名校验
 // 测试。
-#[cfg(test)]
+#[cfg(all(test, feature = "checkpoint-git"))]
 mod p4_tests;

@@ -41,6 +41,12 @@ const RESPONSE_HEAD_TIMEOUT_SECS: u64 = 30;
 /// HTTP 隧道请求 body 上限（dashboard 图片上传 25MB + 富余）。
 const TUNNEL_BODY_LIMIT: usize = 256 * 1024 * 1024;
 
+/// WS 桥上行缓冲上限（设备 → 浏览器解帧残余）。锚定 axum ws 默认单消息
+/// 上限（tokio-tungstenite 64 MiB）——超过它的帧转发必被下游拒收，缓冲
+/// 没有意义；同时也是对「设备宣告不可能完成的帧长/持续喂不可解析字节」
+/// 的内存闸（无界累积=已认证设备可吃网关内存）。
+const MAX_BRIDGE_UP_BUF: usize = 64 * 1024 * 1024;
+
 /// 授权会话 cookie 名（path 限定 `/d/<node_id>/` 由 Set-Cookie 控制——
 /// 同名 cookie 按路径隔离，每设备独立授权）。
 pub const AUTH_COOKIE: &str = "nemesis_bridge_auth";
@@ -707,6 +713,19 @@ async fn handle_ws_tunnel(relay: Arc<RelayServer>, node_id: String, req: Request
                             // 追加进缓冲，下一轮循环体开头统一解帧
                             // （ws 帧可能跨 chunk 边界）。
                             up_buf.extend_from_slice(&chunk);
+                            // 上行缓冲内存闸：解不掉的残余只在「帧完整但字节
+                            // 未到齐」时应增长——设备宣告不可能完成的帧长或
+                            // 持续喂不可解析字节会让残余永远滞留，超限诚实断
+                            // 连（走循环出口的既有收口：ConnClose + close_conn_id）。
+                            if up_buf.len() > MAX_BRIDGE_UP_BUF {
+                                tracing::warn!(
+                                    node_id = %node_id,
+                                    conn_id = %conn_id,
+                                    buf_len = up_buf.len(),
+                                    "[Relay] 上行缓冲超限，断开连接"
+                                );
+                                break;
+                            }
                         }
                         None => break,
                     }

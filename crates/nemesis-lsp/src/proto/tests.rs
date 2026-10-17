@@ -65,6 +65,19 @@ fn decoder_returns_none_on_partial_body() {
     assert!(dec.next_message().unwrap().is_some());
 }
 
+#[test]
+fn decoder_rejects_overflowing_content_length() {
+    // R5-2 回归锁：Content-Length 来自线上字节，body_start+len 裸加法对
+    // 近 usize::MAX 的声明长度在 debug 溢出 panic / release 回绕骗过闸。
+    // 修复后 checked_add 溢出臂诚实 Err（畸形帧）。
+    let mut dec = FrameDecoder::new();
+    dec.push(b"Content-Length: 18446744073709551615\r\n\r\n{}");
+    assert!(
+        dec.next_message().is_err(),
+        "溢出长度必须报错而非 panic/错切"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Classification
 // ---------------------------------------------------------------------------
