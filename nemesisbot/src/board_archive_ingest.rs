@@ -378,7 +378,13 @@ pub async fn sweep_missing_archives(
         };
         let task_id = &latest.task_id;
         // master 收件箱滞留的算「在路上」，腿 1 已处理，不空拉。
-        if inbox_root.join(task_id).exists() {
+        // T8 读侧（2026-10-17 三轮审计）：收件箱目录名 = 落地侧消毒后的
+        // 段名（nemesis-cluster fsutil::safe_task_file_name 同源），探针
+        // 同函数映射，真实任务 id 映射恒等。
+        if inbox_root
+            .join(nemesis_utils::sanitize::sanitize_path_segment(task_id))
+            .exists()
+        {
             continue;
         }
         // worker 明确无档的不再拉（防永久空转；重启清零重试）。

@@ -424,3 +424,46 @@ fn test_s4_get_reflections_with_filename_success() {
     assert_eq!(result.response["filename"], "s4-local.json");
     assert!(result.response["content"].is_string());
 }
+
+/// T10（2026-10-17 三轮审计）：source_node 远端可控——落盘文件名消毒，
+/// 路径字符映射 `_`，不得在 remote_dir 外留下任何痕迹。
+#[test]
+fn hostile_source_node_stays_in_remote_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = FileForgeProvider::new(tmp.path().join("forge"));
+
+    provider
+        .receive_reflection(&serde_json::json!({
+            "source_node": "../../evil",
+            "report": {"insights": ["x"]},
+        }))
+        .expect("receive_reflection should succeed");
+
+    // forge/ 下只有 reflections/（旧形态的逃逸文件会落在 forge/ 一级）。
+    let forge = tmp.path().join("forge");
+    let mut stray: Vec<String> = std::fs::read_dir(&forge)
+        .unwrap()
+        .flatten()
+        .filter_map(|e| e.file_name().to_str().map(String::from))
+        .filter(|n| n != "reflections")
+        .collect();
+    stray.sort();
+    assert!(
+        stray.is_empty(),
+        "source_node 路径逃逸必须被消毒拦截: {stray:?}"
+    );
+
+    // 文件落在 remote_dir 内、消毒名；`../../evil` 前缀 `. . / . . /` 共
+    // 6 个非白名单字符，1:1 映射 = 6 个 `_` → `remote-______evil-*.json`。
+    let remote = forge.join("reflections").join("remote");
+    let names: Vec<String> = std::fs::read_dir(&remote)
+        .unwrap()
+        .flatten()
+        .filter_map(|e| e.file_name().to_str().map(String::from))
+        .collect();
+    assert_eq!(names.len(), 1, "实际: {names:?}");
+    assert!(
+        names[0].starts_with("remote-______evil-") && names[0].ends_with(".json"),
+        "文件名 = 消毒段: {names:?}"
+    );
+}

@@ -366,8 +366,10 @@ async fn test_save_barrier_retry_loop() {
     let store = ContinuationStore::new(dir.path());
     let task_id = "barrier-retry-task";
 
-    // Create a .json.tmp file to simulate a save in progress
-    let tmp_path = dir.path().join(format!("{}.json.tmp", task_id));
+    // 伪造「保存进行中」现场：write_file_atomic 的临时名形如
+    // `.tmp-{pid}-{seq}-{nanos}`（nemesis-utils），探针扫 `.tmp-` 前缀——
+    // 旧形态 `<id>.json.tmp` 与真实临时名永不相交（T7：barrier 死代码的根源）。
+    let tmp_path = dir.path().join(".tmp-barrier-retry-sim");
     let final_path = dir.path().join(format!("{}.json", task_id));
     tokio::fs::write(&tmp_path, "saving...").await.unwrap();
 
@@ -395,8 +397,9 @@ async fn test_save_barrier_retries_exhausted() {
     let store = ContinuationStore::new(dir.path());
     let task_id = "barrier-exhaust-task";
 
-    // Create a .json.tmp file but never write the actual .json
-    let tmp_path = dir.path().join(format!("{}.json.tmp", task_id));
+    // `.tmp-` 前缀夹具（真实临时名形态）让 barrier 命中、重试循环真跑满
+    // 50 轮后才 NotFound（旧形态夹具下循环根本不进入，断言空转过）。
+    let tmp_path = dir.path().join(".tmp-barrier-exhaust-sim");
     tokio::fs::write(&tmp_path, "stuck saving...")
         .await
         .unwrap();
@@ -589,10 +592,10 @@ async fn test_w3b_load_barrier_loop_propagates_parse_error() {
     let dir = tempfile::tempdir().unwrap();
     let store = ContinuationStore::new(dir.path());
 
-    // tmp exists → the retry loop is entered; the final .json exists but is
-    // corrupt → load_from_disk_inner returns Json (not NotFound) which must
-    // propagate immediately instead of sleeping through all 50 retries.
-    std::fs::write(dir.path().join("w3b-corrupt.json.tmp"), "saving").unwrap();
+    // `.tmp-` 前缀夹具（真实临时名形态）→ 重试循环被进入；最终 .json 存在
+    // 但内容损坏 → load_from_disk_inner 返回 Json（非 NotFound），必须立即
+    // 上抛而不是睡满 50 轮重试。
+    std::fs::write(dir.path().join(".tmp-w3b-corrupt-sim"), "saving").unwrap();
     std::fs::write(dir.path().join("w3b-corrupt.json"), "<<<not json>>>").unwrap();
 
     let start = std::time::Instant::now();
@@ -616,10 +619,10 @@ async fn test_w3b_load_barrier_loop_memory_hit() {
     let store = std::sync::Arc::new(ContinuationStore::new(dir.path()));
     let task_id = "w3b-memhit".to_string();
 
-    // A stale tmp file makes load() enter the retry loop (memory + disk both
-    // initially miss). A parallel writer inserts the snapshot into memory
-    // mid-retry; the loop's memory check must pick it up on a later iteration.
-    std::fs::write(dir.path().join("w3b-memhit.json.tmp"), "saving").unwrap();
+    // `.tmp-` 前缀夹具（真实临时名形态）让 load() 进入重试循环（初始内存
+    // + 磁盘双未命中）。并行写者在重试中途把快照插进内存；循环的内存检查
+    // 必须在后续某轮迭代捡到它。
+    std::fs::write(dir.path().join(".tmp-w3b-memhit-sim"), "saving").unwrap();
 
     let writer = {
         let store = store.clone();
@@ -769,8 +772,8 @@ fn s4_tracing_subscriber() {
 async fn test_s4_load_final_attempt_after_retry_exhaustion() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path()).unwrap();
-    // Presence of the tmp file makes `might_be_saving` true → retry loop.
-    std::fs::write(dir.path().join("s4-late.json.tmp"), b"").unwrap();
+    // `.tmp-` 前缀夹具（真实临时名形态）让 `might_be_saving` 为真 → 重试循环。
+    std::fs::write(dir.path().join(".tmp-s4-late-sim"), b"").unwrap();
 
     let store = std::sync::Arc::new(ContinuationStore::new(dir.path()));
 
@@ -886,4 +889,70 @@ async fn test_s4_recover_from_disk_mixed_entries() {
     assert!(store.contains("s4-ok"));
     assert!(store.contains("s4-skip"));
     assert!(!store.contains("s4-bad"));
+}
+
+/// T7（2026-10-17 三轮审计）：快照路径消毒——远端可控 task_id 落盘留
+/// cache_dir 内，save/load/remove 同源对称（内存键原 id、磁盘名消毒名）。
+#[tokio::test]
+async fn test_snapshot_path_sanitized_for_hostile_task_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = ContinuationStore::new(dir.path());
+
+    let hostile = "../../t7_escape";
+    store.save(make_snapshot(hostile)).await.unwrap();
+
+    // 落盘 = 消毒名；`../../t7_escape` 前缀是 `. . / . . /` 共 6 个非白名单
+    // 字符（`../` × 2），1:1 映射 = 6 个 `_` → `______t7_escape`；无逃逸。
+    let names: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .flatten()
+        .filter_map(|e| e.file_name().to_str().map(String::from))
+        .collect();
+    assert_eq!(
+        names,
+        vec!["______t7_escape.json".to_string()],
+        "实际: {names:?}"
+    );
+
+    // 磁盘读回对称（新 store 空内存 → 走 snapshot_path 消毒名）。
+    let store2 = ContinuationStore::new(dir.path());
+    let loaded = store2.load(hostile).await.unwrap();
+    assert_eq!(loaded.task_id, hostile);
+
+    // remove 也走消毒名。
+    assert!(store2.remove(hostile).await);
+    assert!(!dir.path().join("______t7_escape.json").exists());
+}
+
+/// T7 save barrier 复活：write_file_atomic 的临时名 `.tmp-{pid}-{seq}-
+/// {nanos}` 与旧探测形 `<id>.json.tmp` 永不相交（barrier 死代码）。预置
+/// `.tmp-` 前缀文件 + 延迟 save——load 必须在重试窗口内等到快照，而不是
+/// 立即 NotFound。
+#[tokio::test]
+async fn test_save_barrier_waits_for_in_flight_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(ContinuationStore::new(dir.path()));
+
+    // 伪造「原子写进行中」现场。
+    std::fs::write(dir.path().join(".tmp-999-1-1"), b"partial").unwrap();
+
+    let writer_store = store.clone();
+    let writer = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        writer_store
+            .save(make_snapshot("task-barrier"))
+            .await
+            .unwrap();
+    });
+
+    // load 立即发起：最终文件未落、barrier 命中（.tmp- 在场）→ 重试窗口
+    // 内等到 save 完成。死 barrier 形态下这里直接 NotFound。
+    let loaded = store.load("task-barrier").await;
+    writer.await.unwrap();
+    assert!(
+        loaded.as_ref().is_ok(),
+        "save barrier 应在重试窗口内等到快照落盘: {:?}",
+        loaded.err()
+    );
+    assert_eq!(loaded.unwrap().task_id, "task-barrier");
 }

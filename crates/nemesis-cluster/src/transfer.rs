@@ -531,7 +531,9 @@ impl TransferSink {
             && entry.content_hash == req.content_hash
             && self
                 .inbox_root
-                .join(&req.task_id)
+                // T8（2026-10-17 三轮审计）：task_id 远端可控——探针与落地
+                // 同源消毒，与 end 侧 landed 目录名一致。
+                .join(crate::fsutil::safe_task_file_name(&req.task_id))
                 .join("landed.json")
                 .exists()
         {
@@ -698,7 +700,13 @@ impl TransferSink {
         }
         // 3. 落地：inbox/<task_id>/（已存在则整体替换——同 task_id 新内容
         //    以最新为准）。含 files/ + manifest.json + landed.json 回执。
-        let landed = self.inbox_root.join(&begin.task_id);
+        // T8（2026-10-17 三轮审计）：task_id 远端可控，落地目录名消毒
+        // （与 begin 去重探针、nemesis-board dossier 读侧同源同函数），
+        // 否则 `../` 可把暂存载荷改名落到 inbox 外任意路径。真实 uuid/
+        // 单号 task_id 映射恒等，存量落地目录不受影响。
+        let landed = self
+            .inbox_root
+            .join(crate::fsutil::safe_task_file_name(&begin.task_id));
         // 韧性删除（T3，2026-10-17）：同 begin 侧，AV/索引器瞬时句柄退避重试。
         if landed.exists() && !crate::fsutil::remove_dir_all_resilient(&landed) {
             return Err("清理旧收件目录失败：目录重试后仍被占用".into());

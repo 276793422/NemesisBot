@@ -1,5 +1,22 @@
 //! 文件系统韧性小工具（crate 内共享）。
 
+/// 远端可控 task_id → 安全文件名成分（crate 内单一包装，T7/T8/T9/T10 同族
+/// 修复的统一入口，2026-10-17 三轮审计）。
+///
+/// 委托仓内单一真相源 [`nemesis_utils::sanitize::sanitize_path_segment`]
+/// 白名单消毒（兜 `..` / 路径分隔符 / 超长）；消毒改变原值时 WARN 留痕
+/// （可观测性：正常 UUID/单号 task_id 映射恒等，见 WARN 即有对端发来
+/// 异形 id）。读侧消费者（nemesis-board dossier / nemesisbot
+/// board_archive_ingest）直接调 `sanitize_path_segment`——映射同源恒等，
+/// 保证「写入消毒名、读取同名」不错位。
+pub(crate) fn safe_task_file_name(task_id: &str) -> String {
+    let safe = nemesis_utils::sanitize::sanitize_path_segment(task_id);
+    if safe != task_id {
+        tracing::warn!("[FsUtil] task_id 含不安全字符，已消毒落盘: {task_id:?} -> {safe:?}");
+    }
+    safe
+}
+
 /// 带退避重试的目录树删除，返回是否删除成功。
 ///
 /// Windows 上刚写完的文件常被 Defender 实时扫描 / 索引服务短暂持有句柄，

@@ -4064,6 +4064,7 @@ dependencies = [
  "nemesis-path",
  "nemesis-prompts",
  "nemesis-types",
+ "nemesis-utils",
  "regex",
  "rusqlite",
  "serde",
