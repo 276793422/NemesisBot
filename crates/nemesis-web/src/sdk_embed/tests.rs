@@ -14,7 +14,13 @@ fn open(data: &[u8]) -> zip::ZipArchive<std::io::Cursor<&[u8]>> {
 
 fn entry_names(ar: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>) -> Vec<String> {
     (0..ar.len())
-        .map(|i| ar.by_index(i).expect("entry readable").name().to_string())
+        .map(|i| {
+            ar.by_index(i)
+                .expect("entry readable")
+                .name()
+                .expect("entry name decodable")
+                .to_string()
+        })
         .collect()
 }
 
@@ -71,7 +77,12 @@ fn sdist_zip_has_single_top_level_dir_with_version() {
     let expected_prefix = format!("nemesisbot-{SDK_VERSION}/");
     let mut saw_pyproject = false;
     for i in 0..ar.len() {
-        let name = ar.by_index(i).unwrap().name().to_string();
+        let name = ar
+            .by_index(i)
+            .unwrap()
+            .name()
+            .expect("entry name decodable")
+            .to_string();
         assert!(
             name.starts_with(&expected_prefix),
             "entry outside {expected_prefix}: {name}"
