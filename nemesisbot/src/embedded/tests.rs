@@ -1,12 +1,14 @@
 use super::*;
 use nemesis_web::StaticFiles;
 
+#[cfg(feature = "web-static")]
 #[test]
 fn test_embedded_static_exists() {
     // The macro should have embedded the static directory
     assert!(EMBEDDED_STATIC.contains("index.html"));
 }
 
+#[cfg(feature = "web-static")]
 #[test]
 fn test_get_embedded_file() {
     let content = get_embedded_file("index.html");
@@ -15,6 +17,7 @@ fn test_get_embedded_file() {
     assert!(html.contains("<!DOCTYPE html>") || html.contains("<html"));
 }
 
+#[cfg(feature = "web-static")]
 #[test]
 fn test_list_embedded_files() {
     let files = list_embedded_files();
@@ -23,6 +26,7 @@ fn test_list_embedded_files() {
     assert!(files.iter().any(|f| f.contains("assets/")));
 }
 
+#[cfg(feature = "web-static")]
 #[test]
 fn test_extract_dir() {
     let temp = tempfile::tempdir().unwrap();
@@ -57,12 +61,14 @@ fn test_extract_dir() {
 // Additional tests for coverage improvement
 // ============================================================
 
+#[cfg(feature = "web-static")]
 #[test]
 fn test_get_embedded_file_nonexistent() {
     let content = get_embedded_file("nonexistent_file_12345.html");
     assert!(content.is_none());
 }
 
+#[cfg(feature = "web-static")]
 #[test]
 fn test_get_embedded_file_css() {
     // Vue build puts CSS into assets/ directory
@@ -74,6 +80,7 @@ fn test_get_embedded_file_css() {
     );
 }
 
+#[cfg(feature = "web-static")]
 #[test]
 fn test_get_embedded_file_js() {
     // Vue build puts JS into assets/ directory
@@ -85,6 +92,7 @@ fn test_get_embedded_file_js() {
     );
 }
 
+#[cfg(feature = "web-static")]
 #[test]
 fn test_list_embedded_files_contains_known_paths() {
     let files = list_embedded_files();
@@ -97,6 +105,7 @@ fn test_list_embedded_files_contains_known_paths() {
     assert!(files.iter().any(|f| f.contains("fonts/")));
 }
 
+#[cfg(feature = "web-static")]
 #[test]
 fn test_list_embedded_files_no_backslashes() {
     let files = list_embedded_files();
@@ -119,7 +128,8 @@ fn test_resolve_embedded_static_dir_returns_path() {
     let _ = result;
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+// 断言 embedded 回落（index.html 必须有来源）→ web-static 关时无意义。
+#[cfg(all(windows, feature = "web-static"))] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_resolve_static_files_returns_provider() {
     // GLOBAL_STATE_LOCK：与 S11d 磁盘覆盖测试（exe 旁瞬时 static/）互斥。
@@ -135,7 +145,8 @@ fn test_resolve_static_files_returns_provider() {
     assert!(html.contains("<!DOCTYPE html>") || html.contains("<html"));
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+// list_files 非空断言依赖 embedded 面（磁盘兜底不存在时）→ 随 web-static。
+#[cfg(all(windows, feature = "web-static"))] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_resolve_static_files_list() {
     // GLOBAL_STATE_LOCK：与 S11d 磁盘覆盖测试（exe 旁瞬时 static/）互斥。
@@ -148,6 +159,7 @@ fn test_resolve_static_files_list() {
     assert!(files.iter().any(|f| f.contains("index.html")));
 }
 
+#[cfg(feature = "web-static")]
 #[test]
 fn test_embedded_static_files_get_file() {
     let provider = EmbeddedStaticFiles::new(&EMBEDDED_STATIC);
@@ -156,6 +168,7 @@ fn test_embedded_static_files_get_file() {
     assert!(provider.get_file("nonexistent.html").is_none());
 }
 
+#[cfg(feature = "web-static")]
 #[test]
 fn test_embedded_static_files_path_traversal() {
     let provider = EmbeddedStaticFiles::new(&EMBEDDED_STATIC);
@@ -208,6 +221,7 @@ fn test_extract_dir_skip_existing_preserves_user_files() {
     assert_eq!(content, "user customization");
 }
 
+#[cfg(feature = "web-static")]
 #[test]
 fn test_embedded_static_has_fonts() {
     assert!(EMBEDDED_STATIC.contains("fonts"));
@@ -220,6 +234,7 @@ fn test_embedded_workspace_exists() {
     assert!(!files.is_empty(), "Embedded workspace should contain files");
 }
 
+#[cfg(feature = "web-static")]
 #[test]
 fn test_embedded_static_index_html_content() {
     let file = EMBEDDED_STATIC.get_file("index.html").unwrap();
@@ -228,6 +243,7 @@ fn test_embedded_static_index_html_content() {
     assert!(content.len() > 100);
 }
 
+#[cfg(feature = "web-static")]
 #[test]
 fn test_extract_dir_idempotent() {
     let temp1 = tempfile::tempdir().unwrap();
@@ -242,6 +258,7 @@ fn test_extract_dir_idempotent() {
     assert_eq!(file1, file2);
 }
 
+#[cfg(feature = "web-static")]
 #[test]
 fn test_collect_files_returns_all() {
     let mut files = Vec::new();
@@ -261,7 +278,8 @@ fn test_collect_files_returns_all() {
 // - extract_workspace_templates 的"已存在跳过"臂（用户自定义不被覆盖）
 // =========================================================================
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+// 「拆掉磁盘目录后回落内嵌」半段依赖 embedded 面 → 随 web-static。
+#[cfg(all(windows, feature = "web-static"))] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 #[allow(deprecated)]
 fn resolve_static_files_prefers_disk_dir_next_to_exe() {

@@ -102,7 +102,9 @@ fn agt_signature_verify_and_lsp_manager_slots() {
         detail: String::new(),
     }));
     // set_lsp_manager + lsp_manager() getter（getter 此前无调用点）
+    #[cfg(feature = "lsp")]
     server.set_lsp_manager(Arc::new(nemesis_lsp::LspManager::new(None, None)));
+    #[cfg(feature = "lsp")]
     assert!(server.lsp_manager().is_some());
 }
 
@@ -609,13 +611,17 @@ fn agt_skins_filter_chain_board_event_rx_slots() {
     server.set_inbound_filter_chain(Arc::new(chain));
 
     // set_board：真实 BoardService（临时库），Gateway 注入形态。
-    let dir = tempfile::tempdir().unwrap();
-    let store =
-        nemesis_board::BoardStore::open(&dir.path().join("board.db"), "NB").expect("open store");
-    server.set_board(nemesis_board::BoardService::new(
-        Arc::new(store),
-        nemesis_types::cluster::NodeRole::Coordinator,
-    ));
+    // board 关 = 注入槽随 nemesis-board 退出编译，整块跳过。
+    #[cfg(feature = "board")]
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let store = nemesis_board::BoardStore::open(&dir.path().join("board.db"), "NB")
+            .expect("open store");
+        server.set_board(nemesis_board::BoardService::new(
+            Arc::new(store),
+            nemesis_types::cluster::NodeRole::Coordinator,
+        ));
+    }
 }
 
 #[tokio::test]

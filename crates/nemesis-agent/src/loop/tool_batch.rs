@@ -338,6 +338,7 @@ impl AgentLoop {
         // DIAGNOSTICS_WRITE_TOOLS 单一真相源）；路径提取按 args 形态分派
         // （multiedit = edits[].path）。P3：跨文件聚合 + stale 过滤（状态
         // 按 session_key 隔离在 diagnostics_touched）。
+        #[cfg(feature = "lsp")]
         let result = if tool_succeeded
             && Self::DIAGNOSTICS_WRITE_TOOLS.contains(&tc.name.as_str())
             && let Ok(args_val) = serde_json::from_str::<serde_json::Value>(&tc.arguments)

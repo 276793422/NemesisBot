@@ -144,6 +144,7 @@ pub struct SharedResources {
     /// gateway 优雅停机 `shutdown_all()` 收尸语言服务器子进程；web server
     /// `set_lsp_manager` 持同一引用（阶段 2 诊断闭环 C1-C3 消费）。
     /// LspManager 构造零进程（会话按查询惰性起），未启用 LSP 时持有无代价。
+    #[cfg(feature = "lsp")]
     pub lsp_manager: Arc<nemesis_lsp::LspManager>,
 
     /// M1a（devtool-upgrade 阶段 1）：工具事件广播通道。gateway::run 建一次
@@ -236,6 +237,7 @@ impl Default for SharedResources {
                 nemesis_config::Config::default(),
                 PathBuf::default(),
             )),
+            #[cfg(feature = "lsp")]
             lsp_manager: Arc::new(nemesis_lsp::LspManager::new(None, None)),
             agent_event_tx: None,
             background_registry: Arc::new(nemesis_agent::BackgroundProcessRegistry::new()),
@@ -624,6 +626,7 @@ pub fn build_agent_loop(
     // C3 (devtool-upgrade 阶段 2)：共享 LspManager 注入——编辑后诊断回灌
     // （write_file/edit_file → touch → 等 ERROR → "please fix"）与 LspTool
     // 共用同一实例（server 进程不翻倍）。standalone（None）路径反馈静默跳过。
+    #[cfg(feature = "lsp")]
     agent_loop.set_lsp_manager(shared.lsp_manager.clone());
     // A1（2026-09-22 聊天切会话竞态）：环尾 seq 查询回调注入——历史响应
     // 附 last_seq 供前端剔除「先于快照渲染的 assistant 实时帧」。指向
@@ -1196,8 +1199,9 @@ pub fn build_agent_loop(
     // 静态声明**——per-op 风险经 Tool::operation_override 每次调用投影
     // （dispatch 嗅探写 metadata 三键，管线按 op_type 裁决），清单解析不出
     // = 未知名 fail-closed CRITICAL 兜底。主 loop 独占（项目 loop 固定子集
-    // 不含插件工具的同一决策；集群 worker v1 不开行动面）。
-    #[cfg(feature = "security")]
+    // 不含插件工具的同一决策；集群 worker v1 不开行动面）。connectors 关 =
+    // 工具模块整体退出编译，注册跳过。
+    #[cfg(all(feature = "security", feature = "connectors"))]
     if cfg.connectors.as_ref().map(|c| c.enabled).unwrap_or(true) {
         nemesis_security::types::declare_tool_operation(
             crate::connector_tools::FIND_TOOL_NAME,
@@ -1378,6 +1382,7 @@ fn build_shared_tool_config(
         // C5 (2026-09-04): hand the shared LSP manager to the tool so the
         // gateway's graceful shutdown can close every language-server session
         // (see SharedResources.lsp_manager).
+        #[cfg(feature = "lsp")]
         lsp_manager: Some(shared.lsp_manager.clone()),
         // J2a (2026-09-04): SSRF guard host for web_fetch's per-hop redirect
         // re-check (same plugin the gateway's Layer-6 pipeline uses).
@@ -2083,6 +2088,7 @@ pub fn build_cluster_agent_loop(
     agent_loop.set_config_path(config_path.clone());
     // C3：集群 agent 同样注入共享 LspManager（B 端跑长任务写码时也享受
     // 编辑后诊断回灌；同一实例，server 进程不翻倍）。
+    #[cfg(feature = "lsp")]
     agent_loop.set_lsp_manager(shared.lsp_manager.clone());
     // A1（2026-09-22）：环尾 seq 查询注入（与主 loop 同源语义——B 端 loop
     // 虽不走 web history_request，统一注入保持装配一致性，防「这个 loop
@@ -2618,6 +2624,7 @@ pub fn build_project_agent_loop(
     agent_loop.set_config_path(config_path.clone());
     // prompt-pack pro：项目 loop 与主 loop 同一开关、同一描述档位链。
     agent_loop.set_prompt_system(prompt_system);
+    #[cfg(feature = "lsp")]
     agent_loop.set_lsp_manager(shared.lsp_manager.clone());
     // A1（2026-09-22 聊天切会话竞态）：项目 loop 同样注入环尾 seq 查询——
     // 项目会话在 Dashboard 侧切换/轮询的竞态面与主会话完全同构。

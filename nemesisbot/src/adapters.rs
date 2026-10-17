@@ -264,6 +264,7 @@ impl AgentLoopServiceAdapter {
     /// start/stop 每次刷新）。热装 hook 捕获它而非裸 Weak——agent 重启后
     /// 仍解析到最新 loop；None = 停机窗口（重启路径 register_plugin_tools
     /// 会从注册表重新拉起，热装事件此时丢弃是诚实降级）。
+    #[cfg(feature = "plugins-wasm")]
     pub fn loop_ref_handle(
         &self,
     ) -> Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>> {

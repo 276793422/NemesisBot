@@ -530,7 +530,9 @@ impl GatewayCtx {
         #[cfg(feature = "security")]
         let dlp_gate_slot = outbound_dlp_slot.clone();
         let bridge_outbound_handle = tokio::spawn(async move {
-            while let Some(mut msg) = agent_outbound_rx.recv().await {
+            while let Some(msg) = agent_outbound_rx.recv().await {
+                #[cfg_attr(not(feature = "security"), allow(unused_mut))]
+                let mut msg = msg;
                 #[cfg(feature = "security")]
                 apply_outbound_dlp(&dlp_gate_slot, &mut msg);
                 bus_out.publish_outbound(msg);

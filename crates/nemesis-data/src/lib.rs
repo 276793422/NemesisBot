@@ -3,6 +3,9 @@
 //! SQLite-backed storage for LLM request logs, daily rollups, and model pricing.
 //! Database file: `{workspace}/data/nemesisbot_data.db`
 
+// usage-store 关：db / watcher 两模块随 rusqlite 整体退出编译；
+// DataStore 走 usage_store.rs 内的空账本 stub（同型 API）。
+#[cfg(feature = "usage-store")]
 mod db;
 mod models;
 mod pricing;
@@ -10,6 +13,7 @@ mod pricing_filter;
 mod pricing_lite;
 mod pricing_store;
 mod usage_store;
+#[cfg(feature = "usage-store")]
 pub mod watcher;
 
 pub use models::{

@@ -1798,6 +1798,7 @@ pub(crate) async fn send_nb_bus(
 /// board 派发 chat_id = `board:{number}`，board.rs / board_review.rs 两个
 /// 派发点同源）；`board:NB-{n}` 形态无生产产出方，容忍兼容不信任其存在。
 /// 非看板会话（dashboard peer_chat 等）/单号非法 → None（调用方静默跳过）。
+#[cfg_attr(not(all(feature = "security", feature = "cluster")), allow(dead_code))]
 pub(crate) fn issue_number_from_cluster_chat_id(chat_id: &str) -> Option<i64> {
     let board = chat_id.rsplit("/").next()?.trim();
     let n = board.strip_prefix("board:")?;
@@ -1810,6 +1811,7 @@ pub(crate) fn issue_number_from_cluster_chat_id(chat_id: &str) -> Option<i64> {
 /// WARN 不重试（同 `post_discussion_reply` 语义——审批等待不依赖注记到达）。
 /// 同步入口（Composite 观察者在审批等待的同步上下文里触发）：有 tokio
 /// runtime 则 spawn 后台投递，无 runtime（纯同步测试环境）诚实记日志跳过。
+#[cfg(all(feature = "security", feature = "cluster"))]
 pub(crate) fn spawn_board_ask_notice(
     cluster: Arc<nemesis_cluster::cluster::Cluster>,
     chat_id: &str,
@@ -1856,6 +1858,7 @@ pub(crate) fn spawn_board_ask_notice(
 
 /// 注记投递本体：找在线 coordinator（≠本节点）→ board.comment.post 信封
 /// → nb_bus RPC。master 额度三闸拒绝 / RPC 失败都算投递失败（诚实 Err）。
+#[cfg(all(feature = "security", feature = "cluster"))]
 async fn post_board_ask_notice(
     cluster: Arc<nemesis_cluster::cluster::Cluster>,
     self_node_id: &str,

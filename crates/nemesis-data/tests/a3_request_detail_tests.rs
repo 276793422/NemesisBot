@@ -2,6 +2,9 @@
 //!
 //! 覆盖：v1→v2 迁移（旧库 ALTER + 旧行保留）、分项成本 breakdown、
 //! LogFilter 三维过滤、get_request_log 详情往返。
+//!
+//! SQLite 行为测试随 usage-store feature 进出（off 态无库可测）。
+#![cfg(feature = "usage-store")]
 
 use nemesis_data::{CostBreakdown, DataStore, LogFilter, RequestLog};
 use rusqlite::Connection;
@@ -112,6 +115,8 @@ fn migration_v1_to_v2_preserves_rows_and_adds_columns() {
 
 /// 分项成本：DataStore 分层入口命中已知模型 → pricing_model + 分项 + 总和一致；
 /// 未命中 → None。
+// 内嵌表依赖（deepseek 条目来自 embedded 快照）→ 随 pricing-embed。
+#[cfg(feature = "pricing-embed")]
 #[test]
 fn cost_breakdown_layers_and_unknown() {
     let db_path = temp_db_path("breakdown");

@@ -17,6 +17,11 @@
 //! 不要移回 lib tests——兄弟测试先烤单例 = 隔离即刻丢失（同款告诫见
 //! nemesis-agent/tests/history_search_fts.rs 头注）。输入校验 / reindex
 //! 计数这类不依赖索引内容的测试仍留在 lib（对竞争不可失败）。
+//!
+//! history-search 关 = FTS 模块整体退出编译（诚实报「未编译」），本 e2e
+//! 无被测物——文件级门随 feature 进出（缺门实录 2026-10-17：crate 本地
+//! 无 feature 跑必红，workspace 全量 feature 统一掩盖）。
+#![cfg(feature = "history-search")]
 
 use nemesis_web::api_handlers::AppState;
 use nemesis_web::events::EventHub;

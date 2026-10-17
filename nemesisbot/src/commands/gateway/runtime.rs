@@ -144,14 +144,17 @@ pub(crate) struct RuntimeHandoff {
     #[cfg(feature = "security")]
     pub security_plugin: Option<Arc<nemesis_security::pipeline::SecurityPlugin>>,
     #[cfg(not(feature = "security"))]
+    #[allow(dead_code)]
     pub security_plugin: Option<()>,
     #[cfg(feature = "health")]
     pub health_server: Arc<nemesis_health::server::HealthServer>,
     #[cfg(not(feature = "health"))]
+    #[allow(dead_code)]
     pub health_server: (),
     #[cfg(feature = "cluster")]
     pub cluster_adapter: Option<Arc<crate::cluster_service::ClusterServiceAdapter>>,
     #[cfg(not(feature = "cluster"))]
+    #[allow(dead_code)]
     pub cluster_adapter: (),
     /// WS4（P13）：技能装前审批门（LateWebSkillsGate 槽；run_runtime 审批块
     /// bind 真身 WebApprovalManager）。@not(security) 臂空桩——无 security
@@ -159,12 +162,14 @@ pub(crate) struct RuntimeHandoff {
     #[cfg(feature = "security")]
     pub skills_install_gate: Option<Arc<crate::web_approval::LateWebSkillsGate>>,
     #[cfg(not(feature = "security"))]
+    #[allow(dead_code)]
     pub skills_install_gate: (),
     /// W5-3：插件安装审批门（LateInstallApprover 槽；init_agent 建、installer
     /// 持有；run_runtime 审批块 bind 真身）。@not 臂空桩同上。
     #[cfg(feature = "plugins-wasm")]
     pub plugin_install_gate: Option<Arc<crate::plugin_bridge::LateInstallApprover>>,
     #[cfg(not(feature = "plugins-wasm"))]
+    #[allow(dead_code)]
     pub plugin_install_gate: (),
 }
 
@@ -191,6 +196,7 @@ pub(crate) async fn run_runtime(
     let cfg = ctx.cfg.clone();
     let bus = ctx.bus.clone();
     let cron_service = ctx.cron_service.clone();
+    #[cfg(feature = "security")]
     let model_name = ctx.model_name.clone();
     let bridge_outbound_handle = &ctx.bridge_outbound_handle;
     #[cfg(feature = "forge")]
@@ -464,123 +470,130 @@ pub(crate) async fn run_runtime(
                     }
                     Err(e) => warn!("[Gateway] approval.pending handler note: {e}"),
                 }
-                // E1（收官批 2026-10-15）：远程执行面 worker handler——master
-                // 派发的 connector_invoke 到达本节点后走本地 handle_tool_call
-                // 完整 dispatch 瀑布（estop/hidden/Plan/安全 8 层/审批卡；
-                // confirm=required 资金单在审批点阻塞、超时自动拒——远程
-                // 调用不可能静默放行）。凭据铁律：payload 无凭据（master 已
-                // 剥离且永不上 RPC 线），凭据注入由本节点 vault 在管线内
-                // 完成。同步×异步桥：dispatch_wire_request 的 handler 同步
-                // 内联执行于 runtime worker——注册时捕获 Handle +
-                // block_in_place（gateway multi-thread runtime；acp.rs
-                // AcpApprovalManager 同款样板）。
-                let invoke_loop = agent_loop.clone();
-                let invoke_ws = shared_resources.workspace_dir();
-                let invoke_home = home.clone();
-                let invoke_handle = tokio::runtime::Handle::current();
-                match ask_cluster.register_rpc_handler(
-                    crate::connector_tools::INVOKE_TOOL_NAME,
-                    Box::new(move |payload| {
-                        // ① 运行闸：config 现读（缺省 true；false = 诚实拒，
-                        // 不做静默放行）。
-                        let cfg_path = invoke_home.join("config.json");
-                        let enabled = nemesis_config::load_config(&cfg_path)
-                            .ok()
-                            .and_then(|c| c.connectors)
-                            .map(|c| c.remote_invoke_enabled)
-                            .unwrap_or(true);
-                        if !enabled {
-                            return Err(
-                                "远程执行面已关闭（connectors.remote_invoke_enabled=false）"
-                                    .to_string(),
-                            );
-                        }
-                        // ② 载荷解析（缺键诚实拒）。
-                        let connector = payload
-                            .get("connector")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let op = payload
-                            .get("op")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let op_args = payload
-                            .get("args")
-                            .cloned()
-                            .unwrap_or(serde_json::json!({}));
-                        let session_key = payload
-                            .get("session_key")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        if connector.is_empty() || op.is_empty() {
-                            return Err("payload 缺 connector/op".to_string());
-                        }
-                        let connector_for_readback = connector.clone();
-                        let op_for_readback = op.clone();
-                        let from = payload
-                            .get("_rpc")
-                            .and_then(|r| r.get("from"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("unknown")
-                            .to_string();
-                        let started = chrono::Utc::now().to_rfc3339();
-                        let digest = nemesis_connectors::receipt::args_digest(&op_args);
-                        // ③ 完整 dispatch 瀑布。返回值恒为文本（错误以
-                        // "Tool error: "/⛔ 前缀形态携带）：有凭条时分类由
-                        // master 端凭条 outcome 驱动；dispatch 层拒绝（estop/
-                        // hidden/Plan/tier 闸）不落凭条（回执面诚实不造假 =
-                        // null），master 按 ⛔ 前缀识别「未执行」镜像 error。
-                        let result_text = tokio::task::block_in_place(|| {
-                            invoke_handle.block_on(async {
-                                let call = nemesis_agent::types::ToolCallInfo {
-                                    id: format!("remote-{}", uuid::Uuid::new_v4()),
-                                    name: crate::connector_tools::INVOKE_TOOL_NAME.to_string(),
-                                    arguments: serde_json::json!({
-                                        "connector": connector,
-                                        "op": op,
-                                        "args": op_args,
-                                    })
-                                    .to_string(),
-                                };
-                                let tool_ctx = nemesis_agent::context::RequestContext::new(
-                                    "cluster-connector",
-                                    &format!("cluster:{from}"),
-                                    "remote-master",
-                                    &session_key,
+                // connectors 关 = 远程执行面注册段整体退出编译（E1 收官批
+                // 2026-10-15 的 worker handler 随 nemesis-connectors 进出）。
+                #[cfg(feature = "connectors")]
+                {
+                    // E1（收官批 2026-10-15）：远程执行面 worker handler——master
+                    // 派发的 connector_invoke 到达本节点后走本地 handle_tool_call
+                    // 完整 dispatch 瀑布（estop/hidden/Plan/安全 8 层/审批卡；
+                    // confirm=required 资金单在审批点阻塞、超时自动拒——远程
+                    // 调用不可能静默放行）。凭据铁律：payload 无凭据（master 已
+                    // 剥离且永不上 RPC 线），凭据注入由本节点 vault 在管线内
+                    // 完成。同步×异步桥：dispatch_wire_request 的 handler 同步
+                    // 内联执行于 runtime worker——注册时捕获 Handle +
+                    // block_in_place（gateway multi-thread runtime；acp.rs
+                    // AcpApprovalManager 同款样板）。
+                    let invoke_loop = agent_loop.clone();
+                    let invoke_ws = shared_resources.workspace_dir();
+                    let invoke_home = home.clone();
+                    let invoke_handle = tokio::runtime::Handle::current();
+                    match ask_cluster.register_rpc_handler(
+                        crate::connector_tools::INVOKE_TOOL_NAME,
+                        Box::new(move |payload| {
+                            // ① 运行闸：config 现读（缺省 true；false = 诚实拒，
+                            // 不做静默放行）。
+                            let cfg_path = invoke_home.join("config.json");
+                            let enabled = nemesis_config::load_config(&cfg_path)
+                                .ok()
+                                .and_then(|c| c.connectors)
+                                .map(|c| c.remote_invoke_enabled)
+                                .unwrap_or(true);
+                            if !enabled {
+                                return Err(
+                                    "远程执行面已关闭（connectors.remote_invoke_enabled=false）"
+                                        .to_string(),
                                 );
-                                invoke_loop.handle_tool_call(&call, &tool_ctx).await
-                            })
-                        });
-                        // ④ 凭条回读：op + args_digest + ts 下界匹配——只认
-                        // 本次执行新落的凭条；缺失诚实回 null（回执面不
-                        // 造假）。ts 均为 chrono RFC3339（UTC +00:00 同格
-                        // 式），字符串比较即时间比较。
-                        let receipt = nemesis_connectors::receipt::list_receipts(
-                            &invoke_ws,
-                            20,
-                            Some(&connector_for_readback),
-                        )
-                        .ok()
-                        .and_then(|rs| {
-                            rs.into_iter().find(|r| {
-                                r.op == op_for_readback
-                                    && r.args_digest == digest
-                                    && r.ts >= started
-                            })
-                        });
-                        Ok(serde_json::json!({
-                            "receipt": receipt,
-                            "result_text": result_text,
-                        }))
-                    }),
-                ) {
-                    Ok(()) => {
-                        info!("[Gateway] connector_invoke handler armed (remote execution surface)")
+                            }
+                            // ② 载荷解析（缺键诚实拒）。
+                            let connector = payload
+                                .get("connector")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let op = payload
+                                .get("op")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let op_args = payload
+                                .get("args")
+                                .cloned()
+                                .unwrap_or(serde_json::json!({}));
+                            let session_key = payload
+                                .get("session_key")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            if connector.is_empty() || op.is_empty() {
+                                return Err("payload 缺 connector/op".to_string());
+                            }
+                            let connector_for_readback = connector.clone();
+                            let op_for_readback = op.clone();
+                            let from = payload
+                                .get("_rpc")
+                                .and_then(|r| r.get("from"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown")
+                                .to_string();
+                            let started = chrono::Utc::now().to_rfc3339();
+                            let digest = nemesis_connectors::receipt::args_digest(&op_args);
+                            // ③ 完整 dispatch 瀑布。返回值恒为文本（错误以
+                            // "Tool error: "/⛔ 前缀形态携带）：有凭条时分类由
+                            // master 端凭条 outcome 驱动；dispatch 层拒绝（estop/
+                            // hidden/Plan/tier 闸）不落凭条（回执面诚实不造假 =
+                            // null），master 按 ⛔ 前缀识别「未执行」镜像 error。
+                            let result_text = tokio::task::block_in_place(|| {
+                                invoke_handle.block_on(async {
+                                    let call = nemesis_agent::types::ToolCallInfo {
+                                        id: format!("remote-{}", uuid::Uuid::new_v4()),
+                                        name: crate::connector_tools::INVOKE_TOOL_NAME.to_string(),
+                                        arguments: serde_json::json!({
+                                            "connector": connector,
+                                            "op": op,
+                                            "args": op_args,
+                                        })
+                                        .to_string(),
+                                    };
+                                    let tool_ctx = nemesis_agent::context::RequestContext::new(
+                                        "cluster-connector",
+                                        &format!("cluster:{from}"),
+                                        "remote-master",
+                                        &session_key,
+                                    );
+                                    invoke_loop.handle_tool_call(&call, &tool_ctx).await
+                                })
+                            });
+                            // ④ 凭条回读：op + args_digest + ts 下界匹配——只认
+                            // 本次执行新落的凭条；缺失诚实回 null（回执面不
+                            // 造假）。ts 均为 chrono RFC3339（UTC +00:00 同格
+                            // 式），字符串比较即时间比较。
+                            let receipt = nemesis_connectors::receipt::list_receipts(
+                                &invoke_ws,
+                                20,
+                                Some(&connector_for_readback),
+                            )
+                            .ok()
+                            .and_then(|rs| {
+                                rs.into_iter().find(|r| {
+                                    r.op == op_for_readback
+                                        && r.args_digest == digest
+                                        && r.ts >= started
+                                })
+                            });
+                            Ok(serde_json::json!({
+                                "receipt": receipt,
+                                "result_text": result_text,
+                            }))
+                        }),
+                    ) {
+                        Ok(()) => {
+                            info!(
+                                "[Gateway] connector_invoke handler armed (remote execution surface)"
+                            )
+                        }
+                        Err(e) => warn!("[Gateway] connector_invoke handler note: {e}"),
                     }
-                    Err(e) => warn!("[Gateway] connector_invoke handler note: {e}"),
                 }
                 Arc::new(crate::remote_approval::RemoteNotifyResponder::new(
                     web_mgr.clone(),
@@ -1167,7 +1180,9 @@ pub(crate) async fn run_runtime(
     // language-server child processes never outlive the gateway. Previously
     // the tool's sessions were only reaped lazily (idle timeout) or via
     // kill_on_drop at process exit — an abrupt teardown could orphan them.
+    #[cfg(feature = "lsp")]
     let lsp_closed = shared_resources.lsp_manager.shutdown_all().await;
+    #[cfg(feature = "lsp")]
     info!(
         "[Gateway] LSP shutdown: {} language-server session(s) closed",
         lsp_closed

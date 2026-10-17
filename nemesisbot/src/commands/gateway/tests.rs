@@ -6003,6 +6003,9 @@ async fn init_post_agent_coordinator_shape_installs_board_hooks() {
     feature = "health",
     feature = "memory",
     feature = "security",
+    // run_runtime 审计链块只在 start_check()=Some 时执行（快照来自启动自验）
+    // → verify 关时整链无意义，随 verify 进出。
+    feature = "verify",
     feature = "workflow"
 ))]
 fn prime_verify_start_snapshot() {
@@ -6029,6 +6032,9 @@ fn prime_verify_start_snapshot() {
     feature = "health",
     feature = "memory",
     feature = "security",
+    // run_runtime 审计链块只在 start_check()=Some 时执行（快照来自启动自验）
+    // → verify 关时整链无意义，随 verify 进出。
+    feature = "verify",
     feature = "workflow"
 ))]
 async fn run_runtime_pipeline(
@@ -6172,6 +6178,9 @@ async fn run_runtime_pipeline(
     feature = "health",
     feature = "memory",
     feature = "security",
+    // run_runtime 审计链块只在 start_check()=Some 时执行（快照来自启动自验）
+    // → verify 关时整链无意义，随 verify 进出。
+    feature = "verify",
     feature = "workflow"
 ))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -6194,6 +6203,9 @@ async fn run_runtime_full_cycle_guardian_off_covers_steps_18_to_24() {
     feature = "health",
     feature = "memory",
     feature = "security",
+    // run_runtime 审计链块只在 start_check()=Some 时执行（快照来自启动自验）
+    // → verify 关时整链无意义，随 verify 进出。
+    feature = "verify",
     feature = "workflow"
 ))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -7439,6 +7451,9 @@ async fn pa2_corrupt_asset_secret_disables_asset_serving_but_init_survives() {
     feature = "health",
     feature = "memory",
     feature = "security",
+    // run_runtime 审计链块只在 start_check()=Some 时执行（快照来自启动自验）
+    // → verify 关时整链无意义，随 verify 进出。
+    feature = "verify",
     feature = "workflow"
 ))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -7465,6 +7480,9 @@ async fn run_runtime_guardian_critical_small_model_provider_ok_arm() {
     feature = "health",
     feature = "memory",
     feature = "security",
+    // run_runtime 审计链块只在 start_check()=Some 时执行（快照来自启动自验）
+    // → verify 关时整链无意义，随 verify 进出。
+    feature = "verify",
     feature = "workflow"
 ))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -7491,6 +7509,9 @@ async fn run_runtime_guardian_critical_small_model_provider_create_err_arm() {
     feature = "health",
     feature = "memory",
     feature = "security",
+    // run_runtime 审计链块只在 start_check()=Some 时执行（快照来自启动自验）
+    // → verify 关时整链无意义，随 verify 进出。
+    feature = "verify",
     feature = "workflow"
 ))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

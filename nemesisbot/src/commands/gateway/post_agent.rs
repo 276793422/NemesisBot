@@ -52,6 +52,7 @@ pub(crate) struct PostAgentWiring {
 }
 
 /// Step 9c–10 注入族（计划 §4.2 B5）。
+#[cfg_attr(not(feature = "cluster"), allow(unused_mut, unused_variables))]
 pub(crate) async fn init_post_agent(
     ctx: &GatewayCtx,
     web_server: &mut nemesis_web::server::WebServer,
@@ -627,14 +628,19 @@ pub(crate) async fn init_post_agent(
 
     // U-A（2026-10-12 停车现场工程）：派发/拆解侧停车档案的工作区根注入
     // （<workspace>/board/handoffs/；模块级 OnceLock，单测不装配零波及）。
+    // board 关 = handlers::board 随 nemesis-board 退出编译，注入跳过。
+    #[cfg(feature = "board")]
     if nemesis_web::handlers::board::install_handoff_workspace(home.join("workspace")) {
         info!("[Gateway] Board handoff workspace root installed");
     }
 
     // C5: inject the shared LSP manager (same Arc the LspTool registered
     // with) — Phase-2 diagnostics loop and future dashboard LSP ops read it.
-    web_server.set_lsp_manager(shared_resources.lsp_manager.clone());
-    info!("[Gateway] LSP manager injected into web server");
+    #[cfg(feature = "lsp")]
+    {
+        web_server.set_lsp_manager(shared_resources.lsp_manager.clone());
+        info!("[Gateway] LSP manager injected into web server");
+    }
 
     // M1a: hand the tool-event receiver to the web server — its pump (spawned
     // in WebServer::start) routes events to Dashboard WS push + EventHub.
@@ -787,41 +793,46 @@ pub(crate) async fn init_post_agent(
         // 会被看见，写路径零埋点。变化 → SSE `usage-changed` → 前端请求
         // 明细 tab 200ms 防抖静默刷新。无 SSE 订阅者（dashboard 未开）
         // 时跳过轮询读数，空闲零成本。
-        const USAGE_CHANGE_POLL_SECS: u64 = 2;
-        let usage_db_for_watch = nemesis_path::workspace_data_dir(&home).join("nemesisbot_data.db");
-        let event_hub_for_usage = web_server.event_hub().clone();
-        match nemesis_data::watcher::open_conn(&usage_db_for_watch) {
-            Ok(watch_conn) => {
-                tokio::spawn(async move {
-                    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
-                        USAGE_CHANGE_POLL_SECS,
-                    ));
-                    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-                    let mut last = nemesis_data::watcher::data_version(&watch_conn).ok();
-                    loop {
-                        ticker.tick().await;
-                        if event_hub_for_usage.subscriber_count() == 0 {
-                            continue;
+        // usage-store 关：watcher 模块随 SQLite 整体退出编译（无账可侦）。
+        #[cfg(feature = "usage-store")]
+        {
+            const USAGE_CHANGE_POLL_SECS: u64 = 2;
+            let usage_db_for_watch =
+                nemesis_path::workspace_data_dir(&home).join("nemesisbot_data.db");
+            let event_hub_for_usage = web_server.event_hub().clone();
+            match nemesis_data::watcher::open_conn(&usage_db_for_watch) {
+                Ok(watch_conn) => {
+                    tokio::spawn(async move {
+                        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
+                            USAGE_CHANGE_POLL_SECS,
+                        ));
+                        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                        let mut last = nemesis_data::watcher::data_version(&watch_conn).ok();
+                        loop {
+                            ticker.tick().await;
+                            if event_hub_for_usage.subscriber_count() == 0 {
+                                continue;
+                            }
+                            let Ok(v) = nemesis_data::watcher::data_version(&watch_conn) else {
+                                continue;
+                            };
+                            if last != Some(v) {
+                                last = Some(v);
+                                event_hub_for_usage.publish(
+                                    "usage-changed",
+                                    serde_json::json!({ "ts": chrono::Utc::now().to_rfc3339() }),
+                                );
+                                tracing::debug!(
+                                    "[Gateway] usage change detected (data_version={v}) → usage-changed"
+                                );
+                            }
                         }
-                        let Ok(v) = nemesis_data::watcher::data_version(&watch_conn) else {
-                            continue;
-                        };
-                        if last != Some(v) {
-                            last = Some(v);
-                            event_hub_for_usage.publish(
-                                "usage-changed",
-                                serde_json::json!({ "ts": chrono::Utc::now().to_rfc3339() }),
-                            );
-                            tracing::debug!(
-                                "[Gateway] usage change detected (data_version={v}) → usage-changed"
-                            );
-                        }
-                    }
-                });
-                info!("[Gateway] usage change watcher armed (poll={USAGE_CHANGE_POLL_SECS}s)");
-            }
-            Err(e) => {
-                warn!("[Gateway] usage change watcher disabled: {e}");
+                    });
+                    info!("[Gateway] usage change watcher armed (poll={USAGE_CHANGE_POLL_SECS}s)");
+                }
+                Err(e) => {
+                    warn!("[Gateway] usage change watcher disabled: {e}");
+                }
             }
         }
 

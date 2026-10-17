@@ -6950,20 +6950,25 @@ impl Tool for CliReferenceTool {
 /// U20 (sixth batch): cross-session full-text search over chat history
 /// (session_logs). Lazy-indexes on first use (FTS5), falls back to a linear
 /// scan if the index DB is unavailable. Read-only.
+/// history-search 关：工具整体不编译（FTS 索引随 rusqlite 进出，供给闸）。
+#[cfg(feature = "history-search")]
 pub struct HistorySearchTool;
 
+#[cfg(feature = "history-search")]
 impl Default for HistorySearchTool {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(feature = "history-search")]
 impl HistorySearchTool {
     pub fn new() -> Self {
         Self
     }
 }
 
+#[cfg(feature = "history-search")]
 #[async_trait]
 impl Tool for HistorySearchTool {
     fn description(&self) -> String {
@@ -7594,6 +7599,7 @@ pub struct SharedToolConfig {
     /// C5（2026-09-04）：外部 LSP manager 单例（agent_factory 在
     /// SharedResources 建一次；gateway shutdown_all 可达）。None = 注册路径
     /// 自建 manager（`LspTool::new` 兜底，旧行为——测试/独立 runner 用）。
+    #[cfg(feature = "lsp")]
     pub lsp_manager: Option<Arc<nemesis_lsp::LspManager>>,
     /// Forge tool executor for self-learning tools (forge_reflect, forge_create, etc).
     #[cfg(feature = "forge")]
@@ -8119,6 +8125,7 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
     // L1 (U19): read-only LSP semantic-code tool — same opt-in + probe
     // shape: config opts in AND at least one language server on PATH.
     // Absent/failed probe ⇒ tool not registered at all (no dead schema).
+    #[cfg(feature = "lsp")]
     if config.lsp_tool_enabled {
         static LSP_PROBE: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
         let available = LSP_PROBE.get_or_init(|| {
@@ -8192,6 +8199,7 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         Box::new(CliReferenceTool::new()),
     );
     // U20 (sixth batch): cross-session history full-text search.
+    #[cfg(feature = "history-search")]
     tools.insert(
         "history_search".to_string(),
         Box::new(HistorySearchTool::new()),
@@ -8573,6 +8581,7 @@ pub fn register_extended_tools(
         lsp_tool_enabled: false,
         lsp_tool_timeout_secs: None,
         lsp_tool_idle_secs: None,
+        #[cfg(feature = "lsp")]
         lsp_manager: None,
         forge_executor: None,
         forge: None,
@@ -8603,6 +8612,7 @@ pub(crate) mod edit_replacers;
 pub mod claude_code_tool;
 pub mod cli_delegation;
 pub mod codex_tool;
+#[cfg(feature = "lsp")]
 pub mod lsp_tool;
 
 #[cfg(test)]
@@ -8681,5 +8691,5 @@ mod cov_more_tests;
 // Wave6B 覆盖率收尾批次：checks_commands 全生态 / Default 实现 / 空 ctx 回退
 // / 级联两臂 / 文件锁错误注入 / SkillManage 审批 Err+JoinError / 工作流创建
 // 决策表 / register_shared_tools 各注册臂。
-#[cfg(test)]
+#[cfg(all(test, feature = "lsp"))]
 mod cov_wave6_tests;
