@@ -333,6 +333,10 @@ fn validate_exec_root(path: &Path) -> Result<PathBuf, String> {
 /// agent 凭据别名（`vault:` 全前缀形态，即 vault entry key 加前缀）。
 /// 凭据本体只存 vault（AES-256-GCM），agents 表的 credential_refs 只存
 /// 引用——web 面投影只出条数不出内容（bridge.rs 同纪律）。
+///
+/// `#[allow(dead_code)]`：P5 消费面（agent 实体持久化/重启链的凭据装配），
+/// 当前无生产调用方；格式由 tests.rs `credential_alias_format` 钉住。
+#[allow(dead_code)]
 pub fn credential_alias(agent_id: &str, name: &str) -> String {
     format!("vault:agent/{agent_id}/{name}")
 }
@@ -365,10 +369,15 @@ pub fn validate_credential_refs(agent_id: &str, refs: &serde_json::Value) -> Res
 }
 
 /// 解析 agent 凭据（fail loud，vault_runtime 同源每次现开现解锁——
-/// `vault set`/轮换落盘后下一次解析即生效）。P3 常驻执行体 env 白名单
-/// 注入是这个函数的主要消费方。vault 本体在 nemesis-security（安全
-/// 子系统）里——security 裁剪形态无 vault 可解析，本函数随之编译期消失。
+/// `vault set`/轮换落盘后下一次解析即生效）。vault 本体在 nemesis-security
+/// （安全子系统）里——security 裁剪形态无 vault 可解析，本函数随之编译期
+/// 消失。
+///
+/// `#[allow(dead_code)]`：P5 消费面（常驻执行体 env 凭据装配，注入契约
+/// 随 P5/P6 讨论定形）；当前无生产调用方，全链路行为由 tests.rs
+/// `resolve_agent_credential_roundtrip` 钉住（真 vault 落盘 → 解析出真值）。
 #[cfg(feature = "security")]
+#[allow(dead_code)]
 pub fn resolve_agent_credential(
     workspace: &Path,
     agent_id: &str,
