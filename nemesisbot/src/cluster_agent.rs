@@ -1702,7 +1702,10 @@ pub(crate) fn build_comment_post_envelope(
 }
 
 /// D2 读取臂：`board.comment.list` 上行信封（线程纯读——无幂等键、无
-/// 额度记账；limit 缺省由 master 侧收敛）。
+/// 额度记账；limit 缺省由 master 侧收敛）。唯一消费点 board_discuss_tool
+/// 在 board+cluster 门内——随门裁剪（board 关时常量留场 = dead_code，
+/// 同 STALL_MARKER 家族先例）。
+#[cfg(all(feature = "board", feature = "cluster"))]
 pub(crate) fn build_comment_list_envelope(
     thread_kind: &str,
     thread_id: i64,
