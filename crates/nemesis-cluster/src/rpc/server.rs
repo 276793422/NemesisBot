@@ -253,8 +253,11 @@ impl RpcServer {
                 accept_result = listener.accept() => {
                     match accept_result {
                         Ok((stream, remote_addr)) => {
-                            let current = conn_count.load(Ordering::Relaxed);
-                            if current >= max_conns {
+                            // 原子预留槽位（fetch_add 后判满，超限即回吐）：
+                            // 旧的 load→check→fetch_add 是 check-then-act，
+                            // 并发连接窗口内可超卖 max_connections。
+                            if conn_count.fetch_add(1, Ordering::Relaxed) >= max_conns {
+                                conn_count.fetch_sub(1, Ordering::Relaxed);
                                 tracing::warn!(
                                     remote = %remote_addr,
                                     "[RpcServer] Rejecting connection: max_conns reached"
@@ -268,7 +271,6 @@ impl RpcServer {
                             let handlers = Arc::clone(&handlers);
                             let auth_token = auth_token.clone();
                             let conn_count = Arc::clone(&conn_count);
-                            conn_count.fetch_add(1, Ordering::Relaxed);
 
                             tokio::spawn(async move {
                                 Self::handle_connection(
@@ -304,7 +306,7 @@ impl RpcServer {
         remote_addr: String,
         handlers: Arc<RwLock<HashMap<String, Arc<RpcHandlerFn>>>>,
         auth_token: String,
-        _idle_timeout: std::time::Duration,
+        idle_timeout: std::time::Duration,
     ) {
         // Auth is enforced via AEAD frame encryption: when `auth_token` is
         // non-empty, TcpConn derives an AES-256-GCM key from it and decrypts
@@ -313,8 +315,14 @@ impl RpcServer {
         // rejected as a decrypt error in the read loop. No text-line auth
         // handshake is performed, eliminating the BufReader desync bug where
         // `read_line('\n')` could consume frame bytes past the newline.
+        //
+        // idle_timeout 接线（T1，2026-10-17）：读循环空闲超时强制断链——
+        // 半开连接（对端死亡无 FIN/RST）不再永久占用 conn_count 槽位，
+        // 泄漏满 max_connections 拒绝一切新连接的瘫痪链从「无限窗口」
+        // 收敛到「idle_timeout 窗口」。
         let config = TcpConnConfig {
             address: remote_addr.clone(),
+            idle_timeout,
             auth_token: if !auth_token.is_empty() {
                 Some(auth_token)
             } else {

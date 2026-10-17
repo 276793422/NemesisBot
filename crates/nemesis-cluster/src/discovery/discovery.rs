@@ -5,7 +5,7 @@
 //! optional AES-256-GCM encryption for secure LAN discovery.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::discovery::crypto::derive_key;
@@ -512,6 +512,10 @@ pub struct DiscoveryService {
     listener: UdpListener,
     config: DiscoveryConfig,
     running: Arc<AtomicBool>,
+    /// 广播间隔秒数（共享原子，T6②：广播线程每秒 tick 重读——旧实现
+    /// spawn 时按值捕获，set_broadcast_interval 运行中改了不生效）。
+    /// 亚秒粒度不生效（线程 1s tick，既有语义如此，下限 1s）。
+    broadcast_interval_secs: Arc<AtomicU64>,
     broadcast_thread: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
@@ -528,6 +532,7 @@ impl DiscoveryService {
         Ok(Self {
             cluster,
             listener,
+            broadcast_interval_secs: Arc::new(AtomicU64::new(config.interval.as_secs().max(1))),
             config,
             running: Arc::new(AtomicBool::new(false)),
             broadcast_thread: std::sync::Mutex::new(None),
@@ -656,7 +661,7 @@ impl DiscoveryService {
 
         // Start broadcast loop
         let running = Arc::clone(&self.running);
-        let interval = self.config.interval;
+        let interval_secs = Arc::clone(&self.broadcast_interval_secs);
         let cluster = Arc::clone(&self.cluster);
         let listener_port = self.listener.port();
         let enc_key = self.config.enc_key();
@@ -682,7 +687,10 @@ impl DiscoveryService {
                 while running.load(Ordering::SeqCst) {
                     std::thread::sleep(Duration::from_secs(1));
                     tick += 1;
-                    if tick >= interval.as_secs() {
+                    // T6②：每 tick 重读共享间隔——运行中 set_broadcast_interval
+                    // 真生效（旧实现 spawn 时按值捕获，改了不生效）。
+                    let target = interval_secs.load(Ordering::Relaxed).max(1);
+                    if tick >= target {
                         tick = 0;
                         send_announce_with(&broadcast_socket, listener_port, enc_key, &*cluster);
                     }
@@ -735,10 +743,14 @@ impl DiscoveryService {
 
     /// Dynamically change the broadcast interval.
     ///
-    /// Mirrors Go's `Discovery.SetBroadcastInterval`. Takes effect on the
-    /// next broadcast cycle.
+    /// Mirrors Go's `Discovery.SetBroadcastInterval`. T6②（2026-10-17）：
+    /// 广播线程每秒 tick 重读共享秒数，运行中改动真生效（旧实现 spawn 时
+    /// 按值捕获，文档声称 "next broadcast cycle" 是谎话）。亚秒值按 1s
+    /// 下限处理——广播线程 tick 粒度就是 1s，与既有语义一致。
     pub fn set_broadcast_interval(&mut self, interval: Duration) {
         self.config.interval = interval;
+        self.broadcast_interval_secs
+            .store(self.config.interval.as_secs().max(1), Ordering::Relaxed);
     }
 
     /// Get the port the listener is bound to.

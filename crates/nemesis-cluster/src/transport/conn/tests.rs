@@ -653,8 +653,8 @@ fn test_connection_connect_to_invalid_addr() {
 }
 
 // ============================================================
-// S4 coverage: read/write loop arms, heartbeat, idle monitor,
-// accessors, Debug
+// S4 coverage: read/write loop arms, heartbeat, idle timeout
+// (enforced in the read loop), accessors, Debug
 // ============================================================
 
 /// Minimal no-op tracing subscriber that reports every callsite enabled.
@@ -893,13 +893,16 @@ async fn test_tcp_conn_write_error_closes_write_loop() {
     );
 }
 
-/// The idle monitor closes its task once no activity happened for longer
-/// than `idle_timeout`.
+/// T1 回归（2026-10-17）：空闲超时必须**真正关闭连接**。旧的独立 idle
+/// monitor 只 warn 不 close——对端还开着 socket 的窗口内 `receive()` 就要
+/// 返回 None，只能来自本端空闲断链（recv_tx 随读循环退出而 drop），
+/// 而非对端 EOF；修复前此调用会一直挂到对端 500ms 后关 socket。
 #[tokio::test]
-async fn test_tcp_conn_idle_timeout_fires() {
+async fn test_tcp_conn_idle_timeout_closes_connection() {
     ensure_tracing_subscriber();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    // 对端故意长持 socket 不关（500ms），隔离「对端关闭」这条混淆路径
     let peer = tokio::spawn(async move {
         let (s, _) = listener.accept().await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -916,26 +919,44 @@ async fn test_tcp_conn_idle_timeout_fires() {
     );
     conn.start().await.unwrap();
 
-    // check interval = idle_timeout / 2 = 40ms; 300ms is plenty for the
-    // idle warn + task break to run.
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // t≈80ms 读循环空闲超时断链；300ms 内 receive() 必须返回 None
+    let got = tokio::time::timeout(std::time::Duration::from_millis(300), conn.receive())
+        .await
+        .expect("idle timeout must close the connection: receive() must not hang");
+    assert!(
+        got.is_none(),
+        "receive() should return None after idle close"
+    );
+    // 注：is_active() 仍为 true 是既有语义——closed 旗标由 close() 独占，
+    // 读侧死亡不设旗标（防掐死发送队列里待发的响应帧）；服务端
+    // handle_connection 以 receive() → None 为断链信号并收尾 close()。
     conn.close();
+    assert!(!conn.is_active(), "close() 后必须 inactive");
     let _ = peer.await;
 }
 
-/// With `heartbeat_interval` set, the heartbeat task pushes 4-byte
-/// zero-length frames that the peer can read.
+/// T2 回归（2026-10-17）：心跳帧必须是合法 `WireMessage`
+///（type="heartbeat"），经统一组帧链路发出。旧实现裸塞 4 字节零载荷，
+/// 对端再包长度前缀后 JSON parse 必败刷 WARN 且不刷新活跃时间。
 #[tokio::test]
-async fn test_tcp_conn_heartbeat_sends_empty_frames() {
+async fn test_tcp_conn_heartbeat_sends_valid_wire_message() {
     ensure_tracing_subscriber();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let peer = tokio::spawn(async move {
         let (mut s, _) = listener.accept().await.unwrap();
         use tokio::io::AsyncReadExt;
-        let mut buf = [0u8; 4];
-        s.read_exact(&mut buf).await.unwrap();
-        assert_eq!(u32::from_be_bytes(buf), 0, "heartbeat frame must be empty");
+        // 读 length 前缀 + 载荷，断言心跳是可 parse 的 WireMessage
+        let mut len_buf = [0u8; 4];
+        s.read_exact(&mut len_buf).await.unwrap();
+        let len = u32::from_be_bytes(len_buf) as usize;
+        assert!(len > 0, "heartbeat frame must carry a WireMessage payload");
+        let mut payload = vec![0u8; len];
+        s.read_exact(&mut payload).await.unwrap();
+        let msg = super::WireMessage::from_bytes(&payload)
+            .expect("heartbeat frame must parse as WireMessage");
+        assert_eq!(msg.msg_type, "heartbeat", "frame type must be heartbeat");
+        assert!(!msg.from.is_empty(), "heartbeat must carry source node id");
     });
 
     let stream = TokioTcpStream::connect(addr).await.unwrap();

@@ -215,6 +215,35 @@ impl WireMessage {
         }
     }
 
+    /// Create a heartbeat keepalive message.
+    ///
+    /// T2（2026-10-17）：旧实现的心跳是裸 4 字节零载荷帧——写循环再包一层
+    /// 长度前缀后，对端收到的是 4 字节零载荷，`from_bytes` JSON parse 必败，
+    /// 每拍刷一条 parse WARN 且不刷新活跃时间。合法心跳走统一组帧/加密
+    /// 链路，对端 read loop parse 成功即刷新活跃时间并静默丢弃。
+    pub fn new_heartbeat(from: &str) -> Self {
+        let id = format!(
+            "hb-{}-{:08x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+            rand::random::<u32>()
+        );
+        Self {
+            version: Self::VERSION.to_string(),
+            id,
+            msg_type: "heartbeat".to_string(),
+            from: from.to_string(),
+            // 心跳无真实目的地；to 取本节点自身满足 validate() 的非空约束
+            to: from.to_string(),
+            action: "heartbeat".to_string(),
+            payload: serde_json::Value::Null,
+            timestamp: chrono::Local::now().timestamp(),
+            error: String::new(),
+        }
+    }
+
     /// Validate required fields.
     pub fn validate(&self) -> Result<(), String> {
         if self.version.is_empty() {
@@ -307,12 +336,15 @@ impl Default for TcpConnConfig {
 // TcpConn — async connection with read/write loops
 // ===========================================================================
 
-/// An async TCP connection with dedicated read/write loops and idle monitoring.
+/// An async TCP connection with dedicated read/write loops and idle timeout.
 ///
 /// Mirrors Go's `TCPConn`:
-/// - Read loop: reads framed messages, JSON-parses them, sends to recv channel
+/// - Read loop: reads framed messages, JSON-parses them, sends to recv channel;
+///   enforces the idle timeout — no frame within `idle_timeout` really closes
+///   the connection（T1：旧的独立 idle monitor 只 warn 不 close，是空转假动作）
 /// - Write loop: reads from send channel, writes framed messages to TCP
-/// - Idle monitor: periodically checks last activity, closes if idle too long
+/// - Heartbeat（可选）：发送 `type="heartbeat"` 的合法 `WireMessage` 保活帧，
+///   对端 read loop parse 成功即刷新活跃时间并静默丢弃（T2）
 /// - Auth token: optionally sent on start before any data
 pub struct TcpConn {
     node_id: String,
@@ -410,19 +442,15 @@ impl TcpConn {
         // Shared state for tasks
         let closed_r = self.closed.clone();
         let closed_w = self.closed.clone();
-        let closed_i = self.closed.clone();
         let dropped_r = self.dropped_count.clone();
         let last_used_r = self.last_used.clone();
         let last_used_w = self.last_used.clone();
-        let last_used_i = self.last_used.clone();
         let idle_timeout = self.config.idle_timeout;
         let heartbeat_interval = self.config.heartbeat_interval;
         let node_id = self.node_id.clone();
         let _node_id_w = node_id.clone();
-        let _node_id_i = node_id.clone();
         let address = self.address.clone();
         let address_w = address.clone();
-        let address_i = address.clone();
 
         // --- Read loop ---
         // If a cipher key is configured, every frame payload is decrypted
@@ -435,7 +463,26 @@ impl TcpConn {
                 if closed_r.load(Ordering::SeqCst) {
                     break;
                 }
-                match reader.read_frame().await {
+                // T1（2026-10-17）：空闲超时在读循环强制执行——read_frame
+                // 阻塞在半开连接（对端死亡无 FIN/RST）上时，超时即真正断链：
+                // 读循环退出 → recv_tx drop → receive() 返回 None →
+                // handle_connection 收尾 close，conn 槽位归还。旧的独立
+                // idle monitor 只 warn 不 close，对连接生命周期零作用。
+                let frame = match tokio::time::timeout(idle_timeout, reader.read_frame()).await {
+                    Ok(v) => v,
+                    Err(_elapsed) => {
+                        if !closed_r.load(Ordering::SeqCst) {
+                            warn!(
+                                node_id = %node_id,
+                                address = %address,
+                                idle_timeout = ?idle_timeout,
+                                "[Transport] Connection idle too long, closing"
+                            );
+                        }
+                        break;
+                    }
+                };
+                match frame {
                     Ok(ciphertext) => {
                         let plaintext = if let Some(ref key) = key_r {
                             match decrypt_frame(&ciphertext, key) {
@@ -455,11 +502,18 @@ impl TcpConn {
                         };
                         match WireMessage::from_bytes(&plaintext) {
                             Ok(msg) => {
+                                *last_used_r.write() = Instant::now();
+                                if msg.msg_type == "heartbeat" {
+                                    // T2：心跳帧只做保活（上面已刷新活跃时间），
+                                    // 不进消息队列——无人 receive 时也不会灌满
+                                    // recv channel；服务端对非 request 类型本就忽略。
+                                    trace!("[Transport] Heartbeat received: id={}", msg.id);
+                                    continue;
+                                }
                                 trace!(
                                     "[Transport] Received message: id={}, type={}",
                                     msg.id, msg.msg_type
                                 );
-                                *last_used_r.write() = Instant::now();
                                 if recv_tx.try_send(msg).is_err() {
                                     let count = dropped_r.fetch_add(1, Ordering::SeqCst);
                                     warn!(
@@ -557,32 +611,13 @@ impl TcpConn {
             let _ = write_half.shutdown().await;
         });
 
-        // --- Idle monitor ---
-        let idle_task = tokio::spawn(async move {
-            let check_interval = idle_timeout / 2;
-            let mut interval = tokio::time::interval(check_interval);
-            loop {
-                interval.tick().await;
-                if closed_i.load(Ordering::SeqCst) {
-                    break;
-                }
-                let elapsed = last_used_i.read().elapsed();
-                if elapsed > idle_timeout {
-                    warn!(
-                        address = %address_i,
-                        idle_for = ?elapsed,
-                        "[Transport] Connection idle too long, closing"
-                    );
-                    break;
-                }
-            }
-        });
-
         // --- Optional heartbeat ---
+        // T2（2026-10-17）：心跳 = 合法 WireMessage（type="heartbeat"），
+        // 经统一写循环加组帧/加密；活跃时间由写循环写成功时刷新。
         let heartbeat_task = if let Some(hb_interval) = heartbeat_interval {
             let closed_h = self.closed.clone();
             let send_tx_h = self.send_tx.clone();
-            let last_used_h = self.last_used.clone();
+            let node_id_h = self.node_id.clone();
             Some(tokio::spawn(async move {
                 let mut interval = tokio::time::interval(hb_interval);
                 loop {
@@ -590,15 +625,15 @@ impl TcpConn {
                     if closed_h.load(Ordering::SeqCst) {
                         break;
                     }
-                    // Build a heartbeat message (empty payload)
-                    let mut buf = Vec::new();
-                    let len = 0u32;
-                    buf.extend_from_slice(&len.to_be_bytes());
-                    // Send empty frame as heartbeat
-                    if send_tx_h.try_send(buf).is_err() {
-                        break;
+                    let hb = WireMessage::new_heartbeat(&node_id_h);
+                    match hb.to_bytes() {
+                        Ok(data) => {
+                            if send_tx_h.try_send(data).is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
                     }
-                    let _ = last_used_h; // update last_used in write loop
                 }
             }))
         } else {
@@ -607,7 +642,6 @@ impl TcpConn {
 
         self.tasks.push(read_task);
         self.tasks.push(write_task);
-        self.tasks.push(idle_task);
         if let Some(task) = heartbeat_task {
             self.tasks.push(task);
         }

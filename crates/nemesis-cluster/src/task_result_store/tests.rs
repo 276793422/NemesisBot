@@ -450,144 +450,6 @@ async fn test_async_full_lifecycle() {
     assert_eq!(loaded, 0);
 }
 
-// ---- Go-compatible store tests ----
-
-#[test]
-fn test_go_store_new_creates_directory() {
-    let tmp = tempfile::tempdir().unwrap();
-    let workspace = tmp.path().join("ws");
-    let store = GoTaskResultStore::new(&workspace).unwrap();
-    assert!(workspace.join("cluster").join("task_results").exists());
-    let _ = store;
-}
-
-#[test]
-fn test_go_store_set_running_and_get() {
-    let tmp = tempfile::tempdir().unwrap();
-    let store = GoTaskResultStore::new(tmp.path()).unwrap();
-
-    store.set_running("task-1", "node-A");
-
-    let entry = store.get("task-1").unwrap();
-    assert_eq!(entry.task_id, "task-1");
-    assert_eq!(entry.status, "running");
-    assert!(store.is_running("task-1"));
-}
-
-#[test]
-fn test_go_store_set_result_success() {
-    let tmp = tempfile::tempdir().unwrap();
-    let store = GoTaskResultStore::new(tmp.path()).unwrap();
-
-    store.set_running("task-1", "node-A");
-    store
-        .set_result("task-1", "success", "hello world", "", "node-A")
-        .unwrap();
-
-    // Running should be cleared
-    assert!(!store.is_running("task-1"));
-
-    let entry = store.get("task-1").unwrap();
-    assert_eq!(entry.status, "done");
-    assert_eq!(entry.result_status.as_deref(), Some("success"));
-    assert_eq!(entry.response.as_deref(), Some("hello world"));
-    assert!(entry.error.is_none());
-    assert_eq!(entry.source_node, "node-A");
-
-    // Data file should exist
-    let file_path = tmp.path().join("cluster/task_results/task-1.json");
-    assert!(file_path.exists());
-}
-
-#[test]
-fn test_go_store_set_result_error() {
-    let tmp = tempfile::tempdir().unwrap();
-    let store = GoTaskResultStore::new(tmp.path()).unwrap();
-
-    store
-        .set_result("task-2", "error", "", "connection refused", "node-B")
-        .unwrap();
-
-    let entry = store.get("task-2").unwrap();
-    assert_eq!(entry.status, "done");
-    assert_eq!(entry.result_status.as_deref(), Some("error"));
-    assert!(entry.response.is_none());
-    assert_eq!(entry.error.as_deref(), Some("connection refused"));
-}
-
-#[test]
-fn test_go_store_get_unknown_returns_none() {
-    let tmp = tempfile::tempdir().unwrap();
-    let store = GoTaskResultStore::new(tmp.path()).unwrap();
-    assert!(store.get("nonexistent").is_none());
-}
-
-#[test]
-fn test_go_store_delete() {
-    let tmp = tempfile::tempdir().unwrap();
-    let store = GoTaskResultStore::new(tmp.path()).unwrap();
-
-    store
-        .set_result("task-del", "success", "ok", "", "node-A")
-        .unwrap();
-    assert!(store.get("task-del").is_some());
-
-    store.delete("task-del").unwrap();
-    assert!(store.get("task-del").is_none());
-
-    // Data file should be removed
-    let file_path = tmp.path().join("cluster/task_results/task-del.json");
-    assert!(!file_path.exists());
-}
-
-#[test]
-fn test_go_store_index_persistence() {
-    let tmp = tempfile::tempdir().unwrap();
-
-    // Write with one store
-    {
-        let store = GoTaskResultStore::new(tmp.path()).unwrap();
-        store
-            .set_result("persist-1", "success", "result-1", "", "node-A")
-            .unwrap();
-        store
-            .set_result("persist-2", "error", "", "timeout", "node-B")
-            .unwrap();
-    }
-
-    // Load with new store
-    let store = GoTaskResultStore::new(tmp.path()).unwrap();
-    assert_eq!(store.done_count(), 2);
-
-    let r1 = store.get("persist-1").unwrap();
-    assert_eq!(r1.status, "done");
-    assert_eq!(r1.result_status.as_deref(), Some("success"));
-
-    let r2 = store.get("persist-2").unwrap();
-    assert_eq!(r2.status, "done");
-    assert_eq!(r2.result_status.as_deref(), Some("error"));
-}
-
-#[test]
-fn test_go_store_restart_loses_running() {
-    let tmp = tempfile::tempdir().unwrap();
-
-    // Create store, set running + done
-    {
-        let store = GoTaskResultStore::new(tmp.path()).unwrap();
-        store.set_running("running-task", "node-A");
-        store
-            .set_result("done-task", "success", "ok", "", "node-A")
-            .unwrap();
-    }
-
-    // New store -- running state should be lost
-    let store = GoTaskResultStore::new(tmp.path()).unwrap();
-    assert!(!store.is_running("running-task"));
-    assert!(store.get("running-task").is_none()); // Not in index either
-    assert!(store.get("done-task").is_some());
-}
-
 // ============================================================
 // Additional TaskResultStore tests for missing coverage
 // ============================================================
@@ -878,72 +740,6 @@ fn test_task_result_serialization_roundtrip() {
     assert!(parsed.success);
 }
 
-// -- Go-compatible store tests --
-
-#[test]
-fn test_go_task_result_entry_serialization() {
-    let entry = GoTaskResultEntry {
-        task_id: "go-task".into(),
-        status: "running".into(),
-        result_status: None,
-        response: None,
-        error: None,
-        source_node: "node-a".into(),
-        created_at: "2026-01-01T00:00:00Z".into(),
-        updated_at: "2026-01-01T00:00:00Z".into(),
-    };
-    let json = serde_json::to_string(&entry).unwrap();
-    let parsed: GoTaskResultEntry = serde_json::from_str(&json).unwrap();
-    assert_eq!(parsed.task_id, "go-task");
-    assert_eq!(parsed.status, "running");
-    assert!(parsed.response.is_none());
-}
-
-#[test]
-fn test_go_task_result_entry_with_result() {
-    let entry = GoTaskResultEntry {
-        task_id: "go-done".into(),
-        status: "done".into(),
-        result_status: Some("success".into()),
-        response: Some("task completed".into()),
-        error: None,
-        source_node: "node-b".into(),
-        created_at: "2026-01-01T00:00:00Z".into(),
-        updated_at: "2026-01-01T00:00:01Z".into(),
-    };
-    let json = serde_json::to_string(&entry).unwrap();
-    let parsed: GoTaskResultEntry = serde_json::from_str(&json).unwrap();
-    assert!(parsed.response.is_some());
-    assert_eq!(parsed.result_status.unwrap(), "success");
-}
-
-#[test]
-fn test_go_task_result_index_default() {
-    let index = GoTaskResultIndex::default();
-    assert!(index.tasks.is_empty());
-}
-
-#[test]
-fn test_go_task_result_index_serialization() {
-    let mut index = GoTaskResultIndex::default();
-    index.tasks.insert(
-        "t1".into(),
-        GoTaskResultEntry {
-            task_id: "t1".into(),
-            status: "running".into(),
-            result_status: None,
-            response: None,
-            error: None,
-            source_node: "n1".into(),
-            created_at: "2026-01-01".into(),
-            updated_at: "2026-01-01".into(),
-        },
-    );
-    let json = serde_json::to_string(&index).unwrap();
-    let parsed: GoTaskResultIndex = serde_json::from_str(&json).unwrap();
-    assert_eq!(parsed.tasks.len(), 1);
-}
-
 // -- Async store tests --
 
 #[tokio::test]
@@ -1029,8 +825,7 @@ async fn test_async_store_get_nonexistent() {
 // W3b coverage batch: I/O failure arms that the existing suite
 // never drives — cache_dir creation warn, read_dir failure,
 // per-file read failure, tmp-write / rename / delete failures
-// (sync + async), GoTaskResultStore::new create failure and
-// corrupt-index recovery.
+// (sync + async).（GoTaskResultStore 相关用例随 T4 死代码删除）
 // ============================================================
 
 #[test]
@@ -1176,34 +971,6 @@ async fn test_w3b_async_load_from_disk_read_failures() {
     let store2 = AsyncTaskResultStore::with_disk_persistence(10, &cache);
     assert_eq!(store2.load_from_disk_async().await, 1);
     assert!(store2.get_async("good").is_some());
-}
-
-#[test]
-fn test_w3b_go_store_new_failure_and_corrupt_index_recovery() {
-    // 1. Workspace path is a FILE → create_dir_all fails → Err
-    let dir = tempfile::tempdir().unwrap();
-    let blocker = dir.path().join("blocker");
-    std::fs::write(&blocker, b"file").unwrap();
-    let err = match GoTaskResultStore::new(&blocker) {
-        Ok(_) => panic!("expected create failure when workspace path is a file"),
-        Err(e) => e,
-    };
-    assert!(err.contains("failed to create"), "got: {}", err);
-
-    // 2. Corrupt index.json → load_index fails → warn + fresh index, still Ok
-    let dir2 = tempfile::tempdir().unwrap();
-    let results_dir = dir2.path().join("cluster").join("task_results");
-    std::fs::create_dir_all(&results_dir).unwrap();
-    std::fs::write(results_dir.join("index.json"), "{corrupt").unwrap();
-
-    let store = GoTaskResultStore::new(dir2.path()).unwrap();
-    assert_eq!(store.done_count(), 0, "corrupt index must reset to empty");
-    // The store remains fully usable after recovery
-    store.set_running("t1", "node-a");
-    store
-        .set_result("t1", "success", "resp", "", "node-a")
-        .unwrap();
-    assert_eq!(store.done_count(), 1);
 }
 
 // ============================================================
@@ -1449,4 +1216,50 @@ fn test_load_from_disk_drops_running_placeholder() {
     );
     assert!(tmp.path().join("task-real.json").exists());
     assert!(tmp.path().join("task-fail.json").exists());
+}
+
+/// T4 回归（2026-10-17）：异步回载同款丢弃 running 占位（Bug D 对齐）——
+/// 占位随盘复活会让 query_task_result 永远回答 "running"，A 端恢复轮询
+/// 被吊死到 24h 安全网。
+#[tokio::test]
+async fn test_async_load_from_disk_drops_running_placeholder() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    // Store 1: 落一个占位 + 一个真结果。
+    {
+        let store = AsyncTaskResultStore::with_disk_persistence(100, tmp.path());
+        store
+            .store_success_async(
+                "task-ph",
+                "peer_chat",
+                serde_json::json!({"status": "running", "from": "node-b"}),
+            )
+            .await;
+        store
+            .store_success_async(
+                "task-real",
+                "peer_chat",
+                serde_json::json!({"response": "最终回复", "from": "node-b"}),
+            )
+            .await;
+    }
+
+    // Store 2: 重启回载 —— 占位被丢弃，真结果照常回载。
+    let store = AsyncTaskResultStore::with_disk_persistence(100, tmp.path());
+    let loaded = store.load_from_disk_async().await;
+    assert_eq!(loaded, 1, "placeholder 不计入加载");
+
+    assert!(
+        store.get_async("task-ph").is_none(),
+        "running 占位不得随盘复活"
+    );
+    let real = store.get_async("task-real").expect("真结果应回载");
+    assert_eq!(real.result["response"], "最终回复");
+
+    // 占位残file已从盘上删除；真结果文件保留。
+    assert!(
+        !tmp.path().join("task-ph.json").exists(),
+        "占位残file应删除"
+    );
+    assert!(tmp.path().join("task-real.json").exists());
 }
