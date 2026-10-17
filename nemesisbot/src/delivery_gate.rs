@@ -45,6 +45,7 @@ pub(crate) fn capture_task_delivery(
 
 /// [`capture_task_delivery`] 的可测内核：直接收影子库句柄（测试用
 /// `CheckpointStore::new(None, root)` + 真实 git 夹具驱动，不必造 AgentLoop）。
+#[cfg(feature = "checkpoint-git")]
 pub(crate) fn capture_task_delivery_with_store(
     store: &std::sync::Arc<nemesis_agent::checkpoint::CheckpointStore>,
     task_id: &str,
@@ -132,5 +133,19 @@ pub(crate) fn capture_task_delivery_with_store(
     Some(value)
 }
 
-#[cfg(test)]
+/// checkpoint-git 关（minimal-iot / desktop 等裁剪形态）：影子库 git 代码面
+/// 整族不编译（`checkpoint.rs` 交付族随门裁剪）——交付门按模块诚实边界恒
+/// None（证据缺席可观测但不停摆，回调主链路零变化）。
+#[cfg(not(feature = "checkpoint-git"))]
+pub(crate) fn capture_task_delivery_with_store(
+    store: &std::sync::Arc<nemesis_agent::checkpoint::CheckpointStore>,
+    task_id: &str,
+    base_tree: Option<&str>,
+    self_node_id: &str,
+) -> Option<serde_json::Value> {
+    let _ = (store, task_id, base_tree, self_node_id);
+    None
+}
+
+#[cfg(all(test, feature = "checkpoint-git"))]
 mod tests;
