@@ -29,7 +29,7 @@ parking_lot = { workspace = true }
 sha2 = { workspace = true }
 ed25519-dalek = { workspace = true }
 rand = { workspace = true }
-zip = "2"
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

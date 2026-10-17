@@ -340,7 +340,15 @@ async fn install_zip_entries(
         let mut entry = archive
             .by_index(i)
             .map_err(|e| format!("ZIP 条目 {i} 不可读：{e}"))?;
-        let name = entry.name().to_string();
+        // zip 9：条目名解码可失败——名字解不出必非合法 .nbskin，逐条容错形态
+        // （与循环内 read_to_end 错误同款：记 errors 不炸整包）。
+        let name = match entry.name() {
+            Ok(n) => n.to_string(),
+            Err(e) => {
+                errors.push(json!({ "file": format!("entry #{i}"), "error": format!("条目名不可解码：{e}") }));
+                continue;
+            }
+        };
         if entry.is_dir() || !name.ends_with(".nbskin") {
             continue; // signatures.json / certs/ / 目录条目不是可安装对象
         }
