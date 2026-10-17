@@ -593,7 +593,14 @@ fn extract_zip_to_dir(data: &[u8], target_dir: &str) -> Result<()> {
         let file = archive
             .by_index(i)
             .map_err(|e| NemesisError::Other(format!("failed to read ZIP entry {}: {}", i, e)))?;
-        entries.push(file.name().to_string());
+        // zip 9：条目名解码可失败——诚实报错拒绝整包（畸形名字不允许静默转写）。
+        entries.push(
+            file.name()
+                .map_err(|e| {
+                    NemesisError::Other(format!("failed to decode ZIP entry {} name: {}", i, e))
+                })?
+                .to_string(),
+        );
     }
 
     // Determine prefix to strip (flatten single top-level dir).
@@ -611,7 +618,12 @@ fn extract_zip_to_dir(data: &[u8], target_dir: &str) -> Result<()> {
             .by_index(i)
             .map_err(|e| NemesisError::Other(format!("failed to read ZIP entry {}: {}", i, e)))?;
 
-        let name = file.name().to_string();
+        let name = file
+            .name()
+            .map_err(|e| {
+                NemesisError::Other(format!("failed to decode ZIP entry {} name: {}", i, e))
+            })?
+            .to_string();
         if name.ends_with('/') {
             continue; // Skip directories.
         }
