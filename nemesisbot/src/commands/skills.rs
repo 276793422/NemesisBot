@@ -923,7 +923,8 @@ async fn cmd_cache_clear(skills_cfg: &std::path::Path) -> Result<()> {
             .filter_map(|e| e.metadata().ok().map(|m| m.len()))
             .sum();
 
-        std::fs::remove_dir_all(&cache_dir)?;
+        // 韧性删除：缓存目录可能刚被搜索管线写过，瞬时句柄单发会假失败。
+        nemesis_utils::fsutil::remove_dir_all_retry(&cache_dir)?;
         println!("Search cache cleared.");
         println!("  Removed: {} entries (~{} bytes freed)", count, total_size);
     } else {

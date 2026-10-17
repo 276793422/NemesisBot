@@ -10,6 +10,9 @@
  *   目录是真空（展开无内容）。
  * - 点击文件 → 输入框追加 `@相对路径 `（联动 I2 补全体系；尾部带空白
  *   所以不会误触发 @ 补全弹层）。
+ * - 文件行尾 📌（I5，2026-10-17）：设为上下文文件——useFileTreePanel
+ *   共享单例存路径，ChatPanel 每次发送读走随 chat.send data.open_files
+ *   上报，后端注入每轮快照节；同路径再点取消，头部 chip 可视可清除。
  * - 开合状态走 useFileTreePanel 共享单例（2026-09-08 改版：入口收编到
  *   会话侧栏顶部功能区的「工作区」按钮；折叠时本组件不渲染任何内容——
  *   旧的左缘细条 rail 已删除）。
@@ -29,7 +32,7 @@ interface TreeNode {
 
 const { request } = useWSAPI()
 const chatStore = useChatStore()
-const { collapsed, toggle: toggleCollapsed } = useFileTreePanel()
+const { collapsed, toggle: toggleCollapsed, currentFile, setCurrentFile } = useFileTreePanel()
 
 const entries = ref<TreeNode[]>([])
 const truncated = ref(false)
@@ -125,6 +128,12 @@ function insertRef(node: TreeNode) {
   const sep = cur && !/\s$/.test(cur) ? ' ' : ''
   chatStore.input = cur + sep + '@' + node.path + ' '
 }
+
+/** 📌 行动作（I5）：同路径再点 = 取消，异路径 = 切换。@click.stop 防
+ *  触发行本身的 insertRef——两个动作语义独立（提及一次 vs 粘性上下文）。 */
+function togglePin(node: TreeNode) {
+  setCurrentFile(currentFile.value === node.path ? null : node.path)
+}
 </script>
 
 <template>
@@ -135,6 +144,12 @@ function insertRef(node: TreeNode) {
         <span class="filetree-spacer" />
         <button class="filetree-btn" type="button" title="刷新" @click="loadRoot">⟳</button>
         <button class="filetree-btn" type="button" title="折叠（也可用侧栏「工作区」按钮）" @click="toggleCollapsed">⟨</button>
+      </div>
+
+      <div v-if="currentFile" class="filetree-context">
+        <span class="filetree-context-label">📌 上下文</span>
+        <span class="filetree-context-path" :title="currentFile">{{ currentFile }}</span>
+        <button class="filetree-btn" type="button" title="清除上下文文件（后续消息不再携带）" @click="setCurrentFile(null)">×</button>
       </div>
 
       <div v-if="error" class="filetree-error">
@@ -160,6 +175,14 @@ function insertRef(node: TreeNode) {
           </span>
           <span v-else class="filetree-caret filetree-caret-file">·</span>
           <span class="filetree-name">{{ row.node.name }}</span>
+          <button
+            v-if="row.node.type === 'file'"
+            class="filetree-pin"
+            :class="{ active: currentFile === row.node.path }"
+            type="button"
+            :title="currentFile === row.node.path ? '取消上下文文件' : '设为上下文文件（后续消息自动携带路径）'"
+            @click.stop="togglePin(row.node)"
+          >📌</button>
         </div>
         <div v-if="!loading && loadedOnce && visibleRows.length === 0" class="filetree-empty">
           工作区为空
@@ -244,6 +267,53 @@ function insertRef(node: TreeNode) {
 .filetree-name {
   overflow: hidden;
   text-overflow: ellipsis;
+  flex: 1;
+}
+/* I5：📌 上下文动作。悬停行才显现（不干扰日常浏览）；激活态常显。 */
+.filetree-pin {
+  flex: none;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 3px;
+  border-radius: 4px;
+  opacity: 0;
+  filter: grayscale(1);
+}
+.filetree-row:hover .filetree-pin {
+  opacity: 0.65;
+}
+.filetree-pin:hover {
+  opacity: 1 !important;
+  background: var(--bg, rgba(128, 128, 128, 0.12));
+}
+.filetree-pin.active {
+  opacity: 1;
+  filter: none;
+}
+/* 头部上下文 chip：当前 📌 文件可视 + 清除入口。 */
+.filetree-context {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-bottom: 1px dashed var(--border);
+  font-size: var(--text-xs, 12px);
+}
+.filetree-context-label {
+  flex: none;
+  color: var(--text-muted);
+}
+.filetree-context-path {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  direction: rtl;
+  text-align: left;
 }
 .filetree-error,
 .filetree-loading,

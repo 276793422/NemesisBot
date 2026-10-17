@@ -1325,9 +1325,15 @@ impl Tool for DeleteDirTool {
             return Err(format!("Path is not a directory: {}", path.display()));
         }
 
-        tokio::fs::remove_dir_all(path)
-            .await
-            .map_err(|e| format!("Failed to remove directory: {}", e))?;
+        // 韧性删除：Defender/索引器瞬时句柄是常态，单发失败 = 对模型假报错；
+        // spawn_blocking 装同步重试内核（最坏 ~4.4s，不占 async worker）。
+        let retry_path = path.clone();
+        tokio::task::spawn_blocking(move || {
+            nemesis_utils::fsutil::remove_dir_all_retry(&retry_path)
+        })
+        .await
+        .map_err(|e| format!("Failed to remove directory: {e}"))?
+        .map_err(|e| format!("Failed to remove directory: {}", e))?;
 
         Ok("Directory removed".to_string())
     }
@@ -5305,7 +5311,8 @@ impl SkillManageTool {
         std::fs::create_dir_all(skill_dir)
             .map_err(|e| format!("failed to create skill dir: {}", e))?;
         if let Err(e) = std::fs::write(&skill_md, content) {
-            let _ = std::fs::remove_dir_all(skill_dir);
+            // 回滚清理走韧性包装（残留空目录无害，尽力而为）。
+            nemesis_utils::fsutil::remove_dir_all_resilient(skill_dir);
             return Err(format!("failed to write SKILL.md: {}", e));
         }
         // N3：学得技能 manifest 记账（created/overwrite 共用 upsert）。记账失败
@@ -5444,7 +5451,8 @@ impl SkillManageTool {
                 skill_dir.display()
             ));
         }
-        std::fs::remove_dir_all(skill_dir).map_err(|e| format!("failed to delete skill: {}", e))?;
+        nemesis_utils::fsutil::remove_dir_all_retry(skill_dir)
+            .map_err(|e| format!("failed to delete skill: {}", e))?;
         // N3：学得技能 manifest 同步移除（不在账 = 无操作）。失败降级附注，
         // 不回滚 delete（目录已删，账目残条可由 learned_remove 清）。
         let manifest_note =
