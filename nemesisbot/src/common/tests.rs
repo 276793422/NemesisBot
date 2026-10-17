@@ -3,6 +3,10 @@ use std::fs;
 
 #[test]
 fn test_resolve_home_local() {
+    // 读 cwd（local 分支）——持锁防并行 set_current_dir mutator 窗口穿插。
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let home = resolve_home(true);
     assert!(home.to_string_lossy().contains(".nemesisbot"));
 }
@@ -183,6 +187,10 @@ fn test_resolve_home_env_var() {
 #[test]
 fn test_resolve_home_auto_detect() {
     // Test auto-detect when cwd has .nemesisbot
+    // 读 NEMESISBOT_HOME env——持锁防并行 mutator 窗口穿插（读者纪律）。
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let home = resolve_home(false);
     // Should resolve to some .nemesisbot path (either auto-detect or home dir)
     assert!(home.to_string_lossy().contains(".nemesisbot"));
@@ -416,6 +424,11 @@ fn test_copy_directory_with_nested_files() {
 
 #[test]
 fn test_resolve_home_local_returns_cwd_based() {
+    // 精确断言 cwd 拼接——持锁保证函数内读 cwd 与本测试读 current_dir 之间
+    // 不被并行 set_current_dir mutator 穿插。
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let home = resolve_home(true);
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     assert_eq!(home, cwd.join(".nemesisbot"));
@@ -445,6 +458,10 @@ fn test_resolve_home_exe_dir() {
     // This test verifies the exe directory branch is exercised.
     // We can't easily create .nemesisbot next to the test binary,
     // but we can verify the function still returns a valid path.
+    // 读 NEMESISBOT_HOME env（env 优先于 exe_dir 分支）——持锁防并行 mutator。
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let home = resolve_home(false);
     assert!(home.to_string_lossy().ends_with(".nemesisbot"));
 }
