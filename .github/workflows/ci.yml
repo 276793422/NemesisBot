@@ -403,8 +403,12 @@ jobs:
         # hash:N/3（2026-10-10 深夜 2→3 片）：对半拆后单片仍偶发失联（shard1
         # 两连死，死在构建步=VM 抽签劣化与步骤无关），三片把单片测试再减半，
         # 典型总墙钟 ~20-22min 深滑出失联窗。三片并集=全集。
+        # --failure-output final（2026-10-18）：失败详情只进收尾 recap——默认
+        # immediate 在中段流打 panic 现场，wrapper 只留 stderr 尾 100 行=现场
+        # 结构性丢失（sup_env 两连红实录：失败在 7959/9139 位，panic 文本永不
+        # 入日志）。final 把详情挪进 Summary 前的 recap（必然落在尾窗）。
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag "nextest-s${{ matrix.shard }}" -MaxMinutes 115 -TailOut 200 -TailErr 100 -BuildCommand "cargo nextest run --workspace --no-fail-fast --partition hash:${{ matrix.shard }}/3"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag "nextest-s${{ matrix.shard }}" -MaxMinutes 115 -TailOut 200 -TailErr 100 -BuildCommand "cargo nextest run --workspace --no-fail-fast --failure-output final --partition hash:${{ matrix.shard }}/3"
 
   frontend:
     name: Frontend typecheck + vitest + build (Linux)
