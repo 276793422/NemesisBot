@@ -54,7 +54,7 @@ pub fn log_rpc(
         "rpc_call",
         serde_json::json!({
             "direction": direction,
-            "action": action,
+            "action": cluster_log::audit_action_name(action),
             "request_id": request_id,
             "source": source,
             "target": target.unwrap_or("broadcast"),

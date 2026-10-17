@@ -1046,3 +1046,51 @@ async fn test_handle_wire_message_handler_error_and_no_handler() {
     assert_eq!(resp.id, "w-req-3");
     assert!(resp.error.contains("no handler for action"));
 }
+
+// 审计 action 形态统一（2026-10-18）：Known 动作 wire 形态是 PascalCase
+//（PeerChat），经真实分发链（dispatch_wire_request）落盘的 rpc_call 行
+// 必须渲染成小写（peerchat）——日志检索单一形态可全覆盖。
+#[tokio::test]
+async fn test_audit_row_action_rendered_lowercase() {
+    // 全局 cluster_log 是进程级 OnceLock，与 cluster_log/tests.rs 的初始化
+    // 测试存在并行竞态（同款容忍语义，见其 218 行注释）：try_init 返回
+    // false = 落盘目录被并行测试抢先且不可知——本轮退化为只验证分发链
+    // 行为，落盘断言由 cluster_log 单测覆盖。
+    let temp = tempfile::TempDir::new().unwrap();
+    if !crate::cluster_log::try_init_cluster_log(temp.path()) {
+        return;
+    }
+
+    let server = make_server();
+    server.register_handler(
+        "PeerChat",
+        Box::new(|_| Ok(serde_json::json!({"status": "accepted"}))),
+    );
+    let msg = WireMessage::new_request(
+        "node-a",
+        "node-b",
+        "PeerChat",
+        serde_json::json!({"task_id": "t1"}),
+    );
+    let request_id = msg.id.clone();
+    let resp = server.handle_wire_message(msg).await;
+    assert_eq!(resp.msg_type, "response", "handler 命中应返回 response 帧");
+
+    // 按 request_id 精确定位本请求的审计行——并行测试可能往同一文件写
+    // 其它行，contains 全文断言会误伤。
+    let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let content = std::fs::read_to_string(temp.path().join(format!("cluster_{date}.log")))
+        .expect("审计日志文件应已创建");
+    let row = content
+        .lines()
+        .find(|l| l.contains(&request_id))
+        .expect("本请求的 rpc_call 审计行应落盘");
+    assert!(
+        row.contains("\"action\":\"peerchat\""),
+        "rpc_call 审计行应把 action 渲染成小写，实际：{row}"
+    );
+    assert!(
+        !row.contains("\"action\":\"PeerChat\""),
+        "不应再出现 PascalCase 形态，实际：{row}"
+    );
+}

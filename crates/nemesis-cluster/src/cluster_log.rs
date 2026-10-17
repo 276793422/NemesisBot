@@ -149,5 +149,21 @@ pub fn write_cluster_log(event: &str, fields: serde_json::Value) {
     }
 }
 
+/// Normalize an RPC action name for the audit trail (`rpc_call` rows).
+///
+/// The wire protocol itself is deliberately dual-form: `KnownAction::as_str()`
+/// is PascalCase (`PeerChat`/`Ping`/`PeerChatCallback`) while `ActionType::Custom`
+/// strings are lowercase (`peer_chat`/`transfer_begin`/`nb_bus`) — that contract
+/// is frozen (deserialization matches exact strings). The audit trail, however,
+/// renders every action lowercase so log forensics needs a single grep form
+/// (2026-10-17 实盘核对实证：按小写 `peer_chat` 检索漏掉 85 条 `PeerChat`
+/// 派发行，险些误判「派发审计缺失」）。
+///
+/// Historical note: log files written before 2026-10-18 keep the raw form
+/// (PascalCase for Known actions) — auditing old files still needs both forms.
+pub fn audit_action_name(action: &str) -> String {
+    action.to_ascii_lowercase()
+}
+
 #[cfg(test)]
 mod tests;
