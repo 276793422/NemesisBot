@@ -99,6 +99,11 @@ pub struct Cluster {
     /// Set via `set_capabilities()` after the agent is built.
     /// Wrapped in Arc for sharing with RPC handler closures (real-time reads).
     capabilities: Arc<std::sync::Mutex<Vec<String>>>,
+    /// 环境能力声明（NB-122 批 ③ 数据面 2026-10-16）：peers.toml
+    /// `[node].capabilities` 自报段种入；`set_capabilities` 时与工具名
+    /// 并集进宣告面（`[peers.X]` 静态段不消费——那是当年因「配置了也
+    /// 不生效」删除的字段，本字段只认自报段）。
+    static_capabilities: parking_lot::RwLock<Vec<String>>,
 
     // -- Paths --
     workspace: PathBuf,
@@ -211,6 +216,7 @@ impl Cluster {
             tier: parking_lot::RwLock::new(None),
             agent_roster: std::sync::Arc::new(parking_lot::RwLock::new(None)),
             capabilities: Arc::new(std::sync::Mutex::new(Vec::new())),
+            static_capabilities: parking_lot::RwLock::new(Vec::new()),
             workspace: workspace.clone(),
             static_config_path: cluster_dir_path.join("peers.toml"),
             dynamic_state_path: cluster_dir_path.join("state.toml"),
@@ -313,6 +319,12 @@ impl Cluster {
             .map(|s| s.node.professions.clone())
             .unwrap_or_default();
         let tier_default = sc.as_ref().and_then(|s| s.node.tier.clone());
+        // NB-122 批 ③ 数据面：`[node].capabilities` 自报段种入（环境事实
+        // 能力词；set_capabilities 时与工具名并集进宣告面）。
+        let static_caps_default = sc
+            .as_ref()
+            .map(|s| s.node.capabilities.clone())
+            .unwrap_or_default();
 
         // P1 统一任务层：生产路径任务真相源换 tasks.db（SQLite）——内存态根除，
         // gateway 重启后在途任务/审批可恢复。打不开/损坏 = fail-closed（挂
@@ -352,6 +364,7 @@ impl Cluster {
             tier: parking_lot::RwLock::new(tier_default),
             agent_roster: std::sync::Arc::new(parking_lot::RwLock::new(None)),
             capabilities: Arc::new(std::sync::Mutex::new(Vec::new())),
+            static_capabilities: parking_lot::RwLock::new(static_caps_default),
             workspace: workspace.clone(),
             static_config_path: nemesis_path::resolve_cluster_peers_path_in_workspace(&workspace),
             dynamic_state_path: nemesis_path::resolve_cluster_state_path_in_workspace(&workspace),
@@ -2797,14 +2810,26 @@ impl Cluster {
     ///
     /// Called after the AgentLoop is built so the discovery broadcast includes
     /// the actual tool set rather than a hardcoded empty list.
+    ///
+    /// NB-122 批 ③ 数据面：与 `static_capabilities`（peers.toml
+    /// `[node].capabilities` 环境能力自报）取并集——matcher 的
+    /// required_capabilities 硬条件需要工具名之外的环境能力词。并集
+    /// 以自报段在前（顺序稳定，重调幂等），工具名去重追加在后。
     pub fn set_capabilities(&self, caps: Vec<String>) {
         if let Ok(mut guard) = self.capabilities.lock() {
-            *guard = caps;
+            let mut merged = self.static_capabilities.read().clone();
+            for c in caps {
+                if !merged.contains(&c) {
+                    merged.push(c);
+                }
+            }
+            *guard = merged;
         }
         self.sync_local_node_to_registry();
     }
 
-    /// 本机能力清单快照（`set_capabilities` 注入的原值）。与
+    /// 本机能力清单快照（`set_capabilities` 注入的值 = `[node].capabilities`
+    /// 自报段 ∪ AgentLoop 工具名）。与
     /// [`Self::get_capabilities`]（registry 在线节点能力**并集**）语义不同
     /// ——桥 hello（二期身份交换）携带的是本机能力，用本方法。
     pub fn local_capabilities(&self) -> Vec<String> {

@@ -94,6 +94,53 @@ fn system_prompt_carries_evidence_request_discipline() {
 }
 
 #[test]
+fn system_prompt_carries_worker_self_conclusion_discipline() {
+    // NB-123 实录（2026-10-17）：worker 交付已按父单修订口径合规（AC-24
+    // 待人工签核如实标注，口径明文不阻塞自动验收），但 worker 自我结论
+    // 「不可发布」+ 喊停声明把评审带偏 FAIL → REDISPATCH_LOOP 升级人工。
+    // 判定纪律第 5 条钉死：自我结论/喊停是待审数据不是裁决依据；口径
+    // 豁免的人工事项不得写进 gap。全量档与快速档都要在场。
+    assert!(REVIEW_SYSTEM_PROMPT.contains("自我结论与喊停声明"));
+    assert!(REVIEW_SYSTEM_PROMPT.contains("不是裁决依据"));
+    assert!(REVIEW_SYSTEM_PROMPT.contains("不得因 worker 自我结论"));
+    let fast = nemesis_prompts::board::REVIEW_SYSTEM_PROMPT_FAST;
+    assert!(fast.contains("自我结论与喊停声明"));
+    assert!(fast.contains("不得因此 FAIL"));
+}
+
+#[test]
+fn system_prompt_carries_entry_conflict_discipline() {
+    // NB-101 实录（2026-10-17）：父单 AC 前条泛化字面（「所有条目均为通过…
+    // 可发布」）与末行明文口径（「AC-24 待人工签核…不阻塞自动验收判定」）
+    // 冲突，评审轮摆向字面条目判 FAIL。判定纪律第 6 条钉死：条目冲突以
+    // 更具体的后行口径为准。全量档与快速档都要在场。
+    assert!(REVIEW_SYSTEM_PROMPT.contains("以更具体的后行口径为准"));
+    assert!(REVIEW_SYSTEM_PROMPT.contains("优先于泛化字面表述"));
+    assert!(REVIEW_SYSTEM_PROMPT.contains("不因字面矛盾判 FAIL 或 UNSURE"));
+    let fast = nemesis_prompts::board::REVIEW_SYSTEM_PROMPT_FAST;
+    assert!(fast.contains("以更具体的后行口径为准"));
+    assert!(fast.contains("不得因字面矛盾 FAIL"));
+}
+
+#[test]
+fn system_prompt_carries_equivalent_form_and_evidence_citation_discipline() {
+    // NB-101 项目收口复评实录（2026-10-17）：AC-24 口径明写「可发布（附
+    // AC-24 待人工签核事项）」等示例形态，黑盒报告以「可发布」+紧邻句
+    // 「AC-24 正式签字保留为项目外后续事项，不改变本次发布结论」实质等价
+    // 表达，评审却按示例字面匹配判不满足；且升级理由把 AC-24 结论误归属
+    // 到 ac-replay-matrix.md（该文件并无 AC-24 字样）。判定纪律第 7 条
+    // 钉死：示例非穷举、实质等价即符合；引用必须与证据节选一致。
+    assert!(REVIEW_SYSTEM_PROMPT.contains("示例而非穷举"));
+    assert!(REVIEW_SYSTEM_PROMPT.contains("实质等价方式明示"));
+    assert!(REVIEW_SYSTEM_PROMPT.contains("不得因措辞与示例字面不一致判不满足"));
+    assert!(REVIEW_SYSTEM_PROMPT.contains("必须与所附证据节选一致"));
+    let fast = nemesis_prompts::board::REVIEW_SYSTEM_PROMPT_FAST;
+    assert!(fast.contains("示例形态非穷举"));
+    assert!(fast.contains("实质等价表述"));
+    assert!(fast.contains("不得作为事实依据"));
+}
+
+#[test]
 fn parse_rejects_unknown_verdict() {
     let err = parse_review(r#"{"verdict":"MAYBE","reasons":[]}"#).unwrap_err();
     assert!(err.message.contains("JSON 解析失败"), "{err}");
@@ -155,10 +202,73 @@ fn prompt_contains_issue_fields_and_report() {
 }
 
 #[test]
+fn prompt_with_limits_respects_custom_cap_and_default_matches() {
+    // 2026-10-17 NB-101 项目收口三轮误升级根修（回归钉）：收口评审携带
+    // 实物证据段的 worker_report 会被默认 64KB 内联上限截断——内容节选段
+    // （在报告尾部）整体丢失，模型从未见过。_with_limits 变体必须让大
+    // 报告完整通过；默认入口行为与旧契约逐字节一致。
+    let big = format!("{}证据段尾部标记 TAILMARKER123\n", "x".repeat(70 * 1024));
+    // 默认 64KB：截断发生，尾部标记不在场，且有诚实截断注记。
+    let p_default = build_review_user_prompt("NB-1", "t", "d", None, &big, &[]);
+    assert!(!p_default.contains("TAILMARKER123"));
+    assert!(p_default.contains("已截断"));
+    // 自定 256KB：完整通过，尾部标记在场。
+    let p_big = build_review_user_prompt_with_limits("NB-1", "t", "d", None, &big, &[], 256 * 1024);
+    assert!(p_big.contains("TAILMARKER123"));
+    assert!(!p_big.contains("已截断"));
+    // 小报告：两个入口输出一致（默认=委托旧上限）。
+    let small = sample_report_text();
+    assert_eq!(
+        build_review_user_prompt("NB-2", "t", "d", Some("c"), &small, &[]),
+        build_review_user_prompt_with_limits("NB-2", "t", "d", Some("c"), &small, &[], 64 * 1024)
+    );
+}
+
+#[test]
 fn prompt_marks_empty_fields_honestly() {
-    let p = build_review_user_prompt("NB-1", "t", "  ", None, "", &[]);
-    assert!(p.contains("（未提供）"));
+    // 2026-10-17 契约更新（NB-125 根修）：AC 缺失不再渲染「（未提供）」——
+    // 评审侧按标题/背景同源推导判定基准；标题+背景全空才诚实降级。
+    let p = build_review_user_prompt("NB-1", "  ", "  ", None, "", &[]);
+    assert!(p.contains("（未提供——标题与背景均为空，无从推导判定基准）"));
     assert!(p.contains("（无其他评论）"));
+    // 有标题 → 自动推导判据在场，AC 段不再是裸「未提供」（背景段的
+    // 「（未提供）」是描述缺失的合法占位，与 AC 段无关）。
+    let p2 = build_review_user_prompt("NB-2", "上线部署", "", None, "", &[]);
+    assert!(p2.contains("自动推导的判定基准"), "{p2}");
+    assert!(p2.contains("目标已达成并验证"), "{p2}");
+}
+
+#[test]
+fn prompt_renders_derived_criteria_for_bug_report_without_ac() {
+    // NB-125 实录（2026-10-17）：BUG 报告单无 AC，旧契约渲染「（未提供）」
+    // → 评审连续 UNSURE 无限重派。新契约：评审侧同源推导 BUG 形态判定
+    // 基准（问题被修复并验证 + 可重放证据 + 分析不算完成）。
+    let p = build_review_user_prompt(
+        "NB-125",
+        "项目代码无法正确启动，能看到初始界面无法看到游戏主界面",
+        "项目代码无法正确启动。你自己打开游戏看看。",
+        None,
+        "worker 汇报正文",
+        &[],
+    );
+    assert!(p.contains("原验收标准未填"), "{p}");
+    assert!(p.contains("自动推导的判定基准"), "{p}");
+    assert!(p.contains("已被修复并验证"), "{p}");
+    assert!(p.contains("仅定位或分析问题不算完成"), "{p}");
+}
+
+#[test]
+fn system_prompt_carries_missing_ac_judgment_basis_discipline() {
+    // NB-125 根修钉子（2026-10-17 用户裁决：验收标准就应该自动生成）：
+    // 判定纪律第 8 条——AC 缺失/自动推导时以标题/背景陈述的问题或目标为
+    // 判定依据，不得仅因 AC 非人工填写判 UNSURE；仅分析确认不算解决。
+    // 全量档与快速档都要在场。
+    assert!(REVIEW_SYSTEM_PROMPT.contains("以任务标题/背景中陈述的问题或目标为判定依据"));
+    assert!(REVIEW_SYSTEM_PROMPT.contains("不得因验收标准非人工逐条填写而判 UNSURE"));
+    assert!(REVIEW_SYSTEM_PROMPT.contains("仅定位、分析、确认问题不算解决"));
+    let fast = nemesis_prompts::board::REVIEW_SYSTEM_PROMPT_FAST;
+    assert!(fast.contains("不得仅因 AC 非人工填写判 UNSURE"));
+    assert!(fast.contains("仅分析确认不算解决"));
 }
 
 #[test]
@@ -251,13 +361,15 @@ fn strip_directive_lines_all_directives_degrades_to_unprovided() {
     assert!(p.contains("（未提供）"));
 }
 
-/// NB-CODE-010/011：验收标准缺失（未提供 / 全指令行被剥离）时，提示词必须
-/// 带防「凭标题脑补通过」的谨慎判定注记；标准在场时不注入。
+/// NB-CODE-010/011：验收标准真缺失（全指令行被剥离 / 标题背景全空）时，
+/// 提示词必须带防「凭标题脑补通过」的谨慎判定注记；可推导（NB-125 根修
+/// 合流：自动推导基准在场）或标准在场时不注入。
 #[test]
 fn prompt_warns_when_criteria_missing() {
+    // AC 缺失但标题/背景可推导 → 判据在场（推导基准），不注入注记。
     let missing = build_review_user_prompt("NB-1", "t", "d", None, "report", &[]);
-    assert!(missing.contains("验收标准未提供"), "缺标准必须注入注记");
-    assert!(missing.contains("不得默认通过"));
+    assert!(missing.contains("自动推导的判定基准"), "{missing}");
+    assert!(!missing.contains("验收标准未提供"), "{missing}");
 
     let stripped = build_review_user_prompt(
         "NB-2",
@@ -270,6 +382,14 @@ fn prompt_warns_when_criteria_missing() {
     assert!(
         stripped.contains("验收标准未提供"),
         "全指令行剥离后等同缺失，必须注入注记"
+    );
+    assert!(stripped.contains("不得默认通过"));
+
+    // 标题/背景全空 → 无从推导 → 谨慎注记必须在场（真无判据的最后防线）。
+    let nothing = build_review_user_prompt("NB-4", "  ", "  ", None, "report", &[]);
+    assert!(
+        nothing.contains("验收标准未提供") && nothing.contains("不得默认通过"),
+        "无从推导形态必须注入注记: {nothing}"
     );
 
     let present = build_review_user_prompt("NB-3", "t", "d", Some("明示标准"), "report", &[]);

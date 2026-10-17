@@ -83,6 +83,7 @@ fn test_static_config_roundtrip() {
             tags: vec!["test".into()],
             professions: Vec::new(),
             tier: None,
+            capabilities: Vec::new(),
         },
     };
 
@@ -964,6 +965,7 @@ rpc_port = 29422
             tags: vec!["u1".into()],
             professions: Vec::new(),
             tier: None,
+            capabilities: Vec::new(),
         },
     };
     save_static_config(&path, &updated).unwrap();
@@ -1143,4 +1145,38 @@ fn identity_write_with_lock_does_not_clobber_concurrent_append() {
         peers.iter().any(|k| k == "node-x"),
         "并发身份写回不得冲掉 append 的 peer，实际 peers: {peers:?}"
     );
+}
+
+/// NB-122 批 ③ 数据面（2026-10-16）：peers.toml `[node].capabilities`
+/// 环境能力自报段——解析 + save/load round-trip + 缺段 = 空（serde default）。
+#[test]
+fn test_node_capabilities_roundtrip_and_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peers.toml");
+    std::fs::write(
+        &path,
+        "[node]\nid = \"node-cap\"\nname = \"Cap Node\"\nrole = \"worker\"\n\
+         capabilities = [\"browser\", \"chrome\", \"firefox\"]\n",
+    )
+    .unwrap();
+    let loaded = load_static_config(&path).unwrap();
+    assert_eq!(
+        loaded.node.capabilities,
+        vec!["browser", "chrome", "firefox"]
+    );
+
+    // round-trip：save → load 保留
+    let p2 = dir.path().join("peers2.toml");
+    save_static_config(&p2, &loaded).unwrap();
+    let reloaded = load_static_config(&p2).unwrap();
+    assert_eq!(
+        reloaded.node.capabilities,
+        vec!["browser", "chrome", "firefox"]
+    );
+
+    // 缺段 = 空（旧 peers.toml 兼容）
+    let p3 = dir.path().join("peers3.toml");
+    std::fs::write(&p3, "[node]\nid = \"x\"\nname = \"y\"\n").unwrap();
+    let bare = load_static_config(&p3).unwrap();
+    assert!(bare.node.capabilities.is_empty());
 }

@@ -11,6 +11,7 @@ import {
   STATUS_BADGE,
   STATUSES,
   fmtTime,
+  needsUserBadge,
   statusLabel,
   statusTitle,
   type IssueRow,
@@ -82,6 +83,29 @@ function planningBadge(issue: IssueRow): string {
 function planningAbnormal(issue: IssueRow): boolean {
   return planningSecs(issue) > ABNORMAL_SECS
 }
+
+/** dispatching = 拆解完成、auto_confirm 发车派发在途（子单已可见），非异常。 */
+function planningDispatching(issue: IssueRow): boolean {
+  const live = planningById.value.get(issue.id)
+  if (live) return live.phase === 'dispatching'
+  return issue.planning?.phase === 'dispatching'
+}
+
+// 需求①（2026-10-15）：未完成上游依赖徽标——「🔒 等 NB-x」。done 上游不显示
+// （已满足）；已取消上游单独示警（永远无法完成 = 本单死等，级联取消的正常
+// 情况下本单也已取消、列表默认不可见，能看到即异常残留）。
+function pendingDeps(issue: IssueRow): Array<{ id: number; number: string; status: string }> {
+  return (issue.depends_on ?? []).filter((d) => d.status !== 'done')
+}
+
+// 决策可见性（2026-10-15 批）：「✋ 待决策」快速过滤（客户端过滤，数据源
+// 是 issue.list 已附带的 needs_user 投影，零额外请求）。过滤开着时叠 amber
+// 行底色，一眼圈出等裁决的单。
+const filterDecision = ref(false)
+const decisionCount = computed(() => issues.value.filter((i) => !!i.needs_user).length)
+const visibleIssues = computed(() =>
+  filterDecision.value ? issues.value.filter((i) => !!i.needs_user) : issues.value,
+)
 
 async function loadWorkerNodes() {
   try {
@@ -348,6 +372,16 @@ onMounted(refresh)
       >
         清理已取消（{{ cancelledRows.length }}）
       </button>
+      <button
+        class="btn btn-sm filter-decision"
+        :class="{ active: filterDecision, 'has-signal': decisionCount > 0 }"
+        :disabled="decisionCount === 0 && !filterDecision"
+        :title="decisionCount > 0 ? '只显示停车等你裁决的单' : '当前没有待决策的单'"
+        data-test="filter-decision"
+        @click="filterDecision = !filterDecision"
+      >
+        ✋ 待决策 {{ decisionCount }}
+      </button>
       <button class="btn btn-sm" @click="loadIssues()">搜索</button>
       <button class="btn btn-sm" @click="refresh" title="刷新">↻</button>
       <button class="btn btn-sm btn-primary" style="margin-left: auto;" @click="openCreate">+ 新建 Issue</button>
@@ -364,24 +398,60 @@ onMounted(refresh)
     </div>
 
     <div v-else class="table-wrap">
-      <table>
-        <thead>
+      <table>        <thead>
           <tr>
             <th>编号</th><th>标题</th><th>状态</th><th>优先级</th>
             <th>指派</th><th>项目</th><th>更新时间</th><th>操作</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="issue in issues" :key="issue.id" class="issue-row" @click="openDetail(issue)">
+          <tr
+            v-for="issue in visibleIssues"
+            :key="issue.id"
+            class="issue-row"
+            :class="{ 'is-decision': !!issue.needs_user }"
+            @click="openDetail(issue)"
+          >
             <td><code>{{ issue.number }}</code></td>
-            <td style="font-weight: 500;">{{ issue.title }}</td>
+            <td style="font-weight: 500;">
+              {{ issue.title }}
+              <span
+                v-if="issue.needs_user"
+                class="badge badge-decision decision-badge"
+                :title="needsUserBadge(issue.needs_user).title"
+                data-test="needs-user-badge"
+              >{{ needsUserBadge(issue.needs_user).text }}</span>
+              <span
+                v-if="issue.plan_ready"
+                class="badge badge-plan decision-badge"
+                :title="`拆解完成待确认：${issue.plan_ready.subs_count} 个子单（${Math.round(issue.plan_ready.created_age_secs / 60)} 分钟前），点开确认发车`"
+                data-test="plan-ready-badge"
+              >📋 计划待确认</span>
+              <span
+                v-if="issue.attention"
+                class="badge badge-attention decision-badge"
+                title="执行档案迟迟未落地（停滞哨兵）：交付已收但变更集一直没合入——单还在跑，先观察，持续停滞再人工介入"
+                data-test="attention-badge"
+              >⚠ 停滞</span>
+              <span
+                v-for="d in pendingDeps(issue)"
+                :key="d.id"
+                class="badge dep-badge"
+                :class="d.status === 'cancelled' ? 'badge-error' : 'badge-warning'"
+                :title="d.status === 'cancelled'
+                  ? `上游 ${d.number} 已取消：本单将永远无法开工（正常应已被级联取消，能看到即异常残留）`
+                  : `上游 ${d.number} 未完成（${statusLabel(d.status)}），完成后本单才可派发`"
+              >{{ d.status === 'cancelled' ? `⚠ ${d.number} 已取消` : `🔒 等 ${d.number}` }}</span>
+            </td>
             <td>
               <span
                 v-if="planningBadge(issue)"
                 class="badge planning-badge"
-                :class="planningAbnormal(issue) ? 'badge-warning' : 'badge-info'"
-                title="AI 正在拆解该单为子任务（通常 3~8 分钟，完成后自动发车）；结束或失败会自动恢复原状态徽章"
-              >🧩 拆解中 {{ planningBadge(issue) }}<template v-if="planningAttempt(issue) > 1"> · 重试 {{ planningAttempt(issue) }}</template></span>
+                :class="!planningDispatching(issue) && planningAbnormal(issue) ? 'badge-warning' : 'badge-info'"
+                :title="planningDispatching(issue)
+                  ? '拆解完成，自动发车派发中（子单已在看板可见，逐个送达 worker）'
+                  : 'AI 正在拆解该单为子任务（通常 3~8 分钟，完成后自动发车）；结束或失败会自动恢复原状态徽章'"
+              ><template v-if="planningDispatching(issue)">🚗 发车中 {{ planningBadge(issue) }}</template><template v-else>🧩 拆解中 {{ planningBadge(issue) }}<template v-if="planningAttempt(issue) > 1"> · 重试 {{ planningAttempt(issue) }}</template></template></span>
               <span v-else class="badge" :class="STATUS_BADGE[issue.status]" :title="statusTitle(issue.status)">{{ statusLabel(issue.status) }}</span>
             </td>
             <td><span class="badge" :class="PRIORITY_BADGE[issue.priority] || 'badge-neutral'">P{{ issue.priority }} {{ PRIORITY_LABEL[issue.priority] || '' }}</span></td>
@@ -407,6 +477,9 @@ onMounted(refresh)
           </tr>
         </tbody>
       </table>
+      <div v-if="filterDecision && visibleIssues.length === 0" class="empty-state" style="padding: var(--space-6);">
+        <p>没有待决策的单——所有停车单都已处理完。</p>
+      </div>
     </div>
 
     <!-- 详情弹窗（共享组件；v-if 门控：issueId 置空必须收起弹层） -->
@@ -530,9 +603,36 @@ onMounted(refresh)
 .issue-row {
   cursor: pointer;
 }
+/* 决策可见性（2026-10-15 批）：待决策行 amber 左缘 + 浅底；过滤 chip
+ * 高亮态；三徽标与标题留隙。 */
+.issue-row.is-decision td {
+  background: var(--warning-bg, rgba(245, 158, 11, 0.08));
+  box-shadow: inset 3px 0 0 var(--warning);
+}
+.issue-row.is-decision:hover td {
+  background: var(--warning-bg, rgba(245, 158, 11, 0.14));
+}
+.filter-decision.has-signal {
+  color: var(--warning);
+  box-shadow: inset 0 0 0 1px var(--warning);
+}
+.filter-decision.active {
+  background: var(--warning);
+  color: #1a1206;
+  font-weight: 600;
+  box-shadow: none;
+}
+.decision-badge {
+  margin-left: var(--space-1);
+}
 /* 拆解在途徽标（§1.2A）：自计时动态徽标。 */
 .planning-badge {
   font-variant-numeric: tabular-nums;
+}
+/* 上游依赖徽标（2026-10-15 需求①）：「🔒 等 NB-x」。 */
+.dep-badge {
+  margin-left: var(--space-1);
+  font-size: var(--text-xs, 11px);
 }
 .assign-row {
   display: flex;

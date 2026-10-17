@@ -4,7 +4,7 @@
 use rusqlite::Connection;
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 17;
+const SCHEMA_VERSION: i32 = 18;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS board_meta (
@@ -371,6 +371,13 @@ const SCHEMA_V17: &str = r#"
 ALTER TABLE issue ADD COLUMN required_profession TEXT;
 "#;
 
+/// v18（NB-122 批 2026-10-16）：issue 加环境能力硬条件列（JSON 数组
+/// TEXT，NULL/空数组 = 无能力需求）。沿 v17 的 ALTER 既有模式；JSON
+/// 形态与 required_tags 同款（store 层空数组写 NULL、读取宽容解析）。
+const SCHEMA_V18: &str = r#"
+ALTER TABLE issue ADD COLUMN required_capabilities TEXT;
+"#;
+
 /// Open (or create) the board database at `db_path` and run pending migrations.
 pub fn init_db(db_path: &Path) -> Result<Connection, String> {
     if let Some(parent) = db_path.parent() {
@@ -523,6 +530,14 @@ pub fn init_db(db_path: &Path) -> Result<Connection, String> {
         tracing::info!(
             version = 17,
             "[BoardStore] Database migrated to v17 (profession framework M2: issue.required_profession)"
+        );
+    }
+    if current_version < 18 {
+        conn.execute_batch(SCHEMA_V18)
+            .map_err(|e| format!("Board schema v18 migration failed: {e}"))?;
+        tracing::info!(
+            version = 18,
+            "[BoardStore] Database migrated to v18 (NB-122 batch: issue.required_capabilities)"
         );
     }
     set_version(&conn, SCHEMA_VERSION)?;

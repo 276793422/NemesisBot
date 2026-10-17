@@ -348,6 +348,33 @@ pub(crate) async fn init_post_agent(
                 info!("[Gateway] Board review retrigger hook armed (review.retrigger)");
             }
 
+            // 项目收口复评钩子（2026-10-17 NB-101 project_escalate_human 死路
+            // 根修）：WSAPI `review.retrigger {project_id}` 的人工一键重入——
+            // 项目升级记入 auto_decide 后重放扫描视为已结论，父单又已 done，
+            // 没有此钩子升级就是死局。
+            let proj_retrig_deps = replay_sweep_deps.clone();
+            let proj_retrig_cluster = cluster.clone();
+            if let Err(e) = nemesis_web::handlers::board::set_project_review_retrigger_hook(
+                std::sync::Arc::new(move |project_id: i64| {
+                    if !matches!(
+                        proj_retrig_cluster.role().as_str(),
+                        "coordinator" | "master" | "manager"
+                    ) {
+                        return;
+                    }
+                    crate::board_review::spawn_project_review(
+                        (*proj_retrig_deps).clone(),
+                        project_id,
+                    );
+                }),
+            ) {
+                warn!("[Gateway] Board project review retrigger hook register failed: {e}");
+            } else {
+                info!(
+                    "[Gateway] Board project review retrigger hook armed (review.retrigger project_id)"
+                );
+            }
+
             // 启动重放（R4-BUG-2 根修）：评审 spawn 纯内存、master 重启即
             // 丢——in_review 单据/父单/项目在重启后由这里扫描重触发。必须
             // 在三类钩子注册完成后调用（重放验收 PASS 会级联点火上层钩子）。

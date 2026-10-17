@@ -33,10 +33,28 @@ pub struct SummaryCache {
     pub text: String,
 }
 
+/// Detached 回合的模型覆盖对（provider + 模型名）。
+/// 由调用侧（如 board planner 的 `board_plan_model_swap`）解析好 ready-made
+/// 组合后经 `DetachedOpts.model_swap` 注入；本回合 LLM 调用走它而非 loop 的
+/// 主 provider。agent crate 不建 provider（Adapter 桥在消费 crate）——这里
+/// 只是携带。
+pub(crate) struct DetachedModelSwap {
+    pub provider: std::sync::Arc<dyn crate::r#loop::LlmProvider>,
+    pub model: String,
+}
+
 /// An agent instance that manages conversation history for a single session.
 pub struct AgentInstance {
     /// Unique instance identifier.
     id: u64,
+    /// Detached 模型覆盖（BUG 2026-10-08 `board.plan.model` dead-key 修复）。
+    /// `run_detached_events` 从 `DetachedOpts.model_swap` 注入；本回合的
+    /// provider/model 读取点（`effective_model` / `call_llm_with_recovery` /
+    /// chat_opts per-model 键）经本字段消费。instance 级而非 loop 级——与
+    /// `detached_allowed_tools` 同理由：并发 detached 回合互不串扰，loop 级
+    /// 全局槽会污染主回合。provider 解析在调用侧完成（Adapter 桥在消费
+    /// crate，loop 不建 provider）。
+    detached_model: Mutex<Option<DetachedModelSwap>>,
     /// Agent configuration.
     config: AgentConfig,
     /// Conversation history.
@@ -118,6 +136,7 @@ impl AgentInstance {
             provider_meta: Mutex::new(None),
             detached_allowed_tools: Mutex::new(None),
             detached_no_tools: Mutex::new(false),
+            detached_model: Mutex::new(None),
             detached_depth: std::sync::atomic::AtomicUsize::new(0),
             instruction_claims: Mutex::new(Vec::new()),
             pending_instructions: Mutex::new(Vec::new()),
@@ -619,6 +638,39 @@ impl AgentInstance {
     pub fn set_detached_depth(&self, depth: usize) {
         self.detached_depth
             .store(depth, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    // -----------------------------------------------------------------------
+    // Detached model override（BUG 2026-10-08 `board.plan.model` dead-key）
+    // -----------------------------------------------------------------------
+
+    /// 本回合 detached 模型覆盖名（None = 用 loop 主模型）。
+    /// `run_loop` 的 effective_model / chat_opts per-model 键读取。
+    pub(crate) fn detached_model_name(&self) -> Option<String> {
+        self.detached_model
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|s| s.model.clone())
+    }
+
+    /// 本回合 detached provider 覆盖（None = 用 loop 主 provider）。
+    /// `call_llm_with_recovery` 取用。
+    pub(crate) fn detached_model_provider(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::r#loop::LlmProvider>> {
+        self.detached_model.lock().unwrap().as_ref().map(|s| {
+            std::sync::Arc::clone(&s.provider) as std::sync::Arc<dyn crate::r#loop::LlmProvider>
+        })
+    }
+
+    /// 设置/清除 detached 模型覆盖（`run_detached_events` 内部使用）。
+    pub(crate) fn set_detached_model(
+        &self,
+        swap: Option<(std::sync::Arc<dyn crate::r#loop::LlmProvider>, String)>,
+    ) {
+        *self.detached_model.lock().unwrap() =
+            swap.map(|(provider, model)| DetachedModelSwap { provider, model });
     }
 
     // -----------------------------------------------------------------------

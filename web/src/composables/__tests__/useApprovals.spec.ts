@@ -112,6 +112,37 @@ describe('useApprovals', () => {
     expect(pendingApprovals.map(a => a.request_id)).toEqual(['seed-1', 'seed-2'])
   })
 
+  // 2026-10-15 真机「刷新页面闪审批卡」回归锁：裁决窗口已过（age>=timeout）
+  // 的死条目——本地与远程两条种子路径都不得种卡（种进来 1s 内必被摘）。
+  // 死活混批：waitFor 等活条目入列，证明种子确实处理过，0 断言不空转。
+  it('种子/事件里 age>=timeout 的死条目不种卡（本地+远程）', async () => {
+    wsapiRequest.mockImplementation((_mod: string, cmd: string) =>
+      cmd === 'pending'
+        ? Promise.resolve({
+            pending: [
+              makePayload('dead-local', { timeout_secs: 300, age_secs: 300 }),
+              makePayload('alive-local', { timeout_secs: 300, age_secs: 10 }),
+            ],
+          })
+        : Promise.resolve({
+            pending: [
+              makeRemotePayload('dead-remote', { timeout_secs: 300, age_secs: 359 }),
+              makeRemotePayload('alive-remote', { timeout_secs: 300, age_secs: 30 }),
+            ],
+          }),
+    )
+    const { pendingApprovals, pendingRemoteApprovals, initApprovals } = useApprovals()
+    initApprovals()
+    await vi.waitFor(() => expect(pendingApprovals.map(a => a.request_id)).toEqual(['alive-local']))
+    expect(pendingRemoteApprovals.map(a => a.request_id)).toEqual(['alive-remote'])
+
+    // SSE 实时事件同样拦：死条目不进列。
+    fireApproval(makePayload('dead-live', { timeout_secs: 300, age_secs: 300 }))
+    fireRemote(makeRemotePayload('dead-live-r', { timeout_secs: 300, age_secs: 300 }))
+    expect(pendingApprovals.map(a => a.request_id)).toEqual(['alive-local'])
+    expect(pendingRemoteApprovals.map(a => a.request_id)).toEqual(['alive-remote'])
+  })
+
   it('respond 成功 → 本地移除 + 成功 toast', async () => {
     wsapiRequest.mockResolvedValue({ delivered: true })
     const { pendingApprovals, respondTo, initApprovals } = useApprovals()

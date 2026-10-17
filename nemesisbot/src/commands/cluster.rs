@@ -84,6 +84,10 @@ pub enum ClusterAction {
         /// 节点档位（mini/normal/big；写 peers.toml [node] 段，看板派发 tier 闸数据源）
         #[arg(long)]
         tier: Option<String>,
+        /// 环境能力声明（逗号分隔，如 `browser,chrome,firefox`；写 peers.toml [node] 段，
+        /// 与工具名并集进宣告面，看板派发 required_capabilities 硬条件数据源）
+        #[arg(long)]
+        capabilities: Option<String>,
     },
     /// Enable cluster
     Enable,
@@ -799,6 +803,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             address,
             professions,
             tier,
+            capabilities,
         } => {
             println!("Initializing cluster configuration...");
             let cfg_path = common::cluster_config_path(&home);
@@ -892,6 +897,16 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     // 未显式指定时按声明的职能推断（catalog min_tier 最大值）。
                     nemesis_prompts::professions::meta::min_tier_for_set(&professions_vec)
                 });
+            // 环境能力词（NB-122 批 ③ 数据面）：逗号分隔，trim + 剔空；
+            // 自由词表（与 professions slug 不同，无 catalog 校验）。
+            let capabilities_vec: Vec<String> = capabilities
+                .map(|c| {
+                    c.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
             let sc = nemesis_cluster::cluster_config::StaticConfig {
                 node: nemesis_cluster::cluster_config::NodeInfo {
                     id: node_id.clone(),
@@ -902,6 +917,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     tags: tags_vec,
                     professions: professions_vec,
                     tier: tier_value,
+                    capabilities: capabilities_vec,
                 },
             };
             if let Err(e) = nemesis_cluster::cluster_config::save_static_config(&peers_path, &sc) {

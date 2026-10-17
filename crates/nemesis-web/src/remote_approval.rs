@@ -137,11 +137,19 @@ impl RemoteAskRegistry {
     }
 
     /// 存活条目快照（remote_list；TTL 惰性清理 + 剩余秒数升序——快过期的
-    /// 卡片排前面）。
+    /// 卡片排前面）。裁决窗口已过但注册表 +60s 兜底未扫的条目不进快照：
+    /// worker 侧超时自动拒已生效，条目已不可裁决，列出去只会让刷新页面的
+    /// 客户端种一张随即自摘的死卡（2026-10-15 真机实证「刷新闪审批卡」）。
     pub fn snapshot(&self) -> Vec<serde_json::Value> {
         let mut map = self.lock();
         Self::sweep(&mut map);
-        let mut rows: Vec<_> = map.iter().map(|(k, e)| entry_json(k, e)).collect();
+        let mut rows: Vec<_> = map
+            .iter()
+            .filter(|(_, e)| {
+                e.created_at.elapsed() < std::time::Duration::from_secs(e.timeout_secs)
+            })
+            .map(|(k, e)| entry_json(k, e))
+            .collect();
         rows.sort_by_key(|r| {
             r.get("remaining_secs")
                 .and_then(|v| v.as_u64())

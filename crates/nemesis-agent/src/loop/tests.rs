@@ -163,8 +163,9 @@ fn test_config() -> AgentConfig {
         model: "test-model".to_string(),
         system_prompt: Some("You are a test assistant.".to_string()),
         max_turns: 5,
-        tools: vec!["calculator".to_string()],
+        tools: vec![],
         models: std::collections::HashMap::new(),
+        tool_fence_profession: None,
     }
 }
 
@@ -4749,6 +4750,8 @@ async fn test_force_compression_no_system_prompt() {
         max_turns: 5,
         tools: Vec::new(),
         models: std::collections::HashMap::new(),
+
+        tool_fence_profession: None,
     };
     let instance = AgentInstance::new(config);
     for i in 0..5 {
@@ -5955,6 +5958,8 @@ fn test_build_messages_without_system_prompt() {
         max_turns: 5,
         tools: Vec::new(),
         models: std::collections::HashMap::new(),
+
+        tool_fence_profession: None,
     };
     let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), config.clone());
     let instance = AgentInstance::new(config);
@@ -7523,6 +7528,8 @@ fn test_handle_command_show_system_prompt_with_config() {
             max_turns: 5,
             tools: vec![],
             models: std::collections::HashMap::new(),
+
+            tool_fence_profession: None,
         },
     );
     // /show system_prompt may not be a recognized command target
@@ -7777,6 +7784,8 @@ fn test_build_messages_cache_no_system_prompt() {
         max_turns: 5,
         tools: Vec::new(),
         models: std::collections::HashMap::new(),
+
+        tool_fence_profession: None,
     };
     let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), config.clone());
     let instance = AgentInstance::new(config);

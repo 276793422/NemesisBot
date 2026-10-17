@@ -170,7 +170,7 @@ useBoardChanged(() => load(true))
           v-for="issue in col.issues"
           :key="issue.id"
           class="kanban-card"
-          :class="{ 'dragging': dragIssueId === issue.id, 'drop-before': dragOverCardId === issue.id }"
+          :class="{ 'dragging': dragIssueId === issue.id, 'drop-before': dragOverCardId === issue.id, 'is-decision': !!issue.needs_user }"
           draggable="true"
           @dragstart="onDragStart(issue, $event)"
           @dragend="onDragEnd"
@@ -185,7 +185,28 @@ useBoardChanged(() => load(true))
               P{{ issue.priority }} {{ PRIORITY_LABEL[issue.priority] || '' }}
             </span>
           </div>
-          <div class="kanban-card-title">{{ issue.title }}</div>
+          <div class="kanban-card-title">
+            {{ issue.title }}
+            <!-- 决策可见性（2026-10-15 批）：列内扫视也要看到「在等人」。 -->
+            <span
+              v-if="issue.needs_user"
+              class="badge badge-decision"
+              :title="`停车待裁决：${issue.needs_user.stop_kind_label || ''}${issue.needs_user.hint ? ' — ' + issue.needs_user.hint : ''}`"
+              data-test="needs-user-badge"
+            >✋ 待你决策</span>
+            <span
+              v-if="issue.plan_ready"
+              class="badge badge-plan"
+              :title="`拆解完成待确认：${issue.plan_ready.subs_count} 个子单，点开确认发车`"
+              data-test="plan-ready-badge"
+            >📋 计划待确认</span>
+            <span
+              v-if="issue.attention"
+              class="badge badge-attention"
+              title="执行档案停滞（哨兵）：交付已收但变更集未合入——先观察，持续停滞再人工介入"
+              data-test="attention-badge"
+            >⚠ 停滞</span>
+          </div>
           <div class="kanban-card-meta">
             <!-- C2（goal P1）：环节徽标——后端 issue.list 附 stage（单一真相源 issue_stage） -->
             <span v-if="issue.stage" class="badge badge-info">{{ issue.stage }}</span>
@@ -254,6 +275,11 @@ useBoardChanged(() => load(true))
 }
 .kanban-card.drop-before {
   border-top: 2px solid var(--accent);
+}
+/* 决策可见性（2026-10-15 批）：待决策卡 amber 描边（mockup is-decision）。 */
+.kanban-card.is-decision {
+  border-color: var(--warning);
+  box-shadow: 0 0 0 1px var(--warning);
 }
 .kanban-card-top {
   display: flex;

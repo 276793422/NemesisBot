@@ -3,6 +3,7 @@ import { onUnmounted, ref } from 'vue'
 import BoardTabs from '../components/board/BoardTabs.vue'
 import BoardKanban from '../components/board/BoardKanban.vue'
 import IssueListView from './IssueListView.vue'
+import BoardDagView from '../components/board/BoardDagView.vue'
 import ProjectPanel from '../components/board/ProjectPanel.vue'
 import InboxPanel from '../components/board/InboxPanel.vue'
 import AutopilotPanel from '../components/board/AutopilotPanel.vue'
@@ -14,9 +15,9 @@ import { on as sseOn, off as sseOff } from '../composables/useSSE'
 import { usePlanning, fmtElapsed, ABNORMAL_SECS } from '../composables/usePlanning'
 
 // 托管 Agent 看板容器（W2 P3/P4）：项目 / 列表 / 看板（Kanban 拖拽） /
-// 收件箱 / 自动化 / 讨论 / 决策流（P5/E2） / 配置 八个页签（顺序=使用依赖
-// 链，见 BoardTabs.vue）。结构同 ClusterView（页签容器 + components/board/
-// 子组件）。
+// 流程图（全景 DAG，2026-10-15） / 收件箱 / 自动化 / 讨论 / 决策流（P5/E2） /
+// 配置 九个页签（顺序=使用依赖链，见 BoardTabs.vue）。结构同 ClusterView
+// （页签容器 + components/board/ 子组件）。
 
 // 默认落「项目」页签——排序即依赖链：没有项目就没有列表/看板可看。
 const activeTab = ref('projects')
@@ -24,6 +25,7 @@ const activeTab = ref('projects')
 const tabMap: Record<string, any> = {
   kanban: BoardKanban,
   list: IssueListView,
+  dag: BoardDagView,
   projects: ProjectPanel,
   inbox: InboxPanel,
   autopilot: AutopilotPanel,
@@ -54,16 +56,20 @@ const { list: planningList, elapsed } = usePlanning()
     <div class="page-header"><h2>Agent 看板</h2></div>
     <div class="page-body">
       <!-- 拆解在途横幅（§1.2C）：每条在途计划一行自计时；超 ABNORMAL_SECS
-           转「拆解异常」黄态。数据独立于页签，任何页签都可见。 -->
+           转「拆解异常」黄态（仅 planning 阶段——dispatching 是发车派发，
+           逐子单 RPC 送达可达分钟级，不是异常）。数据源 = usePlanning 单例。 -->
       <div v-if="planningList.length" class="planning-banner" data-test="planning-banner">
         <div
           v-for="e in planningList"
           :key="e.issueId"
           class="planning-line"
-          :class="{ abnormal: elapsed(e.issueId) > ABNORMAL_SECS }"
+          :class="{ abnormal: e.phase === 'planning' && elapsed(e.issueId) > ABNORMAL_SECS }"
           :data-test="'planning-line-' + e.issueNumber"
         >
-          <template v-if="elapsed(e.issueId) > ABNORMAL_SECS">
+          <template v-if="e.phase === 'dispatching'">
+            🚗 {{ e.issueNumber }} 拆解完成，自动发车派发中…（已 {{ fmtElapsed(elapsed(e.issueId)) }}，子单已在看板可见）
+          </template>
+          <template v-else-if="elapsed(e.issueId) > ABNORMAL_SECS">
             ⚠ 拆解异常：{{ e.issueNumber }} 已拆解 {{ fmtElapsed(elapsed(e.issueId)) }}（远超正常 3~8 分钟）——请到日志页查 planner 现场或取消后重试
           </template>
           <template v-else>

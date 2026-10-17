@@ -57,6 +57,7 @@ fn f8_config() -> AgentConfig {
         max_turns: 5,
         tools: vec!["echo_alpha".to_string()],
         models: std::collections::HashMap::new(),
+        tool_fence_profession: None,
     }
 }
 

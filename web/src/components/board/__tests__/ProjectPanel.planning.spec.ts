@@ -127,4 +127,18 @@ describe('ProjectPanel 拆解在途行（§1.2B）', () => {
     expect(w.findAll('[data-test="project-planning-row"]').length).toBe(0)
     w.unmount()
   })
+
+  it('planning 投影 phase=dispatching → 「发车派发中」行；异常超时不适用', async () => {
+    const w = await mountPanel([
+      issueRow({ planning: { elapsed_secs: 3600, attempt: 1, phase: 'dispatching' } }),
+    ])
+    const rowsEl = w.findAll('[data-test="project-planning-row"]')
+    expect(rowsEl.length).toBe(1)
+    expect(rowsEl[0].text()).toContain('发车派发中')
+    expect(rowsEl[0].text()).not.toContain('拆解中')
+    // dispatching 超 ABNORMAL_SECS 不得标异常。
+    expect(rowsEl[0].classes()).not.toContain('abnormal')
+    expect(rowsEl[0].text()).not.toContain('异常超时')
+    w.unmount()
+  })
 })

@@ -43,6 +43,7 @@ fn sample() -> (ChangesetManifest, Vec<ChangesetContent>) {
             })
             .collect(),
         deletions: vec!["src/old.rs".into()],
+        skipped: Vec::new(),
     };
     (manifest, contents)
 }
@@ -131,4 +132,33 @@ fn read_rejects_malformed_manifest_paths() {
     let err = read_changeset(&dir).unwrap().unwrap_err();
     assert!(err.contains("escape") || err.contains(".."), "{err}");
     let _ = contents;
+}
+
+/// 旧清单（无 skipped 键，BUG-2026-10-15 之前的产物）解析 = 空 vec，
+/// serde default 双向兼容。
+#[test]
+fn read_manifest_without_skipped_key_is_backward_compatible() {
+    let payload_root = temp_dir("legacy-manifest");
+    let cs = payload_root.join(CHANGESET_DIR_NAME);
+    let files = cs.join(CHANGESET_FILES_DIR);
+    std::fs::create_dir_all(&files).unwrap();
+    std::fs::write(files.join("a.txt"), b"data").unwrap();
+    let legacy = serde_json::json!({
+        "version": CHANGESET_VERSION,
+        "base_commit": "abc",
+        "upserts": [{
+            "path": "a.txt",
+            "sha256": sha256_hex(b"data"),
+            "size": 4,
+        }],
+        "deletions": []
+    });
+    std::fs::write(
+        cs.join(CHANGESET_MANIFEST_NAME),
+        serde_json::to_string(&legacy).unwrap(),
+    )
+    .unwrap();
+    let (manifest, contents) = read_changeset(&payload_root).unwrap().unwrap();
+    assert!(manifest.skipped.is_empty(), "缺键 = 空 skipped");
+    assert_eq!(contents.len(), 1);
 }

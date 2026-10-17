@@ -351,7 +351,7 @@ fn sweep_residual_reenqueues_and_cleans() {
     .unwrap();
 
     let ob = ws.outbox();
-    assert_eq!(sweep_exec_residual(&ws.root, &ob), 1);
+    assert_eq!(sweep_exec_residual(&ws.root, &ob, &|_| false), 1);
     assert!(!exec.exists());
     assert!(
         ob.outbox_root()
@@ -414,7 +414,7 @@ fn diff_tree_excludes_debug_artifacts_both_ways() {
             sha256: sha256_hex(b"oldd"),
         },
     ];
-    let (upserts, contents, deletions) = super::diff_tree(&exec, &baseline).unwrap();
+    let (upserts, contents, deletions, _skipped) = super::diff_tree(&exec, &baseline).unwrap();
     let paths: Vec<&str> = upserts.iter().map(|u| u.path.as_str()).collect();
     assert_eq!(
         paths,
@@ -453,4 +453,218 @@ fn finish_debug_only_tree_is_zero_diff() {
     let payload = ob.outbox_root().join(task).join("payload");
     assert!(payload.join("log.md").exists());
     assert!(read_changeset(&payload).is_none(), "纯调试产物不得产变更集");
+}
+
+// ---------------------------------------------------------------------------
+// BUG-2026-10-15（NB-120）：残留进程清扫（A）+ 不可读文件韧性跳过（B）+
+// 周期兜底护栏（D）
+// ---------------------------------------------------------------------------
+
+/// 短/畸形任务标识不触发清扫（护栏：防误伤 + 测试环境零子进程 spawn）。
+#[test]
+fn kill_leftover_short_needle_is_noop() {
+    assert_eq!(super::kill_task_leftover_processes("short-id"), 0);
+    assert_eq!(super::kill_task_leftover_processes(""), 0);
+}
+
+/// 真实进程清扫：命令行含任务标识的探针进程被强杀（Windows 走 PowerShell
+/// CIM 查询；unix 走 /proc 扫描）。
+#[cfg(windows)]
+#[test]
+fn kill_leftover_processes_kills_real_process() {
+    let needle = "nbkilltest-0123456789abcdef";
+    let mut child = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            &format!("Start-Sleep -Seconds 30 # {needle}"),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn 探针进程");
+    // 等进程出现在进程表（PS 启动 ~1-2s）。
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    let killed = super::kill_task_leftover_processes(needle);
+    assert!(killed >= 1, "探针进程必须被清扫: {killed}");
+    for _ in 0..50 {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(200)),
+            Err(_) => break,
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    panic!("探针进程未被清扫（kill 谎报成功）");
+}
+
+#[cfg(unix)]
+#[test]
+fn kill_leftover_processes_kills_real_process() {
+    let needle = "nbkilltest-0123456789abcdef";
+    let mut child = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("sleep 30 # {needle}"))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn 探针进程");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let killed = super::kill_task_leftover_processes(needle);
+    assert!(killed >= 1, "探针进程必须被清扫: {killed}");
+    for _ in 0..50 {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(200)),
+            Err(_) => break,
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    panic!("探针进程未被清扫（kill 谎报成功）");
+}
+
+/// B 根修：被锁文件（独占句柄）不再废掉整个变更集——该文件进
+/// manifest.skipped 申报，其余文件照常入队合并。
+#[cfg(windows)]
+#[test]
+fn finish_tolerates_locked_file_via_skipped_manifest() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let ws = Ws::new("finish-locked");
+    let task = "t-lock-1";
+    ws.seed_logs(task);
+    let exec = exec_dir_for(&ws.root, task);
+    std::fs::create_dir_all(exec.join("db")).unwrap();
+    std::fs::write(exec.join("db/data.bin"), b"v2").unwrap();
+    std::fs::write(exec.join("src.h"), b"changed\n").unwrap();
+    write_sidecar(
+        &exec,
+        &BaselineSidecar {
+            baseline_commit: "b".into(),
+            files: vec![
+                TransferFileEntry {
+                    path: "db/data.bin".into(),
+                    size: 2,
+                    sha256: sha256_hex(b"v1"),
+                },
+                TransferFileEntry {
+                    path: "src.h".into(),
+                    size: 8,
+                    sha256: sha256_hex(b"original"),
+                },
+            ],
+        },
+    )
+    .unwrap();
+
+    // 独占句柄持锁（share_mode 0）——模拟浏览器对工作副本内 profile 库的锁。
+    let _lock = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(exec.join("db/data.bin"))
+        .unwrap();
+
+    let ob = ws.outbox();
+    assert!(
+        finish_task_exec(&ws.root, &ob, task, "node-a").unwrap(),
+        "单文件锁不得阻断档案管线"
+    );
+    let payload = ob.outbox_root().join(task).join("payload");
+    let (manifest, contents) = read_changeset(&payload)
+        .expect("变更集必须照常入队")
+        .expect("变更集必须可读");
+    assert_eq!(
+        manifest.upserts.len(),
+        1,
+        "仅未锁文件进 upserts: {:?}",
+        manifest.upserts
+    );
+    assert_eq!(manifest.upserts[0].path, "src.h");
+    assert_eq!(contents.len(), 1);
+    assert_eq!(manifest.skipped.len(), 1, "{:?}", manifest.skipped);
+    assert!(
+        manifest.skipped[0].starts_with("db/data.bin"),
+        "跳过注记必须点名文件: {:?}",
+        manifest.skipped
+    );
+}
+
+/// B 根修（unix 臂）：chmod 000 文件跳过进 manifest.skipped，其余照常。
+#[cfg(unix)]
+#[test]
+fn finish_tolerates_unreadable_file_via_skipped_manifest() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let ws = Ws::new("finish-unreadable");
+    let task = "t-unread-1";
+    ws.seed_logs(task);
+    let exec = exec_dir_for(&ws.root, task);
+    std::fs::create_dir_all(exec.join("db")).unwrap();
+    std::fs::write(exec.join("db/data.bin"), b"v2").unwrap();
+    std::fs::write(exec.join("src.h"), b"changed\n").unwrap();
+    std::fs::set_permissions(
+        exec.join("db/data.bin"),
+        std::fs::Permissions::from_mode(0o000),
+    )
+    .unwrap();
+    write_sidecar(
+        &exec,
+        &BaselineSidecar {
+            baseline_commit: "b".into(),
+            files: vec![
+                TransferFileEntry {
+                    path: "db/data.bin".into(),
+                    size: 2,
+                    sha256: sha256_hex(b"v1"),
+                },
+                TransferFileEntry {
+                    path: "src.h".into(),
+                    size: 8,
+                    sha256: sha256_hex(b"original"),
+                },
+            ],
+        },
+    )
+    .unwrap();
+
+    let ob = ws.outbox();
+    assert!(finish_task_exec(&ws.root, &ob, task, "node-a").unwrap());
+    let payload = ob.outbox_root().join(task).join("payload");
+    let (manifest, _) = read_changeset(&payload)
+        .expect("变更集必须照常入队")
+        .expect("变更集必须可读");
+    assert_eq!(manifest.upserts.len(), 1);
+    assert_eq!(manifest.upserts[0].path, "src.h");
+    assert_eq!(manifest.skipped.len(), 1);
+    assert!(manifest.skipped[0].starts_with("db/data.bin"));
+}
+
+/// D 护栏：skip_running 命中的任务不触碰（工作副本原样），其余照常入队。
+#[test]
+fn sweep_skips_running_task() {
+    let ws = Ws::new("sweep-running");
+    for (task, body) in [("t-run-1", b"aaa\n" as &[u8]), ("t-run-2", b"bbb\n")] {
+        ws.seed_logs(task);
+        let exec = exec_dir_for(&ws.root, task);
+        std::fs::create_dir_all(&exec).unwrap();
+        std::fs::write(exec.join("w.h"), body).unwrap();
+        write_sidecar(
+            &exec,
+            &BaselineSidecar {
+                baseline_commit: "b".into(),
+                files: vec![],
+            },
+        )
+        .unwrap();
+    }
+
+    let done = sweep_exec_residual(&ws.root, &ws.outbox(), &|id| id == "t-run-1");
+    assert_eq!(done, 1, "仅非活跃任务被清扫");
+    assert!(
+        exec_dir_for(&ws.root, "t-run-1").exists(),
+        "活跃任务的工作副本不可触碰"
+    );
+    assert!(!exec_dir_for(&ws.root, "t-run-2").exists());
 }

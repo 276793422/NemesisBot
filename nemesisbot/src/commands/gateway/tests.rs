@@ -6294,6 +6294,7 @@ async fn ci2_task_cancel_covers_error_queued_terminal_not_found() {
         waiting_tool_call_id: None,
         callback_result: None,
         required_profession: None,
+        async_usage_stash: None,
     });
     let resp = rpc
         .handle_wire_message(nemesis_cluster::transport::conn::WireMessage::new_request(
@@ -6523,6 +6524,7 @@ async fn ci2_peer_chat_callback_routes_all_branches() {
         waiting_tool_call_id: Some("call-1".into()),
         callback_result: None,
         required_profession: None,
+        async_usage_stash: None,
     });
     let resp = rpc
         .handle_wire_message(nemesis_cluster::transport::conn::WireMessage::new_request(

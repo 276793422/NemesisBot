@@ -26,7 +26,13 @@ interface BoardFlags {
   max_redispatch: number
   dispatch_timeout_secs: number
   plan: { auto_confirm: boolean; model: string | null }
-  review: { max_turns: number; selfcheck: boolean; auto_close_project: boolean; checkers: number }
+  review: {
+    max_turns: number
+    max_unsure_streak: number
+    selfcheck: boolean
+    auto_close_project: boolean
+    checkers: number
+  }
   budget: {
     max_subissues_per_parent: number
     max_total_redispatch: number
@@ -67,6 +73,8 @@ async function load() {
       review: {
         // 0=不限（取证到能下结论为止）——与后端 BoardReviewConfig::default 同源。
         max_turns: r?.review?.max_turns ?? 0,
+        // 连续 UNSURE 停车阈值（0=不限）——与后端默认 2 同源。
+        max_unsure_streak: r?.review?.max_unsure_streak ?? 2,
         selfcheck: !!r?.review?.selfcheck,
         auto_close_project: !!r?.review?.auto_close_project,
         checkers: r?.review?.checkers ?? 1,
@@ -308,6 +316,19 @@ onMounted(load)
             max="5"
             :value="flags.review.checkers"
             @change="onNumber('review.checkers', $event)"
+          />
+        </div>
+        <div class="param-row">
+          <div class="flag-text">
+            <div class="flag-label">连续 UNSURE 停车阈值</div>
+            <div class="flag-desc">同一单连续这么多次评审无法定案（UNSURE）就停止自动重派、转人工裁决（人工处理后自动复评/手动重派会清零计数）；0 = 不限（一直自动重派，配合重派上限兜底）</div>
+          </div>
+          <input
+            class="form-input param-input"
+            type="number"
+            min="0"
+            :value="flags.review.max_unsure_streak"
+            @change="onNumber('review.max_unsure_streak', $event)"
           />
         </div>
         <div class="param-row">

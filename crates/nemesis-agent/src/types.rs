@@ -18,7 +18,18 @@ pub struct AgentConfig {
     /// Maximum number of LLM tool-calling iterations per request.
     pub max_turns: u32,
     /// Names of tools available to this agent.
+    ///
+    /// B2 职能工具围栏（profession-capability-evolution 2026-10-14）：此
+    /// 字段非空 = 实例级工具白名单生效（供给闸 [`crate::loop::tool_defs`]
+    /// 与派发闸 [`crate::loop::tool_dispatch`] 双端交集/拒绝）。写入方只有
+    /// cluster_agent 任务装配（B 端职能子单 / 讨论唤醒轮）；loop 级 config
+    /// 恒空 → 主 loop/普通对话/项目 loop 零行为变化。
     pub tools: Vec<String>,
+    /// [`Self::tools`] 围栏的职能标注——派发拒绝文案带职能名。None =
+    /// 围栏非单一职能来源（讨论唤醒轮的宣言交集形态）或未围；`tools` 是
+    /// 闸的权威判据，本字段只管文案。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_fence_profession: Option<String>,
     /// Model alias → model id map for per-turn switching (Flash-first cost control).
     /// e.g. {"flash": "deepseek-v4-flash", "pro": "deepseek-v4-pro"}.
     /// `/model <alias>` resolves via this; an unknown alias is used as a literal model id.
@@ -33,6 +44,7 @@ impl Default for AgentConfig {
             system_prompt: None,
             max_turns: 100,
             tools: Vec::new(),
+            tool_fence_profession: None,
             models: HashMap::new(),
         }
     }

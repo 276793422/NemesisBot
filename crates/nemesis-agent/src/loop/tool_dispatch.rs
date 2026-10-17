@@ -65,6 +65,61 @@ pub(crate) fn detached_tool_refusal(instance: &AgentInstance, tool: &str) -> Opt
     None
 }
 
+/// B2（profession-capability-evolution 2026-10-14）：围栏豁免工具清单。
+/// 围栏内任务向人求助的唯一基础设施通道——`question`（F7 结构化提问）永
+/// 不被职能围栏拒绝（围栏禁的是能力面，不该连「举手」都禁掉）。estop 不
+/// 是工具形态，无此问题。供给闸与派发闸共用本表；显式全禁契约的哨兵形态
+/// 也引用它（`tools=["question"]`，见 cluster_agent 的 task_system_prompt）。
+/// pub：cluster_agent（nemesisbot）经 loop 根 glob 再导出消费，跨 crate。
+pub const FENCE_EXEMPT_TOOLS: &[&str] = &["question"];
+
+/// B2：工具是否豁免于职能围栏（[`FENCE_EXEMPT_TOOLS`] 成员测试）。
+pub(crate) fn fence_exempt_tool(tool: &str) -> bool {
+    FENCE_EXEMPT_TOOLS.contains(&tool)
+}
+
+/// B2：派发闸拒绝文案的单一真相源（serial 与 parallel 两条派发路径共用，
+/// 文案不允许劈叉）。`profession` = `AgentConfig.tool_fence_profession`
+///（Some 时文案带职能名，None 时通用措辞——讨论唤醒轮的宣言交集形态）。
+/// 白名单外（且非豁免工具）→ `Some(拒绝文案)`；命中白名单 → `None`。
+///
+/// `allowed` 为空 = 显式全禁（契约作者的明确选择）：除豁免外全部拒绝。
+pub(crate) fn profession_fence_refusal_for(
+    profession: Option<&str>,
+    allowed: &[String],
+    tool: &str,
+) -> Option<String> {
+    if fence_exempt_tool(tool) || allowed.iter().any(|a| a == tool) {
+        return None;
+    }
+    let who = profession
+        .map(|p| format!(" (profession: {p})"))
+        .unwrap_or_default();
+    Some(format!(
+        "Error: tool '{tool}' is outside the task's tool fence{who} (allowed: {}). \
+The profession contract deliberately limits this task's tool surface — work within it \
+(read files, write artifacts, use the allowed tools) or answer in plain text. \
+Do NOT retry this tool.",
+        allowed.join(", ")
+    ))
+}
+
+/// B2：派发闸 instance 包装——读任务装配写入的围栏白名单
+/// （[`AgentConfig::tools`]，非空 = 围栏生效）与职能标注（文案用）。
+/// loop 级 config 的 `tools` 恒空 → 主 loop / 普通对话 / 项目 loop 恒
+/// `None`，零行为变化。
+pub(crate) fn profession_fence_refusal(instance: &AgentInstance, tool: &str) -> Option<String> {
+    let allowed = &instance.config().tools;
+    if allowed.is_empty() {
+        return None;
+    }
+    profession_fence_refusal_for(
+        instance.config().tool_fence_profession.as_deref(),
+        allowed,
+        tool,
+    )
+}
+
 impl AgentLoop {
     /// J5：doom-loop 审批卡。经 [`Self::question_asker`]（F7 同源 broker 的
     /// ask 端）发结构化提问「继续吗？」，阻塞等用户作答。
@@ -961,7 +1016,34 @@ impl AgentLoop {
                 None,
             );
         }
-        let result = chain(hook_call_owned).await;
+        // NB-122 批 ④（2026-10-16）：单次工具调用墙钟看门狗。fresh-read
+        // `agents.executor_tool_timeout_secs`（0=关）。只包执行链
+        // （工具体 + around hooks + format-on-save）——审批/提问等待在更早
+        // 的同步 security 段，天然不在闸内（看门狗不得杀人工审批）。
+        // 诚实边界：超时放弃的是 future，已 spawn 的子进程可能成为孤儿
+        // （B4 后台注册表/停摆清扫兜底）；错误以 "Error:" 开头，与
+        // `tool_result_indicates_error` / WAL ok 判定 / doom-loop 签名同刻度。
+        let watchdog = self.current_executor_tool_timeout();
+        let result = match watchdog {
+            Some(limit) => match tokio::time::timeout(limit, chain(hook_call_owned)).await {
+                Ok(result) => result,
+                Err(_) => {
+                    error!(
+                        "[AgentLoop] Tool {} exceeded wall-clock watchdog ({}s) — aborted",
+                        tool_call.name,
+                        limit.as_secs()
+                    );
+                    format!(
+                        "Error: tool '{}' timed out after {}s (agents.executor_tool_timeout_secs wall-clock watchdog). \
+                         The call was aborted — do NOT retry it unchanged; report progress so far, \
+                         or split the work into smaller steps (e.g. background_start + polling).",
+                        tool_call.name,
+                        limit.as_secs()
+                    )
+                }
+            },
+            None => chain(hook_call_owned).await,
+        };
         // S2②（2026-10-09 高优差距批次一）：出侧复扫。8 层管线只看工具
         // 入参，输出侧此前零检查（eval 沙盒 worker 除外）——read_file 读
         // 到明文 key / exec 回显秘钥会原文进上下文与历史。脱敏式：命中即
