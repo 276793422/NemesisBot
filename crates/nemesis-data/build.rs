@@ -42,6 +42,12 @@ fn main() {
     println!("cargo:rerun-if-changed={EXTRAS_PATH}");
     println!("cargo:rerun-if-changed=src/pricing_filter.rs");
 
+    // pricing-embed 关：跳过快照拷贝/下载/注入（pricing.rs 的 include_str!
+    // 与 env! 同被 cfg 掉，OUT_DIR 产物不需要存在）。
+    if std::env::var_os("CARGO_FEATURE_PRICING_EMBED").is_none() {
+        return;
+    }
+
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR set by cargo");
     let dst = std::path::Path::new(&out_dir).join(OUT_FILE);
     let snapshot =

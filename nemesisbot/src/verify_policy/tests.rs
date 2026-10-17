@@ -119,6 +119,7 @@ fn verify_mode_as_str_matches_contract() {
 }
 
 /// hex_encode 小写十六进制（Valid 摘要 key_fp 格式契约）。
+#[cfg(feature = "verify")]
 #[test]
 fn hex_encode_formats_lowercase() {
     assert_eq!(hex_encode(&[0xde, 0xad, 0xbe, 0xef]), "deadbeef");
@@ -152,7 +153,7 @@ fn with_isolated_home<T>(f: impl FnOnce(&std::path::Path) -> T) -> T {
 }
 
 /// security 配置文件缺席 = 未配置（None），不炸不猜。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(all(windows, feature = "verify"))] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn read_config_value_absent_file_is_none() {
     with_isolated_home(|_home| {
@@ -161,7 +162,7 @@ fn read_config_value_absent_file_is_none() {
 }
 
 /// JSON 解析失败：按未配置处理（None + 响亮提示），不 panic。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(all(windows, feature = "verify"))] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn read_config_value_invalid_json_is_none() {
     with_isolated_home(|home| {
@@ -171,7 +172,7 @@ fn read_config_value_invalid_json_is_none() {
 }
 
 /// 字符串值原样（trim 后）透传给裁决矩阵。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(all(windows, feature = "verify"))] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn read_config_value_string_passthrough_trimmed() {
     with_isolated_home(|home| {
@@ -181,7 +182,7 @@ fn read_config_value_string_passthrough_trimmed() {
 }
 
 /// 空串 = 未配置（None）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(all(windows, feature = "verify"))] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn read_config_value_empty_string_is_none() {
     with_isolated_home(|home| {
@@ -191,7 +192,7 @@ fn read_config_value_empty_string_is_none() {
 }
 
 /// null = 未配置（None）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(all(windows, feature = "verify"))] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn read_config_value_null_is_none() {
     with_isolated_home(|home| {
@@ -201,7 +202,7 @@ fn read_config_value_null_is_none() {
 }
 
 /// 非字符串（数字/对象）= 按未配置处理 + 响亮提示，不做二次裁决。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(all(windows, feature = "verify"))] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn read_config_value_non_string_is_none() {
     with_isolated_home(|home| {
@@ -213,7 +214,7 @@ fn read_config_value_non_string_is_none() {
 }
 
 /// 键缺席 = 未配置（None）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(all(windows, feature = "verify"))] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn read_config_value_missing_key_is_none() {
     with_isolated_home(|home| {
@@ -223,6 +224,7 @@ fn read_config_value_missing_key_is_none() {
 }
 
 /// verify_current_exe：锚指纹非 hex → 装配层失败，诚实标 "Error"（非九态）。
+#[cfg(feature = "verify")]
 #[test]
 fn verify_current_exe_bad_anchor_hex_is_error_summary() {
     let summary = verify_current_exe("zzzz-not-hex-at-all-_______________zz");
@@ -236,6 +238,7 @@ fn verify_current_exe_bad_anchor_hex_is_error_summary() {
 }
 
 /// 奇数长度 hex 同样走解码失败臂。
+#[cfg(feature = "verify")]
 #[test]
 fn verify_current_exe_odd_length_anchor_is_error_summary() {
     let summary = verify_current_exe("abc");
@@ -243,6 +246,7 @@ fn verify_current_exe_odd_length_anchor_is_error_summary() {
 }
 
 /// 合法 64-hex 锚 + 未签名测试 exe → 九态 NoSignature（开发构建诚实态）。
+#[cfg(feature = "verify")]
 #[test]
 fn verify_current_exe_unsigned_test_binary_is_no_signature() {
     let anchor = "aa".repeat(32);
@@ -257,7 +261,7 @@ fn verify_current_exe_unsigned_test_binary_is_no_signature() {
 /// ① warn（锚存在 → 真跑自验，未签名测试 exe → 非 Valid，不 exit）；
 /// ② off（跳过验签；快照保持首响——set 失败静默是设计语义）。
 /// 无锚构建形态：warn 降级 off（outcome=None），两形态都不得 exit。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(all(windows, feature = "verify"))] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn self_check_snapshots_first_call_and_never_exits() {
     with_isolated_home(|home| {
@@ -306,6 +310,7 @@ fn anchor_from_env_runtime_arms() {
 // ===========================================================================
 
 /// 子进程臂①：config 非法值 → resolve_mode Err → loud 拒绝 exit 86。
+#[cfg(feature = "verify")]
 #[test]
 fn w5_verify_child_bogus_config_exits() {
     if std::env::var("NEMESISBOT_W5_VERIFY_CHILD").as_deref() != Ok("bogus") {
@@ -317,6 +322,7 @@ fn w5_verify_child_bogus_config_exits() {
 
 /// 子进程臂②：enforce + 未签名测试 exe → 验证失败 → 拒启 exit 86
 ///（覆盖 action=「拒绝启动」字面量 + 终局 exit）。
+#[cfg(feature = "verify")]
 #[test]
 fn w5_verify_child_enforce_unsigned_exits() {
     if std::env::var("NEMESISBOT_W5_VERIFY_CHILD").as_deref() != Ok("enforce") {
@@ -328,6 +334,7 @@ fn w5_verify_child_enforce_unsigned_exits() {
 
 /// 父侧驱动：临时 home 写 security 配置 → 自孵测试二进制跑指定子测 →
 /// 返回子进程退出码（home 用后即焚，无环境残留）。
+#[cfg(feature = "verify")]
 fn w5_run_verify_child(child_test: &str, arm: &str, security_json: &str) -> i32 {
     let tmp = tempfile::TempDir::new().unwrap();
     let home = tmp.path().join(".nemesisbot");
@@ -348,6 +355,7 @@ fn w5_run_verify_child(child_test: &str, arm: &str, security_json: &str) -> i32 
 }
 
 /// 拒启路径①：config 非法值 → exit 86（计划 §1 loud 拒绝）。
+#[cfg(feature = "verify")]
 #[test]
 fn w5_self_check_bogus_value_exits_86() {
     let code = w5_run_verify_child(
@@ -360,6 +368,7 @@ fn w5_self_check_bogus_value_exits_86() {
 
 /// 拒启路径②：enforce 模式 + 未签名 exe（测试二进制即未签名 PE）→
 /// exit 86。
+#[cfg(feature = "verify")]
 #[test]
 fn w5_self_check_enforce_unsigned_exits_86() {
     let code = w5_run_verify_child(

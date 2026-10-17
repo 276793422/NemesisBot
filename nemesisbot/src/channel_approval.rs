@@ -519,6 +519,7 @@ fn parse_reply(content: &str) -> Option<(&'static str, &str)> {
 /// 触发点 = [`CompositeApprovalManager::request_approval_sync_ctx`] 命中
 /// `channel == "cluster"` 的 ask（worker 执行看板任务时的 ABAC 审批）。
 #[derive(Debug, Clone)]
+#[cfg_attr(not(feature = "cluster"), allow(dead_code))]
 pub struct BoardAskNotice {
     pub request_id: String,
     pub operation: String,
@@ -557,6 +558,7 @@ impl CompositeApprovalManager {
 
     /// M5-3：安装 cluster ask 观察者（gateway 装配调用一次；重复安装覆盖
     /// ——同刻只有一个 gateway 装配流程，覆盖无实害）。
+    #[cfg_attr(not(feature = "cluster"), allow(dead_code))]
     pub fn set_board_notifier(
         &self,
         notifier: std::sync::Arc<dyn Fn(&BoardAskNotice) + Send + Sync>,

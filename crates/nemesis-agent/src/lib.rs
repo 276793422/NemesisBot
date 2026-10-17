@@ -43,6 +43,8 @@ pub mod executor_transport;
 pub mod formatter;
 pub mod fs_watcher;
 pub mod history;
+// U20 会话全文检索（FTS5）——随 history-search feature（rusqlite）进出。
+#[cfg(feature = "history-search")]
 pub mod history_search;
 pub mod hooks;
 pub mod image_attach;

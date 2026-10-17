@@ -353,3 +353,30 @@ fn test_write_entry_non_object_fields_wrapped_not_panic() {
 
     let _ = fs::remove_dir_all(log_dir);
 }
+
+// ---------------------------------------------------------------------------
+// audit_action_name（2026-10-18 审计 action 形态统一）
+// ---------------------------------------------------------------------------
+
+// Known 枚举 wire 形态是 PascalCase——审计面渲染成小写，检索单一形态即可
+// 全覆盖（实盘核对实证：按小写 peer_chat 检索漏掉 85 条 PeerChat 派发行）。
+// 归一只消大小写差异，不改命名本身：PeerChat→peerchat 与 Custom 的
+// peer_chat 是两条不同的 wire 动作，各自可检索。
+#[test]
+fn test_audit_action_name_lowercases_known_pascal_case() {
+    assert_eq!(audit_action_name("PeerChat"), "peerchat");
+    assert_eq!(audit_action_name("PeerChatCallback"), "peerchatcallback");
+    assert_eq!(audit_action_name("Ping"), "ping");
+    assert_eq!(audit_action_name("ForgeShare"), "forgeshare");
+    assert_eq!(audit_action_name("Status"), "status");
+}
+
+// Custom 动作本来就是小写——归一后原样不变（含空串边界）。
+#[test]
+fn test_audit_action_name_keeps_custom_lowercase_intact() {
+    assert_eq!(audit_action_name("peer_chat"), "peer_chat");
+    assert_eq!(audit_action_name("transfer_begin"), "transfer_begin");
+    assert_eq!(audit_action_name("nb_bus"), "nb_bus");
+    assert_eq!(audit_action_name("query_task_result"), "query_task_result");
+    assert_eq!(audit_action_name(""), "");
+}

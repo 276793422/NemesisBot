@@ -35,6 +35,7 @@ use super::GatewayCtx;
 use super::print_agent_startup_info;
 #[cfg(all(feature = "board", feature = "cluster"))]
 use super::{advertise_host_for, select_lan_ip_for_advertisement};
+#[cfg(any(feature = "health", feature = "heartbeat"))]
 use crate::adapters;
 use crate::common;
 
@@ -45,8 +46,10 @@ pub(crate) struct ClusterHandoff {
     #[cfg(feature = "cluster")]
     pub bridge_cluster_slot: Arc<std::sync::OnceLock<Arc<nemesis_cluster::cluster::Cluster>>>,
     #[cfg(feature = "cluster")]
+    #[cfg_attr(not(all(feature = "board", feature = "cluster")), allow(dead_code))]
     pub cluster_adapter: Option<Arc<crate::cluster_service::ClusterServiceAdapter>>,
     #[cfg(feature = "cluster")]
+    #[cfg_attr(not(all(feature = "board", feature = "cluster")), allow(dead_code))]
     pub cluster_arc_ref: Option<Arc<nemesis_cluster::cluster::Cluster>>,
 }
 
@@ -77,6 +80,7 @@ pub(crate) async fn init_services(
     let home = ctx.home.clone();
     let config_path = ctx.config_path.clone();
     let cfg = ctx.cfg.clone();
+    #[cfg(any(feature = "heartbeat", feature = "devices"))]
     let bus = ctx.bus.clone();
     let cron_service = ctx.cron_service.clone();
     #[cfg(feature = "board")]

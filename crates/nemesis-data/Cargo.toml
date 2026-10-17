@@ -4,8 +4,23 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# pricing-embed：编译期内嵌价目表（build.rs 快照/下载 → include_str!，
+# ~0.6MB）。IoT/极小镜像可裁（workspace 依赖 default-features=false，
+# 消费方显式 opt-in）；关后 embedded 表为空——lookup 返回 None、
+# compute_cost_usd 恒 0.0（诚实降级：价目是可观测性数据，绝不瞎猜），
+# 运行期下载层与自定义价目层照常。
+#
+# usage-store：SQLite 用量账本（rusqlite bundled ~1MB，iotsmall 里最后
+# 一个 SQLite 来源）。关后 DataStore 保持同型 API：写入 no-op、查询恒空、
+# JSON 价目层照常（价目/账本分离）；open() warn 一次诚实注记。测试构建
+# 经消费方 [dev-dependencies] 显式带回（resolver 2 不泄漏到正常构建）。
+[features]
+default = ["pricing-embed", "usage-store"]
+pricing-embed = []
+usage-store = ["dep:rusqlite"]
+
 [dependencies]
-rusqlite = { version = "0.34", features = ["bundled"] }
+rusqlite = { version = "0.34", features = ["bundled"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }

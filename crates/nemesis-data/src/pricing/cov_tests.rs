@@ -11,6 +11,8 @@ use crate::pricing::PricingTable;
 
 /// `vendor/<alias>` 形态命中：bare-suffix 匹配语义对配置里的
 /// `provider/model` 名生效。
+// 内嵌表依赖（从 embedded entries 取真实 alias）→ 随 pricing-embed。
+#[cfg(feature = "pricing-embed")]
 #[test]
 fn lookup_bare_suffix_resolves_alias() {
     let table = PricingTable::embedded();
@@ -32,6 +34,7 @@ fn lookup_bare_suffix_resolves_alias() {
 }
 
 /// 带首尾空白的输入 trim 后仍命中；纯空白 → None。
+#[cfg(feature = "pricing-embed")]
 #[test]
 fn lookup_trims_whitespace() {
     let table = PricingTable::embedded();

@@ -1,10 +1,13 @@
 //! CRUD operations for usage statistics.
 
 use std::path::Path;
+#[cfg(feature = "usage-store")]
 use std::sync::Mutex;
 
+#[cfg(feature = "usage-store")]
 use rusqlite::{Connection, ToSql, params, params_from_iter};
 
+#[cfg(feature = "usage-store")]
 use crate::db;
 use crate::models::{
     LogFilter, ModelToolHealth, RequestLog, SessionUsageAgg, TrendPoint, UsageSummary,
@@ -12,7 +15,12 @@ use crate::models::{
 use crate::pricing_store::PricingStore;
 
 /// Thread-safe SQLite data store.
+///
+/// usage-store 关：空账本 stub——同型 API（写入 no-op、查询恒空、价目层
+/// 照常），调用方零改动编译。降级语义见 [`Self::open`]。
 pub struct DataStore {
+    /// SQLite 连接（usage-store 关：字段不编译）。
+    #[cfg(feature = "usage-store")]
     conn: Mutex<Connection>,
     /// 分层价目表（自定义 > 下载 > 内置），与 db 同目录落盘
     /// （`{workspace}/data/pricing_custom.json` 等）。LLM 调用方经
@@ -23,6 +31,20 @@ pub struct DataStore {
 impl DataStore {
     /// Open (or create) the database at `db_path`. The layered pricing store
     /// lives next to the db (`db_path.parent()`).
+    ///
+    /// usage-store 关：不建/不开任何数据库——空账本 stub（写入 no-op、
+    /// 查询恒空），价目层照常。此形态属构建期裁剪（iotsmall/极小镜像），
+    /// 响亮 warn 一次，不静默。
+    #[cfg(not(feature = "usage-store"))]
+    pub fn open(db_path: &Path) -> Result<Self, String> {
+        tracing::warn!(
+            "[DataStore] usage-store 未编译进本构建：用量账本不落盘，usage 查询恒空（价目层照常）"
+        );
+        let pricing = PricingStore::open(db_path.parent().unwrap_or_else(|| Path::new(".")))?;
+        Ok(Self { pricing })
+    }
+
+    #[cfg(feature = "usage-store")]
     pub fn open(db_path: &Path) -> Result<Self, String> {
         let conn = db::init_db(db_path)?;
         let pricing = PricingStore::open(db_path.parent().unwrap_or_else(|| Path::new(".")))?;
@@ -77,6 +99,14 @@ impl DataStore {
     }
 
     /// Record a single LLM request log.
+    ///
+    /// usage-store 关：no-op（空账本不落盘）。
+    #[cfg(not(feature = "usage-store"))]
+    pub fn insert_request_log(&self, _log: &RequestLog) -> Result<(), String> {
+        Ok(())
+    }
+
+    #[cfg(feature = "usage-store")]
     pub fn insert_request_log(&self, log: &RequestLog) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
@@ -116,6 +146,24 @@ impl DataStore {
     }
 
     /// Query aggregated summary for a time range.
+    ///
+    /// usage-store 关：全零聚合（空账本语义，与"库从未写入"一致）。
+    #[cfg(not(feature = "usage-store"))]
+    pub fn query_summary(&self, _start_ts: i64, _end_ts: i64) -> Result<UsageSummary, String> {
+        Ok(UsageSummary {
+            total_requests: 0,
+            success_count: 0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            total_cache_creation_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cost_usd: 0.0,
+            avg_latency_ms: 0.0,
+            cache_hit_rate: 0.0,
+        })
+    }
+
+    #[cfg(feature = "usage-store")]
     pub fn query_summary(&self, start_ts: i64, end_ts: i64) -> Result<UsageSummary, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
@@ -170,6 +218,19 @@ impl DataStore {
     }
 
     /// Query trend data grouped by hour or day.
+    ///
+    /// usage-store 关：空序列。
+    #[cfg(not(feature = "usage-store"))]
+    pub fn query_trends(
+        &self,
+        _start_ts: i64,
+        _end_ts: i64,
+        _group_by: &str,
+    ) -> Result<Vec<TrendPoint>, String> {
+        Ok(Vec::new())
+    }
+
+    #[cfg(feature = "usage-store")]
     pub fn query_trends(
         &self,
         start_ts: i64,
@@ -237,6 +298,21 @@ impl DataStore {
 
     /// Query request logs with pagination and optional orthogonal filters
     /// (model 子串 / status 精确 / session_key 子串，A3 请求明细 tab)。
+    ///
+    /// usage-store 关：空列表 + 总数 0。
+    #[cfg(not(feature = "usage-store"))]
+    pub fn query_logs(
+        &self,
+        _start_ts: i64,
+        _end_ts: i64,
+        _page: i32,
+        _page_size: i32,
+        _filter: &LogFilter,
+    ) -> Result<(Vec<RequestLog>, i64), String> {
+        Ok((Vec::new(), 0))
+    }
+
+    #[cfg(feature = "usage-store")]
     pub fn query_logs(
         &self,
         start_ts: i64,
@@ -313,6 +389,14 @@ impl DataStore {
     }
 
     /// Fetch a single request-log row by id（A3 请求明细详情面板）。
+    ///
+    /// usage-store 关：None（空账本无行）。
+    #[cfg(not(feature = "usage-store"))]
+    pub fn get_request_log(&self, _id: i64) -> Result<Option<RequestLog>, String> {
+        Ok(None)
+    }
+
+    #[cfg(feature = "usage-store")]
     pub fn get_request_log(&self, id: i64) -> Result<Option<RequestLog>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
@@ -342,6 +426,19 @@ impl DataStore {
     /// `agent:main:session:{sid}`——与 loop.rs 写入 RequestLog 的
     /// `context.session_key` 同源，无需 LIKE 子串宽松匹配）。
     /// 会话无请求行 → 全零聚合（不是错误）。
+    ///
+    /// usage-store 关：恒全零聚合（空账本语义）。
+    #[cfg(not(feature = "usage-store"))]
+    pub fn aggregate_session_usage(&self, _session_key: &str) -> Result<SessionUsageAgg, String> {
+        Ok(SessionUsageAgg {
+            requests: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_cost_usd: 0.0,
+        })
+    }
+
+    #[cfg(feature = "usage-store")]
     pub fn aggregate_session_usage(&self, session_key: &str) -> Result<SessionUsageAgg, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
@@ -373,6 +470,23 @@ impl DataStore {
     /// （T37 真机 run 4 实证：聚合恒 0 → token 闸永不熔断）。task_id（UUID）
     /// 是 per-dispatch 唯一锚，按 `/{task_id}` 后缀匹配对两种身份形态都稳。
     /// 无请求行 → 全零聚合（不是错误）。
+    ///
+    /// usage-store 关：恒全零聚合（空账本语义；token 预算闸读到的恒是
+    /// 0 占用——闸本身 0=关默认，不受影响）。
+    #[cfg(not(feature = "usage-store"))]
+    pub fn aggregate_session_usage_by_task(
+        &self,
+        _task_id: &str,
+    ) -> Result<SessionUsageAgg, String> {
+        Ok(SessionUsageAgg {
+            requests: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_cost_usd: 0.0,
+        })
+    }
+
+    #[cfg(feature = "usage-store")]
     pub fn aggregate_session_usage_by_task(
         &self,
         task_id: &str,
@@ -404,6 +518,14 @@ impl DataStore {
     /// （天×模型 upsert 增量）。`failed` = 本次调用 args_validator 判 Invalid。
     /// Valid/Fixed 都算成功（Fixed 已自动修复，不是模型失败证据）。
     /// 调用方对错误只 warn——审计是增值动作，不反压轮次。
+    ///
+    /// usage-store 关：no-op（健康账不落盘，`models.health` 恒空）。
+    #[cfg(not(feature = "usage-store"))]
+    pub fn record_tool_validation(&self, _model: &str, _failed: bool) -> Result<(), String> {
+        Ok(())
+    }
+
+    #[cfg(feature = "usage-store")]
     pub fn record_tool_validation(&self, model: &str, failed: bool) -> Result<(), String> {
         let day = chrono::Local::now().format("%Y-%m-%d").to_string();
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
@@ -421,6 +543,14 @@ impl DataStore {
 
     /// P2B：近 `days` 天的每模型工具健康聚合（`models.health` 数据源）。
     /// `days <= 0` 视为 1。无记录的模型不出现（无调用即无健康问题可言）。
+    ///
+    /// usage-store 关：空列表（健康账未编译，无模型出现）。
+    #[cfg(not(feature = "usage-store"))]
+    pub fn query_model_tool_health(&self, _days: i64) -> Result<Vec<ModelToolHealth>, String> {
+        Ok(Vec::new())
+    }
+
+    #[cfg(feature = "usage-store")]
     pub fn query_model_tool_health(&self, days: i64) -> Result<Vec<ModelToolHealth>, String> {
         let cutoff = (chrono::Local::now() - chrono::Duration::days(days.max(1)))
             .format("%Y-%m-%d")
@@ -470,6 +600,18 @@ impl DataStore {
     ///
     /// 挂载点在 gateway 周期任务（启动时 + 每 6h）；此前 `rollup_old_logs`
     /// 从未被生产调用（只有测试），本次一并接上。
+    ///
+    /// usage-store 关：Ok(0)（无账可清）。
+    #[cfg(not(feature = "usage-store"))]
+    pub fn retention_sweep(
+        &self,
+        _retention_days: Option<i64>,
+        _max_rows: Option<i64>,
+    ) -> Result<u64, String> {
+        Ok(0)
+    }
+
+    #[cfg(feature = "usage-store")]
     pub fn retention_sweep(
         &self,
         retention_days: Option<i64>,
@@ -537,6 +679,7 @@ impl DataStore {
 }
 
 /// Row → [`RequestLog`]（列序与 query_logs / get_request_log 的 SELECT 一致）。
+#[cfg(feature = "usage-store")]
 fn row_to_log(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestLog> {
     Ok(RequestLog {
         id: row.get(0)?,
@@ -563,9 +706,11 @@ fn row_to_log(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestLog> {
     })
 }
 
-#[cfg(test)]
+// SQLite 行为测试随 usage-store feature 进出（off 态 stub 无库可测；
+// standalone / --workspace 构建经 default / dev-deps / unification 恒带此 feature）。
+#[cfg(all(test, feature = "usage-store"))]
 mod tests;
 
 // Wave6B 覆盖率收尾：见 cov_wave6b_tests.rs 头注释。
-#[cfg(test)]
+#[cfg(all(test, feature = "usage-store"))]
 mod cov_wave6b_tests;

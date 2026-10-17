@@ -303,12 +303,16 @@ fn write_chat_entry(
     );
     // U20 (sixth batch): lazy FTS index hook — best-effort, failures inside
     // are swallowed (the next full reindex repairs). Timestamp mirrors the
-    // entry written above.
-    let ts = entry
-        .get("timestamp")
-        .and_then(|t| t.as_str())
-        .unwrap_or("");
-    crate::history_search::index_append(session_key, role, content, ts);
+    // entry written above. history-search 关：整段不编译（FTS 索引随
+    // rusqlite 进出，chat_log 本体照常写）。
+    #[cfg(feature = "history-search")]
+    {
+        let ts = entry
+            .get("timestamp")
+            .and_then(|t| t.as_str())
+            .unwrap_or("");
+        crate::history_search::index_append(session_key, role, content, ts);
+    }
 }
 
 /// Read chat log with pagination.

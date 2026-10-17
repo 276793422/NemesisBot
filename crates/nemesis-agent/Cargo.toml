@@ -8,15 +8,32 @@ edition.workspace = true
 # 这些 crate 被 nemesis-agent 硬引用，所以 agent 自身也要开 feature 体系并在源码里 cfg-gate。
 # 见 docs/PLAN/2026-07-01_feature-trimming-and-build-configurator.md Phase 5。
 [features]
-default = ["codemode", "forge", "memory", "workflow", "security"]
+default = ["codemode", "forge", "memory", "workflow", "security", "lsp", "checkpoint-git", "image-process", "history-search"]
 # T2（L1 codemode）：code_run 脚本工具（rquickjs QuickJS 引擎随它进出；
 # 关 = 无 code_run 工具，IoT/极小镜像可裁）。运行开关是 config
 # agents.codemode.enabled（默认关）——编译期与运行期双闸同 hidden_tools 模型。
 codemode = ["dep:rquickjs"]
+# LSP 只读语义查询（lsp 工具 + 诊断回灌 diagnostics_loop 消费
+# nemesis-lsp；关 = 工具与诊断闭环编译期消失，config agents.lsp_tool
+# 运行闸照常在先）。由 nemesisbot 的 lsp feature 穿透。
+lsp = ["dep:nemesis-lsp"]
 forge = ["dep:nemesis-forge"]
 memory = ["dep:nemesis-memory"]
 workflow = ["dep:nemesis-workflow"]
 security = ["dep:nemesis-security", "nemesis-security/security", "nemesis-skills/security", "dep:nemesis-connectors"]
+# D2 checkpoint git 影子库（libgit2 ~1.5MB）：关 = checkpoint 恒 JSON 快照
+# 回落（D4 语义，行为与「无 .git」一致——逐 turn JSON 文件、rewind/undo 照常）。
+# 由 nemesisbot 的 checkpoint-git feature 穿透。
+checkpoint-git = ["dep:git2"]
+# J6 图片降采样（image ~0.8MB）：关 = downscale_gate 恒 Keep（超限图按原图
+# 链路走，>25MB 照旧被验真链诚实拒绝），`agents.image_downscale` 开时响亮
+# warn 一次差异。由 nemesisbot 的 image-process feature 穿透。
+image-process = ["dep:image"]
+# U20 会话全文检索（FTS5）：关 = history_search 工具/CLI/WSAPI logs 命令
+# 诚实报未编译，chat_log 增量索引挂钩 no-op。注意：体积收益 ≈0——nemesis-data
+# 的 DataStore（用量账本核心）无论如何编译 bundled SQLite，本 gate 裁的是
+# FTS 索引/检索代码本体（能力拆分，非体积杠杆）。由 nemesisbot 穿透。
+history-search = ["dep:rusqlite"]
 
 [dependencies]
 nemesis-types = { workspace = true }
@@ -27,7 +44,7 @@ nemesis-routing = { workspace = true }
 nemesis-skills = { workspace = true }
 nemesis-memory = { workspace = true, optional = true }
 nemesis-mcp = { workspace = true }
-nemesis-lsp = { workspace = true }
+nemesis-lsp = { workspace = true, optional = true }
 nemesis-tools = { workspace = true }
 nemesis-cron = { workspace = true }
 nemesis-forge = { workspace = true, optional = true }
@@ -63,8 +80,9 @@ notify = "8"
 # WS9/P22：workspace 写租约的 OS 级文件锁（Windows LockFileEx / POSIX
 # flock；持有进程死亡自动释放——无死锁遗留）。
 fd-lock = "4"
-# D2（devtool-upgrade 阶段 5）：checkpoint git 影子库（default-features=false 无 openssl）。
-git2 = { workspace = true }
+# D2（devtool-upgrade 阶段 5）：checkpoint git 影子库（default-features=false 无 openssl；
+# optional，随 checkpoint-git feature——IoT/最小形态 checkpoint 走 JSON 快照回落）。
+git2 = { workspace = true, optional = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
 # T1（扩展计划 D3）：工具收据 HMAC-SHA256——防幻觉执行证明。
@@ -72,8 +90,9 @@ hmac = { workspace = true }
 # T1：ReceiptKey 随机生成（OsRng OS 熵源）。
 rand = { workspace = true }
 # J6（devtool-upgrade 阶段 6）：图片超限自动降采样（与 nemesis-desktop /
-# plugin-ui 同版本，cargo 自动统一编译单元）。
-image = "0.25"
+# plugin-ui 同版本，cargo 自动统一编译单元；optional，随 image-process
+# feature——关 = 超限图按原图链路走，既有验真链照常把关）。
+image = { version = "0.25", optional = true }
 reqwest = { workspace = true }
 regex = { workspace = true }
 # J2b（devtool-upgrade 阶段 4）：web_fetch HTML → 可读文本提取（html5ever 解析，
@@ -81,7 +100,9 @@ regex = { workspace = true }
 html2text = "0.17"
 # U20 (sixth batch): FTS5 index for session full-text search. Same version +
 # features as nemesis-data's rusqlite — Cargo compiles the bundled SQLite once.
-rusqlite = { version = "0.34", features = ["bundled"] }
+# optional，随 history-search feature（关 = history_search 工具/CLI/WSAPI
+# 诚实报未编译；chat_log 的 FTS 增量索引挂钩 no-op）。
+rusqlite = { version = "0.34", features = ["bundled"], optional = true }
 # T2（L1 codemode）：code_run 脚本工具的 JS 引擎（optional，随 codemode
 # feature）。**声明在下方 target 门控表**——rquickjs-sys 0.14 预生成
 # bindings 不含任何 *-linux-android 三元组（bindgen 运行时生成需宿主接管
@@ -96,6 +117,9 @@ rquickjs = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["test-util", "macros"] }
 mockall = { workspace = true }
 nemesis-providers = { workspace = true }
+# usage-store 行为测试经 dev-dependencies 带回真 SQLite 账本（resolver 2：
+# dev-dep features 不泄漏到正常构建——正常构建按需编译空账本 stub）。
+nemesis-data = { workspace = true, features = ["usage-store"] }
 # S9 (quality-hardening goal 冲刺 S9): thread-local subscriber so tracing macro
 # field expressions (info!/warn!/debug! args) get evaluated in tests — without a
 # subscriber those lines never count as covered. Same pattern as

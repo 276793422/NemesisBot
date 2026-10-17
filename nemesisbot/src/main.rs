@@ -102,7 +102,9 @@ mod conflict_resolver;
 /// 依赖（SecurityPlugin 槽位 cfg 内联，security 关 = None = 无闸直连），
 /// 可独立编译——`connector demo` 在无 security 构建下照常四幕（幕 1 诚实
 /// 跳过语义）；**agent 工具供给**的 security 闸在 agent_factory 注册点
-/// （无 security 组合无 connector 工具供给面）。
+/// （无 security 组合无 connector 工具供给面）。`connectors` feature 门控
+/// ——nemesis-connectors 整包随它进出（连带 nemesis-security）。
+#[cfg(feature = "connectors")]
 mod connector_tools;
 /// P4 交付门（持久 Agent 实体，2026-10-17）：worker 侧交付分支捕获——
 /// 仅 cluster 形态消费（execute_new_task/resume_task 成功收口）。
@@ -327,6 +329,7 @@ enum Commands {
     /// Show system status
     Status,
     /// Search conversation history across sessions (U20 full-text search)
+    #[cfg(feature = "history-search")]
     History {
         #[command(subcommand)]
         action: commands::history::HistoryAction,
@@ -413,6 +416,7 @@ enum Commands {
         action: commands::profile::ProfileAction,
     },
     /// Query the connector registry / receipts / paper ledger (read-only)
+    #[cfg(feature = "connectors")]
     Connector {
         #[command(subcommand)]
         action: commands::connector::ConnectorAction,
@@ -851,6 +855,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             common::ensure_default_logger();
             commands::status::run(cli.local)?;
         }
+        #[cfg(feature = "history-search")]
         Commands::History { action } => {
             common::ensure_default_logger();
             commands::history::run(action, cli.local).await?;
@@ -920,6 +925,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             common::ensure_default_logger();
             commands::profile::run(action, cli.local)?;
         }
+        #[cfg(feature = "connectors")]
         Commands::Connector { action } => {
             common::ensure_default_logger();
             commands::connector::run(action, cli.local)?;

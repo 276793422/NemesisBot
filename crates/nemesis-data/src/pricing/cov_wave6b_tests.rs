@@ -8,6 +8,7 @@
 use crate::pricing::all_pricing;
 
 /// all_pricing 返回内嵌全表（116-118 entries() + 190-192 包装体）。
+#[cfg(feature = "pricing-embed")]
 #[test]
 fn all_pricing_returns_embedded_table() {
     let all = all_pricing();

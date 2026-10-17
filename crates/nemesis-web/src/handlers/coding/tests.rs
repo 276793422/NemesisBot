@@ -68,6 +68,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     }
 }
 
+#[cfg(feature = "lsp")]
 #[tokio::test]
 async fn lsp_status_lists_five_languages_with_probe_flags() {
     let handler = CodingHandler;
@@ -160,6 +161,7 @@ async fn coding_unknown_command_errors() {
 // C6（devtool-upgrade 阶段 6）: lsp_status 安装目录 + lsp_install 诚实报错
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "lsp")]
 #[tokio::test]
 async fn lsp_status_includes_install_catalog_per_language() {
     let handler = CodingHandler;
@@ -176,6 +178,7 @@ async fn lsp_status_includes_install_catalog_per_language() {
     }
 }
 
+#[cfg(feature = "lsp")]
 #[tokio::test]
 async fn lsp_install_unknown_lang_is_honest_error() {
     let dir = tempfile::tempdir().unwrap();
@@ -195,6 +198,7 @@ async fn lsp_install_unknown_lang_is_honest_error() {
 
 /// 未装配 agent loop（AppState 字面量 agent_loop=None）→ 诚实报错。
 /// 放在 needs_interactive 检查之后、不受平台影响（选非交互语言）。
+#[cfg(feature = "lsp")]
 #[tokio::test]
 async fn lsp_install_without_agent_loop_is_honest_error() {
     let dir = tempfile::tempdir().unwrap();
@@ -211,6 +215,7 @@ async fn lsp_install_without_agent_loop_is_honest_error() {
     assert!(err.contains("agent loop not running"), "err: {err}");
 }
 
+#[cfg(feature = "lsp")]
 #[tokio::test]
 async fn lsp_install_missing_data_is_honest_error() {
     let dir = tempfile::tempdir().unwrap();
@@ -231,6 +236,7 @@ async fn lsp_install_missing_data_is_honest_error() {
 /// 大小写宽容：小写 "rust" 与回显形态 "Rust" 都能命中语言
 /// （在 needs_interactive/agent 检查之前就该通过语言解析——
 /// 用 needs_interactive=true 的平台差异或 agent 缺席错误来证明走到了后面）。
+#[cfg(feature = "lsp")]
 #[tokio::test]
 async fn lsp_install_lang_matching_is_case_insensitive() {
     let dir = tempfile::tempdir().unwrap();

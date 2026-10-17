@@ -42,11 +42,13 @@ pub(crate) struct AgentWiring {
     #[cfg(feature = "security")]
     pub security_plugin: Option<Arc<nemesis_security::pipeline::SecurityPlugin>>,
     #[cfg(not(feature = "security"))]
+    #[allow(dead_code)]
     pub security_plugin: Option<()>,
     /// W5-3：插件安装审批晚绑槽（run_runtime 审批块 bind 真身）。
     #[cfg(feature = "plugins-wasm")]
     pub plugin_gate: Option<Arc<crate::plugin_bridge::LateInstallApprover>>,
     #[cfg(not(feature = "plugins-wasm"))]
+    #[allow(dead_code)]
     pub plugin_gate: Option<()>,
     pub initial_tool_count: usize,
 }
@@ -178,6 +180,9 @@ pub(crate) async fn init_agent(
     // registers with it (via SharedToolConfig.lsp_manager), the web server
     // holds the same Arc, and Step-24 teardown calls shutdown_all() so
     // language-server child processes don't outlive the gateway.
+    // lsp feature 关：manager 构造与 auto_install 自举不编译，SharedToolConfig
+    // 的 lsp_manager 槽位同步 cfg 消失。
+    #[cfg(feature = "lsp")]
     let lsp_manager = std::sync::Arc::new(nemesis_lsp::LspManager::new(
         cfg.agents
             .lsp_tool
@@ -193,6 +198,7 @@ pub(crate) async fn init_agent(
     // 串行后台执行，结果进日志）。信任级=用户显式配置的 standing consent
     // （同 A6 formatter / LSP spawn——基础设施装配不走 8 层管线；dashboard
     // 一键安装按钮那条路才走）。装完需重启 Agent 重新探测注册。
+    #[cfg(feature = "lsp")]
     if cfg.agents.lsp_tool.auto_install {
         tokio::spawn(nemesis_lsp::install::auto_install_missing(
             std::time::Duration::from_secs(600),
@@ -270,6 +276,7 @@ pub(crate) async fn init_agent(
         // 形态；gateway 恒 Some）。工厂据此挂 RemoteExecutorTool 常驻路由。
         agent_runtime: Some(agent_runtime),
         config_store: config_store.clone(),
+        #[cfg(feature = "lsp")]
         lsp_manager,
         agent_event_tx: Some(agent_event_tx),
         background_registry,

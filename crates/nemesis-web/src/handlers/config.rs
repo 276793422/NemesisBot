@@ -159,6 +159,7 @@ pub(crate) fn update_raw_config<T>(
 /// registry.json 等，与 config.json 同族共用一把写串行锁）：锁罩「读→闭包改→
 /// 原子写」全程；文件缺失从空对象起（seed 默认是闭包的事）；读/解析失败
 /// = Err 不落盘。闭包 Err 不落盘（abort 语义）。
+#[cfg(any(feature = "cluster", feature = "forge"))]
 pub(crate) fn update_json_file<T>(
     path: &std::path::Path,
     f: impl FnOnce(&mut serde_json::Value) -> Result<T, String>,

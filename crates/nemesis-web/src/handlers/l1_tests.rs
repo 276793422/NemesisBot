@@ -101,10 +101,12 @@ fn cmds_of<'a>(reg: &'a [(String, Vec<&'static str>)], module: &str) -> &'a [&'s
         .unwrap_or(&[])
 }
 
-/// 无 feature 闸的 29 个模块（register_all 的无条件注册段；L6++ G4 起
+/// 无 feature 闸的 26 个模块（register_all 的无条件注册段；L6++ G4 起
 /// 含 projects，P30（WS14）起含 canvas，2026-09-28 起含 roles——角色目录
-/// WSAPI，2026-10-13 起含 selfupdate——L9 版本自切换通道，2026-10-14 起
-/// 含 connectors/paperbroker——行动代理 P0 数据面）。
+/// WSAPI，2026-10-13 起含 selfupdate——L9 版本自切换通道。board 2026-10-17
+/// 起随 `board` feature 门控——nemesis-board 转 optional，SQLite 随它进出；
+/// connectors/paperbroker 2026-10-17 起随 `connectors` feature 门控——
+/// nemesis-security（被 connectors 无条件依赖）随之进出）。
 const UNCONDITIONAL_MODULES: &[&str] = &[
     "system",
     "estop",
@@ -124,7 +126,6 @@ const UNCONDITIONAL_MODULES: &[&str] = &[
     "commands",
     "fs",
     "plugins",
-    "board",
     "logs",
     "agent",
     "persona",
@@ -133,8 +134,6 @@ const UNCONDITIONAL_MODULES: &[&str] = &[
     "canvas",
     "roles",
     "selfupdate",
-    "connectors",
-    "paperbroker",
 ];
 
 // ---------------------------------------------------------------------------
@@ -144,7 +143,7 @@ const UNCONDITIONAL_MODULES: &[&str] = &[
 #[test]
 fn registry_all_modules_nonempty_no_dupes() {
     let reg = build_registry();
-    // 23 个无条件模块必须全在；8 个 feature 门控模块按 cfg 计入下限。
+    // 26 个无条件模块必须全在；10 个 feature 门控模块按 cfg 计入下限。
     // （cfg! 的 feature 参数必须是字面量，无法循环展开——逐个列出。）
     let gated_on = [
         cfg!(feature = "cluster"),
@@ -155,6 +154,8 @@ fn registry_all_modules_nonempty_no_dupes() {
         cfg!(feature = "sandbox"),
         cfg!(feature = "forge"),
         cfg!(feature = "skins"),
+        cfg!(feature = "board"), // 2026-10-17 起 nemesis-board 转 optional
+        cfg!(feature = "connectors"), // 2026-10-17 起，同时带 paperbroker，两个模块
     ];
     let expected_floor = UNCONDITIONAL_MODULES.len()
         + gated_on.iter().filter(|b| **b).count()
@@ -222,9 +223,11 @@ fn registry_anchor_commands_present() {
     if cfg!(feature = "cluster") {
         assert!(cmds_of(&reg, "cluster").contains(&"node.update_identity"));
     }
-    // M5-1（2026-10-10 机制加固）：评审重触发入口（命令无条件注册，钩子
-    // 未安装时诚实报错）。
-    assert!(cmds_of(&reg, "board").contains(&"review.retrigger"));
+    // M5-1（2026-10-10 机制加固）：评审重触发入口（模块内无条件注册，钩子
+    // 未安装时诚实报错）。模块本体 2026-10-17 起随 board feature 门控。
+    if cfg!(feature = "board") {
+        assert!(cmds_of(&reg, "board").contains(&"review.retrigger"));
+    }
     if cfg!(feature = "security") {
         assert!(cmds_of(&reg, "security").contains(&"config.get"));
         assert!(cmds_of(&reg, "scanner").contains(&"config.get"));
@@ -306,23 +309,41 @@ fn docs_generation_writes_wsapi_commands_md() {
     // registry 缺 feature 门控模块，无条件重写会把完整文档冲成残表（真实
     // 发生：只带 plugins-wasm 跑本测试，37 模块被冲成 26）。缺任一已知
     // 门控模块（或 plugins 行缺 wasm 命令）= 诚实 SKIP 并注明，不写盘。
+    // 门控模块（或 plugins 行缺 wasm 命令，或 coding 行缺 lsp 命令）= 诚实
+    // SKIP 并注明，不写盘。board/connectors/paperbroker 2026-10-17 起 feature
+    // 门控（board/connectors 整包进出），coding 行的 lsp_* 随 `lsp` feature
+    // 进出——三者缺一都会静默冲掉命令行（真实发生：只带 12 feature 不带 lsp
+    // 跑，coding 3 命令被冲成 1）。
     const GATED_DOC_MODULES: &[&str] = &[
-        "cluster", "outbox", "voice", "workflow", "memory", "security", "scanner", "sandbox",
-        "forge", "skins",
+        "cluster",
+        "outbox",
+        "voice",
+        "workflow",
+        "memory",
+        "security",
+        "scanner",
+        "sandbox",
+        "forge",
+        "skins",
+        "board",
+        "connectors",
+        "paperbroker",
     ];
     let missing_module = GATED_DOC_MODULES
         .iter()
         .find(|m| cmds_of(&reg, m).is_empty());
+    let lsp_missing = !cmds_of(&reg, "coding").contains(&"lsp_status");
     let wasm_missing = !cmds_of(&reg, "plugins").contains(&"wasm.list");
     if let Some(missing) = missing_module
         .copied()
+        .or(lsp_missing.then_some("coding(lsp_status)"))
         .or(wasm_missing.then_some("plugins(wasm.*)"))
     {
         eprintln!(
             "SKIP docs_generation: 编译缺 feature 门控模块 `{missing}`——重写会把 \
              docs/INFO/wsapi-commands.md 冲成残表。带全 feature 重跑：cargo test -p \
-             nemesis-web --features \"cluster,workflow,memory,security,scanner,forge,voice,\
-             voice-capture,sandbox,skins,plugins-wasm\" docs_generation"
+             nemesis-web --features \"board,connectors,cluster,workflow,memory,security,scanner,\
+             forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp\" docs_generation"
         );
         return;
     }
@@ -333,8 +354,9 @@ fn docs_generation_writes_wsapi_commands_md() {
         "> 由 `crates/nemesis-web/src/handlers/l1_tests.rs::\
 docs_generation_writes_wsapi_commands_md` 从 `ModuleHandler::commands()` \
 静态清单生成——**勿手改**。改任何 handler 的命令臂后**带全 feature** 重跑 \
-`cargo test -p nemesis-web --features \"cluster,workflow,memory,security,scanner,\
-forge,voice,voice-capture,sandbox,skins,plugins-wasm\" docs_generation` 刷新本文件\
+`cargo test -p nemesis-web --features \"board,connectors,cluster,workflow,memory,\
+security,scanner,forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp\" \
+docs_generation` 刷新本文件\
 （feature 不全时本测试诚实 SKIP 不写盘，防止把完整文档冲成残表）。\n\n",
     );
     md.push_str(&format!("共 {} 个模块 / {} 条命令。\n\n", reg.len(), total));
