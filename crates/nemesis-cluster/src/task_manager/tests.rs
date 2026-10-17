@@ -904,6 +904,103 @@ fn test_cleanup_pending_timeout_fires_callback_v2() {
     assert_eq!(recent.status, TaskStatus::Pending);
 }
 
+/// T6① 回归（2026-10-17）：cleanup_completed 超时分支只在条件转移真正
+/// 落地（Ok(true)）时才记日志 + fire callback。竞态形态：任务被列出时
+/// 还是 Pending，但条件转移执行前并发 settle 已把它落成 Completed——
+/// update_result_if_status 返回 Ok(false)，callback 必须不 fire，
+/// 并发 settle 的终态不得被 timeout 覆盖或重复通知。
+struct ConcurrentSettleStore {
+    inner: InMemoryTaskStore,
+}
+
+impl TaskStore for ConcurrentSettleStore {
+    fn create(&self, task: Task) -> Result<(), String> {
+        self.inner.create(task)
+    }
+    fn get(&self, task_id: &str) -> Result<Task, String> {
+        self.inner.get(task_id)
+    }
+    fn update_result(
+        &self,
+        task_id: &str,
+        status: TaskStatus,
+        result: Option<serde_json::Value>,
+    ) -> Result<(), String> {
+        self.inner.update_result(task_id, status, result)
+    }
+    fn update_result_if_status(
+        &self,
+        task_id: &str,
+        expected: &[TaskStatus],
+        status: TaskStatus,
+        result: Option<serde_json::Value>,
+    ) -> Result<bool, String> {
+        // 模拟并发 settle 抢先：条件转移执行前任务已被落成终态
+        self.inner.update_result(
+            task_id,
+            TaskStatus::Completed,
+            Some(serde_json::json!({"response": "won the race"})),
+        )?;
+        self.inner
+            .update_result_if_status(task_id, expected, status, result)
+    }
+    fn delete(&self, task_id: &str) -> Result<(), String> {
+        self.inner.delete(task_id)
+    }
+    fn list_by_status(&self, status: TaskStatus) -> Vec<Task> {
+        self.inner.list_by_status(status)
+    }
+    fn list_all(&self) -> Vec<Task> {
+        self.inner.list_all()
+    }
+}
+
+#[test]
+fn test_cleanup_timeout_does_not_fire_callback_on_lost_race() {
+    let store: Arc<dyn TaskStore> = Arc::new(ConcurrentSettleStore {
+        inner: InMemoryTaskStore::new(),
+    });
+    let callback_count = Arc::new(AtomicUsize::new(0));
+    let callback_count_clone = callback_count.clone();
+    let on_complete: Option<Arc<OnCompleteCallback>> =
+        Some(Arc::new(Box::new(move |_task: &Task| {
+            callback_count_clone.fetch_add(1, Ordering::SeqCst);
+        })));
+
+    let old_created = (chrono::Local::now() - chrono::Duration::hours(25)).to_rfc3339();
+    store
+        .create(Task {
+            id: "race-task".to_string(),
+            status: TaskStatus::Pending,
+            action: "peer_chat".to_string(),
+            peer_id: "remote-1".to_string(),
+            payload: serde_json::json!({"msg": "hello"}),
+            result: None,
+            original_channel: "rpc".to_string(),
+            original_chat_id: "ch".to_string(),
+            created_at: old_created,
+            completed_at: None,
+        })
+        .unwrap();
+
+    cleanup_completed(&store, &on_complete, &test_pending_timeout());
+
+    // 并发 settle 的终态保持原样：status=Completed、result 是竞态胜者的
+    // 结果——不得被 timeout 分支改写成 Failed，也不得重复 fire callback。
+    let task = store.get("race-task").unwrap();
+    assert_eq!(task.status, TaskStatus::Completed);
+    assert_eq!(
+        task.result.as_ref().unwrap()["response"],
+        "won the race",
+        "并发 settle 的结果不得被 timeout 分支覆盖"
+    );
+    assert_eq!(
+        callback_count.load(Ordering::SeqCst),
+        0,
+        "条件转移输掉竞态（Ok(false)）时不得 fire callback"
+    );
+}
+
 #[tokio::test]
 async fn test_start_idempotent_v2() {
     // Test that calling start() twice is a no-op when a runtime is present

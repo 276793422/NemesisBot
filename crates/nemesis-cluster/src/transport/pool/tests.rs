@@ -564,6 +564,94 @@ async fn test_s4_cleanup_dead_removes_dead_entry() {
     server.abort();
 }
 
+/// T5 回归（2026-10-17）：get_inner 捞出**池内死条目**时必须归还信号量
+/// 许可 + 节点计数——旧代码只减 active_count，注释声称「许可留作复用」
+/// 是谎话（forget 掉的许可拿不回来，随后的 dial 取的是新许可），每轮
+/// 死连接轮换永久漏 1 槽。max_conns=1 让漏槽直接表现为第二次 get 假限流。
+#[tokio::test]
+async fn test_t5_dead_entry_in_map_releases_permit_on_get() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let server = tokio::spawn(async move {
+        let mut kept = Vec::new();
+        while let Ok((stream, _)) = listener.accept().await {
+            kept.push(stream);
+        }
+    });
+
+    let pool = Pool::new(AsyncPoolConfig {
+        max_conns: 1,
+        max_conns_per_node: 4,
+        ..Default::default()
+    });
+
+    // 1. 拨号（唯一许可被 forget）→ 归还（活着，入池）。
+    let (key, conn) = pool.get("t5-node", &addr).await.unwrap();
+    pool.return_connection(key.clone(), conn);
+    assert_eq!(pool.active_connection_count(), 1);
+    assert_eq!(pool.get_stats().node_conns.get("t5-node"), Some(&1));
+    assert_eq!(
+        pool.semaphore.available_permits(),
+        0,
+        "唯一许可在池内条目上"
+    );
+
+    // 2. 池内条目死亡（模拟半开连接被标记；return_connection 的验活
+    //    拒收构造不出这个形态，直接在 map 里 close）。
+    pool.conns.lock().get_mut(&key).unwrap().conn.close();
+
+    // 3. 再次 get：死条目被现场剔除——旧行为漏还许可，dial 撞
+    //    "connection limit reached (1)"；修复后许可归还 → 重拨成功，
+    //    且三账（active / node_count / 许可）对齐。
+    let (_key2, conn2) = pool.get("t5-node", &addr).await.unwrap();
+    assert!(conn2.is_active(), "死条目剔除后必须重拨成功");
+    assert_eq!(pool.active_connection_count(), 1);
+    assert_eq!(
+        pool.get_stats().node_conns.get("t5-node"),
+        Some(&1),
+        "死条目剔除必须回落节点计数，重拨再补回"
+    );
+    assert_eq!(pool.semaphore.available_permits(), 0, "新拨消耗唯一许可");
+
+    drop(conn2);
+    pool.close();
+    server.abort();
+}
+
+/// T5 回归（2026-10-17）：return_connection 收到**死连接**时节点计数
+/// 必须随许可、active_count 一起回落（镜像 dial 的消耗三账）。
+#[tokio::test]
+async fn test_t5_return_dead_conn_releases_node_count() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let server = tokio::spawn(async move {
+        let mut kept = Vec::new();
+        while let Ok((stream, _)) = listener.accept().await {
+            kept.push(stream);
+        }
+    });
+
+    let pool = Pool::new(AsyncPoolConfig {
+        max_conns: 10,
+        max_conns_per_node: 4,
+        ..Default::default()
+    });
+
+    let (key, mut conn) = pool.get("t5-dead", &addr).await.unwrap();
+    conn.close();
+    pool.return_connection(key, conn);
+
+    assert_eq!(pool.active_connection_count(), 0);
+    assert!(
+        !pool.get_stats().node_conns.contains_key("t5-dead"),
+        "死连接归还得回落节点计数（旧行为漂移 +1）"
+    );
+    assert_eq!(pool.semaphore.available_permits(), 10, "许可必须全额归还");
+
+    pool.close();
+    server.abort();
+}
+
 /// dec_node_count arcs (pool.rs 470-478): decrement to a non-zero value,
 /// decrement to zero (key removed), and decrement for an absent key.
 #[test]
