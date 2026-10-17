@@ -3466,6 +3466,16 @@ fn replay_guard_project_conclusion_probe() {
     let store =
         Arc::new(nemesis_board::BoardStore::open(&dir.join("board.db"), "NB").expect("open store"));
     let actor = Actor::agent("node-a");
+    // 引用完整性闸（2026-10-17 系统性检查）后 create_issue 校验 project 存在——
+    // fixture 必须先建真实项目再用其 id。
+    let proj7 = store
+        .create_project("重放项目7", "", None, "📌", "", None)
+        .unwrap()
+        .id;
+    let proj9 = store
+        .create_project("重放项目9", "", None, "📌", "", None)
+        .unwrap()
+        .id;
     let mk = |title: &str, pid: i64| -> i64 {
         store
             .create_issue(NewIssue {
@@ -3479,13 +3489,13 @@ fn replay_guard_project_conclusion_probe() {
             .unwrap()
             .id
     };
-    let p1 = mk("父单1", 7);
-    let p2 = mk("父单2", 7);
+    let p1 = mk("父单1", proj7);
+    let p2 = mk("父单2", proj7);
     // 无项目级结论 → 重放。
     assert!(!super::project_review_already_concluded(
         &store,
         &[p1, p2],
-        7
+        proj7
     ));
     // 父单2 带项目 7 的收口结论（escalate sticky 同样算）→ 不重放。
     store
@@ -3493,25 +3503,37 @@ fn replay_guard_project_conclusion_probe() {
             p2,
             &actor,
             "auto_decide",
-            Some(r#"{"decision":"project_escalate_human","verdict":"fail","project_id":7}"#),
+            Some(
+                format!(r#"{{"decision":"project_escalate_human","verdict":"fail","project_id":{proj7}}}"#)
+                    .as_str(),
+            ),
         )
         .unwrap();
     assert!(super::project_review_already_concluded(
         &store,
         &[p1, p2],
-        7
+        proj7
     ));
-    // 结论挂在其他项目名下（project_id=9）→ 项目 7 仍视为未结论。
-    let p3 = mk("父单3", 9);
+    // 结论挂在其他项目名下（项目9）→ 项目 7 仍视为未结论。
+    let p3 = mk("父单3", proj9);
     store
         .add_activity(
             p3,
             &actor,
             "auto_decide",
-            Some(r#"{"decision":"project_complete","verdict":"pass","project_id":9}"#),
+            Some(
+                format!(
+                    r#"{{"decision":"project_complete","verdict":"pass","project_id":{proj9}}}"#
+                )
+                .as_str(),
+            ),
         )
         .unwrap();
-    assert!(!super::project_review_already_concluded(&store, &[p1], 7));
+    assert!(!super::project_review_already_concluded(
+        &store,
+        &[p1],
+        proj7
+    ));
 }
 
 // ---------- render_project_artifacts_evidence（F-U3-6，2026-09-15 U3）----------

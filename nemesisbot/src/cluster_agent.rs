@@ -397,6 +397,7 @@ async fn execute_new_task(
             "",
             &notice,
             None,
+            None,
         )
         .await;
         task_list.complete_task(&task.task_id);
@@ -478,6 +479,7 @@ async fn execute_new_task(
             "",
             "cancelled",
             None,
+            None,
         )
         .await;
         task_list.complete_task(&task.task_id);
@@ -505,6 +507,11 @@ async fn execute_new_task(
 
         // NB-CODE-008：磁盘恢复面静默失效必须可观测——内存态已就绪、任务继续
         // 异步挂起，但崩溃后该任务无法恢复。
+        // E1 二期多跳账（2026-10-17 根修）：async 挂起前已消耗的首跳用量随
+        // usage_before 局部变量一起丢失——暂存进任务记录，resume 完成时
+        // 合并上报（否则多跳任务的 A 端记账只含末跳差值）。
+        let first_leg = extract_task_usage(agent_loop, &task.source.session_key, &usage_before);
+        task_list.set_async_usage_stash(&task.task_id, first_leg);
         if let Err(e) = task_list.save_async_state(
             &task.task_id,
             child_task_id,
@@ -567,6 +574,7 @@ async fn execute_new_task(
         &result,
         &status.0,
         usage,
+        context.tool_path_base.as_deref(),
     )
     .await;
     task_list.complete_task(&task.task_id);
@@ -635,8 +643,11 @@ async fn resume_task(
             "(resume)",
         );
     }
-    // E1 二期：续行前快照（差值 = 本续行轮消耗；原任务用量已在
-    // execute_new_task 成功回调时报过，不重复计）。
+    // E1 二期：续行前快照（差值 = 本续行轮消耗）。旧注释「原任务用量已在
+    // execute_new_task 成功回调时报过」是假的——async 挂起路径没有成功回调，
+    // 首跳用量自 2026-10-17 起由 async_usage_stash 随任务记录暂存，最终
+    // 回调时合并上报（此前多跳任务的首跳消耗从未回传 A 端）。
+    let carried_usage = task.async_usage_stash.clone();
     let usage_before = snapshot_session_usage(agent_loop, &task.source.session_key);
     let events = agent_loop
         .resume_execution_with_token(&instance, &context, &trace_id, &token)
@@ -672,6 +683,7 @@ async fn resume_task(
             "",
             "cancelled",
             None,
+            None,
         )
         .await;
         task_list.complete_task(&task.task_id);
@@ -697,6 +709,14 @@ async fn resume_task(
             &format!("child={}", child_task_id),
         );
 
+        // 二次 async：暂存更新为 已承接首跳 + 本续行轮 的累计（逐跳累加，
+        // 最终回调一次合并上报）。本轮差值取不到（未装配 data_store）时
+        // 保留已有暂存，不吞账。
+        let merged = match extract_task_usage(agent_loop, &task.source.session_key, &usage_before) {
+            Some(leg) => Some(task_usage_merge(carried_usage.as_ref(), &leg)),
+            None => carried_usage.clone(),
+        };
+        task_list.set_async_usage_stash(&task.task_id, merged);
         if let Err(e) = task_list.save_async_state(
             &task.task_id,
             child_task_id,
@@ -722,7 +742,9 @@ async fn resume_task(
     // the resumed turn's tool result / final response are all in the instance
     // history already, so no separate content args are needed.
     persist_session_history(agent_loop, &instance, &task.source.session_key);
-    let usage = extract_task_usage(agent_loop, &task.source.session_key, &usage_before);
+    // E1 二期多跳账：本续行轮差值 + async 暂存的此前各跳累计 = 全程用量。
+    let usage = extract_task_usage(agent_loop, &task.source.session_key, &usage_before)
+        .map(|leg| task_usage_merge(carried_usage.as_ref(), &leg));
     // P1：续行轮同样按终态判定（与 execute_new_task 同一映射，见其注释）。
     // P2A：升级硬停（Done 终止 + 稳定前缀交付文本）同样改判 error——
     // 停止告知不是工作交付（详见 execute_new_task 同段注释）。
@@ -752,6 +774,7 @@ async fn resume_task(
         &result,
         &status.0,
         usage,
+        context.tool_path_base.as_deref(),
     )
     .await;
     task_list.complete_task(&task.task_id);
@@ -986,6 +1009,24 @@ fn truncate_str(s: &str, max_len: usize) -> String {
     }
 }
 
+/// F-U3-2（U3 实证）路径基准判定：档案管线任务（工作副本有基线 sidecar）
+/// → Some(exec_dir)，否则 None。`build_context`（dispatch 层文件工具/执行
+/// cwd 的相对路径基准）与 `deliver_files_back`（交付回传相对路径解析）
+/// 共用——两处口径必须一致，否则 worker 按 tool_path_base 写对的相对
+/// 路径，回传时却按进程 cwd 读不到（2026-10-17 根修：交付回传面此前
+/// 对相对路径形同虚设）。
+fn cluster_task_path_base(
+    agent_loop: &AgentLoop,
+    task: &nemesis_cluster::cluster_task::ClusterTask,
+) -> Option<std::path::PathBuf> {
+    let ws = agent_loop.workspace_root()?;
+    let exec_dir = nemesis_cluster::exec_workspace::exec_dir_for(&ws, &task.task_id);
+    (exec_dir
+        .join(nemesis_cluster::exec_workspace::BASELINE_SIDECAR_NAME)
+        .exists())
+    .then_some(exec_dir)
+}
+
 /// Build a RequestContext for a cluster task.
 ///
 /// `chat_id` 用稳定的 `session_key`（而不是 `node_id:task_id`），让同一对端节点的多次
@@ -1005,15 +1046,7 @@ fn build_context(
     // 层文件工具/执行 cwd 的相对路径基准 = 工作副本目录。worker 误用相对路径
     // 不再静默落到工作副本之外（变更集只扫 exec 目录——落外面=成果丢失）。
     // 非档案任务（无 sidecar）与普通会话一样 base 为空，零行为变化。
-    if let Some(ws) = agent_loop.workspace_root() {
-        let exec_dir = nemesis_cluster::exec_workspace::exec_dir_for(&ws, &task.task_id);
-        if exec_dir
-            .join(nemesis_cluster::exec_workspace::BASELINE_SIDECAR_NAME)
-            .exists()
-        {
-            ctx.tool_path_base = Some(exec_dir);
-        }
-    }
+    ctx.tool_path_base = cluster_task_path_base(agent_loop, task);
     ctx
 }
 
@@ -1234,6 +1267,7 @@ async fn send_task_callback(
     response: &str,
     error: &str,
     usage: Option<serde_json::Value>,
+    path_base: Option<&std::path::Path>,
 ) {
     // P2A（2026-09-12 NB-15）：终结失败分类随 error 回调上行（success =
     // None，字段不落），A 端验收重派决策据此避免同 worker 同模型盲重派。
@@ -1263,8 +1297,10 @@ async fn send_task_callback(
 
     // G（goal P3）：成功交付 → 解析交付文本中的文件路径回传 master
     // （失败/取消不回传；解析/读取失败诚实降级——交付评论内联源码兜底）。
+    // 相对路径按 path_base（= dispatch 层 tool_path_base 同源）解析，
+    // 绝对路径原样。
     if status == "success" {
-        deliver_files_back(rpc_client, task, self_node_id, response).await;
+        deliver_files_back(rpc_client, task, self_node_id, response, path_base).await;
     }
 }
 
@@ -1272,11 +1308,15 @@ async fn send_task_callback(
 /// 文件路径」清单），逐个（≤20 个、单文件 ≤8MB、需存在）base64 后经
 /// nb_bus ns="task" op="delivery.files" 推给 master 落资产。fire-and-forget：
 /// 失败只 debug（master 侧溯源线索=交付评论里的内联源码与路径）。
+/// 相对路径按 path_base 解析（与 dispatch 层 tool_path_base 同源——
+/// [`cluster_task_path_base`]；绝对路径原样），否则档案管线里 worker 按
+/// 工作副本根写的相对路径全部落空（metadata 失败被静默 continue）。
 async fn deliver_files_back(
     rpc_client: Option<&RpcClient>,
     task: &nemesis_cluster::cluster_task::ClusterTask,
     self_node_id: &str,
     delivery_text: &str,
+    path_base: Option<&std::path::Path>,
 ) {
     use base64::Engine as _;
     const MAX_FILES: usize = 20;
@@ -1306,13 +1346,18 @@ async fn deliver_files_back(
 
     let mut files = Vec::new();
     for p in &paths {
-        let Ok(meta) = std::fs::metadata(p) else {
+        // 相对路径 → path_base 拼接（与 dispatch 层工具同一基准）；绝对路径原样。
+        let resolved = match path_base {
+            Some(base) if !std::path::Path::new(p).is_absolute() => base.join(p),
+            _ => std::path::PathBuf::from(p),
+        };
+        let Ok(meta) = std::fs::metadata(&resolved) else {
             continue;
         };
         if !meta.is_file() || meta.len() as usize > MAX_FILE_BYTES {
             continue;
         }
-        let Ok(bytes) = std::fs::read(p) else {
+        let Ok(bytes) = std::fs::read(&resolved) else {
             continue;
         };
         let name = p.rsplit(['/', '\\']).next().unwrap_or("file").to_string();
@@ -1425,6 +1470,26 @@ fn task_usage_delta(
     })
 }
 
+/// 多跳用量合并（2026-10-17 异步多跳根修）：async 暂存的此前各跳累计 +
+/// 本轮差值，逐字段饱和加法。`carried` 缺失/字段缺失按 0 处理（旧任务
+/// 记录无 stash、旧 delta 形态缺字段都兼容）。
+fn task_usage_merge(
+    carried: Option<&serde_json::Value>,
+    leg: &serde_json::Value,
+) -> serde_json::Value {
+    let num = |v: &serde_json::Value, k: &str| v.get(k).and_then(|x| x.as_i64()).unwrap_or(0);
+    let fnum = |v: &serde_json::Value, k: &str| v.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
+    let empty = serde_json::Value::Null;
+    let c = carried.unwrap_or(&empty);
+    let sat_add = |a: i64, b: i64| a.saturating_add(b);
+    serde_json::json!({
+        "input_tokens": sat_add(num(c, "input_tokens"), num(leg, "input_tokens")),
+        "output_tokens": sat_add(num(c, "output_tokens"), num(leg, "output_tokens")),
+        "requests": sat_add(num(c, "requests"), num(leg, "requests")),
+        "cost_usd": fnum(c, "cost_usd") + fnum(leg, "cost_usd"),
+    })
+}
+
 /// 执行前快照 session 用量（[`extract_task_usage`] 的前半；未装配 = 全零）。
 fn snapshot_session_usage(
     agent_loop: &AgentLoop,
@@ -1456,6 +1521,7 @@ async fn handle_task_error(
         "error",
         "",
         error_msg,
+        None,
         None,
     )
     .await;

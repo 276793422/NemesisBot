@@ -5964,6 +5964,7 @@ async fn test_set_cluster_task_queue_routes_callback_to_work_queue() {
         waiting_tool_call_id: None,
         callback_result: None,
         required_profession: None,
+        async_usage_stash: None,
     });
     tl.save_async_state(
         "parent-1",
@@ -6034,6 +6035,7 @@ async fn test_callback_routing_with_full_work_queue_logs_error() {
         waiting_tool_call_id: None,
         callback_result: None,
         required_profession: None,
+        async_usage_stash: None,
     });
     tl.save_async_state(
         "parent-2",

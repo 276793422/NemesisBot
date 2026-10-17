@@ -92,8 +92,9 @@ async function refresh(silent = false) {
 }
 
 onMounted(() => refresh())
-// board-changed 推送：静默换新（不闪 loading）。
-useBoardChanged(() => loadIssues(true))
+// board-changed 推送：静默换新（不闪 loading）。项目与任务一起刷新——
+// 此前只刷 issues，另一端新建的项目不进下拉（误以为创建失败重复建）。
+useBoardChanged(() => refresh(true))
 
 function onProjectChange() {
   highlightStatus.value = ''
@@ -130,6 +131,15 @@ function toggleHighlight(s: string) {
   highlightStatus.value = highlightStatus.value === s ? '' : s
 }
 
+/** 高亮命中判定（未知态感知）：「未知」chip 的哨兵 __other 永不等于真实
+ *  status 枚举值——命中语义 = 不在任何已知 STATUSES 里，否则全图（含目标
+ *  节点）一起压暗、chip 形同虚设（2026-10-17 根修）。 */
+function statusMatchesHighlight(n: DagNode): boolean {
+  if (!highlightStatus.value) return true
+  if (highlightStatus.value === '__other') return !STATUSES.some((s) => s.key === n.status)
+  return n.status === highlightStatus.value
+}
+
 function toggleDecisionHighlight() {
   highlightDecision.value = !highlightDecision.value
 }
@@ -137,7 +147,7 @@ function toggleDecisionHighlight() {
 // --- 渲染辅助 ---
 function nodeOpacity(n: DagNode): number {
   if (highlightDecision.value && !n.needsUser) return 0.12
-  if (highlightStatus.value && n.status !== highlightStatus.value) return 0.12
+  if (highlightStatus.value && !statusMatchesHighlight(n)) return 0.12
   if (n.status === 'cancelled') return 0.5
   return 1
 }
@@ -168,9 +178,7 @@ function edgeOpacity(e: DagEdge): number {
     const to = nodeById.value.get(e.to)
     const from = nodeById.value.get(e.from)
     const hit =
-      to?.status === highlightStatus.value ||
-      from?.status === highlightStatus.value ||
-      (e.external && to?.status === highlightStatus.value)
+      (to && statusMatchesHighlight(to)) || (from && statusMatchesHighlight(from)) || false
     return hit ? 0.9 : 0.06
   }
   if (hoveredId.value !== null) {
