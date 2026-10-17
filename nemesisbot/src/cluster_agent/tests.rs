@@ -177,6 +177,7 @@ fn make_build_context_task(task_id: &str) -> ClusterTask {
         waiting_tool_call_id: None,
         callback_result: None,
         required_profession: None,
+        async_usage_stash: None,
     }
 }
 
@@ -552,6 +553,7 @@ mod loop_e2e {
             waiting_tool_call_id: None,
             callback_result: None,
             required_profession: None,
+            async_usage_stash: None,
         }
     }
 
@@ -986,6 +988,7 @@ mod loop_e2e {
             "done-work",
             "",
             None,
+            None,
         )
         .await;
 
@@ -1241,6 +1244,7 @@ mod wave_b {
             waiting_tool_call_id: None,
             callback_result: None,
             required_profession: None,
+            async_usage_stash: None,
         }
     }
 
@@ -1860,6 +1864,35 @@ fn task_usage_delta_saturates_and_carries_cost() {
     assert_eq!(d2["requests"], 0);
 }
 
+// ---------- E1 二期多跳账：task_usage_merge（2026-10-17 异步多跳根修）----------
+
+/// carried（async 暂存）+ 本轮差值逐字段饱和加法；carried 缺失/字段缺失
+/// 都按 0 兼容。
+#[test]
+fn task_usage_merge_accumulates_and_tolerates_missing() {
+    let carried = serde_json::json!({
+        "input_tokens": 100, "output_tokens": 20, "requests": 2, "cost_usd": 0.1
+    });
+    let leg = serde_json::json!({
+        "input_tokens": 50, "output_tokens": 30, "requests": 1, "cost_usd": 0.2
+    });
+    let m = super::task_usage_merge(Some(&carried), &leg);
+    assert_eq!(m["input_tokens"], 150);
+    assert_eq!(m["output_tokens"], 50);
+    assert_eq!(m["requests"], 3);
+    assert!((m["cost_usd"].as_f64().unwrap() - 0.3).abs() < 1e-9);
+
+    // carried = None（单跳无 async 或旧任务记录）→ 原样透传 leg。
+    let m2 = super::task_usage_merge(None, &leg);
+    assert_eq!(m2["input_tokens"], 50);
+    assert_eq!(m2["requests"], 1);
+
+    // leg 形态缺字段（旧 delta）→ 按 0 计，不 panic。
+    let m3 = super::task_usage_merge(Some(&carried), &serde_json::json!({}));
+    assert_eq!(m3["input_tokens"], 100);
+    assert!((m3["cost_usd"].as_f64().unwrap() - 0.1).abs() < 1e-9);
+}
+
 // -- P1（2026-09-11 真机日志）：turn 终态判定 -----------------------------
 //
 // 失败终止（末事件 Error）必须映射 error 回调，不得包装成 success 空交付。
@@ -2102,6 +2135,7 @@ mod wave_d {
             waiting_tool_call_id: None,
             callback_result: None,
             required_profession: None,
+            async_usage_stash: None,
         }
     }
 
@@ -2711,12 +2745,46 @@ mod wave_d {
 
         // rpc=None：解析后诚实跳过（无客户端臂）。
         let task = d_make_task("t-d-df-none");
-        deliver_files_back(None, &task, "test-node", &text).await;
+        deliver_files_back(None, &task, "test-node", &text, None).await;
 
         // rpc 有（无 resolver → call 快速 Err）→ 组包 + Err 降级臂。
         let rpc = Arc::new(RpcClient::new());
         let task = d_make_task("t-d-df-err");
-        deliver_files_back(Some(rpc.as_ref()), &task, "test-node", &text).await;
+        deliver_files_back(Some(rpc.as_ref()), &task, "test-node", &text, None).await;
+    }
+
+    /// 相对路径按 path_base 解析（2026-10-17 根修：档案管线交付清单是
+    /// 工作副本根相对形态，此前按进程 cwd 读=全部落空）；绝对路径原样；
+    /// base=None 时相对路径照旧按 cwd（旧行为兼容面）。
+    #[tokio::test]
+    async fn deliver_files_resolves_relative_paths_against_path_base() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sub = tmp.path().join("records");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("report.md"), b"body").unwrap();
+
+        // 相对路径 + base=tmp → 命中（组包进 files；rpc Err 降级不炸）。
+        let rpc = Arc::new(RpcClient::new());
+        let task = d_make_task("t-d-df-rel");
+        deliver_files_back(
+            Some(rpc.as_ref()),
+            &task,
+            "test-node",
+            "改动文件：\n- `records/report.md`\n",
+            Some(tmp.path()),
+        )
+        .await;
+
+        // 同一相对路径 + base=None（cwd 下不存在）→ 静默跳过（不 panic）。
+        let task = d_make_task("t-d-df-rel-nobase");
+        deliver_files_back(
+            Some(rpc.as_ref()),
+            &task,
+            "test-node",
+            "改动文件：\n- `records/report.md`\n",
+            None,
+        )
+        .await;
     }
 
     /// 交付文本无路径形态片段 → 解析为空提前返回，不触 RPC。
@@ -2729,6 +2797,7 @@ mod wave_d {
             &task,
             "test-node",
             "纯文本交付：没有可解析的路径片段",
+            None,
         )
         .await;
     }
@@ -2828,6 +2897,7 @@ fn prof_task(slug: Option<&str>) -> ClusterTask {
         waiting_tool_call_id: None,
         callback_result: None,
         required_profession: slug.map(str::to_string),
+        async_usage_stash: None,
     }
 }
 

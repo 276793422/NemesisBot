@@ -732,9 +732,12 @@ async function saveAcThenRetrigger(retrigger: boolean) {
   }
 }
 
-// 打回子单重做。done 是终态（无重开）——已完成单以「返工: …」子单承接意见
+// 打回子单重做。done 是终态（无重开）——已完成单以「返工： …」子单承接意见
 // 并派发；未完成单（in_review/in_progress/blocked/backlog/todo）评论打回，
 // blocked 先解阻再重派（dispatch 闸不收 blocked）。
+// ⚠ 标题前缀必须用全角冒号「返工：」——后端父单返工轮数清点按
+// starts_with("返工：") 计（board_review.rs REMEDIATION_TITLE_PREFIX），
+// 半角「返工: 」建出的单不进清点，parent_remediation_max 预算失真。
 // 部分失败诚实化（复查 #4）：create/评论已落库而 dispatch 失败时不能只报
 // 「打回失败」——用户照原样重试会建出第二张返工单/重复留评论。已落库的
 // 半程要指明产物与下一步（去列表手动派发），并复位表单防重复提交。
@@ -763,7 +766,7 @@ async function sendbackChild() {
       const created = await request('board', 'issue.create', {
         // Array.from 按 Unicode 码点截断：String.slice 会劈开代理对，产出
         // 孤代理让后端 serde_json 拒收（rune 截断教训的前端同族）。
-        title: Array.from('返工: ' + child.title).slice(0, 120).join(''),
+        title: Array.from('返工：' + child.title).slice(0, 120).join(''),
         description: `人工打回 ${child.number}（${child.title}）：\n\n${fb}`,
         priority: child.priority,
         parent_issue_id: d.id,
@@ -1390,8 +1393,9 @@ async function downloadAttachment(a: AttachmentRow) {
               ></textarea>
               <select v-model="decisionTarget" class="form-select" style="max-width: 280px;" data-test="sendback-target">
                 <option value="">打回到节点…</option>
-                <option v-for="n in decisionOnlineNodes" :key="'sb-' + n.name" :value="n.name">{{ n.name }}（在线{{ n.tier ? ' · ' + n.tier : '' }}）</option>
-                <option v-for="n in workerNodes" :key="'sbw-' + n.id" :value="n.id">{{ n.name }}（{{ n.online ? '在线' : '离线' }}）</option>
+                <!-- 与重派目标同一单一数据源（此前两组节点源无条件拼接：同一
+                     在线节点渲染两次、无 role 过滤——redispatch 去重根修的漏改面） -->
+                <option v-for="n in redispatchTargetOptions" :key="'sb-' + n.value" :value="n.value">{{ n.label }}</option>
               </select>
               <div class="decision-actions">
                 <button class="btn btn-sm btn-primary" :disabled="busy" data-test="sendback-run" @click="sendbackChild">打回并派发</button>

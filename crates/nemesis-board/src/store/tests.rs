@@ -4198,3 +4198,149 @@ fn test_skip_review_done_leaves_audit_comment() {
 
     cleanup(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// parent_issue_id / project_id 引用完整性（2026-10-17 系统性检查：两列无
+// REFERENCES 约束，create_issue / update_issue 显式校验把关）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn create_issue_rejects_dangling_parent_and_project() {
+    let (store, dir) = temp_store("ref-dangling-create");
+    let err = store
+        .create_issue(NewIssue {
+            parent_issue_id: Some(999_999),
+            ..new_issue("悬空父单")
+        })
+        .unwrap_err();
+    assert!(err.contains("parent_issue_id 999999 不存在"), "{err}");
+    let err = store
+        .create_issue(NewIssue {
+            project_id: Some(888_888),
+            ..new_issue("悬空项目")
+        })
+        .unwrap_err();
+    assert!(err.contains("project_id 888888 不存在"), "{err}");
+    cleanup(&dir);
+}
+
+#[test]
+fn create_issue_accepts_valid_refs() {
+    let (store, dir) = temp_store("ref-valid-create");
+    let proj = store.create_project("p", "", None, "📦", "", None).unwrap();
+    let parent = store.create_issue(new_issue("父单")).unwrap();
+    let child = store
+        .create_issue(NewIssue {
+            parent_issue_id: Some(parent.id),
+            project_id: Some(proj.id),
+            ..new_issue("子单")
+        })
+        .expect("合法引用必须通过");
+    assert_eq!(child.parent_issue_id, Some(parent.id));
+    assert_eq!(child.project_id, Some(proj.id));
+    cleanup(&dir);
+}
+
+#[test]
+fn update_issue_rejects_dangling_self_and_cycle_refs() {
+    let (store, dir) = temp_store("ref-update-guard");
+    let a = store.create_issue(new_issue("A")).unwrap();
+    let b = store.create_issue(new_issue("B")).unwrap();
+    store
+        .update_issue(
+            b.id,
+            &IssuePatch {
+                parent_issue_id: Some(a.id),
+                ..Default::default()
+            },
+            &admin(),
+        )
+        .unwrap();
+
+    // 悬空 parent。
+    let err = store
+        .update_issue(
+            a.id,
+            &IssuePatch {
+                parent_issue_id: Some(999_999),
+                ..Default::default()
+            },
+            &admin(),
+        )
+        .unwrap_err();
+    assert!(err.contains("999999 不存在"), "{err}");
+
+    // 自引用。
+    let err = store
+        .update_issue(
+            a.id,
+            &IssuePatch {
+                parent_issue_id: Some(a.id),
+                ..Default::default()
+            },
+            &admin(),
+        )
+        .unwrap_err();
+    assert!(err.contains("不能指向自身"), "{err}");
+
+    // 环：a 的 parent 指向 b，而 b 的 parent 已指向 a。
+    let err = store
+        .update_issue(
+            a.id,
+            &IssuePatch {
+                parent_issue_id: Some(b.id),
+                ..Default::default()
+            },
+            &admin(),
+        )
+        .unwrap_err();
+    assert!(err.contains("父子环"), "{err}");
+
+    // 悬空 project。
+    let err = store
+        .update_issue(
+            a.id,
+            &IssuePatch {
+                project_id: Some(888_888),
+                ..Default::default()
+            },
+            &admin(),
+        )
+        .unwrap_err();
+    assert!(err.contains("project_id 888888 不存在"), "{err}");
+    cleanup(&dir);
+}
+
+#[test]
+fn update_issue_untouched_ref_columns_skip_validation() {
+    // 存量数据可能带历史悬空引用：不改引用列的普通更新（改标题）不得被
+    // 误拦——校验只对本 patch 实际改动的列生效。
+    let (store, dir) = temp_store("ref-legacy-tolerant");
+    let legacy_parent: i64 = 999_999;
+    {
+        // 直插一行带悬空 parent 的存量形态（绕过 create 校验）。
+        let conn = store.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO issue (number, title, description, status, priority,
+                assignee_type, assignee_id, creator_type, creator_id,
+                parent_issue_id, created_at, updated_at)
+             VALUES ('NB-X1', 'legacy', '', 'backlog', 2, 'user', 'admin',
+                     'admin', 'admin', ?1, 0, 0)",
+            rusqlite::params![legacy_parent],
+        )
+        .unwrap();
+    }
+    let legacy = store.get_issue_by_number("NB-X1").unwrap();
+    let updated = store
+        .update_issue(
+            legacy.id,
+            &IssuePatch {
+                title: Some("改标题不碰引用列".to_string()),
+                ..Default::default()
+            },
+            &admin(),
+        )
+        .expect("不改引用列的更新必须放行");
+    assert_eq!(updated.title, "改标题不碰引用列");
+    cleanup(&dir);
+}
