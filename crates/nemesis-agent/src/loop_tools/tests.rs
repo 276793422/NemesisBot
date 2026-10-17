@@ -4930,6 +4930,7 @@ async fn workflow_run_input_type_arms() {
 // --- HistorySearchTool arg validation (error arms only — the happy path
 // --- touches the global FTS index and must stay in tests/history_search_fts.rs)
 
+#[cfg(feature = "history-search")]
 #[tokio::test]
 async fn history_search_tool_rejects_bad_args() {
     let tool = HistorySearchTool::new();
@@ -4954,6 +4955,7 @@ async fn history_search_tool_rejects_bad_args() {
     assert!(err.contains("must not be empty"), "got: {err}");
 }
 
+#[cfg(feature = "history-search")]
 #[test]
 fn history_search_tool_metadata() {
     let tool = HistorySearchTool::new();

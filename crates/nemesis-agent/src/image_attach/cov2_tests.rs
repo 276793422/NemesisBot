@@ -141,6 +141,7 @@ fn pick_url_ext_decision_table() {
 
 /// 文本来源 + 降采样开 + 候选不存在 → downscale_gate Err → 诚实注记。
 #[test]
+#[cfg(feature = "image-process")]
 fn text_source_downscale_error_gets_honest_note() {
     let dir = tempfile::tempdir().unwrap();
     let uploads = tempfile::tempdir().unwrap();
@@ -171,6 +172,7 @@ fn text_source_downscale_error_gets_honest_note() {
 
 /// media 来源 + 降采样开 + 路径不存在 → 同一 Err 注记形态。
 #[test]
+#[cfg(feature = "image-process")]
 fn media_source_downscale_error_gets_honest_note() {
     let dir = tempfile::tempdir().unwrap();
     let uploads = tempfile::tempdir().unwrap();

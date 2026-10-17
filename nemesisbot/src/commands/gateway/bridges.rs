@@ -541,5 +541,7 @@ impl nemesis_workflow::nodes::AgentRunner for GatewayAgentRunner {
     }
 }
 
-#[cfg(test)]
+// cov_tests 消费 nemesis_cluster（TaskResultPersister trait 等）——cluster
+// 关（如 iotsmall）时随 feature 一起退出测试编译面。
+#[cfg(all(test, feature = "cluster"))]
 mod cov_tests;

@@ -24,7 +24,14 @@ impl ModuleHandler for CodingHandler {
     }
 
     fn commands(&self) -> &'static [&'static str] {
-        &["lsp_status", "lsp_install", "config"]
+        #[cfg(feature = "lsp")]
+        {
+            &["lsp_status", "lsp_install", "config"]
+        }
+        #[cfg(not(feature = "lsp"))]
+        {
+            &["config"]
+        }
     }
 
     async fn handle_cmd(
@@ -33,10 +40,16 @@ impl ModuleHandler for CodingHandler {
         data: Option<serde_json::Value>,
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
+        // lsp 关：lsp_status/lsp_install 落 _ 臂 = unknown command（诚实报错，
+        // 前端不再有这两条可调命令）；config 照常。
+        #[cfg(not(feature = "lsp"))]
+        let _ = data;
         match cmd {
+            #[cfg(feature = "lsp")]
             "lsp_status" => self.lsp_status(),
             // C6: 一键安装缺失的语言服务器（走 agent 的 exec dispatch——
             // 安全 8 层 + 审批卡 + executor 隔离全链路）。
+            #[cfg(feature = "lsp")]
             "lsp_install" => self.lsp_install(data, ctx).await,
             "config" => self.config(ctx),
             _ => Err(format!("unknown command: coding.{}", cmd)),
@@ -48,6 +61,7 @@ impl CodingHandler {
     /// Live PATH probe of every language server in the nemesis-lsp registry
     /// table (`SERVERS`). Availability is machine-dependent — this command is
     /// exactly why the page does not hard-code anything.
+    #[cfg(feature = "lsp")]
     fn lsp_status(&self) -> Result<Option<serde_json::Value>, String> {
         let languages: Vec<serde_json::Value> = nemesis_lsp::registry::SERVERS
             .iter()
@@ -81,6 +95,7 @@ impl CodingHandler {
     /// 全链路，与模型调用 exec 完全同权同责；审批弹卡复用 dashboard 审批卡
     /// （process_exec 是 CRITICAL → RequireApproval → WebApprovalManager）。
     /// 交互命令（sudo 等）诚实拒绝只给复制。Agent 未运行时诚实报错。
+    #[cfg(feature = "lsp")]
     async fn lsp_install(
         &self,
         data: Option<serde_json::Value>,
@@ -241,5 +256,6 @@ mod tests;
 // AGT 覆盖率批次（2026-09-25）：lsp_install 的交互型命令诚实拒绝臂
 // （平台条件化）、Plan 模式预检拒绝臂、dispatch 全身（裸 loop 的
 // Unknown tool 短路，不执行安装命令）。豁免见 agt_tests 文件头注。
-#[cfg(test)]
+// 全文件均 lsp 域（lsp_install/lsp_status）→ 随 lsp feature 进出。
+#[cfg(all(test, feature = "lsp"))]
 mod agt_tests;

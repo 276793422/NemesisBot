@@ -188,9 +188,11 @@ async fn project_factory_builds_loop_with_byte_identical_shared_schemas() {
 }
 
 // ---------------------------------------------------------------------------
-// checkpoint 影子库两形态
+// checkpoint 影子库两形态（git 形态断言随 checkpoint-git feature 进出；
+// 关 = backend() 恒 Json，影子库断言不成立）
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "checkpoint-git")]
 #[tokio::test]
 async fn project_checkpoint_shadow_repo_stays_out_of_project_dir() {
     // ── 形态一：项目带 .git 目录（git 影子库后端）──

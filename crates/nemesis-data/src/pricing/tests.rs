@@ -10,6 +10,7 @@ fn approx(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-9
 }
 
+#[cfg(feature = "pricing-embed")]
 #[test]
 fn embedded_table_loads_and_is_sane() {
     let table = PricingTable::embedded();
@@ -54,6 +55,7 @@ fn embedded_table_loads_and_is_sane() {
     }
 }
 
+#[cfg(feature = "pricing-embed")]
 #[test]
 fn lookup_exact_and_bare_suffix() {
     // Exact model_id.
@@ -66,6 +68,7 @@ fn lookup_exact_and_bare_suffix() {
     assert!(lookup_pricing("deepseek/deepseek-reasoner").is_some());
 }
 
+#[cfg(feature = "pricing-embed")]
 #[test]
 fn lookup_alias_paths() {
     // extras 别名命中：fireworks_ai/glm-4p46 不在上游键集里 → 走 alias 表。
@@ -89,6 +92,7 @@ fn lookup_unknown_and_empty() {
     assert!(lookup_pricing("totally-made-up-model").is_none());
 }
 
+#[cfg(feature = "pricing-embed")]
 #[test]
 fn cost_gpt4o_plain_math() {
     // gpt-4o: $2.5/M input, $10/M output.
@@ -99,6 +103,7 @@ fn cost_gpt4o_plain_math() {
     assert!(approx(cost, 2.5), "got {cost}");
 }
 
+#[cfg(feature = "pricing-embed")]
 #[test]
 fn cost_deepseek_cache_split() {
     // 上游价格会随时间漂移——期望值从实际命中的条目现算（本测试钉的是
@@ -114,6 +119,7 @@ fn cost_deepseek_cache_split() {
     assert!(approx(cost, expected), "got {cost} want {expected}");
 }
 
+#[cfg(feature = "pricing-embed")]
 #[test]
 fn cost_claude_cache_creation() {
     // claude-opus-4-5: 5 in / 25 out / 0.5 read / 6.25 write.
@@ -123,6 +129,7 @@ fn cost_claude_cache_creation() {
     assert!(approx(cost, expected), "got {cost} want {expected}");
 }
 
+#[cfg(feature = "pricing-embed")]
 #[test]
 fn cost_clamps_negative_plain_input() {
     let p = lookup_pricing("gpt-4o").unwrap();
@@ -180,6 +187,7 @@ fn cost_from_pricing_synthetic_entry() {
     );
 }
 
+#[cfg(feature = "pricing-embed")]
 #[test]
 fn embedded_aliases_roundtrip() {
     let table = PricingTable::embedded();

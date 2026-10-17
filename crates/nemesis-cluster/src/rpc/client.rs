@@ -650,7 +650,7 @@ impl RpcClient {
             let success = result.is_ok();
             let mut fields = serde_json::json!({
                 "direction": "outbound",
-                "action": request.action.as_str(),
+                "action": crate::cluster_log::audit_action_name(request.action.as_str()),
                 "source": request.source,
                 "target": peer_id,
                 "request_id": request.id,

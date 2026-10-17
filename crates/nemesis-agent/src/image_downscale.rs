@@ -19,25 +19,32 @@
 
 use std::path::{Path, PathBuf};
 
+#[cfg(feature = "image-process")]
 use crate::image_path_detector;
 
 /// 降采样触发阈值：文件字节数（与验真链同一 25MB 上限）。
+#[cfg(feature = "image-process")]
 pub(crate) const ENTRY_BYTES: u64 = image_path_detector::MAX_IMAGE_BYTES;
 
 /// 降采样触发阈值：最长边像素（provider 分辨率上限量级）。
+#[cfg(feature = "image-process")]
 pub(crate) const MAX_DIMENSION: u32 = 8000;
 
 /// 降采样阶梯（最长边 px）：逐级收紧，产物 ≤[`Limits::out_bytes`] 才采用。
+#[cfg(feature = "image-process")]
 const LADDER: [u32; 3] = [4096, 2048, 1024];
 
 /// 输入维度安全阀：解码内存 ≈ w·h·4（12000²×4 ≈ 576MB 瞬时峰值）。
+#[cfg(feature = "image-process")]
 const MAX_INPUT_DIMENSION: u32 = 12000;
 
 /// JPEG 重编码质量（对齐实施计划原文 q85）。
+#[cfg(feature = "image-process")]
 const JPEG_QUALITY: u8 = 85;
 
 /// 降采样判定参数（生产默认 = [`DEFAULT_LIMITS`]；测试注入小阈值免合成
 /// 25MB 实体文件）。字段 pub(crate)：仅 nemesis-agent 测试构造。
+#[cfg(feature = "image-process")]
 pub(crate) struct Limits {
     /// 触发降采样的文件字节下限。
     pub entry_bytes: u64,
@@ -47,6 +54,7 @@ pub(crate) struct Limits {
     pub out_bytes: usize,
 }
 
+#[cfg(feature = "image-process")]
 pub(crate) const DEFAULT_LIMITS: Limits = Limits {
     entry_bytes: ENTRY_BYTES,
     entry_dimension: MAX_DIMENSION,
@@ -55,6 +63,7 @@ pub(crate) const DEFAULT_LIMITS: Limits = Limits {
 
 /// 降采样闸判定结果。
 #[derive(Debug)]
+#[cfg_attr(not(feature = "image-process"), allow(dead_code))] // off：仅 Keep 被构造
 pub(crate) enum GateVerdict {
     /// 无需降采样（≤entry 阈值）——调用方按原图继续既有链。
     Keep,
@@ -72,6 +81,23 @@ pub(crate) enum GateVerdict {
 ///
 /// `uploads_dir = None`（开关关）恒 [`GateVerdict::Keep`]——零行为变化。
 /// 调用方对 `Err(reason)` 产出诚实拒绝注记（reason 已是人读文案）。
+///
+/// image-process 关：降采样未编译——恒 Keep（原图直附，既有验真链照常
+/// 把关超限）；开关开而编译关属配置失配，响亮 warn 一次差异，不静默。
+#[cfg(not(feature = "image-process"))]
+pub(crate) fn downscale_gate(
+    _src: &Path,
+    uploads_dir: Option<&Path>,
+) -> Result<GateVerdict, String> {
+    if uploads_dir.is_some() {
+        tracing::warn!(
+            "[image] agents.image_downscale 开但本构建未编译降采样（image-process 关）——超限图片按原图链路处理"
+        );
+    }
+    Ok(GateVerdict::Keep)
+}
+
+#[cfg(feature = "image-process")]
 pub(crate) fn downscale_gate(
     src: &Path,
     uploads_dir: Option<&Path>,
@@ -82,6 +108,7 @@ pub(crate) fn downscale_gate(
     }
 }
 
+#[cfg(feature = "image-process")]
 pub(crate) fn downscale_gate_with(
     src: &Path,
     uploads_dir: &Path,
@@ -176,6 +203,7 @@ pub(crate) fn downscale_gate_with(
 }
 
 /// 透明像素铺白底（JPEG 无 alpha 通道，直接丢 alpha 会把透明区变黑/杂色）。
+#[cfg(feature = "image-process")]
 fn flatten_white(img: image::DynamicImage) -> image::DynamicImage {
     if img.color().has_alpha() {
         let (w, h) = (img.width(), img.height());
@@ -188,6 +216,7 @@ fn flatten_white(img: image::DynamicImage) -> image::DynamicImage {
 }
 
 /// 内容 sha256 前 8 字节 hex（命名寻址；sha2 已是 crate 依赖面）。
+#[cfg(feature = "image-process")]
 fn content_sha8(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -196,5 +225,5 @@ fn content_sha8(bytes: &[u8]) -> String {
     digest[..8].iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "image-process"))]
 mod tests;

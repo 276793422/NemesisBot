@@ -259,7 +259,9 @@ pub async fn send_verdict(
 /// 两个落库点的共用 relay）：解析 `/approve|/deny <短号>`，短号在注册表
 /// 才动作（杂散同形文本零影响）；下发成功 = 注册表摘除 + SSE 关卡 +
 /// 系统评论留痕；失败 = 系统评论留痕（条目保留，可重发）。返回是否动作
-/// （true = 本条评论被解释为远程批复）。
+/// （true = 本条评论被解释为远程批复）。board 关 = 随 nemesis-board 退出
+/// 编译（唯一调用方在 handlers/board.rs，同 gate）。
+#[cfg(feature = "board")]
 pub async fn try_remote_approval_reply(
     store: &nemesis_board::BoardStore,
     cluster: &nemesis_cluster::cluster::Cluster,
@@ -301,5 +303,7 @@ pub async fn try_remote_approval_reply(
     true
 }
 
-#[cfg(test)]
+// 测试夹具真实开关 nemesis_board::BoardStore（temp_store/create_issue/回执
+// 断言）——随 board feature 进出，勿退回裸 #[cfg(test)]。
+#[cfg(all(test, feature = "board"))]
 mod tests;
