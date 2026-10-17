@@ -747,8 +747,11 @@ impl<'a> SecureFileWrapper<'a> {
     /// Delete a directory (recursively) with security check.
     pub async fn delete_directory(&self, path: &str) -> Result<(), String> {
         let validated = self.check_dir_delete(path)?;
-        tokio::fs::remove_dir_all(&validated)
+        // 韧性删除：瞬时句柄（Defender/索引器）单发会假失败；spawn_blocking
+        // 装同步重试内核（最坏 ~4.4s，不占 async worker）。
+        tokio::task::spawn_blocking(move || nemesis_utils::fsutil::remove_dir_all_retry(&validated))
             .await
+            .map_err(|e| format!("failed to delete directory: {e}"))?
             .map_err(|e| format!("failed to delete directory: {}", e))
     }
 

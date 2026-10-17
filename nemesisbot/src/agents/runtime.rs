@@ -594,6 +594,11 @@ impl AgentRuntimeSupervisor {
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
+        // 异常路径兜底：supervisor 在测试 panic / 进程拆除中整体 drop 时，
+        // 槽位 session 随之 drop——kill_on_drop 保证不留活孤儿执行体（占
+        // 工作区文件锁、干扰后续测试）。有序路径显式 shutdown（EOF→超时
+        // kill）后 Child 已退出，此开关不生效，无副作用。
+        cmd.kill_on_drop(true);
         #[cfg(windows)]
         {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -715,6 +720,8 @@ impl AgentRuntimeSupervisor {
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::null());
         cmd.stderr(std::process::Stdio::piped());
+        // 同上：异常 drop 兜底杀盒内执行体（有序路径显式 shutdown 不受影响）。
+        cmd.kill_on_drop(true);
         {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             cmd.creation_flags(CREATE_NO_WINDOW);

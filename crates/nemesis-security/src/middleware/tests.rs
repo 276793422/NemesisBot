@@ -2497,7 +2497,10 @@ async fn test_file_wrapper_delete_nonexistent_directory() {
     let wrapper = SecureFileWrapper::new(&mw);
     let del_dir = ws_path(&ws, "nonexistent_dir");
     let result = wrapper.delete_directory(&del_dir).await;
-    assert!(result.is_err());
+    // 幂等删除语义（fsutil remove_dir_all_retry：NotFound=成功）——删除
+    // 不存在的目录是成功的 no-op，目标态（目录不在）已达成；策略拦截
+    // （工作区外/危险路径）仍由前置 check_dir_delete 负责并报错。
+    assert!(result.is_ok());
 }
 
 #[tokio::test]
