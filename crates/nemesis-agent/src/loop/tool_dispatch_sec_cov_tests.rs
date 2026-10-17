@@ -87,6 +87,8 @@ fn sec_loop() -> AgentLoop {
             max_turns: 5,
             tools: vec![],
             models: std::collections::HashMap::new(),
+
+            tool_fence_profession: None,
         },
     )
 }

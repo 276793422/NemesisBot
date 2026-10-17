@@ -62,6 +62,10 @@ function upsertFromPayload(data: any) {
   const existing = pendingApprovals.findIndex(a => a.request_id === data.request_id)
   const age = typeof data.age_secs === 'number' ? data.age_secs : 0
   const timeout = typeof data.timeout_secs === 'number' ? data.timeout_secs : 0
+  // 裁决窗口已过的死条目不种卡：服务端列表在 sweep 窗口内仍可能吐出
+  // age>=timeout 的行，种进来 expiresAt<=now、1s 内必被摘——表现即
+  // 「刷新页面闪一下审批卡」（2026-10-15 真机实证）。
+  if (timeout > 0 && age >= timeout) return
   const entry: ApprovalRequest = {
     request_id: data.request_id,
     operation: String(data.operation ?? ''),
@@ -119,6 +123,9 @@ function upsertRemoteFromPayload(data: any) {
   const existing = pendingRemoteApprovals.findIndex(a => a.request_id === data.request_id)
   const age = typeof data.age_secs === 'number' ? data.age_secs : 0
   const timeout = typeof data.timeout_secs === 'number' ? data.timeout_secs : 300
+  // 同 upsertFromPayload：裁决窗口已过的死条目不种卡（刷新闪卡根修的
+  // 前端兜底臂——服务端 snapshot 过滤为主闸）。
+  if (timeout > 0 && age >= timeout) return
   const entry: RemoteApprovalRequest = {
     request_id: data.request_id,
     short_id: data.short_id,

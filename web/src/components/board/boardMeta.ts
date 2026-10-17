@@ -26,6 +26,43 @@ export const STATUS_BADGE: Record<string, string> = {
   cancelled: 'badge-neutral',
 }
 
+// DAG 全景图节点配色（2026-10-15 需求③）：badge 语义的图形化投影——
+// 色相沿用 STATUS_BADGE 同族 CSS 变量（双主题自动适配），同色相内用
+// 空心/实心与图标消歧（todo 空心 vs in_progress 实心；backlog 灰空心
+// vs cancelled 灰+✕）。图标冗余兼顾色觉障碍（compact 模式色是唯一编码，
+// 图标必须保留）。
+export interface StatusNodeStyle {
+  fill: string
+  fillOpacity: number
+  stroke: string
+  strokeWidth: number
+  /** 节点内图标（色觉冗余编码）。 */
+  icon: string
+}
+
+export const STATUS_NODE: Record<string, StatusNodeStyle> = {
+  backlog: { fill: 'var(--surface)', fillOpacity: 0.45, stroke: 'var(--text-muted)', strokeWidth: 1, icon: '' },
+  todo: { fill: 'var(--info)', fillOpacity: 0.12, stroke: 'var(--info)', strokeWidth: 1.2, icon: '' },
+  in_progress: { fill: 'var(--info)', fillOpacity: 0.4, stroke: 'var(--info)', strokeWidth: 2.2, icon: '▶' },
+  in_review: { fill: 'var(--warning)', fillOpacity: 0.32, stroke: 'var(--warning)', strokeWidth: 1.8, icon: '👁' },
+  done: { fill: 'var(--success)', fillOpacity: 0.35, stroke: 'var(--success)', strokeWidth: 1.8, icon: '✓' },
+  blocked: { fill: 'var(--error)', fillOpacity: 0.35, stroke: 'var(--error)', strokeWidth: 2.2, icon: '⛔' },
+  cancelled: { fill: 'var(--surface)', fillOpacity: 0.6, stroke: 'var(--text-muted)', strokeWidth: 1, icon: '✕' },
+}
+
+/** 未知状态兜底（后端新增状态先于前端发布时不炸渲染）。 */
+export const STATUS_NODE_FALLBACK: StatusNodeStyle = {
+  fill: 'var(--surface)',
+  fillOpacity: 0.5,
+  stroke: 'var(--text-muted)',
+  strokeWidth: 1,
+  icon: '?',
+}
+
+export function statusNodeStyle(s: string): StatusNodeStyle {
+  return STATUS_NODE[s] || STATUS_NODE_FALLBACK
+}
+
 export const PRIORITY_LABEL: Record<number, string> = {
   0: '低',
   1: '中',
@@ -95,9 +132,75 @@ export interface IssueRow {
    *  issue.list 恒排除 hidden 单，此字段只在详情/CLI 全量面可见。 */
   hidden?: boolean
   /** 拆解运行期可观测（2026-10-11 Part 1）：planner 在途投影——
-   *  issue.list 行附 {elapsed_secs, attempt}，不在途无此键。 */
-  planning?: { elapsed_secs: number; attempt: number }
+   *  issue.list 行附 {elapsed_secs, attempt, phase}（phase：
+   *  planning=planner 运行中 / dispatching=auto_confirm 发车派发中），
+   *  不在途无此键。旧后端无 phase 时视为 planning。 */
+  planning?: { elapsed_secs: number; attempt: number; phase?: 'planning' | 'dispatching' }
+  /** 依赖上游投影（2026-10-15）：每上游 {id, number, status}——列表行
+   *  「🔒 等 NB-x」徽标 + DAG 全景图边数据源。旧后端无此键（可选）。 */
+  depends_on?: Array<{ id: number; number: string; status: string }>
+  /** 父单 id（拆解关系）：DAG 分层下界（子 ≥ 父层+1，根需求独占首行）+
+   *  拆解边渲染。issue.list 走 Issue 全量序列化自带，无需后端投影。 */
+  parent_issue_id?: number | null
   comments?: any[]
   activity?: any[]
   subscribers?: any[]
+  /** 决策可见性投影（2026-10-15 批，issue.list 附带）：
+   *  needs_user = 停车强信号（活档案 + in_review/in_progress 状态闸）——
+   *  「✋ 待你决策」徽标与详情页决策面板数据源；
+   *  plan_ready = 拆解完成等确认发车（PLAN_CACHE 快照）——「📋 计划待确认」；
+   *  attention = 执行档案停滞弱信号（in_progress + 停摆哨兵评论）——只提示。 */
+  needs_user?: {
+    stop_kind: string
+    stop_kind_label: string
+    suggested_action: string
+    hint: string
+    stopped_at: string | null
+  } | null
+  plan_ready?: { plan_id: string; subs_count: number; created_age_secs: number } | null
+  attention?: boolean
+}
+
+// ---- 决策可见性 helper（镜像 crates/nemesis-board/src/handoff.rs
+// stop_kind_label 兜底；正常路径后端已投影 label，此处只补旧后端缺字段）----
+
+/** 停车类型 → 人话标签（与后端 stop_kind_label 同表；未知兜底「停车待处理」）。 */
+export const STOP_KIND_LABEL: Record<string, string> = {
+  unsure_streak: '连续不确定',
+  fail_streak: '连续失败熔断',
+  budget: '预算耗尽',
+  retry_exhausted: '重试耗尽',
+  worker_loop: 'worker 循环异常',
+  capability_fail: '能力不足',
+  infra: '基础设施故障',
+  defect_gate: '缺陷闸拦截',
+  parent_unresolved: '父单收口未决',
+  project_unresolved: '项目收口未决',
+  no_match: '无匹配节点',
+  plan_exhausted: '拆解重试耗尽',
+  llm_unavailable: 'LLM 不可用',
+}
+
+export function stopKindLabel(stopKind: string | undefined | null): string {
+  return (stopKind && STOP_KIND_LABEL[stopKind]) || '停车待处理'
+}
+
+/** suggested_action → 人话（决策面板按钮组预设依据）。 */
+export const SUGGESTED_ACTION_LABEL: Record<string, string> = {
+  manual_check: '人工核查后裁决',
+  retry: '重试/复评',
+  redispatch: '重新派发',
+}
+
+export function suggestedActionLabel(a: string | undefined | null): string {
+  return (a && SUGGESTED_ACTION_LABEL[a]) || '人工核查后裁决'
+}
+
+/** needs_user 行内徽标文案：「✋ 待你决策」+ 停车类型（title 悬浮用）。 */
+export function needsUserBadge(nu: IssueRow['needs_user']): { text: string; title: string } {
+  const label = nu?.stop_kind_label || stopKindLabel(nu?.stop_kind)
+  return {
+    text: '✋ 待你决策',
+    title: `停车待裁决：${label}${nu?.hint ? ' — ' + nu.hint : ''}`,
+  }
 }

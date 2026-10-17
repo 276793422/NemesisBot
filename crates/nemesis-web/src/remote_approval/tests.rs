@@ -210,6 +210,53 @@ fn snapshot_sorts_by_remaining_secs() {
     assert_eq!(first, Some("short-ttl-request"), "soonest-to-expire first");
 }
 
+// 2026-10-15 真机「刷新页面闪审批卡」回归锁：worker 侧超时自动拒生效后、
+// 注册表 +60s 兜底未扫前（裁决窗口外、TTL 窗口内），remote_list/snapshot
+// 不得再吐死条目（前端种卡即自摘=闪卡）；resolve 仍可命中（迟到裁决/
+// ask_closed 竞态安全面不变）。
+#[test]
+fn snapshot_hides_entries_past_decision_window() {
+    let reg = RemoteAskRegistry {
+        inner: Mutex::new(HashMap::new()),
+    };
+    // elapsed=330s：timeout 300（裁决窗口已过）< TTL 360（sweep 未及）。
+    let backdated = std::time::Instant::now().checked_sub(std::time::Duration::from_secs(330));
+    let Some(backdated) = backdated else {
+        eprintln!("SKIP: Instant::checked_sub unsupported on this platform");
+        return;
+    };
+    reg.register(RemoteAskEntry {
+        request_id: "zombie-window-request".into(),
+        worker_node: "w".into(),
+        operation: "op".into(),
+        target: "t".into(),
+        risk_level: "LOW".into(),
+        reason: String::new(),
+        issue_number: None,
+        timeout_secs: 300,
+        created_at: backdated,
+    });
+    reg.register(RemoteAskEntry {
+        request_id: "alive-request".into(),
+        worker_node: "w".into(),
+        operation: "op".into(),
+        target: "t".into(),
+        risk_level: "LOW".into(),
+        reason: String::new(),
+        issue_number: None,
+        timeout_secs: 300,
+        created_at: std::time::Instant::now(),
+    });
+    let snap = reg.snapshot();
+    assert_eq!(snap.len(), 1, "dead entry must not list: {snap:?}");
+    assert_eq!(
+        snap[0].get("request_id").and_then(|v| v.as_str()),
+        Some("alive-request")
+    );
+    // 竞态安全面：条目仍在表，迟到的 resolve 照常命中。
+    assert!(reg.resolve("zombie-window-request").is_some());
+}
+
 /// 回源 relay 的两条 false 路径（解析不命中 / 短号不在注册表）——不触
 /// store/cluster 即返回 false，杂散同形评论零影响。
 #[tokio::test]

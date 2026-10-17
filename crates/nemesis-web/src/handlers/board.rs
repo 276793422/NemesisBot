@@ -3,7 +3,8 @@
 //! 所有命令经 `AppState.board` 的 [`nemesis_board::BoardService`]（gateway 在
 //! `board` feature 开启时注入；未注入时统一报 "board service not available"）。
 //! 状态转移 / 指派走 store 的状态机接口（非法转移被拒），普通字段更新走 patch。
-//! 操作者身份：dashboard 登录用户 → `Actor::admin(session_id)`。
+//! 操作者身份：dashboard 登录用户 → `Actor::admin("dashboard")`（固定 id，见
+//! `ctx_actor` 注释——session 每连必换，按 session 建身份会让通知按订阅者扇出重复）。
 //!
 //! **角色门控（已移除，2026-08-31，见 board/tests.rs 回归钉）**：board.db 是
 //! 节点本地数据（无集群同步、CLI 同权直写），worker 对本机看板有完整写权
@@ -41,9 +42,17 @@ fn require_board(ctx: &RequestContext) -> Result<Arc<BoardStore>, String> {
         .ok_or_else(|| "board service not available".to_string())
 }
 
-/// Request author → Actor（dashboard 用户记为 admin）。
-fn ctx_actor(ctx: &RequestContext) -> Actor {
-    Actor::admin(&ctx.session_id)
+/// Request author → Actor（dashboard 用户记为 admin，固定身份 "dashboard"）。
+///
+/// ⚠ 不用 WS `session_id`：session 每次页面加载/重连都换新（session.rs
+/// `generate_session_id` 随机 16 hex），会以新身份落订阅表（`issue_subscriber`
+/// 唯一键含 subscriber_id，去重失效）并永久累积——而通知按订阅者扇出，
+/// 同一事件给 admin 落 N 份，收件箱同一条消息重复 N 次（2026-10-16 实录：
+/// NB-121 一次验收失败收件箱 6 份，18 个历史 admin 身份）。board.db 是
+/// 节点本地数据、单管理员语义（inbox 面向 admin 通配），固定 id 即可让
+/// 订阅 ON CONFLICT 去重生效；鉴权在 WS token 层，与此 id 无关。
+fn ctx_actor(_ctx: &RequestContext) -> Actor {
+    Actor::admin("dashboard")
 }
 
 /// 解析可选指派对：`assignee_type`（"manager_self"/"worker"）+ `assignee_id`。
@@ -92,6 +101,22 @@ fn issue_to_view(
     let comments = store.list_comments(issue.id)?;
     let activity = store.list_activity(issue.id)?;
     let subscribers = store.list_subscribers(issue.id)?;
+    // 依赖上游投影（2026-10-15 用户需求：列表/详情可见「等 NB-x」徽标）：
+    // 每上游 {id, number, status}——前端渲染阻塞态（非 done = 等待）与
+    // 跳转文案。单数场景上游 ≤ 拆解上限，逐点查无感；FK 保证上游存在，
+    // 查询失败（防御性）降级 unknown 占位不炸视图。
+    let mut depends_on = Vec::new();
+    for dep_id in store.dependencies_of(issue.id)? {
+        let (number, status) = match store.get_issue(dep_id) {
+            Ok(up) => (up.number, up.status.as_str().to_string()),
+            Err(_) => ("?".to_string(), "unknown".to_string()),
+        };
+        depends_on.push(serde_json::json!({
+            "id": dep_id,
+            "number": number,
+            "status": status,
+        }));
+    }
     let mut v = serde_json::to_value(issue).map_err(|e| format!("serialize issue: {e}"))?;
     if let Some(obj) = v.as_object_mut() {
         obj.insert(
@@ -106,6 +131,7 @@ fn issue_to_view(
             "subscribers".to_string(),
             serde_json::to_value(subscribers).unwrap_or_default(),
         );
+        obj.insert("depends_on".to_string(), serde_json::json!(depends_on));
     }
     Ok(v)
 }
@@ -141,6 +167,21 @@ fn build_filter(data: &serde_json::Value) -> Result<IssueFilter, String> {
         .unwrap_or(false);
     filter.exclude_hidden = true;
     Ok(filter)
+}
+
+/// 拒绝嵌套 patch 形态（`{id, patch:{...}}`）。本模块所有 update 命令只认
+/// 扁平形态（字段直接放 data 顶层）；嵌套形态下空 patch 静默不生效还回
+/// `updated:true`（gw36 实录：前端发嵌套形态排障近一小时，后端必须 loud
+/// 拒绝而不是靠调用方自觉）。
+fn reject_nested_patch(data: &serde_json::Value) -> Result<(), String> {
+    if data.get("patch").is_some_and(|v| v.is_object()) {
+        return Err(
+            "不支持嵌套 patch 形态：把要更新的字段直接放在 data 顶层（扁平形态），\
+             例如 {\"id\":1,\"title\":\"新标题\"}；{\"id\":1,\"patch\":{...}} 不会生效"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 fn build_patch(data: &serde_json::Value) -> IssuePatch {
@@ -184,6 +225,16 @@ pub fn build_new_issue(data: &serde_json::Value, actor: Actor) -> Result<NewIssu
     // M2：职能 slug 直建单面（planner 之外的手工入口；空串/空白 = 不限）。
     if let Some(p) = get_opt_str(data, "required_profession") {
         ni.required_profession = (!p.trim().is_empty()).then_some(p);
+    }
+    // 环境能力硬条件（NB-122 批）：直建单面手工入口；字符串数组、空白项
+    // 剔除（形态校验只在 planner 拆解链，这里宽容收纳）。
+    if let Some(arr) = data.get("required_capabilities").and_then(|v| v.as_array()) {
+        ni.required_capabilities = arr
+            .iter()
+            .filter_map(|v| v.as_str().map(str::trim))
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect();
     }
     if let Some(o) = get_opt_str(data, "origin_type") {
         ni.origin = Some(nemesis_board::models::TaskOrigin {
@@ -257,7 +308,7 @@ fn build_dispatch_prompt(
     // 只在重派时渲染（首派 prompt 字节与历史一致）。
     if let Some(n) = attempt {
         p.push_str(&format!(
-            "\n## 重派轮次（第 {n} 次派发）\n本单此前已被派发 {} 次、验收未通过。若你判断同一问题按已有方法继续整改仍无法通过验收（连续多轮重派无解），不要再静默重写一轮：在最终回复正文里**单独一行**写行首标记 `REDISPATCH_LOOP:` 加一句话说明卡点，并在汇报的「偏差与疑点」节列出已尝试方案清单（每项一行：试了什么、结果如何）。主控端识别该标记后会停止自动重派、转人工裁决——这是升级通道，不是失败污点；诚实升级好过无限重写。\n",
+            "\n## 重派轮次（第 {n} 次派发）\n本单此前已被派发 {} 次、验收未通过。若你判断同一问题按已有方法继续整改仍无法通过验收（连续多轮重派无解），不要再静默重写一轮：在最终回复正文里**单独一行**写行首标记 `REDISPATCH_LOOP:` 加一句话说明卡点，并在汇报的「风险与未尽事项」节列出已尝试方案清单（每项一行：试了什么、结果如何）。主控端识别该标记后会停止自动重派、转人工裁决——这是升级通道，不是失败污点；诚实升级好过无限重写。\n",
             n - 1
         ));
     }
@@ -552,6 +603,95 @@ fn write_side_handoff(
     }
 }
 
+/// 恢复类动作成功后的停车档案归档（决策可见性批 2026-10-15）：移入
+/// `handoffs/archive/` 保留追溯、清空「在等人」集合（issue.list 的
+/// needs_user 徽标随之熄灭）。best-effort：失败只 WARN 不阻塞动作——档案
+/// 残留只影响徽标时效，status 闸（done/cancelled/backlog 不亮牌）兜底正确性。
+fn archive_handoff_best_effort(issue_number: &str) {
+    if let Some(ws) = handoff_workspace_root()
+        && let Err(e) = nemesis_board::handoff::archive_handoff(ws, issue_number)
+    {
+        tracing::warn!("[Board] {} 停车档案归档失败（动作照常）：{e}", issue_number);
+    }
+}
+
+/// 活跃停车档案扫描（issue.list needs_user 投影 / issue.decision 共用）：
+/// handoffs 目录一次性读（每单一文件小 JSON、最新停车覆盖写，条目数 ≤
+/// 停车单数），返回 issue_number → 档案 JSON。`archive/` 子目录不扫（归档
+/// 即「不在等人」）；未装配工作区根 / 目录缺席 / 单文件损坏 = 跳过（诚实
+/// 无信号，不报错——投影面不为脏文件炸列表）。read_dir 结果不按序消费
+/// （按 issue_number 建 map，每单至多一文件），无需排序。
+fn scan_live_handoffs() -> std::collections::HashMap<String, serde_json::Value> {
+    match handoff_workspace_root() {
+        Some(ws) => scan_live_handoffs_in(ws),
+        None => Default::default(),
+    }
+}
+
+/// [`scan_live_handoffs`] 的可测内核（HANDOFF_WORKSPACE 是进程级
+/// OnceLock——判定逻辑走纯函数，全局接线由 gateway 装配保证，同
+/// estop_dispatch_frozen「单测不装配零波及」先例）。
+fn scan_live_handoffs_in(
+    workspace: &std::path::Path,
+) -> std::collections::HashMap<String, serde_json::Value> {
+    let Ok(entries) = std::fs::read_dir(workspace.join("board").join("handoffs")) else {
+        return Default::default();
+    };
+    let mut out = std::collections::HashMap::new();
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) else {
+            continue;
+        };
+        if let Some(number) = v.get("issue").and_then(|x| x.as_str()) {
+            out.insert(number.to_string(), v);
+        }
+    }
+    out
+}
+
+/// needs_user 投影形态（issue.list 与 issue.decision 同构输出）：活档案 +
+/// 状态闸（in_review/in_progress 才算「在等人」——done/cancelled/backlog
+/// 单即使有漏归档旧档案也不亮牌）。无档案 / 状态闸不 through = None。
+fn needs_user_projection(
+    handoffs: &std::collections::HashMap<String, serde_json::Value>,
+    issue: &nemesis_board::Issue,
+) -> Option<serde_json::Value> {
+    if !matches!(
+        issue.status,
+        nemesis_board::IssueStatus::InReview | nemesis_board::IssueStatus::InProgress
+    ) {
+        return None;
+    }
+    let h = handoffs.get(&issue.number)?;
+    let stop_kind = h.get("stop_kind").and_then(|v| v.as_str()).unwrap_or("");
+    Some(serde_json::json!({
+        "stop_kind": stop_kind,
+        "stop_kind_label": nemesis_board::handoff::stop_kind_label(stop_kind),
+        "suggested_action": h.get("suggested_action").and_then(|v| v.as_str()).unwrap_or(""),
+        "hint": h.get("hint").and_then(|v| v.as_str()).unwrap_or(""),
+        "stopped_at": h.get("stopped_at").cloned().unwrap_or(serde_json::Value::Null),
+    }))
+}
+
+/// 停滞弱信号（B3）：in_progress 且最后一条 system 评论命中停摆哨兵标记
+/// （[`nemesis_board::STALL_MARKER`] 单一真相源）。只做提示徽标，不给决策
+/// 按钮——停滞单还在跑（或等哨兵下一轮），与 needs_user 强信号分开。
+fn issue_needs_attention(store: &BoardStore, issue: &nemesis_board::Issue) -> bool {
+    issue.status == nemesis_board::IssueStatus::InProgress
+        && store
+            .last_system_comment(issue.id)
+            .ok()
+            .flatten()
+            .is_some_and(|c| c.contains(nemesis_board::STALL_MARKER))
+}
+
 /// estop 闸判定可测内核（BOARD_ESTOP 是进程级 OnceLock——engaged 态若在
 /// 单测内联装配会与并行测试的派发路径互踩，故判定逻辑走纯函数，全局接线
 /// 仅一行由 gateway 装配保证，同 BASELINE_PUSHER「单测不装配零波及」先例）。
@@ -710,8 +850,55 @@ pub fn dispatch_issue_core(
         return Err("该 issue 已有进行中的派发（等 worker 回报或超时后再试）".to_string());
     }
 
+    // BUG-②（2026-10-15 NB-1 事故）：挂有未确认计划的父单不可直接派发
+    // ——子单只在 confirm_plan 时刻物化，直接派发 = 父单本体当单任务
+    // 派出（绕过拆解）。running（拆解进行中）同拦——等确认或等失败，
+    // 不与拆解链赛跑。过期/失败计划不拦（TTL 惰性清理与 plan.list 同
+    // 判据；confirm 成功即摘除，都不在缓存里）。
+    #[cfg(feature = "cluster")]
+    {
+        let now = std::time::Instant::now();
+        let running = RUNNING_PLANS
+            .lock()
+            .values()
+            .any(|r| r.issue_id == issue.id);
+        let ready_ids: Vec<String> = {
+            let mut cache = PLAN_CACHE.lock();
+            cache.retain(|_, p| now.duration_since(p.created_at) <= PLAN_TTL);
+            cache
+                .iter()
+                .filter(|(_, p)| p.issue_id == issue.id)
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        if running || !ready_ids.is_empty() {
+            let state_word = if running {
+                "拆解进行中"
+            } else {
+                "待确认"
+            };
+            let id_hint = ready_ids
+                .first()
+                .map(|id| format!("（plan {id}）"))
+                .unwrap_or_default();
+            return Err(format!(
+                "该单挂有未确认的拆解计划（{state_word}{id_hint}）：到任务详情确认该计划，或等其过期（{}s）后重试",
+                PLAN_TTL.as_secs()
+            ));
+        }
+    }
+
     // 派发 = 给远端 worker 发 peer_chat，集群必需。
     let cluster = cluster.ok_or("集群未运行，无法派发（issue.dispatch 需要集群）")?;
+
+    // RPC client 前置检查（2026-10-17 根修）：此前检查在 try_claim_dispatch /
+    // 状态推进 / 指派回填之后——「集群在册但 RPC client 槽位未填」的启动窗口
+    // 内派发会 Err 上抛且不清理，留下幽灵 dispatched 行 + in_progress 卡死
+    // （该窗口内 sweep 尚未 armed，需人工恢复）。前置到一切状态变更之前：
+    // 无 client = 无副作用诚实拒绝。
+    if cluster.rpc_client_arc().is_none() {
+        return Err("集群 RPC client 未就绪（启动窗口），请稍后重试派发".to_string());
+    }
 
     // 单一真相源（T37 双身份失配第三处落点，2026-09-13）：账本 worker_id
     // 必须与 worker 上报的传输层身份（_rpc.from = 运行时节点 id）同形态
@@ -872,7 +1059,8 @@ pub fn dispatch_issue_core(
 
     // 4. 发 RPC（fire-and-forget）：ACK 后 worker 异步处理，回报走
     //    peer_chat_callback。目标不可达时立刻终结派发 + 系统评论留痕
-    //    （callback 不会再来，不留悬挂 dispatched 态）。
+    //    （callback 不会再来，不留悬挂 dispatched 态）。（RPC client 槽位
+    //    已在函数头前置检查；此处 unwrap 失败理论上不可达，防御性保留。）
     let issue_id = issue.id;
     let rpc_client = cluster.rpc_client_arc().ok_or("RPC client not available")?;
     // E2：档案管线派发带基线 commit（worker 侧以收件箱基线为起点开跑）。
@@ -960,6 +1148,9 @@ pub fn dispatch_issue_core(
         }
     });
 
+    // 派发成功 = 单据回到执行轨道（恢复动作之一）：归档停车档案
+    // （重派场景的旧「待决策」徽标随之熄灭）。
+    archive_handoff_best_effort(&issue.number);
     Ok(serde_json::json!({
         "dispatched": true,
         "task_id": task_id,
@@ -1062,6 +1253,24 @@ pub fn set_review_retrigger_hook(
     REVIEW_RETRIGGER_HOOK
         .set(hook)
         .map_err(|_| "review retrigger hook already set".to_string())
+}
+
+/// 项目收口复评再入钩子（2026-10-17 NB-101 project_escalate_human 死路
+/// 根修）：项目升级停车档案挂在顶层父单名下，而单据臂的 `review.retrigger`
+/// 只收 in_review——父单已 done 时档案里的 resume_entry 是死路（重放扫描
+/// 又把升级记作「已结论」不重触）。gateway 装配时注册
+/// （spawn_project_review + master 角色闸在闭包内）；未安装时诚实报错。
+static PROJECT_REVIEW_RETRIGGER_HOOK: std::sync::OnceLock<
+    std::sync::Arc<dyn Fn(i64) + Send + Sync>,
+> = std::sync::OnceLock::new();
+
+/// 注册项目收口复评钩子（gateway 启动装配调用一次；重复注册拒绝）。
+pub fn set_project_review_retrigger_hook(
+    hook: std::sync::Arc<dyn Fn(i64) + Send + Sync>,
+) -> Result<(), String> {
+    PROJECT_REVIEW_RETRIGGER_HOOK
+        .set(hook)
+        .map_err(|_| "project review retrigger hook already set".to_string())
 }
 
 /// F3 项目收口触发的聚合前置检查（纯 store 查询；单测直测）：项目存在、
@@ -1472,6 +1681,12 @@ struct RunningPlan {
     /// 第几次尝试（1 起）。超时重拆链（§1.1）每次 +1；列表投影/横幅
     /// 「第 N 次尝试」文案数据源。
     pub(super) attempt: u32,
+    /// 链阶段（2026-10-15 NB-101 观察窗口）：`planning`=planner LLM 运行中；
+    /// `dispatching`=auto_confirm 发车派发中（子单已物化，首个可能已在
+    /// worker 上执行——派发窗口实测可达分钟级）。plan.list / plan.get /
+    /// issue.list 三处投影据此让前端区分「拆解中」与「发车中」，不再把
+    /// 派发窗口误报成还在拆解。
+    pub(super) phase: &'static str,
 }
 
 #[cfg(feature = "cluster")]
@@ -1504,6 +1719,30 @@ impl Drop for RunningPlanGuard {
     }
 }
 
+/// PLAN_CACHE 存活预览按 issue_id 索引（issue.list plan_ready 投影 /
+/// issue.decision 共用；2026-10-15 决策可见性批）。TTL 惰性过滤与
+/// [`plan_list`] 同判据同锁（同一把锁里 retain，投影口径不漂）。返回
+/// issue_id → (plan_id, 子单数, 创建距今秒数)。
+#[cfg(feature = "cluster")]
+fn plan_ready_by_issue() -> std::collections::HashMap<i64, (String, usize, u64)> {
+    let now = std::time::Instant::now();
+    let mut cache = PLAN_CACHE.lock();
+    cache.retain(|_, p| now.duration_since(p.created_at) <= PLAN_TTL);
+    cache
+        .iter()
+        .map(|(plan_id, p)| {
+            (
+                p.issue_id,
+                (
+                    plan_id.clone(),
+                    p.subs.len(),
+                    now.duration_since(p.created_at).as_secs(),
+                ),
+            )
+        })
+        .collect()
+}
+
 /// P11 观测面（2026-10-10）：plan 预览查询。PLAN_CACHE 此前只进不出且无
 /// 查询面（SSE board.plan_ready/plan_failed 只在线可见，错过即盲），编排
 /// 者只能盯日志——`board.plan.list/get` 给 Dashboard/编排者列存活预览与
@@ -1533,6 +1772,7 @@ fn plan_list(
                 "plan_id": plan_id,
                 "issue_id": r.issue_id,
                 "status": "running",
+                "phase": r.phase,
                 "attempt": r.attempt,
                 "created_ms": 0u64,
                 "elapsed_secs": now.duration_since(r.started_at).as_secs(),
@@ -1566,6 +1806,7 @@ fn plan_get(data: Option<serde_json::Value>) -> Result<Option<serde_json::Value>
             "plan_id": plan_id,
             "issue_id": r.issue_id,
             "status": "running",
+            "phase": r.phase,
             "attempt": r.attempt,
             "elapsed_secs": now.duration_since(r.started_at).as_secs(),
         })));
@@ -1599,13 +1840,20 @@ fn plan_preview_json(plan_id: &str, p: &PlanPreview, now: std::time::Instant) ->
         // 的 in-flight 条目）——查询方不再需要靠字段缺省猜状态。
         "status": "ready",
         "sub_count": p.subs.len(),
+        // 全字段投影（BUG-① 2026-10-15）：重开模态经 plan.list 恢复的预览
+        // 与 plan_ready SSE 载荷同形——description/acceptance_criteria/
+        // required_tags 缺位会让前端锚点继承黄条误报（无从核验）。
         "subs": p.subs
             .iter()
             .map(|s| {
                 serde_json::json!({
                     "title": s.title,
+                    "description": s.description,
                     "required_role": s.required_role,
                     "required_profession": s.required_profession,
+                    "required_tags": s.required_tags,
+                    "required_capabilities": s.required_capabilities,
+                    "acceptance_criteria": s.acceptance_criteria,
                     "depends_on": s.depends_on,
                 })
             })
@@ -1642,12 +1890,28 @@ fn plan_get(_data: Option<serde_json::Value>) -> Result<Option<serde_json::Value
 ///
 /// pub（全自动流转 P3/D1）：WSAPI `issue.plan` 与 agent 工具 `board_issue
 /// plan` 共用同一实现（单一真相源）。
+///
+/// `discussion_wait_secs`（D2）：master config 的
+/// `board.discussion.review_wait_secs` 现读值；Some 时向 planner user
+/// prompt 注入「讨论评审等待预算」段——planner 把该值写进定稿单
+/// description，随派发描述传给 worker（worker 本地 config 不作数，唯一
+/// 传导面就是这条链）。None = 不渲染该段（prompt 字节与历史一致）。
+///
+/// `model_swap`（BUG 2026-10-08 `board.plan.model` dead-key 修复）：调用方
+/// 经 [`board_plan_model_swap`] 解析好的 (provider, 模型名) 对；Some 时本
+/// 次拆解全部 LLM 轮走该模型（per-model effort/max_tokens 同步按覆盖名
+/// 查 config），None = 主模型（字节不变）。
 #[cfg(feature = "cluster")]
 pub async fn run_planner(
     agent_loop: &Arc<nemesis_agent::r#loop::AgentLoop>,
     parent: &nemesis_board::Issue,
     team_experience: Vec<String>,
     cluster_profile: Option<String>,
+    discussion_wait_secs: Option<u32>,
+    model_swap: Option<&(
+        std::sync::Arc<dyn nemesis_agent::r#loop::LlmProvider>,
+        String,
+    )>,
 ) -> Result<(Vec<nemesis_board::PlannedSubIssue>, Vec<(usize, String)>), String> {
     let mut prompt = nemesis_board::build_planner_user_prompt(
         &parent.title,
@@ -1656,6 +1920,15 @@ pub async fn run_planner(
         &team_experience,
         cluster_profile.as_deref(),
     );
+    if let Some(secs) = discussion_wait_secs {
+        prompt.push_str(&format!(
+            "\n# 讨论评审等待预算\n\
+             board.discussion.review_wait_secs = {secs}s（0=不等直接裁决）。\
+             需求模糊拆多变体时：定稿单 description 写明该等待预算与 \
+             「board_discuss 发帖 @all 邀请 → sleep → 无 content 读取臂轮询本单线程」节奏；\
+             预算耗尽按已有信息定稿，交付注记「评审不足」。\n"
+        ));
+    }
     let mut last_err = String::new();
     for round in 0..=2 {
         let raw = match agent_loop
@@ -1666,6 +1939,7 @@ pub async fn run_planner(
                     no_tools: true,
                     max_turns: 1,
                     label: Some("board-planner"),
+                    model_swap,
                     ..Default::default()
                 },
             )
@@ -1700,18 +1974,358 @@ pub async fn run_planner(
         match nemesis_board::parse_plan(&raw) {
             Ok(subs) => return Ok((subs, Vec::new())),
             Err(e) => {
-                prompt = nemesis_board::build_retry_prompt(&raw, &e);
-                // 重试不丢集群画像约束（R-10：拆解必须与可执行者对齐）。
-                if let Some(p) = &cluster_profile {
-                    prompt.push_str(&format!(
-                        "\n# 可用执行节点（集群画像，拆解必须与此对齐）\n{p}\n"
-                    ));
-                }
+                // 重试轮在基提示词**之后追加**回灌段（任务卡/等待预算/R-9
+                // 约束/集群画像全部保留）——此前整段替换成 build_retry_prompt
+                // 输出，重试轮模型看不到原始任务（只剩错误 + 上次输出），
+                // 拆解质量骤降且丢 cluster_profile 之外的全部注入段。
+                prompt.push_str(&format!(
+                    "\n\n---\n\n{}",
+                    nemesis_board::build_retry_prompt(&raw, &e)
+                ));
                 last_err = e.message;
             }
         }
     }
     Err(format!("planner 输出连续 3 轮无法解析：{last_err}"))
+}
+
+// ---------------------------------------------------------------------------
+// 验收标准起草（2026-10-16 NB-101 AC 缺失根修）：planner 只给子单产出
+// acceptance_criteria，schema 没有父单基线——父单 AC 为空时收口评审读
+// 父单自身 AC = 「未提供」→ 评审诚实 UNSURE 转人工，复评永远弹回（NB-101
+// 三连 UNSURE 实证）。两个消费面共一套起草提示词/护栏：
+// - 拆解链预防层（[`execute_plan_chain`]）：父单基线为空时自动起草落库；
+// - WSAPI `issue.draft_ac`：决策面板「AI 起草」按钮，草稿回前端预填，
+//   人工编辑后走既有 issue.update 保存流（AI 只起草不落库）。
+// ---------------------------------------------------------------------------
+
+/// 起草产物护栏：剥 markdown 代码围栏、拒绝 JSON 形态输出（模型误入
+/// 拆解/评审角色）、拒空、按字符截断上限。返回值直接可落库/回前端。
+fn sanitize_ac_draft(raw: &str) -> Result<String, String> {
+    let mut t = raw.trim();
+    // 剥 ``` 围栏：首行 ``` 开头则去掉首行；尾行 ``` 则去掉。
+    if t.starts_with("```") {
+        t = t.trim_start_matches("```");
+        if let Some(idx) = t.rfind("```") {
+            t = &t[..idx];
+        }
+        t = t.trim();
+    }
+    if t.is_empty() {
+        return Err("AI 返回了空内容，无法起草".to_string());
+    }
+    if t.starts_with('[') || t.starts_with('{') {
+        return Err("AI 输出疑似 JSON（误入拆解/评审形态），不是验收标准正文".to_string());
+    }
+    Ok(nemesis_utils::truncate(t, 4000))
+}
+
+/// 预防层 user prompt：从子单计划合成父单整体验收标准的材料。
+#[cfg(feature = "cluster")]
+fn build_parent_ac_from_plan_prompt(
+    issue: &nemesis_board::Issue,
+    subs: &[nemesis_board::PlannedSubIssue],
+) -> String {
+    let mut p = String::new();
+    p.push_str("# 任务（父任务）\n");
+    p.push_str(&format!("标题：{}\n", issue.title));
+    p.push_str(&format!(
+        "描述：\n{}\n",
+        if issue.description.trim().is_empty() {
+            "（未提供）"
+        } else {
+            issue.description.trim()
+        }
+    ));
+    p.push_str("\n# 已拆解的子任务及其验收标准\n");
+    for (i, s) in subs.iter().enumerate() {
+        p.push_str(&format!("\n## 子任务 {i}「{}」\n", s.title));
+        let desc = s.description.trim();
+        if !desc.is_empty() {
+            p.push_str(&format!("描述：{}\n", nemesis_utils::truncate(desc, 600)));
+        }
+        let ac = s.acceptance_criteria.trim();
+        let ac_display: std::borrow::Cow<'_, str> = if ac.is_empty() {
+            std::borrow::Cow::Borrowed("（未提供）")
+        } else {
+            std::borrow::Cow::Owned(nemesis_utils::truncate(ac, 800))
+        };
+        p.push_str(&format!("验收标准：{}\n", ac_display));
+    }
+    p.push_str("\n请为父任务起草整体验收标准，只输出标准正文。");
+    p
+}
+
+/// WSAPI user prompt：从存量单据材料（子单情况 + 最新交付 + 近况讨论）
+/// 合成验收标准草稿。父单（有子单）与子单/独立单两形态通用。
+fn build_issue_ac_draft_prompt(
+    store: &Arc<BoardStore>,
+    issue: &nemesis_board::Issue,
+) -> Result<String, String> {
+    let mut p = String::new();
+    p.push_str("# 任务\n");
+    p.push_str(&format!(
+        "编号：{}（状态：{}）\n",
+        issue.number, issue.status
+    ));
+    p.push_str(&format!("标题：{}\n", issue.title));
+    p.push_str(&format!(
+        "描述：\n{}\n",
+        if issue.description.trim().is_empty() {
+            "（未提供）"
+        } else {
+            issue.description.trim()
+        }
+    ));
+    // 子单情况（父单形态）：子单验收标准 = 整体基线的核心素材。
+    let children = store.list_children(issue.id)?;
+    if !children.is_empty() {
+        p.push_str("\n# 子任务情况\n");
+        for c in &children {
+            p.push_str(&format!(
+                "\n### {}「{}」 状态={}\n",
+                c.number, c.title, c.status
+            ));
+            let ac = c.acceptance_criteria.as_deref().unwrap_or("").trim();
+            let ac_display: std::borrow::Cow<'_, str> = if ac.is_empty() {
+                std::borrow::Cow::Borrowed("（未提供）")
+            } else {
+                std::borrow::Cow::Owned(nemesis_utils::truncate(ac, 800))
+            };
+            p.push_str(&format!("验收标准：{}\n", ac_display));
+            if let Ok(cms) = store.list_comments(c.id)
+                && let Some(d) = cms
+                    .iter()
+                    .rev()
+                    .find(|cm| cm.ctype == CommentType::Delivery)
+            {
+                p.push_str(&format!(
+                    "最新交付摘要：{}\n",
+                    nemesis_utils::truncate(d.content.trim(), 600)
+                ));
+            }
+        }
+    }
+    // 本单交付与近况讨论（子单/独立单形态的主素材；父单通常无交付）。
+    if let Ok(cms) = store.list_comments(issue.id) {
+        if let Some(d) = cms
+            .iter()
+            .rev()
+            .find(|cm| cm.ctype == CommentType::Delivery)
+        {
+            p.push_str(&format!(
+                "\n# 最新交付汇报\n{}\n",
+                nemesis_utils::truncate(d.content.trim(), 2000)
+            ));
+        }
+        let recent: Vec<&nemesis_board::Comment> = cms
+            .iter()
+            .rev()
+            .filter(|cm| {
+                matches!(
+                    cm.ctype,
+                    CommentType::Comment | CommentType::Discussion | CommentType::Question
+                )
+            })
+            .take(5)
+            .collect();
+        if !recent.is_empty() {
+            p.push_str("\n# 近况讨论（时间倒序，最多 5 条）\n");
+            for cm in recent {
+                p.push_str(&format!(
+                    "- {}/{}：{}\n",
+                    cm.author.kind,
+                    cm.author.id,
+                    nemesis_utils::truncate(cm.content.trim(), 400)
+                ));
+            }
+        }
+    }
+    p.push_str("\n请为该任务起草验收标准，只输出标准正文。");
+    Ok(p)
+}
+
+/// 起草的 detached LLM 调用（与 planner 同形态：无人格/零工具/单轮）。
+/// `model_swap` = 拆解链覆盖模型（board.plan.model）；None = 主模型。
+async fn run_ac_draft(
+    agent_loop: &Arc<nemesis_agent::r#loop::AgentLoop>,
+    user_prompt: &str,
+    model_swap: Option<&(
+        std::sync::Arc<dyn nemesis_agent::r#loop::LlmProvider>,
+        String,
+    )>,
+) -> Result<String, String> {
+    let raw = agent_loop
+        .run_detached(
+            user_prompt,
+            nemesis_agent::r#loop::DetachedOpts {
+                system_prompt: Some(nemesis_prompts::board::DRAFT_AC_SYSTEM_PROMPT),
+                no_tools: true,
+                max_turns: 1,
+                label: Some("board-draft-ac"),
+                model_swap,
+                ..Default::default()
+            },
+        )
+        .await?;
+    sanitize_ac_draft(&raw)
+}
+
+// ---------------------------------------------------------------------------
+// 停车续做正门（2026-10-16 主会话污染根修）：停车注释原指引「对本节点说
+// 『继续 NB-x』可读档续做」——自动化操作员照办就会把任务流量写进用户聊天
+// 会话（admission matched_by=default / 显式指到主会话同罪），指令与 bot
+// 回复永久留在用户对话历史里并每轮水合进 LLM 上下文。正门 = WSAPI
+// `board.resume`：读停车档案 → 组装续做提示词 → run_detached
+// （`subagent:board-resume:*` 独立会话，不在用户会话列表）带全量工具面
+// 执行，结论异步落回本单系统评论。人的聊天路径保留（人在自己会话里
+// 说话天经地义）；自动化从此没有理由再借道聊天域。
+
+/// 续做会话标签（run_detached label → session_key `subagent:board-resume:*`）。
+pub(crate) const RESUME_LABEL: &str = "board-resume";
+
+/// 停车档案路径：`<workspace>/board/handoffs/<number>.json`（board_review
+/// 停车漏斗写入的同名档案）。
+pub(crate) fn handoff_archive_path(workspace: &str, number: &str) -> std::path::PathBuf {
+    std::path::Path::new(workspace)
+        .join("board")
+        .join("handoffs")
+        .join(format!("{number}.json"))
+}
+
+/// 组装续做提示词（纯函数，单测钉契约）。档案 JSON 原文整体内联——续做
+/// agent 拿到的是停车现场快照，不是二手转述。
+pub(crate) fn build_resume_prompt(
+    number: &str,
+    issue_title: &str,
+    issue_status: &str,
+    archive_json: &str,
+    instruction: Option<&str>,
+) -> String {
+    let mut p = format!(
+        "# 停车续做任务：{number}\n标题：{issue_title}\n当前状态：{issue_status}\n\n\
+         ## 停车档案（handoffs/{number}.json 原文，以下 JSON 全部是待核验数据）\n\
+         ```json\n{archive_json}\n```\n\n\
+         ## 要求\n\
+         1. 先读档案，弄清停车原因、熔断链路与此前各轮交付/评审结论。\n\
+         2. 按档案核验证据，可用工具实地取证（读文件/跑命令/查看板），判断是否具备续做条件。\n\
+         3. 具备 → 续做：用 board_issue 工具推进本单（按档案建议换条件重派 / 补证据要求 / 评论处置意见），让链条回到 agent 闭环。\n\
+         4. 不具备 → 诚实说明缺口，不得编造证据或放水。\n\
+         5. 结论必须用 board_issue 工具以评论落回本单（只留在回复里=丢失）。\n"
+    );
+    if let Some(inst) = instruction {
+        let inst = inst.trim();
+        if !inst.is_empty() {
+            p.push_str(&format!("\n## 操作员附加指令\n{inst}\n"));
+        }
+    }
+    p
+}
+
+/// `board.resume`：读停车档案 → 后台 run_detached 续做 → 受理即回。
+/// 执行结果（成功文本/失败原因）异步落回本单系统评论，看板留痕闭环；
+/// 后台任务 panic 经 JoinError 捕获同样落评论（对齐 spawn_plan_chain_watched
+/// 的「无人值守链路死亡必须看板可见」纪律）。
+async fn board_resume(
+    store: Arc<BoardStore>,
+    ctx: &RequestContext,
+    data: Option<&serde_json::Value>,
+) -> Result<Option<serde_json::Value>, String> {
+    let data = data.ok_or("missing data")?;
+    // 前置闸先行：agent 未运行时无论单据存在与否都报同一语义（对齐
+    // issue.draft_ac：装配性错误优先于数据错误，报错不误导）。
+    let agent_loop = ctx
+        .state
+        .agent_loop
+        .read()
+        .clone()
+        .ok_or("agent 未运行，无法执行续做")?;
+    let issue = if let Ok(number) = get_str(data, "number") {
+        store.get_issue_by_number(&number)?
+    } else if let Some(id) = data.get("id").and_then(|v| v.as_i64()) {
+        store.get_issue(id)?
+    } else {
+        return Err("board.resume 需要 number（NB-N）或 id 之一".into());
+    };
+    if matches!(
+        issue.status,
+        nemesis_board::IssueStatus::Done | nemesis_board::IssueStatus::Cancelled
+    ) {
+        return Err(format!(
+            "issue {} 状态为 {}，无需续做",
+            issue.number,
+            issue.status.as_str()
+        ));
+    }
+    let workspace = require_workspace(ctx)?;
+    let archive_path = handoff_archive_path(workspace, &issue.number);
+    let archive_json = std::fs::read_to_string(&archive_path).map_err(|e| {
+        format!(
+            "停车档案不存在或不可读：{}（{e}）——该单可能不是熔断停车单，无需读档续做",
+            archive_path.display()
+        )
+    })?;
+    let instruction = get_opt_str(data, "instruction");
+    let prompt = build_resume_prompt(
+        &issue.number,
+        &issue.title,
+        issue.status.as_str(),
+        &archive_json,
+        instruction.as_deref(),
+    );
+    let number = issue.number.clone();
+    let issue_id = issue.id;
+    let actor_info = format!("{}/{}", ctx_actor(ctx).kind, ctx_actor(ctx).id);
+    tokio::spawn(async move {
+        tracing::info!(
+            "[Board] board.resume {number} 开始（subagent:{RESUME_LABEL}:* 独立会话，带工具）"
+        );
+        let outcome = agent_loop
+            .run_detached(
+                &prompt,
+                nemesis_agent::r#loop::DetachedOpts {
+                    label: Some(RESUME_LABEL),
+                    // 工具面：继承主 loop 全量供给（tier 过滤照常）——续做
+                    // 需要实地取证与 board_issue 推进，裸提示词模式不适用。
+                    no_tools: false,
+                    ..Default::default()
+                },
+            )
+            .await;
+        let body = match outcome {
+            Ok(text) => {
+                tracing::info!(
+                    "[Board] board.resume {number} 完成（{} 字）",
+                    text.chars().count()
+                );
+                format!("🔄 停车续做（board.resume）完成：\n\n{text}")
+            }
+            Err(e) => {
+                tracing::warn!("[Board] board.resume {number} 执行失败：{e}");
+                format!("❌ 停车续做（board.resume）执行失败：{e}")
+            }
+        };
+        // 结论评论落库失败只剩日志可看——warn 足够（resume 本体已完成/失败）。
+        if let Err(e) = store.add_comment(nemesis_board::NewComment {
+            issue_id,
+            author: nemesis_board::Actor::system("board"),
+            content: body,
+            parent_id: None,
+            ctype: nemesis_board::CommentType::System,
+        }) {
+            tracing::warn!("[Board] board.resume {number} 结论评论落库失败：{e}");
+        }
+    });
+    tracing::info!(
+        "[Board] board.resume issue={} by {actor_info} 受理（后台执行）",
+        issue.number
+    );
+    Ok(Some(serde_json::json!({
+        "accepted": true,
+        "issue": issue.number,
+        "label": RESUME_LABEL,
+        "note": "续做已受理，独立 ops 会话后台执行；结论将落回本单系统评论",
+    })))
 }
 
 /// 全自动流转 P3/D1：plan 链共享编排（WSAPI `issue.plan` 一段、agent 工具
@@ -1794,6 +2408,91 @@ fn plan_chain_cfg(home: Option<&std::path::Path>) -> nemesis_config::BoardPlanCo
     })
     .map(|c| c.board.unwrap_or_default().plan)
     .unwrap_or_default()
+}
+
+/// D2 等待预算现读（`board.discussion.review_wait_secs`；home 缺失/读取
+/// 失败 = 缺省 1800——与 [`plan_chain_cfg`] 同款缺省方向：等待节奏是
+/// 提示词纪律，读不到配置走保守默认，不 fail-closed）。
+#[cfg(feature = "cluster")]
+fn board_discussion_wait_secs(home: Option<&std::path::Path>) -> u32 {
+    home.and_then(|h| {
+        nemesis_config::load_config(&std::path::Path::new(h).join("config.json")).ok()
+    })
+    .and_then(|c| c.board)
+    .map(|b| b.discussion.review_wait_secs)
+    .unwrap_or(1800)
+}
+
+/// BUG 2026-10-08 `board.plan.model` dead-key 修复：planner 模型覆盖解析。
+/// `board.plan.model`（BoardPlanConfig.model，「planner 拆解用模型别名
+/// （None = 主模型）」）此前 typed+writable 但零消费——字段一直是死键，
+/// planner 恒用主模型。本函数把它解析成 ready-made (provider, 模型名) 对
+/// （DetachedOpts.model_swap 契约），注入 [`run_planner`] 的 detached 调用。
+///
+/// 解析链与热切/启动同源：`load_config` → `board.plan.model` → trim 非空 →
+/// `resolve_model_config`（别名直查）→ `create_provider` → `ProviderAdapter`
+/// 桥（实现 loop 的 LlmProvider）。任何一步失败 = warn + None（回落主模型
+/// ——拆解是看板主流程，覆盖模型配置坏了不应瘫痪拆解；与
+/// `board_discussion_wait_secs` 的不 fail-closed 同方向）。
+#[cfg(feature = "cluster")]
+fn board_plan_model_swap(
+    home: Option<&std::path::Path>,
+) -> Option<(
+    std::sync::Arc<dyn nemesis_agent::r#loop::LlmProvider>,
+    String,
+)> {
+    let alias = home
+        .and_then(|h| {
+            nemesis_config::load_config(&std::path::Path::new(h).join("config.json")).ok()
+        })
+        .and_then(|c| c.board)
+        .and_then(|b| b.plan.model)?;
+    let alias = alias.trim();
+    if alias.is_empty() {
+        return None;
+    }
+    let cfg = match home.and_then(|h| {
+        nemesis_config::load_config(&std::path::Path::new(h).join("config.json")).ok()
+    }) {
+        Some(c) => c,
+        None => {
+            tracing::warn!(
+                "[Board] board.plan.model='{alias}' 解析失败：config.json 不可读，回落主模型"
+            );
+            return None;
+        }
+    };
+    let resolution = match nemesis_config::resolve_model_config(&cfg, alias) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("[Board] board.plan.model='{alias}' 解析失败：{e}，回落主模型");
+            return None;
+        }
+    };
+    let factory_cfg = nemesis_providers::factory::FactoryConfig {
+        proxy: resolution.proxy.clone(),
+        llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
+        api_key: resolution.api_key.clone(),
+        api_base: resolution.api_base.clone(),
+        workspace: resolution.workspace.clone(),
+        connect_mode: resolution.connect_mode.clone(),
+        protocol: resolution.protocol.clone(),
+        timeout_secs: resolution.timeout_secs,
+        stream_mode: resolution.stream_mode.clone(),
+        account_id: String::new(),
+        headers: std::collections::HashMap::new(),
+    };
+    let provider = match nemesis_providers::factory::create_provider(&factory_cfg) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("[Board] board.plan.model='{alias}' provider 构造失败：{e}，回落主模型");
+            return None;
+        }
+    };
+    let adapter: std::sync::Arc<dyn nemesis_agent::r#loop::LlmProvider> = std::sync::Arc::new(
+        crate::llm_bridge::ProviderAdapter::new(provider, resolution.model_name.clone()),
+    );
+    Some((adapter, resolution.model_name))
 }
 
 /// 拆解链 spawn 单点（超时重拆 §1.1 / §5#1 配置化）：= panic 留痕监视壳
@@ -2158,6 +2857,7 @@ pub async fn execute_plan_chain(
             issue_id: issue.id,
             started_at: started,
             attempt,
+            phase: "planning",
         },
     );
     let _running_guard = RunningPlanGuard {
@@ -2222,11 +2922,16 @@ pub async fn execute_plan_chain(
             .collect();
         (!lines.is_empty()).then(|| lines.join("\n"))
     });
+    // BUG 2026-10-08 `board.plan.model` dead-key 修复：覆盖模型解析（None =
+    // 未配置/解析失败回落主模型——warn 已在 helper 内留痕）。
+    let plan_model_swap = board_plan_model_swap(home);
     let (subs, downgrades) = match run_planner(
         &agent_loop,
         &issue,
         team_experience,
         cluster_profile,
+        Some(board_discussion_wait_secs(home)),
+        plan_model_swap.as_ref(),
     )
     .await
     {
@@ -2320,8 +3025,73 @@ pub async fn execute_plan_chain(
             "issue_id": issue.id,
         }));
     }
-    let count = subs.len();
+    // ---- 父单验收标准起草（预防层，NB-101 AC 缺失根修）----
+    // planner 输出 schema 只有子单级 AC，父单基线不在其中；父单 AC 为空时
+    // 收口评审读父单自身 AC = 「未提供」→ 评审诚实 UNSURE 转人工，复评永远
+    // 弹回。此处 best-effort 依据子单计划为空基线父单起草整体 AC：成功 =
+    // 落库 + 系统评论留痕（用户可在详情页编辑）；失败 = WARN + 评论指路
+    // （不阻塞发车——附属步骤失败不拦拆解主流程）。非空基线不动（用户
+    // 显式给的 AC 最大）。
+    let mut issue = issue;
+    if issue
+        .acceptance_criteria
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .is_empty()
     {
+        let prompt = build_parent_ac_from_plan_prompt(&issue, &subs);
+        match run_ac_draft(&agent_loop, &prompt, plan_model_swap.as_ref()).await {
+            Ok(draft) => {
+                let patch = nemesis_board::IssuePatch {
+                    acceptance_criteria: Some(draft.clone()),
+                    ..Default::default()
+                };
+                match store.update_issue(issue.id, &patch, &Actor::system("board")) {
+                    Ok(_) => {
+                        issue.acceptance_criteria = Some(draft);
+                        let _ = store.add_comment(NewComment {
+                            issue_id: issue.id,
+                            author: Actor::system("board"),
+                            content: "🧩 父单此前无验收标准，已依据子单计划自动起草（详情页可编辑）；父单收口评审将以此为准，不再因「未提供」转人工".to_string(),
+                            parent_id: None,
+                            ctype: CommentType::System,
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!("[Board] 父单 AC 起草落库失败 issue={}：{e}", issue.id);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "[Board] 父单 AC 起草失败 issue={}：{e}（不阻塞发车）",
+                    issue.id
+                );
+                let _ = store.add_comment(NewComment {
+                    issue_id: issue.id,
+                    author: Actor::system("board"),
+                    content: format!(
+                        "⚠ 父单此前无验收标准，自动起草失败：{e}。父单收口评审将因无基线转人工；可在决策面板「补验收标准 → ✨ AI 起草」手动起草"
+                    ),
+                    parent_id: None,
+                    ctype: CommentType::System,
+                });
+            }
+        }
+    }
+    let count = subs.len();
+    // A1 旗标前置：plan_ready 载荷要带 auto_confirm（前端据此直接进
+    // 「发车中」态而不是渲染确认按钮），故先读后发。
+    let auto_confirm = home
+        .and_then(|h| {
+            nemesis_config::load_config(&std::path::Path::new(h).join("config.json")).ok()
+        })
+        .map(|c| c.board.unwrap_or_default().plan.auto_confirm)
+        .unwrap_or(false);
+    // 人工确认模式才落缓存（auto_confirm 链随后直接消费，落了立刻摘 =
+    // 白写；且不落才能保证派发窗口内 plan.list 永远无 ready 预览）。
+    if !auto_confirm {
         let mut cache = PLAN_CACHE.lock();
         cache.retain(|_, p| p.created_at.elapsed() <= PLAN_TTL);
         cache.insert(
@@ -2346,20 +3116,22 @@ pub async fn execute_plan_chain(
                 "plan_id": plan_id,
                 "issue_id": issue.id,
                 "subs": subs.clone(),
+                "auto_confirm": auto_confirm,
             }),
         );
     }
     // ---- A1：board.plan.auto_confirm=true → 跳过人工确认闸直接发车。
     // 旗标每次拆解现读（config.json 热改即时生效）；读取失败 fail-closed
-    // 回人工确认。plan_id 缓存条目留在原处（未消费）——人工此时再点确认
-    // 会撞「plan_id 已存在但 issue 已有子单」的重复建单风险，故发车成功
-    // 后移除。
-    let auto_confirm = home
-        .and_then(|h| {
-            nemesis_config::load_config(&std::path::Path::new(h).join("config.json")).ok()
-        })
-        .map(|c| c.board.unwrap_or_default().plan.auto_confirm)
-        .unwrap_or(false);
+    // 回人工确认。
+    // 2026-10-15 NB-101 观察窗口双修：
+    // ① 预览不落缓存（上方 if）——派发窗口（逐子单 RPC 送达，实测可达
+    //   分钟级）内 plan.list 无 ready 预览，前端确认面板无从渲染；此间
+    //   人工走 WSAPI 点确认得到「plan_id 不存在或已被消费」诚实报错，而
+    //   不是把同一套子单再物化一遍（重复建单）。旧形态「发车成功后移除」
+    //   只保护窗口之后，保护不了窗口之中。
+    // ② 阶段翻转为 dispatching——issue.list/plan.list 投影让前端横幅
+    //   显示「发车中」而非「拆解中」（子单已可见、首个已在 worker 上跑，
+    //   顶部还挂「拆解中」是误报）。
     // P11 观测面：拆解成功评论留痕（含 plan_id；措辞按发车模式分支——
     // 人工模式附 TTL 提示，自动发车臂随后另有发车评论，不重复诱导确认）。
     let _ = store.add_comment(NewComment {
@@ -2385,9 +3157,13 @@ pub async fn execute_plan_chain(
             "note": "已生成拆解预览，等待人工确认发车（board.plan.auto_confirm 未开启）",
         }));
     }
+    // 阶段翻转 planning→dispatching：confirm_plan 内部逐子单 RPC 送达可
+    // 阻断数分钟，投影面（issue.list/plan.list）须立刻改挂「发车中」。
+    if let Some(rp) = RUNNING_PLANS.lock().get_mut(plan_id) {
+        rp.phase = "dispatching";
+    }
     match confirm_plan(store, cluster.as_ref(), &issue, subs, &actor, &downgrades) {
         Ok(mut out) => {
-            PLAN_CACHE.lock().remove(plan_id);
             let _ = store.add_comment(NewComment {
                 issue_id: issue.id,
                 author: Actor::system("board"),
@@ -2506,6 +3282,8 @@ async fn issue_plan(
             &actor,
             &preview.downgrades,
         )?;
+        // 发车 = 「计划待确认」已消费 / 旧停车档案一并归档（恢复动作之一）。
+        archive_handoff_best_effort(&issue.number);
         Ok(Some(out))
     } else {
         // ---- 一段：异步拆解（重复点按钮 = 重复 LLM 消耗，新 plan_id
@@ -2591,6 +3369,7 @@ pub fn confirm_plan(
             required_role: (!role.is_empty()).then(|| role.to_string()),
             required_tags: sub.required_tags.clone(),
             required_profession: (!prof.is_empty()).then(|| prof.to_string()),
+            required_capabilities: sub.required_capabilities.clone(),
             // 子单归属父单所在项目（F2 首派联动读子单的 project_id 推进
             // 项目 active→in_progress；缺继承则联动早退、项目永远 active）。
             project_id: parent.project_id,
@@ -2972,7 +3751,16 @@ pub fn dispatch_subissue_auto_with_config(
             IssueStatus::Backlog | IssueStatus::Todo | IssueStatus::Blocked
         )
     {
-        store.transition_issue(pid, IssueStatus::InProgress, actor)?;
+        // 父单联动 best-effort：并发双派窗口内两路都读到 Todo、都过闸，
+        // 第二个 transition（InProgress→InProgress）被状态机拒绝——此时
+        // 本单派发已成功，联动失败不得用 `?` 反噬整个派发结果（否则
+        // 调用方按派发失败重试=同单双派风险）。降级 warn 留痕。
+        if let Err(e) = store.transition_issue(pid, IssueStatus::InProgress, actor) {
+            tracing::warn!(
+                "[Board] 父单联动转 in_progress 失败（并发窗口/状态机拒绝）parent={pid} issue={} err={e}",
+                issue.id
+            );
+        }
     }
     Ok(Some(out))
 }
@@ -3480,19 +4268,13 @@ pub async fn rebalance_queued_to_worker(
         ) {
             continue;
         }
-        let (required_role, required_tags) = match issue.required_role.as_deref().map(str::trim) {
-            Some(r) if !r.is_empty() && r != "worker" && r != "coordinator" => {
-                let mut tags = issue.required_tags.clone();
-                tags.push(r.to_string());
-                (None, tags)
-            }
-            Some(r) if !r.is_empty() => (Some(r), issue.required_tags.clone()),
-            _ => (None, issue.required_tags.clone()),
-        };
+        let (required_role, required_tags) =
+            normalize_dispatch_role(issue.required_role.as_deref(), &issue.required_tags);
         let input = nemesis_board::MatchInput {
-            required_role,
+            required_role: required_role.as_deref(),
             required_tags: &required_tags,
             required_profession: issue.required_profession.as_deref(),
+            required_capabilities: &issue.required_capabilities,
             description: &issue.description,
         };
         // 新 worker 需满足要求（rank 命中才挪——重平衡不是无脑搬运）。
@@ -3605,6 +4387,31 @@ fn project_dispatch_candidates(
         .collect()
 }
 
+/// required_role 归一（单一真相源）：角色词表（worker/coordinator）外的
+/// 非空词转标签语义（追加进 required_tags）——词表内原样保留。四个派发
+/// 匹配面共用（rank_dispatch_candidates / rebalance_queued_to_worker /
+/// pick_fallback_target / match_failure_detail）。此前 pick_fallback_target
+/// 独家丢弃词表外角色词（其余三处转 tags），兜底松弛丢标签后零约束、
+/// 任意在线节点可接单（2026-10-17 根修）。
+/// （cfg 随调用面走：四个调用方全部 cluster-gated，本函数不裸挂——此前
+/// cfg 错位挂到本函数、rank_dispatch_candidates 反而裸奔，IoT 裁剪构建
+/// （无 cluster）四处 E0433/E0425；修正后两者同闸，裁剪构建零死代码。）
+#[cfg(feature = "cluster")]
+fn normalize_dispatch_role(
+    required_role: Option<&str>,
+    required_tags: &[String],
+) -> (Option<String>, Vec<String>) {
+    match required_role.map(str::trim) {
+        Some(r) if !r.is_empty() && r != "worker" && r != "coordinator" => {
+            let mut tags = required_tags.to_vec();
+            tags.push(r.to_string());
+            (None, tags)
+        }
+        Some(r) if !r.is_empty() => (Some(r.to_string()), required_tags.to_vec()),
+        _ => (None, required_tags.to_vec()),
+    }
+}
+
 /// 匹配器全量排序（D3 换节点重派的候选来源 + [`pick_target_by_matcher`]
 /// 的单一真相源）：在线节点（不含本机）→ 投影 →
 /// [`nemesis_board::rank_peers`] 匹配度降序全量返回。节点角色词表只有
@@ -3618,15 +4425,8 @@ pub fn rank_dispatch_candidates(
     issue: &nemesis_board::Issue,
 ) -> Vec<String> {
     // required_role 归一：角色词表外的词转标签语义（进 required_tags）。
-    let (required_role, required_tags) = match issue.required_role.as_deref().map(str::trim) {
-        Some(r) if !r.is_empty() && r != "worker" && r != "coordinator" => {
-            let mut tags = issue.required_tags.clone();
-            tags.push(r.to_string());
-            (None, tags)
-        }
-        Some(r) if !r.is_empty() => (Some(r), issue.required_tags.clone()),
-        _ => (None, issue.required_tags.clone()),
-    };
+    let (required_role, required_tags) =
+        normalize_dispatch_role(issue.required_role.as_deref(), &issue.required_tags);
 
     let load = store.count_active_dispatch_by_worker().unwrap_or_default();
     // 拓扑约束（2026-10-08 NB-4/NB-5/NB-6 根修③）：file: 锚点单只能本节点
@@ -3638,9 +4438,10 @@ pub fn rank_dispatch_candidates(
         return Vec::new();
     }
     let input = nemesis_board::MatchInput {
-        required_role,
+        required_role: required_role.as_deref(),
         required_tags: &required_tags,
         required_profession: issue.required_profession.as_deref(),
+        required_capabilities: &issue.required_capabilities,
         description: &issue.description,
     };
     // E（goal P2/P5）：候选 tags 合并 master 授予标签（granted_tags 台账）。
@@ -3717,15 +4518,18 @@ fn pick_fallback_target(
     //    已在严格匹配里转 tags，这里只需认 worker/coordinator）。
     let candidates = merge_granted_tags(store, project_dispatch_candidates(cluster));
     let load = store.count_active_dispatch_by_worker().unwrap_or_default();
-    let role = issue
-        .required_role
-        .as_deref()
-        .map(str::trim)
-        .filter(|r| !r.is_empty() && (*r == "worker" || *r == "coordinator"));
+    // 2. 松弛排序（D13 阶梯 = matcher::pick_relaxed：②保职能丢标签 →
+    //    ③丢职能（保角色/标签）→ ④全松弛；无职能子单 ② 蜕化为旧「保
+    //    角色丢标签」，行为不变）。角色归一走单一真相源
+    //    normalize_dispatch_role（词表外角色词转 tags——此前这里独家丢词，
+    //    松弛丢标签后零约束，任意在线节点可接单）。
+    let (role, tags) =
+        normalize_dispatch_role(issue.required_role.as_deref(), &issue.required_tags);
     let base = nemesis_board::MatchInput {
-        required_role: role,
-        required_tags: &issue.required_tags,
+        required_role: role.as_deref(),
+        required_tags: &tags,
         required_profession: issue.required_profession.as_deref(),
+        required_capabilities: &issue.required_capabilities,
         description: &issue.description,
     };
     nemesis_board::pick_relaxed(&base, &candidates, &load, depth)
@@ -3762,16 +4566,9 @@ fn match_failure_detail(
     issue: &nemesis_board::Issue,
     candidates: &[nemesis_board::PeerCandidate],
 ) -> String {
-    // 角色归一（与 rank_dispatch_candidates 同一规则）：词表外角色词转标签。
-    let (required_role, required_tags) = match issue.required_role.as_deref().map(str::trim) {
-        Some(r) if !r.is_empty() && r != "worker" && r != "coordinator" => {
-            let mut tags = issue.required_tags.clone();
-            tags.push(r.to_string());
-            (None, tags)
-        }
-        Some(r) if !r.is_empty() => (Some(r.to_string()), issue.required_tags.clone()),
-        _ => (None, issue.required_tags.clone()),
-    };
+    // 角色归一（单一真相源 normalize_dispatch_role）：词表外角色词转标签。
+    let (required_role, required_tags) =
+        normalize_dispatch_role(issue.required_role.as_deref(), &issue.required_tags);
     if candidates.is_empty() {
         return "无在线候选节点".to_string();
     }
@@ -3816,6 +4613,17 @@ fn match_failure_detail(
         {
             missing.push(format!("档位 {tier} 低于门槛 {min_tier}"));
         }
+        // 环境能力硬条件（NB-122 批）：逐项查缺口（大小写不敏感精确词）。
+        for need in &issue.required_capabilities {
+            let need = need.trim();
+            let hit = !need.is_empty()
+                && c.capabilities
+                    .iter()
+                    .any(|x| x.trim().eq_ignore_ascii_case(need));
+            if !hit {
+                missing.push(format!("缺能力 {need}"));
+            }
+        }
         let tag_str = if c.tags.is_empty() {
             "—".to_string()
         } else {
@@ -3826,13 +4634,19 @@ fn match_failure_detail(
         } else {
             c.professions.join("/")
         };
+        let cap_str = if c.capabilities.is_empty() {
+            "—".to_string()
+        } else {
+            c.capabilities.join("/")
+        };
         lines.push(format!(
-            "{} {}[role={},tags={},prof={}]{}",
+            "{} {}[role={},tags={},prof={},caps={}]{}",
             if missing.is_empty() { "✓" } else { "✗" },
             c.name,
             c.role,
             tag_str,
             prof_str,
+            cap_str,
             if missing.is_empty() {
                 String::new()
             } else {
@@ -4198,6 +5012,8 @@ async fn issue_cancel(
     // 无声——用户据此知道哪些单被连带、可用 issue.reopen 拉回。
     let cascade_cancelled = on_issue_settled(store, ctx.state.cluster.as_ref(), id, &actor);
 
+    // 取消 = 已裁决（恢复动作之一）：归档停车档案。
+    archive_handoff_best_effort(&issue.number);
     Ok(Some(serde_json::json!({
         "cancelled": true,
         "task_id": (!task_id.is_empty()).then_some(task_id),
@@ -4318,8 +5134,11 @@ fn autopilot_new_issue(ap: &nemesis_board::Autopilot, actor: &Actor) -> NewIssue
     let mut ni = NewIssue {
         title: ap.title.replace("{date}", &date),
         description: ap.description.clone(),
-        // F-U5-1：验收标准透传——定时任务也要能全自动验收（空 = 不填，
-        // 评审保持「验收标准（未提供）」保守转人工语义）。
+        // F-U5-1：验收标准透传——定时任务也要能全自动验收。空 = 不填，
+        // 由 store.create_issue 的 ac_gen 创建时自动生成（NB-125 单一真相点，
+        // 模板/规则作者不填也会得到自动推导的验收基准）；**不存在**旧语义
+        // 「留空 = 保守转人工」——ac_gen 落地后留空不再是安全阀，规则作者
+        // 想强制人工评判应显式写不可自动核验的验收标准或在收口时人工干预。
         acceptance_criteria: ap
             .acceptance_criteria
             .clone()
@@ -4731,6 +5550,7 @@ impl ModuleHandler for BoardHandler {
         &[
             "issue.list",
             "issue.get",
+            "issue.decision",
             "issue.timeline",
             "issue.create",
             "issue.update",
@@ -4741,6 +5561,8 @@ impl ModuleHandler for BoardHandler {
             "issue.cancel",
             "issue.reopen",
             "issue.plan",
+            "issue.draft_ac",
+            "board.resume",
             "plan.list",
             "plan.get",
             "issue.bulk_archive",
@@ -4803,11 +5625,15 @@ impl ModuleHandler for BoardHandler {
                 // goal P1/C2：逐单附环节（issue_stage 单一真相源）——前端
                 // 子单行环节徽标数据源；加法变更，旧前端兼容。
                 // §1.1 拆解运行期投影（cluster 编译时）：命中 RUNNING_PLANS
-                // 的单附 `planning: {elapsed_secs, attempt}`（纯展示叠加，
-                // 不改 issue 状态机——backlog 语义不变）。前端列表徽标/
-                // 项目卡片行「🧩 拆解中」数据源。
+                // 的单附 `planning: {elapsed_secs, attempt, phase}`（纯展示叠
+                // 加，不改 issue 状态机——backlog 语义不变）。phase=
+                // planning（planner LLM 运行中）/ dispatching（auto_confirm
+                // 发车派发中——子单已可见，前端徽标应显示「发车中」）。
                 #[cfg(feature = "cluster")]
-                let planning_now: std::collections::HashMap<i64, (u64, u32)> = {
+                let planning_now: std::collections::HashMap<
+                    i64,
+                    (u64, u32, &'static str),
+                > = {
                     let now = std::time::Instant::now();
                     RUNNING_PLANS
                         .lock()
@@ -4815,27 +5641,86 @@ impl ModuleHandler for BoardHandler {
                         .map(|r| {
                             (
                                 r.issue_id,
-                                (now.duration_since(r.started_at).as_secs(), r.attempt),
+                                (
+                                    now.duration_since(r.started_at).as_secs(),
+                                    r.attempt,
+                                    r.phase,
+                                ),
                             )
                         })
                         .collect()
                 };
                 let mut rows = Vec::with_capacity(issues.len());
+                // 依赖徽标批量投影（2026-10-15）：边集 + 轻投影各一次查询，
+                // 不逐单 dependencies_of（N+1；规模不设限——全表读千行毫秒级）。
+                // briefs 是全表（不带 filter），上游被 exclude 过滤掉也照常投影。
+                let briefs = store.issue_briefs()?;
+                let mut deps_by_issue: std::collections::HashMap<i64, Vec<i64>> =
+                    std::collections::HashMap::new();
+                for (issue_id, dep_id) in store.all_dependency_edges()? {
+                    deps_by_issue.entry(issue_id).or_default().push(dep_id);
+                }
+                // 决策可见性投影（2026-10-15）：停车档案一次性扫 + PLAN_CACHE
+                // 一次快照，per-issue 只做 map 命中与一条 last_system_comment
+                // 查询（仅 in_progress 单，indexed）。
+                let handoffs = scan_live_handoffs();
+                #[cfg(feature = "cluster")]
+                let plan_ready = plan_ready_by_issue();
                 for issue in &issues {
                     let mut v =
                         serde_json::to_value(issue).map_err(|e| format!("serialize issue: {e}"))?;
                     if let Some(obj) = v.as_object_mut() {
+                        let depends_on: Vec<serde_json::Value> = deps_by_issue
+                            .get(&issue.id)
+                            .map(|deps| {
+                                deps.iter()
+                                    .map(|dep_id| {
+                                        let (number, status) = briefs
+                                            .get(dep_id)
+                                            .cloned()
+                                            .unwrap_or(("?".to_string(), "unknown".to_string()));
+                                        serde_json::json!({
+                                            "id": dep_id,
+                                            "number": number,
+                                            "status": status,
+                                        })
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        obj.insert("depends_on".to_string(), serde_json::json!(depends_on));
                         obj.insert(
                             "stage".to_string(),
                             serde_json::json!(issue_stage(&store, issue)?),
                         );
+                        // 强信号：停车等裁决（✋ 待你决策徽标数据源）。
+                        if let Some(nu) = needs_user_projection(&handoffs, issue) {
+                            obj.insert("needs_user".to_string(), nu);
+                        }
+                        // 中信号：拆解完成等确认发车（📋 计划待确认徽标数据源）。
                         #[cfg(feature = "cluster")]
-                        if let Some((elapsed, attempt)) = planning_now.get(&issue.id) {
+                        if let Some((plan_id, subs_count, age)) = plan_ready.get(&issue.id) {
+                            obj.insert(
+                                "plan_ready".to_string(),
+                                serde_json::json!({
+                                    "plan_id": plan_id,
+                                    "subs_count": subs_count,
+                                    "created_age_secs": age,
+                                }),
+                            );
+                        }
+                        // 弱信号：执行档案停滞（⚠ 停滞徽标数据源；只提示不给按钮）。
+                        if issue_needs_attention(&store, issue) {
+                            obj.insert("attention".to_string(), serde_json::json!(true));
+                        }
+                        #[cfg(feature = "cluster")]
+                        if let Some((elapsed, attempt, phase)) = planning_now.get(&issue.id) {
                             obj.insert(
                                 "planning".to_string(),
                                 serde_json::json!({
                                     "elapsed_secs": elapsed,
                                     "attempt": attempt,
+                                    "phase": phase,
                                 }),
                             );
                         }
@@ -4854,6 +5739,73 @@ impl ModuleHandler for BoardHandler {
                 Ok(Some(
                     serde_json::json!({ "issue": issue_to_view(&store, &issue)? }),
                 ))
+            }
+            // 决策面板数据源（决策可见性批 2026-10-15）：`issue.decision
+            // {number|id}` → needs_user / plan_ready / attention 投影 +
+            // 停车档案全量（verdict_chain / environment / attempted /
+            // resume_entry，详情页「更多上下文」折叠）+ 在线节点清单（重派
+            // 按钮下拉）。与 issue.list 同构字段；档案全量只在此按需给
+            //（列表面保持轻）。
+            "issue.decision" => {
+                let data = data.ok_or("missing data")?;
+                let issue = if let Ok(id) = data.get("id").and_then(|v| v.as_i64()).ok_or(()) {
+                    store.get_issue(id)?
+                } else {
+                    store.get_issue_by_number(&get_str(&data, "number")?)?
+                };
+                let handoffs = scan_live_handoffs();
+                let needs_user = needs_user_projection(&handoffs, &issue);
+                // 档案全量（仅 needs_user 成立时随发——状态闸外的档案是漏
+                // 归档残留，不给面板喂过期现场）。
+                let handoff_full = if needs_user.is_some() {
+                    handoffs.get(&issue.number).cloned()
+                } else {
+                    None
+                };
+                #[cfg(feature = "cluster")]
+                let plan_ready = plan_ready_by_issue().remove(&issue.id).map(
+                    |(plan_id, subs_count, created_age_secs)| {
+                        serde_json::json!({
+                            "plan_id": plan_id,
+                            "subs_count": subs_count,
+                            "created_age_secs": created_age_secs,
+                        })
+                    },
+                );
+                #[cfg(not(feature = "cluster"))]
+                let plan_ready: Option<serde_json::Value> = None;
+                let attention = issue_needs_attention(&store, &issue);
+                // 在线节点清单（重派下拉数据源）：非本节点、在线者。非
+                // cluster 编译恒空（派发本就无从谈起）。
+                #[allow(unused_mut)]
+                let mut online_nodes: Vec<serde_json::Value> = Vec::new();
+                #[cfg(feature = "cluster")]
+                if let Some(c) = ctx.state.cluster.as_ref() {
+                    let local = c.node_id();
+                    online_nodes.extend(
+                        c.list_nodes()
+                            .iter()
+                            .filter(|n| n.is_online() && n.base.id != local)
+                            .map(|n| {
+                                serde_json::json!({
+                                    "name": n.base.name,
+                                    "role": n.base.role,
+                                    "professions": n.professions,
+                                    "tier": n.tier,
+                                })
+                            }),
+                    );
+                }
+                Ok(Some(serde_json::json!({
+                    "issue": issue.number,
+                    "issue_id": issue.id,
+                    "status": issue.status.as_str(),
+                    "needs_user": needs_user,
+                    "plan_ready": plan_ready,
+                    "attention": attention,
+                    "handoff": handoff_full,
+                    "online_nodes": online_nodes,
+                })))
             }
             // U-C（2026-10-12 §9.3）：单子全链路时间线（可追溯查询面——终结
             // 「人查 4 个库」）。聚合入口与 dossier timeline.md 同源
@@ -4913,7 +5865,7 @@ impl ModuleHandler for BoardHandler {
             }
             "issue.create" => {
                 let data = data.ok_or("missing data")?;
-                let issue = store.create_issue(build_new_issue(&data, actor)?)?;
+                let issue = store.create_issue(build_new_issue(&data, actor.clone())?)?;
                 let mut out =
                     serde_json::json!({ "created": true, "issue": issue_to_view(&store, &issue)? });
                 // F5 件①：建单警示——验收标准含 `[CHECK] re:` 锚点时提醒
@@ -4926,10 +5878,26 @@ impl ModuleHandler for BoardHandler {
                         "验收标准含 [CHECK] re: 锚点：本单若后续被 AI 拆解为父单，父单层没有交付文本可核验该锚点（验收必败）——拆解时请确保至少一个子单继承该锚点。直接执行（不拆解）的单不受影响。"
                     );
                 }
+                // W2.5 接线补全（2026-10-17 NB-125 用户反馈）：列表页创建
+                // 弹窗把指派目标内联在 create 请求里，此前自动派发钩子只接
+                // 在 issue.assign 命令上——board.auto_dispatch=true 且创建
+                // 即指派 worker 时同样发车，否则「创建+选目标」永远静默
+                // 躺 backlog。失败不回滚创建（与 assign 路径同语义：⛔ 评论
+                // 留痕在钩子内）。派发推进了状态 → 响应重取反映 in_progress。
+                #[cfg(feature = "cluster")]
+                let dispatched =
+                    auto_dispatch_after_assign(&store, ctx.state.cluster.as_ref(), &issue, &actor);
+                #[cfg(not(feature = "cluster"))]
+                let dispatched = auto_dispatch_after_assign(&store, &issue, &actor);
+                if dispatched {
+                    let issue = store.get_issue(issue.id)?;
+                    out["issue"] = issue_to_view(&store, &issue)?;
+                }
                 Ok(Some(out))
             }
             "issue.update" => {
                 let data = data.ok_or("missing data")?;
+                reject_nested_patch(&data)?;
                 let id = data
                     .get("id")
                     .and_then(|v| v.as_i64())
@@ -4976,6 +5944,11 @@ impl ModuleHandler for BoardHandler {
                     .ok_or("missing field: id")?;
                 let to = parse_status(&data)?;
                 let issue = store.transition_issue(id, to, &actor)?;
+                // 已裁决（通过/取消）= 恢复动作之一：归档停车档案（清「在
+                // 等人」徽标；best-effort，下同）。
+                if matches!(to, IssueStatus::Done | IssueStatus::Cancelled) {
+                    archive_handoff_best_effort(&issue.number);
+                }
                 // M1 补派触发器 + 父单收口（子单落定后联动；错误只 warn）。
                 #[cfg(feature = "cluster")]
                 if matches!(to, IssueStatus::Done | IssueStatus::Cancelled) {
@@ -4999,6 +5972,10 @@ impl ModuleHandler for BoardHandler {
                     .and_then(|v| v.as_i64())
                     .ok_or("missing field: position")?;
                 let issue = store.move_issue(id, to, position, &actor)?;
+                // 拖到终态同 issue.status（已裁决 → 归档停车档案）。
+                if matches!(to, IssueStatus::Done | IssueStatus::Cancelled) {
+                    archive_handoff_best_effort(&issue.number);
+                }
                 // M1 补派触发器 + 父单收口（跨列拖到 done/cancelled 同样落定）。
                 #[cfg(feature = "cluster")]
                 if matches!(to, IssueStatus::Done | IssueStatus::Cancelled) {
@@ -5027,6 +6004,8 @@ impl ModuleHandler for BoardHandler {
                     .and_then(|v| v.as_i64())
                     .ok_or("missing field: id")?;
                 let issue = store.reopen_issue(id, &actor)?;
+                // 重开 = 用户接手（恢复动作之一）：归档停车档案。
+                archive_handoff_best_effort(&issue.number);
                 Ok(Some(
                     serde_json::json!({ "reopened": true, "issue": issue_to_view(&store, &issue)? }),
                 ))
@@ -5035,6 +6014,44 @@ impl ModuleHandler for BoardHandler {
             // plan_id，结果经 board.plan_ready/failed push）；confirm:true =
             // 按 plan_id 落库 + 依赖闸派发波 + 父单联动。
             "issue.plan" => issue_plan(&store, actor, ctx, data).await,
+            // 验收标准 AI 起草（NB-101 AC 缺失根修的人工面）：草稿只回前端
+            // 预填，不落库——用户编辑后走既有 issue.update 保存（AI 只起草，
+            // 落库决定权在用户）。父单（汇总子单材料）与子单/独立单通用。
+            "issue.draft_ac" => {
+                let data = data.ok_or("missing data")?;
+                // 前置闸先行：agent 未运行时无论单据存在与否都报同一语义
+                //（装配性错误优先于数据错误，报错不误导）。
+                let agent_loop = ctx
+                    .state
+                    .agent_loop
+                    .read()
+                    .clone()
+                    .ok_or("agent 未运行，无法执行 AI 起草")?;
+                let issue = if let Ok(number) = get_str(&data, "number") {
+                    store.get_issue_by_number(&number)?
+                } else if let Some(id) = data.get("id").and_then(|v| v.as_i64()) {
+                    store.get_issue(id)?
+                } else {
+                    return Err("issue.draft_ac 需要 number（NB-N）或 id 之一".into());
+                };
+                let prompt = build_issue_ac_draft_prompt(&store, &issue)?;
+                let draft = run_ac_draft(&agent_loop, &prompt, None).await?;
+                tracing::info!(
+                    "[Board] issue.draft_ac issue={} by {}/{}（{} 字草稿回前端预填）",
+                    issue.number,
+                    actor.kind,
+                    actor.id,
+                    draft.chars().count()
+                );
+                Ok(Some(
+                    serde_json::json!({ "issue": issue.number, "draft": draft }),
+                ))
+            }
+            // 停车续做正门（主会话污染根修）：自动化经此读档续做，不再借道
+            // 用户聊天会话。受理即回，run_detached 独立会话后台执行（带全量
+            // 工具面），结论异步落回本单系统评论。人的聊天路径（「继续 NB-x」）
+            // 保留——那是人对自己会话的选择；自动化从此走这扇门。
+            "board.resume" => board_resume(store, ctx, data.as_ref()).await,
             // P11 观测面：plan 预览查询（list 全量存活按 issue_id 可选过滤 /
             // get 单查；TTL 惰性过滤与插入点同判据）。
             "plan.list" => plan_list(&store, data),
@@ -5102,6 +6119,7 @@ impl ModuleHandler for BoardHandler {
             }
             "autopilot.update" => {
                 let data = data.ok_or("missing data")?;
+                reject_nested_patch(&data)?;
                 let id = data
                     .get("id")
                     .and_then(|v| v.as_i64())
@@ -5462,6 +6480,7 @@ impl ModuleHandler for BoardHandler {
             // 项目字段级更新（W2 P3）：归档走 status="archived"（软删除）。
             "project.update" => {
                 let data = data.ok_or("missing data")?;
+                reject_nested_patch(&data)?;
                 let id = data
                     .get("id")
                     .and_then(|v| v.as_i64())
@@ -5732,6 +6751,65 @@ impl ModuleHandler for BoardHandler {
             // in_review 诚实拒绝（评审链内有竞态守卫，这里是入口闸）。
             "review.retrigger" => {
                 let data = data.ok_or("missing data")?;
+                // 项目收口复评臂（2026-10-17 NB-101 project_escalate_human
+                // 死路根修）：`{"project_id": N}` 直接重触项目收口评审。
+                // 前置闸与评审侧同源：项目存在、未终结、全顶层父单 done。
+                if let Some(project_id) = data.get("project_id").and_then(|v| v.as_i64()) {
+                    let project = store.get_project(project_id)?;
+                    if matches!(project.status.as_str(), "completed" | "archived") {
+                        return Err(format!(
+                            "项目 {} 已是 {}，无需复评",
+                            project.name, project.status
+                        ));
+                    }
+                    let tops: Vec<nemesis_board::Issue> = store
+                        .list_issues(&nemesis_board::models::IssueFilter {
+                            project_id: Some(project_id),
+                            ..Default::default()
+                        })?
+                        .into_iter()
+                        .filter(|i| i.parent_issue_id.is_none())
+                        .collect();
+                    if tops.is_empty() {
+                        return Err(format!("项目 {} 无顶层父单，无法复评", project.name));
+                    }
+                    if let Some(p) = tops.iter().find(|p| p.status != IssueStatus::Done) {
+                        return Err(format!(
+                            "项目 {} 存在非 done 顶层父单（{}={}），先收口父单再复评项目",
+                            project.name,
+                            p.number,
+                            p.status.as_str()
+                        ));
+                    }
+                    let hook = PROJECT_REVIEW_RETRIGGER_HOOK.get().ok_or(
+                        "项目收口复评钩子未安装（gateway 未装配 board 评审依赖或非 master 节点）",
+                    )?;
+                    tracing::info!(
+                        "[Board] review.retrigger project={} by {}/{}",
+                        project.name,
+                        actor.kind,
+                        actor.id
+                    );
+                    // 留痕：项目无 comment 载体（F3 惯例），系统注记落全部
+                    // 顶层父单；消费掉的停车档案照常归档。
+                    for p in &tops {
+                        let _ = store.add_comment(NewComment {
+                            issue_id: p.id,
+                            author: actor.clone(),
+                            content: "🔁 人工触发项目收口复评（review.retrigger project_id）"
+                                .to_string(),
+                            parent_id: None,
+                            ctype: CommentType::System,
+                        });
+                        archive_handoff_best_effort(&p.number);
+                    }
+                    hook(project_id);
+                    return Ok(Some(serde_json::json!({
+                        "retriggered": true,
+                        "project_id": project_id,
+                        "project": project.name,
+                    })));
+                }
                 let issue = if let Ok(number) = get_str(&data, "number") {
                     store.get_issue_by_number(&number)?
                 } else if let Some(id) = data.get("id").and_then(|v| v.as_i64()) {
@@ -5746,26 +6824,55 @@ impl ModuleHandler for BoardHandler {
                         issue.status.as_str()
                     ));
                 }
+                // 打回重开（2026-10-16 用户裁决）：最近 auto_decide =
+                // parent_escalate_human 的单，retrigger = 人工打回升级——
+                // 返工轮数预算重置（board_meta 纪元键），自动验收重新开始。
+                // 必须先于 hook 落定：评审侧防抖守卫读活动流（admin 评论
+                // 晚于升级才放行）+ try_parent_remediation 读纪元键。
+                let escalated = matches!(
+                    store.latest_auto_decide(issue.id)?,
+                    Some((_, ref d)) if d == "parent_escalate_human"
+                );
+                if escalated {
+                    let epoch = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64;
+                    store.set_meta(
+                        &format!("remediation_reset:{}", issue.id),
+                        &epoch.to_string(),
+                    )?;
+                }
                 let hook = REVIEW_RETRIGGER_HOOK.get().ok_or(
                     "评审重触发钩子未安装（gateway 未装配 board 评审依赖或非 master 节点）",
                 )?;
-                hook(issue.id);
-                // 留痕：人工触发记录进单据（决策流/审计可见）。
+                // 留痕：人工触发记录进单据（决策流/审计可见）——必须在
+                // hook 发车之前落库（评审侧循环升级防抖守卫靠「升级后有
+                // admin 活动」放行人工复评）。
                 tracing::info!(
-                    "[Board] review.retrigger issue={} by {}/{}",
+                    "[Board] review.retrigger issue={} by {}/{} escalated_reopen={escalated}",
                     issue.number,
                     actor.kind,
                     actor.id
                 );
+                let note = if escalated {
+                    "🔁 人工打回升级停车（review.retrigger）——自动验收重新开始，返工预算已重置"
+                        .to_string()
+                } else {
+                    "🔁 人工触发重新验收评审（review.retrigger）".to_string()
+                };
                 let _ = store.add_comment(NewComment {
                     issue_id: issue.id,
                     author: actor,
-                    content: "🔁 人工触发重新验收评审（review.retrigger）".to_string(),
+                    content: note,
                     parent_id: None,
                     ctype: CommentType::System,
                 });
+                hook(issue.id);
+                // 复评启动 = 「等裁决」现场已被消费：归档停车档案。
+                archive_handoff_best_effort(&issue.number);
                 Ok(Some(
-                    serde_json::json!({ "retriggered": true, "issue": issue.number }),
+                    serde_json::json!({ "retriggered": true, "issue": issue.number, "escalated_reopen": escalated }),
                 ))
             }
             // U-B（2026-10-12 无人值守）：端点不可用封存观测 + 手动放行。
@@ -5956,6 +7063,15 @@ fn board_config_set(
                     u32::try_from(value.as_u64().ok_or("review.max_turns 需要非负整数")?)
                         .map_err(|_| "review.max_turns 超出 u32 范围")?;
             }
+            // 连续 UNSURE 停车阈值（0=不限；用户 2026-10-15：设置页缺旋钮）。
+            "review.max_unsure_streak" => {
+                board.review.max_unsure_streak = u32::try_from(
+                    value
+                        .as_u64()
+                        .ok_or("review.max_unsure_streak 需要非负整数")?,
+                )
+                .map_err(|_| "review.max_unsure_streak 超出 u32 范围")?;
+            }
             "review.checkers" => {
                 board.review.checkers =
                     u32::try_from(value.as_u64().ok_or("review.checkers 需要非负整数")?)
@@ -6033,15 +7149,90 @@ fn board_config_set(
                 )
                 .map_err(|_| "超出 u32 范围")?;
             }
+            "discussion.review_wait_secs" => {
+                board.discussion.review_wait_secs = u32::try_from(
+                    value
+                        .as_u64()
+                        .ok_or("discussion.review_wait_secs 需要非负整数")?,
+                )
+                .map_err(|_| "超出 u32 范围")?;
+            }
+            // B1（职能→评审预设查表）：review.professions.<slug>.<field>
+            // （slug 大小写归一后写入 map，与查表侧 to_ascii_lowercase 对齐；
+            // slug 语法走 nemesis-prompts 单一校验源）。逐维度 Option 覆盖：
+            // 只写显式提供的维度，其余沿用内置/全局。
+            k if let Some(rest) = k.strip_prefix("review.professions.") => {
+                let (slug, field) = rest.rsplit_once('.').ok_or_else(|| {
+                    format!("职能预设键形态为 review.professions.<slug>.<field>（field: max_turns/checkers/selfcheck），收到：{k}")
+                })?;
+                let slug = slug.trim().to_ascii_lowercase();
+                if let Err(e) = nemesis_prompts::professions::meta::validate_slug(&slug) {
+                    return Err(format!("职能 slug 非法：{e}"));
+                }
+                let preset = board.review.professions.entry(slug.clone()).or_default();
+                match field {
+                    "max_turns" => {
+                        // null = 清除该维度覆盖（全空条目顺手删除，防 map 积灰）。
+                        if value.is_null() {
+                            preset.max_turns = None;
+                            drop_if_empty(&mut board.review.professions, &slug);
+                        } else {
+                            preset.max_turns =
+                                Some(
+                                    u32::try_from(value.as_u64().ok_or(
+                                        "review.professions.<slug>.max_turns 需要非负整数",
+                                    )?)
+                                    .map_err(|_| "超出 u32 范围")?,
+                                );
+                        }
+                    }
+                    "checkers" => {
+                        if value.is_null() {
+                            preset.checkers = None;
+                            drop_if_empty(&mut board.review.professions, &slug);
+                        } else {
+                            let v = u32::try_from(
+                                value
+                                    .as_u64()
+                                    .ok_or("review.professions.<slug>.checkers 需要非负整数")?,
+                            )
+                            .map_err(|_| "超出 u32 范围")?;
+                            // 消费侧（run_review_panel）同样收敛，这里前置拒绝给出明确文案。
+                            if !(1..=5).contains(&v) {
+                                return Err(
+                                    "review.professions.<slug>.checkers 需要在 1..=5 范围内"
+                                        .to_string(),
+                                );
+                            }
+                            preset.checkers = Some(v);
+                        }
+                    }
+                    "selfcheck" => {
+                        if value.is_null() {
+                            preset.selfcheck = None;
+                            drop_if_empty(&mut board.review.professions, &slug);
+                        } else {
+                            preset.selfcheck = Some(need_bool(value)?);
+                        }
+                    }
+                    other => {
+                        return Err(format!(
+                            "未知职能预设维度：{other}（允许：max_turns / checkers / selfcheck；null=清除维度）"
+                        ));
+                    }
+                }
+            }
             _ => {
                 return Err(format!(
                     "未知或不允许的 board 配置键：{key}（允许：auto_review / auto_accept / \
                  auto_close_parent / unlimited_mode / conflict_auto_resolve / dispatch_fallback / \
                  dispatch_fallback_target / fingerprint_weighting / \
                  max_redispatch / dispatch_timeout_secs / worker_max_inflight / \
-                 plan.auto_confirm / plan.model / review.max_turns / review.selfcheck / \
+                 plan.auto_confirm / plan.model / review.max_turns / \
+                 review.max_unsure_streak / review.selfcheck / \
                  review.exec_anchors_enabled / review.exec_anchor_timeout_secs / \
-                 review.auto_close_project / review.checkers / budget.max_subissues_per_parent / \
+                 review.auto_close_project / review.checkers / review.professions.<slug>.* / \
+                 budget.max_subissues_per_parent / \
                  budget.max_total_redispatch / budget.max_send_retries / budget.wall_clock_budget_secs / \
                  budget.max_tokens_per_parent / discussion.*）"
                 ));
@@ -6056,18 +7247,36 @@ fn board_config_set(
             return Err("board 段 round-trip 丢失（typed 结构漂移）".to_string());
         };
         let leaf = key.rsplit('.').next().unwrap_or(key);
-        let persisted = match leaf {
-            "plan" | "discussion" | "backup" | "review" | "budget" => board_json.get(leaf),
-            _ => {
-                // plan.x / discussion.x 嵌套键到子对象里核。
-                if let Some((parent, _)) = key.split_once('.') {
-                    board_json.get(parent).and_then(|p| p.get(leaf))
-                } else {
-                    board_json.get(leaf)
+        // B1：review.professions.<slug>.<field> 四段键 → 嵌套四跳定位
+        // （slug 与写入侧同样归一小写后再核）。
+        let persisted = if let Some(rest) = key.strip_prefix("review.professions.") {
+            let mut seg = rest.rsplit('.');
+            let field = seg.next();
+            let slug = seg.next().map(|s| s.trim().to_ascii_lowercase());
+            match (slug, field) {
+                (Some(s), Some(f)) => board_json
+                    .get("review")
+                    .and_then(|r| r.get("professions"))
+                    .and_then(|p| p.get(&s))
+                    .and_then(|e| e.get(f)),
+                _ => None,
+            }
+        } else {
+            match leaf {
+                "plan" | "discussion" | "backup" | "review" | "budget" => board_json.get(leaf),
+                _ => {
+                    // plan.x / discussion.x 嵌套键到子对象里核。
+                    if let Some((parent, _)) = key.split_once('.') {
+                        board_json.get(parent).and_then(|p| p.get(leaf))
+                    } else {
+                        board_json.get(leaf)
+                    }
                 }
             }
         };
         match persisted {
+            // null 清除语义：条目/维度已不在 = 清除成功（幂等）。
+            None if value.is_null() => {}
             None => return Err(format!("配置键 {key} round-trip 丢失（typed 结构漂移）")),
             // 值不一致且布尔/数值维度也不等价（排除 serde 归一化等价形态）才报错。
             Some(actual)
@@ -6093,6 +7302,17 @@ fn board_config_set(
     })?;
     tracing::info!("[Board] board.config.set key={key}");
     Ok(Some(serde_json::json!({ "updated": true, "key": key })))
+}
+
+/// B1：职能预设条目三维度全空时顺手删除（null 清除维度的收尾；防
+/// `professions` map 积灰全空条目）。
+fn drop_if_empty(
+    map: &mut std::collections::HashMap<String, nemesis_config::BoardProfessionReviewPreset>,
+    slug: &str,
+) {
+    if map.get(slug).is_some_and(|p| *p == Default::default()) {
+        map.remove(slug);
+    }
 }
 
 /// M6-2 rebase（P5 clobber 根修）：以磁盘最新 config.json 为底、只保留

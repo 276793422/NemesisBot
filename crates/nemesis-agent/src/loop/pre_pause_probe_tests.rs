@@ -225,6 +225,7 @@ fn probe_test_config(tool_name: &str) -> AgentConfig {
         system_prompt: Some("You are a test assistant.".to_string()),
         max_turns: 100,
         tools: vec![tool_name.to_string()],
+        tool_fence_profession: None,
         models: std::collections::HashMap::new(),
     }
 }

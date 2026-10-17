@@ -10742,7 +10742,7 @@ async fn main() {
     );
 
     // ==================================================================
-    // 职能框架 U 系列（M7 §4）：U-Prep → U2 → U1 → U7 → U3 → U8 → U4 → U6 → U5
+    // 职能框架 U 系列（M7 §4）：U-Prep → U2 → U1 → U7 → U3 → U8 → U4 → U6 → U5 → U9
     //
     // 场景次序按「B 端职能/模型状态变更最小化」排布：
     //   U2 先钉 tier=mini（全场唯一 tier 闸场景）再恢复；U1 六职能全链；
@@ -11516,6 +11516,79 @@ async fn main() {
                 return fail("U5", format!("字节不同源：B={} bytes A={} bytes", b_bytes.len(), a_bytes.len()));
             }
             pass("U5", format!("图像全链：generate_image 落盘（PNG {} bytes）→ publish → A 端资产取回字节同源 → vision 评审 done", b_bytes.len()))
+        })
+        .await,
+    );
+
+    // ---- U9：D2 集群需求评审全链（<PLAN_VARIANT> 多变体 → 定稿单 @all 邀请
+    //          → 跨节点被动臂应答落线程 → board_discuss 读取臂轮询 → 裁决定稿）----
+    // 压轴纯 board 流（零重启变更——U5 之后环境即 U9 环境：B 带
+    // 六职能+myfamily:myspec、C/D 老形态、fallback=off、auto_accept=on；
+    // 唯一配置动作 = 测试体内派发超时热调，见下）。
+    // 链路：3 个 product 变体单（无依赖，confirm 波即派 B，职能回显机交付）
+    // → 依赖闸放行定稿单 → B 端 <UAT_D2_FINALIZE> 对话机：board_discuss
+    // 发帖 @all 邀请 → sleep → 读取臂轮询本单线程（C/D wake 应答 + A 端
+    // moderator 裁决都落库）→ 按应答出裁决记录（引用线程原文）→ AC re:
+    // 锚点（需求评审记录/定稿）验收 done。
+    all_results.push(
+        run_test("U9: D2 集群需求评审全链（多变体 → @all 邀请 → 跨节点应答 → 读取裁决 → 定稿锚点 done）", || async {
+            // --filter U 过滤跑下 T21 的 600s 派发超时重配不执行，A 保留
+            // Phase 4 的 15s 测试速配——D2 对话机的合法 sleep+轮询链
+            // （sleep 3×2 + 多轮 LLM 往返 ≈ 10~20s）会被派发超时掐死
+            // （run3 实录 2026-10-14：定稿回复迟到被吞 → 停车 → 600s 墙钟红）。
+            // 热调回 600s（免重启，阈值每 tick 经 config.json mtime 热读），
+            // 收尾恢复 15s（后续 T43/T46/T48 各自管理自己的 sweep 值）。
+            if let Err(e) = hot_set_board_sweep_timeout(&ws_a.home(), 600) {
+                return fail("U9", format!("派发超时热调 600s 失败: {e}"));
+            }
+            let r = async {
+                let Ok(mut ws) = ws_connect_gateway(NODES[0].web_port).await else {
+                    return fail("U9", "WS connect to A failed");
+                };
+                // 4 子任务：3 变体（product，无依赖）+ 定稿单（deps [0,1,2]）。
+                let (_pid, children, _c) = match swarm_plan_and_confirm_n(
+                    &mut ws,
+                    NODES[0].web_port,
+                    "<PLAN_VARIANT>",
+                    60,
+                    4,
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => return fail("U9", format!("plan/confirm failed: {e}")),
+                };
+                // 变体单全部 done（auto_accept + 职能回显交付；依赖闸解锁前置）。
+                for (i, cid) in children.iter().take(3).enumerate() {
+                    if let Err(e) =
+                        wait_issue_done(&mut ws, *cid, &format!("U9-变体{}", i + 1), 300).await
+                    {
+                        return fail("U9", format!("变体单未完成: {e}"));
+                    }
+                }
+                // 定稿单依赖闸补派 → D2 对话机全链（发帖→sleep→读→裁决）。
+                if let Err(e) = wait_issue_done(&mut ws, children[3], "U9-定稿", 600).await {
+                    return fail("U9", format!("定稿单未完成: {e}"));
+                }
+                // 定稿交付含 AC 锚点词 + 跨节点应答原文（读取臂真读到落库回帖
+                // 的客观旁证——boardAckText 来自 C/D 被动臂，随裁决引用回流）。
+                let comments = u_comments_text(&mut ws, children[3]).await;
+                for needle in ["需求评审记录", "定稿", "集群协作状态正常"] {
+                    if !comments.contains(needle) {
+                        return fail(
+                            "U9",
+                            format!("定稿交付/线程缺「{needle}」：{}", trunc(&comments, 500)),
+                        );
+                    }
+                }
+                pass(
+                    "U9",
+                    "多变体 done → 定稿单 @all 邀请 → 跨节点应答落线程 → 读取臂轮询 → 裁决定稿交付（AC 锚点全中）",
+                )
+            }
+            .await;
+            let _ = hot_set_board_sweep_timeout(&ws_a.home(), 15);
+            r
         })
         .await,
     );

@@ -99,6 +99,8 @@ fn e7_loop_with_small_model(response: &str) -> (AgentLoop, std::sync::Arc<TitleP
             max_turns: 5,
             tools: vec![],
             models: std::collections::HashMap::new(),
+
+            tool_fence_profession: None,
         },
     );
     let provider = std::sync::Arc::new(TitleProvider::new(response));
@@ -176,6 +178,8 @@ async fn e7_skips_without_small_model_or_real_title() {
             max_turns: 5,
             tools: vec![],
             models: std::collections::HashMap::new(),
+
+            tool_fence_profession: None,
         },
     );
     let key = e7_uniq_key("nosmall");

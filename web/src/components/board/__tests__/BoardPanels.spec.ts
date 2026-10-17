@@ -502,6 +502,30 @@ describe('IssueDetailModal（详情弹窗 P3 增强）', () => {
     expect(w.findAll('button').some((b) => b.text() === '下载')).toBe(true)
     expect(w.text()).toContain('上传附件')
   })
+
+  it('评审重触发：in_review 显示按钮，点击调 review.retrigger（number）', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'issue.get')
+        return Promise.resolve({ issue: issue({ status: 'in_review', comments: [] }) })
+      if (cmd === 'attachment.list') return Promise.resolve({ attachments: [] })
+      if (cmd === 'nodes.list') return Promise.resolve({ nodes: [] })
+      return Promise.resolve({ retriggered: true })
+    })
+    const w = mount(IssueDetailModal, { props: { issueId: 1 } })
+    await flushPromises()
+    const btn = w.findAll('button').find((b) => b.text().includes('重触发评审'))
+    expect(btn).toBeTruthy()
+    await btn!.trigger('click')
+    await flushPromises()
+    const call = requestMock.mock.calls.find((c) => c[1] === 'review.retrigger')!
+    expect(call[0]).toBe('board')
+    expect(call[2]).toEqual({ number: 'NB-1' })
+  })
+
+  it('评审重触发：非 in_review 不渲染入口', async () => {
+    const w = await mountModal([])
+    expect(w.findAll('button').some((b) => b.text().includes('重触发评审'))).toBe(false)
+  })
 })
 
 describe('AutopilotPanel（自动化 P4）', () => {
@@ -817,7 +841,7 @@ describe('BoardConfigPanel（配置 全自动流转 P1/A4）', () => {
     max_redispatch: 2,
     dispatch_timeout_secs: 3600,
     plan: { auto_confirm: false, model: null },
-    review: { max_turns: 1, selfcheck: false, auto_close_project: false },
+    review: { max_turns: 1, max_unsure_streak: 2, selfcheck: false, auto_close_project: false },
     budget: { max_subissues_per_parent: 20, max_total_redispatch: 0, wall_clock_budget_secs: 0 },
     discussion: {
       retention_days: 30,
@@ -967,6 +991,20 @@ describe('BoardConfigPanel（配置 全自动流转 P1/A4）', () => {
     expect(useToast().toasts.some((t) => t.type === 'warn')).toBe(true)
   })
 
+  it('连续 UNSURE 停车阈值：渲染后端值 + 修改即存 review.max_unsure_streak（2026-10-15 补旋钮）', async () => {
+    const w = await mountPanel({ review: { max_turns: 1, max_unsure_streak: 11, selfcheck: false, auto_close_project: false } })
+    expect(w.text()).toContain('连续 UNSURE 停车阈值')
+    // 按行定位（数字输入框顺序会随参数行增删漂移，不取索引）。
+    const row = w.findAll('.param-row').find((r) => r.text().includes('连续 UNSURE 停车阈值'))!
+    const input = row.find('input[type="number"]')
+    expect((input.element as HTMLInputElement).value).toBe('11')
+    await input.setValue('4')
+    await input.trigger('change')
+    await flushPromises()
+    const call = requestMock.mock.calls.find((c) => c[2]?.key === 'review.max_unsure_streak')!
+    expect(call[2]).toEqual({ key: 'review.max_unsure_streak', value: 4 })
+  })
+
   it('模型别名清空 → config.set plan.model=null；填值 → 字符串', async () => {
     const w = await mountPanel({ plan: { auto_confirm: false, model: 'glm-4.7' } })
     const modelInput = w.findAll('input[type="text"]').find((i) =>
@@ -983,10 +1021,10 @@ describe('BoardConfigPanel（配置 全自动流转 P1/A4）', () => {
 })
 
 describe('BoardTabs（页签顺序）', () => {
-  it('从左到右 = 使用依赖链：项目 → 列表 → 看板 → 收件箱 → 自动化 → 讨论 → 决策流 → 配置', () => {
+  it('从左到右 = 使用依赖链：项目 → 列表 → 看板 → 流程图 → 收件箱 → 自动化 → 讨论 → 决策流 → 配置', () => {
     const w = mount(BoardTabs, { props: { modelValue: 'projects' } })
     const labels = w.findAll('button').map((b) => b.text())
-    expect(labels).toEqual(['项目', '列表', '看板', '收件箱', '自动化', '讨论', '决策流', '配置'])
+    expect(labels).toEqual(['项目', '列表', '看板', '流程图', '收件箱', '自动化', '讨论', '决策流', '配置'])
   })
 
   it('点击页签 emit update:modelValue', async () => {

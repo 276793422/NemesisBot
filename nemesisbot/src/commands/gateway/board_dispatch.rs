@@ -331,3 +331,100 @@ fn floor_char_boundary(s: &str, max: usize) -> &str {
     }
     &s[..i]
 }
+
+// ---------------------------------------------------------------------------
+// 档案停摆哨兵（BUG-2026-10-15 C 可观测；NB-120 实证 1.5h 双端「正常」死等
+// ——交付评论后变更集永不落地，master 只能干等 ingest 腿。链条必须自己喊出来）
+// ---------------------------------------------------------------------------
+
+/// 「📦 交付已收，变更集在途」评论前缀（上方 WaitingChangeset/WaitingDispatch
+/// 分支落）。停摆判定锚点。
+const INFLIGHT_MARKER: &str = "📦 交付已收，变更集在途";
+/// 停摆警示评论前缀（本 sweep 落；幂等：最新在途评论之后已有警示 = 不重复）。
+/// 单一真相源在 nemesis-board（issue.list attention 投影同源消费，2026-10-15 上移）。
+const STALL_MARKER: &str = nemesis_board::STALL_MARKER;
+/// 在途警示阈值（秒）：交付评论后超过此值仍未合并 = 停摆。生产 15 分钟。
+pub(crate) const ARCHIVE_STALL_WARN_SECS: i64 = 900;
+
+/// 档案停摆哨兵 sweep（master 侧，60s 周期）：in_progress 单据的最新「变更
+/// 集在途」系统评论早于阈值、且其后没有停摆警示 → WARN + 补警示系统评论。
+/// 无状态、重启安全（评论即幂等标记）；`threshold_secs`/`now` 入参供测试
+/// 注入 0/固定时钟。返回本次新警示的单据数。
+#[cfg(all(feature = "board", feature = "cluster"))]
+pub(crate) fn sweep_archive_stalls(
+    bstore: &nemesis_board::BoardStore,
+    threshold_secs: i64,
+    now: i64,
+) -> usize {
+    let filter = nemesis_board::IssueFilter {
+        status: Some(nemesis_board::IssueStatus::InProgress),
+        ..Default::default()
+    };
+    let issues = match bstore.list_issues(&filter) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("[Gateway] archive stall sweep list_issues failed: {e}");
+            return 0;
+        }
+    };
+    let mut flagged = 0usize;
+    for issue in issues {
+        let comments = match bstore.list_comments(issue.id) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        // 最新一条在途评论（列表按 id 升序 = 插入序；「之后」也按插入序
+        // 判——created_at 秒级粒度，同秒评论用时间戳比较会同秒互斥）。
+        let Some(idx) = comments
+            .iter()
+            .rposition(|c| c.content.contains(INFLIGHT_MARKER))
+        else {
+            continue;
+        };
+        if now - comments[idx].created_at < threshold_secs {
+            continue;
+        }
+        // 在途锚已收口排除：在途评论之后已有合并成功评论（🔀）= 该轮交付
+        // 已正常合并。评审 FAIL 重派回 in_progress 的单，上一轮「在途→合并」
+        // 评论对仍在评论流，且新一轮尚未交付（无新在途评论）——旧锚不得判
+        // 成本轮停摆（NB-122 实录：第 1 轮 31s 合入，第 2 轮执行中被误报
+        // 「955s 未合入」）。新一轮交付会落新在途评论成为锚点，旧合并评论
+        // 在锚点之前、不进判定窗口。
+        if comments[idx + 1..].iter().any(|c| {
+            c.content
+                .contains(crate::board_archive_ingest::MERGE_NOTICE_MARKER)
+        }) {
+            continue;
+        }
+        // 幂等：在途评论之后已有警示（新一轮派发会有新在途评论，自然重置）。
+        if comments[idx + 1..]
+            .iter()
+            .any(|c| c.content.contains(STALL_MARKER))
+        {
+            continue;
+        }
+        let waited = now - comments[idx].created_at;
+        warn!(
+            issue_id = issue.id,
+            waited_secs = waited,
+            "[Gateway] 执行档案停摆：交付评论后 {waited}s 未合并（疑似 worker 档案推送/传输停摆）"
+        );
+        if let Err(e) = bstore.add_comment(nemesis_board::NewComment {
+            issue_id: issue.id,
+            author: nemesis_board::Actor::system("board"),
+            content: format!(
+                "{STALL_MARKER}：交付已收 {waited}s 仍未合入——疑似变更集传输停摆或 worker 离线，请人工检查 worker 档案推送与 master 档案落地。"
+            ),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::System,
+        }) {
+            warn!("[Gateway] archive stall comment failed (issue_id={}): {e}", issue.id);
+            continue;
+        }
+        flagged += 1;
+    }
+    flagged
+}
+
+#[cfg(test)]
+mod tests;

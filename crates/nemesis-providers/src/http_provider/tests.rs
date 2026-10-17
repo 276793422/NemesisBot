@@ -1996,3 +1996,69 @@ async fn test_b_chat_stream_json_200_no_choices_maps_format() {
         other => panic!("expected Format, got {:?}", other),
     }
 }
+
+#[tokio::test]
+async fn test_b_chat_stream_silent_stall_hits_wall_clock_deadline() {
+    // NB-123 实证根修（2026-10-16）：上游静默停流（连而不答、不发 [DONE]、
+    // 不断连）时，reqwest client 级 `.timeout()` 在 bytes_stream() 读路径不
+    // 兜底——旧代码整个任务在 stream.next() 挂死。契约：SSE 读必须受
+    // timeout_secs 绝对墙钟线约束，到线产 Timeout（可重试/可故障转移）。
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        use tokio::io::AsyncWriteExt;
+        sock.write_all(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
+        )
+        .await
+        .unwrap();
+        // 一帧 SSE 数据后永久静默（120s 挂住 >> 测试墙钟）。
+        let frame = b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
+        sock.write_all(format!("{:x}\r\n", frame.len()).as_bytes())
+            .await
+            .unwrap();
+        sock.write_all(frame).await.unwrap();
+        sock.write_all(b"\r\n").await.unwrap();
+        let _ = sock.flush().await;
+        tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+    });
+
+    let config = HttpProviderConfig {
+        stream_mode: String::new(),
+        name: "test".to_string(),
+        base_url: format!("http://{addr}"),
+        api_key: "test-key".to_string(),
+        default_model: "gpt-4".to_string(),
+        timeout_secs: 2,
+        headers: HashMap::new(),
+        proxy: None,
+        preserve_prefix: false,
+    };
+    let provider = HttpProvider::new(config);
+    let messages = vec![Message {
+        role: "user".to_string(),
+        content: "test".into(),
+        tool_calls: vec![],
+        tool_call_id: None,
+        timestamp: None,
+        reasoning_content: None,
+        extra: std::collections::HashMap::new(),
+    }];
+
+    let mut rx = provider.chat_stream(&messages, &[], "gpt-4", &ChatOptions::default());
+    let wait = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        match tokio::time::timeout_at(wait, rx.recv()).await {
+            Err(_) => panic!("silent stall neither completed nor errored within 15s"),
+            Ok(None) => panic!("channel closed without Timeout (stall unbounded again)"),
+            Ok(Some(Ok(_))) => continue,
+            Ok(Some(Err(FailoverError::Timeout { provider, model }))) => {
+                assert_eq!(provider, "test");
+                assert_eq!(model, "gpt-4");
+                break;
+            }
+            Ok(Some(Err(e))) => panic!("expected Timeout on wall-clock deadline, got: {e:?}"),
+        }
+    }
+}

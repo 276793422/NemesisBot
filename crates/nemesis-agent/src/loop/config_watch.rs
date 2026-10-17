@@ -300,6 +300,29 @@ impl AgentLoop {
             .unwrap_or(false)
     }
 
+    /// B2（profession-capability-evolution 2026-10-14）：职能工具围栏总开关
+    /// `agents.profession_tool_fence` fresh-read（F8 `current_hidden_tools`
+    /// 同款模式——config.json 唯一真相源，dashboard/CLI 改键下一轮生效）。
+    /// 缺省 **true**（围栏开）——关闭 = B 端任务装配不写 `AgentConfig.tools`
+    /// 白名单（供给/派发双闸的权威判据为空 = 不围），已围着的实例也照常
+    /// 放行（闸只看非空白名单）。无 config_path / 解析失败 = 默认开。
+    /// pub：cluster_agent（nemesisbot）任务装配消费，跨 crate。
+    pub fn current_profession_tool_fence(&self) -> bool {
+        let path = match self.config_path.read().clone() {
+            Some(p) => p,
+            None => return true,
+        };
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| {
+                v.get("agents")
+                    .and_then(|a| a.get("profession_tool_fence"))
+                    .and_then(|b| b.as_bool())
+            })
+            .unwrap_or(true)
+    }
+
     /// J6：超限图片自动降采样开关（F8 模式 fresh-read config.json；默认**开**，
     /// 极性与 doom_loop_approval 相反——读不到/键缺失按开处理，保持降采样
     /// 能力可用；读取失败不阻塞轮次）。
@@ -808,8 +831,18 @@ impl AgentLoop {
     /// large files write in one shot instead of truncating at a blanket cap.
     /// H4 (U16 half): the active model's reasoning-effort tier from
     /// config.json (`model set-effort`). None when unset/"off"/standalone.
-    pub(crate) fn current_reasoning_effort(&self) -> Option<String> {
-        let active = self.active_model.read().clone();
+    /// 两者均带 detached 覆盖参数（BUG 2026-10-08 `board.plan.model`
+    /// dead-key 修复）：`override_model` = Some 时按覆盖模型名查 per-model
+    /// 键（planner 覆盖跑该模型的 effort/max_tokens 口径），None = 主
+    /// active_model 原路径字节不变。
+    pub(crate) fn current_reasoning_effort_override(
+        &self,
+        override_model: Option<&str>,
+    ) -> Option<String> {
+        let active = match override_model {
+            Some(m) => m.to_string(),
+            None => self.active_model.read().clone(),
+        };
         let path = self.config_path.read().clone()?;
         std::fs::read_to_string(&path)
             .ok()
@@ -817,8 +850,11 @@ impl AgentLoop {
             .and_then(|v| nemesis_types::capability::resolve_reasoning_effort(&v, &active))
     }
 
-    pub(crate) fn current_max_tokens(&self) -> Option<u32> {
-        let active = self.active_model.read().clone();
+    pub(crate) fn current_max_tokens_override(&self, override_model: Option<&str>) -> Option<u32> {
+        let active = match override_model {
+            Some(m) => m.to_string(),
+            None => self.active_model.read().clone(),
+        };
         let path = self.config_path.read().clone()?;
         std::fs::read_to_string(&path)
             .ok()
@@ -826,6 +862,15 @@ impl AgentLoop {
             .and_then(|v| nemesis_types::capability::resolve_max_output_tokens(&v, &active))
             .map(|n| n as u32)
         // ↑ i64 (from JSON) → u32; max_output_tokens is a non-negative count
+    }
+
+    /// 本回合生效模型名：detached 覆盖优先，否则 loop 主 active_model。
+    /// 单一裁决点——run_llm_loop 的 LlmRequest 事件 / active_model 形参 /
+    /// boundary marker 都经它取值（覆盖回合的观测与实调一致）。
+    pub(crate) fn effective_model(&self, instance: &AgentInstance) -> String {
+        instance
+            .detached_model_name()
+            .unwrap_or_else(|| self.active_model.read().clone())
     }
 
     /// M6-1（2026-10-10 机制加固）：`agents.defaults.max_tool_iterations`

@@ -113,6 +113,14 @@ pub fn write_plan_milestone(store: &BoardStore, parent: &Issue, subs: &[PlannedS
         if !sub.required_profession.trim().is_empty() {
             body.push_str(&format!("- 执行职能：{}\n", sub.required_profession.trim()));
         }
+        // 环境能力硬条件（NB-122 批）：档案留痕——停车归因需要看到拆解时
+        // 写了什么能力条件。
+        if !sub.required_capabilities.is_empty() {
+            body.push_str(&format!(
+                "- 环境能力：{}\n",
+                sub.required_capabilities.join("/")
+            ));
+        }
         if !sub.depends_on.is_empty() {
             body.push_str(&format!(
                 "- 依赖：子{}\n",

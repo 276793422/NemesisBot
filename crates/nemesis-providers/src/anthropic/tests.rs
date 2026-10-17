@@ -1662,3 +1662,55 @@ async fn test_b_stream_eof_without_message_stop_synthesizes_final() {
     // message_delta 未到（output_tokens None）但 message_start 已给 input → usage 仍有。
     assert_eq!(fin.usage.as_ref().unwrap().prompt_tokens, 9);
 }
+
+#[tokio::test]
+async fn test_b_anthropic_stream_silent_stall_hits_wall_clock_deadline() {
+    // NB-123 实证根修（2026-10-16，与 http_provider 同门）：上游静默停流时
+    // reqwest client 级 `.timeout()` 在 bytes_stream() 读路径不兜底。契约：
+    // SSE 读受 timeout_secs 绝对墙钟线约束，到线产 Timeout（可重试）。
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        use tokio::io::AsyncWriteExt;
+        sock.write_all(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
+        )
+        .await
+        .unwrap();
+        // 一帧 anthropic SSE 事件后永久静默（120s 挂住 >> 测试墙钟）。
+        let frame = b"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n";
+        sock.write_all(format!("{:x}\r\n", frame.len()).as_bytes())
+            .await
+            .unwrap();
+        sock.write_all(frame).await.unwrap();
+        sock.write_all(b"\r\n").await.unwrap();
+        let _ = sock.flush().await;
+        tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+    });
+
+    let config = AnthropicConfig {
+        api_key: "ak-test".to_string(),
+        base_url: format!("http://{addr}"),
+        default_model: "claude-default".to_string(),
+        timeout_secs: 2,
+        proxy: None,
+        stream_mode: String::new(),
+    };
+    let provider = AnthropicProvider::new(config);
+    let mut rx = provider.chat_stream(&anth_messages(), &[], "m", &ChatOptions::default());
+    let wait = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        match tokio::time::timeout_at(wait, rx.recv()).await {
+            Err(_) => panic!("silent stall neither completed nor errored within 15s"),
+            Ok(None) => panic!("channel closed without Timeout (stall unbounded again)"),
+            Ok(Some(Ok(_))) => continue,
+            Ok(Some(Err(FailoverError::Timeout { provider, model }))) => {
+                assert_eq!(provider, "anthropic");
+                assert_eq!(model, "m");
+                break;
+            }
+            Ok(Some(Err(e))) => panic!("expected Timeout on wall-clock deadline, got: {e:?}"),
+        }
+    }
+}

@@ -120,4 +120,29 @@ describe('IssueListView 拆解在途徽标（§1.2A）', () => {
     expect(cell.text()).not.toContain('拆解中')
     w.unmount()
   })
+
+  it('planning 投影 phase=dispatching → 「🚗 发车中」徽标；SSE auto_confirm ready 同样翻面', async () => {
+    // 投影直种（页面加载时发车已在途）。
+    const w = await mountWith([
+      row({ id: 8, number: 'NB-8', planning: { elapsed_secs: 45, attempt: 1, phase: 'dispatching' } }),
+    ])
+    let cell = statusCell(w, 0)
+    expect(cell.text()).toContain('🚗 发车中')
+    expect(cell.text()).toContain('0:45')
+    expect(cell.text()).not.toContain('拆解中')
+    expect(cell.text()).not.toContain('Backlog')
+    w.unmount()
+
+    // SSE 路径：拆解中徽标 → auto_confirm ready 翻「发车中」。
+    const w2 = await mountWith([row({ id: 9, number: 'NB-9' })])
+    dispatch('board.plan_started', { plan_id: 'p9', issue_id: 9, issue_number: 'NB-9', attempt: 1 })
+    await flushPromises()
+    expect(statusCell(w2, 0).text()).toContain('🧩 拆解中')
+    dispatch('board.plan_ready', { plan_id: 'p9', issue_id: 9, subs: [], auto_confirm: true })
+    await flushPromises()
+    cell = statusCell(w2, 0)
+    expect(cell.text()).toContain('🚗 发车中')
+    expect(cell.text()).not.toContain('Backlog')
+    w2.unmount()
+  })
 })

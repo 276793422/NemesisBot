@@ -16,7 +16,13 @@
   },
   "executor": {
     "enabled": false,
-    "sandbox": false
+    "sandbox": false,
+    "persistent": {
+      "enabled": false,
+      "max_slots": 4,
+      "idle_shutdown_secs": 300,
+      "call_timeout_secs": 600
+    }
   },
   "connectors": {
     "enabled": true,

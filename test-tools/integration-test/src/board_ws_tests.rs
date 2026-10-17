@@ -672,6 +672,215 @@ pub async fn test_board_p4_config_surface(ws: &TestWorkspace, bin: &Path) -> Vec
         }
     }
 
+    // 3.5 B1（职能→评审预设查表）：review.professions.<slug>.<field> 键面
+    // （写入 → get 回读 → 拒绝面 → null 清除恢复）。
+    let prof_cases: &[(&str, serde_json::Value)] = &[
+        ("review.professions.product.max_turns", json!(0)),
+        ("review.professions.product.checkers", json!(2)),
+        ("review.professions.product.selfcheck", json!(true)),
+        ("review.professions.dev:cuda.checkers", json!(3)),
+    ];
+    for (key, value) in prof_cases {
+        let (_, err) = api
+            .call(
+                "board",
+                "config.set",
+                Some(json!({ "key": key, "value": value })),
+            )
+            .await;
+        if err.is_none() {
+            results.push(pass(&format!("{suite}/prof_set_{key}"), "accepted"));
+        } else {
+            results.push(fail(
+                &format!("{suite}/prof_set_{key}"),
+                format!("config.set failed: {err:?}"),
+            ));
+            return results;
+        }
+    }
+    let (dat, err) = api.call("board", "config.get", None).await;
+    match (&dat, &err) {
+        (Some(d), None) => {
+            let checks = [
+                ("/review/professions/product/max_turns", json!(0)),
+                ("/review/professions/product/checkers", json!(2)),
+                ("/review/professions/product/selfcheck", json!(true)),
+                ("/review/professions/dev:cuda/checkers", json!(3)),
+            ];
+            for (pointer, want) in checks {
+                if d.pointer(pointer) == Some(&want) {
+                    results.push(pass(&format!("{suite}/prof_get{pointer}"), "round-trip ok"));
+                } else {
+                    results.push(fail(
+                        &format!("{suite}/prof_get{pointer}"),
+                        format!("期望 {want}，实际 {:?}", d.pointer(pointer)),
+                    ));
+                }
+            }
+        }
+        _ => {
+            results.push(fail(
+                &format!("{suite}/prof_config_get"),
+                format!("config.get failed: {err:?}"),
+            ));
+        }
+    }
+    // 非法 slug / 未知维度 loud 拒绝。
+    for (key, value, marker) in [
+        (
+            "review.professions.BAD SLUG.checkers",
+            json!(1),
+            "职能 slug 非法",
+        ),
+        (
+            "review.professions.dev.tier",
+            json!("big"),
+            "未知职能预设维度",
+        ),
+    ] {
+        let (_, err) = api
+            .call(
+                "board",
+                "config.set",
+                Some(json!({ "key": key, "value": value })),
+            )
+            .await;
+        match &err {
+            Some(e) if e.contains(marker) => {
+                results.push(pass(
+                    &format!("{suite}/prof_reject_{marker}"),
+                    "loud reject ok",
+                ));
+            }
+            other => {
+                results.push(fail(
+                    &format!("{suite}/prof_reject_{marker}"),
+                    format!("应拒绝并含「{marker}」，实际 {other:?}"),
+                ));
+            }
+        }
+    }
+    // null 清除恢复（尾位纪律：professions map 清空，不污染后续套件）。
+    let mut prof_restore_ok = true;
+    for key in [
+        "review.professions.product.max_turns",
+        "review.professions.product.checkers",
+        "review.professions.product.selfcheck",
+        "review.professions.dev:cuda.checkers",
+    ] {
+        let (_, err) = api
+            .call(
+                "board",
+                "config.set",
+                Some(json!({ "key": key, "value": null })),
+            )
+            .await;
+        if err.is_some() {
+            prof_restore_ok = false;
+        }
+    }
+    match prof_restore_ok.then(|| api.call("board", "config.get", None)) {
+        Some(fut) => {
+            let (dat, _) = fut.await;
+            let empty = dat
+                .as_ref()
+                .and_then(|d| d.pointer("/review/professions"))
+                .map(|p| p.as_object().map(|o| o.is_empty()).unwrap_or(false))
+                .unwrap_or(false);
+            if empty {
+                results.push(pass(
+                    &format!("{suite}/prof_restore"),
+                    "professions map 已清空",
+                ));
+            } else {
+                results.push(fail(
+                    &format!("{suite}/prof_restore"),
+                    "null 清除后 professions map 未清空",
+                ));
+            }
+        }
+        None => {
+            results.push(fail(
+                &format!("{suite}/prof_restore"),
+                "null 清除存在失败（污染后续套件）",
+            ));
+        }
+    }
+
+    // 3.6 D2（定稿评审有界等待）：discussion.review_wait_secs 键面
+    // （写入 → get 回读 → 恢复默认；默认 1800 在 get 首查顺带钉住）。
+    {
+        let (dat, err) = api.call("board", "config.get", None).await;
+        match (&dat, &err) {
+            (Some(d), None) => {
+                if d.pointer("/discussion/review_wait_secs") == Some(&json!(1800)) {
+                    results.push(pass(&format!("{suite}/discussion_default"), "默认 1800"));
+                } else {
+                    results.push(fail(
+                        &format!("{suite}/discussion_default"),
+                        format!(
+                            "期望默认 1800，实际 {:?}",
+                            d.pointer("/discussion/review_wait_secs")
+                        ),
+                    ));
+                }
+            }
+            _ => {
+                results.push(fail(
+                    &format!("{suite}/discussion_default"),
+                    format!("config.get failed: {err:?}"),
+                ));
+            }
+        }
+        let (_, err) = api
+            .call(
+                "board",
+                "config.set",
+                Some(json!({ "key": "discussion.review_wait_secs", "value": 60 })),
+            )
+            .await;
+        if err.is_none() {
+            let (dat, err) = api.call("board", "config.get", None).await;
+            match (&dat, &err) {
+                (Some(d), None)
+                    if d.pointer("/discussion/review_wait_secs") == Some(&json!(60)) =>
+                {
+                    results.push(pass(
+                        &format!("{suite}/discussion_set_get"),
+                        "round-trip ok",
+                    ));
+                }
+                _ => {
+                    results.push(fail(
+                        &format!("{suite}/discussion_set_get"),
+                        format!("set 60 后回读失败：{err:?}"),
+                    ));
+                }
+            }
+        } else {
+            results.push(fail(
+                &format!("{suite}/discussion_set_get"),
+                format!("config.set failed: {err:?}"),
+            ));
+        }
+        // 恢复默认（尾位纪律）。
+        let (_, err) = api
+            .call(
+                "board",
+                "config.set",
+                Some(json!({ "key": "discussion.review_wait_secs", "value": 1800 })),
+            )
+            .await;
+        if err.is_none() {
+            results.push(pass(&format!("{suite}/discussion_restore"), "恢复默认"));
+        } else {
+            results.push(fail(
+                &format!("{suite}/discussion_restore"),
+                format!("恢复默认失败：{err:?}"),
+            ));
+        }
+    }
+
     // 4. 恢复默认值（尾位纪律：不污染后续套件）。
     let defaults: &[(&str, serde_json::Value)] = &[
         ("review.max_turns", json!(1)),

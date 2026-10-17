@@ -70,12 +70,20 @@ impl AgentLoop {
         // （list_dir 等只读工具）同样不得绕过 no_tools / allowed_tools。
         no_tools: bool,
         allowed_tools: Option<Vec<String>>,
+        // B2（profession-capability-evolution 2026-10-14）：职能工具围栏随
+        // 行（串行路径同款裁决 [`super::tool_dispatch::profession_fence_refusal`]）
+        // ——只读工具同样不得绕过围栏。逐 future clone，调用方从 instance
+        // config 取值（None/空 = 未围，恒 `None` 放行）。
+        fence_profession: Option<String>,
+        fence_tools: Vec<String>,
     ) -> Vec<PrecomputedTool> {
         let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
         let futs = tool_calls.iter().map(|tc| {
             let sem = sem.clone();
             let tc = tc.clone();
             let allowed_tools = allowed_tools.clone();
+            let fence_profession = fence_profession.clone();
+            let fence_tools = fence_tools.clone();
             async move {
                 let _permit = sem.acquire().await.ok();
                 let start = std::time::Instant::now();
@@ -108,6 +116,25 @@ impl AgentLoop {
                             tc.name,
                             allowed.join(", ")
                         ),
+                        validation_failed: false,
+                        duration_ms: start.elapsed().as_millis() as u64,
+                    };
+                }
+                // B2：职能围栏闸（与串行路径同位；文案单一真相源
+                // [`super::tool_dispatch::profession_fence_refusal_for`]）。
+                if !fence_tools.is_empty()
+                    && let Some(refusal) = super::tool_dispatch::profession_fence_refusal_for(
+                        fence_profession.as_deref(),
+                        &fence_tools,
+                        &tc.name,
+                    )
+                {
+                    warn!(
+                        "[AgentLoop] Profession tool fence refused tool '{}' (parallel batch)",
+                        tc.name
+                    );
+                    return PrecomputedTool {
+                        result: refusal,
                         validation_failed: false,
                         duration_ms: start.elapsed().as_millis() as u64,
                     };
@@ -242,6 +269,20 @@ impl AgentLoop {
         {
             defs.retain(|d| allowed.contains(&d.function.name));
         }
+        // B2（profession-capability-evolution 2026-10-14）：职能工具围栏
+        // 供给闸——任务装配写入的实例级白名单（[`AgentConfig::tools`] 非空
+        // = 围栏生效）与注册表供给取交集；`question` 豁免（围栏内任务向人
+        // 求助的唯一通道，模型必须看得见才能问）。派发闸
+        // （[`super::tool_dispatch::profession_fence_refusal`]）双端对齐。
+        // loop 级 config `tools` 恒空 → 主 loop / 普通对话 / 项目 loop 零
+        // 行为变化。
+        let fence = &instance.config().tools;
+        if !fence.is_empty() {
+            defs.retain(|d| {
+                fence.contains(&d.function.name)
+                    || super::tool_dispatch::fence_exempt_tool(&d.function.name)
+            });
+        }
         // 空白名单 = 不设限（与 run_detached 的 `!allowed.is_empty()` 守卫
         // 同语义——否则 Some(空) 会把供给收窄到零工具，两端语义劈叉）。
         self.apply_tool_doc_folding(defs, instance)
@@ -331,6 +372,27 @@ impl AgentLoop {
                 })
         })
         .unwrap_or_default()
+    }
+
+    /// NB-122 批 ④（2026-10-16）：工具调用墙钟看门狗——fresh-read
+    /// `agents.executor_tool_timeout_secs`（秒）。缺键/无 config_path/不可读
+    /// = 默认 1800s；0 = 关（返回 None）。这是**卡死兜底闸不是提速闸**：
+    /// 阈值要放得过合法长活（cargo build --release 10-20 分钟量级）。
+    pub(crate) fn current_executor_tool_timeout(&self) -> Option<std::time::Duration> {
+        const DEFAULT_SECS: u64 = 1800;
+        let secs = match self.config_path.read().clone() {
+            Some(p) => std::fs::read_to_string(&p)
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .and_then(|v| {
+                    v.get("agents")
+                        .and_then(|a| a.get("executor_tool_timeout_secs"))
+                        .and_then(|n| n.as_u64())
+                })
+                .unwrap_or(DEFAULT_SECS),
+            None => DEFAULT_SECS,
+        };
+        (secs > 0).then(|| std::time::Duration::from_secs(secs))
     }
 
     /// 角色供给的**单一裁决**：当前 tier 分档可见集 − 配置隐藏集（保持目录

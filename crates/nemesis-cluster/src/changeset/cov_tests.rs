@@ -41,6 +41,7 @@ fn base_manifest(upserts: Vec<ChangesetUpsert>) -> ChangesetManifest {
         base_commit: "abc123".into(),
         upserts,
         deletions: Vec::new(),
+        skipped: Vec::new(),
     }
 }
 
