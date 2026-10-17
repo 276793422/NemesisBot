@@ -1245,3 +1245,65 @@ fn bind_host_loopback_matrix() {
 fn console_is_solo_fresh_returns_bool_without_panicking() {
     let _solo = console_is_solo_fresh();
 }
+
+// =========================================================================
+// panic hook（日志全覆盖审计 2026-10-17）：panic 信息必须经 tracing 落盘
+// =========================================================================
+
+/// 共享缓冲 writer：fmt subscriber 的落点，测试里读出格式化后的输出断言。
+#[derive(Clone, Default)]
+struct PanicCaptureWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for PanicCaptureWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for PanicCaptureWriter {
+    type Writer = PanicCaptureWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// install_panic_hook 幂等（重复安装不 panic），且 panic 信息以 ERROR 级
+/// 经 tracing 发出（文件日志 + SSE 面板的唯一入口）；原 panic 语义不变
+/// （catch_unwind 仍接得住）。prev hook（std 默认）照常写 stderr——测试
+/// 输出多一行 panic 文本属预期。
+#[test]
+fn panic_hook_routes_panic_info_through_tracing() {
+    // 幂等：装两次不炸（OnceLock 闸；首次可能已被其他测试经
+    // ensure_default_logger/init_logger_from_config 装过——同为幂等）。
+    install_panic_hook();
+    install_panic_hook();
+
+    let captured = PanicCaptureWriter::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(captured.clone())
+        .with_max_level(tracing::Level::ERROR)
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            panic!("PANIC_HOOK_PROBE_MARKER");
+        }));
+        assert!(result.is_err(), "panic must still unwind to catch_unwind");
+    });
+
+    let guard = captured.0.lock().unwrap();
+    let out = String::from_utf8_lossy(&guard);
+    assert!(
+        out.contains("ERROR") && out.contains("PANIC_HOOK_PROBE_MARKER"),
+        "panic hook must route the panic payload through tracing at ERROR level, got: {out:?}"
+    );
+    // 位置信息在场：hook 消息带 `panicked at <file>:<line>:<col>` 形态。
+    assert!(
+        out.contains("panicked at") && out.contains(".rs:"),
+        "panic hook must include thread/location details, got: {out:?}"
+    );
+}
