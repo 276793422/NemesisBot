@@ -1035,7 +1035,12 @@ impl NodeExecutor for DelayNodeExecutor {
             .get("seconds")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
-        tokio::time::sleep(std::time::Duration::from_secs_f64(secs)).await;
+        // from_secs_f64 对负数/NaN/超 u64 秒直接 panic（工作流引擎任务被
+        // 一个坏节点配置炸掉）；try 形态把非法值归约为诚实节点失败，引擎
+        // 照常存活。
+        let delay = std::time::Duration::try_from_secs_f64(secs)
+            .map_err(|e| format!("延迟秒数非法 {secs}: {e}"))?;
+        tokio::time::sleep(delay).await;
         Ok(NodeResult {
             node_id: node.id.clone(),
             output: serde_json::json!({ "delayed_seconds": secs }),
