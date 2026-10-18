@@ -5170,11 +5170,19 @@ async fn test_dispatch_issue_core_rejects_issue_with_pending_plan() {
     );
     assert!(err.contains("确认"), "{err}");
 
-    // 计划过期 → 不拦（走集群缺失报错）。
+    // 计划过期 → 不拦（走集群缺失报错）。601s 回拨需 Instant 纪元余量；
+    // 刚启动系统回拨不了 → 环境边界诚实跳过（同过期态断言纪律）。
+    let Some(expired_at) = Instant::now()
+        .checked_sub(super::PLAN_TTL)
+        .and_then(|t| t.checked_sub(std::time::Duration::from_secs(1)))
+    else {
+        eprintln!("SKIP 计划过期断言：系统刚启动，Instant 纪元余量不足 601s");
+        return;
+    };
     {
         let mut cache = super::PLAN_CACHE.lock();
         if let Some(p) = cache.get_mut("plan-guard-1") {
-            p.created_at = Instant::now() - super::PLAN_TTL - std::time::Duration::from_secs(1);
+            p.created_at = expired_at;
         }
     }
     let err =
@@ -10022,11 +10030,18 @@ async fn plan_list_includes_running_entries() {
     let _serial = PLAN_TEST_LOCK.lock().await;
     let dir = unique_dir("plan-list-running");
     let ctx = make_ctx_with_board(&dir);
+    // 65s 回拨需 Instant 纪元余量（elapsed_secs>=64 断言依赖真实历史时刻）；
+    // 刚启动系统回拨不了 → 环境边界诚实跳过（同下方过期态断言纪律）。
+    let Some(started) = std::time::Instant::now().checked_sub(std::time::Duration::from_secs(65))
+    else {
+        eprintln!("SKIP running 投影断言：系统刚启动，Instant 纪元余量不足 65s");
+        return;
+    };
     super::RUNNING_PLANS.lock().insert(
         "pl-running-1".to_string(),
         super::RunningPlan {
             issue_id: 42,
-            started_at: std::time::Instant::now() - std::time::Duration::from_secs(65),
+            started_at: started,
             attempt: 1,
             phase: "planning",
         },
@@ -10266,7 +10281,12 @@ async fn plan_timeout_watch_replans_with_next_attempt() {
         plan_id.clone(),
         super::RunningPlan {
             issue_id: issue.id,
-            started_at: std::time::Instant::now() - std::time::Duration::from_secs(1201),
+            // checked_sub 而非裸减：Instant 自系统启动起算，CI 新启 VM 纪元余量
+            // 不足会下溢 panic（2026-10-18 shard2 实录）。监视超时只由 timeout_secs
+            // 睡眠驱动（不读 started_at），回拨不出时用当下时刻语义不变。
+            started_at: std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(1201))
+                .unwrap_or_else(std::time::Instant::now),
             attempt: 1,
             phase: "planning",
         },
@@ -10669,11 +10689,18 @@ async fn issue_list_includes_planning_projection() {
             ..Default::default()
         })
         .unwrap();
+    // 65s 回拨需 Instant 纪元余量（elapsed_secs>=64 断言依赖真实历史时刻）；
+    // 刚启动系统回拨不了 → 环境边界诚实跳过（同过期态断言纪律）。
+    let Some(started) = std::time::Instant::now().checked_sub(std::time::Duration::from_secs(65))
+    else {
+        eprintln!("SKIP planning 投影断言：系统刚启动，Instant 纪元余量不足 65s");
+        return;
+    };
     super::RUNNING_PLANS.lock().insert(
         "pl-proj-1".to_string(),
         super::RunningPlan {
             issue_id: a.id,
-            started_at: std::time::Instant::now() - std::time::Duration::from_secs(65),
+            started_at: started,
             attempt: 2,
             phase: "planning",
         },
