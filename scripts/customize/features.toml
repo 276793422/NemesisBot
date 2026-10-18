@@ -266,6 +266,16 @@ desc = "P2P 集群编排（`nemesisbot cluster` + 集群 Dashboard + cluster_rpc
 category = "subsystems"
 default = true
 
+# NOTE: `cluster-roaming`（A1 iroh 跨网 P2P 叠加层）默认关——LAN 用户零新依赖。
+# 开启后 iroh QUIC 依赖随 nemesis-cluster/cluster-roaming 进出；`cluster roaming`
+# CLI 子命令同 feature 门控。依赖 cluster（自动带入）。
+[[feature]]
+id = "cluster-roaming"
+label = "集群跨网 P2P（iroh QUIC）"
+desc = "iroh 跨网 P2P 叠加层（`cluster roaming` 子命令 + 自证端点/中继打洞）。默认关：LAN 单网段用户零新依赖"
+category = "subsystems"
+default = false
+
 # NOTE: `forge` 可裁剪（feature 穿透 nemesisbot → nemesis-agent/forge + nemesis-web/forge）。
 # 这是 Class C 内核裁剪——动 nemesis-agent 内核。关闭后自学习整包不编译。
 [[feature]]
