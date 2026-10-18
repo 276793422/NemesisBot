@@ -293,6 +293,12 @@ export function testConnection(testToken: string): Promise<boolean> {
   })
 }
 
+/// 会话 token 只读视图。与 httpGet 的 X-Auth-Token 同源（connect() 注入的
+/// 模块级变量，单一真相）——useSSE 等无法携带自定义头的消费者复用。
+export function currentAuthToken(): string | null {
+  return token
+}
+
 export function httpGet<T = any>(path: string): Promise<T> {
   // X-Auth-Token 统一鉴权（lib/authFetch.ts）：本模块因循环依赖
   // （auth store → 本模块）不能引 store，但 connect() 已把同一 token
