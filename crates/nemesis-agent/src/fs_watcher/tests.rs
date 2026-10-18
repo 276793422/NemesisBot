@@ -141,12 +141,18 @@ fn test_self_write_window_drops_recent_writes() {
 fn test_self_write_window_expires() {
     let arc = test_loop();
     arc.note_self_write("a.txt");
-    // Age the entry past the window directly (no sleeping).
+    // Age the entry past the window directly (no sleeping). checked_sub 而非
+    // 裸减：Instant 自系统启动起算，新启 VM 纪元余量不足会下溢 panic；回拨
+    // 不了时环境边界诚实跳过。
+    let Some(aged) = Instant::now()
+        .checked_sub(SELF_WRITE_WINDOW)
+        .and_then(|t| t.checked_sub(Duration::from_secs(1)))
+    else {
+        eprintln!("SKIP 自写窗口过期断言：系统刚启动，Instant 纪元余量不足 21s");
+        return;
+    };
     let mut map = arc.recent_self_writes.lock();
-    map.insert(
-        "a.txt".to_string(),
-        Instant::now() - SELF_WRITE_WINDOW - Duration::from_secs(1),
-    );
+    map.insert("a.txt".to_string(), aged);
     drop(map);
     arc.push_external_change("a.txt");
     assert_eq!(arc.drain_external_changes(), vec!["a.txt".to_string()]);
