@@ -654,8 +654,31 @@ async fn serve_line(
     }
 
     // 两相账第一相：dispatch 前记意图（崩溃窗口 = 意图在账而完成不在 →
-    // 重启后 replay 分类可判「结果未知」）。
-    journal.record_intent(&req.call_id, &req.tool);
+    // 重启后 replay 分类可判「结果未知」）。F2（二轮复评）：意图未可靠落盘
+    // （存储故障/账本不可信）且工具非只读 = 拒绝执行——持久保护缺席时危险
+    // 工具不得继续，否则执行体重启后 intent 随内存蒸发、「结果未知」保护
+    // 失效。只读白名单照常放行（可用性取舍：读不改状态，最坏 = 重启后重读
+    // 一次）。拒绝本身记为完成账（内存 admit）——同 call_id 重发回缓存错误
+    // 不重复尝试；此时无副作用发生，重启后以新 call_id 重试安全。
+    let intent_durable = journal.record_intent(&req.call_id, &req.tool);
+    if !intent_durable && !is_readonly_replayable(&req.tool) {
+        let err = ExecutorResponseWire {
+            v: if req.v == nemesis_agent::executor_transport::PROTOCOL_V2 {
+                nemesis_agent::executor_transport::PROTOCOL_V2
+            } else {
+                0
+            },
+            call_id: req.call_id.clone(),
+            ok: false,
+            result: String::new(),
+            error: "意图落盘失败（执行体账本存储故障），有副作用工具拒绝执行；修复存储后以新 call_id 显式重试".to_string(),
+        };
+        let err_line = serialize_response(&err);
+        journal.record(&err_line);
+        let mut err_line = err_line;
+        err_line.push('\n');
+        return err_line;
+    }
 
     let resp = dispatch(tools, req).await;
     let resp_line = serialize_response(&resp);

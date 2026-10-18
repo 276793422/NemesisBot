@@ -1214,6 +1214,7 @@ pub fn build_agent_loop(
                     cfg.agents.delegate.max_lifetime_secs,
                     claude_path,
                     codex_path,
+                    cfg.agents.delegate.permission_mode.clone(),
                     delegate_manager.clone(),
                 )),
             );
@@ -2139,7 +2140,10 @@ pub fn build_cluster_agent_loop(
     // 审批写/删本地记忆。approval_slot 由 gateway 装配期填（先建槽后填），
     // cluster loop 构建于 services 启动期（first_start/start），时序在填槽
     // 之后；槽空且 security 开启 = 时序异常，WARN 揪出来。
-    #[cfg(all(feature = "desktop", feature = "memory", feature = "security"))]
+    // F6（二轮复评 2026-10-18）：desktop 从门里去掉（与 GatewayMemoryGate
+    // 本体的 memory+security 门对齐——desktop+memory+security 缺 desktop
+    // 组合此前 E0433、desktop 关时集群 loop 白丢审批闸）。
+    #[cfg(all(feature = "memory", feature = "security"))]
     if let Some(adapter) = shared.approval_slot.read().clone() {
         agent_loop.set_memory_approval_gate(Arc::new(
             crate::commands::gateway::GatewayMemoryGate::new(adapter),
@@ -2647,12 +2651,12 @@ pub struct AgentLoopSpec {
     /// `set_tier_override` 钉死——config 重解析/换模型不覆盖记录档位。
     pub tier: String,
     /// G1：tool_policy 折算的隐藏清单（deny ∪ hidden 原样，通配语义同
-    /// `agents.hidden_tools`）。allow 白名单另由 [`Self::tool_policy_allow`]
-    /// 承载（折叠需注册面，build 侧算）。
+    /// `agents.hidden_tools`）。F4 后 allow 白名单不再折入此表。
     pub tool_policy_hidden: Vec<String>,
-    /// G1：tool_policy allow 白名单原样。非空时 build 侧在工具注册完成后
-    /// 折算 `注册面 ∖ allow` 并入隐藏表（白名单语义：不在 allow 的全部
-    /// 隐藏）；动态 MCP 快照同折。空 = 无白名单语义。
+    /// G1：tool_policy allow 白名单原样。F4（二轮复评 2026-10-18）：非空时
+    /// build 侧 `set_tool_policy_allow` **直挂 loop 槽**（旧「注册面 ∖ allow」
+    /// 折算取缔——折算只吃注册期快照，MCP 热加载的新工具漏拦；槽值双闸
+    /// 每回合现读，动态新工具天然落闸）。空 = 无白名单语义。
     pub tool_policy_allow: Vec<String>,
     /// G1：人格目录覆盖（persona_refs `{"dir": <abs path>}`）。Some 时
     /// system prompt 的身份装配根用它（IDENTITY/SOUL 等从该目录读），
@@ -3214,31 +3218,18 @@ pub fn build_agent_loop_from_spec(
     );
 
     // G1：tool_policy 双闸输入（current_hidden_tools 单点合并 → 供给闸 +
-    // dispatch 闸同源生效）。deny/hidden 直合入；allow 非空 = 白名单折算
-    // 「注册面 ∖ allow」。必须在注册完成后执行——折叠需要注册面快照；
-    // MCP 动态发现快照同折（装配期已发现的条目按名折叠，此后动态新发现
-    // 的 mcp 工具靠通配语义覆盖，显式白名单场景属已知边界）。
+    // dispatch 闸同源生效）。deny/hidden 折算保留（黑名单无增量工具问题，
+    // 通配语义同 agents.hidden_tools）。F4（二轮复评 2026-10-18）：allow
+    // 白名单改**直挂 loop 槽**（set_tool_policy_allow）——旧「注册面 ∖ allow」
+    // 折算只吃注册期快照，MCP 热加载的新工具不在快照里就漏拦（注释自认的
+    // 已知边界）；双闸现读槽值后动态新工具天然落闸，折算取缔。
     {
-        let mut hidden = spec.tool_policy_hidden.clone();
-        if !spec.tool_policy_allow.is_empty() {
-            let allow: std::collections::HashSet<&str> =
-                spec.tool_policy_allow.iter().map(|s| s.as_str()).collect();
-            let mut candidates = agent_loop.tool_names();
-            candidates.extend(
-                agent_loop
-                    .mcp_tool_snapshot()
-                    .read()
-                    .iter()
-                    .map(|(name, _)| name.clone()),
-            );
-            for name in candidates {
-                if !allow.contains(name.as_str()) && !hidden.contains(&name) {
-                    hidden.push(name);
-                }
-            }
-        }
+        let hidden = spec.tool_policy_hidden.clone();
         if !hidden.is_empty() {
             agent_loop.set_extra_hidden_tools(hidden);
+        }
+        if !spec.tool_policy_allow.is_empty() {
+            agent_loop.set_tool_policy_allow(spec.tool_policy_allow.clone());
         }
     }
 

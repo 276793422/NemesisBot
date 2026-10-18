@@ -76,7 +76,7 @@ pub(crate) use self::bridges::ClusterForgeBridgeAdapter;
 pub(crate) use self::bridges::GatewayAgentRunner;
 #[cfg(feature = "security")]
 pub(crate) use self::bridges::GatewayLlmJudge;
-#[cfg(all(feature = "desktop", feature = "memory", feature = "security"))]
+#[cfg(all(feature = "memory", feature = "security"))]
 pub(crate) use self::bridges::GatewayMemoryGate;
 #[cfg(all(test, feature = "desktop", feature = "security"))]
 pub(crate) use self::bridges::plugin_ui_library_exists;

@@ -436,6 +436,19 @@ impl AgentLoop {
         *self.extra_hidden_tools.write() = tools;
     }
 
+    /// F4（二轮复评 2026-10-18）：per-loop tool_policy allow 白名单（见字段
+    /// 文档）。全量替换语义——调用方每次传完整清单。空表 = 清除（无白名单
+    /// 语义，供给/dispatch 双闸直通）。
+    pub fn set_tool_policy_allow(&self, tools: Vec<String>) {
+        *self.tool_policy_allow.write() = tools;
+    }
+
+    /// F4：当前生效 allow 白名单快照（槽值现读）。pub 可观测面——工厂/
+    /// 管理页消费（供给闸本身在 crate 内 `build_tool_defs`）。
+    pub fn tool_policy_allow(&self) -> Vec<String> {
+        self.tool_policy_allow.read().clone()
+    }
+
     /// G1：当前生效隐藏表快照（extra ∪ config 单点合并）。pub 可观测面
     /// ——nemesisbot 侧工厂/管理页消费（供给闸本身在 crate 内
     /// `build_tool_defs`，此处只出快照）。

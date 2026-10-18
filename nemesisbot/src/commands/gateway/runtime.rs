@@ -31,7 +31,7 @@ use nemesis_types::agent::ApprovalResponder;
 use super::GatewayCtx;
 #[cfg(feature = "security")]
 use super::GatewayLlmJudge;
-#[cfg(all(feature = "desktop", feature = "memory", feature = "security"))]
+#[cfg(all(feature = "memory", feature = "security"))]
 use super::GatewayMemoryGate;
 use super::count_enabled_channels;
 use super::print_gateway_banner;

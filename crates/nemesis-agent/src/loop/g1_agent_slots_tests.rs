@@ -217,3 +217,120 @@ async fn tier_override_narrows_tool_supply() {
         "mini 档核心工具必须幸存，实际 {names:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ③ F4（二轮复评 2026-10-18）：tool_policy allow 白名单槽——活性双闸
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tool_policy_allow_slot_set_get_clear() {
+    let agent_loop = g1_loop();
+    // 槽语义镜像 extra_hidden_tools：全量替换、空表 = 清除。
+    assert!(agent_loop.tool_policy_allow().is_empty());
+    agent_loop.set_tool_policy_allow(vec!["echo_alpha".to_string()]);
+    assert_eq!(agent_loop.tool_policy_allow(), vec!["echo_alpha"]);
+    agent_loop.set_tool_policy_allow(vec!["echo_beta".to_string(), "exec".to_string()]);
+    assert_eq!(agent_loop.tool_policy_allow(), vec!["echo_beta", "exec"]);
+    agent_loop.set_tool_policy_allow(Vec::new());
+    assert!(agent_loop.tool_policy_allow().is_empty());
+}
+
+#[tokio::test]
+async fn tool_policy_allow_live_gate_supply_and_dispatch() {
+    let mut agent_loop = g1_loop();
+    agent_loop.register_tool("echo_alpha".to_string(), Box::new(G1EchoTool));
+    agent_loop.register_tool("echo_beta".to_string(), Box::new(G1EchoTool));
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_config(&dir, r#"{"defaults": {}}"#);
+    agent_loop.set_config_path(cfg);
+
+    // 白名单 = {alpha}：beta 不供给、dispatch 拒（双闸同源）。
+    agent_loop.set_tool_policy_allow(vec!["echo_alpha".to_string()]);
+    let names = def_names(&agent_loop.build_tool_defs());
+    assert!(
+        !names.contains(&"echo_beta".to_string()),
+        "allow 白名单外的 beta 必须被供给闸剔除，实际 {names:?}"
+    );
+    assert!(names.contains(&"echo_alpha".to_string()), "实际 {names:?}");
+    let ctx = RequestContext::new("web", "chat1", "session1", "sess1");
+    let tc = ToolCallInfo {
+        id: "call_1".to_string(),
+        name: "echo_beta".to_string(),
+        arguments: "{}".to_string(),
+    };
+    let out = agent_loop.handle_tool_call(&tc, &ctx).await;
+    assert!(
+        out.contains("tool_policy allow-list"),
+        "dispatch 必须拦白名单外工具，实际: {out}"
+    );
+
+    // F4 核心修复面：白名单挂好后**热注册**新工具（模拟 MCP 热加载）——
+    // 旧折算只吃注册期快照会漏拦；现读槽值必须天然落闸。
+    agent_loop.register_tool("echo_gamma".to_string(), Box::new(G1EchoTool));
+    let names = def_names(&agent_loop.build_tool_defs());
+    assert!(
+        !names.contains(&"echo_gamma".to_string()),
+        "热注册的白名单外工具必须被供给闸拦住（活性谓词），实际 {names:?}"
+    );
+    let tc_gamma = ToolCallInfo {
+        id: "call_2".to_string(),
+        name: "echo_gamma".to_string(),
+        arguments: "{}".to_string(),
+    };
+    let out = agent_loop.handle_tool_call(&tc_gamma, &ctx).await;
+    assert!(
+        out.contains("tool_policy allow-list"),
+        "热注册工具的 dispatch 也必须落闸，实际: {out}"
+    );
+
+    // 白名单更新纳入 beta：供给恢复 + dispatch 通（全量替换语义）。
+    agent_loop.set_tool_policy_allow(vec!["echo_alpha".to_string(), "echo_beta".to_string()]);
+    let names = def_names(&agent_loop.build_tool_defs());
+    assert!(
+        names.contains(&"echo_beta".to_string()),
+        "加入白名单后必须恢复供给，实际 {names:?}"
+    );
+    let out = agent_loop.handle_tool_call(&tc, &ctx).await;
+    assert!(
+        out.contains("g1_echo_ok"),
+        "白名单内工具 dispatch 必须放行到执行，实际: {out}"
+    );
+
+    // 空表 = 清除白名单语义：gamma 回到无约束供给。
+    agent_loop.set_tool_policy_allow(Vec::new());
+    let names = def_names(&agent_loop.build_tool_defs());
+    assert!(
+        names.contains(&"echo_gamma".to_string()),
+        "空 allow = 无白名单语义，实际 {names:?}"
+    );
+}
+
+#[tokio::test]
+async fn deny_precedence_over_allow() {
+    let mut agent_loop = g1_loop();
+    agent_loop.register_tool("echo_alpha".to_string(), Box::new(G1EchoTool));
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = write_config(&dir, r#"{"defaults": {}}"#);
+    agent_loop.set_config_path(cfg);
+
+    // deny（折 extra_hidden）∩ allow 同名：hidden 闸在 allow 闸之前——
+    // deny 优先，不因进白名单而复活。
+    agent_loop.set_extra_hidden_tools(vec!["echo_alpha".to_string()]);
+    agent_loop.set_tool_policy_allow(vec!["echo_alpha".to_string()]);
+    let names = def_names(&agent_loop.build_tool_defs());
+    assert!(
+        !names.contains(&"echo_alpha".to_string()),
+        "deny∩allow：deny 必须赢，实际 {names:?}"
+    );
+    let ctx = RequestContext::new("web", "chat1", "session1", "sess1");
+    let tc = ToolCallInfo {
+        id: "call_1".to_string(),
+        name: "echo_alpha".to_string(),
+        arguments: "{}".to_string(),
+    };
+    let out = agent_loop.handle_tool_call(&tc, &ctx).await;
+    assert!(
+        out.contains("hidden by configuration"),
+        "deny∩allow：dispatch 必须先落 hidden 闸（deny 优先），实际: {out}"
+    );
+}

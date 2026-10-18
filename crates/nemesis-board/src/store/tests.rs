@@ -116,8 +116,12 @@ fn create_issue_treats_blank_ac_as_missing() {
 // 建单自动置位（谓词 = has_file_anchor 单一真相源；评审门消费面在
 // board_review）。content-regex/exec 锚点与无锚点不置位（re: 锚点核的是
 // 交付文本非文件产物，exec: 由锚点执行闸自行保证）。
+// F5：checkpoint-git 关（纯 cfg 旗标，nemesisbot 穿透）时自动置位跳过——
+// 置位断言测试随门编译（crate 单测不带 feature = 跳过；workspace 全量
+// feature 统一后照常跑到）。
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "checkpoint-git")]
 #[test]
 fn create_issue_file_anchor_ac_auto_sets_requires_evidence() {
     let (store, dir) = temp_store("evidence-file-anchor");

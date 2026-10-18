@@ -271,10 +271,37 @@ impl DelegateEntry {
     }
 }
 
+/// F7：启动在途预留（spawn 已发生、entry 未插表的窗口凭证）。estop
+/// watcher / stop_all / 容量闸经它看见并处置「启动中」的子进程；cancel
+/// = kill 旗 + start_kill（进程杀，树杀交 supervise 收尸）。
+struct StartReservation {
+    #[allow(dead_code)] // 诊断用元数据（错误信息/未来观测面）
+    pid: u32,
+    /// 与 entry/supervise 共享同一 Child Arc（start 里先建 Arc 再分流）。
+    child: Arc<Mutex<tokio::process::Child>>,
+    kill_flag: Arc<AtomicBool>,
+}
+
+impl StartReservation {
+    fn cancel(&self) {
+        self.kill_flag.store(true, Ordering::Relaxed);
+        if let Ok(mut c) = self.child.try_lock() {
+            // start_kill 是同步信号面（stop_all/Drop 的同步临界区可用）；
+            // 已退出进程上调用无害（错误忽略）。
+            let _ = c.start_kill();
+        }
+    }
+}
+
 /// delegate 注册表（每 AgentLoop 一个；loop 重建 → Drop → 全部树杀，
 /// 与 background 注册表同生命周期语义）。
 pub struct DelegateManager {
     entries: Mutex<HashMap<u64, Arc<DelegateEntry>>>,
+    /// F7：启动在途预留（spawn 已发生、entry 未插表）。容量口径 =
+    /// entries + starting；estop watcher / stop_all / Drop 同时排空本表，
+    /// 封「estop 摸不到启动中子进程」与「并发 start 借未插表窗口破
+    /// MAX_DELEGATES」两个窗口。短临界区同步锁（永不跨 await）。
+    starting: SyncMutex<Vec<Arc<StartReservation>>>,
     next_id: AtomicU64,
     estop: RwLock<Option<Arc<EstopState>>>,
     /// estop watcher lazy-spawn 一次性守卫。
@@ -294,6 +321,12 @@ impl Drop for DelegateManager {
                 tracing::debug!(count = n, "[DelegateRegistry] dropped — kill flags raised");
             }
         }
+        // F7：启动在途同款 best-effort 排空。
+        if let Some(mut starting) = self.starting.try_lock() {
+            for r in starting.drain(..) {
+                r.cancel();
+            }
+        }
     }
 }
 
@@ -301,6 +334,7 @@ impl DelegateManager {
     pub fn new() -> Self {
         Self {
             entries: Mutex::new(HashMap::new()),
+            starting: SyncMutex::new(Vec::new()),
             next_id: AtomicU64::new(1),
             estop: RwLock::new(None),
             estop_watcher_spawned: AtomicBool::new(false),
@@ -371,29 +405,35 @@ impl DelegateManager {
         }
         self.ensure_estop_watcher();
 
-        // 满员闸：先淘汰最旧的已完成条目；全在跑才拒绝。
+        // 满员闸：口径 = 已插表 + 启动在途（F7：并发 start 不再能借
+        // 「还没插表」窗口破 MAX_DELEGATES）。先淘汰最旧的已完成条目；
+        // 仍满才拒绝。锁序恒定 entries → starting（starting 守卫永不跨
+        // await、永不反序拿）。
         {
             let mut entries = self.entries.lock().await;
-            if entries.len() >= MAX_DELEGATES {
-                let oldest_finished = entries
+            let starting_n = self.starting.lock().len();
+            if entries.len() + starting_n >= MAX_DELEGATES {
+                let mut finished: Vec<u64> = entries
                     .iter()
                     .filter(|(_, e)| !e.is_running_sync())
                     .map(|(id, _)| *id)
-                    .min();
-                match oldest_finished {
-                    Some(id) => {
-                        entries.remove(&id);
-                        tracing::debug!(
-                            evicted = id,
-                            "[DelegateRegistry] evicted finished delegate for capacity"
-                        );
+                    .collect();
+                finished.sort_unstable();
+                for id in finished {
+                    if entries.len() + starting_n < MAX_DELEGATES {
+                        break;
                     }
-                    None => {
-                        return Err(format!(
-                            "delegate limit reached ({MAX_DELEGATES} running); \
-                             stop one with delegate_stop first"
-                        ));
-                    }
+                    entries.remove(&id);
+                    tracing::debug!(
+                        evicted = id,
+                        "[DelegateRegistry] evicted finished delegate for capacity"
+                    );
+                }
+                if entries.len() + starting_n >= MAX_DELEGATES {
+                    return Err(format!(
+                        "delegate limit reached ({MAX_DELEGATES} active/starting); \
+                         stop one with delegate_stop first"
+                    ));
                 }
             }
         }
@@ -438,6 +478,25 @@ impl DelegateManager {
             kill_flag.clone(),
         ));
 
+        // F7：spawn 已发生 → 先落启动预留，再进握手/首帧/插表窗口。estop
+        // 复检、stop_all、Drop、容量闸都经预留看见并处置「启动中」的子
+        // 进程；所有失败路径经 helper 杀 + 摘（见 finish_start_failed）。
+        let reservation = Arc::new(StartReservation {
+            pid,
+            child: child.clone(),
+            kill_flag: kill_flag.clone(),
+        });
+        self.starting.lock().push(reservation.clone());
+
+        // F7：estop 复检——入口闸到 spawn 之间（容量锁 await 点）触发的
+        // 急停，estop watcher 摸不到未入表进程，由本复检兜住。
+        if self.estop.read().as_ref().is_some_and(|e| e.is_engaged()) {
+            self.finish_start_failed(&reservation);
+            return Err(format!(
+                "estop engaged: delegate start aborted (pid {pid} killed)"
+            ));
+        }
+
         // 墙钟上限 watchdog：到点置 kill 旗标（树杀交给 supervise）+ 在输出
         // 流留诚实注记。0 → Duration::MAX = 不限（不挂任务）。
         if max_lifetime != Duration::MAX {
@@ -481,17 +540,45 @@ impl DelegateManager {
             match codex_handshake(&entry, &mut read_mark).await {
                 Ok(convo) => *entry.peer_session.lock() = Some(convo),
                 Err(e) => {
-                    entry.kill_flag.store(true, Ordering::Relaxed);
-                    self.entries.lock().await.insert(id, entry.clone());
+                    self.fail_start_with_entry(&reservation, &entry, id).await;
                     return Err(format!("codex handshake failed: {e}"));
                 }
             }
         }
         if let Some(p) = prompt {
-            write_user_frame(&entry, p).await?;
+            // F7：不再裸 `?` 丢子进程——首帧失败（stdin 已断/进程已死）与
+            // 握手失败同收尾形态：杀 + 入册供诊断 + 摘预留 + 诚实报错。
+            if let Err(e) = write_user_frame(&entry, p).await {
+                self.fail_start_with_entry(&reservation, &entry, id).await;
+                return Err(format!("failed to write initial prompt: {e}"));
+            }
         }
 
-        self.entries.lock().await.insert(id, entry);
+        // F7 终检（entries 锁内同步裁决）：estop 或容量被并发 start 打破
+        // → 拒绝（杀子进程、不插表——策略性拒绝不产诊断条目）。座位守恒：
+        // 每个在途 start 占一个「座位」（starting 或 entries 二其一），
+        // 终检通过后摘预留与插表同锁完成，总数不超闸。
+        {
+            let mut entries = self.entries.lock().await;
+            let estop_now = self.estop.read().as_ref().is_some_and(|e| e.is_engaged());
+            let over_capacity = entries.len() + self.starting.lock().len() > MAX_DELEGATES;
+            if estop_now || over_capacity {
+                drop(entries);
+                self.finish_start_failed(&reservation);
+                return Err(if estop_now {
+                    format!("estop engaged: delegate start aborted (pid {pid} killed)")
+                } else {
+                    format!(
+                        "delegate limit reached ({MAX_DELEGATES} active/starting); \
+                         concurrent starts raced past the gate"
+                    )
+                });
+            }
+            self.starting
+                .lock()
+                .retain(|r| !Arc::ptr_eq(r, &reservation));
+            entries.insert(id, entry);
+        }
         tracing::info!(
             delegate = id,
             pid,
@@ -508,6 +595,32 @@ impl DelegateManager {
             "resumed": resume_session_id.is_some(),
             "note": "steer with delegate_send; read with delegate_output; stop with delegate_stop",
         }))
+    }
+
+    /// F7：启动失败统一收尾（estop 复检/终检拒绝）——经预留杀子进程 +
+    /// 摘预留。封掉「supervise 任务持 Child Arc → kill_on_drop 永不触发
+    /// → 孤儿进程」窗口。
+    fn finish_start_failed(&self, reservation: &Arc<StartReservation>) {
+        reservation.cancel();
+        self.starting
+            .lock()
+            .retain(|r| !Arc::ptr_eq(r, reservation));
+    }
+
+    /// F7：起步即坏（握手/首帧失败）收尾——杀子进程 + 条目入册供诊断 +
+    /// 摘预留。杀与既有语义同源（kill 旗 → supervise 树杀）；差异是失败
+    /// 路径不再可能丢下无旗的活进程。
+    async fn fail_start_with_entry(
+        &self,
+        reservation: &Arc<StartReservation>,
+        entry: &Arc<DelegateEntry>,
+        id: u64,
+    ) {
+        reservation.cancel();
+        self.entries.lock().await.insert(id, entry.clone());
+        self.starting
+            .lock()
+            .retain(|r| !Arc::ptr_eq(r, reservation));
     }
 
     /// steer：向子代理 stdin 写一条用户帧。
@@ -615,6 +728,15 @@ impl DelegateManager {
             if e.is_running_sync() {
                 e.kill_flag.store(true, Ordering::Relaxed);
             }
+        }
+        // F7：启动在途一并排空（未入表进程——estop watcher / 关停路径
+        // 由此覆盖 spawn～插表窗口）。
+        let pending: Vec<Arc<StartReservation>> = {
+            let mut s = self.starting.lock();
+            std::mem::take(&mut *s)
+        };
+        for r in &pending {
+            r.cancel();
         }
         tracing::info!("[DelegateRegistry] stop_all (estop or shutdown)");
     }
@@ -873,6 +995,10 @@ pub struct DelegateStartTool {
     max_lifetime: Duration,
     claude_path: Option<String>,
     codex_path: Option<String>,
+    /// F8：config `agents.delegate.permission_mode` 缺省值——args 缺省/空
+    /// 时落地（语义 = 默认值非强制：args 显式值恒优先，对齐字段文档
+    /// 「passthrough」）。
+    default_permission_mode: String,
     manager: Arc<DelegateManager>,
 }
 
@@ -883,6 +1009,7 @@ impl DelegateStartTool {
         max_lifetime_secs: u64,
         claude_path: Option<String>,
         codex_path: Option<String>,
+        default_permission_mode: String,
         manager: Arc<DelegateManager>,
     ) -> Self {
         Self {
@@ -895,6 +1022,7 @@ impl DelegateStartTool {
             },
             claude_path,
             codex_path,
+            default_permission_mode,
             manager,
         }
     }
@@ -927,7 +1055,7 @@ impl Tool for DelegateStartTool {
                 "resume_session_id": {"type": "string",
                                       "description": "claude only: session id from a previous delegate_output to continue"},
                 "permission_mode": {"type": "string",
-                                    "description": "claude only: CLI permission mode passthrough (empty = CLI default)"},
+                                    "description": "claude only: CLI permission mode passthrough (empty = configured default)"},
                 "env_allowlist": {"type": "array", "items": {"type": "string"},
                                   "description": "Vault secret names to inject into the child env (explicit whitelist)"}
             },
@@ -962,11 +1090,15 @@ impl Tool for DelegateStartTool {
             .as_str()
             .map(|s| s.to_string())
             .filter(|s| !s.trim().is_empty());
-        let permission_mode = v["permission_mode"]
+        let mut permission_mode = v["permission_mode"]
             .as_str()
             .unwrap_or("")
             .trim()
             .to_string();
+        // F8：args 缺省/空 → config 缺省值（默认值语义，显式 args 恒优先）。
+        if permission_mode.is_empty() {
+            permission_mode = self.default_permission_mode.clone();
+        }
         let aliases: Vec<String> = v["env_allowlist"]
             .as_array()
             .map(|a| {
