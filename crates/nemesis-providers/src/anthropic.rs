@@ -35,6 +35,14 @@ pub struct AnthropicConfig {
     /// 经 FactoryConfig.stream_mode 透传，构造期消费。
     #[serde(default)]
     pub stream_mode: String,
+    /// per-model 缓存断点显式化（B13，2026-10-18 B 级清零）：true 时在
+    /// request body 的 tools 清单尾 + system 尾各注入
+    /// `cache_control:{type:"ephemeral"}`（Anthropic prompt caching 是手动
+    /// 断点语义——无断点 = 零缓存命中，长 system prompt + 大工具清单每轮
+    /// 全价重算）。缺省 false = 请求体字节与现网完全一致（回归锁钉死）。
+    /// 经 FactoryConfig.cache_breakpoints 透传，构造期消费。
+    #[serde(default)]
+    pub cache_breakpoints: bool,
 }
 
 // P3A 超时对齐（2026-09-12）：120s 曾与 openai 兼容 lane 的 600s 口径分裂
@@ -54,6 +62,7 @@ impl Default for AnthropicConfig {
             timeout_secs: 600,
             proxy: None,
             stream_mode: String::new(),
+            cache_breakpoints: false,
         }
     }
 }
@@ -287,6 +296,29 @@ impl AnthropicProvider {
 
         if !tools.is_empty() {
             body["tools"] = serde_json::json!(translate_tools(tools));
+        }
+
+        // B13（cache_breakpoints，2026-10-18 B 级清零）：Anthropic prompt
+        // caching 是手动断点语义，无断点 = 零缓存命中（长 system prompt +
+        // 大工具清单每轮全价重算）。开启时在两个稳定前缀的尾部各放一个
+        // ephemeral 断点：tools 清单尾 + system 尾（官方推荐顺序 tools →
+        // system → messages；messages 区变动频繁，不打断点）。缺省关 =
+        // 本分支整体不进，请求体字节与现网一致（回归锁测试钉死）。
+        if self.config.cache_breakpoints {
+            if let Some(last_tool) = body
+                .get_mut("tools")
+                .and_then(|v| v.as_array_mut())
+                .and_then(|a| a.last_mut())
+            {
+                last_tool["cache_control"] = serde_json::json!({"type": "ephemeral"});
+            }
+            if let Some(last_sys) = body
+                .get_mut("system")
+                .and_then(|v| v.as_array_mut())
+                .and_then(|a| a.last_mut())
+            {
+                last_sys["cache_control"] = serde_json::json!({"type": "ephemeral"});
+            }
         }
 
         // H4 (U16 half): reasoning effort → Anthropic extended-thinking

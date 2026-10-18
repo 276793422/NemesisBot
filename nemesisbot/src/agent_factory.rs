@@ -27,6 +27,11 @@ mod tests;
 #[cfg(test)]
 mod fallback_chain_tests;
 
+// B4（2026-10-18 凭据 vault §7）ModelProviderReloader 测试（无 feature
+// 门——字段决策与 patch 写盘都是纯逻辑；provider 重建用离线安全条目）。
+#[cfg(test)]
+mod reloader_tests;
+
 // L6++（2026-09-08）项目 loop 工厂测试（非 cluster 门控——与 tests.rs 的
 // #![cfg(feature = "cluster")] 顶部门不同，本模块默认构建必跑；模块名含
 // "projects" 对齐 goal 门命令 `cargo test -p nemesisbot projects` 的过滤词）。
@@ -433,6 +438,7 @@ fn wrap_fallback_chain(
                 factory: nemesis_providers::factory::FactoryConfig {
                     proxy: fr.proxy.clone(),
                     stream_mode: fr.stream_mode.clone(),
+                    cache_breakpoints: fr.cache_breakpoints,
                     llm_ref: format!("{}/{}", fr.provider_name, fr.model_name),
                     api_key: fr.api_key.clone(),
                     api_base: fr.api_base.clone(),
@@ -453,6 +459,123 @@ fn wrap_fallback_chain(
         }
     }
     nemesis_providers::fallback_provider::assemble_fallback_chain(model_name, primary, levels)
+}
+
+/// B4（2026-10-18 凭据 vault §7）：Auth 凭据卡的 provider 重建器。持
+/// config.json 所在 home 与 workspace；reload 用 **raw JSON patch**（不经
+/// typed round-trip——typed save 抹 untyped per-model 键的先例，extra
+/// flatten 双保险只护 typed 保存路径，这里根本不走它）+ factory 同源
+/// resolve/create + fallback 链包装，与 [`build_agent_loop`] 装配语义一致。
+pub(crate) struct ModelProviderReloader {
+    home: PathBuf,
+    workspace: PathBuf,
+}
+
+impl ModelProviderReloader {
+    /// 读 raw config.json（读/解析失败 = Err，诚实上抛）。
+    fn read_raw(&self) -> Result<serde_json::Value, String> {
+        let s = std::fs::read_to_string(self.home.join("config.json"))
+            .map_err(|e| format!("读 config.json 失败: {e}"))?;
+        serde_json::from_str(&s).map_err(|e| format!("解析 config.json 失败: {e}"))
+    }
+}
+
+impl nemesis_agent::r#loop::ProviderReloader for ModelProviderReloader {
+    fn credential_request_fields(&self, model: &str) -> (String, String) {
+        let proposed = format!("model/{model}");
+        // raw 读条目 api_key（model_name/model 双形态精确匹配，无前缀门控——
+        // resolve_model_config 2026-10-13 根修同口径）。已是 `vault:<alias>`
+        // = 轮换语义：沿用既有别名（卡片覆盖写，created_at 保留）。
+        let existing = self.read_raw().ok().and_then(|raw| {
+            raw.get("model_list")?
+                .as_array()?
+                .iter()
+                .find_map(|e| {
+                    let m = e.get("model").and_then(|v| v.as_str());
+                    let mn = e.get("model_name").and_then(|v| v.as_str());
+                    (m == Some(model) || mn == Some(model))
+                        .then(|| e.get("api_key").and_then(|k| k.as_str()).map(String::from))
+                })
+                .flatten()
+        });
+        match existing {
+            Some(k) if k.starts_with(nemesis_config::VAULT_PREFIX) => {
+                let alias = k[nemesis_config::VAULT_PREFIX.len()..].trim().to_string();
+                if alias.is_empty() {
+                    (proposed.clone(), proposed)
+                } else {
+                    (proposed, alias)
+                }
+            }
+            _ => (proposed.clone(), proposed),
+        }
+    }
+
+    fn reload_provider(
+        &self,
+        model: &str,
+        patch_alias: Option<&str>,
+    ) -> Result<Arc<dyn nemesis_agent::r#loop::LlmProvider>, String> {
+        // 1. raw patch：条目 api_key → `vault:<alias>`（原子写，失败原文件
+        // 不动；凭据值本体不进 config——只写引用）。
+        if let Some(alias) = patch_alias {
+            let mut raw = self.read_raw()?;
+            let list = raw
+                .get_mut("model_list")
+                .and_then(|v| v.as_array_mut())
+                .ok_or_else(|| "config.json 无 model_list 数组".to_string())?;
+            let entry = list
+                .iter_mut()
+                .find(|e| {
+                    e.get("model").and_then(|m| m.as_str()) == Some(model)
+                        || e.get("model_name").and_then(|m| m.as_str()) == Some(model)
+                })
+                .ok_or_else(|| format!("config.json 无模型条目 `{model}`"))?;
+            entry["api_key"] =
+                serde_json::Value::String(format!("{}{alias}", nemesis_config::VAULT_PREFIX));
+            let pretty = serde_json::to_string_pretty(&raw)
+                .map_err(|e| format!("序列化 config.json 失败: {e}"))?;
+            nemesis_utils::write_file_atomic(
+                &self.home.join("config.json").to_string_lossy(),
+                pretty.as_bytes(),
+                0o600,
+            )
+            .map_err(|e| format!("写 config.json 失败: {e}"))?;
+        }
+        // 2. factory 同源 resolve + create + fallback 链（build_agent_loop
+        // 第 1-2 步同款；创建失败 = Some(warn) → Err 诚实上抛，不降级
+        // NullProvider——拿 Null 重试必然再吃 Auth 错，纯属烧轮次）。
+        let config_path = self.home.join("config.json");
+        let cfg = nemesis_config::load_config(&config_path)
+            .map_err(|e| format!("load_config 失败: {e}"))?;
+        let resolution = nemesis_config::resolve_model_config(&cfg, model)
+            .map_err(|e| format!("resolve_model_config(`{model}`) 失败: {e}"))?;
+        let factory_cfg = nemesis_providers::factory::FactoryConfig {
+            proxy: resolution.proxy.clone(),
+            stream_mode: resolution.stream_mode.clone(),
+            cache_breakpoints: resolution.cache_breakpoints,
+            llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
+            api_key: resolution.api_key.clone(),
+            api_base: resolution.api_base.clone(),
+            workspace: self.workspace.to_string_lossy().to_string(),
+            connect_mode: resolution.connect_mode,
+            protocol: resolution.protocol.clone(),
+            timeout_secs: resolution.timeout_secs,
+            account_id: String::new(),
+            headers: HashMap::new(),
+        };
+        let (provider, create_warn) =
+            nemesis_providers::factory::create_provider_or_null(&factory_cfg);
+        if let Some(w) = create_warn {
+            return Err(format!("provider 构建失败: {w}"));
+        }
+        let provider_arc: Arc<dyn nemesis_providers::router::LLMProvider> =
+            wrap_fallback_chain(&cfg, model, &self.workspace, provider);
+        Ok(Arc::new(ProviderAdapter::new(
+            provider_arc,
+            resolution.model_name,
+        )))
+    }
 }
 
 /// Build a fresh AgentLoop from disk config.
@@ -501,6 +624,7 @@ pub fn build_agent_loop(
     let factory_cfg = nemesis_providers::factory::FactoryConfig {
         proxy: resolution.proxy.clone(),
         stream_mode: resolution.stream_mode.clone(),
+        cache_breakpoints: resolution.cache_breakpoints,
         llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
         api_key: resolution.api_key.clone(),
         api_base: resolution.api_base.clone(),
@@ -627,6 +751,17 @@ pub fn build_agent_loop(
     // runtime model switches and dashboard/CLI config edits re-resolve it live.
     agent_loop.set_tier(resolved_tier);
     agent_loop.set_config_path(shared.home.join("config.json"));
+    // B4（2026-10-18 凭据 vault §7）：Auth 凭据卡装配——provider 重建器恒挂
+    // （纯数据件）；broker 走全局槽（security feature 门控；headless/acp
+    // 未 install → None → Auth 臂走原终局零回归）。
+    agent_loop.set_provider_reloader(Arc::new(ModelProviderReloader {
+        home: shared.home.clone(),
+        workspace: shared.workspace_dir(),
+    }));
+    #[cfg(feature = "security")]
+    if let Some(broker) = crate::credential_broker::current() {
+        agent_loop.set_credential_broker(broker);
+    }
     // prompt-pack pro：描述档位与 system prompt 同一开关（启动装配型）。
     agent_loop.set_prompt_system(prompt_system);
     // C3 (devtool-upgrade 阶段 2)：共享 LspManager 注入——编辑后诊断回灌
@@ -775,6 +910,7 @@ pub fn build_agent_loop(
                 let small_factory_cfg = nemesis_providers::factory::FactoryConfig {
                     proxy: resolution.proxy.clone(),
                     stream_mode: resolution.stream_mode.clone(),
+                    cache_breakpoints: resolution.cache_breakpoints,
                     llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
                     api_key: resolution.api_key.clone(),
                     api_base: resolution.api_base.clone(),
@@ -2021,6 +2157,7 @@ pub fn build_cluster_agent_loop(
     let factory_cfg = nemesis_providers::factory::FactoryConfig {
         proxy: resolution.proxy.clone(),
         stream_mode: resolution.stream_mode.clone(),
+        cache_breakpoints: resolution.cache_breakpoints,
         llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
         api_key: resolution.api_key.clone(),
         api_base: resolution.api_base.clone(),
@@ -2207,6 +2344,16 @@ pub fn build_cluster_agent_loop(
     );
     agent_loop.set_tier(resolved_tier);
     agent_loop.set_config_path(config_path.clone());
+    // B4（2026-10-18 凭据 vault §7）：集群 worker 同款凭据卡装配——B 端跑
+    // 长任务撞 Auth 同样能发卡续行（broker 未 install = None 零回归）。
+    agent_loop.set_provider_reloader(Arc::new(ModelProviderReloader {
+        home: shared.home.clone(),
+        workspace: shared.workspace_dir(),
+    }));
+    #[cfg(feature = "security")]
+    if let Some(broker) = crate::credential_broker::current() {
+        agent_loop.set_credential_broker(broker);
+    }
     // C3：集群 agent 同样注入共享 LspManager（B 端跑长任务写码时也享受
     // 编辑后诊断回灌；同一实例，server 进程不翻倍）。
     #[cfg(feature = "lsp")]
@@ -2859,6 +3006,7 @@ pub fn build_agent_loop_from_spec(
     let factory_cfg = nemesis_providers::factory::FactoryConfig {
         proxy: resolution.proxy.clone(),
         stream_mode: resolution.stream_mode.clone(),
+        cache_breakpoints: resolution.cache_breakpoints,
         llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
         api_key: resolution.api_key.clone(),
         api_base: resolution.api_base.clone(),
@@ -2948,6 +3096,16 @@ pub fn build_agent_loop_from_spec(
     agent_loop.set_max_concurrent_turns(cfg.agents.defaults.max_concurrent_turns.max(0) as usize);
     agent_loop.set_tier(resolved_tier);
     agent_loop.set_config_path(config_path.clone());
+    // B4（2026-10-18 凭据 vault §7）：项目 loop 同款凭据卡装配（broker 未
+    // install = None 零回归；config 与主 loop 同一份，patch 语义一致）。
+    agent_loop.set_provider_reloader(Arc::new(ModelProviderReloader {
+        home: shared.home.clone(),
+        workspace: shared.workspace_dir(),
+    }));
+    #[cfg(feature = "security")]
+    if let Some(broker) = crate::credential_broker::current() {
+        agent_loop.set_credential_broker(broker);
+    }
     // G2（2026-10-18 批四）：per-agent 浏览器 profile（spec 携带；须在
     // enable_mcp_reload 之前——装配期随 manager 转 MCP spawn 链）。None =
     // 主/项目形态零变化。
@@ -3089,6 +3247,7 @@ pub fn build_agent_loop_from_spec(
                 let small_factory_cfg = nemesis_providers::factory::FactoryConfig {
                     proxy: resolution.proxy.clone(),
                     stream_mode: resolution.stream_mode.clone(),
+                    cache_breakpoints: resolution.cache_breakpoints,
                     llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
                     api_key: resolution.api_key.clone(),
                     api_base: resolution.api_base.clone(),

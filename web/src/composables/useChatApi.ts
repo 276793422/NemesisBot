@@ -58,6 +58,11 @@ export interface SessionEntry {
   /** WS9/P18：分支摘要预览（meta.branch_summary 前 160 字符截断——
    *  全文真相源在 agent 侧 meta，注入走 # Branch Context）。 */
   branchSummaryPreview?: string
+  /** B11（2026-10-18 snooze）：会话暂停到点（RFC3339，meta sidecar
+   *  回填）。缺省 = 未暂停；到期由后端 sweeper 摘标记并注入恢复行。 */
+  snoozedUntil?: string
+  /** B11：暂停备注（用户可选说明）。 */
+  snoozeNote?: string
 }
 
 /** L6++（2026-09-08）：项目分组条目（镜像 handlers/projects.rs 的
@@ -181,6 +186,24 @@ export function useChatApi() {
     /** P2（2026-09-11）：清零未送达标记（拉取历史后调用；幂等）。 */
     markDelivered: (session_id: string): Promise<{ cleared: boolean }> =>
       request('sessions', 'mark_delivered', { session_id }),
+
+    /** B11（2026-10-18 snooze）：暂停会话到点。`until` = 相对秒数（如
+     *  3600）或 RFC3339 时刻（必须在未来）；`note` 可选说明。到期由后端
+     *  sweeper 自动摘标记 + 注入恢复行。重复调用 = 改期。 */
+    snooze: (
+      session_id: string,
+      until: string,
+      note?: string,
+    ): Promise<{ session_id: string; snoozed_until: string }> =>
+      request('sessions', 'snooze', {
+        session_id,
+        until,
+        ...(note ? { note } : {}),
+      }),
+
+    /** B11：取消暂停（立即恢复）。幂等——未暂停时返回 unsnoozed=false。 */
+    unsnooze: (session_id: string): Promise<{ session_id: string; unsnoozed: boolean }> =>
+      request('sessions', 'unsnooze', { session_id }),
 
     export: async (session_id: string): Promise<{ session_id: string; messages: unknown[]; count: number }> =>
       await request('sessions', 'export', { session_id }),

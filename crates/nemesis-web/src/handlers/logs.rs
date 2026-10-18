@@ -366,6 +366,15 @@ pub fn scan_session_logs(workspace: &str) -> Vec<serde_json::Value> {
             let preview: String = bs.chars().take(160).collect();
             entry["branchSummaryPreview"] = serde_json::Value::String(preview);
         }
+        // B11（2026-10-18 snooze）：暂停到点（sidecar meta）。无字段不加 =
+        // 未暂停会话零增量——前端据此灰显 + ⏰ 到期徽标；note 跟随投影
+        // （tooltip 展示）。
+        if let Some((snoozed_until, snooze_note)) = read_meta_snooze(&path) {
+            entry["snoozedUntil"] = serde_json::Value::String(snoozed_until);
+            if let Some(note) = snooze_note {
+                entry["snoozeNote"] = serde_json::Value::String(note);
+            }
+        }
         sessions.push(entry);
     }
     // WS9/P17：祖先链补全（一次后处理遍历）。把带 `parent` 的条目升格成
@@ -483,6 +492,24 @@ fn read_meta_undelivered(jsonl_path: &Path) -> u32 {
         .unwrap_or(0)
 }
 
+/// B11（2026-10-18 snooze）：读 sidecar meta 里的暂停标记（`sessions.
+/// snooze` 写入 / sweeper 或 `unsnooze` 摘除）。无字段/缺席 sidecar =
+/// None；返回 `(snoozed_until, snooze_note)`——note 跟随投影供前端
+/// tooltip 展示。
+fn read_meta_snooze(jsonl_path: &Path) -> Option<(String, Option<String>)> {
+    let meta = jsonl_path.with_extension("meta.json");
+    std::fs::read_to_string(&meta)
+        .ok()
+        .and_then(|d| serde_json::from_str::<serde_json::Value>(&d).ok())
+        .and_then(|v| {
+            let until = v.get("snoozed_until").and_then(|u| u.as_str())?;
+            let note = v
+                .get("snooze_note")
+                .and_then(|n| n.as_str())
+                .map(String::from);
+            Some((String::from(until), note))
+        })
+}
 /// WS9/P17：谱系扩展三字段一次 meta 读全取——`(fork_reason, last_rewind,
 /// branch_summary)`。缺席 sidecar / 旧形态文件 = 三 `None`（调用方逐项
 /// 判空，条目零增量）。`last_rewind` 以原样 JSON 对象透传（结构真相源在
@@ -2541,6 +2568,11 @@ mod e4_lineage_tests;
 // security/memory。
 #[cfg(test)]
 mod project_binding_tests;
+
+// B11（2026-10-18 snooze）：scan_session_logs 的 snoozedUntil/snoozeNote
+// 回填 + 无标记 meta / 无 meta 文件的零增量缺省。不依赖 security/memory。
+#[cfg(test)]
+mod b11_snooze_tests;
 
 // AGT 覆盖率批次（2026-09-24）：dispatch 层参数提取兜底臂、parse_cluster_dir_name
 // None 与 sorted_files 缺目录、scan_session_logs 空文件/undelivered 回填、审计链
