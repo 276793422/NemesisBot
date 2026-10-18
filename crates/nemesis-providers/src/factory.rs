@@ -77,6 +77,11 @@ pub struct FactoryConfig {
     /// 签名不变）；no = 逃生门强制非流式。语义对齐 protocol：构造期消费，
     /// 改条目需重新设默认或重启。CLI 型 lane 不消费此字段。
     pub stream_mode: String,
+    /// per-model 缓存断点显式化（B13，2026-10-18 B 级清零）：来自模型条目
+    /// `cache_breakpoints` 字段（provider_resolver 透传）。仅 anthropic
+    /// lane 消费（system 尾 + tools 尾注入 ephemeral 断点）；其他 lane
+    /// 忽略 + 构造期一次 WARN。语义对齐 protocol：构造期消费。
+    pub cache_breakpoints: bool,
 }
 
 /// 全 lane 统一的单请求默认超时（超时阶梯最内层；外层链见 CLAUDE.md）。
@@ -214,6 +219,19 @@ pub fn resolve_provider_selection(cfg: &FactoryConfig) -> Result<ProviderSelecti
 pub fn create_provider(cfg: &FactoryConfig) -> Result<Arc<dyn LLMProvider>, String> {
     let sel = resolve_provider_selection(cfg)?;
 
+    // B13：cache_breakpoints 仅 anthropic lane 消费；其他 lane 显式开启 =
+    // 配置对该 lane 无效，进程内一次 WARN（Once 锁——provider 构造虽是
+    // 低频事件，仍不逐次刷屏），行为照旧不失败。
+    static CACHE_BP_WARN: std::sync::Once = std::sync::Once::new();
+    if cfg.cache_breakpoints && !matches!(sel.provider_type, ProviderType::Anthropic) {
+        CACHE_BP_WARN.call_once(|| {
+            tracing::warn!(
+                lane = ?sel.provider_type,
+                "模型条目 cache_breakpoints 仅 anthropic 协议 lane 生效，当前 lane 忽略该开关"
+            );
+        });
+    }
+
     let provider: Arc<dyn LLMProvider> = match sel.provider_type {
         ProviderType::Anthropic => {
             let anthropic_cfg = AnthropicConfig {
@@ -223,6 +241,7 @@ pub fn create_provider(cfg: &FactoryConfig) -> Result<Arc<dyn LLMProvider>, Stri
                 timeout_secs: effective_timeout(sel.timeout_secs),
                 proxy: opt_proxy(cfg),
                 stream_mode: cfg.stream_mode.clone(),
+                cache_breakpoints: cfg.cache_breakpoints,
             };
             Arc::new(AnthropicProvider::new(anthropic_cfg))
         }

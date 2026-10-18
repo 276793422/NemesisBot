@@ -538,3 +538,87 @@ fn test_migration_v17_to_v18_adds_required_capabilities() {
     assert_eq!(set, r#"["chrome","docker"]"#);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// -------------------------------------------------- B10（2026-10-18 存储韧性）
+
+#[test]
+fn b10_init_db_rejects_foreign_file_loudly() {
+    // 手法①：非 SQLite 内容 → loud Err 带 hex 摘要，拒绝发生在打开前
+    // （原文件内容不被触碰）。
+    let dir = unique_dir("b10-foreign");
+    let path = dir.join("board.db");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(&path, b"this is not a sqlite db!").unwrap();
+
+    let err = init_db(&path).unwrap_err();
+    assert!(
+        err.contains("不是 SQLite 格式") && err.contains("hex:"),
+        "Foreign 文件应带 hex 摘要 loud 拒绝: {err}"
+    );
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        b"this is not a sqlite db!",
+        "拒绝路径不改写原文件"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn b10_init_db_rejects_newer_schema_version() {
+    // 手法②：user_version 高于本程序支持值 → 拒绝降级打开（旧行为会把
+    // 版本静默降级写回、迁移链跳过、运行期 "no such column"）。
+    let dir = unique_dir("b10-drift");
+    let path = dir.join("board.db");
+    {
+        let conn = init_db(&path).unwrap();
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION + 80)
+            .unwrap();
+    }
+    let err = init_db(&path).unwrap_err();
+    assert!(
+        err.contains(&format!("高于本程序支持的 {SCHEMA_VERSION}")),
+        "高版本库应 loud 拒绝: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn b10_migration_from_v1_keeps_backup() {
+    // 手法③：模拟旧版库（fresh v1 + 存量数据 + user_version=1）→ init_db
+    // 走全迁移链升到当前版，迁移前 .bak.1 在场且持旧版快照（存量单可查）。
+    let dir = unique_dir("b10-migrate-bak");
+    let path = dir.join("board.db");
+    std::fs::create_dir_all(&dir).unwrap();
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        conn.execute(
+            "INSERT INTO issue (number, title, status, priority, creator_type, creator_id,
+                position, created_at, updated_at)
+             VALUES('NB-1', '存量单', 'backlog', 1, 'admin', 'admin', 1, 1700000000, 1700000000)",
+            [],
+        )
+        .unwrap();
+    }
+    let conn = init_db(&path).unwrap();
+    let v: i32 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, SCHEMA_VERSION, "迁移链走满");
+
+    let bak1 = dir.join("board.db.bak.1");
+    assert!(bak1.exists(), "迁移前备份在场");
+    let bak_conn = Connection::open(&bak1).unwrap();
+    let bak_v: i32 = bak_conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(bak_v, 1, "备份持迁移前版本");
+    let bak_title: String = bak_conn
+        .query_row("SELECT title FROM issue WHERE number='NB-1'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(bak_title, "存量单", "备份含迁移前存量数据");
+    let _ = std::fs::remove_dir_all(&dir);
+}

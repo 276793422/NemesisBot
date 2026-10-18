@@ -186,6 +186,7 @@ pub(crate) fn scenario_model(name: &str) -> &'static str {
         "vision_roundtrip" => "testai-vision-1.0",
         "codemode_orchestration" => "testai-codemode-1.0",
         "docs_lift" => "testai-docslift-1.0",
+        "disconnect_resume" => "testai-2.1",
         _ => "testai-1.1",
     }
 }

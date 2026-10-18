@@ -58,6 +58,13 @@ pub struct ProviderResolution {
     /// 消费（codex auto=流式；anthropic/openai auto=非流式；yes/no 强制）。
     #[serde(default)]
     pub stream_mode: String,
+    /// per-model 缓存断点显式化（B13，2026-10-18 B 级清零）：模型条目 extra
+    /// 的 `cache_breakpoints`。仅 anthropic lane 消费——开启后在 system 尾 +
+    /// tools 尾注入 `cache_control:{type:"ephemeral"}`（Anthropic 手动缓存
+    /// 语义：断点必须显式放置，无断点 = 零缓存）。缺省 false = 请求体字节
+    /// 与现网完全一致（回归锁钉死）。其他 lane 忽略 + 构造期一次 WARN。
+    #[serde(default)]
+    pub cache_breakpoints: bool,
 }
 
 impl Default for ProviderResolution {
@@ -68,6 +75,7 @@ impl Default for ProviderResolution {
             reasoning_effort: String::new(),
             timeout_secs: 0,
             stream_mode: String::new(),
+            cache_breakpoints: false,
             api_key: String::new(),
             api_base: String::new(),
             proxy: String::new(),
@@ -242,6 +250,19 @@ pub fn normalize_stream_value(v: &serde_json::Value) -> Option<String> {
     }
 }
 
+/// per-model 缓存断点提取（B13）：读模型条目 extra 的 `cache_breakpoints`。
+/// 缺省/非真值 = false（请求体零字节变化）。真值语义对齐 stream 键：布尔
+/// `true` / 字符串 "yes"/"true"（大小写不敏感）→ true；其余诚实忽略按关。
+fn extract_cache_breakpoints(
+    extra: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> bool {
+    extra
+        .get("cache_breakpoints")
+        .and_then(normalize_stream_value)
+        .as_deref()
+        == Some("yes")
+}
+
 fn resolve_from_model_config(mc: &ModelConfig) -> Result<ProviderResolution> {
     let (provider_name, model_name) = if mc.model.contains('/') {
         let mut parts = mc.model.splitn(2, '/');
@@ -274,6 +295,7 @@ fn resolve_from_model_config(mc: &ModelConfig) -> Result<ProviderResolution> {
         reasoning_effort: mc.reasoning_effort.clone(),
         timeout_secs: extract_timeout_secs(&mc.extra),
         stream_mode: extract_stream_mode(&mc.extra),
+        cache_breakpoints: extract_cache_breakpoints(&mc.extra),
     })
 }
 
