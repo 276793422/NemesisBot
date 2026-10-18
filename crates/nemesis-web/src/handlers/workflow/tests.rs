@@ -143,8 +143,15 @@ async fn rate_limiter_never_evicts_live_entries_when_table_full() {
 async fn rate_limiter_sweeps_expired_entries_to_admit_new_ip() {
     let limiter = WebhookRateLimiter::with_max_ips(2);
     // Hand-age two entries beyond the window (child module: private field
-    // access is fine in tests; avoids a 60s sleep).
-    let old = std::time::Instant::now() - WEBHOOK_RATE_WINDOW - std::time::Duration::from_secs(1);
+    // access is fine in tests; avoids a 60s sleep). 61s 回拨需 Instant 纪元
+    // 余量；刚启动系统回拨不了 → 环境边界诚实跳过（agt_tests 同款纪律）。
+    let Some(old) = std::time::Instant::now()
+        .checked_sub(WEBHOOK_RATE_WINDOW)
+        .and_then(|t| t.checked_sub(std::time::Duration::from_secs(1)))
+    else {
+        eprintln!("SKIP 过期清扫断言：系统刚启动，Instant 纪元余量不足 61s");
+        return;
+    };
     {
         let mut hits = limiter.hits.lock().await;
         hits.insert(

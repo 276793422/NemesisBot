@@ -95,6 +95,7 @@ allow = [
   "BSL-1.0",
   "0BSD",
   "CC0-1.0",
+  "Unlicense",       # 公有领域奉献（OSI approved + FSF Free/Libre）；iroh-relay 链 ws_stream_wasm/pharos/async_io_stream
   "MPL-2.0",
   "Unicode-3.0",
   "Unicode-DFS-2016",
