@@ -39,9 +39,10 @@ pub mod vm_runtime;
 
 /// P5 第 4 步：`vm.*` WSAPI 桥（web 侧 [`nemesis_web::handlers::vm::VmBridge`]
 /// trait 的 [`VmSupervisor`](vm_runtime::VmSupervisor) 实现——投影与转发，
-/// gateway 装配期装槽）。
+/// gateway 装配期装槽）。B3 起 pub(crate)：CLI `vm build-image` 前台臂
+/// 复用其输入裁决与任务槽判定（单一真相源，不另写一份预检）。
 #[cfg(feature = "vm")]
-mod vm_bridge;
+pub(crate) mod vm_bridge;
 
 use std::path::{Path, PathBuf};
 
@@ -199,7 +200,9 @@ impl AgentManager {
     }
 
     /// P5 第 4 步：VM 后端后补注入（supervisor 构造晚于 manager——gateway
-    /// post_agent 在两件都在场时接线；幂等覆盖）。
+    /// post_agent 在两件都在场时接线；幂等覆盖）。唯一调用方在
+    /// `#[cfg(feature = "vm")]` 装配块内——vm 关态 dead，allow 门随 feature。
+    #[cfg_attr(not(feature = "vm"), allow(dead_code))]
     pub fn set_vm_backend(&self, vm: std::sync::Arc<dyn VmBackend>) {
         *self.vm.write().expect("agent manager vm lock") = Some(vm);
     }

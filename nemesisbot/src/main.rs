@@ -468,6 +468,12 @@ enum Commands {
         #[command(subcommand)]
         action: commands::sandbox::SandboxCommand,
     },
+    /// VM environment bootstrap (install QEMU / enable accel / status / build image)
+    #[cfg(feature = "vm")]
+    Vm {
+        #[command(subcommand)]
+        action: commands::vm::VmCommand,
+    },
     /// Evaluate a prompt / skill's runtime behaviour in a sandbox and assess
     /// the report (rules-driven risk / safe / unknown verdict)
     #[cfg(feature = "eval")]
@@ -968,6 +974,11 @@ async fn run_command(cli: Cli) -> Result<()> {
         Commands::Sandbox { action } => {
             common::ensure_default_logger();
             commands::sandbox::run(action, cli.local).await?;
+        }
+        #[cfg(feature = "vm")]
+        Commands::Vm { action } => {
+            common::ensure_default_logger();
+            commands::vm::run(action, cli.local).await?;
         }
         #[cfg(feature = "eval")]
         Commands::Eval { action } => {

@@ -345,7 +345,7 @@ fn docs_generation_writes_wsapi_commands_md() {
             "SKIP docs_generation: 编译缺 feature 门控模块 `{missing}`——重写会把 \
              docs/INFO/wsapi-commands.md 冲成残表。带全 feature 重跑：cargo test -p \
              nemesis-web --features \"board,connectors,cluster,workflow,memory,security,scanner,\
-             forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp\" docs_generation"
+             forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp,vm\" docs_generation"
         );
         return;
     }
@@ -357,7 +357,7 @@ fn docs_generation_writes_wsapi_commands_md() {
 docs_generation_writes_wsapi_commands_md` 从 `ModuleHandler::commands()` \
 静态清单生成——**勿手改**。改任何 handler 的命令臂后**带全 feature** 重跑 \
 `cargo test -p nemesis-web --features \"board,connectors,cluster,workflow,memory,\
-security,scanner,forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp\" \
+security,scanner,forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp,vm\" \
 docs_generation` 刷新本文件\
 （feature 不全时本测试诚实 SKIP 不写盘，防止把完整文档冲成残表）。\n\n",
     );

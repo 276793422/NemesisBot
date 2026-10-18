@@ -53,6 +53,9 @@ pub mod profile;
 pub mod run;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
+// VM 环境自举 CLI（第 10 层安装面；vm feature 穿透 nemesis-sandbox/vm）。
+#[cfg(feature = "vm")]
+pub mod vm;
 // 病毒扫描 CLI（scanner feature 从 security 拆出；implies security）。
 #[cfg(feature = "scanner")]
 pub mod scanner;
