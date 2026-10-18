@@ -32,6 +32,17 @@ pub mod runtime;
 /// 管理器（`agents.send` WSAPI 的解析/构建/投递面；R4 remove 联动）。
 pub mod loop_manager;
 
+/// P5 第 3 步：VM 持久实体监督器（`vm` feature 闸——收窄/IoT 形态整模块
+/// 不进二进制，`nemesis-sandbox/vm` 子模块同闸）。
+#[cfg(feature = "vm")]
+pub mod vm_runtime;
+
+/// P5 第 4 步：`vm.*` WSAPI 桥（web 侧 [`nemesis_web::handlers::vm::VmBridge`]
+/// trait 的 [`VmSupervisor`](vm_runtime::VmSupervisor) 实现——投影与转发，
+/// gateway 装配期装槽）。
+#[cfg(feature = "vm")]
+mod vm_bridge;
+
 use std::path::{Path, PathBuf};
 
 use nemesis_path::{resolve_agent_home_in_workspace, resolve_agent_memory_dir_in_workspace};
@@ -46,6 +57,10 @@ use nemesis_taskstore::{AgentRecord, SqliteAgentsStore, TaskDb};
 pub struct CreateAgentParams {
     pub name: String,
     pub tier: String,
+    /// P5 第 4 步：运行时后端档位（`process|vm`；空串同 process）。值域
+    /// 校验单一真相源 `nemesis_taskstore::agents::runtime_backend::validate`
+    /// ——create 落库前过，非法值 loud 拒绝。
+    pub runtime_backend: String,
     pub tool_policy: serde_json::Value,
     pub persona_refs: serde_json::Value,
     pub credential_refs: serde_json::Value,
@@ -76,6 +91,39 @@ pub struct AgentManager {
     loop_manager: std::sync::Arc<
         std::sync::RwLock<Option<std::sync::Arc<crate::agents::loop_manager::AgentLoopManager>>>,
     >,
+    /// P5 第 4 步：VM 常驻后端槽（feature 无关投影 [`VmBackend`]——`vm`
+    /// feature 关闭时恒 None，档位路由与管理面诚实降级，off-state 字节
+    /// 不变）。gateway post_agent 装配（同 set_runtime 的晚注入纪律）。
+    vm: std::sync::Arc<std::sync::RwLock<Option<std::sync::Arc<dyn VmBackend>>>>,
+}
+
+// ---------------------------------------------------------------------------
+// P5 第 4 步：VM 常驻后端面（feature 无关投影）
+// ---------------------------------------------------------------------------
+
+/// VM 常驻后端的生命周期 + 执行面投影。trait 常在（不挂 feature）——
+/// 管理面（agents WSAPI 切档/睡眠/唤醒）与工具路由面（BackendRoutingExecutor）
+/// 对它编程，`vm` feature 关闭时槽恒 None：路由面把 VM 档记作 Unavailable
+/// 回落 per-call（与「开关关」同语义），管理面诚实报「未装配」。实现 =
+/// [`vm_runtime::VmSupervisor`](vm_runtime::VmSupervisor)（cfg vm）。
+///
+/// supertrait [`PersistentExecutor`](nemesis_agent::remote_executor_tool::PersistentExecutor)
+/// 保证路由面与进程档走同一 trait 面（P5 验收门「同一 RuntimeBackend 接口」
+/// 的编译期形态）。
+#[async_trait::async_trait]
+pub trait VmBackend: nemesis_agent::remote_executor_tool::PersistentExecutor {
+    /// 睡眠：`Ok(true)` = 已睡眠（状态落盘）；`Ok(false)` = 无运行中实例
+    /// 可睡（与进程档 sleep 的「无槽」同义，不算错误）；`Err` = 真实失败。
+    async fn sleep_agent(&self, agent_id: &str) -> Result<bool, String>;
+
+    /// 唤醒/冷启。`exec_root` 与进程档 wake 同形签名（审计语义保留）；
+    /// VM 档工作区在 guest 内 `/workspace`，宿主路径不进 guest（共享子树
+    /// 接线诚实后置——Step 3 `shared_host_path: None` 注记同源）。
+    async fn wake_agent(&self, agent_id: &str, exec_root: &Path) -> Result<(), String>;
+
+    /// 运行中实例的 agent 清单（slots 投影用；睡眠/冷停实例不在清单——
+    /// 与进程档「睡着的槽已离开 map」同语义）。
+    fn running_agents(&self) -> Vec<String>;
 }
 
 // ---------------------------------------------------------------------------
@@ -110,6 +158,7 @@ impl AgentManager {
             workspace,
             runtime: std::sync::Arc::new(std::sync::RwLock::new(None)),
             loop_manager: std::sync::Arc::new(std::sync::RwLock::new(None)),
+            vm: std::sync::Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -149,6 +198,17 @@ impl AgentManager {
             .clone()
     }
 
+    /// P5 第 4 步：VM 后端后补注入（supervisor 构造晚于 manager——gateway
+    /// post_agent 在两件都在场时接线；幂等覆盖）。
+    pub fn set_vm_backend(&self, vm: std::sync::Arc<dyn VmBackend>) {
+        *self.vm.write().expect("agent manager vm lock") = Some(vm);
+    }
+
+    /// 取 VM 后端快照（feature 关 / 未装配 = None）。
+    pub fn vm_backend(&self) -> Option<std::sync::Arc<dyn VmBackend>> {
+        self.vm.read().expect("agent manager vm lock").clone()
+    }
+
     /// 两阶段创建（自建 agent）：`provisioning` 落库 → home 物化（幂等）→
     /// `active`。exec_root=自己 home（隔离根语义：跨 agent home 互不可见）。
     /// 物化失败 = 记录留在 `provisioning`（启动 sweep 会重试收敛），错误
@@ -163,11 +223,15 @@ impl AgentManager {
         // 凭据引用面创建期封死（vault:agent/<self_id>/<name> 约定，跨
         // agent 引用拒绝）——先验后落库，失败不留半创建。
         validate_credential_refs(&agent_id, &p.credential_refs)?;
+        // 档位值域同点封死（P5 第 4 步；空串同 process——旧调用方零迁移）。
+        let runtime_backend =
+            nemesis_taskstore::agents::runtime_backend::validate(&p.runtime_backend)?.to_string();
         let home = resolve_agent_home_in_workspace(&self.workspace, &agent_id);
         let mut record = AgentRecord::new_provisioning(&agent_id, name, agent_kind::SELFBUILT);
         record.exec_root = home.to_string_lossy().to_string();
         record.home_path = home_path_str(&self.workspace, &agent_id);
         record.tier = p.tier;
+        record.runtime_backend = runtime_backend;
         record.tool_policy = p.tool_policy;
         record.persona_refs = p.persona_refs;
         // selfbuilt 独占 `agents/<id>` 记忆域。
@@ -188,6 +252,34 @@ impl AgentManager {
         self.store
             .get(&agent_id)?
             .ok_or_else(|| format!("agent {agent_id} 刚创建即读失（存储不一致）"))
+    }
+
+    /// P5 第 4 步：运行时后端切档（G4 ⑦「上层无感」的写入口）。真相源 =
+    /// tasks.db 记录字段；工具调用侧路由执行器每调用现读——切档即时生效，
+    /// 无需重启 loop 或迁移会话（对话/记忆/交付语义不变）。原档常驻实例
+    /// 如需释放，走 sleep（跨档生命周期互不自动接管——切档是偏好变更，
+    /// 不是停机指令）。
+    pub fn update_backend(
+        &self,
+        agent_id: &str,
+        runtime_backend: &str,
+    ) -> Result<AgentRecord, String> {
+        let backend =
+            nemesis_taskstore::agents::runtime_backend::validate(runtime_backend)?.to_string();
+        let mut rec = self
+            .get(agent_id)?
+            .ok_or_else(|| format!("agent 不存在: {agent_id}"))?;
+        if rec.runtime_backend == backend {
+            return Ok(rec); // 幂等：同档重复切 = 无操作（诚实返回现值）。
+        }
+        rec.runtime_backend = backend;
+        self.store.upsert(&rec)?;
+        tracing::info!(
+            agent_id = %agent_id,
+            backend = %rec.runtime_backend,
+            "[agents] runtime_backend 切档已落库（下次工具调用现读生效）"
+        );
+        Ok(rec)
     }
 
     /// main agent 幂等 seed（boot-time）。已存在（任意状态）直接返回；

@@ -89,6 +89,9 @@ pub struct Cluster {
     professions: parking_lot::RwLock<Vec<String>>,
     /// 节点档位（role_tier 口径；peers.toml `[node].tier` 种入，手工声明）。
     tier: parking_lot::RwLock<Option<String>>,
+    /// 自报运行时后端形态（P5 第 4 步 ③；peers.toml `[node].runtime_backend`
+    /// 种入，手工声明；announce 携带。本批只宣告不做 matcher 闸，P6 上位）。
+    runtime_backend: parking_lot::RwLock<Option<String>>,
     /// 自报 agent 实体清单提供者（P2 2026-10-16）。闭包每次现读实体注册
     /// 表（fresh read，不缓存快照）——announce / get_info 拿到的都是当前
     /// 值，运行期增删 agent 无需回写。`None` = 未宣告（announce 不带
@@ -222,6 +225,7 @@ impl Cluster {
             tags: parking_lot::RwLock::new(Vec::new()),
             professions: parking_lot::RwLock::new(Vec::new()),
             tier: parking_lot::RwLock::new(None),
+            runtime_backend: parking_lot::RwLock::new(None),
             agent_roster: std::sync::Arc::new(parking_lot::RwLock::new(None)),
             capabilities: Arc::new(std::sync::Mutex::new(Vec::new())),
             static_capabilities: parking_lot::RwLock::new(Vec::new()),
@@ -330,6 +334,9 @@ impl Cluster {
             .map(|s| s.node.professions.clone())
             .unwrap_or_default();
         let tier_default = sc.as_ref().and_then(|s| s.node.tier.clone());
+        // P5 第 4 步 ③：peers.toml [node] 自报运行时后端形态种入（announce
+        // 携带；手工声明不自动推导，同 tier 先例）。
+        let runtime_backend_default = sc.as_ref().and_then(|s| s.node.runtime_backend.clone());
         // NB-122 批 ③ 数据面：`[node].capabilities` 自报段种入（环境事实
         // 能力词；set_capabilities 时与工具名并集进宣告面）。
         let static_caps_default = sc
@@ -373,6 +380,7 @@ impl Cluster {
             tags: parking_lot::RwLock::new(tags_default),
             professions: parking_lot::RwLock::new(professions_default),
             tier: parking_lot::RwLock::new(tier_default),
+            runtime_backend: parking_lot::RwLock::new(runtime_backend_default),
             agent_roster: std::sync::Arc::new(parking_lot::RwLock::new(None)),
             capabilities: Arc::new(std::sync::Mutex::new(Vec::new())),
             static_capabilities: parking_lot::RwLock::new(static_caps_default),
@@ -472,6 +480,7 @@ impl Cluster {
             professions: self.professions.read().clone(),
             tier: self.tier.read().clone(),
             agents: self.current_agent_roster(),
+            runtime_backend: self.runtime_backend.read().clone(),
             node_type: self.node_type.clone(),
         };
         self.registry.upsert(local_node);
@@ -629,6 +638,9 @@ impl Cluster {
                 // agents 不持久化到 state.toml（运行时清单，周期 announce
                 // 自会重学——空 = 未宣告，绝不因回读假造清单）。
                 agents: Vec::new(),
+                // runtime_backend 与 agents 相反是静态身份——持久化并回读
+                // （P5 第 4 步 ③，同 professions/tier）。
+                runtime_backend: pc.runtime_backend.clone(),
                 node_type: String::new(),
             });
             seeded += 1;
@@ -1406,6 +1418,8 @@ impl Cluster {
             Vec::new(),
             None,
             Vec::new(),
+            // 旧 9 参回调无 runtime_backend → None = 未宣告（诚实，不猜）。
+            None,
             None,
             None,
         )
@@ -1440,6 +1454,7 @@ impl Cluster {
         tier: Option<String>,
         agents: Vec<crate::types::AgentAnnouncement>,
         iroh_id: Option<String>,
+        runtime_backend: Option<String>,
         source_addr: Option<&str>,
     ) -> bool {
         self.handle_discovered_node_impl(
@@ -1456,6 +1471,7 @@ impl Cluster {
             tier,
             agents,
             iroh_id,
+            runtime_backend,
             source_addr,
         )
     }
@@ -1476,6 +1492,7 @@ impl Cluster {
         tier: Option<String>,
         agents: Vec<crate::types::AgentAnnouncement>,
         iroh_id: Option<String>,
+        runtime_backend: Option<String>,
         source_addr: Option<&str>,
     ) -> bool {
         // Skip blacklisted nodes
@@ -1547,6 +1564,7 @@ impl Cluster {
             merged.professions = professions.clone();
             merged.tier = tier.clone();
             merged.agents = agents.clone();
+            merged.runtime_backend = runtime_backend;
             merged.node_type = node_type.to_string();
             // A1：iroh 漫游身份入池（新增非覆盖——空地址分支保留原地址的
             // 纪律不变；iroh 候选是新通路证据，照常追加）。
@@ -1657,6 +1675,7 @@ impl Cluster {
             professions: professions.clone(),
             tier: tier.clone(),
             agents: agents.clone(),
+            runtime_backend: runtime_backend.clone(),
             node_type: node_type.to_string(),
         };
         let changed = self.registry.upsert_if_changed(node);
@@ -1790,6 +1809,7 @@ impl Cluster {
                         professions: professions.clone(),
                         tier: tier.clone(),
                         agents: agents.clone(),
+                        runtime_backend: runtime_backend.clone(),
                         node_type: node_type.into(),
                     },
                 );
@@ -1959,6 +1979,7 @@ impl Cluster {
             existing.professions = info.professions.clone();
             existing.tier = info.tier.clone();
             existing.agents = info.agents.clone();
+            existing.runtime_backend = info.runtime_backend.clone();
             existing.node_type = info.node_type.clone();
             self.registry.upsert(existing);
             self.persist_real_peer_to_toml(&info.id, info);
@@ -2010,6 +2031,7 @@ impl Cluster {
             professions: info.professions.clone(),
             tier: info.tier.clone(),
             agents: info.agents.clone(),
+            runtime_backend: info.runtime_backend.clone(),
             node_type: info.node_type.clone(),
         };
         self.registry.upsert(node);
@@ -2630,6 +2652,18 @@ impl Cluster {
         self.sync_local_node_to_registry();
     }
 
+    /// 自报运行时后端形态（P5 第 4 步 ③；真相源 peers.toml
+    /// `[node].runtime_backend`，手工声明不自动推导；None = 未宣告）。
+    pub fn runtime_backend(&self) -> Option<String> {
+        self.runtime_backend.read().clone()
+    }
+
+    /// Set 自报运行时后端形态（身份编辑；下一 announce 拍生效）。
+    pub fn set_runtime_backend(&self, backend: Option<String>) {
+        *self.runtime_backend.write() = backend;
+        self.sync_local_node_to_registry();
+    }
+
     /// Get the workspace path.
     pub fn workspace(&self) -> &PathBuf {
         &self.workspace
@@ -3087,6 +3121,7 @@ impl Cluster {
             professions: self.professions.read().clone(),
             tier: self.tier.read().clone(),
             agents: self.current_agent_roster(),
+            runtime_backend: self.runtime_backend.read().clone(),
             node_type: self.node_type.clone(),
         };
         self.registry.upsert(info);
@@ -3111,6 +3146,7 @@ impl Cluster {
                 tags: node.tags.clone(),
                 professions: node.professions.clone(),
                 tier: node.tier.clone(),
+                runtime_backend: node.runtime_backend.clone(),
                 priority: 1,
                 enabled: true,
                 status: PeerStatus {
@@ -3369,6 +3405,8 @@ impl Cluster {
         let tags = self.tags.read().clone();
         let professions = self.professions.read().clone();
         let tier = self.tier.read().clone();
+        // P5 第 4 步 ③：自报运行时后端形态（静态身份，构造期捕获同 tier）。
+        let runtime_backend = self.runtime_backend.read().clone();
         // P2 agent roster：Arc 过闭包读活值（提供者每次现读 AgentManager，
         // 运行期增删 agent 无需重启即反映）。
         let roster_slot = self.agent_roster.clone();
@@ -3395,6 +3433,9 @@ impl Cluster {
                     // 职能框架 M2：自报职能/档位（旧对端不读未知键，兼容）。
                     "professions": professions,
                     "tier": tier,
+                    // P5 第 4 步 ③：自报运行时后端形态（None = 未宣告，
+                    // 旧对端不读未知键，兼容）。
+                    "runtime_backend": runtime_backend,
                     // P2：自报 agent 实体清单（announce 子对象同源携带）。
                     "agents": agents,
                     "node_type": node_type,
@@ -3925,6 +3966,7 @@ impl Cluster {
             msg.tier,
             msg.agents,
             msg.iroh_id,
+            msg.runtime_backend,
             None,
         );
         if changed {
@@ -4412,6 +4454,10 @@ impl ClusterCallbacks for Cluster {
         self.tier.read().clone()
     }
 
+    fn runtime_backend(&self) -> Option<String> {
+        self.runtime_backend.read().clone()
+    }
+
     fn agent_roster(&self) -> Vec<crate::types::AgentAnnouncement> {
         self.current_agent_roster()
     }
@@ -4460,6 +4506,7 @@ impl ClusterCallbacks for Cluster {
         tier: Option<&str>,
         agents: &[crate::types::AgentAnnouncement],
         iroh_id: Option<&str>,
+        runtime_backend: Option<&str>,
         source_addr: Option<&str>,
     ) -> bool {
         self.handle_discovered_node_ex(
@@ -4476,6 +4523,7 @@ impl ClusterCallbacks for Cluster {
             tier.map(|s| s.to_string()),
             agents.to_vec(),
             iroh_id.map(|s| s.to_string()),
+            runtime_backend.map(|s| s.to_string()),
             source_addr,
         )
     }
@@ -4772,6 +4820,9 @@ pub struct RealNodeInfo {
     /// 对端自报 agent 实体清单（P2 2026-10-16；get_info 携带；merge 进
     /// 注册表 ExtendedNodeInfo）。
     pub agents: Vec<crate::types::AgentAnnouncement>,
+    /// 对端自报运行时后端形态（P5 第 4 步 ③；get_info/announce 携带；
+    /// None = 未宣告）。本批只宣告不做 matcher 闸（P6 上位）。
+    pub runtime_backend: Option<String>,
     pub node_type: String,
 }
 

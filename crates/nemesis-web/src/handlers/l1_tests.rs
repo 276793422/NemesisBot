@@ -152,6 +152,7 @@ fn registry_all_modules_nonempty_no_dupes() {
         cfg!(feature = "memory"),
         cfg!(feature = "security"), // 同时带 scanner，两个模块
         cfg!(feature = "sandbox"),
+        cfg!(feature = "vm"), // P5：桌面级 VM 管理面
         cfg!(feature = "forge"),
         cfg!(feature = "skins"),
         cfg!(feature = "board"), // 2026-10-17 起 nemesis-board 转 optional
@@ -323,6 +324,7 @@ fn docs_generation_writes_wsapi_commands_md() {
         "security",
         "scanner",
         "sandbox",
+        "vm",
         "forge",
         "skins",
         "board",

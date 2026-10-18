@@ -2273,6 +2273,7 @@ async fn test_run_init_fresh_home() {
             professions: None,
             tier: None,
             capabilities: None,
+            runtime_backend: None,
         },
         false,
     )
@@ -2312,6 +2313,7 @@ async fn test_run_init_defaults_and_reinit_nontty() {
             professions: None,
             tier: None,
             capabilities: None,
+            runtime_backend: None,
         },
         false,
     )
@@ -2332,6 +2334,7 @@ async fn test_run_init_defaults_and_reinit_nontty() {
             professions: None,
             tier: None,
             capabilities: None,
+            runtime_backend: None,
         },
         false,
     )
@@ -2947,6 +2950,7 @@ mod wave_b {
                 professions: None,
                 tier: None,
                 capabilities: None,
+                runtime_backend: None,
             },
             false,
         )

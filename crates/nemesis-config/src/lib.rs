@@ -1043,6 +1043,12 @@ pub struct ExecutorSeparationConfig {
     /// per-call 现状）。见 [`ExecutorPersistentConfig`]。
     #[serde(default)]
     pub persistent: ExecutorPersistentConfig,
+    /// P5（桌面级 VM，2026-10-17）：VM 后端开关组（`executor.vm` 段）。
+    /// **铁律：`enabled` 默认 false**——关闭态 VM 路径零激活（零 QEMU 进程、
+    /// 零镜像下载、工具走原路径），全链行为字节不变（验收门 G4 专项断言）。
+    /// 见 [`ExecutorVmConfig`]。
+    #[serde(default)]
+    pub vm: ExecutorVmConfig,
 }
 
 /// `executor.persistent` 段：常驻执行体（per-agent 长驻子进程，P3 T4）的
@@ -1147,7 +1153,233 @@ impl Default for ExecutorSeparationConfig {
             backend: default_executor_backend(),
             acl: ExecutorAclConfig::default(),
             persistent: ExecutorPersistentConfig::default(),
+            vm: ExecutorVmConfig::default(),
         }
+    }
+}
+
+/// `executor.vm` 段：桌面级 VM 后端（P5，第三类隔离后端——独立内核整机
+/// 隔离）。缺省 = VM 路径零激活（铁律：总开关默认关，绝不替用户决定）。
+///
+/// 枚举型字符串（arch/hypervisor/desktop/gc.over_limit）未知值 loud 拒绝
+/// （[`ExecutorVmConfig::validate`]，对齐 `executor.backend` P24 先例）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutorVmConfig {
+    /// VM 总开关（默认 false——关闭态零 QEMU 进程、零镜像下载、工具走
+    /// 原路径；Dashboard VM 页同款开关，用户可选开、关）。
+    #[serde(default)]
+    pub enabled: bool,
+    /// Guest CPU 架构：`x86_64`（当前唯一产出档）| `aarch64`（接口在位、
+    /// 当前不产出——选了诚实报不支持，恢复路径见实施计划 §5）。
+    #[serde(default = "default_vm_arch")]
+    pub arch: String,
+    /// 硬件加速：`auto`（探测裁决）| `kvm`（显式钉 Linux KVM）| `whpx`
+    /// （显式钉 Windows WHPX）。加速缺席 = 诚实 Unavailable（不做 TCG
+    /// 假跑降级；`executor.strict` 开启时拒绝执行）。
+    #[serde(default = "default_vm_hypervisor")]
+    pub hypervisor: String,
+    /// base 镜像桌面形态：`minimal`（轻量 WM + Chromium，默认）| `full`
+    /// （完整 DE，轮次 3 拍板的可选项）。两变体 base 镜像分开构建。
+    #[serde(default = "default_vm_desktop")]
+    pub desktop: String,
+    /// base 镜像来源（轮次 3-3：来源写死在本地配置中，页面可看可选可配
+    /// 可改）。
+    #[serde(default)]
+    pub image: VmImageConfig,
+    /// per-VM 资源配额。
+    #[serde(default)]
+    pub resources: VmResourceConfig,
+    /// 本节点并发 VM 实例上限（满员闸，对齐 persistent.max_slots 语义——
+    /// 满员诚实拒绝）。
+    #[serde(default = "default_vm_max_instances")]
+    pub max_instances: u32,
+    /// 空闲自动 sleep 秒数（0 = 不自动睡；对齐 persistent.idle_shutdown_secs）。
+    #[serde(default = "default_vm_idle_sleep_secs")]
+    pub idle_sleep_secs: u64,
+    /// 磁盘 GC（总磁盘预算）。
+    #[serde(default)]
+    pub gc: VmGcConfig,
+}
+
+/// `executor.vm.image` 段：base 镜像来源（URL + SHA-256）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VmImageConfig {
+    /// 镜像下载 URL（默认 Debian generic cloud image；可自由编辑——镜像
+    /// 来源可换是验收面）。
+    #[serde(default = "default_vm_image_source")]
+    pub source: String,
+    /// 镜像 SHA-256（hex）。**空 = 构建时从 `{source}` 同目录的 SHA256SUMS
+    /// sidecar 按文件名查表**（Debian 目录惯例）——模板不带易过期的硬编码
+    /// 哈希；显式钉住优先于 sidecar。
+    #[serde(default)]
+    pub sha256: String,
+}
+
+/// `executor.vm.resources` 段：per-VM 资源配额。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VmResourceConfig {
+    #[serde(default = "default_vm_vcpu")]
+    pub vcpu: u32,
+    #[serde(default = "default_vm_ram_mb")]
+    pub ram_mb: u32,
+    #[serde(default = "default_vm_disk_gb")]
+    pub disk_gb: u32,
+}
+
+/// `executor.vm.gc` 段：磁盘 GC（总磁盘预算）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VmGcConfig {
+    /// 全部 VM 磁盘产物（base + overlay）总预算 GB；超限动作按 `over_limit`。
+    /// 0 = 不设预算。
+    #[serde(default = "default_vm_gc_max_disk_gb")]
+    pub max_total_disk_gb: u32,
+    /// 超限动作：`warn`（默认，日志横幅可见）| `stop`（拒绝新实例创建，
+    /// 既有实例不受影响）。
+    #[serde(default = "default_vm_gc_over_limit")]
+    pub over_limit: String,
+}
+
+fn default_vm_arch() -> String {
+    "x86_64".to_string()
+}
+
+fn default_vm_hypervisor() -> String {
+    "auto".to_string()
+}
+
+fn default_vm_desktop() -> String {
+    "minimal".to_string()
+}
+
+fn default_vm_max_instances() -> u32 {
+    2
+}
+
+fn default_vm_idle_sleep_secs() -> u64 {
+    300
+}
+
+fn default_vm_vcpu() -> u32 {
+    2
+}
+
+fn default_vm_ram_mb() -> u32 {
+    2048
+}
+
+fn default_vm_disk_gb() -> u32 {
+    20
+}
+
+fn default_vm_gc_max_disk_gb() -> u32 {
+    50
+}
+
+fn default_vm_gc_over_limit() -> String {
+    "warn".to_string()
+}
+
+/// Debian generic cloud image（bookworm/latest 的 genericcloud 变体——无
+/// 云初始化代理依赖的最小 cloud-init 面）。可自由编辑（轮次 3-3 拍板）。
+fn default_vm_image_source() -> String {
+    "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
+        .to_string()
+}
+
+impl Default for ExecutorVmConfig {
+    /// 手写而非 derive（serde 双路径陷阱，ExecutorPersistentConfig 同款）：
+    /// executor 段**无 vm 键**时 serde 走结构体级 Default，字段级
+    /// `#[serde(default = "...")]` 不经过——两条构造路径必须收敛到同一组
+    /// 默认值（enabled=false 铁律在两条路径都成立）。
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            arch: default_vm_arch(),
+            hypervisor: default_vm_hypervisor(),
+            desktop: default_vm_desktop(),
+            image: VmImageConfig::default(),
+            resources: VmResourceConfig::default(),
+            max_instances: default_vm_max_instances(),
+            idle_sleep_secs: default_vm_idle_sleep_secs(),
+            gc: VmGcConfig::default(),
+        }
+    }
+}
+
+impl Default for VmImageConfig {
+    fn default() -> Self {
+        Self {
+            source: default_vm_image_source(),
+            sha256: String::new(),
+        }
+    }
+}
+
+impl Default for VmResourceConfig {
+    fn default() -> Self {
+        Self {
+            vcpu: default_vm_vcpu(),
+            ram_mb: default_vm_ram_mb(),
+            disk_gb: default_vm_disk_gb(),
+        }
+    }
+}
+
+impl Default for VmGcConfig {
+    fn default() -> Self {
+        Self {
+            max_total_disk_gb: default_vm_gc_max_disk_gb(),
+            over_limit: default_vm_gc_over_limit(),
+        }
+    }
+}
+
+impl ExecutorVmConfig {
+    /// 枚举型字符串字段校验（未知值 loud 拒绝——选型错误不静默改道）。
+    /// 配置装载/`vm.config.set` 两面同源消费。
+    pub fn validate(&self) -> Result<()> {
+        // arch：与 nemesis-sandbox vm::guest_arch 同值域（crate 分层上
+        // nemesis-config 不依赖 sandbox——值域在此重复一份，单测钉同步）。
+        match self.arch.as_str() {
+            "x86_64" | "aarch64" => {}
+            other => {
+                return Err(ConfigError::Validation(format!(
+                    "executor.vm.arch 未知值 {other:?}（合法值：x86_64 | aarch64）"
+                )));
+            }
+        }
+        match self.hypervisor.as_str() {
+            "auto" | "kvm" | "whpx" => {}
+            other => {
+                return Err(ConfigError::Validation(format!(
+                    "executor.vm.hypervisor 未知值 {other:?}（合法值：auto | kvm | whpx）"
+                )));
+            }
+        }
+        match self.desktop.as_str() {
+            "minimal" | "full" => {}
+            other => {
+                return Err(ConfigError::Validation(format!(
+                    "executor.vm.desktop 未知值 {other:?}（合法值：minimal | full）"
+                )));
+            }
+        }
+        match self.gc.over_limit.as_str() {
+            "warn" | "stop" => {}
+            other => {
+                return Err(ConfigError::Validation(format!(
+                    "executor.vm.gc.over_limit 未知值 {other:?}（合法值：warn | stop）"
+                )));
+            }
+        }
+        if self.max_instances == 0 {
+            return Err(ConfigError::Validation(
+                "executor.vm.max_instances 必须 ≥ 1（0 无法创建任何实例；\
+                 要彻底关闭 VM 请用 executor.vm.enabled=false）"
+                    .to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -5161,6 +5393,11 @@ mod ws2_compact_config_tests;
 // 兼容测试。
 #[cfg(test)]
 mod dispatch_fallback_mode_tests;
+
+// P5（桌面级 VM）：executor.vm 段配置面（serde 缺省铁律 / roundtrip /
+// validate loud 拒绝）测试。
+#[cfg(test)]
+mod vm_config_tests;
 
 // Single shared process-global-state lock for ALL tests in this crate that touch
 // `std::env::set_var` / `set_current_dir` / load config (which reads env). These

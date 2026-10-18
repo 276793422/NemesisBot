@@ -99,6 +99,7 @@ fn fake_info(agent_id: &str, kind: &str) -> AgentInfo {
         home_path: "/ws/agents/x/home".to_string(),
         project_id: None,
         tier: "auto".to_string(),
+        runtime_backend: "process".to_string(),
         memory_namespace: format!("agents/{agent_id}"),
         credential_count: 0,
         created_at: "2026-10-16T00:00:00Z".to_string(),
@@ -120,14 +121,25 @@ impl AgentsBridge for FakeBridge {
             Err(format!("agent 不存在: {agent_id}"))
         }
     }
-    fn create(&self, name: &str, tier: &str) -> Result<AgentInfo, String> {
-        self.note("create");
+    fn create(&self, name: &str, tier: &str, runtime_backend: &str) -> Result<AgentInfo, String> {
+        self.note(&format!("create:{tier}:{runtime_backend}"));
         if name.trim().is_empty() {
             return Err("agent name 不能为空".to_string());
         }
         let mut info = fake_info("a3", "selfbuilt");
         info.name = name.to_string();
         info.tier = tier.to_string();
+        info.runtime_backend = if runtime_backend.is_empty() {
+            "process".to_string()
+        } else {
+            runtime_backend.to_string()
+        };
+        Ok(info)
+    }
+    fn update_backend(&self, agent_id: &str, runtime_backend: &str) -> Result<AgentInfo, String> {
+        self.note(&format!("update:{agent_id}->{runtime_backend}"));
+        let mut info = self.get(agent_id)?;
+        info.runtime_backend = runtime_backend.to_string();
         Ok(info)
     }
     async fn remove(&self, agent_id: &str) -> Result<(), String> {
@@ -254,6 +266,41 @@ async fn create_passes_name_and_default_tier() {
 }
 
 #[tokio::test]
+async fn create_passes_runtime_backend_and_update_lands() {
+    let _g = AGENTS_BRIDGE_TEST_LOCK.lock();
+    set_agents_bridge_for_test(Some(FakeBridge::new()));
+    // runtime_backend 缺省 → 空串透传（实现侧按 process 处理）。
+    call("create", Some(serde_json::json!({"name": "w1"})))
+        .await
+        .unwrap()
+        .unwrap();
+    // 显式 vm 透传 + 响应投影带回档位。
+    let out = call(
+        "create",
+        Some(serde_json::json!({"name": "w2", "runtime_backend": "vm"})),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["agent"]["runtime_backend"], "vm");
+    // update 臂：参数透传 + 响应带切档后档案。
+    let out = call(
+        "update",
+        Some(serde_json::json!({"agent_id": "a1", "runtime_backend": "vm"})),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["agent"]["agent_id"], "a1");
+    assert_eq!(out["agent"]["runtime_backend"], "vm");
+    assert!(
+        out["note"].as_str().unwrap().contains("现读生效"),
+        "切档注记应说明生效时机"
+    );
+    set_agents_bridge_for_test(None);
+}
+
+#[tokio::test]
 async fn remove_main_is_rejected_by_bridge() {
     let _g = AGENTS_BRIDGE_TEST_LOCK.lock();
     set_agents_bridge_for_test(Some(FakeBridge::new()));
@@ -277,7 +324,7 @@ fn l1_commands_registry_lists_all_agents_commands() {
     assert_eq!(
         cmds,
         &[
-            "list", "get", "create", "remove", "sleep", "wake", "slots", "send"
+            "list", "get", "create", "update", "remove", "sleep", "wake", "slots", "send"
         ]
     );
 }

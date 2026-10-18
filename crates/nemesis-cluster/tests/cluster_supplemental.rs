@@ -1219,6 +1219,7 @@ fn make_test_extended_node(
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     }
 }
@@ -1939,6 +1940,7 @@ fn test_extended_node_info_with_addresses() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     };
     let json = serde_json::to_string(&node).unwrap();
@@ -1978,6 +1980,7 @@ fn test_extended_node_info_to_peer_config_role_mapping() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     };
     let config = coordinator.to_peer_config();
@@ -2000,6 +2003,7 @@ fn test_extended_node_info_to_peer_config_role_mapping() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     };
     let config = worker.to_peer_config();

@@ -88,6 +88,10 @@ pub enum ClusterAction {
         /// 与工具名并集进宣告面，看板派发 required_capabilities 硬条件数据源）
         #[arg(long)]
         capabilities: Option<String>,
+        /// 运行时后端形态宣告（process|vm；写 peers.toml [node] 段进宣告面，
+        /// 看板派发数据源——本批只宣告不做 matcher 闸）
+        #[arg(long)]
+        runtime_backend: Option<String>,
     },
     /// Enable cluster
     Enable,
@@ -830,6 +834,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             professions,
             tier,
             capabilities,
+            runtime_backend,
         } => {
             println!("Initializing cluster configuration...");
             let cfg_path = common::cluster_config_path(&home);
@@ -933,6 +938,16 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                         .collect()
                 })
                 .unwrap_or_default();
+            // 运行时后端形态（P5 第 4 步 ③）：值域校验对齐 tier 先例——
+            // 非法值 loud 拒绝；缺省 None = 未宣告（matcher fail-open 语义）。
+            let runtime_backend_value = runtime_backend.map(|v| {
+                let v = v.trim().to_ascii_lowercase();
+                if !matches!(v.as_str(), "process" | "vm") {
+                    eprintln!("  Invalid runtime-backend '{v}' (expected process/vm).");
+                    std::process::exit(1);
+                }
+                v
+            });
             let sc = nemesis_cluster::cluster_config::StaticConfig {
                 node: nemesis_cluster::cluster_config::NodeInfo {
                     id: node_id.clone(),
@@ -947,6 +962,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     // 本节点 iroh 身份真相源是 roaming.key（cluster roaming keygen），
                     // init 不写声明（setup_roaming 按派生对账）。
                     iroh_id: None,
+                    runtime_backend: runtime_backend_value,
                 },
             };
             if let Err(e) = nemesis_cluster::cluster_config::save_static_config(&peers_path, &sc) {

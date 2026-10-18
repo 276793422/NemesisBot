@@ -109,6 +109,11 @@ pub struct DiscoveryMessage {
     /// default `None` = 未宣告（wire 兼容，同 professions 先例）。
     #[serde(default)]
     pub iroh_id: Option<String>,
+    /// 节点自报运行时后端形态（P5 第 4 步 ③；如 `"process"` / `"vm"`）。
+    /// 旧节点 / Go 节点的 announce 无此字段 → serde default None = 未宣告
+    /// （wire 兼容，同 professions 先例）。本批只宣告不做 matcher 闸（P6 上位）。
+    #[serde(default)]
+    pub runtime_backend: Option<String>,
     /// Unix timestamp (seconds since epoch).
     pub timestamp: i64,
 }
@@ -146,6 +151,7 @@ impl DiscoveryMessage {
             tier: None,
             agents: Vec::new(),
             iroh_id: None,
+            runtime_backend: None,
             timestamp: now_unix(),
         }
     }
@@ -175,6 +181,13 @@ impl DiscoveryMessage {
         self
     }
 
+    /// 附自报运行时后端形态（P5 第 4 步 ③；None = 未宣告——执行体能力
+    /// 未装配时不宣告，不猜）。保持 [`Self::new_announce`] 既有签名不变。
+    pub fn with_runtime_backend(mut self, backend: Option<String>) -> Self {
+        self.runtime_backend = backend;
+        self
+    }
+
     /// Create a new bye message, mirroring Go's `NewByeMessage`.
     pub fn new_bye(node_id: impl Into<String>) -> Self {
         Self {
@@ -193,6 +206,7 @@ impl DiscoveryMessage {
             tier: None,
             agents: Vec::new(),
             iroh_id: None,
+            runtime_backend: None,
             timestamp: now_unix(),
         }
     }

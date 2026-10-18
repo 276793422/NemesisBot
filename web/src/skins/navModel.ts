@@ -43,6 +43,7 @@ const ITEM_FEATURE: Record<string, string> = {
   vault: 'SECURITY',
   scanner: 'SECURITY',
   sandbox: 'SANDBOX',
+  vm: 'VM',
   board: 'BOARD',
   terminal: 'TERMINAL',
 }
@@ -100,6 +101,8 @@ export const NAV_GROUPS: NavGroupModel[] = [
       { id: 'vault', label: '凭据', route: '/vault', icon: 'M18 8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v2zm-6 4a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h7zM4 6v.01M8 6v.01' },
       { id: 'scanner', label: '扫描器', route: '/scanner', icon: 'M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z' },
       { id: 'sandbox', label: '沙盒', route: '/sandbox', icon: 'M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2zm0 0V7a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v4 M12 15v3' },
+      // P5 第 4 步 ②：桌面级 VM 管理页（VITE_FEATURE_VM 门控，与 sandbox 相邻）。
+      { id: 'vm', label: '虚拟化', route: '/vm', icon: 'M2 3h20v14H2zM8 21h8M12 17v4' },
       // L8：PTY 内嵌终端（VITE_FEATURE_TERMINAL 门控）。
       { id: 'terminal', label: '终端', route: '/terminal', icon: 'M4 17l6-6-6-6M12 19h8' },
       { id: 'local-models', label: '本地模型', route: '/local-models', icon: 'M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z M3.27 6.96L12 12.01l8.73-5.05 M12 22.08V12' },

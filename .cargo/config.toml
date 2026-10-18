@@ -14,3 +14,14 @@
 # 关账且有数轮全绿实证。
 [target.x86_64-pc-windows-msvc]
 linker = "rust-lld"
+
+# P5 guest agent 交叉编译（scripts/build-guest.sh）：Linux musl 目标同样用
+# toolchain 自带 rust-lld——Windows 宿主没有 musl 交叉 cc/gcc，而 guest 是
+# 纯 Rust 依赖（协议薄 crate + tokio/serde，零 C 依赖），musl self-contained
+# std + rust-lld 即可完成链接，不需要装 musl-cross 工具链。产出为全静态
+# ELF（build-guest.sh 做无 ld-musl 断言）。
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"
+
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"

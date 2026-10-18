@@ -87,7 +87,11 @@ pub mod release_fetch;
 // ——manager 槽未装配（feature 关/未启动）时 handler 诚实报「未装配」。
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
+// P5 第 4 步：桌面级 VM 管理面（`vm` feature——命令族全走 VmBridge，
+// feature 本体零依赖，见 handlers/vm.rs 头注）。
 pub mod selfupdate;
+#[cfg(feature = "vm")]
+pub mod vm;
 // 病毒扫描管理面（scanner feature 从 security 拆出；implies security）。
 #[cfg(feature = "scanner")]
 pub mod scanner;
@@ -248,6 +252,11 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     #[cfg(feature = "sandbox")]
     {
         router.register(Arc::new(sandbox::SandboxHandler::new()));
+    }
+    // P5 第 4 步：桌面级 VM 管理面（vm feature 零依赖——探针在 bridge 侧）。
+    #[cfg(feature = "vm")]
+    {
+        router.register(Arc::new(vm::VmHandler));
     }
     #[cfg(feature = "forge")]
     {

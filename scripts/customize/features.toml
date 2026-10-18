@@ -337,6 +337,16 @@ desc = "Sandboxie 沙盒（executor.sandbox=true + nemesisbot sandbox 装/卸/�
 category = "subsystems"
 default = true
 
+# NOTE: `vm`（P5 桌面级 VM 第三类隔离后端）依赖 sandbox（nemesis-sandbox/vm
+# 模块住同一 crate），关 sandbox 连带裁 VM。QEMU 起整机、独立内核级隔离，
+# 需要 KVM/WHPX 硬件加速 + base 镜像磁盘预算——IoT/低资源建议关。
+[[feature]]
+id = "vm"
+label = "VM 后端（桌面级虚拟机）"
+desc = "QEMU 整机隔离执行后端（executor.vm，独立内核级隔离；需 KVM/WHPX + 磁盘预算）。IoT/无虚拟化环境建议关"
+category = "subsystems"
+default = true
+
 # NOTE: `eval` 依赖 sandbox+security（复合 feature），提供 `nemesisbot eval`
 # prompt/skill 安全行为评估（沙盒真跑 + 四记录点 + LLM 代理脱敏）。
 [[feature]]

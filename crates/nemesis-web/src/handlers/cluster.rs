@@ -816,6 +816,9 @@ impl ClusterHandler {
                 professions: Vec::new(),
                 tier: None,
                 agents: Vec::new(),
+                // 手工加节点/配对时对端能力未探明 → None = 未宣告
+                // （announce/get_info 到达时自会学习，同 professions 先例）。
+                runtime_backend: None,
                 node_type: String::new(),
             };
             cluster.register_node(info);
@@ -878,6 +881,9 @@ impl ClusterHandler {
                 professions: Vec::new(),
                 tier: None,
                 agents: Vec::new(),
+                // 配对探测不采集运行时后端形态 → None = 未宣告（announce
+                // 到达时自会学习）。
+                runtime_backend: None,
                 node_type: String::new(),
             };
             cluster.register_node(info);
@@ -1014,6 +1020,9 @@ impl ClusterHandler {
                     .collect()
             })
             .unwrap_or_default();
+        // P5 第 4 步 ③：自报运行时后端形态（旧节点 get_info 无此键 →
+        // None = 未宣告）。
+        let runtime_backend = resp["runtime_backend"].as_str().map(String::from);
 
         let primary_address = if !addresses.is_empty() && rpc_port > 0 {
             format!("{}:{}", addresses[0], rpc_port)
@@ -1040,6 +1049,7 @@ impl ClusterHandler {
             professions,
             tier,
             agents,
+            runtime_backend,
             node_type,
         };
         let canonical_id = cluster.merge_real_node_info(&info);

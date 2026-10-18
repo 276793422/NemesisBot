@@ -146,6 +146,7 @@ mod wave5 {
                 professions: None,
                 tier: None,
                 capabilities: None,
+                runtime_backend: None,
             },
             false,
         )

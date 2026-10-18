@@ -393,6 +393,7 @@ fn test_message_to_node_info_from_message() {
         tier: None,
         agents: Vec::new(),
         iroh_id: None,
+        runtime_backend: None,
         timestamp: 1700000000,
     };
     let info = message_to_node_info(&msg);
@@ -421,6 +422,7 @@ fn test_handle_discovery_message_own_node_ignored() {
         tier: None,
         agents: Vec::new(),
         iroh_id: None,
+        runtime_backend: None,
         timestamp: 1700000000,
     };
     let action = handle_discovery_message(&msg, "local-node", &registry);
@@ -448,6 +450,7 @@ fn test_handle_discovery_message_remote_announce() {
         tier: None,
         agents: Vec::new(),
         iroh_id: None,
+        runtime_backend: None,
         timestamp: 1700000000,
     };
     let action = handle_discovery_message(&msg, "local-node", &registry);
@@ -476,6 +479,7 @@ fn test_handle_discovery_message_bye() {
         tier: None,
         agents: Vec::new(),
         iroh_id: None,
+        runtime_backend: None,
         timestamp: 1700000000,
     };
     handle_discovery_message(&announce, "local-node", &registry);
@@ -497,6 +501,7 @@ fn test_handle_discovery_message_bye() {
         tier: None,
         agents: Vec::new(),
         iroh_id: None,
+        runtime_backend: None,
         timestamp: 1700000001,
     };
     let action = handle_discovery_message(&bye, "local-node", &registry);
@@ -561,6 +566,7 @@ fn test_message_to_node_info_empty_name_and_category_fallbacks() {
         tier: None,
         agents: Vec::new(),
         iroh_id: None,
+        runtime_backend: None,
         timestamp: 1700000000,
     };
     let info = message_to_node_info(&msg);

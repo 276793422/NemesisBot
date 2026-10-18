@@ -22,6 +22,21 @@ fn validate_tier(tier: &str) -> Result<String, String> {
     }
 }
 
+/// 档位现读（记录缺席/读失 = 空串 → 进程档，非存在 agent 行为不变）。
+fn backend_of(mgr: &AgentManager, agent_id: &str) -> String {
+    mgr.get(agent_id)
+        .ok()
+        .flatten()
+        .map(|r| r.runtime_backend)
+        .unwrap_or_default()
+}
+
+/// VM 后端槽（缺席 = 诚实报错——vm feature 关或 gateway 未装配 VM）。
+fn vm_or_err(mgr: &AgentManager) -> Result<std::sync::Arc<dyn super::VmBackend>, String> {
+    mgr.vm_backend()
+        .ok_or_else(|| "VM 后端未装配（vm feature 关闭或 gateway 未装配 VM）".to_string())
+}
+
 /// AgentRecord → web 投影（serde 序列化面；不出 tool_policy/persona_refs
 /// 内部载荷——管理面最小可见）。
 fn to_info(rec: nemesis_taskstore::AgentRecord) -> AgentInfo {
@@ -35,6 +50,7 @@ fn to_info(rec: nemesis_taskstore::AgentRecord) -> AgentInfo {
         home_path: rec.home_path,
         project_id: rec.project_id,
         tier: rec.tier,
+        runtime_backend: rec.runtime_backend,
         memory_namespace: rec.memory_namespace,
         credential_count,
         created_at: rec.created_at.clone(),
@@ -63,11 +79,14 @@ impl AgentsBridge for AgentManager {
         Ok(to_info(rec))
     }
 
-    fn create(&self, name: &str, tier: &str) -> Result<AgentInfo, String> {
+    fn create(&self, name: &str, tier: &str, runtime_backend: &str) -> Result<AgentInfo, String> {
         let tier = validate_tier(tier)?;
+        // runtime_backend 值域校验在 create_agent 落库前做（单一真相源
+        // `runtime_backend::validate`）——桥面薄透传，非法值同样 loud 拒绝。
         let rec = self.create_agent(super::CreateAgentParams {
             name: name.to_string(),
             tier,
+            runtime_backend: runtime_backend.to_string(),
             tool_policy: serde_json::json!({}),
             persona_refs: serde_json::Value::Null,
             credential_refs: serde_json::json!([]),
@@ -75,13 +94,22 @@ impl AgentsBridge for AgentManager {
         Ok(to_info(rec))
     }
 
+    fn update_backend(&self, agent_id: &str, runtime_backend: &str) -> Result<AgentInfo, String> {
+        Ok(to_info(self.update_backend(agent_id, runtime_backend)?))
+    }
+
     async fn remove(&self, agent_id: &str) -> Result<(), String> {
         self.remove(agent_id).await
     }
 
-    // -- T9 生命周期面 ------------------------------------------------------------
+    // -- T9 生命周期面（P5 第 4 步起按记录 runtime_backend 分派档位）------
 
     async fn sleep(&self, agent_id: &str) -> Result<bool, String> {
+        if backend_of(self, agent_id) == nemesis_taskstore::agents::runtime_backend::VM {
+            // VM 档：睡眠 = RAM 快照/冷停（无运行实例 = Ok(false)，与进程
+            // 档「无槽」同义）。
+            return vm_or_err(self)?.sleep_agent(agent_id).await;
+        }
         match self.runtime() {
             Some(rt) => Ok(rt.sleep_agent(agent_id).await),
             None => Ok(false),
@@ -89,28 +117,43 @@ impl AgentsBridge for AgentManager {
     }
 
     async fn wake(&self, agent_id: &str) -> Result<(), String> {
-        let rt = self
-            .runtime()
-            .ok_or_else(|| "常驻执行体未装配（supervisor 未接线）".to_string())?;
         // exec_root 取自记录（T7 同源语义：main=workspace / project=项目
-        // 目录 / selfbuilt=home）。
+        // 目录 / selfbuilt=home）。VM 档宿主路径不进 guest（签名同形保留
+        // 审计语义）。
         let rec = self
             .get(agent_id)?
             .ok_or_else(|| format!("agent 不存在: {agent_id}"))?;
         let exec_root = std::path::PathBuf::from(&rec.exec_root);
-        rt.wake_agent(agent_id, &exec_root)
-            .await
-            .map_err(|e| e.to_string())?;
+        if rec.runtime_backend == nemesis_taskstore::agents::runtime_backend::VM {
+            vm_or_err(self)?.wake_agent(agent_id, &exec_root).await?;
+        } else {
+            let rt = self
+                .runtime()
+                .ok_or_else(|| "常驻执行体未装配（supervisor 未接线）".to_string())?;
+            rt.wake_agent(agent_id, &exec_root)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
         // wake 是一次显式活动：记 last_active（P2 touch 消费点）。
         let _ = self.touch(agent_id);
         Ok(())
     }
 
     fn slots(&self) -> Vec<AgentSlotInfo> {
-        match self.runtime() {
+        // 双档合并投影：进程槽剔除 vm 档 agent（其常驻体不归进程监督器），
+        // VM 运行实例追加（alive 恒 true——running_agents 只出活的）。
+        let vm_agents: std::collections::HashSet<String> = self
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| r.runtime_backend == nemesis_taskstore::agents::runtime_backend::VM)
+            .map(|r| r.agent_id)
+            .collect();
+        let mut out: Vec<AgentSlotInfo> = match self.runtime() {
             Some(rt) => rt
                 .slot_states()
                 .into_iter()
+                .filter(|s| !vm_agents.contains(&s.agent_id))
                 .map(|s| AgentSlotInfo {
                     agent_id: s.agent_id,
                     alive: s.alive,
@@ -118,7 +161,19 @@ impl AgentsBridge for AgentManager {
                 })
                 .collect(),
             None => Vec::new(),
+        };
+        if let Some(vm) = self.vm_backend() {
+            out.extend(
+                vm.running_agents()
+                    .into_iter()
+                    .map(|agent_id| AgentSlotInfo {
+                        agent_id,
+                        alive: true,
+                        idle_secs: 0,
+                    }),
+            );
         }
+        out
     }
 
     fn persistent_enabled(&self) -> bool {

@@ -1995,6 +1995,247 @@ const U_B_PROFESSIONS_POST_U7: [&str; 7] = [
     "myfamily:myspec",
 ];
 
+// ---------------------------------------------------------------------------
+// P5 桌面级 VM 场景辅助（VM-OFF-1 / VM-ON-1）
+// ---------------------------------------------------------------------------
+
+/// 统计当前系统 qemu-system 进程数（Windows tasklist / Unix pgrep）。
+/// off-state 零激活断言与 VM-ON 清扫断言共用。
+#[cfg(windows)]
+fn count_qemu_processes() -> usize {
+    use std::os::windows::process::CommandExt;
+    std::process::Command::new("tasklist")
+        .args([
+            "/FI",
+            "IMAGENAME eq qemu-system-x86_64.exe",
+            "/FO",
+            "CSV",
+            "/NH",
+        ])
+        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter(|l| l.contains("qemu-system"))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+#[cfg(not(windows))]
+fn count_qemu_processes() -> usize {
+    std::process::Command::new("pgrep")
+        .args(["-c", "-f", "qemu-system"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .parse::<usize>()
+                .ok()
+        })
+        .unwrap_or(0)
+}
+
+/// 把本机预下载的 QEMU 运行时与镜像 junction 进目标 workspace 的 VM 资产
+/// 布局（`tools/vm/runtime/qemu` + `tools/vm/images`）。源缺失或链接失败
+/// = Err（调用方诚实 SKIP——实机档没有资产就不跑，不装失败）。
+#[cfg(windows)]
+fn stage_vm_assets(root: &Path, workspace: &Path) -> std::io::Result<()> {
+    let qemu_src = root.join("target/qemu-dl/qemu");
+    let img_src = root.join("target/vm-image");
+    if !qemu_src.is_dir() || !img_src.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "本地 VM 资产缺失: {} / {}",
+                qemu_src.display(),
+                img_src.display()
+            ),
+        ));
+    }
+    let qemu_dst = workspace.join("tools/vm/runtime/qemu");
+    let img_dst = workspace.join("tools/vm/images");
+    std::fs::create_dir_all(qemu_dst.parent().expect("qemu dst parent"))?;
+    std::fs::create_dir_all(img_dst.parent().expect("images dst parent"))?;
+    // junction（目录联接）免管理员权限——std 无稳定 API，走 mklink /J
+    //（CREATE_NO_WINDOW；junction 要求 dst 不存在，TestWorkspace 新建不撞）。
+    // mklink 是 cmd 内建：`/` 一律按开关前缀解析（「Invalid switch - "vm"」
+    // 实录——Path::join 的混合分隔符路径直接送 cmd 会被切成开关），dst/src
+    // 必须先归一成纯反斜杠形态。
+    use std::os::windows::process::CommandExt;
+    let bs = |p: &Path| p.to_string_lossy().replace('/', "\\");
+    for (src, dst) in [(&qemu_src, &qemu_dst), (&img_src, &img_dst)] {
+        let out = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J", &bs(dst), &bs(src)])
+            .creation_flags(0x0800_0000)
+            .output()?;
+        if !out.status.success() {
+            return Err(std::io::Error::other(format!(
+                "mklink /J {} → {} 失败: {}",
+                dst.display(),
+                src.display(),
+                String::from_utf8_lossy(&out.stderr)
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn stage_vm_assets(root: &Path, workspace: &Path) -> std::io::Result<()> {
+    let qemu_src = root.join("target/qemu-dl/qemu");
+    let img_src = root.join("target/vm-image");
+    if !qemu_src.is_dir() || !img_src.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "本地 VM 资产缺失: {} / {}",
+                qemu_src.display(),
+                img_src.display()
+            ),
+        ));
+    }
+    std::os::unix::fs::symlink(&qemu_src, workspace.join("tools/vm/runtime/qemu"))?;
+    std::os::unix::fs::symlink(&img_src, workspace.join("tools/vm/images"))?;
+    Ok(())
+}
+
+/// gateway 启动前预写 executor 配置：`enabled=true`（承载层——
+/// RemoteExecutorTool 装进主 loop）+ `vm.enabled`（VM 档总开关）。
+fn set_executor_vm_config(home: &Path, vm_enabled: bool) -> Result<()> {
+    let config_path = home.join("config.json");
+    let raw = std::fs::read_to_string(&config_path)
+        .with_context(|| format!("Reading {}", config_path.display()))?;
+    let mut config: Value = serde_json::from_str(&raw)?;
+    if let Some(obj) = config.as_object_mut() {
+        obj.insert(
+            "executor".to_string(),
+            json!({ "enabled": true, "vm": { "enabled": vm_enabled } }),
+        );
+    }
+    std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+    Ok(())
+}
+
+/// WS 连接重试（health 就绪到 WS 路由可用的亚秒窗口；T-MONITOR-1 同款
+/// 15×1s，VM 两场景复用）。
+async fn ws_connect_retry(port: u16) -> Result<WsStream> {
+    let mut last = Err(anyhow::anyhow!("未尝试"));
+    for _ in 0..15 {
+        if let Ok(s) = ws_connect_gateway(port).await {
+            return Ok(s);
+        }
+        last = Err(anyhow::anyhow!("15 次重试均失败"));
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    last
+}
+
+/// testai-8.5 工具驱动：发送 `<TOOL>` 指令消息（模型按标签原样发一次工具
+/// 调用），一路收集 `tool_event` push 帧里的 ToolFinished，直到终局
+/// TOOL_DRIVE_DONE 文本。返回（ToolFinished 帧数组, 终局文本）。终局判定
+/// 只认 TOOL_DRIVE_DONE——工具成功与否必须看 ToolFinished 的 ok/result
+/// （8.5 对工具错误也照样收尾，final 文本不可作成败证据）。
+async fn vm_drive_tool(
+    stream: &mut WsStream,
+    tool: &str,
+    args: Value,
+    timeout_secs: u64,
+) -> Result<(Vec<Value>, String)> {
+    // <TOOL> 标签体是裸 JSON（TestAIServer v_models.go 逐字节 Unmarshal），
+    // 不能做任何转义——转义即 BAD_TOOL_TAG。
+    let drive = format!("<TOOL>{{\"name\":\"{tool}\",\"args\":{args}}}</TOOL>");
+    let msg = json!({
+        "type": "message",
+        "module": "chat",
+        "cmd": "send",
+        "data": { "content": drive },
+        "timestamp": chrono::Local::now().to_rfc3339()
+    });
+    stream.send(Message::Text(msg.to_string().into())).await?;
+
+    let mut finished: Vec<Value> = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        let resp = tokio::time::timeout_at(deadline, stream.next()).await;
+        match resp {
+            Ok(Some(Ok(Message::Text(text)))) => {
+                let Ok(v) = serde_json::from_str::<Value>(text.as_ref()) else {
+                    continue;
+                };
+                let msg_type = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                let module = v.get("module").and_then(|m| m.as_str()).unwrap_or("");
+                let cmd = v.get("cmd").and_then(|c| c.as_str()).unwrap_or("");
+                if msg_type == "push" && cmd == "tool_event" {
+                    if v.pointer("/data/kind").and_then(|k| k.as_str()) == Some("ToolFinished") {
+                        finished.push(v["data"]["data"].clone());
+                    }
+                    continue;
+                }
+                if msg_type == "message" && module == "chat" && cmd == "receive" {
+                    if v["data"]["role"].as_str() == Some("user") {
+                        continue; // 发送回声
+                    }
+                    let content = v["data"]["content"].as_str().unwrap_or("").to_string();
+                    if content.contains("TOOL_DRIVE_DONE") {
+                        return Ok((finished, content));
+                    }
+                    // 非 user 非 final 的 receive（如审批卡文本）——忽略继续等。
+                }
+                if msg_type == "system" && module == "error" {
+                    let err = v["data"]["content"]
+                        .as_str()
+                        .unwrap_or("unknown error")
+                        .to_string();
+                    return Err(anyhow::anyhow!("Server error: {}", err));
+                }
+            }
+            Ok(Some(Ok(Message::Ping(_)))) => {
+                let _ = stream.send(Message::Pong(vec![].into())).await;
+            }
+            Ok(Some(Ok(Message::Close(_)))) => {
+                return Err(anyhow::anyhow!("WebSocket closed"));
+            }
+            Ok(Some(Ok(_))) => {}
+            Ok(None) => return Err(anyhow::anyhow!("WebSocket stream ended")),
+            Ok(Some(Err(e))) => return Err(anyhow::anyhow!("WebSocket error: {}", e)),
+            Err(_) => {
+                return Err(anyhow::anyhow!(
+                    "Timeout after {}s waiting for TOOL_DRIVE_DONE (ToolFinished 收到 {} 帧)",
+                    timeout_secs,
+                    finished.len()
+                ));
+            }
+        }
+    }
+}
+
+/// ToolFinished 断言：存在一帧 tool 匹配、ok=true、preview 含期望子串
+///（大小写不敏感——uname 输出「Linux」，echo 输出全大写 marker）。
+fn assert_tool_ok(finished: &[Value], expect_substr: &str) -> Result<()> {
+    let needle = expect_substr.to_lowercase();
+    for f in finished {
+        if f.get("tool").and_then(|t| t.as_str()) != Some("exec") {
+            continue;
+        }
+        let ok = f.get("ok").and_then(|o| o.as_bool()) == Some(true);
+        let preview = f
+            .get("result_preview")
+            .and_then(|r| r.as_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if ok && preview.contains(&needle) {
+            return Ok(());
+        }
+    }
+    anyhow::bail!(
+        "未找到 ok=true 且 preview 含 {expect_substr:?} 的 exec ToolFinished 帧（共 {} 帧）: {finished:?}",
+        finished.len()
+    );
+}
+
 /// 段级墙钟预算起算点：首个未被过滤的测试开始执行时起算（Phase 1-6 的
 /// setup 都是步骤级有界操作，不占测试预算）。
 static SEGMENT_BUDGET_START: std::sync::OnceLock<tokio::time::Instant> = std::sync::OnceLock::new();
@@ -13668,6 +13909,759 @@ async fn main() {
     })
     .await,
 );
+
+    // ---- VM-OFF-1：executor.vm off-state 诚实关断（G4 ⑤，恒跑不跳过）----
+    // 独立 workspace + 独立 gateway（不写任何 executor 配置——模板默认全
+    // 关）。三断言：① vm.overview 诚实关断面（enabled=false / 未装配 /
+    // unknown cmd 三形态任一合法，enabled=true = off-state 回归）；② 宿主
+    // exec 链路无感（8.5 工具驱动一次 echo，本地 exec 通道正常）；③ 全程
+    // 零 qemu-system 进程（零激活铁面）。
+    all_results.push(
+        run_test(
+            "VM-OFF-1: executor.vm off-state（overview 诚实关断 + 零 QEMU + 宿主 exec 无感）",
+            || async {
+                const OFF_WEB: u16 = 37310;
+                const OFF_HEALTH: u16 = 18798;
+                let ws_o = match TestWorkspace::new() {
+                    Ok(w) => w,
+                    Err(e) => return fail("VM-OFF-1", format!("workspace 创建失败: {e}")),
+                };
+                let out = ws_o.run_cli(&gateway_bin, &["onboard", "default"]).await;
+                if !out.success() {
+                    return fail("VM-OFF-1", format!("onboard failed: {}", out.stderr));
+                }
+                if let Err(e) = configure_ports(&ws_o.home(), OFF_WEB, OFF_HEALTH) {
+                    return fail("VM-OFF-1", format!("configure_ports failed: {e}"));
+                }
+                let base = format!("http://127.0.0.1:{}/v1", ai_server_port());
+                for (model, is_default) in [("test/testai-8.5", true), ("test/testai-1.1", false)] {
+                    let mut args: Vec<&str> = vec![
+                        "model", "add", "--model", model, "--base", &base, "--key", "test-key",
+                    ];
+                    if is_default {
+                        args.push("--default");
+                    }
+                    let out = ws_o.run_cli(&gateway_bin, &args).await;
+                    if !out.success() {
+                        return fail(
+                            "VM-OFF-1",
+                            format!("model add {model} failed: {}", out.stderr),
+                        );
+                    }
+                }
+                let mut off_gw =
+                    match GatewayProcess::spawn("Gateway-VMOFF", &gateway_bin, ws_o.path()) {
+                        Ok(g) => g,
+                        Err(e) => return fail("VM-OFF-1", format!("gateway spawn failed: {e}")),
+                    };
+                if let Err(e) = test_harness::wait_for_http(
+                    &format!("http://127.0.0.1:{OFF_HEALTH}/health"),
+                    Duration::from_secs(60),
+                )
+                .await
+                {
+                    let _ = off_gw.kill().await;
+                    return fail("VM-OFF-1", format!("gateway health 未就绪: {e}"));
+                }
+                let mut stream = match ws_connect_retry(OFF_WEB).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let _ = off_gw.kill().await;
+                        return fail("VM-OFF-1", format!("WS 连接失败: {e}"));
+                    }
+                };
+                // ① off-state 关断面：三种合法形态（vm feature 关 = unknown /
+                //    bridge 缺席 = 未装配 / feature 在总开关关 = enabled=false）。
+                match ws_api_request(&mut stream, "vm", "overview", json!({}), 10).await {
+                    Err(e) => {
+                        let m = format!("{e}");
+                        if !(m.contains("VM 管理未装配") || m.contains("unknown")) {
+                            let _ = off_gw.kill().await;
+                            return fail(
+                                "VM-OFF-1",
+                                format!("vm.overview 异常错误（非关断面）: {m}"),
+                            );
+                        }
+                    }
+                    Ok(v) => {
+                        if v.get("enabled").and_then(|e| e.as_bool()) != Some(false) {
+                            let _ = off_gw.kill().await;
+                            return fail(
+                                "VM-OFF-1",
+                                format!("off-state 下 vm.overview.enabled ≠ false: {v}"),
+                            );
+                        }
+                    }
+                }
+                // ② 宿主 exec 链路无感：默认 exec 工具（本地通道）一次 echo。
+                let (finished, _tail) = match vm_drive_tool(
+                    &mut stream,
+                    "exec",
+                    json!({"command": "echo HOSTPATH_OK"}),
+                    180,
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let _ = off_gw.kill().await;
+                        return fail("VM-OFF-1", format!("宿主 exec 驱动失败: {e}"));
+                    }
+                };
+                if let Err(e) = assert_tool_ok(&finished, "HOSTPATH_OK") {
+                    let _ = off_gw.kill().await;
+                    return fail("VM-OFF-1", format!("宿主 exec 断言失败: {e}"));
+                }
+                // ③ 零 QEMU：off-state 全程无任何 qemu-system 进程。
+                let n = count_qemu_processes();
+                if n != 0 {
+                    let _ = off_gw.kill().await;
+                    return fail(
+                        "VM-OFF-1",
+                        format!("off-state 发现 {n} 个 qemu-system 进程（零激活被破坏）"),
+                    );
+                }
+                off_gw.kill().await;
+                pass(
+                    "VM-OFF-1",
+                    "off-state 三断言全过：vm.overview 诚实关断（enabled=false/未装配/unknown）+ \
+             宿主 exec 正常（HOSTPATH_OK）+ 零 QEMU 进程",
+                )
+            },
+        )
+        .await,
+    );
+
+    // ---- VM-ON-1：VM 档全链（探针护栏，环境不满足诚实 SKIP）----
+    // 资产 junction 暂存 → executor 配置预写（承载层 + VM 总开关双开）→
+    // overview 探针三闸（无 vm feature / 无 hypervisor → SKIP；enabled
+    // 未回读 true → FAIL）→ MAIN 切 vm 档 → 8.5 驱动 exec `uname -s`（首
+    // 调用吃掉冷启 + guest 就绪等待墙钟）→ 实例 running 断言 → 睡眠线护栏
+    //（WHPX 无睡眠线 = 跳过 sleep/wake 腿，step-3 已定谳）→ 二次 exec（唤
+    // 醒线或保活线）→ 切回 process 档 exec → 清扫后零 QEMU。
+    all_results.push(
+    run_test("VM-ON-1: VM 档全链（切档→VM exec→实例面→睡眠护栏→回切 process→显式释放→清扫）", || async {
+        const ON_WEB: u16 = 37311;
+        const ON_HEALTH: u16 = 18799;
+        let root = match resolve_project_root() {
+            Ok(r) => r,
+            Err(e) => return test_harness::skip("VM-ON-1", format!("项目根解析失败: {e}")),
+        };
+        let ws_on = match TestWorkspace::new() {
+            Ok(w) => w,
+            Err(e) => return fail("VM-ON-1", format!("workspace 创建失败: {e}")),
+        };
+        let out = ws_on.run_cli(&gateway_bin, &["onboard", "default"]).await;
+        if !out.success() {
+            return fail("VM-ON-1", format!("onboard failed: {}", out.stderr));
+        }
+        // ② 资产护栏：本机无预下载 QEMU/镜像 → 诚实 SKIP（onboard 后暂存
+        //    ——落点是 **workspace** 子树 `<ws>/tools/vm/`，不是 home）。
+        if let Err(e) = stage_vm_assets(&root, &ws_on.workspace()) {
+            return test_harness::skip("VM-ON-1", format!("VM 资产暂存不可用: {e}"));
+        }
+        if let Err(e) = configure_ports(&ws_on.home(), ON_WEB, ON_HEALTH) {
+            return fail("VM-ON-1", format!("configure_ports failed: {e}"));
+        }
+        if let Err(e) = set_executor_vm_config(&ws_on.home(), true) {
+            return fail("VM-ON-1", format!("executor 配置预写失败: {e}"));
+        }
+        let base = format!("http://127.0.0.1:{}/v1", ai_server_port());
+        for (model, is_default) in [("test/testai-8.5", true), ("test/testai-1.1", false)] {
+            let mut args: Vec<&str> = vec![
+                "model", "add", "--model", model, "--base", &base, "--key", "test-key",
+            ];
+            if is_default {
+                args.push("--default");
+            }
+            let out = ws_on.run_cli(&gateway_bin, &args).await;
+            if !out.success() {
+                return fail("VM-ON-1", format!("model add {model} failed: {}", out.stderr));
+            }
+        }
+        let mut on_gw = match GatewayProcess::spawn("Gateway-VMON", &gateway_bin, ws_on.path()) {
+            Ok(g) => g,
+            Err(e) => return fail("VM-ON-1", format!("gateway spawn failed: {e}")),
+        };
+        if let Err(e) = test_harness::wait_for_http(
+            &format!("http://127.0.0.1:{ON_HEALTH}/health"),
+            Duration::from_secs(60),
+        )
+        .await
+        {
+            let _ = on_gw.kill().await;
+            return fail("VM-ON-1", format!("gateway health 未就绪: {e}"));
+        }
+        let mut stream = match ws_connect_retry(ON_WEB).await {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = on_gw.kill().await;
+                return fail("VM-ON-1", format!("WS 连接失败: {e}"));
+            }
+        };
+        // ② 探针三闸：无 vm feature（unknown/未装配）→ SKIP；hypervisor
+        //    缺席 → SKIP；enabled 未回读 true → FAIL。
+        let ov = match ws_api_request(&mut stream, "vm", "overview", json!({}), 10).await {
+            Ok(v) => v,
+            Err(e) => {
+                let m = format!("{e}");
+                let _ = on_gw.kill().await;
+                if m.contains("VM 管理未装配") || m.contains("unknown") {
+                    return test_harness::skip("VM-ON-1", "二进制无 vm feature——实机档跳过");
+                }
+                return fail("VM-ON-1", format!("vm.overview 失败: {m}"));
+            }
+        };
+        if ov.pointer("/probe/available").and_then(|a| a.as_bool()) != Some(true) {
+            let reason = ov
+                .pointer("/probe/reason")
+                .and_then(|r| r.as_str())
+                .unwrap_or("?");
+            let _ = on_gw.kill().await;
+            return test_harness::skip(
+                "VM-ON-1",
+                format!("无可用 hypervisor（{reason}）——实机档按设计跳过"),
+            );
+        }
+        if ov.get("enabled").and_then(|e| e.as_bool()) != Some(true) {
+            let _ = on_gw.kill().await;
+            return fail("VM-ON-1", format!("executor.vm.enabled=true 未被回读: {ov}"));
+        }
+        // ③ MAIN 实体发现（agent_id = uuid，按 kind 查）+ 切 vm 档。
+        let agents = match ws_api_request(&mut stream, "agents", "list", json!({}), 10).await {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = on_gw.kill().await;
+                return fail("VM-ON-1", format!("agents.list 失败: {e}"));
+            }
+        };
+        let main_agent = agents
+            .pointer("/agents")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| {
+                arr.iter()
+                    .find(|a| a.get("kind").and_then(|k| k.as_str()) == Some("main"))
+                    .cloned()
+            });
+        let main_agent = match main_agent {
+            Some(a) => a,
+            None => {
+                let _ = on_gw.kill().await;
+                return fail("VM-ON-1", format!("agents.list 无 main 实体: {agents}"));
+            }
+        };
+        let agent_id = main_agent
+            .get("agent_id")
+            .and_then(|i| i.as_str())
+            .unwrap_or("")
+            .to_string();
+        if main_agent.get("runtime_backend").and_then(|b| b.as_str()) != Some("process") {
+            let _ = on_gw.kill().await;
+            return fail("VM-ON-1", format!("MAIN 默认档 ≠ process: {main_agent}"));
+        }
+        let upd = match ws_api_request(
+            &mut stream,
+            "agents",
+            "update",
+            json!({ "agent_id": agent_id, "runtime_backend": "vm" }),
+            10,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = on_gw.kill().await;
+                return fail("VM-ON-1", format!("agents.update→vm 失败: {e}"));
+            }
+        };
+        if upd.pointer("/agent/runtime_backend").and_then(|b| b.as_str()) != Some("vm") {
+            let _ = on_gw.kill().await;
+            return fail("VM-ON-1", format!("切档未回读 vm: {upd}"));
+        }
+        // ④ 首次 VM exec：吃掉冷启 + guest 就绪等待墙钟（预算内 = 成功，
+        //    result 断言 Linux；超时 = fail 带现场）。
+        let (finished, _) = match vm_drive_tool(
+            &mut stream,
+            "exec",
+            json!({"command": "uname -s"}),
+            660,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = on_gw.kill().await;
+                return fail("VM-ON-1", format!("VM exec 首驱失败: {e}"));
+            }
+        };
+        if let Err(e) = assert_tool_ok(&finished, "Linux") {
+            let _ = on_gw.kill().await;
+            return fail("VM-ON-1", format!("VM exec 断言失败: {e}"));
+        }
+        // ⑤ 实例面：VM registry 有本 agent 的 running 记录。
+        let instances =
+            match ws_api_request(&mut stream, "vm", "instance.list", json!({}), 10).await {
+                Ok(v) => v,
+                Err(e) => {
+                    let _ = on_gw.kill().await;
+                    return fail("VM-ON-1", format!("vm.instance.list 失败: {e}"));
+                }
+            };
+        let running_hit = instances
+            .pointer("/instances")
+            .and_then(|v| v.as_array())
+            .is_some_and(|arr| {
+                arr.iter()
+                    .any(|i| {
+                        i.get("agent_id").and_then(|a| a.as_str()) == Some(agent_id.as_str())
+                            && i.get("running").and_then(|r| r.as_bool()) == Some(true)
+                    })
+            });
+        if !running_hit {
+            let _ = on_gw.kill().await;
+            return fail("VM-ON-1", format!("实例面无 running 记录: {instances}"));
+        }
+        // ⑥ 睡眠线护栏：WHPX 无睡眠线（step-3 定谳）→ 跳过 sleep/wake 腿
+        //    （诚实注记，VM 保持运行）；snapshot/migrate-file 线可用 → 走
+        //    sleep → wake 全程。
+        let mut sleep_note = String::from("睡眠线不可用，跳过 sleep/wake 腿");
+        let ov2 = ws_api_request(&mut stream, "vm", "overview", json!({}), 10).await;
+        let sleep_line = ov2
+            .ok()
+            .and_then(|v| v.get("sleep_line").cloned())
+            .unwrap_or(Value::Null);
+        if sleep_line.is_string() {
+            let slept = match ws_api_request(
+                &mut stream,
+                "agents",
+                "sleep",
+                json!({ "agent_id": agent_id }),
+                600,
+            )
+            .await
+            {
+                Ok(v) => v.get("slept").and_then(|s| s.as_bool()) == Some(true),
+                Err(e) => {
+                    sleep_note = format!("睡眠线在但 sleep 失败: {e}");
+                    false
+                }
+            };
+            if !slept {
+                let _ = on_gw.kill().await;
+                return fail("VM-ON-1", format!("sleep 腿失败（{sleep_note}）"));
+            }
+            match ws_api_request(
+                &mut stream,
+                "agents",
+                "wake",
+                json!({ "agent_id": agent_id }),
+                600,
+            )
+            .await
+            {
+                Ok(v) => {
+                    if v.get("woken").and_then(|w| w.as_bool()) != Some(true) {
+                        let _ = on_gw.kill().await;
+                        return fail("VM-ON-1", format!("wake 未回读 true: {v}"));
+                    }
+                }
+                Err(e) => {
+                    let _ = on_gw.kill().await;
+                    return fail("VM-ON-1", format!("wake 失败: {e}"));
+                }
+            }
+            sleep_note = "snapshot/migrate-file 线 sleep→wake 全程通过".to_string();
+        }
+        // ⑦ 二次 exec：唤醒线（快照 RAM 保留）或保活线（实例未停）都应
+        //    直接出 Linux，不再吃冷启墙钟。
+        let (finished2, _) = match vm_drive_tool(
+            &mut stream,
+            "exec",
+            json!({"command": "uname -s"}),
+            420,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = on_gw.kill().await;
+                return fail("VM-ON-1", format!("二次 VM exec 失败: {e}"));
+            }
+        };
+        if let Err(e) = assert_tool_ok(&finished2, "Linux") {
+            let _ = on_gw.kill().await;
+            return fail("VM-ON-1", format!("二次 VM exec 断言失败: {e}"));
+        }
+        // ⑧ 切回 process 档（上层无感）：下一次 exec 走常驻进程链路。
+        if let Err(e) = ws_api_request(
+            &mut stream,
+            "agents",
+            "update",
+            json!({ "agent_id": agent_id, "runtime_backend": "process" }),
+            10,
+        )
+        .await
+        {
+            let _ = on_gw.kill().await;
+            return fail("VM-ON-1", format!("agents.update→process 失败: {e}"));
+        }
+        let (finished3, _) = match vm_drive_tool(
+            &mut stream,
+            "exec",
+            json!({"command": "echo PROC_BACK_OK"}),
+            180,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = on_gw.kill().await;
+                return fail("VM-ON-1", format!("回切 process 后 exec 失败: {e}"));
+            }
+        };
+        if let Err(e) = assert_tool_ok(&finished3, "PROC_BACK_OK") {
+            let _ = on_gw.kill().await;
+            return fail("VM-ON-1", format!("回切 process 断言失败: {e}"));
+        }
+        // ⑧b 显式释放 VM 实例：切档是偏好变更不是停机指令（update_backend
+        //    契约原文「原档常驻实例如需释放，走 sleep」）——WHPX 无睡眠线 →
+        //    instance.kill 强制释放。收敛轮询窗口内 QEMU 到零 = 实例生命
+        //    周期管理成立。
+        if let Err(e) = ws_api_request(
+            &mut stream,
+            "vm",
+            "instance.kill",
+            json!({ "agent_id": agent_id }),
+            60,
+        )
+        .await
+        {
+            let _ = on_gw.kill().await;
+            return fail("VM-ON-1", format!("vm.instance.kill 失败: {e}"));
+        }
+        let mut reaped = false;
+        for _ in 0..15 {
+            if count_qemu_processes() == 0 {
+                reaped = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+        if !reaped {
+            let n = count_qemu_processes();
+            let _ = on_gw.kill().await;
+            return fail("VM-ON-1", format!("vm.instance.kill 后仍有 {n} 个 qemu 未收敛"));
+        }
+        on_gw.kill().await;
+        // ⑨ 清扫铁面：显式释放后 gateway 退出零 qemu-system 残留（gateway
+        //    kill 本身是 TerminateProcess 无停机协议，孤儿语义归 VM-ON-2 的
+        //    启动 sweep 验收——不在本测试口径内）。
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let n = count_qemu_processes();
+        if n != 0 {
+            return fail("VM-ON-1", format!("gateway 退出后残留 {n} 个 qemu-system 进程"));
+        }
+        pass(
+            "VM-ON-1",
+            format!(
+                "VM 档全链通过（切档→VM exec Linux→实例 running→{sleep_note}→二次 exec→回切 process→显式释放→零残留）"
+            ),
+        )
+    })
+    .await,
+    );
+
+    // ---- VM-ON-2：持久重挂 + 孤儿 sweep（gateway 重启链，G3 门 2/4）----
+    // 前提链与 VM-ON-1 同款探针护栏。差异面：① marker 写进 VM 内非共享
+    // 子树（/var/tmp——磁盘持久、tmpfs 之外、9p 工作区之外，断言不含共
+    // 享面假阳性）；② 强杀 gateway-1（TerminateProcess 无停机协议——QEMU
+    // 无 job object 绑定 → 孤儿化，断言孤儿在场）；③ 等 SWEEP_STARTUP_GRACE
+    //（120s 保护窗按 registry mtime 判——窗内记录即使是孤儿也不收割）过期
+    // 再拉 gateway-2，让启动 sweep 当场收割（G3 门 4：断言进程消失）；
+    // ④ 同 workspace 冷重启重挂同 overlay → cat marker 仍在（G3 门 2：
+    // 含 VM 内非共享子树路径）。
+    all_results.push(
+    run_test("VM-ON-2: 持久重挂 + 孤儿 sweep（gateway 重启链：marker→强杀→保护窗→sweep 收割→重挂持久）", || async {
+        const P2_WEB: u16 = 37312;
+        const P2_HEALTH: u16 = 18800;
+        const P2_WEB_B: u16 = 37313;
+        const P2_HEALTH_B: u16 = 18801;
+        let root = match resolve_project_root() {
+            Ok(r) => r,
+            Err(e) => return test_harness::skip("VM-ON-2", format!("项目根解析失败: {e}")),
+        };
+        let ws_p2 = match TestWorkspace::new() {
+            Ok(w) => w,
+            Err(e) => return fail("VM-ON-2", format!("workspace 创建失败: {e}")),
+        };
+        let out = ws_p2.run_cli(&gateway_bin, &["onboard", "default"]).await;
+        if !out.success() {
+            return fail("VM-ON-2", format!("onboard failed: {}", out.stderr));
+        }
+        if let Err(e) = stage_vm_assets(&root, &ws_p2.workspace()) {
+            return test_harness::skip("VM-ON-2", format!("VM 资产暂存不可用: {e}"));
+        }
+        if let Err(e) = configure_ports(&ws_p2.home(), P2_WEB, P2_HEALTH) {
+            return fail("VM-ON-2", format!("configure_ports failed: {e}"));
+        }
+        if let Err(e) = set_executor_vm_config(&ws_p2.home(), true) {
+            return fail("VM-ON-2", format!("executor 配置预写失败: {e}"));
+        }
+        let base = format!("http://127.0.0.1:{}/v1", ai_server_port());
+        for (model, is_default) in [("test/testai-8.5", true), ("test/testai-1.1", false)] {
+            let mut args: Vec<&str> = vec![
+                "model", "add", "--model", model, "--base", &base, "--key", "test-key",
+            ];
+            if is_default {
+                args.push("--default");
+            }
+            let out = ws_p2.run_cli(&gateway_bin, &args).await;
+            if !out.success() {
+                return fail("VM-ON-2", format!("model add {model} failed: {}", out.stderr));
+            }
+        }
+        let mut p_gw = match GatewayProcess::spawn("Gateway-VMON2", &gateway_bin, ws_p2.path()) {
+            Ok(g) => g,
+            Err(e) => return fail("VM-ON-2", format!("gateway spawn failed: {e}")),
+        };
+        if let Err(e) = test_harness::wait_for_http(
+            &format!("http://127.0.0.1:{P2_HEALTH}/health"),
+            Duration::from_secs(60),
+        )
+        .await
+        {
+            let _ = p_gw.kill().await;
+            return fail("VM-ON-2", format!("gateway health 未就绪: {e}"));
+        }
+        let mut stream = match ws_connect_retry(P2_WEB).await {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = p_gw.kill().await;
+                return fail("VM-ON-2", format!("WS 连接失败: {e}"));
+            }
+        };
+        // 探针三闸（同 VM-ON-1）。
+        let ov = match ws_api_request(&mut stream, "vm", "overview", json!({}), 10).await {
+            Ok(v) => v,
+            Err(e) => {
+                let m = format!("{e}");
+                let _ = p_gw.kill().await;
+                if m.contains("VM 管理未装配") || m.contains("unknown") {
+                    return test_harness::skip("VM-ON-2", "二进制无 vm feature——实机档跳过");
+                }
+                return fail("VM-ON-2", format!("vm.overview 失败: {m}"));
+            }
+        };
+        if ov.pointer("/probe/available").and_then(|a| a.as_bool()) != Some(true) {
+            let reason = ov
+                .pointer("/probe/reason")
+                .and_then(|r| r.as_str())
+                .unwrap_or("?");
+            let _ = p_gw.kill().await;
+            return test_harness::skip(
+                "VM-ON-2",
+                format!("无可用 hypervisor（{reason}）——实机档按设计跳过"),
+            );
+        }
+        if ov.get("enabled").and_then(|e| e.as_bool()) != Some(true) {
+            let _ = p_gw.kill().await;
+            return fail("VM-ON-2", format!("executor.vm.enabled=true 未被回读: {ov}"));
+        }
+        // MAIN 实体发现 + 切 vm 档。
+        let agents = match ws_api_request(&mut stream, "agents", "list", json!({}), 10).await {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = p_gw.kill().await;
+                return fail("VM-ON-2", format!("agents.list 失败: {e}"));
+            }
+        };
+        let main_agent = agents
+            .pointer("/agents")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| {
+                arr.iter()
+                    .find(|a| a.get("kind").and_then(|k| k.as_str()) == Some("main"))
+                    .cloned()
+            });
+        let Some(main_agent) = main_agent else {
+            let _ = p_gw.kill().await;
+            return fail("VM-ON-2", format!("agents.list 无 main 实体: {agents}"));
+        };
+        let agent_id = main_agent
+            .get("agent_id")
+            .and_then(|i| i.as_str())
+            .unwrap_or("")
+            .to_string();
+        if let Err(e) = ws_api_request(
+            &mut stream,
+            "agents",
+            "update",
+            json!({ "agent_id": agent_id, "runtime_backend": "vm" }),
+            10,
+        )
+        .await
+        {
+            let _ = p_gw.kill().await;
+            return fail("VM-ON-2", format!("agents.update→vm 失败: {e}"));
+        }
+        // ① marker 落 VM 内非共享子树（/var/tmp 磁盘持久），当场回读。
+        let (finished, _) = match vm_drive_tool(
+            &mut stream,
+            "exec",
+            json!({"command": "echo PERSIST_OK > /var/tmp/vm-persist.txt && cat /var/tmp/vm-persist.txt"}),
+            660,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = p_gw.kill().await;
+                return fail("VM-ON-2", format!("marker exec 失败: {e}"));
+            }
+        };
+        if let Err(e) = assert_tool_ok(&finished, "PERSIST_OK") {
+            let _ = p_gw.kill().await;
+            return fail("VM-ON-2", format!("marker 断言失败: {e}"));
+        }
+        // ② 强杀 gateway-1（无停机协议）→ QEMU 孤儿化；断言孤儿在场。
+        p_gw.kill().await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let orphans = count_qemu_processes();
+        if orphans == 0 {
+            return fail(
+                "VM-ON-2",
+                "gateway 强杀后零 QEMU 残留——孤儿前提不成立（QEMU 被连带清理？job object 语义变了？）",
+            );
+        }
+        // ③ 启动保护窗排空：sweep 按 registry mtime 判 SWEEP_STARTUP_GRACE
+        //    （120s）——窗内记录即使是孤儿也不收割（防误杀冷启中实例）。
+        //    轮询等 instance.json 年龄过窗（上限 200s 兜底）。
+        let reg = ws_p2
+            .workspace()
+            .join("tools/vm/run")
+            .join(&agent_id)
+            .join("instance.json");
+        let mut aged = false;
+        for _ in 0..100 {
+            let age = std::fs::metadata(&reg)
+                .ok()
+                .and_then(|md| md.modified().ok())
+                .and_then(|t| t.elapsed().ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            if age > 125 {
+                aged = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+        if !aged {
+            return fail(
+                "VM-ON-2",
+                format!("registry 保护窗未在 200s 内过期: {}", reg.display()),
+            );
+        }
+        // ④ 拉起 gateway-2（换端口避 ghost socket）→ 启动 sweep 收割
+        //    孤儿（G3 门 4：断言进程消失）。
+        if let Err(e) = configure_ports(&ws_p2.home(), P2_WEB_B, P2_HEALTH_B) {
+            return fail("VM-ON-2", format!("configure_ports(2) failed: {e}"));
+        }
+        let mut p_gw2 = match GatewayProcess::spawn("Gateway-VMON2b", &gateway_bin, ws_p2.path())
+        {
+            Ok(g) => g,
+            Err(e) => return fail("VM-ON-2", format!("gateway-2 spawn failed: {e}")),
+        };
+        if let Err(e) = test_harness::wait_for_http(
+            &format!("http://127.0.0.1:{P2_HEALTH_B}/health"),
+            Duration::from_secs(60),
+        )
+        .await
+        {
+            let _ = p_gw2.kill().await;
+            return fail("VM-ON-2", format!("gateway-2 health 未就绪: {e}"));
+        }
+        let mut swept_zero = false;
+        for _ in 0..30 {
+            if count_qemu_processes() == 0 {
+                swept_zero = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+        if !swept_zero {
+            let n = count_qemu_processes();
+            let _ = p_gw2.kill().await;
+            return fail("VM-ON-2", format!("启动 sweep 未清孤儿（残留 {n} 个 qemu-system）"));
+        }
+        // ⑤ 持久重挂（G3 门 2）：gateway-2 同 workspace，MAIN 档仍是 vm
+        //    （taskstore 持久）→ exec cat 直达冷重启链路：registry 冷记录
+        //    → ensure_running 冷启重挂同 overlay → guest 重新就绪 → 文件在。
+        let mut stream2 = match ws_connect_retry(P2_WEB_B).await {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = p_gw2.kill().await;
+                return fail("VM-ON-2", format!("gateway-2 WS 连接失败: {e}"));
+            }
+        };
+        let (finished2, _) = match vm_drive_tool(
+            &mut stream2,
+            "exec",
+            json!({"command": "cat /var/tmp/vm-persist.txt"}),
+            420,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = p_gw2.kill().await;
+                return fail("VM-ON-2", format!("重挂后 cat 失败: {e}"));
+            }
+        };
+        if let Err(e) = assert_tool_ok(&finished2, "PERSIST_OK") {
+            let _ = p_gw2.kill().await;
+            return fail("VM-ON-2", format!("持久断言失败（overlay 未跨重启保留？）: {e}"));
+        }
+        // ⑤b 显式释放冷启实例：切档/重挂不停机（生命周期互不自动接管），
+        //    gateway kill 是 TerminateProcess 无停机协议——不显式释放必孤儿。
+        if let Err(e) = ws_api_request(
+            &mut stream2,
+            "vm",
+            "instance.kill",
+            json!({ "agent_id": agent_id }),
+            60,
+        )
+        .await
+        {
+            let _ = p_gw2.kill().await;
+            return fail("VM-ON-2", format!("vm.instance.kill 失败: {e}"));
+        }
+        let mut reaped2 = false;
+        for _ in 0..15 {
+            if count_qemu_processes() == 0 {
+                reaped2 = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+        if !reaped2 {
+            let n = count_qemu_processes();
+            let _ = p_gw2.kill().await;
+            return fail("VM-ON-2", format!("vm.instance.kill 后仍有 {n} 个 qemu 未收敛"));
+        }
+        p_gw2.kill().await;
+        // ⑥ 清扫铁面：显式释放后 gateway-2 退出零 qemu 残留。
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let n = count_qemu_processes();
+        if n != 0 {
+            return fail("VM-ON-2", format!("gateway-2 退出后残留 {n} 个 qemu-system 进程"));
+        }
+        pass(
+            "VM-ON-2",
+            "持久重挂 + 孤儿 sweep 通过（marker 落 /var/tmp → 强杀孤儿在场 → 保护窗过期 → 启动 sweep 收割清零 → 冷重启重挂同 overlay marker 仍在 → 零残留）",
+        )
+    })
+    .await,
+    );
 
     gw_d.kill().await;
     gw_c.kill().await;

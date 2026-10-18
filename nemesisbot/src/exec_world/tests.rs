@@ -311,6 +311,8 @@ mod layer0_and_live_probe {
                     acl: Default::default(),
                     // P3 T4 新段；本用例与常驻档无关，取缺省（全关）。
                     persistent: Default::default(),
+                    // P5 新段；本用例与 VM 后端无关，取缺省（默认关）。
+                    vm: Default::default(),
                 })
             })
             .expect("update store");

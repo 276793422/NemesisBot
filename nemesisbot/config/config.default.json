@@ -22,6 +22,20 @@
       "max_slots": 4,
       "idle_shutdown_secs": 300,
       "call_timeout_secs": 600
+    },
+    "vm": {
+      "enabled": false,
+      "arch": "x86_64",
+      "hypervisor": "auto",
+      "desktop": "minimal",
+      "image": {
+        "source": "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2",
+        "sha256": ""
+      },
+      "resources": { "vcpu": 2, "ram_mb": 2048, "disk_gb": 20 },
+      "max_instances": 2,
+      "idle_sleep_secs": 300,
+      "gc": { "max_total_disk_gb": 50, "over_limit": "warn" }
     }
   },
   "connectors": {

@@ -613,6 +613,7 @@ fn cd4_cluster() -> Arc<nemesis_cluster::cluster::Cluster> {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
     cluster

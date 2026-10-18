@@ -38,6 +38,27 @@ pub mod kind {
     pub const SELFBUILT: &str = "selfbuilt";
 }
 
+/// 运行时后端档位常量（P5 第 4 步接入面：per-agent 工具执行走哪个常驻
+/// 执行体）。字段本体 [`AgentRecord::runtime_backend`]——P2 建表即预留。
+pub mod runtime_backend {
+    /// 进程档（默认）：常驻子进程/沙盒档，工作区 = 宿主 exec_root。
+    pub const PROCESS: &str = "process";
+    /// VM 档（P5）：桌面级 VM 常驻执行体，工作区 = guest 内 `/workspace`。
+    pub const VM: &str = "vm";
+
+    /// 值域校验（单一真相源——create/update 落库前必须过这里；空串同
+    /// process 兼容旧调用方）。非法值 loud 拒绝，不静默纠偏。
+    pub fn validate(value: &str) -> Result<&str, String> {
+        match value.trim() {
+            "" | PROCESS => Ok(PROCESS),
+            VM => Ok(VM),
+            other => Err(format!(
+                "runtime_backend 非法: {other:?}（允许 process|vm，空串同 process）"
+            )),
+        }
+    }
+}
+
 /// Agent 持久记录（agents 表行投影；JSON 列以 `serde_json::Value` 承载，
 /// 损坏 JSON 读取时诚实降级为 `Null` 并保留原文可查——schema 演进由
 /// 增列迁移承接，不在读取路径做静默修补）。

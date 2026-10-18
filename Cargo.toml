@@ -35,6 +35,7 @@ members = [
     "crates/nemesis-plugin",
     "crates/nemesis-plugins-wasm",
     "crates/nemesis-plugin-sdk",
+    "crates/nemesis-exec-protocol",
     "crates/nemesis-routing",
     "crates/nemesis-session",
     "crates/nemesis-state",
@@ -67,6 +68,8 @@ members = [
     "test-tools/revoke-server",
     "test-tools/verify-loader",
     "test-tools/arch-gate",
+    "crates/nemesis-guest",
+    "test-tools/fake-qmp",
 ]
 
 [workspace.package]
@@ -250,6 +253,9 @@ nemesis-board = { path = "crates/nemesis-board" }
 nemesis-connectors = { path = "crates/nemesis-connectors" }
 nemesis-plugins-wasm = { path = "crates/nemesis-plugins-wasm" }
 nemesis-plugin-sdk = { path = "crates/nemesis-plugin-sdk" }
+# P5（桌面级 VM 底座）：executor wire 协议薄 crate（零 nemesis 依赖）——
+# nemesis-agent re-export + nemesis-guest 同源消费，单一真相源。
+nemesis-exec-protocol = { path = "crates/nemesis-exec-protocol" }
 
 # L8 PTY 内嵌终端（dashboard 终端 tab；`terminal` feature 门控，IoT 裁剪可关）
 portable-pty = "0.9"

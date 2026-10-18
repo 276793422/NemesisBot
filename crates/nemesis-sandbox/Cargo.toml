@@ -8,6 +8,8 @@ edition.workspace = true
 nemesis-types = { workspace = true }
 nemesis-path = { workspace = true }
 nemesis-utils = { workspace = true }
+# P5：wire 协议薄 crate（guest agent v2 请求/响应 + call_id 单一真相源）。
+nemesis-exec-protocol = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -25,6 +27,9 @@ chrono = { workspace = true }
 [dev-dependencies]
 tempfile = "3"
 tracing-subscriber = { workspace = true }
+# P5 vm 单测：QMP 客户端回归（fake QEMU 控制面）+ 进程内 guest 全链回归。
+fake-qmp = { path = "../../test-tools/fake-qmp" }
+nemesis-guest = { path = "../nemesis-guest" }
 
 # U11 userland sandbox: landlock LSM bindings (Linux only).
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -40,6 +45,10 @@ default = ["acl"]
 ## P24：Windows ACL 沙盒后端（完整性标签 + DACL 原语）。关掉后 Windows 上
 ## 也编译 stub（availability=Unavailable），给定制构建留裁剪位。实验性档位。
 acl = []
+## P5（桌面级 VM，2026-10-17）：VM 后端模块（GuestArch/QEMU 装配/QMP 客户端/
+## 镜像与 overlay 管理/NAT-TCP 通道/生命周期）。关 = 整个 vm 模块不编译，
+## executor.vm 配置缺消费者（诚实报未编译）。由 nemesisbot 的 vm feature 穿透。
+vm = []
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -49,10 +58,22 @@ windows-sys = { version = "0.59", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
     "Win32_System_Environment",
+    "Win32_System_LibraryLoader",
     "Win32_System_Memory",
     "Win32_System_Pipes",
     "Win32_System_Threading",
 ] }
+
+# P5 第 2 步：真机冒烟（KVM/WHPX 宿主 + 已制备镜像）；required-features 让
+# vm 关态下 cargo test/check 跳过本 target（vm 模块都不在编译，示例无从谈起）。
+[[example]]
+name = "vm_smoke"
+required-features = ["vm"]
+
+# P5 第 3 步 E 线：睡眠/唤醒/持久重挂实机真腿（KVM 宿主；WHPX 诚实 SKIP）。
+[[example]]
+name = "vm_lifecycle_kvm"
+required-features = ["vm"]
 
 [lints]
 workspace = true

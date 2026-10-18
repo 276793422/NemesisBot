@@ -1,0 +1,20 @@
+[package]
+name = "nemesis-guest"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+nemesis-exec-protocol = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt", "net", "io-util", "time", "process", "fs", "macros", "sync"] }
+
+[dev-dependencies]
+tempfile = "3"
+# 集成测试（tests/）是独立 crate：协议构造与 wire 结构要显式声明。
+nemesis-exec-protocol = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

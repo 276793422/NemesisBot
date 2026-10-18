@@ -40,6 +40,8 @@ use crate::adapters;
 /// P3 T8：roster 条目 `state` 判定（纯函数，单测钉死）。常驻执行体存活
 /// → `running`；否则回记录生命周期态（active/provisioning/failed）。
 /// 词汇表契约见 `nemesis_cluster::types::AgentAnnouncement::state`。
+/// 唯一生产消费者在 cluster 装配块内；tests 直引，故 allow 不迁 cfg。
+#[cfg_attr(not(feature = "cluster"), allow(dead_code))]
 pub(crate) fn roster_state(
     alive_ids: &std::collections::HashSet<String>,
     agent_id: &str,
@@ -598,6 +600,66 @@ pub(crate) async fn init_post_agent(
                         reg_mgr.get(agent_id).map(|r| r.is_some()).unwrap_or(false)
                     }));
                     mgr.set_runtime(std::sync::Arc::clone(rt));
+                }
+                // P5 第 3 步：VM 监督器装配（vm feature 闸；`executor.vm`
+                // 总闸在 supervisor 内 config 现读——关 = 全操作诚实不可用，
+                // 这里装配的只是纪律面本身，不激活任何 VM 路径）。装配 =
+                // 注入 manager + 启动孤儿 sweep（清理不收编）+ watchdog
+                // （死槽收敛/周期 sweep/预算告警/idle 自动睡眠）。
+                #[cfg(feature = "vm")]
+                {
+                    let vm_config_path = crate::common::config_path(&shared_resources.home);
+                    // 载体缺席 loud warn：VM 工具路径骑 RemoteExecutorTool 桥
+                    // （executor.enabled=true 才装配）。vm 总闸开而载体缺席 =
+                    // VM 档不可达（管理面/切档可用，工具执行诚实 Unavailable
+                    // 回落 per-call）——装配期提醒，不静默。
+                    let exec_cfg = std::fs::read_to_string(&vm_config_path)
+                        .ok()
+                        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                        .and_then(|v| v.get("executor").cloned());
+                    let vm_on = exec_cfg
+                        .as_ref()
+                        .and_then(|e| e.get("vm"))
+                        .and_then(|v| v.get("enabled"))
+                        .and_then(|b| b.as_bool())
+                        .unwrap_or(false);
+                    let carrier_on = exec_cfg
+                        .as_ref()
+                        .and_then(|e| e.get("enabled"))
+                        .and_then(|b| b.as_bool())
+                        .unwrap_or(false);
+                    if vm_on && !carrier_on {
+                        warn!(
+                            "[Gateway] executor.vm.enabled=true 但 executor.enabled=false：RemoteExecutorTool 桥未装配，VM 档工具执行不可达（调用将诚实 Unavailable 回落 per-call）；如需 VM 执行请同时开启 executor.enabled"
+                        );
+                    }
+                    let vm_sup = std::sync::Arc::new(crate::agents::vm_runtime::VmSupervisor::new(
+                        shared_resources.workspace_dir(),
+                        // 主配置现行布局在 home 根（`<home>/config.json`，
+                        // common::config_path 同源）——不走
+                        // resolve_config_path_in_workspace（该函数锚
+                        // workspace 根，与现行布局不符且无其他生产调用方）。
+                        vm_config_path,
+                    ));
+                    // P5 第 4 步：VM 后端注入 manager（档位路由执行器每调用
+                    // 经 manager 现取——晚注入纪律：loop 构建晚于本块，路由
+                    // 侧无需感知装配时序）。
+                    mgr.set_vm_backend(vm_sup.clone());
+                    // P5 第 4 步：vm.* WSAPI 接线（web 侧 trait + 槽，
+                    // 实现落本 crate——依赖方向 nemesisbot→nemesis-web，
+                    // agents bridge 同款）。manager 不持 VM 引用——真注入
+                    // 面就是这里的桥槽，直接从本地 Arc 装。
+                    let vm_bridge: std::sync::Arc<dyn nemesis_web::handlers::vm::VmBridge> =
+                        vm_sup.clone();
+                    nemesis_web::handlers::vm::install_vm_bridge(vm_bridge);
+                    let sup_for_sweep = std::sync::Arc::clone(&vm_sup);
+                    tokio::spawn(async move {
+                        let swept = sup_for_sweep.sweep_orphans().await;
+                        if swept > 0 {
+                            warn!("[Gateway] VM 孤儿 sweep: 清理 {swept} 个孤儿 QEMU 进程");
+                        }
+                    });
+                    vm_sup.start_watchdog();
                 }
                 // WSAPI agents.* 同点接线（同一 Manager 实例；web 侧 trait
                 // + 槽，实现落本 crate——依赖方向 nemesisbot→nemesis-web）。

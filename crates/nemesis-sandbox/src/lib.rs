@@ -38,6 +38,10 @@ pub mod kmdutil;
 pub mod pending;
 pub mod selftest;
 pub mod status;
+// P5（桌面级 VM，2026-10-17）：第三类隔离后端（独立内核整机隔离）。feature
+// `vm` 门控——关 = 整个 vm 模块不编译（IoT/云端裁剪位）。
+#[cfg(feature = "vm")]
+pub mod vm;
 
 // ---------------------------------------------------------------------------
 // Constants (from C:/AI/NemesisBot/Sandboxie/ source research, 2026-07-09)
