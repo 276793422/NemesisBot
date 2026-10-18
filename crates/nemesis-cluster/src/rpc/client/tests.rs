@@ -52,6 +52,25 @@ fn test_extract_ip_from_addr_bare() {
     assert_eq!(ip, Some("10.0.0.1".parse().unwrap()));
 }
 
+/// A1 P3：iroh 钉址形态（`iroh:<hex>@<ip:port>`）的直连 socket 参与
+/// 同网段仲裁；纯 node_id 形态（无 `@`）不产生 IP（发现层供址，仲裁
+/// 跳过）；与 `roaming::bridge::IROH_ADDR_PREFIX` 字面量一致性由此
+/// 测试与 bridge 侧语法测试双面钉住。
+#[test]
+fn test_extract_ip_roaming_pinned() {
+    let hex = "aa".repeat(32);
+    let ip = extract_ip_from_addr(&format!("iroh:{hex}@192.168.1.10:8080"));
+    assert_eq!(ip, Some("192.168.1.10".parse().unwrap()));
+
+    // 纯 node_id 形态：无钉址 socket → None。
+    let ip = extract_ip_from_addr(&format!("iroh:{hex}"));
+    assert_eq!(ip, None);
+
+    // `@` 后畸形 socket → None（不炸调用方）。
+    let ip = extract_ip_from_addr(&format!("iroh:{hex}@not-a-socket"));
+    assert_eq!(ip, None);
+}
+
 #[test]
 fn test_is_same_subnet_match() {
     assert!(is_same_subnet(

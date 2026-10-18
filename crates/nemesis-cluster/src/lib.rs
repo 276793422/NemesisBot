@@ -32,6 +32,10 @@ pub mod handlers;
 pub mod rpc;
 pub mod transport;
 
+// A1 iroh 跨网 P2P 叠加层（feature=cluster-roaming，默认关——LAN 用户零新依赖）。
+#[cfg(feature = "cluster-roaming")]
+pub mod roaming;
+
 // Re-export commonly used types
 pub use cluster_task::{
     CancelOutcome, ClusterTask, ClusterTaskList, ClusterWorkQueue, SELFCHECK_PROMPT_MARKER,

@@ -161,6 +161,11 @@ git2 = { version = "0.21", default-features = false }
 # 每次调用独立 runtime；interrupt handler + memory limit 资源闸）。
 rquickjs = "0.14"
 
+# A1（A级差距修正计划 2026-10-18）：集群跨网 P2P iroh 叠加层——QUIC 自证端点
+# + 中继打洞（NAT 后零端口转发互连）；feature=cluster-roaming，只在
+# nemesis-cluster 可选消费（LAN 现有 TCP 路径字节不变，iroh 是叠加层）。
+iroh = "1"
+
 # Crypto
 # oid feature：cms builder 要求 Digest 的 AssociatedOid（S0-6 坑位 5b）
 sha2 = { version = "0.10", features = ["oid"] }

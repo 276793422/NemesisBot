@@ -3403,6 +3403,7 @@ fn test_discovered_node_empty_addresses_known_peer_identity_merge_preserves_addr
         Vec::new(),
         Some("big".into()),
         Vec::new(), // 自报 agent 清单：未宣告
+        None,       // iroh_id：未宣告
         None,       // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
     );
     assert!(
@@ -3444,6 +3445,7 @@ fn test_discovered_node_empty_addresses_unknown_peer_still_registered_bridge_sem
         Vec::new(),
         None,
         Vec::new(), // 自报 agent 清单：未宣告
+        None,       // iroh_id：未宣告
         None,       // 桥接成员登记：无 source_addr
     );
     assert!(changed, "bridge member with empty addresses must register");
@@ -8447,6 +8449,7 @@ fn test_announce_refresh_preserves_static_pin_addresses() {
         vec![],
         None,
         Vec::new(), // 自报 agent 清单：未宣告
+        None,       // iroh_id：未宣告
         None,
     );
     assert!(changed);
@@ -8479,6 +8482,7 @@ fn test_announce_refresh_preserves_static_pin_addresses() {
         vec![],
         None,
         Vec::new(), // 自报 agent 清单：未宣告
+        None,       // iroh_id：未宣告
         None,
     );
     assert!(
@@ -8515,6 +8519,7 @@ fn test_announce_refresh_replaces_addresses_for_dynamic_peer() {
         vec![],
         None,
         Vec::new(), // 自报 agent 清单：未宣告
+        None,       // iroh_id：未宣告
         None,
     );
     assert!(changed);
@@ -8723,6 +8728,7 @@ fn test_announce_source_addr_appended_lowest_priority() {
         vec![],
         None,
         Vec::new(), // 自报 agent 清单：未宣告
+        None,       // iroh_id：未宣告
         Some("203.0.113.99"),
     );
     assert!(changed);
@@ -8747,6 +8753,7 @@ fn test_announce_source_addr_appended_lowest_priority() {
         vec![],
         None,
         Vec::new(), // 自报 agent 清单：未宣告
+        None,       // iroh_id：未宣告
         Some("203.0.113.96"),
     );
     let info = cluster.registry.get("src-2").unwrap();
@@ -8822,6 +8829,7 @@ fn test_pool_order_pin_then_payload_then_source() {
         vec![],
         None,
         Vec::new(), // 自报 agent 清单：未宣告
+        None,       // iroh_id：未宣告
         Some("203.0.113.29"),
     );
     let info = cluster.registry.get("order-1").unwrap();
@@ -8990,6 +8998,7 @@ fn test_discovered_node_roster_lands_and_change_detection() {
         Vec::new(),
         None,
         roster_a.clone(),
+        None, // iroh_id：未宣告
         None,
     );
     assert!(changed, "首次入册必 changed");
@@ -9010,6 +9019,7 @@ fn test_discovered_node_roster_lands_and_change_detection() {
         Vec::new(),
         None,
         roster_a.clone(),
+        None, // iroh_id：未宣告
         None,
     );
     assert!(!changed, "同清单重复宣告不得算内容变化");
@@ -9028,6 +9038,7 @@ fn test_discovered_node_roster_lands_and_change_detection() {
         Vec::new(),
         None,
         roster_b.clone(),
+        None, // iroh_id：未宣告
         None,
     );
     assert!(changed, "roster 变化必须算内容变化");
@@ -9082,6 +9093,7 @@ fn test_empty_addresses_known_peer_roster_merge_preserves_address() {
         Vec::new(),
         None,
         roster.clone(),
+        None, // iroh_id：未宣告
         None,
     );
     assert!(changed, "roster None->A 是内容变化");
@@ -9193,4 +9205,240 @@ fn test_set_capabilities_unions_static_identity_caps() {
     // registry 本节点条目同步携带并集（nodes.list 数据源）。
     let entry = cluster.get_node_info("cap-node").expect("local entry");
     assert!(entry.capabilities.contains(&"browser".to_string()));
+}
+
+// -----------------------------------------------------------------------
+// A1 P3: iroh 漫游身份入池
+// -----------------------------------------------------------------------
+
+/// A1 P3：announce 携带合法 iroh_id → `iroh:<hex>` 拼接后作拨号候选
+/// 池尾追加（pin > 载荷 > 源地址 > iroh，不抢直连优先级）；重复 announce
+/// 不重复入池。feature 关闭时 valid_iroh_id 恒 None → 不入池（诚实裁剪）。
+#[cfg(feature = "cluster-roaming")]
+#[test]
+fn test_handle_discovered_node_iroh_id_pools() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+
+    // iroh EndpointId 是 ed25519 公钥——from_bytes 会做 curve point 校验，
+    // 任意 32 字节（如 ab*32）会被 valid_iroh_id 诚实拒绝；必须用真实
+    // 身份派生 hex（RoamingIdentity::generate → node_id_hex）。
+    let hex = crate::roaming::endpoint::RoamingIdentity::generate().node_id_hex();
+    cluster.handle_discovered_node_ex(
+        "iroh-node-1",
+        "roaming-worker",
+        vec!["10.0.0.20".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+        vec![],
+        None,
+        vec![],
+        Some(hex.clone()),
+        None,
+    );
+
+    let node = cluster.get_node_info("iroh-node-1").expect("node stored");
+    #[cfg(feature = "cluster-roaming")]
+    {
+        let cand = format!("iroh:{hex}");
+        assert!(
+            node.addresses.contains(&cand),
+            "合法 iroh_id 必须入池：{:?}",
+            node.addresses
+        );
+        assert_eq!(
+            node.addresses.last(),
+            Some(&cand),
+            "iroh 候选必须池尾（不抢直连优先级）：{:?}",
+            node.addresses
+        );
+        // primary（TCP 地址拼 port）不被 iroh 形态污染。
+        assert_eq!(node.base.address, "10.0.0.20:21949");
+    }
+
+    // 重复 announce：池内已存在 → 不重复。
+    cluster.handle_discovered_node_ex(
+        "iroh-node-1",
+        "roaming-worker",
+        vec!["10.0.0.20".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+        vec![],
+        None,
+        vec![],
+        Some(hex.clone()),
+        None,
+    );
+    let node = cluster.get_node_info("iroh-node-1").unwrap();
+    #[cfg(feature = "cluster-roaming")]
+    assert_eq!(
+        node.addresses
+            .iter()
+            .filter(|a| **a == format!("iroh:{hex}"))
+            .count(),
+        1,
+        "重复 announce 不得重复入池：{:?}",
+        node.addresses
+    );
+}
+
+/// A1 P3（feature 关侧）：valid_iroh_id 恒 None → iroh 候选不得入池
+/// （未编译时入池候选只会浪费拨号预算，诚实裁剪）。
+#[cfg(not(feature = "cluster-roaming"))]
+#[test]
+fn test_handle_discovered_node_iroh_id_absent_when_feature_off() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+
+    cluster.handle_discovered_node_ex(
+        "iroh-node-1",
+        "roaming-worker",
+        vec!["10.0.0.20".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+        vec![],
+        None,
+        vec![],
+        Some("ab".repeat(32)),
+        None,
+    );
+
+    let node = cluster.get_node_info("iroh-node-1").expect("node stored");
+    assert!(
+        !node.addresses.iter().any(|a| a.starts_with("iroh:")),
+        "feature 关闭时 iroh 候选不得入池：{:?}",
+        node.addresses
+    );
+}
+
+/// A1 P3：非法 iroh_id（长度不足 / 非 hex / 空白）被校验丢弃，不入池。
+#[cfg(feature = "cluster-roaming")]
+#[test]
+fn test_handle_discovered_node_iroh_id_invalid_rejected() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+
+    // "ab"*32：hex 语法合法但不是有效 ed25519 公钥（curve point 校验拒）。
+    for bad in ["abcd", &"zz".repeat(32), "", &"ab".repeat(32)] {
+        cluster.handle_discovered_node_ex(
+            "iroh-bad",
+            "bad-id-worker",
+            vec!["10.0.0.21".into()],
+            21949,
+            "worker",
+            "development",
+            vec![],
+            vec![],
+            "agent",
+            vec![],
+            None,
+            vec![],
+            Some(bad.to_string()),
+            None,
+        );
+    }
+    let node = cluster.get_node_info("iroh-bad").expect("node stored");
+    assert!(
+        !node.addresses.iter().any(|a| a.starts_with("iroh:")),
+        "非法 iroh_id 一律不入池：{:?}",
+        node.addresses
+    );
+}
+
+/// A1 P3：iroh 形态地址（静态 pin 场景）作 announce 载荷首地址时，
+/// primary 不拼 rpc_port（拼了会造出 `iroh:<hex>:<port>` 非法地址）。
+#[cfg(feature = "cluster-roaming")]
+#[test]
+fn test_handle_discovered_node_roaming_primary_no_port_suffix() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+
+    let hex = crate::roaming::endpoint::RoamingIdentity::generate().node_id_hex();
+    let roaming_addr = format!("iroh:{hex}@10.0.0.30:40001");
+    cluster.handle_discovered_node_ex(
+        "iroh-node-2",
+        "roaming-primary",
+        vec![roaming_addr.clone(), "10.0.0.31".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+        vec![],
+        None,
+        vec![],
+        None,
+        None,
+    );
+
+    let node = cluster.get_node_info("iroh-node-2").expect("node stored");
+    assert_eq!(
+        node.base.address, roaming_addr,
+        "iroh 形态 primary 原样保留（不拼 :rpc_port）"
+    );
+}
+
+/// 漫游显式开关（config.cluster.json `roaming.enabled`）三态判定：
+/// 缺文件 / 缺字段或 false / 显式 true。缺 key 不再等价于开启——
+/// 单一真相源是 config，key 只是身份材料。
+#[cfg(feature = "cluster-roaming")]
+#[test]
+fn test_roaming_enabled_in_config_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("config.cluster.json");
+
+    // 缺文件 → false。
+    assert!(!Cluster::roaming_enabled_in_config(&cfg));
+
+    // 坏 JSON → false（不 panic）。
+    std::fs::write(&cfg, "{not json").unwrap();
+    assert!(!Cluster::roaming_enabled_in_config(&cfg));
+
+    // 缺 roaming 段 / 缺 enabled 字段 / 显式 false / 非布尔 → false。
+    for body in [
+        r#"{"port": 11949}"#,
+        r#"{"roaming": {}}"#,
+        r#"{"roaming": {"enabled": false}}"#,
+        r#"{"roaming": {"enabled": "yes"}}"#,
+    ] {
+        std::fs::write(&cfg, body).unwrap();
+        assert!(!Cluster::roaming_enabled_in_config(&cfg), "body={body}");
+    }
+
+    // 显式 true → true。
+    std::fs::write(&cfg, r#"{"roaming": {"enabled": true}}"#).unwrap();
+    assert!(Cluster::roaming_enabled_in_config(&cfg));
+}
+
+/// 漫游开关打开但 key 缺席：`load_or_create` 幂等自动生成（首次 created=true
+/// 落盘，二次加载 created=false 且身份一致）——setup_roaming 的自动备料分支。
+#[cfg(feature = "cluster-roaming")]
+#[test]
+fn test_roaming_key_autocreate_on_enable() {
+    use crate::roaming::endpoint::RoamingIdentity;
+
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+
+    let (id1, created1) = RoamingIdentity::load_or_create(ws).unwrap();
+    assert!(created1, "首次 = 生成");
+    let key_path = crate::roaming::endpoint::roaming_key_path(ws);
+    assert!(key_path.exists(), "key 落盘");
+
+    let (id2, created2) = RoamingIdentity::load_or_create(ws).unwrap();
+    assert!(!created2, "二次 = 加载不重生成（轮换只走 keygen --force）");
+    assert_eq!(id1.node_id_hex(), id2.node_id_hex(), "身份一致");
 }

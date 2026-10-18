@@ -84,6 +84,7 @@ fn test_static_config_roundtrip() {
             professions: Vec::new(),
             tier: None,
             capabilities: Vec::new(),
+            iroh_id: None,
         },
     };
 
@@ -966,6 +967,7 @@ rpc_port = 29422
             professions: Vec::new(),
             tier: None,
             capabilities: Vec::new(),
+            iroh_id: None,
         },
     };
     save_static_config(&path, &updated).unwrap();

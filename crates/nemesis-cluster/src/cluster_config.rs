@@ -59,6 +59,13 @@ pub struct NodeInfo {
     /// `[node]` 自报段，经 set_capabilities 并集进宣告，不再无效。
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// iroh 漫游身份 hex 静态声明（A1 跨网 P2P 叠加层）。本节点 iroh 身份
+    /// 的真相源是 `<workspace>/cluster/roaming.key`（`cluster roaming
+    /// keygen` 生成）——此声明用于**对账**：与 key 派生不一致 = 配置漂移
+    /// warn（身份仍以 key 派生为准，声明只是运营者显式记录的锚）。缺省
+    /// `None` = 未声明。
+    #[serde(default)]
+    pub iroh_id: Option<String>,
 }
 
 impl Default for NodeInfo {
@@ -73,6 +80,7 @@ impl Default for NodeInfo {
             professions: Vec::new(),
             tier: None,
             capabilities: Vec::new(),
+            iroh_id: None,
         }
     }
 }
@@ -329,6 +337,7 @@ pub fn create_static_config(node_id: &str, node_name: &str, address: &str) -> St
             professions: Vec::new(),
             tier: None,
             capabilities: Vec::new(),
+            iroh_id: None,
         },
     }
 }

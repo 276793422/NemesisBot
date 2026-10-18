@@ -219,7 +219,7 @@ fn write_bench_config(ws: &TestWorkspace, prompt_system: &str) -> Result<()> {
             model("testai-docslift-1.0"),
         ],
         "channels": {
-            "web": {"enabled": true, "host": "127.0.0.1", "port": 37300, "auth_token": AUTH_TOKEN},
+            "web": {"enabled": true, "host": "127.0.0.1", "port": WS_PORT as i64, "auth_token": AUTH_TOKEN},
             // 独立 websocket 通道保持关（同 integration-test：SEC-001 拒裸绑定）。
             "websocket": {"enabled": false}
         },

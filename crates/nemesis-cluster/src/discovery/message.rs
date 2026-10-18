@@ -104,6 +104,11 @@ pub struct DiscoveryMessage {
     /// 无此字段 → serde default 空 = 未宣告（wire 兼容，同 professions 先例）。
     #[serde(default)]
     pub agents: Vec<crate::types::AgentAnnouncement>,
+    /// 自报 iroh 漫游身份 hex（A1 跨网 P2P 叠加层；对端据此拼 `iroh:<hex>`
+    /// 拨号候选入池）。旧节点 / Go 节点的 announce 无此字段 → serde
+    /// default `None` = 未宣告（wire 兼容，同 professions 先例）。
+    #[serde(default)]
+    pub iroh_id: Option<String>,
     /// Unix timestamp (seconds since epoch).
     pub timestamp: i64,
 }
@@ -140,6 +145,7 @@ impl DiscoveryMessage {
             professions: Vec::new(),
             tier: None,
             agents: Vec::new(),
+            iroh_id: None,
             timestamp: now_unix(),
         }
     }
@@ -161,6 +167,14 @@ impl DiscoveryMessage {
         self
     }
 
+    /// 附自报 iroh 漫游身份 hex（A1；`None` = 未启用漫游叠加层，不带字段
+    /// 语义。生产 announce 构造点 `build_announce_from_callbacks` 链式
+    /// 调用——与 agents 同一单一真相源纪律）。
+    pub fn with_iroh_id(mut self, iroh_id: Option<String>) -> Self {
+        self.iroh_id = iroh_id;
+        self
+    }
+
     /// Create a new bye message, mirroring Go's `NewByeMessage`.
     pub fn new_bye(node_id: impl Into<String>) -> Self {
         Self {
@@ -178,6 +192,7 @@ impl DiscoveryMessage {
             professions: Vec::new(),
             tier: None,
             agents: Vec::new(),
+            iroh_id: None,
             timestamp: now_unix(),
         }
     }

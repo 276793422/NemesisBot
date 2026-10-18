@@ -378,9 +378,24 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 // RPC port resolution: explicit `rpc_port` field (written by pair /
                 // placeholder upgrade with the *probed* value) wins; fall back to
                 // the udp+10000 convention for legacy/hand-written entries.
-                let (host, udp_port) = parse_host_port(addr);
+                // A1：iroh 形态地址（`iroh:<hex>[@<ip:port>]`）自带完整寻址，
+                // 不过 parse_host_port（拆 host:port 会拆坏 node_id）——原样
+                // 透传；rpc_port 仅作记录占位（G14 闸要求非 0，照常 resolve）。
+                let (host, udp_port) = if addr.starts_with("iroh:") {
+                    (addr.to_string(), 0)
+                } else {
+                    parse_host_port(addr)
+                };
                 let rpc_port =
                     nemesis_cluster::cluster_config::resolve_peer_rpc_port(val, udp_port);
+                // A1：iroh-only 条目不依赖 rpc_port 寻址（node_id 即地址，
+                // primary 不拼 port）——缺省给非 0 占位过 G14 闸（rpc_port
+                // ==0 视为 unusable 记录会被拒绝入册）。
+                let rpc_port = if addr.starts_with("iroh:") && rpc_port == 0 {
+                    1
+                } else {
+                    rpc_port
+                };
                 let addresses = if host.is_empty() { vec![] } else { vec![host] };
                 info!(
                     "[Gateway] Loading static peer: {} ({}) addr={} rpc_port={}",
@@ -470,6 +485,25 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     "[Gateway] RPC server started on port {}",
                     cluster_app_cfg.rpc_port
                 );
+
+                // A1：iroh 漫游叠加层（feature=cluster-roaming）。仅在
+                // config.cluster.json `roaming.enabled=true`（Dashboard「跨网」
+                // TAB / `cluster roaming enable` CLI 显式 opt-in）时启用；缺
+                // key 自动备料。失败 warn 不炸集群——漫游是叠加层，TCP 主通
+                // 路不受影响。放 token fail-closed 分支内 = 拒绝无认证 iroh 面。
+                #[cfg(feature = "cluster-roaming")]
+                match cluster.setup_roaming().await {
+                    Ok(true) => info!("[Gateway] Roaming overlay (iroh) active"),
+                    Ok(false) => {
+                        tracing::debug!(
+                            "[Gateway] Roaming overlay not enabled (config roaming.enabled is not true)"
+                        )
+                    }
+                    Err(e) => warn!(
+                        "[Gateway] Roaming overlay setup failed (TCP paths unaffected): {}",
+                        e
+                    ),
+                }
             }
         }
 

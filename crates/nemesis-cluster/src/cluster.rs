@@ -123,6 +123,14 @@ pub struct Cluster {
     rpc_client: Mutex<Option<Arc<RpcClient>>>,
     /// RPC server instance.
     rpc_server: Option<Arc<crate::rpc::server::RpcServer>>,
+    /// A1：iroh 漫游端点（feature=cluster-roaming；`setup_roaming` 装配，
+    /// `stop()` 关停）。None = 未启用（无 roaming.key / 装配失败 / 未编译）。
+    #[cfg(feature = "cluster-roaming")]
+    roaming_endpoint: Mutex<Option<Arc<crate::roaming::endpoint::RoamingEndpoint>>>,
+    /// A1：本节点 iroh 漫游身份 hex（`setup_roaming` 成功后写入；announce
+    /// 携带，对端据此把 `iroh:<hex>` 追加进拨号候选池）。None = 未启用
+    /// 漫游叠加层（announce 不带字段，wire 兼容）。
+    roaming_id: parking_lot::RwLock<Option<String>>,
     /// Arc 自根槽（弱引用；gateway 装配在 `Arc::new(cluster)` 后经
     /// [`Cluster::install_self_weak`] 安装一次）。RPC handler 闭包与后台
     /// 循环经它活读自身身份——构造期只有 `&self`（无 Arc），安装先后无关
@@ -228,6 +236,9 @@ impl Cluster {
             result_store: Arc::new(TaskResultStore::new(1000)),
             rpc_client: Mutex::new(None),
             rpc_server: None,
+            #[cfg(feature = "cluster-roaming")]
+            roaming_endpoint: Mutex::new(None),
+            roaming_id: parking_lot::RwLock::new(None),
             self_weak: Arc::new(Mutex::new(None)),
             rpc_channel: RwLock::new(None),
             udp_port: DEFAULT_UDP_PORT,
@@ -383,6 +394,9 @@ impl Cluster {
             )),
             rpc_client: Mutex::new(None),
             rpc_server: None,
+            #[cfg(feature = "cluster-roaming")]
+            roaming_endpoint: Mutex::new(None),
+            roaming_id: parking_lot::RwLock::new(None),
             self_weak: Arc::new(Mutex::new(None)),
             rpc_channel: RwLock::new(None),
             udp_port: DEFAULT_UDP_PORT,
@@ -819,7 +833,131 @@ impl Cluster {
         self.rpc_reference_broken.load(Ordering::SeqCst)
     }
 
+    /// iroh 漫游叠加层是否在跑（feature=cluster-roaming）。供 Dashboard
+    /// `cluster.roaming.status` 展示运行态；feature 关 = 恒 false。
+    #[cfg(feature = "cluster-roaming")]
+    pub fn roaming_active(&self) -> bool {
+        self.roaming_endpoint.lock().is_some()
+    }
+
+    /// feature-off 形态：漫游层未编译，恒 false。
+    #[cfg(not(feature = "cluster-roaming"))]
+    pub fn roaming_active(&self) -> bool {
+        false
+    }
+
     /// Stop the cluster. Stops discovery (joins threads) and signals shutdown.
+    /// A1 P2：iroh 漫游叠加层装配（feature=cluster-roaming）。
+    ///
+    /// 显式开关（Dashboard/CLI 可控）：config.cluster.json `roaming.enabled`
+    /// 为 true 才装配——key 只是身份材料不再是开关（P0 的「key 存在即启用」
+    /// 文件 opt-in 语义由本闸取代）；缺 key 时自动生成（身份为本地自证材料，
+    /// info 日志诚实记录）。缺省/显式 false = 不装配（Ok(false)），LAN 节点
+    /// 零 iroh 面。装配三件事：bind iroh endpoint（N0 预设，可收可拨）、把
+    /// RPC server 的入站桥挂上 ALPN accept、把端点注入 RPC client（dial
+    /// 按 `iroh:` 前缀分派）。AEAD token 取 server 当前值（`load_rpc_auth_token`
+    /// 在 start() 已应用——调用方必须晚于 `cluster.start()`）。
+    ///
+    /// 返回 Ok(true)=已启用；Ok(false)=开关未开；Err=装配失败（调用方 warn
+    /// 不炸集群——漫游是叠加层，TCP 主通路不受影响）。
+    #[cfg(feature = "cluster-roaming")]
+    pub async fn setup_roaming(&self) -> Result<bool, String> {
+        use crate::roaming::endpoint::{RoamingEndpoint, RoamingProtocolHandler};
+
+        // 显式闸：config.cluster.json `roaming.enabled`（缺文件/缺字段/false
+        // 恒不启用——单一真相源，key 在场也不再等价于开启）。
+        let cfg_path = nemesis_path::resolve_cluster_config_path_in_workspace(&self.workspace);
+        if !Self::roaming_enabled_in_config(&cfg_path) {
+            tracing::debug!(
+                "[Cluster] Roaming overlay not enabled (config.cluster.json roaming.enabled is not true)"
+            );
+            return Ok(false);
+        }
+
+        // 身份材料：缺 key 自动生成（load_or_create 幂等——已有则原样加载）。
+        let (identity, created) =
+            crate::roaming::endpoint::RoamingIdentity::load_or_create(&self.workspace)?;
+        if created {
+            tracing::info!(
+                path = %crate::roaming::endpoint::roaming_key_path(&self.workspace).display(),
+                "[Cluster] Roaming enabled but no identity key — generated one (cluster/roaming.key)"
+            );
+        }
+        let iroh_hex = identity.node_id_hex();
+
+        // 信任簿裁决（P3 accept 侧闸）：trust.toml 存在 = 启用 allowlist
+        // 语义（revoked 一票否决 → trusted 放行 → 默认拒）；不存在 =
+        // 未启用，走 token 单层语义。加载失败 = Err（信任簿坏了宁可不起
+        // 叠加层，不静默放行）。
+        let trust_book = crate::roaming::trust::TrustBook::load(&self.workspace)?;
+
+        // peers.toml [node].iroh_id 静态声明对账：声明与 roaming.key 派生
+        // 不一致 = 配置漂移 warn（身份仍以 key 派生为准——声明只是运营者
+        // 显式记录的锚）。
+        if let Ok(sc) = crate::cluster_config::load_static_config(&self.static_config_path)
+            && let Some(declared) = sc
+                .node
+                .iroh_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+        {
+            let declared_norm = declared
+                .strip_prefix("iroh:")
+                .unwrap_or(declared)
+                .to_lowercase();
+            if declared_norm != iroh_hex {
+                tracing::warn!(
+                    declared = %declared_norm,
+                    actual = %iroh_hex,
+                    "[Cluster] peers.toml [node].iroh_id 与 roaming.key 派生身份不一致（配置漂移；以 key 派生为准）"
+                );
+            }
+        }
+
+        let bridge_handler = match self.rpc_server.as_ref() {
+            Some(server) => server.roaming_conn_handler(trust_book),
+            None => return Err("RPC server 未装配，iroh 入站桥无处挂载".to_string()),
+        };
+
+        let endpoint = RoamingEndpoint::bind(&identity, true).await?;
+        let endpoint = Arc::new(endpoint);
+        endpoint
+            .serve(RoamingProtocolHandler::bridge(bridge_handler))
+            .await?;
+
+        // 出站：RPC client dial 分派按 `iroh:` 前缀走本端点。
+        if let Some(client) = self.rpc_client.lock().clone() {
+            client.set_roaming_endpoint(endpoint.clone());
+        }
+
+        // announce 携带本节点 iroh 身份（下一拍广播生效；对端入池拨号候选）。
+        *self.roaming_id.write() = Some(iroh_hex.clone());
+
+        tracing::info!(
+            node_id = %iroh_hex,
+            "[Cluster] Roaming overlay active (iroh: node reachable via iroh overlay)"
+        );
+        *self.roaming_endpoint.lock() = Some(endpoint);
+        Ok(true)
+    }
+
+    /// 漫游开关判定（纯函数）：config.cluster.json 顶层 `roaming.enabled`
+    /// 严格为 JSON true 才开。缺文件 / 坏 JSON / 缺字段 / false → false。
+    /// 单一真相源（setup_roaming 装配闸与 WSAPI/CLI 状态面同读此形）。
+    #[cfg(feature = "cluster-roaming")]
+    pub fn roaming_enabled_in_config(config_path: &std::path::Path) -> bool {
+        std::fs::read_to_string(config_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .and_then(|cfg| {
+                cfg.get("roaming")
+                    .and_then(|r| r.get("enabled"))
+                    .and_then(|e| e.as_bool())
+            })
+            .unwrap_or(false)
+    }
+
     pub fn stop(&self) {
         *self.running.write() = false;
 
@@ -829,6 +967,15 @@ impl Cluster {
             && let Err(e) = server.stop()
         {
             tracing::warn!(error = %e, "[Cluster] RPC server stop error");
+        }
+
+        // A1：iroh 漫游端点关停（router 收流 + endpoint 关闭；无 runtime 时
+        // 句柄即弃——没有 runtime 就没有在跑的 QUIC 任务，无需显式 close）。
+        #[cfg(feature = "cluster-roaming")]
+        if let Some(endpoint) = self.roaming_endpoint.lock().take()
+            && let Ok(h) = tokio::runtime::Handle::try_current()
+        {
+            h.spawn(async move { endpoint.shutdown().await });
         }
 
         // Stop discovery service (joins broadcast + receive threads)
@@ -1199,6 +1346,41 @@ impl Cluster {
     }
 
     /// Handle a discovered node (from UDP broadcast or manual config).
+    /// A1 双形态：是否 iroh 形态地址（feature 关时恒 false——未编译就
+    /// 不存在 iroh 通路，地址仲裁/拼接一律走 TCP 语义）。
+    #[cfg(feature = "cluster-roaming")]
+    fn addr_is_roaming(a: &str) -> bool {
+        crate::roaming::bridge::is_roaming_address(a)
+    }
+    #[cfg(not(feature = "cluster-roaming"))]
+    fn addr_is_roaming(_a: &str) -> bool {
+        false
+    }
+
+    /// A1 双形态：iroh 漫游身份 hex 校验归一（64 位 hex，大小写不敏感，
+    /// 统一小写）。feature 关时恒 `None`——未编译时入池 iroh 候选只会
+    /// 浪费拨号预算（诚实裁剪）。
+    #[cfg(feature = "cluster-roaming")]
+    fn valid_iroh_id(s: Option<String>) -> Option<String> {
+        let s = s?;
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        match crate::roaming::endpoint::node_id_from_hex(trimmed) {
+            Ok(_) => Some(trimmed.to_lowercase()),
+            Err(e) => {
+                tracing::debug!(value = %trimmed, error = %e,
+                    "[Cluster] Ignoring invalid iroh_id in announce");
+                None
+            }
+        }
+    }
+    #[cfg(not(feature = "cluster-roaming"))]
+    fn valid_iroh_id(_s: Option<String>) -> Option<String> {
+        None
+    }
+
     pub fn handle_discovered_node(
         &self,
         node_id: &str,
@@ -1225,6 +1407,7 @@ impl Cluster {
             None,
             Vec::new(),
             None,
+            None,
         )
     }
 
@@ -1237,6 +1420,10 @@ impl Cluster {
     /// 可见的可达性证据；载荷地址可能因对端枚举缺口缺失，如 if_addrs 的
     /// APIPA 缺口）。作为最低优先级拨号候选并入地址池；非 UDP 路径
     /// （TCP 探针身份回传/静态装载）传 `None`。
+    ///
+    /// `iroh_id`：对端自报 iroh 漫游身份 hex（A1；hex 校验合法且 feature
+    /// 编译时才入池——拼 `iroh:<hex>` 作拨号候选，池尾追加不抢直连优先级；
+    /// 非法值/未编译 = 忽略，debug 留痕）。
     #[allow(clippy::too_many_arguments)]
     pub fn handle_discovered_node_ex(
         &self,
@@ -1252,6 +1439,7 @@ impl Cluster {
         professions: Vec<String>,
         tier: Option<String>,
         agents: Vec<crate::types::AgentAnnouncement>,
+        iroh_id: Option<String>,
         source_addr: Option<&str>,
     ) -> bool {
         self.handle_discovered_node_impl(
@@ -1267,6 +1455,7 @@ impl Cluster {
             professions,
             tier,
             agents,
+            iroh_id,
             source_addr,
         )
     }
@@ -1286,6 +1475,7 @@ impl Cluster {
         professions: Vec<String>,
         tier: Option<String>,
         agents: Vec<crate::types::AgentAnnouncement>,
+        iroh_id: Option<String>,
         source_addr: Option<&str>,
     ) -> bool {
         // Skip blacklisted nodes
@@ -1358,13 +1548,24 @@ impl Cluster {
             merged.tier = tier.clone();
             merged.agents = agents.clone();
             merged.node_type = node_type.to_string();
+            // A1：iroh 漫游身份入池（新增非覆盖——空地址分支保留原地址的
+            // 纪律不变；iroh 候选是新通路证据，照常追加）。
+            if let Some(hex) = Self::valid_iroh_id(iroh_id) {
+                let cand = format!("iroh:{hex}");
+                if !merged.addresses.iter().any(|a| a == &cand) {
+                    merged.addresses.push(cand);
+                }
+            }
             return self.registry.upsert_if_changed(merged);
         }
 
-        let primary_address = if !addresses.is_empty() {
-            format!("{}:{}", addresses[0], rpc_port)
-        } else {
-            String::new()
+        // A1：iroh 形态地址自带完整寻址（node_id[+直连 socket]），拼
+        // `:rpc_port` 会造出 `iroh:<hex>:<port>` 非法地址——原样作
+        // primary。TCP 地址照旧拼 port。
+        let primary_address = match addresses.first() {
+            Some(a) if Self::addr_is_roaming(a) => a.clone(),
+            Some(a) => format!("{}:{}", a, rpc_port),
+            None => String::new(),
         };
 
         let was_known = self.registry.get(node_id).is_some();
@@ -1385,13 +1586,19 @@ impl Cluster {
             && let Some(existing) = self.registry.get(node_id)
         {
             let mut pinned = existing.addresses.clone();
-            let host = existing
-                .base
-                .address
-                .split(':')
-                .next()
-                .unwrap_or("")
-                .to_string();
+            // A1：iroh 形态 base.address 是原子（node_id+可选 socket），
+            // 按冒号拆 host 会拆出 "iroh" 垃圾候选——iroh 形态整条入 pin。
+            let host = if Self::addr_is_roaming(&existing.base.address) {
+                existing.base.address.clone()
+            } else {
+                existing
+                    .base
+                    .address
+                    .split(':')
+                    .next()
+                    .unwrap_or("")
+                    .to_string()
+            };
             if !host.is_empty() && !pinned.contains(&host) {
                 pinned.push(host);
             }
@@ -1418,6 +1625,15 @@ impl Cluster {
             && !pool.iter().any(|a| a.as_str() == src)
         {
             pool.push(src.to_string());
+        }
+        // A1 池尾追加：iroh 候选是跨网兜底通路（N0 发现层打洞），不抢
+        // 局域网直连优先级——池序 pin > 载荷 > 源地址 > iroh。hex 校验
+        // 合法（feature 编译）才入池，杜绝垃圾地址每次拨号白撞。
+        if let Some(hex) = Self::valid_iroh_id(iroh_id) {
+            let cand = format!("iroh:{hex}");
+            if !pool.contains(&cand) {
+                pool.push(cand);
+            }
         }
 
         let node = ExtendedNodeInfo {
@@ -3708,6 +3924,7 @@ impl Cluster {
             msg.professions,
             msg.tier,
             msg.agents,
+            msg.iroh_id,
             None,
         );
         if changed {
@@ -4199,6 +4416,10 @@ impl ClusterCallbacks for Cluster {
         self.current_agent_roster()
     }
 
+    fn roaming_id(&self) -> Option<String> {
+        self.roaming_id.read().clone()
+    }
+
     fn handle_discovered_node(
         &self,
         node_id: &str,
@@ -4238,6 +4459,7 @@ impl ClusterCallbacks for Cluster {
         professions: &[String],
         tier: Option<&str>,
         agents: &[crate::types::AgentAnnouncement],
+        iroh_id: Option<&str>,
         source_addr: Option<&str>,
     ) -> bool {
         self.handle_discovered_node_ex(
@@ -4253,6 +4475,7 @@ impl ClusterCallbacks for Cluster {
             professions.to_vec(),
             tier.map(|s| s.to_string()),
             agents.to_vec(),
+            iroh_id.map(|s| s.to_string()),
             source_addr,
         )
     }

@@ -359,6 +359,10 @@ pub struct RpcClient {
     /// 运行期注入一次；`None` = 纯直连语义（一期行为零变化）。RwLock 因
     /// 装配晚于构造（gateway 组装顺序：RpcClient 先建、桥出口后建）。
     bridge_transport: RwLock<Option<Arc<dyn BridgeSend>>>,
+    /// A1 P2（feature=cluster-roaming）：iroh 漫游端点（拨号侧）。宿主在
+    /// 装配漫游身份后注入；`None` = 拨到 `iroh:` 地址诚实报错（不黑洞）。
+    #[cfg(feature = "cluster-roaming")]
+    roaming_endpoint: RwLock<Option<Arc<crate::roaming::endpoint::RoamingEndpoint>>>,
 }
 
 impl RpcClient {
@@ -377,6 +381,8 @@ impl RpcClient {
             resolver: None,
             warn_gate: crate::discovery::AnnounceWarnGate::with_cooldown(Duration::from_secs(60)),
             bridge_transport: RwLock::new(None),
+            #[cfg(feature = "cluster-roaming")]
+            roaming_endpoint: RwLock::new(None),
         }
     }
 
@@ -422,6 +428,14 @@ impl RpcClient {
     /// 顶部的 per-peer 限流闸，一次调用恰计数一次——桥不绕过也不重复计数。
     pub fn set_bridge_transport(&self, bridge: Arc<dyn BridgeSend>) {
         *self.bridge_transport.write() = Some(bridge);
+    }
+
+    /// A1 P2（feature=cluster-roaming）：注入 iroh 漫游端点（拨号侧）。
+    /// 注入后 `iroh:<node_id_hex>` 形态地址走 QUIC 叠加层；未注入时拨到
+    /// `iroh:` 地址诚实报错。
+    #[cfg(feature = "cluster-roaming")]
+    pub fn set_roaming_endpoint(&self, endpoint: Arc<crate::roaming::endpoint::RoamingEndpoint>) {
+        *self.roaming_endpoint.write() = Some(endpoint);
     }
 
     // -- High-level API -------------------------------------------------------
@@ -794,6 +808,15 @@ impl RpcClient {
         request: &RPCRequest,
         io_timeout: Duration,
     ) -> Result<RPCResponse, RpcClientError> {
+        // A1 P2：iroh 形态地址 → QUIC 叠加层拨号（前缀分派第一闸）。TCP 路径
+        // 字节不变。
+        #[cfg(feature = "cluster-roaming")]
+        if crate::roaming::bridge::is_roaming_address(addr) {
+            return self
+                .roaming_connect_and_send(addr, request, io_timeout)
+                .await;
+        }
+
         // Dial TCP with 10-second timeout (matching Go's net.DialTimeout)
         let stream = time::timeout(Duration::from_secs(10), TcpStream::connect(addr))
             .await
@@ -837,6 +860,81 @@ impl RpcClient {
         })
         .await
         .map_err(|e| RpcClientError::Connection(format!("blocking task join: {}", e)))?
+    }
+
+    /// A1 P2（feature=cluster-roaming）：iroh 叠加层帧交换（`iroh:<node_id_hex>`
+    /// 地址）。
+    ///
+    /// 与 TCP 路径逐语义对齐：同一 [`wire_from_request`] 转换、同一 AEAD
+    /// token 语义（[`RoamingConn`] 帧内加解密，帧格式字节一致）、同一
+    /// [`Frame::decode_response`] 解析与 RemoteError 提升。拨号限时 10s
+    /// （对齐 TCP）；单次读写限时 `io_timeout`（QUIC 流无 socket 级读写
+    /// 超时概念，由外层 tokio timeout 承担——黑洞对端不会挂住调用）。
+    #[cfg(feature = "cluster-roaming")]
+    async fn roaming_connect_and_send(
+        &self,
+        addr: &str,
+        request: &RPCRequest,
+        io_timeout: Duration,
+    ) -> Result<RPCResponse, RpcClientError> {
+        use crate::roaming::bridge::{RoamingConn, parse_roaming_address};
+        use tokio::time::timeout;
+
+        let endpoint = self.roaming_endpoint.read().clone().ok_or_else(|| {
+            RpcClientError::Connection(format!(
+                "iroh 地址 {addr} 需要漫游端点（cluster-roaming 已编译但本节点未装配漫游身份，\
+                 无法解析 iroh: 拨号目标）"
+            ))
+        })?;
+        let target_addr = parse_roaming_address(addr).map_err(RpcClientError::Connection)?;
+
+        // 拨号 + bi-stream 打开。Connection handle 即弃安全——SendStream/
+        // RecvStream 各持一个 ConnectionRef（noq 引用计数），流活着连接不关。
+        let (send, recv) = timeout(
+            Duration::from_secs(10).max(io_timeout),
+            endpoint.connect_stream_addr(target_addr),
+        )
+        .await
+        .map_err(|_| RpcClientError::Connection(format!("iroh dial timeout to {}", addr)))?
+        .map_err(|e| RpcClientError::Connection(format!("iroh connect to {}: {}", addr, e)))?;
+
+        // AEAD token 语义与 TCP 路径同源（同一 auth_token，同一派生）。
+        let token = self.auth_token.lock().clone().unwrap_or_default();
+        let mut mc = RoamingConn::new(send, recv, &token);
+
+        let wire = wire_from_request(request);
+        let json_bytes =
+            serde_json::to_vec(&wire).map_err(|e| RpcClientError::Serialization(e.to_string()))?;
+        timeout(io_timeout, mc.send_frame(&json_bytes))
+            .await
+            .map_err(|_| RpcClientError::Connection(format!("iroh send timeout to {}", addr)))?
+            .map_err(|e| RpcClientError::Connection(format!("iroh send to {}: {}", addr, e)))?;
+
+        tracing::debug!(
+            addr = addr,
+            request_id = %request.id,
+            "[RpcClient] iroh RPC request sent, waiting for response"
+        );
+
+        let resp_bytes = timeout(io_timeout, mc.recv_frame())
+            .await
+            .map_err(|_| RpcClientError::Connection(format!("iroh recv timeout from {}", addr)))?
+            .map_err(|e| RpcClientError::Connection(format!("iroh recv from {}: {}", addr, e)))?;
+
+        let response: RPCResponse = Frame::decode_response(&resp_bytes)
+            .map_err(|e| RpcClientError::Serialization(format!("decode response: {}", e)))?;
+
+        if let Some(ref err) = response.error {
+            tracing::error!(
+                addr = addr,
+                request_id = %request.id,
+                error = %err,
+                "[RpcClient] Remote error response (iroh path)",
+            );
+            return Err(RpcClientError::RemoteError(err.clone()));
+        }
+
+        Ok(response)
     }
 
     /// Synchronous send-and-receive on a blocking thread.
@@ -967,6 +1065,16 @@ impl Default for RpcClient {
 
 /// Extract the IP portion from an "IP:Port" string.
 fn extract_ip_from_addr(addr: &str) -> Option<IpAddr> {
+    // A1：iroh 形态——钉址形态（`iroh:<hex>@<ip:port>`）取 `@` 后的直连
+    // 地址参与同网段仲裁（跨网候选不误抢局域网直连优先级）；纯 node_id
+    // 形态无 IP 可比 → None（落 fallback 序）。字面量前缀判断无需
+    // feature：地址池只在 feature 编译且身份校验合法时才会出现 iroh
+    // 形态（与 `roaming::bridge::IROH_ADDR_PREFIX` 同源，一致性由
+    // tests::test_extract_ip_roaming_pinned 断言钉住）。
+    if let Some(rest) = addr.strip_prefix("iroh:") {
+        let socket = rest.split_once('@')?.1;
+        return extract_ip_from_addr(socket);
+    }
     // Handle [IPv6]:Port
     if let Some(idx) = addr.rfind("]:") {
         let ip_str = &addr[1..idx]; // strip '[' and ']:port'
