@@ -89,6 +89,16 @@ pub struct QemuInstallReport {
 // 纯函数（单测钉死）
 // ---------------------------------------------------------------------------
 
+/// QEMU 关键二进制名对（安装最小集与在场探针的**单一真相源**；当前
+/// x86_64 形态——aarch64 接口在位不产出，见 [`super::guest_arch`]）。
+pub fn qemu_required_binaries() -> (&'static str, &'static str) {
+    if cfg!(target_os = "windows") {
+        ("qemu-system-x86_64.exe", "qemu-img.exe")
+    } else {
+        ("qemu-system-x86_64", "qemu-img")
+    }
+}
+
 /// 分块调度：`total_len` 均分为 `parallel` 块（余数并入末块），返回
 /// `(start, len)` 序列。`parallel<=1` 或 `total_len==0` = 单块全覆盖。
 pub fn plan_chunks(total_len: u64, parallel: usize) -> Vec<(u64, u64)> {
@@ -503,8 +513,7 @@ async fn verify_installer(path: &Path, expected: &Option<String>, url: &str) -> 
 /// 定位 qemu 根目录 → rename 落位 → `--version` 探针 → SHA-256 钉 manifest。
 #[cfg(target_os = "windows")]
 pub async fn install_qemu_windows(opts: &QemuInstallOptions) -> Result<QemuInstallReport> {
-    let qemu_name = "qemu-system-x86_64.exe";
-    let img_name = "qemu-img.exe";
+    let (qemu_name, img_name) = qemu_required_binaries();
 
     // 幂等：已就绪 = 版本探针过即早退（不重装）。
     let qemu_system = opts.install_dir.join(qemu_name);
@@ -641,6 +650,297 @@ pub async fn install_qemu_windows(opts: &QemuInstallOptions) -> Result<QemuInsta
         installer_sha256,
         already_installed: false,
     })
+}
+
+// ---------------------------------------------------------------------------
+// B2：引导命令构造（纯函数——CLI/WSAPI 引导文案与真实执行同源产出）
+// ---------------------------------------------------------------------------
+
+/// WHPX 的 Windows 可选功能名（DISM 单一真相源）。
+pub const DISM_WHPX_FEATURE: &str = "HypervisorPlatform";
+
+/// DISM 启用 WHPX 参数表（`/NoRestart`：重启时机由用户决定，不替用户拍板）。
+pub fn dism_enable_whpx_args() -> Vec<String> {
+    vec![
+        "/Online".into(),
+        "/NoRestart".into(),
+        "/Enable-Feature".into(),
+        format!("/FeatureName:{DISM_WHPX_FEATURE}"),
+        "/All".into(),
+    ]
+}
+
+/// DISM 查询 WHPX 功能状态参数表（只读；非提权上下文可能 740 拒绝——
+/// 调用方按 None 诚实降级，不假装分得清）。
+pub fn dism_query_state_args() -> Vec<String> {
+    vec![
+        "/Online".into(),
+        "/Get-FeatureInfo".into(),
+        format!("/FeatureName:{DISM_WHPX_FEATURE}"),
+    ]
+}
+
+/// DISM `/Get-FeatureInfo` 的功能状态（解析失败 = None，诚实未知）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DismFeatureState {
+    /// 功能已启用（含 Disable Pending——禁用挂起仍算在启用态）。
+    Enabled,
+    /// 启用已挂起（待重启生效）。
+    EnablePending,
+    /// 功能未启用。
+    Disabled,
+}
+
+/// 解析 DISM 输出里的 `State :` 行（英文字段名；本地化 Windows 解析不到 =
+/// None，调用方诚实降级，不瞎猜）。
+pub fn parse_dism_feature_state(output: &str) -> Option<DismFeatureState> {
+    for line in output.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("State :") {
+            return match rest.trim() {
+                "Enabled" => Some(DismFeatureState::Enabled),
+                "Enabled with Disable Pending" | "Disable Pending" => {
+                    Some(DismFeatureState::Enabled)
+                }
+                "Enable Pending" => Some(DismFeatureState::EnablePending),
+                "Disabled" => Some(DismFeatureState::Disabled),
+                _ => None,
+            };
+        }
+    }
+    None
+}
+
+/// Linux CPU vendor（`/proc/cpuinfo` 的 `vendor_id` 行；找不到 = None）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuVendor {
+    Intel,
+    Amd,
+}
+
+pub fn parse_cpu_vendor(cpuinfo: &str) -> Option<CpuVendor> {
+    for line in cpuinfo.lines() {
+        if let Some(rest) = line.strip_prefix("vendor_id") {
+            let v = rest
+                .trim_start_matches(|c: char| c == ':' || c.is_whitespace())
+                .trim();
+            return match v {
+                "GenuineIntel" => Some(CpuVendor::Intel),
+                "AuthenticAMD" => Some(CpuVendor::Amd),
+                _ => None,
+            };
+        }
+    }
+    None
+}
+
+/// CPU vendor → KVM 内核模块名（modprobe 引导用；未知 vendor = None 不瞎猜）。
+pub fn kvm_module_for_vendor(vendor: CpuVendor) -> &'static str {
+    match vendor {
+        CpuVendor::Intel => "kvm_intel",
+        CpuVendor::Amd => "kvm_amd",
+    }
+}
+
+/// Linux 包管理器形态（PATH 探测；未识别 = Unknown 诚实指路，不瞎猜命令）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxPm {
+    Apt,
+    Dnf,
+    Unknown,
+}
+
+/// QEMU 包集合（apt/dnf 各自的发行惯例名；单一真相源——命令构造与
+/// 自动安装执行同源消费）。
+pub fn qemu_packages_for_pm(pm: LinuxPm) -> Option<&'static str> {
+    match pm {
+        LinuxPm::Apt => Some("qemu-system-x86 qemu-utils"),
+        LinuxPm::Dnf => Some("qemu-kvm qemu-img"),
+        LinuxPm::Unknown => None,
+    }
+}
+
+/// 引导命令串（人读文案 + CLI 呈现；`sudo` 前缀统一——自动执行分支在
+/// 免密 sudo 下同样经 sudo -n 走，语义一致）。
+pub fn pm_install_qemu_command(pm: LinuxPm) -> Option<String> {
+    let pkgs = qemu_packages_for_pm(pm)?;
+    match pm {
+        // DEBIAN_FRONTEND 压掉交互式确认（非交互上下文必需）。
+        LinuxPm::Apt => Some(format!(
+            "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y {pkgs}"
+        )),
+        LinuxPm::Dnf => Some(format!("sudo dnf install -y {pkgs}")),
+        LinuxPm::Unknown => None,
+    }
+}
+
+/// KVM 内核模块装载引导命令。
+pub fn modprobe_kvm_command(module: &str) -> String {
+    format!("sudo modprobe {module}")
+}
+
+/// kvm 组成员引导命令（生效需重新登录——文案由呈现层带）。
+pub fn usermod_kvm_command(user: &str) -> String {
+    format!("sudo usermod -aG kvm {user}")
+}
+
+/// Linux 包管理器探测（PATH 上 apt-get / dnf 谁在场；都无 = Unknown）。
+#[cfg(target_os = "linux")]
+pub fn detect_linux_pm() -> LinuxPm {
+    for candidate in ["/usr/bin", "/bin", "/usr/local/bin"] {
+        if Path::new(candidate).join("apt-get").exists() {
+            return LinuxPm::Apt;
+        }
+        if Path::new(candidate).join("dnf").exists() {
+            return LinuxPm::Dnf;
+        }
+    }
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            if dir.join("apt-get").exists() {
+                return LinuxPm::Apt;
+            }
+            if dir.join("dnf").exists() {
+                return LinuxPm::Dnf;
+            }
+        }
+    }
+    LinuxPm::Unknown
+}
+
+/// 免密 sudo 探测（`sudo -n true` 退出码 0 = 可全自动安装；非 0 = 半自动，
+/// 展示命令让用户自己执行——不假装能绕过 root）。
+#[cfg(target_os = "linux")]
+pub async fn passwordless_sudo_available() -> bool {
+    tokio::process::Command::new("sudo")
+        .arg("-n")
+        .arg("true")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+// ---------------------------------------------------------------------------
+// B2：平台安装链
+// ---------------------------------------------------------------------------
+
+/// Linux QEMU 安装链（`#[cfg(linux)]`——非 Linux 编译期消失，不伪装）。
+///
+/// 全自动分支：识别包管理器 + 免密 sudo 可用 → apt/dnf 非交互安装 →
+/// PATH 二进制实跑探针。半自动分支：免密 sudo 不可用 → 诚实报错，错误
+/// 信息自带精确命令（用户终端执行后探针复检转绿）。
+#[cfg(target_os = "linux")]
+pub async fn install_qemu_linux() -> Result<QemuInstallReport> {
+    let pm = detect_linux_pm();
+    let Some(cmd) = pm_install_qemu_command(pm) else {
+        bail!(
+            "未识别包管理器（非 apt/dnf 系）——请按发行版惯例安装 qemu-system-x86 与 qemu-img \
+             （官方下载：https://qemu.org/download/），装好后复检"
+        );
+    };
+    if !passwordless_sudo_available().await {
+        bail!(
+            "免密 sudo 不可用（半自动模式）：请在终端执行 `{cmd}` 后复检——\
+             不假装能绕过 root 鉴权"
+        );
+    }
+
+    // 非交互拆分执行（apt 需 DEBIAN_FRONTEND env 而非 shell 前缀）。
+    // 包名单从 qemu_packages_for_pm 派生（单一真相源，不重复硬编码）。
+    let packages: Vec<String> = qemu_packages_for_pm(pm)
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    let (program, mut args) = match pm {
+        LinuxPm::Apt => (
+            "sudo",
+            vec![
+                "-n".to_string(),
+                "DEBIAN_FRONTEND=noninteractive".to_string(),
+                "apt-get".to_string(),
+                "install".to_string(),
+                "-y".to_string(),
+            ],
+        ),
+        LinuxPm::Dnf => (
+            "sudo",
+            vec![
+                "-n".to_string(),
+                "dnf".to_string(),
+                "install".to_string(),
+                "-y".to_string(),
+            ],
+        ),
+        LinuxPm::Unknown => unreachable!("Unknown 已在上方 bail"),
+    };
+    args.extend(packages);
+    tracing::info!("[vm-install] Linux 包安装开始：{cmd}");
+    let out = tokio::process::Command::new(program)
+        .args(&args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!("包管理器执行失败: {e}"))?;
+    if !out.status.success() {
+        bail!(
+            "包安装失败（{}）：{}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+
+    // 装后裁决：PATH 二进制实跑探针（包管理器说装好 ≠ 二进制可用）。
+    let (sys_name, img_name) = qemu_required_binaries();
+    let sys_path = super::assembly::resolve_qemu_binary(super::guest_arch::GuestArch::X86_64, None);
+    let version = super::probe::qemu_version_ok(&sys_path)
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!("包已安装但 {sys_name} 实跑探针失败：{e}（PATH 未刷新？重试复检）")
+        })?;
+    Ok(QemuInstallReport {
+        install_dir: PathBuf::from("/usr"),
+        qemu_system: sys_path,
+        qemu_img: PathBuf::from("/usr/bin").join(img_name),
+        version,
+        installer_sha256: String::new(),
+        already_installed: false,
+    })
+}
+
+/// Windows WHPX 启用链（`#[cfg(windows)]`）：DISM runas 提权 fire-and-forget
+/// （复用 sandbox elevation 范式——gateway/CLI 进程自身不提权，UAC 弹框由
+/// 用户确认）。完成态由探针复检裁决（`/NoRestart`：重启由用户决定）。
+///
+/// 返回引导说明（人读文案）；真实生效判定恒走 `probe::probe_whpx` 复检。
+#[cfg(target_os = "windows")]
+pub fn enable_accel_windows() -> Result<String> {
+    if super::probe::whpx_dll_present() {
+        return Ok("WHPX 已就绪（无需启用）".to_string());
+    }
+    // DISM 路径（System32 惯例位；WINDIR 缺席按 C:\Windows 兜底）。
+    let windir = std::env::var_os("WINDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("C:\\Windows"));
+    let dism = windir.join("System32").join("Dism.exe");
+    if !dism.exists() {
+        bail!(
+            "Dism.exe 不在场（{}）——请在管理员终端手动执行 DISM 启用",
+            dism.display()
+        );
+    }
+    let args = dism_enable_whpx_args();
+    crate::elevation::relaunch_elevated(&dism, &args)?;
+    Ok(
+        "已发起 UAC 提权请求（请在弹框确认）：DISM 启用 HypervisorPlatform（/NoRestart）。\
+         完成后如探针仍不绿：功能挂起重启则需重启 Windows；重启后仍缺席请进 BIOS \
+         开启虚拟化（Intel VT-x / AMD-V）。"
+            .to_string(),
+    )
 }
 
 #[cfg(test)]

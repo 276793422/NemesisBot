@@ -92,7 +92,22 @@ async fn real_qemu_img_roundtrip_when_available() {
     };
     let _ = probe;
     let tmp = tempfile::tempdir().expect("tempdir");
-    let b = backing(&tmp);
+    // backing 用 qemu-img 真造（新版 qemu-img create -b 立即验证 backing
+    // 是合法 qcow2；假 payload stub 会被拒——zoo 机 QEMU 11 实证。测试
+    // 不得依赖旧版宽容行为）。
+    let b = tmp.path().join("base.qcow2");
+    let mk = tokio::process::Command::new("qemu-img")
+        .args(["create", "-f", "qcow2"])
+        .arg(&b)
+        .arg("1G")
+        .output()
+        .await
+        .expect("qemu-img create backing");
+    assert!(
+        mk.status.success(),
+        "backing 真造失败: {}",
+        String::from_utf8_lossy(&mk.stderr)
+    );
     let overlay = tmp.path().join("nested/a1.qcow2");
     create_overlay(Path::new("qemu-img"), &overlay, &b, 1)
         .await
