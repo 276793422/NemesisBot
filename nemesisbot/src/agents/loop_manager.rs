@@ -157,6 +157,20 @@ impl AgentLoopManager {
                 .map(|h| h.agent_loop.clone())
                 .expect("double-spawn guard: winner handle must exist"));
         }
+        // R4 顺序契约收口（2026-10-18 二轮复查）：构建在途（early get 之后、
+        // insert 之前）`AgentManager::remove` 可整体完成——store.remove 已
+        // 提交而 lm.remove 对空表 no-op，直接 insert 就造出「记录已删、loop
+        // 存活到重启」的孤儿。持 state 锁复查真相源封死窗口：remove 的
+        // lm.remove 要么先行（此处复查必见删）、要么后行（此处插入的 loop
+        // 由它收尾停机），两个交错都收敛。store.get 的 Err（库锁等瞬时
+        // 故障）走 `?` 上抛，只有 None 才当已删——不误杀。
+        if self.store.get(agent_id)?.is_none() {
+            drop(state);
+            agent_loop.stop();
+            agent_loop.clear_session_busy();
+            agent_task.abort();
+            return Err(format!("agent 不存在: {agent_id}"));
+        }
         state.insert(
             agent_id.to_string(),
             AgentLoopHandle {

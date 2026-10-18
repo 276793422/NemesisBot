@@ -303,6 +303,16 @@ impl AgentManager {
     /// 已删 agent 重拉；evict 拿槽锁等在途调用收尾，删除不与 execute
     /// 并发脱管。G1：同批联动停机自建 agent 的常驻 LLM loop（记录删了
     /// loop 不留——此后 `agents.send` 走「agent 不存在」诚实报错）。
+    ///
+    /// 顺序契约（2026-10-18 六批复查）：**真相源先删、loop 后停**（projects
+    /// `remove` 同序）——记录在册时先摘 loop，`lm.remove` 与 `store.remove`
+    /// 之间并发抵达的 `agents.send`/`loop_for_agent` 会经 `resolve_or_build`
+    /// 查到仍在册的记录把 loop 重建出来（孤儿 loop 存活到重启）；先删记录
+    /// 则并发解析立即「agent 不存在」诚实报错，随后 `lm.remove` 收尾停既有
+    /// loop。「构建在途」（early get 后、insert 前）的交错由 loop_manager
+    /// insert 前的真相源复查封死（`resolve_or_build` 同日注）。store 删除
+    /// 失败 = 整个删除失败原样上抛（`lm` 未动，状态一致；runtime evict 已
+    /// 发生但子进程按需重建，无泄漏）。
     pub async fn remove(&self, agent_id: &str) -> Result<(), String> {
         if let Some(record) = self.store.get(agent_id)?
             && record.kind == agent_kind::MAIN
@@ -312,10 +322,11 @@ impl AgentManager {
         if let Some(rt) = self.runtime() {
             rt.evict(agent_id).await;
         }
+        self.store.remove(agent_id)?;
         if let Some(lm) = self.loop_manager() {
             lm.remove(agent_id);
         }
-        self.store.remove(agent_id)
+        Ok(())
     }
 
     pub fn find_by_kind(&self, kind: &str) -> Result<Option<AgentRecord>, String> {
