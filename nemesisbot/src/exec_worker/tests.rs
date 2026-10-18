@@ -413,6 +413,121 @@ mod serve_journal {
         assert_eq!(v["call_id"], "c-9-1", "{v}");
         assert_eq!(v["error"], "unknown tool: nope", "{v}");
     }
+
+    // -----------------------------------------------------------------
+    // R2 两相账 replay 分类（2026-10-18 三方复评）。
+    // -----------------------------------------------------------------
+
+    fn v2_req_tool(call_id: &str, tool: &str) -> String {
+        format!(r#"{{"v":2,"call_id":"{call_id}","tool":"{tool}","args":"{{}}","context":{CTX}}}"#)
+    }
+
+    /// 预置盘上意图行（模拟崩溃前进程写了 intent、没来得及写 done）。
+    fn preset_intent(ws: &std::path::Path, call_id: &str, tool: &str) {
+        let p = ws.join(super::super::journal::JOURNAL_REL);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        use std::io::Write as _;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&p)
+            .unwrap();
+        writeln!(
+            f,
+            r#"{{"kind":"intent","call_id":"{call_id}","tool":"{tool}"}}"#
+        )
+        .unwrap();
+    }
+
+    fn registry_named(name: &str) -> HashMap<String, Box<dyn Tool>> {
+        let mut m: HashMap<String, Box<dyn Tool>> = HashMap::new();
+        m.insert(name.to_string(), Box::new(CountTool(Mutex::new(0))));
+        m
+    }
+
+    /// 只读白名单工具的未决意图 → **安全重执行**（run-1），执行后落完成账、
+    /// 意图了结；重发同 call_id = replay 缓存（不二次执行）。
+    #[tokio::test]
+    async fn pending_intent_readonly_tool_reexecutes_then_lands_in_done_ledger() {
+        let tools = registry_named("read_file");
+        let ws = tempfile::tempdir().unwrap();
+        preset_intent(ws.path(), "c-ro-1", "read_file");
+        let mut j = Journal::with_agent_id(ws.path(), "agent-a");
+        assert_eq!(j.pending_intent("c-ro-1"), Some("read_file"));
+
+        let req = v2_req_tool("c-ro-1", "read_file");
+        let out1 = serve_line(&req, &tools, &mut j).await;
+        let v: serde_json::Value = serde_json::from_str(out1.trim()).unwrap();
+        assert_eq!(v["ok"], serde_json::json!(true), "{v}");
+        assert_eq!(v["result"], "run-1", "只读白名单必须重执行: {v}");
+        assert!(j.lookup("c-ro-1").is_some(), "执行结果落完成账");
+        assert_eq!(j.pending_intent("c-ro-1"), None, "完成准入了结意图");
+        // 重发 = replay 缓存（不二次执行 → 停在 run-1）。
+        let out2 = serve_line(&req, &tools, &mut j).await;
+        assert_eq!(out1, out2, "重发必须回缓存行");
+    }
+
+    /// 非白名单工具的未决意图 → 诚实「结果未知」错误（工具**不执行**），
+    /// 错误记为完成账；重发同 call_id = 字节一致回缓存错误；跨重开同样
+    /// replay（不重复尝试；新 call_id = 模型显式再选）。
+    #[tokio::test]
+    async fn pending_intent_non_readonly_returns_honest_unknown_and_records_done() {
+        let tools = registry_named("exec");
+        let ws = tempfile::tempdir().unwrap();
+        preset_intent(ws.path(), "c-uk-1", "exec");
+        let mut j = Journal::with_agent_id(ws.path(), "agent-a");
+        assert_eq!(j.pending_intent("c-uk-1"), Some("exec"));
+
+        let req = v2_req_tool("c-uk-1", "exec");
+        let out1 = serve_line(&req, &tools, &mut j).await;
+        let v: serde_json::Value = serde_json::from_str(out1.trim()).unwrap();
+        assert_eq!(v["ok"], serde_json::json!(false), "{v}");
+        assert_eq!(v["v"], 2, "{v}");
+        assert_eq!(v["call_id"], "c-uk-1", "{v}");
+        let err = v["error"].as_str().unwrap_or("");
+        assert!(
+            err.contains("结果未知") && err.contains("勿盲重试") && err.contains("exec"),
+            "诚实错误必须说清 outcome-unknown + 工具名: {err}"
+        );
+        // 工具未执行（执行了 result 会是 run-1 而错误行 result 恒空）。
+        assert_eq!(v["result"], "", "{v}");
+        // 错误已记为完成账 + 意图了结。
+        assert!(j.lookup("c-uk-1").is_some(), "诚实错误必须记为完成账");
+        assert_eq!(j.pending_intent("c-uk-1"), None);
+        // 重发 = 字节一致回缓存错误。
+        let out2 = serve_line(&req, &tools, &mut j).await;
+        assert_eq!(out1, out2, "重发必须回缓存错误（不重复尝试）");
+        // 跨重开（崩溃重建形态）同样 replay 缓存错误。
+        let mut j2 = Journal::with_agent_id(ws.path(), "agent-a");
+        let out3 = serve_line(&req, &tools, &mut j2).await;
+        assert_eq!(out1, out3, "跨重开必须 replay 缓存错误");
+    }
+
+    /// 新调用两相账顺序：意图行先落、完成行后落；完成后意图不再未决。
+    #[tokio::test]
+    async fn fresh_call_writes_intent_then_done() {
+        let tools = registry();
+        let ws = tempfile::tempdir().unwrap();
+        let mut j = Journal::with_agent_id(ws.path(), "agent-a");
+        let out = serve_line(&v2_req("c-fresh-1"), &tools, &mut j).await;
+        let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+        assert_eq!(v["result"], "run-1", "{v}");
+        assert_eq!(j.pending_intent("c-fresh-1"), None, "完成后意图了结");
+        let raw =
+            std::fs::read_to_string(ws.path().join(super::super::journal::JOURNAL_REL)).unwrap();
+        let lines: Vec<&str> = raw.lines().collect();
+        assert_eq!(lines.len(), 2, "两相账 = 意图行 + 完成行: {raw}");
+        assert!(
+            lines[0].contains(r#""kind":"intent""#) && lines[0].contains("c-fresh-1"),
+            "第一行必须是意图行: {}",
+            lines[0]
+        );
+        assert!(
+            lines[1].contains(r#""result":"run-1""#),
+            "第二行必须是完成行: {}",
+            lines[1]
+        );
+    }
 }
 
 /// run() 前置守卫：workspace env 缺失必须干净报错（而不是进 stdio 循环挂死）。

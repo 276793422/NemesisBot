@@ -608,3 +608,167 @@ fn record_spec_project_mirror_keeps_project_id_checkpoint_key() {
     assert_eq!(spec.display_name, "mirrored");
     assert!(spec.instructions_trusted, "记录形态默认 verbatim");
 }
+
+// ---------------------------------------------------------------------------
+// G1（2026-10-18 三方复评整改批三）：from_record 的记录→spec 映射
+// （tier / tool_policy 折算 / persona_refs）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn record_spec_maps_tier_tool_policy_persona() {
+    let mut record = nemesis_taskstore::AgentRecord::new_provisioning(
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "worker",
+        "selfbuilt",
+    );
+    record.tier = "mini".to_string();
+    record.tool_policy = serde_json::json!({
+        "deny": ["exec", " exec ", ""],
+        "hidden": ["registry_write"],
+        "allow": ["read_file", "grep"]
+    });
+    record.persona_refs = serde_json::json!({ "dir": "C:/personas/dev" });
+    let spec = super::AgentLoopSpec::from_record(&record);
+    // tier 原样透传（工厂侧 parse：非法 loud warn 回落 config 驱动）。
+    assert_eq!(spec.tier, "mini");
+    // 折算：hidden = hidden ∪ deny（trim + 去重 + 丢弃空白项）；allow 原样。
+    assert_eq!(
+        spec.tool_policy_hidden,
+        vec!["registry_write", "exec"],
+        "deny∪hidden 折算（trim 去重）"
+    );
+    assert_eq!(spec.tool_policy_allow, vec!["read_file", "grep"]);
+    // persona_refs.dir → persona_dir。
+    assert_eq!(
+        spec.persona_dir,
+        Some(PathBuf::from("C:/personas/dev")),
+        "persona_refs.dir 映射"
+    );
+}
+
+#[test]
+fn record_spec_defaults_when_policy_and_persona_absent() {
+    // 全缺省记录（老记录形态）：tier 空、无 policy、Null persona → spec
+    // 零值（工厂侧："" = config 驱动 / 空表 = 不隐藏 / None = 锚 exec_root）。
+    let mut record = nemesis_taskstore::AgentRecord::new_provisioning(
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "plain",
+        "selfbuilt",
+    );
+    record.exec_root = "/tmp/plain".to_string();
+    let spec = super::AgentLoopSpec::from_record(&record);
+    assert_eq!(spec.tier, "");
+    assert!(spec.tool_policy_hidden.is_empty());
+    assert!(spec.tool_policy_allow.is_empty());
+    assert_eq!(spec.persona_dir, None);
+    // G2：记录映射不携带浏览器 profile（workspace 根不在记录视野内——
+    // selfbuilt 由 AgentLoopManager 按 agent home 赋值）。
+    assert_eq!(spec.browser_profile, None);
+}
+
+#[test]
+fn tool_policy_fold_and_persona_dir_edge_shapes() {
+    // 非 JSON 对象 / 非字符串条目 / 空对象——诚实折空。
+    let (hidden, allow) = super::tool_policy_fold(&serde_json::Value::Null);
+    assert!(hidden.is_empty() && allow.is_empty());
+    let (hidden, allow) = super::tool_policy_fold(&serde_json::json!({ "deny": [1, true, null] }));
+    assert!(hidden.is_empty() && allow.is_empty());
+    // persona_refs 边缘形态：Null / 缺 dir / 空 dir / 非字符串 → None。
+    for refs in [
+        serde_json::Value::Null,
+        serde_json::json!({}),
+        serde_json::json!({ "dir": "  " }),
+        serde_json::json!({ "dir": 42 }),
+    ] {
+        assert_eq!(
+            super::persona_dir_from_refs(&refs),
+            None,
+            "refs {refs} 应折 None"
+        );
+    }
+}
+
+/// G1 工厂级消费：记录 tier 钉死 + tool_policy 折算在**构建产物**上生效
+/// ——config 说 big（条目无 model_tier → 默认 big），记录钉 mini 必须赢；
+/// deny 折算进 extra_hidden 后供给闸真实收窄。
+#[tokio::test]
+async fn record_spec_build_consumes_tier_pin_and_tool_policy() {
+    use nemesis_types::capability::ModelTier;
+
+    let home = unique_home("recg1");
+    // config 档位缺省（→ big，空白名单直通）：与记录钉死形成对照。
+    let cfg = serde_json::json!({
+        "agents": { "defaults": { "llm": "big-model", "max_tool_iterations": 5 } },
+        "model_list": [ {
+            "model_name": "big-model",
+            "model": "testai/big-model",
+            "api_key": "test-key",
+            "api_base": "http://127.0.0.1:9"
+        } ]
+    });
+    std::fs::write(
+        home.join("config.json"),
+        serde_json::to_string_pretty(&cfg).unwrap(),
+    )
+    .unwrap();
+    let shared = Arc::new(SharedResources {
+        home: home.clone(),
+        workspace: home.join("workspace"),
+        cron_service: Arc::new(std::sync::Mutex::new(
+            nemesis_cron::service::CronService::new(""),
+        )),
+        mcp_config_path: home.join("nonexistent-mcp.json"),
+        ..Default::default()
+    });
+    std::fs::create_dir_all(home.join("workspace")).unwrap();
+    let main_loop = build_agent_loop(&shared).expect("main loop builds");
+    let session_store = main_loop.session_store().cloned().unwrap();
+
+    let exec_root = home.join("agents").join("g1w").join("home");
+    std::fs::create_dir_all(&exec_root).unwrap();
+    let mut record = nemesis_taskstore::AgentRecord::new_provisioning(
+        "cccccccccccccccccccccccccccccccc",
+        "pinned-worker",
+        "selfbuilt",
+    );
+    record.exec_root = exec_root.to_string_lossy().to_string();
+    record.tier = "mini".to_string();
+    record.tool_policy = serde_json::json!({ "deny": ["grep"] });
+    // G2：从记录映射后手动补 browser_profile（生产由 AgentLoopManager 赋值
+    // ——这里直填，验证 spec→loop 构建消费链路）。
+    let profile_dir = exec_root.join("browser-profile");
+    let spec = {
+        let mut s = super::AgentLoopSpec::from_record(&record);
+        s.browser_profile = Some(profile_dir.clone());
+        s
+    };
+    let built = super::build_agent_loop_from_spec(&shared, &spec, session_store)
+        .expect("record loop builds");
+
+    // deny→extra_hidden：合并隐藏表快照含 grep（供给闸对合并表的收窄在
+    // nemesis-agent g1_agent_slots_tests 钉死——两段链条拼合完整证据）。
+    let hidden = built.effective_hidden_tools();
+    assert!(
+        hidden.contains(&"grep".to_string()),
+        "deny 折算必须进合并隐藏表，实际 {hidden:?}"
+    );
+    // 记录钉死压过 config 档位（big）。
+    assert_eq!(
+        built.tier(),
+        ModelTier::Mini,
+        "记录 tier 钉死必须在构建产物生效"
+    );
+    // 供给闸语义对照：grep 仍在注册表（隐藏≠摘除——收窄发生在闸上，
+    // 闸行为由 nemesis-agent g1_agent_slots_tests 钉死）。
+    let names = built.tool_names();
+    assert!(
+        names.iter().any(|n| n == "grep"),
+        "grep 应仍在注册表（隐藏≠摘除），实际 {names:?}"
+    );
+    // G2：spec.browser_profile 必须消费进构建产物（MCP 装配注入链的起点）。
+    assert_eq!(
+        built.browser_profile(),
+        Some(profile_dir.to_string_lossy().as_ref()),
+        "spec.browser_profile 必须贯通到 loop"
+    );
+}

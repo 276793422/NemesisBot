@@ -1207,6 +1207,34 @@ async fn review_issue(
         &exec_policy,
     )
     .await;
+    // G4 anchor_summary 注记（2026-10-18 批六）：锚点双检结果合并进最新派
+    // 发任务的交付记录（deliveries.payload.anchor_summary）——交付证据自此
+    // 自带客观核验摘要，审计/复盘单行可读（无锚点单不注记，payload 不加
+    // 空壳键）。best-effort：无交付记录（人工转入/旧流程单）、tasks.db 不
+    // 在、合并失败 = 诚实留痕，评审流程不受影响。
+    if !anchor_results.is_empty()
+        && let (Some(task_id), Some(db)) = (
+            dispatches.last().map(|d| d.task_id.clone()),
+            deps.cluster.task_db(),
+        )
+    {
+        let summary = serde_json::json!({
+            "anchor_summary": {
+                "passed": nemesis_board::all_passed(&anchor_results),
+                "total": anchor_results.len(),
+                "detail": nemesis_board::render_anchor_summary(&anchor_results),
+                "checked_at": chrono::Local::now().to_rfc3339(),
+            }
+        });
+        match db.merge_delivery_payload(&task_id, &summary) {
+            Ok(_) => {
+                debug!("[BoardReview] issue {issue_id} anchor_summary 已注记进交付 {task_id}")
+            }
+            Err(e) => warn!(
+                "[BoardReview] issue {issue_id} anchor_summary 注记失败（交付 {task_id}）: {e}"
+            ),
+        }
+    }
     // exec 跳过注记：诚实落系统评论 + 注入 prompt（评审员知道命令类验收
     // 未执行，不自行脑补 PASS）。注记自描述原因（开关关闭 / 环境依赖缺失）。
     if !anchor_skipped.is_empty() {
@@ -1612,6 +1640,48 @@ async fn review_issue(
                     );
                 }
             }
+        }
+    }
+
+    // ---- G4 交付证据契约（2026-10-18 批六）：PASS 必须有交付记录背书。
+    // 置位面：issue 级 `requires_evidence`（AC 含 file: 锚点建单时自动置
+    // 位，恒生效）∪ 全局 `board.review.require_delivery_evidence`（所有单
+    // 子加码）。校验对象 = 最新派发任务在 tasks.db deliveries 表的记录
+    // （A 端 handle_task_complete 落账，幂等键 = task_id）；delivered/
+    // confirmed 两态算在场，rejected 不算。缺失 = 确定性降级 FAIL——结构
+    // 事实零 token 可判（不劳语义评审，也不进 B2b 自检挂起：自检取证的
+    // 是执行证据，改变不了「没有交付记录」这个账本事实），gap 固定「缺交
+    // 易证据」前缀；后续重派/熔断/转人工全部走既有 FAIL 决策表，无新分支。
+    // 本闸在 B2b 之后执行：LLM 主动要证据的挂起路径优先走完，二段评审的
+    // 结论回到这里同样过闸。
+    let mut output = output;
+    let evidence_required = cfg.review.require_delivery_evidence || issue.requires_evidence;
+    if evidence_required && output.verdict == nemesis_board::ReviewVerdict::Pass {
+        let delivered = dispatches
+            .last()
+            .map(|d| d.task_id.clone())
+            .and_then(|task_id| {
+                deps.cluster
+                    .task_db()
+                    .and_then(|db| db.delivery_by_key(&task_id).ok())
+                    .flatten()
+                    .map(|rec| matches!(rec.status.as_str(), "delivered" | "confirmed"))
+            })
+            .unwrap_or(false);
+        if !delivered {
+            output.verdict = nemesis_board::ReviewVerdict::Fail;
+            output.gap = "缺交付证据：本单要求交付记录背书（AC 含 file: 锚点或全局交付证据开关生效），但最新派发任务在交付账本中无 delivered/confirmed 记录——worker 未走交付管线或交付已被拒。请走正常交付流程后重交。".to_string();
+            output.reasons.push(
+                "交付证据缺失：最新派发任务无 delivered/confirmed 交付记录（评审门强制）"
+                    .to_string(),
+            );
+            let _ = post_review_comment(
+                store,
+                issue_id,
+                &deps.cluster,
+                "🔍 交付证据闸：评审结论 PASS 但最新派发任务在交付账本无 delivered/confirmed 记录，按缺证据降级 FAIL 处置（重派/转人工走既有 FAIL 流程）。",
+            );
+            warn!("[BoardReview] issue {issue_id} 交付证据缺失：PASS 降级 FAIL（缺交付记录）");
         }
     }
 

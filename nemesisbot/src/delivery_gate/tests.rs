@@ -99,3 +99,41 @@ fn bad_base_tree_hex_is_none_not_panic() {
     let out = capture_task_delivery_with_store(&store, "t-badbase", Some("deadbeef"), "node-b");
     assert!(out.is_none(), "坏基线 = None（不造证据不炸链路）");
 }
+
+/// G4 截断契约（2026-10-18 批六）：patch 超 `PATCH_MAX_BYTES` 截断时，
+/// wire payload `patch_truncated=true` 必须伴随非空 `patch_path`（完整
+/// patch 在 worker 本地留底、`deliveries.patch` 可指路取回——截断不等于
+/// 丢失证据线索）。消费方（交付账本/验收审计）据此可以信赖该不变量。
+#[test]
+fn truncated_patch_still_carries_patch_path() {
+    let (_d, root) = git_root();
+    std::fs::write(root.join("big.txt"), "x\n").unwrap();
+    let store = Arc::new(CheckpointStore::new(None, root.clone()));
+    store.begin(1, "任务开始");
+    let base = store.current_tree_hex().expect("git 形态有实时 tree");
+
+    // 单行 ~1.2MB 新增内容 > 1MB 上限 → 截断（diff 含 -x/+yy…y 两行 ≈
+    // 载荷字节数，必须实打实超 PATCH_MAX_BYTES）。
+    let big = "y".repeat(1_200_000) + "\n";
+    std::fs::write(root.join("big.txt"), &big).unwrap();
+
+    let out = capture_task_delivery_with_store(&store, "t-trunc", Some(&base), "node-b")
+        .expect("git 形态成功捕获");
+    let obj = out.as_object().expect("delivery 是 JSON object");
+    assert_eq!(obj["patch_truncated"], true, "1.2MB diff 必须触发截断");
+    let path = obj["patch_path"].as_str().expect("patch_path 在场");
+    assert!(
+        !path.trim().is_empty(),
+        "截断时 patch_path 必填（留底可取回）"
+    );
+    // 盘上留底 = wire 截断后原文（一字节不差，证据链自洽）。
+    let on_disk =
+        std::fs::read_to_string(root.join("logs").join("deliveries").join("t-trunc.patch"))
+            .expect("patch 已落盘");
+    let wire_patch = obj["patch"].as_str().expect("patch 是字符串");
+    assert_eq!(on_disk, wire_patch, "盘上留底 = wire 证据");
+    assert!(
+        wire_patch.len() <= nemesis_agent::checkpoint::PATCH_MAX_BYTES,
+        "wire patch 不超上限"
+    );
+}

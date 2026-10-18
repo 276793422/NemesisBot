@@ -92,6 +92,17 @@ fn is_terminal_status(status: &TaskStatus) -> bool {
     )
 }
 
+/// G3：attempt 归因收账的终态串映射（runs 行状态机由 SqliteTaskStore
+/// 适配器维护；这里只映射 attempts 收账串——非终态 None = 不记账）。
+fn ledger_attempt_status(status: TaskStatus) -> Option<&'static str> {
+    match status {
+        TaskStatus::Completed => Some("succeeded"),
+        TaskStatus::Failed => Some("failed"),
+        TaskStatus::Cancelled => Some("cancelled"),
+        _ => None,
+    }
+}
+
 /// In-memory task store backed by a DashMap.
 ///
 /// Mirrors Go's `InMemoryTaskStore`.
@@ -481,6 +492,10 @@ impl TaskManager {
         ) {
             Ok(true) => {
                 crate::logger::log_task("assigned", task_id, node_id);
+                // G3：attempt 归因开账（谁领的、何时开跑；runs 行由
+                // SqliteTaskStore 适配器随本次转移置 running；账本未安装
+                // = 零变化，best-effort 不阻断）。
+                nemesis_taskstore::ledger::begin_cluster_attempt(task_id, node_id);
                 true
             }
             Ok(false) => {
@@ -541,6 +556,17 @@ impl TaskManager {
             }
             Ok(true) => {
                 if let Ok(task) = self.store.get(task_id) {
+                    // G3：attempt 归因收账（runs 行由 SqliteTaskStore 适配器
+                    // 随本次 settle 落终态；这里只关 attempts——账本未安装
+                    // = 零变化，best-effort 不阻断 callback）。
+                    if let Some(s) = ledger_attempt_status(status) {
+                        let err = task
+                            .result
+                            .as_ref()
+                            .and_then(|r| r.get("error"))
+                            .and_then(|v| v.as_str());
+                        nemesis_taskstore::ledger::finish_cluster_attempt(task_id, s, err);
+                    }
                     self.fire_callback(&task);
                 }
                 true
@@ -723,6 +749,13 @@ fn cleanup_completed(
                     );
 
                     if settled == Ok(true) {
+                        // G3：attempt 归因收账（timeout 判死同口径；runs 行
+                        // 已随本次条件转移落终态，这里只关 attempts）。
+                        nemesis_taskstore::ledger::finish_cluster_attempt(
+                            &task.id,
+                            "failed",
+                            Some("safety-net timeout"),
+                        );
                         crate::logger::log_task(
                             "timeout",
                             &task.id,

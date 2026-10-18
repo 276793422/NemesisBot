@@ -15,6 +15,17 @@
 //! is passed via `NEMESISBOT_EXECUTOR_WORKSPACE` so the child does not re-run
 //! path resolution.
 //!
+//! ## MCP 与执行体的边界（G2，2026-10-18）
+//!
+//! 执行体**不装配 MCP**（`register_shared_tools` 是纯内置工具注册表）——
+//! 生产 MCP 走 gateway 侧 per-agent-loop 装配（`enable_mcp_reload`）。执行体
+//! spawn 时带的 `NEMESISBOT_BROWSER_PROFILE` env 是浏览器身份的**上下文标记**
+//! （P3 T6 语义保留）：它只在「有进程在执行体上下文里 spawn MCP server」时
+//! 生效，而该场景在生产不存在；浏览器 profile 的生产路径是 gateway 内
+//! agent loop 经 `McpManager` 显式注入（server 配置 opt-in
+//! `browser_profile: true`）。两层语义同源见 nemesis-mcp
+//! `stdio_transport::args_with_browser_profile` 文档。
+//!
 //! ## U11 用户态沙盒（Linux landlock/bwrap、macOS Seatbelt）
 //!
 //! 非 Windows 上 `executor.sandbox=true` 时 gateway 以 stdio spawn + env
@@ -579,8 +590,8 @@ async fn stdio_loop(
 }
 
 /// 服务一行请求（两个传输循环共用的协议主体）：解析 → journal replay 命中
-/// 回缓存行 → 否则 dispatch → （v2 请求）journal 记账 → 序列化响应行。
-/// 返回值恒带换行。
+/// 回缓存行 → 未决意图分类（R2 两相账）→ dispatch → （v2 请求）intent
+/// 记账 → journal 记账 → 序列化响应行。返回值恒带换行。
 async fn serve_line(
     line: &str,
     tools: &HashMap<String, Box<dyn Tool>>,
@@ -599,7 +610,7 @@ async fn serve_line(
         }
     };
 
-    // 幂等 replay（P3）：call_id 在账 → 该调用曾在先前进程内**执行完成**
+    // 幂等 replay（P3）：call_id 在完成账 → 该调用曾在先前进程内**执行完成**
     // （journal 只在执行完成后记账），直接回缓存结果，不重复执行——
     // 杀进程/杀 gateway 语义对齐 kill -9：已提交且完成的调用 at-most-once。
     if let Some(cached) = journal.lookup(&req.call_id) {
@@ -608,6 +619,43 @@ async fn serve_line(
         cached.push('\n');
         return cached;
     }
+
+    // R2 两相账 replay 分类：intent 在账而完成不在 = 上次尝试结果未知
+    // （进程在完成记账前中断，副作用可能已发生）。只读白名单安全重执行；
+    // 其余诚实回错并**把错误记为完成账**——supervisor 后续按原 call_id 重发
+    // 回缓存错误（不重复尝试），模型以新 call_id 显式重试 = 副作用只发生
+    // 一次。诚实边界：外部副作用的物理 exactly-once 不存在（需业务幂等键），
+    // 账本交付的是 outcome-unknown 诚实化，不是虚假的恰好一次。
+    if let Some(pending_tool) = journal.pending_intent(&req.call_id)
+        && !is_readonly_replayable(pending_tool)
+    {
+        debug!(
+            "[executor] journal pending intent (outcome unknown): call_id={} tool={pending_tool}",
+            req.call_id
+        );
+        let err = ExecutorResponseWire {
+            v: if req.v == nemesis_agent::executor_transport::PROTOCOL_V2 {
+                nemesis_agent::executor_transport::PROTOCOL_V2
+            } else {
+                0
+            },
+            call_id: req.call_id.clone(),
+            ok: false,
+            result: String::new(),
+            error: format!(
+                "上次尝试结果未知（可能已执行，进程在完成记账前中断），勿盲重试；如需重试请以新 call_id 显式发起 (tool: {pending_tool})"
+            ),
+        };
+        let err_line = serialize_response(&err);
+        journal.record(&err_line);
+        let mut err_line = err_line;
+        err_line.push('\n');
+        return err_line;
+    }
+
+    // 两相账第一相：dispatch 前记意图（崩溃窗口 = 意图在账而完成不在 →
+    // 重启后 replay 分类可判「结果未知」）。
+    journal.record_intent(&req.call_id, &req.tool);
 
     let resp = dispatch(tools, req).await;
     let resp_line = serialize_response(&resp);
@@ -618,6 +666,15 @@ async fn serve_line(
     let mut resp_line = resp_line;
     resp_line.push('\n');
     resp_line
+}
+
+/// R2：崩溃重放可安全重执行的只读白名单（保守子集：纯读取、无副作用——
+/// 执行失败最坏代价是重读一次）。**不在册 = 一律 outcome-unknown 诚实报错**；
+/// 新成员须显式评估加入，不许「看起来无害」顺手放行。
+const READONLY_REPLAYABLE: &[&str] = &["read_file", "list_dir", "grep"];
+
+fn is_readonly_replayable(tool: &str) -> bool {
+    READONLY_REPLAYABLE.contains(&tool)
 }
 
 fn serialize_response(resp: &ExecutorResponseWire) -> String {

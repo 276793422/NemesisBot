@@ -290,13 +290,29 @@ impl AgentLoop {
         self.tools.read().get(name).map(|t| t.parameters())
     }
 
+    /// G2（2026-10-18 批四）：注入 per-agent 浏览器 profile（须在
+    /// `enable_mcp_reload` 之前——装配期随 manager 转 MCP spawn 链）。
+    /// None = env 回落语义（主/项目 loop 恒 None）。
+    pub fn set_browser_profile(&mut self, profile: Option<String>) {
+        self.browser_profile = profile;
+    }
+
+    /// G2：当前生效的 per-agent 浏览器 profile（工厂测试与可观测面）。
+    pub fn browser_profile(&self) -> Option<&str> {
+        self.browser_profile.as_deref()
+    }
+
     /// Enable automatic MCP tool reload via mtime-based change detection.
     ///
     /// Creates an `McpManager` for the given config path, discovers tools from
     /// all currently configured servers, and registers them. On each LLM round,
     /// the manager checks if the config file changed and loads new servers.
     pub fn enable_mcp_reload(&mut self, config_path: std::path::PathBuf) {
-        let mgr = nemesis_mcp::manager::McpManager::new(config_path);
+        let mut mgr = nemesis_mcp::manager::McpManager::new(config_path);
+        // G2（2026-10-18 批四）：per-agent 浏览器 profile 随 manager 走——
+        // 启动全量挂载与后续热重载补挂都经 mgr.discover_tools 单点消费
+        // （注入与否的 opt-in 闸在 transport 侧按 server 配置执行）。
+        mgr.set_browser_profile(self.browser_profile.clone());
         if mgr.is_enabled() {
             for server in mgr.list_servers().to_vec() {
                 let server_name = server.name.clone();

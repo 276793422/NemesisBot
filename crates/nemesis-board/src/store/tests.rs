@@ -112,6 +112,65 @@ fn create_issue_treats_blank_ac_as_missing() {
 }
 
 // ---------------------------------------------------------------------------
+// G4 交付证据契约（2026-10-18 批六）：AC 含 file: 类锚点 → requires_evidence
+// 建单自动置位（谓词 = has_file_anchor 单一真相源；评审门消费面在
+// board_review）。content-regex/exec 锚点与无锚点不置位（re: 锚点核的是
+// 交付文本非文件产物，exec: 由锚点执行闸自行保证）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn create_issue_file_anchor_ac_auto_sets_requires_evidence() {
+    let (store, dir) = temp_store("evidence-file-anchor");
+    // 三种 file: 形态各自置位。
+    for (tag, ac) in [
+        ("exists", "[CHECK] file:src/main.rs exists"),
+        ("re", "[CHECK] file:src/main.rs re:fn main"),
+        ("contains", "[CHECK] file:README.md contains:安装"),
+    ] {
+        let issue = store
+            .create_issue(NewIssue {
+                title: format!("带文件锚点的单 {tag}"),
+                acceptance_criteria: Some(ac.to_string()),
+                ..new_issue("x")
+            })
+            .unwrap();
+        assert!(
+            issue.requires_evidence,
+            "file:{tag} 锚点必须自动置位 requires_evidence"
+        );
+    }
+    cleanup(&dir);
+}
+
+#[test]
+fn create_issue_non_file_anchor_ac_keeps_requires_evidence_false() {
+    let (store, dir) = temp_store("evidence-non-file");
+    for (tag, ac) in [
+        ("plain", "构建通过且测试全绿"),
+        ("content-regex", "正常交付\n[CHECK] re:DELIVERY_MARK_42"),
+        ("exec", "命令自证\n[CHECK] exec:cargo test"),
+    ] {
+        let issue = store
+            .create_issue(NewIssue {
+                title: format!("非文件锚点的单 {tag}"),
+                acceptance_criteria: Some(ac.to_string()),
+                ..new_issue("x")
+            })
+            .unwrap();
+        assert!(
+            !issue.requires_evidence,
+            "{tag} 形态不得置位 requires_evidence"
+        );
+    }
+    // 自动生成 AC（无锚点）同样不置位。
+    let issue = store
+        .create_issue(new_issue("项目代码无法正确启动，无法看到游戏主界面"))
+        .unwrap();
+    assert!(!issue.requires_evidence, "自动生成 AC 无文件锚点 = 不置位");
+    cleanup(&dir);
+}
+
+// ---------------------------------------------------------------------------
 // 编号 + 创建
 // ---------------------------------------------------------------------------
 

@@ -9,6 +9,7 @@
 
 use super::AgentManager;
 use nemesis_web::handlers::agents::{AgentInfo, AgentSlotInfo, AgentsBridge};
+use std::sync::Arc;
 
 /// tier 白名单（空串与 auto 同义；与 `resolve_active_tier` 的档位集一致）。
 fn validate_tier(tier: &str) -> Result<String, String> {
@@ -74,8 +75,8 @@ impl AgentsBridge for AgentManager {
         Ok(to_info(rec))
     }
 
-    fn remove(&self, agent_id: &str) -> Result<(), String> {
-        self.remove(agent_id)
+    async fn remove(&self, agent_id: &str) -> Result<(), String> {
+        self.remove(agent_id).await
     }
 
     // -- T9 生命周期面 ------------------------------------------------------------
@@ -124,5 +125,31 @@ impl AgentsBridge for AgentManager {
         self.runtime()
             .map(|rt| rt.persistent_enabled())
             .unwrap_or(false)
+    }
+
+    // -- G1 会话面（agents.send / resolve_session_loop agents 臂）-------------
+
+    fn loop_for_agent(
+        &self,
+        agent_id: &str,
+    ) -> Result<Arc<nemesis_agent::r#loop::AgentLoop>, String> {
+        let lm = self.loop_manager().ok_or_else(|| {
+            "agent 会话面未装配（loop manager 未接线，网关需为装配 gateway 模式）".to_string()
+        })?;
+        lm.loop_for_agent(agent_id)
+    }
+
+    async fn send_to_agent(
+        &self,
+        agent_id: &str,
+        msg: nemesis_types::channel::InboundMessage,
+    ) -> Result<(), String> {
+        let lm = self.loop_manager().ok_or_else(|| {
+            "agent 会话面未装配（loop manager 未接线，网关需为装配 gateway 模式）".to_string()
+        })?;
+        lm.send_message(agent_id, msg).await?;
+        // 投递是一次显式活动：记 last_active（P2 touch 消费点，尽力而为）。
+        let _ = self.touch(agent_id);
+        Ok(())
     }
 }

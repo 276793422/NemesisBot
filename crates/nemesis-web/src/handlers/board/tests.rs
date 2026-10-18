@@ -4946,6 +4946,7 @@ fn bare_issue(role: Option<&str>, tags: &[&str]) -> nemesis_board::Issue {
         required_tags: tags.iter().map(|s| s.to_string()).collect(),
         required_profession: None,
         required_capabilities: vec![],
+        requires_evidence: false,
         created_at: 0,
         updated_at: 0,
     }

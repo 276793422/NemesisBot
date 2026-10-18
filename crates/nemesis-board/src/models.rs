@@ -199,6 +199,13 @@ pub struct Issue {
     /// matcher 硬条件 5）；空 = 无能力需求。
     #[serde(default)]
     pub required_capabilities: Vec<String>,
+    /// 交付证据契约（G4，2026-10-18 批六）：AC 含 file: 类锚点 → 建单时
+    /// 自动置位（单一真相源在 [`crate::store::BoardStore::create_issue`]，
+    /// 按 `has_file_anchor` 谓词）；置位后验收 PASS 必须有交付记录背书
+    /// （delivered/confirmed），缺失 = 评审门降级 FAIL「缺交付证据」。
+    /// 只读字段（无 patch 面）：由 AC 内容决定，不是人工意志位。
+    #[serde(default)]
+    pub requires_evidence: bool,
     /// 取消单「永久收起」标记（P1/A2b 清理出口）：任何前端表面都不再出现，
     /// 即使「显示已取消」开关打开。board.db 仍保留行（审计链完整）。
     #[serde(default)]

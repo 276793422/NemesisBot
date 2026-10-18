@@ -16,6 +16,7 @@ parking_lot = { workspace = true }
 rand = { workspace = true }
 croner = "3"
 nemesis-utils = { workspace = true }
+nemesis-taskstore = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

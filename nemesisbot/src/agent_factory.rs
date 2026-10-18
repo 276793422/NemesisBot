@@ -2576,6 +2576,30 @@ pub struct AgentLoopSpec {
     /// 调用时现查 agents 表（boot 时序：loop 建成早于实体 seed）。
     pub persistent_resolve:
         Option<std::sync::Arc<dyn Fn() -> Option<(String, std::path::PathBuf)> + Send + Sync>>,
+    /// G1（2026-10-18 三方复评整改批三）：记录级能力档位契约（`auto|mini|
+    /// normal|big`，空 = auto = config 驱动，主/项目形态恒空零影响）。
+    /// 非空时 build 侧解析成 [`nemesis_types::capability::ModelTier`] 后
+    /// `set_tier_override` 钉死——config 重解析/换模型不覆盖记录档位。
+    pub tier: String,
+    /// G1：tool_policy 折算的隐藏清单（deny ∪ hidden 原样，通配语义同
+    /// `agents.hidden_tools`）。allow 白名单另由 [`Self::tool_policy_allow`]
+    /// 承载（折叠需注册面，build 侧算）。
+    pub tool_policy_hidden: Vec<String>,
+    /// G1：tool_policy allow 白名单原样。非空时 build 侧在工具注册完成后
+    /// 折算 `注册面 ∖ allow` 并入隐藏表（白名单语义：不在 allow 的全部
+    /// 隐藏）；动态 MCP 快照同折。空 = 无白名单语义。
+    pub tool_policy_allow: Vec<String>,
+    /// G1：人格目录覆盖（persona_refs `{"dir": <abs path>}`）。Some 时
+    /// system prompt 的身份装配根用它（IDENTITY/SOUL 等从该目录读），
+    /// workspace 根仍锚 exec_root（指令链/围栏不随人格目录走）。
+    /// None = ContextBuilder 锚 exec_root（主/项目形态零变化）。
+    pub persona_dir: Option<std::path::PathBuf>,
+    /// G2（2026-10-18 批四）：per-agent 浏览器 profile 目录。Some = 本 loop
+    /// 装配的 MCP server（配置 opt-in `browser_profile: true` 的浏览器类）
+    /// spawn 时注入 `--user-data-dir <dir>`（登录态/cookie per-agent 隔离，
+    /// 落 agent home browser-profile/）。None = env 回落语义（主/项目形态
+    /// 恒 None 零变化；selfbuilt 由 AgentLoopManager 按 agent home 赋值）。
+    pub browser_profile: Option<std::path::PathBuf>,
 }
 
 impl AgentLoopSpec {
@@ -2596,6 +2620,14 @@ impl AgentLoopSpec {
                 rec.kind == nemesis_taskstore::agents::kind::PROJECT
                     && rec.project_id.as_deref() == Some(project_id.as_str())
             })),
+            // G1：项目镜像形态零差异（tier/tool_policy/persona 是 selfbuilt
+            // 记录的契约面，项目镜像不带）。
+            tier: String::new(),
+            tool_policy_hidden: Vec::new(),
+            tool_policy_allow: Vec::new(),
+            persona_dir: None,
+            // G2：项目 loop 共享形态（浏览器 profile 不 per-project）。
+            browser_profile: None,
         }
     }
 
@@ -2605,14 +2637,15 @@ impl AgentLoopSpec {
     /// 路径——那由 from_project 承载）。记忆命名空间按记录走（selfbuilt
     /// = `agents/<id>`，project 镜像 = 空）。
     ///
-    /// `#[allow(dead_code)]`：P5 消费面（自建 agent → 统一工厂的 loop
-    /// 构建入口，P4 交付报告挂起记录在案）；当前无生产调用方，键选择
-    /// 规则由 projects_factory_tests 的 `spec_from_record` 两则钉住。
-    #[allow(dead_code)]
+    /// G1（2026-10-18 三方复评整改批三）：tier/tool_policy/persona_refs
+    /// 全量映射进 spec（P5 消费面 [`AgentLoopManager`] 落地，生产调用方
+    /// 在场；键选择规则由 projects_factory_tests 的 `spec_from_record`
+    /// 两则钉住）。
     pub fn from_record(record: &nemesis_taskstore::AgentRecord) -> Self {
         // 记录形态按 agent_id 精确解析（记录即身份真相源）。id 先克隆
         // 进 'static 闭包（同 from_project）。
         let agent_id = record.agent_id.clone();
+        let (tool_policy_hidden, tool_policy_allow) = tool_policy_fold(&record.tool_policy);
         Self {
             exec_root: std::path::PathBuf::from(&record.exec_root),
             display_name: record.name.clone(),
@@ -2623,8 +2656,55 @@ impl AgentLoopSpec {
             instructions_trusted: true,
             memory_namespace: record.memory_namespace.clone(),
             persistent_resolve: Some(persistent_resolve_by(move |rec| rec.agent_id == agent_id)),
+            tier: record.tier.clone(),
+            tool_policy_hidden,
+            tool_policy_allow,
+            persona_dir: persona_dir_from_refs(&record.persona_refs),
+            // G2：记录映射不携带（workspace 根不在记录视野内）——selfbuilt
+            // 由 AgentLoopManager 按 agent home 赋值（nemesis-path 单一
+            // 派生式 `resolve_agent_browser_profile_in_workspace`）。
+            browser_profile: None,
         }
     }
+}
+
+/// G1：tool_policy JSON →（hidden 折算表, allow 白名单）。deny ∪ hidden
+/// 原样合并（通配语义由消费方 `tool_name_matches_hidden` 承担）；allow
+/// 原样透传（白名单折叠需注册面，build 侧算）。非字符串条目忽略、
+/// 空串剔除；非对象 / 缺键 = 空（无策略语义）。
+pub(crate) fn tool_policy_fold(policy: &serde_json::Value) -> (Vec<String>, Vec<String>) {
+    let pull = |key: &str| -> Vec<String> {
+        policy
+            .get(key)
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|e| e.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<String>>()
+            })
+            .unwrap_or_default()
+    };
+    let mut hidden = pull("hidden");
+    for name in pull("deny") {
+        if !hidden.contains(&name) {
+            hidden.push(name);
+        }
+    }
+    (hidden, pull("allow"))
+}
+
+/// G1：persona_refs JSON → 人格目录。`{"dir": "<abs path>"}` = Some；
+/// Null / 缺 dir / 空串 = None（ContextBuilder 锚 exec_root）。路径不在此
+/// 校验存在性——build 侧目录缺席时 ContextBuilder 自然回落空身份（与
+/// 项目目录无 IDENTITY 同态），注册时不因软引用缺席拒绝创建。
+pub(crate) fn persona_dir_from_refs(refs: &serde_json::Value) -> Option<std::path::PathBuf> {
+    refs.get("dir")
+        .and_then(|d| d.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
 }
 
 /// P2 记忆分域 layout 单一真相源：namespace → 增强内存 data_dir。
@@ -2739,7 +2819,12 @@ pub fn build_agent_loop_from_spec(
     //    prompt 体系与主 loop 同一开关（agents.prompt_system）。
     let prompt_system = nemesis_agent::prompt::PromptSystem::from_config(&cfg.agents);
     let system_prompt = {
-        let mut context_builder = nemesis_agent::context::ContextBuilder::new(&project_dir);
+        // G1：persona_dir 覆盖在场 = 身份装配根换人格目录（IDENTITY/SOUL
+        // 等从该目录读）；workspace 指令链/围栏仍锚 exec_root（下方
+        // set_workspace_root 不受影响）。目录缺席 → ContextBuilder 自然
+        // 回落空身份（软引用语义，不因人格目录缺席拒绝装配）。
+        let prompt_root = spec.persona_dir.as_deref().unwrap_or(project_dir.as_path());
+        let mut context_builder = nemesis_agent::context::ContextBuilder::new(prompt_root);
         context_builder.set_prompt_system(prompt_system);
         context_builder.build_system_prompt(false)
     };
@@ -2798,6 +2883,30 @@ pub fn build_agent_loop_from_spec(
     agent_loop.set_max_concurrent_turns(cfg.agents.defaults.max_concurrent_turns.max(0) as usize);
     agent_loop.set_tier(resolved_tier);
     agent_loop.set_config_path(config_path.clone());
+    // G2（2026-10-18 批四）：per-agent 浏览器 profile（spec 携带；须在
+    // enable_mcp_reload 之前——装配期随 manager 转 MCP spawn 链）。None =
+    // 主/项目形态零变化。
+    agent_loop.set_browser_profile(
+        spec.browser_profile
+            .as_ref()
+            .map(|p| p.to_string_lossy().into_owned()),
+    );
+    // G1：记录级 tier 钉死（spec.tier 非空且非 auto）。Some = 记录是唯一
+    // 真相源——refresh_active_tier 短路，config 重解析/换模型不覆盖记录
+    // 档位；脏值 loud warn 回落 config 驱动（不炸装配）。
+    let spec_tier = spec.tier.trim();
+    if !spec_tier.is_empty() {
+        match serde_json::from_value::<nemesis_types::capability::ModelTier>(
+            serde_json::Value::String(spec_tier.to_string()),
+        ) {
+            Ok(t) if !t.is_auto() => agent_loop.set_tier_override(Some(t)),
+            Ok(_) => {} // auto = config 驱动（与空串同义）
+            Err(_) => warn!(
+                "[AgentFactory] spec tier '{}' 非法（auto|mini|normal|big）— 回落 config 驱动",
+                spec_tier
+            ),
+        }
+    }
     // prompt-pack pro：项目 loop 与主 loop 同一开关、同一描述档位链。
     agent_loop.set_prompt_system(prompt_system);
     #[cfg(feature = "lsp")]
@@ -3038,6 +3147,35 @@ pub fn build_agent_loop_from_spec(
         executor_channel.as_ref(),
         persistent_route.as_ref(),
     );
+
+    // G1：tool_policy 双闸输入（current_hidden_tools 单点合并 → 供给闸 +
+    // dispatch 闸同源生效）。deny/hidden 直合入；allow 非空 = 白名单折算
+    // 「注册面 ∖ allow」。必须在注册完成后执行——折叠需要注册面快照；
+    // MCP 动态发现快照同折（装配期已发现的条目按名折叠，此后动态新发现
+    // 的 mcp 工具靠通配语义覆盖，显式白名单场景属已知边界）。
+    {
+        let mut hidden = spec.tool_policy_hidden.clone();
+        if !spec.tool_policy_allow.is_empty() {
+            let allow: std::collections::HashSet<&str> =
+                spec.tool_policy_allow.iter().map(|s| s.as_str()).collect();
+            let mut candidates = agent_loop.tool_names();
+            candidates.extend(
+                agent_loop
+                    .mcp_tool_snapshot()
+                    .read()
+                    .iter()
+                    .map(|(name, _)| name.clone()),
+            );
+            for name in candidates {
+                if !allow.contains(name.as_str()) && !hidden.contains(&name) {
+                    hidden.push(name);
+                }
+            }
+        }
+        if !hidden.is_empty() {
+            agent_loop.set_extra_hidden_tools(hidden);
+        }
+    }
 
     // Checkpoint 影子库：turn 记录 + git 影子库都落主 workspace
     // logs/project_checkpoints/{pid}/（R7：不污染用户项目目录——项目带 .git

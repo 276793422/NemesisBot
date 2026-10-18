@@ -324,27 +324,41 @@ impl AgentLoop {
     /// from the next turn without restarting the loop). Absent key,
     /// unreadable file, or a standalone loop (no config_path) → empty list
     /// (nothing hidden).
+    ///
+    /// G1（2026-10-18 三方复评整改批三）：与 per-loop `extra_hidden_tools`
+    /// （自建 agent tool_policy 折算，[`Self::set_extra_hidden_tools`]）
+    /// 在此单点合并——供给闸（build_tool_defs）与 dispatch 闸共用本函数，
+    /// 合并一处即双闸天然对齐。config 侧缺键/无 config_path 不影响 extra
+    /// 侧生效；两侧去重合并，顺序不承诺（消费方做通配匹配不做全量比较）。
     pub(crate) fn current_hidden_tools(&self) -> Vec<String> {
-        let path = match self.config_path.read().clone() {
-            Some(p) => p,
-            None => return Vec::new(),
-        };
-        let v = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
-        v.and_then(|v| {
-            v.get("agents")
-                .and_then(|a| a.get("hidden_tools"))
-                .and_then(|h| h.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|e| e.as_str())
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect::<Vec<String>>()
+        let mut merged: Vec<String> = self.extra_hidden_tools.read().clone();
+        let config_list = match self.config_path.read().clone() {
+            Some(p) => {
+                let v = std::fs::read_to_string(&p)
+                    .ok()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+                v.and_then(|v| {
+                    v.get("agents")
+                        .and_then(|a| a.get("hidden_tools"))
+                        .and_then(|h| h.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|e| e.as_str())
+                                .map(|s| s.trim().to_string())
+                                .filter(|s| !s.is_empty())
+                                .collect::<Vec<String>>()
+                        })
                 })
-        })
-        .unwrap_or_default()
+                .unwrap_or_default()
+            }
+            None => Vec::new(),
+        };
+        for name in config_list {
+            if !name.is_empty() && !merged.contains(&name) {
+                merged.push(name);
+            }
+        }
+        merged
     }
 
     /// 角色隐藏 fresh-read（2026-09-28 角色目录与分档供给；`current_hidden_tools`

@@ -215,6 +215,11 @@ impl McpHandler {
             // spawn 空命令才炸。读入后由下方 normalize 抄到 url（url 空时），
             // 两种调用约定（url 存命令 / command 直填）产出同一条可挂载条目。
             command: crate::handlers::get_opt_str(data, "command").unwrap_or_default(),
+            // G2：浏览器 profile 注入 opt-in（缺省 false = 普通 MCP 零变化）。
+            browser_profile: data
+                .get("browser_profile")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
             extra: std::collections::BTreeMap::new(),
         };
         // 新建无存量可还原：掩码值一律 loud 拒绝，绝不把掩码当真值落盘。
@@ -384,6 +389,10 @@ impl McpHandler {
                 && let Ok(parsed) = serde_json::from_value::<Vec<String>>(v)
             {
                 server.tags = parsed;
+            }
+            // G2：浏览器 profile opt-in 补丁臂（未传 = 存量原样——patch 语义）。
+            if let Some(v) = data.get("browser_profile").and_then(|v| v.as_bool()) {
+                server.browser_profile = v;
             }
             // 结构闸（2026-10-15 第十三轮）：patch 后条目必须仍挂载可消费
             // ——url 空（http 别名 = 无端点必败；stdio 且无 command = 双空

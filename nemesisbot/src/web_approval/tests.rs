@@ -650,3 +650,335 @@ fn journal_restart_resume_stale_card_decidable_exactly_once() {
     // 终态落账；二次 pending() 不再出卡。
     assert_eq!(mgr.pending().len(), 0);
 }
+
+// ---------------------------------------------------------------------------
+// R3（2026-10-18 三方复评）：落库时序与裁决竞争
+// ---------------------------------------------------------------------------
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex};
+
+/// 可闸门的 journal 包装：按键阻塞 `record_pending`（键 `__pending`）与
+/// `record_decision`（键 = decided_by），把「先落库后可见」「respond 先记账
+/// vs 超时先记账」的竞争摆成确定性时序。未注册的键直通。底层真 SQLite——
+/// 条件更新语义（Ok(true)/Ok(false)）不被 mock 掉。
+struct GateJournal {
+    inner: std::sync::Arc<dyn nemesis_types::approval_journal::ApprovalJournal>,
+    gates: Mutex<HashMap<String, std::sync::Arc<(Mutex<bool>, Condvar)>>>,
+    in_gate: AtomicUsize,
+}
+
+impl GateJournal {
+    fn new(
+        inner: std::sync::Arc<dyn nemesis_types::approval_journal::ApprovalJournal>,
+    ) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            inner,
+            gates: Mutex::new(HashMap::new()),
+            in_gate: AtomicUsize::new(0),
+        })
+    }
+
+    /// 注册闸门（默认关闭）。
+    fn add_gate(&self, key: &str) {
+        self.gates.lock().unwrap().insert(
+            key.to_string(),
+            std::sync::Arc::new((Mutex::new(false), Condvar::new())),
+        );
+    }
+
+    fn open_gate(&self, key: &str) {
+        let g = self.gates.lock().unwrap().get(key).cloned();
+        if let Some(g) = g {
+            let (m, cv) = &*g;
+            let mut open = m.lock().unwrap();
+            *open = true;
+            cv.notify_all();
+        }
+    }
+
+    fn in_gate_count(&self) -> usize {
+        self.in_gate.load(Ordering::SeqCst)
+    }
+
+    fn wait_in_gate(&self, want: usize) {
+        for _ in 0..500 {
+            if self.in_gate_count() >= want {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("in-gate count did not reach {want}");
+    }
+
+    fn park(&self, key: &str) {
+        let g = {
+            let map = self.gates.lock().unwrap();
+            map.get(key).cloned()
+        };
+        if let Some(g) = g {
+            let (m, cv) = &*g;
+            let mut open = m.lock().unwrap();
+            self.in_gate.fetch_add(1, Ordering::SeqCst);
+            while !*open {
+                open = cv.wait(open).unwrap();
+            }
+            self.in_gate.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+
+impl nemesis_types::approval_journal::ApprovalJournal for GateJournal {
+    fn record_pending(
+        &self,
+        entry: &nemesis_types::approval_journal::ApprovalJournalEntry,
+    ) -> Result<(), String> {
+        self.park("__pending");
+        self.inner.record_pending(entry)
+    }
+    fn record_decision(
+        &self,
+        id: &str,
+        decision: nemesis_types::approval_journal::ApprovalDecision,
+        note: Option<&str>,
+        decided_by: &str,
+    ) -> Result<bool, String> {
+        self.park(decided_by);
+        self.inner.record_decision(id, decision, note, decided_by)
+    }
+    fn entry(
+        &self,
+        id: &str,
+    ) -> Result<nemesis_types::approval_journal::ApprovalJournalEntry, String> {
+        self.inner.entry(id)
+    }
+    fn pending_entries(&self) -> Vec<nemesis_types::approval_journal::ApprovalJournalEntry> {
+        self.inner.pending_entries()
+    }
+    fn find_pending(
+        &self,
+        id_or_short: &str,
+    ) -> Option<nemesis_types::approval_journal::ApprovalJournalEntry> {
+        self.inner.find_pending(id_or_short)
+    }
+}
+
+/// R3 不变量：**内存可见（pending 表/广播）⇒ DB pending 已在**。闸住
+/// record_pending 时，pending 表不得出现、ApprovalRequested 不得广播
+/// （旧序 = 先入册+广播后落库，respond 可在 INSERT 前完成裁决 → 幽灵
+/// pending）；放行后链路照常走通。
+#[test]
+fn journal_pending_persists_before_map_visible_and_broadcast() {
+    let dir = tempfile::tempdir().unwrap();
+    let sqlite = journal_at(&dir.path().join("tasks.db"));
+    let gated = GateJournal::new(sqlite.clone());
+    gated.add_gate("__pending");
+
+    let (btx, mut brx) = tokio::sync::broadcast::channel::<AgentEvent>(16);
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(Some(btx), None));
+    mgr.set_journal(gated.clone());
+
+    let result_rx = request_async(mgr.clone(), "req-ord", 300);
+    gated.wait_in_gate(1);
+    assert!(
+        mgr.pending().is_empty(),
+        "record_pending 在闸内时内存 pending 表不得可见"
+    );
+    assert!(
+        brx.try_recv().is_err(),
+        "record_pending 在闸内时不得广播 ApprovalRequested（先 durable 后可见）"
+    );
+
+    gated.open_gate("__pending");
+    wait_pending(&mgr, 1);
+    let e = sqlite.entry("req-ord").unwrap();
+    assert_eq!(e.status, nemesis_types::approval_journal::status::PENDING);
+
+    assert!(mgr.respond("req-ord", true, false, None).unwrap());
+    let e = sqlite.entry("req-ord").unwrap();
+    assert_eq!(e.status, nemesis_types::approval_journal::status::APPROVED);
+    let _ = result_rx.recv_timeout(Duration::from_secs(2));
+}
+
+/// R3：respond 撞上已记账的 Expired（超时先到）→ `Ok(false)` 显式处理：
+/// 不送裁决、诚实报 already decided、台账终态保持 expired。旧代码
+/// send-then-record 会把裁决送进已超时的通道并静默忽略 Ok(false)。
+#[test]
+fn respond_after_expired_records_no_verdict_and_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let sqlite = journal_at(&dir.path().join("tasks.db"));
+    let gated = GateJournal::new(sqlite.clone());
+    gated.add_gate("web-user");
+
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
+    mgr.set_journal(gated.clone());
+
+    let result_rx = request_async(mgr.clone(), "req-race1", 1);
+    wait_pending(&mgr, 1);
+
+    let respond_rx = {
+        let (tx, rx) = mpsc::channel();
+        let m = mgr.clone();
+        std::thread::spawn(move || {
+            let r = m.respond("req-race1", true, false, None);
+            let _ = tx.send(r);
+        });
+        rx
+    };
+    // respond 卡进记账闸（map 已摘除、verdict 已构建）。
+    gated.wait_in_gate(1);
+    // 放过请求方的 1s 超时 → Expired 记账（"timeout" 不在闸内）→ 正常
+    // 超时路径收场。
+    std::thread::sleep(Duration::from_millis(1300));
+    let v = result_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    assert!(!v.approved, "timeout must deny");
+    let e = sqlite.entry("req-race1").unwrap();
+    assert_eq!(e.status, nemesis_types::approval_journal::status::EXPIRED);
+
+    // 放行 respond 的记账 → 条件更新败方（Ok(false)）→ 诚实报错。
+    gated.open_gate("web-user");
+    let r = respond_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let err = r.expect_err("败方 respond 必须报 already decided");
+    assert!(err.contains("already decided"), "err: {err}");
+    // 台账终态不被败方覆盖。
+    let e = sqlite.entry("req-race1").unwrap();
+    assert_eq!(e.status, nemesis_types::approval_journal::status::EXPIRED);
+}
+
+/// R3：超时分支撞上抢先的 respond（respond 的记账先到）→ `Ok(false)` 被尊重：
+/// **不广播假 timeout**、宽限窗收回在途裁决返回真实结果。旧代码无条件广播
+/// 「timeout」+ 强制 deny——用户批了的操作被谎报成超时拒绝。
+#[test]
+fn timeout_honors_raced_respond_and_recovers_verdict() {
+    let dir = tempfile::tempdir().unwrap();
+    let sqlite = journal_at(&dir.path().join("tasks.db"));
+    let gated = GateJournal::new(sqlite.clone());
+    gated.add_gate("web-user");
+    gated.add_gate("timeout");
+
+    let (btx, mut brx) = tokio::sync::broadcast::channel::<AgentEvent>(32);
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(Some(btx), None));
+    mgr.set_journal(gated.clone());
+
+    let result_rx = request_async(mgr.clone(), "req-race2", 1);
+    wait_pending(&mgr, 1);
+
+    let respond_rx = {
+        let (tx, rx) = mpsc::channel();
+        let m = mgr.clone();
+        std::thread::spawn(move || {
+            let r = m.respond("req-race2", true, false, None);
+            let _ = tx.send(r);
+        });
+        rx
+    };
+    // respond 卡进 web-user 记账闸。
+    gated.wait_in_gate(1);
+    // 请求方 1s 超时到期 → 卡进 timeout 记账闸（两笔记账都在闸内）。
+    std::thread::sleep(Duration::from_millis(1300));
+    gated.wait_in_gate(2);
+
+    // 先放行 respond 的记账 → Ok(true) → 送裁决 + 广播 approved。
+    gated.open_gate("web-user");
+    assert!(
+        respond_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .is_ok(),
+        "先到的 respond 必须成功"
+    );
+    // 再放行超时分支的记账 → Ok(false) → 宽限收回在途裁决。
+    gated.open_gate("timeout");
+    let v = result_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    assert!(
+        v.approved,
+        "超时分支必须尊重 respond 的抢先裁决并收回真实结果，得到: {v:?}"
+    );
+
+    // 广播面：requested + resolved(approved)，**没有** resolved(timeout)。
+    let mut kinds = Vec::new();
+    while let Ok(ev) = brx.try_recv() {
+        let k = serde_json::to_value(&ev).unwrap();
+        kinds.push((
+            k["kind"].as_str().unwrap_or("").to_string(),
+            k["data"]["decision"].as_str().unwrap_or("").to_string(),
+        ));
+    }
+    assert!(
+        !kinds
+            .iter()
+            .any(|(k, d)| k == "ApprovalResolved" && d == "timeout"),
+        "败方超时分支不得广播假 timeout: {kinds:?}"
+    );
+    assert!(
+        kinds
+            .iter()
+            .any(|(k, d)| k == "ApprovalResolved" && d == "approved"),
+        "respond 的真实裁决广播必须在场: {kinds:?}"
+    );
+    let e = sqlite.entry("req-race2").unwrap();
+    assert_eq!(e.status, nemesis_types::approval_journal::status::APPROVED);
+    assert_eq!(e.decided_by.as_deref(), Some("web-user"));
+}
+
+/// R3 可用性立场：台账写失败（Err）时裁决照常送达（审批可用性不绑
+/// tasks.db），审计缺失 loud 留痕——响应仍成功。
+struct ErrJournal;
+
+impl nemesis_types::approval_journal::ApprovalJournal for ErrJournal {
+    fn record_pending(
+        &self,
+        _entry: &nemesis_types::approval_journal::ApprovalJournalEntry,
+    ) -> Result<(), String> {
+        Err("db down".to_string())
+    }
+    fn record_decision(
+        &self,
+        _id: &str,
+        _decision: nemesis_types::approval_journal::ApprovalDecision,
+        _note: Option<&str>,
+        _decided_by: &str,
+    ) -> Result<bool, String> {
+        Err("db down".to_string())
+    }
+    fn entry(
+        &self,
+        _id: &str,
+    ) -> Result<nemesis_types::approval_journal::ApprovalJournalEntry, String> {
+        Err("db down".to_string())
+    }
+    fn pending_entries(&self) -> Vec<nemesis_types::approval_journal::ApprovalJournalEntry> {
+        Vec::new()
+    }
+    fn find_pending(
+        &self,
+        _id_or_short: &str,
+    ) -> Option<nemesis_types::approval_journal::ApprovalJournalEntry> {
+        None
+    }
+}
+
+#[test]
+fn respond_still_delivers_when_journal_errors() {
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
+    mgr.set_journal(std::sync::Arc::new(ErrJournal));
+
+    let result_rx = request_async(mgr.clone(), "req-dberr", 300);
+    wait_pending(&mgr, 1);
+    assert!(
+        mgr.respond("req-dberr", true, false, None).unwrap(),
+        "台账 Err 不得阻断裁决送达"
+    );
+    let v = result_rx
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .unwrap();
+    assert!(v.approved);
+}

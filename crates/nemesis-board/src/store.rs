@@ -150,6 +150,17 @@ impl BoardStore {
                 new.description.trim(),
             );
         }
+        // 交付证据契约（G4，2026-10-18 批六）：AC 含 file: 类锚点 →
+        // requires_evidence 自动置位。file: 锚点核的是真实文件产物，验收
+        // PASS 必须有交付记录背书（评审门在 board_review）。单一真相源在
+        // store（WSAPI/CLI/autopilot/planner 全创建路径生效）；谓词走
+        // `has_file_anchor`（拓扑分类单一真相源，勿内联解析）。自动生成
+        // AC 无锚点 → 不置位（语义正确：自动判定基准无文件产物）。
+        let requires_evidence = new
+            .acceptance_criteria
+            .as_deref()
+            .map(crate::anchor::has_file_anchor)
+            .unwrap_or(false);
 
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -201,8 +212,8 @@ impl BoardStore {
                 parent_issue_id, project_id, due_date, position,
                 acceptance_criteria, origin_type, origin_id,
                 required_role, required_tags, required_profession, required_capabilities,
-                created_at, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?21)",
+                requires_evidence, created_at, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?22)",
             params![
                 number,
                 new.title,
@@ -228,6 +239,7 @@ impl BoardStore {
                     .as_deref()
                     .filter(|s| !s.trim().is_empty()),
                 required_capabilities_json,
+                requires_evidence,
                 now,
             ],
         )
@@ -3997,6 +4009,7 @@ fn row_to_issue(row: &rusqlite::Row<'_>) -> rusqlite::Result<Issue> {
             .get::<_, Option<String>>("required_profession")?
             .filter(|s| !s.trim().is_empty()),
         required_capabilities,
+        requires_evidence: row.get::<_, i64>("requires_evidence")? != 0,
         hidden: row.get::<_, i64>("hidden")? != 0,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,

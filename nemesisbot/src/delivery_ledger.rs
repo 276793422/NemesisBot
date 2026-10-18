@@ -96,6 +96,11 @@ impl DeliveryLedgerBridge {
             patch_truncated: rec.payload.get("patch_truncated").and_then(|v| v.as_bool()),
             patch_path: str_field(&rec.payload, "patch_path"),
             patch_present,
+            // 不可变 tree 标识（G4）：worker 交付 payload 自带（capture 时
+            // 写入），旧格式 payload 缺键 = null 诚实降级。
+            commit: str_field(&rec.payload, "commit"),
+            head_tree: str_field(&rec.payload, "tree"),
+            base_tree: str_field(&rec.payload, "base_tree"),
         }
     }
 }

@@ -754,15 +754,16 @@ for line in sys.stdin:
 }
 
 // ---------------------------------------------------------------------------
-// P3 T6: per-agent browser profile injection（args_with_browser_profile）
+// P3 T6 + G2: per-agent browser profile injection（args_with_browser_profile）
 // ---------------------------------------------------------------------------
 
-/// agent 执行体上下文（profile 有值）：追加 `--user-data-dir <dir>`。
+/// opt-in server + profile 在场：追加 `--user-data-dir <dir>`。
 #[test]
-fn browser_profile_args_appended_in_executor_context() {
+fn browser_profile_args_appended_when_opted_in() {
     let args = args_with_browser_profile(
         &["server.js".to_string()],
         Some(r"C:\ws\agents\a1\home\browser-profile"),
+        true,
     );
     assert_eq!(
         args,
@@ -774,24 +775,29 @@ fn browser_profile_args_appended_in_executor_context() {
     );
 }
 
-/// gateway 上下文（env 缺席）：args 原样——共享 MCP server 零变化。
+/// 未 opt-in（G2 闸，默认形态）：即使 profile 在场也不注入——普通 MCP
+/// 零变化，共享 server 不被塞身份。
 #[test]
-fn browser_profile_args_untouched_in_gateway_context() {
+fn browser_profile_args_untouched_without_opt_in() {
     let args = vec![
         "server.js".to_string(),
         "--port".to_string(),
         "9".to_string(),
     ];
-    let out = args_with_browser_profile(&args, None);
+    let out =
+        args_with_browser_profile(&args, Some(r"C:\ws\agents\a1\home\browser-profile"), false);
+    assert_eq!(out, args);
+    // profile 缺失同样原样（env 回落形态的空上下文）。
+    let out = args_with_browser_profile(&args, None, true);
     assert_eq!(out, args);
 }
 
-/// 空串 profile（防御臂）与已显式配置 `--user-data-dir`（用户优先）都
-/// 不注入、不重复。
+/// 空串 profile（防御臂）与已显式配置 `--user-data-dir`（空格与 `=` 两
+/// 形态，G2 修正补 `=` 判重）都不注入、不重复。
 #[test]
 fn browser_profile_args_skip_on_empty_or_user_configured() {
     let args = vec!["server.js".to_string()];
-    assert_eq!(args_with_browser_profile(&args, Some("  ")), args);
+    assert_eq!(args_with_browser_profile(&args, Some("  "), true), args);
 
     let configured = vec![
         "node".to_string(),
@@ -799,7 +805,52 @@ fn browser_profile_args_skip_on_empty_or_user_configured() {
         "/mine".to_string(),
     ];
     assert_eq!(
-        args_with_browser_profile(&configured, Some(r"C:\agent\profile")),
+        args_with_browser_profile(&configured, Some(r"C:\agent\profile"), true),
         configured
     );
+
+    // `=` 形态（G2 修正：旧实现只判空格形态，会把用户配置挤成第二份
+    // user-data-dir——Chromium 取后者，用户配置被静默覆盖）。
+    let configured_eq = vec!["node".to_string(), "--user-data-dir=/mine".to_string()];
+    assert_eq!(
+        args_with_browser_profile(&configured_eq, Some(r"C:\agent\profile"), true),
+        configured_eq
+    );
+}
+
+/// G2：transport 字段接线——opt-in 闸从 server 配置走，显式 profile 覆盖
+/// 只经 `from_config_with_profile`；裸 `new()`（一次性探测）恒不注入。
+#[test]
+fn stdio_transport_profile_field_wiring() {
+    let opted = crate::types::ServerConfig::new("b", "node").browser_profile(true);
+    let plain = crate::types::ServerConfig::new("s", "cmd");
+
+    // 显式覆盖形态：opt-in true + 目录在场。
+    let t = StdioTransport::from_config_with_profile(&opted, Some(r"C:\p".to_string()));
+    assert!(t.browser_profile_opt_in);
+    assert_eq!(t.browser_profile.as_deref(), Some(r"C:\p"));
+
+    // env 回落形态：opt-in true + 目录 None（连接时读进程 env）。
+    let t = StdioTransport::from_config(&opted);
+    assert!(t.browser_profile_opt_in);
+    assert!(t.browser_profile.is_none());
+
+    // 未 opt-in：字段永远 None/false——即使误传显式目录（构造器不越闸）。
+    let t = StdioTransport::from_config_with_profile(&plain, Some(r"C:\p".to_string()));
+    assert!(!t.browser_profile_opt_in);
+    assert_eq!(t.browser_profile.as_deref(), Some(r"C:\p"));
+    // 注入判定由 helper 的 opt_in 参数执行（false → 不注入）。
+    assert_eq!(
+        args_with_browser_profile(
+            &t.args,
+            t.browser_profile.as_deref(),
+            t.browser_profile_opt_in
+        ),
+        t.args
+    );
+
+    // 裸 new()：一次性探测形态恒 false/None。
+    let t = StdioTransport::new("node", vec![], vec![]);
+    assert!(!t.browser_profile_opt_in);
+    assert!(t.browser_profile.is_none());
 }

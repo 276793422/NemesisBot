@@ -38,6 +38,47 @@ fn test_init_db_creates_file_and_tables() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// v19（G4 交付证据契约，2026-10-18 批六）：旧库迁移后 `requires_evidence`
+/// 列在场且存量行默认 0（新列 NOT NULL DEFAULT 0，旧行不误判为要求证据）。
+#[test]
+fn test_migration_v1_to_latest_adds_requires_evidence_default_zero() {
+    let dir = unique_dir("migrate-v19-requires-evidence");
+    let path = dir.join("board.db");
+    std::fs::create_dir_all(&dir).unwrap();
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        conn.execute(
+            "INSERT INTO board_meta(key, value) VALUES('number_prefix', 'NB')",
+            [],
+        )
+        .unwrap();
+        // v1 期已有数据：存量单（迁移后默认 0 断言对象）。
+        conn.execute(
+            "INSERT INTO issue (number, title, status, priority, creator_type, creator_id,
+                position, created_at, updated_at)
+             VALUES('NB-1', '存量单', 'backlog', 1, 'admin', 'admin', 1, 1700000000, 1700000000)",
+            [],
+        )
+        .unwrap();
+    }
+    let conn = init_db(&path).unwrap();
+    let v: i32 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, SCHEMA_VERSION);
+    let flag: i64 = conn
+        .query_row(
+            "SELECT requires_evidence FROM issue WHERE number = 'NB-1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(flag, 0, "存量行默认不要求证据（新列 DEFAULT 0）");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn test_init_db_is_idempotent() {
     let dir = unique_dir("idempotent");

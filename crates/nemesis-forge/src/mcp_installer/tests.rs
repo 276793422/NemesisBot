@@ -175,6 +175,7 @@ async fn test_install_preserves_existing_server_fields() {
         tags: vec!["tag-a".into()],
         command: "old-command".into(),
         args: vec!["old-arg".into()],
+        browser_profile: false,
         extra: [("custom_key".to_string(), serde_json::json!(42))]
             .into_iter()
             .collect(),

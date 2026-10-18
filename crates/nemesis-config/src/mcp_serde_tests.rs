@@ -199,6 +199,31 @@ fn mcp_config_roundtrip_lossless() {
     assert_eq!(parsed, cfg);
 }
 
+/// G2（2026-10-18 批四）：`browser_profile` 键——缺省 false（存量配置零
+/// 迁移）；true round-trip 无损；false 序列化跳过（存量 config.mcp.json
+/// 字节稳定，typed save 不新增噪音键）。
+#[test]
+fn mcp_server_browser_profile_serde_roundtrip() {
+    // 缺省 → false。
+    let plain: McpServerConfig = serde_json::from_str(r#"{"name":"s","command":"node"}"#).unwrap();
+    assert!(!plain.browser_profile);
+    // false 序列化跳过。
+    let out = serde_json::to_string(&plain).unwrap();
+    assert!(!out.contains("browser_profile"), "false 不得落盘: {out}");
+
+    // true 保留 + 序列化带出 + round-trip 无损。
+    let opted: McpServerConfig =
+        serde_json::from_str(r#"{"name":"s","command":"node","browser_profile":true}"#).unwrap();
+    assert!(opted.browser_profile);
+    let out = serde_json::to_string(&opted).unwrap();
+    assert!(
+        out.contains(r#""browser_profile":true"#),
+        "true 必须落盘: {out}"
+    );
+    let back: McpServerConfig = serde_json::from_str(&out).unwrap();
+    assert_eq!(back, opted);
+}
+
 // ---------------------------------------------------------------------------
 // Builder
 // ---------------------------------------------------------------------------

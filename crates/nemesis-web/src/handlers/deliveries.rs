@@ -45,6 +45,14 @@ pub struct DeliveryInfo {
     pub patch_path: Option<String>,
     /// payload 里有内联 patch 文本 = true（内容走 `deliveries.patch`）。
     pub patch_present: bool,
+    // -- 不可变 tree 标识（G4，2026-10-18 批六；旧 payload 缺键 = null）--
+    /// 交付时 head commit（`DeliveryBranchCapture.commit`）。
+    pub commit: Option<String>,
+    /// 交付时 head tree（payload 键 `tree`——完整快照的不可变内容标识）。
+    pub head_tree: Option<String>,
+    /// 执行前 base tree（diff 的锚点侧；与 head_tree 一起构成可复验的
+    /// 变更区间标识）。
+    pub base_tree: Option<String>,
 }
 
 /// nemesisbot 侧交付账本能力的抽象（实现在 nemesisbot，真相源 tasks.db

@@ -136,3 +136,136 @@ fn ring_cap_evicts_oldest_and_compacts_on_reopen() {
     assert_eq!(j2.lookup("c-ring-1"), None);
     assert!(j2.lookup(&format!("c-ring-{n}")).is_some());
 }
+
+// ===========================================================================
+// R2 两相账（2026-10-18 三方复评）：意图行 / 未决面 / 原子压缩 / 盘写失败
+// 内存兜底。
+// ===========================================================================
+
+fn intent_line(call_id: &str, tool: &str) -> String {
+    serde_json::to_string(&super::IntentLine {
+        kind: super::KIND_INTENT,
+        call_id,
+        tool,
+    })
+    .unwrap()
+}
+
+/// 意图 → 重开（崩溃形态）→ 未决面存活；完成记账了结意图；再重开不再未决。
+#[test]
+fn intent_pending_survives_reopen_and_is_resolved_by_done() {
+    let ws = tempfile::tempdir().unwrap();
+    let mut j = Journal::with_agent_id(ws.path(), "agent-a");
+    j.record_intent("c-i-1", "exec");
+    assert_eq!(j.pending_intent("c-i-1"), Some("exec"), "记账即未决");
+    drop(j);
+    // 重开（supervisor 重建子进程形态）：意图从盘上回载。
+    let mut j = Journal::with_agent_id(ws.path(), "agent-a");
+    assert_eq!(
+        j.pending_intent("c-i-1"),
+        Some("exec"),
+        "跨重启未决意图必须存活"
+    );
+    // 完成记账 → 意图了结 → replay 命中完成账。
+    j.record(&v2_line("c-i-1", "done-result"));
+    assert_eq!(j.pending_intent("c-i-1"), None, "完成准入了结意图");
+    assert_eq!(
+        j.lookup("c-i-1"),
+        Some(v2_line("c-i-1", "done-result").as_str())
+    );
+    drop(j);
+    let j = Journal::with_agent_id(ws.path(), "agent-a");
+    assert_eq!(j.pending_intent("c-i-1"), None);
+    assert!(j.lookup("c-i-1").is_some());
+}
+
+/// 已有完成账的 call_id 记意图 = 迟到重复，不落盘不进未决面。
+#[test]
+fn intent_skipped_when_done_already_present() {
+    let ws = tempfile::tempdir().unwrap();
+    let mut j = Journal::with_agent_id(ws.path(), "agent-a");
+    let line = v2_line("c-i-2", "done");
+    j.record(&line);
+    j.record_intent("c-i-2", "exec");
+    assert_eq!(j.pending_intent("c-i-2"), None);
+    let raw = std::fs::read_to_string(journal_path(ws.path())).unwrap();
+    assert_eq!(raw.lines().count(), 1, "盘上仍只有完成一行: {raw}");
+}
+
+/// 盘写失败（`.runtime` 被文件占位 → 建目录失败）不再放弃记账：仍 admit
+/// 进内存环——进程内 replay at-most-once 保持，跨重启退化 at-least-once。
+#[test]
+fn disk_write_failure_still_admits_to_memory() {
+    let ws = tempfile::tempdir().unwrap();
+    // `.runtime` 位置被普通文件占位 → append_line 的 create_dir_all 必败。
+    let blocker = ws.path().join(".runtime");
+    std::fs::write(&blocker, b"not a dir").unwrap();
+    let mut j = Journal::with_agent_id(ws.path(), "agent-a");
+    let line = v2_line("c-df-1", "memory-only");
+    j.record(&line);
+    assert_eq!(
+        j.lookup("c-df-1"),
+        Some(line.as_str()),
+        "盘写失败必须仍有进程内 replay"
+    );
+    // 意图同理：内存未决面成立。
+    j.record_intent("c-df-2", "exec");
+    assert_eq!(j.pending_intent("c-df-2"), Some("exec"));
+}
+
+/// 未决意图不占环形容量、不由裁剪管理：压缩重写时意图行保活在前。
+#[test]
+fn intent_lines_survive_compaction_rewrite() {
+    let ws = tempfile::tempdir().unwrap();
+    let mut j = Journal::with_agent_id(ws.path(), "agent-a");
+    j.record_intent("c-int-keep", "exec");
+    let n = JOURNAL_RING_CAP as u32 + 5;
+    for i in 1..=n {
+        j.record(&v2_line(&format!("c-ci-{i}"), "x"));
+    }
+    drop(j);
+    // 重开触发压缩（完成账超限）。
+    let j2 = Journal::with_agent_id(ws.path(), "agent-a");
+    assert_eq!(
+        j2.pending_intent("c-int-keep"),
+        Some("exec"),
+        "压缩重写必须保活未决意图"
+    );
+    let raw = std::fs::read_to_string(journal_path(ws.path())).unwrap();
+    assert!(
+        raw.contains(r#""kind":"intent""#),
+        "重写后的盘上账本必须仍含意图行"
+    );
+    assert!(j2.lookup(&format!("c-ci-{n}")).is_some());
+}
+
+/// 崩溃截断的半行意图（与半行完成同族）跳过不入内存；同行好账照常回载。
+#[test]
+fn half_written_intent_line_skipped_on_load() {
+    let ws = tempfile::tempdir().unwrap();
+    let path = journal_path(ws.path());
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        format!(
+            "{}\n{{\"kind\":\"intent\",\"call_id\":\"c-trunc\n{}\n{}\n",
+            intent_line("c-ok-intent", "exec"),
+            intent_line("c-good-intent", "grep"),
+            v2_line("c-done-1", "r")
+        ),
+    )
+    .unwrap();
+    let j = Journal::with_agent_id(ws.path(), "agent-a");
+    assert_eq!(
+        j.pending_intent("c-ok-intent"),
+        Some("exec"),
+        "完好意图行照常回载"
+    );
+    assert_eq!(
+        j.pending_intent("c-good-intent"),
+        Some("grep"),
+        "完好意图行照常回载"
+    );
+    assert_eq!(j.pending_intent("c-trunc"), None, "截断半行必须跳过");
+    assert!(j.lookup("c-done-1").is_some());
+}

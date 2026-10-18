@@ -189,6 +189,59 @@ fn executor_sandbox_requested_follows_config_disk_state() {
 }
 
 // ---------------------------------------------------------------------------
+// R1 隔离策略判读（ExecutorIsolationPolicy，无进程）
+// ---------------------------------------------------------------------------
+
+/// R1：策略三键（sandbox/strict/allow_network）同一现读实现——磁盘是唯一
+/// 真相源，缺段/缺键/文件缺失/解析失败 = false（与 serde default 同缺省）。
+#[test]
+fn isolation_policy_reads_config_disk_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = dir.path().join("config.json");
+    let policy = crate::exec_world::ExecutorIsolationPolicy::new(cfg_path.clone());
+
+    std::fs::write(
+        &cfg_path,
+        r#"{"executor":{"sandbox":true,"strict":true,"allow_network":true}}"#,
+    )
+    .unwrap();
+    assert!(policy.sandbox_requested());
+    assert!(policy.strict_required());
+    assert!(policy.allow_network());
+
+    // 翻转 + strict 键缺失
+    std::fs::write(&cfg_path, r#"{"executor":{"sandbox":false}}"#).unwrap();
+    assert!(!policy.sandbox_requested());
+    assert!(!policy.strict_required(), "strict 键缺失 = false");
+    assert!(!policy.allow_network());
+
+    // executor 段缺失（老 config 形态）
+    std::fs::write(&cfg_path, r#"{"gateway":{"port":1}}"#).unwrap();
+    assert!(!policy.sandbox_requested());
+    assert!(!policy.strict_required());
+
+    // 文件消失 / 解析失败 → false（不 panic）
+    std::fs::remove_file(&cfg_path).unwrap();
+    assert!(!policy.strict_required());
+    std::fs::write(&cfg_path, "not-json").unwrap();
+    assert!(!policy.strict_required(), "解析失败 = false");
+}
+
+/// R1：strict 后端就绪性实测——临时 home 下引擎永远不就绪（测试环境默认态
+/// 即「后端不可用」面；真实 Sandboxie 故障注入不可 CI 复现，见模块文档诚实
+/// 边界）。
+#[cfg(all(feature = "sandbox", windows))]
+#[test]
+fn strict_backend_not_ready_in_temp_home() {
+    let dir = tempfile::tempdir().unwrap();
+    let policy = crate::exec_world::ExecutorIsolationPolicy::new(dir.path().join("config.json"));
+    assert!(
+        !policy.strict_backend_ready(dir.path()),
+        "临时 home 下 Sandboxie 引擎不应就绪"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // T9 槽位看护：崩溃自动重拉（预算熔断 / 复位 / 常驻档关闭不拉）
 // ---------------------------------------------------------------------------
 
@@ -271,6 +324,7 @@ mod sup_real_child {
 
     use crate::GLOBAL_STATE_LOCK;
     use crate::agents::runtime::AgentRuntimeSupervisor;
+    use crate::agents::runtime::Isolation;
     use nemesis_agent::context::RequestContext;
     use nemesis_path::resolve_agent_home_in_workspace;
 
@@ -419,6 +473,127 @@ mod sup_real_child {
         assert_ne!(pid, pid2, "respawn 应产生新进程");
     }
 
+    /// R4：evict = 注册删除联动停机——进程杀掉、槽清空、重拉预算清零；
+    /// 幂等（再 evict 不炸不报）。
+    #[tokio::test]
+    async fn sup_evict_shuts_down_clears_budget_and_is_idempotent() {
+        let _env = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let (sup, exec_root, _cfg) = supervisor(
+            &tmp,
+            r#"{"executor":{"persistent":{"enabled":true,"max_slots":2,"idle_shutdown_secs":0,"call_timeout_secs":120}}}"#,
+        );
+        let out = exec_cmd(&sup, &exec_root, "echo before-evict")
+            .await
+            .expect("persistent round trip");
+        assert!(out.contains("before-evict"), "{out}");
+        // 制造一次重拉记账（崩溃 → auto_relaunch），证明 evict 清预算。
+        let pid = sup.slot_pid("agent-a").await.expect("slot pid");
+        kill_pid(pid);
+        sup.auto_relaunch("agent-a", &exec_root).await;
+        assert_eq!(sup.respawn_attempt_count("agent-a"), 1, "前置：重拉已记账");
+        assert!(sup.slot_pid("agent-a").await.is_some());
+
+        sup.evict("agent-a").await;
+        assert!(sup.slot_states().is_empty(), "evict 后槽必须清空");
+        assert!(sup.slot_pid("agent-a").await.is_none());
+        assert_eq!(
+            sup.respawn_attempt_count("agent-a"),
+            0,
+            "evict 必须清重拉预算"
+        );
+        // 幂等：再 evict 零槽零报错。
+        sup.evict("agent-a").await;
+        assert!(sup.slot_states().is_empty());
+    }
+
+    /// R4：注册表已删除的 agent 崩溃后看护循环不重拉（孤儿进程不复活），
+    /// 也不记重拉预算；重新注册后显式 wake 复活（wake 是操作员在场语义，
+    /// 不过 registration 闸——闸只拦看护循环的自动重拉）。
+    #[tokio::test]
+    async fn sup_removed_agent_crash_is_not_relaunched() {
+        let _env = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let (sup, exec_root, _cfg) = supervisor(
+            &tmp,
+            r#"{"executor":{"persistent":{"enabled":true,"max_slots":2,"idle_shutdown_secs":0,"call_timeout_secs":120}}}"#,
+        );
+        // 可变注册闭包：AtomicBool 模拟「注册 → 删除 → 重新注册」。
+        let registered = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let reg = registered.clone();
+        sup.set_registration_check(Arc::new(move |_id| {
+            reg.load(std::sync::atomic::Ordering::SeqCst)
+        }));
+
+        let out = exec_cmd(&sup, &exec_root, "echo alive-check")
+            .await
+            .expect("spawn");
+        assert!(out.contains("alive-check"), "{out}");
+        let pid = sup.slot_pid("agent-a").await.expect("slot pid");
+
+        // 「删除」：注册闭包翻 false + 进程外杀（模拟崩溃）→ 真看护 tick
+        // （watchdog_tick 的死槽路径 = remove_and_shutdown 清槽 + 注册闸
+        // 拦下 auto_relaunch——完整生产顺序，不是裸调 auto_relaunch）。
+        registered.store(false, std::sync::atomic::Ordering::SeqCst);
+        kill_pid(pid);
+        sup.watchdog_tick().await;
+        assert!(
+            sup.slot_states().is_empty(),
+            "已删除 agent 崩溃后看护循环不得重拉"
+        );
+        assert_eq!(
+            sup.respawn_attempt_count("agent-a"),
+            0,
+            "不重拉也不得记账（预算闸在检查之后才动）"
+        );
+
+        // 「重新注册」：显式 wake 复活。
+        registered.store(true, std::sync::atomic::Ordering::SeqCst);
+        sup.wake_agent("agent-a", &exec_root)
+            .await
+            .expect("重新注册后显式 wake 复活");
+        assert!(sup.slot_pid("agent-a").await.is_some());
+    }
+
+    /// R4：删除与 execute 并发不脱管——evict 拿槽锁等在途调用收尾（慢调用
+    /// 完整返回），收尾后槽清空。evict 若不等锁直接杀，在途调用会中途断线
+    /// 返回 Err。
+    #[tokio::test]
+    async fn sup_evict_waits_for_inflight_execute() {
+        let _env = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let (sup, exec_root, _cfg) = supervisor(
+            &tmp,
+            r#"{"executor":{"persistent":{"enabled":true,"max_slots":2,"idle_shutdown_secs":0,"call_timeout_secs":120}}}"#,
+        );
+        // 后台慢调用（~2s ping），等槽出现后并发 evict。
+        let sup2 = Arc::clone(&sup);
+        let er = exec_root.clone();
+        let inflight = tokio::spawn(async move {
+            exec_cmd(&sup2, &er, "ping -n 2 127.0.0.1 >nul && echo slow-done").await
+        });
+        let waited = {
+            let mut ok = false;
+            for _ in 0..200 {
+                if sup.slot_pid("agent-a").await.is_some() {
+                    ok = true;
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            ok
+        };
+        assert!(waited, "在途调用未建槽");
+
+        sup.evict("agent-a").await;
+        let r = inflight.await.unwrap();
+        assert!(
+            r.is_ok(),
+            "在途调用必须完整收尾（evict 等槽锁，不得中途杀）: {r:?}"
+        );
+        assert!(sup.slot_states().is_empty(), "收尾后槽清空");
+    }
+
     /// P3 ①：env 白名单——宿主注入的秘密变量在常驻执行体内不可见；OS
     /// 基线（PATH）照常可见；运输层内部变量（NEMESISBOT_*）对模型可跑的
     /// 命令 env 不可见——两层防御：① supervisor spawn env_clear+白名单
@@ -512,11 +687,14 @@ mod sup_real_child {
             .expect("sleep 释放槽后 agent-b 应可用");
     }
 
-    /// P3 ⑤：调用中途杀子进程（kill -9 语义）→ Eof → 一次重建 + 原样重发
-    /// 同 call_id → 未完成调用重跑一次并完成（at-least-once 半边；
-    /// at-most-once 半边由 exec_worker serve_journal 测试钉）。
+    /// P3 ⑤ + R2：调用中途杀子进程（kill -9 语义）→ Eof → 一次重建 + 原样
+    /// 重发同 call_id → 子进程两相账裁决：有副作用工具（exec）回「结果未知」
+    /// 诚实错误（不盲重试——副作用可能已发生；at-most-once 优先于重跑）；
+    /// 随后新 call_id 调用照常完成（重建链路健康，诚实错误不拦新调用）。
+    /// 只读白名单的安全重执行半边由 exec_worker serve_journal 测试钉
+    /// （子进程侧契约，真实中途击杀只读调用不可靠计时）。
     #[tokio::test]
-    async fn sup_midcall_kill_resends_and_completes() {
+    async fn sup_midcall_kill_side_effect_reports_unknown() {
         let _env = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let (sup, exec_root, _cfg) = supervisor(
@@ -531,7 +709,7 @@ mod sup_real_child {
         assert!(out.contains("warmup"));
         let pid = sup.slot_pid("agent-a").await.expect("pid");
 
-        // 慢调用在途 → 杀进程 → supervisor 应重建重发并最终完成
+        // 慢调用在途 → 杀进程 → 重建重发同 call_id → 诚实「结果未知」
         let sup2 = sup.clone();
         let root2 = exec_root.clone();
         let slow = tokio::spawn(async move {
@@ -547,12 +725,23 @@ mod sup_real_child {
             .expect("重试应在超时前完成")
             .expect("join");
         match r {
-            Ok(_) => {}
+            Ok(out) => {
+                panic!("有副作用工具中途被杀重发必须报「结果未知」，不得静默重执行: {out:?}")
+            }
             Err(crate::agents::runtime::SupervisorError::ToolFailed(m)) => {
-                panic!("重发后仍失败（journal/重建链路异常）: {m}");
+                assert!(
+                    m.contains("结果未知") || m.contains("勿盲重试"),
+                    "重发错误必须是 R2 诚实语义，得到: {m}"
+                );
             }
             Err(other) => panic!("应分型为 ToolFailed 而非: {other:?}"),
         }
+
+        // 新 call_id（execute 每次新生成）照常完成——重建链路健康。
+        let out = exec_cmd(&sup, &exec_root, "echo after-unknown")
+            .await
+            .expect("崩溃+诚实错误后新调用应完成");
+        assert!(out.contains("after-unknown"), "{out}");
     }
 
     /// sleep/wake 生命周期 + slot_states 观测面：sleep 杀进程清槽（幂等），
@@ -574,6 +763,13 @@ mod sup_real_child {
         assert_eq!(states.len(), 1, "一个 agent 一个槽: {states:?}");
         assert_eq!(states[0].agent_id, "agent-a");
         assert!(states[0].alive);
+        // R1 观测面：无 sandbox 请求 + 临时 home 引擎不就绪 → stdio 槽，
+        // 隔离形态诚实记录（不冒标）。
+        assert_eq!(
+            states[0].isolation,
+            Some(Isolation::Stdio),
+            "stdio 槽的隔离形态应记 Stdio: {states:?}"
+        );
 
         let pid = sup.slot_pid("agent-a").await.expect("pid");
         assert!(sup.sleep_agent("agent-a").await, "sleep 应清槽");
@@ -588,6 +784,102 @@ mod sup_real_child {
         assert!(states[0].alive);
 
         // 收尾：别让子进程泄到测试进程外
+        sup.sleep_agent("agent-a").await;
+    }
+
+    /// R1 strict 预检：`executor.strict` 请求在场而后端不可用（临时 home
+    /// 引擎永不就绪）→ spawn 前拒绝，执行体零落地（无子进程、无槽——
+    /// 「拒绝执行」不能退回裸 stdio）。错误分型 Unavailable（调用未发生，
+    /// per-call 回落链可安全处理）。
+    #[tokio::test]
+    async fn sup_strict_unavailable_refuses_and_spawns_nothing() {
+        let _env = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let (sup, exec_root, _cfg) = supervisor(
+            &tmp,
+            r#"{"executor":{"sandbox":true,"strict":true,"persistent":{"enabled":true,"max_slots":2,"idle_shutdown_secs":0,"call_timeout_secs":120}}}"#,
+        );
+        let c = ctx();
+        let args = serde_json::json!({ "command": "echo must-not-run" }).to_string();
+        let err = sup
+            .execute("agent-a", &exec_root, "exec", &args, &c)
+            .await
+            .expect_err("strict + 后端不可用必须拒绝");
+        match err {
+            crate::agents::runtime::SupervisorError::Unavailable(m) => {
+                assert!(m.contains("strict"), "拒绝信息应指明 strict 契约: {m}");
+            }
+            other => panic!("应分型为 Unavailable，得到: {other:?}"),
+        }
+        assert!(sup.slot_states().is_empty(), "拒绝执行不得留下槽位/子进程");
+        assert!(sup.slot_pid("agent-a").await.is_none());
+    }
+
+    /// R1：sandbox=true 但引擎未就绪、未开 strict → stdio 兼容回退照常可用
+    /// （⑥——strict 缺位时不因沙盒缺失拒服务），槽位隔离形态诚实记 Stdio。
+    #[tokio::test]
+    async fn sup_sandbox_requested_engine_absent_no_strict_falls_back() {
+        let _env = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let (sup, exec_root, _cfg) = supervisor(
+            &tmp,
+            r#"{"executor":{"sandbox":true,"persistent":{"enabled":true,"max_slots":2,"idle_shutdown_secs":0,"call_timeout_secs":120}}}"#,
+        );
+        let out = exec_cmd(&sup, &exec_root, "echo compat-fallback")
+            .await
+            .expect("非 strict 的 stdio 兼容回退应可用");
+        assert!(out.contains("compat-fallback"), "exec 输出异常: {out}");
+        let states = sup.slot_states();
+        assert_eq!(states[0].isolation, Some(Isolation::Stdio));
+        sup.sleep_agent("agent-a").await;
+    }
+
+    /// R1 运行中配置切换：strict 翻开 → 现存 stdio 槽不再满足契约 → execute
+    /// 复检触发重建；后端仍不可用 → Unavailable（调用未发生）。关回 strict
+    /// → 原槽仍活着，恢复可用（重建失败不损毁在册会话）。
+    #[tokio::test]
+    async fn sup_runtime_strict_flip_triggers_revalidation() {
+        let _env = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let (sup, exec_root, cfg_path) = supervisor(
+            &tmp,
+            r#"{"executor":{"persistent":{"enabled":true,"max_slots":2,"idle_shutdown_secs":0,"call_timeout_secs":120}}}"#,
+        );
+        // 基线：无 strict → stdio 槽正常服务
+        let out = exec_cmd(&sup, &exec_root, "echo before-flip")
+            .await
+            .expect("baseline call");
+        assert!(out.contains("before-flip"));
+
+        // 运行中翻开 strict（磁盘现读，无需重启）→ 复检重建被拒
+        std::fs::write(
+            &cfg_path,
+            r#"{"executor":{"sandbox":true,"strict":true,"persistent":{"enabled":true,"max_slots":2,"idle_shutdown_secs":0,"call_timeout_secs":120}}}"#,
+        )
+        .unwrap();
+        let c = ctx();
+        let args = serde_json::json!({ "command": "echo must-not-run" }).to_string();
+        let err = sup
+            .execute("agent-a", &exec_root, "exec", &args, &c)
+            .await
+            .expect_err("strict 翻开后 stdio 槽必须重建且重建被拒");
+        match err {
+            crate::agents::runtime::SupervisorError::Unavailable(m) => {
+                assert!(m.contains("strict"), "拒绝信息应指明 strict 契约: {m}");
+            }
+            other => panic!("应分型为 Unavailable，得到: {other:?}"),
+        }
+
+        // 关回 strict → 原会话未被失败重建破坏，恢复服务
+        std::fs::write(
+            &cfg_path,
+            r#"{"executor":{"persistent":{"enabled":true,"max_slots":2,"idle_shutdown_secs":0,"call_timeout_secs":120}}}"#,
+        )
+        .unwrap();
+        let out = exec_cmd(&sup, &exec_root, "echo after-unflip")
+            .await
+            .expect("关回 strict 后应恢复可用");
+        assert!(out.contains("after-unflip"), "exec 输出异常: {out}");
         sup.sleep_agent("agent-a").await;
     }
 }

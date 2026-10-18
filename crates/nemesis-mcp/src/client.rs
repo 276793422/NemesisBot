@@ -211,6 +211,17 @@ impl McpClient {
     /// protocol/stream 归一「未知值 loud 拒绝」的项目惯例对齐。空串不拒
     /// （手写条目兼容形态）。
     pub fn from_server_config(config: &ServerConfig) -> ClientResult<Self> {
+        Self::from_server_config_with_profile(config, None)
+    }
+
+    /// G2（2026-10-18 批四）：带显式 per-agent 浏览器 profile 的构造
+    /// （gateway agent loop 装配注入；None = env 回落语义不变）。分派规则
+    /// 与 [`Self::from_server_config`] 完全同源（本函数是本体，后者是
+    /// None 委托）。
+    pub fn from_server_config_with_profile(
+        config: &ServerConfig,
+        browser_profile: Option<&str>,
+    ) -> ClientResult<Self> {
         let is_http = matches!(
             config.transport_type.as_str(),
             "http" | "streamable_http" | "streamable-http"
@@ -240,7 +251,12 @@ impl McpClient {
             if cfg.command.is_empty() && !cfg.url.is_empty() {
                 cfg.command = cfg.url.clone();
             }
-            Box::new(crate::stdio_transport::StdioTransport::from_config(&cfg))
+            Box::new(
+                crate::stdio_transport::StdioTransport::from_config_with_profile(
+                    &cfg,
+                    browser_profile.map(str::to_string),
+                ),
+            )
         };
         let mut client = Self::new(transport);
         // config `timeout`（秒）→ 内层逐请求超时 = 外层预算 + 1s 让位宽限

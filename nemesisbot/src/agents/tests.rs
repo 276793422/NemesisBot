@@ -59,8 +59,78 @@ fn create_rejects_bad_inputs_without_leaving_records() {
     assert!(mgr.create_agent(selfbuilt_params("ok")).is_ok());
 }
 
-#[test]
-fn main_agent_seed_is_idempotent_across_manager_instances() {
+/// R4（2026-10-18 三方复评）管理面集成锁：remove 联动常驻执行体停机——
+/// create → wake（真 spawn）→ remove → 槽空 + 记录删。真二进制 + 真 spawn
+/// （二进制解析纪律与 runtime/tests.rs sup_real_child 同源：debug 槽专用）。
+/// 持 GLOBAL_STATE_LOCK 跨 await 是刻意的测试串行化（同 agents_ws_tests
+/// 纪律：真进程用例必须与 vault/全局态用例互斥，槽位覆盖整个 await 窗口）。
+#[cfg(windows)]
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn remove_evicts_resident_executor_and_deletes_record() {
+    use crate::GLOBAL_STATE_LOCK;
+    use crate::agents::runtime::AgentRuntimeSupervisor;
+
+    let _env = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().join("workspace");
+    std::fs::create_dir_all(&ws).unwrap();
+    // persistent.enabled=true 的 config 写在 tempdir 根（supervisor 的
+    // config_path 指它；manager 只管 tasks.db，两者互不知晓）。
+    let cfg_path = dir.path().join("config.json");
+    std::fs::write(
+        &cfg_path,
+        r#"{"executor":{"persistent":{"enabled":true,"max_slots":2,"idle_shutdown_secs":0,"call_timeout_secs":120}}}"#,
+    )
+    .unwrap();
+
+    let mgr = setup(dir.path());
+    let rec = mgr.create_agent(selfbuilt_params("doomed")).unwrap();
+    let sup = {
+        let bin = match std::env::var("NEMESISBOT_TEST_BIN") {
+            Ok(b) => PathBuf::from(b),
+            Err(_) => PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .join("target")
+                .join("debug")
+                .join(format!("nemesisbot{}", std::env::consts::EXE_SUFFIX)),
+        };
+        assert!(
+            bin.exists(),
+            "target/debug/nemesisbot.exe 不存在——先 cargo build -p nemesisbot"
+        );
+        Arc::new(AgentRuntimeSupervisor::new(
+            bin,
+            dir.path().to_path_buf(),
+            ws.clone(),
+            cfg_path,
+        ))
+    };
+    mgr.set_runtime(Arc::clone(&sup));
+
+    // wake：真 spawn（exec_root = agent home）。
+    let exec_root = PathBuf::from(&rec.exec_root);
+    sup.wake_agent(&rec.agent_id, &exec_root)
+        .await
+        .expect("wake spawn");
+    assert!(
+        sup.slot_pid(&rec.agent_id).await.is_some(),
+        "wake 后槽必须在场"
+    );
+
+    // remove：evict 停机 + 记录删。
+    mgr.remove(&rec.agent_id).await.expect("remove");
+    assert!(
+        sup.slot_pid(&rec.agent_id).await.is_none(),
+        "remove 必须联动停掉常驻执行体（evict）"
+    );
+    assert!(sup.slot_states().is_empty());
+    assert!(mgr.get(&rec.agent_id).unwrap().is_none(), "记录必须已删");
+}
+
+#[tokio::test]
+async fn main_agent_seed_is_idempotent_across_manager_instances() {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path().join("workspace");
     std::fs::create_dir_all(&ws).unwrap();
@@ -76,7 +146,7 @@ fn main_agent_seed_is_idempotent_across_manager_instances() {
     assert_eq!(first.memory_namespace, "");
     assert_eq!(first.exec_root, ws.to_string_lossy().to_string());
     // main 不可删。
-    assert!(m2.remove(&first.agent_id).is_err());
+    assert!(m2.remove(&first.agent_id).await.is_err());
     assert!(m2.get(&first.agent_id).unwrap().is_some());
 }
 

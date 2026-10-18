@@ -2,7 +2,7 @@
 
 use std::fs;
 
-use super::{remove_dir_all_resilient, remove_dir_all_retry};
+use super::{remove_dir_all_resilient, remove_dir_all_retry, remove_file_retry};
 
 #[test]
 fn retry_removes_nested_tree() {
@@ -20,6 +20,17 @@ fn retry_treats_not_found_as_success() {
     let absent = tmp.path().join("never-existed");
     remove_dir_all_retry(&absent).unwrap();
     remove_dir_all_resilient(&absent);
+    let absent_file = tmp.path().join("never-existed.txt");
+    remove_file_retry(&absent_file).unwrap();
+}
+
+#[test]
+fn file_retry_removes_single_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let f = tmp.path().join("stale.tmp");
+    fs::write(&f, b"x").unwrap();
+    remove_file_retry(&f).unwrap();
+    assert!(!f.exists());
 }
 
 #[test]

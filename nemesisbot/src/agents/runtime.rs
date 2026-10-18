@@ -18,10 +18,12 @@
 //! `NEMESISBOT_EXECUTOR_SANDBOX` 标记，子进程 exec_worker 启动自装
 //! landlock/bwrap（U11 与 per-call 同源语义，stdio 传输不变）。
 //!
-//! 幂等纪律（P3 ⑤，T2 journal 的消费方）：每次调用生成新 call_id（v2
-//! 协议行）；子进程死亡（Eof）时**一次**重建会话并**原样重发**同 call_id
-//! 请求——子进程侧 journal replay 保证已完成的调用回缓存结果不重执行
-//! （at-most-once），未完成的调用重跑一次（at-least-once）。
+//! 幂等纪律（P3 ⑤，T2 journal 消费方 + R2 两相账）：每次调用生成新
+//! call_id（v2 协议行）；子进程死亡（Eof）时**一次**重建会话并**原样
+//! 重发**同 call_id 请求——裁决在子进程两相账：已完成回缓存结果
+//! （at-most-once）；未决意图属只读白名单（read_file/list_dir/grep）→
+//! 安全重执行；其余（有副作用）→ 回「结果未知」诚实错误（不盲重试，
+//! 重试权交还模型以新 call_id 显式发起）。
 //!
 //! 槽位看护（T9）：watchdog（15s tick）发现死槽 → 清理 → 按同 exec_root
 //! 自动重拉（home 即状态，journal/profile 从盘回载）；连续失败超
@@ -100,6 +102,21 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 /// lazy spawn 路径与看护无关）。
 const MAX_AUTO_RELAUNCH: u32 = 3;
 
+/// 槽位实际隔离形态（R1 能力记录面）：spawn 时按当时的策略判读落定，
+/// `slot_states()` 暴露 + `execute()` strict 复检消费。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum Isolation {
+    /// Sandboxie 盒（Windows + sandbox feature，`executor.sandbox` 请求在场
+    /// 且引擎就绪）。
+    Boxed,
+    /// 用户态沙盒标记（非 Windows，`executor.sandbox` 请求在场——子进程
+    /// exec_worker 自装 landlock/bwrap）。
+    #[cfg_attr(windows, allow(dead_code))] // Windows 构建无构造点（盒臂覆盖）
+    Userland,
+    /// 无隔离 stdio（sandbox=false / 引擎未就绪且非 strict 的兼容回退）。
+    Stdio,
+}
+
 /// 一个 agent 的常驻槽（会话 + 生命周期时间戳）。
 struct AgentSlot {
     /// `None` 只出现在 shutdown 取走的瞬间（取走后槽随即离开 map）。
@@ -111,6 +128,8 @@ struct AgentSlot {
     /// 重拉无需回查 agents 表；与 spawn 时传给 [`base_executor_env`] 的
     /// 同一值）。
     exec_root: std::path::PathBuf,
+    /// spawn 时判定的实际隔离形态（R1：strict 复检 + slot_states 观测）。
+    isolation: Isolation,
 }
 
 impl AgentSlot {
@@ -155,6 +174,10 @@ pub struct SlotState {
     pub agent_id: String,
     pub alive: bool,
     pub idle_secs: u64,
+    /// 实际隔离形态（R1 能力记录面：`boxed` / `userland` / `stdio`）。
+    /// 调用中的槽取不到锁 = 观测不到，`None`（不猜——隔离形态谎报比
+    /// 缺报更糟）。
+    pub isolation: Option<Isolation>,
 }
 
 /// 常驻执行体监督器。所有方法 `&self`（内部锁），跨 agent 并发安全；
@@ -172,10 +195,17 @@ pub struct AgentRuntimeSupervisor {
     home: PathBuf,
     workspace: PathBuf,
     config_path: PathBuf,
+    /// R1 隔离策略判读（spawn 决策 + execute 复检共用；磁盘现读纪律与
+    /// `persistent_settings` 同源）。
+    isolation: crate::exec_world::ExecutorIsolationPolicy,
     slots: Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<AgentSlot>>>>,
     /// 崩溃自动重拉计数（T9 槽位看护熔断）：按 agent 连续计数，一次真实
     /// execute 成功或显式 wake 复位。idle/sleep 不计数（那是有意的停）。
     respawn_attempts: Mutex<HashMap<String, u32>>,
+    /// R4（2026-10-18 三方复评）：注册表存在性检查（`None` = 放行）。boot
+    /// 装配闭包查 agents 表——已删除的 agent 崩溃后不得被看护循环重拉
+    /// （注册删除联动常驻进程生命周期）。
+    registration_check: Mutex<Option<std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>>>,
 }
 
 impl AgentRuntimeSupervisor {
@@ -184,10 +214,45 @@ impl AgentRuntimeSupervisor {
             exe_path,
             home,
             workspace,
+            isolation: crate::exec_world::ExecutorIsolationPolicy::new(config_path.clone()),
             config_path,
             slots: Mutex::new(HashMap::new()),
             respawn_attempts: Mutex::new(HashMap::new()),
+            registration_check: Mutex::new(None),
         }
+    }
+
+    /// R4：注入注册表存在性检查（幂等覆盖）。`None` 期间 = 放行（headless
+    /// /测试形态零改动）。
+    pub fn set_registration_check(
+        &self,
+        check: std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    ) {
+        *self
+            .registration_check
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(check);
+    }
+
+    /// R4：注册表仍在？未装配检查闭包 = 放行（不猜不拦）。
+    fn registered(&self, agent_id: &str) -> bool {
+        match self
+            .registration_check
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            None => true,
+            Some(check) => check(agent_id),
+        }
+    }
+
+    /// R4：注册删除联动停机——停进程（拿槽锁等在途调用收尾，删除不与
+    /// execute 并发脱管）+ 清重拉预算（watchdog 不再为已删 agent 记账）。
+    /// 幂等：槽不在 = 只清预算，不报错。
+    pub async fn evict(&self, agent_id: &str) {
+        self.remove_and_shutdown(agent_id, "removed").await;
+        self.clear_relaunch_counter(agent_id);
     }
 
     /// config.json **现读**（与 tier `check_config_reload` 同纪律：磁盘是
@@ -249,6 +314,20 @@ impl AgentRuntimeSupervisor {
                 .await
                 .map_err(|e| SupervisorError::Unavailable(format!("rebuild dead session: {e}")))?;
         }
+        // R1 strict 复检：spawn 后 strict/后端态变化（dashboard 运行中改键）
+        // 可能让现槽的无隔离形态（stdio）不再满足契约——重建重判。spawn_session
+        // 里 strict 预检不满足会 Err → Unavailable → per-call 回落链的 strict
+        // 闸诚实拒绝；Boxed/Userland 槽满足 strict，无需重建。
+        if self.isolation.strict_required() && guard.isolation == Isolation::Stdio {
+            tracing::info!(
+                agent_id,
+                "strict now required but slot is unisolated (stdio); rebuilding"
+            );
+            *guard = self
+                .spawn_session(agent_id, exec_root)
+                .await
+                .map_err(|e| SupervisorError::Unavailable(format!("rebuild for strict: {e}")))?;
+        }
 
         let timeout = Duration::from_secs(if settings.call_timeout_secs == 0 {
             FALLBACK_CALL_TIMEOUT_SECS
@@ -269,9 +348,10 @@ impl AgentRuntimeSupervisor {
                 }
                 out
             }
-            // 子进程死在调用中途：一次重建 + 原样重发同 call_id。已完成
-            // 的调用回缓存结果（at-most-once）；未完成的此刻真跑一次
-            // （at-least-once）。重建失败 = ToolFailed（不回落——调用已发生）。
+            // 子进程死在调用中途：一次重建 + 原样重发同 call_id。裁决在
+            // 子进程两相账：已完成回缓存（at-most-once）；未决只读白名单
+            // 重执行；未决有副作用回「结果未知」诚实错误（R2——不盲重试）。
+            // 重建失败 = ToolFailed（不回落——调用已发生）。
             Err(TransportError::Eof) => {
                 tracing::warn!(
                     agent_id,
@@ -355,11 +435,13 @@ impl AgentRuntimeSupervisor {
                     agent_id: id.clone(),
                     alive: guard.session().is_alive(),
                     idle_secs: guard.last_used.elapsed().as_secs(),
+                    isolation: Some(guard.isolation),
                 },
                 Err(_) => SlotState {
                     agent_id: id.clone(),
                     alive: true,
                     idle_secs: 0,
+                    isolation: None,
                 },
             })
             .collect()
@@ -419,6 +501,15 @@ impl AgentRuntimeSupervisor {
     /// 常驻档已关（运行中改键/配置损坏）不拉——槽位就此回收，节点宣告态
     /// 随 roster_state 自然降级。idle 睡眠不走这里（那是有意的停）。
     async fn auto_relaunch(&self, agent_id: &str, exec_root: &std::path::Path) {
+        // R4：注册表已删除的 agent 不重拉（注册删除联动——否则 watchdog
+        // 会让孤儿进程在删除后复活）。放回 = 重新注册后走显式 wake。
+        if !self.registered(agent_id) {
+            tracing::info!(
+                agent_id,
+                "agent removed from registry; crashed slot not relaunched"
+            );
+            return;
+        }
         let Some(settings) = self.persistent_settings() else {
             tracing::info!(agent_id, "persistent disabled; crashed slot not relaunched");
             return;
@@ -545,33 +636,55 @@ impl AgentRuntimeSupervisor {
     /// spawn 一个 persistent executor 子进程（隔离纪律见模块文档）。
     /// `exec_root` 写进子进程 `NEMESISBOT_EXECUTOR_WORKSPACE`（工具 cwd 锚，
     /// T7 双根拆分）；agent home 照旧从 agent_id 派生（HOME 重定向根）。
+    ///
+    /// R1 隔离契约（与 per-call 通道同一判读真相源 [`ExecutorIsolationPolicy`]）：
+    /// - strict 预检平台无关先行：`executor.strict` 请求在场而后端当前不可用
+    ///   → `Err`（上游映射 Unavailable → per-call 回落链的 strict 闸诚实拒绝，
+    ///   绝不以无隔离形态执行——不能退回裸 stdio）；
+    /// - Windows 只在 `executor.sandbox` 请求在场时才试盒（sandbox=false 不再
+    ///   被擅自塞盒——与 per-call 行为一致）；引擎未就绪且非 strict 维持 stdio
+    ///   兼容回退（⑥），实际形态记进槽位 `isolation` 供复检与观测。
     async fn spawn_session(
         &self,
         agent_id: &str,
         exec_root: &std::path::Path,
     ) -> Result<AgentSlot, String> {
         let home = self.agent_home(agent_id);
-        // P3 ②：Sandboxie 就绪 → per-agent 常驻盒；未就绪 → stdio 退化
-        // （⑥ 兼容回退——无 Sandboxie 的机器常驻档照常可用）。
+        let policy = &self.isolation;
+        // strict 预检（fail-closed 面）：sandbox feature 裁剪的构建里
+        // `strict_backend_ready` 恒 false → strict 恒拒（与 per-call
+        // feature-off 闸「严格时无后端即拒」一致）。
+        if policy.strict_required() && !policy.strict_backend_ready(&self.home) {
+            return Err(
+                "strict mode (fail-closed): executor.strict is set but no isolation \
+                 backend is currently available (Sandboxie engine not ready / userland \
+                 backend missing / 'sandbox' feature trimmed) — refusing to spawn an \
+                 unisolated persistent executor"
+                    .to_string(),
+            );
+        }
         #[cfg(all(feature = "sandbox", windows))]
-        match self
-            .try_spawn_boxed_session(agent_id, exec_root, &home)
-            .await?
-        {
-            Some(session) => {
-                let now = Instant::now();
-                return Ok(AgentSlot {
-                    session: Some(session),
-                    spawned_at: now,
-                    last_used: now,
-                    exec_root: exec_root.to_path_buf(),
-                });
-            }
-            None => {
-                tracing::info!(
-                    agent_id,
-                    "sandboxie engine not ready; persistent executor falling back to stdio"
-                );
+        if policy.sandbox_requested() {
+            match self
+                .try_spawn_boxed_session(agent_id, exec_root, &home)
+                .await?
+            {
+                Some(session) => {
+                    let now = Instant::now();
+                    return Ok(AgentSlot {
+                        session: Some(session),
+                        spawned_at: now,
+                        last_used: now,
+                        exec_root: exec_root.to_path_buf(),
+                        isolation: Isolation::Boxed,
+                    });
+                }
+                None => {
+                    tracing::info!(
+                        agent_id,
+                        "sandboxie engine not ready; persistent executor falling back to stdio"
+                    );
+                }
             }
         }
         // 浏览器身份目录在真盘预建（与盒路径同纪律：目录在场，Chromium
@@ -588,9 +701,14 @@ impl AgentRuntimeSupervisor {
         // 语义，stdio 传输不变）。Windows 的盒臂在上面处理隔离；引擎未就绪
         // 退化 stdio 不挂标记（P24 ACL 档的 persistent 接入是后续项）。
         #[cfg(not(windows))]
-        if self.executor_sandbox_requested() {
+        let isolation = if policy.sandbox_requested() {
             cmd.env("NEMESISBOT_EXECUTOR_SANDBOX", "1");
-        }
+            Isolation::Userland
+        } else {
+            Isolation::Stdio
+        };
+        #[cfg(windows)]
+        let isolation = Isolation::Stdio;
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
@@ -615,6 +733,7 @@ impl AgentRuntimeSupervisor {
             spawned_at: now,
             last_used: now,
             exec_root: exec_root.to_path_buf(),
+            isolation,
         })
     }
 
@@ -622,11 +741,7 @@ impl AgentRuntimeSupervisor {
     /// 与 typed config 的 `#[serde(default)]` 同缺省 false）。
     #[cfg(all(feature = "sandbox", windows))]
     fn executor_allow_network(&self) -> bool {
-        std::fs::read_to_string(&self.config_path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|v| v.get("executor")?.get("allow_network")?.as_bool())
-            .unwrap_or(false)
+        self.isolation.allow_network()
     }
 
     /// executor.sandbox 现读（非 Windows persistent stdio 臂是否挂
@@ -635,11 +750,7 @@ impl AgentRuntimeSupervisor {
     /// false，与 `ExecutorSeparationConfig` 的 serde default 一致）。
     #[cfg(not(windows))]
     fn executor_sandbox_requested(&self) -> bool {
-        std::fs::read_to_string(&self.config_path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|v| v.get("executor")?.get("sandbox")?.as_bool())
-            .unwrap_or(false)
+        self.isolation.sandbox_requested()
     }
 
     /// P3 ②：Sandboxie 就绪时把常驻执行体 spawn 进 per-agent 盒

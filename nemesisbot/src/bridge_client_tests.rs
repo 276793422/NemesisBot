@@ -600,9 +600,27 @@ async fn test_fin_true_does_not_shutdown_write_half() {
 async fn spawn_mock_relay_on_same_port(
     port: u16,
 ) -> tokio::task::JoinHandle<WebSocketStream<TcpStream>> {
-    let listener = TcpListener::bind(("127.0.0.1", port))
-        .await
-        .expect("rebind");
+    // 全量并行下同口重绑会撞旧 listener/accepted 流的短暂残留窗口
+    //（WSAEADDRINUSE；实录：test_welcome_rejected_then_retry 全量跑 rebind
+    // 假红、单测复跑恒绿）——有界退避重试代替一步 expect。客户端退避重连
+    // 循环会等到监听者出现，延迟不破坏用例语义。
+    let listener = {
+        let mut bound = None;
+        let mut last_err = None;
+        for _ in 0..10 {
+            match TcpListener::bind(("127.0.0.1", port)).await {
+                Ok(l) => {
+                    bound = Some(l);
+                    break;
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        }
+        bound.unwrap_or_else(|| panic!("rebind after retries: {last_err:?}"))
+    };
     tokio::spawn(async move {
         let (stream, _) = listener.accept().await.expect("accept#2");
         accept_async(stream).await.expect("ws handshake#2")

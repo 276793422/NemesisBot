@@ -113,6 +113,9 @@ fn fake_info(key: &str, with_patch: bool) -> DeliveryInfo {
         patch_truncated: Some(false),
         patch_path: Some("logs/deliveries/t-42.patch".to_string()),
         patch_present: with_patch,
+        commit: Some("abc123".to_string()),
+        head_tree: Some("tree-42".to_string()),
+        base_tree: Some("tree-41".to_string()),
     }
 }
 

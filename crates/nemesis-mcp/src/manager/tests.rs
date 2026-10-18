@@ -42,6 +42,25 @@ fn test_new_without_config_file() {
     assert!(mgr.list_servers().is_empty());
 }
 
+/// G2（2026-10-18 批四）：per-agent 浏览器 profile setter/getter roundtrip
+/// ——默认 None（共享形态零变化）；设置/清除自由往返（discover_tools 是
+/// 唯一消费点，本测只锁 manager 载体面）。
+#[test]
+fn test_browser_profile_setter_roundtrip() {
+    let tmp = TempDir::new().unwrap();
+    let mut mgr = McpManager::new(make_config_path(&tmp));
+    assert!(mgr.browser_profile().is_none(), "默认 None");
+
+    mgr.set_browser_profile(Some(r"C:\ws\agents\a1\home\browser-profile".to_string()));
+    assert_eq!(
+        mgr.browser_profile(),
+        Some(r"C:\ws\agents\a1\home\browser-profile")
+    );
+
+    mgr.set_browser_profile(None);
+    assert!(mgr.browser_profile().is_none(), "清除回落 env 语义");
+}
+
 #[test]
 fn test_save_and_reload() {
     let tmp = TempDir::new().unwrap();

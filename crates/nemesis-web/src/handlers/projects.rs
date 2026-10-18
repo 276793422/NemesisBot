@@ -125,14 +125,22 @@ pub(crate) static BRIDGE_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex:
 // resolve：这条会话该用哪个 AgentLoop（单一裁决点）
 // ---------------------------------------------------------------------------
 
-/// 归属解析：bridge 归属命中 → 项目 loop（不可用诚实报错，与 bus 路由的
-/// send_unroutable_error 同语义）；无归属或 bridge 未装配 → 主槽
-/// `AppState.agent_loop`。调用方（chat/tools/approval/question/agent 各
-/// handler）拿到的 Arc 直接替换原先的 `ctx.state.agent_loop.read().clone()`。
+/// 归属解析：agent 会话臂（G1，`agents:{id}:session:{sid}` 形态——纯字符
+/// 串解析，与项目臂键空间不相交，故在先）→ 自建 agent 常驻 loop（不存在/
+/// 不可会话诚实报错）；项目 bridge 归属命中 → 项目 loop（不可用诚实报错，
+/// 与 bus 路由的 send_unroutable_error 同语义）；无归属或 bridge 未装配
+/// → 主槽 `AppState.agent_loop`。调用方（chat/tools/approval/question/agent
+/// 各 handler）拿到的 Arc 直接替换原先的 `ctx.state.agent_loop.read().clone()`。
 pub fn resolve_session_loop(
     ctx: &RequestContext,
     session_key: &str,
 ) -> Result<Arc<AgentLoop>, String> {
+    if let Some(agent_id) = crate::handlers::agents::agent_owner_of(session_key) {
+        let bridge = crate::handlers::agents::agents_bridge().ok_or_else(|| {
+            "agent 会话面未装配（agents bridge 未接线，网关需为装配 gateway 模式）".to_string()
+        })?;
+        return bridge.loop_for_agent(&agent_id);
+    }
     if let Some(bridge) = projects_bridge()
         && let Some(pid) = bridge.owner_of(session_key)
     {
