@@ -116,6 +116,10 @@ impl ExecutorIsolationPolicy {
             }
             #[cfg(not(windows))]
             {
+                // Linux/macOS 用户态后端（landlock/bwrap/Seatbelt）按能力
+                // 探测，不消费 home——参数仅为 Windows 盒臂（SandboxPaths）
+                // 存在，此臂显式弃用（2026-10-18 CI Linux clippy 门禁）。
+                let _ = home;
                 nemesis_sandbox::backend::detect_backend(self.allow_network()).is_some()
             }
         }
