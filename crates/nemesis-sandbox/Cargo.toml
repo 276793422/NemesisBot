@@ -19,6 +19,7 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 reqwest = { workspace = true }
 sha2 = { workspace = true }
+futures = { workspace = true }
 bytes = "1"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 # P21（2026-09-25）：沙盒拒绝台账的时间戳（RFC3339 UTC，毫秒精度）。
@@ -73,6 +74,11 @@ required-features = ["vm"]
 # P5 第 3 步 E 线：睡眠/唤醒/持久重挂实机真腿（KVM 宿主；WHPX 诚实 SKIP）。
 [[example]]
 name = "vm_lifecycle_kvm"
+required-features = ["vm"]
+
+# VM 环境自举 B1：Windows 全新环境 QEMU 安装链实跑（下载/校验/直解/落位/探针）。
+[[example]]
+name = "vm_install_arm"
 required-features = ["vm"]
 
 [lints]

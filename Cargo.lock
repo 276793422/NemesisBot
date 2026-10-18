@@ -5332,6 +5332,7 @@ dependencies = [
  "bytes",
  "chrono",
  "fake-qmp",
+ "futures",
  "landlock",
  "nemesis-exec-protocol",
  "nemesis-guest",
