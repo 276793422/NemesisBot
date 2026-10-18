@@ -41,6 +41,12 @@ use nemesis_connectors::registry::{find_connector, find_op, validate_op_args};
 pub const FIND_TOOL_NAME: &str = "connector_find";
 pub use nemesis_connectors::INVOKE_TOOL_NAME;
 
+/// B4 凭据索要卡的等待窗口（秒）：用户需去外部站点取 key（浏览器往返），
+/// 5 分钟宽裕；超时 = 调用方走原错误路径（不是错误）。recovery Auth 臂
+/// 自有同款常量（nemesis-agent 内，跨 crate 不共享）。
+#[cfg(feature = "security")]
+const CREDENTIAL_CARD_TIMEOUT_SECS: u64 = 300;
+
 /// 远程执行通道（E1，收官批 2026-10-15）：与 ClusterWiring 的
 /// `cluster_rpc_call_fn` 同形——`(peer, action, payload)` → 异步 JSON 响应。
 /// 复用共享闭包（其 peer_chat 特殊逻辑按 action 过滤，`connector_invoke`
@@ -1215,9 +1221,39 @@ impl ConnectorInvokeTool {
                     Ok(s) => s,
                     Err(e) => {
                         if binding.required {
-                            return Err(format!("凭据槽位 `{slot}` 缺失: {e}"));
+                            // B4 凭据索要卡：发卡阻塞等用户提交（broker 落
+                            // vault 后回 true）→ 原地重解析一次续行。槽空
+                            // （headless）/拒绝/超时 = 原错误路径字节不变。
+                            // run_http 在 async 上下文——spawn_blocking 包
+                            // 同步阻塞等待（request_credential_card 契约）。
+                            let original = format!("凭据槽位 `{slot}` 缺失: {e}");
+                            let service = format!("connector/{}", c.id);
+                            let reason = e;
+                            let alias_for_card = alias.clone();
+                            let card_ok = tokio::task::spawn_blocking(move || {
+                                crate::credential_broker::request_credential_card(
+                                    &service,
+                                    &alias_for_card,
+                                    &reason,
+                                    CREDENTIAL_CARD_TIMEOUT_SECS,
+                                )
+                            })
+                            .await
+                            .unwrap_or(false);
+                            if !card_ok {
+                                return Err(original);
+                            }
+                            match crate::vault_runtime::resolve_alias_at(&vault_path, &alias) {
+                                Ok(s) => s,
+                                Err(e2) => {
+                                    return Err(format!(
+                                        "凭据槽位 `{slot}` 写入后解析仍失败: {e2}"
+                                    ));
+                                }
+                            }
+                        } else {
+                            continue; // 可选槽位缺 = 跳过注入（无 key 走公开路径）
                         }
-                        continue; // 可选槽位缺 = 跳过注入（无 key 走公开路径）
                     }
                 };
                 match &binding.into {

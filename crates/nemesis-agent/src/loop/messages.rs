@@ -255,7 +255,17 @@ impl AgentLoop {
                         .nth(300)
                         .map(|(i, _)| i)
                         .unwrap_or(content.len());
-                    (e.score, content[..cut].to_string())
+                    // B15（2026-10-18 B 级清零）：auto-inject 召回同样带日期
+                    // 戳（时效判断不靠运气）；位于动态注入段尾部，稳定前缀
+                    // 字节不受影响。
+                    (
+                        e.score,
+                        format!(
+                            "[{}] {}",
+                            e.entry.created_at.format("%Y-%m-%d"),
+                            &content[..cut]
+                        ),
+                    )
                 })
                 .collect();
             // Sort best-first, cap at top_k.

@@ -262,6 +262,7 @@ fn stream_preferred_lane_semantics() {
         timeout_secs: 1,
         proxy: None,
         stream_mode: stream.to_string(),
+        cache_breakpoints: false,
     };
     assert!(
         !nemesis_providers::anthropic::AnthropicProvider::new(anth_cfg("")).stream_preferred("m")
