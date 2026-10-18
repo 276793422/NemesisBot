@@ -4970,6 +4970,7 @@ name = "nemesis-data"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "nemesis-utils",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",
@@ -5533,6 +5534,7 @@ dependencies = [
  "parking_lot",
  "regex",
  "reqwest 0.12.28",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",

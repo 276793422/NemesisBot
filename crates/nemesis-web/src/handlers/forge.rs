@@ -1313,6 +1313,7 @@ fn build_caller_for_ref(
     let factory_cfg = nemesis_providers::factory::FactoryConfig {
         proxy: resolution.proxy.clone(),
         stream_mode: resolution.stream_mode.clone(),
+        cache_breakpoints: resolution.cache_breakpoints,
         llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
         api_key: resolution.api_key.clone(),
         api_base: resolution.api_base.clone(),

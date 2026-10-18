@@ -32,6 +32,11 @@ pub mod chat;
 pub mod cluster;
 #[cfg(feature = "cluster")]
 pub mod cluster_persona_gen;
+// B12（2026-10-18）：工具事件触发 workflow 自动化（注册表 CRUD + 进程
+// 缓存 + 事件泵）。随 workflow feature 进出——引擎不在则规则永不触发，
+// 诚实裁剪。
+#[cfg(feature = "workflow")]
+pub mod automations;
 pub mod coding;
 pub mod commands;
 pub mod config;
@@ -74,6 +79,10 @@ pub mod plugins_wasm;
 // rename）+ resolve_session_loop 会话归属解析。无 feature 闸——bridge 槽
 // 未装配时 handler 诚实报「未装配」。
 pub mod projects;
+// B4（2026-10-18 凭据 vault §7）：凭据索要卡 WSAPI（credential.respond /
+// credential.pending）。无 feature 闸——responder trait 在 nemesis-types，
+// broker 槽（静态注入）未装配时 handler 诚实报「not wired」。
+pub mod credential;
 // F7（devtool-upgrade 阶段 5）：dashboard 提问卡 WSAPI（question.respond /
 // question.pending）。无 feature 闸——responder 槽在 nemesis-types，未装配时
 // handler 诚实报「未装配」。
@@ -147,6 +156,11 @@ mod sessions_agt_tests;
 #[cfg(test)]
 mod sessions_share_tests;
 
+// B11（2026-10-18 snooze）：snooze/unsnooze 两命令守卫与全链 + 到期唤醒
+// sweeper（home 单例重定向，session_bindings::tests 同款 HomeGuard）。
+#[cfg(test)]
+mod sessions_snooze_tests;
+
 // L6++ G4（2026-09-08）：projects WSAPI 全命令臂（含未装配诚实报错）+
 // resolve_session_loop 两分支 + 项目根切换。
 #[cfg(test)]
@@ -216,6 +230,8 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(approval::ApprovalHandler));
     // F7：提问响应端点（dashboard 提问卡 → WebQuestionBroker）。
     router.register(Arc::new(question::QuestionHandler));
+    // B4：凭据索要卡响应端点（dashboard 凭据卡 → WebCredentialBroker）。
+    router.register(Arc::new(credential::CredentialHandler));
     // 自进化 B 线：用户习惯画像（后门动作 + 开关）。
     router.register(Arc::new(profile::ProfileHandler::new()));
     // 行动代理 P0：connector 数据面（registry 状态 / 凭条流水 / 纸面账本）。
@@ -320,6 +336,9 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     #[cfg(feature = "workflow")]
     {
         router.register(Arc::new(workflow::WorkflowHandler));
+        // B12：automations（automations.list/set/remove；注册表 CRUD +
+        // 进程缓存刷新——事件泵在 gateway 侧 agent_build 装配）。
+        router.register(Arc::new(automations::AutomationsHandler));
     }
 
     // L1：注册完成后发布命令注册表快照（OnceLock 首写胜出——重复注册

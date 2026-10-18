@@ -77,3 +77,77 @@ fn init_db_root_drive_path_parent_none() {
         "unexpected error: {err}"
     );
 }
+
+// -------------------------------------------------- B10（2026-10-18 存储韧性）
+
+#[test]
+fn init_db_rejects_foreign_file_loudly() {
+    // 手法①：非 SQLite 内容（被覆盖/截断）→ loud Err 带 hex 摘要，
+    // 不再是"打开成功、第一条语句才炸"的模糊失败面。
+    let base = temp_base("b10_foreign");
+    let db_path = base.join("usage.db");
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::write(&db_path, b"this is not a sqlite db!").unwrap();
+
+    let err = init_db(&db_path).unwrap_err();
+    assert!(
+        err.contains("不是 SQLite 格式") && err.contains("hex:"),
+        "Foreign 文件应带 hex 摘要 loud 拒绝: {err}"
+    );
+    // 拒绝发生在打开前——文件内容未被触碰。
+    assert_eq!(
+        std::fs::read(&db_path).unwrap(),
+        b"this is not a sqlite db!",
+        "拒绝路径不改写原文件"
+    );
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn init_db_rejects_newer_schema_version() {
+    // 手法②：user_version 高于本程序支持值（来自更新版本的程序）→
+    // 拒绝降级打开；旧行为会把版本静默降级写回、迁移链跳过。
+    let base = temp_base("b10_drift");
+    let db_path = base.join("usage.db");
+    {
+        let conn = init_db(&db_path).unwrap();
+        assert_eq!(SCHEMA_VERSION, 3);
+        conn.pragma_update(None, "user_version", 99).unwrap();
+    }
+    let err = init_db(&db_path).unwrap_err();
+    assert!(
+        err.contains("高于本程序支持的 3"),
+        "高版本库应 loud 拒绝: {err}"
+    );
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn init_db_migration_from_v1_keeps_backup() {
+    // 手法③：模拟旧版库（fresh v1 + user_version=1）→ init_db 走全迁移
+    // 链升到当前版，且迁移前 .bak.1 在场（头合法 + 版本 = 旧版 1）。
+    let base = temp_base("b10_migrate_bak");
+    let db_path = base.join("usage.db");
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+    }
+    let conn = init_db(&db_path).unwrap();
+    let ver: i32 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(ver, SCHEMA_VERSION, "迁移链走满");
+
+    let bak1 = base.join("usage.db.bak.1");
+    assert!(bak1.exists(), "迁移前备份在场");
+    let bak_ver: i32 = rusqlite::Connection::open(&bak1)
+        .unwrap()
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(bak_ver, 1, "备份持迁移前快照");
+
+    let _ = std::fs::remove_dir_all(&base);
+}

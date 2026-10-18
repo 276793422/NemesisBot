@@ -260,6 +260,21 @@ impl AgentLoop {
             )
             .await;
 
+            // 自查②（2026-10-18 B 级清零）：provider 实报输入 token 进
+            // compaction 混合触发信号缓存（prompt + cache_read，P8 会话
+            // 预算记账同口径）；无 usage 的 lane 不写 = 纯估算诚实回落。
+            if let Some(ref usage) = response.usage {
+                let cache_read = usage
+                    .cache_read_tokens
+                    .or(usage.cached_tokens)
+                    .unwrap_or(0)
+                    .max(0) as u64;
+                self.note_compaction_provider_signal(
+                    &context.session_key,
+                    (usage.prompt_tokens.max(0) as u64).saturating_add(cache_read),
+                );
+            }
+
             // 器官 6（§4.2）：max_tokens 截断续写判定。Some(Continue) =
             // 截断已追加续写提示（continue 下一轮）；Some(Stop) = 续写
             // 预算耗尽终局；None = 未截断（计数清零）落回终答判定。
@@ -359,11 +374,19 @@ impl AgentLoop {
             .escalated_to
             .or(st.chat_opts.max_tokens.map(|t| t as u64))
             .unwrap_or(8192);
-        let hit_cap = response
-            .usage
-            .as_ref()
-            .map(|u| (u.completion_tokens as u64) >= token_cap)
-            .unwrap_or(false);
+        let hit_cap = match response.usage.as_ref() {
+            // 有 usage：数值判定（精确）。§6.2：escalated_to 优先——config
+            // 8192 + learned floor 32768 时，完整响应 usage 10000 ≥ 8192
+            // 会对未截断响应误触发。
+            Some(u) => (u.completion_tokens as u64) >= token_cap,
+            // 无 usage（上游剥离 usage 的代理/流形态）：回落 finish_reason
+            // 判定（B1，2026-10-18 B 级清零）——finish_reason=="length" 是
+            // provider 的权威截断信号，不依赖本地 cap 猜测（chat_opts 缺省
+            // 8192 的 false-positive 风险也随之消失）。CLI lane（claude-cli/
+            // codex-cli）恒 "stop"/"tool_calls"（子进程吞截断信息），此回落
+            // 对它们诚实无效——无法检测就不假装检测。
+            None => response.finish_reason.as_deref() == Some("length"),
+        };
         if hit_cap {
             // M4-B（A13）：空内容撞 cap ≠ 大文件被截断——零产出继续喂
             // continue 提示只会每轮烧一次全量 prefill。第 1 次按截断续写
@@ -1156,3 +1179,8 @@ impl AgentLoop {
 #[cfg(test)]
 #[path = "m4b_empty_cap_tests.rs"]
 mod m4b_empty_cap_tests;
+
+// B1（2026-10-18 B 级清零）：无 usage 时 finish_reason 截断回退测试。
+#[cfg(test)]
+#[path = "length_fallback_tests.rs"]
+mod length_fallback_tests;

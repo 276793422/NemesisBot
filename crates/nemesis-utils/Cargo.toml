@@ -15,6 +15,13 @@ parking_lot = { workspace = true }
 # llm_error_class（T2a 下沉）：错误文本分类的正则模式（与 providers 侧同源 workspace 版本）。
 regex = { workspace = true }
 zip = { version = "9", default-features = false, features = ["deflate"] }
+# B10（2026-10-18 存储韧性）：SQLite 打开面前置守卫模块的可选依赖——
+# 只有启用 `sqlite-preflight` feature 的消费方（nemesis-data / nemesis-board）
+# 才会把 rusqlite 拉进依赖图，未启用方零成本。
+rusqlite = { workspace = true, optional = true }
+
+[features]
+sqlite-preflight = ["dep:rusqlite"]
 
 [dev-dependencies]
 tempfile = "3"

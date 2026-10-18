@@ -44,7 +44,7 @@ const sessionStore = useSessionStore()
 const toast = useToast()
 const router = useRouter()
 const wfEditSessions = useWfEditSessions()
-const { openProjectDir } = useChatApi()
+const { openProjectDir, snooze, unsnooze } = useChatApi()
 
 /** 工作流编辑会话（对话生成 TAB 专用）→ 主聊天侧栏隐藏。 */
 function isWfEditSession(id: string): boolean {
@@ -406,6 +406,9 @@ onMounted(async () => {
   // SB（2026-09-17）：会话物化事件 → force 刷新（绕过 5s 缓存——事件就是
   // 「列表已过期」的信号）。事件丢失由 ChatPanel 的 receive 帧兜底补拉。
   onSSE('session.created', onSessionCreated)
+  // B11（2026-10-18 snooze）：暂停标记变更（snooze/unsnooze/到期 sweeper
+  // 唤醒）→ force 刷新——灰显与 ⏰ 徽标跟随列表数据。
+  onSSE('session.updated', onSessionCreated)
 })
 
 function onSessionCreated(_data: any) {
@@ -414,6 +417,7 @@ function onSessionCreated(_data: any) {
 
 onUnmounted(() => {
   offSSE('session.created', onSessionCreated)
+  offSSE('session.updated', onSessionCreated)
 })
 
 function select(id: string) {
@@ -490,6 +494,84 @@ function undeliveredBadge(s: { undelivered?: number }): string | null {
   const n = s.undelivered ?? 0
   if (n <= 0) return null
   return n > 9 ? '9+' : String(n)
+}
+
+// ---------------------------------------------------------------------------
+// B11（2026-10-18 snooze）：会话暂停——UI 标记 + 到期自动唤醒（后端 sweeper
+// 摘标记 + 注入恢复 system 行）。期间消息照常处理；snoozedUntil 在未来 =
+// 暂停中（列表回填的旧标记若已过期但 sweeper 尚未跑，按未暂停渲染——
+// 唤醒是后端的职责，前端不自作主张摘标记）。
+// ---------------------------------------------------------------------------
+
+/** 暂停中判定：snoozedUntil 存在且在未来。 */
+function isSnoozed(s: Pick<SessionEntry, 'snoozedUntil'>): boolean {
+  if (!s.snoozedUntil) return false
+  const due = new Date(s.snoozedUntil)
+  return !isNaN(due.getTime()) && due.getTime() > Date.now()
+}
+
+/** 暂停徽标 tooltip（灰显行 title 复用）：剩余时长 + 备注。 */
+function snoozeTip(s: SessionEntry): string {
+  const due = new Date(s.snoozedUntil || '')
+  const mins = Math.max(0, Math.round((due.getTime() - Date.now()) / 60000))
+  const remain = mins >= 60 ? `${Math.floor(mins / 60)} 小时 ${mins % 60} 分` : `${mins} 分钟`
+  return `已暂停（${remain}后自动恢复）${s.snoozeNote ? ` · ${s.snoozeNote}` : ''}`
+}
+
+/** 暂停会话：prompt 输入时长（30m / 2h / 1d / 纯分钟数 / RFC3339）。
+ *  相对形态在前端折算成相对秒数（后端只认 秒数/RFC3339）。 */
+async function snoozeSession(s: SessionEntry) {
+  closeMenus()
+  const raw = prompt(
+    '暂停这个会话到什么时候？（如 30m / 2h / 1d / 90 分钟；到期自动恢复，期间消息照常处理）',
+    '2h',
+  )
+  if (raw === null) return
+  const input = raw.trim()
+  if (!input) return
+  let until: string
+  const rel = input.match(/^(\d+)\s*(分(?:钟)?|h|小时|d|天)?$/i)
+  if (rel) {
+    const n = parseInt(rel[1], 10)
+    const unit = (rel[2] || 'm').toLowerCase()
+    // 中文单位显式等值匹配（'小时' 不以 'h' 开头、'天' 不以 'd' 开头——
+    // startsWith 会把它们错落到分钟档）。
+    const mult =
+      unit === 'h' || unit === '小时' ? 3600 : unit === 'd' || unit === '天' ? 86400 : 60
+    const secs = n * mult
+    if (secs <= 0) {
+      toast.error('时长必须为正数')
+      return
+    }
+    until = String(secs)
+  } else {
+    // 非相对形态 → 按 RFC3339 透传（后端校验过去时刻）。
+    const d = new Date(input)
+    if (isNaN(d.getTime()) || d.getTime() <= Date.now()) {
+      toast.error('无法识别的时长或时刻（示例：30m / 2h / 1d / 90 分钟）')
+      return
+    }
+    until = d.toISOString()
+  }
+  try {
+    await snooze(s.id, until)
+    toast.success(`已暂停「${title(s)}」`)
+    await sessionStore.fetchList(true)
+  } catch (e: any) {
+    toast.error(typeof e === 'string' ? e : e?.message || '暂停失败')
+  }
+}
+
+/** 取消暂停（立即恢复）。幂等——标记已被 sweeper 摘除时也回成功。 */
+async function unsnoozeSession(s: SessionEntry) {
+  closeMenus()
+  try {
+    await unsnooze(s.id)
+    toast.success(`「${title(s)}」已恢复`)
+    await sessionStore.fetchList(true)
+  } catch (e: any) {
+    toast.error(typeof e === 'string' ? e : e?.message || '恢复失败')
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -647,7 +729,8 @@ function relTime(ts: string): string {
             :key="s.id"
             class="session-item"
             :data-session-id="s.id"
-            :class="{ active: s.id === currentId, orphaned: grp.header?.orphan }"
+            :class="{ active: s.id === currentId, orphaned: grp.header?.orphan, snoozed: isSnoozed(s) }"
+            :title="isSnoozed(s) ? snoozeTip(s) : undefined"
             :style="s.lineageDepth > 0 ? { paddingLeft: `${10 + s.lineageDepth * 14}px` } : undefined"
             @click="select(s.id)"
           >
@@ -655,6 +738,12 @@ function relTime(ts: string): string {
               <!-- M6: pinned 会话标题前缀标记（置顶行的视觉识别） -->
               <span v-if="isPinned(s.id)" class="pin-flag" title="已置顶">📌</span>
               {{ title(s) }}
+              <!-- B11（2026-10-18 snooze）: 暂停中徽标（行灰显 + 到期自动恢复）。 -->
+              <span
+                v-if="isSnoozed(s)"
+                class="snooze-badge"
+                :title="snoozeTip(s)"
+              >⏰</span>
               <!-- P2（2026-09-11）: 未送达回复徽标（assistant 推送失败时后端
                    打点；点开拉取历史后清零）。 -->
               <span
@@ -680,6 +769,9 @@ function relTime(ts: string): string {
             <div v-if="menu?.kind === 'row' && menu.key === s.id" class="group-menu row-menu" @click.stop>
               <button class="menu-item" @click="showInfo(s)">ℹ 会话信息</button>
               <button class="menu-item" @click="togglePin(s.id)">{{ isPinned(s.id) ? '取消置顶' : '置顶' }}</button>
+              <!-- B11（2026-10-18 snooze）：暂停/恢复（互斥入口） -->
+              <button v-if="isSnoozed(s)" class="menu-item" @click="unsnoozeSession(s)">▶ 取消暂停</button>
+              <button v-else class="menu-item" @click="snoozeSession(s)">⏰ 暂停会话</button>
               <button class="menu-item" @click="renameSession(s)">✏ 重命名</button>
               <button class="menu-item" @click="forkSession(s)">⑂ 创建分支</button>
               <button class="menu-item" @click="clearSession(s)">🗑 清空消息</button>
@@ -876,6 +968,15 @@ function relTime(ts: string): string {
 .session-item.orphaned {
   opacity: 0.6;
 }
+/* B11（2026-10-18 snooze）：暂停中会话弱化（比孤儿略浅——状态是暂时的，
+ * 到期自动恢复；hover/active 恢复全亮保证可操作）。 */
+.session-item.snoozed {
+  opacity: 0.55;
+}
+.session-item.snoozed:hover,
+.session-item.snoozed.active {
+  opacity: 1;
+}
 .session-title {
   font-size: 13px;
   white-space: nowrap;
@@ -956,6 +1057,14 @@ function relTime(ts: string): string {
   line-height: 14px;
   font-weight: 600;
   text-align: center;
+  display: inline-block;
+  vertical-align: 1px;
+}
+/* B11（2026-10-18 snooze）: 暂停中徽标——⏰ 字符（无底色，弱化行内
+ * 视觉锚点；tooltip 由行级 snoozeTip 承担） */
+.snooze-badge {
+  margin-left: 6px;
+  font-size: 11px;
   display: inline-block;
   vertical-align: 1px;
 }
