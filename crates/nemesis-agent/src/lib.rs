@@ -35,6 +35,10 @@ pub mod canvas;
 #[cfg(all(feature = "codemode", not(target_os = "android")))]
 pub mod code_run;
 pub mod context;
+/// A3 委派持续操控（2026-10-18）：delegate 四工具 + 协议 adapter（claude
+/// stream-json / codex app-server）。运行闸 `agents.delegate.enabled`（默认
+/// 关）+ CLI 在场探测；复用 B4 后台注册表复用件；estop 联动。
+pub mod delegate_registry;
 pub mod discipline;
 pub mod estop;
 pub mod event_ledger;

@@ -431,7 +431,11 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         // 同源派生拦截）。
         | "run_checks"
         // U13：外部 CLI 委派（claude/codex 子进程跑任务）。
-        | "claude_code" | "codex_delegate" => Some(OperationType::ProcessExec),
+        // A3（委派持续操控）：delegate_start 语义等同 exec（起子代理进程）
+        // → 同档 ProcessExec。
+        | "claude_code" | "codex_delegate" | "delegate_start" => {
+            Some(OperationType::ProcessExec)
+        }
         // F3（2026-09-22 审计修复）：`git`/`grep` 同为 MOVE_TOOLS 但此前未
         // 分类 → 管线 None 放行（fail-open），U10 注释承诺的 declared_
         // operation_type 机制未落地，这里直接补表。FileRead=LOW 让 8 层
@@ -491,7 +495,13 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         "message" | "sleep" | "question" | "subagent" | "skills_list" | "skills_info"
         | "cli_reference" | "history_search" | "mcp_list" | "workflow_run"
         | "workflow_capabilities" | "memory_search" | "memory_list" | "background_output"
-        | "background_kill" => Some(OperationType::Internal),
+        | "background_kill"
+        // A3（委派持续操控）：send/output/stop 只操控本注册表内的自有子
+        // 代理（进程已在 delegate_start 时过闸；steer 文本作为工具入参照
+        // 过注入检测层）——对齐 background_output/kill 例外语义。
+        | "delegate_send" | "delegate_output" | "delegate_stop" => {
+            Some(OperationType::Internal)
+        }
         _ => None,
     }
 }

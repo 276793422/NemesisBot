@@ -685,6 +685,7 @@ fn test_full_config_roundtrip() {
             // T2/T3（2026-10-13 内部专项批次：codemode / turn WAL / provider
             // 流事件开关）——全字段初始化器补齐（值对齐 lib.rs Default）。
             codemode: crate::CodeModeConfig::default(),
+            delegate: crate::DelegateToolConfig::default(),
             turn_wal: true,
             provider_stream_events: true,
             executor_tool_timeout_secs: 1800,
