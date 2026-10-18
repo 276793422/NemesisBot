@@ -40,16 +40,16 @@ fn test_parse_host_port_no_port() {
 // through silently on failure).
 // -------------------------------------------------------------------------
 
-#[cfg(all(feature = "desktop", feature = "memory"))]
+#[cfg(all(feature = "memory", feature = "security"))]
 use nemesis_memory::memory_tools::MemoryApprovalGate;
 
 /// Mock approval manager returning a canned decision.
-#[cfg(all(feature = "desktop", feature = "memory"))]
+#[cfg(all(feature = "memory", feature = "security"))]
 struct MockApproval {
     decision: Result<nemesis_security::auditor::ApprovalVerdict, String>,
 }
 
-#[cfg(all(feature = "desktop", feature = "memory"))]
+#[cfg(all(feature = "memory", feature = "security"))]
 impl nemesis_security::auditor::ApprovalManager for MockApproval {
     fn is_running(&self) -> bool {
         true
@@ -67,7 +67,7 @@ impl nemesis_security::auditor::ApprovalManager for MockApproval {
     }
 }
 
-#[cfg(all(feature = "desktop", feature = "memory"))]
+#[cfg(all(feature = "memory", feature = "security"))]
 fn mock_memory_gate(
     decision: Result<nemesis_security::auditor::ApprovalVerdict, String>,
 ) -> GatewayMemoryGate {
@@ -76,7 +76,7 @@ fn mock_memory_gate(
     GatewayMemoryGate::new(am)
 }
 
-#[cfg(all(feature = "desktop", feature = "memory"))]
+#[cfg(all(feature = "memory", feature = "security"))]
 #[tokio::test]
 async fn memory_gate_approves_when_user_approves() {
     let g = mock_memory_gate(Ok(nemesis_security::auditor::ApprovalVerdict::approved()));
@@ -84,7 +84,7 @@ async fn memory_gate_approves_when_user_approves() {
     assert!(g.approve_forget("forget session Y").await);
 }
 
-#[cfg(all(feature = "desktop", feature = "memory"))]
+#[cfg(all(feature = "memory", feature = "security"))]
 #[tokio::test]
 async fn memory_gate_denies_when_user_denies() {
     let g = mock_memory_gate(Ok(nemesis_security::auditor::ApprovalVerdict::denied()));
@@ -95,7 +95,7 @@ async fn memory_gate_denies_when_user_denies() {
     );
 }
 
-#[cfg(all(feature = "desktop", feature = "memory"))]
+#[cfg(all(feature = "memory", feature = "security"))]
 #[tokio::test]
 async fn memory_gate_denies_on_timeout_or_error() {
     // Popup timeout / IPC error → request_approval_sync returns Err → must deny.

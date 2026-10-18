@@ -5191,7 +5191,9 @@ async fn evidence_gate_present_delivery_passes_and_anchor_summary_merged() {
     );
     seed_dispatch(&deps.store, "t-evidence-hit", issue.id, "node-b");
     // worker 回调已落账（A 端 handle_task_complete 同款：kind=cluster_result、
-    // 幂等键=task_id、落库即 delivered）。
+    // 幂等键=task_id、落库即 delivered）。F5：夹具镜像真实 wire 形态——
+    // payload 必须带 delivery 结构（capture：commit/tree 不可变交付点 +
+    // patch_path 留底），空壳行不再满足闸。
     deps.cluster
         .task_db()
         .unwrap()
@@ -5199,7 +5201,15 @@ async fn evidence_gate_present_delivery_passes_and_anchor_summary_merged() {
             "cluster_result",
             None,
             "t-evidence-hit",
-            &serde_json::json!({"node": "node-b"}),
+            &serde_json::json!({
+                "node": "node-b",
+                "delivery": {
+                    "commit": "evidencecommit01",
+                    "tree": "evidencetree01",
+                    "patch_truncated": false,
+                    "patch_path": "logs/deliveries/t-evidence-hit.patch"
+                }
+            }),
         )
         .unwrap();
     attach_loop(
@@ -5304,6 +5314,191 @@ async fn evidence_gate_global_switch_applies_to_plain_issues() {
             .iter()
             .any(|c| c.content.contains("交付证据闸")),
         "全局开关路径同样落降级留痕评论"
+    );
+}
+
+// ===== F5 结构完整性升级（二轮复评 2026-10-18）：空壳记录不再满足闸 =====
+//
+// 完成回调无条件记账（payload 可为 Null），「记录在场」不足以证明走了
+// 交付管线。闸升级：payload.delivery 必须在场 + commit/tree 非空 +
+// 截断必有 patch_path 留底；缺口文案分档。版本绑定 = 最新派发 task_id。
+
+/// 全局开关 + 普通单 + 指定交付 payload 的公共夹具（PASS 臂直通断言用）。
+async fn evidence_gate_fixture(
+    payload: serde_json::Value,
+    tag: &str,
+) -> (BoardReviewDeps, std::path::PathBuf, i64) {
+    let (deps, ws) = review_deps_taskdb(tag);
+    write_board_config(
+        &deps.home,
+        r#"{"auto_accept":true,"review":{"require_delivery_evidence":true}}"#,
+    );
+    let issue = issue_in_review(
+        &deps.store,
+        &format!("证据结构 {tag}"),
+        "普通文字验收标准",
+        "## 结论\n交付完成",
+    );
+    seed_dispatch(&deps.store, &format!("t-{tag}"), issue.id, "node-b");
+    deps.cluster
+        .task_db()
+        .unwrap()
+        .record_delivery("cluster_result", None, &format!("t-{tag}"), &payload)
+        .unwrap();
+    attach_loop(
+        &deps,
+        Arc::new(CapturingLlm {
+            prompts: std::sync::Mutex::new(Vec::new()),
+            reply: review_json("PASS", ""),
+        }),
+    );
+    (deps, ws, issue.id)
+}
+
+#[tokio::test]
+async fn evidence_gate_null_payload_shell_row_downgrades() {
+    use nemesis_board::IssueStatus;
+
+    // Null 空壳行（完成回调无条件记账的最坏形态）：记录在场但无 delivery
+    // 结构 → 不再满足闸，降级 FAIL（零预算转人工）。
+    let (deps, _ws, issue_id) =
+        evidence_gate_fixture(serde_json::Value::Null, "evidence-null-shell").await;
+    let reviewed = review_issue(&deps, issue_id, ReviewCtx::first_stage())
+        .await
+        .expect("空壳行降级闭环");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.get_issue(issue_id).unwrap().status,
+        IssueStatus::InReview,
+        "Null 空壳 payload 不得再当交付证据（PASS 降级 FAIL → 转人工）"
+    );
+    let comments = deps.store.list_comments(issue_id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("无 delivery 结构")),
+        "缺口文案必须指明 delivery 结构缺席: {:?}",
+        comments.iter().map(|c| &c.content).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn evidence_gate_truncated_with_patch_path_passes() {
+    use nemesis_board::IssueStatus;
+
+    // 截断 + patch_path 留底在场：结构完整 → 放行（G4 契约：截断必有留底）。
+    let (deps, _ws, issue_id) = evidence_gate_fixture(
+        serde_json::json!({
+            "node": "node-b",
+            "delivery": {
+                "commit": "trunccommit01",
+                "tree": "trunctree01",
+                "patch_truncated": true,
+                "patch_path": "logs/deliveries/t-evidence-trunc-ok.patch"
+            }
+        }),
+        "evidence-trunc-ok",
+    )
+    .await;
+    let reviewed = review_issue(&deps, issue_id, ReviewCtx::first_stage())
+        .await
+        .expect("截断有留底放行闭环");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.get_issue(issue_id).unwrap().status,
+        IssueStatus::Done,
+        "截断 + patch_path 留底 = 结构完整 → 闸放行 → auto_accept 落 done"
+    );
+}
+
+#[tokio::test]
+async fn evidence_gate_truncated_without_patch_path_downgrades() {
+    use nemesis_board::IssueStatus;
+
+    // 截断但无 patch_path（G4 契约破坏形态）：降级 FAIL。
+    let (deps, _ws, issue_id) = evidence_gate_fixture(
+        serde_json::json!({
+            "node": "node-b",
+            "delivery": {
+                "commit": "truncnoleave1",
+                "tree": "truncnoleavt1",
+                "patch_truncated": true
+            }
+        }),
+        "evidence-trunc-bad",
+    )
+    .await;
+    let reviewed = review_issue(&deps, issue_id, ReviewCtx::first_stage())
+        .await
+        .expect("截断无留底降级闭环");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.get_issue(issue_id).unwrap().status,
+        IssueStatus::InReview,
+        "截断无留底 = 结构不完整 → 降级 FAIL → 零预算转人工"
+    );
+    let comments = deps.store.list_comments(issue_id).unwrap();
+    assert!(
+        comments.iter().any(|c| c.content.contains("patch_path")),
+        "缺口文案必须指明留底缺失: {:?}",
+        comments.iter().map(|c| &c.content).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn evidence_gate_stale_attempt_record_does_not_satisfy() {
+    use nemesis_board::IssueStatus;
+
+    // 版本绑定：记录挂在旧派发 task_id 名下，最新派发无账 → 闸按最新锚查
+    // 账本 → FAIL（评估方「产物属于旧 attempt」的确定性镜像）。
+    let (deps, _ws) = review_deps_taskdb("evidence-stale");
+    write_board_config(
+        &deps.home,
+        r#"{"max_redispatch":0,"review":{"require_delivery_evidence":true}}"#,
+    );
+    let issue = issue_in_review(
+        &deps.store,
+        "旧 attempt 记录不背书",
+        "普通文字验收标准",
+        "## 结论\n交付完成",
+    );
+    seed_dispatch(&deps.store, "t-evidence-stale-old", issue.id, "node-b");
+    seed_dispatch(&deps.store, "t-evidence-stale-new", issue.id, "node-b");
+    // 完整交付结构挂在旧 attempt 名下——结构再完整也满足不了新锚。
+    deps.cluster
+        .task_db()
+        .unwrap()
+        .record_delivery(
+            "cluster_result",
+            None,
+            "t-evidence-stale-old",
+            &serde_json::json!({
+                "node": "node-b",
+                "delivery": {
+                    "commit": "stalecommit01",
+                    "tree": "staletree01",
+                    "patch_truncated": false,
+                    "patch_path": "logs/deliveries/t-evidence-stale-old.patch"
+                }
+            }),
+        )
+        .unwrap();
+    attach_loop(
+        &deps,
+        Arc::new(CapturingLlm {
+            prompts: std::sync::Mutex::new(Vec::new()),
+            reply: review_json("PASS", ""),
+        }),
+    );
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("旧 attempt 绑定降级闭环");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.get_issue(issue.id).unwrap().status,
+        IssueStatus::InReview,
+        "旧 attempt 记录不满足最新派发锚 → 降级 FAIL → 转人工"
     );
 }
 

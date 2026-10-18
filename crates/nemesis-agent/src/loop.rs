@@ -549,6 +549,12 @@ pub struct AgentLoop {
     /// 供给闸（build_tool_defs）与 dispatch 闸天然双闸对齐；通配语义同
     /// `tool_name_matches_hidden`。空 = 零影响（主 loop / 项目 loop 不触碰）。
     extra_hidden_tools: parking_lot::RwLock<Vec<String>>,
+    /// F4（二轮复评 2026-10-18）：per-loop tool_policy allow 白名单。非空 =
+    /// 白名单语义——不在名单的工具不供给（build_tool_defs）且 dispatch 拒绝
+    /// （双闸同源现读本槽）。取代旧「注册面 ∖ allow 折算进隐藏表」：折算只
+    /// 吃注册期快照，MCP 热加载的新工具漏拦；槽值每回合现读，动态新工具
+    /// 天然落闸。精确名匹配，不扩通配语法。空 = 零影响。
+    tool_policy_allow: parking_lot::RwLock<Vec<String>>,
     /// G1：记录级 tier 钉死（自建 agent 档位契约）。`Some` = tier 以记录为
     /// 唯一真相源——[`Self::refresh_active_tier`] 短路（config 重解析/换模型
     /// 不覆盖记录档位）；`None` = config 驱动（主/项目 loop 语义不变）。
@@ -794,6 +800,7 @@ impl AgentLoop {
             agent_event_tx: parking_lot::RwLock::new(None),
             config_path: parking_lot::RwLock::new(None),
             extra_hidden_tools: parking_lot::RwLock::new(Vec::new()),
+            tool_policy_allow: parking_lot::RwLock::new(Vec::new()),
             tier_override: parking_lot::RwLock::new(None),
             prompt_system: parking_lot::RwLock::new(crate::prompt::PromptSystem::Classic),
             pricing_store: parking_lot::RwLock::new(None),

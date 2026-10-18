@@ -209,6 +209,11 @@ impl AgentLoop {
         // entirely (dispatch re-checks the same list: double gate). Read
         // FRESH each call so dashboard/CLI edits apply from the next turn.
         let hidden = self.current_hidden_tools();
+        // F4（二轮复评 2026-10-18）：tool_policy allow 白名单供给闸——非空 =
+        // 白名单语义，不在名单（精确名匹配）的工具不供给。每回合现读槽值：
+        // MCP 热加载的新工具自动落闸（旧「注册面 ∖ allow 折算」只吃注册期
+        // 快照，动态新发现漏折——已被本闸取代）。空 = 无白名单语义。
+        let policy_allow = self.tool_policy_allow();
         // F1 (devtool-upgrade 阶段 4): Plan 模式第四过滤层——只读白名单
         // ∩（MCP 前缀工具与 spawn 豁免：MCP 语义未知不猜；spawn 保留供给、
         // 分发闸兜底）。与 tier 过滤正交（Mini+Plan 取交集，验收项）。
@@ -229,6 +234,7 @@ impl AgentLoop {
                 }
             })
             .filter(|name| !tool_name_matches_hidden(&hidden, name))
+            .filter(|name| policy_allow.is_empty() || policy_allow.iter().any(|a| a == *name))
             .filter(|name| {
                 !plan_mode
                     || Self::PLAN_MODE_TOOLS.contains(&name.as_str())

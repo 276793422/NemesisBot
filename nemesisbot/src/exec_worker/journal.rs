@@ -22,12 +22,19 @@
 //! 一个执行体进程在跑，裁剪发生在子进程进入服务循环之前。
 //!
 //! 盘写失败（append/建目录）不再放弃记账：仍 admit 进内存环——进程内 replay
-//! 照常 at-most-once，跨重启退化 at-least-once（warn 诚实注明）。读失败且
-//! 文件在场 = loud error（与首次启动无账区分——replay 面已受损必须说话）。
+//! 照常 at-most-once；但账本自此置**不可信**（`durable=false`，sticky 不复活）：
+//! [`Journal::record_intent`] 返回 false，`serve_line` 据此拒绝有副作用的
+//! 非只读工具（F2，二轮复评）——持久保护缺席时危险工具不得继续（否则执行
+//! 体重启后 intent 随内存蒸发，「结果未知」保护失效）。只读白名单照常放行
+//! （可用性取舍）。读失败且文件在场 / 中断恢复失败 = loud error + 同样置
+//! 不可信，**绝不当空账**（与首次启动无账区分——replay 面已受损必须说话）。
 //!
-//! 压缩原子化：写 `.tmp` + rename（目标在场先经 [`nemesis_utils::fsutil`]
-//! 韧性删除——Windows rename 不覆盖已存在目标；rename 前崩溃残留的 `.tmp`
-//! 在下次 open 时清掉）。
+//! 压缩原子化（F1，二轮复评）：写 `.tmp` → 平台替换——Unix `fs::rename`
+//! 自身原子覆盖已存在目标（POSIX），无「先删后改名」窗口；Windows 走
+//! rename 舞步（current → `.bak`、tmp → current、删 `.bak`）。重写中断的
+//! 磁盘状态由 open 时 [`recover_interrupted_rewrite`] 收编（恢复失败 = 置
+//! 不可信）。**承诺面 = 进程崩溃/被杀**（rename 语义内原子）；断电不承诺
+//! （无 fsync，append 路径同样如此——诚实边界）。
 //!
 //! per-call 子进程（无 agent id）journal 恒禁用：每次一调用即退，账本无
 //! 意义，v1 线形态零变化。
@@ -67,6 +74,12 @@ fn parse_intent_line(line: &str) -> Option<(String, String)> {
 pub struct Journal {
     enabled: bool,
     path: Option<PathBuf>,
+    /// 持久可信旗标（F2）：true = 账本读/写均正常；append 失败、加载读
+    /// 错误、中断恢复失败任一发生 → false（**sticky，本进程生命周期不复
+    /// 信**）。false 时 `record_intent` 恒返 false，serve_line 据此拒绝
+    /// 有副作用的非只读工具。禁用态恒 false（无持久面；`record_intent`
+    /// 对禁用直接放行，不查此旗标）。
+    durable: bool,
     /// call_id → 完整响应行（无换行）。
     map: HashMap<String, String>,
     /// 插入序（逐出最旧 + 盘上裁剪重写序）。
@@ -93,6 +106,7 @@ impl Journal {
         let mut this = Self {
             enabled: true,
             path: Some(workspace.join(JOURNAL_REL)),
+            durable: true,
             map: HashMap::new(),
             order: VecDeque::new(),
             intents: HashMap::new(),
@@ -106,6 +120,7 @@ impl Journal {
         Self {
             enabled: false,
             path: None,
+            durable: false,
             map: HashMap::new(),
             order: VecDeque::new(),
             intents: HashMap::new(),
@@ -119,32 +134,34 @@ impl Journal {
     }
 
     /// 载入盘上账本（两相：意图行 + 完成行）；超限/含坏行时把完成账重写回
-    /// 「内存保留集」（原子替换，见 `atomic_rewrite`）——窗口内崩溃的最坏
-    /// 代价 = 完成账部分丢失 → 该次 replay 退化 at-least-once。坏行（崩溃
-    /// 截断的半行，两种 kind 皆可能）跳过不入内存。
+    /// 「内存保留集」（原子替换，见 `atomic_rewrite`）——中断状态已先经
+    /// `recover_interrupted_rewrite` 收编，此后重写窗口内崩溃的最坏代价 =
+    /// 中断态留给下次 open 恢复（不再有丢账形态）。坏行（崩溃截断的半行，
+    /// 两种 kind 皆可能）跳过不入内存。
     fn load_and_compact(&mut self) {
         let Some(path) = self.path.clone() else {
             return;
         };
+        // F1（二轮复评）：先收编上次重写的中断状态（恢复/清残留），再读——
+        // 顺序不可换，否则中断态会被 NotFound 误当空账。恢复失败 = 账本面
+        // 受损，置不可信（F2 闸拒绝有副作用工具），绝不静默当空账。
+        if !recover_interrupted_rewrite(&path) {
+            self.durable = false;
+        }
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             // 首次启动无账 = 空账（静默）。
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
             Err(e) => {
-                // 文件在场但读不了：replay 面已受损，必须说话（不当空账）。
+                // 文件在场但读不了：replay 面已受损，必须说话（不当空账），
+                // 且置不可信——持久保护缺席，有副作用工具不得继续（F2）。
                 tracing::error!(
-                    "[executor] journal load failed (file present; crash replay degraded this boot): {e}"
+                    "[executor] journal load failed (file present; ledger marked not-durable, side-effectful tools will be refused): {e}"
                 );
+                self.durable = false;
                 return;
             }
         };
-        // rename 前崩溃残留的压缩临时文件 = 垃圾，清掉（尽力而为）。
-        let tmp = tmp_path(&path);
-        if tmp.exists()
-            && let Err(e) = nemesis_utils::fsutil::remove_file_retry(&tmp)
-        {
-            tracing::warn!("[executor] journal stale tmp cleanup failed: {e}");
-        }
         let mut done_total = 0usize;
         for line in content.lines() {
             let line = line.trim();
@@ -185,9 +202,23 @@ impl Journal {
                 }
             }
             if let Err(e) = atomic_rewrite(&path, &body) {
-                tracing::warn!(
-                    "[executor] journal compaction failed (continuing append-only): {e}"
-                );
+                // 重写失败分两态：current 仍在场（Unix rename 失败 / Windows
+                // 舞步前三步失败 / 回滚成功）= 旧账完好原地，append-only 继续
+                // 成立（warn 即可）；current 缺席（Windows 舞步 rename 失败
+                // 且回滚 rename 也失败）= 旧账滞留 .bak，后续 append 落进无
+                // 历史的新文件——崩溃窗口内保留集丢持久面（含未决意图 →
+                // 「结果未知」保护失效）。缺席即置不可信（与恢复失败同类：
+                // 存储故障不静默），监督器重启经 recover 收编 .bak 自愈。
+                if path.exists() {
+                    tracing::warn!(
+                        "[executor] journal compaction failed (continuing append-only): {e}"
+                    );
+                } else {
+                    tracing::error!(
+                        "[executor] journal compaction left no current file (old account stranded in .bak) — ledger marked not-durable, side-effectful tools will be refused: {e}"
+                    );
+                    self.durable = false;
+                }
             }
         }
     }
@@ -231,15 +262,25 @@ impl Journal {
         self.intents.get(call_id).map(String::as_str)
     }
 
-    /// 记意图行（dispatch 前调用）。未启用 / 空 call_id / 已有完成账 /
-    /// 幂等重记 = no-op。落盘失败仍入内存（意图面进程内成立，跨重启丢失
-    /// = 退回无账语义 at-least-once，warn 注明）。
-    pub fn record_intent(&mut self, call_id: &str, tool: &str) {
+    /// 记意图行（dispatch 前调用）。返回意图是否**可靠落盘**：
+    /// - 未启用 / 空 call_id → `true`（无持久面也无闸，per-call 形态零变化）；
+    /// - 已有完成账 / 幂等重记 → 返回当前 `durable` 态（no-op）；
+    /// - 账本已不可信（sticky）→ `false`（内存意图面照常登记）；
+    /// - append 失败 → 置不可信 + `false`（F2：不再静默降级，调用方须拒绝
+    ///   有副作用工具）；
+    /// - 成功 → `true`。
+    pub fn record_intent(&mut self, call_id: &str, tool: &str) -> bool {
         if !self.enabled || call_id.is_empty() {
-            return;
+            return true;
         }
         if self.map.contains_key(call_id) || self.intents.contains_key(call_id) {
-            return;
+            return self.durable;
+        }
+        if !self.durable {
+            // sticky：账本已不可信（历史加载失败/中断恢复失败/此前写失败），
+            // 不因后续写成功复信——本进程生命周期内有副作用工具保持拒绝。
+            self.intents.insert(call_id.to_string(), tool.to_string());
+            return false;
         }
         let line = serde_json::to_string(&IntentLine {
             kind: KIND_INTENT,
@@ -248,22 +289,28 @@ impl Journal {
         })
         .unwrap_or_default();
         if line.is_empty() {
-            return;
+            // 序列化失败（本结构理论不可达）：同按不可信处理，不放行。
+            self.durable = false;
+            self.intents.insert(call_id.to_string(), tool.to_string());
+            return false;
         }
         let Some(path) = self.path.clone() else {
-            return;
+            return false;
         };
         if let Err(e) = append_line(&path, &line) {
+            self.durable = false;
             tracing::warn!(
-                "[executor] journal intent append failed (in-memory only; cross-restart replay degrades to at-least-once): {e}"
+                "[executor] journal intent append failed: ledger marked not-durable, side-effectful tools will be refused: {e}"
             );
         }
         self.intents.insert(call_id.to_string(), tool.to_string());
+        self.durable
     }
 
     /// 记账一行完整响应 JSON（无换行）。未启用 / call_id 为空 / 重复 /
-    /// 解析失败 = no-op。append 失败仍 admit 进内存环——进程内 replay 照常
-    /// at-most-once，跨重启退化 at-least-once（不做假成功，warn 注明）。
+    /// 解析失败 = no-op。append 失败仍 admit 进内存环（进程内 replay 照常
+    /// at-most-once），但账本置不可信（F2：有副作用工具自此被闸，不再
+    /// 「跨重启退化 at-least-once」的静默降级）。
     pub fn record(&mut self, response_line: &str) {
         if !self.enabled {
             return;
@@ -279,8 +326,9 @@ impl Journal {
             return;
         };
         if let Err(e) = append_line(&path, response_line) {
+            self.durable = false;
             tracing::warn!(
-                "[executor] journal append failed (in-memory only; cross-restart replay degrades to at-least-once): {e}"
+                "[executor] journal append failed: ledger marked not-durable, side-effectful tools will be refused (in-memory admitted): {e}"
             );
         }
         self.admit(response_line);
@@ -309,16 +357,109 @@ fn tmp_path(path: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// 原子重写账本：写 `.tmp` → 目标在场先韧性删除（Windows rename 不覆盖
-/// 已存在目标）→ rename。单写者（服务循环未启动），窗口内崩溃最坏代价 =
-/// 目标保持旧内容或 `.tmp` 残留（下次 open 清理）。
+/// Windows rename 舞步的旧账暂存路径（同目录 `.bak` 后缀）。
+fn backup_path(path: &Path) -> PathBuf {
+    let mut s = path.as_os_str().to_os_string();
+    s.push(".bak");
+    PathBuf::from(s)
+}
+
+/// F1（二轮复评）：重写中断状态收编（open 时、任何读/清理之前）。返回
+/// 账本是否可信可读（false = 恢复尝试失败，调用方置 durable=false）：
+/// - current 在场：替换已完成，`.tmp`/`.bak` = 残留垃圾，韧性清理（清理
+///   失败不阻断加载）；
+/// - current 缺席：优先 `.bak`（Windows 舞步「current→bak」后中断——旧账
+///   完整且是 tmp 保留集的信息超集）；其次 `.tmp`（Unix 原子重写 rename
+///   未完成 / 旧实现删-改间隙的遗留形态——tmp 即重写保留集）。rename
+///   回位，另一残留顺手清；
+/// - 全缺 = 首次启动，空账合法。
+fn recover_interrupted_rewrite(path: &Path) -> bool {
+    let tmp = tmp_path(path);
+    let bak = backup_path(path);
+    if path.exists() {
+        for stale in [&tmp, &bak] {
+            if stale.exists()
+                && let Err(e) = nemesis_utils::fsutil::remove_file_retry(stale)
+            {
+                tracing::warn!("[executor] journal stale rewrite leftover cleanup failed: {e}");
+            }
+        }
+        return true;
+    }
+    let (src, other) = if bak.exists() {
+        (Some(&bak), Some(&tmp))
+    } else if tmp.exists() {
+        (Some(&tmp), Some(&bak))
+    } else {
+        (None, None)
+    };
+    let Some(src) = src else {
+        return true;
+    };
+    match std::fs::rename(src, path) {
+        Ok(()) => {
+            if let Some(other) = other {
+                let _ = nemesis_utils::fsutil::remove_file_retry(other);
+            }
+            tracing::warn!(
+                "[executor] journal recovered interrupted rewrite (adopted {})",
+                src.display()
+            );
+            true
+        }
+        Err(e) => {
+            tracing::error!(
+                "[executor] journal rewrite recovery failed ({} -> {}): {e} — ledger marked not-durable, side-effectful tools will be refused",
+                src.display(),
+                path.display()
+            );
+            false
+        }
+    }
+}
+
+/// 原子重写账本（F1，二轮复评）：写 `.tmp` → 平台替换语义。
+/// - Unix：`fs::rename` 自身原子覆盖已存在目标（POSIX）——一步到位，
+///   旧实现「先删后改名」的丢账窗口整体消除。
+/// - Windows：rename 不覆盖已存在目标 → 舞步：`current → .bak` →
+///   `.tmp → current` → 删 `.bak`；第 2 步失败把 `.bak` 回位后错误上抛。
+///   舞步中断的磁盘状态由 [`recover_interrupted_rewrite`] 在下次 open
+///   收编（current 缺 + bak 在 = 恢复旧账）。
+///
+/// 承诺面 = 进程崩溃/被杀（rename 语义内原子）；断电不承诺（无 fsync）。
+/// 单写者契约不变：服务循环未启动才可能走到这里。
 fn atomic_rewrite(path: &Path, body: &str) -> std::io::Result<()> {
     let tmp = tmp_path(path);
     std::fs::write(&tmp, body)?;
-    if path.exists() {
-        nemesis_utils::fsutil::remove_file_retry(path)?;
+    #[cfg(unix)]
+    {
+        std::fs::rename(&tmp, path)
     }
-    std::fs::rename(&tmp, path)
+    #[cfg(windows)]
+    {
+        let bak = backup_path(path);
+        if path.exists() {
+            // 上轮残留 `.bak` 先清（Windows rename 目标不可已存在）。
+            if let Err(e) = nemesis_utils::fsutil::remove_file_retry(&bak) {
+                tracing::warn!("[executor] journal stale .bak cleanup failed (continuing): {e}");
+            }
+            std::fs::rename(path, &bak)?;
+        }
+        match std::fs::rename(&tmp, path) {
+            Ok(()) => {
+                let _ = nemesis_utils::fsutil::remove_file_retry(&bak);
+                Ok(())
+            }
+            Err(e) => {
+                // tmp → current 失败：旧账回位（尽力而为），错误照常上抛
+                // （重写未成 = 保留集还在 tmp/旧账在 bak，下轮重试）。
+                if std::fs::rename(&bak, path).is_err() {
+                    tracing::error!("[executor] journal rewrite failed and rollback failed: {e}");
+                }
+                Err(e)
+            }
+        }
+    }
 }
 
 #[cfg(test)]
