@@ -739,3 +739,69 @@ fn bye_message_defaults_agents() {
     let parsed = DiscoveryMessage::from_bytes(&bytes).expect("deserialize");
     assert!(parsed.agents.is_empty());
 }
+
+// -----------------------------------------------------------------------
+// A1 P3: iroh_id wire 兼容
+// -----------------------------------------------------------------------
+
+/// iroh_id 经 with_iroh_id 携带后序列化往返保全。
+#[test]
+fn iroh_id_roundtrip_preserved() {
+    let msg = DiscoveryMessage::new_announce(
+        "node-iroh",
+        "RoamingNode",
+        vec!["10.0.0.1".into()],
+        9000,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+    )
+    .with_iroh_id(Some("aa".repeat(32)));
+
+    let bytes = msg.to_bytes().expect("serialize");
+    let back = DiscoveryMessage::from_bytes(&bytes).expect("deserialize");
+    assert_eq!(back.iroh_id.as_deref(), Some("a".repeat(64).as_str()));
+}
+
+/// 旧节点 / Go 节点的 announce JSON 无 iroh_id 字段 → serde default
+/// None（wire 兼容），且该消息 validate 照常通过。
+#[test]
+fn iroh_id_absent_defaults_none() {
+    let raw = serde_json::json!({
+        "version": "1.0",
+        "type": "announce",
+        "node_id": "legacy-node",
+        "name": "LegacyNode",
+        "addresses": ["10.0.0.1"],
+        "rpc_port": 9000,
+        "role": "worker",
+        "category": "development",
+        "tags": [],
+        "capabilities": [],
+        "timestamp": 1700000000
+    });
+    let msg: DiscoveryMessage =
+        serde_json::from_value(raw).expect("legacy announce without iroh_id");
+    assert!(msg.iroh_id.is_none(), "absent field defaults to None");
+    assert!(msg.validate().is_ok(), "legacy announce stays valid");
+
+    // 显式 null 同样落 None（Go json.Marshal 的 *string nil 形态）。
+    let raw_null = serde_json::json!({
+        "version": "1.0",
+        "type": "announce",
+        "node_id": "legacy-node",
+        "name": "LegacyNode",
+        "addresses": ["10.0.0.1"],
+        "rpc_port": 9000,
+        "role": "worker",
+        "category": "development",
+        "tags": [],
+        "capabilities": [],
+        "timestamp": 1700000000,
+        "iroh_id": null
+    });
+    let msg: DiscoveryMessage = serde_json::from_value(raw_null).expect("explicit null iroh_id");
+    assert!(msg.iroh_id.is_none());
+}

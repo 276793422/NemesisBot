@@ -5,6 +5,7 @@ import ClusterOverview from '../components/cluster/ClusterOverview.vue'
 import ClusterNodes from '../components/cluster/ClusterNodes.vue'
 import ClusterTasks from '../components/cluster/ClusterTasks.vue'
 import ClusterTopology from '../components/cluster/ClusterTopology.vue'
+import ClusterRoaming from '../components/cluster/ClusterRoaming.vue'
 import ClusterIdentity from '../components/cluster/ClusterIdentity.vue'
 import ClusterPersona from '../components/cluster/ClusterPersona.vue'
 import ClusterSettings from '../components/cluster/ClusterSettings.vue'
@@ -18,6 +19,7 @@ const tabMap: Record<string, any> = {
   nodes: ClusterNodes,
   tasks: ClusterTasks,
   topology: ClusterTopology,
+  roaming: ClusterRoaming,
   identity: ClusterIdentity,
   persona: ClusterPersona,
   settings: ClusterSettings,

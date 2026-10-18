@@ -9,6 +9,10 @@ use crate::handlers::{require_home, require_workspace};
 use crate::ws_router::{ModuleHandler, RequestContext};
 use nemesis_cluster::cluster::Cluster;
 use nemesis_cluster::cluster_log_reader;
+#[cfg(feature = "cluster-roaming")]
+use nemesis_cluster::roaming::endpoint::{RoamingIdentity, roaming_key_path};
+#[cfg(feature = "cluster-roaming")]
+use nemesis_cluster::roaming::trust::TrustBook;
 use nemesis_types::cluster::{NodeRole, TaskStatus};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -104,6 +108,12 @@ impl ModuleHandler for ClusterHandler {
             "firewall.check",
             "firewall.add_rules",
             "diagnostics.run",
+            // iroh 跨网漫游（feature=cluster-roaming；关 = status 诚实降级
+            // available:false，enable/disable 运行期报未编译——命令面恒注册，
+            // L1 清单稳定，voice-capture 先例）
+            "roaming.status",
+            "roaming.enable",
+            "roaming.disable",
         ]
     }
 
@@ -220,6 +230,10 @@ impl ModuleHandler for ClusterHandler {
                 let data = data.ok_or("missing data")?;
                 self.diagnostics_run(&data, ctx).await
             }
+            // iroh 跨网漫游开关面（feature=cluster-roaming 穿透）
+            "roaming.status" => self.roaming_status(ctx),
+            "roaming.enable" => self.roaming_enable(ctx),
+            "roaming.disable" => self.roaming_disable(ctx),
             _ => Err(format!("unknown command: cluster.{}", cmd)),
         }
     }
@@ -279,6 +293,125 @@ fn format_duration(d: std::time::Duration) -> String {
 fn cluster_config_path(workspace: &str) -> PathBuf {
     // 路径唯一真相源 = nemesis-path（peers.toml 跨 crate 读写三方共用）。
     nemesis_path::resolve_cluster_config_path_in_workspace(Path::new(workspace))
+}
+
+// --- iroh 跨网漫游开关面（自由函数，cfg 双形态） ---
+
+/// 漫游 config 键 RMW 单一入口：`roaming.enabled` 写 bool（咽喉锁 + 原子写，
+/// 形态与 [`update_cluster_config_enabled`] 同源）。
+#[cfg(feature = "cluster-roaming")]
+fn update_cluster_config_roaming(workspace: &str, enabled: bool) -> Result<(), String> {
+    let _cfg_serial = nemesis_config::config_write_lock();
+    let path = cluster_config_path(workspace);
+    let mut cfg: serde_json::Value = if path.exists() {
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| format!("failed to read cluster config: {}", e))?;
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+    if let Some(obj) = cfg.as_object_mut() {
+        obj.insert(
+            "roaming".to_string(),
+            serde_json::json!({ "enabled": enabled }),
+        );
+    }
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let json =
+        serde_json::to_string_pretty(&cfg).map_err(|e| format!("failed to serialize: {}", e))?;
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), json.as_bytes(), 0o600)
+        .map_err(|e| format!("failed to write cluster config: {}", e))?;
+    Ok(())
+}
+
+/// cluster.roaming.status 载荷。enabled=config 闸（单一真相源
+/// `Cluster::roaming_enabled_in_config`）；active=运行态（roaming 层在跑）；
+/// requires_restart = 两者不一致（用户改了开关还没重启网关）。
+#[cfg(feature = "cluster-roaming")]
+fn roaming_status_payload(
+    workspace: &str,
+    cluster_active: Option<bool>,
+) -> Result<Option<serde_json::Value>, String> {
+    let wspath = Path::new(workspace);
+    let cfg_path = cluster_config_path(workspace);
+    let enabled = Cluster::roaming_enabled_in_config(&cfg_path);
+    let key_path = roaming_key_path(wspath);
+    let key_present = key_path.exists();
+    let node_id = if key_present {
+        RoamingIdentity::load(&key_path)
+            .ok()
+            .map(|i| i.node_id_hex())
+    } else {
+        None
+    };
+    let trust = TrustBook::load(wspath).unwrap_or(None);
+    let (trust_enabled, trusted_n, revoked_n) = match &trust {
+        Some(book) => {
+            let d = book.data();
+            (book.enabled(), d.trusted.len(), d.revoked.len())
+        }
+        None => (false, 0, 0),
+    };
+    let active = cluster_active.unwrap_or(false);
+    Ok(Some(serde_json::json!({
+        "available": true,
+        "enabled": enabled,
+        "active": active,
+        "requires_restart": enabled != active,
+        "key_present": key_present,
+        "node_id": node_id,
+        "trust": {
+            "enabled": trust_enabled,
+            "trusted": trusted_n,
+            "revoked": revoked_n,
+        },
+    })))
+}
+
+#[cfg(not(feature = "cluster-roaming"))]
+fn roaming_status_payload(
+    _workspace: &str,
+    _cluster_active: Option<bool>,
+) -> Result<Option<serde_json::Value>, String> {
+    Ok(Some(serde_json::json!({
+        "available": false,
+        "enabled": false,
+        "active": false,
+        "requires_restart": false,
+        "reason": "cluster-roaming feature 未编译（iroh 跨网漫游层不可用）",
+    })))
+}
+
+/// cluster.roaming.enable/disable 实现。enable 时缺 key 顺手生成（备料），
+/// 返回身份 hex 供 UI 展示；disable 只写闸。
+#[cfg(feature = "cluster-roaming")]
+fn roaming_set_enabled_impl(
+    workspace: &str,
+    enabled: bool,
+) -> Result<Option<serde_json::Value>, String> {
+    update_cluster_config_roaming(workspace, enabled)?;
+    if !enabled {
+        return Ok(Some(
+            serde_json::json!({ "enabled": false, "requires_restart": true }),
+        ));
+    }
+    let wspath = Path::new(workspace);
+    let key_path = roaming_key_path(wspath);
+    let (key_created, node_id) = if key_path.exists() {
+        let id = RoamingIdentity::load(&key_path)?;
+        (false, Some(id.node_id_hex()))
+    } else {
+        let (id, _) = RoamingIdentity::load_or_create(wspath)?;
+        (true, Some(id.node_id_hex()))
+    };
+    Ok(Some(serde_json::json!({
+        "enabled": true,
+        "key_created": key_created,
+        "node_id": node_id,
+        "requires_restart": true,
+    })))
 }
 
 fn peers_path(workspace: &str) -> PathBuf {
@@ -1759,6 +1892,45 @@ impl ClusterHandler {
         nemesis_utils::write_file_atomic(&path.to_string_lossy(), json.as_bytes(), 0o600)
             .map_err(|e| format!("failed to write cluster config: {}", e))?;
         Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // iroh 跨网漫游开关面（feature=cluster-roaming 穿透；开关+UI 接入）
+    // ------------------------------------------------------------------
+
+    /// cluster.roaming.status：config 闸 + key 在场 + 身份 + 信任簿 + 运行态。
+    /// feature 关 = Ok(available:false)——TAB 恒在、前端据此渲染降级面板。
+    fn roaming_status(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+        let workspace = require_workspace(ctx)?.to_string();
+        roaming_status_payload(
+            &workspace,
+            ctx.state.cluster.as_ref().map(|c| c.roaming_active()),
+        )
+    }
+
+    /// cluster.roaming.enable / roaming.disable：写 config `roaming.enabled`，
+    /// enable 时缺 key 顺手生成（备料语义与 setup_roaming 同源）。重启网关生效。
+    fn roaming_set_enabled(
+        &self,
+        ctx: &RequestContext,
+        enabled: bool,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let workspace = require_workspace(ctx)?.to_string();
+        #[cfg(feature = "cluster-roaming")]
+        return roaming_set_enabled_impl(&workspace, enabled);
+        #[cfg(not(feature = "cluster-roaming"))]
+        {
+            let _ = (workspace, enabled);
+            Err("cluster-roaming feature 未编译（iroh 跨网漫游层不可用）".to_string())
+        }
+    }
+
+    fn roaming_enable(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+        self.roaming_set_enabled(ctx, true)
+    }
+
+    fn roaming_disable(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+        self.roaming_set_enabled(ctx, false)
     }
 
     fn peers(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {

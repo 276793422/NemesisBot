@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream as TokioTcpStream;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
@@ -357,7 +357,12 @@ impl Default for TcpConnConfig {
 /// - Heartbeat（可选）：发送 `type="heartbeat"` 的合法 `WireMessage` 保活帧，
 ///   对端 read loop parse 成功即刷新活跃时间并静默丢弃（T2）
 /// - Auth token: optionally sent on start before any data
-pub struct TcpConn {
+///
+/// 泛型于底层流 `S`（`AsyncRead + AsyncWrite`）：默认 `TokioTcpStream`（LAN
+/// TCP 路径，全部既有调用点零改动）；iroh 跨网路径传 [`crate::roaming::bridge::IrohBiStream`]
+/// （QUIC bi-stream 组合器，feature=cluster-roaming）——帧协议/AEAD/空闲监测
+/// 对两种载体逐字节同语义（A1 P2 双栈）。
+pub struct TcpConn<S = TokioTcpStream> {
     node_id: String,
     address: String,
     local_addr: String,
@@ -374,12 +379,12 @@ pub struct TcpConn {
     last_used: Arc<RwLock<Instant>>,
     tasks: Vec<JoinHandle<()>>,
     /// Held until `start()` splits the stream.
-    _conn: Option<TokioTcpStream>,
+    _conn: Option<S>,
     /// Held until `start()` moves it into the write loop.
     _send_rx: Option<mpsc::Receiver<Vec<u8>>>,
 }
 
-impl TcpConn {
+impl TcpConn<TokioTcpStream> {
     /// Create a new TcpConn wrapping an existing tokio TCP stream.
     ///
     /// The connection is not started — call `start()` to launch the read/write
@@ -387,7 +392,19 @@ impl TcpConn {
     pub fn new(conn: TokioTcpStream, config: TcpConnConfig) -> Self {
         let local_addr = conn.local_addr().map(|a| a.to_string()).unwrap_or_default();
         let remote_addr = conn.peer_addr().map(|a| a.to_string()).unwrap_or_default();
+        Self::from_stream(conn, config, local_addr, remote_addr)
+    }
+}
 
+impl<S: AsyncRead + AsyncWrite + Unpin + Send + 'static> TcpConn<S> {
+    /// Wrap a pre-established bidirectional stream（TCP 之外的载体入口；
+    /// 本地/远端描述由调用方提供——非 socket 流没有 addr 概念）。
+    pub fn from_stream(
+        stream: S,
+        config: TcpConnConfig,
+        local_addr: String,
+        remote_addr: String,
+    ) -> Self {
         let (send_tx, send_rx) = mpsc::channel(config.send_buffer_size);
         let (recv_tx, recv_rx) = mpsc::channel(config.read_buffer_size);
         let (close_tx, _) = broadcast::channel(1);
@@ -410,7 +427,7 @@ impl TcpConn {
             tasks: Vec::new(),
             // We need to store send_rx to move it into the write loop later
             _send_rx: Some(send_rx),
-            _conn: Some(conn),
+            _conn: Some(stream),
         }
     }
 
@@ -667,7 +684,9 @@ impl TcpConn {
         );
         Ok(())
     }
+}
 
+impl<S> TcpConn<S> {
     /// Send a wire message through the connection.
     ///
     /// The message is JSON-serialized and queued in the send buffer.
@@ -788,13 +807,13 @@ impl TcpConn {
     }
 }
 
-impl Drop for TcpConn {
+impl<S> Drop for TcpConn<S> {
     fn drop(&mut self) {
         self.close();
     }
 }
 
-impl std::fmt::Debug for TcpConn {
+impl<S> std::fmt::Debug for TcpConn<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TcpConn")
             .field("node_id", &self.node_id)

@@ -861,3 +861,88 @@ fn test_send_announce_with_no_endpoints_no_unicast_noise() {
     sock.set_broadcast(true).unwrap();
     send_announce_with(&sock, 11949, None, &cb);
 }
+
+// -- A1 P3：announce 携带 iroh_id（UDP 往返保全 + 缺省不带字段语义）--
+
+/// FixedEndpointCallbacks 变体：带自报 iroh 漫游身份（默认方法覆写）。
+#[cfg(feature = "cluster-roaming")]
+struct FixedRoamingCallbacks(Vec<String>, Option<String>);
+
+#[cfg(feature = "cluster-roaming")]
+impl ClusterCallbacks for FixedRoamingCallbacks {
+    fn node_id(&self) -> String {
+        "roaming-sender".into()
+    }
+    fn name(&self) -> String {
+        "roaming-sender".into()
+    }
+    fn address(&self) -> String {
+        "127.0.0.1:11949".into()
+    }
+    fn rpc_port(&self) -> u16 {
+        21949
+    }
+    fn all_local_ips(&self) -> Vec<String> {
+        vec!["127.0.0.1".into()]
+    }
+    fn role(&self) -> String {
+        "worker".into()
+    }
+    fn category(&self) -> String {
+        "testing".into()
+    }
+    fn tags(&self) -> Vec<String> {
+        Vec::new()
+    }
+    fn capabilities(&self) -> Vec<String> {
+        Vec::new()
+    }
+    fn handle_discovered_node(
+        &self,
+        _: &str,
+        _: &str,
+        _: &[String],
+        _: u16,
+        _: &str,
+        _: &str,
+        _: &[String],
+        _: &[String],
+        _: &str,
+    ) -> bool {
+        false
+    }
+    fn handle_node_offline(&self, _: &str, _: &str) {}
+    fn sync_to_disk(&self) -> Result<(), String> {
+        Ok(())
+    }
+    fn peer_udp_endpoints(&self) -> Vec<String> {
+        self.0.clone()
+    }
+    fn roaming_id(&self) -> Option<String> {
+        self.1.clone()
+    }
+}
+
+/// announce 单播往返：`roaming_id()` 有值 → 接收端解出 iroh_id 一致；
+/// None → 接收端 iroh_id 也是 None（未启用漫游 = wire 不带身份）。
+#[test]
+#[cfg(feature = "cluster-roaming")]
+fn test_announce_carries_roaming_id_roundtrip() {
+    let hex = crate::roaming::endpoint::RoamingIdentity::generate().node_id_hex();
+
+    for (roaming, label) in [(Some(hex.clone()), "enabled"), (None, "disabled")] {
+        let rx = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        rx.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let rx_port = rx.local_addr().unwrap().port();
+
+        let cb = FixedRoamingCallbacks(vec![format!("127.0.0.1:{}", rx_port)], roaming.clone());
+        let sock = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+        sock.set_broadcast(true).unwrap();
+        send_announce_with(&sock, 11949, None, &cb);
+
+        let mut buf = [0u8; 4096];
+        let (n, _) = rx.recv_from(&mut buf).unwrap();
+        let msg = DiscoveryMessage::from_bytes(&buf[..n]).unwrap();
+        assert_eq!(msg.iroh_id, roaming, "iroh_id 往返保全（{}）", label);
+    }
+}

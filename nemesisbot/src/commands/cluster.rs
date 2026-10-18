@@ -128,6 +128,32 @@ pub enum ClusterAction {
         #[arg(short, long, default_value = "10")]
         broadcast_interval: u64,
     },
+    /// Manage iroh cross-network roaming identity (A1 overlay layer)
+    #[cfg(feature = "cluster-roaming")]
+    Roaming {
+        #[command(subcommand)]
+        action: RoamingAction,
+    },
+}
+
+/// iroh 漫游身份子命令（A1 叠加层；feature=cluster-roaming）。
+#[cfg(feature = "cluster-roaming")]
+#[derive(clap::Subcommand)]
+pub enum RoamingAction {
+    /// Generate (or load existing) node roaming identity key (cluster/roaming.key)
+    Keygen {
+        /// Regenerate even if a key exists (rotates node ID — peers must re-trust)
+        #[arg(long)]
+        force: bool,
+    },
+    /// Show roaming identity status (key file / node ID / trust book)
+    Status,
+    /// Enable cross-network roaming (writes config.cluster.json roaming.enabled;
+    /// takes effect on gateway restart)
+    Enable,
+    /// Disable cross-network roaming (writes config.cluster.json roaming.enabled;
+    /// takes effect on gateway restart)
+    Disable,
 }
 
 #[derive(clap::Subcommand)]
@@ -918,6 +944,9 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     professions: professions_vec,
                     tier: tier_value,
                     capabilities: capabilities_vec,
+                    // 本节点 iroh 身份真相源是 roaming.key（cluster roaming keygen），
+                    // init 不写声明（setup_roaming 按派生对账）。
+                    iroh_id: None,
                 },
             };
             if let Err(e) = nemesis_cluster::cluster_config::save_static_config(&peers_path, &sc) {
@@ -1144,7 +1173,140 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
         ClusterAction::Firewall { action } => {
             run_firewall(action)?;
         }
+        #[cfg(feature = "cluster-roaming")]
+        ClusterAction::Roaming { action } => {
+            run_roaming(action, &home)?;
+        }
     }
+    Ok(())
+}
+
+/// iroh 漫游身份管理（A1 叠加层；keygen/status）。
+#[cfg(feature = "cluster-roaming")]
+fn run_roaming(action: RoamingAction, home: &Path) -> Result<()> {
+    use nemesis_cluster::roaming::endpoint::{RoamingIdentity, persist, roaming_key_path};
+    use nemesis_cluster::roaming::trust::TrustBook;
+
+    // roaming_* / resolve_*_in_workspace 系列收的是 workspace 根（与 gateway
+    // setup_roaming、WSAPI 面同口径），不是 home——错传会把 key/config 写到
+    // `.nemesisbot/` 而非 `.nemesisbot/workspace/`，gateway 读不到。
+    let workspace = common::workspace_path(home);
+
+    match action {
+        RoamingAction::Keygen { force } => {
+            let key_path = roaming_key_path(&workspace);
+            let (id, created) = if force && key_path.exists() {
+                let id = RoamingIdentity::generate();
+                persist(&id, &key_path).map_err(|e| anyhow::anyhow!(e))?;
+                (id, true)
+            } else {
+                RoamingIdentity::load_or_create(&workspace).map_err(|e| anyhow::anyhow!(e))?
+            };
+            println!("Roaming identity key: {}", key_path.display());
+            println!(
+                "  状态: {}",
+                if created {
+                    "新生成"
+                } else {
+                    "已存在（加载）"
+                }
+            );
+            println!("  node_id: {}", id.node_id_hex());
+            println!("  完整地址: iroh:{}", id.node_id_hex());
+            if !created {
+                println!("  （密钥已存在未变更；轮换加 --force——对端须重新信任新 node_id）");
+            }
+            Ok(())
+        }
+        RoamingAction::Status => {
+            let key_path = roaming_key_path(&workspace);
+            println!("Roaming Status");
+            let cfg_path = nemesis_path::resolve_cluster_config_path_in_workspace(&workspace);
+            println!(
+                "  开关: {}（config.cluster.json roaming.enabled）",
+                if nemesis_cluster::cluster::Cluster::roaming_enabled_in_config(&cfg_path) {
+                    "已启用"
+                } else {
+                    "未启用"
+                }
+            );
+            if key_path.exists() {
+                match RoamingIdentity::load(&key_path) {
+                    Ok(id) => {
+                        println!("  密钥: {}（已配置）", key_path.display());
+                        println!("  node_id: {}", id.node_id_hex());
+                        println!("  完整地址: iroh:{}", id.node_id_hex());
+                    }
+                    Err(e) => {
+                        println!("  密钥: {}（读取失败: {e}）", key_path.display());
+                    }
+                }
+            } else {
+                println!("  密钥: 未生成（`nemesisbot cluster roaming keygen` 创建）");
+            }
+            match TrustBook::load(&workspace) {
+                Ok(Some(book)) => {
+                    let d = book.data();
+                    println!(
+                        "  信任名单: trust.toml 已启用（trusted {} 条 / revoked {} 条）",
+                        d.trusted.len(),
+                        d.revoked.len()
+                    );
+                }
+                Ok(None) => println!("  信任名单: 未启用（无 trust.toml——token 单层语义）"),
+                Err(e) => println!("  信任名单: 读取失败: {e}"),
+            }
+            Ok(())
+        }
+        RoamingAction::Enable | RoamingAction::Disable => {
+            let enabled = matches!(action, RoamingAction::Enable);
+            set_roaming_config_enabled(&workspace, enabled)?;
+            println!(
+                "Roaming {}：config.cluster.json roaming.enabled = {}",
+                if enabled { "启用" } else { "停用" },
+                enabled
+            );
+            if enabled {
+                // 缺 key 顺手备料（与 WSAPI enable / setup_roaming 同一语义）。
+                let key_path = roaming_key_path(&workspace);
+                let (id, created) =
+                    RoamingIdentity::load_or_create(&workspace).map_err(|e| anyhow::anyhow!(e))?;
+                if created {
+                    println!("  已生成漫游身份密钥: {}", key_path.display());
+                }
+                println!("  node_id: {}", id.node_id_hex());
+            }
+            println!("  （重启网关后生效：nemesisbot gateway）");
+            Ok(())
+        }
+    }
+}
+
+/// 漫游 config 键写入（CLI 面）：`roaming.enabled` = bool。咽喉锁 + 原子写，
+/// 与 WSAPI `update_cluster_config_roaming` 同形态。收 workspace 根（非 home）。
+#[cfg(feature = "cluster-roaming")]
+fn set_roaming_config_enabled(workspace: &Path, enabled: bool) -> Result<()> {
+    let _cfg_serial = nemesis_config::config_write_lock();
+    let path = nemesis_path::resolve_cluster_config_path_in_workspace(workspace);
+    let mut cfg: serde_json::Value = if path.exists() {
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| anyhow::anyhow!("读取 cluster 配置失败: {e}"))?;
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+    if let Some(obj) = cfg.as_object_mut() {
+        obj.insert(
+            "roaming".to_string(),
+            serde_json::json!({ "enabled": enabled }),
+        );
+    }
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let json = serde_json::to_string_pretty(&cfg)?;
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), json.as_bytes(), 0o600)
+        .map_err(|e| anyhow::anyhow!("写 cluster 配置失败: {e}"))?;
     Ok(())
 }
 

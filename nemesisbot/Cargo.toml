@@ -39,6 +39,9 @@ auth = ["dep:nemesis-auth"]
 voice = ["dep:nemesis-voice", "nemesis-web/voice"]
 voice-capture = ["voice", "nemesis-voice/voice-capture", "nemesis-web/voice-capture"]
 cluster = ["dep:nemesis-cluster", "nemesis-web/cluster"]
+# A1 iroh 跨网 P2P 叠加层：iroh 依赖随 nemesis-cluster 的 cluster-roaming 进出；
+# CLI `cluster roaming` 子命令同 feature 门控。默认关——LAN 用户零新依赖。
+cluster-roaming = ["cluster", "nemesis-cluster/cluster-roaming", "nemesis-web/cluster-roaming"]
 forge = ["dep:nemesis-forge", "nemesis-agent/forge", "nemesis-web/forge"]
 memory = ["dep:nemesis-memory", "nemesis-agent/memory", "nemesis-web/memory"]
 workflow = ["dep:nemesis-workflow", "nemesis-agent/workflow", "nemesis-web/workflow"]

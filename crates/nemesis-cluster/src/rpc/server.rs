@@ -358,14 +358,126 @@ impl RpcServer {
     }
 
     // -----------------------------------------------------------------------
+    // A1 P2：iroh 入站连接桥（feature=cluster-roaming）
+    // -----------------------------------------------------------------------
+
+    /// A1 P2：iroh 入站连接处理器——快照当前 handler 表 / auth token / 空闲
+    /// 超时 / **信任簿**，交给
+    /// [`crate::roaming::endpoint::RoamingProtocolHandler::bridge`]
+    /// serve。与 TCP accept 路径同构：同一 handler 表（动态注册即见）、同一
+    /// AEAD token 语义、同一 `handle_request` 分发——零行为分叉。
+    ///
+    /// `trust`：P3 accept 侧信任闸——`Some(book)` 且连接方 EndpointId 不在
+    /// trusted（或已 revoked）= 拒绝（连接被丢弃，对端得到连接关闭而非
+    /// 黑洞）；`None` = 未启用信任簿，走 token 单层语义。
+    #[cfg(feature = "cluster-roaming")]
+    pub fn roaming_conn_handler(
+        &self,
+        trust: Option<crate::roaming::trust::TrustBook>,
+    ) -> crate::roaming::endpoint::RoamingConnHandler {
+        let handlers = Arc::clone(&self.handlers);
+        let auth_token = self.auth_token.read().clone();
+        let idle_timeout = self.config.idle_timeout;
+        Arc::new(move |conn: iroh::endpoint::Connection| {
+            let handlers = Arc::clone(&handlers);
+            // 信任裁决在 spawn 前同步做：拒绝路径直接丢 handle（连接关闭
+            // = 对端显式失败），不进 accept_bi 循环。
+            if let Some(book) = &trust {
+                let hex = crate::roaming::endpoint::node_id_to_hex(&conn.remote_id());
+                if !book.is_trusted(&hex) {
+                    tracing::warn!(
+                        remote = %hex,
+                        "[RpcServer] iroh 连接被信任簿拒绝（未列入 trusted 或已吊销）"
+                    );
+                    return;
+                }
+            }
+            tokio::spawn(Self::serve_roaming_connection(
+                conn,
+                handlers,
+                auth_token.clone(),
+                idle_timeout,
+            ));
+        })
+    }
+
+    /// iroh 入站连接服务：循环 accept bi-stream，每条流 = 一次帧交换会话
+    /// （对齐 TCP 短连接语义：client 每次 call 开一条流）。流级处理与
+    /// [`Self::handle_connection`] 逐行同构（`TcpConn` 泛型化后直接复用
+    /// `handle_request`）。
+    #[cfg(feature = "cluster-roaming")]
+    async fn serve_roaming_connection(
+        conn: iroh::endpoint::Connection,
+        handlers: Arc<RwLock<HashMap<String, Arc<RpcHandlerFn>>>>,
+        auth_token: String,
+        idle_timeout: std::time::Duration,
+    ) {
+        let remote = format!(
+            "iroh:{}",
+            crate::roaming::endpoint::node_id_to_hex(&conn.remote_id())
+        );
+        loop {
+            match conn.accept_bi().await {
+                Ok((send, recv)) => {
+                    let handlers = Arc::clone(&handlers);
+                    let auth_token = auth_token.clone();
+                    let remote_stream = remote.clone();
+                    tokio::spawn(async move {
+                        let config = TcpConnConfig {
+                            address: remote_stream.clone(),
+                            auth_token: if auth_token.is_empty() {
+                                None
+                            } else {
+                                Some(auth_token)
+                            },
+                            idle_timeout,
+                            ..Default::default()
+                        };
+                        let mut tc = TcpConn::from_stream(
+                            crate::roaming::bridge::IrohBiStream::new(send, recv),
+                            config,
+                            String::new(),
+                            remote_stream.clone(),
+                        );
+                        if let Err(e) = tc.start().await {
+                            tracing::error!(
+                                remote = %remote_stream,
+                                error = %e,
+                                "[RpcServer] Failed to start roaming TcpConn"
+                            );
+                            return;
+                        }
+                        while let Some(wire_msg) = tc.receive().await {
+                            if wire_msg.msg_type == "request" {
+                                Self::handle_request(&tc, &wire_msg, &handlers).await;
+                            }
+                        }
+                        tc.close();
+                    });
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        remote = %remote,
+                        error = %e,
+                        "[RpcServer] Roaming connection closed"
+                    );
+                    break;
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Request handling
     // -----------------------------------------------------------------------
 
-    async fn handle_request(
-        conn: &TcpConn,
+    async fn handle_request<S>(
+        conn: &TcpConn<S>,
         wire_msg: &WireMessage,
         handlers: &RwLock<HashMap<String, Arc<RpcHandlerFn>>>,
-    ) {
+    ) where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
         tracing::info!(
             action = %wire_msg.action,
             from = %wire_msg.from,

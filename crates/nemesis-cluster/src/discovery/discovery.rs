@@ -66,6 +66,12 @@ pub trait ClusterCallbacks: Send + Sync {
     fn agent_roster(&self) -> Vec<crate::types::AgentAnnouncement> {
         Vec::new()
     }
+    /// 自报 iroh 漫游身份 hex（A1 跨网 P2P 叠加层；announce 携带，对端
+    /// 据此把 `iroh:<hex>` 追加进拨号候选池）。默认 `None` = 未启用漫游
+    /// 叠加层（announce 不带字段，wire 兼容）。
+    fn roaming_id(&self) -> Option<String> {
+        None
+    }
     /// Handle a newly discovered or updated node.
     /// Returns `true` if the peer was added or its content actually changed.
     fn handle_discovered_node(
@@ -80,11 +86,12 @@ pub trait ClusterCallbacks: Send + Sync {
         capabilities: &[String],
         node_type: &str,
     ) -> bool;
-    /// 扩展形态 [`Self::handle_discovered_node`]：带对端自报职能、档位与
-    /// agent 清单（profession framework M2 + P2 agent roster）。默认实现
-    /// 丢弃扩展信息委托旧形态——不关心的实现零改动对齐旧行为；生产 UDP
-    /// 发现路径（announce 接收）走本方法。
+    /// 扩展形态 [`Self::handle_discovered_node`]：带对端自报职能、档位、
+    /// agent 清单与 iroh 漫游身份（profession framework M2 + P2 agent
+    /// roster + A1 漫游叠加层）。默认实现丢弃扩展信息委托旧形态——不关心
+    /// 的实现零改动对齐旧行为；生产 UDP 发现路径（announce 接收）走本方法。
     ///
+    /// `iroh_id`：对端自报 iroh 漫游身份 hex（A1；非法值实现侧忽略）。
     /// `source_addr`：R5 源地址收割——announce UDP 包的源 IP（发现层亲眼
     /// 可见的可达性证据），最低优先级拨号候选；非 UDP 路径传 `None`。
     fn handle_discovered_node_ex(
@@ -101,9 +108,10 @@ pub trait ClusterCallbacks: Send + Sync {
         professions: &[String],
         tier: Option<&str>,
         agents: &[crate::types::AgentAnnouncement],
+        iroh_id: Option<&str>,
         source_addr: Option<&str>,
     ) -> bool {
-        let _ = (professions, tier, agents, source_addr);
+        let _ = (professions, tier, agents, iroh_id, source_addr);
         self.handle_discovered_node(
             node_id,
             name,
@@ -630,6 +638,7 @@ impl DiscoveryService {
                         &msg.professions,
                         msg.tier.as_deref(),
                         &msg.agents,
+                        msg.iroh_id.as_deref(),
                         Some(source_ip.as_str()),
                     );
                     if changed {
@@ -789,6 +798,7 @@ pub(crate) fn build_announce_from_callbacks(cluster: &dyn ClusterCallbacks) -> D
     )
     .with_professions(cluster.professions(), cluster.tier())
     .with_agents(cluster.agent_roster())
+    .with_iroh_id(cluster.roaming_id())
 }
 
 /// Send an announce message using the listener's broadcast method.
