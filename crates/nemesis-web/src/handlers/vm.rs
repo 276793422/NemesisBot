@@ -9,7 +9,9 @@
 //! 命令族（实施计划锁定）：`vm.overview` / `vm.config.get` / `vm.config.set`
 //! / `vm.image.list` / `vm.image.build` / `vm.instance.list` /
 //! `vm.instance.sleep` / `vm.instance.wake` / `vm.instance.kill` /
-//! `vm.gc.run`。未装配（headless / 独立 web 测试 / `vm` feature 关）时
+//! `vm.gc.run`；B3 自举族：`vm.bootstrap.status`（只读，无闸）/
+//! `vm.bootstrap.install_qemu` / `vm.bootstrap.enable_accel`（enabled 闸）。
+//! 未装配（headless / 独立 web 测试 / `vm` feature 关）时
 //! handler 不注册，命令诚实未知。
 
 use crate::ws_router::{ModuleHandler, RequestContext};
@@ -58,6 +60,21 @@ pub trait VmBridge: Send + Sync {
 
     /// GC：孤儿 sweep + 磁盘用量 + 预算决策报告。
     async fn gc_run(&self) -> serde_json::Value;
+
+    /// 环境自举状态全量（**只读探针，不受 `executor.vm.enabled` 闸约束**
+    /// ——查询不是安装动作；总开关关闭态安装卡也要能显示引导）。QEMU
+    /// 在场三态 + 加速器引导八态 + 基础镜像在场 + 安装任务槽。
+    fn bootstrap_status(&self) -> serde_json::Value;
+
+    /// 触发 QEMU 环境安装（后台任务，进度/结果看 [`Self::bootstrap_status`]
+    /// 轮询）。**enabled 闸**：`executor.vm.enabled=false` 诚实拒绝（安装
+    /// 是系统侧动作，对齐 image_build 先例——关闭态零激活铁律）。
+    async fn bootstrap_install_qemu(&self) -> Result<serde_json::Value, String>;
+
+    /// 加速器引导（Windows = WHPX DISM 提权链 fire；Linux = kmod/组命令
+    /// 引导文案）。**enabled 闸**同上。同步返回——网关不自我提权（UAC
+    /// 子进程 fire-and-forget），其余分支返回可复制的引导命令原文。
+    async fn bootstrap_enable_accel(&self) -> Result<serde_json::Value, String>;
 }
 
 static VM_BRIDGE: std::sync::RwLock<Option<Arc<dyn VmBridge>>> = std::sync::RwLock::new(None);
@@ -112,6 +129,9 @@ impl ModuleHandler for VmHandler {
             "instance.wake",
             "instance.kill",
             "gc.run",
+            "bootstrap.status",
+            "bootstrap.install_qemu",
+            "bootstrap.enable_accel",
         ]
     }
 
@@ -175,6 +195,9 @@ impl ModuleHandler for VmHandler {
                 Ok(Some(res))
             }
             "gc.run" => Ok(Some(bridge.gc_run().await)),
+            "bootstrap.status" => Ok(Some(bridge.bootstrap_status())),
+            "bootstrap.install_qemu" => Ok(Some(bridge.bootstrap_install_qemu().await?)),
+            "bootstrap.enable_accel" => Ok(Some(bridge.bootstrap_enable_accel().await?)),
             _ => Err(format!("unknown vm cmd: {cmd}")),
         }
     }

@@ -1249,3 +1249,119 @@ pub async fn test_ui_p5_sandbox(ws: &TestWorkspace) -> Vec<TestResult> {
 
     results
 }
+
+// P5-VM：vm bootstrap 自举族表面（环境自举 B3；行为面归 cluster-uat/真机臂）
+// ---------------------------------------------------------------------------
+/// vm bootstrap 三命令表面契约（IT 默认配置 `executor.vm.enabled=false`）：
+/// ① `bootstrap.status` **只读无闸**——关闭态也返回全量探针（查询不是安装
+/// 动作，关闭态安装卡要能显示引导）；② `install_qemu` / `enable_accel`
+/// **enabled 闸诚实拒绝**（自举验收总门 #4——关闭态零激活铁律的表面钉）；
+/// ③ `overview` 形状（P5 桥在真进程 gateway 已装配）。
+pub async fn test_ui_p5_vm_bootstrap(_ws: &TestWorkspace) -> Vec<TestResult> {
+    let suite = "ui/p5_vm_bootstrap";
+    let mut results = Vec::new();
+    print_suite_header(suite);
+
+    let mut api = match WsApi::connect().await {
+        Ok(a) => a,
+        Err(e) => {
+            results.push(fail(suite, format!("ws connect: {e}")));
+            return results;
+        }
+    };
+
+    // ① bootstrap.status 关闭态可读 + 形状（enabled=false / qemu 三态 /
+    //    accel 八态 / image_ready 布尔 / install 槽 / log.path+tail）
+    let (data, err) = api.call("vm", "bootstrap.status", None).await;
+    let d = data.clone().unwrap_or(Value::Null);
+    let qemu_state = d
+        .pointer("/qemu/state")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let accel_state = d
+        .pointer("/accel/state")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let shape_ok = err.is_none()
+        && d.get("enabled").and_then(|v| v.as_bool()) == Some(false)
+        && d.get("platform")
+            .and_then(|v| v.as_str())
+            .is_some_and(|p| !p.is_empty())
+        && ["absent", "partial", "ready"].contains(&qemu_state.as_str())
+        && !accel_state.is_empty()
+        && d.get("image_ready").and_then(|v| v.as_bool()).is_some()
+        && d.pointer("/install/running")
+            .and_then(|v| v.as_bool())
+            .is_some()
+        && d.pointer("/log/path").and_then(|v| v.as_str()).is_some()
+        && d.get("log")
+            .is_some_and(|l| l.get("tail").is_some_and(|t| t.is_array()));
+    results.push(if shape_ok {
+        pass(
+            &format!("{}/status_no_gate", suite),
+            format!("关闭态可读 qemu={qemu_state} accel={accel_state}"),
+        )
+    } else {
+        fail(
+            &format!("{}/status_no_gate", suite),
+            format!("err={err:?} data={data:?}"),
+        )
+    });
+
+    // ② 关闭态安装动作诚实拒绝（闸错误文案点名根因，不含 panic/内部态）
+    let (_, err) = api
+        .call("vm", "bootstrap.install_qemu", Some(json!({})))
+        .await;
+    let gate_install = err
+        .as_deref()
+        .is_some_and(|e| e.contains("executor.vm.enabled=false"));
+    results.push(if gate_install {
+        pass(&format!("{}/install_gate_reject", suite), "关闭态诚实拒绝")
+    } else {
+        fail(
+            &format!("{}/install_gate_reject", suite),
+            format!("未拒或文案缺根因：err={err:?}"),
+        )
+    });
+    let (_, err) = api
+        .call("vm", "bootstrap.enable_accel", Some(json!({})))
+        .await;
+    let gate_accel = err
+        .as_deref()
+        .is_some_and(|e| e.contains("executor.vm.enabled=false"));
+    results.push(if gate_accel {
+        pass(&format!("{}/accel_gate_reject", suite), "关闭态诚实拒绝")
+    } else {
+        fail(
+            &format!("{}/accel_gate_reject", suite),
+            format!("未拒或文案缺根因：err={err:?}"),
+        )
+    });
+
+    // ③ overview 形状（vm 桥真进程装配证明——平铺 json：enabled/probe/
+    //    qemu_binary/images_root 在场）
+    let (data, err) = api.call("vm", "overview", None).await;
+    let d = data.clone().unwrap_or(Value::Null);
+    let overview_ok = err.is_none()
+        && d.get("enabled").and_then(|v| v.as_bool()).is_some()
+        && d.pointer("/probe/platform")
+            .and_then(|v| v.as_str())
+            .is_some()
+        && d.get("qemu_binary").is_some()
+        && d.get("images_root").and_then(|v| v.as_str()).is_some();
+    results.push(if overview_ok {
+        pass(
+            &format!("{}/overview_shape", suite),
+            "probe/qemu_binary/images_root 在场",
+        )
+    } else {
+        fail(
+            &format!("{}/overview_shape", suite),
+            format!("err={err:?} data={data:?}"),
+        )
+    });
+
+    results
+}

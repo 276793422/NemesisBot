@@ -137,6 +137,18 @@ impl VmBridge for FakeBridge {
         self.note("gc.run");
         serde_json::json!({ "swept": 0 })
     }
+    fn bootstrap_status(&self) -> serde_json::Value {
+        self.note("bootstrap.status");
+        serde_json::json!({ "qemu": { "state": "absent" } })
+    }
+    async fn bootstrap_install_qemu(&self) -> Result<serde_json::Value, String> {
+        self.note("bootstrap.install_qemu");
+        Ok(serde_json::json!({ "started": true }))
+    }
+    async fn bootstrap_enable_accel(&self) -> Result<serde_json::Value, String> {
+        self.note("bootstrap.enable_accel");
+        Ok(serde_json::json!({ "guidance": "n/a" }))
+    }
 }
 
 // 持锁跨 await 见文件头豁免说明。
@@ -166,7 +178,7 @@ async fn all_commands_route_through_bridge() {
     with_bridge(|_b: Arc<FakeBridge>, ctx| async move {
         let h = VmHandler;
         let names = h.commands();
-        assert_eq!(names.len(), 10, "命令族清单（实施计划锁定）");
+        assert_eq!(names.len(), 13, "命令族清单（实施计划锁定 + B3 自举族）");
         assert_eq!(h.module_name(), "vm");
 
         for cmd in names {
@@ -194,6 +206,9 @@ async fn all_commands_route_through_bridge() {
             "instance.wake",
             "instance.kill",
             "gc.run",
+            "bootstrap.status",
+            "bootstrap.install_qemu",
+            "bootstrap.enable_accel",
         ] {
             assert!(calls.iter().any(|c| c == expected), "{expected} 未被调用");
         }

@@ -21,7 +21,11 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use nemesis_services::LifecycleService;
-use tracing::{error, info, warn};
+// `error!` 唯一调用点在 security 门控块内（tasks.db 审计日志装配失败分支）
+// ——security 关态下随块退出编译，导入同门（trim 态 unused-import 清零）。
+#[cfg(feature = "security")]
+use tracing::error;
+use tracing::{info, warn};
 
 // M5（2026-10-10 集群无人值守硬化）：RPC 下行 handler 闭包内直调 trait 方法
 // （approval.respond/pending 捕获 web_mgr）。

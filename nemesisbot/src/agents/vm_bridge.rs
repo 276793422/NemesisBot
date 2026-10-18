@@ -12,7 +12,9 @@ use std::sync::Mutex;
 
 use nemesis_sandbox::vm::assembly::resolve_qemu_binary;
 use nemesis_sandbox::vm::guest_arch::{GuestArch, QemuAccel};
+use nemesis_sandbox::vm::install;
 use nemesis_sandbox::vm::lifecycle::SleepMode;
+use nemesis_sandbox::vm::probe;
 use nemesis_sandbox::vm::probe::AccelProbe;
 #[cfg(target_os = "linux")]
 use nemesis_sandbox::vm::probe::probe_kvm;
@@ -45,6 +47,82 @@ struct ImageJob {
 }
 
 static IMAGE_JOB: Mutex<Option<ImageJob>> = Mutex::new(None);
+
+/// 进行中的 QEMU 安装任务（B3 自举族——与 IMAGE_JOB 同款单飞闸；两闸独立：
+/// 装 QEMU 与建镜像互不阻塞）。
+struct BootstrapJob {
+    started_ms: u64,
+}
+
+static BOOTSTRAP_JOB: Mutex<Option<BootstrapJob>> = Mutex::new(None);
+
+/// QEMU 安装日志（`<workspace>/tools/vm/bootstrap.log`）——每次安装
+/// 截断重写；安装卡进度 = 轮询 `vm.bootstrap.status` 的 log.tail。
+pub(crate) fn bootstrap_log_path(workspace: &Path) -> PathBuf {
+    workspace.join("tools").join("vm").join("bootstrap.log")
+}
+
+/// 镜像构建成功收尾日志行（run_image_build 唯一成功出口；CLI 前台臂以
+/// 本行判定成败——单一真相源。「换装失败」分支不含本串，不误判）。
+pub(crate) const IMAGE_BUILD_DONE_LINE: &str = "换装完成";
+
+/// 安装/构建任务是否在飞（CLI 前台臂轮询用；WSAPI 面看各 list 的 job 槽）。
+pub(crate) fn image_job_running() -> bool {
+    IMAGE_JOB.lock().expect("image job lock").is_some()
+}
+
+/// 镜像构建输入裁决（WSAPI 后台臂与 CLI 前台臂共用的**单一真相源**）：
+/// 脚本在场 / arch→guest target 映射 / guest 二进制在场。
+pub(crate) struct ImageBuildInputs {
+    pub script: PathBuf,
+    pub guest_bin: PathBuf,
+    pub arch: String,
+    pub base_url: String,
+    pub sha256: String,
+}
+
+pub(crate) fn image_build_inputs(
+    settings: &nemesis_config::ExecutorVmConfig,
+) -> Result<ImageBuildInputs, String> {
+    // 构建脚本 + guest 二进制在场预检（缺席 = 诚实报错 + 指路）。
+    let script = PathBuf::from("scripts").join("build-vm-image.sh");
+    if !script.exists() {
+        return Err(format!(
+            "镜像构建脚本不在场（{}）——需从仓库根运行网关，或在 Linux/WSL 宿主按构建管线手动执行",
+            script.display()
+        ));
+    }
+    let guest_target = match settings.arch.as_str() {
+        "x86_64" => "x86_64-unknown-linux-musl",
+        "aarch64" => "aarch64-unknown-linux-musl",
+        other => {
+            return Err(format!(
+                "guest 架构 {other:?} 非法（validate 应已拦——数据不一致）"
+            ));
+        }
+    };
+    let guest_bin = PathBuf::from("target")
+        .join(guest_target)
+        .join("release")
+        .join(if cfg!(windows) {
+            "nemesis-guest.exe"
+        } else {
+            "nemesis-guest"
+        });
+    if !guest_bin.exists() {
+        return Err(format!(
+            "guest 代理二进制不在场（{}）——先跑 scripts/build-guest.sh 构建 musl guest 工具链产物",
+            guest_bin.display()
+        ));
+    }
+    Ok(ImageBuildInputs {
+        script,
+        guest_bin,
+        arch: settings.arch.clone(),
+        base_url: settings.image.source.clone(),
+        sha256: settings.image.sha256.clone(),
+    })
+}
 
 /// [`VmSupervisorError`] → WSAPI 字符串（带分类前缀，页面可区分「档没开」
 /// 与「操作失败」两类——Unavailable 可回落、Failed 有副作用可能绝不回落）。
@@ -322,37 +400,8 @@ impl VmBridge for VmSupervisor {
             "VM 档未开启（executor.vm.enabled=false）：镜像构建不可用".to_string()
         })?;
 
-        // 构建脚本 + guest 二进制在场预检（缺席 = 诚实报错 + 指路）。
-        let script = PathBuf::from("scripts").join("build-vm-image.sh");
-        if !script.exists() {
-            return Err(format!(
-                "镜像构建脚本不在场（{}）——需从仓库根运行网关，或在 Linux/WSL 宿主按构建管线手动执行",
-                script.display()
-            ));
-        }
-        let guest_target = match settings.arch.as_str() {
-            "x86_64" => "x86_64-unknown-linux-musl",
-            "aarch64" => "aarch64-unknown-linux-musl",
-            other => {
-                return Err(format!(
-                    "guest 架构 {other:?} 非法（validate 应已拦——数据不一致）"
-                ));
-            }
-        };
-        let guest_bin = PathBuf::from("target")
-            .join(guest_target)
-            .join("release")
-            .join(if cfg!(windows) {
-                "nemesis-guest.exe"
-            } else {
-                "nemesis-guest"
-            });
-        if !guest_bin.exists() {
-            return Err(format!(
-                "guest 代理二进制不在场（{}）——先跑 scripts/build-guest.sh 构建 musl guest 工具链产物",
-                guest_bin.display()
-            ));
-        }
+        // 输入裁决（与 CLI 前台臂共用的单一真相源）。
+        let inputs = image_build_inputs(&settings)?;
 
         // 单飞闸 + 任务登记。
         {
@@ -367,12 +416,18 @@ impl VmBridge for VmSupervisor {
         }
 
         let workspace = self.workspace().to_path_buf();
-        let base_url = settings.image.source.clone();
-        let sha256 = settings.image.sha256.clone();
-        let arch = settings.arch.clone();
 
         tokio::spawn(async move {
-            run_image_build(workspace, script, guest_bin, base_url, sha256, arch, update).await;
+            run_image_build(
+                workspace,
+                inputs.script,
+                inputs.guest_bin,
+                inputs.base_url,
+                inputs.sha256,
+                inputs.arch,
+                update,
+            )
+            .await;
         });
 
         Ok(serde_json::json!({
@@ -441,6 +496,198 @@ impl VmBridge for VmSupervisor {
             "used_gb": used / GIB,
             "decision": decision,
         })
+    }
+
+    fn bootstrap_status(&self) -> serde_json::Value {
+        let workspace = self.workspace();
+        let arch = self
+            .vm_config()
+            .map(|c| c.arch.clone())
+            .unwrap_or_else(|| "x86_64".to_string());
+        let guest = GuestArch::parse(&arch).unwrap_or(GuestArch::X86_64);
+
+        // QEMU 在场三态（install-dir 优先，与 resolve_qemu_binary 消费序同源）。
+        let presence = probe::classify_qemu_presence(
+            guest,
+            crate::agents::vm_runtime::qemu_install_dir(workspace).as_deref(),
+        );
+        let qemu = match &presence {
+            probe::QemuPresence::Absent => serde_json::json!({ "state": "absent" }),
+            probe::QemuPresence::Partial { missing } => serde_json::json!({
+                "state": "partial",
+                "missing": missing,
+            }),
+            probe::QemuPresence::Ready { source } => serde_json::json!({
+                "state": "ready",
+                "source": source,
+            }),
+        };
+
+        // 加速器引导八态（事实采集 → 纯函数分类 → 每态可执行下一步）。
+        let facts = probe::collect_accel_facts();
+        let boot = probe::classify_accel_bootstrap(&facts);
+        let accel = match &boot {
+            probe::AccelBootstrap::Ok => serde_json::json!({ "state": "ok" }),
+            probe::AccelBootstrap::NeedsEnableWindows => serde_json::json!({
+                "state": "needs_enable_windows",
+                "action": "button",
+                "command": format!("DISM {}", install::dism_enable_whpx_args().join(" ")),
+                "note": "WHPX 功能未启用——页面一键发起（UAC 提权，用户确认）",
+            }),
+            probe::AccelBootstrap::NeedsReboot => serde_json::json!({
+                "state": "needs_reboot",
+                "note": "功能已启用但挂起重启——重启 Windows 后复检",
+            }),
+            probe::AccelBootstrap::NeedsBios => serde_json::json!({
+                "state": "needs_bios",
+                "note": "功能已启用但 WHPX 仍缺席——进 BIOS 开启虚拟化（Intel VT-x / AMD-V）",
+            }),
+            probe::AccelBootstrap::NeedsKmod { module } => serde_json::json!({
+                "state": "needs_kmod",
+                "command": install::modprobe_kvm_command(module),
+                "note": "KVM 内核模块未加载——终端执行后复检",
+            }),
+            probe::AccelBootstrap::NeedsGroup => serde_json::json!({
+                "state": "needs_group",
+                "command": install::usermod_kvm_command("$USER"),
+                "note": "/dev/kvm 当前用户不可写——加入 kvm 组并重新登录后复检",
+            }),
+            probe::AccelBootstrap::Unsupported => serde_json::json!({
+                "state": "unsupported",
+                "note": format!("平台 {} 无受支持加速器（仅 Linux KVM / Windows WHPX）", facts.os),
+            }),
+            probe::AccelBootstrap::Unknown { reason } => serde_json::json!({
+                "state": "unknown",
+                "reason": reason,
+            }),
+        };
+
+        // 基础镜像在场（build 链产出的正式位）。
+        let image_ready = vm_images_root(workspace).join("base.qcow2").exists();
+
+        // 安装任务槽 + 日志尾（同 image_list 形态）。
+        let job = BOOTSTRAP_JOB
+            .lock()
+            .expect("bootstrap job lock")
+            .as_ref()
+            .map(|j| serde_json::json!({ "running": true, "started_ms": j.started_ms }));
+        let log_path = bootstrap_log_path(workspace);
+        let tail: Vec<String> = std::fs::read_to_string(&log_path)
+            .map(|raw| {
+                raw.lines()
+                    .rev()
+                    .take(20)
+                    .map(|l| l.to_string())
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        serde_json::json!({
+            "enabled": self.vm_config().as_ref().is_some_and(|c| c.enabled),
+            "platform": std::env::consts::OS,
+            "qemu": qemu,
+            "accel": accel,
+            "image_ready": image_ready,
+            "install": job.unwrap_or(serde_json::json!({ "running": false })),
+            "log": { "path": log_path.to_string_lossy(), "tail": tail },
+        })
+    }
+
+    async fn bootstrap_install_qemu(&self) -> Result<serde_json::Value, String> {
+        let enabled = self.vm_config().as_ref().is_some_and(|c| c.enabled);
+        if !enabled {
+            return Err(
+                "VM 档未开启（executor.vm.enabled=false）：环境安装不可达——先在总开关开启后重试"
+                    .to_string(),
+            );
+        }
+        let workspace = self.workspace().to_path_buf();
+        {
+            let mut job = BOOTSTRAP_JOB.lock().expect("bootstrap job lock");
+            if job.is_some() {
+                return Err(
+                    "已有 QEMU 安装任务进行中（进度看 vm.bootstrap.status 日志尾部）".to_string(),
+                );
+            }
+            *job = Some(BootstrapJob {
+                started_ms: now_ms(),
+            });
+        }
+        tokio::spawn(async move {
+            run_qemu_install(workspace).await;
+        });
+        Ok(serde_json::json!({
+            "started": true,
+            "note": "QEMU 安装任务已后台启动（进度/结果看 vm.bootstrap.status 的 log.tail；完成后自动转绿）",
+        }))
+    }
+
+    async fn bootstrap_enable_accel(&self) -> Result<serde_json::Value, String> {
+        let enabled = self.vm_config().as_ref().is_some_and(|c| c.enabled);
+        if !enabled {
+            return Err(
+                "VM 档未开启（executor.vm.enabled=false）：加速器引导不可达——先在总开关开启后重试"
+                    .to_string(),
+            );
+        }
+
+        // Windows：WHPX DISM 提权链（fire-and-forget UAC——网关不自我提权；
+        // 完成态恒由探针复检裁决）。Linux：分类 → 引导命令原文返回（不替
+        // 用户跑 sudo——半自动诚实纪律）。
+        #[cfg(target_os = "windows")]
+        {
+            let msg = install::enable_accel_windows().map_err(|e| format!("{e:#}"))?;
+            return Ok(serde_json::json!({
+                "platform": "windows",
+                "message": msg,
+                "note": "完成后用 vm.bootstrap.status 复检（功能挂起重启则需重启 Windows）",
+            }));
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let facts = probe::collect_accel_facts();
+            let boot = probe::classify_accel_bootstrap(&facts);
+            let guidance = match boot {
+                probe::AccelBootstrap::Ok => serde_json::json!({
+                    "state": "ok",
+                    "note": "加速器已就绪（无需引导）",
+                }),
+                probe::AccelBootstrap::NeedsKmod { module } => serde_json::json!({
+                    "state": "needs_kmod",
+                    "command": install::modprobe_kvm_command(&module),
+                    "note": "KVM 内核模块未加载——终端执行后复检",
+                }),
+                probe::AccelBootstrap::NeedsGroup => serde_json::json!({
+                    "state": "needs_group",
+                    "command": install::usermod_kvm_command("$USER"),
+                    "note": "加入 kvm 组需重新登录生效",
+                }),
+                probe::AccelBootstrap::NeedsReboot => serde_json::json!({
+                    "state": "needs_reboot",
+                    "note": "功能已启用但挂起重启——重启后复检",
+                }),
+                probe::AccelBootstrap::NeedsBios => serde_json::json!({
+                    "state": "needs_bios",
+                    "note": "进 BIOS 开启虚拟化（Intel VT-x / AMD-V）",
+                }),
+                other => serde_json::json!({
+                    "state": format!("{other:?}"),
+                    "note": "当前态无自动引导动作（见 bootstrap.status 全量诊断）",
+                }),
+            };
+            return Ok(serde_json::json!({
+                "platform": "linux",
+                "guidance": guidance,
+            }));
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+        {
+            let _ = enabled;
+            Err("当前平台无受支持加速器（仅 Linux KVM / Windows WHPX）".to_string())
+        }
     }
 }
 
@@ -568,9 +815,76 @@ async fn run_image_build(
         );
     } else {
         remove_dir_resilient(&staging);
-        log_line(&log_path, "换装完成；任务结束");
+        log_line(&log_path, &format!("{IMAGE_BUILD_DONE_LINE}；任务结束"));
     }
     IMAGE_JOB.lock().expect("image job lock").take();
+}
+
+/// QEMU 安装后台任务（B3 自举族）：平台分派 → 日志逐行落盘 → 任务槽清位。
+/// 幂等（已装 = already_installed 早退）；失败只进日志（页面 tail 可见），
+/// 不 panic。成功后探针复检由 bootstrap_status 轮询自然转绿。
+async fn run_qemu_install(workspace: PathBuf) {
+    let log_path = bootstrap_log_path(&workspace);
+    let _ = std::fs::create_dir_all(log_path.parent().unwrap_or_else(|| Path::new(".")));
+    let _ = std::fs::remove_file(&log_path); // 截断重写
+    log_line(&log_path, &format!("[{}] QEMU 安装启动", now_ms()));
+
+    let result = do_qemu_install(&workspace, &log_path).await;
+    match result {
+        Ok(report) => {
+            log_line(
+                &log_path,
+                &format!(
+                    "安装完成：{}（{}）already_installed={}",
+                    report.qemu_system.display(),
+                    report.version,
+                    report.already_installed
+                ),
+            );
+        }
+        Err(e) => log_line(&log_path, &format!("安装失败：{e:#}")),
+    }
+    BOOTSTRAP_JOB.lock().expect("bootstrap job lock").take();
+    log_line(&log_path, "任务结束");
+}
+
+/// 平台分派的安装链执行体（日志内联进任务函数，这里只产结果）。
+async fn do_qemu_install(
+    workspace: &Path,
+    log_path: &Path,
+) -> anyhow::Result<install::QemuInstallReport> {
+    #[cfg(target_os = "windows")]
+    {
+        let runtime = workspace.join("tools").join("vm").join("runtime");
+        let opts = install::QemuInstallOptions {
+            install_dir: runtime.join("qemu"),
+            work_dir: runtime.join("install-work"),
+            // 复用 sandbox 的 7z 缓存（同一份 7z 服务两条安装链，零重复下载）。
+            seven_zip_dir: workspace.join("tools").join("sandboxie").join("runtime"),
+            ..Default::default()
+        };
+        log_line(
+            log_path,
+            &format!("Windows 链：下载 {} → 校验 → 7z 直解 → 落位", opts.url),
+        );
+        install::install_qemu_windows(&opts).await
+    }
+    #[cfg(target_os = "linux")]
+    {
+        log_line(
+            log_path,
+            "Linux 链：包管理器探测 → 免密 sudo 自动装 / 诚实半自动",
+        );
+        install::install_qemu_linux().await
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        let _ = (workspace, log_path);
+        anyhow::bail!(
+            "当前平台（{}）无自动安装链（仅 Windows / Linux）",
+            std::env::consts::OS
+        )
+    }
 }
 
 /// staging 产物 → 正式位 + 存量 overlay 安全 rebase（数据完好次序：
