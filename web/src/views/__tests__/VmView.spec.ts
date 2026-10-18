@@ -5,7 +5,8 @@ import { useToast } from '../../composables/useToast'
 // P5 第 4 步 ②：虚拟化（VM）管理页。后端语义由 bot 侧 vm_bridge +
 // nemesis-web vm_ws_tests 钉住；本套件钉前端契约面——
 // 探针/建议横幅渲染、总开关 confirm 门与默认关、config.set 全量回写、
-// image.build update 旗标转发、实例 sleep/wake/kill 命令转发。
+// image.build update 旗标转发、实例 sleep/wake/kill 命令转发、
+// B4 环境安装分步卡（分步态渲染 / 关闭态闸 / 命令展示与复制 / 安装转发）。
 
 const requestMock = vi.fn()
 vi.mock('../../composables/useWSAPI', () => ({
@@ -73,16 +74,32 @@ function instanceRow(over: Record<string, unknown> = {}) {
   }
 }
 
-function mountView(ov: unknown = overview(), img: unknown = imageList()) {
+// 与后端 bootstrap_status() 投影同构（vm_bridge.rs）。默认全绿态收窄为
+// absent/needs 组合时用 over 覆盖。enabled=false（默认态铁律）。
+function bootstrapStatus(over: Record<string, unknown> = {}) {
+  return {
+    enabled: false,
+    platform: 'windows',
+    qemu: { state: 'ready', source: 'C:\\ws\\tools\\vm\\qemu' },
+    accel: { state: 'ok' },
+    image_ready: true,
+    install: { running: false },
+    log: { path: 'C:\\ws\\tools\\vm\\bootstrap.log', tail: [] as string[] },
+    ...over,
+  }
+}
+
+function mountView(ov: unknown = overview(), img: unknown = imageList(), bs: unknown = bootstrapStatus()) {
   requestMock.mockImplementation((_m: string, cmd: string) => {
     if (cmd === 'overview') return Promise.resolve(ov)
     if (cmd === 'image.list') return Promise.resolve(img)
+    if (cmd === 'bootstrap.status') return Promise.resolve(bs)
     return Promise.resolve({})
   })
   const w = mount(VmView)
   // 两跳：flushPromises 的 scheduler 只让出一层微任务，refreshAll 的
-  // overview→image.list 链式 await 需要两次才落定（SandboxView 套件同款）。
-  return flushPromises().then(() => flushPromises()).then(() => w)
+  // overview→bootstrap.status→image.list 链式 await 需要多次才落定（SandboxView 套件同款）。
+  return flushPromises().then(() => flushPromises()).then(() => flushPromises()).then(() => w)
 }
 
 beforeEach(() => {
@@ -347,6 +364,140 @@ describe('VmView 实例页', () => {
     await w.find('[data-test="inst-sleep"]').trigger('click')
     await flushPromises()
     expect(useToast().toasts.some((t) => t.type === 'error' && t.message.includes('QEMU 未运行'))).toBe(true)
+    w.unmount()
+  })
+})
+
+describe('VmView 环境安装分步卡（B4）', () => {
+  it('全绿态：三步就绪渲染；安装按钮「已就绪」禁用', async () => {
+    const w = await mountView(overview({ enabled: true }), imageList(), bootstrapStatus())
+    expect(w.find('[data-test="env-card"]').exists()).toBe(true)
+    expect(w.find('[data-test="env-gate-hint"]').exists()).toBe(false)
+    expect(w.find('[data-test="qemu-state"]').text()).toContain('齐备')
+    expect(w.find('[data-test="accel-state"]').text()).toContain('硬件加速可用')
+    expect(w.find('[data-test="image-state"]').text()).toContain('已就绪')
+    const btn = w.find('[data-test="qemu-install"]')
+    expect(btn.text()).toBe('已就绪')
+    expect((btn.element as HTMLButtonElement).disabled).toBe(true)
+    // image_ready=true → 构建按钮不渲染（只留查看日志）
+    expect(w.find('[data-test="image-build"]').exists()).toBe(false)
+    w.unmount()
+  })
+
+  it('未就绪态渲染：absent/needs_kmod 命令展示 + 复制按钮 + 镜像构建按钮在场', async () => {
+    const w = await mountView(overview({ enabled: true }), imageList(), bootstrapStatus({
+      qemu: { state: 'absent' },
+      accel: { state: 'needs_kmod', command: 'sudo modprobe kvm_intel', note: 'KVM 内核模块未加载——终端执行后复检' },
+      image_ready: false,
+    }))
+    expect(w.find('[data-test="qemu-state"]').text()).toContain('未安装')
+    expect(w.find('[data-test="accel-state"]').text()).toContain('KVM 内核模块未加载')
+    expect(w.find('[data-test="accel-command"]').text()).toContain('sudo modprobe kvm_intel')
+    expect(w.find('[data-test="accel-copy"]').exists()).toBe(true)
+    expect(w.find('[data-test="accel-enable"]').exists()).toBe(false) // needs_kmod 无一键按钮（半自动诚实纪律）
+    expect(w.find('[data-test="image-build"]').exists()).toBe(true)
+    w.unmount()
+  })
+
+  it('关闭态闸：提示横幅在场，三个动作按钮全部禁用', async () => {
+    const w = await mountView(overview({ enabled: false }), imageList(), bootstrapStatus({
+      qemu: { state: 'absent' },
+      accel: { state: 'needs_enable_windows', action: 'button', command: 'DISM /Online /Enable-Feature /FeatureName:HypervisorPlatform /All /NoRestart', note: 'WHPX 功能未启用' },
+      image_ready: false,
+    }))
+    expect(w.find('[data-test="env-gate-hint"]').exists()).toBe(true)
+    expect((w.find('[data-test="qemu-install"]').element as HTMLButtonElement).disabled).toBe(true)
+    expect((w.find('[data-test="accel-enable"]').element as HTMLButtonElement).disabled).toBe(true)
+    expect((w.find('[data-test="image-build"]').element as HTMLButtonElement).disabled).toBe(true)
+    w.unmount()
+  })
+
+  it('一键安装转发 bootstrap.install_qemu；成功后立即复检 bootstrap.status', async () => {
+    const w = await mountView(overview({ enabled: true }), imageList(), bootstrapStatus({ qemu: { state: 'absent' } }))
+    const before = requestMock.mock.calls.filter((c) => c[1] === 'bootstrap.status').length
+    await w.find('[data-test="qemu-install"]').trigger('click')
+    await flushPromises()
+    const call = requestMock.mock.calls.find((c) => c[1] === 'bootstrap.install_qemu')!
+    expect(call[0]).toBe('vm')
+    expect(call[2]).toEqual({})
+    expect(requestMock.mock.calls.filter((c) => c[1] === 'bootstrap.status').length).toBeGreaterThan(before)
+    expect(useToast().toasts.some((t) => t.type === 'success')).toBe(true)
+    w.unmount()
+  })
+
+  it('一键安装失败（后端拒绝）→ 错误 toast，不轮询', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'overview') return Promise.resolve(overview({ enabled: true }))
+      if (cmd === 'image.list') return Promise.resolve(imageList())
+      if (cmd === 'bootstrap.status') return Promise.resolve(bootstrapStatus({ qemu: { state: 'absent' } }))
+      if (cmd === 'bootstrap.install_qemu') return Promise.reject(new Error('已有 QEMU 安装任务进行中'))
+      return Promise.resolve({})
+    })
+    const w = mount(VmView)
+    await flushPromises().then(() => flushPromises()).then(() => flushPromises())
+    await w.find('[data-test="qemu-install"]').trigger('click')
+    await flushPromises()
+    expect(useToast().toasts.some((t) => t.type === 'error' && t.message.includes('已有 QEMU 安装任务进行中'))).toBe(true)
+    w.unmount()
+  })
+
+  it('加速一键走 confirm 门：取消不发；确认转发 bootstrap.enable_accel', async () => {
+    const w = await mountView(overview({ enabled: true }), imageList(), bootstrapStatus({
+      accel: { state: 'needs_enable_windows', action: 'button', command: 'DISM /Online /Enable-Feature /FeatureName:HypervisorPlatform /All /NoRestart', note: 'WHPX 功能未启用——页面一键发起（UAC 提权，用户确认）' },
+    }))
+    confirmMock.mockReturnValueOnce(false)
+    await w.find('[data-test="accel-enable"]').trigger('click')
+    await flushPromises()
+    expect(requestMock.mock.calls.find((c) => c[1] === 'bootstrap.enable_accel')).toBeUndefined()
+
+    confirmMock.mockReturnValueOnce(true)
+    await w.find('[data-test="accel-enable"]').trigger('click')
+    await flushPromises()
+    expect(confirmMock).toHaveBeenCalledTimes(2)
+    expect(requestMock.mock.calls.find((c) => c[1] === 'bootstrap.enable_accel')![0]).toBe('vm')
+    expect(useToast().toasts.some((t) => t.type === 'success')).toBe(true)
+    w.unmount()
+  })
+
+  it('复制命令：clipboard.writeText 收到命令原文 + 成功 toast', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+    const cmd = 'sudo modprobe kvm_amd'
+    const w = await mountView(overview({ enabled: true }), imageList(), bootstrapStatus({
+      accel: { state: 'needs_group', command: cmd, note: '/dev/kvm 当前用户不可写' },
+    }))
+    await w.find('[data-test="accel-copy"]').trigger('click')
+    await flushPromises()
+    expect(writeText).toHaveBeenCalledWith(cmd)
+    expect(useToast().toasts.some((t) => t.message.includes('命令已复制'))).toBe(true)
+    w.unmount()
+  })
+
+  it('安装进行中：运行指示渲染 + 安装按钮禁用 + 日志尾展示', async () => {
+    const w = await mountView(overview({ enabled: true }), imageList(), bootstrapStatus({
+      qemu: { state: 'absent' },
+      install: { running: true, started_ms: 1730000000000 },
+      log: { path: 'C:\\ws\\tools\\vm\\bootstrap.log', tail: ['[1/4] 下载 qemu.zip', '[2/4] 校验 SHA-256'] },
+    }))
+    expect(w.find('[data-test="qemu-running"]').exists()).toBe(true)
+    expect(w.find('[data-test="qemu-running"]').text()).toContain('安装进行中')
+    expect((w.find('[data-test="qemu-install"]').element as HTMLButtonElement).disabled).toBe(true)
+    expect(w.find('[data-test="bs-log"]').text()).toContain('校验 SHA-256')
+    w.unmount()
+  })
+
+  it('bootstrap.status 失败 → 卡内诚实降级（重试按钮），页面其余功能不受影响', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'overview') return Promise.resolve(overview())
+      if (cmd === 'image.list') return Promise.resolve(imageList())
+      if (cmd === 'bootstrap.status') return Promise.reject(new Error('no such command'))
+      return Promise.resolve({})
+    })
+    const w = mount(VmView)
+    await flushPromises().then(() => flushPromises()).then(() => flushPromises())
+    expect(w.find('[data-test="env-card"]').exists()).toBe(true)
+    expect(w.text()).toContain('环境状态获取失败')
+    expect(w.find('[data-test="probe-banner"]').exists()).toBe(true)
     w.unmount()
   })
 })

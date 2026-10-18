@@ -129,6 +129,7 @@ async function refreshAll() {
   try {
     const ov = await request('vm', 'overview').catch(() => null)
     overview.value = ov
+    if (ov) await refreshBootstrap()
     await refreshImages()
     loadForm()
   } finally {
@@ -162,6 +163,93 @@ function stopPolling() {
   }
 }
 onBeforeUnmount(stopPolling)
+
+// --- B4 环境安装（对齐沙盒页「环境管理」分步卡） ---
+// bootstrap.status 只读无闸（查询不是安装动作）；install_qemu/enable_accel
+// enabled-gated（关闭态后端诚实拒绝——前端预闸只为少一次徒劳请求，后端仍兜底）。
+const bootstrap = ref<any>(null)
+const bsInstallRunning = computed(() => !!bootstrap.value?.install?.running)
+const qemuState = computed(() => bootstrap.value?.qemu?.state ?? null)
+const accelState = computed(() => bootstrap.value?.accel?.state ?? null)
+const imageReady = computed(() => !!bootstrap.value?.image_ready)
+
+async function refreshBootstrap() {
+  bootstrap.value = await request('vm', 'bootstrap.status').catch(() => null)
+}
+
+// 安装轮询复检（对齐沙盒页「安装完成自动转绿」交互）：
+// install.running 中无界轮询；enable_accel 后有界复检（30 跳 × 2s ≈ 60s，
+// 覆盖 UAC/DISM 完成窗口）；running 翻 false 或有界窗耗尽 → 全量刷新收尾。
+let bsPollTimer: ReturnType<typeof setInterval> | null = null
+let bsPollTicksLeft = 0
+function ensureBootstrapPolling(boundedTicks = 0) {
+  if (boundedTicks > bsPollTicksLeft) bsPollTicksLeft = boundedTicks
+  if (bsPollTimer) return
+  bsPollTimer = setInterval(async () => {
+    await refreshBootstrap()
+    if (bsInstallRunning.value) {
+      bsPollTicksLeft = 0 // 转无界：装完的收尾由 running→false 分支处理
+      return
+    }
+    bsPollTicksLeft -= 1
+    if (bsPollTicksLeft <= 0) {
+      stopBootstrapPolling()
+      // 收尾全量刷新：QEMU/镜像/探针态统一转绿（对齐沙盒页）
+      await refreshAll().catch(() => null)
+    }
+  }, 2000)
+}
+function stopBootstrapPolling() {
+  if (bsPollTimer) {
+    clearInterval(bsPollTimer)
+    bsPollTimer = null
+  }
+  bsPollTicksLeft = 0
+}
+onBeforeUnmount(stopBootstrapPolling)
+
+// --- 环境安装动作 ---
+async function installQemu() {
+  busy.value = 'install_qemu'
+  try {
+    const r = await request('vm', 'bootstrap.install_qemu', {})
+    toast.success(r?.note ?? 'QEMU 安装任务已启动')
+    await refreshBootstrap()
+    ensureBootstrapPolling()
+  } catch (e: any) {
+    toast.error('安装启动失败: ' + (e?.message ?? e))
+  } finally {
+    busy.value = null
+  }
+}
+
+async function enableAccel() {
+  if (!window.confirm(
+    '即将启用硬件加速（Windows WHPX）：\n' +
+    '• 会弹出 UAC 提权框（DISM 启用虚拟机监控程序平台，不自动重启）\n' +
+    '• 功能挂起重启时需重启 Windows 后复检\n\n' +
+    '确认启用？'
+  )) return
+  busy.value = 'enable_accel'
+  try {
+    const r = await request('vm', 'bootstrap.enable_accel', {})
+    toast.success(r?.note ?? '已发起——稍后自动复检')
+    ensureBootstrapPolling(30)
+  } catch (e: any) {
+    toast.error('启用失败: ' + (e?.message ?? e))
+  } finally {
+    busy.value = null
+  }
+}
+
+async function copyCommand(cmd: string) {
+  try {
+    await navigator.clipboard.writeText(cmd)
+    toast.success('命令已复制到剪贴板')
+  } catch {
+    toast.error('复制失败——请手动选择命令文本复制')
+  }
+}
 
 // --- Config save（单一写路径） ---
 function formPayload() {
@@ -276,6 +364,7 @@ function formatMs(ms: number | null): string {
 onMounted(async () => {
   await refreshAll()
   if (buildRunning.value) ensurePolling()
+  if (bsInstallRunning.value) ensureBootstrapPolling()
 })
 </script>
 
@@ -349,6 +438,106 @@ onMounted(async () => {
               <div style="margin-top: var(--space-1); font-size: var(--text-xs);">
                 开关默认关——是否启用由你决定，页面绝不代开。开启需保存后重启 Agent 生效。
               </div>
+            </div>
+          </div>
+
+          <!-- ════════ 环境安装分步卡（B4：对齐沙盒页「环境管理」） ════════ -->
+          <div class="card" data-test="env-card">
+            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+              <h3 style="margin: 0;">环境安装</h3>
+              <button class="btn btn-sm" data-test="env-refresh" @click="refreshAll" :disabled="!!busy">复检</button>
+            </div>
+            <div class="card-body" style="font-size: var(--text-sm);">
+
+              <!-- 关闭态诚实提示：安装动作 enabled-gated（后端同样拒绝），状态检测始终可看 -->
+              <div v-if="!enabled" data-test="env-gate-hint" style="margin-bottom: var(--space-3); padding: var(--space-2) var(--space-3); border: 1px dashed var(--border); border-radius: 4px; color: var(--text-secondary);">
+                VM 档当前关闭（默认态）：以下安装动作在开启总开关并保存后可用；状态检测始终可看。
+              </div>
+
+              <!-- 状态获取失败 -->
+              <div v-if="!bootstrap" style="color: var(--text-secondary);">
+                环境状态获取失败（bootstrap.status）。
+                <button class="btn btn-sm" @click="refreshAll" :disabled="!!busy">重试</button>
+              </div>
+              <template v-else>
+
+                <!-- ① QEMU 环境 -->
+                <div data-test="step-qemu" style="margin-bottom: var(--space-4);">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-2);">
+                    <span style="font-weight: 500;">① QEMU 环境</span>
+                    <button class="btn btn-sm" data-test="qemu-install" @click="installQemu" :disabled="!!busy || bsInstallRunning || qemuState === 'ready' || !enabled">
+                      {{ qemuState === 'ready' ? '已就绪' : '一键安装' }}
+                    </button>
+                  </div>
+                  <div style="padding-left: var(--space-4); color: var(--text-secondary);">
+                    <span :style="{ color: qemuState === 'ready' ? 'var(--success)' : 'var(--text-secondary)' }">{{ qemuState === 'ready' ? '●' : '○' }}</span>
+                    <span style="margin-left: var(--space-2);" data-test="qemu-state">
+                      <template v-if="qemuState === 'ready'">QEMU 可执行文件齐备（{{ bootstrap.qemu.source }}）</template>
+                      <template v-else-if="qemuState === 'partial'">部分缺失（缺：{{ (bootstrap.qemu.missing ?? []).join('、') }}）— 一键下载 + 解压最小集（无 UAC）</template>
+                      <template v-else-if="qemuState === 'absent'">未安装 — 一键下载 + 解压 QEMU 最小集（无 UAC）</template>
+                      <template v-else>状态未知</template>
+                    </span>
+                  </div>
+                  <div v-if="bsInstallRunning" data-test="qemu-running" style="padding-left: var(--space-4); margin-top: var(--space-2); display: flex; align-items: center; gap: var(--space-2); color: var(--accent);">
+                    <div class="spinner spinner-sm"></div>
+                    <span>QEMU 安装进行中（下载 + 解压，无 UAC）… 完成后自动复检转绿</span>
+                  </div>
+                </div>
+
+                <!-- ② 硬件加速 -->
+                <div data-test="step-accel" style="border-top: 1px solid var(--border); padding-top: var(--space-4); margin-bottom: var(--space-4);">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-2);">
+                    <span style="font-weight: 500;">② 硬件加速</span>
+                    <button v-if="bootstrap.accel?.action === 'button'" class="btn btn-sm btn-primary" data-test="accel-enable" @click="enableAccel" :disabled="!!busy || !enabled">一键启用（UAC）</button>
+                  </div>
+                  <div style="padding-left: var(--space-4); display: flex; flex-direction: column; gap: var(--space-1); color: var(--text-secondary);">
+                    <div>
+                      <span :style="{ color: accelState === 'ok' ? 'var(--success)' : 'var(--text-secondary)' }">{{ accelState === 'ok' ? '●' : '○' }}</span>
+                      <span style="margin-left: var(--space-2);" data-test="accel-state">
+                        <template v-if="accelState === 'ok'">硬件加速可用</template>
+                        <template v-else-if="accelState === 'unknown'">诊断未定：{{ bootstrap.accel.reason }}</template>
+                        <template v-else-if="bootstrap.accel?.note">{{ bootstrap.accel.note }}</template>
+                        <template v-else>状态未知</template>
+                      </span>
+                    </div>
+                    <!-- 引导命令 + 复制（needs_enable_windows / needs_kmod / needs_group） -->
+                    <div v-if="bootstrap.accel?.command" style="display: flex; align-items: center; gap: var(--space-2);">
+                      <code data-test="accel-command" style="flex: 1; overflow-x: auto; white-space: nowrap;">{{ bootstrap.accel.command }}</code>
+                      <button class="btn btn-sm" data-test="accel-copy" @click="copyCommand(bootstrap.accel.command)">复制</button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- ③ 基础镜像 -->
+                <div data-test="step-image" style="border-top: 1px solid var(--border); padding-top: var(--space-4);">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-2);">
+                    <span style="font-weight: 500;">③ 基础镜像</span>
+                    <div style="display: flex; gap: var(--space-2);">
+                      <button class="btn btn-sm" @click="activeTab = 'images'">查看构建日志</button>
+                      <button v-if="!imageReady" class="btn btn-sm btn-primary" data-test="image-build" @click="buildImage(false)" :disabled="!!busy || buildRunning || !enabled">首次构建</button>
+                    </div>
+                  </div>
+                  <div style="padding-left: var(--space-4); color: var(--text-secondary);">
+                    <span :style="{ color: imageReady ? 'var(--success)' : 'var(--text-secondary)' }">{{ imageReady ? '●' : '○' }}</span>
+                    <span style="margin-left: var(--space-2);" data-test="image-state">
+                      <template v-if="imageReady">base 镜像已就绪（构建/更新与日志见「镜像」页签）</template>
+                      <template v-else>未构建 — 点「首次构建」下载 base 并注入 guest 代理（日志见「镜像」页签）</template>
+                    </span>
+                  </div>
+                  <div v-if="buildRunning" style="padding-left: var(--space-4); margin-top: var(--space-2); display: flex; align-items: center; gap: var(--space-2); color: var(--accent);">
+                    <div class="spinner spinner-sm"></div>
+                    <span>镜像构建进行中… 完成后自动换装</span>
+                  </div>
+                </div>
+
+                <!-- 安装日志尾部（QEMU 安装任务产出；镜像构建日志在「镜像」页签） -->
+                <div v-if="bootstrap.log?.tail?.length" style="margin-top: var(--space-4); padding-top: var(--space-4); border-top: 1px solid var(--border);">
+                  <div style="font-size: var(--text-xs); color: var(--text-secondary); margin-bottom: var(--space-1);">
+                    安装日志尾部（<code>{{ bootstrap.log.path }}</code>）
+                  </div>
+                  <pre data-test="bs-log" style="margin: 0; max-height: 180px; overflow: auto; font-size: var(--text-xs); font-family: var(--font-mono); background: var(--bg-secondary, rgba(0,0,0,0.05)); padding: var(--space-2); border-radius: 4px;">{{ bootstrap.log.tail.join('\n') }}</pre>
+                </div>
+              </template>
             </div>
           </div>
 
