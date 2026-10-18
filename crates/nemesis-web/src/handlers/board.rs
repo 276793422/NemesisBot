@@ -963,6 +963,18 @@ pub fn dispatch_issue_core(
     let task_id =
         cluster.submit_peer_chat(&target, "peer_chat", chat_payload, "board", &chat_id)?;
 
+    // G3：派发账本开账（确定性 id=board_dispatch:{task_id}；账本未安装=
+    // 零变化，best-effort 不阻断派发）。收口点：写回终态（nemesisbot
+    // board_dispatch.rs）、本函数三处派发中止、RPC 送达失败分支、超时
+    // sweep（autopilot.rs）。
+    nemesis_taskstore::ledger::begin_run(
+        &nemesis_taskstore::ledger::board_dispatch_run_id(&task_id),
+        "board_dispatch",
+        &issue.title,
+        &target,
+        serde_json::json!({ "issue_id": issue.id, "issue_number": issue.number }),
+    );
+
     // M4.5：注入计数只认实际发车的派发（提交失败不计 use_count）。
     if !experience_ids.is_empty()
         && let Err(e) = store.mark_team_memory_used(&experience_ids)
@@ -979,6 +991,12 @@ pub fn dispatch_issue_core(
         Ok(v) => v,
         Err(e) => {
             cluster.fail_task(&task_id, &e);
+            // G3：派发中止收账（诚实失败，可重派=新 task 新账行）。
+            nemesis_taskstore::ledger::settle_run(
+                &nemesis_taskstore::ledger::board_dispatch_run_id(&task_id),
+                "failed",
+                Some(&e),
+            );
             let _ = store.add_comment(nemesis_board::models::NewComment {
                 issue_id: issue.id,
                 author: nemesis_board::Actor::system("board"),
@@ -997,6 +1015,12 @@ pub fn dispatch_issue_core(
     //    inflight，后续派发全部静默 deferred）。
     if !store.try_claim_dispatch(&task_id, issue.id, &target, actor)? {
         cluster.fail_task(&task_id, "并发派发竞态：该 issue 已有进行中的派发");
+        // G3：并发竞态取消收账。
+        nemesis_taskstore::ledger::settle_run(
+            &nemesis_taskstore::ledger::board_dispatch_run_id(&task_id),
+            "cancelled",
+            Some("并发派发竞态：该 issue 已有进行中的派发"),
+        );
         return Err("该 issue 已有进行中的派发（并发派发竞态，本次派发已取消）".to_string());
     }
 
@@ -1029,6 +1053,12 @@ pub fn dispatch_issue_core(
                 let _ =
                     store.finish_dispatch(&task_id, nemesis_board::models::dispatch_state::FAILED);
                 cluster.fail_task(&task_id, &format!("派发中止：状态转移失败（{e}）"));
+                // G3：状态转移失败收账。
+                nemesis_taskstore::ledger::settle_run(
+                    &nemesis_taskstore::ledger::board_dispatch_run_id(&task_id),
+                    "failed",
+                    Some(&format!("状态转移失败：{e}")),
+                );
                 return Err(format!("派发中止：状态转移失败：{e}"));
             }
         }
@@ -1126,6 +1156,13 @@ pub fn dispatch_issue_core(
         if let Some((category, detail)) = failure {
             tracing::warn!(
                 "[Board] dispatch send failed (task_id={task_id_for_rpc}): [{category}] {detail}"
+            );
+            // G3：送达失败收账（此分支不落 fail_task——本地 task 由 stale
+            // 安全网兜底回收，账本面这里直接诚实收口）。
+            nemesis_taskstore::ledger::settle_run(
+                &nemesis_taskstore::ledger::board_dispatch_run_id(&task_id_for_rpc),
+                "failed",
+                Some(&format!("[{category}] {detail}")),
             );
             let _ = store_for_rpc.finish_dispatch(
                 &task_id_for_rpc,
@@ -7045,6 +7082,11 @@ fn board_config_set(
                 };
             }
             "review.selfcheck" => board.review.selfcheck = need_bool(value)?,
+            // G4（2026-10-18 批六）交付证据契约总闸：开启后所有单子验收
+            // PASS 前置校验交付记录在场，缺失 = FAIL「缺交付证据」。
+            "review.require_delivery_evidence" => {
+                board.review.require_delivery_evidence = need_bool(value)?;
+            }
             // M7（2026-10-10）：exec 锚点开关 + 超时（默认关=诚实 skipped 注记，
             // 不进结果组；开=锚点命令在项目根执行，exit 0=过）。
             "review.exec_anchors_enabled" => board.review.exec_anchors_enabled = need_bool(value)?,
@@ -7246,6 +7288,7 @@ fn board_config_set(
                  max_redispatch / dispatch_timeout_secs / worker_max_inflight / \
                  plan.auto_confirm / plan.model / review.max_turns / \
                  review.max_unsure_streak / review.selfcheck / \
+                 review.require_delivery_evidence / \
                  review.exec_anchors_enabled / review.exec_anchor_timeout_secs / \
                  review.auto_close_project / review.checkers / review.professions.<slug>.* / \
                  budget.max_subissues_per_parent / \

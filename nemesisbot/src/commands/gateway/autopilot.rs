@@ -133,6 +133,12 @@ pub(crate) fn sweep_dispatch_timeouts(
         };
         match store.fail_dispatch(&record.task_id, &reason) {
             Ok(Some(rec)) => {
+                // G3：超时 sweep 收账（诚实失败；换节点重派=新 task 新账行）。
+                nemesis_taskstore::ledger::settle_run(
+                    &nemesis_taskstore::ledger::board_dispatch_run_id(&rec.task_id),
+                    "failed",
+                    Some(&reason),
+                );
                 let _ = store.add_comment(nemesis_board::NewComment {
                     issue_id: rec.issue_id,
                     author: nemesis_board::Actor::system("board"),

@@ -61,5 +61,35 @@ pub fn remove_dir_all_resilient(dir: impl AsRef<Path>) -> bool {
     }
 }
 
+/// 带退避重试的单文件删除；耗尽后返回最后一次错误，`NotFound` 视为成功。
+///
+/// 操作面变体（rename 覆盖目标清理、临时文件清扫等「必须删掉才能继续」
+/// 的路径）：与目录变体同理，Windows 上刚写完的文件会被 Defender/索引器
+/// 瞬时持有句柄，单发 remove 必胜的假设在 CI runner 上不成立。
+pub fn remove_file_retry(file: impl AsRef<Path>) -> std::io::Result<()> {
+    let file = file.as_ref();
+    let mut last_err = None;
+    for attempt in 0..MAX_ATTEMPTS {
+        match std::fs::remove_file(file) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => {
+                tracing::debug!(
+                    file = %file.display(),
+                    attempt,
+                    error = %e,
+                    "[FsUtil] 文件删除失败，退避重试"
+                );
+                last_err = Some(e);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(BACKOFF_MS * (attempt as u64 + 1)));
+    }
+    match last_err {
+        Some(e) => Err(e),
+        None => Err(std::io::Error::other("remove_file retry exhausted")),
+    }
+}
+
 #[cfg(test)]
 mod tests;

@@ -259,11 +259,35 @@ impl CronService {
                         callback_job.name, callback_job.id
                     );
 
+                    // G3：触发账本开账（确定性 id=cron_job:{job}:{tick_ms}；
+                    // 账本未安装=零变化，best-effort 不阻断触发）。单发
+                    // 语义：进程死亡留给启动 sweep 诚实标 failed。
+                    let ledger_run_id =
+                        nemesis_taskstore::ledger::cron_job_run_id(&callback_job.id, now_ms);
+                    nemesis_taskstore::ledger::begin_run(
+                        &ledger_run_id,
+                        "cron_job",
+                        &callback_job.name,
+                        "cron",
+                        serde_json::json!({ "trigger": "schedule" }),
+                    );
+
                     // Call on_job handler (outside lock)
                     let handler_result = {
                         let on_job = on_job.lock();
                         on_job.as_ref().map(|h| h(&callback_job))
                     };
+
+                    // G3：触发账本收口（无 handler 也算触发完成——与 cron
+                    // 自身 last_status="ok" 同口径）。
+                    match &handler_result {
+                        Some(Ok(_)) | None => {
+                            nemesis_taskstore::ledger::settle_run(&ledger_run_id, "succeeded", None)
+                        }
+                        Some(Err(e)) => {
+                            nemesis_taskstore::ledger::settle_run(&ledger_run_id, "failed", Some(e))
+                        }
+                    }
 
                     // Write-lock: update job state after execution
                     let start_time = now_ms;
@@ -720,11 +744,32 @@ impl CronService {
             return Err(format!("job not found: {}", job_id));
         };
 
+        // G3：手动触发同款账本（trigger=manual 与计划触发区分；账本未
+        // 安装=零变化）。
+        let ledger_run_id = nemesis_taskstore::ledger::cron_job_run_id(job_id, now_ms);
+        nemesis_taskstore::ledger::begin_run(
+            &ledger_run_id,
+            "cron_job",
+            &callback_job.name,
+            "cron",
+            serde_json::json!({ "trigger": "manual" }),
+        );
+
         // Call on_job handler (outside lock).
         let handler_result = {
             let on_job = self.on_job.lock();
             on_job.as_ref().map(|h| h(&callback_job))
         };
+
+        // G3：手动触发收口（None=无 handler，同 execute 语义视为完成）。
+        match &handler_result {
+            Some(Ok(_)) | None => {
+                nemesis_taskstore::ledger::settle_run(&ledger_run_id, "succeeded", None)
+            }
+            Some(Err(e)) => {
+                nemesis_taskstore::ledger::settle_run(&ledger_run_id, "failed", Some(e))
+            }
+        }
 
         // Write-lock: update state after execution.
         {

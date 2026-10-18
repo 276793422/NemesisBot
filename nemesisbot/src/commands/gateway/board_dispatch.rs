@@ -113,6 +113,21 @@ pub(crate) fn write_back_board_dispatch(
     };
     match bstore.finish_dispatch(task_id, terminal) {
         Ok(true) => {
+            // G3：派发账本收口（DONE→succeeded / FAILED→failed；幂等 CAS，
+            // 重复写回不翻账）。账本未安装=零变化。
+            nemesis_taskstore::ledger::settle_run(
+                &nemesis_taskstore::ledger::board_dispatch_run_id(task_id),
+                if reported_error {
+                    "failed"
+                } else {
+                    "succeeded"
+                },
+                if reported_error {
+                    Some("worker 汇报失败/交付守卫拦截")
+                } else {
+                    None
+                },
+            );
             let worker_actor = nemesis_board::Actor::agent(&disp.worker_id);
             let (ctype, content) = if reported_error {
                 // 失败汇报不做格式判定——错误输出原样留痕。P2A（2026-09-12

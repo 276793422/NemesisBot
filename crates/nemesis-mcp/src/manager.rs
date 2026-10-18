@@ -32,6 +32,11 @@ pub struct McpManager {
     config_path: PathBuf,
     config: McpConfig,
     last_mtime: Option<SystemTime>,
+    /// G2（2026-10-18 批四）：per-agent 浏览器 profile 显式覆盖（gateway
+    /// agent loop 装配时注入；None = 连接时回落进程 env——执行体子进程
+    /// 上下文/共享形态零变化）。`discover_tools` 是单一消费点（启动全量
+    /// 挂载与热重载补挂都经它，manager 实例贯穿两者）。
+    browser_profile: Option<String>,
 }
 
 impl McpManager {
@@ -43,12 +48,24 @@ impl McpManager {
             config_path,
             config: McpConfig::default(),
             last_mtime: None,
+            browser_profile: None,
         };
         if let Err(e) = mgr.load_config() {
             warn!("[McpManager] Failed to load config on init: {}", e);
         }
         mgr.last_mtime = Self::read_mtime(&mgr.config_path);
         mgr
+    }
+
+    /// G2：设置 per-agent 浏览器 profile（须在 `discover_tools` 之前调用；
+    /// None = 清除回落 env 语义）。
+    pub fn set_browser_profile(&mut self, profile: Option<String>) {
+        self.browser_profile = profile;
+    }
+
+    /// G2：当前生效的 per-agent 浏览器 profile（可观测面）。
+    pub fn browser_profile(&self) -> Option<&str> {
+        self.browser_profile.as_deref()
     }
 
     // -----------------------------------------------------------------------
@@ -205,7 +222,12 @@ impl McpManager {
         // stdio bridge 脚本——直接注册（2026-08-30）。
         // 2026-10-15 收敛：分派逻辑上移到 McpClient::from_server_config
         // （单一真相源），与 CLI `mcp test/tools/...` 连接路径共用。
-        let mut client: Box<dyn Client> = match McpClient::from_server_config(server) {
+        // G2：per-agent 浏览器 profile 随此处注入（opt-in 闸在 transport
+        // 侧按 server 配置执行——未 opt-in 的 server 目录在场也不注入）。
+        let mut client: Box<dyn Client> = match McpClient::from_server_config_with_profile(
+            server,
+            self.browser_profile.as_deref(),
+        ) {
             Ok(c) => Box::new(c),
             Err(e) => return Err(e.to_string()),
         };

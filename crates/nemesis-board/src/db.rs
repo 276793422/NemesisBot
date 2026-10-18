@@ -4,7 +4,7 @@
 use rusqlite::Connection;
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 18;
+const SCHEMA_VERSION: i32 = 19;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS board_meta (
@@ -378,6 +378,14 @@ const SCHEMA_V18: &str = r#"
 ALTER TABLE issue ADD COLUMN required_capabilities TEXT;
 "#;
 
+/// v19（G4 交付证据契约，2026-10-18 批六）：issue 加交付证据要求列
+/// （INTEGER 0/1，0 = 不要求）。沿 v17/v18 的 ALTER 既有模式；建单时
+/// store 层按 `has_file_anchor` 谓词自动置位（无人工 patch 面），评审
+/// 门据此在 PASS 前强制校验交付记录在场。
+const SCHEMA_V19: &str = r#"
+ALTER TABLE issue ADD COLUMN requires_evidence INTEGER NOT NULL DEFAULT 0;
+"#;
+
 /// Open (or create) the board database at `db_path` and run pending migrations.
 pub fn init_db(db_path: &Path) -> Result<Connection, String> {
     if let Some(parent) = db_path.parent() {
@@ -538,6 +546,14 @@ pub fn init_db(db_path: &Path) -> Result<Connection, String> {
         tracing::info!(
             version = 18,
             "[BoardStore] Database migrated to v18 (NB-122 batch: issue.required_capabilities)"
+        );
+    }
+    if current_version < 19 {
+        conn.execute_batch(SCHEMA_V19)
+            .map_err(|e| format!("Board schema v19 migration failed: {e}"))?;
+        tracing::info!(
+            version = 19,
+            "[BoardStore] Database migrated to v19 (G4 delivery evidence: issue.requires_evidence)"
         );
     }
     set_version(&conn, SCHEMA_VERSION)?;

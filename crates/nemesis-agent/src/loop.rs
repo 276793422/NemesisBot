@@ -461,6 +461,11 @@ pub struct AgentLoop {
     security: SecurityState,
     /// MCP Manager for dynamic tool discovery and hot-reload.
     mcp_manager: Option<std::sync::Mutex<nemesis_mcp::manager::McpManager>>,
+    /// G2（2026-10-18 批四）：per-agent 浏览器 profile（工厂经 setter 注入，
+    /// `enable_mcp_reload` 转交给 McpManager——server 配置 opt-in
+    /// `browser_profile: true` 的浏览器类 spawn 时拿 `--user-data-dir`）。
+    /// None = env 回落语义（主/项目 loop 恒 None 零变化）。
+    browser_profile: Option<String>,
     /// Snapshot of registered MCP tool names and descriptions.
     /// Shared with McpListTool so it can list MCP tools without accessing the full tool registry.
     mcp_tool_snapshot: Arc<parking_lot::RwLock<Vec<(String, String)>>>,
@@ -538,6 +543,16 @@ pub struct AgentLoop {
     /// so dashboard-added models and CLI `model set-tier` are picked up live,
     /// with no stale snapshot.
     config_path: parking_lot::RwLock<Option<std::path::PathBuf>>,
+    /// G1（2026-10-18 三方复评整改批三）：per-loop 附加隐藏表——自建 agent
+    /// tool_policy（deny/hidden/allow 折算）的 loop 级供给闸输入。与 config
+    /// `agents.hidden_tools` 在 [`Self::current_hidden_tools`] 单点合并，
+    /// 供给闸（build_tool_defs）与 dispatch 闸天然双闸对齐；通配语义同
+    /// `tool_name_matches_hidden`。空 = 零影响（主 loop / 项目 loop 不触碰）。
+    extra_hidden_tools: parking_lot::RwLock<Vec<String>>,
+    /// G1：记录级 tier 钉死（自建 agent 档位契约）。`Some` = tier 以记录为
+    /// 唯一真相源——[`Self::refresh_active_tier`] 短路（config 重解析/换模型
+    /// 不覆盖记录档位）；`None` = config 驱动（主/项目 loop 语义不变）。
+    tier_override: parking_lot::RwLock<Option<nemesis_types::capability::ModelTier>>,
     /// prompt-pack pro（2026-09-27）：提示词体系选择。启动装配型——工厂按
     /// `agents.prompt_system` 注入；Pro 时工具描述走
     /// [`crate::prompt::tool_description`] 档位表（按 tier 取档），Classic
@@ -750,6 +765,7 @@ impl AgentLoop {
                 approval_auto: parking_lot::RwLock::new(None),
             },
             mcp_manager: None,
+            browser_profile: None,
             mcp_tool_snapshot: Arc::new(parking_lot::RwLock::new(Vec::new())),
             data_store: None,
             forge: None,
@@ -777,6 +793,8 @@ impl AgentLoop {
             mode: std::sync::Arc::new(parking_lot::RwLock::new(crate::types::AgentMode::Build)),
             agent_event_tx: parking_lot::RwLock::new(None),
             config_path: parking_lot::RwLock::new(None),
+            extra_hidden_tools: parking_lot::RwLock::new(Vec::new()),
+            tier_override: parking_lot::RwLock::new(None),
             prompt_system: parking_lot::RwLock::new(crate::prompt::PromptSystem::Classic),
             pricing_store: parking_lot::RwLock::new(None),
             #[cfg(feature = "lsp")]
@@ -1038,6 +1056,10 @@ mod spawn_detached_tests;
 // F8 (devtool-upgrade 阶段 3)：hidden_tools 双闸（供给过滤 + dispatch 拦截）测试。
 #[cfg(test)]
 mod f8_hidden_tools_tests;
+// G1（2026-10-18 三方复评整改批三）：per-loop 附加闸槽（extra_hidden 合并 +
+// tier_override 钉死 vs config 驱动）测试。
+#[cfg(test)]
+mod g1_agent_slots_tests;
 // B2（profession-capability-evolution 2026-10-14）：职能工具围栏双闸测试。
 #[cfg(test)]
 mod tool_fence_tests;

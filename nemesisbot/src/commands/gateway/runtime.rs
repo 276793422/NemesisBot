@@ -1215,6 +1215,11 @@ pub(crate) async fn run_runtime(
     agent_adapter.stop().ok();
     // L6++：项目常驻 loop 收尾（镜像主 agent stop：摘表 + stop + abort 任务）。
     projects_manager.stop_all();
+    // G1：自建 agent 常驻 loop 收尾（同款摘表 + stop + abort；manager 槽
+    // 现取——teardown 点无局部句柄，未装配形态自然跳过）。
+    if let Some(lm) = crate::agents::manager().and_then(|m| m.loop_manager()) {
+        lm.stop_all();
+    }
     bridge_outbound_handle.abort();
     //  MSG: 同 step 16 ，目前暂时不用，所以注释掉了
     //dispatch_handle.abort();

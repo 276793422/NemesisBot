@@ -778,6 +778,65 @@ mod journal {
         );
     }
 
+    /// R3（2026-10-18 三方复评）：`journal_record_decision` 契约——首次裁决
+    /// 赢得状态转移（true），撞上已记账裁决（如超时先落 EXPIRED）返回
+    /// false。调用方（watcher 决策臂/超时臂）按 false 拦截败方送裁决与
+    /// 通知；台账终态不被败方覆盖。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn journal_record_decision_won_flag_contract() {
+        let dir = tempfile::tempdir().unwrap();
+        let bus = Arc::new(MessageBus::new());
+        let mgr = Arc::new(ChannelApprovalManager::new(bus.clone()));
+        mgr.set_journal(journal_at(&dir.path().join("tasks.db")));
+
+        // 活 pending：首次裁决 = 赢（true）。
+        mgr.journal_record_pending(
+            "req-race-uuid-1",
+            "req-race",
+            &ctx_of("telegram", "chat-9"),
+            "file_write",
+            "/tmp/x",
+            "HIGH",
+            "test reason",
+            300,
+        );
+        assert!(
+            mgr.journal_record_decision("req-race-uuid-1", true, "im:user-1"),
+            "fresh pending 上的首次裁决必须赢得状态转移"
+        );
+        let e = mgr.journal().unwrap().entry("req-race-uuid-1").unwrap();
+        assert_eq!(e.status, nemesis_types::approval_journal::status::APPROVED);
+
+        // 超时先记账 EXPIRED 的 pending：回执后到 = 败方（false），台账终态
+        // 保持 EXPIRED 不被覆盖。
+        mgr.journal_record_pending(
+            "req-race-uuid-2",
+            "req-rac2",
+            &ctx_of("telegram", "chat-9"),
+            "file_write",
+            "/tmp/y",
+            "HIGH",
+            "test reason",
+            300,
+        );
+        mgr.journal()
+            .unwrap()
+            .record_decision(
+                "req-race-uuid-2",
+                nemesis_types::approval_journal::ApprovalDecision::Expired,
+                Some("审批超时自动拒绝"),
+                "timeout",
+            )
+            .unwrap();
+        assert!(
+            !mgr.journal_record_decision("req-race-uuid-2", true, "im:user-1"),
+            "超时已抢先记账时回执必须是败方（won=false）"
+        );
+        let e = mgr.journal().unwrap().entry("req-race-uuid-2").unwrap();
+        assert_eq!(e.status, nemesis_types::approval_journal::status::EXPIRED);
+        assert_eq!(e.decided_by.as_deref(), Some("timeout"));
+    }
+
     /// 异对话回执 → 「不属于本对话」，台账原样 pending（不越权补裁）。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn stale_reply_from_other_chat_is_rejected() {

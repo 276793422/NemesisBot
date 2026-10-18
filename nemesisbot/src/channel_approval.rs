@@ -124,18 +124,26 @@ impl ChannelApprovalManager {
         }
     }
 
-    /// P1：裁决记账（幂等——超时分支先记 expired 时条件更新必败 warn 留痕）。
-    fn journal_record_decision(&self, request_id: &str, approved: bool, decided_by: &str) {
-        if let Some(j) = self.journal() {
-            let decision = if approved {
-                nemesis_types::approval_journal::ApprovalDecision::Approved
-            } else {
-                nemesis_types::approval_journal::ApprovalDecision::Denied
-            };
-            if let Err(e) = j.record_decision(request_id, decision, None, decided_by) {
+    /// P1：裁决记账。返回「本调用是否赢得裁决状态转移」（R3，2026-10-18
+    /// 三方复评：决策侧先记账后通知，按此值拦截败方重复送裁决/发通知）。
+    /// 无 journal / 台账 Err = true（审批可用性不绑 tasks.db，裁决照常进行，
+    /// 审计缺失 loud 留痕）；`Ok(won)` 如实回传。
+    fn journal_record_decision(&self, request_id: &str, approved: bool, decided_by: &str) -> bool {
+        let Some(j) = self.journal() else {
+            return true;
+        };
+        let decision = if approved {
+            nemesis_types::approval_journal::ApprovalDecision::Approved
+        } else {
+            nemesis_types::approval_journal::ApprovalDecision::Denied
+        };
+        match j.record_decision(request_id, decision, None, decided_by) {
+            Ok(won) => won,
+            Err(e) => {
                 tracing::warn!(
                     "[ChannelApproval] approval journal decision record failed for {request_id}: {e}"
                 );
+                true
             }
         }
     }
@@ -198,18 +206,25 @@ impl ChannelApprovalManager {
                             msg.sender_id,
                             entry.sender_id
                         );
+                        // R3（2026-10-18 三方复评）：**裁决状态转移以台账条件
+                        // 更新为准——先记账、后送裁决**（Web 管理器同序）。
+                        // won=false = 超时分支已抢先记账并通知，此处不再送
+                        // 裁决/回执（先到者的通知已摘牌）。记账先行的副作用：
+                        // 等待方异常退出时台账已持裁决——审计面可恢复，比
+                        // 「送了裁决但没记账」的分叉诚实。
+                        let won = self.journal_record_decision(
+                            &entry.request_id,
+                            verb == "approve",
+                            &format!("im:{}", msg.sender_id),
+                        );
+                        if !won {
+                            continue;
+                        }
                         let verdict = match verb {
                             "approve" => ApprovalVerdict::approved(),
                             _ => ApprovalVerdict::denied(),
                         };
                         if entry.tx.send(verdict).is_ok() {
-                            // P1：裁决记账（全量 request_id；decided_by 记
-                            // 回执人——群聊任一成员可批复，台账如实留名）。
-                            self.journal_record_decision(
-                                &entry.request_id,
-                                verb == "approve",
-                                &format!("im:{}", msg.sender_id),
-                            );
                             let action = if verb == "approve" {
                                 "已批准"
                             } else {
@@ -466,27 +481,53 @@ impl ApprovalManager for ChannelApprovalManager {
                     operation,
                     timeout_secs
                 );
-                // P1：超时也是一次裁决——台账记 expired（幂等：晚到回执撞
-                // pending 条件更新必败，先到先得）。
-                if let Some(j) = self.journal()
-                    && let Err(e) = j.record_decision(
+                // R3（2026-10-18 三方复评）：**先记台账**（幂等条件更新），
+                // 再按记账结果决定后续——Ok(false) = 回执抢先完成裁决（watcher
+                // 已记账并通知），不能顺着超时路径发假超时通知。
+                let expired_record = self.journal().map(|j| {
+                    j.record_decision(
                         request_id,
                         nemesis_types::approval_journal::ApprovalDecision::Expired,
                         Some("审批超时自动拒绝"),
                         "timeout",
                     )
-                {
-                    tracing::error!(
-                        "[ChannelApproval] approval journal timeout record failed for {request_id}: {e}"
-                    );
+                });
+                match expired_record {
+                    Some(Ok(false)) => {
+                        // 回执赢了竞争：此刻大概率已 tx.send（记账后微秒级）
+                        // ——短暂宽限收一次在途裁决恢复真实结果；不补发超时
+                        // 通知（回执侧通知已摘牌）。宽限耗尽/通道关闭 = 回执
+                        // 侧异常中断：诚实返回拒绝、不补假通知。
+                        tracing::info!(
+                            "[ChannelApproval] request {id}: reply won the decision race; recovering in-flight verdict"
+                        );
+                        match rx.recv_timeout(Duration::from_secs(2)) {
+                            Ok(verdict) => Ok(verdict),
+                            Err(_) => {
+                                tracing::warn!(
+                                    "[ChannelApproval] request {id}: raced decision not recoverable from channel; returning denial without timeout notice"
+                                );
+                                Ok(ApprovalVerdict::denied())
+                            }
+                        }
+                    }
+                    other => {
+                        if let Some(Err(e)) = other {
+                            tracing::error!(
+                                "[ChannelApproval] approval journal timeout record failed for {request_id}: {e}"
+                            );
+                        }
+                        // None = 无 journal（审批可用性不绑 tasks.db）；Ok(true)
+                        // = 正常超时裁决。两者都通知摘牌（诚实不悬挂）。
+                        // 超时自动拒绝也是一次裁决——通知对话摘牌（诚实不悬挂）。
+                        self.bus.publish_outbound(OutboundMessage::new(
+                            &ctx.channel,
+                            &ctx.chat_id,
+                            &format!("⌛ 审批 {id} 已超时，操作已自动拒绝。"),
+                        ));
+                        Ok(ApprovalVerdict::denied())
+                    }
                 }
-                // 超时自动拒绝也是一次裁决——通知对话摘牌（诚实不悬挂）。
-                self.bus.publish_outbound(OutboundMessage::new(
-                    &ctx.channel,
-                    &ctx.chat_id,
-                    &format!("⌛ 审批 {id} 已超时，操作已自动拒绝。"),
-                ));
-                Ok(ApprovalVerdict::denied())
             }
         }
     }

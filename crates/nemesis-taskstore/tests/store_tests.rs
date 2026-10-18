@@ -357,6 +357,51 @@ fn delivery_reject_semantics() {
     assert!(!db.reject_delivery("ghost", "x").expect("ghost"));
 }
 
+/// G4（2026-10-18 批六）：payload 浅合并——patch 顶层键逐一覆盖、既有键
+/// 保留；返回合并后全文；幂等键不存在 = Err（注记必须落在真实交付上）。
+#[test]
+fn delivery_merge_payload_shallow_merge_and_missing_key_errs() {
+    let (_dir, path) = temp_db("deliveries_merge");
+    let db = TaskDb::open(&path).expect("open");
+    let payload = serde_json::json!({"branch": "nemesis/run-m", "files_changed": 2});
+
+    assert!(
+        db.record_delivery("cluster_result", Some("t-m"), "t-m", &payload)
+            .expect("record")
+    );
+
+    // 注记 anchor_summary：既有键保留 + 新键写入，返回合并全文。
+    let merged = db
+        .merge_delivery_payload(
+            "t-m",
+            &serde_json::json!({"anchor_summary": {"passed": true, "total": 3}}),
+        )
+        .expect("merge");
+    assert_eq!(merged["branch"], "nemesis/run-m", "既有键保留");
+    assert_eq!(merged["files_changed"], 2, "既有键保留");
+    assert_eq!(merged["anchor_summary"]["passed"], true, "新键写入");
+
+    // 盘上读回一致（落库生效，非只返回值）。
+    let rec = db.delivery_by_key("t-m").expect("read").expect("present");
+    assert_eq!(rec.payload["anchor_summary"]["total"], 3);
+
+    // 同键再合并 = 覆盖（latest-wins：复评刷新摘要）。
+    let merged = db
+        .merge_delivery_payload(
+            "t-m",
+            &serde_json::json!({"anchor_summary": {"passed": false, "total": 3}}),
+        )
+        .expect("re-merge");
+    assert_eq!(merged["anchor_summary"]["passed"], false, "同键覆盖");
+    assert_eq!(merged["branch"], "nemesis/run-m", "其他键不受二轮影响");
+
+    // 不存在的幂等键 = Err。
+    assert!(
+        db.merge_delivery_payload("ghost", &serde_json::json!({"x": 1}))
+            .is_err()
+    );
+}
+
 #[test]
 fn delivery_confirm_then_reject_overrides() {
     let (_dir, path) = temp_db("deliveries_conf_rej");
@@ -484,21 +529,7 @@ fn run_state_machine_and_attempts() {
     assert_eq!(db.get_run(&run_id).expect("get").status, "pending");
 
     db.set_run_status(&run_id, "running").expect("running");
-    db.set_run_status(&run_id, "succeeded").expect("succeeded");
-    // 终态不可再转移；同终态幂等放行。
-    assert!(
-        db.set_run_status(&run_id, "running").is_err(),
-        "terminal is immutable"
-    );
-    db.set_run_status(&run_id, "succeeded")
-        .expect("idempotent re-entry");
-    assert!(
-        db.set_run_status(&run_id, "bogus").is_err(),
-        "invalid status loud"
-    );
-    assert!(db.get_run(&run_id).expect("get").completed_at.is_some());
-
-    // attempt 生命周期。
+    // attempt 生命周期（R5：先尝试后收口——终态 run 拒绝新尝试）。
     let a1 = db.begin_attempt(&run_id, "node-a").expect("attempt 1");
     let a2 = db
         .begin_attempt(&run_id, "node-b")
@@ -524,6 +555,110 @@ fn run_state_machine_and_attempts() {
     assert_eq!(attempts[0].status, "failed");
     assert_eq!(attempts[0].error.as_deref(), Some("worker crashed"));
     assert_eq!(attempts[1].usage, Some(serde_json::json!({"tokens": 42})));
+
+    db.set_run_status(&run_id, "succeeded").expect("succeeded");
+    // 终态不可再转移；同终态幂等放行。
+    assert!(
+        db.set_run_status(&run_id, "running").is_err(),
+        "terminal is immutable"
+    );
+    db.set_run_status(&run_id, "succeeded")
+        .expect("idempotent re-entry");
+    assert!(
+        db.set_run_status(&run_id, "bogus").is_err(),
+        "invalid status loud"
+    );
+    assert!(db.get_run(&run_id).expect("get").completed_at.is_some());
+
+    // R5：终态 run 拒绝新尝试。
+    assert!(
+        db.begin_attempt(&run_id, "node-c").is_err(),
+        "terminal run must refuse new attempt"
+    );
+    // R5：收口只能终态——pending/running 畅通是与注释矛盾的旧缺陷。
+    let run2 = db
+        .create_run(&nemesis_taskstore::NewRun {
+            kind: "agent_run".into(),
+            title: "第二运行".into(),
+            action: "exec".into(),
+            peer_id: "local".into(),
+            payload: serde_json::json!({}),
+        })
+        .expect("create run 2");
+    let b1 = db.begin_attempt(&run2, "node-a").expect("attempt on run2");
+    for bad in ["pending", "running", "bogus"] {
+        assert!(
+            db.finish_attempt(b1, bad, None, None).is_err(),
+            "finish_attempt({bad}) 必须拒绝"
+        );
+    }
+    // 拒绝后 attempt 仍 running（可正常收口）。
+    db.finish_attempt(b1, "failed", Some("still open"), None)
+        .expect("拒绝值不落账，attempt 保持可收口");
+    assert_eq!(db.attempts_of(&run2).expect("attempts")[0].status, "failed");
+}
+
+/// R5：多连接竞争收口同一 run——单语句 CAS 保证只许一个终态胜，
+/// 败方 Err；不同终态不可互相覆盖；同值并发幂等。
+#[test]
+fn run_status_cas_only_one_terminal_wins_across_connections() {
+    let (_dir, path) = temp_db("runs_cas");
+    let db_a = TaskDb::open(&path).expect("open a");
+    let db_b = TaskDb::open(&path).expect("open b");
+
+    let run_id = db_a
+        .create_run(&nemesis_taskstore::NewRun {
+            kind: "cluster_task".into(),
+            title: "竞争收口".into(),
+            action: "peer_chat".into(),
+            peer_id: "node-x".into(),
+            payload: serde_json::json!({}),
+        })
+        .expect("create run");
+    db_a.set_run_status(&run_id, "running").expect("running");
+
+    // 两个独立连接各收口到不同终态：恰好一个胜，败方 Err。
+    let ra = db_a.set_run_status(&run_id, "succeeded");
+    let rb = db_b.set_run_status(&run_id, "failed");
+    match (&ra, &rb) {
+        (Ok(()), Err(_)) | (Err(_), Ok(())) => {}
+        _ => panic!("必须恰一个终态胜，得到 a={ra:?} b={rb:?}"),
+    }
+    let final_status = db_a.get_run(&run_id).expect("get").status;
+    assert!(
+        final_status == "succeeded" || final_status == "failed",
+        "终态必须是两竞争值之一: {final_status}"
+    );
+    // 败方值没有落账（单终态互斥）。
+    assert_eq!(db_b.get_run(&run_id).expect("get").status, final_status);
+    // 第三个连接试图改写成另一终态 → Err（终态互斥跨连接成立）。
+    let other = if final_status == "succeeded" {
+        "cancelled"
+    } else {
+        "succeeded"
+    };
+    assert!(
+        db_b.set_run_status(&run_id, other).is_err(),
+        "不同终态覆盖必须拒绝"
+    );
+
+    // 同值并发幂等：两个连接同写 succeeded（已终态）都 Ok。
+    let run2 = db_a
+        .create_run(&nemesis_taskstore::NewRun {
+            kind: "cluster_task".into(),
+            title: "同值幂等".into(),
+            action: "peer_chat".into(),
+            peer_id: "node-x".into(),
+            payload: serde_json::json!({}),
+        })
+        .expect("create run 2");
+    db_a.set_run_status(&run2, "succeeded").expect("a wins");
+    db_b.set_run_status(&run2, "succeeded")
+        .expect("b 同值幂等放行");
+    assert_eq!(db_a.get_run(&run2).expect("get").status, "succeeded");
+
+    // 不存在的 run 仍诚实报错（n=0 且重读 None 分支）。
+    assert!(db_a.set_run_status("no-such-run", "running").is_err());
 }
 
 #[test]
@@ -707,4 +842,244 @@ fn agent_remove_and_list_order_stable() {
     store.remove("m-1").expect("remove");
     assert!(store.get("m-1").expect("get").is_none());
     assert_eq!(store.list_all().expect("list").len(), 2);
+}
+
+// --- G3 运行账本漏斗（ledger）---
+
+use nemesis_taskstore::NewRun;
+use nemesis_taskstore::ledger;
+
+fn raw_run(kind: &str, title: &str) -> NewRun {
+    NewRun {
+        kind: kind.to_string(),
+        title: title.to_string(),
+        action: "run".to_string(),
+        peer_id: "worker-a".to_string(),
+        payload: serde_json::json!({"k": "v"}),
+    }
+}
+
+#[test]
+fn ledger_begin_and_settle_roundtrip() {
+    let (_dir, path) = temp_db("ledger_roundtrip");
+    let db = TaskDb::open(&path).expect("open");
+
+    let run_id = ledger::board_dispatch_run_id("task-1");
+    ledger::begin_run_on(
+        &db,
+        &run_id,
+        "board_dispatch",
+        "NB-7",
+        "Node-B",
+        serde_json::json!({"issue_id": 7}),
+    );
+
+    let run = db.get_run(&run_id).expect("run in ledger");
+    assert_eq!(run.status, "running", "开账即 running");
+    assert_eq!(run.kind, "board_dispatch");
+    assert_eq!(run.peer_id, "Node-B");
+    let attempts = db.attempts_of(&run_id).expect("attempts");
+    assert_eq!(attempts.len(), 1, "首 attempt 已开");
+    assert_eq!(attempts[0].status, "running");
+    assert_eq!(attempts[0].worker, "Node-B");
+
+    ledger::settle_run_on(&db, &run_id, "failed", Some("worker 汇报失败"));
+    let run = db.get_run(&run_id).expect("run");
+    assert_eq!(run.status, "failed");
+    assert!(run.completed_at.is_some(), "终态盖章 completed_at");
+    let attempts = db.attempts_of(&run_id).expect("attempts");
+    assert_eq!(attempts[0].status, "failed");
+    assert_eq!(attempts[0].error.as_deref(), Some("worker 汇报失败"));
+    assert!(attempts[0].finished_at.is_some());
+
+    // 幂等重收口：同值 CAS 放行，账面不翻。
+    ledger::settle_run_on(&db, &run_id, "failed", Some("第二次"));
+    let run = db.get_run(&run_id).expect("run");
+    assert_eq!(run.status, "failed");
+    let attempts = db.attempts_of(&run_id).expect("attempts");
+    assert_eq!(
+        attempts[0].error.as_deref(),
+        Some("worker 汇报失败"),
+        "first-write-wins"
+    );
+}
+
+#[test]
+fn ledger_begin_idempotent_no_double_attempt() {
+    let (_dir, path) = temp_db("ledger_begin_idem");
+    let db = TaskDb::open(&path).expect("open");
+    let run_id = ledger::workflow_run_id("exec-1");
+    ledger::begin_run_on(
+        &db,
+        &run_id,
+        "workflow_run",
+        "wf",
+        "workflow",
+        serde_json::json!({}),
+    );
+    ledger::begin_run_on(
+        &db,
+        &run_id,
+        "workflow_run",
+        "wf",
+        "workflow",
+        serde_json::json!({}),
+    );
+    let attempts = db.attempts_of(&run_id).expect("attempts");
+    assert_eq!(attempts.len(), 1, "防御性重入不产生双开账");
+}
+
+#[test]
+fn ledger_cluster_attempt_accounting_leaves_run_to_adapter() {
+    let (_dir, path) = temp_db("ledger_cluster");
+    let db = TaskDb::open(&path).expect("open");
+    // runs 行由 SqliteTaskStore 适配器落盘（id=裸 task_id）——这里用
+    // create_run_with_id 模拟。
+    let task_id = "task-abc";
+    db.create_run_with_id(task_id, &raw_run("cluster_task", "peer_chat"))
+        .expect("adapter-style run");
+
+    ledger::begin_cluster_attempt_on(&db, task_id, "node-laptop");
+    let attempts = db.attempts_of(task_id).expect("attempts");
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0].worker, "node-laptop");
+
+    ledger::finish_cluster_attempt_on(&db, task_id, "succeeded", None);
+    let attempts = db.attempts_of(task_id).expect("attempts");
+    assert_eq!(attempts[0].status, "succeeded");
+
+    // run 状态归适配器管——收账不触 run（此处仍 pending，模拟适配器
+    // 尚未随任务转移落终态的时序窗口；双写会造成两套收口时序）。
+    assert_eq!(db.get_run(task_id).expect("run").status, "pending");
+}
+
+#[test]
+fn ledger_sweep_restarts_only_cron_kind() {
+    let (_dir, path) = temp_db("ledger_sweep");
+    let db = TaskDb::open(&path).expect("open");
+
+    ledger::begin_run_on(
+        &db,
+        &ledger::cron_job_run_id("job-1", 1000),
+        "cron_job",
+        "job",
+        "cron",
+        serde_json::json!({}),
+    );
+    ledger::begin_run_on(
+        &db,
+        &ledger::board_dispatch_run_id("task-2"),
+        "board_dispatch",
+        "NB-8",
+        "Node-B",
+        serde_json::json!({}),
+    );
+    // 已收口的 cron run 不被 sweep 翻动。
+    let done_id = ledger::cron_job_run_id("job-2", 2000);
+    ledger::begin_run_on(
+        &db,
+        &done_id,
+        "cron_job",
+        "job",
+        "cron",
+        serde_json::json!({}),
+    );
+    ledger::settle_run_on(&db, &done_id, "succeeded", None);
+
+    let swept = ledger::sweep_restart_orphans_on(&db);
+    assert_eq!(swept, 1, "只圈未收口的 cron_job");
+
+    let run = db
+        .get_run(&ledger::cron_job_run_id("job-1", 1000))
+        .expect("run");
+    assert_eq!(run.status, "failed");
+    let attempts = db.attempts_of(&run.id).expect("attempts");
+    assert_eq!(attempts[0].error.as_deref(), Some("gateway restart"));
+    // board_dispatch 在途 run 不归 boot sweep（生产收口路径负责）。
+    assert_eq!(
+        db.get_run(&ledger::board_dispatch_run_id("task-2"))
+            .expect("run")
+            .status,
+        "running"
+    );
+    assert_eq!(
+        db.get_run(&done_id).expect("run").status,
+        "succeeded",
+        "已收口行不被翻动"
+    );
+}
+
+#[test]
+fn ledger_settle_after_adapter_terminal_first_write_wins() {
+    let (_dir, path) = temp_db("ledger_adapter_first");
+    let db = TaskDb::open(&path).expect("open");
+    let task_id = "task-xyz";
+    db.create_run_with_id(task_id, &raw_run("cluster_task", "peer_chat"))
+        .expect("run");
+    // 适配器先落终态（生产时序：update_result_if_status 随 settle 落）。
+    db.set_run_status(task_id, "failed")
+        .expect("adapter settle");
+    // 账本面迟到收口（不同终态）：CAS 拒绝，first-write-wins 不翻账。
+    ledger::settle_run_on(&db, task_id, "succeeded", None);
+    assert_eq!(db.get_run(task_id).expect("run").status, "failed");
+}
+
+#[test]
+fn create_run_with_id_is_idempotent_and_list_open_runs_filters() {
+    let (_dir, path) = temp_db("create_with_id");
+    let db = TaskDb::open(&path).expect("open");
+
+    let id = ledger::board_dispatch_run_id("task-9");
+    let first = db
+        .create_run_with_id(&id, &raw_run("board_dispatch", "NB-9"))
+        .expect("create");
+    assert_eq!(first, id);
+    // 幂等：同 id 重建不炸不覆盖（标题保持首次值）。
+    let mut second_run = raw_run("board_dispatch", "DIFFERENT");
+    second_run.kind = "board_dispatch".to_string();
+    db.create_run_with_id(&id, &second_run)
+        .expect("idempotent create");
+    assert_eq!(db.get_run(&id).expect("run").title, "NB-9", "已在账不覆盖");
+
+    // list_open_runs：kind 过滤 + 只列未收口。
+    let other = ledger::workflow_run_id("exec-9");
+    db.create_run_with_id(&other, &raw_run("workflow_run", "wf"))
+        .expect("create");
+    db.set_run_status(&other, "succeeded").expect("settle");
+    let open_board = db.list_open_runs("board_dispatch").expect("list");
+    assert_eq!(open_board.len(), 1);
+    assert_eq!(open_board[0].id, id);
+    assert!(db.list_open_runs("workflow_run").expect("list").is_empty());
+}
+
+/// 全局槽：安装幂等 + 生产包装面落到已安装实例。本测试是全进程唯一
+/// install 点（其余测试走 *_on 带库变体，互不触全局）。
+#[test]
+fn ledger_global_install_and_wrappers() {
+    let (_dir, path) = temp_db("ledger_global");
+    let db = TaskDb::open(&path).expect("open");
+    ledger::install(db).expect("first install");
+    assert!(
+        ledger::install(TaskDb::open(&temp_db("ledger_global2").1).expect("db2")).is_err(),
+        "重复安装响亮拒绝"
+    );
+
+    let run_id = ledger::cron_job_run_id("job-g", 42);
+    ledger::begin_run(&run_id, "cron_job", "g", "cron", serde_json::json!({}));
+    let installed_db = ledger::installed().expect("installed");
+    assert_eq!(
+        installed_db.get_run(&run_id).expect("run").status,
+        "running",
+        "生产包装面落到已安装实例"
+    );
+    ledger::settle_run(&run_id, "succeeded", None);
+    assert_eq!(
+        installed_db.get_run(&run_id).expect("run").status,
+        "succeeded"
+    );
+    assert_eq!(
+        ledger::sweep_restart_orphans_installed(),
+        0,
+        "已收口不进 sweep"
+    );
 }

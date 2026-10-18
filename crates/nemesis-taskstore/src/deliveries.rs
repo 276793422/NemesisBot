@@ -120,6 +120,47 @@ impl TaskDb {
         })
     }
 
+    /// 浅合并交付 payload（G4，2026-10-18 批六：评审 anchor_summary 注记）。
+    /// read-modify-write 单事务（同库连接内 BEGIN IMMEDIATE 语义——读与写
+    /// 之间不被并发写插队）；`patch` 的顶层键逐一覆盖、其余键保留（不做
+    /// 深合并——payload 顶层是扁平摘要字段）。返回合并后的完整 payload。
+    /// 幂等键不存在 = `Err`（注记必须落在真实交付上，不凭空造行）。
+    pub fn merge_delivery_payload(
+        &self,
+        idempotency_key: &str,
+        patch: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        self.with_conn(|conn| {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("tasks.db merge delivery begin failed: {e}"))?;
+            let payload_str: String = tx
+                .query_row(
+                    "SELECT payload FROM deliveries WHERE idempotency_key = ?1",
+                    params![idempotency_key],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| format!("tasks.db read delivery failed: {e}"))?
+                .ok_or_else(|| format!("delivery {idempotency_key} not found"))?;
+            let mut payload: serde_json::Value =
+                serde_json::from_str(&payload_str).unwrap_or(serde_json::Value::Null);
+            if let (Some(obj), Some(patch_obj)) = (payload.as_object_mut(), patch.as_object()) {
+                for (k, v) in patch_obj {
+                    obj.insert(k.clone(), v.clone());
+                }
+            }
+            tx.execute(
+                "UPDATE deliveries SET payload = ?2 WHERE idempotency_key = ?1",
+                params![idempotency_key, payload.to_string()],
+            )
+            .map_err(|e| format!("tasks.db merge delivery failed: {e}"))?;
+            tx.commit()
+                .map_err(|e| format!("tasks.db merge delivery commit failed: {e}"))?;
+            Ok(payload)
+        })
+    }
+
     /// 按执行 ID 列交付（run 维证据包查询面；created_at + id 稳定序）。
     pub fn deliveries_by_run(&self, run_id: &str) -> Result<Vec<DeliveryRecord>, String> {
         self.with_conn(|conn| {

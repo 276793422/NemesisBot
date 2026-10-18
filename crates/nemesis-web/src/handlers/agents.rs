@@ -11,6 +11,7 @@
 //! 镜像随 projects.* 走（注册表是路径真相源）。本面只创建/管理 selfbuilt。
 
 use crate::ws_router::{ModuleHandler, RequestContext};
+use nemesis_types::channel::InboundMessage;
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
@@ -52,7 +53,8 @@ pub trait AgentsBridge: Send + Sync {
     /// 创建自建 agent（两阶段：provisioning → home 物化 → active）。
     fn create(&self, name: &str, tier: &str) -> Result<AgentInfo, String>;
     /// 删除记录（main 不可删；物理 home 保留——解除实体注册不做文件清除）。
-    fn remove(&self, agent_id: &str) -> Result<(), String>;
+    /// 异步：删除联动常驻执行体停机（evict 等在途调用收尾）。
+    async fn remove(&self, agent_id: &str) -> Result<(), String>;
 
     /// sleep（P3 T9）：常驻执行体优雅退出（状态全在 home 落盘）。返回
     /// false = 槽本来就不在（或常驻档未开——无进程可睡）。
@@ -68,6 +70,42 @@ pub trait AgentsBridge: Send + Sync {
 
     /// 常驻档是否开启（config `executor.persistent.enabled` 现读）。
     fn persistent_enabled(&self) -> bool;
+
+    /// G1：解析（惰性构建）自建 agent 的常驻 LLM loop。消费面 =
+    /// `resolve_session_loop` 的 agents 臂（审批/提问/会话级命令路由）。
+    /// 同步面——构建链（sqlite 记录读 + 工厂装配）无 await；错误 =
+    /// 不存在 / main·project 正门重定向 / 构建失败（诚实上抛）。
+    fn loop_for_agent(
+        &self,
+        agent_id: &str,
+    ) -> Result<Arc<nemesis_agent::r#loop::AgentLoop>, String>;
+
+    /// G1：投递一条入站消息进 agent loop（`agents.send` 面；出站回复经
+    /// loop 的 agent_outbound 链按 chat_id 回到发起连接）。
+    async fn send_to_agent(&self, agent_id: &str, msg: InboundMessage) -> Result<(), String>;
+}
+
+// ---------------------------------------------------------------------------
+// agent 会话键（G1 会话身份单一真相源）
+// ---------------------------------------------------------------------------
+
+/// agent 会话键形态：`agents:{agent_id}:session:{sid}`。sid 消毒同主会话
+/// 纪律（[`nemesis_agent::session::SessionStore::sanitize_session_id`]
+/// 单一真相源）。本函数与 [`agent_owner_of`] 是该形态的构造/解析单点。
+pub fn agent_session_key(agent_id: &str, session_id: &str) -> String {
+    let sid = nemesis_agent::session::SessionStore::sanitize_session_id(session_id);
+    format!("agents:{agent_id}:session:{sid}")
+}
+
+/// session_key → 归属 agent_id（纯字符串解析；None = 非 agent 会话——
+/// 主会话 / 项目会话形态照旧走各自路由）。
+pub fn agent_owner_of(session_key: &str) -> Option<String> {
+    let rest = session_key.strip_prefix("agents:")?;
+    let (id, _sid) = rest.split_once(":session:")?;
+    if id.is_empty() {
+        return None;
+    }
+    Some(id.to_string())
 }
 
 /// 常驻槽位快照的 web 投影（T9；supervisor `SlotState` 的同构镜像——
@@ -121,14 +159,16 @@ impl ModuleHandler for AgentsHandler {
     }
 
     fn commands(&self) -> &'static [&'static str] {
-        &["list", "get", "create", "remove", "sleep", "wake", "slots"]
+        &[
+            "list", "get", "create", "remove", "sleep", "wake", "slots", "send",
+        ]
     }
 
     async fn handle_cmd(
         &self,
         cmd: &str,
         data: Option<serde_json::Value>,
-        _ctx: &RequestContext,
+        ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
         let bridge = require_bridge()?;
         match cmd {
@@ -156,7 +196,7 @@ impl ModuleHandler for AgentsHandler {
             "remove" => {
                 let data = data.ok_or("missing data")?;
                 let agent_id = crate::handlers::get_str(&data, "agent_id")?;
-                bridge.remove(&agent_id)?;
+                bridge.remove(&agent_id).await?;
                 Ok(Some(serde_json::json!({
                     "removed": agent_id,
                     "note": "仅解除实体注册，未删除 home 目录内的任何文件",
@@ -191,6 +231,45 @@ impl ModuleHandler for AgentsHandler {
                 "persistent_enabled": bridge.persistent_enabled(),
                 "slots": bridge.slots(),
             }))),
+            // G1：给自建 agent 的常驻 LLM loop 投递一条消息。用户行先入
+            // 环（chat.sync / 历史可见性），不回 echo——本响应即发起方
+            // ack；agent 回复经 loop 出站链路按 chat_id 回到本连接
+            // （receive 帧，session_id 盖章仅 main 形态——v1 已知边界）。
+            "send" => {
+                let data = data.ok_or("missing data")?;
+                let agent_id = crate::handlers::get_str(&data, "agent_id")?;
+                let content = crate::handlers::get_str(&data, "content")?;
+                if content.trim().is_empty() {
+                    return Err("content 不能为空".to_string());
+                }
+                let session_id = data
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("default");
+                let session_key = agent_session_key(&agent_id, session_id);
+                let _seq =
+                    crate::chat_event_log::record(&session_key, "user", &content, None, None);
+                let msg = InboundMessage {
+                    channel: "web".to_string(),
+                    sender_id: "web".to_string(),
+                    chat_id: ctx.chat_id.clone(),
+                    content,
+                    media: vec![],
+                    session_key,
+                    correlation_id: String::new(),
+                    metadata: Default::default(),
+                    voice_playback: None,
+                };
+                bridge.send_to_agent(&agent_id, msg).await?;
+                Ok(Some(serde_json::json!({
+                    "accepted": true,
+                    "agent_id": agent_id,
+                    "session_id": session_id,
+                    "note": "回复经 agent loop 出站链路异步送达发起连接（receive 帧）",
+                })))
+            }
             _ => Err(format!("unknown agents cmd: {cmd}")),
         }
     }

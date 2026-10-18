@@ -1644,6 +1644,19 @@ impl WorkflowEngine {
             return Err(EngineError::RecursionLimitExceeded(reason));
         }
 
+        // G3：运行账本开账（确定性 id=workflow_run:{execution_id}；账本
+        // 未安装=零变化，best-effort 不阻断执行）。放在递归闸之后——
+        // 超限拒绝不产生开账行。Waiting（人工审批挂起）的 run 保持开账，
+        // resume 收口；终态在下方 settle。
+        let ledger_run_id = nemesis_taskstore::ledger::workflow_run_id(&execution.id);
+        nemesis_taskstore::ledger::begin_run(
+            &ledger_run_id,
+            "workflow_run",
+            &execution.workflow_name,
+            "workflow",
+            serde_json::json!({ "trigger": execution.trigger_source.clone() }),
+        );
+
         // Initialize workflow context from execution input
         let mut wf_ctx = WorkflowContext::new(execution.input.clone());
         for (k, v) in &workflow.variables {
@@ -1726,6 +1739,22 @@ impl WorkflowEngine {
                 execution.error = Some(err);
                 execution.ended_at = Some(now);
             }
+        }
+
+        // G3：运行账本收口（仅终态；Waiting 保持开账等 resume——挂起的
+        // 执行本身没有结束，账面如实镜像）。幂等：resume 收口同值 CAS。
+        match execution.state {
+            ExecutionState::Completed => {
+                nemesis_taskstore::ledger::settle_run(&ledger_run_id, "succeeded", None);
+            }
+            ExecutionState::Failed => {
+                let err = execution.error.as_deref();
+                nemesis_taskstore::ledger::settle_run(&ledger_run_id, "failed", err);
+            }
+            ExecutionState::Cancelled => {
+                nemesis_taskstore::ledger::settle_run(&ledger_run_id, "cancelled", None);
+            }
+            _ => {}
         }
 
         // Copy results from context into execution
@@ -2342,6 +2371,23 @@ impl WorkflowEngine {
                 execution.error = Some(err);
                 execution.ended_at = Some(now);
             }
+        }
+
+        // G3：resume 路径账本收口（首跑 run_async 的开账行凭确定性 id
+        // 直解；再次 Waiting 保持开账等下一次 resume）。
+        let ledger_run_id = nemesis_taskstore::ledger::workflow_run_id(&execution.id);
+        match execution.state {
+            ExecutionState::Completed => {
+                nemesis_taskstore::ledger::settle_run(&ledger_run_id, "succeeded", None);
+            }
+            ExecutionState::Failed => {
+                let err = execution.error.as_deref();
+                nemesis_taskstore::ledger::settle_run(&ledger_run_id, "failed", err);
+            }
+            ExecutionState::Cancelled => {
+                nemesis_taskstore::ledger::settle_run(&ledger_run_id, "cancelled", None);
+            }
+            _ => {}
         }
 
         // Copy fresh node_results + variables back into the execution.

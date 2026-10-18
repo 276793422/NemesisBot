@@ -45,6 +45,80 @@ use std::sync::Arc;
 
 use nemesis_config::ConfigHandle;
 
+/// R1（2026-10-18 三方复评）：per-call 与常驻执行体共用的隔离策略判读。
+///
+/// 背景：常驻路由（`agents/runtime.rs`）此前不读 `executor.strict`/`executor.
+/// sandbox`——Windows 无条件先试盒（`sandbox=false` 也被塞盒）、引擎缺位静默
+/// 退化 stdio，与 per-call 通道的 strict fail-closed 闸契约不一致。本结构把
+/// sandbox/strict 的**判读**收成单一真相源，spawn 决策两侧各自消费同一判读——
+/// 对同一配置作出一致决定。
+///
+/// 纪律与 supervisor 的 `persistent_settings`/allow_network/sandbox 现读一致：
+/// **磁盘是唯一真相源**（config.json raw JSON 现读，缺段/缺键/文件缺失/解析
+/// 失败 = false，与 `ExecutorSeparationConfig` 的 serde default 同缺省），不持
+/// ConfigHandle——判读随磁盘改动即时生效，无快照表。就绪性不缓存：
+/// [`Self::strict_backend_ready`] 每次实测（引擎/后端就绪是机器态，缓存会撒谎）。
+pub struct ExecutorIsolationPolicy {
+    config_path: std::path::PathBuf,
+}
+
+impl ExecutorIsolationPolicy {
+    pub fn new(config_path: std::path::PathBuf) -> Self {
+        Self { config_path }
+    }
+
+    /// config.json 现读一个 `executor.<key>` 布尔键。
+    fn read_bool(&self, key: &str) -> bool {
+        std::fs::read_to_string(&self.config_path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v.get("executor")?.get(key)?.as_bool())
+            .unwrap_or(false)
+    }
+
+    /// `executor.sandbox` 现读。
+    pub fn sandbox_requested(&self) -> bool {
+        self.read_bool("sandbox")
+    }
+
+    /// `executor.strict` 现读。
+    pub fn strict_required(&self) -> bool {
+        self.read_bool("strict")
+    }
+
+    /// `executor.allow_network` 现读（盒段 `AllowNetworkAccess` 来源 + 非
+    /// Windows 用户态后端选型输入）。
+    pub fn allow_network(&self) -> bool {
+        self.read_bool("allow_network")
+    }
+
+    /// strict 所要求的沙盒后端**当前**是否真的可用（fail-closed 面的能力实测，
+    /// 与 per-call strict 闸同源语义）：
+    /// - Windows + sandbox feature：Sandboxie 引擎就绪三元组（Start.exe 在场
+    ///   + SbieSvc Running + 引擎归属）；
+    /// - 非 Windows + sandbox feature：用户态后端存在性（`detect_backend`，
+    ///   选型按 `executor.allow_network` 现读）；
+    /// - sandbox feature 裁剪：恒 false（本构建不可能有沙盒——strict 恒拒）。
+    pub fn strict_backend_ready(&self, home: &Path) -> bool {
+        #[cfg(feature = "sandbox")]
+        {
+            #[cfg(windows)]
+            {
+                nemesis_sandbox::SandboxPaths::new(home).engine_ready()
+            }
+            #[cfg(not(windows))]
+            {
+                nemesis_sandbox::backend::detect_backend(self.allow_network()).is_some()
+            }
+        }
+        #[cfg(not(feature = "sandbox"))]
+        {
+            let _ = home;
+            false
+        }
+    }
+}
+
 /// 构建 executor 分离通道（单一真相源，gateway agent 层与 workflow 引擎共用）。
 ///
 /// 返回 `Ok(None)` = `executor.enabled = false`（Layer 0：无通道）。

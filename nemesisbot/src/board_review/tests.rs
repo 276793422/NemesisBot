@@ -397,6 +397,55 @@ fn review_deps_ex(name: &str, seed_worker_nodes: bool) -> (BoardReviewDeps, std:
     (deps, workspace)
 }
 
+/// G4 交付证据闸夹具（2026-10-18 批六）：与 [`review_deps`] 同构，但
+/// Cluster 走 `with_workspace`（生产路径）→ tasks.db 在场（deliveries
+/// 记账可读写）。`Cluster::new` 的 task_db=None 内存态验证不了「交付记录
+/// 在场 → PASS 放行」臂——缺失会退化成夹具缺 db 的巧合而非账本事实。
+fn review_deps_taskdb(name: &str) -> (BoardReviewDeps, std::path::PathBuf) {
+    use nemesis_cluster::cluster::Cluster;
+    use nemesis_cluster::types::ClusterConfig;
+
+    let dir = std::env::temp_dir().join(format!(
+        "nemesis-board-review-taskdb-{}-{name}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let workspace = dir.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let store =
+        Arc::new(nemesis_board::BoardStore::open(&dir.join("board.db"), "NB").expect("open store"));
+    store.ensure_default_channels().unwrap();
+
+    let cluster = Arc::new(Cluster::with_workspace(
+        ClusterConfig {
+            node_id: "node-a".to_string(),
+            bind_address: "127.0.0.1:0".to_string(),
+            peers: vec![],
+            node_name: String::new(),
+        },
+        workspace.clone(),
+    ));
+    cluster.set_rpc_client(Arc::new(nemesis_cluster::rpc::client::RpcClient::new()));
+    assert!(
+        cluster.task_db().is_some(),
+        "with_workspace 必须带 tasks.db（生产路径）"
+    );
+
+    let deps = BoardReviewDeps {
+        store,
+        workspace: workspace.clone(),
+        home: dir,
+        moderator_loop: Arc::new(std::sync::OnceLock::new()),
+        cluster,
+        estop: Arc::new(nemesis_agent::estop::EstopState::new()),
+        estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
+        selfcheck: SelfcheckRegistry::new(),
+        #[cfg(feature = "security")]
+        security_slot: None,
+    };
+    (deps, workspace)
+}
+
 /// 建一个 in_review 的待验收单并落 worker 交付汇报（验收输入）。
 fn issue_in_review(
     store: &nemesis_board::BoardStore,
@@ -5053,6 +5102,208 @@ async fn llm_call_failure_posts_honest_review_failed_comment() {
         note.content.contains("LLM 调用失败") && note.content.contains("网络断了"),
         "调用失败必须带分类前缀原文（不得误报成 3 轮解析失败）: {}",
         note.content
+    );
+}
+
+// ===== G4 交付证据闸（2026-10-18 批六） =====
+//
+// issue.requires_evidence（AC 含 file: 锚点建单自动置位）∪ 全局
+// board.review.require_delivery_evidence：PASS 放行前强制校验最新派发
+// 任务在 tasks.db deliveries 的记录在场（delivered/confirmed）；缺失 =
+// 确定性降级 FAIL 走既有 FAIL 决策表（零新增分支）。夹具用
+// with_workspace（tasks.db 在场）保证「缺失」是账本事实而非缺 db 巧合。
+
+#[tokio::test]
+async fn evidence_gate_missing_delivery_downgrades_pass_to_fail() {
+    use nemesis_board::IssueStatus;
+
+    let (deps, ws) = review_deps_taskdb("evidence-missing");
+    // file: 锚点 + 实物在场 → 锚点过 → 进 LLM 臂拿 PASS → 闸降级。
+    std::fs::create_dir_all(ws.join("out")).unwrap();
+    std::fs::write(ws.join("out").join("result.md"), "产物").unwrap();
+    // max_redispatch=0：降级 FAIL 直接转人工（file: 锚点本就进不了重派臂
+    // ——P1 拓扑硬闸拒绝远端目标 + file: 锚点派发）。
+    write_board_config(&deps.home, r#"{"max_redispatch":0}"#);
+    let issue = issue_in_review(
+        &deps.store,
+        "缺交付证据降级",
+        "[CHECK] file:out/result.md exists",
+        "## 结论\n交付完成",
+    );
+    assert!(
+        issue.requires_evidence,
+        "AC 含 file: 锚点建单自动置位 requires_evidence"
+    );
+    seed_dispatch(&deps.store, "t-evidence-miss", issue.id, "node-b");
+    attach_loop(
+        &deps,
+        Arc::new(CapturingLlm {
+            prompts: std::sync::Mutex::new(Vec::new()),
+            reply: review_json("PASS", ""),
+        }),
+    );
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("降级 FAIL 走既有决策表闭环");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.get_issue(issue.id).unwrap().status,
+        IssueStatus::InReview,
+        "零预算 + 降级 FAIL = 转人工（不凭自然语言 PASS 进 done）"
+    );
+    assert_eq!(
+        decided_word(&deps.store, issue.id).as_deref(),
+        Some("escalate_human"),
+        "降级 FAIL 必须走既有 FAIL 决策表（零预算 → 转人工），无新分支"
+    );
+    assert_eq!(
+        deps.store.list_dispatches(issue.id).unwrap().len(),
+        1,
+        "降级路径不额外派发"
+    );
+    let comments = deps.store.list_comments(issue.id).unwrap();
+    assert!(
+        comments.iter().any(|c| c.content.contains("交付证据闸")),
+        "必须落交付证据闸留痕评论: {:?}",
+        comments.iter().map(|c| &c.content).collect::<Vec<_>>()
+    );
+    assert!(
+        comments.iter().any(|c| c.content.contains("缺交付证据")),
+        "差距正文必须带「缺交付证据」前缀: {:?}",
+        comments.iter().map(|c| &c.content).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn evidence_gate_present_delivery_passes_and_anchor_summary_merged() {
+    use nemesis_board::IssueStatus;
+
+    let (deps, ws) = review_deps_taskdb("evidence-present");
+    std::fs::create_dir_all(ws.join("out")).unwrap();
+    std::fs::write(ws.join("out").join("result.md"), "产物").unwrap();
+    write_board_config(&deps.home, r#"{"auto_accept":true}"#);
+    let issue = issue_in_review(
+        &deps.store,
+        "交付记录在场放行",
+        "[CHECK] file:out/result.md exists",
+        "## 结论\n交付完成",
+    );
+    seed_dispatch(&deps.store, "t-evidence-hit", issue.id, "node-b");
+    // worker 回调已落账（A 端 handle_task_complete 同款：kind=cluster_result、
+    // 幂等键=task_id、落库即 delivered）。
+    deps.cluster
+        .task_db()
+        .unwrap()
+        .record_delivery(
+            "cluster_result",
+            None,
+            "t-evidence-hit",
+            &serde_json::json!({"node": "node-b"}),
+        )
+        .unwrap();
+    attach_loop(
+        &deps,
+        Arc::new(CapturingLlm {
+            prompts: std::sync::Mutex::new(Vec::new()),
+            reply: review_json("PASS", ""),
+        }),
+    );
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("交付在场 PASS 全链闭环");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.get_issue(issue.id).unwrap().status,
+        IssueStatus::Done,
+        "交付记录在场 → 闸放行 → auto_accept 落 done"
+    );
+    assert!(
+        !deps
+            .store
+            .list_comments(issue.id)
+            .unwrap()
+            .iter()
+            .any(|c| c.content.contains("交付证据闸")),
+        "在场时不得落降级留痕评论"
+    );
+    // anchor_summary 注记：锚点双检结果已合并进交付 payload（审计单行可
+    // 读），且浅合并不覆盖既有键。
+    let rec = deps
+        .cluster
+        .task_db()
+        .unwrap()
+        .delivery_by_key("t-evidence-hit")
+        .unwrap()
+        .expect("交付记录在场");
+    assert_eq!(rec.payload["node"], "node-b", "浅合并保留既有 payload 键");
+    assert_eq!(
+        rec.payload["anchor_summary"]["passed"],
+        serde_json::Value::Bool(true),
+        "锚点双检通过摘要必须注记进交付 payload: {}",
+        rec.payload
+    );
+    assert_eq!(rec.payload["anchor_summary"]["total"], serde_json::json!(1));
+    assert!(
+        rec.payload["anchor_summary"]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("result.md"),
+        "摘要明细含锚点目标: {}",
+        rec.payload["anchor_summary"]["detail"]
+    );
+}
+
+#[tokio::test]
+async fn evidence_gate_global_switch_applies_to_plain_issues() {
+    use nemesis_board::IssueStatus;
+
+    let (deps, _ws) = review_deps_taskdb("evidence-global");
+    // 普通 AC（无 file: 锚点）→ requires_evidence 不置位；全局开关加码。
+    write_board_config(
+        &deps.home,
+        r#"{"max_redispatch":0,"review":{"require_delivery_evidence":true}}"#,
+    );
+    let issue = issue_in_review(
+        &deps.store,
+        "全局交付证据加码",
+        "普通文字验收标准",
+        "## 结论\n交付完成",
+    );
+    assert!(
+        !issue.requires_evidence,
+        "无 file: 锚点不置位（全局闸是加码不是替代）"
+    );
+    seed_dispatch(&deps.store, "t-evidence-global", issue.id, "node-b");
+    attach_loop(
+        &deps,
+        Arc::new(CapturingLlm {
+            prompts: std::sync::Mutex::new(Vec::new()),
+            reply: review_json("PASS", ""),
+        }),
+    );
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("全局开关降级闭环");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.get_issue(issue.id).unwrap().status,
+        IssueStatus::InReview,
+        "全局开关 + 无交付记录 → PASS 降级 FAIL → 零预算转人工"
+    );
+    assert_eq!(
+        decided_word(&deps.store, issue.id).as_deref(),
+        Some("escalate_human")
+    );
+    assert!(
+        deps.store
+            .list_comments(issue.id)
+            .unwrap()
+            .iter()
+            .any(|c| c.content.contains("交付证据闸")),
+        "全局开关路径同样落降级留痕评论"
     );
 }
 

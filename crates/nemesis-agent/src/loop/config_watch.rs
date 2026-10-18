@@ -418,6 +418,31 @@ impl AgentLoop {
         *self.tier.write() = tier;
     }
 
+    /// G1（2026-10-18 三方复评整改批三）：记录级 tier 钉死。`Some` = 档位以
+    /// 记录为唯一真相源（[`Self::refresh_active_tier`] 短路——换模型/config
+    /// 重解析都不覆盖）；`None` = 回落 config 驱动（主/项目 loop 语义）。
+    /// 设置时同步落当前 tier（下一轮供给闸立即可见，不等 refresh 触发点）。
+    pub fn set_tier_override(&self, tier: Option<nemesis_types::capability::ModelTier>) {
+        *self.tier_override.write() = tier;
+        if let Some(t) = tier {
+            info!("[AgentLoop] Capability tier pinned: {}", t);
+            *self.tier.write() = t;
+        }
+    }
+
+    /// G1：per-loop 附加隐藏表（自建 agent tool_policy 折算；见字段文档）。
+    /// 全量替换语义——调用方每次传完整清单。空表 = 清除。
+    pub fn set_extra_hidden_tools(&self, tools: Vec<String>) {
+        *self.extra_hidden_tools.write() = tools;
+    }
+
+    /// G1：当前生效隐藏表快照（extra ∪ config 单点合并）。pub 可观测面
+    /// ——nemesisbot 侧工厂/管理页消费（供给闸本身在 crate 内
+    /// `build_tool_defs`，此处只出快照）。
+    pub fn effective_hidden_tools(&self) -> Vec<String> {
+        self.current_hidden_tools()
+    }
+
     /// F1（devtool-upgrade 阶段 4）：当前工作模式。
     pub fn mode(&self) -> crate::types::AgentMode {
         *self.mode.read()
@@ -788,6 +813,10 @@ impl AgentLoop {
     // AgentLoop 状态），HotReloader<T> 的 fn(&Path)->T 形状装不下——保留独立
     // 实现并登记（计划原文"诚实优于强行统一"）。收编需 trait 形状的 reloader。
     pub(crate) fn refresh_active_tier(&self) {
+        // G1：记录级钉死在场 = 记录是唯一真相源，config 重解析不覆盖。
+        if self.tier_override.read().is_some() {
+            return;
+        }
         let path = match self.config_path.read().clone() {
             Some(p) => p,
             None => return, // standalone mode — keep the startup tier

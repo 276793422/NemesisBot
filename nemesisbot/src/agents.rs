@@ -28,6 +28,10 @@ mod bridge;
 /// P3 T4：常驻执行体监督器（per-agent 长驻子进程 + 隔离 + 幂等）。
 pub mod runtime;
 
+/// G1（2026-10-18 三方复评整改批三）：自建 agent 常驻 LLM loop 生命周期
+/// 管理器（`agents.send` WSAPI 的解析/构建/投递面；R4 remove 联动）。
+pub mod loop_manager;
+
 use std::path::{Path, PathBuf};
 
 use nemesis_path::{resolve_agent_home_in_workspace, resolve_agent_memory_dir_in_workspace};
@@ -67,6 +71,11 @@ pub struct AgentManager {
     runtime: std::sync::Arc<
         std::sync::RwLock<Option<std::sync::Arc<crate::agents::runtime::AgentRuntimeSupervisor>>>,
     >,
+    /// G1：自建 agent 常驻 LLM loop 管理器（同 runtime 后补注入形态；
+    /// `remove` 联动停机摘 loop——R4 协调点）。
+    loop_manager: std::sync::Arc<
+        std::sync::RwLock<Option<std::sync::Arc<crate::agents::loop_manager::AgentLoopManager>>>,
+    >,
 }
 
 // ---------------------------------------------------------------------------
@@ -100,6 +109,7 @@ impl AgentManager {
             store: SqliteAgentsStore::from_db(db),
             workspace,
             runtime: std::sync::Arc::new(std::sync::RwLock::new(None)),
+            loop_manager: std::sync::Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -116,6 +126,26 @@ impl AgentManager {
         self.runtime
             .read()
             .expect("agent manager runtime lock")
+            .clone()
+    }
+
+    /// G1：自建 agent 常驻 loop 管理器后补注入（同 runtime 形态——loop
+    /// manager 需要 main loop 的 session_store，构造晚于 manager；幂等覆盖）。
+    pub fn set_loop_manager(
+        &self,
+        lm: std::sync::Arc<crate::agents::loop_manager::AgentLoopManager>,
+    ) {
+        *self.loop_manager.write().expect("agent manager loop lock") = Some(lm);
+    }
+
+    /// 取 loop manager 快照（未装配 = None——headless/测试形态，会话面
+    /// 诚实不可用）。
+    pub fn loop_manager(
+        &self,
+    ) -> Option<std::sync::Arc<crate::agents::loop_manager::AgentLoopManager>> {
+        self.loop_manager
+            .read()
+            .expect("agent manager loop lock")
             .clone()
     }
 
@@ -268,11 +298,22 @@ impl AgentManager {
 
     /// 删除记录。main 是对话组身份投影不可删（项目/自建可删；物理 home
     /// 目录保留——删除是解除实体注册，不做文件清除，与 projects 同语义）。
-    pub fn remove(&self, agent_id: &str) -> Result<(), String> {
+    /// R4（2026-10-18 三方复评）：删除联动常驻执行体停机（`evict` 尽力
+    /// 而为——监督器未装配时跳过）+ 看护循环经 registration_check 不再为
+    /// 已删 agent 重拉；evict 拿槽锁等在途调用收尾，删除不与 execute
+    /// 并发脱管。G1：同批联动停机自建 agent 的常驻 LLM loop（记录删了
+    /// loop 不留——此后 `agents.send` 走「agent 不存在」诚实报错）。
+    pub async fn remove(&self, agent_id: &str) -> Result<(), String> {
         if let Some(record) = self.store.get(agent_id)?
             && record.kind == agent_kind::MAIN
         {
             return Err("main agent 是对话组身份投影，不可删除".to_string());
+        }
+        if let Some(rt) = self.runtime() {
+            rt.evict(agent_id).await;
+        }
+        if let Some(lm) = self.loop_manager() {
+            lm.remove(agent_id);
         }
         self.store.remove(agent_id)
     }

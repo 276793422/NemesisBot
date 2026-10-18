@@ -2830,3 +2830,71 @@ fn s12b_describe_schedule_weekday_arm() {
         "0 0 9 15 * *"
     );
 }
+
+// ========================================================================
+// G3 运行账本接线（触发记账；全局槽由本测试进程独占安装）
+// ========================================================================
+
+/// execute_job 手动触发的账面：ok→succeeded、err→failed（trigger=manual
+/// 进 payload；同 job.id 前缀圈定行，不受并行测试的无关记账干扰）。
+#[test]
+fn ledger_cron_execute_job_records_runs() {
+    let ledger_dir = tempfile::tempdir().unwrap();
+    let db = nemesis_taskstore::TaskDb::open(&ledger_dir.path().join("ledger.db"))
+        .expect("open ledger db");
+    nemesis_taskstore::ledger::install(db).expect("first install (process-wide)");
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let schedule = CronSchedule {
+        kind: "every".to_string(),
+        at_ms: None,
+        every_ms: Some(60000),
+        expr: None,
+        tz: None,
+    };
+
+    // 成功臂。
+    let ok_job = svc
+        .add_job("ledger-ok", schedule.clone(), "x", false, None, None)
+        .unwrap();
+    svc.set_on_job(|_job| Ok("done".to_string()));
+    svc.execute_job(&ok_job.id).unwrap();
+
+    // 失败臂。
+    let err_job = svc
+        .add_job("ledger-err", schedule, "x", false, None, None)
+        .unwrap();
+    svc.set_on_job(|_job| Err("boom".to_string()));
+    svc.execute_job(&err_job.id).unwrap();
+
+    let db = nemesis_taskstore::ledger::installed().expect("still installed");
+    let ok_rows: Vec<_> = db
+        .list_runs_by_kind("cron_job", 100)
+        .expect("list")
+        .into_iter()
+        .filter(|r| r.id.starts_with(&format!("cron_job:{}:", ok_job.id)))
+        .collect();
+    assert_eq!(ok_rows.len(), 1, "一次触发一行账");
+    assert_eq!(ok_rows[0].status, "succeeded");
+    assert_eq!(ok_rows[0].peer_id, "cron");
+    assert_eq!(ok_rows[0].payload["trigger"], "manual");
+    assert!(ok_rows[0].completed_at.is_some());
+
+    let err_rows: Vec<_> = db
+        .list_runs_by_kind("cron_job", 100)
+        .expect("list")
+        .into_iter()
+        .filter(|r| r.id.starts_with(&format!("cron_job:{}:", err_job.id)))
+        .collect();
+    assert_eq!(err_rows.len(), 1);
+    assert_eq!(err_rows[0].status, "failed");
+
+    // attempt 侧收口：两行都在跑 attempt 已终结（开账即带首 attempt）。
+    for r in ok_rows.iter().chain(err_rows.iter()) {
+        let attempts = db.attempts_of(&r.id).expect("attempts");
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].status, r.status, "attempt 与 run 同态收口");
+    }
+}

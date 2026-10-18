@@ -36,6 +36,9 @@ nemesis-data = { workspace = true }
 # 与 CLI catalog.rs 共用——nemesis-web 不能依赖 binary crate）。
 nemesis-path = { workspace = true }
 nemesis-agent = { workspace = true }
+# G3 运行账本漏斗（board 派发开账/收账；未安装=零变化，非 optional——
+# 账本是记账面不设 feature 闸）。
+nemesis-taskstore = { workspace = true }
 # MCP sanitize 前缀碰撞检测单一真相源（handlers/mcp.rs server_add 写面
 # warn，与 nemesis-mcp manager 加载面同源 helper；2026-10-16 第十四轮）。
 nemesis-mcp = { workspace = true }

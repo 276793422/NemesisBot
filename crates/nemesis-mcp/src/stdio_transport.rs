@@ -36,6 +36,14 @@ pub struct StdioTransport {
     stdout: Option<Mutex<BufReader<tokio::process::ChildStdout>>>,
     /// Whether the transport is currently connected.
     connected: bool,
+    /// G2：浏览器 profile 显式覆盖（gateway agent loop 装配经 McpManager
+    /// 注入；None = 连接时回落进程 env `NEMESISBOT_BROWSER_PROFILE`——执行体
+    /// 子进程上下文标记）。
+    browser_profile: Option<String>,
+    /// G2：注入 opt-in 闸（server 配置 `browser_profile`）。false = 永不
+    /// 注入（普通 MCP 零变化）；裸 `new()` 构造恒 false（一次性探测不塞
+    /// 身份）。
+    browser_profile_opt_in: bool,
 }
 
 impl StdioTransport {
@@ -51,12 +59,28 @@ impl StdioTransport {
             stdin: None,
             stdout: None,
             connected: false,
+            browser_profile: None,
+            browser_profile_opt_in: false,
         }
     }
 
-    /// Create from a `ServerConfig`.
+    /// Create from a `ServerConfig`（profile 走进程 env 回落——一次性探测
+    /// 与执行体子进程上下文形态）。
     pub fn from_config(config: &crate::types::ServerConfig) -> Self {
-        Self::new(&config.command, config.args.clone(), config.env.clone())
+        Self::from_config_with_profile(config, None)
+    }
+
+    /// G2：从配置构造 + 显式 per-agent profile 覆盖（gateway agent loop
+    /// 装配路径——共享 gateway 进程 env 无法 per-agent）。opt-in 闸仍来自
+    /// 配置（`browser_profile: false` 的 server 即使给了显式目录也不注入）。
+    pub fn from_config_with_profile(
+        config: &crate::types::ServerConfig,
+        profile: Option<String>,
+    ) -> Self {
+        let mut t = Self::new(&config.command, config.args.clone(), config.env.clone());
+        t.browser_profile_opt_in = config.browser_profile;
+        t.browser_profile = profile;
+        t
     }
 }
 
@@ -129,30 +153,43 @@ fn classify_line(line: &str) -> LineKind {
 }
 
 // ---------------------------------------------------------------------------
-// P3 T6: per-agent browser profile injection
+// P3 T6 + G2: per-agent browser profile injection
 // ---------------------------------------------------------------------------
 
-/// P3 T6（浏览器身份）：执行体上下文内的 MCP spawn 注入 per-agent Chromium
-/// profile。`NEMESISBOT_BROWSER_PROFILE` 由常驻执行体监督器 spawn 子进程时
-/// 设置（nemesisbot `agents/runtime.rs` 的 `base_executor_env`），是「本进程
-/// 处于 agent 执行体上下文」的标记：gateway 进程不设它——共享 MCP server
-/// 的 spawn 行为零变化；执行体上下文内 spawn 的浏览器类 MCP server
-/// （playwright / chrome-devtools 等）由此拿到 per-agent `--user-data-dir`
-/// （登录态/cookie 全落 agent home 的 browser-profile/，跨任务跨重建保持、
-/// 不出 home——P3 ④ 纪律；Sandboxie 盒路径另有 OpenFilePath 写穿透）。
+/// 浏览器 profile 注入（P3 T6 引入，G2 2026-10-18 批四修正）。
 ///
-/// server 配置里已显式带 `--user-data-dir` = 用户配置优先，不重复注入。
-/// 纯函数便于单测（进程级 env 无法在并行测试里安全改写）。
-pub(crate) fn args_with_browser_profile(args: &[String], profile: Option<&str>) -> Vec<String> {
-    match profile {
-        Some(dir) if !dir.trim().is_empty() && !args.iter().any(|a| a == "--user-data-dir") => {
-            let mut v = args.to_vec();
-            v.push("--user-data-dir".to_string());
-            v.push(dir.to_string());
-            v
-        }
-        _ => args.to_vec(),
+/// 两条生产路径，同一 helper 消费：
+/// - **gateway agent loop 路径**（G2）：selfbuilt agent 的常驻 loop 携带
+///   agent home 的 browser-profile/ 目录，经 `McpManager` 显式注入
+///   transport——共享 gateway 进程 env 无法 per-agent，走显式覆盖。
+/// - **执行体子进程路径**（P3 T6 语义保留）：执行体监督器 spawn 子进程时
+///   设 `NEMESISBOT_BROWSER_PROFILE`（nemesisbot `agents/runtime.rs` 的
+///   `base_executor_env`），是「本进程处于 agent 执行体上下文」的标记；
+///   transport 连接时 env 回落读取。
+///
+/// **opt-in 闸（G2）**：注入只对配置显式 `browser_profile: true` 的
+/// server 生效——不按服务名猜，普通 MCP 默认零变化（共享 server 不被塞
+/// 身份）。server args 已显式带 `--user-data-dir`（空格或 `=` 形态）=
+/// 用户配置优先，不重复注入。纯函数便于单测（进程级 env 无法在并行测试
+/// 里安全改写）。
+pub(crate) fn args_with_browser_profile(
+    args: &[String],
+    profile: Option<&str>,
+    opt_in: bool,
+) -> Vec<String> {
+    let Some(dir) = profile.filter(|d| !d.trim().is_empty()).filter(|_| opt_in) else {
+        return args.to_vec();
+    };
+    if args
+        .iter()
+        .any(|a| a == "--user-data-dir" || a.starts_with("--user-data-dir="))
+    {
+        return args.to_vec();
     }
+    let mut v = args.to_vec();
+    v.push("--user-data-dir".to_string());
+    v.push(dir.to_string());
+    v
 }
 
 #[async_trait]
@@ -162,10 +199,21 @@ impl Transport for StdioTransport {
             return Ok(());
         }
 
+        // G2：profile 解析——显式覆盖（agent loop 装配注入）优先，回落进程
+        // env 标记（执行体子进程上下文）；opt-in 闸不满足时恒 None（普通
+        // MCP 零变化）。
+        let profile = if self.browser_profile_opt_in {
+            self.browser_profile
+                .clone()
+                .or_else(|| std::env::var("NEMESISBOT_BROWSER_PROFILE").ok())
+        } else {
+            None
+        };
         let mut cmd = Command::new(&self.command);
         cmd.args(args_with_browser_profile(
             &self.args,
-            std::env::var("NEMESISBOT_BROWSER_PROFILE").ok().as_deref(),
+            profile.as_deref(),
+            self.browser_profile_opt_in,
         ))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

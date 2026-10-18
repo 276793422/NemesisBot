@@ -130,7 +130,7 @@ impl AgentsBridge for FakeBridge {
         info.tier = tier.to_string();
         Ok(info)
     }
-    fn remove(&self, agent_id: &str) -> Result<(), String> {
+    async fn remove(&self, agent_id: &str) -> Result<(), String> {
         self.note("remove");
         if agent_id == "main" {
             return Err("main agent 是对话组身份投影，不可删除".to_string());
@@ -158,6 +158,26 @@ impl AgentsBridge for FakeBridge {
     }
     fn persistent_enabled(&self) -> bool {
         true
+    }
+    fn loop_for_agent(
+        &self,
+        agent_id: &str,
+    ) -> Result<Arc<nemesis_agent::r#loop::AgentLoop>, String> {
+        self.note("loop_for_agent");
+        // 真构建不进 web 测试——诚实报错形态即可（resolve_session_loop 的
+        // agents 臂契约在 nemesisbot 侧 loop_manager 用例覆盖）。
+        Err(format!("agent 不存在: {agent_id}"))
+    }
+    async fn send_to_agent(&self, agent_id: &str, msg: InboundMessage) -> Result<(), String> {
+        self.note("send");
+        if agent_id == "nope" {
+            return Err(format!("agent 不存在: {agent_id}"));
+        }
+        assert!(
+            msg.session_key.starts_with("agents:"),
+            "session_key 必须 agents 形态"
+        );
+        Ok(())
     }
 }
 
@@ -256,8 +276,71 @@ fn l1_commands_registry_lists_all_agents_commands() {
     let cmds = handler.commands();
     assert_eq!(
         cmds,
-        &["list", "get", "create", "remove", "sleep", "wake", "slots"]
+        &[
+            "list", "get", "create", "remove", "sleep", "wake", "slots", "send"
+        ]
     );
+}
+
+// -- G1 会话面（agents.send + 会话键形态）-----------------------------------
+
+#[test]
+fn agent_session_key_roundtrip_owner_parse() {
+    let key = agent_session_key("abc123", "default");
+    assert_eq!(key, "agents:abc123:session:default");
+    assert_eq!(agent_owner_of(&key).as_deref(), Some("abc123"));
+    // sid 消毒：非安全字符折叠为 '_'（同主会话纪律）。
+    let key = agent_session_key("abc123", "a/b c");
+    assert_eq!(key, "agents:abc123:session:a_b_c");
+    assert_eq!(agent_owner_of(&key).as_deref(), Some("abc123"));
+    // 非 agent 形态一律 None。
+    assert_eq!(agent_owner_of("agent:main:session:default"), None);
+    assert_eq!(agent_owner_of("proj:1:session:x"), None);
+    assert_eq!(agent_owner_of("agents::session:x"), None, "空 id 不是归属");
+    assert_eq!(agent_owner_of("agents:noid"), None);
+}
+
+#[tokio::test]
+async fn send_routes_to_bridge_with_derived_session_key() {
+    let _g = AGENTS_BRIDGE_TEST_LOCK.lock();
+    set_agents_bridge_for_test(Some(FakeBridge::new()));
+    // 成功臂：session_id 缺省 → default；用户行已入环（chat_event_log 在
+    // 内存环——此处不断言环内容，fake 断言 session_key 形态即可）。
+    let out = call(
+        "send",
+        Some(serde_json::json!({"agent_id": "a2", "content": "干活"})),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["accepted"], true);
+    assert_eq!(out["session_id"], "default");
+    // 显式 session_id 透传。
+    let out = call(
+        "send",
+        Some(serde_json::json!({"agent_id": "a2", "content": "hi", "session_id": "task-7"})),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["session_id"], "task-7");
+    // bridge 错误透传。
+    let err = call(
+        "send",
+        Some(serde_json::json!({"agent_id": "nope", "content": "hi"})),
+    )
+    .await
+    .expect_err("不存在必须报错");
+    assert!(err.contains("nope"));
+    // content 空白拒绝。
+    let err = call(
+        "send",
+        Some(serde_json::json!({"agent_id": "a2", "content": "   "})),
+    )
+    .await
+    .expect_err("空白 content 必须拒绝");
+    assert!(err.contains("content"));
+    set_agents_bridge_for_test(None);
 }
 
 // -- T9 生命周期面（sleep/wake/slots）--------------------------------------

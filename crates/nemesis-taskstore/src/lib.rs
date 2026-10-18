@@ -28,6 +28,7 @@ pub mod agents;
 pub mod approvals;
 pub mod db;
 pub mod deliveries;
+pub mod ledger;
 pub mod runs;
 pub mod tasks;
 

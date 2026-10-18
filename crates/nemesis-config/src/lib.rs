@@ -655,6 +655,12 @@ pub struct BoardReviewConfig {
     /// 恒转人工（返工修不了「无法判定」）。轮数按「返工：」前缀子单累计数计
     /// （含 cancelled——按尝试计不按存活计），超限保持转人工。
     pub parent_remediation_max: u32,
+    /// 交付证据契约总闸（G4，2026-10-18 批六；默认 false = 语义不变）。
+    /// 开启后**所有**单子验收 PASS 前置校验最新派发任务的交付记录在场
+    /// （delivered/confirmed），缺失 = 降级 FAIL「缺交付证据」（不凭自然
+    /// 语言进 done）。issue 级 `requires_evidence`（AC 含 file: 锚点自动
+    /// 置位）不受本闸控制、恒生效——本闸是全局加码，不是全局豁免。
+    pub require_delivery_evidence: bool,
 }
 
 impl BoardReviewConfig {
@@ -778,6 +784,7 @@ impl Default for BoardReviewConfig {
             max_unsure_streak: 2,
             professions: std::collections::HashMap::new(),
             parent_remediation_max: 2,
+            require_delivery_evidence: false,
         }
     }
 }
@@ -3208,6 +3215,15 @@ pub struct McpServerConfig {
     pub tags: Vec<String>,
     #[serde(default)]
     pub command: String,
+    /// G2（2026-10-18 三方复评整改批四）：浏览器 profile 注入 opt-in 闸。
+    /// true = 本 server 允许宿主按上下文注入 per-agent Chromium
+    /// `--user-data-dir`（gateway agent loop 路径 = agent home
+    /// browser-profile/；执行体子进程路径 = `NEMESISBOT_BROWSER_PROFILE`
+    /// env 回落）。默认 false = 普通 MCP 零变化（共享 server 不被塞身份）；
+    /// server args 已显式带 `--user-data-dir`（空格或 `=` 形态）= 用户配置
+    /// 优先，不重复注入。false 序列化跳过（存量 config.mcp.json 字节稳定）。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub browser_profile: bool,
     /// 未类型化键兜底（2026-09-03 二次回归 F2 同族根修，对齐 `ModelConfig.extra`
     /// 惯例）：typed `save_config` round-trip 时编译器保证保留未知键，不再静默
     /// 抹掉（如未来新增的 per-server 键）。空 map 序列化跳过 → 无 unknown 键的
@@ -3237,6 +3253,7 @@ impl Default for McpServerConfig {
             provider_url: String::new(),
             tags: Vec::new(),
             command: String::new(),
+            browser_profile: false,
             extra: std::collections::BTreeMap::new(),
         }
     }
@@ -3277,6 +3294,12 @@ impl McpServerConfig {
     /// Builder: 设置请求超时（秒）。
     pub fn timeout(mut self, secs: u64) -> Self {
         self.timeout_secs = secs;
+        self
+    }
+
+    /// Builder: 打开浏览器 profile 注入 opt-in（G2）。
+    pub fn browser_profile(mut self, yes: bool) -> Self {
+        self.browser_profile = yes;
         self
     }
 }

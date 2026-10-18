@@ -552,8 +552,10 @@ pub(crate) async fn init_post_agent(
         )) {
             Ok(db) => {
                 // P4-c：交付账本 bridge 用独立连接（db 本体随 mgr move；
-                // 多连接 WAL 是既定形态）。
+                // 多连接 WAL 是既定形态）。G1：agent loop 管理器同款第三
+                // 连接（store 是真相源句柄，不持 manager Arc——无引用环）。
                 let deliveries_db = std::sync::Arc::clone(&db);
+                let loops_db = std::sync::Arc::clone(&db);
                 let mgr = std::sync::Arc::new(crate::agents::AgentManager::from_db(
                     shared_resources.workspace_dir(),
                     db,
@@ -588,11 +590,30 @@ pub(crate) async fn init_post_agent(
                 // T9：常驻监督器注入 manager（agents.sleep/wake/slots 生命
                 // 周期面经 bridge 走到 supervisor；supervisor 构造在
                 // agent_build（早于本块），此刻恒在场）。
+                // R4：注册表存在性检查闭包同点注入——看护循环对已删 agent
+                // 诚实停手（崩溃槽不重拉），删除联动常驻进程生命周期。
                 if let Some(rt) = shared_resources.agent_runtime.as_ref() {
+                    let reg_mgr = std::sync::Arc::clone(&mgr);
+                    rt.set_registration_check(std::sync::Arc::new(move |agent_id| {
+                        reg_mgr.get(agent_id).map(|r| r.is_some()).unwrap_or(false)
+                    }));
                     mgr.set_runtime(std::sync::Arc::clone(rt));
                 }
                 // WSAPI agents.* 同点接线（同一 Manager 实例；web 侧 trait
                 // + 槽，实现落本 crate——依赖方向 nemesisbot→nemesis-web）。
+                // G1：先注入 loop manager 再装 bridge（bridge 的
+                // loop_for_agent/send_to_agent 委托它；与项目 manager 同款
+                // 共享主 loop 的 SessionStore Arc，会话隔离靠 session_key）。
+                let loops_mgr =
+                    std::sync::Arc::new(crate::agents::loop_manager::AgentLoopManager::new(
+                        std::sync::Arc::clone(&shared_resources),
+                        loops_db,
+                        agent_loop
+                            .session_store()
+                            .cloned()
+                            .expect("main agent loop must carry a session store"),
+                    ));
+                mgr.set_loop_manager(loops_mgr);
                 let bridge: std::sync::Arc<dyn nemesis_web::handlers::agents::AgentsBridge> =
                     mgr.clone();
                 nemesis_web::handlers::agents::install_agents_bridge(bridge);
@@ -650,6 +671,35 @@ pub(crate) async fn init_post_agent(
                 error!(
                     "[Gateway] tasks.db unavailable, agent 实体注册表关闭（agents.* WSAPI 将诚实报错）: {e}"
                 );
+            }
+        }
+    }
+
+    // --- G3（2026-10-18）：运行账本漏斗安装（runs/attempts 进生产调度）---
+    // 第五条独立连接（多连接 WAL 是既定形态）。装上后 board 派发 / cron
+    // 触发 / workflow 执行经 nemesis-taskstore::ledger 记账（集群任务的
+    // runs 行由 SqliteTaskStore 适配器既有落盘，账本只补 attempts 归因）。
+    // 装失败 = 账本关闭（生产调度照常，仅丢记账），warn 留痕不炸启动。
+    // 顺带启动 sweep：上一进程遗留的未收口 cron 触发诚实标
+    // failed("gateway restart")（board/cluster/workflow 在途 run 由各自
+    // 生产收口路径负责，重启不等于死亡——见 ledger 模块头「诚实边界」）。
+    {
+        match nemesis_taskstore::TaskDb::open(&nemesis_path::resolve_tasks_db_path_in_workspace(
+            &shared_resources.workspace_dir(),
+        )) {
+            Ok(db) => {
+                if let Err(e) = nemesis_taskstore::ledger::install(db) {
+                    warn!("[Gateway] run ledger 重复安装（保持既有实例）: {e}");
+                } else {
+                    let swept = nemesis_taskstore::ledger::sweep_restart_orphans_installed();
+                    if swept > 0 {
+                        info!("[Gateway] run ledger 启动 sweep: 归位 {swept} 条重启孤儿");
+                    }
+                    info!("[Gateway] run ledger armed (tasks.db; board/cron/workflow 记账)");
+                }
+            }
+            Err(e) => {
+                warn!("[Gateway] tasks.db unavailable, run ledger 关闭（调度照常，仅丢记账）: {e}");
             }
         }
     }

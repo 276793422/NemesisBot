@@ -310,6 +310,19 @@ impl nemesis_security::auditor::ApprovalManager for WebApprovalManager {
             created_at: std::time::Instant::now(),
             tx,
         };
+        // R3（2026-10-18 三方复评）：**先 durable pending、后内存入册+广播**
+        // （不变量升级：内存可见 ⇒ DB pending 已在）。旧序（先广播后落库）
+        // 有幽灵 pending 竞态：respond 可在 INSERT 前完成裁决 →
+        // record_decision 撞空库表 → 请求线程随后补插 pending 无裁决 →
+        // 重启复活已处理卡片。DB 失败维持「loud error 不阻断」立场（审批
+        // 可用性不绑 tasks.db；此失败窗口重启后可能复活旧卡，respond_stale
+        // 兜底可裁决摘卡）。
+        {
+            let journal_entry = Self::journal_entry(
+                request_id, operation, target, risk_level, reason, &pattern, "", "",
+            );
+            self.journal_record_pending(&journal_entry);
+        }
         // **先入册、后广播**（不变量：广播 ApprovalRequested ⇒ pending 已
         // 可裁决）。反序时消费方收到事件立即 respond 会查表落空报
         // unknown——高负载并行下请求线程被调度延迟卡在广播与入册之间
@@ -325,16 +338,6 @@ impl nemesis_security::auditor::ApprovalManager for WebApprovalManager {
             if let Some(registered) = map.get(request_id) {
                 self.broadcast_requested(registered, request_id);
             }
-        }
-
-        // P1：审批台账记账（tasks.db approvals 表；尽力而为，失败 loud
-        // error 不阻断）。gateway 重启后 pending 条目仍在库中——重启前的
-        // 卡片可被裁决且只生效一次（幂等条件更新），记账性质=审计留痕。
-        {
-            let journal_entry = Self::journal_entry(
-                request_id, operation, target, risk_level, reason, &pattern, "", "",
-            );
-            self.journal_record_pending(&journal_entry);
         }
 
         // 阻塞等裁决。tokio 上下文（agent loop 工具调度链）用 block_in_place
@@ -373,29 +376,61 @@ impl nemesis_security::auditor::ApprovalManager for WebApprovalManager {
                     operation,
                     timeout_secs
                 );
-                // P1：超时也是一次裁决——台账记 expired（幂等：晚到的用户
-                // respond 撞 pending 条件更新必败，先到先得）。
-                if let Some(j) = self.journal()
-                    && let Err(e) = j.record_decision(
+                // R3：超时也是一次裁决——**先记台账**（幂等条件更新），再按
+                // 记账结果决定后续（Ok(false) = respond 抢先完成裁决，不能
+                // 顺着超时路径广播「timeout」——那是假广播）。
+                let expired_record = self.journal().map(|j| {
+                    j.record_decision(
                         request_id,
                         nemesis_types::approval_journal::ApprovalDecision::Expired,
                         Some("审批超时自动拒绝"),
                         "timeout",
                     )
-                {
-                    tracing::error!(
-                        "[WebApproval] approval journal timeout record failed for {request_id}: {e}"
-                    );
+                });
+                match expired_record {
+                    Some(Ok(false)) => {
+                        // respond 赢了裁决竞争（先到先得）。它此刻大概率已
+                        // tx.send（记账后微秒级）——短暂宽限收一次在途裁决，
+                        // 返回真实结果；respond 已广播 resolved 摘卡，这里
+                        // **不广播 timeout**。宽限耗尽/通道关闭 = respond 侧
+                        // 异常中断：诚实返回拒绝且不补假广播（下次 pending
+                        // 轮询按台账态摘卡）。
+                        tracing::info!(
+                            "[WebApproval] request {request_id}: respond won the decision race; recovering in-flight verdict"
+                        );
+                        match rx.recv_timeout(Duration::from_secs(2)) {
+                            Ok(verdict) => Ok(verdict),
+                            Err(_) => {
+                                tracing::warn!(
+                                    "[WebApproval] request {request_id}: raced decision not recoverable from channel; returning denial without timeout broadcast"
+                                );
+                                Ok(nemesis_security::auditor::ApprovalVerdict {
+                                    approved: false,
+                                    note: Some("审批已被并发裁决".to_string()),
+                                })
+                            }
+                        }
+                    }
+                    other => {
+                        if let Some(Err(e)) = other {
+                            tracing::error!(
+                                "[WebApproval] approval journal timeout record failed for {request_id}: {e}"
+                            );
+                        }
+                        // None = 无 journal（审批可用性不绑 tasks.db，同
+                        // journal_record_pending 立场）；Ok(true) = 正常超时
+                        // 裁决。两者都广播 timeout。
+                        // F6: 超时自动拒绝也是一次裁决——广播出去让所有前端摘卡。
+                        self.broadcast_resolved(request_id, "timeout");
+                        Ok(nemesis_security::auditor::ApprovalVerdict {
+                            approved: false,
+                            // 4.1（2026-09-29 交付审查）：超时拒绝带注记，与用户
+                            // 显式拒绝区分——上游消费 verdict.note 的面（技能/插件
+                            // 安装卡的拒绝原因）不再把超时误报成「用户拒绝了」。
+                            note: Some("审批超时自动拒绝".to_string()),
+                        })
+                    }
                 }
-                // F6: 超时自动拒绝也是一次裁决——广播出去让所有前端摘卡。
-                self.broadcast_resolved(request_id, "timeout");
-                Ok(nemesis_security::auditor::ApprovalVerdict {
-                    approved: false,
-                    // 4.1（2026-09-29 交付审查）：超时拒绝带注记，与用户
-                    // 显式拒绝区分——上游消费 verdict.note 的面（技能/插件
-                    // 安装卡的拒绝原因）不再把超时误报成「用户拒绝了」。
-                    note: Some("审批超时自动拒绝".to_string()),
-                })
             }
         }
     }
@@ -433,24 +468,48 @@ impl ApprovalResponder for WebApprovalManager {
                 note: note.clone(),
             }
         };
-        entry
-            .tx
-            .send(verdict)
-            .map_err(|_| "approval waiter already gone".to_string())?;
-        // P1：裁决记账（tasks.db；幂等——超时分支先记 expired 时，这里
-        // 的条件更新必败 warn 留痕，先到先得）。失败 loud error 不阻断
-        // （裁决已送达等待方，记账是审计面）。
-        if let Some(j) = self.journal() {
-            let decision = if approved {
-                nemesis_types::approval_journal::ApprovalDecision::Approved
-            } else {
-                nemesis_types::approval_journal::ApprovalDecision::Denied
-            };
-            if let Err(e) = j.record_decision(request_id, decision, note.as_deref(), "web-user") {
-                tracing::warn!(
-                    "[WebApproval] approval journal decision record failed for {request_id}: {e}"
+        // R3（2026-10-18 三方复评）：**裁决状态转移以台账条件更新为准——先
+        // 记账、后通知**。R3 前置修复（先 durable pending 后入册广播）保证
+        // 此刻 pending 行必已在，Ok(false) 只可能来自超时分支抢先。
+        // - Ok(true)：本 respond 是先到者 → 送裁决；
+        // - Ok(false)：已有人抢先 → 不送不广播（先到者已广播摘卡），诚实
+        //   回 already decided；
+        // - Err：台账写失败 → 裁决照常送达（审批可用性不绑 tasks.db，审计
+        //   缺失 loud 留痕——语义与台账设计一致但顺序正确）。
+        let decision = if approved {
+            nemesis_types::approval_journal::ApprovalDecision::Approved
+        } else {
+            nemesis_types::approval_journal::ApprovalDecision::Denied
+        };
+        let decided = match self
+            .journal()
+            .map(|j| j.record_decision(request_id, decision, note.as_deref(), "web-user"))
+        {
+            None => true,
+            Some(Ok(won)) => won,
+            Some(Err(e)) => {
+                tracing::error!(
+                    "[WebApproval] approval journal decision record failed for {request_id}: {e} \
+                     (verdict still delivered — availability not bound to tasks.db)"
                 );
+                true
             }
+        };
+        if !decided {
+            tracing::warn!(
+                "[WebApproval] respond for {request_id}: approval already decided (timeout \
+                 raced); verdict not delivered"
+            );
+            return Err(format!("approval already decided: {request_id}"));
+        }
+        if entry.tx.send(verdict).is_err() {
+            // 等待方已退出（requester 线程提前收场）：台账已持裁决，审计面
+            // 可恢复——如实报错，不假装送达。
+            tracing::warn!(
+                "[WebApproval] respond for {request_id}: decision recorded but waiter channel \
+                 is gone; audit holds the decision"
+            );
+            return Err("approval waiter already gone".to_string());
         }
         // F6: 裁决已送达 → 广播 resolved，竞速败方窗口摘卡。在 always 规则
         // 写盘之前发（写失败不影响「卡已处理」事实）。
