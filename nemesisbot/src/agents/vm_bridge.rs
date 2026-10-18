@@ -84,44 +84,59 @@ pub(crate) struct ImageBuildInputs {
 pub(crate) fn image_build_inputs(
     settings: &nemesis_config::ExecutorVmConfig,
 ) -> Result<ImageBuildInputs, String> {
-    // 构建脚本 + guest 二进制在场预检（缺席 = 诚实报错 + 指路）。
-    let script = PathBuf::from("scripts").join("build-vm-image.sh");
-    if !script.exists() {
-        return Err(format!(
-            "镜像构建脚本不在场（{}）——需从仓库根运行网关，或在 Linux/WSL 宿主按构建管线手动执行",
-            script.display()
-        ));
+    // Windows 宿主前置诚实拒绝（P5 §6 既定边界，B5 全新环境实跑定位）：
+    // 镜像管线是 Linux 宿主脚本（file(1)/xorriso 系 POSIX 工具），不前置
+    // 拦截会让用户白下载数百 MB base 后死在 ISO 工具上。两条既定出路——
+    // WSL 构建，或 Linux 机器构建后产物落工作区镜像目录回传（镜像一次
+    // 构建双端复用，P5 实录）。
+    #[cfg(windows)]
+    {
+        let _ = settings;
+        Err(
+            "镜像构建为 Linux 宿主管线（依赖 file(1)/xorriso 系工具）：Windows 宿主请走 WSL 构建，或在 Linux 机器构建后把 base.qcow2 + seed.iso 落到工作区镜像目录回传复用（P5 既定：镜像一次构建双端复用）"
+                .to_string(),
+        )
     }
-    let guest_target = match settings.arch.as_str() {
-        "x86_64" => "x86_64-unknown-linux-musl",
-        "aarch64" => "aarch64-unknown-linux-musl",
-        other => {
+    #[cfg(not(windows))]
+    {
+        // 构建脚本 + guest 二进制在场预检（缺席 = 诚实报错 + 指路）。
+        let script = PathBuf::from("scripts").join("build-vm-image.sh");
+        if !script.exists() {
             return Err(format!(
-                "guest 架构 {other:?} 非法（validate 应已拦——数据不一致）"
+                "镜像构建脚本不在场（{}）——需从仓库根运行网关，或在 Linux/WSL 宿主按构建管线手动执行",
+                script.display()
             ));
         }
-    };
-    let guest_bin = PathBuf::from("target")
-        .join(guest_target)
-        .join("release")
-        .join(if cfg!(windows) {
-            "nemesis-guest.exe"
-        } else {
-            "nemesis-guest"
-        });
-    if !guest_bin.exists() {
-        return Err(format!(
-            "guest 代理二进制不在场（{}）——先跑 scripts/build-guest.sh 构建 musl guest 工具链产物",
-            guest_bin.display()
-        ));
+        let guest_target = match settings.arch.as_str() {
+            "x86_64" => "x86_64-unknown-linux-musl",
+            "aarch64" => "aarch64-unknown-linux-musl",
+            other => {
+                return Err(format!(
+                    "guest 架构 {other:?} 非法（validate 应已拦——数据不一致）"
+                ));
+            }
+        };
+        // guest 产物命名跟 **target** 走不跟宿主走：guest_target 恒为
+        // linux-musl，cargo 产物恒无 .exe（build-guest.sh 的 .exe 只用于宿主
+        // 冒烟件；B5 全新环境实跑抓出的 P5 遗留错配）。
+        let guest_bin = PathBuf::from("target")
+            .join(guest_target)
+            .join("release")
+            .join("nemesis-guest");
+        if !guest_bin.exists() {
+            return Err(format!(
+                "guest 代理二进制不在场（{}）——先跑 scripts/build-guest.sh 构建 musl guest 工具链产物",
+                guest_bin.display()
+            ));
+        }
+        Ok(ImageBuildInputs {
+            script,
+            guest_bin,
+            arch: settings.arch.clone(),
+            base_url: settings.image.source.clone(),
+            sha256: settings.image.sha256.clone(),
+        })
     }
-    Ok(ImageBuildInputs {
-        script,
-        guest_bin,
-        arch: settings.arch.clone(),
-        base_url: settings.image.source.clone(),
-        sha256: settings.image.sha256.clone(),
-    })
 }
 
 /// [`VmSupervisorError`] → WSAPI 字符串（带分类前缀，页面可区分「档没开」
