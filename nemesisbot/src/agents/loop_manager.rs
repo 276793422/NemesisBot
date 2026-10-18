@@ -182,7 +182,24 @@ impl AgentLoopManager {
         self.channels
             .lock()
             .unwrap()
-            .insert(agent_id.to_string(), inbound_tx);
+            .insert(agent_id.to_string(), inbound_tx.clone());
+        // 四轮复查收尾：remove 可在本函数「state 插入之后、channels 插入之
+        // 前」整体穿过（两表摘除对空 channels 表不报错），此处插入即成孤儿
+        // tx——发送面诚实报错不受影响（`send_message` 先过 `resolve_or_
+        // build`），但条目会残留到 teardown。复查收拾：state 已无本 agent =
+        // 撞上了 remove，把刚插入的 tx 摘回。`same_channel` 收窄为只摘自己
+        // 插入的那条（结构化防误摘——万一将来出现同 id 再建，也不会摘掉
+        // 新 loop 的通道）。
+        let orphaned = !self.state.lock().unwrap().contains_key(agent_id);
+        if orphaned {
+            let mut chans = self.channels.lock().unwrap();
+            if chans
+                .get(agent_id)
+                .is_some_and(|cur| cur.same_channel(&inbound_tx))
+            {
+                chans.remove(agent_id);
+            }
+        }
         info!(agent_id = %agent_id, "[AgentLoops] agent loop 已启动");
         Ok(agent_loop)
     }
