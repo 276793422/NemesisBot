@@ -66,6 +66,11 @@ pub struct NodeInfo {
     /// `None` = 未声明。
     #[serde(default)]
     pub iroh_id: Option<String>,
+    /// 自报运行时后端形态（P5 第 4 步 ③；如 `process` / `vm`）。**手工
+    /// 声明**——不从 executor.vm.enabled 自动推导（announce 与执行体装配
+    /// 解耦，同 tier 先例）；缺省 None = 未宣告（本批只宣告不做 matcher 闸）。
+    #[serde(default)]
+    pub runtime_backend: Option<String>,
 }
 
 impl Default for NodeInfo {
@@ -81,6 +86,7 @@ impl Default for NodeInfo {
             tier: None,
             capabilities: Vec::new(),
             iroh_id: None,
+            runtime_backend: None,
         }
     }
 }
@@ -124,6 +130,10 @@ pub struct PeerConfig {
     /// 节点档位（role_tier 口径；None = 未宣告）。
     #[serde(default)]
     pub tier: Option<String>,
+    /// 自报运行时后端形态（P5 第 4 步 ③；state.toml 持久化 discovered 条目
+    /// 用——静态身份，不同于 agents 运行时清单，重启后经回读种回注册表）。
+    #[serde(default)]
+    pub runtime_backend: Option<String>,
     #[serde(default = "default_priority")]
     pub priority: u32,
     #[serde(default = "default_enabled")]
@@ -145,6 +155,7 @@ impl Default for PeerConfig {
             tags: Vec::new(),
             professions: Vec::new(),
             tier: None,
+            runtime_backend: None,
             priority: default_priority(),
             enabled: default_enabled(),
             status: PeerStatus::default(),
@@ -338,6 +349,7 @@ pub fn create_static_config(node_id: &str, node_name: &str, address: &str) -> St
             tier: None,
             capabilities: Vec::new(),
             iroh_id: None,
+            runtime_backend: None,
         },
     }
 }

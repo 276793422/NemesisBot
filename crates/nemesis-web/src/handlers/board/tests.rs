@@ -3430,6 +3430,7 @@ async fn sweep_redispatches_when_matching_tags_peer_appears() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -3519,6 +3520,7 @@ async fn periodic_sweep_notify_parks_with_notice_then_revives() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
     let (cands, dispatched, failed) =
@@ -3741,6 +3743,7 @@ async fn cancel_parent_cascades_children_via_parent_edge() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
     super::dispatch_subissue_auto_with_config(
@@ -4089,6 +4092,7 @@ async fn fallback_role_depth_keeps_role_discipline() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -4152,6 +4156,7 @@ async fn fallback_dispatches_to_relaxed_online_peer() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -4209,6 +4214,7 @@ async fn fallback_pinned_target_name_match_and_offline_honesty() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -4274,6 +4280,7 @@ async fn fallback_role_relaxed_ordering() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -4347,6 +4354,7 @@ async fn fallback_sweep_revives_parked_issue() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
     let (cands, dispatched, failed) = super::sweep_parked_dispatches_with_config(
@@ -4755,6 +4763,7 @@ async fn inflight_gate_hits_canonical_worker_id_for_named_assignee() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -4863,6 +4872,7 @@ async fn mutex_deferred_single_dispatches_after_conflict_settles() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -5058,6 +5068,7 @@ async fn project_resume_no_match_carries_b1_detail() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
     let out = super::project_resume(&store, &cluster, None, project.id, true, &actor)
@@ -5287,6 +5298,7 @@ async fn test_dispatch_backfills_assignee() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
     cluster.register_node(nemesis_cluster::types::ExtendedNodeInfo {
@@ -5305,6 +5317,7 @@ async fn test_dispatch_backfills_assignee() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -7334,6 +7347,7 @@ async fn agt_dispatch_gates_matrix() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
     // 拓扑硬闸臂的 far-node-9 同理须是已知节点（F1 归一化拒绝先于拓扑闸）。
@@ -7353,6 +7367,7 @@ async fn agt_dispatch_gates_matrix() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
     let ctx = agt_make_ctx_ex(
@@ -8032,6 +8047,7 @@ async fn agt_push_dispatch_baseline_paths() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
     mode.store(0, std::sync::atomic::Ordering::SeqCst);
@@ -8105,6 +8121,7 @@ fn w5_online_peer(
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".to_string(),
     });
 }
@@ -11218,6 +11235,7 @@ async fn pick_send_failure_target_prefers_last_worker_then_best_online() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 

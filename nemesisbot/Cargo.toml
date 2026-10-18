@@ -19,7 +19,7 @@ default = [
     "channels-web", "channels-webhook", "channels-rpc",
     "channels-websocket", "channels-external", "channels-maixcam", "channels-line",
     "migrate", "devices", "desktop", "health", "heartbeat", "auth", "voice", "voice-capture", "cluster",
-    "forge", "memory", "workflow", "security", "scanner", "sandbox", "eval", "usage", "board",
+    "forge", "memory", "workflow", "security", "scanner", "sandbox", "vm", "eval", "usage", "board",
     "connectors",
     "terminal", "skins", "plugins-wasm", "codemode", "selfupdate",
     "pricing-embed", "verify", "web-static", "lsp",
@@ -53,6 +53,10 @@ scanner = ["security", "nemesis-security/scanner", "nemesis-web/scanner"]
 # Sandboxie integration (executor.sandbox=true + `nemesisbot sandbox` install/use/uninstall).
 # Optional — off in minimal-iot/IoT (Sandboxie is Windows-driver-based, not used on IoT).
 sandbox = ["dep:nemesis-sandbox", "nemesis-web/sandbox"]
+# P5 桌面级 VM 后端（executor.vm）：穿透 nemesis-sandbox/vm 模块 + Dashboard
+# VM 页。关 = vm 模块整包不编译、executor.vm 配置缺消费者（诚实报未编译）。
+# IoT/无虚拟化环境默认关（IoT 预设钉 false）。
+vm = ["dep:nemesis-sandbox", "nemesis-sandbox/vm", "nemesis-web/vm"]
 # Managed-agent board (W2 P1). board = 注入 + nemesis-web/board 管理面双开：
 # nemesis-board 是 web 的 optional 依赖（rusqlite bundled 随它进出——iotsmall
 # 里最后一个 SQLite 来源）；关 = `nemesisbot issue` CLI、board.* WSAPI、

@@ -33,6 +33,9 @@ pub struct AgentInfo {
     pub project_id: Option<String>,
     /// `auto` / `mini` / `normal` / `big`（空 = auto）。
     pub tier: String,
+    /// 运行时后端档位（P5 第 4 步）：`process` / `vm`——工具执行走哪个
+    /// 常驻执行体（下次调用现读生效，切档无需重启）。
+    pub runtime_backend: String,
     /// 空 = 主 workspace 记忆域；`agents/<id>` = 独占域。
     pub memory_namespace: String,
     /// 凭据引用条数（引用清单不出 web 面——凭据本体在 vault）。
@@ -51,7 +54,12 @@ pub trait AgentsBridge: Send + Sync {
     /// 单条查询。
     fn get(&self, agent_id: &str) -> Result<AgentInfo, String>;
     /// 创建自建 agent（两阶段：provisioning → home 物化 → active）。
-    fn create(&self, name: &str, tier: &str) -> Result<AgentInfo, String>;
+    /// `runtime_backend`：`process|vm`（空串同 process；值域校验在实现侧
+    /// 单一真相源，非法值 loud 拒绝）。
+    fn create(&self, name: &str, tier: &str, runtime_backend: &str) -> Result<AgentInfo, String>;
+    /// 运行时后端切档（P5 第 4 步，G4 ⑦「上层无感」写入口）：落库后下一
+    /// 次工具调用现读生效，无需重启 loop 或迁移会话。
+    fn update_backend(&self, agent_id: &str, runtime_backend: &str) -> Result<AgentInfo, String>;
     /// 删除记录（main 不可删；物理 home 保留——解除实体注册不做文件清除）。
     /// 异步：删除联动常驻执行体停机（evict 等在途调用收尾）。
     async fn remove(&self, agent_id: &str) -> Result<(), String>;
@@ -160,7 +168,7 @@ impl ModuleHandler for AgentsHandler {
 
     fn commands(&self) -> &'static [&'static str] {
         &[
-            "list", "get", "create", "remove", "sleep", "wake", "slots", "send",
+            "list", "get", "create", "update", "remove", "sleep", "wake", "slots", "send",
         ]
     }
 
@@ -190,8 +198,23 @@ impl ModuleHandler for AgentsHandler {
                 let name = crate::handlers::get_str(&data, "name")?;
                 // tier 可选（缺省 auto；空串同 auto）。
                 let tier = crate::handlers::get_str(&data, "tier").unwrap_or_default();
-                let info = bridge.create(&name, &tier)?;
+                // runtime_backend 可选（缺省 process；空串同 process）。
+                let runtime_backend =
+                    crate::handlers::get_str(&data, "runtime_backend").unwrap_or_default();
+                let info = bridge.create(&name, &tier, &runtime_backend)?;
                 Ok(Some(serde_json::json!({ "agent": info })))
+            }
+            // P5 第 4 步：运行时后端切档（G4 ⑦「上层无感」——落库即生效，
+            // 下次工具调用现读，无需重启 loop）。
+            "update" => {
+                let data = data.ok_or("missing data")?;
+                let agent_id = crate::handlers::get_str(&data, "agent_id")?;
+                let runtime_backend = crate::handlers::get_str(&data, "runtime_backend")?;
+                let info = bridge.update_backend(&agent_id, &runtime_backend)?;
+                Ok(Some(serde_json::json!({
+                    "agent": info,
+                    "note": "档位已落库：下次工具调用现读生效，无需重启 loop；原档常驻实例如需释放走 sleep",
+                })))
             }
             "remove" => {
                 let data = data.ok_or("missing data")?;

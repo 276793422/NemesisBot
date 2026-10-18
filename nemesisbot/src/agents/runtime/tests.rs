@@ -536,6 +536,21 @@ mod sup_real_child {
         // 拦下 auto_relaunch——完整生产顺序，不是裸调 auto_relaunch）。
         registered.store(false, std::sync::atomic::Ordering::SeqCst);
         kill_pid(pid);
+        // taskkill /F 返回 ≠ try_wait 立即翻死：TerminateProcess 之后进程
+        // 对象清理是异步的，watchdog_tick 若抢在清理完成前探测会把槽当活槽
+        // 跳过（全量并行负载下实录假红 2026-10-18）。轮询等监督器同一探测
+        // 结论（is_alive=try_wait，slot_states alive 投影）翻死再 tick——
+        // 有界 10s，超时按旧路径继续（tick 断言会给出诚实失败）。
+        for _ in 0..200 {
+            let alive = sup
+                .slot_states()
+                .iter()
+                .any(|s| s.agent_id == "agent-a" && s.alive);
+            if !alive {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
         sup.watchdog_tick().await;
         assert!(
             sup.slot_states().is_empty(),

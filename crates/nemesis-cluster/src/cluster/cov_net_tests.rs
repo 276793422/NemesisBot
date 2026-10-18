@@ -111,6 +111,7 @@ async fn rig_with_fake_peer(
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "gateway".into(),
     };
     peer.base.address = format!("127.0.0.1:{port}");

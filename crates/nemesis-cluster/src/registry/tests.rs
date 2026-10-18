@@ -19,6 +19,7 @@ fn make_node(id: &str) -> ExtendedNodeInfo {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     }
 }
@@ -40,6 +41,7 @@ fn make_node_with_caps(id: &str, caps: Vec<&str>) -> ExtendedNodeInfo {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     }
 }
@@ -68,6 +70,7 @@ fn insert_peer_with_timestamp(
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     };
     // Insert directly into the map with a specific timestamp
@@ -820,6 +823,7 @@ fn test_upsert_if_changed_different_addresses() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     };
     registry.upsert(original);
@@ -840,6 +844,7 @@ fn test_upsert_if_changed_different_addresses() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     };
     let changed = registry.upsert_if_changed(updated);

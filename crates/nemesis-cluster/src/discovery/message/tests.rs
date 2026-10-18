@@ -312,6 +312,59 @@ fn test_json_roundtrip_bye() {
 }
 
 #[test]
+fn test_runtime_backend_absent_defaults_to_none() {
+    // P5 第 4 步 ③ wire 兼容回归（G4）：旧节点 / Go 节点的 announce 无
+    // `runtime_backend` 字段 → serde default None = 未宣告，互通无碍。
+    let go_style_json = format!(
+        r#"{{"version":"1.0","type":"announce","node_id":"old-node","name":"Old",
+        "addresses":["10.0.0.9"],"rpc_port":9100,"role":"worker","category":"dev",
+        "tags":[],"capabilities":["llm"],"node_type":"agent","professions":[],
+        "tier":null,"agents":[],"timestamp":{}}}"#,
+        now_unix()
+    );
+    let msg: DiscoveryMessage = serde_json::from_str(&go_style_json).unwrap();
+    assert_eq!(msg.runtime_backend, None);
+}
+
+#[test]
+fn test_runtime_backend_roundtrip_and_builder() {
+    let msg = DiscoveryMessage::new_announce(
+        "n1",
+        "Name",
+        vec!["10.0.0.1".into()],
+        9000,
+        "worker",
+        "dev",
+        vec![],
+        vec![],
+        "agent",
+    )
+    .with_runtime_backend(Some("vm".into()));
+    assert_eq!(msg.runtime_backend.as_deref(), Some("vm"));
+    let json = serde_json::to_string(&msg).unwrap();
+    assert!(json.contains(r#""runtime_backend":"vm""#));
+    let back: DiscoveryMessage = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, msg);
+
+    // None = 不宣告（执行体能力未装配），序列化后仍可解析。
+    let bare = DiscoveryMessage::new_announce(
+        "n2",
+        "N",
+        vec!["10.0.0.2".into()],
+        9001,
+        "worker",
+        "dev",
+        vec![],
+        vec![],
+        "agent",
+    )
+    .with_runtime_backend(None);
+    let back2: DiscoveryMessage =
+        serde_json::from_str(&serde_json::to_string(&bare).unwrap()).unwrap();
+    assert_eq!(back2.runtime_backend, None);
+}
+
+#[test]
 fn test_json_field_names_match_go() {
     // Ensure the JSON keys match exactly what Go produces.
     let msg = DiscoveryMessage::new_announce(

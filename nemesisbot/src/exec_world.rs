@@ -567,6 +567,11 @@ mod world {
     /// 与 `AgentRunner` 桥（nemesis-workflow ↔ gateway）同构：trait 落在
     /// 被依赖 crate（nemesis-sandbox，跨平台中立），实现落在能看见
     /// `ExecutorChannel` 的装配 crate（nemesisbot）。
+    ///
+    /// 唯一生产消费者 = gateway workflow 装配块（ctx.rs `#[cfg(feature =
+    /// "workflow")]`）；exec_world/tests 仍直引。workflow 关的收窄态 =
+    /// dead code，诚实 allow 不迁移 cfg（测试引用不能跟着消失）。
+    #[cfg_attr(not(feature = "workflow"), allow(dead_code))]
     pub struct ExecutorWorld {
         channel: Arc<nemesis_agent::ExecutorChannel>,
         /// 控制面写盘守卫根（引擎 persist/delete 只允许写这些子树）。
@@ -577,6 +582,7 @@ mod world {
 
     impl ExecutorWorld {
         /// 当前是否走 Sandboxie 盒（live probe + 通道是否带 Start.exe）。
+        #[cfg_attr(not(feature = "workflow"), allow(dead_code))]
         fn boxed_now(&self) -> bool {
             (self.channel.sandbox_probe)() && self.channel.start_exe.is_some()
         }
@@ -668,6 +674,7 @@ mod world {
     /// checkpoints / executions 等）；`spawn_roots`：Spawn 车道允许的 cwd 根
     /// （通常是 `{home}/workspace`）。
     #[allow(clippy::too_many_arguments)]
+    #[cfg_attr(not(feature = "workflow"), allow(dead_code))]
     pub fn build_workflow_world(
         home: &Path,
         workspace_dir: &Path,
@@ -687,6 +694,7 @@ mod world {
 }
 
 #[cfg(feature = "sandbox")]
+#[cfg_attr(not(feature = "workflow"), allow(unused_imports))]
 pub use world::build_workflow_world;
 
 #[cfg(test)]

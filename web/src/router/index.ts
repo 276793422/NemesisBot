@@ -54,6 +54,8 @@ const routes: RouteRecordRaw[] = [
   ...(import.meta.env.VITE_FEATURE_SECURITY !== 'false' ? [{ path: '/vault', name: 'vault', component: () => import('../views/VaultView.vue') }] : []),
   ...(import.meta.env.VITE_FEATURE_SCANNER !== 'false' ? [{ path: '/scanner', name: 'scanner', component: () => import('../views/ScannerView.vue') }] : []),
   ...(import.meta.env.VITE_FEATURE_SANDBOX !== 'false' ? [{ path: '/sandbox', name: 'sandbox', component: () => import('../views/SandboxView.vue') }] : []),
+  // P5 第 4 步 ②：桌面级 VM 管理页（vm feature / VITE_FEATURE_VM 门控）。
+  ...(import.meta.env.VITE_FEATURE_VM !== 'false' ? [{ path: '/vm', name: 'vm', component: () => import('../views/VmView.vue') }] : []),
   // L8 (2026-09-07)：PTY 内嵌终端（terminal feature / VITE_FEATURE_TERMINAL 门控）。
   // 后端 /ws/pty 另有 config terminal.enabled 运行闸（默认关）——路由可达时
   // 页面会显示连接失败，属于诚实降级。

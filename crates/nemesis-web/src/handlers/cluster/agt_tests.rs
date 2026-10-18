@@ -326,6 +326,7 @@ async fn agt_tasks_detail_terminal_labels_and_list_duration_null() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".to_string(),
     });
     let ctx = agt_make_ctx(&dir, Some(cluster.clone()), None, None);

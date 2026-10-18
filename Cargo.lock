@@ -2260,6 +2260,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fake-qmp"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "fallible-iterator"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4727,6 +4736,7 @@ dependencies = [
  "nemesis-connectors",
  "nemesis-cron",
  "nemesis-data",
+ "nemesis-exec-protocol",
  "nemesis-forge",
  "nemesis-http-pool",
  "nemesis-lsp",
@@ -5019,6 +5029,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nemesis-exec-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "nemesis-forge"
 version = "0.1.0"
 dependencies = [
@@ -5045,6 +5064,17 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "nemesis-guest"
+version = "0.1.0"
+dependencies = [
+ "nemesis-exec-protocol",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -5301,7 +5331,10 @@ dependencies = [
  "async-trait",
  "bytes",
  "chrono",
+ "fake-qmp",
  "landlock",
+ "nemesis-exec-protocol",
+ "nemesis-guest",
  "nemesis-path",
  "nemesis-types",
  "nemesis-utils",

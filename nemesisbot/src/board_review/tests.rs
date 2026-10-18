@@ -191,6 +191,7 @@ fn settle_deps_with_store(
             professions: Vec::new(),
             tier: None,
             agents: Vec::new(),
+            runtime_backend: None,
             node_type: "agent".to_string(),
         });
     }
@@ -378,6 +379,7 @@ fn review_deps_ex(name: &str, seed_worker_nodes: bool) -> (BoardReviewDeps, std:
             professions: Vec::new(),
             tier: None,
             agents: Vec::new(),
+            runtime_backend: None,
             node_type: "agent".to_string(),
         });
     }

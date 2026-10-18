@@ -37,6 +37,9 @@ history-search = ["dep:rusqlite"]
 
 [dependencies]
 nemesis-types = { workspace = true }
+# P5 底座：executor wire 协议薄 crate（executor_transport re-export 兼容；
+# guest agent 同源消费——单一真相源）。
+nemesis-exec-protocol = { workspace = true }
 nemesis-prompts = { workspace = true }
 nemesis-config = { workspace = true }
 nemesis-utils = { workspace = true }

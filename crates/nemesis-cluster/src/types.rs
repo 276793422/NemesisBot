@@ -86,6 +86,11 @@ pub struct ExtendedNodeInfo {
     /// 先例）。不持久化到 state.toml（运行时清单，周期 announce 自会重学）。
     #[serde(default)]
     pub agents: Vec<AgentAnnouncement>,
+    /// 自报运行时后端形态（P5 第 4 步 ③；如 `process` / `vm`；None = 未
+    /// 宣告）。与 agents 相反这是**静态身份**——持久化到 state.toml，重启
+    /// 后经回读种回注册表。本批只宣告不做 matcher 闸（P6 上位）。
+    #[serde(default)]
+    pub runtime_backend: Option<String>,
     /// All known addresses for this node (for multi-address failover).
     /// The primary address is stored in `base.address`.
     #[serde(default)]
@@ -160,6 +165,7 @@ impl ExtendedNodeInfo {
             tags: self.tags.clone(),
             professions: self.professions.clone(),
             tier: self.tier.clone(),
+            runtime_backend: self.runtime_backend.clone(),
             priority: 1,
             enabled: true,
             status: PeerStatus {
@@ -198,6 +204,7 @@ impl ExtendedNodeInfo {
             && self.professions == other.professions
             && self.tier == other.tier
             && self.agents == other.agents
+            && self.runtime_backend == other.runtime_backend
             && self.addresses == other.addresses
             && self.node_type == other.node_type
     }

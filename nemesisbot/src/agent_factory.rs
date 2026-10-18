@@ -1844,17 +1844,72 @@ fn persistent_resolve_by(
     })
 }
 
+/// P5 第 4 步：档位路由执行器——常驻执行体的 per-agent 分派器。每次调用
+/// **现读** agents 表记录的 `runtime_backend`（单一真相源；`update_backend`
+/// 落库后下一次调用即生效，无需重建 loop——G4 ⑦「上层无感切档」的实现锚）：
+/// - `vm` → manager 的 VM 后端槽（未装配 = `Unavailable`，上层回落 per-call
+///   并 info 留痕——与「开关关」同语义的诚实降级）；
+/// - `process` / manager 未装 / 读库失败 → 进程档（保守默认，P3 行为不变；
+///   off-state 记录默认全 `process`，行为与 P3 字节一致）。
+///
+/// 进程监督器 Arc 在 loop 建成时捕获；VM 槽经 manager **每调用现取**——
+/// VM supervisor 装配晚于 loop 构建（post_agent 晚注入纪律），静态绑定必空。
+struct BackendRoutingExecutor {
+    process: Arc<crate::agents::runtime::AgentRuntimeSupervisor>,
+}
+
+#[async_trait::async_trait]
+impl nemesis_agent::remote_executor_tool::PersistentExecutor for BackendRoutingExecutor {
+    async fn execute_persistent(
+        &self,
+        agent_id: &str,
+        exec_root: &std::path::Path,
+        tool: &str,
+        args: &str,
+        context: &nemesis_agent::context::RequestContext,
+    ) -> Result<String, nemesis_agent::remote_executor_tool::PersistentCallError> {
+        use nemesis_agent::remote_executor_tool::PersistentCallError;
+
+        let mgr = crate::agents::manager();
+        let backend = mgr
+            .as_ref()
+            .and_then(|m| m.get(agent_id).ok().flatten())
+            .map(|rec| rec.runtime_backend)
+            .unwrap_or_default();
+        if backend == nemesis_taskstore::agents::runtime_backend::VM {
+            let vm = mgr
+                .as_ref()
+                .and_then(|m| m.vm_backend())
+                .ok_or_else(|| {
+                    PersistentCallError::Unavailable(format!(
+                        "agent {agent_id} 档位为 vm 但 VM 后端未装配（vm feature 关闭或 gateway 未装配）"
+                    ))
+                })?;
+            return vm
+                .execute_persistent(agent_id, exec_root, tool, args, context)
+                .await;
+        }
+        self.process
+            .execute_persistent(agent_id, exec_root, tool, args, context)
+            .await
+    }
+}
+
 /// P3 T7：常驻路由构造（supervisor 在场 + 解析闭包 → PersistentRoute）。
 /// None = 无 supervisor 形态（headless run / acp / 测试），工厂跳过挂接。
+/// P5 第 4 步起 executor 一律经档位路由执行器（per-agent `runtime_backend`
+/// 现读分派 vm/process——VM 槽缺席时 VM 档记 Unavailable 回落 per-call，
+/// 进程档行为与 P3 一致）。
 fn persistent_route_for(
     shared: &SharedResources,
     resolve: std::sync::Arc<dyn Fn() -> Option<(String, std::path::PathBuf)> + Send + Sync>,
 ) -> Option<nemesis_agent::PersistentRoute> {
-    let executor = shared.agent_runtime.as_ref()?;
-    Some(nemesis_agent::PersistentRoute {
-        resolve,
-        executor: executor.clone(),
-    })
+    let process = shared.agent_runtime.as_ref()?;
+    let executor: Arc<dyn nemesis_agent::remote_executor_tool::PersistentExecutor> =
+        Arc::new(BackendRoutingExecutor {
+            process: process.clone(),
+        });
+    Some(nemesis_agent::PersistentRoute { resolve, executor })
 }
 
 /// Register all tools and enable MCP on the given AgentLoop.
@@ -2634,7 +2689,9 @@ pub struct AgentLoopSpec {
     pub instructions_trusted: bool,
     /// P2 记忆命名空间：空 = 主 workspace 域（main/项目镜像，增强内存
     /// G2 剥离维持）；`agents/<id>` = 自建 agent 独占域（增强内存挂本域
-    /// manager，jsonl/向量库落 `memory/<ns>/`）。
+    /// manager，jsonl/向量库落 `memory/<ns>/`）。读取点在 memory 装配块
+    /// 内（memory 关的收窄态只写不读，诚实 allow）。
+    #[cfg_attr(not(feature = "memory"), allow(dead_code))]
     pub memory_namespace: String,
     /// P3 T7：常驻路由身份解析闭包（None = 该形态不挂常驻——当前全部
     /// 形态都有解析谓词，None 仅出现在测试手搓 spec）。闭包在每次工具

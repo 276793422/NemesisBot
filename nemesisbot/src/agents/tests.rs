@@ -20,10 +20,67 @@ fn selfbuilt_params(name: &str) -> CreateAgentParams {
     CreateAgentParams {
         name: name.to_string(),
         tier: String::new(),
+        runtime_backend: String::new(),
         tool_policy: serde_json::json!({}),
         persona_refs: serde_json::Value::Null,
         credential_refs: serde_json::json!([]),
     }
+}
+
+// -- P5 第 4 步：runtime_backend 档位面 --------------------------------------
+
+#[test]
+fn create_rejects_illegal_runtime_backend_and_defaults_process() {
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = setup(dir.path());
+    // 非法档位 loud 拒绝，不留半创建记录。
+    let mut bad = selfbuilt_params("bad");
+    bad.runtime_backend = "qemu".to_string();
+    assert!(mgr.create_agent(bad).is_err());
+    assert!(mgr.list().unwrap().is_empty());
+    // 空串同 process（旧调用方零迁移）。
+    let rec = mgr.create_agent(selfbuilt_params("w1")).unwrap();
+    assert_eq!(rec.runtime_backend, "process");
+    // 显式 vm 合法落库。
+    let mut vm = selfbuilt_params("w2");
+    vm.runtime_backend = "vm".to_string();
+    let rec = mgr.create_agent(vm).unwrap();
+    assert_eq!(rec.runtime_backend, "vm");
+}
+
+#[test]
+fn update_backend_switches_persistently_and_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = setup(dir.path());
+    let rec = mgr.create_agent(selfbuilt_params("w")).unwrap();
+    assert_eq!(rec.runtime_backend, "process");
+    // process → vm。
+    let rec = mgr.update_backend(&rec.agent_id, "vm").unwrap();
+    assert_eq!(rec.runtime_backend, "vm");
+    // 落库真相源核验（重开 manager 读同一 db——持久性而非缓存态）。
+    let db = TaskDb::open(&nemesis_path::resolve_tasks_db_path_in_workspace(
+        &dir.path().join("workspace"),
+    ))
+    .unwrap();
+    let mgr2 = AgentManager::from_db(dir.path().join("workspace"), db);
+    assert_eq!(
+        mgr2.get(&rec.agent_id).unwrap().unwrap().runtime_backend,
+        "vm"
+    );
+    // vm → process 回切。
+    let rec = mgr.update_backend(&rec.agent_id, "process").unwrap();
+    assert_eq!(rec.runtime_backend, "process");
+    // 同档幂等 = 无操作（诚实返回现值）。
+    let again = mgr.update_backend(&rec.agent_id, "process").unwrap();
+    assert_eq!(again.runtime_backend, "process");
+    // 非法档位 loud 拒绝（含不存在 agent——值域校验先于存在性）。
+    assert!(mgr.update_backend(&rec.agent_id, "docker").is_err());
+    assert!(
+        mgr.update_backend("nonexistent-agent", "vm")
+            .err()
+            .unwrap()
+            .contains("不存在")
+    );
 }
 
 #[test]

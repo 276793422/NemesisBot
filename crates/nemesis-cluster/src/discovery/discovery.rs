@@ -60,6 +60,11 @@ pub trait ClusterCallbacks: Send + Sync {
     fn tier(&self) -> Option<String> {
         None
     }
+    /// 自报运行时后端形态（P5 第 4 步 ③；如 `process` / `vm`，announce
+    /// 携带）。默认 `None` = 未宣告（执行体能力未装配时不宣告，不猜）。
+    fn runtime_backend(&self) -> Option<String> {
+        None
+    }
     /// 自报 agent 实体清单（P2 2026-10-16；announce 携带）。实现应每次
     /// 现读实体注册表（fresh read），不做启动期快照——运行期增删 agent
     /// 无需回写即随下一个 announce 传播。默认空 = 未宣告。
@@ -87,11 +92,14 @@ pub trait ClusterCallbacks: Send + Sync {
         node_type: &str,
     ) -> bool;
     /// 扩展形态 [`Self::handle_discovered_node`]：带对端自报职能、档位、
-    /// agent 清单与 iroh 漫游身份（profession framework M2 + P2 agent
-    /// roster + A1 漫游叠加层）。默认实现丢弃扩展信息委托旧形态——不关心
-    /// 的实现零改动对齐旧行为；生产 UDP 发现路径（announce 接收）走本方法。
+    /// agent 清单、运行时后端形态与 iroh 漫游身份（profession framework
+    /// M2 + P2 agent roster + P5 第 4 步 ③ + A1 漫游叠加层）。默认实现
+    /// 丢弃扩展信息、委托旧形态——不关心的实现零改动对齐旧行为；生产
+    /// UDP 发现路径（announce 接收）走本方法。
     ///
     /// `iroh_id`：对端自报 iroh 漫游身份 hex（A1；非法值实现侧忽略）。
+    /// `runtime_backend`：对端自报运行时后端形态（P5；如 `process`/`vm`；
+    /// 缺省 None = 未宣告，仅宣告面不设 matcher 闸）。
     /// `source_addr`：R5 源地址收割——announce UDP 包的源 IP（发现层亲眼
     /// 可见的可达性证据），最低优先级拨号候选；非 UDP 路径传 `None`。
     fn handle_discovered_node_ex(
@@ -109,9 +117,17 @@ pub trait ClusterCallbacks: Send + Sync {
         tier: Option<&str>,
         agents: &[crate::types::AgentAnnouncement],
         iroh_id: Option<&str>,
+        runtime_backend: Option<&str>,
         source_addr: Option<&str>,
     ) -> bool {
-        let _ = (professions, tier, agents, iroh_id, source_addr);
+        let _ = (
+            professions,
+            tier,
+            agents,
+            iroh_id,
+            runtime_backend,
+            source_addr,
+        );
         self.handle_discovered_node(
             node_id,
             name,
@@ -341,6 +357,9 @@ impl ClusterCallbacks for RegistryCallbacks {
             professions: Vec::new(),
             tier: None,
             agents: Vec::new(),
+            // 旧 9 参回调无 runtime_backend 入参 → None = 未宣告（诚实，
+            // 不猜；ex 版回调才携带）。
+            runtime_backend: None,
             node_type: node_type.to_string(),
         };
         self.registry.upsert_if_changed(info)
@@ -639,6 +658,7 @@ impl DiscoveryService {
                         msg.tier.as_deref(),
                         &msg.agents,
                         msg.iroh_id.as_deref(),
+                        msg.runtime_backend.as_deref(),
                         Some(source_ip.as_str()),
                     );
                     if changed {
@@ -797,6 +817,7 @@ pub(crate) fn build_announce_from_callbacks(cluster: &dyn ClusterCallbacks) -> D
         cluster.node_type(),
     )
     .with_professions(cluster.professions(), cluster.tier())
+    .with_runtime_backend(cluster.runtime_backend())
     .with_agents(cluster.agent_roster())
     .with_iroh_id(cluster.roaming_id())
 }

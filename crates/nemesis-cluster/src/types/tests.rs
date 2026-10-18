@@ -23,6 +23,7 @@ fn make_test_node(
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     }
 }
@@ -53,6 +54,7 @@ fn test_extended_node_info_serialization() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     };
     let json = serde_json::to_string(&node).unwrap();
@@ -90,6 +92,7 @@ fn test_extended_node_info_get_uptime() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     };
     let uptime = node.get_uptime();
@@ -169,6 +172,7 @@ fn test_to_peer_config() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     };
     let config = node.to_peer_config();
@@ -215,6 +219,7 @@ fn test_addresses_field_preserved() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     };
     let json = serde_json::to_string(&node).unwrap();
@@ -276,6 +281,7 @@ fn test_extended_node_info_getters() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     };
     assert_eq!(node.get_id(), "node-42");
@@ -302,6 +308,7 @@ fn test_to_peer_config_coordinator_role() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     };
     let config = node.to_peer_config();
@@ -424,6 +431,7 @@ fn test_content_eq_different_addresses() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     };
     let b = ExtendedNodeInfo {
@@ -442,6 +450,7 @@ fn test_content_eq_different_addresses() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     };
     assert!(!a.content_eq(&b));
@@ -517,6 +526,7 @@ fn content_eq_distinguishes_professions_and_tier() {
         professions: vec!["dev".into()],
         tier: Some("big".into()),
         agents: vec![],
+        runtime_backend: None,
         addresses: vec![],
         node_type: "agent".into(),
     };
@@ -550,6 +560,7 @@ fn to_peer_config_preserves_professions_and_tier() {
         tier: Some("normal".into()),
         // agents 是运行时清单（不落 state.toml/PeerConfig），字面量给空。
         agents: vec![],
+        runtime_backend: None,
         addresses: vec![],
         node_type: "agent".into(),
     };

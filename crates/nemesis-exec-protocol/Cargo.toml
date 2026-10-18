@@ -1,0 +1,16 @@
+[package]
+name = "nemesis-exec-protocol"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+
+[lints]
+workspace = true

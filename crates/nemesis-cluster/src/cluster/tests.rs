@@ -135,6 +135,7 @@ fn test_register_and_list_nodes() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     };
     cluster.register_node(remote);
@@ -374,6 +375,7 @@ fn test_get_capabilities() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -750,6 +752,7 @@ fn test_cluster_peer_resolver_returns_peer_info() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -799,6 +802,7 @@ fn test_cluster_peer_resolver_offline_peer() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -1385,6 +1389,7 @@ fn test_find_peers_by_capability() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -1627,6 +1632,7 @@ fn test_sync_to_disk_includes_discovered_nodes() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -1657,6 +1663,7 @@ fn test_register_node_updates_existing() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -1677,6 +1684,7 @@ fn test_register_node_updates_existing() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -1711,6 +1719,7 @@ fn test_get_online_peers_includes_online_nodes() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -1730,6 +1739,7 @@ fn test_get_online_peers_includes_online_nodes() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -1762,6 +1772,7 @@ fn test_get_capabilities_dedup() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -1781,6 +1792,7 @@ fn test_get_capabilities_dedup() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -1975,6 +1987,7 @@ fn test_find_peers_by_capability_offline_excluded() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -2899,6 +2912,7 @@ fn test_cluster_peer_resolver_empty_addresses() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -2938,6 +2952,7 @@ fn test_cluster_peer_resolver_empty_primary_address() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -3235,6 +3250,7 @@ fn test_get_peer_after_register() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -3347,6 +3363,7 @@ fn test_cluster_peer_resolver_with_empty_primary_address() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -3387,6 +3404,7 @@ fn test_discovered_node_empty_addresses_known_peer_identity_merge_preserves_addr
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -3404,6 +3422,7 @@ fn test_discovered_node_empty_addresses_known_peer_identity_merge_preserves_addr
         Some("big".into()),
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
+        None,       // 自报运行时后端形态：未宣告
         None,       // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
     );
     assert!(
@@ -3446,6 +3465,7 @@ fn test_discovered_node_empty_addresses_unknown_peer_still_registered_bridge_sem
         None,
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
+        None,       // 自报运行时后端形态：未宣告
         None,       // 桥接成员登记：无 source_addr
     );
     assert!(changed, "bridge member with empty addresses must register");
@@ -3475,6 +3495,7 @@ fn test_cluster_peer_resolver_uses_stored_addresses() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -3852,6 +3873,7 @@ fn test_sync_to_disk_with_connecting_status() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -4487,6 +4509,7 @@ fn test_cluster_peer_resolver_fallback_scan_by_name() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -4536,6 +4559,7 @@ fn test_cluster_peer_resolver_offline_peer_is_online_false() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -4697,6 +4721,7 @@ fn make_real_node_info(id: &str, name: &str, addr: &str) -> RealNodeInfo {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     }
 }
@@ -4756,6 +4781,7 @@ fn test_merge_real_node_info_updates_existing_entry_with_real_id() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "new_type".into(),
     });
 
@@ -4808,6 +4834,7 @@ fn test_merge_real_node_info_keeps_static_peer_address() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -4854,6 +4881,7 @@ fn test_merge_real_node_info_updates_address_for_dynamic_peer() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -4885,6 +4913,7 @@ fn test_merge_real_node_info_upgrades_placeholder_by_address() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: String::new(),
     });
 
@@ -5004,6 +5033,7 @@ fn test_merge_placeholder_upgrade_matches_secondary_address() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: String::new(),
     });
 
@@ -5043,6 +5073,7 @@ fn test_handle_discovered_node_placeholder_upgrade_matches_secondary_address() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: String::new(),
     });
 
@@ -5102,6 +5133,7 @@ fn test_merge_real_node_info_upgrades_placeholder_in_toml() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: String::new(),
     });
 
@@ -5152,6 +5184,7 @@ fn test_handle_discovered_node_upgrades_placeholder_via_udp() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: String::new(),
     });
     assert!(cluster.get_peer("ManualPeer").is_some());
@@ -5204,6 +5237,7 @@ fn test_mark_peer_online_for_refresh_flips_offline_to_online() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: String::new(),
     });
 
@@ -5241,6 +5275,7 @@ fn test_set_peer_status_restores_offline() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: String::new(),
     });
 
@@ -5435,6 +5470,7 @@ fn make_w3b_node(id: &str, name: &str, address: &str, status: NodeStatus) -> Ext
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     }
 }
@@ -5829,6 +5865,7 @@ fn test_upgrade_peer_in_peers_toml_same_sanitized_key_writes_real_id() {
             professions: Vec::new(),
             tier: None,
             agents: Vec::new(),
+            runtime_backend: None,
             node_type: "agent".into(),
         },
     );
@@ -5865,6 +5902,7 @@ fn test_upgrade_peer_in_peers_toml_read_error_skips() {
             professions: Vec::new(),
             tier: None,
             agents: Vec::new(),
+            runtime_backend: None,
             node_type: "agent".into(),
         },
     );
@@ -5901,6 +5939,7 @@ fn test_upgrade_peer_in_peers_toml_without_peers_table_persists_directly() {
             professions: Vec::new(),
             tier: None,
             agents: Vec::new(),
+            runtime_backend: None,
             node_type: "agent".into(),
         },
     );
@@ -5944,6 +5983,7 @@ fn test_upgrade_peer_in_peers_toml_write_error_after_removal() {
             professions: Vec::new(),
             tier: None,
             agents: Vec::new(),
+            runtime_backend: None,
             node_type: "agent".into(),
         },
     );
@@ -5977,6 +6017,7 @@ fn test_merge_real_node_info_master_role_with_write_error() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
     assert_eq!(merged, "master-1");
@@ -6830,6 +6871,7 @@ fn test_upgrade_peer_in_peers_toml_no_file_and_missing_key() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     };
 
@@ -6873,6 +6915,7 @@ fn test_upgrade_peer_in_peers_toml_no_file_and_missing_key() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     };
     cluster2.upgrade_peer_in_peers_toml("ph-b", "real-b", &info_b);
@@ -7554,6 +7597,7 @@ fn test_peer_config(id: &str, address: &str) -> PeerConfig {
         tags: vec!["python".into()],
         professions: Vec::new(),
         tier: None,
+        runtime_backend: None,
         priority: 1,
         enabled: true,
         status: PeerStatus::default(),
@@ -7608,6 +7652,7 @@ fn restore_skips_self_banned_existing_and_unusable() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
     // 预置一个黑名单节点。
@@ -7667,6 +7712,7 @@ fn restore_skips_address_shadow_of_existing_entry() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
     // state.toml 里留着占位名条目（升级前形态）：id=名字、同地址。
@@ -7718,6 +7764,7 @@ fn restore_skips_name_shadow_of_existing_entry() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
     // id=占位名、地址不同（对端换了地址），但名字相同 → 同节点，不种。
@@ -7785,6 +7832,7 @@ async fn health_probe_loop_probes_offline_every_fifth_tick() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
     // 探针循环要求 RPC client 已初始化（None 直接 return）。
@@ -7834,6 +7882,7 @@ fn mark_peer_healthy_recovery_fires_node_discovered() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -7898,6 +7947,7 @@ fn canonical_peer_id_resolves_name_and_id() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -7936,6 +7986,7 @@ fn canonical_peer_id_case_insensitive_fallback() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -8413,6 +8464,7 @@ fn make_addr_chain_peer(
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     }
 }
@@ -8450,6 +8502,7 @@ fn test_announce_refresh_preserves_static_pin_addresses() {
         None,
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
+        None,       // 自报运行时后端形态：未宣告
         None,
     );
     assert!(changed);
@@ -8483,6 +8536,7 @@ fn test_announce_refresh_preserves_static_pin_addresses() {
         None,
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
+        None,       // 自报运行时后端形态：未宣告
         None,
     );
     assert!(
@@ -8520,6 +8574,7 @@ fn test_announce_refresh_replaces_addresses_for_dynamic_peer() {
         None,
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
+        None,       // 自报运行时后端形态：未宣告
         None,
     );
     assert!(changed);
@@ -8559,6 +8614,7 @@ fn test_merge_real_node_info_merges_addresses_for_static_peer() {
         professions: vec![],
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -8729,6 +8785,7 @@ fn test_announce_source_addr_appended_lowest_priority() {
         None,
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
+        None,       // 自报运行时后端形态：未宣告
         Some("203.0.113.99"),
     );
     assert!(changed);
@@ -8754,6 +8811,7 @@ fn test_announce_source_addr_appended_lowest_priority() {
         None,
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
+        None,       // 自报运行时后端形态：未宣告
         Some("203.0.113.96"),
     );
     let info = cluster.registry.get("src-2").unwrap();
@@ -8830,6 +8888,7 @@ fn test_pool_order_pin_then_payload_then_source() {
         None,
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
+        None,       // 自报运行时后端形态：未宣告
         Some("203.0.113.29"),
     );
     let info = cluster.registry.get("order-1").unwrap();
@@ -8999,6 +9058,7 @@ fn test_discovered_node_roster_lands_and_change_detection() {
         None,
         roster_a.clone(),
         None, // iroh_id：未宣告
+        None, // 自报运行时后端形态：未宣告
         None,
     );
     assert!(changed, "首次入册必 changed");
@@ -9020,6 +9080,7 @@ fn test_discovered_node_roster_lands_and_change_detection() {
         None,
         roster_a.clone(),
         None, // iroh_id：未宣告
+        None, // 自报运行时后端形态：未宣告
         None,
     );
     assert!(!changed, "同清单重复宣告不得算内容变化");
@@ -9039,11 +9100,107 @@ fn test_discovered_node_roster_lands_and_change_detection() {
         None,
         roster_b.clone(),
         None, // iroh_id：未宣告
+        None, // 自报运行时后端形态：未宣告
         None,
     );
     assert!(changed, "roster 变化必须算内容变化");
     let node = cluster.registry.get("roster-peer").unwrap();
     assert_eq!(node.agents, roster_b);
+}
+
+/// P5 第 4 步 ③：runtime_backend 随 announce 落册；同值重复宣告冗余收敛
+/// （content_eq，不刷盘）；旧节点（wire 无字段）= None 未宣告照常互通
+/// （serde default 回归）；静态身份持久化 state.toml 并经启动回读种回
+/// 注册表（与 agents 相反——runtime_backend 是静态身份，同 tier 先例）。
+#[test]
+fn test_runtime_backend_announce_lands_and_persists() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    // ① VM 节点 announce 携带 runtime_backend=Some("vm") → 注册表落值。
+    let changed = cluster.handle_discovered_node_ex(
+        "vm-peer",
+        "vm-peer",
+        vec!["203.0.113.80".into()],
+        21980,
+        "worker",
+        "test",
+        Vec::new(),
+        Vec::new(),
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        None, // iroh_id：未宣告
+        Some("vm".into()),
+        None,
+    );
+    assert!(changed, "首次入册必 changed");
+    let node = cluster.registry.get("vm-peer").expect("入册");
+    assert_eq!(node.runtime_backend.as_deref(), Some("vm"));
+
+    // ② 同值重复宣告 → content_eq 相等 → 冗余跳过（不触发刷盘）。
+    let changed2 = cluster.handle_discovered_node_ex(
+        "vm-peer",
+        "vm-peer",
+        vec!["203.0.113.80".into()],
+        21980,
+        "worker",
+        "test",
+        Vec::new(),
+        Vec::new(),
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        None, // iroh_id：未宣告
+        Some("vm".into()),
+        None,
+    );
+    assert!(!changed2, "同值重复宣告不得算内容变化");
+
+    // ③ 旧节点 announce 无字段 → None 未宣告照常入册（互通不炸）。
+    let changed3 = cluster.handle_discovered_node_ex(
+        "old-peer",
+        "old-peer",
+        vec!["203.0.113.81".into()],
+        21981,
+        "worker",
+        "test",
+        Vec::new(),
+        Vec::new(),
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        None, // iroh_id：未宣告
+        None,
+        None,
+    );
+    assert!(changed3, "旧节点入册必 changed");
+    let old = cluster.registry.get("old-peer").expect("入册");
+    assert_eq!(old.runtime_backend, None, "旧节点无字段 = 未宣告");
+
+    // ④ 静态身份持久化：sync_to_disk 落 state.toml（UDP 收端在 changed 时
+    // 触发，直调场景显式同步）→ 新 Cluster 启动回读种回注册表。
+    cluster.sync_to_disk().unwrap();
+    let state_text = std::fs::read_to_string(&cluster.dynamic_state_path).unwrap();
+    assert!(
+        state_text.contains("runtime_backend"),
+        "state.toml 必须持久化 runtime_backend"
+    );
+    let cluster2 = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster2.start();
+    let restored = cluster2.get_node_info("vm-peer").expect("回读种回");
+    assert_eq!(restored.status, NodeStatus::Offline, "回读绝不直接 Online");
+    assert_eq!(
+        restored.runtime_backend.as_deref(),
+        Some("vm"),
+        "静态身份经 state.toml 往返不丢"
+    );
+    cluster2.stop();
+    cluster.stop();
 }
 
 /// G14 空地址已知节点身份合并：agents 与 tier/professions 同族——地址
@@ -9070,6 +9227,7 @@ fn test_empty_addresses_known_peer_roster_merge_preserves_address() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -9094,6 +9252,7 @@ fn test_empty_addresses_known_peer_roster_merge_preserves_address() {
         None,
         roster.clone(),
         None, // iroh_id：未宣告
+        None, // 自报运行时后端形态：未宣告
         None,
     );
     assert!(changed, "roster None->A 是内容变化");
@@ -9131,6 +9290,7 @@ fn test_merge_real_node_info_merges_agent_roster() {
         professions: Vec::new(),
         tier: None,
         agents: Vec::new(),
+        runtime_backend: None,
         node_type: "agent".into(),
     });
 
@@ -9154,6 +9314,7 @@ fn test_merge_real_node_info_merges_agent_roster() {
         professions: vec!["dev".into()],
         tier: Some("big".into()),
         agents: roster.clone(),
+        runtime_backend: None,
         node_type: "agent".into(),
     };
     cluster.merge_real_node_info(&info);
@@ -9312,6 +9473,7 @@ fn test_handle_discovered_node_iroh_id_absent_when_feature_off() {
         None,
         vec![],
         Some("ab".repeat(32)),
+        None, // runtime_backend：未宣告
         None,
     );
 
