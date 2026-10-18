@@ -108,6 +108,7 @@ const MAX_AUTO_RELAUNCH: u32 = 3;
 pub enum Isolation {
     /// Sandboxie 盒（Windows + sandbox feature，`executor.sandbox` 请求在场
     /// 且引擎就绪）。
+    #[cfg_attr(not(windows), allow(dead_code))] // 非 Windows 构建无构造点（盒臂 Windows 专属）
     Boxed,
     /// 用户态沙盒标记（非 Windows，`executor.sandbox` 请求在场——子进程
     /// exec_worker 自装 landlock/bwrap）。
@@ -703,7 +704,7 @@ impl AgentRuntimeSupervisor {
         // 语义，stdio 传输不变）。Windows 的盒臂在上面处理隔离；引擎未就绪
         // 退化 stdio 不挂标记（P24 ACL 档的 persistent 接入是后续项）。
         #[cfg(not(windows))]
-        let isolation = if policy.sandbox_requested() {
+        let isolation = if self.executor_sandbox_requested() {
             cmd.env("NEMESISBOT_EXECUTOR_SANDBOX", "1");
             Isolation::Userland
         } else {
