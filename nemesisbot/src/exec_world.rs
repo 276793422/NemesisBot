@@ -45,13 +45,21 @@ use std::sync::Arc;
 
 use nemesis_config::ConfigHandle;
 
-/// R1（2026-10-18 三方复评）：per-call 与常驻执行体共用的隔离策略判读。
+/// R1（2026-10-18 三方复评）：**常驻执行体侧**的隔离策略判读（supervisor
+/// spawn/execute 决策消费；2026-10-18 三轮复查修正措辞——per-call 通道
+/// **不消费本结构**，见下「与 per-call 侧的关系」）。
 ///
 /// 背景：常驻路由（`agents/runtime.rs`）此前不读 `executor.strict`/`executor.
 /// sandbox`——Windows 无条件先试盒（`sandbox=false` 也被塞盒）、引擎缺位静默
-/// 退化 stdio，与 per-call 通道的 strict fail-closed 闸契约不一致。本结构把
-/// sandbox/strict 的**判读**收成单一真相源，spawn 决策两侧各自消费同一判读——
-/// 对同一配置作出一致决定。
+/// 退化 stdio，与 per-call 通道的 strict fail-closed 闸契约不一致。
+///
+/// 与 per-call 侧的关系（诚实注记，防误读）：per-call 通道
+/// （[`build_executor_channel`]）保留既有 ConfigHandle 闭包闸——它必须校验
+/// **构造期**是否挂上 Start.exe（通道态，本结构表达不了），故两侧是**同语义
+/// 两实现**而非共享代码：同键（sandbox/strict/allow_network）、同缺省（键
+/// 缺失 = false）、同就绪三元组（`SandboxPaths::engine_ready` 单一真相源）。
+/// 配置真相源只有一个（config.json）；判读语义的一致性靠本对齐纪律维持，
+/// 不靠代码共享。
 ///
 /// 纪律与 supervisor 的 `persistent_settings`/allow_network/sandbox 现读一致：
 /// **磁盘是唯一真相源**（config.json raw JSON 现读，缺段/缺键/文件缺失/解析

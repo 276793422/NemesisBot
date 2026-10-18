@@ -637,7 +637,9 @@ impl AgentRuntimeSupervisor {
     /// `exec_root` 写进子进程 `NEMESISBOT_EXECUTOR_WORKSPACE`（工具 cwd 锚，
     /// T7 双根拆分）；agent home 照旧从 agent_id 派生（HOME 重定向根）。
     ///
-    /// R1 隔离契约（与 per-call 通道同一判读真相源 [`ExecutorIsolationPolicy`]）：
+    /// R1 隔离契约（判读本侧结构 [`ExecutorIsolationPolicy`]——与 per-call
+    /// 通道**同语义两实现**：同键同缺省同就绪探针，非共享代码，见
+    /// exec_world.rs 模块文档）：
     /// - strict 预检平台无关先行：`executor.strict` 请求在场而后端当前不可用
     ///   → `Err`（上游映射 Unavailable → per-call 回落链的 strict 闸诚实拒绝，
     ///   绝不以无隔离形态执行——不能退回裸 stdio）；
