@@ -21,9 +21,12 @@
 //!   工具调用；睡眠双线 Snapshot/MigrateFile 机制面都实装，生产默认线
 //!   KVM=Snapshot、WHPX=None（savevm/migrate 双双早验挂死，诚实不支持）
 //!   ——三探针定谳见实施计划附录）。
+//! - [`install`]：环境自举（QEMU ranged 并行下载 + SHA-512 双锚校验 +
+//!   7z 直解落位，对齐 sandbox install 体验；第 10 层安装面）。
 
 pub mod assembly;
 pub mod guest_arch;
+pub mod install;
 pub mod lifecycle;
 pub mod overlay;
 pub mod probe;
