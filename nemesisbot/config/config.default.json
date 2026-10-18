@@ -29,7 +29,7 @@
       "hypervisor": "auto",
       "desktop": "minimal",
       "image": {
-        "source": "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2",
+        "source": "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2",
         "sha256": ""
       },
       "resources": { "vcpu": 2, "ram_mb": 2048, "disk_gb": 20 },

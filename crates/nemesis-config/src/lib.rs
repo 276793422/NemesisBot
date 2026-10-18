@@ -1279,10 +1279,14 @@ fn default_vm_gc_over_limit() -> String {
     "warn".to_string()
 }
 
-/// Debian generic cloud image（bookworm/latest 的 genericcloud 变体——无
+/// Debian generic cloud image（trixie/latest 的 genericcloud 变体——无
 /// 云初始化代理依赖的最小 cloud-init 面）。可自由编辑（轮次 3-3 拍板）。
+/// 与 scripts/build-vm-image.sh 的 DEFAULT_BASE_URL 必须同源：config 缺省
+/// sha256 为空时，脚本只对**自己的默认 URL** 自动走上游 SHA256SUMS→
+/// SHA512SUMS 校验链；两处默认一旦分叉，出盒链路会被脚本按「换源」诚实
+/// 拒绝（缺显式哈希）——B5 全新环境实跑实录。
 fn default_vm_image_source() -> String {
-    "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
+    "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
         .to_string()
 }
 
