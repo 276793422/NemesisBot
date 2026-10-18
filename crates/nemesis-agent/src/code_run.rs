@@ -46,6 +46,99 @@ mod imp {
 
     use super::*;
 
+    /// console 聚合行数上限（A2 残余，2026-10-18）。超限丢弃后续行并附
+    /// 诚实注记——脚本里 console.log 一百万行同样是被共享上下文的事故。
+    pub(crate) const MAX_CONSOLE_LINES: usize = 200;
+
+    /// console 行缓冲（脚本生命周期内同步收集；行数闸 + 截断标志）。
+    struct ConsoleBuf {
+        lines: Vec<String>,
+        truncated: bool,
+    }
+
+    impl ConsoleBuf {
+        fn new() -> std::rc::Rc<std::cell::RefCell<Self>> {
+            std::rc::Rc::new(std::cell::RefCell::new(Self {
+                lines: Vec::new(),
+                truncated: false,
+            }))
+        }
+
+        /// 单行入缓冲（超限丢弃 + 置截断标志，不炸脚本）。
+        fn push(buf: &std::rc::Rc<std::cell::RefCell<Self>>, line: String) {
+            let mut b = buf.borrow_mut();
+            if b.lines.len() >= MAX_CONSOLE_LINES {
+                b.truncated = true;
+                return;
+            }
+            b.lines.push(line);
+        }
+    }
+
+    /// console 多参数拼接：字符串直取；其余 JSON 序列化（undefined →
+    /// 字面量；序列化失败 → 诚实占位，不炸脚本）。泛型 'js 统一 ctx 与
+    /// value 生命周期（invariance 下拆不开）。
+    fn join_console_values<'js>(
+        ctx: &rquickjs::Ctx<'js>,
+        args: rquickjs::function::Rest<rquickjs::Value<'js>>,
+    ) -> String {
+        args.iter()
+            .map(|v| {
+                if let Some(s) = v.as_string()
+                    && let Ok(s) = s.to_string()
+                {
+                    return s;
+                }
+                if v.is_undefined() {
+                    return "undefined".to_string();
+                }
+                match ctx.json_stringify(v.clone()) {
+                    Ok(Some(s)) => s.to_string().unwrap_or_else(|_| "[unserializable]".into()),
+                    _ => "[unserializable]".to_string(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// 安装全局 `console`（log/info/warn/error → 行缓冲；warn/error 带级别
+    /// 前缀）。可变参数走 `Rest<Value>`——固定 arity 的 Func 接不住
+    /// `console.log("a", b, c)`。
+    fn install_console(
+        globals: &rquickjs::Object<'_>,
+        buf: &std::rc::Rc<std::cell::RefCell<ConsoleBuf>>,
+    ) -> Result<(), String> {
+        let console = rquickjs::Object::new(globals.ctx().clone())
+            .map_err(|e| format!("failed to create console object: {e}"))?;
+        for (name, prefix) in [
+            ("log", ""),
+            ("info", ""),
+            ("warn", "[warn] "),
+            ("error", "[error] "),
+        ] {
+            let buf = buf.clone();
+            console
+                .set(
+                    name,
+                    // 参数类型不注解：Func::from 的目标 trait 签名把 ctx 与
+                    // args 推断到同一 'js（手写 Ctx<'_> / Rest<Value<'_>>
+                    // 会被当作两个不相关匿名生命周期而撞 invariance）。
+                    rquickjs::function::Func::from(move |ctx, args| -> rquickjs::Result<()> {
+                        ConsoleBuf::push(
+                            &buf,
+                            format!("{prefix}{}", join_console_values(&ctx, args)),
+                        );
+                        Ok(())
+                    }),
+                )
+                .map_err(|e| format!("failed to install console.{name}: {e}"))?;
+        }
+        globals
+            .set("console", console)
+            .map_err(|e| format!("failed to install console: {e}"))?;
+        Ok(())
+    }
+
     /// `code_run` 工具：持 loop 弱引用（Arc 定型后注入，同 GatewayHostInvoker
     /// 的 Weak 模式——loop 重建不死锁旧引用）+ 装配期读定的资源限制。
     pub struct CodeRunTool {
@@ -85,9 +178,11 @@ Inside the script, call any registered tool with `tool(name, argsJson)` where ar
 JSON string (e.g. `tool(\"read_file\", JSON.stringify({{path: \"a.txt\"}}))`); it returns the \
 tool result as a string and THROWS on rejection — wrap in try/catch when a failure is expected. \
 All tool calls go through the full security pipeline (estop / approval / 8 layers), exactly like \
-direct tool use. The script's final expression value (string recommended) is returned. \
+direct tool use. `console.log/info/warn/error` are captured and appended to the result \
+(first {} lines). The script's final expression value (string recommended) is returned. \
 Budget: wall-clock {}s (infinite loops are interrupted), JS heap {}MB, output capped at {}KB. \
 Use for multi-step tool orchestration in one call; the script cannot call code_run itself.",
+                MAX_CONSOLE_LINES,
                 self.timeout.as_secs(),
                 self.memory_limit_bytes / (1024 * 1024),
                 MAX_OUTPUT_BYTES / 1024
@@ -173,6 +268,11 @@ Use for multi-step tool orchestration in one call; the script cannot call code_r
             // 返回——catch 永不触发（首轮实测 6 败的根因）；Err(Error)
             // 返回值才把 pending 异常拉起来。
             let globals = ctx.globals();
+            // console 聚合（A2 残余）：log/info/warn/error 进行缓冲，脚本
+            // 结束后附进输出摘要（限行）——调试信息不必再为看中间值多烧
+            // LLM 轮次。
+            let console_buf = ConsoleBuf::new();
+            install_console(&globals, &console_buf)?;
             globals
                 .set(
                     "tool",
@@ -197,7 +297,7 @@ Use for multi-step tool orchestration in one call; the script cannot call code_r
             let value: rquickjs::Value = ctx
                 .eval(script.to_string())
                 .map_err(|e| err_text(&ctx, e))?;
-            let out = if value.is_undefined() {
+            let mut out = if value.is_undefined() {
                 "(script completed with no return value)".to_string()
             } else if let Some(s) = value.as_string() {
                 s.to_string().map_err(|e| err_text(&ctx, e))?
@@ -211,6 +311,23 @@ Use for multi-step tool orchestration in one call; the script cannot call code_r
                     ),
                 }
             };
+            // console 聚合：有行才附（空 console 零字节——不污染无调试
+            // 脚本的输出）；总闸 truncate_output 兜底字节。
+            {
+                let buf = console_buf.borrow();
+                if !buf.lines.is_empty() {
+                    out.push_str("\n\n--- console output ---\n");
+                    for line in &buf.lines {
+                        out.push_str(line);
+                        out.push('\n');
+                    }
+                    if buf.truncated {
+                        out.push_str(&format!(
+                            "(+ more console lines truncated at {MAX_CONSOLE_LINES})\n"
+                        ));
+                    }
+                }
+            }
             Ok(truncate_output(out))
         })
     }

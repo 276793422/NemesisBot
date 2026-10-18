@@ -12,6 +12,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use super::imp::MAX_CONSOLE_LINES;
 use super::*;
 use crate::context::RequestContext;
 use crate::estop::EstopState;
@@ -411,4 +412,85 @@ fn tool_description_documents_budget() {
     assert!(d.contains("30s"), "墙钟预算在文档里: {d}");
     assert!(d.contains("64MB"), "内存上限在文档里: {d}");
     assert!(d.contains("tool(name, argsJson)"), "调用面在文档里: {d}");
+    assert!(d.contains("console"), "console 聚合面在文档里: {d}");
+}
+
+// ---------------------------------------------------------------------------
+// console 聚合（A2 残余）
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn console_log_aggregates_into_output() {
+    let (_al, tool) = build_loop();
+    let out = run_script_with(&tool, r#"console.log("hello", 42, {a: 1}); "done""#).await;
+    assert!(out.contains("done"), "完成值仍在: {out}");
+    assert!(out.contains("--- console output ---"), "聚合段标题: {out}");
+    assert!(
+        out.contains("hello 42 {\"a\":1}"),
+        "字符串直取 + 数字/对象 JSON 序列化、空格 join: {out}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn console_warn_error_have_level_prefixes() {
+    let (_al, tool) = build_loop();
+    let out = run_script_with(
+        &tool,
+        r#"console.info("i"); console.warn("w"); console.error("e"); "ok""#,
+    )
+    .await;
+    assert!(out.contains("\ni\n"), "info 与 log 同待遇（无前缀）: {out}");
+    assert!(out.contains("[warn] w"), "warn 带级别前缀: {out}");
+    assert!(out.contains("[error] e"), "error 带级别前缀: {out}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn console_error_does_not_fail_script() {
+    let (_al, tool) = build_loop();
+    // console.error 是输出通道，不是脚本异常（脚本错误仍走 throw 路径）。
+    let out = run_script_with(&tool, r#"console.error("boom-ish"); "fine""#).await;
+    assert!(out.contains("fine"), "脚本照常成功: {out}");
+    assert!(!out.contains("脚本错误"), "不得误报脚本错误: {out}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn console_unused_adds_zero_bytes() {
+    let (_al, tool) = build_loop();
+    let out = run_script_with(&tool, "1+1").await;
+    assert_eq!(out, "2", "不用 console → 输出零附加字节");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn console_line_cap_truncates_honestly() {
+    let (_al, tool) = build_loop();
+    let out = run_script_with(
+        &tool,
+        r#"for (let i = 0; i < 300; i++) { console.log("line-" + i); } "capped""#,
+    )
+    .await;
+    let console_part = out.split("--- console output ---").nth(1).unwrap_or("");
+    let logged = console_part
+        .lines()
+        .filter(|l| l.starts_with("line-"))
+        .count();
+    assert_eq!(logged, MAX_CONSOLE_LINES, "恰好 200 行入缓冲: {out}");
+    assert!(
+        console_part.contains("+ more console lines truncated at"),
+        "截断诚实注记在场: {console_part}"
+    );
+    assert!(
+        console_part.contains("line-199") && !console_part.contains("line-200\nline-"),
+        "保留的是前 200 行（先到先得）: tail={:?}",
+        console_part.lines().last()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn console_handles_edge_value_shapes() {
+    let (_al, tool) = build_loop();
+    let out = run_script_with(&tool, r#"console.log(undefined, null, [1,2]); "ok""#).await;
+    assert!(
+        out.contains("undefined null [1,2]"),
+        "undefined 字面量 + null/数组 JSON 序列化: {out}"
+    );
 }
