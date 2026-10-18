@@ -206,7 +206,26 @@ impl ProjectLoopManager {
         self.channels
             .lock()
             .unwrap()
-            .insert(entry.id.clone(), inbound_tx);
+            .insert(entry.id.clone(), inbound_tx.clone());
+        // 四轮复查收尾（与 agents/loop_manager 同款）：stop_project 可在
+        // 本函数「state 插入之后、channels 插入之前」整体穿过，此处插入即
+        // 成孤儿 tx——`route_one` 经 `project_inbound_tx` 直读 channels 表
+        // 不查 state，孤儿 tx 会收到发送，但其接收端已随 stop 的 abort 关
+        // 闭 → `tx.send` 失败走 `send_unroutable_error` 诚实报错（功能面
+        // 不受影响），但条目会残留到 teardown。复查收拾：state 已无本项目
+        // = 撞上了 stop，把刚插入的 tx 摘回。`same_channel` 收窄为只摘自
+        // 己插入的那条——项目 id 是稳定 id（remove 后重注册同 id 并发
+        // spawn 合法形态），裸 remove 可能误摘新 loop 的通道。
+        let orphaned = !self.state.lock().unwrap().contains_key(&entry.id);
+        if orphaned {
+            let mut chans = self.channels.lock().unwrap();
+            if chans
+                .get(&entry.id)
+                .is_some_and(|cur| cur.same_channel(&inbound_tx))
+            {
+                chans.remove(&entry.id);
+            }
+        }
         info!(
             id = %entry.id,
             name = %entry.name,
