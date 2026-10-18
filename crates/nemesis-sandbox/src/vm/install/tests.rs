@@ -188,3 +188,118 @@ fn options_default_pins_official_source() {
     assert_eq!(o.expected_sha512.as_deref(), Some(QEMU_WINDOWS_SHA512));
     assert_eq!(o.parallel, DEFAULT_PARALLEL);
 }
+
+// ---------------------------------------------------------------------------
+// B2：DISM 状态解析 / CPU vendor / 引导命令构造（纯函数，不真跑 sudo/DISM）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dism_state_parse_all_shapes() {
+    use DismFeatureState as S;
+    assert_eq!(
+        parse_dism_feature_state("State : Enabled"),
+        Some(S::Enabled)
+    );
+    // 启用+禁用挂起（罕见态）按 Enabled 走——DLL 缺席时仍归 BIOS 臂。
+    assert_eq!(
+        parse_dism_feature_state("State : Enabled with Disable Pending"),
+        Some(S::Enabled)
+    );
+    assert_eq!(
+        parse_dism_feature_state("State : Enable Pending"),
+        Some(S::EnablePending)
+    );
+    assert_eq!(
+        parse_dism_feature_state("State : Disabled"),
+        Some(S::Disabled)
+    );
+    // 本地化 Windows / 缺 State 行 = None（分类器诚实回落）。
+    assert_eq!(parse_dism_feature_state("状态 : 已启用"), None);
+    assert_eq!(parse_dism_feature_state(""), None);
+    assert_eq!(
+        parse_dism_feature_state("FeatureName: HypervisorPlatform\nno state line"),
+        None
+    );
+}
+
+#[test]
+fn dism_args_shapes_pinned() {
+    let enable = dism_enable_whpx_args();
+    assert!(enable.contains(&"/Online".to_string()));
+    assert!(enable.contains(&"/NoRestart".to_string()));
+    assert!(enable.contains(&"/Enable-Feature".to_string()));
+    assert!(enable.contains(&format!("/FeatureName:{DISM_WHPX_FEATURE}")));
+    let query = dism_query_state_args();
+    assert!(query.contains(&"/Get-FeatureInfo".to_string()));
+    assert!(query.contains(&format!("/FeatureName:{DISM_WHPX_FEATURE}")));
+    assert!(!query.iter().any(|a| a == "/NoRestart"), "查询不写系统态");
+}
+
+#[test]
+fn cpu_vendor_parse_and_kvm_module_map() {
+    use CpuVendor as V;
+    let intel = "processor : 0\nvendor_id\t: GenuineIntel\nflags: fpu vmx";
+    assert_eq!(parse_cpu_vendor(intel), Some(V::Intel));
+    let amd = "vendor_id\t: AuthenticAMD\nflags: fpu svm";
+    assert_eq!(parse_cpu_vendor(amd), Some(V::Amd));
+    assert_eq!(parse_cpu_vendor("no vendor line"), None);
+    assert_eq!(kvm_module_for_vendor(V::Intel), "kvm_intel");
+    assert_eq!(kvm_module_for_vendor(V::Amd), "kvm_amd");
+}
+
+#[test]
+fn linux_pm_packages_and_commands_pinned() {
+    use LinuxPm as P;
+    assert_eq!(
+        qemu_packages_for_pm(P::Apt),
+        Some("qemu-system-x86 qemu-utils")
+    );
+    assert_eq!(qemu_packages_for_pm(P::Dnf), Some("qemu-kvm qemu-img"));
+    assert_eq!(qemu_packages_for_pm(P::Unknown), None);
+    let apt = pm_install_qemu_command(P::Apt).unwrap();
+    assert!(
+        apt.contains("DEBIAN_FRONTEND=noninteractive")
+            && apt.contains("apt-get install -y qemu-system-x86 qemu-utils"),
+        "{apt}"
+    );
+    let dnf = pm_install_qemu_command(P::Dnf).unwrap();
+    assert!(dnf.contains("dnf install -y qemu-kvm qemu-img"), "{dnf}");
+    assert_eq!(pm_install_qemu_command(P::Unknown), None);
+    assert_eq!(modprobe_kvm_command("kvm_intel"), "sudo modprobe kvm_intel");
+    assert_eq!(usermod_kvm_command("zoo"), "sudo usermod -aG kvm zoo");
+}
+
+/// 二进制名单单一真相源：与平台形态一致（Windows 带 .exe），双名非空且不同。
+#[test]
+fn required_binaries_names_match_platform() {
+    let (sys, img) = qemu_required_binaries();
+    assert!(!sys.is_empty() && !img.is_empty());
+    assert_ne!(sys, img);
+    if cfg!(target_os = "windows") {
+        assert!(sys.ends_with(".exe") && img.ends_with(".exe"));
+        assert_eq!(sys, "qemu-system-x86_64.exe");
+        assert_eq!(img, "qemu-img.exe");
+    } else {
+        assert_eq!(sys, "qemu-system-x86_64");
+        assert_eq!(img, "qemu-img");
+    }
+}
+
+/// Linux 包管理器探测：本机形态断言（测试跑在哪就钉哪——探测函数本身
+/// 的真值只有真实宿主能裁）。
+#[cfg(target_os = "linux")]
+#[test]
+fn detect_linux_pm_matches_host_shape() {
+    let pm = detect_linux_pm();
+    // 任何真实 Linux 宿主至少应识别出三种形态之一，且与 /usr/bin/apt-get
+    // 或 dnf 的在场一致（zoo 机 = apt）。
+    let has_apt = Path::new("/usr/bin/apt-get").exists();
+    let has_dnf = Path::new("/usr/bin/dnf").exists() || Path::new("/usr/bin/yum").exists();
+    match pm {
+        LinuxPm::Apt => assert!(has_apt, "探测为 Apt 但 apt-get 不在场"),
+        LinuxPm::Dnf => assert!(has_dnf, "探测为 Dnf 但 dnf/yum 不在场"),
+        LinuxPm::Unknown => {
+            assert!(!has_apt && !has_dnf, "apt/dnf 在场却探测为 Unknown");
+        }
+    }
+}

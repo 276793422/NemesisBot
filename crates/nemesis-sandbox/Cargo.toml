@@ -81,5 +81,11 @@ required-features = ["vm"]
 name = "vm_install_arm"
 required-features = ["vm"]
 
+# VM 环境自举 B2：probe 状态机真机直证（双端只读：presence/accel facts/
+# 分类器输出；Linux 半自动安装链 / Windows WHPX 早退）。
+[[example]]
+name = "vm_bootstrap_arm"
+required-features = ["vm"]
+
 [lints]
 workspace = true
