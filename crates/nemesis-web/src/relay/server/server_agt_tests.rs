@@ -161,9 +161,15 @@ fn agt_maintenance_tick_disabled_and_conn_expiry() {
     let relay = Arc::new(RelayServer::new("tok".to_string(), true));
     let _rx = relay.register_conn(7, "n1", 1);
     assert!(relay.conns.contains_key(&7), "登记生效");
+    // 旧 created_at 需 Instant 纪元余量 ≥601s；刚启动系统回拨不了 → 环境边界
+    // 诚实跳过（board 过期态断言同款纪律）。
+    let Some(old_created) = Instant::now().checked_sub(Duration::from_secs(601)) else {
+        eprintln!("SKIP 超龄清理断言：系统刚启动，Instant 纪元余量不足 601s");
+        return;
+    };
     // 直接拨旧 created_at（子模块可见私有字段——同 backdate 家族语义）。
     if let Some(mut c) = relay.conns.get_mut(&7) {
-        c.created_at = Instant::now() - Duration::from_secs(601);
+        c.created_at = old_created;
     }
     relay.maintenance_tick();
     assert!(!relay.conns.contains_key(&7), "超龄 conn 必须被清");

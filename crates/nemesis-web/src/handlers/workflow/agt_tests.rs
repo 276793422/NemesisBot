@@ -83,11 +83,17 @@ fn agt_ctx(
 async fn agt_rate_limiter_window_expiry_pops_stale_hits() {
     let limiter = WebhookRateLimiter::new();
     let ip: IpAddr = "203.0.113.9".parse().unwrap();
+    // 旧戳需 Instant 纪元余量 ≥61s；刚启动系统回拨不了 → 环境边界诚实跳过
+    // （board 过期态断言同款纪律）。
+    let Some(old_ts) = Instant::now().checked_sub(Duration::from_secs(61)) else {
+        eprintln!("SKIP 窗口过期断言：系统刚启动，Instant 纪元余量不足 61s");
+        return;
+    };
     // 种一旧一新两个时间戳（旧 = 窗口外 61s）。
     {
         let mut hits = limiter.hits.lock().await;
         let q = hits.entry(ip).or_insert_with(VecDeque::new);
-        q.push_back(Instant::now() - Duration::from_secs(61));
+        q.push_back(old_ts);
         q.push_back(Instant::now());
     }
     // check：先弹窗口外的旧戳（pop_front 臂），遇新戳 break（recent 臂），

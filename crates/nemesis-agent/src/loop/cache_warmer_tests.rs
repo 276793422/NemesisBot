@@ -448,10 +448,17 @@ async fn warm_scan_drops_candidates_of_switched_model() {
         "old-model".to_string(),
     );
     // 把锚点拨老（直接构造已到期形态：重新存一份后改 anchor）。
+    // 400s 回拨需 Instant 纪元余量；刚启动系统回拨不了 → 环境边界诚实跳过
+    // （nemesis-lsp manager 测试同款纪律）。
+    let Some(stale_anchor) =
+        std::time::Instant::now().checked_sub(std::time::Duration::from_secs(400))
+    else {
+        eprintln!("SKIP 到期清理断言：系统刚启动，Instant 纪元余量不足 400s");
+        return;
+    };
     {
         let mut map = loop_.warm_candidates.lock();
-        map.get_mut("s1").unwrap().anchor =
-            std::time::Instant::now() - std::time::Duration::from_secs(400);
+        map.get_mut("s1").unwrap().anchor = stale_anchor;
     }
     loop_.warm_scan_once().await;
     assert!(loop_.warm_candidates.lock().is_empty());
@@ -487,11 +494,17 @@ async fn warm_scan_fires_only_for_due_idle_sessions() {
         "test-model".to_string(),
     );
     {
+        // 400s 回拨需 Instant 纪元余量（到期判定依赖）；刚启动系统回拨不了
+        // → 环境边界诚实跳过。
+        let Some(stale_anchor) =
+            std::time::Instant::now().checked_sub(std::time::Duration::from_secs(400))
+        else {
+            eprintln!("SKIP 到期重放断言：系统刚启动，Instant 纪元余量不足 400s");
+            return;
+        };
         let mut map = loop_.warm_candidates.lock();
-        map.get_mut("due-idle").unwrap().anchor =
-            std::time::Instant::now() - std::time::Duration::from_secs(400);
-        map.get_mut("due-busy").unwrap().anchor =
-            std::time::Instant::now() - std::time::Duration::from_secs(400);
+        map.get_mut("due-idle").unwrap().anchor = stale_anchor;
+        map.get_mut("due-busy").unwrap().anchor = stale_anchor;
     }
     assert!(loop_.try_acquire_session("due-busy"));
 
@@ -521,9 +534,14 @@ async fn warm_scan_skips_when_ttl_unknown() {
         "test-model".to_string(),
     );
     {
+        // checked_sub 而非裸减：Instant 自系统启动起算，新启 VM 纪元余量不足会
+        // 下溢 panic。本测 TTL 未知 → 扫描跳过与锚点新旧无关，回拨不出时用
+        // 当下时刻语义不变。
+        let stale_anchor = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(400))
+            .unwrap_or_else(std::time::Instant::now);
         let mut map = loop_.warm_candidates.lock();
-        map.get_mut("s1").unwrap().anchor =
-            std::time::Instant::now() - std::time::Duration::from_secs(400);
+        map.get_mut("s1").unwrap().anchor = stale_anchor;
     }
     loop_.warm_scan_once().await;
     assert_eq!(call_count(&calls), 0);
