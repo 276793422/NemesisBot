@@ -41,7 +41,7 @@ fn resolve_path_missing_base_skips_canonical_compare() {
 }
 
 #[test]
-fn write_workspace_file_falls_back_when_rename_fails_on_readonly_target() {
+fn write_workspace_file_readonly_target_honest_error_keeps_original() {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     write_workspace_file(&ws, "ro.txt", "first").unwrap();
@@ -58,12 +58,12 @@ fn write_workspace_file_falls_back_when_rename_fails_on_readonly_target() {
     std::fs::set_permissions(&target, perms).unwrap();
 
     if cfg!(windows) {
-        // tmp→target rename fails on the read-only destination; the fallback
-        // direct write fails too → error surfaces.
+        // 只读目标 → rename 失败（无非原子回退）→ 诚实报错，原文件不动。
         assert!(res.is_err());
         let content = std::fs::read_to_string(&target).unwrap();
         assert_eq!(content, "first", "failed write leaves original intact");
     } else {
+        // Unix rename 只看目录权限，越过只读目标直接替换。
         assert!(res.is_ok());
         assert_eq!(read_workspace_file(&ws, "ro.txt").unwrap(), "second");
     }
