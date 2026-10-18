@@ -1178,6 +1178,71 @@ pub fn build_agent_loop(
             "[AgentFactory] codemode code_run registered"
         );
     }
+    // A3 委派持续操控（2026-10-18）：delegate 四工具（start/send/output/
+    // stop）。运行闸 `agents.delegate.enabled`（默认关）+ CLI 在场探测
+    // （claude/codex 至少一个在 PATH，都没有则四件套不注册——诚实缺位不
+    // 空挂）。仅主 gateway loop 装配（项目 loop 固定子集、集群 worker 不
+    // 混外部 CLI 面的同一决策）；delegate_start=ProcessExec、send/output/
+    // stop=Internal 显式声明（types.rs 静态表已映射，这里声明去未知名
+    // warn 噪声）。estop 联动：manager 挂 shared.estop 同一 Arc——急停
+    // 触发 = 全部 delegate 关 stdin + 树杀（watcher manager 级 lazy spawn）。
+    if cfg.agents.delegate.enabled {
+        let claude_path = nemesis_agent::loop_tools::cli_delegation::find_cli_on_path("claude");
+        let codex_path = nemesis_agent::loop_tools::cli_delegation::find_cli_on_path("codex");
+        if claude_path.is_some() || codex_path.is_some() {
+            #[cfg(feature = "security")]
+            {
+                nemesis_security::types::declare_tool_operation(
+                    "delegate_start",
+                    nemesis_security::types::OperationType::ProcessExec,
+                );
+                for name in ["delegate_send", "delegate_output", "delegate_stop"] {
+                    nemesis_security::types::declare_tool_operation(
+                        name,
+                        nemesis_security::types::OperationType::Internal,
+                    );
+                }
+            }
+            let delegate_manager =
+                Arc::new(nemesis_agent::delegate_registry::DelegateManager::new());
+            delegate_manager.attach_estop(shared.estop.clone());
+            agent_loop.register_plugin_tool(
+                "delegate_start".to_string(),
+                Arc::new(nemesis_agent::delegate_registry::DelegateStartTool::new(
+                    &shared.workspace_dir().to_string_lossy(),
+                    cfg.agents.defaults.restrict_to_workspace,
+                    cfg.agents.delegate.max_lifetime_secs,
+                    claude_path,
+                    codex_path,
+                    delegate_manager.clone(),
+                )),
+            );
+            agent_loop.register_plugin_tool(
+                "delegate_send".to_string(),
+                Arc::new(nemesis_agent::delegate_registry::DelegateSendTool::new(
+                    delegate_manager.clone(),
+                )),
+            );
+            agent_loop.register_plugin_tool(
+                "delegate_output".to_string(),
+                Arc::new(nemesis_agent::delegate_registry::DelegateOutputTool::new(
+                    delegate_manager.clone(),
+                )),
+            );
+            agent_loop.register_plugin_tool(
+                "delegate_stop".to_string(),
+                Arc::new(nemesis_agent::delegate_registry::DelegateStopTool::new(
+                    delegate_manager,
+                )),
+            );
+            info!("[AgentFactory] delegate tools registered (start/send/output/stop, A3)");
+        } else {
+            info!(
+                "[AgentFactory] agents.delegate.enabled but no claude/codex CLI on PATH — \
+                 delegate tools not registered"
+            );
+        }
+    }
     // L9 selfupdate 工具面（内部专项总计划）：selfupdate_check（只读）+
     // selfupdate_apply（提案——人类闸=编排内 CRITICAL 审批卡，「总是允许」
     // 恒忽略）。主 loop 独占（项目 loop 不该重启整个 gateway 杀掉兄弟项目；

@@ -1216,6 +1216,9 @@ pub struct AgentsConfig {
     /// T2（L1 codemode）: `code_run` 脚本工具开关与资源限制（默认关）。
     #[serde(default)]
     pub codemode: CodeModeConfig,
+    /// A3（委派持续操控）: delegate 四工具开关与子代理生命上限（默认关）。
+    #[serde(default)]
+    pub delegate: DelegateToolConfig,
     /// L8（内部专项总计划重评估）：工具调用三态 WAL——工具
     /// admit/start/finish 每态一行 JSONL 落 `<workspace>/logs/turn_wal/`，
     /// 进程被强杀（taskkill /F）后重启扫描补 interrupted 并自动续轮。
@@ -1465,6 +1468,40 @@ impl Default for CodeModeConfig {
             enabled: false,
             timeout_secs: default_codemode_timeout_secs(),
             memory_limit_mb: default_codemode_memory_limit_mb(),
+        }
+    }
+}
+
+/// A3（委派持续操控，2026-10-18）: `agents.delegate` config section —
+/// delegate 四工具（delegate_start/send/output/stop）的运行开关与子代理
+/// 生命上限。注册发生在 AgentLoop 装配期且要求 CLI 在场（claude/codex 至
+/// 少一个在 PATH），改键需 loop 重建生效。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DelegateToolConfig {
+    /// Enable the delegate_* tool registration (default false).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Delegate sub-agent lifetime cap in seconds (default 3600). 0 = no
+    /// limit; the watchdog tree-kills at the deadline and leaves an honest
+    /// marker in the delegate's output stream.
+    #[serde(default = "default_delegate_max_lifetime_secs")]
+    pub max_lifetime_secs: u64,
+    /// claude permission-mode passthrough (default "" = CLI default). Never
+    /// implies bypassing the child CLI's own permission surface.
+    #[serde(default)]
+    pub permission_mode: String,
+}
+
+fn default_delegate_max_lifetime_secs() -> u64 {
+    3600
+}
+
+impl Default for DelegateToolConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_lifetime_secs: default_delegate_max_lifetime_secs(),
+            permission_mode: String::new(),
         }
     }
 }
@@ -4375,6 +4412,7 @@ pub fn default_config() -> Config {
             image_downscale: true,
             lease_enabled: true,
             codemode: CodeModeConfig::default(),
+            delegate: DelegateToolConfig::default(),
             turn_wal: true,
             provider_stream_events: true,
             executor_tool_timeout_secs: default_executor_tool_timeout_secs(),

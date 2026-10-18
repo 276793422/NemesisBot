@@ -83,8 +83,12 @@ impl JobStatus {
 /// `produced` 是进程累计产出的字节数（永不回退），`dropped` 是头部被丢弃
 /// 的字节数。offset 分页坐标基于 `produced` 空间：读 offset 若小于 `dropped`
 /// 则自动钳到 `dropped`（数据已丢，调用方从 `dropped_bytes` 得知）。
+///
+/// `pub(crate)`（2026-10-18）：delegate_registry（A3 委派三动词）复用同一
+/// 环形缓冲语义——delegate 条目是「带 stdin 写口的 B4 条目 + 协议抽取」，
+/// 缓冲语义必须逐字节一致（offset 坐标跨工具族可迁移）。
 #[derive(Debug, Default)]
-struct OutputBuffer {
+pub(crate) struct OutputBuffer {
     buf: Vec<u8>,
     produced: u64,
     dropped: u64,
@@ -92,14 +96,14 @@ struct OutputBuffer {
 }
 
 impl OutputBuffer {
-    fn new(max: usize) -> Self {
+    pub(crate) fn new(max: usize) -> Self {
         Self {
             max,
             ..Default::default()
         }
     }
 
-    fn append(&mut self, data: &[u8]) {
+    pub(crate) fn append(&mut self, data: &[u8]) {
         if data.is_empty() {
             return;
         }
@@ -112,9 +116,20 @@ impl OutputBuffer {
         }
     }
 
+    /// 累计产出坐标（单调，offset 分页空间的「下一读位置」）。
+    pub(crate) fn produced(&self) -> u64 {
+        self.produced
+    }
+
+    /// 当前缓冲内还持有的字节（produced 空间的 `[dropped, produced)` 段）。
+    /// delegate 侧做全缓冲协议抽取（assistant 文本）用。
+    pub(crate) fn buf_bytes(&self) -> &[u8] {
+        &self.buf
+    }
+
     /// 从 `offset`（produced 空间）读至多 [`MAX_CHUNK_BYTES`] 字节。
     /// 返回 (chunk, 是否发生了头部钳制)。
-    fn read_chunk(&self, offset: u64) -> (Vec<u8>, bool) {
+    pub(crate) fn read_chunk(&self, offset: u64) -> (Vec<u8>, bool) {
         let clamped = offset.max(self.dropped);
         let skipped = offset < self.dropped;
         let start = (clamped - self.dropped).min(self.buf.len() as u64) as usize;
@@ -384,7 +399,11 @@ impl BackgroundProcessRegistry {
 
 /// 监督任务：轮询 try_wait → 记录终态；见 kill 旗标先树杀（一次），再
 /// 以 start_kill 兜底直杀 shell（树杀指令丢失时至少不漏直接子进程）。
-async fn supervise(
+///
+/// `pub(crate)`（2026-10-18）：delegate_registry 复用同一监督语义（kill
+/// 旗标 + 自然退出收尸）；delegate 侧另有独立的墙钟上限 watch 任务只置
+/// 旗标，不重复实现树杀循环。
+pub(crate) async fn supervise(
     pid: u32,
     child: Arc<Mutex<tokio::process::Child>>,
     status: Arc<Mutex<Option<JobStatus>>>,
@@ -417,7 +436,10 @@ async fn supervise(
 }
 
 /// 排干管道追加进共享输出缓冲（stdout/stderr 各一个任务）。
-fn spawn_pump(
+///
+/// `pub(crate)`（2026-10-18）：delegate_registry 复用（delegate 子进程同样
+/// 必须并发排干，否则 64KB 管道缓冲写满卡死子进程——B2 教训同源）。
+pub(crate) fn spawn_pump(
     pipe: Option<impl tokio::io::AsyncRead + Unpin + Send + 'static>,
     output: Arc<Mutex<OutputBuffer>>,
 ) {
@@ -504,7 +526,14 @@ pub(crate) async fn tree_kill(pid: u32) {
 /// 双侧 canonicalize_for_compare 归一化防 8.3 短名/大小写失配）。
 /// 返回**解析后的绝对路径**——`Command::current_dir` 对相对路径按父进程
 /// cwd 解释，与工作区基准脱钩（exec 侧传原始串是历史行为，这里不复制）。
-fn resolve_cwd(workspace: &str, restrict: bool, cwd: Option<&str>) -> Result<String, String> {
+///
+/// `pub(crate)`（2026-10-18）：delegate_registry 的 delegate_start 复用同一
+/// 语义（子代理工作目录与后台任务同规约束）。
+pub(crate) fn resolve_cwd(
+    workspace: &str,
+    restrict: bool,
+    cwd: Option<&str>,
+) -> Result<String, String> {
     let raw = cwd.unwrap_or(workspace);
     let target = if Path::new(raw).is_absolute() {
         PathBuf::from(raw)
