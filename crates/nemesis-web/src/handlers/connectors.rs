@@ -178,6 +178,7 @@ fn exclusive_tool_rows(
     ws: &Path,
     c: &nemesis_connectors::manifest::ValidatedConnector,
     mcp_tools: &[McpToolRow],
+    main_loop: Option<&std::sync::Arc<nemesis_agent::r#loop::AgentLoop>>,
 ) -> Vec<Value> {
     use nemesis_connectors::registry::mirror_baseline;
     use nemesis_connectors::state::{ToolPolicy, load_tool_state, tool_policy};
@@ -190,6 +191,11 @@ fn exclusive_tool_rows(
         .iter()
         .map(|s| registry::exclusive_prefix(s))
         .collect();
+    // G1 隐藏标记（边界补强 2026-10-20）：config hidden 是绝对闸（任何
+    // 出处都拒），被隐藏的工具三态选择器形同虚设——行照列（管理面全量
+    // 可见）但带 `hidden_by_config` 标记，前端灰显提示先去解除隐藏。
+    let hidden_by_config =
+        |name: &str| main_loop.is_some_and(|l| l.tool_matches_hidden_config(name));
     let mut rows: Vec<Value> = mcp_tools
         .iter()
         .filter(|t| prefixes.iter().any(|p| t.name.starts_with(p.as_str())))
@@ -202,6 +208,7 @@ fn exclusive_tool_rows(
                 "risk": risk.as_str(),
                 "class": class.as_str(),
                 "confirm_required": confirm,
+                "hidden_by_config": hidden_by_config(&t.name),
                 "policy": match tool_policy(&state, &t.name) {
                     ToolPolicy::Default => "default",
                     ToolPolicy::Exempt => "exempt",
@@ -219,7 +226,7 @@ fn exclusive_tool_rows(
         if rows.iter().any(|r| r["id"] == json!(t)) {
             continue;
         }
-        rows.push(json!({ "id": t, "args_schema": Value::Null, "policy": p }));
+        rows.push(json!({ "id": t, "args_schema": Value::Null, "policy": p, "hidden_by_config": hidden_by_config(t) }));
     }
     rows.sort_by(|a, b| {
         a["id"]
@@ -236,6 +243,7 @@ fn cmd_list(ctx: &RequestContext) -> Result<Option<Value>, String> {
     let loaded = registry::scan_connectors(&ws);
     let mcp_prefixes = registered_mcp_prefixes(&ws);
     let mcp_tools = main_loop_mcp_tools(ctx);
+    let main_loop = ctx.state.agent_loop.read().clone();
     let connectors: Vec<Value> = loaded
         .iter()
         .map(|l| {
@@ -246,7 +254,7 @@ fn cmd_list(ctx: &RequestContext) -> Result<Option<Value>, String> {
                 .unwrap_or_default();
             match &l.connector {
                 Some(c) => {
-                    let rows = exclusive_tool_rows(&ws, c, &mcp_tools);
+                    let rows = exclusive_tool_rows(&ws, c, &mcp_tools, main_loop.as_ref());
                     connector_json(&dir_name, c, l.trust, &mcp_prefixes, &rows)
                 }
                 None => json!({
@@ -403,6 +411,20 @@ async fn cmd_undo(ctx: &RequestContext, data: Option<&Value>) -> Result<Option<V
         })));
     }
 
+    // 撤销防重（边界补强 2026-10-20）：反向 op 重复执行会叠加外部副作用
+    // （双退款形态）；域 B 会话回退重复执行 = 级联回退越来越新的轮次
+    // （误伤面）——已发起过撤销的凭条两条域一律拒绝再撤。标记在域 C 反
+    // 向 op 发起执行后 / 域 B 回退成功后落（域 C 无论成败——反向 op 可能
+    // 已在对端生效），前置在此读取（read 类不经过——无副作用无需防重）。
+    // 诚实边界：读不到标记 ≠ 未撤销（标记非事务，见 state::mark_undone
+    // 注记）。
+    if nemesis_connectors::state::is_undone(&ws, &r.receipt_id) {
+        return Err(format!(
+            "凭条 {receipt_id} 已发起过撤销——重复执行撤销会叠加副作用/级联回退，拒绝再次撤销\
+             （若撤销未生效，请人工核对对端状态后另行处理）"
+        ));
+    }
+
     // 域 C：清单声明 undo → 反向 op（凭条主键值回填）。R5：结果按行动
     // 账本新凭条结构化判定——不嗅探文本。
     if let Some(undo) = &op.undo {
@@ -432,6 +454,15 @@ async fn cmd_undo(ctx: &RequestContext, data: Option<&Value>) -> Result<Option<V
             nemesis_agent::context::RequestContext::new("web", &ctx.chat_id, "dashboard-undo", &sk);
         let result_text = loop_ref.handle_tool_call(&call, &tool_ctx).await;
         let after = receipt::list_receipts(&ws, 500, None)?;
+        // 撤销防重落标记（边界补强 2026-10-20）：无论 verdict 成败——反向
+        // op 已发起执行，可能已在对端生效，重复发起会叠加副作用（标记在
+        // 判定后、返回前落，Ok 带撤销凭条 id 供审计）。
+        let verdict = undo_ledger_verdict(&before, &after, &c.id, &undo.op);
+        nemesis_connectors::state::mark_undone(
+            &ws,
+            &r.receipt_id,
+            verdict.as_ref().ok().map(|s| s.as_str()),
+        );
         let base = json!({
             "receipt_id": receipt_id,
             "via": "reverse_op",
@@ -439,30 +470,31 @@ async fn cmd_undo(ctx: &RequestContext, data: Option<&Value>) -> Result<Option<V
             "undo_op": undo.op,
             "result_text": result_text,
         });
-        return Ok(Some(
-            match undo_ledger_verdict(&before, &after, &c.id, &undo.op) {
-                Ok(undo_rid) => json!({
-                    "receipt_id": receipt_id,
-                    "undone": true,
-                    "via": "reverse_op",
-                    "capability": "reverse_op",
-                    "undo_op": undo.op,
-                    "undo_receipt_id": undo_rid,
-                    "result_text": result_text,
-                }),
-                Err(reason) => {
-                    let mut v = base;
-                    v["undone"] = json!(false);
-                    v["reason"] = json!(reason);
-                    v
-                }
-            },
-        ));
+        return Ok(Some(match verdict {
+            Ok(undo_rid) => json!({
+                "receipt_id": receipt_id,
+                "undone": true,
+                "via": "reverse_op",
+                "capability": "reverse_op",
+                "undo_op": undo.op,
+                "undo_receipt_id": undo_rid,
+                "result_text": result_text,
+            }),
+            Err(reason) => {
+                let mut v = base;
+                v["undone"] = json!(false);
+                v["reason"] = json!(reason);
+                v
+            }
+        }));
     }
 
     // 域 B：write 无 undo 声明 → 会话级 rewind_last_turn。R5：只回退
     // 本地会话，外部副作用未被撤销——undone=false 如实标注（不宣称
-    // 「撤销完成」）。
+    // 「撤销完成」）。防重标记同落（边界补强 2026-10-20 四轮补口）：
+    // rewind_last_turn 无凭条→轮次关联（恒回退当下最后一轮），同一凭条
+    // 反复 undo = 逐轮级联回退、误伤后续无关轮次——回退成功后落标记，
+    // 同凭条第二次 undo 走上方防重闸拒绝。
     if op.class == OpClass::Write {
         let sk = session_key_in
             .or(r.session_key.clone())
@@ -470,6 +502,7 @@ async fn cmd_undo(ctx: &RequestContext, data: Option<&Value>) -> Result<Option<V
             .ok_or("该 op 无 undo 声明，会话级撤销需要 session_key（凭条也未记录会话）")?;
         let loop_ref = resolve_session_loop(ctx, &sk)?;
         let report = loop_ref.undo_last_turn(&sk).await?;
+        nemesis_connectors::state::mark_undone(&ws, &r.receipt_id, None);
         return Ok(Some(json!({
             "receipt_id": receipt_id,
             "undone": false,
@@ -639,6 +672,15 @@ fn cmd_tool_policy(ctx: &RequestContext, data: Option<&Value>) -> Result<Option<
         "blocked" => nemesis_connectors::state::ToolPolicy::Blocked,
         other => return Err(format!("未知 policy `{other}`（default|exempt|blocked）")),
     };
+    // 在册校验（边界补强 2026-10-20）：id 不在注册表 = 拒绝（typo 防护，
+    // 不写幽灵 sidecar）。成员资格证明按清单 id 匹配当下扫描结果。
+    let in_registry = registry::scan_connectors(&ws)
+        .iter()
+        .filter_map(|l| l.connector.as_ref())
+        .any(|c| c.id == connector);
+    if !in_registry {
+        return Err(format!("connector `{connector}` 不在注册表"));
+    }
     nemesis_connectors::state::set_tool_policy(&ws, connector, tool, policy)?;
     Ok(Some(json!({
         "ok": true,

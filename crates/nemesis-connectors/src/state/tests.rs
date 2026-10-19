@@ -165,3 +165,33 @@ fn tool_policy_cleanup_preserves_enabled_bit() {
     assert_eq!(state.enabled, None, "存量文件无 enabled 键 = None");
     assert_eq!(tool_policy(&state, "mcp_s__t9"), ToolPolicy::Blocked);
 }
+
+/// 撤销防重标记（边界补强 2026-10-20）：mark → is roundtrip；无标记 =
+/// false；形态异常的凭条 id 不落盘也不误报。
+#[test]
+fn undone_marker_roundtrip_and_shape_guard() {
+    let ws = tmpws();
+    let ws = ws.path();
+
+    assert!(!is_undone(ws, "RCPT-1-0001"), "无标记 = 未撤销");
+    mark_undone(ws, "RCPT-1-0001", Some("RCPT-1-0002"));
+    assert!(is_undone(ws, "RCPT-1-0001"), "标记后 = 已撤销");
+    // 标记文件内容带审计字段（撤销凭条 id + 时间戳）。
+    let body = std::fs::read_to_string(state_dir(ws).join("_undone").join("RCPT-1-0001.json"))
+        .expect("marker file");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["undo_receipt_id"], "RCPT-1-0002");
+    assert!(v["marked_at_ms"].is_i64());
+
+    // 形态异常（路径分隔符 / .. / 超长 / 空串）：不落盘、不误报、不 panic。
+    for bad in ["../escape", "a/b", "..", ".", "", &"x".repeat(129)] {
+        mark_undone(ws, bad, None);
+        assert!(!is_undone(ws, bad), "异常形态不落盘: {bad:?}");
+    }
+    // 目录下只有合法标记文件。
+    let entries: Vec<_> = std::fs::read_dir(state_dir(ws).join("_undone"))
+        .expect("undone dir")
+        .filter_map(|e| e.ok())
+        .collect();
+    assert_eq!(entries.len(), 1, "只落了合法标记");
+}

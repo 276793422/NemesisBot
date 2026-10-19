@@ -12,6 +12,19 @@ use crate::signing::ConnectorTrust;
 pub const CONNECTORS_DIR: &str = "connectors";
 pub const MANIFEST_FILE: &str = "connector.toml";
 
+/// 清单体积分上限（边界补强 2026-10-20）：`scan_connectors` 是热路径
+/// （list / find / invoke / undo 每次调用都全量重扫），读文件前先查体积
+/// ——超限条目按损坏诚实入列，不读不解析。真实清单是 KB 级（几十个 op
+/// 到顶几 KB），256KB = 5~10× 余量；注册表目录在 workspace 内，agent 可
+/// 写（write_file 过安全闸即可落），无上限 = 一次大文件写入让每次扫描
+/// 都背上 MB 级读+TOML 解析。
+pub const MANIFEST_MAX_BYTES: u64 = 256 * 1024;
+
+/// 清单体积检查：超限返回诚实错误文案（读前止损）。
+fn manifest_size_error(bytes: u64) -> String {
+    format!("清单 {bytes} 字节超过体积上限 {MANIFEST_MAX_BYTES}（不读不解析——热路径止损）")
+}
+
 /// 扫描结果条目：connector 或诚实错误。
 #[derive(Debug, Clone)]
 pub struct LoadedConnector {
@@ -92,6 +105,18 @@ pub fn scan_connectors(workspace: &Path) -> Vec<LoadedConnector> {
             });
             continue;
         }
+        // 体积上限（读前止损，见 MANIFEST_MAX_BYTES 注记）。
+        if let Ok(m) = std::fs::metadata(&manifest_path)
+            && m.len() > MANIFEST_MAX_BYTES
+        {
+            out.push(LoadedConnector {
+                dir: path,
+                connector: None,
+                error: Some(manifest_size_error(m.len())),
+                trust: ConnectorTrust::Unsigned,
+            });
+            continue;
+        }
         match std::fs::read_to_string(&manifest_path) {
             Ok(text) => match parse_connector_manifest(&text) {
                 Ok(c) => match assess_dir_trust(&path, workspace) {
@@ -137,6 +162,12 @@ pub fn scan_connectors(workspace: &Path) -> Vec<LoadedConnector> {
 
 /// 按 id 查找单个 connector（区分 不存在 / 损坏 / 停用 三态）。
 ///
+/// 双轨解析（边界补强 2026-10-20）：先直达 `connectors/<id>/`（目录名
+/// 命中，快路径）；未命中再扫描注册表按**清单 id** 匹配（存量手放目录
+/// dir≠id 的兜底——与 CLI enable/disable 的 id-or-dir 双臂同语义；dir
+/// 名升序确定性 first-match，损坏条目跳过）。新走 create 路径的条目
+/// dir==id 恒成立，直达即中。
+///
 /// 成功时同时返回信任徽标（M1 消费面收口 2026-10-19：执行面
 /// require_signed 闸与审批卡警示都从这里取 trust，不再丢给调用方）。
 pub fn find_connector(
@@ -153,7 +184,29 @@ pub fn find_connector(
                 error: format!("缺少 {MANIFEST_FILE}"),
             });
         }
+        // 直达未命中 → 清单 id 兜底扫描（见函数注记）。
+        for loaded in scan_connectors(workspace) {
+            let Some(c) = loaded.connector else {
+                continue;
+            };
+            if c.id != id {
+                continue;
+            }
+            if !c.enabled {
+                return Err(ConnectorLookupError::Disabled { id: id.to_string() });
+            }
+            return Ok((c, loaded.trust));
+        }
         return Err(ConnectorLookupError::NotFound { id: id.to_string() });
+    }
+    // 体积上限（读前止损，与 scan_connectors 同闸）。
+    if let Ok(m) = std::fs::metadata(&manifest_path)
+        && m.len() > MANIFEST_MAX_BYTES
+    {
+        return Err(ConnectorLookupError::Invalid {
+            id: id.to_string(),
+            error: manifest_size_error(m.len()),
+        });
     }
     let text =
         std::fs::read_to_string(&manifest_path).map_err(|e| ConnectorLookupError::Invalid {
@@ -196,6 +249,9 @@ pub fn find_op<'a>(c: &'a ValidatedConnector, op_id: &str) -> Option<&'a Validat
 ///
 /// - 目录名与 connector id 同字符集（`[a-z0-9_-]{1,64}`）——路径安全单点，
 ///   `..` / 绝对路径 / 路径分隔符天然被拒；
+/// - **目录名必须等于清单 id**（边界补强 2026-10-20）：目录即注册表，
+///   `find_connector` 直达 `connectors/<id>/` 与 sidecar 按 id 键控都以
+///   dir==id 为前提——放行 dir≠id 会造出「可列出、不可调用」的死链；
 /// - 清单经 [`parse_connector_manifest`] 全量校验，非法不写半截；
 /// - 拒重复：目录已存在、manifest id 与在册条目撞车（id 全局唯一，
 ///   三方指南 §3.1）都拒绝；
@@ -208,6 +264,12 @@ pub fn create_connector(
 ) -> Result<ValidatedConnector, String> {
     crate::manifest::validate_id(dir_name, "connector 目录名")?;
     let parsed = parse_connector_manifest(toml_text)?;
+    if parsed.id != dir_name {
+        return Err(format!(
+            "connector 目录名 `{dir_name}` 与清单 id `{}` 不一致——目录即注册表，两者必须相同",
+            parsed.id
+        ));
+    }
     let dir = workspace.join(CONNECTORS_DIR).join(dir_name);
     if dir.exists() {
         return Err(format!("connector 目录 `{dir_name}` 已存在"));

@@ -71,6 +71,12 @@ mod tests;
 const HTTP_BODY_CAP: usize = 8 * 1024;
 /// 回执 summary 截断长度（人话摘要，存层不截——工具侧截）。
 const SUMMARY_CAP: usize = 160;
+/// find 单 connector 镜像清单条数上限（边界补强 2026-10-20：大接管面
+/// 全量输出 = 上下文爆炸；截断数以 mirrors_truncated 注记）。
+const MIRROR_LIST_CAP: usize = 64;
+/// find 单条镜像 args_schema 序列化字节上限（超限置 null + 注记；参数
+/// 形态以 invoke 期 R4 校验回灌为准）。
+const MIRROR_SCHEMA_CAP_BYTES: usize = 4 * 1024;
 
 // ---------------------------------------------------------------------------
 // op_type slug 投影（工具侧单一真相源）
@@ -246,6 +252,27 @@ fn honest_err(msg: impl std::fmt::Display) -> String {
     format!("Tool error: {msg}")
 }
 
+/// path 占位符值 percent-encode（边界补强 2026-10-20）：清单里 `path =
+/// "/orders/{id}"` 的占位符是**单 path segment** 语义，值必须逐字节编码
+/// 后才能嵌入 URL——裸替换会让 `/ ? # %` 逃逸 segment（`../../` 层级
+/// 穿越、`?` 追加 query、`#` 截断 path），绕开清单作者声明的端点形态。
+/// 编码集合取保守路线：RFC 3986 unreserved 去掉 `.`（点也编码——`..`
+/// 段会被客户端/服务端按 remove_dot_segments 规范化成层级上升，编码成
+/// `%2E%2E` 后只降级为 segment 内字面值）。UTF-8 逐字节编码，非 ASCII
+/// 值天然合规。query 参数不走这里（reqwest `.query()` 已统一编码）。
+fn encode_path_segment(val: &str) -> String {
+    let mut out = String::with_capacity(val.len());
+    for b in val.bytes() {
+        match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 /// 静态头 + 凭据头合并（A 段 manifest 增强）：同名裁决 = **vault 凭据胜**
 /// ——静态头（`[connector.http.headers]`）是清单作者的缺省形态，凭据注入
 /// 是运行时的显式意图；头名比较按 ASCII 小写折叠（HTTP 头名大小写不敏感）。
@@ -318,42 +345,74 @@ impl ConnectorFindTool {
     /// B2+B3：单 connector 的镜像 op 枚举（独占声明为空 / 无 loop = 空表）。
     /// 基线按 server 自述 annotations hints 定档（B3 四档，registry::
     /// mirror_baseline）；description 随行（A4 检索词元 + 展示）。
-    fn mirrors_of(&self, c: &ValidatedConnector) -> Vec<serde_json::Value> {
+    ///
+    /// 资源上限（边界补强 2026-10-20）：接管面可能很大（上百工具 server），
+    /// 一次 find 全量输出 = agent 上下文爆炸。两道闸：
+    /// - 条数 `MIRROR_LIST_CAP`：截断后由调用方注记（mirrors_truncated）；
+    /// - 单条 `args_schema` 序列化超 `MIRROR_SCHEMA_CAP_BYTES` 置 null +
+    ///   `args_schema_note`（巨型 schema 模型也读不完，参数形态以 invoke
+    ///   期 R4 校验回灌为准）。
+    fn mirrors_of(&self, c: &ValidatedConnector) -> (Vec<serde_json::Value>, usize) {
         if c.exclusive_mcp.is_empty() {
-            return Vec::new();
+            return (Vec::new(), 0);
         }
         let loop_arc = self.loop_ref.read().clone().and_then(|w| w.upgrade());
-        let snapshot = loop_arc.map(|l| l.mcp_tool_snapshot());
+        let snapshot = loop_arc.as_ref().map(|l| l.mcp_tool_snapshot());
         let guard = snapshot.as_ref().map(|s| s.read());
-        let names: Vec<String> = guard
-            .as_deref()
-            .map(|g| g.iter().map(|e| e.name.clone()).collect())
-            .unwrap_or_default();
-        nemesis_connectors::registry::exclusive_mirror_ops(&self.workspace, c, &names)
-            .into_iter()
-            .map(|(tool, _)| {
-                let entry = guard
-                    .as_deref()
-                    .and_then(|g| g.iter().find(|e| e.name == tool));
-                let parameters = entry.map(|e| e.parameters.clone());
-                let description = entry.map(|e| e.description.clone()).unwrap_or_default();
-                let (risk, class, confirm) = nemesis_connectors::registry::mirror_baseline(
-                    entry.and_then(|e| e.read_only_hint),
-                    entry.and_then(|e| e.destructive_hint),
-                );
-                serde_json::json!({
-                    "id": tool,
-                    "intent": ["auto-mirror（独占接管基线）"],
-                    "description": description,
-                    "risk": risk.as_str(),
-                    "class": class.as_str(),
-                    "confirm_required": confirm,
-                    "finance_budget": false,
-                    "binding": format!("mirror:tool:{tool}"),
-                    "args_schema": parameters,
-                })
+        // G1 隐藏工具滤出镜像清单：config hidden 是绝对闸（任何出处都拒，
+        // dispatch 端 F8 闸先于 B2 出处闸），列出来也调不动——枚举面与
+        // 执行闸同源过滤，不留「find 列出、invoke 拒绝」的死链。
+        let names: Vec<String> = match (&guard, loop_arc.as_ref()) {
+            (Some(g), Some(l)) => g
+                .iter()
+                .map(|e| e.name.clone())
+                .filter(|n| !l.tool_matches_hidden_config(n))
+                .collect(),
+            _ => Vec::new(),
+        };
+        let mut rows: Vec<serde_json::Value> = nemesis_connectors::registry::exclusive_mirror_ops(
+            &self.workspace,
+            c,
+            &names,
+        )
+        .into_iter()
+        .map(|(tool, _)| {
+            let entry = guard
+                .as_deref()
+                .and_then(|g| g.iter().find(|e| e.name == tool));
+            let mut parameters = entry.map(|e| e.parameters.clone());
+            let mut schema_note: Option<String> = None;
+            if let Some(p) = &parameters {
+                let size = p.to_string().len();
+                if size > MIRROR_SCHEMA_CAP_BYTES {
+                    schema_note = Some(format!(
+                        "args_schema 过大（{size} 字节），已省略——参数形态以 invoke 期校验回灌为准"
+                    ));
+                    parameters = None;
+                }
+            }
+            let description = entry.map(|e| e.description.clone()).unwrap_or_default();
+            let (risk, class, confirm) = nemesis_connectors::registry::mirror_baseline(
+                entry.and_then(|e| e.read_only_hint),
+                entry.and_then(|e| e.destructive_hint),
+            );
+            serde_json::json!({
+                "id": tool,
+                "intent": ["auto-mirror（独占接管基线）"],
+                "description": description,
+                "risk": risk.as_str(),
+                "class": class.as_str(),
+                "confirm_required": confirm,
+                "finance_budget": false,
+                "binding": format!("mirror:tool:{tool}"),
+                "args_schema": parameters,
+                "args_schema_note": schema_note,
             })
-            .collect()
+        })
+        .collect();
+        let truncated = rows.len().saturating_sub(MIRROR_LIST_CAP);
+        rows.truncate(MIRROR_LIST_CAP);
+        (rows, truncated)
     }
 
     /// B2+A4：镜像 (id, description) 清单（检索补漏用；独占声明为空 /
@@ -367,21 +426,23 @@ impl ConnectorFindTool {
         };
         let snapshot = loop_arc.mcp_tool_snapshot();
         let guard = snapshot.read();
-        nemesis_connectors::registry::exclusive_mirror_ops(
-            &self.workspace,
-            c,
-            &guard.iter().map(|e| e.name.clone()).collect::<Vec<_>>(),
-        )
-        .into_iter()
-        .map(|(t, _)| {
-            let desc = guard
-                .iter()
-                .find(|e| e.name == t)
-                .map(|e| e.description.clone())
-                .unwrap_or_default();
-            (t, desc)
-        })
-        .collect()
+        // G1 隐藏工具滤出（绝对闸同源过滤，见 mirrors_of 注记）。
+        let names: Vec<String> = guard
+            .iter()
+            .map(|e| e.name.clone())
+            .filter(|n| !loop_arc.tool_matches_hidden_config(n))
+            .collect();
+        nemesis_connectors::registry::exclusive_mirror_ops(&self.workspace, c, &names)
+            .into_iter()
+            .map(|(t, _)| {
+                let desc = guard
+                    .iter()
+                    .find(|e| e.name == t)
+                    .map(|e| e.description.clone())
+                    .unwrap_or_default();
+                (t, desc)
+            })
+            .collect()
     }
 }
 
@@ -469,7 +530,7 @@ impl Tool for ConnectorFindTool {
         for h in hits.iter_mut() {
             // B2：镜像 op 并入展示与命中（token 命中镜像工具名**或描述词根**
             // = 该 connector 也算命中——独占接管面按原生根名词/描述可检索）。
-            let mirrors = self.mirrors_of(&h.connector);
+            let (mirrors, mirrors_truncated) = self.mirrors_of(&h.connector);
             let mirror_matched: Vec<String> = mirrors
                 .iter()
                 .filter(|m| {
@@ -505,6 +566,10 @@ impl Tool for ConnectorFindTool {
                 // B2：镜像 op 追加在显式 ops 之后（独立数组——形态不同，
                 // 基线档位见各字段；consume 方式与 ops 一致）。
                 "mirrors": mirrors,
+                // 资源上限注记（边界补强 2026-10-20）：镜像清单截断数——
+                // 0/缺省 = 未截断；>0 = 还有这么多镜像未列出（按更精确的
+                // query 检索或管理页查看全量）。
+                "mirrors_truncated": mirrors_truncated,
             }));
         }
         let total = connectors.len();
@@ -642,7 +707,13 @@ impl ConnectorInvokeTool {
         let loop_arc = self.loop_ref.read().clone().and_then(|w| w.upgrade())?;
         let snapshot = loop_arc.mcp_tool_snapshot();
         let guard = snapshot.read();
-        let names: Vec<String> = guard.iter().map(|e| e.name.clone()).collect();
+        // G1 隐藏工具滤出（绝对闸同源过滤，见 mirrors_of 注记）——隐藏
+        // 工具的镜像 id 在此落 None，走「无 op」诚实报错而非 dispatch 死拒。
+        let names: Vec<String> = guard
+            .iter()
+            .map(|e| e.name.clone())
+            .filter(|n| !loop_arc.tool_matches_hidden_config(n))
+            .collect();
         let mirrors =
             nemesis_connectors::registry::exclusive_mirror_ops(&self.workspace, c, &names);
         if !mirrors.iter().any(|(t, _)| t == op_id) {
@@ -898,7 +969,7 @@ impl ConnectorInvokeTool {
                     } else {
                         format!(
                             "；该 connector 独占接管 MCP server（{}）——镜像 op \
-                             = 原生工具名（connector_find 可列，封禁者除外）",
+                             = 原生工具名（connector_find 可列，封禁/配置隐藏者除外）",
                             c.exclusive_mcp.join(", ")
                         )
                     };
@@ -1521,6 +1592,8 @@ impl ConnectorInvokeTool {
             .ok_or_else(|| format!("connector `{}` 缺 [connector.http].base", c.id))?;
 
         // 占位符展开：{name} ← args[name]；其余参数留给 query/body。
+        // 值经 encode_path_segment（占位符 = 单 path segment 语义，
+        // 边界补强 2026-10-20）。
         let mut url = format!("{}{}", base.trim_end_matches('/'), path);
         let mut consumed = std::collections::BTreeSet::new();
         for ph in placeholders {
@@ -1531,7 +1604,7 @@ impl ConnectorInvokeTool {
                 serde_json::Value::String(s) => s.clone(),
                 other => other.to_string(),
             };
-            url = url.replace(&format!("{{{ph}}}"), &val);
+            url = url.replace(&format!("{{{ph}}}"), &encode_path_segment(&val));
             consumed.insert(ph.clone());
         }
 

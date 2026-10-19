@@ -269,6 +269,35 @@ describe('ConnectorsView 管理面（新建/启停/删除）', () => {
     expect(w2.find('[data-test="create-modal"]').exists()).toBe(true)
     w2.unmount()
   })
+
+  it('dir==id 边界补强：模板 id 跟随目录名自动替换；手改 id 与目录名不一致时预检拦截不发请求', async () => {
+    const w = await mountView()
+    await w.find('[data-test="open-create"]').trigger('click')
+    await flushPromises()
+
+    // 输入目录名 → 模板占位 id 自动跟随（后端强制 dir==id）
+    await w.find('[data-test="create-dir"]').setValue('weather')
+    await flushPromises()
+    const tomlEl = w.find('[data-test="create-toml"]').element as HTMLTextAreaElement
+    expect(tomlEl.value).toContain('id = "weather"')
+    expect(tomlEl.value).not.toContain('id = "my-connector"')
+    w.unmount()
+
+    // 用户手改 id 后与目录名不一致 → 预检拦截，请求不发、模态不关
+    const w2 = await mountView()
+    await w2.find('[data-test="open-create"]').trigger('click')
+    await flushPromises()
+    const ta = w2.find('[data-test="create-toml"]')
+    await ta.setValue('[connector]\nid = "other-id"\nname = "X"\nversion = "0.1.0"\nkind = "local"\n\n[[op]]\nid = "noop"\nrisk = "low"\nclass = "read"\naction = "builtin.noop"\n')
+    await w2.find('[data-test="create-dir"]').setValue('my-dir')
+    await w2.find('[data-test="create-submit"]').trigger('click')
+    await flushPromises()
+    const createCalls = requestMock.mock.calls.filter((c: any[]) => c[1] === 'create')
+    expect(createCalls.length).toBe(0)
+    expect(w2.find('[data-test="create-error"]').text()).toContain('不一致')
+    expect(w2.find('[data-test="create-modal"]').exists()).toBe(true)
+    w2.unmount()
+  })
 })
 
 describe('ConnectorsView B4 总开关', () => {
