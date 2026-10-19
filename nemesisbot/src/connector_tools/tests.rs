@@ -691,6 +691,116 @@ http = { method = "GET", path = "/repos/{owner}/{repo}/issues" }
     );
 }
 
+/// T-CONN-1 ③a 回归锁（2026-10-19 ET 两连红）：无人值守 worker 上下文
+/// （channel=cluster / cluster-connector 两族）required 凭据缺失**不发卡**，
+/// 立即诚实 error 回流 A 端。broker 在场也不得阻塞——1ef104c7 回归实录：
+/// worker 发卡挂 300s 等不到人，A 端 150s 派发窗口先超时。判臂 = 墙钟：
+/// 正常路径 vault 解析毫秒级；回归臂卡挂满 300s 超时（错误字节才回落
+/// 原路径）——elapsed 断言红得有数字，不靠测试挂死暴露。本地交互（web）
+/// 路径的发卡行为归 credential_broker 既有测试，不重复。
+#[cfg(feature = "security")]
+#[test]
+fn test_cluster_channel_missing_credential_skips_card_and_errors_immediately() {
+    // std 锁 guard 不得活过 await（clippy await_holding_lock）——锁在同步
+    // 外壳持有，async 体经 current_thread block_on 执行（commands/connector
+    // demo 同款形态）。
+    let _env_guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(test_cluster_channel_missing_credential_skips_card_inner());
+}
+
+#[cfg(feature = "security")]
+async fn test_cluster_channel_missing_credential_skips_card_inner() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(
+        ws,
+        "credproof",
+        r#"
+[connector]
+id = "credproof"
+name = "Cred Proof"
+version = "0.1.0"
+kind = "rest"
+
+[connector.http]
+base = "http://127.0.0.1:9"
+
+[connector.credentials]
+tok = { required = true, into = "header:X-Proof" }
+
+[[op]]
+id = "ping"
+risk = "low"
+class = "network"
+http = { method = "GET", path = "/ping" }
+"#,
+    );
+    // vault fixture：有库但无该别名——解析必失败（触发面 = 发卡分支）。
+    unsafe { std::env::set_var("NEMESISBOT_VAULT_PASSPHRASE", "test-passphrase") };
+    let vault_path = nemesis_path::resolve_vault_path_in_workspace(ws);
+    nemesis_security::vault::VaultStore::create(
+        &vault_path,
+        nemesis_security::vault::VaultMode::Argon2id,
+        Some("test-passphrase"),
+    )
+    .expect("create vault");
+
+    // 装 broker（B4 生产形态：gateway 装配后 current() 在场——发卡分支
+    // 真实可达，而非靠 broker 缺席的快速路径）。
+    let broker = std::sync::Arc::new(crate::credential_broker::WebCredentialBroker::new(
+        ws.to_path_buf(),
+        None,
+    ));
+    crate::credential_broker::install(broker.clone());
+    struct BrokerGuard;
+    impl Drop for BrokerGuard {
+        fn drop(&mut self) {
+            crate::credential_broker::uninstall();
+        }
+    }
+    let _broker_guard = BrokerGuard;
+
+    let tool = invoke_tool(ws, &ws.join("config.json"));
+    // 判据 = UAT T-CONN-1 ③a 真实通道（远程执行面 RPC handler 构造的
+    // "cluster-connector"）；worker LLM 路径是 "cluster"，同判据族。
+    let cluster_ctx = RequestContext::new("cluster-connector", "chat-1", "user-1", "session-1");
+    let started = std::time::Instant::now();
+    let err = tool
+        .execute(
+            r#"{"connector":"credproof","op":"ping","args":{}}"#,
+            &cluster_ctx,
+        )
+        .await
+        .expect_err("worker context: missing credential must error immediately");
+    let elapsed = started.elapsed();
+    assert!(
+        err.contains("凭据槽位 `tok` 缺失"),
+        "worker 上下文应走原错误路径字节（诚实回流 A 端），msg: {err}"
+    );
+    assert!(
+        elapsed.as_secs() < 15,
+        "worker 上下文凭据缺失必须立即返回（实测 {elapsed:?}）——发卡阻塞 = \
+         T-CONN-1 回归（1ef104c7：挂 300s 拖死 A 端派发窗口）"
+    );
+    assert!(
+        broker.pending_cards().is_empty(),
+        "不得残留/发出 pending 卡: {:?}",
+        broker.pending_cards()
+    );
+    let receipts = list_receipts(ws, 50, None).expect("receipts");
+    assert!(
+        receipts.iter().all(|r| r.outcome != "executed"),
+        "缺失即拒绝，不得执行: {receipts:?}"
+    );
+    unsafe { std::env::remove_var("NEMESISBOT_VAULT_PASSPHRASE") };
+}
+
 // ---- 收官批 A2：Gitea 模板 connector（mock 快速层）----
 
 /// workspace 模板恒合法 + op 面与验收表逐一对齐 + 越界面（危险 op 不声明）。

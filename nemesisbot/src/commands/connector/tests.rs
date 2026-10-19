@@ -21,6 +21,10 @@ fn test_demo_four_acts_evidence() {
         .build()
         .expect("runtime")
         .block_on(test_demo_four_acts_evidence_inner());
+    // demo_acts 就地设 env 不摘（CLI 短命进程无需收尾）——测试进程长命，
+    // 同进程并行下残留 `nemesis-demo` 会泄漏给后续 vault 用例；锁仍在持
+    // （guard 未 drop），摘除无竞争。
+    unsafe { std::env::remove_var("NEMESISBOT_VAULT_PASSPHRASE") };
 }
 
 async fn test_demo_four_acts_evidence_inner() {

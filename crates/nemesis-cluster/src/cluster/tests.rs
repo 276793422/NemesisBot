@@ -9619,7 +9619,7 @@ fn test_set_build_hash_reflects_local_registry_entry() {
     cluster.sync_local_node_to_registry();
     let me = cluster
         .registry
-        .get(&cluster.node_id())
+        .get(cluster.node_id())
         .expect("local entry");
     assert_eq!(
         me.build, "deadbeef",
