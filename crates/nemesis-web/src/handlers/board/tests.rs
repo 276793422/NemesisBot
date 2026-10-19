@@ -2037,6 +2037,10 @@ async fn issue_plan_confirm_creates_children_with_deps_origin_and_honest_degrade
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn dispatch_subissue_auto_gates_dependency_status_and_active_dispatch() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("auto-gates");
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
@@ -3403,6 +3407,10 @@ fn planner_child(
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn park_notice_dedup_parent_blocked_and_silent_sweep() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("park-dedup-block");
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
@@ -3473,6 +3481,10 @@ async fn park_notice_dedup_parent_blocked_and_silent_sweep() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn sweep_redispatches_when_matching_tags_peer_appears() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("sweep-revive");
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
@@ -3797,6 +3809,10 @@ async fn cancel_cascades_to_dependents() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn cancel_parent_cascades_children_via_parent_edge() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("cancel-parent-cascade");
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
@@ -3884,6 +3900,10 @@ async fn cancel_parent_cascades_children_via_parent_edge() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn dispatch_skips_children_of_cancelled_parent() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("dispatch-dead-parent");
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
@@ -4076,6 +4096,10 @@ fn no_parent(store: &Arc<BoardStore>) -> i64 {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn fallback_off_parks_as_before() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("fallback-off");
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
@@ -4110,6 +4134,10 @@ async fn fallback_off_parks_as_before() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn fallback_on_but_no_peers_still_parks() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("fallback-no-peer");
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
@@ -4138,6 +4166,10 @@ async fn fallback_on_but_no_peers_still_parks() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn fallback_role_depth_keeps_role_discipline() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("fallback-role-depth");
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
@@ -4210,6 +4242,10 @@ async fn fallback_role_depth_keeps_role_discipline() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn fallback_dispatches_to_relaxed_online_peer() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("fallback-relaxed");
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
@@ -4278,6 +4314,10 @@ async fn fallback_dispatches_to_relaxed_online_peer() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn fallback_pinned_target_name_match_and_offline_honesty() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("fallback-pin");
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
@@ -4344,6 +4384,10 @@ async fn fallback_pinned_target_name_match_and_offline_honesty() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn fallback_role_relaxed_ordering() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("fallback-role");
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
@@ -4404,6 +4448,10 @@ async fn fallback_role_relaxed_ordering() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn fallback_sweep_revives_parked_issue() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("fallback-sweep");
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
@@ -4828,6 +4876,10 @@ fn test_running_dispatch_lifecycle() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn inflight_gate_hits_canonical_worker_id_for_named_assignee() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("inflight-canonical");
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
@@ -11074,6 +11126,10 @@ async fn test_issue_timeline_surface_contract() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn ua_no_match_park_writes_handoff_archive() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 seed_plan/plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
     let dir = unique_dir("ua-handoff-ws");
     let ws = dir.join("workspace");
     std::fs::create_dir_all(&ws).unwrap();
