@@ -9662,6 +9662,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "verify-probe"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "nemesis-agent",
+ "nemesis-cluster",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "version-compare"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
