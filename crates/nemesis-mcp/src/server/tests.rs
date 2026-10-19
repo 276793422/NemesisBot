@@ -12,6 +12,7 @@ fn make_server() -> McpServer {
             "properties": { "message": { "type": "string" } },
             "required": ["message"]
         }),
+        ..Default::default()
     };
     let echo_handler: ToolHandler = Arc::new(|args| {
         let msg = args.get("message").and_then(|v| v.as_str()).unwrap_or("");
@@ -24,6 +25,7 @@ fn make_server() -> McpServer {
         name: "always_fail".into(),
         description: Some("Always returns an error".into()),
         input_schema: serde_json::json!({ "type": "object", "properties": {} }),
+        ..Default::default()
     };
     let fail_handler: ToolHandler = Arc::new(|_| ToolCallResult::err("deliberate failure"));
     server.register_tool(fail_tool, fail_handler).unwrap();
@@ -197,6 +199,7 @@ async fn register_duplicate_tool() {
         name: "dup".into(),
         description: None,
         input_schema: serde_json::json!({"type": "object"}),
+        ..Default::default()
     };
     let handler: ToolHandler = Arc::new(|_| ToolCallResult::ok("ok"));
     server.register_tool(tool.clone(), handler.clone()).unwrap();
@@ -220,6 +223,7 @@ fn tool_count_via_list() {
         name: "t1".into(),
         description: None,
         input_schema: serde_json::json!({"type": "object"}),
+        ..Default::default()
     };
     let handler: ToolHandler = Arc::new(|_| ToolCallResult::ok("ok"));
     server.register_tool(tool, handler).unwrap();
@@ -291,6 +295,7 @@ async fn multiple_tools_registered() {
             name: format!("tool_{}", i),
             description: Some(format!("Tool number {}", i)),
             input_schema: serde_json::json!({"type": "object"}),
+            ..Default::default()
         };
         let handler: ToolHandler = Arc::new(move |_| ToolCallResult::ok(format!("result_{}", i)));
         server.register_tool(tool, handler).unwrap();
@@ -322,6 +327,7 @@ async fn shared_server_register_tool() {
         name: "shared_tool".into(),
         description: None,
         input_schema: serde_json::json!({"type": "object"}),
+        ..Default::default()
     };
     let handler: ToolHandler = Arc::new(|_| ToolCallResult::ok("shared ok"));
     shared.register_tool(tool, handler).await.unwrap();
@@ -474,6 +480,7 @@ async fn register_and_call_tool_with_complex_args() {
         name: "compute".into(),
         description: None,
         input_schema: serde_json::json!({"type": "object"}),
+        ..Default::default()
     };
     let handler: ToolHandler = Arc::new(|args| {
         let a = args.get("a").and_then(|v| v.as_i64()).unwrap_or(0);

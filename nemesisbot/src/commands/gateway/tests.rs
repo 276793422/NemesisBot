@@ -40,16 +40,16 @@ fn test_parse_host_port_no_port() {
 // through silently on failure).
 // -------------------------------------------------------------------------
 
-#[cfg(all(feature = "desktop", feature = "memory"))]
+#[cfg(all(feature = "memory", feature = "security"))]
 use nemesis_memory::memory_tools::MemoryApprovalGate;
 
 /// Mock approval manager returning a canned decision.
-#[cfg(all(feature = "desktop", feature = "memory"))]
+#[cfg(all(feature = "memory", feature = "security"))]
 struct MockApproval {
     decision: Result<nemesis_security::auditor::ApprovalVerdict, String>,
 }
 
-#[cfg(all(feature = "desktop", feature = "memory"))]
+#[cfg(all(feature = "memory", feature = "security"))]
 impl nemesis_security::auditor::ApprovalManager for MockApproval {
     fn is_running(&self) -> bool {
         true
@@ -67,7 +67,7 @@ impl nemesis_security::auditor::ApprovalManager for MockApproval {
     }
 }
 
-#[cfg(all(feature = "desktop", feature = "memory"))]
+#[cfg(all(feature = "memory", feature = "security"))]
 fn mock_memory_gate(
     decision: Result<nemesis_security::auditor::ApprovalVerdict, String>,
 ) -> GatewayMemoryGate {
@@ -76,7 +76,7 @@ fn mock_memory_gate(
     GatewayMemoryGate::new(am)
 }
 
-#[cfg(all(feature = "desktop", feature = "memory"))]
+#[cfg(all(feature = "memory", feature = "security"))]
 #[tokio::test]
 async fn memory_gate_approves_when_user_approves() {
     let g = mock_memory_gate(Ok(nemesis_security::auditor::ApprovalVerdict::approved()));
@@ -84,7 +84,7 @@ async fn memory_gate_approves_when_user_approves() {
     assert!(g.approve_forget("forget session Y").await);
 }
 
-#[cfg(all(feature = "desktop", feature = "memory"))]
+#[cfg(all(feature = "memory", feature = "security"))]
 #[tokio::test]
 async fn memory_gate_denies_when_user_denies() {
     let g = mock_memory_gate(Ok(nemesis_security::auditor::ApprovalVerdict::denied()));
@@ -95,7 +95,7 @@ async fn memory_gate_denies_when_user_denies() {
     );
 }
 
-#[cfg(all(feature = "desktop", feature = "memory"))]
+#[cfg(all(feature = "memory", feature = "security"))]
 #[tokio::test]
 async fn memory_gate_denies_on_timeout_or_error() {
     // Popup timeout / IPC error → request_approval_sync returns Err → must deny.
@@ -2851,7 +2851,7 @@ name = "Empty Addr Peer"
                 .enable_all()
                 .build()
                 .expect("build gateway test runtime");
-            let _ = rt.block_on(async { run(false, false, &[]).await });
+            let _ = rt.block_on(async { run(false, false, &[], false).await });
         })
         .expect("spawn gateway thread");
 
@@ -4179,7 +4179,7 @@ variables: {}
                     .enable_all()
                     .build()
                     .expect("build gateway conflict-test runtime");
-                let _ = rt.block_on(async { run(false, false, &[]).await });
+                let _ = rt.block_on(async { run(false, false, &[], false).await });
             })
             .expect("spawn gateway thread");
 
@@ -8001,4 +8001,69 @@ fn test_roster_state_other_agent_alive_does_not_leak() {
     // 别的 agent 存活不能让本条变 running。
     let alive: std::collections::HashSet<String> = ["other".to_string()].into_iter().collect();
     assert_eq!(post_agent::roster_state(&alive, "main", "active"), "active");
+}
+
+// -------------------------------------------------------------------------
+// migrate_legacy_max_tool_iterations（2026-10-19 旧模板值迁移）
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_migrate_legacy_max_tool_iterations_rewrites_fingerprint_20() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("config.json");
+    std::fs::write(
+        &cfg,
+        r#"{"agents":{"defaults":{"max_tool_iterations":20,"workspace":"w"}},"model_list":[]}"#,
+    )
+    .unwrap();
+    migrate_legacy_max_tool_iterations(&cfg);
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    assert_eq!(
+        v["agents"]["defaults"]["max_tool_iterations"],
+        serde_json::json!(0),
+        "旧模板指纹 20 必须被改写为 0（不限）"
+    );
+    // 迁移不得动其他键。
+    assert_eq!(v["agents"]["defaults"]["workspace"], serde_json::json!("w"));
+    assert_eq!(v["model_list"], serde_json::json!([]));
+}
+
+#[test]
+fn test_migrate_legacy_max_tool_iterations_leaves_user_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("config.json");
+    // 用户自选值（30 / 0 / 100 / 缺键）一律不碰。
+    for value in [30, 0, 100] {
+        std::fs::write(
+            &cfg,
+            format!(r#"{{"agents":{{"defaults":{{"max_tool_iterations":{value}}}}}}}"#),
+        )
+        .unwrap();
+        migrate_legacy_max_tool_iterations(&cfg);
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(
+            v["agents"]["defaults"]["max_tool_iterations"],
+            serde_json::json!(value),
+            "用户自选值 {value} 不得被迁移触碰"
+        );
+    }
+    std::fs::write(&cfg, r#"{"agents":{"defaults":{}}}"#).unwrap();
+    let before = std::fs::read_to_string(&cfg).unwrap();
+    migrate_legacy_max_tool_iterations(&cfg);
+    assert_eq!(
+        std::fs::read_to_string(&cfg).unwrap(),
+        before,
+        "缺键不得被迁移触碰"
+    );
+}
+
+#[test]
+fn test_migrate_legacy_max_tool_iterations_absent_file_is_noop() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("config.json");
+    // 不 panic、不创建文件（onboard 前的裸 home 是合法形态）。
+    migrate_legacy_max_tool_iterations(&cfg);
+    assert!(!cfg.exists());
 }

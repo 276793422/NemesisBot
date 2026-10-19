@@ -12,6 +12,7 @@
 //! patch 写盘失败）= `None` + warn，绝不阻断任务回调主链路（回调才是
 //! 结果交付的唯一路径；证据缺席可观测但不停摆）。
 
+use nemesis_agent::checks_capture::CheckRecord;
 use nemesis_agent::r#loop::AgentLoop;
 
 /// 任务执行前的基线 tree 快照（git 形态才有；JSON 形态 = None）。
@@ -36,19 +37,22 @@ pub(crate) fn delivery_base_tree(_agent_loop: &AgentLoop) -> Option<String> {
 ///
 /// `base_tree` 传 [`delivery_base_tree`] 的执行前快照；`None` = 执行前就
 /// 无基线（JSON 形态 / 影子库异常）→ 按空树基线整包 diff（capture 层
-/// canonical 语义）。
+/// canonical 语义）。`checks` = 任务窗口内检查类工具的执行证据
+/// （`checks_capture` 捕获，cluster_agent run 前后 begin/take；空 = 没跑
+/// 过检查，诚实缺席不造值）。
 ///
 /// 返回 payload["delivery"] 值：`DeliveryBranchCapture` 序列化 + `branch`
-/// /`task_id`/`node`/`patch_path` 上下文字段。任何失败 = None + warn。
+/// /`task_id`/`node`/`patch_path`/`checks` 上下文字段。任何失败 = None + warn。
 #[cfg(feature = "checkpoint-git")]
 pub(crate) fn capture_task_delivery(
     agent_loop: &AgentLoop,
     task_id: &str,
     base_tree: Option<&str>,
     self_node_id: &str,
+    checks: Vec<CheckRecord>,
 ) -> Option<serde_json::Value> {
     let store = agent_loop.checkpoint_store()?;
-    capture_task_delivery_with_store(&store, task_id, base_tree, self_node_id)
+    capture_task_delivery_with_store(&store, task_id, base_tree, self_node_id, checks)
 }
 
 /// checkpoint-git 关：交付门是 git 影子库增强证据面——恒 None。模块头
@@ -59,6 +63,7 @@ pub(crate) fn capture_task_delivery(
     _task_id: &str,
     _base_tree: Option<&str>,
     _self_node_id: &str,
+    _checks: Vec<CheckRecord>,
 ) -> Option<serde_json::Value> {
     None
 }
@@ -71,6 +76,7 @@ pub(crate) fn capture_task_delivery_with_store(
     task_id: &str,
     base_tree: Option<&str>,
     self_node_id: &str,
+    checks: Vec<CheckRecord>,
 ) -> Option<serde_json::Value> {
     if task_id.is_empty() {
         return None;
@@ -149,6 +155,13 @@ pub(crate) fn capture_task_delivery_with_store(
             "patch_path".into(),
             serde_json::Value::String(patch_display),
         );
+        // ②typed checks 块：任务窗口内检查类工具的执行证据。空 = 没跑过
+        // 检查（诚实缺席——文档类职能的合法形态，绝不造空壳条目）。
+        if !checks.is_empty()
+            && let Ok(v) = serde_json::to_value(&checks)
+        {
+            obj.insert("checks".into(), v);
+        }
     }
     Some(value)
 }
@@ -162,6 +175,7 @@ pub(crate) fn capture_task_delivery_with_store(
     task_id: &str,
     base_tree: Option<&str>,
     self_node_id: &str,
+    _checks: Vec<CheckRecord>,
 ) -> Option<serde_json::Value> {
     let _ = (store, task_id, base_tree, self_node_id);
     None

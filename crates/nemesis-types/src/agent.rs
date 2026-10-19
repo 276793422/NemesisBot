@@ -185,18 +185,23 @@ pub enum AgentEvent {
     /// 结构化提问事件（F7，devtool-upgrade 阶段 5）。agent 的 `question`
     /// 工具发起提问时由 WebQuestionBroker 发布；web pump 转 SSE
     /// `question-asked` 全局广播，前端 QuestionCard 渲染选项卡（单选
-    /// radio / 多选 checkbox）。`question_id` 由工具侧生成（进程内自增），
-    /// WSAPI `question.respond` 用它路由回等待中的 `ask` 调用。
+    /// radio / 多选 checkbox / 单选超 6 项下拉收纳）或表单（B8：`fields`
+    /// 非空 = 表单形态，多字段一次收集）。`question_id` 由工具侧生成
+    /// （进程内自增），WSAPI `question.respond` 用它路由回等待中的
+    /// `ask` 调用。
     QuestionAsked {
         session_key: String,
         chat_id: String,
         question_id: String,
         /// 提问正文（工具 args 的 `question` 字段）。
         question: String,
-        /// 候选选项（工具 args 的 `options`，≥2 项）。
+        /// 候选选项（工具 args 的 `options`，≥2 项；表单形态为空）。
         options: Vec<String>,
-        /// `true` = 用户可多选（checkbox）；`false` = 单选（radio）。
+        /// `true` = 用户可多选（checkbox）；`false` = 单选（radio/下拉）。
         multi: bool,
+        /// 表单字段（B8）；空 = 选项形态。前端按字段渲染
+        /// text 输入框 / select 下拉，作答经 `respond` 的 `values` 送回。
+        fields: Vec<QuestionField>,
         /// 等待窗口（秒）——前端倒计时与之对齐，超时工具侧收到
         /// Timeout 结局并按最佳判断继续。
         timeout_secs: u64,
@@ -437,6 +442,26 @@ pub trait ApprovalResponder: Send + Sync {
     fn pending(&self) -> Vec<serde_json::Value>;
 }
 
+/// B8（提问两形态）：表单字段定义（question 工具 form 形态的单个字段）。
+/// 序列化形态对齐工具 schema（`type` 键）与前端渲染需求。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionField {
+    /// 回答键名（object 回灌的 key；一次提问内唯一，非空）。
+    pub key: String,
+    /// 展示标签（非空）。
+    pub label: String,
+    /// 字段类型：`"text"` = 单行文本输入；`"select"` = 从 `options` 单选。
+    /// 值域在工具侧解析时白名单校验（其他值诚实拒绝）。
+    #[serde(rename = "type")]
+    pub field_type: String,
+    /// `true` = 必填（作答校验非空）；缺省 false。
+    #[serde(default)]
+    pub required: bool,
+    /// `select` 字段的候选（2-6 项非空）；`text` 字段为空向量。
+    #[serde(default)]
+    pub options: Vec<String>,
+}
+
 /// F7（devtool-upgrade 阶段 5）：单次结构化提问请求（question 工具 →
 /// broker 方向的载荷）。`question_id` 由工具侧生成（进程内自增，如 `q-1`）。
 #[derive(Debug, Clone)]
@@ -444,10 +469,13 @@ pub struct QuestionRequest {
     pub question_id: String,
     /// 提问正文（须自含——模型不再补话）。
     pub question: String,
-    /// 候选选项（≥2 项）。
+    /// 候选选项（≥2 项；B8 表单形态为空）。
     pub options: Vec<String>,
     /// `true` = 用户可多选；`false` = 单选。
     pub multi: bool,
+    /// B8：表单字段；**空 = 选项形态**（legacy 单/多选），非空 = 表单形态
+    /// （此时 `options`/`multi` 不参与语义）。
+    pub fields: Vec<QuestionField>,
     /// 提问所属会话（事件透传给前端）。
     pub chat_id: String,
     pub session_key: String,
@@ -456,11 +484,13 @@ pub struct QuestionRequest {
 }
 
 /// F7：提问结局。`Answered` 携带用户选中项（单选恰一项，均为工具给过的
-/// 选项原文）；`Timeout` = 窗口内无人作答（工具侧回灌「按最佳判断继续」，
-/// 不是错误）。
+/// 选项原文）；`AnsweredForm`（B8）携带表单作答（键=字段 key，值=文本或
+/// 选中项原文；可选空值字段已剔除）；`Timeout` = 窗口内无人作答（工具侧
+/// 回灌「按最佳判断继续」，不是错误）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuestionOutcome {
     Answered(Vec<String>),
+    AnsweredForm(std::collections::BTreeMap<String, String>),
     Timeout,
 }
 
@@ -480,10 +510,22 @@ pub trait QuestionAsker: Send + Sync {
 /// 结构化提问响应端 trait（F7，WSAPI → broker 方向）。放在 nemesis-types
 /// 让 nemesis-web 经 agent_loop 槽触达（同 [`ApprovalResponder`] 先例）。
 pub trait QuestionResponder: Send + Sync {
-    /// 送出用户作答。`Ok(true)` = 送达（先到先得）；`Err` = 请求不存在
-    /// （已超时清理/已作答/broker 未装配）或载荷非法（空选择/非候选选项/
-    /// 单选多项——校验失败时请求留在 pending，用户可修正重试）。
+    /// 送出用户作答（选项形态）。`Ok(true)` = 送达（先到先得）；`Err` =
+    /// 请求不存在（已超时清理/已作答/broker 未装配）或载荷非法（空选择/
+    /// 非候选选项/单选多项——校验失败时请求留在 pending，用户可修正重试）。
+    /// 对表单形态的请求诚实报错（表单须走 [`QuestionResponder::respond_form`]）。
     fn respond(&self, question_id: &str, selected: Vec<String>) -> Result<bool, String>;
+
+    /// B8（提问两形态）：送出用户表单作答（`values` 键=字段 key，值=文本
+    /// 或选中项原文）。校验语义同 [`QuestionResponder::respond`]：`Ok(true)`
+    /// = 送达；`Err` = 请求不存在 / 载荷非法（未知键/必填空值/select 非候
+    /// 选——校验失败时请求留在 pending，用户可修正重试）。对选项形态的
+    /// 请求诚实报错（选项须走 [`QuestionResponder::respond`]）。
+    fn respond_form(
+        &self,
+        question_id: &str,
+        values: &std::collections::BTreeMap<String, String>,
+    ) -> Result<bool, String>;
 
     /// 当前等待作答的提问元数据列表（前端刷新/恢复用）。
     fn pending(&self) -> Vec<serde_json::Value>;

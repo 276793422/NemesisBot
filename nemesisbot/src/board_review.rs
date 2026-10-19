@@ -1645,30 +1645,148 @@ async fn review_issue(
 
     // ---- G4 交付证据契约（2026-10-18 批六）：PASS 必须有交付记录背书。
     // 置位面：issue 级 `requires_evidence`（AC 含 file: 锚点建单时自动置
-    // 位，恒生效）∪ 全局 `board.review.require_delivery_evidence`（所有单
-    // 子加码）。校验对象 = 最新派发任务在 tasks.db deliveries 表的记录
-    // （A 端 handle_task_complete 落账，幂等键 = task_id）；delivered/
-    // confirmed 两态算在场，rejected 不算。缺失 = 确定性降级 FAIL——结构
-    // 事实零 token 可判（不劳语义评审，也不进 B2b 自检挂起：自检取证的
-    // 是执行证据，改变不了「没有交付记录」这个账本事实），gap 固定「缺交
-    // 易证据」前缀；后续重派/熔断/转人工全部走既有 FAIL 决策表，无新分支。
+    // 位，恒生效；F5：checkpoint-git 关的执行体建单时跳过自动置位）∪
+    // 全局 `board.review.require_delivery_evidence`（所有的单加码）。
+    // 校验对象 = 最新派发任务在 tasks.db deliveries 表的记录（A 端
+    // handle_task_complete 落账，幂等键 = task_id）；delivered/confirmed
+    // 两态算在场，rejected 不算。
+    // F5（二轮复评 2026-10-18）结构完整性升级：空壳记录（完成回调无条件
+    // 记账，payload 可为 Null）不再满足闸——payload JSON 必须带 `delivery`
+    // 结构（真走交付管线的 capture；普通 cluster_result 空壳行不算），
+    // `delivery.commit`/`.tree` 非空（不可变交付点），`patch_truncated=true`
+    // ⇒ `patch_path` 非空（截断必有盘上留底，G4 既有契约复用）。缺口分档
+    // 文案：无记录 / rejected / 无 delivery 结构（worker 未走交付管线或
+    // 执行体未编译交付管线 checkpoint-git）/ 缺 commit·tree / 截断无留底。
+    // ②typed 证据块（诚实边界收口 2026-10-19）加法演进：`delivery.files`
+    // / `delivery.checks` **在场时**无论开关都验形态（files path 复用
+    // anchor 路径形态闸——拒绝绝对路径/`..`/盘符/UNC，sha256 64-hex；
+    // checks 每条 tool/cmd 非空字符串 + ok 布尔 + summary 字符串），验不过
+    // = FAIL；缺席块行为不变。严格闸 `board.review.evidence_typed_required`
+    // （默认 **false** 烧入期）开启后 `files` 块必须在场（git tree diff
+    // 确定性派生，任何 git 交付都应可派生——缺席 = 证据面残缺）；`checks`
+    // **恒可选**（没跑检查 = 诚实的事实陈述，强制会诱发造值）。
+    // 全部 = 确定性降级 FAIL——结构事实零 token 可判（不劳语义评审，也不
+    // 进 B2b 自检挂起：自检取证改变不了账本事实），后续重派/熔断/转人工
+    // 全走既有 FAIL 决策表，无新分支。
+    // 版本绑定 = `dispatches.last().task_id`（最新派发锚）——评估方「产物
+    // 属于旧 attempt」已被此覆盖：重派产生新 task_id，旧记录不满足新锚。
     // 本闸在 B2b 之后执行：LLM 主动要证据的挂起路径优先走完，二段评审的
     // 结论回到这里同样过闸。
     let mut output = output;
     let evidence_required = cfg.review.require_delivery_evidence || issue.requires_evidence;
     if evidence_required && output.verdict == nemesis_board::ReviewVerdict::Pass {
-        let delivered = dispatches
-            .last()
-            .map(|d| d.task_id.clone())
-            .and_then(|task_id| {
-                deps.cluster
-                    .task_db()
-                    .and_then(|db| db.delivery_by_key(&task_id).ok())
-                    .flatten()
-                    .map(|rec| matches!(rec.status.as_str(), "delivered" | "confirmed"))
-            })
-            .unwrap_or(false);
-        if !delivered {
+        let evidence = dispatches.last().map(|d| d.task_id.clone()).and_then(|task_id| {
+            let db = deps.cluster.task_db()?;
+            let rec = db.delivery_by_key(&task_id).ok().flatten()?;
+            if !matches!(rec.status.as_str(), "delivered" | "confirmed") {
+                return Some(Err(format!(
+                    "缺交付证据：最新派发任务 {task_id} 的交付记录状态为 {}（rejected 不算在场）——交付已被拒。请走正常交付流程后重交。",
+                    rec.status
+                )));
+            }
+            let delivery = rec.payload.get("delivery").filter(|d| !d.is_null());
+            let Some(delivery) = delivery else {
+                return Some(Err(
+                    "缺交付证据：交付记录存在但 payload 无 delivery 结构——worker 未走交付管线，或执行体未编译交付管线（checkpoint-git 裁剪形态）。请用带交付管线的执行体重跑。".to_string(),
+                ));
+            };
+            let commit = delivery.get("commit").and_then(|v| v.as_str()).unwrap_or("");
+            let tree = delivery.get("tree").and_then(|v| v.as_str()).unwrap_or("");
+            if commit.is_empty() || tree.is_empty() {
+                return Some(Err(
+                    "缺交付证据：delivery 结构缺 commit/tree（不可变交付点缺失）——交付分支捕获不完整。请重跑任务以重新捕获交付。".to_string(),
+                ));
+            }
+            let truncated = delivery
+                .get("patch_truncated")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let patch_path = delivery
+                .get("patch_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if truncated && patch_path.is_empty() {
+                return Some(Err(
+                    "缺交付证据：patch 已截断但无 patch_path 盘上留底——截断交付必须留底（G4 契约）。请重跑任务以重新捕获交付。".to_string(),
+                ));
+            }
+            // ②typed files 块（在场即验形态，加法演进）：path 形态闸复用
+            // anchor 路径校验（解析期 FS 无关，集群跨平台拒绝 Windows 形态
+            // 绝对路径），sha256 = 64 位 hex。deletions 不在列表是 capture
+            // 侧语义（无内容可哈希），files_changed 计数仍在场可对照。
+            // 键在场但非数组同样是形态非法（不静默滑过）。
+            if let Some(files_val) = delivery.get("files") {
+                let Some(files) = files_val.as_array() else {
+                    return Some(Err(
+                        "交付证据 typed files 块形态非法：files 必须是数组。请重跑任务以重新捕获交付。".to_string(),
+                    ));
+                };
+                for f in files {
+                    let path = f.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                    let sha = f.get("sha256").and_then(|v| v.as_str()).unwrap_or("");
+                    if path.is_empty() || nemesis_board::anchor::validate_anchor_path_shape(path).is_err() {
+                        return Some(Err(format!(
+                            "交付证据 typed files 块形态非法：path「{path}」不是合法的仓库相对路径（拒绝绝对路径/`..`/盘符等）。请重跑任务以重新捕获交付。"
+                        )));
+                    }
+                    if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+                        return Some(Err(format!(
+                            "交付证据 typed files 块形态非法：path「{path}」的 sha256「{sha}」不是 64 位 hex。请重跑任务以重新捕获交付。"
+                        )));
+                    }
+                }
+            }
+            // ②typed checks 块（在场即验形态）：每条 = capture 侧
+            // CheckRecord wire 契约（tool/cmd 非空字符串 + ok 布尔 +
+            // summary 字符串；多余字段不拦——加法演进对齐 JSON Schema 默认）。
+            if let Some(checks_val) = delivery.get("checks") {
+                let Some(checks) = checks_val.as_array() else {
+                    return Some(Err(
+                        "交付证据 typed checks 块形态非法：checks 必须是数组。请重跑任务以重新捕获交付。".to_string(),
+                    ));
+                };
+                for c in checks {
+                    let tool = c.get("tool").and_then(|v| v.as_str()).unwrap_or("");
+                    let cmd = c.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
+                    let ok = c.get("ok").and_then(|v| v.as_bool());
+                    let summary = c.get("summary").and_then(|v| v.as_str());
+                    if tool.trim().is_empty() || cmd.trim().is_empty() || ok.is_none() || summary.is_none() {
+                        return Some(Err(
+                            "交付证据 typed checks 块形态非法：每条记录须含非空 tool/cmd、布尔 ok、字符串 summary。请重跑任务以重新捕获交付。".to_string(),
+                        ));
+                    }
+                }
+            }
+            // 严格闸（默认 false 烧入期，翻闸须用户裁决）：files 必须在场。
+            // capture 侧空列表 skip 序列化 = 缺席，两态等价处理。
+            if cfg.review.evidence_typed_required
+                && delivery
+                    .get("files")
+                    .and_then(|v| v.as_array())
+                    .is_none_or(|a| a.is_empty())
+            {
+                return Some(Err(
+                    "交付缺类型化证据块：delivery.files 不在场——git tree diff 应可确定性派生（任何 git 交付都有文件清单），缺席 = 证据面残缺。请用带交付管线的执行体重跑。".to_string(),
+                ));
+            }
+            Some(Ok(()))
+        });
+        if let Some(Err(gap)) = evidence {
+            output.verdict = nemesis_board::ReviewVerdict::Fail;
+            output.gap = gap.clone();
+            output
+                .reasons
+                .push("交付证据缺失/不完整（评审门强制，结构完整性校验 F5）".to_string());
+            let _ = post_review_comment(
+                store,
+                issue_id,
+                &deps.cluster,
+                &format!(
+                    "🔍 交付证据闸：评审结论 PASS 但交付证据结构校验未通过，按缺证据降级 FAIL 处置（重派/转人工走既有 FAIL 流程）。\n\n缺口：{gap}"
+                ),
+            );
+            warn!("[BoardReview] issue {issue_id} 交付证据缺失：PASS 降级 FAIL（{gap}）");
+        } else if evidence.is_none() {
             output.verdict = nemesis_board::ReviewVerdict::Fail;
             output.gap = "缺交付证据：本单要求交付记录背书（AC 含 file: 锚点或全局交付证据开关生效），但最新派发任务在交付账本中无 delivered/confirmed 记录——worker 未走交付管线或交付已被拒。请走正常交付流程后重交。".to_string();
             output.reasons.push(

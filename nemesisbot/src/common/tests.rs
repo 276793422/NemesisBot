@@ -762,7 +762,6 @@ fn test_ensure_exe_in_path() {
 // - max_level_filter 五档映射（TRACE 臂只在此直测可达：init_logger 把
 //   TRACE 折到 DEBUG，永不产出 Level::TRACE）
 // - run_interactive_mode 的 EOF 分支（cargo test stdin 是管道 EOF）
-// - setup_cron_tool 组件可用
 // =========================================================================
 
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
@@ -975,14 +974,9 @@ fn max_level_filter_maps_all_five_levels() {
 // [2026-08-27 R9 死码处置] run_interactive_mode_returns_ok_on_stdin_eof
 // 随 run_interactive_mode 一并删除：该函数全仓库零生产调用方（用户
 // 2026-08-27 裁决删除），测试无存续对象。
-
-#[tokio::test]
-async fn setup_cron_tool_returns_wired_service_and_tool() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (service, _tool) = setup_cron_tool(&tmp.path().join("workspace"));
-    // service 可锁定（与生产 gateway 注入 BotService 的形态一致）。
-    let _guard = service.lock().await;
-}
+// [2026-10-19] setup_cron_tool_returns_wired_service_and_tool 随
+// setup_cron_tool 一并删除：该函数全仓库零生产调用方（dead code，生产
+// 注册的是 nemesis-agent loop_tools 的 CronTool），测试无存续对象。
 
 // ===========================================================================
 // r9_zero（R9 补测批零头组，2026-08-27）：resolve_home 的「exe 旁 .nemesisbot」

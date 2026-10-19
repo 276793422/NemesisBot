@@ -189,6 +189,7 @@ fn make_tool(
         name: name.to_string(),
         description: desc.map(String::from),
         input_schema: schema,
+        ..Default::default()
     }
 }
 
@@ -1014,10 +1015,13 @@ fn test_register_shared_tools_includes_i2c_spi_always() {
 
 #[test]
 fn test_register_shared_tools_with_mcp_snapshot_provided() {
-    let snap = Arc::new(parking_lot::RwLock::new(vec![(
-        "foo".to_string(),
-        "bar".to_string(),
-    )]));
+    let snap = Arc::new(parking_lot::RwLock::new(vec![McpToolSnapshotEntry {
+        name: "foo".to_string(),
+        description: "bar".to_string(),
+        parameters: serde_json::json!({"type": "object"}),
+        read_only_hint: None,
+        destructive_hint: None,
+    }]));
     let cfg = SharedToolConfig {
         mcp_tool_snapshot: Some(snap),
         ..Default::default()

@@ -1,0 +1,26 @@
+[package]
+name = "verify-probe"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "verify-probe"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }
+nemesis-agent = { workspace = true }
+nemesis-cluster = { workspace = true, optional = true }
+
+[features]
+# iroh 腿（绑端点/ping）依赖 cluster-roaming——iroh 编译重，按需启用：
+#   cargo run -p verify-probe --features iroh -- iroh-self
+# 默认不启用：workspace 全量构建零新增权重，delegate 腿 / nic 子命令不受影响。
+default = []
+iroh = ["dep:nemesis-cluster", "nemesis-cluster/cluster-roaming"]
+
+[lints]
+workspace = true

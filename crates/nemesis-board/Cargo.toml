@@ -22,5 +22,11 @@ nemesis-utils = { workspace = true, features = ["sqlite-preflight"] }
 nemesis-types = { workspace = true }
 nemesis-prompts = { workspace = true }
 
+[features]
+# F5（2026-10-18 二轮复评）：纯 cfg 旗标（无依赖变化）——nemesisbot 的
+# checkpoint-git 穿透。关 = 执行体无交付管线（delivery 恒缺），
+# requires_evidence 建单自动置位跳过（否则证据闸对这些单恒 FAIL）。
+checkpoint-git = []
+
 [lints]
 workspace = true

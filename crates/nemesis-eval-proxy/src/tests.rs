@@ -1,10 +1,14 @@
 //! Tests: spin up a local mock "real endpoint" (axum), start the proxy
-//! pointing at it, and verify pass-through + auth substitution.
+//! pointing at it, and verify pass-through + auth substitution + the A3
+//! per-launch token gate.
 
 use axum::Router;
 use axum::body::Body;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
+
+/// 测试用的每启动 fake key（A3 闸比对基准）。
+const FAKE: &str = "eval-fake-key-test";
 
 #[tokio::test]
 async fn proxy_forwards_and_swaps_auth() {
@@ -30,18 +34,19 @@ async fn proxy_forwards_and_swaps_auth() {
     let handle = crate::start(
         format!("http://127.0.0.1:{upstream_port}"),
         "sk-REAL-KEY".to_string(),
+        FAKE.to_string(),
     )
     .await
     .unwrap();
 
-    // Client call with a FAKE key through the proxy.
+    // Client call with the expected fake key through the proxy.
     let client = reqwest::Client::new();
     let resp = client
         .post(format!(
             "http://127.0.0.1:{}/v1/chat/completions",
             handle.port
         ))
-        .header("authorization", "Bearer eval-fake-key")
+        .header("authorization", format!("Bearer {FAKE}"))
         .json(&serde_json::json!({ "model": "test" }))
         .send()
         .await
@@ -56,6 +61,96 @@ async fn proxy_forwards_and_swaps_auth() {
     handle.shutdown().await;
 }
 
+// ==================== A3 每启动令牌闸 ====================
+
+#[tokio::test]
+async fn wrong_or_missing_token_is_401_without_upstream_contact() {
+    // 上游计数器：闸必须拦在转发之前——401 请求绝不能触达上游。
+    let hit = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hit_for_route = hit.clone();
+    let upstream = Router::new().route(
+        "/v1/anything",
+        get(move || {
+            let hit = hit_for_route.clone();
+            async move {
+                hit.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                "SHOULD_NOT_BE_REACHED"
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, upstream).await;
+    });
+
+    let handle = crate::start(
+        format!("http://127.0.0.1:{port}"),
+        "k".to_string(),
+        FAKE.to_string(),
+    )
+    .await
+    .unwrap();
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{}/v1/anything", handle.port);
+
+    // ① 错 key → 401
+    let resp = client
+        .get(&base)
+        .header("authorization", "Bearer some-other-key")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "wrong key must 401"
+    );
+
+    // ② 静态旧串（真实事故形态：硬编码 "eval-fake-key"）≠ 本次随机值 → 401
+    let resp = client
+        .get(&base)
+        .header("authorization", "Bearer eval-fake-key")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "stale static key must 401"
+    );
+
+    // ③ 无 auth 头 → 401（此前自动补真 key 放行，已移除）
+    let resp = client.get(&base).send().await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "missing auth must 401"
+    );
+
+    // ④ x-api-key 形态带对 key → 过闸（Anthropic lane）
+    let resp = client
+        .get(&base)
+        .header("x-api-key", FAKE)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "matching x-api-key must pass"
+    );
+
+    // 上游只被 ④ 触达一次——三个 401 全部拦在转发之前。
+    assert_eq!(
+        hit.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "401'd requests must never reach the upstream"
+    );
+
+    handle.shutdown().await;
+}
+
 #[tokio::test]
 async fn proxy_passes_query_and_path_verbatim() {
     let upstream = Router::new().route("/v1/anything", get(|| async { "PATH_OK" }));
@@ -65,16 +160,23 @@ async fn proxy_passes_query_and_path_verbatim() {
         let _ = axum::serve(listener, upstream).await;
     });
 
-    let handle = crate::start(format!("http://127.0.0.1:{port}"), "k".to_string())
-        .await
-        .unwrap();
-
-    let resp = reqwest::get(format!(
-        "http://127.0.0.1:{}/v1/anything?x=1&y=2",
-        handle.port
-    ))
+    let handle = crate::start(
+        format!("http://127.0.0.1:{port}"),
+        "k".to_string(),
+        FAKE.to_string(),
+    )
     .await
     .unwrap();
+
+    let resp = reqwest::Client::new()
+        .get(format!(
+            "http://127.0.0.1:{}/v1/anything?x=1&y=2",
+            handle.port
+        ))
+        .header("authorization", format!("Bearer {FAKE}"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(resp.text().await.unwrap(), "PATH_OK");
 
@@ -98,13 +200,17 @@ async fn proxy_streaming_body_passthrough() {
         let _ = axum::serve(listener, upstream).await;
     });
 
-    let handle = crate::start(format!("http://127.0.0.1:{port}"), "k".to_string())
-        .await
-        .unwrap();
+    let handle = crate::start(
+        format!("http://127.0.0.1:{port}"),
+        "k".to_string(),
+        FAKE.to_string(),
+    )
+    .await
+    .unwrap();
 
     let resp = reqwest::Client::new()
         .post(format!("http://127.0.0.1:{}/v1/stream", handle.port))
-        .header("authorization", "Bearer fake")
+        .header("authorization", format!("Bearer {FAKE}"))
         .body("")
         .send()
         .await
@@ -123,9 +229,13 @@ async fn proxy_streaming_body_passthrough() {
 #[tokio::test]
 async fn api_base_points_at_local_proxy_v1() {
     // start() 是纯被动代理，构造时不连上游；上游地址给个不可达值也无妨
-    let handle = crate::start("http://127.0.0.1:1".to_string(), "k".to_string())
-        .await
-        .unwrap();
+    let handle = crate::start(
+        "http://127.0.0.1:1".to_string(),
+        "k".to_string(),
+        FAKE.to_string(),
+    )
+    .await
+    .unwrap();
     assert!(handle.port > 0, "proxy should listen on a real port");
     assert_eq!(
         handle.api_base(),
@@ -142,11 +252,18 @@ async fn unreachable_upstream_returns_bad_gateway() {
     let dead_port = dead.local_addr().unwrap().port();
     drop(dead);
 
-    let handle = crate::start(format!("http://127.0.0.1:{dead_port}"), "k".to_string())
-        .await
-        .unwrap();
+    let handle = crate::start(
+        format!("http://127.0.0.1:{dead_port}"),
+        "k".to_string(),
+        FAKE.to_string(),
+    )
+    .await
+    .unwrap();
 
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/v1/whatever", handle.port))
+    let resp = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{}/v1/whatever", handle.port))
+        .header("authorization", format!("Bearer {FAKE}"))
+        .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
@@ -185,16 +302,20 @@ async fn x_api_key_swapped_to_bare_real_key() {
         let _ = axum::serve(listener, upstream).await;
     });
 
-    let handle = crate::start(format!("http://127.0.0.1:{port}"), "sk-REAL".to_string())
-        .await
-        .unwrap();
+    let handle = crate::start(
+        format!("http://127.0.0.1:{port}"),
+        "sk-REAL".to_string(),
+        FAKE.to_string(),
+    )
+    .await
+    .unwrap();
     let url = format!("http://127.0.0.1:{}/v1/echo", handle.port);
     let client = reqwest::Client::new();
 
     // ① 只带 x-api-key：换成裸真 key（非 Bearer），且不额外注入 authorization
     let body: serde_json::Value = client
         .post(&url)
-        .header("x-api-key", "fake-key")
+        .header("x-api-key", FAKE)
         .send()
         .await
         .unwrap()
@@ -213,8 +334,8 @@ async fn x_api_key_swapped_to_bare_real_key() {
     // ② 两个头都带：authorization → Bearer 真 key；x-api-key → 裸真 key
     let body: serde_json::Value = client
         .post(&url)
-        .header("authorization", "Bearer fake")
-        .header("x-api-key", "fake-key")
+        .header("authorization", format!("Bearer {FAKE}"))
+        .header("x-api-key", FAKE)
         .send()
         .await
         .unwrap()
@@ -223,18 +344,6 @@ async fn x_api_key_swapped_to_bare_real_key() {
         .unwrap();
     assert_eq!(body["auth"], "Bearer sk-REAL");
     assert_eq!(body["xkey"], "sk-REAL");
-
-    // ③ 一个 auth 头都不带：注入 authorization: Bearer 真 key
-    let body: serde_json::Value = client
-        .post(&url)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(body["auth"], "Bearer sk-REAL");
-    assert_eq!(body["xkey"], "<none>");
 
     handle.shutdown().await;
 }

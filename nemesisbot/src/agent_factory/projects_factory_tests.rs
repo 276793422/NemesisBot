@@ -733,7 +733,9 @@ async fn record_spec_build_consumes_tier_pin_and_tool_policy() {
     );
     record.exec_root = exec_root.to_string_lossy().to_string();
     record.tier = "mini".to_string();
-    record.tool_policy = serde_json::json!({ "deny": ["grep"] });
+    // F4：allow 白名单随 deny 一并挂记录——build 后断言直挂 loop 槽
+    // （不再折算注册面）。
+    record.tool_policy = serde_json::json!({ "deny": ["grep"], "allow": ["read_file", "exec"] });
     // G2：从记录映射后手动补 browser_profile（生产由 AgentLoopManager 赋值
     // ——这里直填，验证 spec→loop 构建消费链路）。
     let profile_dir = exec_root.join("browser-profile");
@@ -751,6 +753,18 @@ async fn record_spec_build_consumes_tier_pin_and_tool_policy() {
     assert!(
         hidden.contains(&"grep".to_string()),
         "deny 折算必须进合并隐藏表，实际 {hidden:?}"
+    );
+    // F4：allow 白名单**直挂 loop 槽**（旧折算取缔）——槽值原样、且注册面
+    // 不再被「∖ allow」折叠（折进 hidden 的话 web_fetch 这类非 allow 工具
+    // 就会出现在隐藏表里）。
+    assert_eq!(
+        built.tool_policy_allow(),
+        vec!["read_file".to_string(), "exec".to_string()],
+        "allow 必须直挂槽值（原样，不折算）"
+    );
+    assert!(
+        !hidden.contains(&"web_fetch".to_string()),
+        "非 allow 工具不得因 allow 白名单折进隐藏表（F4 取缔注册面∖allow 折算），实际 {hidden:?}"
     );
     // 记录钉死压过 config 档位（big）。
     assert_eq!(
@@ -770,5 +784,85 @@ async fn record_spec_build_consumes_tier_pin_and_tool_policy() {
         built.browser_profile(),
         Some(profile_dir.to_string_lossy().as_ref()),
         "spec.browser_profile 必须贯通到 loop"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 治理补全 P1（2026-10-19）：connector 治理面全覆盖——项目 loop 与主 loop
+// 同源接线（A1-b 回归锁：独占接管曾只接主 loop，项目会话成旁路）
+// ---------------------------------------------------------------------------
+
+/// 主 loop 与项目 loop 都注册 connector_find/connector_invoke，且独占隐藏表
+/// 供给器在位（dispatch 行为面观察：写 MCP 快照 + 落独占清单 → web 通道
+/// 直调被独占闸拦）。治理资产恒锚主 workspace——项目 loop 的独占闭包扫的
+/// 也是主 workspace 注册表（`shared.workspace_dir()`）。
+#[cfg(all(feature = "security", feature = "connectors"))]
+#[tokio::test]
+async fn connector_governance_wired_into_main_and_project_loops() {
+    let home = unique_home("gov");
+    write_mini_model_config(&home);
+    let project_dir = home.join("proj");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    let shared = shared_for(&home);
+
+    // 落独占清单（主 workspace 连接器注册表）——两个 loop 共用同一份。
+    let conn_dir = shared
+        .workspace_dir()
+        .join("connectors")
+        .join("gov-smoke-excl");
+    std::fs::create_dir_all(&conn_dir).unwrap();
+    std::fs::write(
+        conn_dir.join("connector.toml"),
+        "[connector]\n\
+         id = \"gov-smoke-excl\"\n\
+         name = \"gov\"\n\
+         version = \"0.1.0\"\n\
+         kind = \"local\"\n\
+         enabled = true\n\
+         exclusive_mcp = \"stub\"\n",
+    )
+    .unwrap();
+
+    let main_loop = build_agent_loop(&shared).expect("main loop builds");
+    assert_governance_wired(&main_loop).await;
+
+    let project = entry_for("gov-proj", &project_dir);
+    let session_store = main_loop.session_store().cloned().unwrap();
+    let project_loop =
+        build_project_agent_loop(&shared, &project, session_store).expect("project loop builds");
+    assert_governance_wired(&project_loop).await;
+
+    let _ = nemesis_utils::fsutil::remove_dir_all_retry(&conn_dir);
+}
+
+/// 单 loop 治理面断言：两工具在注册表 + 独占供给器在位（写快照 → 直调被
+/// 独占闸拦；表外工具不拦 = 对照）。
+#[cfg(all(feature = "security", feature = "connectors"))]
+async fn assert_governance_wired(agent_loop: &Arc<nemesis_agent::r#loop::AgentLoop>) {
+    let names = agent_loop.tool_names();
+    for expected in ["connector_find", "connector_invoke"] {
+        assert!(
+            names.iter().any(|n| n == expected),
+            "{expected} 必须在注册表（治理面全覆盖），实际 {names:?}"
+        );
+    }
+    // 模拟 server 已注册：快照直写（refresh_mcp_snapshot 的产物形态）。
+    *agent_loop.mcp_tool_snapshot().write() = vec![nemesis_agent::r#loop::McpToolSnapshotEntry {
+        name: "mcp_stub__read".to_string(),
+        description: String::new(),
+        parameters: serde_json::json!({"type": "object"}),
+        read_only_hint: None,
+        destructive_hint: None,
+    }];
+    let ctx = nemesis_agent::context::RequestContext::new("web", "chat1", "session1", "sess1");
+    let tc = nemesis_agent::types::ToolCallInfo {
+        id: "call_1".to_string(),
+        name: "mcp_stub__read".to_string(),
+        arguments: "{}".to_string(),
+    };
+    let out = agent_loop.handle_tool_call(&tc, &ctx).await;
+    assert!(
+        out.contains("exclusively managed"),
+        "独占供给器必须在位（未注册工具名按快照独占拦截），实际: {out}"
     );
 }

@@ -36,6 +36,7 @@ fn tool_definition_serialization() {
             },
             "additionalProperties": false,
         }),
+        ..Default::default()
     };
 
     let json = serde_json::to_string(&def).unwrap();
@@ -112,6 +113,7 @@ fn tool_definition_complex_params() {
             },
             "required": ["path"]
         }),
+        ..Default::default()
     };
 
     let json = serde_json::to_string(&def).unwrap();
@@ -186,6 +188,7 @@ fn tool_definition_default_name_pattern() {
         name: "mcp_test_server_echo".into(),
         description: "[MCP:test_server] Echo tool".into(),
         parameters: serde_json::json!({"type": "object"}),
+        ..Default::default()
     };
     assert!(def.name.starts_with("mcp_"));
     assert!(def.description.starts_with("[MCP:"));
@@ -217,11 +220,13 @@ fn tool_definition_name_uniqueness() {
         name: "mcp_server1_tool1".into(),
         description: "Tool 1 from server 1".into(),
         parameters: serde_json::json!({"type": "object"}),
+        ..Default::default()
     };
     let def2 = ToolDefinition {
         name: "mcp_server2_tool1".into(),
         description: "Tool 1 from server 2".into(),
         parameters: serde_json::json!({"type": "object"}),
+        ..Default::default()
     };
     assert_ne!(def1.name, def2.name);
 }
@@ -326,6 +331,7 @@ fn test_mcp_adapter_new_with_description() {
         name: "echo".to_string(),
         description: Some("Echo the input".to_string()),
         input_schema: serde_json::json!({"type": "object", "properties": {"message": {"type": "string"}}}),
+        ..Default::default()
     };
     let adapter = McpAdapter::new(Box::new(mock), mcp_tool.clone());
 
@@ -344,6 +350,7 @@ fn test_mcp_adapter_new_without_description() {
         name: "read".to_string(),
         description: None,
         input_schema: serde_json::json!({"type": "object"}),
+        ..Default::default()
     };
     let adapter = McpAdapter::new(Box::new(mock), mcp_tool);
 
@@ -359,6 +366,7 @@ fn test_mcp_adapter_name_sanitization() {
         name: "my tool@1".to_string(),
         description: Some("desc".to_string()),
         input_schema: serde_json::json!({}),
+        ..Default::default()
     };
     let adapter = McpAdapter::new(Box::new(mock), mcp_tool);
 
@@ -375,6 +383,7 @@ fn test_mcp_adapter_with_timeout() {
         name: "tool".to_string(),
         description: None,
         input_schema: serde_json::json!({}),
+        ..Default::default()
     };
     let adapter = McpAdapter::new(Box::new(mock), mcp_tool).with_timeout(Duration::from_secs(60));
     let def = adapter.definition();
@@ -389,6 +398,7 @@ fn test_mcp_adapter_parameters_structure() {
         name: "compute".to_string(),
         description: Some("Compute".to_string()),
         input_schema: schema.clone(),
+        ..Default::default()
     };
     let adapter = McpAdapter::new(Box::new(mock), mcp_tool);
 
@@ -408,6 +418,7 @@ async fn test_mcp_adapter_execute_text_result() {
         name: "echo".to_string(),
         description: None,
         input_schema: serde_json::json!({}),
+        ..Default::default()
     };
     let adapter = McpAdapter::new(Box::new(mock), mcp_tool);
 
@@ -425,6 +436,7 @@ async fn test_mcp_adapter_execute_error_result() {
         name: "fail_tool".to_string(),
         description: None,
         input_schema: serde_json::json!({}),
+        ..Default::default()
     };
     let adapter = McpAdapter::new(Box::new(mock), mcp_tool);
 
@@ -450,6 +462,7 @@ async fn test_mcp_adapter_execute_error_result_no_text() {
         name: "img_tool".to_string(),
         description: None,
         input_schema: serde_json::json!({}),
+        ..Default::default()
     };
     let adapter = McpAdapter::new(Box::new(mock), mcp_tool);
 
@@ -473,6 +486,7 @@ async fn test_mcp_adapter_execute_image_content() {
         name: "img_tool".to_string(),
         description: None,
         input_schema: serde_json::json!({}),
+        ..Default::default()
     };
     let adapter = McpAdapter::new(Box::new(mock), mcp_tool);
 
@@ -497,6 +511,7 @@ async fn test_mcp_adapter_execute_resource_content() {
         name: "res_tool".to_string(),
         description: None,
         input_schema: serde_json::json!({}),
+        ..Default::default()
     };
     let adapter = McpAdapter::new(Box::new(mock), mcp_tool);
 
@@ -521,6 +536,7 @@ async fn test_mcp_adapter_execute_unknown_content_type() {
         name: "custom_tool".to_string(),
         description: None,
         input_schema: serde_json::json!({}),
+        ..Default::default()
     };
     let adapter = McpAdapter::new(Box::new(mock), mcp_tool);
 
@@ -541,6 +557,7 @@ async fn test_mcp_adapter_execute_multiple_content() {
         name: "multi".to_string(),
         description: None,
         input_schema: serde_json::json!({}),
+        ..Default::default()
     };
     let adapter = McpAdapter::new(Box::new(mock), mcp_tool);
 
@@ -559,6 +576,7 @@ async fn test_mcp_adapter_execute_non_object_args() {
         name: "flex".to_string(),
         description: None,
         input_schema: serde_json::json!({}),
+        ..Default::default()
     };
     let adapter = McpAdapter::new(Box::new(mock), mcp_tool);
 
@@ -582,11 +600,13 @@ async fn test_create_tools_from_client() {
             name: "tool_a".to_string(),
             description: Some("Tool A".to_string()),
             input_schema: serde_json::json!({"type": "object"}),
+            ..Default::default()
         },
         McpTool {
             name: "tool_b".to_string(),
             description: None,
             input_schema: serde_json::json!({"type": "object"}),
+            ..Default::default()
         },
     ];
     let mock = MockClient::new("my_server", tools);
@@ -669,6 +689,7 @@ fn test_mcp_adapter_no_server_info() {
         name: "test".to_string(),
         description: None,
         input_schema: serde_json::json!({}),
+        ..Default::default()
     };
     let adapter = McpAdapter::new(Box::new(NoInfoMock), mcp_tool);
     let def = adapter.definition();
@@ -687,6 +708,7 @@ fn w4c_tool(name: &str, desc: Option<&str>, schema: serde_json::Value) -> McpToo
         name: name.to_string(),
         description: desc.map(|s| s.to_string()),
         input_schema: schema,
+        ..Default::default()
     }
 }
 
@@ -1013,6 +1035,7 @@ async fn test_s1_adapter_execute_unknown_content_type_falls_back_to_raw_text() {
         name: "aud_tool".to_string(),
         description: None,
         input_schema: serde_json::json!({}),
+        ..Default::default()
     };
     let adapter = McpAdapter::new(Box::new(mock), mcp_tool);
 

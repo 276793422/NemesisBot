@@ -1754,7 +1754,9 @@ async fn test_cron_tool_create_missing_schedule() {
     let args = serde_json::json!({"action": "create", "name": "test"}).to_string();
     let result = tool.execute(&args, &ctx).await;
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("Missing 'schedule'"));
+    // 2026-10-19 schema 对齐：错误信息点名三个结构化字段（schedule 字符串
+    // 已降级为回退通道，不再是一等参数）。
+    assert!(result.unwrap_err().contains("at_seconds"));
 }
 
 #[test]
@@ -3544,6 +3546,7 @@ fn test_format_discovery_result_basic() {
                 },
                 "required": ["query"]
             }),
+            ..Default::default()
         }],
         resources: vec![nemesis_mcp::types::Resource {
             uri: "file:///test.txt".to_string(),
@@ -3593,9 +3596,16 @@ async fn test_mcp_list_tool_empty() {
 
 #[tokio::test]
 async fn test_mcp_list_tool_with_tools() {
+    let mk = |name: &str, desc: &str| McpToolSnapshotEntry {
+        name: name.to_string(),
+        description: desc.to_string(),
+        parameters: serde_json::json!({"type": "object"}),
+        read_only_hint: None,
+        destructive_hint: None,
+    };
     let snapshot = Arc::new(parking_lot::RwLock::new(vec![
-        ("mcp_server_tool1".to_string(), "Tool 1 desc".to_string()),
-        ("mcp_server_tool2".to_string(), "Tool 2 desc".to_string()),
+        mk("mcp_server_tool1", "Tool 1 desc"),
+        mk("mcp_server_tool2", "Tool 2 desc"),
     ]));
     let tool = McpListTool::new(snapshot);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
@@ -3612,7 +3622,13 @@ async fn test_mcp_list_tool_dynamic_update() {
     let tool = McpListTool::new(snapshot.clone());
 
     // Add tools after creating the tool
-    *snapshot.write() = vec![("mcp_new_tool".to_string(), "New tool".to_string())];
+    *snapshot.write() = vec![McpToolSnapshotEntry {
+        name: "mcp_new_tool".to_string(),
+        description: "New tool".to_string(),
+        parameters: serde_json::json!({"type": "object"}),
+        read_only_hint: None,
+        destructive_hint: None,
+    }];
 
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool.execute("{}", &ctx).await.unwrap();

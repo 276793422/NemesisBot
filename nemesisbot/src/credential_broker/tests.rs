@@ -8,14 +8,15 @@
 //! `std::thread` 送裁决，规避 `block_in_place` 的 runtime 形态假设。
 //!
 //! env 纪律（vault handler 测试同族）：触及 `NEMESISBOT_VAULT_PASSPHRASE`
-//! 的用例持 `TEST_LOCK`（std Mutex，本文件全 sync）串行；fixture 按平台
+//! 的用例持 `crate::GLOBAL_STATE_LOCK` 串行；fixture 按平台
 //! 默认模式创建（argon2id 带测试口令，dpapi 无口令）。
+//! 锁必须与 connector_tools / vault_runtime / commands::vault 的 env 触及
+//! 测试群同源——env 口令是进程级单例，文件级私有锁互斥不了同进程并行
+//! 用例（Linux ET 实录：两把锁并行 set_var 互相覆盖口令 → DEK 解包认证
+//! 失败假红）。
 
 use super::*;
 use nemesis_security::vault::VaultStore;
-use std::sync::Mutex;
-
-static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 const SECRET: &str = "sk-b4-card-SECRET-do-not-echo";
 const PW: &str = "b4-test-passphrase";
@@ -45,9 +46,11 @@ fn create_fixture(dir: &tempfile::TempDir) {
 }
 
 /// 在 `NEMESISBOT_VAULT_PASSPHRASE=<pw>`（argon2id 平台）在场的环境下执行
-/// `f`。std Mutex——本文件全 sync 无 await，env 置位不需要跨 await。
+/// `f`。本文件全 sync 无 await，env 置位不需要跨 await。
 fn with_passphrase<T>(f: impl FnOnce() -> T) -> T {
-    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _g = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let mode = VaultStore::default_mode();
     let needs_pw = mode == nemesis_security::vault::VaultMode::Argon2id;
     if needs_pw {

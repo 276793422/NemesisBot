@@ -1,13 +1,17 @@
-//! connector 注册表 CLI（行动代理 P0，2026-10-14；签名信任族 D6.1，2026-10-15）。
+//! connector 注册表 CLI（行动代理 P0，2026-10-14；签名信任族 D6.1，2026-10-15；
+//! 管理对称族 B5，2026-10-19）。
 //!
 //! `nemesisbot connector <action>`：list / receipts / ledger / demo +
-//! 签名信任族 sign / keygen / trust / trust-list / trust-revoke。与 WSAPI
-//! `connectors.*` / `paperbroker.ledger` 同源——直读 nemesis-connectors
-//! 存储（`<workspace>/connectors/` 注册表 + `data/receipts/` 凭条流水 +
-//! `data/paper_broker.json` 账本，单点不双写）。执行入口是 agent 的
-//! `connector_invoke` 工具（走完整安全管线），CLI 只做只读查询——例外是
-//! `demo`：30 秒四承诺演示，全部产物落临时目录，零污染真实 workspace；
-//! 以及签名信任族（清单签名/密钥管理，写 detached sig 与共享信任库）。
+//! 签名信任族 sign / keygen / trust / trust-list / trust-revoke +
+//! 管理对称族 add / enable / disable / remove（与 Dashboard 同源：add 走
+//! registry 先校验后落盘，enable/disable 恒写 sidecar 启停位、签名条目
+//! 可用，remove 删目录留凭条）。与 WSAPI `connectors.*` / `paperbroker.ledger`
+//! 同源——直读 nemesis-connectors 存储（`<workspace>/connectors/` 注册表 +
+//! `data/receipts/` 凭条流水 + `data/paper_broker.json` 账本，单点不双写）。
+//! 执行入口是 agent 的 `connector_invoke` 工具（走完整安全管线），CLI 只做
+//! 只读查询——例外是 `demo`：30 秒四承诺演示，全部产物落临时目录，零污染
+//! 真实 workspace；以及签名信任族（清单签名/密钥管理，写 detached sig 与
+//! 共享信任库）与管理对称族（注册表写面，复用 WSAPI 同一 registry 函数）。
 
 use anyhow::Result;
 use clap::Subcommand;
@@ -101,6 +105,32 @@ pub enum ConnectorAction {
         #[arg(long)]
         allow_unsigned: bool,
     },
+    /// Create a connector in the workspace registry (validate-before-write)
+    Add {
+        /// Registry directory name ([a-z0-9_-]{1,64})
+        dir: String,
+        /// Path to a connector.toml file
+        #[arg(long, value_name = "TOML")]
+        file: Option<std::path::PathBuf>,
+        /// Inline manifest TOML text
+        #[arg(long, value_name = "TEXT")]
+        toml: Option<String>,
+    },
+    /// Enable a connector (sidecar bit; manifest bytes untouched)
+    Enable {
+        /// Connector id or registry directory name
+        connector: String,
+    },
+    /// Disable a connector (sidecar bit; manifest bytes untouched)
+    Disable {
+        /// Connector id or registry directory name
+        connector: String,
+    },
+    /// Remove a connector dir (receipts / ledger preserved)
+    Remove {
+        /// Registry directory name
+        dir: String,
+    },
 }
 
 pub fn run(action: ConnectorAction, local: bool) -> Result<()> {
@@ -144,6 +174,7 @@ pub fn run(action: ConnectorAction, local: bool) -> Result<()> {
                                 ),
                                 OpBinding::Tool { tool } => format!("tool {tool}"),
                                 OpBinding::Action { action } => format!("action {action}"),
+                                OpBinding::Script { command, .. } => format!("script {command}"),
                             };
                             println!(
                                 "    - {:<14} risk={:<8} class={:<8} {}",
@@ -404,6 +435,37 @@ pub fn run(action: ConnectorAction, local: bool) -> Result<()> {
                 "  下一步 : `connector list` 查看（默认停用的 connector 在清单里 enabled = true 打开）。"
             );
         }
+        ConnectorAction::Add { dir, file, toml } => {
+            let text = resolve_add_manifest(&file, &toml)?;
+            let c = nemesis_connectors::registry::create_connector(&workspace, &dir, &text)
+                .map_err(anyhow::Error::msg)?;
+            println!(
+                "已创建 connector `{}` → {}",
+                c.id,
+                workspace
+                    .join(nemesis_connectors::registry::CONNECTORS_DIR)
+                    .join(&dir)
+                    .display()
+            );
+            println!(
+                "  ops: {} 条；默认启用与否由清单 enabled 键决定（缺省 true）。",
+                c.ops.len()
+            );
+            println!(
+                "  下一步 : `connector list` 查看；分发前 `connector sign {dir} --key <hex64>` 签名。"
+            );
+        }
+        ConnectorAction::Enable { connector } => {
+            run_connector_toggle(&workspace, &connector, true)?;
+        }
+        ConnectorAction::Disable { connector } => {
+            run_connector_toggle(&workspace, &connector, false)?;
+        }
+        ConnectorAction::Remove { dir } => {
+            nemesis_connectors::registry::remove_connector(&workspace, &dir)
+                .map_err(anyhow::Error::msg)?;
+            println!("已删除 `{dir}`（凭条/账本保留——行动账本是追加式流水，不抹历史账）");
+        }
     }
     Ok(())
 }
@@ -414,6 +476,70 @@ fn validate_hex64(value: &str, what: &str) -> Result<()> {
         anyhow::bail!("{what}应为 hex64（64 个十六进制字符）");
     }
     Ok(())
+}
+
+/// enable/disable 的 id-or-dir 解析：**双臂**——清单 id 命中或注册目录名
+/// 命中都算（顺手捕获 manifest id：sidecar 按 id 键控，dir ≠ id 的条目
+/// 展示路径也必须对）；双臂皆未命中按 (裸名, None) 直通（不在册/损坏由
+/// set_connector_enabled 诚实拒绝）。id 命中优先（id 全局唯一，指南 §3.1）。
+fn resolve_connector_dir(workspace: &std::path::Path, id_or_dir: &str) -> (String, Option<String>) {
+    let loaded = nemesis_connectors::registry::scan_connectors(workspace);
+    if let Some(l) = loaded.iter().find(|l| {
+        l.connector
+            .as_ref()
+            .map(|c| c.id == id_or_dir)
+            .unwrap_or(false)
+    }) {
+        let dir = l
+            .dir
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| id_or_dir.to_string());
+        let id = l.connector.as_ref().map(|c| c.id.clone());
+        return (dir, id);
+    }
+    if let Some(l) = loaded
+        .iter()
+        .find(|l| l.dir.file_name().map(|n| n == id_or_dir).unwrap_or(false))
+    {
+        let id = l.connector.as_ref().map(|c| c.id.clone());
+        return (id_or_dir.to_string(), id);
+    }
+    (id_or_dir.to_string(), None)
+}
+
+/// enable/disable 执行核（CLI 与 WSAPI set_enabled 同一 registry 函数，
+/// sidecar 语义单点）。
+fn run_connector_toggle(workspace: &std::path::Path, connector: &str, enabled: bool) -> Result<()> {
+    let (dir, id) = resolve_connector_dir(workspace, connector);
+    nemesis_connectors::registry::set_connector_enabled(workspace, &dir, enabled)
+        .map_err(anyhow::Error::msg)?;
+    let verb = if enabled { "已启用" } else { "已停用" };
+    println!("{verb} `{connector}`（sidecar 启停位；清单字节不动，签名条目不受影响）");
+    // sidecar 按 manifest id 键控；翻位成功 = 条目在册且清单有效，id 必有
+    // 值。None 只在翻位失败的路径上出现，走不到这里。路径单点 =
+    // state::state_path（真相读写的同一函数，展示不双写路径形态）；id 已过
+    // set_connector_enabled 校验，Err 理论不可达，诚实兜底。
+    let state_key = id.as_deref().unwrap_or(dir.as_str());
+    match nemesis_connectors::state::state_path(workspace, state_key) {
+        Ok(p) => println!("  状态文件 : {}", p.display()),
+        Err(e) => println!("  状态文件 : <不可定位: {e}>"),
+    }
+    Ok(())
+}
+
+/// add 的 --file/--toml 单选解析（二选一必填；文件读失败诚实报错）。
+fn resolve_add_manifest(
+    file: &Option<std::path::PathBuf>,
+    toml: &Option<String>,
+) -> Result<String> {
+    match (file, toml) {
+        (Some(f), None) => std::fs::read_to_string(f)
+            .map_err(|e| anyhow::anyhow!("读取 {} 失败: {e}", f.display())),
+        (None, Some(t)) => Ok(t.clone()),
+        (Some(_), Some(_)) => anyhow::bail!("--file 与 --toml 只能提供其一"),
+        (None, None) => anyhow::bail!("必须提供 --file <toml路径> 或 --toml <内联文本> 之一"),
+    }
 }
 
 /// connector 签名信任库路径（与 skills 共用的 skill_trust.json）。
@@ -570,8 +696,10 @@ async fn demo_acts(ws: &std::path::Path) -> Result<DemoEvidence> {
         drop(store);
         // 读侧 invoke 凭据注入走 vault_runtime::open_unlocked（argon2 vault 需
         // env 解锁；DPAPI 平台 open 即解锁、不消费 env）。demo 进程短命，就地
-        // 设 env 不摘：CLI demo 走完即退；tests 侧 nextest 每测试独立进程，
-        // 无交叉污染面。
+        // 设 env 不摘：CLI demo 走完即退。tests 侧由测试外壳持
+        // crate::GLOBAL_STATE_LOCK 串行 + 收尾摘除（commands/connector/tests.rs）
+        // ——env 是进程级单例，Linux ET `cargo test` 同进程并行下不摘会泄漏
+        // 给后续 vault 用例。
         unsafe { std::env::set_var("NEMESISBOT_VAULT_PASSPHRASE", "nemesis-demo") };
         tool.execute(
             r#"{"connector":"demo-strict","op":"ping","args":{}}"#,

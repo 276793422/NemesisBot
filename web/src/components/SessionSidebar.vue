@@ -46,9 +46,21 @@ const router = useRouter()
 const wfEditSessions = useWfEditSessions()
 const { openProjectDir, snooze, unsnooze } = useChatApi()
 
+// 服务端绑定权威面（2026-10-19 修复）：`wf_agentgen:*` 绑定命中的存活
+// 会话一律视为工作流编辑会话。隐藏判定与 localStorage 登记取**并集**——
+// 本地登记富信息（target 名）但换端口/换浏览器/清站点数据会失忆；
+// 服务端绑定表（sessions.list 回带 bindings）跟会话列表同源，不丢。
+const wfEditBoundSids = computed(() => {
+  const out = new Set<string>()
+  for (const [key, sid] of Object.entries(sessionStore.bindings)) {
+    if (key.startsWith('wf_agentgen:')) out.add(sid)
+  }
+  return out
+})
+
 /** 工作流编辑会话（对话生成 TAB 专用）→ 主聊天侧栏隐藏。 */
 function isWfEditSession(id: string): boolean {
-  return wfEditSessions.targetOf(id) !== undefined
+  return wfEditSessions.targetOf(id) !== undefined || wfEditBoundSids.value.has(id)
 }
 const fileTree = useFileTreePanel()
 

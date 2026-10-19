@@ -70,6 +70,7 @@ members = [
     "test-tools/arch-gate",
     "crates/nemesis-guest",
     "test-tools/fake-qmp",
+    "test-tools/verify-probe",
 ]
 
 [workspace.package]

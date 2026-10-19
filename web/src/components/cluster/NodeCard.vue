@@ -16,6 +16,7 @@ const props = defineProps<{
     successRate?: number
     uptime?: string
     isLocal?: boolean
+    build?: string
   }
 }>()
 
@@ -43,6 +44,7 @@ const roleLabel = computed(() => {
       <span class="node-name">{{ node.name }}</span>
       <span v-if="node.isLocal" class="badge badge-primary" style="font-size:var(--text-xs)">本节点</span>
       <span class="badge" :class="node.role === 'manager' ? 'badge-info' : 'badge-neutral'">{{ roleLabel }}</span>
+      <span v-if="node.build" class="badge badge-neutral" style="font-size:var(--text-xs);font-family:monospace" title="对端自报构建号（git 短 hash）— 与其他节点比对可发现换装偏斜">{{ node.build }}</span>
       <div style="flex:1" />
       <button class="btn btn-sm" @click="emit('ping', node.id)" :disabled="node.isLocal" :title="node.isLocal ? '本节点无需 Ping' : 'Ping'">Ping</button>
       <button class="btn btn-sm" @click="emit('refresh', node.id)" :disabled="node.isLocal" :title="node.isLocal ? '本节点无需刷新' : 'RPC 拉取真实 ID 与最新信息'">刷新</button>
@@ -55,6 +57,11 @@ const roleLabel = computed(() => {
         <span class="label">标签</span>
         <span v-if="node.tags?.length">{{ node.tags.join(', ') }}</span>
         <span v-else>--</span>
+      </div>
+      <div class="node-detail-row">
+        <span class="label">构建</span>
+        <span v-if="node.build" style="font-family:monospace">{{ node.build }}</span>
+        <span v-else style="color:var(--text-muted)">未宣告（旧节点或尚未收到 announce）</span>
       </div>
       <div class="node-detail-row">
         <span class="label">能力</span>

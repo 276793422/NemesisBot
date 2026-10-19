@@ -25,6 +25,10 @@ pub mod capture_sink;
 pub mod cc_hooks;
 pub mod chat_log;
 pub mod checkpoint;
+/// ②typed checks 块捕获（诚实边界收口 2026-10-19）：检查类工具（exec /
+/// run_checks）真实执行后的管线侧确定性记账——交付证据 `$.delivery.checks`
+/// 的捕获源，见模块头诚实边界。
+pub mod checks_capture;
 // P30（WS14）Canvas widget：```canvas 块检出 + JS 语法预检（终答判定处消费）。
 pub mod canvas;
 /// T2（内部专项总计划 L1 codemode）：`code_run` QuickJS 脚本工具——脚本内

@@ -114,6 +114,12 @@ pub struct DiscoveryMessage {
     /// （wire 兼容，同 professions 先例）。本批只宣告不做 matcher 闸（P6 上位）。
     #[serde(default)]
     pub runtime_backend: Option<String>,
+    /// 自报构建号（git 短 hash；运行时硬化批 A1 2026-10-19）。旧节点 /
+    /// Go 节点的 announce 无此字段 → serde default 空 = 未宣告（wire
+    /// 兼容，同 professions 先例）。三机换装偏斜可见性：注册表透传后
+    /// Dashboard 节点面直接展示对端构建号，人工 sha 比对退役。
+    #[serde(default)]
+    pub build: String,
     /// Unix timestamp (seconds since epoch).
     pub timestamp: i64,
 }
@@ -152,6 +158,7 @@ impl DiscoveryMessage {
             agents: Vec::new(),
             iroh_id: None,
             runtime_backend: None,
+            build: String::new(),
             timestamp: now_unix(),
         }
     }
@@ -185,6 +192,11 @@ impl DiscoveryMessage {
     /// 未装配时不宣告，不猜）。保持 [`Self::new_announce`] 既有签名不变。
     pub fn with_runtime_backend(mut self, backend: Option<String>) -> Self {
         self.runtime_backend = backend;
+    /// 附自报构建号（A1 运行时硬化批；生产 announce 构造点
+    /// `build_announce_from_callbacks` 链式调用——与 agents 同一单一真相
+    /// 源纪律）。空串 = 未宣告，wire 上省略语义。
+    pub fn with_build(mut self, build: String) -> Self {
+        self.build = build;
         self
     }
 
@@ -207,6 +219,7 @@ impl DiscoveryMessage {
             agents: Vec::new(),
             iroh_id: None,
             runtime_backend: None,
+            build: String::new(),
             timestamp: now_unix(),
         }
     }

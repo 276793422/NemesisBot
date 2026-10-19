@@ -111,26 +111,60 @@ async fn start_and_wait(
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    cmd.spawn()?;
+    // A4 装配纪律：保留子进程句柄，等待循环经 nemesis_utils::wait_ready
+    // 耦合存活断言——gateway 半路崩（坏配置/端口被占/AV 拦截）立即报退出码
+    // 现场，不再傻等满 30s 只给一句笼统超时。句柄 drop = 脱管继续跑（std
+    // Child drop 不杀进程），与旧行为一致：就绪后的 gateway 生命周期独立。
+    let mut child = cmd.spawn()?;
 
-    // Poll for gateway state file + health (up to 30s)
-    let timeout = Duration::from_secs(30);
-    let start = std::time::Instant::now();
-    while start.elapsed() < timeout {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        if let Some(info) = read_gateway_state(state_path)
-            && info.web_port > 0
-        {
-            let base_url = format!("http://{}:{}", info.web_host, info.web_port);
-            if check_health(&base_url).await.is_ok() {
-                println!("  Gateway started (port {})", info.web_port);
-                return Ok((info.web_host, info.web_port));
+    let mut poll = || async {
+        match read_gateway_state(state_path) {
+            Some(info) if info.web_port > 0 => {
+                let base_url = format!("http://{}:{}", info.web_host, info.web_port);
+                if check_health(&base_url).await.is_ok() {
+                    Some((info.web_host, info.web_port))
+                } else {
+                    None
+                }
             }
+            _ => None,
+        }
+    };
+    // 存活断言是同步体（std Child）：闭包体内算完结果，用 ready future 携带
+    // 所有权值返回——async 块直接借闭包捕获变量会因 future 逃逸挂掉 FnMut。
+    let mut aliveness = || {
+        let death = match child.try_wait() {
+            Ok(Some(status)) => Some(format!(
+                "exit code: {}",
+                status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| status.to_string())
+            )),
+            Ok(None) => None,
+            Err(e) => Some(format!("status check failed: {e}")),
+        };
+        std::future::ready(death)
+    };
+    match nemesis_utils::wait_ready::wait_for_ready(
+        Duration::from_millis(500),
+        Duration::from_secs(30),
+        &mut poll,
+        &mut aliveness,
+    )
+    .await
+    {
+        Ok((host, port)) => {
+            println!("  Gateway started (port {port})");
+            Ok((host, port))
+        }
+        Err(nemesis_utils::wait_ready::ReadyError::ChildDied { detail }) => {
+            Err(format!("Gateway process exited during startup ({detail})").into())
+        }
+        Err(nemesis_utils::wait_ready::ReadyError::Timeout) => {
+            Err("Gateway did not start within 30 seconds".into())
         }
     }
-
-    Err("Gateway did not start within 30 seconds".into())
 }
 
 async fn send_internal_command(

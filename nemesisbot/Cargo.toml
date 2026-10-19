@@ -126,7 +126,7 @@ lsp = ["dep:nemesis-lsp", "nemesis-agent/lsp", "nemesis-web/lsp"]
 # image-process：J6 图片降采样（~0.8MB）；关 = 超限图按原图链路（验真链照常把关）
 # history-search：U20 FTS 会话检索；关 = 工具/CLI/WSAPI 诚实报未编译
 #   （与 usage-store 一起构成 SQLite 拆分两半：账本本体随 usage-store 进出）
-checkpoint-git = ["nemesis-agent/checkpoint-git"]
+checkpoint-git = ["nemesis-agent/checkpoint-git", "nemesis-board/checkpoint-git"]
 image-process = ["nemesis-agent/image-process"]
 history-search = ["nemesis-agent/history-search", "nemesis-web/history-search"]
 

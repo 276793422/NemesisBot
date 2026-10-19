@@ -106,13 +106,25 @@ fn bare_loop() -> nemesis_agent::r#loop::AgentLoop {
 }
 
 /// 记录型 FakeResponder：respond 记录作答回显送达，pending 返回固定条目。
+/// B8：form_calls 记录表单作答（respond_form 通路）。
 struct FakeResponder {
     calls: parking_lot::Mutex<Vec<(String, Vec<String>)>>,
+    form_calls: parking_lot::Mutex<Vec<(String, std::collections::BTreeMap<String, String>)>>,
 }
 
 impl QuestionResponder for FakeResponder {
     fn respond(&self, question_id: &str, selected: Vec<String>) -> Result<bool, String> {
         self.calls.lock().push((question_id.to_string(), selected));
+        Ok(true)
+    }
+    fn respond_form(
+        &self,
+        question_id: &str,
+        values: &std::collections::BTreeMap<String, String>,
+    ) -> Result<bool, String> {
+        self.form_calls
+            .lock()
+            .push((question_id.to_string(), values.clone()));
         Ok(true)
     }
     fn pending(&self) -> Vec<serde_json::Value> {
@@ -128,6 +140,7 @@ fn wired_ctx(dir: &tempfile::TempDir) -> (RequestContext, Arc<FakeResponder>) {
     let al = bare_loop();
     let fake = Arc::new(FakeResponder {
         calls: parking_lot::Mutex::new(Vec::new()),
+        form_calls: parking_lot::Mutex::new(Vec::new()),
     });
     al.set_question_responder(fake.clone());
     (make_ctx(dir, Some(Arc::new(al))), fake)
@@ -296,4 +309,110 @@ async fn pending_lists_responder_entries() {
     assert_eq!(out["pending"][0]["question_id"], "fake-q1");
     assert_eq!(out["pending"][0]["multi"], false);
     assert_eq!(fake.calls.lock().len(), 0, "pending must not consume calls");
+}
+
+// ---------------------------------------------------------------------------
+// B8（提问两形态）：values（表单作答）分支
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn respond_values_delivers_form_to_responder() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, fake) = wired_ctx(&dir);
+    let out = QuestionHandler
+        .handle_cmd(
+            "respond",
+            Some(serde_json::json!({
+                "question_id": "q1",
+                "values": { "env": "prod", "note": "hello" }
+            })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["delivered"], true);
+    let calls = fake.form_calls.lock();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, "q1");
+    assert_eq!(calls[0].1.get("env").map(String::as_str), Some("prod"));
+    assert_eq!(calls[0].1.get("note").map(String::as_str), Some("hello"));
+    assert!(
+        fake.calls.lock().is_empty(),
+        "form branch must not touch the selection channel"
+    );
+}
+
+#[tokio::test]
+async fn respond_rejects_values_and_selected_together() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, fake) = wired_ctx(&dir);
+    let err = QuestionHandler
+        .handle_cmd(
+            "respond",
+            Some(serde_json::json!({
+                "question_id": "q1",
+                "selected": ["a"],
+                "values": { "env": "prod" }
+            })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("not both"), "err: {err}");
+    assert!(fake.calls.lock().is_empty());
+    assert!(fake.form_calls.lock().is_empty());
+}
+
+#[tokio::test]
+async fn respond_rejects_non_string_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, fake) = wired_ctx(&dir);
+    let err = QuestionHandler
+        .handle_cmd(
+            "respond",
+            Some(serde_json::json!({
+                "question_id": "q1",
+                "values": { "count": 3 }
+            })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("must be a string"), "err: {err}");
+    assert!(fake.form_calls.lock().is_empty());
+}
+
+#[tokio::test]
+async fn respond_values_empty_object_is_transport_legal() {
+    // 空表单也是合法传输形态（必填校验在 broker 侧）——handler 只透传。
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, fake) = wired_ctx(&dir);
+    let out = QuestionHandler
+        .handle_cmd(
+            "respond",
+            Some(serde_json::json!({ "question_id": "q2", "values": {} })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["delivered"], true);
+    assert_eq!(fake.form_calls.lock()[0].1.len(), 0);
+}
+
+#[tokio::test]
+async fn respond_rejects_non_object_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, fake) = wired_ctx(&dir);
+    let err = QuestionHandler
+        .handle_cmd(
+            "respond",
+            Some(serde_json::json!({ "question_id": "q1", "values": ["env"] })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("must be an object"), "err: {err}");
+    assert!(fake.form_calls.lock().is_empty());
 }

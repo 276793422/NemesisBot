@@ -741,6 +741,14 @@
   text-decoration: underline;
 }
 
+/* 文件路径链接（markdown.ts linkifyFilePaths 产出；点击经 ChatPanel
+   委托调 fs.open）——无 href（不走浏览器导航），需要显式 pointer 光标；
+   长路径可断行，不撑破消息气泡。 */
+.markdown-body a.file-link {
+  cursor: pointer;
+  word-break: break-all;
+}
+
 .markdown-body img {
   max-width: 100%;
   border-radius: var(--radius-md);

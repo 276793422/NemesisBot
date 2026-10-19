@@ -193,7 +193,7 @@ fn intent_skipped_when_done_already_present() {
 }
 
 /// 盘写失败（`.runtime` 被文件占位 → 建目录失败）不再放弃记账：仍 admit
-/// 进内存环——进程内 replay at-most-once 保持，跨重启退化 at-least-once。
+/// 进内存环——进程内 replay at-most-once 保持；账本置不可信（见 F2 用例）。
 #[test]
 fn disk_write_failure_still_admits_to_memory() {
     let ws = tempfile::tempdir().unwrap();
@@ -268,4 +268,177 @@ fn half_written_intent_line_skipped_on_load() {
     );
     assert_eq!(j.pending_intent("c-trunc"), None, "截断半行必须跳过");
     assert!(j.lookup("c-done-1").is_some());
+}
+
+// ===========================================================================
+// F1/F2（二轮复评 2026-10-18）：重写中断恢复 + durable 闸
+// ===========================================================================
+
+/// F1：current 缺席 + tmp 在场（Unix rename 未完成 / 旧实现删-改间隙遗留）
+/// → open 采纳 tmp 为账本，保留集内的完成记录与未决意图全部可见。
+#[test]
+fn recovery_adopts_tmp_when_current_missing() {
+    let ws = tempfile::tempdir().unwrap();
+    let path = journal_path(ws.path());
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let tmp = path.with_file_name("journal.jsonl.tmp");
+    std::fs::write(
+        &tmp,
+        format!(
+            "{}\n{}\n",
+            intent_line("c-rec-i", "exec"),
+            v2_line("c-rec-done", "done-r")
+        ),
+    )
+    .unwrap();
+    let j = Journal::with_agent_id(ws.path(), "agent-a");
+    assert_eq!(
+        j.pending_intent("c-rec-i"),
+        Some("exec"),
+        "tmp 账本采纳后未决意图必须可见"
+    );
+    assert!(
+        j.lookup("c-rec-done").is_some(),
+        "tmp 账本采纳后完成记录必须可见"
+    );
+    assert!(!tmp.exists(), "采纳后 tmp 应已 rename 归位");
+}
+
+/// F1：current 缺席 + bak + tmp（Windows 舞步「current→bak」后中断）→
+/// 优先恢复 bak（旧账 = tmp 保留集的信息超集，恢复即无丢失），tmp 作
+/// 废弃重写残留清理。
+#[test]
+fn recovery_prefers_bak_when_current_missing() {
+    let ws = tempfile::tempdir().unwrap();
+    let path = journal_path(ws.path());
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let bak = path.with_file_name("journal.jsonl.bak");
+    let tmp = path.with_file_name("journal.jsonl.tmp");
+    std::fs::write(&bak, format!("{}\n", v2_line("c-rec-old", "old-r"))).unwrap();
+    std::fs::write(&tmp, format!("{}\n", v2_line("c-rec-new", "new-r"))).unwrap();
+    let j = Journal::with_agent_id(ws.path(), "agent-a");
+    assert!(j.lookup("c-rec-old").is_some(), "应采纳 bak（旧账超集）");
+    assert_eq!(j.lookup("c-rec-new"), None, "tmp 是废弃重写残留，不采纳");
+    assert!(!bak.exists() && !tmp.exists(), "恢复后两处残留应清干净");
+}
+
+/// F1：current 在场 + tmp/bak 残留（替换已完成、清理未做）→ 残留清干净，
+/// 账本照常回载。
+#[test]
+fn recovery_cleans_leftovers_when_current_present() {
+    let ws = tempfile::tempdir().unwrap();
+    let path = journal_path(ws.path());
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, format!("{}\n", v2_line("c-rec-cur", "cur-r"))).unwrap();
+    let bak = path.with_file_name("journal.jsonl.bak");
+    let tmp = path.with_file_name("journal.jsonl.tmp");
+    std::fs::write(&bak, b"stale-bak").unwrap();
+    std::fs::write(&tmp, b"stale-tmp").unwrap();
+    let j = Journal::with_agent_id(ws.path(), "agent-a");
+    assert!(j.lookup("c-rec-cur").is_some());
+    assert!(
+        !bak.exists() && !tmp.exists(),
+        "在场账本下的重写残留应清干净"
+    );
+}
+
+/// F2：加载读错误（journal.jsonl 是目录 → 读必败且非 NotFound）→
+/// durable=false：record_intent 返回 false（serve_line 闸的旗标源），
+/// 内存未决面照常登记——不当空账静默放行。
+#[test]
+fn load_read_failure_marks_ledger_not_durable() {
+    let ws = tempfile::tempdir().unwrap();
+    let path = journal_path(ws.path());
+    std::fs::create_dir_all(&path).unwrap(); // 目录占位 → read_to_string 必败
+    let mut j = Journal::with_agent_id(ws.path(), "agent-a");
+    assert!(
+        !j.record_intent("c-ro-x", "exec"),
+        "读失败 = 账本不可信，意图不得报可靠落盘"
+    );
+    assert_eq!(j.pending_intent("c-ro-x"), Some("exec"), "内存未决面仍登记");
+}
+
+/// 压缩重写失败的**在场臂**分类（tmp 目录占位 → fs::write(tmp) 必败 →
+/// atomic_rewrite Err，current 完好原地）：durable 保持 true（append-only
+/// 继续成立，账本面健康不得过度拒绝），保留集照常可见、新写入照常落盘。
+/// 缺席臂（Windows 舞步双 rename 失败 → durable=false）不可黑盒确定性
+/// 构造——需 bak 在两次 rename 之间被外部句柄锁住（AV 时序竞态），由
+/// journal.rs 内联注释钉住契约。
+#[test]
+fn compaction_failure_with_current_present_keeps_durable() {
+    let ws = tempfile::tempdir().unwrap();
+    let path = journal_path(ws.path());
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let n = JOURNAL_RING_CAP + 8; // 超限 → open 触发压缩
+    let mut body = String::new();
+    for i in 1..=n {
+        body.push_str(&v2_line(&format!("c-cf-{i}"), "r"));
+        body.push('\n');
+    }
+    std::fs::write(&path, body).unwrap();
+    // tmp 目录占位 → 压缩 write(tmp) 必败（is a directory）。
+    let tmp = path.with_file_name("journal.jsonl.tmp");
+    std::fs::create_dir(&tmp).unwrap();
+    let mut j = Journal::with_agent_id(ws.path(), "agent-a");
+    // 保留集照常回载（环形容量内的最新记录）。
+    assert!(
+        j.lookup(&format!("c-cf-{n}")).is_some(),
+        "重写失败不影响内存保留集"
+    );
+    // 分类在场臂：durable 不降级，意图照常报可靠落盘。
+    assert!(
+        j.record_intent("c-cf-intent", "exec"),
+        "current 在场的重写失败 = append-only 健康，不得误置不可信"
+    );
+    // 新写入照常 append 到原地账本；重开后仍可见（盘面未被破坏）。
+    let done = v2_line("c-cf-after", "done-r");
+    j.record(&done);
+    drop(j);
+    let j2 = Journal::with_agent_id(ws.path(), "agent-a");
+    assert_eq!(
+        j2.lookup("c-cf-after"),
+        Some(done.as_str()),
+        "append-only 继续落盘"
+    );
+}
+
+/// F2：append 失败 → durable=false 且 **sticky**——同一实例上修复存储也
+/// 不复信（本进程生命周期内有副作用工具保持拒绝）；新实例（等价重启）
+/// 读正常账恢复可信。
+#[test]
+fn append_failure_marks_not_durable_sticky() {
+    let ws = tempfile::tempdir().unwrap();
+    let blocker = ws.path().join(".runtime");
+    std::fs::write(&blocker, b"not a dir").unwrap();
+    let mut j = Journal::with_agent_id(ws.path(), "agent-a");
+    assert!(
+        !j.record_intent("c-st-1", "exec"),
+        "append 失败 = 不可靠落盘"
+    );
+    // 存储故障移除（「修复」）——sticky：本实例不复信。
+    std::fs::remove_file(&blocker).unwrap();
+    assert!(
+        !j.record_intent("c-st-2", "exec"),
+        "sticky：修复后同实例不复信"
+    );
+    assert_eq!(j.pending_intent("c-st-1"), Some("exec"));
+    assert_eq!(j.pending_intent("c-st-2"), Some("exec"));
+    drop(j);
+    let mut j2 = Journal::with_agent_id(ws.path(), "agent-a");
+    assert!(
+        j2.record_intent("c-st-3", "exec"),
+        "存储正常的新实例恢复可信"
+    );
+}
+
+/// 正常路径：record_intent 返回 true（可靠落盘）；幂等重记返回当前可信态；
+/// 禁用形态恒 true（无持久面也无闸——per-call 零变化）。
+#[test]
+fn record_intent_returns_durability() {
+    let ws = tempfile::tempdir().unwrap();
+    let mut j = Journal::with_agent_id(ws.path(), "agent-a");
+    assert!(j.record_intent("c-dur-1", "exec"));
+    assert!(j.record_intent("c-dur-1", "exec"), "幂等重记返回当前可信态");
+    let mut dis = Journal::disabled();
+    assert!(dis.record_intent("c-dur-2", "exec"), "禁用 = 无闸");
 }

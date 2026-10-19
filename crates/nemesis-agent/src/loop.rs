@@ -41,6 +41,7 @@ pub(crate) mod prelude {
     pub(crate) use serde::{Deserialize, Serialize};
     pub(crate) use tracing::{debug, error, info, warn};
 
+    pub(crate) use crate::checks_capture;
     pub(crate) use crate::context::RequestContext;
     pub(crate) use crate::hooks::HookToolCall;
     pub(crate) use crate::instance::AgentInstance;
@@ -473,9 +474,9 @@ pub struct AgentLoop {
     /// `browser_profile: true` 的浏览器类 spawn 时拿 `--user-data-dir`）。
     /// None = env 回落语义（主/项目 loop 恒 None 零变化）。
     browser_profile: Option<String>,
-    /// Snapshot of registered MCP tool names and descriptions.
+    /// Snapshot of registered MCP tools (name + description + parameters).
     /// Shared with McpListTool so it can list MCP tools without accessing the full tool registry.
-    mcp_tool_snapshot: Arc<parking_lot::RwLock<Vec<(String, String)>>>,
+    mcp_tool_snapshot: Arc<parking_lot::RwLock<Vec<tools_trait::McpToolSnapshotEntry>>>,
     /// Optional data store for recording LLM usage statistics.
     data_store: Option<Arc<nemesis_data::DataStore>>,
     /// Forge instance for experience collection during tool execution.
@@ -556,6 +557,28 @@ pub struct AgentLoop {
     /// 供给闸（build_tool_defs）与 dispatch 闸天然双闸对齐；通配语义同
     /// `tool_name_matches_hidden`。空 = 零影响（主 loop / 项目 loop 不触碰）。
     extra_hidden_tools: parking_lot::RwLock<Vec<String>>,
+    /// B2（2026-10-19 connector 独占接管）：独占隐藏表供给器——闭包由装配方
+    /// （nemesisbot agent_factory）注入，每次调用现扫连接器注册表（磁盘真相）
+    /// 及 MCP 工具快照，返回当下应从工具面隐藏的**完整工具名清单**（独占
+    /// server 前缀命中，扣除 sidecar 豁免；封禁语义照隐）。与
+    /// `extra_hidden_tools`（G1 全量替换槽）分槽的原因：①写者冲突——G1 每次
+    /// 全量替换，共用会互相清空；②语义分野——extra 是**绝对闸**（任何出处
+    /// 都拒），独占是**出处感知闸**（`connector-binding` 通道的治理回灌放行，
+    /// 见 tool_dispatch），消费点必须能区分两表。供给器缺省（项目 loop /
+    /// 独立装配）= 空表 = 独占闸不生效。
+    exclusive_hidden_provider:
+        parking_lot::RwLock<Option<std::sync::Arc<dyn Fn() -> Vec<String> + Send + Sync>>>,
+    /// F4（二轮复评 2026-10-18）：per-loop tool_policy allow 白名单。非空 =
+    /// 白名单语义——不在名单的工具不供给（build_tool_defs）且 dispatch 拒绝
+    /// （双闸同源现读本槽）。取代旧「注册面 ∖ allow 折算进隐藏表」：折算只
+    /// 吃注册期快照，MCP 热加载的新工具漏拦；槽值每回合现读，动态新工具
+    /// 天然落闸。精确名匹配，不扩通配语法。空 = 零影响。
+    tool_policy_allow: parking_lot::RwLock<Vec<String>>,
+    /// ②typed checks 块捕获槽表（诚实边界收口 2026-10-19）：会话键 → 记录
+    /// 槽。集群 worker 任务 run 前后 begin/take（`checks_capture` 模块文档
+    /// 是语义真相源）；并发任务按 session_key 精确归属互不串账。空表 =
+    /// 零影响（主 loop / 项目 loop 不触碰；查表 miss 仅一次读锁 + 名单比对）。
+    checks_capture: checks_capture::ChecksCaptureMap,
     /// G1：记录级 tier 钉死（自建 agent 档位契约）。`Some` = tier 以记录为
     /// 唯一真相源——[`Self::refresh_active_tier`] 短路（config 重解析/换模型
     /// 不覆盖记录档位）；`None` = config 驱动（主/项目 loop 语义不变）。
@@ -829,6 +852,9 @@ impl AgentLoop {
             agent_event_tx: parking_lot::RwLock::new(None),
             config_path: parking_lot::RwLock::new(None),
             extra_hidden_tools: parking_lot::RwLock::new(Vec::new()),
+            exclusive_hidden_provider: parking_lot::RwLock::new(None),
+            tool_policy_allow: parking_lot::RwLock::new(Vec::new()),
+            checks_capture: parking_lot::RwLock::new(HashMap::new()),
             tier_override: parking_lot::RwLock::new(None),
             prompt_system: parking_lot::RwLock::new(crate::prompt::PromptSystem::Classic),
             pricing_store: parking_lot::RwLock::new(None),
@@ -1248,3 +1274,9 @@ mod ws9_lineage_tests;
 // aux options 显式禁思考标记。
 #[cfg(test)]
 mod bypass_llm_tests;
+
+// B4 + B2（2026-10-19 connector 边界梳理）：总开关双闸 + 独占接管闸。
+// fresh-read 语义（config.json 现值为权威，翻转无需重启）与出处感知
+// （connector-binding 回灌放行）的行为钉子。
+#[cfg(test)]
+mod b4_b2_gate_tests;

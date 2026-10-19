@@ -52,6 +52,7 @@ impl FakeMcpTool {
                 name: name.to_string(),
                 description: "fake mcp tool".to_string(),
                 parameters: serde_json::json!({"type": "object"}),
+                ..Default::default()
             },
         }
     }

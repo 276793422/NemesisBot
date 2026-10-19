@@ -39,6 +39,23 @@ impl crate::r#loop::Tool for McpToolBridge {
     fn parameters(&self) -> serde_json::Value {
         self.inner.definition().parameters.clone()
     }
+
+    // B3（治理补全 2026-10-19）：MCP annotations 透传（快照/镜像基线消费）。
+    fn read_only_hint(&self) -> Option<bool> {
+        self.inner
+            .definition()
+            .annotations
+            .as_ref()
+            .and_then(|a| a.read_only_hint)
+    }
+
+    fn destructive_hint(&self) -> Option<bool> {
+        self.inner
+            .definition()
+            .annotations
+            .as_ref()
+            .and_then(|a| a.destructive_hint)
+    }
 }
 
 #[cfg(test)]

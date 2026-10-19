@@ -448,11 +448,11 @@ impl AgentManager {
 
     /// 删除记录。main 是对话组身份投影不可删（项目/自建可删；物理 home
     /// 目录保留——删除是解除实体注册，不做文件清除，与 projects 同语义）。
-    /// R4（2026-10-18 三方复评）：删除联动常驻执行体停机（`evict` 尽力
-    /// 而为——监督器未装配时跳过）+ 看护循环经 registration_check 不再为
-    /// 已删 agent 重拉；evict 拿槽锁等在途调用收尾，删除不与 execute
-    /// 并发脱管。G1：同批联动停机自建 agent 的常驻 LLM loop（记录删了
-    /// loop 不留——此后 `agents.send` 走「agent 不存在」诚实报错）。
+    /// R4（2026-10-18 三方复评）：删除联动常驻执行体停机（尽力而为——监督
+    /// 器未装配时跳过）+ 看护循环经 registration_check 不再为已删 agent 重
+    /// 拉；evict 拿槽锁等在途调用收尾，删除不与 execute 并发脱管。G1：同批
+    /// 联动停机自建 agent 的常驻 LLM loop（记录删了 loop 不留——此后
+    /// `agents.send` 走「agent 不存在」诚实报错）。
     ///
     /// 顺序契约（2026-10-18 六批复查）：**真相源先删、loop 后停**（projects
     /// `remove` 同序）——记录在册时先摘 loop，`lm.remove` 与 `store.remove`
@@ -463,6 +463,13 @@ impl AgentManager {
     /// insert 前的真相源复查封死（`resolve_or_build` 同日注）。store 删除
     /// 失败 = 整个删除失败原样上抛（`lm` 未动，状态一致；runtime evict 已
     /// 发生但子进程按需重建，无泄漏）。
+    ///
+    /// F3（二轮复评 2026-10-18）：runtime 侧**两段式编排**——`evict_begin`
+    /// （置删除在途旗标 + 排空旧槽）先行，旗标覆盖「旧槽已摘、排空等待中」
+    /// 与「排空完成、记录未删」两个窗口（期间 `get_or_spawn` 锁内复核拒新，
+    /// 删除等待期造不出替代槽）；`store.remove`/`lm.remove` 完成后
+    /// `evict_end` 清旗标。store.remove 失败也要清旗标（不得把失败删除泄漏
+    /// 成永久拒绝），故不用 `?` 中途返回。
     pub async fn remove(&self, agent_id: &str) -> Result<(), String> {
         if let Some(record) = self.store.get(agent_id)?
             && record.kind == agent_kind::MAIN
@@ -470,13 +477,18 @@ impl AgentManager {
             return Err("main agent 是对话组身份投影，不可删除".to_string());
         }
         if let Some(rt) = self.runtime() {
-            rt.evict(agent_id).await;
+            rt.evict_begin(agent_id).await;
         }
-        self.store.remove(agent_id)?;
-        if let Some(lm) = self.loop_manager() {
+        let result = self.store.remove(agent_id);
+        if result.is_ok()
+            && let Some(lm) = self.loop_manager()
+        {
             lm.remove(agent_id);
         }
-        Ok(())
+        if let Some(rt) = self.runtime() {
+            rt.evict_end(agent_id);
+        }
+        result.map(|_| ())
     }
 
     pub fn find_by_kind(&self, kind: &str) -> Result<Option<AgentRecord>, String> {

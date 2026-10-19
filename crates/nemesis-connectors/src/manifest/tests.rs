@@ -518,3 +518,199 @@ fn rejects_undo_empty_op_or_arg() {
     .expect_err("undo.op 空串");
     assert!(err.contains("不能为空"), "got: {err}");
 }
+
+// ---- M2（2026-10-19）script 声明式绑定 ----
+
+const SCRIPT_VALID: &str = r#"
+[connector]
+id = "log-rotate"
+name = "日志轮转"
+version = "0.1.0"
+kind = "local"
+description = "script 绑定验证"
+
+[[op]]
+id = "rotate"
+intent = ["轮转日志"]
+risk = "medium"
+class = "exec"
+script = { command = "rotate --dir {dir} --keep {keep}", timeout_secs = 30, workdir = "scripts", capture = 2048 }
+args_schema = { type = "object", properties = { dir = { type = "string" }, keep = { type = "integer" } } }
+
+[[op]]
+id = "status"
+intent = ["查状态"]
+risk = "low"
+class = "read"
+script = { command = "rotate --status" }
+"#;
+
+#[test]
+fn parses_script_binding_with_placeholders_and_defaults() {
+    let c = parse_connector_manifest(SCRIPT_VALID).expect("valid script manifest");
+    match &c.ops[0].binding {
+        OpBinding::Script {
+            command,
+            placeholders,
+            timeout_secs,
+            workdir,
+            capture,
+        } => {
+            assert_eq!(command, "rotate --dir {dir} --keep {keep}");
+            assert_eq!(placeholders, &vec!["dir".to_string(), "keep".to_string()]);
+            assert_eq!(*timeout_secs, Some(30));
+            assert_eq!(workdir.as_deref(), Some("scripts"));
+            assert_eq!(*capture, Some(2048));
+        }
+        other => panic!("expected script binding, got {other:?}"),
+    }
+    // 缺省臂：timeout/workdir/capture 全 None（运行期走 config 缺省）。
+    match &c.ops[1].binding {
+        OpBinding::Script {
+            timeout_secs,
+            workdir,
+            capture,
+            ..
+        } => {
+            assert_eq!(*timeout_secs, None);
+            assert!(workdir.is_none());
+            assert!(capture.is_none());
+        }
+        other => panic!("expected script binding, got {other:?}"),
+    }
+}
+
+#[test]
+fn rejects_script_undeclared_placeholder_loud() {
+    let bad = SCRIPT_VALID.replace(
+        "args_schema = { type = \"object\", properties = { dir = { type = \"string\" }, keep = { type = \"integer\" } } }",
+        "args_schema = { type = \"object\", properties = { dir = { type = \"string\" } } }",
+    );
+    let err = parse_connector_manifest(&bad).expect_err("未声明占位符必须 loud");
+    assert!(
+        err.contains("`{keep}` 未在 args_schema.properties 声明"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn rejects_script_bad_placeholder_syntax() {
+    let bad = SCRIPT_VALID.replace("--keep {keep}", "--keep {Keep!}");
+    let err = parse_connector_manifest(&bad).expect_err("占位符字符集");
+    assert!(err.contains("占位符非法"), "got: {err}");
+}
+
+#[test]
+fn rejects_script_timeout_zero_and_over_cap() {
+    let zero = SCRIPT_VALID.replace("timeout_secs = 30", "timeout_secs = 0");
+    let err = parse_connector_manifest(&zero).expect_err("timeout 0");
+    assert!(err.contains("timeout_secs 不能为 0"), "got: {err}");
+
+    let over = SCRIPT_VALID.replace("timeout_secs = 30", "timeout_secs = 601");
+    let err = parse_connector_manifest(&over).expect_err("timeout 超 600");
+    assert!(err.contains("上限 600"), "got: {err}");
+}
+
+#[test]
+fn rejects_script_workdir_absolute_and_traversal() {
+    // 绝对路径按平台语义各拒各形：`/tmp` 全平台拒（Unix=is_absolute；
+    // Windows=RootDir 缺盘符根形，join 解析到当前盘根）；Windows 盘符形
+    // `C:\tmp` 只在 Windows 拒——Unix 上是普通相对名（合法、join 不越界）。
+    let abs = SCRIPT_VALID.replace("workdir = \"scripts\"", "workdir = \"/tmp\"");
+    let err = parse_connector_manifest(&abs).expect_err("绝对路径 workdir");
+    assert!(err.contains("必须是相对"), "got: {err}");
+
+    #[cfg(windows)]
+    {
+        let abs = SCRIPT_VALID.replace("workdir = \"scripts\"", "workdir = \"C:\\\\tmp\"");
+        let err = parse_connector_manifest(&abs).expect_err("绝对路径 workdir");
+        assert!(err.contains("必须是相对"), "got: {err}");
+    }
+
+    let tilde = SCRIPT_VALID.replace("workdir = \"scripts\"", "workdir = \"~/scripts\"");
+    let err = parse_connector_manifest(&tilde).expect_err("~ 开头 workdir");
+    assert!(err.contains("必须是相对"), "got: {err}");
+
+    let dotdot = SCRIPT_VALID.replace("workdir = \"scripts\"", "workdir = \"../outside\"");
+    let err = parse_connector_manifest(&dotdot).expect_err("`..` 越界 workdir");
+    assert!(err.contains(".."), "got: {err}");
+
+    let empty = SCRIPT_VALID.replace("workdir = \"scripts\"", "workdir = \"  \"");
+    let err = parse_connector_manifest(&empty).expect_err("空 workdir");
+    assert!(err.contains("不能为空"), "got: {err}");
+}
+
+#[test]
+fn rejects_script_capture_over_cap() {
+    let over = SCRIPT_VALID.replace("capture = 2048", "capture = 65537");
+    let err = parse_connector_manifest(&over).expect_err("capture 超 65536");
+    assert!(err.contains("65536"), "got: {err}");
+}
+
+#[test]
+fn script_counts_in_binding_uniqueness() {
+    // script + tool 同 op 双绑定 = 拒（四选一升级为四选一含 script）。
+    let both = SCRIPT_VALID.replace(
+        "script = { command = \"rotate --status\" }",
+        "script = { command = \"rotate --status\" }\ntool = \"exec\"",
+    );
+    let err = parse_connector_manifest(&both).expect_err("双绑定");
+    assert!(err.contains("只能声明一个"), "got: {err}");
+
+    // 声明 [op.script] 的 op 无其他绑定 = 合法（上面 SCRIPT_VALID 已证）；
+    // 这里补「command 全空白」= 拒（缺 command 键是 serde 形态错误，非本校验）。
+    let nocommand = SCRIPT_VALID.replace(
+        "script = { command = \"rotate --status\" }",
+        "script = { command = \"   \" }",
+    );
+    let err = parse_connector_manifest(&nocommand).expect_err("空白 command");
+    assert!(err.contains("command 不能为空"), "got: {err}");
+}
+
+// ---------------------------------------------------------------------------
+// B2（2026-10-19 独占接管）：exclusive_mcp 清单解析
+// ---------------------------------------------------------------------------
+
+#[test]
+fn exclusive_mcp_missing_defaults_empty() {
+    let c = parse_connector_manifest(VALID_LOCAL).expect("valid local manifest");
+    assert!(
+        c.exclusive_mcp.is_empty(),
+        "缺省不独占（默认态「装了即生效」，拦截只经显式声明出现）"
+    );
+}
+
+#[test]
+fn exclusive_mcp_single_string_form() {
+    let text = VALID_LOCAL.replace(
+        "kind = \"local\"",
+        "kind = \"local\"\nexclusive_mcp = \"playwright-mcp\"",
+    );
+    let c = parse_connector_manifest(&text).expect("single string form");
+    assert_eq!(c.exclusive_mcp, vec!["playwright-mcp".to_string()]);
+}
+
+#[test]
+fn exclusive_mcp_array_form_normalizes() {
+    // 去空白、去重保序。
+    let text = VALID_LOCAL.replace(
+        "kind = \"local\"",
+        "kind = \"local\"\nexclusive_mcp = [\" srv-b \", \"srv-a\", \"srv-b\", \"srv-a\"]",
+    );
+    let c = parse_connector_manifest(&text).expect("array form");
+    assert_eq!(
+        c.exclusive_mcp,
+        vec!["srv-b".to_string(), "srv-a".to_string()],
+        "归一：trim + 去重保序（首现序）"
+    );
+}
+
+#[test]
+fn exclusive_mcp_rejects_blank_entry() {
+    let text = VALID_LOCAL.replace(
+        "kind = \"local\"",
+        "kind = \"local\"\nexclusive_mcp = [\"srv-a\", \"   \"]",
+    );
+    let err = parse_connector_manifest(&text).expect_err("空白 server 名");
+    assert!(err.contains("exclusive_mcp 不能含空项"), "got: {err}");
+}

@@ -18,6 +18,7 @@ pub mod skills;
 #[cfg(feature = "sqlite-preflight")]
 pub mod sqlite_preflight;
 pub mod string_utils;
+pub mod wait_ready;
 pub mod zip_util;
 
 // Re-export the most commonly used functions

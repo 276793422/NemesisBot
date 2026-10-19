@@ -474,7 +474,8 @@ pub fn install_connector(
         );
     }
     let found = nemesis_connectors::registry::find_connector(workspace, connector_id)
-        .map_err(|e| anyhow::anyhow!("落位后注册表查找失败: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("落位后注册表查找失败: {e}"))?
+        .0;
     if found.id != connector.id {
         anyhow::bail!("落位后 id 不符（{} ≠ {}）", found.id, connector.id);
     }
