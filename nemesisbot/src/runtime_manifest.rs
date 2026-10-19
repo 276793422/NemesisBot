@@ -1,4 +1,4 @@
-//! A1 运行时完整性清单（工程模式专项，2026-10-19）。
+//! A1 运行时完整性清单。
 //!
 //! 打包部署（build-windows.bat / build-linux.sh / build-android.bat /
 //! customize 流程）在产物目录落 `runtime-manifest.json`
