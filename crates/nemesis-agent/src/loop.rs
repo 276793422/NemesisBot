@@ -41,6 +41,7 @@ pub(crate) mod prelude {
     pub(crate) use serde::{Deserialize, Serialize};
     pub(crate) use tracing::{debug, error, info, warn};
 
+    pub(crate) use crate::checks_capture;
     pub(crate) use crate::context::RequestContext;
     pub(crate) use crate::hooks::HookToolCall;
     pub(crate) use crate::instance::AgentInstance;
@@ -308,6 +309,13 @@ pub(crate) struct SecurityState {
     /// 未装配 = `None` = 审批通路缺失，escalation 直接走现行为（停轮）。
     pub(crate) question_asker:
         parking_lot::RwLock<Option<Arc<dyn nemesis_types::agent::QuestionAsker>>>,
+    /// B4（2026-10-18 凭据 vault §7）：凭据索要卡 broker——Auth 失败经此向
+    /// 用户发卡要凭据（值不 transit agent 事件：respond 侧先落 vault 再送
+    /// 裁决，等待侧只拿 `CredentialOutcome`）。gateway 装配
+    /// WebCredentialBroker 后挂在这里（approval/question responder 同族）。
+    /// 未装配 = `None`，Auth 臂走原「停止重试」终局零回归。
+    pub(crate) credential_broker:
+        parking_lot::RwLock<Option<Arc<dyn nemesis_types::agent::CredentialBroker>>>,
     /// §2 免打扰运行时态（无人值守计划 Part 2，security feature）：gateway
     /// 注入与 auditor / web security handler 同一 Arc（editor_access 单一
     /// 真相源同款双注入）。`check_escalation` 的 doom-loop 臂读它——开关
@@ -560,6 +568,17 @@ pub struct AgentLoop {
     /// 独立装配）= 空表 = 独占闸不生效。
     exclusive_hidden_provider:
         parking_lot::RwLock<Option<std::sync::Arc<dyn Fn() -> Vec<String> + Send + Sync>>>,
+    /// F4（二轮复评 2026-10-18）：per-loop tool_policy allow 白名单。非空 =
+    /// 白名单语义——不在名单的工具不供给（build_tool_defs）且 dispatch 拒绝
+    /// （双闸同源现读本槽）。取代旧「注册面 ∖ allow 折算进隐藏表」：折算只
+    /// 吃注册期快照，MCP 热加载的新工具漏拦；槽值每回合现读，动态新工具
+    /// 天然落闸。精确名匹配，不扩通配语法。空 = 零影响。
+    tool_policy_allow: parking_lot::RwLock<Vec<String>>,
+    /// ②typed checks 块捕获槽表（诚实边界收口 2026-10-19）：会话键 → 记录
+    /// 槽。集群 worker 任务 run 前后 begin/take（`checks_capture` 模块文档
+    /// 是语义真相源）；并发任务按 session_key 精确归属互不串账。空表 =
+    /// 零影响（主 loop / 项目 loop 不触碰；查表 miss 仅一次读锁 + 名单比对）。
+    checks_capture: checks_capture::ChecksCaptureMap,
     /// G1：记录级 tier 钉死（自建 agent 档位契约）。`Some` = tier 以记录为
     /// 唯一真相源——[`Self::refresh_active_tier`] 短路（config 重解析/换模型
     /// 不覆盖记录档位）；`None` = config 驱动（主/项目 loop 语义不变）。
@@ -724,6 +743,33 @@ pub struct AgentLoop {
     /// `set_turn_wal` 注入（仿 estop late-binding 模式），dispatch 三态
     /// 写入 + 启动恢复扫描消费。
     turn_wal: parking_lot::RwLock<Option<Arc<crate::turn_wal::TurnWal>>>,
+    /// B4（2026-10-18 凭据 vault §7）：provider 重建器——Auth 卡 Stored 后用
+    /// 新凭据重建 provider 并热切。gateway 注入 `ModelProviderReloader`
+    /// （读 config.json → resolve → factory 同源装配）。crate 只定义合同，
+    /// 装配细节（raw patch / resolve / create）全在 bot 侧——生产代码不依赖
+    /// providers（dev-dependency 纪律）。未装配 = `None` = Auth 卡通路缺失。
+    provider_reloader: parking_lot::RwLock<Option<Arc<dyn ProviderReloader>>>,
+}
+
+/// B4（2026-10-18 凭据 vault §7）：Auth 失败 → 凭据卡 → provider 重建的
+/// 装配合同。实现方（bot 侧 `ModelProviderReloader`）持有 config.json 路径
+/// 与 workspace，负责 raw patch 与 factory 同源重建。
+pub trait ProviderReloader: Send + Sync {
+    /// Auth 卡字段决策：`(service, key_name)`。key_name 即 vault 别名
+    /// （卡片提交值落 `vault:<key_name>`）：
+    /// - 条目 api_key 已是 `vault:<alias>` → key_name = 该别名（轮换语义，
+    ///   覆盖写保留 created_at）；
+    /// - 否则提议 `model/<模型别名>`（reloader 后续 patch 落盘）。
+    fn credential_request_fields(&self, model: &str) -> (String, String);
+    /// 重建 provider。`patch_alias` Some = 先把该条目 api_key 原子改写为
+    /// `vault:<alias>`（raw JSON patch，不经 typed round-trip——typed save
+    /// 抹 untyped per-model 键的先例）再重读装配；None = 直接重读装配。
+    /// 失败 = Err（诚实报错，调用侧回落原终局）。
+    fn reload_provider(
+        &self,
+        model: &str,
+        patch_alias: Option<&str>,
+    ) -> Result<Arc<dyn LlmProvider>, String>;
 }
 
 impl AgentLoop {
@@ -772,6 +818,7 @@ impl AgentLoop {
                 approval_responder: parking_lot::RwLock::new(None),
                 question_responder: parking_lot::RwLock::new(None),
                 question_asker: parking_lot::RwLock::new(None),
+                credential_broker: parking_lot::RwLock::new(None),
                 #[cfg(feature = "security")]
                 approval_auto: parking_lot::RwLock::new(None),
             },
@@ -806,6 +853,8 @@ impl AgentLoop {
             config_path: parking_lot::RwLock::new(None),
             extra_hidden_tools: parking_lot::RwLock::new(Vec::new()),
             exclusive_hidden_provider: parking_lot::RwLock::new(None),
+            tool_policy_allow: parking_lot::RwLock::new(Vec::new()),
+            checks_capture: parking_lot::RwLock::new(HashMap::new()),
             tier_override: parking_lot::RwLock::new(None),
             prompt_system: parking_lot::RwLock::new(crate::prompt::PromptSystem::Classic),
             pricing_store: parking_lot::RwLock::new(None),
@@ -845,6 +894,7 @@ impl AgentLoop {
             token_budget: crate::token_budget::SessionTokenBudgetLedger::default(),
             escalated_floors: parking_lot::Mutex::new(HashMap::new()),
             turn_wal: parking_lot::RwLock::new(None),
+            provider_reloader: parking_lot::RwLock::new(None),
         }
     }
 

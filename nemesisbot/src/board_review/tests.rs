@@ -192,6 +192,7 @@ fn settle_deps_with_store(
             tier: None,
             agents: Vec::new(),
             node_type: "agent".to_string(),
+            build: String::new(),
         });
     }
 
@@ -379,6 +380,7 @@ fn review_deps_ex(name: &str, seed_worker_nodes: bool) -> (BoardReviewDeps, std:
             tier: None,
             agents: Vec::new(),
             node_type: "agent".to_string(),
+            build: String::new(),
         });
     }
 
@@ -5191,7 +5193,9 @@ async fn evidence_gate_present_delivery_passes_and_anchor_summary_merged() {
     );
     seed_dispatch(&deps.store, "t-evidence-hit", issue.id, "node-b");
     // worker 回调已落账（A 端 handle_task_complete 同款：kind=cluster_result、
-    // 幂等键=task_id、落库即 delivered）。
+    // 幂等键=task_id、落库即 delivered）。F5：夹具镜像真实 wire 形态——
+    // payload 必须带 delivery 结构（capture：commit/tree 不可变交付点 +
+    // patch_path 留底），空壳行不再满足闸。
     deps.cluster
         .task_db()
         .unwrap()
@@ -5199,7 +5203,15 @@ async fn evidence_gate_present_delivery_passes_and_anchor_summary_merged() {
             "cluster_result",
             None,
             "t-evidence-hit",
-            &serde_json::json!({"node": "node-b"}),
+            &serde_json::json!({
+                "node": "node-b",
+                "delivery": {
+                    "commit": "evidencecommit01",
+                    "tree": "evidencetree01",
+                    "patch_truncated": false,
+                    "patch_path": "logs/deliveries/t-evidence-hit.patch"
+                }
+            }),
         )
         .unwrap();
     attach_loop(
@@ -5304,6 +5316,443 @@ async fn evidence_gate_global_switch_applies_to_plain_issues() {
             .iter()
             .any(|c| c.content.contains("交付证据闸")),
         "全局开关路径同样落降级留痕评论"
+    );
+}
+
+// ===== F5 结构完整性升级（二轮复评 2026-10-18）：空壳记录不再满足闸 =====
+//
+// 完成回调无条件记账（payload 可为 Null），「记录在场」不足以证明走了
+// 交付管线。闸升级：payload.delivery 必须在场 + commit/tree 非空 +
+// 截断必有 patch_path 留底；缺口文案分档。版本绑定 = 最新派发 task_id。
+
+/// 全局开关 + 普通单 + 指定交付 payload 的公共夹具（PASS 臂直通断言用）。
+async fn evidence_gate_fixture(
+    payload: serde_json::Value,
+    tag: &str,
+) -> (BoardReviewDeps, std::path::PathBuf, i64) {
+    let (deps, ws) = review_deps_taskdb(tag);
+    write_board_config(
+        &deps.home,
+        r#"{"auto_accept":true,"review":{"require_delivery_evidence":true}}"#,
+    );
+    let issue = issue_in_review(
+        &deps.store,
+        &format!("证据结构 {tag}"),
+        "普通文字验收标准",
+        "## 结论\n交付完成",
+    );
+    seed_dispatch(&deps.store, &format!("t-{tag}"), issue.id, "node-b");
+    deps.cluster
+        .task_db()
+        .unwrap()
+        .record_delivery("cluster_result", None, &format!("t-{tag}"), &payload)
+        .unwrap();
+    attach_loop(
+        &deps,
+        Arc::new(CapturingLlm {
+            prompts: std::sync::Mutex::new(Vec::new()),
+            reply: review_json("PASS", ""),
+        }),
+    );
+    (deps, ws, issue.id)
+}
+
+#[tokio::test]
+async fn evidence_gate_null_payload_shell_row_downgrades() {
+    use nemesis_board::IssueStatus;
+
+    // Null 空壳行（完成回调无条件记账的最坏形态）：记录在场但无 delivery
+    // 结构 → 不再满足闸，降级 FAIL（零预算转人工）。
+    let (deps, _ws, issue_id) =
+        evidence_gate_fixture(serde_json::Value::Null, "evidence-null-shell").await;
+    let reviewed = review_issue(&deps, issue_id, ReviewCtx::first_stage())
+        .await
+        .expect("空壳行降级闭环");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.get_issue(issue_id).unwrap().status,
+        IssueStatus::InReview,
+        "Null 空壳 payload 不得再当交付证据（PASS 降级 FAIL → 转人工）"
+    );
+    let comments = deps.store.list_comments(issue_id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("无 delivery 结构")),
+        "缺口文案必须指明 delivery 结构缺席: {:?}",
+        comments.iter().map(|c| &c.content).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn evidence_gate_truncated_with_patch_path_passes() {
+    use nemesis_board::IssueStatus;
+
+    // 截断 + patch_path 留底在场：结构完整 → 放行（G4 契约：截断必有留底）。
+    let (deps, _ws, issue_id) = evidence_gate_fixture(
+        serde_json::json!({
+            "node": "node-b",
+            "delivery": {
+                "commit": "trunccommit01",
+                "tree": "trunctree01",
+                "patch_truncated": true,
+                "patch_path": "logs/deliveries/t-evidence-trunc-ok.patch"
+            }
+        }),
+        "evidence-trunc-ok",
+    )
+    .await;
+    let reviewed = review_issue(&deps, issue_id, ReviewCtx::first_stage())
+        .await
+        .expect("截断有留底放行闭环");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.get_issue(issue_id).unwrap().status,
+        IssueStatus::Done,
+        "截断 + patch_path 留底 = 结构完整 → 闸放行 → auto_accept 落 done"
+    );
+}
+
+#[tokio::test]
+async fn evidence_gate_truncated_without_patch_path_downgrades() {
+    use nemesis_board::IssueStatus;
+
+    // 截断但无 patch_path（G4 契约破坏形态）：降级 FAIL。
+    let (deps, _ws, issue_id) = evidence_gate_fixture(
+        serde_json::json!({
+            "node": "node-b",
+            "delivery": {
+                "commit": "truncnoleave1",
+                "tree": "truncnoleavt1",
+                "patch_truncated": true
+            }
+        }),
+        "evidence-trunc-bad",
+    )
+    .await;
+    let reviewed = review_issue(&deps, issue_id, ReviewCtx::first_stage())
+        .await
+        .expect("截断无留底降级闭环");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.get_issue(issue_id).unwrap().status,
+        IssueStatus::InReview,
+        "截断无留底 = 结构不完整 → 降级 FAIL → 零预算转人工"
+    );
+    let comments = deps.store.list_comments(issue_id).unwrap();
+    assert!(
+        comments.iter().any(|c| c.content.contains("patch_path")),
+        "缺口文案必须指明留底缺失: {:?}",
+        comments.iter().map(|c| &c.content).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn evidence_gate_stale_attempt_record_does_not_satisfy() {
+    use nemesis_board::IssueStatus;
+
+    // 版本绑定：记录挂在旧派发 task_id 名下，最新派发无账 → 闸按最新锚查
+    // 账本 → FAIL（评估方「产物属于旧 attempt」的确定性镜像）。
+    let (deps, _ws) = review_deps_taskdb("evidence-stale");
+    write_board_config(
+        &deps.home,
+        r#"{"max_redispatch":0,"review":{"require_delivery_evidence":true}}"#,
+    );
+    let issue = issue_in_review(
+        &deps.store,
+        "旧 attempt 记录不背书",
+        "普通文字验收标准",
+        "## 结论\n交付完成",
+    );
+    seed_dispatch(&deps.store, "t-evidence-stale-old", issue.id, "node-b");
+    seed_dispatch(&deps.store, "t-evidence-stale-new", issue.id, "node-b");
+    // 完整交付结构挂在旧 attempt 名下——结构再完整也满足不了新锚。
+    deps.cluster
+        .task_db()
+        .unwrap()
+        .record_delivery(
+            "cluster_result",
+            None,
+            "t-evidence-stale-old",
+            &serde_json::json!({
+                "node": "node-b",
+                "delivery": {
+                    "commit": "stalecommit01",
+                    "tree": "staletree01",
+                    "patch_truncated": false,
+                    "patch_path": "logs/deliveries/t-evidence-stale-old.patch"
+                }
+            }),
+        )
+        .unwrap();
+    attach_loop(
+        &deps,
+        Arc::new(CapturingLlm {
+            prompts: std::sync::Mutex::new(Vec::new()),
+            reply: review_json("PASS", ""),
+        }),
+    );
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("旧 attempt 绑定降级闭环");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.get_issue(issue.id).unwrap().status,
+        IssueStatus::InReview,
+        "旧 attempt 记录不满足最新派发锚 → 降级 FAIL → 转人工"
+    );
+}
+
+// ===== ②typed 证据块（诚实边界收口 2026-10-19） =====
+//
+// delivery.files / delivery.checks 在场时无论开关都验形态（path 复用
+// anchor 形态闸 + sha256 64-hex + checks wire 契约）；缺席块行为不变。
+// 严格闸 board.review.evidence_typed_required（默认 false）：true 后
+// files 必须在场（git tree diff 确定性派生，缺席 = 证据面残缺）；checks
+// 恒可选（没跑检查 = 诚实的事实陈述，强制会诱发造值）。
+
+/// 合法 typed 块样例（files 1 条 + checks 1 条，形态全合规）。
+fn typed_blocks_json() -> serde_json::Value {
+    serde_json::json!({
+        "node": "node-b",
+        "delivery": {
+            "commit": "typedcommit01",
+            "tree": "typedtree001",
+            "patch_truncated": false,
+            "patch_path": "logs/deliveries/t-typed-ok.patch",
+            "files_changed": 1,
+            "files": [
+                {"path": "src/lib.rs", "sha256": "0123abcd".repeat(8)}
+            ],
+            "checks": [
+                {"tool": "exec", "cmd": "cargo test -p demo", "ok": true, "summary": "5 passed"}
+            ]
+        }
+    })
+}
+
+#[tokio::test]
+async fn evidence_typed_blocks_valid_shape_passes() {
+    use nemesis_board::IssueStatus;
+
+    let (deps, _ws, issue_id) = evidence_gate_fixture(typed_blocks_json(), "typed-ok").await;
+    let reviewed = review_issue(&deps, issue_id, ReviewCtx::first_stage())
+        .await
+        .expect("typed 块合法放行闭环");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.get_issue(issue_id).unwrap().status,
+        IssueStatus::Done,
+        "files/checks 形态全合规 → 闸放行 → auto_accept 落 done"
+    );
+}
+
+#[tokio::test]
+async fn evidence_typed_files_bad_sha256_shape_fails() {
+    use nemesis_board::IssueStatus;
+
+    let mut payload = typed_blocks_json();
+    payload["delivery"]["files"][0]["sha256"] = serde_json::json!("nothex");
+    let (deps, _ws, issue_id) = evidence_gate_fixture(payload, "typed-badsha").await;
+    let reviewed = review_issue(&deps, issue_id, ReviewCtx::first_stage())
+        .await
+        .expect("sha256 形态坏降级闭环");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.get_issue(issue_id).unwrap().status,
+        IssueStatus::InReview,
+        "sha256 非 64-hex = 形态非法 → 降级 FAIL → 转人工"
+    );
+    assert!(
+        deps.store
+            .list_comments(issue_id)
+            .unwrap()
+            .iter()
+            .any(|c| c.content.contains("typed files 块形态非法")),
+        "缺口文案必须指明 files 形态非法: {:?}",
+        deps.store
+            .list_comments(issue_id)
+            .unwrap()
+            .iter()
+            .map(|c| &c.content)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn evidence_typed_files_escape_path_fails() {
+    use nemesis_board::IssueStatus;
+
+    // `..` 越界组件（anchor 形态闸同源拒绝）与盘符形态双臂都 FAIL。
+    for (tag, bad_path) in [
+        ("typed-dotdot", "../../etc/passwd"),
+        ("typed-drive", "C:\\evil.txt"),
+    ] {
+        let mut payload = typed_blocks_json();
+        payload["delivery"]["files"][0]["path"] = serde_json::json!(bad_path);
+        let (deps, _ws, issue_id) = evidence_gate_fixture(payload, tag).await;
+        let reviewed = review_issue(&deps, issue_id, ReviewCtx::first_stage())
+            .await
+            .expect("越界 path 降级闭环");
+        assert!(reviewed);
+        assert_eq!(
+            deps.store.get_issue(issue_id).unwrap().status,
+            IssueStatus::InReview,
+            "非法 path「{bad_path}」必须 FAIL"
+        );
+        assert!(
+            deps.store
+                .list_comments(issue_id)
+                .unwrap()
+                .iter()
+                .any(|c| c.content.contains("typed files 块形态非法")),
+            "非法 path「{bad_path}」落形态非法留痕"
+        );
+    }
+}
+
+#[tokio::test]
+async fn evidence_typed_files_non_array_fails() {
+    use nemesis_board::IssueStatus;
+
+    // 键在场但非数组 = 形态非法（不静默滑过）。
+    let mut payload = typed_blocks_json();
+    payload["delivery"]["files"] = serde_json::json!("not-an-array");
+    let (deps, _ws, issue_id) = evidence_gate_fixture(payload, "typed-nonarray").await;
+    let reviewed = review_issue(&deps, issue_id, ReviewCtx::first_stage())
+        .await
+        .expect("非数组 files 降级闭环");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.get_issue(issue_id).unwrap().status,
+        IssueStatus::InReview,
+        "files 非数组 = 形态非法 → FAIL"
+    );
+    assert!(
+        deps.store
+            .list_comments(issue_id)
+            .unwrap()
+            .iter()
+            .any(|c| c.content.contains("必须是数组")),
+        "缺口文案必须指明数组形态要求"
+    );
+}
+
+#[tokio::test]
+async fn evidence_typed_checks_bad_entry_fails() {
+    use nemesis_board::IssueStatus;
+
+    // checks 条目缺 ok / 空 cmd 两种坏形态都 FAIL。
+    for (tag, mut_entry) in [
+        (
+            "typed-check-noOk",
+            serde_json::json!({"tool":"exec","cmd":"cargo test","summary":"x"}),
+        ),
+        (
+            "typed-check-emptyCmd",
+            serde_json::json!({"tool":"exec","cmd":"   ","ok":true,"summary":"x"}),
+        ),
+    ] {
+        let mut payload = typed_blocks_json();
+        payload["delivery"]["checks"][0] = mut_entry;
+        let (deps, _ws, issue_id) = evidence_gate_fixture(payload, tag).await;
+        let reviewed = review_issue(&deps, issue_id, ReviewCtx::first_stage())
+            .await
+            .expect("checks 坏形态降级闭环");
+        assert!(reviewed);
+        assert_eq!(
+            deps.store.get_issue(issue_id).unwrap().status,
+            IssueStatus::InReview,
+            "checks 条目坏形态（{tag}）必须 FAIL"
+        );
+        assert!(
+            deps.store
+                .list_comments(issue_id)
+                .unwrap()
+                .iter()
+                .any(|c| c.content.contains("typed checks 块形态非法")),
+            "checks 坏形态（{tag}）落形态非法留痕"
+        );
+    }
+}
+
+#[tokio::test]
+async fn evidence_typed_absent_with_strict_on_fails() {
+    use nemesis_board::IssueStatus;
+
+    // 严格闸开 + files 缺席（旧 F5 形态交付）= FAIL：git 交付都应可派生
+    // files，缺席 = 证据面残缺。checks 缺席照常可选（不因 checks 拦人）。
+    let (deps, _ws, issue_id) = evidence_gate_fixture(
+        serde_json::json!({
+            "node": "node-b",
+            "delivery": {
+                "commit": "strictnocommit",
+                "tree": "strictnotree01",
+                "patch_truncated": false,
+                "patch_path": "logs/deliveries/t-typed-strict.patch"
+            }
+        }),
+        "typed-strict-absent",
+    )
+    .await;
+    // 夹具配置之上翻严格闸（评审时读盘，后写生效）。
+    write_board_config(
+        &deps.home,
+        r#"{"auto_accept":true,"review":{"require_delivery_evidence":true,"evidence_typed_required":true}}"#,
+    );
+    let reviewed = review_issue(&deps, issue_id, ReviewCtx::first_stage())
+        .await
+        .expect("严格闸 files 缺席降级闭环");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.get_issue(issue_id).unwrap().status,
+        IssueStatus::InReview,
+        "严格闸开 + files 缺席 → FAIL → 转人工"
+    );
+    assert!(
+        deps.store
+            .list_comments(issue_id)
+            .unwrap()
+            .iter()
+            .any(|c| c.content.contains("交付缺类型化证据块")),
+        "缺口文案必须指明 typed 块缺席: {:?}",
+        deps.store
+            .list_comments(issue_id)
+            .unwrap()
+            .iter()
+            .map(|c| &c.content)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn evidence_typed_absent_with_strict_off_passes() {
+    use nemesis_board::IssueStatus;
+
+    // 严格闸关（默认）+ files/checks 全缺席 = 旧形态照常放行（加法演进，
+    // 存量行为不变的回归锁）。
+    let (deps, _ws, issue_id) = evidence_gate_fixture(
+        serde_json::json!({
+            "node": "node-b",
+            "delivery": {
+                "commit": "legacycommit1",
+                "tree": "legacytree01",
+                "patch_truncated": false,
+                "patch_path": "logs/deliveries/t-typed-legacy.patch"
+            }
+        }),
+        "typed-legacy-ok",
+    )
+    .await;
+    let reviewed = review_issue(&deps, issue_id, ReviewCtx::first_stage())
+        .await
+        .expect("严格闸关缺席放行闭环");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.get_issue(issue_id).unwrap().status,
+        IssueStatus::Done,
+        "默认闸关 + typed 块缺席 = 旧形态照常放行（烧入期零行为变化）"
     );
 }
 

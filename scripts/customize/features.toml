@@ -289,6 +289,9 @@ default = true
 # Class C 内核裁剪。对话记忆（agent 内部 ConversationMemory）独立于本 crate，裁掉不会失忆；
 # 关闭后强化记忆/向量存储/ONNX 嵌入整包不编译，memory_search/store/forget/list 工具、
 # `nemesisbot memory` 命令、Memory Dashboard 随之不可用。
+# F6 注记（2026-10-18 二轮复评）：memory 建议与 security 同开——memory_store/forget
+# 审批闸（GatewayMemoryGate）的门是 memory+security，memory-without-security 组合
+# 无审批闸（写入放行不弹卡）。不建强制依赖，组合仍可编译。
 [[feature]]
 id = "memory"
 label = "强化记忆（向量存储）"

@@ -16,9 +16,17 @@ getrandom = "0.2"
 git2 = { workspace = true }
 regex = { workspace = true }
 nemesis-path = { workspace = true }
-nemesis-utils = { workspace = true }
+# B10（2026-10-18 存储韧性）：启用 SQLite 打开面守卫（能力准入/drift 对账/
+# 迁移前备份/WAL 降级）；board feature 裁掉时整 crate 退出依赖图，无残留。
+nemesis-utils = { workspace = true, features = ["sqlite-preflight"] }
 nemesis-types = { workspace = true }
 nemesis-prompts = { workspace = true }
+
+[features]
+# F5（2026-10-18 二轮复评）：纯 cfg 旗标（无依赖变化）——nemesisbot 的
+# checkpoint-git 穿透。关 = 执行体无交付管线（delivery 恒缺），
+# requires_evidence 建单自动置位跳过（否则证据闸对这些单恒 FAIL）。
+checkpoint-git = []
 
 [lints]
 workspace = true

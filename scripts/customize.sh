@@ -71,6 +71,13 @@ do_build() {
     cp -f "target/$PROFILE/nemesisbot$BIN_EXT" "bin/bin_customize/nemesisbot$BIN_EXT"
     chmod +x "bin/bin_customize/nemesisbot$BIN_EXT" 2>/dev/null || true
     echo "[customize] DONE -> bin/bin_customize/nemesisbot$BIN_EXT"
+    # A1 运行时完整性清单（生成失败诚实降级不阻塞）
+    if command -v python3 >/dev/null 2>&1; then
+        python3 scripts/gen_runtime_manifest.py --out-dir bin/bin_customize \
+            || echo "[customize] WARN runtime-manifest generation failed - skipping"
+    else
+        echo "[customize] WARN python3 not found in PATH - skipping runtime-manifest generation"
+    fi
 }
 
 MODE="${1:-}"

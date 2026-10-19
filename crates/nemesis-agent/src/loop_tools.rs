@@ -1647,26 +1647,43 @@ impl ShellOutputCapture {
     }
 }
 
-/// D4（2026-09-28）：workspace-dacl 受限模式下 console 类子进程的 creation
-/// flags 决策——**exec / run_checks / run_script / git 四处共用的单一真相
-/// 源**。受限令牌树下**新** console 分配必死 0xC0000142（nemesis-sandbox
-/// token.rs 实证；`CREATE_NO_WINDOW` 的隐藏 console 同样算新分配），且
-/// console-less 下默认 flags 也触分配面，故：
+/// exec / exec_async / run_checks / run_script / git 五处共用的 console
+/// creation flags 决策**单一真相源**（D4 2026-09-28 建立；2026-10-19 黑窗
+/// 修复收编默认臂）。
+///
+/// **默认臂 = `Some(CREATE_NO_WINDOW)`（黑窗根修）**：release 版 gateway 是
+/// windows 子系统进程（main.rs `windows_subsystem = "windows"`，自身无
+/// console），console 子进程（cmd.exe/git.exe/CLI 工具）以默认 flags 从无
+/// console 父进程 spawn 时，系统为其分配**新的可见 console** → 黑窗一闪/
+/// 长命令躺桌面（stdout/stderr 已被管道收走，窗内无内容，纯视觉污染）。
+/// CREATE_NO_WINDOW 只压 console（conhost）分配，GUI 程序窗口是程序自建
+/// CreateWindow、与此类 flags 完全无关——projects.open_dir 用它 spawn
+/// explorer.exe 照常弹窗（仓内实证，MCP/LSP/后台进程等 ~15 处同款先例）；
+/// 且优于 DETACHED_PROCESS（console 仍存在，控制台 API 可用，管道不受影
+/// 响）。唯一边界：console TUI 界面不可见（exec 非交互 + 管道收输出，零
+/// 实际损失）。
+///
+/// **workspace-dacl 受限臂保持 D4 语义**：受限令牌树下**新** console 分配
+/// 必死 0xC0000142（nemesis-sandbox token.rs 实证；CREATE_NO_WINDOW 的隐
+/// 藏 console 同样算新分配），故：
 /// - exec_worker 附着成功（`NEMESISBOT_CONSOLE=1`）→ `None`：不加 flags，
 ///   子进程继承附着 console（无新分配），第三方链式工具链一路继承可用；
 /// - 未附着/未设 → `Some(DETACHED_PROCESS)`：无 console 无分配，命令本体
 ///   可跑（深层第三方默认 flags spawn 是诚实边界）。
-///
-/// 非 workspace-dacl 进程恒 `None`（调用方维持各自既有 flags 形态）。
 #[cfg(target_os = "windows")]
-fn restricted_console_flags() -> Option<u32> {
+fn console_creation_flags() -> Option<u32> {
     const DETACHED_PROCESS: u32 = 0x0000_0008;
-    if std::env::var("NEMESISBOT_SANDBOX_BACKEND").as_deref() == Ok("workspace-dacl")
-        && std::env::var("NEMESISBOT_CONSOLE").as_deref() != Ok("1")
-    {
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let restricted = std::env::var("NEMESISBOT_SANDBOX_BACKEND").as_deref() == Ok("workspace-dacl");
+    if restricted && std::env::var("NEMESISBOT_CONSOLE").as_deref() != Ok("1") {
+        // 受限令牌 + 未附着：新 console 分配（含隐藏）必死 → 完全无 console
         Some(DETACHED_PROCESS)
-    } else {
+    } else if restricted {
+        // 受限令牌 + 附着成功：继承附着 console（无新分配）
         None
+    } else {
+        // 生产默认：压黑窗（只管 console 分配，GUI 程序窗口不受影响）
+        Some(CREATE_NO_WINDOW)
     }
 }
 
@@ -1705,11 +1722,12 @@ fn make_piped_shell_command(command: &str) -> tokio::process::Command {
         c.stdout(std::process::Stdio::piped());
         c.stderr(std::process::Stdio::piped());
         c.kill_on_drop(true);
-        // D4（DACL 定向档，2026-09-27）：受限令牌树下**新** console 分配必死
-        // 0xC0000142（nemesis-sandbox token.rs 实证）。flags 决策单一真相源
-        // 在 `restricted_console_flags`（exec/run_checks/run_script/git 四处
-        // 共用；附着成功=继承，未附着=DETACHED）。
-        if let Some(f) = restricted_console_flags() {
+        // 2026-10-19 黑窗根修：release gateway 无 console（windows 子系统），
+        // cmd.exe 默认 flags 会分配新可见 console → 黑窗。flags 决策单一真
+        // 相源在 `console_creation_flags`（exec/exec_async/run_checks/
+        // run_script/git 五处共用；普通模式=CREATE_NO_WINDOW 压黑窗，GUI 程
+        // 序窗口不受影响；workspace-dacl=附着继承/DETACHED）。
+        if let Some(f) = console_creation_flags() {
             c.creation_flags(f);
         }
         let stripped = nemesis_utils::env_sanitize::sanitize_tokio_command(&mut c);
@@ -2344,21 +2362,15 @@ impl Tool for RunScriptTool {
         {
             cmd.process_group(0);
         }
-        // 脚本解释器（bash/python 等）是 console 程序。普通模式压 CREATE_NO_
-        // WINDOW（gateway 托盘/无控制台运行（release windows 子系统，
-        // 2026-09-21）时不弹窗；输出经读回收集，不受影响）。D4（2026-09-28
-        // 复查根修）：workspace-dacl 受限模式下 **CREATE_NO_WINDOW 的隐藏
-        // console 也是新分配**（\Device\ConDrv 写类访问）必死 0xC0000142
-        // （token_tests grandchild 臂 b 实证）→ 走 restricted_console_flags
-        // 单一真相源（附着成功=继承，未附着=DETACHED）。
+        // console flags 单一真相源（2026-10-19 黑窗根修后默认臂即
+        // CREATE_NO_WINDOW，此前的普通模式硬编码分叉收回——语义不变）。
+        // workspace-dacl 受限模式下 CREATE_NO_WINDOW 的隐藏 console 也是新
+        // 分配（\Device\ConDrv 写类访问）必死 0xC0000142（token_tests
+        // grandchild 臂 b 实证）→ 附着成功=继承，未附着=DETACHED。
         #[cfg(target_os = "windows")]
         {
-            if ShellOutputCapture::is_restricted() {
-                if let Some(f) = restricted_console_flags() {
-                    cmd.creation_flags(f);
-                }
-            } else {
-                cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            if let Some(f) = console_creation_flags() {
+                cmd.creation_flags(f);
             }
         }
 
@@ -2540,12 +2552,12 @@ impl Tool for AsyncExecTool {
             // D4（2026-09-28）：workspace-dacl 受限模式下 std piped 必死
             //（ShellOutputCapture 注释）；本工具本就不读输出 → 直接 null。
             c.current_dir(cwd);
-            // console 治理与四工具同源（本工具不在 MOVE_TOOLS、gateway 从不
-            // 把 exec_async 路由进受限 executor——此臂纯防御：未来移入时
-            // cmd.exe 默认 flags 的新 console 分配在受限树下必死）。
+            // console 治理与五工具同源（2026-10-19 黑窗根修：普通模式默认臂
+            // 即 CREATE_NO_WINDOW；本工具不在 MOVE_TOOLS、gateway 从不把
+            // exec_async 路由进受限 executor——受限臂纯防御）。
             #[cfg(target_os = "windows")]
             {
-                if let Some(f) = restricted_console_flags() {
+                if let Some(f) = console_creation_flags() {
                     c.creation_flags(f);
                 }
             }
@@ -5627,11 +5639,24 @@ pub type QuestionBrokerSlot =
 /// question 工具默认等待窗口（秒）。超时回灌「按最佳判断继续」。
 pub const QUESTION_DEFAULT_TIMEOUT_SECS: u64 = 120;
 
-/// F7：结构化提问工具。向用户发一张选项卡（Dashboard QuestionCard）并阻塞
-/// 等作答：单选 radio / `multi=true` 多选 checkbox。回答以选中项原文回灌，
-/// 模型据此继续；超时回灌 "user did not answer, proceed with your best
-/// judgment"（不是错误——轮次照常推进）。broker 经槽注入（gateway 装配
-/// `WebQuestionBroker`）；进程内 id 自增避免并发提问撞号。
+/// B8（提问两形态）：表单形态字段数上限。超限诚实拒绝（防模型一卡塞满
+/// 屏幕；两形态共用 question_id 发号器，超限消耗一个 ID 无害）。
+pub const QUESTION_MAX_FIELDS: usize = 8;
+
+/// B8：单选卡片选项上限（≤6 radio 列表，>6 前端收纳为下拉 select）。
+pub const QUESTION_MAX_SINGLE_OPTIONS: usize = 12;
+
+/// F7：结构化提问工具。两形态（B8）：
+/// - **选项形态**（legacy，`options`）：单选 radio / `multi=true` 多选
+///   checkbox；单选 >6 项前端自动收纳为下拉 select（上限 12）。
+/// - **表单形态**（`fields`）：多个 text 输入框 + select 下拉字段组成的
+///   表单卡；回答以 object（键=字段 key）回灌。`fields` 非空时生效，
+///   `options`/`multi` 被忽略。
+///
+/// 回答以选中项原文 / 表单作答回灌，模型据此继续；超时回灌 "user did not
+/// answer, proceed with your best judgment"（不是错误——轮次照常推进）。
+/// broker 经槽注入（gateway 装配 `WebQuestionBroker`）；进程内 id 自增
+/// 避免并发提问撞号。
 pub struct QuestionTool {
     broker: QuestionBrokerSlot,
 }
@@ -5649,15 +5674,116 @@ pub(crate) fn next_question_id() -> String {
     format!("q-{}", N.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
 }
 
+/// B8：解析并校验表单字段定义（工具入参 `fields` 数组 → `QuestionField`）。
+/// 校验：数量 ≤[`QUESTION_MAX_FIELDS`]、元素全为 object、key/label 非空且
+/// key 一次提问内唯一、type ∈ {text, select}、select 的 options 2-6 项非空、
+/// required 缺省 false。
+fn parse_question_fields(
+    v: &serde_json::Value,
+) -> Result<Vec<nemesis_types::agent::QuestionField>, String> {
+    let arr = v["fields"]
+        .as_array()
+        .ok_or_else(|| "'fields' must be an array of field objects".to_string())?;
+    if arr.len() > QUESTION_MAX_FIELDS {
+        return Err(format!(
+            "'fields' must have at most {} entries, got {}",
+            QUESTION_MAX_FIELDS,
+            arr.len()
+        ));
+    }
+    let mut out = Vec::with_capacity(arr.len());
+    let mut seen = std::collections::HashSet::new();
+    for (i, f) in arr.iter().enumerate() {
+        let obj = f
+            .as_object()
+            .ok_or_else(|| format!("fields[{}] must be an object", i))?;
+        let key = obj
+            .get("key")
+            .and_then(|k| k.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| format!("fields[{}].key is required (non-empty string)", i))?;
+        if !seen.insert(key.to_string()) {
+            return Err(format!(
+                "fields[{}].key '{}' duplicates an earlier key",
+                i, key
+            ));
+        }
+        let label = obj
+            .get("label")
+            .and_then(|l| l.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| format!("fields[{}] ({}) label is required", i, key))?;
+        let field_type = obj.get("type").and_then(|t| t.as_str()).unwrap_or("text");
+        let options: Vec<String> = match obj.get("options") {
+            Some(o) => o
+                .as_array()
+                .ok_or_else(|| {
+                    format!(
+                        "fields[{}] ({}) options must be an array of strings",
+                        i, key
+                    )
+                })?
+                .iter()
+                .map(|o| {
+                    o.as_str()
+                        .map(|s| s.trim().to_string())
+                        .ok_or_else(|| format!("fields[{}] ({}) options must be strings", i, key))
+                })
+                .collect::<Result<Vec<String>, String>>()?,
+            None => Vec::new(),
+        };
+        match field_type {
+            "text" => {}
+            "select" => {
+                if options.len() < 2 || options.len() > 6 {
+                    return Err(format!(
+                        "fields[{}] ({}) is select: options must have 2-6 entries, got {}",
+                        i,
+                        key,
+                        options.len()
+                    ));
+                }
+                if options.iter().any(String::is_empty) {
+                    return Err(format!(
+                        "fields[{}] ({}) select options must be non-empty",
+                        i, key
+                    ));
+                }
+            }
+            other => {
+                return Err(format!(
+                    "fields[{}] ({}) has unknown type '{}' (text|select)",
+                    i, key, other
+                ));
+            }
+        }
+        out.push(nemesis_types::agent::QuestionField {
+            key: key.to_string(),
+            label: label.to_string(),
+            field_type: field_type.to_string(),
+            required: obj
+                .get("required")
+                .and_then(|r| r.as_bool())
+                .unwrap_or(false),
+            options,
+        });
+    }
+    Ok(out)
+}
+
 #[async_trait]
 impl Tool for QuestionTool {
     fn description(&self) -> String {
-        "Ask the user a structured question with fixed options and block until they answer \
-         (or it times out). Use when the choice materially changes what you do next — e.g. \
-         which of two fix strategies to apply. Single-choice by default; multi=true lets the \
-         user pick several. Returns the selected option text(s); on timeout returns a note \
-         to proceed with your best judgment. Do NOT use for trivial choices or free-form \
-         conversation."
+        "Ask the user a structured question and block until they answer (or it times out). \
+         Two forms: (a) options — the user picks from fixed candidates (single-choice by \
+         default; multi=true for several; >6 options render as a dropdown); (b) fields — \
+         a small form of text inputs and select dropdowns when you need several pieces \
+         of structured input at once. Returns the selected option text(s) or the form \
+         answers as a JSON object; on timeout returns a note to proceed with your best \
+         judgment. Use when the answer materially changes what you do next. Do NOT use \
+         for trivial choices or free-form conversation."
             .to_string()
     }
 
@@ -5672,15 +5798,37 @@ impl Tool for QuestionTool {
                 "options": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "2-6 candidate answers the user picks from"
+                    "description": "Options form: 2-12 candidate answers (single-choice; \
+                                    >6 renders as a dropdown). Multi-choice caps at 6. \
+                                    Ignored when fields is given."
                 },
                 "multi": {
                     "type": "boolean",
                     "default": false,
-                    "description": "true = user may select multiple options"
+                    "description": "Options form: true = user may select multiple options. \
+                                    Ignored when fields is given."
+                },
+                "fields": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "key": {"type": "string", "description": "Answer key (unique, non-empty)"},
+                            "label": {"type": "string", "description": "Display label"},
+                            "type": {"type": "string", "enum": ["text", "select"],
+                                     "description": "text = single-line input; select = pick one of options"},
+                            "required": {"type": "boolean", "default": false,
+                                         "description": "true = user must fill this field"},
+                            "options": {"type": "array", "items": {"type": "string"},
+                                        "description": "select fields only: 2-6 candidates"}
+                        },
+                        "required": ["key", "label"]
+                    },
+                    "description": "Form form: 1-8 fields (text inputs + selects). Takes \
+                                    precedence over options/multi."
                 }
             },
-            "required": ["question", "options"]
+            "required": ["question"]
         })
     }
 
@@ -5693,23 +5841,44 @@ impl Tool for QuestionTool {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .ok_or_else(|| "missing required 'question' field".to_string())?;
-        let options: Vec<String> = v["options"]
-            .as_array()
-            .ok_or_else(|| "missing required 'options' field (array of strings)".to_string())?
-            .iter()
-            .map(|o| o.as_str().map(|s| s.trim().to_string()))
-            .collect::<Option<Vec<String>>>()
-            .ok_or_else(|| "'options' must be an array of strings".to_string())?;
-        if options.len() < 2 || options.len() > 6 {
-            return Err(format!(
-                "'options' must have 2-6 entries, got {}",
-                options.len()
-            ));
-        }
-        if options.iter().any(String::is_empty) {
-            return Err("'options' entries must be non-empty".to_string());
-        }
-        let multi = v["multi"].as_bool().unwrap_or(false);
+
+        // B8 两形态分流：fields 非空数组 = 表单形态（options/multi 忽略）；
+        // 否则 = 选项形态（options 必填）。
+        let fields = match v.get("fields") {
+            Some(f) if !f.is_null() => parse_question_fields(&v)?,
+            _ => Vec::new(),
+        };
+        let (options, multi) = if fields.is_empty() {
+            let options: Vec<String> = v["options"]
+                .as_array()
+                .ok_or_else(|| {
+                    "missing required options: give 'options' (2-12 entries) or 'fields' (form)"
+                        .to_string()
+                })?
+                .iter()
+                .map(|o| o.as_str().map(|s| s.trim().to_string()))
+                .collect::<Option<Vec<String>>>()
+                .ok_or_else(|| "'options' must be an array of strings".to_string())?;
+            let multi = v["multi"].as_bool().unwrap_or(false);
+            let max = if multi {
+                6
+            } else {
+                QUESTION_MAX_SINGLE_OPTIONS
+            };
+            if options.len() < 2 || options.len() > max {
+                return Err(format!(
+                    "'options' must have 2-{} entries (multi-choice caps at 6), got {}",
+                    max,
+                    options.len()
+                ));
+            }
+            if options.iter().any(String::is_empty) {
+                return Err("'options' entries must be non-empty".to_string());
+            }
+            (options, multi)
+        } else {
+            (Vec::new(), false)
+        };
 
         let broker = {
             let guard = self.broker.read();
@@ -5728,6 +5897,7 @@ impl Tool for QuestionTool {
             question: question.to_string(),
             options,
             multi,
+            fields,
             chat_id: context.chat_id.clone(),
             session_key: context.session_key.clone(),
             timeout_secs: QUESTION_DEFAULT_TIMEOUT_SECS,
@@ -5750,6 +5920,22 @@ impl Tool for QuestionTool {
                         selected.join("; ")
                     ))
                 }
+            }
+            nemesis_types::agent::QuestionOutcome::AnsweredForm(values) => {
+                // 紧凑 JSON object 回灌（键=字段 key）；空 map 理论不可达
+                // （至少一个必填或可选字段作答），兜底诚实注记。
+                if values.is_empty() {
+                    return Ok("User submitted the form with all fields empty.".to_string());
+                }
+                let obj: serde_json::Value = values
+                    .iter()
+                    .map(|(k, val)| (k.clone(), serde_json::Value::String(val.clone())))
+                    .collect::<serde_json::Map<String, serde_json::Value>>()
+                    .into();
+                Ok(format!(
+                    "User answered form: {}",
+                    serde_json::to_string(&obj).unwrap_or_else(|_| "{}".to_string())
+                ))
             }
             nemesis_types::agent::QuestionOutcome::Timeout => {
                 Ok("No answer: user did not answer, proceed with your best judgment.".to_string())
@@ -6050,6 +6236,7 @@ impl Tool for PlanPresentTool {
                 PLAN_PRESENT_OPTION_REJECT.to_string(),
             ],
             multi: false,
+            fields: Vec::new(),
             chat_id: context.chat_id.clone(),
             session_key: context.session_key.clone(),
             timeout_secs: PLAN_PRESENT_TIMEOUT_SECS,
@@ -6080,6 +6267,15 @@ impl Tool for PlanPresentTool {
                     .insert(context.session_key.clone(), PlanPresentVerdict::Rejected);
                 // 本文本模型本轮看不到（run_loop 消费 verdict 后直接终局），
                 // 落在这里是给 history/审计留一致记录。
+                Ok("❌ 用户驳回了计划：本轮到此结束。".to_string())
+            }
+            // present_plan 只发选项卡（无 fields）——表单作答形态不可达，
+            // 防御臂按拒绝收口（语义最接近：非「批准」即不进 build）。
+            nemesis_types::agent::QuestionOutcome::AnsweredForm(_) => {
+                self.handle
+                    .verdicts
+                    .lock()
+                    .insert(context.session_key.clone(), PlanPresentVerdict::Rejected);
                 Ok("❌ 用户驳回了计划：本轮到此结束。".to_string())
             }
             nemesis_types::agent::QuestionOutcome::Timeout => {
@@ -6243,11 +6439,13 @@ impl GitTool {
         Self { workspace }
     }
 
-    /// D4（2026-09-28 复查接线）：git 子进程执行的单一入口。普通模式 =
-    /// `output()`（隐式 piped，现状零变化）；workspace-dacl 受限模式 =
-    /// 工作区 `.exec_out/` 文件重定向 + `status()` + 读回（std 匿名管道
-    /// 创建在受限令牌下必死——ShellOutputCapture 注释）+ console flags
-    /// 单一真相源（git.exe 是 console 程序，新分配在受限树下必死）。
+    /// git 子进程执行的单一入口。2026-10-19 黑窗根修后：普通模式 =
+    /// `output()`（隐式 piped）+ CREATE_NO_WINDOW 压黑窗（git.exe 是
+    /// console 程序，release gateway 无 console 下默认 flags 会闪窗）；
+    /// workspace-dacl 受限模式 = 工作区 `.exec_out/` 文件重定向 +
+    /// `status()` + 读回（std 匿名管道创建在受限令牌下必死
+    /// ——ShellOutputCapture 注释）+ console flags 单一真相源（新分配在
+    /// 受限树下必死，附着成功=继承/未附着=DETACHED）。
     /// GitTool 在 MOVE_TOOLS 里（exec_worker 内运行），三处旧 `.output()`
     /// 调用在受限形态下全部 os error 5——本 helper 是它们的共同根修。
     fn run_git(&self, args: &[&str]) -> Result<GitOutput, String> {
@@ -6255,7 +6453,7 @@ impl GitTool {
         c.current_dir(&self.workspace).args(args);
         #[cfg(target_os = "windows")]
         {
-            if let Some(f) = restricted_console_flags() {
+            if let Some(f) = console_creation_flags() {
                 use std::os::windows::process::CommandExt;
                 c.creation_flags(f);
             }

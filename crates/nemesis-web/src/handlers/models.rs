@@ -128,6 +128,8 @@ struct SwapParams {
     /// per-model 流式开关（2026-10-13 stream 键）："yes"/"no"/""(auto)。
     /// 构造期消费——热切重设默认后生效。
     stream_mode: String,
+    /// per-model 缓存断点显式化（B13）：仅 anthropic lane 消费，构造期消费。
+    cache_breakpoints: bool,
 }
 
 impl ModelsHandler {
@@ -548,6 +550,7 @@ impl ModelsHandler {
             protocol: swap.protocol.clone(),
             timeout_secs: swap.timeout_secs,
             stream_mode: swap.stream_mode.clone(),
+            cache_breakpoints: swap.cache_breakpoints,
             account_id: String::new(),
             headers: std::collections::HashMap::new(),
         };
@@ -639,6 +642,7 @@ impl ModelsHandler {
                         protocol: fr.protocol.clone(),
                         timeout_secs: fr.timeout_secs,
                         stream_mode: fr.stream_mode.clone(),
+                        cache_breakpoints: fr.cache_breakpoints,
                         account_id: String::new(),
                         headers: std::collections::HashMap::new(),
                     },
@@ -673,6 +677,7 @@ impl ModelsHandler {
             timeout_secs: resolution.timeout_secs,
             proxy: resolution.proxy,
             stream_mode: resolution.stream_mode,
+            cache_breakpoints: resolution.cache_breakpoints,
         })
     }
 

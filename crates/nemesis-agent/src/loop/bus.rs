@@ -128,6 +128,8 @@ impl AgentLoop {
             reinject_tx: parking_lot::RwLock::new(None),
             extra_hidden_tools: parking_lot::RwLock::new(Vec::new()),
             exclusive_hidden_provider: parking_lot::RwLock::new(None),
+            checks_capture: parking_lot::RwLock::new(HashMap::new()),
+            tool_policy_allow: parking_lot::RwLock::new(Vec::new()),
             tier_override: parking_lot::RwLock::new(None),
             queue_size,
             discipline: parking_lot::RwLock::new(None),
@@ -155,6 +157,7 @@ impl AgentLoop {
                 approval_responder: parking_lot::RwLock::new(None),
                 question_responder: parking_lot::RwLock::new(None),
                 question_asker: parking_lot::RwLock::new(None),
+                credential_broker: parking_lot::RwLock::new(None),
                 #[cfg(feature = "security")]
                 approval_auto: parking_lot::RwLock::new(None),
             },
@@ -225,6 +228,7 @@ impl AgentLoop {
             token_budget: crate::token_budget::SessionTokenBudgetLedger::default(),
             escalated_floors: parking_lot::Mutex::new(HashMap::new()),
             turn_wal: parking_lot::RwLock::new(None),
+            provider_reloader: parking_lot::RwLock::new(None),
         }
     }
 

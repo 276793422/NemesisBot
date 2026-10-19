@@ -390,3 +390,99 @@ fn process_alive(pid: u32) -> bool {
         .map(|o| o.status.success())
         .unwrap_or(false)
 }
+
+// ---------------------------------------------------------------------------
+// A2 停止阶梯：优雅停 → 宽限窗 → 强杀升级
+// ---------------------------------------------------------------------------
+
+/// TERM-忽略命令（POSIX 阶梯升级的前提：trap 掉 TERM 后必须靠 SIGKILL
+/// 收场；Windows 无优雅通道，等价长跑命令）。
+fn stubborn_cmd() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "ping -n 30 127.0.0.1"
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        "trap '' TERM; sleep 30"
+    }
+}
+
+/// 直接 spawn 一个 shell 子进程（测 stop_ladder 本体，不经注册表）。
+async fn spawn_shell(cmd: &str) -> (u32, Arc<tokio::sync::Mutex<tokio::process::Child>>) {
+    let child = build_platform_shell(cmd)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn shell");
+    let pid = child.id().expect("pid before exit");
+    (pid, Arc::new(tokio::sync::Mutex::new(child)))
+}
+
+#[tokio::test]
+async fn stop_ladder_terminates_stubborn_process() {
+    let _serial = TEST_LOCK.lock().await;
+    let (pid, child) = spawn_shell(stubborn_cmd()).await;
+    let started = Instant::now();
+    stop_ladder(pid, &child, Duration::from_millis(500)).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(8),
+        "ladder must finish promptly, took {:?}",
+        started.elapsed()
+    );
+    let mut c = child.lock().await;
+    let st = c
+        .try_wait()
+        .expect("wait ok")
+        .expect("stubborn process must be dead after ladder");
+    #[cfg(not(target_os = "windows"))]
+    assert!(
+        st.code().is_none(),
+        "TERM-ignoring process must die by SIGKILL (code None), got {:?}",
+        st.code()
+    );
+    #[cfg(target_os = "windows")]
+    assert!(!st.success(), "force-killed process must not be success");
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tokio::test]
+async fn stop_ladder_graceful_exit_within_window_no_escalation() {
+    let _serial = TEST_LOCK.lock().await;
+    // trap TERM → exit 0：优雅段信号即走，窗内自退，绝不升级强杀。
+    let (pid, child) = spawn_shell("trap 'exit 0' TERM; sleep 30").await;
+    let started = Instant::now();
+    stop_ladder(pid, &child, Duration::from_secs(5)).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "graceful exit must be fast, took {:?}",
+        started.elapsed()
+    );
+    let mut c = child.lock().await;
+    let st = c
+        .try_wait()
+        .expect("wait ok")
+        .expect("graceful process must have exited within window");
+    assert_eq!(
+        st.code(),
+        Some(0),
+        "clean exit-0 proves no SIGKILL escalation fired"
+    );
+}
+
+#[tokio::test]
+async fn background_kill_ladder_terminates_stubborn_job_end_to_end() {
+    let _serial = TEST_LOCK.lock().await;
+    let reg = BackgroundProcessRegistry::new();
+    let started = reg.start(stubborn_cmd(), "/").await.unwrap();
+    let id = started["job_id"].as_u64().unwrap();
+    // 阶梯升级前（TERM-only）：POSIX 上 TERM-忽略进程永远收不掉，kill()
+    // 必落 KILL_WAIT 超时 Err；升级后 3s 宽限 + SIGKILL 落在 5s 窗内。
+    let result = reg
+        .kill(id)
+        .await
+        .expect("kill must succeed within KILL_WAIT now that the ladder escalates");
+    assert_eq!(result["killed"].as_bool(), Some(true));
+    assert_eq!(result["success"].as_bool(), Some(false));
+}

@@ -63,6 +63,10 @@ pub fn delete(kmdutil: &Path, name: &str) -> Command {
 /// `tolerant`: when true, a non-zero exit is logged but not propagated (used for
 /// `stop`/`delete` of services that may already be gone).
 pub fn run(mut cmd: Command, tolerant: bool) -> Result<()> {
+    // 黑窗根修（2026-10-19）：KmdUtil 是 console 程序，gateway（无 console）
+    // 路径（Dashboard 引擎装卸/提权子进程）下默认 flags 会闪窗。单一出口
+    // crate::suppress_console。
+    crate::suppress_console(&mut cmd);
     let output = cmd
         .output()
         .with_context(|| format!("spawn {}", format_command(&cmd)))?;
@@ -121,8 +125,8 @@ pub fn set_sbiesvc_service_key_dwords() -> Result<()> {
 }
 
 fn reg_add_sz(key: &str, value: &str, data: &str) -> Result<()> {
-    let out = std::process::Command::new("reg")
-        .arg("add")
+    let mut c = std::process::Command::new("reg");
+    c.arg("add")
         .arg(key)
         .arg("/v")
         .arg(value)
@@ -130,7 +134,9 @@ fn reg_add_sz(key: &str, value: &str, data: &str) -> Result<()> {
         .arg("REG_SZ")
         .arg("/d")
         .arg(data)
-        .arg("/f")
+        .arg("/f");
+    crate::suppress_console(&mut c);
+    let out = c
         .output()
         .with_context(|| format!("reg add {key} {value}"))?;
     if !out.status.success() {
@@ -143,8 +149,8 @@ fn reg_add_sz(key: &str, value: &str, data: &str) -> Result<()> {
 }
 
 fn reg_add_dword(key: &str, value: &str, data: &str) -> Result<()> {
-    let out = std::process::Command::new("reg")
-        .arg("add")
+    let mut c = std::process::Command::new("reg");
+    c.arg("add")
         .arg(key)
         .arg("/v")
         .arg(value)
@@ -152,7 +158,9 @@ fn reg_add_dword(key: &str, value: &str, data: &str) -> Result<()> {
         .arg("REG_DWORD")
         .arg("/d")
         .arg(data)
-        .arg("/f")
+        .arg("/f");
+    crate::suppress_console(&mut c);
+    let out = c
         .output()
         .with_context(|| format!("reg add {key} {value}"))?;
     if !out.status.success() {

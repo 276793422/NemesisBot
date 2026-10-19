@@ -8,10 +8,14 @@ import { useToast } from './useToast'
  *
  * 后端 WebQuestionBroker 在 agent 的 `question` 工具发起提问时：
  * - 广播 SSE `question-asked`（payload = AgentEvent::QuestionAsked 的 data：
- *   question_id / question / options / multi / timeout_secs / chat_id /
- *   session_key；`question.pending` 列表另带 age_secs）；
+ *   question_id / question / options / multi / fields / timeout_secs /
+ *   chat_id / session_key；`question.pending` 列表另带 age_secs）；
  * - 阻塞等待 WSAPI `question.respond`（超时不是错误：广播
  *   `question-resolved{decision:"timeout"}`，模型按最佳判断继续）。
+ *
+ * B8（提问两形态）：`fields` 非空 = 表单卡（text 输入框 + select 下拉，
+ * options/multi 不参与语义）；空 = 选项卡（radio/checkbox）。单选选项
+ * 超过 6 项前端收纳为下拉 select（QUESTION_DROPDOWN_THRESHOLD）。
  *
  * 本组合式是全局单例（同 useToast/useApprovals）：initQuestions 订阅 SSE +
  * 拉一次 `question.pending` 补断线漏掉的事件；respond 成功或
@@ -19,12 +23,26 @@ import { useToast } from './useToast'
  * 倒计时到期仅本地摘卡（服务端届时已超时放行，模型的选择会出现在聊天流）。
  */
 
+/** B8：单选选项数超过该阈值渲染为下拉 select（≤6 radio 列表）。 */
+export const QUESTION_DROPDOWN_THRESHOLD = 6
+
+export interface QuestionField {
+  key: string
+  label: string
+  /** text = 单行输入；select = 从 options 单选下拉。 */
+  type: 'text' | 'select' | string
+  required?: boolean
+  options?: string[]
+}
+
 export interface PendingQuestion {
   question_id: string
   question: string
   options: string[]
   /** true = 可选多项（checkbox）；false = 单选（radio）。 */
   multi: boolean
+  /** B8：非空 = 表单卡（options/multi 不参与语义）。 */
+  fields: QuestionField[]
   timeout_secs: number
   chat_id?: string
   session_key?: string
@@ -49,6 +67,15 @@ function upsertFromPayload(data: any) {
     question: String(data.question ?? ''),
     options: data.options.map((o: unknown) => String(o)),
     multi: data.multi === true,
+    fields: Array.isArray(data.fields)
+      ? data.fields.map((f: any) => ({
+          key: String(f?.key ?? ''),
+          label: String(f?.label ?? ''),
+          type: String(f?.type ?? 'text'),
+          required: f?.required === true,
+          options: Array.isArray(f?.options) ? f.options.map((o: unknown) => String(o)) : [],
+        }))
+      : [],
     timeout_secs: timeout,
     chat_id: data.chat_id || undefined,
     session_key: data.session_key || undefined,
@@ -133,7 +160,27 @@ export function useQuestions() {
     }
   }
 
-  return { pendingQuestions, now, initQuestions, respondTo }
+  /** B8：提交表单作答（键=字段 key，值=文本或选中项）。校验失败请求留在
+   * pending 可重试；unknown/not wired 同步摘卡。 */
+  async function respondForm(questionId: string, values: Record<string, string>) {
+    const { request } = useWSAPI()
+    try {
+      await request('question', 'respond', {
+        question_id: questionId,
+        values,
+      })
+      removeLocal(questionId)
+      toast.success('已提交回答')
+    } catch (err: any) {
+      const msg = String(err ?? '')
+      if (msg.includes('unknown') || msg.includes('not wired')) {
+        removeLocal(questionId)
+      }
+      toast.error(`回答提交失败: ${msg}`)
+    }
+  }
+
+  return { pendingQuestions, now, initQuestions, respondTo, respondForm }
 }
 
 /** 测试辅助：重置模块级单例状态（生产代码勿用）。 */

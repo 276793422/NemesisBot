@@ -106,6 +106,11 @@ mod conflict_resolver;
 /// ——nemesis-connectors 整包随它进出（连带 nemesis-security）。
 #[cfg(feature = "connectors")]
 mod connector_tools;
+/// B4（2026-10-18 凭据 vault §7）：凭据索要卡 broker——值不 transit 通道。
+/// 门控随 vault_runtime（security feature off = 无 vault 可落，卡片无意义；
+/// 触发点槽空走原错误路径零回归）。
+#[cfg(feature = "security")]
+mod credential_broker;
 /// P4 交付门（持久 Agent 实体，2026-10-17）：worker 侧交付分支捕获——
 /// 仅 cluster 形态消费（execute_new_task/resume_task 成功收口）。
 #[cfg(feature = "cluster")]
@@ -197,6 +202,12 @@ mod channel_approval;
 #[cfg(all(feature = "cluster", feature = "security"))]
 mod remote_approval;
 
+/// A1 运行时完整性清单（工程模式专项，2026-10-19）：打包部署的
+/// 运行时文件 hash 清单（runtime-manifest.json，构建期由
+/// scripts/gen_runtime_manifest.py 生成）+ 启动三态校验。无 feature 门
+/// （cargo 开发态 = manifest 缺席态，warn 不阻塞，照常工作）。
+mod runtime_manifest;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
@@ -275,6 +286,10 @@ enum Commands {
         /// 状态页即全部 UI。需要 bridge.server.token 非空（空则拒绝启动）。
         #[arg(long)]
         relay: bool,
+        /// A1 运行时硬化批：显式跳过 runtime-manifest 完整性校验（运维
+        /// 逃生门；打包部署残缺默认响亮拒启，跳过必须显式输入）。
+        #[arg(long)]
+        skip_runtime_check: bool,
     },
     /// Run a single headless agent task and exit (no ports, no gateway; K1)
     Run {
@@ -793,6 +808,7 @@ async fn run_command(cli: Cli) -> Result<()> {
                 quiet: false,
                 no_console: false,
                 relay: false,
+                skip_runtime_check: false,
             }
         }
     };
@@ -824,6 +840,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             quiet,
             no_console,
             relay,
+            skip_runtime_check,
         } => {
             // Build extra args for logger from flags
             let mut gateway_args: Vec<String> = Vec::new();
@@ -836,7 +853,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             if no_console {
                 gateway_args.push("--no-console".to_string());
             }
-            commands::gateway::run(cli.local, relay, &gateway_args).await?;
+            commands::gateway::run(cli.local, relay, &gateway_args, skip_runtime_check).await?;
         }
         Commands::Agent {
             subcommand,

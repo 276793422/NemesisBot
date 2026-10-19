@@ -6,7 +6,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 // - respond 成功 → 本地移除 + 成功 toast；unknown/not wired 错误 → 也移除；
 //   其他错误（后端校验拒绝，请求留在 pending 可重试）→ 卡片保留；
 // - `question-resolved` 广播 → 静默摘卡；
-// - 倒计时到期 → pruneExpired 摘卡片（服务端已超时放行）。
+// - 倒计时到期 → pruneExpired 摘卡片（服务端已超时放行）；
+// - B8（提问两形态）：fields 规约（type/required/options 缺省）+ respondForm
+//   通路（成功/unknown 摘卡/校验拒绝留卡）。
 // useSSE / useWSAPI / useToast 全部打桩。
 
 const sseHandlers = new Map<string, (data?: unknown) => void>()
@@ -176,5 +178,74 @@ describe('useQuestions', () => {
     expect(pendingQuestions).toHaveLength(1)
     vi.advanceTimersByTime(1100)
     expect(pendingQuestions).toHaveLength(0)
+  })
+
+  // -------------------------------------------------------------------------
+  // B8（提问两形态）：fields 透传 + respondForm 通路
+  // -------------------------------------------------------------------------
+
+  it('fields 非空 = 表单卡：逐字段规约（type 缺省 text / required 缺省 false / options 缺省空）', () => {
+    const { pendingQuestions, initQuestions } = useQuestions()
+    initQuestions()
+    fireQuestion(makePayload('q-form', {
+      options: [],
+      fields: [
+        { key: 'env', label: '环境', type: 'select', required: true, options: ['prod', 'staging'] },
+        { key: 'note', label: '备注' },
+        { key: 'bad', label: '非数组 options', options: 'nope' },
+      ],
+    }))
+    expect(pendingQuestions).toHaveLength(1)
+    const fields = pendingQuestions[0].fields
+    expect(fields).toHaveLength(3)
+    expect(fields[0]).toEqual({
+      key: 'env', label: '环境', type: 'select', required: true, options: ['prod', 'staging'],
+    })
+    expect(fields[1].type).toBe('text')
+    expect(fields[1].required).toBe(false)
+    expect(fields[1].options).toEqual([])
+    expect(fields[2].options).toEqual([])
+
+    // 选项卡（fields 缺席）规约为空数组。
+    fireQuestion(makePayload('q-opts'))
+    expect(pendingQuestions[1].fields).toEqual([])
+  })
+
+  it('respondForm 成功 → values 透传 + 本地移除 + 成功 toast', async () => {
+    wsapiRequest.mockResolvedValue({ delivered: true })
+    const { pendingQuestions, respondForm, initQuestions } = useQuestions()
+    initQuestions()
+    fireQuestion(makePayload('q-fok', { options: [], fields: [{ key: 'env', label: '环境' }] }))
+    expect(pendingQuestions).toHaveLength(1)
+
+    await respondForm('q-fok', { env: 'prod' })
+    expect(wsapiRequest).toHaveBeenCalledWith('question', 'respond', {
+      question_id: 'q-fok',
+      values: { env: 'prod' },
+    })
+    expect(pendingQuestions).toHaveLength(0)
+    expect(toasts.some(t => t.type === 'success')).toBe(true)
+  })
+
+  it('respondForm unknown/not wired → 卡片同步移除 + 错误 toast', async () => {
+    wsapiRequest.mockRejectedValue('unknown question: q-fgone')
+    const { pendingQuestions, respondForm, initQuestions } = useQuestions()
+    initQuestions()
+    fireQuestion(makePayload('q-fgone', { options: [], fields: [{ key: 'env', label: '环境' }] }))
+
+    await respondForm('q-fgone', { env: 'x' })
+    expect(pendingQuestions).toHaveLength(0)
+    expect(toasts.some(t => t.type === 'error')).toBe(true)
+  })
+
+  it('respondForm 校验拒绝（其他错误）→ 卡片保留（后端 pending 可重试）', async () => {
+    wsapiRequest.mockRejectedValue("field 'env' is required")
+    const { pendingQuestions, respondForm, initQuestions } = useQuestions()
+    initQuestions()
+    fireQuestion(makePayload('q-fretry', { options: [], fields: [{ key: 'env', label: '环境' }] }))
+
+    await respondForm('q-fretry', {})
+    expect(pendingQuestions).toHaveLength(1)
+    expect(toasts.some(t => t.type === 'error')).toBe(true)
   })
 })

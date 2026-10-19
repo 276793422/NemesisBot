@@ -805,3 +805,68 @@ fn iroh_id_absent_defaults_none() {
     let msg: DiscoveryMessage = serde_json::from_value(raw_null).expect("explicit null iroh_id");
     assert!(msg.iroh_id.is_none());
 }
+
+// -----------------------------------------------------------------------
+// build wire compat（A1 运行时硬化批 2026-10-19）
+// -----------------------------------------------------------------------
+
+/// 旧节点（无 build 字段）的 announce 必须能被新节点解析：serde default
+/// 空串 = 未宣告（镜像 professions/tier/iroh_id 先例）。
+#[test]
+fn deserialize_old_announce_without_build_field() {
+    let old = serde_json::json!({
+        "version": PROTOCOL_VERSION,
+        "type": "announce",
+        "node_id": "legacy-1",
+        "name": "Legacy",
+        "addresses": ["10.0.0.9"],
+        "rpc_port": 9000,
+        "role": "worker",
+        "category": "development",
+        "tags": [],
+        "capabilities": [],
+        "timestamp": 1_700_000_000i64,
+        "node_type": "agent",
+    });
+    let msg: DiscoveryMessage = serde_json::from_value(old).expect("old announce must parse");
+    assert_eq!(msg.node_id, "legacy-1");
+    assert!(msg.build.is_empty(), "absent build defaults to empty");
+    assert!(msg.validate().is_ok(), "legacy announce stays valid");
+}
+
+/// 带 build 的新 announce 经 UDP 帧序列化路径（to_bytes/from_bytes）往返
+/// 保留；Go 节点 json.Unmarshal 忽略未知键不受影响。
+#[test]
+fn announce_build_roundtrip_preserved() {
+    let msg = DiscoveryMessage::new_announce(
+        "node-b",
+        "Peer",
+        vec!["10.0.0.2".into()],
+        9001,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+    )
+    .with_build("6f96d056".to_string());
+    assert_eq!(msg.build, "6f96d056");
+    let bytes = msg.to_bytes().expect("serialize");
+    let back = DiscoveryMessage::from_bytes(&bytes).expect("deserialize");
+    assert_eq!(back.build, "6f96d056");
+    // 空 build（未宣告）同样往返不炸。
+    let bare = DiscoveryMessage::new_announce(
+        "node-c",
+        "Bare",
+        vec!["10.0.0.3".into()],
+        9002,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+    );
+    let bytes = bare.to_bytes().expect("serialize");
+    let back = DiscoveryMessage::from_bytes(&bytes).expect("deserialize");
+    assert!(back.build.is_empty());
+}

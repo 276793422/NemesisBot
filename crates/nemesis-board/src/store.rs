@@ -156,11 +156,18 @@ impl BoardStore {
         // store（WSAPI/CLI/autopilot/planner 全创建路径生效）；谓词走
         // `has_file_anchor`（拓扑分类单一真相源，勿内联解析）。自动生成
         // AC 无锚点 → 不置位（语义正确：自动判定基准无文件产物）。
+        // F5（二轮复评 2026-10-18）：checkpoint-git 关 = 执行体无交付管线
+        // （回调 payload 恒无 delivery 结构，评审门对这类单恒 FAIL——诚实
+        // 但过狠）→ 建单自动置位跳过。全局 `require_delivery_evidence`
+        // 开关不受此影响（显式加码照常 FAIL，gap 注明执行体未编译交付管线）。
+        #[cfg(feature = "checkpoint-git")]
         let requires_evidence = new
             .acceptance_criteria
             .as_deref()
             .map(crate::anchor::has_file_anchor)
             .unwrap_or(false);
+        #[cfg(not(feature = "checkpoint-git"))]
+        let requires_evidence = false;
 
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;

@@ -64,6 +64,8 @@ interface Issue {
   updated_at: number
   /** 依赖上游投影（2026-10-15 需求①）：issue.get 附带。旧后端无此键。 */
   depends_on?: Array<{ id: number; number: string; status: string }>
+  /** 在途派发投影（B14）：issue.get 附带，撤回派发按钮的显示依据；无在途不插键。 */
+  active_dispatch?: { task_id: string; worker_id: string; state: string; dispatched_at: number }
   comments?: CommentRow[]
   activity?: ActivityRow[]
   subscribers?: any[]
@@ -1140,6 +1142,24 @@ async function updatePriority(p: number) {
   }
 }
 
+// 撤回在途派发（B14）：只撤派发、单据存活——派错节点换人重派 / worker
+// 假死不等超时 sweep 的轻量出口。与「✖ 取消」（连单终杀）不同：issue
+// 状态不动，撤后可直接重新派发。
+async function cancelDispatchIssue() {
+  if (!detail.value || busy.value) return
+  busy.value = true
+  try {
+    const r = await request('board', 'issue.cancel_dispatch', { id: detail.value.id })
+    toast.success(`派发已撤回（task ${(r?.task_id || '').slice(0, 8)}…），单据保留可重新派发`)
+    await loadDetail()
+    changed()
+  } catch (e: any) {
+    toast.error('撤回失败: ' + e)
+  } finally {
+    busy.value = false
+  }
+}
+
 async function dispatchIssue() {
   if (!detail.value || !dispatchTarget.value || busy.value) return
   busy.value = true
@@ -1553,6 +1573,13 @@ async function downloadAttachment(a: AttachmentRow) {
               title="把 issue 作为任务派给 worker 执行，结果自动写回评论"
               @click="dispatchIssue"
             >派发 →</button>
+            <button
+              v-if="detail.active_dispatch"
+              class="btn btn-sm btn-danger"
+              :disabled="busy"
+              :title="`撤回在途派发（worker=${detail.active_dispatch.worker_id}）：只撤派发，单据保留可直接重派；worker 迟到回报会被写回幂等丢弃`"
+              @click="cancelDispatchIssue"
+            >⏹ 撤回派发</button>
             <span class="muted">派发后 issue 转进行中；worker 回报 → 自动写结果评论并转评审中</span>
           </div>
         </div>

@@ -439,6 +439,11 @@ async fn execute_new_task(
     // P4 交付门：执行前快照基线 tree（git 形态才有；成功收口时按此 diff
     // ——先执行后快照会把任务自己的改动算进基线，diff 恒空证据失真）。
     let delivery_base = delivery_base_tree(agent_loop);
+    // ②typed checks 块：任务窗口检查捕获开槽（`checks_capture` 模块文档是
+    // 语义真相源）。证据窗口与交付 diff 窗口一致 = 本轮 run；async 首跳的
+    // 记录随窗口丢弃，与 delivery_base 续行重照基线同语义（最终交付证据
+    // = 最后一轮）。
+    agent_loop.begin_checks_capture(&task.source.session_key);
     let events = agent_loop
         .run_with_trace(
             &instance,
@@ -451,6 +456,9 @@ async fn execute_new_task(
             &[],
         )
         .await;
+    // ②typed checks：窗口关闭必摘槽（cancel/async/error/success 各臂共用
+    // 这一份记录；只有 success 臂的交付捕获真正消费，其余臂诚实丢弃）。
+    let checks = agent_loop.take_checks_capture(&task.source.session_key);
     task_list.unregister_cancel_token(&task.task_id);
     if let Some(obs) = cluster_observer {
         let final_msg = extract_final_message(&events);
@@ -579,6 +587,7 @@ async fn execute_new_task(
             &task.task_id,
             delivery_base.as_deref(),
             self_node_id,
+            checks,
         )
     } else {
         None
@@ -670,9 +679,14 @@ async fn resume_task(
     let usage_before = snapshot_session_usage(agent_loop, &task.source.session_key);
     // P4 交付门：续行同样先记基线（本续行轮的改动才是本轮交付）。
     let delivery_base = delivery_base_tree(agent_loop);
+    // ②typed checks 块：续行窗口同 execute_new_task（开槽→run→摘槽，
+    // 证据窗口与本轮交付 diff 窗口一致）。
+    agent_loop.begin_checks_capture(&task.source.session_key);
     let events = agent_loop
         .resume_execution_with_token(&instance, &context, &trace_id, &token)
         .await;
+    // ②typed checks：窗口关闭必摘槽（cancel/async/error/success 各臂共用）。
+    let checks = agent_loop.take_checks_capture(&task.source.session_key);
     task_list.unregister_cancel_token(&task.task_id);
     if let Some(obs) = cluster_observer {
         let final_msg = extract_final_message(&events);
@@ -795,6 +809,7 @@ async fn resume_task(
             &task.task_id,
             delivery_base.as_deref(),
             self_node_id,
+            checks,
         )
     } else {
         None
