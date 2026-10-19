@@ -5,11 +5,16 @@
 //! ——校验失败请求留在 pending 可重试）/ pending 列表元数据 / 广播事件
 //! （QuestionAsked 载荷 + QuestionResolved answered/timeout 两路）。等待侧
 //! 测试在纯同步线程跑（走 `recv` 直等分支）。
+//!
+//! B8（提问两形态）：表单作答送达（AnsweredForm）+ 表单校验（未知键/必填
+//! 空缺/select 非候选——留卡可重试）+ 两形态互斥守卫（选项卡收表单作答
+//! 或反之诚实报错）+ trim 规约与可选空值剔除 + 广播/pending 携带 fields。
 
 use super::WebQuestionBroker;
 use nemesis_types::agent::{
-    AgentEvent, QuestionAsker, QuestionOutcome, QuestionRequest, QuestionResponder,
+    AgentEvent, QuestionAsker, QuestionField, QuestionOutcome, QuestionRequest, QuestionResponder,
 };
+use std::collections::BTreeMap;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -19,6 +24,43 @@ fn make_req(id: &str, multi: bool) -> QuestionRequest {
         question: "用哪个包管理器?".to_string(),
         options: vec!["pnpm".to_string(), "npm".to_string()],
         multi,
+        fields: Vec::new(),
+        chat_id: "chat-1".to_string(),
+        session_key: "web:chat-1".to_string(),
+        timeout_secs: 10,
+    }
+}
+
+/// B8：表单形态请求（select 必填 + text 可选 + select 可选三字段）。
+fn make_form_req(id: &str) -> QuestionRequest {
+    QuestionRequest {
+        question_id: id.to_string(),
+        question: "部署参数?".to_string(),
+        options: Vec::new(),
+        multi: false,
+        fields: vec![
+            QuestionField {
+                key: "env".to_string(),
+                label: "环境".to_string(),
+                field_type: "select".to_string(),
+                required: true,
+                options: vec!["prod".to_string(), "staging".to_string()],
+            },
+            QuestionField {
+                key: "note".to_string(),
+                label: "备注".to_string(),
+                field_type: "text".to_string(),
+                required: false,
+                options: Vec::new(),
+            },
+            QuestionField {
+                key: "region".to_string(),
+                label: "区域".to_string(),
+                field_type: "select".to_string(),
+                required: false,
+                options: vec!["cn".to_string(), "eu".to_string()],
+            },
+        ],
         chat_id: "chat-1".to_string(),
         session_key: "web:chat-1".to_string(),
         timeout_secs: 10,
@@ -61,6 +103,20 @@ fn ask_async(
         r.timeout_secs = timeout_secs;
         r
     };
+    std::thread::spawn(move || {
+        let _serial = slot_lock();
+        let _ = tx.send(broker.ask(req));
+    });
+    rx
+}
+
+/// B8：表单形态 ask（同 ask_async 的锁与线程纪律）。
+fn ask_form_async(
+    broker: std::sync::Arc<WebQuestionBroker>,
+    id: &str,
+) -> mpsc::Receiver<Result<QuestionOutcome, String>> {
+    let (tx, rx) = mpsc::channel();
+    let req = make_form_req(id);
     std::thread::spawn(move || {
         let _serial = slot_lock();
         let _ = tx.send(broker.ask(req));
@@ -112,7 +168,7 @@ fn answer_flow_resolves_selected_and_clears_pending() {
         .unwrap()
     {
         QuestionOutcome::Answered(sel) => assert_eq!(sel, vec!["pnpm".to_string()]),
-        QuestionOutcome::Timeout => panic!("answered flow must not yield Timeout"),
+        _ => panic!("answered flow must not yield Timeout"),
     }
     assert!(broker.pending().is_empty());
 }
@@ -134,7 +190,7 @@ fn multi_select_flow_delivers_all_selections() {
         QuestionOutcome::Answered(sel) => {
             assert_eq!(sel.len(), 2, "multi select must carry both items");
         }
-        QuestionOutcome::Timeout => panic!("answered flow must not yield Timeout"),
+        _ => panic!("answered flow must not yield Timeout"),
     }
 }
 
@@ -208,6 +264,8 @@ fn pending_lists_question_metadata() {
     assert_eq!(list[0]["question"], "用哪个包管理器?");
     assert_eq!(list[0]["options"][0], "pnpm");
     assert_eq!(list[0]["multi"], false);
+    // B8：选项形态 fields 空数组照常透传（前端按选项卡渲染）。
+    assert_eq!(list[0]["fields"], serde_json::Value::Array(Vec::new()));
     assert_eq!(list[0]["timeout_secs"], 10);
     assert_eq!(list[0]["chat_id"], "chat-1");
     assert_eq!(list[0]["session_key"], "web:chat-1");
@@ -232,6 +290,10 @@ async fn broadcast_carries_ask_payload_and_resolved_on_answer_and_timeout() {
     assert_eq!(asked["data"]["question"], "用哪个包管理器?");
     assert_eq!(asked["data"]["options"][1], "npm");
     assert_eq!(asked["data"]["multi"], false);
+    assert_eq!(
+        asked["data"]["fields"],
+        serde_json::Value::Array(Vec::new())
+    );
     assert_eq!(asked["data"]["timeout_secs"], 10);
     assert_eq!(asked["data"]["chat_id"], "chat-1");
     assert!(broker.respond("q-b1", vec!["npm".into()]).unwrap());
@@ -287,7 +349,7 @@ async fn ask_in_tokio_context_uses_block_in_place_and_still_resolves() {
     assert!(broker.respond("q-bip", vec!["pnpm".into()]).unwrap());
     match waiter.await.unwrap().unwrap() {
         QuestionOutcome::Answered(sel) => assert_eq!(sel, vec!["pnpm".to_string()]),
-        QuestionOutcome::Timeout => panic!("answered flow must not yield Timeout"),
+        _ => panic!("answered flow must not yield Timeout"),
     }
 }
 
@@ -350,4 +412,184 @@ fn auto_approve_on_short_circuits_ask_to_timeout_without_pending() {
     assert!(brx.try_recv().is_err(), "短路路径不得广播 QuestionAsked");
     // 迟到 respond 诚实报 unknown（请求从未登记）。
     assert!(broker.respond("q-auto", vec!["pnpm".into()]).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// B8（提问两形态）：表单作答 / 校验 / 两形态互斥
+// ---------------------------------------------------------------------------
+
+#[test]
+fn form_flow_delivers_values_and_clears_pending() {
+    let broker = std::sync::Arc::new(WebQuestionBroker::new(None));
+    let result_rx = ask_form_async(broker.clone(), "q-f1");
+    wait_pending(&broker, 1);
+    let mut values = BTreeMap::new();
+    values.insert("env".to_string(), "prod".to_string());
+    values.insert("note".to_string(), " 带空格的备注 ".to_string());
+    // 可选 select 缺席 = 合法（未选）。
+    assert!(broker.respond_form("q-f1", &values).unwrap());
+    match result_rx
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .unwrap()
+    {
+        QuestionOutcome::AnsweredForm(v) => {
+            // text 值 trim；可选缺席不补空。
+            assert_eq!(v.get("env").map(String::as_str), Some("prod"));
+            assert_eq!(v.get("note").map(String::as_str), Some("带空格的备注"));
+            assert!(
+                !v.contains_key("region"),
+                "absent optional field must stay absent"
+            );
+        }
+        other => panic!("form flow must yield AnsweredForm, got {:?}", other),
+    }
+    assert!(broker.pending().is_empty());
+}
+
+#[test]
+fn form_validation_rejects_and_keeps_pending_retryable() {
+    let broker = std::sync::Arc::new(WebQuestionBroker::new(None));
+    let result_rx = ask_form_async(broker.clone(), "q-f2");
+    wait_pending(&broker, 1);
+
+    // 未知键 → 拒绝，留卡可重试。
+    let err = broker
+        .respond_form(
+            "q-f2",
+            &BTreeMap::from([("nope".to_string(), "x".to_string())]),
+        )
+        .unwrap_err();
+    assert!(err.contains("unknown field"), "err: {}", err);
+    assert_eq!(broker.pending().len(), 1);
+
+    // 必填缺席 → 拒绝（前端只交已填项也须带空串占位）。
+    let err = broker
+        .respond_form(
+            "q-f2",
+            &BTreeMap::from([("note".to_string(), "hi".to_string())]),
+        )
+        .unwrap_err();
+    assert!(err.contains("required"), "err: {}", err);
+    assert_eq!(broker.pending().len(), 1);
+
+    // 必填空串（纯空白）→ 拒绝。
+    let err = broker
+        .respond_form(
+            "q-f2",
+            &BTreeMap::from([
+                ("env".to_string(), "   ".to_string()),
+                ("note".to_string(), "hi".to_string()),
+            ]),
+        )
+        .unwrap_err();
+    assert!(err.contains("required"), "err: {}", err);
+    assert_eq!(broker.pending().len(), 1);
+
+    // select 非候选 → 拒绝（含可选字段）。
+    let err = broker
+        .respond_form(
+            "q-f2",
+            &BTreeMap::from([
+                ("env".to_string(), "prod".to_string()),
+                ("region".to_string(), "mars".to_string()),
+            ]),
+        )
+        .unwrap_err();
+    assert!(
+        err.contains("not one of the offered options"),
+        "err: {}",
+        err
+    );
+    assert_eq!(broker.pending().len(), 1);
+
+    // 修正后重试成功。
+    let values = BTreeMap::from([
+        ("env".to_string(), "staging".to_string()),
+        ("region".to_string(), "eu".to_string()),
+    ]);
+    assert!(broker.respond_form("q-f2", &values).unwrap());
+    match result_rx
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .unwrap()
+    {
+        QuestionOutcome::AnsweredForm(v) => {
+            assert_eq!(v.get("env").map(String::as_str), Some("staging"));
+            assert_eq!(v.get("region").map(String::as_str), Some("eu"));
+        }
+        other => panic!("form flow must yield AnsweredForm, got {:?}", other),
+    }
+}
+
+#[test]
+fn form_and_selection_shapes_are_mutually_exclusive() {
+    let broker = std::sync::Arc::new(WebQuestionBroker::new(None));
+
+    // 选项卡收表单作答 → 诚实报错，留卡。
+    let result_rx = ask_async(broker.clone(), "q-x1", 10);
+    wait_pending(&broker, 1);
+    let err = broker
+        .respond_form(
+            "q-x1",
+            &BTreeMap::from([("env".to_string(), "prod".to_string())]),
+        )
+        .unwrap_err();
+    assert!(err.contains("expects a selection"), "err: {}", err);
+    assert_eq!(broker.pending().len(), 1);
+    // 修正：走正确形态仍可送达。
+    assert!(broker.respond("q-x1", vec!["npm".into()]).unwrap());
+    let _ = result_rx.recv_timeout(Duration::from_secs(2));
+
+    // 表单卡收选项作答 → 诚实报错，留卡。
+    let result_rx = ask_form_async(broker.clone(), "q-x2");
+    wait_pending(&broker, 1);
+    let err = broker.respond("q-x2", vec!["pnpm".into()]).unwrap_err();
+    assert!(err.contains("form values"), "err: {}", err);
+    assert_eq!(broker.pending().len(), 1);
+    let values = BTreeMap::from([("env".to_string(), "prod".to_string())]);
+    assert!(broker.respond_form("q-x2", &values).unwrap());
+    let _ = result_rx.recv_timeout(Duration::from_secs(2));
+}
+
+#[tokio::test]
+async fn form_pending_and_broadcast_carry_fields() {
+    let (broker, mut events) = broker_with_events();
+    let result_rx = ask_form_async(broker.clone(), "q-fb");
+    let asked = recv_scoped(&mut events).await;
+    assert_eq!(asked["data"]["question_id"], "q-fb");
+    let fields = asked["data"]["fields"].as_array().expect("fields array");
+    assert_eq!(fields.len(), 3);
+    assert_eq!(fields[0]["key"], "env");
+    assert_eq!(fields[0]["type"], "select");
+    assert_eq!(fields[0]["required"], true);
+    assert_eq!(fields[0]["options"][1], "staging");
+    assert_eq!(fields[1]["type"], "text");
+    assert_eq!(fields[1]["required"], false);
+
+    // pending 投影同样携带 fields（刷新/恢复用）。
+    let list = broker.pending();
+    assert_eq!(list.len(), 1);
+    let pf = list[0]["fields"].as_array().expect("pending fields array");
+    assert_eq!(pf[2]["key"], "region");
+    assert_eq!(pf[2]["options"][0], "cn");
+
+    let values = BTreeMap::from([("env".to_string(), "prod".to_string())]);
+    assert!(broker.respond_form("q-fb", &values).unwrap());
+    let resolved = recv_scoped(&mut events).await;
+    assert_eq!(resolved["kind"], "QuestionResolved");
+    assert_eq!(resolved["data"]["decision"], "answered");
+    let _ = result_rx.recv_timeout(Duration::from_secs(2));
+}
+
+#[test]
+fn respond_form_without_request_is_unknown_error() {
+    let broker = WebQuestionBroker::new(None);
+    let err = broker
+        .respond_form(
+            "nope",
+            &BTreeMap::from([("env".to_string(), "x".to_string())]),
+        )
+        .unwrap_err();
+    assert!(err.contains("unknown question"), "err: {}", err);
 }

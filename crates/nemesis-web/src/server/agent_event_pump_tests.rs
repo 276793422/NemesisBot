@@ -299,6 +299,7 @@ async fn question_asked_sse_payload_flattened() {
         question: "选哪种方案?".into(),
         options: vec!["A".into(), "B".into()],
         multi: false,
+        fields: Vec::new(),
         timeout_secs: 120,
     })
     .unwrap();
@@ -311,6 +312,7 @@ async fn question_asked_sse_payload_flattened() {
     assert_eq!(ev.data["question_id"], "q-1", "payload: {}", ev.data);
     assert_eq!(ev.data["options"][0], "A");
     assert_eq!(ev.data["multi"], false);
+    assert_eq!(ev.data["fields"], serde_json::Value::Array(Vec::new()));
     assert!(
         ev.data.get("kind").is_none(),
         "payload must be flattened: {}",

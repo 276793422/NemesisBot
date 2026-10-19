@@ -190,10 +190,10 @@ async fn forward_with_headers(
         Some(k) if k == state.expected_client_key => {}
         _ => {
             tracing::warn!("[eval-proxy] request without valid per-launch token — 401");
-            return Ok(Response::builder()
+            return Response::builder()
                 .status(StatusCode::UNAUTHORIZED)
                 .body(Body::from("eval-proxy: unauthorized"))
-                .map_err(|_| ProxyError::BadUpstream("build response"))?);
+                .map_err(|_| ProxyError::BadUpstream("build response"));
         }
     }
 
