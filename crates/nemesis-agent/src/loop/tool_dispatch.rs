@@ -143,6 +143,7 @@ impl AgentLoop {
             ),
             options: vec!["继续执行".to_string(), "停止".to_string()],
             multi: false,
+            fields: Vec::new(),
             chat_id: context.chat_id.clone(),
             session_key: context.session_key.clone(),
             timeout_secs: crate::loop_tools::QUESTION_DEFAULT_TIMEOUT_SECS,

@@ -590,9 +590,10 @@ fn test_agent_event_approval_resolved_serde_shape() {
 
 /// F7（devtool-upgrade 阶段 5）：QuestionAsked / QuestionResolved 的 serde
 /// 形状 + accessors。QuestionAsked 带会话 chat_id；Resolved 是全局事件。
+/// B8（提问两形态）：fields（表单形态）随事件透传 + AnsweredForm 结局。
 #[test]
 fn test_agent_event_question_serde_shape() {
-    use super::{AgentEvent, QuestionOutcome, QuestionRequest};
+    use super::{AgentEvent, QuestionField, QuestionOutcome, QuestionRequest};
 
     let ev = AgentEvent::QuestionAsked {
         session_key: "web:chat-1".to_string(),
@@ -601,6 +602,7 @@ fn test_agent_event_question_serde_shape() {
         question: "用哪个包管理器?".to_string(),
         options: vec!["pnpm".to_string(), "npm".to_string()],
         multi: false,
+        fields: Vec::new(),
         timeout_secs: 120,
     };
     let v = serde_json::to_value(&ev).unwrap();
@@ -610,22 +612,79 @@ fn test_agent_event_question_serde_shape() {
     assert_eq!(v["data"]["options"][0], "pnpm");
     assert_eq!(v["data"]["multi"], false);
     assert_eq!(v["data"]["timeout_secs"], 120);
+    // B8：选项形态 fields 为空数组（前端按选项卡渲染）。
+    assert_eq!(v["data"]["fields"], serde_json::Value::Array(Vec::new()));
     match serde_json::from_value::<AgentEvent>(v).unwrap() {
         AgentEvent::QuestionAsked {
             question_id,
             options,
             multi,
+            fields,
             ..
         } => {
             assert_eq!(question_id, "q-3");
             assert_eq!(options, vec!["pnpm".to_string(), "npm".to_string()]);
             assert!(!multi);
+            assert!(fields.is_empty());
         }
         other => panic!("wrong variant: {:?}", other),
     }
     // 提问有会话上下文：chat_id 透传。
     assert_eq!(ev.chat_id(), "chat-1");
     assert_eq!(ev.kind(), "QuestionAsked");
+
+    // B8 表单形态：fields 逐字段透传（type 键 rename、required/options
+    // 缺省回填），前端据此渲染 text 输入框 + select 下拉。
+    let form_ev = AgentEvent::QuestionAsked {
+        session_key: "web:chat-1".to_string(),
+        chat_id: "chat-1".to_string(),
+        question_id: "q-4".to_string(),
+        question: "部署参数?".to_string(),
+        options: Vec::new(),
+        multi: false,
+        fields: vec![
+            QuestionField {
+                key: "env".to_string(),
+                label: "环境".to_string(),
+                field_type: "select".to_string(),
+                required: true,
+                options: vec!["prod".to_string(), "staging".to_string()],
+            },
+            QuestionField {
+                key: "note".to_string(),
+                label: "备注".to_string(),
+                field_type: "text".to_string(),
+                required: false,
+                options: Vec::new(),
+            },
+        ],
+        timeout_secs: 120,
+    };
+    let v = serde_json::to_value(&form_ev).unwrap();
+    let f0 = &v["data"]["fields"][0];
+    assert_eq!(f0["key"], "env");
+    assert_eq!(f0["label"], "环境");
+    assert_eq!(f0["type"], "select");
+    assert_eq!(f0["required"], true);
+    assert_eq!(f0["options"][1], "staging");
+    let f1 = &v["data"]["fields"][1];
+    assert_eq!(f1["type"], "text");
+    assert_eq!(f1["required"], false);
+    match serde_json::from_value::<AgentEvent>(v).unwrap() {
+        AgentEvent::QuestionAsked { fields, .. } => {
+            assert_eq!(fields.len(), 2);
+            assert_eq!(fields[0].field_type, "select");
+            assert!(fields[0].required);
+            assert_eq!(
+                fields[0].options,
+                vec!["prod".to_string(), "staging".to_string()]
+            );
+            assert_eq!(fields[1].field_type, "text");
+            assert!(!fields[1].required);
+            assert!(fields[1].options.is_empty());
+        }
+        other => panic!("wrong variant: {:?}", other),
+    }
 
     let resolved = AgentEvent::QuestionResolved {
         question_id: "q-3".to_string(),
@@ -638,18 +697,27 @@ fn test_agent_event_question_serde_shape() {
     assert_eq!(resolved.chat_id(), "");
     assert_eq!(resolved.kind(), "QuestionResolved");
 
-    // QuestionOutcome：单选恰一项 / Timeout 与 Answered 可区分。
+    // QuestionOutcome：单选恰一项 / Timeout 与 Answered 可区分；
+    // B8 AnsweredForm 携带键值作答（BTreeMap，Eq 可比较）。
     let answered = QuestionOutcome::Answered(vec!["pnpm".to_string()]);
     assert_eq!(
         answered,
         QuestionOutcome::Answered(vec!["pnpm".to_string()])
     );
     assert_ne!(answered, QuestionOutcome::Timeout);
+    let mut values = std::collections::BTreeMap::new();
+    values.insert("env".to_string(), "prod".to_string());
+    assert_eq!(
+        QuestionOutcome::AnsweredForm(values.clone()),
+        QuestionOutcome::AnsweredForm(values)
+    );
+    assert_ne!(answered, QuestionOutcome::AnsweredForm(Default::default()));
     let req = QuestionRequest {
         question_id: "q-1".to_string(),
         question: "q".to_string(),
         options: vec!["a".to_string(), "b".to_string()],
         multi: true,
+        fields: Vec::new(),
         chat_id: "c".to_string(),
         session_key: "s".to_string(),
         timeout_secs: 60,
