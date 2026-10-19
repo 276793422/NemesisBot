@@ -664,7 +664,10 @@ fn validate(raw: ConnectorManifestRaw) -> Result<ValidatedConnector, String> {
     })
 }
 
-/// id / op id / 目录名字符集：`[a-z0-9_-]`，1..=64。
+/// id / op id / 目录名字符集：`[a-z0-9_-]`，1..=64。附加 Windows 保留设备名
+/// 拒绝（`con`/`nul`/`com1` 等——id 同时派生注册目录与 sidecar 文件名，保留
+/// 名在 Windows 上连目录创建/文件写都会被 OS 拒且报错难懂；清单层诚实拒绝
+/// 带原因。边界补强 2026-10-20，与 image_gen 路径保留名校验同族）。
 pub(crate) fn validate_id(id: &str, what: &str) -> Result<(), String> {
     if id.is_empty() || id.len() > 64 {
         return Err(format!("{what} `{id}` 长度非法（1..=64）"));
@@ -675,6 +678,17 @@ pub(crate) fn validate_id(id: &str, what: &str) -> Result<(), String> {
     {
         return Err(format!(
             "{what} `{id}` 含非法字符（只允许小写字母/数字/-/_）"
+        ));
+    }
+    const WINDOWS_RESERVED: [&str; 22] = [
+        "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+        "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    ];
+    // 字符集无点 → 整段即基名（Windows 保留名按「首个点之前」判定；
+    // `con-x`/`con_x` 不在保留集，精确比对不误伤）。
+    if WINDOWS_RESERVED.contains(&id) {
+        return Err(format!(
+            "{what} `{id}` 使用了 Windows 保留设备名（目录/文件名在 Windows 上无法创建）"
         ));
     }
     Ok(())

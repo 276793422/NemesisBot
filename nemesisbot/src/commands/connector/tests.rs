@@ -279,15 +279,23 @@ fn test_run_connector_toggle_sidecar_roundtrip() {
     assert!(err.contains("ghost"), "错误点名: {err}");
 }
 
-/// dir ≠ id 的条目：按目录名翻位同样生效，sidecar 落 **id 键控**路径
+/// dir ≠ id 的条目（手放目录——create 已强制目录名==id，此处手工摆盘
+/// 模拟存量形态）：按目录名翻位同样生效，sidecar 落 **id 键控**路径
 /// （state::state_path 键是 manifest id，不是目录名）。
 #[test]
 fn test_run_connector_toggle_dir_name_differs_from_id() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path();
-    let manifest = B5_MIN_MANIFEST.replace("b5-target", "b5-id");
-    nemesis_connectors::registry::create_connector(ws, "b5-dir", &manifest)
-        .expect("create ok (dir=b5-dir, id=b5-id)");
+    // 手工摆盘绕过 create 的 dir==id 强制（边界补强 2026-10-20）
+    let dir = ws
+        .join(nemesis_connectors::registry::CONNECTORS_DIR)
+        .join("b5-dir");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(
+        dir.join(nemesis_connectors::registry::MANIFEST_FILE),
+        B5_MIN_MANIFEST.replace("b5-target", "b5-id"),
+    )
+    .expect("write manifest");
 
     // 按目录名停用
     run_connector_toggle(ws, "b5-dir", false).expect("disable by dir ok");

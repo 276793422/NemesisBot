@@ -122,6 +122,24 @@ fn rejects_bad_connector_id_charset() {
 }
 
 #[test]
+fn rejects_windows_reserved_device_names_as_ids() {
+    // id 同时派生注册目录与 sidecar 文件名——保留设备名在 Windows 上连
+    // 目录/文件创建都被 OS 拒（报错还难懂），清单层诚实拒绝带原因。
+    for reserved in ["con", "nul", "com1", "lpt3"] {
+        let bad = VALID_LOCAL.replace("id = \"local-fs\"", &format!("id = \"{reserved}\""));
+        let err =
+            parse_connector_manifest(&bad).expect_err(&format!("保留名 `{reserved}` 必须拒绝"));
+        assert!(err.contains("Windows 保留设备名"), "`{reserved}`: {err}");
+    }
+    // 精确比对不误伤：连字符/下划线组合与超集名都合法（保留名按「首个
+    // 点之前」整段判定，本字符集无点 → 整段即基名）。
+    for ok in ["con-x", "con_x", "console", "nullify", "com10"] {
+        let good = VALID_LOCAL.replace("id = \"local-fs\"", &format!("id = \"{ok}\""));
+        parse_connector_manifest(&good).unwrap_or_else(|e| panic!("`{ok}` 不应误伤: {e}"));
+    }
+}
+
+#[test]
 fn rejects_duplicate_op_ids() {
     let dup = format!(
         "{VALID_LOCAL}\n[[op]]\nid = \"scan\"\nrisk = \"low\"\nclass = \"read\"\ntool = \"exec\"\n"

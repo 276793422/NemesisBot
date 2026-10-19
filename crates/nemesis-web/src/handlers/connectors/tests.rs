@@ -575,6 +575,45 @@ async fn undo_front_gates() {
     assert!(err.contains("未真实生效"), "{err}");
 }
 
+/// 撤销防重闸（边界补强 2026-10-20）：已发起过撤销的凭条拒绝再撤——
+/// 反向 op 重复执行会叠加外部副作用（双退款形态）。
+#[tokio::test]
+async fn undo_rejects_already_undone() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    write_undo_connector(ws);
+    let ctx = make_ctx(ws);
+
+    let mut r = undo_receipt("u-broker", "place_order", "executed");
+    r.receipt_value = Some("NB-ORD-77".to_string());
+    r.session_key = Some("web:u-undo".to_string());
+    receipt::append_receipt(ws, &r).unwrap();
+
+    // 未标记：走到后续闸（harness 无 loop → resolve 诚实拒，不是防重文案）。
+    let err = cmd_undo(&ctx, Some(&json!({ "receipt_id": r.receipt_id })))
+        .await
+        .unwrap_err();
+    assert!(err.contains("agent loop not running"), "{err}");
+
+    // 落标记后再撤：防重闸拒绝（优先于注册表/loop 闸）。
+    nemesis_connectors::state::mark_undone(ws, &r.receipt_id, None);
+    let err = cmd_undo(&ctx, Some(&json!({ "receipt_id": r.receipt_id })))
+        .await
+        .unwrap_err();
+    assert!(err.contains("已发起过撤销"), "{err}");
+    assert!(err.contains("叠加副作用"), "{err}");
+
+    // read 类不经过防重（无副作用，诚实 noop 照常）。
+    let qr = undo_receipt("u-broker", "quote", "executed");
+    receipt::append_receipt(ws, &qr).unwrap();
+    nemesis_connectors::state::mark_undone(ws, &qr.receipt_id, None);
+    let out = cmd_undo(&ctx, Some(&json!({ "receipt_id": qr.receipt_id })))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["via"], "none", "read 类照常诚实 noop");
+}
+
 /// connector 从注册表消失 / op 从清单移除：按当下裁决诚实拒。
 #[tokio::test]
 async fn undo_rejects_stale_registry() {
@@ -1255,6 +1294,9 @@ async fn tool_policy_param_errors() {
         .await
         .unwrap_err();
     assert!(err.contains("未知 policy"), "{err}");
+    // 在册校验先行（边界补强 2026-10-20）：`../escape` 与任意不存在的
+    // id 一样不在注册表——成员资格是最早、最安全的拒绝面（不拼路径）；
+    // 字符集闸仍在下一层 state_path 兜底（其它调用方仍受它保护）。
     let err = h
         .handle_cmd(
             "tool_policy",
@@ -1263,9 +1305,23 @@ async fn tool_policy_param_errors() {
         )
         .await
         .unwrap_err();
-    assert!(err.contains("非法"), "{err}");
+    assert!(err.contains("不在注册表"), "{err}");
+    let err = h
+        .handle_cmd(
+            "tool_policy",
+            Some(json!({ "connector": "no-such-connector", "tool": "mcp_x__y", "policy": "blocked" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("不在注册表"), "{err}");
+    // 幽灵 sidecar 不得落盘（空工作区无 connector_state 条目）。
+    let state_dir = tmp.path().join("config").join("connector_state");
+    assert!(
+        !state_dir.exists() || std::fs::read_dir(&state_dir).unwrap().next().is_none(),
+        "幽灵 sidecar 不得落盘"
+    );
 }
-
 /// exclusive_tool_rows 直测：live 快照行（schema 随行 + 按当下 sidecar 裁
 /// policy）∪ 离线例外行（sidecar 记录但不在 live 表）；前缀外不连坐；
 /// 字典序。
@@ -1301,7 +1357,7 @@ fn exclusive_tool_rows_projects_live_tools_and_offline_exceptions() {
     ];
 
     // 无例外：两行 default（前缀外 other 不连坐），schema 随行。
-    let rows = exclusive_tool_rows(ws, &c, &live);
+    let rows = exclusive_tool_rows(ws, &c, &live, None);
     let ids: Vec<&str> = rows.iter().map(|r| r["id"].as_str().unwrap()).collect();
     assert_eq!(
         ids,
@@ -1313,6 +1369,9 @@ fn exclusive_tool_rows_projects_live_tools_and_offline_exceptions() {
         rows[1]["args_schema"],
         json!({ "type": "object", "required": ["url"] })
     );
+    // G1 标记（边界补强 2026-10-20）：无 loop 形态 = 配置隐藏标记恒 false
+    // （行照列、不带假信号）；带 loop 时由 tool_matches_hidden_config 现裁。
+    assert_eq!(rows[0]["hidden_by_config"], json!(false));
 
     // B3 四档基线随行：readOnly 自述=low/read 免卡；destructive 自述=
     // high/write 强制确认卡。
@@ -1338,7 +1397,7 @@ fn exclusive_tool_rows_projects_live_tools_and_offline_exceptions() {
         nemesis_connectors::state::ToolPolicy::Blocked,
     )
     .unwrap();
-    let rows = exclusive_tool_rows(ws, &c, &live);
+    let rows = exclusive_tool_rows(ws, &c, &live, None);
     let ids: Vec<&str> = rows.iter().map(|r| r["id"].as_str().unwrap()).collect();
     assert_eq!(
         ids,

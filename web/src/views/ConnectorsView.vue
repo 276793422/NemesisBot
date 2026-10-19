@@ -11,7 +11,7 @@
 // registry 无缓存扫描——增/删/改下一次 list 即见，零重启。
 // 领域数据不进框架页：纸面券商账本等 connector 专属数据走各自出口
 // （CLI `connector ledger`），框架页面只保留通用审计面（回执流水）。
-import { ref, onMounted } from 'vue'
+import { ref, watch, onMounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 import {
@@ -39,6 +39,8 @@ interface MirrorRow {
   class?: string
   confirm_required?: boolean
   description?: string
+  /** G1 隐藏标记（agents.hidden_tools 命中）——绝对闸：选择器放行也调不动，先去解除隐藏 */
+  hidden_by_config?: boolean
 }
 
 interface ConnectorInfo {
@@ -130,6 +132,21 @@ function openCreate() {
   showCreate.value = true
 }
 
+// 模板 id 跟随目录名（后端强制目录名==id，边界补强 2026-10-20）：只在
+// 模板占位 id 未被手改时自动替换——用户已编辑过 id 则不动，交给预检提示。
+watch(newDir, (dir) => {
+  const placeholder = 'id = "my-connector"'
+  if (dir && newToml.value.includes(placeholder)) {
+    newToml.value = newToml.value.replace(placeholder, `id = "${dir}"`)
+  }
+})
+
+// 清单 [connector] 段 id 提取（首个 `id = "..."` 行即段 id——段首必现）。
+function manifestIdOf(toml: string): string | null {
+  const m = toml.match(/^id\s*=\s*"([^"]+)"/m)
+  return m ? m[1] : null
+}
+
 async function submitCreate() {
   createError.value = ''
   const dir = newDir.value.trim()
@@ -137,10 +154,17 @@ async function submitCreate() {
     createError.value = '请填写目录名（小写字母/数字/-/_）'
     return
   }
+  // 客户端预检（服务端仍权威校验）：目录名与清单 id 必须一致——
+  // 目录即注册表，find/invoke 与 sidecar 都按 id 寻址。
+  const id = manifestIdOf(newToml.value)
+  if (id !== null && id !== dir) {
+    createError.value = `目录名与清单 id 不一致（目录 "${dir}" vs id "${id}"）——两者必须相同`
+    return
+  }
   if (creating.value) return
   creating.value = true
   try {
-    // 后端权威校验（目录名字符集 / 清单 schema / 目录与 id 重复），拒绝原文回显。
+    // 后端权威校验（目录名字符集 / 清单 schema / dir==id / 目录与 id 重复），拒绝原文回显。
     await request('connectors', 'create', { dir_name: dir, toml: newToml.value })
     toast.success(`连接器 ${dir} 已创建`)
     showCreate.value = false
@@ -460,7 +484,15 @@ onMounted(refreshAll)
                         </thead>
                         <tbody>
                           <tr v-for="m in c.mirrors || []" :key="m.id" data-test="mirror-row">
-                            <td><code>{{ m.id }}</code></td>
+                            <td>
+                              <code>{{ m.id }}</code>
+                              <span
+                                v-if="m.hidden_by_config"
+                                class="risk-badge"
+                                style="margin-left: 6px;"
+                                title="该工具被 agents.hidden_tools 隐藏（绝对闸）——选择器放行也调不动，需先在配置里解除隐藏"
+                              >已隐藏</span>
+                            </td>
                             <td>
                               <span
                                 v-if="m.risk"
