@@ -612,6 +612,7 @@ fn message_to_node_info(msg: &DiscoveryMessage) -> ExtendedNodeInfo {
         professions: msg.professions.clone(),
         tier: msg.tier.clone(),
         agents: msg.agents.clone(),
+        build: msg.build.clone(),
         node_type: msg.node_type.clone(),
     }
 }

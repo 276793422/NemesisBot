@@ -696,6 +696,7 @@ impl ClusterHandler {
                     "professions": n.professions,
                     "tier": n.tier,
                     "agents": n.agents,
+                    "build": n.build,
                     "online": n.is_online(),
                     "lastSeen": n.base.last_seen,
                     "taskCount": task_count,
@@ -817,6 +818,7 @@ impl ClusterHandler {
                 tier: None,
                 agents: Vec::new(),
                 node_type: String::new(),
+                build: String::new(),
             };
             cluster.register_node(info);
         }
@@ -879,6 +881,7 @@ impl ClusterHandler {
                 tier: None,
                 agents: Vec::new(),
                 node_type: String::new(),
+                build: String::new(),
             };
             cluster.register_node(info);
         }
@@ -1041,6 +1044,7 @@ impl ClusterHandler {
             tier,
             agents,
             node_type,
+            build: String::new(),
         };
         let canonical_id = cluster.merge_real_node_info(&info);
 

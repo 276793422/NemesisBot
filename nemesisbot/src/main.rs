@@ -202,6 +202,12 @@ mod channel_approval;
 #[cfg(all(feature = "cluster", feature = "security"))]
 mod remote_approval;
 
+/// A1 运行时完整性清单（工程模式专项，2026-10-19）：打包部署的
+/// 运行时文件 hash 清单（runtime-manifest.json，构建期由
+/// scripts/gen_runtime_manifest.py 生成）+ 启动三态校验。无 feature 门
+/// （cargo 开发态 = manifest 缺席态，warn 不阻塞，照常工作）。
+mod runtime_manifest;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
@@ -280,6 +286,10 @@ enum Commands {
         /// 状态页即全部 UI。需要 bridge.server.token 非空（空则拒绝启动）。
         #[arg(long)]
         relay: bool,
+        /// A1 运行时硬化批：显式跳过 runtime-manifest 完整性校验（运维
+        /// 逃生门；打包部署残缺默认响亮拒启，跳过必须显式输入）。
+        #[arg(long)]
+        skip_runtime_check: bool,
     },
     /// Run a single headless agent task and exit (no ports, no gateway; K1)
     Run {
@@ -798,6 +808,7 @@ async fn run_command(cli: Cli) -> Result<()> {
                 quiet: false,
                 no_console: false,
                 relay: false,
+                skip_runtime_check: false,
             }
         }
     };
@@ -829,6 +840,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             quiet,
             no_console,
             relay,
+            skip_runtime_check,
         } => {
             // Build extra args for logger from flags
             let mut gateway_args: Vec<String> = Vec::new();
@@ -841,7 +853,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             if no_console {
                 gateway_args.push("--no-console".to_string());
             }
-            commands::gateway::run(cli.local, relay, &gateway_args).await?;
+            commands::gateway::run(cli.local, relay, &gateway_args, skip_runtime_check).await?;
         }
         Commands::Agent {
             subcommand,

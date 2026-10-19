@@ -136,6 +136,7 @@ fn test_register_and_list_nodes() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     };
     cluster.register_node(remote);
 
@@ -375,6 +376,7 @@ fn test_get_capabilities() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     let caps = cluster.get_capabilities();
@@ -751,6 +753,7 @@ fn test_cluster_peer_resolver_returns_peer_info() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     let resolver = ClusterPeerResolver {
@@ -800,6 +803,7 @@ fn test_cluster_peer_resolver_offline_peer() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     let resolver = ClusterPeerResolver {
@@ -1386,6 +1390,7 @@ fn test_find_peers_by_capability() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     let llm_peers = cluster.find_peers_by_capability("llm");
@@ -1628,6 +1633,7 @@ fn test_sync_to_disk_includes_discovered_nodes() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     let result = cluster.sync_to_disk();
@@ -1658,6 +1664,7 @@ fn test_register_node_updates_existing() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     // Re-register same node with updated name
@@ -1678,6 +1685,7 @@ fn test_register_node_updates_existing() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     let node = cluster.get_node_info("node-1").unwrap();
@@ -1712,6 +1720,7 @@ fn test_get_online_peers_includes_online_nodes() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     cluster.register_node(ExtendedNodeInfo {
@@ -1731,6 +1740,7 @@ fn test_get_online_peers_includes_online_nodes() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     let online = cluster.get_online_peers();
@@ -1763,6 +1773,7 @@ fn test_get_capabilities_dedup() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     cluster.register_node(ExtendedNodeInfo {
@@ -1782,6 +1793,7 @@ fn test_get_capabilities_dedup() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     let caps = cluster.get_capabilities();
@@ -1976,6 +1988,7 @@ fn test_find_peers_by_capability_offline_excluded() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     let peers = cluster.find_peers_by_capability("llm");
@@ -2900,6 +2913,7 @@ fn test_cluster_peer_resolver_empty_addresses() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     let resolver = ClusterPeerResolver {
@@ -2939,6 +2953,7 @@ fn test_cluster_peer_resolver_empty_primary_address() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     let resolver = ClusterPeerResolver {
@@ -3236,6 +3251,7 @@ fn test_get_peer_after_register() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     let peer = cluster.get_peer("peer-x").unwrap();
@@ -3348,6 +3364,7 @@ fn test_cluster_peer_resolver_with_empty_primary_address() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     let resolver = ClusterPeerResolver {
@@ -3388,6 +3405,7 @@ fn test_discovered_node_empty_addresses_known_peer_identity_merge_preserves_addr
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     let changed = cluster.handle_discovered_node_ex(
@@ -3405,6 +3423,7 @@ fn test_discovered_node_empty_addresses_known_peer_identity_merge_preserves_addr
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
         None,       // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
+        "",
     );
     assert!(
         changed,
@@ -3447,6 +3466,7 @@ fn test_discovered_node_empty_addresses_unknown_peer_still_registered_bridge_sem
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
         None,       // 桥接成员登记：无 source_addr
+        "",
     );
     assert!(changed, "bridge member with empty addresses must register");
     let node = cluster.registry.get("ghost-peer").expect("registered");
@@ -3476,6 +3496,7 @@ fn test_cluster_peer_resolver_uses_stored_addresses() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     let resolver = ClusterPeerResolver {
@@ -3853,6 +3874,7 @@ fn test_sync_to_disk_with_connecting_status() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     let result = cluster.sync_to_disk();
@@ -4488,6 +4510,7 @@ fn test_cluster_peer_resolver_fallback_scan_by_name() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     let resolver = ClusterPeerResolver {
@@ -4537,6 +4560,7 @@ fn test_cluster_peer_resolver_offline_peer_is_online_false() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     let resolver = ClusterPeerResolver {
@@ -4698,6 +4722,7 @@ fn make_real_node_info(id: &str, name: &str, addr: &str) -> RealNodeInfo {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     }
 }
 
@@ -4757,6 +4782,7 @@ fn test_merge_real_node_info_updates_existing_entry_with_real_id() {
         tier: None,
         agents: Vec::new(),
         node_type: "new_type".into(),
+        build: String::new(),
     });
 
     assert_eq!(canonical, "node-real-1");
@@ -4809,6 +4835,7 @@ fn test_merge_real_node_info_keeps_static_peer_address() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     assert_eq!(canonical, "node-master-1");
@@ -4855,6 +4882,7 @@ fn test_merge_real_node_info_updates_address_for_dynamic_peer() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     let p = cluster.get_peer("node-dyn-1").unwrap();
@@ -4886,6 +4914,7 @@ fn test_merge_real_node_info_upgrades_placeholder_by_address() {
         tier: None,
         agents: Vec::new(),
         node_type: String::new(),
+        build: String::new(),
     });
 
     assert!(cluster.get_peer("MyNodeName").is_some());
@@ -5005,6 +5034,7 @@ fn test_merge_placeholder_upgrade_matches_secondary_address() {
         tier: None,
         agents: Vec::new(),
         node_type: String::new(),
+        build: String::new(),
     });
 
     // 对端自报 primary=10.103.1.5，但全量数组含 placeholder 配的地址
@@ -5044,6 +5074,7 @@ fn test_handle_discovered_node_placeholder_upgrade_matches_secondary_address() {
         tier: None,
         agents: Vec::new(),
         node_type: String::new(),
+        build: String::new(),
     });
 
     let changed = cluster.handle_discovered_node(
@@ -5103,6 +5134,7 @@ fn test_merge_real_node_info_upgrades_placeholder_in_toml() {
         tier: None,
         agents: Vec::new(),
         node_type: String::new(),
+        build: String::new(),
     });
 
     cluster.merge_real_node_info(&make_real_node_info(
@@ -5153,6 +5185,7 @@ fn test_handle_discovered_node_upgrades_placeholder_via_udp() {
         tier: None,
         agents: Vec::new(),
         node_type: String::new(),
+        build: String::new(),
     });
     assert!(cluster.get_peer("ManualPeer").is_some());
 
@@ -5205,6 +5238,7 @@ fn test_mark_peer_online_for_refresh_flips_offline_to_online() {
         tier: None,
         agents: Vec::new(),
         node_type: String::new(),
+        build: String::new(),
     });
 
     assert_eq!(
@@ -5242,6 +5276,7 @@ fn test_set_peer_status_restores_offline() {
         tier: None,
         agents: Vec::new(),
         node_type: String::new(),
+        build: String::new(),
     });
 
     cluster.set_peer_status("peer-y", NodeStatus::Offline);
@@ -5436,6 +5471,7 @@ fn make_w3b_node(id: &str, name: &str, address: &str, status: NodeStatus) -> Ext
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     }
 }
 
@@ -5830,6 +5866,7 @@ fn test_upgrade_peer_in_peers_toml_same_sanitized_key_writes_real_id() {
             tier: None,
             agents: Vec::new(),
             node_type: "agent".into(),
+            build: String::new(),
         },
     );
 
@@ -5866,6 +5903,7 @@ fn test_upgrade_peer_in_peers_toml_read_error_skips() {
             tier: None,
             agents: Vec::new(),
             node_type: "agent".into(),
+            build: String::new(),
         },
     );
     // No panic; the directory stays a directory (no write happened through it).
@@ -5902,6 +5940,7 @@ fn test_upgrade_peer_in_peers_toml_without_peers_table_persists_directly() {
             tier: None,
             agents: Vec::new(),
             node_type: "agent".into(),
+            build: String::new(),
         },
     );
 
@@ -5945,6 +5984,7 @@ fn test_upgrade_peer_in_peers_toml_write_error_after_removal() {
             tier: None,
             agents: Vec::new(),
             node_type: "agent".into(),
+            build: String::new(),
         },
     );
     // Original file content is untouched (the failed write never landed).
@@ -5978,6 +6018,7 @@ fn test_merge_real_node_info_master_role_with_write_error() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
     assert_eq!(merged, "master-1");
     let info = cluster.get_node_info("master-1").unwrap();
@@ -6831,6 +6872,7 @@ fn test_upgrade_peer_in_peers_toml_no_file_and_missing_key() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     };
 
     // (a) fresh workspace, ensure no peers.toml exists
@@ -6874,6 +6916,7 @@ fn test_upgrade_peer_in_peers_toml_no_file_and_missing_key() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     };
     cluster2.upgrade_peer_in_peers_toml("ph-b", "real-b", &info_b);
 
@@ -7609,6 +7652,7 @@ fn restore_skips_self_banned_existing_and_unusable() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
     // 预置一个黑名单节点。
     cluster.removed_peers.write().insert("node-banned".into());
@@ -7668,6 +7712,7 @@ fn restore_skips_address_shadow_of_existing_entry() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
     // state.toml 里留着占位名条目（升级前形态）：id=名字、同地址。
     write_state_toml(
@@ -7719,6 +7764,7 @@ fn restore_skips_name_shadow_of_existing_entry() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
     // id=占位名、地址不同（对端换了地址），但名字相同 → 同节点，不种。
     let mut pc = test_peer_config("Node-A", "10.9.9.9:21949");
@@ -7786,6 +7832,7 @@ async fn health_probe_loop_probes_offline_every_fifth_tick() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
     // 探针循环要求 RPC client 已初始化（None 直接 return）。
     *cluster.rpc_client.lock() = Some(Arc::new(RpcClient::new()));
@@ -7835,6 +7882,7 @@ fn mark_peer_healthy_recovery_fires_node_discovered() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     let fired: Arc<Mutex<Vec<(String, String, String)>>> = Arc::new(Mutex::new(Vec::new()));
@@ -7899,6 +7947,7 @@ fn canonical_peer_id_resolves_name_and_id() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     // 节点 id → 幂等（matcher 路径产物形态）。
@@ -7937,6 +7986,7 @@ fn canonical_peer_id_case_insensitive_fallback() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     // 名字大小写失配 → 回落命中（此前精确匹配直接 None → 派发放行原名
@@ -8414,6 +8464,7 @@ fn make_addr_chain_peer(
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     }
 }
 
@@ -8451,6 +8502,7 @@ fn test_announce_refresh_preserves_static_pin_addresses() {
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
         None,
+        "",
     );
     assert!(changed);
     let info = cluster.registry.get("worker-1").unwrap();
@@ -8484,6 +8536,7 @@ fn test_announce_refresh_preserves_static_pin_addresses() {
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
         None,
+        "",
     );
     assert!(
         !changed2,
@@ -8521,6 +8574,7 @@ fn test_announce_refresh_replaces_addresses_for_dynamic_peer() {
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
         None,
+        "",
     );
     assert!(changed);
     let info = cluster.registry.get("dyn-1").unwrap();
@@ -8560,6 +8614,7 @@ fn test_merge_real_node_info_merges_addresses_for_static_peer() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     let info = cluster.registry.get("stat-1").unwrap();
@@ -8730,6 +8785,7 @@ fn test_announce_source_addr_appended_lowest_priority() {
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
         Some("203.0.113.99"),
+        "",
     );
     assert!(changed);
     let info = cluster.registry.get("src-1").unwrap();
@@ -8755,6 +8811,7 @@ fn test_announce_source_addr_appended_lowest_priority() {
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
         Some("203.0.113.96"),
+        "",
     );
     let info = cluster.registry.get("src-2").unwrap();
     assert_eq!(info.addresses, vec!["203.0.113.96".to_string()]);
@@ -8831,6 +8888,7 @@ fn test_pool_order_pin_then_payload_then_source() {
         Vec::new(), // 自报 agent 清单：未宣告
         None,       // iroh_id：未宣告
         Some("203.0.113.29"),
+        "",
     );
     let info = cluster.registry.get("order-1").unwrap();
     assert_eq!(
@@ -9000,6 +9058,7 @@ fn test_discovered_node_roster_lands_and_change_detection() {
         roster_a.clone(),
         None, // iroh_id：未宣告
         None,
+        "",
     );
     assert!(changed, "首次入册必 changed");
     let node = cluster.registry.get("roster-peer").expect("入册");
@@ -9021,6 +9080,7 @@ fn test_discovered_node_roster_lands_and_change_detection() {
         roster_a.clone(),
         None, // iroh_id：未宣告
         None,
+        "",
     );
     assert!(!changed, "同清单重复宣告不得算内容变化");
 
@@ -9040,6 +9100,7 @@ fn test_discovered_node_roster_lands_and_change_detection() {
         roster_b.clone(),
         None, // iroh_id：未宣告
         None,
+        "",
     );
     assert!(changed, "roster 变化必须算内容变化");
     let node = cluster.registry.get("roster-peer").unwrap();
@@ -9071,6 +9132,7 @@ fn test_empty_addresses_known_peer_roster_merge_preserves_address() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     let roster = vec![crate::types::AgentAnnouncement {
@@ -9095,6 +9157,7 @@ fn test_empty_addresses_known_peer_roster_merge_preserves_address() {
         roster.clone(),
         None, // iroh_id：未宣告
         None,
+        "",
     );
     assert!(changed, "roster None->A 是内容变化");
 
@@ -9132,6 +9195,7 @@ fn test_merge_real_node_info_merges_agent_roster() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     let roster = vec![crate::types::AgentAnnouncement {
@@ -9155,6 +9219,7 @@ fn test_merge_real_node_info_merges_agent_roster() {
         tier: Some("big".into()),
         agents: roster.clone(),
         node_type: "agent".into(),
+        build: String::new(),
     };
     cluster.merge_real_node_info(&info);
 
@@ -9313,6 +9378,7 @@ fn test_handle_discovered_node_iroh_id_absent_when_feature_off() {
         vec![],
         Some("ab".repeat(32)),
         None,
+        "",
     );
 
     let node = cluster.get_node_info("iroh-node-1").expect("node stored");
@@ -9441,4 +9507,123 @@ fn test_roaming_key_autocreate_on_enable() {
     let (id2, created2) = RoamingIdentity::load_or_create(ws).unwrap();
     assert!(!created2, "二次 = 加载不重生成（轮换只走 keygen --force）");
     assert_eq!(id1.node_id_hex(), id2.node_id_hex(), "身份一致");
+}
+
+// ===========================================================================
+// A1 运行时硬化批（2026-10-19）：构建号 wire 传播回归锁。
+// announce build 字段经 ex 漏斗入册（新条目 / 既有条目 merge / 空地址身份
+// 合并三分支全覆盖），Dashboard 节点面据此展示三机换装偏斜。
+// ===========================================================================
+
+/// announce 携带 build：新条目入册时注册表透传。
+#[test]
+fn test_announce_build_propagates_to_registry_new_entry() {
+    let cluster = Cluster::new(make_config());
+    let changed = cluster.handle_discovered_node_ex(
+        "build-peer",
+        "build-peer",
+        vec!["203.0.113.120".into()],
+        21949,
+        "worker",
+        "test",
+        Vec::new(),
+        Vec::new(),
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        None,
+        None,
+        "6f96d056",
+    );
+    assert!(changed, "new entry must register");
+    let node = cluster.registry.get("build-peer").expect("registered");
+    assert_eq!(node.build, "6f96d056", "build must propagate to registry");
+    cluster.stop();
+}
+
+/// 既有条目收到带新 build 的 announce：merge 路径刷新 build。
+#[test]
+fn test_announce_build_refreshes_existing_entry() {
+    let cluster = Cluster::new(make_config());
+    cluster.handle_discovered_node_ex(
+        "build-peer",
+        "build-peer",
+        vec!["203.0.113.121".into()],
+        21949,
+        "worker",
+        "test",
+        Vec::new(),
+        Vec::new(),
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        None,
+        None,
+        "aaaa1111",
+    );
+    // 第二拍：同节点换装（build 变化），地址/身份不变。
+    cluster.handle_discovered_node_ex(
+        "build-peer",
+        "build-peer",
+        vec!["203.0.113.121".into()],
+        21949,
+        "worker",
+        "test",
+        Vec::new(),
+        Vec::new(),
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        None,
+        None,
+        "bbbb2222",
+    );
+    let node = cluster.registry.get("build-peer").expect("registered");
+    assert_eq!(
+        node.build, "bbbb2222",
+        "refreshed announce must update build"
+    );
+    cluster.stop();
+}
+
+/// 未宣告 build（旧对端）：入册为空串，不炸、不占位。
+#[test]
+fn test_announce_without_build_registers_empty() {
+    let cluster = Cluster::new(make_config());
+    let changed = cluster.handle_discovered_node(
+        "legacy-peer",
+        "legacy-peer",
+        vec!["203.0.113.122".into()],
+        21949,
+        "worker",
+        "test",
+        Vec::new(),
+        Vec::new(),
+        "agent",
+    );
+    assert!(changed, "legacy entry must register");
+    let node = cluster.registry.get("legacy-peer").expect("registered");
+    assert!(node.build.is_empty(), "absent build stays empty");
+    cluster.stop();
+}
+
+/// 本节点构建号注入：set_build_hash 后本地注册表条目（sync_local_node_to_registry）
+/// 携带同值——Dashboard isLocal 行的 build 数据源。
+#[test]
+fn test_set_build_hash_reflects_local_registry_entry() {
+    let cluster = Cluster::new(make_config());
+    cluster.set_build_hash("deadbeef");
+    cluster.sync_local_node_to_registry();
+    let me = cluster
+        .registry
+        .get(&cluster.node_id())
+        .expect("local entry");
+    assert_eq!(
+        me.build, "deadbeef",
+        "local entry must carry injected build"
+    );
+    cluster.stop();
 }

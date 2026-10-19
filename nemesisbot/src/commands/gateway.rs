@@ -176,7 +176,12 @@ pub(crate) fn migrate_legacy_max_tool_iterations(config_file: &std::path::Path) 
 }
 
 /// Run the gateway command.
-pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> {
+pub async fn run(
+    local: bool,
+    relay: bool,
+    extra_args: &[String],
+    skip_runtime_check: bool,
+) -> Result<()> {
     // macOS: acquire the tray-handoff channel guard first, so that ANY return
     // path from this function (early `?` errors, normal completion) closes the
     // channel and unblocks the main thread waiting for the tray. See
@@ -184,6 +189,12 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
     // whole process, so they need no special handling here.)
     #[cfg(target_os = "macos")]
     let _tray_channel_guard = nemesis_desktop::main_thread_handoff::channel_guard();
+
+    // A1 运行时完整性清单：启动最早期的部署面校验（先于 selfupdate 恢复/
+    // 任何端口 bind）。打包部署残缺 = 响亮拒启；manifest 缺席（cargo 开发
+    // 态）= warn 不阻塞；`--skip-runtime-check` 显式逃生门。语义详见
+    // runtime_manifest 模块头。
+    crate::runtime_manifest::check_startup(skip_runtime_check)?;
 
     // L9 selfupdate：启动收口先于任何端口 bind——journal 未竟事务处置：
     // restarting 相位 commit 命中 = 上次切换成功收口；miss / staging 相位 =

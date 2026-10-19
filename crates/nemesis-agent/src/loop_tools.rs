@@ -5590,11 +5590,24 @@ pub type QuestionBrokerSlot =
 /// question 工具默认等待窗口（秒）。超时回灌「按最佳判断继续」。
 pub const QUESTION_DEFAULT_TIMEOUT_SECS: u64 = 120;
 
-/// F7：结构化提问工具。向用户发一张选项卡（Dashboard QuestionCard）并阻塞
-/// 等作答：单选 radio / `multi=true` 多选 checkbox。回答以选中项原文回灌，
-/// 模型据此继续；超时回灌 "user did not answer, proceed with your best
-/// judgment"（不是错误——轮次照常推进）。broker 经槽注入（gateway 装配
-/// `WebQuestionBroker`）；进程内 id 自增避免并发提问撞号。
+/// B8（提问两形态）：表单形态字段数上限。超限诚实拒绝（防模型一卡塞满
+/// 屏幕；两形态共用 question_id 发号器，超限消耗一个 ID 无害）。
+pub const QUESTION_MAX_FIELDS: usize = 8;
+
+/// B8：单选卡片选项上限（≤6 radio 列表，>6 前端收纳为下拉 select）。
+pub const QUESTION_MAX_SINGLE_OPTIONS: usize = 12;
+
+/// F7：结构化提问工具。两形态（B8）：
+/// - **选项形态**（legacy，`options`）：单选 radio / `multi=true` 多选
+///   checkbox；单选 >6 项前端自动收纳为下拉 select（上限 12）。
+/// - **表单形态**（`fields`）：多个 text 输入框 + select 下拉字段组成的
+///   表单卡；回答以 object（键=字段 key）回灌。`fields` 非空时生效，
+///   `options`/`multi` 被忽略。
+///
+/// 回答以选中项原文 / 表单作答回灌，模型据此继续；超时回灌 "user did not
+/// answer, proceed with your best judgment"（不是错误——轮次照常推进）。
+/// broker 经槽注入（gateway 装配 `WebQuestionBroker`）；进程内 id 自增
+/// 避免并发提问撞号。
 pub struct QuestionTool {
     broker: QuestionBrokerSlot,
 }
@@ -5612,15 +5625,116 @@ pub(crate) fn next_question_id() -> String {
     format!("q-{}", N.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
 }
 
+/// B8：解析并校验表单字段定义（工具入参 `fields` 数组 → `QuestionField`）。
+/// 校验：数量 ≤[`QUESTION_MAX_FIELDS`]、元素全为 object、key/label 非空且
+/// key 一次提问内唯一、type ∈ {text, select}、select 的 options 2-6 项非空、
+/// required 缺省 false。
+fn parse_question_fields(
+    v: &serde_json::Value,
+) -> Result<Vec<nemesis_types::agent::QuestionField>, String> {
+    let arr = v["fields"]
+        .as_array()
+        .ok_or_else(|| "'fields' must be an array of field objects".to_string())?;
+    if arr.len() > QUESTION_MAX_FIELDS {
+        return Err(format!(
+            "'fields' must have at most {} entries, got {}",
+            QUESTION_MAX_FIELDS,
+            arr.len()
+        ));
+    }
+    let mut out = Vec::with_capacity(arr.len());
+    let mut seen = std::collections::HashSet::new();
+    for (i, f) in arr.iter().enumerate() {
+        let obj = f
+            .as_object()
+            .ok_or_else(|| format!("fields[{}] must be an object", i))?;
+        let key = obj
+            .get("key")
+            .and_then(|k| k.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| format!("fields[{}].key is required (non-empty string)", i))?;
+        if !seen.insert(key.to_string()) {
+            return Err(format!(
+                "fields[{}].key '{}' duplicates an earlier key",
+                i, key
+            ));
+        }
+        let label = obj
+            .get("label")
+            .and_then(|l| l.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| format!("fields[{}] ({}) label is required", i, key))?;
+        let field_type = obj.get("type").and_then(|t| t.as_str()).unwrap_or("text");
+        let options: Vec<String> = match obj.get("options") {
+            Some(o) => o
+                .as_array()
+                .ok_or_else(|| {
+                    format!(
+                        "fields[{}] ({}) options must be an array of strings",
+                        i, key
+                    )
+                })?
+                .iter()
+                .map(|o| {
+                    o.as_str()
+                        .map(|s| s.trim().to_string())
+                        .ok_or_else(|| format!("fields[{}] ({}) options must be strings", i, key))
+                })
+                .collect::<Result<Vec<String>, String>>()?,
+            None => Vec::new(),
+        };
+        match field_type {
+            "text" => {}
+            "select" => {
+                if options.len() < 2 || options.len() > 6 {
+                    return Err(format!(
+                        "fields[{}] ({}) is select: options must have 2-6 entries, got {}",
+                        i,
+                        key,
+                        options.len()
+                    ));
+                }
+                if options.iter().any(String::is_empty) {
+                    return Err(format!(
+                        "fields[{}] ({}) select options must be non-empty",
+                        i, key
+                    ));
+                }
+            }
+            other => {
+                return Err(format!(
+                    "fields[{}] ({}) has unknown type '{}' (text|select)",
+                    i, key, other
+                ));
+            }
+        }
+        out.push(nemesis_types::agent::QuestionField {
+            key: key.to_string(),
+            label: label.to_string(),
+            field_type: field_type.to_string(),
+            required: obj
+                .get("required")
+                .and_then(|r| r.as_bool())
+                .unwrap_or(false),
+            options,
+        });
+    }
+    Ok(out)
+}
+
 #[async_trait]
 impl Tool for QuestionTool {
     fn description(&self) -> String {
-        "Ask the user a structured question with fixed options and block until they answer \
-         (or it times out). Use when the choice materially changes what you do next — e.g. \
-         which of two fix strategies to apply. Single-choice by default; multi=true lets the \
-         user pick several. Returns the selected option text(s); on timeout returns a note \
-         to proceed with your best judgment. Do NOT use for trivial choices or free-form \
-         conversation."
+        "Ask the user a structured question and block until they answer (or it times out). \
+         Two forms: (a) options — the user picks from fixed candidates (single-choice by \
+         default; multi=true for several; >6 options render as a dropdown); (b) fields — \
+         a small form of text inputs and select dropdowns when you need several pieces \
+         of structured input at once. Returns the selected option text(s) or the form \
+         answers as a JSON object; on timeout returns a note to proceed with your best \
+         judgment. Use when the answer materially changes what you do next. Do NOT use \
+         for trivial choices or free-form conversation."
             .to_string()
     }
 
@@ -5635,15 +5749,37 @@ impl Tool for QuestionTool {
                 "options": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "2-6 candidate answers the user picks from"
+                    "description": "Options form: 2-12 candidate answers (single-choice; \
+                                    >6 renders as a dropdown). Multi-choice caps at 6. \
+                                    Ignored when fields is given."
                 },
                 "multi": {
                     "type": "boolean",
                     "default": false,
-                    "description": "true = user may select multiple options"
+                    "description": "Options form: true = user may select multiple options. \
+                                    Ignored when fields is given."
+                },
+                "fields": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "key": {"type": "string", "description": "Answer key (unique, non-empty)"},
+                            "label": {"type": "string", "description": "Display label"},
+                            "type": {"type": "string", "enum": ["text", "select"],
+                                     "description": "text = single-line input; select = pick one of options"},
+                            "required": {"type": "boolean", "default": false,
+                                         "description": "true = user must fill this field"},
+                            "options": {"type": "array", "items": {"type": "string"},
+                                        "description": "select fields only: 2-6 candidates"}
+                        },
+                        "required": ["key", "label"]
+                    },
+                    "description": "Form form: 1-8 fields (text inputs + selects). Takes \
+                                    precedence over options/multi."
                 }
             },
-            "required": ["question", "options"]
+            "required": ["question"]
         })
     }
 
@@ -5656,23 +5792,44 @@ impl Tool for QuestionTool {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .ok_or_else(|| "missing required 'question' field".to_string())?;
-        let options: Vec<String> = v["options"]
-            .as_array()
-            .ok_or_else(|| "missing required 'options' field (array of strings)".to_string())?
-            .iter()
-            .map(|o| o.as_str().map(|s| s.trim().to_string()))
-            .collect::<Option<Vec<String>>>()
-            .ok_or_else(|| "'options' must be an array of strings".to_string())?;
-        if options.len() < 2 || options.len() > 6 {
-            return Err(format!(
-                "'options' must have 2-6 entries, got {}",
-                options.len()
-            ));
-        }
-        if options.iter().any(String::is_empty) {
-            return Err("'options' entries must be non-empty".to_string());
-        }
-        let multi = v["multi"].as_bool().unwrap_or(false);
+
+        // B8 两形态分流：fields 非空数组 = 表单形态（options/multi 忽略）；
+        // 否则 = 选项形态（options 必填）。
+        let fields = match v.get("fields") {
+            Some(f) if !f.is_null() => parse_question_fields(&v)?,
+            _ => Vec::new(),
+        };
+        let (options, multi) = if fields.is_empty() {
+            let options: Vec<String> = v["options"]
+                .as_array()
+                .ok_or_else(|| {
+                    "missing required options: give 'options' (2-12 entries) or 'fields' (form)"
+                        .to_string()
+                })?
+                .iter()
+                .map(|o| o.as_str().map(|s| s.trim().to_string()))
+                .collect::<Option<Vec<String>>>()
+                .ok_or_else(|| "'options' must be an array of strings".to_string())?;
+            let multi = v["multi"].as_bool().unwrap_or(false);
+            let max = if multi {
+                6
+            } else {
+                QUESTION_MAX_SINGLE_OPTIONS
+            };
+            if options.len() < 2 || options.len() > max {
+                return Err(format!(
+                    "'options' must have 2-{} entries (multi-choice caps at 6), got {}",
+                    max,
+                    options.len()
+                ));
+            }
+            if options.iter().any(String::is_empty) {
+                return Err("'options' entries must be non-empty".to_string());
+            }
+            (options, multi)
+        } else {
+            (Vec::new(), false)
+        };
 
         let broker = {
             let guard = self.broker.read();
@@ -5691,6 +5848,7 @@ impl Tool for QuestionTool {
             question: question.to_string(),
             options,
             multi,
+            fields,
             chat_id: context.chat_id.clone(),
             session_key: context.session_key.clone(),
             timeout_secs: QUESTION_DEFAULT_TIMEOUT_SECS,
@@ -5713,6 +5871,22 @@ impl Tool for QuestionTool {
                         selected.join("; ")
                     ))
                 }
+            }
+            nemesis_types::agent::QuestionOutcome::AnsweredForm(values) => {
+                // 紧凑 JSON object 回灌（键=字段 key）；空 map 理论不可达
+                // （至少一个必填或可选字段作答），兜底诚实注记。
+                if values.is_empty() {
+                    return Ok("User submitted the form with all fields empty.".to_string());
+                }
+                let obj: serde_json::Value = values
+                    .iter()
+                    .map(|(k, val)| (k.clone(), serde_json::Value::String(val.clone())))
+                    .collect::<serde_json::Map<String, serde_json::Value>>()
+                    .into();
+                Ok(format!(
+                    "User answered form: {}",
+                    serde_json::to_string(&obj).unwrap_or_else(|_| "{}".to_string())
+                ))
             }
             nemesis_types::agent::QuestionOutcome::Timeout => {
                 Ok("No answer: user did not answer, proceed with your best judgment.".to_string())
@@ -6013,6 +6187,7 @@ impl Tool for PlanPresentTool {
                 PLAN_PRESENT_OPTION_REJECT.to_string(),
             ],
             multi: false,
+            fields: Vec::new(),
             chat_id: context.chat_id.clone(),
             session_key: context.session_key.clone(),
             timeout_secs: PLAN_PRESENT_TIMEOUT_SECS,
@@ -6043,6 +6218,15 @@ impl Tool for PlanPresentTool {
                     .insert(context.session_key.clone(), PlanPresentVerdict::Rejected);
                 // 本文本模型本轮看不到（run_loop 消费 verdict 后直接终局），
                 // 落在这里是给 history/审计留一致记录。
+                Ok("❌ 用户驳回了计划：本轮到此结束。".to_string())
+            }
+            // present_plan 只发选项卡（无 fields）——表单作答形态不可达，
+            // 防御臂按拒绝收口（语义最接近：非「批准」即不进 build）。
+            nemesis_types::agent::QuestionOutcome::AnsweredForm(_) => {
+                self.handle
+                    .verdicts
+                    .lock()
+                    .insert(context.session_key.clone(), PlanPresentVerdict::Rejected);
                 Ok("❌ 用户驳回了计划：本轮到此结束。".to_string())
             }
             nemesis_types::agent::QuestionOutcome::Timeout => {

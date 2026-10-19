@@ -2851,7 +2851,7 @@ name = "Empty Addr Peer"
                 .enable_all()
                 .build()
                 .expect("build gateway test runtime");
-            let _ = rt.block_on(async { run(false, false, &[]).await });
+            let _ = rt.block_on(async { run(false, false, &[], false).await });
         })
         .expect("spawn gateway thread");
 
@@ -4179,7 +4179,7 @@ variables: {}
                     .enable_all()
                     .build()
                     .expect("build gateway conflict-test runtime");
-                let _ = rt.block_on(async { run(false, false, &[]).await });
+                let _ = rt.block_on(async { run(false, false, &[], false).await });
             })
             .expect("spawn gateway thread");
 

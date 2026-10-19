@@ -564,7 +564,7 @@ impl ExecutorChannel {
         let pipe = executor_pipe::pipe_name(&id);
 
         // 1. Create the named pipe BEFORE spawn so the child can connect to it.
-        let mut server = executor_pipe::create_server(&pipe)
+        let server = executor_pipe::create_server(&pipe)
             .map_err(|e| format!("create executor pipe: {e}"))?;
 
         // 2. Spawn the child with the pipe env. stdio is unused for transport
@@ -587,36 +587,78 @@ impl ExecutorChannel {
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("failed to spawn executor child: {e}"))?;
-        Self::drain_stderr(&mut child);
+        let stderr_tail = Self::drain_stderr(&mut child);
 
-        // 3. Wait for the child to connect (timeout — child must start + connect).
-        match tokio::time::timeout(Duration::from_secs(30), server.connect()).await {
-            Err(_) => {
+        // 3. Wait for the child to connect — A4 装配纪律：等待循环耦合子进程
+        //    存活断言（child 启动即崩 = 立即报退出码 + stderr 现场，不傻等
+        //    满 30s 超时）。connect 探针幂等可重入（NamedPipeServer::connect
+        //    cancel-safe），单次尝试限窗 500ms，超窗下轮重试；connect 的 io
+        //    错误按「本轮未就绪」重试（客户端连上又消失等病态形态最终落
+        //    Timeout/ChildDied，主失败面 child 早死由存活断言即时收口）。
+        //    server 挂 Arc<tokio Mutex>：poll 闭包每次 clone 一个 owned Arc
+        //    进 async 块（&mut 借闭包状态的 future 会挂 FnMut 逃逸），等待
+        //    结束后写/读路径经锁 guard 使用同一句柄。
+        let server = std::sync::Arc::new(tokio::sync::Mutex::new(server));
+        let connect_result = {
+            let poll_server = server.clone();
+            let mut poll = move || {
+                let srv = poll_server.clone();
+                async move { srv.lock().await.connect().await.ok() }
+            };
+            let mut aliveness = || {
+                let death = match child.try_wait() {
+                    Ok(Some(status)) => Some(format!(
+                        "exit code: {}, stderr: {}",
+                        status
+                            .code()
+                            .map(|c| c.to_string())
+                            .unwrap_or_else(|| status.to_string()),
+                        stderr_tail.snapshot()
+                    )),
+                    Ok(None) => None,
+                    Err(e) => Some(format!("status check failed: {e}")),
+                };
+                std::future::ready(death)
+            };
+            nemesis_utils::wait_ready::wait_for_ready(
+                Duration::from_millis(500),
+                Duration::from_secs(30),
+                &mut poll,
+                &mut aliveness,
+            )
+            .await
+        };
+        match connect_result {
+            Ok(()) => {}
+            Err(nemesis_utils::wait_ready::ReadyError::ChildDied { detail }) => {
+                let _ = child.start_kill();
+                return Err(format!(
+                    "executor child exited while connecting to pipe (tool={tool}, {detail})"
+                ));
+            }
+            Err(nemesis_utils::wait_ready::ReadyError::Timeout) => {
                 let _ = child.start_kill();
                 return Err(format!(
                     "executor child did not connect to pipe within 30s (tool={tool})"
                 ));
             }
-            Ok(Err(e)) => {
-                let _ = child.start_kill();
-                return Err(format!("executor pipe connect failed: {e}"));
-            }
-            Ok(Ok(())) => {}
         }
 
         // 4. Write request line.
-        server
-            .write_all(request_line.as_bytes())
-            .await
-            .map_err(|e| format!("write executor pipe: {e}"))?;
-        server
-            .flush()
-            .await
-            .map_err(|e| format!("flush executor pipe: {e}"))?;
+        {
+            let mut srv = server.lock().await;
+            srv.write_all(request_line.as_bytes())
+                .await
+                .map_err(|e| format!("write executor pipe: {e}"))?;
+            srv.flush()
+                .await
+                .map_err(|e| format!("flush executor pipe: {e}"))?;
+        }
 
         // 5. Read response line (timeout).
         let resp_line = {
-            let mut reader = BufReader::new(&mut server).lines();
+            let mut srv = server.lock().await;
+            let mut reader = BufReader::new(&mut *srv).lines();
             match tokio::time::timeout(self.timeout, reader.next_line()).await {
                 Err(_) => {
                     let _ = child.start_kill();
@@ -631,8 +673,14 @@ impl ExecutorChannel {
                 }
                 Ok(Ok(None)) => {
                     let _ = child.start_kill();
+                    // 带退出状态 + stderr tail（静默死亡=panic/OOM/启动失败的
+                    // 唯一诊断面；stdio 路径同款格式）。
+                    let status = child.wait().await;
                     return Err(format!(
-                        "executor child closed pipe without a response (tool={tool})"
+                        "executor child closed pipe without a response (tool={tool}, \
+                         exit={:?}); stderr: {}",
+                        status.map(|s| s.to_string()),
+                        stderr_tail.snapshot()
                     ));
                 }
                 Ok(Ok(Some(line))) => line,

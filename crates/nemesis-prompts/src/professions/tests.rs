@@ -376,6 +376,50 @@ fn worker_contract_and_planner_method_nonempty() {
     assert!(PLANNER_METHOD.contains("depends_on"));
 }
 
+/// C10 任务契约四段：planner 侧（planner_method.md 四段产出纪律）与
+/// worker 侧（cluster_worker.md 消费面纪律，稳定前缀全任务可见）成对在
+/// 场；缺任一侧=四段契约断链（planner 写了没人认，或 worker 被要求认
+/// 无人写的结构）。关键词断言防误删（本文件惯例：非字节快照）。
+#[test]
+fn task_contract_four_segments_paired_on_both_sides() {
+    for kw in ["任务契约四段", "目标", "上下文", "约束", "完成标准"] {
+        assert!(
+            PLANNER_METHOD.contains(kw),
+            "planner_method.md 缺四段契约关键词 {kw}"
+        );
+        assert!(
+            CLUSTER_WORKER_CONTRACT.contains(kw),
+            "cluster_worker.md 缺四段契约关键词 {kw}"
+        );
+    }
+    // 消费面缺段纪律：不许脑补（worker 侧），不许留空填充（planner 侧）。
+    assert!(
+        CLUSTER_WORKER_CONTRACT.contains("偏差与疑点"),
+        "worker 缺段必须能落到既有汇报契约的「偏差与疑点」节"
+    );
+    assert!(
+        PLANNER_METHOD.contains("未提供"),
+        "planner 缺段要写明（未提供：原因），不许留空"
+    );
+}
+
+/// C9 推理收尾：planner 与 worker 两侧都带「结论短句、禁止长篇展开」纪
+/// 律；诚实边界=提示词层只约束可见文本（思考通道不设限），故只锁收尾
+/// 关键词，不锁思考预算相关表述。
+#[test]
+fn reasoning_closure_discipline_present_on_both_sides() {
+    for kw in ["推理收尾", "一行短句"] {
+        assert!(
+            PLANNER_METHOD.contains(kw),
+            "planner_method.md 缺推理收尾关键词 {kw}"
+        );
+        assert!(
+            CLUSTER_WORKER_CONTRACT.contains(kw),
+            "cluster_worker.md 缺推理收尾关键词 {kw}"
+        );
+    }
+}
+
 #[test]
 fn catalog_name_and_tier_metadata_align_with_plan() {
     let name_of = |slug: &str| find_builtin(slug).unwrap().name;
