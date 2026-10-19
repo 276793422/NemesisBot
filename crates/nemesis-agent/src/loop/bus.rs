@@ -127,6 +127,7 @@ impl AgentLoop {
             concurrent_mode,
             reinject_tx: parking_lot::RwLock::new(None),
             extra_hidden_tools: parking_lot::RwLock::new(Vec::new()),
+            exclusive_hidden_provider: parking_lot::RwLock::new(None),
             tier_override: parking_lot::RwLock::new(None),
             queue_size,
             discipline: parking_lot::RwLock::new(None),

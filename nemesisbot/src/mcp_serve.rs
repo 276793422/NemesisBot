@@ -171,6 +171,7 @@ pub fn tool_definitions() -> Vec<McpTool> {
                 },
                 "required": ["task"]
             }),
+            ..Default::default()
         },
         McpTool {
             name: "sessions_list".into(),
@@ -185,6 +186,7 @@ pub fn tool_definitions() -> Vec<McpTool> {
                     "limit": {"type": "integer", "description": "Max sessions to return (default 50, cap 200)"}
                 }
             }),
+            ..Default::default()
         },
         McpTool {
             name: "memory_search".into(),
@@ -202,6 +204,7 @@ pub fn tool_definitions() -> Vec<McpTool> {
                 },
                 "required": ["query"]
             }),
+            ..Default::default()
         },
         McpTool {
             name: "board_issue_query".into(),
@@ -220,6 +223,7 @@ pub fn tool_definitions() -> Vec<McpTool> {
                     "limit": {"type": "integer", "description": "Max issues in list view (default 50, cap 200)"}
                 }
             }),
+            ..Default::default()
         },
     ]
 }

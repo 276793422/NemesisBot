@@ -168,3 +168,204 @@ fn test_trust_revoke_readback_flow() {
         Some(nemesis_connectors::signing::TrustLevel::Revoked)
     ));
 }
+
+// ============ B5 管理对称族（治理补全 P4，2026-10-19） ============
+
+/// 最小合法清单模板（rest 型，无凭据槽位）。
+const B5_MIN_MANIFEST: &str = r#"
+[connector]
+id = "b5-target"
+name = "B5 对称命令测试件"
+version = "0.1.0"
+kind = "rest"
+
+[connector.http]
+base = "http://127.0.0.1:9"
+
+[[op]]
+id = "ping"
+intent = ["连通性探测"]
+risk = "low"
+class = "network"
+http = { method = "GET", path = "/ping" }
+"#;
+
+/// add 的 --file/--toml 单选解析：文件读取、内联文本、双提供/缺省拒绝。
+#[test]
+fn test_resolve_add_manifest_exclusive_sources() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let f = tmp.path().join("m.toml");
+    std::fs::write(&f, B5_MIN_MANIFEST).expect("write manifest file");
+
+    // --file 路径读入
+    let text = resolve_add_manifest(&Some(f.clone()), &None).expect("file arm ok");
+    assert_eq!(text, B5_MIN_MANIFEST);
+    // --toml 内联
+    let text = resolve_add_manifest(&None, &Some("x = 1".to_string())).expect("toml arm ok");
+    assert_eq!(text, "x = 1");
+    // 双提供拒绝
+    assert!(resolve_add_manifest(&Some(f.clone()), &Some("y".into())).is_err());
+    // 全缺拒绝
+    assert!(resolve_add_manifest(&None, &None).is_err());
+    // 文件不存在诚实报错
+    let missing = tmp.path().join("nope.toml");
+    let err = format!(
+        "{}",
+        resolve_add_manifest(&Some(missing), &None).expect_err("missing file rejects")
+    );
+    assert!(err.contains("nope.toml"), "错误点名文件: {err}");
+}
+
+/// enable/disable 执行核：add → disable → list 反映 → enable 回翻；sidecar
+/// 文件落位；未知名诚实拒绝。id-or-dir 两形态都可用。
+#[test]
+fn test_run_connector_toggle_sidecar_roundtrip() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+
+    // 先落一个 connector（走 add 同一 registry 函数）
+    let c = nemesis_connectors::registry::create_connector(ws, "b5-target", B5_MIN_MANIFEST)
+        .expect("create ok");
+    assert!(c.enabled, "清单缺省 enabled = true");
+
+    // 按目录名停用
+    run_connector_toggle(ws, "b5-target", false).expect("disable ok");
+    let sidecar = ws
+        .join("config")
+        .join("connector_state")
+        .join("b5-target.json");
+    assert!(sidecar.exists(), "sidecar 启停位文件落位");
+    let disabled = nemesis_connectors::registry::scan_connectors(ws);
+    let row = disabled
+        .iter()
+        .find(|l| {
+            l.connector
+                .as_ref()
+                .map(|c| c.id == "b5-target")
+                .unwrap_or(false)
+        })
+        .expect("entry present");
+    assert!(
+        !row.connector.as_ref().unwrap().enabled,
+        "disable 后 scan 反映停用"
+    );
+
+    // 按 id 启用（id-or-dir 解析：id 命中换算目录名）
+    run_connector_toggle(ws, "b5-target", true).expect("enable ok");
+    let enabled = nemesis_connectors::registry::scan_connectors(ws);
+    let row = enabled
+        .iter()
+        .find(|l| {
+            l.connector
+                .as_ref()
+                .map(|c| c.id == "b5-target")
+                .unwrap_or(false)
+        })
+        .expect("entry present");
+    assert!(
+        row.connector.as_ref().unwrap().enabled,
+        "enable 后 scan 反映启用"
+    );
+
+    // 未知名诚实拒绝
+    let err = format!(
+        "{}",
+        run_connector_toggle(ws, "ghost", true).expect_err("ghost rejects")
+    );
+    assert!(err.contains("ghost"), "错误点名: {err}");
+}
+
+/// dir ≠ id 的条目：按目录名翻位同样生效，sidecar 落 **id 键控**路径
+/// （state::state_path 键是 manifest id，不是目录名）。
+#[test]
+fn test_run_connector_toggle_dir_name_differs_from_id() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    let manifest = B5_MIN_MANIFEST.replace("b5-target", "b5-id");
+    nemesis_connectors::registry::create_connector(ws, "b5-dir", &manifest)
+        .expect("create ok (dir=b5-dir, id=b5-id)");
+
+    // 按目录名停用
+    run_connector_toggle(ws, "b5-dir", false).expect("disable by dir ok");
+    // sidecar 落 id 键控路径
+    assert!(
+        ws.join("config")
+            .join("connector_state")
+            .join("b5-id.json")
+            .exists(),
+        "sidecar 按 manifest id 键控落位"
+    );
+    assert!(
+        !ws.join("config")
+            .join("connector_state")
+            .join("b5-dir.json")
+            .exists(),
+        "目录名键控的路径不该存在"
+    );
+    let disabled = nemesis_connectors::registry::scan_connectors(ws);
+    let row = disabled
+        .iter()
+        .find(|l| {
+            l.connector
+                .as_ref()
+                .map(|c| c.id == "b5-id")
+                .unwrap_or(false)
+        })
+        .expect("entry present");
+    assert!(!row.connector.as_ref().unwrap().enabled, "scan 反映停用");
+
+    // 按目录名回翻
+    run_connector_toggle(ws, "b5-dir", true).expect("enable by dir ok");
+    let enabled = nemesis_connectors::registry::scan_connectors(ws);
+    let row = enabled
+        .iter()
+        .find(|l| {
+            l.connector
+                .as_ref()
+                .map(|c| c.id == "b5-id")
+                .unwrap_or(false)
+        })
+        .expect("entry present");
+    assert!(row.connector.as_ref().unwrap().enabled, "scan 反映启用");
+}
+
+/// remove：删目录、凭条保留（追加式流水语义）、在册外名字诚实拒绝。
+#[test]
+fn test_remove_connector_preserves_receipts() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    nemesis_connectors::registry::create_connector(ws, "b5-target", B5_MIN_MANIFEST)
+        .expect("create ok");
+    // 手写一条凭条（append-only 面，不走执行核）
+    let r = nemesis_connectors::receipt::Receipt {
+        receipt_id: "RCPT-1000-0001".into(),
+        ts: "2026-10-19T08:00:00+00:00".into(),
+        connector: "b5-target".into(),
+        op: "ping".into(),
+        risk: "low".into(),
+        class: "network".into(),
+        outcome: "executed".into(),
+        args_digest: "0123456789abcdef".into(),
+        summary: "B5 测试凭条".into(),
+        receipt_key: None,
+        receipt_value: None,
+        budget_consumed: None,
+        approval_ref: None,
+        session_key: None,
+        undoable: false,
+    };
+    nemesis_connectors::receipt::append_receipt(ws, &r).expect("receipt ok");
+
+    // 在册外名字先拒
+    assert!(nemesis_connectors::registry::remove_connector(ws, "ghost").is_err());
+
+    // 删除在册条目
+    nemesis_connectors::registry::remove_connector(ws, "b5-target").expect("remove ok");
+    assert!(
+        !ws.join("connectors").join("b5-target").exists(),
+        "目录已删"
+    );
+    let receipts =
+        nemesis_connectors::receipt::list_receipts(ws, 50, Some("b5-target")).expect("receipts");
+    assert_eq!(receipts.len(), 1, "凭条历史保留（不抹账）");
+}

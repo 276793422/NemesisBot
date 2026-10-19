@@ -14,7 +14,12 @@ pub mod manifest;
 pub mod receipt;
 pub mod registry;
 pub mod signing;
+pub mod state;
 
 /// connector_invoke 工具 / 集群 RPC action 的单一名字真相源：bot 侧工具
 /// 名、master→worker 的 RPC action、E3 撤销的域 C 反向调用三处共用。
 pub const INVOKE_TOOL_NAME: &str = "connector_invoke";
+
+/// connector_find 工具名的单一真相源（与 [`INVOKE_TOOL_NAME`] 同族——
+/// 供给闸/dispatch 闸按名识别连接器治理工具；名字改这里一处）。
+pub const FIND_TOOL_NAME: &str = "connector_find";

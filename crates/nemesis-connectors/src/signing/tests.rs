@@ -150,9 +150,11 @@ fn test_registry_rejects_tampered_and_honors_verified() {
     assert_eq!(l.trust, ConnectorTrust::Verified);
     assert!(parse_connector_manifest("x").is_err()); // sanity：parse 函数在场
 
-    // find_connector 正常放行。
-    let found = crate::registry::find_connector(ws.path(), "sample").expect("完好连接器可用");
+    // find_connector 正常放行（M1：trust 随返回值透出）。
+    let (found, found_trust) =
+        crate::registry::find_connector(ws.path(), "sample").expect("完好连接器可用");
     assert_eq!(found.id, "sample");
+    assert_eq!(found_trust, ConnectorTrust::Verified);
 
     // 篡改 → scan corrupt 入列 + find 拒用。
     std::fs::write(

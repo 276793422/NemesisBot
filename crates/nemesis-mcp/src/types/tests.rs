@@ -52,6 +52,7 @@ fn mcp_tool_and_tool_call_result_roundtrip() {
             "properties": { "path": { "type": "string" } },
             "required": ["path"]
         }),
+        ..Default::default()
     };
     let json = serde_json::to_string(&tool).unwrap();
     let rt: McpTool = serde_json::from_str(&json).unwrap();
@@ -288,6 +289,7 @@ fn mcp_tool_without_description() {
         name: "simple_tool".into(),
         description: None,
         input_schema: serde_json::json!({"type": "object"}),
+        ..Default::default()
     };
     let json = serde_json::to_string(&tool).unwrap();
     let rt: McpTool = serde_json::from_str(&json).unwrap();
@@ -501,6 +503,7 @@ fn mcp_tool_input_schema_serialized_as_input_schema() {
         name: "t".into(),
         description: None,
         input_schema: serde_json::json!({"type":"object"}),
+        ..Default::default()
     };
     let json = serde_json::to_string(&tool).unwrap();
     assert!(json.contains("\"inputSchema\""));
@@ -582,4 +585,44 @@ fn client_capabilities_with_all_fields() {
     assert!(rt.tools.is_some());
     assert!(rt.resources.is_some());
     assert!(rt.prompts.is_some());
+}
+
+/// B3：MCP annotations 双 hint 解析（camelCase wire 键；半缺 = None 不猜）。
+#[test]
+fn tool_annotations_camel_case_roundtrip() {
+    let json = r#"{"readOnlyHint":true,"destructiveHint":false}"#;
+    let a: McpToolAnnotations = serde_json::from_str(json).unwrap();
+    assert_eq!(a.read_only_hint, Some(true));
+    assert_eq!(a.destructive_hint, Some(false));
+    // 序列化回 wire 形态仍是 camelCase，且 None 键省略。
+    let out = serde_json::to_string(&a).unwrap();
+    assert!(out.contains("readOnlyHint"));
+    assert!(out.contains("destructiveHint"));
+}
+
+#[test]
+fn tool_annotations_partial_and_absent() {
+    // 只有一键：另一键 = None。
+    let a: McpToolAnnotations = serde_json::from_str(r#"{"readOnlyHint":true}"#).unwrap();
+    assert_eq!(a.read_only_hint, Some(true));
+    assert_eq!(a.destructive_hint, None);
+    // 全缺省 = 双 None（空对象与缺字段等价）。
+    let empty: McpToolAnnotations = serde_json::from_str("{}").unwrap();
+    assert_eq!(empty.read_only_hint, None);
+    assert_eq!(empty.destructive_hint, None);
+}
+
+#[test]
+fn mcp_tool_annotations_field_wiring() {
+    // McpTool.annotations 缺省 = None；带 annotations 的 wire JSON 完整解析。
+    let bare: McpTool =
+        serde_json::from_str(r#"{"name":"t","description":"d","inputSchema":{}}"#).unwrap();
+    assert!(bare.annotations.is_none());
+    let full: McpTool = serde_json::from_str(
+        r#"{"name":"t","description":"d","inputSchema":{},
+            "annotations":{"readOnlyHint":true}}"#,
+    )
+    .unwrap();
+    let ann = full.annotations.expect("annotations present");
+    assert_eq!(ann.read_only_hint, Some(true));
 }

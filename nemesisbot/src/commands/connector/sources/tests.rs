@@ -139,8 +139,9 @@ fn test_search_and_install_unsigned_gate() {
     let report = install_connector(ws.path(), "src", "remote-1", true).expect("install");
     assert_eq!(report.trust, ConnectorTrust::Unsigned);
     assert_eq!(report.copied, vec![MANIFEST_FILE.to_string()]);
-    let found =
-        nemesis_connectors::registry::find_connector(ws.path(), "remote-1").expect("装完可用");
+    let found = nemesis_connectors::registry::find_connector(ws.path(), "remote-1")
+        .expect("装完可用")
+        .0;
     assert_eq!(found.id, "remote-1");
 
     // 目标冲突 → 拒（不覆盖）。

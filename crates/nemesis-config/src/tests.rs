@@ -3922,3 +3922,27 @@ fn test_connectors_remote_invoke_enabled_default_true_and_roundtrip() {
     // Default 手工实现与 serde 缺省同源。
     assert!(crate::ConnectorsConfig::default().remote_invoke_enabled);
 }
+
+#[test]
+fn test_connectors_script_default_timeout_semantics() {
+    // 缺省（无 script 段）= 60s（auto 语义下的全局缺省超时）。
+    let cfg: crate::ConnectorsConfig = serde_json::from_value(serde_json::json!({})).unwrap();
+    assert_eq!(cfg.script_timeout_secs(), 60);
+    assert!(!cfg.require_signed, "M1 缺省不拦");
+
+    // 显式段 round-trip；0 = 拒绝所有 script op 的哨兵值必须保真。
+    let cfg2: crate::ConnectorsConfig = serde_json::from_value(serde_json::json!({
+        "script": { "default_timeout_secs": 0 }
+    }))
+    .unwrap();
+    assert_eq!(cfg2.script_timeout_secs(), 0);
+    let out = serde_json::to_value(&cfg2).unwrap();
+    assert_eq!(out["script"]["default_timeout_secs"], 0);
+
+    // 非 0 值透传。
+    let cfg3: crate::ConnectorsConfig = serde_json::from_value(serde_json::json!({
+        "script": { "default_timeout_secs": 120 }
+    }))
+    .unwrap();
+    assert_eq!(cfg3.script_timeout_secs(), 120);
+}

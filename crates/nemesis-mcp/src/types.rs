@@ -163,8 +163,20 @@ impl std::error::Error for JSONRPCError {}
 // MCP domain types
 // ---------------------------------------------------------------------------
 
+/// MCP protocol tool annotations（B3，2026-10-19 治理补全）：server 对工具
+/// 行为的自述提示（hint——**不是承诺**，纯声明供宿主定基线）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct McpToolAnnotations {
+    /// 只读提示：true = 不改环境（查询/列出类）。缺省 None = 未声明。
+    #[serde(rename = "readOnlyHint", skip_serializing_if = "Option::is_none")]
+    pub read_only_hint: Option<bool>,
+    /// 破坏性提示：true = 可能破坏性/不可逆。缺省 None = 未声明。
+    #[serde(rename = "destructiveHint", skip_serializing_if = "Option::is_none")]
+    pub destructive_hint: Option<bool>,
+}
+
 /// Description of a tool exposed by an MCP server.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct McpTool {
     /// The tool name.
     pub name: String,
@@ -174,6 +186,9 @@ pub struct McpTool {
     /// JSON Schema describing the expected input.
     #[serde(rename = "inputSchema")]
     pub input_schema: serde_json::Value,
+    /// Server 自述行为提示（B3）；老 server 不带 = None，反序列化零破坏。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<McpToolAnnotations>,
 }
 
 /// A single content item returned from a tool call.

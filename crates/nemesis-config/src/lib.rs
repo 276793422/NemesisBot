@@ -218,10 +218,29 @@ pub struct ConnectorsConfig {
     /// 自己的 vault 解锁。
     #[serde(default = "default_remote_invoke_enabled")]
     pub remote_invoke_enabled: bool,
+    /// 信任总闸（M1）：true = unsigned connector 一律拒执行（trust_blocked
+    /// 诚实凭条）；false（缺省）= 只在审批卡加警示行，不拦截——本地自签
+    /// 开发场景合法，拦截是用户显式选择。
+    #[serde(default)]
+    pub require_signed: bool,
+    /// script 绑定全局配置（M2；None = 全缺省：default_timeout_secs 60）。
+    #[serde(default)]
+    pub script: Option<ConnectorsScriptConfig>,
 }
 
 fn default_remote_invoke_enabled() -> bool {
     true
+}
+
+impl ConnectorsConfig {
+    /// script 绑定全局缺省超时秒数（op 级 timeout_secs 可覆盖；**0 = 拒绝
+    /// 所有 script op**——防误配无限挂；上限 600 与 exec 工具闸对齐）。
+    pub fn script_timeout_secs(&self) -> u64 {
+        self.script
+            .as_ref()
+            .map(|s| s.default_timeout_secs)
+            .unwrap_or(60)
+    }
 }
 
 impl Default for ConnectorsConfig {
@@ -231,6 +250,24 @@ impl Default for ConnectorsConfig {
             max_ops_per_hour: 0,
             finance: None,
             remote_invoke_enabled: true,
+            require_signed: false,
+            script: None,
+        }
+    }
+}
+
+/// script 绑定全局配置（M2，2026-10-19）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ConnectorsScriptConfig {
+    /// 全局缺省超时秒数（0 = 拒绝所有 script op）。
+    pub default_timeout_secs: u64,
+}
+
+impl Default for ConnectorsScriptConfig {
+    fn default() -> Self {
+        Self {
+            default_timeout_secs: 60,
         }
     }
 }

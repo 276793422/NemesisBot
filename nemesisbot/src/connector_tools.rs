@@ -10,9 +10,10 @@
 //! - 执行三绑定：`http`（SSRF 钉死 fetch）/ `tool`（经 Weak<AgentLoop>
 //!   回灌 [`AgentLoop::handle_tool_call_at_depth`] **完整 dispatch 瀑布**，
 //!   同 code_run 桥形态）/ `action`（内置 demo 动作，纸面账本）；
-//! - 全 outcome 落统一回执（executed/error/budget_blocked/disabled；
-//!   denied_approval 由 dispatch 的 ABAC deny 分支代写——审批拒绝发生在
-//!   execute 之前，工具自身写不了，工具侧见 ⛔ 前缀即跳过不双写）；
+//! - 全 outcome 落统一回执（executed/error/budget_blocked/trust_blocked/
+//!   disabled/unknown；denied_approval 由 dispatch 的 ABAC deny 分支代写——
+//!   审批拒绝发生在 execute 之前，工具自身写不了，工具侧见 ⛔ 前缀即跳过
+//!   不双写）；
 //! - 执行前强制（R4，本地/远程单点覆盖）：args_schema 校验 + 资金参数形态
 //!   （finance op 的 qty 必须在场且为有限正数）在出网前拒绝，不消耗额度；
 //! - 预算护栏（限频 + 资金 fail-closed）在 execute 内、dispatch 审批之后
@@ -37,8 +38,9 @@ use nemesis_connectors::registry::search_connectors;
 use nemesis_connectors::registry::{find_connector, find_op, validate_op_args};
 
 /// 工具名（消费者 = agent_factory 的 security 闸注册块——同闸单一形态）。
+/// 真相源在 nemesis-connectors（与 [`INVOKE_TOOL_NAME`] 同族 re-export）。
 #[cfg(feature = "security")]
-pub const FIND_TOOL_NAME: &str = "connector_find";
+pub use nemesis_connectors::FIND_TOOL_NAME;
 pub use nemesis_connectors::INVOKE_TOOL_NAME;
 
 /// 远程执行通道（E1，收官批 2026-10-15）：与 ClusterWiring 的
@@ -285,12 +287,95 @@ fn merge_query_pairs(
 #[cfg(feature = "security")]
 pub struct ConnectorFindTool {
     workspace: PathBuf,
+    /// B2：loop 快照句柄（镜像 op 枚举用）。缺省 None = 镜像面不出——
+    /// 无 loop 的测试/独立装配形态下独占 connector 只列显式 ops（诚实，
+    /// 不假列调不到的镜像）。
+    loop_ref: parking_lot::RwLock<Option<Weak<AgentLoop>>>,
 }
 
 #[cfg(feature = "security")]
 impl ConnectorFindTool {
     pub fn new(workspace: PathBuf) -> Self {
-        Self { workspace }
+        Self {
+            workspace,
+            loop_ref: parking_lot::RwLock::new(None),
+        }
+    }
+
+    /// Arc 定型后注入（agent_factory，与 ConnectorInvokeTool::set_loop
+    /// 同点）。消费者 = security 闸注册块——同闸。
+    #[cfg(feature = "security")]
+    pub fn set_loop(&self, loop_weak: Weak<AgentLoop>) {
+        *self.loop_ref.write() = Some(loop_weak);
+    }
+
+    /// B2+B3：单 connector 的镜像 op 枚举（独占声明为空 / 无 loop = 空表）。
+    /// 基线按 server 自述 annotations hints 定档（B3 四档，registry::
+    /// mirror_baseline）；description 随行（A4 检索词元 + 展示）。
+    fn mirrors_of(&self, c: &ValidatedConnector) -> Vec<serde_json::Value> {
+        if c.exclusive_mcp.is_empty() {
+            return Vec::new();
+        }
+        let loop_arc = self.loop_ref.read().clone().and_then(|w| w.upgrade());
+        let snapshot = loop_arc.map(|l| l.mcp_tool_snapshot());
+        let guard = snapshot.as_ref().map(|s| s.read());
+        let names: Vec<String> = guard
+            .as_deref()
+            .map(|g| g.iter().map(|e| e.name.clone()).collect())
+            .unwrap_or_default();
+        nemesis_connectors::registry::exclusive_mirror_ops(&self.workspace, c, &names)
+            .into_iter()
+            .map(|(tool, _)| {
+                let entry = guard
+                    .as_deref()
+                    .and_then(|g| g.iter().find(|e| e.name == tool));
+                let parameters = entry.map(|e| e.parameters.clone());
+                let description = entry.map(|e| e.description.clone()).unwrap_or_default();
+                let (risk, class, confirm) = nemesis_connectors::registry::mirror_baseline(
+                    entry.and_then(|e| e.read_only_hint),
+                    entry.and_then(|e| e.destructive_hint),
+                );
+                serde_json::json!({
+                    "id": tool,
+                    "intent": ["auto-mirror（独占接管基线）"],
+                    "description": description,
+                    "risk": risk.as_str(),
+                    "class": class.as_str(),
+                    "confirm_required": confirm,
+                    "finance_budget": false,
+                    "binding": format!("mirror:tool:{tool}"),
+                    "args_schema": parameters,
+                })
+            })
+            .collect()
+    }
+
+    /// B2+A4：镜像 (id, description) 清单（检索补漏用；独占声明为空 /
+    /// 无 loop = 空表）。描述随行——检索词元可命中描述里的英文词根。
+    fn mirror_pairs_of(&self, c: &ValidatedConnector) -> Vec<(String, String)> {
+        if c.exclusive_mcp.is_empty() {
+            return Vec::new();
+        }
+        let Some(loop_arc) = self.loop_ref.read().clone().and_then(|w| w.upgrade()) else {
+            return Vec::new();
+        };
+        let snapshot = loop_arc.mcp_tool_snapshot();
+        let guard = snapshot.read();
+        nemesis_connectors::registry::exclusive_mirror_ops(
+            &self.workspace,
+            c,
+            &guard.iter().map(|e| e.name.clone()).collect::<Vec<_>>(),
+        )
+        .into_iter()
+        .map(|(t, _)| {
+            let desc = guard
+                .iter()
+                .find(|e| e.name == t)
+                .map(|e| e.description.clone())
+                .unwrap_or_default();
+            (t, desc)
+        })
+        .collect()
     }
 }
 
@@ -335,24 +420,87 @@ impl Tool for ConnectorFindTool {
                     .map(|s| s.to_string())
             })
             .unwrap_or_default();
-        let hits = search_connectors(&self.workspace, &query);
+        let tokens: Vec<String> = query.split_whitespace().map(|t| t.to_lowercase()).collect();
+        let mut hits = search_connectors(&self.workspace, &query);
+        // B2+A4 检索补漏：search_connectors 只看显式 op / connector 级字段，
+        // token 命中**镜像 id 或镜像描述词根**（英文词根可命中——原生工具
+        // description 是独占面最富的检索素材）的独占 connector 会被它
+        // 先行过滤掉——按注册表全量补漏，命中镜像 = 也算命中（独占接管面
+        // 按原生根名词/描述可检索，与 execute 循环内的镜像并入注释同一意图）。
+        if !tokens.is_empty() {
+            let hit_ids: std::collections::HashSet<String> =
+                hits.iter().map(|h| h.connector.id.clone()).collect();
+            for loaded in nemesis_connectors::registry::scan_connectors(&self.workspace) {
+                let Some(c) = loaded.connector else { continue };
+                if !c.enabled || hit_ids.contains(&c.id) {
+                    continue;
+                }
+                let matched: Vec<String> = self
+                    .mirror_pairs_of(&c)
+                    .into_iter()
+                    .filter(|(id, desc)| {
+                        let desc = desc.to_lowercase();
+                        tokens.iter().any(|t| {
+                            id.to_lowercase().contains(t.as_str()) || desc.contains(t.as_str())
+                        })
+                    })
+                    .map(|(id, _)| id)
+                    .collect();
+                if !matched.is_empty() {
+                    hits.push(nemesis_connectors::registry::ConnectorSearchHit {
+                        matched_ops: matched,
+                        trust: loaded.trust,
+                        connector: c,
+                    });
+                }
+            }
+        }
         let errors: Vec<String> = nemesis_connectors::registry::scan_connectors(&self.workspace)
             .into_iter()
             .filter_map(|l| l.error.map(|e| format!("{}: {e}", l.dir.display())))
             .collect();
-        let connectors: Vec<serde_json::Value> = hits
-            .iter()
-            .map(|h| {
-                serde_json::json!({
-                    "id": h.connector.id,
-                    "name": h.connector.name,
-                    "version": h.connector.version,
-                    "description": h.connector.description,
-                    "matched_ops": h.matched_ops,
-                    "ops": h.connector.ops.iter().map(op_json).collect::<Vec<_>>(),
+        let mut connectors: Vec<serde_json::Value> = Vec::with_capacity(hits.len());
+        for h in hits.iter_mut() {
+            // B2：镜像 op 并入展示与命中（token 命中镜像工具名**或描述词根**
+            // = 该 connector 也算命中——独占接管面按原生根名词/描述可检索）。
+            let mirrors = self.mirrors_of(&h.connector);
+            let mirror_matched: Vec<String> = mirrors
+                .iter()
+                .filter(|m| {
+                    tokens.is_empty()
+                        || tokens.iter().any(|t| {
+                            let id = m.get("id").and_then(|i| i.as_str()).unwrap_or("");
+                            let desc = m
+                                .get("description")
+                                .and_then(|d| d.as_str())
+                                .unwrap_or("")
+                                .to_lowercase();
+                            id.to_lowercase().contains(t.as_str()) || desc.contains(t.as_str())
+                        })
                 })
-            })
-            .collect();
+                .filter_map(|m| m.get("id").and_then(|i| i.as_str()))
+                .map(|id| id.to_string())
+                .collect();
+            if h.matched_ops.is_empty() && !mirror_matched.is_empty() {
+                h.matched_ops = mirror_matched.clone();
+            } else {
+                h.matched_ops.extend(mirror_matched.iter().cloned());
+            }
+            connectors.push(serde_json::json!({
+                "id": h.connector.id,
+                "name": h.connector.name,
+                "version": h.connector.version,
+                "description": h.connector.description,
+                // M1：签名徽标随命中透出——模型可感知，自主优先高信任
+                // 源（弱信号，不门控）。
+                "trust": h.trust.as_str(),
+                "matched_ops": h.matched_ops,
+                "ops": h.connector.ops.iter().map(op_json).collect::<Vec<_>>(),
+                // B2：镜像 op 追加在显式 ops 之后（独立数组——形态不同，
+                // 基线档位见各字段；consume 方式与 ops 一致）。
+                "mirrors": mirrors,
+            }));
+        }
         let total = connectors.len();
         Ok(serde_json::to_string_pretty(&serde_json::json!({
             "total": total,
@@ -373,6 +521,14 @@ fn op_json(o: &ValidatedOp) -> serde_json::Value {
         }
         nemesis_connectors::manifest::OpBinding::Tool { tool } => format!("tool:{tool}"),
         nemesis_connectors::manifest::OpBinding::Action { action } => format!("action:{action}"),
+        nemesis_connectors::manifest::OpBinding::Script {
+            command,
+            timeout_secs,
+            ..
+        } => match timeout_secs {
+            Some(t) => format!("script:{command} (timeout={t}s)"),
+            None => format!("script:{command}"),
+        },
     };
     serde_json::json!({
         "id": o.id,
@@ -460,7 +616,51 @@ impl ConnectorInvokeTool {
     /// （外部写可能已生效而账目被保留），漏推 = 用户无从发现需人工对账。
     fn should_push(class: OpClass, finance_budget: bool, outcome: &str) -> bool {
         (class != OpClass::Read || finance_budget)
-            && matches!(outcome, "executed" | "error" | "budget_blocked" | "unknown")
+            && matches!(
+                outcome,
+                "executed" | "error" | "budget_blocked" | "trust_blocked" | "unknown"
+            )
+    }
+
+    /// B2（2026-10-19 独占接管）：镜像 op 解析——op_id 不在显式 `[[op]]`
+    /// 清单时，若该 connector 独占的 MCP server 前缀命中此工具且 sidecar
+    /// 策略为 default，伪造镜像 [`ValidatedOp`]（基线：risk=medium /
+    /// class=read / 无 confirm / 无资金 / binding=Tool 直连原生工具名 /
+    /// args_schema = 原生工具的注册参数 schema；基线档位按 server 自述
+    /// annotations hints 四档定（B3，registry::mirror_baseline——readOnly
+    /// 自述=low/read 免卡，未声明=medium/read 保守基线，自述非只读或破坏
+    /// 性=high/write 强制确认卡）。真实危险度仍由 dispatch 瀑布按**原生
+    /// 工具名**的注册声明裁决，镜像侧档位只决定「不比裸奔松」的接管基线。
+    /// None = 非镜像（显式 op 查找失败照旧走 honest error 路径）。
+    fn resolve_mirror_op(&self, c: &ValidatedConnector, op_id: &str) -> Option<ValidatedOp> {
+        let loop_arc = self.loop_ref.read().clone().and_then(|w| w.upgrade())?;
+        let snapshot = loop_arc.mcp_tool_snapshot();
+        let guard = snapshot.read();
+        let names: Vec<String> = guard.iter().map(|e| e.name.clone()).collect();
+        let mirrors =
+            nemesis_connectors::registry::exclusive_mirror_ops(&self.workspace, c, &names);
+        if !mirrors.iter().any(|(t, _)| t == op_id) {
+            return None;
+        }
+        let entry = guard.iter().find(|e| e.name == op_id)?;
+        let (risk, class, confirm_required) = nemesis_connectors::registry::mirror_baseline(
+            entry.read_only_hint,
+            entry.destructive_hint,
+        );
+        Some(ValidatedOp {
+            id: op_id.to_string(),
+            intent: vec!["auto-mirror（独占接管基线，B2）".to_string()],
+            risk,
+            class,
+            confirm_required,
+            finance_budget: false,
+            receipt_key: None,
+            undo: None,
+            binding: nemesis_connectors::manifest::OpBinding::Tool {
+                tool: op_id.to_string(),
+            },
+            args_schema: Some(entry.parameters.clone()),
+        })
     }
 }
 
@@ -504,6 +704,15 @@ impl Tool for ConnectorInvokeTool {
 
     /// per-op 风险投影（dispatch 嗅探 → metadata 三键 → 管线裁决）。解析
     /// 不出（连接器/op 不存在或损坏）= None → 静态路径 fail-closed 兜底。
+    /// M1 信任警示（2026-10-19）：HIGH/CRITICAL op 且 connector 未签名 →
+    /// force_approval 追加警示行（审批卡多因展示；语义与 pre-exec 命中同
+    /// 家族——非拦截，卡片必须到达人）。
+    ///
+    /// B2（2026-10-19）：显式 op 未命中时先试**镜像 op**解析（独占接管
+    /// 基线：凭条照记，档位按 annotations hints 四档定，见
+    /// resolve_mirror_op 注记）——否则镜像 id 落 None = 静态
+    /// 未知名 fail-closed CRITICAL，每次镜像调用都逼出危急审批卡，接管
+    /// 基线被自身管线击穿（§6.3③ 预判的自堵陷阱）。
     fn operation_override(&self, args: &str) -> Option<OperationOverride> {
         let v: serde_json::Value = serde_json::from_str(args).ok()?;
         let connector = v.get("connector")?.as_str()?.trim();
@@ -511,24 +720,69 @@ impl Tool for ConnectorInvokeTool {
         if connector.is_empty() || op_id.is_empty() {
             return None;
         }
-        let c = find_connector(&self.workspace, connector).ok()?;
-        let op = find_op(&c, op_id)?;
+        let (c, trust) = find_connector(&self.workspace, connector).ok()?;
         let op_args = v.get("args").cloned().unwrap_or(serde_json::json!({}));
-        Some(OperationOverride {
-            op_type: op_slug_for(op.risk, op.class).to_string(),
-            force_approval: op.confirm_required.then(|| {
-                format!(
-                    "connector `{}` op `{}` 声明强制人工确认（confirm=required）——\
-                     执行前必须得到用户明确批准",
-                    c.id, op.id
+        let (op_type, force_approval, risk, class) = match find_op(&c, op_id) {
+            Some(op) => {
+                // M1：unsigned + 高危 op → 警示并入强审批文案（confirm=
+                // required 的理由在前，警示在后；无 confirm 的 HIGH/CRITICAL
+                // 警示单独成卡——未经人看一眼的未签名高危动作不值得自动
+                // 放行）。
+                let mut force = op.confirm_required.then(|| {
+                    format!(
+                        "connector `{}` op `{}` 声明强制人工确认（confirm=required）——\
+                         执行前必须得到用户明确批准",
+                        c.id, op.id
+                    )
+                });
+                if matches!(op.risk, RiskLevel::High | RiskLevel::Critical)
+                    && trust == nemesis_connectors::signing::ConnectorTrust::Unsigned
+                {
+                    let warn = "⚠ 该 connector 未经签名验证（无 connector.toml.sig 或签名者不在信任库）\
+                         ——请自行确认来源可信";
+                    force = Some(match force {
+                        Some(f) => format!("{f}；{warn}"),
+                        None => warn.to_string(),
+                    });
+                }
+                (
+                    op_slug_for(op.risk, op.class).to_string(),
+                    force,
+                    op.risk,
+                    op.class,
                 )
-            }),
+            }
+            // B2 镜像基线（B3 升级：四档化）——基线由镜像 hints 推导：
+            // 默认 medium+read → registry_read 档（管线按 slug 反查 =
+            // MEDIUM；字面语义不承担实际类别，见 resolve_mirror_op 注记）；
+            // 自述破坏性/非只读 → high+write+confirm（slug file_write），
+            // confirm_required 带理由成强制审批卡。
+            None => {
+                let m = self.resolve_mirror_op(&c, op_id)?;
+                let force = m.confirm_required.then(|| {
+                    format!(
+                        "connector `{}` 镜像 op `{}` 自述破坏性（MCP destructive/非只读）——\
+                         执行前必须得到用户明确批准",
+                        c.id, op_id
+                    )
+                });
+                (
+                    op_slug_for(m.risk, m.class).to_string(),
+                    force,
+                    m.risk,
+                    m.class,
+                )
+            }
+        };
+        Some(OperationOverride {
+            op_type,
+            force_approval,
             receipt_ctx: serde_json::to_string(&ReceiptCtxJson {
                 workspace: self.workspace.to_string_lossy().to_string(),
                 connector: c.id.clone(),
-                op: op.id.clone(),
-                risk: op.risk.as_str().to_string(),
-                class: op.class.as_str().to_string(),
+                op: op_id.to_string(),
+                risk: risk.as_str().to_string(),
+                class: class.as_str().to_string(),
                 args_digest: args_digest(&op_args),
             })
             .ok(),
@@ -592,8 +846,8 @@ impl ConnectorInvokeTool {
 
         // 注册表三态：NotFound/Invalid = 无账可记（诚实报错回模型）；
         // Disabled = connector 在册但停用——记 disabled 回执（存在性是账）。
-        let c = match find_connector(&self.workspace, connector) {
-            Ok(c) => c,
+        let (c, trust) = match find_connector(&self.workspace, connector) {
+            Ok((c, trust)) => (c, trust),
             Err(nemesis_connectors::registry::ConnectorLookupError::Disabled { id }) => {
                 let r = write_receipt(
                     &self.workspace,
@@ -620,23 +874,44 @@ impl ConnectorInvokeTool {
             }
             Err(e) => return (Err(honest_err(e)), None),
         };
-        let op = match find_op(&c, op_id) {
+        // B2：显式 op 未命中 → **镜像 op 兜底**（独占接管基线）。镜像 op
+        // 是治理壳伪造的 ValidatedOp（binding=Tool 直连原生工具名，
+        // args_schema = 原生注册参数），后续预检/预算/信任闸/回执/分派流程
+        // 与显式 op 完全同路——接管不加旁路。
+        let mirror_slot: ValidatedOp;
+        let op: &ValidatedOp = match find_op(&c, op_id) {
             Some(op) => op,
-            None => {
-                return (
-                    Err(honest_err(format!(
-                        "connector `{}` 无 op `{}`（可用: {}）",
-                        c.id,
-                        op_id,
-                        c.ops
-                            .iter()
-                            .map(|o| o.id.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ))),
-                    None,
-                );
-            }
+            None => match self.resolve_mirror_op(&c, op_id) {
+                Some(m) => {
+                    mirror_slot = m;
+                    &mirror_slot
+                }
+                None => {
+                    let hint = if c.exclusive_mcp.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            "；该 connector 独占接管 MCP server（{}）——镜像 op \
+                             = 原生工具名（connector_find 可列，封禁者除外）",
+                            c.exclusive_mcp.join(", ")
+                        )
+                    };
+                    return (
+                        Err(honest_err(format!(
+                            "connector `{}` 无 op `{}`（可用: {}）{}",
+                            c.id,
+                            op_id,
+                            c.ops
+                                .iter()
+                                .map(|o| o.id.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            hint
+                        ))),
+                        None,
+                    );
+                }
+            },
         };
 
         // R4 执行前强制（单点，本地/远程同覆盖）：args_schema 校验 + 资金
@@ -662,6 +937,57 @@ impl ConnectorInvokeTool {
             }
         };
 
+        // M2：script 绑定占位符实参在出网前校验——声明式命令模板不能半
+        // 展开（白名单在解析期钉死占位符集合，这里钉实参在审批/预算之前
+        // 就位；与 args_schema 校验同 family，不消耗额度）。
+        if let nemesis_connectors::manifest::OpBinding::Script { placeholders, .. } = &op.binding {
+            for ph in placeholders {
+                if op_args.get(ph).map(|v| v.is_null()).unwrap_or(true) {
+                    return (
+                        Err(honest_err(format!(
+                            "⛔ INVALID ARGS: script 命令占位符 `{ph}` 缺实参（未执行，未消耗额度）"
+                        ))),
+                        None,
+                    );
+                }
+            }
+        }
+
+        // M1 信任总闸（connectors.require_signed=true）：unsigned 一律拒执行。
+        // 单点落在全部形态校验之后、出网（本地 dispatch / 远程 RPC）之前——
+        // 本地与远程同覆盖；凭条 outcome=trust_blocked（budget_blocked 家族
+        // 语义：拒绝有账，额度未消耗）。require_signed 缺省 false = 只警示
+        // （operation_override 的审批卡警示行），拦截是用户显式选择。
+        let cfg = connectors_config(&self.config_path);
+        if cfg.require_signed && trust == nemesis_connectors::signing::ConnectorTrust::Unsigned {
+            let r = write_receipt(
+                &self.workspace,
+                &c.id,
+                &op.id,
+                op.risk.as_str(),
+                op.class.as_str(),
+                "trust_blocked",
+                &digest,
+                "connector 未经签名验证（connectors.require_signed=true 拒绝执行 unsigned 清单）",
+                None,
+                None,
+                None,
+                Some(&context.session_key),
+                context.approval_ref.clone(),
+                false,
+            );
+            self.maybe_push_card(context, &c, op, &r, &cfg).await;
+            return (
+                Err(honest_err(format!(
+                    "⛔ TRUST: connector `{}` 未经签名验证（无 connector.toml.sig 或签名者不在信任库）\
+                     ——require_signed=true 拒绝执行。本地自签开发请 `connector trust` 自己的公钥，\
+                     或显式关闭该闸",
+                    c.id
+                ))),
+                Some(r),
+            );
+        }
+
         // 远程分支（E1）：target_node 指定 → master 闸 + 集群派发 +
         // 镜像凭条（对端还有完整 dispatch 瀑布与本地预算，双闸是刻意的）。
         if let Some(target) = target_node {
@@ -674,7 +1000,6 @@ impl ConnectorInvokeTool {
         // R3：reserve 原子占用（裁决即记账），收口按 outcome 决策表：
         // DispatchRejected/Failed/Err → release（确定性未出网/本地失败）；
         // Done → commit（既成事实）。
-        let cfg = connectors_config(&self.config_path);
         let limits = budget_limits(&cfg);
         let now_ms = chrono::Utc::now().timestamp_millis();
         let reservation = match self.budget.reserve(&limits, &c.id, now_ms, finance_qty) {
@@ -1142,6 +1467,26 @@ impl ConnectorInvokeTool {
             nemesis_connectors::manifest::OpBinding::Tool { tool } => {
                 self.run_tool_binding(c, op, tool, op_args, context).await
             }
+            nemesis_connectors::manifest::OpBinding::Script {
+                command,
+                placeholders,
+                timeout_secs,
+                workdir,
+                capture,
+            } => {
+                self.run_script_binding(
+                    c,
+                    op,
+                    command,
+                    placeholders,
+                    *timeout_secs,
+                    workdir.as_deref(),
+                    *capture,
+                    op_args,
+                    context,
+                )
+                .await
+            }
             nemesis_connectors::manifest::OpBinding::Action { action } => {
                 self.run_action(c, op, action, op_args, context).await
             }
@@ -1428,6 +1773,64 @@ impl ConnectorInvokeTool {
         })
     }
 
+    /// M2（2026-10-19）script 绑定：声明式命令模板 → exec 同源通路。
+    ///
+    /// 展开的命令整体作为 exec 的单参数（command 字段）——占位符白名单
+    /// 在解析期钉死、实参在 R4 出网前已验；执行经 [`Self::run_tool_binding`]
+    /// 回灌 `handle_tool_call_at_depth`，命令守卫/安全 8 层/审批/审计照跑
+    /// ——script 绑定不是绕过命令守卫的后门。超时/目录/捕获是清单作者
+    /// 钉死的声明式语义（不是模型现场决定）：timeout 缺省走 config
+    /// `connectors.script.default_timeout_secs`（0 = 拒绝所有 script op），
+    /// workdir 相对 workspace 根（解析期已拒绝对路径/`..`），capture 决定
+    /// Done 凭条 summary 捕获 stdout 尾部字节数（缺省 400；Failed/Unknown
+    /// 不截——错误文本是诊断主体）。
+    #[allow(clippy::too_many_arguments)]
+    async fn run_script_binding(
+        &self,
+        c: &ValidatedConnector,
+        op: &ValidatedOp,
+        command: &str,
+        placeholders: &[String],
+        timeout_secs: Option<u64>,
+        workdir: Option<&str>,
+        capture: Option<u32>,
+        op_args: &serde_json::Value,
+        context: &RequestContext,
+    ) -> Result<InvocationOutcome, String> {
+        // 全局闸（config connectors.script.default_timeout_secs = 0 = 拒绝）。
+        let cfg = connectors_config(&self.config_path);
+        let default_timeout = cfg.script_timeout_secs();
+        if default_timeout == 0 {
+            return Err(
+                "script 执行被配置禁用（connectors.script.default_timeout_secs = 0）".to_string(),
+            );
+        }
+        let expanded = expand_script_command(command, placeholders, op_args)?;
+        let timeout = timeout_secs.unwrap_or(default_timeout);
+        let mut args = serde_json::json!({ "command": expanded, "timeout": timeout });
+        if let Some(wd) = workdir {
+            args["cwd"] = serde_json::json!(wd);
+        }
+        let outcome = self.run_tool_binding(c, op, "exec", &args, context).await?;
+        match outcome {
+            InvocationOutcome::Done {
+                result_text,
+                receipt_key,
+                receipt_value,
+                ..
+            } => {
+                let n = usize::try_from(capture.unwrap_or(400)).unwrap_or(400);
+                Ok(InvocationOutcome::Done {
+                    summary: utf8_tail(&result_text, n),
+                    receipt_key,
+                    receipt_value,
+                    result_text,
+                })
+            }
+            other => Ok(other),
+        }
+    }
+
     /// action 绑定（内置动作）：纸面账本三动作 + monitor 语义检查（E4）。
     async fn run_action(
         &self,
@@ -1438,12 +1841,13 @@ impl ConnectorInvokeTool {
         context: &RequestContext,
     ) -> Result<InvocationOutcome, String> {
         match action {
+            "builtin.noop" => self.action_noop(c, op),
             "builtin.paper_order" => self.action_paper_order(c, op, op_args),
             "builtin.paper_positions" => self.action_paper_positions(c, op),
             "builtin.paper_cancel" => self.action_paper_cancel(c, op, op_args),
             "builtin.monitor_check" => self.action_monitor_check(c, op, op_args, context).await,
             other => Err(format!(
-                "未知内置动作 `{other}`（运行时支持: builtin.paper_order / \
+                "未知内置动作 `{other}`（运行时支持: builtin.noop / builtin.paper_order / \
                  builtin.paper_positions / builtin.paper_cancel / builtin.monitor_check）"
             )),
         }
@@ -1654,6 +2058,26 @@ impl ConnectorInvokeTool {
         })
     }
 
+    /// 内置空动作（前端「新建连接器」最小模板的运行期支撑）：不做任何事，
+    /// 恒成功——新作者粘模板即得一个可真实 invoke 的连接器，走完整治理面
+    /// （凭条/预算/审批链照跑）验证管线连通，再逐步换成自己的绑定。
+    fn action_noop(
+        &self,
+        c: &ValidatedConnector,
+        op: &ValidatedOp,
+    ) -> Result<InvocationOutcome, String> {
+        Ok(InvocationOutcome::Done {
+            summary: format!("noop（内置空动作）: {}.{} 执行成功，零副作用", c.id, op.id),
+            receipt_key: None,
+            receipt_value: None,
+            result_text: format!(
+                "ok: connector `{}` op `{}` 是 builtin.noop 绑定（零副作用验证动作）。\
+                 把 [op] 的 action 换成 http/tool/script 绑定即可接入真实能力。",
+                c.id, op.id
+            ),
+        })
+    }
+
     fn action_paper_cancel(
         &self,
         _c: &ValidatedConnector,
@@ -1813,16 +2237,76 @@ enum ToolBindingClass {
 /// 制的超时失败输出）也是确定性结果，不误判（executor/shell 的真实超时
 /// 文本形态见 executor.rs:81/107、shell.rs:661，均为单行独立错误非进程
 /// 输出混入）。
+/// M2：script 命令模板单遍扫描展开——`{name}`（在白名单内的占位符）替换
+/// 为 args 实参（字符串原样；其余 JSON 序列化形态），其余字符照抄。单遍
+/// 而非逐名 replace 的原因：实参值不做二次展开（值里含 `{xxx}` 字样保持
+/// 字面——逐名 replace 会把前一个实参值里的占位符字样再展开，注入面）。
+/// 白名单外的 `{xxx}` 保持字面（解析期已拒，防御性兜底）。
+fn expand_script_command(
+    command: &str,
+    placeholders: &[String],
+    op_args: &serde_json::Value,
+) -> Result<String, String> {
+    let bytes = command.as_bytes();
+    let mut out = String::with_capacity(command.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'{' {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j] != b'}' {
+                j += 1;
+            }
+            if j < bytes.len() {
+                let name = &command[i + 1..j];
+                if placeholders.iter().any(|p| p == name) {
+                    let raw = op_args
+                        .get(name)
+                        .ok_or_else(|| format!("script 命令占位符 `{name}` 缺实参"))?;
+                    match raw {
+                        serde_json::Value::String(s) => out.push_str(s),
+                        other => out.push_str(&other.to_string()),
+                    }
+                    i = j + 1;
+                    continue;
+                }
+            }
+        }
+        let ch = command[i..].chars().next().expect("合法 UTF-8 切片");
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    Ok(out)
+}
+
+/// 取文本尾部至多 n 字节（UTF-8 字符边界对齐——切点向后找首个字符边界，
+/// 不劈半个字符）。
+fn utf8_tail(text: &str, n: usize) -> String {
+    if text.len() <= n {
+        return text.to_string();
+    }
+    let start = text.len() - n;
+    let start = (start..=text.len())
+        .find(|&i| text.is_char_boundary(i))
+        .unwrap_or(text.len());
+    text[start..].to_string()
+}
+
 fn classify_tool_result(result: &str) -> ToolBindingClass {
     if result.starts_with('⛔') {
         return ToolBindingClass::DispatchRejected;
     }
+    // F2 超时特判扩面（M2 script 绑定实测发现）：exec 工具的超时收尸 =
+    // `Ok("Command timed out …")`（loop_tools.rs `exec_output_passed` 单一
+    // 真相源的失败形态之二），**无错误前缀**——走不到下面的错误头分支，
+    // 会被误判 Done → 假 executed 凭条。含 "timed out" 即结果未知（命令
+    // 可能已被处理了一部分）；`Exit code:` 前缀 = 进程跑完退出非零（确定
+    // 性失败），输出含 "timed out" 字样也不误判（防线保留）。
+    if !result.starts_with("Exit code:") && result.contains("timed out") {
+        return ToolBindingClass::UnknownOutcome;
+    }
     if nemesis_agent::turn_guard::tool_result_indicates_error(result)
         || result.starts_with("Plan mode:")
     {
-        if !result.starts_with("Exit code:") && result.contains("timed out") {
-            return ToolBindingClass::UnknownOutcome;
-        }
         return ToolBindingClass::Failed;
     }
     ToolBindingClass::Done

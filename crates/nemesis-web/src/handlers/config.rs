@@ -155,6 +155,25 @@ pub(crate) fn update_raw_config<T>(
     Ok(out)
 }
 
+/// [`update_raw_config`] 的缺失容忍变体：config.json 不存在时从空对象起
+/// （NotFound 以外读/解析失败仍 Err；语义对齐 update_json_file 家族的
+/// 「文件缺失从空对象起」）。消费方：connectors.set_master（B4 总闸——
+/// 新装配态也允许一键落键，不因缺母版拒绝）。
+pub(crate) fn update_raw_config_seeded<T>(
+    home: &str,
+    f: impl FnOnce(&mut serde_json::Value) -> Result<T, String>,
+) -> Result<T, String> {
+    let _serial = nemesis_config::config_write_lock();
+    let mut cfg = match std::fs::read_to_string(config_path(home)) {
+        Ok(s) => serde_json::from_str(&s).map_err(|e| format!("invalid config.json: {e}"))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        Err(e) => return Err(format!("read config.json: {e}")),
+    };
+    let out = f(&mut cfg)?;
+    write_raw_config(home, &cfg)?;
+    Ok(out)
+}
+
 /// 任意 JSON 配置家族文件的事务入口（config.cluster.json / config.forge.json /
 /// registry.json 等，与 config.json 同族共用一把写串行锁）：锁罩「读→闭包改→
 /// 原子写」全程；文件缺失从空对象起（seed 默认是闭包的事）；读/解析失败

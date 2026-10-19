@@ -367,6 +367,53 @@ async fn test_unknown_action_binding_is_honest_error() {
     assert!(err.contains("未知内置动作"), "msg: {err}");
 }
 
+#[tokio::test]
+async fn test_builtin_noop_is_invocable_minimal_action() {
+    // 前端「新建连接器」最小模板的运行期支撑：builtin.noop 恒成功、零副作用，
+    // 走完整治理面（预算/凭条照记）——粘模板即得可真实 invoke 的连接器。
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(
+        ws,
+        "noop-demo",
+        r#"
+[connector]
+id = "noop-demo"
+name = "Noop Demo"
+version = "0.1.0"
+kind = "local"
+
+[[op]]
+id = "hello"
+intent = ["示例操作"]
+risk = "low"
+class = "read"
+action = "builtin.noop"
+"#,
+    );
+    let tool = invoke_tool(ws, &ws.join("config.json"));
+    let out = tool
+        .execute(
+            r#"{"connector":"noop-demo","op":"hello","args":{}}"#,
+            &ctx(),
+        )
+        .await
+        .expect("noop must succeed");
+    assert!(out.contains("noop"), "summary 应点名 noop，实际: {out}");
+    assert!(
+        out.contains("noop-demo") && out.contains("`hello`"),
+        "summary 应带 connector 与 op 定位，实际: {out}"
+    );
+    // 凭条照记（治理面走过场）。
+    let receipts = list_receipts(ws, 10, None).expect("receipts readable");
+    assert!(
+        receipts
+            .iter()
+            .any(|r| r.connector == "noop-demo" && r.op == "hello"),
+        "noop 调用必须留凭条，实际: {receipts:?}"
+    );
+}
+
 #[test]
 fn test_receipt_card_contains_receipt_id_and_quota() {
     use nemesis_connectors::receipt::{args_digest, new_receipt_id};
@@ -733,14 +780,15 @@ fn test_workspace_template_gitea_manifest_is_valid_and_scoped() {
 
 // ---- 收官批 C2：web-ui 模板 connector（浏览器兜底，playwright-mcp）----
 
-/// workspace 模板恒合法 + **默认停用**（只声明不默认开）+ op 面对齐 C 段验收表
+/// 示例模板（examples/connectors/，A3 起不随 onboard 提取）恒合法 + **默认停用**
+/// （只声明不默认开）+ op 面对齐 C 段验收表
 /// （读 low/read 直通、写 high/write 强授权卡）+ 全 tool 绑定 playwright-mcp +
 /// 危险 op 不声明（evaluate/run_code_unsafe/file_upload 不进清单）。
 #[test]
 fn test_workspace_template_webui_manifest_is_valid_and_disabled_by_default() {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/workspace/connectors/web-ui/connector.toml"
+        "/../examples/connectors/web-ui/connector.toml"
     );
     let text = std::fs::read_to_string(path).expect("web-ui 模板存在");
     let c = nemesis_connectors::manifest::parse_connector_manifest(&text)
@@ -1295,6 +1343,15 @@ fn test_classify_tool_result_receipt_semantics() {
         classify_tool_result("Tool error: command timed out after 60s"),
         UnknownOutcome
     );
+    // M2 扩面回归锁：exec 工具超时收尸 = `Ok("Command timed out …")`
+    // （loop_tools.rs 单一真相源，**无错误前缀**）——此前落 Done = 假
+    // executed 凭条，script 超时诚实臂的根修。
+    assert_eq!(
+        classify_tool_result(
+            "Command timed out after 5 seconds. Partial output:\n(no output before timeout)"
+        ),
+        UnknownOutcome
+    );
     // F2 误判防线：`Exit code:` 前缀 = 进程跑完退出非零（确定性失败），
     // 输出含 "timed out" 字样也不误判为 unknown
     assert_eq!(
@@ -1472,7 +1529,7 @@ tool = "mcp_absent__browser_click"
     tool.set_loop(Arc::downgrade(&loop_arc));
 
     // manifest 层 leniency：注册表缺席不拒 parse（回归锁钉死现行为）
-    let c = find_connector(ws, "ui-bot").expect("manifest parses despite absent tool");
+    let (c, _trust) = find_connector(ws, "ui-bot").expect("manifest parses despite absent tool");
     assert!(matches!(
         c.ops[0].binding,
         nemesis_connectors::manifest::OpBinding::Tool { .. }
@@ -2799,5 +2856,992 @@ tool = "write_file"
         direct_v["path"].as_str(),
         args_v["path"].as_str(),
         "直接执行与经桥执行落同一工作副本"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// M1 信任徽标消费面（2026-10-19）：require_signed 闸 / 审批卡警示 / find 徽标
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_require_signed_gate_blocks_unsigned_with_trust_blocked_receipt() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(ws, "paper-broker", MIXED_MANIFEST);
+    let config = ws.join("config.json");
+    std::fs::write(
+        &config,
+        r#"{
+  "connectors": {
+    "enabled": true,
+    "max_ops_per_hour": 10,
+    "finance": { "max_order_qty": 100.0, "max_orders_per_day": 5 },
+    "require_signed": true
+  }
+}"#,
+    )
+    .expect("write config");
+    let tool = invoke_tool(ws, &config);
+
+    // unsigned + require_signed=true → 出网前拒（本地/远程同闸单点）
+    let err = tool
+        .execute(
+            r#"{"connector":"paper-broker","op":"place_order","args":{"side":"buy","symbol":"AAPL","qty":1,"price":1.0}}"#,
+            &ctx(),
+        )
+        .await
+        .expect_err("unsigned must be rejected");
+    assert!(err.contains("⛔ TRUST"), "prefix: {err}");
+    assert!(
+        err.contains("require_signed"),
+        "denial names the gate: {err}"
+    );
+
+    // trust_blocked 诚实凭条（拒绝有账，额度未消耗——budget_consumed 不在场）
+    let receipts = list_receipts(ws, 50, None).expect("receipts");
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0].outcome, "trust_blocked");
+    assert!(receipts[0].budget_consumed.is_none(), "额度未消耗");
+    // 账本零变动
+    let ledger = nemesis_connectors::ledger::load_ledger(ws).expect("ledger");
+    assert!(ledger.orders.is_empty());
+
+    // 对照臂：同一 unsigned connector，缺省 config（require_signed 缺省
+    // false）→ 不拦截，action 正常执行。
+    let config2 = ws.join("config2.json");
+    write_finance_config(&config2);
+    let tool2 = invoke_tool(ws, &config2);
+    let out = tool2
+        .execute(
+            r#"{"connector":"paper-broker","op":"place_order","args":{"side":"buy","symbol":"AAPL","qty":1,"price":1.0}}"#,
+            &ctx(),
+        )
+        .await
+        .expect("default config must not gate");
+    assert!(out.contains("NB-ORD-1"), "order ok: {out}");
+}
+
+#[tokio::test]
+async fn test_require_signed_gate_covers_remote_branch_too() {
+    // 远程分支（target_node 在场）同样被闸——单点在远程分派之前。
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(ws, "paper-broker", MIXED_MANIFEST);
+    let config = ws.join("config.json");
+    std::fs::write(
+        &config,
+        r#"{ "connectors": { "enabled": true, "require_signed": true } }"#,
+    )
+    .expect("write config");
+    let tool = invoke_tool(ws, &config);
+
+    let err = tool
+        .execute(
+            r#"{"connector":"paper-broker","op":"quote","args":{"symbol":"AAPL"},"target_node":"Node-B"}"#,
+            &ctx(),
+        )
+        .await
+        .expect_err("remote branch must be gated too");
+    assert!(err.contains("⛔ TRUST"), "msg: {err}");
+    let receipts = list_receipts(ws, 50, None).expect("receipts");
+    assert_eq!(receipts[0].outcome, "trust_blocked");
+}
+
+#[tokio::test]
+async fn test_operation_override_trust_warning_unsigned_high_risk() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(ws, "paper-broker", MIXED_MANIFEST);
+    let tool = invoke_tool(ws, &ws.join("config.json"));
+
+    // unsigned + critical(confirm=required)：confirm 理由 + 警示行同卡
+    let o = tool
+        .operation_override(r#"{"connector":"paper-broker","op":"place_order","args":{}}"#)
+        .expect("override projected");
+    let f = o.force_approval.expect("confirm 必强审批");
+    assert!(f.contains("confirm=required"), "confirm 理由在前: {f}");
+    assert!(f.contains("未经签名验证"), "M1 警示并入: {f}");
+
+    // unsigned + low/read：零警示零强审批（未签名读操作不值得弹卡）
+    let o_low = tool
+        .operation_override(r#"{"connector":"paper-broker","op":"quote","args":{}}"#)
+        .expect("override projected");
+    assert!(o_low.force_approval.is_none(), "low+unsigned 不弹卡");
+
+    // 对照臂：签名 + 信任库收录 → verified，警示消失。
+    let dir = ws.join("connectors").join("paper-broker");
+    let pair = nemesis_connectors::signing::generate_key_pair().expect("keygen");
+    let store = nemesis_connectors::signing::workspace_trust_store(ws);
+    store.add_key(
+        &pair.public_key,
+        "test-signer",
+        nemesis_connectors::signing::TrustLevel::Verified,
+    );
+    nemesis_connectors::signing::sign_connector_dir(&dir, &pair.private_key).expect("sign");
+    let o_signed = tool
+        .operation_override(r#"{"connector":"paper-broker","op":"place_order","args":{}}"#)
+        .expect("override projected");
+    let f_signed = o_signed.force_approval.expect("confirm 仍在");
+    assert!(
+        !f_signed.contains("未经签名验证"),
+        "verified 后警示必须消失: {f_signed}"
+    );
+}
+
+#[cfg(feature = "security")]
+#[tokio::test]
+async fn test_find_emits_trust_field() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(ws, "paper-broker", MIXED_MANIFEST);
+    let tool = ConnectorFindTool::new(ws.to_path_buf());
+    let out = tool.execute("{}", &ctx()).await.expect("find ok");
+    assert!(
+        out.contains("\"trust\": \"unsigned\""),
+        "find 结果必须携带信任徽标: {out}"
+    );
+}
+
+// ---- M2（2026-10-19）script 绑定 e2e（真 AgentLoop + 真 ExecTool）----
+
+/// script 连接器清单（平台感知：慢命令臂 Windows=ping / Unix=sleep）。
+/// `clean` op 的命令故意撞命令守卫黑名单（rm_rf）——deny 臂用。
+fn script_manifest() -> String {
+    let slow = if cfg!(windows) {
+        "ping -n 3 127.0.0.1"
+    } else {
+        "sleep 2"
+    };
+    format!(
+        r#"
+[connector]
+id = "script-demo"
+name = "脚本连接器"
+version = "0.1.0"
+kind = "local"
+description = "script 绑定 e2e"
+
+[[op]]
+id = "greet"
+intent = ["打招呼"]
+risk = "low"
+class = "exec"
+script = {{ command = "echo hello-{{name}}", capture = 8 }}
+args_schema = {{ type = "object", properties = {{ name = {{ type = "string" }} }} }}
+
+[[op]]
+id = "slow"
+intent = ["慢命令"]
+risk = "low"
+class = "exec"
+script = {{ command = "{slow}", timeout_secs = 1 }}
+
+[[op]]
+id = "clean"
+intent = ["清理文件"]
+risk = "high"
+class = "exec"
+script = {{ command = "rm -rf marker.txt" }}
+"#
+    )
+}
+
+/// 裸 AgentLoop + 真注册 `exec` 工具：script 绑定经 `run_tool_binding` 走
+/// 完整 dispatch 瀑布到 ExecTool——与生产 tool 绑定同路（不是直连执行器）。
+fn loop_with_exec(ws: &Path) -> Arc<nemesis_agent::r#loop::AgentLoop> {
+    use nemesis_agent::r#loop::{LlmMessage, LlmProvider, LlmResponse};
+    use nemesis_agent::types::{AgentConfig, ChatOptions, ToolDefinition};
+
+    struct NullProvider;
+    #[async_trait::async_trait]
+    impl LlmProvider for NullProvider {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<ChatOptions>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
+            unreachable!("script 绑定不触发 LLM")
+        }
+    }
+
+    let mut agent_loop = nemesis_agent::r#loop::AgentLoop::new(
+        Box::new(NullProvider),
+        AgentConfig {
+            model: "test-model".to_string(),
+            max_turns: 1,
+            ..Default::default()
+        },
+    );
+    let ws_str = ws.to_string_lossy().to_string();
+    agent_loop.register_tool(
+        "exec".to_string(),
+        Box::new(nemesis_agent::loop_tools::ExecTool::new(&ws_str, false)),
+    );
+    Arc::new(agent_loop)
+}
+
+/// 臂①：正常执行 + 占位符单遍展开 + capture 尾部截断进凭条 summary。
+#[tokio::test]
+async fn test_script_binding_executes_with_placeholder_expansion_and_capture() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(ws, "script-demo", &script_manifest());
+    let tool = invoke_tool(ws, &ws.join("config.json"));
+    let loop_arc = loop_with_exec(ws);
+    tool.set_loop(Arc::downgrade(&loop_arc));
+
+    let out = tool
+        .execute(
+            r#"{"connector":"script-demo","op":"greet","args":{"name":"e2e"}}"#,
+            &ctx(),
+        )
+        .await
+        .expect("script ok");
+    assert!(out.contains("hello-e2e"), "占位符展开: {out}");
+
+    let receipts = list_receipts(ws, 50, None).expect("receipts");
+    assert_eq!(receipts.len(), 1);
+    let r = &receipts[0];
+    assert_eq!(r.outcome, "executed");
+    // capture=8：exec 原样回传 stdout（含行尾 \r\n），summary = UTF-8 尾部
+    // 8 字节（ASCII 硬截断）。
+    let full = "hello-e2e\r\n";
+    assert_eq!(r.summary, &full[full.len() - 8..], "capture 尾部截断进凭条");
+    assert!(r.budget_consumed.is_some(), "executed 记账随行");
+}
+
+/// 臂②：超时诚实——ExecTool 超时收尸文本（无错误前缀）必须落 unknown
+/// 凭条（结果未知，可能已执行了一部分），绝不落 executed；模型侧收到
+/// 诚实 Err。回归锁：classify_tool_result 扩面前该文本落 Done = 假账。
+#[tokio::test]
+async fn test_script_binding_timeout_is_unknown_outcome_not_executed() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(ws, "script-demo", &script_manifest());
+    let tool = invoke_tool(ws, &ws.join("config.json"));
+    let loop_arc = loop_with_exec(ws);
+    tool.set_loop(Arc::downgrade(&loop_arc));
+
+    let err = tool
+        .execute(r#"{"connector":"script-demo","op":"slow"}"#, &ctx())
+        .await
+        .expect_err("超时必须诚实报错");
+    assert!(err.contains("timed out"), "超时原文透传: {err}");
+
+    let receipts = list_receipts(ws, 50, None).expect("receipts");
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(
+        receipts[0].outcome, "unknown",
+        "超时=结果未知（unknown），绝不是 executed"
+    );
+}
+
+/// 臂③（cfg security）：命令守卫拦截路径——script 展开后的命令经 dispatch
+/// 瀑布过安全 8 层（Layer 2 command guard），撞 rm_rf 黑名单 = ⛔ 拒绝，
+/// 零副作用（目标文件仍在）+ 零 executed 凭条。script 绑定不是绕过命令
+/// 守卫的后门的反向证明。
+#[cfg(feature = "security")]
+#[tokio::test]
+async fn test_script_binding_command_guard_blocks_with_zero_side_effect() {
+    use nemesis_agent::r#loop::{LlmMessage, LlmProvider, LlmResponse};
+    use nemesis_agent::types::{AgentConfig, ChatOptions, ToolDefinition};
+    use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
+
+    struct NullProvider;
+    #[async_trait::async_trait]
+    impl LlmProvider for NullProvider {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<ChatOptions>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
+            unreachable!("script 绑定不触发 LLM")
+        }
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(ws, "script-demo", &script_manifest());
+    let marker = ws.join("marker.txt");
+    std::fs::write(&marker, "keep").expect("marker");
+
+    let tool = invoke_tool(ws, &ws.join("config.json"));
+    let mut agent_loop = nemesis_agent::r#loop::AgentLoop::new(
+        Box::new(NullProvider),
+        AgentConfig {
+            model: "test-model".to_string(),
+            max_turns: 1,
+            ..Default::default()
+        },
+    );
+    let ws_str = ws.to_string_lossy().to_string();
+    agent_loop.register_tool(
+        "exec".to_string(),
+        Box::new(nemesis_agent::loop_tools::ExecTool::new(&ws_str, false)),
+    );
+    // 真 SecurityPlugin（默认配置 = command guard enabled）：dispatch 瀑布
+    // Layer 2 对 ProcessExec 做黑名单扫描。
+    agent_loop.set_security_plugin(Arc::new(SecurityPlugin::new(
+        SecurityPluginConfig::default(),
+    )));
+    let loop_arc = Arc::new(agent_loop);
+    tool.set_loop(Arc::downgrade(&loop_arc));
+
+    let out = tool
+        .execute(r#"{"connector":"script-demo","op":"clean"}"#, &ctx())
+        .await
+        .expect("⛔ 拒绝以 Ok 透传（DispatchRejected 家族）");
+    assert!(out.contains("⛔"), "命令守卫拒绝原文透传: {out}");
+
+    // 零副作用：rm -rf 从未执行（文件仍在）。
+    assert_eq!(
+        std::fs::read_to_string(&marker).expect("marker 未被删"),
+        "keep",
+        "命令守卫拦截 = 命令从未运行"
+    );
+    // 零 executed 凭条（拒了就是拒了，不造假账）。
+    let receipts = list_receipts(ws, 50, None).expect("receipts");
+    assert!(
+        receipts.iter().all(|r| r.outcome != "executed"),
+        "拦截不得落 executed: {:?}",
+        receipts
+            .iter()
+            .map(|r| r.outcome.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// 臂④：config `connectors.script.default_timeout_secs = 0` = 全局禁用
+/// script op（绑定分派层 Err——错误也是账：error 凭条 + 额度回吐）。
+#[tokio::test]
+async fn test_script_binding_config_zero_disables_script_ops() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(ws, "script-demo", &script_manifest());
+    let config = ws.join("config.json");
+    std::fs::write(
+        &config,
+        r#"{"connectors":{"enabled":true,"script":{"default_timeout_secs":0}}}"#,
+    )
+    .expect("config");
+    let tool = invoke_tool(ws, &config);
+    let loop_arc = loop_with_exec(ws);
+    tool.set_loop(Arc::downgrade(&loop_arc));
+
+    let err = tool
+        .execute(
+            r#"{"connector":"script-demo","op":"greet","args":{"name":"x"}}"#,
+            &ctx(),
+        )
+        .await
+        .expect_err("0 = 全拒");
+    assert!(err.contains("script 执行被配置禁用"), "{err}");
+    // 配置闸在绑定分派层拒（dispatch Err 臂）——错误也是账：error 凭条 +
+    // 额度回吐，绝不落 executed。
+    let receipts = list_receipts(ws, 50, None).expect("receipts");
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0].outcome, "error");
+    assert!(receipts[0].summary.contains("script 执行被配置禁用"));
+    assert!(receipts[0].budget_consumed.is_none(), "拒绝 = 额度回吐");
+}
+
+/// 臂⑤：缺占位符实参（R4）——审批/预算之前响亮拒绝，零凭条零额度。
+#[tokio::test]
+async fn test_script_binding_missing_placeholder_arg_rejected_before_budget() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(ws, "script-demo", &script_manifest());
+    let tool = invoke_tool(ws, &ws.join("config.json"));
+    let loop_arc = loop_with_exec(ws);
+    tool.set_loop(Arc::downgrade(&loop_arc));
+
+    let err = tool
+        .execute(
+            r#"{"connector":"script-demo","op":"greet","args":{}}"#,
+            &ctx(),
+        )
+        .await
+        .expect_err("缺实参必须拒");
+    assert!(
+        err.contains("⛔ INVALID ARGS") && err.contains("占位符 `name` 缺实参"),
+        "{err}"
+    );
+    assert!(
+        list_receipts(ws, 50, None).expect("receipts").is_empty(),
+        "预算/审批前拒绝 = 零凭条"
+    );
+}
+
+/// 纯函数单测：expand_script_command 单遍扫描——值内 `{xxx}` 字面量不得
+/// 二次展开（注入预防）；非白名单占位符保留字面；非 string 值 JSON 化；
+/// 多字节字符跨扫描不劈。
+#[test]
+fn test_expand_script_command_single_pass_semantics() {
+    let ph = |names: &[&str]| names.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    // 值里带 {name} 字面量：单遍扫描不回头，绝不二次展开
+    let out = expand_script_command(
+        "echo {name}",
+        &ph(&["name"]),
+        &serde_json::json!({"name": "{name}"}),
+    )
+    .expect("ok");
+    assert_eq!(out, "echo {name}", "值内占位符字面量不二次展开");
+    // 非白名单 {xxx} 保留字面
+    let out = expand_script_command(
+        "echo {unk} {name}",
+        &ph(&["name"]),
+        &serde_json::json!({"name": "v"}),
+    )
+    .expect("ok");
+    assert_eq!(out, "echo {unk} v");
+    // 缺实参 = Err
+    assert!(expand_script_command("echo {name}", &ph(&["name"]), &serde_json::json!({})).is_err());
+    // 非 string 值 JSON 序列化形态
+    let out =
+        expand_script_command("n={n}", &ph(&["n"]), &serde_json::json!({"n": 42})).expect("ok");
+    assert_eq!(out, "n=42");
+    // 多字节字符逐字符推进不劈 UTF-8
+    let out = expand_script_command(
+        "echo 你好{name}",
+        &ph(&["name"]),
+        &serde_json::json!({"name": "界"}),
+    )
+    .expect("ok");
+    assert_eq!(out, "echo 你好界");
+}
+
+/// utf8_tail 字符边界对齐：切点向后找边界，宁短不劈半个字符。
+#[test]
+fn test_utf8_tail_char_boundary() {
+    assert_eq!(utf8_tail("hello", 10), "hello");
+    assert_eq!(utf8_tail("hello", 5), "hello");
+    assert_eq!(utf8_tail("hello", 3), "llo");
+    // "ab你"（5 字节）：tail 3 → 边界起点 2 = "你"；tail 4 → "b你"
+    assert_eq!(utf8_tail("ab你", 3), "你");
+    assert_eq!(utf8_tail("ab你", 4), "b你");
+    // tail < 单个多字节字符 = 空串（宁短不劈）
+    assert_eq!(utf8_tail("ab你", 2), "");
+    assert_eq!(utf8_tail("ab你", 1), "");
+}
+
+// ---- M4b（2026-10-19）：desktop-ui 模板 connector（桌面只读面，window-mcp）----
+
+/// 示例模板（examples/connectors/，A3 起不随 onboard 提取）恒合法 + **默认停用** +
+/// 只读三 op 全 low/read 无强授权卡 +
+/// 全 tool 绑定 window-mcp + 交互写入/落盘截图不声明（web-ui 同款防线）。
+#[test]
+fn test_workspace_template_desktopui_manifest_is_valid_and_disabled_by_default() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../examples/connectors/desktop-ui/connector.toml"
+    );
+    let text = std::fs::read_to_string(path).expect("desktop-ui 模板存在");
+    let c = nemesis_connectors::manifest::parse_connector_manifest(&text)
+        .expect("模板 manifest 必须恒合法");
+    assert_eq!(c.id, "desktop-ui");
+    // 只声明不默认开：桌面只读面是用户显式开启的能力。
+    assert!(!c.enabled, "desktop-ui 模板必须默认停用（enabled = false）");
+    let ids: Vec<&str> = c.ops.iter().map(|o| o.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["list_windows", "find_window", "window_text"],
+        "只读三 op：枚举 / 查找 / 文本提取"
+    );
+    // 读面：全部 low/read 直通、无强授权卡（模板定位就是只读面）。
+    for op in &c.ops {
+        assert_eq!(op.risk, RiskLevel::Low, "{}", op.id);
+        assert_eq!(op.class, OpClass::Read, "{}", op.id);
+        assert!(!op.confirm_required, "{} 不应要强授权卡", op.id);
+    }
+    // 全部 tool 绑定到 window-mcp server（前缀对齐 adapter 注册形态
+    // mcp_{server}_{tool}）；无 receipt 主键（MCP 扁平化文本，凭条走首行
+    // summary——web-ui 同款裁定）。
+    for op in &c.ops {
+        match &op.binding {
+            nemesis_connectors::manifest::OpBinding::Tool { tool } => {
+                assert!(
+                    tool.starts_with("mcp_window_"),
+                    "{op_id} 绑定 {tool} 应指向 window-mcp",
+                    op_id = op.id
+                );
+            }
+            other => panic!("{} 应为 tool 绑定，实际 {other:?}", op.id),
+        }
+        assert!(op.receipt_key.is_none(), "{} 不声明 receipt", op.id);
+    }
+    // 越界面：交互写入与落盘截图不声明（不存在即安全）。
+    let bound: Vec<&str> = c
+        .ops
+        .iter()
+        .filter_map(|o| match &o.binding {
+            nemesis_connectors::manifest::OpBinding::Tool { tool } => Some(tool.as_str()),
+            _ => None,
+        })
+        .collect();
+    for dangerous in [
+        "click_window",
+        "click_at",
+        "type_text",
+        "send_key_to_window",
+        "capture_screenshot_to_file",
+    ] {
+        assert!(
+            !bound.iter().any(|t| t.contains(dangerous)),
+            "模板不得声明危险工具 {dangerous}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// B2（2026-10-19 独占接管）：镜像 op 基线投影 / 执行 / 例外 / find 枚举
+// ---------------------------------------------------------------------------
+
+/// 独占接管 connector 模板（接管 `stub` server；显式 op 一个，其余走镜像）。
+const EXCLUSIVE_MANIFEST: &str = r#"
+[connector]
+id = "excl"
+name = "独占壳"
+version = "0.1.0"
+kind = "local"
+exclusive_mcp = "stub"
+description = "B2 镜像验证"
+
+[[op]]
+id = "noop"
+intent = ["空转"]
+risk = "low"
+class = "read"
+action = "builtin.noop"
+"#;
+
+/// 桩 MCP 工具（同 tool 绑定 e2e 形态：JSON 返回带主键）。
+struct StubPageTool;
+#[async_trait::async_trait]
+impl Tool for StubPageTool {
+    async fn execute(&self, _args: &str, _context: &RequestContext) -> Result<String, String> {
+        Ok(r#"{"status":"ok","title":"Example Domain"}"#.to_string())
+    }
+}
+
+/// 真 AgentLoop + 注册桩工具 + 直灌 MCP 工具快照（register_tool 不刷快照
+/// ——快照是 MCP 注册/reload 时整表重建的，测试按生产数据形态直灌）。
+fn loop_with_snapshot(
+    names: &[(&str, serde_json::Value)],
+) -> Arc<nemesis_agent::r#loop::AgentLoop> {
+    let entries: Vec<(&str, serde_json::Value, Option<bool>, Option<bool>)> = names
+        .iter()
+        .map(|(n, p)| (*n, p.clone(), None, None))
+        .collect();
+    loop_with_snapshot_hints(entries.as_slice())
+}
+
+/// B3：带 annotations hints 的变体（description 也随参——A4 检索词元测
+/// 需要英文词根描述）。
+fn loop_with_snapshot_hints(
+    entries: &[(&str, serde_json::Value, Option<bool>, Option<bool>)],
+) -> Arc<nemesis_agent::r#loop::AgentLoop> {
+    loop_with_snapshot_full(entries, &[])
+}
+
+/// 全参形态：hints + 每工具独立 description。
+fn loop_with_snapshot_full(
+    entries: &[(&str, serde_json::Value, Option<bool>, Option<bool>)],
+    descriptions: &[&str],
+) -> Arc<nemesis_agent::r#loop::AgentLoop> {
+    use nemesis_agent::r#loop::{LlmMessage, LlmProvider, LlmResponse};
+    use nemesis_agent::types::{AgentConfig, ChatOptions, ToolDefinition};
+
+    struct NullProvider;
+    #[async_trait::async_trait]
+    impl LlmProvider for NullProvider {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<ChatOptions>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
+            unreachable!("镜像验证不触发 LLM")
+        }
+    }
+
+    let mut agent_loop = nemesis_agent::r#loop::AgentLoop::new(
+        Box::new(NullProvider),
+        AgentConfig {
+            model: "test-model".to_string(),
+            max_turns: 1,
+            ..Default::default()
+        },
+    );
+    agent_loop.register_tool("mcp_stub__read_page".to_string(), Box::new(StubPageTool));
+    {
+        let snapshot = agent_loop.mcp_tool_snapshot();
+        let mut snap = snapshot.write();
+        for (i, (name, params, ro, destr)) in entries.iter().enumerate() {
+            snap.push(nemesis_agent::r#loop::McpToolSnapshotEntry {
+                name: name.to_string(),
+                description: descriptions
+                    .get(i)
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| format!("{name} 描述")),
+                parameters: params.clone(),
+                read_only_hint: *ro,
+                destructive_hint: *destr,
+            });
+        }
+    }
+    Arc::new(agent_loop)
+}
+
+/// operation_override 镜像分支：基线投影 registry_read 档、无强制审批、
+/// receipt_ctx 记 medium/read。快照缺席的名字不镜像（None → 静态
+/// fail-closed 兜底）。
+#[cfg(feature = "security")]
+#[tokio::test]
+async fn test_operation_override_mirror_baseline_projection() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(ws, "excl", EXCLUSIVE_MANIFEST);
+    let tool = invoke_tool(ws, &ws.join("config.json"));
+    let loop_arc = loop_with_snapshot(&[
+        (
+            "mcp_stub__read_page",
+            serde_json::json!({"type":"object","required":["url"],"properties":{"url":{"type":"string"}}}),
+        ),
+        ("mcp_stub__click", serde_json::json!({"type":"object"})),
+    ]);
+    tool.set_loop(Arc::downgrade(&loop_arc));
+
+    // 镜像 id（原生工具名）→ 基线投影。
+    let o = tool
+        .operation_override(r#"{"connector":"excl","op":"mcp_stub__read_page"}"#)
+        .expect("mirror resolves");
+    assert_eq!(
+        o.op_type, "registry_read",
+        "medium+read → op_slug_for 投影 registry_read 档（管线按 slug 反查 = MEDIUM，不比裸奔松）"
+    );
+    assert!(
+        o.force_approval.is_none(),
+        "基线无 confirm 卡: {:?}",
+        o.force_approval
+    );
+    let ctx: serde_json::Value =
+        serde_json::from_str(o.receipt_ctx.as_deref().expect("receipt_ctx")).expect("json");
+    assert_eq!(ctx["risk"], "medium");
+    assert_eq!(ctx["class"], "read");
+    assert_eq!(ctx["op"], "mcp_stub__read_page");
+
+    // 不在镜像面的名字（快照缺席）→ None → 静态 fail-closed 兜底。
+    assert!(
+        tool.operation_override(r#"{"connector":"excl","op":"mcp_stub__absent"}"#)
+            .is_none(),
+        "快照缺席的名字不镜像（None = 静态路径 fail-closed）"
+    );
+}
+
+/// B3 四档基线：hints 驱动镜像 op 档位（readOnly 自述=low/read 免卡，
+/// destructive 自述=high/write 强制确认卡；未声明维持 medium/read）。
+/// 管线 slug 投影同源：high+write → file_write（plan 模式写闸免费同享）。
+#[cfg(feature = "security")]
+#[tokio::test]
+async fn test_operation_override_mirror_hint_tiers() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(ws, "excl", EXCLUSIVE_MANIFEST);
+    let tool = invoke_tool(ws, &ws.join("config.json"));
+    let loop_arc = loop_with_snapshot_hints(&[
+        (
+            "mcp_stub__read_page",
+            serde_json::json!({"type":"object"}),
+            Some(true),
+            None,
+        ),
+        (
+            "mcp_stub__click",
+            serde_json::json!({"type":"object"}),
+            None,
+            Some(true),
+        ),
+        (
+            "mcp_stub__plain",
+            serde_json::json!({"type":"object"}),
+            None,
+            None,
+        ),
+    ]);
+    tool.set_loop(Arc::downgrade(&loop_arc));
+
+    // readOnly 自述 → low/read：slug file_read（LOW 档），无确认卡。
+    let o = tool
+        .operation_override(r#"{"connector":"excl","op":"mcp_stub__read_page"}"#)
+        .expect("ro mirror resolves");
+    assert_eq!(o.op_type, "file_read", "low+read → LOW 档 slug");
+    assert!(o.force_approval.is_none());
+    let ctx: serde_json::Value = serde_json::from_str(o.receipt_ctx.as_deref().unwrap()).unwrap();
+    assert_eq!(ctx["risk"], "low");
+    assert_eq!(ctx["class"], "read");
+
+    // destructive 自述 → high/write：slug file_write（HIGH 档）+ 强制确认卡。
+    let o = tool
+        .operation_override(r#"{"connector":"excl","op":"mcp_stub__click"}"#)
+        .expect("destructive mirror resolves");
+    assert_eq!(o.op_type, "file_write", "high+write → HIGH 档 slug");
+    assert!(o.force_approval.is_some(), "自述破坏性 = 强制确认卡");
+    let ctx: serde_json::Value = serde_json::from_str(o.receipt_ctx.as_deref().unwrap()).unwrap();
+    assert_eq!(ctx["risk"], "high");
+    assert_eq!(ctx["class"], "write");
+
+    // 未声明 → 维持 medium/read 保守基线（v1 行为不变）。
+    let o = tool
+        .operation_override(r#"{"connector":"excl","op":"mcp_stub__plain"}"#)
+        .expect("plain mirror resolves");
+    assert_eq!(o.op_type, "registry_read");
+    assert!(o.force_approval.is_none());
+}
+
+/// A4：镜像描述词元可命中——英文描述词根检索（原生工具 description 是
+/// 独占面最富的检索素材；id 词元命中路径既有测试已覆盖）。
+#[cfg(feature = "security")]
+#[tokio::test]
+async fn test_find_matches_mirror_description_tokens() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(ws, "excl", EXCLUSIVE_MANIFEST);
+    let find = ConnectorFindTool::new(ws.to_path_buf());
+    let loop_arc = loop_with_snapshot_full(
+        &[(
+            "mcp_stub__read_page",
+            serde_json::json!({"type":"object"}),
+            Some(true),
+            None,
+        )],
+        &["Navigate to a URL and capture the page snapshot"],
+    );
+    find.set_loop(Arc::downgrade(&loop_arc));
+
+    // token "snapshot" 不在 id（mcp_stub__read_page 无该词根）——命中的只能是
+    // 英文描述词根，验证描述维度的检索。
+    let out = find
+        .execute(r#"{"query":"snapshot"}"#, &ctx())
+        .await
+        .expect("find ok");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let hits = v["connectors"].as_array().unwrap();
+    let excl = hits.iter().find(|h| h["id"] == "excl").expect("excl hit");
+    let matched = excl["matched_ops"].as_array().unwrap();
+    assert!(
+        matched.iter().any(|m| m == "mcp_stub__read_page"),
+        "描述词根命中镜像: {excl}"
+    );
+}
+
+/// 镜像 e2e：execute 走完整预检/预算/回执/dispatch 瀑布，原生工具真实执行
+/// （绑定回灌通道放行独占闸），executed 回执带基线档位记账。
+#[cfg(feature = "security")]
+#[tokio::test]
+async fn test_execute_mirror_op_runs_native_tool_with_receipt() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(ws, "excl", EXCLUSIVE_MANIFEST);
+    let tool = invoke_tool(ws, &ws.join("config.json"));
+    let loop_arc = loop_with_snapshot(&[(
+        "mcp_stub__read_page",
+        serde_json::json!({"type":"object","required":["url"],"properties":{"url":{"type":"string"}}}),
+    )]);
+    tool.set_loop(Arc::downgrade(&loop_arc));
+
+    let out = tool
+        .execute(
+            r#"{"connector":"excl","op":"mcp_stub__read_page","args":{"url":"https://example.com"}}"#,
+            &ctx(),
+        )
+        .await
+        .expect("mirror execute ok");
+    assert!(out.contains("Example Domain"), "原生工具结果透传: {out}");
+
+    let receipts = list_receipts(ws, 50, None).expect("receipts");
+    assert_eq!(receipts.len(), 1, "镜像基线 receipt 恒写");
+    let r = &receipts[0];
+    assert_eq!(r.outcome, "executed");
+    assert_eq!(r.connector, "excl");
+    assert_eq!(r.op, "mcp_stub__read_page");
+    assert_eq!(r.risk, "medium", "基线档位记账");
+    assert_eq!(r.class, "read");
+}
+
+/// args_schema 预检（R4）对镜像 op 同样生效：缺必填参数 = 出网前诚实拒。
+#[cfg(feature = "security")]
+#[tokio::test]
+async fn test_execute_mirror_validates_args_against_snapshot_schema() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(ws, "excl", EXCLUSIVE_MANIFEST);
+    let tool = invoke_tool(ws, &ws.join("config.json"));
+    let loop_arc = loop_with_snapshot(&[(
+        "mcp_stub__read_page",
+        serde_json::json!({"type":"object","required":["url"],"properties":{"url":{"type":"string"}}}),
+    )]);
+    tool.set_loop(Arc::downgrade(&loop_arc));
+
+    let (result, _receipt) = tool
+        .execute_with_receipt(
+            r#"{"connector":"excl","op":"mcp_stub__read_page","args":{}}"#,
+            &ctx(),
+        )
+        .await;
+    let err = result.expect_err("缺必填 url 必须拒");
+    assert!(err.contains("url"), "拒绝原因点名缺失参数: {err}");
+}
+
+/// 封禁/豁免/快照缺席三态：镜像都不提供 → 诚实报错 + 独占接管 hint
+/// （指路 connector_find / Dashboard 例外）。非独占 connector 无 hint。
+#[cfg(feature = "security")]
+#[tokio::test]
+async fn test_mirror_blocked_exempt_absent_are_honest_errors_with_hint() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(ws, "excl", EXCLUSIVE_MANIFEST);
+    let tool = invoke_tool(ws, &ws.join("config.json"));
+    let loop_arc = loop_with_snapshot(&[
+        (
+            "mcp_stub__read_page",
+            serde_json::json!({"type":"object","required":["url"],"properties":{"url":{"type":"string"}}}),
+        ),
+        ("mcp_stub__click", serde_json::json!({"type":"object"})),
+    ]);
+    tool.set_loop(Arc::downgrade(&loop_arc));
+
+    // 封禁：镜像不提供（原生照隐——能力对 agent 消失）。
+    nemesis_connectors::state::set_tool_policy(
+        ws,
+        "excl",
+        "mcp_stub__click",
+        nemesis_connectors::state::ToolPolicy::Blocked,
+    )
+    .expect("blocked");
+    let err = tool
+        .execute(r#"{"connector":"excl","op":"mcp_stub__click"}"#, &ctx())
+        .await
+        .expect_err("封禁 = 诚实拒");
+    assert!(err.contains("独占接管"), "hint 指路治理面: {err}");
+
+    // 豁免：回原生直调，不经镜像（原生侧独占闸放行）。
+    nemesis_connectors::state::set_tool_policy(
+        ws,
+        "excl",
+        "mcp_stub__click",
+        nemesis_connectors::state::ToolPolicy::Exempt,
+    )
+    .expect("exempt");
+    let err = tool
+        .execute(r#"{"connector":"excl","op":"mcp_stub__click"}"#, &ctx())
+        .await
+        .expect_err("豁免 = 镜像不提供（走原生直调）");
+    assert!(err.contains("独占接管"), "{err}");
+
+    // 快照缺席的名字：同错误路径 + hint（可用清单只列显式 op，镜像面
+    // 指路 connector_find——清单可能很长，不往错误里塞）。
+    let err = tool
+        .execute(r#"{"connector":"excl","op":"mcp_stub__nope"}"#, &ctx())
+        .await
+        .expect_err("未知名字诚实拒");
+    assert!(err.contains("独占接管"), "{err}");
+    assert!(
+        err.contains("connector_find 可列"),
+        "hint 指路镜像枚举通道: {err}"
+    );
+    assert!(err.contains("可用: noop"), "显式 op 清单在场: {err}");
+
+    // 非独占 connector：同款无 op 错误但无独占 hint。
+    write_connector(ws, "paper-broker", MIXED_MANIFEST);
+    let err = tool
+        .execute(r#"{"connector":"paper-broker","op":"nope"}"#, &ctx())
+        .await
+        .expect_err("未知 op 诚实拒");
+    assert!(
+        !err.contains("独占接管"),
+        "非独占 connector 不带接管 hint: {err}"
+    );
+}
+
+/// connector_find：镜像 op 独立数组枚举（binding mirror:tool:* + 快照
+/// schema 随行）；token 命中镜像工具名 = 该 connector 入列；无 loop /
+/// 无独占声明 = mirrors 空。
+#[cfg(feature = "security")]
+#[tokio::test]
+async fn test_find_lists_mirror_ops_for_exclusive_connector() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(ws, "excl", EXCLUSIVE_MANIFEST);
+    write_connector(ws, "paper-broker", MIXED_MANIFEST);
+
+    let find = ConnectorFindTool::new(ws.to_path_buf());
+    let loop_arc = loop_with_snapshot(&[(
+        "mcp_stub__read_page",
+        serde_json::json!({"type":"object","required":["url"],"properties":{"url":{"type":"string"}}}),
+    )]);
+    find.set_loop(Arc::downgrade(&loop_arc));
+
+    // 全列表：excl 带 mirrors 数组；paper-broker mirrors 空。
+    let out = find
+        .execute(r#"{"query":""}"#, &ctx())
+        .await
+        .expect("find ok");
+    let v: serde_json::Value = serde_json::from_str(&out).expect("json");
+    let rows = v["connectors"].as_array().unwrap();
+    let excl = rows.iter().find(|r| r["id"] == "excl").expect("excl 入列");
+    let mirrors = excl["mirrors"].as_array().unwrap();
+    assert_eq!(mirrors.len(), 1, "{excl}");
+    assert_eq!(mirrors[0]["id"], "mcp_stub__read_page");
+    assert_eq!(mirrors[0]["binding"], "mirror:tool:mcp_stub__read_page");
+    assert_eq!(mirrors[0]["risk"], "medium");
+    assert_eq!(mirrors[0]["confirm_required"], false);
+    assert_eq!(
+        mirrors[0]["args_schema"]["required"],
+        serde_json::json!(["url"]),
+        "快照 schema 随行"
+    );
+    let plain = rows
+        .iter()
+        .find(|r| r["id"] == "paper-broker")
+        .expect("paper-broker 入列");
+    assert_eq!(
+        plain["mirrors"].as_array().unwrap().len(),
+        0,
+        "非独占 connector 无镜像面"
+    );
+
+    // token 检索：按原生根名词命中镜像（read_page 既是镜像 id 也是桩工具名）。
+    let out = find
+        .execute(r#"{"query":"read_page"}"#, &ctx())
+        .await
+        .expect("find ok");
+    assert!(out.contains("\"excl\""), "镜像 token 命中 connector: {out}");
+    assert!(
+        out.contains("mcp_stub__read_page"),
+        "matched_ops 含镜像 id: {out}"
+    );
+
+    // 无 loop 的 find（独立装配形态）：诚实不假列。
+    let bare = ConnectorFindTool::new(ws.to_path_buf());
+    let out = bare
+        .execute(r#"{"query":""}"#, &ctx())
+        .await
+        .expect("find ok");
+    let v: serde_json::Value = serde_json::from_str(&out).expect("json");
+    let excl = v["connectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == "excl")
+        .expect("excl 入列");
+    assert_eq!(
+        excl["mirrors"].as_array().unwrap().len(),
+        0,
+        "无 loop = 不假列调不到的镜像"
     );
 }
