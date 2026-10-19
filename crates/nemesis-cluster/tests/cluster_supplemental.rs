@@ -1220,6 +1220,7 @@ fn make_test_extended_node(
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     }
 }
 
@@ -1940,6 +1941,7 @@ fn test_extended_node_info_with_addresses() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     };
     let json = serde_json::to_string(&node).unwrap();
     let back: ExtendedNodeInfo = serde_json::from_str(&json).unwrap();
@@ -1979,6 +1981,7 @@ fn test_extended_node_info_to_peer_config_role_mapping() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     };
     let config = coordinator.to_peer_config();
     // 规范配置词表：Coordinator → "coordinator"。
@@ -2001,6 +2004,7 @@ fn test_extended_node_info_to_peer_config_role_mapping() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     };
     let config = worker.to_peer_config();
     assert_eq!(config.role, "worker");

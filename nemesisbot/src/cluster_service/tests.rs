@@ -614,6 +614,7 @@ fn cd4_cluster() -> Arc<nemesis_cluster::cluster::Cluster> {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
     cluster
 }

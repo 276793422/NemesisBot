@@ -2,7 +2,7 @@
 //!
 //! agent 的 `question` 工具（nemesis-agent loop_tools）发起结构化提问时
 //! 阻塞在这里：广播 `AgentEvent::QuestionAsked`（web pump 转 SSE
-//! `question-asked`，前端 QuestionCard 渲染选项卡），并实现
+//! `question-asked`，前端 QuestionCard 渲染选项卡/表单卡），并实现
 //! [`nemesis_types::agent::QuestionResponder`]（WSAPI → broker 方向：
 //! `question.respond` / `question.pending` 把用户作答送回等待中的 `ask`）。
 //!
@@ -12,27 +12,42 @@
 //! 不新建 runtime。超时不是错误：广播 `QuestionResolved{timeout}` 并返回
 //! `QuestionOutcome::Timeout`，工具侧回灌「按最佳判断继续」。
 //!
-//! 载荷校验（respond 侧）：空选择 / 非候选选项 / 单选多项 → 诚实报错，
-//! 请求留在 pending——用户修正后可重试（校验失败不摘卡不惊动等待方）。
+//! B8（提问两形态）：同一 pending 通道承载两种作答形态
+//! （[`Answer`] 枚举）——选项形态（`respond`）/ 表单形态（`respond_form`）。
+//! 两形态互斥：选项卡收表单作答（或反之）诚实报错（请求留在 pending）。
+//!
+//! 载荷校验（respond 侧）：空选择 / 非候选选项 / 单选多项（选项形态）；
+//! 未知键 / 必填空值 / select 非候选（表单形态）→ 诚实报错，请求留在
+//! pending——用户修正后可重试（校验失败不摘卡不惊动等待方）。
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use nemesis_types::agent::{AgentEvent, QuestionOutcome, QuestionRequest};
+use nemesis_types::agent::{AgentEvent, QuestionField, QuestionOutcome, QuestionRequest};
+
+/// 用户作答载荷（B8 两形态统一通道；ask 侧 match 还原成 QuestionOutcome）。
+enum Answer {
+    /// 选项形态：选中项原文（单选恰一项）。
+    Selection(Vec<String>),
+    /// 表单形态：键=字段 key，值=文本或选中项原文（可选空值已剔除）。
+    Form(BTreeMap<String, String>),
+}
 
 /// 一条等待作答的提问：元数据（`question.pending` 列表用）+ 作答回传通道
-/// （`question.respond` 取出后 send）。
+/// （`question.respond`/`respond_form` 取出后 send）。
 struct PendingEntry {
     question: String,
     options: Vec<String>,
     multi: bool,
+    /// B8：表单字段；空 = 选项形态，非空 = 表单形态（两形态互斥）。
+    fields: Vec<QuestionField>,
     timeout_secs: u64,
     chat_id: String,
     session_key: String,
     created_at: std::time::Instant,
-    tx: mpsc::Sender<Vec<String>>,
+    tx: mpsc::Sender<Answer>,
 }
 
 pub struct WebQuestionBroker {
@@ -58,6 +73,7 @@ impl WebQuestionBroker {
                 question: entry.question.clone(),
                 options: entry.options.clone(),
                 multi: entry.multi,
+                fields: entry.fields.clone(),
                 timeout_secs: entry.timeout_secs,
             });
         }
@@ -79,11 +95,49 @@ impl WebQuestionBroker {
             "question": entry.question,
             "options": entry.options,
             "multi": entry.multi,
+            "fields": entry.fields,
             "timeout_secs": entry.timeout_secs,
             "chat_id": entry.chat_id,
             "session_key": entry.session_key,
             "age_secs": entry.created_at.elapsed().as_secs(),
         })
+    }
+
+    /// 锁守卫借用下校验表单作答并规约为最终回灌 map：键必须命中字段
+    /// 定义；必填 trim 后非空；select 值 ∈ 该字段候选；text trim；
+    /// 可选空值字段剔除。返回规约后的 map（不摘卡——摘卡在取出段）。
+    fn validate_form_values(
+        fields: &[QuestionField],
+        values: &BTreeMap<String, String>,
+    ) -> Result<BTreeMap<String, String>, String> {
+        let mut out = BTreeMap::new();
+        for (k, v) in values {
+            let field = fields
+                .iter()
+                .find(|f| &f.key == k)
+                .ok_or_else(|| format!("unknown field: '{}'", k))?;
+            let trimmed = v.trim();
+            if trimmed.is_empty() {
+                if field.required {
+                    return Err(format!("field '{}' is required", field.key));
+                }
+                continue; // 可选空值字段剔除
+            }
+            if field.field_type == "select" && !field.options.iter().any(|o| o == trimmed) {
+                return Err(format!(
+                    "'{}' is not one of the offered options for field '{}'",
+                    trimmed, field.key
+                ));
+            }
+            out.insert(field.key.clone(), trimmed.to_string());
+        }
+        // 缺席的必填字段同样拒绝（前端只提交已填项也要带空串占位）。
+        for f in fields {
+            if f.required && !out.contains_key(&f.key) {
+                return Err(format!("field '{}' is required", f.key));
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -104,11 +158,12 @@ impl nemesis_types::agent::QuestionAsker for WebQuestionBroker {
             );
             return Ok(QuestionOutcome::Timeout);
         }
-        let (tx, rx) = mpsc::channel::<Vec<String>>();
+        let (tx, rx) = mpsc::channel::<Answer>();
         let entry = PendingEntry {
             question: request.question.clone(),
             options: request.options.clone(),
             multi: request.multi,
+            fields: request.fields.clone(),
             timeout_secs: request.timeout_secs,
             chat_id: request.chat_id.clone(),
             session_key: request.session_key.clone(),
@@ -146,7 +201,7 @@ impl nemesis_types::agent::QuestionAsker for WebQuestionBroker {
         }
 
         match result {
-            Ok(selected) => {
+            Ok(Answer::Selection(selected)) => {
                 tracing::info!(
                     "[WebQuestion] question {} answered ({} item(s))",
                     request.question_id,
@@ -155,6 +210,14 @@ impl nemesis_types::agent::QuestionAsker for WebQuestionBroker {
                 // 已了结广播由 respond 侧负责（单一真相源，同审批先例——
                 // 这里再广播一次会发出重复 resolved 事件）。
                 Ok(QuestionOutcome::Answered(selected))
+            }
+            Ok(Answer::Form(values)) => {
+                tracing::info!(
+                    "[WebQuestion] question {} answered (form, {} field(s))",
+                    request.question_id,
+                    values.len()
+                );
+                Ok(QuestionOutcome::AnsweredForm(values))
             }
             Err(_) => {
                 tracing::warn!(
@@ -180,6 +243,12 @@ impl nemesis_types::agent::QuestionResponder for WebQuestionBroker {
             let entry = map
                 .get(question_id)
                 .ok_or_else(|| format!("unknown question: {}", question_id))?;
+            if !entry.fields.is_empty() {
+                return Err(
+                    "this question expects form values (use question.respond with values)"
+                        .to_string(),
+                );
+            }
             if selected.is_empty() {
                 return Err("selection is empty".to_string());
             }
@@ -203,7 +272,48 @@ impl nemesis_types::agent::QuestionResponder for WebQuestionBroker {
         // 先到先得：remove 已把请求移出 pending，第二个 respond 天然 unknown。
         entry
             .tx
-            .send(selected)
+            .send(Answer::Selection(selected))
+            .map_err(|_| "question waiter already gone".to_string())?;
+        self.broadcast_resolved(question_id, "answered");
+        Ok(true)
+    }
+
+    fn respond_form(
+        &self,
+        question_id: &str,
+        values: &BTreeMap<String, String>,
+    ) -> Result<bool, String> {
+        // 先校验后取出（同 respond：校验失败请求留在 pending）；校验同时
+        // 规约作答（trim / 可选空值剔除）——**下游拿规约后的 map**，不是
+        // 原始载荷（工具回灌与审计所见一致）。
+        let normalized = {
+            let map = self
+                .pending
+                .lock()
+                .map_err(|e| format!("pending map poisoned: {}", e))?;
+            let entry = map
+                .get(question_id)
+                .ok_or_else(|| format!("unknown question: {}", question_id))?;
+            if entry.fields.is_empty() {
+                return Err(
+                    "this question expects a selection (use question.respond with selected)"
+                        .to_string(),
+                );
+            }
+            Self::validate_form_values(&entry.fields, values)?
+        };
+        let entry = {
+            let mut map = self
+                .pending
+                .lock()
+                .map_err(|e| format!("pending map poisoned: {}", e))?;
+            map.remove(question_id)
+                .ok_or_else(|| format!("unknown question: {}", question_id))?
+        };
+        // 先到先得：remove 已把请求移出 pending，第二个 respond 天然 unknown。
+        entry
+            .tx
+            .send(Answer::Form(normalized))
             .map_err(|_| "question waiter already gone".to_string())?;
         self.broadcast_resolved(question_id, "answered");
         Ok(true)

@@ -1056,3 +1056,92 @@ fn tool_schemas_expose_expected_parameters() {
     assert!(out.description().contains("offset"));
     assert!(stop.description().contains("tree-kills"));
 }
+
+/// A2 sleeper CLI：忽略 stdin EOF（模拟轮次中的 delegate——不读 stdin，
+/// EOF 优雅语义对它无效，必须走 kill 旗标阶梯）。
+fn make_fake_sleeper_cli(dir: &std::path::Path) -> String {
+    #[cfg(windows)]
+    {
+        let p = dir.join("fake_sleeper_cli.cmd");
+        std::fs::write(&p, "@echo off\r\nping -n 30 127.0.0.1 >nul\r\n").expect("write fake cli");
+        p.to_string_lossy().to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let p = dir.join("fake_sleeper_cli.sh");
+        std::fs::write(&p, "#!/bin/sh\nsleep 30\n").expect("write fake cli");
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        p.to_string_lossy().to_string()
+    }
+}
+
+/// A2：空闲 delegate（echo CLI，无待处理输入）stop → stdin EOF 优雅窗内
+/// 自退 → 不置 kill 旗标，exit.killed 诚实保持 false。
+#[tokio::test]
+async fn stop_idle_delegate_exits_gracefully_without_kill_flag() {
+    let _serial = TEST_LOCK.lock().await;
+    let dir = unique_temp_dir("stop_grace_idle");
+    let cli = make_fake_echo_cli(&dir);
+    let mgr = Arc::new(DelegateManager::new());
+    let started = mgr
+        .start(
+            DelegateProtocolKind::ClaudeStreamJson,
+            &cli,
+            None,
+            dir.to_string_lossy().as_ref(),
+            None,
+            "",
+            Default::default(),
+            Duration::MAX,
+        )
+        .await
+        .expect("start ok");
+    let id = started["delegate_id"].as_u64().unwrap();
+
+    let stopped = mgr.stop(id).await.expect("stop ok");
+    assert_eq!(stopped["stopped"], true);
+    assert!(
+        stopped.get("exit").is_some(),
+        "idle delegate must exit within the EOF grace window: {stopped}"
+    );
+    assert_eq!(
+        stopped["exit"]["killed"], false,
+        "graceful EOF stop must NOT raise the kill flag: {stopped}"
+    );
+}
+
+/// A2：EOF-忽略 delegate（模拟轮次中）stop → 优雅窗超窗 → kill 旗标 →
+/// supervise 停止阶梯收尸，killed=true 且 STOP_WAIT 窗内拿到终态。
+#[tokio::test]
+async fn stop_eof_ignoring_delegate_escalates_to_kill() {
+    let _serial = TEST_LOCK.lock().await;
+    let dir = unique_temp_dir("stop_grace_ladder");
+    let cli = make_fake_sleeper_cli(&dir);
+    let mgr = Arc::new(DelegateManager::new());
+    let started = mgr
+        .start(
+            DelegateProtocolKind::ClaudeStreamJson,
+            &cli,
+            None,
+            dir.to_string_lossy().as_ref(),
+            None,
+            "",
+            Default::default(),
+            Duration::MAX,
+        )
+        .await
+        .expect("start ok");
+    let id = started["delegate_id"].as_u64().unwrap();
+
+    let stopped = mgr.stop(id).await.expect("stop ok");
+    assert_eq!(stopped["stopped"], true);
+    assert!(
+        stopped.get("exit").is_some(),
+        "EOF-ignoring delegate must still terminate within STOP_WAIT via ladder: {stopped}"
+    );
+    assert_eq!(
+        stopped["exit"]["killed"], true,
+        "escalated stop must mark killed: {stopped}"
+    );
+}

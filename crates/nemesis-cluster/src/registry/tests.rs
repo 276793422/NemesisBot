@@ -20,6 +20,7 @@ fn make_node(id: &str) -> ExtendedNodeInfo {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     }
 }
 
@@ -41,6 +42,7 @@ fn make_node_with_caps(id: &str, caps: Vec<&str>) -> ExtendedNodeInfo {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     }
 }
 
@@ -69,6 +71,7 @@ fn insert_peer_with_timestamp(
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     };
     // Insert directly into the map with a specific timestamp
     let mut peers = registry.peers.lock();
@@ -821,6 +824,7 @@ fn test_upsert_if_changed_different_addresses() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     };
     registry.upsert(original);
 
@@ -841,6 +845,7 @@ fn test_upsert_if_changed_different_addresses() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     };
     let changed = registry.upsert_if_changed(updated);
     assert!(changed, "different addresses should return true");

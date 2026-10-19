@@ -3509,6 +3509,7 @@ async fn sweep_redispatches_when_matching_tags_peer_appears() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     let (cands, dispatched, failed) = super::sweep_parked_dispatches(&store, &cluster, &actor);
@@ -3598,6 +3599,7 @@ async fn periodic_sweep_notify_parks_with_notice_then_revives() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
     let (cands, dispatched, failed) =
         super::sweep_parked_dispatches_notify(&store, &cluster, &actor, true);
@@ -3820,6 +3822,7 @@ async fn cancel_parent_cascades_children_via_parent_edge() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
     super::dispatch_subissue_auto_with_config(
         Some(&fallback_cfg(DispatchFallbackMode::Full, None)),
@@ -4168,6 +4171,7 @@ async fn fallback_role_depth_keeps_role_discipline() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     // Role 档（新默认）：不越角色纪律 → 诚实停车 + ⏸ 评论。
@@ -4231,6 +4235,7 @@ async fn fallback_dispatches_to_relaxed_online_peer() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     let out = super::dispatch_subissue_auto_with_config(
@@ -4288,6 +4293,7 @@ async fn fallback_pinned_target_name_match_and_offline_honesty() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     // 钉住 name（大小写不敏感）→ 派给该节点。
@@ -4353,6 +4359,7 @@ async fn fallback_role_relaxed_ordering() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     let parent = no_parent(&store);
@@ -4426,6 +4433,7 @@ async fn fallback_sweep_revives_parked_issue() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
     let (cands, dispatched, failed) = super::sweep_parked_dispatches_with_config(
         Some(&fallback_cfg(DispatchFallbackMode::Full, None)),
@@ -4834,6 +4842,7 @@ async fn inflight_gate_hits_canonical_worker_id_for_named_assignee() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     // 占满 node-alex-1 的 slot：在途派发账本形态 = 节点 id（归一化后唯一形态）。
@@ -4942,6 +4951,7 @@ async fn mutex_deferred_single_dispatches_after_conflict_settles() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     // 子A 派出（在途）；子B 命中 R-9 互斥闸 → 静默延后留 backlog。
@@ -5137,6 +5147,7 @@ async fn project_resume_no_match_carries_b1_detail() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
     let out = super::project_resume(&store, &cluster, None, project.id, true, &actor)
         .await
@@ -5374,6 +5385,7 @@ async fn test_dispatch_backfills_assignee() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
     cluster.register_node(nemesis_cluster::types::ExtendedNodeInfo {
         base: nemesis_cluster::types::NodeInfo {
@@ -5392,6 +5404,7 @@ async fn test_dispatch_backfills_assignee() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     // 未指派 → 派发给 node-b：同步管线全程成功（submit → 转移 → 回填 →
@@ -7421,6 +7434,7 @@ async fn agt_dispatch_gates_matrix() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
     // 拓扑硬闸臂的 far-node-9 同理须是已知节点（F1 归一化拒绝先于拓扑闸）。
     cluster.register_node(nemesis_cluster::types::ExtendedNodeInfo {
@@ -7440,6 +7454,7 @@ async fn agt_dispatch_gates_matrix() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
     let ctx = agt_make_ctx_ex(
         &dir,
@@ -8119,6 +8134,7 @@ async fn agt_push_dispatch_baseline_paths() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
     mode.store(0, std::sync::atomic::Ordering::SeqCst);
     // 哑 client 会派生「peer unresolvable」瞬时 Err → spawn 内回滚与同步
@@ -8192,6 +8208,7 @@ fn w5_online_peer(
         tier: None,
         agents: Vec::new(),
         node_type: "agent".to_string(),
+        build: String::new(),
     });
 }
 
@@ -11324,6 +11341,7 @@ async fn pick_send_failure_target_prefers_last_worker_then_best_online() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".into(),
+        build: String::new(),
     });
 
     // 无派发记录的单：在线候选存在时会走 rank 榜首臂；None 臂在下方

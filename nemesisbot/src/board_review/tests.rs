@@ -192,6 +192,7 @@ fn settle_deps_with_store(
             tier: None,
             agents: Vec::new(),
             node_type: "agent".to_string(),
+            build: String::new(),
         });
     }
 
@@ -379,6 +380,7 @@ fn review_deps_ex(name: &str, seed_worker_nodes: bool) -> (BoardReviewDeps, std:
             tier: None,
             agents: Vec::new(),
             node_type: "agent".to_string(),
+            build: String::new(),
         });
     }
 

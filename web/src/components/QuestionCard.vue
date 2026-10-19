@@ -1,28 +1,59 @@
 <script setup lang="ts">
 import { computed, reactive } from 'vue'
-import { useQuestions, type PendingQuestion } from '../composables/useQuestions'
+import {
+  useQuestions,
+  QUESTION_DROPDOWN_THRESHOLD,
+  type PendingQuestion,
+} from '../composables/useQuestions'
 
 /**
  * F7（devtool-upgrade 阶段 5）：结构化提问卡（模态）。
  *
  * agent 的 `question` 工具发起提问 → SSE `question-asked` → 本组件弹出
- * 模态：问题 + 候选选项（单选 radio / 多选 checkbox）+ 倒计时；提交经
- * WSAPI `question.respond` 送回 WebQuestionBroker（超时服务端放行，模型
- * 按最佳判断继续）。裁决广播 `question-resolved` 到达时 composable 统一
- * 摘卡（竞速败方窗口无感关闭）。
+ * 模态 + 倒计时；提交经 WSAPI `question.respond` 送回 WebQuestionBroker
+ * （超时服务端放行，模型按最佳判断继续）。裁决广播 `question-resolved`
+ * 到达时 composable 统一摘卡（竞速败方窗口无感关闭）。
  * 挂载于 AppLayout 根层（与 ApprovalCard 同层同理：任意页面都能响应，
  * agent 提问不挑用户正在看的页面）。
+ *
+ * B8（提问两形态）：
+ * - 选项卡（fields 空）：单选 radio / 多选 checkbox；单选选项超过
+ *   QUESTION_DROPDOWN_THRESHOLD 收纳为下拉 select（工具侧上限 12）。
+ * - 表单卡（fields 非空）：每字段一行——text 单行输入 / select 下拉；
+ *   required 字段标红星，提交按钮在必填齐活前置灰。options/multi 不参与
+ *   语义。
  */
 
-const { pendingQuestions, now, respondTo } = useQuestions()
+const { pendingQuestions, now, respondTo, respondForm } = useQuestions()
 
 const visible = computed(() => pendingQuestions.length > 0)
 
 /** 每张卡的选项草稿（question_id → 已勾选选项；提交后随卡清除）。 */
 const drafts = reactive<Record<string, string[]>>({})
 
+/** B8：每张卡的表单草稿（question_id → 字段 key → 值）。 */
+const formDrafts = reactive<Record<string, Record<string, string>>>({})
+
+/** 表单卡判定：fields 非空 = 表单形态（后端两形态互斥）。 */
+function isForm(q: PendingQuestion): boolean {
+  return q.fields.length > 0
+}
+
 function draftFor(q: PendingQuestion): string[] {
   return drafts[q.question_id] ?? []
+}
+
+function formDraftFor(q: PendingQuestion): Record<string, string> {
+  if (!formDrafts[q.question_id]) {
+    formDrafts[q.question_id] = Object.fromEntries(q.fields.map(f => [f.key, '']))
+  }
+  return formDrafts[q.question_id]
+}
+
+/** 表单卡提交可用性：所有 required 字段 trim 后非空。 */
+function formReady(q: PendingQuestion): boolean {
+  const draft = formDraftFor(q)
+  return q.fields.filter(f => f.required).every(f => (draft[f.key] ?? '').trim() !== '')
 }
 
 function toggle(q: PendingQuestion, option: string) {
@@ -35,8 +66,25 @@ function toggle(q: PendingQuestion, option: string) {
 }
 
 function submit(q: PendingQuestion) {
-  respondTo(q.question_id, [...draftFor(q)])
-  delete drafts[q.question_id]
+  if (isForm(q)) {
+    if (!formReady(q)) return
+    // 只提交非空字段（可选空值后端剔除；空对象 = 全部可选未填，合法）。
+    const draft = formDraftFor(q)
+    const values: Record<string, string> = {}
+    for (const [k, v] of Object.entries(draft)) {
+      if (v.trim() !== '') values[k] = v
+    }
+    respondForm(q.question_id, values)
+    delete formDrafts[q.question_id]
+  } else {
+    respondTo(q.question_id, [...draftFor(q)])
+    delete drafts[q.question_id]
+  }
+}
+
+/** 单选选项卡是否收纳为下拉（B8：>6 项；多选恒 checkbox 列表）。 */
+function asDropdown(q: PendingQuestion): boolean {
+  return !q.multi && q.options.length > QUESTION_DROPDOWN_THRESHOLD
 }
 
 function remaining(q: PendingQuestion): number {
@@ -54,24 +102,65 @@ function remaining(q: PendingQuestion): number {
       <div class="approval-card question-card">
         <div class="approval-header">
           <h3 style="margin: 0;">❓ Agent 提问</h3>
-          <span class="badge">{{ q.multi ? '多选' : '单选' }}</span>
+          <span class="badge">{{ isForm(q) ? '表单' : q.multi ? '多选' : '单选' }}</span>
         </div>
 
         <div class="question-body">
           <p class="question-text">{{ q.question }}</p>
-          <label
-            v-for="opt in q.options"
-            :key="opt"
-            class="question-option"
-          >
-            <input
-              :type="q.multi ? 'checkbox' : 'radio'"
-              :name="q.question_id"
-              :checked="draftFor(q).includes(opt)"
-              @change="toggle(q, opt)"
-            />
-            <span>{{ opt }}</span>
-          </label>
+
+          <!-- B8 表单卡：字段逐行渲染（text 输入框 / select 下拉）。 -->
+          <template v-if="isForm(q)">
+            <div v-for="f in q.fields" :key="f.key" class="question-field">
+              <label class="question-field-label">
+                <span>{{ f.label }}<template v-if="f.required"> <span class="required-mark">*</span></template></span>
+                <input
+                  v-if="f.type === 'text'"
+                  type="text"
+                  class="question-field-input"
+                  :value="formDraftFor(q)[f.key] ?? ''"
+                  @input="formDraftFor(q)[f.key] = ($event.target as HTMLInputElement).value"
+                />
+                <select
+                  v-else-if="f.type === 'select'"
+                  class="question-field-input"
+                  :value="formDraftFor(q)[f.key] ?? ''"
+                  @change="formDraftFor(q)[f.key] = ($event.target as HTMLSelectElement).value"
+                >
+                  <option value="" disabled>{{ f.required ? '请选择' : '（不选）' }}</option>
+                  <option v-for="opt in f.options" :key="opt" :value="opt">{{ opt }}</option>
+                </select>
+              </label>
+            </div>
+          </template>
+
+          <!-- B8 单选下拉收纳：选项 >6 时 select 代替 radio 列表。 -->
+          <template v-else-if="asDropdown(q)">
+            <select
+              class="question-field-input question-dropdown"
+              :value="draftFor(q)[0] ?? ''"
+              @change="toggle(q, ($event.target as HTMLSelectElement).value)"
+            >
+              <option value="" disabled>请选择</option>
+              <option v-for="opt in q.options" :key="opt" :value="opt">{{ opt }}</option>
+            </select>
+          </template>
+
+          <!-- 选项卡（≤6 radio / 多选 checkbox）。 -->
+          <template v-else>
+            <label
+              v-for="opt in q.options"
+              :key="opt"
+              class="question-option"
+            >
+              <input
+                :type="q.multi ? 'checkbox' : 'radio'"
+                :name="q.question_id"
+                :checked="draftFor(q).includes(opt)"
+                @change="toggle(q, opt)"
+              />
+              <span>{{ opt }}</span>
+            </label>
+          </template>
         </div>
 
         <div class="approval-footer">
@@ -79,7 +168,7 @@ function remaining(q: PendingQuestion): number {
           <div class="approval-actions">
             <button
               class="btn btn-success"
-              :disabled="draftFor(q).length === 0"
+              :disabled="isForm(q) ? !formReady(q) : draftFor(q).length === 0"
               @click="submit(q)"
             >
               提交
@@ -141,6 +230,43 @@ function remaining(q: PendingQuestion): number {
 
 .question-option input {
   flex-shrink: 0;
+  cursor: pointer;
+}
+
+/* B8：表单字段行 + 下拉（表单 select 与单选下拉共用输入样式）。 */
+.question-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.question-field-label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+}
+
+.required-mark {
+  color: var(--danger, #e5484d);
+}
+
+.question-field-input {
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-input, transparent);
+  color: inherit;
+  font-size: var(--text-sm);
+}
+
+.question-field-input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.question-dropdown {
+  width: 100%;
   cursor: pointer;
 }
 </style>

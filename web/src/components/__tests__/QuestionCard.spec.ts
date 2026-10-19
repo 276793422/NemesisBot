@@ -7,6 +7,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 // - 未选择时提交禁用；选择后提交 → respondTo → WSAPI question.respond；
 // - 单选互斥（radio）/ 多选可叠加（checkbox）；
 // - respond 成功后卡片消失；resolved 广播静默摘卡。
+// B8（提问两形态）：表单卡（表单徽标/text+select 字段/必填红星/必填齐活
+// 才可提交/只送非空值）+ 单选选项 >6 收纳为下拉（6 项仍 radio）。
 
 const sseHandlers = new Map<string, (data?: unknown) => void>()
 const wsapiRequest = vi.fn()
@@ -190,6 +192,113 @@ describe('QuestionCard', () => {
     sseHandlers.get('question-resolved')!({ question_id: 'q-loser', decision: 'timeout' })
     await vi.advanceTimersByTimeAsync(0)
     expect(w.find('.question-backdrop').exists()).toBe(false)
+    w.unmount()
+  })
+
+  // -------------------------------------------------------------------------
+  // B8（提问两形态）：表单卡 + 单选下拉收纳
+  // -------------------------------------------------------------------------
+
+  function makeFormPayload(questionId: string, overrides: Record<string, unknown> = {}) {
+    return makePayload(questionId, {
+      options: [],
+      fields: [
+        { key: 'env', label: '环境', type: 'select', required: true, options: ['prod', 'staging'] },
+        { key: 'note', label: '备注', type: 'text' },
+      ],
+      ...overrides,
+    })
+  }
+
+  it('表单卡：表单徽标 + text 输入框与 select 下拉 + 必填红星', async () => {
+    const w = await mounted()
+    fireQuestion(makeFormPayload('q-form'))
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(w.text()).toContain('表单')
+    expect(w.text()).toContain('环境')
+    expect(w.text()).toContain('备注')
+    expect(w.find('input[type="text"].question-field-input').exists()).toBe(true)
+    expect(w.findAll('select.question-field-input')).toHaveLength(1)
+    expect(w.find('.required-mark').exists()).toBe(true)
+    expect(w.find('input[type="radio"]').exists()).toBe(false)
+    w.unmount()
+  })
+
+  it('表单卡：必填未齐提交禁用；齐活后启用，提交只送非空字段', async () => {
+    const w = await mounted()
+    fireQuestion(makeFormPayload('q-fsub'))
+    await vi.advanceTimersByTimeAsync(0)
+
+    const submit = () => w.findAll('button').find(b => b.text() === '提交')!
+    expect(submit().attributes('disabled')).toBeDefined()
+
+    // 填 text（必填仍是 select）→ 仍禁用。
+    await w.find('input[type="text"]').setValue('hello')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(submit().attributes('disabled')).toBeDefined()
+
+    // select 选 prod → 启用。
+    await w.findAll('select.question-field-input')[0].setValue('prod')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(submit().attributes('disabled')).toBeUndefined()
+
+    await submit().trigger('click')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(wsapiRequest).toHaveBeenCalledWith('question', 'respond', {
+      question_id: 'q-fsub',
+      values: { env: 'prod', note: 'hello' },
+    })
+    w.unmount()
+  })
+
+  it('表单卡：全部可选未填即可提交（空 values 合法）', async () => {
+    const w = await mounted()
+    fireQuestion(makeFormPayload('q-fopt', {
+      fields: [{ key: 'note', label: '备注', type: 'text' }],
+    }))
+    await vi.advanceTimersByTimeAsync(0)
+
+    const submit = () => w.findAll('button').find(b => b.text() === '提交')!
+    expect(submit().attributes('disabled')).toBeUndefined()
+    await submit().trigger('click')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(wsapiRequest).toHaveBeenCalledWith('question', 'respond', {
+      question_id: 'q-fopt',
+      values: {},
+    })
+    w.unmount()
+  })
+
+  it('单选选项超过 6 项收纳为下拉 select（radio 消失），选择后提交', async () => {
+    const w = await mounted()
+    fireQuestion(makePayload('q-dd', { options: ['1', '2', '3', '4', '5', '6', '7'] }))
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(w.find('select.question-dropdown').exists()).toBe(true)
+    expect(w.find('input[type="radio"]').exists()).toBe(false)
+
+    const submit = () => w.findAll('button').find(b => b.text() === '提交')!
+    expect(submit().attributes('disabled')).toBeDefined()
+
+    await w.find('select.question-dropdown').setValue('7')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(submit().attributes('disabled')).toBeUndefined()
+    await submit().trigger('click')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(wsapiRequest).toHaveBeenCalledWith('question', 'respond', {
+      question_id: 'q-dd',
+      selected: ['7'],
+    })
+    w.unmount()
+  })
+
+  it('单选恰好 6 项仍是 radio 列表（不收纳）', async () => {
+    const w = await mounted()
+    fireQuestion(makePayload('q-six', { options: ['1', '2', '3', '4', '5', '6'] }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(w.find('select.question-dropdown').exists()).toBe(false)
+    expect(w.findAll('input[type="radio"]')).toHaveLength(6)
     w.unmount()
   })
 })
