@@ -90,15 +90,17 @@ fn claude_user_frame_encodes_stream_json_shape() {
 }
 
 #[test]
-fn codex_user_frame_has_placeholder_id_and_conversation() {
-    let frame = DelegateProtocolKind::CodexAppServer.encode_user_frame("go", Some("conv-9"));
+fn codex_user_frame_has_placeholder_id_and_thread() {
+    let frame = DelegateProtocolKind::CodexAppServer.encode_user_frame("go", Some("thread-9"));
     let v: Value = serde_json::from_str(&frame).unwrap();
     assert_eq!(v["jsonrpc"], "2.0");
     // 占位 id=0：发送时由 rewrite_rpc_id 覆写为递增 id。
     assert_eq!(v["id"], 0);
-    assert_eq!(v["method"], "sendUserMessage");
-    assert_eq!(v["params"]["conversationId"], "conv-9");
-    assert_eq!(v["params"]["items"][0]["text"], "go");
+    assert_eq!(v["method"], "turn/start");
+    assert_eq!(v["params"]["threadId"], "thread-9");
+    // 必填字段名是 input（0.149.1 实测；items 会被 missing field `input` 拒）。
+    assert_eq!(v["params"]["input"][0]["type"], "text");
+    assert_eq!(v["params"]["input"][0]["text"], "go");
 }
 
 #[test]
@@ -140,20 +142,49 @@ fn claude_extract_assistant_texts_only_assistant_events() {
 #[test]
 fn codex_extract_agent_message_events() {
     let p = DelegateProtocolKind::CodexAppServer;
-    let event = json!({
+    // 完成事件（0.149.1 实测形态）：item.type=="agentMessage" → 抽 item.text。
+    let completed = json!({
         "jsonrpc": "2.0",
-        "method": "codex/event/agent_message",
-        "params": {"msg": {"message": "worker says hi"}}
+        "method": "item/completed",
+        "params": {
+            "item": {"type": "agentMessage", "id": "msg_1", "text": "worker says hi"},
+            "threadId": "t1",
+            "turnId": "u1"
+        }
     })
     .to_string();
-    assert_eq!(p.extract_assistant_texts(&event), vec!["worker says hi"]);
+    assert_eq!(
+        p.extract_assistant_texts(&completed),
+        vec!["worker says hi"]
+    );
+    // 流式增量与 completed 同内容——抽了会双份 → 不抽。
+    let delta = json!({
+        "jsonrpc": "2.0",
+        "method": "item/agentMessage/delta",
+        "params": {"threadId": "t1", "turnId": "u1", "itemId": "msg_1", "delta": "worker says"}
+    })
+    .to_string();
+    assert!(p.extract_assistant_texts(&delta).is_empty());
+    // userMessage 的 completed 是用户回声不是回复 → 不抽。
+    let user_echo = json!({
+        "jsonrpc": "2.0",
+        "method": "item/completed",
+        "params": {
+            "item": {"type": "userMessage", "id": "i2",
+                     "content": [{"type": "text", "text": "worker says hi"}]},
+            "threadId": "t1",
+            "turnId": "u1"
+        }
+    })
+    .to_string();
+    assert!(p.extract_assistant_texts(&user_echo).is_empty());
     // codex 的会话 id 在握手响应里（manager 缓存），不在事件流 → None。
-    assert_eq!(p.extract_session_id(&event), None);
+    assert_eq!(p.extract_session_id(&completed), None);
 }
 
 #[test]
 fn rewrite_rpc_id_replaces_only_first_placeholder() {
-    let frame = r#"{"jsonrpc":"2.0","id":0,"method":"sendUserMessage","params":{"note":"x"}}"#;
+    let frame = r#"{"jsonrpc":"2.0","id":0,"method":"turn/start","params":{"note":"x"}}"#;
     let rewritten = rewrite_rpc_id(frame, 17);
     assert!(rewritten.contains(r#""id":17"#));
     assert!(!rewritten.contains(r#""id":0,"#));
@@ -603,17 +634,18 @@ async fn estop_in_start_window_aborts_and_kills_child() {
 }
 
 /// barrier 假 codex CLI：挂起直到 `<dir>/go` 出现，然后分两拍打印罐头
-/// 握手响应（initialize id=1 / newConversation id=2 带 conversationId），
-/// 再活几秒收尾。两拍间隔 2s 是必须的：rpc_round 按 read_mark 消费输出，
-/// 一次全打印会被 round 1 的整块读取吞掉 id=2 行 → round 2 永远等不到。
-/// 用于把并发 start 确定性地停在握手窗口（starting 表里）。
+/// 握手响应（initialize id=1 / thread/start id=2 带 thread.id，0.149.1
+/// 实测形态），再活几秒收尾。两拍间隔 2s 是必须的：rpc_round 按
+/// read_mark 消费输出，一次全打印会被 round 1 的整块读取吞掉 id=2 行
+/// → round 2 永远等不到。用于把并发 start 确定性地停在握手窗口
+/// （starting 表里）。
 fn make_barrier_codex_cli(dir: &std::path::Path) -> String {
     let go = dir.join("go");
     #[cfg(windows)]
     {
         let p = dir.join("fake_barrier_codex.cmd");
         let body = format!(
-            "@echo off\r\n:loop\r\nif exist \"{}\" goto go\r\nping -n 1 127.0.0.1 >nul\r\ngoto loop\r\n:go\r\necho {{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{}}}}\r\nping -n 3 127.0.0.1 >nul\r\necho {{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"conversationId\":\"barrier-convo\"}}}}\r\nping -n 6 127.0.0.1 >nul\r\n",
+            "@echo off\r\n:loop\r\nif exist \"{}\" goto go\r\nping -n 1 127.0.0.1 >nul\r\ngoto loop\r\n:go\r\necho {{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{}}}}\r\nping -n 3 127.0.0.1 >nul\r\necho {{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"thread\":{{\"id\":\"barrier-thread\",\"sessionId\":\"barrier-thread\"}}}}}}\r\nping -n 6 127.0.0.1 >nul\r\n",
             go.to_string_lossy()
         );
         std::fs::write(&p, body).expect("write barrier cli");
@@ -624,7 +656,7 @@ fn make_barrier_codex_cli(dir: &std::path::Path) -> String {
         use std::os::unix::fs::PermissionsExt;
         let p = dir.join("fake_barrier_codex.sh");
         let body = format!(
-            "#!/bin/sh\nwhile [ ! -f {} ]; do sleep 0.05; done\necho '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{}}}}'\nsleep 2\necho '{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"conversationId\":\"barrier-convo\"}}}}'\nsleep 5\n",
+            "#!/bin/sh\nwhile [ ! -f {} ]; do sleep 0.05; done\necho '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{}}}}'\nsleep 2\necho '{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"thread\":{{\"id\":\"barrier-thread\",\"sessionId\":\"barrier-thread\"}}}}}}'\nsleep 5\n",
             go.to_string_lossy()
         );
         std::fs::write(&p, body).expect("write barrier cli");
@@ -887,9 +919,58 @@ async fn delegate_real_claude_smoke() {
     eprintln!("stopped: {stopped}");
 }
 
-// ---------------------------------------------------------------------------
-// env 白名单（vault 解析器槽位，生产同源注入点）
-// ---------------------------------------------------------------------------
+#[tokio::test]
+#[ignore = "real-machine smoke: needs codex CLI on PATH + login state"]
+async fn delegate_real_codex_smoke() {
+    let Some(cli) = crate::loop_tools::cli_delegation::find_cli_on_path("codex") else {
+        eprintln!("SKIP: codex CLI not on PATH — real-machine smoke not applicable here");
+        return;
+    };
+    let _serial = TEST_LOCK.lock().await;
+    let dir = unique_temp_dir("smoke");
+    let mgr = Arc::new(DelegateManager::new());
+    let started = mgr
+        .start(
+            DelegateProtocolKind::CodexAppServer,
+            &cli,
+            Some("Reply with exactly this token and nothing else: DELEGATE_SMOKE_OK"),
+            dir.to_string_lossy().as_ref(),
+            None,
+            "",
+            Default::default(),
+            Duration::from_secs(180),
+        )
+        .await
+        .expect("codex start ok");
+    let id = started["delegate_id"].as_u64().unwrap();
+    eprintln!("started: {started}");
+
+    // thread/start → turn/start 全握手 + 真 LLM 往返，给 120s。
+    let out = wait_output_pred_for(&mgr, id, Duration::from_secs(120), |o| {
+        o["assistant"].as_array().is_some_and(|a| !a.is_empty())
+    })
+    .await;
+    let assistant = out["assistant"].as_array().unwrap();
+    assert!(
+        !assistant.is_empty(),
+        "expected at least one agentMessage from real codex: {out}"
+    );
+    let joined = assistant
+        .iter()
+        .filter_map(|s| s.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    eprintln!("assistant reply: {joined}");
+    assert!(
+        joined.contains("DELEGATE_SMOKE_OK"),
+        "codex reply should contain the smoke token: {joined}"
+    );
+    // codex 的 session 来自握手（peer_session），out.session_id 恒 None——注释留证。
+    eprintln!("peer session: {:?}", out["session_id"]);
+
+    let stopped = mgr.stop(id).await.expect("stop ok");
+    eprintln!("stopped: {stopped}");
+}
 
 #[test]
 fn empty_allowlist_is_noop_without_resolver() {

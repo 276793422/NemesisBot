@@ -39,10 +39,15 @@
 //! 协议版本边界（诚实声明）：
 //! - claude adapter 实测对齐（`claude -p --input-format stream-json
 //!   --output-format stream-json --verbose`，本机已装 claude CLI）；
-//! - codex app-server（JSON-RPC over stdio：initialize → newConversation →
-//!   sendUserMessage / interruptConversation）按上游公开协议形态实现 +
-//!   canned-line 单测钉住解析逻辑；**本机无 codex CLI，真机冒烟未跑**——
-//!   接入前先 delegate_start 冒烟一次，协议漂移只改 adapter 纯函数面。
+//! - codex app-server（JSON-RPC over stdio）**2026-10-19 实机对齐**（3b 验收
+//!   在 codex-cli 0.149.1 上逐段探测拿一手 wire 形态）：`initialize` →
+//!   `thread/start`（thread id 在 `result.thread.id`）→ `turn/start`（发消息
+//!   / steer，必填 `threadId`+`input`；turn 活动期再发 = 排队进当前 turn）；
+//!   assistant 文本 = `item/completed` 通知里 `item.type=="agentMessage"` 的
+//!   `item.text`（`item/agentMessage/delta` 是流式增量，与 completed 同内容
+//!   ——只抽 completed 防双份）。早期按公开形态臆写的 conversation 代词表
+//!   （`newConversation`/`sendUserMessage`）在 0.149.1 握手即败，已整体退役；
+//!   后续 codex 版本再漂移时只改 adapter 纯函数面 + canned-line 测试。
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -66,7 +71,7 @@ use crate::r#loop::Tool;
 pub const MAX_DELEGATES: usize = 8;
 
 /// codex app-server JSON-RPC 握手超时（起进程 + initialize +
-/// newConversation 两个往返；15s 覆盖冷启动）。
+/// thread/start 两个往返；15s 覆盖冷启动）。
 const CODEX_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// stop 后等子进程退出的上限（超过如实报 still terminating）。
@@ -84,7 +89,7 @@ pub enum DelegateProtocolKind {
     /// EOF on stdin = 优雅收尾。
     ClaudeStreamJson,
     /// `codex app-server`——JSON-RPC over stdio：initialize →
-    /// newConversation → sendUserMessage。
+    /// thread/start → turn/start（2026-10-19 实机对齐，见模块文档）。
     CodexAppServer,
 }
 
@@ -139,8 +144,8 @@ impl DelegateProtocolKind {
                 Ok(args)
             }
             Self::CodexAppServer => {
-                // codex 子代理 v1 不支持 resume（app-server 的会话恢复面与
-                // CLI `codex resume` 语义不同，待真机验证后补）。
+                // codex 子代理 v1 不支持 resume（新协议有 `thread/resume` 面，
+                // 但参数契约未实测——接入时按真机探测补，不臆写）。
                 if resume_session_id.is_some() {
                     return Err(
                         "codex adapter does not support resume_session_id yet (claude only)"
@@ -155,6 +160,9 @@ impl DelegateProtocolKind {
     /// 编码一条 steer 用户帧（写入 stdin，调用方补换行）。
     ///
     /// codex 的 `"id":0` 是占位——实际发送时 manager 覆写为递增 id。
+    /// `turn/start` 在 turn 活动期再发 = 服务端排队进当前 turn（实机
+    /// 实测），所以 steer 与首条消息同形；turn 级精确注入（`turn/steer`
+    /// 需 `expectedTurnId`）需要 turn 生命周期跟踪，不在 v1。
     pub fn encode_user_frame(&self, text: &str, conversation_id: Option<&str>) -> String {
         match self {
             Self::ClaudeStreamJson => json!({
@@ -168,10 +176,10 @@ impl DelegateProtocolKind {
             Self::CodexAppServer => json!({
                 "jsonrpc": "2.0",
                 "id": 0,
-                "method": "sendUserMessage",
+                "method": "turn/start",
                 "params": {
-                    "conversationId": conversation_id.unwrap_or(""),
-                    "items": [{"type": "text", "text": text}]
+                    "threadId": conversation_id.unwrap_or(""),
+                    "input": [{"type": "text", "text": text}]
                 }
             })
             .to_string(),
@@ -182,8 +190,10 @@ impl DelegateProtocolKind {
     ///
     /// claude：只取 `type == "assistant"` 事件里的 text 块——`result` 事件
     /// 的收尾文本与 assistant 事件内容重复（同一轮既流又结），重复抽取会让
-    /// assistant 数组出现双份。codex：`codex/event/agent_message` 通知的
-    /// `params.msg.message`。
+    /// assistant 数组出现双份。codex：`item/completed` 通知里
+    /// `item.type=="agentMessage"` 的 `item.text`——`item/agentMessage/delta`
+    /// 是同一内容的流式增量（抽了会双份），`userMessage` 的 completed 不是
+    /// assistant（抽了会把用户回声当回复）。
     pub fn extract_assistant_texts(&self, line: &str) -> Vec<String> {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
             return Vec::new();
@@ -207,8 +217,9 @@ impl DelegateProtocolKind {
                 }
             }
             Self::CodexAppServer => {
-                if v["method"] == "codex/event/agent_message" {
-                    v["params"]["msg"]["message"]
+                if v["method"] == "item/completed" && v["params"]["item"]["type"] == "agentMessage"
+                {
+                    v["params"]["item"]["text"]
                         .as_str()
                         .map(|s| vec![s.to_string()])
                         .unwrap_or_default()
@@ -254,8 +265,8 @@ struct DelegateEntry {
     output: Arc<Mutex<OutputBuffer>>,
     status: Arc<Mutex<Option<JobStatus>>>,
     kill_flag: Arc<AtomicBool>,
-    /// claude session_id（输出流抽取，resume 用）/ codex conversation id
-    /// （握手获得，sendUserMessage 用）。小临界区，同步锁（读快照不跨 await）。
+    /// claude session_id（输出流抽取，resume 用）/ codex thread id
+    /// （握手获得，turn/start 用）。小临界区，同步锁（读快照不跨 await）。
     peer_session: SyncMutex<Option<String>>,
     /// codex JSON-RPC 请求 id 计数（1/2 被握手占用）。
     next_rpc_id: AtomicU64,
@@ -532,7 +543,7 @@ impl DelegateManager {
             next_rpc_id: AtomicU64::new(10),
         });
 
-        // 协议握手：codex 需 initialize → newConversation 拿 conversation id；
+        // 协议握手：codex 需 initialize → thread/start 拿 thread id；
         // claude 无握手（首帧直接写）。握手失败 = 起步即坏，树杀回收后诚实
         // 报错（条目仍入册供诊断）。
         if protocol == DelegateProtocolKind::CodexAppServer {
@@ -642,10 +653,12 @@ impl DelegateManager {
         let (chunk, clamped) = output.read_chunk(offset);
         let next_offset = output.produced();
         // 全缓冲协议抽取（缓冲上限 256KB，逐行 parse 成本可忽略；guard 持有
-        // 期间无 await）。
+        // 期间无 await）。两种协议都走同一循环——协议差异封装在
+        // extract_assistant_texts/extract_session_id 内（codex 的
+        // session_id 走握手缓存，extract_session_id 恒 None 无害）。
         let mut assistant: Vec<String> = Vec::new();
         let mut session_from_stream: Option<String> = None;
-        if entry.protocol == DelegateProtocolKind::ClaudeStreamJson {
+        {
             let text = String::from_utf8_lossy(output.buf_bytes());
             for line in text.lines() {
                 if line.trim().is_empty() {
@@ -680,8 +693,8 @@ impl DelegateManager {
     ///
     /// claude print 模式没有 interrupt 帧（stream-json 输入只有 user 帧），
     /// 「现在就停」的唯一语义 = EOF + 树杀——硬停诚实文档化；codex 的
-    /// interruptConversation 面待真机验证，v1 同样以树杀兜底，先保证
-    /// 「stop 即停」不落空。
+    /// `turn/interrupt`（必填 threadId+turnId）需要 turn 生命周期跟踪，
+    /// v1 同样以树杀兜底，先保证「stop 即停」不落空。
     pub async fn stop(&self, id: u64) -> Result<serde_json::Value, String> {
         let entry = self.entry(id).await?;
         // 先关 stdin：防树杀竞态窗口里又注入新帧。
@@ -813,7 +826,7 @@ fn rewrite_rpc_id(frame: &str, id: u64) -> String {
     frame.replacen("\"id\":0", &format!("\"id\":{id}"), 1)
 }
 
-/// codex 握手：initialize → newConversation，从输出流等 JSON-RPC 响应。
+/// codex 握手：initialize → thread/start，从输出流等 JSON-RPC 响应。
 async fn codex_handshake(entry: &DelegateEntry, read_mark: &mut u64) -> Result<String, String> {
     rpc_round(
         entry,
@@ -827,20 +840,21 @@ async fn codex_handshake(entry: &DelegateEntry, read_mark: &mut u64) -> Result<S
         entry,
         read_mark,
         2,
-        r#"{"jsonrpc":"2.0","id":2,"method":"newConversation","params":{}}"#,
+        r#"{"jsonrpc":"2.0","id":2,"method":"thread/start","params":{}}"#,
         CODEX_HANDSHAKE_TIMEOUT,
     )
     .await?;
-    // conversationId 形态按上游版本两种键名都收（camelCase 新 / snake 旧）。
+    // thread id 形态按 0.149.1 实测：result.thread.id（同响应里的
+    // result.thread.sessionId 同值，作次选兜底）。
     let v: serde_json::Value =
         serde_json::from_str(&resp).map_err(|e| format!("handshake response is not JSON: {e}"))?;
-    v["result"]["conversationId"]
+    v["result"]["thread"]["id"]
         .as_str()
-        .or_else(|| v["result"]["conversation_id"].as_str())
+        .or_else(|| v["result"]["thread"]["sessionId"].as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| {
             format!(
-                "newConversation response missing conversationId: {}",
+                "thread/start response missing thread.id: {}",
                 truncate_diag(&resp)
             )
         })
