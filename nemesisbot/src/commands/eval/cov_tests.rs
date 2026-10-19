@@ -335,6 +335,7 @@ async fn run_phases_writes_config_and_bails_at_missing_monitor_dll() {
         "test/testai-1.1",
         "http://127.0.0.1:19001/v1",
         "",
+        "cov-fake-key",
         &sbieini,
         "NemesisEvalBox_cov",
         &eval_box_root,

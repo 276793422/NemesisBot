@@ -278,14 +278,16 @@ async fn run_success_when_mock_gateway_already_running() {
 }
 
 // ===========================================================================
-// r9_spawn_fail（R9 补测批零头组，2026-08-27）：start_and_wait 的 spawn-poll
-// 循环（dashboard.rs 79-118）首次真链路覆盖。确定性设计：
+// r9_spawn_fail（R9 补测批零头组，2026-08-27；A4 改版 2026-10-19）：
+// start_and_wait 的 spawn-wait 首次真链路覆盖。确定性设计：
 //   - state 文件预置 web_port=1（必然拒绝连接）→ run() 走进 start_and_wait；
 //   - config.json 写 {"model_list":"not-an-array"}：合法 JSON Value 但过不了
 //     Config 反序列化 → 被 spawn 的子网关在绑定任何端口之前响亮退出；
-//   - 于是父进程轮询满固定 30s 预算 → Err("Gateway did not start within 30
-//     seconds") → main.rs 打 "Error: ..." + exit(1)。
-// 无残留进程（子网关自毙）、不占任何生产端口。慢测（~32s），全程持锁串行。
+//   - A4 装配纪律（wait_ready 存活耦合）后：子网关早死立即报
+//     "Gateway process exited during startup (exit code: N)"——不再傻等
+//     满 30s 只给笼统超时（改版前形态）→ main.rs 打 "Error: ..." + exit(1)。
+// 无残留进程（子网关自毙）、不占任何生产端口。改版后秒级（原 ~32s 慢测），
+// 全程持锁串行。
 // ===========================================================================
 
 // 整 mod Windows 形态（1/1 测试全走 Windows CLI 进程边界）。
@@ -295,7 +297,7 @@ mod r9_spawn_fail {
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
-    async fn start_and_wait_times_out_when_spawned_gateway_dies_on_bad_config() {
+    async fn start_and_wait_fails_fast_with_exit_code_when_gateway_dies_on_bad_config() {
         let _guard = crate::GLOBAL_STATE_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -329,25 +331,26 @@ mod r9_spawn_fail {
             "要进入 start_and_wait：\n{combined}"
         );
         assert!(
-            combined.contains("Gateway did not start within 30 seconds"),
-            "30s 预算耗尽的错误文本缺失：\n{combined}"
+            combined.contains("Gateway process exited during startup"),
+            "A4 早死现场（带退出码）的错误文本缺失：\n{combined}"
         );
     }
 }
 
 // ===========================================================================
-// r10_start_wait_direct（R10 终测补测，2026-08-27）：start_and_wait 的
-// 进程内直调覆盖。r9_spawn_fail 走子进程链（CLI 子进程里跑生产代码），但
-// 实测该子进程的 error-exit 镜像在插桩测量下不可靠（llvm 计数器丢失，
-// merged lcov 里 79-119 仍 miss）。直调形态让这些行落进测试二进制自己的
-// 镜像（Leg A 语义），完全绕开子进程 flush 不确定性：
-//   - 成功轮询臂：state 文件预置指向本地 mock health 端口 → 第一轮 poll
-//     就 check_health Ok → Ok 返回（107-115）；
-//   - 超时臂：state 文件永不出现 → 30s 预算耗尽 Err（118-119）。
-// 两臂都会 spawn current_exe（= 测试二进制本身，非网关）：BUG #48 修复后
-// start_and_wait 在 cfg!(test) 下传 libtest 空过滤器（--exact 不存在名）
-// → 子进程 0 测试秒退，无副作用、不占端口、无残留进程、零输出。
-// （修复前传 "gateway" 会被 libtest 当过滤器，嵌套重跑 217 个网关测试。）
+// r10_start_wait_direct（R10 终测补测，2026-08-27；A4 改版 2026-10-19）：
+// start_and_wait 的进程内直调覆盖。r9_spawn_fail 走子进程链（CLI 子进程里
+// 跑生产代码），但实测该子进程的 error-exit 镜像在插桩测量下不可靠（llvm
+// 计数器丢失，merged lcov 里 79-119 仍 miss）。直调形态让这些行落进测试
+// 二进制自己的镜像（Leg A 语义），完全绕开子进程 flush 不确定性：
+//   - 成功轮询臂：state 文件预置指向本地 mock health 端口 → 首轮 poll 就
+//     check_health Ok → Ok 返回（存活断言从未参与）；
+//   - 早死臂（A4 改版，原 30s 超时臂）：cfg!(test) 下 start_and_wait spawn
+//     current_exe + libtest 空过滤器 → 子进程 0 测试秒退；存活耦合发现早死
+//     → 秒级 Err "exited during startup (exit code: 0)"——不再傻等 30s。
+//     （「子进程存活但永不就绪 → Timeout」臂由 wait_ready 单测覆盖。）
+// 两臂都无残留进程、不占端口、零输出。（修复前传 "gateway" 会被 libtest
+// 当过滤器，嵌套重跑 217 个网关测试——BUG #48。）
 // ===========================================================================
 
 mod r10_start_wait_direct {
@@ -378,20 +381,25 @@ mod r10_start_wait_direct {
         assert_eq!(got, port as i64);
     }
 
-    /// 超时臂：state 文件所在目录不存在 → read_gateway_state 恒 None →
-    /// 30s 预算耗尽返回 Err（慢测 ~31s：函数内预算写死 Duration 30s）。
+    /// 早死臂（A4 改版，原「state 永不出现 → 30s 超时」）：state 文件所在
+    /// 目录不存在 → read_gateway_state 恒 None；stub 子进程 0 测试秒退 →
+    /// 存活耦合秒级 Err（带退出码 0 现场），不再耗满 30s 预算。
     #[tokio::test]
-    async fn start_and_wait_times_out_when_state_never_appears() {
+    async fn start_and_wait_fails_fast_when_stub_child_exits_without_state() {
         let dir = tempfile::tempdir().unwrap();
         let state_path = dir.path().join("no_such_dir").join("gateway.json");
 
         let err = start_and_wait(false, &state_path)
             .await
-            .expect_err("state 永不出现必须超时 Err");
+            .expect_err("stub 子进程早死必须快速 Err（A4 存活耦合）");
+        let msg = err.to_string();
         assert!(
-            err.to_string()
-                .contains("Gateway did not start within 30 seconds"),
-            "got: {err}"
+            msg.contains("Gateway process exited during startup"),
+            "A4 早死现场缺失: {msg}"
+        );
+        assert!(
+            msg.contains("exit code: 0"),
+            "stub 干净退出 → exit code 0 必须在场: {msg}"
         );
     }
 }

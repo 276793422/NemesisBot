@@ -327,6 +327,7 @@ async fn agt_tasks_detail_terminal_labels_and_list_duration_null() {
         tier: None,
         agents: Vec::new(),
         node_type: "agent".to_string(),
+        build: String::new(),
     });
     let ctx = agt_make_ctx(&dir, Some(cluster.clone()), None, None);
     let h = ClusterHandler::new();
