@@ -131,6 +131,7 @@ async function refreshAll() {
     overview.value = ov
     if (ov) await refreshBootstrap()
     await refreshImages()
+    await refreshTry()
     loadForm()
   } finally {
     loading.value = false
@@ -346,6 +347,73 @@ async function instanceOp(op: 'sleep' | 'wake' | 'kill', agentId: string) {
     toast.error(`操作失败: ` + (e?.message ?? e))
   } finally {
     busy.value = null
+  }
+}
+
+// --- B6 快速试玩 ---
+// try.status 只读无闸（查询不是动作）；enabled/镜像/arm64 闸在后端 bridge
+// 层、estop 冻结闸在后端 handler 层——前端预闸只为少一次徒劳请求，后端仍兜底。
+// 信任级 = dashboard 登录用户（对齐 PTY 终端先例）；命令跑在 VM 整机隔离边界内。
+const tryState = ref<any>(null)
+const tryRunning = computed(() => !!tryState.value?.running)
+const tryCommand = ref('')
+const tryOutput = ref('')
+const tryBusy = ref(false)
+
+// 预设命令：guest 内秒级可回、不依赖 ICMP（SLIRP 不转发 ping——预设不放
+// ping，防「第一条命令就失败」的观感；网络形态看 ip addr）。
+const TRY_PRESETS = ['uname -a', 'uptime', 'cat /etc/os-release', 'ip addr', 'df -h']
+
+async function refreshTry() {
+  tryState.value = await request('vm', 'try.status').catch(() => null)
+}
+
+async function tryStart() {
+  tryBusy.value = true
+  try {
+    const r = await request('vm', 'try.start', {})
+    toast.success(r?.note ?? '试玩实例已就绪')
+    await refreshTry()
+  } catch (e: any) {
+    toast.error('启动失败: ' + (e?.message ?? e))
+  } finally {
+    tryBusy.value = false
+  }
+}
+
+async function tryRun(cmd?: string) {
+  const command = (cmd ?? tryCommand.value).trim()
+  if (!command) return
+  tryBusy.value = true
+  tryOutput.value += `$ ${command}\n`
+  try {
+    const r = await request('vm', 'try.exec', { command })
+    tryOutput.value += (r?.output ?? '') + '\n\n'
+    if (!cmd) tryCommand.value = ''
+  } catch (e: any) {
+    tryOutput.value += `[出错] ${e?.message ?? e}\n\n`
+  } finally {
+    tryBusy.value = false
+    await refreshTry()
+  }
+}
+
+async function tryStop() {
+  if (!window.confirm(
+    '即将冷停试玩实例：\n' +
+    '• QEMU 进程退出（磁盘状态保留，下次启动同盘冷启）\n\n' +
+    '确认停止？'
+  )) return
+  tryBusy.value = true
+  try {
+    const r = await request('vm', 'try.stop', {})
+    toast.success(r?.note ?? '已停止')
+    tryOutput.value = ''
+    await refreshTry()
+  } catch (e: any) {
+    toast.error('停止失败: ' + (e?.message ?? e))
+  } finally {
+    tryBusy.value = false
   }
 }
 
@@ -707,6 +775,61 @@ onMounted(async () => {
 
         <!-- ════════ 实例 ════════ -->
         <div v-if="activeTab === 'instances'">
+          <!-- B6 快速试玩卡 -->
+          <div class="card" data-test="try-card" style="margin-bottom: var(--space-4);">
+            <div class="card-header"><h3 style="margin: 0;">快速试玩</h3></div>
+            <div class="card-body" style="font-size: var(--text-sm);">
+              <div v-if="!tryState" style="color: var(--text-secondary);">试玩状态不可用（网关未装配 VM 管理面）。</div>
+              <div v-else-if="!tryState.enabled" data-test="try-off" style="color: var(--text-secondary);">
+                VM 档未开启——先到「配置」页打开总开关，再回来试玩。
+                <button class="btn btn-sm" style="margin-left: var(--space-2);" @click="activeTab = 'config'">去配置</button>
+              </div>
+              <div v-else-if="!tryState.arch_supported" data-test="try-arch">
+                当前档位 {{ tryState.arch }} 暂不支持试玩（aarch64 镜像管线尚未产出，属接口预留）——切回 x86_64 档可用。
+              </div>
+              <div v-else-if="!tryState.image_ready" data-test="try-noimage" style="color: var(--text-secondary);">
+                基础镜像未就绪——先在「配置」页的环境安装卡完成 QEMU 安装与镜像构建。
+                <button class="btn btn-sm" style="margin-left: var(--space-2);" @click="activeTab = 'config'">去环境安装</button>
+              </div>
+              <template v-else>
+                <div v-if="!tryRunning" style="color: var(--text-secondary); margin-bottom: var(--space-2);">
+                  一台专属试玩实例（try-dashboard）：启动后在 Debian 里跑几条命令，直观感受整机隔离；闲置约 5 分钟自动睡眠省资源。
+                </div>
+                <div style="display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap;">
+                  <span :style="{ color: tryRunning ? 'var(--success)' : 'var(--text-secondary)' }" data-test="try-state-label">{{ tryRunning ? '● 运行中' : '○ 已停止' }}</span>
+                  <button v-if="!tryRunning" class="btn btn-sm btn-primary" data-test="try-start" @click="tryStart" :disabled="tryBusy || !!busy">启动试玩实例</button>
+                  <button v-else class="btn btn-sm btn-danger" data-test="try-stop" @click="tryStop" :disabled="tryBusy || !!busy">停止试玩</button>
+                  <template v-if="tryRunning">
+                    <button
+                      v-for="p in TRY_PRESETS"
+                      :key="p"
+                      class="btn btn-sm"
+                      data-test="try-preset"
+                      @click="tryRun(p)"
+                      :disabled="tryBusy || !!busy"
+                    >{{ p }}</button>
+                  </template>
+                </div>
+                <div v-if="tryRunning" style="margin-top: var(--space-2); display: flex; gap: var(--space-2);">
+                  <input
+                    v-model="tryCommand"
+                    data-test="try-input"
+                    placeholder="输入 shell 命令（在 VM 内执行，如 ls /）"
+                    style="flex: 1;"
+                    :disabled="tryBusy || !!busy"
+                    @keydown.enter="tryRun()"
+                  />
+                  <button class="btn btn-sm btn-primary" data-test="try-run" @click="tryRun()" :disabled="tryBusy || !!busy || !tryCommand.trim()">执行</button>
+                </div>
+                <pre
+                  v-if="tryOutput"
+                  data-test="try-output"
+                  style="margin-top: var(--space-2); max-height: 300px; overflow: auto; background: var(--bg-secondary, rgba(0,0,0,0.05)); padding: var(--space-2); border-radius: 4px; white-space: pre-wrap; word-break: break-all;"
+                >{{ tryOutput }}</pre>
+              </template>
+            </div>
+          </div>
+
           <div class="card">
             <div class="card-header"><h3 style="margin: 0;">VM 实例</h3></div>
             <div class="card-body" style="font-size: var(--text-sm);">

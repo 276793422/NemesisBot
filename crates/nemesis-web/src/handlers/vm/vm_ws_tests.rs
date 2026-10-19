@@ -149,6 +149,22 @@ impl VmBridge for FakeBridge {
         self.note("bootstrap.enable_accel");
         Ok(serde_json::json!({ "guidance": "n/a" }))
     }
+    fn try_status(&self) -> serde_json::Value {
+        self.note("try.status");
+        serde_json::json!({ "agent_id": "try-dashboard", "enabled": false })
+    }
+    async fn try_start(&self) -> Result<serde_json::Value, String> {
+        self.note("try.start");
+        Ok(serde_json::json!({ "running": true }))
+    }
+    async fn try_exec(&self, command: &str) -> Result<serde_json::Value, String> {
+        self.note("try.exec");
+        Ok(serde_json::json!({ "command": command, "output": "ok" }))
+    }
+    async fn try_stop(&self) -> Result<serde_json::Value, String> {
+        self.note("try.stop");
+        Ok(serde_json::json!({ "running": false }))
+    }
 }
 
 // 持锁跨 await 见文件头豁免说明。
@@ -178,7 +194,11 @@ async fn all_commands_route_through_bridge() {
     with_bridge(|_b: Arc<FakeBridge>, ctx| async move {
         let h = VmHandler;
         let names = h.commands();
-        assert_eq!(names.len(), 13, "命令族清单（实施计划锁定 + B3 自举族）");
+        assert_eq!(
+            names.len(),
+            17,
+            "命令族清单（实施计划锁定 + B3 自举族 + B6 试玩族）"
+        );
         assert_eq!(h.module_name(), "vm");
 
         for cmd in names {
@@ -187,6 +207,7 @@ async fn all_commands_route_through_bridge() {
                 "instance.sleep" | "instance.wake" | "instance.kill" => {
                     Some(serde_json::json!({ "agent_id": "a1" }))
                 }
+                "try.exec" => Some(serde_json::json!({ "command": "uname -a" })),
                 _ => None,
             };
             let res = h.handle_cmd(cmd, data, &ctx).await;
@@ -209,6 +230,10 @@ async fn all_commands_route_through_bridge() {
             "bootstrap.status",
             "bootstrap.install_qemu",
             "bootstrap.enable_accel",
+            "try.status",
+            "try.start",
+            "try.exec",
+            "try.stop",
         ] {
             assert!(calls.iter().any(|c| c == expected), "{expected} 未被调用");
         }
@@ -273,6 +298,118 @@ async fn instance_ops_require_agent_id() {
             let err = h.handle_cmd(cmd, None, &ctx).await.unwrap_err();
             assert!(err.contains("missing data"), "{cmd}: {err}");
         }
+    })
+    .await;
+}
+
+// ---------------------------------------------------------------------------
+// B6 快速试玩族
+// ---------------------------------------------------------------------------
+
+/// estop 触发态 ctx（make_ctx 基础上挂 engaged 的 EstopState——与 estop
+/// WSAPI / 托盘 / CLI 四入口同源状态）。
+fn make_estopped_ctx() -> RequestContext {
+    let mut ctx = make_ctx();
+    let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
+    estop.trigger();
+    // ctx.state 刚构造（引用计数 1）——get_mut 安全。
+    Arc::get_mut(&mut ctx.state).expect("fresh ctx state").estop = Some(estop);
+    ctx
+}
+
+#[tokio::test]
+async fn try_commands_route_through_bridge() {
+    with_bridge(|b: Arc<FakeBridge>, ctx| async move {
+        let h = VmHandler;
+        // status 只读探针。
+        let res = h
+            .handle_cmd("try.status", None, &ctx)
+            .await
+            .expect("status");
+        assert_eq!(res.unwrap()["agent_id"], "try-dashboard");
+        // start / stop 无参。
+        h.handle_cmd("try.start", None, &ctx).await.expect("start");
+        h.handle_cmd("try.stop", None, &ctx).await.expect("stop");
+        // exec 转发命令原文。
+        let res = h
+            .handle_cmd(
+                "try.exec",
+                Some(serde_json::json!({ "command": "  uname -a  " })),
+                &ctx,
+            )
+            .await
+            .expect("exec");
+        assert_eq!(res.unwrap()["command"], "uname -a", "命令 trim 后转发");
+        let calls = b.calls.lock().unwrap();
+        for expected in ["try.status", "try.start", "try.stop", "try.exec"] {
+            assert!(calls.iter().any(|c| c == expected), "{expected} 未被调用");
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn try_start_exec_refused_when_estop_engaged() {
+    with_bridge(|b: Arc<FakeBridge>, _ctx| async move {
+        let h = VmHandler;
+        let ctx = make_estopped_ctx();
+        let err = h.handle_cmd("try.start", None, &ctx).await.unwrap_err();
+        assert!(err.contains("急停"), "start 必须被 estop 冻结: {err}");
+        let err = h
+            .handle_cmd(
+                "try.exec",
+                Some(serde_json::json!({ "command": "uname -a" })),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("急停"), "exec 必须被 estop 冻结: {err}");
+        // stop = 停机方向（安全方向）——estop 中放行。
+        h.handle_cmd("try.stop", None, &ctx)
+            .await
+            .expect("stop 在急停中必须放行");
+        // status 只读恒放行。
+        h.handle_cmd("try.status", None, &ctx)
+            .await
+            .expect("status 在急停中必须放行");
+        // bridge 只收到放行的两条。
+        let calls = b.calls.lock().unwrap();
+        assert!(!calls.iter().any(|c| c == "try.start"));
+        assert!(!calls.iter().any(|c| c == "try.exec"));
+        assert!(calls.iter().any(|c| c == "try.stop"));
+        assert!(calls.iter().any(|c| c == "try.status"));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn try_exec_input_validation() {
+    with_bridge(|_b: Arc<FakeBridge>, ctx| async move {
+        let h = VmHandler;
+        // 缺 data / 缺 command。
+        let err = h.handle_cmd("try.exec", None, &ctx).await.unwrap_err();
+        assert!(err.contains("missing data"), "{err}");
+        // 空命令 / 纯空白拒绝。
+        let err = h
+            .handle_cmd(
+                "try.exec",
+                Some(serde_json::json!({ "command": "   " })),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("命令为空"), "{err}");
+        // 超长命令拒绝（试玩通道不承载长脚本）。
+        let long = "x".repeat(2001);
+        let err = h
+            .handle_cmd(
+                "try.exec",
+                Some(serde_json::json!({ "command": long })),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("过长"), "{err}");
     })
     .await;
 }
