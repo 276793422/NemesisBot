@@ -33,8 +33,11 @@
 //! 自身原子覆盖已存在目标（POSIX），无「先删后改名」窗口；Windows 走
 //! rename 舞步（current → `.bak`、tmp → current、删 `.bak`）。重写中断的
 //! 磁盘状态由 open 时 [`recover_interrupted_rewrite`] 收编（恢复失败 = 置
-//! 不可信）。**承诺面 = 进程崩溃/被杀**（rename 语义内原子）；断电不承诺
-//! （无 fsync，append 路径同样如此——诚实边界）。
+//! 不可信）。**承诺面 = 进程崩溃/被杀 + 断电**（rename 语义内原子 + 意图/
+//! 完成行与压缩 tmp 落盘即 fsync，①断电级收口 2026-10-19：丢意图 = 重启
+//! 重发无账可查 → 副作用重放，故 append 路径不豁免）。诚实注记：Windows
+//! `FlushFileBuffers` 语义弱于 POSIX fsync（目录项/元数据持久化时序平台
+//! 差），注记不建分支。
 //!
 //! per-call 子进程（无 agent id）journal 恒禁用：每次一调用即退，账本无
 //! 意义，v1 线形态零变化。
@@ -335,7 +338,11 @@ impl Journal {
     }
 }
 
-/// 追加一行到账本（建目录 + append + flush）。record/record_intent 共用。
+/// 追加一行到账本（建目录 + append + flush + fsync）。record/record_intent
+/// 共用。fsync（①断电级收口，2026-10-19 三步计划）：意图/完成行落盘即持久
+/// ——断电窗口不再丢最近几行账（丢意图 = 监督器重启重发无账可查 → 副作用
+/// 重放，F2 要防的退化正好从这回来）。sync 失败走既有 append 失败路径
+/// （durable=false + F2 闸），无新分支。
 fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -347,7 +354,8 @@ fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
         .open(path)?;
     file.write_all(line.as_bytes())?;
     file.write_all(b"\n")?;
-    file.flush()
+    file.flush()?;
+    file.sync_all()
 }
 
 /// 压缩临时文件路径（同目录 `.tmp` 后缀——rename 同卷原子）。
@@ -418,22 +426,33 @@ fn recover_interrupted_rewrite(path: &Path) -> bool {
     }
 }
 
-/// 原子重写账本（F1，二轮复评）：写 `.tmp` → 平台替换语义。
+/// 原子重写账本（F1，二轮复评）：写 `.tmp`（fsync 落盘后才 rename——
+/// ①断电级收口：rename 后断电的最坏形态是新旧皆失，tmp 内容必须先到盘）
+/// → 平台替换语义。
 /// - Unix：`fs::rename` 自身原子覆盖已存在目标（POSIX）——一步到位，
-///   旧实现「先删后改名」的丢账窗口整体消除。
+///   旧实现「先删后改名」的丢账窗口整体消除；rename 后父目录 sync 尽力
+///   而为（目录项持久化，失败不影响结果正确性；`write_file_atomic` 同款
+///   先例）。
 /// - Windows：rename 不覆盖已存在目标 → 舞步：`current → .bak` →
 ///   `.tmp → current` → 删 `.bak`；第 2 步失败把 `.bak` 回位后错误上抛。
 ///   舞步中断的磁盘状态由 [`recover_interrupted_rewrite`] 在下次 open
 ///   收编（current 缺 + bak 在 = 恢复旧账）。
 ///
-/// 承诺面 = 进程崩溃/被杀（rename 语义内原子）；断电不承诺（无 fsync）。
+/// 承诺面 = 进程崩溃/被杀 + 断电（rename 原子 + 落盘即 fsync；Windows
+/// `FlushFileBuffers` 语义弱于 POSIX fsync，平台差注记不建分支）。
 /// 单写者契约不变：服务循环未启动才可能走到这里。
 fn atomic_rewrite(path: &Path, body: &str) -> std::io::Result<()> {
     let tmp = tmp_path(path);
-    std::fs::write(&tmp, body)?;
+    write_synced(&tmp, body)?;
     #[cfg(unix)]
     {
-        std::fs::rename(&tmp, path)
+        std::fs::rename(&tmp, path)?;
+        if let Some(dir) = path.parent()
+            && let Ok(d) = std::fs::File::open(dir)
+        {
+            let _ = d.sync_all();
+        }
+        Ok(())
     }
     #[cfg(windows)]
     {
@@ -460,6 +479,15 @@ fn atomic_rewrite(path: &Path, body: &str) -> std::io::Result<()> {
             }
         }
     }
+}
+
+/// 全量写入并 fsync（压缩 tmp 落盘专用）。
+fn write_synced(path: &Path, body: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut f = std::fs::File::create(path)?;
+    f.write_all(body.as_bytes())?;
+    f.flush()?;
+    f.sync_all()
 }
 
 #[cfg(test)]
