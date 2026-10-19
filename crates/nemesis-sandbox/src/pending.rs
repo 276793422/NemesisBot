@@ -166,9 +166,10 @@ pub fn delete_file(pending: &PendingFile) -> Result<bool> {
 /// `Start.exe /box:<name> delete_sandbox`. The box should have no running
 /// processes (the per-call executor exits between calls).
 pub fn delete_box_contents(start_exe: &Path, box_name: &str) -> Result<()> {
-    let out = std::process::Command::new(start_exe)
-        .arg(format!("/box:{box_name}"))
-        .arg("delete_sandbox")
+    let mut c = std::process::Command::new(start_exe);
+    c.arg(format!("/box:{box_name}")).arg("delete_sandbox");
+    crate::suppress_console(&mut c);
+    let out = c
         .output()
         .with_context(|| format!("spawn Start.exe delete_sandbox ({})", start_exe.display()))?;
     if !out.status.success() {
