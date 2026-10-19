@@ -911,7 +911,20 @@ fn validate_script_binding(
             ));
         }
         let p = std::path::Path::new(wd_trim);
-        if p.is_absolute() || wd_trim.starts_with('~') {
+        // 绝对/半绝对形态全拒：is_absolute 覆盖本平台全形（Windows 盘符形
+        // `C:\tmp` / Unix 根形 `/tmp`）；RootDir/Prefix 补跨平台缝——Windows
+        // 上 `/tmp`（缺盘符根形）与 `C:tmp`（盘符相对形）的 is_absolute 都是
+        // false，但 join 语义下前者解析到当前盘根、后者按盘符 cwd 解析，都会
+        // 逃出 workspace 根。声明期拒；运行期 exec 工具的 restrict 边界照跑
+        // （纵深防御第二道）。反向形态无害不拒：Unix 上 `C:\tmp` 是普通相对
+        // 名（join 不越界）。
+        let semi_absolute = p.components().any(|c| {
+            matches!(
+                c,
+                std::path::Component::RootDir | std::path::Component::Prefix(_)
+            )
+        });
+        if p.is_absolute() || semi_absolute || wd_trim.starts_with('~') {
             return Err(err(format!(
                 "workdir `{wd_trim}` 必须是相对 workspace 根的路径（绝对路径/~ 开头都拒）"
             )));

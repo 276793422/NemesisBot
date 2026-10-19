@@ -451,7 +451,25 @@ async fn stop_ladder_terminates_stubborn_process() {
 async fn stop_ladder_graceful_exit_within_window_no_escalation() {
     let _serial = TEST_LOCK.lock().await;
     // trap TERM → exit 0：优雅段信号即走，窗内自退，绝不升级强杀。
-    let (pid, child) = spawn_shell("trap 'exit 0' TERM; sleep 30").await;
+    // 竞态闸：spawn 返回只保证 exec(sh) 完成，不保证 trap 已装——TERM 落在
+    // exec 与 trap 之间按默认处置死（code()=None 假红；高载 runner 上
+    // 动态链接/启动被调度延迟，窗口可拉到几十 ms）。trap 装好后写 marker，
+    // 等 marker 出现再发车：首记 TERM 必落在 trap 生效后。
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let marker = tmp.path().join("trap_ready");
+    let (pid, child) = spawn_shell(&format!(
+        "trap 'exit 0' TERM; : > '{}'; sleep 30",
+        marker.display()
+    ))
+    .await;
+    let ready_deadline = Instant::now() + Duration::from_secs(10);
+    while !marker.exists() {
+        assert!(
+            Instant::now() < ready_deadline,
+            "trap 未就绪（marker 未出现）"
+        );
+        sleep(Duration::from_millis(20)).await;
+    }
     let started = Instant::now();
     stop_ladder(pid, &child, Duration::from_secs(5)).await;
     assert!(
