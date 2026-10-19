@@ -93,6 +93,11 @@ pub(crate) struct WslProbe {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Ready/NoDistro 的构造点全在 cfg(windows) 探针与 cfg(test) 单测里——Linux
+// 非 test 构建天然无构造（spawn 探测只在 Windows 跑），条件 allow 消
+// dead_code（CI Linux clippy 实录 2026-10-19）；Windows/test 侧 lint 照常在场。
+// 变体本身不可 cfg 裁剪：classify_image_route 跨平台读全四态。
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
 pub(crate) enum WslState {
     /// 管线工具齐备——可直接经 wsl.exe 构建。
     Ready,
@@ -114,6 +119,9 @@ impl WslProbe {
         }
     }
 
+    /// 唯一消费点 = [`wsl_spawn_probe`]（cfg windows）——随门裁剪消 Linux
+    /// dead_code（同 [`WslState`] 注）。
+    #[cfg(windows)]
     fn no_distro() -> Self {
         Self {
             state: WslState::NoDistro,
@@ -124,10 +132,14 @@ impl WslProbe {
     }
 }
 
+// 下面 5 个解析/分类纯函数的生产消费点全在 [`wsl_spawn_probe`]（cfg
+// windows）；Linux 侧只有伴生测试消费——`#[cfg(any(windows, test))]` 让
+// Linux bin 构建不编译（无 dead_code），跨平台单测语义保持（模块头注）。
 /// wsl.exe 管理命令（`--list` 等）输出解码：带 UTF-16LE BOM 显式认；无 BOM
 /// 按「奇数下标 0 字节占比」启发式认 UTF-16LE（纯 ASCII 文本的 UTF-16LE
 /// 编码在每个奇数下标放 0x00，UTF-8 文本几乎不会），否则按 UTF-8 lossy。
 /// Linux 侧（`wsl -e bash`）输出是 UTF-8，走 lossy 分支原样透传。
+#[cfg(any(windows, test))]
 pub(crate) fn decode_wsl_output(bytes: &[u8]) -> String {
     if bytes.starts_with(&[0xFF, 0xFE]) {
         let units: Vec<u16> = bytes[2..]
@@ -149,6 +161,7 @@ pub(crate) fn decode_wsl_output(bytes: &[u8]) -> String {
 
 /// `wsl --list --quiet` 输出解析：每行一个发行版名；空集 = 无发行版。
 /// （容忍行尾 `\r` 与解码残留的 `\0`。）
+#[cfg(any(windows, test))]
 pub(crate) fn parse_wsl_distro_list(text: &str) -> Vec<String> {
     text.lines()
         .map(|l| l.trim().trim_end_matches('\u{0}').to_string())
@@ -161,11 +174,13 @@ pub(crate) fn parse_wsl_distro_list(text: &str) -> Vec<String> {
 /// 输出的是本地化错误消息——**实测退出码仍为 0**，不能靠 exit code 判别；
 /// 消息行（语言相关）必含空白，与注册名形态可判别。非清单形态 = 按
 /// 无发行版处理（`wsl --install` 对两态都是正确修复）。
+#[cfg(any(windows, test))]
 pub(crate) fn is_distro_manifest(lines: &[String]) -> bool {
     !lines.is_empty() && lines.iter().all(|l| !l.contains(' ') && !l.contains('\t'))
 }
 
 /// 工具探测输出解析：`<name>=yes|no` 行 → 映射；无法识别的行忽略。
+#[cfg(any(windows, test))]
 pub(crate) fn parse_tool_probe(text: &str) -> std::collections::BTreeMap<String, bool> {
     let mut tools = std::collections::BTreeMap::new();
     for line in text.lines() {
@@ -178,6 +193,7 @@ pub(crate) fn parse_tool_probe(text: &str) -> std::collections::BTreeMap<String,
 
 /// 工具映射 →（缺失清单, 是否有 apt-get）。管线硬要求（build-vm-image.sh
 /// 的静态检查同口径）：ISO 工具三选一 + file(1) + 下载器二选一。
+#[cfg(any(windows, test))]
 pub(crate) fn classify_wsl_tools(
     tools: &std::collections::BTreeMap<String, bool>,
 ) -> (Vec<String>, bool) {
@@ -195,7 +211,9 @@ pub(crate) fn classify_wsl_tools(
     (missing, on("apt-get"))
 }
 
-/// 工具探测脚本（在 WSL 发行版内跑；输出 `t=yes|no` 逐行）。
+/// 工具探测脚本（在 WSL 发行版内跑；输出 `t=yes|no` 逐行）。唯一消费点
+/// = [`wsl_spawn_probe`]（cfg windows）——随门裁剪（同上组注）。
+#[cfg(windows)]
 const WSL_TOOL_PROBE_SCRIPT: &str = "for t in genisoimage xorriso mkisofs file curl wget apt-get; do command -v \"$t\" >/dev/null 2>&1 && echo \"$t=yes\" || echo \"$t=no\"; done";
 
 /// 真 spawn 探测（Windows-only；阻塞式——调用方持 TTL 缓存）。
@@ -1026,7 +1044,7 @@ impl VmBridge for VmSupervisor {
                 }),
                 probe::AccelBootstrap::NeedsKmod { module } => serde_json::json!({
                     "state": "needs_kmod",
-                    "command": install::modprobe_kvm_command(&module),
+                    "command": install::modprobe_kvm_command(module),
                     "note": "KVM 内核模块未加载——终端执行后复检",
                 }),
                 probe::AccelBootstrap::NeedsGroup => serde_json::json!({
@@ -1656,6 +1674,7 @@ async fn do_qemu_install(
     }
     #[cfg(target_os = "linux")]
     {
+        let _ = workspace; // Linux 链经包管理器装系统路径，不落 workspace
         log_line(
             log_path,
             "Linux 链：包管理器探测 → 免密 sudo 自动装 / 诚实半自动",
