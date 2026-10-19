@@ -704,6 +704,132 @@ impl VmBridge for VmSupervisor {
             Err("当前平台无受支持加速器（仅 Linux KVM / Windows WHPX）".to_string())
         }
     }
+
+    fn try_status(&self) -> serde_json::Value {
+        let config = self.vm_config();
+        let enabled = config.as_ref().is_some_and(|c| c.enabled);
+        let arch = config
+            .as_ref()
+            .map(|c| c.arch.clone())
+            .unwrap_or_else(|| "x86_64".to_string());
+        let arch_supported = arch == "x86_64";
+        let workspace = self.workspace();
+        let images = vm_images_root(workspace);
+        let image_ready = images.join("base.qcow2").exists() && images.join("seed.iso").exists();
+        let running = self.running_agents().iter().any(|a| a == TRY_AGENT_ID);
+        serde_json::json!({
+            "agent_id": TRY_AGENT_ID,
+            "enabled": enabled,
+            "image_ready": image_ready,
+            "arch": arch,
+            "arch_supported": arch_supported,
+            "running": running,
+        })
+    }
+
+    async fn try_start(&self) -> Result<serde_json::Value, String> {
+        try_gate(self)?;
+        let started_cold = !self.running_agents().iter().any(|a| a == TRY_AGENT_ID);
+        self.ensure_running(TRY_AGENT_ID)
+            .await
+            .map_err(err_string)?;
+        Ok(serde_json::json!({
+            "agent_id": TRY_AGENT_ID,
+            "running": true,
+            "note": if started_cold {
+                "试玩实例已就绪（冷启动完成，guest agent 在线）。实例受同一套睡眠线管理：闲置后自动睡眠省资源。"
+            } else {
+                "试玩实例已在运行（复用现有实例）。"
+            },
+        }))
+    }
+
+    async fn try_exec(&self, command: &str) -> Result<serde_json::Value, String> {
+        try_gate(self)?;
+        // 自动拉起（幂等）：未运行先 ensure_running——与「启动按钮」同一
+        // 通路，失败诚实上抛（镜像缺/加速缺/满员闸各自原样报）。
+        let slot = self
+            .ensure_running(TRY_AGENT_ID)
+            .await
+            .map_err(err_string)?;
+        // 每调用独立握手（execute_persistent 同款：跨睡眠的常驻流是伪状态）。
+        let mut stream = {
+            let s = slot.lock().await;
+            nemesis_sandbox::vm::lifecycle::auth_handshake(
+                s.vm.agent_addr,
+                &s.vm.token,
+                TRY_CALL_TIMEOUT,
+            )
+            .await
+            .map_err(|e| format!("不可用: VM guest 通道握手失败: {e}"))?
+        };
+        let args = serde_json::json!({ "command": command, "timeout": 30 }).to_string();
+        let resp = nemesis_sandbox::vm::lifecycle::guest_call(
+            &mut stream,
+            "exec",
+            &args,
+            &serde_json::json!({ "source": "dashboard-quick-try" }),
+            TRY_CALL_TIMEOUT,
+        )
+        .await
+        .map_err(|e| format!("失败: VM guest 调用失败: {e}"))?;
+        if resp.ok {
+            Ok(serde_json::json!({
+                "agent_id": TRY_AGENT_ID,
+                "command": command,
+                "output": resp.result,
+            }))
+        } else {
+            Err(format!("失败: VM 内命令执行出错: {}", resp.error))
+        }
+    }
+
+    async fn try_stop(&self) -> Result<serde_json::Value, String> {
+        // 幂等：未运行 = Ok 带「未运行」注记（试玩卡的停止按钮不该报错）。
+        if !self.running_agents().iter().any(|a| a == TRY_AGENT_ID) {
+            return Ok(serde_json::json!({
+                "agent_id": TRY_AGENT_ID,
+                "running": false,
+                "note": "试玩实例未在运行（无需停止；磁盘状态保留）",
+            }));
+        }
+        self.stop_agent(TRY_AGENT_ID).await.map_err(err_string)?;
+        Ok(serde_json::json!({
+            "agent_id": TRY_AGENT_ID,
+            "running": false,
+            "note": "试玩实例已冷停（QEMU 退出，overlay 保留——下次启动同盘冷启）",
+        }))
+    }
+}
+
+/// B6 快速试玩固定 agent_id（骑既有 supervisor 全套机制——registry/槽位/
+/// 睡眠线/满员闸与 agent 实例完全同构，`vm.instance.list` 如实可见）。
+pub(crate) const TRY_AGENT_ID: &str = "try-dashboard";
+
+/// 试玩单次调用墙钟预算（握手 + exec；预设命令均秒级，30s guest 侧超时
+/// 之外留出协议余量——超时 = 诚实失败，不是常态路径）。
+const TRY_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// 试玩 start/exec 公共前置闸（enabled → arch → 镜像在场），失败文案
+/// 带下一步指引（先开总开关 / 换 x86_64 档 / 去环境安装卡补齐）。
+fn try_gate(sup: &VmSupervisor) -> Result<(), String> {
+    let settings = sup.vm_settings().ok_or_else(|| {
+        "VM 档未开启（executor.vm.enabled=false）：试玩不可用——先在配置页开启总开关".to_string()
+    })?;
+    if settings.arch != "x86_64" {
+        return Err(format!(
+            "试玩仅支持 x86_64 档（当前 {}）：aarch64 镜像管线尚未产出，属接口预留",
+            settings.arch
+        ));
+    }
+    let images = vm_images_root(sup.workspace());
+    if !images.join("base.qcow2").exists() || !images.join("seed.iso").exists() {
+        return Err(
+            "基础镜像未就绪（base.qcow2 / seed.iso 缺席）——先在环境安装卡完成 QEMU 安装与镜像构建"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 /// wake 线路预读（`None` = 无记录/无产物 → 冷启）。

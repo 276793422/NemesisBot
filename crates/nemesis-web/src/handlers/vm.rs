@@ -75,6 +75,24 @@ pub trait VmBridge: Send + Sync {
     /// 引导文案）。**enabled 闸**同上。同步返回——网关不自我提权（UAC
     /// 子进程 fire-and-forget），其余分支返回可复制的引导命令原文。
     async fn bootstrap_enable_accel(&self) -> Result<serde_json::Value, String>;
+
+    /// B6 快速试玩状态（**只读探针，不受 enabled 闸约束**——查询不是
+    /// 动作）：enabled / image_ready（base.qcow2 + seed.iso）/ arch_
+    /// supported / running 一次取齐（Dashboard 试玩卡四态渲染的单命令面）。
+    fn try_status(&self) -> serde_json::Value;
+
+    /// 启动试玩实例（固定 agent_id，骑既有 supervisor 全套机制；命中
+    /// 运行槽即返回，冷启阻塞至 guest agent 就绪——与 instance.wake 同
+    /// 形态）。**enabled 闸**；estop 冻结闸在 handler 层（agent 活动形态）。
+    async fn try_start(&self) -> Result<serde_json::Value, String>;
+
+    /// 试玩实例内执行 shell 命令（guest `exec` 工具；未运行时自动先
+    /// ensure_running）。**enabled 闸**；estop 冻结闸在 handler 层。
+    async fn try_exec(&self, command: &str) -> Result<serde_json::Value, String>;
+
+    /// 停止试玩实例（冷停；幂等——未运行返回「未运行」不算错）。停机
+    /// 方向 = 安全方向：estop 中放行（handler 层不设冻结闸）。
+    async fn try_stop(&self) -> Result<serde_json::Value, String>;
 }
 
 static VM_BRIDGE: std::sync::RwLock<Option<Arc<dyn VmBridge>>> = std::sync::RwLock::new(None);
@@ -132,6 +150,10 @@ impl ModuleHandler for VmHandler {
             "bootstrap.status",
             "bootstrap.install_qemu",
             "bootstrap.enable_accel",
+            "try.status",
+            "try.start",
+            "try.exec",
+            "try.stop",
         ]
     }
 
@@ -139,7 +161,7 @@ impl ModuleHandler for VmHandler {
         &self,
         cmd: &str,
         data: Option<serde_json::Value>,
-        _ctx: &RequestContext,
+        ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
         let bridge = require_vm_bridge()?;
         match cmd {
@@ -198,9 +220,51 @@ impl ModuleHandler for VmHandler {
             "bootstrap.status" => Ok(Some(bridge.bootstrap_status())),
             "bootstrap.install_qemu" => Ok(Some(bridge.bootstrap_install_qemu().await?)),
             "bootstrap.enable_accel" => Ok(Some(bridge.bootstrap_enable_accel().await?)),
+            "try.status" => Ok(Some(bridge.try_status())),
+            "try.start" => {
+                refuse_if_estopped(ctx)?;
+                Ok(Some(bridge.try_start().await?))
+            }
+            "try.exec" => {
+                refuse_if_estopped(ctx)?;
+                let data = data.ok_or("missing data")?;
+                let command = crate::handlers::get_str(&data, "command")?;
+                let command = command.trim();
+                if command.is_empty() {
+                    return Err("命令为空".to_string());
+                }
+                if command.chars().count() > TRY_EXEC_MAX_CHARS {
+                    return Err(format!(
+                        "命令过长（上限 {TRY_EXEC_MAX_CHARS} 字符）——试玩通道不承载长脚本"
+                    ));
+                }
+                Ok(Some(bridge.try_exec(command).await?))
+            }
+            "try.stop" => Ok(Some(bridge.try_stop().await?)),
             _ => Err(format!("unknown vm cmd: {cmd}")),
         }
     }
+}
+
+/// 试玩命令长度上限（防把试玩通道当脚本通道用——长任务走 agent 面）。
+const TRY_EXEC_MAX_CHARS: usize = 2000;
+
+/// estop 冻结闸（B6 试玩 start/exec：agent 活动形态——急停触发时诚实
+/// 拒绝；stop/status 不经此闸，停机与只读方向恒放行）。检查点在 handler
+/// 层——`ctx.state.estop` 与 estop WSAPI / 托盘 / CLI 四入口同源。
+fn refuse_if_estopped(ctx: &RequestContext) -> Result<(), String> {
+    let engaged = ctx
+        .state
+        .estop
+        .as_ref()
+        .map(|e| e.is_engaged())
+        .unwrap_or(false);
+    if engaged {
+        return Err(
+            "急停生效中：试玩启动/执行已冻结（estop --release 或侧栏释放后恢复）".to_string(),
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -6,7 +6,8 @@ import { useToast } from '../../composables/useToast'
 // nemesis-web vm_ws_tests 钉住；本套件钉前端契约面——
 // 探针/建议横幅渲染、总开关 confirm 门与默认关、config.set 全量回写、
 // image.build update 旗标转发、实例 sleep/wake/kill 命令转发、
-// B4 环境安装分步卡（分步态渲染 / 关闭态闸 / 命令展示与复制 / 安装转发）。
+// B4 环境安装分步卡（分步态渲染 / 关闭态闸 / 命令展示与复制 / 安装转发）、
+// B6 快速试玩卡（四态闸 / 启停转发 / exec 转发与输出渲染）。
 
 const requestMock = vi.fn()
 vi.mock('../../composables/useWSAPI', () => ({
@@ -89,11 +90,31 @@ function bootstrapStatus(over: Record<string, unknown> = {}) {
   }
 }
 
-function mountView(ov: unknown = overview(), img: unknown = imageList(), bs: unknown = bootstrapStatus()) {
+// 与后端 try_status() 投影同构（vm_bridge.rs B6）。默认 = 开启 + 镜像就绪
+// + 未运行（试玩卡「就绪未运行」态——带启动按钮）。
+function tryStatus(over: Record<string, unknown> = {}) {
+  return {
+    agent_id: 'try-dashboard',
+    enabled: true,
+    image_ready: true,
+    arch: 'x86_64',
+    arch_supported: true,
+    running: false,
+    ...over,
+  }
+}
+
+function mountView(
+  ov: unknown = overview(),
+  img: unknown = imageList(),
+  bs: unknown = bootstrapStatus(),
+  ts: unknown = tryStatus(),
+) {
   requestMock.mockImplementation((_m: string, cmd: string) => {
     if (cmd === 'overview') return Promise.resolve(ov)
     if (cmd === 'image.list') return Promise.resolve(img)
     if (cmd === 'bootstrap.status') return Promise.resolve(bs)
+    if (cmd === 'try.status') return Promise.resolve(ts)
     return Promise.resolve({})
   })
   const w = mount(VmView)
@@ -498,6 +519,127 @@ describe('VmView 环境安装分步卡（B4）', () => {
     expect(w.find('[data-test="env-card"]').exists()).toBe(true)
     expect(w.text()).toContain('环境状态获取失败')
     expect(w.find('[data-test="probe-banner"]').exists()).toBe(true)
+    w.unmount()
+  })
+})
+
+describe('VmView 快速试玩卡（B6）', () => {
+  async function toInstancesTab(w: ReturnType<typeof mount>) {
+    await w.findAll('button').find((b) => b.text() === '实例')!.trigger('click')
+    await flushPromises()
+  }
+
+  it('关闭态闸：try-off 横幅渲染、启动按钮缺席；就绪态启动转发 try.start + 复检', async () => {
+    const w = await mountView(overview({ enabled: false }), imageList(), bootstrapStatus(), tryStatus({ enabled: false }))
+    await toInstancesTab(w)
+    expect(w.find('[data-test="try-card"]').exists()).toBe(true)
+    expect(w.find('[data-test="try-off"]').exists()).toBe(true)
+    expect(w.find('[data-test="try-start"]').exists()).toBe(false)
+    w.unmount()
+
+    // 就绪态（默认 fixture）：启动按钮在场，点击转发 vm.try.start（无参 data）
+    const w2 = await mountView()
+    await toInstancesTab(w2)
+    expect(w2.find('[data-test="try-off"]').exists()).toBe(false)
+    await w2.find('[data-test="try-start"]').trigger('click')
+    await flushPromises()
+    const call = requestMock.mock.calls.find((c) => c[1] === 'try.start')!
+    expect(call[0]).toBe('vm')
+    expect(call[2]).toEqual({})
+    expect(useToast().toasts.some((t) => t.type === 'success')).toBe(true)
+    w2.unmount()
+  })
+
+  it('镜像未就绪 / arch 不支持：对应指引横幅渲染，启动按钮缺席', async () => {
+    const w = await mountView(overview({ enabled: true }), imageList(), bootstrapStatus(), tryStatus({ image_ready: false }))
+    await toInstancesTab(w)
+    expect(w.find('[data-test="try-noimage"]').exists()).toBe(true)
+    expect(w.find('[data-test="try-start"]').exists()).toBe(false)
+    w.unmount()
+
+    const w2 = await mountView(overview({ enabled: true }), imageList(), bootstrapStatus(), tryStatus({ arch: 'aarch64', arch_supported: false }))
+    await toInstancesTab(w2)
+    expect(w2.find('[data-test="try-arch"]').exists()).toBe(true)
+    expect(w2.text()).toContain('aarch64')
+    expect(w2.find('[data-test="try-start"]').exists()).toBe(false)
+    w2.unmount()
+  })
+
+  it('运行态：停止按钮 + 输入框 + 预设按钮组渲染；启动按钮缺席', async () => {
+    const w = await mountView(overview({ enabled: true }), imageList(), bootstrapStatus(), tryStatus({ running: true }))
+    await toInstancesTab(w)
+    expect(w.find('[data-test="try-state-label"]').text()).toContain('运行中')
+    expect(w.find('[data-test="try-start"]').exists()).toBe(false)
+    expect(w.find('[data-test="try-stop"]').exists()).toBe(true)
+    expect(w.find('[data-test="try-input"]').exists()).toBe(true)
+    expect(w.findAll('[data-test="try-preset"]').length).toBe(5)
+    w.unmount()
+  })
+
+  it('预设命令转发 try.exec（payload command）；输出区累积渲染', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'overview') return Promise.resolve(overview({ enabled: true }))
+      if (cmd === 'image.list') return Promise.resolve(imageList())
+      if (cmd === 'bootstrap.status') return Promise.resolve(bootstrapStatus())
+      if (cmd === 'try.status') return Promise.resolve(tryStatus({ running: true }))
+      if (cmd === 'try.exec') return Promise.resolve({ command: 'uname -a', output: 'Linux try 6.1.0 x86_64' })
+      return Promise.resolve({})
+    })
+    const w = mount(VmView)
+    await flushPromises()
+    await toInstancesTab(w)
+    await w.findAll('[data-test="try-preset"]')[0].trigger('click')
+    await flushPromises()
+    const call = requestMock.mock.calls.find((c) => c[1] === 'try.exec')!
+    expect(call[0]).toBe('vm')
+    expect(call[2]).toEqual({ command: 'uname -a' })
+    const out = w.find('[data-test="try-output"]')
+    expect(out.exists()).toBe(true)
+    expect(out.text()).toContain('$ uname -a')
+    expect(out.text()).toContain('Linux try 6.1.0 x86_64')
+    w.unmount()
+  })
+
+  it('自由输入 @keydown.enter 触发执行；错误行进输出区且输入保留（可改可重试）', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'overview') return Promise.resolve(overview({ enabled: true }))
+      if (cmd === 'image.list') return Promise.resolve(imageList())
+      if (cmd === 'bootstrap.status') return Promise.resolve(bootstrapStatus())
+      if (cmd === 'try.status') return Promise.resolve(tryStatus({ running: true }))
+      if (cmd === 'try.exec') return Promise.reject(new Error('VM 内命令执行出错'))
+      return Promise.resolve({})
+    })
+    const w = mount(VmView)
+    await flushPromises()
+    await toInstancesTab(w)
+    await w.find('[data-test="try-input"]').setValue('ls /')
+    await w.find('[data-test="try-input"]').trigger('keydown.enter')
+    await flushPromises()
+    const call = requestMock.mock.calls.find((c) => c[1] === 'try.exec')!
+    expect(call[2]).toEqual({ command: 'ls /' })
+    // 失败不清输入——用户改完直接重试（tryCommand 清空只发生在成功路径）
+    expect((w.find('[data-test="try-input"]').element as HTMLInputElement).value).toBe('ls /')
+    expect(w.find('[data-test="try-output"]').text()).toContain('$ ls /')
+    expect(w.find('[data-test="try-output"]').text()).toContain('[出错] VM 内命令执行出错')
+    w.unmount()
+  })
+
+  it('停止过 confirm 门：取消不发；确认转发 try.stop', async () => {
+    const w = await mountView(overview({ enabled: true }), imageList(), bootstrapStatus(), tryStatus({ running: true }))
+    await toInstancesTab(w)
+
+    confirmMock.mockReturnValueOnce(false)
+    await w.find('[data-test="try-stop"]').trigger('click')
+    await flushPromises()
+    expect(requestMock.mock.calls.find((c) => c[1] === 'try.stop')).toBeUndefined()
+
+    confirmMock.mockReturnValueOnce(true)
+    await w.find('[data-test="try-stop"]').trigger('click')
+    await flushPromises()
+    const call = requestMock.mock.calls.find((c) => c[1] === 'try.stop')!
+    expect(call[0]).toBe('vm')
+    expect(call[2]).toEqual({})
+    expect(useToast().toasts.some((t) => t.type === 'success')).toBe(true)
     w.unmount()
   })
 })

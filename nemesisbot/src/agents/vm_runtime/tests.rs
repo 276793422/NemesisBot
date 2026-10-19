@@ -504,3 +504,76 @@ fn persistent_execution_subset_gate_and_config_off() {
         "config 关必须 Unavailable: {err:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// B6 快速试玩族（VmBridge trait 面；真机链路仍归 vm_smoke——这里钉闸）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn try_family_off_state_gates() {
+    use nemesis_web::handlers::vm::VmBridge;
+
+    let rt = tokio::runtime::Runtime::new().expect("rt");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_config(&tmp.path().join("config.json"), &full_vm_json(false));
+    let sup = VmSupervisor::new(tmp.path().to_path_buf(), tmp.path().join("config.json"));
+
+    // status 只读探针：关闭态如实可见（对齐 bootstrap.status 纪律——查询不是动作）。
+    let st = sup.try_status();
+    assert_eq!(st["enabled"], false);
+    assert_eq!(st["running"], false);
+    assert_eq!(st["agent_id"], "try-dashboard");
+    assert_eq!(st["image_ready"], false, "无镜像目录 = 未就绪");
+
+    // start / exec：enabled 闸诚实拒绝（off-state 零激活铁律）。
+    let err = rt.block_on(sup.try_start()).unwrap_err();
+    assert!(err.contains("总开关"), "start 必须被 enabled 闸拦: {err}");
+    let err = rt.block_on(sup.try_exec("uname -a")).unwrap_err();
+    assert!(err.contains("总开关"), "exec 必须被 enabled 闸拦: {err}");
+
+    // stop = 停机方向：无闸，未运行 = 幂等 Ok（试玩卡停止按钮不报错）。
+    let res = rt.block_on(sup.try_stop()).expect("stop 幂等");
+    assert_eq!(res["running"], false);
+    assert!(res["note"].as_str().unwrap().contains("未在运行"));
+}
+
+#[test]
+fn try_family_enabled_gates_arch_then_image() {
+    use nemesis_web::handlers::vm::VmBridge;
+
+    let rt = tokio::runtime::Runtime::new().expect("rt");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let cfg = tmp.path().join("config.json");
+
+    // aarch64 档：诚实不可用（接口预留——镜像管线尚无产物）。
+    let aarch64 = full_vm_json(true).replace("\"x86_64\"", "\"aarch64\"");
+    write_config(&cfg, &aarch64);
+    let sup = VmSupervisor::new(tmp.path().to_path_buf(), cfg.clone());
+    let st = sup.try_status();
+    assert_eq!(st["arch"], "aarch64");
+    assert_eq!(st["arch_supported"], false);
+    let err = rt.block_on(sup.try_start()).unwrap_err();
+    assert!(
+        err.contains("x86_64") && err.contains("预留"),
+        "arch 闸: {err}"
+    );
+
+    // x86_64 档但镜像缺席：指路环境安装卡。
+    write_config(&cfg, &full_vm_json(true));
+    let err = rt.block_on(sup.try_start()).unwrap_err();
+    assert!(
+        err.contains("base.qcow2") && err.contains("环境安装"),
+        "镜像闸指路: {err}"
+    );
+    let err = rt.block_on(sup.try_exec("uname -a")).unwrap_err();
+    assert!(err.contains("base.qcow2"), "exec 同过镜像闸: {err}");
+
+    // 镜像齐（占位文件）→ status 就绪转绿（真启动仍归 vm_smoke 真机面）。
+    let images = tmp.path().join("tools").join("vm").join("images");
+    std::fs::create_dir_all(&images).expect("images dir");
+    std::fs::write(images.join("base.qcow2"), b"stub").expect("base");
+    std::fs::write(images.join("seed.iso"), b"stub").expect("seed");
+    let st = sup.try_status();
+    assert_eq!(st["image_ready"], true);
+    assert_eq!(st["arch_supported"], true);
+}
