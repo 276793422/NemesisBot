@@ -138,6 +138,7 @@ async fn install(workspace: &std::path::Path) -> Result<()> {
     }
     #[cfg(target_os = "linux")]
     {
+        let _ = workspace; // Linux 链经包管理器装系统路径，不落 workspace
         use nemesis_sandbox::vm::install::install_qemu_linux;
         println!("[vm] Linux 安装链：包管理器探测 → 免密 sudo 自动装 / 诚实半自动");
         let report = install_qemu_linux().await?;
@@ -186,7 +187,7 @@ async fn enable_accel() -> Result<()> {
             AccelBootstrap::Ok => println!("[vm] 加速器已就绪（无需引导）"),
             AccelBootstrap::NeedsKmod { module } => {
                 println!("[vm] KVM 内核模块未加载——终端执行后复检：");
-                println!("  {}", modprobe_kvm_command(&module));
+                println!("  {}", modprobe_kvm_command(module));
                 println!("[vm] 复检：nemesisbot vm status");
             }
             AccelBootstrap::NeedsGroup => {
