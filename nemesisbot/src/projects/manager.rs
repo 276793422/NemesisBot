@@ -1080,14 +1080,18 @@ struct ConflictResolutionTask {
     bus: Arc<nemesis_bus::MessageBus>,
 }
 
-/// 冲突裁决编排（plan §4.3 + H3 停车语义）：逐文件一张审批卡（三选项，
-/// spawn_blocking 阻塞等答）→ ① 记入 host-wins 清单 / ② 宿主改动落挂
-/// 起表（不进 VM；turn 末 commit 不回传覆盖宿主——此后宿主重新改动该
-/// 文件 = 手动合并完成，开工闸自动解挂推进）/ ③·超时 = 整轮取消。全部
-/// 裁决收场后：挂起表先落（失败 = 整轮取消，文件零改动）→ host-wins
-/// 逐条落盘（`apply_conflict_host_wins`，独立 internal_call + 基线增量
-/// 刷新；单条失败不拦其余，诚实汇总）→ 回注消息。任何取消臂都诚实出
-/// 站告知且**什么都不改**（不出半裁决状态）。
+/// 冲突裁决编排（plan §4.3 + H3 停车语义）：**挂起表先于裁决落**（全部
+/// 冲突文件的前置挂起——裁决卡挂着的三百秒窗口内，turn 末回传/手动
+/// commit 的 H3 过滤靠它保护宿主改动不被 VM 版覆盖；落盘失败 = 整轮取
+/// 消，连卡都不发）→ 逐文件一张审批卡（三选项，spawn_blocking 阻塞等
+/// 答）→ ① 记入 host-wins 清单（`apply_conflict_host_wins` 应用时解挂）
+/// / ② 前置条目保留（不进 VM；此后宿主重新改动该文件 = 手动合并完成，
+/// 开工闸自动解挂推进）/ ③·超时 = 整轮取消并**恢复前置前的挂起表快
+/// 照**（撤销本轮前置——回到「下轮开工闸重新检出重新问」的旧语义，也
+/// 不吞掉更早轮次遗留的旧条目）。① 逐条落盘（独立 internal_call + 基
+/// 线增量刷新；单条失败不拦其余，诚实汇总——失败条的挂起条目留在表
+/// 里，H3 过滤继续保护该文件）→ 回注消息。取消臂诚实出站告知且不改任
+/// 何工作区文件（挂起表恢复快照 = 状态无痕）。
 ///
 /// broker 缺席（headless / 无人值守未接线）= 取消语义：不能悄悄选边。
 /// supervisor / agent_id / 注册表条目在**应用期**重新解析（卡片挂着时
@@ -1105,6 +1109,24 @@ async fn run_conflict_resolution(t: ConflictResolutionTask) {
         return;
     };
 
+    // 前置挂起（停车凭据先于裁决存在）+ 前置前快照（取消臂恢复用；
+    // 过闸快照——不漏并发轮次条目）。
+    let pre_existing = crate::vm_sync::snapshot_diverged(&t.main_workspace, &t.pid).await;
+    let entries: Vec<(String, String, String)> = t
+        .files
+        .iter()
+        .map(|f| (f.rel.clone(), f.host_sha.clone(), f.vm_sha.clone()))
+        .collect();
+    if let Err(e) = crate::vm_sync::park_diverged_files(&t.main_workspace, &t.pid, entries).await {
+        conflict_cancel_outbound(
+            &t.bus,
+            &t.msg,
+            &t.name,
+            &format!("挂起记录落盘失败（{e}），本轮已取消；文件未做任何改动"),
+        );
+        return;
+    }
+
     let mut host_wins: Vec<String> = Vec::new();
     let mut keep_vm: Vec<String> = Vec::new();
     for f in &t.files {
@@ -1113,6 +1135,7 @@ async fn run_conflict_resolution(t: ConflictResolutionTask) {
             question: conflict_question_text(&t.name, f),
             options: conflict_options(),
             multi: false,
+            fields: Vec::new(),
             chat_id: t.msg.chat_id.clone(),
             session_key: t.msg.session_key.clone(),
             timeout_secs: CONFLICT_ASK_TIMEOUT_SECS,
@@ -1123,6 +1146,11 @@ async fn run_conflict_resolution(t: ConflictResolutionTask) {
             Ok(Ok(nemesis_types::agent::QuestionOutcome::Answered(sel))) => {
                 classify_conflict_answer(Some(&sel))
             }
+            // 冲突卡是单选选项形态（fields 空），表单作答不该出现——诚实取消。
+            Ok(Ok(nemesis_types::agent::QuestionOutcome::AnsweredForm(_))) => (
+                ConflictChoice::Cancel,
+                "冲突裁决卡为单选形态，收到表单作答（不合法），本轮已取消".to_string(),
+            ),
             Ok(Ok(nemesis_types::agent::QuestionOutcome::Timeout)) => {
                 classify_conflict_answer(None)
             }
@@ -1139,6 +1167,21 @@ async fn run_conflict_resolution(t: ConflictResolutionTask) {
             ConflictChoice::HostWins => host_wins.push(f.rel.clone()),
             ConflictChoice::KeepVm => {
                 keep_vm.push(f.rel.clone());
+                // 幂等重申挂起条目（正常路径前置已在，同值覆盖无变化；
+                // 双轮并发裁决同一文件的竞态下——前轮①已解挂该条目——
+                // 后轮②重申 = 「后裁决者赢」语义一致）。失败仅 warn：正
+                // 常路径前置条目仍在，重申只是竞态补丁。
+                let entry = vec![(f.rel.clone(), f.host_sha.clone(), f.vm_sha.clone())];
+                if let Err(e) =
+                    crate::vm_sync::park_diverged_files(&t.main_workspace, &t.pid, entry).await
+                {
+                    tracing::warn!(
+                        project = %t.pid,
+                        file = %f.rel,
+                        error = %e,
+                        "[ProjectLoops] ② 挂起条目重申失败（前置条目仍在，保守继续）"
+                    );
+                }
                 tracing::info!(
                     project = %t.pid,
                     file = %f.rel,
@@ -1146,37 +1189,30 @@ async fn run_conflict_resolution(t: ConflictResolutionTask) {
                 );
             }
             ConflictChoice::Cancel => {
+                // 撤销前置挂起（恢复前置前快照——状态无痕：下轮开工闸
+                // 重新检出重新问；更早轮次的遗留条目不受本轮影响）。
+                // 过在飞闸恢复（防与 commit 过滤读 / 并发 park 丢更新）。
+                if let Err(e) = crate::vm_sync::restore_diverged_snapshot(
+                    &t.main_workspace,
+                    &t.pid,
+                    &pre_existing,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        project = %t.pid,
+                        error = %e,
+                        "[ProjectLoops] 冲突取消臂恢复挂起表快照失败：保留前置条目（保守停车，不改工作区文件）"
+                    );
+                }
                 conflict_cancel_outbound(&t.bus, &t.msg, &t.name, &note);
                 return;
             }
         }
     }
 
-    // ② 先落挂起表（停车语义的凭据）：落盘失败 = 整轮取消——不能让
-    // KeepVm 退化成 turn 末回传覆盖宿主（数据丢失面）。落表成功后宿主
-    // 文件一个字节都没动（挂起只写 baseline_dir 内的簿记文件）。
-    if !keep_vm.is_empty() {
-        let entries: Vec<(String, String, String)> = keep_vm
-            .iter()
-            .filter_map(|rel| {
-                t.files
-                    .iter()
-                    .find(|f| &f.rel == rel)
-                    .map(|f| (f.rel.clone(), f.host_sha.clone(), f.vm_sha.clone()))
-            })
-            .collect();
-        if let Err(e) =
-            crate::vm_sync::park_diverged_files(&t.main_workspace, &t.pid, entries).await
-        {
-            conflict_cancel_outbound(
-                &t.bus,
-                &t.msg,
-                &t.name,
-                &format!("挂起记录落盘失败（{e}），本轮已取消；文件未做任何改动"),
-            );
-            return;
-        }
-    }
+    // ② 的挂起条目已在**前置挂起**落定（先于裁决存在，保护裁决窗口）；
+    // 这里无需再落表。① 的条目由 apply_conflict_host_wins 应用时解挂。
 
     // 应用期重新解析身份（卡片挂着时项目可能被移除/切档/环境被拆）。
     let mgr = crate::agents::manager();
@@ -1192,6 +1228,18 @@ async fn run_conflict_resolution(t: ConflictResolutionTask) {
         Some((sup, rec.agent_id, entry.path))
     });
     let Some((sup, agent_id, project_path)) = resolved else {
+        // 裁决期间环境变化：恢复前置前快照（同取消臂——不留本轮半裁决
+        // 状态），诚实取消。过在飞闸恢复（同取消臂理由）。
+        if let Err(e) =
+            crate::vm_sync::restore_diverged_snapshot(&t.main_workspace, &t.pid, &pre_existing)
+                .await
+        {
+            tracing::warn!(
+                project = %t.pid,
+                error = %e,
+                "[ProjectLoops] 裁决环境变化臂恢复挂起表快照失败：保留前置条目（保守停车）"
+            );
+        }
         conflict_cancel_outbound(
             &t.bus,
             &t.msg,

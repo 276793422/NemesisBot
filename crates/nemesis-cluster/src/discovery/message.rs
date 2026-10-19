@@ -192,6 +192,9 @@ impl DiscoveryMessage {
     /// 未装配时不宣告，不猜）。保持 [`Self::new_announce`] 既有签名不变。
     pub fn with_runtime_backend(mut self, backend: Option<String>) -> Self {
         self.runtime_backend = backend;
+        self
+    }
+
     /// 附自报构建号（A1 运行时硬化批；生产 announce 构造点
     /// `build_announce_from_callbacks` 链式调用——与 agents 同一单一真相
     /// 源纪律）。空串 = 未宣告，wire 上省略语义。
