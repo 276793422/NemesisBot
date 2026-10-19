@@ -93,6 +93,30 @@ impl AgentLoop {
             .is_some_and(|s| s.enabled())
     }
 
+    /// B4（凭据 vault §7）：装配凭据索要卡 broker（gateway init_agent 一次性；
+    /// 重复调用覆盖——agent 重启重建 broker 后以最新为准）。
+    pub fn set_credential_broker(&self, broker: Arc<dyn nemesis_types::agent::CredentialBroker>) {
+        *self.security.credential_broker.write() = Some(broker);
+    }
+
+    /// B4：取凭据 broker（未装配 = `None`——Auth 臂走原终局零回归）。
+    pub(crate) fn credential_broker(
+        &self,
+    ) -> Option<Arc<dyn nemesis_types::agent::CredentialBroker>> {
+        self.security.credential_broker.read().clone()
+    }
+
+    /// B4：装配 provider 重建器（gateway 注入 `ModelProviderReloader`；
+    /// agent 重启重建 loop 后工厂重新调用 setter 自动跟进）。
+    pub fn set_provider_reloader(&self, reloader: Arc<dyn super::ProviderReloader>) {
+        *self.provider_reloader.write() = Some(reloader);
+    }
+
+    /// B4：取 provider 重建器（未装配 = `None`）。
+    pub(crate) fn provider_reloader(&self) -> Option<Arc<dyn super::ProviderReloader>> {
+        self.provider_reloader.read().clone()
+    }
+
     /// K1a (U14): 注册一个用户工具钩子。pre 在固定 security 闸之后、工具
     /// 执行之前运行；post 在执行之后、Forge 记录之前运行（详见
     /// `crate::hooks` 模块文档）。RwLock 注册——运行中随时可挂。

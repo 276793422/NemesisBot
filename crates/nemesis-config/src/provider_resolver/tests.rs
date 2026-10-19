@@ -509,6 +509,7 @@ fn test_provider_resolution_serialization() {
         enabled: true,
         timeout_secs: 0,
         stream_mode: String::new(),
+        cache_breakpoints: false,
     };
     let json = serde_json::to_string(&pr).unwrap();
     let parsed: ProviderResolution = serde_json::from_str(&json).unwrap();
@@ -1074,6 +1075,72 @@ fn test_resolve_model_config_stream_mode_passthrough() {
         "no"
     );
     assert_eq!(resolve_model_config(&cfg, "plain").unwrap().stream_mode, "");
+}
+
+// ---------------------------------------------------------------------------
+// cache_breakpoints 提取（B13，2026-10-18 B 级清零）：真值语义与 stream
+// 键同源（normalize_stream_value），缺省/未知值 = 关。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_extract_cache_breakpoints_value_matrix() {
+    use serde_json::json;
+    let mk = |v: serde_json::Value| {
+        let extra = std::collections::BTreeMap::from([("cache_breakpoints".to_string(), v)]);
+        extract_cache_breakpoints(&extra)
+    };
+    // 开启侧
+    assert!(mk(json!(true)));
+    assert!(mk(json!("yes")));
+    assert!(mk(json!("YES")));
+    assert!(mk(json!("true")));
+    // 关闭侧
+    assert!(!mk(json!(false)));
+    assert!(!mk(json!("no")));
+    // 缺省 / 未知值 / 非 bool 非字符串 → 关（请求体零字节变化）
+    let empty = std::collections::BTreeMap::new();
+    assert!(!extract_cache_breakpoints(&empty));
+    assert!(!mk(json!("maybe")));
+    assert!(!mk(json!(1)));
+    assert!(!mk(json!(null)));
+}
+
+#[test]
+fn test_resolve_model_config_cache_breakpoints_passthrough() {
+    let cfg = Config {
+        model_list: vec![
+            ModelConfig {
+                extra: std::collections::BTreeMap::from([(
+                    "cache_breakpoints".to_string(),
+                    serde_json::json!(true),
+                )]),
+                model_name: "cached".to_string(),
+                model: "anthropic/claude-x".to_string(),
+                api_key: "k".to_string(),
+                ..Default::default()
+            },
+            ModelConfig {
+                extra: Default::default(),
+                model_name: "plain".to_string(),
+                model: "anthropic/claude-x".to_string(),
+                api_key: "k".to_string(),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    assert!(
+        resolve_model_config(&cfg, "cached")
+            .unwrap()
+            .cache_breakpoints,
+        "开启条目透传 true"
+    );
+    assert!(
+        !resolve_model_config(&cfg, "plain")
+            .unwrap()
+            .cache_breakpoints,
+        "缺省条目透传 false"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -22,6 +22,17 @@ pub(crate) struct CompactState {
     /// Auto-summarization paused (stuck). Re-checked each call; cleared once
     /// the prompt drops back below the summarize threshold.
     stuck: bool,
+    /// 自查②（2026-10-18 B 级清零）：最近一次 provider 实报的整请求输入
+    /// token（prompt + cache_read，与 P8 会话预算记账同口径）。压缩触发
+    /// 比较的混合信号下界——字符估算（×2/5）与真实值偏差大时以实报为准
+    /// （取大者 = 偏早触发，安全侧）；无 usage 的 lane（claude-cli/
+    /// codex-cli）保持 None = 纯估算诚实回落。
+    pub(crate) last_provider_prompt_tokens: Option<u64>,
+    /// B2（2026-10-18 B 级清零）：连续「压缩无进展」次数（摘要被守卫弃用
+    /// = 无进展；成功采用即清零；达 [`COMPACT_NO_PROGRESS_LIMIT`] 与 ⑩
+    /// stuck 闩共用暂停语义）。手动 /compact（force_compression 路径）不
+    /// 经此守卫，不受限。
+    pub(crate) no_progress: u32,
 }
 
 /// ⑩ Soft tier: prompt at this fraction of context_window emits a one-shot
@@ -32,6 +43,16 @@ const COMPACT_SUMMARIZE_RATIO: usize = 75; // % (unchanged from legacy behavior)
 /// ⑩ Stuck: a summarization counts as ineffective when the prompt afterwards
 /// is still at least this fraction of its pre-summarization size.
 const COMPACT_STUCK_PLATEAU_RATIO: usize = 90; // %
+
+/// B2（2026-10-18 B 级清零）：压缩无进展守卫阈值——摘要采用前用同一信号源
+/// 比较压缩前后，省幅不足信号的 5% 视为无进展 → 弃用（用有损摘要换零空间
+/// 是纯亏损）。纯相对阈值：计划原案 max(5%, 500 tokens) 中的 500 绝对地板
+/// 只在 <10k token 的微型窗口生效（生产触发规模 = 75% × ≥128k 窗口，5% 恒
+/// 为数千 token，地板无增益），为不误伤小窗口会话与既有测试取纯相对。
+const COMPACT_NO_PROGRESS_RATIO: usize = 5; // %
+
+/// B2：连续无进展达此次数 → 暂停自动压缩（与 ⑩ stuck 闩共用暂停语义）。
+const COMPACT_NO_PROGRESS_LIMIT: u32 = 2;
 
 /// N1（devtool-upgrade 阶段 1）：context_window 三级解析链的最后一级兜底。
 /// 历史 32000 对现代 128k+ 模型意味着 24000 token 就触发压缩（编码场景过早
@@ -299,6 +320,19 @@ impl AgentLoop {
         // size gates moved to build_messages, so the raw estimate would count
         // a 70KB original the provider only ever sees as a bounded locator.
         let tail_tokens = estimate_tokens_for_turns_projected(&history[c..]);
+        // 自查②（2026-10-18 B 级清零）：混合信号。provider 实报（整请求：
+        // system + tools + summary + tail）≥ tail 部分，取大者 = 偏早触发
+        // （安全侧）；实报来自上一轮请求（最新鲜的地面真值），无 usage 的
+        // lane 自然回落纯估算。软位/触发/失效判定/记账全部用同一信号，
+        // 守卫（B2）比较也用它——单一信号源防轴间口径漂移。
+        let provider_signal = self
+            .compact_state
+            .lock()
+            .get(session_key)
+            .and_then(|s| s.last_provider_prompt_tokens)
+            .map(|v| v as usize)
+            .unwrap_or(0);
+        let signal = tail_tokens.max(provider_signal);
         let soft = context_window * COMPACT_SOFT_RATIO / 100;
         let threshold = context_window * COMPACT_SUMMARIZE_RATIO / 100;
 
@@ -316,7 +350,10 @@ impl AgentLoop {
             history.len().saturating_sub(K_TARGET)
         };
         let new_c = tool_safe_boundary(&history, raw_new_c);
-        let will_summarize = tail_tokens >= threshold && new_c > c;
+        // 自查②：触发比较用混合信号（实报 ≥ tail，取大者早触发）。`new_c > c`
+        // 闸保留——可折叠前缀没变化时（尾巴太短/工具与 system 占大头）摘要帮
+        // 不上，交给 force_compression，不空转。
+        let will_summarize = signal >= threshold && new_c > c;
 
         // ⑩ Graded tiers (soft / summarize) + stuck self-check on the tail.
         // Soft is info-log-only. The stuck counter only ticks when summarize
@@ -332,19 +369,19 @@ impl AgentLoop {
             }
             let st = states.entry(session_key.to_string()).or_default();
 
-            if tail_tokens >= soft && !st.soft_noticed {
+            if signal >= soft && !st.soft_noticed {
                 st.soft_noticed = true;
                 info!(
-                    "[AgentLoop] context tail at ~{}% of window ({} / {}); summarization will trigger at {}%",
-                    tail_tokens * 100 / context_window.max(1),
-                    tail_tokens,
+                    "[AgentLoop] context pressure at ~{}% of window ({} / {}); summarization will trigger at {}%",
+                    signal * 100 / context_window.max(1),
+                    signal,
                     context_window,
                     COMPACT_SUMMARIZE_RATIO
                 );
             }
 
             if will_summarize {
-                if summarize_was_ineffective(st.last_summary_tokens, tail_tokens) {
+                if summarize_was_ineffective(st.last_summary_tokens, signal) {
                     st.consecutive_failures += 1;
                 } else {
                     st.consecutive_failures = 0;
@@ -357,14 +394,19 @@ impl AgentLoop {
                         );
                         st.stuck = true;
                     }
-                    paused_stuck = true;
                 } else {
-                    st.last_summary_tokens = tail_tokens;
+                    st.last_summary_tokens = signal;
                 }
-            } else if tail_tokens < threshold {
-                // Breathing room — clear the stuck latch.
+            } else if signal < threshold {
+                // Breathing room — clear the stuck latch (both axes).
                 st.consecutive_failures = 0;
                 st.stuck = false;
+                st.no_progress = 0;
+            }
+            // ⑩+B2：stuck 闩统一生效——无论由 failures 轴（本块上方）还是
+            // no_progress 轴（B2 守卫，摘要弃用时置位）触发，都暂停本轮。
+            if st.stuck {
+                paused_stuck = true;
             }
         }
         if paused_stuck {
@@ -448,10 +490,50 @@ impl AgentLoop {
         .await;
 
         if let Some(summary) = summary {
-            instance.set_summary_cache(Some(crate::instance::SummaryCache {
-                covers_up_to: new_c,
-                text: summary,
-            }));
+            // B2（2026-10-18 B 级清零）：无进展守卫——采用前用同轴估算比较
+            // 压缩前后：基线 = 被折叠前的上下文（旧摘要 + 现尾巴），省幅不足
+            // 基线 5% 视为无进展 → 弃用（covers 不推进——用有损摘要换零空间
+            // 是纯亏损，且历史原文比同尺寸摘要信息量大）。基线刻意不用混合
+            // `signal`：provider 实报含 system+tools 常量开销而 projected 不
+            // 含，saved 会被开销抬高——开销 ≥ 5%×signal 时零进展摘要照样过闸
+            // （守卫被架空；复查 2026-10-19 根修）。触发判定继续用 signal
+            // （偏早触发是安全侧），守卫只认同轴省幅。弃用计数 no_progress
+            // 联动 COMPACT_NO_PROGRESS_LIMIT 暂停闩（连续 2 次暂停自动压缩；
+            // 手动 /compact 走 force_compression 不受限）。无进展弃用后下轮
+            // 同 tail 再次触发 summarize_was_ineffective 轴
+            // （last_summary_tokens 已在触发分支记账），双轴同指卡死。
+            let est_before =
+                crate::session::estimate_tokens(existing_summary).saturating_add(tail_tokens);
+            let projected = crate::session::estimate_tokens(&summary)
+                .saturating_add(estimate_tokens_for_turns_projected(&history[new_c..]));
+            let saved = est_before.saturating_sub(projected);
+            let min_save = est_before * COMPACT_NO_PROGRESS_RATIO / 100;
+            if saved < min_save {
+                warn!(
+                    "[AgentLoop] compaction no progress for {}: est_before={est_before} projected={} (saved {saved} < {min_save}); discarding summary, full history kept",
+                    session_key, projected
+                );
+                let mut states = self.compact_state.lock();
+                if let Some(st) = states.get_mut(session_key) {
+                    st.no_progress += 1;
+                    if st.no_progress >= COMPACT_NO_PROGRESS_LIMIT && !st.stuck {
+                        st.stuck = true;
+                        warn!(
+                            "[AgentLoop] compaction paused for {}: {COMPACT_NO_PROGRESS_LIMIT} consecutive no-progress summarizations (manual /compact still available)",
+                            session_key
+                        );
+                    }
+                }
+            } else {
+                instance.set_summary_cache(Some(crate::instance::SummaryCache {
+                    covers_up_to: new_c,
+                    text: summary,
+                }));
+                // 成功采用即清零（连续性只针对「反复无进展」）。
+                if let Some(st) = self.compact_state.lock().get_mut(session_key) {
+                    st.no_progress = 0;
+                }
+            }
         } else {
             // 2026-08-25 摘要静默失败修复：失败（或无可摘要内容）时绝不推进
             // covers —— 否则被折叠的上下文会静默丢失。Loud warn，不静默。
@@ -471,6 +553,21 @@ impl AgentLoop {
             let mut map = summarizing_flag.lock();
             map.remove(&clear_key);
         }
+    }
+
+    /// 自查②（2026-10-18 B 级清零）：记录最近一次 provider 实报的整请求
+    /// 输入 token（prompt + cache_read），供 [`Self::maybe_update_summary`]
+    /// 的混合触发信号使用。每次 LLM 响应后调用（run_loop 器官 5 之后）；
+    /// 无 usage 的调用方不调 = 信号保持 None = 纯估算回落。
+    pub(crate) fn note_compaction_provider_signal(&self, session_key: &str, total_input: u64) {
+        let mut states = self.compact_state.lock();
+        if states.len() > SESSION_STATE_MAX_ENTRIES {
+            states.clear();
+        }
+        states
+            .entry(session_key.to_string())
+            .or_default()
+            .last_provider_prompt_tokens = Some(total_input);
     }
 
     /// P5（能力扩展 WS2）：`agents.defaults.compact_keep_recent_tokens`
@@ -1488,3 +1585,9 @@ pub(crate) async fn summarize_prefix_owned(
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod ws2_compact_tests;
+
+// ---------------------------------------------------------------------------
+// 自查② + B2（2026-10-18 B 级清零）：混合触发信号 + 压缩无进展守卫测试。
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod compact_signal_tests;

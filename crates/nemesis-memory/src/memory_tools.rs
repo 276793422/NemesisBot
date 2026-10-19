@@ -235,11 +235,15 @@ impl MemoryToolExecutor {
                             } else {
                                 String::new()
                             };
+                            // B15（2026-10-18 B 级清零）：召回带日期戳——时效
+                            // 判断（「这条还作数吗」）不再靠运气。episodic 段
+                            // 此前已有时间戳，语义段此前是唯一缺口。
                             output.push_str(&format!(
-                                "{}. [ID: {}]{} {}\n",
+                                "{}. [ID: {}]{} [{}] {}\n",
                                 i + 1,
                                 se.entry.id,
                                 score_str,
+                                se.entry.created_at.format("%Y-%m-%d"),
                                 truncate_text(&se.entry.content, 200)
                             ));
                             if !se.entry.tags.is_empty() {

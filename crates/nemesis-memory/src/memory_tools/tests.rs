@@ -2517,8 +2517,15 @@ async fn agt_search_output_formats_positive_and_zero_scores() {
     assert!(result.success);
     // 正分条目 → "[75%]" 后缀（score > 0.0 臂）
     assert!(result.content.contains("[75%]"), "got: {}", result.content);
-    // 零分条目 → 无百分号后缀（else 臂）
-    assert!(result.content.contains("[ID: id-zero] zero score doc"));
+    // 零分条目 → 无百分号后缀（else 臂）；B15 日期戳 [YYYY-MM-DD] 在场
+    // （created_at 恒有值 = 恒带前缀，无回落分支）。
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let expected_zero = format!("[ID: id-zero] [{today}] zero score doc");
+    assert!(
+        result.content.contains(&expected_zero),
+        "expected `{expected_zero}` in: {}",
+        result.content
+    );
 }
 
 #[tokio::test]

@@ -132,6 +132,19 @@ fn issue_to_view(
             serde_json::to_value(subscribers).unwrap_or_default(),
         );
         obj.insert("depends_on".to_string(), serde_json::json!(depends_on));
+        // 在途派发投影（B14）：撤回派发按钮的显示依据（有在途才显示）；
+        // None 不插键（前端 undefined falsy）。只投影撤回需要的最小面。
+        if let Some(d) = store.get_active_dispatch(issue.id)? {
+            obj.insert(
+                "active_dispatch".to_string(),
+                serde_json::json!({
+                    "task_id": d.task_id,
+                    "worker_id": d.worker_id,
+                    "state": d.state,
+                    "dispatched_at": d.dispatched_at,
+                }),
+            );
+        }
     }
     Ok(v)
 }
@@ -2532,6 +2545,7 @@ fn board_plan_model_swap(
         protocol: resolution.protocol.clone(),
         timeout_secs: resolution.timeout_secs,
         stream_mode: resolution.stream_mode.clone(),
+        cache_breakpoints: resolution.cache_breakpoints,
         account_id: String::new(),
         headers: std::collections::HashMap::new(),
     };
@@ -5086,6 +5100,87 @@ async fn issue_cancel(
     Err("issue.cancel 需要集群支持（cluster feature 未编译）".to_string())
 }
 
+/// `issue.cancel_dispatch` 实现（B14，2026-10-18 B 级清零）：**只撤派发、
+/// 单据存活**——与 `issue.cancel`（连单终杀）互补的轻量出口。适用场景：
+/// 派错节点想换人重派、worker 假死不等超时 sweep。语义：
+/// - A 侧撤派发行（→ cancelled 终态）+ 下行 task_cancel（fire-and-forget，
+///   与 issue.cancel 共用 [`spawn_task_cancel`] 单一出口）；
+/// - 竞态守卫同构：赢竞态（cancel_dispatch Ok(Some)）才动账；输（worker
+///   恰好回报/超时 sweep 先到）诚实报错——issue 保持写回的状态；
+/// - **issue 状态不动**：留原地（in_progress 可直接重派——
+///   dispatch_issue_core 状态闸放行 InProgress；转 blocked 反而挡住重派，
+///   需两步操作）；
+/// - 写回幂等早退兜住迟到回报（write_back_board_dispatch 对 cancelled
+///   派发行 already_terminal 早退）——撤后 worker 迟到回报不会假 done；
+/// - 系统评论留痕（撤回不改状态，评论是重派线索的唯一载体；评论失败
+///   不回滚撤回本体，warn 留痕）。
+#[cfg(feature = "cluster")]
+async fn issue_cancel_dispatch(
+    store: &Arc<BoardStore>,
+    actor: Actor,
+    ctx: &RequestContext,
+    data: Option<serde_json::Value>,
+) -> Result<Option<serde_json::Value>, String> {
+    let data = data.ok_or("missing data")?;
+    let id = data
+        .get("id")
+        .and_then(|v| v.as_i64())
+        .ok_or("missing field: id")?;
+    let issue = store.get_issue(id)?;
+    let dispatch = store
+        .get_active_dispatch(id)?
+        .ok_or_else(|| "该 issue 无在途派发（未派发或已终结）".to_string())?;
+
+    // 竞态守卫：只认 dispatched/running 态；输（worker 恰好回报/超时 sweep
+    // 先到）= 派发已终结，诚实报错让前端刷新（对齐 issue.cancel）。
+    if store.cancel_dispatch(&dispatch.task_id, &actor)?.is_none() {
+        return Err("派发已终结（worker 回报或超时），撤回未生效".to_string());
+    }
+
+    // 下行取消（fire-and-forget）：集群缺席（理论不可达——派发本身需要
+    // 集群）退化为仅本地撤回 + warn，不炸撤回本体。
+    if let Some(cluster) = ctx.state.cluster.as_ref() {
+        spawn_task_cancel(store, cluster, id, &dispatch.worker_id, &dispatch.task_id);
+    } else {
+        tracing::warn!(
+            "[Board] cancel_dispatch: 集群未装配，task_cancel 未下行（task_id={})",
+            dispatch.task_id
+        );
+    }
+
+    // 留痕（best-effort）：撤回不改 issue 状态，评论是重派线索的唯一载体。
+    if let Err(e) = store.add_comment(nemesis_board::NewComment {
+        issue_id: id,
+        author: nemesis_board::Actor::system("board"),
+        content: format!(
+            "⏹ 派发已撤回（worker={}，task_id={}）：单据保留，可直接重新派发。",
+            dispatch.worker_id, dispatch.task_id
+        ),
+        parent_id: None,
+        ctype: nemesis_board::CommentType::System,
+    }) {
+        tracing::warn!("[Board] cancel_dispatch 留痕评论失败（issue={id}）：{e}");
+    }
+
+    Ok(Some(serde_json::json!({
+        "cancelled_dispatch": true,
+        "task_id": dispatch.task_id,
+        "issue": issue_to_view(store, &issue)?,
+    })))
+}
+
+/// `issue.cancel_dispatch`（未编译 cluster）：与 issue.cancel 同构——无
+/// 集群编译形态下不存在在途派发（派发本身需要集群）。
+#[cfg(not(feature = "cluster"))]
+async fn issue_cancel_dispatch(
+    _store: &Arc<BoardStore>,
+    _actor: Actor,
+    _ctx: &RequestContext,
+    _data: Option<serde_json::Value>,
+) -> Result<Option<serde_json::Value>, String> {
+    Err("issue.cancel_dispatch 需要集群支持（cluster feature 未编译）".to_string())
+}
+
 /// 自动派发判定（纯函数，可单测）：config 开关开 **且** 指派对象是 worker。
 /// 开关 = `config.json` 的 `board.auto_dispatch`（W2.5 接口预留，用户拍板
 /// 2026-08-31：现阶段不做自动派发，默认 false；置 true 即激活）。
@@ -5612,6 +5707,7 @@ impl ModuleHandler for BoardHandler {
             "issue.move",
             "issue.dispatch",
             "issue.cancel",
+            "issue.cancel_dispatch",
             "issue.reopen",
             "issue.plan",
             "issue.draft_ac",
@@ -6047,6 +6143,10 @@ impl ModuleHandler for BoardHandler {
             // 拒绝取消，issue 保持写回的状态）。响应带 cascade_cancelled
             //（C3：被级联取消的子单编号清单）。
             "issue.cancel" => issue_cancel(&store, actor, ctx, data).await,
+            // 只撤派发、单据存活（B14）：与 issue.cancel（连单终杀）互补——
+            // 派错节点换人重派 / worker 假死不等超时 sweep 的轻量出口。
+            // issue 状态不动（可直接重派），写回幂等早退兜住迟到回报。
+            "issue.cancel_dispatch" => issue_cancel_dispatch(&store, actor, ctx, data).await,
             // reopen（发现④ 2026-09-15）：cancelled → backlog 唯一终态
             // 出口，自动追加审计评论 + 解除 hidden；与 CLI `issue reopen`
             // 共用 store.reopen_issue 单一后端。

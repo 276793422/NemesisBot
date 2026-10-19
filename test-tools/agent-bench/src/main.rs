@@ -290,6 +290,7 @@ async fn run_scenario(
         }
         "codemode_orchestration" => scenarios::run_codemode_orchestration(ctx, runs, ws).await,
         "docs_lift" => scenarios::run_docs_lift(ctx, runs, ws).await,
+        "disconnect_resume" => scenarios::run_disconnect_resume(ctx, runs).await,
         other => {
             println!("  未知场景 {other}，跳过");
             Vec::new()

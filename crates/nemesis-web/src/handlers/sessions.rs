@@ -36,6 +36,8 @@ impl ModuleHandler for SessionsHandler {
             "share_list",
             "share_revoke",
             "mark_delivered",
+            "snooze",
+            "unsnooze",
         ]
     }
 
@@ -89,6 +91,66 @@ impl ModuleHandler for SessionsHandler {
                 );
                 let cleared = nemesis_agent::chat_log::clear_undelivered_replies(&session_key);
                 Ok(Some(serde_json::json!({ "cleared": cleared })))
+            }
+            "snooze" => {
+                // B11（2026-10-18 snooze）：暂停会话到指定时刻（相对秒或
+                // RFC3339）。幂等 upsert（重复 snooze = 改期）；到期由
+                // gateway snooze sweeper 摘标记 + 注入恢复 system 行。期间
+                // 消息照常处理——snooze 只是 UI 标记 + 到期唤醒语义。
+                let d = data.as_ref().ok_or_else(|| "missing data".to_string())?;
+                let session_id = d
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing session_id".to_string())?;
+                let raw_until = d
+                    .get("until")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing until".to_string())?;
+                let note = d
+                    .get("note")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+                let sid = nemesis_agent::session::SessionStore::sanitize_session_id(session_id);
+                let session_key = format!("agent:main:session:{sid}");
+                if !nemesis_agent::chat_log::chat_log_exists(&session_key) {
+                    return Err(format!("会话不存在: {sid}"));
+                }
+                let until = parse_snooze_until(raw_until)?;
+                nemesis_agent::chat_log::write_session_snooze(
+                    &session_key,
+                    &until,
+                    note.as_deref(),
+                );
+                ctx.state.event_hub.publish(
+                    "session.updated",
+                    serde_json::json!({ "session_id": sid, "snoozed_until": until }),
+                );
+                Ok(Some(
+                    serde_json::json!({ "session_id": sid, "snoozed_until": until }),
+                ))
+            }
+            "unsnooze" => {
+                // B11：立即解除暂停。无标记 = 幂等成功（unsnoozed=false 仍回
+                // 200，前端刷新列表即可）。
+                let session_id = data
+                    .as_ref()
+                    .and_then(|d| d.get("session_id"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing session_id".to_string())?;
+                let sid = nemesis_agent::session::SessionStore::sanitize_session_id(session_id);
+                let session_key = format!("agent:main:session:{sid}");
+                let cleared = nemesis_agent::chat_log::clear_session_snooze(&session_key).is_some();
+                ctx.state.event_hub.publish(
+                    "session.updated",
+                    serde_json::json!({
+                        "session_id": sid,
+                        "snoozed_until": serde_json::Value::Null,
+                    }),
+                );
+                Ok(Some(
+                    serde_json::json!({ "session_id": sid, "unsnoozed": cleared }),
+                ))
             }
             "create" => {
                 let workspace = require_workspace(ctx)?;
@@ -550,4 +612,95 @@ impl ModuleHandler for SessionsHandler {
             _ => Err(format!("unknown sessions cmd: {}", cmd)),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// B11（2026-10-18 snooze）：暂停时刻解析 + 到期唤醒 sweeper
+// ---------------------------------------------------------------------------
+
+/// 解析暂停时刻：i64 相对秒（自现在起）或 RFC3339 绝对时刻，统一归一为
+/// RFC3339（本地时区）。过去时刻/非正秒数 = 诚实报错——「立即恢复」是
+/// unsnooze 的语义，不静默吞掉（否则用户输错单位会把 8h 暂停变成 8s）。
+pub(crate) fn parse_snooze_until(raw: &str) -> Result<String, String> {
+    let raw = raw.trim();
+    if let Ok(secs) = raw.parse::<i64>() {
+        if secs <= 0 {
+            return Err(format!("相对秒数必须为正整数: {raw}"));
+        }
+        let due = chrono::Local::now() + chrono::Duration::seconds(secs);
+        return Ok(due.to_rfc3339());
+    }
+    let dt = chrono::DateTime::parse_from_rfc3339(raw).map_err(|_| {
+        format!("until 需为相对秒数（如 3600）或 RFC3339（如 2026-10-19T09:00:00+08:00）: {raw}")
+    })?;
+    if dt.with_timezone(&chrono::Local) <= chrono::Local::now() {
+        return Err(format!("暂停时刻已过去: {raw}"));
+    }
+    Ok(dt.with_timezone(&chrono::Local).to_rfc3339())
+}
+
+/// 到期唤醒 sweeper（gateway 常驻；upload sweeper 同款装配形态）。每 10s
+/// 扫一遍 meta sidecar——量级 = 会话数（每个一个小 JSON 读），可忽略。
+pub fn spawn_snooze_sweeper() {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+        interval.tick().await; // 首 tick 立即返回（启动期无需抢跑，10s 内兜住）
+        loop {
+            interval.tick().await;
+            let woken = wake_due_sessions();
+            if woken > 0 {
+                tracing::info!("[sessions] snooze sweeper 唤醒 {woken} 个会话");
+            }
+        }
+    });
+}
+
+/// 扫描到期暂停项并执行唤醒，返回唤醒数（pub(crate) 供测试直调）。
+///
+/// 唤醒编排四件套：摘标记（chat_log 真相源，竞速安全——并发 sweeper/
+/// unsnooze 只有一方拿到 Some）→ 注入恢复 system 行（jsonl 真相源）→
+/// `chat_event_log::record` 入环 + chat.activity 广播（sweep 不经 web 的
+/// record 点，已开 ChatPanel 窗口的活同步必须在这里手动补）→
+/// `publish_global_event("session.updated")`（侧栏 force 刷新信号）。
+pub(crate) fn wake_due_sessions() -> usize {
+    let now = chrono::Local::now();
+    let mut woken = 0;
+    for (stem, until, _) in nemesis_agent::chat_log::snoozed_sessions() {
+        // 只认 web 命名空间（snooze 写入路径只有 sessions handler，只收
+        // web sid）；其他 stem 防御性跳过，不做有损还原。
+        let Some(sid) = stem.strip_prefix("agent_main_session_") else {
+            continue;
+        };
+        let Ok(due) = chrono::DateTime::parse_from_rfc3339(&until) else {
+            // 坏标记不阻塞其他项。写入路径只产 RFC3339，坏标记只会来自手
+            // 工改盘——静默跳过（sweeper 10s 一轮，WARN 会周期刷屏）。
+            continue;
+        };
+        if due.with_timezone(&chrono::Local) > now {
+            continue;
+        }
+        let session_key = format!("agent:main:session:{sid}");
+        let Some((_, note)) = nemesis_agent::chat_log::clear_session_snooze(&session_key) else {
+            continue; // 已被并发方摘掉
+        };
+        // 会话可能在暂停期间被删除——不复活（no jsonl = scan 不可见）。
+        if !nemesis_agent::chat_log::chat_log_exists(&session_key) {
+            continue;
+        }
+        let content = match note {
+            Some(n) => format!("⏰ 会话暂停已到期，自动恢复（{n}）"),
+            None => "⏰ 会话暂停已到期，自动恢复".to_string(),
+        };
+        nemesis_agent::chat_log::append_chat_log(&session_key, "system", &content);
+        crate::chat_event_log::record(sid, "system", &content, None, None);
+        crate::chat_event_log::publish_global_event(
+            "session.updated",
+            serde_json::json!({
+                "session_id": sid,
+                "snoozed_until": serde_json::Value::Null,
+            }),
+        );
+        woken += 1;
+    }
+    woken
 }

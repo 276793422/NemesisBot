@@ -106,6 +106,11 @@ mod conflict_resolver;
 /// ——nemesis-connectors 整包随它进出（连带 nemesis-security）。
 #[cfg(feature = "connectors")]
 mod connector_tools;
+/// B4（2026-10-18 凭据 vault §7）：凭据索要卡 broker——值不 transit 通道。
+/// 门控随 vault_runtime（security feature off = 无 vault 可落，卡片无意义；
+/// 触发点槽空走原错误路径零回归）。
+#[cfg(feature = "security")]
+mod credential_broker;
 /// P4 交付门（持久 Agent 实体，2026-10-17）：worker 侧交付分支捕获——
 /// 仅 cluster 形态消费（execute_new_task/resume_task 成功收口）。
 #[cfg(feature = "cluster")]

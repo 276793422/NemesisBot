@@ -1043,6 +1043,65 @@ pub fn clear_undelivered_replies(session_key: &str) -> bool {
     true
 }
 
+/// B11（2026-10-18 snooze）：把会话暂停到 `until_rfc3339`（RFC3339，含时区）。
+/// 幂等 upsert（重复 snooze = 改期，旧 note 一并覆盖）。
+pub fn write_session_snooze(session_key: &str, until_rfc3339: &str, note: Option<&str>) {
+    upsert_meta(session_key, |m| {
+        m.snoozed_until = Some(until_rfc3339.to_string());
+        m.snooze_note = note.map(|n| n.to_string());
+    });
+}
+
+/// B11：摘除暂停标记（与 upsert_meta 同锁——check-then-write 原子性）。
+/// 返回被摘除的 `(until, note)`；无标记/无 meta = `None`（不空写文件）。
+pub fn clear_session_snooze(session_key: &str) -> Option<(String, Option<String>)> {
+    let _guard = META_LOCK.lock();
+    let mut meta = read_meta_full(session_key)?;
+    let until = meta.snoozed_until.take()?;
+    let note = meta.snooze_note.take();
+    let path = meta_path(session_key);
+    if let Err(e) = fs::write(&path, serde_json::to_string(&meta).unwrap_or_default()) {
+        tracing::warn!(
+            "[chat_log] failed to clear snooze {}: {}",
+            path.display(),
+            e
+        );
+    }
+    Some((until, note))
+}
+
+/// B11：扫描全部暂停中的会话，返回 `(safe_stem, until, note)`。`safe_stem`
+/// 是 sanitize 后的 meta 文件名去 `.meta.json` 后缀（调用方按
+/// `agent_main_session_{sid}` 前缀还原裸 sid，logs.rs 同款规则）。输出按
+/// stem 排序——消费与条目顺序无关（每条独立处理），排序只为测试确定性。
+pub fn snoozed_sessions() -> Vec<(String, String, Option<String>)> {
+    let dir = default_path_manager().sessions_log_dir();
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some(stem) = name.strip_suffix(".meta.json") else {
+            continue;
+        };
+        let Ok(data) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(meta) = serde_json::from_str::<SessionMeta>(&data) else {
+            continue;
+        };
+        if let Some(until) = meta.snoozed_until {
+            out.push((stem.to_string(), until, meta.snooze_note));
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
 /// Read the full sidecar meta by session key. `None` when absent/unparsable.
 fn read_meta_full(session_key: &str) -> Option<SessionMeta> {
     let path = meta_path(session_key);
@@ -1097,6 +1156,15 @@ pub struct SessionMeta {
     /// （未达阈值 / 小模型未配置——诚实跳过）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch_summary: Option<String>,
+    /// B11（2026-10-18 snooze）：会话暂停到点（RFC3339，含时区）。None =
+    /// 未暂停。到期由 gateway 的 snooze sweeper 摘除标记并注入恢复 system
+    /// 行；期间消息照常处理（snooze 只是 UI 标记 + 到期唤醒语义，不拦截
+    /// 入站消息）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snoozed_until: Option<String>,
+    /// B11：暂停备注（用户可选说明，唤醒注入行尾追加；None = 无）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snooze_note: Option<String>,
 }
 
 /// WS9/P17：一次消息级回退的谱系记录（`last_rewind` 的载荷）。
@@ -1311,6 +1379,11 @@ mod cov2_tests;
 // 投影 + PresentedFile serde 缺省契约测试。
 #[cfg(test)]
 mod n5_tests;
+
+// B11（2026-10-18 snooze）：SessionMeta 暂停标记三函数（write 幂等 upsert /
+// clear 摘除返回原值 / snoozed_sessions 扫描过滤）测试。
+#[cfg(test)]
+mod b11_tests;
 
 // cov 系文件型测试的共享串行锁（2026-09-28 复查新增）：目录型夹具（rewind
 // tmp 目录 / rename 目标目录 / legacy 嵌套目录 / boundary sidecar 目录）与
