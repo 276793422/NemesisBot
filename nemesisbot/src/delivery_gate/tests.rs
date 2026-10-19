@@ -27,7 +27,7 @@ fn json_backend_returns_none() {
         store.backend(),
         nemesis_agent::checkpoint::CheckpointBackend::Json
     );
-    let out = capture_task_delivery_with_store(&store, "json-task", None, "node-b");
+    let out = capture_task_delivery_with_store(&store, "json-task", None, "node-b", Vec::new());
     assert!(out.is_none(), "JSON 形态无影子库 → None（诚实降级）");
 }
 
@@ -35,7 +35,7 @@ fn json_backend_returns_none() {
 fn empty_task_id_returns_none() {
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(CheckpointStore::new(None, dir.path().to_path_buf()));
-    assert!(capture_task_delivery_with_store(&store, "", None, "node-b").is_none());
+    assert!(capture_task_delivery_with_store(&store, "", None, "node-b", Vec::new()).is_none());
 }
 
 #[test]
@@ -51,7 +51,14 @@ fn happy_path_json_shape_and_patch_file() {
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(root.join("src").join("new.rs"), "fn main() {}\n").unwrap();
 
-    let out = capture_task_delivery_with_store(&store, "t-happy", Some(&base), "node-b")
+    // ②typed checks 块：一条真实执行过的检查记录随 wire 上行。
+    let checks = vec![CheckRecord {
+        tool: "exec".into(),
+        cmd: "cargo test -p nemesisbot".into(),
+        ok: true,
+        summary: "test result: ok. 5 passed".into(),
+    }];
+    let out = capture_task_delivery_with_store(&store, "t-happy", Some(&base), "node-b", checks)
         .expect("git 形态成功捕获");
     let obj = out.as_object().expect("delivery 是 JSON object");
 
@@ -69,6 +76,14 @@ fn happy_path_json_shape_and_patch_file() {
     let patch = obj["patch"].as_str().expect("patch 是字符串");
     assert!(patch.contains("a.txt"));
     assert!(patch.contains("src/new.rs"));
+
+    // ②typed checks 块 wire 透传（shape = CheckRecord 序列化字段）。
+    let checks = obj["checks"].as_array().expect("checks 是数组");
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0]["tool"], "exec");
+    assert_eq!(checks[0]["cmd"], "cargo test -p nemesisbot");
+    assert_eq!(checks[0]["ok"], true);
+    assert_eq!(checks[0]["summary"], "test result: ok. 5 passed");
 
     // patch 落盘留底与 wire JSON 一致（正斜杠相对路径）。
     let on_disk =
@@ -96,7 +111,13 @@ fn bad_base_tree_hex_is_none_not_panic() {
     std::fs::write(root.join("f.txt"), "x\n").unwrap();
     let store = Arc::new(CheckpointStore::new(None, root));
     // 坏 hex（非 40 位）：capture 层响亮失败 → 交付门兜成 None + warn。
-    let out = capture_task_delivery_with_store(&store, "t-badbase", Some("deadbeef"), "node-b");
+    let out = capture_task_delivery_with_store(
+        &store,
+        "t-badbase",
+        Some("deadbeef"),
+        "node-b",
+        Vec::new(),
+    );
     assert!(out.is_none(), "坏基线 = None（不造证据不炸链路）");
 }
 
@@ -117,10 +138,13 @@ fn truncated_patch_still_carries_patch_path() {
     let big = "y".repeat(1_200_000) + "\n";
     std::fs::write(root.join("big.txt"), &big).unwrap();
 
-    let out = capture_task_delivery_with_store(&store, "t-trunc", Some(&base), "node-b")
-        .expect("git 形态成功捕获");
+    let out =
+        capture_task_delivery_with_store(&store, "t-trunc", Some(&base), "node-b", Vec::new())
+            .expect("git 形态成功捕获");
     let obj = out.as_object().expect("delivery 是 JSON object");
     assert_eq!(obj["patch_truncated"], true, "1.2MB diff 必须触发截断");
+    // ②typed checks 块诚实缺席：没跑检查 = 键不出现（绝不造空壳）。
+    assert!(obj.get("checks").is_none(), "空 checks 不得出现在 wire");
     let path = obj["patch_path"].as_str().expect("patch_path 在场");
     assert!(
         !path.trim().is_empty(),

@@ -90,15 +90,17 @@ fn claude_user_frame_encodes_stream_json_shape() {
 }
 
 #[test]
-fn codex_user_frame_has_placeholder_id_and_conversation() {
-    let frame = DelegateProtocolKind::CodexAppServer.encode_user_frame("go", Some("conv-9"));
+fn codex_user_frame_has_placeholder_id_and_thread() {
+    let frame = DelegateProtocolKind::CodexAppServer.encode_user_frame("go", Some("thread-9"));
     let v: Value = serde_json::from_str(&frame).unwrap();
     assert_eq!(v["jsonrpc"], "2.0");
     // 占位 id=0：发送时由 rewrite_rpc_id 覆写为递增 id。
     assert_eq!(v["id"], 0);
-    assert_eq!(v["method"], "sendUserMessage");
-    assert_eq!(v["params"]["conversationId"], "conv-9");
-    assert_eq!(v["params"]["items"][0]["text"], "go");
+    assert_eq!(v["method"], "turn/start");
+    assert_eq!(v["params"]["threadId"], "thread-9");
+    // 必填字段名是 input（0.149.1 实测；items 会被 missing field `input` 拒）。
+    assert_eq!(v["params"]["input"][0]["type"], "text");
+    assert_eq!(v["params"]["input"][0]["text"], "go");
 }
 
 #[test]
@@ -140,20 +142,49 @@ fn claude_extract_assistant_texts_only_assistant_events() {
 #[test]
 fn codex_extract_agent_message_events() {
     let p = DelegateProtocolKind::CodexAppServer;
-    let event = json!({
+    // 完成事件（0.149.1 实测形态）：item.type=="agentMessage" → 抽 item.text。
+    let completed = json!({
         "jsonrpc": "2.0",
-        "method": "codex/event/agent_message",
-        "params": {"msg": {"message": "worker says hi"}}
+        "method": "item/completed",
+        "params": {
+            "item": {"type": "agentMessage", "id": "msg_1", "text": "worker says hi"},
+            "threadId": "t1",
+            "turnId": "u1"
+        }
     })
     .to_string();
-    assert_eq!(p.extract_assistant_texts(&event), vec!["worker says hi"]);
+    assert_eq!(
+        p.extract_assistant_texts(&completed),
+        vec!["worker says hi"]
+    );
+    // 流式增量与 completed 同内容——抽了会双份 → 不抽。
+    let delta = json!({
+        "jsonrpc": "2.0",
+        "method": "item/agentMessage/delta",
+        "params": {"threadId": "t1", "turnId": "u1", "itemId": "msg_1", "delta": "worker says"}
+    })
+    .to_string();
+    assert!(p.extract_assistant_texts(&delta).is_empty());
+    // userMessage 的 completed 是用户回声不是回复 → 不抽。
+    let user_echo = json!({
+        "jsonrpc": "2.0",
+        "method": "item/completed",
+        "params": {
+            "item": {"type": "userMessage", "id": "i2",
+                     "content": [{"type": "text", "text": "worker says hi"}]},
+            "threadId": "t1",
+            "turnId": "u1"
+        }
+    })
+    .to_string();
+    assert!(p.extract_assistant_texts(&user_echo).is_empty());
     // codex 的会话 id 在握手响应里（manager 缓存），不在事件流 → None。
-    assert_eq!(p.extract_session_id(&event), None);
+    assert_eq!(p.extract_session_id(&completed), None);
 }
 
 #[test]
 fn rewrite_rpc_id_replaces_only_first_placeholder() {
-    let frame = r#"{"jsonrpc":"2.0","id":0,"method":"sendUserMessage","params":{"note":"x"}}"#;
+    let frame = r#"{"jsonrpc":"2.0","id":0,"method":"turn/start","params":{"note":"x"}}"#;
     let rewritten = rewrite_rpc_id(frame, 17);
     assert!(rewritten.contains(r#""id":17"#));
     assert!(!rewritten.contains(r#""id":0,"#));
@@ -504,6 +535,332 @@ async fn all_running_at_capacity_rejects_honestly() {
 }
 
 // ---------------------------------------------------------------------------
+// F7（二轮复评 2026-10-18）：启动在途纳入急停与容量
+// ---------------------------------------------------------------------------
+
+/// 等 pid 对应进程消失（F7 取证面：失败路径必须真的杀掉子进程，不许孤儿）。
+#[cfg(windows)]
+async fn wait_pid_gone(pid: u32) -> bool {
+    for _ in 0..50 {
+        let out = tokio::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+            .output()
+            .await;
+        if let Ok(o) = out {
+            let s = String::from_utf8_lossy(&o.stdout);
+            // 无匹配时 tasklist 输出 INFO 行（各语言形态不一），不含 pid。
+            if !s.contains(&pid.to_string()) {
+                return true;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    false
+}
+
+#[cfg(not(windows))]
+async fn wait_pid_gone(pid: u32) -> bool {
+    for _ in 0..50 {
+        let gone = tokio::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .output()
+            .await
+            .map(|o| !o.status.success())
+            .unwrap_or(true);
+        if gone {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    false
+}
+
+/// 从「estop engaged: delegate start aborted (pid N killed)」抠 pid。
+fn pid_from_abort_err(err: &str) -> Option<u32> {
+    let rest = err.split("pid ").nth(1)?;
+    let num: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    num.parse().ok()
+}
+
+#[tokio::test]
+async fn estop_in_start_window_aborts_and_kills_child() {
+    let _serial = TEST_LOCK.lock().await;
+    let dir = unique_temp_dir("estop_window");
+    let cli = make_fake_echo_cli(&dir);
+    let mgr = Arc::new(DelegateManager::new());
+    let estop = Arc::new(crate::estop::EstopState::new());
+    mgr.attach_estop(estop.clone());
+
+    // 占住 entries 锁把 bg start 钉在容量闸（入口 estop 检查之后、spawn
+    // 之前）——这正是旧实现「watcher 摸不到未入表进程」的窗口。
+    let guard = mgr.entries.lock().await;
+    let mgr_bg = mgr.clone();
+    let cli_bg = cli.clone();
+    let cwd_bg = dir.to_string_lossy().to_string();
+    let bg = tokio::spawn(async move {
+        mgr_bg
+            .start(
+                DelegateProtocolKind::ClaudeStreamJson,
+                &cli_bg,
+                None,
+                &cwd_bg,
+                None,
+                "",
+                Default::default(),
+                Duration::MAX,
+            )
+            .await
+    });
+    // current_thread 调度：一次让位足以让 bg 跑到容量闸挂起。
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    estop.trigger();
+    drop(guard);
+
+    let err = bg.await.expect("join ok").expect_err("must abort");
+    assert!(
+        err.contains("estop engaged: delegate start aborted"),
+        "honest abort: {err}"
+    );
+    // 摘预留零残留： entries 与 starting 都空（测试模块可见私有字段）。
+    assert_eq!(mgr.entries.lock().await.len(), 0, "no entry may leak");
+    assert_eq!(mgr.starting.lock().len(), 0, "no reservation may leak");
+    // 孤儿取证：报告过的 pid 必须真的死了（start_kill + supervise 树杀）。
+    let pid = pid_from_abort_err(&err).expect("abort error carries pid");
+    assert!(
+        wait_pid_gone(pid).await,
+        "pid {pid} must be dead, not orphaned"
+    );
+}
+
+/// barrier 假 codex CLI：挂起直到 `<dir>/go` 出现，然后分两拍打印罐头
+/// 握手响应（initialize id=1 / thread/start id=2 带 thread.id，0.149.1
+/// 实测形态），再活几秒收尾。两拍间隔 2s 是必须的：rpc_round 按
+/// read_mark 消费输出，一次全打印会被 round 1 的整块读取吞掉 id=2 行
+/// → round 2 永远等不到。用于把并发 start 确定性地停在握手窗口
+/// （starting 表里）。
+fn make_barrier_codex_cli(dir: &std::path::Path) -> String {
+    let go = dir.join("go");
+    #[cfg(windows)]
+    {
+        let p = dir.join("fake_barrier_codex.cmd");
+        let body = format!(
+            "@echo off\r\n:loop\r\nif exist \"{}\" goto go\r\nping -n 1 127.0.0.1 >nul\r\ngoto loop\r\n:go\r\necho {{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{}}}}\r\nping -n 3 127.0.0.1 >nul\r\necho {{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"thread\":{{\"id\":\"barrier-thread\",\"sessionId\":\"barrier-thread\"}}}}}}\r\nping -n 6 127.0.0.1 >nul\r\n",
+            go.to_string_lossy()
+        );
+        std::fs::write(&p, body).expect("write barrier cli");
+        p.to_string_lossy().to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let p = dir.join("fake_barrier_codex.sh");
+        let body = format!(
+            "#!/bin/sh\nwhile [ ! -f {} ]; do sleep 0.05; done\necho '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{}}}}'\nsleep 2\necho '{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"thread\":{{\"id\":\"barrier-thread\",\"sessionId\":\"barrier-thread\"}}}}}}'\nsleep 5\n",
+            go.to_string_lossy()
+        );
+        std::fs::write(&p, body).expect("write barrier cli");
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        p.to_string_lossy().to_string()
+    }
+}
+
+#[tokio::test]
+async fn concurrent_starts_capacity_counts_inflight() {
+    let _serial = TEST_LOCK.lock().await;
+    let dir = unique_temp_dir("cap_inflight");
+    let cli = make_barrier_codex_cli(&dir);
+    let mgr = Arc::new(DelegateManager::new());
+
+    // 9 个并发 start：8 个进握手窗口挂起（占用 starting 座位），第 9 个
+    // 必须被容量闸拒（旧实现只数 entries——并发可破 MAX_DELEGATES）。
+    let mut bgs = Vec::new();
+    for _ in 0..MAX_DELEGATES + 1 {
+        let mgr_bg = mgr.clone();
+        let cli_bg = cli.clone();
+        let cwd_bg = dir.to_string_lossy().to_string();
+        bgs.push(tokio::spawn(async move {
+            mgr_bg
+                .start(
+                    DelegateProtocolKind::CodexAppServer,
+                    &cli_bg,
+                    None,
+                    &cwd_bg,
+                    None,
+                    "",
+                    Default::default(),
+                    Duration::MAX,
+                )
+                .await
+        }));
+    }
+    // 等 8 个全停在握手（每 50ms 轮询一次 output）——多等几拍确保全部
+    // 越过容量闸。断言窗口内的座位守恒。
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let starting_now = mgr.starting.lock().len();
+    assert_eq!(
+        starting_now, MAX_DELEGATES,
+        "all 8 should be parked in the handshake window: {starting_now}"
+    );
+
+    // 放行 barrier：8 个握手完成 → 终检（entries+starting ≤ 8）→ 全插入。
+    std::fs::write(dir.join("go"), b"1").expect("release barrier");
+    let mut oks = Vec::new();
+    let mut errs = Vec::new();
+    for bg in bgs {
+        match bg.await.expect("join ok") {
+            Ok(v) => oks.push(v["delegate_id"].as_u64().unwrap()),
+            Err(e) => errs.push(e),
+        }
+    }
+    assert_eq!(
+        oks.len(),
+        MAX_DELEGATES,
+        "exactly 8 may start: oks={oks:?} errs={errs:?}"
+    );
+    assert_eq!(
+        errs.len(),
+        1,
+        "exactly one rejected: oks={oks:?} errs={errs:?}"
+    );
+    assert!(
+        errs[0].contains("limit reached") && errs[0].contains("active/starting"),
+        "rejection must name the inflight-aware gate: {}",
+        errs[0]
+    );
+    assert_eq!(mgr.entries.lock().await.len(), MAX_DELEGATES);
+    assert_eq!(mgr.starting.lock().len(), 0);
+
+    for id in oks {
+        mgr.stop(id).await.expect("cleanup stop");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// F8：permission_mode 配置缺省贯通（args 缺省 → 配置值；显式 args 恒优先）
+// ---------------------------------------------------------------------------
+
+/// 回显自身 argv 的假 claude CLI：把 build_args 形态直接落到 stdout，
+/// 让 permission_mode 贯通可观测（`ARGS=-p ... --permission-mode X`）。
+fn make_echo_args_cli(dir: &std::path::Path) -> String {
+    #[cfg(windows)]
+    {
+        let p = dir.join("fake_echo_args.cmd");
+        std::fs::write(&p, "@echo off\r\necho ARGS=%*\r\nmore\r\n").expect("write fake cli");
+        p.to_string_lossy().to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let p = dir.join("fake_echo_args.sh");
+        std::fs::write(&p, "#!/bin/sh\necho \"ARGS=$*\"\ncat\n").expect("write fake cli");
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        p.to_string_lossy().to_string()
+    }
+}
+
+#[tokio::test]
+async fn start_tool_permission_mode_default_and_override() {
+    let _serial = TEST_LOCK.lock().await;
+    let dir = unique_temp_dir("perm_mode");
+    let cli = make_echo_args_cli(&dir);
+    let mgr = Arc::new(DelegateManager::new());
+    let workspace = dir.to_string_lossy().to_string();
+    let tool = DelegateStartTool::new(
+        &workspace,
+        true,
+        3600,
+        Some(cli.clone()),
+        None,
+        "acceptEdits".to_string(),
+        mgr.clone(),
+    );
+    let ctx = crate::context::RequestContext::new("test", "chat", "user", "session");
+
+    // args 缺省 → 配置缺省值落地。
+    let out: Value = serde_json::from_str(
+        &tool
+            .execute(r#"{"cli":"claude"}"#, &ctx)
+            .await
+            .expect("start ok"),
+    )
+    .expect("json out");
+    let id = out["delegate_id"].as_u64().unwrap();
+    let o = wait_output_pred(&mgr, id, |o| {
+        o["raw"]["chunk"]
+            .as_str()
+            .is_some_and(|c| c.contains("ARGS="))
+    })
+    .await;
+    let chunk = o["raw"]["chunk"].as_str().unwrap();
+    assert!(
+        chunk.contains("--permission-mode acceptEdits"),
+        "configured default must land in build_args: {chunk}"
+    );
+    mgr.stop(id).await.expect("stop ok");
+
+    // args 显式 → 恒优先（配置值被覆盖）。
+    let out: Value = serde_json::from_str(
+        &tool
+            .execute(
+                r#"{"cli":"claude","permission_mode":"bypassPermissions"}"#,
+                &ctx,
+            )
+            .await
+            .expect("start ok"),
+    )
+    .expect("json out");
+    let id = out["delegate_id"].as_u64().unwrap();
+    let o = wait_output_pred(&mgr, id, |o| {
+        o["raw"]["chunk"]
+            .as_str()
+            .is_some_and(|c| c.contains("ARGS="))
+    })
+    .await;
+    let chunk = o["raw"]["chunk"].as_str().unwrap();
+    assert!(
+        chunk.contains("--permission-mode bypassPermissions"),
+        "explicit args must win: {chunk}"
+    );
+    assert!(
+        !chunk.contains("acceptEdits"),
+        "configured default must be overridden: {chunk}"
+    );
+    mgr.stop(id).await.expect("stop ok");
+
+    // 配置空 + args 缺省 → 不加旗（CLI 默认，现行为）。
+    let tool = DelegateStartTool::new(
+        &workspace,
+        true,
+        3600,
+        Some(cli),
+        None,
+        String::new(),
+        mgr.clone(),
+    );
+    let out: Value = serde_json::from_str(
+        &tool
+            .execute(r#"{"cli":"claude"}"#, &ctx)
+            .await
+            .expect("start ok"),
+    )
+    .expect("json out");
+    let id = out["delegate_id"].as_u64().unwrap();
+    let o = wait_output_pred(&mgr, id, |o| {
+        o["raw"]["chunk"]
+            .as_str()
+            .is_some_and(|c| c.contains("ARGS="))
+    })
+    .await;
+    let chunk = o["raw"]["chunk"].as_str().unwrap();
+    assert!(
+        !chunk.contains("--permission-mode"),
+        "empty config + empty args = CLI default (no flag): {chunk}"
+    );
+    mgr.stop(id).await.expect("stop ok");
+}
+
+// ---------------------------------------------------------------------------
 // 真机冒烟（#[ignore]：CI 默认跳过；本机 claude CLI 在场且有登录态时
 // `cargo test -p nemesis-agent -- --ignored delegate_real_claude_smoke`
 // 手动触发。缺席 → 诚实 SKIP，不是失败。）
@@ -562,9 +919,58 @@ async fn delegate_real_claude_smoke() {
     eprintln!("stopped: {stopped}");
 }
 
-// ---------------------------------------------------------------------------
-// env 白名单（vault 解析器槽位，生产同源注入点）
-// ---------------------------------------------------------------------------
+#[tokio::test]
+#[ignore = "real-machine smoke: needs codex CLI on PATH + login state"]
+async fn delegate_real_codex_smoke() {
+    let Some(cli) = crate::loop_tools::cli_delegation::find_cli_on_path("codex") else {
+        eprintln!("SKIP: codex CLI not on PATH — real-machine smoke not applicable here");
+        return;
+    };
+    let _serial = TEST_LOCK.lock().await;
+    let dir = unique_temp_dir("smoke");
+    let mgr = Arc::new(DelegateManager::new());
+    let started = mgr
+        .start(
+            DelegateProtocolKind::CodexAppServer,
+            &cli,
+            Some("Reply with exactly this token and nothing else: DELEGATE_SMOKE_OK"),
+            dir.to_string_lossy().as_ref(),
+            None,
+            "",
+            Default::default(),
+            Duration::from_secs(180),
+        )
+        .await
+        .expect("codex start ok");
+    let id = started["delegate_id"].as_u64().unwrap();
+    eprintln!("started: {started}");
+
+    // thread/start → turn/start 全握手 + 真 LLM 往返，给 120s。
+    let out = wait_output_pred_for(&mgr, id, Duration::from_secs(120), |o| {
+        o["assistant"].as_array().is_some_and(|a| !a.is_empty())
+    })
+    .await;
+    let assistant = out["assistant"].as_array().unwrap();
+    assert!(
+        !assistant.is_empty(),
+        "expected at least one agentMessage from real codex: {out}"
+    );
+    let joined = assistant
+        .iter()
+        .filter_map(|s| s.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    eprintln!("assistant reply: {joined}");
+    assert!(
+        joined.contains("DELEGATE_SMOKE_OK"),
+        "codex reply should contain the smoke token: {joined}"
+    );
+    // codex 的 session 来自握手（peer_session），out.session_id 恒 None——注释留证。
+    eprintln!("peer session: {:?}", out["session_id"]);
+
+    let stopped = mgr.stop(id).await.expect("stop ok");
+    eprintln!("stopped: {stopped}");
+}
 
 #[test]
 fn empty_allowlist_is_noop_without_resolver() {
@@ -619,6 +1025,7 @@ fn tool_schemas_expose_expected_parameters() {
         3600,
         Some("claude".into()),
         None,
+        String::new(),
         Arc::new(DelegateManager::new()),
     );
     let schema = start.parameters();
@@ -648,4 +1055,93 @@ fn tool_schemas_expose_expected_parameters() {
     assert!(send.description().contains("delegate_start"));
     assert!(out.description().contains("offset"));
     assert!(stop.description().contains("tree-kills"));
+}
+
+/// A2 sleeper CLI：忽略 stdin EOF（模拟轮次中的 delegate——不读 stdin，
+/// EOF 优雅语义对它无效，必须走 kill 旗标阶梯）。
+fn make_fake_sleeper_cli(dir: &std::path::Path) -> String {
+    #[cfg(windows)]
+    {
+        let p = dir.join("fake_sleeper_cli.cmd");
+        std::fs::write(&p, "@echo off\r\nping -n 30 127.0.0.1 >nul\r\n").expect("write fake cli");
+        p.to_string_lossy().to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let p = dir.join("fake_sleeper_cli.sh");
+        std::fs::write(&p, "#!/bin/sh\nsleep 30\n").expect("write fake cli");
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        p.to_string_lossy().to_string()
+    }
+}
+
+/// A2：空闲 delegate（echo CLI，无待处理输入）stop → stdin EOF 优雅窗内
+/// 自退 → 不置 kill 旗标，exit.killed 诚实保持 false。
+#[tokio::test]
+async fn stop_idle_delegate_exits_gracefully_without_kill_flag() {
+    let _serial = TEST_LOCK.lock().await;
+    let dir = unique_temp_dir("stop_grace_idle");
+    let cli = make_fake_echo_cli(&dir);
+    let mgr = Arc::new(DelegateManager::new());
+    let started = mgr
+        .start(
+            DelegateProtocolKind::ClaudeStreamJson,
+            &cli,
+            None,
+            dir.to_string_lossy().as_ref(),
+            None,
+            "",
+            Default::default(),
+            Duration::MAX,
+        )
+        .await
+        .expect("start ok");
+    let id = started["delegate_id"].as_u64().unwrap();
+
+    let stopped = mgr.stop(id).await.expect("stop ok");
+    assert_eq!(stopped["stopped"], true);
+    assert!(
+        stopped.get("exit").is_some(),
+        "idle delegate must exit within the EOF grace window: {stopped}"
+    );
+    assert_eq!(
+        stopped["exit"]["killed"], false,
+        "graceful EOF stop must NOT raise the kill flag: {stopped}"
+    );
+}
+
+/// A2：EOF-忽略 delegate（模拟轮次中）stop → 优雅窗超窗 → kill 旗标 →
+/// supervise 停止阶梯收尸，killed=true 且 STOP_WAIT 窗内拿到终态。
+#[tokio::test]
+async fn stop_eof_ignoring_delegate_escalates_to_kill() {
+    let _serial = TEST_LOCK.lock().await;
+    let dir = unique_temp_dir("stop_grace_ladder");
+    let cli = make_fake_sleeper_cli(&dir);
+    let mgr = Arc::new(DelegateManager::new());
+    let started = mgr
+        .start(
+            DelegateProtocolKind::ClaudeStreamJson,
+            &cli,
+            None,
+            dir.to_string_lossy().as_ref(),
+            None,
+            "",
+            Default::default(),
+            Duration::MAX,
+        )
+        .await
+        .expect("start ok");
+    let id = started["delegate_id"].as_u64().unwrap();
+
+    let stopped = mgr.stop(id).await.expect("stop ok");
+    assert_eq!(stopped["stopped"], true);
+    assert!(
+        stopped.get("exit").is_some(),
+        "EOF-ignoring delegate must still terminate within STOP_WAIT via ladder: {stopped}"
+    );
+    assert_eq!(
+        stopped["exit"]["killed"], true,
+        "escalated stop must mark killed: {stopped}"
+    );
 }

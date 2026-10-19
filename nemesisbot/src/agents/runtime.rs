@@ -37,7 +37,7 @@
 //! = 调用已尝试（可能已有副作用）——原样上抛，**绝不回落**（per-call 是
 //! 另一个 journal 禁用的进程，回落 = 有副作用工具的重复执行）。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -207,6 +207,12 @@ pub struct AgentRuntimeSupervisor {
     /// 装配闭包查 agents 表——已删除的 agent 崩溃后不得被看护循环重拉
     /// （注册删除联动常驻进程生命周期）。
     registration_check: Mutex<Option<std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>>>,
+    /// F3（二轮复评 2026-10-18）：删除在途旗标（agent_id 集合）。删除编排
+    /// （`AgentManager::remove`）经 [`Self::evict_begin`] 置位 + 排空旧槽、
+    /// 记录删除后 [`Self::evict_end`] 清位——旗标覆盖「旧槽已摘、排空等待
+    /// 中」与「排空完成、记录未删」两个窗口，`get_or_spawn` 两处锁内复核
+    /// 拒新，删除等待期不再造出 evict 覆盖不到的替代槽。
+    evicting: Mutex<HashSet<String>>,
 }
 
 impl AgentRuntimeSupervisor {
@@ -220,6 +226,7 @@ impl AgentRuntimeSupervisor {
             slots: Mutex::new(HashMap::new()),
             respawn_attempts: Mutex::new(HashMap::new()),
             registration_check: Mutex::new(None),
+            evicting: Mutex::new(HashSet::new()),
         }
     }
 
@@ -254,6 +261,35 @@ impl AgentRuntimeSupervisor {
     pub async fn evict(&self, agent_id: &str) {
         self.remove_and_shutdown(agent_id, "removed").await;
         self.clear_relaunch_counter(agent_id);
+    }
+
+    /// F3：删除编排第一段——置在途旗标 + 排空既有槽（旗标先于排空落位，
+    /// 排空「摘槽→等槽锁」窗口内抵达的 get_or_spawn 立即见到旗标）。幂等：
+    /// 重复 begin 只重复排空（evict 本身幂等）。
+    pub async fn evict_begin(&self, agent_id: &str) {
+        self.evicting
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(agent_id.to_string());
+        self.evict(agent_id).await;
+    }
+
+    /// F3：删除编排收尾——清在途旗标。调用时机 = 注册记录已删、loop 已停
+    /// 之后（`AgentManager::remove`）：此刻起该 agent 的新请求走正常路径
+    /// （解析面「agent 不存在」诚实报错），旗标不得泄漏成永久拒绝。
+    pub fn evict_end(&self, agent_id: &str) {
+        self.evicting
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(agent_id);
+    }
+
+    /// F3：删除在途？（get_or_spawn 两处锁内复核的判据。）
+    fn is_evicting(&self, agent_id: &str) -> bool {
+        self.evicting
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(agent_id)
     }
 
     /// config.json **现读**（与 tier `check_config_reload` 同纪律：磁盘是
@@ -592,7 +628,10 @@ impl AgentRuntimeSupervisor {
     }
 
     /// 取槽或 spawn 新槽（容量闸：满员 = Unavailable，并发插入在 map 锁内
-    /// 复核防超卖；输掉的竞态 spawn 会被优雅关停）。
+    /// 复核防超卖；输掉的竞态 spawn 会被优雅关停）。F3：删除在途旗标两处
+    /// 复核（早退查询处 + 插入处，均在 map 锁内）——删除编排窗口内一律
+    /// Unavailable（「agent is being removed」），不给删除等待期造出 evict
+    /// 覆盖不到的替代槽。
     async fn get_or_spawn(
         &self,
         agent_id: &str,
@@ -601,6 +640,11 @@ impl AgentRuntimeSupervisor {
     ) -> Result<std::sync::Arc<tokio::sync::Mutex<AgentSlot>>, SupervisorError> {
         let existing = {
             let map = self.slots.lock().unwrap_or_else(|e| e.into_inner());
+            if self.is_evicting(agent_id) {
+                return Err(SupervisorError::Unavailable(
+                    "agent is being removed".into(),
+                ));
+            }
             map.get(agent_id).cloned()
         };
         if let Some(s) = existing {
@@ -614,6 +658,16 @@ impl AgentRuntimeSupervisor {
         let arc_ref = arc.clone();
         let winner = {
             let mut map = self.slots.lock().unwrap_or_else(|e| e.into_inner());
+            if self.is_evicting(agent_id) {
+                // F3：插入复核——spawn 期间删除编排开始了。刚 spawn 的会话
+                // 优雅关停防孤儿进程（镜像下方输者路径），再诚实拒绝。
+                drop(map);
+                let mut g = arc_ref.lock().await;
+                g.shutdown(Duration::from_secs(2)).await;
+                return Err(SupervisorError::Unavailable(
+                    "agent is being removed".into(),
+                ));
+            }
             if let Some(s) = map.get(agent_id) {
                 s.clone()
             } else if map.len() >= settings.max_slots as usize {

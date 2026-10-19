@@ -31,7 +31,7 @@ use nemesis_types::agent::ApprovalResponder;
 use super::GatewayCtx;
 #[cfg(feature = "security")]
 use super::GatewayLlmJudge;
-#[cfg(all(feature = "desktop", feature = "memory", feature = "security"))]
+#[cfg(all(feature = "memory", feature = "security"))]
 use super::GatewayMemoryGate;
 use super::count_enabled_channels;
 use super::print_gateway_banner;
@@ -71,6 +71,7 @@ fn resolve_guardian_judge_lane(
         let judge_factory_cfg = nemesis_providers::factory::FactoryConfig {
             proxy: resolution.proxy.clone(),
             stream_mode: resolution.stream_mode.clone(),
+            cache_breakpoints: resolution.cache_breakpoints,
             llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
             api_key: resolution.api_key.clone(),
             api_base: resolution.api_base.clone(),
@@ -925,6 +926,11 @@ pub(crate) async fn run_runtime(
     // nemesis-path resolve_uploads_dir_in_workspace。
     nemesis_web::handlers::upload::spawn_uploads_sweeper();
     info!("[Gateway] uploads TTL sweeper started (7d TTL, 6h interval)");
+
+    // B11（2026-10-18 snooze）：暂停会话到期唤醒 sweeper（每 10s 扫 meta
+    // sidecar；到期摘标记 + 注入恢复 system 行 + 事件广播）。
+    nemesis_web::handlers::sessions::spawn_snooze_sweeper();
+    info!("[Gateway] snooze sweeper started (10s interval)");
 
     // Ctrl+C / SIGINT 优雅停机臂（2026-08-31 web-dead 停机事故教训）：
     // 此前 gateway 停机只有两条路——/api/internal（骑 web，web 任务一死即全断）

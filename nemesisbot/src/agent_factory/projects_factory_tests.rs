@@ -733,7 +733,9 @@ async fn record_spec_build_consumes_tier_pin_and_tool_policy() {
     );
     record.exec_root = exec_root.to_string_lossy().to_string();
     record.tier = "mini".to_string();
-    record.tool_policy = serde_json::json!({ "deny": ["grep"] });
+    // F4：allow 白名单随 deny 一并挂记录——build 后断言直挂 loop 槽
+    // （不再折算注册面）。
+    record.tool_policy = serde_json::json!({ "deny": ["grep"], "allow": ["read_file", "exec"] });
     // G2：从记录映射后手动补 browser_profile（生产由 AgentLoopManager 赋值
     // ——这里直填，验证 spec→loop 构建消费链路）。
     let profile_dir = exec_root.join("browser-profile");
@@ -751,6 +753,18 @@ async fn record_spec_build_consumes_tier_pin_and_tool_policy() {
     assert!(
         hidden.contains(&"grep".to_string()),
         "deny 折算必须进合并隐藏表，实际 {hidden:?}"
+    );
+    // F4：allow 白名单**直挂 loop 槽**（旧折算取缔）——槽值原样、且注册面
+    // 不再被「∖ allow」折叠（折进 hidden 的话 web_fetch 这类非 allow 工具
+    // 就会出现在隐藏表里）。
+    assert_eq!(
+        built.tool_policy_allow(),
+        vec!["read_file".to_string(), "exec".to_string()],
+        "allow 必须直挂槽值（原样，不折算）"
+    );
+    assert!(
+        !hidden.contains(&"web_fetch".to_string()),
+        "非 allow 工具不得因 allow 白名单折进隐藏表（F4 取缔注册面∖allow 折算），实际 {hidden:?}"
     );
     // 记录钉死压过 config 档位（big）。
     assert_eq!(

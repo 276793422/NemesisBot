@@ -2133,6 +2133,30 @@ pub async fn pump_agent_events(
                     );
                     continue;
                 }
+                // B4（2026-10-18 凭据 vault §7）：凭据索要卡同走全局广播——
+                // 全局卡（无会话字段），前端凭据卡渲染 key_name/reason +
+                // 倒计时；凭据值绝不进事件载荷。展平内层同 BUG-B 族。
+                if matches!(
+                    event,
+                    nemesis_types::agent::AgentEvent::CredentialRequested { .. }
+                ) {
+                    event_hub.publish(
+                        "credential-requested",
+                        data.get("data").cloned().unwrap_or(data),
+                    );
+                    continue;
+                }
+                if matches!(
+                    event,
+                    nemesis_types::agent::AgentEvent::CredentialResolved { .. }
+                ) {
+                    // 同族展平（前端 removeLocal 读平铺 request_id）。
+                    event_hub.publish(
+                        "credential-resolved",
+                        data.get("data").cloned().unwrap_or(data),
+                    );
+                    continue;
+                }
                 // SB（2026-09-17）：会话物化 → SSE `session.created` 全局广播
                 // ——前端会话列表 force 刷新（修「隐式会话不进侧栏」）。全局
                 // 语义（侧栏是跨会话面），不做 web: 定向 push。

@@ -359,9 +359,17 @@ async fn run_eval(
         // 6g — LLM proxy. The fake-key config is only complete once the
         // proxy port is known.
         let api_base_host_for_meta = proxy_target_host(&real_base);
-        let proxy = nemesis_eval_proxy::start(real_base.clone(), resolution.api_key.clone())
-            .await
-            .context("start eval LLM proxy")?;
+        // A3 每启动随机 fake key：发给盒内 agent 过代理闸，代理校验通过才
+        // 换真 key。静态 "eval-fake-key" + 无校验代理 = 本地任意进程摸到
+        // 环回端口即可在 eval 生命周期内蹭真 key（已修）。
+        let fake_key = uuid::Uuid::new_v4().simple().to_string();
+        let proxy = nemesis_eval_proxy::start(
+            real_base.clone(),
+            resolution.api_key.clone(),
+            fake_key.clone(),
+        )
+        .await
+        .context("start eval LLM proxy")?;
 
         let eval_result = run_phases(
             api_base_host_for_meta.as_str(),
@@ -373,6 +381,7 @@ async fn run_eval(
             &model_ref,
             &box_api_base(proxy.api_base().as_str(), &model_ref, &resolution.protocol),
             &resolution.protocol,
+            &fake_key,
             &sbieini,
             &eval_box,
             &eval_box_root,
@@ -551,6 +560,7 @@ async fn run_phases(
     model_ref: &str,
     box_api_base: &str,
     protocol: &str,
+    fake_key: &str,
     sbieini: &Path,
     eval_box: &str,
     eval_box_root: &Path,
@@ -570,7 +580,8 @@ async fn run_phases(
         "model_list": [{
             "model_name": model_name,
             "model": model_ref,
-            "api_key": "eval-fake-key",
+            // A3 每启动随机 fake key（与代理闸配对；不再是静态串）。
+            "api_key": fake_key,
             // lane 随 wire 协议而异：HttpCompat 带 /v1（provider 拼
             // /chat/completions），Anthropic/Codex base 裸（provider 自己拼
             // /v1/messages、/responses）。此前无条件 /v1 → claude lane 盒内

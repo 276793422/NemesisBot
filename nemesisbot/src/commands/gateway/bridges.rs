@@ -31,12 +31,18 @@ pub(crate) fn plugin_ui_library_exists() -> bool {
 /// approval popup. When attached, agent `memory_store`/`memory_forget` calls pop
 /// up an approval dialog; approval is never bypassed by YOLO/auto. Denies on
 /// timeout/error so a memory write never silently succeeds unapproved.
-#[cfg(all(feature = "desktop", feature = "memory", feature = "security"))]
+///
+/// F6（二轮复评 2026-10-18）：实现体只依赖 `Arc<dyn ApprovalManager>`（security）
+/// 与 memory trait，零 desktop 依赖——cfg 门从 desktop+memory+security 收窄为
+/// memory+security（memory+security 无 desktop 的裁剪组合此前 E0433 编译失败）。
+/// memory-without-security 组合无审批闸（本结构体不编译；调用点另有 security
+/// 外层闸），见 scripts/customize/features.toml memory 条目注记。
+#[cfg(all(feature = "memory", feature = "security"))]
 pub(crate) struct GatewayMemoryGate {
     approval: Arc<dyn nemesis_security::auditor::ApprovalManager>,
 }
 
-#[cfg(all(feature = "desktop", feature = "memory", feature = "security"))]
+#[cfg(all(feature = "memory", feature = "security"))]
 impl GatewayMemoryGate {
     // pub(crate)（ASM-02）：cluster loop 装配点（agent_factory）复用同一闸
     // ——审批闸此前只接主 loop，集群 loop 的 memory_store/forget 缺省放行。
@@ -74,7 +80,7 @@ impl GatewayMemoryGate {
     }
 }
 
-#[cfg(all(feature = "desktop", feature = "memory", feature = "security"))]
+#[cfg(all(feature = "memory", feature = "security"))]
 #[async_trait::async_trait]
 impl nemesis_memory::memory_tools::MemoryApprovalGate for GatewayMemoryGate {
     async fn approve_store(&self, preview: &str) -> bool {

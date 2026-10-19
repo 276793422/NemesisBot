@@ -51,6 +51,254 @@ impl Default for FsHandler {
     }
 }
 
+// ---------------------------------------------------------------------------
+// fs.open：聊天文件链接打开（2026-10-19 用户报告问题 2——模型输出 markdown
+// 里的文件路径在 UI 上不可点击，用户得手动翻目录找文件）
+// ---------------------------------------------------------------------------
+
+/// 允许「默认应用直接打开」的扩展名白名单（小写带点）。
+///
+/// 安全动机：防「模型写 evil.bat → 聊天链接 → 用户点击 → 执行」链。
+/// 白名单只收被动打开类型（文本文档/图片/PDF）；可执行/脚本/宏形态
+/// （bat/cmd/exe/ps1/vbs/js/hta/lnk/...）一律降级为「文件管理器定位」
+/// （reveal）——用户看得见、找得到，但不会因一次点击而执行。
+const OPENABLE_EXTENSIONS: &[&str] = &[
+    ".md", ".txt", ".log", ".json", ".csv", ".pdf", //
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
+];
+
+/// 扩展名白名单判定（大小写不敏感——`REPORT.MD` 同 `.md` 放行）。
+fn is_openable_extension(path: &Path) -> bool {
+    let ext = path
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy().to_lowercase()))
+        .unwrap_or_default();
+    OPENABLE_EXTENSIONS.contains(&ext.as_str())
+}
+
+/// 路径包含判定：分隔符统一 `/` 后做前缀比较。Windows 大小写不敏感
+/// （聊天文本里的盘符/目录大小写不可控）；前缀必须命中边界（相等或
+/// 后随 `/`），防 `C:\foo2` 命中 `C:\foo`。纯词法（不 canonicalize）——
+/// 这是点击链接的 UX 便利闸，不是安全 8 层的替代；主防线是「只放行
+/// workspace/已注册项目目录」+ 扩展名白名单。
+fn path_contains(root: &Path, target: &Path) -> bool {
+    let norm = |p: &Path| {
+        p.to_string_lossy()
+            .replace('\\', "/")
+            .trim_end_matches('/')
+            .to_string()
+    };
+    let (r, t) = (norm(root), norm(target));
+    if r.is_empty() {
+        return true; // 根盘形态（实践中不出现；防御性放行避免误拒）
+    }
+    let eq = if cfg!(windows) {
+        r.eq_ignore_ascii_case(&t)
+    } else {
+        r == t
+    };
+    if eq {
+        return true;
+    }
+    if t.len() <= r.len() {
+        return false;
+    }
+    let prefix = if cfg!(windows) {
+        t[..r.len()].eq_ignore_ascii_case(&r)
+    } else {
+        t.starts_with(&r)
+    };
+    prefix && t.as_bytes()[r.len()] == b'/'
+}
+
+/// `..` 段拒绝 + 分隔符归一（点击链接语义不需要逃逸形态；合法嵌套路径
+/// 用绝对或 workspace 相对形态表达）。
+fn normalize_click_path(raw: &str) -> Result<String, String> {
+    let norm = raw.trim().replace('\\', "/");
+    if norm.is_empty() {
+        return Err("path 缺失".to_string());
+    }
+    if norm.split('/').any(|seg| seg == "..") {
+        return Err(format!("path 越出 workspace: {raw}"));
+    }
+    Ok(norm)
+}
+
+/// 允许打开的根集合：主 workspace + 全部已注册项目目录（绝对路径只放行
+/// 这两类——防诱导打开任意系统文件；相对路径按 session root 解析后再过
+/// 同一包含闸）。
+fn allowed_open_roots(main_workspace: &str) -> Vec<PathBuf> {
+    let mut roots = vec![PathBuf::from(main_workspace)];
+    if let Some(bridge) = crate::handlers::projects::projects_bridge() {
+        for p in bridge.list() {
+            roots.push(PathBuf::from(p.path));
+        }
+    }
+    roots
+}
+
+/// 解析点击路径 → (绝对路径, 是否目录)。
+///
+/// - **相对**（`reports/notes.md` / `notes.md`）：拼 session root（调用方
+///   已按会话切换），再过包含闸（纵深：join 相对恒在 root 下，闸兜异常形态）。
+/// - **绝对**（模型常输出绝对路径）：仅放行 [`allowed_open_roots`] 集合内；
+///   集合外诚实报错（含探测面收敛：报错只说越界，不回显集合内容）。
+/// - 目标不存在 → **CJK 引导语剥前缀回退**（见 [`cjk_boundary_candidates`]）
+///   后仍不存在才诚实报错（前端 toast 提示，不留死链接静默）。
+///
+/// 纯决策不 spawn——测试面；实际打开在 [`FsHandler::handle_cmd`] 的 `open` 臂。
+fn resolve_click_target(
+    session_root: &str,
+    main_workspace: &str,
+    raw: &str,
+) -> Result<(PathBuf, bool), String> {
+    let norm = normalize_click_path(raw)?;
+    match try_resolve_once(session_root, main_workspace, &norm) {
+        Ok(hit) => Ok(hit),
+        Err(e) if e.contains("文件不存在") => {
+            // 存在性回退（2026-10-19 用户设计：候选不存在不应直接死，先剥
+            // 粘连的中文引导语找真实文件——「见docs/总结.md」→ docs/总结.md）。
+            // 每个候选先过同一套 normalize 闸（`..` 段拒绝必须重跑——raw
+            // 「见../x」因首段是「见..」可通过整体检查，切出的候选「../x」
+            // 若不过闸，path_contains 字符串前缀检查拦不住 OS 层 .. 解析，
+            // 即成逃逸面），再走同一条 try_resolve_once。
+            for cand in cjk_boundary_candidates(&norm) {
+                if normalize_click_path(&cand).is_err() {
+                    continue;
+                }
+                if let Ok(hit) = try_resolve_once(session_root, main_workspace, &cand) {
+                    return Ok(hit);
+                }
+            }
+            Err(e)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// 单次解析（归一后的路径）：containment + 存在性，供回退循环复用。
+fn try_resolve_once(
+    session_root: &str,
+    main_workspace: &str,
+    norm: &str,
+) -> Result<(PathBuf, bool), String> {
+    let p = Path::new(norm);
+    let target = if p.is_absolute() || p.has_root() {
+        if !allowed_open_roots(main_workspace)
+            .iter()
+            .any(|root| path_contains(root, p))
+        {
+            return Err(format!(
+                "path 越出 workspace（仅允许工作区/项目目录内）: {norm}"
+            ));
+        }
+        PathBuf::from(norm)
+    } else {
+        let joined = PathBuf::from(session_root).join(norm);
+        if !path_contains(Path::new(session_root), &joined) {
+            return Err(format!("path 越出 workspace: {norm}"));
+        }
+        joined
+    };
+    let meta =
+        std::fs::metadata(&target).map_err(|_| format!("文件不存在: {}", target.display()))?;
+    Ok((target, meta.is_dir()))
+}
+
+/// CJK 统一表意区判定（含扩展 A）——与前端 linkify SEG 字符类口径一致
+/// （web/src/utils/markdown.ts）。
+fn is_cjk_char(c: char) -> bool {
+    ('\u{3400}'..='\u{4DBF}').contains(&c) || ('\u{4E00}'..='\u{9FFF}').contains(&c)
+}
+
+/// CJK 引导语剥前缀候选：模型输出「见docs/总结.md」「文件在C:/ws/a.md」时
+/// 中英文直接粘连（无空格），整段路径不存在；在 CJK→ASCII 边界切开后取
+/// 后缀作为候选路径重试。只在「后一字符是路径合法 ASCII 字符」处切，
+/// 全角标点（：、。）后不切。候选按边界从左到右（长后缀优先——第一个
+/// 边界剥掉的通常就是引导语本身）。
+fn cjk_boundary_candidates(norm: &str) -> Vec<String> {
+    let chars: Vec<char> = norm.chars().collect();
+    let mut out = Vec::new();
+    for i in 1..chars.len() {
+        // norm 已把 `\` 归一成 `/`，此处无需处理反斜杠。
+        if is_cjk_char(chars[i - 1])
+            && (chars[i].is_ascii_alphanumeric() || matches!(chars[i], '/' | '.' | '_' | '-' | '@'))
+        {
+            let cand: String = chars[i..].iter().collect();
+            // 「总结.md」的「结→.」边界会切出 ".md" 这类扩展名碎片（垃圾
+            // 候选）；"./x" 是合法相对形态不受影响。
+            if cand.starts_with('.') && !cand.starts_with("./") {
+                continue;
+            }
+            if !out.contains(&cand) {
+                out.push(cand);
+            }
+        }
+    }
+    out
+}
+
+/// 默认应用打开文件（Windows=`explorer <file>`——资源管理器对文件路径
+/// 走默认关联程序，绕开被禁的 `start` 系命令；macOS=`open`；
+/// Linux=`xdg-open`）。spawn 不等待；CREATE_NO_WINDOW 同后台进程纪律。
+fn open_file_with_default(path: &Path) -> Result<(), String> {
+    let spawn = || -> std::io::Result<std::process::Child> {
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            std::process::Command::new("explorer")
+                .arg(path)
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()
+        }
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("open").arg(path).spawn()
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            std::process::Command::new("xdg-open").arg(path).spawn()
+        }
+    };
+    spawn()
+        .map(|_| ())
+        .map_err(|e| format!("打开文件失败: {e}"))
+}
+
+/// 文件管理器定位文件（不打开、不高亮执行——非白名单扩展名的降级动作）。
+/// Windows=`explorer /select,<path>`（单参数形态——explorer 自行解析命令
+/// 行，拆参会在含空格路径上断裂）；macOS=`open -R`；Linux 无标准 reveal，
+/// 打开父目录（诚实降级）。
+fn reveal_in_file_manager(path: &Path) -> Result<(), String> {
+    let spawn = || -> std::io::Result<std::process::Child> {
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            std::process::Command::new("explorer")
+                .arg(format!("/select,{}", path.display()))
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()
+        }
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("open")
+                .arg("-R")
+                .arg(path)
+                .spawn()
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            let parent = path.parent().unwrap_or(path);
+            std::process::Command::new("xdg-open").arg(parent).spawn()
+        }
+    };
+    spawn()
+        .map(|_| ())
+        .map_err(|e| format!("定位文件失败: {e}"))
+}
+
 impl FsHandler {
     pub fn new() -> Self {
         Self
@@ -254,7 +502,7 @@ impl ModuleHandler for FsHandler {
     }
 
     fn commands(&self) -> &'static [&'static str] {
-        &["complete_path", "tree"]
+        &["complete_path", "tree", "open"]
     }
 
     async fn handle_cmd(
@@ -305,6 +553,37 @@ impl ModuleHandler for FsHandler {
                     .and_then(|v| v.as_u64())
                     .unwrap_or(3) as usize;
                 Ok(Some(self.tree_in(&workspace, &path, depth)?))
+            }
+            // 文件链接打开（问题 2）：目录→文件管理器；白名单扩展名→默认
+            // 应用；其余→文件管理器定位（不点击执行）。main_workspace 用
+            // 未切换的主 workspace（绝对路径 containment 集合 = 主 workspace
+            // + 全部项目；session root 已含于其中）。
+            "open" => {
+                let raw = data
+                    .as_ref()
+                    .and_then(|d| d.get("path"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let main_workspace = require_workspace(ctx)?.to_string();
+                let (target, is_dir) = resolve_click_target(&workspace, &main_workspace, &raw)?;
+                let out = if is_dir {
+                    crate::handlers::projects::open_in_file_manager(&target)?;
+                    serde_json::json!({
+                        "kind": "dir", "action": "open", "path": target.display().to_string(),
+                    })
+                } else if is_openable_extension(&target) {
+                    open_file_with_default(&target)?;
+                    serde_json::json!({
+                        "kind": "file", "action": "open", "path": target.display().to_string(),
+                    })
+                } else {
+                    reveal_in_file_manager(&target)?;
+                    serde_json::json!({
+                        "kind": "file", "action": "reveal", "path": target.display().to_string(),
+                    })
+                };
+                Ok(Some(out))
             }
             _ => Err(format!("unknown command: fs.{}", cmd)),
         }

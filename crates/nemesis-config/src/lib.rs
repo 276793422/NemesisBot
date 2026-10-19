@@ -698,6 +698,14 @@ pub struct BoardReviewConfig {
     /// 语言进 done）。issue 级 `requires_evidence`（AC 含 file: 锚点自动
     /// 置位）不受本闸控制、恒生效——本闸是全局加码，不是全局豁免。
     pub require_delivery_evidence: bool,
+    /// 交付证据 typed 块强制闸（诚实边界收口 ②，2026-10-19；默认 **false**
+    /// 烧入期）。true 后交付证据闸要求 `$.delivery.files` typed 块**在场**
+    /// （git tree diff 确定性派生，任何 git 交付都应可派生——缺席 = 证据面
+    /// 残缺，FAIL「交付缺类型化证据块」）。`checks` 块**恒可选**（没跑检查
+    /// = 诚实的事实陈述，不是证据缺失；强制会诱发造值）。typed 块**在场
+    /// 时**无论本闸开关都验形态（path 形态闸 + sha256 hex 形态 + cmd 非空），
+    /// 验不过 = FAIL——加法演进，旧 payload 缺席块行为不变。
+    pub evidence_typed_required: bool,
 }
 
 impl BoardReviewConfig {
@@ -822,6 +830,7 @@ impl Default for BoardReviewConfig {
             professions: std::collections::HashMap::new(),
             parent_remediation_max: 2,
             require_delivery_evidence: false,
+            evidence_typed_required: false,
         }
     }
 }

@@ -153,6 +153,7 @@ onUnmounted(() => {
           <span v-else-if="!node.id.startsWith('node-')" class="badge badge-warning" style="font-size:var(--text-xs);margin-left:var(--space-1)" title="点击右侧『刷新』按钮拉取远端真实 ID">占位 ID</span>
         </span>
         <span class="badge" :class="node.role === 'manager' ? 'badge-info' : 'badge-neutral'">{{ node.role }}</span>
+        <span v-if="node.build" class="node-build" :title="'构建号 ' + node.build">{{ node.build }}</span>
         <span class="node-caps">{{ (node.capabilities || []).slice(0, 3).join(', ') }}</span>
         <span class="node-seen">{{ node.lastSeen || '--' }}</span>
         <span class="node-expand">{{ expandedId === node.id ? '▲' : '▼' }}</span>
@@ -218,6 +219,7 @@ onUnmounted(() => {
 .node-dot.online { background: var(--success); }
 .node-dot.offline { background: var(--text-muted); }
 .node-name-col { font-weight: 600; min-width: 80px; }
+.node-build { font-family: monospace; font-size: var(--text-xs); color: var(--text-muted); flex-shrink: 0; }
 .node-caps { flex: 1; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .node-seen { color: var(--text-muted); font-size: var(--text-xs); min-width: 50px; text-align: right; }
 .node-expand { color: var(--text-muted); font-size: 10px; }

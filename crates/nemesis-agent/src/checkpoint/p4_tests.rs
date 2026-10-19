@@ -209,3 +209,111 @@ fn capture_does_not_disturb_workspace() {
         "影子库独立于真实 .git"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ②typed 证据块（诚实边界收口 2026-10-19）：delivery.files 清单
+// ---------------------------------------------------------------------------
+
+#[test]
+fn capture_files_entries_sha256_and_exclude_deletions() {
+    let (_d, root) = p4_git_root();
+    std::fs::write(root.join("a.txt"), "v1\n").unwrap();
+    std::fs::write(root.join("old.txt"), "doomed\n").unwrap();
+
+    let store = CheckpointStore::new(None, root.clone());
+    store.begin(1, "任务开始");
+    let base = store.current_tree_hex().unwrap();
+
+    // 任务：改 a.txt + 增 src/new.rs + 删 old.txt（三形态各一）。
+    std::fs::write(root.join("a.txt"), "v2\nmore\n").unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src").join("new.rs"), "fn main() {}\n").unwrap();
+    std::fs::remove_file(root.join("old.txt")).unwrap();
+
+    let cap = store
+        .capture_delivery_branch(Some(&base), "run-tf1")
+        .unwrap();
+    // 计数含删除（3 形态全计），清单排除删除（无内容可哈希）。
+    assert_eq!(cap.files_changed, 3);
+    assert_eq!(cap.files.len(), 2, "删除项不入清单");
+    assert!(!cap.files_truncated);
+
+    let a = cap
+        .files
+        .iter()
+        .find(|f| f.path == "a.txt")
+        .expect("a.txt 在清单");
+    let new = cap
+        .files
+        .iter()
+        .find(|f| f.path == "src/new.rs")
+        .expect("src/new.rs 在清单（正斜杠形态）");
+    assert!(
+        cap.files.iter().all(|f| !f.path.contains('\\')),
+        "路径全正斜杠"
+    );
+    assert!(
+        cap.files.iter().all(|f| !f.path.contains("old.txt")),
+        "old.txt（删除）确实不在清单"
+    );
+
+    // sha256 = 交付 tree 的 blob 内容摘要（与磁盘新内容一致）。
+    let expect_a = {
+        let mut h = Sha256::new();
+        h.update(b"v2\nmore\n");
+        format!("{:x}", h.finalize())
+    };
+    let expect_new = {
+        let mut h = Sha256::new();
+        h.update(b"fn main() {}\n");
+        format!("{:x}", h.finalize())
+    };
+    assert_eq!(a.sha256, expect_a);
+    assert_eq!(new.sha256, expect_new);
+    assert_eq!(a.sha256.len(), 64);
+}
+
+#[test]
+fn capture_files_empty_when_no_changes_and_absent_in_json() {
+    let (_d, root) = p4_git_root();
+    std::fs::write(root.join("same.txt"), "v1\n").unwrap();
+
+    let store = CheckpointStore::new(None, root.clone());
+    store.begin(1, "任务开始");
+    let base = store.current_tree_hex().unwrap();
+    // 任务零改动。
+    let cap = store
+        .capture_delivery_branch(Some(&base), "run-tf2")
+        .unwrap();
+    assert!(cap.files.is_empty());
+    assert!(!cap.files_truncated);
+
+    // 空清单 skip 序列化 = wire 上键缺席（诚实缺席，验收侧「缺席块行为
+    // 不变」由此钉死）。
+    let json = serde_json::to_value(&cap).unwrap();
+    assert!(json.get("files").is_none(), "空 files 不得序列化");
+    assert!(json.get("files_truncated").is_none());
+}
+
+#[test]
+fn capture_files_truncates_at_max_with_honest_flag() {
+    let (_d, root) = p4_git_root();
+    std::fs::write(root.join("seed.txt"), "seed\n").unwrap();
+
+    let store = CheckpointStore::new(None, root.clone());
+    store.begin(1, "任务开始");
+    let base = store.current_tree_hex().unwrap();
+
+    // FILES_MAX + 30 个新增文件 → 清单截断到上限 + 诚实注记位。
+    for i in 0..FILES_MAX + 30 {
+        let p = root.join(format!("gen/f{i:04}.txt"));
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, format!("content {i}\n")).unwrap();
+    }
+    let cap = store
+        .capture_delivery_branch(Some(&base), "run-tf3")
+        .unwrap();
+    assert_eq!(cap.files.len(), FILES_MAX, "清单截断到上限");
+    assert!(cap.files_truncated, "超限必须带截断注记位");
+    assert_eq!(cap.files_changed, FILES_MAX + 30, "计数不受清单截断影响");
+}

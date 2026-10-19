@@ -16,6 +16,12 @@
 //! - **Not an open proxy**: only the single real endpoint configured at
 //!   construction is ever contacted — a malicious skill inside the sandbox
 //!   cannot use it as an SSRF springboard.
+//! - **Per-launch client token** (A3): the proxy enforces that every request
+//!   carries the per-launch random fake key issued for this eval run —
+//!   missing or mismatching auth is 401'd without touching the upstream.
+//!   Previously the proxy accepted ANY (or no) auth and statically hardcoded
+//!   `"eval-fake-key"` on the agent side, so any local process that saw the
+//!   loopback port could ride the real key for the eval's lifetime.
 //! - Lifecycle == eval lifecycle: dropped when eval ends; the real key never
 //!   touches disk.
 
@@ -84,6 +90,9 @@ struct ProxyState {
     real_base: String,
     /// The real API key (memory only — never written to disk).
     api_key: String,
+    /// Per-launch client token (A3)：本次 eval 发给盒内 agent 的随机 fake
+    /// key——incoming auth 必须精确匹配它才转发（缺失/不匹配 = 401）。
+    expected_client_key: String,
     client: reqwest::Client,
 }
 
@@ -91,10 +100,17 @@ struct ProxyState {
 ///
 /// - `real_base`: scheme://host[:port] of the real LLM endpoint (no path).
 /// - `api_key`:   the real key, substituted into auth headers.
-pub async fn start(real_base: String, api_key: String) -> Result<ProxyHandle, ProxyError> {
+/// - `expected_client_key`: the per-launch random fake key issued to the
+///   sandboxed agent (A3) — requests not carrying it are rejected 401.
+pub async fn start(
+    real_base: String,
+    api_key: String,
+    expected_client_key: String,
+) -> Result<ProxyHandle, ProxyError> {
     let state = ProxyState {
         real_base: real_base.trim_end_matches('/').to_string(),
         api_key,
+        expected_client_key,
         client: reqwest::Client::builder().build()?,
     };
 
@@ -147,6 +163,18 @@ async fn proxy_handler(State(state): State<ProxyState>, req: Request<Body>) -> R
     }
 }
 
+/// 从 incoming headers 提取客户端凭据（authorization 的 Bearer token 或
+/// x-api-key 裸值；A3 闸比对用）。
+fn client_key_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
+    for h in AUTH_HEADERS {
+        if let Some(v) = headers.get(h).and_then(|v| v.to_str().ok()) {
+            let bare = v.strip_prefix("Bearer ").unwrap_or(v);
+            return Some(bare.to_string());
+        }
+    }
+    None
+}
+
 async fn forward_with_headers(
     state: &ProxyState,
     method: &Method,
@@ -155,6 +183,20 @@ async fn forward_with_headers(
     headers: &axum::http::HeaderMap,
     body: Body,
 ) -> Result<Response<Body>, ProxyError> {
+    // A3 闸：incoming auth 必须携带本次 eval 的每启动随机 fake key——缺失
+    // 或不匹配一律 401，不触碰上游。防本地旁观进程摸到环回端口蹭真 key
+    // （此前对任意/缺失 auth 无条件放行转发）。
+    match client_key_from_headers(headers) {
+        Some(k) if k == state.expected_client_key => {}
+        _ => {
+            tracing::warn!("[eval-proxy] request without valid per-launch token — 401");
+            return Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .body(Body::from("eval-proxy: unauthorized"))
+                .map_err(|_| ProxyError::BadUpstream("build response"));
+        }
+    }
+
     let query = uri_query.map(|q| format!("?{q}")).unwrap_or_default();
     let url = format!("{}{}{}", state.real_base, uri_path, query);
 
@@ -177,7 +219,8 @@ async fn forward_with_headers(
     // Substitute the REAL key into the auth headers. Authorization is always
     // rewritten as "Bearer <real key>" (OpenAI-compatible providers expect
     // the Bearer scheme; sending the bare key earned 401s). x-api-key
-    // (Anthropic-style) carries the bare key.
+    // (Anthropic-style) carries the bare key. （A3 闸已保证两个 auth 头至
+    // 少一个在场——此前的「无 auth 头自动补」分支随闸移除。）
     for h in AUTH_HEADERS {
         if headers.contains_key(h) {
             let value = if h == "authorization" {
@@ -187,9 +230,6 @@ async fn forward_with_headers(
             };
             out_req = out_req.header(h, value);
         }
-    }
-    if !headers.contains_key("authorization") && !headers.contains_key("x-api-key") {
-        out_req = out_req.header("authorization", format!("Bearer {}", state.api_key));
     }
 
     // Body as a byte stream (keeps pass-through semantics for any content).

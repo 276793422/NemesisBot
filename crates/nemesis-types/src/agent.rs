@@ -185,18 +185,23 @@ pub enum AgentEvent {
     /// 结构化提问事件（F7，devtool-upgrade 阶段 5）。agent 的 `question`
     /// 工具发起提问时由 WebQuestionBroker 发布；web pump 转 SSE
     /// `question-asked` 全局广播，前端 QuestionCard 渲染选项卡（单选
-    /// radio / 多选 checkbox）。`question_id` 由工具侧生成（进程内自增），
-    /// WSAPI `question.respond` 用它路由回等待中的 `ask` 调用。
+    /// radio / 多选 checkbox / 单选超 6 项下拉收纳）或表单（B8：`fields`
+    /// 非空 = 表单形态，多字段一次收集）。`question_id` 由工具侧生成
+    /// （进程内自增），WSAPI `question.respond` 用它路由回等待中的
+    /// `ask` 调用。
     QuestionAsked {
         session_key: String,
         chat_id: String,
         question_id: String,
         /// 提问正文（工具 args 的 `question` 字段）。
         question: String,
-        /// 候选选项（工具 args 的 `options`，≥2 项）。
+        /// 候选选项（工具 args 的 `options`，≥2 项；表单形态为空）。
         options: Vec<String>,
-        /// `true` = 用户可多选（checkbox）；`false` = 单选（radio）。
+        /// `true` = 用户可多选（checkbox）；`false` = 单选（radio/下拉）。
         multi: bool,
+        /// 表单字段（B8）；空 = 选项形态。前端按字段渲染
+        /// text 输入框 / select 下拉，作答经 `respond` 的 `values` 送回。
+        fields: Vec<QuestionField>,
         /// 等待窗口（秒）——前端倒计时与之对齐，超时工具侧收到
         /// Timeout 结局并按最佳判断继续。
         timeout_secs: u64,
@@ -269,6 +274,36 @@ pub enum AgentEvent {
         /// 自流开始的墙钟（毫秒）——end/error 阶段携带。
         elapsed_ms: Option<u64>,
     },
+    /// 凭据索要卡事件（B4，2026-10-18 凭据 vault §7）：工具槽位 / 模型
+    /// API key 缺凭据时由 WebCredentialBroker 发布；web pump 转 SSE
+    /// `credential-requested` 全局广播，前端凭据卡渲染（key_name + reason
+    /// 与倒计时）。**全局卡**：无会话字段（凭据是进程级资产，同
+    /// ApprovalResolved 的全局语义）。`request_id` 由 broker 生成，WSAPI
+    /// `credential.respond` 用它路由回等待中的 `request_credential` 调用。
+    /// **凭据值绝不进事件**——载荷只有元数据，值只走 用户→WSAPI→broker
+    /// 落 vault 的单向链，broker 内存零驻留。
+    CredentialRequested {
+        request_id: String,
+        /// 凭据所属服务描述（如 `connector/<id>` 或 `model:<alias>`）。
+        service: String,
+        /// vault 别名（bare，无 `vault:` 前缀）——卡片说明的写入目标。
+        key_name: String,
+        /// 为什么需要（401 原文摘要 / 槽位缺失原因）。
+        reason: String,
+        /// 等待窗口（秒）——前端倒计时与之对齐，超时自动放弃（调用方
+        /// 走原错误路径，不是错误）。
+        timeout_secs: u64,
+    },
+    /// 凭据已了结事件（B4）。respond 落 vault 成功、用户拒绝或超时后由
+    /// broker 发布；web pump 转 SSE `credential-resolved`——所有窗口据此
+    /// 摘除本地凭据卡（与 approval-resolved 同语义）。
+    CredentialResolved {
+        /// 与 [`AgentEvent::CredentialRequested`] 的 request_id 对应。
+        request_id: String,
+        /// 了结方式：`stored`（已落 vault，调用方原地重解析续行）/
+        /// `denied`（用户拒绝）/ `timeout`（超时无人提交）。
+        decision: String,
+    },
 }
 
 /// H1（devtool-upgrade 阶段 2）：单条 todo（todowrite 全量提交语义）。
@@ -327,6 +362,9 @@ impl AgentEvent {
             // 提问了结事件同理只带 id（全局广播）。
             AgentEvent::ApprovalResolved { .. }
             | AgentEvent::QuestionResolved { .. }
+            // 凭据卡是进程级全局卡（同审批了结的全局广播语义）。
+            | AgentEvent::CredentialRequested { .. }
+            | AgentEvent::CredentialResolved { .. }
             // 会话物化事件带裸 id 但无 chat 目标（全局广播语义）。
             | AgentEvent::SessionCreated { .. } => "",
         }
@@ -351,6 +389,8 @@ impl AgentEvent {
             | AgentEvent::ProviderStream { session_key, .. }
             | AgentEvent::DeliverablesRegistered { session_key, .. } => Some(session_key),
             AgentEvent::ApprovalResolved { .. } | AgentEvent::QuestionResolved { .. } => None,
+            // 凭据卡是进程级全局卡，无会话上下文。
+            AgentEvent::CredentialRequested { .. } | AgentEvent::CredentialResolved { .. } => None,
         }
     }
 
@@ -370,6 +410,8 @@ impl AgentEvent {
             AgentEvent::CanvasOpen { .. } => "CanvasOpen",
             AgentEvent::ProviderStream { .. } => "ProviderStream",
             AgentEvent::DeliverablesRegistered { .. } => "DeliverablesRegistered",
+            AgentEvent::CredentialRequested { .. } => "CredentialRequested",
+            AgentEvent::CredentialResolved { .. } => "CredentialResolved",
         }
     }
 }
@@ -400,6 +442,26 @@ pub trait ApprovalResponder: Send + Sync {
     fn pending(&self) -> Vec<serde_json::Value>;
 }
 
+/// B8（提问两形态）：表单字段定义（question 工具 form 形态的单个字段）。
+/// 序列化形态对齐工具 schema（`type` 键）与前端渲染需求。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionField {
+    /// 回答键名（object 回灌的 key；一次提问内唯一，非空）。
+    pub key: String,
+    /// 展示标签（非空）。
+    pub label: String,
+    /// 字段类型：`"text"` = 单行文本输入；`"select"` = 从 `options` 单选。
+    /// 值域在工具侧解析时白名单校验（其他值诚实拒绝）。
+    #[serde(rename = "type")]
+    pub field_type: String,
+    /// `true` = 必填（作答校验非空）；缺省 false。
+    #[serde(default)]
+    pub required: bool,
+    /// `select` 字段的候选（2-6 项非空）；`text` 字段为空向量。
+    #[serde(default)]
+    pub options: Vec<String>,
+}
+
 /// F7（devtool-upgrade 阶段 5）：单次结构化提问请求（question 工具 →
 /// broker 方向的载荷）。`question_id` 由工具侧生成（进程内自增，如 `q-1`）。
 #[derive(Debug, Clone)]
@@ -407,10 +469,13 @@ pub struct QuestionRequest {
     pub question_id: String,
     /// 提问正文（须自含——模型不再补话）。
     pub question: String,
-    /// 候选选项（≥2 项）。
+    /// 候选选项（≥2 项；B8 表单形态为空）。
     pub options: Vec<String>,
     /// `true` = 用户可多选；`false` = 单选。
     pub multi: bool,
+    /// B8：表单字段；**空 = 选项形态**（legacy 单/多选），非空 = 表单形态
+    /// （此时 `options`/`multi` 不参与语义）。
+    pub fields: Vec<QuestionField>,
     /// 提问所属会话（事件透传给前端）。
     pub chat_id: String,
     pub session_key: String,
@@ -419,11 +484,13 @@ pub struct QuestionRequest {
 }
 
 /// F7：提问结局。`Answered` 携带用户选中项（单选恰一项，均为工具给过的
-/// 选项原文）；`Timeout` = 窗口内无人作答（工具侧回灌「按最佳判断继续」，
-/// 不是错误）。
+/// 选项原文）；`AnsweredForm`（B8）携带表单作答（键=字段 key，值=文本或
+/// 选中项原文；可选空值字段已剔除）；`Timeout` = 窗口内无人作答（工具侧
+/// 回灌「按最佳判断继续」，不是错误）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuestionOutcome {
     Answered(Vec<String>),
+    AnsweredForm(std::collections::BTreeMap<String, String>),
     Timeout,
 }
 
@@ -443,12 +510,82 @@ pub trait QuestionAsker: Send + Sync {
 /// 结构化提问响应端 trait（F7，WSAPI → broker 方向）。放在 nemesis-types
 /// 让 nemesis-web 经 agent_loop 槽触达（同 [`ApprovalResponder`] 先例）。
 pub trait QuestionResponder: Send + Sync {
-    /// 送出用户作答。`Ok(true)` = 送达（先到先得）；`Err` = 请求不存在
-    /// （已超时清理/已作答/broker 未装配）或载荷非法（空选择/非候选选项/
-    /// 单选多项——校验失败时请求留在 pending，用户可修正重试）。
+    /// 送出用户作答（选项形态）。`Ok(true)` = 送达（先到先得）；`Err` =
+    /// 请求不存在（已超时清理/已作答/broker 未装配）或载荷非法（空选择/
+    /// 非候选选项/单选多项——校验失败时请求留在 pending，用户可修正重试）。
+    /// 对表单形态的请求诚实报错（表单须走 [`QuestionResponder::respond_form`]）。
     fn respond(&self, question_id: &str, selected: Vec<String>) -> Result<bool, String>;
 
+    /// B8（提问两形态）：送出用户表单作答（`values` 键=字段 key，值=文本
+    /// 或选中项原文）。校验语义同 [`QuestionResponder::respond`]：`Ok(true)`
+    /// = 送达；`Err` = 请求不存在 / 载荷非法（未知键/必填空值/select 非候
+    /// 选——校验失败时请求留在 pending，用户可修正重试）。对选项形态的
+    /// 请求诚实报错（选项须走 [`QuestionResponder::respond`]）。
+    fn respond_form(
+        &self,
+        question_id: &str,
+        values: &std::collections::BTreeMap<String, String>,
+    ) -> Result<bool, String>;
+
     /// 当前等待作答的提问元数据列表（前端刷新/恢复用）。
+    fn pending(&self) -> Vec<serde_json::Value>;
+}
+
+/// B4（2026-10-18 凭据 vault §7）：单次凭据索要请求（触发点 → broker 方向
+/// 的载荷）。触发点 = recovery Auth 臂（模型 API key 401/403）与 connector
+/// 工具必需凭据槽位缺失；`key_name` 是 vault 别名（bare，无 `vault:`
+/// 前缀）。
+#[derive(Debug, Clone)]
+pub struct CredentialRequest {
+    /// broker 生成的请求标识（`cred-<hex8>`）。
+    pub request_id: String,
+    /// 凭据所属服务描述（`model:<alias>` / `connector/<id>`，卡片展示）。
+    pub service: String,
+    /// vault 别名（bare）——respond 侧按它落库。
+    pub key_name: String,
+    /// 为什么需要（错误摘要，卡片展示）。
+    pub reason: String,
+    /// 等待窗口（秒）；超时返回 [`CredentialOutcome::Denied`]（语义等价：
+    /// 调用方走原错误路径）。
+    pub timeout_secs: u64,
+}
+
+/// B4：凭据索要结局。**通道只传裁决不传值**——`Stored` 表示用户已提交且
+/// broker 已把值落 vault（调用方原地重解析即续行）；值从不经本通道。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CredentialOutcome {
+    /// 已落 vault（调用方重解析）。
+    Stored,
+    /// 用户拒绝或超时（调用方走原错误路径）。
+    Denied,
+}
+
+/// 凭据索要发起端 trait（B4，触发点 → broker 方向）。
+///
+/// 与 [`CredentialResponder`]（WSAPI → broker 方向）互补，实现方
+/// （nemesisbot 的 `WebCredentialBroker`）同时实现两者。同步阻塞语义
+/// （等用户提交）：调用方经 `spawn_blocking` 调用（tokio 上下文内 broker
+/// 自身用 `block_in_place` 让出 worker，同 QuestionAsker 契约）。放在
+/// nemesis-types 让 nemesis-agent 无需依赖 nemesisbot/nemesis-web。
+pub trait CredentialBroker: Send + Sync {
+    /// 发起索要并阻塞等结局。`Ok` = 窗口内有结局（落库/拒绝/超时）；
+    /// `Err` = broker 内部故障（pending 锁中毒等）。
+    fn request_credential(&self, request: &CredentialRequest) -> Result<CredentialOutcome, String>;
+}
+
+/// 凭据索要响应端 trait（B4，WSAPI → broker 方向）。
+///
+/// respond 侧职责：**先落 vault 再送裁决**——值经本 trait 进入 broker 后
+/// 立即写 vault（force 语义=卡片提交即显式轮换意图），成功才回 `Stored`；
+/// 落库失败回 `Err`（请求留在 pending，用户可修正重试）。凭据值不落日志/
+/// 错误/审计（vault 纪律，只记 alias）。
+pub trait CredentialResponder: Send + Sync {
+    /// 提交凭据值。`Ok(json)` = 已落 vault 且裁决送达（json 带
+    /// `stored`/`key_name` 回执）；`Err` = 请求不存在（已超时清理/已裁决/
+    /// broker 未装配）或落库失败（请求留在 pending，可修正重试）。
+    fn respond(&self, request_id: &str, value: &str) -> Result<serde_json::Value, String>;
+
+    /// 当前等待提交的凭据请求元数据列表（前端刷新/恢复用；**无值字段**）。
     fn pending(&self) -> Vec<serde_json::Value>;
 }
 

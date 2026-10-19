@@ -12,11 +12,10 @@ pub enum ServiceState {
 
 /// Query a Windows service's state by name (e.g. "SbieSvc", "SbieDrv").
 pub fn service_state(name: &str) -> ServiceState {
-    let out = match std::process::Command::new("sc")
-        .arg("query")
-        .arg(name)
-        .output()
-    {
+    let mut c = std::process::Command::new("sc");
+    c.arg("query").arg(name);
+    crate::suppress_console(&mut c);
+    let out = match c.output() {
         Ok(o) => o,
         Err(_) => return ServiceState::NotFound,
     };
@@ -42,11 +41,10 @@ pub fn service_state(name: &str) -> ServiceState {
 /// service (e.g. SbieSvc) is OURS — i.e. its binary lives under our runtime dir
 /// — vs a system / someone-else's Sandboxie, so we stop only our own on exit.
 pub fn service_binary_path(name: &str) -> Option<String> {
-    let out = std::process::Command::new("sc")
-        .arg("qc")
-        .arg(name)
-        .output()
-        .ok()?;
+    let mut c = std::process::Command::new("sc");
+    c.arg("qc").arg(name);
+    crate::suppress_console(&mut c);
+    let out = c.output().ok()?;
     if !out.status.success() {
         return None;
     }

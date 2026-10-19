@@ -13,7 +13,12 @@ pub mod message;
 pub mod platform;
 pub mod sanitize;
 pub mod skills;
+// B10（2026-10-18 存储韧性）：SQLite 打开面前置守卫——feature 门控，
+// 未启用 `sqlite-preflight` 的消费方不编译本模块（rusqlite 不进依赖图）。
+#[cfg(feature = "sqlite-preflight")]
+pub mod sqlite_preflight;
 pub mod string_utils;
+pub mod wait_ready;
 pub mod zip_util;
 
 // Re-export the most commonly used functions

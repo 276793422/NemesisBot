@@ -528,6 +528,79 @@ mod serve_journal {
             lines[1]
         );
     }
+
+    // -----------------------------------------------------------------
+    // F2（二轮复评 2026-10-18）：意图未可靠落盘 → 有副作用工具拒绝 dispatch。
+    // -----------------------------------------------------------------
+
+    /// 意图落盘失败（`.runtime` 被文件占位）+ 非只读工具 → 诚实拒绝，工具
+    /// **不执行**（result 恒空，执行了会是 run-1）；拒绝记为完成账（进程内
+    /// replay），重发同 call_id = 字节一致回缓存错误。
+    #[tokio::test]
+    async fn intent_not_durable_non_readonly_tool_refused_without_executing() {
+        let tools = registry_named("exec");
+        let ws = tempfile::tempdir().unwrap();
+        let blocker = ws.path().join(".runtime");
+        std::fs::write(&blocker, b"not a dir").unwrap();
+        let mut j = Journal::with_agent_id(ws.path(), "agent-a");
+
+        let req = v2_req_tool("c-nd-1", "exec");
+        let out = serve_line(&req, &tools, &mut j).await;
+        let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+        assert_eq!(v["ok"], serde_json::json!(false), "{v}");
+        assert_eq!(v["v"], 2, "{v}");
+        assert_eq!(v["call_id"], "c-nd-1", "{v}");
+        let err = v["error"].as_str().unwrap_or("");
+        assert!(
+            err.contains("意图落盘失败") && err.contains("拒绝执行") && err.contains("新 call_id"),
+            "诚实错误必须说清拒绝原因与重试方式: {err}"
+        );
+        // 工具未执行（执行了 result 会是 run-1 而错误行 result 恒空）。
+        assert_eq!(v["result"], "", "{v}");
+        // 拒绝记为完成账（内存 admit）→ 重发回缓存错误，不重复尝试。
+        assert!(j.lookup("c-nd-1").is_some(), "拒绝必须记为完成账");
+        let out2 = serve_line(&req, &tools, &mut j).await;
+        assert_eq!(out, out2, "重发必须回缓存错误（不重复尝试）");
+    }
+
+    /// 意图落盘失败 + 只读白名单工具 → 照常执行（可用性取舍：读不改状态，
+    /// 最坏 = 重启后重读一次）。
+    #[tokio::test]
+    async fn intent_not_durable_readonly_tool_still_executes() {
+        let tools = registry_named("read_file");
+        let ws = tempfile::tempdir().unwrap();
+        let blocker = ws.path().join(".runtime");
+        std::fs::write(&blocker, b"not a dir").unwrap();
+        let mut j = Journal::with_agent_id(ws.path(), "agent-a");
+
+        let out = serve_line(&v2_req_tool("c-nd-2", "read_file"), &tools, &mut j).await;
+        let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+        assert_eq!(v["ok"], serde_json::json!(true), "{v}");
+        assert_eq!(v["result"], "run-1", "只读白名单在账本故障时必须放行: {v}");
+    }
+
+    /// 存储修复后恢复执行：拒绝发生在存储故障窗口内；修复 + 新实例（等价
+    /// 重启）→ 新 call_id 的非只读工具照常 dispatch（sticky 只限本实例）。
+    #[tokio::test]
+    async fn storage_repair_restores_non_readonly_dispatch() {
+        let tools = registry_named("exec");
+        let ws = tempfile::tempdir().unwrap();
+        let blocker = ws.path().join(".runtime");
+        std::fs::write(&blocker, b"not a dir").unwrap();
+        let mut j = Journal::with_agent_id(ws.path(), "agent-a");
+        let out = serve_line(&v2_req_tool("c-nd-3", "exec"), &tools, &mut j).await;
+        let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+        assert_eq!(v["ok"], serde_json::json!(false), "{v}");
+        assert_eq!(v["result"], "", "故障窗口内不得执行: {v}");
+
+        // 修复存储 + 新 journal 实例（等价执行体重启）。
+        std::fs::remove_file(&blocker).unwrap();
+        let mut j2 = Journal::with_agent_id(ws.path(), "agent-a");
+        let out2 = serve_line(&v2_req_tool("c-nd-4", "exec"), &tools, &mut j2).await;
+        let v2: serde_json::Value = serde_json::from_str(out2.trim()).unwrap();
+        assert_eq!(v2["ok"], serde_json::json!(true), "{v2}");
+        assert_eq!(v2["result"], "run-1", "修复后非只读工具必须恢复执行: {v2}");
+    }
 }
 
 /// run() 前置守卫：workspace env 缺失必须干净报错（而不是进 stdio 循环挂死）。

@@ -93,6 +93,30 @@ impl AgentLoop {
             .is_some_and(|s| s.enabled())
     }
 
+    /// B4（凭据 vault §7）：装配凭据索要卡 broker（gateway init_agent 一次性；
+    /// 重复调用覆盖——agent 重启重建 broker 后以最新为准）。
+    pub fn set_credential_broker(&self, broker: Arc<dyn nemesis_types::agent::CredentialBroker>) {
+        *self.security.credential_broker.write() = Some(broker);
+    }
+
+    /// B4：取凭据 broker（未装配 = `None`——Auth 臂走原终局零回归）。
+    pub(crate) fn credential_broker(
+        &self,
+    ) -> Option<Arc<dyn nemesis_types::agent::CredentialBroker>> {
+        self.security.credential_broker.read().clone()
+    }
+
+    /// B4：装配 provider 重建器（gateway 注入 `ModelProviderReloader`；
+    /// agent 重启重建 loop 后工厂重新调用 setter 自动跟进）。
+    pub fn set_provider_reloader(&self, reloader: Arc<dyn super::ProviderReloader>) {
+        *self.provider_reloader.write() = Some(reloader);
+    }
+
+    /// B4：取 provider 重建器（未装配 = `None`）。
+    pub(crate) fn provider_reloader(&self) -> Option<Arc<dyn super::ProviderReloader>> {
+        self.provider_reloader.read().clone()
+    }
+
     /// K1a (U14): 注册一个用户工具钩子。pre 在固定 security 闸之后、工具
     /// 执行之前运行；post 在执行之后、Forge 记录之前运行（详见
     /// `crate::hooks` 模块文档）。RwLock 注册——运行中随时可挂。
@@ -253,6 +277,25 @@ impl AgentLoop {
     /// to read/write history via the same SessionStore the loop would use.
     pub fn session_store(&self) -> Option<&Arc<crate::session::SessionStore>> {
         self.session_store.as_ref()
+    }
+
+    /// ②typed checks 块捕获：任务 run 前建槽（`checks_capture` 模块文档是
+    /// 语义真相源）。同会话键重复 begin = 覆盖（漏摘自愈，占用有界）。
+    pub fn begin_checks_capture(&self, session_key: &str) {
+        self.checks_capture.write().insert(
+            session_key.to_string(),
+            Arc::new(parking_lot::Mutex::new(Vec::new())),
+        );
+    }
+
+    /// ②typed checks 块捕获：任务 run 后摘槽取记录（槽必移除，无泄漏）。
+    /// 没跑检查 / 未 begin = 空列表（诚实缺席，交付 payload 不带 checks）。
+    pub fn take_checks_capture(&self, session_key: &str) -> Vec<checks_capture::CheckRecord> {
+        self.checks_capture
+            .write()
+            .remove(session_key)
+            .map(|sink| std::mem::take(&mut *sink.lock()))
+            .unwrap_or_default()
     }
 
     /// Set the continuation manager for async cluster RPC callbacks.

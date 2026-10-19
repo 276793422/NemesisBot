@@ -2113,9 +2113,17 @@ impl NodeExecutor for ScriptNodeExecutor {
 
         // Fallback (no registry / no world — unit tests / stub paths):
         // direct spawn.
-        let output = tokio::process::Command::new(interpreter)
-            .arg(flag)
-            .arg(&resolved_script)
+        let mut cmd = tokio::process::Command::new(interpreter);
+        cmd.arg(flag).arg(&resolved_script);
+        // 黑窗根修（2026-10-19）：直跑臂与生产 execution-world 车道
+        // （guarded_direct_spawn）同纪律压 CREATE_NO_WINDOW。
+        // （tokio Command 在 Windows 原生自带 creation_flags，无需 std CommandExt）
+        #[cfg(windows)]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let output = cmd
             .output()
             .await
             .map_err(|e| format!("failed to execute script: {}", e))?;
