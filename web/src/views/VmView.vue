@@ -173,6 +173,20 @@ const bsInstallRunning = computed(() => !!bootstrap.value?.install?.running)
 const qemuState = computed(() => bootstrap.value?.qemu?.state ?? null)
 const accelState = computed(() => bootstrap.value?.accel?.state ?? null)
 const imageReady = computed(() => !!bootstrap.value?.image_ready)
+// B7 构建路由（bootstrap.image_route）：「能不能点」与「缺什么怎么补」
+// 同一份后端事实。旧后端无此段时闸交后端（启动时诚实拒绝），不卡按钮。
+const imageRoute = computed(() => (bootstrap.value?.image_route ?? null) as { state?: string; missing?: string[]; command?: string; note?: string; guest_ready?: boolean } | null)
+const imageRouteReady = computed(() => {
+  const s = imageRoute.value?.state
+  if (!s) return true
+  return s === 'native' || s === 'wsl_ready'
+})
+const imageRouteIsWsl = computed(() => imageRoute.value?.state === 'wsl_ready')
+const guestReady = computed(() => imageRoute.value?.guest_ready !== false)
+const guestBuildCmd = computed(() => {
+  const target = form.value.arch === 'aarch64' ? 'aarch64-unknown-linux-musl' : 'x86_64-unknown-linux-musl'
+  return `bash scripts/build-guest.sh "${target}"`
+})
 
 async function refreshBootstrap() {
   bootstrap.value = await request('vm', 'bootstrap.status').catch(() => null)
@@ -356,9 +370,13 @@ async function instanceOp(op: 'sleep' | 'wake' | 'kill', agentId: string) {
 // 信任级 = dashboard 登录用户（对齐 PTY 终端先例）；命令跑在 VM 整机隔离边界内。
 const tryState = ref<any>(null)
 const tryRunning = computed(() => !!tryState.value?.running)
+const tryStarting = computed(() => !!tryState.value?.starting)
 const tryCommand = ref('')
 const tryOutput = ref('')
 const tryBusy = ref(false)
+// B8c：命令超时档（秒；0=缺省 30s 不透传）。guest 上限 600s——apt 全程等
+// 长命令不再被 30s 缺省假超时。请求预算 = max(120s, 档位 + 90s 协议余量)。
+const tryTimeout = ref(0)
 
 // 预设命令：guest 内秒级可回、不依赖 ICMP（SLIRP 不转发 ping——预设不放
 // ping，防「第一条命令就失败」的观感；网络形态看 ip addr）。
@@ -368,16 +386,41 @@ async function refreshTry() {
   tryState.value = await request('vm', 'try.status').catch(() => null)
 }
 
+// 冷启动走后端后台任务（try.start 发起即返回 starting=true），前端轮询
+// try.status 转绿——真机教训：同步等冷启 30-60s 必撞默认 30s 请求超时。
+const TRY_START_POLL_MS = 2000
+const TRY_START_POLL_BUDGET_MS = 180_000
+
 async function tryStart() {
+  if (tryStarting.value) return
   tryBusy.value = true
   try {
-    const r = await request('vm', 'try.start', {})
-    toast.success(r?.note ?? '试玩实例已就绪')
-    await refreshTry()
+    const r = await request('vm', 'try.start', {}, 15_000)
+    toast.info(r?.note ?? '冷启动已发起')
+    const deadline = Date.now() + TRY_START_POLL_BUDGET_MS
+    for (;;) {
+      await refreshTry()
+      if (!tryState.value) return // 网关不可达：状态空，停轮询（下次进页复检）
+      if (tryState.value.running) {
+        toast.success('试玩实例已就绪（guest agent 在线）')
+        return
+      }
+      if (!tryState.value.starting) {
+        const err = tryState.value.last_error
+        toast.error(err ? '启动失败: ' + err : '启动未能完成（原因未知，可重试或看网关日志）')
+        return
+      }
+      if (Date.now() >= deadline) {
+        toast.error('启动超时（超过 3 分钟仍在进行）——可到「实例」页查看该实例状态')
+        return
+      }
+      await new Promise((res) => setTimeout(res, TRY_START_POLL_MS))
+    }
   } catch (e: any) {
     toast.error('启动失败: ' + (e?.message ?? e))
   } finally {
     tryBusy.value = false
+    await refreshTry()
   }
 }
 
@@ -387,7 +430,16 @@ async function tryRun(cmd?: string) {
   tryBusy.value = true
   tryOutput.value += `$ ${command}\n`
   try {
-    const r = await request('vm', 'try.exec', { command })
+    // 请求预算随超时档放大：guest 命令超时 Ns + 握手/协议余量（后端单
+    // 调用信封 = N+30s）；缺省档维持 120s 下限（慢命令不假超时）。
+    const guestSecs = tryTimeout.value || 30
+    const budget = Math.max(120_000, (guestSecs + 90) * 1000)
+    const r = await request(
+      'vm',
+      'try.exec',
+      { command, timeout: tryTimeout.value || undefined },
+      budget,
+    )
     tryOutput.value += (r?.output ?? '') + '\n\n'
     if (!cmd) tryCommand.value = ''
   } catch (e: any) {
@@ -417,6 +469,81 @@ async function tryStop() {
   }
 }
 
+// --- B9-3 项目工作副本同步 ---
+// 状态卡 = vm.sync.status 只读（不开闸、不拽睡眠实例）；commit/resync 是
+// agent 活动形态——estop 冻结闸在后端 handler 层，前端预闸只为少一次徒劳
+// 请求。冲突裁决卡骑既有提问卡 UI（question-asked SSE → 全局提问队列），
+// 本页无独立冲突面。
+const syncProjects = ref<any[]>([])
+const syncProjectId = ref('')
+const syncStatus = ref<any>(null)
+const syncBusy = ref(false)
+
+async function refreshSyncProjects() {
+  const r = await request('projects', 'list').catch(() => null)
+  syncProjects.value = r?.projects ?? []
+  if (!syncProjects.value.some((p: any) => p.id === syncProjectId.value)) {
+    syncProjectId.value = syncProjects.value[0]?.id ?? ''
+    syncStatus.value = null
+  }
+}
+
+async function refreshSyncStatus() {
+  if (!syncProjectId.value) {
+    syncStatus.value = null
+    return
+  }
+  syncStatus.value = await request('vm', 'sync.status', { project: syncProjectId.value }).catch(
+    (e: any) => ({ _error: e?.message ?? String(e) }),
+  )
+}
+
+function onSyncProjectChange() {
+  syncStatus.value = null
+  void refreshSyncStatus()
+}
+
+async function syncCommit() {
+  if (!syncProjectId.value) return
+  syncBusy.value = true
+  try {
+    const r = await request('vm', 'commit', { project: syncProjectId.value }, 600_000)
+    if (r?.no_baseline) {
+      toast.info(r?.note ?? '项目尚未开工同步（无基线）')
+    } else {
+      toast.success(
+        `已提交：${r?.changed?.length ?? 0} 个文件回传宿主，${r?.deleted?.length ?? 0} 个删除已同步`,
+      )
+    }
+    await refreshSyncStatus()
+  } catch (e: any) {
+    toast.error('提交失败: ' + (e?.message ?? e))
+  } finally {
+    syncBusy.value = false
+  }
+}
+
+async function syncResync() {
+  if (!syncProjectId.value) return
+  if (!window.confirm(
+    `即将对该项目强制重同步：\n` +
+    '• VM 工作副本将被清空\n' +
+    '• 以宿主当前内容整体覆盖重建基线\n' +
+    '• VM 内未回传的改动将丢失\n\n' +
+    '确认继续？'
+  )) return
+  syncBusy.value = true
+  try {
+    const r = await request('vm', 'resync', { project: syncProjectId.value }, 600_000)
+    toast.success(`重同步完成：${r?.files ?? 0} 个文件已推送（${formatSize(r?.bytes ?? 0)}）`)
+    await refreshSyncStatus()
+  } catch (e: any) {
+    toast.error('重同步失败: ' + (e?.message ?? e))
+  } finally {
+    syncBusy.value = false
+  }
+}
+
 function formatSize(n: number): string {
   if (!n) return '0B'
   if (n < 1024 * 1024) return `${Math.round(n / 1024)}K`
@@ -433,6 +560,10 @@ onMounted(async () => {
   await refreshAll()
   if (buildRunning.value) ensurePolling()
   if (bsInstallRunning.value) ensureBootstrapPolling()
+  // B9-3 同步卡：项目清单 + 当前选中项目的状态（失败静默——卡内已有
+  // 诚实错误位，不弹全局 toast 打扰）。
+  await refreshSyncProjects()
+  await refreshSyncStatus()
 })
 </script>
 
@@ -576,21 +707,38 @@ onMounted(async () => {
                   </div>
                 </div>
 
-                <!-- ③ 基础镜像 -->
+                <!-- ③ 基础镜像（B7 构建路由：Windows 宿主自动经 WSL，缺什么补什么） -->
                 <div data-test="step-image" style="border-top: 1px solid var(--border); padding-top: var(--space-4);">
                   <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-2);">
                     <span style="font-weight: 500;">③ 基础镜像</span>
                     <div style="display: flex; gap: var(--space-2);">
                       <button class="btn btn-sm" @click="activeTab = 'images'">查看构建日志</button>
-                      <button v-if="!imageReady" class="btn btn-sm btn-primary" data-test="image-build" @click="buildImage(false)" :disabled="!!busy || buildRunning || !enabled">首次构建</button>
+                      <button v-if="!imageReady" class="btn btn-sm btn-primary" data-test="image-build" @click="buildImage(false)" :disabled="!!busy || buildRunning || !enabled || !imageRouteReady || !guestReady" :title="imageRoute?.note || ''">首次构建</button>
                     </div>
                   </div>
                   <div style="padding-left: var(--space-4); color: var(--text-secondary);">
                     <span :style="{ color: imageReady ? 'var(--success)' : 'var(--text-secondary)' }">{{ imageReady ? '●' : '○' }}</span>
                     <span style="margin-left: var(--space-2);" data-test="image-state">
                       <template v-if="imageReady">base 镜像已就绪（构建/更新与日志见「镜像」页签）</template>
-                      <template v-else>未构建 — 点「首次构建」下载 base 并注入 guest 代理（日志见「镜像」页签）</template>
+                      <template v-else-if="imageRouteReady && imageRouteIsWsl">未构建 — 点「首次构建」自动经 WSL 跑构建管线（下载 base + 注入 guest 代理，产物直落镜像目录）</template>
+                      <template v-else-if="imageRouteReady">未构建 — 点「首次构建」下载 base 并注入 guest 代理（日志见「镜像」页签）</template>
+                      <template v-else>{{ imageRoute?.note || '未构建' }}</template>
                     </span>
+                  </div>
+                  <!-- 构建路由引导（B7）：每态给可执行下一步 + 复制 -->
+                  <div v-if="!imageReady && imageRoute && !imageRouteReady" data-test="image-route-guide" style="padding-left: var(--space-4); margin-top: var(--space-2); display: flex; flex-direction: column; gap: var(--space-1); color: var(--text-secondary);">
+                    <div v-if="imageRoute.missing?.length" data-test="image-route-missing" style="color: var(--warning, #b58900);">
+                      缺：{{ imageRoute.missing.join('、') }}
+                    </div>
+                    <div v-if="imageRoute.command" style="display: flex; align-items: center; gap: var(--space-2);">
+                      <code data-test="image-route-command" style="flex: 1; overflow-x: auto; white-space: nowrap;">{{ imageRoute.command }}</code>
+                      <button class="btn btn-sm" data-test="image-route-copy" @click="copyCommand(imageRoute.command!)">复制</button>
+                    </div>
+                    <div v-if="imageRoute.note" data-test="image-route-note" style="font-size: var(--text-xs);">{{ imageRoute.note }}</div>
+                  </div>
+                  <!-- guest 代理未构建：Windows 侧 git-bash 直接交叉编译（guest 依赖纯 Rust，无需 WSL 工具链） -->
+                  <div v-if="!imageReady && !guestReady" data-test="guest-missing-hint" style="padding-left: var(--space-4); margin-top: var(--space-1); font-size: var(--text-xs); color: var(--text-secondary);">
+                    guest 代理二进制未构建——在 git-bash 执行后点「复检」：<code style="user-select: all;">{{ guestBuildCmd }}</code>
                   </div>
                   <div v-if="buildRunning" style="padding-left: var(--space-4); margin-top: var(--space-2); display: flex; align-items: center; gap: var(--space-2); color: var(--accent);">
                     <div class="spinner spinner-sm"></div>
@@ -796,9 +944,9 @@ onMounted(async () => {
                   一台专属试玩实例（try-dashboard）：启动后在 Debian 里跑几条命令，直观感受整机隔离；闲置约 5 分钟自动睡眠省资源。
                 </div>
                 <div style="display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap;">
-                  <span :style="{ color: tryRunning ? 'var(--success)' : 'var(--text-secondary)' }" data-test="try-state-label">{{ tryRunning ? '● 运行中' : '○ 已停止' }}</span>
-                  <button v-if="!tryRunning" class="btn btn-sm btn-primary" data-test="try-start" @click="tryStart" :disabled="tryBusy || !!busy">启动试玩实例</button>
-                  <button v-else class="btn btn-sm btn-danger" data-test="try-stop" @click="tryStop" :disabled="tryBusy || !!busy">停止试玩</button>
+                  <span :style="{ color: tryRunning ? 'var(--success)' : 'var(--text-secondary)' }" data-test="try-state-label">{{ tryRunning ? '● 运行中' : (tryStarting ? '◐ 启动中…' : '○ 已停止') }}</span>
+                  <button v-if="!tryRunning" class="btn btn-sm btn-primary" data-test="try-start" @click="tryStart" :disabled="tryBusy || tryStarting || !!busy">{{ tryStarting ? '启动中…' : '启动试玩实例' }}</button>
+                  <button v-if="tryRunning || tryStarting" class="btn btn-sm btn-danger" data-test="try-stop" @click="tryStop" :disabled="!!busy">停止试玩</button>
                   <template v-if="tryRunning">
                     <button
                       v-for="p in TRY_PRESETS"
@@ -810,7 +958,7 @@ onMounted(async () => {
                     >{{ p }}</button>
                   </template>
                 </div>
-                <div v-if="tryRunning" style="margin-top: var(--space-2); display: flex; gap: var(--space-2);">
+                <div v-if="tryRunning" style="margin-top: var(--space-2); display: flex; gap: var(--space-2); align-items: center;">
                   <input
                     v-model="tryCommand"
                     data-test="try-input"
@@ -819,6 +967,12 @@ onMounted(async () => {
                     :disabled="tryBusy || !!busy"
                     @keydown.enter="tryRun()"
                   />
+                  <select v-model.number="tryTimeout" data-test="try-timeout" :disabled="tryBusy || !!busy" title="命令超时（apt 等长命令选长档）">
+                    <option :value="0">默认 30s</option>
+                    <option :value="120">120s</option>
+                    <option :value="300">300s</option>
+                    <option :value="600">600s</option>
+                  </select>
                   <button class="btn btn-sm btn-primary" data-test="try-run" @click="tryRun()" :disabled="tryBusy || !!busy || !tryCommand.trim()">执行</button>
                 </div>
                 <pre
@@ -826,6 +980,46 @@ onMounted(async () => {
                   data-test="try-output"
                   style="margin-top: var(--space-2); max-height: 300px; overflow: auto; background: var(--bg-secondary, rgba(0,0,0,0.05)); padding: var(--space-2); border-radius: 4px; white-space: pre-wrap; word-break: break-all;"
                 >{{ tryOutput }}</pre>
+              </template>
+            </div>
+          </div>
+
+          <!-- B9-3 项目工作副本同步卡 -->
+          <div class="card" data-test="sync-card" style="margin-bottom: var(--space-4);">
+            <div class="card-header"><h3 style="margin: 0;">项目工作副本同步</h3></div>
+            <div class="card-body" style="font-size: var(--text-sm);">
+              <div v-if="syncProjects.length === 0" data-test="sync-no-projects" style="color: var(--text-secondary);">
+                暂无注册项目——侧栏「项目」区注册并开启 VM 档后，项目工作副本每轮对话自动双向对齐；这里提供手动提交与强制重同步。
+              </div>
+              <template v-else>
+                <div style="display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; margin-bottom: var(--space-2);">
+                  <select v-model="syncProjectId" data-test="sync-project" :disabled="syncBusy" @change="onSyncProjectChange">
+                    <option v-for="p in syncProjects" :key="p.id" :value="p.id">{{ p.name }}</option>
+                  </select>
+                  <button class="btn btn-sm btn-primary" data-test="sync-commit" :disabled="syncBusy || !!busy" @click="syncCommit">一键提交</button>
+                  <button class="btn btn-sm btn-danger" data-test="sync-resync" :disabled="syncBusy || !!busy" @click="syncResync">强制重同步</button>
+                  <span style="color: var(--text-secondary); font-size: var(--text-xs);">每轮对话结束自动回传；「一键提交」立即对齐一次。冲突时弹出裁决卡。</span>
+                </div>
+                <div v-if="syncStatus?._error" data-test="sync-error" style="color: var(--danger, #c0392b);">{{ syncStatus._error }}</div>
+                <template v-else-if="syncStatus">
+                  <div v-if="!syncStatus.has_baseline" data-test="sync-no-baseline" style="color: var(--text-secondary);">
+                    尚未开工同步（无基线）——给该项目会话发一条消息即触发开工全量同步。
+                  </div>
+                  <template v-else>
+                    <div data-test="sync-baseline" style="color: var(--text-secondary);">
+                      基线：{{ syncStatus.baseline_files }} 个文件 · {{ formatMs(syncStatus.synced_at_ms) }} · 选源 {{ syncStatus.selection }}
+                    </div>
+                    <div data-test="sync-pending" style="margin-top: var(--space-1);">
+                      <span v-if="syncStatus.host_pending.length === 0 && syncStatus.host_pending_deletes.length === 0" style="color: var(--success);">✓ 宿主无待同步变更</span>
+                      <span v-else style="color: var(--warning, #b58900);">
+                        宿主待同步：{{ syncStatus.host_pending.length }} 改 / {{ syncStatus.host_pending_deletes.length }} 删（下轮开工自动对齐，或「一键提交」立即推）
+                      </span>
+                    </div>
+                    <div v-if="syncStatus.last_commit" data-test="sync-last-commit" style="margin-top: var(--space-1); color: var(--text-secondary); font-size: var(--text-xs);">
+                      上次提交：{{ formatMs(syncStatus.last_commit.committed_at_ms) }} — {{ syncStatus.last_commit.changed?.length ?? 0 }} 改 / {{ syncStatus.last_commit.deleted?.length ?? 0 }} 删 / {{ formatSize(syncStatus.last_commit.bytes ?? 0) }}
+                    </div>
+                  </template>
+                </template>
               </template>
             </div>
           </div>

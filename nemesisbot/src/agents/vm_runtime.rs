@@ -478,6 +478,24 @@ pub struct VmSupervisor {
     workspace: PathBuf,
     config_path: PathBuf,
     slots: Mutex<HashMap<String, Arc<tokio::sync::Mutex<VmSlot>>>>,
+    /// 自引用弱句柄（试玩后台启动任务需要 owned `Arc`——装配侧
+    /// `set_self_arc` 注入；Weak 不阻止释放。缺席 = try_start 同步回落）。
+    self_weak: Mutex<Option<std::sync::Weak<VmSupervisor>>>,
+    /// 试玩后台启动状态（`try_launch_*` 族单一真相源；短临界区 std 锁）。
+    try_launch: Mutex<TryLaunchState>,
+}
+
+/// 试玩启动在途状态（真机教训 2026-10-19：冷启动同步等 30-60s 撞前端
+/// 30s WSAPI 超时——「timeout: vm.try.start」弹窗而 QEMU 实际已成功启动；
+/// 改为发起即返回 + 前端轮询 try.status 转绿，本结构记录在途/停止请求/
+/// 失败原因）。
+#[derive(Default)]
+struct TryLaunchState {
+    starting: bool,
+    /// 启动期间的停止请求登记（try.stop 落点；就绪后由启动任务补停）。
+    stop_requested: bool,
+    /// 启动失败原因（轮询侧诚实展示；成功清空）。
+    last_error: Option<String>,
 }
 
 impl VmSupervisor {
@@ -486,6 +504,84 @@ impl VmSupervisor {
             workspace,
             config_path,
             slots: Mutex::new(HashMap::new()),
+            self_weak: Mutex::new(None),
+            try_launch: Mutex::new(TryLaunchState::default()),
+        }
+    }
+
+    /// 装配侧注入自引用（gateway install 处调用一次；Weak——释放不受阻）。
+    pub fn set_self_arc(self: &std::sync::Arc<Self>) {
+        *self
+            .self_weak
+            .lock()
+            .expect("vm supervisor self_weak lock poisoned") =
+            Some(std::sync::Arc::downgrade(self));
+    }
+
+    /// 试玩启动状态快照（try_status 投影 + try_exec 闸消费）。
+    pub(crate) fn try_launch_snapshot(&self) -> (bool, Option<String>) {
+        let st = self.try_launch.lock().expect("vm try launch lock poisoned");
+        (st.starting, st.last_error.clone())
+    }
+
+    /// 认领一次后台启动：置位 starting 并返回自引用句柄。已在途 = None
+    /// （幂等——双击/轮询期重复点击不发第二枪）；自引用句柄缺席（单测等
+    /// 非常规装配）= 回滚置位后返回 None（调用方同步回落旧语义）。
+    pub(crate) fn try_launch_claim(&self) -> Option<std::sync::Arc<VmSupervisor>> {
+        {
+            let mut st = self.try_launch.lock().expect("vm try launch lock poisoned");
+            if st.starting {
+                return None;
+            }
+            st.last_error = None;
+            st.stop_requested = false;
+            st.starting = true;
+        }
+        let owned = self
+            .self_weak
+            .lock()
+            .expect("vm supervisor self_weak lock poisoned")
+            .clone()
+            .and_then(|w| w.upgrade());
+        if owned.is_none() {
+            self.try_launch
+                .lock()
+                .expect("vm try launch lock poisoned")
+                .starting = false;
+        }
+        owned
+    }
+
+    /// 启动任务收尾：翻牌 + 记错（成功清错）。之后取停止请求须另起一次
+    /// 锁（`try_launch_take_stop_request`）——收尾翻牌后 `stop_if_starting`
+    /// 不再接受新登记，无「看到在途却补不上停」的窗口。
+    pub(crate) fn try_launch_finish(&self, err: Option<String>) {
+        let mut st = self.try_launch.lock().expect("vm try launch lock poisoned");
+        st.starting = false;
+        st.last_error = err;
+    }
+
+    /// 读后清停止请求（启动任务就绪后消费）。
+    pub(crate) fn try_launch_take_stop_request(&self) -> bool {
+        std::mem::take(
+            &mut self
+                .try_launch
+                .lock()
+                .expect("vm try launch lock poisoned")
+                .stop_requested,
+        )
+    }
+
+    /// try.stop 在启动在途时的落点：在途 = 登记停止请求并返回 true
+    ///（调用方给「就绪后自动停机」注记）；检查与登记同一临界区，与
+    /// `try_launch_finish` 的翻牌互斥。
+    pub(crate) fn try_launch_stop_if_starting(&self) -> bool {
+        let mut st = self.try_launch.lock().expect("vm try launch lock poisoned");
+        if st.starting {
+            st.stop_requested = true;
+            true
+        } else {
+            false
         }
     }
 
@@ -1162,18 +1258,33 @@ impl nemesis_agent::remote_executor_tool::PersistentExecutor for VmSupervisor {
             )));
         }
 
-        // ensure_running：config 现读（关=Unavailable）→ GC 闸 → 命中槽/
-        // 唤醒/冷启（含满员闸）。失败分型直接透传（Unavailable=可回落，
-        // Failed=不回落）。
-        let slot = self
-            .ensure_running(agent_id)
+        let ctx = serde_json::to_value(context)
+            .map_err(|e| PersistentCallError::ToolFailed(format!("序列化请求上下文失败: {e}")))?;
+        self.call_guest(agent_id, tool, args, &ctx)
             .await
-            .map_err(vm_err_to_persistent)?;
+            .map_err(vm_err_to_persistent)
+    }
+}
+
+impl VmSupervisor {
+    /// 单次 guest 调用共享通路（ensure_running + 握手 + guest_call）。
+    /// B9-1 从 execute_persistent 提取——agent 工具调用与 internal_call
+    /// 走同一条路，差别只在调用方的闸（子集闸/无闸）。
+    ///
+    /// 失败分型沿用既有纪律：ensure_running/握手失败 = Unavailable（请求
+    /// 从未发出，上层可回落）；请求发出后的失败 = Failed（副作用未知，
+    /// 绝不回落）。
+    async fn call_guest(
+        &self,
+        agent_id: &str,
+        tool: &str,
+        args: &str,
+        ctx: &serde_json::Value,
+    ) -> Result<String, VmSupervisorError> {
+        let slot = self.ensure_running(agent_id).await?;
 
         // 每调用独立连接（VmInstance 不持常驻流——睡眠/唤醒生命周期以
-        // 进程边界为锚，跨睡眠的常驻流是伪状态）。连接 + 鉴权失败 =
-        // 请求从未发出 = Unavailable（可回落）；请求发出后的失败 =
-        // ToolFailed（副作用未知，绝不回落——重复执行危险）。
+        // 进程边界为锚，跨睡眠的常驻流是伪状态）。
         let mut stream = {
             let s = slot.lock().await;
             nemesis_sandbox::vm::lifecycle::auth_handshake(
@@ -1182,29 +1293,43 @@ impl nemesis_agent::remote_executor_tool::PersistentExecutor for VmSupervisor {
                 GUEST_CALL_TIMEOUT,
             )
             .await
-            .map_err(|e| PersistentCallError::Unavailable(format!("VM guest 通道握手失败: {e}")))?
+            .map_err(|e| VmSupervisorError::Unavailable(format!("VM guest 通道握手失败: {e}")))?
         };
-        let ctx = serde_json::to_value(context)
-            .map_err(|e| PersistentCallError::ToolFailed(format!("序列化请求上下文失败: {e}")))?;
         let resp = nemesis_sandbox::vm::lifecycle::guest_call(
             &mut stream,
             tool,
             args,
-            &ctx,
+            ctx,
             GUEST_CALL_TIMEOUT,
         )
         .await
         .map_err(|e| {
-            PersistentCallError::ToolFailed(format!("VM guest 调用失败（副作用未知，不回落）: {e}"))
+            VmSupervisorError::Failed(format!("VM guest 调用失败（副作用未知，不回落）: {e}"))
         })?;
         if resp.ok {
             Ok(resp.result)
         } else {
-            Err(PersistentCallError::ToolFailed(format!(
+            Err(VmSupervisorError::Failed(format!(
                 "VM guest 工具执行失败: {}",
                 resp.error
             )))
         }
+    }
+
+    /// B9-1：vm_sync 同步引擎的**内部方法通道**（bulk_write/bulk_read/
+    /// bulk_read_chunk/hash_tree）。与 agent 工具面的唯一差别 = **不过
+    /// `VM_GUEST_TOOLS` 子集闸**——这四个方法名宿主闸根本不认识，agent
+    /// 永远摸不到（vm_sync 地基，B9 实施计划 §4.2 ③「guest 三个内部
+    /// 方法」的宿主侧入口）。ctx 钉 `source: "vm_sync"` 供 guest 侧区分。
+    pub(crate) async fn internal_call(
+        &self,
+        agent_id: &str,
+        tool: &str,
+        args: serde_json::Value,
+    ) -> Result<String, VmSupervisorError> {
+        let ctx = serde_json::json!({ "source": "vm_sync" });
+        self.call_guest(agent_id, tool, &args.to_string(), &ctx)
+            .await
     }
 }
 

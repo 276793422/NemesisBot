@@ -71,10 +71,337 @@ pub(crate) fn image_job_running() -> bool {
     IMAGE_JOB.lock().expect("image job lock").is_some()
 }
 
+// ===========================================================================
+// B7 —— Windows 宿主镜像构建 WSL 自动路由
+//
+// 探针四态 + 解析/分类纯函数 + 路径翻译。纯函数跨平台（解析/分类可在
+// 任何宿主上单测）；真 spawn 探测 cfg(windows)。构建管线本体
+// （scripts/build-vm-image.sh）零改动——本模块只回答「怎么把它 spawn 起来」。
+// ===========================================================================
+
+/// WSL 探针结论（`bootstrap_status` 的 image_route 段与 `image_build`
+/// 启动裁决共用一份事实）。
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct WslProbe {
+    pub state: WslState,
+    /// MissingTools 时缺的工具（人读清单，前端直接展示）。
+    pub missing: Vec<String>,
+    /// 发行版内有 apt-get（修复命令用 apt 形态）。
+    pub has_apt: bool,
+    /// Unavailable 时的人读原因。
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WslState {
+    /// 管线工具齐备——可直接经 wsl.exe 构建。
+    Ready,
+    /// 无任何发行版（含 WSL 功能未启用——`wsl --install` 一并修复）。
+    NoDistro,
+    /// 有发行版但缺管线工具（ISO 工具 / file(1) / 下载器）。
+    MissingTools,
+    /// wsl.exe 不在场 / 探测超时等探测本身失败。
+    Unavailable,
+}
+
+impl WslProbe {
+    fn unavailable(reason: impl Into<String>) -> Self {
+        Self {
+            state: WslState::Unavailable,
+            missing: Vec::new(),
+            has_apt: false,
+            reason: reason.into(),
+        }
+    }
+
+    fn no_distro() -> Self {
+        Self {
+            state: WslState::NoDistro,
+            missing: Vec::new(),
+            has_apt: false,
+            reason: String::new(),
+        }
+    }
+}
+
+/// wsl.exe 管理命令（`--list` 等）输出解码：带 UTF-16LE BOM 显式认；无 BOM
+/// 按「奇数下标 0 字节占比」启发式认 UTF-16LE（纯 ASCII 文本的 UTF-16LE
+/// 编码在每个奇数下标放 0x00，UTF-8 文本几乎不会），否则按 UTF-8 lossy。
+/// Linux 侧（`wsl -e bash`）输出是 UTF-8，走 lossy 分支原样透传。
+pub(crate) fn decode_wsl_output(bytes: &[u8]) -> String {
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        let units: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        return String::from_utf16_lossy(&units);
+    }
+    let zero_at_odd = bytes.iter().skip(1).step_by(2).filter(|&&b| b == 0).count();
+    if bytes.len() >= 2 && zero_at_odd * 2 >= bytes.len() {
+        let units: Vec<u16> = bytes
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        return String::from_utf16_lossy(&units);
+    }
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// `wsl --list --quiet` 输出解析：每行一个发行版名；空集 = 无发行版。
+/// （容忍行尾 `\r` 与解码残留的 `\0`。）
+pub(crate) fn parse_wsl_distro_list(text: &str) -> Vec<String> {
+    text.lines()
+        .map(|l| l.trim().trim_end_matches('\u{0}').to_string())
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// 清单形态判别：`--list --quiet` 成功输出是每行一个发行版注册名
+/// （注册名不含空白）；而 wsl.exe 在「WSL 功能未启用 / 无发行版」时
+/// 输出的是本地化错误消息——**实测退出码仍为 0**，不能靠 exit code 判别；
+/// 消息行（语言相关）必含空白，与注册名形态可判别。非清单形态 = 按
+/// 无发行版处理（`wsl --install` 对两态都是正确修复）。
+pub(crate) fn is_distro_manifest(lines: &[String]) -> bool {
+    !lines.is_empty() && lines.iter().all(|l| !l.contains(' ') && !l.contains('\t'))
+}
+
+/// 工具探测输出解析：`<name>=yes|no` 行 → 映射；无法识别的行忽略。
+pub(crate) fn parse_tool_probe(text: &str) -> std::collections::BTreeMap<String, bool> {
+    let mut tools = std::collections::BTreeMap::new();
+    for line in text.lines() {
+        if let Some((name, val)) = line.trim().split_once('=') {
+            tools.insert(name.trim().to_string(), val.trim() == "yes");
+        }
+    }
+    tools
+}
+
+/// 工具映射 →（缺失清单, 是否有 apt-get）。管线硬要求（build-vm-image.sh
+/// 的静态检查同口径）：ISO 工具三选一 + file(1) + 下载器二选一。
+pub(crate) fn classify_wsl_tools(
+    tools: &std::collections::BTreeMap<String, bool>,
+) -> (Vec<String>, bool) {
+    let on = |t: &str| tools.get(t).copied().unwrap_or(false);
+    let mut missing = Vec::new();
+    if !(on("genisoimage") || on("xorriso") || on("mkisofs")) {
+        missing.push("genisoimage（或 xorriso / mkisofs 任一）".to_string());
+    }
+    if !on("file") {
+        missing.push("file".to_string());
+    }
+    if !on("curl") && !on("wget") {
+        missing.push("curl 或 wget".to_string());
+    }
+    (missing, on("apt-get"))
+}
+
+/// 工具探测脚本（在 WSL 发行版内跑；输出 `t=yes|no` 逐行）。
+const WSL_TOOL_PROBE_SCRIPT: &str = "for t in genisoimage xorriso mkisofs file curl wget apt-get; do command -v \"$t\" >/dev/null 2>&1 && echo \"$t=yes\" || echo \"$t=no\"; done";
+
+/// 真 spawn 探测（Windows-only；阻塞式——调用方持 TTL 缓存）。
+/// 单独 pub(crate) 是给伴生测试文件做环境无关断言（只验「落在四态之一」）。
+#[cfg(windows)]
+pub(crate) fn wsl_spawn_probe() -> WslProbe {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    const TIMEOUT: Duration = Duration::from_secs(3);
+    // 后台探测不闪窗（CREATE_NO_WINDOW）。
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    fn run(program: &str, args: &[&str], timeout: Duration) -> Option<(i32, Vec<u8>, Vec<u8>)> {
+        use std::os::windows::process::CommandExt as _;
+        let mut child = Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .ok()?;
+        let mut stdout = child.stdout.take()?;
+        let mut stderr = child.stderr.take()?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let mut out = Vec::new();
+                    let mut err = Vec::new();
+                    let _ = stdout.read_to_end(&mut out);
+                    let _ = stderr.read_to_end(&mut err);
+                    return Some((status.code().unwrap_or(-1), out, err));
+                }
+                Ok(None) if Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+                Err(_) => return None,
+            }
+        }
+    }
+
+    // ① 发行版清单（wsl.exe 管理命令 = UTF-16LE 输出）。
+    let Some((_, out, _)) = run("wsl.exe", &["--list", "--quiet"], TIMEOUT) else {
+        return WslProbe::unavailable("wsl.exe 不在场或探测超时（旧版 Windows / 冷启动）");
+    };
+    let distros = parse_wsl_distro_list(&decode_wsl_output(&out));
+    if !is_distro_manifest(&distros) {
+        // 空清单 / 错误消息文本（功能未启用也 exit 0——实测）同样归此态：
+        // wsl --install 对「功能未启用」与「无发行版」都是正确修复。
+        return WslProbe::no_distro();
+    }
+
+    // ② 管线工具探测（Linux 侧输出 = UTF-8）。
+    let Some((_, out2, _)) = run(
+        "wsl.exe",
+        &["-e", "bash", "-c", WSL_TOOL_PROBE_SCRIPT],
+        TIMEOUT,
+    ) else {
+        return WslProbe::unavailable("WSL 工具探测超时（发行版冷启动？）——稍后点复检");
+    };
+    let tools = parse_tool_probe(&decode_wsl_output(&out2));
+    if tools.is_empty() {
+        return WslProbe::unavailable("发行版内探测无响应（缺 bash？）——本管线需要 bash");
+    }
+    let (missing, has_apt) = classify_wsl_tools(&tools);
+    if missing.is_empty() {
+        WslProbe {
+            state: WslState::Ready,
+            missing,
+            has_apt,
+            reason: String::new(),
+        }
+    } else {
+        WslProbe {
+            state: WslState::MissingTools,
+            missing,
+            has_apt,
+            reason: String::new(),
+        }
+    }
+}
+
+/// WSL 探针 TTL 缓存——bootstrap.status 前端轮询不能每次都 spawn wsl.exe
+/// （冷启动秒级）。就绪/缺工具 30s；无发行版/不可用 5s（装 WSL/装工具是
+/// 外部事件，复检要快点看到转绿）。构建启动前走 [`wsl_probe_fresh`] 强刷。
+#[cfg(windows)]
+static WSL_PROBE_CACHE: std::sync::Mutex<Option<(std::time::Instant, WslProbe)>> =
+    std::sync::Mutex::new(None);
+
+/// 缓存读（过期或空槽才真探）。
+#[cfg(windows)]
+fn wsl_probe_cached() -> WslProbe {
+    let mut slot = WSL_PROBE_CACHE.lock().expect("wsl probe cache");
+    if let Some((at, probe)) = slot.as_ref() {
+        let ttl = match probe.state {
+            WslState::Ready | WslState::MissingTools => std::time::Duration::from_secs(30),
+            WslState::NoDistro | WslState::Unavailable => std::time::Duration::from_secs(5),
+        };
+        if at.elapsed() < ttl {
+            return probe.clone();
+        }
+    }
+    let fresh = wsl_spawn_probe();
+    *slot = Some((std::time::Instant::now(), fresh.clone()));
+    fresh
+}
+
+/// 强刷（image_build 启动裁决用——启动瞬间的真实态优先于缓存）。
+#[cfg(windows)]
+fn wsl_probe_fresh() -> WslProbe {
+    let fresh = wsl_spawn_probe();
+    *WSL_PROBE_CACHE.lock().expect("wsl probe cache") =
+        Some((std::time::Instant::now(), fresh.clone()));
+    fresh
+}
+
+/// Windows 盘符路径 → WSL /mnt 形态（`C:\a\b` → `/mnt/c/a/b`）。
+/// UNC / 非盘符路径诚实 Err（本管线用不到，不猜）。
+pub(crate) fn windows_to_wsl_path(p: &Path) -> Result<String, String> {
+    let s = p.to_string_lossy();
+    let mut chars = s.chars();
+    let Some(drive) = chars.next() else {
+        return Err("空路径无法翻译为 WSL 形态".to_string());
+    };
+    if !drive.is_ascii_alphabetic() || chars.next() != Some(':') {
+        return Err(format!(
+            "非盘符路径（{s}）——WSL 路径翻译只支持「C:\\…」形态"
+        ));
+    }
+    let rest = s[2..].trim_start_matches(['\\', '/']).replace('\\', "/");
+    if rest.is_empty() {
+        return Ok(format!("/mnt/{}", drive.to_ascii_lowercase()));
+    }
+    Ok(format!("/mnt/{}/{}", drive.to_ascii_lowercase(), rest))
+}
+
+/// image_route 六态（`bootstrap_status.image_route.state` 的值域）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ImageRouteState {
+    /// 非 Windows 宿主——bash 原生直跑。
+    Native,
+    /// 构建脚本不在场（仓库根约束不满足）。
+    NoScript,
+    /// Windows + WSL 工具齐备。
+    WslReady,
+    WslNoDistro,
+    WslMissingTools,
+    WslUnavailable,
+}
+
+/// route 分类纯函数（喂脚本在场性 + 探针结果；探针 None = 非 Windows）。
+pub(crate) fn classify_image_route(
+    script_present: bool,
+    probe: Option<&WslProbe>,
+) -> ImageRouteState {
+    if !script_present {
+        return ImageRouteState::NoScript;
+    }
+    match probe {
+        None => ImageRouteState::Native,
+        Some(p) => match p.state {
+            WslState::Ready => ImageRouteState::WslReady,
+            WslState::NoDistro => ImageRouteState::WslNoDistro,
+            WslState::MissingTools => ImageRouteState::WslMissingTools,
+            WslState::Unavailable => ImageRouteState::WslUnavailable,
+        },
+    }
+}
+
+/// arch → guest 产物路径（WSAPI/CLI 启动裁决与 image_route 展示共用——
+/// 「能不能构建」与「卡上怎么显示」必须同一份事实）。
+fn guest_bin_path(arch: &str) -> Result<PathBuf, String> {
+    let target = match arch {
+        "x86_64" => "x86_64-unknown-linux-musl",
+        "aarch64" => "aarch64-unknown-linux-musl",
+        other => {
+            return Err(format!(
+                "guest 架构 {other:?} 非法（validate 应已拦——数据不一致）"
+            ));
+        }
+    };
+    // guest 产物命名跟 **target** 走不跟宿主走：guest_target 恒为
+    // linux-musl，cargo 产物恒无 .exe（build-guest.sh 的 .exe 只用于宿主
+    // 冒烟件；B5 全新环境实跑抓出的 P5 遗留错配）。
+    Ok(PathBuf::from("target")
+        .join(target)
+        .join("release")
+        .join("nemesis-guest"))
+}
+
 /// 镜像构建输入裁决（WSAPI 后台臂与 CLI 前台臂共用的**单一真相源**）：
-/// 脚本在场 / arch→guest target 映射 / guest 二进制在场。
+/// 脚本在场 / arch→guest target 映射 / guest 二进制在场 /（Windows）WSL 路由。
 pub(crate) struct ImageBuildInputs {
+    /// spawn 主体：native = bash；WSL 路由 = wsl.exe。
+    pub program: String,
+    /// spawn 前置参（WSL = ["-e", "bash"]；native = 空）。
+    pub pre_args: Vec<String>,
+    /// 构建脚本路径（WSL 路由时为已翻译的 /mnt 形态）。
     pub script: PathBuf,
+    /// guest 二进制路径（WSL 路由时为已翻译的 /mnt 形态）。
     pub guest_bin: PathBuf,
     pub arch: String,
     pub base_url: String,
@@ -84,52 +411,73 @@ pub(crate) struct ImageBuildInputs {
 pub(crate) fn image_build_inputs(
     settings: &nemesis_config::ExecutorVmConfig,
 ) -> Result<ImageBuildInputs, String> {
-    // Windows 宿主前置诚实拒绝（P5 §6 既定边界，B5 全新环境实跑定位）：
-    // 镜像管线是 Linux 宿主脚本（file(1)/xorriso 系 POSIX 工具），不前置
-    // 拦截会让用户白下载数百 MB base 后死在 ISO 工具上。两条既定出路——
-    // WSL 构建，或 Linux 机器构建后产物落工作区镜像目录回传（镜像一次
-    // 构建双端复用，P5 实录）。
+    // 构建脚本 + guest 二进制在场预检（两平台同口径；缺席 = 诚实报错 + 指路）。
+    let script = PathBuf::from("scripts").join("build-vm-image.sh");
+    if !script.exists() {
+        return Err(format!(
+            "镜像构建脚本不在场（{}）——需从仓库根运行网关，或在 Linux/WSL 宿主按构建管线手动执行",
+            script.display()
+        ));
+    }
+    let guest_bin = guest_bin_path(&settings.arch)?;
+    if !guest_bin.exists() {
+        return Err(format!(
+            "guest 代理二进制不在场（{}）——先跑 scripts/build-guest.sh 构建 musl guest 工具链产物",
+            guest_bin.display()
+        ));
+    }
+
     #[cfg(windows)]
     {
-        let _ = settings;
-        Err(
-            "镜像构建为 Linux 宿主管线（依赖 file(1)/xorriso 系工具）：Windows 宿主请走 WSL 构建，或在 Linux 机器构建后把 base.qcow2 + seed.iso 落到工作区镜像目录回传复用（P5 既定：镜像一次构建双端复用）"
-                .to_string(),
-        )
+        // B7：Windows 宿主不再硬拒绝——前置同 Linux 口径，再探 WSL：
+        // 就绪 = 自动经 `wsl.exe -e bash` 跑同一管线（产物路径翻译 /mnt 形态，
+        // staging→promote 换装链复用）；任何一环缺席 = 诚实报错 + 可复制修复命令。
+        // P5 既定边界保留：镜像一次构建双端复用，Linux 构建回传仍是等价出路。
+        let probe = wsl_probe_fresh();
+        match probe.state {
+            WslState::Ready => {
+                // 预检用的相对路径先升绝对（cwd=仓库根）再翻译 /mnt 形态；
+                // 翻译收在 Ready 臂内——缺席态优先给指路文案，不被路径错误抢跑。
+                let cwd = std::env::current_dir()
+                    .map_err(|e| format!("无法定位当前目录（WSL 路径翻译需要绝对路径）：{e}"))?;
+                let wsl_script = windows_to_wsl_path(&cwd.join(&script))?;
+                let wsl_guest = windows_to_wsl_path(&cwd.join(&guest_bin))?;
+                Ok(ImageBuildInputs {
+                    program: "wsl.exe".to_string(),
+                    pre_args: vec!["-e".to_string(), "bash".to_string()],
+                    script: PathBuf::from(wsl_script),
+                    guest_bin: PathBuf::from(wsl_guest),
+                    arch: settings.arch.clone(),
+                    base_url: settings.image.source.clone(),
+                    sha256: settings.image.sha256.clone(),
+                })
+            }
+            WslState::NoDistro => Err(
+                "未检测到 WSL 发行版——终端执行 `wsl --install -d Ubuntu`（可能需要管理员与重启，完成后点「复检」），或在 Linux 机器构建后把 base.qcow2 + seed.iso 落到镜像目录回传"
+                    .to_string(),
+            ),
+            WslState::MissingTools => Err(if probe.has_apt {
+                format!(
+                    "WSL 发行版缺镜像构建工具（{}）——执行 `wsl -e bash -c \"sudo apt install -y genisoimage file curl\"` 后点「复检」",
+                    probe.missing.join("、")
+                )
+            } else {
+                format!(
+                    "WSL 发行版缺镜像构建工具（{}）——在发行版内安装齐后点「复检」",
+                    probe.missing.join("、")
+                )
+            }),
+            WslState::Unavailable => Err(format!(
+                "WSL 不可用（{}）——可执行 `wsl --install` 启用（可能需要管理员与重启），或在 Linux 机器构建后把 base.qcow2 + seed.iso 落到镜像目录回传",
+                probe.reason
+            )),
+        }
     }
     #[cfg(not(windows))]
     {
-        // 构建脚本 + guest 二进制在场预检（缺席 = 诚实报错 + 指路）。
-        let script = PathBuf::from("scripts").join("build-vm-image.sh");
-        if !script.exists() {
-            return Err(format!(
-                "镜像构建脚本不在场（{}）——需从仓库根运行网关，或在 Linux/WSL 宿主按构建管线手动执行",
-                script.display()
-            ));
-        }
-        let guest_target = match settings.arch.as_str() {
-            "x86_64" => "x86_64-unknown-linux-musl",
-            "aarch64" => "aarch64-unknown-linux-musl",
-            other => {
-                return Err(format!(
-                    "guest 架构 {other:?} 非法（validate 应已拦——数据不一致）"
-                ));
-            }
-        };
-        // guest 产物命名跟 **target** 走不跟宿主走：guest_target 恒为
-        // linux-musl，cargo 产物恒无 .exe（build-guest.sh 的 .exe 只用于宿主
-        // 冒烟件；B5 全新环境实跑抓出的 P5 遗留错配）。
-        let guest_bin = PathBuf::from("target")
-            .join(guest_target)
-            .join("release")
-            .join("nemesis-guest");
-        if !guest_bin.exists() {
-            return Err(format!(
-                "guest 代理二进制不在场（{}）——先跑 scripts/build-guest.sh 构建 musl guest 工具链产物",
-                guest_bin.display()
-            ));
-        }
         Ok(ImageBuildInputs {
+            program: "bash".to_string(),
+            pre_args: Vec::new(),
             script,
             guest_bin,
             arch: settings.arch.clone(),
@@ -435,6 +783,8 @@ impl VmBridge for VmSupervisor {
         tokio::spawn(async move {
             run_image_build(
                 workspace,
+                inputs.program,
+                inputs.pre_args,
                 inputs.script,
                 inputs.guest_bin,
                 inputs.base_url,
@@ -577,8 +927,11 @@ impl VmBridge for VmSupervisor {
             }),
         };
 
-        // 基础镜像在场（build 链产出的正式位）。
+        // 基础镜像在场（build 链产出的正式位）+ 构建路由六态（B7：Windows
+        // 宿主经 WSL 自动构建的可达面——「能不能点」与「缺什么怎么补」
+        // 同一份事实，B2 八态同款每态给可执行下一步）。
         let image_ready = vm_images_root(workspace).join("base.qcow2").exists();
+        let image_route = image_route_json(&arch);
 
         // 安装任务槽 + 日志尾（同 image_list 形态）。
         let job = BOOTSTRAP_JOB
@@ -606,6 +959,7 @@ impl VmBridge for VmSupervisor {
             "qemu": qemu,
             "accel": accel,
             "image_ready": image_ready,
+            "image_route": image_route,
             "install": job.unwrap_or(serde_json::json!({ "running": false })),
             "log": { "path": log_path.to_string_lossy(), "tail": tail },
         })
@@ -717,6 +1071,7 @@ impl VmBridge for VmSupervisor {
         let images = vm_images_root(workspace);
         let image_ready = images.join("base.qcow2").exists() && images.join("seed.iso").exists();
         let running = self.running_agents().iter().any(|a| a == TRY_AGENT_ID);
+        let (starting, last_error) = self.try_launch_snapshot();
         serde_json::json!({
             "agent_id": TRY_AGENT_ID,
             "enabled": enabled,
@@ -724,34 +1079,88 @@ impl VmBridge for VmSupervisor {
             "arch": arch,
             "arch_supported": arch_supported,
             "running": running,
+            "starting": starting,
+            "last_error": last_error,
         })
     }
 
     async fn try_start(&self) -> Result<serde_json::Value, String> {
         try_gate(self)?;
-        let started_cold = !self.running_agents().iter().any(|a| a == TRY_AGENT_ID);
-        self.ensure_running(TRY_AGENT_ID)
-            .await
-            .map_err(err_string)?;
-        Ok(serde_json::json!({
-            "agent_id": TRY_AGENT_ID,
-            "running": true,
-            "note": if started_cold {
-                "试玩实例已就绪（冷启动完成，guest agent 在线）。实例受同一套睡眠线管理：闲置后自动睡眠省资源。"
-            } else {
-                "试玩实例已在运行（复用现有实例）。"
-            },
-        }))
+        if self.running_agents().iter().any(|a| a == TRY_AGENT_ID) {
+            return Ok(serde_json::json!({
+                "agent_id": TRY_AGENT_ID,
+                "running": true,
+                "starting": false,
+                "note": "试玩实例已在运行（复用现有实例）。",
+            }));
+        }
+        match self.try_launch_claim() {
+            // 生产装配（gateway 注入自引用）：后台冷启 + 发起即返回——前端
+            // 轮询 try.status 的 starting/running 转绿。真机教训（2026-10-19）：
+            // 冷启动同步等 30-60s 必撞前端 30s WSAPI 超时（用户看到
+            // 「timeout: vm.try.start」弹窗，而 QEMU 实际已成功启动）。
+            Some(sup) => {
+                tokio::spawn(async move {
+                    let outcome = sup.ensure_running(TRY_AGENT_ID).await;
+                    let err = outcome.err().map(err_string);
+                    sup.try_launch_finish(err);
+                    // 启动期间收到停止请求：就绪后立即补停（中止卡在启动的实例）。
+                    if sup.try_launch_take_stop_request()
+                        && sup.running_agents().iter().any(|a| a == TRY_AGENT_ID)
+                        && let Err(e) = sup.stop_agent(TRY_AGENT_ID).await
+                    {
+                        tracing::warn!("[vm-bridge] 试玩启动后补停失败: {}", err_string(e));
+                    }
+                });
+                Ok(serde_json::json!({
+                    "agent_id": TRY_AGENT_ID,
+                    "running": false,
+                    "starting": true,
+                    "note": "冷启动中（首启注入约 1-2 分钟）：状态卡将自动转绿，期间可离开本页。",
+                }))
+            }
+            // 句柄缺席（单测等非常规装配）：同步回落旧语义（阻塞到就绪）。
+            None => {
+                tracing::warn!(
+                    "[vm-bridge] 试玩后台启动句柄缺席（set_self_arc 未接线？）——同步冷启动回落（长请求）"
+                );
+                self.ensure_running(TRY_AGENT_ID)
+                    .await
+                    .map_err(err_string)?;
+                Ok(serde_json::json!({
+                    "agent_id": TRY_AGENT_ID,
+                    "running": true,
+                    "starting": false,
+                    "note": "试玩实例已就绪（冷启动完成，guest agent 在线）。实例受同一套睡眠线管理：闲置后自动睡眠省资源。",
+                }))
+            }
+        }
     }
 
-    async fn try_exec(&self, command: &str) -> Result<serde_json::Value, String> {
+    async fn try_exec(
+        &self,
+        command: &str,
+        timeout_secs: Option<u64>,
+    ) -> Result<serde_json::Value, String> {
         try_gate(self)?;
+        // 启动在途诚实拒绝：exec 的自动拉起与后台启动任务并发 ensure 会
+        // 双开 QEMU 抢同一 overlay（qcow2 锁冲突）——引导用户等转绿。
+        if self.try_launch_snapshot().0 {
+            return Err(
+                "试玩实例启动中（冷启动约 1-2 分钟）——待状态转「运行中」后再执行命令".to_string(),
+            );
+        }
         // 自动拉起（幂等）：未运行先 ensure_running——与「启动按钮」同一
         // 通路，失败诚实上抛（镜像缺/加速缺/满员闸各自原样报）。
         let slot = self
             .ensure_running(TRY_AGENT_ID)
             .await
             .map_err(err_string)?;
+        // B8c：可选超时透传（缺省 30s；上限 600s 与 guest 硬上限同源钳制，
+        // handler 已钳一次，这里兜底防御）。
+        let guest_timeout = timeout_secs.unwrap_or(30).clamp(1, 600);
+        // 单调用信封预算 = guest 命令超时 + 握手/协议余量；缺省维持 60s。
+        let call_timeout = std::time::Duration::from_secs(guest_timeout + 30).max(TRY_CALL_TIMEOUT);
         // 每调用独立握手（execute_persistent 同款：跨睡眠的常驻流是伪状态）。
         let mut stream = {
             let s = slot.lock().await;
@@ -763,13 +1172,13 @@ impl VmBridge for VmSupervisor {
             .await
             .map_err(|e| format!("不可用: VM guest 通道握手失败: {e}"))?
         };
-        let args = serde_json::json!({ "command": command, "timeout": 30 }).to_string();
+        let args = serde_json::json!({ "command": command, "timeout": guest_timeout }).to_string();
         let resp = nemesis_sandbox::vm::lifecycle::guest_call(
             &mut stream,
             "exec",
             &args,
             &serde_json::json!({ "source": "dashboard-quick-try" }),
-            TRY_CALL_TIMEOUT,
+            call_timeout,
         )
         .await
         .map_err(|e| format!("失败: VM guest 调用失败: {e}"))?;
@@ -777,6 +1186,7 @@ impl VmBridge for VmSupervisor {
             Ok(serde_json::json!({
                 "agent_id": TRY_AGENT_ID,
                 "command": command,
+                "timeout_secs": guest_timeout,
                 "output": resp.result,
             }))
         } else {
@@ -785,6 +1195,16 @@ impl VmBridge for VmSupervisor {
     }
 
     async fn try_stop(&self) -> Result<serde_json::Value, String> {
+        // 启动在途：登记停止请求，就绪后由启动任务补停（中止卡在启动的
+        // 实例——用户「启动卡死了想停」的真实诉求；检查与登记同临界区）。
+        if self.try_launch_stop_if_starting() {
+            return Ok(serde_json::json!({
+                "agent_id": TRY_AGENT_ID,
+                "running": false,
+                "starting": true,
+                "note": "启动中收到停止请求：实例就绪后将立即自动停机。",
+            }));
+        }
         // 幂等：未运行 = Ok 带「未运行」注记（试玩卡的停止按钮不该报错）。
         if !self.running_agents().iter().any(|a| a == TRY_AGENT_ID) {
             return Ok(serde_json::json!({
@@ -799,6 +1219,72 @@ impl VmBridge for VmSupervisor {
             "running": false,
             "note": "试玩实例已冷停（QEMU 退出，overlay 保留——下次启动同盘冷启）",
         }))
+    }
+
+    // -----------------------------------------------------------------
+    // B9-3 项目工作副本同步（WSAPI vm.sync.status / vm.commit / vm.resync
+    // 同一面；CLI vm commit/resync 走 /api/internal 转发到同一桥）。
+    // -----------------------------------------------------------------
+
+    async fn sync_status(&self, project: &str) -> Result<serde_json::Value, String> {
+        let entry = resolve_project_entry(self.workspace(), project)?;
+        let report =
+            crate::vm_sync::sync_status_report(self.workspace(), &entry.id, &entry.path).await?;
+        serde_json::to_value(report).map_err(|e| format!("状态序列化失败: {e}"))
+    }
+
+    async fn sync_commit(&self, project: &str) -> Result<serde_json::Value, String> {
+        let (entry, agent_id) = resolve_sync_target(self.workspace(), project)?;
+        match crate::vm_sync::commit_project(
+            self.workspace(),
+            &entry.id,
+            &entry.path,
+            self,
+            &agent_id,
+        )
+        .await?
+        {
+            Some(report) => {
+                serde_json::to_value(report).map_err(|e| format!("报告序列化失败: {e}"))
+            }
+            None => Ok(serde_json::json!({
+                "no_baseline": true,
+                "note": "项目尚未开工同步（无基线）——先给项目会话发一条消息触发开工同步",
+            })),
+        }
+    }
+
+    async fn sync_resync(&self, project: &str) -> Result<serde_json::Value, String> {
+        let (entry, agent_id) = resolve_sync_target(self.workspace(), project)?;
+        // force_full=true：跳过基线对账直接全量重建（VM 工作副本清空后
+        // 以宿主当前内容整体覆盖——调用方须已向用户披露丢失语义）。
+        // 正常路径恒 Fresh；其余臂是防御性穷举（内部锁串行下不会出现）。
+        match crate::vm_sync::open_work_gate(
+            self.workspace(),
+            &entry.id,
+            &entry.path,
+            self,
+            &agent_id,
+            true,
+        )
+        .await?
+        {
+            crate::vm_sync::GateSync::Fresh(report) => {
+                serde_json::to_value(report).map_err(|e| format!("报告序列化失败: {e}"))
+            }
+            crate::vm_sync::GateSync::Ready { synced_at_ms } => Ok(serde_json::json!({
+                "kind": "ready",
+                "synced_at_ms": synced_at_ms,
+                "note": "内部形态（重同步请求落了增量就绪臂）",
+            })),
+            crate::vm_sync::GateSync::Aligned { pushed, deleted } => {
+                Ok(serde_json::json!({ "kind": "aligned", "pushed": pushed, "deleted": deleted }))
+            }
+            crate::vm_sync::GateSync::Conflicts(files) => Ok(serde_json::json!({
+                "kind": "conflicts",
+                "files": files,
+            })),
+        }
     }
 }
 
@@ -842,6 +1328,49 @@ fn load_wake_line(workspace: &Path, agent_id: &str) -> Option<String> {
     }
 }
 
+/// B9-3 同步目标解析（按项目 id 精确 → 名称回退）。返回注册表条目：
+/// `entry.id` 是同步账本的键、`entry.path` 是同步根。
+pub(super) fn resolve_project_entry(
+    workspace: &Path,
+    project: &str,
+) -> Result<crate::projects::registry::ProjectEntry, String> {
+    let reg = crate::projects::registry::registry_path(workspace);
+    if let Some(e) = crate::projects::registry::find_project(&reg, project) {
+        return Ok(e);
+    }
+    crate::projects::registry::list_projects(&reg)
+        .into_iter()
+        .find(|e| e.name == project)
+        .ok_or_else(|| format!("项目不存在: {project}（id 或名称皆未命中注册表）"))
+}
+
+/// B9-3 commit/resync 目标全解析：项目条目 + VM 档会话的 agent_id。
+/// VM 实例常驻 gateway 进程——agent 记录不在（管理器未装配 / 会话未建）
+/// 或非 VM 档 = 诚实报错，不假装同步了。
+pub(super) fn resolve_sync_target(
+    workspace: &Path,
+    project: &str,
+) -> Result<(crate::projects::registry::ProjectEntry, String), String> {
+    let entry = resolve_project_entry(workspace, project)?;
+    let mgr = crate::agents::manager().ok_or_else(|| {
+        "Agent 管理器未装配（gateway 未运行或以非 gateway 模式装配）——VM 实例常驻 gateway 进程，手动同步需经 gateway".to_string()
+    })?;
+    let rec = mgr
+        .agent_by_project(&entry.id)
+        .ok_or_else(|| format!("项目会话未运行（{}）——先在项目会话发消息建会话", entry.name))?;
+    if rec.runtime_backend != nemesis_taskstore::agents::runtime_backend::VM {
+        return Err(format!(
+            "项目会话不是 VM 档（当前 {} 档）——工作副本同步只服务 VM 档会话",
+            if rec.runtime_backend.is_empty() {
+                "process"
+            } else {
+                &rec.runtime_backend
+            }
+        ));
+    }
+    Ok((entry, rec.agent_id))
+}
+
 /// registry 记录 → web 投影（token 不投影——凭据不出管理面）。
 fn record_json(
     r: &crate::agents::vm_runtime::VmInstanceRecord,
@@ -862,10 +1391,99 @@ fn record_json(
     })
 }
 
+/// `bootstrap_status.image_route` 段（B2 八态同款：事实采集 → 纯函数分类
+/// → 每态给可执行下一步 + 复制命令）。分类逻辑在
+/// [`classify_image_route`]（纯函数，单测钉六态）；本函数只做「探针取事实 +
+/// 每态 JSON 形态」。Windows 探针走 TTL 缓存（轮询面不重复 spawn）。
+fn image_route_json(arch: &str) -> serde_json::Value {
+    let script_present = Path::new("scripts").join("build-vm-image.sh").exists();
+    let guest_ready = guest_bin_path(arch).map(|p| p.exists()).unwrap_or(false);
+
+    #[cfg(windows)]
+    let probe: Option<WslProbe> = Some(wsl_probe_cached());
+    #[cfg(not(windows))]
+    let probe: Option<WslProbe> = None;
+
+    let route = classify_image_route(script_present, probe.as_ref());
+    let probe_ref = probe.as_ref();
+    // WSL 两态必伴探针（classify 契约，单测钉死）；defensive unwrap 走
+    // 诚实形态不 panic。
+    let (state, missing, command, note) = match route {
+        ImageRouteState::NoScript => (
+            "no_script",
+            Vec::<String>::new(),
+            String::new(),
+            "构建脚本不在场（scripts/build-vm-image.sh）——从仓库根运行网关，或在 Linux 宿主构建后把 base.qcow2 + seed.iso 落到镜像目录回传".to_string(),
+        ),
+        ImageRouteState::Native => (
+            "native",
+            Vec::<String>::new(),
+            String::new(),
+            "Linux 宿主原生管线——「首次构建」直接执行".to_string(),
+        ),
+        ImageRouteState::WslReady => (
+            "wsl_ready",
+            Vec::<String>::new(),
+            String::new(),
+            "WSL 环境就绪——「首次构建」自动经 WSL 跑同一管线，产物直落镜像目录"
+                .to_string(),
+        ),
+        ImageRouteState::WslNoDistro => (
+            "wsl_no_distro",
+            Vec::<String>::new(),
+            "wsl --install -d Ubuntu".to_string(),
+            "未检测到 WSL 发行版——终端执行后（可能需要管理员与重启）点「复检」"
+                .to_string(),
+        ),
+        ImageRouteState::WslMissingTools => {
+            let empty = WslProbe {
+                state: WslState::MissingTools,
+                missing: Vec::new(),
+                has_apt: false,
+                reason: String::new(),
+            };
+            let p = probe_ref.unwrap_or(&empty);
+            (
+                "wsl_missing_tools",
+                p.missing.clone(),
+                if p.has_apt {
+                    "wsl -e bash -c \"sudo apt install -y genisoimage file curl\"".to_string()
+                } else {
+                    String::new()
+                },
+                "装完后点「复检」，转就绪即可构建".to_string(),
+            )
+        }
+        ImageRouteState::WslUnavailable => {
+            let empty = WslProbe::unavailable("探测态缺失（内部状态不一致）");
+            let p = probe_ref.unwrap_or(&empty);
+            (
+                "wsl_unavailable",
+                Vec::<String>::new(),
+                "wsl --install".to_string(),
+                format!("{}；或改在 Linux 宿主构建后把产物落镜像目录回传", p.reason),
+            )
+        }
+    };
+
+    serde_json::json!({
+        "state": state,
+        "missing": missing,
+        "command": command,
+        "note": note,
+        "guest_ready": guest_ready,
+    })
+}
+
 /// 镜像构建后台任务：脚本 spawn → 日志逐行落盘 → 成功后 rebase/换装 →
 /// 任务槽清位。任何失败只进日志（页面 tail 可见），不 panic。
+/// B7：spawn 主体由 inputs 裁决（native bash / 经 `wsl.exe -e bash`——
+/// Windows 宿主自动路由）；staging 传给子进程前翻译 /mnt 形态，宿主侧
+/// promote 换装链仍用原生形态（字节不变）。
 async fn run_image_build(
     workspace: PathBuf,
+    program: String,
+    pre_args: Vec<String>,
     script: PathBuf,
     guest_bin: PathBuf,
     base_url: String,
@@ -876,18 +1494,44 @@ async fn run_image_build(
     let log_path = image_build_log_path(&workspace);
     let _ = std::fs::create_dir_all(log_path.parent().unwrap_or_else(|| Path::new(".")));
     let _ = std::fs::remove_file(&log_path); // 截断重写
+    let route_note = if program == "wsl.exe" {
+        "经 WSL"
+    } else {
+        "native bash"
+    };
     log_line(
         &log_path,
-        &format!("[{}] 镜像构建启动（update={update} arch={arch}）", now_ms()),
+        &format!(
+            "[{}] 镜像构建启动（update={update} arch={arch} route={route_note}）",
+            now_ms()
+        ),
     );
 
     let staging = staging_dir(&workspace);
     let _ = std::fs::create_dir_all(&staging);
+    let staging_arg = if program == "wsl.exe" {
+        match windows_to_wsl_path(&staging) {
+            Ok(p) => PathBuf::from(p),
+            Err(e) => {
+                log_line(
+                    &log_path,
+                    &format!("staging 路径无法翻译为 WSL 形态：{e}；任务结束"),
+                );
+                IMAGE_JOB.lock().expect("image job lock").take();
+                return;
+            }
+        }
+    } else {
+        staging.clone()
+    };
 
-    let mut cmd = tokio::process::Command::new("bash");
+    let mut cmd = tokio::process::Command::new(&program);
+    for a in &pre_args {
+        cmd.arg(a);
+    }
     cmd.arg(&script)
         .arg("--out")
-        .arg(&staging)
+        .arg(&staging_arg)
         .arg("--guest-bin")
         .arg(&guest_bin)
         .arg("--base-url")
@@ -927,7 +1571,7 @@ async fn run_image_build(
             log_line(
                 &log_path,
                 &format!(
-                    "spawn bash 失败: {e}（Windows 宿主需 git-bash/WSL bash 在 PATH）；任务结束"
+                    "spawn {program} 失败: {e}（Windows 宿主需 git-bash/WSL 在 PATH）；任务结束"
                 ),
             );
             IMAGE_JOB.lock().expect("image job lock").take();

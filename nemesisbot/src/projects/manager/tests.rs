@@ -1005,3 +1005,85 @@ async fn bridge_set_trust_persists_and_hot_applies_to_live_loop() {
         nemesis_agent::workspace_instructions::InstructionTrust::Trusted
     );
 }
+
+// ---------------------------------------------------------------------------
+// B9 冲突裁决卡纯函数（feature=vm；真值表钉死「不猜」纪律）
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "vm")]
+mod vm_conflict {
+    use super::super::{
+        ConflictChoice, classify_conflict_answer, conflict_options, conflict_question_text,
+    };
+    use crate::vm_sync::ConflictFile;
+
+    fn cf(rel: &str) -> ConflictFile {
+        ConflictFile {
+            rel: rel.to_string(),
+            host_sha: "h".repeat(64),
+            vm_sha: "v".repeat(64),
+            baseline_sha: "b".repeat(64),
+        }
+    }
+
+    #[test]
+    fn conflict_answer_truth_table() {
+        let opts = conflict_options();
+
+        // 超时（None）= 取消 + 诚实注记；空/多选 = 取消。
+        let (c, note) = classify_conflict_answer(None);
+        assert_eq!(c, ConflictChoice::Cancel);
+        assert!(note.contains("取消"), "注记应说明已取消: {note}");
+
+        let (c, _) = classify_conflict_answer(Some(&[]));
+        assert_eq!(c, ConflictChoice::Cancel);
+        let (c, _) = classify_conflict_answer(Some(&[opts[0].clone(), opts[1].clone()]));
+        assert_eq!(c, ConflictChoice::Cancel);
+
+        // ①/② 按序号前缀命中（broker respond 按候选原文校验，原文即应答）。
+        let (c, note) = classify_conflict_answer(Some(&[opts[0].clone()]));
+        assert_eq!(c, ConflictChoice::HostWins);
+        assert!(note.is_empty(), "非取消裁决注记恒空");
+        let (c, note) = classify_conflict_answer(Some(&[opts[1].clone()]));
+        assert_eq!(c, ConflictChoice::KeepVm);
+        assert!(note.is_empty());
+
+        // ③ 与答非所列 = 取消。
+        let (c, note) = classify_conflict_answer(Some(&[opts[2].clone()]));
+        assert_eq!(c, ConflictChoice::Cancel);
+        assert!(note.contains("取消"));
+        let (c, _) = classify_conflict_answer(Some(&["④ 全都要".to_string()]));
+        assert_eq!(c, ConflictChoice::Cancel, "非候选不猜");
+    }
+
+    #[test]
+    fn conflict_options_numbered_and_mutually_classified() {
+        let opts = conflict_options();
+        assert_eq!(opts.len(), 3);
+        assert!(opts[0].starts_with('①'));
+        assert!(opts[1].starts_with('②'));
+        assert!(opts[2].starts_with('③'));
+        // 选项两两不同（broker 候选集要求）。
+        for i in 0..opts.len() {
+            for j in i + 1..opts.len() {
+                assert_ne!(opts[i], opts[j]);
+            }
+        }
+    }
+
+    #[test]
+    fn conflict_question_text_self_contained() {
+        let text = conflict_question_text("我的项目", &cf("src/main.rs"));
+        assert!(text.contains("我的项目"), "正文应含项目名");
+        assert!(text.contains("src/main.rs"), "正文应含冲突文件 rel");
+        assert!(text.contains("双改"), "正文应说明双改事实");
+    }
+
+    #[test]
+    fn conflict_question_ids_unique() {
+        let a = super::super::next_conflict_question_id();
+        let b = super::super::next_conflict_question_id();
+        assert_ne!(a, b);
+        assert!(a.starts_with("vm-conflict-"));
+    }
+}

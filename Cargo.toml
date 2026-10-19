@@ -169,6 +169,10 @@ rquickjs = "0.14"
 # nemesis-cluster 可选消费（LAN 现有 TCP 路径字节不变，iroh 是叠加层）。
 iroh = "1"
 
+# B9-1（VM 项目工作副本）：宿主打包 / guest 解包的项目树 tar 载体（不压缩
+# ——localhost slirp 通道带宽廉价，CPU 留给 hash）；纯 Rust 零系统依赖。
+tar = "0.4"
+
 # Crypto
 # oid feature：cms builder 要求 Digest 的 AssociatedOid（S0-6 坑位 5b）
 sha2 = { version = "0.10", features = ["oid"] }

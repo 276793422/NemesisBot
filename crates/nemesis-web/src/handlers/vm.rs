@@ -87,12 +87,34 @@ pub trait VmBridge: Send + Sync {
     async fn try_start(&self) -> Result<serde_json::Value, String>;
 
     /// 试玩实例内执行 shell 命令（guest `exec` 工具；未运行时自动先
-    /// ensure_running）。**enabled 闸**；estop 冻结闸在 handler 层。
-    async fn try_exec(&self, command: &str) -> Result<serde_json::Value, String>;
+    /// ensure_running）。`timeout_secs`：B8c 可选超时透传（秒；None=guest
+    /// 缺省 30s，>600 由 handler 钳制到 guest 硬上限——慢命令如 apt 全程
+    /// 不再假超时）。**enabled 闸**；estop 冻结闸在 handler 层。
+    async fn try_exec(
+        &self,
+        command: &str,
+        timeout_secs: Option<u64>,
+    ) -> Result<serde_json::Value, String>;
 
     /// 停止试玩实例（冷停；幂等——未运行返回「未运行」不算错）。停机
     /// 方向 = 安全方向：estop 中放行（handler 层不设冻结闸）。
     async fn try_stop(&self) -> Result<serde_json::Value, String>;
+
+    /// 项目工作副本同步状态（B9-3；**只读**：不开闸、不落盘、不触碰
+    /// VM 实例——status 永远不该把睡眠的实例拽起来）。`project` 接受
+    /// 项目 id 或名称；无基线 = `has_baseline:false`（无从对账，不是
+    /// 「无变更」）。
+    async fn sync_status(&self, project: &str) -> Result<serde_json::Value, String>;
+
+    /// 项目工作副本一键提交（B9-3；commit 闸：宿主变更推 VM + VM 侧
+    /// 修改回拉宿主，冲突落提问卡等用户裁决）。`project` 接受项目 id
+    /// 或名称。
+    async fn sync_commit(&self, project: &str) -> Result<serde_json::Value, String>;
+
+    /// 项目工作副本强制重同步（B9-3；force_full：清空 VM 工作副本后
+    /// 以宿主当前内容整体覆盖重建基线——VM 内未回传的改动将丢失，调用
+    /// 方需在 UI 层诚实披露）。
+    async fn sync_resync(&self, project: &str) -> Result<serde_json::Value, String>;
 }
 
 static VM_BRIDGE: std::sync::RwLock<Option<Arc<dyn VmBridge>>> = std::sync::RwLock::new(None);
@@ -154,6 +176,9 @@ impl ModuleHandler for VmHandler {
             "try.start",
             "try.exec",
             "try.stop",
+            "sync.status",
+            "commit",
+            "resync",
         ]
     }
 
@@ -238,9 +263,33 @@ impl ModuleHandler for VmHandler {
                         "命令过长（上限 {TRY_EXEC_MAX_CHARS} 字符）——试玩通道不承载长脚本"
                     ));
                 }
-                Ok(Some(bridge.try_exec(command).await?))
+                // B8c：可选超时透传（秒）。缺省/0=None（guest 默认 30s）；
+                // >600 钳制到 guest exec 硬上限（同源 600s）。
+                let timeout_secs = data
+                    .get("timeout")
+                    .and_then(|v| v.as_u64())
+                    .filter(|t| *t > 0)
+                    .map(|t| t.min(TRY_EXEC_MAX_TIMEOUT_SECS));
+                Ok(Some(bridge.try_exec(command, timeout_secs).await?))
             }
             "try.stop" => Ok(Some(bridge.try_stop().await?)),
+            "sync.status" => {
+                let data = data.ok_or("missing data")?;
+                let project = crate::handlers::get_str(&data, "project")?;
+                Ok(Some(bridge.sync_status(&project).await?))
+            }
+            "commit" => {
+                refuse_if_estopped(ctx)?;
+                let data = data.ok_or("missing data")?;
+                let project = crate::handlers::get_str(&data, "project")?;
+                Ok(Some(bridge.sync_commit(&project).await?))
+            }
+            "resync" => {
+                refuse_if_estopped(ctx)?;
+                let data = data.ok_or("missing data")?;
+                let project = crate::handlers::get_str(&data, "project")?;
+                Ok(Some(bridge.sync_resync(&project).await?))
+            }
             _ => Err(format!("unknown vm cmd: {cmd}")),
         }
     }
@@ -248,6 +297,9 @@ impl ModuleHandler for VmHandler {
 
 /// 试玩命令长度上限（防把试玩通道当脚本通道用——长任务走 agent 面）。
 const TRY_EXEC_MAX_CHARS: usize = 2000;
+
+/// 试玩命令超时上限（秒）——与 guest `EXEC_MAX_TIMEOUT_SECS` 同源钳制。
+const TRY_EXEC_MAX_TIMEOUT_SECS: u64 = 600;
 
 /// estop 冻结闸（B6 试玩 start/exec：agent 活动形态——急停触发时诚实
 /// 拒绝；stop/status 不经此闸，停机与只读方向恒放行）。检查点在 handler

@@ -31,6 +31,26 @@ pub enum VmCommand {
         #[arg(long)]
         update: bool,
     },
+    /// 项目工作副本同步状态（B9-3；只读——不开闸、不拽起睡眠实例）。
+    SyncStatus {
+        /// 项目 id 或名称。
+        project: String,
+    },
+    /// 项目工作副本一键提交（B9-3；VM 侧修改回拉宿主 + 基线刷新；冲突
+    /// 落 Dashboard 提问卡裁决——CLI 见冲突即报并指向 Dashboard）。
+    Commit {
+        /// 项目 id 或名称。
+        project: String,
+    },
+    /// 强制重同步（B9-3；清空 VM 工作副本后以宿主当前内容整体覆盖重建
+    /// 基线——VM 内未回传的改动将丢失；交互确认后执行）。
+    Resync {
+        /// 项目 id 或名称。
+        project: String,
+        /// 跳过交互确认（脚本 / CI 用）。
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 pub async fn run(action: VmCommand, local: bool) -> Result<()> {
@@ -47,6 +67,29 @@ pub async fn run(action: VmCommand, local: bool) -> Result<()> {
             enable_accel().await
         }
         VmCommand::BuildImage { update } => build_image(&home, &workspace, update).await,
+        VmCommand::SyncStatus { project } => {
+            sync_via_gateway(&home, "vm_sync_status", &project).await
+        }
+        VmCommand::Commit { project } => sync_via_gateway(&home, "vm_sync_commit", &project).await,
+        VmCommand::Resync { project, yes } => {
+            if !yes {
+                print!(
+                    "[vm] 即将对项目「{project}」强制重同步：VM 工作副本将被清空，\
+以宿主当前内容整体覆盖重建（VM 内未回传的改动将丢失）。确认请输入 yes："
+                );
+                {
+                    use std::io::Write as _;
+                    std::io::stdout().flush()?;
+                }
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line)?;
+                if line.trim() != "yes" {
+                    println!("[vm] 已取消（未做任何改动）");
+                    return Ok(());
+                }
+            }
+            sync_via_gateway(&home, "vm_sync_resync", &project).await
+        }
     }
 }
 
@@ -215,4 +258,66 @@ async fn build_image(
     } else {
         bail!("镜像构建未成功（日志尾部如上；staging 保留供排查，现有镜像未动）")
     }
+}
+
+/// B9-3 同步命令的 gateway 转发（VM 实例常驻 gateway 进程，CLI 进程不
+/// 持有 supervisor——与 estop 同一条 /api/internal 通道；请求-响应形态，
+/// 恒 200 `{status: ok|error, ...}` 按体解析：业务失败（项目不存在 /
+/// 非 VM 档 / 冲突）不是传输错误）。
+async fn sync_via_gateway(home: &std::path::Path, cmd: &str, project: &str) -> Result<()> {
+    let config_path = home.join("config.json");
+    let cfg_str = std::fs::read_to_string(&config_path).map_err(|e| {
+        anyhow::anyhow!(
+            "无法读取 {}：{}。若 gateway 以 --local 启动，请用：nemesisbot --local vm commit {project}",
+            config_path.display(),
+            e
+        )
+    })?;
+    let cfg: serde_json::Value = serde_json::from_str(&cfg_str)?;
+    let auth_token = cfg["channels"]["web"]["auth_token"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+
+    let state_path =
+        nemesis_path::resolve_gateway_state_path_in_workspace(&crate::common::workspace_path(home));
+    let info = crate::commands::dashboard::read_gateway_state(&state_path).ok_or_else(|| {
+        anyhow::anyhow!("Gateway 未运行（找不到 state 文件）。先用 `nemesisbot gateway` 启动它。")
+    })?;
+    if info.web_port <= 0 {
+        bail!("Gateway state 无效（web_port=0）");
+    }
+    let base_url = format!("http://{}:{}", info.web_host, info.web_port);
+    crate::commands::dashboard::check_health(&base_url)
+        .await
+        .map_err(|_| anyhow::anyhow!("Gateway 在 {base_url} 不可达。确认它正在跑。"))?;
+
+    // 全量重建可能传大 tar（loopback 但量大），超时放宽到 30 分钟——
+    // 诚实等待优先于假超时。
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(1800))
+        .build()?;
+    let url = format!("{base_url}/api/internal");
+    let resp = client
+        .post(&url)
+        .header("X-Auth-Token", &auth_token)
+        .json(&serde_json::json!({ "cmd": cmd, "project": project }))
+        .send()
+        .await?;
+    let status = resp.status();
+    let body: serde_json::Value = serde_json::from_str(&resp.text().await.unwrap_or_default())
+        .unwrap_or_else(|_| serde_json::json!({}));
+    if !status.is_success() {
+        bail!("Internal command failed: {status} {body}");
+    }
+    if body["status"].as_str() != Some("ok") {
+        bail!(
+            "{}",
+            body["error"]
+                .as_str()
+                .unwrap_or("未知错误（响应缺 error 字段）")
+        );
+    }
+    println!("{}", serde_json::to_string_pretty(&body["result"])?);
+    Ok(())
 }

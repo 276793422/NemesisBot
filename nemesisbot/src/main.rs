@@ -202,6 +202,13 @@ mod channel_approval;
 #[cfg(all(feature = "cluster", feature = "security"))]
 mod remote_approval;
 
+/// B9（VM 项目工作副本）：gateway 同步引擎——宿主项目目录 ↔ VM
+/// /workspace 的工作树对齐（开工全量 + 基线账本 + 排除规则/路径翻译
+/// 单点）。消费方 = 项目路由开工闸（projects manager）+ WSAPI/CLI
+/// 强制重扫（B9-3）。
+#[cfg(feature = "vm")]
+mod vm_sync;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 

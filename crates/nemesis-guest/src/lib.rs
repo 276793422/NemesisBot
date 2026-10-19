@@ -33,6 +33,10 @@ use nemesis_exec_protocol::{
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 pub mod tools;
+// B9-1/B9-2 内部方法（bulk_write/bulk_read/bulk_read_chunk/hash_tree/
+// bulk_delete）：gateway 同步引擎专用通道（internal_call），**不进 agent
+// 工具面**——宿主侧 VM_GUEST_TOOLS 子集闸不认识它们。
+pub(crate) mod bulk;
 
 /// guest 工作区边界（`NEMESISBOT_GUEST_WORKSPACE`，缺省 `/workspace`）。
 /// VM 内的根 = 挂载共享子树的挂载点（第 2 步接真实 virtiofs/9p 路径）。
@@ -55,6 +59,9 @@ pub fn default_workspace() -> PathBuf {
 pub struct GuestAgent {
     workspace: PathBuf,
     token: Option<String>,
+    /// bulk 传输状态表（Arc 共享——accept 每连接克隆 agent 后仍指向同一张
+    /// 表：一次 bulk_write 的分块可能落在不同连接上，序列跨连接可达）。
+    transfers: bulk::TransferMap,
 }
 
 impl GuestAgent {
@@ -62,6 +69,7 @@ impl GuestAgent {
         Self {
             workspace,
             token: None,
+            transfers: bulk::new_transfer_map(),
         }
     }
 
@@ -103,7 +111,7 @@ impl GuestAgent {
             return serialize(&resp);
         }
 
-        let resp = match tools::dispatch(&tool, &args, &self.workspace).await {
+        let resp = match tools::dispatch(&tool, &args, &self.workspace, &self.transfers).await {
             Ok(result) => ExecutorResponseWire {
                 v: PROTOCOL_V2,
                 call_id,

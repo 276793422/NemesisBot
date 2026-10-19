@@ -1212,3 +1212,36 @@ fn resolve_posix_shell_path_sh_resolution_agrees_with_bash() {
     let sh = super::resolve_posix_shell_path("sh");
     assert_eq!(bash != "bash", sh != "sh");
 }
+
+// B8d：超时树杀——此前 `timeout(dur, output())` 超时丢 future 不 kill，
+// 被超时命令继续在后台跑。钉死「超时后命令链不再推进」：marker 由命令链
+// 末段落盘，孤儿若存活必在自然结束点后写入 → 断言红。
+#[tokio::test]
+async fn test_timeout_kills_child_tree() {
+    let tool = make_tool();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let marker = dir.path().join("orphan_marker");
+    let command = if cfg!(target_os = "windows") {
+        format!("ping -n 4 127.0.0.1 >nul & type nul > {}", marker.display())
+    } else {
+        format!("sleep 3 && touch {}", marker.display())
+    };
+    let started = std::time::Instant::now();
+    let result = tool
+        .execute(&serde_json::json!({"command": command, "timeout": 1}))
+        .await;
+    assert!(result.is_error, "超时命令应报错，got: {}", result.for_llm);
+    assert!(
+        result.for_llm.contains("command timed out after 1s"),
+        "got: {}",
+        result.for_llm
+    );
+    // 等 sleep/ping 自然结束点过去（3s+ 余量），孤儿若活着必已落 marker。
+    while started.elapsed() < std::time::Duration::from_secs(5) {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        !marker.exists(),
+        "超时命令的子进程未被终止（孤儿存活，marker 已落盘）"
+    );
+}

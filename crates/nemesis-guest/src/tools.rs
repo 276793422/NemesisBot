@@ -19,9 +19,9 @@ use std::time::Duration;
 
 use crate::resolve_in_workspace;
 
-/// exec 超时：缺省 30s、上限 600s（对齐宿主 ExecTool 的
-/// `exec_timeout_secs` 口径）。
-const EXEC_DEFAULT_TIMEOUT_SECS: u64 = 30;
+/// exec 超时：缺省 60s（B8e 对齐宿主 shell 工具缺省）、上限 600s
+/// （对齐宿主 ExecTool 的 `exec_timeout_secs` 口径）。
+const EXEC_DEFAULT_TIMEOUT_SECS: u64 = 60;
 const EXEC_MAX_TIMEOUT_SECS: u64 = 600;
 
 /// 输出截断（guest 侧独立于宿主 spill/prune 体系——VM 通道的 spill 落盘
@@ -31,7 +31,17 @@ const TRUNCATE_HEAD_CHARS: usize = 4000;
 const TRUNCATE_TAIL_CHARS: usize = 4000;
 
 /// 派发一个工具调用。`args` 是 LLM 产出的原始 JSON 串（协议原样透传）。
-pub async fn dispatch(tool: &str, args: &str, workspace: &Path) -> Result<String, String> {
+///
+/// 除 agent 工具子集外，本函数也路由 **B9-1 内部方法**（bulk_write/
+/// bulk_read/bulk_read_chunk/hash_tree）——它们经宿主 `internal_call`
+/// 专用通道进入，宿主侧 `VM_GUEST_TOOLS` 子集闸不认识它们，agent
+/// 工具面永不暴露（`transfers` 是 bulk 分块传输状态表）。
+pub(crate) async fn dispatch(
+    tool: &str,
+    args: &str,
+    workspace: &Path,
+    transfers: &crate::bulk::TransferMap,
+) -> Result<String, String> {
     let val: serde_json::Value =
         serde_json::from_str(args).map_err(|e| format!("Invalid JSON arguments: {e}"))?;
     match tool {
@@ -43,10 +53,18 @@ pub async fn dispatch(tool: &str, args: &str, workspace: &Path) -> Result<String
         "create_dir" => create_dir(&val, workspace).await,
         "delete_file" => delete_file(&val, workspace).await,
         "delete_dir" => delete_dir(&val, workspace).await,
+        // B9-1 内部方法（vm_sync 同步引擎通道；不是 agent 工具）。
+        "bulk_write" => crate::bulk::bulk_write(&val, workspace, transfers).await,
+        "bulk_read" => crate::bulk::bulk_read(&val, workspace, transfers).await,
+        "bulk_read_chunk" => crate::bulk::bulk_read_chunk(&val, transfers).await,
+        "hash_tree" => crate::bulk::hash_tree(&val, workspace).await,
+        // B9-2 内部方法（开工闸宿主删除传播）。
+        "bulk_delete" => crate::bulk::bulk_delete(&val, workspace).await,
         // 诚实拒绝未实现项（edit_file/multiedit/grep/git 往后续补）。
         other => Err(format!(
             "unknown tool: {other} (guest subset: exec, read_file, write_file, append_file, \
-             list_dir, create_dir, delete_file, delete_dir)"
+             list_dir, create_dir, delete_file, delete_dir; internal: bulk_write, bulk_read, \
+             bulk_read_chunk, hash_tree, bulk_delete)"
         )),
     }
 }
@@ -81,7 +99,14 @@ async fn exec(val: &serde_json::Value, workspace: &Path) -> Result<String, Strin
     cmd.arg(flag).arg(command).current_dir(&cwd);
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+        .stderr(std::process::Stdio::piped())
+        // B8d：任何路径上 Child 被 drop（含早期返回）都兜底 kill，不留孤儿。
+        .kill_on_drop(true);
+    // B8d 树杀前提（对齐宿主 background_registry::tree_kill）：Unix 侧
+    // spawn 时 process_group(0)，超时才能整组 SIGKILL——只杀 sh 本体时
+    // `a && b` 复合命令的载荷进程会孤儿化继续跑（僵尸 apt 占 dpkg 锁）。
+    #[cfg(unix)]
+    cmd.process_group(0);
 
     // B2 同款纪律：管道读取独立任务并发 drain——只 wait 会在写满管道缓冲时
     // 死锁；把管道移进被 timeout 包住的 future 会在超时取消时丢残余输出。
@@ -114,8 +139,44 @@ async fn exec(val: &serde_json::Value, workspace: &Path) -> Result<String, Strin
             }
         }
         Ok(Err(e)) => Err(format!("Failed to execute command: {e}")),
-        Err(_) => Err(format!("command timed out after {timeout_secs}s")),
+        Err(_) => {
+            // B8d：超时 = 终止整棵进程树并收尸后再报错。此前直接返回 Err，
+            // Child 默认 drop 不 kill——被超时的命令继续在 VM 后台跑。
+            // 树杀对齐宿主 background_registry::tree_kill；2s 护栏防 kill
+            // 指令自身卡住应答。收尾 drain 等管道关闭，避免残余输出串扰。
+            kill_tree(child.id()).await;
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            let _ = out_task.await;
+            let _ = err_task.await;
+            Err(format!(
+                "command timed out after {timeout_secs}s (process killed)"
+            ))
+        }
     }
+}
+
+/// B8d 超时树杀（宿主 `background_registry::tree_kill` 同款语义）：
+/// Windows = `taskkill /T /F`；Unix = 进程组 SIGKILL（配合 spawn 侧
+/// `process_group(0)`）。尽力而为：2s 护栏，失败不阻塞超时错误返回
+/// （后续 `child.start_kill` 直杀 shell 本体兜底）。
+async fn kill_tree(pid: Option<u32>) {
+    let Some(pid) = pid else {
+        return;
+    };
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = tokio::process::Command::new("taskkill");
+        c.args(["/T", "/F", "/PID", &pid.to_string()]);
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut c = tokio::process::Command::new("kill");
+        c.args(["-9", "--", &format!("-{pid}")]);
+        c
+    };
+    let _ = tokio::time::timeout(Duration::from_secs(2), cmd.output()).await;
 }
 
 async fn drain_pipe(pipe: Option<impl tokio::io::AsyncRead + Unpin + Send>) -> String {
