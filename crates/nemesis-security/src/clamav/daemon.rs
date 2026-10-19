@@ -55,6 +55,15 @@ impl Daemon {
         let mut cmd = Command::new(&clamd_exe);
         cmd.args(["--config-file", &self.config.config_file, "-F"]);
         cmd.current_dir(&self.config.clamav_path);
+        // 黑窗根修（2026-10-19）：clamd 是 console 程序，gateway（release
+        // windows 子系统，无 console）spawn 默认 flags 会分配新可见 console
+        // 且随守护进程常驻——「cmd 窗口躺在桌面」的 scanner 版。压掉。
+        // （tokio Command 在 Windows 原生自带 creation_flags，无需 std CommandExt）
+        #[cfg(windows)]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
         // Kill clamd when the Child handle drops — otherwise the daemon orphans
         // on gateway exit, holds port 3310 (~1GB RAM), and the next gateway
         // start hits a port conflict → ping-only fallback. Belt-and-suspenders
