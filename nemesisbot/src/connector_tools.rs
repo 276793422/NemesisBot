@@ -1166,7 +1166,7 @@ impl ConnectorInvokeTool {
         path: &str,
         placeholders: &[String],
         op_args: &serde_json::Value,
-        _context: &RequestContext,
+        context: &RequestContext,
     ) -> Result<InvocationOutcome, String> {
         let base = c
             .base_url
@@ -1221,6 +1221,20 @@ impl ConnectorInvokeTool {
                     Ok(s) => s,
                     Err(e) => {
                         if binding.required {
+                            // 无人值守 worker 上下文不发卡：远程任务等不到本地
+                            // 人，卡挂满 300s 拖死 A 端派发超时（T-CONN-1 ET
+                            // 两连红实录：357ca645 加测试时凭据缺失=立即诚实
+                            // error；1ef104c7 接卡后 worker 发卡阻塞）。诚实
+                            // error 立即回流 A 端由发起方决策（换节点重派/报
+                            // 错收口）——正是该测试钉的契约「凭据不上线 + 缺失
+                            // 诚实报错回流」。卡语义保留给本地交互执行（web/IM
+                            // 通道）。两判据：`cluster` = worker LLM 任务执行
+                            // （cluster_agent build_context）；`cluster-connector`
+                            // = 远程执行面 RPC handler（gateway/runtime.rs 构造）。
+                            // 与 channel_approval M5-3 的 cluster 判定同族。
+                            if matches!(context.channel.as_str(), "cluster" | "cluster-connector") {
+                                return Err(format!("凭据槽位 `{slot}` 缺失: {e}"));
+                            }
                             // B4 凭据索要卡：发卡阻塞等用户提交（broker 落
                             // vault 后回 true）→ 原地重解析一次续行。槽空
                             // （headless）/拒绝/超时 = 原错误路径字节不变。

@@ -570,8 +570,10 @@ async fn demo_acts(ws: &std::path::Path) -> Result<DemoEvidence> {
         drop(store);
         // 读侧 invoke 凭据注入走 vault_runtime::open_unlocked（argon2 vault 需
         // env 解锁；DPAPI 平台 open 即解锁、不消费 env）。demo 进程短命，就地
-        // 设 env 不摘：CLI demo 走完即退；tests 侧 nextest 每测试独立进程，
-        // 无交叉污染面。
+        // 设 env 不摘：CLI demo 走完即退。tests 侧由测试外壳持
+        // crate::GLOBAL_STATE_LOCK 串行 + 收尾摘除（commands/connector/tests.rs）
+        // ——env 是进程级单例，Linux ET `cargo test` 同进程并行下不摘会泄漏
+        // 给后续 vault 用例。
         unsafe { std::env::set_var("NEMESISBOT_VAULT_PASSPHRASE", "nemesis-demo") };
         tool.execute(
             r#"{"connector":"demo-strict","op":"ping","args":{}}"#,
