@@ -70,4 +70,23 @@ describe('session store fetchList 在飞共享', () => {
     expect(requestMock).toHaveBeenCalledTimes(2)
     expect(store.sessions.map(s => s.id)).toEqual(['a', 'b'])
   })
+
+  // 2026-10-19 修复配套：wf_edit 会话「主侧栏隐藏」的服务端真相源是
+  // sessions.list 回带的 bindings（此前被 fetchList 丢弃，隐藏标记只剩
+  // 浏览器 localStorage——换端口/换浏览器即失忆，工作流编辑会话假性
+  // 出现在聊天侧栏）。侧栏按 `wf_agentgen:*` 前缀消费本快照。
+  it('保存服务端绑定表快照；响应缺 bindings 时清空', async () => {
+    const store = useSessionStore()
+
+    requestMock.mockResolvedValueOnce({
+      sessions: [row('main'), row('wfe')],
+      bindings: { 'wf_agentgen:demo': 'wfe' },
+    })
+    await store.fetchList(true)
+    expect(store.bindings).toEqual({ 'wf_agentgen:demo': 'wfe' })
+
+    requestMock.mockResolvedValueOnce({ sessions: [row('main')] })
+    await store.fetchList(true)
+    expect(store.bindings).toEqual({})
+  })
 })

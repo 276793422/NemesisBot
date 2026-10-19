@@ -57,6 +57,11 @@ const SUPERVISE_INTERVAL: Duration = Duration::from_millis(200);
 /// `background_kill` 等待子进程退出的上限（超时如实报 still running）。
 const KILL_WAIT: Duration = Duration::from_secs(5);
 
+/// A2 停止阶梯的宽限窗：优雅停（POSIX=进程组 SIGTERM）后等自然退出的
+/// 时长。必须小于 [`KILL_WAIT`]（5s）——阶梯 3s 宽限 + 强杀生效（~0.5s）
+/// 要落在 kill() 的等待窗内，否则调用方会在升级到强杀之前误报 stubborn。
+pub(crate) const STOP_GRACE: Duration = Duration::from_secs(3);
+
 /// 单个后台任务的终态。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobStatus {
@@ -397,8 +402,9 @@ impl BackgroundProcessRegistry {
     }
 }
 
-/// 监督任务：轮询 try_wait → 记录终态；见 kill 旗标先树杀（一次），再
-/// 以 start_kill 兜底直杀 shell（树杀指令丢失时至少不漏直接子进程）。
+/// 监督任务：轮询 try_wait → 记录终态；见 kill 旗标跑一次停止阶梯
+/// （优雅停→宽限窗→强杀升级，A2），再以 start_kill 兜底直杀 shell
+/// （阶梯指令丢失时至少不漏直接子进程）。
 ///
 /// `pub(crate)`（2026-10-18）：delegate_registry 复用同一监督语义（kill
 /// 旗标 + 自然退出收尸）；delegate 侧另有独立的墙钟上限 watch 任务只置
@@ -414,9 +420,11 @@ pub(crate) async fn supervise(
         if kill_flag.load(Ordering::Relaxed) {
             if !kill_sent {
                 kill_sent = true;
-                tree_kill(pid).await;
+                // A2 停止阶梯：优雅停 → 宽限窗 → 强杀升级（内含等待，
+                // 只跑一次；此后每轮仅剩收尸轮询 + start_kill 兜底）。
+                stop_ladder(pid, &child, STOP_GRACE).await;
             }
-            // 兜底直杀：树杀已生效时这里是已退出进程上的 Err——忽略。
+            // 兜底直杀：阶梯已生效时这里是已退出进程上的 Err——忽略。
             let _ = child.lock().await.start_kill();
         }
         let exited = {
@@ -483,6 +491,78 @@ pub(crate) fn build_platform_shell(command: &str) -> tokio::process::Command {
         c.process_group(0);
         c
     }
+}
+
+/// 停止阶梯第一段：优雅停。
+///
+/// - POSIX：向进程组发 SIGTERM（shell 捕获后优雅收尾、子树随之退出；
+///   默认处理同样直接终止）。
+/// - Windows：控制台子进程没有真优雅终止通道（`taskkill` 无 `/F` 靠
+///   窗口消息，控制台程序基本无效）——第一段即树杀强杀，宽限窗实际
+///   演变为「强杀后的收尸等待」（诚实边界，不虚报优雅语义）。
+///
+/// `pub(crate)`：delegate_registry 经 supervise 共用同一阶梯。
+pub(crate) async fn graceful_stop(pid: u32) {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut c = tokio::process::Command::new("kill");
+        c.args(["-TERM", "--", &format!("-{}", pid)]);
+        // 2s 上限：指令本身不该卡住阶梯（与 tree_kill 同纪律）。
+        let _ = tokio::time::timeout(Duration::from_secs(2), c.output()).await;
+    }
+    #[cfg(target_os = "windows")]
+    tree_kill(pid).await;
+}
+
+/// 停止阶梯第二段：强杀升级（优雅段超窗后的兜底）。
+///
+/// - POSIX：向进程组发 SIGKILL——此前缺失（[`tree_kill`] 对 POSIX 只发
+///   TERM，trap/僵死进程永不升级，`start_kill` 只杀 shell 本体会漏孙
+///   进程）。
+/// - Windows：复用树杀（幂等；第一段已是强杀，走到这里说明进程连 `/F`
+///   都还没死透——多补一轮，`stop_ladder` 末尾另有 `start_kill` 兜底）。
+pub(crate) async fn force_kill(pid: u32) {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut c = tokio::process::Command::new("kill");
+        c.args(["-KILL", "--", &format!("-{}", pid)]);
+        let _ = tokio::time::timeout(Duration::from_secs(2), c.output()).await;
+    }
+    #[cfg(target_os = "windows")]
+    tree_kill(pid).await;
+}
+
+/// A2 子进程停止阶梯（**长命进程路径专用**：background 任务与 delegate
+/// 经 [`supervise`] 共用；exec 等 per-call 短命子进程保持 [`tree_kill`]
+/// 直杀语义，避免过度工程）：优雅停 → 宽限窗内轮询等自然退出 → 超窗
+/// 强杀升级 → `start_kill` 兜底直杀 shell 本体。
+///
+/// 调用方随后照常 try_wait 收尸记录终态（真相源不变）。指令丢失一律
+/// 忽略错误——收尸才是真相源（与 tree_kill 同纪律）；PID 复用窗口同
+/// tree_kill（毫秒级固有竞态，不做缓解）。
+pub(crate) async fn stop_ladder(
+    pid: u32,
+    child: &Arc<Mutex<tokio::process::Child>>,
+    grace: Duration,
+) {
+    graceful_stop(pid).await;
+    let deadline = tokio::time::Instant::now() + grace;
+    loop {
+        let exited = {
+            let mut c = child.lock().await;
+            c.try_wait().ok().flatten()
+        };
+        if exited.is_some() {
+            return;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    force_kill(pid).await;
+    // 进程组指令丢失时至少不漏直接子进程（已退出进程上调用无害）。
+    let _ = child.lock().await.start_kill();
 }
 
 /// 树杀：干掉 pid 及其整棵子树。

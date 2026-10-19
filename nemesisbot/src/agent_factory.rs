@@ -1350,6 +1350,7 @@ pub fn build_agent_loop(
                     cfg.agents.delegate.max_lifetime_secs,
                     claude_path,
                     codex_path,
+                    cfg.agents.delegate.permission_mode.clone(),
                     delegate_manager.clone(),
                 )),
             );
@@ -1408,44 +1409,11 @@ pub fn build_agent_loop(
         info!("[AgentFactory] selfupdate tools registered (check + apply, L9)");
     }
     // 行动代理 P0（2026-10-14）：connector_find / connector_invoke 动态工具
-    // 对。总闸 config.connectors.enabled（缺省开）。注册期静态声明只给
-    // connector_find（纯读编排面 → Internal LOW）；connector_invoke **不
-    // 静态声明**——per-op 风险经 Tool::operation_override 每次调用投影
-    // （dispatch 嗅探写 metadata 三键，管线按 op_type 裁决），清单解析不出
-    // = 未知名 fail-closed CRITICAL 兜底。主 loop 独占（项目 loop 固定子集
-    // 不含插件工具的同一决策；集群 worker v1 不开行动面）。connectors 关 =
-    // 工具模块整体退出编译，注册跳过。
+    // 对 + 独占隐藏表供给器（B2）——装配细节收敛到
+    // [`register_connector_governance`]（治理补全 P1 起主 loop 与统一工厂
+    // 项目/selfbuilt loop 共用同一治理面装配）。
     #[cfg(all(feature = "security", feature = "connectors"))]
-    if cfg.connectors.as_ref().map(|c| c.enabled).unwrap_or(true) {
-        nemesis_security::types::declare_tool_operation(
-            crate::connector_tools::FIND_TOOL_NAME,
-            nemesis_security::types::OperationType::Internal,
-        );
-        let connector_ws = shared.workspace_dir();
-        agent_loop.register_plugin_tool(
-            crate::connector_tools::FIND_TOOL_NAME.to_string(),
-            Arc::new(crate::connector_tools::ConnectorFindTool::new(
-                connector_ws.clone(),
-            )),
-        );
-        let invoke_tool = Arc::new(crate::connector_tools::ConnectorInvokeTool::new(
-            connector_ws,
-            config_path.clone(),
-            shared.security_plugin.clone(),
-        ));
-        agent_loop.register_plugin_tool(
-            crate::connector_tools::INVOKE_TOOL_NAME.to_string(),
-            invoke_tool.clone(),
-        );
-        invoke_tool.set_loop(Arc::downgrade(&agent_loop));
-        // E1（收官批）：远程执行面——集群 RPC 通道在场时注入 remote_call_fn
-        // （与 cluster_rpc 工具同源闭包；cluster 关闭 = None = target_node
-        // 诚实报错）。凭据不跨节点：payload 无凭据，对端用自己的 vault。
-        if let Some(ref call_fn) = shared.cluster_rpc_call_fn {
-            invoke_tool.set_remote_call_fn(call_fn.clone());
-        }
-        info!("[AgentFactory] connector tools registered (find + invoke, P0)");
-    }
+    register_connector_governance(&agent_loop, shared);
     // I1 (devtool-upgrade 阶段 3)：workspace fs watcher——外部编辑下一轮
     // 以 <external_changes> 注记浮出（指令链文件走 digest 失效锚点）。句柄
     // 活在 AgentLoop 内、随其销毁；启动失败 warn 一次后禁用，不阻断装配。
@@ -1477,7 +1445,9 @@ fn build_shared_tool_config(
     shared: &Arc<SharedResources>,
     cfg: &nemesis_config::Config,
     model_name: &str,
-    mcp_tool_snapshot: Option<Arc<parking_lot::RwLock<Vec<(String, String)>>>>,
+    mcp_tool_snapshot: Option<
+        Arc<parking_lot::RwLock<Vec<nemesis_agent::r#loop::McpToolSnapshotEntry>>>,
+    >,
 ) -> (
     nemesis_agent::SharedToolConfig,
     Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SpawnFn>>,
@@ -2048,6 +2018,81 @@ fn persistent_route_for(
     Some(nemesis_agent::PersistentRoute { resolve, executor })
 }
 
+/// 行动代理 P0 + 治理补全 P1（2026-10-19）：connector 治理面装配——
+/// `connector_find` / `connector_invoke` 注册 + B2 独占隐藏表供给器注入。
+/// 主 loop（[`build_agent_loop`]）与统一工厂（[`build_agent_loop_from_spec`]：
+/// 项目 loop / selfbuilt 记录 loop）共用，独占接管不再有项目会话旁路；
+/// 集群 worker 维持不开行动面（v1 决策）。
+///
+/// **调用时机**：loop `Arc` 定型之后（`set_loop` 存 `Weak`、独占闭包回读
+/// 快照都要 `Weak<Arc>`）；注册本身无条件（B4 总闸可见性裁决全走运行期
+/// 双闸：build_tool_defs 供给过滤 + dispatch 诚实拒绝，均 fresh-read
+/// config）——注册无害，工具定义挂在注册表不等于供给给模型。注册期静态
+/// 声明只给 connector_find（纯读编排面 → Internal LOW）；connector_invoke
+/// **不静态声明**——per-op 风险经 `Tool::operation_override` 每次调用投影
+/// （dispatch 嗅探写 metadata 三键，管线按 op_type 裁决），清单解析不出 =
+/// 未知名 fail-closed CRITICAL 兜底。
+///
+/// 治理资产恒锚主 workspace（`shared.workspace_dir()`：连接器注册表 /
+/// sidecar / 凭据 / 总闸 config.json）——项目 loop 的 exec_root 是项目目录，
+/// 治理配置不随执行根走。
+#[cfg(all(feature = "security", feature = "connectors"))]
+pub(crate) fn register_connector_governance(
+    agent_loop: &Arc<nemesis_agent::r#loop::AgentLoop>,
+    shared: &Arc<SharedResources>,
+) {
+    nemesis_security::types::declare_tool_operation(
+        crate::connector_tools::FIND_TOOL_NAME,
+        nemesis_security::types::OperationType::Internal,
+    );
+    let connector_ws = shared.workspace_dir();
+    let find_tool = Arc::new(crate::connector_tools::ConnectorFindTool::new(
+        connector_ws.clone(),
+    ));
+    agent_loop.register_plugin_tool(
+        crate::connector_tools::FIND_TOOL_NAME.to_string(),
+        find_tool.clone(),
+    );
+    let invoke_tool = Arc::new(crate::connector_tools::ConnectorInvokeTool::new(
+        connector_ws.clone(),
+        shared.home.join("config.json"),
+        shared.security_plugin.clone(),
+    ));
+    agent_loop.register_plugin_tool(
+        crate::connector_tools::INVOKE_TOOL_NAME.to_string(),
+        invoke_tool.clone(),
+    );
+    // B2：两个 connector 工具都要 loop 快照——invoke 解析镜像 op
+    // （args_schema + 镜像成员判定），find 枚举镜像面（connector_find
+    // 输出的 mirrors 数组）。
+    find_tool.set_loop(Arc::downgrade(agent_loop));
+    invoke_tool.set_loop(Arc::downgrade(agent_loop));
+    // E1（收官批）：远程执行面——集群 RPC 通道在场时注入 remote_call_fn
+    // （与 cluster_rpc 工具同源闭包；cluster 关闭 = None = target_node
+    // 诚实报错）。凭据不跨节点：payload 无凭据，对端用自己的 vault。
+    if let Some(ref call_fn) = shared.cluster_rpc_call_fn {
+        invoke_tool.set_remote_call_fn(call_fn.clone());
+    }
+    // B2（2026-10-19 独占接管）：独占隐藏表供给器——闭包每次现扫
+    // （注册表 + sidecar + MCP 工具快照，磁盘真相），算出的完整工具名
+    // 清单由 AgentLoop 并入供给过滤与 dispatch 出处感知闸（见
+    // tool_defs/tool_dispatch）。
+    let exclusive_loop = Arc::downgrade(agent_loop);
+    agent_loop.set_exclusive_hidden_provider(Arc::new(move || {
+        let Some(loop_arc) = exclusive_loop.upgrade() else {
+            return Vec::new();
+        };
+        let names: Vec<String> = loop_arc
+            .mcp_tool_snapshot()
+            .read()
+            .iter()
+            .map(|e| e.name.clone())
+            .collect();
+        nemesis_connectors::registry::exclusive_hidden_tools(&connector_ws, &names)
+    }));
+    info!("[AgentFactory] connector governance registered (find + invoke + exclusive provider)");
+}
+
 /// Register all tools and enable MCP on the given AgentLoop.
 ///
 /// Shared between main agent and cluster agent. The caller is responsible for
@@ -2331,7 +2376,10 @@ pub fn build_cluster_agent_loop(
     // 审批写/删本地记忆。approval_slot 由 gateway 装配期填（先建槽后填），
     // cluster loop 构建于 services 启动期（first_start/start），时序在填槽
     // 之后；槽空且 security 开启 = 时序异常，WARN 揪出来。
-    #[cfg(all(feature = "desktop", feature = "memory", feature = "security"))]
+    // F6（二轮复评 2026-10-18）：desktop 从门里去掉（与 GatewayMemoryGate
+    // 本体的 memory+security 门对齐——desktop+memory+security 缺 desktop
+    // 组合此前 E0433、desktop 关时集群 loop 白丢审批闸）。
+    #[cfg(all(feature = "memory", feature = "security"))]
     if let Some(adapter) = shared.approval_slot.read().clone() {
         agent_loop.set_memory_approval_gate(Arc::new(
             crate::commands::gateway::GatewayMemoryGate::new(adapter),
@@ -2851,12 +2899,12 @@ pub struct AgentLoopSpec {
     /// `set_tier_override` 钉死——config 重解析/换模型不覆盖记录档位。
     pub tier: String,
     /// G1：tool_policy 折算的隐藏清单（deny ∪ hidden 原样，通配语义同
-    /// `agents.hidden_tools`）。allow 白名单另由 [`Self::tool_policy_allow`]
-    /// 承载（折叠需注册面，build 侧算）。
+    /// `agents.hidden_tools`）。F4 后 allow 白名单不再折入此表。
     pub tool_policy_hidden: Vec<String>,
-    /// G1：tool_policy allow 白名单原样。非空时 build 侧在工具注册完成后
-    /// 折算 `注册面 ∖ allow` 并入隐藏表（白名单语义：不在 allow 的全部
-    /// 隐藏）；动态 MCP 快照同折。空 = 无白名单语义。
+    /// G1：tool_policy allow 白名单原样。F4（二轮复评 2026-10-18）：非空时
+    /// build 侧 `set_tool_policy_allow` **直挂 loop 槽**（旧「注册面 ∖ allow」
+    /// 折算取缔——折算只吃注册期快照，MCP 热加载的新工具漏拦；槽值双闸
+    /// 每回合现读，动态新工具天然落闸）。空 = 无白名单语义。
     pub tool_policy_allow: Vec<String>,
     /// G1：人格目录覆盖（persona_refs `{"dir": <abs path>}`）。Some 时
     /// system prompt 的身份装配根用它（IDENTITY/SOUL 等从该目录读），
@@ -3430,31 +3478,18 @@ pub fn build_agent_loop_from_spec(
     );
 
     // G1：tool_policy 双闸输入（current_hidden_tools 单点合并 → 供给闸 +
-    // dispatch 闸同源生效）。deny/hidden 直合入；allow 非空 = 白名单折算
-    // 「注册面 ∖ allow」。必须在注册完成后执行——折叠需要注册面快照；
-    // MCP 动态发现快照同折（装配期已发现的条目按名折叠，此后动态新发现
-    // 的 mcp 工具靠通配语义覆盖，显式白名单场景属已知边界）。
+    // dispatch 闸同源生效）。deny/hidden 折算保留（黑名单无增量工具问题，
+    // 通配语义同 agents.hidden_tools）。F4（二轮复评 2026-10-18）：allow
+    // 白名单改**直挂 loop 槽**（set_tool_policy_allow）——旧「注册面 ∖ allow」
+    // 折算只吃注册期快照，MCP 热加载的新工具不在快照里就漏拦（注释自认的
+    // 已知边界）；双闸现读槽值后动态新工具天然落闸，折算取缔。
     {
-        let mut hidden = spec.tool_policy_hidden.clone();
-        if !spec.tool_policy_allow.is_empty() {
-            let allow: std::collections::HashSet<&str> =
-                spec.tool_policy_allow.iter().map(|s| s.as_str()).collect();
-            let mut candidates = agent_loop.tool_names();
-            candidates.extend(
-                agent_loop
-                    .mcp_tool_snapshot()
-                    .read()
-                    .iter()
-                    .map(|(name, _)| name.clone()),
-            );
-            for name in candidates {
-                if !allow.contains(name.as_str()) && !hidden.contains(&name) {
-                    hidden.push(name);
-                }
-            }
-        }
+        let hidden = spec.tool_policy_hidden.clone();
         if !hidden.is_empty() {
             agent_loop.set_extra_hidden_tools(hidden);
+        }
+        if !spec.tool_policy_allow.is_empty() {
+            agent_loop.set_tool_policy_allow(spec.tool_policy_allow.clone());
         }
     }
 
@@ -3498,6 +3533,12 @@ pub fn build_agent_loop_from_spec(
     // Arc 定型后注入子代理 spawn 闭包（Weak 防环，与主 spawn 同理）。
     let agent_loop = Arc::new(agent_loop);
     inject_project_spawn_fn(&agent_loop, &spawn_slot, project_cc_bridge.clone());
+    // 治理补全 P1（2026-10-19）：connector 治理面与主 loop 同源——项目/
+    // selfbuilt loop 同装 MCP（enable_mcp_reload），独占接管与 connector
+    // 工具必须同覆盖，否则项目会话成为独占旁路（治理资产仍锚主 workspace，
+    // 见 register_connector_governance 文档）。cfg 对齐注册条件。
+    #[cfg(all(feature = "security", feature = "connectors"))]
+    register_connector_governance(&agent_loop, shared);
     // fs watcher 锚项目目录（外部编辑注记只看项目内变更）。
     let _ = AgentLoop::start_fs_watcher(&agent_loop, &cfg.agents.fs_watcher);
     // ASM-08：装配自检（与主/集群 loop 同一闸，D5=甲）。

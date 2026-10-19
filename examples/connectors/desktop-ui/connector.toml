@@ -1,0 +1,59 @@
+# desktop-ui connector —— 执行第三档：桌面 UI 自动化只读面（经 window-mcp）。
+#
+# 定位：没有 API 也没有网页的本地应用，走窗口枚举 / 窗口文本提取这条只读
+# 通道（读屏定位、状态确认）。op 全部 tool 绑定到 window-mcp 的同名工具——
+# 前置是 config.mcp.json 注册了 window-mcp server（Skills/desktop-automation
+# 有接线先例），连接器列表页的「MCP 未注册」徽标 = 前缀探测：绑定的
+# mcp_window_ 前缀没有任何已注册 server 匹配时诚实亮出，不假装可用。
+#
+# **默认停用（enabled = false）**：桌面只读面是用户显式开启的能力——先完成
+# window-mcp 注册，再把 enabled 改回 true。工具名前缀 mcp_window_ 对应
+# config.mcp.json 的 server name，改了名字要同步改下面各 op 的 tool 绑定。
+#
+# 凭条说明：MCP adapter 把工具结果扁平化成纯文本（content parts join），不是
+# JSON——receipt 主键解析拿不到值，凭条结果栏走结果首行 summary。所以各 op
+# 刻意不声明 receipt 字段。
+#
+# 刻意不声明（manifest 不声明即不可调用，不存在即安全）：
+#   click_window / click_at / type_text / send_key_to_window（交互写入——
+#   点击、输入、按键直接操纵目标应用，是本模板的对立面）；
+#   capture_screenshot_to_file（截图唯一形态带 file_path 参数 = 调用方任选
+#   落盘路径，文件写入不经本 connector 工作区围栏——对齐 web-ui 模板对
+#   screenshot 落盘形态的排除先例；window-mcp 若未来提供无落盘形态
+#   （base64 直返）可按 low/read 补声明）。
+#
+# 诚实边界：OS 级 UI 自动化永远无法靠声明做出硬只读保证（读到的内容也是
+# 屏幕快照，无语义保证）——防线是「不声明即不可调用」+ 执行面安全 8 层 +
+# 审批卡，不在这份清单上。
+
+[connector]
+id = "desktop-ui"
+name = "Desktop UI"
+version = "0.1.0"
+kind = "local"
+enabled = false
+description = "桌面窗口只读面（经 window-mcp）：枚举 / 查找 / 文本提取"
+
+[[op]]
+id = "list_windows"
+intent = ["枚举窗口", "列出窗口", "看看开了哪些窗口"]
+risk = "low"
+class = "read"
+tool = "mcp_window_enumerate_windows"
+args_schema = { type = "object", properties = { filter_visible = { type = "boolean", description = "只返回可见窗口（建议 true）" }, title_contains = { type = "string", description = "按窗口标题子串过滤" } } }
+
+[[op]]
+id = "find_window"
+intent = ["找窗口", "查找窗口", "窗口在不在"]
+risk = "low"
+class = "read"
+tool = "mcp_window_find_window_by_title"
+args_schema = { type = "object", required = ["title_contains"], properties = { title_contains = { type = "string", description = "窗口标题子串（返回句柄等信息）" } } }
+
+[[op]]
+id = "window_text"
+intent = ["读窗口文本", "提取窗口内容", "窗口里写的什么"]
+risk = "low"
+class = "read"
+tool = "mcp_window_get_window_text"
+args_schema = { type = "object", properties = { hwnd = { type = "string", description = "窗口句柄（find_window 返回）" }, title = { type = "string", description = "窗口标题子串（hwnd 缺省时先查后读）" } } }

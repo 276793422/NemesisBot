@@ -898,6 +898,7 @@ fn register_node(cluster: &Cluster, id: &str, role: NodeRole, category: &str, on
         agents: Vec::new(),
         runtime_backend: None,
         node_type: "agent".to_string(),
+        build: String::new(),
     });
 }
 
@@ -1918,6 +1919,7 @@ async fn worker_sync_env(
         agents: Vec::new(),
         runtime_backend: None,
         node_type: "agent".to_string(),
+        build: String::new(),
     });
     let client = Arc::new(RpcClient::with_resolver(Arc::new(FixedPeerResolver {
         addr: "127.0.0.1".to_string(),

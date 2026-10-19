@@ -609,6 +609,72 @@ mod sup_real_child {
         assert!(sup.slot_states().is_empty(), "收尾后槽清空");
     }
 
+    /// F3（二轮复评）：删除编排窗口内 get_or_spawn 拒新——旗标在位时无槽
+    /// 也不 spawn（早退闸），wake 诚实 Unavailable；evict_end 后恢复可用
+    /// （真实子进程往返）。
+    #[tokio::test]
+    async fn sup_evict_flag_refuses_wake_and_recovers_after_end() {
+        let _env = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let (sup, exec_root, _cfg) = supervisor(
+            &tmp,
+            r#"{"executor":{"persistent":{"enabled":true,"max_slots":2,"idle_shutdown_secs":0,"call_timeout_secs":120}}}"#,
+        );
+        use crate::agents::runtime::SupervisorError;
+
+        sup.evict_begin("agent-a").await; // 无槽：纯置旗
+        let r = sup.wake_agent("agent-a", &exec_root).await;
+        match r {
+            Err(SupervisorError::Unavailable(m)) => {
+                assert!(m.contains("being removed"), "拒绝须说明删除在途: {m}");
+            }
+            other => panic!("编排窗口内 wake 必须被拒: {other:?}"),
+        }
+        assert!(sup.slot_states().is_empty(), "拒绝路径不得留下任何槽");
+
+        sup.evict_end("agent-a");
+        sup.wake_agent("agent-a", &exec_root)
+            .await
+            .expect("evict_end 后恢复可用");
+        assert!(sup.slot_pid("agent-a").await.is_some());
+        sup.evict("agent-a").await;
+        assert!(sup.slot_states().is_empty());
+    }
+
+    /// F3：删除编排与并发 spawn 的竞态不变式——begin 返回后槽必为空（并发
+    /// wake 要么被旗标拒绝（修复语义），要么先成槽被排空（等价旧行为）），
+    /// 绝不允许幸存「evict 覆盖不到的替代槽」；反复三轮压窗口（spawn 真实
+    /// 子进程数百 ms，80ms 后置旗 = 高概率落在 spawn 在途）。旧行为此断言
+    /// 红：insert 落在「槽已摘/排空返回」之后 → 幸存槽。
+    #[tokio::test]
+    async fn sup_evict_window_blocks_replacement_spawn() {
+        let _env = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let (sup, exec_root, _cfg) = supervisor(
+            &tmp,
+            r#"{"executor":{"persistent":{"enabled":true,"max_slots":2,"idle_shutdown_secs":0,"call_timeout_secs":120}}}"#,
+        );
+        for round in 0..3 {
+            let sup2 = Arc::clone(&sup);
+            let er = exec_root.clone();
+            let bg = tokio::spawn(async move { sup2.wake_agent("agent-a", &er).await });
+            // 等 spawn 进场（子进程已起、槽未插表 = 旧行为的可乘窗口）。
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            sup.evict_begin("agent-a").await;
+            assert!(
+                sup.slot_states().is_empty(),
+                "round {round}: 删除编排窗口内不得幸存替代槽"
+            );
+            let r = bg.await.unwrap();
+            if let Err(crate::agents::runtime::SupervisorError::Unavailable(m)) = &r {
+                assert!(m.contains("being removed"), "round {round}: {m}");
+            }
+            sup.evict_end("agent-a");
+        }
+        // 全程结束后 supervisor 干净（下轮测试复用全局进程预算无残留）。
+        assert!(sup.slot_states().is_empty());
+    }
+
     /// P3 ①：env 白名单——宿主注入的秘密变量在常驻执行体内不可见；OS
     /// 基线（PATH）照常可见；运输层内部变量（NEMESISBOT_*）对模型可跑的
     /// 命令 env 不可见——两层防御：① supervisor spawn env_clear+白名单

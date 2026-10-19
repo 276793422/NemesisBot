@@ -1624,6 +1624,8 @@ async fn run_node(
         cluster.set_node_name(&name);
     }
     cluster.set_node_type("node");
+    // A1 运行时硬化批：announce 携带本节点构建号（与 gateway 装载同源）。
+    cluster.set_build_hash(crate::common::VERSION_INFO.git_commit);
 
     // Load static peers from peers.toml
     let peers_path = common::cluster_dir(home).join("peers.toml");

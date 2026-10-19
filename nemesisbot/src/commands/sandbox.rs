@@ -547,13 +547,28 @@ fn run_startexe_timeout(
     sub: &str,
     timeout: std::time::Duration,
 ) -> bool {
-    let mut child = match std::process::Command::new(start_exe)
-        .arg(format!("/box:{box_name}"))
-        .arg("/silent")
-        .arg(sub)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
+    let mut child = match {
+        // 黑窗根修（2026-10-19）：统一压 CREATE_NO_WINDOW（仓库纪律：生产
+        // 路径 spawn 一律）。Start.exe 自身 GUI 子系统不受影响；eval/网关侧
+        // 调用（无 console 进程）下彻底杜绝子进程链的 console 分配。
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            let mut c = std::process::Command::new(start_exe);
+            c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            c
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            std::process::Command::new(start_exe)
+        }
+    }
+    .arg(format!("/box:{box_name}"))
+    .arg("/silent")
+    .arg(sub)
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null())
+    .spawn()
     {
         Ok(c) => c,
         Err(e) => {
@@ -573,11 +588,17 @@ fn run_startexe_timeout(
             Ok(None) => {
                 if std::time::Instant::now() >= deadline {
                     // 树杀：Start.exe 可能有孙进程，kill() 只杀直接子。
-                    let _ = std::process::Command::new("taskkill")
-                        .args(["/PID", &child.id().to_string(), "/T", "/F"])
+                    // 黑窗根修（2026-10-19）：taskkill 是 console 程序，压窗。
+                    let mut tk = std::process::Command::new("taskkill");
+                    tk.args(["/PID", &child.id().to_string(), "/T", "/F"])
                         .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .status();
+                        .stderr(std::process::Stdio::null());
+                    #[cfg(target_os = "windows")]
+                    {
+                        use std::os::windows::process::CommandExt;
+                        tk.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+                    }
+                    let _ = tk.status();
                     let _ = child.kill();
                     let _ = child.wait();
                     eprintln!(

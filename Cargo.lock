@@ -4935,7 +4935,9 @@ dependencies = [
  "chrono",
  "ed25519-dalek 2.2.0",
  "hex",
+ "nemesis-mcp",
  "nemesis-security",
+ "nemesis-utils",
  "parking_lot",
  "serde",
  "serde_json",
@@ -9709,6 +9711,17 @@ dependencies = [
  "clap",
  "libloading 0.8.9",
  "nemesis-verify",
+]
+
+[[package]]
+name = "verify-probe"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "nemesis-agent",
+ "nemesis-cluster",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

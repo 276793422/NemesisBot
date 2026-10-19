@@ -630,14 +630,13 @@ pub fn write_workspace_file(workspace: &str, relative: &str, content: &str) -> R
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("failed to create dir: {}", e))?;
     }
-    let tmp_path = path.with_extension("tmp");
-    std::fs::write(&tmp_path, content).map_err(|e| format!("failed to write tmp: {}", e))?;
-    if let Err(e) = std::fs::rename(&tmp_path, &path) {
-        let _ = std::fs::remove_file(&tmp_path);
-        std::fs::write(&path, content).map_err(|e| format!("failed to write file: {}", e))?;
-        tracing::warn!(error = %e, "[WebServer] Atomic rename failed, fell back to direct write");
-    }
-    Ok(())
+    // 横向扫（2026-10-19，journal F1 同族收口）：此前 rename 失败会回退
+    // 「非原子直写覆盖目标」——fs::write 先截断后写，中途崩溃=半截文件落
+    // 盘；且主要失败形态（目标被占用/只读）下直写同样失败，回退救不了场
+    // 景、只留下原子性缺口。统一收口 nemesis-utils 权威原子写（REL-002）：
+    // 唯一临时名 + sync_all + 失败清 tmp、原文件不动、错误上抛。0o644 对齐
+    // 原 fs::write 默认（0666 & umask）的实际形态。
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o644)
 }
 
 /// List files in a workspace directory, returning relative paths.

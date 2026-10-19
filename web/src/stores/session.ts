@@ -17,6 +17,12 @@ export const useSessionStore = defineStore('session', () => {
   const api = useChatApi()
 
   const sessions = ref<SessionEntry[]>([])
+  // B（2026-09-23 会话绑定注册表）：sessions.list 回带的服务端绑定表快照
+  // （binding_key → session_id）。wf_edit 会话的「主侧栏隐藏」以它为服务端
+  // 真相源（2026-10-19 修复：此前 fetchList 丢弃 bindings，隐藏标记只剩
+  // 浏览器 localStorage 登记表——换端口/换浏览器/清站点数据即失忆，
+  // 工作流编辑会话假性出现在聊天侧栏）。
+  const bindings = ref<Record<string, string>>({})
   const currentId = ref<string | null>(null)
   const listLoading = ref(false)
   const listError = ref<string | null>(null)
@@ -90,6 +96,7 @@ export const useSessionStore = defineStore('session', () => {
       try {
         const resp = await api.list()
         sessions.value = resp.sessions ?? []
+        bindings.value = resp.bindings ?? {}
         lastListFetch.value = Date.now()
       } catch (e) {
         listError.value = typeof e === 'string' ? e : '加载会话列表失败'
@@ -220,5 +227,5 @@ export const useSessionStore = defineStore('session', () => {
     showSidebar.value = !showSidebar.value
   }
 
-  return { sessions, currentId, listLoading, listError, showSidebar, projects, justCreatedSid, fetchList, fetchProjects, create, createProject, removeProject, renameProject, projectNameOf, rename, clear, exportSession, markDelivered, remove, switchTo, toggleSidebar }
+  return { sessions, bindings, currentId, listLoading, listError, showSidebar, projects, justCreatedSid, fetchList, fetchProjects, create, createProject, removeProject, renameProject, projectNameOf, rename, clear, exportSession, markDelivered, remove, switchTo, toggleSidebar }
 })

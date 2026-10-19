@@ -91,6 +91,11 @@ pub struct ExtendedNodeInfo {
     /// 后经回读种回注册表。本批只宣告不做 matcher 闸（P6 上位）。
     #[serde(default)]
     pub runtime_backend: Option<String>,
+    /// 对端自报构建号（git 短 hash；A1 运行时硬化批）。旧 state.toml /
+    /// 旧 announce 无此字段 → serde default 空 = 未宣告（同 professions
+    /// 先例）。Dashboard 节点面展示，三机换装偏斜一眼可见。
+    #[serde(default)]
+    pub build: String,
     /// All known addresses for this node (for multi-address failover).
     /// The primary address is stored in `base.address`.
     #[serde(default)]
@@ -205,6 +210,7 @@ impl ExtendedNodeInfo {
             && self.tier == other.tier
             && self.agents == other.agents
             && self.runtime_backend == other.runtime_backend
+            && self.build == other.build
             && self.addresses == other.addresses
             && self.node_type == other.node_type
     }

@@ -77,6 +77,11 @@ pub trait ClusterCallbacks: Send + Sync {
     fn roaming_id(&self) -> Option<String> {
         None
     }
+    /// 自报构建号（git 短 hash；A1 运行时硬化批，announce 携带）。默认
+    /// 空 = 未宣告。对端据此在注册表/Dashboard 展示构建偏斜。
+    fn build_hash(&self) -> String {
+        String::new()
+    }
     /// Handle a newly discovered or updated node.
     /// Returns `true` if the peer was added or its content actually changed.
     fn handle_discovered_node(
@@ -119,6 +124,7 @@ pub trait ClusterCallbacks: Send + Sync {
         iroh_id: Option<&str>,
         runtime_backend: Option<&str>,
         source_addr: Option<&str>,
+        build: &str,
     ) -> bool {
         let _ = (
             professions,
@@ -128,6 +134,7 @@ pub trait ClusterCallbacks: Send + Sync {
             runtime_backend,
             source_addr,
         );
+        let _ = (professions, tier, agents, iroh_id, source_addr, build);
         self.handle_discovered_node(
             node_id,
             name,
@@ -360,6 +367,8 @@ impl ClusterCallbacks for RegistryCallbacks {
             // 旧 9 参回调无 runtime_backend 入参 → None = 未宣告（诚实，
             // 不猜；ex 版回调才携带）。
             runtime_backend: None,
+            // 旧形态 adapter（不 override ex）：build 未携带，空 = 未宣告。
+            build: String::new(),
             node_type: node_type.to_string(),
         };
         self.registry.upsert_if_changed(info)
@@ -660,6 +669,7 @@ impl DiscoveryService {
                         msg.iroh_id.as_deref(),
                         msg.runtime_backend.as_deref(),
                         Some(source_ip.as_str()),
+                        &msg.build,
                     );
                     if changed {
                         tracing::info!(node_id = %msg.node_id, "[Discovery] Node info updated, syncing to disk");
@@ -820,6 +830,7 @@ pub(crate) fn build_announce_from_callbacks(cluster: &dyn ClusterCallbacks) -> D
     .with_runtime_backend(cluster.runtime_backend())
     .with_agents(cluster.agent_roster())
     .with_iroh_id(cluster.roaming_id())
+    .with_build(cluster.build_hash())
 }
 
 /// Send an announce message using the listener's broadcast method.

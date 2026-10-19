@@ -4,8 +4,10 @@
 //! `WebQuestionBroker::ask`（question 工具的阻塞点）。Responder 经
 //! `ctx.state.agent_loop` 的 question_responder 槽触达（gateway 装配时
 //! `set_question_responder` 注入）——未装配（headless / 旧装配）时诚实报
-//! 「未装配」。载荷校验（空选择/非候选/单选多项）在 broker 侧，这里只做
-//! 传输形态校验（question_id 存在、selected 是字符串数组）。
+//! 「未装配」。载荷校验（空选择/非候选/单选多项；B8 表单：未知键/必填
+//! 空缺/select 非候选）在 broker 侧，这里只做传输形态校验（question_id
+//! 存在、selected 是字符串数组 / values 是字符串值 object——B8 两形态
+//! 二选一，都给诚实报错）。
 
 use crate::ws_router::{ModuleHandler, RequestContext};
 
@@ -75,6 +77,39 @@ impl ModuleHandler for QuestionHandler {
                     .get("question_id")
                     .and_then(|v| v.as_str())
                     .ok_or("missing question_id")?;
+                // B8（提问两形态）：`values`（object，值全为字符串）= 表单
+                // 作答 → respond_form；`selected`（字符串数组）= 选项作答 →
+                // respond。两者都给/都不给 = 传输形态错误（broker 侧再管
+                // 形态互斥与字段校验）。
+                if data.get("values").is_some() {
+                    if data.get("selected").is_some() {
+                        return Err(
+                            "provide either 'selected' (options form) or 'values' (form), not both"
+                                .to_string(),
+                        );
+                    }
+                    let values = data
+                        .get("values")
+                        .and_then(|v| v.as_object())
+                        .ok_or("values must be an object of string values")?;
+                    let mut map = std::collections::BTreeMap::new();
+                    for (k, v) in values {
+                        let s = v
+                            .as_str()
+                            .ok_or_else(|| format!("values.{} must be a string", k))?;
+                        map.insert(k.clone(), s.to_string());
+                    }
+                    let delivered = responder.respond_form(question_id, &map)?;
+                    tracing::info!(
+                        "[Web/WSAPI] question.respond id={} form -> delivered={}",
+                        question_id,
+                        delivered
+                    );
+                    return Ok(Some(serde_json::json!({
+                        "question_id": question_id,
+                        "delivered": delivered,
+                    })));
+                }
                 let selected = data
                     .get("selected")
                     .and_then(|v| v.as_array())

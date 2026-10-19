@@ -218,10 +218,29 @@ pub struct ConnectorsConfig {
     /// 自己的 vault 解锁。
     #[serde(default = "default_remote_invoke_enabled")]
     pub remote_invoke_enabled: bool,
+    /// 信任总闸（M1）：true = unsigned connector 一律拒执行（trust_blocked
+    /// 诚实凭条）；false（缺省）= 只在审批卡加警示行，不拦截——本地自签
+    /// 开发场景合法，拦截是用户显式选择。
+    #[serde(default)]
+    pub require_signed: bool,
+    /// script 绑定全局配置（M2；None = 全缺省：default_timeout_secs 60）。
+    #[serde(default)]
+    pub script: Option<ConnectorsScriptConfig>,
 }
 
 fn default_remote_invoke_enabled() -> bool {
     true
+}
+
+impl ConnectorsConfig {
+    /// script 绑定全局缺省超时秒数（op 级 timeout_secs 可覆盖；**0 = 拒绝
+    /// 所有 script op**——防误配无限挂；上限 600 与 exec 工具闸对齐）。
+    pub fn script_timeout_secs(&self) -> u64 {
+        self.script
+            .as_ref()
+            .map(|s| s.default_timeout_secs)
+            .unwrap_or(60)
+    }
 }
 
 impl Default for ConnectorsConfig {
@@ -231,6 +250,24 @@ impl Default for ConnectorsConfig {
             max_ops_per_hour: 0,
             finance: None,
             remote_invoke_enabled: true,
+            require_signed: false,
+            script: None,
+        }
+    }
+}
+
+/// script 绑定全局配置（M2，2026-10-19）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ConnectorsScriptConfig {
+    /// 全局缺省超时秒数（0 = 拒绝所有 script op）。
+    pub default_timeout_secs: u64,
+}
+
+impl Default for ConnectorsScriptConfig {
+    fn default() -> Self {
+        Self {
+            default_timeout_secs: 60,
         }
     }
 }
@@ -661,6 +698,14 @@ pub struct BoardReviewConfig {
     /// 语言进 done）。issue 级 `requires_evidence`（AC 含 file: 锚点自动
     /// 置位）不受本闸控制、恒生效——本闸是全局加码，不是全局豁免。
     pub require_delivery_evidence: bool,
+    /// 交付证据 typed 块强制闸（诚实边界收口 ②，2026-10-19；默认 **false**
+    /// 烧入期）。true 后交付证据闸要求 `$.delivery.files` typed 块**在场**
+    /// （git tree diff 确定性派生，任何 git 交付都应可派生——缺席 = 证据面
+    /// 残缺，FAIL「交付缺类型化证据块」）。`checks` 块**恒可选**（没跑检查
+    /// = 诚实的事实陈述，不是证据缺失；强制会诱发造值）。typed 块**在场
+    /// 时**无论本闸开关都验形态（path 形态闸 + sha256 hex 形态 + cmd 非空），
+    /// 验不过 = FAIL——加法演进，旧 payload 缺席块行为不变。
+    pub evidence_typed_required: bool,
 }
 
 impl BoardReviewConfig {
@@ -785,6 +830,7 @@ impl Default for BoardReviewConfig {
             professions: std::collections::HashMap::new(),
             parent_remediation_max: 2,
             require_delivery_evidence: false,
+            evidence_typed_required: false,
         }
     }
 }

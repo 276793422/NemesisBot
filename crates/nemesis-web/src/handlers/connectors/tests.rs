@@ -241,6 +241,8 @@ fn list_reports_valid_and_corrupt_connectors() {
     assert_eq!(valid["id"], "demo-quotes");
     assert_eq!(valid["kind"], "rest");
     assert_eq!(valid["enabled"], true);
+    // M1：未签名 connector → unsigned 徽标（信任库缺席 = 全 unsigned）。
+    assert_eq!(valid["trust"], "unsigned");
     assert!(valid["error"].is_null());
     let ops = valid["ops"].as_array().unwrap();
     assert_eq!(ops.len(), 2);
@@ -255,8 +257,56 @@ fn list_reports_valid_and_corrupt_connectors() {
     let corrupt = &rows[1];
     assert_eq!(corrupt["id"], "b-broken", "损坏条目以目录名代 id");
     assert_eq!(corrupt["enabled"], false);
+    // M1：损坏条目 trust = null（无有效清单，谈不上「未签名」的判断）。
+    assert!(corrupt["trust"].is_null(), "corrupt trust: {corrupt}");
     let err = corrupt["error"].as_str().unwrap();
     assert!(!err.is_empty(), "损坏原因必须可见: {corrupt}");
+}
+
+/// M1 信任徽标三态（2026-10-19）：verified（信任库内密钥签名）/ unsigned
+/// （无 sig 文件）/ 损坏（null）同场投影——前端徽标色的数据面契约。
+#[test]
+fn list_trust_badges_three_states() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    // verified：写清单 → 信任库收录密钥 → 签名。
+    let vdir = ws
+        .join(nemesis_connectors::registry::CONNECTORS_DIR)
+        .join("a-signed");
+    write_http_connector(ws, "a-signed", "signed-quotes");
+    let pair = nemesis_connectors::signing::generate_key_pair().expect("keygen");
+    let store = nemesis_connectors::signing::workspace_trust_store(ws);
+    store.add_key(
+        &pair.public_key,
+        "test-signer",
+        nemesis_connectors::signing::TrustLevel::Verified,
+    );
+    nemesis_connectors::signing::sign_connector_dir(&vdir, &pair.private_key).expect("sign");
+
+    // unsigned：不签名的普通清单。
+    write_http_connector(ws, "b-plain", "plain-quotes");
+
+    // corrupt：坏 TOML。
+    let broken = ws
+        .join(nemesis_connectors::registry::CONNECTORS_DIR)
+        .join("c-broken");
+    std::fs::create_dir_all(&broken).unwrap();
+    std::fs::write(
+        broken.join(nemesis_connectors::registry::MANIFEST_FILE),
+        "not toml [",
+    )
+    .unwrap();
+
+    let ctx = make_ctx(ws);
+    let out = cmd_list(&ctx).unwrap().unwrap();
+    let rows = out["connectors"].as_array().unwrap();
+    assert_eq!(rows.len(), 3, "三态同场: {out}");
+    assert_eq!(rows[0]["id"], "signed-quotes");
+    assert_eq!(rows[0]["trust"], "verified", "信任库内密钥签名 = verified");
+    assert_eq!(rows[1]["id"], "plain-quotes");
+    assert_eq!(rows[1]["trust"], "unsigned");
+    assert_eq!(rows[2]["id"], "c-broken");
+    assert!(rows[2]["trust"].is_null());
 }
 
 /// workspace 未配置 → workspace_of 诚实 Err。
@@ -402,7 +452,19 @@ async fn handler_contract_and_unknown_command() {
 
     let h = ConnectorsHandler;
     assert_eq!(h.module_name(), "connectors");
-    assert_eq!(h.commands(), &["list", "receipts.list", "undo"]);
+    assert_eq!(
+        h.commands(),
+        &[
+            "list",
+            "receipts.list",
+            "undo",
+            "create",
+            "set_enabled",
+            "remove",
+            "set_master",
+            "tool_policy"
+        ]
+    );
     let out = h.handle_cmd("list", None, &ctx).await.unwrap().unwrap();
     assert!(out["connectors"].is_array());
     let err = h.handle_cmd("nope", None, &ctx).await.unwrap_err();
@@ -721,4 +783,577 @@ fn undo_ledger_verdict_three_arms() {
     )
     .unwrap_err();
     assert!(err.contains("未落新凭条"), "{err}");
+}
+
+// ---------------------------------------------------------------------------
+// M4b（2026-10-19）tool 绑定在位探测（mcp_ready）
+// ---------------------------------------------------------------------------
+
+/// tool 绑定 connector 模板（window-mcp 形态；desktop-ui 模板同构）。
+fn write_tool_connector(ws: &Path, dir: &str, id: &str) {
+    let dir = ws
+        .join(nemesis_connectors::registry::CONNECTORS_DIR)
+        .join(dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join(nemesis_connectors::registry::MANIFEST_FILE),
+        format!(
+            r#"[connector]
+id = "{id}"
+name = "Desktop UI"
+version = "0.1.0"
+kind = "local"
+description = "桌面只读面"
+
+[[op]]
+id = "list_windows"
+intent = ["枚举窗口"]
+risk = "low"
+class = "read"
+tool = "mcp_window_enumerate_windows"
+"#
+        ),
+    )
+    .unwrap();
+}
+
+fn row_of<'a>(out: &'a serde_json::Value, id: &str) -> &'a serde_json::Value {
+    out["connectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == id)
+        .unwrap_or_else(|| panic!("connector {id} 未入列: {out}"))
+}
+
+/// 在位探测三态：window server 已注册 → true；config.mcp.json 缺席 →
+/// false（诚实「MCP 未注册」，不假装可用）；http 绑定 → null（不适用）。
+/// server 名 sanitize 对齐 adapter 挂载面（`my.window` → `mcp_my_window_`）。
+#[test]
+fn list_tool_bindings_probe_mcp_registration() {
+    // ① 已注册 → mcp_ready = true
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    write_tool_connector(ws, "d-ui", "desktop-ui");
+    write_http_connector(ws, "a-rest", "demo-quotes");
+    let cfg_dir = ws.join("config");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    std::fs::write(
+        cfg_dir.join("config.mcp.json"),
+        r#"{"enabled": true, "servers": [{"name": "window", "transport_type": "stdio", "command": "window-mcp.exe"}]}"#,
+    )
+    .unwrap();
+    let ctx = make_ctx(ws);
+    let out = cmd_list(&ctx).unwrap().unwrap();
+    assert_eq!(
+        row_of(&out, "desktop-ui")["mcp_ready"],
+        true,
+        "window server 已注册 → 就绪: {out}"
+    );
+    assert!(
+        row_of(&out, "demo-quotes")["mcp_ready"].is_null(),
+        "http 绑定探测不适用 → null: {out}"
+    );
+
+    // ② 无 config.mcp.json → false
+    let dir2 = tempfile::tempdir().unwrap();
+    write_tool_connector(dir2.path(), "d-ui", "desktop-ui");
+    let ctx2 = make_ctx(dir2.path());
+    let out2 = cmd_list(&ctx2).unwrap().unwrap();
+    assert_eq!(
+        row_of(&out2, "desktop-ui")["mcp_ready"],
+        false,
+        "MCP server 缺席 → 诚实未就绪: {out2}"
+    );
+
+    // ③ sanitize 对齐：server 名带非 [a-z0-9_] 字符 → 前缀归一同 adapter。
+    let dir3 = tempfile::tempdir().unwrap();
+    let ws3 = dir3.path();
+    write_tool_connector(ws3, "d-ui", "desktop-ui");
+    std::fs::create_dir_all(ws3.join("config")).unwrap();
+    std::fs::write(
+        ws3.join("config").join("config.mcp.json"),
+        r#"{"enabled": true, "servers": [{"name": "my.window", "transport_type": "stdio", "command": "window-mcp.exe"}]}"#,
+    )
+    .unwrap();
+    // 绑定名按 sanitize 后前缀（my.window → my_window）才命中。
+    let dir_t = ws3
+        .join(nemesis_connectors::registry::CONNECTORS_DIR)
+        .join("d-ui");
+    std::fs::write(
+        dir_t.join(nemesis_connectors::registry::MANIFEST_FILE),
+        r#"[connector]
+id = "desktop-ui"
+name = "Desktop UI"
+version = "0.1.0"
+kind = "local"
+description = "桌面只读面"
+
+[[op]]
+id = "list_windows"
+intent = ["枚举窗口"]
+risk = "low"
+class = "read"
+tool = "mcp_my_window_enumerate_windows"
+"#,
+    )
+    .unwrap();
+    let ctx3 = make_ctx(ws3);
+    let out3 = cmd_list(&ctx3).unwrap().unwrap();
+    assert_eq!(
+        row_of(&out3, "desktop-ui")["mcp_ready"],
+        true,
+        "sanitize 后前缀命中（my.window → mcp_my_window_）: {out3}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 管理面（2026-10-19）：create / set_enabled / remove
+// ---------------------------------------------------------------------------
+
+const HANDLER_TOML: &str = r#"[connector]
+id = "mng-c"
+name = "管理面测试"
+version = "0.1.0"
+kind = "local"
+
+[[op]]
+id = "noop"
+risk = "low"
+class = "read"
+action = "builtin.noop"
+"#;
+
+#[test]
+fn management_commands_registered_in_surface() {
+    let cmds = ConnectorsHandler.commands();
+    assert_eq!(
+        cmds.len(),
+        8,
+        "list/receipts.list/undo + create/set_enabled/remove + set_master/tool_policy"
+    );
+    assert!(cmds.contains(&"create"));
+    assert!(cmds.contains(&"set_enabled"));
+    assert!(cmds.contains(&"remove"));
+    assert!(cmds.contains(&"set_master"));
+    assert!(cmds.contains(&"tool_policy"));
+}
+
+#[tokio::test]
+async fn management_roundtrip_create_toggle_remove() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(tmp.path());
+    let h = ConnectorsHandler;
+
+    // create → list 可见
+    let r = h
+        .handle_cmd(
+            "create",
+            Some(json!({ "dir_name": "mng-c", "toml": HANDLER_TOML })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(r["ok"], json!(true));
+    assert_eq!(r["id"], json!("mng-c"));
+    let list = h.handle_cmd("list", None, &ctx).await.unwrap().unwrap();
+    assert_eq!(list["count"], json!(1));
+    assert_eq!(list["connectors"][0]["id"], json!("mng-c"));
+
+    // set_enabled false → list 反映停用
+    let r = h
+        .handle_cmd(
+            "set_enabled",
+            Some(json!({ "dir": "mng-c", "enabled": false })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(r["enabled"], json!(false));
+    let list = h.handle_cmd("list", None, &ctx).await.unwrap().unwrap();
+    assert_eq!(list["connectors"][0]["enabled"], json!(false));
+
+    // remove → list 清空；目录消失
+    let r = h
+        .handle_cmd("remove", Some(json!({ "dir": "mng-c" })), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(r["receipts_retained"], json!(true));
+    let list = h.handle_cmd("list", None, &ctx).await.unwrap().unwrap();
+    assert_eq!(list["count"], json!(0));
+}
+
+#[tokio::test]
+async fn management_param_and_registry_errors_are_honest() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(tmp.path());
+    let h = ConnectorsHandler;
+
+    // 缺参数
+    assert!(h.handle_cmd("create", None, &ctx).await.is_err());
+    assert!(
+        h.handle_cmd("create", Some(json!({ "dir_name": "x" })), &ctx)
+            .await
+            .is_err()
+    );
+    assert!(
+        h.handle_cmd("set_enabled", Some(json!({ "dir": "x" })), &ctx)
+            .await
+            .is_err(),
+        "缺 enabled"
+    );
+    assert!(
+        h.handle_cmd(
+            "set_enabled",
+            Some(json!({ "dir": "x", "enabled": "yes" })),
+            &ctx
+        )
+        .await
+        .is_err(),
+        "enabled 必须是 bool"
+    );
+    assert!(h.handle_cmd("remove", None, &ctx).await.is_err());
+
+    // 清单非法：错误原文透传（前端展示）
+    let err = h
+        .handle_cmd(
+            "create",
+            Some(json!({ "dir_name": "bad", "toml": "not toml [" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("TOML 解析失败"), "{err}");
+
+    // 不在册目录启停/删除
+    let err = h
+        .handle_cmd(
+            "set_enabled",
+            Some(json!({ "dir": "ghost", "enabled": true })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("不在注册表"), "{err}");
+    let err = h
+        .handle_cmd("remove", Some(json!({ "dir": "ghost" })), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("不在注册表"), "{err}");
+}
+
+// ---------------------------------------------------------------------------
+// B4 总开关（2026-10-19）：connectors.set_master
+// ---------------------------------------------------------------------------
+
+/// 关→config.json 真落键→list 反映；再开走「已有段更新」分支。缺省开
+/// （无 config.json 时与供给闸同源语义）。
+#[tokio::test]
+async fn set_master_roundtrip_config_and_list() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(tmp.path());
+    let h = ConnectorsHandler;
+
+    // 缺省开。
+    let list = h.handle_cmd("list", None, &ctx).await.unwrap().unwrap();
+    assert_eq!(list["enabled"], json!(true));
+
+    // 关：响应 + config.json + list 三处一致。
+    let r = h
+        .handle_cmd("set_master", Some(json!({ "enabled": false })), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(r, json!({ "ok": true, "enabled": false }));
+    let cfg: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(tmp.path().join("config.json")).unwrap())
+            .unwrap();
+    assert_eq!(cfg["connectors"]["enabled"], json!(false), "真落盘: {cfg}");
+    let list = h.handle_cmd("list", None, &ctx).await.unwrap().unwrap();
+    assert_eq!(list["enabled"], json!(false));
+
+    // 再开：已有 connectors 段走更新分支。
+    let r = h
+        .handle_cmd("set_master", Some(json!({ "enabled": true })), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(r["enabled"], json!(true));
+    let list = h.handle_cmd("list", None, &ctx).await.unwrap().unwrap();
+    assert_eq!(list["enabled"], json!(true));
+}
+
+/// 参数面：缺 data / 缺 enabled / enabled 非 bool 都诚实拒（不静默）。
+#[tokio::test]
+async fn set_master_param_errors() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(tmp.path());
+    let h = ConnectorsHandler;
+
+    assert!(h.handle_cmd("set_master", None, &ctx).await.is_err());
+    assert!(
+        h.handle_cmd("set_master", Some(json!({})), &ctx)
+            .await
+            .is_err(),
+        "缺 enabled"
+    );
+    assert!(
+        h.handle_cmd("set_master", Some(json!({ "enabled": "yes" })), &ctx)
+            .await
+            .is_err(),
+        "enabled 必须是 bool"
+    );
+    // 拒绝路径不落盘。
+    assert!(!tmp.path().join("config.json").exists());
+}
+
+// ---------------------------------------------------------------------------
+// B2 per-tool 例外（2026-10-19）：connectors.tool_policy + mirrors 投影
+// ---------------------------------------------------------------------------
+
+/// 独占接管 connector 模板（接管 `stub` server）。
+fn write_excl_connector(ws: &Path, dir: &str, id: &str) {
+    let dir = ws
+        .join(nemesis_connectors::registry::CONNECTORS_DIR)
+        .join(dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join(nemesis_connectors::registry::MANIFEST_FILE),
+        format!(
+            r#"[connector]
+id = "{id}"
+name = "独占壳"
+version = "0.1.0"
+kind = "local"
+exclusive_mcp = "stub"
+
+[[op]]
+id = "noop"
+risk = "low"
+class = "read"
+action = "builtin.noop"
+"#
+        ),
+    )
+    .unwrap();
+}
+
+/// blocked → list.mirrors 行投影 policy；exempt 覆盖；default 清记录。
+/// harness 无 loop（快照空）= server 离线形态：行来自 sidecar 记录，
+/// args_schema null 诚实展示。
+#[tokio::test]
+async fn tool_policy_writes_sidecar_and_list_projects_mirrors() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path();
+    write_excl_connector(ws, "x-ui", "excl-takeover");
+    let ctx = make_ctx(ws);
+    let h = ConnectorsHandler;
+
+    // blocked 写入。
+    let r = h
+        .handle_cmd(
+            "tool_policy",
+            Some(json!({ "connector": "excl-takeover", "tool": "mcp_stub__click", "policy": "blocked" })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(r["ok"], json!(true));
+    assert_eq!(r["policy"], json!("blocked"));
+
+    // list 投影：exclusive_mcp + mirrors 行（离线例外行，schema null）。
+    let list = h.handle_cmd("list", None, &ctx).await.unwrap().unwrap();
+    let row = row_of(&list, "excl-takeover");
+    assert_eq!(row["exclusive_mcp"], json!(["stub"]));
+    let mirrors = row["mirrors"].as_array().unwrap();
+    assert_eq!(mirrors.len(), 1, "{row}");
+    assert_eq!(mirrors[0]["id"], json!("mcp_stub__click"));
+    assert_eq!(mirrors[0]["policy"], json!("blocked"));
+    assert!(
+        mirrors[0]["args_schema"].is_null(),
+        "server 离线（无快照）= schema 缺席诚实展示"
+    );
+
+    // exempt 覆盖 blocked（豁免 = 更强的显式意志）。
+    h.handle_cmd(
+        "tool_policy",
+        Some(
+            json!({ "connector": "excl-takeover", "tool": "mcp_stub__click", "policy": "exempt" }),
+        ),
+        &ctx,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let list = h.handle_cmd("list", None, &ctx).await.unwrap().unwrap();
+    let mirrors = row_of(&list, "excl-takeover")["mirrors"]
+        .as_array()
+        .unwrap();
+    assert_eq!(mirrors[0]["policy"], json!("exempt"));
+
+    // default → 记录清除 → sidecar 无行（快照也空）= mirrors 空表。
+    h.handle_cmd(
+        "tool_policy",
+        Some(
+            json!({ "connector": "excl-takeover", "tool": "mcp_stub__click", "policy": "default" }),
+        ),
+        &ctx,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let list = h.handle_cmd("list", None, &ctx).await.unwrap().unwrap();
+    assert_eq!(
+        row_of(&list, "excl-takeover")["mirrors"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0,
+        "全 default = 无例外行"
+    );
+
+    // 非独占 connector：mirrors 恒空。
+    write_http_connector(ws, "a-rest", "demo-quotes");
+    let list = h.handle_cmd("list", None, &ctx).await.unwrap().unwrap();
+    assert_eq!(
+        row_of(&list, "demo-quotes")["mirrors"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+}
+
+/// 参数面：缺参数 / 未知 policy / 非法 connector id 诚实拒。
+#[tokio::test]
+async fn tool_policy_param_errors() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(tmp.path());
+    let h = ConnectorsHandler;
+
+    assert!(h.handle_cmd("tool_policy", None, &ctx).await.is_err());
+    assert!(
+        h.handle_cmd(
+            "tool_policy",
+            Some(json!({ "connector": "c", "tool": "t" })),
+            &ctx
+        )
+        .await
+        .is_err(),
+        "缺 policy"
+    );
+    let err = h
+        .handle_cmd(
+            "tool_policy",
+            Some(json!({ "connector": "c", "tool": "t", "policy": "always" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("未知 policy"), "{err}");
+    let err = h
+        .handle_cmd(
+            "tool_policy",
+            Some(json!({ "connector": "../escape", "tool": "t", "policy": "blocked" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("非法"), "{err}");
+}
+
+/// exclusive_tool_rows 直测：live 快照行（schema 随行 + 按当下 sidecar 裁
+/// policy）∪ 离线例外行（sidecar 记录但不在 live 表）；前缀外不连坐；
+/// 字典序。
+#[test]
+fn exclusive_tool_rows_projects_live_tools_and_offline_exceptions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path();
+    // 目录名 = id（find_connector 按目录名定位）。
+    write_excl_connector(ws, "excl-takeover", "excl-takeover");
+    let c = nemesis_connectors::registry::find_connector(ws, "excl-takeover")
+        .unwrap()
+        .0;
+
+    let live = vec![
+        McpToolRow {
+            name: "mcp_stub__read_page".to_string(),
+            params: json!({ "type": "object", "required": ["url"] }),
+            read_only_hint: Some(true),
+            destructive_hint: None,
+        },
+        McpToolRow {
+            name: "mcp_stub__click".to_string(),
+            params: json!({ "type": "object" }),
+            read_only_hint: None,
+            destructive_hint: Some(true),
+        },
+        McpToolRow {
+            name: "mcp_other__list".to_string(),
+            params: json!({ "type": "object" }),
+            read_only_hint: None,
+            destructive_hint: None,
+        },
+    ];
+
+    // 无例外：两行 default（前缀外 other 不连坐），schema 随行。
+    let rows = exclusive_tool_rows(ws, &c, &live);
+    let ids: Vec<&str> = rows.iter().map(|r| r["id"].as_str().unwrap()).collect();
+    assert_eq!(
+        ids,
+        vec!["mcp_stub__click", "mcp_stub__read_page"],
+        "字典序"
+    );
+    assert_eq!(rows[0]["policy"], json!("default"));
+    assert_eq!(
+        rows[1]["args_schema"],
+        json!({ "type": "object", "required": ["url"] })
+    );
+
+    // B3 四档基线随行：readOnly 自述=low/read 免卡；destructive 自述=
+    // high/write 强制确认卡。
+    assert_eq!(rows[0]["risk"], json!("high"));
+    assert_eq!(rows[0]["class"], json!("write"));
+    assert_eq!(rows[0]["confirm_required"], json!(true));
+    assert_eq!(rows[1]["risk"], json!("low"));
+    assert_eq!(rows[1]["class"], json!("read"));
+    assert_eq!(rows[1]["confirm_required"], json!(false));
+
+    // exempt read_page（live 行翻 exempt）+ blocked ghost（离线例外行）。
+    nemesis_connectors::state::set_tool_policy(
+        ws,
+        "excl-takeover",
+        "mcp_stub__read_page",
+        nemesis_connectors::state::ToolPolicy::Exempt,
+    )
+    .unwrap();
+    nemesis_connectors::state::set_tool_policy(
+        ws,
+        "excl-takeover",
+        "mcp_stub__ghost",
+        nemesis_connectors::state::ToolPolicy::Blocked,
+    )
+    .unwrap();
+    let rows = exclusive_tool_rows(ws, &c, &live);
+    let ids: Vec<&str> = rows.iter().map(|r| r["id"].as_str().unwrap()).collect();
+    assert_eq!(
+        ids,
+        vec!["mcp_stub__click", "mcp_stub__ghost", "mcp_stub__read_page"],
+        "live 行 ∪ 离线例外行，字典序"
+    );
+    let ghost = rows
+        .iter()
+        .find(|r| r["id"] == json!("mcp_stub__ghost"))
+        .unwrap();
+    assert_eq!(ghost["policy"], json!("blocked"));
+    assert!(ghost["args_schema"].is_null(), "离线行 schema 缺席");
+    let exempt_row = rows
+        .iter()
+        .find(|r| r["id"] == json!("mcp_stub__read_page"))
+        .unwrap();
+    assert_eq!(exempt_row["policy"], json!("exempt"));
 }

@@ -143,6 +143,7 @@ impl AgentLoop {
             ),
             options: vec!["继续执行".to_string(), "停止".to_string()],
             multi: false,
+            fields: Vec::new(),
             chat_id: context.chat_id.clone(),
             session_key: context.session_key.clone(),
             timeout_secs: crate::loop_tools::QUESTION_DEFAULT_TIMEOUT_SECS,
@@ -180,7 +181,32 @@ impl AgentLoop {
     /// invoking instance's sub-agent nesting depth (instance.detached_depth());
     /// it is injected into depth-aware tools (spawn) before execution so the
     /// `agents.subagent.max_depth` limit can reject over-deep spawns.
+    ///
+    /// ②typed checks 块捕获（2026-10-19）：包装层——原实现拆到
+    /// [`Self::handle_tool_call_at_depth_impl`]，本层在结果定稿后做检查类
+    /// 工具记账（拒绝不记账，`checks_capture::classify_result` 单点分类）。
+    /// 所有调度路径（串行/批次/子代理）都过本入口，一处包装全覆盖。
     pub async fn handle_tool_call_at_depth(
+        &self,
+        tool_call: &ToolCallInfo,
+        context: &RequestContext,
+        depth: usize,
+    ) -> String {
+        let result = self
+            .handle_tool_call_at_depth_impl(tool_call, context, depth)
+            .await;
+        checks_capture::record_check(
+            &self.checks_capture,
+            &context.session_key,
+            &tool_call.name,
+            &tool_call.arguments,
+            &result,
+        );
+        result
+    }
+
+    /// [`Self::handle_tool_call_at_depth`] 的原实现（闸门瀑布 + 执行）。
+    async fn handle_tool_call_at_depth_impl(
         &self,
         tool_call: &ToolCallInfo,
         context: &RequestContext,
@@ -249,6 +275,61 @@ impl AgentLoop {
                 );
                 return format!(
                     "Error: Tool '{}' is hidden by configuration (agents.hidden_tools) and cannot be executed. Inform the user; do NOT retry unless they un-hide it.",
+                    tool_call.name
+                );
+            }
+        }
+
+        // B4 (2026-10-19 connector 总开关)：dispatch 闸——供给闸（
+        // build_tool_defs 过滤）的镜像，F8 双闸同模型：陈旧 prompt cache /
+        // 在途请求仍可能带出这两个名字，执行时刻以 config 现值为权威。
+        // 位置在 security 之前：总闸拒绝不付 judge/scanner 成本。
+        if (tool_call.name == "connector_find" || tool_call.name == "connector_invoke")
+            && !self.current_connectors_enabled()
+        {
+            warn!(
+                "[AgentLoop] Connector tool {} refused (connectors.enabled=false).",
+                tool_call.name
+            );
+            return "Error: 连接器总开关已关闭（connectors.enabled=false），connector_find/connector_invoke 不可用。Inform the user; they can re-enable connectors in Dashboard → Connectors（总开关恢复后无需重启）.".to_string();
+        }
+
+        // B2 (2026-10-19 connector 独占接管)：独占闸 dispatch 端——出处感知。
+        // config hidden（上一闸）是绝对闸，任何出处都拒；独占闸只拦「直调」
+        // ：经 connector_invoke 的绑定回灌（ctx.channel ==
+        // "connector-binding"，run_tool_binding 同标签）必须放行——那正是
+        // 治理通路的正向路由，拒了它独占一开连接器自己先瘫（自堵雷）。放行
+        // 不等于旁路：回灌调用进的是同一个 dispatch 瀑布的后续全部闸
+        // （estop/Plan/安全 8 层/审批），只是免掉「独占表拒绝原生名」这一条。
+        if context.channel != "connector-binding" {
+            let excl = self.current_exclusive_hidden_tools();
+            if tool_name_matches_hidden(&excl, &tool_call.name) {
+                warn!(
+                    "[AgentLoop] Exclusively-managed tool {} refused (connector takeover).",
+                    tool_call.name
+                );
+                return format!(
+                    "Error: Tool '{}' is exclusively managed by an enabled connector（独占接管）：native direct calls are blocked; call it via connector_invoke (discover with connector_find), or ask the user to set an exemption in Dashboard → Connectors.",
+                    tool_call.name
+                );
+            }
+        }
+
+        // F4（二轮复评 2026-10-18）：tool_policy allow 白名单 dispatch 闸——
+        // 供给闸（build_tool_defs）的第二半，双闸同源现读槽值。白名单语义：
+        // 非空 ∧ 精确名不在名单 → 拒绝。陈旧 prompt cache / 子代理 defs 快照
+        // / MCP 热加载新工具都由现读兜住。位置在 hidden 之后、min-tier 之前
+        // （同属廉价闸，拒绝不付 judge/scanner 成本）。deny∩allow 场景 deny
+        // 优先已由顺序保证（hidden 闸先拦）。
+        {
+            let allow = self.tool_policy_allow();
+            if !allow.is_empty() && !allow.iter().any(|a| a == &tool_call.name) {
+                warn!(
+                    "[AgentLoop] Tool {} refused by tool_policy allow-list.",
+                    tool_call.name
+                );
+                return format!(
+                    "Error: Tool '{}' is not permitted by this agent's tool_policy allow-list and cannot be executed. Inform the user; do NOT retry.",
                     tool_call.name
                 );
             }

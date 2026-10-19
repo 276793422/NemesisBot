@@ -23,7 +23,7 @@ use crate::types::*;
 // to the agent system.
 
 /// A tool definition in NemesisBot format.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ToolDefinition {
     /// Unique tool name (prefixed with server name to avoid collisions).
     pub name: String,
@@ -31,6 +31,10 @@ pub struct ToolDefinition {
     pub description: String,
     /// JSON Schema describing the expected input parameters.
     pub parameters: serde_json::Value,
+    /// Server 自述行为提示（B3，从 McpTool.annotations 透传；老 server 不带
+    /// = None）。消费点：连接器独占镜像基线定档（nemesis-connectors registry）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<super::types::McpToolAnnotations>,
 }
 
 /// The result of executing a tool.
@@ -115,6 +119,7 @@ impl McpAdapter {
             name: prefixed_name,
             description,
             parameters,
+            annotations: mcp_tool.annotations.clone(),
         };
 
         Self {
@@ -263,6 +268,7 @@ pub async fn create_tools_from_client(
                     name: prefixed_name,
                     description,
                     parameters,
+                    annotations: mcp_tool.annotations.clone(),
                 }
             },
             timeout: Duration::from_secs(30),
@@ -306,6 +312,7 @@ pub async fn create_tools_from_client_named(
             name: prefixed_name,
             description,
             parameters,
+            annotations: mcp_tool.annotations.clone(),
         };
 
         let adapter = ArcClientAdapter {

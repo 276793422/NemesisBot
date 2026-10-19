@@ -436,6 +436,72 @@ impl AgentLoop {
         *self.extra_hidden_tools.write() = tools;
     }
 
+    /// B2（2026-10-19 connector 独占接管）：独占隐藏表供给器注入（装配点
+    /// nemesisbot agent_factory，loop Arc 定型后调）。闭包每次现扫（连接器
+    /// 注册表 + sidecar 例外 + MCP 工具快照）——磁盘真相，无失效通知问题；
+    /// server 升级换工具集，下一次工具面构建即按当下真相重算。
+    pub fn set_exclusive_hidden_provider(
+        &self,
+        f: std::sync::Arc<dyn Fn() -> Vec<String> + Send + Sync>,
+    ) {
+        *self.exclusive_hidden_provider.write() = Some(f);
+    }
+
+    /// B2：当前独占隐藏表（供给器现算）。供给器缺省 = 空表——治理补全
+    /// P1（2026-10-19）起主 loop 与统一工厂（项目 / selfbuilt 记录 loop）
+    /// 共用 `register_connector_governance` 装配（独占接管全覆盖）；**集群
+    /// worker 不注入**（v1 决策：worker 不开行动面）。与
+    /// `current_hidden_tools`（绝对闸）分开消费：独占闸在 dispatch 端是
+    /// 出处感知的（`connector-binding` 通道放行），两表混用会让 G1 的
+    /// 隐藏也被绑定回灌绕过。
+    ///
+    /// B4 层级闸（计划明文「总开关关 = 独占闸一并释放，全部回原生直通」）：
+    /// 总闸关闭时此表恒空——否则治理面（connector_find/invoke）已被供给闸
+    /// 裁掉、原生工具又被独占表扣住，能力落入「两边都调不到」的砖死态。
+    /// 短路收口在本方法，供给/分发两个消费点自动同源。
+    pub(crate) fn current_exclusive_hidden_tools(&self) -> Vec<String> {
+        if !self.current_connectors_enabled() {
+            return Vec::new();
+        }
+        match self.exclusive_hidden_provider.read().as_ref() {
+            Some(f) => f(),
+            None => Vec::new(),
+        }
+    }
+
+    /// B4（2026-10-19 connector 总开关）：`connectors.enabled` fresh-read。
+    /// 缺省 **true**——`ConnectorsConfig` 的 serde default 与字段文档语义
+    /// （「总闸（false = connector_find/connector_invoke 两工具不上供给面）」
+    /// 的反面）对齐：无 config_path / 缺键 / 坏 JSON / 读失败一律按「开」，
+    /// 默认态「装了即生效」不因读失败翻转。
+    pub(crate) fn current_connectors_enabled(&self) -> bool {
+        match self.config_path.read().clone() {
+            Some(p) => std::fs::read_to_string(&p)
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .and_then(|v| {
+                    v.get("connectors")
+                        .and_then(|c| c.get("enabled"))
+                        .and_then(|e| e.as_bool())
+                })
+                .unwrap_or(true),
+            None => true,
+        }
+    }
+
+    /// F4（二轮复评 2026-10-18）：per-loop tool_policy allow 白名单（见字段
+    /// 文档）。全量替换语义——调用方每次传完整清单。空表 = 清除（无白名单
+    /// 语义，供给/dispatch 双闸直通）。
+    pub fn set_tool_policy_allow(&self, tools: Vec<String>) {
+        *self.tool_policy_allow.write() = tools;
+    }
+
+    /// F4：当前生效 allow 白名单快照（槽值现读）。pub 可观测面——工厂/
+    /// 管理页消费（供给闸本身在 crate 内 `build_tool_defs`）。
+    pub fn tool_policy_allow(&self) -> Vec<String> {
+        self.tool_policy_allow.read().clone()
+    }
+
     /// G1：当前生效隐藏表快照（extra ∪ config 单点合并）。pub 可观测面
     /// ——nemesisbot 侧工厂/管理页消费（供给闸本身在 crate 内
     /// `build_tool_defs`，此处只出快照）。

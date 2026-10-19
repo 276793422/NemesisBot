@@ -1738,6 +1738,7 @@ fn sample_node(id: &str, name: &str, role: NodeRole, online: bool) -> ExtendedNo
         agents: Vec::new(),
         runtime_backend: None,
         node_type: "agent".to_string(),
+        build: String::new(),
     }
 }
 

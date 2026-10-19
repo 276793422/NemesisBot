@@ -84,6 +84,7 @@ fn node(id: &str, name: &str, addr: &str, status: NodeStatus) -> ExtendedNodeInf
         agents: Vec::new(),
         runtime_backend: None,
         node_type: "gateway".into(),
+        build: String::new(),
     }
 }
 
@@ -323,6 +324,7 @@ fn merge_real_node_matches_full_address_candidates() {
         agents: Vec::new(),
         runtime_backend: None,
         node_type: "gateway".into(),
+        build: String::new(),
     });
     assert_eq!(got, "real-b");
     let peers = cluster.list_nodes();
@@ -374,6 +376,7 @@ fn upgrade_removes_legacy_sanitized_key() {
         agents: Vec::new(),
         runtime_backend: None,
         node_type: "gateway".into(),
+        build: String::new(),
     });
     assert_eq!(got, "real-dot");
 

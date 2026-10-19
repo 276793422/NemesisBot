@@ -209,6 +209,20 @@ impl AgentLoop {
         // entirely (dispatch re-checks the same list: double gate). Read
         // FRESH each call so dashboard/CLI edits apply from the next turn.
         let hidden = self.current_hidden_tools();
+        // B4 (2026-10-19 connector 总开关)：`connectors.enabled` fresh-read
+        // ——关 = connector_find/connector_invoke 整体从供给面消失（docker
+        // daemon 停机语义；dispatch 同闸兜底陈旧 prompt cache）。
+        let connectors_on = self.current_connectors_enabled();
+        // B2 (2026-10-19 connector 独占接管)：独占隐藏表——闭包每次现算
+        // （独占 server 前缀命中的当下 MCP 工具 − sidecar 豁免）。供给侧
+        // 无出处概念：整表全隐；出处豁免只在 dispatch 端
+        // （`connector-binding` 通道回灌放行）。
+        let exclusive_hidden = self.current_exclusive_hidden_tools();
+        // F4（二轮复评 2026-10-18）：tool_policy allow 白名单供给闸——非空 =
+        // 白名单语义，不在名单（精确名匹配）的工具不供给。每回合现读槽值：
+        // MCP 热加载的新工具自动落闸（旧「注册面 ∖ allow 折算」只吃注册期
+        // 快照，动态新发现漏折——已被本闸取代）。空 = 无白名单语义。
+        let policy_allow = self.tool_policy_allow();
         // F1 (devtool-upgrade 阶段 4): Plan 模式第四过滤层——只读白名单
         // ∩（MCP 前缀工具与 spawn 豁免：MCP 语义未知不猜；spawn 保留供给、
         // 分发闸兜底）。与 tier 过滤正交（Mini+Plan 取交集，验收项）。
@@ -229,6 +243,18 @@ impl AgentLoop {
                 }
             })
             .filter(|name| !tool_name_matches_hidden(&hidden, name))
+            // B4：总开关关 → 连接器治理工具双名下线（名字真相源
+            // nemesis-connectors FIND/INVOKE_TOOL_NAME；此处字面量与之一致
+            // ——agent 对 connectors 是可选依赖，供给过滤在无 security 构建
+            // 也要编译，字面量 + 测试钉住对齐）。
+            .filter(|name| {
+                connectors_on
+                    || !(name.as_str() == "connector_find" || name.as_str() == "connector_invoke")
+            })
+            // B2：独占 server 的原生 mcp_* 工具从工具面消失（镜像 op 经
+            // connector_invoke 接管路由——治理闸唯一入口）。
+            .filter(|name| !tool_name_matches_hidden(&exclusive_hidden, name))
+            .filter(|name| policy_allow.is_empty() || policy_allow.iter().any(|a| a == *name))
             .filter(|name| {
                 !plan_mode
                     || Self::PLAN_MODE_TOOLS.contains(&name.as_str())

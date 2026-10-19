@@ -69,6 +69,28 @@ pub const FILTER_ALTITUDE: &str = "86900";
 /// Default box name we launch the executor into.
 pub const DEFAULT_BOX_NAME: &str = "NemesisBox";
 
+/// 2026-10-19 黑窗根修：本 crate 的外部工具 spawn（sc/reg/KmdUtil/7z/where/
+/// Start.exe）统一压 `CREATE_NO_WINDOW`。release gateway 是 windows 子系统
+/// 进程（main.rs `windows_subsystem = "windows"`，自身无 console），console
+/// 子进程以默认 flags 从无 console 父进程 spawn 时系统分配**新的可见
+/// console** → Dashboard 沙盒页每次状态探测（sc query ~160ms/个）、eval
+/// 预检、引擎装卸每次闪黑窗。CREATE_NO_WINDOW 只压 console（conhost）分
+/// 配：管道输出/退出码不受影响；GUI 程序窗口（Start.exe 的错误框、盒内
+/// explorer）是程序自建，与此 flags 无关。CLI 终端调用本继承 console 不
+/// 闪，加旗标无副作用。非 Windows：std 无 creation_flags 概念，no-op。
+pub(crate) fn suppress_console(cmd: &mut std::process::Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = cmd;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Paths — everything Sandboxie lives under <home>/workspace/tools/sandboxie/,
 // never C:\Windows

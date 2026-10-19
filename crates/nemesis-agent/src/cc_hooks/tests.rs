@@ -1511,6 +1511,7 @@ async fn observing_question_asks_notifies_then_delegates() {
             question: "继续吗？".to_string(),
             options: vec!["是".to_string(), "否".to_string()],
             multi: false,
+            fields: Vec::new(),
             chat_id: "web:1".to_string(),
             session_key: "sk-1".to_string(),
             timeout_secs: 30,
