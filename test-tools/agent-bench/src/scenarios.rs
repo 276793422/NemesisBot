@@ -13,6 +13,7 @@
 //! | vision_roundtrip | testai-vision-1.0 | VISION_OK:1 | 多模态图片上行链路 |
 //! | codemode_orchestration | testai-codemode-1.0 | CODEMODE_DONE:42 + out.txt="42" | code_run 脚本编排（read+write 单调用）|
 //! | docs_lift | testai-docslift-1.0 | A 臂 DOCS_MISSING + B 臂 DOCS_OK | 工作区指令水合（AGENTS.md → LLM 请求，L10 docs_lift）|
+//! | disconnect_resume | testai-2.1 | 断线补拉 seq 无缝 + gap=false + final 不丢 | chat.sync 断线续接（L2 事件补拉，B9）|
 //!
 //! 刻意不收编：testai-9.1 委派（依赖 claude CLI 在 PATH，非确定性）；
 //! 裸 SQL 文本的注入拦截（注入检测层工作在**工具入参**上，纯聊天文本
@@ -620,6 +621,144 @@ pub async fn run_docs_lift(
     out
 }
 
+/// disconnect_resume ×N：断线续接（B9，L2 chat.sync 事件补拉链路）。
+/// 每轮全新会话四步：
+///   ① conn1 基线轮：纯文本 → testai-2.1 确定性提示语回复；
+///     `chat.sync(after_seq=0)` 取基线末 seq S1。
+///   ② conn1 发 `<PARALLEL>…`（触发 3 个 /slow?secs=6|3|2 web_fetch，
+///     墙钟 ≈6s 的**确定性**长窗口）后立即 close——断线注入落在工具
+///     执行窗口内，此后的 receive 帧（工具 / final）全部发往已死连接，
+///     只能靠重连后 chat.sync 补拉。
+///   ③ conn2 轮询 `chat.sync(after_seq=S1)` 直到 assistant 含
+///     PARALLEL_DONE（有界 90s；实际 ≈6-7s）。服务端 record() 在
+///     broadcast() 之前——环形缓冲记录不依赖连接在场，断线窗口事件
+///     必在环里（这是被测的核心性质：gateway 处理按 session 寻址，
+///     不随连接断开而中止）。
+///   ④ 断言：补拉事件全部 seq > S1 且**无缝**（首条 == S1+1、逐条连续）；
+///     gap == false（SESSION_REPLAY_CAP 未溢出）；序列含 user
+///     `<PARALLEL>` 行 + final assistant PARALLEL_DONE（final 不丢）。
+pub async fn run_disconnect_resume(ctx: BenchCtx, runs: u32) -> Vec<Result<(u64, String)>> {
+    let long_task = format!("<PARALLEL>http://127.0.0.1:{}</PARALLEL>", ctx.ai_port);
+    const RESUME_TIMEOUT_SECS: u64 = 90;
+    const POLL_INTERVAL: Duration = Duration::from_millis(500);
+    let mut out = Vec::new();
+    for _ in 0..runs {
+        let start = Instant::now();
+        let flow = async {
+            let session_id = fresh_session_id("bench-dc");
+            // ① 基线轮（连接 1）：确定性回复 + 取基线末 seq。
+            let mut conn1 = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+            chat_send(&mut conn1, &session_id, "bench 基线轮", None).await?;
+            chat_wait(
+                &mut conn1,
+                &session_id,
+                "send <PARALLEL>",
+                Duration::from_secs(60),
+            )
+            .await?;
+            let sync1 = wsapi_call_on(
+                &mut conn1,
+                "chat",
+                "sync",
+                json!({ "session_id": session_id, "after_seq": 0 }),
+                Duration::from_secs(10),
+            )
+            .await?;
+            let events1 = sync1["events"].as_array().cloned().unwrap_or_default();
+            anyhow::ensure!(
+                !events1.is_empty(),
+                "基线轮后 chat.sync 事件为空（环形缓冲未记录基线轮）"
+            );
+            let s1 = events1
+                .iter()
+                .filter_map(|e| e["seq"].as_u64())
+                .max()
+                .ok_or_else(|| anyhow!("基线事件缺 seq 字段: {:?}", events1.last()))?;
+
+            // ② 断线注入：长任务发出后立即掐断连接（工具窗口 ≈6s，
+            //    send→close 毫秒级，确定性落在窗口内）。
+            chat_send(&mut conn1, &session_id, &long_task, None).await?;
+            let _ = conn1.close(None).await;
+
+            // ③ 重连轮询补拉：直到 final assistant PARALLEL_DONE 在场。
+            let mut conn2 = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+            let poll_start = Instant::now();
+            let (events, gap, final_text) = loop {
+                let sync = wsapi_call_on(
+                    &mut conn2,
+                    "chat",
+                    "sync",
+                    json!({ "session_id": session_id, "after_seq": s1 }),
+                    Duration::from_secs(10),
+                )
+                .await?;
+                let evs = sync["events"].as_array().cloned().unwrap_or_default();
+                let done = evs.iter().any(|e| {
+                    e["role"].as_str() == Some("assistant")
+                        && e["content"]
+                            .as_str()
+                            .is_some_and(|c| c.contains("PARALLEL_DONE"))
+                });
+                if done || poll_start.elapsed() >= Duration::from_secs(RESUME_TIMEOUT_SECS) {
+                    let gap = sync["gap"].as_bool().unwrap_or(true);
+                    let text = evs
+                        .iter()
+                        .rev()
+                        .find(|e| e["role"].as_str() == Some("assistant"))
+                        .and_then(|e| e["content"].as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    break (evs, gap, text);
+                }
+                tokio::time::sleep(POLL_INTERVAL).await;
+            };
+            let _ = conn2.close(None).await;
+
+            // ④ 断言：final 不丢 + 序列无缝 + gap=false + user 行在场。
+            anyhow::ensure!(
+                final_text.contains("PARALLEL_DONE"),
+                "断线重连后补拉未见 PARALLEL_DONE（final 丢失或 gateway 断线中止处理）: \
+                 last_assistant={final_text:?}"
+            );
+            anyhow::ensure!(
+                !events.is_empty(),
+                "断线窗口后无任何补拉事件（seq {s1} 之后 ring 为空）"
+            );
+            let mut expect = s1 + 1;
+            for e in &events {
+                let seq = e["seq"]
+                    .as_u64()
+                    .ok_or_else(|| anyhow!("补拉事件缺 seq: {e}"))?;
+                anyhow::ensure!(
+                    seq == expect,
+                    "补拉事件序号不连续：期望 {expect} 实际 {seq}（事件缺口或重复）"
+                );
+                expect = seq + 1;
+            }
+            anyhow::ensure!(
+                !gap,
+                "chat.sync 报 gap=true（SESSION_REPLAY_CAP 环溢出，事件被覆盖）"
+            );
+            anyhow::ensure!(
+                events.iter().any(|e| {
+                    e["role"].as_str() == Some("user")
+                        && e["content"]
+                            .as_str()
+                            .is_some_and(|c| c.contains("<PARALLEL>"))
+                }),
+                "补拉序列缺长任务 user 行（user 落盘未按 session 寻址？）"
+            );
+            Ok(final_text)
+        }
+        .await;
+        out.push(match flow {
+            Ok(reply) => Ok((start.elapsed().as_millis() as u64, reply)),
+            Err(e) => Err(e),
+        });
+    }
+    out
+}
+
 /// 落 1×1 透明 PNG 到 workspace（与 nemesis-agent probe 第 8 题同一载荷）。
 pub fn drop_png_fixture(ws: &TestWorkspace) -> Result<std::path::PathBuf> {
     use base64::Engine as _;
@@ -678,6 +817,10 @@ pub fn default_catalog() -> Vec<ScenarioSpec> {
         ScenarioSpec {
             name: "docs_lift",
             runs: 1,
+        },
+        ScenarioSpec {
+            name: "disconnect_resume",
+            runs: 15,
         },
     ]
 }

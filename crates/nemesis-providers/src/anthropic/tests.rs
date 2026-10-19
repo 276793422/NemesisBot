@@ -176,6 +176,7 @@ fn test_anthropic_config_serialization_roundtrip() {
         timeout_secs: 60,
         proxy: None,
         stream_mode: String::new(),
+        cache_breakpoints: false,
     };
     let json = serde_json::to_string(&config).unwrap();
     let back: AnthropicConfig = serde_json::from_str(&json).unwrap();
@@ -625,6 +626,7 @@ fn anth_config(base: &str) -> AnthropicConfig {
         timeout_secs: 10,
         proxy: None,
         stream_mode: String::new(),
+        cache_breakpoints: false,
     }
 }
 
@@ -1696,6 +1698,7 @@ async fn test_b_anthropic_stream_silent_stall_hits_wall_clock_deadline() {
         timeout_secs: 2,
         proxy: None,
         stream_mode: String::new(),
+        cache_breakpoints: false,
     };
     let provider = AnthropicProvider::new(config);
     let mut rx = provider.chat_stream(&anth_messages(), &[], "m", &ChatOptions::default());
@@ -1713,4 +1716,122 @@ async fn test_b_anthropic_stream_silent_stall_hits_wall_clock_deadline() {
             Ok(Some(Err(e))) => panic!("expected Timeout on wall-clock deadline, got: {e:?}"),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// B13 缓存断点显式化（2026-10-18 B 级清零）：cache_breakpoints 只在
+// anthropic lane 的 request body 注入 ephemeral 断点；缺省关 = 字节兼容。
+// ---------------------------------------------------------------------------
+
+fn b13_messages() -> Vec<Message> {
+    // 两条 system：单块时 [0] 就是尾部，「非尾部块不打断点」断言退化成
+    // 与尾断言自相矛盾（实测假红）——两块起该断言才有区分度。
+    vec![
+        Message {
+            role: "system".to_string(),
+            content: "You are helpful".into(),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+        Message {
+            role: "system".to_string(),
+            content: "Be concise".into(),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+        Message {
+            role: "user".to_string(),
+            content: "Hi".into(),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+    ]
+}
+
+fn b13_tools() -> Vec<ToolDefinition> {
+    vec![ToolDefinition {
+        tool_type: "function".to_string(),
+        function: ToolFunctionDefinition {
+            name: "read_file".to_string(),
+            description: "Read a file".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"]
+            }),
+        },
+    }]
+}
+
+/// 回归锁：缺省关（Default）= 请求体不含 cache_control——字节与现网一致，
+/// 关闭态用户的 wire 流量零变化。
+#[test]
+fn b13_cache_breakpoints_off_body_stays_byte_compatible() {
+    let provider = AnthropicProvider::new(AnthropicConfig::default());
+    let body = provider.build_request_body(
+        &b13_messages(),
+        &b13_tools(),
+        "claude-3",
+        &ChatOptions::default(),
+    );
+    assert!(
+        !body.to_string().contains("cache_control"),
+        "关闭态请求体不得出现 cache_control: {body}"
+    );
+}
+
+/// 开启：断点各落 tools 清单尾 + system 尾（稳定前缀尾部，官方推荐顺序
+/// tools → system；非尾部元素不打断点）。
+#[test]
+fn b13_cache_breakpoints_on_marks_tools_and_system_tail() {
+    let provider = AnthropicProvider::new(AnthropicConfig {
+        cache_breakpoints: true,
+        ..Default::default()
+    });
+    let body = provider.build_request_body(
+        &b13_messages(),
+        &b13_tools(),
+        "claude-3",
+        &ChatOptions::default(),
+    );
+    let tools = body["tools"].as_array().unwrap();
+    assert_eq!(
+        tools.last().unwrap()["cache_control"]["type"],
+        "ephemeral",
+        "tools 尾带断点"
+    );
+    let system = body["system"].as_array().unwrap();
+    assert_eq!(
+        system.last().unwrap()["cache_control"]["type"],
+        "ephemeral",
+        "system 尾带断点"
+    );
+    assert!(
+        system[0].get("cache_control").is_none(),
+        "非尾部 system 块不打断点"
+    );
+}
+
+/// 无 tools 时只标 system 尾；tools 字段整体不出现在 body（无内容可标，
+/// 不造假断点）。
+#[test]
+fn b13_cache_breakpoints_on_without_tools_marks_system_only() {
+    let provider = AnthropicProvider::new(AnthropicConfig {
+        cache_breakpoints: true,
+        ..Default::default()
+    });
+    let body =
+        provider.build_request_body(&b13_messages(), &[], "claude-3", &ChatOptions::default());
+    assert!(body.get("tools").is_none(), "无 tools 不发空数组");
+    let system = body["system"].as_array().unwrap();
+    assert_eq!(system.last().unwrap()["cache_control"]["type"], "ephemeral");
 }

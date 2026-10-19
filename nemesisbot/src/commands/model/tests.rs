@@ -2518,6 +2518,7 @@ mod r9_subprocess {
         let cfg = nemesis_providers::factory::FactoryConfig {
             proxy: String::new(),
             stream_mode: String::new(),
+            cache_breakpoints: false,
             llm_ref: "r9p/repro-x".into(),
             api_key: "sk-r9".into(),
             api_base: format!("{}/v1", mock.base_url()),

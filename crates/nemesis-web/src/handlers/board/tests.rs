@@ -1404,6 +1404,84 @@ async fn test_issue_cancel_validation_without_cluster() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// B14 issue.cancel_dispatch（只撤派发、单据存活）：无在途派发诚实报错；
+/// 有在途派发、集群缺失 = 本地撤回 + 下行退化 warn（撤回比 issue.cancel
+/// 轻、可逆——重派即可，无需集群在动账前把关）；撤后 issue 状态不动、
+/// 活动派发清零（重派闸放行）、再撤诚实报错、留痕评论在场。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn test_issue_cancel_dispatch_keeps_issue_alive() {
+    let dir = unique_dir("cancel-dispatch");
+    let ctx = make_ctx_with_board(&dir);
+    let store = ctx.state.board.as_ref().unwrap().store().clone();
+
+    // 无在途派发 → 诚实报错。
+    let out = dispatch(
+        &ctx,
+        "issue.create",
+        serde_json::json!({ "title": "撤派发" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let id = out["issue"]["id"].as_i64().unwrap();
+    let err = dispatch(
+        &ctx,
+        "issue.cancel_dispatch",
+        serde_json::json!({ "id": id }),
+    )
+    .await
+    .expect_err("no active dispatch must error");
+    assert!(err.contains("无在途派发"), "{err}");
+
+    // 直播一条 dispatched 派发（绕过集群）→ 撤回成功（集群缺失 = 仅本地
+    // 撤回，下行 warn 不炸本体）。
+    let actor = nemesis_board::Actor::admin("test-session");
+    store
+        .insert_dispatch("task-cd-1", id, "node-b", &actor)
+        .expect("seed dispatch");
+    let out = dispatch(
+        &ctx,
+        "issue.cancel_dispatch",
+        serde_json::json!({ "id": id }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["cancelled_dispatch"], true, "撤回应答必须立旗");
+    assert_eq!(out["task_id"], "task-cd-1");
+
+    // issue 状态不动（可直接重派）+ 活动派发清零（重派闸放行）。
+    let out = dispatch(&ctx, "issue.get", serde_json::json!({ "id": id }))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["issue"]["status"], "backlog", "撤派发不得动 issue 状态");
+    assert!(
+        !store.has_active_dispatch(id).unwrap(),
+        "撤后重派闸必须放行"
+    );
+
+    // 派发行已终态：再撤 = 诚实报错（active 查不到 → 无在途派发文案）。
+    let err = dispatch(
+        &ctx,
+        "issue.cancel_dispatch",
+        serde_json::json!({ "id": id }),
+    )
+    .await
+    .expect_err("terminal dispatch must error");
+    assert!(err.contains("无在途派发"), "{err}");
+
+    // 留痕评论在场（撤回不改状态，评论是重派线索的唯一载体）。
+    let comments = store.list_comments(id).unwrap();
+    assert!(
+        comments.iter().any(|c| c.content.contains("派发已撤回")),
+        "撤回必须留痕"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// W2 P4 autopilot：CRUD + 手动触发（target 空 → 仅建单，`{date}` 替换，
 /// origin=autopilot 进 run 历史）+ target 非空但集群缺失 → 建单前拒绝 +
 /// remove。cron 未注入（AppState.cron=None）→ 跳过 job 登记，cron_job_id

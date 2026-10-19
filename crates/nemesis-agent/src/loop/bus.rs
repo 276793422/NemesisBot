@@ -156,6 +156,7 @@ impl AgentLoop {
                 approval_responder: parking_lot::RwLock::new(None),
                 question_responder: parking_lot::RwLock::new(None),
                 question_asker: parking_lot::RwLock::new(None),
+                credential_broker: parking_lot::RwLock::new(None),
                 #[cfg(feature = "security")]
                 approval_auto: parking_lot::RwLock::new(None),
             },
@@ -226,6 +227,7 @@ impl AgentLoop {
             token_budget: crate::token_budget::SessionTokenBudgetLedger::default(),
             escalated_floors: parking_lot::Mutex::new(HashMap::new()),
             turn_wal: parking_lot::RwLock::new(None),
+            provider_reloader: parking_lot::RwLock::new(None),
         }
     }
 

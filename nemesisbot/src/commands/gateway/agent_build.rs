@@ -278,7 +278,7 @@ pub(crate) async fn init_agent(
         config_store: config_store.clone(),
         #[cfg(feature = "lsp")]
         lsp_manager,
-        agent_event_tx: Some(agent_event_tx),
+        agent_event_tx: Some(agent_event_tx.clone()),
         background_registry,
         plugin_manager,
         // 全自动流转 P3/D1：board_issue 工具依赖（注册点在 build_agent_loop
@@ -317,6 +317,21 @@ pub(crate) async fn init_agent(
     #[cfg(feature = "plugins-wasm")]
     if let Some(ref pm) = shared_resources.plugin_manager {
         crate::plugin_bridge::spawn_estop_watcher(pm, &shared_resources.estop);
+    }
+
+    // B4（2026-10-18 凭据 vault §7）：凭据索要卡 broker——**先于
+    // build_agent_loop** 装全局槽（工厂构造 loop 时读 current() 挂入；
+    // init_agent 重跑幂等覆盖）。WSAPI credential.respond 走同一 Arc；
+    // 模块随 security feature。
+    #[cfg(feature = "security")]
+    {
+        let broker = Arc::new(crate::credential_broker::WebCredentialBroker::new(
+            common::workspace_path(&home),
+            shared_resources.agent_event_tx.clone(),
+        ));
+        crate::credential_broker::install(broker.clone());
+        nemesis_web::handlers::credential::set_broker(broker);
+        info!("[Gateway] Credential broker wired (auth credential card, B4)");
     }
 
     let agent_loop = crate::agent_factory::build_agent_loop(&shared_resources)
@@ -388,6 +403,29 @@ pub(crate) async fn init_agent(
         if let Some(ref ds) = data_store {
             workflow_engine.set_usage_store(ds.clone());
             info!("[Gateway] Workflow usage store wired");
+        }
+
+        // B12（2026-10-18）：automations 工具事件触发泵——注册表加载进进程
+        // 缓存（WSAPI automations.set/remove 同进程热刷新），泵订阅 agent
+        // 事件广播，ToolStarted 匹配 pattern → 冷却闸 → fire-and-forget
+        // start_async 起跑 workflow（防自我循环：workflow:* 会话事件跳过）。
+        // manager 级一次性任务，不随 agent 重启泄；加载失败 warn 不炸启动
+        // （坏注册表不该绑架 gateway）。
+        {
+            let ws_root = common::workspace_path(&home);
+            match nemesis_web::handlers::automations::load_and_cache(&ws_root) {
+                Ok(n) => info!("[Gateway] automations: {n} trigger(s) loaded"),
+                Err(e) => {
+                    tracing::warn!("[Gateway] automations registry load failed: {e}")
+                }
+            }
+            if let Some(ref tx) = shared_resources.agent_event_tx {
+                nemesis_web::handlers::automations::spawn_event_pump(
+                    tx.subscribe(),
+                    workflow_engine.clone(),
+                );
+                info!("[Gateway] automations event pump started");
+            }
         }
     }
 

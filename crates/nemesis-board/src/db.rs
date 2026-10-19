@@ -393,19 +393,46 @@ pub fn init_db(db_path: &Path) -> Result<Connection, String> {
             .map_err(|e| format!("Failed to create board directory: {e}"))?;
     }
 
+    // B10 手法① 能力准入：Connection::open 对任意可读文件惰性成功——
+    // 被覆盖/截断的垃圾文件要到第一条语句才炸且报错面模糊。头 16 字节
+    // 前置判定，非 SQLite 内容 loud 拒绝并带 hex 摘要。
+    match nemesis_utils::sqlite_preflight::header_kind(db_path)
+        .map_err(|e| format!("Failed to inspect board database file: {e}"))?
+    {
+        nemesis_utils::sqlite_preflight::HeaderKind::New
+        | nemesis_utils::sqlite_preflight::HeaderKind::Valid => {}
+        nemesis_utils::sqlite_preflight::HeaderKind::Foreign { head_hex } => {
+            return Err(nemesis_utils::sqlite_preflight::foreign_header_error(
+                db_path, &head_hex,
+            ));
+        }
+    }
+
     let conn =
         Connection::open(db_path).map_err(|e| format!("Failed to open board database: {e}"))?;
 
     // WAL + FK enforcement；busy_timeout 让 CLI 与 gateway 并开同库时
     // 写写冲突退避重试而不是立刻报 SQLITE_BUSY（board.db 支持多进程读）。
-    conn.execute_batch(
-        "PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;",
-    )
-    .map_err(|e| format!("Failed to set pragmas: {e}"))?;
+    // B10 手法④：journal_mode 拆出为降级尝试（网络盘/FAT/只读 warn 不崩，
+    // 回落默认 journal 模式）；FK/busy_timeout 是语义闸，保持硬失败。
+    nemesis_utils::sqlite_preflight::set_wal_lenient(&conn, "[BoardStore]");
+    conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
+        .map_err(|e| format!("Failed to set pragmas: {e}"))?;
 
     let current_version: i32 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap_or(0);
+
+    // B10 手法② schema 漂移对账：库来自更新版本的程序 → 拒绝降级打开
+    // （旧行为会把 user_version 静默降级写回，迁移链跳过、运行期
+    // "no such column"）。
+    nemesis_utils::sqlite_preflight::check_schema_drift(current_version, SCHEMA_VERSION)?;
+
+    // B10 手法③ 迁移前轮换备份（0 = 全新库无数据可保护，跳过；备份
+    // 失败 warn 不阻断迁移）。
+    if current_version > 0 && current_version < SCHEMA_VERSION {
+        nemesis_utils::sqlite_preflight::backup_before_migrate(&conn, db_path, "[BoardStore]");
+    }
 
     if current_version < 1 {
         conn.execute_batch(SCHEMA_V1)

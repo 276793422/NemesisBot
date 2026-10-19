@@ -127,6 +127,25 @@ impl AgentLoop {
                 let classified = nemesis_utils::llm_error_class::classify_llm_error(&err);
                 match &classified {
                     Some(nemesis_utils::llm_error_class::LlmErrorClass::Auth) => {
+                        // B4（2026-10-18 凭据 vault §7）：先试凭据索要卡——
+                        // broker/reloader 任一未装配返回 None，走原终局零
+                        // 回归；卡 Stored 则热切新 provider 并一次受守卫重试。
+                        if let Some(retried) = self
+                            .try_credential_card_retry(
+                                instance,
+                                context,
+                                trace_id,
+                                &err,
+                                active_model,
+                                cancel_token,
+                                request_had_images,
+                                round_start,
+                                st,
+                            )
+                            .await
+                        {
+                            return retried;
+                        }
                         return Err(self
                             .finish_llm_error_no_retry(
                                 instance,
@@ -451,6 +470,136 @@ impl AgentLoop {
                     request_had_images,
                 ));
                 Err(AgentEvent::Error(formatted))
+            }
+        }
+    }
+
+    /// B4 卡超时（connector_tools 触发臂同值 300s；跨 crate 各持一份常量，
+    /// 理由同彼处注记）。
+    const B4_CREDENTIAL_CARD_TIMEOUT_SECS: u64 = 300;
+
+    /// B4（2026-10-18 凭据 vault §7）：Auth 失败 → 凭据索要卡 → Stored 则
+    /// 重建 provider 热切并**一次受守卫重试**（cancel/estop 臂与首呼同构；
+    /// 再败 = 新终局文案）。broker/reloader 任一未装配、卡被拒/超时、重建
+    /// 失败 → `None`（调用侧落原「停止重试」终局，字节不变）。
+    ///
+    /// 值纪律：卡 reason 只带错误摘要（截 200 字符），凭据值只在
+    /// respond→vault 链路里存在、全程不进 agent 事件/日志。
+    #[allow(clippy::too_many_arguments)]
+    async fn try_credential_card_retry(
+        &self,
+        instance: &AgentInstance,
+        context: &RequestContext,
+        trace_id: &str,
+        err: &str,
+        active_model: &str,
+        cancel_token: &tokio_util::sync::CancellationToken,
+        request_had_images: bool,
+        round_start: std::time::Instant,
+        st: &TurnState,
+    ) -> Option<Result<LlmResponse, AgentEvent>> {
+        let broker = self.credential_broker()?;
+        let reloader = self.provider_reloader()?;
+        let (service, key_name) = reloader.credential_request_fields(active_model);
+        let mut reason: String = err.chars().take(200).collect();
+        if reason.chars().count() < err.chars().count() {
+            reason.push('…');
+        }
+        let request = nemesis_types::agent::CredentialRequest {
+            request_id: format!("auth-{trace_id}"),
+            service,
+            key_name: key_name.clone(),
+            reason,
+            timeout_secs: Self::B4_CREDENTIAL_CARD_TIMEOUT_SECS,
+        };
+        info!(
+            "[AgentLoop] Auth 失败，发凭据索要卡 request_id={} model={} key_name={}（值不落日志）",
+            request.request_id, active_model, request.key_name
+        );
+        // 卡阻塞等待放 spawn_blocking（broker 内部 recv_timeout 直等），不占
+        // async worker；JoinError / broker Err = 卡通路异常 → 回落原终局。
+        let b = broker.clone();
+        let outcome = tokio::task::spawn_blocking(move || b.request_credential(&request))
+            .await
+            .ok()?
+            .ok()?;
+        if outcome != nemesis_types::agent::CredentialOutcome::Stored {
+            info!("[AgentLoop] 凭据卡未存储（拒绝/超时），Auth 按原终局处理");
+            return None;
+        }
+        // 重建 provider（patch 已由 reloader 落盘）并热切；重建失败 = 诚实
+        // 回落原终局。
+        let model = active_model.to_string();
+        let alias = key_name.clone();
+        let r = reloader.clone();
+        let new_provider =
+            tokio::task::spawn_blocking(move || r.reload_provider(&model, Some(&alias)))
+                .await
+                .ok()?
+                .ok()?;
+        self.set_provider_and_model(new_provider.clone(), active_model.to_string());
+        info!(
+            "[AgentLoop] 凭据卡 Stored：provider 已重建并热切（model={}），一次受守卫重试",
+            active_model
+        );
+
+        // 一次受守卫重试：messages/tool_defs 重建（重试环同款）+ cancel/
+        // estop 臂与首呼同构（臂序先 cancel 再 estop；两处 select 均未加
+        // biased，随机轮询语义一致）。
+        let r_msgs = self.build_messages(instance);
+        let r_tools = self.rebuild_full_tool_defs();
+        let mut estop_rx = self.security.subscribe();
+        let stream_sink = self.provider_stream_sink(context, active_model);
+        let active_provider: Arc<dyn LlmProvider> = match &stream_sink {
+            Some(sink) => Arc::new(StreamingLlmProvider::new(new_provider, sink.clone())),
+            None => new_provider,
+        };
+        let chat_result = tokio::select! {
+            result = self.chat_call_escalating(
+                self.current_provider_call_timeout_secs(),
+                &active_provider,
+                active_model,
+                r_msgs,
+                Some(st.chat_opts.clone()),
+                r_tools,
+            ) => result,
+            _ = cancel_token.cancelled() => {
+                info!("[AgentLoop] LLM retry (credential card) cancelled, turns_used={}", st.turns_used);
+                if let Some(sink) = &stream_sink {
+                    sink.error("已取消（用户中断）");
+                }
+                return Some(Err(AgentEvent::Done("已取消".to_string())));
+            }
+            _ = Self::wait_estop_engaged(estop_rx.as_mut()) => {
+                info!(
+                    "[AgentLoop] E-stop engaged during LLM retry (credential card), turns_used={}",
+                    st.turns_used
+                );
+                if let Some(sink) = &stream_sink {
+                    sink.error("已急停（E-STOP），LLM 调用已中断");
+                }
+                return Some(Err(AgentEvent::Done(
+                    "⛔ 已急停 (E-STOP) — LLM 调用已中断。发送 `nemesisbot estop --release` 恢复。"
+                        .to_string(),
+                )));
+            }
+        };
+        match chat_result {
+            Ok(resp) => Some(Ok(resp)),
+            Err(e2) => {
+                warn!("[AgentLoop] 凭据更新后重试仍失败: {}", e2);
+                Some(Err(self
+                    .finish_llm_error_no_retry(
+                        instance,
+                        context,
+                        trace_id,
+                        st.turns_used,
+                        round_start,
+                        e2,
+                        "认证失败：凭据已更新但重试仍失败，请检查凭据值是否正确，已停止重试",
+                        request_had_images,
+                    )
+                    .await))
             }
         }
     }
