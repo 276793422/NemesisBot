@@ -67,6 +67,7 @@ members = [
     "test-tools/revoke-server",
     "test-tools/verify-loader",
     "test-tools/arch-gate",
+    "test-tools/verify-probe",
 ]
 
 [workspace.package]
