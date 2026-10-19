@@ -1,6 +1,6 @@
 //! W7 对抗套件（A2 全案例 + A9 observer 对抗）。
 //!
-//! 方法论（内部专项）：fixtures = 真实 cdylib 组件 crate
+//! 方法论：fixtures = 真实 cdylib 组件 crate
 //! （`plugins/wasm/{translate,activity-log}`），产物缺席时在测试内
 //! 按需 `cargo build --target wasm32-wasip2 --release`（fixture crate 自有
 //! workspace，target 目录独立于宿主）；构建失败 = 环境不满足，诚实 SKIP。

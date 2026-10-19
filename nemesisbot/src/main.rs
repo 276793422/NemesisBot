@@ -209,7 +209,7 @@ mod remote_approval;
 #[cfg(feature = "vm")]
 mod vm_sync;
 
-/// A1 运行时完整性清单（工程模式专项，2026-10-19）：打包部署的
+/// A1 运行时完整性清单：打包部署的
 /// 运行时文件 hash 清单（runtime-manifest.json，构建期由
 /// scripts/gen_runtime_manifest.py 生成）+ 启动三态校验。无 feature 门
 /// （cargo 开发态 = manifest 缺席态，warn 不阻塞，照常工作）。
