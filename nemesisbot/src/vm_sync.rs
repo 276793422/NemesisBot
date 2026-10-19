@@ -317,13 +317,47 @@ pub(crate) fn load_diverged(main_workspace: &Path, project_id: &str) -> Diverged
     }
 }
 
-async fn save_diverged(
+/// 整表写回（pub(crate)：manager 冲突取消臂恢复前置前快照消费——与
+/// [`load_diverged`] 对称）。
+pub(crate) async fn save_diverged(
     main_workspace: &Path,
     project_id: &str,
     map: &DivergedMap,
 ) -> Result<(), String> {
     let json = serde_json::to_string(map).map_err(|e| format!("挂起表序列化失败: {e}"))?;
     write_json_atomic(&diverged_path(main_workspace, project_id), &json).await
+}
+
+/// 整表恢复（过在飞闸）：manager 冲突取消/环境变化臂恢复前置前快照的
+/// 唯一入口。直接调 [`save_diverged`] 会绕过 INFLIGHT 闸——与 commit 的
+/// 挂起表过滤读、后续 park 的读改写形成丢更新竞态（「commit 刚过滤完
+/// → 取消臂抹表 → 保护丢失」）。恢复语义 = 整表覆盖快照，所以闸内
+/// load-modify-save 不适用，直接闸内写。
+pub(crate) async fn restore_diverged_snapshot(
+    main_workspace: &Path,
+    project_id: &str,
+    map: &DivergedMap,
+) -> Result<(), String> {
+    let gate = inflight_gate(project_id)?;
+    let _guard = gate.lock().await;
+    save_diverged(main_workspace, project_id, map).await
+}
+
+/// 整表快照（过在飞闸）：manager 冲突裁决**前置 park 之前**取前置快照用。
+/// 无闸 [`load_diverged`] 有原子性（rename）但无隔离性——双轮并发下可能
+/// 漏掉刚并发 park 的条目，取消臂恢复陈旧快照会抹掉别的轮次条目（取消
+/// 轮无权动他轮凭据）。闸内读与 park/restore/commit 同序，快照不漏。
+pub(crate) async fn snapshot_diverged(main_workspace: &Path, project_id: &str) -> DivergedMap {
+    let gate = inflight_gate(project_id);
+    match gate {
+        Ok(g) => {
+            let _guard = g.lock().await;
+            load_diverged(main_workspace, project_id)
+        }
+        // 闸构造失败（首用初始化失败，实际不可达）——降级无闸读，快照
+        // 陈旧的风险回到极窄双轮窗口，好过裁决流程整体失败。
+        Err(_) => load_diverged(main_workspace, project_id),
+    }
 }
 
 /// 冲突裁决②（保留 VM 版）落挂起表（幂等：同 rel 重挂以最新指纹覆盖）。
@@ -411,6 +445,9 @@ async fn git_check_ignore(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
+        // 10s 超时臂 = wait future 被 drop：不开 kill_on_drop 会泄漏挂死
+        // 的 git 进程（慢机/句柄风暴下的僵尸源）。
+        .kill_on_drop(true)
         .spawn()
         .ok()?;
     use tokio::io::AsyncWriteExt;

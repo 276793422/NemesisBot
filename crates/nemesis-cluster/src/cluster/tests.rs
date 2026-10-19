@@ -9196,6 +9196,7 @@ fn test_runtime_backend_announce_lands_and_persists() {
         None, // iroh_id：未宣告
         Some("vm".into()),
         None,
+        "", // build：未宣告（P5 期测试补齐 A1 参数）
     );
     assert!(changed, "首次入册必 changed");
     let node = cluster.registry.get("vm-peer").expect("入册");
@@ -9218,6 +9219,7 @@ fn test_runtime_backend_announce_lands_and_persists() {
         None, // iroh_id：未宣告
         Some("vm".into()),
         None,
+        "", // build：未宣告（P5 期测试补齐 A1 参数）
     );
     assert!(!changed2, "同值重复宣告不得算内容变化");
 
@@ -9238,6 +9240,7 @@ fn test_runtime_backend_announce_lands_and_persists() {
         None, // iroh_id：未宣告
         None,
         None,
+        "", // build：未宣告（P5 期测试补齐 A1 参数）
     );
     assert!(changed3, "旧节点入册必 changed");
     let old = cluster.registry.get("old-peer").expect("入册");
@@ -9465,6 +9468,7 @@ fn test_handle_discovered_node_iroh_id_pools() {
         vec![],
         Some(hex.clone()),
         None,
+        "", // build：未宣告（P5 期测试补齐 A1 参数）
     );
 
     let node = cluster.get_node_info("iroh-node-1").expect("node stored");
@@ -9502,6 +9506,7 @@ fn test_handle_discovered_node_iroh_id_pools() {
         vec![],
         Some(hex.clone()),
         None,
+        "", // build：未宣告（P5 期测试补齐 A1 参数）
     );
     let node = cluster.get_node_info("iroh-node-1").unwrap();
     #[cfg(feature = "cluster-roaming")]
@@ -9575,6 +9580,7 @@ fn test_handle_discovered_node_iroh_id_invalid_rejected() {
             vec![],
             Some(bad.to_string()),
             None,
+            "", // build：未宣告（P5 期测试补齐 A1 参数）
         );
     }
     let node = cluster.get_node_info("iroh-bad").expect("node stored");
@@ -9610,6 +9616,7 @@ fn test_handle_discovered_node_roaming_primary_no_port_suffix() {
         vec![],
         None,
         None,
+        "", // build：未宣告（P5 期测试补齐 A1 参数）
     );
 
     let node = cluster.get_node_info("iroh-node-2").expect("node stored");
@@ -9696,6 +9703,7 @@ fn test_announce_build_propagates_to_registry_new_entry() {
         Vec::new(),
         None,
         None,
+        None, // runtime_backend：未宣告（合并补齐 P5 参数位）
         "6f96d056",
     );
     assert!(changed, "new entry must register");
@@ -9723,6 +9731,7 @@ fn test_announce_build_refreshes_existing_entry() {
         Vec::new(),
         None,
         None,
+        None, // runtime_backend：未宣告（合并补齐 P5 参数位）
         "aaaa1111",
     );
     // 第二拍：同节点换装（build 变化），地址/身份不变。
@@ -9741,6 +9750,7 @@ fn test_announce_build_refreshes_existing_entry() {
         Vec::new(),
         None,
         None,
+        None, // runtime_backend：未宣告（合并补齐 P5 参数位）
         "bbbb2222",
     );
     let node = cluster.registry.get("build-peer").expect("registered");
