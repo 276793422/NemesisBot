@@ -522,7 +522,11 @@ impl ContextBuilder {
              ## Important Rules\n\n\
              1. **Always use tools** - When you need to perform an action, you must call the appropriate tool.\n\
              2. **Be helpful and accurate** - When using tools, briefly explain what you are doing.\n\
-             3. **Memory** - When you need to remember something, write it to the memory file.",
+             3. **Memory** - When you need to remember something, write it to the memory file.\n\
+             4. **File paths** - When mentioning a file you created or modified, output its full path \
+             (workspace-relative like `docs/summary.md`, or absolute), never a bare filename with \
+             leading text glued to it (write \"见 docs/总结.md\", not \"见docs/总结.md\"). \
+             Keep the path as a standalone token (space before it, or wrapped in backticks) so the UI can render it as a clickable link.",
             self.build_environment_workspace()
         )
     }

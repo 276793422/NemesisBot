@@ -2463,10 +2463,22 @@ fn test_tcp_bind(port: u16) -> serde_json::Value {
 // Platform-specific firewall check
 // ---------------------------------------------------------------------------
 
+/// 黑窗根修（2026-10-19）：netsh 是 console 程序，gateway（release windows
+/// 子系统，无 console）下默认 flags 每次防火墙探测/加规则闪黑窗。本文件
+/// 全部 netsh spawn 走此构造器，单点收口。
+#[cfg(target_os = "windows")]
+fn netsh_cmd() -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut c = std::process::Command::new("netsh");
+    c.creation_flags(CREATE_NO_WINDOW);
+    c
+}
+
 #[cfg(target_os = "windows")]
 fn check_platform_firewall(udp_port: u16, tcp_port: u16) -> serde_json::Value {
     // Check if Windows Firewall is enabled
-    let fw_enabled = std::process::Command::new("netsh")
+    let fw_enabled = netsh_cmd()
         .args(["advfirewall", "show", "currentprofile", "state"])
         .output()
         .ok()
@@ -2475,7 +2487,7 @@ fn check_platform_firewall(udp_port: u16, tcp_port: u16) -> serde_json::Value {
         .unwrap_or(false);
 
     // Check if rules already exist
-    let udp_rule_exists = std::process::Command::new("netsh")
+    let udp_rule_exists = netsh_cmd()
         .args([
             "advfirewall",
             "firewall",
@@ -2488,7 +2500,7 @@ fn check_platform_firewall(udp_port: u16, tcp_port: u16) -> serde_json::Value {
         .map(|o| o.status.success())
         .unwrap_or(false);
 
-    let tcp_rule_exists = std::process::Command::new("netsh")
+    let tcp_rule_exists = netsh_cmd()
         .args([
             "advfirewall",
             "firewall",
@@ -2718,7 +2730,7 @@ fn add_platform_firewall_rules(
     );
 
     // Step 1: Try direct execution (succeeds if already running as admin)
-    let udp_ok = std::process::Command::new("netsh")
+    let udp_ok = netsh_cmd()
         .args([
             "advfirewall",
             "firewall",
@@ -2735,7 +2747,7 @@ fn add_platform_firewall_rules(
         .map(|o| o.status.success())
         .unwrap_or(false);
 
-    let tcp_ok = std::process::Command::new("netsh")
+    let tcp_ok = netsh_cmd()
         .args([
             "advfirewall",
             "firewall",

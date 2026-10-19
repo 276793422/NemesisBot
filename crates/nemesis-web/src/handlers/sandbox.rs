@@ -537,10 +537,16 @@ impl ModuleHandler for SandboxHandler {
                 }
                 #[cfg(target_os = "windows")]
                 {
+                    // 黑窗根修（2026-10-19）：统一压 CREATE_NO_WINDOW（仓库
+                    // 纪律：生产路径 spawn 一律）。GUI 窗口（盒内 explorer）
+                    // 是程序自建，不受此 flags 影响。
+                    use std::os::windows::process::CommandExt;
+                    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
                     std::process::Command::new(start_exe)
                         .arg(format!("/box:{}", nemesis_sandbox::DEFAULT_BOX_NAME))
                         .arg("explorer.exe")
                         .arg(user_profile())
+                        .creation_flags(CREATE_NO_WINDOW)
                         .spawn()
                         .map_err(|e| format!("spawn in-box explorer: {e}"))?;
                 }
@@ -569,8 +575,12 @@ impl ModuleHandler for SandboxHandler {
                 .map_err(|e| format!("rewrite Sandboxie.ini: {e}"))?;
                 #[cfg(target_os = "windows")]
                 {
+                    // 黑窗根修（2026-10-19）：同上，统一压 CREATE_NO_WINDOW。
+                    use std::os::windows::process::CommandExt;
+                    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
                     std::process::Command::new(paths.start_exe())
                         .arg("/reload")
+                        .creation_flags(CREATE_NO_WINDOW)
                         .spawn()
                         .map_err(|e| format!("spawn Start.exe /reload: {e}"))?;
                 }

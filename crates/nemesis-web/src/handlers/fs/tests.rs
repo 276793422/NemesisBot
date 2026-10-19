@@ -416,3 +416,218 @@ async fn tree_handle_cmd_defaults() {
     assert_eq!(out["path"], "src");
     assert_eq!(out["entries"].as_array().unwrap().len(), 2);
 }
+
+// ---------------------------------------------------------------------------
+// fs.open：聊天文件链接打开（决策纯函数面——spawn 臂不进单测）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn openable_extension_whitelist() {
+    fn mk(name: &str) -> &Path {
+        Path::new(name)
+    }
+    assert!(is_openable_extension(mk("a.md")));
+    assert!(is_openable_extension(mk("REPORT.MD"))); // 大小写不敏感
+    assert!(is_openable_extension(mk("x/y/data.json")));
+    assert!(is_openable_extension(mk("shot.PNG")));
+    for deny in ["evil.bat", "run.cmd", "x.exe", "s.ps1", "m.msi", "noext"] {
+        assert!(!is_openable_extension(mk(deny)), "{deny}");
+    }
+}
+
+/// 包含判定边界：`C:\foo2` 不得命中 `C:\foo`；分隔符两态等价。
+#[test]
+fn path_contains_boundary() {
+    if cfg!(windows) {
+        let foo = Path::new("C:/work/foo");
+        assert!(path_contains(foo, Path::new("C:/work/foo")));
+        assert!(path_contains(foo, Path::new("C:/work/foo/bar/a.md")));
+        assert!(path_contains(
+            Path::new("C:\\work\\foo"),
+            Path::new("c:/WORK/foo/bar/a.md")
+        ));
+        assert!(!path_contains(foo, Path::new("C:/work/foo2/a.md")));
+        assert!(!path_contains(foo, Path::new("C:/work/fo")));
+    } else {
+        let foo = Path::new("/work/foo");
+        assert!(path_contains(foo, Path::new("/work/foo/bar/a.md")));
+        assert!(!path_contains(foo, Path::new("/work/foo2/a.md")));
+    }
+}
+
+fn resolve(ws: &TempDir, raw: &str) -> Result<(std::path::PathBuf, bool), String> {
+    resolve_click_target(
+        ws.path().to_str().unwrap(),
+        ws.path().to_str().unwrap(),
+        raw,
+    )
+}
+
+/// 相对路径（含裸文件名）：拼 workspace root → 存在判定 + 类型。
+#[test]
+fn open_resolve_relative_hits_workspace_file_and_dir() {
+    let ws = setup_workspace();
+    let (p, is_dir) = resolve(&ws, "alpha.txt").unwrap();
+    assert!(!is_dir);
+    assert_eq!(p, ws.path().join("alpha.txt"));
+
+    std::fs::create_dir_all(ws.path().join("reports")).unwrap();
+    let (p, is_dir) = resolve(&ws, "reports").unwrap();
+    assert!(is_dir);
+    assert_eq!(p, ws.path().join("reports"));
+
+    let (p, _) = resolve(&ws, "src/main.rs").unwrap();
+    assert_eq!(p, ws.path().join("src").join("main.rs"));
+
+    // 反斜杠形态等价。
+    let (p, _) = resolve(&ws, "src\\main.rs").unwrap();
+    assert_eq!(p, ws.path().join("src").join("main.rs"));
+}
+
+/// `..` 段 / 空路径 / 不存在 → 诚实报错。
+#[test]
+fn open_resolve_rejects_escape_and_missing() {
+    let ws = setup_workspace();
+    for bad in ["../outside", "src/../../x", ""] {
+        let err = resolve(&ws, bad).unwrap_err();
+        assert!(
+            err.contains("越出 workspace") || err.contains("path 缺失"),
+            "bad={bad:?} err={err}"
+        );
+    }
+    let err = resolve(&ws, "no_such.md").unwrap_err();
+    assert!(err.contains("文件不存在"), "{err}");
+}
+
+/// 绝对路径：workspace 内放行；集合外（系统目录）拒绝。
+#[test]
+fn open_resolve_absolute_containment() {
+    let ws = setup_workspace();
+    let inside = ws.path().join("alpha.txt");
+    let (p, is_dir) = resolve(&ws, &inside.to_string_lossy()).unwrap();
+    assert!(!is_dir);
+    assert_eq!(p, inside);
+
+    let sys_dir = if cfg!(windows) { "C:/Windows" } else { "/etc" };
+    let err = resolve(&ws, sys_dir).unwrap_err();
+    assert!(err.contains("越出 workspace"), "sys={sys_dir} err={err}");
+}
+
+/// main_workspace 与 session_root 分工：session_root 指向项目目录时，
+/// 相对路径拼项目目录；绝对路径 containment 集合仍含主 workspace。
+#[test]
+fn open_resolve_session_root_vs_main_workspace() {
+    let ws = setup_workspace();
+    let proj = TempDir::new().unwrap();
+    std::fs::write(proj.path().join("note.md"), "n").unwrap();
+
+    let (p, _) = resolve_click_target(
+        proj.path().to_str().unwrap(),
+        ws.path().to_str().unwrap(),
+        "note.md",
+    )
+    .unwrap();
+    assert_eq!(p, proj.path().join("note.md"));
+
+    // 主 workspace 内的文件经绝对路径仍可开（containment 集合含主 ws）。
+    let inside_main = ws.path().join("alpha.txt");
+    let (p, _) = resolve_click_target(
+        proj.path().to_str().unwrap(),
+        ws.path().to_str().unwrap(),
+        &inside_main.to_string_lossy(),
+    )
+    .unwrap();
+    assert_eq!(p, inside_main);
+}
+
+/// handle_cmd 层错误路径（不触发 spawn）：缺 path / 越界。
+#[tokio::test]
+async fn open_handle_cmd_error_paths() {
+    let ws = setup_workspace();
+    let h = FsHandler::new();
+    let ctx = ctx_with_workspace(&ws);
+
+    let err = h
+        .handle_cmd("open", Some(serde_json::json!({})), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("path 缺失"), "{err}");
+
+    let sys_dir = if cfg!(windows) { "C:/Windows" } else { "/etc" };
+    let err = h
+        .handle_cmd("open", Some(serde_json::json!({ "path": sys_dir })), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("越出 workspace"), "{err}");
+}
+
+// ---- 存在性回退（2026-10-19 用户设计：CJK 引导语粘连剥前缀找真实文件）----
+
+/// 相对路径头粘连：「见docs/总结.md」→ 剥引导语 → docs/总结.md 命中。
+#[test]
+fn open_resolve_fallback_strips_cjk_prefix_relative() {
+    let ws = setup_workspace();
+    std::fs::create_dir_all(ws.path().join("docs")).unwrap();
+    std::fs::write(ws.path().join("docs/总结.md"), "# s").unwrap();
+
+    let (p, is_dir) = resolve(&ws, "见docs/总结.md").unwrap();
+    assert!(!is_dir);
+    assert_eq!(p, ws.path().join("docs").join("总结.md"));
+}
+
+/// 绝对路径头粘连：「文件在<abs>」→ 剥引导语 → 绝对路径命中（containment 照过）。
+#[test]
+fn open_resolve_fallback_strips_cjk_prefix_absolute() {
+    let ws = setup_workspace();
+    let abs = ws.path().join("alpha.txt");
+    let raw = format!("文件在{}", abs.to_string_lossy());
+
+    let (p, is_dir) = resolve(&ws, &raw).unwrap();
+    assert!(!is_dir);
+    assert_eq!(p, abs);
+}
+
+/// 回退候选不放松任何闸：候选含 `..` 段直接跳过，工作区外的真实文件
+/// 即使存在也打不开（最终诚实报「文件不存在」）。
+#[test]
+fn open_resolve_fallback_skips_dotdot_candidates() {
+    let outer = TempDir::new().unwrap();
+    let inner = outer.path().join("ws");
+    std::fs::create_dir_all(&inner).unwrap();
+    std::fs::write(outer.path().join("sibling.md"), "outside").unwrap();
+
+    let err = resolve_click_target(
+        inner.to_str().unwrap(),
+        inner.to_str().unwrap(),
+        "见../sibling.md",
+    )
+    .unwrap_err();
+    // 若候选未过 .. 闸，这里会打开 outer/sibling.md 而非报错。
+    assert!(err.contains("文件不存在"), "{err}");
+}
+
+/// 无 CJK 边界的纯 ASCII 不存在路径不回退，错误信息保持原样。
+#[test]
+fn open_resolve_fallback_no_candidates_for_ascii() {
+    let ws = setup_workspace();
+    let err = resolve(&ws, "no_such.md").unwrap_err();
+    assert!(err.contains("文件不存在"), "{err}");
+    assert!(err.contains("no_such.md"), "{err}");
+}
+
+/// 候选生成纯函数：边界扫描口径（CJK→ASCII 词字符/分隔符才切；
+/// 全角标点不切；同候选去重）。
+#[test]
+fn cjk_boundary_candidates_scan() {
+    // 引导语粘连：单边界 → 单候选。
+    assert_eq!(cjk_boundary_candidates("见docs/总结.md"), ["docs/总结.md"]);
+    // 绝对路径盘符边界。
+    assert_eq!(cjk_boundary_candidates("文件在C:/ws/a.md"), ["C:/ws/a.md"]);
+    // 无边界 → 空。
+    assert!(cjk_boundary_candidates("plain/path.md").is_empty());
+    // 全角冒号后不切。
+    assert!(cjk_boundary_candidates("路径：docs/a.md").is_empty());
+    // CJK 文件名后跟扩展名点：切出的 ".md" 碎片被过滤，不产生垃圾候选。
+    assert_eq!(cjk_boundary_candidates("见docs/总结.md"), ["docs/总结.md"]);
+    assert!(cjk_boundary_candidates("报告总结.md").is_empty());
+}

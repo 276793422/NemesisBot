@@ -1647,26 +1647,43 @@ impl ShellOutputCapture {
     }
 }
 
-/// D4（2026-09-28）：workspace-dacl 受限模式下 console 类子进程的 creation
-/// flags 决策——**exec / run_checks / run_script / git 四处共用的单一真相
-/// 源**。受限令牌树下**新** console 分配必死 0xC0000142（nemesis-sandbox
-/// token.rs 实证；`CREATE_NO_WINDOW` 的隐藏 console 同样算新分配），且
-/// console-less 下默认 flags 也触分配面，故：
+/// exec / exec_async / run_checks / run_script / git 五处共用的 console
+/// creation flags 决策**单一真相源**（D4 2026-09-28 建立；2026-10-19 黑窗
+/// 修复收编默认臂）。
+///
+/// **默认臂 = `Some(CREATE_NO_WINDOW)`（黑窗根修）**：release 版 gateway 是
+/// windows 子系统进程（main.rs `windows_subsystem = "windows"`，自身无
+/// console），console 子进程（cmd.exe/git.exe/CLI 工具）以默认 flags 从无
+/// console 父进程 spawn 时，系统为其分配**新的可见 console** → 黑窗一闪/
+/// 长命令躺桌面（stdout/stderr 已被管道收走，窗内无内容，纯视觉污染）。
+/// CREATE_NO_WINDOW 只压 console（conhost）分配，GUI 程序窗口是程序自建
+/// CreateWindow、与此类 flags 完全无关——projects.open_dir 用它 spawn
+/// explorer.exe 照常弹窗（仓内实证，MCP/LSP/后台进程等 ~15 处同款先例）；
+/// 且优于 DETACHED_PROCESS（console 仍存在，控制台 API 可用，管道不受影
+/// 响）。唯一边界：console TUI 界面不可见（exec 非交互 + 管道收输出，零
+/// 实际损失）。
+///
+/// **workspace-dacl 受限臂保持 D4 语义**：受限令牌树下**新** console 分配
+/// 必死 0xC0000142（nemesis-sandbox token.rs 实证；CREATE_NO_WINDOW 的隐
+/// 藏 console 同样算新分配），故：
 /// - exec_worker 附着成功（`NEMESISBOT_CONSOLE=1`）→ `None`：不加 flags，
 ///   子进程继承附着 console（无新分配），第三方链式工具链一路继承可用；
 /// - 未附着/未设 → `Some(DETACHED_PROCESS)`：无 console 无分配，命令本体
 ///   可跑（深层第三方默认 flags spawn 是诚实边界）。
-///
-/// 非 workspace-dacl 进程恒 `None`（调用方维持各自既有 flags 形态）。
 #[cfg(target_os = "windows")]
-fn restricted_console_flags() -> Option<u32> {
+fn console_creation_flags() -> Option<u32> {
     const DETACHED_PROCESS: u32 = 0x0000_0008;
-    if std::env::var("NEMESISBOT_SANDBOX_BACKEND").as_deref() == Ok("workspace-dacl")
-        && std::env::var("NEMESISBOT_CONSOLE").as_deref() != Ok("1")
-    {
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let restricted = std::env::var("NEMESISBOT_SANDBOX_BACKEND").as_deref() == Ok("workspace-dacl");
+    if restricted && std::env::var("NEMESISBOT_CONSOLE").as_deref() != Ok("1") {
+        // 受限令牌 + 未附着：新 console 分配（含隐藏）必死 → 完全无 console
         Some(DETACHED_PROCESS)
-    } else {
+    } else if restricted {
+        // 受限令牌 + 附着成功：继承附着 console（无新分配）
         None
+    } else {
+        // 生产默认：压黑窗（只管 console 分配，GUI 程序窗口不受影响）
+        Some(CREATE_NO_WINDOW)
     }
 }
 
@@ -1705,11 +1722,12 @@ fn make_piped_shell_command(command: &str) -> tokio::process::Command {
         c.stdout(std::process::Stdio::piped());
         c.stderr(std::process::Stdio::piped());
         c.kill_on_drop(true);
-        // D4（DACL 定向档，2026-09-27）：受限令牌树下**新** console 分配必死
-        // 0xC0000142（nemesis-sandbox token.rs 实证）。flags 决策单一真相源
-        // 在 `restricted_console_flags`（exec/run_checks/run_script/git 四处
-        // 共用；附着成功=继承，未附着=DETACHED）。
-        if let Some(f) = restricted_console_flags() {
+        // 2026-10-19 黑窗根修：release gateway 无 console（windows 子系统），
+        // cmd.exe 默认 flags 会分配新可见 console → 黑窗。flags 决策单一真
+        // 相源在 `console_creation_flags`（exec/exec_async/run_checks/
+        // run_script/git 五处共用；普通模式=CREATE_NO_WINDOW 压黑窗，GUI 程
+        // 序窗口不受影响；workspace-dacl=附着继承/DETACHED）。
+        if let Some(f) = console_creation_flags() {
             c.creation_flags(f);
         }
         let stripped = nemesis_utils::env_sanitize::sanitize_tokio_command(&mut c);
@@ -2344,21 +2362,15 @@ impl Tool for RunScriptTool {
         {
             cmd.process_group(0);
         }
-        // 脚本解释器（bash/python 等）是 console 程序。普通模式压 CREATE_NO_
-        // WINDOW（gateway 托盘/无控制台运行（release windows 子系统，
-        // 2026-09-21）时不弹窗；输出经读回收集，不受影响）。D4（2026-09-28
-        // 复查根修）：workspace-dacl 受限模式下 **CREATE_NO_WINDOW 的隐藏
-        // console 也是新分配**（\Device\ConDrv 写类访问）必死 0xC0000142
-        // （token_tests grandchild 臂 b 实证）→ 走 restricted_console_flags
-        // 单一真相源（附着成功=继承，未附着=DETACHED）。
+        // console flags 单一真相源（2026-10-19 黑窗根修后默认臂即
+        // CREATE_NO_WINDOW，此前的普通模式硬编码分叉收回——语义不变）。
+        // workspace-dacl 受限模式下 CREATE_NO_WINDOW 的隐藏 console 也是新
+        // 分配（\Device\ConDrv 写类访问）必死 0xC0000142（token_tests
+        // grandchild 臂 b 实证）→ 附着成功=继承，未附着=DETACHED。
         #[cfg(target_os = "windows")]
         {
-            if ShellOutputCapture::is_restricted() {
-                if let Some(f) = restricted_console_flags() {
-                    cmd.creation_flags(f);
-                }
-            } else {
-                cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            if let Some(f) = console_creation_flags() {
+                cmd.creation_flags(f);
             }
         }
 
@@ -2540,12 +2552,12 @@ impl Tool for AsyncExecTool {
             // D4（2026-09-28）：workspace-dacl 受限模式下 std piped 必死
             //（ShellOutputCapture 注释）；本工具本就不读输出 → 直接 null。
             c.current_dir(cwd);
-            // console 治理与四工具同源（本工具不在 MOVE_TOOLS、gateway 从不
-            // 把 exec_async 路由进受限 executor——此臂纯防御：未来移入时
-            // cmd.exe 默认 flags 的新 console 分配在受限树下必死）。
+            // console 治理与五工具同源（2026-10-19 黑窗根修：普通模式默认臂
+            // 即 CREATE_NO_WINDOW；本工具不在 MOVE_TOOLS、gateway 从不把
+            // exec_async 路由进受限 executor——受限臂纯防御）。
             #[cfg(target_os = "windows")]
             {
-                if let Some(f) = restricted_console_flags() {
+                if let Some(f) = console_creation_flags() {
                     c.creation_flags(f);
                 }
             }
@@ -6194,11 +6206,13 @@ impl GitTool {
         Self { workspace }
     }
 
-    /// D4（2026-09-28 复查接线）：git 子进程执行的单一入口。普通模式 =
-    /// `output()`（隐式 piped，现状零变化）；workspace-dacl 受限模式 =
-    /// 工作区 `.exec_out/` 文件重定向 + `status()` + 读回（std 匿名管道
-    /// 创建在受限令牌下必死——ShellOutputCapture 注释）+ console flags
-    /// 单一真相源（git.exe 是 console 程序，新分配在受限树下必死）。
+    /// git 子进程执行的单一入口。2026-10-19 黑窗根修后：普通模式 =
+    /// `output()`（隐式 piped）+ CREATE_NO_WINDOW 压黑窗（git.exe 是
+    /// console 程序，release gateway 无 console 下默认 flags 会闪窗）；
+    /// workspace-dacl 受限模式 = 工作区 `.exec_out/` 文件重定向 +
+    /// `status()` + 读回（std 匿名管道创建在受限令牌下必死
+    /// ——ShellOutputCapture 注释）+ console flags 单一真相源（新分配在
+    /// 受限树下必死，附着成功=继承/未附着=DETACHED）。
     /// GitTool 在 MOVE_TOOLS 里（exec_worker 内运行），三处旧 `.output()`
     /// 调用在受限形态下全部 os error 5——本 helper 是它们的共同根修。
     fn run_git(&self, args: &[&str]) -> Result<GitOutput, String> {
@@ -6206,7 +6220,7 @@ impl GitTool {
         c.current_dir(&self.workspace).args(args);
         #[cfg(target_os = "windows")]
         {
-            if let Some(f) = restricted_console_flags() {
+            if let Some(f) = console_creation_flags() {
                 use std::os::windows::process::CommandExt;
                 c.creation_flags(f);
             }
