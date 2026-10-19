@@ -73,12 +73,17 @@ fn stall_alerts_once_then_idempotent() {
 fn new_inflight_comment_resets_episode() {
     let store = fixture("reset");
     let id = in_progress_issue(&store, "redispatched");
-    let now = chrono::Utc::now().timestamp();
     add_inflight(&store, id);
+    // 注入时钟在评论落库后采样：created_at 由 BoardStore 落库时取秒级
+    // Utc::now()——先采 now 后插评论，插入撞到下一秒就产生负年龄，
+    // threshold 0 的闸（now - created_at < 0 → skip）把警示吞掉出假红
+    // （2026-10-19 CI shard3 实录）。落库后采样保证 created_at ≤ now。
+    let now = chrono::Utc::now().timestamp();
     assert_eq!(sweep_archive_stalls(&store, 0, now), 1);
 
     // 重派 → 新在途评论（插入序在旧警示之后）→ 新周期再警示一次。
     add_inflight(&store, id);
+    let now = chrono::Utc::now().timestamp();
     assert_eq!(sweep_archive_stalls(&store, 0, now), 1);
 
     let stall = store
@@ -112,7 +117,6 @@ fn non_in_progress_issues_not_flagged() {
 fn merged_inflight_not_flagged_after_redispatch() {
     let store = fixture("merged");
     let id = in_progress_issue(&store, "reworked");
-    let now = chrono::Utc::now().timestamp();
 
     // 第 1 轮：在途 → 合并成功（31s 合入形态）。
     add_inflight(&store, id);
@@ -126,6 +130,11 @@ fn merged_inflight_not_flagged_after_redispatch() {
         })
         .unwrap();
 
+    // 注入时钟在评论落库后采样（秒界竞态教训同 new_inflight_comment_resets_episode）。
+    // 落库后采样还让本次 sweep 的 0 由「合并锚抑制」逻辑真实达成——
+    // 先采后插撞秒界时 0 是被负年龄阈值闸跳出来的，假绿掩蔽本测试要守的语义。
+    let now = chrono::Utc::now().timestamp();
+
     // 评审 FAIL → 重派回 in_progress（状态本就 in_progress，无需转移），
     // 第 2 轮执行中：旧在途锚 + 旧合并评论 → 不得警示。
     assert_eq!(
@@ -136,6 +145,7 @@ fn merged_inflight_not_flagged_after_redispatch() {
 
     // 第 2 轮真实停摆形态：新在途评论（变更集在途）→ 警示照常触发。
     add_inflight(&store, id);
+    let now = chrono::Utc::now().timestamp();
     assert_eq!(sweep_archive_stalls(&store, 0, now), 1, "新在途锚警示照常");
 
     let stall = store

@@ -163,6 +163,9 @@ fn pinned_constants_are_wellformed() {
 // verify_installer：钉值不符的诊断分支（sidecar 可达性不影响错误定性）
 // ---------------------------------------------------------------------------
 
+// 被测 fn 随 install_qemu_windows 链走 cfg windows——测试同门裁剪（Linux
+// 编译期消失，否则 E0425）。
+#[cfg(target_os = "windows")]
 #[tokio::test]
 async fn verify_installer_empty_file_fails_with_pin() {
     // 空文件 vs 钉值 → 必败；sidecar 分支内含网络调用（失败容忍），只断言

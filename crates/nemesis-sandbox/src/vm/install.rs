@@ -460,11 +460,16 @@ pub async fn fetch_sha512_sidecar(url: &str) -> Result<String> {
 // Windows QEMU 安装链
 // ---------------------------------------------------------------------------
 
-/// Windows 安装包临时命名（work_dir 内）。
+/// Windows 安装包临时命名（work_dir 内）。唯二消费点都在
+/// [`install_qemu_windows`]（cfg windows）内——随门裁剪，否则 Linux 视角
+/// dead_code（CI Linux clippy `-D warnings` 实录 2026-10-19）。
+#[cfg(target_os = "windows")]
 const INSTALLER_NAME: &str = "qemu-setup.exe";
+#[cfg(target_os = "windows")]
 const UNPACK_DIR_NAME: &str = "unpack";
 
 /// 安装包在侧校验（钉值/sidecar 双锚），不一致 = Err（错误信息带两侧值）。
+#[cfg(target_os = "windows")]
 async fn verify_installer(path: &Path, expected: &Option<String>, url: &str) -> Result<()> {
     let actual = tokio::task::spawn_blocking({
         let path = path.to_path_buf();
