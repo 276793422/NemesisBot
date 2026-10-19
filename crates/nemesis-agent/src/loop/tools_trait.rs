@@ -26,6 +26,22 @@ pub enum FileChangeKind {
     Delete,
 }
 
+/// MCP 工具快照条目（`refresh_mcp_snapshot` 产出）。
+///
+/// 消费方：`McpListTool`（name + description 列表展示）；B2 独占接管
+/// （name 供给闸/隐藏表比对，parameters 供镜像 op 的 args_schema 预检与
+/// connector_find 展示）。快照在 MCP 注册/reload 时整表重建。
+#[derive(Debug, Clone)]
+pub struct McpToolSnapshotEntry {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+    /// server 自述只读提示（B3 透传；None = 未声明）。
+    pub read_only_hint: Option<bool>,
+    /// server 自述破坏性提示（B3 透传；None = 未声明）。
+    pub destructive_hint: Option<bool>,
+}
+
 /// Trait for tools that can be executed by the agent loop.
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -59,6 +75,17 @@ pub trait Tool: Send + Sync {
     /// JSON Schema object (e.g., {"type": "object", "properties": {...}}).
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {}})
+    }
+
+    /// MCP annotations 透传（B3，治理补全 2026-10-19）：server 自述只读
+    /// 提示。缺省 None（内置工具不声明语义——它们有自己的 op 分档）。
+    fn read_only_hint(&self) -> Option<bool> {
+        None
+    }
+
+    /// MCP annotations 透传（B3）：server 自述破坏性提示。缺省 None。
+    fn destructive_hint(&self) -> Option<bool> {
+        None
     }
 
     /// Preview the file change this call would make, for checkpointing (the edit
@@ -200,11 +227,13 @@ impl AgentLoop {
             base
         };
         // W5 盲点修复配套：MCP 动态工具注册期声明操作类型（进程级 declare
-        // 表，管线 lookup-first）。MCP ToolDefinition 尚无 annotations 面
-        // （readOnlyHint 等），基线取 FileRead（LOW）——修复前这些工具走
-        // 「未知名放行」整跳 8 层；声明后全管线照跑（注入检测/凭据扫描/
-        // DLP/审计链），默认配置下不产生新审批摩擦。annotations 透传是
-        // 远期项（届时按 hint 精确分档）。
+        // 表，管线 lookup-first）。基线恒取 FileRead（LOW）——annotations
+        // 已透传（B3，definition.annotations → read_only/destructive_hint），
+        // 但那是 connector 镜像基线（mirror_baseline）与 Dashboard 展示面的
+        // 消费维度；8 层 declare 面按 hints 精确分档是独立后续项（治理补全
+        // 计划明示不做，见 docs/PLAN/2026-10-19_connector治理补全批次.md）。
+        // 声明后全管线照跑（注入检测/凭据扫描/DLP/审计链），默认配置下不
+        // 产生新审批摩擦。
         #[cfg(feature = "security")]
         nemesis_security::types::declare_tool_operation(
             &name,
@@ -425,19 +454,25 @@ impl AgentLoop {
 
     /// Refresh the MCP tool snapshot from the tool registry.
     fn refresh_mcp_snapshot(&self) {
-        let snapshot: Vec<(String, String)> = self
+        let snapshot: Vec<McpToolSnapshotEntry> = self
             .tools
             .read()
             .iter()
             .filter(|(name, _)| name.starts_with("mcp_"))
-            .map(|(name, tool)| (name.clone(), tool.description()))
+            .map(|(name, tool)| McpToolSnapshotEntry {
+                name: name.clone(),
+                description: tool.description(),
+                parameters: tool.parameters(),
+                read_only_hint: tool.read_only_hint(),
+                destructive_hint: tool.destructive_hint(),
+            })
             .collect();
         *self.mcp_tool_snapshot.write() = snapshot;
     }
 
     /// Return a shared reference to the MCP tool snapshot.
     /// Used to wire up McpListTool.
-    pub fn mcp_tool_snapshot(&self) -> Arc<parking_lot::RwLock<Vec<(String, String)>>> {
+    pub fn mcp_tool_snapshot(&self) -> Arc<parking_lot::RwLock<Vec<McpToolSnapshotEntry>>> {
         self.mcp_tool_snapshot.clone()
     }
 

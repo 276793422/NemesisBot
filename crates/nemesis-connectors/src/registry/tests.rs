@@ -125,7 +125,7 @@ action = "builtin.noop"
 "#,
     )
     .expect("write");
-    let c = find_connector(ws.path(), "ok").expect("ok connector");
+    let c = find_connector(ws.path(), "ok").expect("ok connector").0;
     assert_eq!(c.id, "ok");
 }
 
@@ -156,7 +156,7 @@ action = "builtin.b"
 "#,
     )
     .expect("write");
-    let c = find_connector(ws.path(), "c").expect("c");
+    let c = find_connector(ws.path(), "c").expect("c").0;
     assert_eq!(find_op(&c, "beta").expect("beta op").risk, RiskLevel::High);
     assert!(find_op(&c, "gamma").is_none());
 }
@@ -393,7 +393,9 @@ args_schema = {schema_toml}
         "good",
         r#"{ type = "object", required = ["state"], properties = { state = { type = "string", enum = ["closed"], description = "目标状态" }, n = { type = "integer", minimum = 1, maximum = 9 } } }"#,
     );
-    let c = find_connector(ws.path(), "good").expect("白名单内关键词应通过加载");
+    let c = find_connector(ws.path(), "good")
+        .expect("白名单内关键词应通过加载")
+        .0;
     let op = find_op(&c, "doit").expect("op");
     let schema = op.args_schema.as_ref().expect("schema 透传");
     // 加载期合法 + 运行期校验闭环：非法参数被拒、合法参数放行
@@ -526,4 +528,449 @@ args_schema = {schema_toml}
         r#"{ type = "object", properties = { n = { type = "integer", minimum = 1 }, x = { type = "number", maximum = 2.5 } } }"#,
     );
     assert!(find_connector(ws.path(), "ok-num").is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// 管理面（Dashboard connectors.create / set_enabled / remove，2026-10-19）
+// ---------------------------------------------------------------------------
+
+const MIN_TOML: &str = r#"[connector]
+id = "new-c"
+name = "新连接器"
+version = "0.1.0"
+kind = "local"
+
+[[op]]
+id = "noop"
+risk = "low"
+class = "read"
+action = "builtin.noop"
+"#;
+
+#[test]
+fn create_connector_happy_path_and_visible_in_scan() {
+    let ws = tmpws();
+    let c = create_connector(ws.path(), "new-c", MIN_TOML).expect("create");
+    assert_eq!(c.id, "new-c");
+    // 热生效：下一次 scan 即见（无缓存）。
+    let loaded = scan_connectors(ws.path());
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].connector.as_ref().expect("valid").id, "new-c");
+    assert!(
+        loaded[0].connector.as_ref().expect("valid").enabled,
+        "清单缺 enabled 键 = 默认启用"
+    );
+    // 落盘文件存在。
+    assert!(
+        ws.path()
+            .join(CONNECTORS_DIR)
+            .join("new-c")
+            .join(MANIFEST_FILE)
+            .exists()
+    );
+}
+
+#[test]
+fn create_connector_rejects_bad_dir_name_bad_toml_and_duplicates() {
+    let ws = tmpws();
+    // 目录名非法（大写 / `..` / 绝对路径形态 / 空）
+    for bad in ["Upper", "../escape", "a/b", ""] {
+        let err = create_connector(ws.path(), bad, MIN_TOML).unwrap_err();
+        assert!(
+            err.contains("目录名") || err.contains("非法"),
+            "{bad}: {err}"
+        );
+    }
+    // 清单非法不写半截（目录都不应出现）
+    let err = create_connector(ws.path(), "bad-toml", "this is not toml [").unwrap_err();
+    assert!(err.contains("TOML 解析失败"), "{err}");
+    assert!(!ws.path().join(CONNECTORS_DIR).join("bad-toml").exists());
+    // 目录重复
+    create_connector(ws.path(), "dup", MIN_TOML).expect("first");
+    let err = create_connector(ws.path(), "dup", MIN_TOML).unwrap_err();
+    assert!(err.contains("已存在"), "{err}");
+    // id 撞车（不同目录、同 id）
+    let err = create_connector(ws.path(), "other-dir", MIN_TOML).unwrap_err();
+    assert!(err.contains("已被其他目录占用"), "{err}");
+}
+
+#[test]
+fn set_connector_enabled_writes_sidecar_manifest_bytes_untouched() {
+    let ws = tmpws();
+    let toml_text = format!(
+        "# 头部注释必须原样保留\n{}",
+        MIN_TOML.replace("id = \"new-c\"", "id = \"tog\"\nenabled = true")
+    );
+    create_connector(ws.path(), "tog", &toml_text).expect("create");
+    let manifest_path = ws
+        .path()
+        .join(CONNECTORS_DIR)
+        .join("tog")
+        .join(MANIFEST_FILE);
+    let before = std::fs::read_to_string(&manifest_path).expect("read");
+
+    // 停用：清单字节不动（A3-a 启停写 sidecar），effective 反映在 scan/find。
+    set_connector_enabled(ws.path(), "tog", false).expect("disable");
+    let after = std::fs::read_to_string(&manifest_path).expect("read");
+    assert_eq!(before, after, "清单字节必须原样——启停恒写 sidecar");
+    assert!(
+        after.contains("enabled = true"),
+        "清单缺省不受影响: {after}"
+    );
+    assert!(
+        !scan_connectors(ws.path())[0]
+            .connector
+            .as_ref()
+            .expect("valid")
+            .enabled,
+        "sidecar 覆盖清单缺省 = 停用"
+    );
+    assert!(
+        find_connector(ws.path(), "tog").is_err(),
+        "停用后 find 应 Disabled"
+    );
+
+    // 再启用：sidecar 翻回 true。
+    set_connector_enabled(ws.path(), "tog", true).expect("enable");
+    let after = std::fs::read_to_string(&manifest_path).expect("read");
+    assert_eq!(before, after, "再启用也不碰清单");
+    assert!(find_connector(ws.path(), "tog").is_ok());
+}
+
+#[test]
+fn scan_merge_manifest_disabled_without_sidecar_stays_disabled() {
+    // 旧工作区兼容：清单 enabled=false 且无 sidecar → 保持停用（缺省语义不漂）。
+    let ws = tmpws();
+    let toml_text = MIN_TOML.replace("id = \"new-c\"", "id = \"legacy\"\nenabled = false");
+    create_connector(ws.path(), "legacy", &toml_text).expect("create");
+    let loaded = scan_connectors(ws.path());
+    assert!(
+        !loaded[0].connector.as_ref().expect("valid").enabled,
+        "无 sidecar 时清单缺省必须生效"
+    );
+    assert!(matches!(
+        find_connector(ws.path(), "legacy"),
+        Err(ConnectorLookupError::Disabled { .. })
+    ));
+
+    // sidecar 显式开启 → 用户意志覆盖清单缺省。
+    set_connector_enabled(ws.path(), "legacy", true).expect("enable");
+    let loaded = scan_connectors(ws.path());
+    assert!(loaded[0].connector.as_ref().expect("valid").enabled);
+    assert!(find_connector(ws.path(), "legacy").is_ok());
+}
+
+#[test]
+fn set_connector_enabled_honest_failures() {
+    let ws = tmpws();
+    // 不在册
+    let err = set_connector_enabled(ws.path(), "ghost", true).unwrap_err();
+    assert!(err.contains("不在注册表"), "{err}");
+    // 损坏条目（TOML 语法坏）诚实拒绝——sidecar 按 manifest id 键控，损坏
+    // 条目解析不出 id（旧实现「语法可解析即可翻位」收窄为不可启停）。
+    let dir = ws.path().join(CONNECTORS_DIR).join("broken");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(dir.join(MANIFEST_FILE), "this is not toml [").expect("write");
+    let err = set_connector_enabled(ws.path(), "broken", false).unwrap_err();
+    assert!(err.contains("清单损坏"), "{err}");
+}
+
+#[test]
+fn set_connector_enabled_works_for_signed_entry() {
+    // A3-a 核心收益：签名条目启停恒写 sidecar，清单字节不动 → 验签恒过。
+    // （旧实现翻 `[connector] enabled` 位破坏验签，只能诚实拒绝。）
+    let ws = tmpws();
+    create_connector(ws.path(), "signed-c", MIN_TOML).expect("create");
+    let dir = ws.path().join(CONNECTORS_DIR).join("signed-c");
+    let pair = crate::signing::generate_key_pair().expect("keygen");
+    crate::signing::sign_connector_dir(&dir, &pair.private_key).expect("sign");
+
+    set_connector_enabled(ws.path(), "signed-c", false).expect("签名条目可正常停用");
+    let text = std::fs::read_to_string(dir.join(MANIFEST_FILE)).expect("read");
+    assert!(!text.contains("enabled = false"), "清单必须原样: {text}");
+    // 清单未动 → 验签仍过（条目保持 connector=Some，trust 徽标在）。
+    let loaded = scan_connectors(ws.path());
+    let entry = &loaded[0];
+    assert!(
+        entry.connector.is_some(),
+        "验签失败会变 corrupt——清单被改动过"
+    );
+    assert!(!entry.connector.as_ref().expect("valid").enabled);
+
+    set_connector_enabled(ws.path(), "signed-c", true).expect("再启用");
+    assert!(
+        scan_connectors(ws.path())[0]
+            .connector
+            .as_ref()
+            .expect("valid")
+            .enabled
+    );
+}
+
+#[test]
+fn remove_connector_deletes_dir_but_receipts_survive() {
+    let ws = tmpws();
+    create_connector(ws.path(), "doomed", MIN_TOML).expect("create");
+    // 模拟历史凭条（在 data/ 下，与 connector 目录无关）
+    let receipts_dir = ws.path().join("data").join("receipts");
+    std::fs::create_dir_all(&receipts_dir).expect("mkdir");
+    std::fs::write(
+        receipts_dir.join("receipts-20261019.jsonl"),
+        "{\"receipt_id\":\"R1\"}",
+    )
+    .expect("write");
+
+    remove_connector(ws.path(), "doomed").expect("remove");
+    assert!(!ws.path().join(CONNECTORS_DIR).join("doomed").exists());
+    assert!(
+        receipts_dir.join("receipts-20261019.jsonl").exists(),
+        "凭条历史保留"
+    );
+    assert!(scan_connectors(ws.path()).is_empty());
+
+    // 不在册目录名拒绝（无遍历攻击面：不在扫描结果里的名字一律拒）
+    let err = remove_connector(ws.path(), "../escape").unwrap_err();
+    assert!(err.contains("不在注册表"), "{err}");
+}
+
+// ---------------------------------------------------------------------------
+// B2（2026-10-19 独占接管）：独占隐藏表 + 镜像 op 枚举
+// ---------------------------------------------------------------------------
+
+/// 独占声明 connector 模板（接管 `stub` server；显式 op 绑定一个不在
+/// 模拟工具面里的名字，验证「显式档优先、镜像不双路由」不干扰枚举）。
+const EXCL_TOML: &str = r#"[connector]
+id = "excl"
+name = "独占壳"
+version = "0.1.0"
+kind = "local"
+exclusive_mcp = "stub"
+
+[[op]]
+id = "page_read"
+risk = "medium"
+class = "read"
+tool = "mcp_stub__explicit_tool"
+"#;
+
+fn write_connector(ws: &tempfile::TempDir, id: &str, toml_text: &str) {
+    let dir = ws.path().join(CONNECTORS_DIR).join(id);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(dir.join(MANIFEST_FILE), toml_text).expect("write");
+}
+
+fn mcp_tools() -> Vec<String> {
+    vec![
+        "mcp_stub__read_page".to_string(),
+        "mcp_stub__click".to_string(),
+        "mcp_other__list".to_string(),
+    ]
+}
+
+#[test]
+fn exclusive_prefix_uses_sanitize_truth_source() {
+    // 前缀形态 `mcp_<sanitize(server)>_`——与 MCP 挂载面
+    // （adapter.rs `format!("mcp_{server_name}_{tool_name}")`）同源同构。
+    assert_eq!(exclusive_prefix("stub"), "mcp_stub_");
+    // 大写/非法字符被 sanitize 归一（与 MCP 挂载名一致）。
+    assert_eq!(exclusive_prefix("My-Server"), exclusive_prefix("my-server"));
+}
+
+#[test]
+fn exclusive_hidden_tools_hides_prefix_matches() {
+    let ws = tmpws();
+    write_connector(&ws, "excl", EXCL_TOML);
+
+    let hidden = exclusive_hidden_tools(ws.path(), &mcp_tools());
+    assert_eq!(
+        hidden,
+        vec![
+            "mcp_stub__read_page".to_string(),
+            "mcp_stub__click".to_string()
+        ],
+        "独占前缀命中全隐（default 与 blocked 同隐），表外不连坐"
+    );
+
+    // exempt 豁免：恢复原生直调（供给闸放行）。
+    crate::state::set_tool_policy(
+        ws.path(),
+        "excl",
+        "mcp_stub__click",
+        crate::state::ToolPolicy::Exempt,
+    )
+    .expect("exempt");
+    let hidden = exclusive_hidden_tools(ws.path(), &mcp_tools());
+    assert_eq!(
+        hidden,
+        vec!["mcp_stub__read_page".to_string()],
+        "豁免项不隐"
+    );
+
+    // 停用 connector = 原生直通恢复（整表为空）。
+    set_connector_enabled(ws.path(), "excl", false).expect("disable");
+    assert!(exclusive_hidden_tools(ws.path(), &mcp_tools()).is_empty());
+}
+
+#[test]
+fn exclusive_hidden_tools_disabled_or_absent_contributes_nothing() {
+    let ws = tmpws();
+    // 无任何 connector = 空表。
+    assert!(exclusive_hidden_tools(ws.path(), &mcp_tools()).is_empty());
+
+    // enabled=false 的独占 connector 不贡献隐藏。
+    let disabled = EXCL_TOML.replace(
+        "exclusive_mcp = \"stub\"",
+        "exclusive_mcp = \"stub\"\nenabled = false",
+    );
+    write_connector(&ws, "excl", &disabled);
+    assert!(exclusive_hidden_tools(ws.path(), &mcp_tools()).is_empty());
+
+    // 无独占声明的启用 connector 也不贡献。
+    write_connector(&ws, "plain", MIN_TOML);
+    assert!(exclusive_hidden_tools(ws.path(), &mcp_tools()).is_empty());
+}
+
+#[test]
+fn exclusive_mirror_ops_enumeration_and_exclusions() {
+    let ws = tmpws();
+    write_connector(&ws, "excl", EXCL_TOML);
+    let c = find_connector(ws.path(), "excl").expect("valid").0;
+
+    let mirrors = exclusive_mirror_ops(ws.path(), &c, &mcp_tools());
+    let ids: Vec<&str> = mirrors.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["mcp_stub__click", "mcp_stub__read_page"],
+        "镜像枚举按工具名字典序，前缀外不连坐"
+    );
+
+    // blocked：镜像不提供（能力对 agent 消失）。
+    crate::state::set_tool_policy(
+        ws.path(),
+        "excl",
+        "mcp_stub__click",
+        crate::state::ToolPolicy::Blocked,
+    )
+    .expect("blocked");
+    let mirrors = exclusive_mirror_ops(ws.path(), &c, &mcp_tools());
+    let ids: Vec<&str> = mirrors.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(ids, vec!["mcp_stub__read_page"], "封禁项镜像不提供");
+
+    // exempt：回原生直调，同样不经镜像。
+    crate::state::set_tool_policy(
+        ws.path(),
+        "excl",
+        "mcp_stub__read_page",
+        crate::state::ToolPolicy::Exempt,
+    )
+    .expect("exempt");
+    let mirrors = exclusive_mirror_ops(ws.path(), &c, &mcp_tools());
+    assert!(mirrors.is_empty(), "全部例外化后镜像面为空");
+}
+
+#[test]
+fn exclusive_mirror_ops_excludes_explicit_op_coverage() {
+    // 显式 [[op]] 的 tool 绑定命中独占前缀内的真实工具 = 该工具走显式档，
+    // 镜像不提供（避免双路由）。
+    let ws = tmpws();
+    let toml = EXCL_TOML.replace("mcp_stub__explicit_tool", "mcp_stub__click");
+    write_connector(&ws, "excl", &toml);
+    let c = find_connector(ws.path(), "excl").expect("valid").0;
+    let mirrors = exclusive_mirror_ops(ws.path(), &c, &mcp_tools());
+    let ids: Vec<&str> = mirrors.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["mcp_stub__read_page"],
+        "显式已覆盖的 click 不进镜像面"
+    );
+}
+
+#[test]
+fn exclusive_mirror_ops_empty_without_declaration() {
+    let ws = tmpws();
+    write_connector(&ws, "plain", MIN_TOML);
+    let c = find_connector(ws.path(), "plain").expect("valid").0;
+    assert!(
+        exclusive_mirror_ops(ws.path(), &c, &mcp_tools()).is_empty(),
+        "无独占声明 = 无镜像面（默认态不拦截）"
+    );
+}
+
+/// 治理补全 P1（2026-10-19）：纯独占接管清单合法——ops 为空 + exclusive_mcp
+/// 声明 = 镜像 op 就是操作面（此前「至少一个 [[op]]」把纯接管形态逼成
+/// 写假 op）。同时钉 exclusive_hidden_tools 对该形态照常命中。
+#[test]
+fn exclusive_only_manifest_is_legal_and_hidden_tools_hit() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().join("workspace");
+    let conn_dir = ws.join("connectors").join("gov-smoke-excl");
+    std::fs::create_dir_all(&conn_dir).unwrap();
+    std::fs::write(
+        conn_dir.join("connector.toml"),
+        "[connector]\nid = \"gov-smoke-excl\"\nname = \"gov\"\nversion = \"0.1.0\"\nkind = \"local\"\nenabled = true\nexclusive_mcp = \"stub\"\n",
+    )
+    .unwrap();
+    let scanned = scan_connectors(&ws);
+    assert_eq!(scanned.len(), 1, "纯独占清单必须合法入册");
+    assert!(
+        scanned[0].error.is_none(),
+        "纯独占清单不得报错，实际 {:?}",
+        scanned[0].error
+    );
+    let names = vec!["mcp_stub__read".to_string()];
+    let hidden = exclusive_hidden_tools(&ws, &names);
+    assert_eq!(hidden, vec!["mcp_stub__read".to_string()]);
+}
+
+/// 对照：既无 op 又无 exclusive_mcp = 没有任何可调用面，仍拒绝。
+#[test]
+fn empty_manifest_without_exclusive_still_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().join("workspace");
+    let conn_dir = ws.join("connectors").join("bare");
+    std::fs::create_dir_all(&conn_dir).unwrap();
+    std::fs::write(
+        conn_dir.join("connector.toml"),
+        "[connector]
+id = \"bare\"
+name = \"bare\"
+version = \"0.1.0\"
+kind = \"local\"
+enabled = true
+",
+    )
+    .unwrap();
+    let scanned = scan_connectors(&ws);
+    assert_eq!(scanned.len(), 1);
+    assert!(
+        scanned[0]
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("[[op]]")),
+        "空连接器仍必须拒绝，实际 {:?}",
+        scanned[0].error
+    );
+}
+
+/// B3：mirror_baseline 四档 + 矛盾裁决纯函数表。
+#[test]
+fn mirror_baseline_tier_table() {
+    use crate::manifest::OpClass;
+    // 只读自述 → low/read 免卡。
+    let (r, c, confirm) = mirror_baseline(Some(true), None);
+    assert_eq!((r, c, confirm), (RiskLevel::Low, OpClass::Read, false));
+    // 破坏性自述 → high/write 强制确认。
+    let (r, c, confirm) = mirror_baseline(None, Some(true));
+    assert_eq!((r, c, confirm), (RiskLevel::High, OpClass::Write, true));
+    // 显式非只读（readOnly=false）同档破坏性。
+    let (r, c, confirm) = mirror_baseline(Some(false), None);
+    assert_eq!((r, c, confirm), (RiskLevel::High, OpClass::Write, true));
+    // 未声明 → medium/read（v1 保守基线不变）。
+    let (r, c, confirm) = mirror_baseline(None, None);
+    assert_eq!((r, c, confirm), (RiskLevel::Medium, OpClass::Read, false));
+    let (r, c, confirm) = mirror_baseline(None, Some(false));
+    assert_eq!((r, c, confirm), (RiskLevel::Medium, OpClass::Read, false));
+    // 矛盾自述（ro=true + destr=true）按 destructive 裁（就高不就低）。
+    let (r, c, confirm) = mirror_baseline(Some(true), Some(true));
+    assert_eq!((r, c, confirm), (RiskLevel::High, OpClass::Write, true));
 }

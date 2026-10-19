@@ -254,6 +254,41 @@ impl AgentLoop {
             }
         }
 
+        // B4 (2026-10-19 connector 总开关)：dispatch 闸——供给闸（
+        // build_tool_defs 过滤）的镜像，F8 双闸同模型：陈旧 prompt cache /
+        // 在途请求仍可能带出这两个名字，执行时刻以 config 现值为权威。
+        // 位置在 security 之前：总闸拒绝不付 judge/scanner 成本。
+        if (tool_call.name == "connector_find" || tool_call.name == "connector_invoke")
+            && !self.current_connectors_enabled()
+        {
+            warn!(
+                "[AgentLoop] Connector tool {} refused (connectors.enabled=false).",
+                tool_call.name
+            );
+            return "Error: 连接器总开关已关闭（connectors.enabled=false），connector_find/connector_invoke 不可用。Inform the user; they can re-enable connectors in Dashboard → Connectors（总开关恢复后无需重启）.".to_string();
+        }
+
+        // B2 (2026-10-19 connector 独占接管)：独占闸 dispatch 端——出处感知。
+        // config hidden（上一闸）是绝对闸，任何出处都拒；独占闸只拦「直调」
+        // ：经 connector_invoke 的绑定回灌（ctx.channel ==
+        // "connector-binding"，run_tool_binding 同标签）必须放行——那正是
+        // 治理通路的正向路由，拒了它独占一开连接器自己先瘫（自堵雷）。放行
+        // 不等于旁路：回灌调用进的是同一个 dispatch 瀑布的后续全部闸
+        // （estop/Plan/安全 8 层/审批），只是免掉「独占表拒绝原生名」这一条。
+        if context.channel != "connector-binding" {
+            let excl = self.current_exclusive_hidden_tools();
+            if tool_name_matches_hidden(&excl, &tool_call.name) {
+                warn!(
+                    "[AgentLoop] Exclusively-managed tool {} refused (connector takeover).",
+                    tool_call.name
+                );
+                return format!(
+                    "Error: Tool '{}' is exclusively managed by an enabled connector（独占接管）：native direct calls are blocked; call it via connector_invoke (discover with connector_find), or ask the user to set an exemption in Dashboard → Connectors.",
+                    tool_call.name
+                );
+            }
+        }
+
         // WASM 插件 min-tier dispatch 闸（2026-09-30 插件体系复查 #2）：
         // 供给侧（build_tool_defs 按档位秩过滤）之外的第二道闸，F8 双闸
         // 同模型——陈旧 prompt cache / 子代理 defs 快照可能带出已过档的

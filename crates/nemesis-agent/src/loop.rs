@@ -466,9 +466,9 @@ pub struct AgentLoop {
     /// `browser_profile: true` 的浏览器类 spawn 时拿 `--user-data-dir`）。
     /// None = env 回落语义（主/项目 loop 恒 None 零变化）。
     browser_profile: Option<String>,
-    /// Snapshot of registered MCP tool names and descriptions.
+    /// Snapshot of registered MCP tools (name + description + parameters).
     /// Shared with McpListTool so it can list MCP tools without accessing the full tool registry.
-    mcp_tool_snapshot: Arc<parking_lot::RwLock<Vec<(String, String)>>>,
+    mcp_tool_snapshot: Arc<parking_lot::RwLock<Vec<tools_trait::McpToolSnapshotEntry>>>,
     /// Optional data store for recording LLM usage statistics.
     data_store: Option<Arc<nemesis_data::DataStore>>,
     /// Forge instance for experience collection during tool execution.
@@ -549,6 +549,17 @@ pub struct AgentLoop {
     /// 供给闸（build_tool_defs）与 dispatch 闸天然双闸对齐；通配语义同
     /// `tool_name_matches_hidden`。空 = 零影响（主 loop / 项目 loop 不触碰）。
     extra_hidden_tools: parking_lot::RwLock<Vec<String>>,
+    /// B2（2026-10-19 connector 独占接管）：独占隐藏表供给器——闭包由装配方
+    /// （nemesisbot agent_factory）注入，每次调用现扫连接器注册表（磁盘真相）
+    /// 及 MCP 工具快照，返回当下应从工具面隐藏的**完整工具名清单**（独占
+    /// server 前缀命中，扣除 sidecar 豁免；封禁语义照隐）。与
+    /// `extra_hidden_tools`（G1 全量替换槽）分槽的原因：①写者冲突——G1 每次
+    /// 全量替换，共用会互相清空；②语义分野——extra 是**绝对闸**（任何出处
+    /// 都拒），独占是**出处感知闸**（`connector-binding` 通道的治理回灌放行，
+    /// 见 tool_dispatch），消费点必须能区分两表。供给器缺省（项目 loop /
+    /// 独立装配）= 空表 = 独占闸不生效。
+    exclusive_hidden_provider:
+        parking_lot::RwLock<Option<std::sync::Arc<dyn Fn() -> Vec<String> + Send + Sync>>>,
     /// G1：记录级 tier 钉死（自建 agent 档位契约）。`Some` = tier 以记录为
     /// 唯一真相源——[`Self::refresh_active_tier`] 短路（config 重解析/换模型
     /// 不覆盖记录档位）；`None` = config 驱动（主/项目 loop 语义不变）。
@@ -794,6 +805,7 @@ impl AgentLoop {
             agent_event_tx: parking_lot::RwLock::new(None),
             config_path: parking_lot::RwLock::new(None),
             extra_hidden_tools: parking_lot::RwLock::new(Vec::new()),
+            exclusive_hidden_provider: parking_lot::RwLock::new(None),
             tier_override: parking_lot::RwLock::new(None),
             prompt_system: parking_lot::RwLock::new(crate::prompt::PromptSystem::Classic),
             pricing_store: parking_lot::RwLock::new(None),
@@ -1212,3 +1224,9 @@ mod ws9_lineage_tests;
 // aux options 显式禁思考标记。
 #[cfg(test)]
 mod bypass_llm_tests;
+
+// B4 + B2（2026-10-19 connector 边界梳理）：总开关双闸 + 独占接管闸。
+// fresh-read 语义（config.json 现值为权威，翻转无需重启）与出处感知
+// （connector-binding 回灌放行）的行为钉子。
+#[cfg(test)]
+mod b4_b2_gate_tests;

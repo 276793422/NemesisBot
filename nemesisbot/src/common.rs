@@ -648,35 +648,6 @@ pub fn should_skip_heartbeat_for_bootstrap(workspace: &Path) -> bool {
     workspace.join("BOOTSTRAP.md").exists()
 }
 
-// =========================================================================
-// Cron tool setup
-// =========================================================================
-
-/// Set up the cron tool, creating a CronService and CronTool, wiring them
-/// together with the onJob handler.
-///
-/// Returns (CronService wrapped in Arc<Mutex>, CronTool) ready to be
-/// registered with the agent loop. The caller is responsible for:
-/// 1. Registering the CronTool with the AgentLoop
-/// 2. Injecting the CronService into BotService
-///
-/// Mirrors Go's `SetupCronTool()`.
-#[allow(dead_code)]
-pub fn setup_cron_tool(
-    _workspace: &Path,
-) -> (
-    std::sync::Arc<tokio::sync::Mutex<nemesis_tools::cron::CronService>>,
-    nemesis_tools::cron::CronTool,
-) {
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
-
-    let cron_service = Arc::new(Mutex::new(nemesis_tools::cron::CronService::new()));
-    let cron_tool = nemesis_tools::cron::CronTool::new(Arc::clone(&cron_service));
-
-    (cron_service, cron_tool)
-}
-
 #[cfg(test)]
 mod tests;
 

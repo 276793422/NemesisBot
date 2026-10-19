@@ -250,3 +250,128 @@ fn rate_limit_off_still_prunes_window_ticks() {
     let win = st.windows.get("paper").unwrap();
     assert_eq!(win.len(), 1, "过期 tick 必须被扫除，不无限堆积");
 }
+
+// --- M3（2026-10-19）store-backed 真跨进程限额 ------------------------------
+
+use std::path::Path;
+
+fn store_guard(path: &Path) -> BudgetGuard {
+    BudgetGuard::with_store(path.to_path_buf())
+}
+
+#[test]
+fn store_persists_across_instances_and_blocks_over_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("budget.json");
+    let lm = limits(2, f64::INFINITY, 0);
+    {
+        let a = store_guard(&store);
+        assert!(a.reserve(&lm, "paper", T0, None).is_ok());
+        assert!(a.reserve(&lm, "paper", T0 + 1, None).is_ok());
+    } // A drop（模拟进程退出——内存态蒸发，账目在盘上）
+    let b = store_guard(&store);
+    assert_eq!(b.rate_used("paper", T0 + 2), 2, "新实例读回前实例的滑窗");
+    assert_eq!(
+        b.reserve(&lm, "paper", T0 + 3, None),
+        Err(BudgetVerdict::RateLimited { used: 2, limit: 2 }),
+        "跨实例合并记账：限额真生效"
+    );
+}
+
+#[test]
+fn store_settlement_visible_across_instances() {
+    // A reserve → B release（收口跨实例可见——文件是唯一真相）；
+    // 回吐后 A 再占成功；A commit 后 B release 幂等无操作。
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("budget.json");
+    let a = store_guard(&store);
+    let b = store_guard(&store);
+    let lm = limits(1, 100.0, 1);
+    let r = a.reserve(&lm, "paper", T0, Some(10.0)).unwrap();
+    b.release(&r);
+    assert_eq!(a.rate_used("paper", T0), 0, "B 的 release 对 A 可见");
+    assert_eq!(a.finance_today(T0), (0, 0.0));
+    assert!(a.reserve(&lm, "paper", T0 + 1, Some(10.0)).is_ok());
+}
+
+/// `shared_budget_guard`（生产入口）挂 store：同进程同 Arc 不变；跨实例
+/// （模拟另一进程直连 with_store）账目连续。
+#[test]
+fn shared_budget_guard_is_store_backed() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+    let a = super::shared_budget_guard(&ws);
+    let lm = limits(1, f64::INFINITY, 0);
+    assert!(a.reserve(&lm, "paper", T0, None).is_ok());
+    // store 文件已落盘（registry 按 canonical 路径键控，store 挂在 canonical
+    // key 下——两种拼法指向同一文件，exists 都必须真）。
+    let canonical = ws.canonicalize().unwrap();
+    assert!(
+        super::budget_store_path(&canonical).exists() || super::budget_store_path(&ws).exists(),
+        "store 必须落盘"
+    );
+    // 同进程另一 workspace 实例（模拟第二进程：不走进程内 registry）
+    let b = BudgetGuard::with_store(super::budget_store_path(&ws));
+    assert_eq!(
+        b.reserve(&lm, "paper", T0 + 1, None),
+        Err(BudgetVerdict::RateLimited { used: 1, limit: 1 }),
+        "跨进程共享账目：生产入口挂 store 真生效"
+    );
+}
+
+#[test]
+fn corrupt_store_resets_fail_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("budget.json");
+    std::fs::write(&store, b"{not json").unwrap();
+    let g = store_guard(&store);
+    let lm = limits(1, f64::INFINITY, 0);
+    assert!(
+        g.reserve(&lm, "paper", T0, None).is_ok(),
+        "损坏 = 重置 fail-open"
+    );
+    // 重置后写回合法账目，后续实例正常读
+    let b = store_guard(&store);
+    assert_eq!(b.rate_used("paper", T0), 1);
+}
+
+#[test]
+fn store_lock_blocks_until_holder_releases() {
+    // 互斥：主线程持锁期间 B 阻塞在 lock 上；解锁后 B 完成。OS 进程死亡
+    // 自动释放 = 无陈锁恢复问题（这正是选 OS 文件锁而非自管锁文件的根因）。
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("budget.json");
+    let lock_path = store.with_extension("lock");
+    std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+    let holder = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .unwrap();
+    holder.lock().unwrap();
+    let g = Arc::new(store_guard(&store));
+    let g2 = g.clone();
+    let lm = limits(1, f64::INFINITY, 0);
+    let h = thread::spawn(move || g2.reserve(&lm, "paper", T0, None).is_ok());
+    thread::sleep(std::time::Duration::from_millis(200));
+    assert!(!h.is_finished(), "持锁期间 B 必须阻塞在文件锁上");
+    holder.unlock().unwrap();
+    assert!(h.join().unwrap(), "解锁后 B 完成占用");
+}
+
+#[test]
+fn store_missing_dir_falls_back_to_memory_honestly() {
+    // 目录不可创建（路径中一段是已存在的**文件**——确定性失败，不依赖
+    // 只读挂载等环境巧合）：内存回退，执行面不锁死。
+    let dir = tempfile::tempdir().unwrap();
+    let file_blocker = dir.path().join("blocker");
+    std::fs::write(&file_blocker, b"x").unwrap();
+    let store = file_blocker.join("budget.json");
+    let g = store_guard(&store);
+    let lm = limits(1, f64::INFINITY, 0);
+    assert!(g.reserve(&lm, "paper", T0, None).is_ok(), "降级不拒绝执行");
+    assert_eq!(g.rate_used("paper", T0), 1);
+}

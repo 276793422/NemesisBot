@@ -29,7 +29,7 @@ use crate::background_registry::{
     BackgroundKillTool, BackgroundOutputTool, BackgroundProcessRegistry, BackgroundStartTool,
 };
 use crate::context::RequestContext;
-use crate::r#loop::{FileChange, FileChangeKind, Tool};
+use crate::r#loop::{FileChange, FileChangeKind, McpToolSnapshotEntry, Tool};
 // ===========================================================================
 // Basic file/message tools
 // ===========================================================================
@@ -2691,14 +2691,23 @@ impl CronTool {
     }
 }
 
+/// Convert a whole-second duration from tool args to milliseconds
+/// (overflow-honest: rejects values that cannot be represented as i64 ms).
+fn secs_arg_to_ms(secs: u64) -> Result<i64, String> {
+    i64::try_from(secs)
+        .ok()
+        .and_then(|s| s.checked_mul(1000))
+        .ok_or_else(|| "seconds value too large".to_string())
+}
+
 #[async_trait]
 impl Tool for CronTool {
     fn description(&self) -> String {
-        "Schedule reminders, tasks, or system commands. Use at_seconds for one-time reminders, every_seconds for recurring tasks, cron_expr for complex schedules.".to_string()
+        "Schedule reminders and recurring tasks. For create, provide exactly ONE of at_seconds (one-time, fires N seconds from now), every_seconds (recurring interval), or cron_expr (5-field cron expression), plus a message to deliver when the job fires. Use list to get job ids; delete with an id to remove.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({"type":"object","properties":{"action":{"type":"string","description":"One of: create, delete, list"},"at_seconds":{"type":"integer","description":"Seconds from now for one-time execution"},"every_seconds":{"type":"integer","description":"Interval in seconds for recurring execution"},"cron_expr":{"type":"string","description":"Cron expression for complex schedules"},"command":{"type":"string","description":"Command or message to execute"},"message":{"type":"string","description":"Reminder message"},"continue_session":{"type":"boolean","description":"true = when the job fires, continue THIS conversation's session (context/persona preserved, reply lands in this chat history). false (default) = fresh session at fire time. Only meaningful with deliver=false."},"max_rounds":{"type":"integer","enum":[5,10,20],"default":10,"description":"Per-fire tool-round budget when continue_session=true: the fired turn stops gracefully after this many tool rounds (work is saved; the job is NOT deleted — next fire re-budgets). Fixed tiers only. Ignored when continue_session=false."}}})
+        serde_json::json!({"type":"object","properties":{"action":{"type":"string","enum":["create","delete","list"],"description":"create = schedule a job; delete = remove a job by id; list = show all jobs with their ids"},"name":{"type":"string","description":"create: optional job name (default: unnamed)"},"at_seconds":{"type":"integer","description":"create (one-time): fire N seconds from now"},"every_seconds":{"type":"integer","description":"create (recurring): fire every N seconds"},"cron_expr":{"type":"string","description":"create (recurring): 5-field cron expression, e.g. \"0 9 * * *\""},"message":{"type":"string","description":"create: reminder message delivered to the conversation when the job fires"},"continue_session":{"type":"boolean","description":"true = when the job fires, continue THIS conversation's session (context/persona preserved, reply lands in this chat history). false (default) = fresh session at fire time."},"max_rounds":{"type":"integer","enum":[5,10,20],"default":10,"description":"Per-fire tool-round budget when continue_session=true: the fired turn stops gracefully after this many tool rounds (work is saved; the job is NOT deleted — next fire re-budgets). Fixed tiers only. Ignored when continue_session=false."},"id":{"type":"string","description":"delete: job id to remove (from list)"}}})
     }
 
     async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
@@ -2733,47 +2742,87 @@ impl Tool for CronTool {
                     .get("name")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unnamed");
-                let schedule_str = val.get("schedule").and_then(|v| v.as_str()).unwrap_or("");
-                let content = val.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                let deliver = val.get("deliver").and_then(|v| v.as_bool()).unwrap_or(true);
-
-                if schedule_str.is_empty() {
-                    return Err("Missing 'schedule' argument".to_string());
-                }
-
-                // Parse schedule: support "every:Ns", "at:TIMESTAMP", "cron:EXPR"
-                let schedule = if schedule_str.starts_with("every:") {
-                    let secs_str = schedule_str
-                        .trim_start_matches("every:")
-                        .trim_end_matches('s');
-                    let secs: i64 = secs_str.parse().map_err(|_| "Invalid interval")?;
-                    nemesis_cron::service::CronSchedule {
-                        kind: "every".to_string(),
-                        at_ms: None,
-                        every_ms: Some(secs * 1000),
-                        expr: None,
-                        tz: None,
-                    }
-                } else if schedule_str.starts_with("at:") {
-                    let ts_str = schedule_str.trim_start_matches("at:");
-                    let ts = chrono::DateTime::parse_from_rfc3339(ts_str)
-                        .map_err(|e| format!("Invalid timestamp: {}", e))?;
+                // Schedule resolution: structured fields (the declared schema
+                // surface) first, legacy `schedule` string ("every:Ns" /
+                // "at:RFC3339" / raw cron expr) second for backward
+                // compatibility. Priority: at_seconds > every_seconds >
+                // cron_expr > schedule.
+                let schedule = if let Some(secs) = val.get("at_seconds").and_then(|v| v.as_u64()) {
+                    let at_ms = chrono::Local::now().timestamp_millis() + secs_arg_to_ms(secs)?;
                     nemesis_cron::service::CronSchedule {
                         kind: "at".to_string(),
-                        at_ms: Some(ts.timestamp_millis()),
+                        at_ms: Some(at_ms),
                         every_ms: None,
                         expr: None,
                         tz: None,
                     }
-                } else {
+                } else if let Some(secs) = val.get("every_seconds").and_then(|v| v.as_u64()) {
+                    nemesis_cron::service::CronSchedule {
+                        kind: "every".to_string(),
+                        at_ms: None,
+                        every_ms: Some(secs_arg_to_ms(secs)?),
+                        expr: None,
+                        tz: None,
+                    }
+                } else if let Some(expr) = val.get("cron_expr").and_then(|v| v.as_str()) {
                     nemesis_cron::service::CronSchedule {
                         kind: "cron".to_string(),
                         at_ms: None,
                         every_ms: None,
-                        expr: Some(schedule_str.to_string()),
+                        expr: Some(expr.to_string()),
                         tz: None,
                     }
+                } else {
+                    let schedule_str = val.get("schedule").and_then(|v| v.as_str()).unwrap_or("");
+                    if schedule_str.is_empty() {
+                        return Err("Missing schedule: provide one of at_seconds, every_seconds, or cron_expr".to_string());
+                    }
+                    if schedule_str.starts_with("every:") {
+                        let secs_str = schedule_str
+                            .trim_start_matches("every:")
+                            .trim_end_matches('s');
+                        let secs: i64 = secs_str.parse().map_err(|_| "Invalid interval")?;
+                        // 负数/溢出与新结构化路径同源拒绝（u64 转换挡负值，
+                        // checked mul 挡 i64::MAX*1000 溢出 panic/回绕）。
+                        let secs = u64::try_from(secs).map_err(|_| "Invalid interval")?;
+                        nemesis_cron::service::CronSchedule {
+                            kind: "every".to_string(),
+                            at_ms: None,
+                            every_ms: Some(secs_arg_to_ms(secs)?),
+                            expr: None,
+                            tz: None,
+                        }
+                    } else if schedule_str.starts_with("at:") {
+                        let ts_str = schedule_str.trim_start_matches("at:");
+                        let ts = chrono::DateTime::parse_from_rfc3339(ts_str)
+                            .map_err(|e| format!("Invalid timestamp: {}", e))?;
+                        nemesis_cron::service::CronSchedule {
+                            kind: "at".to_string(),
+                            at_ms: Some(ts.timestamp_millis()),
+                            every_ms: None,
+                            expr: None,
+                            tz: None,
+                        }
+                    } else {
+                        nemesis_cron::service::CronSchedule {
+                            kind: "cron".to_string(),
+                            at_ms: None,
+                            every_ms: None,
+                            expr: Some(schedule_str.to_string()),
+                            tz: None,
+                        }
+                    }
                 };
+                // message is the declared field; content is the legacy alias
+                // kept readable for backward compatibility.
+                let content = val
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| val.get("content").and_then(|v| v.as_str()))
+                    .unwrap_or("");
+                // Envelope field kept for store round-trip compat; not part of
+                // the declared schema (the fire path delivers unconditionally).
+                let deliver = val.get("deliver").and_then(|v| v.as_bool()).unwrap_or(true);
 
                 // Use context first, fallback to stored values (mirrors MessageTool pattern).
                 let channel = if context.channel.is_empty() {
@@ -7520,11 +7569,11 @@ fn format_discovery_result(result: &nemesis_mcp::manager::DiscoveryResult) -> St
 ///
 /// Reads from a shared snapshot updated by AgentLoop when MCP tools change.
 pub struct McpListTool {
-    mcp_tools: Arc<parking_lot::RwLock<Vec<(String, String)>>>,
+    mcp_tools: Arc<parking_lot::RwLock<Vec<McpToolSnapshotEntry>>>,
 }
 
 impl McpListTool {
-    pub fn new(mcp_tools: Arc<parking_lot::RwLock<Vec<(String, String)>>>) -> Self {
+    pub fn new(mcp_tools: Arc<parking_lot::RwLock<Vec<McpToolSnapshotEntry>>>) -> Self {
         Self { mcp_tools }
     }
 }
@@ -7547,8 +7596,8 @@ impl Tool for McpListTool {
             return Ok("No MCP tools are currently registered.".to_string());
         }
         let mut lines = vec![format!("## Registered MCP Tools ({})\n", tools.len())];
-        for (name, desc) in tools.iter() {
-            lines.push(format!("- **{}**: {}", name, desc));
+        for entry in tools.iter() {
+            lines.push(format!("- **{}**: {}", entry.name, entry.description));
         }
         Ok(lines.join("\n"))
     }
@@ -7625,8 +7674,8 @@ pub struct SharedToolConfig {
     #[cfg(not(feature = "memory"))]
     #[allow(dead_code)]
     pub memory_executor: Option<()>,
-    /// Snapshot of registered MCP tool names and descriptions for McpListTool.
-    pub mcp_tool_snapshot: Option<Arc<parking_lot::RwLock<Vec<(String, String)>>>>,
+    /// Snapshot of registered MCP tools for McpListTool.
+    pub mcp_tool_snapshot: Option<Arc<parking_lot::RwLock<Vec<McpToolSnapshotEntry>>>>,
     /// Workflow engine reference for the `workflow_run` agent tool.
     /// `None` means workflows aren't wired in (tool stays unregistered).
     #[cfg(feature = "workflow")]
@@ -8636,6 +8685,10 @@ mod exec_timeout_tests;
 mod loop_tools_extra_tests;
 #[cfg(test)]
 mod skill_manage_tests;
+// CronTool schema↔impl 一致性回归（2026-10-19）：schema 形态调用是
+// 一等公民，死参（command/deliver）不再声明，schedule 字符串仅作回退。
+#[cfg(test)]
+mod cron_tool_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

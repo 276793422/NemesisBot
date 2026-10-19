@@ -34,12 +34,24 @@
 //! receipt = "order_id"                # 回执主键字段
 //! undo = { op = "cancel_order", arg = "order_id" }  # E3 撤销声明
 //! tool = "exec"                       # local/script 型用 tool / action 绑定
+//!
+//! [[op]]                              # M2（2026-10-19）script 声明式绑定：
+//! id = "rotate_logs"                  #  命令模板 + 钉死的超时/目录/捕获
+//! risk = "high"                       #  语义——不是模型现场决定；执行走
+//! class = "exec"                      #  exec 同源通路（命令守卫+8 层照跑）
+//! [op.script]
+//! command = "powershell -File scripts/rotate.ps1 -Dir {dir}"
+//! timeout_secs = 120                  # 缺省走 config connectors.script
+//! workdir = "scripts"                 # 相对 workspace 根，缺省 workspace 根
+//! capture = 400                       # 凭条 summary 捕获 stdout 尾部字节
 //! ```
 //!
 //! 全结构 `deny_unknown_fields`（拼错字段 loud 报错，不静默丢）。原始反序
 //! 列化形态经 [`parse_connector_manifest`] 校验为 [`ValidatedConnector`]：
 //! id/op 字符集、op 唯一、恰一绑定（kind 仅描述性，混合绑定合法）、
-//! confirm/budget 值域、http path 占位符语法。
+//! confirm/budget 值域、http path / script command 占位符语法 + 白名单
+//! （占位符必须被 args_schema.properties 声明——未声明的 `{xxx}` 解析期
+//! 报错，不静默透传给 shell）。
 
 use std::collections::BTreeMap;
 
@@ -73,6 +85,22 @@ pub struct ConnectorMetaRaw {
     pub http: Option<HttpBaseRaw>,
     #[serde(default)]
     pub credentials: Option<BTreeMap<String, CredentialSlotRaw>>,
+    /// B2（2026-10-19 独占接管）：独占声明的 MCP server 名（单串或数组）。
+    /// 非空 + 启用 = 该 server 的全部导出工具从模型工具面隐藏（`mcp_` 前缀
+    /// 整组），只能经本 connector 的镜像 op / 显式 [[op]] 间接调用——治理闸
+    /// 唯一入口；停用/删除/总开关关 = 原生直通恢复。缺省/空 = 不独占
+    /// （默认态「装了即生效」，拦截只经显式声明出现）。
+    #[serde(default)]
+    pub exclusive_mcp: Option<ExclusiveMcpSpec>,
+}
+
+/// B2：`exclusive_mcp` 两形态（`exclusive_mcp = "playwright-mcp"` 或
+/// `exclusive_mcp = ["a", "b"]`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ExclusiveMcpSpec {
+    One(String),
+    Many(Vec<String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,6 +172,9 @@ pub struct OpDefRaw {
     /// 内置动作绑定（demo 域专用，如 `builtin.demo`）。
     #[serde(default)]
     pub action: Option<String>,
+    /// M2（2026-10-19）script 声明式绑定：`[op.script]` 表。
+    #[serde(default)]
+    pub script: Option<ScriptOpRaw>,
     #[serde(default)]
     pub args_schema: Option<serde_json::Value>,
 }
@@ -153,6 +184,34 @@ pub struct OpDefRaw {
 pub struct HttpOpRaw {
     pub method: HttpMethod,
     pub path: String,
+}
+
+/// M2（2026-10-19）script 绑定原始形态：`[op.script]`。
+///
+/// 声明式语义（与 `tool = "exec"` 的差别）：超时/目录/输出截断是**作者
+/// 钉死的**，不是模型现场决定；命令模板 `{arg}` 占位从 args_schema 展开
+/// 为单参数整体替换。执行映射到 exec 同源通路（完整 dispatch 瀑布 + 命令
+/// 守卫 + 安全 8 层照跑）——script 绑定不是绕过命令守卫的后门。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScriptOpRaw {
+    /// 命令模板（`{arg}` 占位符从 args_schema.properties 展开；未声明的
+    /// 占位符解析期报错）。
+    pub command: String,
+    /// 超时秒数；缺省走 config `connectors.script.default_timeout_secs`
+    /// （全局缺省 60）。上限 600 与 exec 工具闸对齐（声明超出 = 假承诺，
+    /// 解析期 loud 拒）。
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    /// 工作目录（相对 workspace 根；缺省 workspace 根。绝对路径/含 `..`
+    /// 解析期拒——声明式 workdir 不开越界通道；运行期 exec 工具的
+    /// restrict 边界照跑）。
+    #[serde(default)]
+    pub workdir: Option<String>,
+    /// 凭条 summary 捕获 stdout 尾部字节数（缺省 400；上限 65536——凭条
+    /// 是人看/卡面的，不是日志转储）。
+    #[serde(default)]
+    pub capture: Option<u32>,
 }
 
 /// E3（收官批）撤销声明原始形态：`undo = { op = "cancel_order", arg = "order_id" }`。
@@ -248,6 +307,9 @@ pub struct ValidatedConnector {
     /// 冲突时被 vault 凭据覆盖——执行面 merge 裁决）。
     pub static_headers: BTreeMap<String, String>,
     pub credentials: BTreeMap<String, CredentialBinding>,
+    /// B2：独占的 MCP server 名清单（归一后形态：去空白、去空、去重、保序）。
+    /// 空 = 不独占。
+    pub exclusive_mcp: Vec<String>,
     /// ops（保清单书写序）。
     pub ops: Vec<ValidatedOp>,
 }
@@ -304,6 +366,20 @@ pub enum OpBinding {
     },
     Action {
         action: String,
+    },
+    /// M2（2026-10-19）script 声明式绑定。
+    Script {
+        /// 命令模板（`{arg}` 占位待展开）。
+        command: String,
+        /// 模板占位符名（全部必须在 args_schema.properties 声明——解析期
+        /// 已验，运行期只按此展开）。
+        placeholders: Vec<String>,
+        /// 清单级超时覆盖（None = config 全局缺省 60）。
+        timeout_secs: Option<u64>,
+        /// 工作目录（相对 workspace 根；None = workspace 根）。
+        workdir: Option<String>,
+        /// 凭条 summary 捕获 stdout 尾部字节数（None = 400）。
+        capture: Option<u32>,
     },
 }
 
@@ -383,8 +459,39 @@ fn validate(raw: ConnectorManifestRaw) -> Result<ValidatedConnector, String> {
         }
     }
 
-    if raw.ops.is_empty() {
-        return Err(format!("connector `{}`: 至少要声明一个 [[op]]", meta.id));
+    // 治理补全 P1（2026-10-19）：纯独占接管形态合法化——ops 为空但声明了
+    // exclusive_mcp 时不再要求 [[op]]（镜像 op 就是它的操作面，B2 语义下
+    // 「整体接管一个 server、一个 op 都不写」是主场景；此前被迫写假 op）。
+    // 既无 op 又无独占 = 连接器没有任何可调用面，仍拒绝。
+    if raw.ops.is_empty() && meta.exclusive_mcp.is_none() {
+        return Err(format!(
+            "connector `{}`: 至少要声明一个 [[op]]（或 exclusive_mcp 独占接管）",
+            meta.id
+        ));
+    }
+
+    // B2：独占声明归一（去空白、拒空项、去重保序）。server 名是否真实
+    // 在册**不在此处校验**——独占声明可以走在装 MCP 之前（治理壳先行的
+    // 合法形态），前缀匹配在运行期按当下注册真相计算，未注册 = 无工具
+    // 可独占（无操作），不报错。
+    let mut exclusive_mcp: Vec<String> = Vec::new();
+    if let Some(spec) = meta.exclusive_mcp {
+        let entries = match spec {
+            ExclusiveMcpSpec::One(s) => vec![s],
+            ExclusiveMcpSpec::Many(v) => v,
+        };
+        for e in entries {
+            let e = e.trim().to_string();
+            if e.is_empty() {
+                return Err(format!(
+                    "connector `{}`: exclusive_mcp 不能含空项（server 名不能为空白）",
+                    meta.id
+                ));
+            }
+            if !exclusive_mcp.contains(&e) {
+                exclusive_mcp.push(e);
+            }
+        }
     }
 
     let mut ops = Vec::with_capacity(raw.ops.len());
@@ -395,20 +502,22 @@ fn validate(raw: ConnectorManifestRaw) -> Result<ValidatedConnector, String> {
             return Err(format!("connector `{}`: op id `{}` 重复", meta.id, op.id));
         }
 
-        // kind↔绑定一致性 + 恰一绑定
+        // kind↔绑定一致性 + 恰一绑定（M2 起 script 四选一）
         let http = op.http.is_some();
         let tool = op.tool.is_some();
         let action = op.action.is_some();
-        let binding_count = usize::from(http) + usize::from(tool) + usize::from(action);
+        let script = op.script.is_some();
+        let binding_count =
+            usize::from(http) + usize::from(tool) + usize::from(action) + usize::from(script);
         if binding_count == 0 {
             return Err(format!(
-                "connector `{}` op `{}`: 缺执行绑定（http / tool / action 三选一）",
+                "connector `{}` op `{}`: 缺执行绑定（http / tool / action / script 四选一）",
                 meta.id, op.id
             ));
         }
         if binding_count > 1 {
             return Err(format!(
-                "connector `{}` op `{}`: 执行绑定只能声明一个（http / tool / action）",
+                "connector `{}` op `{}`: 执行绑定只能声明一个（http / tool / action / script）",
                 meta.id, op.id
             ));
         }
@@ -443,6 +552,8 @@ fn validate(raw: ConnectorManifestRaw) -> Result<ValidatedConnector, String> {
             OpBinding::Tool {
                 tool: t.trim().to_string(),
             }
+        } else if let Some(s) = op.script {
+            validate_script_binding(&meta.id, &op.id, s, op.args_schema.as_ref())?
         } else {
             let a = op.action.expect("恰一绑定已保证");
             if a.trim().is_empty() {
@@ -548,12 +659,13 @@ fn validate(raw: ConnectorManifestRaw) -> Result<ValidatedConnector, String> {
         base_url,
         static_headers,
         credentials,
+        exclusive_mcp,
         ops,
     })
 }
 
-/// id / op id 字符集：`[a-z0-9_-]`，1..=64。
-fn validate_id(id: &str, what: &str) -> Result<(), String> {
+/// id / op id / 目录名字符集：`[a-z0-9_-]`，1..=64。
+pub(crate) fn validate_id(id: &str, what: &str) -> Result<(), String> {
     if id.is_empty() || id.len() > 64 {
         return Err(format!("{what} `{id}` 长度非法（1..=64）"));
     }
@@ -733,6 +845,86 @@ fn validate_header_value(value: &str) -> Result<(), String> {
 /// 校验 http path 占位符语法，返回占位符名列表。
 /// 合法形态：`{name}`（name 为 `[a-z0-9_]`，非空）；孤立 `}` 非法；孤立 `{`
 /// 或空名/非法字符 loud 报错。
+/// M2（2026-10-19）script 绑定校验：命令模板占位符语法 + 白名单 +
+/// 声明式字段的边界（超时上限对齐 exec 工具闸；workdir 相对且禁越界；
+/// capture 有界）。全部解析期 loud 拒——装得进去 ≠ 执行得住，假声明
+/// （超 600 的 timeout、越界 workdir）不该活到运行期才炸。
+fn validate_script_binding(
+    connector_id: &str,
+    op_id: &str,
+    s: ScriptOpRaw,
+    schema: Option<&serde_json::Value>,
+) -> Result<OpBinding, String> {
+    let err = |msg: String| -> String {
+        format!("connector `{connector_id}` op `{op_id}`: [op.script] {msg}")
+    };
+    let command = s.command;
+    if command.trim().is_empty() {
+        return Err(err("command 不能为空".to_string()));
+    }
+    // 占位符语法（与 http path 同款解析器）+ 白名单：每个占位符必须被
+    // args_schema.properties 声明——未声明的 `{xxx}` 解析期报错，不静默
+    // 透传给 shell（提示词约定形态下模型自由发挥面大的根因就是它）。
+    let placeholders =
+        parse_path_placeholders(&command).map_err(|e| err(format!("command 占位符非法: {e}")))?;
+    let properties = schema
+        .and_then(|v| v.get("properties"))
+        .and_then(|v| v.as_object());
+    for ph in &placeholders {
+        let declared = properties.is_some_and(|p| p.contains_key(ph.as_str()));
+        if !declared {
+            return Err(err(format!(
+                "command 占位符 `{{{ph}}}` 未在 args_schema.properties 声明（占位符必须白名单化，未声明的占位符不透传给 shell）"
+            )));
+        }
+    }
+    // 超时：0 无意义（立即超时）；>600 是假承诺（exec 工具闸 cap 600）。
+    if s.timeout_secs == Some(0) {
+        return Err(err("timeout_secs 不能为 0（要禁 script op 用 config connectors.script.default_timeout_secs = 0）".to_string()));
+    }
+    if s.timeout_secs.is_some_and(|t| t > 600) {
+        return Err(err(
+            "timeout_secs 上限 600（exec 工具闸 600s，声明超出 = 假承诺）".to_string(),
+        ));
+    }
+    // workdir：相对 workspace 根；绝对路径 / `..` 越界解析期拒。运行期
+    // exec 工具的 restrict 边界照跑（纵深防御第二道）。
+    if let Some(wd) = &s.workdir {
+        let wd_trim = wd.trim();
+        if wd_trim.is_empty() {
+            return Err(err(
+                "workdir 不能为空（要 workspace 根就删掉这个键）".to_string()
+            ));
+        }
+        let p = std::path::Path::new(wd_trim);
+        if p.is_absolute() || wd_trim.starts_with('~') {
+            return Err(err(format!(
+                "workdir `{wd_trim}` 必须是相对 workspace 根的路径（绝对路径/~ 开头都拒）"
+            )));
+        }
+        if p.components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(err(format!(
+                "workdir `{wd_trim}` 含 `..`（越界通道不开——声明式 workdir 不是沙箱旁路）"
+            )));
+        }
+    }
+    const MAX_CAPTURE: u32 = 65536;
+    if s.capture.is_some_and(|c| c as u64 > MAX_CAPTURE as u64) {
+        return Err(err(format!(
+            "capture 上限 {MAX_CAPTURE} 字节（凭条是人看/卡面的，不是日志转储）"
+        )));
+    }
+    Ok(OpBinding::Script {
+        command,
+        placeholders,
+        timeout_secs: s.timeout_secs,
+        workdir: s.workdir,
+        capture: s.capture,
+    })
+}
+
 fn parse_path_placeholders(path: &str) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
     let bytes = path.as_bytes();
