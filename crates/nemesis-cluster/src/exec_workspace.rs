@@ -556,6 +556,13 @@ fn kill_matching_cmdline(needle: &str, self_pid: u32) -> Result<Vec<u32>, String
     );
     let mut cmd = std::process::Command::new("powershell");
     cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+    // 黑窗根修（2026-10-19）：gateway（release windows 子系统）spawn 默认
+    // flags 会给 powershell 分配新可见 console。
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
     let out = run_with_timeout(cmd, std::time::Duration::from_secs(10))?;
     if !out.status.success() {
         return Err(format!(

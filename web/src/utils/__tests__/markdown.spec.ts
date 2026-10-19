@@ -77,3 +77,63 @@ describe('renderMarkdownHtml', () => {
     expect(html).toContain('<strong>强</strong>')
   })
 })
+
+// ---- 文件路径 linkify（问题 2：聊天里的文件路径可点击打开）----
+// 契约：三类路径成链（Windows 绝对 / 带目录相对 / 白名单裸文件名）、
+// 普通英文不成链、尾部标点不吞、<a> 内与 <pre> 代码块内跳过。
+
+describe('renderMarkdownHtml linkify（文件路径）', () => {
+  // 锚点属性序列化顺序固定：class → data-path → title（创建顺序），故
+  // data-path 恒为第二属性，匹配到闭引号即可（后随 title）。
+  const links = (html: string) => html.match(/<a class="file-link" data-path="[^"]*"/g) || []
+  const paths = (html: string) =>
+    [...html.matchAll(/data-path="([^"]*)"/g)].map((m) => m[1])
+
+  it('Windows 绝对路径成链（含行内代码形态）', () => {
+    const html = renderMarkdownHtml('报告已生成：`C:\\AI\\workspace\\reports\\总结.md`')
+    expect(links(html).length).toBe(1)
+    expect(paths(html)[0]).toBe('C:\\AI\\workspace\\reports\\总结.md')
+  })
+
+  it('带目录相对路径与裸白名单文件名成链', () => {
+    const html = renderMarkdownHtml('见 docs/总结.md 与 README.md')
+    expect(paths(html).sort()).toEqual(['README.md', 'docs/总结.md'])
+  })
+
+  it('带目录但非白名单扩展不成链（src/utils/markdown.ts）', () => {
+    const html = renderMarkdownHtml('改了 src/utils/markdown.ts')
+    expect(links(html).length).toBe(0)
+  })
+
+  it('普通英文与无扩展名相对 token 不成链', () => {
+    const html = renderMarkdownHtml('and/or not a path v1.2 config_value')
+    expect(links(html).length).toBe(0)
+  })
+
+  it('裸文件名只认白名单扩展名（evil.bat / run.ps1 不成链）', () => {
+    const html = renderMarkdownHtml('附件 evil.bat 与 run.ps1')
+    expect(links(html).length).toBe(0)
+  })
+
+  it('尾部标点不吞进链接（句号/右括号留在链外）', () => {
+    const html = renderMarkdownHtml('报告在 reports/a.md。详情见 (notes/plan.md)。')
+    expect(paths(html)).toContain('reports/a.md')
+    expect(paths(html)).toContain('notes/plan.md')
+    expect(html).toContain('</a>。')
+  })
+
+  it('已有链接内与代码块内不二次成链', () => {
+    const html = renderMarkdownHtml(
+      '[官网](https://example.com/C:\\x\\a.md) 与\n\n```\nC:\\no\\link.md\n```',
+    )
+    expect(paths(html)).not.toContain('C:\\x\\a.md')
+    expect(paths(html)).not.toContain('C:\\no\\link.md')
+  })
+
+  it('多个路径各自成链且正文完整保留', () => {
+    const html = renderMarkdownHtml('A.md 和 logs/run.log 都在')
+    expect(links(html).length).toBe(2)
+    expect(html).toContain('和')
+    expect(html).toContain('都在')
+  })
+})

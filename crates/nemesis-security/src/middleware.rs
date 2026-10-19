@@ -30,6 +30,11 @@ fn shell_command(command: &str) -> tokio::process::Command {
         use std::os::windows::process::CommandExt;
         let mut cmd = tokio::process::Command::new("cmd");
         cmd.raw_arg(format!("/C {}", command));
+        // 黑窗根修（2026-10-19）：cmd/taskkill 等 console 子进程从无 console
+        // 的 gateway（release windows 子系统）spawn 会分配新可见 console。
+        // 本构造器覆盖 execute_command/kill/term/check 等全部调用点，单点收口。
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
         cmd
     }
     #[cfg(not(target_os = "windows"))]

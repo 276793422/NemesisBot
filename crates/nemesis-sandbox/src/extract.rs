@@ -146,7 +146,10 @@ pub fn seven_zip_status(runtime_dir: &Path) -> (bool, &'static str) {
 /// Search PATH + common install dirs for a system 7z.exe (used only when no
 /// cached/downloaded copy exists yet).
 fn find_system_7z() -> Option<PathBuf> {
-    if let Ok(out) = std::process::Command::new("where").arg("7z.exe").output()
+    let mut c = std::process::Command::new("where");
+    c.arg("7z.exe");
+    crate::suppress_console(&mut c);
+    if let Ok(out) = c.output()
         && out.status.success()
         && let Some(line) = String::from_utf8_lossy(&out.stdout).lines().next()
     {
@@ -170,11 +173,13 @@ fn find_system_7z() -> Option<PathBuf> {
 /// Extract `installer` into `runtime_dir` using `seven_zip`. Overwrites existing.
 pub fn extract(installer: &Path, runtime_dir: &Path, seven_zip: &Path) -> Result<()> {
     // `7z x <installer> -o<dir> -y` — extract with full paths, yes to all.
-    let output = std::process::Command::new(seven_zip)
-        .arg("x")
+    let mut c = std::process::Command::new(seven_zip);
+    c.arg("x")
         .arg(installer)
         .arg(format!("-o{}", runtime_dir.display()))
-        .arg("-y")
+        .arg("-y");
+    crate::suppress_console(&mut c);
+    let output = c
         .output()
         .with_context(|| format!("spawn 7z at {}", seven_zip.display()))?;
     if !output.status.success() {

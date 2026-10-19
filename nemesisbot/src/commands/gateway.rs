@@ -132,6 +132,49 @@ pub(crate) mod r9_live_tests;
 #[cfg(all(test, windows))]
 mod scenario_tests;
 
+// -------------------------------------------------------------------------
+// 旧模板值一次性迁移（2026-10-19 用户报告「长任务 20 轮突然暂停」）
+// -------------------------------------------------------------------------
+
+/// INIT 模板（继承自 OpenClaw 迁移）在 `agents.defaults` 写死
+/// `max_tool_iterations: 20`；onboard 复制模板且**不覆盖已有文件**——老实例
+/// 永远带着 20，长任务 20 轮即暂停（模板后来改 0 不限、typed serde default
+/// 100，都只帮到新实例/缺键实例，部署态无人为其升级）。此处做一次性文件
+/// 迁移：**精确匹配 20**（旧模板指纹，非用户自选值）→ 改写 0（不限，对齐
+/// 现行模板意图）+ WARN 留痕；其他任何值（用户自选）不碰。
+///
+/// 为什么改**文件**而非 typed 内存：AgentLoop 的轮顶预算每轮新鲜读 raw
+/// config.json（M6-1 热读，config_watch::current_max_tool_iterations），
+/// 只改内存会立刻被热读盖回；落盘后热读/typed 双面一致（config.json 唯一
+/// 真相源纪律）。失败（只读盘等）= 按原值运行 + WARN，不阻塞启动。
+pub(crate) fn migrate_legacy_max_tool_iterations(config_file: &std::path::Path) {
+    let Ok(content) = std::fs::read_to_string(config_file) else {
+        return; // 无 config（onboard 前只跑 embedded 默认）——无事可迁
+    };
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return; // 解析失败交给 load_config 的错误路径，不在这里抢
+    };
+    let current = v
+        .get("agents")
+        .and_then(|a| a.get("defaults"))
+        .and_then(|d| d.get("max_tool_iterations"))
+        .and_then(|x| x.as_i64());
+    if current != Some(20) {
+        return;
+    }
+    v["agents"]["defaults"]["max_tool_iterations"] = serde_json::json!(0);
+    let write = serde_json::to_string_pretty(&v)
+        .map_err(|e| e.to_string())
+        .and_then(|s| std::fs::write(config_file, s).map_err(|e| e.to_string()));
+    match write {
+        Ok(()) => tracing::warn!(
+            "[Config] 已迁移旧模板值 agents.defaults.max_tool_iterations: 20 → 0（不限）。\
+             此值为早期模板遗留，长任务 20 轮即暂停（2026-10-19 用户报告）；如确需限轮请手动改回。"
+        ),
+        Err(e) => tracing::warn!("[Config] 旧模板值迁移写盘失败（忽略，按原值 20 运行）: {e}"),
+    }
+}
+
 /// Run the gateway command.
 pub async fn run(
     local: bool,
@@ -162,6 +205,10 @@ pub async fn run(
     // 报「当前版本未知」）。
     {
         let home = crate::common::resolve_home(local);
+        // 旧模板值一次性迁移（见 fn 文档）——必须先于 GatewayCtx::assemble
+        // 读配置：AgentLoop 的轮顶预算每轮新鲜读 raw config.json（M6-1），
+        // 迁移落盘后热读与 typed 装配双面一致。
+        migrate_legacy_max_tool_iterations(&crate::common::config_path(&home));
         let ws_dir = crate::common::workspace_path(&home);
         let recovery = nemesis_web::selfupdate::recover_on_boot(
             &ws_dir,

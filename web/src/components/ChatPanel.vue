@@ -450,8 +450,36 @@ function scrollToBottomIfNear() {
   }
 }
 
-function onChatAreaClick() {
+function onChatAreaClick(ev: MouseEvent) {
+  onFileLinkClick(ev)
   chatInput.value?.focus()
+}
+
+// 文件链接点击（问题 2，2026-10-19）：markdown linkify 产出的
+// .file-link 经事件委托调 fs.open——后端做 containment + 扩展名白名单：
+// 目录/白名单文件直接打开，其余类型降级为文件管理器定位（不执行）。
+// 会话内相对路径按 session root 解析（项目会话落在项目目录）。
+async function onFileLinkClick(ev: MouseEvent) {
+  const el = (ev.target as HTMLElement | null)?.closest('a.file-link') as HTMLElement | null
+  if (!el) return
+  ev.preventDefault()
+  const path = el.dataset.path
+  if (!path) return
+  try {
+    const res = await request('fs', 'open', {
+      path,
+      session_id: effectiveSid.value || undefined,
+    })
+    if (res?.action === 'reveal') {
+      toast.info('该文件类型不支持直接打开，已在文件管理器中定位')
+    } else if (res?.kind === 'dir') {
+      toast.success('已在文件管理器中打开目录')
+    } else {
+      toast.success('已用默认应用打开文件')
+    }
+  } catch (e: any) {
+    toast.error(`打开失败：${e?.message ?? e}`)
+  }
 }
 
 // P1（2026-09-21）：tool_event 载荷 → store 状态的唯一转换。实时 push
