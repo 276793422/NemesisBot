@@ -631,9 +631,19 @@ fn rejects_script_timeout_zero_and_over_cap() {
 
 #[test]
 fn rejects_script_workdir_absolute_and_traversal() {
-    let abs = SCRIPT_VALID.replace("workdir = \"scripts\"", "workdir = \"C:\\\\tmp\"");
+    // 绝对路径按平台语义各拒各形：`/tmp` 全平台拒（Unix=is_absolute；
+    // Windows=RootDir 缺盘符根形，join 解析到当前盘根）；Windows 盘符形
+    // `C:\tmp` 只在 Windows 拒——Unix 上是普通相对名（合法、join 不越界）。
+    let abs = SCRIPT_VALID.replace("workdir = \"scripts\"", "workdir = \"/tmp\"");
     let err = parse_connector_manifest(&abs).expect_err("绝对路径 workdir");
     assert!(err.contains("必须是相对"), "got: {err}");
+
+    #[cfg(windows)]
+    {
+        let abs = SCRIPT_VALID.replace("workdir = \"scripts\"", "workdir = \"C:\\\\tmp\"");
+        let err = parse_connector_manifest(&abs).expect_err("绝对路径 workdir");
+        assert!(err.contains("必须是相对"), "got: {err}");
+    }
 
     let tilde = SCRIPT_VALID.replace("workdir = \"scripts\"", "workdir = \"~/scripts\"");
     let err = parse_connector_manifest(&tilde).expect_err("~ 开头 workdir");

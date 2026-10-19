@@ -3371,9 +3371,12 @@ async fn test_script_binding_executes_with_placeholder_expansion_and_capture() {
     assert_eq!(receipts.len(), 1);
     let r = &receipts[0];
     assert_eq!(r.outcome, "executed");
-    // capture=8：exec 原样回传 stdout（含行尾 \r\n），summary = UTF-8 尾部
-    // 8 字节（ASCII 硬截断）。
+    // capture=8：exec 原样回传 stdout（行尾随平台：Windows \r\n / Unix \n），
+    // summary = UTF-8 尾部 8 字节（ASCII 硬截断）。
+    #[cfg(windows)]
     let full = "hello-e2e\r\n";
+    #[cfg(not(windows))]
+    let full = "hello-e2e\n";
     assert_eq!(r.summary, &full[full.len() - 8..], "capture 尾部截断进凭条");
     assert!(r.budget_consumed.is_some(), "executed 记账随行");
 }
