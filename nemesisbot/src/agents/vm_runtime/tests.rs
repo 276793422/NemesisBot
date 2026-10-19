@@ -505,6 +505,56 @@ fn persistent_execution_subset_gate_and_config_off() {
     );
 }
 
+/// B9-1 内部方法通道双钉（gateway 同步引擎的闸位契约）：
+/// ① `internal_call` **不走** agent 工具面子集闸——bulk_write 等内部方法
+///   未就绪环境的失败必须是诚实 Unavailable（可回落），错误里绝不出现
+///   「子集」措辞（闸位置钉死：子集闸永远拦不到同步引擎）；
+/// ② `execute_persistent`（agent 工具面）**必须拦**内部方法——agent 拿到
+///   bulk_write 名字也进不了同步通道。
+#[test]
+fn internal_call_gate_position_pins() {
+    use nemesis_agent::remote_executor_tool::{PersistentCallError, PersistentExecutor};
+
+    let rt = tokio::runtime::Runtime::new().expect("rt");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_config(&tmp.path().join("config.json"), &full_vm_json(false));
+    let sup = VmSupervisor::new(tmp.path().to_path_buf(), tmp.path().join("config.json"));
+    let ctx = nemesis_agent::context::RequestContext::new("web", "c1", "u", "s1");
+    let exec_root = tmp.path().join("exec");
+
+    // ① internal_call：config 关 → ensure_running Unavailable（未发出请求）。
+    let err = rt
+        .block_on(sup.internal_call(
+            "agent-1",
+            "bulk_write",
+            serde_json::json!({"transfer": "t", "seq": 0, "total": 1, "data": ""}),
+        ))
+        .unwrap_err();
+    let msg = match &err {
+        VmSupervisorError::Unavailable(m) => m.clone(),
+        other => panic!("internal_call 必须走 Unavailable 臂: {other:?}"),
+    };
+    assert!(msg.contains("enabled=false"), "{msg}");
+    assert!(
+        !msg.contains("子集"),
+        "internal_call 不得被子集闸拦截: {msg}"
+    );
+    assert!(!msg.contains("VM_GUEST_TOOLS"), "{msg}");
+
+    // ② agent 工具面对内部方法恒关：execute_persistent("bulk_write") →
+    //    ToolFailed（不回落），文案点名不在 guest 子集。
+    let err = rt
+        .block_on(async {
+            sup.execute_persistent("agent-1", &exec_root, "bulk_write", "{}", &ctx)
+                .await
+        })
+        .unwrap_err();
+    assert!(
+        matches!(err, PersistentCallError::ToolFailed(ref m) if m.contains("子集")),
+        "bulk_write 必须被子集闸拦成 ToolFailed: {err:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // B6 快速试玩族（VmBridge trait 面；真机链路仍归 vm_smoke——这里钉闸）
 // ---------------------------------------------------------------------------
@@ -528,7 +578,7 @@ fn try_family_off_state_gates() {
     // start / exec：enabled 闸诚实拒绝（off-state 零激活铁律）。
     let err = rt.block_on(sup.try_start()).unwrap_err();
     assert!(err.contains("总开关"), "start 必须被 enabled 闸拦: {err}");
-    let err = rt.block_on(sup.try_exec("uname -a")).unwrap_err();
+    let err = rt.block_on(sup.try_exec("uname -a", None)).unwrap_err();
     assert!(err.contains("总开关"), "exec 必须被 enabled 闸拦: {err}");
 
     // stop = 停机方向：无闸，未运行 = 幂等 Ok（试玩卡停止按钮不报错）。
@@ -565,7 +615,7 @@ fn try_family_enabled_gates_arch_then_image() {
         err.contains("base.qcow2") && err.contains("环境安装"),
         "镜像闸指路: {err}"
     );
-    let err = rt.block_on(sup.try_exec("uname -a")).unwrap_err();
+    let err = rt.block_on(sup.try_exec("uname -a", None)).unwrap_err();
     assert!(err.contains("base.qcow2"), "exec 同过镜像闸: {err}");
 
     // 镜像齐（占位文件）→ status 就绪转绿（真启动仍归 vm_smoke 真机面）。
@@ -576,4 +626,89 @@ fn try_family_enabled_gates_arch_then_image() {
     let st = sup.try_status();
     assert_eq!(st["image_ready"], true);
     assert_eq!(st["arch_supported"], true);
+}
+
+// ---------------------------------------------------------------------------
+// B6 热修（try.start 发起即返回）：启动在途状态机 + 在途闸
+// （真机教训 2026-10-19：冷启动同步等 30-60s 撞前端 30s WSAPI 超时）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn try_launch_claim_state_machine() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_config(&tmp.path().join("config.json"), &full_vm_json(false));
+
+    // 无句柄（未 set_self_arc）：认领 = None + 状态回滚（同步回落语义）。
+    let plain = VmSupervisor::new(tmp.path().to_path_buf(), tmp.path().join("config.json"));
+    assert!(plain.try_launch_claim().is_none());
+    let (starting, err) = plain.try_launch_snapshot();
+    assert!(!starting, "回滚后不得残留在途位");
+    assert!(err.is_none());
+
+    // 有句柄：认领返回自引用；在途期间二次认领幂等 None。
+    let sup = std::sync::Arc::new(VmSupervisor::new(
+        tmp.path().to_path_buf(),
+        tmp.path().join("config.json"),
+    ));
+    sup.set_self_arc();
+    let owned = sup.try_launch_claim().expect("首次认领成功");
+    assert!(std::sync::Arc::ptr_eq(&owned, &sup));
+    assert!(sup.try_launch_claim().is_none(), "在途幂等");
+
+    // 在途停止登记（try.stop 落点）→ 收尾翻牌带错 → 消费（读后清）。
+    assert!(sup.try_launch_stop_if_starting());
+    sup.try_launch_finish(Some("炸了".to_string()));
+    let (starting, err) = sup.try_launch_snapshot();
+    assert!(!starting);
+    assert_eq!(err.as_deref(), Some("炸了"));
+    assert!(
+        sup.try_launch_take_stop_request(),
+        "在途期登记的停止请求可消费"
+    );
+    assert!(!sup.try_launch_take_stop_request(), "读后清");
+    assert!(!sup.try_launch_stop_if_starting(), "收尾后不再接受停止登记");
+
+    // 成功收尾清错。
+    sup.try_launch_finish(None);
+    assert!(sup.try_launch_snapshot().1.is_none());
+}
+
+#[test]
+fn try_family_starting_gates_exec_and_stop_lands_request() {
+    use nemesis_web::handlers::vm::VmBridge;
+
+    let rt = tokio::runtime::Runtime::new().expect("rt");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let cfg = tmp.path().join("config.json");
+    write_config(&cfg, &full_vm_json(true));
+    let images = tmp.path().join("tools").join("vm").join("images");
+    std::fs::create_dir_all(&images).expect("images dir");
+    std::fs::write(images.join("base.qcow2"), b"stub").expect("base");
+    std::fs::write(images.join("seed.iso"), b"stub").expect("seed");
+    let sup = std::sync::Arc::new(VmSupervisor::new(tmp.path().to_path_buf(), cfg));
+    sup.set_self_arc();
+
+    // 模拟在途（真启动归 vm_smoke 真机面）：认领置位。
+    assert!(sup.try_launch_claim().is_some());
+
+    // status 投影在途可见（前端轮询契约：starting + running 两字段）。
+    let st = sup.try_status();
+    assert_eq!(st["running"], false);
+    assert_eq!(st["starting"], true);
+
+    // exec 在途诚实拒绝（并发 ensure 双开 QEMU 抢同一 overlay 的 qcow2 锁）。
+    let err = rt.block_on(sup.try_exec("uname -a", None)).unwrap_err();
+    assert!(err.contains("启动中"), "exec 在途闸: {err}");
+
+    // stop 在途 = 登记请求（Ok + 注记），不报错。
+    let res = rt.block_on(sup.try_stop()).expect("stop 在途登记");
+    assert_eq!(res["starting"], true);
+    assert!(res["note"].as_str().unwrap().contains("自动停机"));
+    assert!(sup.try_launch_take_stop_request(), "请求已登记");
+
+    // 收尾（失败形态）：starting 翻 false + last_error 透出（轮询侧展示）。
+    sup.try_launch_finish(Some("不可用: 加速器缺席".to_string()));
+    let st = sup.try_status();
+    assert_eq!(st["starting"], false);
+    assert_eq!(st["last_error"], "不可用: 加速器缺席");
 }

@@ -40,6 +40,82 @@ fn shell_command(command: &str) -> tokio::process::Command {
     }
 }
 
+/// B8d：受超时约束执行 shell 命令——spawn + 并发 drain + 超时树杀。此前
+/// `timeout(dur, cmd.output())` 超时取消 future 连带 drop Child 默认不
+/// kill，被超时命令继续在后台跑（孤儿）；移进 future 的管道读在取消时
+/// 还会丢残余输出。形态对齐 guest exec / shell.rs（B2 管道并发 drain，
+/// 防写满管道缓冲死锁）。返回 (stdout, stderr, exit status)。
+async fn run_shell_bounded(
+    command: &str,
+    timeout_secs: u64,
+) -> Result<(String, String, std::process::ExitStatus), String> {
+    let timeout = std::time::Duration::from_secs(timeout_secs.min(600));
+    let mut cmd = shell_command(command);
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    // 树杀前提：Unix 侧进程组（对齐 background_registry::tree_kill）。
+    #[cfg(unix)]
+    cmd.process_group(0);
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("failed to execute command: {e}"))?;
+    let out_task = tokio::spawn(drain_child_pipe(child.stdout.take()));
+    let err_task = tokio::spawn(drain_child_pipe(child.stderr.take()));
+
+    match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(Ok(status)) => {
+            let stdout = out_task.await.unwrap_or_default();
+            let stderr = err_task.await.unwrap_or_default();
+            Ok((stdout, stderr, status))
+        }
+        Ok(Err(e)) => Err(format!("failed to execute command: {e}")),
+        Err(_) => {
+            // 超时 = 终止整棵进程树并收尸后再报错，不留孤儿。
+            kill_child_tree(child.id()).await;
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            let _ = out_task.await;
+            let _ = err_task.await;
+            Err(format!("command timed out after {timeout_secs}s"))
+        }
+    }
+}
+
+async fn drain_child_pipe(pipe: Option<impl tokio::io::AsyncRead + Unpin + Send>) -> String {
+    let Some(mut pipe) = pipe else {
+        return String::new();
+    };
+    let mut buf = Vec::new();
+    use tokio::io::AsyncReadExt;
+    let _ = pipe.read_to_end(&mut buf).await;
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+/// 超时树杀（guest `tools::kill_tree` / `background_registry::tree_kill`
+/// 同款语义）：Windows = `taskkill /T /F`；Unix = 进程组 SIGKILL。尽力
+/// 而为：2s 护栏，失败不阻塞超时错误返回（start_kill 直杀 shell 兜底）。
+async fn kill_child_tree(pid: Option<u32>) {
+    let Some(pid) = pid else {
+        return;
+    };
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = tokio::process::Command::new("taskkill");
+        c.args(["/T", "/F", "/PID", &pid.to_string()]);
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut c = tokio::process::Command::new("kill");
+        c.args(["-9", "--", &format!("-{pid}")]);
+        c
+    };
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), cmd.output()).await;
+}
+
 /// Permission preset for security operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionPreset {
@@ -938,25 +1014,15 @@ impl<'a> SecureProcessWrapper<'a> {
             timeout_secs,
         );
 
-        let timeout = std::time::Duration::from_secs(timeout_secs.min(600));
-        let result = tokio::time::timeout(timeout, shell_command(command).output()).await;
-
-        match result {
-            Ok(Ok(output)) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                if output.status.success() {
-                    Ok(stdout.trim().to_string())
-                } else {
-                    Err(format!(
-                        "exit code {}: {}",
-                        output.status.code().unwrap_or(-1),
-                        stderr.trim()
-                    ))
-                }
-            }
-            Ok(Err(e)) => Err(format!("failed to execute command: {}", e)),
-            Err(_) => Err(format!("command timed out after {}s", timeout_secs)),
+        let (stdout, stderr, status) = run_shell_bounded(command, timeout_secs).await?;
+        if status.success() {
+            Ok(stdout.trim().to_string())
+        } else {
+            Err(format!(
+                "exit code {}: {}",
+                status.code().unwrap_or(-1),
+                stderr.trim()
+            ))
         }
     }
     /// Spawn a process and return its PID without waiting for completion.
@@ -1172,19 +1238,13 @@ impl<'a> SecureProcessWrapper<'a> {
     ) -> Result<ProcessOutput, String> {
         self.check_process_exec(command)?;
 
-        let timeout = std::time::Duration::from_secs(timeout_secs.min(600));
-        let result = tokio::time::timeout(timeout, shell_command(command).output()).await;
-
-        match result {
-            Ok(Ok(output)) => Ok(ProcessOutput {
-                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-                stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-                exit_code: output.status.code(),
-                success: output.status.success(),
-            }),
-            Ok(Err(e)) => Err(format!("failed to execute command: {}", e)),
-            Err(_) => Err(format!("command timed out after {}s", timeout_secs)),
-        }
+        let (stdout, stderr, status) = run_shell_bounded(command, timeout_secs).await?;
+        Ok(ProcessOutput {
+            stdout,
+            stderr,
+            exit_code: status.code(),
+            success: status.success(),
+        })
     }
 }
 

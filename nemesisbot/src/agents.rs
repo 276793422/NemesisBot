@@ -44,6 +44,14 @@ pub mod vm_runtime;
 #[cfg(feature = "vm")]
 pub(crate) mod vm_bridge;
 
+/// B7 伴生测试（vm_bridge.rs 的 WSL 自动路由纯函数；零内联纪律）。
+#[cfg(all(test, feature = "vm"))]
+mod vm_bridge_tests;
+
+/// B9-3 伴生测试（vm_bridge.rs 的同步目标解析；零内联纪律）。
+#[cfg(all(test, feature = "vm"))]
+mod vm_bridge_sync_tests;
+
 use std::path::{Path, PathBuf};
 
 use nemesis_path::{resolve_agent_home_in_workspace, resolve_agent_memory_dir_in_workspace};
@@ -96,6 +104,14 @@ pub struct AgentManager {
     /// feature 关闭时恒 None，档位路由与管理面诚实降级，off-state 字节
     /// 不变）。gateway post_agent 装配（同 set_runtime 的晚注入纪律）。
     vm: std::sync::Arc<std::sync::RwLock<Option<std::sync::Arc<dyn VmBackend>>>>,
+    /// B9-1：VM 具体型监督器槽——vm_sync 同步引擎的 `internal_call`（内部
+    /// 方法通道）需要具体型 [`vm_runtime::VmSupervisor`]；`vm` trait 槽是
+    /// feature 无关投影，不携带内部方法。与 `vm` 槽并存（post_agent 同一
+    /// 装配点装同一 Arc 的两投影）。
+    #[cfg(feature = "vm")]
+    vm_supervisor: std::sync::Arc<
+        std::sync::RwLock<Option<std::sync::Arc<crate::agents::vm_runtime::VmSupervisor>>>,
+    >,
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +176,8 @@ impl AgentManager {
             runtime: std::sync::Arc::new(std::sync::RwLock::new(None)),
             loop_manager: std::sync::Arc::new(std::sync::RwLock::new(None)),
             vm: std::sync::Arc::new(std::sync::RwLock::new(None)),
+            #[cfg(feature = "vm")]
+            vm_supervisor: std::sync::Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -210,6 +228,43 @@ impl AgentManager {
     /// 取 VM 后端快照（feature 关 / 未装配 = None）。
     pub fn vm_backend(&self) -> Option<std::sync::Arc<dyn VmBackend>> {
         self.vm.read().expect("agent manager vm lock").clone()
+    }
+
+    /// B9-1：VM 具体型监督器注入（与 set_vm_backend 同一装配点、同一 Arc
+    /// 的两投影；幂等覆盖）。
+    #[cfg(feature = "vm")]
+    pub fn set_vm_supervisor(&self, sup: std::sync::Arc<crate::agents::vm_runtime::VmSupervisor>) {
+        *self
+            .vm_supervisor
+            .write()
+            .expect("agent manager vm supervisor lock") = Some(sup);
+    }
+
+    /// 取具体型监督器快照（vm 关 / 未装配 = None——vm_sync 诚实不可用）。
+    #[cfg(feature = "vm")]
+    pub fn vm_supervisor(&self) -> Option<std::sync::Arc<crate::agents::vm_runtime::VmSupervisor>> {
+        self.vm_supervisor
+            .read()
+            .expect("agent manager vm supervisor lock")
+            .clone()
+    }
+
+    /// B9-1：按项目 ID 查项目 agent 记录（kind=project 且 project_id 匹配；
+    /// status 不筛——provisioning/failed 形态下 ensure_running 会诚实失败，
+    /// 拦截消息比静默放行诚实）。存储读取失败 = warn + None（消息路由热
+    /// 路径不因账本故障整体停车，但留痕）。
+    pub fn agent_by_project(&self, project_id: &str) -> Option<AgentRecord> {
+        match self.store.list_all() {
+            Ok(rows) => rows.into_iter().find(|r| {
+                r.kind == agent_kind::PROJECT && r.project_id.as_deref() == Some(project_id)
+            }),
+            Err(e) => {
+                tracing::warn!(
+                    "[Agents] agent_by_project({project_id}) 存储读取失败，按无 agent 处理: {e}"
+                );
+                None
+            }
+        }
     }
 
     /// 两阶段创建（自建 agent）：`provisioning` 落库 → home 物化（幂等）→

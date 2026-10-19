@@ -921,6 +921,31 @@ pub fn write_json_response<T: serde::Serialize>(value: &T) -> Vec<u8> {
 // Handler: /api/internal (undocumented control endpoint)
 // ---------------------------------------------------------------------------
 
+/// B9-3 VM 同步内连（`vm` feature 开 = 转发 vm bridge；feature 关 = 诚实
+/// 报错不假装成功）。与 handler 的 cfg 闸解耦——调用臂无 cfg、feature 差
+/// 异收拢在这一个函数里。
+#[allow(unused_variables)]
+async fn vm_sync_internal(cmd: &str, project: &str) -> Result<serde_json::Value, String> {
+    #[cfg(feature = "vm")]
+    {
+        let Some(bridge) = crate::handlers::vm::vm_bridge() else {
+            return Err(
+                "VM 管理未装配（vm bridge 未接线，网关需为装配 gateway 模式且 vm feature 开）"
+                    .to_string(),
+            );
+        };
+        match cmd {
+            "vm_sync_status" => bridge.sync_status(project).await,
+            "vm_sync_commit" => bridge.sync_commit(project).await,
+            _ => bridge.sync_resync(project).await,
+        }
+    }
+    #[cfg(not(feature = "vm"))]
+    {
+        Err("vm feature 未编译：VM 工作副本同步不可用".to_string())
+    }
+}
+
 /// `POST /api/internal` — internal control endpoint for CLI commands.
 ///
 /// Requires `X-Auth-Token` header matching `web.auth_token`.
@@ -972,6 +997,26 @@ pub async fn handle_api_internal(
                 "status": "ok",
                 "engaged": estop.is_engaged(),
             })));
+        }
+        // B9-3 项目工作副本同步（CLI `vm commit` / `vm resync` / `vm sync-status`
+        // 转发面）：VM 实例常驻 gateway 进程，CLI 进程不持有 supervisor——
+        // 与 estop 同款直连（不经 internal_cmd_tx 的 fire-and-forget——同步
+        // 是请求-响应形态，结果必须带回）。恒 HTTP 200 `{status: ok|error,
+        // ...}`：业务失败（项目不存在 / 非 VM 档 / 冲突清单）不是传输错误，
+        // CLI 按体解析，不做状态码二值化。
+        "vm_sync_status" | "vm_sync_commit" | "vm_sync_resync" => {
+            let project = body.get("project").and_then(|v| v.as_str()).unwrap_or("");
+            if project.trim().is_empty() {
+                return Ok(Json(serde_json::json!({
+                    "status": "error",
+                    "error": "缺少 project（项目 id 或名称）",
+                })));
+            }
+            let r = vm_sync_internal(cmd, project).await;
+            return Ok(Json(match r {
+                Ok(result) => serde_json::json!({ "status": "ok", "result": result }),
+                Err(error) => serde_json::json!({ "status": "error", "error": error }),
+            }));
         }
         _ => {}
     }

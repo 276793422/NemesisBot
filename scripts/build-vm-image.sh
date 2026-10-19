@@ -167,8 +167,15 @@ INSTANCE_ID="nemesis-guest-base-$(date +%Y%m%d)-${GUEST_SHA:0:8}"
 # variant 扩展（P5 第 3 步 E 线）：desktop = WM + Chromium（浏览器登录保持
 # 人工验证面的载体——自动化断言不含 GUI 登录，诚实边界）。cloud-config
 # packages 段首启 apt 安装（数百 MB，一次性进 base 之后的 overlay/镜像）。
+# B8b：默认 variant 预装基础工具链（build-essential/git/curl，约几百 MB）
+# ——开箱即写代码，apt install 工具链的分钟级首启等待不再必要。
 case "$VARIANT" in
-    "")          VARIANT_USERDATA="" ;;
+    "")          VARIANT_USERDATA='
+packages:
+  - build-essential
+  - git
+  - curl
+' ;;
     desktop)     VARIANT_USERDATA='
 packages:
   - openbox
@@ -207,6 +214,9 @@ write_files:
       fi
       export NEMESISBOT_GUEST_TOKEN="\$serial"
       export NEMESISBOT_GUEST_WORKSPACE=/workspace
+      # B8a：systemd 系统服务环境无 HOME——不补则 `~` 不展开（字面量），
+      # `cd ~` 直接失败；指向执行根，agent 与人同惠。
+      export HOME=/workspace
       exec /usr/local/bin/nemesis-guest-agent --listen 0.0.0.0:$GUEST_AGENT_PORT
   - path: /etc/systemd/system/nemesis-guest-agent.service
     permissions: "0644"

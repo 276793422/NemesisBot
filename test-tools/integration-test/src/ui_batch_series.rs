@@ -1365,3 +1365,75 @@ pub async fn test_ui_p5_vm_bootstrap(_ws: &TestWorkspace) -> Vec<TestResult> {
 
     results
 }
+
+// ---------------------------------------------------------------------------
+// P5-VM：vm 项目工作副本同步族表面（工作副本 B9-3；行为面归 cluster-uat/真机臂）
+// ---------------------------------------------------------------------------
+/// vm 同步三命令表面契约（IT 默认配置：无注册项目）：① 缺 data / 缺 project
+/// **诚实拒绝**（参数面）；② 未注册项目三条命令全部「项目不存在」（路由经
+/// handler→bridge→supervisor→项目解析全链在真进程 gateway 打通，诚实失败
+/// 而非假成功/panic）。
+pub async fn test_ui_p5_vm_sync(_ws: &TestWorkspace) -> Vec<TestResult> {
+    let suite = "ui/p5_vm_sync";
+    let mut results = Vec::new();
+    print_suite_header(suite);
+
+    let mut api = match WsApi::connect().await {
+        Ok(a) => a,
+        Err(e) => {
+            results.push(fail(suite, format!("ws connect: {e}")));
+            return results;
+        }
+    };
+
+    // ① 缺 data
+    let (_, err) = api.call("vm", "sync.status", None).await;
+    let missing_data = err.as_deref().is_some_and(|e| e.contains("missing data"));
+    results.push(if missing_data {
+        pass(
+            &format!("{}/missing_data_reject", suite),
+            "缺 data 诚实拒绝",
+        )
+    } else {
+        fail(
+            &format!("{}/missing_data_reject", suite),
+            format!("未拒：err={err:?}"),
+        )
+    });
+
+    // ② 缺 project
+    let (_, err) = api.call("vm", "sync.status", Some(json!({}))).await;
+    let missing_project = err.as_deref().is_some_and(|e| e.contains("project"));
+    results.push(if missing_project {
+        pass(
+            &format!("{}/missing_project_reject", suite),
+            "缺 project 诚实拒绝",
+        )
+    } else {
+        fail(
+            &format!("{}/missing_project_reject", suite),
+            format!("未拒：err={err:?}"),
+        )
+    });
+
+    // ③ 未注册项目：三条命令全链路由 + 诚实「项目不存在」
+    for cmd in ["sync.status", "commit", "resync"] {
+        let (_, err) = api
+            .call("vm", cmd, Some(json!({ "project": "nb-it-nonexistent" })))
+            .await;
+        let not_found = err.as_deref().is_some_and(|e| e.contains("项目不存在"));
+        results.push(if not_found {
+            pass(
+                &format!("{}/unregistered_{cmd}", suite),
+                "全链路由打通，未注册项目诚实报错",
+            )
+        } else {
+            fail(
+                &format!("{}/unregistered_{cmd}", suite),
+                format!("文案缺根因：err={err:?}"),
+            )
+        });
+    }
+
+    results
+}

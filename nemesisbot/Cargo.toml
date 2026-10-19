@@ -258,6 +258,8 @@ base64 = { workspace = true }
 # 反向桥客户端（goal 一期批次二）：出站 ws 连中继 + access_check 哈希比对
 tokio-tungstenite = { workspace = true }
 sha2 = { workspace = true }
+# B9-1：vm_sync 打包项目树（bulk_write 分块进 VM）
+tar = { workspace = true }
 getrandom = "0.2"
 async-trait = { workspace = true }
 parking_lot = { workspace = true }

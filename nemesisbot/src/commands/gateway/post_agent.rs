@@ -641,10 +641,18 @@ pub(crate) async fn init_post_agent(
                         // workspace 根，与现行布局不符且无其他生产调用方）。
                         vm_config_path,
                     ));
+                    // 试玩 try.start 后台启动任务的 owned 句柄（发起即返回
+                    // 语义依赖此注入；缺席 = 同步回落长请求）。
+                    vm_sup.set_self_arc();
                     // P5 第 4 步：VM 后端注入 manager（档位路由执行器每调用
                     // 经 manager 现取——晚注入纪律：loop 构建晚于本块，路由
                     // 侧无需感知装配时序）。
                     mgr.set_vm_backend(vm_sup.clone());
+                    // B9（VM 项目工作副本）：concrete supervisor 槽并行注入
+                    // ——vm_sync 需要 internal_call（guest 内部方法通道，
+                    // trait 对象 VmBackend 上没有），manager 里与 trait 槽
+                    // 各持一份 Arc，同一实例。
+                    mgr.set_vm_supervisor(vm_sup.clone());
                     // P5 第 4 步：vm.* WSAPI 接线（web 侧 trait + 槽，
                     // 实现落本 crate——依赖方向 nemesisbot→nemesis-web，
                     // agents bridge 同款）。manager 不持 VM 引用——真注入

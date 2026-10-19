@@ -178,6 +178,15 @@ impl ProjectLoopManager {
             self.session_store.clone(),
         )
         .map_err(|e| format!("构建项目 loop 失败: {e}"))?;
+        // B9 commit 闸（turn 末 VM→宿主回传 + 基线刷新）：全项目 loop 无差别
+        // 注册（触发期自检——VM 档是 agents 表运行期属性，非 VM 项目零开销
+        // 穿越；supervisor 未装配时同样零开销穿越）。
+        #[cfg(feature = "vm")]
+        agent_loop.add_lifecycle_hook(std::sync::Arc::new(crate::vm_sync::VmCommitHook {
+            project_id: entry.id.clone(),
+            project_path: entry.path.clone(),
+            main_workspace: self.main_workspace.clone(),
+        }));
         // 与主 loop 的 AgentLoopServiceAdapter 同构：per-loop mpsc 入站通道
         // + reinject tx（queue-drain 回灌走同一条路）+ 后台任务消费。
         let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(1024);
@@ -382,6 +391,21 @@ impl ProjectLoopManager {
         let RouteDecision::ToProject(pid) = route_decision(msg, owner.as_deref()) else {
             return; // ToMain：主桥放行，这里丢弃
         };
+        // B9 开工闸（VM 档项目）：投递前确保 VM 内工作副本与宿主一致。
+        // 拦截/冲突都扣住消息（不出半就绪的工作副本给 agent 撞，不出半
+        // 裁决的冲突面给 agent 撞）。非 VM 档项目零开销直通。
+        #[cfg(feature = "vm")]
+        match self.vm_sync_gate(&pid).await {
+            GateVerdict::Blocked(e) => {
+                self.send_sync_blocked_error(msg, &pid, &e);
+                return;
+            }
+            GateVerdict::Conflicts(files) if !files.is_empty() => {
+                self.spawn_conflict_resolution(msg, &pid, files);
+                return;
+            }
+            GateVerdict::Conflicts(_) | GateVerdict::Pass => {}
+        }
         match self.project_inbound_tx(&pid) {
             Some(tx) => {
                 if tx.send(msg.clone()).await.is_err() {
@@ -391,6 +415,128 @@ impl ProjectLoopManager {
             }
             None => self.send_unroutable_error(msg, &pid),
         }
+    }
+
+    /// B9 开工闸：项目档位为 vm 时，消息投递前做「宿主变更清单 + 嫌疑
+    /// 文件三方对比 + 批量推进」（[`crate::vm_sync::open_work_gate`]——
+    /// 基线在册且宿主无变更 = 零传输直通；首次 = 开工全量同步，分钟级
+    /// 一次性成本；§4.2 ④ 的开工闸语义——**轮边界批量对齐**，不做透明
+    /// 按需 fill）。双改冲突（宿主≠基线 且 VM≠基线）原样上抛，由
+    /// [`Self::spawn_conflict_resolution`] 接管（审批卡三选项，文件粒度
+    /// 隔离）。
+    ///
+    /// 直通臂（零开销）：agents 表无该项目记录 / 档位非 vm——绝大多数
+    /// 项目走这里。VM supervisor 未装配 = 诚实拦（用户给项目开了 vm 档
+    /// 但环境没跟上）；注册表无条目 = 放行（交路由层原「项目不可用」
+    /// 语义，那里能从会话 sidecar 恢复展示名，比这里的拦截文案更准）。
+    #[cfg(feature = "vm")]
+    async fn vm_sync_gate(&self, pid: &str) -> GateVerdict {
+        let Some(mgr) = crate::agents::manager() else {
+            return GateVerdict::Pass;
+        };
+        let Some(rec) = mgr.agent_by_project(pid) else {
+            return GateVerdict::Pass;
+        };
+        if rec.runtime_backend != nemesis_taskstore::agents::runtime_backend::VM {
+            return GateVerdict::Pass;
+        }
+        let Some(sup) = mgr.vm_supervisor() else {
+            return GateVerdict::Blocked(
+                "VM 执行环境未装配（vm feature 关闭或 gateway 未启用 VM），无法开工".to_string(),
+            );
+        };
+        let Some(entry) = registry::list_projects(&self.registry_path)
+            .into_iter()
+            .find(|p| p.id == pid)
+        else {
+            return GateVerdict::Pass; // 见函数文档：交「项目不可用」原语义
+        };
+        match crate::vm_sync::open_work_gate(
+            &self.main_workspace,
+            pid,
+            &entry.path,
+            sup.as_ref(),
+            &rec.agent_id,
+            false,
+        )
+        .await
+        {
+            Ok(gate) => match gate {
+                crate::vm_sync::GateSync::Fresh(report) => {
+                    info!(
+                        project = %pid,
+                        files = report.files,
+                        bytes = report.bytes,
+                        selection = report.selection,
+                        "[ProjectLoops] VM 工作副本首次开工全量同步完成"
+                    );
+                    GateVerdict::Pass
+                }
+                crate::vm_sync::GateSync::Ready { synced_at_ms } => {
+                    tracing::debug!(
+                        project = %pid,
+                        synced_at_ms,
+                        "[ProjectLoops] VM 工作副本基线在册且宿主无变更，零传输直通"
+                    );
+                    GateVerdict::Pass
+                }
+                crate::vm_sync::GateSync::Aligned { pushed, deleted } => {
+                    info!(
+                        project = %pid,
+                        pushed = pushed.len(),
+                        deleted = deleted.len(),
+                        "[ProjectLoops] VM 工作副本开工增量对齐完成（{} 推 / {} 删）",
+                        pushed.len(),
+                        deleted.len()
+                    );
+                    GateVerdict::Pass
+                }
+                crate::vm_sync::GateSync::Conflicts(files) => GateVerdict::Conflicts(files),
+            },
+            Err(e) => GateVerdict::Blocked(e),
+        }
+    }
+
+    /// B9 开工闸拦截消息的诚实出站报错（`send_unroutable_error` 同款
+    /// 形态；刻意不写 chat_log——消息未进任何 loop，路由层保持纯转发
+    /// 语义）。
+    #[cfg(feature = "vm")]
+    fn send_sync_blocked_error(&self, msg: &InboundMessage, pid: &str, reason: &str) {
+        let name = self.display_label(pid, &msg.session_key);
+        let content = format!("⚠ 项目「{name}」VM 工作副本未就绪，消息已拦截：{reason}");
+        warn!(
+            project = %pid,
+            channel = %msg.channel,
+            chat_id = %msg.chat_id,
+            "[ProjectLoops] {content}"
+        );
+        self.bus
+            .publish_outbound(OutboundMessage::new(&msg.channel, &msg.chat_id, &content));
+    }
+
+    /// B9 冲突裁决任务派发（`route_one` 冲突臂）：扣留消息，后台逐文件
+    /// 发审批卡；全部裁决收场后回注消息（任何一卡取消/超时 = 整轮取消，
+    /// 诚实出站告知）。任务只捕获 'static 克隆，不借 `&self`。
+    #[cfg(feature = "vm")]
+    fn spawn_conflict_resolution(
+        &self,
+        msg: &InboundMessage,
+        pid: &str,
+        files: Vec<crate::vm_sync::ConflictFile>,
+    ) {
+        let name = self.display_label(pid, &msg.session_key);
+        let payload = ConflictResolutionTask {
+            msg: msg.clone(),
+            pid: pid.to_string(),
+            name,
+            files,
+            main_workspace: self.main_workspace.clone(),
+            registry_path: self.registry_path.clone(),
+            question_slot: self.shared.question_slot.clone(),
+            tx: self.project_inbound_tx(pid),
+            bus: self.bus.clone(),
+        };
+        self.rt.spawn(run_conflict_resolution(payload));
     }
 
     /// 归属命中但目标项目 loop 不可用（目录消失/inactive/已移除）→ 不
@@ -822,4 +968,322 @@ impl nemesis_web::handlers::projects::ProjectsBridge for ProjectLoopManager {
     fn reload_provider_all(&self) {
         ProjectLoopManager::reload_providers(self);
     }
+}
+
+// ---------------------------------------------------------------------------
+// B9 开工闸裁决值 + 冲突裁决任务（'static 后台编排；route_one 冲突臂派发）
+// ---------------------------------------------------------------------------
+
+/// B9（VM 项目工作副本）开工闸裁决值：`Pass` = 直通/对齐完成；
+/// `Blocked` = 诚实拦截（消息不投递）；`Conflicts` = 双改冲突，扣留
+/// 消息转人工逐文件裁决。
+#[cfg(feature = "vm")]
+enum GateVerdict {
+    Pass,
+    Blocked(String),
+    Conflicts(Vec<crate::vm_sync::ConflictFile>),
+}
+
+/// 冲突审批卡超时（秒）。逐文件一卡，用户不答 = 整轮取消（不悄悄
+/// 选边——plan §4.3）。
+#[cfg(feature = "vm")]
+const CONFLICT_ASK_TIMEOUT_SECS: u64 = 300;
+
+/// 冲突审批卡 question_id 发号器（进程内自增 + 毫秒戳，跨重启唯一）。
+#[cfg(feature = "vm")]
+fn next_conflict_question_id() -> String {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    format!(
+        "vm-conflict-{}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0),
+        N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    )
+}
+
+/// B9 冲突裁决三选一（每文件一张卡；多选/非候选/超时 = 取消）。
+#[cfg(feature = "vm")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConflictChoice {
+    /// ① 宿主版覆盖 VM 版（VM 内改动丢弃）。
+    HostWins,
+    /// ② 保留 VM 版：宿主改动**挂起**（park）——turn 末 commit 不把
+    /// VM 版回传覆盖宿主，宿主改动也不进 VM；此后在宿主重新修改该文件
+    /// = 手动合并完成，自动解挂并推进 VM。
+    KeepVm,
+    /// ③/超时/答非所列：取消本轮开工（消息不投递，什么都不改）。
+    Cancel,
+}
+
+/// 冲突卡三选项（选项原文即应答原文——broker respond 按候选原文校验，
+/// [`classify_conflict_answer`] 按序号前缀分类）。
+#[cfg(feature = "vm")]
+pub(crate) fn conflict_options() -> Vec<String> {
+    vec![
+        "① 用宿主版覆盖 VM 版（VM 内改动丢弃）".to_string(),
+        "② 保留 VM 版（宿主改动挂起不覆盖；之后在宿主重新修改该文件即视为合并完成，会自动推进 VM）"
+            .to_string(),
+        "③ 取消本轮（消息不投递）".to_string(),
+    ]
+}
+
+/// 冲突卡问题正文（自含：项目名 + 文件 + 双改事实）。
+#[cfg(feature = "vm")]
+pub(crate) fn conflict_question_text(name: &str, f: &crate::vm_sync::ConflictFile) -> String {
+    format!(
+        "项目「{name}」双改冲突：文件 {} 在宿主与 VM 内都被修改（相对上次同步基线）。\
+         选择如何处理这一个文件？",
+        f.rel
+    )
+}
+
+/// 应答 → 裁决（`None` = 超时）。选项原文按序号前缀分类；空/多项/
+/// 非候选一律 Cancel（不猜）。第二值是取消时的诚实注记（HostWins/
+/// KeepVm 恒空串）。
+#[cfg(feature = "vm")]
+pub(crate) fn classify_conflict_answer(outcome: Option<&[String]>) -> (ConflictChoice, String) {
+    let Some(sel) = outcome else {
+        return (ConflictChoice::Cancel, "未作答，本轮已取消".to_string());
+    };
+    if sel.len() != 1 {
+        return (
+            ConflictChoice::Cancel,
+            "应答形态无效，本轮已取消".to_string(),
+        );
+    }
+    let a = sel[0].trim();
+    if a.starts_with('①') {
+        (ConflictChoice::HostWins, String::new())
+    } else if a.starts_with('②') {
+        (ConflictChoice::KeepVm, String::new())
+    } else {
+        (
+            ConflictChoice::Cancel,
+            "未识别的选择，本轮已取消".to_string(),
+        )
+    }
+}
+
+/// 冲突裁决任务的全部捕获（route_one 派发时一次性克隆；任务不借管理器）。
+#[cfg(feature = "vm")]
+struct ConflictResolutionTask {
+    msg: InboundMessage,
+    pid: String,
+    name: String,
+    files: Vec<crate::vm_sync::ConflictFile>,
+    main_workspace: PathBuf,
+    registry_path: PathBuf,
+    question_slot: nemesis_agent::loop_tools::QuestionBrokerSlot,
+    tx: Option<tokio::sync::mpsc::Sender<InboundMessage>>,
+    bus: Arc<nemesis_bus::MessageBus>,
+}
+
+/// 冲突裁决编排（plan §4.3 + H3 停车语义）：逐文件一张审批卡（三选项，
+/// spawn_blocking 阻塞等答）→ ① 记入 host-wins 清单 / ② 宿主改动落挂
+/// 起表（不进 VM；turn 末 commit 不回传覆盖宿主——此后宿主重新改动该
+/// 文件 = 手动合并完成，开工闸自动解挂推进）/ ③·超时 = 整轮取消。全部
+/// 裁决收场后：挂起表先落（失败 = 整轮取消，文件零改动）→ host-wins
+/// 逐条落盘（`apply_conflict_host_wins`，独立 internal_call + 基线增量
+/// 刷新；单条失败不拦其余，诚实汇总）→ 回注消息。任何取消臂都诚实出
+/// 站告知且**什么都不改**（不出半裁决状态）。
+///
+/// broker 缺席（headless / 无人值守未接线）= 取消语义：不能悄悄选边。
+/// supervisor / agent_id / 注册表条目在**应用期**重新解析（卡片挂着时
+/// 项目可能被移除/切档——消失即诚实取消，不带旧身份落盘）。
+#[cfg(feature = "vm")]
+async fn run_conflict_resolution(t: ConflictResolutionTask) {
+    let broker = t.question_slot.read().clone();
+    let Some(broker) = broker else {
+        conflict_cancel_outbound(
+            &t.bus,
+            &t.msg,
+            &t.name,
+            "无可用交互界面接收冲突裁决卡，本轮已取消（消息未投递，文件未改动）",
+        );
+        return;
+    };
+
+    let mut host_wins: Vec<String> = Vec::new();
+    let mut keep_vm: Vec<String> = Vec::new();
+    for f in &t.files {
+        let req = nemesis_types::agent::QuestionRequest {
+            question_id: next_conflict_question_id(),
+            question: conflict_question_text(&t.name, f),
+            options: conflict_options(),
+            multi: false,
+            chat_id: t.msg.chat_id.clone(),
+            session_key: t.msg.session_key.clone(),
+            timeout_secs: CONFLICT_ASK_TIMEOUT_SECS,
+        };
+        let ask_broker = broker.clone();
+        let outcome = tokio::task::spawn_blocking(move || ask_broker.ask(req)).await;
+        let (choice, note) = match outcome {
+            Ok(Ok(nemesis_types::agent::QuestionOutcome::Answered(sel))) => {
+                classify_conflict_answer(Some(&sel))
+            }
+            Ok(Ok(nemesis_types::agent::QuestionOutcome::Timeout)) => {
+                classify_conflict_answer(None)
+            }
+            Ok(Err(e)) => (
+                ConflictChoice::Cancel,
+                format!("裁决卡故障（{e}），本轮已取消"),
+            ),
+            Err(e) => (
+                ConflictChoice::Cancel,
+                format!("裁决任务失败（{e}），本轮已取消"),
+            ),
+        };
+        match choice {
+            ConflictChoice::HostWins => host_wins.push(f.rel.clone()),
+            ConflictChoice::KeepVm => {
+                keep_vm.push(f.rel.clone());
+                tracing::info!(
+                    project = %t.pid,
+                    file = %f.rel,
+                    "[ProjectLoops] 冲突裁决：保留 VM 版（宿主改动挂起，turn 末不回传覆盖）"
+                );
+            }
+            ConflictChoice::Cancel => {
+                conflict_cancel_outbound(&t.bus, &t.msg, &t.name, &note);
+                return;
+            }
+        }
+    }
+
+    // ② 先落挂起表（停车语义的凭据）：落盘失败 = 整轮取消——不能让
+    // KeepVm 退化成 turn 末回传覆盖宿主（数据丢失面）。落表成功后宿主
+    // 文件一个字节都没动（挂起只写 baseline_dir 内的簿记文件）。
+    if !keep_vm.is_empty() {
+        let entries: Vec<(String, String, String)> = keep_vm
+            .iter()
+            .filter_map(|rel| {
+                t.files
+                    .iter()
+                    .find(|f| &f.rel == rel)
+                    .map(|f| (f.rel.clone(), f.host_sha.clone(), f.vm_sha.clone()))
+            })
+            .collect();
+        if let Err(e) =
+            crate::vm_sync::park_diverged_files(&t.main_workspace, &t.pid, entries).await
+        {
+            conflict_cancel_outbound(
+                &t.bus,
+                &t.msg,
+                &t.name,
+                &format!("挂起记录落盘失败（{e}），本轮已取消；文件未做任何改动"),
+            );
+            return;
+        }
+    }
+
+    // 应用期重新解析身份（卡片挂着时项目可能被移除/切档/环境被拆）。
+    let mgr = crate::agents::manager();
+    let resolved = mgr.as_ref().and_then(|m| {
+        let sup = m.vm_supervisor()?;
+        let rec = m.agent_by_project(&t.pid)?;
+        let entry = registry::list_projects(&t.registry_path)
+            .into_iter()
+            .find(|p| p.id == t.pid)?;
+        if rec.runtime_backend != nemesis_taskstore::agents::runtime_backend::VM {
+            return None;
+        }
+        Some((sup, rec.agent_id, entry.path))
+    });
+    let Some((sup, agent_id, project_path)) = resolved else {
+        conflict_cancel_outbound(
+            &t.bus,
+            &t.msg,
+            &t.name,
+            "裁决期间项目/VM 环境状态已变化，本轮已取消（消息未投递）",
+        );
+        return;
+    };
+
+    let mut applied: Vec<String> = Vec::new();
+    let mut failed: Vec<(String, String)> = Vec::new();
+    for rel in &host_wins {
+        match crate::vm_sync::apply_conflict_host_wins(
+            &t.main_workspace,
+            &t.pid,
+            &project_path,
+            sup.as_ref(),
+            &agent_id,
+            rel,
+        )
+        .await
+        {
+            Ok(()) => applied.push(rel.clone()),
+            Err(e) => failed.push((rel.clone(), e)),
+        }
+    }
+    if !failed.is_empty() {
+        let detail = failed
+            .iter()
+            .map(|(r, e)| format!("- {r}: {e}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        warn!(
+            project = %t.pid,
+            failed = failed.len(),
+            "[ProjectLoops] 冲突宿主覆盖部分失败:\n{detail}"
+        );
+    }
+    info!(
+        project = %t.pid,
+        applied = applied.len(),
+        kept_vm = keep_vm.len(),
+        "[ProjectLoops] 冲突裁决收场，消息回注项目 loop"
+    );
+
+    // 回注消息（裁决完成 = 开工闸语义满足：非冲突文件已对齐、冲突文件
+    // 按裁决落定——①已覆盖 / ②挂起受停车语义保护，turn 末 commit 不回
+    // 传覆盖宿主）。
+    let (channel, chat_id) = (t.msg.channel.clone(), t.msg.chat_id.clone());
+    match t.tx {
+        Some(tx) => {
+            if tx.send(t.msg).await.is_err() {
+                // loop 在裁决窗口内被停掉：按不可用诚实报（send_unroutable
+                // 是 &self 方法，这里用同文案内联——任务不借管理器）。
+                let content = format!(
+                    "⚠ 项目「{}」的会话在冲突裁决期间被停止，原消息未能投递（冲突处理结果已保留）。",
+                    t.name
+                );
+                t.bus
+                    .publish_outbound(OutboundMessage::new(&channel, &chat_id, &content));
+            }
+        }
+        None => {
+            conflict_cancel_outbound(
+                &t.bus,
+                &t.msg,
+                &t.name,
+                "项目通道已不可用，原消息未能投递（冲突处理结果已保留）",
+            );
+        }
+    }
+}
+
+/// 冲突整轮取消的诚实出站告知（`send_sync_blocked_error` 的任务形态；
+/// 刻意不写 chat_log——消息未进任何 loop，路由层保持纯转发语义）。
+#[cfg(feature = "vm")]
+fn conflict_cancel_outbound(
+    bus: &nemesis_bus::MessageBus,
+    msg: &InboundMessage,
+    name: &str,
+    note: &str,
+) {
+    tracing::warn!(
+        channel = %msg.channel,
+        chat_id = %msg.chat_id,
+        "[ProjectLoops] 项目「{name}」双改冲突裁决未收场：{note}"
+    );
+    bus.publish_outbound(OutboundMessage::new(
+        &msg.channel,
+        &msg.chat_id,
+        &format!(
+            "⚠ 项目「{name}」存在宿主与 VM 双改冲突，{note}。重新发送消息可再次触发开工对齐。"
+        ),
+    ));
 }

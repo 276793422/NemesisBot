@@ -75,12 +75,15 @@ fn make_ctx() -> RequestContext {
 /// nemesisbot（依赖方向不许反向）。
 struct FakeBridge {
     calls: Mutex<Vec<String>>,
+    /// B8c：try.exec 收到的 timeout 透传值（None=缺省臂）。
+    try_exec_timeouts: Mutex<Vec<Option<u64>>>,
 }
 
 impl FakeBridge {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             calls: Mutex::new(Vec::new()),
+            try_exec_timeouts: Mutex::new(Vec::new()),
         })
     }
     fn note(&self, c: &str) {
@@ -157,13 +160,30 @@ impl VmBridge for FakeBridge {
         self.note("try.start");
         Ok(serde_json::json!({ "running": true }))
     }
-    async fn try_exec(&self, command: &str) -> Result<serde_json::Value, String> {
+    async fn try_exec(
+        &self,
+        command: &str,
+        timeout_secs: Option<u64>,
+    ) -> Result<serde_json::Value, String> {
         self.note("try.exec");
+        self.try_exec_timeouts.lock().unwrap().push(timeout_secs);
         Ok(serde_json::json!({ "command": command, "output": "ok" }))
     }
     async fn try_stop(&self) -> Result<serde_json::Value, String> {
         self.note("try.stop");
         Ok(serde_json::json!({ "running": false }))
+    }
+    async fn sync_status(&self, project: &str) -> Result<serde_json::Value, String> {
+        self.note("sync.status");
+        Ok(serde_json::json!({ "project_id": project, "has_baseline": false }))
+    }
+    async fn sync_commit(&self, project: &str) -> Result<serde_json::Value, String> {
+        self.note("commit");
+        Ok(serde_json::json!({ "project_id": project, "changed": [], "deleted": [] }))
+    }
+    async fn sync_resync(&self, project: &str) -> Result<serde_json::Value, String> {
+        self.note("resync");
+        Ok(serde_json::json!({ "project_id": project, "files": 0 }))
     }
 }
 
@@ -196,8 +216,8 @@ async fn all_commands_route_through_bridge() {
         let names = h.commands();
         assert_eq!(
             names.len(),
-            17,
-            "命令族清单（实施计划锁定 + B3 自举族 + B6 试玩族）"
+            20,
+            "命令族清单（实施计划锁定 + B3 自举族 + B6 试玩族 + B9-3 同步族）"
         );
         assert_eq!(h.module_name(), "vm");
 
@@ -208,6 +228,7 @@ async fn all_commands_route_through_bridge() {
                     Some(serde_json::json!({ "agent_id": "a1" }))
                 }
                 "try.exec" => Some(serde_json::json!({ "command": "uname -a" })),
+                "sync.status" | "commit" | "resync" => Some(serde_json::json!({ "project": "p1" })),
                 _ => None,
             };
             let res = h.handle_cmd(cmd, data, &ctx).await;
@@ -234,6 +255,9 @@ async fn all_commands_route_through_bridge() {
             "try.start",
             "try.exec",
             "try.stop",
+            "sync.status",
+            "commit",
+            "resync",
         ] {
             assert!(calls.iter().any(|c| c == expected), "{expected} 未被调用");
         }
@@ -410,6 +434,97 @@ async fn try_exec_input_validation() {
             .await
             .unwrap_err();
         assert!(err.contains("过长"), "{err}");
+
+        // B8c：timeout 透传——缺省 None / 显式值透传 / 超上限钳 600。
+        h.handle_cmd(
+            "try.exec",
+            Some(serde_json::json!({ "command": "uname -a" })),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        h.handle_cmd(
+            "try.exec",
+            Some(serde_json::json!({ "command": "uname -a", "timeout": 300 })),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        h.handle_cmd(
+            "try.exec",
+            Some(serde_json::json!({ "command": "uname -a", "timeout": 99_999 })),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        h.handle_cmd(
+            "try.exec",
+            Some(serde_json::json!({ "command": "uname -a", "timeout": 0 })),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        let got = _b.try_exec_timeouts.lock().unwrap().clone();
+        assert_eq!(
+            got,
+            vec![None, Some(300), Some(600), None],
+            "timeout 透传/钳制/0=缺省"
+        );
+    })
+    .await;
+}
+
+// ---------------------------------------------------------------------------
+// B9-3 项目工作副本同步族
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn sync_commands_route_project_through_bridge() {
+    with_bridge(|b: Arc<FakeBridge>, ctx| async move {
+        let h = VmHandler;
+        // 三条命令都要求 project（缺参诚实报错，不打 bridge）。
+        for cmd in ["sync.status", "commit", "resync"] {
+            let err = h.handle_cmd(cmd, None, &ctx).await.unwrap_err();
+            assert!(
+                err.contains("missing data") || err.contains("project"),
+                "{cmd}: {err}"
+            );
+        }
+        // project 原文转发。
+        for cmd in ["sync.status", "commit", "resync"] {
+            let res = h
+                .handle_cmd(cmd, Some(serde_json::json!({ "project": "NB-1" })), &ctx)
+                .await
+                .expect(cmd);
+            assert_eq!(res.unwrap()["project_id"], "NB-1", "{cmd} project 未转发");
+        }
+        let calls = b.calls.lock().unwrap();
+        for expected in ["sync.status", "commit", "resync"] {
+            assert!(calls.iter().any(|c| c == expected), "{expected} 未被调用");
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn sync_commit_resync_refused_when_estop_engaged_status_allowed() {
+    with_bridge(|b: Arc<FakeBridge>, _ctx| async move {
+        let h = VmHandler;
+        let ctx = make_estopped_ctx();
+        let data = Some(serde_json::json!({ "project": "p1" }));
+        // commit / resync 是 agent 活动形态（写宿主 + 拽 VM）——急停冻结。
+        for cmd in ["commit", "resync"] {
+            let err = h.handle_cmd(cmd, data.clone(), &ctx).await.unwrap_err();
+            assert!(err.contains("急停"), "{cmd} 必须被 estop 冻结: {err}");
+        }
+        // status 只读恒放行。
+        h.handle_cmd("sync.status", data, &ctx)
+            .await
+            .expect("status 在急停中必须放行");
+        let calls = b.calls.lock().unwrap();
+        assert!(!calls.iter().any(|c| c == "commit"));
+        assert!(!calls.iter().any(|c| c == "resync"));
+        assert!(calls.iter().any(|c| c == "sync.status"));
     })
     .await;
 }

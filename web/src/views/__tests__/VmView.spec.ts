@@ -77,6 +77,7 @@ function instanceRow(over: Record<string, unknown> = {}) {
 
 // 与后端 bootstrap_status() 投影同构（vm_bridge.rs）。默认全绿态收窄为
 // absent/needs 组合时用 over 覆盖。enabled=false（默认态铁律）。
+// image_route 默认 wsl_ready（platform=windows 的全绿路由态，B7）。
 function bootstrapStatus(over: Record<string, unknown> = {}) {
   return {
     enabled: false,
@@ -84,14 +85,15 @@ function bootstrapStatus(over: Record<string, unknown> = {}) {
     qemu: { state: 'ready', source: 'C:\\ws\\tools\\vm\\qemu' },
     accel: { state: 'ok' },
     image_ready: true,
+    image_route: { state: 'wsl_ready', missing: [], command: '', note: '', guest_ready: true },
     install: { running: false },
     log: { path: 'C:\\ws\\tools\\vm\\bootstrap.log', tail: [] as string[] },
     ...over,
   }
 }
 
-// 与后端 try_status() 投影同构（vm_bridge.rs B6）。默认 = 开启 + 镜像就绪
-// + 未运行（试玩卡「就绪未运行」态——带启动按钮）。
+// 与后端 try_status() 投影同构（vm_bridge.rs B6+热修）。默认 = 开启 +
+// 镜像就绪 + 未运行未在途（试玩卡「就绪未运行」态——带启动按钮）。
 function tryStatus(over: Record<string, unknown> = {}) {
   return {
     agent_id: 'try-dashboard',
@@ -100,6 +102,8 @@ function tryStatus(over: Record<string, unknown> = {}) {
     arch: 'x86_64',
     arch_supported: true,
     running: false,
+    starting: false,
+    last_error: null,
     ...over,
   }
 }
@@ -433,6 +437,76 @@ describe('VmView 环境安装分步卡（B4）', () => {
     w.unmount()
   })
 
+  // ── B7 构建路由（bootstrap.image_route）各态渲染 ──
+
+  it('wsl_ready：构建按钮可用，状态行注明自动经 WSL', async () => {
+    const w = await mountView(overview({ enabled: true }), imageList(), bootstrapStatus({
+      image_ready: false,
+      image_route: { state: 'wsl_ready', missing: [], command: '', note: 'WSL 环境就绪——「首次构建」自动经 WSL 跑同一管线，产物直落镜像目录', guest_ready: true },
+    }))
+    const btn = w.find('[data-test="image-build"]')
+    expect(btn.exists()).toBe(true)
+    expect((btn.element as HTMLButtonElement).disabled).toBe(false)
+    expect(w.find('[data-test="image-state"]').text()).toContain('经 WSL')
+    expect(w.find('[data-test="image-route-guide"]').exists()).toBe(false)
+    w.unmount()
+  })
+
+  it('wsl_missing_tools：黄条缺清单 + 复制命令 + 构建按钮禁用', async () => {
+    const w = await mountView(overview({ enabled: true }), imageList(), bootstrapStatus({
+      image_ready: false,
+      image_route: { state: 'wsl_missing_tools', missing: ['genisoimage（或 xorriso / mkisofs 任一）', 'file'], command: 'wsl -e bash -c "sudo apt install -y genisoimage file curl"', note: '装完后点「复检」，转就绪即可构建', guest_ready: true },
+    }))
+    expect((w.find('[data-test="image-build"]').element as HTMLButtonElement).disabled).toBe(true)
+    expect(w.find('[data-test="image-route-missing"]').text()).toContain('genisoimage')
+    expect(w.find('[data-test="image-route-command"]').text()).toContain('sudo apt install')
+    expect(w.find('[data-test="image-route-copy"]').exists()).toBe(true)
+    expect(w.find('[data-test="image-route-note"]').text()).toContain('复检')
+    w.unmount()
+  })
+
+  it('wsl_no_distro：指路 wsl --install 命令 + 诚实注记，构建按钮禁用', async () => {
+    const w = await mountView(overview({ enabled: true }), imageList(), bootstrapStatus({
+      image_ready: false,
+      image_route: { state: 'wsl_no_distro', missing: [], command: 'wsl --install -d Ubuntu', note: '未检测到 WSL 发行版——终端执行后（可能需要管理员与重启）点「复检」', guest_ready: true },
+    }))
+    expect((w.find('[data-test="image-build"]').element as HTMLButtonElement).disabled).toBe(true)
+    expect(w.find('[data-test="image-route-command"]').text()).toContain('wsl --install -d Ubuntu')
+    expect(w.find('[data-test="image-route-note"]').text()).toContain('管理员与重启')
+    w.unmount()
+  })
+
+  it('guest 未就绪：提示行给 build-guest 复制命令，构建按钮禁用', async () => {
+    const w = await mountView(overview({ enabled: true }), imageList(), bootstrapStatus({
+      image_ready: false,
+      image_route: { state: 'wsl_ready', missing: [], command: '', note: '', guest_ready: false },
+    }))
+    expect((w.find('[data-test="image-build"]').element as HTMLButtonElement).disabled).toBe(true)
+    expect(w.find('[data-test="guest-missing-hint"]').exists()).toBe(true)
+    expect(w.find('[data-test="guest-missing-hint"]').text()).toContain('bash scripts/build-guest.sh')
+    w.unmount()
+  })
+
+  it('no_script：脚本缺席态渲染后端 note 指路，构建按钮禁用', async () => {
+    const w = await mountView(overview({ enabled: true }), imageList(), bootstrapStatus({
+      image_ready: false,
+      image_route: { state: 'no_script', missing: [], command: '', note: '构建脚本不在场（scripts/build-vm-image.sh）——从仓库根运行网关，或在 Linux 宿主构建后把 base.qcow2 + seed.iso 落到镜像目录回传', guest_ready: true },
+    }))
+    expect((w.find('[data-test="image-build"]').element as HTMLButtonElement).disabled).toBe(true)
+    expect(w.find('[data-test="image-state"]').text()).toContain('构建脚本不在场')
+    w.unmount()
+  })
+
+  it('image_route 键缺席（旧后端形态）：闸默认放行，构建按钮仍可用', async () => {
+    const w = await mountView(overview({ enabled: true }), imageList(), bootstrapStatus({
+      image_ready: false,
+      image_route: undefined,
+    }))
+    expect(w.find('[data-test="image-route-guide"]').exists()).toBe(false)
+    expect((w.find('[data-test="image-build"]').element as HTMLButtonElement).disabled).toBe(false)
+    w.unmount()
+  })
+
   it('一键安装转发 bootstrap.install_qemu；成功后立即复检 bootstrap.status', async () => {
     const w = await mountView(overview({ enabled: true }), imageList(), bootstrapStatus({ qemu: { state: 'absent' } }))
     const before = requestMock.mock.calls.filter((c) => c[1] === 'bootstrap.status').length
@@ -537,16 +611,58 @@ describe('VmView 快速试玩卡（B6）', () => {
     expect(w.find('[data-test="try-start"]').exists()).toBe(false)
     w.unmount()
 
-    // 就绪态（默认 fixture）：启动按钮在场，点击转发 vm.try.start（无参 data）
+    // 就绪态（默认 fixture）：启动按钮在场，点击转发 vm.try.start（无参
+    // data）；后端发起即返回 + 首次轮询即见运行 → 成功 toast（冷启动
+    // 后台化契约：前端不等冷启，轮询转绿）。
     const w2 = await mountView()
     await toInstancesTab(w2)
     expect(w2.find('[data-test="try-off"]').exists()).toBe(false)
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'overview') return Promise.resolve(overview())
+      if (cmd === 'image.list') return Promise.resolve(imageList())
+      if (cmd === 'bootstrap.status') return Promise.resolve(bootstrapStatus())
+      if (cmd === 'try.start') return Promise.resolve({ running: false, starting: true, note: '冷启动中' })
+      if (cmd === 'try.status') return Promise.resolve(tryStatus({ running: true }))
+      return Promise.resolve({})
+    })
     await w2.find('[data-test="try-start"]').trigger('click')
     await flushPromises()
     const call = requestMock.mock.calls.find((c) => c[1] === 'try.start')!
     expect(call[0]).toBe('vm')
     expect(call[2]).toEqual({})
     expect(useToast().toasts.some((t) => t.type === 'success')).toBe(true)
+    w2.unmount()
+  })
+
+  it('启动在途渲染：状态标签「启动中」、按钮转「启动中…」禁用；失败透传 last_error', async () => {
+    // 在途态 fixture（轮询窗口内的真实形态）：标签 + 按钮文案/禁用；
+    // 停止按钮在途可见（「启动卡死了想停」的中止路径）。
+    const w = await mountView(overview(), imageList(), bootstrapStatus(), tryStatus({ starting: true }))
+    await toInstancesTab(w)
+    expect(w.find('[data-test="try-state-label"]').text()).toContain('启动中')
+    const btn = w.find('[data-test="try-start"]')
+    expect(btn.text()).toBe('启动中…')
+    expect((btn.element as HTMLButtonElement).disabled).toBe(true)
+    expect(w.find('[data-test="try-stop"]').exists()).toBe(true)
+    w.unmount()
+
+    // 启动失败：try.status 回落 starting=false + last_error → 错误 toast 带原因。
+    const w2 = await mountView()
+    await toInstancesTab(w2)
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'overview') return Promise.resolve(overview())
+      if (cmd === 'image.list') return Promise.resolve(imageList())
+      if (cmd === 'bootstrap.status') return Promise.resolve(bootstrapStatus())
+      if (cmd === 'try.start') return Promise.resolve({ running: false, starting: true, note: '冷启动中' })
+      if (cmd === 'try.status')
+        return Promise.resolve(tryStatus({ starting: false, last_error: '不可用: 加速器缺席' }))
+      return Promise.resolve({})
+    })
+    await w2.find('[data-test="try-start"]').trigger('click')
+    await flushPromises()
+    const errs = useToast().toasts.filter((t) => t.type === 'error')
+    expect(errs.length).toBeGreaterThan(0)
+    expect(errs.some((t) => t.message.includes('加速器缺席'))).toBe(true)
     w2.unmount()
   })
 
@@ -624,6 +740,36 @@ describe('VmView 快速试玩卡（B6）', () => {
     w.unmount()
   })
 
+  it('超时档透传（B8c）：缺省不传 timeout 且预算 120s；选档转发 timeout 且预算=档位+90s', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'overview') return Promise.resolve(overview({ enabled: true }))
+      if (cmd === 'image.list') return Promise.resolve(imageList())
+      if (cmd === 'bootstrap.status') return Promise.resolve(bootstrapStatus())
+      if (cmd === 'try.status') return Promise.resolve(tryStatus({ running: true }))
+      if (cmd === 'try.exec') return Promise.resolve({ command: 'x', output: 'ok' })
+      return Promise.resolve({})
+    })
+    const w = mount(VmView)
+    await flushPromises()
+    await toInstancesTab(w)
+    // 缺省档：payload 不带 timeout，请求预算维持 120s 下限。
+    await w.find('[data-test="try-input"]').setValue('uname -a')
+    await w.find('[data-test="try-run"]').trigger('click')
+    await flushPromises()
+    let call = requestMock.mock.calls.find((c) => c[1] === 'try.exec')!
+    expect(call[2]).toEqual({ command: 'uname -a' })
+    expect(call[3]).toBe(120_000)
+    // 选 300s：payload 带 timeout=300，预算 390s（档位+90s 余量）。
+    await w.find('[data-test="try-timeout"]').setValue('300')
+    await w.find('[data-test="try-input"]').setValue('apt update')
+    await w.find('[data-test="try-run"]').trigger('click')
+    await flushPromises()
+    call = requestMock.mock.calls.filter((c) => c[1] === 'try.exec')[1]!
+    expect(call[2]).toEqual({ command: 'apt update', timeout: 300 })
+    expect(call[3]).toBe(390_000)
+    w.unmount()
+  })
+
   it('停止过 confirm 门：取消不发；确认转发 try.stop', async () => {
     const w = await mountView(overview({ enabled: true }), imageList(), bootstrapStatus(), tryStatus({ running: true }))
     await toInstancesTab(w)
@@ -640,6 +786,129 @@ describe('VmView 快速试玩卡（B6）', () => {
     expect(call[0]).toBe('vm')
     expect(call[2]).toEqual({})
     expect(useToast().toasts.some((t) => t.type === 'success')).toBe(true)
+    w.unmount()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// B9-3 项目工作副本同步卡
+// ---------------------------------------------------------------------------
+
+// 与后端 projects.list / vm.sync.status 投影同构（handlers/projects.rs +
+// vm_sync.rs SyncStatusReport）。
+function projectsList(over: Record<string, unknown>[] = []) {
+  return {
+    projects: over.length
+      ? over
+      : [{ id: 'proj-1', name: 'demo-app', path: 'C:\ws\projects\demo-app', created_at: '2026-10-19T00:00:00Z' }],
+    count: over.length || 1,
+  }
+}
+
+function syncStatus(over: Record<string, unknown> = {}) {
+  return {
+    project_id: 'proj-1',
+    has_baseline: true,
+    synced_at_ms: 1730000000000,
+    selection: 'git',
+    baseline_files: 42,
+    host_pending: ['src/a.rs'],
+    host_pending_deletes: [],
+    last_commit: { project_id: 'proj-1', committed_at_ms: 1730001000000, changed: ['x.txt'], deleted: [], bytes: 5 },
+    ...over,
+  }
+}
+
+function mountWithSync(pl: unknown = projectsList(), ss: unknown = syncStatus(), extra: Record<string, unknown> = {}) {
+  requestMock.mockImplementation((_m: string, cmd: string) => {
+    if (cmd === 'overview') return Promise.resolve(overview({ enabled: true }))
+    if (cmd === 'image.list') return Promise.resolve(imageList())
+    if (cmd === 'bootstrap.status') return Promise.resolve(bootstrapStatus())
+    if (cmd === 'try.status') return Promise.resolve(tryStatus())
+    if (cmd === 'list') return Promise.resolve(pl)
+    if (cmd === 'sync.status') return Promise.resolve(ss)
+    if (cmd in extra) return Promise.resolve(extra[cmd])
+    return Promise.resolve({})
+  })
+  const w = mount(VmView)
+  return flushPromises().then(() => flushPromises()).then(() => flushPromises()).then(() => w)
+}
+
+describe('VmView 项目工作副本同步卡（B9-3）', () => {
+  async function toInstancesTab(w: ReturnType<typeof mount>) {
+    await w.findAll('button').find((b) => b.text() === '实例')!.trigger('click')
+    await flushPromises()
+  }
+
+  it('无注册项目：占位文案渲染；不发 sync.status', async () => {
+    const w = await mountView()
+    await toInstancesTab(w)
+    expect(w.find('[data-test="sync-card"]').exists()).toBe(true)
+    expect(w.find('[data-test="sync-no-projects"]').exists()).toBe(true)
+    expect(requestMock.mock.calls.find((c) => c[1] === 'sync.status')).toBeUndefined()
+    w.unmount()
+  })
+
+  it('有项目：projects.list + sync.status 拉取；基线/待同步/上次提交渲染', async () => {
+    const w = await mountWithSync()
+    await toInstancesTab(w)
+    expect(w.find('[data-test="sync-project"]').exists()).toBe(true)
+    expect((w.find('[data-test="sync-project"]').element as HTMLSelectElement).value).toBe('proj-1')
+    expect(w.find('[data-test="sync-baseline"]').text()).toContain('42 个文件')
+    expect(w.find('[data-test="sync-pending"]').text()).toContain('1 改 / 0 删')
+    expect(w.find('[data-test="sync-last-commit"]').text()).toContain('上次提交')
+    w.unmount()
+  })
+
+  it('无基线态：sync-no-baseline 渲染（has_baseline=false = 未开工，不是无变更）', async () => {
+    const w = await mountWithSync(projectsList(), syncStatus({ has_baseline: false, synced_at_ms: null, selection: null, baseline_files: null, host_pending: [], host_pending_deletes: [], last_commit: null }))
+    await toInstancesTab(w)
+    expect(w.find('[data-test="sync-no-baseline"]').exists()).toBe(true)
+    expect(w.find('[data-test="sync-baseline"]').exists()).toBe(false)
+    w.unmount()
+  })
+
+  it('一键提交：project id 转发 + 10 分钟预算；no_baseline 走 info 分支', async () => {
+    const w = await mountWithSync(projectsList(), syncStatus(), {
+      commit: { project_id: 'proj-1', committed_at_ms: 1730002000000, changed: ['a'], deleted: [], bytes: 1 },
+    })
+    await toInstancesTab(w)
+    await w.find('[data-test="sync-commit"]').trigger('click')
+    await flushPromises()
+    const call = requestMock.mock.calls.find((c) => c[1] === 'commit')!
+    expect(call[0]).toBe('vm')
+    expect(call[2]).toEqual({ project: 'proj-1' })
+    expect(call[3]).toBe(600_000)
+    w.unmount()
+  })
+
+  it('强制重同步过 confirm 门：取消不发；确认转发 resync（project + 预算）', async () => {
+    const w = await mountWithSync(projectsList(), syncStatus(), {
+      resync: { files: 42, bytes: 12345, selection: 'git', synced_at_ms: 1730003000000 },
+    })
+    await toInstancesTab(w)
+
+    confirmMock.mockReturnValueOnce(false)
+    await w.find('[data-test="sync-resync"]').trigger('click')
+    await flushPromises()
+    expect(requestMock.mock.calls.find((c) => c[1] === 'resync')).toBeUndefined()
+
+    confirmMock.mockReturnValueOnce(true)
+    await w.find('[data-test="sync-resync"]').trigger('click')
+    await flushPromises()
+    const call = requestMock.mock.calls.find((c) => c[1] === 'resync')!
+    expect(call[0]).toBe('vm')
+    expect(call[2]).toEqual({ project: 'proj-1' })
+    expect(call[3]).toBe(600_000)
+    expect(useToast().toasts.some((t) => t.type === 'success')).toBe(true)
+    w.unmount()
+  })
+
+  it('sync.status 请求失败：sync-error 诚实渲染（不崩、按钮仍在）', async () => {
+    const w = await mountWithSync(projectsList(), { _error: '项目不存在: proj-1' })
+    await toInstancesTab(w)
+    expect(w.find('[data-test="sync-error"]').text()).toContain('项目不存在')
+    expect(w.find('[data-test="sync-commit"]').exists()).toBe(true)
     w.unmount()
   })
 })
