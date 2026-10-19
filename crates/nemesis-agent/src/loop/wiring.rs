@@ -255,6 +255,25 @@ impl AgentLoop {
         self.session_store.as_ref()
     }
 
+    /// ②typed checks 块捕获：任务 run 前建槽（`checks_capture` 模块文档是
+    /// 语义真相源）。同会话键重复 begin = 覆盖（漏摘自愈，占用有界）。
+    pub fn begin_checks_capture(&self, session_key: &str) {
+        self.checks_capture.write().insert(
+            session_key.to_string(),
+            Arc::new(parking_lot::Mutex::new(Vec::new())),
+        );
+    }
+
+    /// ②typed checks 块捕获：任务 run 后摘槽取记录（槽必移除，无泄漏）。
+    /// 没跑检查 / 未 begin = 空列表（诚实缺席，交付 payload 不带 checks）。
+    pub fn take_checks_capture(&self, session_key: &str) -> Vec<checks_capture::CheckRecord> {
+        self.checks_capture
+            .write()
+            .remove(session_key)
+            .map(|sink| std::mem::take(&mut *sink.lock()))
+            .unwrap_or_default()
+    }
+
     /// Set the continuation manager for async cluster RPC callbacks.
     ///
     /// When set, `cluster_continuation` messages intercepted by the bus loop

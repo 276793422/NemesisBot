@@ -41,6 +41,7 @@ pub(crate) mod prelude {
     pub(crate) use serde::{Deserialize, Serialize};
     pub(crate) use tracing::{debug, error, info, warn};
 
+    pub(crate) use crate::checks_capture;
     pub(crate) use crate::context::RequestContext;
     pub(crate) use crate::hooks::HookToolCall;
     pub(crate) use crate::instance::AgentInstance;
@@ -555,6 +556,11 @@ pub struct AgentLoop {
     /// 吃注册期快照，MCP 热加载的新工具漏拦；槽值每回合现读，动态新工具
     /// 天然落闸。精确名匹配，不扩通配语法。空 = 零影响。
     tool_policy_allow: parking_lot::RwLock<Vec<String>>,
+    /// ②typed checks 块捕获槽表（诚实边界收口 2026-10-19）：会话键 → 记录
+    /// 槽。集群 worker 任务 run 前后 begin/take（`checks_capture` 模块文档
+    /// 是语义真相源）；并发任务按 session_key 精确归属互不串账。空表 =
+    /// 零影响（主 loop / 项目 loop 不触碰；查表 miss 仅一次读锁 + 名单比对）。
+    checks_capture: checks_capture::ChecksCaptureMap,
     /// G1：记录级 tier 钉死（自建 agent 档位契约）。`Some` = tier 以记录为
     /// 唯一真相源——[`Self::refresh_active_tier`] 短路（config 重解析/换模型
     /// 不覆盖记录档位）；`None` = config 驱动（主/项目 loop 语义不变）。
@@ -801,6 +807,7 @@ impl AgentLoop {
             config_path: parking_lot::RwLock::new(None),
             extra_hidden_tools: parking_lot::RwLock::new(Vec::new()),
             tool_policy_allow: parking_lot::RwLock::new(Vec::new()),
+            checks_capture: parking_lot::RwLock::new(HashMap::new()),
             tier_override: parking_lot::RwLock::new(None),
             prompt_system: parking_lot::RwLock::new(crate::prompt::PromptSystem::Classic),
             pricing_store: parking_lot::RwLock::new(None),

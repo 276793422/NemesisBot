@@ -180,7 +180,32 @@ impl AgentLoop {
     /// invoking instance's sub-agent nesting depth (instance.detached_depth());
     /// it is injected into depth-aware tools (spawn) before execution so the
     /// `agents.subagent.max_depth` limit can reject over-deep spawns.
+    ///
+    /// ②typed checks 块捕获（2026-10-19）：包装层——原实现拆到
+    /// [`Self::handle_tool_call_at_depth_impl`]，本层在结果定稿后做检查类
+    /// 工具记账（拒绝不记账，`checks_capture::classify_result` 单点分类）。
+    /// 所有调度路径（串行/批次/子代理）都过本入口，一处包装全覆盖。
     pub async fn handle_tool_call_at_depth(
+        &self,
+        tool_call: &ToolCallInfo,
+        context: &RequestContext,
+        depth: usize,
+    ) -> String {
+        let result = self
+            .handle_tool_call_at_depth_impl(tool_call, context, depth)
+            .await;
+        checks_capture::record_check(
+            &self.checks_capture,
+            &context.session_key,
+            &tool_call.name,
+            &tool_call.arguments,
+            &result,
+        );
+        result
+    }
+
+    /// [`Self::handle_tool_call_at_depth`] 的原实现（闸门瀑布 + 执行）。
+    async fn handle_tool_call_at_depth_impl(
         &self,
         tool_call: &ToolCallInfo,
         context: &RequestContext,

@@ -152,7 +152,30 @@ pub struct DeliveryBranchCapture {
     /// unified diff（相对 `base_tree`）；超 `PATCH_MAX_BYTES` 截断。
     pub patch: String,
     pub patch_truncated: bool,
+    /// 逐文件变更清单（typed 证据块 ②，2026-10-19）：从 `(base_tree, tree)`
+    /// diff 确定性派生（**不依赖 agent 配合**），`sha256` = 交付 tree 中该
+    /// blob 内容的摘要——与 commit/tree 同源定格，评审侧可对 patch 重放核
+    /// 验。只含新增/修改（删除无内容可哈希，总数仍见 `files_changed`）。
+    /// 空 = 无变更或派生降级（缺席是合法形态；加法演进不破旧 payload）。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<DeliveryFileEntry>,
+    /// files 清单截断位（超 [`FILES_MAX`] 诚实注记；只在 true 时序列化）。
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub files_truncated: bool,
 }
+
+/// 交付变更清单单条目（typed 证据块 ②）：相对路径 + blob 内容 sha256 hex。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DeliveryFileEntry {
+    /// 交付根内的相对路径（forward slash 形态；派生自 git delta）。
+    pub path: String,
+    /// 交付 tree 中该 blob 内容的 sha256 hex（64 字符）。
+    pub sha256: String,
+}
+
+/// 逐文件清单上限（防异常巨大交付撑爆 wire payload；超限诚实截断 +
+/// `files_truncated` 注记，与 patch 截断同契约形态）。
+pub const FILES_MAX: usize = 500;
 
 /// 交付 patch 的字节上限（截断保护——异常巨大的交付 diff 不进账本
 /// payload；完整 patch 由调用方落盘，账本只引用路径）。
@@ -609,6 +632,57 @@ impl CheckpointStore {
         ))
     }
 
+    /// 逐文件变更清单派生（typed 证据块 ②）：同一 `(base, tree)` diff 的
+    /// delta 枚举——新增/修改取 `new_file` 的 blob 内容 sha256；删除无内容
+    /// 不入清单。超 [`FILES_MAX`] 截断（诚实注记位）。与 [`Self::diff_patch`]
+    /// 分开各跑一次 diff（影子库 task 收口一次性成本，换来两函数单一职责）。
+    #[cfg(feature = "checkpoint-git")]
+    fn diff_file_entries(
+        repo: &git2::Repository,
+        base_hex: &str,
+        tree_hex: &str,
+    ) -> Result<(Vec<DeliveryFileEntry>, bool), String> {
+        let base_oid =
+            git2::Oid::from_str(base_hex).map_err(|e| format!("base tree hex 解析失败: {e}"))?;
+        let tree_oid =
+            git2::Oid::from_str(tree_hex).map_err(|e| format!("tree hex 解析失败: {e}"))?;
+        let base_tree = repo
+            .find_tree(base_oid)
+            .map_err(|e| format!("影子 base tree 不可达 {base_hex}: {e}"))?;
+        let tree = repo
+            .find_tree(tree_oid)
+            .map_err(|e| format!("影子 tree 不可达 {tree_hex}: {e}"))?;
+        let diff = repo
+            .diff_tree_to_tree(Some(&base_tree), Some(&tree), None)
+            .map_err(|e| format!("影子 tree diff 失败: {e}"))?;
+        let mut files = Vec::new();
+        for delta in diff.deltas() {
+            // 删除 delta 的 new blob id 为零值（无内容可哈希，不入清单）。
+            let oid = delta.new_file().id();
+            if oid.is_zero() {
+                continue;
+            }
+            let Some(path) = delta.new_file().path() else {
+                continue;
+            };
+            let blob = repo
+                .find_blob(oid)
+                .map_err(|e| format!("交付清单 blob 不可达 {oid}: {e}"))?;
+            let mut hasher = Sha256::new();
+            hasher.update(blob.content());
+            files.push(DeliveryFileEntry {
+                // forward slash 形态统一（评审侧跨平台字符串比对）。
+                path: path.to_string_lossy().replace('\\', "/"),
+                sha256: format!("{:x}", hasher.finalize()),
+            });
+        }
+        let truncated = files.len() > FILES_MAX;
+        if truncated {
+            files.truncate(FILES_MAX);
+        }
+        Ok((files, truncated))
+    }
+
     /// P4 交付门：把当前工作区捕获为**可审交付分支**（git 形态专用）。
     ///
     /// - `base_tree`：diff 基线（通常传任务开始时的影子 tree——
@@ -672,6 +746,20 @@ impl CheckpointStore {
             .map_err(|e| format!("影子交付 commit 写入失败: {e}"))?;
         repo.reference(&ref_name, commit_oid, true, "nemesis delivery capture")
             .map_err(|e| format!("影子交付 ref 写入失败 {ref_name}: {e}"))?;
+        // typed 证据块 ②：逐文件清单派生。失败 = warn 降级空清单（files
+        // 缺席是合法形态，验证侧 strict off 时放行）——不因增强字段炸掉
+        // 整个 capture（commit/tree/patch 主证据面优先保住）。
+        let (files, files_truncated) = match Self::diff_file_entries(&repo, &base_hex, &tree_hex) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    branch = %branch,
+                    error = %e,
+                    "[Checkpoint] 交付清单派生失败（files 块缺席降级，commit/tree/patch 主证据不受影响）"
+                );
+                (Vec::new(), false)
+            }
+        };
         Ok(DeliveryBranchCapture {
             ref_name,
             commit: commit_oid.to_string(),
@@ -682,6 +770,8 @@ impl CheckpointStore {
             deletions,
             patch,
             patch_truncated,
+            files,
+            files_truncated,
         })
     }
 

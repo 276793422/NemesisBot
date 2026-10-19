@@ -1657,6 +1657,14 @@ async fn review_issue(
     // ⇒ `patch_path` 非空（截断必有盘上留底，G4 既有契约复用）。缺口分档
     // 文案：无记录 / rejected / 无 delivery 结构（worker 未走交付管线或
     // 执行体未编译交付管线 checkpoint-git）/ 缺 commit·tree / 截断无留底。
+    // ②typed 证据块（诚实边界收口 2026-10-19）加法演进：`delivery.files`
+    // / `delivery.checks` **在场时**无论开关都验形态（files path 复用
+    // anchor 路径形态闸——拒绝绝对路径/`..`/盘符/UNC，sha256 64-hex；
+    // checks 每条 tool/cmd 非空字符串 + ok 布尔 + summary 字符串），验不过
+    // = FAIL；缺席块行为不变。严格闸 `board.review.evidence_typed_required`
+    // （默认 **false** 烧入期）开启后 `files` 块必须在场（git tree diff
+    // 确定性派生，任何 git 交付都应可派生——缺席 = 证据面残缺）；`checks`
+    // **恒可选**（没跑检查 = 诚实的事实陈述，强制会诱发造值）。
     // 全部 = 确定性降级 FAIL——结构事实零 token 可判（不劳语义评审，也不
     // 进 B2b 自检挂起：自检取证改变不了账本事实），后续重派/熔断/转人工
     // 全走既有 FAIL 决策表，无新分支。
@@ -1700,6 +1708,65 @@ async fn review_issue(
             if truncated && patch_path.is_empty() {
                 return Some(Err(
                     "缺交付证据：patch 已截断但无 patch_path 盘上留底——截断交付必须留底（G4 契约）。请重跑任务以重新捕获交付。".to_string(),
+                ));
+            }
+            // ②typed files 块（在场即验形态，加法演进）：path 形态闸复用
+            // anchor 路径校验（解析期 FS 无关，集群跨平台拒绝 Windows 形态
+            // 绝对路径），sha256 = 64 位 hex。deletions 不在列表是 capture
+            // 侧语义（无内容可哈希），files_changed 计数仍在场可对照。
+            // 键在场但非数组同样是形态非法（不静默滑过）。
+            if let Some(files_val) = delivery.get("files") {
+                let Some(files) = files_val.as_array() else {
+                    return Some(Err(
+                        "交付证据 typed files 块形态非法：files 必须是数组。请重跑任务以重新捕获交付。".to_string(),
+                    ));
+                };
+                for f in files {
+                    let path = f.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                    let sha = f.get("sha256").and_then(|v| v.as_str()).unwrap_or("");
+                    if path.is_empty() || nemesis_board::anchor::validate_anchor_path_shape(path).is_err() {
+                        return Some(Err(format!(
+                            "交付证据 typed files 块形态非法：path「{path}」不是合法的仓库相对路径（拒绝绝对路径/`..`/盘符等）。请重跑任务以重新捕获交付。"
+                        )));
+                    }
+                    if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+                        return Some(Err(format!(
+                            "交付证据 typed files 块形态非法：path「{path}」的 sha256「{sha}」不是 64 位 hex。请重跑任务以重新捕获交付。"
+                        )));
+                    }
+                }
+            }
+            // ②typed checks 块（在场即验形态）：每条 = capture 侧
+            // CheckRecord wire 契约（tool/cmd 非空字符串 + ok 布尔 +
+            // summary 字符串；多余字段不拦——加法演进对齐 JSON Schema 默认）。
+            if let Some(checks_val) = delivery.get("checks") {
+                let Some(checks) = checks_val.as_array() else {
+                    return Some(Err(
+                        "交付证据 typed checks 块形态非法：checks 必须是数组。请重跑任务以重新捕获交付。".to_string(),
+                    ));
+                };
+                for c in checks {
+                    let tool = c.get("tool").and_then(|v| v.as_str()).unwrap_or("");
+                    let cmd = c.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
+                    let ok = c.get("ok").and_then(|v| v.as_bool());
+                    let summary = c.get("summary").and_then(|v| v.as_str());
+                    if tool.trim().is_empty() || cmd.trim().is_empty() || ok.is_none() || summary.is_none() {
+                        return Some(Err(
+                            "交付证据 typed checks 块形态非法：每条记录须含非空 tool/cmd、布尔 ok、字符串 summary。请重跑任务以重新捕获交付。".to_string(),
+                        ));
+                    }
+                }
+            }
+            // 严格闸（默认 false 烧入期，翻闸须用户裁决）：files 必须在场。
+            // capture 侧空列表 skip 序列化 = 缺席，两态等价处理。
+            if cfg.review.evidence_typed_required
+                && delivery
+                    .get("files")
+                    .and_then(|v| v.as_array())
+                    .is_none_or(|a| a.is_empty())
+            {
+                return Some(Err(
+                    "交付缺类型化证据块：delivery.files 不在场——git tree diff 应可确定性派生（任何 git 交付都有文件清单），缺席 = 证据面残缺。请用带交付管线的执行体重跑。".to_string(),
                 ));
             }
             Some(Ok(()))
