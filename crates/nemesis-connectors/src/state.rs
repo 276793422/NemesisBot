@@ -67,15 +67,26 @@ pub fn state_path(workspace: &Path, connector_id: &str) -> Result<PathBuf, Strin
 
 /// 读 sidecar（缺文件/坏 JSON/坏条目 = 空表——**读路径永不报错**：例外
 /// 状态缺失按 default 基线走，治理不因状态文件损坏而放宽或崩溃；坏文件
-/// 在 set 路径写入时被整体覆盖）。
+/// 在 set 路径写入时被整体覆盖）。坏 JSON 时 WARN 一声（文件存在但
+/// parse 失败 = 意志丢失风险：`enabled=false` 的停用位会静默回落清单
+/// 缺省，观测面必须可见——缺文件是常态不走这分支）。
 pub fn load_tool_state(workspace: &Path, connector_id: &str) -> ToolPolicyState {
     let Ok(path) = state_path(workspace, connector_id) else {
         return ToolPolicyState::default();
     };
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    match std::fs::read_to_string(&path) {
+        Ok(text) => match serde_json::from_str::<ToolPolicyState>(&text) {
+            Ok(state) => state,
+            Err(e) => {
+                tracing::warn!(
+                    "[Connector] sidecar `{}` 存在但解析失败（按空表降级，停用位/例外状态回落基线）: {e}",
+                    path.display()
+                );
+                ToolPolicyState::default()
+            }
+        },
+        Err(_) => ToolPolicyState::default(),
+    }
 }
 
 /// 单工具的当下策略（exempt 优先于 blocked——同名双录是配置矛盾，豁免
@@ -130,6 +141,68 @@ pub fn set_tool_policy(
         serde_json::to_string_pretty(&state).map_err(|e| format!("sidecar 序列化失败: {e}"))?;
     nemesis_utils::write_file_atomic(&path.to_string_lossy(), text.as_bytes(), 0o600)
         .map_err(|e| format!("sidecar 写入失败: {e}"))
+}
+
+/// 撤销防重标记目录：`config/connector_state/_undone/`（与 `<id>.json`
+/// sidecar 同层——目录 vs 文件不撞；连接器 id 字符集含 `_`，`_undone` 形态
+/// 上可作 id 但 state_path 恒带 `.json` 后缀，永不指到这里）。
+fn undone_dir(workspace: &Path) -> PathBuf {
+    state_dir(workspace).join("_undone")
+}
+
+/// 凭条 id 进文件名前的防御式校验（凭条 id 形态 = `RCPT-{ms}-{seq}`，
+/// 系统生成恒安全；测试/手工构造形态防御深度——拒路径分隔符与 `..`，
+/// 不合法 = 标记不落/读为未标记，由调用方 WARN 观测）。
+fn undone_marker_path(workspace: &Path, receipt_id: &str) -> Option<PathBuf> {
+    if receipt_id.is_empty()
+        || receipt_id.len() > 128
+        || receipt_id == "."
+        || receipt_id == ".."
+        || !receipt_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return None;
+    }
+    Some(undone_dir(workspace).join(format!("{receipt_id}.json")))
+}
+
+/// 撤销防重标记（边界补强 2026-10-20）：域 C 反向 op **发起执行后**落
+/// 标记（无论 verdict 成败——反向 op 可能已在对端生效，与 unknown 凭条
+/// 同保守语义），后续对同凭条的 undo 一律拒绝——重复执行反向 op 会叠加
+/// 外部副作用（双退款形态）。写失败 WARN + 继续（与凭条同纪律：观测
+/// 可见、不阻塞主流程）。诚实边界：标记非事务——反向 op 执行后、标记
+/// 落盘前进程崩溃 = 漏标记（窗口注记级，接受）。
+pub fn mark_undone(workspace: &Path, receipt_id: &str, undo_receipt_id: Option<&str>) {
+    let Some(path) = undone_marker_path(workspace, receipt_id) else {
+        tracing::warn!("[Connector] 撤销防重标记落盘跳过（凭条 id 形态异常）: {receipt_id}");
+        return;
+    };
+    let body = serde_json::json!({
+        "receipt_id": receipt_id,
+        "undo_receipt_id": undo_receipt_id,
+        "marked_at_ms": chrono::Utc::now().timestamp_millis(),
+    });
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        tracing::warn!("[Connector] 撤销防重标记目录创建失败: {e}");
+        return;
+    }
+    if let Err(e) = nemesis_utils::write_file_atomic(
+        &path.to_string_lossy(),
+        body.to_string().as_bytes(),
+        0o600,
+    ) {
+        tracing::warn!("[Connector] 撤销防重标记写入失败: {e}");
+    }
+}
+
+/// 撤销防重查询：标记在场 = 该凭条已发起过撤销。读失败/形态异常按
+/// 未标记（与 sidecar 读路径永不报错同纪律——放行的代价由 is_undone
+/// 的调用方文案提示「读不到标记 ≠ 未撤销」的保守边界）。
+pub fn is_undone(workspace: &Path, receipt_id: &str) -> bool {
+    undone_marker_path(workspace, receipt_id).is_some_and(|p| p.is_file())
 }
 
 /// effective enabled 单点合并（A3-a）：sidecar 有值 = 用户意志胜；缺省

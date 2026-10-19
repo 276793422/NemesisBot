@@ -509,6 +509,14 @@ impl AgentLoop {
         self.current_hidden_tools()
     }
 
+    /// G1：单工具是否被当前隐藏表命中（同一匹配器、同一现读——与 dispatch
+    /// 端绝对闸同源）。pub 判定面——连接器镜像枚举（connector_tools）用它
+    /// 把 G1 隐藏工具滤出镜像清单：G1 是绝对闸（任何出处都拒），镜像列出
+    /// 也调不动，枚举面必须同源过滤（否则 find 列出、invoke 拒绝的死链）。
+    pub fn tool_matches_hidden_config(&self, name: &str) -> bool {
+        super::tool_defs::tool_name_matches_hidden(&self.current_hidden_tools(), name)
+    }
+
     /// F1（devtool-upgrade 阶段 4）：当前工作模式。
     pub fn mode(&self) -> crate::types::AgentMode {
         *self.mode.read()

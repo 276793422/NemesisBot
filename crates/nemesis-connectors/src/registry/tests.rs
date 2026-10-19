@@ -72,6 +72,45 @@ fn scan_dir_without_manifest_honest_entry() {
 }
 
 #[test]
+fn scan_and_find_reject_oversized_manifest_without_reading() {
+    // 边界补强 2026-10-20：清单体积上限——超限条目按损坏诚实入列 /
+    // 诚实 Invalid，不进 TOML 解析（scan 是热路径，读前止损）。
+    let ws = tmpws();
+    // 超限条目：合法 TOML 前缀 + 巨量注释垫到超限。
+    let dir = ws.path().join(CONNECTORS_DIR).join("big-c");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let mut big = String::from("[connector]\nid = \"big-c\"\nname = \"big\"\n");
+    big.push_str(&format!("# {}\n", "x".repeat(64)));
+    while big.len() as u64 <= MANIFEST_MAX_BYTES {
+        big.push_str(&format!("# {}\n", "x".repeat(64)));
+    }
+    std::fs::write(dir.join(MANIFEST_FILE), &big).expect("write");
+    assert!(big.len() as u64 > MANIFEST_MAX_BYTES);
+
+    let loaded = scan_connectors(ws.path());
+    assert_eq!(loaded.len(), 1);
+    assert!(loaded[0].connector.is_none());
+    let err = loaded[0].error.as_deref().expect("honest error");
+    assert!(err.contains("体积上限"), "err: {err}");
+
+    // find 直达路径同闸。
+    let found = find_connector(ws.path(), "big-c");
+    match found {
+        Err(ConnectorLookupError::Invalid { error, .. }) => {
+            assert!(error.contains("体积上限"), "err: {error}");
+        }
+        other => panic!("expected Invalid, got {other:?}"),
+    }
+
+    // 压线不过限的正常清单照常解析（同注册表共存证明 cap 不误伤）。
+    write_connector(&ws, "ok-c", &min_toml_for("ok-c"));
+    let loaded = scan_connectors(ws.path());
+    assert_eq!(loaded.len(), 2);
+    let ok = loaded.iter().find(|l| l.connector.is_some()).expect("ok-c");
+    assert_eq!(ok.connector.as_ref().expect("some").id, "ok-c");
+}
+
+#[test]
 fn find_connector_three_states() {
     let ws = tmpws();
     // 不存在
@@ -547,6 +586,12 @@ class = "read"
 action = "builtin.noop"
 "#;
 
+/// 生成 id 指定、其余同 MIN_TOML 的清单文本（create 强制目录名==id，
+/// 测试夹具按目录名配平 id——边界补强 2026-10-20）。
+fn min_toml_for(id: &str) -> String {
+    MIN_TOML.replace("id = \"new-c\"", &format!("id = \"{id}\""))
+}
+
 #[test]
 fn create_connector_happy_path_and_visible_in_scan() {
     let ws = tmpws();
@@ -571,7 +616,7 @@ fn create_connector_happy_path_and_visible_in_scan() {
 }
 
 #[test]
-fn create_connector_rejects_bad_dir_name_bad_toml_and_duplicates() {
+fn create_connector_rejects_bad_dir_name_bad_toml_duplicates_and_mismatch() {
     let ws = tmpws();
     // 目录名非法（大写 / `..` / 绝对路径形态 / 空）
     for bad in ["Upper", "../escape", "a/b", ""] {
@@ -586,12 +631,18 @@ fn create_connector_rejects_bad_dir_name_bad_toml_and_duplicates() {
     assert!(err.contains("TOML 解析失败"), "{err}");
     assert!(!ws.path().join(CONNECTORS_DIR).join("bad-toml").exists());
     // 目录重复
-    create_connector(ws.path(), "dup", MIN_TOML).expect("first");
-    let err = create_connector(ws.path(), "dup", MIN_TOML).unwrap_err();
+    let dup_toml = min_toml_for("dup");
+    create_connector(ws.path(), "dup", &dup_toml).expect("first");
+    let err = create_connector(ws.path(), "dup", &dup_toml).unwrap_err();
     assert!(err.contains("已存在"), "{err}");
-    // id 撞车（不同目录、同 id）
+    // 目录名与清单 id 不一致（边界补强 2026-10-20：dir==id 强制——放行
+    // 会造出「可列出、不可调用」死链，find_connector 直达 connectors/<id>/）
     let err = create_connector(ws.path(), "other-dir", MIN_TOML).unwrap_err();
-    assert!(err.contains("已被其他目录占用"), "{err}");
+    assert!(err.contains("不一致"), "{err}");
+    assert!(
+        !ws.path().join(CONNECTORS_DIR).join("other-dir").exists(),
+        "不一致拒绝不落盘"
+    );
 }
 
 #[test]
@@ -680,7 +731,7 @@ fn set_connector_enabled_works_for_signed_entry() {
     // A3-a 核心收益：签名条目启停恒写 sidecar，清单字节不动 → 验签恒过。
     // （旧实现翻 `[connector] enabled` 位破坏验签，只能诚实拒绝。）
     let ws = tmpws();
-    create_connector(ws.path(), "signed-c", MIN_TOML).expect("create");
+    create_connector(ws.path(), "signed-c", &min_toml_for("signed-c")).expect("create");
     let dir = ws.path().join(CONNECTORS_DIR).join("signed-c");
     let pair = crate::signing::generate_key_pair().expect("keygen");
     crate::signing::sign_connector_dir(&dir, &pair.private_key).expect("sign");
@@ -710,7 +761,7 @@ fn set_connector_enabled_works_for_signed_entry() {
 #[test]
 fn remove_connector_deletes_dir_but_receipts_survive() {
     let ws = tmpws();
-    create_connector(ws.path(), "doomed", MIN_TOML).expect("create");
+    create_connector(ws.path(), "doomed", &min_toml_for("doomed")).expect("create");
     // 模拟历史凭条（在 data/ 下，与 connector 目录无关）
     let receipts_dir = ws.path().join("data").join("receipts");
     std::fs::create_dir_all(&receipts_dir).expect("mkdir");
@@ -731,6 +782,62 @@ fn remove_connector_deletes_dir_but_receipts_survive() {
     // 不在册目录名拒绝（无遍历攻击面：不在扫描结果里的名字一律拒）
     let err = remove_connector(ws.path(), "../escape").unwrap_err();
     assert!(err.contains("不在注册表"), "{err}");
+}
+
+#[test]
+fn find_connector_fallback_resolves_dir_id_mismatch() {
+    // 边界补强 2026-10-20：存量手放目录 dir≠id（绕过 create 的强制）——
+    // find_connector 直达未命中后按清单 id 扫描兜底，不再「可列出、不可调用」。
+    let ws = tmpws();
+    write_connector(&ws, "hand-made", &min_toml_for("fallback-c"));
+
+    // 按 manifest id 找（直达 connectors/fallback-c/ 未命中 → 扫描兜底命中）
+    let (c, _) = find_connector(ws.path(), "fallback-c").expect("fallback by id");
+    assert_eq!(c.id, "fallback-c");
+    // 按目录名找（直达命中，双轨另一臂）
+    let (c2, _) = find_connector(ws.path(), "hand-made").expect("direct by dir");
+    assert_eq!(c2.id, "fallback-c");
+    // 未知 id 仍是 NotFound
+    assert!(matches!(
+        find_connector(ws.path(), "ghost"),
+        Err(ConnectorLookupError::NotFound { .. })
+    ));
+
+    // 兜底命中的停用态也诚实暴露（sidecar 按 manifest id 键控）
+    set_connector_enabled(ws.path(), "hand-made", false).expect("disable");
+    assert!(matches!(
+        find_connector(ws.path(), "fallback-c"),
+        Err(ConnectorLookupError::Disabled { .. })
+    ));
+    set_connector_enabled(ws.path(), "hand-made", true).expect("re-enable");
+    assert!(find_connector(ws.path(), "fallback-c").is_ok());
+}
+
+#[test]
+fn corrupt_sidecar_falls_back_to_manifest_enabled_default() {
+    // 边界补强 2026-10-20：坏 JSON sidecar = 空表降级（读路径永不报错），
+    // enabled 回落清单缺省——停用缺省不被静默翻转成启用（观测面 WARN
+    // 在 load_tool_state；行为语义在此钉住）。
+    let ws = tmpws();
+    let toml_text = MIN_TOML.replace("id = \"new-c\"", "id = \"broken-side\"\nenabled = false");
+    write_connector(&ws, "broken-side", &toml_text);
+    let side_dir = crate::state::state_dir(ws.path());
+    std::fs::create_dir_all(&side_dir).expect("mkdir");
+    std::fs::write(side_dir.join("broken-side.json"), "{ not json").expect("write");
+
+    let loaded = scan_connectors(ws.path());
+    let entry = loaded
+        .iter()
+        .find(|l| l.connector.as_ref().is_some_and(|c| c.id == "broken-side"))
+        .expect("entry");
+    assert!(
+        !entry.connector.as_ref().expect("valid").enabled,
+        "损坏 sidecar → enabled 回落清单缺省（false）"
+    );
+    assert!(matches!(
+        find_connector(ws.path(), "broken-side"),
+        Err(ConnectorLookupError::Disabled { .. })
+    ));
 }
 
 // ---------------------------------------------------------------------------
