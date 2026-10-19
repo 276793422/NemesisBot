@@ -77,6 +77,12 @@ const CODEX_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 /// stop 后等子进程退出的上限（超过如实报 still terminating）。
 const STOP_WAIT: Duration = Duration::from_secs(6);
 
+/// A2 stop 优雅窗：stdin EOF 后等 delegate 自然退出的时长（空闲态的
+/// claude/codex 收到 EOF 立即自退，窗内即走；轮次中的收不了，交给 kill
+/// 旗标走 supervise 阶梯）。预算约束：EOF 窗 2s + 阶梯宽限 3s + 强杀
+/// 生效 ≈ 5.5s < [`STOP_WAIT`]（6s），超窗诚实报 still terminating。
+const DELEGATE_EOF_GRACE: Duration = Duration::from_secs(2);
+
 // ---------------------------------------------------------------------------
 // 协议 adapter（纯函数面）
 // ---------------------------------------------------------------------------
@@ -689,22 +695,34 @@ impl DelegateManager {
         }))
     }
 
-    /// 停止：优雅关 stdin（EOF = claude 完成当前轮后自退）+ 树杀兜底。
+    /// 停止：优雅关 stdin（EOF = claude 完成当前轮后自退）→ 优雅窗内等
+    /// 自然退出 → 仍活着置 kill 旗标（supervise 停止阶梯：优雅停→宽限窗
+    /// →强杀升级，A2）。
     ///
     /// claude print 模式没有 interrupt 帧（stream-json 输入只有 user 帧），
-    /// 「现在就停」的唯一语义 = EOF + 树杀——硬停诚实文档化；codex 的
-    /// `turn/interrupt`（必填 threadId+turnId）需要 turn 生命周期跟踪，
-    /// v1 同样以树杀兜底，先保证「stop 即停」不落空。
+    /// 「现在就停」的语义 = EOF + 优雅窗 + 树杀阶梯——硬停诚实文档化；
+    /// codex 的 `turn/interrupt`（必填 threadId+turnId）需要 turn 生命周
+    /// 期跟踪，v1 同样以阶梯兜底，先保证「stop 即停」不落空。
     pub async fn stop(&self, id: u64) -> Result<serde_json::Value, String> {
         let entry = self.entry(id).await?;
-        // 先关 stdin：防树杀竞态窗口里又注入新帧。
+        // 先关 stdin：防树杀竞态窗口里又注入新帧；EOF 同时是 claude 的
+        // 优雅停止语义（空闲态收到 EOF 立即自退）。
         if let Some(mut s) = entry.stdin.lock().await.take() {
             use tokio::io::AsyncWriteExt;
             let _ = s.shutdown().await;
         }
         if entry.is_running().await {
-            entry.kill_flag.store(true, Ordering::Relaxed);
-            // 等收尸（supervise 200ms 轮询 + 树杀 2s 上限）。
+            // A2 优雅窗：EOF 后先给一段自然收尾窗（空闲态的 delegate 自
+            // 退且 exit.killed 诚实保持 false；轮次中的收不了——交给下
+            // 方 kill 旗标走 supervise 阶梯）。
+            let graceful_deadline = Instant::now() + DELEGATE_EOF_GRACE;
+            while Instant::now() < graceful_deadline && entry.is_running().await {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            if entry.is_running().await {
+                entry.kill_flag.store(true, Ordering::Relaxed);
+            }
+            // 等收尸（supervise 200ms 轮询 + 阶梯宽限/强杀，6s 上限）。
             let deadline = Instant::now() + STOP_WAIT;
             while Instant::now() < deadline {
                 if !entry.is_running().await {
@@ -891,7 +909,25 @@ async fn rpc_round(
     let needle = format!("\"id\":{id}");
     loop {
         if !entry.is_running().await {
-            return Err("delegate exited during handshake".to_string());
+            // A4 装配纪律：死亡现场带退出码——status 槽（supervise 已填终态）
+            // 优先，竞态窗内未填则 try_wait 子进程兜底，两者皆空 = 收尸中。
+            let detail = match entry.status.lock().await.clone() {
+                Some(s) => s
+                    .exit_code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "signal".to_string()),
+                None => entry
+                    .child
+                    .lock()
+                    .await
+                    .try_wait()
+                    .ok()
+                    .flatten()
+                    .and_then(|st| st.code())
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "unknown (being reaped)".to_string()),
+            };
+            return Err(format!("delegate exited during handshake (exit: {detail})"));
         }
         let output = entry.output.lock().await;
         if output.produced() > *read_mark {

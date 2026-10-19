@@ -27,6 +27,8 @@ sqlite-preflight = ["dep:rusqlite"]
 tempfile = "3"
 wiremock = "0.6"
 tracing-subscriber = { workspace = true }
+# wait_ready 测试的 start_paused 虚拟时钟（full 不含 test-util）。
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

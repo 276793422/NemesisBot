@@ -323,6 +323,18 @@ fi
 echo ""
 
 # ============================================
+# Runtime manifest (A1 运行时完整性清单；生成失败诚实降级不阻塞打包)
+# ============================================
+if command -v python3 >/dev/null 2>&1; then
+    if ! python3 scripts/gen_runtime_manifest.py --out-dir "$BIN_DIR" --version "$VERSION" --commit "$GIT_COMMIT"; then
+        echo "  WARN runtime-manifest generation failed — gateway startup will treat deployment as unchecked (manifest absent)"
+    fi
+else
+    echo "  WARN python3 not found in PATH — skipping runtime-manifest generation"
+fi
+echo ""
+
+# ============================================
 # Summary
 # ============================================
 echo "============================================"

@@ -82,6 +82,14 @@ if not exist "target\!PROFILE!\nemesisbot.exe" (
 )
 copy /y "target\!PROFILE!\nemesisbot.exe" "bin\bin_customize\nemesisbot.exe" >nul
 echo [customize] DONE -^> bin\bin_customize\nemesisbot.exe
+REM A1 运行时完整性清单（生成失败诚实降级不阻塞）
+where python >nul 2>&1
+if %errorlevel%==0 (
+    python scripts\gen_runtime_manifest.py --out-dir bin\bin_customize
+    if errorlevel 1 echo [customize] WARN runtime-manifest generation failed - skipping
+) else (
+    echo [customize] WARN python not found in PATH - skipping runtime-manifest generation
+)
 exit /b 0
 
 REM ============ subroutine: build Vue frontend (self-contained) ============

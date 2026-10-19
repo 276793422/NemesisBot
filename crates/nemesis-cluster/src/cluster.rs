@@ -131,6 +131,11 @@ pub struct Cluster {
     /// 携带，对端据此把 `iroh:<hex>` 追加进拨号候选池）。None = 未启用
     /// 漫游叠加层（announce 不带字段，wire 兼容）。
     roaming_id: parking_lot::RwLock<Option<String>>,
+    /// A1 运行时硬化批：本节点构建号（git 短 hash；announce 携带）。由
+    /// 宿主（nemesisbot gateway / 轻量节点命令）在构造后经
+    /// [`Cluster::set_build_hash`] 注入——编译期常量 `NEMESISBOT_GIT_COMMIT`
+    /// 住在 nemesisbot，cluster crate 不重复抽 git。空 = 未宣告。
+    build_hash: parking_lot::RwLock<String>,
     /// Arc 自根槽（弱引用；gateway 装配在 `Arc::new(cluster)` 后经
     /// [`Cluster::install_self_weak`] 安装一次）。RPC handler 闭包与后台
     /// 循环经它活读自身身份——构造期只有 `&self`（无 Arc），安装先后无关
@@ -239,6 +244,7 @@ impl Cluster {
             #[cfg(feature = "cluster-roaming")]
             roaming_endpoint: Mutex::new(None),
             roaming_id: parking_lot::RwLock::new(None),
+            build_hash: parking_lot::RwLock::new(String::new()),
             self_weak: Arc::new(Mutex::new(None)),
             rpc_channel: RwLock::new(None),
             udp_port: DEFAULT_UDP_PORT,
@@ -397,6 +403,7 @@ impl Cluster {
             #[cfg(feature = "cluster-roaming")]
             roaming_endpoint: Mutex::new(None),
             roaming_id: parking_lot::RwLock::new(None),
+            build_hash: parking_lot::RwLock::new(String::new()),
             self_weak: Arc::new(Mutex::new(None)),
             rpc_channel: RwLock::new(None),
             udp_port: DEFAULT_UDP_PORT,
@@ -472,6 +479,7 @@ impl Cluster {
             professions: self.professions.read().clone(),
             tier: self.tier.read().clone(),
             agents: self.current_agent_roster(),
+            build: self.build_hash.read().clone(),
             node_type: self.node_type.clone(),
         };
         self.registry.upsert(local_node);
@@ -629,6 +637,9 @@ impl Cluster {
                 // agents 不持久化到 state.toml（运行时清单，周期 announce
                 // 自会重学——空 = 未宣告，绝不因回读假造清单）。
                 agents: Vec::new(),
+                // build 同纪律：回读种入的 Offline 占位不带构建号（空 =
+                // 未宣告），下次 announce/探针到达自会补齐。
+                build: String::new(),
                 node_type: String::new(),
             });
             seeded += 1;
@@ -940,6 +951,14 @@ impl Cluster {
         );
         *self.roaming_endpoint.lock() = Some(endpoint);
         Ok(true)
+    }
+
+    /// A1 运行时硬化批：注入本节点构建号（git 短 hash）。宿主（nemesisbot
+    /// gateway / 轻量节点命令）在 `Cluster::with_workspace` / `Cluster::new`
+    /// 之后调用——编译期常量 `NEMESISBOT_GIT_COMMIT` 住在 nemesisbot，cluster
+    /// crate 不能反向依赖。空串 = 未宣告（announce 不带 build 语义）。
+    pub fn set_build_hash(&self, h: &str) {
+        *self.build_hash.write() = h.to_string();
     }
 
     /// 漫游开关判定（纯函数）：config.cluster.json 顶层 `roaming.enabled`
@@ -1408,6 +1427,7 @@ impl Cluster {
             Vec::new(),
             None,
             None,
+            "",
         )
     }
 
@@ -1441,6 +1461,7 @@ impl Cluster {
         agents: Vec<crate::types::AgentAnnouncement>,
         iroh_id: Option<String>,
         source_addr: Option<&str>,
+        build: &str,
     ) -> bool {
         self.handle_discovered_node_impl(
             node_id,
@@ -1457,6 +1478,7 @@ impl Cluster {
             agents,
             iroh_id,
             source_addr,
+            build,
         )
     }
 
@@ -1477,6 +1499,7 @@ impl Cluster {
         agents: Vec<crate::types::AgentAnnouncement>,
         iroh_id: Option<String>,
         source_addr: Option<&str>,
+        build: &str,
     ) -> bool {
         // Skip blacklisted nodes
         if self.removed_peers.read().contains(node_id) {
@@ -1548,6 +1571,7 @@ impl Cluster {
             merged.tier = tier.clone();
             merged.agents = agents.clone();
             merged.node_type = node_type.to_string();
+            merged.build = build.to_string();
             // A1：iroh 漫游身份入池（新增非覆盖——空地址分支保留原地址的
             // 纪律不变；iroh 候选是新通路证据，照常追加）。
             if let Some(hex) = Self::valid_iroh_id(iroh_id) {
@@ -1657,6 +1681,7 @@ impl Cluster {
             professions: professions.clone(),
             tier: tier.clone(),
             agents: agents.clone(),
+            build: build.to_string(),
             node_type: node_type.to_string(),
         };
         let changed = self.registry.upsert_if_changed(node);
@@ -1790,6 +1815,7 @@ impl Cluster {
                         professions: professions.clone(),
                         tier: tier.clone(),
                         agents: agents.clone(),
+                        build: build.to_string(),
                         node_type: node_type.into(),
                     },
                 );
@@ -1959,6 +1985,7 @@ impl Cluster {
             existing.professions = info.professions.clone();
             existing.tier = info.tier.clone();
             existing.agents = info.agents.clone();
+            existing.build = info.build.clone();
             existing.node_type = info.node_type.clone();
             self.registry.upsert(existing);
             self.persist_real_peer_to_toml(&info.id, info);
@@ -2010,6 +2037,7 @@ impl Cluster {
             professions: info.professions.clone(),
             tier: info.tier.clone(),
             agents: info.agents.clone(),
+            build: info.build.clone(),
             node_type: info.node_type.clone(),
         };
         self.registry.upsert(node);
@@ -3087,6 +3115,7 @@ impl Cluster {
             professions: self.professions.read().clone(),
             tier: self.tier.read().clone(),
             agents: self.current_agent_roster(),
+            build: self.build_hash.read().clone(),
             node_type: self.node_type.clone(),
         };
         self.registry.upsert(info);
@@ -3926,6 +3955,7 @@ impl Cluster {
             msg.agents,
             msg.iroh_id,
             None,
+            &msg.build,
         );
         if changed {
             tracing::info!(
@@ -4461,6 +4491,7 @@ impl ClusterCallbacks for Cluster {
         agents: &[crate::types::AgentAnnouncement],
         iroh_id: Option<&str>,
         source_addr: Option<&str>,
+        build: &str,
     ) -> bool {
         self.handle_discovered_node_ex(
             node_id,
@@ -4477,7 +4508,12 @@ impl ClusterCallbacks for Cluster {
             agents.to_vec(),
             iroh_id.map(|s| s.to_string()),
             source_addr,
+            build,
         )
+    }
+
+    fn build_hash(&self) -> String {
+        self.build_hash.read().clone()
     }
 
     fn handle_node_offline(&self, node_id: &str, reason: &str) {
@@ -4772,6 +4808,10 @@ pub struct RealNodeInfo {
     /// 对端自报 agent 实体清单（P2 2026-10-16；get_info 携带；merge 进
     /// 注册表 ExtendedNodeInfo）。
     pub agents: Vec<crate::types::AgentAnnouncement>,
+    /// 对端自报构建号（A1 运行时硬化批；announce/探针/get_info 携带；
+    /// merge 进注册表 ExtendedNodeInfo）。不落 peers.toml（写盘手选字段，
+    /// 下次 announce 自会重学）。
+    pub build: String,
     pub node_type: String,
 }
 
