@@ -2677,6 +2677,162 @@ http = { method = "GET", path = "/feed?src=manifest" }
     assert!(feed_url.contains('&'), "追加用 & 连接: {feed_url}");
 }
 
+/// path 占位符 percent-encode（边界补强 2026-10-20）：占位符 = 单 path
+/// segment 语义——`../` 不得穿越层级、`?`/`#` 不得逃逸 segment、中文按
+/// UTF-8 percent 形态。严格断言放在 wiremock 收到的原始 URL（url crate
+/// 不解码 path，原始字节是唯一真相）；`..` 若未编码会被客户端 remove_dot_
+/// segments 规范化吃掉，path 形态直接变——两个面都钉死。
+#[tokio::test]
+async fn test_http_path_placeholder_is_percent_encoded() {
+    let server = wiremock::MockServer::start().await;
+    // 匹配器全放行（any）——invoke 必成功，形态断言全部压在收到的
+    // 原始 path 上（url crate 不解码 path，原始字节唯一真相）。
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(
+        ws,
+        "esc-api",
+        &r#"
+[connector]
+id = "esc-api"
+name = "Escape"
+version = "0.1.0"
+kind = "rest"
+
+[connector.http]
+base = "{BASE}"
+
+[[op]]
+id = "get_item"
+intent = ["查询"]
+risk = "low"
+class = "read"
+http = { method = "GET", path = "/repos/{owner}/issues/{index}" }
+"#
+        .replace("{BASE}", &server.uri()),
+    );
+    let tool = invoke_tool(ws, &ws.join("config.json"));
+
+    // owner 带 `../` 穿越 + index 带 `?x` query 逃逸——两者都必须被编码
+    // 钉在 segment 内。
+    let out = tool
+        .execute(
+            r#"{"connector":"esc-api","op":"get_item","args":{"owner":"octo/../admin","index":"42?x"}}"#,
+            &ctx(),
+        )
+        .await
+        .expect("invoke ok（编码后命中 mock）");
+    assert!(out.contains("ok"), "result: {out}");
+
+    let received = server.received_requests().await.expect("received");
+    assert_eq!(received.len(), 1);
+    let path = received[0].url.path();
+    assert_eq!(
+        path, "/repos/octo%2F%2E%2E%2Fadmin/issues/42%3Fx",
+        "`../` 与 `?` 必须编码在 segment 内（穿越/逃逸被钉死）: {path}"
+    );
+}
+
+/// encode_path_segment 单测：unreserved 直通、危险字符逐字节编码、
+/// `.` 也编码（防 `..` 段被规范化成层级上升）、非 ASCII 按 UTF-8。
+#[test]
+fn test_encode_path_segment_shapes() {
+    use super::encode_path_segment;
+    assert_eq!(encode_path_segment("octocat"), "octocat");
+    assert_eq!(encode_path_segment("a-b_1~"), "a-b_1~");
+    assert_eq!(encode_path_segment(".."), "%2E%2E", "`..` 编码后不再是层级");
+    assert_eq!(encode_path_segment("1.2.3"), "1%2E2%2E3");
+    assert_eq!(encode_path_segment("a/b"), "a%2Fb");
+    assert_eq!(encode_path_segment("a?b#c"), "a%3Fb%23c");
+    assert_eq!(
+        encode_path_segment("a%2Fb"),
+        "a%252Fb",
+        "已编码值不二次解码"
+    );
+    assert_eq!(encode_path_segment("a b"), "a%20b");
+    // 中（E4 B8 AD）→ UTF-8 逐字节。
+    assert_eq!(encode_path_segment("中"), "%E4%B8%AD");
+    assert_eq!(encode_path_segment(""), "");
+}
+
+/// find 镜像资源上限（边界补强 2026-10-20）：条数截断（MIRROR_LIST_CAP）
+/// + mirrors_truncated 注记；超限 schema 置 null + args_schema_note。
+#[cfg(feature = "security")]
+#[tokio::test]
+async fn test_find_mirror_list_and_schema_caps() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(ws, "excl", EXCLUSIVE_MANIFEST);
+    let find = ConnectorFindTool::new(ws.to_path_buf());
+
+    let big_schema = serde_json::json!({
+        "type": "object",
+        "properties": {"pad": {"type": "string", "description": "x".repeat(5000)}}
+    });
+    let names: Vec<String> = (0..70).map(|i| format!("mcp_stub__t{i:03}")).collect();
+    let entries: Vec<(&str, serde_json::Value, Option<bool>, Option<bool>)> = names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| {
+            (
+                n.as_str(),
+                if i == 0 {
+                    big_schema.clone()
+                } else {
+                    serde_json::json!({"type": "object"})
+                },
+                None,
+                None,
+            )
+        })
+        .collect();
+    let loop_arc = loop_with_snapshot_hints(&entries);
+    find.set_loop(Arc::downgrade(&loop_arc));
+
+    let out = find
+        .execute(r#"{"query":""}"#, &ctx())
+        .await
+        .expect("find ok");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let excl = v["connectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["id"] == "excl")
+        .expect("excl hit");
+    let mirrors = excl["mirrors"].as_array().unwrap();
+    assert_eq!(mirrors.len(), 64, "条数上限 MIRROR_LIST_CAP");
+    assert_eq!(excl["mirrors_truncated"], serde_json::json!(6), "截断注记");
+    // 字典序 t000 在清单内：schema 超限置 null + note（形态可辨识）。
+    let t000 = mirrors
+        .iter()
+        .find(|m| m["id"] == "mcp_stub__t000")
+        .unwrap();
+    assert!(t000["args_schema"].is_null(), "超限 schema 省略: {t000}");
+    assert!(
+        t000["args_schema_note"]
+            .as_str()
+            .unwrap()
+            .contains("args_schema 过大"),
+        "note 注记: {t000}"
+    );
+    // 普通条目 schema 照常在列。
+    let t001 = mirrors
+        .iter()
+        .find(|m| m["id"] == "mcp_stub__t001")
+        .unwrap();
+    assert!(t001["args_schema"].is_object());
+    assert!(t001["args_schema_note"].is_null());
+}
+
 /// R6 同名冲突端到端：凭据 query（vault 注入 `into = "query:api_key"`）
 /// 与 args 同名 `api_key` 同场——wiremock 收到的必须只有 vault 值（普通
 /// args 不得覆盖/伴随凭据出现）。GLOBAL_STATE_LOCK 形态同既有 vault e2e。
@@ -3747,6 +3903,83 @@ async fn test_find_matches_mirror_description_tokens() {
         matched.iter().any(|m| m == "mcp_stub__read_page"),
         "描述词根命中镜像: {excl}"
     );
+}
+
+/// G1×镜像（2026-10-20 边界补强）：被 `agents.hidden_tools` 隐藏的原生
+/// 工具不进镜像面。G1 在 dispatch 端是绝对闸（任何出处都拒，绑定回灌
+/// 也不例外），镜像若照列就是「find 可列、invoke 必死」的死链家族——
+/// 枚举面（mirrors_of/mirror_pairs_of）与调用面（resolve_mirror_op）经
+/// `AgentLoop::tool_matches_hidden_config` 与 dispatch 闸同源过滤。
+#[cfg(feature = "security")]
+#[tokio::test]
+async fn test_g1_hidden_tool_excluded_from_mirror_surface() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    write_connector(ws, "excl", EXCLUSIVE_MANIFEST);
+    let find = ConnectorFindTool::new(ws.to_path_buf());
+    let loop_arc = loop_with_snapshot_full(
+        &[(
+            "mcp_stub__read_page",
+            serde_json::json!({"type":"object"}),
+            Some(true),
+            None,
+        )],
+        &["Navigate to a URL and capture the page snapshot"],
+    );
+    find.set_loop(Arc::downgrade(&loop_arc));
+
+    // 对照组（未隐藏）：描述词根命中，镜像在列。
+    let out = find
+        .execute(r#"{"query":"snapshot"}"#, &ctx())
+        .await
+        .expect("find ok");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let excl = v["connectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["id"] == "excl")
+        .expect("对照组：未隐藏时镜像可检索");
+    assert!(
+        excl["mirrors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["id"] == "mcp_stub__read_page"),
+        "对照组镜像应在列: {excl}"
+    );
+
+    // 实验组（G1 隐藏）：枚举面消失——检索不再经镜像命中该 connector。
+    loop_arc.set_extra_hidden_tools(vec!["mcp_stub__read_page".to_string()]);
+    let out = find
+        .execute(r#"{"query":"snapshot"}"#, &ctx())
+        .await
+        .expect("find ok");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let hit = v["connectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["id"] == "excl");
+    let mirrors_clean = hit.is_none()
+        || !hit.unwrap()["mirrors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["id"] == "mcp_stub__read_page");
+    assert!(mirrors_clean, "G1 隐藏工具不得进镜像清单: {:?}", hit);
+
+    // 调用面：隐藏工具的镜像 id 落「无 op」诚实报错（而非 dispatch 死拒）。
+    let tool = invoke_tool(ws, &ws.join("config.json"));
+    tool.set_loop(Arc::downgrade(&loop_arc));
+    let err = tool
+        .execute(
+            r#"{"connector":"excl","op":"mcp_stub__read_page","args":{}}"#,
+            &ctx(),
+        )
+        .await
+        .expect_err("隐藏镜像必须拒绝");
+    assert!(err.contains("无 op"), "诚实报错而非 dispatch 死拒: {err}");
 }
 
 /// 镜像 e2e：execute 走完整预检/预算/回执/dispatch 瀑布，原生工具真实执行
