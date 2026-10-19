@@ -203,7 +203,16 @@ async fn b11_snooze_unsnooze_roundtrip() {
     .await
     .unwrap()
     .unwrap();
-    assert_eq!(out["snoozed_until"], "2099-01-01T09:00:00+08:00");
+    // 归一只换表示不换时刻：输出按本地时区 RFC3339（UTC runner 上是 +00:00 形态），
+    // 断言同一时刻而非同一字符串——字符串相等会把断言钉死在开发机时区上（CI 实录）。
+    assert_eq!(
+        chrono::DateTime::parse_from_rfc3339(
+            out["snoozed_until"].as_str().expect("snoozed_until 缺失")
+        )
+        .unwrap(),
+        chrono::DateTime::parse_from_rfc3339("2099-01-01T09:00:00+08:00").unwrap(),
+        "幂等改期应保持同一时刻"
+    );
 
     // unsnooze：摘标记回 true；meta 清空；二次 unsnooze 幂等 false。
     let out = run(
@@ -291,7 +300,12 @@ fn b11_parse_snooze_until_units() {
     // 绝对时刻（跨时区归一本地）。
     let out = parse_snooze_until("2099-06-01T12:00:00Z").unwrap();
     let dt = chrono::DateTime::parse_from_rfc3339(&out).unwrap();
-    assert_eq!(dt.format("%Y-%m-%d").to_string(), "2099-06-01");
+    // 断言同一时刻而非本地日期串——`%Y-%m-%d` 依赖 runner 时区（UTC+14 及更东会跨日）。
+    assert_eq!(
+        dt,
+        chrono::DateTime::parse_from_rfc3339("2099-06-01T12:00:00Z").unwrap(),
+        "归一只换表示不换时刻"
+    );
     // 非法臂。
     for bad in ["0", "-3", "abc", "2020-01-01T00:00:00Z"] {
         assert!(parse_snooze_until(bad).is_err(), "{bad} 应报错");
