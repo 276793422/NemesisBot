@@ -640,6 +640,13 @@ pub struct AgentLoop {
     /// chain. `None` disables the instructions section of the merged
     /// context digest.
     workspace_root: parking_lot::RwLock<Option<std::path::PathBuf>>,
+    /// VM 档执行环境注记 resolver（B9 审计收口）。`Some` 时每轮
+    /// build_messages 调用一次，非空返回值作为一行追加进 # Environment
+    /// 快照（bot 侧安装：档位 per-call 现读，vm 档返回 guest 路径语义行，
+    /// process 档返回空串 = 字节不变）。`None`（headless/测试/未装配）=
+    /// 零行为差异。nemesis-agent 不识 VM 概念，注记内容由宿主侧决定。
+    exec_env_resolver:
+        parking_lot::RwLock<Option<std::sync::Arc<dyn Fn() -> String + Send + Sync>>>,
     /// N7（2026-10-13）：工作区指令信任档（见
     /// [`crate::workspace_instructions::InstructionTrust`]）。缺省 Trusted
     /// ——主/集群 loop 不经显式注入即为主循环行为；项目 loop 装配时按注册
@@ -873,6 +880,7 @@ impl AgentLoop {
             inbox: std::sync::Arc::new(crate::inbox::Inbox::new(crate::inbox::DEFAULT_QUEUE_SIZE)),
             turn_task_handles: parking_lot::Mutex::new(Vec::new()),
             workspace_root: parking_lot::RwLock::new(None),
+            exec_env_resolver: parking_lot::RwLock::new(None),
             instruction_trust: parking_lot::RwLock::new(
                 crate::workspace_instructions::InstructionTrust::Trusted,
             ),

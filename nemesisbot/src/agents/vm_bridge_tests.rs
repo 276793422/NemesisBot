@@ -36,7 +36,7 @@ fn decode_wsl_output_bomless_utf16le_ascii() {
 
 #[test]
 fn decode_wsl_output_plain_utf8_passthrough() {
-    let text = "genisoimage=yes\nfile=no\n";
+    let text = "qemu-img=yes\nfile=no\n";
     assert_eq!(decode_wsl_output(text.as_bytes()), text);
 }
 
@@ -69,11 +69,9 @@ fn distro_manifest_rejects_error_message_shapes() {
 
 #[test]
 fn tool_probe_parses_yes_no_and_ignores_noise() {
-    let tools = parse_tool_probe(
-        "genisoimage=yes\nxorriso=no\nfile=yes\ncurl=yes\nwget=no\napt-get=yes\n噪声行\n",
-    );
-    assert_eq!(tools.get("genisoimage"), Some(&true));
-    assert_eq!(tools.get("xorriso"), Some(&false));
+    let tools =
+        parse_tool_probe("qemu-img=yes\nfile=yes\ncurl=yes\nwget=no\napt-get=yes\n噪声行\n");
+    assert_eq!(tools.get("qemu-img"), Some(&true));
     assert_eq!(tools.get("wget"), Some(&false));
     assert_eq!(tools.get("apt-get"), Some(&true));
     assert!(!tools.contains_key("噪声行"));
@@ -82,7 +80,7 @@ fn tool_probe_parses_yes_no_and_ignores_noise() {
 #[test]
 fn classify_tools_all_present_means_ready() {
     let tools = tools_from(&[
-        ("genisoimage", true),
+        ("qemu-img", true),
         ("file", true),
         ("curl", true),
         ("wget", false),
@@ -94,22 +92,16 @@ fn classify_tools_all_present_means_ready() {
 }
 
 #[test]
-fn classify_tools_missing_iso_and_file() {
-    let tools = tools_from(&[
-        ("xorriso", false),
-        ("mkisofs", false),
-        ("genisoimage", false),
-        ("file", false),
-        ("wget", true),
-    ]);
+fn classify_tools_missing_qemu_img_and_file() {
+    let tools = tools_from(&[("qemu-img", false), ("file", false), ("wget", true)]);
     let (missing, _) = classify_wsl_tools(&tools);
-    // ISO 组 + file 各一条；下载器有 wget 满足不再报。
+    // qemu-img 组 + file 各一条；下载器有 wget 满足不再报。
     assert_eq!(missing.len(), 2);
 }
 
 #[test]
 fn classify_tools_missing_downloader_and_no_apt() {
-    let tools = tools_from(&[("genisoimage", true), ("file", true)]);
+    let tools = tools_from(&[("qemu-img", true), ("file", true)]);
     let (missing, has_apt) = classify_wsl_tools(&tools);
     assert_eq!(missing, vec!["curl 或 wget".to_string()]);
     assert!(!has_apt);

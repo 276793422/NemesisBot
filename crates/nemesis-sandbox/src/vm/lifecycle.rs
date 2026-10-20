@@ -261,8 +261,6 @@ pub struct VmStartParams {
     pub ram_mb: u32,
     /// 本实例 overlay（backing = base 镜像，见 `overlay` 模块）。
     pub overlay_path: PathBuf,
-    /// cloud-init nocloud seed ISO（首启装配用；已装配 overlay 复用可 None）。
-    pub seed_iso: Option<PathBuf>,
     /// per-instance 鉴权 token（[`generate_token`]）。
     pub token: String,
     /// 9p 共享子树（None = 不挂，Windows 宿主诚实边界）。
@@ -307,7 +305,6 @@ impl VmInstance {
             vcpu: p.vcpu,
             ram_mb: p.ram_mb,
             overlay_path: p.overlay_path.clone(),
-            seed_iso: p.seed_iso.clone(),
             qmp_port,
             host_forward_port: host_port,
             token: p.token.clone(),

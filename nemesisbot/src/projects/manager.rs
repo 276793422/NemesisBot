@@ -1164,7 +1164,16 @@ async fn run_conflict_resolution(t: ConflictResolutionTask) {
             ),
         };
         match choice {
-            ConflictChoice::HostWins => host_wins.push(f.rel.clone()),
+            ConflictChoice::HostWins => {
+                host_wins.push(f.rel.clone());
+                // 与 ② 臂对等的逐文件裁决留痕（可观测性对齐：②有「保留 VM
+                // 版」行，①此前只落 applied 计数，单文件裁决无迹可查）。
+                tracing::info!(
+                    project = %t.pid,
+                    file = %f.rel,
+                    "[ProjectLoops] 冲突裁决：用宿主版覆盖 VM 版（VM 内改动丢弃）"
+                );
+            }
             ConflictChoice::KeepVm => {
                 keep_vm.push(f.rel.clone());
                 // 幂等重申挂起条目（正常路径前置已在，同值覆盖无变化；

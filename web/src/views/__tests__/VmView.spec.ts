@@ -455,10 +455,10 @@ describe('VmView 环境安装分步卡（B4）', () => {
   it('wsl_missing_tools：黄条缺清单 + 复制命令 + 构建按钮禁用', async () => {
     const w = await mountView(overview({ enabled: true }), imageList(), bootstrapStatus({
       image_ready: false,
-      image_route: { state: 'wsl_missing_tools', missing: ['genisoimage（或 xorriso / mkisofs 任一）', 'file'], command: 'wsl -e bash -c "sudo apt install -y genisoimage file curl"', note: '装完后点「复检」，转就绪即可构建', guest_ready: true },
+      image_route: { state: 'wsl_missing_tools', missing: ['qemu-img（qemu-utils 包）', 'file'], command: 'wsl -e bash -c "sudo apt install -y qemu-utils file curl"', note: '装完后点「复检」，转就绪即可构建', guest_ready: true },
     }))
     expect((w.find('[data-test="image-build"]').element as HTMLButtonElement).disabled).toBe(true)
-    expect(w.find('[data-test="image-route-missing"]').text()).toContain('genisoimage')
+    expect(w.find('[data-test="image-route-missing"]').text()).toContain('qemu-img')
     expect(w.find('[data-test="image-route-command"]').text()).toContain('sudo apt install')
     expect(w.find('[data-test="image-route-copy"]').exists()).toBe(true)
     expect(w.find('[data-test="image-route-note"]').text()).toContain('复检')
@@ -490,7 +490,7 @@ describe('VmView 环境安装分步卡（B4）', () => {
   it('no_script：脚本缺席态渲染后端 note 指路，构建按钮禁用', async () => {
     const w = await mountView(overview({ enabled: true }), imageList(), bootstrapStatus({
       image_ready: false,
-      image_route: { state: 'no_script', missing: [], command: '', note: '构建脚本不在场（scripts/build-vm-image.sh）——从仓库根运行网关，或在 Linux 宿主构建后把 base.qcow2 + seed.iso 落到镜像目录回传', guest_ready: true },
+      image_route: { state: 'no_script', missing: [], command: '', note: '构建脚本不在场（scripts/build-vm-image.sh）——从仓库根运行网关，或在 Linux 宿主构建后把 base.qcow2 落到镜像目录回传', guest_ready: true },
     }))
     expect((w.find('[data-test="image-build"]').element as HTMLButtonElement).disabled).toBe(true)
     expect(w.find('[data-test="image-state"]').text()).toContain('构建脚本不在场')
