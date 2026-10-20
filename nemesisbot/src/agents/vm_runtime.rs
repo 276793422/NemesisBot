@@ -25,7 +25,7 @@
 //! registry = `<workspace>/tools/vm/run/<agent_id>/instance.json`（端口
 //! **不落盘**——临时端口每次启动重分；token/资源/睡眠产物落盘）。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -47,7 +47,9 @@ const SLEEP_BUDGET: Duration = Duration::from_secs(300);
 const STOP_GRACE: Duration = Duration::from_secs(10);
 /// registry 写入宽限窗：sweep 跳过 mtime 距今小于该值的记录——ensure_running
 /// 先落记录再等 QEMU 起来（冷启秒级到分钟级），不跳过会把正在启动的 VM
-/// 误判孤儿杀掉。
+/// 误判孤儿杀掉。在途启动的精确防线是 supervisor 的 starting 集（sweep
+/// 直接跳过在途 agent，不受窗长限制）；本窗兜底「非本 supervisor 在途」
+/// 的异常形态（如崩溃残留的半截记录）。
 const SWEEP_STARTUP_GRACE: Duration = Duration::from_secs(120);
 /// guest agent 就绪等待预算（冷启/唤醒统一）：QMP running ≠ guest 侧 agent
 /// 已监听——cloud-init/systemd 还在走（微型镜像典型 20-60s，上限给慢盘
@@ -248,24 +250,53 @@ pub(crate) fn load_record(workspace: &Path, agent_id: &str) -> Option<VmInstance
     }
 }
 
-pub(crate) fn save_record(workspace: &Path, agent_id: &str, record: &VmInstanceRecord) {
+/// registry 写盘序号（tmp 文件名唯一性：并发 save 同 agent 不互踩临时文件）。
+static REGISTRY_WRITE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// registry 写盘（**原子替换**：临时文件 + 同目录 rename——崩溃/断电中途
+/// 只留孤儿 tmp，instance.json 要么旧完整要么新完整，绝不半截 JSON）。
+/// registry 是「孤儿 sweep 可见性 + spawn 前落盘锚」的真相源，半截/缺失
+/// 记录的后果链：load=None → sweep 看不见孤儿 + ensure 当新记录重开同一
+/// overlay = qcow2 并发写损坏。失败如实返回 Err（spawn 前锚位 `?` 消费）。
+pub(crate) fn save_record(
+    workspace: &Path,
+    agent_id: &str,
+    record: &VmInstanceRecord,
+) -> Result<(), String> {
     let dir = vm_run_dir(workspace, agent_id);
-    if let Err(e) = std::fs::create_dir_all(&dir) {
-        tracing::warn!("[vm-runtime] registry 目录创建失败 {}: {e}", dir.display());
-        return;
-    }
-    let json = match serde_json::to_string_pretty(record) {
-        Ok(j) => j,
-        Err(e) => {
-            tracing::warn!("[vm-runtime] registry 序列化失败: {e}");
-            return;
-        }
-    };
-    if let Err(e) = std::fs::write(registry_path(workspace, agent_id), json) {
-        tracing::warn!(
-            "[vm-runtime] registry 写入失败 {}: {e}",
-            registry_path(workspace, agent_id).display()
-        );
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("registry 目录创建失败 {}: {e}", dir.display()))?;
+    let json =
+        serde_json::to_string_pretty(record).map_err(|e| format!("registry 序列化失败: {e}"))?;
+    let target = registry_path(workspace, agent_id);
+    let tmp = dir.join(format!(
+        "instance.json.{}.{}.tmp",
+        std::process::id(),
+        REGISTRY_WRITE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::write(&tmp, json).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("registry 临时文件写入失败 {}: {e}", tmp.display())
+    })?;
+    // 同目录 rename（NTFS/ext4 都原子；跨盘 rename 才有拷贝窗——tmp 与
+    // target 同目录，不存在跨盘）。
+    std::fs::rename(&tmp, &target).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("registry 原子替换失败 {}: {e}", target.display())
+    })?;
+    Ok(())
+}
+
+/// save_record 的 best-effort 包装（非锚定位）：状态转移已发生、落盘失败
+/// 只降级可观测性/下次冷启形态，不该把操作面错误顶上去。
+pub(crate) fn save_record_warn(
+    workspace: &Path,
+    agent_id: &str,
+    record: &VmInstanceRecord,
+    ctx: &str,
+) {
+    if let Err(e) = save_record(workspace, agent_id, record) {
+        tracing::warn!("[vm-runtime] registry 写入失败（{ctx}）: {e}");
     }
 }
 
@@ -397,6 +428,130 @@ async fn kill_pid(pid: u32) -> bool {
     }
 }
 
+/// spawn 前防线：该 agent 的 pidfile 指向一个**身份核验通过的活 QEMU** =
+/// registry 丢失/损坏后 sweep 看不见的真实孤儿（或另一 gateway 进程共用
+/// 同 workspace）——此时再 spawn 就是同一 overlay 双开（qcow2 并发写 =
+/// 盘损坏），诚实拒绝而不是撞上去。身份不匹配（pid 复用）不拦——与 sweep
+/// 同款保守 doctrine（宁可漏拦不误拦；PATH 回落裸名解析的弱核验窗与
+/// sweep 一致）。正常流 pidfile 残留（QEMU 已退出）在这里就是死 pid →
+/// 直接放行，零额外成本。
+pub(crate) fn ensure_no_live_qemu(pidfile: &Path, qemu_bin: &Path) -> Result<(), String> {
+    if let Some(pid) = parse_pidfile(pidfile)
+        && pid_matches_qemu_identity(pid, qemu_bin)
+    {
+        return Err(format!(
+            "pidfile 命中身份核验通过的活 QEMU（pid {pid}）——同 overlay 禁止双开：等孤儿 sweep 清理（watchdog ≤{}s 一轮）或显式处理后重试（pidfile: {}）",
+            WATCHDOG_TICK.as_secs(),
+            pidfile.display()
+        ));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 镜像换装互斥（promote vs spawn——桥侧 promote_staging 与本模块 start 共享）
+// ---------------------------------------------------------------------------
+
+/// 镜像换装闸：promote（qemu-img rebase / 删旧 base / 新 base 转正）与
+/// spawn（overlay 创建 + QEMU 打开 overlay）互斥。两相协议：
+/// start 侧在 overlay 首触前取闸、持有到本函数终态（成功=槽即将入 map，
+/// 失败=子进程已收尸 overlay 已释放）；promote 侧持闸做 pidfile 全量扫描
+/// 后才动镜像——「扫描时无活 QEMU」在闸保护下直到 promote 结束都不会有
+/// 新 spawn（spawn 早期 QEMU 尚未写 pidfile，纯扫描有进程创建窗，闸把
+/// 窗口钉死）。tokio Mutex（持锁跨 await；任务取消即释放，不卡停机）。
+pub(crate) static IMAGE_SWAP_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// spawn 在途标记文件名（run/<agent>/ 下）。
+const STARTING_MARKER: &str = "starting";
+
+/// 在途标记的陈旧界：超过视为崩溃残留（进程死在 spawn 相位没来得及
+/// 自清理），不再拦换装。正常 spawn 相位（overlay 制备 + QMP 就绪等待）
+/// 远短于此；取宽裕值防慢机误伤。
+const STARTING_MARKER_STALE: Duration = Duration::from_secs(600);
+
+/// spawn 在途标记守卫：构造即落盘、Drop 即移除（`?` 早退/panic 展开全
+/// 覆盖）。跨进程可见性哨兵：QEMU 自身要等 spawn 后才写 pidfile，进程
+/// 创建窗内另一进程的镜像换装扫描看不见 pidfile——标记把这段窗补上
+/// （与 pidfile 同一「文件即跨进程真相」教义；终态后 pidfile 接管活体
+/// 职责，标记可删）。
+struct StartingMarkerGuard {
+    path: PathBuf,
+}
+
+impl StartingMarkerGuard {
+    fn arm(run_dir: &Path) -> std::io::Result<Self> {
+        let path = run_dir.join(STARTING_MARKER);
+        std::fs::write(&path, std::process::id().to_string())?;
+        Ok(Self { path })
+    }
+}
+
+impl Drop for StartingMarkerGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// 在途标记新鲜判定：缺席 = 不在途；mtime 在陈旧界内（或读不出/时钟
+/// 倒挂）= 新鲜——拿不准时往「拦换装」的保守方向落。
+fn starting_marker_fresh(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    match meta.modified() {
+        Ok(mtime) => mtime
+            .elapsed()
+            .map(|age| age < STARTING_MARKER_STALE)
+            .unwrap_or(true),
+        Err(_) => true,
+    }
+}
+
+/// 活 QEMU 扫描核（[`any_live_qemu`] 的可注入形态，单测钉四态表）：
+/// run 根下每个 agent 目录的 pidfile 身份核验 + spawn 在途标记（新鲜），
+/// 任一命中 = 活。
+pub(crate) fn any_live_qemu_scan(workspace: &Path, qemu_bin_of: &dyn Fn(&str) -> PathBuf) -> bool {
+    let Ok(rd) = std::fs::read_dir(vm_run_root(workspace)) else {
+        return false;
+    };
+    for entry in rd.flatten() {
+        if !entry.path().is_dir() {
+            continue;
+        }
+        // spawn 在途（标记新鲜）= 活：QEMU 尚未写 pidfile 的进程创建窗。
+        if starting_marker_fresh(&entry.path().join(STARTING_MARKER)) {
+            return true;
+        }
+        let pidfile = entry.path().join("qemu.pid");
+        let agent_id = entry.file_name().to_string_lossy().to_string();
+        if let Some(pid) = parse_pidfile(&pidfile)
+            && pid_matches_qemu_identity(pid, &qemu_bin_of(&agent_id))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// 全 workspace 活 QEMU 扫描（pidfile + 身份核验 + spawn 在途标记，与
+/// [`ensure_no_live_qemu`]/sweep 同一判定族）。镜像换装前置闸：任何实例
+/// 在跑或在启动中 = 拒绝换装——rebase 写 overlay 与运行中 QEMU 写
+/// overlay 并发 = qcow2 损坏，删旧 base 撞运行中实例的打开句柄 = Windows
+/// 共享违例。跨进程哨兵：CLI 前台臂 / 另一 gateway 进程的活实例与在途
+/// spawn 同样可见（内存槽是进程本地的，pidfile/标记才是跨进程真相）。
+pub(crate) fn any_live_qemu(workspace: &Path) -> bool {
+    // 身份核验基准与 spawn/sweep 同源：按 registry arch 重解 qemu 二进制。
+    // registry 缺失/损坏退 x86_64 解析（spawn 前锚保证本代码产的活 QEMU
+    // 必有 registry；盲区只剩「外部手工 spawn 且非 x86_64」——aarch64 是
+    // 接口预留档当前不产出，实际不可达）。
+    any_live_qemu_scan(workspace, &|agent_id| {
+        let arch = load_record(workspace, agent_id)
+            .and_then(|r| GuestArch::parse(&r.arch).ok())
+            .unwrap_or(GuestArch::X86_64);
+        resolve_qemu_binary(arch, qemu_install_dir(workspace).as_deref())
+    })
+}
+
 // ---------------------------------------------------------------------------
 // GC 与闸（纯函数，单测钉死）
 // ---------------------------------------------------------------------------
@@ -460,6 +615,39 @@ pub(crate) fn capacity_full(running: usize, max_instances: u32) -> bool {
     running >= max_instances as usize
 }
 
+/// ensure_running 路由判定（纯函数，单测钉死）。顺序语义：**活槽短路一切
+/// 「拒新」闸**——reuse 不消耗新磁盘/名额，GC stop/满员只该拦新启动；把
+/// 活实例拒成 Unavailable = 逼上层宿主回落操作另一套文件视图（正确性
+/// 事故，不是可用性折损）。无槽时：GC stop 闸先于满员闸（磁盘语义优先）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum EnsureRoute {
+    /// 命中活槽：直接复用（GC/满员闸都不该碰它）。
+    Reuse,
+    /// GC stop 拒新（不删既有数据）。
+    GcDeny { used_gb: u64, budget_gb: u32 },
+    /// 运行中实例已满额，拒新启动。
+    CapFull { max_instances: u32 },
+    /// 放行启动。
+    Proceed,
+}
+
+pub(crate) fn ensure_route(
+    has_alive_slot: bool,
+    used_bytes: u64,
+    gc: &nemesis_config::VmGcConfig,
+    running: usize,
+    max_instances: u32,
+) -> EnsureRoute {
+    if has_alive_slot {
+        return EnsureRoute::Reuse;
+    }
+    match gc_decision(used_bytes, gc) {
+        GcDecision::Deny { used_gb, budget_gb } => EnsureRoute::GcDeny { used_gb, budget_gb },
+        _ if capacity_full(running, max_instances) => EnsureRoute::CapFull { max_instances },
+        _ => EnsureRoute::Proceed,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 槽位与监督器
 // ---------------------------------------------------------------------------
@@ -483,6 +671,13 @@ pub struct VmSupervisor {
     self_weak: Mutex<Option<std::sync::Weak<VmSupervisor>>>,
     /// 试玩后台启动状态（`try_launch_*` 族单一真相源；短临界区 std 锁）。
     try_launch: Mutex<TryLaunchState>,
+    /// per-agent 启动在途集（ensure_running 同 agent 互斥闸）：spawn 在
+    /// map 锁外、全程分钟级——两个并发 ensure_running 都会错过「槽未入
+    /// map」窗口而双双 spawn 抢同一 overlay（qcow2 并发写 = 盘损坏风险；
+    /// try 面的 starting 旗标只盖 dashboard 一条通路，防不住 instance_wake
+    /// ×2 / instance_wake × try_start 等交叉）。在途 = insert 失败 = 诚实
+    /// 拒绝。sweep_orphans 同源消费：在途 agent 不是孤儿。
+    starting: Mutex<HashSet<String>>,
 }
 
 /// 试玩启动在途状态（真机教训 2026-10-19：冷启动同步等 30-60s 撞前端
@@ -498,6 +693,22 @@ struct TryLaunchState {
     last_error: Option<String>,
 }
 
+/// 启动在途闸守卫：持集期内 Drop 自动摘除——覆盖 start_or_wake 起所有
+/// `?` 早退路径（启动失败/就绪超时/竞态输家），不靠手工逐出口清理。
+struct StartGateGuard<'a> {
+    set: &'a Mutex<HashSet<String>>,
+    id: String,
+}
+
+impl Drop for StartGateGuard<'_> {
+    fn drop(&mut self) {
+        self.set
+            .lock()
+            .expect("vm supervisor starting lock poisoned")
+            .remove(&self.id);
+    }
+}
+
 impl VmSupervisor {
     pub fn new(workspace: PathBuf, config_path: PathBuf) -> Self {
         Self {
@@ -506,6 +717,7 @@ impl VmSupervisor {
             slots: Mutex::new(HashMap::new()),
             self_weak: Mutex::new(None),
             try_launch: Mutex::new(TryLaunchState::default()),
+            starting: Mutex::new(HashSet::new()),
         }
     }
 
@@ -680,17 +892,14 @@ impl VmSupervisor {
             )
         })?;
 
-        // GC stop 闸：超预算且 over_limit=stop → 拒新（不删既有数据）。
-        let used = disk_usage_bytes(&self.workspace);
-        if let GcDecision::Deny { used_gb, budget_gb } = gc_decision(used, &settings.gc) {
-            return Err(VmSupervisorError::Unavailable(format!(
-                "VM 磁盘预算闸（over_limit=stop）：已用 {used_gb}GB 超预算 {budget_gb}GB，拒绝新实例（不删既有数据）"
-            )));
-        }
-
         // 命中槽：摸活跃时间；死槽顺手收敛（QEMU 崩溃后下一次调用自愈）。
-        // 先绑定再 if-let——scrutinee 临时 std 守卫若活到块尾会罩住下面的
-        // `existing.lock().await`，future 非 Send（async_trait 面 require）。
+        // **在一切「拒新」闸之前**——活槽复用不消耗新磁盘/名额，GC stop/
+        // 满员只该拦新启动；把运行中实例拒成 Unavailable = 逼上层宿主回落
+        // 操作另一套文件视图（正确性事故）。路由判定走 [`ensure_route`]
+        // 纯函数（顺序语义单测钉死）。先绑定再 if-let——scrutinee 临时
+        // std 守卫若活到块尾会罩住下面的 `existing.lock().await`，future
+        // 非 Send（async_trait 面 require）。
+        let mut hit: Option<Arc<tokio::sync::Mutex<VmSlot>>> = None;
         let existing = self
             .slots
             .lock()
@@ -700,34 +909,67 @@ impl VmSupervisor {
         if let Some(existing) = existing {
             let mut slot = existing.lock().await;
             slot.last_used = Instant::now();
-            if slot.vm.is_alive() {
-                drop(slot);
-                return Ok(existing);
-            }
+            let alive = slot.vm.is_alive();
             drop(slot);
-            self.slots
-                .lock()
-                .expect("vm supervisor slots lock poisoned")
-                .remove(agent_id);
-            if let Some(mut record) = load_record(&self.workspace, agent_id) {
-                mark_cold(&mut record);
-                save_record(&self.workspace, agent_id, &record);
+            if alive {
+                hit = Some(existing);
+            } else {
+                self.slots
+                    .lock()
+                    .expect("vm supervisor slots lock poisoned")
+                    .remove(agent_id);
+                if let Some(mut record) = load_record(&self.workspace, agent_id) {
+                    mark_cold(&mut record);
+                    save_record_warn(&self.workspace, agent_id, &record, "死槽收敛");
+                }
             }
         }
 
-        // 满员闸（先查再占；插入时复核）。
-        if capacity_full(
+        // GC stop 闸 + 满员闸（经 [`ensure_route`]：活槽已短路到这里之外）。
+        let used = disk_usage_bytes(&self.workspace);
+        match ensure_route(
+            hit.is_some(),
+            used,
+            &settings.gc,
             self.slots
                 .lock()
                 .expect("vm supervisor slots lock poisoned")
                 .len(),
             settings.max_instances,
         ) {
+            EnsureRoute::Reuse => return Ok(hit.expect("route Reuse 必有槽")),
+            EnsureRoute::GcDeny { used_gb, budget_gb } => {
+                return Err(VmSupervisorError::Unavailable(format!(
+                    "VM 磁盘预算闸（over_limit=stop）：已用 {used_gb}GB 超预算 {budget_gb}GB，拒绝新实例（不删既有数据）"
+                )));
+            }
+            EnsureRoute::CapFull { max_instances } => {
+                return Err(VmSupervisorError::Unavailable(format!(
+                    "VM 满员闸：运行中实例已达 max_instances({max_instances})"
+                )));
+            }
+            EnsureRoute::Proceed => {}
+        }
+
+        // 启动在途闸（同 agent 互斥）：insert 成功 = 拿到本 agent 启动权；
+        // 已在途 = 诚实拒绝（不排队——spawn 全程分钟级，等它不如让调用方
+        // 稍后重试；try 面另有 starting 旗标给前端更友好的引导）。守卫 Drop
+        // 覆盖后续所有早退路径。
+        if !self
+            .starting
+            .lock()
+            .expect("vm supervisor starting lock poisoned")
+            .insert(agent_id.to_string())
+        {
             return Err(VmSupervisorError::Unavailable(format!(
-                "VM 满员闸：运行中实例已达 max_instances({})",
-                settings.max_instances
+                "agent {agent_id} 的 VM 正在启动中（冷启动最长约 {}s）——待就绪后再试",
+                GUEST_READY_BUDGET.as_secs()
             )));
         }
+        let _start_gate = StartGateGuard {
+            set: &self.starting,
+            id: agent_id.to_string(),
+        };
 
         let vm = self.start_or_wake(agent_id, &settings).await?;
 
@@ -798,7 +1040,11 @@ impl VmSupervisor {
         record.vcpu = settings.resources.vcpu;
         record.ram_mb = settings.resources.ram_mb;
         record.disk_gb = settings.resources.disk_gb;
-        save_record(&self.workspace, agent_id, &record);
+        // spawn 前落盘锚（一）：registry 先于 spawn——写失败 = 锚不成立 =
+        // 不 spawn（修前吞错只 warn，锚位形同虚设）。
+        save_record(&self.workspace, agent_id, &record).map_err(|e| {
+            VmSupervisorError::Failed(format!("registry 落盘失败（spawn 前锚）: {e}"))
+        })?;
 
         let arch = GuestArch::parse(&record.arch)
             .map_err(|e| VmSupervisorError::Failed(format!("registry arch 非法: {e}")))?;
@@ -808,9 +1054,34 @@ impl VmSupervisor {
             VmSupervisorError::Unavailable(format!("加速裁决拒绝（诚实缺席）: {e}"))
         })?;
         record.accel = accel.as_str().to_string();
-        save_record(&self.workspace, agent_id, &record);
+        // spawn 前落盘锚（二）：accel 裁决回填后、spawn 前（sweep 身份核验
+        // 需要它重解 qemu 二进制）。失败同样不 spawn。
+        save_record(&self.workspace, agent_id, &record).map_err(|e| {
+            VmSupervisorError::Failed(format!("registry 落盘失败（spawn 前锚）: {e}"))
+        })?;
 
         let qemu_bin = resolve_qemu_binary(arch, qemu_install_dir(&self.workspace).as_deref());
+
+        // spawn 前活 QEMU 防线（[`ensure_no_live_qemu`]）：registry 丢失/
+        // 损坏时 sweep 看不见的孤儿——双开同 overlay = qcow2 并发写损坏，
+        // 这里诚实拒绝。
+        ensure_no_live_qemu(&run_dir.join("qemu.pid"), &qemu_bin)
+            .map_err(VmSupervisorError::Failed)?;
+
+        // 镜像换装互斥（[`IMAGE_SWAP_GATE`] 两相协议的 spawn 侧）：从
+        // overlay 首触（首启 create_overlay 以 base 作 backing 模板）持到
+        // 本函数终态——成功=槽即将入 map（promote 侧 pidfile 扫描可见），
+        // 失败=子进程已收尸（overlay 已释放）。promote 持闸期间本路径在
+        // 此排队，闸后启动用的已是新 base，一致性自然成立。守卫取消即
+        // 释放，不卡停机。
+        let _swap_gate = IMAGE_SWAP_GATE.lock().await;
+
+        // 在途标记（[`StartingMarkerGuard`]）：闸后落盘——排队等闸期间不
+        // 算在途（否则另一进程的换装扫描会为一个还没开跑的 start 误拒）。
+        // 覆盖本进程 spawn 全相位 + 跨进程可见（另一进程的 promote 扫描
+        // 看得见）；Drop 即移除，终态后 pidfile 接管活体哨兵。
+        let _starting = StartingMarkerGuard::arm(&run_dir)
+            .map_err(|e| VmSupervisorError::Failed(format!("spawn 在途标记落盘失败: {e}")))?;
 
         // wake-or-cold 路由（[`wake_kind_of`] 纯函数）+ 首启制备。
         let (loadvm_tag, incoming_file, seed_iso) = if first_boot {
@@ -867,8 +1138,17 @@ impl VmSupervisor {
         let mut vm = match VmInstance::start(params).await {
             Ok(vm) => vm,
             Err(e) => {
+                // 唤醒载体的迁移状态文件不删（可能仍有效，手动恢复/排查用），
+                // 但记录已转冷停不再指向它——留一声 WARN 指路，避免盘上
+                // 孤儿状态文件无从追溯。
+                if let Some(p) = &record.state_path {
+                    tracing::warn!(
+                        "[vm-runtime] agent {agent_id} 启动失败：迁移状态文件保留在 {}（记录已转冷停，可手动恢复或删除）",
+                        p.display()
+                    );
+                }
                 mark_cold(&mut record);
-                save_record(&self.workspace, agent_id, &record);
+                save_record_warn(&self.workspace, agent_id, &record, "启动失败转冷停");
                 return Err(VmSupervisorError::Failed(format!("VM 启动失败: {e}")));
             }
         };
@@ -887,7 +1167,7 @@ impl VmSupervisor {
                     if tokio::time::Instant::now() >= deadline {
                         let _ = vm.stop(STOP_GRACE).await;
                         mark_cold(&mut record);
-                        save_record(&self.workspace, agent_id, &record);
+                        save_record_warn(&self.workspace, agent_id, &record, "就绪超时转冷停");
                         return Err(VmSupervisorError::Failed(format!(
                             "guest agent 就绪超时（{GUEST_READY_BUDGET:?}）: {e}"
                         )));
@@ -908,7 +1188,7 @@ impl VmSupervisor {
             record.state_path = None;
         }
         record.asleep_at = None;
-        save_record(&self.workspace, agent_id, &record);
+        save_record_warn(&self.workspace, agent_id, &record, "启动完成回填");
         tracing::info!(
             "[vm-runtime] agent {agent_id} VM 已启动（accel={} vcpu={} ram={}MB）",
             record.accel,
@@ -961,7 +1241,7 @@ impl VmSupervisor {
                 .expect("vm supervisor slots lock poisoned")
                 .remove(agent_id);
             mark_cold(&mut record);
-            save_record(&self.workspace, agent_id, &record);
+            save_record_warn(&self.workspace, agent_id, &record, "睡眠前死槽收敛");
             return Err(VmSupervisorError::Failed(
                 "QEMU 进程已死：收敛为冷停记录（未睡眠）".into(),
             ));
@@ -980,7 +1260,7 @@ impl VmSupervisor {
         record.snapshot_tag = artifact.snapshot_tag;
         record.state_path = artifact.state_path;
         record.asleep_at = Some(now_ms());
-        save_record(&self.workspace, agent_id, &record);
+        save_record_warn(&self.workspace, agent_id, &record, "睡眠完成");
         drop(s);
         self.slots
             .lock()
@@ -1015,7 +1295,7 @@ impl VmSupervisor {
             .remove(agent_id);
         if let Some(mut record) = load_record(&self.workspace, agent_id) {
             mark_cold(&mut record);
-            save_record(&self.workspace, agent_id, &record);
+            save_record_warn(&self.workspace, agent_id, &record, "停机转冷停");
         }
         res.map_err(|e| VmSupervisorError::Failed(format!("stop 失败（记录已转冷停）: {e}")))
     }
@@ -1044,7 +1324,23 @@ impl VmSupervisor {
             {
                 continue; // 自己槽内的活实例不碰
             }
+            if self
+                .starting
+                .lock()
+                .expect("vm supervisor starting lock poisoned")
+                .contains(&dir_name)
+            {
+                continue; // 自己正在启动的实例不碰（启动期记录 asleep_at=None
+                // 且槽未入 map——mtime 保护窗短于就绪预算，此处是
+                // 不受窗长限制的精确防线）
+            }
             let Some(mut record) = load_record(&self.workspace, &dir_name) else {
+                // registry 缺失/不可解析（原子写已消除半截形态，剩下是人为
+                // 删除/外部损坏）：孤儿可见性盲区——无记录不动任何进程，
+                // loud 一声让操作者知道这里有失控风险。
+                tracing::warn!(
+                    "[vm-runtime] agent {dir_name} 的 registry 缺失/不可解析：孤儿 sweep 本轮跳过（无记录不动任何进程）"
+                );
                 continue;
             };
             if record.asleep_at.is_some() {
@@ -1086,7 +1382,7 @@ impl VmSupervisor {
                 }
             }
             mark_cold(&mut record);
-            save_record(&self.workspace, &dir_name, &record);
+            save_record_warn(&self.workspace, &dir_name, &record, "孤儿 sweep");
         }
         swept
     }
@@ -1139,7 +1435,7 @@ impl VmSupervisor {
                     .remove(&id);
                 if let Some(mut record) = load_record(&self.workspace, &id) {
                     mark_cold(&mut record);
-                    save_record(&self.workspace, &id, &record);
+                    save_record_warn(&self.workspace, &id, &record, "watchdog 死槽收敛");
                 }
                 tracing::warn!(
                     "[vm-runtime] agent {id} 的 QEMU 进程意外退出：收敛为冷停记录（不自动重拉）"

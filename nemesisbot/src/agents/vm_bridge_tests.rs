@@ -208,3 +208,36 @@ fn live_probe_lands_on_a_valid_state() {
         probe.state
     );
 }
+
+/// 镜像换装④臂收尾消息：恢复成功 = 诚实告知落点已恢复（不带手动命令）。
+#[test]
+fn promote_step4_failure_message_restore_ok() {
+    let msg = super::vm_bridge::promote_step4_failure_message(
+        Path::new("o:\\vm\\overlays\\a.qcow2"),
+        Path::new("o:\\vm\\images\\base.qcow2"),
+        None,
+    );
+    assert!(msg.contains("已自动恢复落点"), "msg = {msg}");
+    assert!(msg.contains("该 overlay 可启动"), "msg = {msg}");
+    assert!(!msg.contains("手动修复"), "msg = {msg}");
+    assert!(msg.contains("重跑换装"), "msg = {msg}");
+}
+
+/// 镜像换装④臂收尾消息：恢复失败 = 带手动修复命令（rebase -u + 两路径
+/// 在场）——修前文案「文件仍在场，手动转正」在 rename 后是空头指引
+/// （base.new.qcow2 已转正不存在），回归锁：失败指引必须指向转正路径。
+#[test]
+fn promote_step4_failure_message_restore_failed_carries_manual_command() {
+    let msg = super::vm_bridge::promote_step4_failure_message(
+        Path::new("o:\\vm\\overlays\\a.qcow2"),
+        Path::new("o:\\vm\\images\\base.qcow2"),
+        Some("copy failed"),
+    );
+    assert!(msg.contains("落点自动恢复失败"), "msg = {msg}");
+    assert!(msg.contains("手动修复"), "msg = {msg}");
+    assert!(msg.contains("rebase -u"), "msg = {msg}");
+    // 指引指向转正后的 canonical（在场），不是已不存在的 base.new.qcow2
+    // （"base.new.qcow2" 不含子串 "base.qcow2"——该断言天然排除旧临时名）。
+    assert!(msg.contains("o:\\vm\\images\\base.qcow2"), "msg = {msg}");
+    assert!(msg.contains("o:\\vm\\overlays\\a.qcow2"), "msg = {msg}");
+}

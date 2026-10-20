@@ -565,7 +565,13 @@ pub async fn install_qemu_windows(opts: &QemuInstallOptions) -> Result<QemuInsta
     if prior.is_none() {
         ranged_download(&opts.url, &installer, opts.parallel).await?;
     }
-    verify_installer(&installer, &opts.expected_sha512, &opts.url).await?;
+    if let Err(e) = verify_installer(&installer, &opts.expected_sha512, &opts.url).await {
+        // 坏包不滞留：留在 work_dir 的 installer 会让下次运行走
+        // `prior.is_some()` 跳过重下，永远卡在同一坏包现场——删掉再报错，
+        // 下轮重新下载。
+        let _ = tokio::fs::remove_file(&installer).await;
+        return Err(e);
+    }
 
     // 3. 7z 直解（NSIS 免安装直跑——P5 实证；sync IO → spawn_blocking）。
     let unpack = opts.work_dir.join(UNPACK_DIR_NAME);

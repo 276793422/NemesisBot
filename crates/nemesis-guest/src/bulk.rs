@@ -268,7 +268,19 @@ fn clean_workspace(workspace: &Path) -> Result<(), String> {
     let entries = std::fs::read_dir(workspace).map_err(|e| format!("读取工作区失败: {e}"))?;
     for ent in entries.flatten() {
         let p = ent.path();
-        let res = if p.is_dir() {
+        // 不跟随 symlink：DirEntry::file_type() 不解引用。agent 可在工作区
+        // 建 symlink-to-dir（node_modules/.bin 是常态），若走 p.is_dir() 会
+        // 跟随链接 → 旧代码 remove_dir_all 在 Linux 对链接本身报 ENOTDIR
+        // → 整个 clean 失败 → 全量同步不可用。
+        let (is_real_dir, is_link) = match ent.file_type() {
+            Ok(t) => (t.is_dir(), t.is_symlink()),
+            Err(_) => (p.is_dir(), false), // stat 失败极罕见：回落旧行为
+        };
+        // 链接删除语义按平台分叉（删链接本身，两边都不递归进目标）：
+        // Linux 一律 unlink（remove_dir_all 对链接报错）；Windows 目录型
+        // 链接（symlink/junction）需 RemoveDirectory 删 reparse 点——
+        // DeleteFileW 拒绝。
+        let res = if is_real_dir || (is_link && !cfg!(unix)) {
             std::fs::remove_dir_all(&p)
         } else {
             std::fs::remove_file(&p)
@@ -276,7 +288,7 @@ fn clean_workspace(workspace: &Path) -> Result<(), String> {
         if let Err(e) = res {
             // 删除挂起幻影（AV/索引器瞬时句柄）容忍到重试也失败的形态：
             // clean 是尽力而为的清场，个别残留不阻塞解包（解包同名覆盖）。
-            if p.is_dir() && !p.exists() {
+            if is_real_dir && !p.exists() {
                 continue;
             }
             return Err(format!("清空工作区失败 ({}): {e}", p.display()));
@@ -285,8 +297,39 @@ fn clean_workspace(workspace: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// 路径组件 symlink 闸：`rel` 的任一祖先组件或末端组件若已存在且是
+/// symlink，拒绝该条目（fail-closed，点名路径）。agent 可在 VM 工作区建
+/// `ln -s / etc` 形态的链接——宿主推送同名前缀路径时，解包会顺着链接
+/// 写出工作区（逃逸）或写坏链接目标（完整性）。逐组件 symlink_metadata
+/// 检查在 create_dir_all/File::create 之前同步执行；检查到落盘之间残留
+/// 微秒级 TOCTOU 窗口需要 VM 内并发进程精确卡位——对手在 VM 内本就持
+/// 有 exec，不值得为此引入 libc/O_NOFOLLOW，如实注记不谎称零窗口。
+fn ensure_no_symlink_components(workspace: &Path, rel: &Path) -> Result<(), String> {
+    let mut cur = workspace.to_path_buf();
+    for comp in rel.components() {
+        cur.push(comp);
+        match std::fs::symlink_metadata(&cur) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(format!(
+                    "路径组件含 symlink，拒绝解包（fail-closed）: {} —— 请先清理 VM 工作区同名链接",
+                    cur.display()
+                ));
+            }
+            // 已存在为普通目录：继续查下级；尚不存在：后续 create 会建；
+            // 已存在为普通文件但还有下级组件：交给 create_dir_all 的诚实 IO 错误。
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("stat {} 失败: {e}", cur.display())),
+        }
+    }
+    Ok(())
+}
+
 /// 安全解包 tar：条目名过 [`safe_entry_rel`]，Regular 落盘（Unix 恢复权限
 /// 位），Directory 建目录，其余形态（symlink/hardlink/fifo 等）跳过计数。
+/// 落盘前逐条目过 [`ensure_no_symlink_components`]（祖先/末端 symlink 穿
+/// 透拒绝；Directory 臂同样在闸后——create_dir_all 会被 symlink-to-dir
+/// 组件穿透）。
 fn extract_tar_safe(tar_path: &Path, workspace: &Path) -> Result<(usize, usize), String> {
     let f = std::fs::File::open(tar_path).map_err(|e| format!("打开 tar 失败: {e}"))?;
     let mut arch = tar::Archive::new(std::io::BufReader::new(f));
@@ -297,6 +340,8 @@ fn extract_tar_safe(tar_path: &Path, workspace: &Path) -> Result<(usize, usize),
         let mut entry = entry.map_err(|e| format!("tar 条目读取失败: {e}"))?;
         let rel = safe_entry_rel(&entry.path().map_err(|e| format!("{e}"))?)?;
         let dst = workspace.join(&rel);
+        // symlink 组件闸在所有落盘臂之前统一执行。
+        ensure_no_symlink_components(workspace, Path::new(&rel))?;
         match entry.header().entry_type() {
             tar::EntryType::Directory => {
                 std::fs::create_dir_all(&dst).map_err(|e| format!("创建目录 {rel} 失败: {e}"))?;
