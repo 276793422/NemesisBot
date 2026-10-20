@@ -2097,6 +2097,12 @@ pub(crate) fn register_connector_governance(
 ///
 /// Shared between main agent and cluster agent. The caller is responsible for
 /// registering cluster_rpc with call_fn after this call.
+/// VM 档执行环境注记（B9 审计收口）：vm 档 agent 每轮 build_messages 注入
+/// guest 路径语义——治「模型拿宿主 Windows 绝对路径打 VM 文件工具吃
+/// ENOENT」的迷惑（真机实测：list_dir C:\… → guest ENOENT）。常量文本
+/// 跨轮字节稳定，prompt cache 前缀不受损。
+const EXEC_ENV_VM_NOTE: &str = "exec_env: 文件/exec 工具当前经 VM guest（Linux）执行，工作区根 = /workspace（POSIX 路径形态）；不要使用宿主 Windows 绝对路径（C:\\…）";
+
 fn register_tools_and_mcp(
     agent_loop: &mut nemesis_agent::r#loop::AgentLoop,
     shared: &Arc<SharedResources>,
@@ -2127,6 +2133,51 @@ fn register_tools_and_mcp(
                 }
                 all_tools.insert((*name).to_string(), Box::new(bridge));
             }
+        }
+        // VM 档执行环境注记（B9 审计收口）：桥真正挂上才安装 resolver——
+        // 每轮 build_messages 现查档位（与 BackendRoutingExecutor 同源
+        // resolve 闭包），vm 档注入 guest 路径语义行，process 档空串字节
+        // 不变。安装闸放在桥挂载成功分支内：executor.enabled=false 的死
+        // 配置形态工具根本不路由 VM，注入「文件走 VM」会是主动撒谎（该
+        // 形态由下方 else 臂 warn 负责）。
+        if let Some(route) = persistent {
+            let resolve = route.resolve.clone();
+            agent_loop.set_exec_env_resolver(std::sync::Arc::new(move || {
+                let Some((agent_id, _)) = resolve() else {
+                    return String::new();
+                };
+                crate::agents::manager()
+                    .as_ref()
+                    .and_then(|m| m.get(&agent_id).ok().flatten())
+                    .filter(|rec| {
+                        rec.runtime_backend == nemesis_taskstore::agents::runtime_backend::VM
+                    })
+                    .map(|_| EXEC_ENV_VM_NOTE.to_string())
+                    .unwrap_or_default()
+            }));
+        }
+    } else {
+        // 死配置闸（B9 审计发现的诚实缺口告警半边）：executor.enabled=false
+        // 时上面的桥挂载整段跳过，BackendRoutingExecutor 无消费点——agents
+        // 表任何 vm 档记录在此形态下 runtime_backend=vm 静默无效（工具全在
+        // 宿主执行）。装配期是同时知道「桥没挂」与「有 vm 档」两个事实的
+        // 唯一低成本检测点，每次 loop 重建都会过（覆盖启动/重启/改配后的
+        // 下一次重建）。
+        let vm_agents: Vec<String> = crate::agents::manager()
+            .as_ref()
+            .and_then(|m| m.list().ok())
+            .map(|recs| {
+                recs.iter()
+                    .filter(|r| r.runtime_backend == nemesis_taskstore::agents::runtime_backend::VM)
+                    .map(|r| r.agent_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !vm_agents.is_empty() {
+            tracing::warn!(
+                agents = ?vm_agents,
+                "[AgentFactory] executor 分离未启用（config.json executor.enabled=false），但 agents 表存在 vm 档记录：runtime_backend=vm 静默无效，文件/exec 工具仍在宿主执行。启用 VM 后端需置 executor.enabled=true 并重启"
+            );
         }
     }
 

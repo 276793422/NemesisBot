@@ -14,7 +14,7 @@
 //!
 //! ```text
 //! cargo run -p nemesis-sandbox --features vm --example vm_lifecycle_kvm -- \
-//!     --base /vm/images/base.qcow2 --seed /vm/images/seed.iso \
+//!     --base /vm/images/base.qcow2 \
 //!     [--run-dir DIR] [--qemu-dir DIR] [--sleep-budget-secs N]
 //! ```
 
@@ -35,7 +35,6 @@ const DISK_MARKER: &str = "/var/tmp/p5-vm-persist.txt";
 
 struct Args {
     base: Option<PathBuf>,
-    seed: Option<PathBuf>,
     run_dir: PathBuf,
     qemu_dir: Option<PathBuf>,
     sleep_budget_secs: u64,
@@ -44,7 +43,6 @@ struct Args {
 fn parse_args() -> Args {
     let mut a = Args {
         base: None,
-        seed: None,
         run_dir: PathBuf::from("target/vm-lifecycle"),
         qemu_dir: None,
         sleep_budget_secs: 600,
@@ -54,7 +52,6 @@ fn parse_args() -> Args {
         let mut val = |name: &str| it.next().unwrap_or_else(|| panic!("{name} 缺值"));
         match k.as_str() {
             "--base" => a.base = Some(PathBuf::from(val("--base"))),
-            "--seed" => a.seed = Some(PathBuf::from(val("--seed"))),
             "--run-dir" => a.run_dir = PathBuf::from(val("--run-dir")),
             "--qemu-dir" => a.qemu_dir = Some(PathBuf::from(val("--qemu-dir"))),
             "--sleep-budget-secs" => {
@@ -84,11 +81,6 @@ async fn main() {
     if !base.exists() {
         skip(&format!("base 镜像不存在: {}", base.display()));
     }
-    let seed = match args.seed.clone() {
-        Some(s) if s.exists() => s,
-        Some(s) => skip(&format!("seed ISO 不存在: {}", s.display())),
-        None => skip("缺 --seed（scripts/build-vm-image.sh 产出的 cloud-init nocloud seed）"),
-    };
 
     // [1] accel 裁决：本示例验证的是睡眠线真腿——当前只有 KVM 有
     //    （Snapshot；WHPX 双线挂死已定谳 = None）。非 KVM 宿主诚实 SKIP。
@@ -153,7 +145,6 @@ async fn main() {
     let result = run_lifecycle(
         &args,
         &base,
-        &seed,
         &run_dir,
         &overlay_path,
         &qemu_bin,
@@ -175,7 +166,6 @@ async fn main() {
 async fn run_lifecycle(
     args: &Args,
     base: &Path,
-    seed: &Path,
     run_dir: &Path,
     overlay_path: &Path,
     qemu_bin: &Path,
@@ -186,26 +176,24 @@ async fn run_lifecycle(
 ) -> Result<(), String> {
     let _ = base; // base 只在 overlay backing 里消费（参数面留档）。
     let sleep_budget = Duration::from_secs(args.sleep_budget_secs);
-    let start_params =
-        |id: String, seed_iso: Option<PathBuf>, loadvm: Option<String>| VmStartParams {
-            id,
-            run_dir: run_dir.to_path_buf(),
-            qemu_bin: qemu_bin.to_path_buf(),
-            accel: QemuAccel::Kvm,
-            arch: GuestArch::X86_64,
-            vcpu: 2,
-            ram_mb: 2048,
-            overlay_path: overlay_path.to_path_buf(),
-            seed_iso,
-            token: token.to_string(),
-            shared_host_path: None,
-            loadvm_tag: loadvm,
-            incoming_file: None,
-        };
+    let start_params = |id: String, loadvm: Option<String>| VmStartParams {
+        id,
+        run_dir: run_dir.to_path_buf(),
+        qemu_bin: qemu_bin.to_path_buf(),
+        accel: QemuAccel::Kvm,
+        arch: GuestArch::X86_64,
+        vcpu: 2,
+        ram_mb: 2048,
+        overlay_path: overlay_path.to_path_buf(),
+        token: token.to_string(),
+        shared_host_path: None,
+        loadvm_tag: loadvm,
+        incoming_file: None,
+    };
 
     // [3] 冷启 + guest agent 就绪（首启含 cloud-init 装配，可能数分钟）。
     step(3, "冷启（QMP 就绪）+ guest agent 就绪");
-    let vm = VmInstance::start(start_params(id.to_string(), Some(seed.to_path_buf()), None))
+    let vm = VmInstance::start(start_params(id.to_string(), None))
         .await
         .map_err(|e| format!("VM 冷启失败: {e}"))?;
     println!(
@@ -288,7 +276,6 @@ async fn run_lifecycle(
     step(6, "真 loadvm 唤醒 + RAM marker 判据");
     let vm_wake = VmInstance::start(start_params(
         format!("{id}-wake"),
-        None, // 快照恢复不吃 seed（cloud-init 早已装配完）
         artifact.snapshot_tag.clone(),
     ))
     .await
@@ -342,13 +329,9 @@ async fn run_lifecycle(
     //    重挂成立（G3 门 2 的 VM 内非共享子树路径）；RAM marker 缺席 =
     //    真冷启负面判据（tmpfs 随重启清空——证明不是意外 wake 形态串场）。
     step(7, "冷重启同 overlay 重挂（持久性）");
-    let vm_cold = VmInstance::start(start_params(
-        format!("{id}-cold"),
-        Some(seed.to_path_buf()),
-        None,
-    ))
-    .await
-    .map_err(|e| format!("冷重启失败: {e}"))?;
+    let vm_cold = VmInstance::start(start_params(format!("{id}-cold"), None))
+        .await
+        .map_err(|e| format!("冷重启失败: {e}"))?;
     *live = Some(vm_cold);
     let vm_cold = live.as_mut().expect("live");
     let mut stream3 = wait_agent(vm_cold, 420).await?;

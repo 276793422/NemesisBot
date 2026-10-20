@@ -192,15 +192,16 @@ pub(crate) fn parse_tool_probe(text: &str) -> std::collections::BTreeMap<String,
 }
 
 /// 工具映射 →（缺失清单, 是否有 apt-get）。管线硬要求（build-vm-image.sh
-/// 的静态检查同口径）：ISO 工具三选一 + file(1) + 下载器二选一。
+/// 的静态检查同口径）：qemu-img（convert 烧录）+ file(1) + 下载器二选一；
+/// 烧录步还需 root（loop 挂载），install 提示文案已注明。
 #[cfg(any(windows, test))]
 pub(crate) fn classify_wsl_tools(
     tools: &std::collections::BTreeMap<String, bool>,
 ) -> (Vec<String>, bool) {
     let on = |t: &str| tools.get(t).copied().unwrap_or(false);
     let mut missing = Vec::new();
-    if !(on("genisoimage") || on("xorriso") || on("mkisofs")) {
-        missing.push("genisoimage（或 xorriso / mkisofs 任一）".to_string());
+    if !on("qemu-img") {
+        missing.push("qemu-img（qemu-utils 包）".to_string());
     }
     if !on("file") {
         missing.push("file".to_string());
@@ -214,7 +215,7 @@ pub(crate) fn classify_wsl_tools(
 /// 工具探测脚本（在 WSL 发行版内跑；输出 `t=yes|no` 逐行）。唯一消费点
 /// = [`wsl_spawn_probe`]（cfg windows）——随门裁剪（同上组注）。
 #[cfg(windows)]
-const WSL_TOOL_PROBE_SCRIPT: &str = "for t in genisoimage xorriso mkisofs file curl wget apt-get; do command -v \"$t\" >/dev/null 2>&1 && echo \"$t=yes\" || echo \"$t=no\"; done";
+const WSL_TOOL_PROBE_SCRIPT: &str = "for t in qemu-img file curl wget apt-get; do command -v \"$t\" >/dev/null 2>&1 && echo \"$t=yes\" || echo \"$t=no\"; done";
 
 /// 真 spawn 探测（Windows-only；阻塞式——调用方持 TTL 缓存）。
 /// 单独 pub(crate) 是给伴生测试文件做环境无关断言（只验「落在四态之一」）。
@@ -471,12 +472,12 @@ pub(crate) fn image_build_inputs(
                 })
             }
             WslState::NoDistro => Err(
-                "未检测到 WSL 发行版——终端执行 `wsl --install -d Ubuntu`（可能需要管理员与重启，完成后点「复检」），或在 Linux 机器构建后把 base.qcow2 + seed.iso 落到镜像目录回传"
+                "未检测到 WSL 发行版——终端执行 `wsl --install -d Ubuntu`（可能需要管理员与重启，完成后点「复检」），或在 Linux 机器构建后把 base.qcow2 落到镜像目录回传"
                     .to_string(),
             ),
             WslState::MissingTools => Err(if probe.has_apt {
                 format!(
-                    "WSL 发行版缺镜像构建工具（{}）——执行 `wsl -e bash -c \"sudo apt install -y genisoimage file curl\"` 后点「复检」",
+                    "WSL 发行版缺镜像构建工具（{}）——执行 `wsl -e bash -c \"sudo apt install -y qemu-utils file curl\"` 后点「复检」（烧录 seed 还需 root 权限）",
                     probe.missing.join("、")
                 )
             } else {
@@ -486,7 +487,7 @@ pub(crate) fn image_build_inputs(
                 )
             }),
             WslState::Unavailable => Err(format!(
-                "WSL 不可用（{}）——可执行 `wsl --install` 启用（可能需要管理员与重启），或在 Linux 机器构建后把 base.qcow2 + seed.iso 落到镜像目录回传",
+                "WSL 不可用（{}）——可执行 `wsl --install` 启用（可能需要管理员与重启），或在 Linux 机器构建后把 base.qcow2 落到镜像目录回传",
                 probe.reason
             )),
         }
@@ -1087,7 +1088,7 @@ impl VmBridge for VmSupervisor {
         let arch_supported = arch == "x86_64";
         let workspace = self.workspace();
         let images = vm_images_root(workspace);
-        let image_ready = images.join("base.qcow2").exists() && images.join("seed.iso").exists();
+        let image_ready = images.join("base.qcow2").exists();
         let running = self.running_agents().iter().any(|a| a == TRY_AGENT_ID);
         let (starting, last_error) = self.try_launch_snapshot();
         serde_json::json!({
@@ -1174,9 +1175,11 @@ impl VmBridge for VmSupervisor {
             .ensure_running(TRY_AGENT_ID)
             .await
             .map_err(err_string)?;
-        // B8c：可选超时透传（缺省 30s；上限 600s 与 guest 硬上限同源钳制，
-        // handler 已钳一次，这里兜底防御）。
-        let guest_timeout = timeout_secs.unwrap_or(30).clamp(1, 600);
+        // B8c：可选超时透传（缺省与 guest EXEC_DEFAULT_TIMEOUT_SECS 同源
+        // 60s——B8e 把 guest 默认 30→60 后 host 若还按 30 预算，60s 长命令
+        // 撞 host 墙钟先死；上限 600s 与 guest 硬上限同源钳制，handler 已钳
+        // 一次，这里兜底防御）。
+        let guest_timeout = timeout_secs.unwrap_or(60).clamp(1, 600);
         // 单调用信封预算 = guest 命令超时 + 握手/协议余量；缺省维持 60s。
         let call_timeout = std::time::Duration::from_secs(guest_timeout + 30).max(TRY_CALL_TIMEOUT);
         // 每调用独立握手（execute_persistent 同款：跨睡眠的常驻流是伪状态）。
@@ -1327,10 +1330,9 @@ fn try_gate(sup: &VmSupervisor) -> Result<(), String> {
         ));
     }
     let images = vm_images_root(sup.workspace());
-    if !images.join("base.qcow2").exists() || !images.join("seed.iso").exists() {
+    if !images.join("base.qcow2").exists() {
         return Err(
-            "基础镜像未就绪（base.qcow2 / seed.iso 缺席）——先在环境安装卡完成 QEMU 安装与镜像构建"
-                .to_string(),
+            "基础镜像未就绪（base.qcow2 缺席）——先在环境安装卡完成 QEMU 安装与镜像构建".to_string(),
         );
     }
     Ok(())
@@ -1431,7 +1433,7 @@ fn image_route_json(arch: &str) -> serde_json::Value {
             "no_script",
             Vec::<String>::new(),
             String::new(),
-            "构建脚本不在场（scripts/build-vm-image.sh）——从仓库根运行网关，或在 Linux 宿主构建后把 base.qcow2 + seed.iso 落到镜像目录回传".to_string(),
+            "构建脚本不在场（scripts/build-vm-image.sh）——从仓库根运行网关，或在 Linux 宿主构建后把 base.qcow2 落到镜像目录回传".to_string(),
         ),
         ImageRouteState::Native => (
             "native",
@@ -1465,7 +1467,7 @@ fn image_route_json(arch: &str) -> serde_json::Value {
                 "wsl_missing_tools",
                 p.missing.clone(),
                 if p.has_apt {
-                    "wsl -e bash -c \"sudo apt install -y genisoimage file curl\"".to_string()
+                    "wsl -e bash -c \"sudo apt install -y qemu-utils file curl\"".to_string()
                 } else {
                     String::new()
                 },
@@ -1728,12 +1730,12 @@ async fn promote_staging(workspace: &Path, staging: &Path, log_path: &Path) -> R
         .map_err(|e| format!("新 base 拷贝任务失败: {e}"))?
         .map_err(|e| format!("新 base 落临时名失败: {e}"))?;
 
-    // seed.iso / manifest.json 先就位（不依赖 rebase 成败——冷启链路用）。
-    for name in ["seed.iso", "manifest.json"] {
-        let src = staging.join(name);
-        if src.exists() {
-            std::fs::copy(&src, images.join(name)).map_err(|e| format!("{name} 就位失败: {e}"))?;
-        }
+    // manifest.json 先就位（不依赖 rebase 成败——留痕面；seed 已烧进
+    // base，镜像目录不再有独立 seed 介质）。
+    let src = staging.join("manifest.json");
+    if src.exists() {
+        std::fs::copy(&src, images.join("manifest.json"))
+            .map_err(|e| format!("manifest.json 就位失败: {e}"))?;
     }
 
     // 存量 overlay 清单（旧 base 在位才有 rebase 语义）。显式排序——
@@ -1764,6 +1766,11 @@ async fn promote_staging(workspace: &Path, staging: &Path, log_path: &Path) -> R
                 .arg("rebase")
                 .arg("-b")
                 .arg(&new_base)
+                // 新版 qemu-img 换 backing 强制显式格式（B7 真机走查实锤：
+                // 缺 -F 报 "backing format must be specified"；overlay 全族
+                // 均为本管线 create -F qcow2 产物，格式恒 qcow2）。
+                .arg("-F")
+                .arg("qcow2")
                 .arg(ov)
                 .output()
                 .await
@@ -1791,6 +1798,9 @@ async fn promote_staging(workspace: &Path, staging: &Path, log_path: &Path) -> R
             .arg("-u")
             .arg("-b")
             .arg(&canonical)
+            // 同上：-u 只改指针也要求显式 backing 格式。
+            .arg("-F")
+            .arg("qcow2")
             .arg(ov)
             .output()
             .await
@@ -1843,7 +1853,7 @@ pub(crate) fn promote_step4_failure_message(
                 .to_string()
         }
         Some(e) => format!(
-            "落点自动恢复失败（{e}）——手动修复：qemu-img rebase -u -b \"{}\" \"{}\"",
+            "落点自动恢复失败（{e}）——手动修复：qemu-img rebase -u -F qcow2 -b \"{}\" \"{}\"",
             canonical.display(),
             overlay.display()
         ),

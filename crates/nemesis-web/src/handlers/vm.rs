@@ -77,7 +77,7 @@ pub trait VmBridge: Send + Sync {
     async fn bootstrap_enable_accel(&self) -> Result<serde_json::Value, String>;
 
     /// B6 快速试玩状态（**只读探针，不受 enabled 闸约束**——查询不是
-    /// 动作）：enabled / image_ready（base.qcow2 + seed.iso）/ arch_
+    /// 动作）：enabled / image_ready（base.qcow2）/ arch_
     /// supported / running 一次取齐（Dashboard 试玩卡四态渲染的单命令面）。
     fn try_status(&self) -> serde_json::Value;
 
@@ -88,8 +88,8 @@ pub trait VmBridge: Send + Sync {
 
     /// 试玩实例内执行 shell 命令（guest `exec` 工具；未运行时自动先
     /// ensure_running）。`timeout_secs`：B8c 可选超时透传（秒；None=guest
-    /// 缺省 30s，>600 由 handler 钳制到 guest 硬上限——慢命令如 apt 全程
-    /// 不再假超时）。**enabled 闸**；estop 冻结闸在 handler 层。
+    /// 缺省 60s（B8e 口径），>600 由 handler 钳制到 guest 硬上限——慢命令
+    /// 如 apt 全程不再假超时）。**enabled 闸**；estop 冻结闸在 handler 层。
     async fn try_exec(
         &self,
         command: &str,
@@ -263,7 +263,8 @@ impl ModuleHandler for VmHandler {
                         "命令过长（上限 {TRY_EXEC_MAX_CHARS} 字符）——试玩通道不承载长脚本"
                     ));
                 }
-                // B8c：可选超时透传（秒）。缺省/0=None（guest 默认 30s）；
+                // B8c：可选超时透传（秒）。缺省/0=None（guest 默认 60s，
+                // B8e 口径）；
                 // >600 钳制到 guest exec 硬上限（同源 600s）。
                 let timeout_secs = data
                     .get("timeout")
