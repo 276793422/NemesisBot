@@ -14,7 +14,6 @@ fn spec(accel: QemuAccel, shared: Option<PathBuf>) -> VmLaunchSpec {
         vcpu: 2,
         ram_mb: 2048,
         overlay_path: PathBuf::from("/vm/overlays/agent-1.qcow2"),
-        seed_iso: None,
         qmp_port: 45123,
         host_forward_port: 45124,
         token: "tok-abc123".into(),
@@ -141,31 +140,6 @@ fn overlay_is_virtio_primary_disk() {
     );
 }
 
-/// cloud-init seed：Some = cdrom 只读挂载（fs label cidata 由 cloud-init
-/// 发现）；None = 无 cdrom（已装配持久 overlay 复用启动形态）。
-#[test]
-fn seed_iso_optional_cdrom() {
-    let mut s = spec(QemuAccel::Kvm, None);
-    s.seed_iso = Some(PathBuf::from("/vm/images/seed.iso"));
-    let args = build_qemu_args(&s);
-    let drives: Vec<&String> = args.iter().filter(|a| a.starts_with("file=")).collect();
-    let cd = args
-        .iter()
-        .find(|a| a.starts_with("file=") && a.contains("format=raw,media=cdrom,readonly=on"))
-        .expect("seed cdrom 在位");
-    assert_eq!(
-        *cd,
-        "file=/vm/images/seed.iso,format=raw,media=cdrom,readonly=on"
-    );
-    assert_eq!(drives.len(), 2, "主盘 + seed 两块: {drives:?}");
-
-    let without = args_of(QemuAccel::Kvm, None);
-    assert!(
-        !without.iter().any(|a| a.contains("media=cdrom")),
-        "无 seed 时不装配 cdrom"
-    );
-}
-
 /// pidfile 在位（孤儿 sweep 通道锚定）。
 #[test]
 fn pidfile_present() {
@@ -248,8 +222,8 @@ fn validate_clean_spec_ok() {
         .expect("干净 spec 应通过");
 }
 
-/// 逗号闸逐字段：overlay_path / seed_iso / shared_host_path / incoming_file
-/// 任一含逗号 = Err 且报错点名该字段（L6++ 项目路径用户任意，可含逗号；
+/// 逗号闸逐字段：overlay_path / shared_host_path / incoming_file 任一含
+/// 逗号 = Err 且报错点名该字段（L6++ 项目路径用户任意，可含逗号；
 /// 逗号在 QEMU 单 argv 子选项串里是分隔符）。
 #[test]
 fn validate_rejects_comma_in_each_path_field() {
@@ -258,12 +232,6 @@ fn validate_rejects_comma_in_each_path_field() {
             "overlay_path",
             Box::new(|s: &mut VmLaunchSpec| {
                 s.overlay_path = PathBuf::from("/vm/a,b/o.qcow2");
-            }),
-        ),
-        (
-            "seed_iso",
-            Box::new(|s: &mut VmLaunchSpec| {
-                s.seed_iso = Some(PathBuf::from("/vm/seed,x.iso"));
             }),
         ),
         (

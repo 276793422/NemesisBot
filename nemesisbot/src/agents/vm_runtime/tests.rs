@@ -745,10 +745,10 @@ fn try_family_enabled_gates_arch_then_image() {
     assert!(err.contains("base.qcow2"), "exec 同过镜像闸: {err}");
 
     // 镜像齐（占位文件）→ status 就绪转绿（真启动仍归 vm_smoke 真机面）。
+    // seed 已烧进 base（无独立介质），image_ready 只看 base.qcow2。
     let images = tmp.path().join("tools").join("vm").join("images");
     std::fs::create_dir_all(&images).expect("images dir");
     std::fs::write(images.join("base.qcow2"), b"stub").expect("base");
-    std::fs::write(images.join("seed.iso"), b"stub").expect("seed");
     let st = sup.try_status();
     assert_eq!(st["image_ready"], true);
     assert_eq!(st["arch_supported"], true);
@@ -810,7 +810,6 @@ fn try_family_starting_gates_exec_and_stop_lands_request() {
     let images = tmp.path().join("tools").join("vm").join("images");
     std::fs::create_dir_all(&images).expect("images dir");
     std::fs::write(images.join("base.qcow2"), b"stub").expect("base");
-    std::fs::write(images.join("seed.iso"), b"stub").expect("seed");
     let sup = std::sync::Arc::new(VmSupervisor::new(tmp.path().to_path_buf(), cfg));
     sup.set_self_arc();
 

@@ -374,8 +374,8 @@ const tryStarting = computed(() => !!tryState.value?.starting)
 const tryCommand = ref('')
 const tryOutput = ref('')
 const tryBusy = ref(false)
-// B8c：命令超时档（秒；0=缺省 30s 不透传）。guest 上限 600s——apt 全程等
-// 长命令不再被 30s 缺省假超时。请求预算 = max(120s, 档位 + 90s 协议余量)。
+// B8c：命令超时档（秒；0=缺省不透传，guest 默认 60s——B8e 口径）。guest 上限
+// 600s——apt 全程等长命令不再被缺省假超时。请求预算 = max(120s, 档位 + 90s 协议余量)。
 const tryTimeout = ref(0)
 
 // 预设命令：guest 内秒级可回、不依赖 ICMP（SLIRP 不转发 ping——预设不放
@@ -968,7 +968,7 @@ onMounted(async () => {
                     @keydown.enter="tryRun()"
                   />
                   <select v-model.number="tryTimeout" data-test="try-timeout" :disabled="tryBusy || !!busy" title="命令超时（apt 等长命令选长档）">
-                    <option :value="0">默认 30s</option>
+                    <option :value="0">默认 60s</option>
                     <option :value="120">120s</option>
                     <option :value="300">300s</option>
                     <option :value="600">600s</option>
