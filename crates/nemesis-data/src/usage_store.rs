@@ -199,14 +199,16 @@ impl DataStore {
             .map_err(|e| format!("query_summary: {e}"))?;
 
         // Compute cache hit rate
-        // DeepSeek/OpenAI: cache_creation = miss tokens, cache_read = hit tokens
-        //   correct formula: cache_read / (cache_creation + cache_read)
-        // Anthropic: cache_creation = write tokens, cache_read = read tokens
-        //   correct formula: cache_read / (cache_creation + cache_read)
-        // Both simplify to: hits / (hits + misses)
-        let cacheable = summary.total_cache_creation_tokens + summary.total_cache_read_tokens;
-        let cache_hit_rate = if cacheable > 0 {
-            summary.total_cache_read_tokens as f64 / cacheable as f64
+        // 命中率 = 缓存读 / 总输入（input + creation + read），三协议族
+        // 统一口径：input_tokens 列是归一后的非缓存纯输入（账本不变量），
+        // 缓存读占总输入的比例。旧口径 read/(creation+read) 依赖「OpenAI
+        // 族把 miss 落 creation 列」的旧喂料形态——miss 归纯输入后该分母
+        // 不复存在，且 Anthropic 族旧口径漏掉纯输入段权重。
+        let total_input = summary.total_input_tokens
+            + summary.total_cache_creation_tokens
+            + summary.total_cache_read_tokens;
+        let cache_hit_rate = if total_input > 0 {
+            summary.total_cache_read_tokens as f64 / total_input as f64
         } else {
             0.0
         };

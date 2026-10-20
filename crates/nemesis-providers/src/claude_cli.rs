@@ -179,10 +179,10 @@ impl ClaudeCliProvider {
         };
 
         let usage = if resp.usage.input_tokens > 0 || resp.usage.output_tokens > 0 {
+            // Anthropic wire 的 input_tokens 本就是非缓存纯输入（加法语义，
+            // 缓存读写单列）——透传不折缓存；total 按账本口径还原全量。
             Some(UsageInfo {
-                prompt_tokens: resp.usage.input_tokens
-                    + resp.usage.cache_creation_input_tokens
-                    + resp.usage.cache_read_input_tokens,
+                prompt_tokens: resp.usage.input_tokens,
                 completion_tokens: resp.usage.output_tokens,
                 total_tokens: resp.usage.input_tokens
                     + resp.usage.cache_creation_input_tokens

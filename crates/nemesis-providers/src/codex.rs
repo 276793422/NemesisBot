@@ -436,15 +436,27 @@ fn parse_codex_response(data: &serde_json::Value) -> LLMResponse {
     };
 
     let usage = if let Some(u) = data.get("usage") {
-        let prompt = u.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+        let prompt_raw = u.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
         let completion = u.get("output_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+        // Responses API 的 input_tokens 含 input_tokens_details.cached_tokens
+        // （子集语义，与 chat/completions 的 prompt_tokens 同族）。归一到
+        // Anthropic 语义（账本不变量）：prompt = 非缓存纯输入，缓存读单列
+        // ——落账/聚合/预算链路统一按 input+cache_read 还原总量，计价公式
+        // plain=input 直接相乘，缓存折扣不再丢失。
+        let cached = u
+            .get("input_tokens_details")
+            .and_then(|d| d.get("cached_tokens"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0)
+            .clamp(0, prompt_raw.max(0));
+        let prompt = prompt_raw - cached;
         Some(UsageInfo {
             prompt_tokens: prompt,
             completion_tokens: completion,
-            total_tokens: prompt + completion,
-            cached_tokens: None,
+            total_tokens: prompt_raw + completion,
+            cached_tokens: Some(cached),
             cache_creation_tokens: None,
-            cache_read_tokens: None,
+            cache_read_tokens: Some(cached),
         })
     } else {
         None

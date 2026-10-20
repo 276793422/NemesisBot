@@ -140,6 +140,11 @@ impl PricingTable {
 
 /// Compute `total_cost_usd` for one LLM request against the embedded table.
 /// Unknown model → `0.0` (degrade, never guess).
+///
+/// `input_tokens` 语义（账本不变量，2026-10-20 修复）：**非缓存纯输入**
+/// （Anthropic 语义）。三条出站 lane 的 provider 层统一归一后喂入；缓存
+/// 读写单列各自计价。此前「input 含缓存总量、公式内做减法」的旧语义与
+/// 账本聚合（`SUM(input_tokens + cache_read_tokens)`）矛盾，已废弃。
 pub fn compute_cost_usd(
     model: &str,
     input_tokens: i64,
@@ -209,6 +214,9 @@ struct EffectivePrices {
 }
 
 /// Pure cost math for a known pricing entry (unit-testable without the table).
+///
+/// `input_tokens` = 非缓存纯输入（见 [`compute_cost_usd`] 语义注记）；
+/// 负值防御性钳 0（上游报数异常不产生负成本）。
 pub fn cost_from_pricing(
     p: &ModelPricing,
     input_tokens: i64,
@@ -217,9 +225,7 @@ pub fn cost_from_pricing(
     cache_read_tokens: i64,
 ) -> f64 {
     let prices = effective_prices(p, input_tokens);
-    // Plain input = total input minus cached portions, clamped at zero for
-    // providers that report cache tokens separately from prompt tokens.
-    let plain_input = (input_tokens - cache_creation_tokens - cache_read_tokens).max(0);
+    let plain_input = input_tokens.max(0);
     (plain_input as f64 * prices.input
         + output_tokens as f64 * prices.output
         + cache_creation_tokens as f64 * prices.cache_creation
@@ -238,7 +244,7 @@ pub fn cost_breakdown_from_pricing(
     cache_read_tokens: i64,
 ) -> crate::CostBreakdown {
     let prices = effective_prices(p, input_tokens);
-    let plain_input = (input_tokens - cache_creation_tokens - cache_read_tokens).max(0);
+    let plain_input = input_tokens.max(0);
     let input_cost_usd = plain_input as f64 * prices.input / 1_000_000.0;
     let output_cost_usd = output_tokens as f64 * prices.output / 1_000_000.0;
     let cache_creation_cost_usd =
