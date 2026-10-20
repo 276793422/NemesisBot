@@ -44,7 +44,7 @@ const sessionStore = useSessionStore()
 const toast = useToast()
 const router = useRouter()
 const wfEditSessions = useWfEditSessions()
-const { openProjectDir, snooze, unsnooze } = useChatApi()
+const { openProjectDir, snooze, unsnooze, detach } = useChatApi()
 
 // 服务端绑定权威面（2026-10-19 修复）：`wf_agentgen:*` 绑定命中的存活
 // 会话一律视为工作流编辑会话。隐藏判定与 localStorage 登记取**并集**——
@@ -586,6 +586,26 @@ async function unsnoozeSession(s: SessionEntry) {
   }
 }
 
+/** detach（2026-10-20）：脱离父分支——清血缘 meta，与会话的父会话平级
+ *  独立（子分支跟随脱离，整棵子树独立）。不可逆；消息内容不受影响。 */
+async function detachSession(s: SessionEntry) {
+  closeMenus()
+  const ok = confirm(
+    `脱离父分支：「${title(s)}」将变成与父会话平级的独立会话。\n\n` +
+      `· 不可恢复（血缘关联不会保留）\n` +
+      `· 它下面的子分支会一并脱离\n` +
+      `· 消息内容不受影响\n\n确定脱离？`,
+  )
+  if (!ok) return
+  try {
+    await detach(s.id)
+    toast.success(`「${title(s)}」已脱离父分支`)
+    await sessionStore.fetchList(true)
+  } catch (e: any) {
+    toast.error(typeof e === 'string' ? e : e?.message || '脱离失败')
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 会话信息（行菜单）：sessions.list 已回填的静态信息只读展示——归属/
 // 时间/消息数/用量/模型/fork 血缘。零额外请求（消息数即 list 的
@@ -706,6 +726,7 @@ function relTime(ts: string): string {
             />
           </template>
           <template v-else>
+            <span class="group-icon" aria-hidden="true">📁</span>
             <span v-if="isProjectPinned(grp.key)" class="pin-flag" title="已置顶">📌</span>
             <span class="group-name" :title="grp.header.name">{{ grp.header.name }}</span>
             <span
@@ -734,21 +755,26 @@ function relTime(ts: string): string {
           </div>
         </div>
 
-        <!-- 会话行（对话组 / 项目组 / 孤儿组单源复用；折叠时不渲染） -->
-        <template v-if="!isCollapsed(grp.key)">
+        <!-- 会话行（对话组 / 项目组 / 孤儿组单源复用；折叠时不渲染）。
+             2026-10-20 改版：组容器化——项目/孤儿组的会话体包 .group-body
+             （左缩进 + 1px 垂直导轨线），对话组（无组头）不包作对照。 -->
+        <div v-if="!isCollapsed(grp.key)" :class="{ 'group-body': !!grp.header }">
+          <!-- 谱系缩进（2026-10-20 收敛 10px/级）；--depth 供 .session-item::before 画树杈 -->
           <div
             v-for="s in visibleItems(grp)"
             :key="s.id"
             class="session-item"
             :data-session-id="s.id"
-            :class="{ active: s.id === currentId, orphaned: grp.header?.orphan, snoozed: isSnoozed(s) }"
+            :class="{ active: s.id === currentId, orphaned: grp.header?.orphan, snoozed: isSnoozed(s), branched: s.lineageDepth > 0 }"
             :title="isSnoozed(s) ? snoozeTip(s) : undefined"
-            :style="s.lineageDepth > 0 ? { paddingLeft: `${10 + s.lineageDepth * 14}px` } : undefined"
+            :style="s.lineageDepth > 0 ? { paddingLeft: `${10 + s.lineageDepth * 10}px`, '--depth': s.lineageDepth } : undefined"
             @click="select(s.id)"
           >
             <div class="session-title">
               <!-- M6: pinned 会话标题前缀标记（置顶行的视觉识别） -->
               <span v-if="isPinned(s.id)" class="pin-flag" title="已置顶">📌</span>
+              <!-- 2026-10-20：分支会话标记（⑂ 弱化色前缀，取代旧 fork-line 的 ↳ 行首） -->
+              <span v-if="s.parent" class="fork-marker" title="分支会话">⑂</span>
               {{ title(s) }}
               <!-- B11（2026-10-18 snooze）: 暂停中徽标（行灰显 + 到期自动恢复）。 -->
               <span
@@ -764,14 +790,15 @@ function relTime(ts: string): string {
                 :title="`有未送达的回复（已落盘，打开即见）`"
               >{{ undeliveredBadge(s) }}</span>
             </div>
-            <!-- E4: fork 血缘标记（父在列表可点击跳转；不在则纯文本） -->
+            <!-- E4: fork 血缘标记（父在列表可点击跳转；不在则纯文本）。
+                 ↳ 前缀已升格为标题行内 ⑂ marker（2026-10-20）。 -->
             <div
               v-if="s.parent"
               class="session-fork-line"
               :class="{ link: parentInList(s) }"
               :title="parentInList(s) ? '跳转到父会话' : '父会话不在列表中'"
               @click.stop="goParent(s)"
-            >↳ {{ forkLabel(s) }}</div>
+            >{{ forkLabel(s) }}</div>
             <!-- M5: 会话用量（tokens/cost，sessions.list 回填；无记录不占位） -->
             <div v-if="usage(s)" class="session-usage">{{ usage(s) }}</div>
             <div class="session-meta">
@@ -786,6 +813,8 @@ function relTime(ts: string): string {
               <button v-else class="menu-item" @click="snoozeSession(s)">⏰ 暂停会话</button>
               <button class="menu-item" @click="renameSession(s)">✏ 重命名</button>
               <button class="menu-item" @click="forkSession(s)">⑂ 创建分支</button>
+              <!-- detach（2026-10-20）：仅分支会话显示——脱离后与父会话平级 -->
+              <button v-if="s.parent" class="menu-item" @click="detachSession(s)">✂ 脱离父分支</button>
               <button class="menu-item" @click="clearSession(s)">🗑 清空消息</button>
               <button class="menu-item" @click="exportSession(s)">📥 导出</button>
               <button class="menu-item danger" @click="del(s.id)">✕ 删除会话</button>
@@ -797,7 +826,7 @@ function relTime(ts: string): string {
             class="show-more"
             @click.stop="toggleExpanded(grp.key)"
           >{{ isExpanded(grp.key) ? '收起' : `显示更多 (${grp.items.length - SHOW_MORE_CAP})` }}</button>
-        </template>
+        </div>
         <!-- 对话区空态（区块内提示，替代整列表 .empty） -->
         <div
           v-if="grp.key === '__chat' && chatSessions.length === 0 && !sessionStore.listLoading"
@@ -969,6 +998,19 @@ function relTime(ts: string): string {
   border-left: 3px solid transparent;
   position: relative;
 }
+/* 2026-10-20：分支行树杈连接线——从父会话缩进列垂下、钩到本行标题
+ * （::before 相对 padding box 定位；--depth 由行内 style 注入，
+ * left = 10px×depth 恰对齐父会话文本起点，横臂收到本行文本前 2px）。 */
+.session-item.branched::before {
+  content: '';
+  position: absolute;
+  left: calc(10px * var(--depth));
+  top: 0;
+  width: 8px;
+  height: 15px;
+  border-left: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
 .session-item:hover {
   background: var(--bg-primary);
 }
@@ -1056,6 +1098,12 @@ function relTime(ts: string): string {
   font-size: 10px;
   margin-right: 2px;
 }
+/* 2026-10-20：分支会话标记（标题行内弱化前缀，取代旧 fork-line 行首 ↳） */
+.fork-marker {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin-right: 2px;
+}
 /* P2（2026-09-11）: 未送达回复徽标——标题右侧小圆点计数 */
 .undelivered-badge {
   margin-left: 6px;
@@ -1113,23 +1161,38 @@ function relTime(ts: string): string {
   color: var(--text);
   background: var(--bg-primary);
 }
+/* 2026-10-20：组容器化——项目/孤儿组的会话体统一缩进 + 左侧 1px 垂直
+ * 导轨线；对话组（无组头）不包此容器，会话行与容器外对齐作对照。 */
+.group-body {
+  margin-left: 7px;
+  padding-left: 7px;
+  border-left: 1px solid var(--border);
+}
 .empty {
   padding: 20px 12px;
   color: var(--text-muted);
   font-size: 13px;
   text-align: center;
 }
-/* L6++：组头 */
+/* L6++：组头。2026-10-20 容器化——中性背景条 + 圆角，📁 前缀图标，
+ * 计数徽章化（文本仍为 (N)，grouping.spec 断言钉住）。 */
 .group-header {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 6px 4px;
+  padding: 6px 8px;
   margin-top: 2px;
   font-size: 12px;
   font-weight: 600;
   cursor: default;
   position: relative;
+  background: var(--surface-hover);
+  border-radius: 6px;
+}
+.group-icon {
+  font-size: 12px;
+  margin-right: 2px;
+  line-height: 1;
 }
 .group-header .caret {
   cursor: pointer;
@@ -1158,6 +1221,11 @@ function relTime(ts: string): string {
   color: var(--text-muted);
   font-weight: 400;
   font-size: 11px;
+  background: var(--bg-primary);
+  border-radius: 8px;
+  padding: 0 6px;
+  margin-left: 2px;
+  line-height: 16px;
 }
 .group-spacer {
   flex: 1;

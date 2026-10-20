@@ -26,6 +26,10 @@ const turns = ref<SessionTurnRow[]>([])
 const totalMessages = ref(0)
 /** 选中的分岔轮次；null = 全量分叉（默认，对齐 CLI 省略 --at 的语义）。 */
 const atTurn = ref<number | null>(null)
+/** detach 同族（2026-10-20）：勾选「完全独立」= 新会话不写血缘 meta
+ *  （parent/分叉缘由/分支摘要都不落盘）——生来无父分支，不进谱系树，
+ *  也不注入 Branch Context。消息内容照常整段拷贝，boundary 审计照常。 */
+const independent = ref(false)
 
 watch(
   () => props.sessionId,
@@ -34,6 +38,7 @@ watch(
     loading.value = true
     turns.value = []
     atTurn.value = null
+    independent.value = false
     try {
       const resp = await api.turns(sid)
       turns.value = resp.turns
@@ -51,8 +56,12 @@ async function doFork() {
   if (forking.value) return
   forking.value = true
   try {
-    const resp = await api.fork(props.sessionId, atTurn.value ?? undefined)
-    toast.success(`已分叉出新会话（保留 ${resp.kept_messages} 条消息）`)
+    const resp = await api.fork(props.sessionId, atTurn.value ?? undefined, independent.value)
+    toast.success(
+      independent.value
+        ? `已分叉出独立会话（保留 ${resp.kept_messages} 条消息，无父分支关联）`
+        : `已分叉出新会话（保留 ${resp.kept_messages} 条消息）`,
+    )
     emit('forked', resp.session_id)
   } catch (e: any) {
     toast.error(e?.message || '分叉失败')
@@ -89,6 +98,15 @@ async function doFork() {
             <span class="turn-meta">{{ t.kept_messages }} 条</span>
           </label>
         </div>
+        <label class="independent-option">
+          <input type="checkbox" v-model="independent" />
+          <span class="independent-text">
+            创建为完全独立会话
+            <span class="independent-hint">
+              勾选后新会话不保留分叉来源：无父分支关联、不进谱系树（消息内容照常复制；不可逆）
+            </span>
+          </span>
+        </label>
       </div>
       <div class="modal-footer">
         <span class="foot-hint">
@@ -216,6 +234,30 @@ async function doFork() {
   text-align: right;
   color: var(--text-muted);
   font-size: 11px;
+}
+/* 「完全独立会话」勾选项：分隔线上方留白，弱化为次级行为。 */
+.independent-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 8px;
+  border-top: 1px dashed var(--border);
+  font-size: 13px;
+  cursor: pointer;
+}
+.independent-option input {
+  margin-top: 2px;
+}
+.independent-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.independent-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
 }
 .modal-footer {
   display: flex;

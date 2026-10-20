@@ -164,6 +164,21 @@ pub fn fork_session(
     requested_new_key: Option<String>,
     at_turn: Option<usize>,
 ) -> Result<ForkInfo, String> {
+    fork_session_opts(store, source_key, requested_new_key, at_turn, false)
+}
+
+/// 「完全独立会话」形态（2026-10-20）：`independent=true` 时跳过新 key 的
+/// 血缘 meta 写入（parent / forked_at_turn）——新会话生来无父分支，UI 谱系
+/// 视图视为平级独立会话（fork_reason 与分支摘要在 endpoint 侧同步跳过）。
+/// 内容拷贝 / store 重建 / boundary 审计事件与普通 fork 完全一致（审计兜底
+/// 不因独立形态减弱；boundary 行在 jsonl 内部，UI 不可见）。
+pub fn fork_session_opts(
+    store: &SessionStore,
+    source_key: &str,
+    requested_new_key: Option<String>,
+    at_turn: Option<usize>,
+    independent: bool,
+) -> Result<ForkInfo, String> {
     // Whole-log read: fork is a one-shot admin op, not a hot path.
     let (rows, total, _, _) = chat_log::read_chat_log(source_key, usize::MAX, None);
     if rows.is_empty() {
@@ -237,8 +252,11 @@ pub fn fork_session(
 
     // E4 (2026-09-05): 记录 fork 血缘到新 key 的 sidecar meta（parent +
     // forked_at_turn）。Upsert 语义——随后 fork endpoint 写 title 时保留
-    // 这两字段；旧 meta 文件（只有 title）不受影响。
-    chat_log::write_session_parent(&new_key, source_key, at);
+    // 这两字段；旧 meta 文件（只有 title）不受影响。independent 形态跳过
+    // （fork_session_opts 文档：生来无父分支）。
+    if !independent {
+        chat_log::write_session_parent(&new_key, source_key, at);
+    }
 
     Ok(ForkInfo {
         kept_messages: cut,
