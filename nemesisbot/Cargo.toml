@@ -284,6 +284,9 @@ serde = { workspace = true }
 [dev-dependencies]
 # generate_image 工具落盘链路假端点（集群专业职能框架 M4）。
 wiremock = "0.6"
+# F2 回归锁（三轮复评 2026-10-21）：DB 删除失败注入用 SQLite 触发器
+# （BEFORE DELETE RAISE）——需直接在测试里对 tasks.db 建触发器。
+rusqlite = { workspace = true }
 # P4 交付门测试夹具：真 git 仓 workspace（git2 已在依赖图内——nemesis-agent
 # 影子库；此处只为测试可命名，不进 bin 依赖面）。
 git2 = { workspace = true }

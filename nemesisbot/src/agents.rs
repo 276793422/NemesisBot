@@ -142,12 +142,16 @@ pub trait VmBackend: nemesis_agent::remote_executor_tool::PersistentExecutor {
     /// 与进程档「睡着的槽已离开 map」同语义）。
     fn running_agents(&self) -> Vec<String>;
 
-    /// R2（2026-10-20 复评）：删除联动逐出。`AgentManager::remove` **无条件**
-    /// 调用（不读 runtime_backend——切过档的旧 VM 实例一并收敛）：运行/启动
-    /// 在途实例冷停出 map，旧身份入墓碑（后续 wake/ensure_running 诚实拒
-    /// 绝）。幂等；`Err` = 删除编排整体中止（记录仍在册，重试干净）。
-    /// **无默认实现**——默认 Ok 会把未来实现者的漏接静默成老 bug。
-    async fn evict_agent(&self, agent_id: &str) -> Result<(), String>;
+    /// R2（2026-10-20 复评）+ F2（2026-10-21 三轮复评）：删除联动逐出，
+    /// **两段式**（prepare / commit / abort）。`AgentManager::remove` **无条件**
+    /// 调 prepare（不读 runtime_backend——切过档的旧 VM 实例一并收敛）：
+    /// 进临时拒绝态（新启动被拒）+ 运行实例冷停出 map，**可逆**；真相源
+    /// （DB）删除成功后 commit（临时态转永久墓碑），失败则 abort（临时态
+    /// 解除，记录仍在册 = 身份可再唤醒）。commit/abort 同步不可失败；三者
+    /// **均无默认实现**——默认 Ok/空操作会把未来实现者的漏接静默成老 bug。
+    async fn evict_agent_prepare(&self, agent_id: &str) -> Result<(), String>;
+    fn evict_agent_commit(&self, agent_id: &str);
+    fn evict_agent_abort(&self, agent_id: &str);
 }
 
 // ---------------------------------------------------------------------------
@@ -479,9 +483,14 @@ impl AgentManager {
     /// 成永久拒绝），故不用 `?` 中途返回。
     ///
     /// R2（2026-10-20 复评）：删除联动 VM 后端收敛——`evict_begin` 之前
-    /// **无条件**调 `vm.evict_agent`（不读 runtime_backend：切过档的旧 VM
-    /// 实例一并收敛），墓碑保证旧身份此后不可再唤醒。失败 = 整体中止且
-    /// 记录未动（evict_begin 尚未发生，无中间态），重试即干净。
+    /// **无条件**走 VM 逐出（不读 runtime_backend：切过档的旧 VM 实例一并
+    /// 收敛）。F2（2026-10-21 三轮复评）改**两段式**：prepare（临时拒绝态
+    /// 加冷停出槽，可逆）先行；`store.remove` 成功 → commit（永久墓碑）；
+    /// 失败 → abort（临时态解除，记录仍在册 = 身份可再唤醒，已冷停实例走
+    /// 正常冷启恢复）。旧单段式的事故面（探针实证）：墓碑先于 DB 删除永久
+    /// 生效，DB 失败后「记录在册但身份永久不可唤醒」直到 supervisor 重启。
+    /// 显式**不采用**「先删库后停机」换序——那会重新产生已删身份的脱管
+    /// 运行实例（R2 整改的原始动机）。
     pub async fn remove(&self, agent_id: &str) -> Result<(), String> {
         if let Some(record) = self.store.get(agent_id)?
             && record.kind == agent_kind::MAIN
@@ -489,18 +498,30 @@ impl AgentManager {
             return Err("main agent 是对话组身份投影，不可删除".to_string());
         }
         if let Some(vm) = self.vm_backend() {
-            vm.evict_agent(agent_id)
-                .await
-                .map_err(|e| format!("VM 后端逐出失败，删除中止（记录未动，重试即干净）: {e}"))?;
+            vm.evict_agent_prepare(agent_id).await.map_err(|e| {
+                format!("VM 后端逐出准备失败，删除中止（记录未动，重试即干净）: {e}")
+            })?;
         }
         if let Some(rt) = self.runtime() {
             rt.evict_begin(agent_id).await;
         }
         let result = self.store.remove(agent_id);
-        if result.is_ok()
-            && let Some(lm) = self.loop_manager()
-        {
-            lm.remove(agent_id);
+        match &result {
+            Ok(()) => {
+                if let Some(lm) = self.loop_manager() {
+                    lm.remove(agent_id);
+                }
+                if let Some(vm) = self.vm_backend() {
+                    vm.evict_agent_commit(agent_id);
+                }
+            }
+            Err(_) => {
+                // 删除失败：解除 VM 临时拒绝态（永久墓碑不落——身份保持
+                // 可唤醒）；process 侧旗标由下方 evict_end 统一清。
+                if let Some(vm) = self.vm_backend() {
+                    vm.evict_agent_abort(agent_id);
+                }
+            }
         }
         if let Some(rt) = self.runtime() {
             rt.evict_end(agent_id);

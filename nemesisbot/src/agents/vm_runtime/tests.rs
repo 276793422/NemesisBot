@@ -358,6 +358,62 @@ async fn stop_without_slot_is_failed_not_unavailable() {
 }
 
 // ---------------------------------------------------------------------------
+// F2（2026-10-21 三轮复评）：逐出两段式状态机（无须 QEMU——无槽形态下
+// prepare 纯状态转换；断言面 = ensure_running 的生命周期拒绝文案）。
+// ---------------------------------------------------------------------------
+
+/// 唤醒并取错误串（测试环境槽/镜像缺席，不应真能启动）。
+async fn wake_err_string(sup: &VmSupervisor, id: &str) -> String {
+    match sup.ensure_running(id).await {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("测试环境（槽/镜像缺席）不应真能启动 VM"),
+    }
+}
+
+/// prepare → 临时拒绝态生效（「删除在途」）；abort → 解除（回到非删除
+/// 语义）；再 prepare → commit → 永久墓碑（「已删除」）；commit 后 abort
+/// 幂等不得复活身份。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn evict_two_phase_state_machine_without_slot() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let cfg = tmp.path().join("config.json");
+    write_config(&cfg, &full_vm_json(true));
+    let sup = VmSupervisor::new(tmp.path().to_path_buf(), cfg);
+
+    // ① prepare：进临时拒绝态。
+    sup.evict_agent_prepare("agent-a").await.unwrap();
+    let err = wake_err_string(&sup, "agent-a").await;
+    assert!(
+        err.contains("删除在途"),
+        "prepare 后临时拒绝态必须生效: {err}"
+    );
+
+    // ② abort：临时态解除，身份回到可唤醒语义（此处形态 = config 侧诚实
+    // 报错，绝不再携带删除字样）。
+    sup.evict_agent_abort("agent-a");
+    let err = wake_err_string(&sup, "agent-a").await;
+    assert!(
+        !err.contains("删除在途") && !err.contains("已删除"),
+        "abort 后身份必须恢复可唤醒语义: {err}"
+    );
+
+    // ③ 再 prepare → commit：永久墓碑落地。
+    sup.evict_agent_prepare("agent-a").await.unwrap();
+    sup.evict_agent_commit("agent-a");
+    let err = wake_err_string(&sup, "agent-a").await;
+    assert!(err.contains("已删除"), "commit 后永久墓碑必须生效: {err}");
+
+    // ④ 幂等 + 顺序安全：commit 后 abort 不得清掉墓碑复活身份。
+    sup.evict_agent_commit("agent-a");
+    sup.evict_agent_abort("agent-a");
+    let err = wake_err_string(&sup, "agent-a").await;
+    assert!(
+        err.contains("已删除"),
+        "commit 后的 abort 不得复活身份: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 孤儿 sweep：清理不收编的收敛面（死 pid / 启动保护窗）
 // ---------------------------------------------------------------------------
 

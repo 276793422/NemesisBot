@@ -154,6 +154,12 @@ pub enum SupervisorError {
     /// 常驻路径不可用（config 关闭 / 满员 / spawn 失败）——调用未发生，
     /// 调用方可安全回落 per-call。
     Unavailable(String),
+    /// F1（2026-10-21 三轮复评）：身份生命周期已终结（删除/注销/代次失效）的
+    /// 拒绝——调用未发生**且**该身份不该再执行任何工具。与 [`Self::Unavailable`]
+    /// 的本质区别：Unavailable 是「本次没执行成，换个路径可以」，本变体是
+    /// 「这个身份永远不该再执行」——**禁止回落**（回落 per-call = 已删身份的
+    /// 工具照常执行，探针实证的 F1 事故面）。
+    LifecycleRejected(String),
     /// 调用已尝试且失败（工具报错 / 传输失败）——可能已有副作用，绝不回落。
     ToolFailed(String),
 }
@@ -162,6 +168,9 @@ impl std::fmt::Display for SupervisorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Unavailable(m) => write!(f, "persistent executor unavailable: {m}"),
+            Self::LifecycleRejected(m) => {
+                write!(f, "persistent executor lifecycle rejected: {m}")
+            }
             Self::ToolFailed(m) => write!(f, "persistent executor call failed: {m}"),
         }
     }
@@ -677,7 +686,8 @@ impl AgentRuntimeSupervisor {
         let (existing, gen0) = {
             let map = self.slots.lock().unwrap_or_else(|e| e.into_inner());
             if self.is_evicting(agent_id) {
-                return Err(SupervisorError::Unavailable(
+                // F1：删除在途 = 生命周期拒绝（不落 Unavailable，禁宿主回落）。
+                return Err(SupervisorError::LifecycleRejected(
                     "agent is being removed".into(),
                 ));
             }
@@ -706,22 +716,24 @@ impl AgentRuntimeSupervisor {
             if self.is_evicting(agent_id) || self.generation(agent_id) != gen0 {
                 // F3：插入复核——spawn 期间删除编排开始了；R3：或删除编排已
                 // 完整走完（代次已变、旗标已清）。刚 spawn 的会话优雅关停防
-                // 孤儿进程（镜像下方输者路径），再诚实拒绝。
+                // 孤儿进程（镜像下方输者路径），再诚实拒绝。F1：生命周期
+                // 拒绝（不落 Unavailable，禁宿主回落）。
                 drop(map);
                 let mut g = arc_ref.lock().await;
                 g.shutdown(Duration::from_secs(2)).await;
-                return Err(SupervisorError::Unavailable(
+                return Err(SupervisorError::LifecycleRejected(
                     "agent is being removed".into(),
                 ));
             }
             if !self.registered(agent_id) {
                 // R3：注册表在册复核（独立第二保险）——记录已删而代次路径
                 // 因任何原因漏接时兜底；语义 = 「记录仍在册」（生产接线
-                // `store.get(id).is_some()`）。
+                // `store.get(id).is_some()`）。F1：生命周期拒绝（禁宿主回落
+                // ——已删身份的工具不得在宿主照常执行）。
                 drop(map);
                 let mut g = arc_ref.lock().await;
                 g.shutdown(Duration::from_secs(2)).await;
-                return Err(SupervisorError::Unavailable(
+                return Err(SupervisorError::LifecycleRejected(
                     "agent record no longer present".into(),
                 ));
             }
@@ -1009,7 +1021,8 @@ impl AgentRuntimeSupervisor {
 // T7 依赖倒置桥：supervisor 实现 agent crate 侧的 PersistentExecutor trait
 // （nemesis-agent 不依赖 nemesisbot——trait 在 agent 侧定义，bot 侧实现；
 // RemoteExecutorTool 经 Arc<dyn PersistentExecutor> 调进来）。分型转译是
-// 纯映射：Unavailable 保持（回落判据），ToolFailed 保持（绝不回落）。
+// 纯映射：Unavailable 保持（回落判据），LifecycleRejected 保持（F1：身份
+// 已终结，工具侧终止本次调用），ToolFailed 保持（绝不回落）。
 // ---------------------------------------------------------------------------
 
 #[async_trait::async_trait]
@@ -1032,6 +1045,10 @@ impl nemesis_agent::remote_executor_tool::PersistentExecutor for AgentRuntimeSup
                     message: m,
                     host_fallback: true,
                 },
+                // F1（2026-10-21 三轮复评）：删除/注销/代次失效拒绝——身份已
+                // 终结，宿主回落 = 已删身份的工具照常执行（探针实证）。转译
+                // LifecycleRejected，工具侧终止本次调用。
+                SupervisorError::LifecycleRejected(m) => PersistentCallError::LifecycleRejected(m),
                 SupervisorError::ToolFailed(m) => PersistentCallError::ToolFailed(m),
             })
     }

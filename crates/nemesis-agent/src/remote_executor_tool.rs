@@ -819,6 +819,12 @@ pub enum PersistentCallError {
         message: String,
         host_fallback: bool,
     },
+    /// F1（2026-10-21 三轮复评）：身份生命周期已终结（删除/注销/代次失效）
+    /// 的拒绝——调用未发生**且**该身份不该再执行任何工具。与 `Unavailable`
+    /// 的区别：即便宿主同文件视图（process 档）也**禁止回落**——回落 =
+    /// 已删身份的工具在宿主照常执行（探针实证的事故面）。调用方必须终止
+    /// 本次调用。
+    LifecycleRejected(String),
     /// 调用已尝试（可能已有副作用）——绝不回落，原样上抛。
     ToolFailed(String),
 }
@@ -828,6 +834,9 @@ impl std::fmt::Display for PersistentCallError {
         match self {
             Self::Unavailable { message, .. } => {
                 write!(f, "persistent executor unavailable: {message}")
+            }
+            Self::LifecycleRejected(m) => {
+                write!(f, "persistent executor lifecycle rejected: {m}")
             }
             Self::ToolFailed(m) => write!(f, "persistent executor call failed: {m}"),
         }
@@ -921,6 +930,17 @@ impl Tool for RemoteExecutorTool {
                 Err(PersistentCallError::ToolFailed(e)) => {
                     // 调用已发生（可能已有副作用）——回落会重复执行，原样上抛。
                     return Err(e);
+                }
+                Err(PersistentCallError::LifecycleRejected(message)) => {
+                    // F1（2026-10-21 三轮复评）：身份已终结（删除/注销/代次
+                    // 失效）——无论哪个后端档位都终止本次调用，绝不落 per-call
+                    // 宿主路径（回落 = 已删身份的工具照常执行）。文案表达生命
+                    // 周期拒绝，不再复用「文件视图不同」的档位切换指引。
+                    return Err(format!(
+                        "persistent executor lifecycle rejected: {message}；\
+                         该执行体身份已被删除或注销，本次工具调用终止——\
+                         不回落宿主执行"
+                    ));
                 }
                 Err(PersistentCallError::Unavailable {
                     message,

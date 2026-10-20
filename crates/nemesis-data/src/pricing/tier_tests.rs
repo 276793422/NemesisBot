@@ -26,6 +26,99 @@ fn approx(a: f64, b: f64) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// 选档口径（F3，2026-10-21 三轮复评回归锁，原诊断探针翻转转正）：选档看
+// 完整 prompt 长度（非缓存输入+缓存创建+缓存读取，[`tier_selection_tokens`]），
+// 计费按三类各自分列。此前选档只吃非缓存输入——大量缓存读的长会话永远
+// 命中短上下文基础价。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cached_read_crosses_threshold_selects_tier() {
+    let mut p = base_entry();
+    p.price_tiers = Some(vec![PriceTier {
+        min_prompt_tokens: 200_000,
+        input_cost_per_million: Some(3.0),
+        output_cost_per_million: Some(9.0),
+        cache_read_cost_per_million: Some(0.2),
+        cache_creation_cost_per_million: None,
+    }]);
+    // 纯输入 10k 远低于阈值，但缓存读 240k 是真实上下文 → 完整长度 250k
+    // 过档：10k*3 + 1k*9 + 0 + 240k*0.2 = 30k+9k+48k = 87k / 1e6 = 0.087。
+    // （基础价误档得 0.036——旧 BUG 形态，探针时代断言的就是它。）
+    let total = cost_from_pricing(&p, 10_000, 1_000, 0, 240_000);
+    assert!(
+        approx(total, 0.087),
+        "cache read must trigger tier selection, got {total}"
+    );
+    let b = cost_breakdown_from_pricing(&p, 10_000, 1_000, 0, 240_000);
+    assert!(
+        approx(b.total_cost_usd, 0.087),
+        "breakdown must agree: {}",
+        b.total_cost_usd
+    );
+    assert!(
+        approx(
+            b.total_cost_usd,
+            b.input_cost_usd
+                + b.output_cost_usd
+                + b.cache_creation_cost_usd
+                + b.cache_read_cost_usd
+        ),
+        "columns must sum to total"
+    );
+}
+
+#[test]
+fn cache_creation_crosses_threshold_selects_tier() {
+    let mut p = base_entry();
+    p.price_tiers = Some(vec![PriceTier {
+        min_prompt_tokens: 200_000,
+        input_cost_per_million: Some(3.0),
+        output_cost_per_million: Some(9.0),
+        cache_read_cost_per_million: Some(0.2),
+        cache_creation_cost_per_million: Some(2.0),
+    }]);
+    // 150k 纯输入未过档，+100k 缓存写 = 250k 过档：
+    // 150k*3 + 1k*9 + 100k*2 + 0 = 659k / 1e6 = 0.659。
+    let total = cost_from_pricing(&p, 150_000, 1_000, 100_000, 0);
+    assert!(
+        approx(total, 0.659),
+        "cache creation must trigger tier selection, got {total}"
+    );
+}
+
+#[test]
+fn cache_in_total_below_threshold_stays_base() {
+    let mut p = base_entry();
+    p.price_tiers = Some(vec![PriceTier {
+        min_prompt_tokens: 200_000,
+        input_cost_per_million: Some(3.0),
+        output_cost_per_million: Some(9.0),
+        cache_read_cost_per_million: Some(0.2),
+        cache_creation_cost_per_million: Some(2.0),
+    }]);
+    // 100k 纯输入 + 30k 写 + 50k 读 = 180k < 200k → 基础价：
+    // 100k*1 + 10k*2 + 30k*1.25 + 50k*0.1 = 162.5k / 1e6 = 0.1625。
+    let total = cost_from_pricing(&p, 100_000, 10_000, 30_000, 50_000);
+    assert!(
+        approx(total, 0.1625),
+        "below-threshold total must stay base, got {total}"
+    );
+}
+
+#[test]
+fn tier_selection_clamps_negatives_and_saturates() {
+    // 负分量钳 0（不参与、不抵扣其他分量）；饱和加法不 panic。
+    assert_eq!(super::tier_selection_tokens(-5, -3, -1), 0);
+    assert_eq!(super::tier_selection_tokens(10, -20, 5), 15);
+    assert_eq!(
+        super::tier_selection_tokens(i64::MAX, 1, 0),
+        i64::MAX,
+        "saturating add must not overflow"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 阈值语义：未达阈值 = 基础价；达到阈值 = 档价生效（覆盖输入与输出价）。
 // ---------------------------------------------------------------------------
 

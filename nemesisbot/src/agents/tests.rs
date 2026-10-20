@@ -27,13 +27,17 @@ fn selfbuilt_params(name: &str) -> CreateAgentParams {
     }
 }
 
-// R2 回归锁（原诊断探针翻转）：删除联动 VM 后端收敛——remove 无条件调
-// vm.evict_agent（运行实例冷停出 running_agents；本 mock 的 evict 实现
-// 镜像真实语义：从运行清单摘除），删除后旧实例不再在运行清单。
+// R2 回归锁（原诊断探针翻转）+ F2 适配（2026-10-21 三轮复评）：删除联动
+// VM 后端收敛——remove 无条件走 evict_agent_prepare（运行实例冷停出
+// running_agents；本 mock 镜像真实语义：prepare 摘清单、commit 记墓碑、
+// abort 无操作），删除成功后旧实例不再在运行清单且身份入墓碑。
 #[tokio::test]
 async fn remove_converges_attached_vm_backend_instance() {
     use super::VmBackend;
-    struct ReviewVm(std::sync::Mutex<Vec<String>>);
+    struct ReviewVm {
+        running: std::sync::Mutex<Vec<String>>,
+        tombstones: std::sync::Mutex<Vec<String>>,
+    }
     #[async_trait::async_trait]
     impl nemesis_agent::remote_executor_tool::PersistentExecutor for ReviewVm {
         async fn execute_persistent(
@@ -50,20 +54,28 @@ async fn remove_converges_attached_vm_backend_instance() {
     #[async_trait::async_trait]
     impl VmBackend for ReviewVm {
         async fn sleep_agent(&self, id: &str) -> Result<bool, String> {
-            self.0.lock().unwrap().retain(|x| x != id);
+            self.running.lock().unwrap().retain(|x| x != id);
             Ok(true)
         }
         async fn wake_agent(&self, id: &str, _: &Path) -> Result<(), String> {
-            self.0.lock().unwrap().push(id.to_string());
+            self.running.lock().unwrap().push(id.to_string());
             Ok(())
         }
         fn running_agents(&self) -> Vec<String> {
-            self.0.lock().unwrap().clone()
+            self.running.lock().unwrap().clone()
         }
-        async fn evict_agent(&self, id: &str) -> Result<(), String> {
-            // 镜像 VmSupervisor::evict_agent 的可见效果：运行实例冷停出清单。
-            self.0.lock().unwrap().retain(|x| x != id);
+        async fn evict_agent_prepare(&self, id: &str) -> Result<(), String> {
+            // 镜像 VmSupervisor::evict_agent_prepare 的可见效果：运行实例冷停出清单。
+            self.running.lock().unwrap().retain(|x| x != id);
             Ok(())
+        }
+        fn evict_agent_commit(&self, id: &str) {
+            self.tombstones.lock().unwrap().push(id.to_string());
+        }
+        fn evict_agent_abort(&self, id: &str) {
+            // 临时态解除——本 mock 无独立临时集（prepare 无临时副作用），
+            // 空操作即镜像「prepare 未记任何待解除状态」。
+            let _ = id;
         }
     }
     let dir = tempfile::tempdir().unwrap();
@@ -71,7 +83,10 @@ async fn remove_converges_attached_vm_backend_instance() {
     let mut params = selfbuilt_params("review vm remove");
     params.runtime_backend = "vm".into();
     let record = mgr.create_agent(params).unwrap();
-    let vm = Arc::new(ReviewVm(std::sync::Mutex::new(Vec::new())));
+    let vm = Arc::new(ReviewVm {
+        running: std::sync::Mutex::new(Vec::new()),
+        tombstones: std::sync::Mutex::new(Vec::new()),
+    });
     mgr.set_vm_backend(vm.clone());
     vm.wake_agent(&record.agent_id, Path::new(&record.exec_root))
         .await
@@ -80,7 +95,93 @@ async fn remove_converges_attached_vm_backend_instance() {
     mgr.remove(&record.agent_id).await.unwrap();
     assert!(mgr.get(&record.agent_id).unwrap().is_none());
     assert!(!vm.running_agents().contains(&record.agent_id));
+    // F2：删除成功 = 永久墓碑落地（旧身份不可再唤醒的语义锚）。
+    assert!(
+        vm.tombstones.lock().unwrap().contains(&record.agent_id),
+        "删除成功必须提交永久墓碑"
+    );
     vm.sleep_agent(&record.agent_id).await.unwrap();
+}
+
+// F2 回归锁（原三轮复评诊断探针翻转，2026-10-21）：DB 删除失败 = 临时拒绝
+// 态解除、永久墓碑不落——记录仍在册的身份**可再唤醒**。旧行为（探针实证）：
+// evict_agent 先落永久墓碑再删库，DELETE 触发器注入失败后 ensure_running
+// 报「已删除（VM 身份已逐出）」——记录在册但身份永久不可唤醒直到重启。
+// 真实 SQLite + BEFORE DELETE RAISE 触发器 + 真实 VmSupervisor（无须 QEMU：
+// 断言面 = 控制状态，唤醒错误形态为 VM 档启动类诚实报错）。
+#[cfg(feature = "vm")]
+#[tokio::test]
+async fn failed_delete_releases_evicting_state_record_still_wakeable() {
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = setup(dir.path());
+    let mut params = selfbuilt_params("review failed deletion");
+    params.runtime_backend = "vm".into();
+    let record = mgr.create_agent(params).unwrap();
+    let workspace = dir.path().join("workspace");
+    let vm = Arc::new(super::vm_runtime::VmSupervisor::new(
+        workspace.clone(),
+        dir.path().join("config.json"),
+    ));
+    mgr.set_vm_backend(vm.clone());
+    let conn =
+        rusqlite::Connection::open(nemesis_path::resolve_tasks_db_path_in_workspace(&workspace))
+            .unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER review_reject_delete BEFORE DELETE ON agents BEGIN SELECT RAISE(ABORT, 'review injected delete failure'); END;",
+    )
+    .unwrap();
+    let delete_error = mgr.remove(&record.agent_id).await.unwrap_err();
+    assert!(
+        delete_error.contains("review injected delete failure"),
+        "删除失败须原样上抛: {delete_error}"
+    );
+    assert!(
+        mgr.get(&record.agent_id).unwrap().is_some(),
+        "DB 删除失败 = 记录仍在册"
+    );
+    // 翻转断言：唤醒不再被「已删除/删除在途」拒绝——永久墓碑未落、临时态
+    // 已解除。错误若发生只能是 VM 档本身（测试环境无 config/镜像）的启动
+    // 类诚实报错。
+    let wake_error = match vm.ensure_running(&record.agent_id).await {
+        Ok(_) => panic!("测试环境无 VM config，不应真能启动"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        !wake_error.contains("已删除"),
+        "删除失败后身份不得被判「已删除」（墓碑未落）: {wake_error}"
+    );
+    assert!(
+        !wake_error.contains("删除在途"),
+        "删除失败后临时拒绝态必须解除: {wake_error}"
+    );
+}
+
+// F2 配套：**成功路径**墓碑语义保持——删除成功后旧身份不可再唤醒
+// （「已删除」拒绝仍在；与上例合起来钉死两段式的两臂）。
+#[cfg(feature = "vm")]
+#[tokio::test]
+async fn successful_delete_still_tombstones_vm_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = setup(dir.path());
+    let mut params = selfbuilt_params("review success deletion");
+    params.runtime_backend = "vm".into();
+    let record = mgr.create_agent(params).unwrap();
+    let workspace = dir.path().join("workspace");
+    let vm = Arc::new(super::vm_runtime::VmSupervisor::new(
+        workspace.clone(),
+        dir.path().join("config.json"),
+    ));
+    mgr.set_vm_backend(vm.clone());
+    mgr.remove(&record.agent_id).await.unwrap();
+    assert!(mgr.get(&record.agent_id).unwrap().is_none());
+    let wake_error = match vm.ensure_running(&record.agent_id).await {
+        Ok(_) => panic!("已删除身份不应能启动"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        wake_error.contains("已删除"),
+        "删除成功后旧身份必须被墓碑拒绝: {wake_error}"
+    );
 }
 
 // -- P5 第 4 步：runtime_backend 档位面 --------------------------------------

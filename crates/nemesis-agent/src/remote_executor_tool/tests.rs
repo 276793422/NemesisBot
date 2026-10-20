@@ -707,6 +707,38 @@ async fn persistent_route_unavailable_no_host_fallback_propagates_honest_error()
     assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
 }
 
+// F1 回归锁（原三轮复评诊断探针翻转，2026-10-21）：LifecycleRejected（身份
+// 已删除/注销/代次失效）→ 无论后端档位一律终止本次调用，绝不 spawn 宿主
+// 执行器。旧行为：process 桥把删除拒绝混进 Unavailable(host_fallback=true)，
+// 工具经 per-call 照常执行（已删身份的工具在宿主成功跑完 = 事故面）。
+#[tokio::test]
+async fn persistent_route_lifecycle_rejected_terminates_without_fallback() {
+    let executor = mock_executor(Some(Err(PersistentCallError::LifecycleRejected(
+        "agent is being removed".into(),
+    ))));
+    let tool = routing_tool(
+        Some(("ag-1".to_string(), PathBuf::from("/root/ws"))),
+        executor.clone(),
+    );
+    let err = tool
+        .execute("{}", &req_ctx())
+        .await
+        .expect_err("LifecycleRejected 必须上抛，不得回落");
+    assert!(
+        err.contains("lifecycle rejected"),
+        "错误须表达生命周期拒绝: {err}"
+    );
+    assert!(
+        err.contains("agent is being removed"),
+        "根因（supervisor 给的 message）必须保留: {err}"
+    );
+    assert!(
+        !err.contains("failed to spawn"),
+        "per-call 通道必须一次都未被触碰: {err}"
+    );
+    assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
+}
+
 #[tokio::test]
 async fn persistent_route_resolve_none_skips_executor_and_falls_back() {
     let executor = mock_executor(None);
