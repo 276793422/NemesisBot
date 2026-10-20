@@ -136,6 +136,57 @@ pub fn build_qemu_args(spec: &VmLaunchSpec) -> Vec<String> {
     args
 }
 
+/// 装配前校验（`VmInstance::start` spawn 前的最后一道闸）。
+///
+/// 1. **逗号闸**：`-drive file=...,format=qcow2` / `-virtfs local,path=...` /
+///    `-smbios type=1,serial=...` / `-incoming file:...`（QEMU 8.0+ 支持
+///    `file:<path>,offset=` 子选项）都是「单 argv 内逗号分隔子选项」形态——
+///    路径/值里的 `,` 会被 QEMU 当子选项分隔符（L6++ 项目路径用户任意、
+///    可含逗号），产生离谱报错甚至静默错配。诚实拒绝优于猜测转义（QEMU
+///    各解析点的转义语义无法本地验证、版本间有漂移）。
+/// 2. **wake 载体互斥**：`-loadvm` 与 `-incoming` 同时装配互相打架（规格
+///    约定互斥——spec 组装点分散，靠约定不如靠闸）。
+///
+/// `-pidfile` / `-loadvm` 的值是独立 argv 元素、无子选项解析，逗号无害，
+/// 不在闸内（校验面贴着真实风险，不过度）。
+pub fn validate_launch_spec(spec: &VmLaunchSpec) -> Result<(), String> {
+    if spec.loadvm_tag.is_some() && spec.incoming_file.is_some() {
+        return Err(
+            "loadvm_tag 与 incoming_file 互斥（savevm 与 migrate-file 两条 wake 线不可同启）"
+                .to_string(),
+        );
+    }
+    let mut checked: Vec<(&'static str, &Path)> =
+        vec![("overlay_path", spec.overlay_path.as_path())];
+    if let Some(p) = &spec.seed_iso {
+        checked.push(("seed_iso", p));
+    }
+    if let Some(p) = &spec.shared_host_path {
+        checked.push(("shared_host_path", p));
+    }
+    if let Some(p) = &spec.incoming_file {
+        checked.push(("incoming_file", p));
+    }
+    let bad: Vec<String> = checked
+        .iter()
+        .filter(|(_, p)| p.to_string_lossy().contains(','))
+        .map(|(label, p)| format!("{label}={}", p.display()))
+        .collect();
+    if !bad.is_empty() {
+        return Err(format!(
+            "以下路径含逗号（QEMU 子选项分隔符，无法安全装配）：{}——请改用不含逗号的工作区/项目目录",
+            bad.join("; ")
+        ));
+    }
+    if spec.token.contains(',') {
+        return Err(
+            "token 含逗号（-smbios serial 的子选项分隔符）——token 应为 generate_token 产出的纯 hex"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// 从 PATH / 安装目录解析 qemu-system 二进制（宿主探测辅助）：
 /// 显式目录优先，否则 PATH 查找（直接把二进制名给 Command 交给 OS 解析）。
 pub fn resolve_qemu_binary(arch: GuestArch, install_dir: Option<&Path>) -> PathBuf {

@@ -236,3 +236,90 @@ fn resolve_qemu_binary_windows_shape() {
     );
     assert_eq!(r, PathBuf::from("qemu-system-x86_64"));
 }
+
+// ---------------------------------------------------------------------------
+// validate_launch_spec：逗号闸 + wake 载体互斥（spawn 前最后一道闸）
+// ---------------------------------------------------------------------------
+
+/// 干净 spec = Ok（基线不误伤）。
+#[test]
+fn validate_clean_spec_ok() {
+    validate_launch_spec(&spec(QemuAccel::Kvm, Some(PathBuf::from("/host/ws"))))
+        .expect("干净 spec 应通过");
+}
+
+/// 逗号闸逐字段：overlay_path / seed_iso / shared_host_path / incoming_file
+/// 任一含逗号 = Err 且报错点名该字段（L6++ 项目路径用户任意，可含逗号；
+/// 逗号在 QEMU 单 argv 子选项串里是分隔符）。
+#[test]
+fn validate_rejects_comma_in_each_path_field() {
+    let cases: Vec<(&str, Box<dyn Fn(&mut VmLaunchSpec)>)> = vec![
+        (
+            "overlay_path",
+            Box::new(|s: &mut VmLaunchSpec| {
+                s.overlay_path = PathBuf::from("/vm/a,b/o.qcow2");
+            }),
+        ),
+        (
+            "seed_iso",
+            Box::new(|s: &mut VmLaunchSpec| {
+                s.seed_iso = Some(PathBuf::from("/vm/seed,x.iso"));
+            }),
+        ),
+        (
+            "shared_host_path",
+            Box::new(|s: &mut VmLaunchSpec| {
+                s.shared_host_path = Some(PathBuf::from("/host/ws,2"));
+            }),
+        ),
+        (
+            "incoming_file",
+            Box::new(|s: &mut VmLaunchSpec| {
+                s.incoming_file = Some(PathBuf::from("/vm/run/a,1/vm.state"));
+            }),
+        ),
+    ];
+    for (field, apply) in cases {
+        let mut s = spec(QemuAccel::Kvm, None);
+        apply(&mut s);
+        let err = validate_launch_spec(&s).expect_err(&format!("{field} 含逗号必须拒绝"));
+        assert!(err.contains(field), "报错要点名字段 {field}: {err}");
+        assert!(err.contains("逗号"), "报错要讲原因: {err}");
+    }
+}
+
+/// token 逗号（-smbios serial 子选项面）= Err。
+#[test]
+fn validate_rejects_comma_in_token() {
+    let mut s = spec(QemuAccel::Kvm, None);
+    s.token = "to,k,en".into();
+    let err = validate_launch_spec(&s).expect_err("token 含逗号必须拒绝");
+    assert!(err.contains("token"), "{err}");
+}
+
+/// `-pidfile` / `-loadvm` 的值是独立 argv、无子选项解析——逗号无害不闸
+/// （校验面贴真实风险，不过度）。
+#[test]
+fn validate_allows_comma_in_pidfile_and_loadvm_tag() {
+    let mut s = spec(QemuAccel::Kvm, None);
+    s.pidfile = PathBuf::from("/run/vm,a/qemu.pid");
+    s.loadvm_tag = Some("p5,sleep".into());
+    validate_launch_spec(&s).expect("pidfile/loadvm_tag 逗号无害");
+}
+
+/// wake 载体互斥：loadvm_tag 与 incoming_file 同 Some = Err；单 Some = Ok。
+#[test]
+fn validate_rejects_loadvm_and_incoming_together() {
+    let mut s = spec(QemuAccel::Kvm, None);
+    s.loadvm_tag = Some("p5sleep".into());
+    s.incoming_file = Some(PathBuf::from("/vm/run/vm.state"));
+    let err = validate_launch_spec(&s).expect_err("双 wake 载体必须拒绝");
+    assert!(err.contains("互斥"), "{err}");
+
+    let mut a = spec(QemuAccel::Kvm, None);
+    a.loadvm_tag = Some("p5sleep".into());
+    validate_launch_spec(&a).expect("仅 loadvm = Ok");
+    let mut b = spec(QemuAccel::Whpx, None);
+    b.incoming_file = Some(PathBuf::from("/vm/run/vm.state"));
+    validate_launch_spec(&b).expect("仅 incoming = Ok");
+}

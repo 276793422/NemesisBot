@@ -136,6 +136,46 @@ async fn select_files_git_respects_gitignore() {
     );
 }
 
+/// 盘面是唯一真相：`--cached` 会列出已从盘面删除但未 stage 的 index 幽灵
+/// 条目——修前带进打包清单 = pack_tar「清单与盘面失配」诚实报错，一个
+/// 未 stage 的普通删除把首次全量同步卡死开工。
+#[tokio::test]
+async fn select_files_git_filters_ghost_cached_entries() {
+    let probe = std::process::Command::new("git").arg("--version").output();
+    let Ok(out) = probe else {
+        eprintln!("SKIP: git 无法启动（环境不满足）");
+        return;
+    };
+    if !out.status.success() {
+        eprintln!("SKIP: git --version 失败（环境不满足）");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    // 提交身份 -c 注入：CI 容器可能没配全局 user.email/name。
+    let git = |args: &[&str]| {
+        let mut c = std::process::Command::new("git");
+        c.arg("-c")
+            .arg("user.email=t@t")
+            .arg("-c")
+            .arg("user.name=t");
+        c.args(args).current_dir(root).output().unwrap()
+    };
+    assert!(git(&["init", "-q"]).status.success());
+    std::fs::write(root.join("ghost.rs"), b"fn g() {}").unwrap();
+    std::fs::write(root.join("alive.rs"), b"fn a() {}").unwrap();
+    assert!(git(&["add", "."]).status.success());
+    assert!(git(&["commit", "-q", "-m", "init"]).status.success());
+
+    // 盘面删除但不 stage：index 幽灵条目形态（修前此态选源即失败）。
+    std::fs::remove_file(root.join("ghost.rs")).unwrap();
+
+    let files = super::select_files_git(root).await.unwrap();
+    let rels: Vec<&str> = files.iter().map(|f| f.rel.as_str()).collect();
+    assert_eq!(rels, vec!["alive.rs"], "幽灵条目应被盘面过滤剔除: {rels:?}");
+}
+
 // ---------------------------------------------------------------------------
 // 打包：mode 覆写 + 单趟哈希 + 内容一致
 // ---------------------------------------------------------------------------
@@ -224,6 +264,23 @@ fn baseline_roundtrip_and_corrupt_fallback() {
     std::fs::write(dir.join("baseline.json"), "{not json").unwrap();
     assert!(load_baseline(ws, "NB-project/1").is_none());
     assert!(load_baseline(ws, "不存在的项目").is_none());
+}
+
+/// 原子写：内容落位 + 唯一临时名纪律（成功后不残留 tmp；旧固定
+/// `*.json.tmp` 依赖「调用方持 INFLIGHT 闸」隐式不变式，唯一名把安全
+/// 性收进函数自身）。
+#[tokio::test]
+async fn write_json_atomic_writes_content_and_leaves_no_tmp() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = tmp.path().join("nested/dir/x.json");
+    super::write_json_atomic(&p, "{\"a\":1}").await.unwrap();
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), "{\"a\":1}");
+    let leftovers: Vec<String> = std::fs::read_dir(p.parent().unwrap())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(leftovers, vec!["x.json"], "不得残留临时文件: {leftovers:?}");
 }
 
 // ---------------------------------------------------------------------------
@@ -451,6 +508,53 @@ fn extract_tar_to_host_rejects_traversal_entry() {
     let tmp = tempfile::tempdir().unwrap();
     let r = super::extract_tar_to_host(&tar_bytes, tmp.path());
     assert!(r.is_err(), "越界条目应拒绝");
+}
+
+// ---------------------------------------------------------------------------
+// 组件 symlink 闸（2026-10-20 复查批；与 guest 侧 extract_tar_safe 同族）
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+#[test]
+fn extract_tar_to_host_refuses_symlink_component() {
+    // 宿主工作区（真实开发目录）存在链接组件：pnpm node_modules 形态。
+    // VM 树回拉同名真实文件时不得顺着链接写出工作区。
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("ws");
+    let outside = tmp.path().join("outside");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+    let tar_bytes = build_tar(&[("link/x.txt", Some(b"pwn"), None)]);
+    let err = super::extract_tar_to_host(&tar_bytes, &root).unwrap_err();
+    assert!(
+        err.contains("symlink"),
+        "必须 fail-closed 拒绝，实际错误: {err}"
+    );
+    assert!(
+        !outside.join("x.txt").exists(),
+        "回拉不得顺着链接写出工作区"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn extract_tar_to_host_refuses_final_symlink_no_clobber() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("ws");
+    let outside = tmp.path().join("outside");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("store.bin"), b"original").unwrap();
+    std::os::unix::fs::symlink(outside.join("store.bin"), root.join("victim")).unwrap();
+    let tar_bytes = build_tar(&[("victim", Some(b"overwritten"), None)]);
+    let err = super::extract_tar_to_host(&tar_bytes, &root).unwrap_err();
+    assert!(err.contains("symlink"), "实际错误: {err}");
+    assert_eq!(
+        std::fs::read(outside.join("store.bin")).unwrap(),
+        b"original",
+        "链接目标不得被覆盖"
+    );
 }
 
 // ---------------------------------------------------------------------------

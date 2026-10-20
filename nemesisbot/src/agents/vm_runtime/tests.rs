@@ -205,7 +205,7 @@ fn registry_roundtrip_fs() {
     let ws = tmp.path();
     assert!(load_record(ws, "agent-1").is_none(), "无记录 = None");
     let r = sample_record("agent-1");
-    save_record(ws, "agent-1", &r);
+    save_record(ws, "agent-1", &r).expect("save record");
     let back = load_record(ws, "agent-1").expect("roundtrip");
     assert_eq!(back, r);
 }
@@ -384,7 +384,7 @@ async fn sweep_marks_dead_record_cold() {
     let mut r = sample_record("agent-1");
     r.asleep_at = None; // 应在运行
     r.overlay = overlay_path(ws, "agent-1");
-    save_record(ws, "agent-1", &r);
+    save_record(ws, "agent-1", &r).expect("save record");
     backdate(&registry_path(ws, "agent-1"), Duration::from_secs(300));
 
     let sup = VmSupervisor::new(ws.to_path_buf(), ws.join("config.json"));
@@ -404,12 +404,12 @@ async fn sweep_skips_sleeping_and_recent_records() {
     // 睡眠中记录。
     let mut sleeping = sample_record("agent-sleep");
     sleeping.overlay = overlay_path(ws, "agent-sleep");
-    save_record(ws, "agent-sleep", &sleeping);
+    save_record(ws, "agent-sleep", &sleeping).expect("save record");
     // 刚写的「应在运行」记录（保护窗内——不 backdate）。
     let mut fresh = sample_record("agent-fresh");
     fresh.asleep_at = None;
     fresh.overlay = overlay_path(ws, "agent-fresh");
-    save_record(ws, "agent-fresh", &fresh);
+    save_record(ws, "agent-fresh", &fresh).expect("save record");
 
     let sup = VmSupervisor::new(ws.to_path_buf(), ws.join("config.json"));
     let swept = sup.sweep_orphans().await;
@@ -711,4 +711,308 @@ fn try_family_starting_gates_exec_and_stop_lands_request() {
     let st = sup.try_status();
     assert_eq!(st["starting"], false);
     assert_eq!(st["last_error"], "不可用: 加速器缺席");
+}
+
+// ---------------------------------------------------------------------------
+// 启动在途闸（starting 集）：同 agent 并发 ensure 互斥 + 失败路径 Drop 释放
+// + sweep 跳过在途 agent（2026-10-20 复查批回归锁）
+// ---------------------------------------------------------------------------
+
+/// 在途拒绝 + 失败路径自动释放：hypervisor 非法值让 start_or_wake 在 spawn
+/// 前确定性失败——第一次拿到的是根因错误（非「启动中」）；守卫 Drop 后
+/// starting 集清空，第二次调用重新拿闸、报同样的根因错误（而非闸拒绝）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_gate_released_on_failure_path() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let cfg = tmp.path().join("config.json");
+    // full_vm_json 的 hypervisor=auto 换成非法值：parse_hypervisor 在 spawn
+    // 前诚实失败（registry 已落、QEMU 未起）——守卫释放路径的确定性载体。
+    let bogus = full_vm_json(true).replace(r#""hypervisor": "auto""#, r#""hypervisor": "bogus""#);
+    write_config(&cfg, &bogus);
+    let sup = VmSupervisor::new(tmp.path().to_path_buf(), cfg);
+
+    let err1 = match sup.ensure_running("agent-1").await {
+        Err(e) => e,
+        Ok(_) => panic!("hypervisor 非法时启动必须失败"),
+    };
+    assert!(
+        matches!(&err1, VmSupervisorError::Failed(m) if m.contains("hypervisor")),
+        "第一次 = 根因错误而非闸拒绝: {err1:?}"
+    );
+    assert!(
+        sup.starting.lock().expect("starting").is_empty(),
+        "失败路径守卫必须已释放 starting 集"
+    );
+
+    let err2 = match sup.ensure_running("agent-1").await {
+        Err(e) => e,
+        Ok(_) => panic!("第二次同样必须失败"),
+    };
+    assert!(
+        matches!(&err2, VmSupervisorError::Failed(m) if m.contains("hypervisor")),
+        "第二次应重新拿闸报同一根因（而非「正在启动中」）: {err2:?}"
+    );
+}
+
+/// 同 agent 在途（并发调用方已持闸）= 诚实 Unavailable 拒绝；异 agent 不受
+/// 影响（闸是 per-agent 的，不是全局）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_gate_blocks_same_agent_only() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let cfg = tmp.path().join("config.json");
+    write_config(&cfg, &full_vm_json(true));
+    let sup = VmSupervisor::new(tmp.path().to_path_buf(), cfg);
+
+    // 模拟并发在途（真启动归 vm_smoke 真机面）。
+    sup.starting
+        .lock()
+        .expect("starting")
+        .insert("agent-1".to_string());
+
+    let err = match sup.ensure_running("agent-1").await {
+        Err(e) => e,
+        Ok(_) => panic!("同 agent 在途时 ensure 必须被闸拒绝"),
+    };
+    assert!(
+        matches!(&err, VmSupervisorError::Unavailable(m) if m.contains("正在启动中")),
+        "同 agent 在途 = Unavailable 闸拒绝: {err:?}"
+    );
+    // 清闸后异 agent 不被 agent-1 的在途闸连坐（走到自己后续的真实失败点：
+    // 加速裁决/镜像资产缺失——按宿主环境而定，但绝不是「正在启动中」）。
+    sup.starting.lock().expect("starting").clear();
+    let err2 = match sup.ensure_running("agent-2").await {
+        Err(e) => e,
+        Ok(_) => panic!("无镜像/无加速的空 workspace 启动必须失败"),
+    };
+    assert!(
+        !matches!(&err2, VmSupervisorError::Unavailable(m) if m.contains("正在启动中")),
+        "异 agent 不得被同 agent 在途闸连坐: {err2:?}"
+    );
+}
+
+/// sweep 跳过在途 agent：记录「应在运行」+ mtime 拨老过保护窗（排除 mtime
+/// 宽限的干扰）+ 在途集持有 → 记录原样保留（不被误转冷停/误杀）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sweep_skips_inflight_starting_agent() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    let mut r = sample_record("agent-1");
+    r.asleep_at = None; // 「应在运行」——无在途闸时 sweep 会动它
+    r.overlay = overlay_path(ws, "agent-1");
+    save_record(ws, "agent-1", &r).expect("save record");
+    backdate(&registry_path(ws, "agent-1"), Duration::from_secs(300));
+
+    let sup = VmSupervisor::new(ws.to_path_buf(), ws.join("config.json"));
+    sup.starting
+        .lock()
+        .expect("starting")
+        .insert("agent-1".to_string());
+
+    let swept = sup.sweep_orphans().await;
+    assert_eq!(swept, 0, "在途 agent 不是孤儿");
+    let after = load_record(ws, "agent-1").expect("record");
+    assert_eq!(after, r, "在途启动的记录必须原样保留（未被转冷停）");
+}
+
+// ---------------------------------------------------------------------------
+// 第六轮复查（2026-10-20）：ensure 路由顺序（活槽短路拒新闸）+ registry
+// 原子写（spawn 前锚如实报错）+ spawn 前活 QEMU 防线
+// ---------------------------------------------------------------------------
+
+/// 路由顺序表：活槽短路一切「拒新」闸（GC stop/满员都不该拦已在跑的
+/// 实例——拒它 = Unavailable → 宿主回落混两套文件视图）；无槽时 GC stop
+/// 闸先于满员闸（磁盘语义优先）；warn 档超预算只告警不拒。
+#[test]
+fn ensure_route_order_table() {
+    let deny = gc_cfg(2, "stop");
+
+    // 活槽：预算爆 + 满员，仍然 Reuse（修前 GC 闸在槽检查之前，会先把
+    // 活实例拒成 Unavailable）。
+    assert_eq!(
+        ensure_route(true, GIB * 99, &deny, 4, 2),
+        EnsureRoute::Reuse,
+        "活槽短路 GC stop 闸与满员闸"
+    );
+
+    // 无槽 + 超预算 stop = GC 拒新（先于满员闸）。
+    assert_eq!(
+        ensure_route(false, GIB * 3, &deny, 4, 2),
+        EnsureRoute::GcDeny {
+            used_gb: 3,
+            budget_gb: 2
+        }
+    );
+
+    // 无槽 + warn 档超预算：不拒（只告警）→ 满员闸接住。
+    assert_eq!(
+        ensure_route(false, GIB * 3, &gc_cfg(2, "warn"), 4, 2),
+        EnsureRoute::CapFull { max_instances: 2 }
+    );
+
+    // 无槽 + 预算内 + 满员 = CapFull；未满 = Proceed。
+    assert_eq!(
+        ensure_route(false, GIB, &deny, 2, 2),
+        EnsureRoute::CapFull { max_instances: 2 }
+    );
+    assert_eq!(ensure_route(false, GIB, &deny, 1, 2), EnsureRoute::Proceed);
+
+    // 无预算闸（max=0）恒放行/短路形态。
+    let off = gc_cfg(0, "stop");
+    assert_eq!(
+        ensure_route(false, GIB * 999, &off, 0, 1),
+        EnsureRoute::Proceed
+    );
+    assert_eq!(
+        ensure_route(false, GIB * 999, &off, 1, 1),
+        EnsureRoute::CapFull { max_instances: 1 }
+    );
+}
+
+/// registry 原子写：roundtrip + 成功路径 run 目录只剩 instance.json（无
+/// 孤儿 .tmp——临时文件已被 rename 消费；修前裸 write 失败会留半截 JSON）。
+#[test]
+fn registry_save_roundtrip_leaves_no_tmp() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    let r = sample_record("agent-1");
+    save_record(ws, "agent-1", &r).expect("save");
+    let mut r2 = r.clone();
+    r2.asleep_at = Some(42);
+    save_record(ws, "agent-1", &r2).expect("save again（tmp 名唯一，连续写不互踩）");
+    assert_eq!(load_record(ws, "agent-1"), Some(r2));
+
+    let entries: Vec<String> = std::fs::read_dir(vm_run_dir(ws, "agent-1"))
+        .expect("run dir")
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    assert_eq!(
+        entries,
+        vec!["instance.json".to_string()],
+        "成功路径不留孤儿 tmp: {entries:?}"
+    );
+}
+
+/// registry 写失败必须如实报 Err（spawn 前锚 `?` 消费的结构前提）：
+/// run/<agent> 被同名文件占位 → create_dir_all 失败 = Err（修前吞错只
+/// warn，锚位形同虚设——spawn 照跑，崩溃一致性保证为空）。
+#[test]
+fn registry_save_error_is_reported_not_swallowed() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    let run_dir = vm_run_dir(ws, "agent-1");
+    std::fs::create_dir_all(run_dir.parent().expect("run root")).expect("run root");
+    std::fs::write(&run_dir, b"occupied").expect("占位 run/<agent>");
+    let err = save_record(ws, "agent-1", &sample_record("agent-1")).unwrap_err();
+    assert!(err.contains("registry"), "报错要点名 registry: {err}");
+}
+
+/// spawn 前活 QEMU 防线（[`ensure_no_live_qemu`]）：pidfile 指向身份核验
+/// 通过的活进程（本测试进程自身 = 平凡活体，镜像比对用 current_exe 平凡
+/// 匹配）→ 拒绝；pid 已死 / 身份不匹配 / pidfile 缺席 → 放行（不误拦正常
+/// 冷启/唤醒——QEMU 退出后 pidfile 残留是常态）。
+#[test]
+fn ensure_no_live_qemu_gate_table() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let pidfile = tmp.path().join("qemu.pid");
+    let me = std::env::current_exe().expect("current_exe");
+
+    // 活体 + 镜像匹配（本进程）= 拒绝（双开防线主臂）。
+    std::fs::write(&pidfile, format!("{}\n", std::process::id())).expect("write pid");
+    let err = ensure_no_live_qemu(&pidfile, &me).unwrap_err();
+    assert!(err.contains("禁止双开"), "{err}");
+
+    // 身份不匹配（同活 pid、异镜像）= 放行（pid 复用保守 doctrine）。
+    let other = me.with_file_name("definitely-not-this-binary");
+    ensure_no_live_qemu(&pidfile, &other).expect("身份不匹配不拦");
+
+    // pid 已死 = 放行（正常冷启/唤醒形态）。
+    std::fs::write(&pidfile, format!("{}\n", u32::MAX - 1)).expect("write dead pid");
+    ensure_no_live_qemu(&pidfile, &me).expect("死 pid 不拦");
+
+    // pidfile 缺席 = 放行。
+    let missing = tmp.path().join("no-such.pid");
+    ensure_no_live_qemu(&missing, &me).expect("无 pidfile 不拦");
+}
+
+/// 全 workspace 活 QEMU 扫描核（[`any_live_qemu_scan`] 可注入形态四态表，
+/// 镜像换装闸 promote 侧的判定核）：run 根缺席 / pid 已死 / 身份不匹配 /
+/// run 根下的散文件 = 无活；任一 agent 目录身份命中 = 有活（跨进程哨兵
+/// ——CLI 前台臂 / 另一 gateway 进程的活实例同样可见）。镜像解析用
+/// current_exe 注入（本测试进程自身 = 平凡活体；自然解析在 Windows 上
+/// 解析出的是裸名，与测试 exe 镜像路径永不相等，故必须注入）。
+#[test]
+fn any_live_qemu_scan_table() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    let me = std::env::current_exe().expect("current_exe");
+    let other = me.with_file_name("definitely-not-this-binary");
+
+    // run 根缺席 = 无活（空 workspace 形态）。
+    assert!(!any_live_qemu_scan(ws, &|_| me.clone()));
+
+    // 死 pid = 无活（正常冷停后 pidfile 残留形态）。
+    let run1 = vm_run_dir(ws, "agent-1");
+    std::fs::create_dir_all(&run1).expect("run dir 1");
+    std::fs::write(run1.join("qemu.pid"), format!("{}\n", u32::MAX - 1)).expect("dead pid");
+    assert!(!any_live_qemu_scan(ws, &|_| me.clone()), "死 pid 不算活");
+
+    // 活体 + 镜像不匹配 = 无活（pid 复用保守 doctrine，与
+    // ensure_no_live_qemu 同一口径）。
+    std::fs::write(run1.join("qemu.pid"), format!("{}\n", std::process::id())).expect("live pid");
+    assert!(
+        !any_live_qemu_scan(ws, &|_| other.clone()),
+        "身份不匹配不算活"
+    );
+
+    // 活体 + 镜像匹配 = 有活。
+    assert!(any_live_qemu_scan(ws, &|_| me.clone()), "身份命中必须有活");
+
+    // 多目录扫描不得早退：agent-1 改回死 pid，agent-2 身份命中——无论
+    // read_dir 顺序如何（平台实现细节），唯一命中必须被报真。
+    std::fs::write(run1.join("qemu.pid"), format!("{}\n", u32::MAX - 1)).expect("dead pid 1");
+    let run2 = vm_run_dir(ws, "agent-2");
+    std::fs::create_dir_all(&run2).expect("run dir 2");
+    std::fs::write(run2.join("qemu.pid"), format!("{}\n", std::process::id())).expect("live pid 2");
+    assert!(
+        any_live_qemu_scan(ws, &|_| me.clone()),
+        "第二目录命中必须报真"
+    );
+
+    // run 根下的散文件（非 agent 目录）被跳过，不误判不崩。
+    std::fs::write(vm_run_root(ws).join("stray.txt"), b"junk").expect("stray file");
+    std::fs::write(run2.join("qemu.pid"), format!("{}\n", u32::MAX - 1)).expect("dead pid 2");
+    assert!(!any_live_qemu_scan(ws, &|_| me.clone()), "散文件不误判");
+
+    // spawn 在途标记（新鲜）= 有活——pidfile 未写的进程创建窗跨进程可见
+    // （修前纯 pidfile 扫描看不见 spawn 在途，换装可能撞上正在制备的实例）。
+    let run3 = vm_run_dir(ws, "agent-3");
+    std::fs::create_dir_all(&run3).expect("run dir 3");
+    std::fs::write(run3.join("starting"), std::process::id().to_string()).expect("marker");
+    assert!(any_live_qemu_scan(ws, &|_| me.clone()), "新鲜在途标记算活");
+
+    // 陈旧标记（进程死在 spawn 相位的残留）= 无活——陈旧界（600s）外
+    // 不拦换装。
+    backdate(&run3.join("starting"), Duration::from_secs(601));
+    assert!(!any_live_qemu_scan(ws, &|_| me.clone()), "陈旧标记不算活");
+}
+
+/// 在途标记守卫终态纪律：Drop 移除标记（成功/失败各路径的 `?` 早退全
+/// 覆盖——守卫语义即「活着才算在途」）。
+#[test]
+fn starting_marker_guard_drop_removes() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let run = tmp.path().join("run").join("agent-1");
+    std::fs::create_dir_all(&run).expect("run dir");
+    let marker = run.join("starting");
+    {
+        let g = StartingMarkerGuard::arm(&run).expect("arm");
+        assert_eq!(g.path, marker);
+        assert!(marker.exists(), "arm 即落盘");
+        assert!(starting_marker_fresh(&marker), "刚落的标记新鲜");
+    }
+    assert!(!marker.exists(), "Drop 即移除");
+
+    // 陈旧界内的判定边界：缺席 = 不新鲜（不在途）。
+    assert!(!starting_marker_fresh(&run.join("no-such-marker")));
 }

@@ -186,6 +186,131 @@ async fn spawn_missing_qemu_binary_is_launch_error() {
 }
 
 // ---------------------------------------------------------------------------
+// wait_qmp_ready 收尸纪律（fake-qmp + 真子进程回归——2026-10-20 第五轮：
+// 修前查询瞬断 `?` 直通放弃整轮、坏状态路径不 kill——泄漏的 QEMU 占
+// overlay+端口，下轮 ensure_running 双开同一 overlay = qcow2 并发写损坏）
+// ---------------------------------------------------------------------------
+
+/// 长寿命替身进程（非 QEMU）：给 wait_qmp_ready 一个可收尸的 child。
+fn spawn_sleeper() -> tokio::process::Child {
+    let mut cmd = tokio::process::Command::new(if cfg!(target_os = "windows") {
+        "ping"
+    } else {
+        "sleep"
+    });
+    if cfg!(target_os = "windows") {
+        cmd.args(["-n", "30", "127.0.0.1"]);
+    } else {
+        cmd.arg("30");
+    }
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn sleeper")
+}
+
+/// 断言失败时也收走替身进程（start_kill 对已退出进程是 no-op）。
+struct KillOnDrop(tokio::process::Child);
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.start_kill();
+    }
+}
+
+/// 坏状态路径（冷启 + paused 非过渡态）必须 kill+wait 后再报错。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wait_qmp_ready_bad_status_reaps_child() {
+    let handle = fake_qmp::spawn().await.expect("spawn fake-qmp");
+    handle.set_behavior(
+        "query-status",
+        fake_qmp::Behavior::Return(serde_json::json!({
+            "status": "paused", "singlestep": false, "running": false
+        })),
+    );
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut g = KillOnDrop(spawn_sleeper());
+    let err = VmInstance::wait_qmp_ready(
+        &mut g.0,
+        handle.addr(),
+        &tmp.path().join("qemu.stderr.log"),
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(&err, VmError::Launch(m) if m.contains("状态非 running") && m.contains("已终止")),
+        "{err:?}"
+    );
+    // 收尸回归锚：修前此路径直接 return——子进程仍在跑。
+    assert!(
+        matches!(g.0.try_wait(), Ok(Some(_))),
+        "坏状态路径必须收尸（子进程应已退出）"
+    );
+    let _ = g.0.wait().await; // 完全收账（幂等）
+    handle.shutdown().await;
+}
+
+/// 查询瞬断（每轮断连）不放弃整轮：继续轮询到 deadline（修前首轮
+/// `?` 直通回 Qmp 错误）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wait_qmp_ready_query_failure_polls_until_deadline() {
+    let handle = fake_qmp::spawn().await.expect("spawn fake-qmp");
+    handle.set_behavior("query-status", fake_qmp::Behavior::Reset);
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut g = KillOnDrop(spawn_sleeper());
+    let started = std::time::Instant::now();
+    let err = VmInstance::wait_qmp_ready_with_budget(
+        &mut g.0,
+        handle.addr(),
+        &tmp.path().join("qemu.stderr.log"),
+        false,
+        Duration::from_millis(900),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(&err, VmError::Launch(m) if m.contains("内未就绪")),
+        "瞬断必须继续轮询到 deadline（而非首轮 QMP 错误放弃）: {err:?}"
+    );
+    assert!(
+        started.elapsed() >= Duration::from_millis(600),
+        "确实轮询了一阵而非首轮放弃（实际 {:?}）",
+        started.elapsed()
+    );
+    assert!(matches!(g.0.try_wait(), Ok(Some(_))), "deadline 路径收尸");
+    let _ = g.0.wait().await;
+    handle.shutdown().await;
+}
+
+/// 装配闸在 spawn **之前**：逗号路径 = 逗号错误而非 spawn 错误（这里
+/// qemu_bin 也不存在——若闸序错了会先报「spawn 失败」）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_rejects_comma_path_before_spawn() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let params = VmStartParams {
+        id: "test-1".into(),
+        run_dir: tmp.path().join("run"),
+        qemu_bin: tmp.path().join("no-such-qemu-system-x86_64"),
+        accel: QemuAccel::Kvm,
+        arch: GuestArch::X86_64,
+        vcpu: 1,
+        ram_mb: 256,
+        overlay_path: tmp.path().join("o,r.qcow2"),
+        seed_iso: None,
+        token: generate_token(),
+        shared_host_path: None,
+        loadvm_tag: None,
+        incoming_file: None,
+    };
+    let err = VmInstance::start(params).await.unwrap_err();
+    assert!(
+        matches!(&err, VmError::Launch(m) if m.contains("逗号") && m.contains("overlay_path")),
+        "{err:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 首帧鉴权 + 工具调用：进程内 guest 全链回归（真实 TCP，无 QEMU）
 // ---------------------------------------------------------------------------
 

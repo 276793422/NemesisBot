@@ -1611,6 +1611,21 @@ async fn run_image_build(
     }
     log_line(&log_path, "构建产物就绪（staging）——开始换装/rebase");
 
+    // 换装前置闸（[`IMAGE_SWAP_GATE`] 两相协议的 promote 侧）：持闸期间
+    // 无新 spawn（start 路径同闸排队），闸内活体全量扫描拒绝运行中/启动
+    // 中的实例（pidfile 身份核验 + spawn 在途标记）——rebase 写 overlay
+    // 与运行中 QEMU 并发 = qcow2 损坏；删旧 base 撞运行中实例的打开句柄
+    // = Windows 共享违例。拒绝诚实且有出路（睡眠/停机后重试），staging
+    // 与现有镜像都原位保留。
+    let _swap_gate = crate::agents::vm_runtime::IMAGE_SWAP_GATE.lock().await;
+    if crate::agents::vm_runtime::any_live_qemu(&workspace) {
+        log_line(
+            &log_path,
+            "检测到运行中/启动中的 VM 实例——换装拒绝（rebase 不得触碰运行中实例的 overlay/base）：先睡眠或停机全部实例再重试；staging 保留、现有镜像未动；任务结束",
+        );
+        IMAGE_JOB.lock().expect("image job lock").take();
+        return;
+    }
     if let Err(e) = promote_staging(&workspace, &staging, &log_path).await {
         log_line(
             &log_path,
@@ -1695,8 +1710,9 @@ async fn do_qemu_install(
 /// ① 新 base 落临时名 `base.new.qcow2` → ② 每个存量 overlay `qemu-img
 /// rebase -b base.new`（safe 模式：旧 backing 经原路径读旧内容、差集
 /// 拷进 overlay、改指针）→ ③ 删旧 base、新 base 转正 → ④ 每 overlay
-/// `-u` 重定向指针到转正路径。任何一步失败：新旧两 base 都在、指针
-/// 都有落点，全部实例仍可启动（诚实 warn 不留悬空）。
+/// `-u` 重定向指针到转正路径（④失败时 rename 已执行、临时名已不在——
+/// 自动把转正 base 拷回临时名恢复落点，拷贝失败才留手动修复指引）。
+/// 任何一步失败：指针都有落点，全部实例仍可启动（诚实报错不留悬空）。
 async fn promote_staging(workspace: &Path, staging: &Path, log_path: &Path) -> Result<(), String> {
     let images = vm_images_root(workspace);
     let new_base_src = staging.join("base.qcow2");
@@ -1704,7 +1720,13 @@ async fn promote_staging(workspace: &Path, staging: &Path, log_path: &Path) -> R
         return Err("staging 缺 base.qcow2（构建产物不完整）".to_string());
     }
     let new_base = images.join("base.new.qcow2");
-    std::fs::copy(&new_base_src, &new_base).map_err(|e| format!("新 base 落临时名失败: {e}"))?;
+    // GB 级镜像同步拷贝 → spawn_blocking（不占 async executor 线程）。
+    let cp_src = new_base_src.clone();
+    let cp_dst = new_base.clone();
+    tokio::task::spawn_blocking(move || std::fs::copy(&cp_src, &cp_dst))
+        .await
+        .map_err(|e| format!("新 base 拷贝任务失败: {e}"))?
+        .map_err(|e| format!("新 base 落临时名失败: {e}"))?;
 
     // seed.iso / manifest.json 先就位（不依赖 rebase 成败——冷启链路用）。
     for name in ["seed.iso", "manifest.json"] {
@@ -1714,13 +1736,17 @@ async fn promote_staging(workspace: &Path, staging: &Path, log_path: &Path) -> R
         }
     }
 
-    // 存量 overlay 清单（旧 base 在位才有 rebase 语义）。
+    // 存量 overlay 清单（旧 base 在位才有 rebase 语义）。显式排序——
+    // read_dir 顺序是平台实现细节，rebase 日志序不应随文件系统漂移。
     let overlays: Vec<PathBuf> = std::fs::read_dir(vm_overlays_root(workspace))
         .map(|rd| {
-            rd.flatten()
+            let mut paths: Vec<PathBuf> = rd
+                .flatten()
                 .map(|e| e.path())
                 .filter(|p| p.extension().is_some_and(|x| x == "qcow2"))
-                .collect()
+                .collect();
+            paths.sort();
+            paths
         })
         .unwrap_or_default();
     let qemu_img = resolve_qemu_img(workspace);
@@ -1770,12 +1796,57 @@ async fn promote_staging(workspace: &Path, staging: &Path, log_path: &Path) -> R
             .await
             .map_err(|e| format!("qemu-img rebase -u 启动失败: {e}"))?;
         if !out.status.success() {
+            // ④ 失败时 rename 已执行——base.new.qcow2 已转正不复存在，该
+            // overlay 指针真实状态 = 悬空。恢复「指针都有落点」不变量：把
+            // 转正后的 base 拷回临时名（GB 级 → spawn_blocking；字节相同，
+            // 悬空指针重新有效）；拷贝失败则诚实给手动修复命令（此时
+            // base.qcow2 在场）。
+            let restore = tokio::task::spawn_blocking({
+                let canonical = canonical.clone();
+                let new_base = new_base.clone();
+                move || std::fs::copy(&canonical, &new_base).map(|_| ())
+            })
+            .await;
+            let restore_err = match &restore {
+                Ok(Ok(())) => None,
+                Ok(Err(e)) => Some(e.to_string()),
+                Err(e) => Some(e.to_string()),
+            };
+            if restore_err.is_none() {
+                log_line(
+                    log_path,
+                    &format!("指针落点已恢复: {} → {}", new_base.display(), ov.display()),
+                );
+            }
             return Err(format!(
-                "overlay {} 指针重定向失败（{}）——overlay 当前指向 base.new.qcow2（文件仍在场，可启动；手动转正即可）",
+                "overlay {} 指针重定向失败（{}）——{}",
                 ov.display(),
-                String::from_utf8_lossy(&out.stderr).trim()
+                String::from_utf8_lossy(&out.stderr).trim(),
+                promote_step4_failure_message(ov, &canonical, restore_err.as_deref())
             ));
         }
     }
     Ok(())
+}
+
+/// ④ 臂失败的收尾消息（纯函数，单测钉两态）：恢复成功 = 诚实告知落点
+/// 已恢复、实例可启动；恢复失败 = 带手动修复命令（此时转正 base 在场，
+/// `rebase -u` 指过去即可修复）。
+pub(crate) fn promote_step4_failure_message(
+    overlay: &Path,
+    canonical: &Path,
+    restore_err: Option<&str>,
+) -> String {
+    let restore_note = match restore_err {
+        None => {
+            "已自动恢复落点（base.new.qcow2 重新在场，数据与转正 base 相同），该 overlay 可启动"
+                .to_string()
+        }
+        Some(e) => format!(
+            "落点自动恢复失败（{e}）——手动修复：qemu-img rebase -u -b \"{}\" \"{}\"",
+            canonical.display(),
+            overlay.display()
+        ),
+    };
+    format!("{restore_note}；修复后重跑换装即可继续")
 }

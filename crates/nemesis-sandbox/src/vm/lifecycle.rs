@@ -22,7 +22,7 @@ use tokio::net::TcpStream;
 
 use nemesis_exec_protocol::{ExecutorResponseWire, build_v2_request_line, new_call_id};
 
-use super::assembly::{VmLaunchSpec, build_qemu_args};
+use super::assembly::{VmLaunchSpec, build_qemu_args, validate_launch_spec};
 use super::guest_arch::{GuestArch, QemuAccel};
 use super::probe::{AccelProbe, probe_kvm, probe_whpx};
 use super::qmp::QmpClient;
@@ -315,6 +315,10 @@ impl VmInstance {
             loadvm_tag: p.loadvm_tag.clone(),
             incoming_file: p.incoming_file.clone(),
         };
+        // 装配闸（逗号/wake 互斥）：spawn 前诚实拒绝，不带病上岗。
+        if let Err(reason) = validate_launch_spec(&spec) {
+            return Err(VmError::Launch(reason));
+        }
         let args = build_qemu_args(&spec);
         let stderr_path = p.run_dir.join("qemu.stderr.log");
         let stderr_file = std::fs::File::create(&stderr_path).map_err(|e| {
@@ -379,6 +383,23 @@ impl VmInstance {
         } else {
             QMP_READY_TIMEOUT
         };
+        Self::wait_qmp_ready_with_budget(child, qmp_addr, stderr_path, wake, total).await
+    }
+
+    /// 轮询主体（预算参数化——单测以短预算驱动全部失败路径，不烧 60s/180s）。
+    ///
+    /// 收尸纪律：spawn 成功后的**每一条**失败路径都必须 kill+wait 子进程再
+    /// 返回（deadline 与坏状态两处）——泄漏一个还在跑的 QEMU 会占住 overlay
+    /// 和端口，下轮 ensure_running 再 spawn 第二个 QEMU 抢同一 overlay =
+    /// qcow2 并发写损坏。查询瞬断不算失败：与连接失败同性质（进程活着、
+    /// 这一轮没读上），继续轮询。
+    async fn wait_qmp_ready_with_budget(
+        child: &mut tokio::process::Child,
+        qmp_addr: SocketAddr,
+        stderr_path: &Path,
+        wake: bool,
+        total: Duration,
+    ) -> Result<(), VmError> {
         let deadline = tokio::time::Instant::now() + total;
         loop {
             // QEMU 已退出 = 启动失败，立即报（不等满预算）。
@@ -389,25 +410,31 @@ impl VmInstance {
                 )));
             }
             if let Ok(mut client) = QmpClient::connect(qmp_addr, Duration::from_secs(1)).await {
-                let status = client
-                    .query_status(Duration::from_secs(5))
-                    .await
-                    .map_err(VmError::Qmp)?;
-                let transitional = wake
-                    && matches!(
-                        status.as_str(),
-                        "inmigrate" | "prelaunch" | "paused" | "restore-vm"
-                    );
-                if status != "running" && !transitional {
-                    return Err(VmError::Launch(format!(
-                        "QEMU 起了但状态非 running（{status}）——stderr 现场: {}",
-                        stderr_path.display()
-                    )));
+                match client.query_status(Duration::from_secs(5)).await {
+                    Ok(status) => {
+                        let transitional = wake
+                            && matches!(
+                                status.as_str(),
+                                "inmigrate" | "prelaunch" | "paused" | "restore-vm"
+                            );
+                        if status != "running" && !transitional {
+                            // 收尸后再报（见函数级收尸纪律）。
+                            let _ = child.kill().await;
+                            let _ = child.wait().await;
+                            return Err(VmError::Launch(format!(
+                                "QEMU 起了但状态非 running（{status}），已终止——stderr 现场: {}",
+                                stderr_path.display()
+                            )));
+                        }
+                        if status == "running" {
+                            return Ok(());
+                        }
+                        // wake 过渡态：继续轮询到 running（预算由外层 deadline 管）。
+                    }
+                    Err(e) => {
+                        tracing::debug!(error = ?e, "[vm] QMP 状态查询未读上，继续轮询");
+                    }
                 }
-                if status == "running" {
-                    return Ok(());
-                }
-                // wake 过渡态：继续轮询到 running（预算由外层 deadline 管）。
             }
             if tokio::time::Instant::now() >= deadline {
                 let _ = child.kill().await;

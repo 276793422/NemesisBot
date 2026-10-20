@@ -473,20 +473,35 @@ async fn git_check_ignore(
     Some(ignored)
 }
 
-/// JSON 原子写（临时文件 + 改名；Windows 侧 rename 覆盖已存在目标可行）。
+/// JSON 原子写（唯一临时名 + 改名；Windows 侧 rename 覆盖已存在目标可行）。
+/// 临时名带 pid+序号：此前固定 `*.json.tmp` 依赖「所有调用方持 INFLIGHT
+/// 闸」的隐式不变式（同路径双写方互踩临时文件 = 后写方 rename 走先写方
+/// 的半截内容），这里把安全性收进函数自身、不靠调用方纪律（与 vm_runtime
+/// save_record 同款）。写/改名失败臂清理孤儿 tmp。
 async fn write_json_atomic(path: &Path, json: &str) -> Result<(), String> {
+    static WRITE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
             .map_err(|e| format!("创建目录失败: {e}"))?;
     }
-    let tmp = path.with_extension("json.tmp");
-    tokio::fs::write(&tmp, json)
-        .await
-        .map_err(|e| format!("写临时文件失败: {e}"))?;
-    tokio::fs::rename(&tmp, path)
-        .await
-        .map_err(|e| format!("原子改名失败: {e}"))?;
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".to_string());
+    let tmp = path.with_file_name(format!(
+        "{name}.{}.{}.tmp",
+        std::process::id(),
+        WRITE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    tokio::fs::write(&tmp, json).await.map_err(|e| {
+        let _ = std::fs::remove_file(&tmp); // 错误清理臂：同步 fs（async 版未 await 即 drop 等于没清）
+        format!("写临时文件失败: {e}")
+    })?;
+    tokio::fs::rename(&tmp, path).await.map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("原子改名失败: {e}")
+    })?;
     Ok(())
 }
 
@@ -657,6 +672,19 @@ async fn select_files_git(root: &Path) -> Result<Vec<FileSync>, String> {
     }
     files.sort_by(|a, b| a.rel.cmp(&b.rel));
     files.dedup_by(|a, b| a.rel == b.rel);
+    // 盘面是唯一真相（与 detect_host_changes/stat_classify 同语义）：
+    // `--cached` 会列出已从盘面删除但未 stage 的 index 幽灵条目——带进
+    // 打包清单就是 pack_tar「清单与盘面失配」诚实报错，一个未 stage 的
+    // 普通删除把首次全量同步卡死开工。stat 后消失的条目按删除语义处理
+    // （下轮 git status 同样不再列它，双方一致）。stat 循环入阻塞线程，
+    // 20 万文件量级不占执行器。
+    let root2 = root.to_path_buf();
+    let files = tokio::task::spawn_blocking(move || {
+        files.retain(|f| root2.join(&f.rel).is_file());
+        files
+    })
+    .await
+    .map_err(|e| format!("盘面过滤任务失败: {e}"))?;
     Ok(files)
 }
 
@@ -1492,6 +1520,18 @@ async fn full_sync(
     persist_baseline(main_workspace, project_id, &manifest).await?;
     // 全量同步 = 宿主整体覆盖 VM：原挂起文件的宿主版已随全量进 VM 且基
     // 线已含——挂起表清空（陈旧条目留着会永久拦掉未来同类变更，H3）。
+    // 清空前检查：非空挂起 = 用户「保留 VM 版」的裁决将被宿主版覆盖。
+    // 显式 resync 是披露过的语义，但坏基线 → 自动全量是隐式路径——
+    // loud warn 点名，不留无声覆盖。已在 INFLIGHT 闸内，直读安全。
+    let pending = load_diverged(main_workspace, project_id);
+    if !pending.is_empty() {
+        tracing::warn!(
+            project = %project_id,
+            count = pending.len(),
+            files = ?pending.keys().take(8).collect::<Vec<_>>(),
+            "[vm_sync] 全量同步将丢弃全部挂起裁决（这些文件的 VM 版本被宿主版本覆盖）"
+        );
+    }
     save_diverged(main_workspace, project_id, &BTreeMap::new()).await?;
     Ok(report)
 }
@@ -1877,6 +1917,36 @@ async fn pull_files_to_host(
 /// exec 位按 header 归一 755/644）。**只写不删**——删除面由调用方按
 /// deleted 清单显式处理（明示语义，不藏在 tar 里）。
 #[allow(dead_code)]
+/// 组件 symlink 闸（宿主侧）：`rel` 的任一祖先/末端组件若已存在且是
+/// symlink，拒绝落盘（fail-closed，点名路径）。宿主工作区是真实开发
+/// 目录——pnpm 的 node_modules 全链接、用户手建链接都常见；VM 树回拉的
+/// 同名真实文件若顺着链接写入，会写到工作区外（pnpm 全局 store 等）。
+/// 与 guest 侧 `extract_tar_safe` 的组件闸同族防御（2026-10-20 复查批
+/// 同修）。调用前 rel 已过 [`safe_rel`]（无 `..`/绝对/前缀组件，`/` 分隔）。
+fn ensure_no_symlink_components_host(root: &Path, rel: &str) -> Result<(), String> {
+    let mut cur = root.to_path_buf();
+    for comp in rel.split('/') {
+        if comp.is_empty() {
+            continue; // safe_rel 已拒空组件；防御性跳过重复斜杠
+        }
+        cur.push(comp);
+        match std::fs::symlink_metadata(&cur) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(format!(
+                    "路径组件含 symlink，拒绝回拉落盘（fail-closed）: {} —— 请先清理宿主工作区同名链接",
+                    cur.display()
+                ));
+            }
+            // 已存在为普通目录：继续查下级；尚不存在：后续 create 会建；
+            // 已存在为普通文件但还有下级组件：交给 create_dir_all 的诚实 IO 错误。
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("stat {} 失败: {e}", cur.display())),
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn extract_tar_to_host(bytes: &[u8], root: &Path) -> Result<(), String> {
     let mut ar = tar::Archive::new(bytes);
     let entries = ar.entries().map_err(|e| format!("tar 遍历失败: {e}"))?;
@@ -1891,6 +1961,8 @@ pub(crate) fn extract_tar_to_host(bytes: &[u8], root: &Path) -> Result<(), Strin
         if !ent.header().entry_type().is_file() {
             continue; // 目录/链接条目忽略：父目录按需创建；symlink 不进工作副本
         }
+        // 组件 symlink 闸在落盘前统一执行（std::fs::write 会跟随链接）。
+        ensure_no_symlink_components_host(root, &rel)?;
         let dst = root.join(&rel);
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败（{rel}）: {e}"))?;
