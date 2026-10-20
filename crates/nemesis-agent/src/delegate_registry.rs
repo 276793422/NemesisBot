@@ -51,7 +51,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use async_trait::async_trait;
@@ -310,6 +310,21 @@ impl StartReservation {
     }
 }
 
+/// R6（2026-10-20）：启动许可 RAII——容量闸「检查+占位」的占位半边。取得
+/// 发生在 entries 锁内（并发准入串行化），持有跨 build_args/spawn/estop
+/// 复检；reservation 落入 starting（座位改由 starting 计数）即 Drop 释放。
+/// 三段口径 `entries + starting + permits` 全程守恒不超 [`MAX_DELEGATES`]，
+/// 「N 个并发 start 全部挤过检查、各自 spawn 才占位」的瞬态超额不可能。
+struct StartingPermit {
+    counter: Arc<AtomicUsize>,
+}
+
+impl Drop for StartingPermit {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// delegate 注册表（每 AgentLoop 一个；loop 重建 → Drop → 全部树杀，
 /// 与 background 注册表同生命周期语义）。
 pub struct DelegateManager {
@@ -319,6 +334,11 @@ pub struct DelegateManager {
     /// 封「estop 摸不到启动中子进程」与「并发 start 借未插表窗口破
     /// MAX_DELEGATES」两个窗口。短临界区同步锁（永不跨 await）。
     starting: SyncMutex<Vec<Arc<StartReservation>>>,
+    /// R6：启动许可计数（spawn 前的座位占位）。与 entries/starting 构成
+    /// 三段口径；许可获取在 entries 锁内 → 并发准入串行化，瞬态超额不可能。
+    starting_permits: Arc<AtomicUsize>,
+    #[cfg(test)]
+    review_admission_barrier: RwLock<Option<Arc<tokio::sync::Barrier>>>,
     next_id: AtomicU64,
     estop: RwLock<Option<Arc<EstopState>>>,
     /// estop watcher lazy-spawn 一次性守卫。
@@ -352,6 +372,9 @@ impl DelegateManager {
         Self {
             entries: Mutex::new(HashMap::new()),
             starting: SyncMutex::new(Vec::new()),
+            starting_permits: Arc::new(AtomicUsize::new(0)),
+            #[cfg(test)]
+            review_admission_barrier: RwLock::new(None),
             next_id: AtomicU64::new(1),
             estop: RwLock::new(None),
             estop_watcher_spawned: AtomicBool::new(false),
@@ -422,14 +445,18 @@ impl DelegateManager {
         }
         self.ensure_estop_watcher();
 
-        // 满员闸：口径 = 已插表 + 启动在途（F7：并发 start 不再能借
-        // 「还没插表」窗口破 MAX_DELEGATES）。先淘汰最旧的已完成条目；
-        // 仍满才拒绝。锁序恒定 entries → starting（starting 守卫永不跨
-        // await、永不反序拿）。
-        {
+        // 满员闸（R6：检查+占位同临界区）：口径三段 = 已插表 + 启动在途 +
+        // 已发许可。先淘汰最旧的已完成条目；仍满才拒绝。许可也在本 entries
+        // 锁内取得——并发准入在此串行化，permit 跨 build_args/spawn/estop
+        // 复检持有（RAII，任何早退路径 Drop 自动释放），reservation 落入
+        // starting（座位改由 starting 计数）才释放。锁序恒定 entries →
+        // starting（starting 守卫永不跨 await、永不反序拿）。
+        let permit = {
             let mut entries = self.entries.lock().await;
-            let starting_n = self.starting.lock().len();
-            if entries.len() + starting_n >= MAX_DELEGATES {
+            let mut used = entries.len()
+                + self.starting.lock().len()
+                + self.starting_permits.load(Ordering::SeqCst);
+            if used >= MAX_DELEGATES {
                 let mut finished: Vec<u64> = entries
                     .iter()
                     .filter(|(_, e)| !e.is_running_sync())
@@ -437,24 +464,38 @@ impl DelegateManager {
                     .collect();
                 finished.sort_unstable();
                 for id in finished {
-                    if entries.len() + starting_n < MAX_DELEGATES {
+                    if used < MAX_DELEGATES {
                         break;
                     }
                     entries.remove(&id);
+                    used -= 1;
                     tracing::debug!(
                         evicted = id,
                         "[DelegateRegistry] evicted finished delegate for capacity"
                     );
                 }
-                if entries.len() + starting_n >= MAX_DELEGATES {
+                if used >= MAX_DELEGATES {
                     return Err(format!(
                         "delegate limit reached ({MAX_DELEGATES} active/starting); \
                          stop one with delegate_stop first"
                     ));
                 }
             }
-        }
+            // 有位 → 取许可（仍在本锁内；entries 锁持有期间并发方不可能
+            // 增发许可，快照即裁决）。
+            self.starting_permits.fetch_add(1, Ordering::SeqCst);
+            StartingPermit {
+                counter: Arc::clone(&self.starting_permits),
+            }
+        };
 
+        #[cfg(test)]
+        {
+            let barrier = self.review_admission_barrier.read().clone();
+            if let Some(barrier) = barrier {
+                barrier.wait().await;
+            }
+        }
         let args = protocol.build_args(resume_session_id, permission_mode)?;
         let mut cmd = tokio::process::Command::new(cli_path);
         cmd.args(&args)
@@ -504,6 +545,8 @@ impl DelegateManager {
             kill_flag: kill_flag.clone(),
         });
         self.starting.lock().push(reservation.clone());
+        // R6：座位已由 starting 计数接管 → 释放许可（三段口径守恒）。
+        drop(permit);
 
         // F7：estop 复检——入口闸到 spawn 之间（容量锁 await 点）触发的
         // 急停，estop watcher 摸不到未入表进程，由本复检兜住。
