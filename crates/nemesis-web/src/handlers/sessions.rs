@@ -442,9 +442,8 @@ impl ModuleHandler for SessionsHandler {
                     "count": total,
                 })))
             }
-            // E3（devtool-upgrade 阶段 5）：消息级回退——会话截断到
-            // message_index 所在 turn 结束 + 文件恢复到其后第一个 checkpoint
-            // turn 开始时的状态 + 压 undo 栈。message_index 契约：本模块
+            // E3（devtool-upgrade 阶段 5）：消息级回退——会话截断 + 文件恢复
+            // 到锚 turn 开始时的状态 + 压 undo 栈。message_index 契约：本模块
             // `export`（= logs.session_detail 的行序，同一 jsonl）里
             // messages 数组下标。编排在 AgentLoop（checkpoint/undo 栈都住
             // 那边），这里只做参数解析与 agent_loop 装配检查。
@@ -452,6 +451,10 @@ impl ModuleHandler for SessionsHandler {
             // 冲突预检检出「文件在 checkpoint 后被外部修改」时默认零副作用
             // 拒绝（blocked:true + 结构化冲突清单），force=true 强过（回执
             // 与日志留痕）。
+            // mode（2026-10-20 重新生成修复）：缺省/"turn" = turn 对齐
+            // （index 所在整轮保留，其后截掉）；"before" = 按轮首回退（保留
+            // index 之前，该行及其后移除——前端「重新生成」：目标=提问行，
+            // 文件滚回提问前，支持 cut=0 首轮）。未知值 loud 拒绝。
             "rewind_to_message" => {
                 let session_id = data
                     .as_ref()
@@ -470,6 +473,11 @@ impl ModuleHandler for SessionsHandler {
                     .and_then(|d| d.get("force"))
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
+                let mode = data
+                    .as_ref()
+                    .and_then(|d| d.get("mode"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("turn");
                 let session_key = format!(
                     "agent:main:session:{}",
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
@@ -479,9 +487,19 @@ impl ModuleHandler for SessionsHandler {
                 // 槽，项目会话回退拿到主 loop 的空 checkpoint 索引，文件恢
                 // 复静默 no-op 只截对话）。无归属/bridge 未装配回主槽不变。
                 let al = crate::handlers::projects::resolve_session_loop(ctx, &session_key)?;
-                let mut out = al
-                    .rewind_to_message(&session_key, message_index, force)
-                    .await?;
+                let mut out = match mode {
+                    "turn" => {
+                        al.rewind_to_message(&session_key, message_index, force)
+                            .await?
+                    }
+                    "before" => {
+                        al.rewind_before_message(&session_key, message_index, force)
+                            .await?
+                    }
+                    other => {
+                        return Err(format!("未知 mode: {other}（支持 turn | before）"));
+                    }
+                };
                 // 回执带上调用方的裸 session_id（前端用它回显）。
                 out["session_id"] = serde_json::Value::String(session_id);
                 Ok(Some(out))
