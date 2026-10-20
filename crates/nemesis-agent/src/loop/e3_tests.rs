@@ -405,3 +405,162 @@ async fn e3_git_rewind_redo_covers_undeclared_shell_side_effects() {
 
     delete_chat_log(&key);
 }
+
+// —— 重新生成支撑（2026-10-20）：rewind_before_message ——
+
+/// 三轮摆法（两轮 stage 的直延长：turn 3 begin → snapshot 捕 v3 → 工具改
+/// v4 → 行落盘）。返回时 code.txt = v4。
+async fn stage_three_turns(tag: &str) -> (AgentLoop, String, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("ws");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("code.txt"), "v1").unwrap();
+
+    let al = AgentLoop::new(Box::new(E3NoopProvider), e3_config());
+    al.set_checkpoint_store(Arc::new(crate::checkpoint::CheckpointStore::new(
+        None, root,
+    )));
+    let key = e3_uniq_key(tag);
+    delete_chat_log(&key);
+
+    let cp = al.attached_checkpoint().unwrap();
+
+    for (turn, next) in [(1usize, "v2"), (2, "v3"), (3, "v4")] {
+        cp.begin(turn, "turn");
+        cp.snapshot(&e3_modify("code.txt")).await;
+        std::fs::write(dir.path().join("ws").join("code.txt"), next).unwrap();
+        e3_append(&key, "user", &format!("turn {turn} q"), Some(turn));
+        e3_append(&key, "assistant", &format!("turn {turn} a"), None);
+    }
+
+    (al, key, dir)
+}
+
+/// 重新生成热路径（末轮）：两轮会话对 turn 2 提问行（index 2）before 回退
+/// → 提问行与其回复一并移除、turn 1 完整保留、文件回 turn 2 begin 前（v2）
+/// ——「保留提问、撤掉回复」形态，`rewind_to_message` 表达不了（其 cut 落
+/// 在下一轮 user 行，末轮 = 空转）。
+#[tokio::test]
+async fn e3_rewind_before_last_turn_drops_reply_keeps_question() {
+    let (al, key, dir) = stage_two_turns("before-last").await;
+    let file = dir.path().join("ws").join("code.txt");
+
+    let out = al.rewind_before_message(&key, 2, false).await.unwrap();
+    assert_eq!(out["kept_count"], 2, "turn 1 保留: {out}");
+    assert_eq!(out["removed_count"], 2, "turn 2 问+答一并移除: {out}");
+    assert_eq!(out["restore_turn"], 2, "锚 = 提问行自带的 begin 标记");
+    assert_eq!(out["file_restore"], "applied");
+    assert_eq!(out["redoable"], true);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "v2");
+
+    let (rows, total, _, _) = read_chat_log(&key, 100, None);
+    assert_eq!(total, 2);
+    assert_eq!(rows[0]["content"], "turn 1 q");
+    assert_eq!(rows[1]["content"], "turn 1 a");
+
+    delete_chat_log(&key);
+}
+
+/// 中间轮 before 回退：三轮会话对 turn 2 提问行（index 2）→ turn 2 与其后
+/// 所有轮（turn 3）一并移除（前缀截断语义），文件把 turn 3 的 v4 也滚回 v2
+/// ——锚=提问行 begin 标记，restore_code(2) 覆盖 ≥turn 2 的全部变更。
+#[tokio::test]
+async fn e3_rewind_before_mid_conversation_drops_question_and_later_turns() {
+    let (al, key, dir) = stage_three_turns("before-mid").await;
+    let file = dir.path().join("ws").join("code.txt");
+
+    let out = al.rewind_before_message(&key, 2, false).await.unwrap();
+    assert_eq!(out["kept_count"], 2, "{out}");
+    assert_eq!(out["removed_count"], 4, "turn 2 + turn 3 各两行: {out}");
+    assert_eq!(out["restore_turn"], 2);
+    assert_eq!(out["file_restore"], "applied");
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "v2",
+        "turn 3 的 v4 一并回滚"
+    );
+
+    let (rows, total, _, _) = read_chat_log(&key, 100, None);
+    assert_eq!(total, 2);
+    assert_eq!(rows[1]["content"], "turn 1 a");
+
+    delete_chat_log(&key);
+}
+
+/// cut=0：首轮提问行 before 回退 → 会话截到空（`rewind_to_message` 契约表
+/// 达不了的形态，`rewind_last_turn` 注释为证）；文件回 turn 1 begin 前
+/// （v1）；redo 整段回填（LIFO 栈条目 kept_count=0 与空会话吻合）。
+#[tokio::test]
+async fn e3_rewind_before_cut_zero_clears_all_and_redo_roundtrips() {
+    let (al, key, dir) = stage_two_turns("before-zero").await;
+    let file = dir.path().join("ws").join("code.txt");
+
+    let out = al.rewind_before_message(&key, 0, false).await.unwrap();
+    assert_eq!(out["kept_count"], 0, "{out}");
+    assert_eq!(out["removed_count"], 4);
+    assert_eq!(out["restore_turn"], 1, "锚 = 首个 checkpoint turn");
+    assert_eq!(out["file_restore"], "applied");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "v1");
+
+    let (_, total, _, _) = read_chat_log(&key, 100, None);
+    assert_eq!(total, 0, "会话截到空");
+
+    // redo：空会话行数守卫（0 == kept_count）通过，整段回填。
+    let out = al.redo_rewind(&key).await.unwrap();
+    assert_eq!(out["restored_count"], 4, "{out}");
+    let (rows, total, _, _) = read_chat_log(&key, 100, None);
+    assert_eq!(total, 4);
+    assert_eq!(rows[0]["content"], "turn 1 q");
+    assert_eq!(rows[3]["content"], "turn 2 a");
+
+    delete_chat_log(&key);
+}
+
+/// 契约守卫：assistant 行落点 loud 拒绝（会产生「删提问留回复」破碎轮）；
+/// 越界 / 空会话诚实报错。
+#[tokio::test]
+async fn e3_rewind_before_rejects_non_user_row_out_of_range_and_empty() {
+    let (al, key, _dir) = stage_two_turns("before-guard").await;
+
+    // index 1 = assistant 行。
+    let err = al.rewind_before_message(&key, 1, false).await.unwrap_err();
+    assert!(err.contains("不是 user 行"), "{err}");
+
+    // 越界（== len 与 > len 同罪）。
+    let err = al.rewind_before_message(&key, 4, false).await.unwrap_err();
+    assert!(err.contains("超出范围"), "{err}");
+
+    // 空会话。
+    let empty_key = e3_uniq_key("before-guard-empty");
+    delete_chat_log(&empty_key);
+    let err = al
+        .rewind_before_message(&empty_key, 0, false)
+        .await
+        .unwrap_err();
+    assert!(err.contains("没有可回退"), "{err}");
+    delete_chat_log(&empty_key);
+
+    delete_chat_log(&key);
+}
+
+/// busy 闸：会话处理中零副作用诚实拒绝（与 rewind_to_message / undo 入口
+/// 同语义），释放后放行。
+#[tokio::test]
+async fn e3_rewind_before_rejects_busy_session() {
+    let (al, key, dir) = stage_two_turns("before-busy").await;
+    let file = dir.path().join("ws").join("code.txt");
+
+    assert!(al.try_acquire_session(&key));
+    let err = al.rewind_before_message(&key, 2, false).await.unwrap_err();
+    assert!(err.contains("正在处理"), "{err}");
+    let (_, total, _, _) = read_chat_log(&key, 100, None);
+    assert_eq!(total, 4, "零副作用");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "v3");
+
+    al.release_session(&key);
+    let out = al.rewind_before_message(&key, 2, false).await.unwrap();
+    assert_eq!(out["removed_count"], 2, "{out}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "v2");
+
+    delete_chat_log(&key);
+}

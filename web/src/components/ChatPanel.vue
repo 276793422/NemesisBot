@@ -36,6 +36,7 @@ import type { ToolEvent } from '../stores/chat'
 // M5 (2026-09-05): 会话级 context/cost 常驻条——cost 格式化与侧栏共用。
 import { fmtCost } from '../composables/useUsageFormat'
 import { renderMarkdownHtml } from '../utils/markdown'
+import { planRegenerate } from '../utils/regenerate'
 import hljs from 'highlight.js/lib/core'
 import javascript from 'highlight.js/lib/languages/javascript'
 import typescript from 'highlight.js/lib/languages/typescript'
@@ -1112,9 +1113,15 @@ function onWatchdog() {
 // ---------------------------------------------------------------------------
 // M6（devtool-upgrade 阶段 7）：消息级回退——E3 rewind/redo 的首个前端入口。
 // message_index = 后端 chat_log jsonl 行号（ChatMessage.rowIndex：历史批次
-// 连续推导 + live 递增；error/system 是纯前端渲染不占行）。rewind 截断语义
-// 按 turn 边界（后端从目标行之后扫到下一 user 行），checkpoint 锚存在时
-// 尽力回滚文件。仅主聊天模块可用——sessions.rewind_to_message 后端固定编
+// 连续推导 + live 递增；error/system 是纯前端渲染不占行）。回退是前缀截断
+// （保留目标之前、其后全部移除——undo 栈可 redo）。两类语义：
+// - mode "turn"（缺省）：截断到目标行所在 turn 结束——撤销此问/删除整轮用
+//   （目标=前一条 assistant 行，cut 天然落在本轮 user 行）；
+// - mode "before"（2026-10-20 重新生成修复）：截断到目标 user 行之前——
+//   重新生成用（目标=本轮提问行：该轮回复与其后对话一并移除、文件滚回提
+//   问前，支持首轮 cut=0），成功后自动重发提问原文（utils/regenerate 守卫
+//   裁决：插话/含图/斜杠命令只回退不重发）。
+// 仅主聊天模块可用——sessions.rewind_to_message 后端固定编
 // 址 agent:main:session:{sid}，workflow_chat 等模块会话键不同。
 // ---------------------------------------------------------------------------
 
@@ -1126,15 +1133,29 @@ const showDelegate = ref(false)
 
 /** rewind/redo 后全量重同步：无条件以 chat_log 为真相源 replace 重建视图，
  *  并用响应 oldest_index 重建行号（与 watchdog 分支的区别：不依赖 streaming
- *  条件——回退发生在非 streaming 态）。 */
+ *  条件——回退发生在非 streaming 态）。返回 Promise：响应落地（replace 完
+ *  成）或 10s 安全超时后 resolve——重新生成的重发链 await 它，保证本地回显
+ *  不被 replace 冲掉；普通 rewind/redo 调用方忽略返回值照旧。 */
 let pendingResync = false
-function resyncFromLog() {
-  pendingResync = true
-  const requestId = 'resync_' + Date.now()
-  inFlightHistory.set(requestId, { kind: 'resync' })
-  sendHistoryRequest(requestId, 100, null, {
-    module: props.module,
-    moduleData: activeModuleData(),
+function resyncFromLog(): Promise<void> {
+  return new Promise((resolve) => {
+    let done = false
+    const finish = () => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      resolve()
+    }
+    // 安全超时：响应丢失（断连/围栏丢弃）不挂死重发链——视图可能停留旧
+    // 数据，发送链照常推进（watchdog 兜轮次恢复）。
+    const timer = setTimeout(finish, 10_000)
+    pendingResync = true
+    const requestId = 'resync_' + Date.now()
+    inFlightHistory.set(requestId, { kind: 'resync', onDone: finish })
+    sendHistoryRequest(requestId, 100, null, {
+      module: props.module,
+      moduleData: activeModuleData(),
+    })
   })
 }
 
@@ -1163,6 +1184,13 @@ async function doRewind(messageIndex: number) {
       session_id: sid,
       message_index: messageIndex,
     })
+    // P20 冲突拒绝 = 零副作用：不重同步，也不显示误导性「撤掉 0 条」。
+    if (resp?.blocked) {
+      toast.error(
+        `回退被冲突预检拒绝：${resp?.conflicts?.length ?? '?'} 个文件在 checkpoint 后被外部修改，未做任何改动`,
+      )
+      return
+    }
     rewindToastSummary(resp)
     resyncFromLog()
   } catch (e: any) {
@@ -1187,7 +1215,72 @@ async function doRedo() {
   rewinding.value = false
 }
 
-/** 消息气泡的回退动作组（行号不可用=诚实不给入口）。 */
+/** 非末轮回退确认：本轮之后还有行 = 其后对话一并移除（回退是前缀截断，
+ *  中间轮点击任何回退按钮都会带走后面所有轮——把既有语义显式化）。 */
+function confirmIfTurnsFollow(turnEnd: number): boolean {
+  const hasLater = chatStore.messages.some((m) => (m.rowIndex ?? -1) > turnEnd)
+  return !hasLater || window.confirm('该轮之后还有对话，将一并移除（文件改动回滚）。继续？')
+}
+
+/** 本轮最后一行的行号（「其后还有对话」的判定锚）：assistant 行即回复本
+ *  行；user 行向后找第一条 assistant（steer 插话行也计入本轮）。 */
+function turnEndIndexOf(msg: ChatMessage): number {
+  if (msg.role === 'assistant') return msg.rowIndex!
+  const reply = chatStore.messages.find(
+    (m) => m.rowIndex !== undefined && m.rowIndex > msg.rowIndex! && m.role === 'assistant',
+  )
+  return reply?.rowIndex ?? msg.rowIndex!
+}
+
+/** 重新生成（2026-10-20）：回退到本轮提问行之前（mode:"before"，该轮回复
+ *  与其后所有行移除、文件滚回提问前）+ 自动重发提问原文。守卫命中（插话/
+ *  含图/斜杠命令）只回退，原文回填输入框手动发——sendValidated 复用输入
+ *  框发送续体（回显/锚定/busy/watchdog 全内置）。 */
+async function doRegenerate(msg: ChatMessage) {
+  if (rewinding.value || !isDefaultChat.value) return
+  const sid = effectiveSid.value
+  if (!sid || msg.rowIndex === undefined) return
+  const plan = planRegenerate(chatStore.messages, msg.rowIndex, msg.role)
+  if (!plan) {
+    toast.warn('找不到本轮提问行，无法重新生成')
+    return
+  }
+  if (!confirmIfTurnsFollow(turnEndIndexOf(msg))) return
+
+  rewinding.value = true
+  try {
+    const resp = await request('sessions', 'rewind_to_message', {
+      session_id: sid,
+      message_index: plan.turnStart,
+      mode: 'before',
+    })
+    // P20 冲突拒绝 = 零副作用：不重发、不重同步。
+    if (resp?.blocked) {
+      toast.error(
+        `回退被冲突预检拒绝：${resp?.conflicts?.length ?? '?'} 个文件在 checkpoint 后被外部修改，未做任何改动`,
+      )
+      return
+    }
+    rewindToastSummary(resp)
+    // 等重同步落地再重发：本地回显若抢在 replace 前入列，会被整视图替换
+    // 冲掉（流式占位同理）。响应丢失由 resync 的 10s 安全超时放行。
+    await resyncFromLog()
+    if (plan.noResendReason) {
+      chatStore.input = plan.content
+      toast.warn(`已回退到提问：${plan.noResendReason}，已回填输入框，请手动发送`)
+    } else {
+      sendValidated(plan.content, [])
+    }
+  } catch (e: any) {
+    toast.error(e?.message || String(e))
+  }
+  rewinding.value = false
+}
+
+/** 消息气泡的回退动作组（行号不可用=诚实不给入口）。重新生成走
+ *  doRegenerate（mode:"before" + 自动重发）；撤销/删除整轮走 turn 语义
+ *  doRewind（目标=前一条 assistant 行，cut 天然落在本轮 user 行）；非末轮
+ *  点击任一按钮先确认（其后对话一并移除）。 */
 function rewindActions(msg: ChatMessage) {
   if (!isDefaultChat.value) return []
   if (msg.role !== 'user' && msg.role !== 'assistant') return []
@@ -1196,29 +1289,33 @@ function rewindActions(msg: ChatMessage) {
   if (msg.role === 'user') {
     acts.push({
       label: '↻ 重新生成',
-      title: '撤掉这条提问的回复（保留提问）',
-      run: () => doRewind(msg.rowIndex!),
+      title: '回退到提问前并重新回答（其后对话一并移除，文件回滚）',
+      run: () => doRegenerate(msg),
     })
     if (msg.rowIndex > 0) {
       acts.push({
         label: '⏪ 撤销此问',
-        title: '删除这条提问及其回复（文件改动尽力回滚）',
-        run: () => doRewind(msg.rowIndex! - 1),
+        title: '删除这条提问及其回复（文件改动尽力回滚；其后对话一并移除）',
+        run: () => {
+          if (confirmIfTurnsFollow(turnEndIndexOf(msg))) doRewind(msg.rowIndex! - 1)
+        },
       })
     }
   } else {
-    // assistant 行的前一行是本轮 user 行（chat_log 只存 user/assistant 且
-    // 连续）：回退到 user 行 = 重新生成；回退到 user 前一行 = 删除整轮。
+    // assistant 行：重新生成 = 定位本轮提问行（结构回溯）before 回退 + 重发；
+    // 删除整轮 = 回退到前一条 assistant 行（cut 落在本轮 user 行，整轮移除）。
     acts.push({
       label: '↻ 重新生成',
-      title: '撤掉这条回复（保留提问）',
-      run: () => doRewind(msg.rowIndex! - 1),
+      title: '撤掉这条回复并重新回答（其后对话一并移除，文件回滚）',
+      run: () => doRegenerate(msg),
     })
     if (msg.rowIndex > 1) {
       acts.push({
         label: '⏪ 删除整轮',
-        title: '删除本轮提问与回复（文件改动尽力回滚）',
-        run: () => doRewind(msg.rowIndex! - 2),
+        title: '删除本轮提问与回复（文件改动尽力回滚；其后对话一并移除）',
+        run: () => {
+          if (confirmIfTurnsFollow(msg.rowIndex!)) doRewind(msg.rowIndex! - 2)
+        },
       })
     }
   }
@@ -1243,7 +1340,10 @@ watch(
 // hist_ 响应还会冒领 pendingResync / pendingWatchdogReload 标志，拿错误
 // 请求的 payload 整段替换。围栏语义：响应按 request_id 匹配在飞登记，
 // 不匹配（迟到/并行/他请求）直接丢弃；会话切换时整表作废。
-const inFlightHistory = new Map<string, { kind: 'page' | 'resync' | 'watchdog'; paginated?: boolean }>()
+const inFlightHistory = new Map<
+  string,
+  { kind: 'page' | 'resync' | 'watchdog'; paginated?: boolean; onDone?: () => void }
+>()
 
 function handleHistoryResponse(data: any) {
   // 围栏第一道：request_id 必须匹配一个在飞请求，否则丢弃（不前插、
@@ -1299,6 +1399,8 @@ function handleHistoryResponse(data: any) {
     chatStore.setBusy(effectiveSid.value, false)
     clearWatchdog()
     nextTick(() => scrollToBottom())
+    // 重新生成的重发链在等这个响应（视图 replace 完成 = 可安全回显重发）。
+    inflight.onDone?.()
     return
   }
 

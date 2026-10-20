@@ -157,6 +157,52 @@ impl AgentLoop {
         self.rewind_last_turn(session_key).await
     }
 
+    /// 重新生成支撑（2026-10-20，docs/BUG/2026-10-20_chat-regenerate-rewind-buttons-mismatch.md）：
+    /// 回退到 `message_index` 行**之前**（`cut = message_index`——保留
+    /// `rows[..cut]`，该行及其后所有行移除）。与 [`Self::rewind_to_message`]
+    /// （turn 对齐：index 所在整轮保留）的差异只在截断点计算；本入口能表
+    /// 达「保留提问、撤掉回复」（前端重新生成）与 cut=0（首轮重新生成，
+    /// 现有 turn 对齐入口表达不了的形态，[`Self::rewind_last_turn`] 注释
+    /// 为证）。
+    ///
+    /// 文件恢复锚零新增：cut 落在提问行上时，提问行自带本轮
+    /// `checkpoint_turn` begin 标记，共享机体现有 `rows[cut..]` 首标记
+    /// find_map 天然命中本轮——文件回滚到提问前，正是重新生成要的语义。
+    ///
+    /// 契约：`message_index` 必须指向 user 行——assistant 行落点会产生
+    /// 「删提问留回复」的破碎轮，loud 拒绝。busy 闸与边界检查同
+    /// [`Self::rewind_to_message`]；共享 [`Self::rewind_from_cut`] 机体
+    /// （P20 冲突预检 / undo 栈 / F8 审计全量复用）。
+    pub async fn rewind_before_message(
+        &self,
+        session_key: &str,
+        message_index: usize,
+        force: bool,
+    ) -> Result<serde_json::Value, String> {
+        if self.is_session_busy(session_key) {
+            return Err("会话正在处理消息，请等当前回合完成后再回退".to_string());
+        }
+        let (rows, _total, _, _) = crate::chat_log::read_chat_log(session_key, usize::MAX, None);
+        if rows.is_empty() {
+            return Err("会话没有可回退的消息".to_string());
+        }
+        if message_index >= rows.len() {
+            return Err(format!(
+                "message_index {} 超出范围（会话共 {} 条消息）",
+                message_index,
+                rows.len()
+            ));
+        }
+        if rows[message_index].get("role").and_then(|v| v.as_str()) != Some("user") {
+            return Err(format!(
+                "message_index {} 不是 user 行（本入口按轮首回退，请指向提问行）",
+                message_index
+            ));
+        }
+        self.rewind_from_cut(session_key, &rows, message_index, message_index, force)
+            .await
+    }
+
     /// rewind 共享机体（`rewind_to_message` / `rewind_last_turn` 两入口的
     /// 单一真相源）：`rows` 是全量行快照、`cut` 是保留/截断分界（
     /// `rows[..cut]` 保留、`rows[cut..]` 移除）、`report_index` 是回执与
