@@ -141,6 +141,13 @@ pub trait VmBackend: nemesis_agent::remote_executor_tool::PersistentExecutor {
     /// 运行中实例的 agent 清单（slots 投影用；睡眠/冷停实例不在清单——
     /// 与进程档「睡着的槽已离开 map」同语义）。
     fn running_agents(&self) -> Vec<String>;
+
+    /// R2（2026-10-20 复评）：删除联动逐出。`AgentManager::remove` **无条件**
+    /// 调用（不读 runtime_backend——切过档的旧 VM 实例一并收敛）：运行/启动
+    /// 在途实例冷停出 map，旧身份入墓碑（后续 wake/ensure_running 诚实拒
+    /// 绝）。幂等；`Err` = 删除编排整体中止（记录仍在册，重试干净）。
+    /// **无默认实现**——默认 Ok 会把未来实现者的漏接静默成老 bug。
+    async fn evict_agent(&self, agent_id: &str) -> Result<(), String>;
 }
 
 // ---------------------------------------------------------------------------
@@ -470,11 +477,21 @@ impl AgentManager {
     /// 删除等待期造不出替代槽）；`store.remove`/`lm.remove` 完成后
     /// `evict_end` 清旗标。store.remove 失败也要清旗标（不得把失败删除泄漏
     /// 成永久拒绝），故不用 `?` 中途返回。
+    ///
+    /// R2（2026-10-20 复评）：删除联动 VM 后端收敛——`evict_begin` 之前
+    /// **无条件**调 `vm.evict_agent`（不读 runtime_backend：切过档的旧 VM
+    /// 实例一并收敛），墓碑保证旧身份此后不可再唤醒。失败 = 整体中止且
+    /// 记录未动（evict_begin 尚未发生，无中间态），重试即干净。
     pub async fn remove(&self, agent_id: &str) -> Result<(), String> {
         if let Some(record) = self.store.get(agent_id)?
             && record.kind == agent_kind::MAIN
         {
             return Err("main agent 是对话组身份投影，不可删除".to_string());
+        }
+        if let Some(vm) = self.vm_backend() {
+            vm.evict_agent(agent_id)
+                .await
+                .map_err(|e| format!("VM 后端逐出失败，删除中止（记录未动，重试即干净）: {e}"))?;
         }
         if let Some(rt) = self.runtime() {
             rt.evict_begin(agent_id).await;

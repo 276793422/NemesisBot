@@ -88,8 +88,11 @@ impl ToolHook for ToolEventHook {
         let result = next(call).await;
         let duration_ms = start.elapsed().as_millis() as u64;
 
-        // Forge 同款启发式（loop.rs）：around 层只见最终 String。
-        let ok = !result.contains("SECURITY BLOCKED") && !result.contains("Tool error:");
+        // R4（2026-10-20）：成败判定换 [`classify_result`] 单一真相源——
+        // 按工具类选精确判别器（exec = Exit code: 前缀判据，非零退出不再
+        // 被标成功）；拒绝族（⛔/Plan/hidden/安全拦截）= None → ok:false
+        // （拒绝不是成功，旧 contains 启发式把 ⛔ ESTOP 拒绝标成了 ok）。
+        let ok = crate::checks_capture::classify_result(&tool, &result).unwrap_or(false);
 
         let _ = self.tx.send(AgentEvent::ToolFinished {
             session_key,

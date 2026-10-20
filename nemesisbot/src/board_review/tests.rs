@@ -5534,6 +5534,64 @@ fn typed_blocks_json() -> serde_json::Value {
     })
 }
 
+// R5 回归锁（原诊断探针翻转）：真实「纯删除」交付在 R5 后是完整的证据面——
+// capture 侧 files 恒序列化且含 delete 条目（old_sha256 承载证据），形态闸
+// kind 分臂放行，评审通过离开 InReview。
+#[tokio::test]
+async fn deletion_only_capture_satisfies_strict_evidence_gate() {
+    let tmp = tempfile::tempdir().unwrap();
+    git2::Repository::init(tmp.path()).unwrap();
+    std::fs::write(tmp.path().join("obsolete.txt"), "obsolete\n").unwrap();
+    let cp = Arc::new(nemesis_agent::checkpoint::CheckpointStore::new(
+        None,
+        tmp.path().to_path_buf(),
+    ));
+    cp.begin(1, "review deletion baseline");
+    let base = cp.current_tree_hex().unwrap();
+    std::fs::remove_file(tmp.path().join("obsolete.txt")).unwrap();
+    let delivery = crate::delivery_gate::capture_task_delivery_with_store(
+        &cp,
+        "t-review-delete-only",
+        Some(&base),
+        "node-b",
+        Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(delivery["files_changed"], 1);
+    let files = delivery["files"]
+        .as_array()
+        .expect("files 恒序列化（R5 契约）");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0]["path"], "obsolete.txt");
+    assert_eq!(files[0]["kind"], "delete");
+    assert!(
+        files[0].get("sha256").is_none(),
+        "delete 无新内容可哈希（sha256 空串不序列化）"
+    );
+    assert_eq!(
+        files[0]["old_sha256"].as_str().unwrap().len(),
+        64,
+        "old_sha256 = 变更前 blob 摘要"
+    );
+    let (deps, _ws, id) = evidence_gate_fixture(
+        serde_json::json!({"node":"node-b", "delivery":delivery}),
+        "review-delete-only",
+    )
+    .await;
+    write_board_config(
+        &deps.home,
+        r#"{"auto_accept":true,"review":{"require_delivery_evidence":true,"evidence_typed_required":true}}"#,
+    );
+    review_issue(&deps, id, ReviewCtx::first_stage())
+        .await
+        .unwrap();
+    assert_eq!(
+        deps.store.get_issue(id).unwrap().status,
+        nemesis_board::IssueStatus::Done,
+        "纯删除交付 = 完整证据 → 闸放行 → auto_accept 落 done"
+    );
+}
+
 #[tokio::test]
 async fn evidence_typed_blocks_valid_shape_passes() {
     use nemesis_board::IssueStatus;

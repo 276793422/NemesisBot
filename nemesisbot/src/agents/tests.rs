@@ -27,6 +27,62 @@ fn selfbuilt_params(name: &str) -> CreateAgentParams {
     }
 }
 
+// R2 回归锁（原诊断探针翻转）：删除联动 VM 后端收敛——remove 无条件调
+// vm.evict_agent（运行实例冷停出 running_agents；本 mock 的 evict 实现
+// 镜像真实语义：从运行清单摘除），删除后旧实例不再在运行清单。
+#[tokio::test]
+async fn remove_converges_attached_vm_backend_instance() {
+    use super::VmBackend;
+    struct ReviewVm(std::sync::Mutex<Vec<String>>);
+    #[async_trait::async_trait]
+    impl nemesis_agent::remote_executor_tool::PersistentExecutor for ReviewVm {
+        async fn execute_persistent(
+            &self,
+            _: &str,
+            _: &Path,
+            _: &str,
+            _: &str,
+            _: &nemesis_agent::context::RequestContext,
+        ) -> Result<String, nemesis_agent::remote_executor_tool::PersistentCallError> {
+            Ok("unused".into())
+        }
+    }
+    #[async_trait::async_trait]
+    impl VmBackend for ReviewVm {
+        async fn sleep_agent(&self, id: &str) -> Result<bool, String> {
+            self.0.lock().unwrap().retain(|x| x != id);
+            Ok(true)
+        }
+        async fn wake_agent(&self, id: &str, _: &Path) -> Result<(), String> {
+            self.0.lock().unwrap().push(id.to_string());
+            Ok(())
+        }
+        fn running_agents(&self) -> Vec<String> {
+            self.0.lock().unwrap().clone()
+        }
+        async fn evict_agent(&self, id: &str) -> Result<(), String> {
+            // 镜像 VmSupervisor::evict_agent 的可见效果：运行实例冷停出清单。
+            self.0.lock().unwrap().retain(|x| x != id);
+            Ok(())
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = setup(dir.path());
+    let mut params = selfbuilt_params("review vm remove");
+    params.runtime_backend = "vm".into();
+    let record = mgr.create_agent(params).unwrap();
+    let vm = Arc::new(ReviewVm(std::sync::Mutex::new(Vec::new())));
+    mgr.set_vm_backend(vm.clone());
+    vm.wake_agent(&record.agent_id, Path::new(&record.exec_root))
+        .await
+        .unwrap();
+    assert!(vm.running_agents().contains(&record.agent_id));
+    mgr.remove(&record.agent_id).await.unwrap();
+    assert!(mgr.get(&record.agent_id).unwrap().is_none());
+    assert!(!vm.running_agents().contains(&record.agent_id));
+    vm.sleep_agent(&record.agent_id).await.unwrap();
+}
+
 // -- P5 第 4 步：runtime_backend 档位面 --------------------------------------
 
 #[test]

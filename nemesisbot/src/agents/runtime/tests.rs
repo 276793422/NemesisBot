@@ -641,6 +641,47 @@ mod sup_real_child {
         assert!(sup.slot_states().is_empty());
     }
 
+    // R3 回归锁（原 review 探针反转，2026-10-20）：删除完整走完（begin→end、
+    // 旗标已清、记录已注销）后，spawn 中途的在途 wake 必须在插入点被代次
+    // 复核拦下——诚实 Err、刚 spawn 的会话被关停、零幸存槽。旧行为（ABA）：
+    // 插表成功 = 已删身份复活，result Ok 且槽幸存。
+    #[tokio::test]
+    async fn completed_delete_cannot_be_overtaken_by_inflight_spawn() {
+        let _env = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let (sup, exec_root, _cfg) = supervisor(
+            &tmp,
+            r#"{"executor":{"persistent":{"enabled":true,"max_slots":2,"idle_shutdown_secs":0,"call_timeout_secs":120}}}"#,
+        );
+        let registered = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let registered_check = registered.clone();
+        sup.set_registration_check(Arc::new(move |_| {
+            registered_check.load(std::sync::atomic::Ordering::SeqCst)
+        }));
+        let barrier = Arc::new((tokio::sync::Notify::new(), tokio::sync::Notify::new()));
+        *sup.review_spawn_barrier.lock().unwrap() = Some(barrier.clone());
+        let bg_sup = sup.clone();
+        let bg = tokio::spawn(async move { bg_sup.wake_agent("agent-a", &exec_root).await });
+        tokio::time::timeout(std::time::Duration::from_secs(20), barrier.0.notified())
+            .await
+            .unwrap();
+        sup.evict_begin("agent-a").await;
+        registered.store(false, std::sync::atomic::Ordering::SeqCst);
+        sup.evict_end("agent-a");
+        barrier.1.notify_one();
+        let result = bg.await.unwrap();
+        assert!(sup.slot_states().is_empty(), "已删身份不得留下任何幸存槽");
+        match &result {
+            Err(crate::agents::runtime::SupervisorError::Unavailable(m)) => {
+                assert!(
+                    m.contains("being removed") || m.contains("no longer present"),
+                    "诚实拒绝须说明删除/注销: {m}"
+                );
+            }
+            other => panic!("删除完成后在途 spawn 必须被拒（ABA 封死）: {other:?}"),
+        }
+    }
+
     /// F3：删除编排与并发 spawn 的竞态不变式——begin 返回后槽必为空（并发
     /// wake 要么被旗标拒绝（修复语义），要么先成槽被排空（等价旧行为）），
     /// 绝不允许幸存「evict 覆盖不到的替代槽」；反复三轮压窗口（spawn 真实

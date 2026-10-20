@@ -215,7 +215,7 @@ fn capture_does_not_disturb_workspace() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn capture_files_entries_sha256_and_exclude_deletions() {
+fn capture_files_entries_cover_all_kinds_with_old_sha() {
     let (_d, root) = p4_git_root();
     std::fs::write(root.join("a.txt"), "v1\n").unwrap();
     std::fs::write(root.join("old.txt"), "doomed\n").unwrap();
@@ -233,9 +233,10 @@ fn capture_files_entries_sha256_and_exclude_deletions() {
     let cap = store
         .capture_delivery_branch(Some(&base), "run-tf1")
         .unwrap();
-    // 计数含删除（3 形态全计），清单排除删除（无内容可哈希）。
+    // 计数含删除（3 形态全计），R5 清单同样含全部形态（删除入清单，
+    // old_sha256 承载证据）。
     assert_eq!(cap.files_changed, 3);
-    assert_eq!(cap.files.len(), 2, "删除项不入清单");
+    assert_eq!(cap.files.len(), 3, "add/modify/delete 三条目");
     assert!(!cap.files_truncated);
 
     let a = cap
@@ -248,13 +249,14 @@ fn capture_files_entries_sha256_and_exclude_deletions() {
         .iter()
         .find(|f| f.path == "src/new.rs")
         .expect("src/new.rs 在清单（正斜杠形态）");
+    let old = cap
+        .files
+        .iter()
+        .find(|f| f.path == "old.txt")
+        .expect("old.txt（删除）在清单（R5：删除也是交付事实）");
     assert!(
         cap.files.iter().all(|f| !f.path.contains('\\')),
         "路径全正斜杠"
-    );
-    assert!(
-        cap.files.iter().all(|f| !f.path.contains("old.txt")),
-        "old.txt（删除）确实不在清单"
     );
 
     // sha256 = 交付 tree 的 blob 内容摘要（与磁盘新内容一致）。
@@ -263,18 +265,52 @@ fn capture_files_entries_sha256_and_exclude_deletions() {
         h.update(b"v2\nmore\n");
         format!("{:x}", h.finalize())
     };
+    let expect_old = {
+        let mut h = Sha256::new();
+        h.update(b"doomed\n");
+        format!("{:x}", h.finalize())
+    };
     let expect_new = {
         let mut h = Sha256::new();
         h.update(b"fn main() {}\n");
         format!("{:x}", h.finalize())
     };
+    assert_eq!(a.kind, DeliveryFileKind::Modify);
     assert_eq!(a.sha256, expect_a);
+    assert_eq!(
+        a.old_sha256,
+        {
+            let mut h = Sha256::new();
+            h.update(b"v1\n");
+            format!("{:x}", h.finalize())
+        },
+        "modify 携带变更前摘要"
+    );
+    assert_eq!(new.kind, DeliveryFileKind::Add);
     assert_eq!(new.sha256, expect_new);
-    assert_eq!(a.sha256.len(), 64);
+    assert!(new.old_sha256.is_empty(), "add 无变更前");
+    assert_eq!(old.kind, DeliveryFileKind::Delete);
+    assert!(old.sha256.is_empty(), "delete 无新内容可哈希");
+    assert_eq!(
+        old.old_sha256, expect_old,
+        "delete 的 old_sha256 = 变更前 blob 摘要"
+    );
+
+    // wire 契约：kind 小写；delete 条目无 sha256 键、add 条目无 old_sha256 键。
+    let json = serde_json::to_value(&cap).unwrap();
+    let jold = json["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["path"] == "old.txt")
+        .unwrap();
+    assert_eq!(jold["kind"], "delete");
+    assert!(jold.get("sha256").is_none());
+    assert_eq!(jold["old_sha256"].as_str().unwrap().len(), 64);
 }
 
 #[test]
-fn capture_files_empty_when_no_changes_and_absent_in_json() {
+fn capture_files_empty_serializes_as_empty_array() {
     let (_d, root) = p4_git_root();
     std::fs::write(root.join("same.txt"), "v1\n").unwrap();
 
@@ -288,10 +324,14 @@ fn capture_files_empty_when_no_changes_and_absent_in_json() {
     assert!(cap.files.is_empty());
     assert!(!cap.files_truncated);
 
-    // 空清单 skip 序列化 = wire 上键缺席（诚实缺席，验收侧「缺席块行为
-    // 不变」由此钉死）。
+    // R5：files 恒序列化——空清单 = 「零文件变更」的派生事实（与「字段
+    // 缺席」语义不同）；files_truncated 仍只 true 时序列化。
     let json = serde_json::to_value(&cap).unwrap();
-    assert!(json.get("files").is_none(), "空 files 不得序列化");
+    assert_eq!(
+        json.get("files").and_then(|v| v.as_array()),
+        Some(&Vec::new()),
+        "空 files 序列化为空数组"
+    );
     assert!(json.get("files_truncated").is_none());
 }
 
