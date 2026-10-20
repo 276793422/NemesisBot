@@ -113,7 +113,6 @@ const NAV_MORE: { id: string; label: string; path: string }[] = [
   { id: 'hooks', label: 'HOOK', path: '/hooks' },
   { id: 'commands', label: '命令', path: '/commands' },
   { id: 'plugins', label: '插件', path: '/plugins' },
-  { id: 'subagents', label: '子Agent', path: '/subagents' },
   { id: 'channels', label: '通道', path: '/channels' },
   { id: 'workflows', label: '工作流', path: '/workflows' },
   { id: 'forge', label: 'Forge', path: '/forge' },

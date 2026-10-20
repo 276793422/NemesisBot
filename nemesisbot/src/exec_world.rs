@@ -6,9 +6,11 @@
 //! RemoteExecutorTool → executor 子进程 / Sandboxie 盒），但仍有三类执行不经过
 //! 任何执行环境抽象：
 //!
-//! 1. **CLI `nemesisbot workflow run`** 用裸 `WorkflowEngine::new()`，script
+//! 1. **CLI `nemesisbot workflow run`** 曾用裸 `WorkflowEngine::new()`，script
 //!    节点落到 `ScriptNodeExecutor::new()` 的裸 `Command::new` —— 生产可达的
-//!    沙盒逃逸路径（executor.sandbox=true 也拦不住）。
+//!    沙盒逃逸路径（executor.sandbox=true 也拦不住）。（2026-10-20 起 CLI 与
+//!    agent 工厂换 `new_arc`，sub_workflow 节点不再是 stub；script 节点的
+//!    隔离由本模块 world 装配承接，与构造器无关。）
 //! 2. **引擎自身 IO**（persist_workflow / persist_execution / delete）直接写
 //!    磁盘，workflow_name 不清洗时存在路径穿越面。
 //! 3. 各装配点（agent / workflow / 未来的 tool-plugin）各写一套 spawn 语义。
