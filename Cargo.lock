@@ -5748,6 +5748,7 @@ dependencies = [
  "regex",
  "reqwest 0.12.28",
  "rpassword",
+ "rusqlite",
  "rustyline",
  "serde",
  "serde_json",

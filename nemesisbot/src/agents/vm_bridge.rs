@@ -506,10 +506,12 @@ pub(crate) fn image_build_inputs(
 }
 
 /// [`VmSupervisorError`] → WSAPI 字符串（带分类前缀，页面可区分「档没开」
-/// 与「操作失败」两类——Unavailable 可回落、Failed 有副作用可能绝不回落）。
+/// 「身份已终结」「操作失败」三类——Unavailable 可回落、LifecycleRejected
+/// 身份已终结禁回落（F1）、Failed 有副作用可能绝不回落）。
 fn err_string(e: VmSupervisorError) -> String {
     match e {
         VmSupervisorError::Unavailable(m) => format!("不可用: {m}"),
+        VmSupervisorError::LifecycleRejected(m) => format!("生命周期拒绝: {m}"),
         VmSupervisorError::Failed(m) => format!("失败: {m}"),
     }
 }

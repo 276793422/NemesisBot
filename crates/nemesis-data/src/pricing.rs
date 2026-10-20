@@ -16,18 +16,28 @@
 //! parsing path for both. `embedded_source()` reports which variant was
 //! compiled in (CLI / API display it verbatim).
 //!
-//! Cost formula (usage-pricing plan):
+//! Cost formula (usage-pricing plan; 2026-10-20 口径统一后语义):
 //!
 //! ```text
 //! total_cost_usd =
-//!     (input - cache_creation - cache_read) * input_price
+//!     input * input_price                       (非缓存纯输入)
 //!   + output * output_price
 //!   + cache_creation * cache_creation_price
-//!   + cache_read * cache_read_price        (all prices per million tokens)
+//!   + cache_read * cache_read_price             (all prices per million tokens)
 //! ```
 //!
-//! The formula assumes cache tokens are reported as part of `input_tokens`
-//! (OpenAI-style normalization, which is what `nemesis-providers` exposes).
+//! `input_tokens` is the **non-cached plain input** (Anthropic-style
+//! semantics) — the three outbound lanes normalize before feeding the
+//! ledger; cache read/write are priced in their own columns and are never
+//! re-charged at the plain-input rate. Two distinct token口径 share this
+//! module:
+//!
+//! - **计费口径** = the four columns above (each priced separately);
+//! - **选档口径** = full prompt length for `price_tiers` threshold
+//!   matching, computed by [`tier_selection_tokens`] (= plain input +
+//!   cache creation + cache read) — cache tokens are real context and do
+//!   trigger long-context tiers.
+//!
 //! Providers that report cache tokens separately are handled gracefully by
 //! clamping the plain-input portion at zero. Models missing from the table
 //! degrade to `0.0` — cost is observability data, never guess.
@@ -164,11 +174,31 @@ pub fn compute_cost_usd(
     )
 }
 
-/// Prompt-length 阶梯解析（L3，2026-10-12 内部专项 T0）：`input_tokens`
+/// 阶梯选档口径的单一真相源（F3，2026-10-21）：`min_prompt_tokens` 的语义
+/// 是**完整 prompt 长度**（含缓存部分——缓存读写就是真实上下文，长会话的
+/// 阶梯价正该由它触发），在当前统一口径（`input_tokens` = 非缓存纯输入）
+/// 下 = 非缓存输入 + 缓存创建 + 缓存读取。各分量防御性钳 0 + 饱和加法
+/// （上游报数异常不 panic、不产生负长度）。**计费口径**仍按三类各自分列
+/// （缓存不按普通输入价重复计费）——选档看完整长度，计费按列。
+pub fn tier_selection_tokens(
+    input_tokens: i64,
+    cache_creation_tokens: i64,
+    cache_read_tokens: i64,
+) -> i64 {
+    input_tokens
+        .max(0)
+        .saturating_add(cache_creation_tokens.max(0))
+        .saturating_add(cache_read_tokens.max(0))
+}
+
+/// Prompt-length 阶梯解析（L3，2026-10-12 内部专项 T0）：`prompt_tokens`
 /// 达到某档 `min_prompt_tokens` 即该档生效；多条命中取阈值最大的一档；
 /// 档内 `None` 价目字段继承基础价。**单一真相源**——`cost_from_pricing`
 /// 与 `cost_breakdown_from_pricing` 共同消费，两条口径永不分叉。
-fn effective_prices(p: &ModelPricing, input_tokens: i64) -> EffectivePrices {
+///
+/// `prompt_tokens` = 完整 prompt 长度（[`tier_selection_tokens`] 的产物，
+/// 含缓存），非账本的 `input_tokens`（非缓存纯输入）——两口径勿混。
+fn effective_prices(p: &ModelPricing, prompt_tokens: i64) -> EffectivePrices {
     let Some(tiers) = &p.price_tiers else {
         return EffectivePrices {
             input: p.input_cost_per_million,
@@ -177,11 +207,11 @@ fn effective_prices(p: &ModelPricing, input_tokens: i64) -> EffectivePrices {
             cache_creation: p.cache_creation_cost_per_million,
         };
     };
-    // 命中 = input_tokens >= min_prompt_tokens；多条命中取阈值最大的一档
+    // 命中 = prompt_tokens >= min_prompt_tokens；多条命中取阈值最大的一档
     // （max_by_key 平票取后者，但等阈值档语义上应同价——取哪条都一致）。
     let tier = tiers
         .iter()
-        .filter(|t| input_tokens >= t.min_prompt_tokens)
+        .filter(|t| prompt_tokens >= t.min_prompt_tokens)
         .max_by_key(|t| t.min_prompt_tokens);
     match tier {
         None => EffectivePrices {
@@ -224,7 +254,11 @@ pub fn cost_from_pricing(
     cache_creation_tokens: i64,
     cache_read_tokens: i64,
 ) -> f64 {
-    let prices = effective_prices(p, input_tokens);
+    // 选档 = 完整 prompt 长度（缓存参与）；计费列三类各自分列。
+    let prices = effective_prices(
+        p,
+        tier_selection_tokens(input_tokens, cache_creation_tokens, cache_read_tokens),
+    );
     let plain_input = input_tokens.max(0);
     (plain_input as f64 * prices.input
         + output_tokens as f64 * prices.output
@@ -243,7 +277,11 @@ pub fn cost_breakdown_from_pricing(
     cache_creation_tokens: i64,
     cache_read_tokens: i64,
 ) -> crate::CostBreakdown {
-    let prices = effective_prices(p, input_tokens);
+    // 选档与总价版同源：完整 prompt 长度（缓存参与），见 [`tier_selection_tokens`]。
+    let prices = effective_prices(
+        p,
+        tier_selection_tokens(input_tokens, cache_creation_tokens, cache_read_tokens),
+    );
     let plain_input = input_tokens.max(0);
     let input_cost_usd = plain_input as f64 * prices.input / 1_000_000.0;
     let output_cost_usd = output_tokens as f64 * prices.output / 1_000_000.0;

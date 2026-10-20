@@ -625,7 +625,8 @@ mod sup_real_child {
         sup.evict_begin("agent-a").await; // 无槽：纯置旗
         let r = sup.wake_agent("agent-a", &exec_root).await;
         match r {
-            Err(SupervisorError::Unavailable(m)) => {
+            // F1：删除在途 = 生命周期拒绝（原 Unavailable 变体已拆分）。
+            Err(SupervisorError::LifecycleRejected(m)) => {
                 assert!(m.contains("being removed"), "拒绝须说明删除在途: {m}");
             }
             other => panic!("编排窗口内 wake 必须被拒: {other:?}"),
@@ -644,7 +645,9 @@ mod sup_real_child {
     // R3 回归锁（原 review 探针反转，2026-10-20）：删除完整走完（begin→end、
     // 旗标已清、记录已注销）后，spawn 中途的在途 wake 必须在插入点被代次
     // 复核拦下——诚实 Err、刚 spawn 的会话被关停、零幸存槽。旧行为（ABA）：
-    // 插表成功 = 已删身份复活，result Ok 且槽幸存。
+    // 插表成功 = 已删身份复活，result Ok 且槽幸存。F1（2026-10-21 三轮复评）：
+    // 拒绝变体从 Unavailable 细分为 LifecycleRejected（身份已终结，禁宿主
+    // 回落）——match 臂随之收窄，可降级的 Unavailable 不再混入删除语义。
     #[tokio::test]
     async fn completed_delete_cannot_be_overtaken_by_inflight_spawn() {
         let _env = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -672,7 +675,7 @@ mod sup_real_child {
         let result = bg.await.unwrap();
         assert!(sup.slot_states().is_empty(), "已删身份不得留下任何幸存槽");
         match &result {
-            Err(crate::agents::runtime::SupervisorError::Unavailable(m)) => {
+            Err(crate::agents::runtime::SupervisorError::LifecycleRejected(m)) => {
                 assert!(
                     m.contains("being removed") || m.contains("no longer present"),
                     "诚实拒绝须说明删除/注销: {m}"
@@ -680,6 +683,82 @@ mod sup_real_child {
             }
             other => panic!("删除完成后在途 spawn 必须被拒（ABA 封死）: {other:?}"),
         }
+    }
+
+    // F1 回归锁（原三轮复评诊断探针翻转，2026-10-21）：删除完整走完后恢复
+    // 的工具调用必须**终止**在生命周期拒绝——不落宿主 per-call 回落。旧行为
+    // （探针实证）：拒绝被统一映射成 host_fallback=true，RemoteExecutorTool
+    // 经宿主通道照常执行（宿主 marker 文件被读出 = 已删身份的工具成功执行）。
+    // 断言面（对齐评估验收 1-3）：Err + 错误表达生命周期拒绝 + 错误不含宿主
+    // marker 内容（宿主通道未执行 = 无新工具副作用）+ 零幸存槽。完整链路
+    // （RemoteExecutorTool.execute，非仅 wake_agent）。
+    #[tokio::test]
+    async fn completed_delete_rejection_terminates_call_without_host_fallback() {
+        use nemesis_agent::r#loop::Tool;
+        use nemesis_agent::loop_tools::ExecTool;
+        use nemesis_agent::remote_executor_tool::{
+            ExecutorChannel, PersistentRoute, RemoteExecutorTool,
+        };
+        let _env = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let (sup, exec_root, _) = supervisor(
+            &tmp,
+            r#"{"executor":{"persistent":{"enabled":true,"max_slots":2,"idle_shutdown_secs":0,"call_timeout_secs":120}}}"#,
+        );
+        let registered = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let check = registered.clone();
+        sup.set_registration_check(Arc::new(move |_| {
+            check.load(std::sync::atomic::Ordering::SeqCst)
+        }));
+        // 宿主 marker：若回落发生，per-call read_file 会把内容读出来。
+        std::fs::write(
+            exec_root.join("review-host-marker.txt"),
+            "REVIEW_DELETED_AGENT_HOST_READ",
+        )
+        .unwrap();
+        let barrier = Arc::new((tokio::sync::Notify::new(), tokio::sync::Notify::new()));
+        *sup.review_spawn_barrier.lock().unwrap() = Some(barrier.clone());
+        let channel = Arc::new(
+            ExecutorChannel::new(
+                resolve_test_bin().unwrap(),
+                exec_root.to_string_lossy().to_string(),
+                Arc::new(|| false),
+            )
+            .with_home(tmp.path().to_path_buf()),
+        );
+        let local = Box::new(ExecTool::new(&exec_root.to_string_lossy(), true));
+        let exec_root_for_route = exec_root.clone();
+        let tool = RemoteExecutorTool::new("read_file".into(), local, channel).with_persistent(
+            PersistentRoute {
+                resolve: Arc::new(move || Some(("agent-a".into(), exec_root_for_route.clone()))),
+                executor: sup.clone(),
+            },
+        );
+        let bg = tokio::spawn(async move {
+            tool.execute(r#"{"path":"review-host-marker.txt"}"#, &ctx())
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(20), barrier.0.notified())
+            .await
+            .unwrap();
+        sup.evict_begin("agent-a").await;
+        registered.store(false, std::sync::atomic::Ordering::SeqCst);
+        sup.evict_end("agent-a");
+        barrier.1.notify_one();
+        let result = bg.await.unwrap();
+        assert!(sup.slot_states().is_empty(), "已删身份不得留下任何幸存槽");
+        let err = match result {
+            Ok(out) => panic!("删除后的工具调用必须终止，不得经宿主回落成功执行: {out:?}"),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("lifecycle rejected"),
+            "错误必须表达生命周期拒绝: {err}"
+        );
+        assert!(
+            !err.contains("REVIEW_DELETED_AGENT_HOST_READ"),
+            "宿主回落不得发生（marker 内容不得出现于任何结果）: {err}"
+        );
     }
 
     /// F3：删除编排与并发 spawn 的竞态不变式——begin 返回后槽必为空（并发

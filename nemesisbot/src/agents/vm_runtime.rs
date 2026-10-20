@@ -65,13 +65,17 @@ pub(crate) const GIB: u64 = 1024 * 1024 * 1024;
 // 错误分型（对齐 P3 SupervisorError 语义——Step 4 接入面靠它决定可否回落）
 // ---------------------------------------------------------------------------
 
-/// VM 监督器错误。两臂语义（P3 同款）：调用方据此决定「回落其他执行后端」
-/// 还是「如实上报」。
+/// VM 监督器错误。三臂语义（P3 同款 + F1 扩）：调用方据此决定「回落其他
+/// 执行后端」还是「如实上报」。
 #[derive(Debug)]
 pub enum VmSupervisorError {
     /// 档不可用，**调用从未发生**（config 关 / 镜像缺 / 满员 / GC stop 闸 /
     /// 加速缺席 / 睡眠线不支持）——可安全回落其他执行后端。
     Unavailable(String),
+    /// F1（2026-10-21 三轮复评）：身份生命周期已终结（删除墓碑/删除在途）——
+    /// 调用未发生**且**该身份不该再执行任何工具。**禁宿主回落**（回落 =
+    /// 已删身份的工具在宿主照常执行）。
+    LifecycleRejected(String),
     /// 操作已尝试且**可能已有副作用**（VM 进程状态可能已变）——不回落，
     /// 如实上报。
     Failed(String),
@@ -81,6 +85,7 @@ impl std::fmt::Display for VmSupervisorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             VmSupervisorError::Unavailable(m) => write!(f, "VM 档不可用: {m}"),
+            VmSupervisorError::LifecycleRejected(m) => write!(f, "VM 档生命周期拒绝: {m}"),
             VmSupervisorError::Failed(m) => write!(f, "VM 操作失败: {m}"),
         }
     }
@@ -679,12 +684,17 @@ pub struct VmSupervisor {
     /// 拒绝。sweep_orphans 同源消费：在途 agent 不是孤儿。
     starting: Mutex<HashSet<String>>,
     /// R2（2026-10-20 复评）：已逐出身份墓碑。删除编排（`AgentManager::
-    /// remove` → `VmBackend::evict_agent`）先落墓碑再冷停出槽；`ensure_
-    /// running` 入口与槽安装点复查——封「删除 vs 分钟级冷启动」窗口（启动
-    /// 在途的 wake 完成时被安装点拦下，自停刚起的实例 + 诚实 Err）与
-    /// 「删除后旧身份再唤醒」。单调增长可忽略（每条一个 String，删除是
-    /// 低频管理动作）。
+    /// remove` → `VmBackend::evict_agent_prepare/commit`）在真相源删除成功
+    /// 后落墓碑；`ensure_running` 入口与槽安装点复查——封「删除 vs 分钟级
+    /// 冷启动」窗口（启动在途的 wake 完成时被安装点拦下，自停刚起的实例 +
+    /// 诚实 Err）与「删除后旧身份再唤醒」。单调增长可忽略（每条一个
+    /// String，删除是低频管理动作）。
     evicted: Mutex<HashSet<String>>,
+    /// F2（2026-10-21 三轮复评）：删除**在途**临时拒绝态。prepare 进、
+    /// commit 转 permanent / abort 解除——与 `evicted` 分离是本修复的核
+    /// 心：DB 删除失败时临时态解除、身份可再唤醒，永久墓碑不误落（探针
+    /// 实证的「记录在册但身份永久不可唤醒」事故面）。
+    evicting: Mutex<HashSet<String>>,
 }
 
 /// 试玩启动在途状态（真机教训 2026-10-19：冷启动同步等 30-60s 撞前端
@@ -726,6 +736,7 @@ impl VmSupervisor {
             try_launch: Mutex::new(TryLaunchState::default()),
             starting: Mutex::new(HashSet::new()),
             evicted: Mutex::new(HashSet::new()),
+            evicting: Mutex::new(HashSet::new()),
         }
     }
 
@@ -894,11 +905,18 @@ impl VmSupervisor {
         if let Err(m) = validate_agent_id(agent_id) {
             return Err(VmSupervisorError::Failed(m));
         }
-        // R2：已逐出身份拒绝（删除联动墓碑）——Unavailable（调用未发生；
-        // vm 档禁宿主回落由错误位表达）。
+        // R2：已逐出身份拒绝（删除联动墓碑）——F1：生命周期拒绝（调用未
+        // 发生且身份已终结；禁宿主回落由独立变体表达，不再是 Unavailable）。
         if self.is_evicted(agent_id) {
-            return Err(VmSupervisorError::Unavailable(format!(
+            return Err(VmSupervisorError::LifecycleRejected(format!(
                 "agent {agent_id} 已删除（VM 身份已逐出），旧实例不可再唤醒"
+            )));
+        }
+        // F2：删除在途临时拒绝——prepare 已进、commit/abort 未决的窗口内
+        // 新启动一律拒绝（临时态，abort 后自动恢复可唤醒）。
+        if self.is_evicting(agent_id) {
+            return Err(VmSupervisorError::LifecycleRejected(format!(
+                "agent {agent_id} 删除在途（VM 身份逐出进行中），暂不可唤醒"
             )));
         }
         let settings = self.vm_settings().ok_or_else(|| {
@@ -993,32 +1011,53 @@ impl VmSupervisor {
             last_used: Instant::now(),
         }));
         // 插入/复核（锁内只做决策，await 一律在锁块外——std 守卫跨 await
-        // 会让 future 非 Send，async_trait 面直接拒绝）。
+        // 会让 future 非 Send，async_trait 面直接拒绝）。F2：墓碑与删除
+        // 在途一并复查（删除 vs 分钟级冷启动窗口两态都拦）；满员/双赢家
+        // 仍是可降级 Unavailable——生命周期拒绝单独成臂（F1 变体语义）。
+        enum InstallRejection {
+            Lifecycle(String),
+            Unavailable(String),
+        }
         let race_loser = {
             let mut map = self
                 .slots
                 .lock()
                 .expect("vm supervisor slots lock poisoned");
             if self.is_evicted(agent_id) {
-                // R2：启动在途窗口内删除编排完成——安装点墓碑复查拦下，
-                // 刚启动的实例走输家路径自停（封「删除 vs 分钟级冷启动」）。
-                Some(format!("agent {agent_id} 已删除（VM 身份已逐出）"))
+                // R2：启动在途窗口内删除编排完成（永久墓碑已落）——安装点
+                // 复查拦下，刚启动的实例走输家路径自停。
+                Some(InstallRejection::Lifecycle(format!(
+                    "agent {agent_id} 已删除（VM 身份已逐出）"
+                )))
+            } else if self.is_evicting(agent_id) {
+                // F2：启动在途窗口内删除编排开始（临时态在位）——同上拦下。
+                Some(InstallRejection::Lifecycle(format!(
+                    "agent {agent_id} 删除在途（VM 身份逐出进行中）"
+                )))
             } else if capacity_full(map.len(), settings.max_instances) {
-                Some("VM 满员闸（并发复核）：另一实例先占满名额".to_string())
+                Some(InstallRejection::Unavailable(
+                    "VM 满员闸（并发复核）：另一实例先占满名额".to_string(),
+                ))
             } else if map.insert(agent_id.to_string(), slot.clone()).is_some() {
                 // 同 agent 并发 ensure 双赢家：保留先到者，自己（新实例）退出。
-                Some("VM 满员闸（并发复核）：同 agent 并发 ensure 双赢家".to_string())
+                Some(InstallRejection::Unavailable(
+                    "VM 满员闸（并发复核）：同 agent 并发 ensure 双赢家".to_string(),
+                ))
             } else {
                 None
             }
         };
         if let Some(reason) = race_loser {
-            // 竞态输家：满员窗口/名额被并发赢家占掉 → 刚启动的实例诚实退出。
+            // 竞态输家：满员窗口/名额被并发赢家占掉（或删除编排赢下窗口）
+            // → 刚启动的实例诚实退出。
             let mut loser = slot.lock().await;
             if let Err(e) = loser.vm.stop(STOP_GRACE).await {
                 tracing::warn!("[vm-runtime] 竞态输家实例停止失败（残留由孤儿 sweep 收敛）: {e}");
             }
-            return Err(VmSupervisorError::Unavailable(reason));
+            return Err(match reason {
+                InstallRejection::Lifecycle(m) => VmSupervisorError::LifecycleRejected(m),
+                InstallRejection::Unavailable(m) => VmSupervisorError::Unavailable(m),
+            });
         }
         Ok(slot)
     }
@@ -1328,16 +1367,32 @@ impl VmSupervisor {
             .contains(agent_id)
     }
 
-    /// R2：删除联动逐出（幂等）：墓碑先落 → 有槽则冷停出 map（复用
-    /// [`Self::stop_agent`] 语义：QMP quit→kill 兜底，overlay/持久盘保留
-    /// ——停机≠删盘，「不可再唤醒旧身份」由墓碑保证）；睡眠/冷停实例无
-    /// 进程，墓碑即足。启动在途的实例不等（冷启动分钟级，等它不如让
-    /// ensure_running 安装点的墓碑复查拦下自停）。
-    pub async fn evict_agent(&self, agent_id: &str) -> Result<(), String> {
-        validate_agent_id(agent_id)?;
-        self.evicted
+    /// F2：删除在途？（临时态——prepare 进、commit/abort 出；消费点 =
+    /// ensure_running 入口 + 槽安装点，与墓碑同位复查。）
+    fn is_evicting(&self, agent_id: &str) -> bool {
+        self.evicting
             .lock()
-            .expect("vm supervisor evicted lock poisoned")
+            .expect("vm supervisor evicting lock poisoned")
+            .contains(agent_id)
+    }
+
+    /// R2：删除联动逐出，F2（2026-10-21 三轮复评）改**两段式**——
+    ///
+    /// - [`Self::evict_agent_prepare`]：进 `evicting` 临时拒绝态 + 有槽冷停
+    ///   出 map（复用 [`Self::stop_agent`] 语义：QMP quit→kill 兜底，
+    ///   overlay/持久盘保留——停机≠删盘）。可逆：stop 失败 = prepare 自身
+    ///   失败，临时态自清理、删除未开始。启动在途的实例不等（冷启动分钟
+    ///   级，等它不如让 ensure_running 安装点的 evicting/evicted 复查拦下
+    ///   自停）。
+    /// - [`Self::evict_agent_commit`]：真相源（DB）删除成功后调用——临时态
+    ///   转永久墓碑（旧身份此后不可再唤醒）。同步不可失败。
+    /// - [`Self::evict_agent_abort`]：DB 删除失败后调用——解除临时态（记录
+    ///   仍在册 = 身份可再唤醒；已冷停实例走正常冷启恢复），永久墓碑不落。
+    pub async fn evict_agent_prepare(&self, agent_id: &str) -> Result<(), String> {
+        validate_agent_id(agent_id)?;
+        self.evicting
+            .lock()
+            .expect("vm supervisor evicting lock poisoned")
             .insert(agent_id.to_string());
         let has_slot = self
             .slots
@@ -1345,13 +1400,54 @@ impl VmSupervisor {
             .expect("vm supervisor slots lock poisoned")
             .contains_key(agent_id);
         if has_slot {
-            self.stop_agent(agent_id).await.map_err(|e| e.to_string())?;
+            // stop 失败 = 删除未开始：临时态自清理（RAII 于人手——abort 由
+            // 失败路径显式调用），旧身份保持可唤醒。
+            if let Err(e) = self.stop_agent(agent_id).await {
+                self.evicting
+                    .lock()
+                    .expect("vm supervisor evicting lock poisoned")
+                    .remove(agent_id);
+                return Err(e.to_string());
+            }
         }
         tracing::info!(
             agent_id = %agent_id,
-            "[vm-runtime] agent 已逐出（删除联动）：运行实例冷停，旧身份不可再唤醒"
+            "[vm-runtime] agent 逐出准备完成（删除在途）：运行实例冷停，新启动被临时拒绝"
         );
         Ok(())
+    }
+
+    /// F2 第二段：真相源删除成功 → 永久墓碑落地 + 临时态转正（同步不可
+    /// 失败；幂等）。
+    pub fn evict_agent_commit(&self, agent_id: &str) {
+        self.evicted
+            .lock()
+            .expect("vm supervisor evicted lock poisoned")
+            .insert(agent_id.to_string());
+        self.evicting
+            .lock()
+            .expect("vm supervisor evicting lock poisoned")
+            .remove(agent_id);
+        tracing::info!(
+            agent_id = %agent_id,
+            "[vm-runtime] agent 逐出提交：永久墓碑落地，旧身份不可再唤醒"
+        );
+    }
+
+    /// F2 失败恢复段：真相源删除失败 → 解除临时拒绝态（旧身份可再唤醒；
+    /// 幂等）。
+    pub fn evict_agent_abort(&self, agent_id: &str) {
+        let removed = self
+            .evicting
+            .lock()
+            .expect("vm supervisor evicting lock poisoned")
+            .remove(agent_id);
+        if removed {
+            tracing::info!(
+                agent_id = %agent_id,
+                "[vm-runtime] agent 逐出中止：临时拒绝态解除，身份保持可唤醒"
+            );
+        }
     }
 
     /// 孤儿 sweep（gateway 启动 + watchdog 周期共用）：registry
@@ -1574,7 +1670,8 @@ const GUEST_CALL_TIMEOUT: Duration = Duration::from_secs(600);
 /// = 已可能副作用 → ToolFailed 绝不回落。R1（2026-10-20）：VM 档 guest 异文
 /// 件视图——Unavailable 时 `host_fallback=false`，宿主回落由错误位**禁止**
 /// （静默落宿主 = 文件视图切换正确性 bug；上层见 false 必须上抛诚实错误，
-/// 不得 spawn 宿主执行器）。
+/// 不得 spawn 宿主执行器）。F1（2026-10-21 三轮复评）：LifecycleRejected
+/// （删除墓碑/删除在途）独立透传——身份已终结，无论文件视图一律终止。
 fn vm_err_to_persistent(
     e: VmSupervisorError,
 ) -> nemesis_agent::remote_executor_tool::PersistentCallError {
@@ -1584,6 +1681,7 @@ fn vm_err_to_persistent(
             message: m,
             host_fallback: false,
         },
+        VmSupervisorError::LifecycleRejected(m) => PersistentCallError::LifecycleRejected(m),
         VmSupervisorError::Failed(m) => PersistentCallError::ToolFailed(m),
     }
 }
@@ -1718,9 +1816,20 @@ impl super::VmBackend for VmSupervisor {
         self.running_agents()
     }
 
-    async fn evict_agent(&self, agent_id: &str) -> Result<(), String> {
-        // R2：删除联动——墓碑 + 冷停出槽（见 inherent evict_agent 文档）。
-        self.evict_agent(agent_id).await
+    async fn evict_agent_prepare(&self, agent_id: &str) -> Result<(), String> {
+        // R2/F2：删除联动第一段——临时拒绝态 + 冷停出槽（见 inherent
+        // evict_agent_prepare 文档）。
+        self.evict_agent_prepare(agent_id).await
+    }
+
+    fn evict_agent_commit(&self, agent_id: &str) {
+        // F2 第二段：真相源删除成功 → 永久墓碑（见 inherent 同名方法）。
+        self.evict_agent_commit(agent_id)
+    }
+
+    fn evict_agent_abort(&self, agent_id: &str) {
+        // F2 失败恢复段：临时态解除（见 inherent 同名方法）。
+        self.evict_agent_abort(agent_id)
     }
 }
 
