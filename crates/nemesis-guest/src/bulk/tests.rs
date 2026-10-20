@@ -65,9 +65,11 @@ fn pack_files_missing_files_are_absent_not_fatal() {
 /// 手工组 tar（pack_files 从磁盘打包，造不出「链接在前、条目穿链接」
 /// 的恶意形态——攻击面测试必须手工组包）。
 #[cfg(unix)]
-fn build_tar(dir: &std::path::Path, name: &str, entries: &[(&str, &[u8])]) -> std::path::PathBuf {
-    std::fs::create_dir_all(dir).unwrap();
-    let out = dir.join(name);
+fn build_tar(ws: &std::path::Path, name: &str, entries: &[(&str, &[u8])]) -> std::path::PathBuf {
+    // 调用方传的是 tempdir 下的新鲜子目录（如 tmp/t）——先建父目录，
+    // 否则 File::create 直接 ENOENT（2026-10-20 CI Linux coverage job 实证）。
+    std::fs::create_dir_all(ws).unwrap();
+    let out = ws.join(name);
     let f = std::fs::File::create(&out).unwrap();
     let mut b = tar::Builder::new(f);
     for (rel, data) in entries {
