@@ -1006,6 +1006,46 @@ pub fn clear_session_project(session_key: &str) -> bool {
     true
 }
 
+/// 会话「脱离父分支」（2026-10-20）：摘除 fork 血缘四字段（parent /
+/// forked_at_turn / fork_reason / branch_summary），其余 meta（title /
+/// project 归属 / manual 标记 / last_rewind / snooze / undelivered）全部
+/// 保留。语义：
+/// - meta 缺失 / 本就无血缘 = no-op 返 false（调用方诚实报「没有父分支」）；
+/// - 有血缘 = 读改写摘除（META_LOCK 下 check-then-write 原子，同
+///   clear_session_project）；
+/// - 消息内容零改动——fork 时新会话 jsonl 本就是整段 VERBATIM 拷贝，脱离
+///   只断 meta 派生视图（谱系树 / 祖先链 / Branch Context 注入 gate 只看
+///   branch_summary，清空后下一轮自然停止）。
+///
+/// 返回是否实际摘除了血缘。
+pub fn clear_session_lineage(session_key: &str) -> bool {
+    let _guard = META_LOCK.lock();
+    let Some(mut meta) = read_meta_full(session_key) else {
+        return false;
+    };
+    if meta.parent.is_none()
+        && meta.forked_at_turn.is_none()
+        && meta.fork_reason.is_none()
+        && meta.branch_summary.is_none()
+    {
+        return false;
+    }
+    meta.parent = None;
+    meta.forked_at_turn = None;
+    meta.fork_reason = None;
+    meta.branch_summary = None;
+    let path = meta_path(session_key);
+    if let Err(e) = fs::write(&path, serde_json::to_string(&meta).unwrap_or_default()) {
+        tracing::warn!(
+            "[chat_log] failed to clear session lineage {}: {}",
+            path.display(),
+            e
+        );
+        return false;
+    }
+    true
+}
+
 /// Read the conversation title from the sidecar meta file, if present.
 pub fn read_session_meta(session_key: &str) -> Option<String> {
     read_meta_full(session_key).and_then(|m| m.title)
@@ -1384,6 +1424,11 @@ mod n5_tests;
 // clear 摘除返回原值 / snoozed_sessions 扫描过滤）测试。
 #[cfg(test)]
 mod b11_tests;
+
+// detach（2026-10-20「脱离父分支」）：clear_session_lineage 血缘四字段摘除
+// + 其余 meta 保留 + 无血缘诚实返 false 测试。
+#[cfg(test)]
+mod detach_tests;
 
 // cov 系文件型测试的共享串行锁（2026-09-28 复查新增）：目录型夹具（rewind
 // tmp 目录 / rename 目标目录 / legacy 嵌套目录 / boundary sidecar 目录）与
