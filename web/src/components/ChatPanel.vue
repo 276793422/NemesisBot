@@ -296,7 +296,11 @@ function refreshUsage() {
   request('chat', 'context_status', { session_id: sid })
     .then((data) => {
       if (effectiveSid.value !== sid) return
-      ctxPct.value = typeof data?.context?.pct === 'number' ? data.context.pct : null
+      // 优先压缩点百分比 pct_trigger（「距压缩还有多远」，与 ≥80% hot
+      // 徽标语义贴合）；旧后端无该字段回落窗口 pct。
+      const c = data?.context
+      ctxPct.value =
+        typeof c?.pct_trigger === 'number' ? c.pct_trigger : typeof c?.pct === 'number' ? c.pct : null
     })
     .catch(() => {})
   request('logs', 'session_usage', { session_id: sid })
@@ -2423,6 +2427,10 @@ const unwatchSession = watch(
         newId === sessionStore.justCreatedSid)
     ) {
       if (newId === sessionStore.justCreatedSid) sessionStore.justCreatedSid = null
+      // M6-fix：全新会话建立行号锚——服务端 jsonl 为空，视图内（含发送链
+      // 先行的本地回显）user/assistant 行即第 0..n-1 行。不建锚则本轮全部
+      // live 行无 rowIndex，回退/重新生成按钮组首轮恒不渲染。
+      chatStore.anchorFreshSession()
       syncInboxMode()
       syncAgentMode()
       return

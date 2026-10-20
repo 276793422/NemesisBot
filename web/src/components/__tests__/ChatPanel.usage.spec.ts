@@ -156,4 +156,20 @@ describe('ChatPanel M5 用量常驻条', () => {
     expect(callsAfterTurn).toBe(2)
     w.unmount()
   })
+
+  it('pct_trigger（压缩点口径）优先于 pct；旧后端缺字段回落 pct', async () => {
+    // 2026-10-20 压缩点一等公民化：徽标语义 =「距压缩还有多远」。
+    ctxResponse = { context: { pct: 85, pct_trigger: 95 } }
+    usageResponse = { total_cost_usd: 0 }
+    installRequestMock()
+    const w = await mountPanelWithSession('s1')
+    expect(w.find('.usage-ctx').text()).toBe('95% context')
+    expect(w.find('.usage-ctx').classes()).toContain('hot')
+    w.unmount()
+
+    ctxResponse = { context: { pct: 85 } }
+    const w2 = await mountPanelWithSession('s1')
+    expect(w2.find('.usage-ctx').text()).toBe('85% context')
+    w2.unmount()
+  })
 })

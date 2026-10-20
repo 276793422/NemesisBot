@@ -199,6 +199,8 @@ impl ModelsHandler {
                     "model_size_b": raw.get("model_size_b").cloned().unwrap_or(serde_json::Value::Null),
                     "real_name": raw.get("real_name").cloned().unwrap_or(serde_json::Value::Null),
                     "context_window": raw.get("context_window").cloned().unwrap_or(serde_json::Value::Null),
+                    // per-model 绝对压缩点（2026-10-20 compact_context_tokens；缺省 = 窗口×75%）。
+                    "compact_context_tokens": raw.get("compact_context_tokens").cloned().unwrap_or(serde_json::Value::Null),
                     // T2b（扩展计划 D4）：fallback 链声明（字符串数组，回显
                     // only——编辑走 config.json / attr 编辑器；装配点
                     // agent_factory::wrap_fallback_chain）。
@@ -743,6 +745,31 @@ impl ModelsHandler {
                 }
                 serde_json::Value::Number(n.into())
             }
+            "compact_context_tokens" => {
+                // per-model 绝对压缩点（2026-10-20）：数字 = 到点即压（不乘
+                // 比例）；0 / 空串 = 清除（回窗口×75% 默认链）。清除以 Null
+                // 作哨兵，应用闭包里「移键」落盘——写 Null 会留 `"key": null`
+                // 字节垃圾；resolver 对缺席本就按 None 处理。超过真实窗口时
+                // 运行期钳到窗口（compact.rs resolve_compact_trigger，一次性
+                // warn），此处不预校验窗口（三级链 + 价目表值网关侧才齐）。
+                let n = value.as_u64().or_else(|| {
+                    value.as_str().and_then(|s| {
+                        if s.trim().is_empty() {
+                            Some(0)
+                        } else {
+                            s.trim().parse::<u64>().ok()
+                        }
+                    })
+                });
+                let n = n.ok_or(
+                    "compact_context_tokens must be a positive number (or 0/empty to clear)",
+                )?;
+                if n == 0 {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::Value::Number(n.into())
+                }
+            }
             "real_name" => {
                 let s = value.as_str().ok_or("real_name must be a string")?;
                 if s.trim().is_empty() {
@@ -796,7 +823,7 @@ impl ModelsHandler {
             }
             _ => {
                 return Err(format!(
-                    "unknown field '{field}'. Supported: model_tier | reasoning_effort | model_size_b | real_name | context_window | protocol | proxy | stream"
+                    "unknown field '{field}'. Supported: model_tier | reasoning_effort | model_size_b | real_name | context_window | compact_context_tokens | protocol | proxy | stream"
                 ));
             }
         };
@@ -836,7 +863,15 @@ impl ModelsHandler {
                                 || model == default_llm
                                 || (!alias.is_empty() && alias == default_llm));
                         entry_model_name = model_name.to_string();
-                        entry[field.as_str()] = normalized.clone();
+                        // Null 哨兵 = 清除：移键落盘（写 Null 会留 `"key": null`
+                        // 字节垃圾；resolver 对缺席本就按 None 处理）。
+                        if normalized.is_null() {
+                            if let Some(obj) = entry.as_object_mut() {
+                                obj.remove(field.as_str());
+                            }
+                        } else {
+                            entry[field.as_str()] = normalized.clone();
+                        }
                         updated = true;
                         break;
                     }

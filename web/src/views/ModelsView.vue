@@ -29,6 +29,8 @@ interface Model {
   model_size_b?: number | string | null
   real_name?: string | null
   context_window?: number | string | null
+  // per-model 绝对压缩点（2026-10-20；null/缺省 = 窗口×75% 默认链）。
+  compact_context_tokens?: number | string | null
   catalog_match?: CatalogMatch | null
   // G4 (U15)：key 来源分类（后端 classify_key_source，零明文）。
   key_source?: { kind: string; ref: string } | null
@@ -71,6 +73,7 @@ interface AttrDraft {
   size: string
   realName: string
   ctx: string
+  compactCtx: string // '' = 自动（窗口 × 75%）
   protocol: string // '' = 自动识别（按名称前缀）
   stream: string // '' = auto（跟随 lane 默认）
 }
@@ -197,6 +200,7 @@ function toggleAttrs(m: Model) {
       size: m.model_size_b != null ? String(m.model_size_b) : '',
       realName: m.real_name || '',
       ctx: m.context_window != null ? String(m.context_window) : '',
+      compactCtx: m.compact_context_tokens != null ? String(m.compact_context_tokens) : '',
       protocol: m.protocol || '',
       stream: m.stream || '',
     }
@@ -216,6 +220,9 @@ function dirtyFields(m: Model): string[] {
   if ((m.real_name || '') !== d.realName.trim()) out.push('real_name')
   const ctxStr = m.context_window != null ? String(m.context_window) : ''
   if (ctxStr !== d.ctx.trim()) out.push('context_window')
+  const ccStr = m.compact_context_tokens != null ? String(m.compact_context_tokens) : ''
+  // v-model 对 type="number" 输入自动转 number——String 归一后比较。
+  if (ccStr !== String(d.compactCtx ?? '').trim()) out.push('compact_context_tokens')
   if ((m.protocol || '') !== d.protocol) out.push('protocol')
   if ((m.stream || '') !== d.stream) out.push('stream')
   return out
@@ -230,6 +237,7 @@ const FIELD_EFFECT: Record<string, string> = {
   model_size_b: 'auto 档下即时生效（参与能力自动检测）',
   real_name: 'auto 档下即时生效（别名识别真名）',
   context_window: '保存后生效（上下文预算依据）',
+  compact_context_tokens: '即时生效（每轮压缩检查前重读配置）；留空 = 自动（窗口 × 75%）',
   protocol: '改默认模型立即生效（自动热切）；其他模型设为默认时生效；或重启后生效',
   stream: '改默认模型立即生效（自动热切）；其他模型设为默认时生效；或重启后生效',
 }
@@ -250,6 +258,9 @@ async function saveAttrs(m: Model) {
     model_size_b: d.size.trim() === '' ? null : Number(d.size.trim()),
     real_name: d.realName.trim(),
     context_window: d.ctx.trim() === '' ? null : Number(d.ctx.trim()),
+    // 压缩点后端支持空串清除（移键落盘）——直接发串，不做 v1 skip-null。
+    // v-model 对 type="number" 输入自动转 number——String 归一。
+    compact_context_tokens: String(d.compactCtx ?? '').trim(),
     protocol: d.protocol, // 空串 = 自动识别（后端接受空串清除，非 null）
     stream: d.stream, // 空串 = auto（后端接受空串清除，非 null）
   }
@@ -281,6 +292,7 @@ async function saveAttrs(m: Model) {
       size: fresh.model_size_b != null ? String(fresh.model_size_b) : '',
       realName: fresh.real_name || '',
       ctx: fresh.context_window != null ? String(fresh.context_window) : '',
+      compactCtx: fresh.compact_context_tokens != null ? String(fresh.compact_context_tokens) : '',
       protocol: fresh.protocol || '',
       stream: fresh.stream || '',
     }
@@ -293,6 +305,24 @@ function fillCtxFromCatalog(m: Model) {
   if (cw == null) return
   const d = attrDrafts.value[m.model_name]
   if (d) d.ctx = String(cw)
+}
+
+/** 压缩点超窗口的前端黄字提醒（真实钳制在网关运行期，一次性 warn）。
+ * 窗口取条目 context_window，缺省回落目录值；两者皆缺 = 无法预判，不提示。
+ * 注意 v-model 对 type="number" 输入会自动转 number——一律 String 归一。 */
+function compactCtxClampHint(m: Model): string {
+  const d = attrDrafts.value[m.model_name]
+  if (!d) return ''
+  const raw = String(d.compactCtx ?? '').trim()
+  if (raw === '') return ''
+  const v = Number(raw)
+  if (!Number.isFinite(v) || v <= 0) return ''
+  const winRaw = m.context_window ?? m.catalog_match?.context_window
+  const win = winRaw != null ? Number(winRaw) : NaN
+  if (Number.isFinite(win) && win > 0 && v > win) {
+    return `⚠ 设定 ${v.toLocaleString()} 超过窗口 ${win.toLocaleString()}，会被钳到窗口；如需更大请先设 context_window`
+  }
+  return ''
 }
 
 async function addModel() {
@@ -583,6 +613,14 @@ onMounted(() => {
                   <template v-if="m.catalog_match?.family">（models.dev：{{ m.catalog_match.family }}）</template>
                 </span>
               </div>
+              <div class="attr-field attr-field--wide">
+                <label class="form-label">上下文压缩点 compact_context_tokens（设 N = 到 N token 即压缩，不乘比例）</label>
+                <input class="form-input" type="number" min="1" v-model="attrDrafts[m.model_name].compactCtx" placeholder="留空 = 自动（窗口 × 75%）" />
+                <span v-if="compactCtxClampHint(m)" class="attr-effect attr-clamp-warn">{{ compactCtxClampHint(m) }}</span>
+                <span class="attr-effect">
+                  {{ FIELD_EFFECT['compact_context_tokens'] }}。建议大于尾巴保留预算（默认 20000），否则压缩无法推进
+                </span>
+              </div>
             </div>
             <div class="attr-actions">
               <span class="attr-dirty">{{ dirtyFields(m).length ? `已修改：${dirtyFields(m).join('、')}` : '无修改' }}</span>
@@ -740,6 +778,11 @@ onMounted(() => {
 .attr-effect {
   font-size: 11px;
   color: var(--text-muted);
+}
+/* 压缩点超窗口前端提醒（黄字；真实钳制与一次性 warn 在网关运行期） */
+.attr-clamp-warn {
+  font-size: 11px;
+  color: var(--warning);
 }
 .attr-actions {
   display: flex;
