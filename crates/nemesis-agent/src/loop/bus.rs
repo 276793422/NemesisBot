@@ -207,6 +207,7 @@ impl AgentLoop {
             inbox: std::sync::Arc::new(crate::inbox::Inbox::new(queue_size.max(1))),
             turn_task_handles: parking_lot::Mutex::new(Vec::new()),
             workspace_root: parking_lot::RwLock::new(None),
+            exec_env_resolver: parking_lot::RwLock::new(None),
             instruction_trust: parking_lot::RwLock::new(
                 crate::workspace_instructions::InstructionTrust::Trusted,
             ),

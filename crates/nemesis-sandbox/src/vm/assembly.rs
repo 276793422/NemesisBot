@@ -47,9 +47,6 @@ pub struct VmLaunchSpec {
     pub ram_mb: u32,
     /// 本实例 qcow2 overlay 路径（base 作 backing，见 overlay 模块）。
     pub overlay_path: PathBuf,
-    /// cloud-init nocloud seed ISO（首启装配 guest agent 用；已装好的持久
-    /// overlay 复用启动可 None——seed 挂载只在首次引导有消费方）。
-    pub seed_iso: Option<PathBuf>,
     /// QMP 监听端口（宿主 127.0.0.1 临时端口）。
     pub qmp_port: u16,
     /// hostfwd 宿主侧端口（宿主 127.0.0.1 临时端口 → guest agent 端口）。
@@ -87,15 +84,6 @@ pub fn build_qemu_args(spec: &VmLaunchSpec) -> Vec<String> {
         "file={},format=qcow2,if=virtio",
         spec.overlay_path.display()
     ));
-    if let Some(seed) = &spec.seed_iso {
-        // cloud-init nocloud seed（fs label `cidata`——cloud-init 按标签
-        // 发现数据源；media=cdrom 走 q35 的 AHCI）。
-        args.push("-drive".into());
-        args.push(format!(
-            "file={},format=raw,media=cdrom,readonly=on",
-            seed.display()
-        ));
-    }
     args.extend(display_args().iter().map(|s| s.to_string()));
     args.push("-nic".into());
     args.push(format!(
@@ -158,9 +146,6 @@ pub fn validate_launch_spec(spec: &VmLaunchSpec) -> Result<(), String> {
     }
     let mut checked: Vec<(&'static str, &Path)> =
         vec![("overlay_path", spec.overlay_path.as_path())];
-    if let Some(p) = &spec.seed_iso {
-        checked.push(("seed_iso", p));
-    }
     if let Some(p) = &spec.shared_host_path {
         checked.push(("shared_host_path", p));
     }

@@ -10,7 +10,7 @@
 //!
 //! ```text
 //! cargo run -p nemesis-sandbox --features vm --example vm_smoke -- \
-//!     --base /vm/images/base.qcow2 --seed /vm/images/seed.iso \
+//!     --base /vm/images/base.qcow2 \
 //!     [--run-dir DIR] [--qemu-dir DIR] [--shared DIR] [--deadline-secs N]
 //! ```
 
@@ -26,7 +26,6 @@ use nemesis_sandbox::vm::overlay;
 
 struct Args {
     base: Option<PathBuf>,
-    seed: Option<PathBuf>,
     run_dir: PathBuf,
     qemu_dir: Option<PathBuf>,
     shared: Option<PathBuf>,
@@ -36,7 +35,6 @@ struct Args {
 fn parse_args() -> Args {
     let mut a = Args {
         base: None,
-        seed: None,
         run_dir: PathBuf::from("target/vm-smoke"),
         qemu_dir: None,
         shared: None,
@@ -47,7 +45,6 @@ fn parse_args() -> Args {
         let mut val = |name: &str| it.next().unwrap_or_else(|| panic!("{name} 缺值"));
         match k.as_str() {
             "--base" => a.base = Some(PathBuf::from(val("--base"))),
-            "--seed" => a.seed = Some(PathBuf::from(val("--seed"))),
             "--run-dir" => a.run_dir = PathBuf::from(val("--run-dir")),
             "--qemu-dir" => a.qemu_dir = Some(PathBuf::from(val("--qemu-dir"))),
             "--shared" => a.shared = Some(PathBuf::from(val("--shared"))),
@@ -76,13 +73,6 @@ async fn main() {
     if !base.exists() {
         skip(&format!("base 镜像不存在: {}", base.display()));
     }
-    // seed 是首启装配的载体（裸 base 没有 guest agent，缺 seed = 步骤 4
-    // 必然超时）——缺了直接诚实拒绝，不烧 5 分钟等待预算。
-    let seed = match args.seed.clone() {
-        Some(s) if s.exists() => s,
-        Some(s) => skip(&format!("seed ISO 不存在: {}", s.display())),
-        None => skip("缺 --seed（scripts/build-vm-image.sh 产出的 cloud-init nocloud seed）"),
-    };
 
     // [1] accel 裁决（探针缺席 = 诚实 SKIP——本机无硬件虚拟化不硬跑）。
     step(1, "accel 探针裁决");
@@ -148,7 +138,6 @@ async fn main() {
         vcpu: 2,
         ram_mb: 2048,
         overlay_path: overlay_path.clone(),
-        seed_iso: Some(seed),
         token: token.clone(),
         shared_host_path: shared,
         loadvm_tag: None,

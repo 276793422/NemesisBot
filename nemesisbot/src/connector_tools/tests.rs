@@ -693,9 +693,32 @@ http = { method = "PATCH", path = "/repos/{owner}/{repo}/issues/{index}" }
 }
 
 /// required 凭据缺失 = 诚实报错（不动手），不带 vault 文件的全新环境直触发。
+///
+/// 必须与 broker 装载测试互斥（GLOBAL_STATE_LOCK）：本用例 web 上下文 +
+/// required 缺失正是发卡分支的触发面——若与装 broker 的用例并行，卡会落进
+/// 对方的 broker（request_credential_card 走 current()），对方 pending 断言
+/// 抓到陌生卡假红；本用例自身则阻塞满 300s 卡超时后回落原错误字节，**照样
+/// pass**——污染只有对方可见。实录（2026-10-20 全量首跑）：
+/// test_cluster_channel_missing_credential_skips_card 残留 connector/gitea
+/// 卡（本用例发出），隔离复跑双绿定位到跨用例串扰。
 #[cfg(feature = "security")]
-#[tokio::test]
-async fn test_required_credential_missing_is_honest_error() {
+#[test]
+fn test_required_credential_missing_is_honest_error() {
+    // std 锁 guard 不得活过 await（clippy await_holding_lock）——锁在同步
+    // 外壳持有，async 体经 current_thread block_on 执行（同款形态见
+    // test_cluster_channel_missing_credential_skips_card wrapper）。
+    let _env_guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(test_required_credential_missing_is_honest_error_inner());
+}
+
+#[cfg(feature = "security")]
+async fn test_required_credential_missing_is_honest_error_inner() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path();
     write_connector(

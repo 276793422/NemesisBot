@@ -5,8 +5,11 @@
 # checkouts produce LF working trees too, so rustfmt output (LF) and git agree
 # and the "LF will be replaced by CRLF" churn for Rust files disappears.
 #
-# Scoped to *.rs ONLY — .bat/.ps1/.sh/.json/.toml/etc. intentionally keep their
-# current (CRLF) line endings here. Normalizing those is a separate, larger
-# change. (Aside: scripts/build-linux.sh is currently CRLF, which can break
-# execution under Linux bash — worth fixing on its own, not via this file.)
+# *.rs first, then *.sh (2026-10-20): shell scripts only ever execute under
+# bash (git-bash / Linux / WSL), where CRLF breaks parsing — the B7 WSL image
+# build route hit exactly this (autocrlf checkout turned build-vm-image.sh
+# CRLF; WSL bash read `set -euo pipefail\r` and rejected `pipefail` as an
+# invalid option name). Pinning *.sh to LF keeps every checkout runnable.
+# .bat/.ps1 stay CRLF (Windows-native interpreters).
 *.rs text eol=lf
+*.sh text eol=lf

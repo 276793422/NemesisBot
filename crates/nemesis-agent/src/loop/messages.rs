@@ -562,6 +562,16 @@ impl AgentLoop {
         {
             snapshot_section.push_str(&format!("\nworkspace: {}", root.display()));
         }
+        // VM 档执行环境注记（B9 审计收口）：resolver 每 build 现查档位
+        //（与 BackendRoutingExecutor 同源语义——切档下一轮即真），vm 档
+        // 追加 guest 路径语义行，process 档空串不追加（字节不变，golden
+        // 快照不受扰）。常量文本跨轮稳定，cache 前缀不受损。
+        if let Some(resolver) = self.exec_env_resolver.read().as_ref() {
+            let note = resolver();
+            if !note.is_empty() {
+                snapshot_section.push_str(&format!("\n{note}"));
+            }
+        }
         snapshot_section.push_str("\n(本快照取代之前的时间/环境快照)");
 
         // T5/T6（多模态）：turn → 请求消息统一走 `turn_to_request_message`

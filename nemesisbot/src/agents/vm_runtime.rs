@@ -874,7 +874,7 @@ impl VmSupervisor {
     }
 
     /// 确保 agent 的 VM 在运行：命中槽 → 摸 `last_used` 直接返回；否则
-    /// 唤醒（睡眠产物）或冷启（首启带 seed 制备，否则同盘冷启）。
+    /// 唤醒（睡眠产物）或冷启（首启制备 overlay，否则同盘冷启）。
     ///
     /// spawn 在 map 锁外（P3 同款——冷启秒级到分钟级，不持锁阻塞并发）；
     /// 插入时竞态复核满员 + 同 agent 双赢家（输家诚实停掉）。
@@ -1004,9 +1004,10 @@ impl VmSupervisor {
         Ok(slot)
     }
 
-    /// 唤醒或冷启（overlay 缺席 = 首启：走镜像管线产物制备 + seed 播种）。
-    /// registry 先于 spawn 落盘（asleep_at=None）——启动中途崩溃也留下
-    /// sweep 可见痕迹（SWEEP_STARTUP_GRACE 窗内不误杀）。
+    /// 唤醒或冷启（overlay 缺席 = 首启：走镜像管线产物制备；cloud-init
+    /// seed 已烧进 base，装配零介质）。registry 先于 spawn 落盘
+    /// （asleep_at=None）——启动中途崩溃也留下 sweep 可见痕迹
+    /// （SWEEP_STARTUP_GRACE 窗内不误杀）。
     async fn start_or_wake(
         &self,
         agent_id: &str,
@@ -1084,14 +1085,16 @@ impl VmSupervisor {
             .map_err(|e| VmSupervisorError::Failed(format!("spawn 在途标记落盘失败: {e}")))?;
 
         // wake-or-cold 路由（[`wake_kind_of`] 纯函数）+ 首启制备。
-        let (loadvm_tag, incoming_file, seed_iso) = if first_boot {
+        // seed 已烧进 base（`/var/lib/cloud/seed/nocloud/`，2026-10-20
+        // cdrom 缺席定谳的根修——q35 AHCI cdrom 在 ds-identify 检测窗内
+        // 缺席 → cloud-init 单元被 generator 静默摘除），gateway 无需再
+        // 挂任何 seed 介质。
+        let (loadvm_tag, incoming_file) = if first_boot {
             let base = vm_images_root(&self.workspace).join("base.qcow2");
-            let seed = vm_images_root(&self.workspace).join("seed.iso");
-            if !base.exists() || !seed.exists() {
+            if !base.exists() {
                 return Err(VmSupervisorError::Unavailable(format!(
-                    "镜像资产缺失（base={} seed={}）：先跑镜像管线 scripts/build-vm-image.sh",
-                    base.display(),
-                    seed.display()
+                    "镜像资产缺失（base={}）：先跑镜像管线 scripts/build-vm-image.sh",
+                    base.display()
                 )));
             }
             overlay::create_overlay(
@@ -1102,19 +1105,19 @@ impl VmSupervisor {
             )
             .await
             .map_err(|e| VmSupervisorError::Failed(format!("overlay 创建失败: {e}")))?;
-            (None, None, Some(seed))
+            (None, None)
         } else {
             match wake_kind_of(&record) {
-                WakeKind::FromSnapshot(tag) => (Some(tag), None, None),
-                WakeKind::FromState(p) if p.exists() => (None, Some(p), None),
+                WakeKind::FromSnapshot(tag) => (Some(tag), None),
+                WakeKind::FromState(p) if p.exists() => (None, Some(p)),
                 WakeKind::FromState(p) => {
                     tracing::warn!(
                         "[vm-runtime] agent {agent_id} 迁移状态文件缺席（{}）：降级冷启同盘 overlay",
                         p.display()
                     );
-                    (None, None, None)
+                    (None, None)
                 }
-                WakeKind::Cold => (None, None, None), // 已制备盘：不重播 cloud-init
+                WakeKind::Cold => (None, None), // 已制备盘：不重播 cloud-init
             }
         };
 
@@ -1127,7 +1130,6 @@ impl VmSupervisor {
             vcpu: record.vcpu,
             ram_mb: record.ram_mb,
             overlay_path: overlay_p,
-            seed_iso,
             token: record.token.clone(),
             // Step 3 最小面：宿主共享目录接线归 Step 4 接入面（与工具面
             // 一起定契约），这里诚实 None。

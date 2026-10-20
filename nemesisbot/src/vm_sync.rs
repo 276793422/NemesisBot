@@ -1767,6 +1767,28 @@ pub async fn commit_project(
         }
     }
     if report.changed.is_empty() && report.deleted.is_empty() {
+        // 全过滤早退（H3 停车 / gitignore），但基线仍要刷成 VM 树——上方
+        // 注释承诺的「挂起条目随 VM 走，解挂后三方对比照常」在这里兑现。
+        // 不刷的后果（真机实测）：停车轮 commit 全被过滤 → 基线停在停车前
+        // 旧值 → 宿主手动合并完成 → 开工闸 ReleaseMerged 解挂 → 三方对比
+        // 对旧基线仍是「VM 偏离」→ 立刻再判 Conflict 再弹卡，「按正常变
+        // 更推进」永远走不到。host_meta 不动：本路径无 changed/deleted 可
+        // 记账。
+        persist_baseline(
+            main_workspace,
+            project_id,
+            &BaselineManifest {
+                project_id: baseline.project_id,
+                synced_at_ms: now_ms(),
+                is_git: baseline.is_git,
+                selection: baseline.selection,
+                bytes: baseline.bytes,
+                skipped_symlinks: baseline.skipped_symlinks,
+                files: current,
+                host_meta: baseline.host_meta,
+            },
+        )
+        .await?;
         write_json_atomic(
             &last_commit_path(main_workspace, project_id),
             &serde_json::to_string_pretty(&report).map_err(|e| format!("序列化失败: {e}"))?,

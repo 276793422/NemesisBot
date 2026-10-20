@@ -68,6 +68,17 @@ impl AgentLoop {
         *self.workspace_root.write() = Some(root);
     }
 
+    /// VM 档执行环境注记 resolver（B9 审计收口）。宿主侧在执行体桥挂载
+    /// 成功时安装（见 nemesisbot agent_factory `register_tools_and_mcp`）：
+    /// 每轮 build_messages 调用，非空返回值追加进 # Environment 快照；
+    /// 未安装（headless/测试）= 零行为差异。
+    pub fn set_exec_env_resolver(
+        &self,
+        resolver: std::sync::Arc<dyn Fn() -> String + Send + Sync>,
+    ) {
+        *self.exec_env_resolver.write() = Some(resolver);
+    }
+
     /// 节点工作区根（装配时 [`Self::set_workspace_root`] 注入；未设 = None）。
     /// F-U3-2：cluster agent 以此定位档案管线任务的工作副本目录。
     pub fn workspace_root(&self) -> Option<std::path::PathBuf> {
