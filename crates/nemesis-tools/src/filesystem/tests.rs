@@ -109,6 +109,98 @@ async fn test_file_exists() {
     assert!(result.for_llm.contains("true"));
 }
 
+// ListDir/FileExists 工作区边界回归锁（2026-10-20 潜在债收口）：两工具此前
+// 收了 restrict 参数但不校验、绝对路径直通（全仓生产零注册，纯潜在债）。
+#[tokio::test]
+async fn test_list_dir_tool_restricted() {
+    let dir = TempDir::new().unwrap();
+    let ws = dir.path().to_string_lossy().to_string();
+    let tool = ListDirTool::new(&ws, true);
+
+    // 绝对路径工作区外 → 拒绝。
+    let outside = TempDir::new().unwrap();
+    let result = tool
+        .execute(&serde_json::json!({"path": outside.path().to_string_lossy()}))
+        .await;
+    assert!(result.is_error);
+    assert!(
+        result.for_llm.contains("outside workspace"),
+        "Expected 'outside workspace' error, got: {}",
+        result.for_llm
+    );
+
+    // `..` 穿越出工作区 → 拒绝。
+    let result = tool.execute(&serde_json::json!({"path": ".."})).await;
+    assert!(result.is_error);
+    assert!(
+        result.for_llm.contains("outside workspace"),
+        "Expected 'outside workspace' error, got: {}",
+        result.for_llm
+    );
+
+    // 工作区内绝对路径 → 正常列出。
+    tokio::fs::write(dir.path().join("inner.txt"), "x")
+        .await
+        .unwrap();
+    let result = tool
+        .execute(&serde_json::json!({"path": dir.path().to_string_lossy()}))
+        .await;
+    assert!(!result.is_error);
+    assert!(result.for_llm.contains("inner.txt"));
+}
+
+#[tokio::test]
+async fn test_list_dir_tool_unrestricted_absolute_outside() {
+    let dir = TempDir::new().unwrap();
+    let ws = dir.path().to_string_lossy().to_string();
+    let tool = ListDirTool::new(&ws, false);
+
+    // restrict=false：工作区外绝对路径照常可达（旧行为保持）。
+    let outside = TempDir::new().unwrap();
+    tokio::fs::write(outside.path().join("outer.txt"), "x")
+        .await
+        .unwrap();
+    let result = tool
+        .execute(&serde_json::json!({"path": outside.path().to_string_lossy()}))
+        .await;
+    assert!(!result.is_error);
+    assert!(result.for_llm.contains("outer.txt"));
+}
+
+#[tokio::test]
+async fn test_file_exists_tool_restricted() {
+    let dir = TempDir::new().unwrap();
+    let ws = dir.path().to_string_lossy().to_string();
+    let tool = FileExistsTool::new(&ws, true);
+
+    // 绝对路径工作区外 → 拒绝（不再静默回 "false"）。
+    let outside = TempDir::new().unwrap();
+    tokio::fs::write(outside.path().join("secret.txt"), "x")
+        .await
+        .unwrap();
+    let result = tool
+        .execute(&serde_json::json!({
+            "path": outside.path().join("secret.txt").to_string_lossy()
+        }))
+        .await;
+    assert!(result.is_error);
+    assert!(
+        result.for_llm.contains("outside workspace"),
+        "Expected 'outside workspace' error, got: {}",
+        result.for_llm
+    );
+
+    // 工作区内绝对路径 → 正常探测。
+    tokio::fs::write(dir.path().join("inner.txt"), "x")
+        .await
+        .unwrap();
+    let result = tool
+        .execute(&serde_json::json!({"path": dir.path().join("inner.txt").to_string_lossy()}))
+        .await;
+    assert!(!result.is_error);
+    assert!(result.for_llm.contains("true"));
+}
+
 #[tokio::test]
 async fn test_create_directory() {
     let dir = TempDir::new().unwrap();

@@ -736,6 +736,86 @@ async fn concurrent_starts_capacity_counts_inflight() {
     }
 }
 
+// R6 回归锁（原 review 探针反转，2026-10-20）：容量闸 = 「检查+占位」——
+// 许可在 entries 锁内取得（并发准入串行化），MAX+1 个同步并发 start 只有
+// MAX 个能越过闸（第 MAX+1 个在闸上即被拒，到不了 admission barrier），
+// 座位三段口径 entries+starting+permits 全程 ≤ MAX_DELEGATES。
+#[tokio::test]
+async fn admission_permit_caps_concurrent_starts_at_limit() {
+    let _serial = TEST_LOCK.lock().await;
+    let dir = unique_temp_dir("review_admission");
+    let cli = make_barrier_codex_cli(&dir);
+    let mgr = Arc::new(DelegateManager::new());
+    // barrier 参与方 = MAX+1（MAX 个越闸 start + 本测试）：若回归（闸失去
+    // 占位语义），MAX+1 个全挂 barrier、本测试 wait 参与计数不足 → 超时
+    // 失败，误超订即时可观测。
+    let barrier = Arc::new(tokio::sync::Barrier::new(MAX_DELEGATES + 1));
+    *mgr.review_admission_barrier.write() = Some(barrier.clone());
+    let mut bgs = Vec::new();
+    for _ in 0..MAX_DELEGATES + 1 {
+        let mgr = mgr.clone();
+        let cli = cli.clone();
+        let cwd = dir.to_string_lossy().to_string();
+        bgs.push(tokio::spawn(async move {
+            mgr.start(
+                DelegateProtocolKind::CodexAppServer,
+                &cli,
+                None,
+                &cwd,
+                None,
+                "",
+                Default::default(),
+                Duration::MAX,
+            )
+            .await
+        }));
+    }
+    tokio::time::timeout(Duration::from_secs(10), barrier.wait())
+        .await
+        .expect("exactly MAX starts may reach the admission barrier");
+    // 停驻窗口：座位全部以「许可」形态持有（spawn 尚未发生）。
+    let seats = mgr.entries.lock().await.len()
+        + mgr.starting.lock().len()
+        + mgr
+            .starting_permits
+            .load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(seats, MAX_DELEGATES, "parked starts hold seats via permits");
+    // 放行 CLI barrier：握手完成 → 预留落位（许可释放）→ 终检 → 插表。
+    std::fs::write(dir.join("go"), b"1").unwrap();
+    let mut oks = Vec::new();
+    let mut errs = Vec::new();
+    for bg in bgs {
+        match bg.await.unwrap() {
+            Ok(v) => oks.push(v["delegate_id"].as_u64().unwrap()),
+            Err(e) => errs.push(e),
+        }
+    }
+    assert_eq!(
+        oks.len(),
+        MAX_DELEGATES,
+        "MAX ok: oks={oks:?} errs={errs:?}"
+    );
+    assert_eq!(
+        errs.len(),
+        1,
+        "exactly one rejected at the gate: errs={errs:?}"
+    );
+    assert!(
+        errs[0].contains("limit reached") && errs[0].contains("active/starting"),
+        "the MAX+1th start must be rejected by the permit gate: {}",
+        errs[0]
+    );
+    assert_eq!(mgr.entries.lock().await.len(), MAX_DELEGATES);
+    assert_eq!(mgr.starting.lock().len(), 0);
+    assert_eq!(
+        mgr.starting_permits
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "no permit may leak"
+    );
+    mgr.stop_all().await;
+}
+
 // ---------------------------------------------------------------------------
 // F8：permission_mode 配置缺省贯通（args 缺省 → 配置值；显式 args 恒优先）
 // ---------------------------------------------------------------------------

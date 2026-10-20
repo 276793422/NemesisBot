@@ -477,8 +477,9 @@ async fn cmd_run(
         println!("  Input: {:?}", input_map);
     }
 
-    // Create engine and run
-    let engine = nemesis_workflow::engine::WorkflowEngine::new();
+    // Create engine and run. new_arc（非 new）：注册真实 sub_workflow 执行器
+    // ——new() 的 stub 会让子工作流节点恒 Failed "no engine configured"。
+    let engine = nemesis_workflow::engine::WorkflowEngine::new_arc();
 
     // U10 统一执行世界：CLI 裸引擎此前是执行体隔离的逃逸路径——script
     // 节点落到 `ScriptNodeExecutor::new()` 的裸 spawn，executor.sandbox=true

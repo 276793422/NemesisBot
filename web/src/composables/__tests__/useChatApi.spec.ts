@@ -76,6 +76,12 @@ describe('useChatApi.fork', () => {
     await useChatApi().fork('sid', 0)
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ at_turn: 0 })
   })
+
+  it('independent=true → body 追加 {independent: true}（完全独立会话，2026-10-20）', async () => {
+    fetchMock.mockReturnValue(okJson({ session_id: 'n', kept_messages: 4, independent: true }))
+    await useChatApi().fork('sid', 2, true)
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ at_turn: 2, independent: true })
+  })
 })
 
 describe('useChatApi apiFetch 错误传播', () => {

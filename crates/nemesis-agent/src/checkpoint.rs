@@ -155,22 +155,43 @@ pub struct DeliveryBranchCapture {
     /// 逐文件变更清单（typed 证据块 ②，2026-10-19）：从 `(base_tree, tree)`
     /// diff 确定性派生（**不依赖 agent 配合**），`sha256` = 交付 tree 中该
     /// blob 内容的摘要——与 commit/tree 同源定格，评审侧可对 patch 重放核
-    /// 验。只含新增/修改（删除无内容可哈希，总数仍见 `files_changed`）。
-    /// 空 = 无变更或派生降级（缺席是合法形态；加法演进不破旧 payload）。
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    /// 验。R5（2026-10-20 复评）：含全部变更类型（add/modify/delete）——
+    /// 删除条目 `kind=delete` + `old_sha256`（变更前 blob 摘要），评审闸可
+    /// 据此核验「删除确实发生」而非零证据放行。空 = 无变更或派生降级（**恒
+    /// 序列化**——空清单与「字段缺席」语义不同：前者是派生事实，后者无法
+    /// 区分旧 payload 与证据缺失）。
     pub files: Vec<DeliveryFileEntry>,
     /// files 清单截断位（超 [`FILES_MAX`] 诚实注记；只在 true 时序列化）。
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub files_truncated: bool,
 }
 
-/// 交付变更清单单条目（typed 证据块 ②）：相对路径 + blob 内容 sha256 hex。
+/// R5：交付清单条目变更类型（serde 小写序列化 `add`/`modify`/`delete`）。
+/// rename 在 git delta 层呈现为 delete+add 对，不造第四值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DeliveryFileKind {
+    Add,
+    Modify,
+    Delete,
+}
+
+/// 交付变更清单单条目（typed 证据块 ②）：相对路径 + 变更类型 + blob 内容
+/// sha256 hex。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DeliveryFileEntry {
     /// 交付根内的相对路径（forward slash 形态；派生自 git delta）。
     pub path: String,
-    /// 交付 tree 中该 blob 内容的 sha256 hex（64 字符）。
+    /// 变更类型（R5）。
+    pub kind: DeliveryFileKind,
+    /// 交付 tree 中该 blob 内容的 sha256 hex（64 字符）；delete 条目为空串
+    /// 不序列化（无新内容可哈希——变更前内容见 `old_sha256`）。
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub sha256: String,
+    /// 变更前 blob 内容 sha256 hex（`modify`/`delete` 携带；`add` 为空串
+    /// 不序列化——新增无「变更前」）。
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub old_sha256: String,
 }
 
 /// 逐文件清单上限（防异常巨大交付撑爆 wire payload；超限诚实截断 +
@@ -633,15 +654,19 @@ impl CheckpointStore {
     }
 
     /// 逐文件变更清单派生（typed 证据块 ②）：同一 `(base, tree)` diff 的
-    /// delta 枚举——新增/修改取 `new_file` 的 blob 内容 sha256；删除无内容
-    /// 不入清单。超 [`FILES_MAX`] 截断（诚实注记位）。与 [`Self::diff_patch`]
-    /// 分开各跑一次 diff（影子库 task 收口一次性成本，换来两函数单一职责）。
+    /// delta 枚举——新增/修改取 `new_file` 的 blob 内容 sha256；修改/删除
+    /// 附 `old_file` 摘要（R5：删除条目 `old_sha256` 承载证据，不再整类
+    /// 跳过——删除也是交付事实）。rename 在 delta 层呈 delete+add 对，
+    /// typechange 按 modify 记（同路径内容形态变更）。超 [`FILES_MAX`]
+    /// 截断（诚实注记位）。与 [`Self::diff_patch`] 分开各跑一次 diff
+    /// （影子库 task 收口一次性成本，换来两函数单一职责）。
     #[cfg(feature = "checkpoint-git")]
     fn diff_file_entries(
         repo: &git2::Repository,
         base_hex: &str,
         tree_hex: &str,
     ) -> Result<(Vec<DeliveryFileEntry>, bool), String> {
+        use git2::Delta;
         let base_oid =
             git2::Oid::from_str(base_hex).map_err(|e| format!("base tree hex 解析失败: {e}"))?;
         let tree_oid =
@@ -657,23 +682,44 @@ impl CheckpointStore {
             .map_err(|e| format!("影子 tree diff 失败: {e}"))?;
         let mut files = Vec::new();
         for delta in diff.deltas() {
-            // 删除 delta 的 new blob id 为零值（无内容可哈希，不入清单）。
-            let oid = delta.new_file().id();
-            if oid.is_zero() {
-                continue;
+            match delta.status() {
+                Delta::Added | Delta::Modified | Delta::Typechange | Delta::Deleted => {}
+                // Unmodified/Conflicted/Unreadable 不应出现在 tree-to-tree
+                // diff；保守跳过（与旧行为一致，不造第五类）。
+                _ => continue,
             }
-            let Some(path) = delta.new_file().path() else {
-                continue;
+            let new_oid = delta.new_file().id();
+            let old_oid = delta.old_file().id();
+            let (kind, sha256, old_sha256) = match delta.status() {
+                Delta::Added => {
+                    // add 无变更前；new blob 必非零。
+                    let sha = Self::blob_sha256(repo, new_oid)?;
+                    (DeliveryFileKind::Add, sha, String::new())
+                }
+                Delta::Deleted => {
+                    // delete 无新内容可哈希；old blob 承载证据。
+                    let old_sha = Self::blob_sha256(repo, old_oid)?;
+                    (DeliveryFileKind::Delete, String::new(), old_sha)
+                }
+                // modify/typechange：两侧都有内容。
+                _ => {
+                    let sha = Self::blob_sha256(repo, new_oid)?;
+                    let old_sha = Self::blob_sha256(repo, old_oid)?;
+                    (DeliveryFileKind::Modify, sha, old_sha)
+                }
             };
-            let blob = repo
-                .find_blob(oid)
-                .map_err(|e| format!("交付清单 blob 不可达 {oid}: {e}"))?;
-            let mut hasher = Sha256::new();
-            hasher.update(blob.content());
+            // 路径取两侧中在场的一侧（delete 只有 old，add 只有 new）。
+            let path = delta
+                .new_file()
+                .path()
+                .or_else(|| delta.old_file().path())
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .ok_or_else(|| format!("交付清单 delta 无路径（{kind:?}）"))?;
             files.push(DeliveryFileEntry {
-                // forward slash 形态统一（评审侧跨平台字符串比对）。
-                path: path.to_string_lossy().replace('\\', "/"),
-                sha256: format!("{:x}", hasher.finalize()),
+                path,
+                kind,
+                sha256,
+                old_sha256,
             });
         }
         let truncated = files.len() > FILES_MAX;
@@ -681,6 +727,17 @@ impl CheckpointStore {
             files.truncate(FILES_MAX);
         }
         Ok((files, truncated))
+    }
+
+    /// blob 内容 sha256 hex（交付清单摘要单一来源；oid 零值调用方错误）。
+    #[cfg(feature = "checkpoint-git")]
+    fn blob_sha256(repo: &git2::Repository, oid: git2::Oid) -> Result<String, String> {
+        let blob = repo
+            .find_blob(oid)
+            .map_err(|e| format!("交付清单 blob 不可达 {oid}: {e}"))?;
+        let mut hasher = Sha256::new();
+        hasher.update(blob.content());
+        Ok(format!("{:x}", hasher.finalize()))
     }
 
     /// P4 交付门：把当前工作区捕获为**可审交付分支**（git 形态专用）。

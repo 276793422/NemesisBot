@@ -541,11 +541,16 @@ impl RequestLogger {
             if info.usage.cached_tokens > 0 {
                 // Manual division guard: a checked_mul/checked_div chain is less
                 // readable and overflow is impossible for realistic token counts.
+                // 命中率分母 = 纯输入 + 缓存读（prompt 已按账本不变量归一为
+                // 非缓存纯输入，直接除会得出 >100%）。
                 #[allow(clippy::manual_checked_ops)]
-                let cache_pct = if info.usage.prompt_tokens > 0 {
-                    info.usage.cached_tokens * 100 / info.usage.prompt_tokens
-                } else {
-                    0
+                let cache_pct = {
+                    let total_input = info.usage.prompt_tokens + info.usage.cached_tokens;
+                    if total_input > 0 {
+                        info.usage.cached_tokens * 100 / total_input
+                    } else {
+                        0
+                    }
                 };
                 content.push_str(&format!(
                     " - **Cached Tokens**: {} ({ }% cache hit)\n",

@@ -38,6 +38,7 @@ impl ModuleHandler for SessionsHandler {
             "mark_delivered",
             "snooze",
             "unsnooze",
+            "detach",
         ]
     }
 
@@ -128,6 +129,34 @@ impl ModuleHandler for SessionsHandler {
                 );
                 Ok(Some(
                     serde_json::json!({ "session_id": sid, "snoozed_until": until }),
+                ))
+            }
+            "detach" => {
+                // 脱离父分支（2026-10-20）：清血缘 meta 四字段（parent /
+                // forked_at_turn / fork_reason / branch_summary）——UI 谱系
+                // 视图回平、Branch Context 停止注入。消息内容零改动（fork
+                // 时整段 VERBATIM 拷贝，零共享状态）；子分支跟随独立（子树
+                // 挂在本会话下，本会话成根后树自动重组）。不可逆；boundary
+                // 审计行保留（jsonl 内部，UI 不可见）。无血缘 = 诚实拒绝。
+                let session_id = data
+                    .as_ref()
+                    .and_then(|d| d.get("session_id"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing session_id".to_string())?;
+                let sid = nemesis_agent::session::SessionStore::sanitize_session_id(session_id);
+                let session_key = format!("agent:main:session:{sid}");
+                if !nemesis_agent::chat_log::chat_log_exists(&session_key) {
+                    return Err(format!("会话不存在: {sid}"));
+                }
+                if !nemesis_agent::chat_log::clear_session_lineage(&session_key) {
+                    return Err(format!("会话 {sid} 没有父分支血缘（非分支会话，无需脱离）"));
+                }
+                ctx.state.event_hub.publish(
+                    "session.updated",
+                    serde_json::json!({ "session_id": sid, "detached": true }),
+                );
+                Ok(Some(
+                    serde_json::json!({ "session_id": sid, "detached": true }),
                 ))
             }
             "unsnooze" => {

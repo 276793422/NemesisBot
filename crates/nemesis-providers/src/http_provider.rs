@@ -9,10 +9,17 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Extract UsageInfo from a usage JSON value, including cached token metrics.
+///
+/// 账本不变量：`prompt_tokens` 归一为**非缓存纯输入**（Anthropic 语义），
+/// 缓存读单列 `cache_read_tokens`。OpenAI/DeepSeek 族 wire 的 prompt/input
+/// 均含缓存（子集语义），此处统一剥出；miss 段就是普通输入——OpenAI 族
+/// 没有缓存写概念，恒不落 `cache_creation_tokens`（Anthropic 族除外）。
 fn extract_usage(u: &serde_json::Value) -> UsageInfo {
+    let prompt_raw = u["prompt_tokens"].as_i64().unwrap_or(0);
+
     // DeepSeek: prompt_cache_hit_tokens + prompt_cache_miss_tokens
+    // （miss 段可由 prompt - hit 推导，不单独读取）
     let ds_hit = u.get("prompt_cache_hit_tokens").and_then(|v| v.as_i64());
-    let ds_miss = u.get("prompt_cache_miss_tokens").and_then(|v| v.as_i64());
 
     // OpenAI: usage.prompt_tokens_details.cached_tokens
     let oai_cached = u
@@ -26,27 +33,23 @@ fn extract_usage(u: &serde_json::Value) -> UsageInfo {
         .and_then(|v| v.as_i64());
     let ant_read = u.get("cache_read_input_tokens").and_then(|v| v.as_i64());
 
-    let (cached, creation, read) = if let (Some(hit), Some(miss)) = (ds_hit, ds_miss) {
-        // DeepSeek: hit → cache_read, miss → cache_creation
-        (Some(hit), Some(miss), Some(hit))
+    let (plain_prompt, cached, creation, read) = if let Some(hit) = ds_hit {
+        // DeepSeek: prompt = hit + miss → 剥出 hit；miss 归普通输入。
+        let hit = hit.clamp(0, prompt_raw.max(0));
+        (prompt_raw - hit, Some(hit), None, Some(hit))
     } else if let Some(c) = oai_cached {
-        // OpenAI: cached_tokens in prompt_tokens_details
-        // miss = prompt_tokens - cached_tokens
-        let prompt = u["prompt_tokens"].as_i64().unwrap_or(0);
-        let miss = (prompt - c).max(0);
-        (Some(c), Some(miss), Some(c))
+        // OpenAI: prompt_tokens 含 cached_tokens（子集）→ 同上剥出。
+        let c = c.clamp(0, prompt_raw.max(0));
+        (prompt_raw - c, Some(c), None, Some(c))
     } else if ant_creation.is_some() || ant_read.is_some() {
-        // Anthropic: separate creation and read
-        (None, ant_creation, ant_read)
-    } else if let Some(hit) = ds_hit {
-        // DeepSeek without miss field (fallback)
-        (Some(hit), None, Some(hit))
+        // Anthropic: prompt_tokens 原生即非缓存纯输入，不动；读写单列。
+        (prompt_raw, None, ant_creation, ant_read)
     } else {
-        (None, None, None)
+        (prompt_raw, None, None, None)
     };
 
     UsageInfo {
-        prompt_tokens: u["prompt_tokens"].as_i64().unwrap_or(0),
+        prompt_tokens: plain_prompt,
         completion_tokens: u["completion_tokens"].as_i64().unwrap_or(0),
         total_tokens: u["total_tokens"].as_i64().unwrap_or(0),
         cached_tokens: cached,

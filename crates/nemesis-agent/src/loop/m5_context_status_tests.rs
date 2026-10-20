@@ -175,3 +175,59 @@ fn session_tokens_used_reports_budget_ledger() {
     let st2 = al.session_context_status("agent:main:session:no-tokens");
     assert_eq!(st2["session_tokens_used"], 0);
 }
+
+/// 2026-10-20 压缩点一等公民化：`trigger`/`trigger_source`/`pct_trigger`
+/// 观测字段。无用户键 → trigger = 窗口×75%（instance 兜底语义）；设了
+/// `compact_context_tokens` → 到点即压 + source=user。
+#[test]
+fn context_status_reports_trigger_fields() {
+    let (al, store) = m5_loop();
+    let key = "agent:main:session:trig";
+    store.get_or_create(key);
+    store.add_message(key, "user", "hello trigger fields");
+
+    // 无 config_path / 无价目表 → 三级链未命中 → 实例兜底 128k。
+    let st = al.session_context_status(key);
+    assert_eq!(st["trigger"], 96_000, "128k × 75% 既有行为");
+    assert_eq!(st["trigger_source"], "instance");
+    let used = st["used_tokens"].as_u64().unwrap() as usize;
+    assert_eq!(
+        st["pct_trigger"],
+        (used * 100 / 96_000).min(100),
+        "压缩点百分比与 pct 同公式"
+    );
+}
+
+/// 设了 `compact_context_tokens`：trigger 照用户值、source=user；
+/// pct_trigger 相对压缩点（而非窗口）。
+#[test]
+fn context_status_user_compact_point_overrides() {
+    let dir = std::env::temp_dir().join(format!("nb-m5-cc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg_path = dir.join("config.json");
+    std::fs::write(
+        &cfg_path,
+        serde_json::json!({
+            "model_list": [{"model_name": "test-model", "compact_context_tokens": 1000}]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let store = std::sync::Arc::new(crate::session::SessionStore::new_in_memory());
+    let mut al = AgentLoop::new(Box::new(NoopProvider), local_test_config());
+    al.set_session_store(store.clone());
+    al.set_config_path(cfg_path.clone());
+    let key = "agent:main:session:ucc";
+    store.get_or_create(key);
+    store.add_message(key, "user", "hello user compact point");
+
+    let st = al.session_context_status(key);
+    assert_eq!(st["trigger"], 1000, "到点即压，不乘比例");
+    assert_eq!(st["trigger_source"], "user");
+    assert_eq!(st["window"], 128_000, "真实窗口语义不变（三级链兜底）");
+    let used = st["used_tokens"].as_u64().unwrap() as usize;
+    assert_eq!(st["pct_trigger"], (used * 100 / 1000).min(100));
+    let _ = std::fs::remove_dir_all(&dir);
+}

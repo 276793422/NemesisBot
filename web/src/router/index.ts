@@ -19,11 +19,11 @@ const routes: RouteRecordRaw[] = [
   { path: '/skills', name: 'skills', component: () => import('../views/SkillsView.vue') },
   { path: '/mcp', name: 'mcp', component: () => import('../views/McpView.vue') },
   // 2026-08-29：管理分组新增页（MCP 之后）。Hook 页自设置页迁移；
-  // 命令/插件/子Agent 为骨架页，细节待定。
+  // 命令/插件为实页（命令=slash 命令 CRUD，插件=三 Tab 含 WASM）。
+  // 子Agent 骨架页已于 2026-10-20 下线（无实质功能不挂侧栏入口）。
   { path: '/hooks', name: 'hooks', component: () => import('../views/HookView.vue') },
   { path: '/commands', name: 'commands', component: () => import('../views/CommandsView.vue') },
   { path: '/plugins', name: 'plugins', component: () => import('../views/PluginsView.vue') },
-  { path: '/subagents', name: 'subagents', component: () => import('../views/SubagentView.vue') },
   { path: '/channels', name: 'channels', component: () => import('../views/ChannelsView.vue') },
   // 行动连接器（2026-10-14 AI 原生行动代理）：只读面——连接器注册表 +
   // 行动回执（行动账本）+ 纸面券商模拟账本（WSAPI connectors 模块）。

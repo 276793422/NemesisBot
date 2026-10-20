@@ -174,8 +174,12 @@ async fn chat_success_via_fake_batch() {
         .unwrap();
     assert_eq!(resp.content, "hi from fake codex");
     let usage = resp.usage.expect("usage 必须解析");
-    assert_eq!(usage.prompt_tokens, 3);
+    // 账本不变量：input=2 是纯输入，cached=1 单列（不折进 prompt）。
+    assert_eq!(usage.prompt_tokens, 2);
     assert_eq!(usage.completion_tokens, 3);
+    assert_eq!(usage.total_tokens, 6);
+    assert_eq!(usage.cached_tokens, Some(1));
+    assert_eq!(usage.cache_read_tokens, Some(1));
 }
 
 /// build_tools_prompt 对照（工具段渲染不炸）。

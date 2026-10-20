@@ -146,8 +146,10 @@ async fn chat_success_via_fake_batch() {
         .unwrap();
     assert_eq!(resp.content, "hello from fake claude");
     let usage = resp.usage.expect("usage 必须汇总");
-    assert_eq!(usage.prompt_tokens, 6);
+    // 纯输入透传（3），缓存段不折进 prompt；total=3+1+2+5=11。
+    assert_eq!(usage.prompt_tokens, 3);
     assert_eq!(usage.completion_tokens, 5);
+    assert_eq!(usage.total_tokens, 11);
     assert_eq!(usage.cached_tokens, Some(2));
 }
 

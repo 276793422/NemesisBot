@@ -460,7 +460,9 @@ fn process_image_path_resolves_own_pid() {
 
 /// 子集闸双臂：超子集工具（grep）= ToolFailed **不回落**（VM 与宿主两套
 /// 文件视图混用 = 正确性事故）；子集内工具（exec）在 config 关 = Unavailable
-/// （可安全回落 per-call）。两臂都无需 QEMU/镜像——闸先于一切 IO。
+/// 且 host_fallback=false（R1：vm 档 guest 异文件视图，宿主回落被错误位
+/// 禁止——「可安全回落」只对 process 档成立）。两臂都无需 QEMU/镜像——闸
+/// 先于一切 IO。
 #[test]
 fn persistent_execution_subset_gate_and_config_off() {
     use nemesis_agent::remote_executor_tool::{PersistentCallError, PersistentExecutor};
@@ -492,7 +494,7 @@ fn persistent_execution_subset_gate_and_config_off() {
         .unwrap_err();
     assert!(matches!(err, PersistentCallError::ToolFailed(_)));
 
-    // 子集内 + config 关 → Unavailable（调用未发生，可回落）。
+    // 子集内 + config 关 → Unavailable 且 host_fallback=false（vm 档禁宿主回落）。
     let err = rt
         .block_on(async {
             sup.execute_persistent("agent-1", &exec_root, "exec", "{}", &ctx)
@@ -500,8 +502,76 @@ fn persistent_execution_subset_gate_and_config_off() {
         })
         .unwrap_err();
     assert!(
-        matches!(err, PersistentCallError::Unavailable(ref m) if m.contains("enabled=false")),
-        "config 关必须 Unavailable: {err:?}"
+        matches!(
+            err,
+            PersistentCallError::Unavailable {
+                ref message,
+                host_fallback: false,
+            } if message.contains("enabled=false")
+        ),
+        "config 关必须 Unavailable 且 host_fallback=false: {err:?}"
+    );
+}
+
+// R1 回归锁（原 review 探针反转，2026-10-20）：VM enabled 但镜像缺席时，
+// vm 档不可用错误携带 host_fallback=false——RemoteExecutorTool 必须上抛诚实
+// 错误（含回落禁用说明），绝不静默落宿主 per-call 通道（宿主标记文件不可被
+// 读出）。通道 exe 指向不存在路径：正确实现下永不被触碰；若回落（回归），
+// spawn 失败错误形态立即可辨。
+#[cfg(windows)]
+#[tokio::test]
+async fn unavailable_vm_does_not_fallback_to_host() {
+    use nemesis_agent::r#loop::Tool;
+    use nemesis_agent::remote_executor_tool::{
+        ExecutorChannel, PersistentRoute, RemoteExecutorTool,
+    };
+    // 全隔离（tempdir home/config，无进程级全局态操纵——翻转后不再需要
+    // GLOBAL_STATE_LOCK，探针时代的 env 依赖已随 NEMESISBOT_TEST_BIN 退场）。
+    let tmp = tempfile::tempdir().unwrap();
+    write_config(&tmp.path().join("config.json"), &full_vm_json(true));
+    std::fs::write(
+        tmp.path().join("host-only-marker.txt"),
+        "REVIEW_HOST_ONLY_MARKER",
+    )
+    .unwrap();
+    let sup = std::sync::Arc::new(VmSupervisor::new(
+        tmp.path().to_path_buf(),
+        tmp.path().join("config.json"),
+    ));
+    let channel = std::sync::Arc::new(ExecutorChannel::new(
+        tmp.path().join("no-such-executor.exe"),
+        tmp.path().to_string_lossy().to_string(),
+        std::sync::Arc::new(|| false),
+    ));
+    let root = tmp.path().to_path_buf();
+    let tool = RemoteExecutorTool::new(
+        "read_file".into(),
+        Box::new(nemesis_agent::loop_tools::ExecTool::new(
+            &root.to_string_lossy(),
+            true,
+        )),
+        channel,
+    )
+    .with_persistent(PersistentRoute {
+        resolve: std::sync::Arc::new(move || Some(("review-vm".into(), root.clone()))),
+        executor: sup,
+    });
+    let ctx = nemesis_agent::context::RequestContext::new("web", "review", "tester", "review");
+    let err = tool
+        .execute(r#"{"path":"host-only-marker.txt"}"#, &ctx)
+        .await
+        .expect_err("vm 档不可用必须上抛诚实错误，不得回落宿主读出标记");
+    assert!(
+        err.contains("host fallback forbidden") && err.contains("不回落宿主"),
+        "错误须含回落禁用契约文案: {err}"
+    );
+    assert!(
+        !err.contains("REVIEW_HOST_ONLY_MARKER"),
+        "宿主文件内容绝不可出现在结果中: {err}"
+    );
+    assert!(
+        !err.contains("failed to spawn"),
+        "per-call 通道必须一次都未被触碰: {err}"
     );
 }
 

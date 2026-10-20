@@ -1987,9 +1987,14 @@ impl nemesis_agent::remote_executor_tool::PersistentExecutor for BackendRoutingE
                 .as_ref()
                 .and_then(|m| m.vm_backend())
                 .ok_or_else(|| {
-                    PersistentCallError::Unavailable(format!(
-                        "agent {agent_id} 档位为 vm 但 VM 后端未装配（vm feature 关闭或 gateway 未装配）"
-                    ))
+                    // R1：档位为 vm 的 agent 不经宿主执行——host_fallback=false
+                    // 禁回落（宿主与 guest 文件视图不同）。
+                    PersistentCallError::Unavailable {
+                        message: format!(
+                            "agent {agent_id} 档位为 vm 但 VM 后端未装配（vm feature 关闭或 gateway 未装配）"
+                        ),
+                        host_fallback: false,
+                    }
                 })?;
             return vm
                 .execute_persistent(agent_id, exec_root, tool, args, context)

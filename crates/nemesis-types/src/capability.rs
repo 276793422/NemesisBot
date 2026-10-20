@@ -134,24 +134,47 @@ pub fn parse_size_marker(s: &str) -> Option<u32> {
     Some(n as u32)
 }
 
+/// `model_list` 条目定位（单一真相源，2026-10-20）：active 别名对 `model_name`
+/// / `model` 字段的**精确**匹配优先；未命中回落 **bare-suffix**——`model`
+/// 字段末段与 active 别名末段相等（`"glm-4.7"` ↔ `"zhipu/glm-4.7"`）。
+///
+/// 为什么需要 bare-suffix：活 gateway 的 active_model 是剥前缀裸名
+/// （provider_resolver `resolve_from_model_config` 对含 '/' 的 model 切尾段；
+/// CLI `model add --default` 写的 `agents.defaults.llm` 也是裸名，两条路在此
+/// 汇合）。自定义别名条目（`model_name` ≠ 裸名，Dashboard 加模型表单允许）
+/// 在纯精确匹配下全族失联——per-model 键（tier / vision / context_window /
+/// compact_context_tokens / …）静默回落默认。2026-10-20 真浏览器 E2E 实证：
+/// `context_window: 131072` 被无视、压缩观测落价目表值。bare-suffix 语义与
+/// `nemesis_data` 价目表 lookup 的第 3 级对齐；多条目同裸名按数组序先到先得
+/// （与精确匹配、价目表一致）。
+pub(crate) fn find_model_entry<'a>(
+    cfg: &'a serde_json::Value,
+    active_alias: &str,
+) -> Option<&'a serde_json::Value> {
+    let arr = cfg.get("model_list")?.as_array()?;
+    let bare = active_alias.rsplit('/').next().unwrap_or(active_alias);
+    let matches_exact = |m: &serde_json::Value| {
+        let name = m.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
+        let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
+        name == active_alias || full == active_alias
+    };
+    let matches_bare = |m: &serde_json::Value| {
+        let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
+        full.rsplit('/').next().unwrap_or(full) == bare
+    };
+    arr.iter()
+        .find(|m| matches_exact(m))
+        .or_else(|| arr.iter().find(|m| matches_bare(m)))
+}
+
 /// Resolve the capability tier for the active model in a `config.json` Value.
 ///
 /// Looks up `model_list[]` for the entry matching `active_alias` (by
-/// `model_name` or `model`), reads its `model_tier` (default `Auto`), and
-/// resolves via the heuristic. Returns `Big` if the model can't be found.
+/// `model_name` or `model`, bare-suffix 回落见 [`find_model_entry`]), reads its
+/// `model_tier` (default `Auto`), and resolves via the heuristic. Returns `Big`
+/// if the model can't be found.
 pub fn resolve_active_tier(cfg: &serde_json::Value, active_alias: &str) -> ModelTier {
-    let entry = cfg
-        .get("model_list")
-        .and_then(|v| v.as_array())
-        .and_then(|arr| {
-            arr.iter().find(|m| {
-                let name = m.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
-                let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
-                name == active_alias || full == active_alias
-            })
-        });
-
-    let Some(entry) = entry else {
+    let Some(entry) = find_model_entry(cfg, active_alias) else {
         return ModelTier::Big;
     };
 
@@ -190,16 +213,8 @@ pub fn resolve_active_tier(cfg: &serde_json::Value, active_alias: &str) -> Model
 /// Pure (no IO); `AgentLoop::current_max_tokens` reads config.json fresh and
 /// hands the parsed value here. Mirrors [`resolve_active_tier`].
 pub fn resolve_max_output_tokens(cfg: &serde_json::Value, active_alias: &str) -> Option<i64> {
-    cfg.get("model_list")
-        .and_then(|v| v.as_array())
-        .and_then(|arr| {
-            arr.iter().find(|m| {
-                let name = m.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
-                let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
-                name == active_alias || full == active_alias
-            })
-        })
-        .and_then(|m| m.get("max_output_tokens"))
+    find_model_entry(cfg, active_alias)?
+        .get("max_output_tokens")
         .and_then(|v| v.as_i64())
 }
 
@@ -274,16 +289,7 @@ pub fn resolve_pre_pause_probe(cfg: &serde_json::Value) -> PrePauseProbeSettings
 /// matching `model_list[]` entry and returns its `reasoning_effort` string
 /// ("off"|"low"|"medium"|"high"); None/empty → None (send nothing).
 pub fn resolve_reasoning_effort(cfg: &serde_json::Value, active_alias: &str) -> Option<String> {
-    let e = cfg
-        .get("model_list")
-        .and_then(|v| v.as_array())
-        .and_then(|arr| {
-            arr.iter().find(|m| {
-                let name = m.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
-                let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
-                name == active_alias || full == active_alias
-            })
-        })
+    let e = find_model_entry(cfg, active_alias)
         .and_then(|m| m.get("reasoning_effort"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
@@ -301,16 +307,20 @@ pub fn resolve_reasoning_effort(cfg: &serde_json::Value, active_alias: &str) -> 
 /// historical 32000 hardcoded in `AgentInstance`). Written by `model add`
 /// when the models.dev catalog hit fills it, or manually via config.json.
 pub fn resolve_context_window(cfg: &serde_json::Value, active_alias: &str) -> Option<i64> {
-    cfg.get("model_list")
-        .and_then(|v| v.as_array())
-        .and_then(|arr| {
-            arr.iter().find(|m| {
-                let name = m.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
-                let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
-                name == active_alias || full == active_alias
-            })
-        })
-        .and_then(|m| m.get("context_window"))
+    find_model_entry(cfg, active_alias)?
+        .get("context_window")
+        .and_then(|v| v.as_i64())
+        .filter(|w| *w > 0)
+}
+
+/// Per-model 绝对压缩点（2026-10-20 压缩点一等公民化）：`compact_context_tokens`
+/// 键——设了就「到点即压」（不乘窗口比例），解决「模型支持 1M 但要在 200K 压
+/// 一次」的表达缺口。镜像 [`resolve_context_window`] 的形态；`None` = 未设
+/// （调用方回落 窗口×75% 既有行为）。钳制（min(值, 真实窗口)）在组合层
+/// （nemesis-agent `resolve_compact_trigger`）做——本函数只读原始键。
+pub fn resolve_compact_context_tokens(cfg: &serde_json::Value, active_alias: &str) -> Option<i64> {
+    find_model_entry(cfg, active_alias)?
+        .get("compact_context_tokens")
         .and_then(|v| v.as_i64())
         .filter(|w| *w > 0)
 }
@@ -327,16 +337,8 @@ pub fn resolve_summarizer_prefix_reuse(
     cfg: &serde_json::Value,
     active_alias: &str,
 ) -> Option<bool> {
-    cfg.get("model_list")
-        .and_then(|v| v.as_array())
-        .and_then(|arr| {
-            arr.iter().find(|m| {
-                let name = m.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
-                let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
-                name == active_alias || full == active_alias
-            })
-        })
-        .and_then(|m| m.get("summarizer_prefix_reuse"))
+    find_model_entry(cfg, active_alias)?
+        .get("summarizer_prefix_reuse")
         .and_then(|v| v.as_bool())
 }
 
@@ -451,17 +453,7 @@ pub fn detect_vision_from_name(name: &str) -> bool {
 ///
 /// 条目缺失 / 无 model_list（standalone）→ 默认放行。
 pub fn resolve_active_vision(cfg: &serde_json::Value, active_alias: &str) -> VisionResolution {
-    let entry = cfg
-        .get("model_list")
-        .and_then(|v| v.as_array())
-        .and_then(|arr| {
-            arr.iter().find(|m| {
-                let name = m.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
-                let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
-                name == active_alias || full == active_alias
-            })
-        });
-    let Some(entry) = entry else {
+    let Some(entry) = find_model_entry(cfg, active_alias) else {
         return vision_default_allow();
     };
 
@@ -520,15 +512,7 @@ pub fn resolve_active_vision(cfg: &serde_json::Value, active_alias: &str) -> Vis
 /// (no IO) so it's unit-testable; `AgentLoop::current_display_model` reads
 /// config.json fresh each call and hands the parsed value here.
 pub fn resolve_display_model(cfg: &serde_json::Value, active_alias: &str) -> String {
-    cfg.get("model_list")
-        .and_then(|v| v.as_array())
-        .and_then(|arr| {
-            arr.iter().find(|m| {
-                let name = m.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
-                let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
-                name == active_alias || full == active_alias
-            })
-        })
+    find_model_entry(cfg, active_alias)
         .and_then(|m| m.get("model").and_then(|v| v.as_str()).map(String::from))
         .unwrap_or_else(|| active_alias.to_string())
 }

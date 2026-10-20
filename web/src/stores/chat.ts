@@ -224,6 +224,23 @@ export const useChatStore = defineStore('chat', () => {
     if (anchor !== null) nextRowIndex = anchor + rows
   }
 
+  /** M6-fix（2026-10-21）：发送链刚 create 的全新会话建立行号锚。watcher 的
+   *  justCreatedSid 分支有意跳过 reset+loadHistory（服务端 jsonl 在首条消息
+   *  落盘前必为空，且 reset 会毁掉尚未落盘的本地回显）——代价是锚永远停在
+   *  null，本地回显与后续 live 行全部不编号，回退/重新生成按钮组
+   *  （rewindActions 要求 rowIndex）在该会话首轮恒不渲染。此函数由该分支
+   *  调用：新会话服务端历史为空是事实，视图内 user/assistant 行就是 jsonl
+   *  的第 0..n-1 行——按序回填编号并把锚推到行尾。error/system 行不占行，
+   *  与 addMessage/prependHistory 语义一致。 */
+  function anchorFreshSession() {
+    let n = 0
+    for (const m of messages.value) {
+      if (m.role !== 'user' && m.role !== 'assistant') continue
+      m.rowIndex = n++
+    }
+    nextRowIndex = n
+  }
+
   /** Replace the whole message list — used by the chat watchdog to resync
    *  from session_log when a live response frame is suspected lost. Replacing
    *  (not merging) avoids any dedup / stable-id requirement.
@@ -373,6 +390,7 @@ export const useChatStore = defineStore('chat', () => {
     inflightTurns,
     addMessage,
     prependHistory,
+    anchorFreshSession,
     replaceMessages,
     dropAssistantBelowSeq,
     dropTailIfSame,

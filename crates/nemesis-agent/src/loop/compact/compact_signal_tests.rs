@@ -109,6 +109,25 @@ fn keep_tokens_config(tag: &str, keep: usize) -> std::path::PathBuf {
     path
 }
 
+/// 2026-10-20 压缩点一等公民化：keep + per-model `compact_context_tokens`
+/// 二合一配置（active_model = config.model = "test-model"，条目按别名命中）。
+fn compact_point_config(tag: &str, keep: usize, compact: i64) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "nemesis_test_compact_point_{tag}_{}.json",
+        std::process::id()
+    ));
+    std::fs::write(
+        &path,
+        serde_json::json!({
+            "agents": {"defaults": {"compact_keep_recent_tokens": keep}},
+            "model_list": [{"model_name": "test-model", "compact_context_tokens": compact}]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    path
+}
+
 /// 标准低估算历史：system(4 tok) + 7 × user/assistant(各 "x".repeat(25) = 10
 /// tok) → tail 估算 74 < threshold 75（context_window=100）——纯估算不触发。
 fn low_estimate_history() -> AgentInstance {
@@ -406,5 +425,110 @@ async fn b2_baseline_is_estimate_axis_not_inflated_provider_signal() {
     let cache = instance.get_summary_cache().expect("有效摘要不被误弃");
     assert_eq!(cache.covers_up_to, 8);
     assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let _ = std::fs::remove_file(&cfg_path);
+}
+
+// ---------------------------------------------------------------------------
+// 2026-10-20 压缩点一等公民化：用户压缩点触发 + 钳制一次性告知
+// ---------------------------------------------------------------------------
+
+/// 用户压缩点 < 默认 75% 点：到点即压（不乘比例）——估算 74 在默认
+/// threshold 75 之下、用户点 50 之上，只有压缩点形态触发。
+#[tokio::test]
+async fn user_compact_point_triggers_below_default_ratio() {
+    let (provider, _calls) = QueueProvider::boxed(vec![Ok("SUMMARY".to_string())]);
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        provider,
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let cfg_path = compact_point_config("usertrig", 10, 50);
+    agent_loop.set_config_path(cfg_path.clone());
+    let instance = low_estimate_history(); // 估算 74；默认链 75 不触发
+
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+
+    let cache = instance
+        .get_summary_cache()
+        .expect("用户压缩点 50 到点即压");
+    assert_eq!(cache.covers_up_to, 7);
+    let _ = std::fs::remove_file(&cfg_path);
+}
+
+/// 未到用户压缩点：不触发、provider 不被调（到点即压的「未到点」半边）。
+#[tokio::test]
+async fn user_compact_point_not_reached_no_trigger() {
+    let (provider, calls) = QueueProvider::boxed(vec![]);
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        provider,
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let cfg_path = compact_point_config("usermiss", 10, 200);
+    agent_loop.set_config_path(cfg_path.clone());
+    let instance = low_estimate_history(); // 估算 74 < 200
+
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+
+    assert!(instance.get_summary_cache().is_none(), "74 < 200 未到点");
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "provider 不被调");
+    let _ = std::fs::remove_file(&cfg_path);
+}
+
+/// 超窗口钳制 + 一次性告知：压缩点 500 > 实例窗口 100 → 钳到 100；
+/// 第一轮进入状态块即置 clamped_noticed（不等软位/触发位），第二轮不重复。
+#[tokio::test]
+async fn clamp_notice_fires_once_even_below_soft() {
+    let (provider, calls) = QueueProvider::boxed(vec![]);
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        provider,
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let cfg_path = compact_point_config("clamp", 10, 500);
+    agent_loop.set_config_path(cfg_path.clone());
+    let instance = low_estimate_history(); // 窗口 100 → 钳 100；估算 74 < 100
+
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+    assert!(
+        instance.get_summary_cache().is_none(),
+        "74 < 钳后点 100 不触发"
+    );
+    let noticed = agent_loop
+        .compact_state
+        .lock()
+        .get("s")
+        .map(|s| s.clamped_noticed);
+    assert_eq!(noticed, Some(true), "首轮即一次性告知");
+
+    // 第二轮：状态仍在（一次性闸保持），无 panic、无重复触发副作用。
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+    let still = agent_loop
+        .compact_state
+        .lock()
+        .get("s")
+        .map(|s| s.clamped_noticed);
+    assert_eq!(still, Some(true));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
     let _ = std::fs::remove_file(&cfg_path);
 }

@@ -1712,26 +1712,40 @@ async fn review_issue(
             }
             // ②typed files 块（在场即验形态，加法演进）：path 形态闸复用
             // anchor 路径校验（解析期 FS 无关，集群跨平台拒绝 Windows 形态
-            // 绝对路径），sha256 = 64 位 hex。deletions 不在列表是 capture
-            // 侧语义（无内容可哈希），files_changed 计数仍在场可对照。
-            // 键在场但非数组同样是形态非法（不静默滑过）。
+            // 绝对路径）。R5（2026-10-20 复评）kind 分臂：capture 侧含全部
+            // 变更类型——add/modify 须 sha256 64-hex（modify 另须 old_sha256
+            // 64-hex）；delete 无新内容可哈希，须 old_sha256 64-hex 且无
+            // sha256（old 摘要承载「删除确实发生」的证据）。kind 缺席 = 旧
+            // 形态条目（恒 add/modify、恒有 sha256）→ 有 sha 即过，存量
+            // 夹具零改动；kind 在场但值未知 = loud 形态非法（不静默滑过）。
+            // 键在场但非数组同样是形态非法。
             if let Some(files_val) = delivery.get("files") {
                 let Some(files) = files_val.as_array() else {
                     return Some(Err(
                         "交付证据 typed files 块形态非法：files 必须是数组。请重跑任务以重新捕获交付。".to_string(),
                     ));
                 };
+                let is_hex64 =
+                    |s: &str| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit());
                 for f in files {
                     let path = f.get("path").and_then(|v| v.as_str()).unwrap_or("");
-                    let sha = f.get("sha256").and_then(|v| v.as_str()).unwrap_or("");
                     if path.is_empty() || nemesis_board::anchor::validate_anchor_path_shape(path).is_err() {
                         return Some(Err(format!(
                             "交付证据 typed files 块形态非法：path「{path}」不是合法的仓库相对路径（拒绝绝对路径/`..`/盘符等）。请重跑任务以重新捕获交付。"
                         )));
                     }
-                    if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    let sha = f.get("sha256").and_then(|v| v.as_str()).unwrap_or("");
+                    let old_sha = f.get("old_sha256").and_then(|v| v.as_str()).unwrap_or("");
+                    let shape_bad = match f.get("kind").and_then(|v| v.as_str()) {
+                        None => !is_hex64(sha),
+                        Some("add") => !is_hex64(sha) || !old_sha.is_empty(),
+                        Some("modify") => !is_hex64(sha) || !is_hex64(old_sha),
+                        Some("delete") => !sha.is_empty() || !is_hex64(old_sha),
+                        Some(_) => true,
+                    };
+                    if shape_bad {
                         return Some(Err(format!(
-                            "交付证据 typed files 块形态非法：path「{path}」的 sha256「{sha}」不是 64 位 hex。请重跑任务以重新捕获交付。"
+                            "交付证据 typed files 块形态非法：path「{path}」的 kind/sha256/old_sha256 组合不合 wire 契约（add/modify 须 64 位 hex sha256；modify 另须 old_sha256；delete 须 64 位 hex old_sha256 且无 sha256）。请重跑任务以重新捕获交付。"
                         )));
                     }
                 }
@@ -1758,7 +1772,8 @@ async fn review_issue(
                 }
             }
             // 严格闸（默认 false 烧入期，翻闸须用户裁决）：files 必须在场。
-            // capture 侧空列表 skip 序列化 = 缺席，两态等价处理。
+            // R5 后 files 恒序列化（空数组 = 「零文件变更」的真实派生事实，
+            // 仍按证据面残缺处置——git 交付的文件清单不应为空）。
             if cfg.review.evidence_typed_required
                 && delivery
                     .get("files")

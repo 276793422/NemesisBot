@@ -213,6 +213,121 @@ fn update_field_effort_and_size_normalization() {
     );
 }
 
+/// per-model 绝对压缩点（2026-10-20 compact_context_tokens）：数字落盘 /
+/// 0 或空串清除=移键（不是写 null）/ 非法值 loud 拒 / 未知字段报错清单
+/// 含新键 / models.list 透传。
+#[test]
+fn update_field_compact_context_tokens_set_clear_reject() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), SEED);
+    let h = ModelsHandler::new();
+    let home = home_str(&dir);
+    let m1 = || read_config_raw(dir.path())["model_list"][0].clone();
+
+    // 数字（含串形态）落盘为数值。
+    h.update_field(
+        &home,
+        &serde_json::json!({ "name": "m1", "field": "compact_context_tokens", "value": 200000 }),
+        &make_ctx(&dir),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(m1()["compact_context_tokens"].as_u64(), Some(200000));
+    h.update_field(
+        &home,
+        &serde_json::json!({ "name": "m1", "field": "compact_context_tokens", "value": "131072" }),
+        &make_ctx(&dir),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(m1()["compact_context_tokens"].as_u64(), Some(131072));
+
+    // 0 = 清除 → 键被移除（写 null 会留 `"key": null` 字节垃圾）。
+    h.update_field(
+        &home,
+        &serde_json::json!({ "name": "m1", "field": "compact_context_tokens", "value": 0 }),
+        &make_ctx(&dir),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(
+        m1().get("compact_context_tokens").is_none(),
+        "0 清除必须移键而非写 null"
+    );
+
+    // 空串 = 清除 → 同样移键。
+    h.update_field(
+        &home,
+        &serde_json::json!({ "name": "m1", "field": "compact_context_tokens", "value": 400000 }),
+        &make_ctx(&dir),
+    )
+    .unwrap()
+    .unwrap();
+    h.update_field(
+        &home,
+        &serde_json::json!({ "name": "m1", "field": "compact_context_tokens", "value": "" }),
+        &make_ctx(&dir),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(m1().get("compact_context_tokens").is_none(), "空串清除移键");
+
+    // 非法值 loud 拒（垃圾串 / 负数），文件不动。
+    for bad in [serde_json::json!("abc"), serde_json::json!(-5)] {
+        let err = h
+            .update_field(
+                &home,
+                &serde_json::json!({ "name": "m1", "field": "compact_context_tokens", "value": bad }),
+                &make_ctx(&dir),
+            )
+            .unwrap_err();
+        assert!(
+            err.contains("positive number"),
+            "非法值须 loud 拒，got: {err}"
+        );
+    }
+
+    // 未知字段报错清单含新键（可发现性）。
+    let err = h
+        .update_field(
+            &home,
+            &serde_json::json!({ "name": "m1", "field": "no_such_field", "value": 1 }),
+            &make_ctx(&dir),
+        )
+        .unwrap_err();
+    assert!(
+        err.contains("compact_context_tokens"),
+        "未知字段错误须列出支持字段，got: {err}"
+    );
+}
+
+/// models.list 透传 `compact_context_tokens`（缺省 null = 未设，前端按未设渲染）。
+#[test]
+fn list_passthrough_compact_context_tokens() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = home_str(&dir);
+    write_config(
+        dir.path(),
+        r#"{
+      "model_list": [
+        { "model_name": "m1", "model": "qwen/qwen3-30b", "compact_context_tokens": 200000 },
+        { "model_name": "m2", "model": "test/testai-1.1" }
+      ]
+    }"#,
+    );
+    if nemesis_config::global().is_some() {
+        eprintln!(
+            "skip list_passthrough_compact_context_tokens: process-global ConfigStore installed"
+        );
+        return;
+    }
+    let h = ModelsHandler::new();
+    let out = h.list(&home).unwrap().unwrap();
+    let models = out["models"].as_array().unwrap();
+    assert_eq!(models[0]["compact_context_tokens"], 200000);
+    assert!(models[1]["compact_context_tokens"].is_null(), "缺省 = null");
+}
+
 #[test]
 fn catalog_info_reports_cache_state() {
     let dir = tempfile::tempdir().unwrap();

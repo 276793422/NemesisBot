@@ -115,10 +115,10 @@ fn tier_partial_inheritance_covers_cache_prices() {
         cache_read_cost_per_million: Some(0.5),
         cache_creation_cost_per_million: None,
     }]);
-    // 100k 全量输入中 80k 缓存读、10k 缓存写、10k 明文：
-    // 10k*1(基础 in) + 40k*2(基础 out) + 10k*1.25(基础 write) + 80k*0.5(档 read)
-    // = 10k + 80k + 12.5k + 40k = 142.5k / 1e6 = 0.1425
-    let cost = cost_from_pricing(&p, 100_000, 40_000, 10_000, 80_000);
+    // 纯输入 10k（input 参数 = 非缓存纯输入，账本不变量），缓存写 10k +
+    // 读 80k 单列：10k*1(基础 in) + 40k*2(基础 out) + 10k*1.25(基础 write)
+    // + 80k*0.5(档 read) = 10k + 80k + 12.5k + 40k = 142.5k / 1e6 = 0.1425
+    let cost = cost_from_pricing(&p, 10_000, 40_000, 10_000, 80_000);
     assert!(
         approx(cost, 0.1425),
         "cache-only tier override must inherit the rest, got {cost}"
@@ -139,7 +139,8 @@ fn tier_breakdown_columns_sum_to_total() {
         cache_read_cost_per_million: Some(0.2),
         cache_creation_cost_per_million: Some(2.0),
     }]);
-    let b = cost_breakdown_from_pricing(&p, 200_000, 50_000, 20_000, 60_000);
+    // input 参数 = 非缓存纯输入：120k 纯输入，写 20k + 读 60k 单列。
+    let b = cost_breakdown_from_pricing(&p, 120_000, 50_000, 20_000, 60_000);
     // 分项版：120k*3 + 50k*9 + 20k*2 + 60k*0.2 = 0.36+0.45+0.04+0.012 = 0.862
     assert!(
         approx(
@@ -152,7 +153,7 @@ fn tier_breakdown_columns_sum_to_total() {
         "breakdown columns must sum to total"
     );
     // 总价版同口径（同 effective_prices）。
-    let t = cost_from_pricing(&p, 200_000, 50_000, 20_000, 60_000);
+    let t = cost_from_pricing(&p, 120_000, 50_000, 20_000, 60_000);
     assert!(
         approx(t, b.total_cost_usd),
         "total and breakdown must agree under tiers: {t} vs {}",

@@ -2,6 +2,30 @@
 
 use super::*;
 
+// R4 回归锁（原 review 探针反转）：真实命令失败必须分类为 ok=false。
+#[tokio::test]
+async fn nonzero_exec_is_classified_failed() {
+    use crate::r#loop::Tool;
+    let tmp = tempfile::tempdir().unwrap();
+    let tool = crate::loop_tools::ExecTool::new(&tmp.path().to_string_lossy(), true);
+    let ctx = crate::context::RequestContext::new("web", "review", "tester", "review");
+    let result = tool.execute(r#"{"command":"exit 7"}"#, &ctx).await.unwrap();
+    let classification = classify_result("exec", &result);
+    assert!(result.contains("Exit code: 7"));
+    assert_eq!(
+        classification,
+        Some(false),
+        "non-zero exit must not be recorded as success"
+    );
+}
+
+// R4 回归锁：成功输出**中途**打印 `Tool error:` 字样不误判（前缀而非 contains）。
+#[test]
+fn successful_output_mentioning_tool_error_is_not_misjudged() {
+    let output = "all checks passed\nnote: fixture echoes the literal string Tool error: end";
+    assert_eq!(classify_result("exec", output), Some(true));
+}
+
 #[test]
 fn is_checks_class_matches_exact_names() {
     assert!(is_checks_class("exec"));
@@ -45,43 +69,95 @@ fn extract_cmd_run_checks_renders_scope_and_filter() {
 #[test]
 fn classify_result_executed_vs_refused() {
     // 真实执行：成功 / 工具失败（失败也是证据）。
-    assert_eq!(classify_result("build ok, 3 tests passed"), Some(true));
     assert_eq!(
-        classify_result("Tool error: command not found"),
+        classify_result("exec", "build ok, 3 tests passed"),
+        Some(true)
+    );
+    assert_eq!(
+        classify_result("exec", "Tool error: command not found"),
         Some(false)
     );
     // 拒绝家族（未执行，不入账）：
-    assert_eq!(classify_result("⛔ ESTOP: 已急停 — 工具调用已被拒绝"), None);
     assert_eq!(
-        classify_result("⛔ RATE LIMIT — NO APPROVAL CHANNEL [layer:limits]"),
+        classify_result("exec", "⛔ ESTOP: 已急停 — 工具调用已被拒绝"),
         None
     );
     assert_eq!(
-        classify_result("Plan mode: file modifications are denied."),
+        classify_result("exec", "⛔ RATE LIMIT — NO APPROVAL CHANNEL [layer:limits]"),
+        None
+    );
+    assert_eq!(
+        classify_result("exec", "Plan mode: file modifications are denied."),
         None
     );
     assert_eq!(
         classify_result(
+            "exec",
             "Error: Tool 'exec' is hidden by configuration (agents.hidden_tools) and cannot be executed."
         ),
         None
     );
     assert_eq!(
         classify_result(
+            "exec",
             "Error: Tool 'exec' is not permitted by this agent's tool_policy allow-list and cannot be executed."
         ),
         None
     );
     assert_eq!(
         classify_result(
+            "exec",
             "Error: Tool 'exec' requires model tier 'big' or above; the active model's tier is lower."
         ),
         None
     );
     assert_eq!(
-        classify_result("⛔ SECURITY BLOCKED [layer:ssrf] target denied"),
+        classify_result("exec", "⛔ SECURITY BLOCKED [layer:ssrf] target denied"),
         None
     );
+}
+
+// R4：run_checks 阶段状态行判据（行首 ✗/⏱ = 失败；缩进回显不误判）。
+#[test]
+fn classify_result_run_checks_stage_lines() {
+    // 全部通过：既有 ▶ 行、无 ✗/⏱ 行首。
+    let pass = "[run_checks] scope=all · rust\n▶ build: exit 0 (1.2s)\n全部通过，无失败签名行。\n";
+    assert_eq!(classify_result("run_checks", pass), Some(true));
+    // exit 非零阶段：✗ 行首。
+    let fail = "[run_checks] scope=all · rust\n▶ build: exit 0 (1.2s)\n✗ test: exit 101 (3.4s) — passed 9 / failed 1\n失败签名行（去重后 1 行）：\n";
+    assert_eq!(classify_result("run_checks", fail), Some(false));
+    // 超时阶段：⏱ 行首。
+    let timeout = "[run_checks] scope=all · rust\n⏱ test: TIMED OUT after 600s (600.1s elapsed)\n";
+    assert_eq!(classify_result("run_checks", timeout), Some(false));
+    // 聚焦摘录区缩进回显 stdout 含 ✗ 字符（非行首）不误判。
+    let echo = "[run_checks] scope=test · rust\n▶ test: exit 0 (2.0s)\n失败签名行（去重后 1 行）：\n  ✗ 从 stdout 原文缩进回显的行\n";
+    assert_eq!(classify_result("run_checks", echo), Some(true));
+    // 拒绝族对 run_checks 同样成立。
+    assert_eq!(
+        classify_result("run_checks", "Plan mode: file modifications are denied."),
+        None
+    );
+}
+
+// R4：record_check 端到端——run_checks 失败阶段（✗ 行首）记 ok=false。
+#[test]
+fn record_check_run_checks_failed_stage_recorded_as_evidence() {
+    let map: ChecksCaptureMap = RwLock::new(HashMap::new());
+    map.write()
+        .insert("sess".into(), Arc::new(Mutex::new(Vec::new())));
+
+    let pass_reply =
+        "[run_checks] scope=all · rust\n▶ build: exit 0 (1.2s)\n全部通过，无失败签名行。\n";
+    record_check(&map, "sess", "run_checks", r#"{"scope":"all"}"#, pass_reply);
+    let fail_reply =
+        "[run_checks] scope=all · rust\n✗ test: exit 101 (3.4s) — passed 9 / failed 1\n";
+    record_check(&map, "sess", "run_checks", r#"{"scope":"all"}"#, fail_reply);
+
+    let sink = map.read().get("sess").cloned().unwrap();
+    let records = sink.lock();
+    assert_eq!(records.len(), 2);
+    assert!(records[0].ok, "all-pass run_checks is ok");
+    assert!(!records[1].ok, "failed stage must be recorded as evidence");
 }
 
 #[test]
