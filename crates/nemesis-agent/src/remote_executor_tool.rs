@@ -799,15 +799,26 @@ pub fn home_redirect_env_pairs(home: &Path) -> Vec<(String, String)> {
 // ---------------------------------------------------------------------------
 
 /// 常驻执行体调用的分型错误（T7）。语义边界只有一条线：**调用有没有发生**。
-/// `Unavailable` = 调用未发生（实体未就绪 / 槽满 / spawn 失败在握手前），调用
-/// 方可安全回落 per-call 路径；`ToolFailed` = 调用已送达执行体（可能已有副
-/// 作用），回落会造成重复执行——必须原样上抛。这是 supervisor 侧
-/// `SupervisorError` 的 agent crate 侧镜像（nemesis-agent 不依赖 nemesisbot，
-/// 依赖倒置：trait 定义在本 crate，bot 侧实现）。
+/// `Unavailable` = 调用未发生（实体未就绪 / 槽满 / spawn 失败在握手前）；
+/// `ToolFailed` = 调用已送达执行体（可能已有副作用），回落会造成重复执行——
+/// 必须原样上抛。这是 supervisor 侧 `SupervisorError` 的 agent crate 侧镜像
+/// （nemesis-agent 不依赖 nemesisbot，依赖倒置：trait 定义在本 crate，bot 侧
+/// 实现）。
+///
+/// R1（2026-10-20）：回落策略由错误**携带**（`host_fallback` 位）——只有产生
+/// 错误的执行体自己知道当时路由到哪个后端：process 档宿主同文件视图，回落
+/// 语义安全；vm 档 guest 异文件视图，静默落宿主 = 在不同文件视图上执行 =
+/// 文件视图切换正确性 bug，必须禁。路由层无权代答（静态判断做不到——
+/// `PersistentRoute` 是单路由服务双档位）。
 #[derive(Debug, Clone)]
 pub enum PersistentCallError {
-    /// 调用未发生——可安全回落 per-call 执行路径。
-    Unavailable(String),
+    /// 调用未发生。`host_fallback = true` → 可回落 per-call 宿主路径；
+    /// `false` → 不得回落（当前后端与宿主文件视图不同，回落即文件视图
+    /// 切换），调用方上抛诚实错误。
+    Unavailable {
+        message: String,
+        host_fallback: bool,
+    },
     /// 调用已尝试（可能已有副作用）——绝不回落，原样上抛。
     ToolFailed(String),
 }
@@ -815,7 +826,9 @@ pub enum PersistentCallError {
 impl std::fmt::Display for PersistentCallError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Unavailable(m) => write!(f, "persistent executor unavailable: {m}"),
+            Self::Unavailable { message, .. } => {
+                write!(f, "persistent executor unavailable: {message}")
+            }
             Self::ToolFailed(m) => write!(f, "persistent executor call failed: {m}"),
         }
     }
@@ -909,13 +922,28 @@ impl Tool for RemoteExecutorTool {
                     // 调用已发生（可能已有副作用）——回落会重复执行，原样上抛。
                     return Err(e);
                 }
-                Err(PersistentCallError::Unavailable(e)) => {
-                    // 调用未发生——诚实降级到 per-call 路径（兼容回退是 PLAN
-                    // P3 验收门明文；info 留痕不 warn——回落是设计内形态）。
+                Err(PersistentCallError::Unavailable {
+                    message,
+                    host_fallback,
+                }) => {
+                    if !host_fallback {
+                        // R1：产生错误的执行体声明「宿主回落不安全」（vm 档
+                        // guest 异文件视图）——静默落 per-call = 在宿主文件
+                        // 视图上执行 = 文件视图切换。上抛诚实错误，附切换
+                        // 指引；不 spawn 宿主执行器。
+                        return Err(format!(
+                            "persistent executor unavailable (host fallback forbidden): {message}；\
+                             当前执行档位的后端不可用，不回落宿主（文件视图不同）——\
+                             切回 process 档或恢复 VM 后重试"
+                        ));
+                    }
+                    // 调用未发生且宿主同视图——诚实降级到 per-call 路径（兼容
+                    // 回退是 PLAN P3 验收门明文；info 留痕不 warn——回落是设计
+                    // 内形态）。
                     tracing::info!(
                         tool = %self.name,
                         agent_id = %agent_id,
-                        reason = %e,
+                        reason = %message,
                         "persistent executor unavailable; falling back to per-call"
                     );
                 }

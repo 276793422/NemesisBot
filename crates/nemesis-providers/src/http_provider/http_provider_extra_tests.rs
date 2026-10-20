@@ -59,8 +59,10 @@ fn test_extract_usage_deepseek_with_hit_and_miss() {
         "prompt_cache_miss_tokens": 70
     });
     let usage = extract_usage(&usage_json);
+    // 归一：prompt = 100-30 = 70 纯输入；miss 段是普通输入，不进 creation。
+    assert_eq!(usage.prompt_tokens, 70);
     assert_eq!(usage.cached_tokens, Some(30));
-    assert_eq!(usage.cache_creation_tokens, Some(70));
+    assert_eq!(usage.cache_creation_tokens, None);
     assert_eq!(usage.cache_read_tokens, Some(30));
 }
 
@@ -73,6 +75,7 @@ fn test_extract_usage_deepseek_hit_only() {
         "prompt_cache_hit_tokens": 40
     });
     let usage = extract_usage(&usage_json);
+    assert_eq!(usage.prompt_tokens, 60);
     assert_eq!(usage.cached_tokens, Some(40));
     assert_eq!(usage.cache_read_tokens, Some(40));
     assert_eq!(usage.cache_creation_tokens, None);
@@ -80,7 +83,7 @@ fn test_extract_usage_deepseek_hit_only() {
 
 #[test]
 fn test_extract_usage_openai_with_negative_miss() {
-    // cached > prompt_tokens should clamp to 0 (negative miss scenario)
+    // cached > prompt_tokens：prompt 钳 0（异常报数不产生负纯输入）
     let usage_json = serde_json::json!({
         "prompt_tokens": 5,
         "completion_tokens": 1,
@@ -90,10 +93,11 @@ fn test_extract_usage_openai_with_negative_miss() {
         }
     });
     let usage = extract_usage(&usage_json);
-    assert_eq!(usage.cached_tokens, Some(10));
-    // miss = max(5 - 10, 0) = 0
-    assert_eq!(usage.cache_creation_tokens, Some(0));
-    assert_eq!(usage.cache_read_tokens, Some(10));
+    assert_eq!(usage.prompt_tokens, 0);
+    // cached 同步钳到 prompt_raw，保持 plain(0) + cache_read(5) = wire 总量(5)。
+    assert_eq!(usage.cached_tokens, Some(5));
+    assert_eq!(usage.cache_creation_tokens, None);
+    assert_eq!(usage.cache_read_tokens, Some(5));
 }
 
 #[test]

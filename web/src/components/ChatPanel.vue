@@ -36,7 +36,7 @@ import type { ToolEvent } from '../stores/chat'
 // M5 (2026-09-05): 会话级 context/cost 常驻条——cost 格式化与侧栏共用。
 import { fmtCost } from '../composables/useUsageFormat'
 import { renderMarkdownHtml } from '../utils/markdown'
-import { planRegenerate } from '../utils/regenerate'
+import { planRegenerate, type RegenPlan } from '../utils/regenerate'
 import hljs from 'highlight.js/lib/core'
 import javascript from 'highlight.js/lib/languages/javascript'
 import typescript from 'highlight.js/lib/languages/typescript'
@@ -296,7 +296,11 @@ function refreshUsage() {
   request('chat', 'context_status', { session_id: sid })
     .then((data) => {
       if (effectiveSid.value !== sid) return
-      ctxPct.value = typeof data?.context?.pct === 'number' ? data.context.pct : null
+      // 优先压缩点百分比 pct_trigger（「距压缩还有多远」，与 ≥80% hot
+      // 徽标语义贴合）；旧后端无该字段回落窗口 pct。
+      const c = data?.context
+      ctxPct.value =
+        typeof c?.pct_trigger === 'number' ? c.pct_trigger : typeof c?.pct === 'number' ? c.pct : null
     })
     .catch(() => {})
   request('logs', 'session_usage', { session_id: sid })
@@ -1114,15 +1118,17 @@ function onWatchdog() {
 // M6（devtool-upgrade 阶段 7）：消息级回退——E3 rewind/redo 的首个前端入口。
 // message_index = 后端 chat_log jsonl 行号（ChatMessage.rowIndex：历史批次
 // 连续推导 + live 递增；error/system 是纯前端渲染不占行）。回退是前缀截断
-// （保留目标之前、其后全部移除——undo 栈可 redo）。两类语义：
-// - mode "turn"（缺省）：截断到目标行所在 turn 结束——撤销此问/删除整轮用
-//   （目标=前一条 assistant 行，cut 天然落在本轮 user 行）；
-// - mode "before"（2026-10-20 重新生成修复）：截断到目标 user 行之前——
-//   重新生成用（目标=本轮提问行：该轮回复与其后对话一并移除、文件滚回提
-//   问前，支持首轮 cut=0），成功后自动重发提问原文（utils/regenerate 守卫
-//   裁决：插话/含图/斜杠命令只回退不重发）。
-// 仅主聊天模块可用——sessions.rewind_to_message 后端固定编
-// 址 agent:main:session:{sid}，workflow_chat 等模块会话键不同。
+// （保留目标之前、其后全部移除——undo 栈可 redo）。前端回退按钮组统一走
+// mode "before"（2026-10-20 横向扫描统一）：目标 = 本轮提问行
+// （planRegenerate 结构回溯，对 steer 插话/system 行稳健——旧「撤销此问
+// R-1 / 删除整轮 A-2」行界算术在含插话的轮上会把 cut 落进本轮、半删假成
+// 功）。重新生成 = 回退后自动重发提问原文（utils/regenerate 守卫裁决：
+// 插话/系统触发/含图/斜杠命令只回退不重发）；撤销此问/删除整轮 = 同一截
+// 断的两个入口（提问行/回复行），不重发；首轮不再隐藏（before(0)=清空会
+// 话，确认护栏在）。旧 turn 对齐模式（mode "turn"）后端保留（API 兼容 +
+// 驱动脚本），前端不再使用。
+// 仅主聊天模块可用——sessions.rewind_to_message 按会话归属路由项目 loop
+// （L6++ G6），workflow_chat 等模块会话键不同。
 // ---------------------------------------------------------------------------
 
 const rewinding = ref(false)
@@ -1173,30 +1179,48 @@ function rewindToastSummary(resp: any) {
   toast.success(`已回退：${parts.join('；')}`)
 }
 
-/** 回退到 messageIndex 行之后（行号语义见 rewindActions 各按钮）。 */
-async function doRewind(messageIndex: number) {
-  if (rewinding.value || !isDefaultChat.value) return
+/** 重新生成/撤销此问/删除整轮的共享回退核（2026-10-20 横向扫描统一）：
+ *  planRegenerate 轮首定位 → 非末轮确认 → mode:"before" 截断（本轮提问行
+ *  起、其后全部移除、文件滚回提问前）→ 重同步。返回定位结果供调用方续作
+ *  （重发/不重发）；null = 定位失败/用户取消/blocked（均已 toast）。
+ *  rewinding 用 try/finally 复位——blocked 早退若跳过复位会把全部回退/重
+ *  做按钮永久锁死（本文件上一版回归，P20 冲突触发即现形）。 */
+async function rewindToTurnStart(msg: ChatMessage): Promise<RegenPlan | null> {
+  if (rewinding.value || !isDefaultChat.value) return null
   const sid = effectiveSid.value
-  if (!sid) return
+  if (!sid || msg.rowIndex === undefined) return null
+  const plan = planRegenerate(chatStore.messages, msg.rowIndex, msg.role)
+  if (!plan) {
+    toast.warn('找不到本轮提问行，无法回退')
+    return null
+  }
+  if (!confirmIfTurnsFollow(turnEndIndexOf(msg))) return null
+
   rewinding.value = true
   try {
     const resp = await request('sessions', 'rewind_to_message', {
       session_id: sid,
-      message_index: messageIndex,
+      message_index: plan.turnStart,
+      mode: 'before',
     })
-    // P20 冲突拒绝 = 零副作用：不重同步，也不显示误导性「撤掉 0 条」。
+    // P20 冲突拒绝 = 零副作用：不重发、不重同步。
     if (resp?.blocked) {
       toast.error(
         `回退被冲突预检拒绝：${resp?.conflicts?.length ?? '?'} 个文件在 checkpoint 后被外部修改，未做任何改动`,
       )
-      return
+      return null
     }
     rewindToastSummary(resp)
-    resyncFromLog()
+    // 等重同步落地再续作：本地回显若抢在 replace 前入列，会被整视图替换
+    // 冲掉（流式占位同理）。响应丢失由 resync 的 10s 安全超时放行。
+    await resyncFromLog()
+    return plan
   } catch (e: any) {
     toast.error(e?.message || String(e))
+    return null
+  } finally {
+    rewinding.value = false
   }
-  rewinding.value = false
 }
 
 /** E3 redo：弹本会话 undo 栈顶反向恢复（栈在网关内存态，空栈后端诚实报错）。 */
@@ -1232,55 +1256,32 @@ function turnEndIndexOf(msg: ChatMessage): number {
   return reply?.rowIndex ?? msg.rowIndex!
 }
 
-/** 重新生成（2026-10-20）：回退到本轮提问行之前（mode:"before"，该轮回复
- *  与其后所有行移除、文件滚回提问前）+ 自动重发提问原文。守卫命中（插话/
- *  含图/斜杠命令）只回退，原文回填输入框手动发——sendValidated 复用输入
- *  框发送续体（回显/锚定/busy/watchdog 全内置）。 */
+/** 重新生成：回退到提问前 + 自动重发提问原文（守卫命中只回退，原文回填
+ *  输入框手动发——sendValidated 复用输入框发送续体：回显/锚定/busy/
+ *  watchdog 全内置）。 */
 async function doRegenerate(msg: ChatMessage) {
-  if (rewinding.value || !isDefaultChat.value) return
-  const sid = effectiveSid.value
-  if (!sid || msg.rowIndex === undefined) return
-  const plan = planRegenerate(chatStore.messages, msg.rowIndex, msg.role)
-  if (!plan) {
-    toast.warn('找不到本轮提问行，无法重新生成')
-    return
+  const plan = await rewindToTurnStart(msg)
+  if (!plan) return
+  if (plan.noResendReason) {
+    chatStore.input = plan.content
+    toast.warn(`已回退到提问：${plan.noResendReason}，已回填输入框，请手动发送`)
+  } else {
+    sendValidated(plan.content, [])
   }
-  if (!confirmIfTurnsFollow(turnEndIndexOf(msg))) return
-
-  rewinding.value = true
-  try {
-    const resp = await request('sessions', 'rewind_to_message', {
-      session_id: sid,
-      message_index: plan.turnStart,
-      mode: 'before',
-    })
-    // P20 冲突拒绝 = 零副作用：不重发、不重同步。
-    if (resp?.blocked) {
-      toast.error(
-        `回退被冲突预检拒绝：${resp?.conflicts?.length ?? '?'} 个文件在 checkpoint 后被外部修改，未做任何改动`,
-      )
-      return
-    }
-    rewindToastSummary(resp)
-    // 等重同步落地再重发：本地回显若抢在 replace 前入列，会被整视图替换
-    // 冲掉（流式占位同理）。响应丢失由 resync 的 10s 安全超时放行。
-    await resyncFromLog()
-    if (plan.noResendReason) {
-      chatStore.input = plan.content
-      toast.warn(`已回退到提问：${plan.noResendReason}，已回填输入框，请手动发送`)
-    } else {
-      sendValidated(plan.content, [])
-    }
-  } catch (e: any) {
-    toast.error(e?.message || String(e))
-  }
-  rewinding.value = false
 }
 
-/** 消息气泡的回退动作组（行号不可用=诚实不给入口）。重新生成走
- *  doRegenerate（mode:"before" + 自动重发）；撤销/删除整轮走 turn 语义
- *  doRewind（目标=前一条 assistant 行，cut 天然落在本轮 user 行）；非末轮
- *  点击任一按钮先确认（其后对话一并移除）。 */
+/** 撤销此问/删除整轮共享：回退并删除本轮（提问行起、其后全部移除），不
+ *  重发。两按钮是同一截断的提问行/回复行入口；轮内 user 行（含插话）随
+ *  轮原子移除。 */
+async function doDeleteTurn(msg: ChatMessage) {
+  await rewindToTurnStart(msg)
+}
+
+/** 消息气泡的回退动作组（行号不可用=诚实不给入口）。四按钮统一走
+ *  rewindToTurnStart（mode:"before" + 轮首定位）：重新生成附自动重发；撤
+ *  销此问/删除整轮 = 同一截断（提问行/回复行两个入口）不重发；非末轮点
+ *  击任一按钮先确认（其后对话一并移除）。首轮不再隐藏——旧 R>0/A>1 守卫
+ *  是为行界算术防负数设的，before(0)=清空会话合法且有确认/重做兜底。 */
 function rewindActions(msg: ChatMessage) {
   if (!isDefaultChat.value) return []
   if (msg.role !== 'user' && msg.role !== 'assistant') return []
@@ -1292,32 +1293,22 @@ function rewindActions(msg: ChatMessage) {
       title: '回退到提问前并重新回答（其后对话一并移除，文件回滚）',
       run: () => doRegenerate(msg),
     })
-    if (msg.rowIndex > 0) {
-      acts.push({
-        label: '⏪ 撤销此问',
-        title: '删除这条提问及其回复（文件改动尽力回滚；其后对话一并移除）',
-        run: () => {
-          if (confirmIfTurnsFollow(turnEndIndexOf(msg))) doRewind(msg.rowIndex! - 1)
-        },
-      })
-    }
+    acts.push({
+      label: '⏪ 撤销此问',
+      title: '删除本轮提问与回复（文件改动尽力回滚；其后对话一并移除）',
+      run: () => doDeleteTurn(msg),
+    })
   } else {
-    // assistant 行：重新生成 = 定位本轮提问行（结构回溯）before 回退 + 重发；
-    // 删除整轮 = 回退到前一条 assistant 行（cut 落在本轮 user 行，整轮移除）。
     acts.push({
       label: '↻ 重新生成',
       title: '撤掉这条回复并重新回答（其后对话一并移除，文件回滚）',
       run: () => doRegenerate(msg),
     })
-    if (msg.rowIndex > 1) {
-      acts.push({
-        label: '⏪ 删除整轮',
-        title: '删除本轮提问与回复（文件改动尽力回滚；其后对话一并移除）',
-        run: () => {
-          if (confirmIfTurnsFollow(msg.rowIndex!)) doRewind(msg.rowIndex! - 2)
-        },
-      })
-    }
+    acts.push({
+      label: '⏪ 删除整轮',
+      title: '删除本轮提问与回复（文件改动尽力回滚；其后对话一并移除）',
+      run: () => doDeleteTurn(msg),
+    })
   }
   return acts
 }
@@ -2436,6 +2427,10 @@ const unwatchSession = watch(
         newId === sessionStore.justCreatedSid)
     ) {
       if (newId === sessionStore.justCreatedSid) sessionStore.justCreatedSid = null
+      // M6-fix：全新会话建立行号锚——服务端 jsonl 为空，视图内（含发送链
+      // 先行的本地回显）user/assistant 行即第 0..n-1 行。不建锚则本轮全部
+      // live 行无 rowIndex，回退/重新生成按钮组首轮恒不渲染。
+      chatStore.anchorFreshSession()
       syncInboxMode()
       syncAgentMode()
       return

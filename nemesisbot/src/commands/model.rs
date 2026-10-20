@@ -97,6 +97,15 @@ pub enum ModelAction {
         /// One of: auto | yes | no（别名 true/false）
         stream: String,
     },
+    /// per-model 绝对压缩点（2026-10-20 compact_context_tokens）：设 N =
+    /// 上下文到 N token 即压缩（不乘比例，解决「1M 模型但 200K 压一次」）；
+    /// auto / 0 / 空串清除回默认链（窗口×75%）。超过真实窗口时运行期钳到
+    /// 窗口（一次性 warn）。每轮压缩检查前重读配置——下一轮即生效。
+    SetCompactContext {
+        name: String,
+        /// token 数，或 auto / 0 清除
+        tokens: String,
+    },
     /// H4 (U16 half): set the reasoning-effort tier for a model.
     /// "off" clears it (send nothing); low/medium/high set the tier that
     /// providers translate into their wire format.
@@ -619,6 +628,27 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                             println!("    Base URL: {}", b);
                         }
                         if verbose {
+                            // 有效压缩点 + 来源（2026-10-20 compact_context_tokens；
+                            // 未设 = 窗口×75% 默认链，被钳时 clamped_from 带原值）。
+                            let trig = nemesis_agent::r#loop::resolve_compact_trigger(
+                                Some(&cfg),
+                                alias_for_window,
+                                pricing.as_ref(),
+                                (
+                                    nemesis_agent::r#loop::FALLBACK_CONTEXT_WINDOW,
+                                    "fallback-128k",
+                                ),
+                            );
+                            match trig.clamped_from {
+                                Some(orig) => println!(
+                                    "    Compact trigger: {} tokens (user-set {} clamped to window {}, source: {})",
+                                    trig.trigger, orig, trig.window, trig.source
+                                ),
+                                None => println!(
+                                    "    Compact trigger: {} tokens (window {}, source: {})",
+                                    trig.trigger, trig.window, trig.source
+                                ),
+                            }
                             // Show masked key as dots
                             if let Some(k) = m.get("api_key").and_then(|v| v.as_str()) {
                                 if !k.is_empty() {
@@ -910,6 +940,81 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                     "✓ {} → stream={} (构造期消费：默认模型需重新设默认或重启生效)",
                     name, shown
                 );
+            } else {
+                anyhow::bail!("Model not found: {}", name);
+            }
+        }
+        ModelAction::SetCompactContext { name, tokens } => {
+            if !cfg_path.exists() {
+                anyhow::bail!("Configuration not found.");
+            }
+            // 数字 = 到点即压（不乘比例）；auto / 0 / 空串 = 清除（移键落盘，
+            // 回窗口×75% 默认链）。非法值 loud 拒绝——flag 是用户当次意志，
+            // 不静默纠偏。生效走每轮压缩检查前的 config fresh-read，下一轮
+            // 即生效（无需重启）。
+            let trimmed = tokens.trim();
+            let value: u64 = if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
+                0
+            } else {
+                trimmed.parse::<u64>().map_err(|_| {
+                    anyhow::anyhow!(
+                        "Invalid compact_context_tokens '{}'. Use a positive token count, or auto | 0 to clear.",
+                        tokens
+                    )
+                })?
+            };
+            let cleared = value == 0;
+            let data = std::fs::read_to_string(&cfg_path)?;
+            let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
+            let updated = update_model_entry(&mut cfg, &name, |e| {
+                if cleared {
+                    // 清除 = 移键（写 Null 会留 `"key": null` 字节垃圾；
+                    // resolver 对缺席本就按 None 处理）。
+                    if let Some(obj) = e.as_object_mut() {
+                        obj.remove("compact_context_tokens");
+                    }
+                } else {
+                    e["compact_context_tokens"] = serde_json::Value::Number(value.into());
+                }
+            });
+            if updated {
+                // REL-002：统一原子写入。
+                write_config_atomic(&cfg_path, &cfg)?;
+                if cleared {
+                    println!(
+                        "✓ {} → compact_context_tokens=auto（清除，回默认链：窗口 × 75%）",
+                        name
+                    );
+                } else {
+                    // 展示解析后的有效压缩点（含钳制结果）——超窗口时这里
+                    // 直观看到被钳到窗口，而不是等运行期 warn。
+                    let pricing =
+                        nemesis_data::PricingStore::open(&nemesis_path::workspace_data_dir(&home))
+                            .ok();
+                    let trig = nemesis_agent::r#loop::resolve_compact_trigger(
+                        Some(&cfg),
+                        &name,
+                        pricing.as_ref(),
+                        (
+                            nemesis_agent::r#loop::FALLBACK_CONTEXT_WINDOW,
+                            "fallback-128k",
+                        ),
+                    );
+                    println!(
+                        "✓ {} → compact_context_tokens={}（到点即压，不乘比例；下一轮生效）",
+                        name, value
+                    );
+                    if let Some(orig) = trig.clamped_from {
+                        println!(
+                            "  ⚠ 设定 {} 超过真实上下文窗口 {}（来源: {}），已钳到窗口；如需更大窗口请设 context_window",
+                            orig, trig.window, trig.source
+                        );
+                    }
+                    println!(
+                        "  有效压缩点: {} tokens（窗口 {}, 来源: {}）",
+                        trig.trigger, trig.window, trig.source
+                    );
+                }
             } else {
                 anyhow::bail!("Model not found: {}", name);
             }

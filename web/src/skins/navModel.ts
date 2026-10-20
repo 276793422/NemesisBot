@@ -68,10 +68,10 @@ export const NAV_GROUPS: NavGroupModel[] = [
       { id: 'skills', label: 'Skills', route: '/skills', icon: 'M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 1 1 7.072 0l-.548.547A3.374 3.374 0 0 0 14 18.469V19a2 2 0 1 1-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z' },
       { id: 'mcp', label: 'MCP', route: '/mcp', icon: 'M4 6h16M4 12h16M4 18h16' },
       // 2026-08-29：MCP 之下新增 HOOK/命令/插件/子Agent 四页。
+      // （子Agent 骨架页 2026-10-20 下线，不挂无实质功能的入口。）
       { id: 'hooks', label: 'HOOK', route: '/hooks', icon: 'M18 16.98h-5.99c-1.1 0-1.95.94-2.48 1.9A4 4 0 0 1 2 17c.01-.7.2-1.4.57-2m6.65 2H5a2 2 0 0 1 0-4h.01L7.9 8.08A4 4 0 0 1 12 2a4 4 0 0 1 4 4c0 .35-.05.71-.14 1.05M12 8a4 4 0 0 1 4 4c0 1.1-.45 2.1-1.17 2.83L12 18' },
       { id: 'commands', label: '命令', route: '/commands', icon: 'M4 17l6-6-6-6M12 19h8' },
       { id: 'plugins', label: '插件', route: '/plugins', icon: 'M12 22v-5M9 8V2M15 8V2M6 8h12v4a6 6 0 0 1-12 0V8z' },
-      { id: 'subagents', label: '子Agent', route: '/subagents', icon: 'M12 8V4M8 4h8M5 8h14a1 1 0 0 1 1 1v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V9a1 1 0 0 1 1-1zM9 13h.01M15 13h.01' },
       { id: 'channels', label: '通道', route: '/channels', icon: 'M22 12h-4l-3 9L9 3l-3 9H2' },
       // 行动连接器（2026-10-14 AI 原生行动代理）：注册表/回执/纸面账本只读面。
       { id: 'connectors', label: 'Connectors', route: '/connectors', icon: 'M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71' },

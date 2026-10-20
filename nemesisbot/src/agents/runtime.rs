@@ -213,6 +213,15 @@ pub struct AgentRuntimeSupervisor {
     /// 中」与「排空完成、记录未删」两个窗口，`get_or_spawn` 两处锁内复核
     /// 拒新，删除等待期不再造出 evict 覆盖不到的替代槽。
     evicting: Mutex<HashSet<String>>,
+    /// R3（2026-10-20 复评）：身份代次表（删除 = 身份事件，代次 +1 且单调
+    /// 不清零）。旗标只能拦「删除进行中」，拦不住「删除已完成」——早退检查
+    /// 后、插入点前的窗口里删除完整走完（begin→end）即 ABA 复活：spawn 是
+    /// 长 await，插表时旗标已清、map 已空，旧检查全部通过。插入点对代次
+    /// 复核封死该窗口。叶锁：evict 路径从不持它拿 slots 锁（先动代次再排
+    /// 空），get_or_spawn 在 slots 锁内读它——无锁序环。
+    generations: Mutex<HashMap<String, u64>>,
+    #[cfg(test)]
+    review_spawn_barrier: Mutex<Option<std::sync::Arc<(tokio::sync::Notify, tokio::sync::Notify)>>>,
 }
 
 impl AgentRuntimeSupervisor {
@@ -227,6 +236,9 @@ impl AgentRuntimeSupervisor {
             respawn_attempts: Mutex::new(HashMap::new()),
             registration_check: Mutex::new(None),
             evicting: Mutex::new(HashSet::new()),
+            generations: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            review_spawn_barrier: Mutex::new(None),
         }
     }
 
@@ -263,10 +275,12 @@ impl AgentRuntimeSupervisor {
         self.clear_relaunch_counter(agent_id);
     }
 
-    /// F3：删除编排第一段——置在途旗标 + 排空既有槽（旗标先于排空落位，
-    /// 排空「摘槽→等槽锁」窗口内抵达的 get_or_spawn 立即见到旗标）。幂等：
-    /// 重复 begin 只重复排空（evict 本身幂等）。
+    /// F3：删除编排第一段——**代次 +1**（R3，先于旗标与排空：删除是身份
+    /// 事件，begin 与 end 之间抵达的 spawn 由旗标拦，begin 前已过早退检查、
+    /// 在 spawn 中途的由插入点代次复核拦）+ 置在途旗标 + 排空既有槽。幂等：
+    /// 重复 begin 只重复排空（evict 本身幂等；代次继续 +1 无害——单调）。
     pub async fn evict_begin(&self, agent_id: &str) {
+        self.bump_generation(agent_id);
         self.evicting
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -274,14 +288,34 @@ impl AgentRuntimeSupervisor {
         self.evict(agent_id).await;
     }
 
-    /// F3：删除编排收尾——清在途旗标。调用时机 = 注册记录已删、loop 已停
-    /// 之后（`AgentManager::remove`）：此刻起该 agent 的新请求走正常路径
-    /// （解析面「agent 不存在」诚实报错），旗标不得泄漏成永久拒绝。
+    /// F3：删除编排收尾——清在途旗标（**不清代次**——R3：代次单调，删除
+    /// 已完成的事实由代次表达，`get_or_spawn` 插入点复核对它裁决）。调用
+    /// 时机 = 注册记录已删、loop 已停之后（`AgentManager::remove`）：此刻
+    /// 起该 agent 的新请求走正常路径（解析面「agent 不存在」诚实报错），
+    /// 旗标不得泄漏成永久拒绝。
     pub fn evict_end(&self, agent_id: &str) {
         self.evicting
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(agent_id);
+    }
+
+    /// R3：代次 +1 并返回新值（叶锁，持锁不嵌套）。
+    fn bump_generation(&self, agent_id: &str) -> u64 {
+        let mut g = self.generations.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = g.entry(agent_id.to_string()).or_insert(0);
+        *entry += 1;
+        *entry
+    }
+
+    /// R3：当前代次（无记录 = 0）。
+    fn generation(&self, agent_id: &str) -> u64 {
+        self.generations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(agent_id)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// F3：删除在途？（get_or_spawn 两处锁内复核的判据。）
@@ -631,21 +665,24 @@ impl AgentRuntimeSupervisor {
     /// 复核防超卖；输掉的竞态 spawn 会被优雅关停）。F3：删除在途旗标两处
     /// 复核（早退查询处 + 插入处，均在 map 锁内）——删除编排窗口内一律
     /// Unavailable（「agent is being removed」），不给删除等待期造出 evict
-    /// 覆盖不到的替代槽。
+    /// 覆盖不到的替代槽。R3：插入点再对**代次**与**在册**复核——spawn 是
+    /// 长 await，早退检查后删除完整走完（begin→end、旗标已清、map 已空）
+    /// 的 ABA 窗口由代次变化与注册表在册双保险封死。
     async fn get_or_spawn(
         &self,
         agent_id: &str,
         exec_root: &std::path::Path,
         settings: &ExecutorPersistentConfig,
     ) -> Result<std::sync::Arc<tokio::sync::Mutex<AgentSlot>>, SupervisorError> {
-        let existing = {
+        let (existing, gen0) = {
             let map = self.slots.lock().unwrap_or_else(|e| e.into_inner());
             if self.is_evicting(agent_id) {
                 return Err(SupervisorError::Unavailable(
                     "agent is being removed".into(),
                 ));
             }
-            map.get(agent_id).cloned()
+            let gen0 = self.generation(agent_id);
+            (map.get(agent_id).cloned(), gen0)
         };
         if let Some(s) = existing {
             return Ok(s);
@@ -655,17 +692,37 @@ impl AgentRuntimeSupervisor {
             .await
             .map_err(|e| SupervisorError::Unavailable(format!("spawn: {e}")))?;
         let arc = std::sync::Arc::new(tokio::sync::Mutex::new(fresh));
+        #[cfg(test)]
+        {
+            let barrier = self.review_spawn_barrier.lock().unwrap().clone();
+            if let Some(barrier) = barrier {
+                barrier.0.notify_one();
+                barrier.1.notified().await;
+            }
+        }
         let arc_ref = arc.clone();
         let winner = {
             let mut map = self.slots.lock().unwrap_or_else(|e| e.into_inner());
-            if self.is_evicting(agent_id) {
-                // F3：插入复核——spawn 期间删除编排开始了。刚 spawn 的会话
-                // 优雅关停防孤儿进程（镜像下方输者路径），再诚实拒绝。
+            if self.is_evicting(agent_id) || self.generation(agent_id) != gen0 {
+                // F3：插入复核——spawn 期间删除编排开始了；R3：或删除编排已
+                // 完整走完（代次已变、旗标已清）。刚 spawn 的会话优雅关停防
+                // 孤儿进程（镜像下方输者路径），再诚实拒绝。
                 drop(map);
                 let mut g = arc_ref.lock().await;
                 g.shutdown(Duration::from_secs(2)).await;
                 return Err(SupervisorError::Unavailable(
                     "agent is being removed".into(),
+                ));
+            }
+            if !self.registered(agent_id) {
+                // R3：注册表在册复核（独立第二保险）——记录已删而代次路径
+                // 因任何原因漏接时兜底；语义 = 「记录仍在册」（生产接线
+                // `store.get(id).is_some()`）。
+                drop(map);
+                let mut g = arc_ref.lock().await;
+                g.shutdown(Duration::from_secs(2)).await;
+                return Err(SupervisorError::Unavailable(
+                    "agent record no longer present".into(),
                 ));
             }
             if let Some(s) = map.get(agent_id) {
@@ -969,7 +1026,12 @@ impl nemesis_agent::remote_executor_tool::PersistentExecutor for AgentRuntimeSup
         self.execute(agent_id, exec_root, tool, args, context)
             .await
             .map_err(|e| match e {
-                SupervisorError::Unavailable(m) => PersistentCallError::Unavailable(m),
+                // R1：process 常驻执行体与宿主同文件视图——Unavailable 时宿主
+                // 回落安全，host_fallback=true。
+                SupervisorError::Unavailable(m) => PersistentCallError::Unavailable {
+                    message: m,
+                    host_fallback: true,
+                },
                 SupervisorError::ToolFailed(m) => PersistentCallError::ToolFailed(m),
             })
     }

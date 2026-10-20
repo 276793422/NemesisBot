@@ -33,12 +33,17 @@ pub(crate) struct CompactState {
     /// stuck 闩共用暂停语义）。手动 /compact（force_compression 路径）不
     /// 经此守卫，不受限。
     pub(crate) no_progress: u32,
+    /// 压缩点钳制一次性告知（2026-10-20）：用户 `compact_context_tokens`
+    /// 超过真实窗口被钳时 warn 一次（per-session one-shot，防每轮刷屏）。
+    clamped_noticed: bool,
 }
 
-/// ⑩ Soft tier: prompt at this fraction of context_window emits a one-shot
-/// info notice (no summarization, cache-stable prefix intact).
-const COMPACT_SOFT_RATIO: usize = 50; // % of context_window
-/// ⑩ Summarize tier: at this fraction, trigger summarization.
+/// ⑩ Summarize tier: at this fraction, trigger summarization. 2026-10-20
+/// 压缩点一等公民化后此比例只作用于「无用户压缩点」的窗口派生臂（比例
+/// 一律不动，用户拍板）；用户 `compact_context_tokens` 到点即压不乘此值。
+/// soft 档从触发点推导（`trigger * 2 / 3`）——默认路径数学恒等旧形态
+/// `window * 50%`（0.75w × 2/3 = 0.5w）；用户压缩点下 soft 随点走（旧公式
+/// 会在「1M 模型设 200K 压缩点」场景于 500K 才响）。
 const COMPACT_SUMMARIZE_RATIO: usize = 75; // % (unchanged from legacy behavior)
 /// ⑩ Stuck: a summarization counts as ineffective when the prompt afterwards
 /// is still at least this fraction of its pre-summarization size.
@@ -114,6 +119,65 @@ pub fn resolve_context_window_tiered(
         }
     }
     (None, "fallback-128k")
+}
+
+/// 2026-10-20 压缩点一等公民化：有效压缩点解析结果（组合层，钳制在这做）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompactTrigger {
+    /// 真实窗口（三级链解析值 + fallback）——`force_compression` 的
+    /// max_msg_tokens 守卫与 `session_context_status` 的窗口显示继续用它。
+    pub window: usize,
+    /// 有效压缩点（token）。混合信号 ≥ trigger 即触发压缩。
+    pub trigger: usize,
+    /// 触发点来源：`"user"`（compact_context_tokens 到点即压）/ `"config"` /
+    /// `"catalog"` / `"instance"`（实例窗口兜底 × 75%）/ `"fallback-128k"`
+    /// （CLI 展示等无实例场景 × 75%；后两者 = 窗口来源 × 75%）。
+    pub source: &'static str,
+    /// Some(原值) = 用户压缩点超过真实窗口被钳到 window。想突破目录值先设
+    /// `context_window`（L1 是用户显式意志）。
+    pub clamped_from: Option<usize>,
+}
+
+/// 组合解析：per-model 绝对压缩点（`compact_context_tokens`，到点即压）→
+/// 未设回落 窗口×75% 既有行为（比例一律不动，零行为变化）。纯函数可单测；
+/// fresh-read 胶水在 `config_watch::current_compact_trigger`。
+///
+/// `fallback` = 三级链全 miss 时的（窗口, 来源标签）：agent 侧传实例窗口
+/// （启动时三级链物化值 / 测试显式 set_context_window——**旧路径语义**，
+/// config 无 model_list 时行为与既有 `unwrap_or_else(instance.context_window)`
+/// 完全一致）；CLI 展示传编译期默认 128k。
+pub fn resolve_compact_trigger(
+    cfg: Option<&serde_json::Value>,
+    alias: &str,
+    pricing: Option<&nemesis_data::PricingStore>,
+    fallback: (usize, &'static str),
+) -> CompactTrigger {
+    let (window_opt, window_source) = resolve_context_window_tiered(cfg, alias, pricing);
+    let (window, fallback_source) = window_opt.map_or(fallback, |w| (w, window_source));
+    let user = cfg
+        .and_then(|c| nemesis_types::capability::resolve_compact_context_tokens(c, alias))
+        .filter(|t| *t > 0)
+        .map(|t| t as usize);
+    match user {
+        Some(t) if t > window => CompactTrigger {
+            window,
+            trigger: window,
+            source: "user",
+            clamped_from: Some(t),
+        },
+        Some(t) => CompactTrigger {
+            window,
+            trigger: t,
+            source: "user",
+            clamped_from: None,
+        },
+        None => CompactTrigger {
+            window,
+            trigger: window * COMPACT_SUMMARIZE_RATIO / 100,
+            source: fallback_source,
+            clamped_from: None,
+        },
+    }
 }
 
 /// ⑩ Stuck limit: after this many consecutive ineffective summarizations,
@@ -292,14 +356,12 @@ impl AgentLoop {
         chat_id: &str,
     ) {
         let history = instance.get_history();
-        // U16 (sixth batch) + N1 (devtool-upgrade 阶段 1): prefer the active
-        // model's context_window via the three-tier chain (config explicit →
-        // pricing catalog → instance default, now 128_000) over the
-        // historical 32000. Falls back to the instance value when
-        // unset/standalone.
-        let context_window = self
-            .current_context_window()
-            .unwrap_or_else(|| instance.context_window());
+        // 2026-10-20 压缩点一等公民化：触发点 = per-model `compact_context_tokens`
+        // （到点即压）→ 未设回落 窗口×75% 既有行为（三级链 fresh-read，
+        // `current_compact_trigger` 组合钳制）。真实窗口（trig.window）继续
+        // 供 summarize 的 max_msg_tokens 守卫使用，语义不变。
+        let trig = self.current_compact_trigger(instance.context_window());
+        let context_window = trig.window;
 
         // C indexes the full history (system prompt at index 0); the verbatim
         // tail build_messages sends is history[C..]. Clamp to history length
@@ -333,8 +395,11 @@ impl AgentLoop {
             .map(|v| v as usize)
             .unwrap_or(0);
         let signal = tail_tokens.max(provider_signal);
-        let soft = context_window * COMPACT_SOFT_RATIO / 100;
-        let threshold = context_window * COMPACT_SUMMARIZE_RATIO / 100;
+        // soft = 压缩点的 2/3：默认路径数学恒等旧形态（0.75w × 2/3 = 0.5w =
+        // 旧 window×50%）；用户压缩点下 soft 随点走（沿用 window×50% 会在
+        // 「1M 模型设 200K 压缩点」场景于 500K 才响——压缩点早过了）。
+        let soft = trig.trigger * 2 / 3;
+        let threshold = trig.trigger;
 
         // P5: new boundary — token budget (default) or legacy count fallback
         // (0), then back off any tool_call/result pair straddling it.
@@ -369,14 +434,27 @@ impl AgentLoop {
             }
             let st = states.entry(session_key.to_string()).or_default();
 
+            // 压缩点钳制一次性告知（独立于 soft——配置错误应该立刻可见，
+            // 不等上下文涨到软位）。
+            if let Some(orig) = trig.clamped_from
+                && !st.clamped_noticed
+            {
+                st.clamped_noticed = true;
+                warn!(
+                    "[AgentLoop] compact_context_tokens {} exceeds the real context window {} (source: {}); clamped to the window. To raise the window, set context_window explicitly",
+                    orig, trig.window, trig.source
+                );
+            }
+
             if signal >= soft && !st.soft_noticed {
                 st.soft_noticed = true;
                 info!(
-                    "[AgentLoop] context pressure at ~{}% of window ({} / {}); summarization will trigger at {}%",
-                    signal * 100 / context_window.max(1),
+                    "[AgentLoop] context pressure at ~{}% of compaction point ({} / {}, source: {}); summarization will trigger at {}",
+                    signal * 100 / trig.trigger.max(1),
                     signal,
-                    context_window,
-                    COMPACT_SUMMARIZE_RATIO
+                    trig.trigger,
+                    trig.source,
+                    trig.trigger
                 );
             }
 
@@ -777,6 +855,8 @@ impl AgentLoop {
     /// `used` = 摘要覆盖点之后的逐字尾部（build_messages 实际发给 LLM 的
     /// 部分）按 MODEL-FACING 投影估算的 token 数；`window` = 三级解析链
     /// （config `context_window` → 价目表 → 实例默认）给出的窗口。
+    /// `trigger`/`trigger_source`/`pct_trigger`（2026-10-20）= 有效压缩点
+    /// 及其来源（`compact_context_tokens` 到点即压 / 窗口×75%）。
     /// 这样 Dashboard 显示的百分比就是「下一轮真实占用」而不是一个
     /// 另一套口径的近似值。
     ///
@@ -785,9 +865,10 @@ impl AgentLoop {
     pub fn session_context_status(&self, session_key: &str) -> serde_json::Value {
         let instance = self.get_or_create_instance(session_key);
         let history = instance.get_history();
-        let window = self
-            .current_context_window()
-            .unwrap_or_else(|| instance.context_window());
+        // 2026-10-20：触发点/来源/压缩点百分比一并上报（加法式——既有 pct
+        // 对窗口语义不变；前端徽标优先 pct_trigger =「距压缩还有多远」）。
+        let trig = self.current_compact_trigger(instance.context_window());
+        let window = trig.window;
         let cache = instance.get_summary_cache();
         let covers = cache
             .as_ref()
@@ -797,11 +878,15 @@ impl AgentLoop {
             .min(history.len());
         let used = estimate_tokens_for_turns_projected(&history[covers..]);
         let pct = (used * 100).checked_div(window).unwrap_or(0).min(100);
+        let pct_trigger = (used * 100).checked_div(trig.trigger).unwrap_or(0).min(100);
         let json = serde_json::json!({
             "session_key": session_key,
             "used_tokens": used,
             "window": window,
             "pct": pct,
+            "trigger": trig.trigger,
+            "trigger_source": trig.source,
+            "pct_trigger": pct_trigger,
             "history_len": history.len(),
             "covers_up_to": covers,
             "summarized": cache.is_some(),

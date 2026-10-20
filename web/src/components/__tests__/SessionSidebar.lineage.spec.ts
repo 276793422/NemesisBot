@@ -5,8 +5,11 @@ import { mount, flushPromises } from '@vue/test-utils'
 // WS9/P17（2026-09-26）：SessionSidebar 谱系投影——组内会话按谱系树
 // 缩进排序（子会话紧跟父会话、深度递增左内边距）+ 会话信息弹窗「谱系」
 // 节（祖先链 ↳ 缩进行 + 缘由 + 回退记录 + 分支摘要预览）。
+// 2026-10-20 改版：缩进收敛 10px/级；⑂ marker 升入标题行；分支行
+// branched 树杈类 + 行菜单「脱离父分支」（detach）。
 
 const listMock = vi.fn()
+const detachMock = vi.fn()
 vi.mock('vue-router', () => ({
   useRouter: () => ({ push: vi.fn() }),
 }))
@@ -20,6 +23,7 @@ vi.mock('../../composables/useChatApi', () => ({
     delete: vi.fn(),
     turns: vi.fn(),
     fork: vi.fn(),
+    detach: (...a: any[]) => detachMock(...a),
   }),
 }))
 
@@ -28,6 +32,7 @@ import SessionSidebar from '../SessionSidebar.vue'
 beforeEach(() => {
   setActivePinia(createPinia())
   listMock.mockReset()
+  detachMock.mockReset()
 })
 
 async function mountWith(sessions: any[]) {
@@ -55,10 +60,10 @@ describe('SessionSidebar WS9 谱系树缩进排序', () => {
     expect(child).toBe(root + 1)
     expect(gc).toBe(child + 1)
 
-    // 缩进：根无内联 padding；子 10+14=24px；孙 10+28=38px。
+    // 缩进：根无内联 padding；子 10+10=20px；孙 10+20=30px（2026-10-20 收敛 10px/级）。
     expect(rows[root].attributes('style') || '').not.toContain('padding-left')
-    expect(rows[child].attributes('style')).toContain('padding-left: 24px')
-    expect(rows[gc].attributes('style')).toContain('padding-left: 38px')
+    expect(rows[child].attributes('style')).toContain('padding-left: 20px')
+    expect(rows[gc].attributes('style')).toContain('padding-left: 30px')
     w.unmount()
   })
 
@@ -71,6 +76,39 @@ describe('SessionSidebar WS9 谱系树缩进排序', () => {
     for (const r of rows) {
       expect(r.attributes('style') || '').not.toContain('padding-left')
     }
+    w.unmount()
+  })
+
+  it('分支行：⑂ marker 升入标题行 + branched 树杈类；行菜单「脱离父分支」仅分支会话可见', async () => {
+    detachMock.mockResolvedValue({ session_id: 'child', detached: true })
+    vi.stubGlobal('confirm', () => true)
+    const w = await mountWith([
+      { id: 'root', firstMessage: '根会话' },
+      { id: 'child', firstMessage: '子会话', parent: 'agent:main:session:root' },
+    ])
+
+    const childRow = w.findAll('.session-item').find(r => r.text().includes('子会话'))!
+    const rootRow = w.findAll('.session-item').find(r => r.text().includes('根会话'))!
+    // ⑂ marker 只在分支会话标题行；树杈连接线挂点（::before 宿主类）同此。
+    expect(childRow.find('.fork-marker').exists()).toBe(true)
+    expect(childRow.classes()).toContain('branched')
+    expect(rootRow.find('.fork-marker').exists()).toBe(false)
+    expect(rootRow.classes()).not.toContain('branched')
+
+    // 分支会话菜单有「脱离父分支」，点击 → confirm + detach + 列表刷新。
+    await childRow.find('.row-more').trigger('click')
+    const detachBtn = w.findAll('.menu-item').find(b => b.text().includes('脱离父分支'))
+    expect(detachBtn).toBeTruthy()
+    await detachBtn!.trigger('click')
+    await flushPromises()
+    expect(detachMock).toHaveBeenCalledWith('child')
+
+    // 根会话（无 parent）菜单里没有该项。
+    const rootRowAfter = w.findAll('.session-item').find(r => r.text().includes('根会话'))!
+    await rootRowAfter.find('.row-more').trigger('click')
+    const rootDetach = w.findAll('.menu-item').find(b => b.text().includes('脱离父分支'))
+    expect(rootDetach).toBeUndefined()
+    vi.unstubAllGlobals()
     w.unmount()
   })
 })

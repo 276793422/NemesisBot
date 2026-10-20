@@ -109,6 +109,8 @@ export interface SessionForkResult {
   dropped_messages: number
   summary_kept: boolean
   chat_log_lines: number
+  /** 完全独立形态（请求回显）：true = 新会话无血缘 meta。 */
+  independent?: boolean
 }
 
 export function useChatApi() {
@@ -205,6 +207,12 @@ export function useChatApi() {
     unsnooze: (session_id: string): Promise<{ session_id: string; unsnoozed: boolean }> =>
       request('sessions', 'unsnooze', { session_id }),
 
+    /** detach（2026-10-20）：脱离父分支——清血缘 meta（parent/fork缘由/
+     *  分支摘要），与会话的父会话平级独立；子分支跟随独立。不可逆；
+     *  消息内容不受影响。无血缘时后端诚实报错。 */
+    detach: (session_id: string): Promise<{ session_id: string; detached: boolean }> =>
+      request('sessions', 'detach', { session_id }),
+
     export: async (session_id: string): Promise<{ session_id: string; messages: unknown[]; count: number }> =>
       await request('sessions', 'export', { session_id }),
 
@@ -214,11 +222,19 @@ export function useChatApi() {
 
     /** P3-1: fork at a turn boundary (omit at_turn = whole history).
      * Backend delegates to the Z1 fork_session — SessionStore + chat_log
-     * copy + boundary events. */
-    fork: (session_id: string, at_turn?: number): Promise<SessionForkResult> =>
+     * copy + boundary events. `independent`（2026-10-20）：勾选后新会话
+     * 不写血缘 meta（生来无父分支，无分叉缘由/分支摘要）。 */
+    fork: (
+      session_id: string,
+      at_turn?: number,
+      independent?: boolean,
+    ): Promise<SessionForkResult> =>
       apiFetch<SessionForkResult>(`/api/chat/sessions/${encodeURIComponent(session_id)}/fork`, {
         method: 'POST',
-        body: JSON.stringify(at_turn != null ? { at_turn } : {}),
+        body: JSON.stringify({
+          ...(at_turn != null ? { at_turn } : {}),
+          ...(independent ? { independent: true } : {}),
+        }),
       }),
 
     // -----------------------------------------------------------------

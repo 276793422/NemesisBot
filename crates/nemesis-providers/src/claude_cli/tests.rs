@@ -258,9 +258,14 @@ fn test_parse_response_with_usage() {
     let resp = provider.parse_response(output).unwrap();
     assert_eq!(resp.content, "Done!");
     let usage = resp.usage.unwrap();
-    assert_eq!(usage.prompt_tokens, 130); // 100 + 10 + 20
+    // Anthropic 加法语义透传：prompt=纯输入 100，缓存读写单列；
+    // total 按账本口径还原全量（100+10+20+50）。
+    assert_eq!(usage.prompt_tokens, 100);
     assert_eq!(usage.completion_tokens, 50);
     assert_eq!(usage.total_tokens, 180);
+    assert_eq!(usage.cached_tokens, Some(20));
+    assert_eq!(usage.cache_creation_tokens, Some(10));
+    assert_eq!(usage.cache_read_tokens, Some(20));
 }
 
 #[test]

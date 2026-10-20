@@ -169,8 +169,9 @@ fn w4_log(model: &str, created_at: i64, session_key: &str, status: i32) -> crate
     }
 }
 
-/// query_summary：聚合计数/Token/成本，且 cache_hit_rate 在有缓存 Token 时
-/// = read/(creation+read)、在零缓存时回 0.0（除零保护分支）。
+/// query_summary：聚合计数/Token/成本，且 cache_hit_rate = 缓存读/总输入
+/// （input + creation + read，三协议族统一口径）、总输入为零时回 0.0
+/// （除零保护分支）。
 #[test]
 fn query_summary_aggregates_and_computes_cache_hit_rate() {
     let (store, path) = open_store("w4_summary");
@@ -193,12 +194,12 @@ fn query_summary_aggregates_and_computes_cache_hit_rate() {
     assert_eq!(sum.total_cache_read_tokens, 60);
     assert!((sum.total_cost_usd - 1.0).abs() < 1e-9);
     assert!(
-        (sum.cache_hit_rate - 0.75).abs() < 1e-9,
-        "60/(20+60)={}",
+        (sum.cache_hit_rate - 60.0 / 280.0).abs() < 1e-9,
+        "60/(200+20+60)={}",
         sum.cache_hit_rate
     );
 
-    // 零缓存行 → cacheable=0 → 0.0 分支。
+    // 零缓存行 → 分子 0 → 0.0（分母含纯输入仍 >0）。
     store
         .insert_request_log(&crate::RequestLog {
             cache_creation_tokens: 0,

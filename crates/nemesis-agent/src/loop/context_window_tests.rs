@@ -252,3 +252,148 @@ async fn l3_guess_too_big_recovers_via_emergency_compression() {
         .collect();
     assert_eq!(done, vec!["Recovered after compression!".to_string()]);
 }
+
+// ---------------------------------------------------------------------------
+// 2026-10-20 压缩点一等公民化：resolve_compact_trigger 五臂
+// ---------------------------------------------------------------------------
+
+fn cc_entry(name: &str, full: &str, context_window: &str, compact: &str) -> String {
+    let ctx = if context_window.is_empty() {
+        String::new()
+    } else {
+        format!(r#", "context_window": {context_window}"#)
+    };
+    let cc = if compact.is_empty() {
+        String::new()
+    } else {
+        format!(r#", "compact_context_tokens": {compact}"#)
+    };
+    format!(r#"{{"model_name": "{name}", "model": "{full}"{ctx}{cc}}}"#)
+}
+
+#[test]
+fn compact_trigger_user_exact_fires_without_ratio() {
+    let cfg: serde_json::Value = serde_json::from_str(&format!(
+        "{{\"model_list\": [{}]}}",
+        cc_entry("opus", "x/opus", "200000", "50000")
+    ))
+    .unwrap();
+    let trig = resolve_compact_trigger(
+        Some(&cfg),
+        "opus",
+        None,
+        (FALLBACK_CONTEXT_WINDOW, "fallback-128k"),
+    );
+    // 到点即压：50k 触发，不乘 75%（若乘比例会是 37.5k）。
+    assert_eq!(trig.trigger, 50_000);
+    assert_eq!(trig.source, "user");
+    assert_eq!(trig.clamped_from, None);
+    assert_eq!(trig.window, 200_000, "真实窗口保持三级链解析值");
+}
+
+#[test]
+fn compact_trigger_user_above_window_clamps() {
+    let cfg: serde_json::Value = serde_json::from_str(&format!(
+        "{{\"model_list\": [{}]}}",
+        cc_entry("opus", "x/opus", "200000", "500000")
+    ))
+    .unwrap();
+    let trig = resolve_compact_trigger(
+        Some(&cfg),
+        "opus",
+        None,
+        (FALLBACK_CONTEXT_WINDOW, "fallback-128k"),
+    );
+    assert_eq!(trig.trigger, 200_000, "钳到窗口");
+    assert_eq!(trig.clamped_from, Some(500_000), "带原值供一次性告知");
+    assert_eq!(trig.source, "user");
+}
+
+#[test]
+fn compact_trigger_unset_uses_window_ratio_config() {
+    // 未设压缩点 → 窗口×75% 既有行为（L1 config 来源透传）。
+    let cfg: serde_json::Value = serde_json::from_str(&format!(
+        "{{\"model_list\": [{}]}}",
+        cc_entry("opus", "x/opus", "200000", "")
+    ))
+    .unwrap();
+    let trig = resolve_compact_trigger(
+        Some(&cfg),
+        "opus",
+        None,
+        (FALLBACK_CONTEXT_WINDOW, "fallback-128k"),
+    );
+    assert_eq!(trig.trigger, 150_000);
+    assert_eq!(trig.source, "config");
+    assert_eq!(trig.clamped_from, None);
+}
+
+#[test]
+fn compact_trigger_unset_uses_window_ratio_catalog() {
+    let dir = temp_dir_unique("cc-l2");
+    let store = std::sync::Arc::new(nemesis_data::PricingStore::open(&dir).unwrap());
+    store
+        .replace_downloaded(
+            vec![pricing_entry("glm-4.7", Some(128_000))],
+            nemesis_data::PricingMeta::default(),
+        )
+        .unwrap();
+    let cfg: serde_json::Value = serde_json::from_str(&format!(
+        "{{\"model_list\": [{}]}}",
+        cc_entry("glm", "zhipu/glm-4.7", "", "")
+    ))
+    .unwrap();
+    let trig = resolve_compact_trigger(Some(&cfg), "glm", Some(store.as_ref()), (100, "instance"));
+    assert_eq!(trig.trigger, 96_000, "目录窗口 128k × 75%");
+    assert_eq!(trig.source, "catalog");
+}
+
+#[test]
+fn compact_trigger_fallback_uses_caller_supplied_window() {
+    // 三级链全 miss：agent 侧传实例窗口（100, "instance"）→ 触发点 75——
+    // 旧路径语义逐位保持（instance.set_context_window(100) 的既有测试形态）。
+    let trig = resolve_compact_trigger(None, "obscure/local-7b", None, (100, "instance"));
+    assert_eq!(trig.window, 100);
+    assert_eq!(trig.trigger, 75);
+    assert_eq!(trig.source, "instance");
+
+    // CLI 展示形态：编译期默认 128k。
+    let trig = resolve_compact_trigger(
+        None,
+        "obscure/local-7b",
+        None,
+        (FALLBACK_CONTEXT_WINDOW, "fallback-128k"),
+    );
+    assert_eq!(trig.window, 128_000);
+    assert_eq!(trig.trigger, 96_000);
+    assert_eq!(trig.source, "fallback-128k");
+
+    // 实例兜底窗口 + 用户压缩点：压缩点照常生效（来源 user），窗口用兜底。
+    let cfg: serde_json::Value = serde_json::from_str(&format!(
+        "{{\"model_list\": [{}]}}",
+        cc_entry("local", "obscure/local-7b", "", "50")
+    ))
+    .unwrap();
+    let trig = resolve_compact_trigger(Some(&cfg), "local", None, (100, "instance"));
+    assert_eq!(trig.trigger, 50);
+    assert_eq!(trig.source, "user");
+    assert_eq!(trig.window, 100);
+}
+
+/// 零值过滤（resolver 链底层）：`compact_context_tokens: 0` / 负数 = 未设。
+#[test]
+fn compact_trigger_zero_and_negative_filtered() {
+    let cfg: serde_json::Value = serde_json::from_str(&format!(
+        "{{\"model_list\": [{}]}}",
+        cc_entry("opus", "x/opus", "200000", "0")
+    ))
+    .unwrap();
+    let trig = resolve_compact_trigger(
+        Some(&cfg),
+        "opus",
+        None,
+        (FALLBACK_CONTEXT_WINDOW, "fallback-128k"),
+    );
+    assert_eq!(trig.trigger, 150_000, "0 视作未设 → 窗口×75%");
+    assert_eq!(trig.source, "config");
+}

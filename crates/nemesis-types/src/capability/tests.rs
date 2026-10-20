@@ -231,6 +231,128 @@ fn resolve_context_window_per_model() {
     );
 }
 
+// 2026-10-20 压缩点一等公民化：per-model 绝对压缩点键。
+#[test]
+fn resolve_compact_context_tokens_per_model() {
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model_name": "big", "model": "x/big", "compact_context_tokens": 200000},
+            {"model_name": "zero", "model": "x/zero", "compact_context_tokens": 0},
+            {"model_name": "plain", "model": "x/plain"}
+        ]
+    });
+    assert_eq!(
+        resolve_compact_context_tokens(&cfg, "big"),
+        Some(200000),
+        "match by alias"
+    );
+    assert_eq!(
+        resolve_compact_context_tokens(&cfg, "x/big"),
+        Some(200000),
+        "match by full id"
+    );
+    assert_eq!(
+        resolve_compact_context_tokens(&cfg, "zero"),
+        None,
+        "zero filtered out (= unset)"
+    );
+    assert_eq!(
+        resolve_compact_context_tokens(&cfg, "plain"),
+        None,
+        "field absent = 75% chain fallback"
+    );
+    assert_eq!(
+        resolve_compact_context_tokens(&serde_json::json!({}), "anything"),
+        None,
+        "no model_list"
+    );
+}
+
+// 2026-10-20 真浏览器 E2E 实证回归锁：活 gateway 的 active_model 是剥前缀
+// 裸名（`resolve_from_model_config` 切 '/' 取尾段；CLI `model add --default`
+// 写 agents.defaults.llm 同为裸名），自定义别名条目（model_name ≠ 裸名）
+// 在纯精确匹配下全族失联——context_window=131072 被无视、压缩点落价目表。
+// find_model_entry 的 bare-suffix 回落修复；此处钉核心语义。
+#[test]
+fn find_model_entry_bare_suffix_fallback() {
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model_name": "glm-test", "model": "zhipu/glm-4.7", "context_window": 131072}
+        ]
+    });
+    // 裸名（活 gateway active_model 形态）经 bare-suffix 命中——修复前 None。
+    let entry = find_model_entry(&cfg, "glm-4.7").expect("bare suffix must resolve");
+    assert_eq!(
+        entry.get("context_window").and_then(|v| v.as_i64()),
+        Some(131072)
+    );
+    // 精确 name / full 优先级不变。
+    assert!(find_model_entry(&cfg, "glm-test").is_some());
+    assert!(find_model_entry(&cfg, "zhipu/glm-4.7").is_some());
+    assert!(find_model_entry(&cfg, "unrelated").is_none(), "no match");
+    // active 带 vendor 前缀时末段参与 bare-suffix（`openai/gpt-4o` ↔
+    // `azure/gpt-4o` 形态）。
+    let cfg2 = serde_json::json!({
+        "model_list": [
+            {"model_name": "aliased", "model": "azure/gpt-4o", "max_output_tokens": 8192}
+        ]
+    });
+    assert!(find_model_entry(&cfg2, "openai/gpt-4o").is_some());
+}
+
+#[test]
+fn find_model_entry_exact_beats_bare_suffix() {
+    // 精确匹配跨数组序压过 bare-suffix：bare 候选在前、精确候选在后，
+    // 仍必须返回精确条目（find(exact) 先于 or_else(find(bare))）。
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model_name": "other", "model": "z/glm-4.7", "context_window": 1},
+            {"model_name": "glm-4.7", "model": "zhipu/glm-4.7", "context_window": 131072}
+        ]
+    });
+    let entry = find_model_entry(&cfg, "glm-4.7").expect("exact name must win");
+    assert_eq!(
+        entry.get("context_window").and_then(|v| v.as_i64()),
+        Some(131072),
+        "exact entry wins over earlier bare-suffix candidate"
+    );
+}
+
+#[test]
+fn resolve_context_window_bare_name_reaches_custom_alias_entry() {
+    // 活 gateway 场景端到端：alias=裸名 "glm-4.7" 必须读到自定义别名条目的
+    // context_window（修复前落价目表/兜底——context_window 与压缩点同源同族）。
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model_name": "glm-test", "model": "zhipu/glm-4.7", "context_window": 131072}
+        ]
+    });
+    assert_eq!(
+        resolve_context_window(&cfg, "glm-4.7"),
+        Some(131072),
+        "context_window reachable via bare name"
+    );
+    assert_eq!(
+        resolve_compact_context_tokens(&cfg, "glm-4.7"),
+        None,
+        "unset compact key stays None (= 75% chain)"
+    );
+}
+
+#[test]
+fn resolve_compact_context_tokens_bare_name_reaches_custom_alias_entry() {
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model_name": "glm-test", "model": "zhipu/glm-4.7", "compact_context_tokens": 50000}
+        ]
+    });
+    assert_eq!(
+        resolve_compact_context_tokens(&cfg, "glm-4.7"),
+        Some(50000),
+        "user compact point reachable via bare name"
+    );
+}
+
 // Sixth-batch sweep: delegation tools are Normal-tier and above.
 #[test]
 fn tier_lists_delegation_tools() {

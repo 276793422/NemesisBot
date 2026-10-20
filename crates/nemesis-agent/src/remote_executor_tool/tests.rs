@@ -656,9 +656,11 @@ async fn persistent_route_tool_failed_propagates_without_fallback() {
 
 #[tokio::test]
 async fn persistent_route_unavailable_falls_back_to_percall() {
-    let executor = mock_executor(Some(Err(PersistentCallError::Unavailable(
-        "slots full".into(),
-    ))));
+    // host_fallback=true（process 档槽满等宿主同视图形态）→ 走既有回落。
+    let executor = mock_executor(Some(Err(PersistentCallError::Unavailable {
+        message: "slots full".into(),
+        host_fallback: true,
+    })));
     let tool = routing_tool(
         Some(("ag-1".to_string(), PathBuf::from("/root/ws"))),
         executor.clone(),
@@ -669,7 +671,38 @@ async fn persistent_route_unavailable_falls_back_to_percall() {
         .expect_err("回落通道 exe 不存在，必产错误");
     assert!(
         err.starts_with("executor unavailable:") && err.contains("failed to spawn"),
-        "Unavailable 必须回落到 per-call 通道: {err}"
+        "Unavailable(host_fallback=true) 必须回落到 per-call 通道: {err}"
+    );
+    assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
+}
+
+// R1 回归锁：host_fallback=false（vm 档 guest 异文件视图）→ 诚实错误上抛，
+// 绝不 spawn 宿主执行器（通道 exe 不存在——被触碰即败形可辨）。
+#[tokio::test]
+async fn persistent_route_unavailable_no_host_fallback_propagates_honest_error() {
+    let executor = mock_executor(Some(Err(PersistentCallError::Unavailable {
+        message: "vm image missing".into(),
+        host_fallback: false,
+    })));
+    let tool = routing_tool(
+        Some(("ag-1".to_string(), PathBuf::from("/root/ws"))),
+        executor.clone(),
+    );
+    let err = tool
+        .execute("{}", &req_ctx())
+        .await
+        .expect_err("host_fallback=false 必须上抛，不得回落");
+    assert!(
+        err.contains("host fallback forbidden") && err.contains("不回落宿主"),
+        "错误须含回落禁用契约文案: {err}"
+    );
+    assert!(
+        err.contains("vm image missing"),
+        "根因（执行体给的 message）必须保留在错误里: {err}"
+    );
+    assert!(
+        !err.contains("failed to spawn"),
+        "per-call 通道必须一次都未被触碰: {err}"
     );
     assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
 }

@@ -1524,10 +1524,12 @@ fn test_extract_usage_with_cached_tokens() {
     });
 
     let usage = extract_usage(&usage_json);
-    assert_eq!(usage.prompt_tokens, 10);
+    // DeepSeek hit-only：prompt 归一为非缓存纯输入（10-5），读单列。
+    assert_eq!(usage.prompt_tokens, 5);
     assert_eq!(usage.completion_tokens, 20);
     assert_eq!(usage.total_tokens, 30);
     assert_eq!(usage.cached_tokens, Some(5));
+    assert_eq!(usage.cache_creation_tokens, None);
     assert_eq!(usage.cache_read_tokens, Some(5));
 }
 
@@ -1543,10 +1545,13 @@ fn test_extract_usage_with_cached_tokens_openai_format() {
     });
 
     let usage = extract_usage(&usage_json);
-    assert_eq!(usage.prompt_tokens, 10);
+    // OpenAI 子集语义：prompt 剥出缓存（10-8=2 纯输入），读单列，
+    // 无缓存写概念（miss=普通输入，不进 creation）。
+    assert_eq!(usage.prompt_tokens, 2);
     assert_eq!(usage.completion_tokens, 20);
     assert_eq!(usage.total_tokens, 30);
     assert_eq!(usage.cached_tokens, Some(8));
+    assert_eq!(usage.cache_creation_tokens, None);
     assert_eq!(usage.cache_read_tokens, Some(8));
 }
 

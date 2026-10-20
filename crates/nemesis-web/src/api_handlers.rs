@@ -1306,6 +1306,13 @@ pub async fn handle_api_chat_session_fork(
         .get("reason")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    // 「完全独立会话」（2026-10-20，可选，默认 false）：勾选后跳过血缘
+    // 写入——parent/fork_reason/分支摘要都不落新会话 meta，生来无父分支
+    // （UI 谱系视图视为平级独立会话）。boundary 审计事件照常（fork 内部）。
+    let independent = body
+        .get("independent")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let store = resolve_fork_store(&state)?;
     let key = chat_session_key(&session_id);
@@ -1325,20 +1332,22 @@ pub async fn handle_api_chat_session_fork(
     }
 
     let info =
-        nemesis_agent::session_fork::fork_session(&store, &key, None, at_turn).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e})),
-            )
-        })?;
+        nemesis_agent::session_fork::fork_session_opts(&store, &key, None, at_turn, independent)
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": e})),
+                )
+            })?;
     // Optional title for the new session's meta (same call the sessions
     // WSAPI rename uses).
     if let Some(t) = title {
         nemesis_agent::chat_log::write_session_meta(&info.new_key, &t);
     }
     // WS9/P17：分叉缘由落盘（请求缺省/空白不写——谱系视图回退显示通用
-    // 「fork」；write_session_fork_reason 内部同样 trim+空跳过）。
-    if let Some(r) = reason.as_deref() {
+    // 「fork」；write_session_fork_reason 内部同样 trim+空跳过）。完全
+    // 独立形态不写（无血缘即无分叉缘由）。
+    if !independent && let Some(r) = reason.as_deref() {
         nemesis_agent::chat_log::write_session_fork_reason(&info.new_key, r);
     }
     // WS9/P18：遗弃后缀 ≥3 轮 → 后台生成分支摘要写入**新会话** meta（新
@@ -1347,8 +1356,10 @@ pub async fn handle_api_chat_session_fork(
     // 间落盘的新行会混进摘要；也不再二次全量读）。主 loop 未运行或
     // small_model 未配置 = prepare 诚实跳过，绝不阻塞 fork 本体。项目
     // 会话也走主 loop 的 small_model 槽位（该槽位读同一份 config/模型
-    // 表，实例间等价——诚实边界记入实施报告）。
-    if info.dropped_user_turns >= nemesis_agent::r#loop::BRANCH_SUMMARY_MIN_TURNS
+    // 表，实例间等价——诚实边界记入实施报告）。完全独立形态跳过——
+    // Branch Context 是血缘派生视图，独立会话不该带上「父会话走后如何」。
+    if !independent
+        && info.dropped_user_turns >= nemesis_agent::r#loop::BRANCH_SUMMARY_MIN_TURNS
         && let Some(agent_loop) = state.agent_loop.read().clone()
         && let Some(prepared) = nemesis_agent::r#loop::prepare_branch_summary(
             &agent_loop,
@@ -1372,6 +1383,7 @@ pub async fn handle_api_chat_session_fork(
         "dropped_user_turns": info.dropped_user_turns,
         "summary_kept": info.summary_kept,
         "chat_log_lines": info.chat_log_lines,
+        "independent": independent,
     })))
 }
 

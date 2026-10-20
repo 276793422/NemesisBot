@@ -156,3 +156,51 @@ fn branch_summary_writer_skips_empty_and_caps_length() {
 
     delete_chat_log(&key);
 }
+
+/// 「完全独立会话」（2026-10-20）：fork_session_opts(independent=true) 跳过
+/// 新 key 的血缘 meta 写入（parent / forked_at_turn），内容拷贝照常；
+/// boundary 审计事件双写照常（审计兜底不因独立形态减弱）。
+#[test]
+fn independent_fork_skips_parent_meta_but_keeps_content_and_audit() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new_with_storage(dir.path());
+    let src = uniq("indep-src");
+    seed_turns(&src, 4);
+
+    let info = fork_session_opts(&store, &src, None, Some(2), true).unwrap();
+    let new_key = info.new_key.clone();
+
+    // 血缘未写：independent 形态下唯一建档点（write_session_parent）被
+    // 跳过，无 title/项目绑定时 meta 文件根本不落盘——生来无血缘的诚实
+    // 形态（sessions.list 从 jsonl 扫描派生，meta 缺席合法）。
+    assert!(
+        read_session_meta_full(&new_key).is_none(),
+        "independent 且无 title/绑定 → 不落 meta 文件"
+    );
+
+    // 内容拷贝照常（VERBATIM 前缀，2 轮 × 2 行 = 4 行）。
+    assert_eq!(info.kept_messages, 4);
+    let (_, total, _, _) = crate::chat_log::read_chat_log(&new_key, usize::MAX, None);
+    assert_eq!(total, 4, "新 jsonl = 整段拷贝的前缀");
+
+    // boundary 审计事件双写照常（源 out + 新 in）。
+    let src_events = crate::chat_log::read_boundary_events(&src);
+    let new_events = crate::chat_log::read_boundary_events(&new_key);
+    assert!(
+        src_events.iter().any(|e| e["event"] == "session_fork_out"),
+        "源会话 fork_out 审计行保留"
+    );
+    assert!(
+        new_events.iter().any(|e| e["event"] == "session_fork_in"),
+        "新会话 fork_in 审计行保留（独立形态不弱化审计）"
+    );
+
+    // 对照组：wrapper（independent=false）默认仍写血缘（存量契约不变）。
+    let normal = fork_session(&store, &src, None, Some(1)).unwrap();
+    let normal_meta = read_session_meta_full(&normal.new_key).expect("meta");
+    assert_eq!(normal_meta.parent.as_deref(), Some(src.as_str()));
+
+    delete_chat_log(&src);
+    delete_chat_log(&new_key);
+    delete_chat_log(&normal.new_key);
+}
