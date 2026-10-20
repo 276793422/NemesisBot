@@ -69,6 +69,14 @@ describe('planRegenerate 自动重发守卫', () => {
     expect(planRegenerate(msgs, 1, 'assistant')!.noResendReason).toContain('插话')
   })
 
+  it('系统触发轮（[System: 前缀，后端定时任务落盘形态）→ 不自动重发（防副作用重放）', () => {
+    const msgs = [row(0, 'user', '[System: cron] 每日站会提醒'), row(1, 'assistant', 'ok')]
+    expect(planRegenerate(msgs, 1, 'assistant')!.noResendReason).toContain('系统')
+    // 直接点系统 user 行（提问行自身入口）同样命中。
+    const msgs2 = [row(0, 'user', '[System: cron] 提醒'), row(1, 'assistant', 'ok')]
+    expect(planRegenerate(msgs2, 0, 'user')!.noResendReason).toContain('系统')
+  })
+
   it('提问带图片（历史只有计数没有路径）→ 不自动重发', () => {
     const msgs = [row(0, 'user', '看这张图', 2), row(1, 'assistant', 'a')]
     expect(planRegenerate(msgs, 1, 'assistant')!.noResendReason).toContain('图片')

@@ -1,10 +1,12 @@
 /**
- * 重新生成规划（纯函数，2026-10-20 重新生成修复）。
+ * 重新生成规划（纯函数，2026-10-20 重新生成修复；同日横向扫描后成为回退
+ * 按钮组共用的轮首定位器）。
  *
  * 「重新生成」的真实语义 = 回退到本轮提问行之前（`sessions.rewind_to_message`
- * `mode:"before"`：该轮与其后所有行移除、文件滚回提问前）+ 重发提问原文。
- * 本模块只做**规划**（定位轮首 + 自动重发守卫裁决），副作用（rewind/发送）
- * 在 ChatPanel。
+ * `mode:"before"`：该轮与其后所有行移除、文件滚回提问前）+ 重发提问原文；
+ * 「撤销此问/删除整轮」= 同一截断但不重发（两按钮是同一操作的提问行/回复
+ * 行入口）。本模块只做**规划**（定位轮首 + 自动重发守卫裁决），副作用
+ * （rewind/发送）在 ChatPanel。
  */
 
 export interface RegenRowLike {
@@ -34,6 +36,11 @@ export interface RegenPlan {
  *
  * 守卫（诚实降级：只回退不重发）：
  * - `[steer] ` 开头 = 轮首即插话行（异常形态），原文不宜原样重发；
+ * - `[System: ` 开头 = 后端系统触发轮（定时任务/心跳等，commands.rs 的
+ *   B1 落盘形态 `[System: {sender}] {content}`，role=user）——重发 =
+ *   把系统提示词当用户消息重放，副作用同类斜杠命令。注意 admission.rs
+ *   另有一条裸内容落盘路径（cron 原文无前缀），内容层面不可区分，本守卫
+ *   覆盖不到——诚实边界；
  * - imageCount > 0 = 历史响应只有图片计数、路径拿不到，重发会丢图；
  * - `/` 开头 = 斜杠命令，重放有副作用；
  * - 空内容无可重发。
@@ -57,6 +64,7 @@ export function planRegenerate(
   let noResendReason: string | null = null
   if (!content) noResendReason = '提问内容为空'
   else if (content.startsWith('[steer] ')) noResendReason = '插话轮不自动重发'
+  else if (content.startsWith('[System: ')) noResendReason = '系统触发轮（定时任务等）不自动重发，重放有副作用'
   else if ((q.imageCount ?? 0) > 0) noResendReason = '消息含图片（重发会丢附件）'
   else if (content.startsWith('/')) noResendReason = '斜杠命令不自动重发（防副作用重放）'
   return { turnStart, content, noResendReason }
