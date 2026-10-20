@@ -307,9 +307,14 @@ fn test_parse_jsonl_cached_tokens_in_usage() {
     let output = r#"{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":5,"output_tokens":3}}"#;
     let resp = provider.parse_jsonl_events(output).unwrap();
     let usage = resp.usage.unwrap();
-    assert_eq!(usage.prompt_tokens, 15); // 10 + 5 cached
+    // 账本不变量：CLI wire 的 input_tokens 本就是纯输入（加法语义），
+    // 透传不折缓存；缓存读单列。
+    assert_eq!(usage.prompt_tokens, 10);
     assert_eq!(usage.completion_tokens, 3);
     assert_eq!(usage.total_tokens, 18);
+    assert_eq!(usage.cached_tokens, Some(5));
+    assert_eq!(usage.cache_creation_tokens, None);
+    assert_eq!(usage.cache_read_tokens, Some(5));
 }
 
 #[test]

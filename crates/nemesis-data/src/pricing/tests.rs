@@ -107,10 +107,11 @@ fn cost_gpt4o_plain_math() {
 #[test]
 fn cost_deepseek_cache_split() {
     // 上游价格会随时间漂移——期望值从实际命中的条目现算（本测试钉的是
-    // cache 拆分公式，不是任何具体价格）。
+    // cache 拆分公式，不是任何具体价格）。input 参数 = 非缓存纯输入
+    // （账本不变量）：1M 总输入中 600k 缓存读 → 纯输入 400k。
     let p = lookup_pricing("deepseek/deepseek-chat").expect("deepseek-chat");
     assert!(p.input_cost_per_million > 0.0, "lookup actually hit");
-    let cost = compute_cost_usd("deepseek/deepseek-chat", 1_000_000, 100_000, 0, 600_000);
+    let cost = compute_cost_usd("deepseek/deepseek-chat", 400_000, 100_000, 0, 600_000);
     // plain 400k*in + out 100k*out + read 600k*read, all /1e6
     let expected = (400_000.0 * p.input_cost_per_million
         + 100_000.0 * p.output_cost_per_million
@@ -122,8 +123,9 @@ fn cost_deepseek_cache_split() {
 #[cfg(feature = "pricing-embed")]
 #[test]
 fn cost_claude_cache_creation() {
-    // claude-opus-4-5: 5 in / 25 out / 0.5 read / 6.25 write.
-    let cost = compute_cost_usd("claude-opus-4-5", 1_000_000, 50_000, 200_000, 300_000);
+    // claude-opus-4-5: 5 in / 25 out / 0.5 read / 6.25 write。
+    // input 参数 = 非缓存纯输入：500k 纯输入 + 200k 写 + 300k 读。
+    let cost = compute_cost_usd("claude-opus-4-5", 500_000, 50_000, 200_000, 300_000);
     let expected =
         (500_000.0 * 5.0 + 50_000.0 * 25.0 + 200_000.0 * 6.25 + 300_000.0 * 0.5) / 1_000_000.0;
     assert!(approx(cost, expected), "got {cost} want {expected}");
@@ -131,12 +133,13 @@ fn cost_claude_cache_creation() {
 
 #[cfg(feature = "pricing-embed")]
 #[test]
-fn cost_clamps_negative_plain_input() {
+fn cost_plain_input_billed_alongside_cache_read() {
     let p = lookup_pricing("gpt-4o").unwrap();
-    // Cache tokens exceed reported prompt tokens (separate-report convention)
-    // → plain input clamps to 0, cache portion still billed.
+    // Anthropic 语义合法形态：纯输入 100 + 缓存读 500（读可大于纯输入）
+    // → 两段各自计价，互不减损。
     let cost = cost_from_pricing(p, 100, 0, 0, 500);
-    let expected = 500.0 * p.cache_read_cost_per_million / 1_000_000.0;
+    let expected =
+        (100.0 * p.input_cost_per_million + 500.0 * p.cache_read_cost_per_million) / 1_000_000.0;
     assert!(approx(cost, expected), "got {cost} want {expected}");
     assert!(cost >= 0.0);
 }
@@ -164,8 +167,9 @@ fn cost_from_pricing_synthetic_entry() {
         aliases: vec!["vendor/synthetic".into()],
         price_tiers: None,
     };
+    // input 参数 = 非缓存纯输入：100k 纯输入，缓存写 50k + 读 150k 单列。
     // plain 100k*1 + out 200k*2 + write 50k*1.25 + read 150k*0.1 = 100k+400k+62.5k+15k = 577.5k /1e6
-    let cost = cost_from_pricing(&p, 300_000, 200_000, 50_000, 150_000);
+    let cost = cost_from_pricing(&p, 100_000, 200_000, 50_000, 150_000);
     assert!(approx(cost, 0.5775), "got {cost}");
 
     // The synthetic alias resolves through the table API when registered.

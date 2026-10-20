@@ -187,14 +187,18 @@ impl CodexCliProvider {
                 }
                 "turn.completed" => {
                     if let Some(u) = event.usage {
-                        let prompt = u.input_tokens + u.cached_input_tokens;
+                        // CLI JSONL 的 input_tokens 与 cached_input_tokens 是
+                        // 加法语义（input 不含缓存）。按账本不变量归一：prompt
+                        // = 纯输入原样透传，缓存读单列（不再折进 prompt——
+                        // 旧行为是为迁就「计价 input 含缓存总量」旧公式）。
+                        let prompt = u.input_tokens;
                         usage = Some(UsageInfo {
                             prompt_tokens: prompt,
                             completion_tokens: u.output_tokens,
-                            total_tokens: prompt + u.output_tokens,
-                            cached_tokens: None,
+                            total_tokens: prompt + u.cached_input_tokens + u.output_tokens,
+                            cached_tokens: Some(u.cached_input_tokens),
                             cache_creation_tokens: None,
-                            cache_read_tokens: None,
+                            cache_read_tokens: Some(u.cached_input_tokens),
                         });
                     }
                 }

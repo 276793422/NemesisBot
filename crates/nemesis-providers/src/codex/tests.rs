@@ -87,6 +87,44 @@ fn test_parse_codex_response_text() {
 }
 
 #[test]
+fn test_parse_codex_response_cached_tokens() {
+    // Responses API 子集语义：input_tokens 含 input_tokens_details.cached_tokens。
+    // 归一（账本不变量）：prompt = 纯输入，缓存读单列——gpt 模型缓存统计
+    // 恒 0 的根因修复回归锁（流式 response.completed 与非流式同汇于此）。
+    let data = serde_json::json!({
+        "output": [],
+        "usage": {
+            "input_tokens": 1000,
+            "output_tokens": 50,
+            "input_tokens_details": {"cached_tokens": 800}
+        }
+    });
+    let resp = parse_codex_response(&data);
+    let usage = resp.usage.expect("usage present");
+    assert_eq!(usage.prompt_tokens, 200);
+    assert_eq!(usage.completion_tokens, 50);
+    assert_eq!(usage.total_tokens, 1050);
+    assert_eq!(usage.cached_tokens, Some(800));
+    assert_eq!(usage.cache_creation_tokens, None);
+    assert_eq!(usage.cache_read_tokens, Some(800));
+}
+
+#[test]
+fn test_parse_codex_response_no_details_cache_defaults_zero() {
+    // 旧端点不返回 input_tokens_details：缓存字段诚实归零，prompt 不动。
+    let data = serde_json::json!({
+        "output": [],
+        "usage": {"input_tokens": 1000, "output_tokens": 50}
+    });
+    let resp = parse_codex_response(&data);
+    let usage = resp.usage.expect("usage present");
+    assert_eq!(usage.prompt_tokens, 1000);
+    assert_eq!(usage.cached_tokens, Some(0));
+    assert_eq!(usage.cache_read_tokens, Some(0));
+    assert_eq!(usage.cache_creation_tokens, None);
+}
+
+#[test]
 fn test_parse_codex_response_function_call() {
     let data = serde_json::json!({
         "output": [
