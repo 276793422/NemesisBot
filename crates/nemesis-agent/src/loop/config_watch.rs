@@ -1065,6 +1065,29 @@ impl AgentLoop {
         resolve_context_window_tiered(cfg.as_ref(), &active, pricing.as_deref())
     }
 
+    /// 2026-10-20 压缩点一等公民化：有效压缩点 fresh-read（同
+    /// [`Self::current_context_window_with_source`] 模式——config.json 唯一
+    /// 真相源，`model set-compact-context` / Dashboard 改键下一轮压缩检查
+    /// 即生效）。组合与钳制单一真相源在 [`resolve_compact_trigger`]；
+    /// `fallback_window` = 三级链全 miss 时的兜底窗口——调用方传
+    /// `instance.context_window()`（启动物化值 / 测试显式设置，旧路径语义
+    /// 逐位保持）；来源标签相应记 `"instance"`。
+    pub(crate) fn current_compact_trigger(&self, fallback_window: usize) -> super::CompactTrigger {
+        let active = self.active_model.read().clone();
+        let cfg = self.config_path.read().clone().and_then(|path| {
+            std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        });
+        let pricing = self.pricing_store.read().clone();
+        resolve_compact_trigger(
+            cfg.as_ref(),
+            &active,
+            pricing.as_deref(),
+            (fallback_window, "instance"),
+        )
+    }
+
     /// T10（多模态 goal）：active 模型的 vision 能力（读 config.json 新鲜
     /// 值，同 [`current_max_tokens`] 模式——config.json 是唯一真相源，模型
     /// 中途切换 / 磁盘改动都自然生效）。standalone / 条目缺失 → 默认放行。

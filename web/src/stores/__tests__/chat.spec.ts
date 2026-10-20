@@ -383,3 +383,47 @@ describe('chat store dropSessionState (W3)', () => {
     expect(Object.keys(store.inflightTurns)).toHaveLength(0)
   })
 })
+
+// ---------------------------------------------------------------------------
+// M6-fix（2026-10-21）：发送链 create 的全新会话建立行号锚。此前 justCreatedSid
+// 分支跳过 reset+loadHistory（防毁本地回显）但锚停在 null → 本地回显与后续
+// live 行全部无 rowIndex → 回退/重新生成按钮组在该会话首轮恒不渲染。
+describe('chat store anchorFreshSession (M6-fix)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('numbers unanchored user/assistant rows from 0 and continues for later live rows', () => {
+    const store = useChatStore()
+    // 模拟发送链时序：本地回显先行（无锚不编号）→ create 后补锚。
+    store.addMessage(msg('user', 'q1'))
+    store.anchorFreshSession()
+    expect(store.messages[0].rowIndex).toBe(0)
+    // 后续 live 行接锚续号（assistant 回复、第二轮）。
+    store.addMessage(msg('assistant', 'a1'))
+    store.addMessage(msg('user', 'q2'))
+    expect(store.messages.map(m => m.rowIndex)).toEqual([0, 1, 2])
+  })
+
+  it('error/system rows do not occupy lines (consistent with addMessage)', () => {
+    const store = useChatStore()
+    store.addMessage(msg('user', 'q1'))
+    store.addMessage(msg('error', 'boom'))
+    store.addMessage(msg('system', 'note'))
+    store.anchorFreshSession()
+    store.addMessage(msg('assistant', 'a1'))
+    expect(store.messages[0].rowIndex).toBe(0)
+    expect(store.messages[1].rowIndex).toBeUndefined()
+    expect(store.messages[2].rowIndex).toBeUndefined()
+    expect(store.messages[3].rowIndex).toBe(1)
+  })
+
+  it('re-anchoring an already-anchored fresh view renumbers from 0 (server log is empty)', () => {
+    const store = useChatStore()
+    store.prependHistory([msg('user', 'stale'), msg('assistant', 'rows')], 40)
+    store.addMessage(msg('user', 'echo'))
+    // justCreated 分支语义：新会话服务端 jsonl 必为空——视图内行就是 0..n-1。
+    store.anchorFreshSession()
+    expect(store.messages.map(m => m.rowIndex)).toEqual([0, 1, 2])
+  })
+})

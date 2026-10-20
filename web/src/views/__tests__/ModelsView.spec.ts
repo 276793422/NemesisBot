@@ -199,3 +199,96 @@ describe('ModelsView 流式开关（stream 键 UI）', () => {
     w.unmount()
   })
 })
+
+// ---------------------------------------------------------------------------
+// per-model 绝对压缩点（2026-10-20 compact_context_tokens）：属性编辑器
+// 输入行 seed / dirty 检出 / 保存调用（空串清除）/ 超窗口黄字提醒。
+describe('ModelsView 上下文压缩点（compact_context_tokens UI）', () => {
+  function findCcField(w: ReturnType<typeof mount>) {
+    return w
+      .find('.attr-editor')
+      .findAll('.attr-field')
+      .find((f) => f.find('.form-label').text().includes('上下文压缩点'))
+  }
+
+  async function openAttrs(w: ReturnType<typeof mount>) {
+    const attrBtn = w.findAll('button').find((b) => b.text() === '属性')!
+    await attrBtn.trigger('click')
+    await flushPromises()
+  }
+
+  it('属性编辑器含压缩点输入行：seed 自条目值 + 即时生效标注', async () => {
+    const w = await mountView([
+      modelRow({ model_name: 'glm', model: 'zhipu/glm-4.7', compact_context_tokens: 200000 }),
+    ])
+    await openAttrs(w)
+    const field = findCcField(w)
+    expect(field).toBeDefined()
+    const input = field!.find('input')
+    expect((input.element as HTMLInputElement).value).toBe('200000')
+    expect(field!.find('.attr-effect').text()).toContain('即时生效')
+    expect(field!.find('.attr-clamp-warn').exists()).toBe(false)
+    w.unmount()
+  })
+
+  it('dirty 检出 + 保存发 update_field；清空发空串（后端移键清除）', async () => {
+    const updateCalls: any[] = []
+    requestMock.mockImplementation(async (module: string, cmd: string, data?: any) => {
+      if (module === 'models' && cmd === 'list') {
+        return {
+          models: [modelRow({ model_name: 'glm', model: 'zhipu/glm-4.7', compact_context_tokens: 200000 })],
+        }
+      }
+      if (module === 'models' && cmd === 'catalog_info') return { exists: false, fetched_at: '', entries: 0 }
+      if (module === 'models' && cmd === 'health') return { models: [], days: 0, note: '' }
+      if (module === 'models' && cmd === 'update_field') {
+        updateCalls.push(data)
+        return { updated: true }
+      }
+      throw new Error(`unexpected request ${module}.${cmd}`)
+    })
+    const w = mount(ModelsView)
+    await flushPromises()
+    await openAttrs(w)
+
+    // 改值 → dirty 显示 → 保存。
+    const field = findCcField(w)!
+    await field.find('input').setValue('100000')
+    expect(w.find('.attr-dirty').text()).toContain('compact_context_tokens')
+    const saveBtn = w.findAll('button').find((b) => b.text() === '保存属性')!
+    await saveBtn.trigger('click')
+    await flushPromises()
+    expect(updateCalls).toHaveLength(1)
+    expect(updateCalls[0]).toMatchObject({ name: 'glm', field: 'compact_context_tokens', value: '100000' })
+
+    // 清空再保存 → 发空串（后端 0/空串 = 移键清除）。
+    await findCcField(w)!.find('input').setValue('')
+    await saveBtn.trigger('click')
+    await flushPromises()
+    expect(updateCalls).toHaveLength(2)
+    expect(updateCalls[1]).toMatchObject({ field: 'compact_context_tokens', value: '' })
+    w.unmount()
+  })
+
+  it('输入超过条目窗口 → 黄字钳制提醒；未超不提醒', async () => {
+    const w = await mountView([
+      modelRow({
+        model_name: 'glm',
+        model: 'zhipu/glm-4.7',
+        context_window: 131072,
+        compact_context_tokens: 100000,
+      }),
+    ])
+    await openAttrs(w)
+    const field = findCcField(w)!
+    expect(field.find('.attr-clamp-warn').exists()).toBe(false)
+
+    await field.find('input').setValue('500000')
+    await flushPromises()
+    const warn = findCcField(w)!.find('.attr-clamp-warn')
+    expect(warn.exists()).toBe(true)
+    expect(warn.text()).toContain('500,000')
+    expect(warn.text()).toContain('钳到窗口')
+    w.unmount()
+  })
+})
