@@ -6,6 +6,33 @@ use async_trait::async_trait;
 use nemesis_path::paths::canonicalize_for_compare;
 use std::path::{Path, PathBuf};
 
+/// 工作区路径解析 + restrict 边界校验（本模块工具族单一真相源）。
+///
+/// 相对路径相对 workspace 解析；绝对路径原样采纳。`restrict` 开启时双侧
+/// 统一归一化（nemesis-path 单一真相源）：target 侧 resolve 防 symlink
+/// escape；workspace 侧同步 canonicalize，防 Windows 8.3 短名失配（CI
+/// runner 的 TEMP 是 C:\Users\RUNNER~1\...，target 经 canonicalize 成长名
+/// 后与原始短名串永不相等 → 误拒，2026-09-01）。`Path::starts_with` 为
+/// 组件级比较。
+fn resolve_workspace_path(workspace: &Path, restrict: bool, path: &str) -> Result<PathBuf, String> {
+    let target = Path::new(path);
+    let canonical = if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        workspace.join(target)
+    };
+
+    if restrict {
+        let resolved = canonicalize_for_compare(&canonical);
+        let ws = canonicalize_for_compare(workspace);
+        if !resolved.starts_with(&ws) {
+            return Err(format!("path '{}' is outside workspace", path));
+        }
+    }
+
+    Ok(canonical)
+}
+
 /// File read tool.
 pub struct ReadFileTool {
     workspace: PathBuf,
@@ -21,27 +48,7 @@ impl ReadFileTool {
     }
 
     fn validate_path(&self, path: &str) -> Result<PathBuf, String> {
-        let target = Path::new(path);
-        let canonical = if target.is_absolute() {
-            target.to_path_buf()
-        } else {
-            self.workspace.join(target)
-        };
-
-        if self.restrict {
-            // 双侧统一归一化（nemesis-path 单一真相源）：target 侧 resolve 防
-            // symlink escape；workspace 侧同步 canonicalize，防 Windows 8.3
-            // 短名失配（CI runner 的 TEMP 是 C:\Users\RUNNER~1\...，target 经
-            // canonicalize 成长名后与原始短名串永不相等 → 误拒，2026-09-01）。
-            // Path::starts_with 为组件级比较。
-            let resolved = canonicalize_for_compare(&canonical);
-            let ws = canonicalize_for_compare(&self.workspace);
-            if !resolved.starts_with(&ws) {
-                return Err(format!("path '{}' is outside workspace", path));
-            }
-        }
-
-        Ok(canonical)
+        resolve_workspace_path(&self.workspace, self.restrict, path)
     }
 }
 
@@ -94,28 +101,7 @@ impl WriteFileTool {
     }
 
     fn validate_path(&self, path: &str) -> Result<PathBuf, String> {
-        let target = Path::new(path);
-        let canonical = if target.is_absolute() {
-            target.to_path_buf()
-        } else {
-            self.workspace.join(target)
-        };
-
-        if self.restrict {
-            // 双侧统一归一化（nemesis-path 单一真相源）：target 侧 resolve 防
-            // symlink escape；workspace 侧同步 canonicalize，防 Windows 8.3
-            // 短名失配误拒（CI RUNNER~1 家族，2026-09-01）。
-            let resolved = canonicalize_for_compare(&canonical);
-            let ws = canonicalize_for_compare(&self.workspace);
-            if !resolved.starts_with(&ws) {
-                return Err(format!(
-                    "access denied: path '{}' is outside the workspace",
-                    path
-                ));
-            }
-        }
-
-        Ok(canonical)
+        resolve_workspace_path(&self.workspace, self.restrict, path)
     }
 }
 
@@ -170,7 +156,6 @@ impl Tool for WriteFileTool {
 /// List directory tool.
 pub struct ListDirTool {
     workspace: PathBuf,
-    #[allow(dead_code)]
     restrict: bool,
 }
 
@@ -202,10 +187,9 @@ impl Tool for ListDirTool {
 
     async fn execute(&self, args: &serde_json::Value) -> ToolResult {
         let path = args["path"].as_str().unwrap_or(".");
-        let target = if Path::new(path).is_absolute() {
-            PathBuf::from(path)
-        } else {
-            self.workspace.join(path)
+        let target = match resolve_workspace_path(&self.workspace, self.restrict, path) {
+            Ok(p) => p,
+            Err(e) => return ToolResult::error(&e),
         };
 
         match tokio::fs::read_dir(&target).await {
@@ -231,7 +215,6 @@ impl Tool for ListDirTool {
 /// File exists check tool.
 pub struct FileExistsTool {
     workspace: PathBuf,
-    #[allow(dead_code)]
     restrict: bool,
 }
 
@@ -268,10 +251,9 @@ impl Tool for FileExistsTool {
             None => return ToolResult::error("missing 'path' argument"),
         };
 
-        let target = if Path::new(path).is_absolute() {
-            PathBuf::from(path)
-        } else {
-            self.workspace.join(path)
+        let target = match resolve_workspace_path(&self.workspace, self.restrict, path) {
+            Ok(p) => p,
+            Err(e) => return ToolResult::error(&e),
         };
 
         match tokio::fs::metadata(&target).await {
@@ -299,28 +281,7 @@ impl CreateDirectoryTool {
     }
 
     fn validate_path(&self, path: &str) -> Result<PathBuf, String> {
-        let target = Path::new(path);
-        let canonical = if target.is_absolute() {
-            target.to_path_buf()
-        } else {
-            self.workspace.join(target)
-        };
-
-        if self.restrict {
-            // 双侧统一归一化（nemesis-path 单一真相源）：target 侧 resolve 防
-            // symlink escape；workspace 侧同步 canonicalize，防 Windows 8.3
-            // 短名失配误拒（CI RUNNER~1 家族，2026-09-01）。
-            let resolved = canonicalize_for_compare(&canonical);
-            let ws = canonicalize_for_compare(&self.workspace);
-            if !resolved.starts_with(&ws) {
-                return Err(format!(
-                    "access denied: path '{}' is outside the workspace",
-                    path
-                ));
-            }
-        }
-
-        Ok(canonical)
+        resolve_workspace_path(&self.workspace, self.restrict, path)
     }
 }
 
@@ -375,28 +336,7 @@ impl DeleteFileTool {
     }
 
     fn validate_path(&self, path: &str) -> Result<PathBuf, String> {
-        let target = Path::new(path);
-        let canonical = if target.is_absolute() {
-            target.to_path_buf()
-        } else {
-            self.workspace.join(target)
-        };
-
-        if self.restrict {
-            // 双侧统一归一化（nemesis-path 单一真相源）：target 侧 resolve 防
-            // symlink escape；workspace 侧同步 canonicalize，防 Windows 8.3
-            // 短名失配误拒（CI RUNNER~1 家族，2026-09-01）。
-            let resolved = canonicalize_for_compare(&canonical);
-            let ws = canonicalize_for_compare(&self.workspace);
-            if !resolved.starts_with(&ws) {
-                return Err(format!(
-                    "access denied: path '{}' is outside the workspace",
-                    path
-                ));
-            }
-        }
-
-        Ok(canonical)
+        resolve_workspace_path(&self.workspace, self.restrict, path)
     }
 }
 
@@ -483,23 +423,10 @@ impl Tool for DeleteDirTool {
             None => return ToolResult::error("missing 'path' argument"),
         };
 
-        let target = if Path::new(path).is_absolute() {
-            PathBuf::from(path)
-        } else {
-            self.workspace.join(path)
+        let target = match resolve_workspace_path(&self.workspace, self.restrict, path) {
+            Ok(p) => p,
+            Err(e) => return ToolResult::error(&e),
         };
-
-        // Validate path is within workspace if restricted.
-        // 双侧统一归一化（nemesis-path 单一真相源）：顺带补上此前缺失的
-        // symlink resolve（本工具原先两侧都不解析），并防 8.3 短名失配
-        // （CI RUNNER~1 家族，2026-09-01）。
-        if self.restrict {
-            let resolved = canonicalize_for_compare(&target);
-            let ws = canonicalize_for_compare(&self.workspace);
-            if !resolved.starts_with(&ws) {
-                return ToolResult::error(&format!("path '{}' is outside workspace", path));
-            }
-        }
 
         // Check if path exists and is a directory
         match tokio::fs::metadata(&target).await {

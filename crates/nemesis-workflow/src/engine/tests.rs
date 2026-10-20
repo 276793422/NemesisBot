@@ -709,6 +709,64 @@ async fn test_engine_new_arc() {
     assert!(!engine.is_closed().await);
 }
 
+// new_arc 必须注册真实 sub_workflow 执行器（2026-10-20 生产构造点回归锁）：
+// 基础构造 new() 的注册表预置 SubWorkflowNodeStub——子工作流节点恒 Failed
+// "cannot execute: no engine configured"，CLI（workflow.rs）与 agent 工厂
+// （agent.rs）此前都踩这个坑。本测试走完整链路：父工作流 sub_workflow 节点
+// → 子工作流执行 → 子节点输出投影进节点 output（按 child node_id 键控）。
+#[tokio::test]
+async fn test_new_arc_runs_sub_workflow_child() {
+    let engine = WorkflowEngine::new_arc();
+
+    // 子工作流：transform identity 节点，输出 = {"text": <input>}。
+    let mut echo = make_node("echo", "transform", vec![]);
+    echo.config = HashMap::from([
+        ("expression".to_string(), serde_json::json!("identity")),
+        ("input".to_string(), serde_json::json!("{{msg}}")),
+    ]);
+    engine
+        .register_workflow(make_workflow("child_wf", vec![echo]))
+        .unwrap();
+
+    // 父工作流：sub_workflow 节点引用子工作流并传字面量输入。
+    let mut sub = make_node("call_child", "sub_workflow", vec![]);
+    sub.config = HashMap::from([
+        ("workflow".to_string(), serde_json::json!("child_wf")),
+        ("input".to_string(), serde_json::json!({"msg": "hello"})),
+    ]);
+    engine
+        .register_workflow(make_workflow("parent_wf", vec![sub]))
+        .unwrap();
+
+    let execution = engine.run("parent_wf", HashMap::new(), None).await.unwrap();
+    assert_eq!(execution.state, ExecutionState::Completed);
+
+    let sub_result = execution
+        .node_results
+        .get("call_child")
+        .expect("sub_workflow node should have executed");
+    assert_eq!(sub_result.state, ExecutionState::Completed);
+    assert!(
+        sub_result.error.is_none(),
+        "sub_workflow node must not fail (stub behavior): {:?}",
+        sub_result.error
+    );
+    // 子节点输出按 child node_id 键控投影。
+    assert_eq!(
+        sub_result
+            .output
+            .get("echo")
+            .and_then(|v| v.get("text"))
+            .and_then(|v| v.as_str()),
+        Some("hello")
+    );
+    // 子执行 id 记账在 metadata（审计可回查）。
+    assert!(
+        sub_result.metadata.contains_key("execution_id"),
+        "sub_workflow node should record child execution_id"
+    );
+}
+
 #[tokio::test]
 async fn test_engine_with_executors() {
     let registry = NodeExecutorRegistry::new();
