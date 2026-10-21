@@ -3,11 +3,13 @@
 //! This module is only used on non-Linux platforms.
 //! On Linux, window_gtk.rs provides the GTK + WebKitGTK implementation.
 
+#[cfg(not(target_os = "macos"))]
+use crate::bring_window_to_foreground;
 #[cfg(target_os = "windows")]
 use crate::set_active_hwnd;
 use crate::{
-    bring_window_to_foreground, is_close_requested, set_approval_result,
-    take_bring_to_front_requested, WindowConfig, PLUGIN_ERR_WINDOW,
+    is_close_requested, set_approval_result, take_bring_to_front_requested, WindowConfig,
+    PLUGIN_ERR_WINDOW,
 };
 
 use tao::dpi::{LogicalSize, PhysicalPosition};
@@ -124,7 +126,7 @@ pub fn create_dashboard_window(config: &WindowConfig) -> Result<(), i32> {
     eprintln!("[plugin-ui] Dashboard window created, loading {}", url);
 
     // Run event loop (blocking)
-    run_event_loop(event_loop);
+    run_event_loop(event_loop, window);
 
     // Clean up WebView2 data directory
     cleanup_web_context(&data_dir);
@@ -271,7 +273,7 @@ pub fn create_approval_window(config: &WindowConfig) -> Result<(), i32> {
 
     // Run event loop (blocking) — returns when ControlFlow::Exit is set
     eprintln!("[plugin-ui] Entering event loop...");
-    run_event_loop(event_loop);
+    run_event_loop(event_loop, window);
     eprintln!("[plugin-ui] Event loop exited");
 
     // Clean up WebView2 data directory
@@ -289,16 +291,14 @@ pub fn create_approval_window(config: &WindowConfig) -> Result<(), i32> {
 ///
 /// Uses `WaitUntil` with a 100ms interval so the event loop periodically
 /// checks `CLOSE_REQUESTED` and `BRING_TO_FRONT_REQUESTED` flags.
-fn run_event_loop(mut event_loop: EventLoop<()>) {
+fn run_event_loop(mut event_loop: EventLoop<()>, window: tao::window::Window) {
     event_loop.run_return(move |event, _, control_flow| {
         *control_flow = ControlFlow::WaitUntil(
             std::time::Instant::now() + std::time::Duration::from_millis(100),
         );
 
         // Check for bring-to-front request (from parent via WebSocket)
-        if take_bring_to_front_requested() {
-            bring_window_to_foreground();
-        }
+        process_bring_to_front(&window);
 
         // Check for close request (set by set_approval_result or timeout thread)
         if is_close_requested() {
@@ -309,14 +309,10 @@ fn run_event_loop(mut event_loop: EventLoop<()>) {
 
         match event {
             Event::NewEvents(tao::event::StartCause::Init) => {
-                if take_bring_to_front_requested() {
-                    bring_window_to_foreground();
-                }
+                process_bring_to_front(&window);
             }
             Event::MainEventsCleared => {
-                if take_bring_to_front_requested() {
-                    bring_window_to_foreground();
-                }
+                process_bring_to_front(&window);
                 if is_close_requested() {
                     eprintln!("[plugin-ui] MainEventsCleared: close requested, exiting");
                     *control_flow = ControlFlow::Exit;
@@ -339,6 +335,34 @@ fn run_event_loop(mut event_loop: EventLoop<()>) {
             _ => {}
         }
     });
+}
+
+/// Consume a pending bring-to-front request and act on the window.
+///
+/// Platform dispatch (runs on the event loop's main thread — both backends
+/// require window calls there):
+/// - **macOS**: restore from the Dock (`set_minimized(false)`) then focus.
+///   `ACTIVE_HWND` is only populated on Windows, so the hwnd path is a no-op
+///   here; and tao's `set_focus()` skips minimized windows, so the restore
+///   must run first.
+/// - **Windows**: Win32 `ShowWindow` + `SetForegroundWindow` via the captured
+///   hwnd (unchanged behavior).
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+fn process_bring_to_front(window: &tao::window::Window) {
+    if !take_bring_to_front_requested() {
+        return;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        window.set_minimized(false);
+        window.set_focus();
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        bring_window_to_foreground();
+    }
 }
 
 // ---------------------------------------------------------------------------

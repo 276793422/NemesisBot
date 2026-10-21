@@ -95,6 +95,18 @@ fn test_bring_to_front_flag() {
 }
 
 #[test]
+fn test_plugin_request_bring_to_front_sets_flag() {
+    // Regression: the C entry point must route through the flag so both
+    // window backends (tao window.rs / GTK window_gtk.rs) pick it up on
+    // their main-thread polls. Direct Win32 calls from the WS thread only
+    // ever worked on Windows; Linux needs the GTK present() path.
+    BRING_TO_FRONT_REQUESTED.store(false, Ordering::SeqCst);
+    plugin_request_bring_to_front();
+    assert!(take_bring_to_front_requested());
+    assert!(!take_bring_to_front_requested());
+}
+
+#[test]
 fn test_active_hwnd() {
     set_active_hwnd(0);
     assert_eq!(get_active_hwnd(), 0);
