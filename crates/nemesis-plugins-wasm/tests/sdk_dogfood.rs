@@ -22,6 +22,8 @@ use nemesis_plugins_wasm::limits::PluginLimits;
 use nemesis_plugins_wasm::registry::PluginManager;
 use nemesis_plugins_wasm::runtime::ExecContext;
 
+mod common;
+
 struct NoSecrets;
 
 impl SecretResolver for NoSecrets {
@@ -117,6 +119,7 @@ async fn installed_manager()
     let Some(wasm) = fixture_wasm() else {
         return Err(skip_reason().into());
     };
+    common::ensure_host_dll();
     let ws = tempfile::tempdir()?;
     let mgr = Arc::new(PluginManager::new(
         ws.path(),

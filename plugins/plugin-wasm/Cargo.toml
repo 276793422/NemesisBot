@@ -1,0 +1,29 @@
+[package]
+name = "plugin-wasm"
+version = "0.1.0"
+edition = "2021"
+
+description = "NemesisBot WASM 宿主运行时插件（纯 wasmtime 通用装配壳，零业务依赖）"
+license = "AGPL-3.0-only"
+
+# 脱离主 workspace（plugin-ui 同款纪律：独立产物、独立 CARGO_TARGET_DIR）。
+[workspace]
+
+[lib]
+name = "plugin_wasm"
+crate-type = ["cdylib"]
+
+# 零 nemesis-* 依赖（耦合隔离判据：CI grep 门禁盯策略词根；本 crate 只装
+# wasmtime 本体 + 通用装配壳，全部策略语义在宿主 exe 侧回调里）。
+[dependencies]
+# 钉 48 系：wasmtime 49 需 rustc 1.96，与主仓 rust-toolchain.toml（1.95）不兼容
+wasmtime = { version = "48", features = ["cache"] }
+wasmtime-wasi = { version = "48" }
+serde_json = "1"
+base64 = "0.22"
+anyhow = "1"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

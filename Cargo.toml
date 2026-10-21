@@ -116,11 +116,10 @@ serde_yaml = "0.9"
 base64 = "0.22"
 toml = "0.8"
 
-# WASM 插件框架（宿主运行时 + guest 绑定生成；wasmtime 48 / wit-bindgen 0.61
-# 同代组合——wasmtime 49 需 rustc 1.96，与 rust-toolchain.toml 钉死的 1.95
-# 不兼容，故钉 48 系；升级时两处同步动）
-wasmtime = { version = "48", features = ["cache"] }
-wasmtime-wasi = "48"
+# WASM 插件框架 guest 绑定生成（wit-bindgen 0.61 与宿主壳 wasmtime 48 同代
+# 组合——wasmtime 49 需 rustc 1.96，与 rust-toolchain.toml 钉死的 1.95 不兼
+# 容；wasmtime 本体只进宿主壳 DLL plugins/plugin-wasm（自有 workspace 钉
+# 48 系），exe 侧零 wasmtime 依赖，升级时两处同步动）
 wit-bindgen = "0.61"
 toml_edit = { version = "0.22", features = ["serde"] }
 

@@ -222,11 +222,9 @@ impl PluginInstaller {
         }
 
         // ⑥ 编译 + get-metadata 对账
-        let component =
-            wasmtime::component::Component::new(&self.manager.runtime().engine, &wasm_bytes)
-                .map_err(|e| PluginError::Compile(format!("compile: {e}")))?;
+        let component = self.manager.runtime().compile_component(&wasm_bytes)?;
         let tool_meta = self
-            .probe_and_reconcile(&manifest, &component, trust_state)
+            .probe_and_reconcile(&manifest, component, trust_state)
             .await?;
 
         // ⑦ lockfile（lockfile-first：落位之前写——失败 = 零突变干净中止，
@@ -299,7 +297,7 @@ impl PluginInstaller {
     async fn probe_and_reconcile(
         &self,
         manifest: &PluginManifest,
-        component: &wasmtime::component::Component,
+        component: u64,
         trust_state: PluginTrustState,
     ) -> Result<Option<ToolMetaSnapshot>, PluginError> {
         let _ = trust_state;
@@ -310,7 +308,7 @@ impl PluginInstaller {
         let meta = self
             .manager
             .runtime()
-            .probe_metadata(Arc::new(component.clone()), frame)
+            .probe_metadata(component, frame)
             .await?;
         // 对账：基础名合法（slug 同规）；参数 JSON 可解析且顶层 object；
         // operation-type 词表收敛（未知值从紧 = 空串语义，宿主按未注册名
@@ -456,11 +454,9 @@ impl PluginInstaller {
                 manifest.wasm_sha256
             )));
         }
-        let component =
-            wasmtime::component::Component::new(&self.manager.runtime().engine, &wasm_bytes)
-                .map_err(|e| PluginError::Compile(format!("compile: {e}")))?;
+        let component = self.manager.runtime().compile_component(&wasm_bytes)?;
         let tool_meta = self
-            .probe_and_reconcile(&manifest, &component, trust_state)
+            .probe_and_reconcile(&manifest, component, trust_state)
             .await?;
         self.manager
             .register(manifest, trust_state, component, tool_meta)

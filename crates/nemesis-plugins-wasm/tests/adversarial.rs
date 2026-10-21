@@ -24,6 +24,8 @@ use nemesis_plugins_wasm::runtime::ExecContext;
 use nemesis_plugins_wasm::{PluginError, PluginTrustState};
 use nemesis_types::agent::AgentEvent;
 
+mod common;
+
 struct NoSecrets;
 
 impl SecretResolver for NoSecrets {
@@ -162,6 +164,7 @@ fn ctx() -> ExecContext {
 }
 
 fn manager_with(limits: PluginLimits, secrets: Arc<dyn SecretResolver>) -> Arc<PluginManager> {
+    common::ensure_host_dll();
     let ws = tempfile::tempdir().expect("tempdir");
     let ws_path = ws.path().to_path_buf();
     std::mem::forget(ws); // 用例生命周期 = 进程生命周期；TempDir 泄漏免清理竞态

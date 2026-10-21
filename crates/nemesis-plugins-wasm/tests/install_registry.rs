@@ -19,6 +19,8 @@ use nemesis_plugins_wasm::install::{AutoApprove, LockfileEntry, PluginInstaller,
 use nemesis_plugins_wasm::limits::PluginLimits;
 use nemesis_plugins_wasm::registry::PluginManager;
 
+mod common;
+
 struct NoSecrets;
 
 impl SecretResolver for NoSecrets {
@@ -28,6 +30,7 @@ impl SecretResolver for NoSecrets {
 }
 
 fn fresh_manager() -> (tempfile::TempDir, Arc<PluginManager>) {
+    common::ensure_host_dll();
     let ws = tempfile::tempdir().expect("tempdir");
     let mgr = Arc::new(
         PluginManager::new(ws.path(), PluginLimits::default(), Arc::new(NoSecrets))
