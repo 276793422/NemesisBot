@@ -191,8 +191,9 @@ impl AgentLoop {
     ///
     /// Extracted verbatim from `run_llm_loop` (K1b, U14) so the post-LLM
     /// hook retry re-call rebuilds them from the same single source instead
-    /// of duplicating the tier-filter/sort block (the transient-retry path
-    /// predates the extraction and keeps its inline copy — untouched).
+    /// of duplicating the tier-filter/sort block (the recovery loops'
+    /// full-rebuild variant now shares this ordering too — see
+    /// `rebuild_full_tool_defs`).
     ///
     /// Mirrors Go's ToolRegistry.ToProviderDefs() which calls
     /// tool.Description() and tool.Parameters(). Sort by name so the order is
@@ -559,9 +560,17 @@ impl AgentLoop {
     /// context 压缩环 / 429 环 / transient 环各内联一份的 map/collect 三连——
     /// 三处合一，语义保持全量不过折叠闸）。
     pub(crate) fn rebuild_full_tool_defs(&self) -> Vec<crate::types::ToolDefinition> {
-        self.tools
-            .read()
-            .iter()
+        let tools_guard = self.tools.read();
+        // Sort by name, same as build_tool_defs: recovery requests (post-
+        // compaction / 429 / transient retry) are trying to reuse the
+        // prompt-cache prefix of the failed request — an unsorted
+        // (HashMap-iteration-order) tool array would break that prefix on
+        // every recovery. 2026-10-21 自查 #6 根修。
+        let mut names: Vec<&String> = tools_guard.keys().collect();
+        names.sort();
+        names
+            .into_iter()
+            .filter_map(|name| tools_guard.get(name).map(|tool| (name, tool)))
             .map(|(name, tool)| crate::types::ToolDefinition {
                 tool_type: "function".to_string(),
                 function: crate::types::ToolFunctionDef {

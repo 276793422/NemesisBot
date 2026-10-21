@@ -251,3 +251,31 @@ async fn runtime_flip_unhides_without_restart() {
     let out = agent_loop.handle_tool_call(&tc, &ctx).await;
     assert_eq!(out, "echo_ok", "解除隐藏后必须真正执行，实际: {out}");
 }
+
+// ---------------------------------------------------------------------------
+// ⑥ rebuild_full_tool_defs 排序（2026-10-21 自查 #6）：恢复环（压缩/429/
+//    transient）的全量重建必须与 build_tool_defs 同序（字母序）——HashMap
+//    迭代序异序的工具数组会白断恢复请求想复用的 prompt cache 前缀。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rebuild_full_tool_defs_is_sorted_like_build_tool_defs() {
+    let mut agent_loop = f8_loop();
+    // 注册序刻意乱序（HashMap 迭代序本就不保证任何序）。
+    agent_loop.register_tool("echo_charlie".to_string(), Box::new(EchoTool));
+    agent_loop.register_tool("echo_alpha".to_string(), Box::new(EchoTool));
+    agent_loop.register_tool("echo_beta".to_string(), Box::new(EchoTool));
+
+    let names = def_names(&agent_loop.rebuild_full_tool_defs());
+    assert_eq!(
+        names,
+        vec!["echo_alpha", "echo_beta", "echo_charlie"],
+        "恢复环全量重建必须按名字母序"
+    );
+    // 与主链路同序——前缀字节一致性是修复目标本体。
+    assert_eq!(
+        names,
+        def_names(&agent_loop.build_tool_defs()),
+        "rebuild 与主链路序不一致 = 恢复请求 cache 前缀断裂"
+    );
+}

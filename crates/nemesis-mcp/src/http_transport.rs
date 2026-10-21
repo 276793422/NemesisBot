@@ -169,11 +169,16 @@ impl Transport for HttpTransport {
             req = req.header("Mcp-Session-Id", sid);
         }
 
-        let response = req
-            .json(request)
-            .send()
-            .await
-            .map_err(|e| TransportError::send_failed(format!("HTTP request failed: {}", e)))?;
+        let response = req.json(request).send().await.map_err(|e| {
+            TransportError::send_failed(format!(
+                // reqwest Display embeds the full request URL (query
+                // included) — strip it and re-add a sanitized form so
+                // query-carried keys (`?key=`) can't reach logs/model.
+                "HTTP request failed ({}): {}",
+                sanitize_url_for_log(&self.url),
+                e.without_url()
+            ))
+        })?;
 
         // Store session ID from response headers.
         if let Some(sid) = response.headers().get("mcp-session-id")
@@ -214,7 +219,7 @@ impl Transport for HttpTransport {
             parse_sse_response(response).await
         } else {
             let body = response.text().await.map_err(|e| {
-                TransportError::send_failed(format!("Failed to read response: {}", e))
+                TransportError::send_failed(format!("Failed to read response: {}", e.without_url()))
             })?;
             let trimmed = body.trim();
             if trimmed.is_empty() {
@@ -238,6 +243,37 @@ impl Transport for HttpTransport {
 
     fn name(&self) -> &str {
         "http"
+    }
+}
+
+/// Log/model-safe URL rendering: keeps `scheme://host[:port]/path`, masks
+/// userinfo, and collapses any query string to `?<redacted>`.
+///
+/// MCP endpoints routinely carry auth keys in the query (Smithery-style
+/// `?key=...`), and reqwest error `Display` embeds the full request URL —
+/// without this a failed send leaks the key into error strings that reach
+/// BOTH the logs AND the model (transport errors are returned to the LLM
+/// verbatim via mcp_discover). 2026-10-21 自查 #1 根修.
+pub(crate) fn sanitize_url_for_log(url: &str) -> String {
+    let (base, had_query) = match url.split_once('?') {
+        Some((b, _)) => (b, true),
+        None => (url, false),
+    };
+    let sanitized = match base.split_once("://") {
+        Some((scheme, rest)) => match rest.rsplit_once('@') {
+            // `scheme://user:pass@host/...` — the '@' belongs to the
+            // authority only when no '/' appears before it.
+            Some((userinfo, after)) if !userinfo.contains('/') => {
+                format!("{}://***@{}", scheme, after)
+            }
+            _ => base.to_string(),
+        },
+        None => base.to_string(),
+    };
+    if had_query {
+        format!("{}?<redacted>", sanitized)
+    } else {
+        sanitized
     }
 }
 
@@ -282,10 +318,9 @@ async fn parse_sse_response(
             continue;
         }
 
-        let chunk = response
-            .chunk()
-            .await
-            .map_err(|e| TransportError::send_failed(format!("SSE read error: {}", e)))?;
+        let chunk = response.chunk().await.map_err(|e| {
+            TransportError::send_failed(format!("SSE read error: {}", e.without_url()))
+        })?;
 
         match chunk {
             Some(bytes) => buffer.push_str(&String::from_utf8_lossy(&bytes)),
