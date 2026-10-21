@@ -19,6 +19,7 @@ default = [
     "channels-web", "channels-webhook", "channels-rpc",
     "channels-websocket", "channels-external", "channels-maixcam", "channels-line",
     "migrate", "devices", "desktop", "health", "heartbeat", "auth", "voice", "voice-capture", "cluster",
+    "cluster-roaming", "roaming-relay",
     "forge", "memory", "workflow", "security", "scanner", "sandbox", "vm", "eval", "usage", "board",
     "connectors",
     "terminal", "skins", "plugins-wasm", "codemode", "selfupdate",
@@ -40,10 +41,14 @@ voice = ["dep:nemesis-voice", "nemesis-web/voice"]
 voice-capture = ["voice", "nemesis-voice/voice-capture", "nemesis-web/voice-capture"]
 cluster = ["dep:nemesis-cluster", "nemesis-web/cluster"]
 # A1 iroh 跨网 P2P 叠加层：iroh 依赖随 nemesis-cluster 的 cluster-roaming 进出；
-# CLI `cluster roaming` 子命令同 feature 门控。默认关——LAN 用户零新依赖。
+# CLI `cluster roaming` 子命令同 feature 门控。默认开（2026-10-22）——UDP 打洞
+# 是跨网组网的基础能力，dashboard 中继页/roaming 状态面开箱可用；IoT 最小形态
+# 经 customize 预设显式裁掉（minimal-iot/minimal-agent 恒关）。
 cluster-roaming = ["cluster", "nemesis-cluster/cluster-roaming", "nemesis-web/cluster-roaming"]
 # QUIC 中继服务器：自建中继（`quic` CLI 子命令 + 随 gateway 进程内启动）。
 # 隐含 cluster-roaming；nemesis-web/roaming-relay = relay.* WSAPI 管理面。
+# 默认开（2026-10-22，同上）——自建中继回落是客户端配对流程的另一半；
+# rcgen/ACME 编译增量由全量构建承担，IoT 形态不受影响。
 roaming-relay = ["cluster-roaming", "nemesis-cluster/roaming-relay", "nemesis-web/roaming-relay"]
 forge = ["dep:nemesis-forge", "nemesis-agent/forge", "nemesis-web/forge"]
 memory = ["dep:nemesis-memory", "nemesis-agent/memory", "nemesis-web/memory"]
