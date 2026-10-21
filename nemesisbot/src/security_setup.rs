@@ -113,30 +113,7 @@ pub(crate) async fn build_security_plugin(
         None
     };
     if let Some(ref v) = sec_json {
-        if let Some(dlp) = v
-            .get("layers")
-            .and_then(|l| l.get("dlp"))
-            .and_then(|d| d.as_object())
-        {
-            if let Some(b) = dlp.get("enabled").and_then(|x| x.as_bool()) {
-                security_config.dlp_enabled = b;
-            }
-            if let Some(s) = dlp.get("action").and_then(|x| x.as_str()) {
-                security_config.dlp_action = s.to_string();
-            }
-            if let Some(arr) = dlp.get("rules").and_then(|x| x.as_array()) {
-                security_config.dlp_enabled_rules = arr
-                    .iter()
-                    .filter_map(|x| x.as_str().map(String::from))
-                    .collect();
-            }
-            if let Some(s) = dlp.get("low_confidence_action").and_then(|x| x.as_str()) {
-                security_config.dlp_low_confidence_action = s.to_string();
-            }
-            if let Some(s) = dlp.get("inbound_action").and_then(|x| x.as_str()) {
-                security_config.dlp_inbound_action = s.to_string();
-            }
-        }
+        apply_dlp_config(v, &mut security_config);
         // 其余 layer 开关（injection/command_guard/credential/ssrf）：
         // 构造期是唯一生效路径（reload 只打日志不重建 layer）。
         apply_security_layer_switches(v, &mut security_config);
@@ -379,6 +356,43 @@ pub(crate) async fn build_security_plugin(
     _security_enabled: bool,
 ) -> Option<()> {
     None
+}
+
+/// Apply the `layers.dlp` config from `config.security.json` onto a
+/// [`nemesis_security::pipeline::SecurityPluginConfig`]（构造期字段，与
+/// 层开关同阶段）。gateway（[`build_security_plugin`]）与 A4 校准
+/// （`security_calibrate` 的只读生产同源装配）共用——生产面与校准面
+/// 读同一份 DLP 配置，规则评估语义不漂移。缺键 = 保持当前值。
+#[cfg(feature = "security")]
+pub(crate) fn apply_dlp_config(
+    sec_json: &serde_json::Value,
+    config: &mut nemesis_security::pipeline::SecurityPluginConfig,
+) {
+    let Some(dlp) = sec_json
+        .get("layers")
+        .and_then(|l| l.get("dlp"))
+        .and_then(|d| d.as_object())
+    else {
+        return;
+    };
+    if let Some(b) = dlp.get("enabled").and_then(|x| x.as_bool()) {
+        config.dlp_enabled = b;
+    }
+    if let Some(s) = dlp.get("action").and_then(|x| x.as_str()) {
+        config.dlp_action = s.to_string();
+    }
+    if let Some(arr) = dlp.get("rules").and_then(|x| x.as_array()) {
+        config.dlp_enabled_rules = arr
+            .iter()
+            .filter_map(|x| x.as_str().map(String::from))
+            .collect();
+    }
+    if let Some(s) = dlp.get("low_confidence_action").and_then(|x| x.as_str()) {
+        config.dlp_low_confidence_action = s.to_string();
+    }
+    if let Some(s) = dlp.get("inbound_action").and_then(|x| x.as_str()) {
+        config.dlp_inbound_action = s.to_string();
+    }
 }
 
 /// Apply the `layers.<name>.enabled` switches from `config.security.json`

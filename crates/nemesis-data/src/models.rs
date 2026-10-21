@@ -179,6 +179,10 @@ pub struct ModelToolHealth {
     pub tool_calls: i64,
     pub validation_failures: i64,
     pub failure_rate: f64,
+    /// A2（2026-10-21 引入）：窗口内 loop-guard 事件数
+    /// （⑥/④/⑤/⑤′/⑦/⑧/T1）。`#[serde(default)]` 兼容旧前端/旧调用方。
+    #[serde(default)]
+    pub guard_events: i64,
     pub hint: Option<String>,
 }
 

@@ -96,6 +96,29 @@ fn config_path(home: &str) -> PathBuf {
     super::config::config_path(home)
 }
 
+/// 健康建议阈值（纯函数，单测直测）：数据层只出事实（计数），建议在此
+/// 统一追加——P2B 原规则（参数校验失败率 ≥20% 且调用 ≥10）+ A2（2026-10-21
+/// 前代实现思路引入）守卫事件规则（近窗口 loop-guard nudge ≥5 = 模型
+/// 「原地打转」信号）。校验失败优先级更高（直接的能力证据），守卫事件
+/// 只在无校验建议时给出。
+fn apply_health_hints(rows: &mut [nemesis_data::ModelToolHealth], days: i64) {
+    for r in rows.iter_mut() {
+        if r.tool_calls >= 10 && r.failure_rate >= 0.2 {
+            r.hint = Some(format!(
+                "近 {days} 天参数校验失败率 {:.0}%（{}/{}）——模型按 schema 正确选用工具的能力可能不足。建议：跑 `model probe` 校准能力档位，或 `model set-tier` 调高档位，或将该模型换出执行节点。",
+                r.failure_rate * 100.0,
+                r.validation_failures,
+                r.tool_calls
+            ));
+        } else if r.guard_events >= 5 {
+            r.hint = Some(format!(
+                "近 {days} 天触发 {} 次循环守卫（重复失败 / 重复成功 / 重复输出）——模型可能原地打转。建议：跑 `model probe` 校准能力档位，或 `model set-tier` 调高档位，或将该模型换出执行节点。",
+                r.guard_events
+            ));
+        }
+    }
+}
+
 /// DISABLED (P3-2, 2026-08-24): typed save is no longer called — every
 /// `model_list` mutation here goes through raw RMW
 /// ([`super::config::update_raw_config`]) because a typed round-trip DROPS
@@ -921,16 +944,7 @@ impl ModelsHandler {
             .unwrap_or(7)
             .clamp(1, 90);
         let mut rows = ds.query_model_tool_health(days)?;
-        for r in rows.iter_mut() {
-            if r.tool_calls >= 10 && r.failure_rate >= 0.2 {
-                r.hint = Some(format!(
-                    "近 {days} 天参数校验失败率 {:.0}%（{}/{}）——模型按 schema 正确选用工具的能力可能不足。建议：跑 `model probe` 校准能力档位，或 `model set-tier` 调高档位，或将该模型换出执行节点。",
-                    r.failure_rate * 100.0,
-                    r.validation_failures,
-                    r.tool_calls
-                ));
-            }
-        }
+        apply_health_hints(&mut rows, days);
         Ok(Some(serde_json::json!({ "days": days, "models": rows })))
     }
 

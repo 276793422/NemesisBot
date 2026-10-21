@@ -2089,6 +2089,44 @@ impl BoardStore {
             .map_err(|e| e.to_string())
     }
 
+    /// A1（2026-10-21 引入）：全仓最近完结派发的耗时样本
+    /// （`node_perf` 估计器数据源）。只取 `completed_at` 已落且晚于
+    /// `dispatched_at` 的行（时长为正才有预测意义；0/负 = 数据异常，
+    /// 排除而非污染中位数）。类别键 = issue 的 `required_profession`
+    /// （trim+小写；空 → `"_"`，与 [`crate::node_perf::normalize_category`]
+    /// 同口径）。按 rowid 降序 = 最新优先，`limit` 由调用方给
+    /// （建议 [`crate::node_perf::WORKER_SAMPLE_CAP`] × 候选节点数）。
+    pub fn recent_completed_dispatch_durations(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<crate::node_perf::WorkerDurationSample>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT d.worker_id,
+                        d.completed_at - d.dispatched_at,
+                        COALESCE(NULLIF(TRIM(LOWER(i.required_profession)), ''), '_')
+                 FROM issue_dispatch d
+                 JOIN issue i ON i.id = d.issue_id
+                 WHERE d.completed_at IS NOT NULL
+                   AND d.completed_at > d.dispatched_at
+                 ORDER BY d.rowid DESC
+                 LIMIT ?1",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![limit], |row| {
+                Ok(crate::node_perf::WorkerDurationSample {
+                    worker_id: row.get(0)?,
+                    duration_secs: row.get(1)?,
+                    profession: row.get(2)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
     /// issue 是否有未完结（`dispatched`）派发（防重复派发）。
     pub fn has_active_dispatch(&self, issue_id: i64) -> Result<bool, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;

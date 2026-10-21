@@ -4519,16 +4519,54 @@ pub fn rank_dispatch_candidates(
         .collect()
 }
 
-/// 匹配器选节点：取 [`rank_dispatch_candidates`] 榜首。
+/// 匹配器选节点：取 [`rank_dispatch_candidates`] 榜首（先过 A1 耗时
+/// 次级重排——见 [`duration_weighted_candidates`]）。
 #[cfg(feature = "cluster")]
 fn pick_target_by_matcher(
     store: &BoardStore,
     cluster: &nemesis_cluster::cluster::Cluster,
     issue: &nemesis_board::Issue,
 ) -> Option<String> {
-    rank_dispatch_candidates(store, cluster, issue)
-        .into_iter()
-        .next()
+    duration_weighted_candidates(
+        store,
+        issue,
+        rank_dispatch_candidates(store, cluster, issue),
+    )
+    .into_iter()
+    .next()
+}
+
+/// A1（2026-10-21 引入）：耗时估计次级重排。匹配器硬条件
+/// 排序（分数↓负载↑）之后，按 (worker, required_profession) 历史耗时
+/// 中位数把「同类任务跑得快」的节点提前——借鉴前代实现运行时估计器
+/// （滑窗中位数 + 欠采样回落全局 + 无数据零干预），数据面 = 本仓现成的
+/// `issue_dispatch` 完结派发表（master 侧单钟），无需新计时埋点。
+/// 单候选 / 无样本 / 查询失败 → 原序返回（零行为变化红线）。与 P34
+/// 指纹稳定加权（成功率，board_review 侧）正交：本函数管速度。
+#[cfg(feature = "cluster")]
+fn duration_weighted_candidates(
+    store: &BoardStore,
+    issue: &nemesis_board::Issue,
+    ranked: Vec<String>,
+) -> Vec<String> {
+    if ranked.len() < 2 {
+        return ranked;
+    }
+    let category = nemesis_board::normalize_category(issue.required_profession.as_deref());
+    match store.recent_completed_dispatch_durations((nemesis_board::WORKER_SAMPLE_CAP * 8) as i64) {
+        Ok(samples) if !samples.is_empty() => {
+            let ordered = nemesis_board::reorder_by_predicted_duration(ranked, &samples, &category);
+            tracing::debug!(
+                "[board] duration weighting (category={category}) reordered candidates: {ordered:?}"
+            );
+            ordered
+        }
+        Ok(_) => ranked,
+        Err(e) => {
+            tracing::warn!("[board] duration sample query failed (original order kept): {e}");
+            ranked
+        }
+    }
 }
 
 /// 停车场兜底目标（集群完备性加固 2026-09-11；2026-09-29 三档化）。自动

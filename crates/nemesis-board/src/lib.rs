@@ -25,6 +25,7 @@ pub mod git_repo;
 pub mod handoff;
 pub mod matcher;
 pub mod models;
+pub mod node_perf;
 pub mod planner;
 pub mod project_state;
 pub mod quota;
@@ -81,6 +82,10 @@ pub use models::{
     ChannelMessage, Comment, CommentType, Issue, IssueFilter, IssuePatch, IssueStatus, NewAsset,
     NewAutopilot, NewChannel, NewChannelMessage, NewComment, NewIssue, NewNotification,
     Notification, Project, ProjectPatch, TaskOrigin, channel_message_type, notification_kind,
+};
+pub use node_perf::{
+    MIN_WORKER_SAMPLES, WORKER_SAMPLE_CAP, WorkerDurationSample, normalize_category,
+    predicted_durations, reorder_by_predicted_duration,
 };
 pub use planner::{
     MAX_SUBISSUES, PLANNER_SYSTEM_PROMPT, PlanParseError, PlannedSubIssue,

@@ -71,6 +71,20 @@ pub enum SecurityAction {
     /// Reset security config to defaults
     #[command(name = "config-reset")]
     ConfigReset,
+    /// A4（2026-10-21 引入）：安全校准——样本批量重放过规则
+    /// 管线（**永不执行**），对照人工标注与（可选）guardian LLM 二审，产出
+    /// 一致性报告到 workspace/logs/calibration/<ts>/（不改任何配置）。
+    Calibrate {
+        /// 样本文件（JSONL）：{"tool":"exec","args":{...},"actual":"block"|"allow","note":"可选"}
+        #[arg(long)]
+        samples: String,
+        /// 额外跑 guardian LLM 二审（模型别名；缺省只对比规则层 vs 标注）
+        #[arg(long)]
+        judge_model: Option<String>,
+        /// judge 逐样本间隔毫秒（防限流）
+        #[arg(long, default_value_t = 200)]
+        judge_interval_ms: u64,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -1324,6 +1338,57 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
         SecurityAction::Pending => cmd_pending(&security_cfg)?,
         SecurityAction::Edit => cmd_edit(&security_cfg)?,
         SecurityAction::ConfigReset => cmd_config_reset(&security_cfg)?,
+        SecurityAction::Calibrate {
+            samples,
+            judge_model,
+            judge_interval_ms,
+        } => {
+            let samples_path = std::path::PathBuf::from(&samples);
+            anyhow::ensure!(
+                samples_path.exists(),
+                "样本文件不存在: {}",
+                samples_path.display()
+            );
+            println!("🛡️ 安全校准（样本永不执行；本命令不修改任何配置）");
+            println!("  样本: {}", samples_path.display());
+            match &judge_model {
+                Some(m) => println!("  guardian 二审: {m}"),
+                None => println!("  guardian 二审: 未启用（--judge-model 可开）"),
+            }
+            let (report, dir) = crate::security_calibrate::run_calibrate(
+                &home,
+                &samples_path,
+                judge_model.as_deref(),
+                judge_interval_ms,
+            )
+            .await?;
+            println!(
+                "\n规则层 vs 标注：TP={} FP={} TN={} FN={}（一致率 {}）",
+                report.rule_true_positive,
+                report.rule_false_positive,
+                report.rule_true_negative,
+                report.rule_false_negative,
+                report
+                    .rule_agreement()
+                    .map(|a| format!("{:.1}%", a * 100.0))
+                    .unwrap_or_else(|| "-".into())
+            );
+            if let Some(j) = &report.judge {
+                println!(
+                    "规则 × judge：双block={} 双allow={} 规则更严={} judge更严={}（一致率 {}，单列 {}）",
+                    j.both_block,
+                    j.both_allow,
+                    j.rule_stricter,
+                    j.judge_stricter,
+                    j.agreement_rate()
+                        .map(|a| format!("{:.1}%", a * 100.0))
+                        .unwrap_or_else(|| "-".into()),
+                    j.excluded
+                );
+            }
+            println!("  报告: {}", dir.join("report.md").display());
+            println!("  JSON: {}", dir.join("report.json").display());
+        }
     }
     Ok(())
 }

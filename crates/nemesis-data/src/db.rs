@@ -92,6 +92,17 @@ CREATE TABLE IF NOT EXISTS tool_validation_stats (
     validation_failures INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (day, model)
 );
+
+-- A2（2026-10-21 引入）：loop-guard 事件计数（⑥/④ 失败
+-- nudge、⑤/⑤′ 重复成功 nudge、⑦ 退化、⑧ 行文重复、T1 无收据合成失败）。
+-- 与 tool_validation_stats 同口径（天×模型 upsert 增量），turn 收尾写一行。
+-- `models.health` 按「原地打转」口径消费（tier 校准建议）。
+CREATE TABLE IF NOT EXISTS guard_event_stats (
+    day      TEXT    NOT NULL,
+    model    TEXT    NOT NULL,
+    events   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, model)
+);
 "#;
 
 /// Open (or create) the database at `db_path` and run pending migrations.

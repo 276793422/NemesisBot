@@ -672,6 +672,11 @@ impl AgentLoop {
             // exactly one marker — the budget's observability requirement.
             crate::chat_log::append_boundary_event(&context.session_key, "turn_end", end_reason);
         }
+
+        // A2（2026-10-21 引入）：守卫事件随 turn 收尾落账
+        // （⑥/④/⑤/⑤′/⑦/⑧/T1 nudge 总数 → `guard_event_stats` 表 →
+        // `models.health` tier 校准建议）。0 事件内部短路不写行。
+        self.record_guard_events_stats(st.turn_guard.guard_event_count());
     }
 
     // -----------------------------------------------------------------------

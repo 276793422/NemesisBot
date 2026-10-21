@@ -136,6 +136,12 @@ pub struct TurnGuard {
     /// 失败即未落；exec 类副作用刻意不在触发集合——exec 同时承载只读
     /// 命令，纳入会退化成逢 exec 必探针）。
     had_writes: bool,
+    /// A2（2026-10-21 引入）：本轮守卫事件计数——④/⑥ 失败
+    /// nudge、⑤/⑤′ 重复成功 nudge、⑦ 退化重试/放弃、⑧ 行文重复 nudge、
+    /// T1 无收据合成失败，每次实际发出即 +1（判定未触发不计）。turn 收尾
+    /// 经 `finalize_turn` 落 usage 账本 `guard_event_stats` 表，
+    /// `models.health` 按「原地打转」口径消费（tier 校准建议）。
+    guard_events: u32,
 }
 
 impl TurnGuard {
@@ -194,7 +200,11 @@ impl TurnGuard {
             None
         };
 
-        storm_nudge.or(alt_nudge)
+        let nudge = storm_nudge.or(alt_nudge);
+        if nudge.is_some() {
+            self.guard_events += 1;
+        }
+        nudge
     }
 
     /// T1（扩展计划 D3）：带执行收据核对的结果入账——生产 dispatch 路径
@@ -224,6 +234,7 @@ impl TurnGuard {
                 "[loop guard] '{}' claimed success without an execution receipt (x{}) — synthetic failure recorded",
                 tool, *count
             );
+            self.guard_events += 1;
             return Some(format!(
                 "\n[loop guard] 工具 '{}' 的结果声称成功，但本回合没有对应的执行收据（可能未真实执行）。请确认操作确实已执行（重新调用工具核实），不要在未执行的情况下宣称完成。",
                 tool
@@ -299,6 +310,7 @@ impl TurnGuard {
         let count = self.success_counts.entry(sig).or_insert(0);
         *count += 1;
         if *count > REPEAT_SUCCESS_THRESHOLD {
+            self.guard_events += 1;
             Some(format!(
                 "\n[loop guard] {} 已在本任务中以相同参数成功 {} 次。重复同样的写操作没有意义。请确认结果（读回 / 测试），或换下一步操作，或在最终答复里收尾。",
                 tool, *count
@@ -312,6 +324,11 @@ impl TurnGuard {
     /// 前编译探针的触发闸（消费方 `loop/pre_pause_probe`）。
     pub(crate) fn had_writes(&self) -> bool {
         self.had_writes
+    }
+
+    /// A2：本轮守卫事件总数（`finalize_turn` 落账用；判定未触发不计）。
+    pub fn guard_event_count(&self) -> u32 {
+        self.guard_events
     }
 
     /// ⑤′ Record a successful READ-like tool call; returns a nudge when this
@@ -331,6 +348,7 @@ impl TurnGuard {
         let count = self.read_success_counts.entry(sig).or_insert(0);
         *count += 1;
         if *count >= READ_REPEAT_NUDGE_THRESHOLD {
+            self.guard_events += 1;
             Some(format!(
                 "\n[loop guard] {} 已在本任务中以相同参数查询 {} 次，每次结果都一样。重复查询不会带来新信息。请重读上一次的结果并基于它行动、调整查询参数或搜索范围，或在最终答复里收尾。",
                 tool, *count
@@ -361,6 +379,7 @@ impl TurnGuard {
             // now seen two in a row) nudges.
             self.last_content = Some(content.to_string());
             if self.repeat_text_count >= 1 {
+                self.guard_events += 1;
                 return Some(format!(
                     "\n[loop guard] 你连续两轮给出了几乎相同的内容（相似度 ≥{:.0}%）。请给出新信息、新角度，或直接收尾。",
                     TEXT_REPETITION_SIM_THRESHOLD * 100.0
@@ -381,6 +400,7 @@ impl TurnGuard {
             return FinalAnswerVerdict::Accept;
         }
         self.empty_final_count += 1;
+        self.guard_events += 1;
         if self.empty_final_count >= MAX_EMPTY_FINAL_RETRIES {
             FinalAnswerVerdict::GiveUp(
                 "（模型多次未给出有效答复，已停止重试。请重试或换一种问法。）".to_string(),
