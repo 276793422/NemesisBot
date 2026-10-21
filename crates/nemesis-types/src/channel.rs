@@ -141,6 +141,12 @@ pub struct OutboundMeta {
     /// 缺席 = 非集群回复 / 旧快照，出站帧不带该键，与历史行为逐字节一致。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_node: Option<String>,
+    /// 通知送达关联（项 C，2026-10-22）：本出站消息的投递结果要记账到
+    /// 哪笔交付（deliveries.idempotency_key = 任务 id）。只有集群续行的
+    /// **最终回复**携带（中途工具回执不挂——通知义务针对任务结果本身）。
+    /// None = 无关联，出站帧不带该键，与历史行为逐字节一致。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
 }
 
 /// Outbound message from the agent engine to a channel.

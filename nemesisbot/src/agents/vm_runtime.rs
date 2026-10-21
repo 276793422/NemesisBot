@@ -188,7 +188,7 @@ pub(crate) fn resolve_display_port(
                 return Err(VmSupervisorError::Unavailable(format!(
                     "display=vnc 要求 desktop variant 镜像（headless 镜像上开显示 = 黑屏，\
                      不是合法形态）：当前 manifest variant = {}（{}）——\
-                     请以 --variant desktop 重跑镜像管线 scripts/build-vm-image.sh",
+                     请以 --variant desktop 重跑镜像管线（build-vm-image.sh，随 plugin-vm 插件包分发）",
                     variant.as_deref().unwrap_or("缺失/不可读"),
                     manifest_path.display()
                 )));
@@ -1240,7 +1240,7 @@ impl VmSupervisor {
             let base = vm_images_root(&self.workspace).join("base.qcow2");
             if !base.exists() {
                 return Err(VmSupervisorError::Unavailable(format!(
-                    "镜像资产缺失（base={}）：先跑镜像管线 scripts/build-vm-image.sh",
+                    "镜像资产缺失（base={}）：先跑镜像管线 build-vm-image.sh（随 plugin-vm 插件包分发，仓库形态 plugins/plugin-vm/）",
                     base.display()
                 )));
             }

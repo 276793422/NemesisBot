@@ -707,6 +707,19 @@ pub struct BoardReviewConfig {
     /// 时**无论本闸开关都验形态（path 形态闸 + sha256 hex 形态 + cmd 非空），
     /// 验不过 = FAIL——加法演进，旧 payload 缺席块行为不变。
     pub evidence_typed_required: bool,
+    /// 必需检查契约（项 B「必需的必须跑」，2026-10-22 拍板；键 = 匹配键，
+    /// 值 = 必需锚点 id 列表）。匹配键与 issue `required_tags` 做**大小写
+    /// 不敏感交集**（与派发 matcher 标签硬条件同规则同词表）；命中任一
+    /// 标签键 → 该键的检查列表生效（多键命中取并集）；无标签命中 → 落
+    /// **空串键**的全局兜底规则（无空串键 = 无要求，行为不变）。锚点 id
+    /// 匹配 `[CHECK]` 锚点的 target（file 路径 / exec 命令）或 pattern
+    ///（re:/contains: 文本）。命中单子验收时，任一必需锚点「AC 未声明 /
+    /// 被跳过（exec 关或环境缺）/ 未产出核验结果」→ 强制停车转人工：
+    /// 不进语义评审、不允许 auto_accept，系统评论列缺口明细（哪条规则/
+    /// 哪个锚点/为何未满足）。已运行（过或不过）= 覆盖满足，裁决归锚点
+    /// 双检既有短路。空 map = 契约关闭（默认，零回归）。
+    #[serde(default)]
+    pub required_checks: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl BoardReviewConfig {
@@ -832,6 +845,7 @@ impl Default for BoardReviewConfig {
             parent_remediation_max: 2,
             require_delivery_evidence: false,
             evidence_typed_required: false,
+            required_checks: std::collections::HashMap::new(),
         }
     }
 }
@@ -1360,7 +1374,8 @@ fn default_vm_gc_over_limit() -> String {
 
 /// Debian generic cloud image（trixie/latest 的 genericcloud 变体——无
 /// 云初始化代理依赖的最小 cloud-init 面）。可自由编辑（轮次 3-3 拍板）。
-/// 与 scripts/build-vm-image.sh 的 DEFAULT_BASE_URL 必须同源：config 缺省
+/// 与 build-vm-image.sh（plugins/plugin-vm/，随 plugin-vm 插件包分发）的
+/// DEFAULT_BASE_URL 必须同源：config 缺省
 /// sha256 为空时，脚本只对**自己的默认 URL** 自动走上游 SHA256SUMS→
 /// SHA512SUMS 校验链；两处默认一旦分叉，出盒链路会被脚本按「换源」诚实
 /// 拒绝（缺显式哈希）——B5 全新环境实跑实录。

@@ -79,7 +79,9 @@ fn review_row_records_decision_and_run_id() {
     assert_eq!(rows.len(), 1, "review 行应挂最新派发的 run_id");
     let row = &rows[0];
     assert_eq!(row.kind, "review");
-    assert_eq!(row.status, "delivered");
+    // 项 C：记账即义务登记（recorded），review 行无出站义务（notify none）。
+    assert_eq!(row.status, "recorded");
+    assert_eq!(row.notify_state, "none");
     assert_eq!(payload_field(row, "scope"), "issue");
     assert_eq!(payload_field(row, "decision"), "escalate_human");
     assert_eq!(payload_field(row, "task_id"), "t-1");
@@ -98,6 +100,7 @@ fn auto_accept_confirms_branch_delivery() {
         Some("t-2"),
         "t-2:branch",
         &serde_json::json!({ "branch": "run-t-2" }),
+        false,
     )
     .unwrap();
     review_outcome_delivery(
@@ -127,6 +130,7 @@ fn redispatch_rejects_branch_with_review_reason() {
         Some("t-3"),
         "t-3:branch",
         &serde_json::json!({ "branch": "run-t-3" }),
+        false,
     )
     .unwrap();
     review_outcome_delivery(
@@ -162,6 +166,7 @@ fn pending_decisions_and_parent_scope_leave_branch_untouched() {
         Some("t-4"),
         "t-4:branch",
         &serde_json::json!({ "branch": "run-t-4" }),
+        false,
     )
     .unwrap();
     // escalate_human → pending 留人工（WSAPI deliveries.confirm/reject）。
@@ -175,7 +180,7 @@ fn pending_decisions_and_parent_scope_leave_branch_untouched() {
     );
     assert_eq!(
         db.delivery_by_key("t-4:branch").unwrap().unwrap().status,
-        "delivered",
+        "recorded",
         "escalate_human 不做分支闭环"
     );
     // parent_* scope 只记证据行，即便同 issue 有派发也不闭环。
@@ -189,7 +194,7 @@ fn pending_decisions_and_parent_scope_leave_branch_untouched() {
     );
     assert_eq!(
         db.delivery_by_key("t-4:branch").unwrap().unwrap().status,
-        "delivered",
+        "recorded",
         "parent scope 不做分支闭环"
     );
     // 两条决策各成 review 行（每次决策是独立事件，不互斥）。

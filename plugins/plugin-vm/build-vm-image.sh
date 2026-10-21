@@ -31,17 +31,21 @@
 # - 磁盘扩容不需要本脚本管：overlay 大于 base 时，genericcloud 的 cloud-init
 #   growpart/resizefs 首启自动扩 rootfs 到 overlay 尺寸。
 #
-# 用法：
-#   scripts/build-vm-image.sh --guest-bin target/x86_64-unknown-linux-musl/release/nemesis-guest
-#   scripts/build-vm-image.sh --guest-bin ... --base-url <URL> --sha256 <HEX>   # 来源可换（推荐钉死校验和；不钉则从 source 同目录拉上游 SUMS 对账）
-#   scripts/build-vm-image.sh --guest-bin ... --skip-download                    # base.upstream.qcow2 已在位（复验校验和后直接烧录）
-#   scripts/build-vm-image.sh --guest-bin ... --variant desktop                  # WM+Chromium+GUI 自动化三件套变体（P5-R2 带界面 VM 载体：autologin 直进 X11 图形会话）
-#   scripts/build-vm-image.sh --guest-bin ... --display-resolution 1280x720      # desktop variant 的 X 分辨率预设（默认 1280x720；运行期可经 guest exec xrandr 调整）
-#   scripts/build-vm-image.sh --guest-bin ... --apt-mirror <URL> --apt-suite <S> # 受限网络：guest sources 覆写为镜像源（suite 如 bookworm，两参必同给）
+# 用法（脚本随 plugin-vm 插件包分发：仓库形态 plugins/plugin-vm/，部署形态
+# <exe_dir>/plugin_vm/——所有输入经 arg 显式给，不假设仓库根）：
+#   plugins/plugin-vm/build-vm-image.sh --guest-bin target/x86_64-unknown-linux-musl/release/nemesis-guest
+#   plugins/plugin-vm/build-vm-image.sh --guest-bin ... --base-url <URL> --sha256 <HEX>   # 来源可换（推荐钉死校验和；不钉则从 source 同目录拉上游 SUMS 对账）
+#   plugins/plugin-vm/build-vm-image.sh --guest-bin ... --skip-download                    # base.upstream.qcow2 已在位（复验校验和后直接烧录）
+#   plugins/plugin-vm/build-vm-image.sh --guest-bin ... --variant desktop                  # WM+Chromium+GUI 自动化三件套变体（P5-R2 带界面 VM 载体：autologin 直进 X11 图形会话）
+#   plugins/plugin-vm/build-vm-image.sh --guest-bin ... --display-resolution 1280x720      # desktop variant 的 X 分辨率预设（默认 1280x720；运行期可经 guest exec xrandr 调整）
+#   plugins/plugin-vm/build-vm-image.sh --guest-bin ... --apt-mirror <URL> --apt-suite <S> # 受限网络：guest sources 覆写为镜像源（suite 如 bookworm，两参必同给）
 # ============================================================================
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+# 不自定位 cd（2026-10-22 随包搬迁：脚本可能住在部署包 <exe_dir>/plugin_vm/
+# 里，「dirname/..」不再指向任何仓库根）。相对默认值（--out target/vm-image）
+# 相对调用方 cwd 解析；bot 装配（run_image_build）恒显式传 --out/--guest-bin，
+# 不受影响。
 
 # ---------------------------------------------------------------------------
 # 预设（镜像来源配置化的脚本层；WSAPI/CLI 包装在第 4 步加 preset 列表）
@@ -60,7 +64,7 @@ DISPLAY_RESOLUTION="1280x720"
 APT_MIRROR=""
 APT_SUITE=""
 
-usage() { grep '^#' "$0" | head -41; exit 2; }
+usage() { grep '^#' "$0" | head -44; exit 2; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -504,7 +508,7 @@ cat > "$OUT_DIR/manifest.json" <<EOF
   "variant": "${VARIANT:-base}",
   "display_resolution": "$DISPLAY_RESOLUTION",
   "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "generator": "scripts/build-vm-image.sh",
+  "generator": "plugins/plugin-vm/build-vm-image.sh",
   "guest_agent_port": $GUEST_AGENT_PORT,
   "workspace_mount_tag": "workspace",
   "base": { "digest_algo": "sha256", "digest": "$FINAL_SHA", "size_bytes": $BASE_SIZE, "file": "base.qcow2", "seed_burned_in": "$SEED_DEST" },

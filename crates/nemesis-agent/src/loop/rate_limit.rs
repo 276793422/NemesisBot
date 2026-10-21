@@ -148,6 +148,7 @@ impl AgentLoop {
                     session_key: (!context.session_key.is_empty())
                         .then(|| context.session_key.clone()),
                     source_node: None,
+                    task_id: None,
                 },
             };
             if let Err(e) = tx.send(outbound).await {

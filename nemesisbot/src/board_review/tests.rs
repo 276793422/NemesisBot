@@ -5214,6 +5214,7 @@ async fn evidence_gate_present_delivery_passes_and_anchor_summary_merged() {
                     "patch_path": "logs/deliveries/t-evidence-hit.patch"
                 }
             }),
+            false,
         )
         .unwrap();
     attach_loop(
@@ -5347,7 +5348,7 @@ async fn evidence_gate_fixture(
     deps.cluster
         .task_db()
         .unwrap()
-        .record_delivery("cluster_result", None, &format!("t-{tag}"), &payload)
+        .record_delivery("cluster_result", None, &format!("t-{tag}"), &payload, false)
         .unwrap();
     attach_loop(
         &deps,
@@ -5485,6 +5486,7 @@ async fn evidence_gate_stale_attempt_record_does_not_satisfy() {
                     "patch_path": "logs/deliveries/t-evidence-stale-old.patch"
                 }
             }),
+            false,
         )
         .unwrap();
     attach_loop(

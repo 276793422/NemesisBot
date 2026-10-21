@@ -881,6 +881,97 @@ pub async fn test_board_p4_config_surface(ws: &TestWorkspace, bin: &Path) -> Vec
         }
     }
 
+    // 3.7 必需检查契约（项 B「必需的必须跑」，2026-10-22 拍板）：
+    // review.required_checks whole-map 键面（写入 → get 回读 → 空数组规则
+    // loud 拒绝 → 空对象恢复 = 契约关闭；尾位纪律）。
+    {
+        let rules = json!({
+            "dev": ["docs/build.md", "npm test"],
+            "": ["run.sh"]
+        });
+        let (_, err) = api
+            .call(
+                "board",
+                "config.set",
+                Some(json!({ "key": "review.required_checks", "value": rules })),
+            )
+            .await;
+        if err.is_none() {
+            results.push(pass(&format!("{suite}/rc_set"), "accepted"));
+        } else {
+            results.push(fail(
+                &format!("{suite}/rc_set"),
+                format!("config.set failed: {err:?}"),
+            ));
+        }
+        let (dat, err) = api.call("board", "config.get", None).await;
+        match (&dat, &err) {
+            (Some(d), None) => {
+                if d.pointer("/review/required_checks/dev")
+                    == Some(&json!(["docs/build.md", "npm test"]))
+                    && d.pointer("/review/required_checks/") == Some(&json!(["run.sh"]))
+                {
+                    results.push(pass(
+                        &format!("{suite}/rc_get"),
+                        "round-trip ok（含空串键全局兜底）",
+                    ));
+                } else {
+                    results.push(fail(
+                        &format!("{suite}/rc_get"),
+                        format!(
+                            "期望 dev+全局兜底规则，实际 {:?}",
+                            d.pointer("/review/required_checks")
+                        ),
+                    ));
+                }
+            }
+            _ => {
+                results.push(fail(
+                    &format!("{suite}/rc_get"),
+                    format!("config.get failed: {err:?}"),
+                ));
+            }
+        }
+        // 空数组规则 loud 拒绝（「空规则请直接摘除」）。
+        let (_, err) = api
+            .call(
+                "board",
+                "config.set",
+                Some(json!({ "key": "review.required_checks", "value": json!({ "dev": [] }) })),
+            )
+            .await;
+        match &err {
+            Some(e) if e.contains("空规则请直接摘除") => {
+                results.push(pass(&format!("{suite}/rc_reject_empty"), "loud reject ok"));
+            }
+            other => {
+                results.push(fail(
+                    &format!("{suite}/rc_reject_empty"),
+                    format!("空数组规则应被拒绝，实际 {other:?}"),
+                ));
+            }
+        }
+        // 恢复空对象 = 契约关闭（尾位纪律）。
+        let (_, err) = api
+            .call(
+                "board",
+                "config.set",
+                Some(json!({ "key": "review.required_checks", "value": json!({}) })),
+            )
+            .await;
+        if err.is_none() {
+            results.push(pass(
+                &format!("{suite}/rc_restore"),
+                "空对象恢复（契约关闭）",
+            ));
+        } else {
+            results.push(fail(
+                &format!("{suite}/rc_restore"),
+                format!("恢复空对象失败：{err:?}"),
+            ));
+        }
+    }
+
     // 4. 恢复默认值（尾位纪律：不污染后续套件）。
     let defaults: &[(&str, serde_json::Value)] = &[
         ("review.max_turns", json!(1)),

@@ -486,6 +486,7 @@ impl AgentLoop {
                             channel: context.channel.clone(),
                             chat_id: context.chat_id.clone(),
                             sender_id: context.user.clone(),
+                            session_key: context.session_key.clone(),
                         };
                         match security.auditor().request_limit_approval(
                             &tool_call.name,
@@ -549,6 +550,13 @@ impl AgentLoop {
                         let mut m = std::collections::HashMap::new();
                         m.insert("approval_chat_id".to_string(), context.chat_id.clone());
                         m.insert("approval_sender_id".to_string(), context.user.clone());
+                        // 审批续执行（2026-10-22）：会话键随行——重启补裁
+                        // respond_stale 按它把裁决消息回灌原会话（bus →
+                        // 主 loop / 项目归属转发同一入口）。
+                        m.insert(
+                            "approval_session_key".to_string(),
+                            context.session_key.clone(),
+                        );
                         // 行动代理 P0：connector 动态工具投影三键——管线层
                         // 读键裁决 op_type（override_op_type）/ 强审批
                         // （override_force_approval）；deny 分支读
@@ -722,6 +730,7 @@ impl AgentLoop {
                                 let approval_ctx = nemesis_security::auditor::ApprovalContext {
                                     channel: context.channel.clone(),
                                     chat_id: context.chat_id.clone(),
+                                    session_key: context.session_key.clone(),
                                     ..Default::default()
                                 };
                                 match security.auditor().request_guardian_verdict_approval(
@@ -771,6 +780,7 @@ impl AgentLoop {
                                     let approval_ctx = nemesis_security::auditor::ApprovalContext {
                                         channel: context.channel.clone(),
                                         chat_id: context.chat_id.clone(),
+                                        session_key: context.session_key.clone(),
                                         ..Default::default()
                                     };
                                     match security.auditor().request_guardian_failure_approval(

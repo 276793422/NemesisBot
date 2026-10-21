@@ -1018,6 +1018,103 @@ describe('BoardConfigPanel（配置 全自动流转 P1/A4）', () => {
       value: null,
     })
   })
+
+  it('必需检查规则：已有规则按匹配键字典序渲染（空串键=全局兜底在首行）', async () => {
+    const w = await mountPanel({
+      review: {
+        max_turns: 1,
+        max_unsure_streak: 2,
+        selfcheck: false,
+        auto_close_project: false,
+        required_checks: { dev: ['build.md', 'test.sh'], '': ['run.sh'] },
+      },
+    })
+    expect(w.text()).toContain('必需检查规则')
+    const rows = w.findAll('.required-rule-row')
+    expect(rows.length).toBe(2)
+    // 空串键排序在 'dev' 之前 → 首行 = 全局兜底。
+    const keyInputs = w.findAll('input[placeholder="匹配标签（留空 = 全局兜底）"]')
+    const idInputs = w.findAll('input[placeholder="必需锚点 id，逗号分隔"]')
+    expect((keyInputs[0].element as HTMLInputElement).value).toBe('')
+    expect((idInputs[0].element as HTMLInputElement).value).toBe('run.sh')
+    expect((keyInputs[1].element as HTMLInputElement).value).toBe('dev')
+    expect((idInputs[1].element as HTMLInputElement).value).toBe('build.md, test.sh')
+  })
+
+  it('必需检查规则：编辑 ids → 整 map 保存（逗号/分号/空白切分）', async () => {
+    const w = await mountPanel({
+      review: {
+        max_turns: 1,
+        max_unsure_streak: 2,
+        selfcheck: false,
+        auto_close_project: false,
+        required_checks: { dev: ['build.md'] },
+      },
+    })
+    const idsInput = w.findAll('input[placeholder="必需锚点 id，逗号分隔"]')[0]
+    await idsInput.setValue('build.md, test.sh；lint.py')
+    await idsInput.trigger('change')
+    await flushPromises()
+    const call = requestMock.mock.calls.find((c) => c[2]?.key === 'review.required_checks')!
+    expect(call[2]).toEqual({
+      key: 'review.required_checks',
+      value: { dev: ['build.md', 'test.sh', 'lint.py'] },
+    })
+  })
+
+  it('必需检查规则：添加规则 + 未填草稿行保存时跳过', async () => {
+    const w = await mountPanel({ review: { max_turns: 1, max_unsure_streak: 2, selfcheck: false, auto_close_project: false } })
+    await w.find('button.btn-secondary').trigger('click') // ＋ 添加规则 → 草稿行
+    await flushPromises()
+    expect(w.findAll('.required-rule-row').length).toBe(1)
+    // 草稿行（key/ids 全空）不触发保存。
+    expect(requestMock.mock.calls.some((c) => c[2]?.key === 'review.required_checks')).toBe(false)
+    // 填写草稿行 → 保存含该规则；空串键 = 全局兜底合法。
+    // （setValue 对文本框会连带触发 change → 草稿空行会先存一笔 {}，断言取最后一笔。）
+    const keyInput = w.find('input[placeholder="匹配标签（留空 = 全局兜底）"]')
+    const idsInput = w.find('input[placeholder="必需锚点 id，逗号分隔"]')
+    await idsInput.setValue('always.md')
+    await flushPromises()
+    const call = requestMock.mock.calls
+      .filter((c) => c[2]?.key === 'review.required_checks')
+      .pop()!
+    expect(call[2]).toEqual({ key: 'review.required_checks', value: { '': ['always.md'] } })
+  })
+
+  it('必需检查规则：删除规则 → 整 map 保存去掉该键', async () => {
+    const w = await mountPanel({
+      review: {
+        max_turns: 1,
+        max_unsure_streak: 2,
+        selfcheck: false,
+        auto_close_project: false,
+        required_checks: { dev: ['build.md'], qa: ['report.md'] },
+      },
+    })
+    const rows = w.findAll('.required-rule-row')
+    expect(rows.length).toBe(2)
+    // 删第一行（dev，字典序在前）。
+    await rows[0].find('button').trigger('click')
+    await flushPromises()
+    const call = requestMock.mock.calls.find((c) => c[2]?.key === 'review.required_checks')!
+    expect(call[2]).toEqual({ key: 'review.required_checks', value: { qa: ['report.md'] } })
+  })
+
+  it('必需检查规则：key 填了但 ids 空 → warn toast 不保存', async () => {
+    const w = await mountPanel({ review: { max_turns: 1, max_unsure_streak: 2, selfcheck: false, auto_close_project: false } })
+    await w.find('button.btn-secondary').trigger('click')
+    await flushPromises()
+    const keyInput = w.find('input[placeholder="匹配标签（留空 = 全局兜底）"]')
+    const idsInput = w.find('input[placeholder="必需锚点 id，逗号分隔"]')
+    await keyInput.setValue('dev')
+    await keyInput.trigger('change')
+    await flushPromises()
+    expect(useToast().toasts.some((t) => t.type === 'warn')).toBe(true)
+    expect(requestMock.mock.calls.some((c) => c[2]?.key === 'review.required_checks')).toBe(false)
+    // 行态保留（不回滚清空）。
+    expect((keyInput.element as HTMLInputElement).value).toBe('dev')
+    expect((idsInput.element as HTMLInputElement).value).toBe('')
+  })
 })
 
 describe('BoardTabs（页签顺序）', () => {

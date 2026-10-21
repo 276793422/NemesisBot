@@ -101,6 +101,7 @@ fn branch_delivery_inner(
         Some(task_id),
         &format!("{task_id}:branch"),
         delivery,
+        false,
     )
     .map_err(|e| {
         tracing::warn!(

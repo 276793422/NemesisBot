@@ -28,13 +28,21 @@ pub struct DeliveryInfo {
     /// `branch` / `review` / `dossier`（交付种类）。
     pub kind: String,
     pub idempotency_key: String,
-    /// `delivered` / `confirmed` / `rejected`。
+    /// `recorded` / `delivered` / `confirmed` / `rejected`（项 C 2026-10-22
+    /// 起：记账即 recorded，通道接受才 delivered）。
     pub status: String,
     pub created_at: String,
     pub delivered_at: Option<String>,
     pub confirmed_at: Option<String>,
     pub rejected_at: Option<String>,
     pub reject_reason: Option<String>,
+    // -- 通知义务维度（项 C，与 status 正交）--
+    /// `pending` / `channel_accepted` / `confirmed` / `none` / `legacy` / `dead`。
+    pub notify_state: String,
+    /// 通知失败累计次数（重试债记账；0 = 无失败）。
+    pub notify_attempts: i64,
+    /// 最近一次通知失败原因（None = 无失败记录）。
+    pub notify_last_error: Option<String>,
     // -- payload 展开字段（branch 交付；缺失 = null/false）--
     pub branch: Option<String>,
     pub node: Option<String>,

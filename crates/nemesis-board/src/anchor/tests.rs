@@ -1010,3 +1010,242 @@ fn parse_regex_blind_mode_splits_at_last_hash() {
         "blind fallback keeps the pattern body, comment = last ` # ` tail"
     );
 }
+
+// ---------- required_check_gaps：必需检查契约（项 B，2026-10-22 拍板）----------
+
+fn fc(raw: &str, target: &str) -> AnchorCheck {
+    AnchorCheck {
+        raw: raw.into(),
+        kind: AnchorKind::FileExists,
+        target: target.into(),
+        pattern: None,
+    }
+}
+
+fn fpat(raw: &str, pattern: &str) -> AnchorCheck {
+    AnchorCheck {
+        raw: raw.into(),
+        kind: AnchorKind::FileRegex,
+        target: String::new(),
+        pattern: Some(pattern.into()),
+    }
+}
+
+fn res(a: &AnchorCheck, passed: bool) -> AnchorResult {
+    AnchorResult {
+        anchor: a.clone(),
+        passed,
+        detail: String::new(),
+    }
+}
+
+fn rules(pairs: &[(&str, &[&str])]) -> std::collections::HashMap<String, Vec<String>> {
+    pairs
+        .iter()
+        .map(|(k, ids)| {
+            (
+                k.to_string(),
+                ids.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            )
+        })
+        .collect()
+}
+
+fn gap_ids(gaps: &[RequiredCheckGap]) -> Vec<(&str, &str)> {
+    gaps.iter()
+        .map(|g| match g {
+            RequiredCheckGap::NotConfigured { rule_key, check_id }
+            | RequiredCheckGap::Skipped {
+                rule_key, check_id, ..
+            }
+            | RequiredCheckGap::NotRun { rule_key, check_id } => {
+                (rule_key.as_str(), check_id.as_str())
+            }
+        })
+        .collect()
+}
+
+/// 已运行（过或不过）= 覆盖满足，无缺口（裁决归 FAIL 短路，本判定不管过没过）。
+#[test]
+fn required_checks_ran_is_covered_both_verdicts() {
+    let a = fc("[CHECK] file:docs/build.md exists", "docs/build.md");
+    let b = fc("[CHECK] file:docs/test.md exists", "docs/test.md");
+    let r = rules(&[("dev", &["docs/build.md"])]);
+
+    // 过了 = 覆盖满足。
+    let g = required_check_gaps(
+        &r,
+        &["dev".into()],
+        std::slice::from_ref(&a),
+        &[res(&a, true)],
+        &[],
+    );
+    assert!(g.is_empty());
+    // 不过也 = 覆盖满足（FAIL 短路是另一道闸的事）。
+    let g = required_check_gaps(
+        &r,
+        &["dev".into()],
+        std::slice::from_ref(&a),
+        &[res(&a, false)],
+        &[],
+    );
+    assert!(g.is_empty());
+    // 多锚点场景：必需 id 命中的锚点跑过即可，无关锚点不掺和。
+    let g = required_check_gaps(
+        &r,
+        &["dev".into()],
+        &[a.clone(), b.clone()],
+        &[res(&b, true)],
+        &[],
+    );
+    assert_eq!(gap_ids(&g), vec![("dev", "docs/build.md")]);
+}
+
+/// AC 未声明必需锚点 → NotConfigured。
+#[test]
+fn required_checks_not_configured() {
+    let a = fc("[CHECK] file:docs/other.md exists", "docs/other.md");
+    let r = rules(&[("dev", &["docs/build.md"])]);
+    let g = required_check_gaps(
+        &r,
+        &["dev".into()],
+        std::slice::from_ref(&a),
+        &[res(&a, true)],
+        &[],
+    );
+    assert_eq!(gap_ids(&g), vec![("dev", "docs/build.md")]);
+    assert!(matches!(g[0], RequiredCheckGap::NotConfigured { .. }));
+}
+
+/// 声明了但被跳过（skip 注记含锚点 raw）→ Skipped 且 reason 自带原文。
+#[test]
+fn required_checks_skipped() {
+    let a = fc("[CHECK] exec:npm test", "npm test");
+    let note =
+        "⏭ exec 锚点未执行（board.review.exec_anchors_enabled 未开启）：[CHECK] exec:npm test"
+            .to_string();
+    let g = required_check_gaps(
+        &rules(&[("qa", &["npm test"])]),
+        &["qa".into()],
+        &[a],
+        &[],
+        std::slice::from_ref(&note),
+    );
+    assert_eq!(gap_ids(&g), vec![("qa", "npm test")]);
+    match &g[0] {
+        RequiredCheckGap::Skipped { reason, .. } => assert_eq!(reason, &note),
+        other => panic!("expect Skipped, got {other:?}"),
+    }
+}
+
+/// 声明了但双检无结果无注记（防御态）→ NotRun。
+#[test]
+fn required_checks_not_run() {
+    let a = fc("[CHECK] file:docs/build.md exists", "docs/build.md");
+    let g = required_check_gaps(
+        &rules(&[("dev", &["docs/build.md"])]),
+        &["dev".into()],
+        &[a],
+        &[],
+        &[],
+    );
+    assert_eq!(gap_ids(&g), vec![("dev", "docs/build.md")]);
+    assert!(matches!(g[0], RequiredCheckGap::NotRun { .. }));
+}
+
+/// 标签交集大小写不敏感（与派发 matcher 同规则）。
+#[test]
+fn required_checks_tag_match_case_insensitive() {
+    let g = required_check_gaps(
+        &rules(&[("Dev", &["docs/build.md"])]),
+        &["DEV".into()],
+        &[],
+        &[],
+        &[],
+    );
+    assert_eq!(gap_ids(&g), vec![("Dev", "docs/build.md")]);
+}
+
+/// 无标签命中：有空串键 → 全局兜底生效；无空串键 → 无要求（行为不变）。
+#[test]
+fn required_checks_global_fallback() {
+    let a = fc("[CHECK] file:docs/build.md exists", "docs/build.md");
+    // 无命中标签但配置了空串键 → 全局规则生效，报缺口。
+    let g = required_check_gaps(
+        &rules(&[("", &["docs/build.md"])]),
+        &["unrelated".into()],
+        std::slice::from_ref(&a),
+        &[],
+        &[],
+    );
+    assert_eq!(gap_ids(&g), vec![("", "docs/build.md")]);
+    // 无空串键且标签不命中 → 无要求。
+    let g = required_check_gaps(
+        &rules(&[("dev", &["docs/build.md"])]),
+        &["unrelated".into()],
+        &[a],
+        &[],
+        &[],
+    );
+    assert!(g.is_empty());
+}
+
+/// 多键命中取并集；pattern 锚点按 pattern 匹配 id；输出按规则键字典序。
+#[test]
+fn required_checks_multi_key_union_and_pattern_and_ordering() {
+    let file_a = fc("[CHECK] file:docs/build.md exists", "docs/build.md");
+    let re_a = fpat("[CHECK] re:全部通过", "全部通过");
+    let results = vec![res(&file_a, true)];
+    // 多键命中（qa + arch 字典序 arch 在前）→ 两键列表并集。
+    let g = required_check_gaps(
+        &rules(&[
+            ("qa", &["全部通过", "docs/build.md"]),
+            ("arch", &["docs/design.md"]),
+        ]),
+        &["arch".into(), "qa".into()],
+        &[file_a, re_a],
+        &results,
+        &[],
+    );
+    assert_eq!(
+        gap_ids(&g),
+        vec![
+            ("arch", "docs/design.md"), // NotConfigured
+            ("qa", "全部通过"),         // pattern 锚点声明了但没跑
+        ]
+    );
+}
+
+/// 空规则集 = 契约关闭（默认态，零回归）。
+#[test]
+fn required_checks_empty_rules_no_gaps() {
+    let g = required_check_gaps(
+        &std::collections::HashMap::new(),
+        &["dev".into()],
+        &[],
+        &[],
+        &[],
+    );
+    assert!(g.is_empty());
+}
+
+/// 渲染：逐条含锚点 id + 规则标签；空串键显示「全局兜底」。
+#[test]
+fn required_checks_render_includes_rule_and_reason() {
+    let gaps = vec![
+        RequiredCheckGap::NotConfigured {
+            rule_key: "dev".into(),
+            check_id: "docs/build.md".into(),
+        },
+        RequiredCheckGap::Skipped {
+            rule_key: String::new(),
+            check_id: "npm test".into(),
+            reason: "⏭ exec 关".into(),
+        },
+    ];
+    let text = render_required_check_gaps(&gaps);
+    assert!(text.contains("`docs/build.md`（规则 dev）"));
+    assert!(text.contains("未声明"));
+    assert!(text.contains("`npm test`（规则 全局兜底）"));
+    assert!(text.contains("被跳过"));
+}

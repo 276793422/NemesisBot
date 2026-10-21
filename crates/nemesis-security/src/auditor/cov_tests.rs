@@ -110,6 +110,7 @@ fn ctx_of(channel: &str) -> ApprovalContext {
         channel: channel.into(),
         chat_id: "chat-1".into(),
         sender_id: "user-1".into(),
+        session_key: String::new(),
     }
 }
 

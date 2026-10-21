@@ -490,7 +490,7 @@ describe('VmView 环境安装分步卡（B4）', () => {
   it('no_script：脚本缺席态渲染后端 note 指路，构建按钮禁用', async () => {
     const w = await mountView(overview({ enabled: true }), imageList(), bootstrapStatus({
       image_ready: false,
-      image_route: { state: 'no_script', missing: [], command: '', note: '构建脚本不在场（scripts/build-vm-image.sh）——从仓库根运行网关，或在 Linux 宿主构建后把 base.qcow2 落到镜像目录回传', guest_ready: true },
+      image_route: { state: 'no_script', missing: [], command: '', note: '构建脚本不在场——安装 plugin-vm 插件包（plugin_vm/ 资源目录含 build-vm-image.sh），或开发形态从仓库根运行网关，或在 Linux 宿主构建后把 base.qcow2 落到镜像目录回传', guest_ready: true },
     }))
     expect((w.find('[data-test="image-build"]').element as HTMLButtonElement).disabled).toBe(true)
     expect(w.find('[data-test="image-state"]').text()).toContain('构建脚本不在场')

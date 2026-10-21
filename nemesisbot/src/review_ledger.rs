@@ -141,7 +141,7 @@ pub(crate) fn review_outcome_delivery(
         unix_millis(),
         next_event_key_seq()
     );
-    if let Err(e) = db.record_delivery("review", task_id.as_deref(), &key, &payload) {
+    if let Err(e) = db.record_delivery("review", task_id.as_deref(), &key, &payload, false) {
         tracing::warn!(
             issue_id = issue_id,
             decision = decision,
@@ -225,7 +225,7 @@ pub(crate) fn dossier_delivery(
         unix_millis(),
         next_event_key_seq()
     );
-    if let Err(e) = db.record_delivery("dossier", None, &key, &payload) {
+    if let Err(e) = db.record_delivery("dossier", None, &key, &payload, false) {
         tracing::warn!(
             project_id = project_id,
             "[ReviewLedger] 项目档案入账失败: {e}"

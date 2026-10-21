@@ -958,7 +958,7 @@ onMounted(async () => {
                变体（启动会诚实报错，黑屏不是合法形态）——提示换装 desktop。 -->
           <div v-if="displayHeadlessWarn" class="card" data-test="display-headless-warn" style="margin-bottom: var(--space-4); border-color: var(--warning, #b58900);">
             <div class="card-body" style="font-size: var(--text-sm); color: var(--warning, #b58900);">
-              executor.vm.display=vnc 已开启，但当前镜像为 headless 档（desktop=minimal）——显示需要桌面变体镜像，请以 <code>--variant desktop</code> 重跑镜像管线 <code>scripts/build-vm-image.sh</code> 后再试。
+              executor.vm.display=vnc 已开启，但当前镜像为 headless 档（desktop=minimal）——显示需要桌面变体镜像，请以 <code>--variant desktop</code> 重跑镜像管线 <code>build-vm-image.sh</code>（随 plugin-vm 插件包分发）后再试。
             </div>
           </div>
           <!-- B6 快速试玩卡 -->

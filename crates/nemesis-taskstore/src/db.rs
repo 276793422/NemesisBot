@@ -12,9 +12,9 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::Connection;
 
-/// 当前 schema 版本。P2（agents 表）/P4（交付泛化）增表时：
-/// 追加迁移步 + 本常量 +1，历史步永不改写。
-pub(crate) const LATEST_SCHEMA_VERSION: i64 = 3;
+/// 当前 schema 版本。P2（agents 表）/P4（交付泛化）/项 C（通知三段）
+/// 增表时：追加迁移步 + 本常量 +1，历史步永不改写。
+pub(crate) const LATEST_SCHEMA_VERSION: i64 = 4;
 
 /// v1 基线 schema：统一任务层四表。
 pub(crate) const SCHEMA_V1: &str = r#"
@@ -123,6 +123,34 @@ ALTER TABLE deliveries ADD COLUMN rejected_at TEXT;
 ALTER TABLE deliveries ADD COLUMN reject_reason TEXT;
 "#;
 
+/// v4（项 C 通知三段，2026-10-22）：deliveries 通知义务四列 + 出站失败
+/// 重试箱 notify_outbox。`notify_state` 与 `status` 双维正交（status 说
+/// 「交付证据到哪一步」，notify_state 说「出站通知义务走到哪一段」）：
+/// pending（有义务，初始）→ channel_accepted → confirmed；none = 无义务；
+/// legacy = v4 前旧账（不参与通知管线）；dead = 死信终态。
+/// 旧账回填 'legacy'：迁移时不给历史交付补通知义务（它们交付时走的是
+/// 旧「落库即 delivered」语义，无重试债可追）。
+/// notify_outbox：通道 send 失败的出站消息暂存（message = JSON 序列化的
+/// OutboundMessage），按 delivery_key UNIQUE（同笔交付同时至多一笔待重试，
+/// UPSERT 覆盖 message + 累计 attempts）。
+pub(crate) const SCHEMA_V4: &str = r#"
+ALTER TABLE deliveries ADD COLUMN notify_state TEXT NOT NULL DEFAULT '';
+ALTER TABLE deliveries ADD COLUMN notify_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE deliveries ADD COLUMN notify_last_error TEXT;
+ALTER TABLE deliveries ADD COLUMN notify_next_retry_at TEXT;
+UPDATE deliveries SET notify_state = 'legacy' WHERE notify_state = '';
+CREATE TABLE IF NOT EXISTS notify_outbox (
+    id            TEXT PRIMARY KEY,
+    delivery_key  TEXT NOT NULL UNIQUE,
+    message       TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    attempts      INTEGER NOT NULL DEFAULT 0,
+    last_error    TEXT,
+    next_retry_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notify_outbox_retry ON notify_outbox(next_retry_at);
+"#;
+
 /// tasks.db 连接持有者（`Arc<TaskDb>` 共享；内部 Mutex 串行写——
 /// 单写者权威与 board.db 同款，WAL 保读不阻塞）。
 #[derive(Debug)]
@@ -228,6 +256,7 @@ impl TaskDb {
                 1 => SCHEMA_V1,
                 2 => SCHEMA_V2,
                 3 => SCHEMA_V3,
+                4 => SCHEMA_V4,
                 _ => unreachable!("migration step missing for schema v{v}"),
             };
             tx.execute_batch(sql)

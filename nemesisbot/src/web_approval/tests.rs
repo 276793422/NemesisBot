@@ -982,3 +982,202 @@ fn respond_still_delivers_when_journal_errors() {
         .unwrap();
     assert!(v.approved);
 }
+
+// ---------------------------------------------------------------------------
+// 审批续执行（2026-10-22 拍板「批准+拒绝都回灌」）：stale 裁决回灌原会话
+// ---------------------------------------------------------------------------
+
+/// 捕获型注入器：记录 (session_key, content)，送达结果可编程（true=会话
+/// 在位送达 / false=会话已不在，模拟 gateway 闭包的 chat_log 在位检查）。
+struct CapturingInjector {
+    calls: std::sync::Mutex<Vec<(String, String)>>,
+    deliverable: bool,
+}
+
+impl CapturingInjector {
+    fn new(deliverable: bool) -> Self {
+        Self {
+            calls: std::sync::Mutex::new(Vec::new()),
+            deliverable,
+        }
+    }
+    fn install(self: &std::sync::Arc<Self>, mgr: &WebApprovalManager) {
+        let this = self.clone();
+        mgr.set_continuation_injector(std::sync::Arc::new(move |sk, content| {
+            this.calls
+                .lock()
+                .unwrap()
+                .push((sk.to_string(), content.to_string()));
+            this.deliverable
+        }));
+    }
+    fn calls(&self) -> Vec<(String, String)> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+/// 「重启前」夹具：pending 记账后进程死亡（内存 pending 随 drop 消失），
+/// 重开后从盘上重开 tasks.db（真落盘耐久，非同句柄自证）。
+fn restart_with_stale_card(
+    db_path: &std::path::Path,
+    request_id: &str,
+    session_key: &str,
+) -> WebApprovalManager {
+    {
+        let mgr = WebApprovalManager::new(None, None);
+        mgr.set_journal(journal_at(db_path));
+        let entry = WebApprovalManager::journal_entry(
+            request_id,
+            "process_exec",
+            "cargo publish",
+            "HIGH",
+            "rule: exec-publish",
+            "cargo publish *",
+            session_key,
+            session_key,
+        );
+        mgr.journal_record_pending(&entry);
+    }
+    let mgr = WebApprovalManager::new(None, None);
+    mgr.set_journal(journal_at(db_path));
+    mgr
+}
+
+#[test]
+fn stale_approve_delivers_continuation_to_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = restart_with_stale_card(
+        &dir.path().join("tasks.db"),
+        "req-ba",
+        "agent:main:session:s1",
+    );
+    let inj = std::sync::Arc::new(CapturingInjector::new(true));
+    inj.install(&mgr);
+
+    assert!(mgr.respond("req-ba", true, false, None).unwrap());
+    let calls = inj.calls();
+    assert_eq!(calls.len(), 1, "批准回灌恰好一条（实际 {calls:?}）");
+    assert_eq!(calls[0].0, "agent:main:session:s1");
+    assert!(calls[0].1.contains("已被批准"), "msg = {}", calls[0].1);
+    assert!(
+        calls[0].1.contains("cargo publish"),
+        "回灌必须带操作摘要（msg = {}）",
+        calls[0].1
+    );
+    assert!(
+        calls[0].1.contains("重新发起"),
+        "批准臂必须带可重新发起提示（拍板 1；msg = {}）",
+        calls[0].1
+    );
+}
+
+#[test]
+fn stale_deny_delivers_denial_notice_to_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = restart_with_stale_card(
+        &dir.path().join("tasks.db"),
+        "req-bd",
+        "agent:main:session:s2",
+    );
+    let inj = std::sync::Arc::new(CapturingInjector::new(true));
+    inj.install(&mgr);
+
+    assert!(!mgr.respond("req-bd", false, false, None).unwrap());
+    let calls = inj.calls();
+    assert_eq!(calls.len(), 1, "拒绝回灌恰好一条（实际 {calls:?}）");
+    assert_eq!(calls[0].0, "agent:main:session:s2");
+    assert!(calls[0].1.contains("已被拒绝"), "msg = {}", calls[0].1);
+    assert!(
+        !calls[0].1.contains("重新发起"),
+        "拒绝臂不带重新发起提示（msg = {}）",
+        calls[0].1
+    );
+}
+
+#[test]
+fn stale_legacy_entry_without_session_key_is_audit_only() {
+    let dir = tempfile::tempdir().unwrap();
+    // session_key 空 = 续执行功能落地前的历史条目形态。
+    let mgr = restart_with_stale_card(&dir.path().join("tasks.db"), "req-leg", "");
+    let inj = std::sync::Arc::new(CapturingInjector::new(true));
+    inj.install(&mgr);
+
+    assert!(mgr.respond("req-leg", true, false, None).unwrap());
+    assert!(
+        inj.calls().is_empty(),
+        "无 session_key 的历史条目不得回灌（诚实留账，不造假投递）"
+    );
+}
+
+#[test]
+fn stale_undeliverable_session_degrades_and_stays_exactly_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = restart_with_stale_card(
+        &dir.path().join("tasks.db"),
+        "req-gone",
+        "agent:main:session:deleted",
+    );
+    // 注入器在但返回 false = gateway 侧会话在位检查不过（chat_log 已删）。
+    let inj = std::sync::Arc::new(CapturingInjector::new(false));
+    inj.install(&mgr);
+
+    assert!(mgr.respond("req-gone", true, false, None).unwrap());
+    let calls = inj.calls();
+    assert_eq!(calls.len(), 1, "投递尝试恰好一次（实际 {calls:?}）");
+    // 裁决照常生效（记账不受投递失败影响）；二次 respond = already decided。
+    assert!(mgr.respond("req-gone", true, false, None).is_err());
+    assert_eq!(mgr.pending().len(), 0);
+}
+
+#[test]
+fn ctx_request_routes_session_key_into_entry_and_journal() {
+    let dir = tempfile::tempdir().unwrap();
+    let journal = journal_at(&dir.path().join("tasks.db"));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
+    mgr.set_journal(journal.clone());
+
+    // 带 ctx 的请求（loop dispatch 从 RequestContext 穿线后的真实形态）。
+    let (tx, rx) = mpsc::channel();
+    {
+        let mgr = mgr.clone();
+        std::thread::spawn(move || {
+            let ctx = nemesis_security::auditor::ApprovalContext {
+                channel: "web".to_string(),
+                chat_id: "sess-9".to_string(),
+                sender_id: "user-1".to_string(),
+                session_key: "agent:main:session:sess-9".to_string(),
+            };
+            let r = mgr.request_approval_sync_ctx(
+                "req-ctx",
+                "process_exec",
+                "cargo publish",
+                "HIGH",
+                "rule: exec-publish",
+                300,
+                &ctx,
+            );
+            let _ = tx.send(r);
+        });
+    }
+    wait_pending(&mgr, 1);
+
+    // PendingEntry → 事件/卡片带真实 session_key。
+    let card = mgr
+        .pending()
+        .into_iter()
+        .find(|c| c["request_id"] == "req-ctx")
+        .expect("card visible");
+    assert_eq!(card["session_key"], "agent:main:session:sess-9");
+
+    // 台账 payload 带真实 session_key（重启补裁回灌的路由依据）。
+    let e = journal.find_pending("req-ctx").expect("journal pending");
+    assert_eq!(
+        e.payload["session_key"], "agent:main:session:sess-9",
+        "payload = {}",
+        e.payload
+    );
+
+    assert!(mgr.respond("req-ctx", true, false, None).unwrap());
+    let v = rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+    assert!(v.approved);
+}

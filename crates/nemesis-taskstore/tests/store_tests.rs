@@ -286,32 +286,43 @@ fn delivery_idempotency_and_confirm() {
     let db = TaskDb::open(&path).expect("open");
     let payload = serde_json::json!({"result": "42"});
 
+    // 项 C：record = 义务登记（recorded + notify pending），不是投递完成。
     assert!(
-        db.record_delivery("cluster_result", Some("t-9"), "t-9", &payload)
+        db.record_delivery("cluster_result", Some("t-9"), "t-9", &payload, true)
             .expect("first")
     );
     assert!(
-        !db.record_delivery("cluster_result", Some("t-9"), "t-9", &payload)
+        !db.record_delivery("cluster_result", Some("t-9"), "t-9", &payload, true)
             .expect("dup"),
         "duplicate key must not re-record"
     );
 
     let rec = db.delivery_by_key("t-9").expect("read").expect("present");
-    assert_eq!(rec.status, "delivered");
+    assert_eq!(rec.status, "recorded");
+    assert_eq!(rec.notify_state, "pending");
+    assert!(rec.delivered_at.is_none(), "落库不写 delivered_at");
+    assert!(rec.notify_next_retry_at.is_some(), "有义务即入调度");
     assert!(rec.confirmed_at.is_none());
+
+    // 通道接受：recorded → delivered + notify channel_accepted（项 C）。
+    assert!(
+        db.mark_delivery_channel_accepted("t-9")
+            .expect("channel accepted")
+    );
+    let rec = db.delivery_by_key("t-9").expect("read").expect("present");
+    assert_eq!(rec.status, "delivered");
+    assert_eq!(rec.notify_state, "channel_accepted");
+    assert!(rec.delivered_at.is_some(), "接受时首次置 delivered_at");
 
     assert!(db.confirm_delivery("t-9").expect("confirm"));
     assert!(
         !db.confirm_delivery("t-9").expect("re-confirm"),
         "already confirmed"
     );
-    assert_eq!(
-        db.delivery_by_key("t-9")
-            .expect("read")
-            .expect("present")
-            .status,
-        "confirmed"
-    );
+    let rec = db.delivery_by_key("t-9").expect("read").expect("present");
+    assert_eq!(rec.status, "confirmed");
+    assert_eq!(rec.notify_state, "confirmed");
+    assert!(rec.notify_next_retry_at.is_none());
     assert!(db.delivery_by_key("ghost").expect("read").is_none());
 }
 
@@ -324,7 +335,7 @@ fn delivery_reject_semantics() {
     let payload = serde_json::json!({"branch": "nemesis/run-1"});
 
     assert!(
-        db.record_delivery("branch", Some("run-1"), "run-1:branch", &payload)
+        db.record_delivery("branch", Some("run-1"), "run-1:branch", &payload, false)
             .expect("record")
     );
 
@@ -366,7 +377,7 @@ fn delivery_merge_payload_shallow_merge_and_missing_key_errs() {
     let payload = serde_json::json!({"branch": "nemesis/run-m", "files_changed": 2});
 
     assert!(
-        db.record_delivery("cluster_result", Some("t-m"), "t-m", &payload)
+        db.record_delivery("cluster_result", Some("t-m"), "t-m", &payload, false)
             .expect("record")
     );
 
@@ -409,7 +420,7 @@ fn delivery_confirm_then_reject_overrides() {
     let payload = serde_json::json!({});
 
     assert!(
-        db.record_delivery("review", Some("run-2"), "run-2:review", &payload)
+        db.record_delivery("review", Some("run-2"), "run-2:review", &payload, false)
             .expect("record")
     );
     assert!(db.confirm_delivery("run-2:review").expect("confirm"));
@@ -443,7 +454,7 @@ fn delivery_by_run_and_recent_listing() {
         ("run-b", "run-b:dossier"),
     ] {
         assert!(
-            db.record_delivery("branch", Some(run), key, &serde_json::json!({}))
+            db.record_delivery("branch", Some(run), key, &serde_json::json!({}), false)
                 .expect("record")
         );
     }
@@ -465,7 +476,7 @@ fn delivery_by_run_and_recent_listing() {
 }
 
 #[test]
-fn schema_v2_database_migrates_to_v3_keeping_rows() {
+fn schema_v2_database_migrates_to_latest_keeping_rows() {
     let (_dir, path) = temp_db("v2_upgrade");
     // 手工构造 v2 形态库（deliveries 无 rejected_at/reject_reason 列，
     // user_version=2）——锁定「存量 v2 库被新代码打开」的迁移路径。
@@ -490,7 +501,7 @@ fn schema_v2_database_migrates_to_v3_keeping_rows() {
         .expect("stamp v2");
     drop(conn);
 
-    // 新代码打开 → 静默迁到 v3，旧数据完好且新列可用。
+    // 新代码打开 → 静默迁到最新版，旧数据完好且新列可用。
     let db = TaskDb::open(&path).expect("open after migration");
     let rec = db
         .delivery_by_key("old-run")
@@ -499,6 +510,11 @@ fn schema_v2_database_migrates_to_v3_keeping_rows() {
     assert_eq!(rec.status, "delivered");
     assert!(rec.rejected_at.is_none());
     assert!(rec.reject_reason.is_none());
+    // 项 C：v4 前旧账回填 legacy——不参与通知管线（旧语义落库即 delivered，
+    // 无重试债可追），不因迁移突然背上通知义务。
+    assert_eq!(rec.notify_state, "legacy");
+    assert_eq!(rec.notify_attempts, 0);
+    assert!(rec.notify_next_retry_at.is_none());
     // 新列可用：对迁移过来的旧记录直接拒绝。
     assert!(db.reject_delivery("old-run", "补拒").expect("reject"));
     assert_eq!(
@@ -507,6 +523,203 @@ fn schema_v2_database_migrates_to_v3_keeping_rows() {
             .expect("present")
             .status,
         "rejected"
+    );
+}
+
+// --- 交付账本（项 C 通知三段：mark/channel_accepted + outbox 重试 + 死信） ---
+
+#[test]
+fn delivery_channel_accepted_is_forward_only() {
+    let (_dir, path) = temp_db("deliveries_accepted");
+    let db = TaskDb::open(&path).expect("open");
+    let payload = serde_json::json!({});
+
+    assert!(
+        db.record_delivery("cluster_result", Some("t-a"), "t-a", &payload, true)
+            .expect("record")
+    );
+    // 重复接受幂等（同键两次回调），delivered_at 不被覆盖。
+    assert!(db.mark_delivery_channel_accepted("t-a").expect("first"));
+    let first = db
+        .delivery_by_key("t-a")
+        .expect("read")
+        .expect("present")
+        .delivered_at
+        .expect("delivered_at set");
+    assert!(
+        !db.mark_delivery_channel_accepted("t-a").expect("second"),
+        "已 delivered 后再次接受 = no-op"
+    );
+    assert_eq!(
+        db.delivery_by_key("t-a")
+            .expect("read")
+            .expect("present")
+            .delivered_at,
+        Some(first),
+        "delivered_at COALESCE 保留首值"
+    );
+
+    // confirmed 后到达的迟到接受 = no-op（拒绝/确认语义不被覆盖）。
+    assert!(db.confirm_delivery("t-a").expect("confirm"));
+    assert!(
+        !db.mark_delivery_channel_accepted("t-a")
+            .expect("late accept"),
+        "confirmed 后的迟到接受必须被 forward-only 闸挡住"
+    );
+    let rec = db.delivery_by_key("t-a").expect("read").expect("present");
+    assert_eq!(rec.status, "confirmed");
+    assert_eq!(rec.notify_state, "confirmed");
+
+    // rejected 后同理（同库不同键）。
+    assert!(
+        db.record_delivery("cluster_result", Some("t-b"), "t-b", &payload, true)
+            .expect("record")
+    );
+    assert!(db.reject_delivery("t-b", "验收 FAIL").expect("reject"));
+    assert!(
+        !db.mark_delivery_channel_accepted("t-b")
+            .expect("accept after reject"),
+        "rejected 后的迟到接受必须被 forward-only 闸挡住"
+    );
+}
+
+#[test]
+fn delivery_notify_none_skips_pipeline() {
+    let (_dir, path) = temp_db("deliveries_none");
+    let db = TaskDb::open(&path).expect("open");
+    let payload = serde_json::json!({});
+
+    assert!(
+        db.record_delivery("dossier", None, "d-1", &payload, false)
+            .expect("record")
+    );
+    let rec = db.delivery_by_key("d-1").expect("read").expect("present");
+    assert_eq!(rec.notify_state, "none");
+    assert!(rec.notify_next_retry_at.is_none(), "无义务不进调度");
+
+    // 无义务行确认后仍走 confirmed（义务维度与证据维度正交收口）。
+    assert!(db.confirm_delivery("d-1").expect("confirm"));
+    let rec = db.delivery_by_key("d-1").expect("read").expect("present");
+    assert_eq!(rec.status, "confirmed");
+    assert_eq!(rec.notify_state, "confirmed");
+}
+
+#[test]
+fn notify_outbox_enqueue_due_and_remove() {
+    let (_dir, path) = temp_db("notify_outbox");
+    let db = TaskDb::open(&path).expect("open");
+    let payload = serde_json::json!({});
+    assert!(
+        db.record_delivery("cluster_result", Some("t-n"), "t-n", &payload, true)
+            .expect("record")
+    );
+    let msg = r#"{"channel":"web","chat_id":"c1","content":"hi"}"#;
+
+    // 首次失败入箱：attempts=1，退避 15s。
+    db.notify_enqueue_failure("t-n", msg, "boom")
+        .expect("enqueue");
+    let rec = db.delivery_by_key("t-n").expect("read").expect("present");
+    assert_eq!(rec.notify_attempts, 1);
+    assert_eq!(rec.notify_last_error.as_deref(), Some("boom"));
+
+    // 同键再次失败 = UPSERT 覆盖 message、attempts 累计、退避翻倍。
+    db.notify_enqueue_failure("t-n", msg, "boom2")
+        .expect("enqueue 2");
+    db.notify_enqueue_failure("t-n", msg, "boom3")
+        .expect("enqueue 3");
+    let rec = db.delivery_by_key("t-n").expect("read").expect("present");
+    assert_eq!(rec.notify_attempts, 3);
+    assert_eq!(rec.notify_last_error.as_deref(), Some("boom3"));
+
+    // 到期行按 next_retry_at 升序出队；未到期（未来时刻）不出现。
+    let due_future = db.notify_due("2000-01-01T00:00:00+08:00", 16).expect("due");
+    assert!(due_future.is_empty(), "早于所有 next_retry_at = 无到期");
+    let due = db.notify_due("2999-01-01T00:00:00+08:00", 16).expect("due");
+    assert_eq!(due.len(), 1, "UPSERT 按 delivery_key 唯一，至多一行");
+    assert_eq!(due[0].delivery_key, "t-n");
+    assert_eq!(due[0].attempts, 3);
+
+    // 成功任意处清债：按 delivery_key 出箱 + 交付侧状态由调用方推进。
+    db.notify_remove_by_delivery("t-n").expect("remove");
+    assert!(
+        db.notify_due("2999-01-01T00:00:00+08:00", 16)
+            .expect("due after remove")
+            .is_empty()
+    );
+
+    // notify_remove（按行 id）形态同样可清。
+    db.notify_enqueue_failure("t-n", msg, "boom4")
+        .expect("re-enqueue");
+    let due = db.notify_due("2999-01-01T00:00:00+08:00", 16).expect("due");
+    assert_eq!(due.len(), 1);
+    let row_id = due[0].id.clone();
+    db.notify_remove(&row_id).expect("remove by id");
+    assert!(
+        db.notify_due("2999-01-01T00:00:00+08:00", 16)
+            .expect("due after id remove")
+            .is_empty()
+    );
+}
+
+#[test]
+fn notify_backoff_curve_matches_cd6() {
+    // CD6 同款曲线：15, 30, 60, 120, 240, 480, 600, 600...（600s 封顶）。
+    let expected = [15u64, 30, 60, 120, 240, 480, 600, 600, 600];
+    for (i, exp) in expected.iter().enumerate() {
+        assert_eq!(
+            nemesis_taskstore::deliveries::notify_backoff_secs(i as i64 + 1),
+            *exp,
+            "attempts={} 退避值漂移",
+            i + 1
+        );
+    }
+    // 死信闸双条件。
+    assert!(!nemesis_taskstore::deliveries::notify_dead_lettered(0, 1));
+    assert!(
+        nemesis_taskstore::deliveries::notify_dead_lettered(
+            nemesis_taskstore::deliveries::NOTIFY_DEAD_LETTER_AGE_SECS,
+            1
+        ),
+        "age 闸命中"
+    );
+    assert!(
+        nemesis_taskstore::deliveries::notify_dead_lettered(
+            0,
+            nemesis_taskstore::deliveries::NOTIFY_DEAD_LETTER_MAX_ATTEMPTS
+        ),
+        "attempts 闸命中"
+    );
+}
+
+#[test]
+fn delivery_notify_dead_gate() {
+    let (_dir, path) = temp_db("notify_dead");
+    let db = TaskDb::open(&path).expect("open");
+    let payload = serde_json::json!({});
+    assert!(
+        db.record_delivery("cluster_result", Some("t-d"), "t-d", &payload, true)
+            .expect("record")
+    );
+
+    // pending → dead；none/legacy 不受影响。
+    assert!(db.mark_delivery_notify_dead("t-d").expect("dead"));
+    let rec = db.delivery_by_key("t-d").expect("read").expect("present");
+    assert_eq!(rec.notify_state, "dead");
+    assert!(rec.notify_next_retry_at.is_none());
+
+    // 幂等：已 dead 再标 = Ok(false)。
+    assert!(!db.mark_delivery_notify_dead("t-d").expect("re-dead"));
+
+    // confirmed 不被死信闸回写（义务已走完终点）。
+    assert!(
+        db.record_delivery("cluster_result", Some("t-e"), "t-e", &payload, true)
+            .expect("record 2")
+    );
+    assert!(db.confirm_delivery("t-e").expect("confirm"));
+    assert!(
+        !db.mark_delivery_notify_dead("t-e")
+            .expect("dead after confirm"),
+        "confirmed 行不得被死信闸改写"
     );
 }
 

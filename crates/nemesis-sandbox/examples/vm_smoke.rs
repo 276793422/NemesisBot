@@ -5,7 +5,7 @@
 //! 环境不满足（QEMU 缺席 / 无硬件加速）= **诚实 SKIP**（exit 0，打 SKIP
 //! 标记行——自动化脚本按标记区分「跑过全绿」与「没跑」）。
 //!
-//! 前置：`--base` 指向已制备的 base 镜像（`scripts/build-vm-image.sh` 产
+//! 前置：`--base` 指向已制备的 base 镜像（`plugins/plugin-vm/build-vm-image.sh` 产
 //! 出；guest 二进制经 cloud-init 已进镜像）。
 //!
 //! ```text
@@ -68,7 +68,7 @@ fn step(n: u8, what: &str) {
 async fn main() {
     let args = parse_args();
     let Some(base) = args.base.clone() else {
-        skip("缺 --base（先用 scripts/build-vm-image.sh 制备镜像）");
+        skip("缺 --base（先用 plugins/plugin-vm/build-vm-image.sh 制备镜像）");
     };
     if !base.exists() {
         skip(&format!("base 镜像不存在: {}", base.display()));

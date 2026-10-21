@@ -50,6 +50,14 @@ pub(crate) fn now_rfc3339() -> String {
     chrono::Local::now().to_rfc3339()
 }
 
+/// 当前时间 + `secs` 秒（项 C 通知重试的 next_retry_at；与 now_rfc3339
+/// 同为 RFC3339 本地时——同族字符串字典序 = 时间序，DST 折叠窗口的
+/// 既有误差口径与 deliveries 查询面一致）。
+pub(crate) fn rfc3339_after_secs(secs: u64) -> String {
+    use chrono::TimeDelta;
+    (chrono::Local::now() + TimeDelta::try_seconds(secs as i64).unwrap_or_default()).to_rfc3339()
+}
+
 const TASK_COLUMNS: &str = "id, status, action, peer_id, payload, result, original_channel, \
      original_chat_id, created_at, completed_at";
 
