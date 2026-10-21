@@ -11,6 +11,7 @@ use tracing::{error, info, warn};
 pub mod commands;
 pub mod credentials;
 pub mod hot_reload;
+pub mod plugins_native;
 pub mod provider_resolver;
 pub mod store;
 pub mod vault_ref;
@@ -5448,6 +5449,11 @@ mod dispatch_fallback_mode_tests;
 // validate loud 拒绝）测试。
 #[cfg(test)]
 mod vm_config_tests;
+
+// 原生插件开关（plugins_native）：目录身份 / 开关文件缺省与 RMW 语义 /
+// 损坏保守放行 / 即时生效标记。
+#[cfg(test)]
+mod plugins_native_tests;
 
 // Single shared process-global-state lock for ALL tests in this crate that touch
 // `std::env::set_var` / `set_current_dir` / load config (which reads env). These

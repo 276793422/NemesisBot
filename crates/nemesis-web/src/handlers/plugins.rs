@@ -1,18 +1,40 @@
-//! 插件状态总览（`plugins.list`）+ WASM 插件开发包下载（`wasm.devkit_download`）。
+//! 插件状态总览（`plugins.list`）+ 开关（`plugins.native_set_enabled`）+
+//! WASM 插件开发包下载（`wasm.devkit_download`）。
 //!
-//! Dashboard「插件」页（PluginsView，三 Tab）的数据源：`plugins.list` 枚举
-//! 已知插件库（探测 exe 旁 `plugins/`）；`wasm.*` 系列代理到
-//! handlers/plugins_wasm.rs（宿主运行时管理面），其中 `wasm.devkit_download`
-//! 自处理——官方 Release 拉开发包（源码 zip，最小可编译集合）落 workspace
-//! 并解包。编译期子系统 feature 状态不在此处（→ system.features，About 页
-//! 「构建形态」tab 消费）。只读为主、无副作用（devkit 下载只落 workspace）。
+//! Dashboard「插件」页（PluginsView）的数据源：`plugins.list` 枚举原生插件
+//! 全目录（nemesis-config `plugins_native::NativePluginId` 四成员——目录
+//! 真相源）+ 管线插件；每个原生条目带文件探测 / 用户开关（`<workspace>/
+//! config/plugins_native.json`，缺省启用）/ 签名状态（gateway 装配期经
+//! [`set_native_status_probe`] 注入——验签执行体在 nemesisbot 侧，本 crate
+//! 不依赖 nemesis-verify；槽空 = dormant 诚实降级）/ 未知库清单（只列出，
+//! 不装载）。`wasm.*` 系列代理到 handlers/plugins_wasm.rs（宿主运行时管理
+//! 面），其中 `wasm.devkit_download` 自处理。编译期子系统 feature 状态不在
+//! 此处（→ system.features）。开关写有副作用（长期记忆文件），其余只读。
 
 use crate::ws_router::{ModuleHandler, RequestContext};
 use nemesis_agent::hooks::ToolHook;
-// `Path` 本体仅在 memory feature 块内使用（no-feature 下避免 unused import 警告）。
-#[cfg(feature = "memory")]
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
+
+/// 原生插件签名/未知库状态 probe（gateway 装配期注入；闭包 =
+/// nemesisbot `native_plugins::native_payload_json` 捕获 config_dir/exe_dir）。
+/// 本 crate 无 nemesis-verify 依赖——验签面只存在于注入后。
+static NATIVE_STATUS_PROBE: OnceLock<Arc<dyn Fn() -> serde_json::Value + Send + Sync>> =
+    OnceLock::new();
+
+/// gateway 装配期注入（agent_build，与 plugins_wasm::set_installer 同批）。
+pub fn set_native_status_probe(probe: Arc<dyn Fn() -> serde_json::Value + Send + Sync>) {
+    let _ = NATIVE_STATUS_PROBE.set(probe);
+}
+
+fn signature_dormant_fallback() -> serde_json::Value {
+    serde_json::json!({
+        "mode": "dormant",
+        "state": null,
+        "detail": "签名状态探测未接入（gateway 未注入 probe）",
+    })
+}
 
 /// WASM 插件开发包（devkit）的 Release 附件名与落位子目录——CI
 ///（daily-release，仅 linux，平台无关源码包）打包链的固定产物。下载管线
@@ -96,18 +118,68 @@ impl PluginsHandler {
         obj
     }
 
+    /// 原生插件目录条目：文件探测 + 用户开关 + 签名状态（probe 合并）+ 生效语义。
+    fn native_entry(
+        &self,
+        id: &str,
+        label: &str,
+        used_by: &str,
+        config_dir: &Path,
+        signature: serde_json::Value,
+    ) -> serde_json::Value {
+        let mut obj = self.detect_plugin(id, label, used_by);
+        let enabled = match nemesis_config::plugins_native::NativePluginId::from_id(id) {
+            Some(pid) => nemesis_config::plugins_native::load_enabled(config_dir, pid),
+            None => true,
+        };
+        obj["enabled"] = serde_json::json!(enabled);
+        obj["immediate_effect"] = serde_json::json!(
+            nemesis_config::plugins_native::NativePluginId::from_id(id)
+                .map(|p| p.immediate_effect())
+                .unwrap_or(false)
+        );
+        obj["signature"] = signature;
+        obj
+    }
+
     fn plugins_list(&self, workspace: &str) -> Result<serde_json::Value, String> {
-        let _ = workspace; // 预留：后续按 workspace 差异化（多实例/集群）时使用
+        let workspace_path = Path::new(workspace);
+        let config_dir = nemesis_path::workspace_config_dir(workspace_path);
+
+        // 签名/未知库状态：probe 注入（gateway 装配期）优先；槽空 = dormant
+        // 降级 + 空未知库（开关/探测不受影响——它们走 nemesis-config 直读）。
+        let probe = NATIVE_STATUS_PROBE.get().map(|f| f());
+        let sig_of = |id: &str| -> serde_json::Value {
+            probe
+                .as_ref()
+                .and_then(|p| p.get("status"))
+                .and_then(|s| s.as_array())
+                .and_then(|arr| {
+                    arr.iter()
+                        .find(|e| e.get("id").and_then(|i| i.as_str()) == Some(id))
+                })
+                .and_then(|e| e.get("signature"))
+                .cloned()
+                .unwrap_or_else(signature_dormant_fallback)
+        };
+        let unrecognized = probe
+            .as_ref()
+            .and_then(|p| p.get("unrecognized"))
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([]));
 
         // plugin_onnx：能力状态取自 embedding 配置（active tier 模型就绪与否）。
         // nemesis-memory 是可选依赖：feature off 时仅报告文件探测结果。
-        let mut onnx =
-            self.detect_plugin("plugin_onnx", "ONNX 嵌入推理", "强化记忆 / 自动记忆注入");
+        let mut onnx = self.native_entry(
+            "plugin_onnx",
+            "ONNX 嵌入推理",
+            "强化记忆 / 自动记忆注入",
+            &config_dir,
+            sig_of("plugin_onnx"),
+        );
         onnx["capabilities"] = serde_json::json!(["embedding 推理（tokenizer + model.onnx）"]);
         #[cfg(feature = "memory")]
         {
-            let workspace_path = Path::new(workspace);
-            let config_dir = nemesis_path::workspace_config_dir(workspace_path);
             let emb = nemesis_memory::vector::embedding_config::load_embedding_config(&config_dir);
             let emb_data_dir =
                 nemesis_memory::vector::embedding_config::embedding_data_dir(&config_dir);
@@ -129,12 +201,35 @@ impl PluginsHandler {
         }
 
         // plugin_ui：desktop 子系统消费（WebView UI + Linux 系统托盘）。
-        let mut ui = self.detect_plugin(
+        let mut ui = self.native_entry(
             "plugin_ui",
             "WebView UI / 系统托盘",
             "desktop 集成（Linux 托盘经 plugin-ui.so 运行时加载）",
+            &config_dir,
+            sig_of("plugin_ui"),
         );
         ui["capabilities"] = serde_json::json!(["webview 宿主", "系统托盘（Linux）"]);
+
+        // eval 监控 DLL：eval 沙盒事件采集（唯一事件驱动装载点 = 开关即时生效）。
+        let mut eval_monitor = self.native_entry(
+            "eval_monitor_dll",
+            "eval 沙盒监控",
+            "eval 行为评估（监控事件采集；开关即时生效）",
+            &config_dir,
+            sig_of("eval_monitor_dll"),
+        );
+        eval_monitor["capabilities"] =
+            serde_json::json!(["沙盒驱动事件采集（注入宿主 + SbieAPI）"]);
+
+        // WASM 宿主壳：wasmtime 运行时所在（2026-10-21 宿主剥离）。
+        let mut wasm_shell = self.native_entry(
+            "plugin_wasm",
+            "WASM 插件宿主壳",
+            "WASM 组件插件子系统（plugin.<slug> 工具/观察者）",
+            &config_dir,
+            sig_of("plugin_wasm"),
+        );
+        wasm_shell["capabilities"] = serde_json::json!(["wasmtime 组件运行时（独立壳 DLL）"]);
 
         // 管线插件（T2 三段化的进程内插件；启停经 set_metrics_enabled）。
         let metrics = nemesis_agent::hooks::metrics_plugin_slot();
@@ -146,8 +241,41 @@ impl PluginsHandler {
         }]);
 
         Ok(serde_json::json!({
-            "plugins": [onnx, ui],
+            "plugins": [onnx, ui, eval_monitor, wasm_shell],
             "pipeline_plugins": pipeline_plugins,
+            "unrecognized_libraries": unrecognized,
+        }))
+    }
+
+    /// `plugins.native_set_enabled {id, enabled}`：写开关文件（长期记忆，
+    /// 读-改-写保留他条目；写锁与 config 家族同源）。返回生效语义提示。
+    fn native_set_enabled(
+        &self,
+        workspace: &str,
+        data: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
+        let data = data.ok_or("missing data")?;
+        let id = data
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or("id (string) is required")?;
+        let enabled = data
+            .get("enabled")
+            .and_then(|v| v.as_bool())
+            .ok_or("enabled (bool) is required")?;
+        let pid = nemesis_config::plugins_native::NativePluginId::from_id(id)
+            .ok_or_else(|| format!("未知原生插件 id：{id}"))?;
+        let config_dir = nemesis_path::workspace_config_dir(Path::new(workspace));
+        nemesis_config::plugins_native::set_enabled(&config_dir, pid, enabled)?;
+        Ok(serde_json::json!({
+            "id": pid.id(),
+            "enabled": enabled,
+            "immediate_effect": pid.immediate_effect(),
+            "note": if pid.immediate_effect() {
+                "开关即时生效（事件驱动装载）"
+            } else {
+                "重启 gateway 后生效"
+            },
         }))
     }
 }
@@ -236,6 +364,7 @@ impl ModuleHandler for PluginsHandler {
         &[
             "list",
             "set_metrics_enabled",
+            "native_set_enabled",
             #[cfg(feature = "plugins-wasm")]
             "wasm.list",
             #[cfg(feature = "plugins-wasm")]
@@ -289,6 +418,7 @@ impl ModuleHandler for PluginsHandler {
         let _ = data;
         match cmd {
             "list" => self.plugins_list(&workspace).map(Some),
+            "native_set_enabled" => self.native_set_enabled(&workspace, data).map(Some),
             "set_metrics_enabled" => {
                 let data = data.ok_or("missing data")?;
                 let enabled = data

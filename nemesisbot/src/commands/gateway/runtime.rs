@@ -836,6 +836,8 @@ pub(crate) async fn run_runtime(
     {
         #[cfg(all(feature = "desktop", not(target_os = "android")))]
         let pm = Arc::clone(&process_manager);
+        #[cfg(all(feature = "desktop", not(target_os = "android")))]
+        let open_dash_cfg_dir = nemesis_path::workspace_config_dir(&common::workspace_path(&home));
         let url = format!("http://{}:{}", web_display_host, real_port);
         let token = cfg.channels.web.auth_token.clone();
         let mut rx = internal_cmd_rx;
@@ -851,8 +853,27 @@ pub(crate) async fn run_runtime(
                     nemesis_web::internal::InternalCommand::OpenDashboard => {
                         #[cfg(all(feature = "desktop", not(target_os = "android")))]
                         {
-                            info!("[Gateway] Internal command: open_dashboard");
-                            let _ = open_plugin_window(&pm, "dashboard", &url, &token);
+                            // 原生插件闸：plugin_ui（WebView 窗宿主）。事件驱动
+                            // 裁决——开关翻动对本入口即时生效（托盘面仍以启动
+                            // 装配为准）。停用/拦截 = 诚实日志 + 不开窗（浏览器
+                            // 访问 Dashboard 不受影响）。
+                            match crate::native_plugins::gate_load(
+                                &open_dash_cfg_dir,
+                                nemesis_config::plugins_native::NativePluginId::PluginUi,
+                            ) {
+                                crate::native_plugins::GateOutcome::Allow => {
+                                    info!("[Gateway] Internal command: open_dashboard");
+                                    let _ = open_plugin_window(&pm, "dashboard", &url, &token);
+                                }
+                                crate::native_plugins::GateOutcome::DisabledBySwitch => info!(
+                                    "[Gateway] open_dashboard 忽略：plugin_ui 已停用（本地插件库开关）"
+                                ),
+                                crate::native_plugins::GateOutcome::BlockedBySignature(d) => {
+                                    tracing::warn!(
+                                        "[Gateway] open_dashboard 忽略：plugin_ui 未通过签名策略（{d}）"
+                                    )
+                                }
+                            }
                         }
                         #[cfg(not(all(feature = "desktop", not(target_os = "android"))))]
                         {
@@ -956,8 +977,26 @@ pub(crate) async fn run_runtime(
 
     // Step 22: Configure system tray (desktop only)
     #[cfg(all(feature = "desktop", not(target_os = "android")))]
-    {
+    'tray: {
         use nemesis_desktop::PlatformTray;
+
+        // 原生插件闸：plugin_ui（托盘 + 审批弹窗 + WebView 窗宿主 DLL）。
+        // 停用/签名拦 = 诚实日志 + 整块跳过（装配期一次性消费——开关改动
+        // 重启 gateway 生效）。
+        match crate::native_plugins::gate_load(
+            &nemesis_path::workspace_config_dir(&common::workspace_path(&home)),
+            nemesis_config::plugins_native::NativePluginId::PluginUi,
+        ) {
+            crate::native_plugins::GateOutcome::Allow => {}
+            crate::native_plugins::GateOutcome::DisabledBySwitch => {
+                info!("[Gateway] plugin_ui 已停用（本地插件库开关）——系统托盘不装配（重启后生效）");
+                break 'tray;
+            }
+            crate::native_plugins::GateOutcome::BlockedBySignature(d) => {
+                tracing::warn!("[Gateway] plugin_ui 未通过签名策略（{d}）——系统托盘不装配");
+                break 'tray;
+            }
+        }
 
         let mut tray = PlatformTray::new();
         // Menu callbacks run on the tray thread (no tokio context). Service

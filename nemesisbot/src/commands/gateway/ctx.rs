@@ -1060,7 +1060,25 @@ impl GatewayCtx {
         // Memory tool executor creation is now handled by the factory function.
         #[cfg(feature = "memory")]
         {
-            if cfg.memory.as_ref().map(|m| m.enabled).unwrap_or(false) {
+            // 原生插件闸：plugin_onnx（ONNX 嵌入推理 DLL，强化记忆的本地嵌入
+            // 后端）。停用/签名拦 = 诚实日志 + 不构建 manager（装配期一次性
+            // 消费，开关改动重启 gateway 生效）。
+            let onnx_gate = crate::native_plugins::gate_load(
+                &nemesis_path::workspace_config_dir(&common::workspace_path(&home)),
+                nemesis_config::plugins_native::NativePluginId::PluginOnnx,
+            );
+            let onnx_allowed = matches!(onnx_gate, crate::native_plugins::GateOutcome::Allow);
+            match onnx_gate {
+                crate::native_plugins::GateOutcome::Allow => {}
+                crate::native_plugins::GateOutcome::DisabledBySwitch => info!(
+                    "[Gateway] plugin_onnx 已停用（本地插件库开关）——强化记忆不装配（重启后生效）"
+                ),
+                crate::native_plugins::GateOutcome::BlockedBySignature(d) => {
+                    warn!("[Gateway] plugin_onnx 未通过签名策略（{d}）——强化记忆不装配")
+                }
+            }
+            let memory_enabled = cfg.memory.as_ref().map(|m| m.enabled).unwrap_or(false);
+            if onnx_allowed && memory_enabled {
                 let memory_data_dir = home.join("workspace").join("memory_vector");
                 let config_dir = home.join("workspace").join("config");
                 let mgr =

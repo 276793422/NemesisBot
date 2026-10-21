@@ -19,6 +19,18 @@ interface PluginEntry {
   path?: string
   capabilities?: string[]
   detail?: any
+  /** 用户开关（plugins_native.json；缺省 = true）。 */
+  enabled: boolean
+  /** 开关即时生效（false = 重启 gateway 后生效）。 */
+  immediate_effect: boolean
+  /** 签名策略状态（mode=enforced 且 state!=Valid 时装载被拦；warn=放行示警；
+   * dormant=策略关闭）。 */
+  signature?: { mode: string; state: string | null; detail: string }
+}
+
+interface UnrecognizedLibrary {
+  name: string
+  path: string
 }
 
 interface PipelinePlugin {
@@ -76,6 +88,7 @@ const activeTab = ref(wasmFeatureEnabled ? 'wasm' : 'native')
 
 const plugins = ref<PluginEntry[]>([])
 const pipelinePlugins = ref<PipelinePlugin[]>([])
+const unrecognizedLibraries = ref<UnrecognizedLibrary[]>([])
 const loading = ref(true)
 
 const wasmPlugins = ref<WasmPluginRow[]>([])
@@ -112,10 +125,42 @@ async function loadPlugins() {
     const data = await request('plugins', 'list')
     plugins.value = data?.plugins || []
     pipelinePlugins.value = data?.pipeline_plugins || []
+    unrecognizedLibraries.value = data?.unrecognized_libraries || []
   } catch (e: any) {
     toast.error('加载插件状态失败: ' + e)
   }
   loading.value = false
+}
+
+/** 原生插件开关（长期记忆 plugins_native.json）。即时生效型当场刷新语义提示，
+ * 重启生效型明确告知「重启后生效」。 */
+async function toggleNative(p: PluginEntry) {
+  const target = !p.enabled
+  try {
+    const data = await request('plugins', 'native_set_enabled', { id: p.id, enabled: target })
+    p.enabled = data?.enabled ?? target
+    toast.success(
+      `${p.label} 已${p.enabled ? '启用' : '停用'}${data?.note ? '（' + data.note + '）' : ''}`
+    )
+  } catch (e: any) {
+    toast.error('开关写入失败: ' + e)
+  }
+}
+
+/** 签名徽标文案与配色。enforced=拦截面（红）；warn=放行但如实示警（橙）；
+ * dormant=策略关闭（灰）。 */
+function signatureBadge(p: PluginEntry): { text: string; color: string } {
+  const sig = p.signature
+  if (!sig || sig.mode !== 'enforced') {
+    if (sig && sig.mode === 'warn') {
+      if (sig.state === 'Valid') return { text: '已验签', color: 'var(--success)' }
+      return { text: '未验签（warn 放行）', color: 'var(--warning)' }
+    }
+    return { text: '签名策略休眠', color: 'var(--text-muted)' }
+  }
+  if (sig.state === 'Valid') return { text: '已验签', color: 'var(--success)' }
+  if (sig.state) return { text: `签名拦截：${sig.state}`, color: 'var(--danger)' }
+  return { text: '未验签', color: 'var(--warning)' }
 }
 
 async function togglePipeline(p: PipelinePlugin) {
@@ -433,28 +478,39 @@ onMounted(() => {
         </template>
       </div>
 
-      <!-- ═══ Tab: 本地插件库（C-ABI，只读）═══ -->
+      <!-- ═══ Tab: 本地插件库（C-ABI，目录全量 + 用户开关 + 签名状态）═══ -->
       <div v-else-if="activeTab === 'native'" style="margin-top: var(--space-4);">
         <div class="card">
           <div class="card-header"><h3>本地插件库（{{ plugins.filter(p => p.found).length }}/{{ plugins.length }} 已就绪）</h3></div>
           <div class="card-body">
             <p style="font-size: var(--text-xs); color: var(--text-muted); margin: 0 0 var(--space-2);">
-              原生动态库（.dll / .so），位于运行目录旁的 <code>plugins/</code> 子目录，与主程序同步分发。
-              页面为只读总览；插件文件放对位置后点「重载」即可识别。新扩展请优先使用 WASM 插件（沙盒隔离 + 跨平台）。
+              运行目录旁 <code>plugins/</code> 子目录里的原生动态库（.dll / .so），与主程序同步分发。
+              每个插件可用开关决定生效与否（长期记忆，重启后仍保持）；新扩展请优先使用 WASM 插件（沙盒隔离 + 跨平台）。
             </p>
-            <div v-for="p in plugins" :key="p.id" class="plugin-card">
+            <div v-for="p in plugins" :key="p.id" class="plugin-card" :style="{ opacity: p.enabled ? 1 : 0.55 }">
               <div style="display: flex; justify-content: space-between; align-items: center;">
                 <div style="display: flex; align-items: center; gap: var(--space-2);">
                   <span :style="{ color: p.found ? 'var(--success)' : 'var(--text-muted)' }" style="font-size: 18px;">{{ p.found ? '●' : '○' }}</span>
                   <span style="font-weight: 600; font-family: var(--font-mono);">{{ p.id }}</span>
-                  <span class="plugin-badge" :class="p.found ? 'plugin-badge--ok' : 'plugin-badge--off'">
+                  <span v-if="!p.enabled" class="plugin-badge plugin-badge--off">已停用</span>
+                  <span v-else class="plugin-badge" :class="p.found ? 'plugin-badge--ok' : 'plugin-badge--off'">
                     {{ p.found ? '已就绪' : '未找到' }}
                   </span>
+                  <span :style="{ color: signatureBadge(p).color }" style="font-size: var(--text-xs);">{{ signatureBadge(p).text }}</span>
                 </div>
-                <span class="plugin-filename">{{ p.filename }}</span>
+                <div style="display: flex; align-items: center; gap: var(--space-3);">
+                  <span class="plugin-filename">{{ p.filename }}</span>
+                  <label class="toggle-switch" :title="p.immediate_effect ? '开关即时生效' : '开关改动重启后生效'">
+                    <input type="checkbox" :checked="p.enabled" @change="toggleNative(p)" />
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
               </div>
               <div style="margin-top: var(--space-1); color: var(--text-secondary); font-size: var(--text-sm);">
                 {{ p.label }} —— 服务于{{ p.used_by }}
+              </div>
+              <div style="color: var(--text-muted); font-size: var(--text-xs); margin-top: 2px;">
+                开关{{ p.immediate_effect ? '即时生效' : '改动重启后生效' }}<template v-if="p.signature && p.signature.detail"> · 签名：{{ p.signature.detail }}</template>
               </div>
               <div v-if="p.path" style="color: var(--text-muted); font-size: var(--text-xs); margin-top: 2px; word-break: break-all;">{{ p.path }}</div>
               <div v-if="p.capabilities?.length" style="margin-top: var(--space-2); display: flex; gap: var(--space-1); flex-wrap: wrap;">
@@ -472,6 +528,13 @@ onMounted(() => {
                   </span>
                   （可在「记忆」页环境准备卡安装）
                 </template>
+              </div>
+            </div>
+            <div v-if="unrecognizedLibraries.length" style="margin-top: var(--space-4);">
+              <h4 style="margin: 0 0 var(--space-2); font-size: var(--text-sm);">未识别的库（只列出，不装载）</h4>
+              <div v-for="u in unrecognizedLibraries" :key="u.name" class="plugin-card" style="display: flex; justify-content: space-between; align-items: center;">
+                <span style="font-family: var(--font-mono); font-size: var(--text-sm);">{{ u.name }}</span>
+                <span style="color: var(--text-muted); font-size: var(--text-xs); word-break: break-all; margin-left: var(--space-3);">{{ u.path }}</span>
               </div>
             </div>
           </div>
@@ -535,5 +598,46 @@ onMounted(() => {
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   color: var(--text-muted);
+}
+/* Toggle switch（本地插件库开关；与 MemoryView 等页同款） */
+.toggle-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+  position: relative;
+}
+.toggle-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.toggle-slider {
+  width: 36px;
+  height: 20px;
+  background: var(--border, #d1d5db);
+  border-radius: 10px;
+  position: relative;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+.toggle-slider::after {
+  content: '';
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  background: white;
+  border-radius: 50%;
+  top: 2px;
+  left: 2px;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+}
+.toggle-switch input:checked + .toggle-slider {
+  background: var(--accent, #3b82f6);
+}
+.toggle-switch input:checked + .toggle-slider::after {
+  transform: translateX(16px);
 }
 </style>

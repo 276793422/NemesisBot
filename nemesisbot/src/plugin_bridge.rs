@@ -530,6 +530,24 @@ pub fn build_plugin_stack(
         info!("[WasmPlugin] 子系统已关闭（plugins.wasm.enabled=false）");
         return None;
     }
+    // 原生插件闸：宿主壳 plugin_wasm.dll 同受用户开关 + 签名策略管辖
+    // （装配期一次性消费——开关改动重启 gateway 生效）。
+    match crate::native_plugins::gate_load(
+        &nemesis_path::workspace_config_dir(&common::workspace_path(home)),
+        nemesis_config::plugins_native::NativePluginId::PluginWasm,
+    ) {
+        crate::native_plugins::GateOutcome::Allow => {}
+        crate::native_plugins::GateOutcome::DisabledBySwitch => {
+            info!(
+                "[WasmPlugin] 宿主壳已停用（本地插件库开关关）——WASM 插件子系统不装配，重启后生效语义"
+            );
+            return None;
+        }
+        crate::native_plugins::GateOutcome::BlockedBySignature(d) => {
+            tracing::warn!("[WasmPlugin] 宿主壳未通过签名策略（{d}）——WASM 插件子系统不装配");
+            return None;
+        }
+    }
     let manager = Arc::new(
         PluginManager::new(
             &common::workspace_path(home),

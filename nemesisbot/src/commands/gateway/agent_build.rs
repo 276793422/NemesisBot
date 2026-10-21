@@ -174,6 +174,21 @@ pub(crate) async fn init_agent(
     #[cfg(not(feature = "plugins-wasm"))]
     let (plugin_manager, plugin_gate): (Option<()>, Option<()>) = (None, None);
 
+    // 原生插件状态 probe 注入（与 plugins_wasm::set_installer 同批）：签名
+    // 验签执行体在 nemesisbot（nemesis-verify + 编译期锚），web handler 只
+    // 收 JSON——插件页「本地插件库」的签名徽标/未知库清单单一来源。
+    {
+        let probe_config_dir =
+            nemesis_path::workspace_config_dir(&crate::common::workspace_path(&home));
+        let probe_exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .unwrap_or_default();
+        nemesis_web::handlers::plugins::set_native_status_probe(Arc::new(move || {
+            crate::native_plugins::native_payload_json(&probe_config_dir, &probe_exe_dir)
+        }));
+    }
+
     // Build SharedResources and use the factory to create the AgentLoop.
     // （estop 句柄已在集群装配块前创建——board 评审依赖集共用同一 Arc。）
     // C5 (2026-09-04): ONE LspManager for the whole gateway — the LspTool

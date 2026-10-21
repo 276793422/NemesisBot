@@ -22,8 +22,8 @@ impl SecretResolver for NoSecrets {
 
 #[test]
 fn host_dll_missing_degrades_to_not_available() {
-    // env 候选指到必然不存在的路径；exe-相邻（target/debug/deps/）与仓库
-    // 开发路径（deps 视角 = target/plugins/...）同样缺席 → 全候选落空。
+    // env 权威覆盖语义：显式指定 = 只试该路径、不回落探测——无论开发机
+    // 上壳产物是否在位（deps 候选/仓库开发路径），缺席都确定性成立。
     // SAFETY: 单线程测试进程早期，无并发读者。
     unsafe {
         std::env::set_var(
