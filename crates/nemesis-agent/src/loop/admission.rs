@@ -802,6 +802,9 @@ impl AgentLoop {
                             voice_playback: msg.voice_playback,
                         },
                         timestamp: chrono::Local::now().to_rfc3339(),
+                        // A5（2026-10-21 DeepInfer 思路引入）：优先级随消息
+                        // metadata 解析（单点 [`crate::inbox::priority_of`]）。
+                        priority: crate::inbox::priority_of(msg),
                     };
                     // Second-pass review fix: the `!`-prefix steer channel
                     // exists ONLY in Steer mode. Queue mode is pure
@@ -848,6 +851,22 @@ impl AgentLoop {
                                 agent_id,
                                 response: "⏳ 排队已满，消息未能接收。请等当前任务完成后再发。"
                                     .to_string(),
+                            };
+                        }
+                        crate::inbox::EnqueueOutcome::RejectedSoft => {
+                            // A5（2026-10-21 DeepInfer 思路引入）：软水位拒
+                            // 绝——未到硬上限，普通优先级暂缓；文案与「已满」
+                            // 区分（用户可感知的信号不同：稍后重试大概率能进，
+                            // 高优先级可用 metadata priority=high 走插队）。
+                            warn!(
+                                "[AgentLoop] Session busy and inbox soft-full — normal-priority message deferred: session_key={}",
+                                session_key
+                            );
+                            const SOFT_FULL_MESSAGE: &str = "⏳ 队列紧张（即将满），你的消息暂未接收。请等当前任务完成后再发；高优先级消息可在发送时指定 priority=high 插队。";
+                            self.persist_busy_refusal(msg, &session_key, SOFT_FULL_MESSAGE);
+                            return GateOutcome::Immediate {
+                                agent_id,
+                                response: SOFT_FULL_MESSAGE.to_string(),
                             };
                         }
                     }

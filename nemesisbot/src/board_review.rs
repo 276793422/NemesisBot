@@ -373,6 +373,9 @@ pub(crate) fn pick_redispatch_target(
     let ranked =
         nemesis_web::handlers::board::rank_dispatch_candidates(&deps.store, &deps.cluster, issue);
     let ranked = fingerprint_weighted_ranked(deps, issue, ranked);
+    // A1（2026-10-21 DeepInfer 思路引入）：耗时估计次级重排——指纹
+    // （成功率）先行，速度在成功率中性段内细分；正交信号按此序叠加。
+    let ranked = duration_weighted_ranked(&deps.store, issue, ranked);
     match ranked
         .into_iter()
         .find(|w| !historical.contains(w.as_str()))
@@ -438,6 +441,42 @@ fn fingerprint_weighted_ranked(
         issue.id, ordered
     );
     ordered
+}
+
+/// A1（2026-10-21 DeepInfer 思路引入）：耗时估计次级重排（指纹加权之后的
+/// 第三段排序）：按 (worker, required_profession) 历史耗时中位数把「同类
+/// 任务跑得快」的节点提前——借鉴 DeepInfer 运行时估计器（滑窗中位数 +
+/// 欠采样回落全局 + 无数据零干预）。数据面 = 本仓现成的 `issue_dispatch`
+/// 完结派发表（master 侧单钟），无新计时埋点、无新配置旗标（数据即闸：
+/// 没有完结派发就自动零干预）。候选不足 2 / 无样本 / 查询失败 → 原序
+/// 返回；失败只 warn——启发式不炸决策（与指纹加权同纪律）。
+fn duration_weighted_ranked(
+    store: &nemesis_board::BoardStore,
+    issue: &nemesis_board::Issue,
+    ranked: Vec<String>,
+) -> Vec<String> {
+    if ranked.len() < 2 {
+        return ranked;
+    }
+    let category = nemesis_board::normalize_category(issue.required_profession.as_deref());
+    match store.recent_completed_dispatch_durations((nemesis_board::WORKER_SAMPLE_CAP * 8) as i64) {
+        Ok(samples) if !samples.is_empty() => {
+            let ordered = nemesis_board::reorder_by_predicted_duration(ranked, &samples, &category);
+            info!(
+                "[BoardReview] issue {} 耗时加权生效（category={category}）：候选序 → {:?}",
+                issue.id, ordered
+            );
+            ordered
+        }
+        Ok(_) => ranked,
+        Err(e) => {
+            warn!(
+                "[BoardReview] issue {} 耗时样本查询失败（原序继续）：{e}",
+                issue.id
+            );
+            ranked
+        }
+    }
 }
 
 /// P34 指纹记账（评审定案唯一写点，见模块头注释）：PASS=成功 / FAIL=

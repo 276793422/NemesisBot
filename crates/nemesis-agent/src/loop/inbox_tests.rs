@@ -174,6 +174,7 @@ async fn test_inbox_steer_mode_interjects_next_step() {
         crate::inbox::QueuedMessage {
             msg: inbound("agent:s3", "!stop deleting"),
             timestamp: String::new(),
+            priority: crate::inbox::MessagePriority::Normal,
         },
     );
 
@@ -211,6 +212,7 @@ async fn test_inbox_abort_transfers_next_step() {
         crate::inbox::QueuedMessage {
             msg: inbound("agent:s4", "!urgent"),
             timestamp: String::new(),
+            priority: crate::inbox::MessagePriority::Normal,
         },
     );
     // Simulate the post-turn abort path directly.
@@ -228,13 +230,14 @@ async fn test_inbox_capacity_limit() {
     let provider = CapturingProvider::new(vec![]);
     let lp = loop_with(ConcurrentMode::Queue, Box::new(provider)); // capacity 4
     assert!(lp.try_acquire_session("agent:s5"));
-    // Fill all 4 slots through the enqueue API (same as the busy path).
-    for i in 0..4 {
+    // A5 软水位（soft = 3）：前 3 条普通消息照常入队。
+    for i in 0..3 {
         let outcome = lp.inbox.enqueue(
             "agent:s5",
             crate::inbox::QueuedMessage {
                 msg: inbound("agent:s5", &format!("msg {i}")),
                 timestamp: String::new(),
+                priority: crate::inbox::MessagePriority::Normal,
             },
         );
         assert!(matches!(
@@ -242,6 +245,36 @@ async fn test_inbox_capacity_limit() {
             crate::inbox::EnqueueOutcome::QueuedForNextTurn
         ));
     }
+    // 第 4 条普通消息（total=3 = 软水位）→ 软拒；busy 路径返回「队列紧张」回执。
+    let outcome = lp.inbox.enqueue(
+        "agent:s5",
+        crate::inbox::QueuedMessage {
+            msg: inbound("agent:s5", "soft overflow"),
+            timestamp: String::new(),
+            priority: crate::inbox::MessagePriority::Normal,
+        },
+    );
+    assert!(matches!(
+        outcome,
+        crate::inbox::EnqueueOutcome::RejectedSoft
+    ));
+    let (_id, resp, _) = lp
+        .process_inbound_message(&inbound("agent:s5", "soft overflow via busy"))
+        .await;
+    assert!(resp.contains("队列紧张"), "soft receipt: {resp}");
+    // High 不受软水位约束：补进第 4 格（total 3→4 = 硬上限）。
+    let outcome = lp.inbox.enqueue(
+        "agent:s5",
+        crate::inbox::QueuedMessage {
+            msg: inbound("agent:s5", "high jump"),
+            timestamp: String::new(),
+            priority: crate::inbox::MessagePriority::High,
+        },
+    );
+    assert!(matches!(
+        outcome,
+        crate::inbox::EnqueueOutcome::QueuedForNextTurn
+    ));
     // The 5th message through the busy path gets the "full" receipt.
     let (_id, resp, _) = lp
         .process_inbound_message(&inbound("agent:s5", "overflow"))
@@ -538,6 +571,7 @@ fn inbox_status_reports_queues_capacity_and_mode() {
     let mk = |content: &str| crate::inbox::QueuedMessage {
         msg: inbound(key, content),
         timestamp: "t".to_string(),
+        priority: crate::inbox::MessagePriority::Normal,
     };
     assert_eq!(
         al.inbox.enqueue_for_mode(key, mk("first"), true),

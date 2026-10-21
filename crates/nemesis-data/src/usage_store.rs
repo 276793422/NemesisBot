@@ -569,7 +569,7 @@ impl DataStore {
                  ORDER BY tool_calls DESC",
             )
             .map_err(|e| format!("prepare model tool health: {e}"))?;
-        let rows = stmt
+        let mut rows: Vec<ModelToolHealth> = stmt
             .query_map(params![cutoff], |row| {
                 let model: String = row.get(0)?;
                 let calls: i64 = row.get(1)?;
@@ -584,13 +584,80 @@ impl DataStore {
                     tool_calls: calls,
                     validation_failures: failures,
                     failure_rate: rate,
+                    guard_events: 0,
                     hint: None,
                 })
             })
             .map_err(|e| format!("query_model_tool_health: {e}"))?
             .filter_map(|r| r.ok())
             .collect();
+        // A2（2026-10-21 DeepInfer 思路引入）：守卫事件并入（同窗口聚合）。
+        // 并集语义：守卫事件是独立观测面——只有守卫事件、没有工具调用的
+        // 模型（空答复/文本重复型打转）也要出现在健康行里（guard_events
+        // 驱动的 hint 正是为它准备的），不允许静默丢弃。
+        let mut guard_stmt = conn
+            .prepare(
+                "SELECT model, COALESCE(SUM(events), 0)
+                 FROM guard_event_stats
+                 WHERE day >= ?1
+                 GROUP BY model",
+            )
+            .map_err(|e| format!("prepare guard events: {e}"))?;
+        let guard_map: std::collections::HashMap<String, i64> = guard_stmt
+            .query_map(params![cutoff], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(|e| format!("query guard events: {e}"))?
+            .filter_map(|r| r.ok())
+            .collect();
+        for r in rows.iter_mut() {
+            if let Some(events) = guard_map.get(&r.model) {
+                r.guard_events = *events;
+            }
+        }
+        for (model, events) in &guard_map {
+            if !rows.iter().any(|r| &r.model == model) {
+                rows.push(ModelToolHealth {
+                    model: model.clone(),
+                    tool_calls: 0,
+                    validation_failures: 0,
+                    failure_rate: 0.0,
+                    guard_events: *events,
+                    hint: None,
+                });
+            }
+        }
+        rows.sort_by_key(|b| std::cmp::Reverse(b.tool_calls));
         Ok(rows)
+    }
+
+    /// A2（2026-10-21 DeepInfer 思路引入）：记一笔守卫事件计数（天×模型
+    /// upsert 增量）。`events` = 本 turn 实际发出的 loop-guard nudge 总数，
+    /// 0 不写行（与「无事件即无记录」语义一致，turn 频次远高于守卫事件）。
+    /// 调用方对错误只 warn——审计是增值动作，不反压轮次。
+    ///
+    /// usage-store 关：no-op（健康账不落盘，`models.health` 恒空）。
+    #[cfg(not(feature = "usage-store"))]
+    pub fn record_guard_events(&self, _model: &str, _events: u32) -> Result<(), String> {
+        Ok(())
+    }
+
+    #[cfg(feature = "usage-store")]
+    pub fn record_guard_events(&self, model: &str, events: u32) -> Result<(), String> {
+        if events == 0 {
+            return Ok(());
+        }
+        let day = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO guard_event_stats (day, model, events)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(day, model) DO UPDATE SET
+                events = events + ?3",
+            params![day, model, i64::from(events)],
+        )
+        .map_err(|e| format!("record_guard_events: {e}"))?;
+        Ok(())
     }
 
     /// Roll up request logs older than 30 days into daily_rollups and delete originals.

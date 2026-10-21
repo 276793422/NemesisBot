@@ -114,6 +114,7 @@ fn queued(session: &str, content: &str) -> QueuedMessage {
             voice_playback: None,
         },
         timestamp: String::new(),
+        priority: nemesis_agent::inbox::MessagePriority::Normal,
     }
 }
 

@@ -136,6 +136,63 @@ async fn models_health_hint_threshold_and_small_sample() {
     );
 }
 
+/// A2：守卫事件 hint 三臂——零工具调用的纯守卫模型并集出行 + 建议；
+/// 校验失败 hint 优先于守卫 hint；<5 次不下结论。
+#[tokio::test]
+async fn models_health_guard_events_hint_and_priority() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let ds = Arc::new(DataStore::open(&temp_db_path()).unwrap());
+    // m-guard：只有守卫事件（5 次，零工具调用）→ 并集语义出行 + hint。
+    for _ in 0..5 {
+        ds.record_guard_events("m-guard", 1).unwrap();
+    }
+    // m-both：校验失败率达标（50% ≥ 20%）+ 守卫事件 ≥5——校验 hint 优先。
+    for _ in 0..5 {
+        ds.record_guard_events("m-both", 1).unwrap();
+    }
+    for i in 0..10 {
+        ds.record_tool_validation("m-both", i % 2 == 0).unwrap();
+    }
+    // m-under：守卫事件 4 次（< 5）→ 无 hint（宁可少算不错算）。
+    for _ in 0..4 {
+        ds.record_guard_events("m-under", 1).unwrap();
+    }
+
+    let handler = ModelsHandler::new();
+    let ctx = make_ctx(&dir, Some(ds));
+    let out = health_call(&handler, &ctx, None).await;
+    let models = out["models"].as_array().unwrap();
+
+    let guard = models
+        .iter()
+        .find(|m| m["model"] == "m-guard")
+        .expect("零调用纯守卫模型必须出列（并集语义）");
+    assert_eq!(guard["tool_calls"], 0);
+    assert_eq!(guard["guard_events"], 5);
+    let hint = guard["hint"].as_str().expect("5 次守卫事件必须给建议");
+    assert!(hint.contains("守卫") && hint.contains("probe"), "{hint}");
+
+    let both = models
+        .iter()
+        .find(|m| m["model"] == "m-both")
+        .expect("m-both 必须在列");
+    let both_hint = both["hint"].as_str().expect("m-both 必有 hint");
+    assert!(
+        both_hint.contains("校验失败率"),
+        "校验失败 hint 优先于守卫 hint: {both_hint}"
+    );
+
+    let under = models
+        .iter()
+        .find(|m| m["model"] == "m-under")
+        .expect("m-under 必须在列");
+    assert!(
+        under["hint"].is_null(),
+        "4 次守卫事件 < 5 不得给建议: {:?}",
+        under["hint"]
+    );
+}
+
 /// data.days 窗口夹取（1~90）；账本未装配 = 空列表 + 诚实 note。
 #[tokio::test]
 async fn models_health_days_clamp_and_missing_ledger() {

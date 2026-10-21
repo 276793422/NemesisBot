@@ -12062,3 +12062,100 @@ async fn test_admin_subscriber_dedup_across_sessions() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// A1（2026-10-21 DeepInfer 思路引入）：duration_weighted_candidates 接线
+//（匹配器榜 → 耗时次级重排）。核心重排语义（滑窗中位数/回落链/方向）由
+// nemesis-board node_perf 单测覆盖；这里钉接线语义：单候选/无样本/跨类别
+// 零干预 + 有样本时重排真实生效。
+// ---------------------------------------------------------------------------
+
+/// 播种一条完结派发耗时样本（insert 后 hold 秒再 finish，时长 = hold）。
+/// `BoardStore.conn` 私有、跨 crate 无法回拨时间戳，快慢差用真实时钟
+/// （1s vs 3s，间隔远超调度抖动；秒级粒度下 0 时长会被查询过滤）。
+#[cfg(feature = "cluster")]
+fn seed_dispatch_duration(
+    store: &nemesis_board::BoardStore,
+    issue_id: i64,
+    task_id: &str,
+    worker: &str,
+    hold_secs: u64,
+) {
+    store
+        .insert_dispatch(
+            task_id,
+            issue_id,
+            worker,
+            &nemesis_board::Actor::system("board"),
+        )
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(hold_secs));
+    assert!(
+        store
+            .finish_dispatch(task_id, nemesis_board::models::dispatch_state::DONE)
+            .unwrap(),
+        "finish_dispatch 应命中 dispatched 态"
+    );
+}
+
+#[cfg(feature = "cluster")]
+#[test]
+fn a1_duration_weighted_candidates_wiring() {
+    let dir = unique_dir("a1-duration-wiring");
+    let store = nemesis_board::BoardStore::open(&dir.join("board.db"), "NB").unwrap();
+
+    let prof = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "职能单".to_string(),
+            required_profession: Some("dev:cpp".to_string()),
+            ..Default::default()
+        })
+        .unwrap();
+    let plain = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "无职能单".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    // 单候选透传（<2 零干预，先于类别读取早退）。
+    assert_eq!(
+        super::duration_weighted_candidates(&store, &bare_issue(None, &[]), vec!["solo".into()]),
+        vec!["solo".to_string()]
+    );
+
+    // 空仓零干预：无样本原序返回（零行为变化红线）。
+    assert_eq!(
+        super::duration_weighted_candidates(
+            &store,
+            &bare_issue(None, &[]),
+            vec!["b".into(), "a".into()]
+        ),
+        vec!["b".to_string(), "a".to_string()]
+    );
+
+    // 真实样本：node-fast 3×1s（中位 1）vs node-slow 3×2s（中位 2），
+    // 各达 MIN_WORKER_SAMPLES(=3) 才进 per-worker 预测面（欠采样者落
+    // 类别全局中位数，1 样本/worker 会双双打平回原序）。
+    for task in ["t-f1", "t-f2", "t-f3"] {
+        seed_dispatch_duration(&store, prof.id, task, "node-fast", 1);
+    }
+    for task in ["t-s1", "t-s2", "t-s3"] {
+        seed_dispatch_duration(&store, prof.id, task, "node-slow", 2);
+    }
+
+    // 有样本生效：慢者榜首 → 快者提前。
+    let ranked = vec!["node-slow".to_string(), "node-fast".to_string()];
+    assert_eq!(
+        super::duration_weighted_candidates(&store, &prof, ranked.clone()),
+        vec!["node-fast".to_string(), "node-slow".to_string()]
+    );
+
+    // 跨类别隔离：同批样本（dev:cpp）对无职能单（类别 "_"）零干预。
+    assert_eq!(
+        super::duration_weighted_candidates(&store, &plain, ranked),
+        vec!["node-slow".to_string(), "node-fast".to_string()]
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

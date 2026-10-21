@@ -997,6 +997,79 @@ fn test_dispatch_baseline_roundtrip() {
 }
 
 #[test]
+fn test_recent_completed_dispatch_durations() {
+    let (store, dir) = temp_store("dispatch-durations");
+    // 两个 issue：一个带职能（大小写/空白混杂，验证 COALESCE+LOWER 归一），
+    // 一个不带（空 → "_" 公共桶）。
+    let mut prof_issue = new_issue("职能单");
+    prof_issue.required_profession = Some("  Dev:CPP ".to_string());
+    let prof_issue = store.create_issue(prof_issue).unwrap();
+    let plain_issue = store.create_issue(new_issue("无职能单")).unwrap();
+
+    // 空仓 → 空样本。
+    assert!(
+        store
+            .recent_completed_dispatch_durations(64)
+            .unwrap()
+            .is_empty()
+    );
+
+    // 未完结派发（completed_at IS NULL）→ 不进样本。
+    store
+        .insert_dispatch("task-run", prof_issue.id, "node-fast", &admin())
+        .unwrap();
+
+    store
+        .insert_dispatch("task-a1", prof_issue.id, "node-fast", &admin())
+        .unwrap();
+    store
+        .insert_dispatch("task-a2", plain_issue.id, "node-slow", &admin())
+        .unwrap();
+    assert!(
+        store
+            .finish_dispatch("task-a1", dispatch_state::DONE)
+            .unwrap()
+    );
+    assert!(
+        store
+            .finish_dispatch("task-a2", dispatch_state::DONE)
+            .unwrap()
+    );
+
+    // 秒级时间戳粒度下同秒完结会得 duration=0（被 WHERE 过滤）——测试里
+    // 把 dispatched_at 回拨 120s，得到确定性的正时长（真时长语义由
+    // node_perf 单测覆盖，这里只验投影与过滤）。
+    {
+        let conn = store.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE issue_dispatch
+             SET dispatched_at = dispatched_at - 120
+             WHERE task_id IN ('task-a1', 'task-a2')",
+            [],
+        )
+        .unwrap();
+    }
+
+    let samples = store.recent_completed_dispatch_durations(64).unwrap();
+    assert_eq!(samples.len(), 2);
+    // rowid DESC = 最新优先：task-a2 在前。
+    assert_eq!(samples[0].worker_id, "node-slow");
+    assert_eq!(samples[0].profession, "_");
+    assert_eq!(samples[1].worker_id, "node-fast");
+    // 职能归一：trim + 小写。
+    assert_eq!(samples[1].profession, "dev:cpp");
+    // 查询 WHERE 已保证时长为正。
+    assert!(samples.iter().all(|s| s.duration_secs == 120));
+
+    // limit 生效：只要 1 条 → 最新一条。
+    let one = store.recent_completed_dispatch_durations(1).unwrap();
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].worker_id, "node-slow");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn test_dispatch_scoped_to_issue() {
     let (store, dir) = temp_store("dispatch-scope");
     let a = store.create_issue(new_issue("甲")).unwrap();
