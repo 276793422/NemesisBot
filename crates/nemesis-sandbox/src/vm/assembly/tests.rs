@@ -20,6 +20,7 @@ fn spec(accel: QemuAccel, shared: Option<PathBuf>) -> VmLaunchSpec {
         shared_host_path: shared,
         loadvm_tag: None,
         incoming_file: None,
+        display_vnc_port: None,
     }
 }
 
@@ -71,6 +72,44 @@ fn display_none_present() {
     assert_eq!(args[i + 1], "none");
 }
 
+/// P5-R2 vnc 态：`-vnc 127.0.0.1:<display>` 回环装配 + `-display` 不出现
+/// （两形态互斥）；display = port-5900 反向换算（QEMU 冒号后数字是显示器
+/// 编号而非端口——2026-10-21 真机探针：`127.0.0.1:51206` 绑 57106 的根因
+/// 回归锁）；默认 None 路径字节不变（display_none_present 回归锁的对称面）。
+#[test]
+fn display_vnc_loopback_assembly() {
+    let mut s = spec(QemuAccel::Kvm, None);
+    s.display_vnc_port = Some(51206);
+    let args = build_qemu_args(&s);
+    let i = args.iter().position(|a| a == "-vnc").expect("-vnc 在位");
+    // 51206 - 5900 = 45306：QEMU 绑 5900+45306 = 51206（真实端口契约）
+    assert_eq!(
+        args[i + 1],
+        "127.0.0.1:45306",
+        "VNC 必须绑 127.0.0.1 且按 display 编号换算"
+    );
+    assert!(
+        !args.iter().any(|a| a == "-display"),
+        "vnc 态不装 -display（两形态互斥）"
+    );
+    assert!(
+        !args
+            .iter()
+            .any(|a| a.contains("-:590") || a.contains("0.0.0.0:51206")),
+        "禁止非回环绑定"
+    );
+}
+
+/// 守卫：display_vnc_port < 5900 无合法 display 编号形态——诚实 panic
+/// （错绑 5900 偏移端口 = registry 记录连不上 = VNC 永久哑）。
+#[test]
+#[should_panic(expected = "display_vnc_port")]
+fn display_vnc_port_below_base_panics() {
+    let mut s = spec(QemuAccel::Kvm, None);
+    s.display_vnc_port = Some(4599);
+    let _ = build_qemu_args(&s);
+}
+
 /// accel → 参数映射 + 机型/CPU 来自 machine_spec（arch × accel 全组合）。
 #[test]
 fn accel_and_machine_mapping() {
@@ -87,6 +126,24 @@ fn accel_and_machine_mapping() {
             let ci = args.iter().position(|a| a == "-cpu").unwrap();
             assert_eq!(args[ci + 1], ms.cpu, "{arch:?}/{accel:?}");
         }
+    }
+}
+
+/// 绝对指点设备：显式 xhci 控制器 + usb-tablet 挂显式总线（q35 无默认
+/// pointer 硬件也无默认 USB 总线——裸 `-device usb-tablet` 实测
+/// `No 'usb-bus' bus found` 提前退出；缺它则 VNC 操作档的键鼠事件到
+/// QEMU 后 guest 无设备可收，鼠标「完全不动」。2026-10-21 演示实录回归锁）。
+#[test]
+fn usb_tablet_always_present() {
+    for &accel in QemuAccel::ALL {
+        let args = args_of(accel, None);
+        let i = args
+            .iter()
+            .position(|a| a == "-device")
+            .unwrap_or_else(|| panic!("-device 在位（{accel:?}）"));
+        assert_eq!(args[i + 1], "qemu-xhci,id=vm-usb", "{accel:?}");
+        assert_eq!(args[i + 2], "-device", "{accel:?}");
+        assert_eq!(args[i + 3], "usb-tablet,bus=vm-usb.0", "{accel:?}");
     }
 }
 
@@ -186,12 +243,14 @@ fn incoming_file_optional_flag() {
 }
 
 /// 参数无重复 flag（装配函数回归锚——重复 flag 在 QEMU 侧是静默后者覆盖）。
+/// 例外：`-device` 刻意出现两枚（xhci 控制器 + usb-tablet，见
+/// usb_tablet_always_present），排除后查重。
 #[test]
 fn no_duplicate_flags() {
     let args = args_of(QemuAccel::Kvm, Some(PathBuf::from("/host/ws")));
     let flags: Vec<_> = args
         .iter()
-        .filter(|a| a.starts_with('-'))
+        .filter(|a| a.starts_with('-') && a.as_str() != "-device")
         .cloned()
         .collect();
     let mut sorted = flags.clone();

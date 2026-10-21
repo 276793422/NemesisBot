@@ -24,6 +24,7 @@ fn selfbuilt_params(name: &str) -> CreateAgentParams {
         tool_policy: serde_json::json!({}),
         persona_refs: serde_json::Value::Null,
         credential_refs: serde_json::json!([]),
+        principal: String::new(),
     }
 }
 
@@ -203,6 +204,28 @@ fn create_rejects_illegal_runtime_backend_and_defaults_process() {
     vm.runtime_backend = "vm".to_string();
     let rec = mgr.create_agent(vm).unwrap();
     assert_eq!(rec.runtime_backend, "vm");
+}
+
+// P6-R4（D4 预留）：principal 落库回归锁——create 持久化主体标识，重开
+// manager（同 db）读回一致；缺省空串 = 未绑定。纯预留：无任何闸读取。
+#[test]
+fn create_persists_principal_for_persistence_source_of_truth() {
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = setup(dir.path());
+    let mut p = selfbuilt_params("bound");
+    p.principal = "web/user-42".to_string();
+    let rec = mgr.create_agent(p).unwrap();
+    assert_eq!(rec.principal, "web/user-42");
+    // 未绑定 = 缺省空串。
+    let rec = mgr.create_agent(selfbuilt_params("unbound")).unwrap();
+    assert_eq!(rec.principal, "");
+    // 落库真相源核验（重开 manager 读同一 db——持久性而非缓存态）。
+    let db = TaskDb::open(&nemesis_path::resolve_tasks_db_path_in_workspace(
+        &dir.path().join("workspace"),
+    ))
+    .unwrap();
+    let mgr2 = AgentManager::from_db(dir.path().join("workspace"), db);
+    assert_eq!(mgr2.get(&rec.agent_id).unwrap().unwrap().principal, "");
 }
 
 #[test]

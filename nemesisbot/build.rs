@@ -108,7 +108,7 @@ fn main() {
 
     // ------------------------------------------------------------------
     // 构建形态清单（system.features WSAPI 数据源）：解析
-    // scripts/customize/features.toml（feature 清单单一真相源，49 条），
+    // scripts/customize/features.toml（feature 清单单一真相源，50 条），
     // 逐条以 CARGO_FEATURE_<ID 大写下划线> env（cargo 为本包每个启用的
     // feature 设置）判定**本构建的真实编译态**，写 OUT_DIR/features.json
     // 供 embedded.rs include_str! 嵌入。清单缺失（罕见： customize 目录

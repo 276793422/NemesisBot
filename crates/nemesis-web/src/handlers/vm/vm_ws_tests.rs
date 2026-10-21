@@ -216,8 +216,8 @@ async fn all_commands_route_through_bridge() {
         let names = h.commands();
         assert_eq!(
             names.len(),
-            20,
-            "命令族清单（实施计划锁定 + B3 自举族 + B6 试玩族 + B9-3 同步族）"
+            21,
+            "命令族清单（实施计划锁定 + B3 自举族 + B6 试玩族 + B9-3 同步族 + P5-R2⑥ 显示族）"
         );
         assert_eq!(h.module_name(), "vm");
 
@@ -235,32 +235,50 @@ async fn all_commands_route_through_bridge() {
             assert!(res.is_ok(), "{cmd} 必须经 bridge 成功: {res:?}");
         }
 
-        // 每条命令真的到了 bridge（配置臂以外全部录制在案）。
-        let calls = _b.calls.lock().unwrap();
-        for expected in [
-            "overview",
-            "config.get",
-            "config.set",
-            "image.list",
-            "image.build",
-            "instance.list",
-            "instance.sleep",
-            "instance.wake",
-            "instance.kill",
-            "gc.run",
-            "bootstrap.status",
-            "bootstrap.install_qemu",
-            "bootstrap.enable_accel",
-            "try.status",
-            "try.start",
-            "try.exec",
-            "try.stop",
-            "sync.status",
-            "commit",
-            "resync",
-        ] {
-            assert!(calls.iter().any(|c| c == expected), "{expected} 未被调用");
+        // 每条命令真的到了 bridge（配置臂以外全部录制在案）。守卫收进
+        // 块作用域——闭包尾活守卫 + 后续 display 探针再触 bridge 的
+        // note() 会同线程自死锁（std Mutex 非重入，2026-10-21 实录）。
+        {
+            let calls = _b.calls.lock().unwrap();
+            for expected in [
+                "overview",
+                "config.get",
+                "config.set",
+                "image.list",
+                "image.build",
+                "instance.list",
+                "instance.sleep",
+                "instance.wake",
+                "instance.kill",
+                "gc.run",
+                "bootstrap.status",
+                "bootstrap.install_qemu",
+                "bootstrap.enable_accel",
+                "try.status",
+                "try.start",
+                "try.exec",
+                "try.stop",
+                "sync.status",
+                "commit",
+                "resync",
+            ] {
+                assert!(calls.iter().any(|c| c == expected), "{expected} 未被调用");
+            }
         }
+
+        // P5-R2⑥ 显示探针：组合命令（走 config_get，无专用 bridge 方法，
+        // 故不在上方录制清单）——返回面 = compiled/config 现值/endpoint 三段。
+        let disp = h
+            .handle_cmd("display.status", None, &ctx)
+            .await
+            .expect("display.status")
+            .expect("display.status payload");
+        assert_eq!(disp["compiled"], cfg!(feature = "vm-display"));
+        assert!(disp["display"].is_string(), "{disp}");
+        assert!(
+            disp["endpoint"].is_null() || disp["endpoint"].is_object(),
+            "{disp}"
+        );
     })
     .await;
 }

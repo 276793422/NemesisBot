@@ -41,6 +41,7 @@ fn sample_record(agent_id: &str) -> VmInstanceRecord {
         vcpu: 2,
         ram_mb: 2048,
         disk_gb: 20,
+        display_port: Some(45901),
     }
 }
 
@@ -54,6 +55,28 @@ fn record_roundtrip() {
     let json = serde_json::to_string(&r).expect("serde");
     let back: VmInstanceRecord = serde_json::from_str(&json).expect("serde");
     assert_eq!(back, r);
+}
+
+/// 旧记录（无 display_port 键）= serde default None（P5-R2 字段后补兼容——
+/// 既有工作区 registry 不炸）。
+#[test]
+fn record_without_display_port_key_loads_as_none() {
+    let json = serde_json::json!({
+        "agent_id": "agent-1",
+        "overlay": "/tmp/o.qcow2",
+        "token": "a".repeat(32),
+        "sleep_mode": "cold",
+        "snapshot_tag": null,
+        "state_path": null,
+        "asleep_at": 1700000000000u64,
+        "arch": "x86_64",
+        "accel": "whpx",
+        "vcpu": 2,
+        "ram_mb": 2048,
+        "disk_gb": 20
+    });
+    let r: VmInstanceRecord = serde_json::from_value(json).expect("旧形态记录可解析");
+    assert_eq!(r.display_port, None, "缺键 = None（display=none 兼容）");
 }
 
 /// 冷停语义：清 wake 产物 + asleep_at 置 Some + sleep_mode=cold。
@@ -273,6 +296,115 @@ fn gc_decision_table() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// 磁盘 GC：孤儿 overlay / 陈旧换装残留（P5-R4）
+// ---------------------------------------------------------------------------
+
+/// sweep_disk_garbage 决策表：引用三族（run 目录名 / 记录 sanitize id /
+/// 记录 overlay stem）全保留；无引用孤儿回收；registry 损坏的 run 目录
+/// 由目录名兜底保守保留；canonical base 在场时 base.new 残留回收、canonical
+/// 缺席时 base.new 是唯一落点绝不碰。
+#[test]
+fn disk_garbage_sweep_decision_table() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    std::fs::create_dir_all(vm_overlays_root(ws)).unwrap();
+    std::fs::create_dir_all(vm_images_root(ws)).unwrap();
+
+    // a：registry 记录在案（sanitize id 同名）→ 保留。
+    let rec_a = VmInstanceRecord {
+        overlay: overlay_path(ws, "agent-a"),
+        ..sample_record("agent-a")
+    };
+    save_record(ws, "agent-a", &rec_a).expect("save record a");
+    std::fs::write(overlay_path(ws, "agent-a"), vec![0u8; 64]).unwrap();
+
+    // b：无任何引用 → 孤儿回收。
+    std::fs::write(vm_overlays_root(ws).join("agent-b.qcow2"), vec![0u8; 64]).unwrap();
+
+    // c：run 目录在但 registry 损坏 → 目录名兜底保守保留。
+    std::fs::create_dir_all(vm_run_dir(ws, "agent-c")).unwrap();
+    std::fs::write(vm_run_dir(ws, "agent-c").join("instance.json"), "not json{").unwrap();
+    std::fs::write(overlay_path(ws, "agent-c"), vec![0u8; 64]).unwrap();
+
+    // d：记录在案但记录里 overlay stem 与文件名不同（workspace 迁移过的
+    // 形态）——记录 stem 与 sanitize id 双引用都认 → 保留。
+    let rec_d = VmInstanceRecord {
+        overlay: PathBuf::from("Z:\\elsewhere\\agent-d.qcow2"),
+        ..sample_record("agent-d")
+    };
+    save_record(ws, "agent-d", &rec_d).expect("save record d");
+    std::fs::write(overlay_path(ws, "agent-d"), vec![0u8; 64]).unwrap();
+
+    // e：非 qcow2 文件（杂项）不碰。
+    std::fs::write(vm_overlays_root(ws).join("notes.txt"), b"x").unwrap();
+
+    // 换装残留：canonical 在场 → base.new 回收。
+    std::fs::write(vm_images_root(ws).join("base.qcow2"), vec![0u8; 64]).unwrap();
+    std::fs::write(vm_images_root(ws).join("base.new.qcow2"), vec![0u8; 64]).unwrap();
+
+    let sup = VmSupervisor::new(ws.to_path_buf(), ws.join("config.json"));
+    let removed = sup.sweep_disk_garbage();
+    assert_eq!(
+        removed, 2,
+        "恰好回收 agent-b.qcow2 + base.new.qcow2: {removed}"
+    );
+    assert!(overlay_path(ws, "agent-a").exists(), "在案 overlay 保留");
+    assert!(
+        overlay_path(ws, "agent-c").exists(),
+        "registry 损坏 → 目录名兜底保留"
+    );
+    assert!(overlay_path(ws, "agent-d").exists(), "记录 stem/双引用保留");
+    assert!(
+        !vm_overlays_root(ws).join("agent-b.qcow2").exists(),
+        "孤儿回收"
+    );
+    assert!(
+        vm_overlays_root(ws).join("notes.txt").exists(),
+        "非 qcow2 不碰"
+    );
+    assert!(
+        !vm_images_root(ws).join("base.new.qcow2").exists(),
+        "换装残留回收"
+    );
+    assert!(
+        vm_images_root(ws).join("base.qcow2").exists(),
+        "canonical base 不动"
+    );
+
+    // canonical 缺席形态：base.new 是唯一落点 → 不碰。
+    std::fs::remove_file(vm_images_root(ws).join("base.qcow2")).unwrap();
+    std::fs::write(vm_images_root(ws).join("base.new.qcow2"), vec![0u8; 64]).unwrap();
+    assert_eq!(
+        sup.sweep_disk_garbage(),
+        0,
+        "canonical 缺席 → base.new 保留"
+    );
+    assert!(vm_images_root(ws).join("base.new.qcow2").exists());
+}
+
+/// 引用集纯函数：run 目录名 + 记录 sanitize id + 记录 overlay stem 三族并集；
+/// run 根缺席 = 空集（此时所有 overlay 都成孤儿——全新 workspace 本来就
+/// 不该有 overlay，真出现即垃圾）。
+#[test]
+fn referenced_overlay_stems_three_families() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    assert!(referenced_overlay_stems(ws).is_empty(), "run 根缺席 = 空集");
+
+    let rec = VmInstanceRecord {
+        overlay: PathBuf::from("/moved/past.qcow2"),
+        ..sample_record("agent-x")
+    };
+    save_record(ws, "agent-x", &rec).expect("save");
+    let refs = referenced_overlay_stems(ws);
+    assert!(refs.contains("agent-x"), "run 目录名族: {refs:?}");
+    assert!(
+        refs.contains("past"),
+        "记录 overlay stem 族（迁移形态兜底）: {refs:?}"
+    );
+}
+
 /// 满员闸判定：max=0 = 恒满（诚实拒新——配置为 0 不该悄悄放行）。
 #[test]
 fn capacity_gate_table() {
@@ -305,6 +437,9 @@ async fn vm_settings_reads_and_gates() {
     assert_eq!(s.max_instances, 2);
     assert_eq!(s.resources.ram_mb, 2048);
     assert_eq!(s.idle_sleep_secs, 300);
+    // P5-R4：配置未写 ready_budget_secs 键 = 字段级缺省 240（原编译期
+    // 常量行为字节不变的回归锚——现读面与闸/超时消费同源）。
+    assert_eq!(s.ready_budget_secs, 240);
 }
 
 /// 关闭态零激活：ensure_running / sleep_agent 全部诚实 Unavailable。
@@ -1140,4 +1275,34 @@ fn starting_marker_guard_drop_removes() {
 
     // 陈旧界内的判定边界：缺席 = 不新鲜（不在途）。
     assert!(!starting_marker_fresh(&run.join("no-such-marker")));
+}
+
+// ---------------------------------------------------------------------------
+// P5-R1：browser 不进 guest 子集（独立 VmBrowserTool 通道的唯一性锚）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn browser_not_in_guest_subset_routes_via_dedicated_tool() {
+    // "browser" 刻意不在 VM_GUEST_TOOLS（子集闸对直接 execute_persistent
+    // 调用诚实拒绝）：browser 是独立能力面，唯一入口 = 宿主 VmBrowserTool
+    // （browser_call 同 call_guest 通路但不过子集闸——vm_runtime.rs 注记）。
+    assert!(!VM_GUEST_TOOLS.contains(&"browser"));
+    use nemesis_agent::remote_executor_tool::{PersistentCallError, PersistentExecutor};
+
+    let rt = tokio::runtime::Runtime::new().expect("rt");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_config(&tmp.path().join("config.json"), &full_vm_json(true));
+    let sup = VmSupervisor::new(tmp.path().to_path_buf(), tmp.path().join("config.json"));
+    let ctx = nemesis_agent::context::RequestContext::new("web", "c1", "u", "s1");
+    let err = rt
+        .block_on(async {
+            sup.execute_persistent("agent-1", tmp.path(), "browser", "{}", &ctx)
+                .await
+        })
+        .unwrap_err();
+    // 子集闸先于一切 IO：browser 调用 = ToolFailed（绝不回落宿主混用文件视图）。
+    assert!(
+        matches!(err, PersistentCallError::ToolFailed(ref m) if m.contains("browser")),
+        "browser 必须被子集闸拦成 ToolFailed: {err:?}"
+    );
 }

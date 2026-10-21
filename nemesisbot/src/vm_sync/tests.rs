@@ -738,3 +738,18 @@ fn diverged_parked_host_missing_then_host_appears_is_merge() {
         super::DivergedVerdict::KeepParked
     ));
 }
+
+// ---------------------------------------------------------------------------
+// P5-R1：.browser-profile 排除（登录态 VM 本地；D-P6-1 可迁移形态预埋）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn browser_profile_excluded_uploads_admitted() {
+    // guest chromium user-data-dir：cookies/缓存不进项目工作副本（体积与
+    // 正确性双考虑）——登录态经 VM overlay 持久，不走同步。
+    assert!(!admits(".browser-profile/Default/Cookies"));
+    assert!(!admits(".browser-profile")); // 精确目录名边缘形态
+    // uploads/ 刻意**不**排除：browser 截图落 <workspace>/uploads/，经
+    // vm_sync 回灌宿主 → vision 评审 M5 同源。
+    assert!(admits("uploads/browser-1730000000000.png"));
+}

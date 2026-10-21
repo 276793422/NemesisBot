@@ -1,0 +1,26 @@
+[package]
+name = "plugin-vm"
+version = "0.1.0"
+license = "AGPL-3.0-only"
+edition = "2021"
+description = "NemesisBot VM display plugin — VNC-aware frame relay between gateway shim and QEMU VNC (cdylib)"
+
+# Standalone project — NOT part of the main workspace (cdylib has separate
+# target). 体积纪律：VNC 语义全在本插件，主二进制零增量。
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# 显示通道 io 泵 + 会话调度（current_thread 不够——accept + per-session
+# 泵任务共跑，用多线程小 runtime）。
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros"] }
+# meta 握手行解析（一行 JSON {session_id, agent_id, mode}）。
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Build: cd plugins/plugin-vm && cargo build --release
+# Output: target/release/plugin_vm.dll (or libplugin_vm.so/.dylib)
+# Install: 拷到 nemesisbot.exe 同目录；装载闸 = 宿主 v4 签名 + 双向 ABI
+# （无签名库 dev 形态 warn 放行 / release 拒绝）。

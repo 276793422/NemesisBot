@@ -110,6 +110,10 @@ sandbox = ["dep:nemesis-sandbox"]
 # P5 桌面级 VM 管理面（vm.* WSAPI + Dashboard VM 页）。当前 handler 随
 # 步骤 4 落地；feature 先在位（编译开关三线同步原则），关 = 空闸。
 vm = []
+# P5-R2 带界面 VM 显示通道（/ws/vm-display VNC 无知 shim：浏览器 WS ⇄
+# plugin-vm 回环 TCP 帧中继）。VNC 语义全在插件；关 = 端点不编译
+# （体积纪律：可选显示面不进主二进制）。
+vm-display = []
 # WASM 插件管理面（plugins.wasm.* WSAPI；宿主运行时整槽注入）。
 # dep:zip = wasm.devkit_download 的解包（与 skins 共享同一 crate 同一
 # feature 集；skins 关、plugins-wasm 开的构建也能解包）。

@@ -37,6 +37,10 @@ pub mod tools;
 // bulk_delete）：gateway 同步引擎专用通道（internal_call），**不进 agent
 // 工具面**——宿主侧 VM_GUEST_TOOLS 子集闸不认识它们。
 pub(crate) mod bulk;
+// P5-R1 guest 内浏览器（headless chromium + CDP）：宿主 `browser` 工具的
+// 执行体，经 tools::dispatch 的 "browser" 分支进入。与 bulk 同理不进
+// VM_GUEST_TOOLS 子集（宿主 VmBrowserTool 是唯一入口）。
+pub(crate) mod browser;
 
 /// guest 工作区边界（`NEMESISBOT_GUEST_WORKSPACE`，缺省 `/workspace`）。
 /// VM 内的根 = 挂载共享子树的挂载点（第 2 步接真实 virtiofs/9p 路径）。

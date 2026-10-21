@@ -425,6 +425,20 @@ pub(crate) struct ImageBuildInputs {
     pub arch: String,
     pub base_url: String,
     pub sha256: String,
+    /// 镜像 variant（P5-R2 ② 接线）：config `desktop: "full"` →
+    /// `--variant desktop`（带桌面镜像——display=vnc 的前置）；`minimal` →
+    /// 空（脚本默认 base variant）。与 scripts/build-vm-image.sh 的
+    /// VARIANT 值域同源。
+    pub variant_arg: Vec<String>,
+}
+
+/// config `desktop` → 构建脚本 variant 参数（P5-R2 ② 接线；两臂同源消费）。
+/// `full` = `["--variant", "desktop"]`；`minimal` = 空（脚本默认 base）。
+pub(crate) fn variant_args(desktop: &str) -> Vec<String> {
+    match desktop {
+        "full" => vec!["--variant".to_string(), "desktop".to_string()],
+        _ => Vec::new(),
+    }
 }
 
 pub(crate) fn image_build_inputs(
@@ -469,6 +483,7 @@ pub(crate) fn image_build_inputs(
                     arch: settings.arch.clone(),
                     base_url: settings.image.source.clone(),
                     sha256: settings.image.sha256.clone(),
+                    variant_arg: variant_args(&settings.desktop),
                 })
             }
             WslState::NoDistro => Err(
@@ -502,6 +517,7 @@ pub(crate) fn image_build_inputs(
             arch: settings.arch.clone(),
             base_url: settings.image.source.clone(),
             sha256: settings.image.sha256.clone(),
+            variant_arg: variant_args(&settings.desktop),
         })
     }
 }
@@ -811,6 +827,7 @@ impl VmBridge for VmSupervisor {
                 inputs.base_url,
                 inputs.sha256,
                 inputs.arch,
+                inputs.variant_arg,
                 update,
             )
             .await;
@@ -867,6 +884,8 @@ impl VmBridge for VmSupervisor {
 
     async fn gc_run(&self) -> serde_json::Value {
         let swept = self.sweep_orphans().await;
+        // P5-R4：手动 GC 面同吃磁盘垃圾回收（孤儿 overlay / 换装残留）。
+        let disk_gc = self.sweep_disk_garbage();
         let used = disk_usage_bytes(self.workspace());
         let decision = self.vm_config().map(|c| match gc_decision(used, &c.gc) {
             GcDecision::Allow => serde_json::json!({ "verdict": "allow" }),
@@ -879,6 +898,7 @@ impl VmBridge for VmSupervisor {
         });
         serde_json::json!({
             "swept_orphans": swept,
+            "swept_disk_garbage": disk_gc,
             "used_gb": used / GIB,
             "decision": decision,
         })
@@ -1410,6 +1430,9 @@ fn record_json(
         "disk_gb": r.disk_gb,
         "has_snapshot": r.snapshot_tag.is_some(),
         "has_state_file": r.state_path.is_some(),
+        // P5-R2 显示面：display_port 在场（运行中实例）= 前端「查看屏幕」
+        // 入口的能力依据之一（配合 config display + 插件在位探测）。
+        "display_port": r.display_port,
     })
 }
 
@@ -1511,6 +1534,7 @@ async fn run_image_build(
     base_url: String,
     sha256: String,
     arch: String,
+    variant_arg: Vec<String>,
     update: bool,
 ) {
     let log_path = image_build_log_path(&workspace);
@@ -1560,6 +1584,11 @@ async fn run_image_build(
         .arg(&base_url)
         .arg("--arch")
         .arg(&arch);
+    // P5-R2 ②：desktop=full → --variant desktop（带桌面镜像——display=vnc
+    // 的前置；minimal = 脚本默认 base variant）。
+    for a in &variant_arg {
+        cmd.arg(a);
+    }
     if !sha256.is_empty() {
         cmd.arg("--sha256").arg(&sha256);
     }

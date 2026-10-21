@@ -3621,6 +3621,8 @@ fn try_parent_remediation(
         required_role: parent.required_role.clone(),
         required_tags: parent.required_tags.clone(),
         required_profession: parent.required_profession.clone(),
+        // P6-R1：返工单继承父单 backend 需求——重做的工作形态与原单一致。
+        required_backend: parent.required_backend.clone(),
         required_capabilities: parent.required_capabilities.clone(),
         ..Default::default()
     })?;

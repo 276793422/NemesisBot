@@ -179,6 +179,7 @@ impl ModuleHandler for VmHandler {
             "sync.status",
             "commit",
             "resync",
+            "display.status",
         ]
     }
 
@@ -290,6 +291,48 @@ impl ModuleHandler for VmHandler {
                 let data = data.ok_or("missing data")?;
                 let project = crate::handlers::get_str(&data, "project")?;
                 Ok(Some(bridge.sync_resync(&project).await?))
+            }
+            // P5-R2 ⑥：显示能力探针（**只读，无闸**——查询不是动作；前端
+            // 据此决定「查看屏幕」入口是否可见与提示文案）。三段拼装：
+            // ① `compiled`（vm-display feature 编译态）② config display /
+            // desktop 现值 ③ 插件 endpoint（None = plugin-vm 未装载或
+            // feature 未编译——二者前端用 compiled 区分）。
+            "display.status" => {
+                let cfg = bridge.config_get();
+                let display = cfg
+                    .as_ref()
+                    .and_then(|v| v.get("display"))
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("none")
+                    .to_string();
+                let desktop = cfg
+                    .as_ref()
+                    .and_then(|v| v.get("desktop"))
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("minimal")
+                    .to_string();
+                let resolution = cfg
+                    .as_ref()
+                    .and_then(|v| v.get("display_resolution"))
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("1280x720")
+                    .to_string();
+                #[cfg(feature = "vm-display")]
+                let endpoint = crate::vm_display::endpoint().map(|e| {
+                    serde_json::json!({
+                        "listen_port": e.listen_port,
+                        "plugin_abi_version": e.plugin_abi_version,
+                    })
+                });
+                #[cfg(not(feature = "vm-display"))]
+                let endpoint: Option<serde_json::Value> = None;
+                Ok(Some(serde_json::json!({
+                    "compiled": cfg!(feature = "vm-display"),
+                    "display": display,
+                    "desktop": desktop,
+                    "display_resolution": resolution,
+                    "endpoint": endpoint,
+                })))
             }
             _ => Err(format!("unknown vm cmd: {cmd}")),
         }

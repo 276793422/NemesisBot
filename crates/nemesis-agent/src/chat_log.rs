@@ -833,6 +833,16 @@ pub fn write_session_meta_manual(session_key: &str, title: &str) {
     });
 }
 
+/// P6-R4（D4 预留）：会话 → principal 首绑（`process_admitted` 会话首建
+/// 时一次写入；只写不读，空串 = 无主体不落盘）。RMW 保留既有 lineage/
+/// title 等字段（upsert_meta 同源语义）。
+pub fn write_session_meta_principal(session_key: &str, principal: &str) {
+    if principal.trim().is_empty() {
+        return;
+    }
+    upsert_meta(session_key, |m| m.principal = Some(principal.to_string()));
+}
+
 /// E7: 会话侧栏的默认占位标题（sessions create 未显式命名时写入）。
 /// 自动标题允许覆盖它（占位符不是用户意志）。
 pub const DEFAULT_SESSION_TITLE: &str = "新对话";
@@ -1205,6 +1215,12 @@ pub struct SessionMeta {
     /// B11：暂停备注（用户可选说明，唤醒注入行尾追加；None = 无）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snooze_note: Option<String>,
+    /// P6-R4（D4 预留）：会话首绑 principal（`{channel}/{sender_id}`，映射
+    /// 单一真相源 `nemesis_types::channel::principal_for_channel`）。只写
+    /// 不读——多租户闸不做，消费方出现前任何代码不得据它分叉行为。
+    /// None = 未绑定（cron/heartbeat/system 等无主体来源，或旧文件）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal: Option<String>,
 }
 
 /// WS9/P17：一次消息级回退的谱系记录（`last_rewind` 的载荷）。

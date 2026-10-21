@@ -269,6 +269,10 @@ pub struct VmStartParams {
     pub loadvm_tag: Option<String>,
     /// wake 线 B：migrate-to-file 状态文件（睡眠实例重挂用；冷启 None）。
     pub incoming_file: Option<PathBuf>,
+    /// 显示面（P5-R2）：Some(port) = VNC 监听真实 TCP 端口（127.0.0.1，
+    /// 装配层按 display=port-5900 反向换算进 QEMU 参数）；None =
+    /// `-display none`（默认）。端口由 caller 走 [`alloc_loopback_port`]。
+    pub display_vnc_port: Option<u16>,
 }
 
 /// 运行中的 VM 实例（QEMU 子进程句柄 + 控制面/数据面地址）。
@@ -281,6 +285,9 @@ pub struct VmInstance {
     pub qmp_addr: SocketAddr,
     /// guest agent 数据面地址（hostfwd 宿主侧，127.0.0.1 临时端口）。
     pub agent_addr: SocketAddr,
+    /// VNC 显示端口（127.0.0.1；display=none 为 None——插件经宿主查询
+    /// 后直连此端口做字节泵）。
+    pub display_port: Option<u16>,
     /// pidfile 路径（孤儿 sweep 通道锚点，第 3 步消费）。
     pub pidfile: PathBuf,
     /// per-instance 鉴权 token。
@@ -311,6 +318,7 @@ impl VmInstance {
             shared_host_path: p.shared_host_path.clone(),
             loadvm_tag: p.loadvm_tag.clone(),
             incoming_file: p.incoming_file.clone(),
+            display_vnc_port: p.display_vnc_port,
         };
         // 装配闸（逗号/wake 互斥）：spawn 前诚实拒绝，不带病上岗。
         if let Err(reason) = validate_launch_spec(&spec) {
@@ -326,10 +334,27 @@ impl VmInstance {
         })?;
 
         let mut cmd = tokio::process::Command::new(&p.qemu_bin);
+        // 串口全量捕获（cloud 镜像 grub 自带 console=ttyS0）：boot/cloud-init
+        // 输出落 run_dir/serial.log——首启装配失败（packages 卡死 / runcmd
+        // 中断）从宿主侧直接定性，不再靠 QMP 截屏盲猜（2026-10-21 VNC 演示
+        // 实录：fresh 首启两轮长静默，QMP 截屏只见 X 黑屏，guest 内原因
+        // 不可见）。反斜杠换正斜杠——chardev file: 路径不吃反斜杠转义风险。
+        let serial_str = p
+            .run_dir
+            .join("serial.log")
+            .to_string_lossy()
+            .replace('\\', "/");
+        cmd.arg("-serial").arg(format!("file:{serial_str}"));
         cmd.args(&args)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::from(stderr_file));
+            .stderr(std::process::Stdio::from(stderr_file))
+            // 句柄消失 = QEMU 收割（kill_on_drop）：gateway 任何形态退出
+            // （优雅停机/Ctrl-C/裸杀）槽位 VmInstance 随之 drop，不挂这个
+            // QEMU 就变孤儿进程吃满内存（VM-UAT 实录：两个 2GB 孤儿污染
+            // 后续测试的「qemu→0」全局计数）。VM 生命周期完全由 gateway
+            // 持有——没有「脱离网关继续跑」的产品语义，fail-closed 正确。
+            .kill_on_drop(true);
         // 后台形态：不弹窗（Windows CREATE_NO_WINDOW；对齐仓库后台进程纪律）。
         #[cfg(target_os = "windows")]
         {
@@ -348,10 +373,32 @@ impl VmInstance {
         let is_wake = p.loadvm_tag.is_some() || p.incoming_file.is_some();
         Self::wait_qmp_ready(&mut child, qmp_addr, &stderr_path, is_wake).await?;
 
+        // VNC 绑定验证（2026-10-21 事故缺口）：QEMU 对 -vnc 绑定失败**非
+        // 致命**（warn 后继续无显示跑）——registry 记着幻影端口 = 插件永久
+        // 连不上（当日实录：插件 session_reject vnc_connect_failed）。QMP
+        // 就绪时 VNC listener 早已建立（QEMU 初始化期先于 QMP），此刻 TCP
+        // 探针缺席 = 绑定确实失败，fail-closed 拒绝上岗（child kill_on_drop
+        // 收割，不留无显示的僵尸实例）。
+        if let Some(vnc_port) = p.display_vnc_port {
+            let vnc_addr = format!("127.0.0.1:{vnc_port}");
+            let probe = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                tokio::net::TcpStream::connect(&vnc_addr),
+            )
+            .await;
+            if !matches!(probe, Ok(Ok(_))) {
+                return Err(VmError::Launch(format!(
+                    "QEMU VNC 端口 {vnc_addr} 未监听（绑定失败或竞窗被抢；stderr 见 {}）",
+                    stderr_path.display()
+                )));
+            }
+        }
+
         tracing::info!(
             id = %p.id,
             %qmp_port,
             %host_port,
+            display_port = ?p.display_vnc_port,
             accel = p.accel.as_str(),
             "[vm] QEMU 实例已启动（QMP 就绪）"
         );
@@ -360,6 +407,7 @@ impl VmInstance {
             child,
             qmp_addr,
             agent_addr,
+            display_port: p.display_vnc_port,
             pidfile: spec.pidfile,
             token: p.token,
             run_dir: p.run_dir,

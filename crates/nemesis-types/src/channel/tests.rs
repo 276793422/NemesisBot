@@ -559,3 +559,27 @@ fn test_open_files_from_metadata_missing_or_garbage_is_empty() {
     md.insert("open_files".to_string(), "[1,2]".to_string());
     assert!(open_files_from_metadata(&md).is_empty());
 }
+
+// -- P6-R4（D4 预留）：principal 映射 ---------------------------------------
+
+#[test]
+fn test_principal_for_channel_composite_shape() {
+    // 复合键形态与集群跨节点 sender 键同形：{channel}/{sender}。
+    assert_eq!(
+        principal_for_channel("web", "user-42"),
+        "web/user-42".to_string()
+    );
+    assert_eq!(
+        principal_for_channel("telegram", "12345"),
+        "telegram/12345".to_string()
+    );
+}
+
+#[test]
+fn test_principal_for_channel_empty_sender_unbound() {
+    // cron/heartbeat/system 等无主体来源 → 空串 = 不绑定。
+    assert_eq!(principal_for_channel("system", ""), "");
+    assert_eq!(principal_for_channel("cron", "   "), "");
+    // channel 为空但 sender 在场 → 绑定形态保持诚实（不虚构通道名）。
+    assert_eq!(principal_for_channel("", "u1"), "/u1");
+}

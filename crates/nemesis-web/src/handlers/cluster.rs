@@ -1484,6 +1484,26 @@ impl ClusterHandler {
             updated["tier"] = serde_json::json!(parsed);
             tier_parsed = Some(parsed);
         }
+        // P6-R1：runtime_backend 宣告编辑（process|vm；null/空 = 清除未宣告
+        // 状态）。与 tier 同款：运行时热改写（下一 announce 拍生效）+
+        // peers.toml [node] 段持久化。值域单一真相源与 matcher 硬条件 6
+        // 对齐（非空需求要求节点精确宣告同值，未宣告 fail-closed 排除）。
+        let mut backend_parsed: Option<Option<String>> = None;
+        if let Some(v) = data.get("runtime_backend") {
+            let b = v.as_str().map(str::trim).unwrap_or("").to_ascii_lowercase();
+            let parsed = if b.is_empty() {
+                None
+            } else if matches!(b.as_str(), "process" | "vm") {
+                Some(b)
+            } else {
+                return Err(
+                    "runtime_backend must be 'process'/'vm' or null (undeclared)".to_string(),
+                );
+            };
+            cluster.set_runtime_backend(parsed.clone());
+            updated["runtime_backend"] = serde_json::json!(parsed);
+            backend_parsed = Some(parsed);
+        }
 
         // Persist to peers.toml [node] section
         if let Ok(workspace) = require_workspace(ctx) {
@@ -1511,6 +1531,9 @@ impl ClusterHandler {
                 }
                 if let Some(t) = &tier_parsed {
                     node.tier = t.clone();
+                }
+                if let Some(b) = &backend_parsed {
+                    node.runtime_backend = b.clone();
                 }
                 Ok(())
             })?;

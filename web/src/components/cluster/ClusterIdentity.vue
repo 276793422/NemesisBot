@@ -20,6 +20,9 @@ const capabilities = ref<string[]>([])
 // 职能框架 M6：自报职能（看板派发匹配的硬条件数据源）+ 节点档位。
 const professions = ref<string[]>([])
 const nodeTier = ref('')
+// P6-R1：运行时后端宣告（process|vm；planner 给子单标 required_backend 时
+// 只派给精确宣告同值的节点，未宣告 = fail-closed 排除）。空串 = 未宣告。
+const nodeBackend = ref('')
 
 // 内置职能目录（与后端 nemesis-prompts::professions::meta::CATALOG 一致；
 // min_tier 标注派发闸要求——声明 architecture/dev:cpp 的节点需要 big 档）。
@@ -62,6 +65,7 @@ async function loadIdentity() {
     if (me) {
       professions.value = me.professions ?? []
       nodeTier.value = me.tier ?? ''
+      nodeBackend.value = me.runtime_backend ?? ''
     }
   } catch { /* ignore */ }
 }
@@ -76,6 +80,7 @@ async function saveIdentity() {
       tags: tags.value,
       professions: professions.value,
       tier: nodeTier.value || null,
+      runtime_backend: nodeBackend.value || null,
     })
     toast.success('节点身份已更新')
   } catch (e: any) {
@@ -199,6 +204,17 @@ onMounted(async () => {
             <option value="mini">mini（小模型档）</option>
             <option value="normal">normal（中模型档）</option>
             <option value="big">big（大模型档）</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">
+            运行时后端
+            <span class="form-hint" title="本节点执行子单的形态宣告：process=常规进程，vm=虚拟机（浏览器/GUI 等隔离环境）。planner 标注 required_backend 的子单只派给精确宣告同值的节点，未宣告 = 不派（fail-closed）。留空 = 未宣告。">ⓘ</span>
+          </label>
+          <select class="form-input" v-model="nodeBackend" style="width:240px">
+            <option value="">未宣告（不接 backend 闸任务）</option>
+            <option value="process">process（常规进程执行）</option>
+            <option value="vm">vm（虚拟机执行）</option>
           </select>
         </div>
         <div class="form-group" v-if="capabilities.length">

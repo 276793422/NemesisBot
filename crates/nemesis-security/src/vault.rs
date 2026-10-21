@@ -369,6 +369,132 @@ impl VaultStore {
         &self.path
     }
 
+    /// 导出若干别名为可迁移密文 blob（P6-R2 agent 迁移）。
+    ///
+    /// 语义：用**随机一次性导出 DEK** 重封所选条目（AES-256-GCM，AAD 仍是
+    /// 别名——与 [`VaultEntry`] 常规落盘形态完全同构），导出 DEK 经
+    /// Argon2id + `passphrase` 包裹进 blob 头。`passphrase` 由调用方随机
+    /// 生成、只随迁移 commit RPC 传递，**绝不落盘**——blob 全程密文。
+    /// 元数据（domain/description/created_at/rotated_at）原样保留。
+    ///
+    /// 错误：未解锁 → [`VaultError::Locked`]；任一别名不在场 →
+    /// [`VaultError::UnknownAlias`]（loud，调用方先校验清单）。
+    pub fn export_entries(
+        &self,
+        aliases: &[String],
+        passphrase: &str,
+    ) -> Result<Vec<u8>, VaultError> {
+        let src_dek = self.dek()?;
+        // 先校验全部别名在场，再动密码学（fail fast，不做半份导出）。
+        for a in aliases {
+            if !self.file.entries.contains_key(a) {
+                return Err(VaultError::UnknownAlias(a.clone()));
+            }
+        }
+        let mut export_dek = vec![0u8; DEK_LEN];
+        OsRng.fill_bytes(&mut export_dek);
+        let mut file = VaultFile {
+            version: FORMAT_VERSION,
+            mode: VaultMode::Argon2id,
+            dpapi_blob: None,
+            wrap_salt: None,
+            wrap_nonce: None,
+            argon2: None,
+            wrapped_dek: None,
+            entries: BTreeMap::new(),
+        };
+        seal_dek_into(
+            &mut file,
+            VaultMode::Argon2id,
+            &export_dek,
+            Some(passphrase),
+        )?;
+        for a in aliases {
+            let e = &self.file.entries[a];
+            let nonce = decode_nonce(&e.nonce)?;
+            let ct = B64
+                .decode(&e.ciphertext)
+                .map_err(|err| VaultError::Corrupted(format!("密文 base64 解码失败: {err}")))?;
+            let pt = aead_open(src_dek, &nonce, &ct, a.as_bytes())?;
+            let mut out_nonce = [0u8; NONCE_LEN];
+            OsRng.fill_bytes(&mut out_nonce);
+            let out_ct = aead_seal(&export_dek, &out_nonce, &pt, a.as_bytes())?;
+            file.entries.insert(
+                a.clone(),
+                VaultEntry {
+                    domain: e.domain.clone(),
+                    description: e.description.clone(),
+                    created_at: e.created_at.clone(),
+                    rotated_at: e.rotated_at.clone(),
+                    nonce: B64.encode(out_nonce),
+                    ciphertext: B64.encode(out_ct),
+                },
+            );
+        }
+        serde_json::to_vec(&file).map_err(|e| VaultError::Crypto(format!("序列化失败: {e}")))
+    }
+
+    /// 从 [`VaultStore::export_entries`] 产物导入条目（P6-R2 agent 迁移）。
+    ///
+    /// 语义：用 `passphrase` 还原导出 DEK，把每条目用**本 vault 的 DEK**
+    /// 重封落进本 vault（已存在的别名按 `set` 轮换语义覆盖，元数据保留
+    /// blob 里的原始 created_at/rotated_at）。调用方自行 `save()` 持久化
+    /// （与 `set`/`remove` 同约定）。返回导入的别名清单。
+    ///
+    /// 错误：blob 解析失败/版本不符 → [`VaultError::Corrupted`]；
+    /// passphrase 错 →
+    /// [`VaultError::WrongPassphrase`]；本 vault 未解锁 →
+    /// [`VaultError::Locked`]。
+    pub fn import_entries(
+        &mut self,
+        blob: &[u8],
+        passphrase: &str,
+    ) -> Result<Vec<String>, VaultError> {
+        let parsed: VaultFile = serde_json::from_slice(blob)
+            .map_err(|e| VaultError::Corrupted(format!("迁移凭据 blob 解析失败: {e}")))?;
+        if parsed.version != FORMAT_VERSION {
+            return Err(VaultError::Corrupted(format!(
+                "迁移凭据 blob 版本 {} 不受支持（当前支持 {FORMAT_VERSION}）",
+                parsed.version
+            )));
+        }
+        // 导出产物恒为 Argon2id（export_entries 构造约束）；dpapi 头意味着
+        // 篡改或异源 blob，loud 拒绝。
+        if parsed.mode != VaultMode::Argon2id {
+            return Err(VaultError::Corrupted(
+                "迁移凭据 blob 模式非法（应为 argon2id）".into(),
+            ));
+        }
+        let export_dek = unwrap_dek(&parsed, Some(passphrase))?;
+        // dek() 借用 self；循环里要 mutate entries，先拿 owned。
+        let dst_dek = self.dek()?.to_vec();
+        let mut imported = Vec::with_capacity(parsed.entries.len());
+        for (alias, e) in &parsed.entries {
+            validate_alias(alias)?;
+            let nonce = decode_nonce(&e.nonce)?;
+            let ct = B64
+                .decode(&e.ciphertext)
+                .map_err(|err| VaultError::Corrupted(format!("密文 base64 解码失败: {err}")))?;
+            let pt = aead_open(&export_dek, &nonce, &ct, alias.as_bytes())?;
+            let mut out_nonce = [0u8; NONCE_LEN];
+            OsRng.fill_bytes(&mut out_nonce);
+            let out_ct = aead_seal(&dst_dek, &out_nonce, &pt, alias.as_bytes())?;
+            self.file.entries.insert(
+                alias.clone(),
+                VaultEntry {
+                    domain: e.domain.clone(),
+                    description: e.description.clone(),
+                    created_at: e.created_at.clone(),
+                    rotated_at: e.rotated_at.clone(),
+                    nonce: B64.encode(out_nonce),
+                    ciphertext: B64.encode(out_ct),
+                },
+            );
+            imported.push(alias.clone());
+        }
+        Ok(imported)
+    }
+
     fn dek(&self) -> Result<&[u8], VaultError> {
         self.dek.as_deref().ok_or(VaultError::Locked)
     }

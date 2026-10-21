@@ -109,7 +109,7 @@ impl AgentLoopManager {
         }
         if record.status != nemesis_taskstore::agents::status::ACTIVE {
             return Err(format!(
-                "agent {agent_id} 状态为 {}，当前不可会话（provisioning 会随启动 sweep 收敛；failed 需人工处理）",
+                "agent {agent_id} 状态为 {}，当前不可会话（provisioning 会随启动 sweep 收敛；migrating 表示跨节点迁移进行中，结束后自动恢复或随源端收敛；failed 需人工处理）",
                 record.status
             ));
         }
@@ -299,5 +299,17 @@ impl AgentLoopManager {
     #[allow(dead_code)]
     pub fn is_running(&self, agent_id: &str) -> bool {
         self.state.lock().unwrap().contains_key(agent_id)
+    }
+
+    /// 渠道排队深度（P6-R2 迁移前置检查；None = loop 不在场/无渠道）。
+    /// 迁移编排用它在停 loop 前做「在途任务诚实拒绝」判定——排队消息
+    /// 未消费时拒绝迁移，等用户等消息处理完。tokio mpsc 不直接暴露
+    /// len——用 max_capacity - 剩余 permit 推导（创建时 1024 定容）。
+    pub fn has_queued(&self, agent_id: &str) -> Option<usize> {
+        self.channels
+            .lock()
+            .unwrap()
+            .get(agent_id)
+            .map(|tx| tx.max_capacity().saturating_sub(tx.capacity()))
     }
 }

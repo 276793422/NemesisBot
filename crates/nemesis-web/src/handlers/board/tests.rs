@@ -1823,6 +1823,7 @@ fn sub(title: &str, deps: Vec<usize>) -> nemesis_board::PlannedSubIssue {
         required_role: String::new(),
         required_tags: Vec::new(),
         required_profession: String::new(),
+        required_backend: String::new(),
         required_capabilities: vec![],
         acceptance_criteria: format!("- [ ] {title} 验收"),
         depends_on: deps,
@@ -2997,6 +2998,7 @@ async fn test_confirm_plan_subs_inherit_parent_project_id() {
             required_role: String::new(),
             required_tags: Vec::new(),
             required_profession: String::new(),
+            required_backend: String::new(),
             required_capabilities: vec![],
             acceptance_criteria: String::new(),
             depends_on: Vec::new(),
@@ -5069,6 +5071,7 @@ fn cand(id: &str, role: &str, tags: &[&str]) -> nemesis_board::PeerCandidate {
         capabilities: vec![],
         professions: vec![],
         tier: None,
+        runtime_backend: None,
     }
 }
 
@@ -5095,6 +5098,7 @@ fn bare_issue(role: Option<&str>, tags: &[&str]) -> nemesis_board::Issue {
         required_role: role.map(str::to_string),
         required_tags: tags.iter().map(|s| s.to_string()).collect(),
         required_profession: None,
+        required_backend: None,
         required_capabilities: vec![],
         requires_evidence: false,
         created_at: 0,
@@ -8378,6 +8382,7 @@ async fn w5_confirm_plan_empty_title_err_and_dispatch_wave() {
         required_role: String::new(),
         required_tags: Vec::new(),
         required_profession: String::new(),
+        required_backend: String::new(),
         required_capabilities: vec![],
         acceptance_criteria: String::new(),
         depends_on: Vec::new(),

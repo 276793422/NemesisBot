@@ -1,6 +1,6 @@
 //! Swarm M1：智能选节点匹配器（纯函数，无集群依赖）。
 //!
-//! 打分语义（impl-plan §3.2 + 集群专业职能框架 M2）：
+//! 打分语义（impl-plan §3.2 + 集群专业职能框架 M2 + P6-R1 backend 闸）：
 //! - `required_role` 是**硬条件**：给了但无人精确命中 → 空结果（诚实留
 //!   backlog，不硬塞给错误角色）；
 //! - `required_tags` 是**硬条件**：给了则必须有交集；
@@ -13,6 +13,11 @@
 //!   非空则节点必须**全量命中**所列能力词（大小写不敏感、trim 后精确词
 //!   匹配）。**不参与松弛**——环境缺口松弛不出来，D13 阶梯每一级都带本
 //!   条件（无节点具备 = 诚实停车，不硬塞给装不出环境的节点）；
+//! - **硬条件 6（backend 闸，P6-R1 2026-10-21）**：`required_backend`
+//!   非空则节点必须**精确宣告同值**（`process`|`vm`，大小写不敏感）。
+//!   节点未宣告（None）= **fail-closed 排除**——形态错配是环境事实不是
+//!   能力档位，与 capabilities 硬条件 5 同款、刻意不同于 tier 闸的
+//!   fail-open。**不参与松弛**（同硬条件 5：进程节点松弛不出 VM）；
 //! - capabilities 对描述的词面覆盖是**加分项**（+5/命中，封顶 15）；
 //! - 排序：(分数↓, 负载↑, name 字典序) —— 同分时选最闲的节点。
 //!
@@ -36,6 +41,9 @@ pub struct PeerCandidate {
     pub professions: Vec<String>,
     /// 节点自报档位（mini/normal/big；None = 未宣告，tier 闸 fail-open）。
     pub tier: Option<String>,
+    /// 节点宣告的运行时后端（P6-R1：`process`|`vm`；None = 未宣告，
+    /// backend 闸 fail-closed——需求非空时直接排除）。
+    pub runtime_backend: Option<String>,
 }
 
 /// 匹配输入（子单的派发需求侧）。
@@ -50,6 +58,10 @@ pub struct MatchInput<'a> {
     /// 需求能力词（硬条件 5，NB-122 批）：非空则必须全量命中节点
     /// capabilities；**不参与松弛**。空 = 不限能力。
     pub required_capabilities: &'a [String],
+    /// 需求运行时后端（硬条件 6，P6-R1）：非空则节点必须精确宣告同值
+    /// （大小写不敏感；节点未宣告 = 排除）；**不参与松弛**。
+    /// None/空 = 不过闸（旧节点混编零回归）。
+    pub required_backend: Option<&'a str>,
     /// 子单描述（capabilities 词面覆盖加分用；小写比较）。
     pub description: &'a str,
 }
@@ -82,6 +94,12 @@ pub fn rank_peers(
         .as_deref()
         .and_then(nemesis_prompts::professions::meta::find_builtin)
         .map(|m| m.min_tier);
+    // backend 需求归一（trim + 小写）；空串视作未给（不过闸）。
+    let backend_need = input
+        .required_backend
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_lowercase);
 
     let mut scored: Vec<(String, i64, usize)> = peers
         .iter()
@@ -128,6 +146,18 @@ pub fn rank_peers(
                             .capabilities
                             .iter()
                             .any(|c| c.trim().eq_ignore_ascii_case(need))
+                })
+            {
+                return None;
+            }
+            // 硬条件 6：backend 精确命中（P6-R1；大小写不敏感）。节点未宣告
+            // （None）= fail-closed 排除——形态错配是环境事实不是能力档位，
+            // 刻意不同于 tier 闸的 fail-open。不参与松弛（进程节点松弛不出
+            // VM，pick_relaxed 各级 make() 原样携带本条件）。
+            if let Some(need) = &backend_need
+                && !peer.runtime_backend.as_deref().is_some_and(|b| {
+                    let b = b.trim();
+                    !b.is_empty() && b.to_lowercase() == *need
                 })
             {
                 return None;
@@ -209,6 +239,10 @@ pub fn pick_relaxed<'a>(
             // 硬条件 5 不参与松弛（NB-122 批）：能力是环境事实，松弛各级
             // 原样携带——无节点具备 = 全阶梯走完仍 None = 调用方诚实停车。
             required_capabilities: base.required_capabilities,
+            // 硬条件 6 同款（P6-R1）：进程节点松弛不出 VM——backend 需求
+            // 各级原样携带，无 VM 节点 = 全阶梯走完仍 None = 诚实停车
+            // （D-P6-2 裁决）。
+            required_backend: base.required_backend,
             description: base.description,
         }
     }

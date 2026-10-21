@@ -55,6 +55,12 @@ pub struct PlannedSubIssue {
     /// 空串 = 无职能需求。格式校验见 [`parse_plan`]（D9 三臂）。
     #[serde(default)]
     pub required_profession: String,
+    /// 派发需求运行时后端（P6-R1，2026-10-21）：`process`|`vm`（大小写
+    /// 不敏感，解析期小写归一）；空串 = 无需求不过闸。匹配端是精确命中
+    /// 加 fail-closed 硬闸、不参与松弛（见 matcher 硬条件 6）。值域校验见
+    /// [`parse_plan`]。
+    #[serde(default)]
+    pub required_backend: String,
     /// 环境能力硬条件（NB-122 批 2026-10-16）：执行所需节点能力词（小写
     /// 短词，与节点宣告的 capabilities 同词表）。匹配是**全量硬闸**——每项
     /// 都必须命中，且不参与松弛（环境缺口松弛不出来）；空 = 无能力需求。
@@ -91,7 +97,7 @@ pub fn parse_plan(raw: &str) -> Result<Vec<PlannedSubIssue>, PlanParseError> {
             .to_string(),
     })?;
 
-    let plan: Vec<PlannedSubIssue> =
+    let mut plan: Vec<PlannedSubIssue> =
         serde_json::from_str(&json_text).map_err(|e| PlanParseError {
             message: format!("JSON 解析失败：{e}。请检查引号/逗号/字段类型，只输出 JSON 数组。"),
         })?;
@@ -109,11 +115,22 @@ pub fn parse_plan(raw: &str) -> Result<Vec<PlannedSubIssue>, PlanParseError> {
             ),
         });
     }
-    for (i, sub) in plan.iter().enumerate() {
+    // 数量在循环前定死（iter_mut 借用期间不能取 plan.len()）。
+    let total = plan.len();
+    for (i, sub) in plan.iter_mut().enumerate() {
         if sub.title.trim().is_empty() {
             return Err(PlanParseError {
                 message: format!("第 {i} 个子任务的 title 为空。每个子任务都必须有非空标题。"),
             });
+        }
+        // required_backend 归一在严格臂就地完成（大小写不敏感是设计语义，
+        // "VM"/" Process" 都收编为合法值再校验值域）。
+        if !sub.required_backend.trim().is_empty() {
+            let normalized = sub.required_backend.trim().to_ascii_lowercase();
+            if let Some(err) = backend_format_error(i, &normalized) {
+                return Err(err);
+            }
+            sub.required_backend = normalized;
         }
         if let Some(err) = profession_format_error(i, &sub.required_profession) {
             return Err(err);
@@ -122,12 +139,11 @@ pub fn parse_plan(raw: &str) -> Result<Vec<PlannedSubIssue>, PlanParseError> {
             return Err(err);
         }
         for &dep in &sub.depends_on {
-            if dep >= plan.len() {
+            if dep >= total {
                 return Err(PlanParseError {
                     message: format!(
-                        "第 {i} 个子任务的 depends_on 引用了序号 {dep}，但本批只有 {} 个子任务（序号 0-{}）。",
-                        plan.len(),
-                        plan.len() - 1
+                        "第 {i} 个子任务的 depends_on 引用了序号 {dep}，但本批只有 {total} 个子任务（序号 0-{}）。",
+                        total - 1
                     ),
                 });
             }
@@ -158,6 +174,20 @@ fn profession_format_error(index: usize, raw: &str) -> Option<PlanParseError> {
     nemesis_prompts::professions::meta::validate_slug(trimmed).err().map(|e| PlanParseError {
         message: format!(
             "第 {index} 个子任务的 required_profession=\"{trimmed}\" 格式非法：{e}。职能 slug 形如 dev、dev:cpp（小写字母/数字/连字符/下划线，至多一个冒号分段）；无职能需求填空串。"
+        ),
+    })
+}
+
+/// 后端值校验臂（P6-R1）：入参必须是**已归一**（trim + 小写）的值，非空时
+/// 值域 = `process`|`vm`。返回 `Some(PlanParseError)` = 非法（挂进既有回灌
+/// 重试）；空串/空白由调用方先行短路 = 无后端需求。
+fn backend_format_error(index: usize, normalized: &str) -> Option<PlanParseError> {
+    if normalized.is_empty() || normalized == "process" || normalized == "vm" {
+        return None;
+    }
+    Some(PlanParseError {
+        message: format!(
+            "第 {index} 个子任务的 required_backend=\"{normalized}\" 非法。值域为 process（常规进程执行）或 vm（虚拟机执行，任务需浏览器/GUI 等隔离环境）；无后端需求填空串。"
         ),
     })
 }
@@ -231,6 +261,22 @@ pub fn parse_plan_lenient(raw: &str) -> Result<LenientPlan, PlanParseError> {
         // 宽和臂唯一放宽点：职能格式非法 → 置空 + 记降级（其余字段照常严校）。
         if profession_format_error(i, &sub.required_profession).is_some() {
             downgraded.push((i, std::mem::take(&mut sub.required_profession)));
+        }
+        // 宽和臂后端处理（P6-R1）：非法值置空（照能力词「剔除非法」先例，
+        // 不进 required_profession 专属降级台账）+ WARN 留痕。非法后端值在
+        // 匹配端永不命中，置空让计划落地；严格臂前两轮已给过自纠机会。
+        if !sub.required_backend.trim().is_empty() {
+            let normalized = sub.required_backend.trim().to_ascii_lowercase();
+            if normalized == "process" || normalized == "vm" {
+                sub.required_backend = normalized;
+            } else {
+                tracing::warn!(
+                    index = i,
+                    raw = %sub.required_backend,
+                    "[Board] planner 末轮宽和：required_backend 非法，置空降级"
+                );
+                sub.required_backend.clear();
+            }
         }
         // 宽和臂能力词处理（NB-122 批）：非法项（空/trim 后含空白/超长）直接
         // 剔除、合法项保留——非法能力词在匹配端永远无法命中，剔除比整字段

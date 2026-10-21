@@ -37,6 +37,11 @@ pub mod loop_manager;
 #[cfg(feature = "vm")]
 pub mod vm_runtime;
 
+/// P6-R2：agent 跨节点迁移（`cluster` feature 闸——编排/传输/B 端落地
+/// 面全在此；裁剪形态不可迁移，WSAPI 臂诚实报错）。
+#[cfg(feature = "cluster")]
+pub mod migrate;
+
 /// P5 第 4 步：`vm.*` WSAPI 桥（web 侧 [`nemesis_web::handlers::vm::VmBridge`]
 /// trait 的 [`VmSupervisor`](vm_runtime::VmSupervisor) 实现——投影与转发，
 /// gateway 装配期装槽）。B3 起 pub(crate)：CLI `vm build-image` 前台臂
@@ -73,6 +78,10 @@ pub struct CreateAgentParams {
     pub tool_policy: serde_json::Value,
     pub persona_refs: serde_json::Value,
     pub credential_refs: serde_json::Value,
+    /// P6-R4（D4 预留）：主体标识（空 = 未绑定）。只落库不消费——多租户
+    /// 闸不做；迁移 `rewrite_record_for_target` 不触碰本字段（全记录
+    /// serialize 过 RPC，B 端 upsert 原值保全）。
+    pub principal: String,
 }
 
 /// sweep 收敛结果（WSAPI/日志可观测面）。
@@ -82,6 +91,10 @@ pub struct SweepReport {
     pub activated: Vec<String>,
     /// provisioning → failed（物化失败，WARN 留痕）。
     pub failed: Vec<String>,
+    /// P6-R2：migrating + 墓碑在场（commit ACK 已达）→ 删记录收敛。
+    pub migrated_removed: Vec<String>,
+    /// P6-R2：migrating + 无墓碑（commit 未达）→ 回滚 active 照常服务。
+    pub reactivated: Vec<String>,
 }
 
 /// Agent 记录管理器（clone 廉价；与任务真相源共享同一 `Arc<TaskDb>`）。
@@ -112,6 +125,11 @@ pub struct AgentManager {
     vm_supervisor: std::sync::Arc<
         std::sync::RwLock<Option<std::sync::Arc<crate::agents::vm_runtime::VmSupervisor>>>,
     >,
+    /// P6-R2：迁移传输层槽（cluster feature 闸；gateway post_agent 在
+    /// cluster Arc 就绪后注入——与 set_runtime 同款晚注入纪律）。
+    #[cfg(feature = "cluster")]
+    migrate_transport:
+        std::sync::Arc<std::sync::RwLock<Option<std::sync::Arc<dyn migrate::MigrateTransport>>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +207,8 @@ impl AgentManager {
             vm: std::sync::Arc::new(std::sync::RwLock::new(None)),
             #[cfg(feature = "vm")]
             vm_supervisor: std::sync::Arc::new(std::sync::RwLock::new(None)),
+            #[cfg(feature = "cluster")]
+            migrate_transport: std::sync::Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -260,6 +280,48 @@ impl AgentManager {
             .clone()
     }
 
+    /// P6-R2：迁移传输层注入（cluster Arc 就绪后；幂等覆盖）。
+    #[cfg(feature = "cluster")]
+    pub fn set_migrate_transport(&self, t: std::sync::Arc<dyn migrate::MigrateTransport>) {
+        *self
+            .migrate_transport
+            .write()
+            .expect("agent manager migrate transport lock") = Some(t);
+    }
+
+    /// 取迁移传输层快照（cluster 关 / 未注入 = None——迁移面诚实报错）。
+    #[cfg(feature = "cluster")]
+    pub fn migrate_transport(&self) -> Option<std::sync::Arc<dyn migrate::MigrateTransport>> {
+        self.migrate_transport
+            .read()
+            .expect("agent manager migrate transport lock")
+            .clone()
+    }
+
+    /// P6-R2：迁移一个 selfbuilt agent 到目标节点。cluster 裁剪形态恒
+    /// 不可用（诚实报错）；启用形态全权委托
+    /// [`migrate::migrate_agent`](crate::agents::migrate::migrate_agent)
+    /// 的 12 步编排（validate/转移/回滚/墓碑语义见该模块头）。
+    #[cfg(feature = "cluster")]
+    pub async fn migrate_agent(
+        &self,
+        agent_id: &str,
+        target_node: &str,
+    ) -> Result<serde_json::Value, String> {
+        migrate::migrate_agent(self, agent_id, target_node).await
+    }
+
+    /// P6-R2（cluster 裁剪形态）：迁移不可用。
+    #[cfg(not(feature = "cluster"))]
+    pub async fn migrate_agent(
+        &self,
+        agent_id: &str,
+        _target_node: &str,
+    ) -> Result<serde_json::Value, String> {
+        let _ = agent_id;
+        Err("agent 迁移不可用：cluster feature 未编译".to_string())
+    }
+
     /// B9-1：按项目 ID 查项目 agent 记录（kind=project 且 project_id 匹配；
     /// status 不筛——provisioning/failed 形态下 ensure_running 会诚实失败，
     /// 拦截消息比静默放行诚实）。存储读取失败 = warn + None（消息路由热
@@ -306,6 +368,8 @@ impl AgentManager {
         // selfbuilt 独占 `agents/<id>` 记忆域。
         record.memory_namespace = format!("agents/{agent_id}");
         record.credential_refs = p.credential_refs;
+        // P6-R4（D4 预留）：主体标识落库（只立字段，无消费方）。
+        record.principal = p.principal;
 
         // 第一阶段：记录先落库（provisioning）——后续任何失败都留有
         // 可收敛的痕迹，不产生「目录在、记录无」的孤儿。
@@ -419,11 +483,15 @@ impl AgentManager {
     }
 
     /// 启动 sweep：收敛卡在 `provisioning` 的半创建记录。重物化成功 →
-    /// `active`；失败 → `failed` 终态（调用方 WARN 留痕）。
+    /// `active`；失败 → `failed` 终态（调用方 WARN 留痕）。P6-R2 起同批
+    /// 收敛 `migrating` 残留（cluster 启用形态）：墓碑在场 = 迁移成功
+    /// 终局删记录；缺席 = commit 未达回滚 active。
     pub fn sweep(&self) -> Result<SweepReport, String> {
         let mut report = SweepReport {
             activated: Vec::new(),
             failed: Vec::new(),
+            migrated_removed: Vec::new(),
+            reactivated: Vec::new(),
         };
         for record in self.store.list_all()? {
             if record.status != agent_status::PROVISIONING {
@@ -454,6 +522,9 @@ impl AgentManager {
                 }
             }
         }
+        // P6-R2：migrating 残留收敛（cluster 裁剪形态无迁移态，恒空跳过）。
+        #[cfg(feature = "cluster")]
+        migrate::sweep_migrating(&self.store, &self.workspace, &mut report)?;
         Ok(report)
     }
 

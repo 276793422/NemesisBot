@@ -189,6 +189,7 @@ async fn run_lifecycle(
         shared_host_path: None,
         loadvm_tag: loadvm,
         incoming_file: None,
+        display_vnc_port: None,
     };
 
     // [3] 冷启 + guest agent 就绪（首启含 cloud-init 装配，可能数分钟）。

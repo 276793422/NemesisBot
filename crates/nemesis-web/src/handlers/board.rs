@@ -2984,7 +2984,13 @@ pub async fn execute_plan_chain(
                 } else {
                     format!(" caps={}", p.capabilities.join("/"))
                 };
-                format!("- {} [role={} tags={tags}]{caps}", p.name, p.role)
+                // P6-R1：backend 宣告进画像——planner 才知道给哪类子单标
+                // required_backend（值域 process/vm；未宣告节点显示 —）。
+                let backend = match p.runtime_backend.as_deref() {
+                    Some(b) if !b.is_empty() => format!(" backend={b}"),
+                    _ => String::new(),
+                };
+                format!("- {} [role={} tags={tags}]{caps}{backend}", p.name, p.role)
             })
             .collect();
         (!lines.is_empty()).then(|| lines.join("\n"))
@@ -3428,6 +3434,9 @@ pub fn confirm_plan(
         } else {
             sub.required_profession.trim()
         };
+        // required_backend 已在 parse_plan 归一（严格臂校验写回/宽和臂非法
+        // 置空），此处只做空白防波；不参与职能降级（backend 闸与职能正交）。
+        let backend = sub.required_backend.trim();
         let created = store.create_issue(nemesis_board::NewIssue {
             title: sub.title.clone(),
             description: sub.description.clone(),
@@ -3436,6 +3445,7 @@ pub fn confirm_plan(
             required_role: (!role.is_empty()).then(|| role.to_string()),
             required_tags: sub.required_tags.clone(),
             required_profession: (!prof.is_empty()).then(|| prof.to_string()),
+            required_backend: (!backend.is_empty()).then(|| backend.to_string()),
             required_capabilities: sub.required_capabilities.clone(),
             // 子单归属父单所在项目（F2 首派联动读子单的 project_id 推进
             // 项目 active→in_progress；缺继承则联动早退、项目永远 active）。
@@ -4342,6 +4352,7 @@ pub async fn rebalance_queued_to_worker(
             required_tags: &required_tags,
             required_profession: issue.required_profession.as_deref(),
             required_capabilities: &issue.required_capabilities,
+            required_backend: issue.required_backend.as_deref(),
             description: &issue.description,
         };
         // 新 worker 需满足要求（rank 命中才挪——重平衡不是无脑搬运）。
@@ -4450,6 +4461,9 @@ fn project_dispatch_candidates(
             // tags 先例投影进 matcher（tier None = 闸 fail-open）。
             professions: p.professions.clone(),
             tier: p.tier.clone(),
+            // P6-R1：announce/静态 peers 携带的 backend 宣告已落注册表——
+            // 同 tags/tier 先例投影进 matcher（None = 闸 fail-closed）。
+            runtime_backend: p.runtime_backend.clone(),
         })
         .collect()
 }
@@ -4509,6 +4523,7 @@ pub fn rank_dispatch_candidates(
         required_tags: &required_tags,
         required_profession: issue.required_profession.as_deref(),
         required_capabilities: &issue.required_capabilities,
+        required_backend: issue.required_backend.as_deref(),
         description: &issue.description,
     };
     // E（goal P2/P5）：候选 tags 合并 master 授予标签（granted_tags 台账）。
@@ -4635,6 +4650,7 @@ fn pick_fallback_target(
         required_tags: &tags,
         required_profession: issue.required_profession.as_deref(),
         required_capabilities: &issue.required_capabilities,
+        required_backend: issue.required_backend.as_deref(),
         description: &issue.description,
     };
     nemesis_board::pick_relaxed(&base, &candidates, &load, depth)

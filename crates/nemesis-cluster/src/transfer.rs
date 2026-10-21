@@ -52,6 +52,12 @@ pub const TRANSFER_KIND_EXECUTION_RECORDS: &str = "execution_records";
 /// P4/E2：项目档案基线快照（master 派发时 HEAD 树同步推送 worker）。
 pub const TRANSFER_KIND_PROJECT_BASELINE: &str = "project_baseline";
 
+/// P6-R2：agent home 迁移载荷（A 端把 `<workspace>/agents/<id>/` 的
+/// home/** + memory/** 经 push_transfer_dir 推到 B 端 inbox；凭据密文
+/// 另走 commit RPC，不混入本通道）。B 端 sink 落地路径与既有类别一致
+/// （`<workspace>/cluster/inbox/<task_id>/files/`），迁移方自行 rename。
+pub const TRANSFER_KIND_AGENT_HOME: &str = "agent_home";
+
 /// 默认 chunk 大小：1 MiB（base64 后 ~1.4 MB JSON，16 MB 帧上限富余；
 /// 速率限制 30 req/10s 下有效吞吐 ~3 MiB/s，2 GiB 极限载荷 ~11 分钟——
 /// 可接受，正常执行记录是 KB~MB 级）。

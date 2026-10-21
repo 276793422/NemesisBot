@@ -258,3 +258,96 @@ fn dpapi_corrupted_blob_honest_error() {
     );
     cleanup(&path);
 }
+
+// ---------------------------------------------------------------------------
+// P6-R2 agent 迁移：export_entries / import_entries。
+// ---------------------------------------------------------------------------
+
+/// 导出→导入 roundtrip：值还原、元数据保留、错误口令拒绝、
+/// 导出 blob 是 argon2id 形态（可跨机器）。
+#[test]
+fn export_import_roundtrip_preserves_values_and_meta() {
+    let src_path = tmp_vault_path("xfer-src");
+    let dst_path = tmp_vault_path("xfer-dst");
+    let mut src = VaultStore::create(&src_path, VaultMode::Argon2id, Some("src-pw")).unwrap();
+    src.set("agent/a1/k1", "secret-one", "openai", "主 key")
+        .unwrap();
+    src.set("agent/a1/k2", "secret-two", "anthropic", "")
+        .unwrap();
+    src.set("unrelated", "other", "x", "").unwrap();
+
+    let blob = src
+        .export_entries(
+            &["agent/a1/k1".into(), "agent/a1/k2".into()],
+            "one-time-pass",
+        )
+        .unwrap();
+    // blob 全程密文：不能含明文。
+    assert!(!String::from_utf8_lossy(&blob).contains("secret-one"));
+
+    // 错误口令拒绝。
+    let mut dst = VaultStore::create(&dst_path, VaultMode::Argon2id, Some("dst-pw")).unwrap();
+    assert!(matches!(
+        dst.import_entries(&blob, "wrong-pass"),
+        Err(VaultError::WrongPassphrase)
+    ));
+
+    let imported = dst.import_entries(&blob, "one-time-pass").unwrap();
+    assert_eq!(imported, vec!["agent/a1/k1", "agent/a1/k2"]);
+    assert_eq!(dst.get("agent/a1/k1").unwrap(), "secret-one");
+    assert_eq!(dst.get("agent/a1/k2").unwrap(), "secret-two");
+    assert!(matches!(
+        dst.get("unrelated"),
+        Err(VaultError::UnknownAlias(_))
+    ));
+    // 导出无关条目不进 blob。
+    let meta = dst.list();
+    let k1 = meta.iter().find(|l| l.alias == "agent/a1/k1").unwrap();
+    assert_eq!(k1.meta.domain, "openai");
+    assert_eq!(k1.meta.description, "主 key");
+    assert!(!k1.meta.created_at.is_empty());
+
+    // 重复导入 = 覆盖（set 轮换语义），值照常还原。
+    dst.import_entries(&blob, "one-time-pass").unwrap();
+    assert_eq!(dst.get("agent/a1/k1").unwrap(), "secret-one");
+
+    cleanup(&src_path);
+    cleanup(&dst_path);
+}
+
+/// 缺别名 loud 拒绝 + 未解锁拒绝导出。
+#[test]
+fn export_rejects_missing_alias_and_locked_store() {
+    let path = tmp_vault_path("xfer-errs");
+    let mut store = VaultStore::create(&path, VaultMode::Argon2id, Some("pw")).unwrap();
+    store.set("only", "v", "d", "").unwrap();
+    store.save().unwrap();
+    assert!(matches!(
+        store.export_entries(&["only".into(), "ghost".into()], "p"),
+        Err(VaultError::UnknownAlias(_))
+    ));
+    // 锁定后拒绝导出。
+    drop(store);
+    let locked = VaultStore::open(&path).unwrap();
+    assert!(matches!(
+        locked.export_entries(&["only".into()], "p"),
+        Err(VaultError::Locked)
+    ));
+    // 锁定后拒绝导入（先造合法 blob）。
+    let mut unlocked = VaultStore::open(&path).unwrap();
+    unlocked.unlock("pw").unwrap();
+    let blob = unlocked.export_entries(&["only".into()], "p2").unwrap();
+    let dst_path = tmp_vault_path("xfer-errs-dst");
+    let dst_locked = VaultStore::create(&dst_path, VaultMode::Argon2id, Some("x")).unwrap();
+    drop(unlocked);
+    // dst create 后已解锁；重开成锁定态再试导入。
+    drop(dst_locked);
+    let mut dst = VaultStore::open(&dst_path).unwrap();
+    assert!(matches!(
+        dst.import_entries(&blob, "p2"),
+        Err(VaultError::Locked)
+    ));
+
+    cleanup(&path);
+    cleanup(&dst_path);
+}

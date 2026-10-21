@@ -142,6 +142,7 @@ async fn main() {
         shared_host_path: shared,
         loadvm_tag: None,
         incoming_file: None,
+        display_vnc_port: None,
     })
     .await
     .expect("VM start");

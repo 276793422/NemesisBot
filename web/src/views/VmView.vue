@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, defineAsyncComponent } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 
@@ -9,12 +9,42 @@ import { useToast } from '../composables/useToast'
 const { request } = useWSAPI()
 const toast = useToast()
 
+// P5-R2 ⑥：VM 屏幕 modal（动态 import —— noVNC chunk 打开才加载；
+// VITE_FEATURE_VM_DISPLAY=false 时入口消失 + 引用被 tree-shake 掉）。
+const VmDisplayModal = defineAsyncComponent(() => import('../components/vm/VmDisplayModal.vue'))
+const VM_DISPLAY_UI_ON = import.meta.env.VITE_FEATURE_VM_DISPLAY !== 'false'
+
 // --- State ---
 const loading = ref(true)
 const activeTab = ref<'config' | 'images' | 'instances'>('config')
 const overview = ref<any>(null)
 const image = ref<any>(null)
 const busy = ref<string | null>(null)
+
+// --- P5-R2 ⑥ 显示能力探针（vm.display.status，只读无闸） ---
+const displayStatus = ref<any>(null)
+const displayAgent = ref<string | null>(null)
+/** 模态打开时挂目标 agent；null = 关闭。 */
+function openDisplay(agentId: string) {
+  displayAgent.value = agentId
+}
+function closeDisplay() {
+  displayAgent.value = null
+}
+/** 「查看屏幕」入口可见性：编译态 + config display=vnc + 插件在位。 */
+const displayReady = computed(() => {
+  const s = displayStatus.value
+  return !!(VM_DISPLAY_UI_ON && s?.compiled && s?.display === 'vnc' && s?.endpoint)
+})
+/** display=vnc 但镜像是 headless 档（desktop=minimal）——诚实提示换装。 */
+const displayHeadlessWarn = computed(() => {
+  const s = displayStatus.value
+  return !!(s?.compiled && s?.display === 'vnc' && s.desktop === 'minimal')
+})
+
+async function refreshDisplayStatus() {
+  displayStatus.value = await request('vm', 'display.status').catch(() => null)
+}
 
 const probe = computed(() => overview.value?.probe ?? null)
 const enabled = computed(() => !!overview.value?.enabled)
@@ -132,6 +162,7 @@ async function refreshAll() {
     if (ov) await refreshBootstrap()
     await refreshImages()
     await refreshTry()
+    await refreshDisplayStatus()
     loadForm()
   } finally {
     loading.value = false
@@ -923,6 +954,13 @@ onMounted(async () => {
 
         <!-- ════════ 实例 ════════ -->
         <div v-if="activeTab === 'instances'">
+          <!-- P5-R2 ⑥ headless 档诚实提示：display=vnc 但镜像是 headless
+               变体（启动会诚实报错，黑屏不是合法形态）——提示换装 desktop。 -->
+          <div v-if="displayHeadlessWarn" class="card" data-test="display-headless-warn" style="margin-bottom: var(--space-4); border-color: var(--warning, #b58900);">
+            <div class="card-body" style="font-size: var(--text-sm); color: var(--warning, #b58900);">
+              executor.vm.display=vnc 已开启，但当前镜像为 headless 档（desktop=minimal）——显示需要桌面变体镜像，请以 <code>--variant desktop</code> 重跑镜像管线 <code>scripts/build-vm-image.sh</code> 后再试。
+            </div>
+          </div>
           <!-- B6 快速试玩卡 -->
           <div class="card" data-test="try-card" style="margin-bottom: var(--space-4);">
             <div class="card-header"><h3 style="margin: 0;">快速试玩</h3></div>
@@ -956,6 +994,7 @@ onMounted(async () => {
                       @click="tryRun(p)"
                       :disabled="tryBusy || !!busy"
                     >{{ p }}</button>
+                    <button v-if="displayReady" class="btn btn-sm" data-test="try-display" @click="openDisplay(tryState.agent_id ?? '')">查看屏幕</button>
                   </template>
                 </div>
                 <div v-if="tryRunning" style="margin-top: var(--space-2); display: flex; gap: var(--space-2); align-items: center;">
@@ -1045,6 +1084,7 @@ onMounted(async () => {
                   <span v-if="inst.has_state_file" class="instance-tag">有状态文件</span>
                   <span style="flex: 1;"></span>
                   <div style="display: flex; gap: var(--space-2); flex-shrink: 0;">
+                    <button v-if="inst.running && displayReady" class="btn btn-sm" data-test="inst-display" @click="openDisplay(inst.agent_id)">查看屏幕</button>
                     <button v-if="inst.running" class="btn btn-sm" data-test="inst-sleep" @click="instanceOp('sleep', inst.agent_id)" :disabled="!!busy">睡眠</button>
                     <button v-else class="btn btn-sm btn-primary" data-test="inst-wake" @click="instanceOp('wake', inst.agent_id)" :disabled="!!busy">唤醒</button>
                     <button v-if="inst.running" class="btn btn-sm btn-danger" data-test="inst-kill" @click="instanceOp('kill', inst.agent_id)" :disabled="!!busy">冷停</button>
@@ -1055,6 +1095,11 @@ onMounted(async () => {
           </div>
         </div>
       </template>
+
+      <!-- P5-R2 ⑥ VM 屏幕 modal（teleport 到 body 防父容器 overflow 裁剪） -->
+      <Teleport to="body">
+        <VmDisplayModal v-if="displayAgent !== null" :agent-id="displayAgent" @close="closeDisplay" />
+      </Teleport>
 
     </div>
   </div>

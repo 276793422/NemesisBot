@@ -46,6 +46,14 @@ fn resolve_alias(path: &Path, alias: &str) -> Result<String, String> {
     resolve_alias_at(path, alias.strip_prefix("vault:").unwrap_or(alias))
 }
 
+/// 打开并解锁 vault 的 pub 变体（P6-R2 agent 迁移的凭据导出用——迁移
+/// 编排需要拿整个 [`VaultStore`] 做 export_entries，不是单别名读取）。
+/// 语义与私有 [`open_unlocked`] 完全同源（现开现解锁、argon2 走
+/// `NEMESISBOT_VAULT_PASSPHRASE`）。
+pub fn open_unlocked_at(path: &Path) -> Result<nemesis_security::vault::VaultStore, String> {
+    open_unlocked(path)
+}
+
 /// 打开并解锁 vault（每次解析现开）。文件不存在是常见态（还没人 set 过），
 /// 报错带创建指引。
 fn open_unlocked(path: &Path) -> Result<nemesis_security::vault::VaultStore, String> {
