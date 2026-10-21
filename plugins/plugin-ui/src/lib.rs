@@ -143,7 +143,7 @@ pub const PLUGIN_ERR_UNKNOWN_TYPE: i32 = 5;
 ///
 /// Returns: 0 on success, negative error code on failure.
 #[no_mangle]
-pub extern "C" fn plugin_init(config_dir: *const c_char, host: *const HostServices) -> i32 {
+pub unsafe extern "C" fn plugin_init(config_dir: *const c_char, host: *const HostServices) -> i32 {
     // Store host pointer
     HOST_PTR.store(host as *mut HostServices, Ordering::SeqCst);
 
@@ -296,7 +296,11 @@ pub extern "C" fn plugin_request_close() {
 /// handler when the parent wants to deduplicate windows).
 #[no_mangle]
 pub extern "C" fn plugin_request_bring_to_front() {
-    bring_window_to_foreground();
+    // Set the flag for the event loop's periodic check — the GTK/tao window
+    // must only be touched from the main thread, and both window backends
+    // poll this flag there (window.rs / window_gtk.rs). Called from the
+    // child's WS notification thread, so the atomic hand-off is required.
+    BRING_TO_FRONT_REQUESTED.store(true, Ordering::SeqCst);
 }
 
 /// Get the approval result as a C string pointer.
