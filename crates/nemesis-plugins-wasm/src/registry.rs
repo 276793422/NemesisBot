@@ -114,22 +114,16 @@ pub struct PluginManager {
 }
 
 impl PluginManager {
-    /// 构建管理器（目录不存在即创建）。
+    /// 构建管理器（目录不存在即创建）。宿主壳自动选路 + 进程缓存装载；
+    /// 生产 gateway 装配走 [`Self::new_with_host_path`]（闸获准路径定点
+    /// 装载——验签对象即装载对象）。壳缺席 = `NotAvailable`（诚实降级）。
     pub fn new(
         workspace_root: &Path,
         limits: PluginLimits,
         secrets: Arc<dyn SecretResolver>,
     ) -> Result<Self, PluginError> {
-        let workspace_root = workspace_root
-            .canonicalize()
-            .map_err(|e| PluginError::Io(format!("workspace root: {e}")))?;
-        let plugins_dir = workspace_root.join("plugins");
-        let data_root = workspace_root.join("plugin-data");
-        let cache_root = workspace_root.join("cache").join("wasm");
-        std::fs::create_dir_all(&plugins_dir)
-            .map_err(|e| PluginError::Io(format!("create plugins dir: {e}")))?;
-        std::fs::create_dir_all(&data_root)
-            .map_err(|e| PluginError::Io(format!("create plugin-data dir: {e}")))?;
+        let (workspace_root, plugins_dir, data_root, cache_root) =
+            Self::build_dirs(workspace_root)?;
         let runtime = PluginRuntime::new(limits.clone(), Some(&cache_root))?;
         Ok(Self {
             workspace_root,
@@ -145,6 +139,53 @@ impl PluginManager {
             audit: Mutex::new(None),
             config_io: Mutex::new(()),
         })
+    }
+
+    /// 定点构建（R1 整改）：宿主壳从**闸获准路径**装载（native_plugins
+    /// enforce 验签通过的那个文件），绕过自动选路与进程装载缓存。装载/
+    /// 符号绑定/ABI 握手失败 = `NotAvailable`（调用方诚实降级）。
+    pub fn new_with_host_path(
+        workspace_root: &Path,
+        limits: PluginLimits,
+        secrets: Arc<dyn SecretResolver>,
+        host_path: &Path,
+    ) -> Result<Self, PluginError> {
+        let (workspace_root, plugins_dir, data_root, cache_root) =
+            Self::build_dirs(workspace_root)?;
+        let host = crate::loader::open_at(host_path)?;
+        let runtime = PluginRuntime::with_host(limits.clone(), Some(&cache_root), host)?;
+        Ok(Self {
+            workspace_root,
+            plugins_dir,
+            data_root,
+            limits,
+            runtime,
+            plugins: RwLock::new(HashMap::new()),
+            observers: Mutex::new(HashMap::new()),
+            secrets,
+            invoker: Mutex::new(None),
+            enabled: AtomicBool::new(true),
+            audit: Mutex::new(None),
+            config_io: Mutex::new(()),
+        })
+    }
+
+    /// 目录装配（两个构造器共享）：workspace canonicalize + plugins/
+    /// plugin-data 目录确保在场，返回各推导根。
+    fn build_dirs(
+        workspace_root: &Path,
+    ) -> Result<(PathBuf, PathBuf, PathBuf, PathBuf), PluginError> {
+        let workspace_root = workspace_root
+            .canonicalize()
+            .map_err(|e| PluginError::Io(format!("workspace root: {e}")))?;
+        let plugins_dir = workspace_root.join("plugins");
+        let data_root = workspace_root.join("plugin-data");
+        let cache_root = workspace_root.join("cache").join("wasm");
+        std::fs::create_dir_all(&plugins_dir)
+            .map_err(|e| PluginError::Io(format!("create plugins dir: {e}")))?;
+        std::fs::create_dir_all(&data_root)
+            .map_err(|e| PluginError::Io(format!("create plugin-data dir: {e}")))?;
+        Ok((workspace_root, plugins_dir, data_root, cache_root))
     }
 
     /// 装配宿主工具调用面（gateway 在 agent loop 就绪后调用）。

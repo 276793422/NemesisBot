@@ -14,6 +14,26 @@
 //!    与 `config_json_path` 访问器对接）。
 use super::*;
 
+/// 完整输入 token 口径单一真相源（R2 整改 2026-10-22）：
+/// `prompt + cache_creation + cache_read`。两族 provider 语义对齐的依据 =
+/// provider 归一化层已把 OpenAI/DeepSeek 的 cached 子集从 `prompt_tokens`
+/// 剥出（剥出后 prompt = 非缓存纯输入），Anthropic 的 prompt_tokens 本来
+/// 就不含缓存两列——所以「三项相加」对两族都是完整输入（整改前漏计
+/// cache_creation，Anthropic 形态会话预算/压缩信号系统性偏低）。
+/// `.or(cached_tokens)` 兼容旧 lane 报告形态（两键不同时出现，不双计）。
+/// 全字段钳负 + 饱和加。计价分项（input_cost 三列拆分）不受此影响。
+pub(crate) fn usage_full_input(usage: &crate::loop_executor::ObserverUsageInfo) -> u64 {
+    let creation = usage.cache_creation_tokens.unwrap_or(0).max(0) as u64;
+    let read = usage
+        .cache_read_tokens
+        .or(usage.cached_tokens)
+        .unwrap_or(0)
+        .max(0) as u64;
+    (usage.prompt_tokens.max(0) as u64)
+        .saturating_add(creation)
+        .saturating_add(read)
+}
+
 impl AgentLoop {
     /// `agents.defaults.session_token_budget` fresh-read（F8 模式，
     /// config.json 唯一真相源——改键下一轮生效，无快照表）。

@@ -856,12 +856,16 @@ pub(crate) async fn run_runtime(
                             // 原生插件闸：plugin_ui（WebView 窗宿主）。事件驱动
                             // 裁决——开关翻动对本入口即时生效（托盘面仍以启动
                             // 装配为准）。停用/拦截 = 诚实日志 + 不开窗（浏览器
-                            // 访问 Dashboard 不受影响）。
+                            // 访问 Dashboard 不受影响）。Allow.path 允许丢弃：
+                            // DLL 由子进程 child_mode 以同源
+                            // find_plugin_library_in 查找加载（gateway 侧无从
+                            // 定点），闸验对象与装载对象恒同文件（native_plugins
+                            // 模块文档两档契约第二档）。
                             match crate::native_plugins::gate_load(
                                 &open_dash_cfg_dir,
                                 nemesis_config::plugins_native::NativePluginId::PluginUi,
                             ) {
-                                crate::native_plugins::GateOutcome::Allow => {
+                                crate::native_plugins::GateOutcome::Allow { .. } => {
                                     info!("[Gateway] Internal command: open_dashboard");
                                     let _ = open_plugin_window(&pm, "dashboard", &url, &token);
                                 }
@@ -982,12 +986,14 @@ pub(crate) async fn run_runtime(
 
         // 原生插件闸：plugin_ui（托盘 + 审批弹窗 + WebView 窗宿主 DLL）。
         // 停用/签名拦 = 诚实日志 + 整块跳过（装配期一次性消费——开关改动
-        // 重启 gateway 生效）。
+        // 重启 gateway 生效）。Allow.path 允许丢弃：tray 的 run_via_plugin_ui
+        // 与闸共用 find_plugin_library 单一查找（nemesis-desktop systray），
+        // 闸验对象与装载对象恒同文件（native_plugins 模块文档两档契约第二档）。
         match crate::native_plugins::gate_load(
             &nemesis_path::workspace_config_dir(&common::workspace_path(&home)),
             nemesis_config::plugins_native::NativePluginId::PluginUi,
         ) {
-            crate::native_plugins::GateOutcome::Allow => {}
+            crate::native_plugins::GateOutcome::Allow { .. } => {}
             crate::native_plugins::GateOutcome::DisabledBySwitch => {
                 info!("[Gateway] plugin_ui 已停用（本地插件库开关）——系统托盘不装配（重启后生效）");
                 break 'tray;

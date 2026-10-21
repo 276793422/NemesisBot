@@ -72,8 +72,8 @@ fn test_context(session_key: &str) -> crate::RequestContext {
     }
 }
 
-/// 带用量的 RequestLog 行（seed 数据构造；input/cache_read/output 语义与
-/// observer.rs 落账一致）。
+/// 带用量的 RequestLog 行（seed 数据构造；input/cache_creation/cache_read/
+/// output 语义与 observer.rs 落账一致；creation 缺省 0，用例按需改字段）。
 fn usage_row(
     session_key: &str,
     input: i64,
@@ -121,7 +121,8 @@ fn seed_on_first_current_reads_db_aggregate() {
     let _logs = capture_logs();
     let dir = tempfile::tempdir().unwrap();
     let ds = nemesis_data::DataStore::open(&dir.path().join("tb-seed.db")).unwrap();
-    // 口径 = input（含 cache_read）+ output：行1 (100+20)+30、行2 10+5。
+    // 口径 = 完整输入（prompt + cache_creation + cache_read）+ output：
+    // 行1 (100+20)+30、行2 10+5（R2 后含 creation，本用例两行 creation=0）。
     ds.insert_request_log(&usage_row("sess-a", 100, 20, 30))
         .unwrap();
     ds.insert_request_log(&usage_row("sess-a", 10, 0, 5))
@@ -133,6 +134,22 @@ fn seed_on_first_current_reads_db_aggregate() {
     assert_eq!(ledger.current(Some(&ds), "sess-a"), 165);
     // 无行会话 = 全零聚合（不是错误）。
     assert_eq!(ledger.current(Some(&ds), "sess-empty"), 0);
+}
+
+/// R2 2026-10-22 回归锁：seed 底账含 cache_creation 行（Anthropic 形态——
+/// 整改前漏计，会话预算从底账种入时系统性偏低）。
+#[test]
+fn seed_includes_cache_creation_tokens() {
+    let _logs = capture_logs();
+    let dir = tempfile::tempdir().unwrap();
+    let ds = nemesis_data::DataStore::open(&dir.path().join("tb-seed-creation.db")).unwrap();
+    let mut row = usage_row("sess-creation", 100, 20, 30);
+    row.cache_creation_tokens = 25;
+    ds.insert_request_log(&row).unwrap();
+
+    let ledger = SessionTokenBudgetLedger::default();
+    // (100 + 25 + 20) + 30 = 175（三列相加，漏计形态给 150）。
+    assert_eq!(ledger.current(Some(&ds), "sess-creation"), 175);
 }
 
 #[test]

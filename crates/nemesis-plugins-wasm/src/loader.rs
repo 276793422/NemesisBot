@@ -1,12 +1,17 @@
 //! 宿主 DLL 装载器（libloading；load-once-never-unload）。
 //!
-//! 搜索顺序：`NEMESIS_WASM_HOST_DLL` 环境变量**权威覆盖**（显式指定 =
-//! 只试该路径，不再回落探测——缺席/装载失败即失败，错误文本如实列出；
-//! 测试注入与部署替换的确定性通道）→ exe 同目录 → exe 旁 `plugins/`
-//! （部署布局）→ 开发路径（`<repo>/plugins/plugin-wasm/target/release/`，
-//! 测试二进制多一层 deps/ 深）。装载失败 =
-//! `PluginError::NotAvailable`（`PluginManager::new` 上抛 → gateway 侧
-//! `build_plugin_stack` 警告并整体关闭 wasm 子系统——诚实降级，不崩）。
+//! 路径解析单一真相源 = [`resolve_host_dll_path`]（纯扫描）：`NEMESIS_WASM_HOST_DLL`
+//! 环境变量**权威覆盖**（显式指定 = 只认该路径，不再回落探测——缺席/装载
+//! 失败即失败，错误文本如实列出；测试注入与部署替换的确定性通道）→ exe
+//! 同目录 → exe 旁 `plugins/`（部署布局）→ 开发路径
+//! （`<repo>/plugins/plugin-wasm/target/release/`，测试二进制多一层 deps/
+//! 深）。**首个存在者即最终文件**：装载不再逐候选回落（高优先位置损坏
+//! DLL 静默换低优先文件 = 验签/装载对象漂移的同类土壤）。
+//!
+//! 两条装载入口：[`HostDll::open`]（自动选路 + 进程缓存，测试/降级用）与
+//! [`open_at`]（定点装载，native_plugins 闸 `Allow { path }` 获准路径——
+//! 验签对象即装载对象）。装载失败 = `PluginError::NotAvailable`（调用方
+//! 诚实关闭 wasm 子系统，不崩、不静默假装可用）。
 //!
 //! 卸载纪律：进程内**永不** `Library::unload`（函数指针存活期 = 进程；
 //! 卸载后悬垂指针 = UB，与 plugin-ui 的运行时加载同纪律）。
@@ -79,12 +84,24 @@ fn candidate_paths() -> Vec<std::path::PathBuf> {
     out
 }
 
+/// 宿主壳 DLL 路径解析（**纯扫描**：env 权威覆盖 → exe 同目录 → exe 旁
+/// `plugins/` → 开发路径，首个存在者。不装载、不触进程装载缓存）。
+///
+/// 单一真相源：native_plugins 闸（enforce 态验签对象）与本装载器的实际
+/// 装载对象都消费这里——`Allow { path }` 携带的文件就是 `open_at` 装载的
+/// 文件（R1 整改：验签对象 = 实际装载对象，二者不得各自选路）。
+pub fn resolve_host_dll_path() -> Option<std::path::PathBuf> {
+    candidate_paths().into_iter().find(|p| p.is_file())
+}
+
 /// 进程级装载缓存（首个成功路径定终身；失败也缓存——重试无意义，失败
 /// 原因写进错误文本）。
 static HOST: OnceLock<Result<Arc<HostDll>, String>> = OnceLock::new();
 
 impl HostDll {
-    /// 装载（进程单例；重复调用返回缓存结论）。
+    /// 装载（进程单例；重复调用返回缓存结论）。自动选路语义，测试与
+    /// 降级路径用；生产装配走 [`PluginManager::new_with_host_path`]（闸
+    /// 获准路径定点装载）。
     pub(crate) fn open() -> Result<Arc<HostDll>, PluginError> {
         match HOST.get_or_init(|| unsafe { open_impl() }) {
             Ok(h) => Ok(h.clone()),
@@ -93,41 +110,58 @@ impl HostDll {
     }
 }
 
+/// 定点装载（闸获准路径——验签对象即装载对象；绕过候选扫描与进程缓存，
+/// 装载失败即失败，不逐候选回落）。
+pub(crate) fn open_at(path: &std::path::Path) -> Result<Arc<HostDll>, PluginError> {
+    // SAFETY: path 来自受控解析序列（native_plugins 闸 `Allow { path }`）。
+    match unsafe { open_at_impl(path) } {
+        Ok(h) => Ok(h),
+        Err(e) => Err(PluginError::NotAvailable(e)),
+    }
+}
+
 /// # Safety
-/// 装载任意动态库即执行其初始化代码；路径来自受控搜索序列。
-unsafe fn open_impl() -> Result<Arc<HostDll>, String> {
+/// 装载任意动态库即执行其初始化代码；path 必须来自受控搜索序列。
+unsafe fn open_at_impl(path: &std::path::Path) -> Result<Arc<HostDll>, String> {
     unsafe {
-        let mut tried = Vec::new();
-        for path in candidate_paths() {
-            if !path.is_file() {
-                tried.push(format!("{}（不存在）", path.display()));
-                continue;
-            }
-            let lib = match libloading::Library::new(&path) {
-                Ok(l) => l,
-                Err(e) => {
-                    tried.push(format!("{}（{e}）", path.display()));
-                    continue;
-                }
-            };
-            let dll = bind_symbols(lib)?;
-            // ABI 握手（代际不匹配 = 拒绝装配，与 manifest api-version 同纪律）。
-            let v = (dll.abi_version)();
-            if v != abi::ABI_VERSION {
-                return Err(format!(
-                    "host dll abi version mismatch: dll {v}, host {} ({})",
-                    abi::ABI_VERSION,
-                    path.display()
-                ));
-            }
-            tracing::info!(path = %path.display(), "[WasmPlugin] 宿主壳已装载");
-            return Ok(Arc::new(dll));
+        let lib = match libloading::Library::new(path) {
+            Ok(l) => l,
+            Err(e) => return Err(format!("{}（{e}）", path.display())),
+        };
+        let dll = bind_symbols(lib)?;
+        // ABI 握手（代际不匹配 = 拒绝装配，与 manifest api-version 同纪律）。
+        let v = (dll.abi_version)();
+        if v != abi::ABI_VERSION {
+            return Err(format!(
+                "host dll abi version mismatch: dll {v}, host {} ({})",
+                abi::ABI_VERSION,
+                path.display()
+            ));
         }
-        Err(format!(
+        tracing::info!(path = %path.display(), "[WasmPlugin] 宿主壳已装载");
+        Ok(Arc::new(dll))
+    }
+}
+
+/// # Safety
+/// 自动选路装载；内部委托 [`open_at_impl`]。
+unsafe fn open_impl() -> Result<Arc<HostDll>, String> {
+    // 选路单一真相源：resolve_host_dll_path 定文件（首个存在者），装载只
+    // 对该文件。不再逐候选回落——高优先位置一个损坏/不兼容 DLL 静默换
+    // 低优先文件，正是「验签对象 ≠ 装载对象」漂移的同类土壤；loud 失败
+    // 诚实（调用方按 NotAvailable 整体关闭子系统）。
+    let Some(path) = resolve_host_dll_path() else {
+        let tried: Vec<String> = candidate_paths()
+            .iter()
+            .map(|p| format!("{}（不存在）", p.display()))
+            .collect();
+        return Err(format!(
             "wasm host dll not found（candidates: {}）",
             tried.join("; ")
-        ))
-    }
+        ));
+    };
+    // SAFETY: path 来自受控搜索序列（candidate_paths）。
+    unsafe { open_at_impl(&path) }
 }
 
 /// # Safety

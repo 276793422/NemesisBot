@@ -1,6 +1,7 @@
 //! 自查② + B2（2026-10-18 B 级清零）compact 域测试。
 //!
-//! - 自查②：混合触发信号——provider 实报（prompt + cache_read）参与触发
+//! - 自查②：混合触发信号——provider 实报（完整输入 = prompt +
+//!   cache_creation + cache_read，`usage_full_input` 单一真相源）参与触发
 //!   比较（取大者早触发，安全侧）；无 usage 的 lane 回落纯估算（不多触发）；
 //! - B2：无进展守卫——摘要采用前用同轴估算比较压缩前后（基线 = 旧摘要 +
 //!   尾巴，不含 provider 实报的 system+tools 开销——2026-10-19 根修），省幅
