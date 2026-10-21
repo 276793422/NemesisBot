@@ -78,6 +78,15 @@ ignore = [
   # 暴露。移除条件：workspace 完成 serde_yaml 迁移（候选 serde_yml fork 或
   # 配置格式归一 toml/json），属独立重构任务。台账：docs/INFO/2026-08-31_dependency-rules.md（2026-10-14）
   { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml archived (last 0.2.11); hard-pinned by deprecated serde_yaml 0.9, parses only local user-owned YAML configs, no untrusted network input" },
+  # rustls-webpki 0.102 emSign 中间证书缺陷（RUSTSEC-2026-0382，修复在
+  # webpki ≥0.103.16，跨 minor）。锁内 0.103.x 已 cargo update 到 0.103.16；
+  # 残留 0.102.8 与上方 0049/0098/0099/0104 四联公告同一条钉死链
+  # （rumqttc 0.25 → rustls 0.23 → 本项目 mqtt feature，default-off）。
+  # 暴露面：受影响路径需信任锚允许经被吊销 emSign 中间证书（私钥已泄露）的
+  # 链——纯 TLS 客户端连主流公共 CA 端点，MITM 需持有泄露中间钥伪造 emSign
+  # 链才可达。移除条件：rumqttc 升级到 rustls 0.24+/webpki ≥0.103.16 后
+  # cargo update -p rustls-webpki。台账：docs/INFO/2026-08-31_dependency-rules.md（2026-10-21）
+  { id = "RUSTSEC-2026-0382", reason = "rustls-webpki accepts distrusted emSign intermediates; fix in webpki >=0.103.16, 0.103.x updated in lock, 0.102.8 pinned via rustls 0.23 (rumqttc 0.25, mqtt default-off); client-only, mainstream-CA exposure" },
 ]
 
 [licenses]
