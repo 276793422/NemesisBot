@@ -1,5 +1,8 @@
 <script setup lang="ts">
-// 中继通道（goal 批次三）：通道页【中继通道】tab。
+// 桥接通道（goal 批次三）：通道页【桥接通道】tab。
+// 改名注记（2026-10-21）：原【中继通道】tab 更名【桥接通道】——本组件是
+// WebSocket 桥接中继（bridge.server/client）；「中继通道」名让位给新的
+// QUIC 中继 tab（QuicRelayTab，iroh 内网穿透），功能本身零改动。
 //
 // 双区布局（goal 钉死）：
 // - 服务端区：本机作为中继服务端（正常启动默认开）。开关为**运行时态**

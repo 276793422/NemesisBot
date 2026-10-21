@@ -179,6 +179,7 @@ pub(crate) fn migrate_legacy_max_tool_iterations(config_file: &std::path::Path) 
 pub async fn run(
     local: bool,
     relay: bool,
+    quic_relay: bool,
     extra_args: &[String],
     skip_runtime_check: bool,
 ) -> Result<()> {
@@ -229,10 +230,11 @@ pub async fn run(
     }
 
     // Phase B1（计划 §4.2）：Steps 1–9b（PB-0 bootstrap + PB-1 单例预装配）
-    // 收敛为 GatewayCtx::assemble（gateway/ctx.rs）。`--relay` 纯中继早退在
-    // assemble 内部处理（None → 直接 Ok 返回；run_relay 语义不变）；
-    // channel_guard（上方）仍护住 run() 全部早退路径（C10）。
-    let Some(ctx) = GatewayCtx::assemble(local, relay, extra_args).await? else {
+    // 收敛为 GatewayCtx::assemble（gateway/ctx.rs）。`--relay` / `--quic-relay`
+    // 纯中继早退在 assemble 内部处理（None → 直接 Ok 返回；run_relay /
+    // run_relay_server 语义不变）；channel_guard（上方）仍护住 run() 全部
+    // 早退路径（C10）。
+    let Some(ctx) = GatewayCtx::assemble(local, relay, quic_relay, extra_args).await? else {
         return Ok(());
     };
     // ctx 影子说明：B2–B7 各相位 fn 均自行从 ctx 克隆/借取所需字段（B1 建

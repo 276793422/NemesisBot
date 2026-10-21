@@ -59,7 +59,7 @@ fn write_bare_config(home: &std::path::Path) {
 async fn init_web_branch_matrix_via_assemble() {
     let th = ctx_env();
     write_bare_config(&th.home);
-    let mut ctx: GatewayCtx = GatewayCtx::assemble(false, false, &[])
+    let mut ctx: GatewayCtx = GatewayCtx::assemble(false, false, false, &[])
         .await
         .expect("assemble ok")
         .expect("非 relay 必返 Some");
@@ -194,7 +194,7 @@ async fn assemble_auto_inits_seed_mode_when_config_missing() {
     let th = ctx_env();
     // 不写 config.json → assemble 走 auto-init（Seed）分支后继续。
     assert!(!th.home.join("config.json").exists());
-    let ctx = GatewayCtx::assemble(false, false, &[])
+    let ctx = GatewayCtx::assemble(false, false, false, &[])
         .await
         .expect("assemble ok")
         .expect("非 relay 必返 Some");
@@ -225,7 +225,7 @@ async fn assemble_coverage_arms_capture_off_board_db_failure_and_relay_gate() {
     let board_dir = th.home.join("workspace").join("board").join("board.db");
     std::fs::create_dir_all(&board_dir).unwrap();
 
-    let ctx: GatewayCtx = GatewayCtx::assemble(false, false, &[])
+    let ctx: GatewayCtx = GatewayCtx::assemble(false, false, false, &[])
         .await
         .expect("assemble ok")
         .expect("非 relay 必返 Some");
@@ -236,10 +236,31 @@ async fn assemble_coverage_arms_capture_off_board_db_failure_and_relay_gate() {
 
     // ③ relay 早退臂：--relay + 空 bridge.server.token → run_relay fail-closed
     //    （不 bind 任何端口，直接 Err 返回）。
-    let Err(err) = GatewayCtx::assemble(false, true, &[]).await else {
+    let Err(err) = GatewayCtx::assemble(false, true, false, &[]).await else {
         panic!("relay 模式在 bridge.server.token 为空时必须拒绝启动");
     };
     assert!(err.to_string().contains("bridge.server.token"), "{err}");
+}
+
+/// Step 5b-2（QUIC 中继统一入口，2026-10-21）：`--quic-relay` 早退臂。
+/// config.cluster.json 缺席 → roaming.relay 解析回落默认（token 空）→ 与
+/// `--relay` 同款 fail-closed 拒绝启动（不 bind 任何端口）；feature 关 =
+/// 诚实报 feature 缺失（旗标恒编译）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn assemble_quic_relay_early_exit_fails_closed_on_empty_token() {
+    let th = ctx_env();
+    write_bare_config(&th.home);
+    let Err(err) = GatewayCtx::assemble(false, false, true, &[]).await else {
+        panic!("quic relay 模式在 roaming.relay.token 为空时必须拒绝启动");
+    };
+    #[cfg(feature = "roaming-relay")]
+    {
+        assert!(err.to_string().contains("roaming.relay.token"), "{err}");
+    }
+    #[cfg(not(feature = "roaming-relay"))]
+    {
+        assert!(err.to_string().contains("roaming-relay"), "{err}");
+    }
 }
 
 // ===========================================================================
@@ -256,7 +277,7 @@ async fn assemble_coverage_arms_capture_off_board_db_failure_and_relay_gate() {
 async fn w5_init_web_cors_dev_and_origins_arms_via_real_path() {
     let th = ctx_env();
     write_bare_config(&th.home);
-    let ctx: GatewayCtx = GatewayCtx::assemble(false, false, &[])
+    let ctx: GatewayCtx = GatewayCtx::assemble(false, false, false, &[])
         .await
         .expect("assemble ok")
         .expect("非 relay 必返 Some");
@@ -291,7 +312,7 @@ async fn w5_init_web_cors_dev_and_origins_arms_via_real_path() {
 async fn w5_init_web_all_channel_push_and_outbound_bridge_forward() {
     let th = ctx_env();
     write_bare_config(&th.home);
-    let mut ctx: GatewayCtx = GatewayCtx::assemble(false, false, &[])
+    let mut ctx: GatewayCtx = GatewayCtx::assemble(false, false, false, &[])
         .await
         .expect("assemble ok")
         .expect("非 relay 必返 Some");
@@ -343,7 +364,7 @@ async fn w5_init_web_all_channel_push_and_outbound_bridge_forward() {
 async fn w5_init_web_bridge_server_token_empty_takes_else_arm() {
     let th = ctx_env();
     write_bare_config(&th.home);
-    let mut ctx: GatewayCtx = GatewayCtx::assemble(false, false, &[])
+    let mut ctx: GatewayCtx = GatewayCtx::assemble(false, false, false, &[])
         .await
         .expect("assemble ok")
         .expect("非 relay 必返 Some");
@@ -376,7 +397,7 @@ async fn w5_init_web_bridge_hub_rpc_hub_assembly_with_enabled_cluster() {
     cfg["model_list"] = serde_json::json!([]);
     std::fs::write(th.home.join("config.json"), cfg.to_string()).unwrap();
 
-    let mut ctx: GatewayCtx = GatewayCtx::assemble(false, false, &[])
+    let mut ctx: GatewayCtx = GatewayCtx::assemble(false, false, false, &[])
         .await
         .expect("assemble ok")
         .expect("非 relay 必返 Some");

@@ -444,6 +444,28 @@ pub(crate) fn build_peer_entry_table(
     peer_entry
 }
 
+/// 把旧条目 table 中**新 entry 没写的键**补回来（缺失补齐式）。
+///
+/// 权威判定 = 新 entry 实际写了什么：`build_peer_entry_table` 写了的键
+/// （address/name/role/category 恒写；rpc_port 仅 >0 时写）以新值为准，
+/// 新写入跳过的键一律从旧值补。五字段里只有 rpc_port 有条件写——
+/// `if rpc_port > 0`（:438）意味着 0 会**缺键**而非写 0，黑名单式会把
+/// 手写显式 rpc_port 当权威字段丢掉（非标准 udp/rpc 配对如 9149/29149
+/// 的手写条目经一次 persist 就丢端口，重启后 loader 回落 udp+10000 猜错；
+/// 2026-10-21 六审 #6 子物种）。缺失补齐式同时覆盖扩展字段
+/// （tags/professions/tier/runtime_backend/priority/enabled/status 及未来
+/// 新增字段）= PeerConfig 加新字段时写入面自动保留，无需同步本函数。
+pub(crate) fn merge_peer_entry_extras(
+    new_entry: &mut toml::value::Table,
+    prev: &toml::value::Table,
+) {
+    for (k, v) in prev {
+        if !new_entry.contains_key(k) {
+            new_entry.insert(k.clone(), v.clone());
+        }
+    }
+}
+
 /// Like [`append_peer_to_file`] but also persists a `name` field. Used when
 /// upgrading a placeholder peer to its real node_id — the human-readable name
 /// (e.g. "Node-A") must be written so that after a reload the static loader
@@ -527,12 +549,17 @@ pub fn append_peer_to_file_with_name(
         );
     }
 
-    peers_table.insert(
-        key,
-        toml::Value::Table(build_peer_entry_table(
-            address, role, category, name, rpc_port,
-        )),
-    );
+    // 覆盖已有键时补回新 entry 没写的键——rpc_port=0 时不写键（旧显式
+    // 端口保留）+ 扩展字段（tags/professions/tier/runtime_backend/
+    // priority/enabled/status…）从旧值补齐。operator 手写的端口/职能/档位
+    // 声明不得被 persist 冲掉（2026-10-21 四审 #6：静态条目被 nodes.ping
+    // → merge 路径 persist 覆盖 → 重启后 professions/tier 丢失，职能匹配
+    // 不到 + tier 闸 fail-open；六审补 rpc_port 子物种）。
+    let mut peer_entry = build_peer_entry_table(address, role, category, name, rpc_port);
+    if let Some(prev) = peers_table.get(&key).and_then(|v| v.as_table()) {
+        merge_peer_entry_extras(&mut peer_entry, prev);
+    }
+    peers_table.insert(key, toml::Value::Table(peer_entry));
 
     // Serialize and atomic write
     let toml_str = toml::to_string_pretty(&doc).map_err(|e| {

@@ -9,8 +9,12 @@ use crate::handlers::{require_home, require_workspace};
 use crate::ws_router::{ModuleHandler, RequestContext};
 use nemesis_cluster::cluster::Cluster;
 use nemesis_cluster::cluster_log_reader;
+#[cfg(feature = "roaming-relay")]
+use nemesis_cluster::roaming::config::{RelayTls, resolved_roaming};
 #[cfg(feature = "cluster-roaming")]
 use nemesis_cluster::roaming::endpoint::{RoamingIdentity, roaming_key_path};
+#[cfg(feature = "roaming-relay")]
+use nemesis_cluster::roaming::relay_server;
 #[cfg(feature = "cluster-roaming")]
 use nemesis_cluster::roaming::trust::TrustBook;
 use nemesis_types::cluster::{NodeRole, TaskStatus};
@@ -114,6 +118,11 @@ impl ModuleHandler for ClusterHandler {
             "roaming.status",
             "roaming.enable",
             "roaming.disable",
+            // QUIC 自建中继（feature=roaming-relay；关 = status 诚实降级
+            // available:false，config 保存运行期报未编译——命令面恒注册，
+            // roaming.status 同款先例）
+            "relay.status",
+            "relay.config",
         ]
     }
 
@@ -234,6 +243,12 @@ impl ModuleHandler for ClusterHandler {
             "roaming.status" => self.roaming_status(ctx),
             "roaming.enable" => self.roaming_enable(ctx),
             "roaming.disable" => self.roaming_disable(ctx),
+            // QUIC 自建中继管理面（feature=roaming-relay 穿透）
+            "relay.status" => self.relay_status(ctx),
+            "relay.config" => {
+                let data = data.ok_or("missing data")?;
+                self.relay_config_save(ctx, &data)
+            }
             _ => Err(format!("unknown command: cluster.{}", cmd)),
         }
     }
@@ -298,7 +313,9 @@ fn cluster_config_path(workspace: &str) -> PathBuf {
 // --- iroh 跨网漫游开关面（自由函数，cfg 双形态） ---
 
 /// 漫游 config 键 RMW 单一入口：`roaming.enabled` 写 bool（咽喉锁 + 原子写，
-/// 形态与 [`update_cluster_config_enabled`] 同源）。
+/// 形态与 [`update_cluster_config_enabled`] 同源）。**段内 RMW 保留兄弟键**
+///（relay_url/relay_token/relay）——本入口是单键写，整段替换会把自建中继
+/// 设置静默抹掉（relay.status/config 上线后尤为致命）。
 #[cfg(feature = "cluster-roaming")]
 fn update_cluster_config_roaming(workspace: &str, enabled: bool) -> Result<(), String> {
     let _cfg_serial = nemesis_config::config_write_lock();
@@ -311,10 +328,12 @@ fn update_cluster_config_roaming(workspace: &str, enabled: bool) -> Result<(), S
         serde_json::json!({})
     };
     if let Some(obj) = cfg.as_object_mut() {
-        obj.insert(
-            "roaming".to_string(),
-            serde_json::json!({ "enabled": enabled }),
-        );
+        let roaming = obj
+            .entry("roaming".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(ro) = roaming.as_object_mut() {
+            ro.insert("enabled".to_string(), serde_json::json!(enabled));
+        }
     }
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -411,6 +430,273 @@ fn roaming_set_enabled_impl(
         "key_created": key_created,
         "node_id": node_id,
         "requires_restart": true,
+    })))
+}
+
+// --- QUIC 自建中继管理面（feature=roaming-relay 穿透） ---
+
+/// relay 段统一投影（status/config 保存回显共用）。**token 永不回传**——
+/// 只有 token_set bool（凭据面纪律，与漫游信任簿同源）。证书面按 TLS 档：
+/// self-signed = workspace 路径 + generated/pending；manual = 用户路径回显
+/// + ready/missing；none = unused。
+#[cfg(feature = "roaming-relay")]
+fn relay_settings_payload(
+    relay: &nemesis_cluster::roaming::config::RelaySettings,
+    workspace: &str,
+) -> serde_json::Value {
+    let tls_str = match relay.tls {
+        RelayTls::SelfSigned => "self-signed",
+        RelayTls::Manual => "manual",
+        RelayTls::None => "none",
+    };
+    let (cert_path, cert_state, key_path, key_state) = match relay.tls {
+        RelayTls::Manual => {
+            let cert = Path::new(&relay.cert_path);
+            let key = Path::new(&relay.key_path);
+            (
+                relay.cert_path.clone(),
+                if !relay.cert_path.is_empty() && cert.exists() {
+                    "ready"
+                } else {
+                    "missing"
+                },
+                relay.key_path.clone(),
+                if !relay.key_path.is_empty() && key.exists() {
+                    "ready"
+                } else {
+                    "missing"
+                },
+            )
+        }
+        RelayTls::None => (String::new(), "unused", String::new(), "unused"),
+        RelayTls::SelfSigned => {
+            let cert = relay_server::relay_cert_path(Path::new(workspace));
+            let key = relay_server::relay_key_path(Path::new(workspace));
+            (
+                cert.display().to_string(),
+                if cert.exists() {
+                    "generated"
+                } else {
+                    "pending"
+                },
+                key.display().to_string(),
+                if key.exists() { "generated" } else { "pending" },
+            )
+        }
+    };
+    serde_json::json!({
+        "enabled": relay.enabled,
+        "http_port": relay.http_port,
+        "quic_port": relay.quic_port,
+        "external_host": relay.external_host,
+        "tls": tls_str,
+        "token_set": !relay.token.is_empty(),
+        "cert_path": cert_path,
+        "cert_state": cert_state,
+        "key_path": key_path,
+        "key_state": key_state,
+        "advertised_url": relay_server::advertised_relay_url(relay),
+    })
+}
+
+/// cluster.relay.status 载荷。enabled=config 闸（resolved_roaming 单一真相
+/// 源）；active=运行态（gateway 进程内中继在跑）；requires_restart = 两者
+/// 不一致。client 面带客户端三键（roaming_enabled/relay_url/relay_token_set
+/// ——令牌同样只给 bool）。
+#[cfg(feature = "roaming-relay")]
+fn relay_status_payload(
+    workspace: &str,
+    active: bool,
+    http_addr: Option<std::net::SocketAddr>,
+    quic_addr: Option<std::net::SocketAddr>,
+) -> Result<Option<serde_json::Value>, String> {
+    let cfg_path = cluster_config_path(workspace);
+    let resolved = resolved_roaming(&cfg_path);
+    Ok(Some(serde_json::json!({
+        "available": true,
+        "enabled": resolved.relay.enabled,
+        "active": active,
+        "requires_restart": resolved.relay.enabled != active,
+        "http_addr": http_addr.map(|a| a.to_string()),
+        "quic_addr": quic_addr.map(|a| a.to_string()),
+        "relay": relay_settings_payload(&resolved.relay, workspace),
+        "client": {
+            "roaming_enabled": resolved.enabled,
+            "relay_url": resolved.relay_url,
+            "relay_token_set": !resolved.relay_token.is_empty(),
+        },
+    })))
+}
+
+/// cluster.relay.config 保存实现：校验 → RMW 合并 `roaming.relay` 段 + 客户端
+/// 面两键（relay_url/relay_token 写 roaming 段直挂；段内其他键与 roaming
+/// 兄弟键全保留）。**空串 = 删除该键 = 恢复解析默认**（token 空回落
+/// AllowAll、relay_url 空回落 n0 公共中继）；端口强校验 1-65535（0 会让对外
+/// URL 变 host:0 废话）；tls 强校验三值——解析层对未知 tls 宽容降级
+/// SelfSigned，写面不许（写面是当次意志，静默纠偏会把 manual 写成
+/// self-signed）。
+#[cfg(feature = "roaming-relay")]
+fn relay_config_save_impl(
+    workspace: &str,
+    data: &serde_json::Value,
+) -> Result<Option<serde_json::Value>, String> {
+    let obj = data.as_object().ok_or("data must be an object")?;
+    let mut patch = serde_json::Map::new();
+    if let Some(v) = obj.get("enabled") {
+        let b = v.as_bool().ok_or("enabled must be a bool")?;
+        patch.insert("enabled".to_string(), serde_json::json!(b));
+    }
+    for key in ["http_port", "quic_port"] {
+        if let Some(v) = obj.get(key) {
+            let n = v
+                .as_u64()
+                .ok_or_else(|| format!("{key} must be a port number"))?;
+            let p = u16::try_from(n).map_err(|_| format!("{key} out of range (1-65535)"))?;
+            if p == 0 {
+                return Err(format!(
+                    "{key} 必须在 1-65535（0 会让对外 relay URL 无意义）"
+                ));
+            }
+            patch.insert(key.to_string(), serde_json::json!(p));
+        }
+    }
+    if let Some(v) = obj.get("external_host") {
+        let s = v.as_str().ok_or("external_host must be a string")?;
+        let s = s.trim();
+        // 空串 = 清除（回落自动探测）；Null 同效（下同）。
+        patch.insert(
+            "external_host".to_string(),
+            if s.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!(s)
+            },
+        );
+    }
+    if let Some(v) = obj.get("tls") {
+        let s = v.as_str().ok_or("tls must be a string")?;
+        let s = s.trim().to_ascii_lowercase();
+        match s.as_str() {
+            "self-signed" | "manual" | "none" => {
+                patch.insert("tls".to_string(), serde_json::json!(s));
+            }
+            other => {
+                return Err(format!(
+                    "tls 档非法: {other}（合法: self-signed | manual | none）"
+                ));
+            }
+        }
+    }
+    if let Some(v) = obj.get("token") {
+        let s = v.as_str().ok_or("token must be a string")?;
+        let s = s.trim();
+        // 空串 = 清除令牌（回落 AllowAll）。
+        patch.insert(
+            "token".to_string(),
+            if s.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!(s)
+            },
+        );
+    }
+    for key in ["cert_path", "key_path"] {
+        if let Some(v) = obj.get(key) {
+            let s = v
+                .as_str()
+                .ok_or_else(|| format!("{key} must be a string"))?;
+            let s = s.trim();
+            patch.insert(
+                key.to_string(),
+                if s.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::json!(s)
+                },
+            );
+        }
+    }
+    // 客户端面两键（写 roaming 段直挂，非 relay 子段）：relay_url 空 =
+    // 回落 n0 公共中继；relay_token 空 = 清除。
+    let mut client_patch = serde_json::Map::new();
+    for key in ["relay_url", "relay_token"] {
+        if let Some(v) = obj.get(key) {
+            let s = v
+                .as_str()
+                .ok_or_else(|| format!("{key} must be a string"))?;
+            let s = s.trim();
+            client_patch.insert(
+                key.to_string(),
+                if s.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::json!(s)
+                },
+            );
+        }
+    }
+    if patch.is_empty() && client_patch.is_empty() {
+        return Err(
+            "no recognized relay fields（可写键: enabled/http_port/quic_port/external_host/tls/token/cert_path/key_path/relay_url/relay_token）"
+                .to_string(),
+        );
+    }
+
+    let _cfg_serial = nemesis_config::config_write_lock();
+    let path = cluster_config_path(workspace);
+    let mut cfg: serde_json::Value = if path.exists() {
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| format!("failed to read cluster config: {}", e))?;
+        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+    let root = cfg
+        .as_object_mut()
+        .ok_or("cluster config root must be an object")?;
+    let roaming = root
+        .entry("roaming".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    let roaming = roaming
+        .as_object_mut()
+        .ok_or("roaming section must be an object")?;
+    let relay = roaming
+        .entry("relay".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    let relay = relay
+        .as_object_mut()
+        .ok_or("roaming.relay section must be an object")?;
+    for (k, v) in patch {
+        if v.is_null() {
+            relay.remove(&k);
+        } else {
+            relay.insert(k, v);
+        }
+    }
+    for (k, v) in client_patch {
+        if v.is_null() {
+            roaming.remove(&k);
+        } else {
+            roaming.insert(k, v);
+        }
+    }
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let json =
+        serde_json::to_string_pretty(&cfg).map_err(|e| format!("failed to serialize: {}", e))?;
+    // 统一原子写入（config.cluster.json 含 token，REL-002 同款）。
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), json.as_bytes(), 0o600)
+        .map_err(|e| format!("failed to write cluster config: {}", e))?;
+    let resolved = resolved_roaming(&path);
+    Ok(Some(serde_json::json!({
+        "saved": true,
+        "requires_restart": true,
+        "relay": relay_settings_payload(&resolved.relay, workspace),
+        "client": {
+            "relay_url": resolved.relay_url,
+            "relay_token_set": !resolved.relay_token.is_empty(),
+        },
     })))
 }
 
@@ -1945,6 +2231,51 @@ impl ClusterHandler {
 
     fn roaming_disable(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
         self.roaming_set_enabled(ctx, false)
+    }
+
+    // ------------------------------------------------------------------
+    // QUIC 自建中继管理面（feature=roaming-relay 穿透）
+    // ------------------------------------------------------------------
+
+    /// cluster.relay.status：config 闸 + 运行态 + 证书状态 + 客户端面。
+    /// feature 关 = Ok(available:false)——TAB 恒在、前端据此渲染降级面板。
+    #[cfg(feature = "roaming-relay")]
+    fn relay_status(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+        let workspace = require_workspace(ctx)?.to_string();
+        let (active, http_addr, quic_addr) = match ctx.state.cluster.as_ref() {
+            Some(c) => c.relay_server_status(),
+            None => (false, None, None),
+        };
+        relay_status_payload(&workspace, active, http_addr, quic_addr)
+    }
+
+    #[cfg(not(feature = "roaming-relay"))]
+    fn relay_status(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+        let _ = require_workspace(ctx)?;
+        Ok(Some(serde_json::json!({
+            "available": false,
+            "enabled": false,
+            "active": false,
+            "requires_restart": false,
+            "reason": "roaming-relay feature 未编译（QUIC 中继层不可用）",
+        })))
+    }
+
+    /// cluster.relay.config：保存服务端 relay 段（合并写，兄弟键保留；
+    /// 空串 = 清除该键回落默认）。重启网关生效（运行态由 relay.status 看）。
+    fn relay_config_save(
+        &self,
+        ctx: &RequestContext,
+        data: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let workspace = require_workspace(ctx)?.to_string();
+        #[cfg(feature = "roaming-relay")]
+        return relay_config_save_impl(&workspace, data);
+        #[cfg(not(feature = "roaming-relay"))]
+        {
+            let _ = (workspace, data);
+            Err("roaming-relay feature 未编译（QUIC 中继层不可用）".to_string())
+        }
     }
 
     fn peers(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {

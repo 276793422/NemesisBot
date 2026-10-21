@@ -1,4 +1,4 @@
-// 中继通道组件测试（goal 批次三）。
+// 桥接通道组件测试（goal 批次三；2026-10-21 随 tab 改名【中继通道】→【桥接通道】）。
 // 后端行为由 crates/nemesis-web/src/relay/client_status_tests.rs 钉住
 // （后端唯一真相源）；此处只测组件接线：
 // - 空态渲染（服务端未配置 / 客户端未启用）
@@ -23,7 +23,7 @@ vi.mock('../../composables/useWebSocket', () => ({
   httpGet: (...args: any[]) => httpGetMock(...args),
 }))
 
-import RelayTab from '../RelayTab.vue'
+import BridgeTab from '../BridgeTab.vue'
 
 const fetchMock = vi.fn()
 
@@ -83,19 +83,19 @@ beforeEach(() => {
   httpGetMock.mockResolvedValue(overviewData())
 })
 
-describe('RelayTab 空态', () => {
+describe('BridgeTab 空态', () => {
   it('服务端未配置显示提示；客户端未启用显示提示', async () => {
     httpGetMock.mockResolvedValue({ server: null, client: null })
-    const w = mount(RelayTab)
+    const w = mount(BridgeTab)
     await flushPromises()
     expect(w.text()).toContain('本机未开启中继服务端')
     expect(w.text()).toContain('客户端未启用')
   })
 })
 
-describe('RelayTab 数据渲染', () => {
+describe('BridgeTab 数据渲染', () => {
   it('设备表渲染桥入设备（名称/在线/流量）', async () => {
-    const w = mount(RelayTab)
+    const w = mount(BridgeTab)
     await flushPromises()
     expect(w.text()).toContain('HomePC')
     expect(w.text()).toContain('bridge-homepc')
@@ -104,7 +104,7 @@ describe('RelayTab 数据渲染', () => {
   })
 
   it('客户端状态徽章 + 节点 ID 展示', async () => {
-    const w = mount(RelayTab)
+    const w = mount(BridgeTab)
     await flushPromises()
     expect(w.find('.badge-success').exists()).toBe(true)
     expect(w.text()).toContain('已连接')
@@ -118,7 +118,7 @@ describe('RelayTab 数据渲染', () => {
         node_id: 'bridge-testnode', last_error: 'token 不匹配', updated_at: 1700000000,
       },
     }))
-    const w = mount(RelayTab)
+    const w = mount(BridgeTab)
     await flushPromises()
     expect(w.find('.badge-error').exists()).toBe(true)
     expect(w.text()).toContain('被拒绝')
@@ -126,9 +126,9 @@ describe('RelayTab 数据渲染', () => {
   })
 })
 
-describe('RelayTab 交互', () => {
+describe('BridgeTab 交互', () => {
   it('服务端开关切换 POST /api/relay/enabled {on:false}', async () => {
-    const w = mount(RelayTab)
+    const w = mount(BridgeTab)
     await flushPromises()
     const checkbox = w.find('input[type="checkbox"]')
     expect(checkbox.exists()).toBe(true)
@@ -144,7 +144,7 @@ describe('RelayTab 交互', () => {
   })
 
   it('手动重连按钮 POST /api/relay/client/reconnect', async () => {
-    const w = mount(RelayTab)
+    const w = mount(BridgeTab)
     await flushPromises()
     const btn = w.findAll('button').find(b => b.text() === '手动重连')
     expect(btn).toBeTruthy()
@@ -157,7 +157,7 @@ describe('RelayTab 交互', () => {
   })
 
   it('保存配置：改动 relay_url → set_field 只提交该字段（遮蔽 token 未变不提交）', async () => {
-    const w = mount(RelayTab)
+    const w = mount(BridgeTab)
     await flushPromises()
     const inputs = w.findAll('input.form-input')
     expect(inputs.length).toBe(3)
@@ -176,7 +176,7 @@ describe('RelayTab 交互', () => {
   })
 
   it('保存配置：全部未变 → 零 set_field 调用', async () => {
-    const w = mount(RelayTab)
+    const w = mount(BridgeTab)
     await flushPromises()
     const save = w.findAll('button').find(b => b.text() === '保存配置')
     await save!.trigger('click')
@@ -188,7 +188,7 @@ describe('RelayTab 交互', () => {
   })
 
   it('令牌/密码显示切换：默认 password 渲染，点「显示」转明文（内容 = 后端掩码）', async () => {
-    const w = mount(RelayTab)
+    const w = mount(BridgeTab)
     await flushPromises()
     const secretInputs = w.findAll('input').filter(i => i.attributes('type') === 'password')
     expect(secretInputs.length).toBe(2)
@@ -205,7 +205,7 @@ describe('RelayTab 交互', () => {
   })
 })
 
-describe('RelayTab 服务端设置弹层', () => {
+describe('BridgeTab 服务端设置弹层', () => {
   async function openModal(w: any) {
     const btn = w.findAll('button').find((b: any) => b.text() === '设置')
     expect(btn).toBeTruthy()
@@ -214,7 +214,7 @@ describe('RelayTab 服务端设置弹层', () => {
   }
 
   it('打开弹层：渲染令牌输入（值 = 后端掩码）', async () => {
-    const w = mount(RelayTab)
+    const w = mount(BridgeTab)
     await flushPromises()
     await openModal(w)
     expect(w.text()).toContain('中继服务端设置')
@@ -224,7 +224,7 @@ describe('RelayTab 服务端设置弹层', () => {
   })
 
   it('掩码未改直接保存 → 零 set_field，弹层关闭', async () => {
-    const w = mount(RelayTab)
+    const w = mount(BridgeTab)
     await flushPromises()
     await openModal(w)
     const save = w.findAll('.modal-card button').find((b: any) => b.text() === '保存')
@@ -238,7 +238,7 @@ describe('RelayTab 服务端设置弹层', () => {
   })
 
   it('修改令牌保存 → set_field 提交 bridge.server.token', async () => {
-    const w = mount(RelayTab)
+    const w = mount(BridgeTab)
     await flushPromises()
     await openModal(w)
     await w.find('.modal-card input.form-input').setValue('new-server-token')
@@ -256,7 +256,7 @@ describe('RelayTab 服务端设置弹层', () => {
   })
 
   it('重新生成 → 输入变为合法 UUID v4（与掩码不同）', async () => {
-    const w = mount(RelayTab)
+    const w = mount(BridgeTab)
     await flushPromises()
     await openModal(w)
     const regen = w.findAll('.modal-card button').find((b: any) => b.text() === '重新生成')
@@ -267,12 +267,12 @@ describe('RelayTab 服务端设置弹层', () => {
   })
 })
 
-describe('RelayTab 打开面板', () => {
+describe('BridgeTab 打开面板', () => {
   it('在线设备点「打开面板」→ window.open /d/<node_id>/ 新窗口', async () => {
     const openMock = vi.fn()
     vi.stubGlobal('open', openMock)
     try {
-      const w = mount(RelayTab)
+      const w = mount(BridgeTab)
       await flushPromises()
       const btn = w.findAll('button').find((b: any) => b.text() === '打开面板')
       expect(btn).toBeTruthy()
@@ -298,7 +298,7 @@ describe('RelayTab 打开面板', () => {
         }],
       },
     }))
-    const w = mount(RelayTab)
+    const w = mount(BridgeTab)
     await flushPromises()
     const btn = w.findAll('button').find((b: any) => b.text() === '打开面板')
     expect(btn).toBeTruthy()

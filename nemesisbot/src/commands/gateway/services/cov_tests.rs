@@ -78,7 +78,7 @@ async fn init_services_full_phase_with_device_and_board_sync_arms() {
 
     // 全相位链（run() 的 B1–B6 编排骨架就地展开；B7 run_runtime 会停在
     // wait_for_shutdown，故不调用——init_services 产物即断言面）。
-    let ctx: GatewayCtx = GatewayCtx::assemble(false, false, &[])
+    let ctx: GatewayCtx = GatewayCtx::assemble(false, false, false, &[])
         .await
         .expect("assemble ok")
         .expect("非 relay 必返 Some");
@@ -228,7 +228,7 @@ async fn init_services_enabled_cluster_bridge_identity_and_asset_persist() {
     }]);
     std::fs::write(guard_env.home.join("config.json"), cfg.to_string()).unwrap();
 
-    let ctx: GatewayCtx = GatewayCtx::assemble(false, false, &[])
+    let ctx: GatewayCtx = GatewayCtx::assemble(false, false, false, &[])
         .await
         .expect("assemble ok")
         .expect("非 relay 必返 Some");
@@ -392,7 +392,7 @@ mod wave6 {
         }]);
         std::fs::write(guard_env.home.join("config.json"), cfg.to_string()).unwrap();
 
-        let ctx: GatewayCtx = GatewayCtx::assemble(false, false, &[])
+        let ctx: GatewayCtx = GatewayCtx::assemble(false, false, false, &[])
             .await
             .expect("assemble ok")
             .expect("非 relay 必返 Some");
@@ -568,7 +568,7 @@ async fn w6_boot_master_cluster_arms_board_review_hooks() {
     }]);
     std::fs::write(guard_env.home.join("config.json"), cfg.to_string()).unwrap();
 
-    let ctx: GatewayCtx = GatewayCtx::assemble(false, false, &[])
+    let ctx: GatewayCtx = GatewayCtx::assemble(false, false, false, &[])
         .await
         .expect("assemble ok")
         .expect("非 relay 必返 Some");
@@ -724,7 +724,7 @@ variables: {}
     cfg["executor"] = serde_json::json!({"enabled": true, "sandbox": true});
     std::fs::write(guard_env.home.join("config.json"), cfg.to_string()).unwrap();
 
-    let ctx: GatewayCtx = GatewayCtx::assemble(false, false, &[])
+    let ctx: GatewayCtx = GatewayCtx::assemble(false, false, false, &[])
         .await
         .expect("assemble ok（模型解析失败必须降级不硬退）")
         .expect("非 relay 必返 Some");

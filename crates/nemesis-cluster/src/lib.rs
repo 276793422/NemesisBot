@@ -36,6 +36,18 @@ pub mod transport;
 #[cfg(feature = "cluster-roaming")]
 pub mod roaming;
 
+/// iroh 地址前缀（`iroh:<64位小写hex>`）——形态判定单一真相源。
+///
+/// 住 lib.rs（无 feature 门）：形态仲裁是纯字符串语义，feature 关的节点
+/// 同样会**收到**漫游节点的 announce（混合版本农场），地址不得按 TCP 口径
+/// 拼接损坏。`roaming::bridge`（cluster-roaming）re-export 同一常量。
+pub const IROH_ADDR_PREFIX: &str = "iroh:";
+
+/// 是否 iroh 形态地址（前缀判断；拨号分派第一闸 + 地址仲裁禁拼 `:port` 依据）。
+pub fn is_roaming_address(addr: &str) -> bool {
+    addr.trim_start().starts_with(IROH_ADDR_PREFIX)
+}
+
 // Re-export commonly used types
 pub use cluster_task::{
     CancelOutcome, ClusterTask, ClusterTaskList, ClusterWorkQueue, SELFCHECK_PROMPT_MARKER,

@@ -77,6 +77,16 @@ pub trait ClusterCallbacks: Send + Sync {
     fn roaming_id(&self) -> Option<String> {
         None
     }
+    /// 自报跨网叠加层**完整拨号地址**（自建中继形态；形如
+    /// `iroh:<hex>@<relay_url>`，announce `addresses` 携带）。自建中继
+    /// 端点走 Minimal 预设——零发现层，裸 node_id 无解析路径（实测钉死：
+    /// `bare_node_id_dial_fails_on_self_relay_minimal_base`），对端必须拿
+    /// 到完整形态才能 bridge 解析 → `with_relay_url`。默认空 = 未使用
+    /// 自建中继（裸 `iroh:<hex>` 候选经 `iroh_id` 字段照常携带，N0 发现
+    /// 层解析）。
+    fn roaming_overlay_addresses(&self) -> Vec<String> {
+        Vec::new()
+    }
     /// 自报构建号（git 短 hash；A1 运行时硬化批，announce 携带）。默认
     /// 空 = 未宣告。对端据此在注册表/Dashboard 展示构建偏斜。
     fn build_hash(&self) -> String {
@@ -815,10 +825,14 @@ impl DiscoveryService {
 /// 两通道的载荷字段集必须恒等，否则 UDP 隔离拓扑里两条通道落地身份会
 /// 出现形状分叉。空地址守卫留在发送点（构造期不做 IO 判断）。
 pub(crate) fn build_announce_from_callbacks(cluster: &dyn ClusterCallbacks) -> DiscoveryMessage {
+    // 自建中继完整拨号地址在 LAN IP 之后池尾追加——跨网通路不抢局域网
+    // 直连优先级（与 handle_discovered_node_impl 的池序纪律同口径）。
+    let mut addresses = cluster.all_local_ips();
+    addresses.extend(cluster.roaming_overlay_addresses());
     DiscoveryMessage::new_announce(
         cluster.node_id(),
         cluster.name(),
-        cluster.all_local_ips(),
+        addresses,
         cluster.rpc_port(),
         cluster.role(),
         cluster.category(),

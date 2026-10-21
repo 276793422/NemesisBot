@@ -866,7 +866,7 @@ fn test_send_announce_with_no_endpoints_no_unicast_noise() {
 
 /// FixedEndpointCallbacks 变体：带自报 iroh 漫游身份（默认方法覆写）。
 #[cfg(feature = "cluster-roaming")]
-struct FixedRoamingCallbacks(Vec<String>, Option<String>);
+struct FixedRoamingCallbacks(Vec<String>, Option<String>, Vec<String>);
 
 #[cfg(feature = "cluster-roaming")]
 impl ClusterCallbacks for FixedRoamingCallbacks {
@@ -921,6 +921,9 @@ impl ClusterCallbacks for FixedRoamingCallbacks {
     fn roaming_id(&self) -> Option<String> {
         self.1.clone()
     }
+    fn roaming_overlay_addresses(&self) -> Vec<String> {
+        self.2.clone()
+    }
 }
 
 /// announce 单播往返：`roaming_id()` 有值 → 接收端解出 iroh_id 一致；
@@ -935,7 +938,11 @@ fn test_announce_carries_roaming_id_roundtrip() {
         rx.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         let rx_port = rx.local_addr().unwrap().port();
 
-        let cb = FixedRoamingCallbacks(vec![format!("127.0.0.1:{}", rx_port)], roaming.clone());
+        let cb = FixedRoamingCallbacks(
+            vec![format!("127.0.0.1:{}", rx_port)],
+            roaming.clone(),
+            Vec::new(),
+        );
         let sock = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
         sock.set_broadcast(true).unwrap();
         send_announce_with(&sock, 11949, None, &cb);
@@ -944,5 +951,56 @@ fn test_announce_carries_roaming_id_roundtrip() {
         let (n, _) = rx.recv_from(&mut buf).unwrap();
         let msg = DiscoveryMessage::from_bytes(&buf[..n]).unwrap();
         assert_eq!(msg.iroh_id, roaming, "iroh_id 往返保全（{}）", label);
+    }
+}
+
+/// 自建中继完整拨号地址 announce 往返：`roaming_overlay_addresses()` 有值
+/// → 接收端 addresses 含 `iroh:<hex>@<relay_url>`（LAN IP 之后池尾追加，
+/// 不抢直连优先级）；空 = addresses 不含 iroh 形态（N0 形态行为不变）。
+#[test]
+#[cfg(feature = "cluster-roaming")]
+fn test_announce_carries_relay_qualified_overlay_address() {
+    let hex = crate::roaming::endpoint::RoamingIdentity::generate().node_id_hex();
+    let overlay = format!("iroh:{hex}@http://relay.example.com:3340");
+
+    for (overlay_addr, label) in [(Some(overlay.clone()), "self-relay"), (None, "n0-fallback")] {
+        let rx = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        rx.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let rx_port = rx.local_addr().unwrap().port();
+
+        let cb = FixedRoamingCallbacks(
+            vec![format!("127.0.0.1:{}", rx_port)],
+            Some(hex.clone()),
+            overlay_addr.clone().map(|a| vec![a]).unwrap_or_default(),
+        );
+        let sock = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+        sock.set_broadcast(true).unwrap();
+        send_announce_with(&sock, 11949, None, &cb);
+
+        let mut buf = [0u8; 4096];
+        let (n, _) = rx.recv_from(&mut buf).unwrap();
+        let msg = DiscoveryMessage::from_bytes(&buf[..n]).unwrap();
+        match &overlay_addr {
+            Some(addr) => {
+                // 池尾追加纪律：iroh 完整形态在 LAN IP 之后（不抢直连优先级）。
+                let pos = msg.addresses.iter().position(|a| a == addr);
+                assert!(pos.is_some(), "完整拨号地址应在 addresses 内（{}）", label);
+                let lan_pos = msg.addresses.iter().position(|a| a == "127.0.0.1");
+                assert!(
+                    lan_pos.is_some() && pos.unwrap() > lan_pos.unwrap(),
+                    "iroh 完整形态必须在 LAN IP 之后（{}）: {:?}",
+                    label,
+                    msg.addresses
+                );
+            }
+            None => {
+                assert!(
+                    !msg.addresses.iter().any(|a| a.starts_with("iroh:")),
+                    "N0 形态 addresses 不应含 iroh 完整地址（{}）: {:?}",
+                    label,
+                    msg.addresses
+                );
+            }
+        }
     }
 }

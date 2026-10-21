@@ -3,7 +3,8 @@ import { ref, computed, onMounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 import VoiceTab from './VoiceTab.vue'
-import RelayTab from './RelayTab.vue'
+import BridgeTab from './BridgeTab.vue'
+import QuicRelayTab from './QuicRelayTab.vue'
 
 const { request } = useWSAPI()
 const toast = useToast()
@@ -16,7 +17,7 @@ const selectedChannel = ref<string | null>(null)
 const channelDetail = ref<any>({})
 const editConfig = ref('')
 const editing = ref(false)
-const activeTab = ref<'local' | 'cloud' | 'voice' | 'relay'>('local')
+const activeTab = ref<'local' | 'cloud' | 'voice' | 'bridge' | 'relay'>('local')
 
 const channelLabels: Record<string, string> = {
   web: 'Web', websocket: 'WebSocket', telegram: 'Telegram', discord: 'Discord',
@@ -31,6 +32,9 @@ const localNames = new Set(['web', 'websocket'])
 const localChannels = computed(() => channels.value.filter(ch => localNames.has(ch.name)))
 const cloudChannels = computed(() => channels.value.filter(ch => !localNames.has(ch.name)))
 const isVoiceTab = computed(() => activeTab.value === 'voice')
+// 桥接通道（原「中继通道」，2026-10-21 改名——WebSocket 桥接中继设施不变）
+const isBridgeTab = computed(() => activeTab.value === 'bridge')
+// 中继通道（QUIC，iroh 内网穿透中继；与桥接是两套独立设施）
 const isRelayTab = computed(() => activeTab.value === 'relay')
 
 async function loadChannels() {
@@ -85,6 +89,7 @@ onMounted(loadChannels)
           <button class="ch-tab" :class="{ active: activeTab === 'local' }" @click="activeTab = 'local'">本地通道</button>
           <button class="ch-tab" :class="{ active: activeTab === 'cloud' }" @click="activeTab = 'cloud'">云端通道</button>
           <button class="ch-tab" :class="{ active: activeTab === 'voice' }" @click="activeTab = 'voice'">语音通道</button>
+          <button class="ch-tab" :class="{ active: activeTab === 'bridge' }" @click="activeTab = 'bridge'">桥接通道</button>
           <button class="ch-tab" :class="{ active: activeTab === 'relay' }" @click="activeTab = 'relay'">中继通道</button>
         </div>
 
@@ -93,9 +98,14 @@ onMounted(loadChannels)
           <VoiceTab />
         </div>
 
-        <!-- Relay TAB (goal 批次三：中继通道，语音通道右侧): full width -->
+        <!-- Bridge TAB（原中继通道，goal 批次三；WebSocket 桥接中继）: full width -->
+        <div v-else-if="isBridgeTab">
+          <BridgeTab />
+        </div>
+
+        <!-- Relay TAB（QUIC 中继，iroh 内网穿透；2026-10-21 新增）: full width -->
         <div v-else-if="isRelayTab">
-          <RelayTab />
+          <QuicRelayTab />
         </div>
 
         <!-- Local/Cloud TABs: two-column layout -->

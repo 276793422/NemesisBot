@@ -3462,6 +3462,91 @@ fn test_discovered_node_empty_addresses_known_peer_identity_merge_preserves_addr
     assert_eq!(node.status, NodeStatus::Online);
 }
 
+// 自建中继形态（QUIC 中继 2026-10-21）：announce 载荷携带
+// `iroh:<hex>@<relay_url>` 完整拨号地址（Minimal 基座零发现层，裸 node_id
+// 无解析路径）。接收侧两纪律：
+// ① iroh 形态独占地址时 primary 原样收录——**不得按 TCP 口径拼 `:rpc_port`**
+//   （会造出 `iroh:<hex>@http://...:50591` 非法地址，bridge 解析必败）；
+// ② LAN IP 在前时 primary 保持 TCP 形态，iroh 完整形态入池尾（跨网兜底
+//   不抢局域网直连优先级，池序 pin > 载荷 > 源地址 > iroh）。
+#[test]
+fn test_discovered_node_relay_qualified_overlay_address_pooling() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+    let hex = "a".repeat(64);
+    let overlay = format!("iroh:{hex}@http://relay.example.com:3340");
+
+    // 形态一：iroh 完整地址是唯一地址（纯 NAT 节点，无局域网可报）。
+    let changed = cluster.handle_discovered_node_ex(
+        "nat-only",
+        "nat-only",
+        vec![overlay.clone()],
+        50591,
+        "worker",
+        "development",
+        Vec::new(),
+        Vec::new(),
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        None,
+        None,
+        None,
+        "",
+    );
+    assert!(changed, "overlay-only peer must register");
+    let node = cluster.registry.get("nat-only").expect("registered");
+    assert_eq!(
+        node.base.address, overlay,
+        "iroh 形态独占地址必须原样作 primary（禁拼 :port）"
+    );
+    assert!(
+        node.addresses.contains(&overlay),
+        "完整拨号地址必须入池（对端拨号候选）: {:?}",
+        node.addresses
+    );
+    assert!(
+        !node.addresses.iter().any(|a| a.ends_with(":50591")),
+        "iroh 形态禁止被拼 RPC 端口: {:?}",
+        node.addresses
+    );
+
+    // 形态二：LAN IP 在前（自建中继节点正常自报形态）——primary 保持
+    // TCP 形态，iroh 完整形态入池尾。
+    let changed2 = cluster.handle_discovered_node_ex(
+        "lan-relay",
+        "lan-relay",
+        vec!["192.168.1.50".to_string(), overlay.clone()],
+        50592,
+        "worker",
+        "development",
+        Vec::new(),
+        Vec::new(),
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        None,
+        None,
+        None,
+        "",
+    );
+    assert!(changed2, "lan+overlay peer must register");
+    let node2 = cluster.registry.get("lan-relay").expect("registered");
+    assert_eq!(
+        node2.base.address, "192.168.1.50:50592",
+        "LAN IP 在前时 primary 保持 TCP 形态"
+    );
+    let lan_pos = node2.addresses.iter().position(|a| a == "192.168.1.50");
+    let overlay_pos = node2.addresses.iter().position(|a| a == &overlay);
+    assert!(
+        lan_pos.is_some() && overlay_pos.is_some() && overlay_pos.unwrap() > lan_pos.unwrap(),
+        "iroh 完整形态必须排在 LAN IP 之后（池序纪律）: {:?}",
+        node2.addresses
+    );
+}
+
 #[test]
 fn test_discovered_node_empty_addresses_unknown_peer_still_registered_bridge_semantics() {
     let cluster = Cluster::new(make_config());
@@ -4875,6 +4960,189 @@ fn test_merge_real_node_info_keeps_static_peer_address() {
 }
 
 #[test]
+fn test_merge_real_node_info_static_pin_survives_peers_toml_persist() {
+    // 洞 #5 盘面臂回归锁（2026-10-21 横扫姊妹洞）：内存保护（上方
+    // keeps_static_peer_address）保住 base.address，但 persist 路径用的是
+    // 入参 info.address——append 路径对已存在键=有意覆盖，nodes.ping 一
+    // 次，peers.toml 手写的 pin 地址就被 announce 自报 primary 冲掉，重
+    // 启后 R2 静态语义丢失（内存 pin 只活到下次重启）。盘面与内存同纪律。
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    let config = make_config();
+    let cluster = Cluster::with_workspace(config, workspace.clone());
+
+    // Simulate gateway static-peer load: discovered entry + mark_static
+    cluster.handle_discovered_node(
+        "node-master-1",
+        "master",
+        vec!["192.168.1.1".into()],
+        9000,
+        "coordinator",
+        "development",
+        vec![],
+        vec![],
+        "unknown",
+    );
+    assert!(cluster.registry.mark_static("node-master-1"));
+
+    let canonical = cluster.merge_real_node_info(&RealNodeInfo {
+        id: "node-master-1".into(),
+        name: "master".into(),
+        address: "10.255.0.1:9000".into(),
+        rpc_port: 0,
+        addresses: vec!["10.255.0.1:9000".into(), "192.168.1.50:9000".into()],
+        role: nemesis_types::cluster::NodeRole::Coordinator,
+        category: "development".into(),
+        capabilities: vec!["exec".into()],
+        tags: Vec::new(),
+        professions: Vec::new(),
+        tier: None,
+        agents: Vec::new(),
+        runtime_backend: None,
+        node_type: "agent".into(),
+        build: String::new(),
+    });
+
+    assert_eq!(canonical, "node-master-1");
+    // 盘上 pin 地址不被自报 primary 覆盖（9000 ≤ 10000，rpc_to_udp 原样）。
+    let peers_path = workspace.join("cluster/peers.toml");
+    let doc = std::fs::read_to_string(&peers_path)
+        .unwrap()
+        .parse::<toml::Value>()
+        .unwrap();
+    let addr = doc["peers"]["node-master-1"]["address"].as_str().unwrap();
+    assert_eq!(addr, "192.168.1.1:9000");
+}
+
+#[test]
+fn test_merge_real_node_info_static_peer_extras_survive_persist() {
+    // 四审 #6b 端到端（2026-10-21）：静态条目盘上带 professions/tier 手写
+    // 声明（U 系列职能静态声明的真实形态）→ merge（nodes.ping 路径）→
+    // 盘上扩展字段原样。#5 修复保 address，本测试钉扩展字段——append
+    // 覆盖路径保留非五字段（merge_peer_entry_extras）。
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    let config = make_config();
+    let cluster = Cluster::with_workspace(config, workspace.clone());
+
+    // 预写盘上静态声明形态（operator 手写 professions/tier）
+    let peers_path = workspace.join("cluster/peers.toml");
+    std::fs::write(
+        &peers_path,
+        "[peers.node-master-1]\n\
+         address = \"192.168.1.1:9000\"\n\
+         name = \"master\"\n\
+         role = \"coordinator\"\n\
+         category = \"development\"\n\
+         professions = [\"dev:cpp\"]\n\
+         tier = \"big\"\n",
+    )
+    .unwrap();
+
+    // registry 侧模拟 gateway 静态装载：条目在册 + static 标记
+    cluster.handle_discovered_node(
+        "node-master-1",
+        "master",
+        vec!["192.168.1.1".into()],
+        9000,
+        "coordinator",
+        "development",
+        vec![],
+        vec![],
+        "unknown",
+    );
+    assert!(cluster.registry.mark_static("node-master-1"));
+
+    // ping 路径：merge 自报 primary 与 pin 不同
+    cluster.merge_real_node_info(&RealNodeInfo {
+        id: "node-master-1".into(),
+        name: "master".into(),
+        address: "10.255.0.1:9000".into(),
+        rpc_port: 0,
+        addresses: vec!["10.255.0.1:9000".into()],
+        role: nemesis_types::cluster::NodeRole::Coordinator,
+        category: "development".into(),
+        capabilities: vec!["exec".into()],
+        tags: Vec::new(),
+        professions: Vec::new(),
+        tier: None,
+        agents: Vec::new(),
+        runtime_backend: None,
+        node_type: "agent".into(),
+        build: String::new(),
+    });
+
+    let doc = std::fs::read_to_string(&peers_path)
+        .unwrap()
+        .parse::<toml::Value>()
+        .unwrap();
+    let entry = &doc["peers"]["node-master-1"];
+    assert_eq!(entry["address"].as_str().unwrap(), "192.168.1.1:9000");
+    assert_eq!(
+        entry["professions"].as_array().unwrap().len(),
+        1,
+        "手写 professions 不得被 persist 冲掉"
+    );
+    assert_eq!(entry["tier"].as_str().unwrap(), "big");
+}
+
+#[test]
+fn test_upgrade_peer_in_peers_toml_carries_extras_to_real_key() {
+    // 四审 #6 同族（2026-10-21）：占位升级字段搬运——占位条目（静态 peers
+    // 手写）的 professions/tier 随键迁移到真实 id 键，不因升级丢失。
+    let dir = tempfile::tempdir().unwrap();
+    let cluster_dir = dir.path().join("cluster");
+    std::fs::create_dir_all(&cluster_dir).unwrap();
+    std::fs::write(
+        cluster_dir.join("peers.toml"),
+        "[node]\n\
+         id = \"local-node-001\"\n\n\
+         [peers.ph-a]\n\
+         address = \"127.0.0.1:9149\"\n\
+         name = \"A\"\n\
+         role = \"worker\"\n\
+         category = \"development\"\n\
+         professions = [\"dev:cpp\"]\n\
+         tier = \"big\"\n",
+    )
+    .unwrap();
+
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    let info = RealNodeInfo {
+        id: "real-a".into(),
+        name: "Alpha Real".into(),
+        address: "10.8.8.1:21949".into(),
+        rpc_port: 0,
+        addresses: Vec::new(),
+        role: nemesis_types::cluster::NodeRole::Worker,
+        category: "test".into(),
+        capabilities: vec![],
+        tags: Vec::new(),
+        professions: Vec::new(),
+        tier: None,
+        agents: Vec::new(),
+        runtime_backend: None,
+        node_type: "agent".into(),
+        build: String::new(),
+    };
+    cluster.upgrade_peer_in_peers_toml("ph-a", "real-a", &info);
+
+    let doc = std::fs::read_to_string(cluster_dir.join("peers.toml"))
+        .unwrap()
+        .parse::<toml::Value>()
+        .unwrap();
+    let real = &doc["peers"]["real-a"];
+    assert!(real.is_table(), "real-a entry written");
+    assert_eq!(
+        real["professions"].as_array().unwrap().len(),
+        1,
+        "占位条目手写 professions 必须随键迁移"
+    );
+    assert_eq!(real["tier"].as_str().unwrap(), "big");
+    assert!(doc["peers"].get("ph-a").is_none(), "占位键已删除");
+}
+
+#[test]
 fn test_merge_real_node_info_updates_address_for_dynamic_peer() {
     // 对照组：非静态（UDP 发现）节点，merge 照常用对端自报地址更新。
     let dir = tempfile::tempdir().unwrap();
@@ -5128,6 +5396,160 @@ fn test_handle_discovered_node_placeholder_upgrade_matches_secondary_address() {
         cluster.get_peer("node-bob").is_none(),
         "placeholder 命中 announce 次地址必须被升级移除"
     );
+}
+
+#[test]
+fn test_handle_discovered_node_never_consumes_local_self_entry_as_placeholder() {
+    // 2026-10-21 同机双节点实测回归锁：对端自报地址与本机地址相同
+    // （同机多实例同 rpc_port / NAT 共出口 IP+端口）时，占位升级的地
+    // 址比对臂曾把 registry 本机自条目当 stale 占位吞掉——自条目被
+    // 删、peers.toml [peers.{对端}] 被写成本机 name + UDP 派生端口、
+    // 对端单播打回本机 socket（发现自环，G2 探针只能走 overlay）。
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+
+    // 本机自条目：地址与即将到来的 announce 自报主地址完全相同。
+    let local_id = cluster.node_id.clone();
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: local_id.clone(),
+            name: "local-node".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "10.103.175.236:21949".into(),
+            category: "development".into(),
+            last_seen: String::new(),
+        },
+        status: NodeStatus::Online,
+        capabilities: Vec::new(),
+        tags: Vec::new(),
+        addresses: Vec::new(),
+        professions: Vec::new(),
+        tier: None,
+        agents: Vec::new(),
+        runtime_backend: None,
+        node_type: String::new(),
+        build: String::new(),
+    });
+
+    cluster.handle_discovered_node(
+        "node-b-real",
+        "Node-B",
+        vec!["10.103.175.236".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+    );
+
+    // 自条目必须健在（不被当占位消费）。
+    let self_entry = cluster.get_peer(&local_id);
+    assert!(self_entry.is_some(), "本机自条目不得被占位升级吞掉");
+    assert_eq!(self_entry.unwrap().base.name, "local-node");
+    // 真实对端条目照常建立，name 不被本机名污染。
+    let peer = cluster
+        .get_peer("node-b-real")
+        .expect("对端真实条目必须建立");
+    assert_eq!(peer.base.name, "Node-B", "对端 name 不得继承本机名");
+}
+
+#[test]
+fn test_merge_real_node_info_never_consumes_local_self_entry_as_placeholder() {
+    // 同上回归锁的 merge_real_node_info 臂（register_rpc_peer / 探针身份
+    // 回传等路径共用本函数的占位解析）。
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+
+    let local_id = cluster.node_id.clone();
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: local_id.clone(),
+            name: "local-node".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "10.0.0.5:9000".into(),
+            category: "development".into(),
+            last_seen: String::new(),
+        },
+        status: NodeStatus::Online,
+        capabilities: Vec::new(),
+        tags: Vec::new(),
+        addresses: Vec::new(),
+        professions: Vec::new(),
+        tier: None,
+        agents: Vec::new(),
+        runtime_backend: None,
+        node_type: String::new(),
+        build: String::new(),
+    });
+
+    cluster.merge_real_node_info(&make_real_node_info(
+        "node-real-2",
+        "Real Two",
+        "10.0.0.5:9000",
+    ));
+
+    assert!(
+        cluster.get_peer(&local_id).is_some(),
+        "本机自条目不得被占位升级吞掉"
+    );
+    let peer = cluster.get_peer("node-real-2").expect("真实条目必须建立");
+    assert_eq!(peer.base.name, "Real Two", "对端 name 不得继承本机名");
+}
+
+#[test]
+fn test_announce_address_arm_never_consumes_real_remote_entry() {
+    // 2026-10-21 复查姊妹洞回归锁：同机同 rpc_port / 共享 NAT 出口拓扑
+    // 下两个真实远端节点地址相同。地址比对臂曾吞「任意 id≠announce-id
+    // 条目」——见证节点视角里两个真实条目反复互吞（flapping）、
+    // peers.toml 反复改写。收窄后地址臂只消费真占位（静态 / id==name /
+    // 空 name），真实条目（人类名、id≠name、非静态）共存。
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+
+    // 真实远端 B（announce 学来的形态：人类名、id≠name、非静态）。
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "node-b-real".into(),
+            name: "Node-B".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "10.103.175.236:21949".into(),
+            category: "development".into(),
+            last_seen: String::new(),
+        },
+        status: NodeStatus::Online,
+        capabilities: Vec::new(),
+        tags: Vec::new(),
+        addresses: Vec::new(),
+        professions: Vec::new(),
+        tier: None,
+        agents: Vec::new(),
+        runtime_backend: None,
+        node_type: String::new(),
+        build: String::new(),
+    });
+
+    // 同地址的 C 的 announce 到达。
+    cluster.handle_discovered_node(
+        "node-c-real",
+        "Node-C",
+        vec!["10.103.175.236".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+    );
+
+    // B 不得被当占位吞掉。
+    let b = cluster
+        .get_peer("node-b-real")
+        .expect("真实远端条目必须健在");
+    assert_eq!(b.base.name, "Node-B", "B 的身份不得被 C 的 announce 污染");
+    // C 照常建立。
+    let c = cluster.get_peer("node-c-real").expect("C 条目照常建立");
+    assert_eq!(c.base.name, "Node-C");
 }
 
 #[test]
@@ -7826,7 +8248,9 @@ fn restore_skips_name_shadow_of_existing_entry() {
 
 // ------------------------------------------------------------------
 // G2 探针降频（集群完备性加固 2026-09-11）：should_probe_peer 纯函数
-// + spawn 链路测试（Offline 节点只在第 5 tick 被探一次）。
+// + spawn 链路测试。2026-10-21 启动冲刺：Offline 前 12 tick 全探（纯中继/
+// UDP 静默拓扑首次上线不能等 5 个 interval；窗口 12 = 60s 默认间隔下覆盖
+// 12 分钟人尺度启动偏差），之后恢复 1/5 降频。
 // ------------------------------------------------------------------
 
 #[test]
@@ -7838,14 +8262,21 @@ fn should_probe_peer_down_frequency_matrix() {
             "online tick {tick} 必须探"
         );
     }
-    // Offline：第 5 tick 一次（降频是恢复手段不是放弃）。
-    for tick in [1u64, 2, 3, 4, 6, 7, 8, 9, 11, 14] {
+    // Offline：前 12 tick 启动冲刺全探（纯中继拓扑首上线秒级拨号）。
+    for tick in [1u64, 2, 5, 10, 12] {
+        assert!(
+            super::should_probe_peer(false, tick),
+            "offline tick {tick} 启动冲刺必须探"
+        );
+    }
+    // 冲刺窗口后：第 5 tick 一次（降频是恢复手段不是放弃）。
+    for tick in [13u64, 14, 16, 17, 18, 19] {
         assert!(
             !super::should_probe_peer(false, tick),
             "offline tick {tick} 不应探（1/5 降频）"
         );
     }
-    for tick in [5u64, 10, 15, 50] {
+    for tick in [15u64, 20, 50] {
         assert!(
             super::should_probe_peer(false, tick),
             "offline tick {tick}（5 的倍数）必须探"
@@ -7853,13 +8284,14 @@ fn should_probe_peer_down_frequency_matrix() {
     }
 }
 
-/// 链路：探针循环确实按降频调度——dead-port Offline 节点在 tick 5 前零
-/// 失败计数、tick 5 后恰好 +1（其余 tick 不再 +1）。127.0.0.1:1 是保留
-/// 端口，connection refused 即刻返回。用 `start_paused` 虚拟时钟：tick
+/// 链路：探针循环确实按「启动冲刺 + 降频」调度——dead-port Offline 节点在
+/// tick 1-12（冲刺窗口）每 tick +1、tick 13/14 零增量、tick 15 再 +1。
+/// 127.0.0.1:1 是保留端口，connection refused 即刻返回。用 `start_paused`
+/// 虚拟时钟：tick
 /// 推进确定（探针真实 I/O pending 期间 runtime 空闲 → 自动推进到下一
 /// tick deadline），不依赖真实墙钟窗口，CI 慢机不 flaky。
 #[tokio::test(start_paused = true)]
-async fn health_probe_loop_probes_offline_every_fifth_tick() {
+async fn health_probe_loop_sprint_then_fifth_tick() {
     let cluster = Cluster::new(make_config());
     // 死端口 Offline 节点（127.0.0.1:1 保留端口，refused 即刻返回）。
     cluster.register_node(ExtendedNodeInfo {
@@ -7890,16 +8322,91 @@ async fn health_probe_loop_probes_offline_every_fifth_tick() {
 
     let failures = || cluster.registry.probe_failure_count("node-dead");
     // 虚拟时钟推进到 320ms：tick 1(0ms)-4(300ms) 已过，tick 5(400ms) 未到。
+    // 冲刺窗口（tick 1-12）内每 tick 都探。
     tokio::time::sleep(Duration::from_millis(320)).await;
     let before = failures();
     assert_eq!(
-        before, 0,
-        "tick 5 之前 Offline 节点不得被探（实得 {before}）"
+        before, 4,
+        "冲刺窗口 tick 1-4 每 tick 恰好各探一次（实得 {before}）"
     );
-    // 推进到 520ms：tick 5(400ms) 已探恰好一次；tick 6(500ms) 不探。
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // 推进到 1250ms：tick 5-12（400-1100ms）继续全探（窗口内），
+    // tick 13(1200ms) 已在窗口外不探 → 累计恰好 12。
+    tokio::time::sleep(Duration::from_millis(930)).await;
+    let mid = failures();
+    assert_eq!(
+        mid, 12,
+        "冲刺窗口 tick 1-12 全探，tick 13 起降频（实得 {mid}）"
+    );
+    // 推进到 1650ms：tick 14(1300ms) 不探、tick 15(1400ms) 再探一次、
+    // tick 16(1500ms) 不探。
+    tokio::time::sleep(Duration::from_millis(400)).await;
     let after = failures();
-    assert_eq!(after, 1, "tick 5 恰好探一次（实得 {after}）");
+    assert_eq!(after, 13, "tick 15 恰好再探一次（实得 {after}）");
+}
+
+// ---------------------------------------------------------------------
+// QUIC 中继钉址形态的拨号候选解析回归（2026-10-21 实测抓到的真 bug）：
+// iroh 形态 base.address 是原子（node_id+可选 relay_url），按冒号拆 host
+// 曾拆出 `iroh:<hex>@http://127.0.0.1` 截断垃圾候选混进拨号池（junk 白撞
+// 一次拨号 + 失败链 last error 用垃圾地址误导排障，relay 端口还被错当
+// rpc_port 返回）。修后不变量：全址整条候选恰好一条、零截断形态、
+// rpc_port 派生恒 0（iroh 地址内无 RPC 端口语义）。
+// ---------------------------------------------------------------------
+
+#[test]
+fn resolve_dial_candidates_iroh_pinned_base_address_atomic() {
+    use crate::rpc::client::PeerResolver;
+
+    let cluster = Cluster::new(make_config());
+    let hex = "ab".repeat(32);
+    let full = format!("iroh:{hex}@http://127.0.0.1:33440");
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "nb-relay-peer".into(),
+            name: "relay-peer".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: full.clone(),
+            category: "development".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status: NodeStatus::Offline,
+        capabilities: vec![],
+        tags: vec![],
+        // 静态 iroh 条目装载形态：loader 给的池里就只有这一条（G14 闸
+        // 占位不进池——iroh 分支 udp_port=0 不产 TCP 候选）。
+        addresses: vec![full.clone()],
+        professions: Vec::new(),
+        tier: None,
+        agents: Vec::new(),
+        runtime_backend: None,
+        node_type: "agent".into(),
+        build: String::new(),
+    });
+    cluster.mark_peer_static("nb-relay-peer");
+
+    let resolver = super::ClusterPeerResolver {
+        registry: cluster.registry.clone(),
+        node_id: cluster.node_id().to_string(),
+        rpc_port: 23951,
+    };
+    let (candidates, rpc_port, _) = resolver
+        .get_peer_info("nb-relay-peer")
+        .expect("静态 iroh peer 必须可解析候选");
+    assert_eq!(
+        candidates.iter().filter(|a| *a == &full).count(),
+        1,
+        "全址候选恰好一次（实得 {candidates:?}）"
+    );
+    assert!(
+        candidates
+            .iter()
+            .all(|a| *a == full || !a.starts_with("iroh:")),
+        "不得出现截断/变形垃圾候选（实得 {candidates:?}）"
+    );
+    assert_eq!(
+        rpc_port, 0,
+        "iroh 形态 rpc_port 派生恒 0（:33440 是中继端口）"
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -9467,8 +9974,9 @@ fn test_handle_discovered_node_iroh_id_pools() {
         None,
         vec![],
         Some(hex.clone()),
-        None,
-        "", // build：未宣告（P5 期测试补齐 A1 参数）
+        None, // 自报运行时后端形态：未宣告
+        None, // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
+        "",   // build：未宣告（P5 期测试补齐 A1 参数）
     );
 
     let node = cluster.get_node_info("iroh-node-1").expect("node stored");
@@ -9505,8 +10013,9 @@ fn test_handle_discovered_node_iroh_id_pools() {
         None,
         vec![],
         Some(hex.clone()),
-        None,
-        "", // build：未宣告（P5 期测试补齐 A1 参数）
+        None, // 自报运行时后端形态：未宣告
+        None, // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
+        "",   // build：未宣告（P5 期测试补齐 A1 参数）
     );
     let node = cluster.get_node_info("iroh-node-1").unwrap();
     #[cfg(feature = "cluster-roaming")]
@@ -9579,8 +10088,9 @@ fn test_handle_discovered_node_iroh_id_invalid_rejected() {
             None,
             vec![],
             Some(bad.to_string()),
-            None,
-            "", // build：未宣告（P5 期测试补齐 A1 参数）
+            None, // 自报运行时后端形态：未宣告
+            None, // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
+            "",   // build：未宣告（P5 期测试补齐 A1 参数）
         );
     }
     let node = cluster.get_node_info("iroh-bad").expect("node stored");
@@ -9614,9 +10124,10 @@ fn test_handle_discovered_node_roaming_primary_no_port_suffix() {
         vec![],
         None,
         vec![],
-        None,
-        None,
-        "", // build：未宣告（P5 期测试补齐 A1 参数）
+        None, // iroh_id：未宣告
+        None, // 自报运行时后端形态：未宣告
+        None, // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
+        "",   // build：未宣告（P5 期测试补齐 A1 参数）
     );
 
     let node = cluster.get_node_info("iroh-node-2").expect("node stored");

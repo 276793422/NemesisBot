@@ -153,6 +153,7 @@ impl GatewayCtx {
     pub(crate) async fn assemble(
         local: bool,
         relay: bool,
+        quic_relay: bool,
         extra_args: &[String],
     ) -> Result<Option<GatewayCtx>> {
         // Step 1: Resolve home directory
@@ -253,6 +254,16 @@ impl GatewayCtx {
         // 即全部 UI。bridge.server.token 空 → 拒绝启动（fail-closed）。
         if relay {
             run_relay(&home, &cfg).await?;
+            return Ok(None);
+        }
+
+        // Step 5b-2（QUIC 中继统一入口，2026-10-21 拍板与 `quic relay` 分类
+        // 管理入口并存）：`--quic-relay` 早退——只跑自建 iroh 中继（与
+        // `quic relay` 同源同一 `run_relay_server`），不装配 agent/board/
+        // 集群/discovery。读 config.cluster.json roaming.relay 段；token 空
+        // = 拒绝启动（fail-closed，与 `--relay` 同款纪律）。
+        if quic_relay {
+            run_quic_relay(&home).await?;
             return Ok(None);
         }
 
@@ -1163,6 +1174,25 @@ impl GatewayCtx {
             llm_provider,
         }))
     }
+}
+
+/// `--quic-relay` 早退执行体（Step 5b-2）。feature 开 = 调进 `quic relay`
+/// 分类管理入口的同一实现（单一真相源，两入口行为必然一致）；feature 关 =
+/// 诚实报错（旗标恒编译——IoT 裁剪版不带中继也该有明确拒绝文案而非
+/// 「未知参数」）。
+#[cfg(feature = "roaming-relay")]
+async fn run_quic_relay(home: &std::path::Path) -> Result<()> {
+    crate::commands::quic::run_relay_server(home)
+        .await
+        .map_err(anyhow::Error::msg)
+}
+
+#[cfg(not(feature = "roaming-relay"))]
+async fn run_quic_relay(_home: &std::path::Path) -> Result<()> {
+    anyhow::bail!(
+        "--quic-relay 需要 roaming-relay feature 编译（当前二进制未含）；\
+         自建：cargo build --release -p nemesisbot --features roaming-relay"
+    )
 }
 
 /// T5（扩展计划 D2b）：出站 DLP 脱敏闸单测（apply_outbound_dlp 判定逻辑 +

@@ -507,6 +507,24 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                         e
                     ),
                 }
+
+                // QUIC 中继服务器随 gateway 进程内启动（roaming-relay）。
+                // 闸 = config roaming.relay.enabled；不要求 roaming.enabled
+                // （VPS 形态：只当中继服务器不开叠加层是合法组合）。失败 warn
+                // 不炸集群——中继是叠加层设施（端口占用/证书非法在此显形）。
+                #[cfg(feature = "roaming-relay")]
+                match cluster.setup_relay_server().await {
+                    Ok(true) => info!("[Gateway] Self-hosted relay server active"),
+                    Ok(false) => {
+                        tracing::debug!(
+                            "[Gateway] Self-hosted relay not enabled (config roaming.relay.enabled is not true)"
+                        )
+                    }
+                    Err(e) => warn!(
+                        "[Gateway] Self-hosted relay setup failed (overlay/TCP paths unaffected): {}",
+                        e
+                    ),
+                }
             }
         }
 

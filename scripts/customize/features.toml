@@ -276,6 +276,16 @@ desc = "iroh 跨网 P2P 叠加层（`cluster roaming` 子命令 + 自证端点/�
 category = "subsystems"
 default = false
 
+# NOTE: `roaming-relay`（QUIC 中继服务器）默认关——iroh-relay server 面
+# 拉入 rcgen/ACME 等编译增量，只做客户端打洞不需要。依赖 cluster-roaming
+# （自动带入）。独立命令 `quic relay` 与随 gateway 启动同 feature 门控。
+[[feature]]
+id = "roaming-relay"
+label = "QUIC 中继服务器（内网穿透）"
+desc = "自建 iroh 中继回落服务器（`quic relay` 独立命令 + 随 gateway 启动）。默认关：只做客户端不需要"
+category = "subsystems"
+default = false
+
 # NOTE: `forge` 可裁剪（feature 穿透 nemesisbot → nemesis-agent/forge + nemesis-web/forge）。
 # 这是 Class C 内核裁剪——动 nemesis-agent 内核。关闭后自学习整包不编译。
 [[feature]]

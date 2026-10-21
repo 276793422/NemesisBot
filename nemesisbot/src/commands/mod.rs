@@ -48,6 +48,9 @@ pub mod onboard;
 pub mod persona;
 /// 用户习惯画像 CLI（自进化升级 B 线：list/enable/disable/veto/forget/pin）。
 pub mod profile;
+// QUIC 中继 CLI（roaming-relay feature 穿透 nemesis-cluster/roaming-relay）。
+#[cfg(feature = "roaming-relay")]
+pub mod quic;
 /// K1（devtool-upgrade 阶段 4）：headless 单任务执行（无端口、无 gateway，
 /// 安全 9 层全量生效，跑完即退）。
 pub mod run;

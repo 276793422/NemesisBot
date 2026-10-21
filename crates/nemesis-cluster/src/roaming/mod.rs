@@ -6,11 +6,17 @@
 //! 语义保留（传输加密之外的应用授权层，字节兼容）。
 //!
 //! - [`endpoint`]：节点密钥（roaming.key）+ iroh Endpoint 装配 + ping/echo 通路；
+//! - [`config`]：config.cluster.json `roaming` 段解析（单一真相源纯函数）；
 //! - [`trust`]：TrustBook 本地 allowlist（trust.toml，可选第三层信任）；
 //! - [`bridge`]：iroh bi-stream ↔ 现有帧协议（framing + AEAD）桥接。
+//! - [`relay_server`]：自建 iroh 中继回落服务器（QUIC 内网穿透；roaming-relay）。
 //!
-//! feature：`cluster-roaming`（默认关——LAN 用户零新依赖）。
+//! feature：`cluster-roaming`（默认关——LAN 用户零新依赖）；`roaming-relay`
+//! （隐含 cluster-roaming，中继服务器面：iroh-relay/server + rcgen + rustls）。
 
 pub mod bridge;
+pub mod config;
 pub mod endpoint;
+#[cfg(feature = "roaming-relay")]
+pub mod relay_server;
 pub mod trust;

@@ -502,7 +502,11 @@ async fn nodes_refresh_success_upgrades_placeholder() {
     let cluster = test_cluster(&dir);
     cluster.register_node(node(
         "ph",
-        "placeholder",
+        // 占位资格（三审 #4 收窄）：只有静态 / id==name / 空 name 三种条目
+        // 可被地址消费——真实远端条目不得地址吞并（防同地址 flapping）。
+        // fixture 用 id==name（保守发现条目的真实形态），id≠name+非静态
+        // 形态按收窄语义就是真实条目，不该被升级消费。
+        "ph",
         NodeRole::Worker,
         false,
         "10.1.2.3:9000",
