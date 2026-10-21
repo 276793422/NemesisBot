@@ -199,6 +199,12 @@ pub struct Issue {
     /// matcher 硬条件 5）；空 = 无能力需求。
     #[serde(default)]
     pub required_capabilities: Vec<String>,
+    /// 派发需求运行时后端（P6-R1，2026-10-21）：`process`|`vm`，与节点
+    /// 宣告的 runtime_backend 精确匹配（大小写不敏感；节点未宣告 =
+    /// fail-closed 排除，不参与松弛，见 matcher 硬条件 6）；None/空 =
+    /// 无需求不过闸（旧节点混编零回归）。
+    #[serde(default)]
+    pub required_backend: Option<String>,
     /// 交付证据契约（G4，2026-10-18 批六）：AC 含 file: 类锚点 → 建单时
     /// 自动置位（单一真相源在 [`crate::store::BoardStore::create_issue`]，
     /// 按 `has_file_anchor` 谓词）；置位后验收 PASS 必须有交付记录背书
@@ -475,6 +481,9 @@ pub struct NewIssue {
     /// 环境能力硬条件（NB-122 批 2026-10-16）：派发需求节点能力词
     /// （匹配硬闸、不参与松弛）；空 = 无能力需求。
     pub required_capabilities: Vec<String>,
+    /// 派发需求运行时后端（P6-R1）：`process`|`vm`，精确匹配 + fail-closed
+    /// （不参与松弛）；None/空 = 无需求不过闸。
+    pub required_backend: Option<String>,
 }
 
 impl Default for NewIssue {
@@ -495,6 +504,7 @@ impl Default for NewIssue {
             required_tags: Vec::new(),
             required_profession: None,
             required_capabilities: Vec::new(),
+            required_backend: None,
         }
     }
 }

@@ -4,7 +4,7 @@
 use rusqlite::Connection;
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 19;
+const SCHEMA_VERSION: i32 = 20;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS board_meta (
@@ -386,6 +386,14 @@ const SCHEMA_V19: &str = r#"
 ALTER TABLE issue ADD COLUMN requires_evidence INTEGER NOT NULL DEFAULT 0;
 "#;
 
+/// v20（P6-R1 backend 派发闸，2026-10-21）：issue 加派发需求运行时后端列
+/// （TEXT，值域 `process`|`vm`，NULL/空 = 无需求不过闸）。沿 v17 单值
+/// ALTER 既有模式；matcher 硬条件按精确匹配 + fail-closed（节点未宣告
+/// = 排除），与 capabilities 硬条件 5 同款、刻意不同于 tier 闸 fail-open。
+const SCHEMA_V20: &str = r#"
+ALTER TABLE issue ADD COLUMN required_backend TEXT;
+"#;
+
 /// Open (or create) the board database at `db_path` and run pending migrations.
 pub fn init_db(db_path: &Path) -> Result<Connection, String> {
     if let Some(parent) = db_path.parent() {
@@ -581,6 +589,14 @@ pub fn init_db(db_path: &Path) -> Result<Connection, String> {
         tracing::info!(
             version = 19,
             "[BoardStore] Database migrated to v19 (G4 delivery evidence: issue.requires_evidence)"
+        );
+    }
+    if current_version < 20 {
+        conn.execute_batch(SCHEMA_V20)
+            .map_err(|e| format!("Board schema v20 migration failed: {e}"))?;
+        tracing::info!(
+            version = 20,
+            "[BoardStore] Database migrated to v20 (P6-R1 backend dispatch gate: issue.required_backend)"
         );
     }
     set_version(&conn, SCHEMA_VERSION)?;

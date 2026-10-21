@@ -877,6 +877,18 @@ impl WebServer {
             router.route("/ws/pty", get(crate::pty::handle_pty_upgrade))
         };
 
+        // P5-R2 带界面 VM 显示通道（vm-display feature 门控；config
+        // executor.vm.display 运行闸 + token 闸 + 插件闸 + estop 闸在 handler 内）。
+        #[cfg(feature = "vm-display")]
+        let router = if self.relay_only {
+            router
+        } else {
+            router.route(
+                "/ws/vm-display",
+                get(crate::vm_display::handle_vm_display_upgrade),
+            )
+        };
+
         // Workflow REST endpoints (milestone 1a-E3/E4)
         #[cfg(feature = "workflow")]
         let router = if self.relay_only {

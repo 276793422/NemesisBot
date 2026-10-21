@@ -35,7 +35,8 @@
 #   scripts/build-vm-image.sh --guest-bin target/x86_64-unknown-linux-musl/release/nemesis-guest
 #   scripts/build-vm-image.sh --guest-bin ... --base-url <URL> --sha256 <HEX>   # 来源可换（推荐钉死校验和；不钉则从 source 同目录拉上游 SUMS 对账）
 #   scripts/build-vm-image.sh --guest-bin ... --skip-download                    # base.upstream.qcow2 已在位（复验校验和后直接烧录）
-#   scripts/build-vm-image.sh --guest-bin ... --variant desktop                  # WM+Chromium 变体（E 线人工验证面载体）
+#   scripts/build-vm-image.sh --guest-bin ... --variant desktop                  # WM+Chromium+GUI 自动化三件套变体（P5-R2 带界面 VM 载体：autologin 直进 X11 图形会话）
+#   scripts/build-vm-image.sh --guest-bin ... --display-resolution 1280x720      # desktop variant 的 X 分辨率预设（默认 1280x720；运行期可经 guest exec xrandr 调整）
 #   scripts/build-vm-image.sh --guest-bin ... --apt-mirror <URL> --apt-suite <S> # 受限网络：guest sources 覆写为镜像源（suite 如 bookworm，两参必同给）
 # ============================================================================
 set -euo pipefail
@@ -55,10 +56,11 @@ SHA256_OVERRIDE=""
 ARCH="x86_64"
 SKIP_DOWNLOAD=0
 VARIANT=""
+DISPLAY_RESOLUTION="1280x720"
 APT_MIRROR=""
 APT_SUITE=""
 
-usage() { grep '^#' "$0" | head -40; exit 2; }
+usage() { grep '^#' "$0" | head -41; exit 2; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -68,6 +70,7 @@ while [ $# -gt 0 ]; do
         --sha256)       SHA256_OVERRIDE="$2"; shift 2 ;;
         --arch)         ARCH="$2"; shift 2 ;;
         --variant)      VARIANT="$2"; shift 2 ;;
+        --display-resolution) DISPLAY_RESOLUTION="$2"; shift 2 ;;
         --apt-mirror)   APT_MIRROR="$2"; shift 2 ;;
         --apt-suite)    APT_SUITE="$2"; shift 2 ;;
         --skip-download) SKIP_DOWNLOAD=1; shift ;;
@@ -77,6 +80,13 @@ while [ $# -gt 0 ]; do
 done
 
 fail() { echo "!! $*" >&2; exit 1; }
+
+# --display-resolution 形态闸（desktop variant 消费；base 构建不消费但同样
+# 校验——与 config 面 executor.vm.display_resolution 校验同口径 WxH 正整数）。
+case "$DISPLAY_RESOLUTION" in
+    [1-9]*x[1-9]*) : ;;
+    *) fail "--display-resolution 形态应为 宽x高 正整数（如 1280x720）：$DISPLAY_RESOLUTION" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # 前置闸：arch / guest 二进制 / 下载工具 / 烧录工具 / root（全部诚实报缺）
@@ -173,24 +183,123 @@ SEED_DIR="$OUT_DIR/seed.d"
 rm -rf "$SEED_DIR"
 mkdir -p "$SEED_DIR"
 
-# variant 扩展（P5 第 3 步 E 线）：desktop = WM + Chromium（浏览器登录保持
-# 人工验证面的载体——自动化断言不含 GUI 登录，诚实边界）。cloud-config
-# packages 段首启 apt 安装（数百 MB，一次性进 base 之后的 overlay/镜像）。
-# B8b：默认 variant 预装基础工具链（build-essential/git/curl，约几百 MB）
-# ——开箱即写代码，apt install 工具链的分钟级首启等待不再必要。
+# variant 扩展：desktop = P5-R2 带界面 VM 载体。cloud-config packages 段首启
+# apt 安装（数百 MB，一次性进 base 之后的 overlay/镜像）。B8b：默认 variant
+# 预装基础工具链（build-essential/git/curl，约几百 MB）——开箱即写代码，apt
+# install 工具链的分钟级首启等待不再必要。P5-R1：默认 variant 加 chromium
+# （guest 内 headless 浏览器，`browser` 工具的执行体；headless 运行不依赖
+# 桌面栈，desktop variant 已有的包此处不重复）。
+#
+# desktop 三层（P5-R2 spec ②镜像桌面就绪）：
+# - 桌面栈：X11 路线刻意保留（openbox + xinit + Xorg，Wayland 不排期——VNC
+#   字节泵/xdotool 注入对 X11 形态最直接）；fonts-noto-cjk 保证中文渲染不豆腐块。
+# - autologin：nemesis-x.service 在 tty1 直起 X 会话（root 无密码——display=vnc
+#   的首帧即桌面；xinit -auth /root/.Xauthority 钉死 authority 文件位置，guest
+#   侧 GUI 工具经统一 wrapper 注入 DISPLAY/XAUTHORITY，不赌会话环境）。
+# - GUI 自动化三件套：xdotool（键鼠注入）/ wmctrl（窗口管理）/ scrot（截图 →
+#   vm_sync uploads → vision 评审，M5 同源）。
+VARIANT_WRITE_FILES=""
+VARIANT_RUNCMD=""
+# 转义纪律（VARIANT_* 经变量插入 user-data heredoc——变量值是**原样插入**，
+# 不会再做一轮展开/去转义）：内容里的运行期 $ 形态（$@ / $(...) / ${1:-...}）
+# 一律**裸写**（单引号赋值保字面 + heredoc 插值不加工）；构建期要烧定的值
+# 用 @NAME@ 占位符，写盘后统一 sed 替换（下方 DISPLAY_RESOLUTION）。
 case "$VARIANT" in
     "")          VARIANT_USERDATA='
 packages:
   - build-essential
   - git
   - curl
+  - chromium
 ' ;;
-    desktop)     VARIANT_USERDATA='
+    desktop)
+        VARIANT_USERDATA='
 packages:
   - openbox
   - xinit
+  - xserver-xorg
+  - x11-xserver-utils
+  - dbus-x11
+  - fonts-noto-cjk
+  - xdotool
+  - wmctrl
+  - scrot
   - xterm
   - chromium
+  - linux-image-amd64
+'
+        VARIANT_WRITE_FILES='
+  - path: /etc/systemd/system/nemesis-x.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=NemesisBot X session (autologin on tty1, display=vnc carrier)
+      After=systemd-user-sessions.service
+      Conflicts=getty@tty1.service
+
+      [Service]
+      ExecStart=/usr/bin/xinit /root/.xinitrc -- /usr/bin/Xorg :0 -nolisten tcp -auth /root/.Xauthority vt1
+      Restart=always
+      RestartSec=3
+      StandardInput=tty
+      TTYPath=/dev/tty1
+      TTYReset=yes
+      TTYVHangup=yes
+
+      [Install]
+      WantedBy=multi-user.target
+  - path: /root/.xinitrc
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      # X 会话入口（nemesis-x.service 经 xinit 拉起）。
+      # 分辨率预设：镜像构建期烧定（--display-resolution，默认与 config 面
+      # executor.vm.display_resolution 同源 1280x720）；运行期可经 guest exec
+      # xrandr 动态调整，此处只管首帧形态。best-effort：模式缺席不阻断会话。
+      xrandr --output Virtual-1 --mode @DISPLAY_RESOLUTION@ 2>/dev/null \
+          || xrandr -s @DISPLAY_RESOLUTION@ 2>/dev/null || true
+      # 会话总线（chromium 等生态常态假设；失败不致命）
+      eval "$(dbus-launch --sh-syntax)" 2>/dev/null || true
+      exec openbox-session
+  - path: /usr/local/bin/nemesis-gui
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      # agent GUI 驱动统一入口（宿主 agent 经 guest exec 调用）：guest agent
+      # 是系统服务、无会话环境——DISPLAY/XAUTHORITY 在这里统一注入，不赌。
+      # 用法：nemesis-gui xdotool click 1 / nemesis-gui wmctrl -l / ...
+      export DISPLAY=:0
+      export XAUTHORITY=/root/.Xauthority
+      exec "$@"
+  - path: /usr/local/bin/nemesis-guest-screenshot
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      # 截图 → 指定落点（约定 /workspace/uploads/… 子树——经 vm_sync uploads
+      # 回灌宿主 → vision 评审链路，与 M5 同源）。
+      # 用法：nemesis-guest-screenshot <out.png>
+      out="${1:-/workspace/uploads/screenshot.png}"
+      mkdir -p "$(dirname "$out")"
+      exec /usr/local/bin/nemesis-gui scrot -z -o "$out"
+'
+        VARIANT_RUNCMD='
+  # desktop：autologin X 会话（write_files 已落 nemesis-x.service）
+  - systemctl enable --now nemesis-x.service
+  # cloud 内核无本地输入栈（/sys/bus/usb 缺席、usbhid/psmouse 模块不在——
+  # QEMU 侧挂 xhci+usb-tablet guest 也看不见，VNC 操作档鼠标「完全不动」
+  # 的 2026-10-21 实录根因）。装完整版内核并卸掉 cloud 内核——grub 单选项
+  # 无默认排序赌注；remove 触发器自动 update-grub。
+  # dpkg 残局自愈先行（2026-10-21 实录二：首启 packages 阶段被中断后 dpkg
+  # 留未完成配置项，sh -e 语义下 remove 行中止并连坐其后所有 runcmd）。
+  # 引号纪律：本块整体在单引号赋值内，内部只能用双引号。
+  # noninteractive 硬要求（2026-10-21 实录三）：卸载目标是【正在运行的内核】
+  # （首启跑的就是 cloud 内核），linux-check-removal 会经 debconf 弹 whiptail
+  # 「Abort kernel removal?」等交互应答——无人应答挂死整个 runcmd（本机挂
+  # 20+ 分钟实锤）。该工具源码明确：DEBIAN_FRONTEND=noninteractive 时跳过
+  # 提问直接放行（print "W: Removing the running kernel"）。
+  - sh -c "DEBIAN_FRONTEND=noninteractive dpkg --configure -a >>/var/log/nemesis-guest-provision.log 2>&1 || echo dpkg-heal-nonzero >>/var/log/nemesis-guest-provision.log"
+  - sh -c "DEBIAN_FRONTEND=noninteractive apt-get remove -y \"linux-image-*-cloud-amd64\""
+  - update-grub
 ' ;;
     *) fail "未知 variant: $VARIANT（当前支持: desktop）" ;;
 esac
@@ -219,6 +328,31 @@ if [ -n "$APT_MIRROR" ]; then
       Suites: $APT_SUITE-security
       Components: main contrib non-free non-free-firmware
       Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg"
+fi
+
+# bookworm 专供 apt pin（2026-10-21 真机实证）：bookworm 的 luit
+# 2.0.20221028-1 声明 Breaks: x11-utils (< 7.7+6)，而 bookworm 的 x11-utils
+# 候选恰是 7.7+5；xterm 经备选依赖（x11-utils | luit）把 luit 拉进解算集时
+# apt pkgProblemResolver 回溯失败 → 整批 packages 阶段退出（desktop 变体
+# 首启装配炸的根因，cloud-init status: error、X 栈零包落地）。x11-utils
+# 7.7+5 自带 luit 二进制，pin 掉独立 luit 包零功能损失；trixie 起 x11-utils
+# Depends: luit 是正常成对关系，本 pin 不可带过去——按 suite 条件生成。
+LUIT_PIN_USERDATA=""
+if [ "$APT_SUITE" = "bookworm" ]; then
+    LUIT_PIN_USERDATA='
+  - path: /etc/apt/preferences.d/nemesis-no-luit-bookworm
+    permissions: "0644"
+    content: |
+      Explanation: bookworm luit Breaks x11-utils (< 7.7+6) while bookworm
+      Explanation: x11-utils candidate is 7.7+5; xterm pulls luit via the
+      Explanation: x11-utils|luit alternative and the apt resolver fails to
+      Explanation: backtrack, aborting the whole packages stage (live repro
+      Explanation: 2026-10-21). x11-utils ships the luit binary itself, so
+      Explanation: pinning the standalone package out loses nothing. Do NOT
+      Explanation: reuse on trixie (x11-utils Depends: luit there).
+      Package: luit
+      Pin: version *
+      Pin-Priority: -1'
 fi
 
 # launcher：token 不进镜像——每次启动从 SMBIOS DMI serial 现读（宿主 QEMU
@@ -281,14 +415,25 @@ write_files:
       [Network]
       DHCP=yes
 ${APT_USERDATA}
+${LUIT_PIN_USERDATA}
+${VARIANT_WRITE_FILES}
 ${VARIANT_USERDATA}
 runcmd:
+  # /workspace 必须最先落定（2026-10-21 实录：desktop variant 在 apt-get remove
+  # 中止 → 末段的 mkdir 未执行 → guest agent exec 的 cwd 不存在 = 永久 ENOENT，
+  # 与「命令不存在」同码极难排查）。放最前，后续任何 apt 行失败不再连坐
+  # exec 可用性；mount 在 agent enable 前（Linux 宿主 9p 先就位再起服务）。
+  - mkdir -p /workspace
+  # 9p 共享子树 best-effort（Windows 宿主无 virtfs = 挂载缺席，/workspace 落 VM 磁盘）
+  - sh -c 'mount -t 9p -o trans=virtio,version=9p2000.L workspace /workspace 2>>/var/log/nemesis-guest-provision.log || echo "9p workspace tag absent; /workspace on VM disk" >>/var/log/nemesis-guest-provision.log'
   - systemctl daemon-reload
   - systemctl enable --now nemesis-guest-agent.service
-  # 9p 共享子树 best-effort（Windows 宿主无 virtfs = 挂载缺席，/workspace 落 VM 磁盘）
-  - mkdir -p /workspace
-  - sh -c 'mount -t 9p -o trans=virtio,version=9p2000.L workspace /workspace 2>>/var/log/nemesis-guest-provision.log || echo "9p workspace tag absent; /workspace on VM disk" >>/var/log/nemesis-guest-provision.log'
+${VARIANT_RUNCMD}
 EOF
+
+# 构建期占位符烧定（INSTANCE_ID 内容寻址随 resolution 自动变化——替换必须在
+# sha 计算之前；形态闸已保证 $DISPLAY_RESOLUTION 只含数字和 x，sed 安全）。
+sed -i "s/@DISPLAY_RESOLUTION@/$DISPLAY_RESOLUTION/g" "$SEED_DIR/user-data"
 
 # INSTANCE_ID 内容寻址（user-data sha 前 8 位）：seed 内容（guest 二进制 b64 /
 # variant / apt-mirror / 脚本修订）任何变化自动换 id。cloud-init NoCloud 按
@@ -357,6 +502,7 @@ cat > "$OUT_DIR/manifest.json" <<EOF
 {
   "arch": "$ARCH",
   "variant": "${VARIANT:-base}",
+  "display_resolution": "$DISPLAY_RESOLUTION",
   "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "generator": "scripts/build-vm-image.sh",
   "guest_agent_port": $GUEST_AGENT_PORT,

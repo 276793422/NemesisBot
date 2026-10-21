@@ -178,7 +178,15 @@ impl GatewayProcess {
 
     async fn kill(&mut self) {
         if let Some(mut child) = self.child.take() {
+            // 树杀优先：TerminateProcess 只杀网关本体，QEMU 孙进程会变孤儿
+            // （VM-UAT 实录：EVICT-1/BROWSER-1 失败路径裸杀网关 → 两个 QEMU
+            // 孤儿存活到套件结束，污染后续测试的「qemu→0」全局计数）。
+            // taskkill /T 递归收割整棵进程树；对已退出 PID 无害。
+            if let Some(pid) = child.id() {
+                tree_kill(pid);
+            }
             let _ = child.kill().await;
+            let _ = child.wait().await;
             println!("  {} stopped", self.name);
         }
     }
@@ -207,8 +215,30 @@ impl GatewayProcess {
 impl Drop for GatewayProcess {
     fn drop(&mut self) {
         if let Some(mut child) = self.child.take() {
+            // Drop 路径同样树杀（fail 路径 `?` 提前返回时 GatewayProcess
+            // 走 Drop——不树杀同样孤儿化 QEMU；同步上下文跑 taskkill 合法）。
+            if let Some(pid) = child.id() {
+                tree_kill(pid);
+            }
             let _ = child.start_kill();
         }
+    }
+}
+
+/// Windows 树杀：`taskkill /F /T /PID`（CREATE_NO_WINDOW 不弹窗）。
+/// 非 Windows 无 taskkill——测试工具仅 Windows 形态，直接空实现兜底。
+fn tree_kill(pid: u32) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .output();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = pid;
     }
 }
 
@@ -2144,14 +2174,31 @@ async fn vm_drive_tool(
     args: Value,
     timeout_secs: u64,
 ) -> Result<(Vec<Value>, String)> {
+    vm_drive_tool_in_session(stream, None, tool, args, timeout_secs).await
+}
+
+/// 会话路由版 vm_drive_tool：`session_id` 在场时 chat.send 带 `data.session_id`
+///（后端派生 session_key 经 resolve_session_loop 路由到项目 loop——L6++ 单一
+/// 裁决点），None = 主 loop（VM-ON-1/2 的旧行为）。
+async fn vm_drive_tool_in_session(
+    stream: &mut WsStream,
+    session_id: Option<&str>,
+    tool: &str,
+    args: Value,
+    timeout_secs: u64,
+) -> Result<(Vec<Value>, String)> {
     // <TOOL> 标签体是裸 JSON（TestAIServer v_models.go 逐字节 Unmarshal），
     // 不能做任何转义——转义即 BAD_TOOL_TAG。
     let drive = format!("<TOOL>{{\"name\":\"{tool}\",\"args\":{args}}}</TOOL>");
+    let mut data = json!({ "content": drive });
+    if let Some(sid) = session_id {
+        data["session_id"] = json!(sid);
+    }
     let msg = json!({
         "type": "message",
         "module": "chat",
         "cmd": "send",
-        "data": { "content": drive },
+        "data": data,
         "timestamp": chrono::Local::now().to_rfc3339()
     });
     stream.send(Message::Text(msg.to_string().into())).await?;
@@ -2214,10 +2261,11 @@ async fn vm_drive_tool(
 
 /// ToolFinished 断言：存在一帧 tool 匹配、ok=true、preview 含期望子串
 ///（大小写不敏感——uname 输出「Linux」，echo 输出全大写 marker）。
-fn assert_tool_ok(finished: &[Value], expect_substr: &str) -> Result<()> {
+/// tool 名参数化版（browser 等非 exec 工具用）；exec 断言走 [`assert_tool_ok`]。
+fn assert_tool_ok_named(finished: &[Value], tool: &str, expect_substr: &str) -> Result<()> {
     let needle = expect_substr.to_lowercase();
     for f in finished {
-        if f.get("tool").and_then(|t| t.as_str()) != Some("exec") {
+        if f.get("tool").and_then(|t| t.as_str()) != Some(tool) {
             continue;
         }
         let ok = f.get("ok").and_then(|o| o.as_bool()) == Some(true);
@@ -2231,9 +2279,301 @@ fn assert_tool_ok(finished: &[Value], expect_substr: &str) -> Result<()> {
         }
     }
     anyhow::bail!(
-        "未找到 ok=true 且 preview 含 {expect_substr:?} 的 exec ToolFinished 帧（共 {} 帧）: {finished:?}",
+        "未找到 ok=true 且 preview 含 {expect_substr:?} 的 {tool} ToolFinished 帧（共 {} 帧）: {finished:?}",
         finished.len()
     );
+}
+
+/// exec 工具版断言（VM-ON-1/2 等既有调用点的薄包装）。
+fn assert_tool_ok(finished: &[Value], expect_substr: &str) -> Result<()> {
+    assert_tool_ok_named(finished, "exec", expect_substr)
+}
+
+/// ToolFinished 存在性断言（不看 preview 内容，只看 ok）——browser 探测腿用
+///（`command -v chromium` 的输出本身不是断言对象，成败才是）。
+fn assert_any_tool_finished(finished: &[Value], tool: &str, ok_expected: bool) -> Result<()> {
+    for f in finished {
+        if f.get("tool").and_then(|t| t.as_str()) == Some(tool)
+            && f.get("ok").and_then(|o| o.as_bool()) == Some(ok_expected)
+        {
+            return Ok(());
+        }
+    }
+    anyhow::bail!(
+        "未找到 ok={ok_expected} 的 {tool} ToolFinished 帧（共 {} 帧）: {finished:?}",
+        finished.len()
+    );
+}
+
+/// 宿主迷你认证服务器（P5-R3 T-VM-BROWSER 专用）：`GET /login` 下发
+/// `Set-Cookie: nb_uat=alice`；`GET /whoami` 按 Cookie 回 `USER=alice` /
+/// `USER=anonymous`。guest 经 slirp 网关别名 `10.0.2.2:<port>` 可达宿主
+/// loopback。返回 shutdown 旗标（置 true 后 accept 轮询 ≤200ms 自退）。
+fn spawn_mini_auth_server(port: u16) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+    use std::io::{Read, Write};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let shutdown = std::sync::Arc::new(AtomicBool::new(false));
+    let flag = shutdown.clone();
+    std::thread::spawn(move || {
+        let listener = match std::net::TcpListener::bind(("127.0.0.1", port)) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("mini auth server bind 127.0.0.1:{port} 失败: {e}");
+                return;
+            }
+        };
+        let _ = listener.set_nonblocking(true);
+        loop {
+            if flag.load(Ordering::Relaxed) {
+                return;
+            }
+            match listener.accept() {
+                Ok((mut sock, _)) => {
+                    // 请求收全闸（run7 实证）：socket 处于 nonblocking（accept
+                    // 轮询形态继承），slirp 链路上 accept 完成与请求数据到达
+                    // 之间有真实窗口——单次 `read().unwrap_or(0)` 把 WouldBlock
+                    // 吞成空 request → path="/" → 404 NOT_FOUND 回给 chromium，
+                    // /login 页面渲染成 404（VM-BROWSER-1 run7 的 LOGIN_OK
+                    // 断言失败根因）。改为累积读到 \r\n\r\n（请求头完整）+
+                    // 3s 截止（EOF/异常/超时都带着已收到的字节走，解析尽力）。
+                    let _ = sock.set_nonblocking(true);
+                    let mut buf: Vec<u8> = Vec::with_capacity(1024);
+                    let mut tmp = [0u8; 4096];
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                    loop {
+                        match sock.read(&mut tmp) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                buf.extend_from_slice(&tmp[..n]);
+                                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                                    break;
+                                }
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                if std::time::Instant::now() >= deadline {
+                                    break;
+                                }
+                                std::thread::sleep(std::time::Duration::from_millis(5));
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    let req = String::from_utf8_lossy(&buf).to_lowercase();
+                    let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
+                    let cookie_hit = req.contains("cookie: nb_uat=alice");
+                    let (status, headers, body) = if path.starts_with("/login") {
+                        (
+                            "200 OK",
+                            "Set-Cookie: nb_uat=alice; Path=/\r\nContent-Type: text/plain\r\n",
+                            "LOGIN_OK".to_string(),
+                        )
+                    } else if path.starts_with("/whoami") {
+                        let body = if cookie_hit {
+                            "USER=alice"
+                        } else {
+                            "USER=anonymous"
+                        };
+                        ("200 OK", "Content-Type: text/plain\r\n", body.to_string())
+                    } else {
+                        (
+                            "404 Not Found",
+                            "Content-Type: text/plain\r\n",
+                            "NOT_FOUND".to_string(),
+                        )
+                    };
+                    let resp = format!(
+                        "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = sock.write_all(resp.as_bytes());
+                    let _ = sock.flush();
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(100)),
+            }
+        }
+    });
+    shutdown
+}
+
+/// VM 档 UAT 样板上下文（VM-EVICT/VM-BROWSER/VM-SYNC 三测试共用）：onboard →
+/// 资产暂存 → 端口 → executor.vm → 双模型 → gateway 拉起 → 探针三闸 → MAIN
+/// 发现 + 切 vm 档。失败分支就地 kill gateway，`Err` 通道携带终局
+/// TestResult（fail 或诚实 SKIP）——调用方 `match { Ok(c) => c, Err(r) => return r }`。
+struct VmOnCtx {
+    ws: TestWorkspace,
+    gw: GatewayProcess,
+    stream: WsStream,
+    agent_id: String,
+}
+
+async fn vm_on_boilerplate(
+    test_name: &'static str,
+    gateway_bin: &Path,
+    web_port: u16,
+    health_port: u16,
+) -> std::result::Result<VmOnCtx, TestResult> {
+    let root = match resolve_project_root() {
+        Ok(r) => r,
+        Err(e) => {
+            return Err(test_harness::skip(
+                test_name,
+                format!("项目根解析失败: {e}"),
+            ));
+        }
+    };
+    let ws = match TestWorkspace::new() {
+        Ok(w) => w,
+        Err(e) => return Err(fail(test_name, format!("workspace 创建失败: {e}"))),
+    };
+    let out = ws.run_cli(gateway_bin, &["onboard", "default"]).await;
+    if !out.success() {
+        return Err(fail(test_name, format!("onboard failed: {}", out.stderr)));
+    }
+    // 资产护栏：本机无预下载 QEMU/镜像 → 诚实 SKIP（onboard 后暂存到
+    // workspace 子树 `<ws>/tools/vm/`）。
+    if let Err(e) = stage_vm_assets(&root, &ws.workspace()) {
+        return Err(test_harness::skip(
+            test_name,
+            format!("VM 资产暂存不可用: {e}"),
+        ));
+    }
+    if let Err(e) = configure_ports(&ws.home(), web_port, health_port) {
+        return Err(fail(test_name, format!("configure_ports failed: {e}")));
+    }
+    if let Err(e) = set_executor_vm_config(&ws.home(), true) {
+        return Err(fail(test_name, format!("executor 配置预写失败: {e}")));
+    }
+    let base = format!("http://127.0.0.1:{}/v1", ai_server_port());
+    for (model, is_default) in [("test/testai-8.5", true), ("test/testai-1.1", false)] {
+        let mut args: Vec<&str> = vec![
+            "model", "add", "--model", model, "--base", &base, "--key", "test-key",
+        ];
+        if is_default {
+            args.push("--default");
+        }
+        let out = ws.run_cli(gateway_bin, &args).await;
+        if !out.success() {
+            return Err(fail(
+                test_name,
+                format!("model add {model} failed: {}", out.stderr),
+            ));
+        }
+    }
+    let mut gw = match GatewayProcess::spawn("Gateway-VMBOILER", gateway_bin, ws.path()) {
+        Ok(g) => g,
+        Err(e) => return Err(fail(test_name, format!("gateway spawn failed: {e}"))),
+    };
+    if let Err(e) = test_harness::wait_for_http(
+        &format!("http://127.0.0.1:{health_port}/health"),
+        Duration::from_secs(60),
+    )
+    .await
+    {
+        let _ = gw.kill().await;
+        return Err(fail(test_name, format!("gateway health 未就绪: {e}")));
+    }
+    let mut stream = match ws_connect_retry(web_port).await {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = gw.kill().await;
+            return Err(fail(test_name, format!("WS 连接失败: {e}")));
+        }
+    };
+    // 探针三闸：无 vm feature（unknown/未装配）→ SKIP；hypervisor 缺席 →
+    // SKIP；enabled 未回读 true → FAIL。
+    let ov = match ws_api_request(&mut stream, "vm", "overview", json!({}), 10).await {
+        Ok(v) => v,
+        Err(e) => {
+            let m = format!("{e}");
+            let _ = gw.kill().await;
+            if m.contains("VM 管理未装配") || m.contains("unknown") {
+                return Err(test_harness::skip(
+                    test_name,
+                    "二进制无 vm feature——实机档跳过",
+                ));
+            }
+            return Err(fail(test_name, format!("vm.overview 失败: {m}")));
+        }
+    };
+    if ov.pointer("/probe/available").and_then(|a| a.as_bool()) != Some(true) {
+        let reason = ov
+            .pointer("/probe/reason")
+            .and_then(|r| r.as_str())
+            .unwrap_or("?");
+        let _ = gw.kill().await;
+        return Err(test_harness::skip(
+            test_name,
+            format!("无可用 hypervisor（{reason}）——实机档按设计跳过"),
+        ));
+    }
+    if ov.get("enabled").and_then(|e| e.as_bool()) != Some(true) {
+        let _ = gw.kill().await;
+        return Err(fail(
+            test_name,
+            format!("executor.vm.enabled=true 未被回读: {ov}"),
+        ));
+    }
+    // MAIN 实体发现（agent_id = uuid，按 kind 查）+ 切 vm 档（偏好变更，
+    // 不启机——首次 VM exec 才吃冷启）。
+    let agents = match ws_api_request(&mut stream, "agents", "list", json!({}), 10).await {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = gw.kill().await;
+            return Err(fail(test_name, format!("agents.list 失败: {e}")));
+        }
+    };
+    let main_agent = agents
+        .pointer("/agents")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| {
+            arr.iter()
+                .find(|a| a.get("kind").and_then(|k| k.as_str()) == Some("main"))
+                .cloned()
+        });
+    let main_agent = match main_agent {
+        Some(a) => a,
+        None => {
+            let _ = gw.kill().await;
+            return Err(fail(
+                test_name,
+                format!("agents.list 无 main 实体: {agents}"),
+            ));
+        }
+    };
+    let agent_id = main_agent
+        .get("agent_id")
+        .and_then(|i| i.as_str())
+        .unwrap_or("")
+        .to_string();
+    let upd = match ws_api_request(
+        &mut stream,
+        "agents",
+        "update",
+        json!({ "agent_id": agent_id, "runtime_backend": "vm" }),
+        10,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = gw.kill().await;
+            return Err(fail(test_name, format!("agents.update→vm 失败: {e}")));
+        }
+    };
+    if upd
+        .pointer("/agent/runtime_backend")
+        .and_then(|b| b.as_str())
+        != Some("vm")
+    {
+        let _ = gw.kill().await;
+        return Err(fail(test_name, format!("切档未回读 vm: {upd}")));
+    }
+    Ok(VmOnCtx {
+        ws,
+        gw,
+        stream,
+        agent_id,
+    })
 }
 
 /// 段级墙钟预算起算点：首个未被过滤的测试开始执行时起算（Phase 1-6 的
@@ -14661,6 +15001,1100 @@ async fn main() {
         )
     })
     .await,
+    );
+
+    // ---- VM-EVICT-1：VM 实例逐出真机端（P5-R3；探针护栏同前）----
+    // 逐出面 = `vm.instance.kill`（QEMU 退出 + overlay/registry 保留，下次
+    // 冷启同盘）。**不走 agents.remove**——本测试的 agent 是 main（对话组
+    // 身份投影，remove 面硬拒「不可删除」），身份投影契约本身也是断言项：
+    // kill 后 agents.list 仍必须有 main 记录。remove→evict→记录删除链由
+    // agents/tests.rs 单测钉住（可移除 agent 面）；本测试补真 QEMU 端：
+    // exec 冷启（实例在场）→ instance.kill → 轮询 qemu→0 → 盘上产物保留
+    // 断言（registry instance.json + overlay——停机≠删盘）。
+    all_results.push(
+    run_test("VM-EVICT-1: 逐出真机端（VM exec 起实例→vm.instance.kill→QEMU 收敛→盘上产物保留→main 身份投影保留）", || async {
+        let ctx = match vm_on_boilerplate("VM-EVICT-1", &gateway_bin, 37314, 18802).await {
+            Ok(c) => c,
+            Err(r) => return r,
+        };
+        let VmOnCtx { ws, mut gw, mut stream, agent_id } = ctx;
+        // ① 首驱 exec：吃掉冷启，实例 running。
+        let (finished, _) = match vm_drive_tool(
+            &mut stream,
+            "exec",
+            json!({"command": "echo EVICT_READY && uname -s"}),
+            660,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = gw.kill().await;
+                return fail("VM-EVICT-1", format!("VM exec 首驱失败: {e}"));
+            }
+        };
+        if let Err(e) = assert_tool_ok(&finished, "EVICT_READY") {
+            let _ = gw.kill().await;
+            return fail("VM-EVICT-1", format!("VM exec 断言失败: {e}"));
+        }
+        // ② vm.instance.kill：唯一逐出面（QEMU 退出 + overlay 保留）。
+        if let Err(e) = ws_api_request(
+            &mut stream,
+            "vm",
+            "instance.kill",
+            json!({ "agent_id": agent_id }),
+            60,
+        )
+        .await
+        {
+            let _ = gw.kill().await;
+            return fail("VM-EVICT-1", format!("vm.instance.kill 失败: {e}"));
+        }
+        // ③ 轮询 qemu→0：逐出=真停机（常驻实例被强制收敛）。
+        let mut reaped = false;
+        for _ in 0..30 {
+            if count_qemu_processes() == 0 {
+                reaped = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+        if !reaped {
+            let n = count_qemu_processes();
+            let _ = gw.kill().await;
+            return fail("VM-EVICT-1", format!("vm.instance.kill 后仍有 {n} 个 qemu 未收敛"));
+        }
+        // ④ 盘上产物保留（停机≠删盘）：registry + overlay 都在。
+        let reg = ws.workspace().join("tools/vm/run").join(&agent_id).join("instance.json");
+        let overlay = ws.workspace().join("tools/vm/overlays").join(format!("{agent_id}.qcow2"));
+        let reg_meta = std::fs::metadata(&reg);
+        let ov_meta = std::fs::metadata(&overlay);
+        let (reg_ok, ov_ok) = (reg_meta.is_ok(), ov_meta.is_ok());
+        if !reg_ok || !ov_ok {
+            let _ = gw.kill().await;
+            return fail(
+                "VM-EVICT-1",
+                format!(
+                    "逐出后盘上产物丢失（registry={reg_ok} overlay={ov_ok}）——停机≠删盘契约破坏: {} | {}",
+                    reg.display(),
+                    overlay.display()
+                ),
+            );
+        }
+        // ⑤ 身份投影契约：main agent 是对话组身份投影，kill 只停实例不删
+        //    记录——agents.list 仍必须有 main 记录。
+        let agents = match ws_api_request(&mut stream, "agents", "list", json!({}), 10).await {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = gw.kill().await;
+                return fail("VM-EVICT-1", format!("agents.list 复查失败: {e}"));
+            }
+        };
+        let still_there = agents
+            .pointer("/agents")
+            .and_then(|v| v.as_array())
+            .is_some_and(|arr| {
+                arr.iter()
+                    .any(|a| a.get("agent_id").and_then(|i| i.as_str()) == Some(agent_id.as_str()))
+            });
+        if !still_there {
+            let _ = gw.kill().await;
+            return fail(
+                "VM-EVICT-1",
+                format!("instance.kill 后 main 记录消失（身份投影契约破坏）: {agents}"),
+            );
+        }
+        gw.kill().await;
+        // ⑥ 清扫铁面：零 qemu 残留。
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let n = count_qemu_processes();
+        if n != 0 {
+            return fail("VM-EVICT-1", format!("gateway 退出后残留 {n} 个 qemu-system 进程"));
+        }
+        pass(
+            "VM-EVICT-1",
+            "逐出真机端通过（VM exec 起实例 → vm.instance.kill → QEMU 收敛到零 → registry+overlay 保留 → main 身份投影保留 → 零残留）",
+        )
+    })
+    .await,
+    );
+
+    // ---- VM-BROWSER-1：browser 工具链 + cookie 跨冷启持久（P5-R1/P5-R3）----
+    // 宿主迷你认证服务器（/login 下发 Set-Cookie，/whoami 按 Cookie 回身份），
+    // guest chromium 经 slirp 10.0.2.2 可达。腿：chromium 探测（不过=诚实
+    // SKIP——底图未含 seed 或首启 cloud-init 装配未完成）→ navigate login →
+    // extract LOGIN_OK → navigate whoami →
+    // USER=alice（cookie 往返）→ screenshot 落 uploads → 40s settle（
+    // CookieMonster ~30s 刷盘节奏；instance.kill 硬杀无退出 flush）→ 冷启
+    // 重挂同 overlay → whoami 仍 USER=alice（.browser-profile 落盘跨停启持
+    // 久真证明——不依赖睡眠线，WHPX 全可跑）。
+    all_results.push(
+    run_test("VM-BROWSER-1: browser 工具链 + cookie 跨冷启持久（登录→往返→截图→冷重启重读 profile）", || async {
+        const MINI_PORT: u16 = 18851;
+        const BR_WEB_B: u16 = 37316;
+        const BR_HEALTH_B: u16 = 18804;
+        let mini_shutdown = spawn_mini_auth_server(MINI_PORT);
+        let result = async {
+            let ctx = vm_on_boilerplate("VM-BROWSER-1", &gateway_bin, 37315, 18803).await?;
+            let VmOnCtx { ws, mut gw, mut stream, agent_id } = ctx;
+            // ① chromium 探测（首驱 exec 顺带吃掉冷启）。
+            let (probe, _) = match vm_drive_tool(
+                &mut stream,
+                "exec",
+                json!({"command": "command -v chromium"}),
+                660,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    gw.kill().await;
+                    return Err(fail(
+                        "VM-BROWSER-1",
+                        format!(
+                            "chromium 探测 exec 失败: {e}（超时多为 guest 首启 cloud-init 装配未完成——apt 限速时 agent 长时间不可达，查 guest /var/log/cloud-init-output.log 定性）"
+                        ),
+                    ));
+                }
+            };
+            if assert_any_tool_finished(&probe, "exec", true).is_err() {
+                gw.kill().await;
+                return Err(test_harness::skip(
+                    "VM-BROWSER-1",
+                    "guest 无 chromium 可用（两因任一：底图 packages 未含 chromium seed，或首启 cloud-init 装配未完成/超时）。查 target/vm-image/manifest.json 与 guest /var/log/cloud-init-output.log 定性后重编镜像重跑",
+                ));
+            }
+            let base_url = format!("http://10.0.2.2:{MINI_PORT}");
+            // ② navigate /login → extract LOGIN_OK。
+            let (fin, _) = match vm_drive_tool(
+                &mut stream,
+                "browser",
+                json!({"action": "navigate", "url": format!("{base_url}/login")}),
+                180,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    // 失败现场自带（e2e 失败信息必须自带现场）：agent-spawned
+                    // chromium 的 stderr 尾行 + 9222 监听/CDP 探测 + 进程数。
+                    let diag = match vm_drive_tool(
+                        &mut stream,
+                        "exec",
+                        json!({"command": "tail -8 /tmp/nemesis-chromium.log 2>/dev/null; ss -tln 2>/dev/null | grep 9222 || echo NO9222; curl -s -m 2 -o /dev/null -w 'CDP_HTTP:%{http_code}\\n' http://127.0.0.1:9222/json/version; echo chromium_procs=$(ps aux | grep -v grep | grep -c chromium)"}),
+                        90,
+                    )
+                    .await
+                    {
+                        Ok((f, _)) => f
+                            .iter()
+                            .filter_map(|v| v.get("result_preview").and_then(|r| r.as_str()))
+                            .map(|s| s.to_string())
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                        Err(de) => format!("诊断 exec 本身失败: {de}"),
+                    };
+                    gw.kill().await;
+                    return Err(fail(
+                        "VM-BROWSER-1",
+                        format!("browser navigate /login 失败: {e}\n--- guest 现场 ---\n{diag}"),
+                    ));
+                }
+            };
+            if let Err(e) = assert_tool_ok_named(&fin, "browser", "/login") {
+                gw.kill().await;
+                return Err(fail("VM-BROWSER-1", format!("navigate /login 断言失败: {e}")));
+            }
+            let (fin, _) = match vm_drive_tool(
+                &mut stream,
+                "browser",
+                json!({"action": "extract_text"}),
+                120,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    gw.kill().await;
+                    return Err(fail("VM-BROWSER-1", format!("extract_text(/login) 失败: {e}")));
+                }
+            };
+            if let Err(e) = assert_tool_ok_named(&fin, "browser", "LOGIN_OK") {
+                gw.kill().await;
+                return Err(fail("VM-BROWSER-1", format!("LOGIN_OK 断言失败: {e}")));
+            }
+            // ③ navigate /whoami → extract USER=alice（cookie 往返）。
+            let (fin, _) = match vm_drive_tool(
+                &mut stream,
+                "browser",
+                json!({"action": "navigate", "url": format!("{base_url}/whoami")}),
+                120,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    gw.kill().await;
+                    return Err(fail("VM-BROWSER-1", format!("browser navigate /whoami 失败: {e}")));
+                }
+            };
+            let (fin2, _) = match vm_drive_tool(
+                &mut stream,
+                "browser",
+                json!({"action": "extract_text"}),
+                120,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    gw.kill().await;
+                    return Err(fail("VM-BROWSER-1", format!("extract_text(/whoami) 失败: {e}")));
+                }
+            };
+            if let Err(e) = assert_tool_ok_named(&fin2, "browser", "USER=alice") {
+                gw.kill().await;
+                return Err(fail(
+                    "VM-BROWSER-1",
+                    format!("cookie 往返断言失败（Set-Cookie 未随请求回传？）: {e} | navigate帧: {fin:?}"),
+                ));
+            }
+            // ④ screenshot 落 uploads（guest 侧盘点佐证）。
+            let (fin, _) = match vm_drive_tool(
+                &mut stream,
+                "browser",
+                json!({"action": "screenshot", "path": "uploads/uat-browser.png"}),
+                120,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    gw.kill().await;
+                    return Err(fail("VM-BROWSER-1", format!("browser screenshot 失败: {e}")));
+                }
+            };
+            let (fin_ls, _) = match vm_drive_tool(
+                &mut stream,
+                "exec",
+                json!({"command": "test -s /workspace/uploads/uat-browser.png && echo SHOT_OK"}),
+                120,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    gw.kill().await;
+                    return Err(fail("VM-BROWSER-1", format!("uploads 盘点 exec 失败: {e}")));
+                }
+            };
+            if let Err(e) = assert_tool_ok(&fin_ls, "SHOT_OK") {
+                gw.kill().await;
+                return Err(fail(
+                    "VM-BROWSER-1",
+                    format!("截图落盘断言失败: {e} | screenshot帧: {fin:?}"),
+                ));
+            }
+            // ⑤ settle：CookieMonster ~30s 刷盘（instance.kill 硬杀无退出
+            //    flush——不等就丢 cookie）。
+            tokio::time::sleep(Duration::from_secs(40)).await;
+            if let Err(e) = ws_api_request(
+                &mut stream,
+                "vm",
+                "instance.kill",
+                json!({ "agent_id": agent_id }),
+                60,
+            )
+            .await
+            {
+                gw.kill().await;
+                return Err(fail("VM-BROWSER-1", format!("vm.instance.kill 失败: {e}")));
+            }
+            let mut reaped = false;
+            for _ in 0..15 {
+                if count_qemu_processes() == 0 {
+                    reaped = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            if !reaped {
+                gw.kill().await;
+                return Err(fail("VM-BROWSER-1", "instance.kill 后 qemu 未收敛"));
+            }
+            // ⑥ 冷重启链：换端口拉 gateway-2（同 workspace 同 overlay）。
+            gw.kill().await;
+            if let Err(e) = configure_ports(&ws.home(), BR_WEB_B, BR_HEALTH_B) {
+                return Err(fail("VM-BROWSER-1", format!("configure_ports(2) failed: {e}")));
+            }
+            let mut gw2 = match GatewayProcess::spawn("Gateway-VMBR2", &gateway_bin, ws.path()) {
+                Ok(g) => g,
+                Err(e) => return Err(fail("VM-BROWSER-1", format!("gateway-2 spawn failed: {e}"))),
+            };
+            if let Err(e) = test_harness::wait_for_http(
+                &format!("http://127.0.0.1:{BR_HEALTH_B}/health"),
+                Duration::from_secs(60),
+            )
+            .await
+            {
+                let _ = gw2.kill().await;
+                return Err(fail("VM-BROWSER-1", format!("gateway-2 health 未就绪: {e}")));
+            }
+            let mut stream2 = match ws_connect_retry(BR_WEB_B).await {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = gw2.kill().await;
+                    return Err(fail("VM-BROWSER-1", format!("gateway-2 WS 连接失败: {e}")));
+                }
+            };
+            // ⑦ 冷启重挂同 overlay → chromium 重读 .browser-profile →
+            //    whoami 仍 USER=alice（磁盘持久真证明）。
+            let (fin, _) = match vm_drive_tool(
+                &mut stream2,
+                "browser",
+                json!({"action": "navigate", "url": format!("{base_url}/whoami")}),
+                420,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    let _ = gw2.kill().await;
+                    return Err(fail("VM-BROWSER-1", format!("冷启后 navigate /whoami 失败: {e}")));
+                }
+            };
+            let (fin2, _) = match vm_drive_tool(
+                &mut stream2,
+                "browser",
+                json!({"action": "extract_text"}),
+                120,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    let _ = gw2.kill().await;
+                    return Err(fail("VM-BROWSER-1", format!("冷启后 extract_text 失败: {e}")));
+                }
+            };
+            if let Err(e) = assert_tool_ok_named(&fin2, "browser", "USER=alice") {
+                let _ = gw2.kill().await;
+                return Err(fail(
+                    "VM-BROWSER-1",
+                    format!("cookie 跨冷启持久断言失败（.browser-profile 未落 overlay？）: {e} | 首轮whoami帧: {fin:?}"),
+                ));
+            }
+            // ⑧ 收尾：显式释放 + gateway-2 退出零残留。
+            if let Err(e) = ws_api_request(
+                &mut stream2,
+                "vm",
+                "instance.kill",
+                json!({ "agent_id": agent_id }),
+                60,
+            )
+            .await
+            {
+                let _ = gw2.kill().await;
+                return Err(fail("VM-BROWSER-1", format!("收尾 instance.kill 失败: {e}")));
+            }
+            let mut reaped2 = false;
+            for _ in 0..15 {
+                if count_qemu_processes() == 0 {
+                    reaped2 = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            if !reaped2 {
+                let _ = gw2.kill().await;
+                return Err(fail("VM-BROWSER-1", "收尾 instance.kill 后 qemu 未收敛"));
+            }
+            gw2.kill().await;
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            let n = count_qemu_processes();
+            if n != 0 {
+                return Err(fail("VM-BROWSER-1", format!("gateway-2 退出后残留 {n} 个 qemu-system 进程")));
+            }
+            Ok(())
+        }
+        .await;
+        mini_shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+        result.map(|_| {
+            pass(
+                "VM-BROWSER-1",
+                "browser 工具链 + cookie 持久通过（chromium 探测→LOGIN_OK→USER=alice 往返→截图落 uploads→40s settle→冷启重挂→USER=alice 仍在→零残留）",
+            )
+        })
+        .unwrap_or_else(|r| r)
+    })
+    .await,
+    );
+
+    // ---- VM-SYNC-1：VM 档项目会话文件交换两臂（P5-R3）----
+    // 收敛机器真流：宿主项目目录带 hello.txt → projects.create → **干净
+    // 重启**（sync_project_agents 仅启动期跑——记录物化前提）→ 项目 agent
+    // 切 vm 档 → sessions.create{project_id} → chat.send{session_id} 驱动：
+    // 臂1（开工闸 push）exec cat hello.txt 断言 PUSH_ARM_V1（首条消息吃
+    // gate full_sync + 冷启）；臂2（VmCommitHook 自动 pull）exec 写
+    // VM_PULL_V2 → 轮末自动回传 → 轮询宿主文件断言；vm.sync.status 表面
+    // 断言。冲突臂不进 UAT：gate+hook 每轮刷基线使 gate 时冲突在正常运行
+    // 中不可达，制造冲突=绕过被测机制——三方分类与 diverged verdict 已由
+    // vm_sync/tests.rs 钉死（ChangeKind::Conflict + 六 verdict 测试）。
+    all_results.push(
+    run_test("VM-SYNC-1: 项目会话文件交换两臂（gate push→hook pull→sync.status 表面；重启物化链）", || async {
+        const SY_WEB: u16 = 37317;
+        const SY_HEALTH: u16 = 18805;
+        const SY_WEB_B: u16 = 37318;
+        const SY_HEALTH_B: u16 = 18806;
+        let ctx = match vm_on_boilerplate("VM-SYNC-1", &gateway_bin, SY_WEB, SY_HEALTH).await {
+            Ok(c) => c,
+            Err(r) => return r,
+        };
+        let VmOnCtx { ws, mut gw, mut stream, .. } = ctx;
+        // ① 宿主项目目录（绝对路径 + 带 hello.txt；与 workspace 不重叠）。
+        let proj_dir = std::env::temp_dir().join(format!(
+            "nb-uat-vm-syncproj-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        if let Err(e) = std::fs::create_dir_all(&proj_dir) {
+            let _ = gw.kill().await;
+            return fail("VM-SYNC-1", format!("项目目录创建失败: {e}"));
+        }
+        // 长名化（8.3 短名教训同源）：TEMP 常见 LOCALA~1 短名形态——
+        // canonicalize 消解短名组件 + 剥 verbatim 前缀，注册表存常规长名。
+        let proj_dir = {
+            let canon = std::fs::canonicalize(&proj_dir).unwrap_or(proj_dir.clone());
+            let s = canon.to_string_lossy().to_string();
+            std::path::PathBuf::from(s.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(s))
+        };
+        let hello = proj_dir.join("hello.txt");
+        if let Err(e) = std::fs::write(&hello, "PUSH_ARM_V1\n") {
+            let _ = gw.kill().await;
+            return fail("VM-SYNC-1", format!("hello.txt 写入失败: {e}"));
+        }
+        // ② projects.create（loop 立即起，agents 表记录未物化）。
+        let created = match ws_api_request(
+            &mut stream,
+            "projects",
+            "create",
+            json!({ "name": "syncproj", "path": proj_dir.to_string_lossy() }),
+            15,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = gw.kill().await;
+                return fail("VM-SYNC-1", format!("projects.create 失败: {e}"));
+            }
+        };
+        let project_id = created
+            .pointer("/project/id")
+            .and_then(|i| i.as_str())
+            .unwrap_or("")
+            .to_string();
+        if project_id.is_empty() {
+            let _ = gw.kill().await;
+            return fail("VM-SYNC-1", format!("projects.create 无 project.id: {created}"));
+        }
+        gw.kill().await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        // ③ 干净重启：sync_project_agents 物化项目 agent 记录 + start_all
+        //    重拉项目 loop。
+        if let Err(e) = configure_ports(&ws.home(), SY_WEB_B, SY_HEALTH_B) {
+            return fail("VM-SYNC-1", format!("configure_ports(2) failed: {e}"));
+        }
+        let mut gw2 = match GatewayProcess::spawn("Gateway-VMSY2", &gateway_bin, ws.path()) {
+            Ok(g) => g,
+            Err(e) => return fail("VM-SYNC-1", format!("gateway-2 spawn failed: {e}")),
+        };
+        if let Err(e) = test_harness::wait_for_http(
+            &format!("http://127.0.0.1:{SY_HEALTH_B}/health"),
+            Duration::from_secs(60),
+        )
+        .await
+        {
+            let _ = gw2.kill().await;
+            return fail("VM-SYNC-1", format!("gateway-2 health 未就绪: {e}"));
+        }
+        let mut stream2 = match ws_connect_retry(SY_WEB_B).await {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = gw2.kill().await;
+                return fail("VM-SYNC-1", format!("gateway-2 WS 连接失败: {e}"));
+            }
+        };
+        // ④ 项目 agent 记录发现 + 切 vm 档。
+        let agents = match ws_api_request(&mut stream2, "agents", "list", json!({}), 10).await {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = gw2.kill().await;
+                return fail("VM-SYNC-1", format!("agents.list 失败: {e}"));
+            }
+        };
+        let proj_agent = agents
+            .pointer("/agents")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| {
+                arr.iter()
+                    .find(|a| {
+                        a.get("kind").and_then(|k| k.as_str()) == Some("project")
+                            && a.get("project_id").and_then(|p| p.as_str()) == Some(project_id.as_str())
+                    })
+                    .cloned()
+            });
+        let proj_agent = match proj_agent {
+            Some(a) => a,
+            None => {
+                let _ = gw2.kill().await;
+                return fail(
+                    "VM-SYNC-1",
+                    format!("重启后 agents.list 无 project 记录（sync_project_agents 未物化？）: {agents}"),
+                );
+            }
+        };
+        let proj_agent_id = proj_agent
+            .get("agent_id")
+            .and_then(|i| i.as_str())
+            .unwrap_or("")
+            .to_string();
+        if let Err(e) = ws_api_request(
+            &mut stream2,
+            "agents",
+            "update",
+            json!({ "agent_id": proj_agent_id, "runtime_backend": "vm" }),
+            10,
+        )
+        .await
+        {
+            let _ = gw2.kill().await;
+            return fail("VM-SYNC-1", format!("项目 agent 切 vm 档失败: {e}"));
+        }
+        // ⑤ 项目会话 + 驱动臂 1（开工闸 push：gate full_sync 含冷启）。
+        let sess = match ws_api_request(
+            &mut stream2,
+            "sessions",
+            "create",
+            json!({ "project_id": project_id }),
+            10,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = gw2.kill().await;
+                return fail("VM-SYNC-1", format!("sessions.create 失败: {e}"));
+            }
+        };
+        let session_id = sess
+            .get("session_id")
+            .and_then(|i| i.as_str())
+            .unwrap_or("")
+            .to_string();
+        if session_id.is_empty() {
+            let _ = gw2.kill().await;
+            return fail("VM-SYNC-1", format!("sessions.create 无 session_id: {sess}"));
+        }
+        let (fin, _) = match vm_drive_tool_in_session(
+            &mut stream2,
+            Some(&session_id),
+            "exec",
+            json!({"command": "cat hello.txt"}),
+            660,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = gw2.kill().await;
+                return fail("VM-SYNC-1", format!("push 臂驱动失败: {e}"));
+            }
+        };
+        if let Err(e) = assert_tool_ok(&fin, "PUSH_ARM_V1") {
+            let _ = gw2.kill().await;
+            return fail("VM-SYNC-1", format!("push 臂断言失败（宿主文件未达 VM？）: {e}"));
+        }
+        // ⑥ 臂 2（VmCommitHook 自动 pull）：VM 侧写 → 轮末回传宿主。
+        let (fin, _) = match vm_drive_tool_in_session(
+            &mut stream2,
+            Some(&session_id),
+            "exec",
+            json!({"command": "echo VM_PULL_V2 > hello.txt && cat hello.txt"}),
+            420,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = gw2.kill().await;
+                return fail("VM-SYNC-1", format!("pull 臂驱动失败: {e}"));
+            }
+        };
+        if let Err(e) = assert_tool_ok(&fin, "VM_PULL_V2") {
+            let _ = gw2.kill().await;
+            return fail("VM-SYNC-1", format!("pull 臂 VM 侧断言失败: {e}"));
+        }
+        // 轮询宿主 hello.txt（hook 在轮末异步跑——TOOL_DRIVE_DONE 到达时
+        // commit 可能仍在飞）。
+        let mut pulled = false;
+        for _ in 0..30 {
+            if std::fs::read_to_string(&hello)
+                .map(|c| c.contains("VM_PULL_V2"))
+                .unwrap_or(false)
+            {
+                pulled = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        if !pulled {
+            let host_content = std::fs::read_to_string(&hello).unwrap_or_default();
+            let _ = gw2.kill().await;
+            return fail(
+                "VM-SYNC-1",
+                format!("pull 臂断言失败：VmCommitHook 30s 内未回传宿主（宿主现值 {host_content:?}）"),
+            );
+        }
+        // ⑦ vm.sync.status 表面：基线在 + 有 commit 记账。
+        let status = match ws_api_request(
+            &mut stream2,
+            "vm",
+            "sync.status",
+            json!({ "project": project_id }),
+            15,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = gw2.kill().await;
+                return fail("VM-SYNC-1", format!("vm.sync.status 失败: {e}"));
+            }
+        };
+        if status.get("has_baseline").and_then(|b| b.as_bool()) != Some(true) {
+            let _ = gw2.kill().await;
+            return fail("VM-SYNC-1", format!("sync.status has_baseline≠true: {status}"));
+        }
+        if status.get("last_commit").map(Value::is_null).unwrap_or(true) {
+            let _ = gw2.kill().await;
+            return fail("VM-SYNC-1", format!("sync.status last_commit 缺失: {status}"));
+        }
+        // ⑧ 收尾：显式释放项目 agent 实例 + 零残留。
+        if let Err(e) = ws_api_request(
+            &mut stream2,
+            "vm",
+            "instance.kill",
+            json!({ "agent_id": proj_agent_id }),
+            60,
+        )
+        .await
+        {
+            let _ = gw2.kill().await;
+            return fail("VM-SYNC-1", format!("收尾 instance.kill 失败: {e}"));
+        }
+        let mut reaped = false;
+        for _ in 0..15 {
+            if count_qemu_processes() == 0 {
+                reaped = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+        if !reaped {
+            let _ = gw2.kill().await;
+            return fail("VM-SYNC-1", "收尾 instance.kill 后 qemu 未收敛");
+        }
+        gw2.kill().await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let n = count_qemu_processes();
+        if n != 0 {
+            return fail("VM-SYNC-1", format!("gateway-2 退出后残留 {n} 个 qemu-system 进程"));
+        }
+        let _ = std::fs::remove_dir_all(&proj_dir);
+        pass(
+            "VM-SYNC-1",
+            "项目会话文件交换两臂通过（重启物化→切档→gate push PUSH_ARM_V1→hook pull VM_PULL_V2 回传宿主→sync.status 基线+commit 在→零残留）",
+        )
+    })
+    .await,
+    );
+
+    // T-MIG-1: agent 跨节点迁移正流（P6-R2 双节点真流）。A 端 create
+    // selfbuilt（两阶段创建返回即 active）→ 种 home/memory 文件 →
+    // agents.migrate 到 Node-B：真 transfer 分块通道 + 真 commit RPC +
+    // 真 vault 双端（空凭据直通）全链路。断言：A 记录消失、墓碑与
+    // staging 清扫、D9 源端 home 物理保留；B 记录 active + name/tier
+    // 保留 + exec_root 重派生到 B 工作区（home_node 字段不进 web 投影，
+    // exec_root 与 B 工作区派生路径字符串全等作等价证明）+ home/memory
+    // 逐字节落位 + landing 清空。
+    all_results.push(
+        run_test("T-MIG-1: agent 跨节点迁移正流（A→B 真流：记录转移 + 文件逐字节落位 + 源端清扫）", || async {
+            let mut wsa = match ws_connect_gateway(NODES[0].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T-MIG-1", format!("WS connect to A failed: {e}")),
+            };
+            let created = match ws_api_request(&mut wsa, "agents", "create",
+                json!({ "name": "T-MIG1 迁移工", "tier": "normal" }), 15).await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T-MIG-1", format!("agents.create failed: {e}")),
+            };
+            let agent_id = created
+                .pointer("/agent/agent_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if agent_id.is_empty() {
+                return fail("T-MIG-1", format!("agents.create 无 agent_id: {created}"));
+            }
+            // 种迁移载荷（逐字节核验基准）：<ws>/agents/<id>/home + <ws>/memory/agents/<id>。
+            let a_ws = ws_a.home().join("workspace");
+            let a_home = a_ws.join("agents").join(&agent_id).join("home");
+            std::fs::create_dir_all(a_home.join("sub")).ok();
+            if let Err(e) = std::fs::write(a_home.join("notes.md"), "TMIG1-HOME-MARKER\n") {
+                return fail("T-MIG-1", format!("种 home 文件失败: {e}"));
+            }
+            std::fs::write(a_home.join("sub").join("data.txt"), "TMIG1-SUB-MARKER\n").ok();
+            let a_mem = a_ws.join("memory").join("agents").join(&agent_id);
+            std::fs::create_dir_all(&a_mem).ok();
+            std::fs::write(a_mem.join("MEMORY.md"), "TMIG1-MEMORY-MARKER\n").ok();
+
+            let b_node_id = match node_runtime_id(&mut wsa, "Node-B").await {
+                Ok(v) => v,
+                Err(e) => return fail("T-MIG-1", format!("解析 Node-B 运行时 id 失败: {e}")),
+            };
+
+            // 迁移本体：120s 覆盖慢机 transfer 分块 + commit RPC。
+            let mig = match ws_api_request(&mut wsa, "agents", "migrate",
+                json!({ "agent_id": agent_id, "target_node": "Node-B" }), 120).await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T-MIG-1", format!("agents.migrate failed: {e}")),
+            };
+            if mig.pointer("/migration/status").and_then(|v| v.as_str()) != Some("migrated") {
+                return fail("T-MIG-1", format!("迁移响应异常（status≠migrated）: {mig}"));
+            }
+            if mig.pointer("/migration/target_node").and_then(|v| v.as_str())
+                != Some(b_node_id.as_str())
+            {
+                return fail(
+                    "T-MIG-1",
+                    format!("target_node 未归一成 Node-B 运行时 id（{b_node_id}）: {mig}"),
+                );
+            }
+
+            // A 端：记录已删 + 墓碑/staging 清扫 + D9 源端 home 物理保留。
+            match ws_api_request(&mut wsa, "agents", "get", json!({ "agent_id": agent_id }), 10).await {
+                Err(e) => {
+                    if !e.to_string().contains("不存在") {
+                        return fail("T-MIG-1", format!("A 端 get 应报不存在，实际: {e}"));
+                    }
+                }
+                Ok(v) => return fail("T-MIG-1", format!("A 端记录应已删除，仍可读: {v}")),
+            }
+            if a_ws.join("agents").join(format!("{agent_id}.migrated.json")).exists() {
+                return fail("T-MIG-1", "A 端迁移墓碑未清扫");
+            }
+            if a_ws.join("cluster").join("migrate_out").join(&agent_id).exists() {
+                return fail("T-MIG-1", "A 端迁移 staging 未清扫");
+            }
+            if !a_home.join("notes.md").is_file() {
+                return fail("T-MIG-1", "A 端源 home 被搬走（D9 copy-not-rename 语义破坏）");
+            }
+
+            // B 端：记录 active + 路径重派生 + 文件逐字节落位。
+            let mut wsb = match ws_connect_gateway(NODES[1].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T-MIG-1", format!("WS connect to B failed: {e}")),
+            };
+            let got = match ws_api_request(&mut wsb, "agents", "get", json!({ "agent_id": agent_id }), 10).await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T-MIG-1", format!("B 端 get 失败（记录未落地？）: {e}")),
+            };
+            let info = &got["agent"];
+            for (field, expect) in [
+                ("kind", "selfbuilt"),
+                ("status", "active"),
+                ("tier", "normal"),
+            ] {
+                if info.get(field).and_then(|v| v.as_str()) != Some(expect) {
+                    return fail("T-MIG-1", format!("B 端记录 {field}≠{expect}: {info}"));
+                }
+            }
+            if info.get("name").and_then(|v| v.as_str()) != Some("T-MIG1 迁移工") {
+                return fail("T-MIG-1", format!("B 端记录 name 丢失: {info}"));
+            }
+            let b_home = ws_b
+                .home()
+                .join("workspace")
+                .join("agents")
+                .join(&agent_id)
+                .join("home");
+            if info.get("exec_root").and_then(|v| v.as_str()) != Some(b_home.to_string_lossy().as_ref())
+            {
+                return fail("T-MIG-1", format!("B 端 exec_root 未重派生到 B 工作区: {info}"));
+            }
+            for (rel, marker) in [
+                ("notes.md", "TMIG1-HOME-MARKER"),
+                ("sub/data.txt", "TMIG1-SUB-MARKER"),
+            ] {
+                let p = b_home.join(rel);
+                match std::fs::read_to_string(&p) {
+                    Ok(c) if c.contains(marker) => {}
+                    other => {
+                        return fail("T-MIG-1", format!("B 端 home 文件 {rel} 落位异常: {other:?}"))
+                    }
+                }
+            }
+            match std::fs::read_to_string(
+                ws_b.home()
+                    .join("workspace")
+                    .join("memory")
+                    .join("agents")
+                    .join(&agent_id)
+                    .join("MEMORY.md"),
+            ) {
+                Ok(c) if c.contains("TMIG1-MEMORY-MARKER") => {}
+                other => return fail("T-MIG-1", format!("B 端 memory 文件落位异常: {other:?}")),
+            }
+            if ws_b
+                .home()
+                .join("workspace")
+                .join("cluster")
+                .join("inbox")
+                .join(format!("agent-migrate-{agent_id}"))
+                .exists()
+            {
+                return fail("T-MIG-1", "B 端迁移 landing 未清");
+            }
+            pass(
+                "T-MIG-1",
+                "跨节点迁移正流通过：A 记录删+墓碑/staging 清扫+源端 home 保留；B active+exec_root 重派生+home/memory 逐字节落位+landing 清",
+            )
+        })
+        .await,
+    );
+
+    // T-MIG-2: 迁移拒绝面（全在 A 端，零副作用——各臂后记录不动且状态恒
+    // active）。①main 不可迁（D1）；②VM 档不可迁（D3）；③未知目标节点
+    // fail-closed（is_peer_online 闸——未知与真离线共用同一拒绝路径，真离
+    // 线 kill 场景不单列，诚实边界注记）；④迁移到本节点拒绝。
+    all_results.push(
+        run_test("T-MIG-2: 迁移拒绝面（main/VM 档/未知目标/本节点 四臂零副作用）", || async {
+            let mut wsa = match ws_connect_gateway(NODES[0].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T-MIG-2", format!("WS connect to A failed: {e}")),
+            };
+
+            // 臂①：main agent 不可迁移。
+            let list = match ws_api_request(&mut wsa, "agents", "list", json!({}), 10).await {
+                Ok(v) => v,
+                Err(e) => return fail("T-MIG-2", format!("agents.list failed: {e}")),
+            };
+            let main_id = list["agents"]
+                .as_array()
+                .and_then(|a| {
+                    a.iter()
+                        .find(|x| x.get("kind").and_then(|v| v.as_str()) == Some("main"))
+                })
+                .and_then(|x| x.get("agent_id").and_then(|v| v.as_str()))
+                .unwrap_or("")
+                .to_string();
+            if main_id.is_empty() {
+                return fail("T-MIG-2", format!("agents.list 无 main 形态: {list}"));
+            }
+            let err = match ws_api_request(&mut wsa, "agents", "migrate",
+                json!({ "agent_id": main_id, "target_node": "Node-B" }), 15).await
+            {
+                Err(e) => e,
+                Ok(v) => return fail("T-MIG-2", format!("main 迁移应拒绝: {v}")),
+            };
+            if !err.to_string().contains("不可迁移") {
+                return fail("T-MIG-2", format!("main 拒绝文案异常: {err}"));
+            }
+
+            // 臂②：VM 档自建 agent 不可迁移（D3），断言后 remove 清理。
+            let vm_create = match ws_api_request(&mut wsa, "agents", "create",
+                json!({ "name": "T-MIG2 VM 档工", "tier": "normal", "runtime_backend": "vm" }), 15).await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T-MIG-2", format!("VM 档 create failed: {e}")),
+            };
+            let vm_id = vm_create
+                .pointer("/agent/agent_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if vm_id.is_empty() {
+                return fail("T-MIG-2", format!("VM 档 create 无 agent_id: {vm_create}"));
+            }
+            let err = match ws_api_request(&mut wsa, "agents", "migrate",
+                json!({ "agent_id": vm_id, "target_node": "Node-B" }), 15).await
+            {
+                Err(e) => e,
+                Ok(v) => return fail("T-MIG-2", format!("VM 档迁移应拒绝: {v}")),
+            };
+            if !err.to_string().contains("VM 档") {
+                return fail("T-MIG-2", format!("VM 档拒绝文案异常: {err}"));
+            }
+            // 拒绝后记录仍 active（零副作用），再清理。
+            let got = match ws_api_request(&mut wsa, "agents", "get", json!({ "agent_id": vm_id }), 10).await {
+                Ok(v) => v,
+                Err(e) => return fail("T-MIG-2", format!("VM 档 agent get failed: {e}")),
+            };
+            if got.pointer("/agent/status").and_then(|v| v.as_str()) != Some("active") {
+                return fail("T-MIG-2", format!("VM 档拒绝后状态应仍 active: {got}"));
+            }
+            if let Err(e) = ws_api_request(&mut wsa, "agents", "remove", json!({ "agent_id": vm_id }), 30).await {
+                return fail("T-MIG-2", format!("VM 档 agent 清理失败: {e}"));
+            }
+
+            // 臂③：未知目标节点 fail-closed（is_peer_online 闸）。
+            let sb_create = match ws_api_request(&mut wsa, "agents", "create",
+                json!({ "name": "T-MIG2 拒绝面工", "tier": "normal" }), 15).await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T-MIG-2", format!("拒绝面 create failed: {e}")),
+            };
+            let sb_id = sb_create
+                .pointer("/agent/agent_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if sb_id.is_empty() {
+                return fail("T-MIG-2", format!("拒绝面 create 无 agent_id: {sb_create}"));
+            }
+            let err = match ws_api_request(&mut wsa, "agents", "migrate",
+                json!({ "agent_id": sb_id, "target_node": "Node-NoSuchNode" }), 15).await
+            {
+                Err(e) => e,
+                Ok(v) => return fail("T-MIG-2", format!("未知目标迁移应拒绝: {v}")),
+            };
+            if !err.to_string().contains("不在线") {
+                return fail("T-MIG-2", format!("未知目标拒绝文案异常: {err}"));
+            }
+
+            // 臂④：迁移到本节点拒绝。
+            let err = match ws_api_request(&mut wsa, "agents", "migrate",
+                json!({ "agent_id": sb_id, "target_node": "Node-A" }), 15).await
+            {
+                Err(e) => e,
+                Ok(v) => return fail("T-MIG-2", format!("本节点迁移应拒绝: {v}")),
+            };
+            if !err.to_string().contains("本节点") {
+                return fail("T-MIG-2", format!("本节点拒绝文案异常: {err}"));
+            }
+
+            // 各臂全程零副作用：记录在、状态 active，清理收尾。
+            let got = match ws_api_request(&mut wsa, "agents", "get", json!({ "agent_id": sb_id }), 10).await {
+                Ok(v) => v,
+                Err(e) => return fail("T-MIG-2", format!("拒绝面 agent 应完好: {e}")),
+            };
+            if got.pointer("/agent/status").and_then(|v| v.as_str()) != Some("active") {
+                return fail("T-MIG-2", format!("拒绝面 agent 状态应仍 active: {got}"));
+            }
+            if let Err(e) = ws_api_request(&mut wsa, "agents", "remove", json!({ "agent_id": sb_id }), 30).await {
+                return fail("T-MIG-2", format!("拒绝面 agent 清理失败: {e}"));
+            }
+            pass(
+                "T-MIG-2",
+                "迁移拒绝面通过：main/VM 档/未知目标（fail-closed）/本节点 四臂全拒且记录零副作用",
+            )
+        })
+        .await,
+    );
+
+    // T-WAN-1: cluster.pair 运行时配对面（P6-R3 WAN 验收映射——跨网段运维
+    // 面真流）。正臂：A 对 Node-C 字面 RPC 端口 pair → 双形态探测命中字面
+    // 臂 → 拉真实运行时 id → 写盘（表键=字面 id，与种子键共存）→ 写后回读
+    // 断言 + registry Online 注册；负臂：不可达地址 fail-closed 且零写入。
+    // 不覆盖 remove→pair（removed_peers 黑名单拦 announce 是文档语义，本
+    // session 不可达，重启才清——不做）。
+    all_results.push(
+        run_test("T-WAN-1: cluster.pair 运行时配对（正臂写盘+回读；负臂 fail-closed 零写入）", || async {
+            let mut wsa = match ws_connect_gateway(NODES[0].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T-WAN-1", format!("WS connect to A failed: {e}")),
+            };
+            // 对端运行时 id 基线（直连 Node-C 取本机 nodes.list）。
+            let mut wsc = match ws_connect_gateway(NODES[2].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T-WAN-1", format!("WS connect to C failed: {e}")),
+            };
+            let c_id = match node_runtime_id(&mut wsc, "Node-C").await {
+                Ok(v) => v,
+                Err(e) => return fail("T-WAN-1", format!("node_runtime_id C failed: {e}")),
+            };
+
+            // 正臂：字面 RPC 端口形态 pair。
+            let pair = match ws_api_request(&mut wsa, "cluster", "pair",
+                json!({ "address": format!("127.0.0.1:{}", NODES[2].rpc_port) }), 30).await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T-WAN-1", format!("pair 正臂失败: {e}")),
+            };
+            if pair["paired"].as_bool() != Some(true) {
+                return fail("T-WAN-1", format!("paired 应为 true: {pair}"));
+            }
+            let pid = pair["peer_id"].as_str().unwrap_or("");
+            if pid != c_id {
+                return fail("T-WAN-1", format!("peer_id 应为 C 运行时 id {c_id}: {pair}"));
+            }
+            let want_rpc = format!("127.0.0.1:{}", NODES[2].rpc_port);
+            if pair["rpc_address"].as_str() != Some(want_rpc.as_str()) {
+                return fail("T-WAN-1", format!("rpc_address 应为 {want_rpc}: {pair}"));
+            }
+            if pair["literal_port_was_rpc"].as_bool() != Some(true) {
+                return fail("T-WAN-1", format!("字面 RPC 端口应命中 literal 臂: {pair}"));
+            }
+            let want_udp = format!("127.0.0.1:{}", NODES[2].udp_port);
+            if pair["udp_address"].as_str() != Some(want_udp.as_str()) {
+                return fail("T-WAN-1", format!("udp_address 应为 {want_udp}: {pair}"));
+            }
+
+            // 写盘回读：cluster.peers raw TOML 应含 pair 写入的表键（运行时
+            // id）与 udp 地址（种子键与 pair 键共存，断言 pair 键在场）。
+            let peers = match ws_api_request(&mut wsa, "cluster", "peers", json!({}), 15).await {
+                Ok(v) => v,
+                Err(e) => return fail("T-WAN-1", format!("peers 读回失败: {e}")),
+            };
+            let raw = peers["peers"].as_str().unwrap_or("").to_string();
+            if raw.is_empty() {
+                return fail("T-WAN-1", format!("peers 响应缺 raw TOML: {peers}"));
+            }
+            if !raw.contains(&c_id) || !raw.contains(&want_udp) {
+                return fail("T-WAN-1", format!("peers.toml 应含 pair 写入键 {c_id}/{want_udp}"));
+            }
+
+            // 负臂：不可达地址 fail-closed 且零写入。
+            let err = match ws_api_request(&mut wsa, "cluster", "pair",
+                json!({ "address": "127.0.0.1:59901" }), 45).await
+            {
+                Ok(v) => return fail("T-WAN-1", format!("不可达地址 pair 应拒绝: {v}")),
+                Err(e) => e,
+            };
+            if !err.to_string().contains("无法连接") {
+                return fail("T-WAN-1", format!("负臂文案异常: {err}"));
+            }
+            let peers2 = match ws_api_request(&mut wsa, "cluster", "peers", json!({}), 15).await {
+                Ok(v) => v,
+                Err(e) => return fail("T-WAN-1", format!("负臂后 peers 读回失败: {e}")),
+            };
+            let raw2 = peers2["peers"].as_str().unwrap_or("");
+            if raw2 != raw {
+                return fail("T-WAN-1", "负臂零写入断言失败：peers.toml 内容变化");
+            }
+
+            pass(
+                "T-WAN-1",
+                "运行时配对面通过：正臂 peer_id=运行时id+字面探测+udp 换算+写盘回读；负臂 fail-closed 零写入",
+            )
+        })
+        .await,
     );
 
     gw_d.kill().await;

@@ -176,6 +176,7 @@ async fn spawn_missing_qemu_binary_is_launch_error() {
         shared_host_path: None,
         loadvm_tag: None,
         incoming_file: None,
+        display_vnc_port: None,
     };
     let err = VmInstance::start(params).await.unwrap_err();
     assert!(
@@ -300,6 +301,7 @@ async fn start_rejects_comma_path_before_spawn() {
         shared_host_path: None,
         loadvm_tag: None,
         incoming_file: None,
+        display_vnc_port: None,
     };
     let err = VmInstance::start(params).await.unwrap_err();
     assert!(

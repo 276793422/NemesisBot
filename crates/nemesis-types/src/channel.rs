@@ -98,6 +98,22 @@ pub fn workflow_edit_from_metadata(
         .and_then(|raw| serde_json::from_str::<WorkflowEditTarget>(raw).ok())
 }
 
+// ---------------------------------------------------------------------------
+// principal 映射（P6-R4，D4 预留）：通道会话 → 主体标识
+// ---------------------------------------------------------------------------
+
+/// 通道会话 → principal 映射（**单一真相源**；形态 `{channel}/{sender_id}`，
+/// 与集群跨节点复合键同形）。D4 预留：只立映射与绑定，租户闸不做——
+/// 消费方（未来多租户授权）出现前任何代码不得读取本值做行为分叉。
+///
+/// `sender_id` 为空（cron/heartbeat/system 等无主体来源）→ 空串 = 不绑定。
+pub fn principal_for_channel(channel: &str, sender_id: &str) -> String {
+    if sender_id.trim().is_empty() {
+        return String::new();
+    }
+    format!("{channel}/{sender_id}")
+}
+
 /// Extensible per-delivery metadata attached to an `OutboundMessage`.
 ///
 /// Holds attributes that are optional/channel-specific (not every channel

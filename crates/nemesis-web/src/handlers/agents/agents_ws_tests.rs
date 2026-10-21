@@ -101,6 +101,7 @@ fn fake_info(agent_id: &str, kind: &str) -> AgentInfo {
         tier: "auto".to_string(),
         runtime_backend: "process".to_string(),
         memory_namespace: format!("agents/{agent_id}"),
+        principal: String::new(),
         credential_count: 0,
         created_at: "2026-10-16T00:00:00Z".to_string(),
         last_active_at: "2026-10-16T00:00:00Z".to_string(),
@@ -121,7 +122,13 @@ impl AgentsBridge for FakeBridge {
             Err(format!("agent 不存在: {agent_id}"))
         }
     }
-    fn create(&self, name: &str, tier: &str, runtime_backend: &str) -> Result<AgentInfo, String> {
+    fn create(
+        &self,
+        name: &str,
+        tier: &str,
+        runtime_backend: &str,
+        principal: &str,
+    ) -> Result<AgentInfo, String> {
         self.note(&format!("create:{tier}:{runtime_backend}"));
         if name.trim().is_empty() {
             return Err("agent name 不能为空".to_string());
@@ -134,6 +141,8 @@ impl AgentsBridge for FakeBridge {
         } else {
             runtime_backend.to_string()
         };
+        // P6-R4 D4 预留：principal 薄透传（透传断言见 create_passes_principal）。
+        info.principal = principal.to_string();
         Ok(info)
     }
     fn update_backend(&self, agent_id: &str, runtime_backend: &str) -> Result<AgentInfo, String> {
@@ -191,6 +200,20 @@ impl AgentsBridge for FakeBridge {
         );
         Ok(())
     }
+    async fn migrate(
+        &self,
+        agent_id: &str,
+        target_node: &str,
+    ) -> Result<serde_json::Value, String> {
+        self.note("migrate");
+        if agent_id == "nope" {
+            return Err(format!("agent 不存在: {agent_id}"));
+        }
+        Ok(serde_json::json!({
+            "agent_id": agent_id,
+            "target": target_node,
+        }))
+    }
 }
 
 async fn call(
@@ -242,6 +265,39 @@ async fn get_missing_agent_propagates_bridge_error() {
     set_agents_bridge_for_test(None);
 }
 
+// P6-R2：migrate WSAPI 面（透传 agent_id/target_node，bridge 明细包在
+// migration 键下）。
+#[tokio::test]
+async fn migrate_passes_params_and_wraps_detail() {
+    let _g = AGENTS_BRIDGE_TEST_LOCK.lock();
+    let bridge = FakeBridge::new();
+    set_agents_bridge_for_test(Some(bridge.clone()));
+    // 缺 target_node → 参数层报错。
+    let err = call("migrate", Some(serde_json::json!({"agent_id": "a1"})))
+        .await
+        .expect_err("缺参必须报错");
+    assert!(err.contains("target_node"), "缺参文案应点名字段: {err}");
+    let out = call(
+        "migrate",
+        Some(serde_json::json!({"agent_id": "a1", "target_node": "node-b"})),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["migration"]["agent_id"], "a1");
+    assert_eq!(out["migration"]["target"], "node-b");
+    assert_eq!(*bridge.calls.lock().unwrap(), vec!["migrate"]);
+    // bridge 错误透传。
+    let err = call(
+        "migrate",
+        Some(serde_json::json!({"agent_id": "nope", "target_node": "node-b"})),
+    )
+    .await
+    .expect_err("不存在必须报错");
+    assert!(err.contains("nope"));
+    set_agents_bridge_for_test(None);
+}
+
 #[tokio::test]
 async fn create_passes_name_and_default_tier() {
     let _g = AGENTS_BRIDGE_TEST_LOCK.lock();
@@ -262,6 +318,20 @@ async fn create_passes_name_and_default_tier() {
     .unwrap()
     .unwrap();
     assert_eq!(out["agent"]["tier"], "big");
+    // principal 缺省 → 空串；显式值薄透传（P6-R4 D4 预留）。
+    let out = call(
+        "create",
+        Some(serde_json::json!({"name": "w", "principal": "web/user-42"})),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["agent"]["principal"], "web/user-42");
+    let out = call("create", Some(serde_json::json!({"name": "w"})))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["agent"]["principal"], "");
     set_agents_bridge_for_test(None);
 }
 
@@ -324,7 +394,8 @@ fn l1_commands_registry_lists_all_agents_commands() {
     assert_eq!(
         cmds,
         &[
-            "list", "get", "create", "update", "remove", "sleep", "wake", "slots", "send"
+            "list", "get", "create", "update", "remove", "sleep", "wake", "slots", "send",
+            "migrate"
         ]
     );
 }

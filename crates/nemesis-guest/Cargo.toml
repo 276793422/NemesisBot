@@ -13,6 +13,9 @@ tokio = { workspace = true, features = ["rt", "net", "io-util", "time", "process
 base64 = { workspace = true }
 sha2 = { workspace = true }
 tar = { workspace = true }
+# P5-R1 guest 内浏览器：CDP 命令通道（page target WS；发现端点走裸 TCP HTTP）
+tokio-tungstenite = { workspace = true }
+futures = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

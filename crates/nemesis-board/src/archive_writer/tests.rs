@@ -47,6 +47,7 @@ fn plan_milestone_writes_docs_plan_md_with_dependencies() {
     let subs = vec![
         PlannedSubIssue {
             required_profession: String::new(),
+            required_backend: String::new(),
             required_capabilities: vec![],
             title: "子任务零".into(),
             description: "第一步".into(),
@@ -57,6 +58,7 @@ fn plan_milestone_writes_docs_plan_md_with_dependencies() {
         },
         PlannedSubIssue {
             required_profession: String::new(),
+            required_backend: String::new(),
             required_capabilities: vec![],
             title: "子任务一".into(),
             description: String::new(),

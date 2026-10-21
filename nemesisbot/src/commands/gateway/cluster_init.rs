@@ -933,6 +933,34 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             }
         }
 
+        // --- P6-R2：agent 迁移 commit handler（B 端落地面，全员注册）---
+        // 任何节点都是潜在迁移目标（与 asset RPC 同款「每节点都注册」纪律）。
+        // 同步闭包（RpcHandlerFn）——B 端主体是文件 rename + vault import +
+        // SQLite upsert，全 sync 友好；独立 TaskDb 连接（多连接 WAL 既定
+        // 形态）。载荷缺 landing（transfer 未达）= 诚实 Err，A 端回滚。
+        {
+            let deps = crate::agents::migrate::MigrateCommitDeps {
+                workspace: home.join("workspace"),
+                self_node_id: cluster.node_id().to_string(),
+            };
+            match cluster.register_rpc_handler(
+                crate::agents::migrate::ACTION_AGENT_MIGRATE_COMMIT,
+                Box::new(move |payload| {
+                    crate::agents::migrate::handle_migrate_commit(&deps, payload)
+                }),
+            ) {
+                Ok(()) => {
+                    info!(
+                        "[Gateway] Registered agent_migrate_commit handler (agent migration landing)"
+                    )
+                }
+                Err(e) => warn!(
+                    "[Gateway] agent_migrate_commit handler registration skipped: {}",
+                    e
+                ),
+            }
+        }
+
         // --- Register peer_chat handler (needs Arc<Cluster> to register remote nodes) ---
         {
             let handler_ref = handler_arc.clone();

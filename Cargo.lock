@@ -4820,6 +4820,7 @@ name = "nemesis-guest"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "futures",
  "nemesis-exec-protocol",
  "serde",
  "serde_json",
@@ -4827,6 +4828,7 @@ dependencies = [
  "tar",
  "tempfile",
  "tokio",
+ "tokio-tungstenite 0.26.2",
 ]
 
 [[package]]
@@ -5449,6 +5451,7 @@ dependencies = [
  "git2",
  "include_dir",
  "libc",
+ "libloading 0.8.9",
  "nemesis-agent",
  "nemesis-auth",
  "nemesis-board",
@@ -5474,6 +5477,7 @@ dependencies = [
  "nemesis-migrate",
  "nemesis-observer",
  "nemesis-path",
+ "nemesis-plugin",
  "nemesis-plugins-wasm",
  "nemesis-prompts",
  "nemesis-providers",

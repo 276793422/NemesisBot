@@ -989,6 +989,13 @@ impl AgentLoop {
                 },
             );
             if !log_existed {
+                // P6-R4（D4 预留）：会话首建即绑 principal（`{channel}/
+                // {sender_id}`，映射单一真相源）。只写不读——多租户闸不做，
+                // 消费方出现前不得据它分叉行为；无主体来源（cron/heartbeat/
+                // system）映射为空串，不落盘。
+                let principal =
+                    nemesis_types::channel::principal_for_channel(&msg.channel, &msg.sender_id);
+                crate::chat_log::write_session_meta_principal(&session_key, &principal);
                 self.emit_session_created(&session_key);
             }
         }

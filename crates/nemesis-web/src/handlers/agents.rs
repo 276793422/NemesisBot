@@ -38,6 +38,8 @@ pub struct AgentInfo {
     pub runtime_backend: String,
     /// 空 = 主 workspace 记忆域；`agents/<id>` = 独占域。
     pub memory_namespace: String,
+    /// 主体标识（P6-R4 D4 预留，只投影不读——多租户闸未做）。空串 = 未绑定。
+    pub principal: String,
     /// 凭据引用条数（引用清单不出 web 面——凭据本体在 vault）。
     pub credential_count: usize,
     pub created_at: String,
@@ -55,8 +57,15 @@ pub trait AgentsBridge: Send + Sync {
     fn get(&self, agent_id: &str) -> Result<AgentInfo, String>;
     /// 创建自建 agent（两阶段：provisioning → home 物化 → active）。
     /// `runtime_backend`：`process|vm`（空串同 process；值域校验在实现侧
-    /// 单一真相源，非法值 loud 拒绝）。
-    fn create(&self, name: &str, tier: &str, runtime_backend: &str) -> Result<AgentInfo, String>;
+    /// 单一真相源，非法值 loud 拒绝）。`principal`：主体标识（P6-R4 D4
+    /// 预留薄透传，空 = 未绑定）。
+    fn create(
+        &self,
+        name: &str,
+        tier: &str,
+        runtime_backend: &str,
+        principal: &str,
+    ) -> Result<AgentInfo, String>;
     /// 运行时后端切档（P5 第 4 步，G4 ⑦「上层无感」写入口）：落库后下一
     /// 次工具调用现读生效，无需重启 loop 或迁移会话。
     fn update_backend(&self, agent_id: &str, runtime_backend: &str) -> Result<AgentInfo, String>;
@@ -91,6 +100,12 @@ pub trait AgentsBridge: Send + Sync {
     /// G1：投递一条入站消息进 agent loop（`agents.send` 面；出站回复经
     /// loop 的 agent_outbound 链按 chat_id 回到发起连接）。
     async fn send_to_agent(&self, agent_id: &str, msg: InboundMessage) -> Result<(), String>;
+
+    /// P6-R2：跨节点迁移编排（A 端，源节点）。返回 JSON 明细（task_id/
+    /// target/tombstone 等）——诚实错误（目标不在线/在途任务/并发迁移/
+    /// 非 selfbuilt/VM 档）不做静默降级。
+    async fn migrate(&self, agent_id: &str, target_node: &str)
+    -> Result<serde_json::Value, String>;
 }
 
 // ---------------------------------------------------------------------------
@@ -169,6 +184,7 @@ impl ModuleHandler for AgentsHandler {
     fn commands(&self) -> &'static [&'static str] {
         &[
             "list", "get", "create", "update", "remove", "sleep", "wake", "slots", "send",
+            "migrate",
         ]
     }
 
@@ -201,7 +217,9 @@ impl ModuleHandler for AgentsHandler {
                 // runtime_backend 可选（缺省 process；空串同 process）。
                 let runtime_backend =
                     crate::handlers::get_str(&data, "runtime_backend").unwrap_or_default();
-                let info = bridge.create(&name, &tier, &runtime_backend)?;
+                // principal 可选（P6-R4 D4 预留；缺省空串 = 未绑定）。
+                let principal = crate::handlers::get_str(&data, "principal").unwrap_or_default();
+                let info = bridge.create(&name, &tier, &runtime_backend, &principal)?;
                 Ok(Some(serde_json::json!({ "agent": info })))
             }
             // P5 第 4 步：运行时后端切档（G4 ⑦「上层无感」——落库即生效，
@@ -292,6 +310,15 @@ impl ModuleHandler for AgentsHandler {
                     "session_id": session_id,
                     "note": "回复经 agent loop 出站链路异步送达发起连接（receive 帧）",
                 })))
+            }
+            // P6-R2：跨节点迁移（A 端编排——12 步序列在 nemesisbot 侧；
+            // 本面只透传 agent_id/target_node，返回编排明细 JSON）。
+            "migrate" => {
+                let data = data.ok_or("missing data")?;
+                let agent_id = crate::handlers::get_str(&data, "agent_id")?;
+                let target_node = crate::handlers::get_str(&data, "target_node")?;
+                let detail = bridge.migrate(&agent_id, &target_node).await?;
+                Ok(Some(serde_json::json!({ "migration": detail })))
             }
             _ => Err(format!("unknown agents cmd: {cmd}")),
         }

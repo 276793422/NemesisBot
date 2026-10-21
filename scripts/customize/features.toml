@@ -360,6 +360,19 @@ desc = "QEMU 整机隔离执行后端（executor.vm，独立内核级隔离；�
 category = "subsystems"
 default = true
 
+# NOTE: `vm-display`（P5-R2 带界面 VM 显示通道）依赖 vm（display_port_query
+# 数据源是 VmSupervisor，无 VM 后端的显示插件无意义）。三线体积纪律：
+# plugin-vm cdylib 独立非 workspace member、noVNC 前端动态 import（不进主
+# bundle）、网关 shim feature 门控——关 = /ws/vm-display 不编译、Dashboard
+# 「查看屏幕」入口 tree-shake 掉，主二进制零增量。
+[[feature]]
+id = "vm-display"
+label = "VM 显示通道（VNC）"
+desc = "带界面 VM 屏幕查看（executor.vm.display=vnc + plugin-vm 插件 + Dashboard 屏幕 modal）。依赖 vm；关 = /ws/vm-display 不编译、显示入口消失"
+category = "subsystems"
+depends = ["vm"]
+default = true
+
 # NOTE: `eval` 依赖 sandbox+security（复合 feature），提供 `nemesisbot eval`
 # prompt/skill 安全行为评估（沙盒真跑 + 四记录点 + LLM 代理脱敏）。
 [[feature]]

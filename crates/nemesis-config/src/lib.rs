@@ -1243,6 +1243,26 @@ pub struct ExecutorVmConfig {
     /// 空闲自动 sleep 秒数（0 = 不自动睡；对齐 persistent.idle_shutdown_secs）。
     #[serde(default = "default_vm_idle_sleep_secs")]
     pub idle_sleep_secs: u64,
+    /// guest agent 就绪等待预算秒数（冷启/唤醒统一）：QMP running ≠ guest
+    /// 侧 agent 已监听——cloud-init/systemd 还在走（微型镜像典型 20-60s，
+    /// 缺省 240 给慢盘慢机余量）。就绪前交槽 = 首次 guest 调用 connect
+    /// refused → 宿主回落混两套文件视图——引导墙钟必须在交槽前吃掉。
+    /// 缺省 240 = 原 vm_runtime 编译期常量行为字节不变（P5-R4 配置化）。
+    /// 0 拒绝（无预算 = 启动可无限挂起，不是合法形态）。
+    #[serde(default = "default_vm_ready_budget_secs")]
+    pub ready_budget_secs: u64,
+    /// 显示面（P5-R2 带界面 VM）：`none`（默认，`-display none` 无头形态
+    /// 字节不变）| `vnc`（QEMU `-vnc 127.0.0.1:<display>` 回环 VNC——端口
+    /// 走临时端口段分配、真实 TCP 端口进 registry，QEMU 参数按 display=
+    /// port-5900 反向换算；经 plugin-vm 插件中继到 Dashboard）。vnc 态要求
+    /// desktop variant 镜像（headless 镜像 + vnc = 诚实报错，黑屏不是合法形态）。
+    #[serde(default = "default_vm_display")]
+    pub display: String,
+    /// vnc 态分辨率预设（guest 侧 xinit/xrandr 消费；`宽x高` 形态，缺省
+    /// 1280x720）。display=none 时该键无效（不校验与显示面的耦合，键独立
+    /// 合法即可——无头形态下改分辨率无消费方）。
+    #[serde(default = "default_vm_display_resolution")]
+    pub display_resolution: String,
     /// 磁盘 GC（总磁盘预算）。
     #[serde(default)]
     pub gc: VmGcConfig,
@@ -1298,12 +1318,24 @@ fn default_vm_desktop() -> String {
     "minimal".to_string()
 }
 
+fn default_vm_display() -> String {
+    "none".to_string()
+}
+
+fn default_vm_display_resolution() -> String {
+    "1280x720".to_string()
+}
+
 fn default_vm_max_instances() -> u32 {
     2
 }
 
 fn default_vm_idle_sleep_secs() -> u64 {
     300
+}
+
+fn default_vm_ready_budget_secs() -> u64 {
+    240
 }
 
 fn default_vm_vcpu() -> u32 {
@@ -1348,10 +1380,13 @@ impl Default for ExecutorVmConfig {
             arch: default_vm_arch(),
             hypervisor: default_vm_hypervisor(),
             desktop: default_vm_desktop(),
+            display: default_vm_display(),
+            display_resolution: default_vm_display_resolution(),
             image: VmImageConfig::default(),
             resources: VmResourceConfig::default(),
             max_instances: default_vm_max_instances(),
             idle_sleep_secs: default_vm_idle_sleep_secs(),
+            ready_budget_secs: default_vm_ready_budget_secs(),
             gc: VmGcConfig::default(),
         }
     }
@@ -1415,6 +1450,21 @@ impl ExecutorVmConfig {
                 )));
             }
         }
+        match self.display.as_str() {
+            "none" | "vnc" => {}
+            other => {
+                return Err(ConfigError::Validation(format!(
+                    "executor.vm.display 未知值 {other:?}（合法值：none | vnc；\
+                     vnc 需 plugin-vm 插件 + desktop variant 镜像）"
+                )));
+            }
+        }
+        // display_resolution：`宽x高` 形态（正整数），guest xrandr 消费面。
+        if let Err(msg) = validate_display_resolution(&self.display_resolution) {
+            return Err(ConfigError::Validation(format!(
+                "executor.vm.display_resolution {msg}（合法形态：宽x高，如 1280x720）"
+            )));
+        }
         match self.gc.over_limit.as_str() {
             "warn" | "stop" => {}
             other => {
@@ -1430,8 +1480,34 @@ impl ExecutorVmConfig {
                     .to_string(),
             ));
         }
+        if self.ready_budget_secs == 0 {
+            return Err(ConfigError::Validation(
+                "executor.vm.ready_budget_secs 必须 ≥ 1（0 = guest 就绪等待无上限，\
+                 启动可无限挂起不是合法形态；要更多余量请直接调大数值）"
+                    .to_string(),
+            ));
+        }
         Ok(())
     }
+}
+
+/// `executor.vm.display_resolution` 形态校验：`宽x高`（正整数）。
+/// 单独函数（validate 与未来消费方同源复用），错误消息只含值态不含键名
+/// （键名由调用方补——文案单一出口）。
+pub fn validate_display_resolution(v: &str) -> std::result::Result<(), String> {
+    let (w, h) = v
+        .split_once('x')
+        .ok_or_else(|| format!("未知值 {v:?}，缺 'x' 分隔"))?;
+    let w: u32 = w
+        .parse()
+        .map_err(|_| format!("未知值 {v:?}，宽度非正整数"))?;
+    let h: u32 = h
+        .parse()
+        .map_err(|_| format!("未知值 {v:?}，高度非正整数"))?;
+    if w == 0 || h == 0 {
+        return Err(format!("未知值 {v:?}，宽高必须 > 0"));
+    }
+    Ok(())
 }
 
 // ============================================================================

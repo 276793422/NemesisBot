@@ -25,6 +25,7 @@ fn vm_serde_default_when_key_absent() {
     assert_eq!(vm.desktop, "minimal");
     assert_eq!(vm.max_instances, 2);
     assert_eq!(vm.idle_sleep_secs, 300);
+    assert_eq!(vm.ready_budget_secs, 240);
     assert_eq!(vm.resources.vcpu, 2);
     assert_eq!(vm.resources.ram_mb, 2048);
     assert_eq!(vm.resources.disk_gb, 20);
@@ -72,6 +73,7 @@ fn vm_typed_roundtrip_preserves_explicit_values() {
                 "resources": {"vcpu": 4, "ram_mb": 4096, "disk_gb": 40},
                 "max_instances": 3,
                 "idle_sleep_secs": 0,
+                "ready_budget_secs": 480,
                 "gc": {"max_total_disk_gb": 0, "over_limit": "stop"}
             }
         }
@@ -89,6 +91,7 @@ fn vm_typed_roundtrip_preserves_explicit_values() {
     assert_eq!(vm.resources.disk_gb, 40);
     assert_eq!(vm.max_instances, 3);
     assert_eq!(vm.idle_sleep_secs, 0, "0 = 不自动睡");
+    assert_eq!(vm.ready_budget_secs, 480, "显式值保真");
     assert_eq!(vm.gc.max_total_disk_gb, 0, "0 = 不设预算");
     assert_eq!(vm.gc.over_limit, "stop");
 
@@ -177,4 +180,115 @@ fn vm_validate_rejects_zero_max_instances() {
     assert!(err.contains("enabled=false"), "错误必须指路关闭开关: {err}");
     vm.max_instances = 1;
     vm.validate().unwrap_or_else(|e| panic!("1 合法: {e}"));
+}
+
+// ---------------------------------------------------------------------------
+// ready_budget_secs（P5-R4 配置化：原 vm_runtime 编译期常量 240s 退役）
+// ---------------------------------------------------------------------------
+
+/// 缺省 240 = 原编译期常量行为字节不变（回归锁：双路径同源——serde 字段级
+/// 缺省与手写 Default 都落 240）。
+#[test]
+fn vm_ready_budget_default_is_240_both_paths() {
+    assert_eq!(
+        ExecutorVmConfig::default().ready_budget_secs,
+        240,
+        "手写 Default 路径"
+    );
+    let cfg: Config = serde_json::from_str(r#"{"executor":{"vm":{"enabled":true}}}"#)
+        .expect("partial vm section parses");
+    let vm = &cfg.executor.as_ref().expect("executor 段在场").vm;
+    assert_eq!(vm.ready_budget_secs, 240, "serde 字段级缺省路径");
+}
+
+#[test]
+fn vm_validate_rejects_zero_ready_budget() {
+    let mut vm = ExecutorVmConfig::default();
+    vm.ready_budget_secs = 0;
+    let err = vm.validate().unwrap_err().to_string();
+    assert!(
+        err.contains("ready_budget_secs") && err.contains("≥ 1"),
+        "0 = 无限挂起不是合法形态: {err}"
+    );
+    vm.ready_budget_secs = 1;
+    vm.validate().unwrap_or_else(|e| panic!("1 合法: {e}"));
+}
+
+// ---------------------------------------------------------------------------
+// display / display_resolution（P5-R2 带界面 VM）
+// ---------------------------------------------------------------------------
+
+/// 缺省 none = 原无头形态字节不变（回归锁：双路径同源——serde 字段级缺省
+/// 与手写 Default 都落 "none"；分辨率缺省 1280x720）。
+#[test]
+fn vm_display_default_is_none_both_paths() {
+    assert_eq!(
+        ExecutorVmConfig::default().display,
+        "none",
+        "手写 Default 路径"
+    );
+    assert_eq!(
+        ExecutorVmConfig::default().display_resolution,
+        "1280x720",
+        "分辨率缺省"
+    );
+    let cfg: Config = serde_json::from_str(r#"{"executor":{"vm":{"enabled":true}}}"#)
+        .expect("partial vm section parses");
+    let vm = &cfg.executor.as_ref().expect("executor 段在场").vm;
+    assert_eq!(vm.display, "none", "serde 字段级缺省路径");
+    assert_eq!(vm.display_resolution, "1280x720");
+}
+
+#[test]
+fn vm_display_typed_roundtrip_preserves_vnc() {
+    let src = serde_json::json!({
+        "executor": {"vm": {
+            "enabled": true,
+            "display": "vnc",
+            "display_resolution": "1920x1080"
+        }}
+    });
+    let cfg: Config = serde_json::from_value(src).expect("display 段 parses");
+    let vm = &cfg.executor.as_ref().expect("executor 段在场").vm;
+    assert_eq!(vm.display, "vnc");
+    assert_eq!(vm.display_resolution, "1920x1080");
+    let bytes = serde_json::to_vec(&cfg).expect("serialize");
+    let reparsed: Config = serde_json::from_slice(&bytes).expect("reparse");
+    assert_eq!(
+        reparsed
+            .executor
+            .as_ref()
+            .expect("roundtrip 后 executor 段在场")
+            .vm,
+        *vm,
+        "roundtrip 字段全保真"
+    );
+}
+
+#[test]
+fn vm_validate_loud_rejects_unknown_display() {
+    let mut vm = ExecutorVmConfig::default();
+    vm.display = "spice".into();
+    let err = vm.validate().unwrap_err().to_string();
+    assert!(err.contains("none") && err.contains("vnc"), "{err}");
+    for legal in ["none", "vnc"] {
+        vm.display = legal.into();
+        vm.validate().unwrap_or_else(|e| panic!("{legal}: {e}"));
+    }
+}
+
+#[test]
+fn vm_validate_loud_rejects_bad_display_resolution() {
+    let mut vm = ExecutorVmConfig::default();
+    for bad in ["1280", "1280X720", "axb", "0x720", "1280x0", "-1280x720"] {
+        vm.display_resolution = bad.into();
+        let err = vm.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("display_resolution") && err.contains("宽x高"),
+            "{bad}: {err}"
+        );
+    }
+    vm.display_resolution = "1920x1080".into();
+    vm.validate()
+        .unwrap_or_else(|e| panic!("1920x1080 合法: {e}"));
 }

@@ -2186,6 +2186,21 @@ fn register_tools_and_mcp(
         }
     }
 
+    // P5-R1：browser 工具（VM 档 guest 内 headless chromium + CDP，guest
+    // 执行体 = nemesis-guest src/browser.rs）。注册闸 = persistent 路由
+    // 在场（gateway 形态；headless run/acp 无 agents 表解析面，注册了也
+    // 永远解析失败——诚实缺省，generate_image 同款注册闸风格）。执行时
+    // 现查 agents 表档位，非 VM 档诚实报错（进程档没有浏览器执行体，
+    // 不回落宿主——与 ToolFailed「绝不回落」语义同源）。
+    if let Some(route) = persistent {
+        all_tools.insert(
+            crate::browser_tool::TOOL_NAME.to_string(),
+            Box::new(crate::browser_tool::VmBrowserTool::new(
+                route.resolve.clone(),
+            )),
+        );
+    }
+
     let tool_count = all_tools.len();
     for (name, tool) in all_tools {
         agent_loop.register_tool(name, tool);

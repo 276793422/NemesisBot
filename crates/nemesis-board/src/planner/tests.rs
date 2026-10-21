@@ -230,6 +230,7 @@ fn system_prompt_declares_the_schema_fields() {
         "description",
         "required_role",
         "required_tags",
+        "required_backend",
         "acceptance_criteria",
         "depends_on",
     ] {
@@ -710,6 +711,70 @@ fn planner_prompt_declares_required_capabilities_contract() {
         user.contains("required_capabilities 只能从上述节点 caps="),
         "user 段约束必须声明能力词表来源"
     );
+}
+
+// -----------------------------------------------------------------------
+// required_backend（P6-R1，2026-10-21，运行时后端硬闸）
+// -----------------------------------------------------------------------
+
+/// 严格臂：值域外（docker/podman/空格形态等）→ PlanParseError 回灌（模型
+/// 下轮自纠）；大小写不敏感是设计语义——"VM"/" Process" 归一为合法值。
+#[test]
+fn backend_invalid_value_rejected_and_normalized_in_strict_parse() {
+    // 值域外 → 回灌。
+    let err = parse_plan(r#"[{"title":"子甲","required_backend":"docker"}]"#).unwrap_err();
+    assert!(err.message.contains("required_backend"), "{err}");
+    assert!(err.message.contains("process"), "{err}");
+    // 大小写 + 前后空白归一（就地写回归一值）。
+    let plan = parse_plan(r#"[{"title":"子甲","required_backend":"VM"}]"#).unwrap();
+    assert_eq!(plan[0].required_backend, "vm");
+    let plan = parse_plan(r#"[{"title":"子甲","required_backend":"  Process  "}]"#).unwrap();
+    assert_eq!(plan[0].required_backend, "process");
+    // 合法值原样通过。
+    let plan = parse_plan(r#"[{"title":"子甲","required_backend":"process"}]"#).unwrap();
+    assert_eq!(plan[0].required_backend, "process");
+}
+
+/// 缺字段 / 空串 / 空白 = 无后端需求（serde default 零迁移；闸不过）。
+#[test]
+fn backend_absent_or_blank_means_none() {
+    let plan = parse_plan(r#"[{"title":"子甲"}]"#).unwrap();
+    assert_eq!(plan[0].required_backend, "");
+    let plan = parse_plan(r#"[{"title":"子甲","required_backend":""}]"#).unwrap();
+    assert_eq!(plan[0].required_backend, "");
+    let plan = parse_plan(r#"[{"title":"子甲","required_backend":"   "}]"#).unwrap();
+    assert_eq!(plan[0].required_backend, "   ", "空白不归一（无需求语义）");
+}
+
+/// 宽和臂：合法值归一保留；非法值置空 + **不进** required_profession 专属
+/// 降级台账（照能力词「剔除非法」先例）；其余校验照常严校。
+#[test]
+fn lenient_final_round_clears_invalid_backend_without_downgrade_entry() {
+    let raw = r#"[
+        {"title":"子甲","required_backend":"lxc"},
+        {"title":"子乙","required_backend":"VM"},
+        {"title":"子丙"}
+    ]"#;
+    let lp = parse_plan_lenient(raw).unwrap();
+    assert_eq!(lp.plan[0].required_backend, "", "非法后端置空");
+    assert_eq!(lp.plan[1].required_backend, "vm", "合法项归一保留");
+    assert_eq!(lp.plan[2].required_backend, "");
+    assert!(lp.downgraded.is_empty(), "backend 不进职能降级台账");
+    // 宽和臂对整体非 JSON 的失败面与严格版一致。
+    assert!(parse_plan_lenient("not json").is_err());
+}
+
+/// 提示词同步钉：planner prompt 必须声明 `required_backend` 字段 + 值域
+/// 语义 + 拆解纪律条款（何时标 vm：浏览器/GUI/隔离环境需求）。
+#[test]
+fn planner_prompt_declares_required_backend_contract() {
+    let p = super::super::planner_system_prompt();
+    assert!(p.contains("required_backend"), "schema 必须声明字段");
+    assert!(
+        p.contains("process") && p.contains("vm"),
+        "拆解纪律必须声明值域 process|vm"
+    );
+    assert!(p.contains("运行时后端"), "拆解纪律必须含运行时后端硬闸条款");
 }
 
 // ---------------------------------------------------------------------------

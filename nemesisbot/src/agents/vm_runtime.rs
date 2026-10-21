@@ -34,7 +34,8 @@ use nemesis_config::ExecutorVmConfig;
 use nemesis_sandbox::vm::assembly::resolve_qemu_binary;
 use nemesis_sandbox::vm::guest_arch::{GuestArch, QemuAccel};
 use nemesis_sandbox::vm::lifecycle::{
-    SleepMode, VmInstance, VmStartParams, adjudicate_accel_real, auth_handshake, generate_token,
+    SleepMode, VmInstance, VmStartParams, adjudicate_accel_real, alloc_loopback_port,
+    auth_handshake, generate_token,
 };
 use nemesis_sandbox::vm::overlay;
 use nemesis_utils::sanitize::sanitize_path_segment;
@@ -51,12 +52,8 @@ const STOP_GRACE: Duration = Duration::from_secs(10);
 /// 直接跳过在途 agent，不受窗长限制）；本窗兜底「非本 supervisor 在途」
 /// 的异常形态（如崩溃残留的半截记录）。
 const SWEEP_STARTUP_GRACE: Duration = Duration::from_secs(120);
-/// guest agent 就绪等待预算（冷启/唤醒统一）：QMP running ≠ guest 侧 agent
-/// 已监听——cloud-init/systemd 还在走（微型镜像典型 20-60s，上限给慢盘
-/// 慢机余量）。就绪前交槽 = 首次 guest 调用 connect refused → Unavailable →
-/// 宿主回落混两套文件视图——引导墙钟必须在交槽前吃掉。
-const GUEST_READY_BUDGET: Duration = Duration::from_secs(240);
-/// guest agent 就绪轮询间隔。
+/// guest agent 就绪轮询间隔。（就绪预算本体 = config `executor.vm.
+/// ready_budget_secs`，缺省 240——P5-R4 配置化，原编译期常量退役。）
 const GUEST_READY_POLL: Duration = Duration::from_secs(2);
 /// GiB（GC 预算单位换算）。
 pub(crate) const GIB: u64 = 1024 * 1024 * 1024;
@@ -121,6 +118,11 @@ pub struct VmInstanceRecord {
     pub vcpu: u32,
     pub ram_mb: u32,
     pub disk_gb: u32,
+    /// VNC 显示端口（P5-R2；display=vnc 时每次启动分配，display=none 为
+    /// None。**端口不参与唤醒路由**——重启/唤醒后按 config 现值重分，
+    /// 旧记录缺键 = serde default None 兼容）。
+    #[serde(default)]
+    pub display_port: Option<u16>,
 }
 
 /// 唤醒产物路由（纯函数，单测钉死）：快照线优先（tag 恒随 overlay 在），
@@ -157,6 +159,47 @@ pub(crate) fn parse_accel(s: &str) -> Option<QemuAccel> {
         "kvm" => Some(QemuAccel::Kvm),
         "whpx" => Some(QemuAccel::Whpx),
         _ => None,
+    }
+}
+
+/// 显示端口解析（P5-R2 带界面 VM）：config `executor.vm.display` 现值裁决。
+/// - `none` → `None`（无头形态，装配字节不变——回归锁在 assembly/tests）；
+/// - `vnc` → **headless 闸**（base 镜像 manifest 的 `variant` 必须 =
+///   `desktop`——headless 镜像 + vnc = 黑屏，不是合法形态，诚实拒绝）+
+///   [`alloc_loopback_port`] 同机制分配回环端口；
+/// - 未知值 → `Unavailable`（config validate 已拦，此为防御性兜底）。
+pub(crate) fn resolve_display_port(
+    workspace: &Path,
+    settings: &ExecutorVmConfig,
+) -> Result<Option<u16>, VmSupervisorError> {
+    match settings.display.as_str() {
+        "none" => Ok(None),
+        "vnc" => {
+            let manifest_path = vm_images_root(workspace).join("manifest.json");
+            let variant = std::fs::read_to_string(&manifest_path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .and_then(|v| {
+                    v.get("variant")
+                        .and_then(|x| x.as_str())
+                        .map(str::to_string)
+                });
+            if variant.as_deref() != Some("desktop") {
+                return Err(VmSupervisorError::Unavailable(format!(
+                    "display=vnc 要求 desktop variant 镜像（headless 镜像上开显示 = 黑屏，\
+                     不是合法形态）：当前 manifest variant = {}（{}）——\
+                     请以 --variant desktop 重跑镜像管线 scripts/build-vm-image.sh",
+                    variant.as_deref().unwrap_or("缺失/不可读"),
+                    manifest_path.display()
+                )));
+            }
+            alloc_loopback_port()
+                .map(Some)
+                .map_err(|e| VmSupervisorError::Failed(format!("显示端口分配失败: {e}")))
+        }
+        other => Err(VmSupervisorError::Unavailable(format!(
+            "executor.vm.display 未知值 {other:?}（合法值：none | vnc）"
+        ))),
     }
 }
 
@@ -253,6 +296,31 @@ pub(crate) fn load_record(workspace: &Path, agent_id: &str) -> Option<VmInstance
             None
         }
     }
+}
+
+/// 孤儿 overlay 判定的引用集（P5-R4 磁盘 GC 判定面，[`VmSupervisor::
+/// sweep_disk_garbage`] 消费；独立纯函数便于单测）：全部 run 目录名 ∪ 各
+/// registry 记录 `sanitize(agent_id)` ∪ 记录 overlay 文件 stem。registry
+/// 损坏/缺席时目录名兜底——认不出 = 保守保留，绝不因记录损坏删数据盘。
+pub(crate) fn referenced_overlay_stems(workspace: &Path) -> std::collections::HashSet<String> {
+    let mut refs = std::collections::HashSet::new();
+    let Ok(rd) = std::fs::read_dir(vm_run_root(workspace)) else {
+        return refs;
+    };
+    for entry in rd.flatten() {
+        if !entry.path().is_dir() {
+            continue;
+        }
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+        refs.insert(dir_name.clone());
+        if let Some(rec) = load_record(workspace, &dir_name) {
+            refs.insert(sanitize_path_segment(&rec.agent_id));
+            if let Some(stem) = rec.overlay.file_stem() {
+                refs.insert(stem.to_string_lossy().to_string());
+            }
+        }
+    }
+    refs
 }
 
 /// registry 写盘序号（tmp 文件名唯一性：并发 save 同 agent 不互踩临时文件）。
@@ -695,6 +763,12 @@ pub struct VmSupervisor {
     /// 心：DB 删除失败时临时态解除、身份可再唤醒，永久墓碑不误落（探针
     /// 实证的「记录在册但身份永久不可唤醒」事故面）。
     evicting: Mutex<HashSet<String>>,
+    /// 确定性不可睡眠墓碑（idle sweep 用）：accel 无睡眠线（如 whpx 三探针
+    /// 定谳）是宿主能力、实例生命周期内不变——sweep 周期重试只会刷屏 +
+    /// 每 tick 白读一次 registry 盘文件（2026-10-21 demo 实录：单实例 1 小时
+    /// 113 对 WARN/INFO）。只在 sweep 臂消费；用户显式 sleep 照常诚实报错。
+    /// 单调增长可忽略（每 agent 一条 String，同 evicted 口径）。
+    sleep_unavailable: Mutex<HashSet<String>>,
 }
 
 /// 试玩启动在途状态（真机教训 2026-10-19：冷启动同步等 30-60s 撞前端
@@ -737,6 +811,7 @@ impl VmSupervisor {
             starting: Mutex::new(HashSet::new()),
             evicted: Mutex::new(HashSet::new()),
             evicting: Mutex::new(HashSet::new()),
+            sleep_unavailable: Mutex::new(HashSet::new()),
         }
     }
 
@@ -996,7 +1071,7 @@ impl VmSupervisor {
         {
             return Err(VmSupervisorError::Unavailable(format!(
                 "agent {agent_id} 的 VM 正在启动中（冷启动最长约 {}s）——待就绪后再试",
-                GUEST_READY_BUDGET.as_secs()
+                settings.ready_budget_secs
             )));
         }
         let _start_gate = StartGateGuard {
@@ -1092,6 +1167,7 @@ impl VmSupervisor {
                 vcpu: settings.resources.vcpu,
                 ram_mb: settings.resources.ram_mb,
                 disk_gb: settings.resources.disk_gb,
+                display_port: None, // vnc 态在 spawn 前重分
             },
         };
         record.asleep_at = None;
@@ -1120,6 +1196,19 @@ impl VmSupervisor {
         })?;
 
         let qemu_bin = resolve_qemu_binary(arch, qemu_install_dir(&self.workspace).as_deref());
+
+        // 显示端口解析（P5-R2）：config `display` 现值裁决。vnc 态过
+        // headless 闸（desktop variant 镜像）+ 回环端口分配；失败 = 启动前
+        // 诚实拒绝（无副作用，Unavailable 语义）。
+        let display_port = resolve_display_port(&self.workspace, settings)?;
+        record.display_port = display_port;
+        if display_port.is_some() {
+            // spawn 前落盘锚（二.5）：display=vnc 的端口决议也进 registry
+            // （插件/前端经 vm status 查询可见）。
+            save_record(&self.workspace, agent_id, &record).map_err(|e| {
+                VmSupervisorError::Failed(format!("registry 落盘失败（display 锚）: {e}"))
+            })?;
+        }
 
         // spawn 前活 QEMU 防线（[`ensure_no_live_qemu`]）：registry 丢失/
         // 损坏时 sweep 看不见的孤儿——双开同 overlay = qcow2 并发写损坏，
@@ -1194,6 +1283,7 @@ impl VmSupervisor {
             shared_host_path: None,
             loadvm_tag,
             incoming_file: incoming_file.clone(),
+            display_vnc_port: display_port,
         };
         let mut vm = match VmInstance::start(params).await {
             Ok(vm) => vm,
@@ -1218,8 +1308,10 @@ impl VmSupervisor {
         // 余量）。就绪前交槽 = 首次 guest 调用 connect refused → Unavailable
         // → 宿主回落混两套文件视图。在交槽前把引导墙钟吃掉：轮询鉴权握手
         //（流即弃——execute_persistent 每次调用独立握手）；超时 = 启动失败
-        //（停机 + 回冷），不带着没就绪的 VM 出这个函数。
-        let deadline = tokio::time::Instant::now() + GUEST_READY_BUDGET;
+        //（停机 + 回冷），不带着没就绪的 VM 出这个函数。预算 = config
+        // `executor.vm.ready_budget_secs` 现读（缺省 240，P5-R4 配置化）。
+        let ready_budget = Duration::from_secs(settings.ready_budget_secs);
+        let deadline = tokio::time::Instant::now() + ready_budget;
         loop {
             match auth_handshake(vm.agent_addr, &record.token, Duration::from_secs(5)).await {
                 Ok(_) => break,
@@ -1229,7 +1321,7 @@ impl VmSupervisor {
                         mark_cold(&mut record);
                         save_record_warn(&self.workspace, agent_id, &record, "就绪超时转冷停");
                         return Err(VmSupervisorError::Failed(format!(
-                            "guest agent 就绪超时（{GUEST_READY_BUDGET:?}）: {e}"
+                            "guest agent 就绪超时（{ready_budget:?}）: {e}"
                         )));
                     }
                     tokio::time::sleep(GUEST_READY_POLL).await;
@@ -1539,6 +1631,77 @@ impl VmSupervisor {
         swept
     }
 
+    /// 磁盘 GC：孤儿 overlay + 陈旧换装残留清扫（P5-R4；watchdog 周期 +
+    /// gateway 启动 sweep 共用）。返回删除的文件数。
+    ///
+    /// **孤儿判定（保守）**：overlays 根下 `*.qcow2` 且文件名 stem 不在
+    /// 引用集内。引用集 = 全部 run 目录名 ∪ 各 registry 记录的
+    /// `sanitize(agent_id)` ∪ 记录 overlay 文件 stem——三族并集，registry
+    /// 缺失/不可解析的 run 目录由目录名兜底（认不出 = 不删，与
+    /// [`Self::sweep_orphans`]「无记录不动任何进程」同姿态）。registry
+    /// 先于 overlay 落盘（`start_or_wake` 锚序），所以「有记录无 overlay」
+    /// 是合法中间态、「有 overlay 无记录」只剩记录被整体移除一种来路。
+    /// 逐出墓碑（evicted）不删盘：`evict_agent` 语义 = 停机≠删盘，overlay
+    /// 随 registry 记录保留，整体移除才回收。
+    ///
+    /// **陈旧 base**：images 根下 `base.new.qcow2` 仅当 `base.qcow2` 同时
+    /// 在场才删（promote_staging ③ 转正后的中断残留；canonical 缺席时
+    /// base.new 是唯一落点，删了 = 毁镜像）。`.staging` 目录刻意不碰——
+    /// 构建失败保留供排查是 vm_bridge 的既定决策，GC 不翻案。
+    pub fn sweep_disk_garbage(&self) -> usize {
+        let mut removed = 0usize;
+        let refs = referenced_overlay_stems(&self.workspace);
+        if let Ok(rd) = std::fs::read_dir(vm_overlays_root(&self.workspace)) {
+            let mut paths: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+            // read_dir 顺序是平台实现细节（NTFS 字典序 vs ext4 哈希序）——
+            // 删除序显式排序，行为跨平台可复现。
+            paths.sort();
+            for p in paths {
+                if p.extension().is_none_or(|x| x != "qcow2") {
+                    continue;
+                }
+                let Some(stem) = p.file_stem().map(|s| s.to_string_lossy().to_string()) else {
+                    continue;
+                };
+                if refs.contains(&stem) {
+                    continue;
+                }
+                match std::fs::remove_file(&p) {
+                    Ok(()) => {
+                        tracing::warn!(
+                            "[vm-runtime] 孤儿 overlay 已回收（无任何 registry/run 目录引用）: {}",
+                            p.display()
+                        );
+                        removed += 1;
+                    }
+                    Err(e) => tracing::warn!(
+                        "[vm-runtime] 孤儿 overlay 回收失败（下轮重试）: {}: {e}",
+                        p.display()
+                    ),
+                }
+            }
+        }
+        // 陈旧换装残留：canonical base 在场时 base.new 才是垃圾。
+        let images = vm_images_root(&self.workspace);
+        let new_base = images.join("base.new.qcow2");
+        if new_base.exists() && images.join("base.qcow2").exists() {
+            match std::fs::remove_file(&new_base) {
+                Ok(()) => {
+                    tracing::warn!(
+                        "[vm-runtime] 陈旧换装残留已回收（canonical base 已在场）: {}",
+                        new_base.display()
+                    );
+                    removed += 1;
+                }
+                Err(e) => tracing::warn!(
+                    "[vm-runtime] 换装残留回收失败（下轮重试）: {}: {e}",
+                    new_base.display()
+                ),
+            }
+        }
+        removed
+    }
+
     /// watchdog（P3 同款 Arc downgrade 自弱引用循环；supervisor 全体 drop
     /// → 看护自灭）。单 tick：死槽收敛 → 孤儿 sweep → 磁盘预算告警 →
     /// idle 自动睡眠（`idle_sleep_secs=0` 关）。
@@ -1598,6 +1761,11 @@ impl VmSupervisor {
         // 2. 孤儿 sweep。
         self.sweep_orphans().await;
 
+        // 2.5 磁盘 GC：孤儿 overlay / 陈旧换装残留（P5-R4）。在 config
+        // 门之前跑——垃圾回收不依赖 VM 档开关（enabled=false 时遗留产物
+        // 照样回收，关闭态零激活指的是不启动新东西不是不管旧垃圾）。
+        self.sweep_disk_garbage();
+
         // 3 + 4. 预算告警 / idle 自动睡眠（都在 config 现读的臂里）。
         let Some(settings) = self.vm_settings() else {
             return;
@@ -1629,11 +1797,28 @@ impl VmSupervisor {
                 }
             }
             for id in idle_ids {
+                // 确定性不可睡眠（accel 无睡眠线）只报一次：周期重试零收益
+                // （见 sleep_unavailable 字段注）。此处 Unavailable 只可能是
+                // 该情形——config 缺席在上方 `vm_settings()` 早退臂已挡。
+                if self
+                    .sleep_unavailable
+                    .lock()
+                    .expect("vm supervisor sleep_unavailable lock poisoned")
+                    .contains(&id)
+                {
+                    continue;
+                }
                 tracing::info!(
                     "[vm-runtime] agent {id} idle 超 {}s，自动睡眠",
                     settings.idle_sleep_secs
                 );
                 if let Err(e) = self.sleep_agent(&id).await {
+                    if matches!(e, VmSupervisorError::Unavailable(_)) {
+                        self.sleep_unavailable
+                            .lock()
+                            .expect("vm supervisor sleep_unavailable lock poisoned")
+                            .insert(id.clone());
+                    }
                     tracing::warn!("[vm-runtime] agent {id} 自动睡眠失败（保持运行）: {e}");
                 }
             }
@@ -1784,6 +1969,23 @@ impl VmSupervisor {
     ) -> Result<String, VmSupervisorError> {
         let ctx = serde_json::json!({ "source": "vm_sync" });
         self.call_guest(agent_id, tool, &args.to_string(), &ctx)
+            .await
+    }
+
+    /// P5-R1：`browser` 工具专用通道（guest 内 headless chromium + CDP，
+    /// 执行体 = nemesis-guest src/browser.rs）。与 agent 文件/exec 工具面
+    /// 同路（call_guest）但**不过 `VM_GUEST_TOOLS` 子集闸**——"browser"
+    /// 刻意不在子集（子集是 guest 文件/exec 直通面，两套文件视图纪律；
+    /// 浏览器是独立能力面，宿主 VmBrowserTool 是唯一入口，agent 直接拿
+    /// "browser" 打 guest 文件/exec 通道会被子集闸诚实拒绝）。ctx 钉
+    /// `source: "browser"` 供 guest 侧区分（与 internal_call 同款纪律）。
+    pub(crate) async fn browser_call(
+        &self,
+        agent_id: &str,
+        args: serde_json::Value,
+    ) -> Result<String, VmSupervisorError> {
+        let ctx = serde_json::json!({ "source": "browser" });
+        self.call_guest(agent_id, "browser", &args.to_string(), &ctx)
             .await
     }
 }

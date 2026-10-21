@@ -219,8 +219,8 @@ impl BoardStore {
                 parent_issue_id, project_id, due_date, position,
                 acceptance_criteria, origin_type, origin_id,
                 required_role, required_tags, required_profession, required_capabilities,
-                requires_evidence, created_at, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?22)",
+                required_backend, requires_evidence, created_at, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?23)",
             params![
                 number,
                 new.title,
@@ -246,6 +246,10 @@ impl BoardStore {
                     .as_deref()
                     .filter(|s| !s.trim().is_empty()),
                 required_capabilities_json,
+                new.required_backend
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty()),
                 requires_evidence,
                 now,
             ],
@@ -4053,6 +4057,10 @@ fn row_to_issue(row: &rusqlite::Row<'_>) -> rusqlite::Result<Issue> {
         required_profession: row
             .get::<_, Option<String>>("required_profession")?
             .filter(|s| !s.trim().is_empty()),
+        required_backend: row
+            .get::<_, Option<String>>("required_backend")?
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
         required_capabilities,
         requires_evidence: row.get::<_, i64>("requires_evidence")? != 0,
         hidden: row.get::<_, i64>("hidden")? != 0,

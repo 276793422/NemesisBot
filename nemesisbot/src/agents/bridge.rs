@@ -52,6 +52,8 @@ fn to_info(rec: nemesis_taskstore::AgentRecord) -> AgentInfo {
         tier: rec.tier,
         runtime_backend: rec.runtime_backend,
         memory_namespace: rec.memory_namespace,
+        // P6-R4（D4 预留）：主体标识投影（空串 = 未绑定）。
+        principal: rec.principal,
         credential_count,
         created_at: rec.created_at.clone(),
         // 未触碰过 = None → 回落 created_at（投影面不给 null——web 消费方
@@ -79,7 +81,13 @@ impl AgentsBridge for AgentManager {
         Ok(to_info(rec))
     }
 
-    fn create(&self, name: &str, tier: &str, runtime_backend: &str) -> Result<AgentInfo, String> {
+    fn create(
+        &self,
+        name: &str,
+        tier: &str,
+        runtime_backend: &str,
+        principal: &str,
+    ) -> Result<AgentInfo, String> {
         let tier = validate_tier(tier)?;
         // runtime_backend 值域校验在 create_agent 落库前做（单一真相源
         // `runtime_backend::validate`）——桥面薄透传，非法值同样 loud 拒绝。
@@ -90,6 +98,8 @@ impl AgentsBridge for AgentManager {
             tool_policy: serde_json::json!({}),
             persona_refs: serde_json::Value::Null,
             credential_refs: serde_json::json!([]),
+            // P6-R4（D4 预留）：主体标识薄透传（空 = 未绑定）。
+            principal: principal.to_string(),
         })?;
         Ok(to_info(rec))
     }
@@ -206,5 +216,15 @@ impl AgentsBridge for AgentManager {
         // 投递是一次显式活动：记 last_active（P2 touch 消费点，尽力而为）。
         let _ = self.touch(agent_id);
         Ok(())
+    }
+
+    // -- P6-R2 迁移面 ------------------------------------------------------
+
+    async fn migrate(
+        &self,
+        agent_id: &str,
+        target_node: &str,
+    ) -> Result<serde_json::Value, String> {
+        self.migrate_agent(agent_id, target_node).await
     }
 }

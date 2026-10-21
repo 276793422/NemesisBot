@@ -4,8 +4,14 @@
 //! 设计纪律（实施计划 §5「GPU/音频」扩展点）：
 //! - 所有 QEMU 参数集中在本模块纯函数产出（调用方只传 spec，不拼字符串）
 //!   ——GPU/音频/显示恢复 = 只改这里 + 配置 schema 加键；
-//! - `-display none` 固定（headless 服务器形态，guest 内浏览器走
-//!   offscreen/Xvfb）；
+//! - 显示面（P5-R2）：默认 `-display none`（headless 服务器形态字节不变，
+//!   测试锚定）；`display_vnc_port = Some(port)` 时装配 `-vnc 127.0.0.1:<display>`
+//!   （回环绑定——NAT 零暴露闸同源；port=真实 TCP 端口，display=port-5900
+//!   反向换算，见 VNC_DISPLAY_BASE 注——QEMU 冒号后数字是显示器编号而非
+//!   端口，直接填端口会错绑 5900 偏移，registry 永远连不上）。**readonly
+//!   不在 QEMU 层做**：`-vnc
+//!   ...,readonly` 会锁死所有 viewer 且改档需重启 VM——per-session 观察档
+//!   由 plugin-vm 在 RFB 客户端→服务端方向过滤写类消息（类型 4/5/6）实现。
 //! - hostfwd **恒绑 127.0.0.1**（G2 宿主零暴露面闸——装配层钉死，测试
 //!   断言；外部接口不可达由绑定语义保证）；
 //! - 首帧 token 挑战鉴权的 token 经 `-smbios type=1,serial=<token>` 传入
@@ -25,6 +31,15 @@ pub const QMP_BIND: &str = "127.0.0.1";
 
 /// NAT hostfwd 绑定地址（恒 127.0.0.1——G2 宿主零暴露面闸）。
 pub const NAT_BIND: &str = "127.0.0.1";
+
+/// VNC 显示绑定地址（恒 127.0.0.1——与 NAT 闸同源：VNC 只绑回环，外部
+/// 访问一律过网关 shim + dashboard token，裸协议不出回环）。
+pub const VNC_BIND: &str = "127.0.0.1";
+
+/// QEMU `-vnc` 的显示器编号基准（真实 TCP 端口 = 5900 + 编号——QEMU 全
+/// 版本稳定语义；2026-10-21 真机探针定谳：`-vnc 127.0.0.1:12345` 绑定
+/// 18245，`port=` 子选项不存在（Invalid parameter），无直写端口语法）。
+pub const VNC_DISPLAY_BASE: u16 = 5900;
 
 /// 9p 共享子树挂载 tag（guest 侧 cloud-init 按此 tag 挂到 /workspace）。
 pub const WORKSPACE_MOUNT_TAG: &str = "workspace";
@@ -63,6 +78,11 @@ pub struct VmLaunchSpec {
     /// wake 载体 B：`-incoming file:<path>`（migrate-to-file 状态文件，
     /// WHPX 备选线——早验判定 WHPX savevm 不可行，见实施计划附录）。
     pub incoming_file: Option<PathBuf>,
+    /// 显示面（P5-R2）：Some(port) = VNC 监听**真实 TCP 端口**（127.0.0.1；
+    /// QEMU 参数按 display=port-5900 反向换算，见 VNC_DISPLAY_BASE 注）；
+    /// None = `-display none`（默认无头形态，字节不变）。端口由调用方走
+    /// `alloc_loopback_port` 同机制分配（临时端口段恒 ≥5900）。
+    pub display_vnc_port: Option<u16>,
 }
 
 /// 装配完整 QEMU 参数表（顺序稳定——可断言、可复现）。
@@ -84,7 +104,34 @@ pub fn build_qemu_args(spec: &VmLaunchSpec) -> Vec<String> {
         "file={},format=qcow2,if=virtio",
         spec.overlay_path.display()
     ));
-    args.extend(display_args().iter().map(|s| s.to_string()));
+    match spec.display_vnc_port {
+        Some(port) => {
+            // vnc 态：回环绑定（VNC_BIND 恒 127.0.0.1），QEMU 直接说 RFB——
+            // 插件/网关面按字节泵中继，本层不含 VNC 语义。
+            // QEMU 冒号后数字是**显示器编号**（真实端口 = 5900+编号，见
+            // VNC_DISPLAY_BASE 注）；display_vnc_port 契约 = 真实 TCP 端口
+            // （registry/plugin-vm 直连用），此处反向换算绑回 port。
+            // 临时端口段（Win 49152+ / Linux 32768+）恒 ≥5900；低于 5900
+            // 的 port 无合法 display 形态——诚实 panic（错绑 5900 端口比
+            // 启动失败更危险：registry 记录的端口连不上=VNC 永久哑）。
+            let display_no = port.checked_sub(VNC_DISPLAY_BASE).unwrap_or_else(|| {
+                panic!("display_vnc_port {port} < {VNC_DISPLAY_BASE}（QEMU display 编号无法表达；端口分配必须走临时端口段）")
+            });
+            args.push("-vnc".into());
+            args.push(format!("{VNC_BIND}:{display_no}"));
+        }
+        None => args.extend(display_args().iter().map(|s| s.to_string())),
+    }
+    // 绝对指点设备（usb-tablet）：q35 默认不带任何 pointer 硬件（探针
+    // 实录：guest /proc/bus/input/devices 只有键盘类 event，X 无鼠标可
+    // 拾取）——VNC 操作档的 PointerEvent 是绝对坐标，usb-tablet 是 QEMU
+    // 绝对指针的标准载体（usbhid 通用驱动，guest 侧零额外配置）。
+    // q35 也无默认 USB 总线（裸 `-device usb-tablet` 实测 `No 'usb-bus'
+    // bus found`）——显式 xhci 控制器 + tablet 挂显式总线，不赌默认行为。
+    args.push("-device".into());
+    args.push("qemu-xhci,id=vm-usb".into());
+    args.push("-device".into());
+    args.push("usb-tablet,bus=vm-usb.0".into());
     args.push("-nic".into());
     args.push(format!(
         "user,model=virtio-net-pci,hostfwd=tcp:{NAT_BIND}:{}-:{GUEST_AGENT_PORT}",

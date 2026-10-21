@@ -17,6 +17,10 @@ export default defineConfig({
   },
   build: {
     outDir: '../crates/nemesis-web/static',
+    // es2022：noVNC（VM 显示 modal 动态 chunk）用了 top-level await，
+    // 默认 target（chrome87/es2020 族）编译不过。TLA 在 Chrome 89+/FF 89+/
+    // Safari 15+ 即支持，es2022 对 2026 dashboard 是安全下限。
+    target: 'es2022',
     // outDir 在项目根之外（web/ → crates/nemesis-web/static/），Vite 默认不
     // 清空 → 陈旧 hash chunk 逐轮累积，全部被 include_dir! 嵌进 exe（2026-08-24
     // 复检实测累积 ~4MB/167 个文件、实际引用仅 ~33 个）。static/ 内容 100% 由

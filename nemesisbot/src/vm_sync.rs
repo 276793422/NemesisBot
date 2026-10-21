@@ -55,7 +55,11 @@ const SUSPECT_FULL_RESYNC_THRESHOLD: usize = 20_000;
 const VM_QUERY_CHUNK: usize = 5_000;
 
 /// 默认排除表（非 git 项目 + git 项目顶滤共用；双向生效的「表」侧）。
-pub const DEFAULT_EXCLUDE_PREFIXES: [&str; 12] = [
+/// `.browser-profile/` 是 P5-R1 guest 内 chromium 的 user-data-dir（登录态
+/// 常驻的锚，overlay 承载跨睡眠/重启）——cookies/缓存不进项目工作副本
+/// （体积 + 运行中 chromium 文件竞争双考虑）；迁移面按 D-P6-1 可迁移形态
+/// 预埋（随 agent home 打包，P6-R2 定谳）。
+pub const DEFAULT_EXCLUDE_PREFIXES: [&str; 13] = [
     ".git/",
     "target/",
     "node_modules/",
@@ -68,6 +72,7 @@ pub const DEFAULT_EXCLUDE_PREFIXES: [&str; 12] = [
     ".idea/",
     ".vscode/",
     "coverage/",
+    ".browser-profile/",
 ];
 
 /// 同步完成报告（可观测面：WSAPI/日志/审计消费）。

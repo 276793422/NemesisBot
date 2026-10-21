@@ -26,6 +26,12 @@ pub mod status {
     pub const ACTIVE: &str = "active";
     /// sweep 判定的失败终态（半创建无法续建时）；人工可删可重建。
     pub const FAILED: &str = "failed";
+    /// 跨节点迁移进行中（P6-R2）：A 端迁移编排置入，源端 loop 冻结
+    /// （resolve_or_build 的 `status != ACTIVE` 闸拒绝新消息）。收敛由
+    /// [`super::store`] 的 sweep 负责——commit ACK 已达（本地墓碑在场）=
+    /// 迁移成功，删记录+删墓碑；墓碑缺席 = commit 未达，回滚 active 照常
+    /// 服务。
+    pub const MIGRATING: &str = "migrating";
 }
 
 /// Agent 记录类别常量。
@@ -62,7 +68,11 @@ pub mod runtime_backend {
 /// Agent 持久记录（agents 表行投影；JSON 列以 `serde_json::Value` 承载，
 /// 损坏 JSON 读取时诚实降级为 `Null` 并保留原文可查——schema 演进由
 /// 增列迁移承接，不在读取路径做静默修补）。
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Serialize/Deserialize（P6-R2）：跨节点迁移载荷承载（A 端打包 / B 端
+/// 解析）——纯增量 derive，DB 层仍是手工行投影（`row_record`），互不
+/// 影响。
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AgentRecord {
     pub agent_id: String,
     pub name: String,

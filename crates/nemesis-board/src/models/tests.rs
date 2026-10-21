@@ -88,6 +88,7 @@ fn test_issue_serde_roundtrip() {
         required_role: Some("worker".into()),
         required_tags: vec!["rust".into()],
         required_profession: Some("dev:cpp".into()),
+        required_backend: Some("vm".into()),
         required_capabilities: vec!["chrome".into()],
         requires_evidence: true,
         hidden: false,

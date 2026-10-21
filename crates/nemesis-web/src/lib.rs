@@ -31,6 +31,8 @@ pub mod pricing_sync;
 pub mod protocol;
 #[cfg(feature = "terminal")]
 pub mod pty;
+#[cfg(feature = "vm-display")]
+pub mod vm_display;
 // M5（2026-10-10 集群无人值守硬化）：跨节点批复桥 master 侧（注册表 +
 // 看板评论回源）。cluster 门（nemesis-cluster optional）。
 pub mod relay;

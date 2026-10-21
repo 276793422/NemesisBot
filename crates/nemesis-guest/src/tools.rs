@@ -53,6 +53,9 @@ pub(crate) async fn dispatch(
         "create_dir" => create_dir(&val, workspace).await,
         "delete_file" => delete_file(&val, workspace).await,
         "delete_dir" => delete_dir(&val, workspace).await,
+        // P5-R1 guest 内浏览器（headless chromium + CDP）：宿主 VmBrowserTool
+        // 专用通道（ctx source:"browser"），不进 VM_GUEST_TOOLS 子集。
+        "browser" => crate::browser::handle(&val, workspace).await,
         // B9-1 内部方法（vm_sync 同步引擎通道；不是 agent 工具）。
         "bulk_write" => crate::bulk::bulk_write(&val, workspace, transfers).await,
         "bulk_read" => crate::bulk::bulk_read(&val, workspace, transfers).await,
@@ -64,7 +67,7 @@ pub(crate) async fn dispatch(
         other => Err(format!(
             "unknown tool: {other} (guest subset: exec, read_file, write_file, append_file, \
              list_dir, create_dir, delete_file, delete_dir; internal: bulk_write, bulk_read, \
-             bulk_read_chunk, hash_tree, bulk_delete)"
+             bulk_read_chunk, hash_tree, bulk_delete; browser bridge: browser)"
         )),
     }
 }

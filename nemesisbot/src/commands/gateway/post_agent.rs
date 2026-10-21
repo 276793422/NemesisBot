@@ -589,6 +589,16 @@ pub(crate) async fn init_post_agent(
                     Err(e) => warn!("[Gateway] agents sweep 失败: {e}"),
                 }
                 crate::agents::install_manager(std::sync::Arc::clone(&mgr));
+                // P6-R2：迁移传输层注入（cluster Arc 已由 init_cluster 回填
+                // bridge_cluster_slot——A 端编排 + B 端 commit 的传输面）。
+                #[cfg(feature = "cluster")]
+                if let Some(cluster) = cluster.bridge_cluster_slot.get() {
+                    mgr.set_migrate_transport(std::sync::Arc::new(
+                        crate::agents::migrate::ClusterMigrateTransport {
+                            cluster: std::sync::Arc::clone(cluster),
+                        },
+                    ));
+                }
                 // T9：常驻监督器注入 manager（agents.sleep/wake/slots 生命
                 // 周期面经 bridge 走到 supervisor；supervisor 构造在
                 // agent_build（早于本块），此刻恒在场）。
@@ -668,6 +678,39 @@ pub(crate) async fn init_post_agent(
                         }
                     });
                     vm_sup.start_watchdog();
+                    // P5-R2 ④：plugin-vm 宿主装载（vm-display feature 门控，
+                    // implies vm）。缺席 = 常态静默（display=vnc 时 shim
+                    // 端诚实 501）；在场但被拒（签名/ABI）= loud warn 留痕。
+                    #[cfg(feature = "vm-display")]
+                    match crate::vm_display_loader::load_plugin_vm(
+                        std::sync::Arc::clone(&vm_sup),
+                        &shared_resources.workspace_dir(),
+                    ) {
+                        crate::vm_display_loader::LoadOutcome::Absent => {}
+                        crate::vm_display_loader::LoadOutcome::Loaded { listen_port } => {
+                            info!("[Gateway] plugin-vm 显示插件装载成功：127.0.0.1:{listen_port}");
+                        }
+                        crate::vm_display_loader::LoadOutcome::Rejected(reason) => {
+                            warn!("[Gateway] plugin-vm 装载被拒：{reason}");
+                        }
+                    }
+                    // estop 断连挂点：急停触发 → 全部显示会话立即断连
+                    // （与 PTY estop kill 同款纪律；watcher 断 = gateway
+                    // 停机 → 插件 display_free 收尾——幂等，缺席 no-op）。
+                    #[cfg(feature = "vm-display")]
+                    {
+                        let estop = shared_resources.estop.clone();
+                        tokio::spawn(async move {
+                            let mut rx = estop.subscribe();
+                            while rx.changed().await.is_ok() {
+                                if *rx.borrow() {
+                                    nemesis_web::vm_display::disconnect_all_for_estop();
+                                }
+                            }
+                            // estop watch sender 全 drop = gateway 停机路径。
+                            crate::vm_display_loader::shutdown_plugin_vm();
+                        });
+                    }
                 }
                 // WSAPI agents.* 同点接线（同一 Manager 实例；web 侧 trait
                 // + 槽，实现落本 crate——依赖方向 nemesisbot→nemesis-web）。

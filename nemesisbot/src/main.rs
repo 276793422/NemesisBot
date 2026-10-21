@@ -84,6 +84,9 @@ mod bridge_client;
 mod bridge_cluster;
 #[cfg(feature = "cluster")]
 mod bridge_rpc;
+/// P5-R1：browser 工具（VM 档 guest 内 headless chromium 的宿主侧入口；
+/// 仅 VM 档诚实执行，注册闸 = persistent 路由在场）。
+mod browser_tool;
 #[cfg(feature = "cluster")]
 mod cluster_agent;
 #[cfg(feature = "cluster")]
@@ -220,6 +223,11 @@ mod remote_approval;
 /// 强制重扫（B9-3）。
 #[cfg(feature = "vm")]
 mod vm_sync;
+
+/// P5-R2 ④：plugin-vm 宿主装载器（vm-display feature 门控，implies vm
+/// ——display_port_query 数据源是 VmSupervisor）。
+#[cfg(feature = "vm-display")]
+mod vm_display_loader;
 
 /// A1 运行时完整性清单：打包部署的
 /// 运行时文件 hash 清单（runtime-manifest.json，构建期由
