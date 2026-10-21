@@ -18,21 +18,20 @@ use crate::transport::frame::{
     AES_KEY_SIZE, AsyncFrameReader, decrypt_frame, derive_key, encrypt_frame, write_frame_async,
 };
 
-/// iroh 地址前缀（`iroh:<64位小写hex>`）——dial 分派依据。
-pub const IROH_ADDR_PREFIX: &str = "iroh:";
+/// iroh 地址前缀（`iroh:<64位小写hex>`）——单一真相源在 lib.rs（无 feature
+/// 门，announce 接收侧地址仲裁同样需要）；此处 re-export 保路径兼容。
+pub use crate::{IROH_ADDR_PREFIX, is_roaming_address};
 
-/// 是否 iroh 形态地址（前缀判断；P2 dial 分派第一闸）。
-pub fn is_roaming_address(addr: &str) -> bool {
-    addr.trim_start().starts_with(IROH_ADDR_PREFIX)
-}
-
-/// `iroh:<hex>[@<ip:port>]` → [`iroh::EndpointAddr`]（剥前缀 + hex 解码；
-/// 非法 loud 报错）。
+/// `iroh:<hex>[@<socket|relay_url>]` → [`iroh::EndpointAddr`]（剥前缀 +
+/// hex 解码；非法 loud 报错）。
 ///
-/// 两种形态：
+/// 三种形态：
 /// - `iroh:<hex>`：仅 node_id——依赖发现层供址（N0 预设的 DNS/relay）。
-/// - `iroh:<hex>@<socket>`：钉直连地址——Minimal 预设（无发现）/ 受限网络
+/// - `iroh:<hex>@<ip:port>`：钉直连地址——Minimal 预设（无发现）/ 受限网络
 ///   / loopback 测试的诚实出口（`EndpointAddr::with_ip_addr`）。
+/// - `iroh:<hex>@http(s)://host:port`：钉中继回落地址——自建中继形态
+///   （`bind_custom_relay` 端点的对端寻址；`with_relay_url`）。识别依据 =
+///   `@` 后带 `://` scheme 前缀。
 pub fn parse_roaming_address(addr: &str) -> Result<iroh::EndpointAddr, String> {
     let s = addr.trim();
     let rest = s
@@ -41,7 +40,7 @@ pub fn parse_roaming_address(addr: &str) -> Result<iroh::EndpointAddr, String> {
     let (hex_part, socket_part) = match rest.split_once('@') {
         Some((h, sock)) => {
             if sock.trim().is_empty() {
-                return Err(format!("iroh 地址 `@` 后缺直连地址: {addr}"));
+                return Err(format!("iroh 地址 `@` 后缺地址: {addr}"));
             }
             (h, Some(sock.trim()))
         }
@@ -50,6 +49,13 @@ pub fn parse_roaming_address(addr: &str) -> Result<iroh::EndpointAddr, String> {
     let node_id = super::endpoint::node_id_from_hex(hex_part)?;
     let base = iroh::EndpointAddr::from(node_id);
     match socket_part {
+        Some(sock) if sock.contains("://") => {
+            // 中继回落形态（http:// / https://）——`with_relay_url`。
+            let url: iroh::RelayUrl = sock.parse().map_err(|e| {
+                format!("iroh 中继地址非法（应为 http(s)://host:port）: {sock}: {e}")
+            })?;
+            Ok(base.with_relay_url(url))
+        }
         Some(sock) => {
             let sa: std::net::SocketAddr = sock
                 .parse()

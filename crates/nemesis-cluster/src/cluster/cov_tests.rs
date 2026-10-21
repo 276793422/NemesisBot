@@ -545,8 +545,13 @@ fn safety_net_and_probe_gate_helpers() {
     assert_eq!(stale_task_safety_net(86400), chrono::Duration::hours(48));
 
     assert!(should_probe_peer(true, 1), "Online 每 tick 都探");
-    assert!(!should_probe_peer(false, 1));
-    assert!(should_probe_peer(false, 5), "Offline 1/5 降频自愈");
+    assert!(
+        should_probe_peer(false, 1),
+        "Offline 启动冲刺前 12 tick 全探"
+    );
+    assert!(!should_probe_peer(false, 13), "冲刺窗口后不探");
+    assert!(should_probe_peer(false, 5), "窗口内也是 5 的倍数（冗余臂）");
+    assert!(should_probe_peer(false, 15), "Offline 1/5 降频自愈");
 
     let _ = probe_drift_gate();
     let a = probe_drift_gate() as *const _;
@@ -626,5 +631,44 @@ async fn poll_stale_times_out_past_safety_net_publishes_bus() {
         msgs[0]
             .sender_id
             .starts_with("cluster_continuation:cov-timeout")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// QUIC 中继 gateway 内路径 fail-closed（2026-10-21 三路收口）：
+// `setup_relay_server` 对 roaming.relay.token 空 = Err 拒绝启动（跳板无鉴权
+// 裸奔 = 公网白蹭带宽 + 存在性探测面）。与独立入口 `run_relay_server` 顶部
+// 闸同一纪律；Err → 调用方 warn 不炸 gateway（中继是叠加层设施）。
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "roaming-relay")]
+#[tokio::test]
+async fn setup_relay_server_fails_closed_on_empty_token() {
+    let ws = Ws::new("relay-fc");
+    // enabled=true + token 空（default 段无 token 键 = 空）。
+    ws.write_app_config(
+        r#"{
+            "enabled": false,
+            "roaming": { "enabled": false, "relay": { "enabled": true } }
+        }"#,
+    );
+    let cluster = ws.cluster("relay-fc-node", "relay-fc-node");
+
+    let err = cluster
+        .setup_relay_server()
+        .await
+        .expect_err("token 空必须拒绝启动（fail-closed）");
+    assert!(
+        err.contains("roaming.relay.token"),
+        "报错必须指路 token 键：{err}"
+    );
+    assert!(
+        err.contains("fail-closed") || err.contains("拒绝启动"),
+        "报错必须说明拒绝语义：{err}"
+    );
+    // 未 spawn：句柄槽必须仍为空（拒绝发生在任何端口 bind 之前）。
+    assert!(
+        cluster.relay_server.lock().is_none(),
+        "fail-closed 拒绝不得留下中继句柄"
     );
 }

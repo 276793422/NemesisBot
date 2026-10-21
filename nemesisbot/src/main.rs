@@ -299,6 +299,12 @@ enum Commands {
         /// 状态页即全部 UI。需要 bridge.server.token 非空（空则拒绝启动）。
         #[arg(long)]
         relay: bool,
+        /// QUIC 纯中继模式（统一入口；与 `quic relay` 分类管理入口同源同一
+        /// 实现）：只跑自建 iroh 中继，不起本地 agent/board/集群/discovery。
+        /// 读 config.cluster.json roaming.relay 段；token 空 = 拒绝启动
+        /// （fail-closed）。需要 roaming-relay feature 编译。
+        #[arg(long)]
+        quic_relay: bool,
         /// A1 运行时硬化批：显式跳过 runtime-manifest 完整性校验（运维
         /// 逃生门；打包部署残缺默认响亮拒启，跳过必须显式输入）。
         #[arg(long)]
@@ -490,6 +496,12 @@ enum Commands {
     Sandbox {
         #[command(subcommand)]
         action: commands::sandbox::SandboxCommand,
+    },
+    /// QUIC relay server (standalone process / status)
+    #[cfg(feature = "roaming-relay")]
+    Quic {
+        #[command(subcommand)]
+        action: commands::quic::QuicAction,
     },
     /// VM environment bootstrap (install QEMU / enable accel / status / build image)
     #[cfg(feature = "vm")]
@@ -827,6 +839,7 @@ async fn run_command(cli: Cli) -> Result<()> {
                 quiet: false,
                 no_console: false,
                 relay: false,
+                quic_relay: false,
                 skip_runtime_check: false,
             }
         }
@@ -859,6 +872,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             quiet,
             no_console,
             relay,
+            quic_relay,
             skip_runtime_check,
         } => {
             // Build extra args for logger from flags
@@ -872,7 +886,14 @@ async fn run_command(cli: Cli) -> Result<()> {
             if no_console {
                 gateway_args.push("--no-console".to_string());
             }
-            commands::gateway::run(cli.local, relay, &gateway_args, skip_runtime_check).await?;
+            commands::gateway::run(
+                cli.local,
+                relay,
+                quic_relay,
+                &gateway_args,
+                skip_runtime_check,
+            )
+            .await?;
         }
         Commands::Agent {
             subcommand,
@@ -999,6 +1020,15 @@ async fn run_command(cli: Cli) -> Result<()> {
         Commands::Sandbox { action } => {
             common::ensure_default_logger();
             commands::sandbox::run(action, cli.local).await?;
+        }
+        #[cfg(feature = "roaming-relay")]
+        Commands::Quic { action } => {
+            common::ensure_default_logger();
+            let home = common::resolve_home(cli.local);
+            if let Err(e) = commands::quic::run(&home, action).await {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
         }
         #[cfg(feature = "vm")]
         Commands::Vm { action } => {

@@ -378,6 +378,95 @@ fn test_append_peer_to_file_appends_multiple() {
 }
 
 #[test]
+fn test_append_peer_overwrite_preserves_extras() {
+    // 四审 #6（2026-10-21）：覆盖路径保留扩展字段——operator 手写的
+    // professions/tier/tags 不得被五字段 persist 冲掉（静态条目职能/档位
+    // 声明被一次 nodes.ping 抹掉的根修；缺失补齐式保留=PeerConfig 加新字
+    // 段时写入面自动跟上）。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peers.toml");
+    std::fs::write(
+        &path,
+        "[peers.real-x]\n\
+         address = \"192.168.1.10:9149\"\n\
+         name = \"X\"\n\
+         role = \"worker\"\n\
+         category = \"development\"\n\
+         professions = [\"dev:cpp\", \"test-whitebox\"]\n\
+         tier = \"big\"\n\
+         tags = [\"gpu\"]\n",
+    )
+    .unwrap();
+
+    append_peer_to_file_with_name(
+        &path,
+        "real-x",
+        "10.103.1.5:19149",
+        "coordinator",
+        "general",
+        Some("X2"),
+        19149,
+    )
+    .unwrap();
+
+    let doc = std::fs::read_to_string(&path)
+        .unwrap()
+        .parse::<toml::Value>()
+        .unwrap();
+    let entry = &doc["peers"]["real-x"];
+    // 五字段刷新为本次调用的权威值
+    assert_eq!(entry["address"].as_str().unwrap(), "10.103.1.5:19149");
+    assert_eq!(entry["role"].as_str().unwrap(), "coordinator");
+    assert_eq!(entry["category"].as_str().unwrap(), "general");
+    assert_eq!(entry["name"].as_str().unwrap(), "X2");
+    assert_eq!(entry["rpc_port"].as_integer().unwrap(), 19149);
+    // 扩展字段原样保留
+    assert_eq!(entry["professions"].as_array().unwrap().len(), 2);
+    assert_eq!(entry["tier"].as_str().unwrap(), "big");
+    assert_eq!(entry["tags"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn test_append_peer_zero_rpc_port_preserves_explicit_port() {
+    // 六审 #6 子物种（2026-10-21）：build_peer_entry_table 对 rpc_port=0
+    // **不写键**（`if rpc_port > 0`），缺失补齐式必须把旧显式端口补回来
+    // ——非标准 udp/rpc 配对（9149/29149）手写条目经一次 rpc_port=0 的
+    // persist 就不能丢端口（丢了重启后 loader 回落 udp+10000 派生=猜错）。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peers.toml");
+    std::fs::write(
+        &path,
+        "[peers.hand-x]\n\
+         address = \"192.168.1.10:9149\"\n\
+         name = \"X\"\n\
+         role = \"worker\"\n\
+         category = \"development\"\n\
+         rpc_port = 29149\n",
+    )
+    .unwrap();
+
+    // 消费方不知 rpc_port 时传 0（如某些 persist 路径只知 UDP 地址）
+    append_peer_to_file_with_name(
+        &path,
+        "hand-x",
+        "192.168.1.10:9149",
+        "worker",
+        "development",
+        Some("X"),
+        0,
+    )
+    .unwrap();
+
+    let doc = std::fs::read_to_string(&path)
+        .unwrap()
+        .parse::<toml::Value>()
+        .unwrap();
+    let entry = &doc["peers"]["hand-x"];
+    assert_eq!(entry["rpc_port"].as_integer().unwrap(), 29149);
+    assert_eq!(entry["address"].as_str().unwrap(), "192.168.1.10:9149");
+}
+
+#[test]
 fn test_append_peer_to_file_corrupt_fallback() {
     // If peers.toml is corrupt (invalid TOML), append_peer_to_file should
     // fall back to a fresh table rather than failing.

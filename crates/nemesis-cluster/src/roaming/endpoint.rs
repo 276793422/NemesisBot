@@ -10,9 +10,12 @@
 
 use std::path::{Path, PathBuf};
 
-use iroh::endpoint::{Connection, RecvStream, SendStream};
+use iroh::endpoint::{Connection, RecvStream, RelayMode, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
-use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, endpoint::presets};
+use iroh::{
+    Endpoint, EndpointAddr, EndpointId, RelayConfig, RelayMap, RelayUrl, SecretKey,
+    endpoint::presets,
+};
 
 /// iroh 叠加层 ALPN（应用层协议协商标识；版本后缀与集群 RPC 语义对齐）。
 pub const ROAMING_ALPN: &str = "nemesis-cluster/1";
@@ -146,7 +149,7 @@ impl RoamingEndpoint {
     /// `identity` 决定 EndpointId；`accept` = 是否接收入站连接（网关侧 true，
     /// 纯客户端场景 false）。绑定失败 loud 报错。
     pub async fn bind(identity: &RoamingIdentity, accept: bool) -> Result<Self, String> {
-        Self::bind_with(identity, accept, presets::N0).await
+        Self::bind_with(identity, accept, presets::N0, None).await
     }
 
     /// 绑定端点（Minimal 预设：无中继、无 DNS 寻址——纯直连）。
@@ -154,15 +157,57 @@ impl RoamingEndpoint {
     /// 受限网络（公网 relay 不可达）的诚实出口：对端地址必须以完整
     /// `EndpointAddr`（带 IP）或已有发现缓存提供。loopback 测试同用此形态。
     pub async fn bind_direct(identity: &RoamingIdentity, accept: bool) -> Result<Self, String> {
-        Self::bind_with(identity, accept, presets::Minimal).await
+        Self::bind_with(identity, accept, presets::Minimal, None).await
+    }
+
+    /// 绑定端点（自建中继回落形态）：Minimal 骨架 + `RelayMode::Custom`
+    /// 单中继地图 + 可选 bearer token（服务端 SharedToken 配对）。
+    ///
+    /// **Minimal 基座是刻意的**：自建中继服务于受限网络（n0 公共设施
+    /// 不可达正是自建的动机），N0 预设的 DNS/pkarr 发现在此形同虚设。
+    /// 寻址全部显式——对端地址用 `iroh:<hex>@http://relay:port`（bridge
+    /// 解析 → `with_relay_url`）或直连 IP 形态；裸 `iroh:<hex>`（n0
+    /// 发现）在本形态不可用。
+    ///
+    /// v1 诚实边界：客户端走 HTTP relay transport（quic=None，零证书负担
+    /// ——relay_url `http://` 形态即接入）；QUIC relay transport 的自签
+    /// 证书分发（`CaTlsConfig::custom_roots` pin）是 v2 管理面。
+    pub async fn bind_custom_relay(
+        identity: &RoamingIdentity,
+        accept: bool,
+        relay_url: &str,
+        auth_token: Option<&str>,
+    ) -> Result<Self, String> {
+        let url: RelayUrl = relay_url
+            .trim()
+            .parse()
+            .map_err(|e| format!("relay_url 非法（{relay_url:?}）: {e}"))?;
+        // quic=None 显式关客户端 QUIC relay transport（`From<RelayUrl>` 缺省
+        // 会带上默认 QUIC 配置——那是 v2 面，v1 不走）。
+        let mut relay = RelayConfig::new(url, None);
+        if let Some(token) = auth_token.map(str::trim).filter(|t| !t.is_empty()) {
+            relay = relay.with_auth_token(token);
+        }
+        let map = RelayMap::from_iter([relay]);
+        Self::bind_with(
+            identity,
+            accept,
+            presets::Minimal,
+            Some(RelayMode::Custom(map)),
+        )
+        .await
     }
 
     async fn bind_with(
         identity: &RoamingIdentity,
         accept: bool,
         preset: impl iroh::endpoint::presets::Preset,
+        relay_mode: Option<RelayMode>,
     ) -> Result<Self, String> {
         let mut builder = Endpoint::builder(preset).secret_key(identity.secret.clone());
+        if let Some(mode) = relay_mode {
+            builder = builder.relay_mode(mode);
+        }
         if accept {
             builder = builder.alpns(vec![ROAMING_ALPN.as_bytes().to_vec()]);
         }

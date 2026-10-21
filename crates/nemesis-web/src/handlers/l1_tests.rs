@@ -223,6 +223,9 @@ fn registry_anchor_commands_present() {
     }
     if cfg!(feature = "cluster") {
         assert!(cmds_of(&reg, "cluster").contains(&"node.update_identity"));
+        // QUIC 中继管理面（2026-10-21）：命令面恒注册（roaming 先例），锚点在这里红。
+        assert!(cmds_of(&reg, "cluster").contains(&"relay.status"));
+        assert!(cmds_of(&reg, "cluster").contains(&"relay.config"));
     }
     // M5-1（2026-10-10 机制加固）：评审重触发入口（模块内无条件注册，钩子
     // 未安装时诚实报错）。模块本体 2026-10-17 起随 board feature 门控。
@@ -336,16 +339,21 @@ fn docs_generation_writes_wsapi_commands_md() {
         .find(|m| cmds_of(&reg, m).is_empty());
     let lsp_missing = !cmds_of(&reg, "coding").contains(&"lsp_status");
     let wasm_missing = !cmds_of(&reg, "plugins").contains(&"wasm.list");
+    // relay.* 挂在 cluster 模块行内（feature=roaming-relay 门控），模块在位
+    // 检查罩不住——按命令在位检查（否则无 roaming-relay 重生成会静默冲掉
+    // 这两条，2026-10-17 lsp 二犯同族）。
+    let relay_missing = !cmds_of(&reg, "cluster").contains(&"relay.status");
     if let Some(missing) = missing_module
         .copied()
         .or(lsp_missing.then_some("coding(lsp_status)"))
         .or(wasm_missing.then_some("plugins(wasm.*)"))
+        .or(relay_missing.then_some("cluster(relay.*)"))
     {
         eprintln!(
             "SKIP docs_generation: 编译缺 feature 门控模块 `{missing}`——重写会把 \
              docs/INFO/wsapi-commands.md 冲成残表。带全 feature 重跑：cargo test -p \
              nemesis-web --features \"board,connectors,cluster,workflow,memory,security,scanner,\
-             forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp,vm\" docs_generation"
+             forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp,vm,roaming-relay\" docs_generation"
         );
         return;
     }
@@ -357,8 +365,8 @@ fn docs_generation_writes_wsapi_commands_md() {
 docs_generation_writes_wsapi_commands_md` 从 `ModuleHandler::commands()` \
 静态清单生成——**勿手改**。改任何 handler 的命令臂后**带全 feature** 重跑 \
 `cargo test -p nemesis-web --features \"board,connectors,cluster,workflow,memory,\
-security,scanner,forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp,vm\" \
-docs_generation` 刷新本文件\
+security,scanner,forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp,vm,\
+roaming-relay\" docs_generation` 刷新本文件\
 （feature 不全时本测试诚实 SKIP 不写盘，防止把完整文档冲成残表）。\n\n",
     );
     md.push_str(&format!("共 {} 个模块 / {} 条命令。\n\n", reg.len(), total));

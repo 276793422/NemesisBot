@@ -130,10 +130,20 @@ pub struct Cluster {
     /// `stop()` 关停）。None = 未启用（无 roaming.key / 装配失败 / 未编译）。
     #[cfg(feature = "cluster-roaming")]
     roaming_endpoint: Mutex<Option<Arc<crate::roaming::endpoint::RoamingEndpoint>>>,
+    /// QUIC 中继服务器句柄（feature=roaming-relay；`setup_relay_server`
+    /// 装配，`stop()` 关停——与 roaming_endpoint 同生命周期）。None = 未
+    /// 启动（relay.enabled 关 / 装配失败 / 未编译）。
+    #[cfg(feature = "roaming-relay")]
+    relay_server: Mutex<Option<crate::roaming::relay_server::RelayServerHandle>>,
     /// A1：本节点 iroh 漫游身份 hex（`setup_roaming` 成功后写入；announce
     /// 携带，对端据此把 `iroh:<hex>` 追加进拨号候选池）。None = 未启用
     /// 漫游叠加层（announce 不带字段，wire 兼容）。
     roaming_id: parking_lot::RwLock<Option<String>>,
+    /// 自建中继形态的完整拨号地址（`iroh:<hex>@<relay_url>`；`setup_roaming`
+    /// 成功后写入，announce `addresses` 携带）。Minimal 基座零发现层，裸
+    /// node_id 无解析路径——对端需要完整形态才能 bridge → `with_relay_url`。
+    /// 空 = N0 形态（裸候选经 `roaming_id` 字段，N0 发现层解析）。
+    roaming_dialable: parking_lot::RwLock<Vec<String>>,
     /// A1 运行时硬化批：本节点构建号（git 短 hash；announce 携带）。由
     /// 宿主（nemesisbot gateway / 轻量节点命令）在构造后经
     /// [`Cluster::set_build_hash`] 注入——编译期常量 `NEMESISBOT_GIT_COMMIT`
@@ -247,7 +257,10 @@ impl Cluster {
             rpc_server: None,
             #[cfg(feature = "cluster-roaming")]
             roaming_endpoint: Mutex::new(None),
+            #[cfg(feature = "roaming-relay")]
+            relay_server: Mutex::new(None),
             roaming_id: parking_lot::RwLock::new(None),
+            roaming_dialable: parking_lot::RwLock::new(Vec::new()),
             build_hash: parking_lot::RwLock::new(String::new()),
             self_weak: Arc::new(Mutex::new(None)),
             rpc_channel: RwLock::new(None),
@@ -410,7 +423,10 @@ impl Cluster {
             rpc_server: None,
             #[cfg(feature = "cluster-roaming")]
             roaming_endpoint: Mutex::new(None),
+            #[cfg(feature = "roaming-relay")]
+            relay_server: Mutex::new(None),
             roaming_id: parking_lot::RwLock::new(None),
+            roaming_dialable: parking_lot::RwLock::new(Vec::new()),
             build_hash: parking_lot::RwLock::new(String::new()),
             self_weak: Arc::new(Mutex::new(None)),
             rpc_channel: RwLock::new(None),
@@ -943,7 +959,23 @@ impl Cluster {
             None => return Err("RPC server 未装配，iroh 入站桥无处挂载".to_string()),
         };
 
-        let endpoint = RoamingEndpoint::bind(&identity, true).await?;
+        // 端点装配：relay_url 空 = n0 公共中继（现行为字节不变）；非空 =
+        // 自建中继回落（Minimal 基座 + Custom 中继地图——裸 `iroh:<hex>` 寻址
+        // 在此形态不可用，对端地址需 `iroh:<hex>@<relay_url>` 形态，bridge
+        // 解析 → with_relay_url）。可选 relay_token 与服务端 SharedToken 配对。
+        let roaming_cfg = crate::roaming::config::resolved_roaming(&cfg_path);
+        let endpoint = if roaming_cfg.relay_url.trim().is_empty() {
+            RoamingEndpoint::bind(&identity, true).await?
+        } else {
+            let trimmed_token = roaming_cfg.relay_token.trim();
+            let token = (!trimmed_token.is_empty()).then_some(trimmed_token);
+            tracing::info!(
+                relay_url = %roaming_cfg.relay_url,
+                "[Cluster] Roaming using self-hosted relay (Minimal base — bare iroh:<hex> addressing unavailable, peers need iroh:<hex>@<relay_url> form)"
+            );
+            RoamingEndpoint::bind_custom_relay(&identity, true, &roaming_cfg.relay_url, token)
+                .await?
+        };
         let endpoint = Arc::new(endpoint);
         endpoint
             .serve(RoamingProtocolHandler::bridge(bridge_handler))
@@ -956,6 +988,15 @@ impl Cluster {
 
         // announce 携带本节点 iroh 身份（下一拍广播生效；对端入池拨号候选）。
         *self.roaming_id.write() = Some(iroh_hex.clone());
+        // 自建中继形态：自报地址带 `@relay_url` 完整形态（Minimal 基座零
+        // 发现层，裸 node_id 对端无解析路径——实测钉死在
+        // `bare_node_id_dial_fails_on_self_relay_minimal_base`）；N0 形态
+        // 清空——裸候选经 `roaming_id` 字段，N0 发现层解析。
+        *self.roaming_dialable.write() = if roaming_cfg.relay_url.trim().is_empty() {
+            Vec::new()
+        } else {
+            vec![format!("iroh:{iroh_hex}@{}", roaming_cfg.relay_url.trim())]
+        };
 
         tracing::info!(
             node_id = %iroh_hex,
@@ -975,18 +1016,87 @@ impl Cluster {
 
     /// 漫游开关判定（纯函数）：config.cluster.json 顶层 `roaming.enabled`
     /// 严格为 JSON true 才开。缺文件 / 坏 JSON / 缺字段 / false → false。
-    /// 单一真相源（setup_roaming 装配闸与 WSAPI/CLI 状态面同读此形）。
+    /// 实现委托 `roaming::config::resolved_roaming`（整个 `roaming` 段的
+    /// 单一真相源——setup_roaming 装配闸与 WSAPI/CLI 状态面同读此形）。
     #[cfg(feature = "cluster-roaming")]
     pub fn roaming_enabled_in_config(config_path: &std::path::Path) -> bool {
-        std::fs::read_to_string(config_path)
-            .ok()
-            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-            .and_then(|cfg| {
-                cfg.get("roaming")
-                    .and_then(|r| r.get("enabled"))
-                    .and_then(|e| e.as_bool())
-            })
-            .unwrap_or(false)
+        crate::roaming::config::resolved_roaming(config_path).enabled
+    }
+
+    /// QUIC 中继服务器随 gateway 进程内启动（feature=roaming-relay）。
+    ///
+    /// 闸：config.cluster.json `roaming.relay.enabled`（独立命令
+    /// `nemesisbot quic relay` 不受此闸约束——CLI 即显式意志）。不要求
+    /// `roaming.enabled`（VPS 形态：只当中继服务器不开叠加层是合法组合）。
+    /// 幂等：已启动直接 Ok(true)。启动失败（端口占用/证书非法）loud 报错，
+    /// 调用方 warn 不炸集群——中继是叠加层设施。
+    ///
+    /// fail-closed（2026-10-21 三路收口）：`roaming.relay.token` 空 = 拒绝
+    /// 启动——跳板无鉴权裸奔 = 公网任何人可白蹭带宽/转自方流量 + 已知
+    /// node ID 的存在性探测面。与独立入口 `quic relay` / `gateway
+    /// --quic-relay`（`run_relay_server` 顶部闸）同一纪律。
+    ///
+    /// 返回 Ok(true)=已启动（含幂等命中）；Ok(false)=开关未开；
+    /// Err=装配失败（含 token 空 fail-closed）。
+    #[cfg(feature = "roaming-relay")]
+    pub async fn setup_relay_server(&self) -> Result<bool, String> {
+        let cfg_path = nemesis_path::resolve_cluster_config_path_in_workspace(&self.workspace);
+        let roaming_cfg = crate::roaming::config::resolved_roaming(&cfg_path);
+        if !roaming_cfg.relay.enabled {
+            tracing::debug!(
+                "[Cluster] Self-hosted relay not enabled (config.cluster.json roaming.relay.enabled is not true)"
+            );
+            return Ok(false);
+        }
+        if roaming_cfg.relay.token.trim().is_empty() {
+            return Err(
+                "roaming.relay.token 为空：无鉴权中继拒绝启动（fail-closed）。请在 \
+                 config.cluster.json roaming.relay.token 配置预共享令牌（客户端侧 \
+                 roaming.relay_token 需配对同值）。"
+                    .to_string(),
+            );
+        }
+        if self.relay_server.lock().is_some() {
+            return Ok(true);
+        }
+        let handle =
+            crate::roaming::relay_server::spawn_relay_server(&roaming_cfg.relay, &self.workspace)
+                .await?;
+        tracing::info!(
+            http = ?handle.http_addr,
+            quic = ?handle.quic_addr,
+            url = %crate::roaming::relay_server::advertised_relay_url(&roaming_cfg.relay),
+            "[Cluster] Self-hosted relay server started"
+        );
+        let mut dup = None;
+        {
+            let mut slot = self.relay_server.lock();
+            if slot.is_some() {
+                dup = Some(handle);
+            } else {
+                *slot = Some(handle);
+            }
+        } // 守卫作用域收口——不跨 await。
+        if let Some(mut d) = dup {
+            // 并发双跑（理论态）：先到者保留，后到者关停。
+            d.shutdown().await;
+        }
+        Ok(true)
+    }
+
+    /// 自建中继运行状态（WSAPI/状态面用）：(运行中, http_addr, quic_addr)。
+    #[cfg(feature = "roaming-relay")]
+    pub fn relay_server_status(
+        &self,
+    ) -> (
+        bool,
+        Option<std::net::SocketAddr>,
+        Option<std::net::SocketAddr>,
+    ) {
+        match self.relay_server.lock().as_ref() {
+            Some(h) => (h.running(), h.http_addr, h.quic_addr),
+            None => (false, None, None),
+        }
     }
 
     pub fn stop(&self) {
@@ -1007,6 +1117,15 @@ impl Cluster {
             && let Ok(h) = tokio::runtime::Handle::try_current()
         {
             h.spawn(async move { endpoint.shutdown().await });
+        }
+
+        // QUIC 中继服务器关停（同形态：spawn 优雅停机——estop 不冻结中继，
+        // 中继是传输设施不是 agent 活动面）。
+        #[cfg(feature = "roaming-relay")]
+        if let Some(mut relay) = self.relay_server.lock().take()
+            && let Ok(h) = tokio::runtime::Handle::try_current()
+        {
+            h.spawn(async move { relay.shutdown().await });
         }
 
         // Stop discovery service (joins broadcast + receive threads)
@@ -1377,15 +1496,15 @@ impl Cluster {
     }
 
     /// Handle a discovered node (from UDP broadcast or manual config).
-    /// A1 双形态：是否 iroh 形态地址（feature 关时恒 false——未编译就
-    /// 不存在 iroh 通路，地址仲裁/拼接一律走 TCP 语义）。
-    #[cfg(feature = "cluster-roaming")]
+    /// 是否 iroh 形态地址——**形态判定是纯字符串语义**（`iroh:` 前缀），
+    /// 不依赖漫游栈编译：feature 关的节点同样会**收到**漫游节点的 announce
+    /// （混合版本农场），按 TCP 口径拼 `:rpc_port` 会把完整地址损坏成
+    /// `iroh:<hex>@http://...:50591`（`test_discovered_node_relay_qualified_
+    /// overlay_address_pooling` 形态一钉死）。识别后原样收录即可——拨号
+    /// 由候选分派裁决，本节点未编译漫游栈时该候选自然失败，与地址损坏
+    /// 是两回事。
     fn addr_is_roaming(a: &str) -> bool {
-        crate::roaming::bridge::is_roaming_address(a)
-    }
-    #[cfg(not(feature = "cluster-roaming"))]
-    fn addr_is_roaming(_a: &str) -> bool {
-        false
+        crate::is_roaming_address(a)
     }
 
     /// A1 双形态：iroh 漫游身份 hex 校验归一（64 位 hex，大小写不敏感，
@@ -1731,6 +1850,13 @@ impl Cluster {
             // 携带非空人读名（≠ node_id）时按名归并。真实条目（id≠name）
             // 不参与名合并——同名异 id 的两个真实节点不会被误并。
             let announce_carries_human_name = !name.is_empty() && name != node_id;
+            // 本机自条目永不作占位消费（2026-10-21 同机双节点实测缺陷）：
+            // 对端自报主地址与本机地址相同（同机多实例同 rpc_port / NAT 共
+            // 出口 IP+端口）时，地址比对臂会把 registry 的本机自条目当
+            // stale 占位吞掉——自条目被删、peers.toml [peers.{对端}] 被写成
+            // 本机 name + UDP 派生端口、对端单播从此打回本机 socket（发现
+            // 自环，G2 探针只能走 overlay）。自条目不参与占位匹配。
+            let local_node_id = self.node_id.clone();
             let placeholders: Vec<(String, String, Vec<String>)> = self
                 .registry
                 .list_peers()
@@ -1739,11 +1865,27 @@ impl Cluster {
                     if p.base.id == node_id {
                         return false;
                     }
+                    if p.base.id == local_node_id {
+                        return false;
+                    }
                     if announce_carries_human_name
                         && p.base.id == p.base.name
                         && p.base.name == name
                     {
                         return true;
+                    }
+                    // 地址比对臂只消费「真占位」：静态 peers 手写条目 /
+                    // id==name（占位键、保守缺省条目）/ 空 name（无身份
+                    // 条目）。运行时学来的真实远端条目（announce 人类名、
+                    // id≠name、非静态）不得被地址吞并——同机同 rpc_port /
+                    // 共享 NAT 出口拓扑下两个真实节点地址相同，吞错 =
+                    // 注册表 flapping + peers.toml 反复改写（2026-10-21
+                    // 交付后复查，自条目缺陷的姊妹洞）。
+                    if !(self.registry.is_peer_static(&p.base.id)
+                        || p.base.id == p.base.name
+                        || p.base.name.is_empty())
+                    {
+                        return false;
                     }
                     // 发现②/B4 强化：占位匹配对自报**全量**地址逐个比对，
                     // 不再只对 primary——placeholder（静态 peers 手写条目）
@@ -2008,8 +2150,26 @@ impl Cluster {
             existing.runtime_backend = info.runtime_backend.clone();
             existing.build = info.build.clone();
             existing.node_type = info.node_type.clone();
+            let static_pinned_address = if self.registry.is_peer_static(&info.id) {
+                Some(existing.base.address.clone())
+            } else {
+                None
+            };
             self.registry.upsert(existing);
-            self.persist_real_peer_to_toml(&info.id, info);
+            // R2 盘面臂（2026-10-21 横扫姊妹洞）：静态对端的 persist 地址与
+            // 内存同纪律——本函数唯一生产调用方（web nodes.ping）每次都会走
+            // 到这里，若用入参 info.address 写盘，peers.toml 手写的 pin 地址
+            // 被 announce 自报 primary 覆盖（append 路径对已存在键=有意覆
+            // 盖），重启后静态语义丢失——内存 2111 保住的 pin 只活到下次重
+            // 启。动态条目照旧随自报刷新（T9 语义不动）。
+            match static_pinned_address {
+                Some(addr) if !addr.is_empty() => {
+                    let mut pinned = info.clone();
+                    pinned.address = addr;
+                    self.persist_real_peer_to_toml(&info.id, &pinned);
+                }
+                _ => self.persist_real_peer_to_toml(&info.id, info),
+            }
             return info.id.clone();
         }
 
@@ -2018,9 +2178,20 @@ impl Cluster {
         // primary 可能不是用户静态配置的那个地址（真机实证：placeholder
         // 配 192.168.137.x 而自报 primary=10.103.x → 永不归一，双条目
         // 并存）。改为对自报全量地址逐个匹配，任一命中即归一。
+        // 本机自条目豁免（同 announce 漏斗纪律）：对端自报地址与本机地址
+        // 相同时不得把自条目当占位消费。地址匹配同样只消费「真占位」
+        // （静态 / id==name / 空 name）——运行时学来的真实远端条目不得被
+        // 地址吞并（同机同 rpc_port / 共享 NAT 出口拓扑防 flapping）。
+        let local_node_id = self.node_id.clone();
         let placeholder_id = self
             .registry
             .find_by_address(&info.address)
+            .filter(|p| {
+                (self.registry.is_peer_static(&p.base.id)
+                    || p.base.id == p.base.name
+                    || p.base.name.is_empty())
+                    && p.base.id != local_node_id
+            })
             .map(|p| p.base.id.clone())
             .or_else(|| {
                 info.addresses
@@ -2037,6 +2208,12 @@ impl Cluster {
                         };
                         self.registry
                             .find_by_address(&candidate)
+                            .filter(|p| {
+                                (self.registry.is_peer_static(&p.base.id)
+                                    || p.base.id == p.base.name
+                                    || p.base.name.is_empty())
+                                    && p.base.id != local_node_id
+                            })
                             .map(|p| p.base.id.clone())
                     })
                     .next()
@@ -2194,16 +2371,20 @@ impl Cluster {
         // 写**。旧两段式（先删占位写一次，再追加真实条目又写一次）在两次写
         // 之间留出「既无占位也无真实条目」的窗口——G2 探针身份化（probe-identity
         // 改造）后升级路径触发频率大增，并发读盘的 T2 检查恰好落窗即假红。
-        peers_table.insert(
-            real_id.to_string(),
-            toml::Value::Table(crate::cluster_config::build_peer_entry_table(
-                &Self::rpc_to_udp_address(&info.address),
-                info.role.as_role_str(),
-                &info.category,
-                Some(&info.name),
-                info.rpc_port,
-            )),
+        // 四审 #6 同族：占位条目（静态 peers 手写）的扩展字段（professions/
+        // tier/tags/…）随键迁移**搬运**到新键——removed 旧 table 的非五字段
+        // 并入新 entry，operator 手写职能/档位不因升级丢失。
+        let mut real_entry = crate::cluster_config::build_peer_entry_table(
+            &Self::rpc_to_udp_address(&info.address),
+            info.role.as_role_str(),
+            &info.category,
+            Some(&info.name),
+            info.rpc_port,
         );
+        if let Some(prev) = removed.as_ref().and_then(|v| v.as_table()) {
+            crate::cluster_config::merge_peer_entry_extras(&mut real_entry, prev);
+        }
+        peers_table.insert(real_id.to_string(), toml::Value::Table(real_entry));
 
         // Single atomic write of placeholder-strip + real-entry insert.
         let toml_str = match toml::to_string_pretty(&doc) {
@@ -4069,10 +4250,16 @@ pub fn stale_task_safety_net(llm_timeout_secs: u64) -> chrono::Duration {
 }
 
 /// G2: 探针调度判定（纯函数，便于单测）：Online 对端每 tick 都探；
-/// Offline 对端每 5 个 tick 探一次（1/5 降频自愈——不是放弃，是恢复手段，
-/// 一次成功立即翻回 Online）。`tick` 为 1-based tick 序号。
+/// Offline 对端**前 12 个 tick 全探**（启动冲刺——纯中继/UDP 静默拓扑
+/// （跨网自建中继，announce 永远不来）里静态 peer 的 Offline→Online 只能
+/// 靠探针，降频 1/5 × 60s interval = 首次上线最长 5 分钟，用户视角等同
+/// 「组网失败」；冲刺窗口内全探把首拨号提前到秒级。窗口取 12 = 默认 60s
+/// 间隔下覆盖 12 分钟的人尺度启动偏差——用户先起 A 再去配 B 是常态，B 晚
+/// 到 5~10 分钟仍在窗口内秒级互见），之后每 5 个 tick 探一次（1/5 降频
+/// 自愈——不是放弃，是恢复手段，一次成功立即翻回 Online）。
+/// `tick` 为 1-based tick 序号。
 fn should_probe_peer(online: bool, tick: u64) -> bool {
-    online || tick.is_multiple_of(5)
+    online || tick <= 12 || tick.is_multiple_of(5)
 }
 
 /// G2: 探针 timestamp 漂移 WARN 限频闸门（进程级，每节点 10 分钟冷却）。
@@ -4496,6 +4683,10 @@ impl ClusterCallbacks for Cluster {
         self.roaming_id.read().clone()
     }
 
+    fn roaming_overlay_addresses(&self) -> Vec<String> {
+        self.roaming_dialable.read().clone()
+    }
+
     fn handle_discovered_node(
         &self,
         node_id: &str,
@@ -4667,13 +4858,30 @@ impl ClusterPeerResolver {
     /// 不等但候选全撞本地端点），豁免只钉住 id 全等这一条路。
     fn resolve_dial_candidates(&self, info: &ExtendedNodeInfo) -> Option<(Vec<String>, u16, bool)> {
         let is_online = info.status == NodeStatus::Online;
-        let (host, port) = parse_host_port(&info.base.address);
+        // A1（QUIC 中继钉址实测 2026-10-21）：iroh 形态 base.address 是原子
+        // （node_id+可选 relay_url），按冒号拆 host 会拆出
+        // `iroh:<hex>@http://127.0.0.1` 截断垃圾候选（全址 best 失败后 junk
+        // 白撞一次拨号 + 失败链 last error 用垃圾地址误导排障）——与
+        // handle_discovered_node_impl pin 路径（:1739 同病同修「整条入 pin」）
+        // 同族。iroh 形态整条作 host 候选参与去重，port=0（iroh 地址内无
+        // RPC 端口语义；`:33440` 是中继端口，绝不能当 rpc_port 派生给
+        // host-only 候选拼对）。
+        let (host, port) = if crate::is_roaming_address(&info.base.address) {
+            (info.base.address.clone(), 0)
+        } else {
+            parse_host_port(&info.base.address)
+        };
         let mut addresses = info.addresses.clone();
-        if !host.is_empty()
-            && !addresses
+        // iroh 原子 host 按整串相等去重（`split(':').next()` 对 iroh 形态
+        // 恒得 "iroh"，会把整条重复候选拱进池）。
+        let host_in_pool = if crate::is_roaming_address(&host) {
+            addresses.iter().any(|a| a == &host)
+        } else {
+            addresses
                 .iter()
                 .any(|a| a.split(':').next() == Some(host.as_str()))
-        {
+        };
+        if !host.is_empty() && !host_in_pool {
             addresses.push(host);
         }
 
