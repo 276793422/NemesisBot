@@ -102,6 +102,14 @@ pub struct WebApprovalManager {
     /// 补裁能力——诚实降级，非静默：装配失败有 loud error）。
     journal:
         std::sync::OnceLock<std::sync::Arc<dyn nemesis_types::approval_journal::ApprovalJournal>>,
+    /// 审批续执行（2026-10-22）：stale 卡裁决回灌注入器。OnceLock 晚绑
+    /// （镜像 set_journal 时序——manager 先于 gateway 装配块存在），由
+    /// run_runtime 审批块注入持有 bus 的闭包：按 session_key 发一条系统
+    /// 入站消息（主 loop 直消费；项目会话经 ProjectLoopManager 归属转发，
+    /// 同一 bus 入口两种归宿都命中）。返回 bool = 是否实际送达（gateway
+    /// 侧做会话在位检查——chat_log 已删 = false，退化纯记账）。未注入 =
+    /// 纯记账（headless / 独立测试），行为与续执行功能落地前一致。
+    continuation: std::sync::OnceLock<std::sync::Arc<dyn Fn(&str, &str) -> bool + Send + Sync>>,
 }
 
 impl WebApprovalManager {
@@ -114,6 +122,7 @@ impl WebApprovalManager {
             pending: Mutex::new(HashMap::new()),
             rules_path,
             journal: std::sync::OnceLock::new(),
+            continuation: std::sync::OnceLock::new(),
         }
     }
 
@@ -129,6 +138,15 @@ impl WebApprovalManager {
         &self,
     ) -> Option<&std::sync::Arc<dyn nemesis_types::approval_journal::ApprovalJournal>> {
         self.journal.get()
+    }
+
+    /// 审批续执行：注入 stale 裁决回灌闭包（gateway 装配块；签名与语义见
+    /// 结构体字段注记）。幂等失败 = 重复注入，静默忽略（首个胜出）。
+    pub fn set_continuation_injector(
+        &self,
+        injector: std::sync::Arc<dyn Fn(&str, &str) -> bool + Send + Sync>,
+    ) {
+        let _ = self.continuation.set(injector);
     }
 
     /// F3:「总是允许」规则落盘。pattern 由 B5 归约生成（单一真相源
@@ -250,13 +268,21 @@ impl WebApprovalManager {
         }
     }
 
-    /// P1 重启补裁（respond 的 map-miss 兜底）：台账记一笔裁决，前端卡片
-    /// 得以摘除。原操作进程已死、不恢复执行——纯记账性质，响应里由前端
-    /// 注记提示。幂等：台账已裁决（超时/先到 respond）= Err already decided。
+    /// P1 重启补裁（respond 的 map-miss 兜底）+ 审批续执行（2026-10-22 拍板：
+    /// 批准+拒绝都回灌）：台账记一笔裁决，前端卡片得以摘除；随后按台账
+    /// payload 里的 session_key 把裁决消息回灌原会话（批准臂提示可重新发起、
+    /// 拒绝臂拒绝通知）。原操作进程已死、**不自动重放**——副作用重放正是
+    /// 两相账刚封死的坑，续行决策权交给 agent/用户，机制只负责送达裁决。
+    /// 幂等：台账已裁决（超时/先到 respond）= Err already decided；回灌在
+    /// 记账生效（Ok(true)）之后才发生，竞速败方零回灌。
     fn respond_stale(&self, request_id: &str, approved: bool) -> Result<bool, String> {
         let Some(j) = self.journal() else {
             return Err(format!("unknown approval request: {request_id}"));
         };
+        // 先取条目后落账：record_decision 生效即移出 pending，之后取不到了
+        // （find_pending 只看 pending 行）。取不到 = 旧条目（payload 无
+        // session_key 的历史形态）→ 回灌自然退化。
+        let entry = j.find_pending(request_id);
         let decision = if approved {
             nemesis_types::approval_journal::ApprovalDecision::Approved
         } else {
@@ -268,11 +294,63 @@ impl WebApprovalManager {
                     "[WebApproval] stale respond for {request_id}: gateway restarted since this \
                      approval was raised; decision recorded for audit, original operation is gone"
                 );
+                if let Some(e) = entry {
+                    self.notify_stale_decision(request_id, &e, approved);
+                }
                 self.broadcast_resolved(request_id, if approved { "approved" } else { "denied" });
                 Ok(approved)
             }
             Ok(false) => Err(format!("approval already decided: {request_id}")),
             Err(e) => Err(format!("approval journal respond failed: {e}")),
+        }
+    }
+
+    /// 审批续执行回灌（stale 裁决记账生效后调用）：session_key 在且注入器
+    /// 在 → 组消息投回原会话（agent 收到后自行决定是否重新发起）；任一缺
+    /// 失/送达失败 → 诚实留 warn，退化为纯记账（不造假投递）。
+    fn notify_stale_decision(
+        &self,
+        request_id: &str,
+        entry: &nemesis_types::approval_journal::ApprovalJournalEntry,
+        approved: bool,
+    ) {
+        let Some(session_key) = entry
+            .payload
+            .get("session_key")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        else {
+            tracing::info!(
+                "[WebApproval] stale decision for {request_id}: no session_key in journal \
+                 payload; audit-only (legacy entry)"
+            );
+            return;
+        };
+        let summary = format!("{} {}", entry.operation, entry.target);
+        let content = if approved {
+            format!(
+                "系统通知：一条审批卡（重启前签发）已被批准：{summary}。原执行现场已随网关重启\
+                 终止，不可自动重放副作用；如仍需执行该操作，请重新发起。"
+            )
+        } else {
+            format!(
+                "系统通知：一条审批卡（重启前签发）已被拒绝：{summary}。原执行现场已随网关重启\
+                 终止，该操作不会执行。"
+            )
+        };
+        let injector = self.continuation.get();
+        let delivered = injector.map(|f| f(session_key, &content)).unwrap_or(false);
+        if delivered {
+            tracing::info!(
+                "[WebApproval] stale decision for {request_id} delivered back to session \
+                 {session_key} ({})",
+                if approved { "approved" } else { "denied" }
+            );
+        } else {
+            tracing::warn!(
+                "[WebApproval] stale decision for {request_id}: session {session_key} not \
+                 deliverable (injector missing or session gone); audit-only"
+            );
         }
     }
 }
@@ -291,6 +369,61 @@ impl nemesis_security::auditor::ApprovalManager for WebApprovalManager {
         reason: &str,
         timeout_secs: u64,
     ) -> Result<nemesis_security::auditor::ApprovalVerdict, String> {
+        self.request_routed(
+            request_id,
+            operation,
+            target,
+            risk_level,
+            reason,
+            timeout_secs,
+            "",
+            "",
+        )
+    }
+
+    fn request_approval_sync_ctx(
+        &self,
+        request_id: &str,
+        operation: &str,
+        target: &str,
+        risk_level: &str,
+        reason: &str,
+        timeout_secs: u64,
+        ctx: &nemesis_security::auditor::ApprovalContext,
+    ) -> Result<nemesis_security::auditor::ApprovalVerdict, String> {
+        // 审批续执行路由面（2026-10-22）：ctx 带的 chat_id / session_key
+        // （loop dispatch 构造 ApprovalContext 时从 RequestContext 穿线）
+        // 落进 PendingEntry 与台账 payload——重启补裁 respond_stale 据此
+        // 把裁决消息回灌原会话。空值 = 无来源上下文（cron 直发等），补裁
+        // 自然退化纯记账。
+        self.request_routed(
+            request_id,
+            operation,
+            target,
+            risk_level,
+            reason,
+            timeout_secs,
+            &ctx.chat_id,
+            &ctx.session_key,
+        )
+    }
+}
+
+impl WebApprovalManager {
+    /// `request_approval_sync` / `_ctx` 的公共主体（路由参数化）：
+    /// chat_id / session_key 为空 = 无来源上下文（旧形态，行为与续执行
+    /// 落地前一致）。
+    fn request_routed(
+        &self,
+        request_id: &str,
+        operation: &str,
+        target: &str,
+        risk_level: &str,
+        reason: &str,
+        timeout_secs: u64,
+        chat_id: &str,
+        session_key: &str,
+    ) -> Result<nemesis_security::auditor::ApprovalVerdict, String> {
         let (tx, rx) = mpsc::channel::<nemesis_security::auditor::ApprovalVerdict>();
         let (why, impact, reject_note) =
             approval_card_fields(operation, target, risk_level, reason);
@@ -302,8 +435,8 @@ impl nemesis_security::auditor::ApprovalManager for WebApprovalManager {
             risk_level: risk_level.to_string(),
             reason: reason.to_string(),
             timeout_secs,
-            chat_id: String::new(),
-            session_key: String::new(),
+            chat_id: chat_id.to_string(),
+            session_key: session_key.to_string(),
             why,
             impact,
             reject_note,
@@ -319,7 +452,14 @@ impl nemesis_security::auditor::ApprovalManager for WebApprovalManager {
         // 兜底可裁决摘卡）。
         {
             let journal_entry = Self::journal_entry(
-                request_id, operation, target, risk_level, reason, &pattern, "", "",
+                request_id,
+                operation,
+                target,
+                risk_level,
+                reason,
+                &pattern,
+                chat_id,
+                session_key,
             );
             self.journal_record_pending(&journal_entry);
         }
@@ -567,6 +707,12 @@ impl ApprovalResponder for WebApprovalManager {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+                let payload_session_key = e
+                    .payload
+                    .get("session_key")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
                 out.push(serde_json::json!({
                     "request_id": e.id,
                     "operation": e.operation,
@@ -576,7 +722,7 @@ impl ApprovalResponder for WebApprovalManager {
                     "timeout_secs": serde_json::Value::Null,
                     "pattern": payload_pattern,
                     "chat_id": serde_json::Value::Null,
-                    "session_key": serde_json::Value::Null,
+                    "session_key": payload_session_key,
                     "why": e.reason,
                     "impact": e.target,
                     "reject_note": "重启前的审批请求：原操作已随进程终止，裁决仅记账留痕。",

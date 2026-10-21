@@ -2745,9 +2745,19 @@ impl Cluster {
         // P1 统一任务层：结果回传 delivery 记账（deliveries 表首个消费者；
         // idempotency_key=task_id 天然去重——G5 恢复轮询/重复回调不重复记账）。
         // 记账失败只留痕不阻断回传（记账是辅助台账，回传是主链路）。
+        // 项 C：任务有原始来源通道（original_channel 非空）才有出站通知
+        // 义务（notify_expected）——无源任务（纯 RPC/内部）记 none，不进
+        // 重试调度。
         if let Some(db) = &self.task_db {
             let payload = task.result.clone().unwrap_or(serde_json::Value::Null);
-            match db.record_delivery("cluster_result", Some(task_id), task_id, &payload) {
+            let notify_expected = !task.original_channel.is_empty();
+            match db.record_delivery(
+                "cluster_result",
+                Some(task_id),
+                task_id,
+                &payload,
+                notify_expected,
+            ) {
                 Ok(true) => {}
                 Ok(false) => {
                     tracing::debug!("[Cluster] delivery already recorded for task {task_id}")

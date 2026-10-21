@@ -374,6 +374,33 @@ pub(crate) async fn run_runtime(
                 shared_resources.agent_event_tx.clone(),
                 Some(approval_rules_path),
             ));
+            // 审批续执行（2026-10-22 拍板「批准+拒绝都回灌」）：stale 卡
+            // （gateway 重启前签发）裁决后，按台账 payload 的 session_key
+            // 把裁决消息回灌原会话。注入器晚绑（镜像 set_journal 时序）；
+            // 闭包持 bus——入站消息统一走 bus：主 loop 直消费，项目会话经
+            // ProjectLoopManager 归属转发（同一入口两种归宿都命中）。会话
+            // 在位检查（chat_log 已删 = 不造假投递）在闭包内做，manager 侧
+            // 只管「发什么」。
+            web_mgr.set_continuation_injector({
+                let bus = bus.clone();
+                std::sync::Arc::new(move |session_key: &str, content: &str| -> bool {
+                    if !nemesis_agent::chat_log::chat_log_exists(session_key) {
+                        return false;
+                    }
+                    bus.publish_inbound(nemesis_types::channel::InboundMessage {
+                        channel: "web".to_string(),
+                        sender_id: "system".to_string(),
+                        chat_id: session_key.to_string(),
+                        content: content.to_string(),
+                        media: Vec::new(),
+                        session_key: session_key.to_string(),
+                        correlation_id: String::new(),
+                        metadata: std::collections::HashMap::new(),
+                        voice_playback: None,
+                    });
+                    true
+                })
+            });
             // K4 (b)（devtool-upgrade 阶段 7）：IM 通道审批卡 + 组合分流——
             // web/无上下文 → web_mgr（Dashboard 卡片，现状不变）；IM 通道
             // → ChannelApprovalManager（审批卡回发起对话 + /approve|/deny

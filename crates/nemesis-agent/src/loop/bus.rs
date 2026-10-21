@@ -435,6 +435,7 @@ impl AgentLoop {
                     // 记录，断线重连后 chat.sync 才能寻址。
                     session_key: (!msg.session_key.is_empty()).then(|| msg.session_key.clone()),
                     source_node: None,
+                    task_id: None,
                 },
             };
             if let Err(e) = tx.send(outbound).await {
@@ -468,6 +469,7 @@ impl AgentLoop {
                 model: Some(self.current_display_model()),
                 session_key: (!session_key.is_empty()).then(|| session_key.to_string()),
                 source_node: None,
+                task_id: None,
             },
         };
         if let Err(e) = tx.send(outbound).await {

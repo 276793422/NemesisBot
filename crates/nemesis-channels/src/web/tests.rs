@@ -177,6 +177,7 @@ async fn test_send_to_session_forwards_model_badge() {
             model: Some("deepseek/deepseek-v4-flash".to_string()),
             session_key: None,
             source_node: Some("node-b".to_string()),
+            task_id: None,
         },
     };
     let result = ch.send(msg).await;

@@ -1135,6 +1135,142 @@ pub fn render_anchor_failures(results: &[AnchorResult]) -> String {
     out
 }
 
+// ---- 必需检查契约（项 B「必需的必须跑」，2026-10-22 拍板）----
+// 「跑了必须过」由锚点双检 FAIL 短路兜住；本节补另一半：「必需的必须跑」
+// ——规则要求某类单子必须带某锚点，而该锚点 AC 未声明 / 被跳过（exec 关
+// 或环境缺）/ 未产出核验结果时，语义评审不得对该单给 PASS（零证据放行
+// 面）。判定是纯函数（无 IO 无 LLM），缺口呈现与停车处置归调用方。
+
+/// 单条必需检查的覆盖缺口（三态，对应「为何未满足」评论明细）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RequiredCheckGap {
+    /// 规则要求的锚点 id 在本单 AC 中无任何匹配 `[CHECK]` 行——AC 未声明。
+    NotConfigured { rule_key: String, check_id: String },
+    /// 匹配的锚点被跳过（exec 开关关 / 环境依赖缺失）——声明了但没跑。
+    /// `reason` = 跳过注记原文（自述原因）。
+    Skipped {
+        rule_key: String,
+        check_id: String,
+        reason: String,
+    },
+    /// 匹配的锚点已声明但双检未产出结果（防御态：双检对每条声明锚点必产
+    /// 结果或注记，正常流不可达；出现即诚实报告不静默放行）。
+    NotRun { rule_key: String, check_id: String },
+}
+
+/// 锚点 id 是否命中一条解析后的锚点：id 等于 target（file 路径 / exec
+/// 命令）或 pattern（re:/contains: 文本）。file 路径精确匹配（路径是身份
+/// 不是模式）；exec 命令精确匹配（命令串本身即 id）。
+fn anchor_id_matches(check_id: &str, anchor: &AnchorCheck) -> bool {
+    anchor.target == check_id || anchor.pattern.as_deref() == Some(check_id)
+}
+
+/// 必需检查覆盖判定（纯函数）：按「匹配键 → 必需锚点 id 列表」规则集与
+/// 本单标签（`required_tags`，大小写不敏感交集，与派发 matcher 同规则）
+/// 算出未满足覆盖的必需项列表。命中任一标签键 → 各键列表并集生效；无标
+/// 签命中 → 空串键全局兜底（无空串键 = 无要求）。已产出双检结果的锚点
+///（过或不过）= 覆盖满足——裁决归 FAIL 短路，本判定只管「跑没跑」。
+/// 输出按规则键字典序排列（HashMap 无序，评论与测试需要确定性）。
+pub fn required_check_gaps(
+    rules: &std::collections::HashMap<String, Vec<String>>,
+    issue_tags: &[String],
+    anchors: &[AnchorCheck],
+    results: &[AnchorResult],
+    skipped: &[String],
+) -> Vec<RequiredCheckGap> {
+    // 匹配键选取：标签交集命中（大小写不敏感），未命中落全局兜底空串键。
+    let mut matched_keys: Vec<String> = rules
+        .keys()
+        .filter(|k| !k.is_empty() && issue_tags.iter().any(|t| t.eq_ignore_ascii_case(k)))
+        .cloned()
+        .collect();
+    if matched_keys.is_empty() && rules.contains_key("") {
+        matched_keys.push(String::new());
+    }
+    matched_keys.sort();
+    let mut gaps = Vec::new();
+    for key in &matched_keys {
+        for check_id in &rules[key.as_str()] {
+            let matched: Vec<&AnchorCheck> = anchors
+                .iter()
+                .filter(|a| anchor_id_matches(check_id, a))
+                .collect();
+            if matched.is_empty() {
+                gaps.push(RequiredCheckGap::NotConfigured {
+                    rule_key: key.clone(),
+                    check_id: check_id.clone(),
+                });
+                continue;
+            }
+            // 已产出结果 = 覆盖满足（对同 id 多锚点：任一跑过即算跑——
+            // 双检对每条声明锚点必产结果或注记，部分跳过由跳过注记评论
+            // 单独披露，不在此重复计缺）。
+            let ran = results
+                .iter()
+                .any(|r| matched.iter().any(|a| a.raw == r.anchor.raw));
+            if ran {
+                continue;
+            }
+            // 跳过注记原文含锚点 raw（run_anchors_dual_ext 两处 push 均
+            // 以 anchor.raw 收尾）——按 raw 归属回锚点。
+            match skipped
+                .iter()
+                .find(|note| matched.iter().any(|a| note.contains(&a.raw)))
+            {
+                Some(note) => gaps.push(RequiredCheckGap::Skipped {
+                    rule_key: key.clone(),
+                    check_id: check_id.clone(),
+                    reason: note.clone(),
+                }),
+                None => gaps.push(RequiredCheckGap::NotRun {
+                    rule_key: key.clone(),
+                    check_id: check_id.clone(),
+                }),
+            }
+        }
+    }
+    gaps
+}
+
+/// 缺口明细渲染（停车评论体；逐条可读：哪条规则 / 哪个锚点 / 为何未满足）。
+pub fn render_required_check_gaps(gaps: &[RequiredCheckGap]) -> String {
+    fn key_label(rule_key: &str) -> &str {
+        if rule_key.is_empty() {
+            "全局兜底"
+        } else {
+            rule_key
+        }
+    }
+    let mut out = String::new();
+    for g in gaps {
+        match g {
+            RequiredCheckGap::NotConfigured { rule_key, check_id } => {
+                out.push_str(&format!(
+                    "- `{check_id}`（规则 {}）：验收标准未声明该锚点（无匹配的 [CHECK] 行）\n",
+                    key_label(rule_key)
+                ));
+            }
+            RequiredCheckGap::Skipped {
+                rule_key,
+                check_id,
+                reason,
+            } => {
+                out.push_str(&format!(
+                    "- `{check_id}`（规则 {}）：锚点被跳过未执行（{reason}）\n",
+                    key_label(rule_key)
+                ));
+            }
+            RequiredCheckGap::NotRun { rule_key, check_id } => {
+                out.push_str(&format!(
+                    "- `{check_id}`（规则 {}）：锚点已声明但本轮未产出核验结果\n",
+                    key_label(rule_key)
+                ));
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod cov_tests;
 #[cfg(test)]

@@ -58,6 +58,10 @@ pub struct ChannelSyncConfig {
     pub targets: HashMap<String, Vec<String>>,
 }
 
+/// 通知记账钩子签名（项 C，2026-10-22）：消息 + 本次投递结果
+/// （`Result<()>` = 本 crate 别名，std Result<(), NemesisError>）。
+pub type NotifyHookFn = dyn Fn(&OutboundMessage, &Result<()>) + Send + Sync;
+
 /// Manages the lifecycle of all channel instances.
 pub struct ChannelManager {
     channels: RwLock<HashMap<String, Arc<dyn Channel>>>,
@@ -78,6 +82,11 @@ pub struct ChannelManager {
     /// Shutdown flag for the dispatch loop.
     /// When set, the dispatch loop exits even if cloned senders are still alive.
     shutdown: std::sync::atomic::AtomicBool,
+    /// 通知记账钩子（项 C）：每次**真实投递尝试**后回调（send 返回，或
+    /// 通道未找到的失败）。allowed-channels 过滤的 drop 不是投递，不回调
+    /// ——过滤是配置语义，不能替任务造「通道收下了」的 claim。None =
+    /// 未接线（测试/非 gateway 形态），行为与历史一致。
+    notify_hook: parking_lot::Mutex<Option<std::sync::Arc<NotifyHookFn>>>,
 }
 
 impl ChannelManager {
@@ -93,6 +102,7 @@ impl ChannelManager {
             sync_targets: RwLock::new(HashMap::new()),
             dispatch_started: std::sync::atomic::AtomicBool::new(false),
             shutdown: std::sync::atomic::AtomicBool::new(false),
+            notify_hook: parking_lot::Mutex::new(None),
         }
     }
 
@@ -110,6 +120,18 @@ impl ChannelManager {
     /// Returns a clone of the outbound sender for publishing messages.
     pub fn outbound_sender(&self) -> mpsc::Sender<OutboundMessage> {
         self.outbound_tx.clone()
+    }
+
+    /// 接线通知记账钩子（项 C；gateway 装配时调用一次）。
+    pub fn set_notify_hook(&self, hook: std::sync::Arc<NotifyHookFn>) {
+        *self.notify_hook.lock() = Some(hook);
+    }
+
+    /// 触发通知钩子（投递结果记账；None = 未接线直接返回）。
+    fn fire_notify_hook(&self, msg: &OutboundMessage, result: &Result<()>) {
+        if let Some(hook) = self.notify_hook.lock().as_ref() {
+            hook(msg, result);
+        }
     }
 
     /// Spawns a background task that reads from the outbound receiver
@@ -340,7 +362,20 @@ impl ChannelManager {
                 self.metrics
                     .dispatched
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                match ch.send(msg).await {
+                // 项 C：钩子接线时发消息副本、留原值投递后记账（send 按
+                // 值收消息）；未接线形态零拷贝零回调，与历史行为一致。
+                let hook_wired = self.notify_hook.lock().is_some();
+                let result = if hook_wired {
+                    let r = ch.send(msg.clone()).await;
+                    // 真实投递尝试完成，记账（成功 → 通道接受；失败 → 入
+                    // 重试箱）。钩子内部 swallow 自身错误——记账故障不改
+                    // 变投递语义。
+                    self.fire_notify_hook(&msg, &r);
+                    r
+                } else {
+                    ch.send(msg).await
+                };
+                match result {
                     Ok(()) => Ok(()),
                     Err(e) => {
                         error!(
@@ -362,6 +397,12 @@ impl ChannelManager {
                     "[ChannelManager] No channel found for outbound message, target={}",
                     channel_name
                 );
+                let err = NemesisError::Channel(format!(
+                    "channel '{}' not found for outbound message",
+                    channel_name
+                ));
+                // 项 C：通道缺席也是投递失败（义务不该因通道未注册而蒸发）。
+                self.fire_notify_hook(&msg, &Err(err));
                 Err(NemesisError::Channel(format!(
                     "channel '{}' not found for outbound message",
                     channel_name

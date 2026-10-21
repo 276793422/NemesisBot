@@ -1009,6 +1009,14 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
             );
         }
 
+        // 项 C（2026-10-22）：通知记账钩子 + 失败重试 sweeper。钩子在
+        // dispatch_loop 启动前接线（start_dispatch_loop 消费 &Arc<Self>，
+        // 钩子读写同一实例的 Mutex 槽，顺序无竞态但先接为先）。sweeper
+        // 每 tick 惰性读 db 槽（post_agent 注入），槽空 = no-op——本函数
+        // 早于 post_agent 执行，不在此处注入 db。
+        channel_manager.set_notify_hook(std::sync::Arc::new(crate::notify::notify_accounting));
+        crate::notify::spawn_sweeper(std::sync::Arc::clone(&channel_manager));
+
         // Start all registered channels.
         if let Err(e) = channel_manager.start_all().await {
             warn!("[Gateway] ChannelManager start_all note: {} (non-fatal)", e);

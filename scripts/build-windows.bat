@@ -13,6 +13,10 @@ REM
 REM Output layout:
 REM   bin\bin_windows\
 REM     nemesisbot.exe
+REM     plugin_vm.dll
+REM     plugin_vm\
+REM       build-vm-image.sh
+REM       guest\<arch>\nemesis-guest
 REM     plugins\
 REM       plugin_ui.dll
 REM       eval_monitor_dll.dll
@@ -169,6 +173,15 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM vm-display pass (plugin-vm host loader; plugin-vm package = single distribution
+REM dependency of the whole VM stack, packaged exe must carry the display loader.
+REM Incremental: only the nemesisbot crate recompiles; failure = keep default exe, non-fatal)
+echo   Building nemesisbot with vm-display (plugin-vm loader)...
+cargo build --release -p nemesisbot --features vm-display
+if errorlevel 1 (
+    echo   WARN vm-display build failed, keeping default exe ^(VM display relay unavailable^)
+)
+
 echo   OK Build completed
 echo.
 
@@ -260,13 +273,37 @@ if exist "plugins\plugin-wasm\Cargo.toml" (
         echo   WARN Plugin-wasm DLL build failed ^(non-fatal, wasm plugin subsystem unavailable^)
         echo.
         set CARGO_TARGET_DIR=target\target_windows
-        goto step5
+        goto plugin_vm
     )
     popd
     set CARGO_TARGET_DIR=target\target_windows
     echo   OK Plugin-wasm DLL built
 ) else (
     echo   SKIP plugins\plugin-wasm\Cargo.toml not found
+)
+echo.
+
+:plugin_vm
+REM --- plugin-vm (VM display relay DLL beside exe + plugin_vm\ resource dir:
+REM     build-vm-image.sh + guest binaries; plugin-vm package = single distribution
+REM     dependency of the whole VM stack) ---
+if exist "plugins\plugin-vm\Cargo.toml" (
+    echo   Building plugin-vm...
+    pushd plugins\plugin-vm
+    set CARGO_TARGET_DIR=..\..\target\target_windows\plugins\plugin-vm
+    cargo build --release
+    if errorlevel 1 (
+        popd
+        echo   WARN Plugin-vm DLL build failed ^(non-fatal, VM display relay unavailable^)
+        echo.
+        set CARGO_TARGET_DIR=target\target_windows
+        goto step5
+    )
+    popd
+    set CARGO_TARGET_DIR=target\target_windows
+    echo   OK Plugin-vm DLL built
+) else (
+    echo   SKIP plugins\plugin-vm\Cargo.toml not found
 )
 echo.
 
@@ -340,6 +377,39 @@ if "!EVAL_MONITOR_FOUND!"=="0" if "%SKIP_PLUGIN%"=="0" (
 if "!DLL_FOUND!"=="0" if "%SKIP_PLUGIN%"=="0" (
     echo   WARN plugin-ui.dll not found in build output
 )
+
+REM Copy plugin-vm DLL beside the exe (loader resolves plugin_vm.dll in the exe's own
+REM directory, NOT plugins\ subdir) + plugin_vm\ resource dir (image script + guest binaries;
+REM plugin-vm package = single distribution dependency of the whole VM stack)
+if exist "target\target_windows\plugins\plugin-vm\release\plugin_vm.dll" (
+    copy /y "target\target_windows\plugins\plugin-vm\release\plugin_vm.dll" "bin\bin_windows\" >nul 2>&1
+    set /a COPIED+=1
+) else (
+    if "%SKIP_PLUGIN%"=="0" echo   WARN plugin_vm.dll not found in build output ^(VM display relay unavailable^)
+)
+if not exist "bin\bin_windows\plugin_vm" mkdir "bin\bin_windows\plugin_vm"
+if exist "plugins\plugin-vm\build-vm-image.sh" (
+    copy /y "plugins\plugin-vm\build-vm-image.sh" "bin\bin_windows\plugin_vm\" >nul 2>&1
+    set /a COPIED+=1
+) else (
+    if "%SKIP_PLUGIN%"=="0" echo   WARN build-vm-image.sh not found ^(VM image pipeline unavailable^)
+)
+REM Guest binaries: build musl cross artifacts if absent and git-bash is available (B7: Windows
+REM git-bash direct cross-compile works), then mirror bin\bin_guest\<arch>\ into the package.
+where bash >nul 2>&1
+if not errorlevel 1 if not exist "bin\bin_guest\x86_64\nemesis-guest" (
+    echo   Building guest binaries ^(bash scripts\build-guest.sh^)...
+    bash scripts\build-guest.sh >nul 2>&1
+    if errorlevel 1 echo   WARN guest build failed ^(non-fatal^)
+)
+for %%a in (x86_64 aarch64) do (
+    if exist "bin\bin_guest\%%a\nemesis-guest" (
+        if not exist "bin\bin_windows\plugin_vm\guest\%%a" mkdir "bin\bin_windows\plugin_vm\guest\%%a"
+        copy /y "bin\bin_guest\%%a\nemesis-guest" "bin\bin_windows\plugin_vm\guest\%%a\" >nul 2>&1
+        set /a COPIED+=1
+    )
+)
+if not exist "bin\bin_windows\plugin_vm\guest\x86_64\nemesis-guest" if "%SKIP_PLUGIN%"=="0" echo   WARN guest binaries absent ^(run bash scripts\build-guest.sh; VM image build unavailable^)
 
 REM Copy test-tools binaries to bin\bin_windows\tests\
 if not exist "bin\bin_windows\tests" mkdir "bin\bin_windows\tests"

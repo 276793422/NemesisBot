@@ -7250,6 +7250,36 @@ fn board_config_set(
                     .ok_or("review.exec_anchor_timeout_secs 需要非负整数")?;
             }
             "review.auto_close_project" => board.review.auto_close_project = need_bool(value)?,
+            // 必需检查契约（项 B「必需的必须跑」，2026-10-22 拍板）：whole-map
+            // 键——value = 整个 {匹配键: [必需锚点 id 列表]} 对象（匹配键可含
+            // 点，per-rule 点后缀键不可行；UI 每次 load→edit→save 全 map）。
+            // 空数组规则拒绝（空规则无意义，直接摘除该键）；空 id 拒绝（不做
+            // 静默纠偏——round-trip 值比对按原值核，静默归一会假红）。空对象
+            // = 契约关闭；空串键 = 全局兜底规则（合法，保留）。
+            "review.required_checks" => {
+                let rules: std::collections::HashMap<String, Vec<String>> =
+                    serde_json::from_value(value.clone()).map_err(|e| {
+                        format!("review.required_checks 需要 {{匹配键: [锚点 id]}} 对象: {e}")
+                    })?;
+                for (k, ids) in &rules {
+                    let key_label = if k.is_empty() {
+                        "（全局兜底）"
+                    } else {
+                        k.as_str()
+                    };
+                    if ids.is_empty() {
+                        return Err(format!(
+                            "review.required_checks 规则 {key_label} 为空数组：空规则请直接摘除该键"
+                        ));
+                    }
+                    if ids.iter().any(|s| s.trim().is_empty()) {
+                        return Err(format!(
+                            "review.required_checks 规则 {key_label} 含空锚点 id：请移除空项或填写完整 id"
+                        ));
+                    }
+                }
+                board.review.required_checks = rules;
+            }
             "plan.auto_confirm" => board.plan.auto_confirm = need_bool(value)?,
             // 任务档案（2026-09-29）：项目收口自动导出（默认开）。
             "dossier.auto_on_complete" => board.dossier.auto_on_complete = need_bool(value)?,
@@ -7444,7 +7474,8 @@ fn board_config_set(
                  review.max_unsure_streak / review.selfcheck / \
                  review.require_delivery_evidence / \
                  review.exec_anchors_enabled / review.exec_anchor_timeout_secs / \
-                 review.auto_close_project / review.checkers / review.professions.<slug>.* / \
+                 review.auto_close_project / review.checkers / review.required_checks / \
+                 review.professions.<slug>.* / \
                  budget.max_subissues_per_parent / \
                  budget.max_total_redispatch / budget.max_send_retries / budget.wall_clock_budget_secs / \
                  budget.max_tokens_per_parent / discussion.*）"

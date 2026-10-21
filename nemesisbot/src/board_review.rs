@@ -1246,6 +1246,86 @@ async fn review_issue(
         &exec_policy,
     )
     .await;
+    // 必需检查契约闸（项 B「必需的必须跑」，2026-10-22 拍板）：命中规则的
+    // 单子若有必需锚点「AC 未声明 / 被跳过 / 未产出结果」→ 强制停车转人工
+    //（needs_validation）：不进语义评审、不允许 auto_accept，系统评论列缺
+    // 口明细，状态留 in_review。已运行的锚点（过或不过）= 覆盖满足，裁决
+    // 归锚点双检既有短路——本闸只封「零证据放行」面。插在双检后、其余评
+    // 审动作前：停车时 skip 注记评论 / PASS 评论 / vision / LLM 全不触发。
+    let required_gaps = nemesis_board::required_check_gaps(
+        &cfg.review.required_checks,
+        &issue.required_tags,
+        &anchors,
+        &anchor_results,
+        &anchor_skipped,
+    );
+    if !required_gaps.is_empty() {
+        let gaps_detail = nemesis_board::render_required_check_gaps(&required_gaps);
+        warn!(
+            "[BoardReview] issue {issue_id} 必需检查契约未满足（{} 项缺口）→ 强制停车转人工，不进语义评审",
+            required_gaps.len()
+        );
+        let handoff_note = park_with_handoff(
+            deps,
+            &issue.number,
+            issue_id,
+            nemesis_board::handoff::HandoffSpec {
+                stop_kind: "required_checks",
+                suggested_action: "manual_check",
+                hint: "必需检查未满足（验收标准缺少规则要求的锚点或锚点未执行）：补齐 AC 锚点声明或开启 exec 锚点后复评".into(),
+                resume_entry: "review.retrigger（number=NB-x，补齐必需检查后复评）".into(),
+                environment: last_dispatch_env(&dispatches),
+                attempted: vec![serde_json::json!({
+                    "action": "required_check_gaps",
+                    "result": gaps_detail,
+                })],
+            },
+        );
+        let msg = format!(
+            "{}🧭 必需检查契约未满足：本单命中必需检查规则，但以下锚点未覆盖（未声明 / 被跳过 / 未运行）——按规则不得自动验收（不进语义评审、不允许 auto_accept）。请人工补齐后用 board.review.retrigger 复评，或直接裁决。\n\n{gaps_detail}{handoff_note}",
+            human_mention
+        );
+        store.add_comment(nemesis_board::NewComment {
+            issue_id,
+            author: nemesis_board::Actor::system("board-review"),
+            content: msg,
+            parent_id: None,
+            ctype: CommentType::System,
+        })?;
+        record_auto_decide(
+            deps,
+            issue_id,
+            "escalate_human",
+            "needs_validation",
+            serde_json::json!({
+                "reason": "required_checks_unmet",
+                "gaps": required_gaps
+                    .iter()
+                    .map(|g| serde_json::json!({
+                        "rule": match g {
+                            nemesis_board::RequiredCheckGap::NotConfigured { rule_key, .. }
+                            | nemesis_board::RequiredCheckGap::Skipped { rule_key, .. }
+                            | nemesis_board::RequiredCheckGap::NotRun { rule_key, .. } =>
+                                rule_key.clone(),
+                        },
+                        "check": match g {
+                            nemesis_board::RequiredCheckGap::NotConfigured { check_id, .. }
+                            | nemesis_board::RequiredCheckGap::Skipped { check_id, .. }
+                            | nemesis_board::RequiredCheckGap::NotRun { check_id, .. } =>
+                                check_id.clone(),
+                        },
+                        "kind": match g {
+                            nemesis_board::RequiredCheckGap::NotConfigured { .. } =>
+                                "not_configured",
+                            nemesis_board::RequiredCheckGap::Skipped { .. } => "skipped",
+                            nemesis_board::RequiredCheckGap::NotRun { .. } => "not_run",
+                        },
+                    }))
+                    .collect::<Vec<_>>(),
+            }),
+        );
+        return Ok(true);
+    }
     // G4 anchor_summary 注记（2026-10-18 批六）：锚点双检结果合并进最新派
     // 发任务的交付记录（deliveries.payload.anchor_summary）——交付证据自此
     // 自带客观核验摘要，审计/复盘单行可读（无锚点单不注记，payload 不加
@@ -1687,8 +1767,10 @@ async fn review_issue(
     // 位，恒生效；F5：checkpoint-git 关的执行体建单时跳过自动置位）∪
     // 全局 `board.review.require_delivery_evidence`（所有的单加码）。
     // 校验对象 = 最新派发任务在 tasks.db deliveries 表的记录（A 端
-    // handle_task_complete 落账，幂等键 = task_id）；delivered/confirmed
-    // 两态算在场，rejected 不算。
+    // handle_task_complete 落账，幂等键 = task_id）；**非 rejected 即在
+    // 场**（项 C 2026-10-22 起 status 初始 recorded、通道接受才 delivered
+    // ——通知维度与交付证据正交：recorded/delivered/confirmed 都算在场，
+    // rejected 单独为拒绝判据）。
     // F5（二轮复评 2026-10-18）结构完整性升级：空壳记录（完成回调无条件
     // 记账，payload 可为 Null）不再满足闸——payload JSON 必须带 `delivery`
     // 结构（真走交付管线的 capture；普通 cluster_result 空壳行不算），
@@ -1717,10 +1799,9 @@ async fn review_issue(
         let evidence = dispatches.last().map(|d| d.task_id.clone()).and_then(|task_id| {
             let db = deps.cluster.task_db()?;
             let rec = db.delivery_by_key(&task_id).ok().flatten()?;
-            if !matches!(rec.status.as_str(), "delivered" | "confirmed") {
+            if rec.status == "rejected" {
                 return Some(Err(format!(
-                    "缺交付证据：最新派发任务 {task_id} 的交付记录状态为 {}（rejected 不算在场）——交付已被拒。请走正常交付流程后重交。",
-                    rec.status
+                    "缺交付证据：最新派发任务 {task_id} 的交付记录状态为 rejected（拒绝不算在场）——交付已被拒。请走正常交付流程后重交。"
                 )));
             }
             let delivery = rec.payload.get("delivery").filter(|d| !d.is_null());

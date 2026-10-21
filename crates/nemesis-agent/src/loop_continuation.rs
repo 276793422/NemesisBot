@@ -1418,6 +1418,8 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                             .then(|| cont_data.session_key.clone()),
                         // 中途工具回执不挂节点徽章——归属只在最终回复。
                         source_node: None,
+                        // 项 C：中途回执不解除通知义务（义务针对任务结果本身）。
+                        task_id: None,
                     },
                 };
                 if let Err(e) = outbound_tx.send(outbound).await {
@@ -1514,6 +1516,9 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                 // 集群续行归属（2026-09-23）：干活的是远端节点，web 通道据此
                 // 渲染「节点 X」徽章。None = 不写键，出站帧与历史行为一致。
                 source_node: source_node.map(|s| s.to_string()),
+                // 项 C（2026-10-22）：最终回复携带任务 id，通道投递结果据此
+                // 记账到 deliveries（notify_state 三段：pending→accepted→confirmed）。
+                task_id: Some(task_id.to_string()),
             },
         };
         if let Err(e) = outbound_tx.send(outbound).await {

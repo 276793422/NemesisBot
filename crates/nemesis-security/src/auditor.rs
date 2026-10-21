@@ -146,10 +146,10 @@ impl ApprovalVerdict {
 /// K4 (devtool-upgrade 阶段 7): 审批请求的来源通道上下文。
 ///
 /// 由 pipeline 从 `ToolInvocation.metadata` 提取（loop 在构造 invocation 时
-/// 填入 `approval_chat_id` / `approval_sender_id`；channel 取
-/// `invocation.source`）。审批管理器据此把审批卡路由回**发起操作的对话**
-/// （IM 通道卡片 + 回执），而不是只会弹 Dashboard/桌面弹窗。字段为空 =
-/// 无来源上下文（cron 直发无 chat 等），管理器自行决定回落行为。
+/// 填入 `approval_chat_id` / `approval_sender_id` / `approval_session_key`；
+/// channel 取 `invocation.source`）。审批管理器据此把审批卡路由回**发起操
+/// 作的对话**（IM 通道卡片 + 回执），而不是只会弹 Dashboard/桌面弹窗。字段
+/// 为空 = 无来源上下文（cron 直发无 chat 等），管理器自行决定回落行为。
 #[derive(Debug, Clone, Default)]
 pub struct ApprovalContext {
     /// 来源通道名（web / telegram / feishu / ...）。
@@ -158,6 +158,10 @@ pub struct ApprovalContext {
     pub chat_id: String,
     /// 发起人 ID（记录用；v1 群聊语义下同 chat 任一成员可批复）。
     pub sender_id: String,
+    /// 来源会话键（重启补裁回灌用：裁决消息按它路由回原会话——主 loop 走
+    /// bus，项目会话经 ProjectLoopManager 归属转发，同一 session_key 两种
+    /// 归宿都命中）。空 = 旧链路/无会话上下文，补裁退化为纯记账。
+    pub session_key: String,
 }
 
 pub trait ApprovalManager: Send + Sync {

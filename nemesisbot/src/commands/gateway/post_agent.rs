@@ -742,6 +742,9 @@ pub(crate) async fn init_post_agent(
                 crate::delivery_ledger::DeliveryLedgerBridge::install(std::sync::Arc::clone(
                     &deliveries_db,
                 ));
+                // 项 C（2026-10-22）：通知账本 db 同点注入（sweeper 每 tick
+                // 惰性读槽；钩子记账复用同一 Arc<TaskDb>）。
+                crate::notify::install_notify_db(std::sync::Arc::clone(&deliveries_db));
                 // 节点宣告带 agent 清单（P2）：provider 闭包每次现读实体
                 // 注册表（UDP announce / TCP 探针回退 / get_info 三路同源），
                 // 运行期建删 agent 无需回写或重启。cluster 关 = 不装（roster

@@ -32,6 +32,8 @@ interface BoardFlags {
     selfcheck: boolean
     auto_close_project: boolean
     checkers: number
+    /** 必需检查契约：{匹配标签: [必需锚点 id]}；空串键 = 全局兜底规则 */
+    required_checks: Record<string, string[]>
   }
   budget: {
     max_subissues_per_parent: number
@@ -78,6 +80,7 @@ async function load() {
         selfcheck: !!r?.review?.selfcheck,
         auto_close_project: !!r?.review?.auto_close_project,
         checkers: r?.review?.checkers ?? 1,
+        required_checks: r?.review?.required_checks ?? {},
       },
       budget: {
         max_subissues_per_parent: r?.budget?.max_subissues_per_parent ?? 20,
@@ -96,6 +99,7 @@ async function load() {
   } catch (e: any) {
     toast.error('加载看板配置失败: ' + e)
   } finally {
+    syncRequiredRulesFromFlags()
     loading.value = false
   }
 }
@@ -170,7 +174,7 @@ function normalizeFallbackMode(v: any): 'off' | 'role' | 'full' {
   return 'off'
 }
 
-async function setFlag(key: string, value: boolean | number | string | null) {
+async function setFlag(key: string, value: boolean | number | string | null | Record<string, string[]>) {
   try {
     await request('board', 'config.set', { key, value })
     toast.success('已保存')
@@ -210,6 +214,70 @@ function onFallbackMode(ev: Event) {
 function onFallbackTarget(ev: Event) {
   const raw = (ev.target as HTMLInputElement).value.trim()
   void setFlag('dispatch_fallback_target', raw === '' ? null : raw)
+}
+
+// ---- 必需检查规则（项 B「必需的必须跑」，2026-10-22 拍板）----
+// 行态编辑（key + 逗号分隔 ids 原文），每次行变更整 map 保存（后端 whole-map
+// 键 review.required_checks）。空 key 行填了 ids = 全局兜底规则；key+ids 全
+// 空 = 未填完的草稿行（保存时跳过）；key 填了但 ids 空 / 键重复 = 校验失败
+// 不保存（toast 提示，行态保留）。
+
+interface RequiredRuleRow {
+  key: string
+  ids: string
+}
+
+const requiredRules = ref<RequiredRuleRow[]>([])
+
+function syncRequiredRulesFromFlags() {
+  const map = flags.value?.review.required_checks ?? {}
+  requiredRules.value = Object.keys(map)
+    .sort()
+    .map((k) => ({ key: k, ids: map[k].join(', ') }))
+}
+
+/** 逗号/分号/空白切分锚点 id 列表（中英文逗号分号都认）。 */
+function parseIds(raw: string): string[] {
+  return raw
+    .split(/[,;，；\s]+/)
+    .map((s) => s.trim())
+    .filter((s) => s !== '')
+}
+
+function ruleLabel(key: string): string {
+  return key === '' ? '全局兜底' : key
+}
+
+async function saveRequiredRules() {
+  const map: Record<string, string[]> = {}
+  for (const row of requiredRules.value) {
+    const key = row.key.trim()
+    const ids = parseIds(row.ids)
+    if (key === '' && ids.length === 0) continue // 未填完的草稿行
+    if (ids.length === 0) {
+      toast.warn(`规则「${ruleLabel(key)}」缺少锚点 id，未保存`)
+      return
+    }
+    if (key in map) {
+      toast.warn(`规则键「${ruleLabel(key)}」重复，未保存`)
+      return
+    }
+    map[key] = ids
+  }
+  await setFlag('review.required_checks', map)
+}
+
+function addRequiredRule() {
+  requiredRules.value.push({ key: '', ids: '' })
+}
+
+function removeRequiredRule(idx: number) {
+  requiredRules.value.splice(idx, 1)
+  void saveRequiredRules()
+}
+
+function onRequiredRuleInput() {
+  void saveRequiredRules()
 }
 
 onMounted(load)
@@ -272,6 +340,35 @@ onMounted(load)
             :value="flags.dispatch_fallback_target ?? ''"
             @change="onFallbackTarget($event)"
           />
+        </div>
+      </div>
+
+      <!-- 必需检查规则（项 B「必需的必须跑」）：命中标签的单子验收时，
+           列出的锚点必须全部跑过（声明+执行），否则强制停车转人工 -->
+      <h3 class="section-title">必需检查规则</h3>
+      <div class="param-list">
+        <div v-for="(row, idx) in requiredRules" :key="idx" class="param-row required-rule-row">
+          <input
+            class="form-input rule-key-input"
+            type="text"
+            placeholder="匹配标签（留空 = 全局兜底）"
+            v-model="row.key"
+            @change="onRequiredRuleInput"
+          />
+          <input
+            class="form-input rule-ids-input"
+            type="text"
+            placeholder="必需锚点 id，逗号分隔"
+            v-model="row.ids"
+            @change="onRequiredRuleInput"
+          />
+          <button class="btn btn-ghost btn-sm" title="删除规则" @click="removeRequiredRule(idx)">✕</button>
+        </div>
+        <div class="required-rule-hint">
+          命中规则（任务标签与匹配键交集，大小写不敏感）的单子验收时，列出的锚点必须在验收标准中声明且实际执行（过或不过都算跑过）；任一未满足则验收强制停车转人工，不自动通过。匹配键留空 = 全局兜底（对所有单子生效）。锚点 id 填 [CHECK] 行的文件路径 / 命令 / pattern 文本。
+        </div>
+        <div>
+          <button class="btn btn-secondary btn-sm" @click="addRequiredRule">＋ 添加规则</button>
         </div>
       </div>
 
@@ -534,5 +631,21 @@ onMounted(load)
 }
 .param-input-wide {
   width: 240px;
+}
+.required-rule-row {
+  align-items: center;
+}
+.rule-key-input {
+  width: 200px;
+  flex-shrink: 0;
+}
+.rule-ids-input {
+  flex: 1;
+}
+.required-rule-hint {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  padding: 0 var(--space-1);
 }
 </style>

@@ -233,3 +233,121 @@ fn promote_step4_failure_message_restore_failed_carries_manual_command() {
     assert!(msg.contains("o:\\vm\\images\\base.qcow2"), "msg = {msg}");
     assert!(msg.contains("o:\\vm\\overlays\\a.qcow2"), "msg = {msg}");
 }
+
+// ===========================================================================
+// plugin-vm 单一依赖包查找链（2026-10-22 拍板：脚本 + guest 产物随
+// plugin-vm 插件包分发，bot 不携带——查找顺序部署优先/开发回落的回归锁）。
+// ===========================================================================
+mod package_lookup {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use super::super::vm_bridge::{guest_bin_candidates_with, vm_image_script_path_with};
+
+    /// 唯一临时 scratch 目录（按测试名 + pid 隔离，并行不互踩）。
+    struct Scratch(PathBuf);
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let base = std::env::temp_dir()
+                .join(format!("vm_bridge_pkg_lookup_{tag}_{}", std::process::id()));
+            let _ = fs::remove_dir_all(&base);
+            fs::create_dir_all(&base).expect("mkdir scratch");
+            Self(base)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn script_lookup_prefers_plugin_dir_then_dev_fallback() {
+        let scratch = Scratch::new("script");
+        let plugin_dir = scratch.path();
+        let dev = scratch.path().join("dev").join("build-vm-image.sh");
+        fs::create_dir_all(dev.parent().unwrap()).unwrap();
+        // 开发形态脚本先物化（①b/② 的回落臂依赖它在场）。
+        fs::write(&dev, b"#!/usr/bin/env bash\n").unwrap();
+
+        // ① 包内脚本在场 → 命中包路径（部署形态优先）。
+        let in_pkg = plugin_dir.join("build-vm-image.sh");
+        fs::write(&in_pkg, b"#!/usr/bin/env bash\n").unwrap();
+        assert_eq!(
+            vm_image_script_path_with(Some(plugin_dir), &dev),
+            Some(in_pkg.clone())
+        );
+        // ①b 无 exe 目录语义（plugin_dir=None）→ 直接走开发回落。
+        assert_eq!(vm_image_script_path_with(None, &dev), Some(dev.clone()));
+
+        // ② 包内缺席、开发形态在场 → 回落 dev 路径。
+        fs::remove_file(&in_pkg).unwrap();
+        assert_eq!(
+            vm_image_script_path_with(Some(plugin_dir), &dev),
+            Some(dev.clone())
+        );
+
+        // ③ 双双缺席 → None（no_script 态的来源）。
+        fs::remove_file(&dev).unwrap();
+        assert_eq!(vm_image_script_path_with(Some(plugin_dir), &dev), None);
+        assert_eq!(vm_image_script_path_with(None, &dev), None);
+    }
+
+    #[test]
+    fn guest_candidates_order_package_first_then_dev_target() {
+        let scratch = Scratch::new("guest");
+        let plugin_dir = scratch.path();
+
+        // ① 部署形态候选在先：plugin_vm/guest/<短arch>/（与 build-guest.sh 的
+        //    bin/bin_guest/<短arch>/ 布局同构，打包直拷），开发形态候选垫后
+        //    （target triple 形态）。
+        assert_eq!(
+            guest_bin_candidates_with(Some(plugin_dir), "x86_64").unwrap(),
+            vec![
+                plugin_dir
+                    .join("guest")
+                    .join("x86_64")
+                    .join("nemesis-guest"),
+                PathBuf::from("target")
+                    .join("x86_64-unknown-linux-musl")
+                    .join("release")
+                    .join("nemesis-guest"),
+            ]
+        );
+        // ② aarch64 同构：短 arch 进包路径，triple 进 dev 路径。
+        assert_eq!(
+            guest_bin_candidates_with(Some(plugin_dir), "aarch64").unwrap(),
+            vec![
+                plugin_dir
+                    .join("guest")
+                    .join("aarch64")
+                    .join("nemesis-guest"),
+                PathBuf::from("target")
+                    .join("aarch64-unknown-linux-musl")
+                    .join("release")
+                    .join("nemesis-guest"),
+            ]
+        );
+        // ③ 无 exe 目录语义 → 只剩开发形态候选。
+        assert_eq!(
+            guest_bin_candidates_with(None, "x86_64").unwrap(),
+            vec![
+                PathBuf::from("target")
+                    .join("x86_64-unknown-linux-musl")
+                    .join("release")
+                    .join("nemesis-guest")
+            ]
+        );
+    }
+
+    #[test]
+    fn guest_candidates_reject_unknown_arch() {
+        let scratch = Scratch::new("arch");
+        let err = guest_bin_candidates_with(Some(scratch.path()), "riscv64")
+            .expect_err("非法 arch 必须 Err");
+        assert!(err.contains("riscv64"), "err = {err}");
+    }
+}

@@ -153,6 +153,9 @@ mod mcp_serve;
 /// warn=放行示警 / dormant=放行不验）+ Dashboard 本地插件库清单
 ///（status_list / scan_unrecognized）。
 mod native_plugins;
+/// 项 C（2026-10-22）：出站通知记账 + 失败重试 sweeper——notify_state
+/// 三段推进（pending→channel_accepted→confirmed）与 notify_outbox 重投。
+mod notify;
 /// WASM 插件框架 ↔ gateway 桥（W5-3）：agent 工具桥 / 宿主调用面 / vault
 /// 凭据解析 / 安装审批晚绑 / estop 联动。随 `plugins-wasm` feature 门控
 /// （该 feature implies security——信任/审计/扫描机制依赖 nemesis-security）。

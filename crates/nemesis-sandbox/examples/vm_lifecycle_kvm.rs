@@ -76,7 +76,7 @@ fn step(n: u8, what: &str) {
 async fn main() {
     let args = parse_args();
     let Some(base) = args.base.clone() else {
-        skip("缺 --base（先用 scripts/build-vm-image.sh 制备镜像）");
+        skip("缺 --base（先用 plugins/plugin-vm/build-vm-image.sh 制备镜像）");
     };
     if !base.exists() {
         skip(&format!("base 镜像不存在: {}", base.display()));

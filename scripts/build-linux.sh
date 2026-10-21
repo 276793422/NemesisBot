@@ -11,6 +11,10 @@
 # Output layout:
 #   bin/bin_linux/
 #   ├── nemesisbot
+#   ├── libplugin_vm.so
+#   ├── plugin_vm/
+#   │   ├── build-vm-image.sh
+#   │   └── guest/<arch>/nemesis-guest
 #   ├── plugins/
 #   │   ├── plugin_ui.so
 #   │   └── plugin_onnx.so
@@ -166,6 +170,14 @@ if ! cargo build --release 2>&1; then
     exit 1
 fi
 
+# vm-display pass（plugin-vm 宿主 loader；plugin-vm 包 = VM 能力栈唯一分发
+# 依赖，打包件 exe 必须带显示 loader。增量：仅 nemesisbot crate 重编；
+# 失败保留默认 exe，非致命）
+echo "  Building nemesisbot with vm-display (plugin-vm loader)..."
+if ! cargo build --release -p nemesisbot --features vm-display 2>&1; then
+    echo "  WARN vm-display build failed, keeping default exe (VM display relay unavailable)"
+fi
+
 BUILD_DURATION=$(( SECONDS - START_TIME ))
 echo "  OK Build completed in ${BUILD_DURATION}s"
 echo ""
@@ -223,6 +235,23 @@ else
         fi
     else
         echo "  SKIP $PLUGIN_WASM_DIR/Cargo.toml not found"
+    fi
+    echo ""
+
+    # --- plugin-vm（显示中继 .so 放 exe 同目录 + plugin_vm/ 资源目录：镜像脚本
+    #     + guest 产物——plugin-vm 包 = VM 能力栈唯一分发依赖） ---
+    PLUGIN_VM_DIR="plugins/plugin-vm"
+    if [ -f "$PLUGIN_VM_DIR/Cargo.toml" ]; then
+        echo "  Building plugin-vm..."
+        VM_START=$SECONDS
+        if (cd "$PLUGIN_VM_DIR" && CARGO_TARGET_DIR="${ROOT_DIR}/target/target_linux/plugins/plugin-vm" cargo build --release 2>&1); then
+            VM_DURATION=$(( SECONDS - VM_START ))
+            echo "  OK Plugin-vm built in ${VM_DURATION}s"
+        else
+            echo "  WARN Plugin-vm build failed (non-fatal — VM 显示中继将不可用)"
+        fi
+    else
+        echo "  SKIP $PLUGIN_VM_DIR/Cargo.toml not found"
     fi
     echo ""
 fi
@@ -294,6 +323,48 @@ for so_path in "target/target_linux/plugins/plugin-wasm/release/libplugin_wasm.s
 done
 if [ "$WASM_DLL_FOUND" = false ] && [ "$SKIP_PLUGIN" = false ]; then
     echo "  WARN libplugin_wasm.so not found in build output (wasm 插件子系统将不可用)"
+fi
+
+# plugin-vm 显示中继（exe 同目录查找——loader 语义）+ plugin_vm/ 资源目录
+# （镜像脚本 + guest 产物——plugin-vm 包 = VM 能力栈唯一分发依赖）
+VM_DLL_FOUND=false
+for so_path in "target/target_linux/plugins/plugin-vm/release/libplugin_vm.so"; do
+    if [ -f "$so_path" ]; then
+        cp "$so_path" "$BIN_DIR/"
+        SIZE=$(wc -c < "$so_path")
+        SIZE_MB=$(( SIZE / 1048576 ))
+        COPIED+=("libplugin_vm.so (${SIZE_MB} MB)")
+        VM_DLL_FOUND=true
+        break
+    fi
+done
+if [ "$VM_DLL_FOUND" = false ] && [ "$SKIP_PLUGIN" = false ]; then
+    echo "  WARN libplugin_vm.so not found in build output (VM 显示中继将不可用)"
+fi
+mkdir -p "$BIN_DIR/plugin_vm/guest"
+if [ -f "plugins/plugin-vm/build-vm-image.sh" ]; then
+    cp "plugins/plugin-vm/build-vm-image.sh" "$BIN_DIR/plugin_vm/"
+    COPIED+=("plugin_vm/build-vm-image.sh")
+else
+    [ "$SKIP_PLUGIN" = false ] && echo "  WARN build-vm-image.sh not found (VM 镜像管线将不可用)"
+fi
+# guest 产物：缺席且 bash 可用时尽力构建（musl 交叉编译），再把
+# bin/bin_guest/<arch>/ 镜像进插件包资源目录
+if [ ! -f "bin/bin_guest/x86_64/nemesis-guest" ] && command -v cargo >/dev/null 2>&1; then
+    if rustup target list --installed 2>/dev/null | grep -q x86_64-unknown-linux-musl; then
+        echo "  Building guest binaries (scripts/build-guest.sh)..."
+        bash scripts/build-guest.sh >/dev/null 2>&1 || echo "  WARN guest build failed (non-fatal)"
+    fi
+fi
+for arch in x86_64 aarch64; do
+    if [ -f "bin/bin_guest/$arch/nemesis-guest" ]; then
+        mkdir -p "$BIN_DIR/plugin_vm/guest/$arch"
+        cp "bin/bin_guest/$arch/nemesis-guest" "$BIN_DIR/plugin_vm/guest/$arch/"
+        COPIED+=("plugin_vm/guest/$arch/nemesis-guest")
+    fi
+done
+if [ ! -f "$BIN_DIR/plugin_vm/guest/x86_64/nemesis-guest" ] && [ "$SKIP_PLUGIN" = false ]; then
+    echo "  WARN guest binaries absent (run scripts/build-guest.sh; VM 镜像构建将不可用)"
 fi
 
 # Copy test-tools binaries to bin/bin_linux/tests/

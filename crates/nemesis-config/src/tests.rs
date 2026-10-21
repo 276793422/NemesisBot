@@ -3234,6 +3234,55 @@ fn test_board_review_budget_roundtrip() {
 }
 
 // ============================================================
+// 必需检查契约（项 B「必需的必须跑」，2026-10-22 拍板）：
+// board.review.required_checks 默认 / round-trip / 空串键全局兜底保留
+// ============================================================
+
+#[test]
+fn test_board_required_checks_default_empty_and_roundtrip() {
+    // 默认空 map = 契约关闭（零回归）；缺段 / 空段 / 段内缺字段一致。
+    let empty: Config = serde_json::from_str("{}").unwrap();
+    assert!(
+        empty
+            .board
+            .unwrap_or_default()
+            .review
+            .required_checks
+            .is_empty()
+    );
+    let partial: BoardFlagConfig = serde_json::from_value(serde_json::json!({
+        "review": { "max_turns": 3 }
+    }))
+    .unwrap();
+    assert!(
+        partial.review.required_checks.is_empty(),
+        "段内缺字段落空 map"
+    );
+
+    // 显式配置 → round-trip 全保留（含空串键全局兜底规则 + 多 id 列表）。
+    let cfg: BoardFlagConfig = serde_json::from_value(serde_json::json!({
+        "review": {
+            "required_checks": {
+                "dev": ["docs/build.md", "npm test"],
+                "": ["run.sh"]
+            }
+        }
+    }))
+    .unwrap();
+    assert_eq!(
+        cfg.review.required_checks.get("dev").map(|v| v.as_slice()),
+        Some(&["docs/build.md".to_string(), "npm test".to_string()][..])
+    );
+    assert_eq!(
+        cfg.review.required_checks.get("").map(|v| v.as_slice()),
+        Some(&["run.sh".to_string()][..]),
+        "空串键 = 全局兜底规则，round-trip 不得丢失"
+    );
+    let re: BoardFlagConfig = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+    assert_eq!(re.review.required_checks, cfg.review.required_checks);
+}
+
+// ============================================================
 // B1：职能→评审预设查表（board.review.professions）
 // ============================================================
 

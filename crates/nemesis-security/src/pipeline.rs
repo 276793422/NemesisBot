@@ -807,6 +807,8 @@ impl SecurityPlugin {
         // K4 (b): 从 invocation metadata 提取审批来源上下文（loop 构造
         // invocation 时填入）——RequireApproval 时审批卡按它路由回发起
         // 对话（IM 通道）；缺键 = 空 ctx，管理器按现状处理。
+        // approval_session_key（2026-10-22 审批续执行）：重启补裁回灌路由
+        // 键——随行进台账 payload，stale 卡裁决后按它把裁决消息送回原会话。
         let approval_ctx = crate::auditor::ApprovalContext {
             channel: invocation.source.clone(),
             chat_id: invocation
@@ -817,6 +819,11 @@ impl SecurityPlugin {
             sender_id: invocation
                 .metadata
                 .get("approval_sender_id")
+                .cloned()
+                .unwrap_or_default(),
+            session_key: invocation
+                .metadata
+                .get("approval_session_key")
                 .cloned()
                 .unwrap_or_default(),
         };
