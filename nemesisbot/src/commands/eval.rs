@@ -186,6 +186,25 @@ async fn run_eval(
         PathBuf::from(stripped)
     };
 
+    // 原生插件闸（eval 监控 DLL 是插件目录一员；事件驱动装载 = 开关即时
+    // 生效）。关 = 诚实终止（监控事件缺失的评估没有结论价值，不静默降级）；
+    // 签名策略与 exe 自验同一三态矩阵（enforce 态 fail-closed 拒载）。
+    match crate::native_plugins::gate_load(
+        &nemesis_path::workspace_config_dir(&common::workspace_path(&real_home)),
+        nemesis_config::plugins_native::NativePluginId::EvalMonitor,
+    ) {
+        crate::native_plugins::GateOutcome::Allow => {}
+        crate::native_plugins::GateOutcome::DisabledBySwitch => bail!(
+            "eval_monitor_dll 已被用户停用（Dashboard「本地插件库」开关 / \
+             <workspace>/config/plugins_native.json）；重新开启后 eval 立即可用（本插件开关即时生效）"
+        ),
+        crate::native_plugins::GateOutcome::BlockedBySignature(d) => {
+            bail!(
+                "eval_monitor_dll 未通过签名策略（{d}）：enforce 态（锁定版/显式配置）只装载自方根签名库"
+            )
+        }
+    }
+
     // 6b — real config → key/base/model (memory only, never written to disk).
     let real_cfg_path = real_home.join("config.json");
     let real_cfg = nemesis_config::load_config(&real_cfg_path)

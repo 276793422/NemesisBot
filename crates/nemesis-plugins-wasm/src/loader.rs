@@ -1,8 +1,10 @@
 //! 宿主 DLL 装载器（libloading；load-once-never-unload）。
 //!
-//! 搜索顺序：`NEMESIS_WASM_HOST_DLL` 环境变量 → exe 同目录 → exe 旁
-//! `plugins/`（部署布局）→ 开发路径（`<repo>/plugins/plugin-wasm/target
-//! /release/`）。装载失败 =
+//! 搜索顺序：`NEMESIS_WASM_HOST_DLL` 环境变量**权威覆盖**（显式指定 =
+//! 只试该路径，不再回落探测——缺席/装载失败即失败，错误文本如实列出；
+//! 测试注入与部署替换的确定性通道）→ exe 同目录 → exe 旁 `plugins/`
+//! （部署布局）→ 开发路径（`<repo>/plugins/plugin-wasm/target/release/`，
+//! 测试二进制多一层 deps/ 深）。装载失败 =
 //! `PluginError::NotAvailable`（`PluginManager::new` 上抛 → gateway 侧
 //! `build_plugin_stack` 警告并整体关闭 wasm 子系统——诚实降级，不崩）。
 //!
@@ -44,14 +46,16 @@ fn dll_file_name() -> &'static str {
     }
 }
 
-/// 候选路径序列（env → exe 同目录 → exe 旁 `plugins/` → 开发路径）。
+/// 候选路径序列（env 权威覆盖 → exe 同目录 → exe 旁 `plugins/` → 开发路径）。
 fn candidate_paths() -> Vec<std::path::PathBuf> {
-    let mut out = Vec::new();
+    // 显式 env 指定 = 权威覆盖：只试该路径，不回落探测（降级测试依赖此
+    // 语义在「壳在位」的开发机上确定性模拟缺席；部署替换同理）。
     if let Ok(p) = std::env::var("NEMESIS_WASM_HOST_DLL")
         && !p.trim().is_empty()
     {
-        out.push(std::path::PathBuf::from(p));
+        return vec![std::path::PathBuf::from(p)];
     }
+    let mut out = Vec::new();
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
     {
@@ -59,10 +63,16 @@ fn candidate_paths() -> Vec<std::path::PathBuf> {
         // 部署布局：build 脚本把壳产物放 exe 旁 plugins/（与 plugin-ui/
         // eval-monitor 同目录纪律）。
         out.push(dir.join("plugins").join(dll_file_name()));
-        // 开发形态：tests/gateway 从 target/{debug,release} 跑，壳产物在
+        // 开发形态：gateway 从 target/{debug,release} 跑，壳产物在
         // plugins/plugin-wasm/target/release/（独立 CARGO_TARGET_DIR）。
         out.push(
             dir.join("../../plugins/plugin-wasm/target/release")
+                .join(dll_file_name()),
+        );
+        // 测试形态：cargo test 的测试二进制在 target/{debug,release}/deps/，
+        // 比运行时 exe 深一层——同一开发路径需三级 ".." 才达仓库根。
+        out.push(
+            dir.join("../../../plugins/plugin-wasm/target/release")
                 .join(dll_file_name()),
         );
     }

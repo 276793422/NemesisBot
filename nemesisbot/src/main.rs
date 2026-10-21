@@ -144,6 +144,12 @@ mod image_gen_tool;
 /// 暴露给 Claude Code / Cursor 等客户端；K1 式装配与 gateway 同源
 /// （安全 8 层全量生效，MCP 出口不是安全旁路）。
 mod mcp_serve;
+/// 原生插件装载闸 + 签名策略（四个本地 C-ABI 插件 DLL 的统一裁决点）：
+/// 开关文件 `<workspace>/config/plugins_native.json`（nemesis-config
+/// plugins_native）+ 与 exe 自验同源的三态签名矩阵（enforce=拒载 /
+/// warn=放行示警 / dormant=放行不验）+ Dashboard 本地插件库清单
+///（status_list / scan_unrecognized）。
+mod native_plugins;
 /// WASM 插件框架 ↔ gateway 桥（W5-3）：agent 工具桥 / 宿主调用面 / vault
 /// 凭据解析 / 安装审批晚绑 / estop 联动。随 `plugins-wasm` feature 门控
 /// （该 feature implies security——信任/审计/扫描机制依赖 nemesis-security）。
@@ -1189,5 +1195,7 @@ pub(crate) static APPROVAL_AUTO_SLOT_LOCK: std::sync::Mutex<()> = std::sync::Mut
 
 #[cfg(test)]
 mod bridge_client_tests;
+#[cfg(test)]
+mod native_plugins_tests;
 #[cfg(test)]
 mod tests;

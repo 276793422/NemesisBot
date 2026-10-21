@@ -70,19 +70,35 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
 }
 
 #[test]
-fn plugins_list_reports_both_known_plugins_without_error() {
+fn plugins_list_reports_full_native_catalog_without_error() {
     let dir = tempfile::tempdir().unwrap();
     let r = PluginsHandler::new().plugins_list(&ws(&dir)).unwrap();
 
     let arr = r["plugins"].as_array().unwrap();
-    assert_eq!(arr.len(), 2, "onnx + ui");
-    assert_eq!(arr[0]["id"], "plugin_onnx");
-    assert_eq!(arr[1]["id"], "plugin_ui");
+    // 目录 = nemesis-config NativePluginId::ALL 四成员（2026-10-21 起不再
+    // 只列 onnx+ui——用户指出的「四个插件只见两个」根修）。
+    let ids: Vec<&str> = arr.iter().filter_map(|p| p["id"].as_str()).collect();
+    assert_eq!(
+        ids,
+        vec![
+            "plugin_onnx",
+            "plugin_ui",
+            "eval_monitor_dll",
+            "plugin_wasm"
+        ]
+    );
 
     // 测试进程 exe 旁没有 plugins/ → found:false 是合法状态（不报错）。
     for p in arr {
         assert_eq!(p["found"], false, "test env has no plugins dir: {p}");
+        // 开关缺省 = 启用（向后兼容语义）；生效语义标记在位。
+        assert_eq!(p["enabled"], true, "{p}");
+        assert_eq!(p["immediate_effect"], p["id"] == "eval_monitor_dll", "{p}");
+        // probe 未注入 = dormant 诚实降级。
+        assert_eq!(p["signature"]["mode"], "dormant", "{p}");
     }
+    // 未知库清单字段在位（测试环境无 plugins/ 目录 = 空表）。
+    assert_eq!(r["unrecognized_libraries"], serde_json::json!([]));
 
     // feature 状态数组已迁出（system.features / About 页构建形态 tab 消费）——
     // 这里钉「不再返回」，防止旧字段悄悄回潮。
@@ -90,6 +106,49 @@ fn plugins_list_reports_both_known_plugins_without_error() {
         r.get("features").is_none(),
         "plugins.list 不再携带 features（迁至 system.features）：{r}"
     );
+}
+
+#[tokio::test]
+async fn native_set_enabled_persists_and_list_reflects() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    let h = PluginsHandler::new();
+
+    // 关掉 plugin_ui。
+    let out = h
+        .handle_cmd(
+            "native_set_enabled",
+            Some(serde_json::json!({ "id": "plugin_ui", "enabled": false })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["enabled"], serde_json::json!(false));
+    assert_eq!(out["immediate_effect"], serde_json::json!(false));
+
+    // 清单反映开关（其他条目仍缺省启用）。
+    let r = h.handle_cmd("list", None, &ctx).await.unwrap().unwrap();
+    for p in r["plugins"].as_array().unwrap() {
+        let expected = p["id"] != "plugin_ui";
+        assert_eq!(p["enabled"], expected, "{p}");
+    }
+
+    // 未知 id → loud；缺字段 → loud。
+    let err = h
+        .handle_cmd(
+            "native_set_enabled",
+            Some(serde_json::json!({ "id": "nope", "enabled": true })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("未知原生插件 id"), "{err}");
+    let err = h
+        .handle_cmd("native_set_enabled", Some(serde_json::json!({})), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("id"), "{err}");
 }
 
 #[test]
@@ -148,7 +207,7 @@ async fn dispatch_list_via_bare_cmd_name() {
 
     // 裸名 "list"（不是 "plugins.list"）——commands.list 事故的 dispatch 级钉。
     let r = h.handle_cmd("list", None, &ctx).await.unwrap().unwrap();
-    assert!(r["plugins"].as_array().unwrap().len() == 2);
+    assert!(r["plugins"].as_array().unwrap().len() == 4);
 
     // 未知子命令 → loud 错误。
     let err = h.handle_cmd("bogus", None, &ctx).await.unwrap_err();

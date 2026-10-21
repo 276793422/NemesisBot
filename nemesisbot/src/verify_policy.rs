@@ -274,17 +274,25 @@ fn read_config_value(local_mode: bool) -> Option<String> {
         Ok(s) => s,
         Err(_) => return None,
     };
-    let json: serde_json::Value = match serde_json::from_str(&raw) {
+    match parse_signature_verify_value(&raw) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!(
-                "[verify] ⚠️ security 配置解析失败（{}）——signature_verify 按未配置处理",
-                e
-            );
-            return None;
+            eprintln!("[verify] ⚠️ security 配置解析失败（{e}）——signature_verify 按未配置处理");
+            None
         }
-    };
-    match json.get("signature_verify") {
+    }
+}
+
+/// 解析 security config 原文顶层 `signature_verify` 的字符串值——**单一解析
+/// 实现**（pub(crate)：原生插件装载闸 `native_plugins` 消费同一三态矩阵，
+/// 禁止在别处散落同款 JSON 抠键）。键缺席 / Null / 空串 = None（按未配置）；
+/// JSON 解析失败 / 键非字符串 = Err（响亮与否由调用方定——启动自验提示，
+/// 原生闸静默按未配置）。
+#[cfg(feature = "verify")]
+pub(crate) fn parse_signature_verify_value(raw: &str) -> Result<Option<String>, String> {
+    let json: serde_json::Value =
+        serde_json::from_str(raw).map_err(|e| format!("JSON 解析失败：{e}"))?;
+    Ok(match json.get("signature_verify") {
         Some(serde_json::Value::String(s)) => {
             let t = s.trim();
             if t.is_empty() {
@@ -293,15 +301,11 @@ fn read_config_value(local_mode: bool) -> Option<String> {
                 Some(t.to_string())
             }
         }
-        Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Null) | None => None,
         Some(_) => {
-            eprintln!(
-                "[verify] ⚠️ security.signature_verify 必须是字符串（off/warn/enforce）——当前按未配置处理"
-            );
-            None
+            return Err("signature_verify 必须是字符串（off/warn/enforce）".to_string());
         }
-        None => None,
-    }
+    })
 }
 
 /// 验证当前进程 exe（lib 直接验签，不走 DLL；编译期锚单锚集）。

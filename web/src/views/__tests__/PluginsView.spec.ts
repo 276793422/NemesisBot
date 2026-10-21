@@ -2,10 +2,10 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { useToast } from '../../composables/useToast'
 
-// 2026-09-29 三 Tab 重构：默认落 WASM Tab（主角：是什么/怎么做引导 +
-// devkit 下载 + 管理面）；本地插件库 / 管线插件各自成 Tab。契约（
-// request('plugins','list') 精确形态）与错误降级不变。后端行为由
-// handlers/plugins/tests.rs（含 dispatch 级）钉住。
+// 三 Tab 重构（2026-09-29）+ 本地插件库升级（2026-10-21：目录全量四成员 +
+// 用户开关（native_set_enabled，长期记忆）+ 签名状态徽标 + 未知库清单——
+// 只列出，不装载）。契约（request('plugins','list') 精确形态）与错误降级
+// 不变。后端行为由 handlers/plugins/tests.rs（含 dispatch 级）钉住。
 
 const requestMock = vi.fn()
 vi.mock('../../composables/useWSAPI', () => ({
@@ -26,6 +26,9 @@ const LIST = {
       found: true,
       filename: 'plugin_onnx.dll',
       path: 'C:\\bot\\plugins\\plugin_onnx.dll',
+      enabled: true,
+      immediate_effect: false,
+      signature: { mode: 'dormant', state: null, detail: '签名状态探测未接入（gateway 未注入 probe）' },
       capabilities: ['embedding 推理'],
       detail: {
         enhanced_memory_enabled: true,
@@ -40,7 +43,33 @@ const LIST = {
       used_by: 'desktop 集成',
       found: false,
       filename: 'plugin_ui.dll',
+      enabled: true,
+      immediate_effect: false,
+      signature: { mode: 'dormant', state: null, detail: '签名状态探测未接入（gateway 未注入 probe）' },
     },
+    {
+      id: 'eval_monitor_dll',
+      label: 'eval 沙盒监控',
+      used_by: 'eval 行为评估',
+      found: true,
+      filename: 'eval_monitor_dll.dll',
+      enabled: true,
+      immediate_effect: true,
+      signature: { mode: 'dormant', state: null, detail: '签名状态探测未接入（gateway 未注入 probe）' },
+    },
+    {
+      id: 'plugin_wasm',
+      label: 'WASM 插件宿主壳',
+      used_by: 'WASM 组件插件子系统',
+      found: true,
+      filename: 'plugin_wasm.dll',
+      enabled: false,
+      immediate_effect: false,
+      signature: { mode: 'dormant', state: null, detail: '签名状态探测未接入（gateway 未注入 probe）' },
+    },
+  ],
+  unrecognized_libraries: [
+    { name: 'stray_helper.dll', path: 'C:\\bot\\plugins\\stray_helper.dll' },
   ],
 }
 
@@ -77,7 +106,7 @@ describe('PluginsView 三 Tab 重构（WASM 主角 + 本地库 + 管线）', () 
     expect(w.text()).toContain('怎么开发一个插件')
     expect(w.text()).toContain('下载插件开发包')
     // 本地库内容在另一 Tab，默认不渲染
-    expect(w.text()).not.toContain('1/2 已就绪')
+    expect(w.text()).not.toContain('3/4 已就绪')
     w.unmount()
   })
 
@@ -106,18 +135,105 @@ describe('PluginsView 三 Tab 重构（WASM 主角 + 本地库 + 管线）', () 
     w.unmount()
   })
 
-  it('本地插件库 Tab：切换后渲染就绪状态、能力与 onnx detail', async () => {
+  it('本地插件库 Tab：目录全量四成员 + 就绪状态 + 开关 + 签名徽标 + 生效语义', async () => {
     const w = await mountView()
     await switchTab(w as any, '本地插件库')
-    expect(w.text()).toContain('1/2 已就绪')
+    expect(w.text()).toContain('3/4 已就绪')
     expect(w.text()).toContain('plugin_onnx')
     expect(w.text()).toContain('已就绪')
     expect(w.text()).toContain('C:\\bot\\plugins\\plugin_onnx.dll')
     expect(w.text()).toContain('embedding 推理')
     expect(w.text()).toContain('模型就绪')
-    // 未找到的 ui 插件
-    expect(w.text()).toContain('plugin_ui')
+    // 目录全量（2026-10-21：不再只列 onnx+ui）
+    expect(w.text()).toContain('eval_monitor_dll')
+    expect(w.text()).toContain('plugin_wasm')
     expect(w.text()).toContain('未找到')
+    // 开关（checkbox 在场）+ 生效语义注记
+    const boxes = w.findAll('input[type="checkbox"]')
+    expect(boxes.length).toBe(4)
+    expect(w.text()).toContain('开关即时生效')
+    expect(w.text()).toContain('改动重启后生效')
+    // 签名徽标（dormant 态）
+    expect(w.text()).toContain('签名策略休眠')
+    // 停用条目：置灰（opacity）+ 已停用 badge
+    const off = w.findAll('.plugin-card').find(c => c.text().includes('plugin_wasm'))
+    expect(off!.attributes('style')).toContain('opacity: 0.55')
+    expect(off!.text()).toContain('已停用')
+    w.unmount()
+  })
+
+  it('本地插件库开关：toggle 走 native_set_enabled，toast 带生效语义', async () => {
+    const w = await mountView()
+    await switchTab(w as any, '本地插件库')
+    requestMock.mockClear()
+    requestMock.mockImplementation((_m: string, cmd: string, data?: any) => {
+      if (cmd === 'native_set_enabled')
+        return Promise.resolve({ id: data.id, enabled: data.enabled, immediate_effect: false, note: '重启 gateway 后生效' })
+      if (cmd === 'list') return Promise.resolve(LIST)
+      return Promise.resolve({})
+    })
+    // 点 plugin_onnx 的开关（关）。
+    const card = w.findAll('.plugin-card').find(c => c.text().includes('plugin_onnx'))
+    const box = card!.find('input[type="checkbox"]')
+    await box.setValue(false)
+    await flushPromises()
+    expect(requestMock).toHaveBeenCalledWith('plugins', 'native_set_enabled', { id: 'plugin_onnx', enabled: false })
+    expect(useToast().toasts.some(t => t.message.includes('已停用') && t.message.includes('重启 gateway 后生效'))).toBe(true)
+    w.unmount()
+  })
+
+  it('未知库清单：只列出，不装载', async () => {
+    const w = await mountView()
+    await switchTab(w as any, '本地插件库')
+    expect(w.text()).toContain('未识别的库')
+    expect(w.text()).toContain('只列出，不装载')
+    expect(w.text()).toContain('stray_helper.dll')
+    w.unmount()
+  })
+
+  it('签名 enforced 拦截态：红字签名拦截徽标', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'list') {
+        return Promise.resolve({
+          ...LIST,
+          plugins: LIST.plugins.map(p =>
+            p.id === 'plugin_ui'
+              ? { ...p, signature: { mode: 'enforced', state: 'Tampered', detail: 'file hash mismatch' } }
+              : p
+          ),
+        })
+      }
+      if (cmd === 'wasm.list') return Promise.resolve({ plugins: [] })
+      return Promise.resolve({})
+    })
+    const w = await mountView()
+    await switchTab(w as any, '本地插件库')
+    expect(w.text()).toContain('签名拦截：Tampered')
+    expect(w.text()).toContain('file hash mismatch')
+    w.unmount()
+  })
+
+  it('签名 warn 态：未验签放行（橙）+ 已验签（绿）', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'list') {
+        return Promise.resolve({
+          ...LIST,
+          plugins: LIST.plugins.map(p =>
+            p.id === 'plugin_ui'
+              ? { ...p, signature: { mode: 'warn', state: 'NoSignature', detail: '无主签名（开发构建 / 未签产物）' } }
+              : p.id === 'plugin_onnx'
+                ? { ...p, signature: { mode: 'warn', state: 'Valid', detail: 'signed_at=1' } }
+                : p
+          ),
+        })
+      }
+      if (cmd === 'wasm.list') return Promise.resolve({ plugins: [] })
+      return Promise.resolve({})
+    })
+    const w = await mountView()
+    await switchTab(w as any, '本地插件库')
+    expect(w.text()).toContain('未验签（warn 放行）')
+    expect(w.text()).toContain('无主签名（开发构建 / 未签产物）')
     w.unmount()
   })
 
@@ -125,13 +241,12 @@ describe('PluginsView 三 Tab 重构（WASM 主角 + 本地库 + 管线）', () 
     requestMock.mockImplementation((_m: string, cmd: string) => {
       if (cmd === 'list') {
         return Promise.resolve({
-          plugins: [
-            {
-              ...LIST.plugins[0],
-              detail: { enhanced_memory_enabled: true, active_tier: 'medium', active_model: 'all-MiniLM-L6-v2', model_ready: false },
-            },
-            LIST.plugins[1],
-          ],
+          ...LIST,
+          plugins: LIST.plugins.map(p =>
+            p.id === 'plugin_onnx'
+              ? { ...p, detail: { enhanced_memory_enabled: true, active_tier: 'medium', active_model: 'all-MiniLM-L6-v2', model_ready: false } }
+              : p
+          ),
         })
       }
       if (cmd === 'wasm.list') return Promise.resolve({ plugins: [] })
