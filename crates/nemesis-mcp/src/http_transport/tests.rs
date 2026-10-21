@@ -974,3 +974,50 @@ async fn r14_test_w4c_http_sse_notification_only_ended_without_data() {
     );
     t.close().await.unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// sanitize_url_for_log（2026-10-21 自查 #1：query 凭据不得进错误串）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sanitize_url_strips_query_key() {
+    // Smithery 风格 `?key=` 端点——reqwest Display 原样带全 URL 的时代，
+    // 连接失败会把 key 泄进错误串（日志 + mcp_discover 回灌模型双通路）。
+    assert_eq!(
+        super::sanitize_url_for_log("https://gateway.smithery.ai/mcp?key=secret-key-123"),
+        "https://gateway.smithery.ai/mcp?<redacted>"
+    );
+}
+
+#[test]
+fn sanitize_url_plain_url_untouched() {
+    assert_eq!(
+        super::sanitize_url_for_log("http://127.0.0.1:8080/mcp"),
+        "http://127.0.0.1:8080/mcp"
+    );
+    assert_eq!(
+        super::sanitize_url_for_log("https://example.com/a/b/c"),
+        "https://example.com/a/b/c"
+    );
+}
+
+#[test]
+fn sanitize_url_masks_userinfo() {
+    assert_eq!(
+        super::sanitize_url_for_log("https://user:hunter2@example.com/mcp"),
+        "https://***@example.com/mcp"
+    );
+    assert_eq!(
+        super::sanitize_url_for_log("https://user:hunter2@example.com/mcp?key=k"),
+        "https://***@example.com/mcp?<redacted>"
+    );
+}
+
+#[test]
+fn sanitize_url_path_at_sign_is_not_userinfo() {
+    // '@' 出现在路径段（authority 之后含 '/'）不是 userinfo，不掩码。
+    assert_eq!(
+        super::sanitize_url_for_log("https://example.com/u@a/resource"),
+        "https://example.com/u@a/resource"
+    );
+}

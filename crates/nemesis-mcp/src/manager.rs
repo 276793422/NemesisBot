@@ -12,7 +12,7 @@ use tracing::{info, warn};
 
 use crate::adapter::{self, Tool};
 use crate::client::{Client, McpClient};
-use crate::http_transport::HttpTransport;
+use crate::http_transport::{HttpTransport, sanitize_url_for_log};
 use crate::stdio_transport::StdioTransport;
 use crate::types::{McpTool, Resource, ServerConfig, ServerInfo};
 
@@ -393,14 +393,16 @@ pub async fn discover_server_metadata_http_with_headers(
             let _ = client.close().await;
             return Err(format!(
                 "MCP HTTP server '{}' initialization failed: {}",
-                url, e
+                sanitize_url_for_log(url),
+                e
             ));
         }
         Err(_) => {
             let _ = client.close().await;
             return Err(format!(
                 "MCP HTTP server '{}' timed out after {}s",
-                url, timeout_secs
+                sanitize_url_for_log(url),
+                timeout_secs
             ));
         }
     }
