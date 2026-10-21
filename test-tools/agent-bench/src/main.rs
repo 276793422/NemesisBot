@@ -18,7 +18,7 @@
 mod report;
 mod scenarios;
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use futures::StreamExt;
 use report::Scorecard;
 use serde_json::{Value, json};
@@ -40,6 +40,12 @@ struct BenchConfig {
     /// 提示词体系（`agents.prompt_system`）：pro（默认）/ classic。
     /// 双基线对比用——同一场景集在两种体系下各存一份 baseline。
     prompt_system: String,
+    /// A3：同机延迟门容忍度（0.30 = p50 相对回退 +30% 判倒退）。
+    latency_tolerance: f64,
+    /// A3：并发度扫描档位（`--sweep 1,2,4,8`；None = 不扫）。
+    sweep_levels: Option<Vec<usize>>,
+    /// A3：导出 chrome trace（`--trace` → out_dir/trace.json）。
+    trace: bool,
 }
 
 impl BenchConfig {
@@ -52,6 +58,9 @@ impl BenchConfig {
         let mut compare_baseline = None;
         let mut out_dir = None;
         let mut prompt_system = "pro".to_string();
+        let mut latency_tolerance = 0.30;
+        let mut sweep_levels = None;
+        let mut trace = false;
         let mut i = 1;
         while i < args.len() {
             match args[i].as_str() {
@@ -88,6 +97,38 @@ impl BenchConfig {
                     }
                     prompt_system = v.to_string();
                 }
+                "--latency-tolerance" => {
+                    i += 1;
+                    let v: f64 = args[i].parse().map_err(|_| {
+                        anyhow!(
+                            "--latency-tolerance 需要百分数（如 30 = +30%），得到: {}",
+                            args[i]
+                        )
+                    })?;
+                    if !(0.0..=1000.0).contains(&v) {
+                        bail!("--latency-tolerance 超出合理区间 [0, 1000]: {v}");
+                    }
+                    latency_tolerance = v / 100.0;
+                }
+                "--sweep" => {
+                    i += 1;
+                    let mut levels = Vec::new();
+                    for part in args[i].split(',') {
+                        let p = part.trim();
+                        if p.is_empty() {
+                            continue;
+                        }
+                        let n: usize = p
+                            .parse()
+                            .map_err(|_| anyhow!("--sweep 档位需为正整数，得到: {p}"))?;
+                        levels.push(n);
+                    }
+                    if levels.is_empty() {
+                        bail!("--sweep 解析结果为空（示例: --sweep 1,2,4,8）");
+                    }
+                    sweep_levels = Some(levels);
+                }
+                "--trace" => trace = true,
                 other => bail!("未知参数: {other}"),
             }
             i += 1;
@@ -119,6 +160,9 @@ impl BenchConfig {
             compare_baseline,
             out_dir,
             prompt_system,
+            latency_tolerance,
+            sweep_levels,
+            trace,
         })
     }
 }
@@ -427,7 +471,9 @@ async fn main() -> Result<()> {
         for r in results {
             match r {
                 Ok((ms, _)) => {
-                    score.record_pass(ms);
+                    // A3：记墙钟偏移（chrome trace 时间轴）。
+                    let offset = bench_start.elapsed().as_millis() as u64;
+                    score.record_pass_at(ms, offset);
                     println!("  PASS  {ms}ms");
                 }
                 Err(e) => {
@@ -459,18 +505,101 @@ async fn main() -> Result<()> {
         println!("baseline 已保存：{}", base.display());
     }
 
+    // A3：并发度扫描（与场景目录解耦——扫的是吞吐/延迟曲线，不是通过率）。
+    if let Some(levels) = &cfg.sweep_levels {
+        println!("\n=== 并发度扫描（档位 {levels:?}）===");
+        // 记住扫前默认（models.list 的 is_default 行），扫完恢复——bench
+        // 不留环境副作用（场景热切模型属既有行为，sweep 是新增入口，
+        // 自己收尾）。
+        let prev_default: Option<String> = match api.call("models", "list", None).await {
+            (Some(v), None) => v.get("models").and_then(|m| m.as_array()).and_then(|arr| {
+                arr.iter()
+                    .find(|e| {
+                        e.get("is_default")
+                            .and_then(|d| d.as_bool())
+                            .unwrap_or(false)
+                    })
+                    .and_then(|e| {
+                        e.get("model_name")
+                            .and_then(|n| n.as_str())
+                            .map(String::from)
+                    })
+            }),
+            _ => None,
+        };
+        // 钉回基础对话模型（扫描量调度不量场景语义）。
+        let (_, err) = api
+            .call(
+                "models",
+                "set_default",
+                Some(json!({ "name": "test/testai-1.1" })),
+            )
+            .await;
+        if let Some(e) = err {
+            eprintln!("sweep 前置 models.set_default 失败: {e}（跳过扫描）");
+        } else {
+            let sweep = scenarios::run_concurrency_sweep(ctx, levels).await;
+            std::fs::write(
+                cfg.out_dir.join("sweep.json"),
+                serde_json::to_string_pretty(&scenarios::sweep_to_json(&sweep))?,
+            )?;
+            std::fs::write(
+                cfg.out_dir.join("sweep.md"),
+                scenarios::sweep_to_markdown(&sweep),
+            )?;
+            println!(
+                "扫描结果：{} / sweep.md",
+                cfg.out_dir.join("sweep.json").display()
+            );
+            // 恢复扫前默认（尽力而为；失败只提示，不影响 exit code）。
+            if let Some(prev) = &prev_default
+                && prev != "testai-1.1"
+                && prev != "test/testai-1.1"
+            {
+                let (_, rerr) = api
+                    .call("models", "set_default", Some(json!({ "name": prev })))
+                    .await;
+                if let Some(re) = rerr {
+                    eprintln!("sweep 后恢复默认模型 {prev} 失败: {re}");
+                }
+            }
+        }
+    }
+
+    // A3：chrome trace 导出。
+    if cfg.trace {
+        let trace_path = cfg.out_dir.join("trace.json");
+        report::export_chrome_trace(&card, &trace_path)?;
+        println!("chrome trace：{}", trace_path.display());
+    }
+
     let mut exit_code = 0;
     if let Some(base) = &cfg.compare_baseline {
-        match report::compare_baseline(&card, base) {
-            Ok(regressions) if regressions.is_empty() => {
-                println!("baseline 对比：无回退 ✓");
-            }
-            Ok(regressions) => {
-                eprintln!("baseline 对比：{} 项回退：", regressions.len());
-                for r in &regressions {
-                    eprintln!("  - {r}");
+        match report::compare_baseline(&card, base, cfg.latency_tolerance) {
+            Ok(findings) => {
+                // A3 修订：findings 混合倒退项与 `[note]`/`[ok]` 提示项——
+                // 只有非提示项判失败（exit 1）。
+                let regressions: Vec<&String> = findings
+                    .iter()
+                    .filter(|f| !f.starts_with("[note]") && !f.starts_with("[ok]"))
+                    .collect();
+                if regressions.is_empty() {
+                    for f in &findings {
+                        println!("baseline 对比：{f}");
+                    }
+                    println!("baseline 对比：无回退 ✓");
+                } else {
+                    eprintln!("baseline 对比：{} 项回退：", regressions.len());
+                    for r in &regressions {
+                        eprintln!("  - {r}");
+                    }
+                    for f in &findings {
+                        if f.starts_with("[note]") {
+                            eprintln!("  {f}");
+                        }
+                    }
+                    exit_code = 1;
                 }
-                exit_code = 1;
             }
             Err(e) => {
                 eprintln!("baseline 对比失败: {e:#}");

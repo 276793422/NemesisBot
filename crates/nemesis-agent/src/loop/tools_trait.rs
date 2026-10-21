@@ -489,6 +489,22 @@ impl AgentLoop {
         }
     }
 
+    /// A2（2026-10-21 引入）：turn 收尾守卫事件落账
+    /// （`guard_event_stats` 天×模型 upsert，`models.health` 按「原地打转」
+    /// 口径消费——tier 校准建议的数据面）。0 事件不写行；无 data_store
+    /// 静默跳过；写失败只 warn——审计是增值动作，不反压轮次。
+    pub(crate) fn record_guard_events_stats(&self, events: u32) {
+        if events == 0 {
+            return;
+        }
+        if let Some(ref ds) = self.data_store {
+            let model = self.active_model.read().clone();
+            if let Err(e) = ds.record_guard_events(&model, events) {
+                tracing::warn!("[AgentLoop] record_guard_events failed: {e}");
+            }
+        }
+    }
+
     /// Phase 2: check a tool call's arguments against the registered tool's
     /// schema. Returns Valid / Fixed / Invalid. Unknown tools return Valid so
     /// the existing unknown-tool path in `handle_tool_call` reports them

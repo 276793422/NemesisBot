@@ -113,6 +113,7 @@ impl Tool for SteerEnqueueTool {
                     voice_playback: None,
                 },
                 timestamp: String::new(),
+                priority: crate::inbox::MessagePriority::Normal,
             },
         );
         Ok("STEER_TOOL_OK".to_string())
@@ -162,6 +163,7 @@ impl Tool for ReadOnlyProbeTool {
                         voice_playback: None,
                     },
                     timestamp: String::new(),
+                    priority: crate::inbox::MessagePriority::Normal,
                 },
             );
         }
@@ -235,6 +237,7 @@ async fn steer_skip_unit_synthesizes_results_and_keeps_pairs_legal() {
         QueuedMessage {
             msg: inbound(key, "! 先停下"),
             timestamp: String::new(),
+            priority: crate::inbox::MessagePriority::Normal,
         },
     );
 

@@ -481,3 +481,65 @@ fn similarity_short_strings_have_empty_shingle_sets() {
     // 两个都短于 n-gram 窗口 → shingle 集全空 → 并集 0 → 0.0。
     assert_eq!(similarity("ab", "cd"), 0.0);
 }
+
+// ---------------------------------------------------------------------------
+// A2（2026-10-21 引入）：guard_events 计数——本轮守卫事件
+// 总数（`finalize_turn` 落账用）。判定未触发不计数；六类触发点各自 +1。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn guard_events_count_triggers_not_clean_checks() {
+    let mut g = TurnGuard::new();
+    assert_eq!(g.guard_event_count(), 0);
+
+    // 干净路径（无判定触发）：不计。
+    assert!(g.record_tool_outcome("read_file", None).is_none());
+    assert!(
+        g.record_read_success("read_file", "{\"path\":\"a.rs\"}")
+            .is_none()
+    );
+    assert_eq!(g.guard_event_count(), 0);
+    assert!(matches!(
+        g.check_final_answer("正常答复"),
+        FinalAnswerVerdict::Accept
+    ));
+    assert_eq!(g.guard_event_count(), 0);
+
+    // 失败环 nudge：+1（nudge 阈值 3——前两次失败只入环不计，nudge 才算事件）。
+    let err = "Error: build failed: unresolved import";
+    g.record_tool_outcome("exec", Some(err));
+    g.record_tool_outcome("exec", Some(err));
+    assert_eq!(g.guard_event_count(), 0);
+    assert!(g.record_tool_outcome("exec", Some(err)).is_some());
+    assert_eq!(g.guard_event_count(), 1);
+
+    // 空答复重试：+1（未到 GiveUp 阈值）。
+    assert!(matches!(
+        g.check_final_answer("   "),
+        FinalAnswerVerdict::RetryWithNudge(_)
+    ));
+    assert_eq!(g.guard_event_count(), 2);
+}
+
+#[test]
+fn guard_events_each_trigger_class_counts_once() {
+    let mut g = TurnGuard::new();
+    // 写重复 nudge（⑤ 阈值 2：第 3 次同参成功才 nudge）——前两次干净不计。
+    let wargs = "{\"path\":\"a.rs\",\"content\":\"x\"}";
+    assert!(g.record_write_success("write_file", wargs).is_none());
+    assert!(g.record_write_success("write_file", wargs).is_none());
+    assert_eq!(g.guard_event_count(), 0);
+    assert!(g.record_write_success("write_file", wargs).is_some());
+    assert_eq!(g.guard_event_count(), 1);
+
+    // 读风暴（⑤′ 阈值 3：第 3 次同参起每次 nudge，每次计一格）。
+    let rargs = "{\"path\":\"same.rs\"}";
+    let mut read_nudges = 0;
+    for _ in 0..5 {
+        if g.record_read_success("read_file", rargs).is_some() {
+            read_nudges += 1;
+        }
+    }
+    assert_eq!(read_nudges, 3, "reads 3/4/5 nudge");
+    assert_eq!(g.guard_event_count(), 1 + 3);
+}

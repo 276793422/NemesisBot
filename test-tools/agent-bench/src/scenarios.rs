@@ -824,3 +824,115 @@ pub fn default_catalog() -> Vec<ScenarioSpec> {
         },
     ]
 }
+
+// ---------------------------------------------------------------------------
+// A3（2026-10-21 引入）：并发度扫描（Pareto 扫描）
+// ---------------------------------------------------------------------------
+
+/// 单档扫描结果（`--sweep` 输出的一行）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SweepLevelResult {
+    /// 并发档位（同时在线的独立会话数）。
+    pub level: usize,
+    /// 成功会话数。
+    pub success: usize,
+    /// 总会话数（= level）。
+    pub total: usize,
+    /// 整批墙钟（毫秒）——首会话发出到末会话收齐。
+    pub wall_ms: u64,
+    /// 单轮延迟 p50（毫秒，成功轮）。
+    pub p50_round_ms: u64,
+}
+
+/// 并发度扫描：每个档位起 N 条独立会话各跑一轮 basic 回复，量
+/// 「并发度 → 墙钟/单轮延迟」曲线（前代实现参数扫描表的直系同型：
+/// 吞吐换延迟的 Pareto 面，用于给 queue_size / 并发上限定档）。
+///
+/// 档位逐个跑（档内并发、档间串行）——档与档之间不互相污染调度。
+/// 单轮失败不中断扫描（记入 success/total，诚实呈现）。
+pub async fn run_concurrency_sweep(_ctx: BenchCtx, levels: &[usize]) -> Vec<SweepLevelResult> {
+    let mut out = Vec::new();
+    for &level in levels {
+        let level = level.max(1);
+        let start = Instant::now();
+        let mut handles = Vec::new();
+        for i in 0..level {
+            handles.push(tokio::spawn(async move {
+                let t0 = Instant::now();
+                let session_id = fresh_session_id(&format!("bench-sweep-{level}-{i}"));
+                let round = async {
+                    let mut stream = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+                    chat_send(
+                        &mut stream,
+                        &session_id,
+                        &format!("bench sweep {level}/{i}"),
+                        None,
+                    )
+                    .await?;
+                    let reply = chat_wait(
+                        &mut stream,
+                        &session_id,
+                        "好的，我知道了",
+                        Duration::from_secs(90),
+                    )
+                    .await?;
+                    let _ = stream.close(None).await;
+                    Ok::<String, anyhow::Error>(reply)
+                };
+                match round.await {
+                    Ok(_) => Ok(t0.elapsed().as_millis() as u64),
+                    Err(e) => Err(e),
+                }
+            }));
+        }
+        let mut round_ms = Vec::new();
+        let mut success = 0usize;
+        for h in handles {
+            if let Ok(Ok(ms)) = h.await {
+                success += 1;
+                round_ms.push(ms);
+            }
+        }
+        let wall = start.elapsed().as_millis() as u64;
+        round_ms.sort_unstable();
+        let p50 = round_ms.get(round_ms.len() / 2).copied().unwrap_or(0);
+        out.push(SweepLevelResult {
+            level,
+            success,
+            total: level,
+            wall_ms: wall,
+            p50_round_ms: p50,
+        });
+        println!("  sweep 并发={level}: {success}/{level} 成功，墙钟 {wall}ms，单轮 p50 {p50}ms");
+    }
+    out
+}
+
+/// 扫描结果 → JSON（档位数组，落 `sweep.json`）。
+pub fn sweep_to_json(results: &[SweepLevelResult]) -> Value {
+    json!({
+        "schema": "agent-bench-sweep/v1",
+        "levels": results,
+    })
+}
+
+/// 扫描结果 → Markdown 表（落 `sweep.md`；吞吐列 = level/wall 换算，
+/// 仅供横向读数，不作门）。
+pub fn sweep_to_markdown(results: &[SweepLevelResult]) -> String {
+    let mut out = String::new();
+    out.push_str("# agent-bench 并发度扫描\n\n");
+    out.push_str("| 并发 | 成功 | 墙钟(ms) | 单轮 p50(ms) | 吞吐(轮/s) |\n");
+    out.push_str("|---|---|---|---|---|\n");
+    for r in results {
+        let throughput = if r.wall_ms > 0 {
+            format!("{:.2}", r.success as f64 / (r.wall_ms as f64 / 1000.0))
+        } else {
+            "-".to_string()
+        };
+        out.push_str(&format!(
+            "| {} | {}/{} | {} | {} | {} |\n",
+            r.level, r.success, r.total, r.wall_ms, r.p50_round_ms, throughput
+        ));
+    }
+    out
+}
