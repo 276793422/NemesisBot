@@ -210,7 +210,7 @@ async function clearServerToken() {
   savingServer.value = true
   try {
     await request('cluster', 'relay.config', { token: '' })
-    toast.success('访问令牌已清除（回落 AllowAll，重启网关后生效）')
+    toast.success('访问令牌已清除——重启网关后中继将拒绝启动（无鉴权跳板不允许，fail-closed）')
     serverForm.value.token = ''
     await loadStatus()
   } catch (e: any) {
@@ -381,10 +381,10 @@ onUnmounted(() => {
             <span class="settings-key">访问令牌</span>
             <div style="display: flex; gap: var(--space-2); align-items: center;">
               <input class="form-input" type="password" v-model="serverForm.token" autocomplete="new-password"
-                :placeholder="relayStatus?.relay.token_set ? '已设置——输入新值可替换（留空不改）' : '客户端接入本中继所需（空 = 无鉴权）'"
+                :placeholder="relayStatus?.relay.token_set ? '已设置——输入新值可替换（留空不改）' : '客户端接入本中继所需（未设 = 中继拒绝启动，fail-closed）'"
                 spellcheck="false" style="font-family: var(--font-mono); font-size: var(--text-sm); max-width: 320px;" />
               <button v-if="relayStatus?.relay.token_set" class="btn btn-sm" type="button" :disabled="savingServer"
-                title="清除令牌（客户端将无法凭令牌接入——回落无鉴权）" @click="clearServerToken">清除</button>
+                title="清除令牌（清除后中继将拒绝启动——无鉴权裸奔不允许）" @click="clearServerToken">清除</button>
             </div>
           </div>
 
