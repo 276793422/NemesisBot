@@ -157,7 +157,7 @@ async fn session_usage_happy_path() {
         .unwrap();
     assert_eq!(r["session_key"], "agent:main:session:s1");
     assert_eq!(r["requests"], 2);
-    assert_eq!(r["input_tokens"], 350, "input 口径含 cache_read");
+    assert_eq!(r["input_tokens"], 350, "完整输入口径（creation 缺省 0 行）");
     assert_eq!(r["output_tokens"], 70);
     assert!((r["total_cost_usd"].as_f64().unwrap() - 0.03).abs() < 1e-9);
 }

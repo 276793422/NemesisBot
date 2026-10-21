@@ -176,6 +176,68 @@ fn session_tokens_used_reports_budget_ledger() {
     assert_eq!(st2["session_tokens_used"], 0);
 }
 
+/// R2 2026-10-22 回归锁：`record_round_usage` 的预算 delta = 完整输入
+/// （prompt + cache_creation + cache_read，`usage_full_input` 单一真相源）
+/// + output——Anthropic 形态（creation>0）不再漏计。走真实 record_round_usage
+/// 接线（observer 落账 + 预算累计），不手捏 delta。
+#[tokio::test]
+async fn record_round_usage_budget_delta_includes_cache_creation() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut al, _store) = m5_loop();
+    std::fs::write(
+        dir.path().join("config.json"),
+        serde_json::json!({"agents": {"defaults": {"session_token_budget": 100_000}}}).to_string(),
+    )
+    .unwrap();
+    al.set_config_path(dir.path().join("config.json"));
+    let ds = std::sync::Arc::new(
+        nemesis_data::DataStore::open(&dir.path().join("budget_delta.db")).unwrap(),
+    );
+    al.set_data_store(ds);
+
+    let key = "agent:main:session:budget-delta";
+    let context = RequestContext::new("web", "chat-budget", "user-budget", key);
+    let mut response = LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
+        content: "ok".to_string(),
+        tool_calls: Vec::new(),
+        finished: true,
+        reasoning_content: None,
+        usage: Some(crate::loop_executor::ObserverUsageInfo {
+            prompt_tokens: 100,
+            completion_tokens: 30,
+            total_tokens: 155,
+            cached_tokens: None,
+            cache_creation_tokens: Some(10),
+            cache_read_tokens: Some(15),
+        }),
+        raw_request_body: None,
+        raw_response_body: None,
+    };
+
+    al.record_round_usage(
+        &context,
+        "tr-budget",
+        &mut response,
+        std::time::Duration::from_millis(5),
+        1,
+    )
+    .await;
+
+    // 完整输入三列 100+10+15=125，+output 30 = 155（漏计形态给 145）。
+    assert_eq!(al.session_tokens_used(key), 155);
+    // 落账行同口径可回查（seed-on-miss 从底账种入不得互相打架）。
+    let agg = al
+        .data_store
+        .as_deref()
+        .unwrap()
+        .aggregate_session_usage(key)
+        .unwrap();
+    assert_eq!(agg.input_tokens, 125);
+    assert_eq!(agg.output_tokens, 30);
+}
+
 /// 2026-10-20 压缩点一等公民化：`trigger`/`trigger_source`/`pct_trigger`
 /// 观测字段。无用户键 → trigger = 窗口×75%（instance 兜底语义）；设了
 /// `compact_context_tokens` → 到点即压 + source=user。

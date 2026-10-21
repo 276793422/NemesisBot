@@ -3,7 +3,9 @@
 //! 开发/测试构建缺省落 **warn** 态；测试对锚形态做确定性分支断言而非假设
 //! 休眠）。
 
-use crate::native_plugins::{GateOutcome, gate_load, scan_unrecognized, status_list};
+use crate::native_plugins::{
+    GateOutcome, gate_load, gate_load_path, resolve_load_path, scan_unrecognized, status_list,
+};
 use nemesis_config::plugins_native::{NativePluginId, set_enabled};
 use std::path::PathBuf;
 
@@ -46,14 +48,137 @@ fn gate_disabled_by_switch() {
 }
 
 /// 开关开 + 库文件缺席 = Allow（闸只管「找到了装不装」，缺席归装载点日志；
-/// warn/enforce 态下缺席同样放行——拒绝发生在装载点的降级路径）。
+/// warn/enforce 态下缺席同样放行——拒绝发生在装载点的降级路径）。用
+/// PluginUi 保证确定性（wasm 宿主壳在开发机上可能经 env/开发路径命中真
+/// 产物——那也是合法的 Allow { path: Some }）。
 #[test]
 fn gate_allows_when_library_absent() {
     let config = temp_dir("absent");
     assert_eq!(
-        gate_load(&config, NativePluginId::PluginWasm),
-        GateOutcome::Allow
+        gate_load(&config, NativePluginId::PluginUi),
+        GateOutcome::Allow { path: None }
     );
+    let _ = std::fs::remove_dir_all(&config);
+}
+
+/// R1 回归锁（三评 probe 转正）：enforce 态下 env 权威覆盖指向未签名
+/// 文件 = 拒载（整改前闸只查 plugins/、查不到即 Allow，装载器却照装 env
+/// 文件——验签对象 ≠ 装载对象）。warn 缺省态同文件放行且 `Allow { path }`
+/// 携带的就是它（调用方按此定点装载）。
+#[test]
+fn enforce_blocks_unsigned_env_override_host() {
+    #[cfg(all(feature = "verify", feature = "plugins-wasm"))]
+    {
+        if crate::verify_policy::ROOT_ANCHOR.is_none() {
+            // 无锚构建恒休眠，enforce 不可达——本测试的前设不成立，诚实跳过。
+            return;
+        }
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let config = temp_dir("enforce_env");
+        let junk = temp_dir("enforce_env_dll").join("unsigned-review-host.dll");
+        std::fs::write(&junk, b"not a signed pe").unwrap();
+        // SAFETY: 进程级串行锁（GLOBAL_STATE_LOCK）内的 env 突变。
+        unsafe {
+            std::env::set_var("NEMESIS_WASM_HOST_DLL", &junk);
+        }
+        // enforce：env 文件未签名 → BlockedBySignature（fail-closed）。
+        std::fs::write(
+            config.join("config.security.json"),
+            r#"{ "signature_verify": "enforce" }"#,
+        )
+        .unwrap();
+        match gate_load(&config, NativePluginId::PluginWasm) {
+            GateOutcome::BlockedBySignature(_) => {}
+            other => panic!("enforce 态 env 未签名文件必须拒载，实得：{other:?}"),
+        }
+        // warn（缺省）：放行，且携带的路径 = env 文件本身（装载同源）。
+        std::fs::remove_file(config.join("config.security.json")).unwrap();
+        match gate_load(&config, NativePluginId::PluginWasm) {
+            GateOutcome::Allow { path } => {
+                assert_eq!(
+                    path.as_deref(),
+                    Some(junk.as_path()),
+                    "Allow 必须携带 env 文件"
+                );
+            }
+            other => panic!("warn 态必须放行，实得：{other:?}"),
+        }
+        // SAFETY: 同上，锁内清理。
+        unsafe {
+            std::env::remove_var("NEMESIS_WASM_HOST_DLL");
+        }
+        let _ = std::fs::remove_dir_all(&config);
+        let _ = std::fs::remove_dir_all(junk.parent().unwrap());
+    }
+    #[cfg(not(all(feature = "verify", feature = "plugins-wasm")))]
+    {
+        // verify / plugins-wasm 未编译：签名闸休眠、wasm 装载面缺席——
+        // 语义前提不成立，诚实跳过（保持编译无警告）。
+        let config = temp_dir("enforce_env_skip");
+        assert!(matches!(
+            gate_load(&config, NativePluginId::PluginWasm),
+            GateOutcome::Allow { .. }
+        ));
+        let _ = std::fs::remove_dir_all(&config);
+    }
+}
+
+/// R1 回归锁：`gate_load_path` 对显式路径的三态行为——enforce 验的就是
+/// 调用方给的那个文件（eval 监控 DLL 开发形态仓库路径受验的通道）；
+/// 路径感知变体不自行选路。
+#[test]
+fn gate_load_path_verifies_explicit_file() {
+    #[cfg(feature = "verify")]
+    {
+        if crate::verify_policy::ROOT_ANCHOR.is_some() {
+            let config = temp_dir("path_explicit");
+            let junk = temp_dir("path_explicit_dll").join("dev-shape-monitor.dll");
+            std::fs::write(&junk, b"not a signed pe").unwrap();
+            std::fs::write(
+                config.join("config.security.json"),
+                r#"{ "signature_verify": "enforce" }"#,
+            )
+            .unwrap();
+            match gate_load_path(&config, NativePluginId::EvalMonitor, Some(&junk)) {
+                GateOutcome::BlockedBySignature(_) => {}
+                other => panic!("enforce 态显式未签名文件必须拒载，实得：{other:?}"),
+            }
+            // 路径缺席（None）= 闸不管（缺席归装载点）。
+            assert_eq!(
+                gate_load_path(&config, NativePluginId::EvalMonitor, None),
+                GateOutcome::Allow { path: None }
+            );
+            let _ = std::fs::remove_dir_all(&config);
+            let _ = std::fs::remove_dir_all(junk.parent().unwrap());
+        }
+    }
+    #[cfg(not(feature = "verify"))]
+    {
+        let config = temp_dir("path_explicit_skip");
+        let junk = temp_dir("path_explicit_dll").join("dev-shape-monitor.dll");
+        std::fs::write(&junk, b"x").unwrap();
+        assert!(matches!(
+            gate_load_path(&config, NativePluginId::EvalMonitor, Some(&junk)),
+            GateOutcome::Allow { .. }
+        ));
+        let _ = std::fs::remove_dir_all(&config);
+        let _ = std::fs::remove_dir_all(junk.parent().unwrap());
+    }
+}
+
+/// 统一解析入口：非 wasm 插件在无库环境解析为 None；解析结果与
+/// `gate_load` 的 `Allow { path }` 同源（单一真相源契约）。
+#[test]
+fn resolve_load_path_matches_gate_allow_path() {
+    let config = temp_dir("resolve_sync");
+    let id = NativePluginId::PluginOnnx;
+    match (resolve_load_path(id), gate_load(&config, id)) {
+        (None, GateOutcome::Allow { path: None }) => {}
+        (Some(p), GateOutcome::Allow { path: Some(q) }) => assert_eq!(p, q),
+        (r, g) => panic!("解析与闸裁决不同源：resolve={r:?} gate={g:?}"),
+    }
     let _ = std::fs::remove_dir_all(&config);
 }
 

@@ -2025,7 +2025,8 @@ fn write_budget_config(dir: &std::path::Path, budget: u64) {
     .unwrap();
 }
 
-/// 带用量的 RequestLog 行（口径 = input 含 cache_read + output）。
+/// 带用量的 RequestLog 行（口径 = 完整输入（prompt + cache_creation +
+/// cache_read）+ output；creation/read 缺省 0，用例按需改字段）。
 fn budget_usage_row(session_key: &str, input: i64, output: i64) -> nemesis_data::RequestLog {
     nemesis_data::RequestLog {
         id: 0,

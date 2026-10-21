@@ -1410,7 +1410,8 @@ impl LogsHandler {
     }
 
     /// M5（2026-09-05）：`logs.session_usage` —— 单会话的 LLM 用量聚合
-    /// （请求条数 / 输入 token（含 cache_read）/ 输出 token / 总成本）。
+    /// （请求条数 / 输入 token（完整输入 = prompt + cache_creation +
+    /// cache_read，R2 2026-10-22 口径）/ 输出 token / 总成本）。
     /// 数据来自 `request_logs`（RequestLog.session_key 精确匹配）；无
     /// 数据库（usage 统计未启用）时诚实报错，前端静默降级为不展示。
     fn session_usage(
