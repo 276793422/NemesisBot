@@ -10,9 +10,10 @@
 //! config 键 `agents.defaults.session_token_budget`（u64）：**0 = 关（默认，
 //! 不改现网行为）**。注意与 `max_tool_iterations` 的「0 = 不限」惯例相反——
 //! 本键一族（含 `board.budget.*`）0 = 关，文档与提示词一律写死。
-//! 计费口径 = `input（含 cache_read）+ output`，与
-//! `DataStore::aggregate_session_usage` 账本 SQL 同源——累计器与底账
-//! 两边公式一致才不会互相打架。
+//! 计费口径 = 完整输入（prompt + cache_creation + cache_read，R2 2026-10-22
+//! 补全——loop 侧 `loop/token_budget.rs::usage_full_input` 单一真相源）+
+//! output，与 `DataStore::aggregate_session_usage` 账本 SQL 同源——累计器
+//! 与底账两边公式一致才不会互相打架。
 
 use std::collections::HashMap;
 
@@ -71,7 +72,8 @@ pub(crate) struct SessionTokenBudgetLedger {
     map: std::sync::Mutex<HashMap<String, SessionBudgetEntry>>,
 }
 
-/// 底账种入值：`Some(total)` = DB 聚合成功（input 含 cache_read）；`None`
+/// 底账种入值：`Some(total)` = DB 聚合成功（完整输入 = prompt +
+/// cache_creation + cache_read，R2 2026-10-22 口径）；`None`
 /// = 无 data store 或查询失败（调用方回落内存增量）。
 fn seed_total(ds: Option<&nemesis_data::DataStore>, session_key: &str) -> Option<u64> {
     let agg = ds?.aggregate_session_usage(session_key).ok()?;

@@ -1,8 +1,8 @@
 //! M5（devtool-upgrade 阶段 3）：`DataStore::aggregate_session_usage` 测试。
 //!
 //! 会话级用量聚合的三个契约：
-//! 1. 求和口径——`input_tokens` 含 `cache_read`（模型实际"读到"的输入，
-//!    与 UsageStoreSlot 统计同式），cost 直接 SUM；
+//! 1. 求和口径——`input_tokens` = 完整输入（prompt + cache_creation +
+//!    cache_read，R2 2026-10-22 补全 creation 列），cost 直接 SUM；
 //! 2. session_key **精确匹配**隔离（不是 LIKE 子串——两个会话互不污染）；
 //! 3. 未知 key → 全零聚合（前端按零值不渲染，而非报错）。
 
@@ -55,10 +55,31 @@ fn aggregate_sums_input_including_cache_read() {
 
     let agg = store.aggregate_session_usage(key).expect("aggregate");
     assert_eq!(agg.requests, 2);
-    // input 口径含 cache_read：(100+50) + (200+0) = 350。
+    // input 口径含 cache_read（creation 缺省 0）：(100+50) + (200+0) = 350。
     assert_eq!(agg.input_tokens, 350);
     assert_eq!(agg.output_tokens, 70);
     assert!((agg.total_cost_usd - 0.03).abs() < 1e-9);
+
+    let _ = fs::remove_file(&db_path);
+}
+
+/// R2 2026-10-22 回归锁：cache_creation 列计入聚合（Anthropic 形态——
+/// 整改前漏计 creation，会话预算/压缩信号系统性偏低）。
+#[test]
+fn aggregate_sums_input_including_cache_creation() {
+    let db_path = temp_db_path();
+    let store = DataStore::open(&db_path).expect("open db");
+    let key = "agent:main:session:agg-creation";
+
+    let mut row = log(key, 100, 50, 30, 0.01);
+    row.cache_creation_tokens = 25;
+    store.insert_request_log(&row).unwrap();
+
+    let agg = store.aggregate_session_usage(key).expect("aggregate");
+    assert_eq!(agg.requests, 1);
+    // 完整输入三列相加：100 + 25 + 50 = 175。
+    assert_eq!(agg.input_tokens, 175);
+    assert_eq!(agg.output_tokens, 30);
 
     let _ = fs::remove_file(&db_path);
 }

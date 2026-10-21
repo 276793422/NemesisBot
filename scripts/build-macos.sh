@@ -13,7 +13,8 @@
 #   ├── nemesisbot
 #   └── plugins/
 #       ├── libplugin_ui.dylib
-#       └── libplugin_onnx.dylib
+#       ├── libplugin_onnx.dylib
+#       └── libplugin_wasm.dylib
 #
 # Note: Only builds the main nemesisbot binary (+ its crate dependencies).
 #       Test-tools (integration-test / cluster-test / ...) are NOT compiled.
@@ -217,6 +218,21 @@ else
     else
         echo "  SKIP $PLUGIN_ONNX_DIR/Cargo.toml not found"
     fi
+
+    # --- plugin-wasm（WASM 插件宿主壳；缺席 = wasm 插件子系统诚实关闭） ---
+    PLUGIN_WASM_DIR="plugins/plugin-wasm"
+    if [ -f "$PLUGIN_WASM_DIR/Cargo.toml" ]; then
+        echo "  Building plugin-wasm..."
+        WASM_START=$SECONDS
+        if (cd "$PLUGIN_WASM_DIR" && CARGO_TARGET_DIR="${ROOT_DIR}/target/target_macos/plugins/plugin-wasm" cargo build --release 2>&1); then
+            WASM_DURATION=$(( SECONDS - WASM_START ))
+            echo "  OK Plugin-wasm built in ${WASM_DURATION}s"
+        else
+            echo "  WARN Plugin-wasm build failed (non-fatal — wasm 插件子系统将不可用)"
+        fi
+    else
+        echo "  SKIP $PLUGIN_WASM_DIR/Cargo.toml not found"
+    fi
     echo ""
 fi
 
@@ -272,6 +288,23 @@ for dylib_path in "target/target_macos/plugins/plugin-onnx/release/libplugin_onn
 done
 if [ "$ONNX_FOUND" = false ] && [ "$SKIP_PLUGIN" = false ]; then
     echo "  WARN libplugin_onnx.dylib not found in build output"
+fi
+
+# plugin-wasm 宿主壳（exe 旁 plugins/ 查找——缺席 = 子系统诚实关闭）
+WASM_FOUND=false
+for dylib_path in "target/target_macos/plugins/plugin-wasm/release/libplugin_wasm.dylib" \
+                  "target/target_macos/plugins/plugin-wasm/release/libplugin_wasm.so"; do
+    if [ -f "$dylib_path" ]; then
+        cp "$dylib_path" "$BIN_DIR/plugins/"
+        SIZE=$(wc -c < "$dylib_path")
+        SIZE_MB=$(( SIZE / 1048576 ))
+        COPIED+=("libplugin_wasm.dylib (${SIZE_MB} MB)")
+        WASM_FOUND=true
+        break
+    fi
+done
+if [ "$WASM_FOUND" = false ] && [ "$SKIP_PLUGIN" = false ]; then
+    echo "  WARN libplugin_wasm.dylib not found in build output (wasm 插件子系统将不可用)"
 fi
 
 echo "  OK Copied ${#COPIED[@]} file(s) to $BIN_DIR/"

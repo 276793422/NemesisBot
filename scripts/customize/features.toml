@@ -266,25 +266,28 @@ desc = "P2P 集群编排（`nemesisbot cluster` + 集群 Dashboard + cluster_rpc
 category = "subsystems"
 default = true
 
-# NOTE: `cluster-roaming`（A1 iroh 跨网 P2P 叠加层）默认关——LAN 用户零新依赖。
-# 开启后 iroh QUIC 依赖随 nemesis-cluster/cluster-roaming 进出；`cluster roaming`
-# CLI 子命令同 feature 门控。依赖 cluster（自动带入）。
+# NOTE: `cluster-roaming`（A1 iroh 跨网 P2P 叠加层）默认开（2026-10-22）——
+# UDP 打洞是跨网组网的基础能力，dashboard 中继页开箱可用。iroh QUIC 依赖随
+# nemesis-cluster/cluster-roaming 进出；`cluster roaming` CLI 子命令同 feature
+# 门控。依赖 cluster（自动带入）。IoT 最小形态经预设显式裁掉。
 [[feature]]
 id = "cluster-roaming"
 label = "集群跨网 P2P（iroh QUIC）"
-desc = "iroh 跨网 P2P 叠加层（`cluster roaming` 子命令 + 自证端点/中继打洞）。默认关：LAN 单网段用户零新依赖"
+desc = "iroh 跨网 P2P 叠加层（`cluster roaming` 子命令 + 自证端点/中继打洞）。默认开：跨网组网基础能力；IoT 最小形态可裁"
 category = "subsystems"
-default = false
+default = true
 
-# NOTE: `roaming-relay`（QUIC 中继服务器）默认关——iroh-relay server 面
-# 拉入 rcgen/ACME 等编译增量，只做客户端打洞不需要。依赖 cluster-roaming
-# （自动带入）。独立命令 `quic relay` 与随 gateway 启动同 feature 门控。
+# NOTE: `roaming-relay`（QUIC 中继服务器）默认开（2026-10-22，与 cluster-roaming
+# 同批翻转）——自建中继回落是「客户端指向中继服务器 + 令牌配对」流程的另一半，
+# 不编译则 dashboard 中继页恒为降级面板。iroh-relay server 面拉入 rcgen/ACME
+# 等编译增量，由全量构建承担。依赖 cluster-roaming（自动带入）。
+# 独立命令 `quic relay` 与随 gateway 启动同 feature 门控。
 [[feature]]
 id = "roaming-relay"
 label = "QUIC 中继服务器（内网穿透）"
-desc = "自建 iroh 中继回落服务器（`quic relay` 独立命令 + 随 gateway 启动）。默认关：只做客户端不需要"
+desc = "自建 iroh 中继回落服务器（`quic relay` 独立命令 + 随 gateway 启动）。默认开：客户端配对流程的另一半；IoT 最小形态可裁"
 category = "subsystems"
-default = false
+default = true
 
 # NOTE: `forge` 可裁剪（feature 穿透 nemesisbot → nemesis-agent/forge + nemesis-web/forge）。
 # 这是 Class C 内核裁剪——动 nemesis-agent 内核。关闭后自学习整包不编译。

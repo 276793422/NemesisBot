@@ -5531,6 +5531,10 @@ mod vm_config_tests;
 #[cfg(test)]
 mod plugins_native_tests;
 
+// HotReloader force_reload 语义（写方自刷新，绕过 mtime 检测）测试。
+#[cfg(test)]
+mod hot_reload_tests;
+
 // Single shared process-global-state lock for ALL tests in this crate that touch
 // `std::env::set_var` / `set_current_dir` / load config (which reads env). These
 // mutate/read PROCESS-GLOBAL state, so under parallel test execution they race:

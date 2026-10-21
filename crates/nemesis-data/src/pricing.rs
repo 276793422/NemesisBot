@@ -151,10 +151,13 @@ impl PricingTable {
 /// Compute `total_cost_usd` for one LLM request against the embedded table.
 /// Unknown model → `0.0` (degrade, never guess).
 ///
-/// `input_tokens` 语义（账本不变量，2026-10-20 修复）：**非缓存纯输入**
-/// （Anthropic 语义）。三条出站 lane 的 provider 层统一归一后喂入；缓存
-/// 读写单列各自计价。此前「input 含缓存总量、公式内做减法」的旧语义与
-/// 账本聚合（`SUM(input_tokens + cache_read_tokens)`）矛盾，已废弃。
+/// `input_tokens` 语义（账本不变量，2026-10-20 修复；R2 2026-10-22 补全
+/// 口径注记）：**非缓存纯输入**（Anthropic 语义）。三条出站 lane 的
+/// provider 层统一归一后喂入；缓存读写单列各自计价。合并形态的账本聚合
+/// = `SUM(input_tokens + cache_creation_tokens + cache_read_tokens)`
+/// （R2 前漏 creation 列）；分列聚合（UsageSummary / TrendPoint /
+/// daily_rollups）三列各自独立，消费方按需相加。此前「input 含缓存
+/// 总量、公式内做减法」的旧语义已废弃。
 pub fn compute_cost_usd(
     model: &str,
     input_tokens: i64,

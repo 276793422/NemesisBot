@@ -156,8 +156,9 @@ pub struct UsageSummary {
 
 /// 单会话的用量聚合（M5 会话级 cost/context 常驻）。
 ///
-/// `input_tokens` 已含 cache_read（模型实际"读到"的输入口径，与
-/// UsageStoreSlot 的统计同式）；`requests` 是落库的 LLM 请求条数。
+/// `input_tokens` = 完整输入口径（prompt + cache_creation + cache_read，
+/// R2 2026-10-22 补全——prompt 列是 provider 非缓存纯输入，聚合 SQL 把
+/// 缓存两列加回）；`requests` 是落库的 LLM 请求条数。
 /// 会话无任何请求时全零（不是错误——`logs.session_usage` 对
 /// 空/外部通道会话诚实返回零值）。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

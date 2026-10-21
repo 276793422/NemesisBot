@@ -429,6 +429,11 @@ impl DataStore {
     /// `context.session_key` 同源，无需 LIKE 子串宽松匹配）。
     /// 会话无请求行 → 全零聚合（不是错误）。
     ///
+    /// `input_tokens` 口径 = 完整输入（prompt + cache_creation +
+    /// cache_read；R2 2026-10-22 补全 cache_creation——prompt 列是 provider
+    /// 非缓存纯输入，Anthropic 形态漏计 creation 会话预算系统性偏低），
+    /// 与 loop 侧 `usage_full_input`（P8 预算 delta / 压缩信号）同口径。
+    ///
     /// usage-store 关：恒全零聚合（空账本语义）。
     #[cfg(not(feature = "usage-store"))]
     pub fn aggregate_session_usage(&self, _session_key: &str) -> Result<SessionUsageAgg, String> {
@@ -447,7 +452,7 @@ impl DataStore {
             .prepare(
                 "SELECT
                     COUNT(*),
-                    COALESCE(SUM(input_tokens + cache_read_tokens), 0),
+                    COALESCE(SUM(input_tokens + cache_creation_tokens + cache_read_tokens), 0),
                     COALESCE(SUM(output_tokens), 0),
                     COALESCE(SUM(total_cost_usd), 0.0)
                  FROM request_logs WHERE session_key = ?1",
@@ -472,6 +477,9 @@ impl DataStore {
     /// （T37 真机 run 4 实证：聚合恒 0 → token 闸永不熔断）。task_id（UUID）
     /// 是 per-dispatch 唯一锚，按 `/{task_id}` 后缀匹配对两种身份形态都稳。
     /// 无请求行 → 全零聚合（不是错误）。
+    ///
+    /// `input_tokens` 口径 = 完整输入（prompt + cache_creation +
+    /// cache_read，与 `aggregate_session_usage` 同式，R2 2026-10-22 补全）。
     ///
     /// usage-store 关：恒全零聚合（空账本语义；token 预算闸读到的恒是
     /// 0 占用——闸本身 0=关默认，不受影响）。
@@ -499,7 +507,7 @@ impl DataStore {
             .prepare(
                 "SELECT
                     COUNT(*),
-                    COALESCE(SUM(input_tokens + cache_read_tokens), 0),
+                    COALESCE(SUM(input_tokens + cache_creation_tokens + cache_read_tokens), 0),
                     COALESCE(SUM(output_tokens), 0),
                     COALESCE(SUM(total_cost_usd), 0.0)
                  FROM request_logs WHERE session_key LIKE ?1",

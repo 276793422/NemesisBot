@@ -2,14 +2,18 @@
 //!
 //! 装配形态对齐官方 iroh-relay `--dev` 模式：HTTP relay transport 明文
 //! （`http_port`，客户端零证书负担——relay_url 用 `http://` 即接入）+
-//! QUIC relay transport / QAD（`quic_port`，TLS 1.3）。TLS 三档：
+//! QAD（QUIC Address Discovery，`quic_port`，TLS 1.3；iroh 1.0.2 的 QUIC
+//! 臂**只有地址发现**，relay 流量本身恒走 HTTP/WS transport，无 QUIC relay
+//! transport——`quic_port` 属 v2 预留面）。TLS 三档：
 //! - [`RelayTls::SelfSigned`]（默认）：rcgen 自签，PEM 落
 //!   `<workspace>/cluster/relay/`，存在即复用（幂等）；
 //! - [`RelayTls::Manual`]：用户自备 PEM（cert_path + key_path，仅 PKCS#8 私钥）；
-//! - [`RelayTls::None`]：QUIC transport 关，纯 HTTP relay transport（受限兜底档）。
+//! - [`RelayTls::None`]：QAD 关，纯 HTTP relay transport（受限兜底档）。
 //!
 //! 访问控制：token 非空 = SharedToken（`Authorization: Bearer` / `?token=`，
-//! 官方 binary 同款形态）；空 = `AllowAll`。
+//! 官方 binary 同款形态）；空 = `AllowAll`（解析层默认）——但三个启动路径
+//! （`quic relay` CLI / `gateway --quic-relay` / 随网关 in-process）都在
+//! spawn 前对空 token fail-closed 拒绝，无鉴权中继不允许裸奔。
 //!
 //! Spike 结论（2026-10-21，iroh 1.0.2 源码核对）：
 //! - 客户端信任面存在——`Endpoint::builder().ca_tls_config(CaTlsConfig::

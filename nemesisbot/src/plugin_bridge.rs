@@ -531,12 +531,19 @@ pub fn build_plugin_stack(
         return None;
     }
     // 原生插件闸：宿主壳 plugin_wasm.dll 同受用户开关 + 签名策略管辖
-    // （装配期一次性消费——开关改动重启 gateway 生效）。
-    match crate::native_plugins::gate_load(
+    // （装配期一次性消费——开关改动重启 gateway 生效）。R1 整改：闸的
+    // `Allow { path }` 携带统一解析出的具体文件（enforce 态验签对象），
+    // 装载按同一路径定点进行——「验了 A 装 B」的解耦已封死。
+    let allowed_host_path = match crate::native_plugins::gate_load(
         &nemesis_path::workspace_config_dir(&common::workspace_path(home)),
         nemesis_config::plugins_native::NativePluginId::PluginWasm,
     ) {
-        crate::native_plugins::GateOutcome::Allow => {}
+        crate::native_plugins::GateOutcome::Allow { path } => {
+            if let Some(p) = &path {
+                info!("[WasmPlugin] 宿主壳装载对象：{}", p.display());
+            }
+            path
+        }
         crate::native_plugins::GateOutcome::DisabledBySwitch => {
             info!(
                 "[WasmPlugin] 宿主壳已停用（本地插件库开关关）——WASM 插件子系统不装配，重启后生效语义"
@@ -547,13 +554,24 @@ pub fn build_plugin_stack(
             tracing::warn!("[WasmPlugin] 宿主壳未通过签名策略（{d}）——WASM 插件子系统不装配");
             return None;
         }
-    }
+    };
     let manager = Arc::new(
-        PluginManager::new(
-            &common::workspace_path(home),
-            rc.limits,
-            Arc::new(VaultPluginSecrets::for_home(home)),
-        )
+        match &allowed_host_path {
+            // 闸验签过的具体文件 → 定点装载（不得再自行选路）。
+            Some(p) => PluginManager::new_with_host_path(
+                &common::workspace_path(home),
+                rc.limits,
+                Arc::new(VaultPluginSecrets::for_home(home)),
+                p,
+            ),
+            // 库文件缺席：保持既有语义——PluginManager::new 自动选路并以
+            // NotAvailable 诚实降级（子系统整体关闭）。
+            None => PluginManager::new(
+                &common::workspace_path(home),
+                rc.limits,
+                Arc::new(VaultPluginSecrets::for_home(home)),
+            ),
+        }
         .map_err(|e| {
             tracing::warn!(error = %e, "[WasmPlugin] PluginManager 构建失败，子系统停用");
             e

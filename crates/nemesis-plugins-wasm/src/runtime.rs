@@ -134,6 +134,16 @@ impl PluginRuntime {
         cache_root: Option<&std::path::Path>,
     ) -> Result<Self, PluginError> {
         let host = HostDll::open()?;
+        Self::with_host(limits, cache_root, host)
+    }
+
+    /// 定点宿主构建（闸获准路径——验签对象即装载对象；host 来自
+    /// `loader::open_at`，绕过自动选路与进程缓存）。
+    pub(crate) fn with_host(
+        limits: PluginLimits,
+        cache_root: Option<&std::path::Path>,
+        host: Arc<HostDll>,
+    ) -> Result<Self, PluginError> {
         host.engine_init(cache_root)?;
         Ok(Self {
             host,

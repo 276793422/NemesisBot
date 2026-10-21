@@ -530,8 +530,9 @@ fn relay_status_payload(
 
 /// cluster.relay.config 保存实现：校验 → RMW 合并 `roaming.relay` 段 + 客户端
 /// 面两键（relay_url/relay_token 写 roaming 段直挂；段内其他键与 roaming
-/// 兄弟键全保留）。**空串 = 删除该键 = 恢复解析默认**（token 空回落
-/// AllowAll、relay_url 空回落 n0 公共中继）；端口强校验 1-65535（0 会让对外
+/// 兄弟键全保留）。**空串 = 删除该键 = 恢复解析默认**（token 空回解析默认
+/// 空——三个启动路径对空 token fail-closed 拒绝，中继不起；relay_url 空
+/// 回落 n0 公共中继）；端口强校验 1-65535（0 会让对外
 /// URL 变 host:0 废话）；tls 强校验三值——解析层对未知 tls 宽容降级
 /// SelfSigned，写面不许（写面是当次意志，静默纠偏会把 manual 写成
 /// self-signed）。
@@ -590,7 +591,7 @@ fn relay_config_save_impl(
     if let Some(v) = obj.get("token") {
         let s = v.as_str().ok_or("token must be a string")?;
         let s = s.trim();
-        // 空串 = 清除令牌（回落 AllowAll）。
+        // 空串 = 清除令牌（解析默认空；启动面 fail-closed 拒绝无鉴权中继）。
         patch.insert(
             "token".to_string(),
             if s.is_empty() {

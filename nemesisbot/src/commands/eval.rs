@@ -186,25 +186,6 @@ async fn run_eval(
         PathBuf::from(stripped)
     };
 
-    // 原生插件闸（eval 监控 DLL 是插件目录一员；事件驱动装载 = 开关即时
-    // 生效）。关 = 诚实终止（监控事件缺失的评估没有结论价值，不静默降级）；
-    // 签名策略与 exe 自验同一三态矩阵（enforce 态 fail-closed 拒载）。
-    match crate::native_plugins::gate_load(
-        &nemesis_path::workspace_config_dir(&common::workspace_path(&real_home)),
-        nemesis_config::plugins_native::NativePluginId::EvalMonitor,
-    ) {
-        crate::native_plugins::GateOutcome::Allow => {}
-        crate::native_plugins::GateOutcome::DisabledBySwitch => bail!(
-            "eval_monitor_dll 已被用户停用（Dashboard「本地插件库」开关 / \
-             <workspace>/config/plugins_native.json）；重新开启后 eval 立即可用（本插件开关即时生效）"
-        ),
-        crate::native_plugins::GateOutcome::BlockedBySignature(d) => {
-            bail!(
-                "eval_monitor_dll 未通过签名策略（{d}）：enforce 态（锁定版/显式配置）只装载自方根签名库"
-            )
-        }
-    }
-
     // 6b — real config → key/base/model (memory only, never written to disk).
     let real_cfg_path = real_home.join("config.json");
     let real_cfg = nemesis_config::load_config(&real_cfg_path)
@@ -271,6 +252,36 @@ async fn run_eval(
             real_home.display()
         );
     }
+
+    // 6e.5 — 原生插件闸（eval 监控 DLL 是插件目录一员；事件驱动装载 =
+    // 开关即时生效）。关 = 诚实终止（监控事件缺失的评估没有结论价值，不
+    // 静默降级）；签名策略与 exe 自验同一三态矩阵（enforce 态 fail-closed
+    // 拒载）。R1 整改：先解析出实际装载文件（部署/开发双形态查找规则留在
+    // 本模块），闸验的就是它——开发形态仓库路径回退同样受验。缺席此处
+    // fail-fast（不再拖到注入点才报，避免半装配现场）。位置在 6b 配置层与
+    // 6e 沙盒就绪之后——分层 bail 顺序：config → model → sandbox → monitor。
+    let monitor_resolved = monitor_dll_path().ok();
+    match crate::native_plugins::gate_load_path(
+        &nemesis_path::workspace_config_dir(&common::workspace_path(&real_home)),
+        nemesis_config::plugins_native::NativePluginId::EvalMonitor,
+        monitor_resolved.as_deref(),
+    ) {
+        crate::native_plugins::GateOutcome::Allow { .. } => {}
+        crate::native_plugins::GateOutcome::DisabledBySwitch => bail!(
+            "eval_monitor_dll 已被用户停用（Dashboard「本地插件库」开关 / \
+             <workspace>/config/plugins_native.json）；重新开启后 eval 立即可用（本插件开关即时生效）"
+        ),
+        crate::native_plugins::GateOutcome::BlockedBySignature(d) => {
+            bail!(
+                "eval_monitor_dll 未通过签名策略（{d}）：enforce 态（锁定版/显式配置）只装载自方根签名库"
+            )
+        }
+    }
+    // 开关开但库缺席：富报错（部署/开发双形态文案）。
+    let monitor_dll = match monitor_resolved {
+        Some(p) => p,
+        None => monitor_dll_path()?,
+    };
 
     // 6f.0 — concurrent-eval lock（F1，2026-08-19）。Sandboxie.ini 是全局
     // 单文件：两个 eval 并发会互相覆盖/删除对方的 box 段（A 的
@@ -407,6 +418,7 @@ async fn run_eval(
             &start_exe,
             &sbiectrl,
             &sbiedll,
+            &monitor_dll,
             &common_args,
             &subject,
             &prompt_text,
@@ -586,6 +598,7 @@ async fn run_phases(
     start_exe: &Path,
     sbiectrl: &Path,
     sbiedll: &Path,
+    monitor_dll: &Path,
     common_args: &EvalCommon,
     subject: &str,
     prompt_text: &str,
@@ -652,8 +665,8 @@ async fn run_phases(
         );
     }
 
-    // 6j — monitor shell (signed host + monitor DLL).
-    let monitor_dll = monitor_dll_path()?;
+    // 6j — monitor shell (signed host + monitor DLL)。路径已在闸阶段解析
+    // （enforce 验签对象 = 这里注入的同一文件，R1 整改）。
     let events_path = home.join("monitor_events.jsonl");
     let events_str = events_path.to_string_lossy().to_string();
     let sbiedll_str = sbiedll.to_string_lossy().to_string();
