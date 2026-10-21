@@ -198,6 +198,11 @@ jobs:
         run: |
           (cd plugins/plugin-ui  && cargo build --release)
           (cd plugins/plugin-onnx && cargo build --release)
+          # plugin-wasm 是 WASM 插件宿主壳（独立 workspace，wasmtime 48 钉系，
+          # 与本地 build-windows.bat / build-linux.sh 同源）。缺席 = 用户机上
+          # wasm 插件子系统诚实关闭——全量 nightly 必须带壳，non-fatal 仅兜
+          # 编译环境意外，不构成常态缺席的理由。
+          (cd plugins/plugin-wasm && cargo build --release)
           # eval-monitor 是 Windows-only 注入 DLL（注入签名的 SbieCtrl.exe
           # 采集 Sandboxie 事件），只在 Windows 编
           if [ "${{ matrix.platform }}" = "windows" ]; then
@@ -210,16 +215,20 @@ jobs:
           mkdir -p staging/plugins
           # 主二进制（workspace 根 target/release/）
           cp "target/release/${{ matrix.binary }}" staging/
-          # plugin-ui / plugin-onnx 是独立 workspace（各自 Cargo.toml 带 [workspace] 声明），
-          # 产物在各自 plugins/<name>/target/release/ 下；crate 名连字符→下划线：
+          # plugin-ui / plugin-onnx / plugin-wasm 是独立 workspace（各自 Cargo.toml
+          # 带 [workspace] 声明），产物在各自 plugins/<name>/target/release/ 下；
+          # crate 名连字符→下划线：
           #   plugin-ui   → libplugin_ui.so (Linux) / plugin_ui.dll (Windows)
           #   plugin-onnx → libplugin_onnx.so / plugin_onnx.dll
+          #   plugin-wasm → libplugin_wasm.so / plugin_wasm.dll（WASM 插件宿主壳）
           #   plugin-eval-monitor → eval_monitor_dll.dll（Windows-only 注入 DLL）
           # 编译失败（non-fatal）则文件不存在，跳过，不影响主程序发布
           cp plugins/plugin-ui/target/release/libplugin_ui.so    staging/plugins/ 2>/dev/null || true
           cp plugins/plugin-ui/target/release/plugin_ui.dll     staging/plugins/ 2>/dev/null || true
           cp plugins/plugin-onnx/target/release/libplugin_onnx.so staging/plugins/ 2>/dev/null || true
           cp plugins/plugin-onnx/target/release/plugin_onnx.dll   staging/plugins/ 2>/dev/null || true
+          cp plugins/plugin-wasm/target/release/libplugin_wasm.so staging/plugins/ 2>/dev/null || true
+          cp plugins/plugin-wasm/target/release/plugin_wasm.dll   staging/plugins/ 2>/dev/null || true
           cp plugins/plugin-eval-monitor/target/release/eval_monitor_dll.dll staging/plugins/ 2>/dev/null || true
           echo "=== staging 内容 ==="
           ls -la staging staging/plugins

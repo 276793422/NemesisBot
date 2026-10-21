@@ -1062,14 +1062,18 @@ impl GatewayCtx {
         {
             // 原生插件闸：plugin_onnx（ONNX 嵌入推理 DLL，强化记忆的本地嵌入
             // 后端）。停用/签名拦 = 诚实日志 + 不构建 manager（装配期一次性
-            // 消费，开关改动重启 gateway 生效）。
+            // 消费，开关改动重启 gateway 生效）。Allow.path 允许丢弃：
+            // MemoryManager::detect_plugin_path 与闸共用 find_plugin_library
+            // 单一查找，闸验对象与装载对象恒同文件（native_plugins 模块
+            // 文档两档契约的第二档）。
             let onnx_gate = crate::native_plugins::gate_load(
                 &nemesis_path::workspace_config_dir(&common::workspace_path(&home)),
                 nemesis_config::plugins_native::NativePluginId::PluginOnnx,
             );
-            let onnx_allowed = matches!(onnx_gate, crate::native_plugins::GateOutcome::Allow);
+            let onnx_allowed =
+                matches!(onnx_gate, crate::native_plugins::GateOutcome::Allow { .. });
             match onnx_gate {
-                crate::native_plugins::GateOutcome::Allow => {}
+                crate::native_plugins::GateOutcome::Allow { .. } => {}
                 crate::native_plugins::GateOutcome::DisabledBySwitch => info!(
                     "[Gateway] plugin_onnx 已停用（本地插件库开关）——强化记忆不装配（重启后生效）"
                 ),

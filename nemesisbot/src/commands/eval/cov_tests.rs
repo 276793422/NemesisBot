@@ -1,14 +1,16 @@
 // Wave-5 round-2 coverage tests for eval.rs helpers that the main tests.rs
-// does not reach: run_phases head (up to the monitor-DLL gate), box_api_base,
+// does not reach: run_phases head (up to the 6j injection call), box_api_base,
 // wait_with_timeout (real process handles), sbieini_set/clean_box with fake
 // external tools, assess_and_report happy paths, exit_if_risk_flagged(false).
 //
 // Safety notes:
 // - `sbieini` / `start_exe` are FAKE .cmd batch files (exit /b 0|3) — nothing
 //   touches a real Sandboxie.ini or service.
-// - run_phases is called only in an environment where the monitor DLL is
-//   absent (dev shape): it bails at `monitor_dll_path()?` BEFORE
-//   `launch_and_inject_with_env`, so no DLL injection ever happens.
+// - run_phases receives the monitor-DLL path from the caller (R1 2026-10-22:
+//   resolved + signature-gated in run_eval, passed through). This test feeds
+//   fake (nonexistent) SbieCtrl.exe / monitor DLL / agent exe, so the 6j
+//   `launch_and_inject_with_env` call fails at spawn/read time — no real DLL
+//   injection ever happens.
 // - RISK_EXIT_FLAG is only ever read while false; storing true would
 //   exit(2) the test process and is never done here.
 use super::*;
@@ -296,12 +298,13 @@ fn clean_box_runs_delete_sandbox_when_root_exists() {
 
 // ---------------------------------------------------------------------------
 // run_phases — 头段（config 写入 / trace 开关 / clean_box / agent 伪 spawn），
-// 在 monitor DLL 缺失的开发形态下于 monitor_dll_path()? 处 bail。
-// launch_and_inject_with_env 永不触达。
+// 假路径下于 6j launch_and_inject_with_env 处失败（spawn/读 DLL 即败，无真
+// 注入）。monitor DLL 缺失的 bail 语义已在 run_eval 闸段（R1 后 run_phases
+// 只消费调用方传入的路径，不再自查）。launch 成功后的注入段永不触达。
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn run_phases_writes_config_and_bails_at_missing_monitor_dll() {
+async fn run_phases_writes_config_and_fails_at_injection_with_fake_paths() {
     let real_home = tmp();
     let home = tmp();
     let workspace = tmp();
@@ -313,6 +316,7 @@ async fn run_phases_writes_config_and_bails_at_missing_monitor_dll() {
     let start_exe = fake_tool(tools.path(), "Start", 0);
     let sbiectrl = tools.path().join("SbieCtrl.exe");
     let sbiedll = tools.path().join("SbieDLL.dll");
+    let monitor_dll = tools.path().join("eval_monitor_dll.dll");
     let agent_exe = tools.path().join("agent.exe");
     // box root 不存在 → clean_box 走早退分支（不弹真对话框）。
     let eval_box_root = tools.path().join("box_root_missing");
@@ -342,6 +346,7 @@ async fn run_phases_writes_config_and_bails_at_missing_monitor_dll() {
         &start_exe,
         &sbiectrl,
         &sbiedll,
+        &monitor_dll,
         &common,
         "cov subject",
         "cov prompt",
@@ -349,10 +354,10 @@ async fn run_phases_writes_config_and_bails_at_missing_monitor_dll() {
     )
     .await;
 
-    let err = result.expect_err("monitor DLL 缺失 → run_phases 必须 bail");
+    let err = result.expect_err("假 SbieCtrl/monitor DLL → 6j 注入必须失败");
     assert!(
-        err.to_string().contains("monitor DLL"),
-        "bail 原因应指向 monitor DLL 缺失: {err:#}"
+        err.to_string().contains("launch monitor shell"),
+        "失败点应是 6j 注入调用: {err:#}"
     );
 
     // 头段副作用断言：最小 config.json 已写入盒内 home。

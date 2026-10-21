@@ -432,10 +432,22 @@ async fn stop_ladder_terminates_stubborn_process() {
         started.elapsed()
     );
     let mut c = child.lock().await;
-    let st = c
-        .try_wait()
-        .expect("wait ok")
-        .expect("stubborn process must be dead after ladder");
+    // 阶梯契约 = 杀指令发完即返回，不等内核收割（见 stop_ladder 文档
+    // 「调用方随后照常 try_wait 收尸」）。高载 runner 上 graceful 段 kill
+    // 二进制 spawn 可吃掉大半宽限窗，升级段 KILL 投递→收割延迟几十 ms——
+    // 返回后立即断言 = Ok(None) 假红（2026-10-22 ET Linux 实录，3107 过
+    // 仅此 1 挂）。给有界收割窗，超窗才判死。
+    let reap_deadline = Instant::now() + Duration::from_secs(10);
+    let st = loop {
+        if let Some(s) = c.try_wait().expect("wait ok") {
+            break s;
+        }
+        assert!(
+            Instant::now() < reap_deadline,
+            "stubborn process must be dead after ladder (10s reap window exhausted)"
+        );
+        sleep(Duration::from_millis(50)).await;
+    };
     #[cfg(not(target_os = "windows"))]
     assert!(
         st.code().is_none(),

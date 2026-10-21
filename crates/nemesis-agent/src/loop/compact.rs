@@ -22,8 +22,9 @@ pub(crate) struct CompactState {
     /// Auto-summarization paused (stuck). Re-checked each call; cleared once
     /// the prompt drops back below the summarize threshold.
     stuck: bool,
-    /// 自查②（2026-10-18 B 级清零）：最近一次 provider 实报的整请求输入
-    /// token（prompt + cache_read，与 P8 会话预算记账同口径）。压缩触发
+    /// 自查②（2026-10-18 B 级清零；R2 2026-10-22 口径补全）：最近一次
+    /// provider 实报的整请求完整输入 token（prompt + cache_creation +
+    /// cache_read，与 P8 会话预算记账同口径）。压缩触发
     /// 比较的混合信号下界——字符估算（×2/5）与真实值偏差大时以实报为准
     /// （取大者 = 偏早触发，安全侧）；无 usage 的 lane（claude-cli/
     /// codex-cli）保持 None = 纯估算诚实回落。
@@ -633,10 +634,12 @@ impl AgentLoop {
         }
     }
 
-    /// 自查②（2026-10-18 B 级清零）：记录最近一次 provider 实报的整请求
-    /// 输入 token（prompt + cache_read），供 [`Self::maybe_update_summary`]
-    /// 的混合触发信号使用。每次 LLM 响应后调用（run_loop 器官 5 之后）；
-    /// 无 usage 的调用方不调 = 信号保持 None = 纯估算回落。
+    /// 自查②（2026-10-18 B 级清零；R2 2026-10-22 口径补全）：记录最近一次
+    /// provider 实报的整请求完整输入 token（prompt + cache_creation +
+    /// cache_read，`usage_full_input` 单一真相源），供
+    /// [`Self::maybe_update_summary`] 的混合触发信号使用。每次 LLM 响应后
+    /// 调用（run_loop 器官 5 之后）；无 usage 的调用方不调 = 信号保持
+    /// None = 纯估算回落。
     pub(crate) fn note_compaction_provider_signal(&self, session_key: &str, total_input: u64) {
         let mut states = self.compact_state.lock();
         if states.len() > SESSION_STATE_MAX_ENTRIES {
@@ -890,9 +893,10 @@ impl AgentLoop {
             "history_len": history.len(),
             "covers_up_to": covers,
             "summarized": cache.is_some(),
-            // P8（集群无人值守硬化 A2）：会话累计 token（口径 = input 含
-            // cache_read + output，与 session_token_budget 同源）。预算关闭
-            // 时也可观测——账目缺失路径从底账种入，与预算闸独立。
+            // P8（集群无人值守硬化 A2；R2 2026-10-22 口径补全）：会话累计
+            // token（口径 = 完整输入（prompt + cache_creation + cache_read）
+            // + output，与 session_token_budget 同源）。预算关闭时也可观测
+            // ——账目缺失路径从底账种入，与预算闸独立。
             "session_tokens_used": self.session_tokens_used(session_key),
         });
         json

@@ -946,6 +946,10 @@ impl SecurityAuditor {
                     &risk,
                 ) {
                     Ok(Some(pattern)) => {
+                        // 落盘即自刷新：规则当轮可见，不赌下次 ask 的
+                        // mtime 检测（分辨率/瞬时 stat 失败都可能漏检，
+                        // 2026-10-22 CI Windows 假红实录）。
+                        hot.force_reload();
                         tracing::info!(
                             "[ApprovalAuto] cluster ask auto-approved + persisted rule: {} {}",
                             op,

@@ -340,8 +340,9 @@ fn started_reply_retryable(resp: &nemesis_cluster::rpc_types::RPCResponse) -> bo
 /// P8（集群无人值守硬化 A2）：会话 token 预算拒接判定（D3 重派入口）。
 /// `agents.defaults.session_token_budget`（0 = 关，默认）读法经 loop 侧
 /// `current_session_token_budget`（config.json 单一真相源 fresh-read）；
-/// 用量取 `aggregate_session_usage` absolute（口径 = input 含 cache_read +
-/// output，与 loop 侧累计器同账本同公式）。`None` = 关/无账/未超限（放行）。
+/// 用量取 `aggregate_session_usage` absolute（口径 = 完整输入（prompt +
+/// cache_creation + cache_read）+ output，与 loop 侧累计器同账本同公式）。
+/// `None` = 关/无账/未超限（放行）。
 fn session_budget_rejection(agent_loop: &AgentLoop, session_key: &str) -> Option<String> {
     let budget = agent_loop.current_session_token_budget();
     if budget == 0 {

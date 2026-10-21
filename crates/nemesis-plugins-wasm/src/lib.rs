@@ -33,6 +33,7 @@ pub mod runtime;
 pub mod trust;
 
 pub use error::PluginError;
+pub use loader::resolve_host_dll_path;
 pub use manifest::{PluginKind, PluginManifest};
 pub use registry::{InstanceConfigFile, PluginManager, RegisteredPlugin, ToolMetaSnapshot};
 pub use trust::{PluginTrustState, VerificationOutcome};

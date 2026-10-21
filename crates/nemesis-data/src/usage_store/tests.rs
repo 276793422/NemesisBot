@@ -361,7 +361,9 @@ fn session_aggregates_exact_and_task_suffix() {
         .aggregate_session_usage("agent:main:s1")
         .expect("session agg");
     assert_eq!(agg.requests, 2);
-    assert_eq!(agg.input_tokens, 100 * 2 + 30 * 2, "input + cache_read");
+    // R2 2026-10-22：完整输入口径 = prompt + cache_creation + cache_read
+    // （w4_log 三列 100/10/30）。
+    assert_eq!(agg.input_tokens, (100 + 10 + 30) * 2, "完整输入三列相加");
     assert_eq!(agg.output_tokens, 80);
     assert!((agg.total_cost_usd - 1.0).abs() < 1e-9);
 
@@ -372,11 +374,12 @@ fn session_aggregates_exact_and_task_suffix() {
     assert_eq!(zero.requests, 0);
     assert_eq!(zero.total_cost_usd, 0.0);
 
-    // 按任务后缀：两种身份形态都收进来。
+    // 按任务后缀：两种身份形态都收进来；input 口径同上（R2）。
     let task = store
         .aggregate_session_usage_by_task("t-uuid")
         .expect("task agg");
     assert_eq!(task.requests, 2);
+    assert_eq!(task.input_tokens, (100 + 10 + 30) * 2);
     let _ = std::fs::remove_file(path);
 }
 

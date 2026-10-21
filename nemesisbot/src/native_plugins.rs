@@ -14,18 +14,33 @@
 //!   均未签名，缺省强制会把开发态肢解）；off / 锚缺席 / verify 未编译 =
 //!   休眠（放行不验）。锚缺席恒休眠——无锚即无验签能力，与 exe 自验的
 //!   「无锚降级」同语义。
+//! - **验签/装载同源**（R1 整改 2026-10-22）：[`resolve_load_path`] 是
+//!   路径解析单一真相源，`GateOutcome::Allow` 携带获准装载的具体文件。
+//!   消费义务两档：装载点另有查找规则的（wasm 宿主壳 loader 的 env 覆盖/
+//!   开发路径候选、eval 监控 DLL 的开发形态仓库路径）**必须**按
+//!   `Allow.path` 定点装载——enforce 态「验了 A 装 B」的解耦在此封死；
+//!   与闸共用 [`find_plugin_library`] 单一查找的（plugin_ui 子窗/tray、
+//!   plugin_onnx MemoryManager），闸验的对象与其自带查找恒同文件，
+//!   gateway 三个装配点丢弃 `path` 与消费等价。
 //! - **清单**：`status_list` / `scan_unrecognized` 供 Dashboard「本地插件
 //!   库」页消费（目录全量列出 + 开关状态 + 签名状态 + 未知库列出不装载）。
+//!   清单语义 = **exe 旁 plugins/ 目录身份**（部署目录视图），与闸的统一
+//!   解析序列是两回事——env 覆盖/开发路径命中的装载对象不进清单。
 
 use nemesis_config::plugins_native::{NativePluginId, load_enabled};
-use nemesis_utils::find_plugin_library_in;
-use std::path::Path;
+use nemesis_utils::{find_plugin_library, find_plugin_library_in};
+use std::path::{Path, PathBuf};
 
 /// 装载闸裁决。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GateOutcome {
-    /// 装载（开关开 + 签名策略放行、warn 或休眠）。
-    Allow,
+    /// 装载（开关开 + 签名策略放行、warn 或休眠）。携带获准装载的**具体
+    /// 文件**（R1 整改：enforce 态验签的就是它；查找规则与此处不同的
+    /// 装载点——wasm 宿主壳/eval 监控 DLL——必须按它定点装载，与
+    /// [`find_plugin_library`] 同源的装载点丢弃与消费等价，见模块文档）；
+    /// `None` = 库文件缺席（缺席不在此定性——装载点自己的「未找到」
+    /// 日志/降级路径负责）。
+    Allow { path: Option<PathBuf> },
     /// 用户开关关（诚实跳过，日志注记）。
     DisabledBySwitch,
     /// 签名策略拦截（enforce 态下非 Valid / 读取失败 fail-closed）。
@@ -72,42 +87,75 @@ fn signature_gate_mode(config_dir: &Path) -> SignatureGateMode {
     }
 }
 
-/// 装载闸（四个装载点的唯一裁决入口）。
+/// 统一路径解析（单一真相源）：闸的验签对象与装载点的实际装载对象都
+/// 消费这里——R1 整改前闸只查 exe 旁 `plugins/`，而 wasm 宿主壳装载器
+/// 另有 env 覆盖/exe 同目录/开发路径候选，enforce 态「验了 A 装 B」。
+///
+/// - `PluginWasm` → 宿主壳装载器候选扫描（`resolve_host_dll_path`，env
+///   权威覆盖语义同源；plugins-wasm 未编译时回落 `plugins/`——该形态下
+///   子系统根本不装配，解析只服务清单显示）。
+/// - 其余（plugin_ui / plugin_onnx / eval_monitor_dll 部署形态）→ exe 旁
+///   `plugins/`。eval_monitor 的开发形态仓库路径由 eval.rs 自行解析后走
+///   [`gate_load_path`]（查找规则留在消费点，闸不掺业务搜索）。
+pub fn resolve_load_path(id: NativePluginId) -> Option<PathBuf> {
+    match id {
+        NativePluginId::PluginWasm => {
+            #[cfg(feature = "plugins-wasm")]
+            if let Some(p) = nemesis_plugins_wasm::resolve_host_dll_path() {
+                return Some(p);
+            }
+            find_plugin_library(id.id())
+        }
+        _ => find_plugin_library(id.id()),
+    }
+}
+
+/// 装载闸（四个装载点的唯一裁决入口）——解析与裁决同源：enforce 验的
+/// 就是 [`resolve_load_path`] 给出的文件，`Allow` 原样带回该路径。
 ///
 /// DLL 缺席不在此定性——装载点自己的「未找到」日志/降级路径负责（闸只管
 /// 「找到了装不装」）；开关关的日志由调用点出（它知道自己在关哪个子系统）。
 pub fn gate_load(config_dir: &Path, id: NativePluginId) -> GateOutcome {
+    gate_load_path(config_dir, id, resolve_load_path(id).as_deref())
+}
+
+/// 路径感知装载闸（自带查找规则的装载点——eval 监控 DLL 的部署/开发双
+/// 形态——先解析出具体文件再入闸，enforce 验的就是这个文件）。
+pub fn gate_load_path(config_dir: &Path, id: NativePluginId, path: Option<&Path>) -> GateOutcome {
     if !load_enabled(config_dir, id) {
         return GateOutcome::DisabledBySwitch;
     }
     #[cfg(feature = "verify")]
-    if signature_gate_mode(config_dir) == SignatureGateMode::Enforce {
-        use nemesis_verify::verify::VerifyOutcome as O;
-        if let Some(path) = nemesis_utils::find_plugin_library(id.id()) {
-            return match verify_file(&path, crate::verify_policy::ROOT_ANCHOR.unwrap_or_default()) {
-                Ok(O::Valid { .. }) => GateOutcome::Allow,
-                Ok(other) => {
-                    let (state, detail) = outcome_label(&other);
-                    tracing::warn!(
-                        "[NativePlugin] {} 签名策略拦截（{}：{}；enforce 态 = 只装自方根签名库）",
-                        id.id(),
-                        state,
-                        detail
-                    );
-                    GateOutcome::BlockedBySignature(format!("{state}: {detail}"))
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "[NativePlugin] {} 签名验证读取失败，fail-closed 拒载（{}）",
-                        id.id(),
-                        e
-                    );
-                    GateOutcome::BlockedBySignature(e)
-                }
-            };
-        }
+    if signature_gate_mode(config_dir) == SignatureGateMode::Enforce
+        && let Some(path) = path
+    {
+        return match verify_file(path, crate::verify_policy::ROOT_ANCHOR.unwrap_or_default()) {
+            Ok(nemesis_verify::verify::VerifyOutcome::Valid { .. }) => GateOutcome::Allow {
+                path: Some(path.to_path_buf()),
+            },
+            Ok(other) => {
+                let (state, detail) = outcome_label(&other);
+                tracing::warn!(
+                    "[NativePlugin] {} 签名策略拦截（{}：{}；enforce 态 = 只装自方根签名库）",
+                    id.id(),
+                    state,
+                    detail
+                );
+                GateOutcome::BlockedBySignature(format!("{state}: {detail}"))
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "[NativePlugin] {} 签名验证读取失败，fail-closed 拒载（{}）",
+                    id.id(),
+                    e
+                );
+                GateOutcome::BlockedBySignature(e)
+            }
+        };
     }
-    GateOutcome::Allow
+    GateOutcome::Allow {
+        path: path.map(Path::to_path_buf),
+    }
 }
 
 /// 三态的字符串观察窗（测试消费；模式名与 `SignatureStatus.mode` 同词表）。
@@ -225,7 +273,9 @@ fn signature_status(config_dir: &Path, path: Option<&Path>) -> SignatureStatus {
                 return SignatureStatus {
                     mode: "enforced",
                     state: None,
-                    detail: "库文件未找到（无从验签；装载时同样拒绝）".to_string(),
+                    detail: "plugins/ 目录未找到该库文件（enforce 态下闸按统一解析 \
+                             序列裁决；缺席的降级/报错由装载点负责）"
+                        .to_string(),
                 };
             };
             verify_or_state(path, "enforced")

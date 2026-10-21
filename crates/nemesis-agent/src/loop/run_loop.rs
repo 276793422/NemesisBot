@@ -260,18 +260,15 @@ impl AgentLoop {
             )
             .await;
 
-            // 自查②（2026-10-18 B 级清零）：provider 实报输入 token 进
-            // compaction 混合触发信号缓存（prompt + cache_read，P8 会话
-            // 预算记账同口径）；无 usage 的 lane 不写 = 纯估算诚实回落。
+            // 自查②（2026-10-18 B 级清零；R2 2026-10-22 口径补全）：
+            // provider 实报输入 token 进 compaction 混合触发信号缓存（完整
+            // 输入 = prompt + cache_creation + cache_read，P8 会话预算记账
+            // 同口径，`usage_full_input` 单一真相源）；无 usage 的 lane 不写
+            // = 纯估算诚实回落。
             if let Some(ref usage) = response.usage {
-                let cache_read = usage
-                    .cache_read_tokens
-                    .or(usage.cached_tokens)
-                    .unwrap_or(0)
-                    .max(0) as u64;
                 self.note_compaction_provider_signal(
                     &context.session_key,
-                    (usage.prompt_tokens.max(0) as u64).saturating_add(cache_read),
+                    super::token_budget::usage_full_input(usage),
                 );
             }
 

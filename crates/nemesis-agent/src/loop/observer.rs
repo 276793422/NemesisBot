@@ -95,7 +95,8 @@ impl AgentLoop {
         }
 
         // P8（集群无人值守硬化 A2）：会话 token 预算累计。口径与
-        // `aggregate_session_usage` 账本一致 = input（含 cache_read）+
+        // `aggregate_session_usage` 账本一致 = 完整输入（prompt +
+        // cache_creation + cache_read，`usage_full_input` 单一真相源）+
         // output。budget 关闭（0，默认）时零 config 读直接跳过；开启时
         // fresh-read 每轮一次（与 current_max_tool_iterations 同频）。
         // 本调用位于 `insert_request_log` 之后——seed-on-miss 路径读到的
@@ -103,13 +104,7 @@ impl AgentLoop {
         if self.current_session_token_budget() > 0
             && let Some(ref usage) = response.usage
         {
-            let cache_read = usage
-                .cache_read_tokens
-                .or(usage.cached_tokens)
-                .unwrap_or(0)
-                .max(0) as u64;
-            let delta = (usage.prompt_tokens.max(0) as u64)
-                .saturating_add(cache_read)
+            let delta = super::token_budget::usage_full_input(usage)
                 .saturating_add(usage.completion_tokens.max(0) as u64);
             self.record_session_tokens(&context.session_key, delta);
         }

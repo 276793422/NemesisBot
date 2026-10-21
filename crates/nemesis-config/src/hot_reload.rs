@@ -58,6 +58,20 @@ impl<T: Clone + Serialize + DeserializeOwned + Send + Sync + 'static> HotReloade
         true
     }
 
+    /// 绕过 mtime 比较强制重读（写方落盘后立即自我刷新：mtime 分辨率
+    /// 异常 / stat 瞬时失败都可能让下一次 `check()` 漏检——2026-10-22
+    /// CI Windows 实录，审批 pattern 落盘后第二问漏检假红）。成功返回
+    /// true；stat 失败按 None 记账并返回 false（下次 `check()` 兜底）。
+    pub fn force_reload(&self) -> bool {
+        let mtime = std::fs::metadata(&self.path)
+            .and_then(|m| m.modified())
+            .ok();
+        let value = (self.load)(&self.path);
+        *self.mtime.lock().unwrap() = mtime;
+        *self.state.write().unwrap() = value;
+        mtime.is_some()
+    }
+
     /// Current cached value (clone).
     pub fn get(&self) -> T {
         self.state.read().unwrap().clone()
