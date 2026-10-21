@@ -53,6 +53,12 @@
 #                                               跟随；解析非默认槽模型，wrapper
 #                                               不适用——同 forge.rs/dreaming_job
 #                                               先例）
+#   nemesisbot/src/security_calibrate.rs        安全校准 judge 一次性通道
+#                                               （security calibrate CLI 无
+#                                               gateway 常驻；CalibrateJudge 按
+#                                               model probe 同款装配路径即建
+#                                               即用即退，同 run.rs/model.rs
+#                                               一次性先例）
 #
 # 测试文件（/tests 目录、*_tests.rs / tests.rs）不在纪律范围。
 set -uo pipefail
@@ -61,7 +67,7 @@ cd "$(dirname "$0")/.."
 hits=$(grep -rnE "create_provider(_or_null)?\s*\(" crates nemesisbot/src --include='*.rs' 2>/dev/null \
   | grep -v '/tests' \
   | grep -v '_tests\.rs' \
-  | grep -vE '^(crates/nemesis-providers/src/factory\.rs|crates/nemesis-providers/src/fallback_provider\.rs|nemesisbot/src/agent_factory\.rs|nemesisbot/src/commands/gateway/ctx\.rs|nemesisbot/src/commands/gateway/post_agent\.rs|nemesisbot/src/commands/gateway/runtime\.rs|nemesisbot/src/commands/gateway/dreaming_job\.rs|nemesisbot/src/commands/run\.rs|nemesisbot/src/commands/model\.rs|nemesisbot/src/commands/session\.rs|nemesisbot/src/projects/manager\.rs|crates/nemesis-web/src/handlers/models\.rs|crates/nemesis-web/src/handlers/forge\.rs|crates/nemesis-web/src/handlers/board\.rs):' \
+  | grep -vE '^(crates/nemesis-providers/src/factory\.rs|crates/nemesis-providers/src/fallback_provider\.rs|nemesisbot/src/agent_factory\.rs|nemesisbot/src/commands/gateway/ctx\.rs|nemesisbot/src/commands/gateway/post_agent\.rs|nemesisbot/src/commands/gateway/runtime\.rs|nemesisbot/src/commands/gateway/dreaming_job\.rs|nemesisbot/src/commands/run\.rs|nemesisbot/src/commands/model\.rs|nemesisbot/src/commands/session\.rs|nemesisbot/src/projects/manager\.rs|crates/nemesis-web/src/handlers/models\.rs|crates/nemesis-web/src/handlers/forge\.rs|crates/nemesis-web/src/handlers/board\.rs|nemesisbot/src/security_calibrate\.rs):' \
   || true)
 
 if [ -n "$hits" ]; then

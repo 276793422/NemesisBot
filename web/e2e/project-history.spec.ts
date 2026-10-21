@@ -64,28 +64,31 @@ test('项目会话历史：目录删除后组不可用但历史完整可读', as
   await expect(projGroup).toBeVisible({ timeout: 20_000 })
   expect(await projGroup.evaluate((el) => el.classList.contains('unavailable'))).toBe(true)
 
-  // U2: 项目会话历史渲染（组头相邻的会话行）
-  const sessionRow = projGroup.locator('xpath=following-sibling::div[contains(@class,"session-item")][1]')
+  // U2: 项目会话历史渲染（组头相邻 .group-body 容器内的首个会话行；
+  // 2026-10-20 组容器化后 session-item 不再是组头的直接兄弟）
+  const sessionRow = projGroup
+    .locator('xpath=following-sibling::div[contains(@class,"group-body")][1]')
+    .locator('.session-item')
+    .first()
   await expect(sessionRow).toBeVisible({ timeout: 20_000 })
   await sessionRow.click()
-  await expect(page.locator('.message').last()).toBeVisible({ timeout: 30_000 })
-  const msgCount = await page.locator('.message').count()
-  expect(msgCount).toBeGreaterThanOrEqual(ROUNDS * 2)
+  // 历史在飞窗口内空态占位气泡（ChatPanel v-else-if，同为 .message assistant）
+  // 也可见且恰 1 条——last+count 两段断言会被占位态采样命中（本地实测竞态）。
+  // toHaveCount 自动重试到确切条数：占位（1）≠10 继续等，落地即 10。
+  await expect(page.locator('.message')).toHaveCount(ROUNDS * 2, { timeout: 30_000 })
 
   // U3/U4: 无伪消息、无失败横幅
   await expect(page.locator('.message', { hasText: '当前不可用' }).first()).toBeHidden()
   await expect(page.locator('.message', { hasText: '历史消息加载失败' }).first()).toBeHidden()
 
-  // U5: 切走（新建对话）再切回 → 历史仍在
+  // U5: 切走（新建对话）再切回 → 历史仍在（同款 toHaveCount 防占位竞态）
   const newChat = page.locator('.fn-new-chat')
   if (await newChat.isVisible().catch(() => false)) {
     await newChat.click()
     await expect(page.locator('.session-item').first()).toBeVisible({ timeout: 20_000 })
   }
   await sessionRow.click()
-  await expect(page.locator('.message').last()).toBeVisible({ timeout: 30_000 })
-  const msgCountBack = await page.locator('.message').count()
-  expect(msgCountBack).toBeGreaterThanOrEqual(ROUNDS * 2)
+  await expect(page.locator('.message')).toHaveCount(ROUNDS * 2, { timeout: 30_000 })
   await expect(page.locator('.message', { hasText: '历史消息加载失败' }).first()).toBeHidden()
 
   await page.context().close()
