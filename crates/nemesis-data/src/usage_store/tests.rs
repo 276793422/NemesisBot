@@ -491,3 +491,36 @@ fn cost_breakdown_wrapper_some_and_none() {
     );
     let _ = std::fs::remove_file(path);
 }
+
+/// A2（2026-10-21 DeepInfer 思路引入）：record_guard_events 落账 +
+/// query_model_tool_health 并入。同日同模型 upsert 累加；0 事件不写行；
+/// 无守卫事件的模型保持 0（并入查询不制造幽灵行）。
+#[test]
+fn guard_events_recorded_and_merged_into_health() {
+    let (store, path) = open_store("guard_events_merge");
+
+    // 先造一条 tool_validation_stats（让 m/a 出现在健康行里）。
+    store.record_tool_validation("m/a", true).unwrap();
+    store.record_tool_validation("m/a", false).unwrap();
+
+    // 0 事件不写行（重复调用也无副作用）。
+    store.record_guard_events("m/a", 0).unwrap();
+    store.record_guard_events("m/b", 0).unwrap();
+
+    // 累加：3 + 2 = 5。
+    store.record_guard_events("m/a", 3).unwrap();
+    store.record_guard_events("m/a", 2).unwrap();
+    // m/b 只有守卫事件、没有工具调用——并入后应出现（guard_events=7，
+    // tool_calls=0），不允许静默丢弃。
+    store.record_guard_events("m/b", 7).unwrap();
+
+    let rows = store.query_model_tool_health(30).expect("query health");
+    let a = rows.iter().find(|r| r.model == "m/a").expect("m/a row");
+    assert_eq!(a.guard_events, 5);
+    assert_eq!(a.tool_calls, 2);
+    let b = rows.iter().find(|r| r.model == "m/b").expect("m/b row");
+    assert_eq!(b.guard_events, 7);
+    assert_eq!(b.tool_calls, 0);
+
+    let _ = std::fs::remove_file(path);
+}

@@ -16,7 +16,131 @@ fn msg(content: &str) -> QueuedMessage {
             voice_playback: None,
         },
         timestamp: "2026-08-22T00:00:00Z".to_string(),
+        priority: MessagePriority::Normal,
     }
+}
+
+/// A5：带 metadata 的消息构造器（priority_of / 高优先级用例）。
+fn msg_with_meta(content: &str, metadata: Vec<(&str, &str)>) -> QueuedMessage {
+    let mut m = msg(content);
+    m.msg.metadata = metadata
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    let priority = priority_of(&m.msg);
+    m.priority = priority;
+    m
+}
+
+// A5（2026-10-21 DeepInfer 思路引入）：优先级解析单点——metadata["priority"]
+// trim + 大小写不敏感 == "high" 才是 High；缺键/空/未知值一律 Normal。
+#[test]
+fn test_priority_of_metadata() {
+    let mut m = msg("x");
+    assert_eq!(priority_of(&m.msg), MessagePriority::Normal);
+    m.msg.metadata.insert("priority".into(), "high".into());
+    assert_eq!(priority_of(&m.msg), MessagePriority::High);
+    m.msg.metadata.insert("priority".into(), " HIGH ".into());
+    assert_eq!(priority_of(&m.msg), MessagePriority::High);
+    m.msg.metadata.insert("priority".into(), "High".into());
+    assert_eq!(priority_of(&m.msg), MessagePriority::High);
+    // 未知值不猜 → Normal。
+    m.msg.metadata.insert("priority".into(), "urgent".into());
+    assert_eq!(priority_of(&m.msg), MessagePriority::Normal);
+    m.msg.metadata.insert("priority".into(), String::new());
+    assert_eq!(priority_of(&m.msg), MessagePriority::Normal);
+}
+
+// A5：High 插队语义——插到现有 High 连续段之后、第一个 Normal 之前
+// （High 之间 FIFO；Normal 保持原有相对顺序）。
+#[test]
+fn test_high_priority_insertion_order() {
+    let inbox = Inbox::new(16);
+    let drain = |inbox: &Inbox, key: &str| -> Vec<String> {
+        let mut out = Vec::new();
+        while let Some(m) = inbox.claim_next_turn_head(key) {
+            out.push(m.msg.content);
+        }
+        out
+    };
+
+    // Normal x2 后到 High → 插到队首（两个 Normal 之前）。
+    inbox.enqueue_for_mode("a", msg("n1"), false);
+    inbox.enqueue_for_mode("a", msg("n2"), false);
+    inbox.enqueue_for_mode("a", msg_with_meta("h1", vec![("priority", "high")]), false);
+    assert_eq!(drain(&inbox, "a"), vec!["h1", "n1", "n2"]);
+
+    // High x2 后到 High → 排在现有 High 之后（High 之间 FIFO）。
+    inbox.enqueue_for_mode("b", msg_with_meta("h1", vec![("priority", "HIGH")]), false);
+    inbox.enqueue_for_mode(
+        "b",
+        msg_with_meta("h2", vec![("priority", " High ")]),
+        false,
+    );
+    inbox.enqueue_for_mode("b", msg_with_meta("h3", vec![("priority", "high")]), false);
+    assert_eq!(drain(&inbox, "b"), vec!["h1", "h2", "h3"]);
+
+    // 混合段：n1, h1, n2 后到 h2 → 插到 h1 之后、n1 之前（High 恒在
+    // 现有 Normal 之前；两个 High 保持 FIFO）。
+    inbox.enqueue_for_mode("c", msg("n1"), false);
+    inbox.enqueue_for_mode("c", msg_with_meta("h1", vec![("priority", "high")]), false);
+    inbox.enqueue_for_mode("c", msg("n2"), false);
+    inbox.enqueue_for_mode("c", msg_with_meta("h2", vec![("priority", "high")]), false);
+    assert_eq!(drain(&inbox, "c"), vec!["h1", "h2", "n1", "n2"]);
+}
+
+// A5：软水位边界——容量 10，软水位 9。第 10 条 Normal（total=9 = 软水位）
+// RejectedSoft（非 Rejected——硬上限未到）；同态下 High 与 steer 插话仍
+// 放行；硬上限（total=10）一律 Rejected。
+#[test]
+fn test_soft_watermark_boundary() {
+    let inbox = Inbox::new(10);
+    use EnqueueOutcome::{QueuedForNextStep, QueuedForNextTurn, Rejected, RejectedSoft};
+
+    // 填 9 条（到达时 total=0..=8 → 未到软水位，全部放行）。
+    for i in 0..9 {
+        assert_eq!(
+            inbox.enqueue_for_mode("s", msg(&format!("n{i}")), false),
+            QueuedForNextTurn
+        );
+    }
+    // total=9 = 软水位：Normal → RejectedSoft。
+    assert_eq!(inbox.enqueue_for_mode("s", msg("n9"), false), RejectedSoft);
+    // 同态下 steer 插话不受软水位约束（进 next_step，total → 10）。
+    assert_eq!(
+        inbox.enqueue_for_mode("s", msg("!urgent"), true),
+        QueuedForNextStep
+    );
+    // total=10 = 硬上限：连 High 也拒。
+    assert_eq!(
+        inbox.enqueue_for_mode("s", msg_with_meta("h2", vec![("priority", "high")]), false),
+        Rejected
+    );
+    assert_eq!(inbox.enqueue_for_mode("s", msg("x"), false), Rejected);
+
+    // High 旁路单独验证（不撞硬上限）：total=9 = 软水位时 High 仍放行。
+    let inbox2 = Inbox::new(10);
+    for i in 0..9 {
+        let _ = inbox2.enqueue_for_mode("s2", msg(&format!("n{i}")), false);
+    }
+    assert_eq!(
+        inbox2.enqueue_for_mode("s2", msg_with_meta("h", vec![("priority", "high")]), false),
+        QueuedForNextTurn
+    );
+
+    // capacity=1：软水位 .max(1) 与硬上限同值 → 语义退化为纯容量上限
+    // （第 1 条入队后 total=1，后续一律硬拒），不产生「软水位 0 全拒死」
+    // 的病理——这正是 .max(1) 存在的意义。
+    let tiny = Inbox::new(1);
+    assert_eq!(
+        tiny.enqueue_for_mode("t", msg("n1"), false),
+        QueuedForNextTurn
+    );
+    assert_eq!(tiny.enqueue_for_mode("t", msg("n2"), false), Rejected);
+    assert_eq!(
+        tiny.enqueue_for_mode("t", msg_with_meta("h", vec![("priority", "high")]), false),
+        Rejected
+    );
 }
 
 #[test]
@@ -59,6 +183,7 @@ fn test_strip_steer_marker() {
 #[test]
 fn test_enqueue_routing_and_capacity() {
     let inbox = Inbox::new(3);
+    // A5 软水位（2026-10-21）：容量 3 → soft = max(2,1) = 2。
     assert_eq!(
         inbox.enqueue("s", msg("normal one")),
         EnqueueOutcome::QueuedForNextTurn
@@ -67,11 +192,21 @@ fn test_enqueue_routing_and_capacity() {
         inbox.enqueue("s", msg("!urgent")),
         EnqueueOutcome::QueuedForNextStep
     );
+    // total=2 已达软水位：普通消息软拒（不是硬拒——硬上限未到）。
     assert_eq!(
         inbox.enqueue("s", msg("normal two")),
+        EnqueueOutcome::RejectedSoft
+    );
+    // High 不受软水位约束（补进第 3 格 = 硬上限）。
+    assert_eq!(
+        inbox.enqueue("s", msg_with_meta("high", vec![("priority", "high")])),
         EnqueueOutcome::QueuedForNextTurn
     );
-    // Capacity 3 reached → rejected.
+    // 硬上限 3 已满 → 一律硬拒（steer 与 High 的软水位豁免不豁免硬上限）。
+    assert_eq!(
+        inbox.enqueue("s", msg("!another")),
+        EnqueueOutcome::Rejected
+    );
     assert_eq!(
         inbox.enqueue("s", msg("overflow")),
         EnqueueOutcome::Rejected

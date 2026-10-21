@@ -724,6 +724,12 @@ fn handle_chat_send(
         /// workflow_edit_from_metadata 单点解析后渲染上下文 section。
         #[serde(default)]
         workflow_edit: Option<nemesis_types::channel::WorkflowEditTarget>,
+        /// A5（2026-10-21 DeepInfer 思路引入）：队列优先级提示。`"high"`
+        /// （大小写不敏感）= 会话忙时排队插队且不受软水位约束；其余值/
+        /// 缺省 = 普通。经 metadata["priority"] 全链路透传
+        /// （open_files 同款单点模式，AgentLoop 侧 `inbox::priority_of` 解析）。
+        #[serde(default)]
+        priority: Option<String>,
     }
     let data: ChatData = msg.decode_data()?;
     // BUG-1（2026-09-03 二次回归）：纯图片消息合法——前端支持只传 media 不带
@@ -785,6 +791,15 @@ fn handle_chat_send(
             "workflow_edit".to_string(),
             nemesis_types::channel::workflow_edit_to_metadata(&target),
         );
+    }
+    // A5：队列优先级提示进 metadata（缺省/空白 = 不写键，普通对话零影响）。
+    if let Some(p) = data
+        .priority
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        metadata.insert("priority".to_string(), p.to_ascii_lowercase());
     }
 
     Ok(Some(IncomingMessage {

@@ -168,6 +168,12 @@ mod question_broker;
 /// 项目档案自动导出 `dossier` 行。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod review_ledger;
+/// A4（2026-10-21 DeepInfer 思路引入）：安全校准——规则层 × guardian LLM
+/// 二审一致性标定（`security calibrate`；样本永不执行、报告不改配置）。
+/// 消费 nemesis-security 的 pipeline/guardian（security feature 门控面），
+/// 与 commands::security 同闸。
+#[cfg(feature = "security")]
+mod security_calibrate;
 /// K1（devtool-upgrade 阶段 4）：SecurityPlugin 构造单一真相源（gateway /
 /// headless `run` 共用，安全 9 层在无端口形态不降级）。
 mod security_setup;

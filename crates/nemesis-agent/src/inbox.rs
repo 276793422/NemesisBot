@@ -36,6 +36,40 @@ pub struct QueuedMessage {
     pub msg: nemesis_types::channel::InboundMessage,
     /// Queue-receipt timestamp (diagnostics only).
     pub timestamp: String,
+    /// A5（2026-10-21 DeepInfer 思路引入）：队列优先级。High 在 next_turn
+    /// 队内插队（现有 High 连续段之后、第一个 Normal 之前——High 之间保持
+    /// FIFO），且不受软水位约束。来源 = 消息 `metadata["priority"]`
+    /// （[`priority_of`] 单点解析；WSAPI `chat.send` / 通道入站可选携带，
+    /// v1 不新造内部消息流）。
+    pub priority: MessagePriority,
+}
+
+/// A5（2026-10-21 DeepInfer 思路引入）：队列消息优先级。借鉴 DeepInfer
+/// 抢占调度的 `waiting.push_front` 语义——被让路的消息回到队首而非队尾。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum MessagePriority {
+    #[default]
+    Normal,
+    High,
+}
+
+impl MessagePriority {
+    pub fn is_high(self) -> bool {
+        matches!(self, MessagePriority::High)
+    }
+}
+
+/// 优先级解析单点：`metadata["priority"]`（trim 后大小写不敏感）等于
+/// `"high"` = High，其余（缺键/空/未知值）= Normal。
+pub fn priority_of(msg: &nemesis_types::channel::InboundMessage) -> MessagePriority {
+    match msg
+        .metadata
+        .get("priority")
+        .map(|s| s.trim().to_ascii_lowercase())
+    {
+        Some(p) if p == "high" => MessagePriority::High,
+        _ => MessagePriority::Normal,
+    }
 }
 
 /// Whether a message is a steer (in-turn interjection) candidate.
@@ -77,6 +111,9 @@ pub enum EnqueueOutcome {
     QueuedForNextStep,
     /// Both queues full — refused.
     Rejected,
+    /// A5：软水位拒绝——队列未到硬上限但已达软水位（容量的 90%），
+    /// 普通优先级消息暂缓接收（High 与 steer 插话不受软水位约束）。
+    RejectedSoft,
 }
 
 /// Read-only inbox snapshot for the dashboard (`agent.inbox_status`).
@@ -133,15 +170,35 @@ impl Inbox {
         steer_enabled: bool,
     ) -> EnqueueOutcome {
         let steer = steer_enabled && is_steer_message(&msg.msg.content);
+        let priority = msg.priority;
         let mut all = self.queues.lock();
         let q = all.entry(session_key.to_string()).or_default();
         let total = q.next_turn.len() + q.next_step.len();
         if total >= self.capacity {
             return EnqueueOutcome::Rejected;
         }
+        // A5 软水位：到达容量的 90% 后普通优先级消息不再入队（硬上限
+        // 语义不变——所有消息到硬上限一律拒）；High 与 steer 插话不受
+        // 软水位约束——高优先级的意义就在满载时段仍能进来。`.max(1)`
+        // 防 capacity=1 时 soft_limit=0 把普通消息全拒死。
+        let soft_limit = ((self.capacity * 9) / 10).max(1);
+        if total >= soft_limit && priority != MessagePriority::High && !steer {
+            return EnqueueOutcome::RejectedSoft;
+        }
         if steer {
             q.next_step.push_back(msg);
             EnqueueOutcome::QueuedForNextStep
+        } else if priority.is_high() {
+            // A5 插队：High 插到 next_turn 现有 High 连续段之后、第一个
+            // Normal 之前（High 之间保持 FIFO；与 DeepInfer 抢占的
+            // `waiting.push_front` 同型——让路的消息回队首而非队尾）。
+            let insert_at = q
+                .next_turn
+                .iter()
+                .take_while(|m| m.priority.is_high())
+                .count();
+            q.next_turn.insert(insert_at, msg);
+            EnqueueOutcome::QueuedForNextTurn
         } else {
             q.next_turn.push_back(msg);
             EnqueueOutcome::QueuedForNextTurn

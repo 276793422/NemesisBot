@@ -1087,3 +1087,41 @@ async fn test_websocket_request_type_with_router_dispatches() {
         assert_eq!(parsed["data"]["hello"], "world");
     }
 }
+
+// ---------------------------------------------------------------------------
+// A5（2026-10-21 DeepInfer 思路引入）：chat.send data.priority → metadata
+//（与 open_files 同款单点模式；队列侧 `inbox::priority_of` 同口径解析）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_handle_chat_send_priority_into_metadata() {
+    // 清洗单点生效：trim + 小写。
+    let raw = br#"{"type":"message","module":"chat","cmd":"send","data":{"content":"urgent","priority":" HIGH "}}"#;
+    let result = handle_text_message("s1", "w:s1", "w:s1", raw)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        result.metadata.get("priority").map(String::as_str),
+        Some("high")
+    );
+}
+
+#[test]
+fn test_handle_chat_send_without_priority_has_no_key() {
+    // 老客户端零影响：不带 priority → metadata 无该键。
+    let raw = br#"{"type":"message","module":"chat","cmd":"send","data":{"content":"hello"}}"#;
+    let result = handle_text_message("s1", "w:s1", "w:s1", raw)
+        .unwrap()
+        .unwrap();
+    assert!(!result.metadata.contains_key("priority"));
+}
+
+#[test]
+fn test_handle_chat_send_blank_priority_dropped() {
+    // 空白值 = 未指定 → 不写键（不产空串垃圾提示）。
+    let raw = br#"{"type":"message","module":"chat","cmd":"send","data":{"content":"hi","priority":"   "}}"#;
+    let result = handle_text_message("s1", "w:s1", "w:s1", raw)
+        .unwrap()
+        .unwrap();
+    assert!(!result.metadata.contains_key("priority"));
+}
