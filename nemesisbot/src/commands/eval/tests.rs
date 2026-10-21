@@ -1604,10 +1604,14 @@ mod wave_b {
         let blocker = leaked.join("blocker.txt");
         std::fs::write(&blocker, "hold").unwrap();
 
-        // 预算全覆盖：phase1 ≈0.5s + phase2 10×1s ≈ 10.7s < 持有 13s。
+        // 持有者寿命必须 ≫ close 全预算（phase1 ≈0.5s + phase2 10×1s ≈ 10.5s
+        // 名义，CI 慢机/负载下重试轮拉伸可过 2 倍）。此前 13s 与烧满窗口只差
+        // ~2.3s：负载拉伸越过 13s → 持有者先超时自灭、句柄释放 → 后续重试
+        // 正当删除成功（close 契约就是句柄释放即清完）→「树须完整」假红
+        // （2026-10-21 CI shard2 实录，solo recap 同挂）。120s 覆盖任何慢机。
         let marker = leaked.join(".holder_ready");
         let script = format!(
-            "$fs=[System.IO.File]::Open('{b}','Open','ReadWrite','ReadWrite');Set-Content -Path '{m}' -Value held;Start-Sleep -Milliseconds 13000;$fs.Close()",
+            "$fs=[System.IO.File]::Open('{b}','Open','ReadWrite','ReadWrite');Set-Content -Path '{m}' -Value held;Start-Sleep -Milliseconds 120000;$fs.Close()",
             b = blocker.display(),
             m = marker.display(),
         );
@@ -1648,9 +1652,20 @@ mod wave_b {
             "持有期内不得假性删除成功、也不得半删（树须完整）"
         );
 
-        // 清场等持有者超时自灭（此时大多已过 13s 寿命），随后手工回收验证树完好。
+        // 清场：kill 持有者（句柄随进程终止关闭，不等 120s 寿命），随后手工
+        // 回收验证树完好。删除挂起有瞬时宽限，给 ~3s 小重试（Windows 删除
+        // 幻影是常态不是异常）。
+        let _ = holder.kill();
         let _ = holder.wait();
-        std::fs::remove_dir_all(&leaked).expect("句柄释放后树必须仍可手工回收");
+        let mut removed = false;
+        for _ in 0..30 {
+            if std::fs::remove_dir_all(&leaked).is_ok() {
+                removed = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(removed, "句柄释放后树必须仍可手工回收");
     }
 
     // ---------------------------------------------------------------------
