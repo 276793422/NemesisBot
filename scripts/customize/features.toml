@@ -428,14 +428,16 @@ desc = "编译期烧死 enforce：启动自验失败即拒启（exit 86），con
 category = "subsystems"
 default = false
 
-# NOTE: `plugins-wasm` 可裁剪（WASM 组件插件框架，2026-09-29）。wasmtime 运行时
-# 体积可观（iotsmall 真形态实测 +9.35MB：19.83→29.18）；panic=abort 相容性已实证（2026-10-17
-# 四路径探针 trap/mem_bomb/fuel_bomb/echo 全接住 + 真 gateway 启动装载过；
-# 复跑：crates/nemesis-plugins-wasm/examples/iotsmall_abort_probe.rs）——
-# IoT 预设仍默认关是体积取舍非兼容性。关闭后
-# nemesis-plugins-wasm / nemesis-plugin-sdk 整包不编译，plugin.<slug> 工具、
-# plugins.wasm.* WSAPI、`nemesisbot plugin` CLI、Dashboard 插件页 WASM 分节随之
-# 消失（诚实报未编译）。
+# NOTE: `plugins-wasm` 可裁剪（WASM 组件插件框架，2026-09-29）。2026-10-21 起
+# wasmtime 运行时整体剥离进宿主壳 DLL plugins/plugin-wasm（独立构建，产物
+# plugin_wasm.dll ~20MB 放 exe 旁 plugins/；装载缺席 = 子系统诚实关闭）——exe
+# 本体体积不再含 wasmtime（实测主二进制 -22.8MB），上述 +9.35MB iotsmall 实测
+# 已成历史口径。panic=abort 相容性已实证（2026-10-17 四路径探针
+# trap/mem_bomb/fuel_bomb/echo 全接住；复跑：crates/nemesis-plugins-wasm
+# /examples/iotsmall_abort_probe.rs，注意该探针测的 exe 侧引擎已随剥离退役，
+# 兼容性结论由壳侧同代 wasmtime 延续）。关闭后 nemesis-plugins-wasm /
+# nemesis-plugin-sdk 整包不编译，plugin.<slug> 工具、plugins.wasm.* WSAPI、
+# `nemesisbot plugin` CLI、Dashboard 插件页 WASM 分节随之消失（诚实报未编译）。
 [[feature]]
 id = "plugins-wasm"
 label = "WASM 组件插件（沙盒化）"

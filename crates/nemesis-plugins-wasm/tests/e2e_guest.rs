@@ -10,6 +10,8 @@
 //! cargo test -p nemesis-plugins-wasm --test e2e_guest
 //! ```
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -130,6 +132,7 @@ fn ctx() -> ExecContext {
 async fn fresh_manager_secrets(
     secrets: Arc<dyn SecretResolver>,
 ) -> Result<(tempfile::TempDir, Arc<PluginManager>), PluginError> {
+    common::ensure_host_dll();
     let ws = tempfile::tempdir().map_err(|e| PluginError::Io(e.to_string()))?;
     let mgr = Arc::new(PluginManager::new(
         ws.path(),

@@ -55,8 +55,8 @@ pub struct RegisteredPlugin {
     pub manifest: PluginManifest,
     /// 信任四态（安装/启动时验签结论）。
     pub trust: PluginTrustState,
-    /// 编译产物。
-    pub component: Arc<wasmtime::component::Component>,
+    /// 编译产物（宿主壳 DLL 句柄；0 = 无效）。
+    pub component: u64,
     /// 工具元数据（kind=tool 必有）。
     pub tool_meta: Option<ToolMetaSnapshot>,
     /// 宿主日志环形缓冲。
@@ -224,13 +224,9 @@ impl PluginManager {
         &self.runtime
     }
 
-    /// 用共享引擎编译一段 wasm 组件字节（含 workspace 编译缓存收益）。
-    pub fn compile_component(
-        &self,
-        wasm_bytes: &[u8],
-    ) -> Result<wasmtime::component::Component, PluginError> {
-        wasmtime::component::Component::new(&self.runtime.engine, wasm_bytes)
-            .map_err(|e| PluginError::Compile(format!("compile: {e}")))
+    /// 用宿主壳编译一段 wasm 组件字节（含 workspace 编译缓存收益）。
+    pub fn compile_component(&self, wasm_bytes: &[u8]) -> Result<u64, PluginError> {
+        self.runtime.compile_component(wasm_bytes)
     }
 
     /// slug 的载荷目录。
@@ -256,7 +252,7 @@ impl PluginManager {
         self: &Arc<Self>,
         manifest: PluginManifest,
         trust: PluginTrustState,
-        component: wasmtime::component::Component,
+        component: u64,
         tool_meta: Option<ToolMetaSnapshot>,
     ) -> Result<Arc<RegisteredPlugin>, PluginError> {
         let slug = manifest.slug.clone();
@@ -306,7 +302,7 @@ impl PluginManager {
         let reg = Arc::new(RegisteredPlugin {
             manifest,
             trust,
-            component: Arc::new(component),
+            component,
             tool_meta,
             logs,
             egress,
@@ -325,7 +321,10 @@ impl PluginManager {
     pub fn unregister(&self, slug: &str) -> bool {
         // drop 发送端 → worker 收 None 退出（即使注册表无条目也清队列）。
         drop(self.observers.lock().remove(slug));
-        if self.plugins.write().remove(slug).is_some() {
+        let removed = self.plugins.write().remove(slug);
+        if let Some(reg) = removed.as_ref() {
+            // 释放编译产物（壳对 0/重复 drop 容忍）。
+            self.runtime.host.component_drop(reg.component);
             tracing::info!(slug, "[WasmPlugin] 已注销");
             true
         } else {
@@ -399,7 +398,7 @@ impl PluginManager {
         }
         let frame = self.build_frame(&reg, false);
         self.runtime
-            .execute_tool(reg.component.clone(), frame, args_json, exec_ctx)
+            .execute_tool(reg.component, frame, args_json, exec_ctx)
             .await
     }
 
@@ -447,7 +446,7 @@ impl PluginManager {
                     continue;
                 }
                 let frame = mgr.build_frame(&reg, true);
-                let comp = reg.component.clone();
+                let comp = reg.component;
                 if let Err(e) = mgr.runtime.call_observe(comp, frame, event_json).await {
                     match e {
                         PluginError::Timeout { ms } => {

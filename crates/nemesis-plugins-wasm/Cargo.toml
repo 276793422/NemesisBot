@@ -3,13 +3,13 @@ name = "nemesis-plugins-wasm"
 version.workspace = true
 edition.workspace = true
 
-description = "NemesisBot WASM 插件框架宿主运行时（wasmtime 组件装配 + 资源管控 + 装配准入）"
+description = "NemesisBot WASM 插件框架宿主面（壳 DLL 装载 + 句柄 ABI + 装配准入；wasmtime 在宿主壳内）"
 license = "AGPL-3.0-only"
 
 [dependencies]
-# 宿主运行时
-wasmtime.workspace = true
-wasmtime-wasi.workspace = true
+# 宿主壳 DLL 装载（wasmtime 只进壳，exe 侧零重依赖）
+libloading = "0.8"
+base64.workspace = true
 
 # 内部层（types 事件源 / security 签名+扫描+操作注册表 / utils 原子写）
 nemesis-types = { workspace = true }

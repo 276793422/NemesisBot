@@ -16,6 +16,7 @@ REM     nemesisbot.exe
 REM     plugins\
 REM       plugin_ui.dll
 REM       eval_monitor_dll.dll
+REM       plugin_wasm.dll
 REM     tests\
 REM       cluster-test.exe
 REM       integration-test.exe
@@ -67,8 +68,8 @@ for /f "tokens=*" %%i in ('git describe --tags --abbrev=0 2^>nul') do set VERSIO
 set GIT_COMMIT=unknown
 for /f "tokens=*" %%i in ('git rev-parse --short HEAD 2^>nul') do set GIT_COMMIT=%%i
 
-REM 编译期价目表内嵌：值随构建变化 → 绕开 target 缓存强制 build.rs 重跑
-REM （下载 LiteLLM 最新表内嵌；失败自动快照兜底，见 nemesis-data/build.rs）
+REM Compile-time pricing table embed: value changes per build -> bypass target cache to force build.rs rerun
+REM (download latest LiteLLM table for embedding; falls back to repo snapshot on failure, see nemesis-data/build.rs)
 set NEMESIS_PRICES_REFRESH=%GIT_COMMIT%_%RANDOM%%RANDOM%
 
 for /f "tokens=*" %%i in ('rustc --version 2^>nul') do set RUSTC_VERSION=%%i
@@ -225,8 +226,8 @@ if exist "plugins\plugin-onnx\Cargo.toml" (
 echo.
 
 :plugin_eval_monitor
-REM --- plugin-eval-monitor（eval 沙盒监控 DLL；2026-08-18 部署化：
-REM     exe 旁 plugins\ 查找，不再绑死仓库绝对路径） ---
+REM --- plugin-eval-monitor (eval sandbox monitor DLL; 2026-08-18 deployment:
+REM     resolved next to exe via plugins\ dir, no longer bound to repo absolute path) ---
 if exist "plugins\plugin-eval-monitor\Cargo.toml" (
     echo   Building plugin-eval-monitor...
     pushd plugins\plugin-eval-monitor
@@ -234,16 +235,38 @@ if exist "plugins\plugin-eval-monitor\Cargo.toml" (
     cargo build --release
     if errorlevel 1 (
         popd
-        echo   WARN Plugin-eval-monitor DLL build failed ^(non-fatal — eval 功能将不可用^)
+        echo   WARN Plugin-eval-monitor DLL build failed ^(non-fatal, eval feature unavailable^)
         echo.
         set CARGO_TARGET_DIR=target\target_windows
-        goto step5
+        goto plugin_wasm
     )
     popd
     set CARGO_TARGET_DIR=target\target_windows
     echo   OK Plugin-eval-monitor DLL built
 ) else (
     echo   SKIP plugins\plugin-eval-monitor\Cargo.toml not found
+)
+echo.
+
+:plugin_wasm
+REM --- plugin-wasm (WASM plugin host shell; resolved next to exe via plugins\ dir; absent = subsystem honestly disabled) ---
+if exist "plugins\plugin-wasm\Cargo.toml" (
+    echo   Building plugin-wasm...
+    pushd plugins\plugin-wasm
+    set CARGO_TARGET_DIR=..\..\target\target_windows\plugins\plugin-wasm
+    cargo build --release
+    if errorlevel 1 (
+        popd
+        echo   WARN Plugin-wasm DLL build failed ^(non-fatal, wasm plugin subsystem unavailable^)
+        echo.
+        set CARGO_TARGET_DIR=target\target_windows
+        goto step5
+    )
+    popd
+    set CARGO_TARGET_DIR=target\target_windows
+    echo   OK Plugin-wasm DLL built
+) else (
+    echo   SKIP plugins\plugin-wasm\Cargo.toml not found
 )
 echo.
 
@@ -293,8 +316,17 @@ if "!ONNX_DLL_FOUND!"=="0" if "%SKIP_PLUGIN%"=="0" (
     echo   WARN plugin-onnx.dll not found in build output
 )
 
+REM Copy plugin-wasm DLL to bin\bin_windows\plugins\
+REM (WASM plugin host shell; resolved next to exe via plugins\ dir; absent = subsystem honestly disabled)
+if exist "target\target_windows\plugins\plugin-wasm\release\plugin_wasm.dll" (
+    copy /y "target\target_windows\plugins\plugin-wasm\release\plugin_wasm.dll" "bin\bin_windows\plugins\" >nul 2>&1
+    set /a COPIED+=1
+) else (
+    if "%SKIP_PLUGIN%"=="0" echo   WARN plugin_wasm.dll not found in build output ^(wasm plugin subsystem unavailable^)
+)
+
 REM Copy eval-monitor DLL to bin\bin_windows\plugins\
-REM （eval 沙盒监控；exe 旁 plugins\ 查找——部署目录拷走即用）
+REM (eval sandbox monitor; resolved next to exe via plugins\ dir; portable with the deploy dir)
 set EVAL_MONITOR_FOUND=0
 if exist "target\target_windows\plugins\plugin-eval-monitor\release\eval_monitor_dll.dll" (
     copy /y "target\target_windows\plugins\plugin-eval-monitor\release\eval_monitor_dll.dll" "bin\bin_windows\plugins\" >nul 2>&1
@@ -302,7 +334,7 @@ if exist "target\target_windows\plugins\plugin-eval-monitor\release\eval_monitor
     set EVAL_MONITOR_FOUND=1
 )
 if "!EVAL_MONITOR_FOUND!"=="0" if "%SKIP_PLUGIN%"=="0" (
-    echo   WARN eval_monitor_dll.dll not found in build output ^(eval 功能将不可用^)
+    echo   WARN eval_monitor_dll.dll not found in build output ^(eval feature unavailable^)
 )
 
 if "!DLL_FOUND!"=="0" if "%SKIP_PLUGIN%"=="0" (
@@ -321,13 +353,13 @@ for %%e in (ai-server.exe cluster-test.exe integration-test.exe mcp-server.exe) 
 echo   OK Copied !COPIED! file^(s^) to bin\bin_windows\
 echo.
 
-REM Optional: build skins (.nbskin) — skins\ 子模块在场且 Node 可用才构建。
-REM 本地构建只打包不签名（.nbskin 无签名照常可用，管理面标 ⚪ unsigned）；
-REM 签名分发走 daily-release CI 统一铸叶签署。
+REM Optional: build skins (.nbskin) - only when skins\ submodule is present and Node is available.
+REM Local build packs without signing (.nbskin works unsigned; the management UI marks it as unsigned).
+REM Signed distribution goes through daily-release CI leaf signing.
 if exist "skins" (
     where node >nul 2>&1
     if errorlevel 1 (
-        echo   WARN Node.js not found in PATH — skipping .nbskin skin packaging
+        echo   WARN Node.js not found in PATH - skipping .nbskin skin packaging
     ) else (
         echo   Building skins ^(.nbskin^)...
         if not exist "bin\bin_windows\skins" mkdir "bin\bin_windows\skins"
@@ -360,17 +392,17 @@ if exist "skins" (
         )
     )
 ) else (
-    echo   SKIP skins\ not found — no .nbskin packaging
+    echo   SKIP skins\ not found - no .nbskin packaging
 )
 echo.
 
 REM ============================================
-REM Runtime manifest (A1 运行时完整性清单；生成失败诚实降级不阻塞打包)
+REM Runtime manifest (A1 runtime integrity manifest; generation failure degrades honestly without blocking packaging)
 REM ============================================
 where python >nul 2>&1
 if %errorlevel%==0 (
     python scripts\gen_runtime_manifest.py --out-dir bin\bin_windows --version %VERSION% --commit %GIT_COMMIT%
-    if errorlevel 1 echo   WARN runtime-manifest generation failed - gateway startup will treat deployment as unchecked (manifest absent)
+    if errorlevel 1 echo   WARN runtime-manifest generation failed - gateway startup will treat deployment as unchecked ^(manifest absent^)
 ) else (
     echo   WARN python not found in PATH - skipping runtime-manifest generation
 )

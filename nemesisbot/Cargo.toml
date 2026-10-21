@@ -139,10 +139,12 @@ history-search = ["nemesis-agent/history-search", "nemesis-web/history-search"]
 # 调用方零改动。测试构建经各消费 crate 的 [dev-dependencies] 带回真账本。
 usage-store = ["nemesis-data/usage-store"]
 
-# WASM 插件框架（`plugin` CLI + Dashboard 插件页 + agent 工具桥；guest 侧
-# wasmtime 运行时随它进出）。关 = 无 WASM 插件子系统，`plugin.*` 工具与
-# `plugins.wasm.*` WSAPI 整体消失。implies security：信任验签/审计链/
-# 病毒扫描机制依赖 nemesis-security（nemesis-plugins-wasm 本身硬依赖）。
+# WASM 插件框架（`plugin` CLI + Dashboard 插件页 + agent 工具桥；wasmtime
+# 运行时在宿主壳 DLL plugins/plugin-wasm（独立构建、exe 旁 plugins/ 查找）
+# ——DLL 缺席 = 子系统诚实关闭，exe 体积不受 wasmtime 影响）。关 = 无
+# WASM 插件子系统，`plugin.*` 工具与 `plugins.wasm.*` WSAPI 整体消失。
+# implies security：信任验签/审计链/病毒扫描机制依赖 nemesis-security
+#（nemesis-plugins-wasm 本身硬依赖）。
 plugins-wasm = ["security", "dep:nemesis-plugins-wasm", "nemesis-web/plugins-wasm"]
 
 # Channel backends (forwarded to nemesis-channels)

@@ -6,10 +6,59 @@
 
 use super::*;
 use nemesis_plugins_wasm::registry::PluginManager;
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
+
+/// 宿主壳 DLL 就绪保障（与 nemesis-plugins-wasm tests/common 同纪律）：
+/// 产物缺席按需构建，路径经 `NEMESIS_WASM_HOST_DLL` 注入 loader——
+/// 测试二进制在 target/debug/deps/，exe-相邻候选摸不到壳产物。
+fn ensure_host_dll() {
+    static HOST_DLL: OnceLock<Option<PathBuf>> = OnceLock::new();
+    let path = HOST_DLL.get_or_init(|| {
+        let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins/plugin-wasm");
+        let out = crate_dir
+            .join("target/release")
+            .join(if cfg!(target_os = "windows") {
+                "plugin_wasm.dll"
+            } else if cfg!(target_os = "macos") {
+                "libplugin_wasm.dylib"
+            } else {
+                "libplugin_wasm.so"
+            });
+        if !out.exists() {
+            let cargo = std::env::var_os("CARGO")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("cargo"));
+            let mut cmd = std::process::Command::new(cargo);
+            cmd.args(["build", "--release"]).current_dir(&crate_dir);
+            for k in [
+                "CARGO_TARGET_DIR",
+                "CARGO_ENCODED_RUSTFLAGS",
+                "CARGO_BUILD_TARGET",
+            ] {
+                cmd.env_remove(k);
+            }
+            match cmd.status() {
+                Ok(s) if s.success() => {}
+                s => {
+                    eprintln!("宿主壳 DLL 构建失败：{s:?}");
+                    return None;
+                }
+            }
+        }
+        out.exists().then_some(out)
+    });
+    let Some(p) = path else {
+        panic!("宿主壳 DLL 构建失败（环境错误）：需 cargo 可用 + 壳 crate 可编译");
+    };
+    // SAFETY: 单写点（OnceLock 串行化）；读者 = 同进程 loader，均在本函数
+    // 返回后触达。
+    unsafe { std::env::set_var("NEMESIS_WASM_HOST_DLL", p) };
+}
 
 /// 独立 workspace 装配（AutoApprove + 无扫描——CLI 同构形态）。
 fn temp_installer() -> (tempfile::TempDir, Arc<PluginInstaller>) {
+    ensure_host_dll();
     let dir = tempfile::tempdir().expect("tempdir");
     let ws = dir.path().join("workspace");
     std::fs::create_dir_all(&ws).expect("workspace");

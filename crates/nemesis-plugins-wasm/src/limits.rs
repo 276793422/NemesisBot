@@ -1,6 +1,7 @@
-//! 插件资源限制表 + wasmtime ResourceLimiter 实现。
+//! 插件资源限制表 + 并发实例闸。
 //!
-//! 默认额度（可在 config `plugins.limits` 全局收紧；manifest `[limits]`
+//! 内存/表/fuel/墙钟预算的实际执行在宿主壳 DLL（plugin_wasm.dll）里；
+//! 本模块只剩额度表（单一真相源）与信号量闸。默认额度（可在 config `plugins.limits` 全局收紧；manifest `[limits]`
 //! 只能在全局上限内进一步收紧，放宽被忽略并留 warn）。
 
 use std::sync::Arc;
@@ -77,72 +78,6 @@ impl PluginLimits {
             }
         }
         (out, ignored)
-    }
-}
-
-/// wasmtime ResourceLimiter：单 Store 的内存/表上限。
-///
-/// fresh-store-per-call 语义下每个 Store 只实例化一个组件实例；内存/表上限
-/// 来自 [`PluginLimits`]。wasmtime 48 的 ResourceLimiter 为同步 trait（判定
-/// 即时完成，无异步等待路径）。
-pub(crate) struct PluginResourceLimiter {
-    memory_bytes: usize,
-    table_elements: usize,
-    /// Store 级内存/表累计额。Component Model 组件可静态包含多个 core
-    /// module，各持独立内存/表——per-资源独立判定会让总额放大 N 倍
-    /// （2026-09-29 交付审查 M4），按 Store 累计判定。
-    memory_total: usize,
-    table_total: usize,
-}
-
-impl PluginResourceLimiter {
-    #[must_use]
-    pub(crate) fn new(limits: &PluginLimits) -> Self {
-        Self {
-            memory_bytes: limits.memory_bytes,
-            table_elements: limits.table_elements,
-            memory_total: 0,
-            table_total: 0,
-        }
-    }
-}
-
-impl wasmtime::ResourceLimiter for PluginResourceLimiter {
-    // 累计记账是单调的：core wasm 的 memory.grow / table.grow 只有增长
-    // 语义（规范上线性内存与表不可收缩），wasmtime limiter API 也不存在
-    // shrink 回调——无需补偿路径，Store 级累计只增不减正合语义（M4）。
-    fn memory_growing(
-        &mut self,
-        current: usize,
-        desired: usize,
-        _maximum: Option<usize>,
-    ) -> wasmtime::Result<bool> {
-        let new_total = self
-            .memory_total
-            .saturating_add(desired.saturating_sub(current));
-        if new_total <= self.memory_bytes {
-            self.memory_total = new_total;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-
-    fn table_growing(
-        &mut self,
-        current: usize,
-        desired: usize,
-        _maximum: Option<usize>,
-    ) -> wasmtime::Result<bool> {
-        let new_total = self
-            .table_total
-            .saturating_add(desired.saturating_sub(current));
-        if new_total <= self.table_elements {
-            self.table_total = new_total;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
     }
 }
 
