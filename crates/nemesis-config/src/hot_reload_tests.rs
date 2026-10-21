@@ -3,6 +3,7 @@
 
 use crate::hot_reload::HotReloader;
 use std::path::Path;
+use std::time::Duration;
 
 fn load_vec(path: &Path) -> Vec<String> {
     std::fs::read_to_string(path)
@@ -23,8 +24,17 @@ fn force_reload_picks_up_rewrite_without_mtime_change_signal() {
     let r = HotReloader::new(path.clone(), load_vec);
     assert_eq!(r.get(), vec!["v1".to_string()]);
 
-    // 常规路径 sanity：mtime 变化 → check() 重载。
+    // 常规路径 sanity：mtime 信号确定变化 → check() 重载。mtime 用
+    // set_times 钉到远离当前的固定值——不能赌连续两次快速写自然产生
+    // 不同 mtime（CI Windows runner 实录：亚毫秒级连写撞同值 mtime，
+    // check() 漏检假红 2026-10-22；这正是 force_reload 防的现象本身）。
     write_json(&path, &["v2"]);
+    let f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    f.set_times(
+        std::fs::FileTimes::new()
+            .set_modified(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_000)),
+    )
+    .unwrap();
     assert!(r.check(), "mtime 变化应触发重载");
     assert_eq!(r.get(), vec!["v2".to_string()]);
 
