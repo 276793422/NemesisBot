@@ -1,4 +1,5 @@
-# CI 编译看门狗（2026-10-08；2026-10-09 R8 去 WMI + 空转熔断）：Windows hosted
+# CI 编译看门狗（2026-10-08；2026-10-09 R8 去 WMI + 空转熔断；2026-10-22
+# 进程级归因：WARN 预警 + ABORT 现场 top-mem 快照，见 Show-TopProcs）：Windows hosted
 # runner 在 nemesisbot 冷构建 bin 步反复楔死（R6/R7 四轮实录：libs 步健康速度
 # 跑完 → bin 步 40-44min 零进展 → MaxMinutes 上限从未触发 → runner ~50min 被
 # 回收）。两个根因级教训固化进本脚本：
@@ -27,6 +28,9 @@ param(
     [long]$FreeCommitFloorMb = 2048,
     [long]$FreeRamFloorMb = 1536,
     [long]$FreeDiskFloorMb = 2048,
+    # 预警线（2026-10-22 资源地板事故后新增）：commit 余量跌破此值时打印
+    # 进程归因快照（至多一次）——别等 ABORT 才第一次看到「谁在吃」。
+    [long]$WarnCommitMb = 3072,
     [int]$TailOut = 25,
     [int]$TailErr = 40
 )
@@ -80,8 +84,25 @@ function Get-MemSnapshot {
         CommitLimitMb = [math]::Round($ms.ullTotalPageFile / 1MB)
     }
 }
+# 进程级归因（2026-10-22 资源地板事故后补：聚合数字只能说「余量多少」，
+# 说不了「谁在吃」。Get-Process 是 syscall 级 API（非 WMI，R8 教训），
+# 高载下毫秒级。PrivateMemorySize64 = 进程私有提交字节，与 free_commit
+# 同一口径——top 5 相加约等于已吃掉的 commit 大头）。
+function Show-TopProcs {
+    $procs = @(Get-Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.PrivateMemorySize64 -gt 0 } |
+        Sort-Object PrivateMemorySize64 -Descending |
+        Select-Object -First 5)
+    $rustcN = @(Get-Process -Name rustc -ErrorAction SilentlyContinue).Count
+    $cargoN = @(Get-Process -Name cargo -ErrorAction SilentlyContinue).Count
+    "[$Tag] top-mem procs (private commit; rustc=$rustcN cargo=$cargoN):"
+    foreach ($pr in $procs) {
+        "[$Tag]   {0,-24} pid={1,7} priv={2}MB" -f $pr.ProcessName, $pr.Id, [math]::Round($pr.PrivateMemorySize64 / 1MB)
+    }
+}
 $lastBytes = -1L
 $lastProgressMin = 0.0
+$warned = $false
 while (-not $p.HasExited) {
     Start-Sleep -Seconds $PollSecs
     $mem = Get-MemSnapshot
@@ -92,22 +113,32 @@ while (-not $p.HasExited) {
     if ($bytes -ne $lastBytes) { $lastBytes = $bytes; $lastProgressMin = $elMin }
     $idleMin = [math]::Round($elMin - $lastProgressMin, 1)
     $el = [int]$elMin
-    "[$Tag] t=${el}min idle=${idleMin}min free_ram=$($mem.FreeRamMb)MB free_commit=$($mem.FreeCommitMb)/$($mem.CommitLimitMb)MB free_disk=${freeDiskMb}MB"
+    $rustcN = @(Get-Process -Name rustc -ErrorAction SilentlyContinue).Count
+    "[$Tag] t=${el}min idle=${idleMin}min free_ram=$($mem.FreeRamMb)MB free_commit=$($mem.FreeCommitMb)/$($mem.CommitLimitMb)MB free_disk=${freeDiskMb}MB rustc=$rustcN"
+    # 预警（每次运行至多一次）：commit 余量逼近地板时先留进程归因现场
+    if (-not $warned -and $mem.FreeCommitMb -lt $WarnCommitMb) {
+        $warned = $true
+        "[$Tag] WARN commit approaching floor: free_commit=$($mem.FreeCommitMb)MB < warn=${WarnCommitMb}MB"
+        Show-TopProcs
+    }
     if ($el -ge $MaxMinutes) {
         taskkill /T /F /PID $p.Id | Out-Null
         "[$Tag] ABORT max-time ${MaxMinutes}min exceeded"
+        Show-TopProcs
         Show-Tails
         exit 1
     }
     if ($idleMin -ge $IdleMinutes) {
         taskkill /T /F /PID $p.Id | Out-Null
         "[$Tag] ABORT no-output idle ${IdleMinutes}min (last progress t=$([math]::Round($lastProgressMin,1))min)"
+        Show-TopProcs
         Show-Tails
         exit 3
     }
     if ($mem.FreeCommitMb -lt $FreeCommitFloorMb -or $mem.FreeRamMb -lt $FreeRamFloorMb -or $freeDiskMb -lt $FreeDiskFloorMb) {
         taskkill /T /F /PID $p.Id | Out-Null
         "[$Tag] ABORT resource floor breach: free_commit=$($mem.FreeCommitMb)MB free_ram=$($mem.FreeRamMb)MB free_disk=${freeDiskMb}MB (floors ${FreeCommitFloorMb}/${FreeRamFloorMb}/${FreeDiskFloorMb}MB)"
+        Show-TopProcs
         Show-Tails
         exit 2
     }
