@@ -564,3 +564,62 @@ async fn e3_rewind_before_rejects_busy_session() {
 
     delete_chat_log(&key);
 }
+
+// —— BUG-HUNT R6（2026-10-23）：under_history_gate 会话闸补测 ——
+
+/// busy 闸补齐 rewind_to_message 入口（undo / rewind_before 已有专测）：
+/// 拒绝 + 零副作用 + 释放后放行。
+#[tokio::test]
+async fn e3_rewind_to_message_rejects_busy_session() {
+    let (al, key, dir) = stage_two_turns("rew-busy").await;
+    let file = dir.path().join("ws").join("code.txt");
+
+    assert!(al.try_acquire_session(&key));
+    let err = al.rewind_to_message(&key, 0, false).await.unwrap_err();
+    assert!(err.contains("正在处理"), "{err}");
+    let (_, total, _, _) = read_chat_log(&key, 100, None);
+    assert_eq!(total, 4, "零副作用");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "v3");
+
+    al.release_session(&key);
+    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
+    assert_eq!(out["removed_count"], 2, "{out}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "v2");
+
+    delete_chat_log(&key);
+}
+
+/// busy 闸补齐 redo_rewind 入口：闸拒绝先于「栈空」语义错误——本测连
+/// undo 都没做过，若闸失效会落到「没有可重做」而非「正在处理」。
+#[tokio::test]
+async fn e3_redo_rejects_busy_session_before_stack_semantics() {
+    let (al, key, _dir) = stage_two_turns("redo-busy").await;
+
+    assert!(al.try_acquire_session(&key));
+    let err = al.redo_rewind(&key).await.unwrap_err();
+    assert!(err.contains("正在处理"), "闸拒绝必须先于栈空语义: {err}");
+
+    al.release_session(&key);
+    let err = al.redo_rewind(&key).await.unwrap_err();
+    assert!(err.contains("没有可重做"), "{err}");
+
+    delete_chat_log(&key);
+}
+
+/// 闸的错误/成功路径释放：内层 Err（越界 index）早退后 guard drop 必须
+/// 把 busy 旗标还回去——不留「永久 busy、会话从此全拒」的死会话。
+#[tokio::test]
+async fn e3_gate_releases_session_after_inner_error() {
+    let (al, key, _dir) = stage_two_turns("gate-err").await;
+
+    let err = al.rewind_to_message(&key, 99, false).await.unwrap_err();
+    assert!(!err.contains("正在处理"), "{err}");
+    assert!(!al.is_session_busy(&key), "错误路径必须释放 busy 旗标");
+
+    // 释放成立：合法回退紧接着可用（若旗标泄漏这里会假拒绝）。
+    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
+    assert_eq!(out["removed_count"], 2, "{out}");
+    assert!(!al.is_session_busy(&key), "成功路径也要释放");
+
+    delete_chat_log(&key);
+}

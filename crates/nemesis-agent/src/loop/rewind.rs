@@ -83,6 +83,9 @@ impl AgentLoop {
     /// 指纹/当前指纹，前端可展示）；`force == true` 强过，回执与日志留痕
     /// （`forced: true`）。
     ///
+    /// 会话闸：经 [`Self::under_history_gate`] 真互斥（BUG-HUNT R6——旧
+    /// peek 存在「检查后、截断前」窗口，在飞回合的行会被陈旧快照截丢）。
+    ///
     /// 返回回执 JSON（kept/removed 计数 + 恢复文件清单 + redoable；被拒时
     /// 为 blocked 结构）。
     pub async fn rewind_to_message(
@@ -91,9 +94,18 @@ impl AgentLoop {
         message_index: usize,
         force: bool,
     ) -> Result<serde_json::Value, String> {
-        if self.is_session_busy(session_key) {
-            return Err("会话正在处理消息，请等当前回合完成后再回退".to_string());
-        }
+        self.under_history_gate(session_key, "回退", || {
+            self.rewind_to_message_inner(session_key, message_index, force)
+        })
+        .await
+    }
+
+    async fn rewind_to_message_inner(
+        &self,
+        session_key: &str,
+        message_index: usize,
+        force: bool,
+    ) -> Result<serde_json::Value, String> {
         // 全量读（回退是一次性管理操作，非热路径——fork 同款）。
         let (rows, _total, _, _) = crate::chat_log::read_chat_log(session_key, usize::MAX, None);
         if rows.is_empty() {
@@ -128,7 +140,7 @@ impl AgentLoop {
     ///
     /// busy 检查省略：唯一调用方是会话维护尾巴（gate 已获取会话 = 串行保
     /// 证，会话正忙根本进不到这里）；WSAPI 面的同语义入口走
-    /// [`Self::undo_last_turn`]（busy 闸 + 委托本方法）。
+    /// [`Self::undo_last_turn`]（会话闸 + 委托本方法）。
     pub(crate) async fn rewind_last_turn(
         &self,
         session_key: &str,
@@ -145,16 +157,15 @@ impl AgentLoop {
             .await
     }
 
-    /// 行动代理 E3（收官批 2026-10-15）WSAPI 撤销入口：busy 闸 +
+    /// 行动代理 E3（收官批 2026-10-15）WSAPI 撤销入口：会话闸
+    /// （[`Self::under_history_gate`] 真互斥）+ 委托
     /// [`Self::rewind_last_turn`]。会话正在处理消息时零副作用诚实拒绝
     /// （对话与文件都不动）——`connectors.undo` 的域 B（write 无 undo 声
     /// 明）走此入口回退最后一轮。维护尾巴调用方不经此入口（gate 已持会
     /// 话），直接走内部方法。
     pub async fn undo_last_turn(&self, session_key: &str) -> Result<serde_json::Value, String> {
-        if self.is_session_busy(session_key) {
-            return Err("会话正在处理消息，请等当前回合完成后再撤销".to_string());
-        }
-        self.rewind_last_turn(session_key).await
+        self.under_history_gate(session_key, "撤销", || self.rewind_last_turn(session_key))
+            .await
     }
 
     /// 重新生成支撑（2026-10-20，docs/BUG/2026-10-20_chat-regenerate-rewind-buttons-mismatch.md）：
@@ -170,7 +181,7 @@ impl AgentLoop {
     /// find_map 天然命中本轮——文件回滚到提问前，正是重新生成要的语义。
     ///
     /// 契约：`message_index` 必须指向 user 行——assistant 行落点会产生
-    /// 「删提问留回复」的破碎轮，loud 拒绝。busy 闸与边界检查同
+    /// 「删提问留回复」的破碎轮，loud 拒绝。会话闸与边界检查同
     /// [`Self::rewind_to_message`]；共享 [`Self::rewind_from_cut`] 机体
     /// （P20 冲突预检 / undo 栈 / F8 审计全量复用）。
     pub async fn rewind_before_message(
@@ -179,9 +190,18 @@ impl AgentLoop {
         message_index: usize,
         force: bool,
     ) -> Result<serde_json::Value, String> {
-        if self.is_session_busy(session_key) {
-            return Err("会话正在处理消息，请等当前回合完成后再回退".to_string());
-        }
+        self.under_history_gate(session_key, "回退", || {
+            self.rewind_before_message_inner(session_key, message_index, force)
+        })
+        .await
+    }
+
+    async fn rewind_before_message_inner(
+        &self,
+        session_key: &str,
+        message_index: usize,
+        force: bool,
+    ) -> Result<serde_json::Value, String> {
         let (rows, _total, _, _) = crate::chat_log::read_chat_log(session_key, usize::MAX, None);
         if rows.is_empty() {
             return Err("会话没有可回退的消息".to_string());
@@ -402,10 +422,15 @@ impl AgentLoop {
     ///
     /// 诚实边界：redo 不重建 checkpoint 索引（undo 时 turn-*.json 已清），
     /// redo 过的区间无法再次 rewind；文件只恢复工作区内（tree 覆盖范围）。
+    /// 会话闸：经 [`Self::under_history_gate`] 真互斥（同 rewind 家族）。
     pub async fn redo_rewind(&self, session_key: &str) -> Result<serde_json::Value, String> {
-        if self.is_session_busy(session_key) {
-            return Err("会话正在处理消息，请等当前回合完成后再重做".to_string());
-        }
+        self.under_history_gate(session_key, "重做", || {
+            self.redo_rewind_inner(session_key)
+        })
+        .await
+    }
+
+    async fn redo_rewind_inner(&self, session_key: &str) -> Result<serde_json::Value, String> {
         let entry = {
             let mut stacks = self.rewind_undo_stacks.lock();
             stacks.get_mut(session_key).and_then(|s| s.pop_back())

@@ -138,6 +138,22 @@ impl SentInRoundTracker {
     }
 }
 
+/// 会话历史闸的 RAII 释放守卫（[`AgentLoop::under_history_gate`] 专用）：
+/// 持有 session_busy 旗标直到 drop——操作体 `?` 早退、panic 展开都保证
+/// 释放，不留「永久 busy、会话从此全拒」的死会话（clear_session_busy 的
+/// 注释记录过这类事故形态）。只负责释放；排队消息的排空是 async，由
+/// under_history_gate 在 drop 后显式做。
+struct SessionBusyGuard<'a> {
+    loop_ref: &'a AgentLoop,
+    session_key: String,
+}
+
+impl Drop for SessionBusyGuard<'_> {
+    fn drop(&mut self) {
+        self.loop_ref.release_session(&self.session_key);
+    }
+}
+
 impl AgentLoop {
     /// Clear all session busy states.
     ///
@@ -1297,6 +1313,43 @@ impl AgentLoop {
     pub fn session_queue_length(&self, session_key: &str) -> usize {
         let map = self.session_busy.lock();
         map.get(session_key).map_or(0, |s| s.queue_length)
+    }
+
+    /// 会话历史闸（BUG-HUNT R6，2026-10-23）：WSAPI 破坏性会话操作
+    /// （消息级回退/撤销/重做、chat.compact/clear、sessions.clear/delete）
+    /// 的真互斥入口。旧的「`is_session_busy` peek 后直接动手」存在
+    /// check-then-act 窗口——检查与落盘之间新消息可被正常 admit（gate 只
+    /// 认 session_busy 旗标，peek 不置位），在飞回合把行写进 jsonl，随后
+    /// 的截断按**陈旧行快照**落盘，新行被静默截丢（不在 undo 条目里，
+    /// redo 无法恢复；唯一残迹是 event ledger 差集）。
+    ///
+    /// 本方法把 peek 升级为真 acquire：持有期间该会话的新消息走
+    /// gate_inbound 的 busy 分支（queue/steer 排队、reject 诚实拒绝），
+    /// 与 turn 生命周期互斥；操作完成（含错误路径，guard RAII 兜 panic）
+    /// 后释放并 [`Self::drain_next_turn_queue`] 排空持闸期间排队的消息。
+    /// 与 slash 维护路径（Maintenance outcome 先 acquire 再进尾巴）语义
+    /// 对齐——两入口不再有闸差异。
+    pub async fn under_history_gate<T, F, Fut>(
+        &self,
+        session_key: &str,
+        verb: &str,
+        op: F,
+    ) -> Result<T, String>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, String>>,
+    {
+        if !self.try_acquire_session(session_key) {
+            return Err(format!("会话正在处理消息，请等当前回合完成后再{verb}"));
+        }
+        let _guard = SessionBusyGuard {
+            loop_ref: self,
+            session_key: session_key.to_string(),
+        };
+        let out = op().await;
+        drop(_guard);
+        self.drain_next_turn_queue(session_key).await;
+        out
     }
 
     /// U7 dashboard visibility (G1): one-call snapshot of a session's inbox
