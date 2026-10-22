@@ -130,6 +130,16 @@ impl AgentLoop {
             exclusive_hidden_provider: parking_lot::RwLock::new(None),
             checks_capture: parking_lot::RwLock::new(HashMap::new()),
             tool_policy_allow: parking_lot::RwLock::new(Vec::new()),
+            compact_policy: parking_lot::RwLock::new(std::sync::Arc::new(
+                crate::r#loop::policy::BuiltinCompactPolicy,
+            )),
+            final_judge_policy: parking_lot::RwLock::new(std::sync::Arc::new(
+                crate::r#loop::policy::BuiltinFinalJudgePolicy,
+            )),
+            validation_policy: parking_lot::RwLock::new(std::sync::Arc::new(
+                crate::r#loop::policy::BuiltinValidationPolicy,
+            )),
+            title_callback: parking_lot::RwLock::new(None),
             tier_override: parking_lot::RwLock::new(None),
             queue_size,
             discipline: parking_lot::RwLock::new(None),
