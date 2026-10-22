@@ -235,8 +235,9 @@ fn promote_step4_failure_message_restore_failed_carries_manual_command() {
 }
 
 // ===========================================================================
-// plugin-vm 单一依赖包查找链（2026-10-22 拍板：脚本 + guest 产物随
-// plugin-vm 插件包分发，bot 不携带——查找顺序部署优先/开发回落的回归锁）。
+// VM 资源查找链（2026-10-22 三拍：资源内嵌 plugin_vm.dll 用时释放——
+// 没有资源目录；released 根 = <workspace>/tools/vm/released/，布局与旧
+// 资源目录同构。查找顺序 released 优先/开发回落的回归锁）。
 // ===========================================================================
 mod package_lookup {
     use std::fs;
@@ -265,73 +266,67 @@ mod package_lookup {
     }
 
     #[test]
-    fn script_lookup_prefers_plugin_dir_then_dev_fallback() {
+    fn script_lookup_prefers_released_root_then_dev_fallback() {
         let scratch = Scratch::new("script");
-        let plugin_dir = scratch.path();
+        let released = scratch.path();
         let dev = scratch.path().join("dev").join("build-vm-image.sh");
         fs::create_dir_all(dev.parent().unwrap()).unwrap();
         // 开发形态脚本先物化（①b/② 的回落臂依赖它在场）。
         fs::write(&dev, b"#!/usr/bin/env bash\n").unwrap();
 
-        // ① 包内脚本在场 → 命中包路径（部署形态优先）。
-        let in_pkg = plugin_dir.join("build-vm-image.sh");
-        fs::write(&in_pkg, b"#!/usr/bin/env bash\n").unwrap();
+        // ① 释放态脚本在场 → 命中 released 路径（释放态优先）。
+        let in_released = released.join("build-vm-image.sh");
+        fs::write(&in_released, b"#!/usr/bin/env bash\n").unwrap();
         assert_eq!(
-            vm_image_script_path_with(Some(plugin_dir), &dev),
-            Some(in_pkg.clone())
+            vm_image_script_path_with(Some(released), &dev),
+            Some(in_released.clone())
         );
-        // ①b 无 exe 目录语义（plugin_dir=None）→ 直接走开发回落。
+        // ①b 无 released 根语义（released=None）→ 直接走开发回落。
         assert_eq!(vm_image_script_path_with(None, &dev), Some(dev.clone()));
 
-        // ② 包内缺席、开发形态在场 → 回落 dev 路径。
-        fs::remove_file(&in_pkg).unwrap();
+        // ② 释放态缺席、开发形态在场 → 回落 dev 路径。
+        fs::remove_file(&in_released).unwrap();
         assert_eq!(
-            vm_image_script_path_with(Some(plugin_dir), &dev),
+            vm_image_script_path_with(Some(released), &dev),
             Some(dev.clone())
         );
 
         // ③ 双双缺席 → None（no_script 态的来源）。
         fs::remove_file(&dev).unwrap();
-        assert_eq!(vm_image_script_path_with(Some(plugin_dir), &dev), None);
+        assert_eq!(vm_image_script_path_with(Some(released), &dev), None);
         assert_eq!(vm_image_script_path_with(None, &dev), None);
     }
 
     #[test]
-    fn guest_candidates_order_package_first_then_dev_target() {
+    fn guest_candidates_order_released_root_first_then_dev_target() {
         let scratch = Scratch::new("guest");
-        let plugin_dir = scratch.path();
+        let released = scratch.path();
 
-        // ① 部署形态候选在先：plugin_vm/guest/<短arch>/（与 build-guest.sh 的
-        //    bin/bin_guest/<短arch>/ 布局同构，打包直拷），开发形态候选垫后
-        //    （target triple 形态）。
+        // ① 释放态候选在先：released/guest/<短arch>/（布局与 build-guest.sh
+        //    的 bin/bin_guest/<短arch>/ 同构），开发形态候选垫后（target
+        //    triple 形态）。
         assert_eq!(
-            guest_bin_candidates_with(Some(plugin_dir), "x86_64").unwrap(),
+            guest_bin_candidates_with(Some(released), "x86_64").unwrap(),
             vec![
-                plugin_dir
-                    .join("guest")
-                    .join("x86_64")
-                    .join("nemesis-guest"),
+                released.join("guest").join("x86_64").join("nemesis-guest"),
                 PathBuf::from("target")
                     .join("x86_64-unknown-linux-musl")
                     .join("release")
                     .join("nemesis-guest"),
             ]
         );
-        // ② aarch64 同构：短 arch 进包路径，triple 进 dev 路径。
+        // ② aarch64 同构：短 arch 进 released 路径，triple 进 dev 路径。
         assert_eq!(
-            guest_bin_candidates_with(Some(plugin_dir), "aarch64").unwrap(),
+            guest_bin_candidates_with(Some(released), "aarch64").unwrap(),
             vec![
-                plugin_dir
-                    .join("guest")
-                    .join("aarch64")
-                    .join("nemesis-guest"),
+                released.join("guest").join("aarch64").join("nemesis-guest"),
                 PathBuf::from("target")
                     .join("aarch64-unknown-linux-musl")
                     .join("release")
                     .join("nemesis-guest"),
             ]
         );
-        // ③ 无 exe 目录语义 → 只剩开发形态候选。
+        // ③ 无 released 根语义 → 只剩开发形态候选。
         assert_eq!(
             guest_bin_candidates_with(None, "x86_64").unwrap(),
             vec![

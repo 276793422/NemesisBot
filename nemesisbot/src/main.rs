@@ -232,6 +232,17 @@ mod vm_sync;
 #[cfg(feature = "vm-display")]
 mod vm_display_loader;
 
+/// plugin-vm 库文件查找 + v4 签名闸（vm feature 门控）——装载臂
+/// （vm_display_loader）与资源释放臂（vm_resources）的单一真相源。
+#[cfg(feature = "vm")]
+mod vm_plugin_lib;
+
+/// plugin-vm 内嵌资源释放臂（vm feature 门控）：dlopen 取内嵌资源
+/// （镜像构建脚本 + guest 双架构 ELF）落盘 workspace/tools/vm/released/
+/// ——「用的时候释放」，分发面只剩单个插件库文件。
+#[cfg(feature = "vm")]
+mod vm_resources;
+
 /// A1 运行时完整性清单：打包部署的
 /// 运行时文件 hash 清单（runtime-manifest.json，构建期由
 /// scripts/gen_runtime_manifest.py 生成）+ 启动三态校验。无 feature 门
@@ -1203,6 +1214,15 @@ static GLOBAL_STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 // poison-aware（`.lock().unwrap_or_else(|e| e.into_inner())`）。
 #[cfg(test)]
 pub(crate) static APPROVAL_AUTO_SLOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+// §3 `NEMESIS_WASM_HOST_DLL` 进程级 env 突变的共享串行锁——native_plugins
+// （gate 验签对象切换）与 plugin_bridge（ensure_host_dll 注入 dev 壳产物）
+// 两个测试模块都改读同一变量，各自只持 GLOBAL_STATE_LOCK / 无锁时并行互踩
+// （2026-10-22 实录：native warn 态检查读到 plugin_bridge 注入的 dev DLL
+// 路径，Allow 携带对象断言假红）。持锁跨整个用例体（env 必须活到用例内
+// 的 loader/闸读取完成）。获取侧 poison-aware，同上约定。
+#[cfg(test)]
+pub(crate) static WASM_HOST_DLL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod bridge_client_tests;

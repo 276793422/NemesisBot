@@ -26,13 +26,21 @@
 //! 收 runtime，幂等）。
 //!
 //! Build: `cargo build --release` → plugin_vm.dll / libplugin_vm.so
-//! Install: 拷到 nemesisbot.exe 同目录（宿主 loader 探测名见下）。
+//! Install: 拷到 nemesisbot.exe 旁 `plugins/` 子目录（宿主 loader 探测名见下；
+//! exe 同目录仅旧部署回落）。**单文件部署**——镜像构建脚本与 guest 双架构
+//! ELF 全部内嵌在库本体（`resources` 模块 + `plugin_vm_resource_get` 导出），
+//! 宿主用时释放到 workspace；**没有资源目录**（2026-10-22 拍板）。
 
 // 同步副本（源：crates/nemesis-plugin/src/vm_display.rs，字节一致纪律）。
 // 插件侧只消费部分常量/类型——未消费面 dead_code 允许（副本不因插件
 // 视角裁剪，diff 可比对）。
 #[allow(dead_code)]
 mod vm_display;
+
+mod resources;
+
+#[cfg(test)]
+mod resource_tests;
 
 use std::ffi::{CStr, CString};
 use std::io;
@@ -64,7 +72,7 @@ const VNC_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 /// RFB client→server 写类消息类型（readonly 会话丢弃）：
 /// 4=KeyEvent, 5=PointerEvent, 6=ClientCutText（RFB 6.3）。
 fn is_write_message(t: u8) -> bool {
-    matches!(t, 4 | 5 | 6)
+    matches!(t, 4..=6)
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +282,55 @@ pub unsafe extern "C" fn plugin_vm_display_free() {
     log(2, "已释放（listener 停 + runtime 收）");
 }
 
+/// `plugin_vm_resource_get` 符号名（宿主 dlsym 用；宿主侧 vm_resources
+/// 模块持同名字符串，两侧注释互指防漂移）。
+pub const RESOURCE_GET_SYMBOL: &str = "plugin_vm_resource_get";
+
+/// 返回码：资源在（out 已填）。
+pub const RESOURCE_GET_OK: c_int = 0;
+/// 返回码：该资源构建时未内嵌（guest 产物不在场——换全量构建的包）。
+pub const RESOURCE_GET_ABSENT: c_int = 2;
+/// 返回码：资源名未知 / 参数非法。
+pub const RESOURCE_GET_UNKNOWN: c_int = 1;
+
+/// `plugin_vm_resource_get(name, out_ptr, out_len) -> i32`：内嵌资源按名
+/// 取字节指针（资源是 include 进 .rodata 的静态数据，库生命周期 =
+/// 进程生命周期——宿主永不 unload 本插件，指针恒有效）。
+///
+/// 返回码：0 = ok；1 = 名未知；2 = 资源未内嵌（构建时产物缺席）；
+/// 1 同时覆盖参数非法（宿主不会传 null——传了按未知处理，不 panic）。
+///
+/// # Safety
+/// `name` 必须指向合法 C 字符串；`out_ptr`/`out_len` 必须指向可写内存。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn plugin_vm_resource_get(
+    name: *const c_char,
+    out_ptr: *mut *const u8,
+    out_len: *mut usize,
+) -> c_int {
+    if name.is_null() || out_ptr.is_null() || out_len.is_null() {
+        return RESOURCE_GET_UNKNOWN;
+    }
+    let name = unsafe { CStr::from_ptr(name) }.to_string_lossy();
+    match crate::resources::resource(&name) {
+        Some(bytes) => {
+            unsafe {
+                *out_ptr = bytes.as_ptr();
+                *out_len = bytes.len();
+            }
+            RESOURCE_GET_OK
+        }
+        // guest 名在值域内但未内嵌 = ABSENT（区别于拼错名 UNKNOWN——
+        // 宿主对 ABSENT 诚实报「插件缺该架构资源」，对 UNKNOWN 报 ABI 不符）。
+        None if name == resources::RESOURCE_GUEST_X86_64
+            || name == resources::RESOURCE_GUEST_AARCH64 =>
+        {
+            RESOURCE_GET_ABSENT
+        }
+        None => RESOURCE_GET_UNKNOWN,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 会话处理
 // ---------------------------------------------------------------------------
@@ -323,7 +380,7 @@ async fn handle_session(stream: TcpStream) {
         // 查询失败 = 断连（网关 down 泵见 EOF → 会话结束；不给浏览器
         // 伪造 RFB 数据）。
         log(3, &format!("agent {} 无可用 VNC 端口，断连", meta.agent_id));
-        audit("session_reject", &format!("{{\"reason\":\"no_vnc_port\"}}"));
+        audit("session_reject", "{\"reason\":\"no_vnc_port\"}");
         return;
     };
 
@@ -337,7 +394,7 @@ async fn handle_session(stream: TcpStream) {
         Ok(Ok(s)) => s,
         _ => {
             log(3, &format!("QEMU VNC 127.0.0.1:{vnc_port} 连接失败/超时"));
-            audit("session_reject", &format!("{{\"reason\":\"vnc_connect_failed\"}}"));
+            audit("session_reject", "{\"reason\":\"vnc_connect_failed\"}");
             return;
         }
     };
@@ -363,17 +420,12 @@ async fn handle_session(stream: TcpStream) {
     // 上行：帧解析 → ro 模式丢弃写类消息（4/5/6）→ 原始字节写 VNC。
     let up_sock = &mut sock_read;
     let up = async move {
-        loop {
-            match read_frame(up_sock).await {
-                Ok(frame) => {
-                    if readonly && frame.first().is_some_and(|t| is_write_message(*t)) {
-                        continue; // readonly：丢弃，连接保持
-                    }
-                    if vnc_write.write_all(&frame).await.is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
+        while let Ok(frame) = read_frame(up_sock).await {
+            if readonly && frame.first().is_some_and(|t| is_write_message(*t)) {
+                continue; // readonly：丢弃，连接保持
+            }
+            if vnc_write.write_all(&frame).await.is_err() {
+                break;
             }
         }
     };

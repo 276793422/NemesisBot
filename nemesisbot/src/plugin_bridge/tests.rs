@@ -52,13 +52,23 @@ fn ensure_host_dll() {
     unsafe { std::env::set_var("NEMESIS_WASM_HOST_DLL", p) };
 }
 
-fn temp_home() -> (tempfile::TempDir, std::path::PathBuf) {
+fn temp_home() -> (
+    std::sync::MutexGuard<'static, ()>,
+    tempfile::TempDir,
+    std::path::PathBuf,
+) {
+    // env 注入必须活到用例体内的 loader 读取完成——锁句柄随元组交还调用方
+    // 持有至用例结束（WASM_HOST_DLL_LOCK 与 native_plugins_tests 共享，
+    // 2026-10-22 竞态实录：两模块并行互踩 NEMESIS_WASM_HOST_DLL）。
+    let lock = crate::WASM_HOST_DLL_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     ensure_host_dll();
     let dir = tempfile::tempdir().expect("tempdir");
     let home = dir.path().to_path_buf();
     // PluginManager::new 对 workspace root canonicalize——目录必须先在场。
     std::fs::create_dir_all(common::workspace_path(&home)).expect("workspace dir");
-    (dir, home)
+    (lock, dir, home)
 }
 
 fn meta(name: &str, operation_type: &str, parameters_json: &str) -> ToolMetaSnapshot {
@@ -75,7 +85,7 @@ fn meta(name: &str, operation_type: &str, parameters_json: &str) -> ToolMetaSnap
 
 #[test]
 fn runtime_config_defaults_when_file_missing() {
-    let (_dir, home) = temp_home();
+    let (_lock, _dir, home) = temp_home();
     let rc = read_runtime_config(&home);
     assert!(rc.enabled, "缺省 enabled=true");
     let d = PluginLimits::default();
@@ -86,7 +96,7 @@ fn runtime_config_defaults_when_file_missing() {
 
 #[test]
 fn runtime_config_tightening_applied_and_loosening_ignored() {
-    let (_dir, home) = temp_home();
+    let (_lock, _dir, home) = temp_home();
     let d = PluginLimits::default();
     let cfg = serde_json::json!({
         "plugins": { "wasm": {
@@ -142,7 +152,7 @@ fn operation_mapping_covers_wordlist() {
 
 #[test]
 fn bridge_parameters_fallback_on_invalid_json() {
-    let (_dir, home) = temp_home();
+    let (_lock, _dir, home) = temp_home();
     let manager = Arc::new(
         PluginManager::new(
             &common::workspace_path(&home),
@@ -159,7 +169,7 @@ fn bridge_parameters_fallback_on_invalid_json() {
 
 #[test]
 fn bridge_is_read_only_follows_declaration() {
-    let (_dir, home) = temp_home();
+    let (_lock, _dir, home) = temp_home();
     let manager = Arc::new(
         PluginManager::new(
             &common::workspace_path(&home),
@@ -180,7 +190,7 @@ fn bridge_is_read_only_follows_declaration() {
 fn bridge_min_tier_follows_manifest_snapshot() {
     // min-tier 接线（2026-09-30 #2）：桥按安装期对账快照声明最低档，
     // 数据随 meta 走（无边车表无漂移）。
-    let (_dir, home) = temp_home();
+    let (_lock, _dir, home) = temp_home();
     let manager = Arc::new(
         PluginManager::new(
             &common::workspace_path(&home),
@@ -221,7 +231,7 @@ async fn install_approver_unbound_is_fail_closed() {
 fn rescan_output_redacts_credentials_on_success_text() {
     // 2026-09-30 复查 #1/#3：出站复扫单点行为钉死——命中即脱敏，
     // 审计只进 summary（此处只验文本面）。
-    let (_dir, home) = temp_home();
+    let (_lock, _dir, home) = temp_home();
     let manager = Arc::new(
         PluginManager::new(
             &common::workspace_path(&home),
@@ -242,7 +252,7 @@ fn rescan_output_redacts_credentials_on_success_text() {
 
 #[test]
 fn rescan_output_passthrough_without_matches() {
-    let (_dir, home) = temp_home();
+    let (_lock, _dir, home) = temp_home();
     let manager = Arc::new(
         PluginManager::new(
             &common::workspace_path(&home),
@@ -262,7 +272,7 @@ fn rescan_output_passthrough_without_matches() {
 
 #[test]
 fn vault_secrets_missing_vault_resolves_none() {
-    let (_dir, home) = temp_home();
+    let (_lock, _dir, home) = temp_home();
     let secrets = VaultPluginSecrets::for_home(&home);
     assert!(secrets.resolve("vault:plugin/demo/key").is_none());
 }
@@ -270,7 +280,7 @@ fn vault_secrets_missing_vault_resolves_none() {
 #[tokio::test]
 async fn estop_watcher_initial_alignment() {
     // spawn_estop_watcher 首行对齐初始态：已触发的 estop → 子系统冻结。
-    let (_dir, home) = temp_home();
+    let (_lock, _dir, home) = temp_home();
     let manager = Arc::new(
         PluginManager::new(
             &common::workspace_path(&home),

@@ -92,10 +92,13 @@ TARGETS=()
 for f in "$STAGING"/*; do
     [ -f "$f" ] || continue
     case "$(basename "$f")" in
-        nemesisbot | nemesisbot.exe | revoke-server | revoke-server.exe | exe-sign-tool | exe-sign-tool.exe | *.nbskin)
+        nemesisbot | nemesisbot.exe | revoke-server | revoke-server.exe | exe-sign-tool | exe-sign-tool.exe \
+            | *.nbskin)
             TARGETS+=("$f") ;;
     esac
 done
+# plugins/ 子目录全签（含 plugin_vm——2026-10-22 布局统一后与其他插件同住
+# plugins/，release 装载签名闸对未签名一方插件拒载，必须可签）。
 for f in "$STAGING/plugins/"*; do
     [ -f "$f" ] && TARGETS+=("$f")
 done

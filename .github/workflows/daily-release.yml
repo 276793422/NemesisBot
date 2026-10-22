@@ -187,9 +187,14 @@ jobs:
             echo "⚠️ certs/root_cert.der 不存在——产物无编译期锚（消费版签名验证降级 off），锁定版构建将跳过"
           fi
 
-      - name: Build nemesisbot (release)
+      # nightly 主二进制直接带 VM 显示装载器（vm-display 非 default feature
+      # 是体积纪律——IoT 裁剪形态不受影响；nightly 全量分发没有裁剪诉求，
+      # 该有的都要有）。fatal：CI 是无人值守的最后一道防线，不允许
+      # 「vm-display 编译失败就静默降级成无装载器二进制照发」——与本地构建
+      # 脚本的 WARN 非 fatal 语义刻意不同（本地失败有人在场，nightly 无人兜底）。
+      - name: Build nemesisbot (release, vm-display)
         shell: bash
-        run: cargo build --release -p nemesisbot
+        run: cargo build --release -p nemesisbot --features vm-display
 
       # plugin 是可选附件：构建失败不影响主程序发布
       - name: Build plugins (non-fatal)
@@ -208,6 +213,33 @@ jobs:
           if [ "${{ matrix.platform }}" = "windows" ]; then
             (cd plugins/plugin-eval-monitor && cargo build --release)
           fi
+
+      # guest 二进制（musl 静态 ELF 双架构）＝VM 镜像管线的注入件。guest 是
+      # Linux ELF、与宿主平台无关——Windows 包与 Linux 包内容一致（本地
+      # build-windows.bat 同款 git-bash 直接交叉编译，B7 实证）。rustup
+      # target add 显式补 musl std：rust-toolchain.toml 把全仓 pin 到 1.95.0
+      # （目录 override 压过 dtolnay 步装的 stable），不补则交叉编译 E0463
+      # （android job 同款坑位）。
+      #
+      # 顺序关键（资源内嵌纪律 2026-10-22）：guest 构建必须先于 plugin-vm
+      # 构建——镜像脚本 + guest ELF 编译期内嵌进 plugin_vm 库，缺席资源 +
+      # NMB_VM_REQUIRE_RESOURCES=1 = 构建红（fail-closed 不出残包）。
+      - name: Install musl guest targets
+        shell: bash
+        run: rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+
+      - name: Build guest binaries (musl dual-arch)
+        shell: bash
+        run: bash scripts/build-guest.sh
+
+      # plugin-vm（VM 显示中继）：nightly 必带（2026-10-22 拍板「该有的都要
+      # 有」）——升格为 fatal 独立步，不与上面的可选附件同槽。deps 仅
+      # tokio/serde/serde_json，两平台 runner 零额外系统依赖。
+      # NMB_VM_REQUIRE_RESOURCES=1：release 打包形态 fail-closed——内嵌资源
+      # 缺席直接构建红（与本地打包脚本同款 env）。
+      - name: Build plugin-vm (release, resources embedded)
+        shell: bash
+        run: (cd plugins/plugin-vm && NMB_VM_REQUIRE_RESOURCES=1 cargo build --release)
 
       - name: Stage artifacts
         shell: bash
@@ -230,6 +262,26 @@ jobs:
           cp plugins/plugin-wasm/target/release/libplugin_wasm.so staging/plugins/ 2>/dev/null || true
           cp plugins/plugin-wasm/target/release/plugin_wasm.dll   staging/plugins/ 2>/dev/null || true
           cp plugins/plugin-eval-monitor/target/release/eval_monitor_dll.dll staging/plugins/ 2>/dev/null || true
+          # plugin-vm 单文件部署（2026-10-22 资源内嵌拍板）：与其他插件同住
+          # plugins/ 子目录（装载器 plugins/ 优先 + exe 同目录回落）；镜像
+          # 脚本 + guest 双架构 musl ELF 已编译期内嵌进库文件（上方构建步
+          # NMB_VM_REQUIRE_RESOURCES=1 fail-closed 保内嵌成功），宿主首次
+          # 构建镜像时自动释放——分发面只有单个库文件，没有 plugin_vm/
+          # 资源目录。
+          if [ -f plugins/plugin-vm/target/release/plugin_vm.dll ]; then
+            cp plugins/plugin-vm/target/release/plugin_vm.dll staging/plugins/
+          fi
+          if [ -f plugins/plugin-vm/target/release/libplugin_vm.so ]; then
+            cp plugins/plugin-vm/target/release/libplugin_vm.so staging/plugins/
+          fi
+          # VM 面在场断言：构建步全是 fatal（含资源内嵌 fail-closed），产物
+          # 缺失理论上不可能——此断言兜底 staging 拷贝逻辑回归（缺件 =
+          # 构建红，不放出「下载后发现插件不在」的残包）
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            test -f staging/plugins/plugin_vm.dll || { echo "❌ staging/plugins/plugin_vm.dll 缺席"; exit 1; }
+          else
+            test -f staging/plugins/libplugin_vm.so || { echo "❌ staging/plugins/libplugin_vm.so 缺席"; exit 1; }
+          fi
           echo "=== staging 内容 ==="
           ls -la staging staging/plugins
 
@@ -261,7 +313,7 @@ jobs:
             echo "⚠️ 无信任锚——跳过锁定版构建（不产出无法启动的无锚锁定包）"
             exit 0
           fi
-          cargo build --release -p nemesisbot --features verify-enforce-lock
+          cargo build --release -p nemesisbot --features verify-enforce-lock,vm-display
           echo "LOCKED_BUILT=1" >> "$GITHUB_ENV"
 
       - name: Stage locked artifacts
@@ -270,8 +322,14 @@ jobs:
         run: |
           mkdir -p staging-locked/plugins
           cp "target/release/${{ matrix.binary }}" staging-locked/
-          cp staging/plugins/* staging-locked/plugins/ 2>/dev/null || true
+          # cp -r + /.：plugins/ 整体镜像（无 -r 时 cp 对子目录只报
+          # omitting directory）
+          cp -r staging/plugins/. staging-locked/plugins/ 2>/dev/null || true
           cp staging/version.txt staging-locked/
+          # VM 面与消费版同源（锁定=同功能+强制验签，不是功能裁剪版）——
+          # plugin_vm 库（资源内嵌单文件）随 plugins/ 子目录整体带入；此刻两套
+          # staging 均未签名，后面 Sign artifacts 对各自 staging 独立签一次
+          # （无嵌套签名路径）
           echo "Flavor    : enforce-locked" >> staging-locked/version.txt
           echo "=== staging-locked 内容 ==="
           ls -la staging-locked
@@ -348,9 +406,9 @@ jobs:
           cd staging
           7z a "../${{ matrix.archive }}" '*'
 
-      # 单独的 plugins 包（nightly-*-plugins.*）：包内扁平放编译产物（.dll/.so），
-      # 只想要插件二进制的人免下整包。格式随平台：Windows 用 zip（7z），
-      # Linux 用 tar.gz——与各自主包格式一致。
+      # 单独的 plugins 包（nightly-*-plugins.*）：包内放编译产物（.dll/.so，
+      # plugin_vm 为资源内嵌单文件），只想要插件二进制的人免下整包。
+      # 格式随平台：Windows 用 zip（7z），Linux 用 tar.gz——与各自主包格式一致。
       # plugin 编译是 non-fatal——一个都没编出来就跳过打包（空包无意义）；
       # 主包内容不变（plugins/ 子目录仍随主包分发）。
       - name: Package plugins
@@ -726,7 +784,7 @@ jobs:
           Version  : ${VERSION}
           Commit   : ${{ github.sha }}
           Branch   : ${{ github.ref_name }}
-          Features : default (full)
+          Features : default (full) + vm-display
           Built by : ${{ github.workflow }} #${{ github.run_number }} (run ${{ github.run_id }})
           Quality  : Extended Tests passed on the same commit
           EOF
@@ -777,8 +835,9 @@ jobs:
             - **Windows**: `nightly-windows.zip`（解压后运行 `nemesisbot.exe gateway`）
             - **Linux**: `nightly-linux.tar.gz`（解压后运行 `./nemesisbot gateway`）
             - **Android**: `nightly-android.apk`（arm64-v8a；签名模式见 build-android job 日志——配置了 ANDROID_KEYSTORE_* Secrets 为正式签名（与本地 sign.bat 同源），未配置为 debug 签名兜底（覆盖安装需先卸载））
-            - **Windows 插件包**: `nightly-windows-plugins.zip`（包内扁平放插件 .dll：plugin_ui / plugin_onnx / eval_monitor_dll）
-            - **Linux 插件包**: `nightly-linux-plugins.tar.gz`（包内扁平放插件 .so）
+            - **VM 显示中继**: 已编译进 Windows/Linux 主二进制（vm-display）——主包内 `plugins/` 目录带 `plugin_vm.dll`/`libplugin_vm.so` 单文件（镜像构建脚本 + guest 双架构 musl ELF 已内嵌库内，首次构建镜像时自动释放），零额外安装
+            - **Windows 插件包**: `nightly-windows-plugins.zip`（包内放插件 .dll：plugin_ui / plugin_onnx / plugin_wasm / eval_monitor_dll / plugin_vm；解压到 exe 旁 `plugins/` 即恢复布局）
+            - **Linux 插件包**: `nightly-linux-plugins.tar.gz`（包内放插件 .so：plugin_ui / plugin_onnx / plugin_wasm / libplugin_vm；解压到 exe 旁 `plugins/` 即恢复布局）
             - **锁定版全家桶**: `nightly-locked-full.zip`（签名验证强制（enforce）的锁定版 Windows/Linux 客户端 + Android APK + 全部插件 + signserver + sign-tools 一站式；启动日志/侧栏带 🔒 标识；信任根未配置时本包缺席）
             - **皮肤包**: `nightly-skins.zip`（全部 `.nbskin` 皮肤 + v4 签名（与主程序同一信任根）+ `signatures.json` 清单 + `certs/root_cert.der`；解压后把 `.nbskin` 放到 exe 同级 `skins/` 目录即可，Dashboard 设置页「皮肤」tab 管理与热切换；未配置 `NMB_ISSUING_*` Secrets 时包内皮肤无签名但照常可用）
             - **插件开发包**: `nightly-wasm-devkit.zip`（WASM 插件最小可编译集合源码包：三方 SDK + 打包工具 + 全部示例，平台无关；解压后 `cargo run -p pack` 一键编译打包示例——配套 Dashboard「插件」页「下载插件开发包」一键取用）
