@@ -6,7 +6,6 @@ pub mod bridge;
 pub mod collector;
 pub mod config;
 pub mod cycle_store;
-pub mod evaluator;
 pub mod experience_store;
 pub mod exporter;
 pub mod forge;

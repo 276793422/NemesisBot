@@ -2286,7 +2286,7 @@ async fn test_channel_list_and_messages_pagination() {
         .unwrap()
         .unwrap();
     let channels = out["channels"].as_array().unwrap();
-    assert_eq!(channels.len(), 3, "default #dev/#qa/#general seeded");
+    assert_eq!(channels.len(), 4, "default #dev/#qa/#general/#team seeded");
     let cid = channels[0]["id"].as_i64().unwrap();
 
     // 直接经 store 造 3 条消息，验证 after_id 游标与 limit。

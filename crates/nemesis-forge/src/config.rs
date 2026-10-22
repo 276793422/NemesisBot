@@ -61,24 +61,16 @@ pub struct ForgeConfig {
 }
 
 /// Collection subsystem configuration.
+///
+/// 2026-10-22 对称清理：`enabled` / `buffer_size` / `flush_interval_secs` /
+/// `max_experiences_per_day` / `interval_secs` 五个 write-only 键随聚合线
+/// 移除——flush 循环、每日限额与「采集间隔」的唯一消费者就是被删的
+/// collector_loop / append_aggregated（interval_secs 生前唯一消费点是 CLI
+/// `forge status` 的展示打印，不驱动任何行为），`buffer_size` 与
+/// `collection.enabled` 在此之前也已全仓零消费（采集开关只有 `forge.enabled`
+/// 总闸一条真相源）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CollectionConfig {
-    /// Whether experience collection is enabled.
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-
-    /// Maximum buffer size before flushing.
-    #[serde(default = "default_buffer_size")]
-    pub buffer_size: usize,
-
-    /// Interval between flush passes (seconds).
-    #[serde(default = "default_flush_interval")]
-    pub flush_interval_secs: u64,
-
-    /// Maximum experiences to keep per day (0 = unlimited).
-    #[serde(default = "default_max_exp_per_day")]
-    pub max_experiences_per_day: usize,
-
     /// Fields to sanitize when collecting experiences.
     #[serde(default = "default_sanitize_fields")]
     pub sanitize_fields: Vec<String>,
@@ -86,40 +78,19 @@ pub struct CollectionConfig {
     /// Maximum experiences to keep overall.
     #[serde(default = "default_max_experiences")]
     pub max_experiences: usize,
-
-    /// Interval between collection passes (seconds).
-    #[serde(default = "default_interval")]
-    pub interval_secs: u64,
 }
 
 impl Default for CollectionConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
-            buffer_size: default_buffer_size(),
-            flush_interval_secs: default_flush_interval(),
-            max_experiences_per_day: default_max_exp_per_day(),
             sanitize_fields: default_sanitize_fields(),
             max_experiences: default_max_experiences(),
-            interval_secs: default_interval(),
         }
     }
 }
 
 fn default_true() -> bool {
     true
-}
-
-fn default_buffer_size() -> usize {
-    256
-}
-
-fn default_flush_interval() -> u64 {
-    30
-}
-
-fn default_max_exp_per_day() -> usize {
-    500
 }
 
 fn default_sanitize_fields() -> Vec<String> {
@@ -131,10 +102,6 @@ fn default_sanitize_fields() -> Vec<String> {
         "credential".into(),
         "key".into(),
     ]
-}
-
-fn default_interval() -> u64 {
-    300
 }
 
 fn default_max_experiences() -> usize {
@@ -386,7 +353,11 @@ pub struct TraceConfig {
     #[serde(default = "default_max_trace_age")]
     pub max_trace_age_days: u64,
 
-    /// Minimum number of traces required for analysis.
+    /// Minimum number of traces required for analysis (0 = no floor).
+    ///
+    /// 2026-10-23 验证轮四接线：此前该键零消费者（死键）。窗口内轨迹少
+    /// 于 N 条不做实效分析（样本太少结论即噪声）；0 = 不设下限（护栏
+    /// 默认关）。
     #[serde(default = "default_min_traces")]
     pub min_traces_for_analysis: usize,
 }
@@ -406,7 +377,7 @@ fn default_max_trace_age() -> u64 {
 }
 
 fn default_min_traces() -> usize {
-    5
+    0 // 护栏默认关（0=不限）；2026-10-23 验证轮四接线——此前该键零消费者
 }
 
 /// Learning configuration for Phase 6 closed-loop learning.

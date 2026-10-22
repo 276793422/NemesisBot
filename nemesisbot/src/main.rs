@@ -43,6 +43,10 @@ mod board_asset_tool;
 /// 幂等/额度/裁决器/wake 下行/主持人裁决）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod board_bus;
+/// 集群任务认领（2026-10-22）：board_claim 工具（仅注册进 cluster
+/// agent；browse/claim 两臂，信封构造本地、RPC 复用 cluster_agent 共用件）。
+#[cfg(all(feature = "board", feature = "cluster"))]
+mod board_claim_tool;
 /// Swarm M3（G4 主动发言通道）：board_discuss 工具（仅注册进 cluster
 /// agent；信封/RPC 复用 cluster_agent 共用件）。
 #[cfg(all(feature = "board", feature = "cluster"))]

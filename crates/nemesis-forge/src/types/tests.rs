@@ -70,23 +70,6 @@ fn test_collected_experience_clone() {
 }
 
 #[test]
-fn test_aggregated_experience_serialization() {
-    let agg = AggregatedExperience {
-        pattern_hash: "abc123".into(),
-        tool_name: "file_read".into(),
-        count: 42,
-        avg_duration_ms: 150,
-        success_rate: 0.95,
-        last_seen: "2026-04-29T12:00:00Z".into(),
-    };
-    let json = serde_json::to_string(&agg).unwrap();
-    let back: AggregatedExperience = serde_json::from_str(&json).unwrap();
-    assert_eq!(back.pattern_hash, "abc123");
-    assert_eq!(back.count, 42);
-    assert!((back.success_rate - 0.95).abs() < 0.001);
-}
-
-#[test]
 fn test_tool_stats_serialization() {
     let stats = ToolStats {
         count: 10,
@@ -321,54 +304,6 @@ fn test_registry_config_custom_path() {
     let json = serde_json::to_string(&cfg).unwrap();
     let back: RegistryConfig = serde_json::from_str(&json).unwrap();
     assert_eq!(back.index_path, "/tmp/forge_index.json");
-}
-
-#[test]
-fn test_aggregated_experience_all_fields() {
-    let agg = AggregatedExperience {
-        pattern_hash: "sha256:abc123".into(),
-        tool_name: "file_read".into(),
-        count: 100,
-        avg_duration_ms: 150,
-        success_rate: 0.95,
-        last_seen: "2026-05-01T12:00:00Z".into(),
-    };
-    let json = serde_json::to_string(&agg).unwrap();
-    let back: AggregatedExperience = serde_json::from_str(&json).unwrap();
-    assert_eq!(back.pattern_hash, "sha256:abc123");
-    assert_eq!(back.count, 100);
-    assert!((back.success_rate - 0.95).abs() < 0.001);
-    assert_eq!(back.last_seen, "2026-05-01T12:00:00Z");
-}
-
-#[test]
-fn test_aggregated_experience_zero_success_rate() {
-    let agg = AggregatedExperience {
-        pattern_hash: "hash".into(),
-        tool_name: "failing_tool".into(),
-        count: 10,
-        avg_duration_ms: 200,
-        success_rate: 0.0,
-        last_seen: "2026-01-01T00:00:00Z".into(),
-    };
-    let json = serde_json::to_string(&agg).unwrap();
-    let back: AggregatedExperience = serde_json::from_str(&json).unwrap();
-    assert_eq!(back.success_rate, 0.0);
-}
-
-#[test]
-fn test_aggregated_experience_perfect_success_rate() {
-    let agg = AggregatedExperience {
-        pattern_hash: "hash".into(),
-        tool_name: "perfect_tool".into(),
-        count: 50,
-        avg_duration_ms: 10,
-        success_rate: 1.0,
-        last_seen: "2026-06-01T00:00:00Z".into(),
-    };
-    let json = serde_json::to_string(&agg).unwrap();
-    let back: AggregatedExperience = serde_json::from_str(&json).unwrap();
-    assert_eq!(back.success_rate, 1.0);
 }
 
 #[test]

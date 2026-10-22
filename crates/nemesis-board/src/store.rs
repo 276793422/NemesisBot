@@ -975,6 +975,115 @@ impl BoardStore {
         self.get_issue(id)
     }
 
+    /// 认领制原子置位（2026-10-22 集群任务认领机制）：worker 自主接单的
+    /// 存储侧。与 [`Self::assign_issue`] 的唯一差异是 UPDATE 带
+    /// `assignee_id IS NULL` 守卫——先到先得，双 worker 并发认领在 SQLite
+    /// 单写者 + 事务下必有一败（changes()==0 → 读当前指派诚实拒绝）。
+    /// 尾装与 assign 同源：activity `claimed` + subscriber + 站内通知。
+    ///
+    /// `claimer` 是认领节点 id（worker 侧 `_rpc.from`，master 侧不信任信封
+    /// 体自报——由调用方传入权威身份）。
+    pub fn claim_issue(&self, id: i64, claimer: &str, actor: &Actor) -> Result<Issue, String> {
+        let claimer = claimer.trim();
+        if claimer.is_empty() {
+            return Err("claimer must not be empty".to_string());
+        }
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let old: Issue = tx
+            .query_row(
+                "SELECT * FROM issue WHERE id = ?1",
+                params![id],
+                row_to_issue,
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("issue {id} not found"))?;
+
+        let now = Self::now();
+        let changed = tx
+            .execute(
+                "UPDATE issue SET assignee_type = ?1, assignee_id = ?2, updated_at = ?3
+                 WHERE id = ?4 AND assignee_id IS NULL",
+                params![AssignmentType::Worker.as_str(), claimer, now, id],
+            )
+            .map_err(|e| e.to_string())?;
+        if changed == 0 {
+            // 守卫未命中 = 指派在本事务前已被占（快照里的 old 即当时态）。
+            return Err(match old.assignee_id.as_deref() {
+                Some(a) => format!("已被 {a} 认领"),
+                None => format!("issue {id} 指派状态已变化，认领未生效"),
+            });
+        }
+
+        insert_activity(
+            &tx,
+            id,
+            actor,
+            "claimed",
+            Some(&format!(
+                "{}: {} → worker/{claimer}",
+                actor.id,
+                display_assignee(&old)
+            )),
+            now,
+        )?;
+        let new_assignee = Actor::new(AssignmentType::Worker.as_str(), claimer);
+        insert_subscriber(&tx, id, &new_assignee, "assignee")?;
+        // 站内通知：认领者与操作者不是同一方时通知认领者（自领自知，不扰）。
+        if new_assignee != *actor {
+            insert_notification(
+                &tx,
+                &NewNotification {
+                    recipient: new_assignee,
+                    kind: notification_kind::ASSIGNED.to_string(),
+                    title: format!("{} {}", old.number, old.title),
+                    content: format!("你认领了这个任务（{}/{}）", actor.kind, actor.id),
+                    issue_id: Some(id),
+                },
+                now,
+            )?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        drop(conn); // 释放锁再 get_issue（防持锁重入死锁）
+        self.get_issue(id)
+    }
+
+    /// 认领资格闸（browse 过滤 + claim 复检共用的单一真相源）：Ok = 可领
+    /// （返回 issue 快照），Err = 诚实拒绝原因。与派发闸同口径：状态限
+    /// Backlog/Todo（派发前态）、未指派、叶子单（父单/容器单不可领）、
+    /// 无在途派发、依赖全 Done（防认领绕过拆解依赖序）。职能/tier 硬闸
+    /// 不在此处（需要集群注册表的节点声明，属调用方职责——nemesisbot
+    /// board_bus 的 claim handler 用 matcher 严格档判定）。
+    pub fn claimable_check(&self, issue_id: i64) -> Result<Issue, String> {
+        let issue = self.get_issue(issue_id)?;
+        if !matches!(issue.status, IssueStatus::Backlog | IssueStatus::Todo) {
+            return Err(format!(
+                "issue 处于 {} 状态（可认领：backlog/todo）",
+                issue.status
+            ));
+        }
+        if let Some(a) = issue.assignee_id.as_deref() {
+            return Err(format!("已被 {a} 认领"));
+        }
+        if !self.list_children(issue.id)?.is_empty() {
+            return Err("父单/容器单不可认领（请认领其叶子子单）".to_string());
+        }
+        if self.has_active_dispatch(issue.id)? {
+            return Err("该 issue 已有进行中的派发".to_string());
+        }
+        for dep in self.dependencies_of(issue.id)? {
+            let d = self.get_issue(dep)?;
+            if d.status != IssueStatus::Done {
+                return Err(format!(
+                    "依赖未完成：{}/{} 处于 {}",
+                    d.number, d.title, d.status
+                ));
+            }
+        }
+        Ok(issue)
+    }
+
     /// 看板拖拽（W2 P3）：原子地完成「状态转移 + 列内排序」——同列重排只改
     /// position（不触发状态机，写 reordered 活动）；跨列拖动走状态机校验并写
     /// status_change 评论 + 指派对象通知（与 [`Self::transition_issue`] 同套
@@ -2835,10 +2944,12 @@ impl BoardStore {
     // 讨论频道 + 任务资产（Swarm M2；impl-plan §4.1/§4.2）
     // -----------------------------------------------------------------------
 
-    /// master 启动装配时 ensure 三个默认频道（`#dev` / `#qa` / `#general`），
-    /// `INSERT OR IGNORE` 幂等（§4.2.1）。
+    /// master 启动装配时 ensure 四个默认频道（`#dev` / `#qa` / `#general` /
+    /// `#team`），`INSERT OR IGNORE` 幂等（§4.2.1）。
     pub fn ensure_default_channels(&self) -> Result<(), String> {
-        for name in ["#dev", "#qa", "#general"] {
+        // #team（2026-10-22 认领机制 Q4）：团队频道，认领播报落点。第四个
+        // 默认频道——INSERT OR IGNORE 幂等，老部署下次启动自动补种零迁移。
+        for name in ["#dev", "#qa", "#general", "#team"] {
             self.conn
                 .lock()
                 .map_err(|e| e.to_string())?

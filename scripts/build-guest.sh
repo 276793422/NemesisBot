@@ -17,6 +17,10 @@
 #   bash scripts/build-guest.sh                     # 双 musl 目标 + 宿主冒烟
 #   bash scripts/build-guest.sh "x86_64-unknown-linux-musl"   # 只建一个
 #
+# 产物根跟随 CARGO_TARGET_DIR（未设 = target/）：build-windows.bat /
+# build-linux.sh 都是设了 target 重定向后再调本脚本，内部路径必须与 cargo
+# 实际落点同源，否则宿主冒烟与交叉产物 cp 全部扑空。
+#
 # 退出码：0 = 全绿；非 0 = 有红灯（构建失败直接中止）。
 # ============================================================================
 set -u
@@ -27,6 +31,15 @@ OUT_ROOT=bin/bin_guest
 PKG=nemesis-guest
 HOST_BIN_EXT=""
 [ "$(uname -s)" = "Linux" ] || HOST_BIN_EXT=".exe"
+
+# 产物根单一真相（2026-10-22 实录：build-windows.bat 全局设
+# CARGO_TARGET_DIR=target\target_windows 后调本脚本，硬编码 target/ 让宿主
+# 冒烟与交叉产物 cp 全部扑空 → bin_guest 落空 → plugin-vm 在
+# NMB_VM_REQUIRE_RESOURCES=1 下 fail-closed 拒绝出包）。CI 未设该 env，
+# 回落 target/ 行为不变。反斜杠统一归一成 /（git-bash 工具链对混合分隔符
+# 容忍度不一）。
+ART_ROOT="${CARGO_TARGET_DIR:-target}"
+ART_ROOT="${ART_ROOT//\\//}"
 
 FAIL=0
 step() { printf '\n===== %s =====\n' "$*"; }
@@ -73,7 +86,7 @@ done
 
 step "宿主构建 + stdio 冒烟（本机形态，跨平台行为基准）"
 cargo build --release -p "$PKG" || { echo "!! 宿主构建失败"; exit 1; }
-HOST_BIN="target/release/${PKG}${HOST_BIN_EXT}"
+HOST_BIN="${ART_ROOT}/release/${PKG}${HOST_BIN_EXT}"
 if smoke_stdio "$HOST_BIN"; then
     echo "ok: 宿主冒烟通过（$HOST_BIN）"
 else
@@ -85,7 +98,7 @@ for t in $TARGETS; do
     step "交叉构建 $t"
     cargo build --release -p "$PKG" --target "$t" \
         || { echo "!! 交叉构建失败: $t"; exit 1; }
-    src="target/$t/release/${PKG}"
+    src="${ART_ROOT}/$t/release/${PKG}"
     outdir="$OUT_ROOT/$arch"
     mkdir -p "$outdir"
     cp "$src" "$outdir/$PKG"

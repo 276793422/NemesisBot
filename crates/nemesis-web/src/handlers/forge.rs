@@ -264,7 +264,6 @@ impl ForgeHandler {
                 "learning_enabled": forge_config.learning.enabled,
                 "reflection_interval_secs": forge_config.reflection.interval_secs,
                 "cleanup_interval_secs": forge_config.storage.cleanup_interval_secs,
-                "collection_flush_secs": forge_config.collection.flush_interval_secs,
                 "max_experience_age_days": forge_config.storage.max_experience_age_days,
                 "min_pattern_frequency": forge_config.learning.min_pattern_frequency,
                 "max_auto_creates": forge_config.learning.max_auto_creates,
