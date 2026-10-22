@@ -192,6 +192,15 @@ impl DeploymentMonitor {
             return outcomes;
         }
 
+        // 样本护栏（2026-10-23 验证轮四接线）：`min_traces_for_analysis`
+        // 此前零消费者（死键）。窗口内轨迹少于 N 条不做实效分析——样本
+        // 太少，结论即噪声。0 = 不设下限（默认，护栏关）；存量配置模板
+        // 自带 5 的部署按其声明生效。
+        let min_traces = self.config.trace.min_traces_for_analysis;
+        if min_traces > 0 && recent_traces.len() < min_traces {
+            return outcomes;
+        }
+
         // Get all active skills with ToolSignatures
         let artifacts = self.registry.list(None, None);
         for artifact in &artifacts {
