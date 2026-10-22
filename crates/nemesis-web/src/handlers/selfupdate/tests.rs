@@ -106,7 +106,12 @@ async fn status_shape_is_honest_when_unwired() {
     assert_eq!(out["commit_known"], false);
     assert!(out["journal_phase"].is_null());
     assert_eq!(out["wired"], false);
-    assert_eq!(out["platform_supported"], cfg!(target_os = "windows"));
+    // 平台支持契约=apply_supported 的双平台集（2026-10-22 CI Linux 覆盖
+    // job 实录：自更新扩 Linux 后此处仍钉单 windows，Linux 上恒假红）。
+    assert_eq!(
+        out["platform_supported"],
+        cfg!(any(target_os = "windows", target_os = "linux"))
+    );
     assert_eq!(out["download"]["phase"], "idle");
     assert!(out["pending"].is_null());
     assert!(out["cached_check"].is_null());
