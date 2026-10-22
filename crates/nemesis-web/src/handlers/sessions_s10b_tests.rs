@@ -85,6 +85,7 @@ fn make_ctx(dir: &tempfile::TempDir, with_store: bool) -> RequestContext {
         forge: None,
         agent_loop: Arc::new(agent_loop),
         cluster: None,
+        quic_relay: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,

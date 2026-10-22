@@ -1,4 +1,4 @@
-//! QUIC 中继服务器（feature=roaming-relay）——自建 iroh 中继回落（内网穿透）。
+//! QUIC 中继服务器（feature=quic-relay）——自建 iroh 中继回落（内网穿透）。
 //!
 //! 装配形态对齐官方 iroh-relay `--dev` 模式：HTTP relay transport 明文
 //! （`http_port`，客户端零证书负担——relay_url 用 `http://` 即接入）+
@@ -14,6 +14,10 @@
 //! 官方 binary 同款形态）；空 = `AllowAll`（解析层默认）——但三个启动路径
 //! （`quic relay` CLI / `gateway --quic-relay` / 随网关 in-process）都在
 //! spawn 前对空 token fail-closed 拒绝，无鉴权中继不允许裸奔。
+//!
+//! rendezvous 成员注册表（2026-10-22）：token 非空且 `registry_port>0` 时随
+//! 中继并行拉起（[`crate::roaming::rendezvous_server`]，默认 3341）——设备
+//! 接入即报到、周期拉名册，零手工配置互见；拉起失败 = WARN + 中继照常。
 //!
 //! Spike 结论（2026-10-21，iroh 1.0.2 源码核对）：
 //! - 客户端信任面存在——`Endpoint::builder().ca_tls_config(CaTlsConfig::
@@ -74,6 +78,9 @@ pub struct RelayServerHandle {
     pub http_addr: Option<SocketAddr>,
     /// QUIC relay transport 实际监听地址（tls=none 时为 None）。
     pub quic_addr: Option<SocketAddr>,
+    /// rendezvous 成员注册表（token 非空且 registry_port>0 时随中继拉起；
+    /// 拉起失败 = None + WARN——名册是附加设施，不拖垮传输面）。
+    pub registry: Option<crate::roaming::rendezvous_server::RegistryServerHandle>,
 }
 
 impl RelayServerHandle {
@@ -83,7 +90,11 @@ impl RelayServerHandle {
     }
 
     /// 优雅停机（幂等；停机错误 best-effort 记日志不炸调用方）。
+    /// 顺序：先注册表后中继（名册不再收新报到，传输面最后关）。
     pub async fn shutdown(&mut self) {
+        if let Some(mut registry) = self.registry.take() {
+            registry.shutdown().await;
+        }
         if let Some(server) = self.server.take()
             && let Err(e) = server.shutdown().await
         {
@@ -131,10 +142,32 @@ pub async fn spawn_relay_server(
     let server = Server::spawn(server_config)
         .await
         .map_err(|e| format!("iroh 中继服务器启动失败: {e}"))?;
+
+    // rendezvous 成员注册表（自动发现面）：token 非空（有门禁）且
+    // registry_port>0（未显式关）才拉起；失败 = warn + 中继照常（名册是
+    // 附加设施，不拖垮传输面）。
+    let registry = if settings.registry_port > 0 && !settings.token.trim().is_empty() {
+        match crate::roaming::rendezvous_server::spawn_registry_server(
+            settings.registry_port,
+            settings.token.trim(),
+        )
+        .await
+        {
+            Ok(handle) => Some(handle),
+            Err(e) => {
+                tracing::warn!(error = %e, "[Rendezvous] 成员注册表拉起失败（中继照常运行，自动发现不可用）");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     Ok(RelayServerHandle {
         http_addr: server.http_addr(),
         quic_addr: server.quic_addr(),
         server: Some(server),
+        registry,
     })
 }
 

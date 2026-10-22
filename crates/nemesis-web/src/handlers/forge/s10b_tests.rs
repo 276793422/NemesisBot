@@ -45,6 +45,7 @@ fn build_state(ws: &str, forge: Option<Arc<nemesis_forge::forge::Forge>>) -> App
         forge,
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
+        quic_relay: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,

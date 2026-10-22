@@ -100,9 +100,9 @@ cluster = ["dep:nemesis-cluster"]
 # iroh 跨网漫游管理面（cluster.roaming.* WSAPI；由 nemesisbot 的
 # cluster-roaming 穿透）。关 = 三条命令诚实报未编译，cluster 其余命令照常。
 cluster-roaming = ["cluster", "nemesis-cluster/cluster-roaming"]
-# QUIC 中继管理面（cluster.relay.* WSAPI；由 nemesisbot 的 roaming-relay
+# QUIC 中继管理面（cluster.relay.* WSAPI；由 nemesisbot 的 quic-relay
 # 穿透，隐含 cluster-roaming）。关 = relay.status/config 诚实降级 available:false。
-roaming-relay = ["cluster-roaming", "nemesis-cluster/roaming-relay"]
+quic-relay = ["cluster-roaming", "nemesis-cluster/quic-relay"]
 forge = ["dep:nemesis-forge"]
 memory = ["dep:nemesis-memory"]
 workflow = ["dep:nemesis-workflow"]

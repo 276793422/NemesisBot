@@ -1438,6 +1438,14 @@ pub(crate) async fn run_runtime(
         }
     }
 
+    // QUIC 中继停机（quic-relay，2026-10-23 解耦）：与集群停臂互不依赖
+    // ——中继生命周期归 QuicRelayManager，集群关了中继也要停。
+    #[cfg(feature = "quic-relay")]
+    if let Some(mgr) = ctx.quic_relay_manager.as_ref() {
+        mgr.stop();
+        info!("[Gateway] QUIC relay stopped");
+    }
+
     // Clean up gateway state file
     let _ = std::fs::remove_file(nemesis_path::resolve_gateway_state_path_in_workspace(
         &common::workspace_path(&home),
