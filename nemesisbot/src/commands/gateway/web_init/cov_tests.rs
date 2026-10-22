@@ -264,6 +264,50 @@ async fn assemble_quic_relay_early_exit_fails_closed_on_empty_token() {
     }
 }
 
+/// 旧位置 QUIC 键迁移在 assemble 期触发（cluster-roaming 闸——**不只
+/// quic-relay**）：cluster.json 带 roaming 段 client 三键老形态 + quic.json
+/// 缺席 → assemble 后 quic.json 在场且三键迁入。钉住迁移调用的闸位组合
+/// 缝隙：客户端消费面 `Cluster::setup_roaming` 在 cluster-roaming 下读
+/// config.quic.json，迁移若只挂 quic-relay 闸，「cluster-roaming 开 +
+/// quic-relay 裁掉」的合法组合里老配置用户会被静默回落 n0 公共中继。
+/// 本测试在默认 feature（两闸同开）下运行，钉的是「assemble 必须做迁移」
+/// 这一语义面；闸位本身的组合正确性由裁剪组合编译检查保证（cargo check
+/// --no-default-features --features cluster-roaming）。
+#[cfg(feature = "cluster-roaming")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn assemble_migrates_legacy_quic_keys_to_config_quic_json() {
+    let th = ctx_env();
+    write_bare_config(&th.home);
+    // cluster.json 带 roaming 老形态（client 三键直挂 roaming 段；relay 段
+    // 不带——三键任一非空即触发迁移，见 ensure_quic_config 触发条件）。
+    let cluster_path = crate::common::cluster_config_path(&th.home);
+    std::fs::create_dir_all(cluster_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &cluster_path,
+        r#"{"enabled": false, "roaming": {"enabled": false, "relay_url": "http://vps.example.com:3340", "relay_token": "tok-123", "rendezvous_url": ""}}"#,
+    )
+    .unwrap();
+
+    let _ctx: GatewayCtx = GatewayCtx::assemble(false, false, false, &[])
+        .await
+        .expect("assemble ok")
+        .expect("非 relay 必返 Some");
+
+    let quic_path = crate::common::quic_config_path(&th.home);
+    let raw = std::fs::read_to_string(&quic_path)
+        .expect("quic.json 应由 assemble 期迁移生成（cluster-roaming 闸内）");
+    let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(v["client"]["relay_url"], "http://vps.example.com:3340");
+    assert_eq!(v["client"]["relay_token"], "tok-123");
+    // cluster.json 旧键保留不删（迁移只拷贝——回写冲突避免）。
+    let cluster: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cluster_path).unwrap()).unwrap();
+    assert_eq!(
+        cluster["roaming"]["relay_url"],
+        "http://vps.example.com:3340"
+    );
+}
+
 // ===========================================================================
 // wave5 round2（2026-09-25）：CORS 新路径直写（修旧变体 G 的 legacy-copy
 // 一次性语义缺陷——旧测写 legacy 路径，首跑即被拷贝到新路径，后续覆写

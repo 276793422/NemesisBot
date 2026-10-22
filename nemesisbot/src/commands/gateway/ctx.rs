@@ -1153,24 +1153,28 @@ impl GatewayCtx {
             }
         };
 
+        // 旧位置首读迁移（**cluster-roaming 闸，不只 quic-relay**）：客户端
+        // 消费面 Cluster::setup_roaming 在 cluster-roaming 下读 config.quic.json
+        // client 段——迁移若只挂 quic-relay 闸，「cluster-roaming 开 +
+        // quic-relay 裁掉」组合里老配置用户（cluster.json roaming 段三键）
+        // 会被静默回落 n0 公共中继（quic.json 缺席 → resolved_quic 全默认，
+        // 自建中继 + SharedToken 配对全丢）。ensure_quic_config 幂等（quic.json
+        // 已在 = no-op）；只拷贝不删除。
+        #[cfg(feature = "cluster-roaming")]
+        if nemesis_cluster::roaming::quic_config::ensure_quic_config(
+            &common::cluster_config_path(&home),
+            &common::quic_config_path(&home),
+        ) {
+            info!("[Gateway] config.quic.json created（旧位置 QUIC 键已迁移，原键保留不删）");
+        }
+
         // QUIC 中继管理器（quic-relay）：assemble 期构造单例（estop 同款
-        // 时机），首读触发旧位置迁移（ensure_quic_config 幂等——cluster.json
-        // roaming 段 QUIC 键拷贝进 config.quic.json，只拷贝不删除）。闸开没开
-        // 由 init_cluster 的独立闸判（setup() 自读 config.quic.json）。
+        // 时机）。闸开没开由 init_cluster 的独立闸判（setup() 自读
+        // config.quic.json）。
         #[cfg(feature = "quic-relay")]
-        let quic_relay_manager = {
-            if nemesis_cluster::roaming::quic_config::ensure_quic_config(
-                &common::cluster_config_path(&home),
-                &common::quic_config_path(&home),
-            ) {
-                info!("[Gateway] config.quic.json created（旧位置 QUIC 键已迁移，原键保留不删）");
-            }
-            Some(std::sync::Arc::new(
-                nemesis_cluster::roaming::relay_manager::QuicRelayManager::new(
-                    home.join("workspace"),
-                ),
-            ))
-        };
+        let quic_relay_manager = Some(std::sync::Arc::new(
+            nemesis_cluster::roaming::relay_manager::QuicRelayManager::new(home.join("workspace")),
+        ));
 
         Ok(Some(GatewayCtx {
             // 身份与配置
