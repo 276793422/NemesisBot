@@ -7,6 +7,12 @@
 // 版本纪律：package 版本 = 合同代际。v0 冻结后破口径改动必须升 0.2.0；
 // 兼容新增（新可选宿主函数 / 新事件型）可在 minor 内演进。v0 文件不带
 // @unstable 注解（冻结时再补注解层级）。
+//
+// 演进记录（minor 窗口内兼容新增，不升代际）：
+// - 2026-10-22 样板工程批 2：host 增 `llm-complete`（杂务 LLM 补全，组件
+//   内调 LLM 的唯一通道）；新增 `loop-policy` interface + `plugin-loop-policy`
+//   world（循环流程策略接管面）。旧组件字节按名 import、宿主 linker 提供
+//   超集——存量 tool/observer 组件零影响。
 package nemesis:plugin@0.1.0;
 
 /// 共享类型别名。
@@ -91,6 +97,14 @@ interface host {
     /// 调用其它宿主工具（深度 1：`plugin.` 前缀目标拒绝——插件不可互相
     /// 调用，防递归放大与信任链混淆）。
     tool-invoke: func(tool: string, args-json: json-string) -> result<json-string, host-error>;
+
+    /// 杂务 LLM 补全（2026-10-22 批 2 新增；组件内调 LLM 的唯一通道）。
+    ///
+    /// 走宿主 bypass_llm 护栏同源：max_tokens 钳 8192 上限、墙钟超时、
+    /// 输出校验；模型 = `agents.small_model` 杂务槽（与 /compact 同源）。
+    /// fail-closed：estop → unavailable；无 small_model 槽 → not-found。
+    /// 预算计入每帧宿主调用预算。
+    llm-complete: func(prompt: string, max-tokens: u32) -> result<string, host-error>;
 }
 
 /// 工具型插件出口（world plugin-tool）。
@@ -164,6 +178,69 @@ interface observer {
     observe: func(event: json-string) -> result<_, host-error>;
 }
 
+/// 循环流程策略插件出口（world plugin-loop-policy；2026-10-22 批 2 新增）。
+///
+/// 一个组件可接管任意子集（policy-metadata 自报）；运行期**每策略点仅一个
+/// 激活组件**（安装期对账，冲突诚实拒绝）。三策略点全部单 json-string 进出
+/// （observer 的 observe 同形态先例）；出参统一支持 `{"verdict":"builtin"}`
+/// = 单次显式回退宿主内置逻辑（渐进定制基础）。
+///
+/// 宿主硬闸在组件决策之上（不可绕）：max_tool_iterations 硬顶、estop、
+/// P8 token 预算、摘要长度上限校验；入参投影由宿主构造，不含图片字节与
+/// 凭据；历史/文本截断上限由宿主 config 控制。
+interface loop-policy {
+    use types.{json-string};
+    use host.{host-error};
+
+    /// 策略点接管清单（安装期对账 + 运行期路由的唯一事实源）。
+    record policy-metadata {
+        /// 接管上下文压缩（compact-check：触发 + 摘要生成）。
+        compact: bool,
+        /// 接管终答裁决（judge-final）。
+        final-judge: bool,
+        /// 接管工具参数校验（validate-args）。
+        validation: bool,
+    }
+
+    /// 元数据自报（安装期编译对账 + 运行期路由）。
+    get-policy-metadata: func() -> result<policy-metadata, host-error>;
+
+    /// 压缩策略点（触发 + 执行一体单入口；语义版本随投影 JSON 的 `point`
+    /// 字段演进，接口形状不随子点增减变化——observer 单入口同纪律）。
+    ///
+    /// 入参投影（宿主构造）：
+    /// - `{"point":"trigger","session_key":...,"tail_tokens":...,
+    ///    "provider_signal":...,"signal":...,"threshold":...,"soft":...,
+    ///    "window":...,"covers_up_to":...,"new_boundary":...}`
+    /// - `{"point":"exec","session_key":...,"prefix":[{"role":...,
+    ///    "content":...,"tool_name"?...}],"existing_summary":...,
+    ///    "window":...,"model":...}`（prefix 条数与单条字符上限 = 宿主
+    ///    config 投影上限）
+    ///
+    /// 出参：trigger → `{"verdict":"compact"|"skip"|"builtin"}`；
+    /// exec → `{"verdict":"summary","summary":"..."}` /
+    /// `{"verdict":"skip"}` / `{"verdict":"builtin"}`。未知 `point` →
+    /// guest 应回 `{"verdict":"builtin"}`（宿主侧同样兜底）。
+    compact-check: func(input: json-string) -> result<json-string, host-error>;
+
+    /// 终答裁决点（无工具调用时的候选终答接不接受；heartbeat 特例与
+    /// tool_calls 分流在宿主，不进组件）。
+    ///
+    /// 入参投影：`{"session_key":...,"content":<截断>,"turns_used":...,
+    /// "validation_failures":...}`。
+    /// 出参：`{"verdict":"accept"}` / `{"verdict":"retry","nudge":"..."}` /
+    /// `{"verdict":"giveup","notice":"..."}` / `{"verdict":"builtin"}`。
+    judge-final: func(input: json-string) -> result<json-string, host-error>;
+
+    /// 工具参数校验点（串行/并行两路共用；schema 可为 null = 工具未声明）。
+    ///
+    /// 入参投影：`{"tool":...,"schema":<object|null>,"args":<原始 args
+    /// JSON 串>}`。
+    /// 出参：`{"verdict":"valid"}` / `{"verdict":"fixed","args":"..."}` /
+    /// `{"verdict":"reject","message":"..."}` / `{"verdict":"builtin"}`。
+    validate-args: func(input: json-string) -> result<json-string, host-error>;
+}
+
 /// 工具插件世界（一 manifest 一 kind 不混装）。
 world plugin-tool {
     import host;
@@ -174,4 +251,10 @@ world plugin-tool {
 world plugin-observer {
     import host;
     export observer;
+}
+
+/// 循环策略插件世界。
+world plugin-loop-policy {
+    import host;
+    export loop-policy;
 }
