@@ -63,13 +63,16 @@ scanner = ["security", "nemesis-security/scanner", "nemesis-web/scanner"]
 sandbox = ["dep:nemesis-sandbox", "nemesis-web/sandbox"]
 # P5 桌面级 VM 后端（executor.vm）：穿透 nemesis-sandbox/vm 模块 + Dashboard
 # VM 页。关 = vm 模块整包不编译、executor.vm 配置缺消费者（诚实报未编译）。
-# IoT/无虚拟化环境默认关（IoT 预设钉 false）。
-vm = ["dep:nemesis-sandbox", "nemesis-sandbox/vm", "nemesis-web/vm"]
+# IoT/无虚拟化环境默认关（IoT 预设钉 false）。libloading 挂这里（2026-10-22
+# 拍板：VM 资源内嵌进 plugin_vm.dll 用时释放——资源释放臂 dlopen 属 vm
+# 语义，纯 vm 构建 + 插件在场即能构建镜像，不绑 vm-display）。
+vm = ["dep:nemesis-sandbox", "nemesis-sandbox/vm", "nemesis-web/vm", "dep:libloading"]
 # P5-R2 带界面 VM：显示通道 shim（nemesis-web/vm-display）+ plugin-vm 宿主
 # loader（nemesis-plugin vtable + v4 签名装载闸 + 双向 ABI 闸）。implies
-# vm（display_port_query 数据源是 VmSupervisor）。plugin-vm cdylib 本体
-# 非 workspace member，不随 feature 进二进制——关 = /ws/vm-display 不编译。
-vm-display = ["vm", "nemesis-web/vm-display", "dep:nemesis-plugin", "dep:libloading"]
+# vm（display_port_query 数据源是 VmSupervisor；资源释放链同源）。
+# plugin-vm cdylib 本体非 workspace member，不随 feature 进二进制——
+# 关 = /ws/vm-display 不编译。
+vm-display = ["vm", "nemesis-web/vm-display", "dep:nemesis-plugin"]
 # Managed-agent board (W2 P1). board = 注入 + nemesis-web/board 管理面双开：
 # nemesis-board 是 web 的 optional 依赖（rusqlite bundled 随它进出——iotsmall
 # 里最后一个 SQLite 来源）；关 = `nemesisbot issue` CLI、board.* WSAPI、
@@ -247,9 +250,10 @@ nemesis-verify = { workspace = true, optional = true }
 # 并转发 nemesis-web 同名 feature 装配 plugins.wasm.* WSAPI 管理面）。
 nemesis-plugins-wasm = { workspace = true, optional = true }
 # plugin-vm 宿主 loader（vm-display feature 门控）：HostServices 同族的
-# vm-display vtable 类型 + libloading 装载点。
+# vm-display vtable 类型 + 装载点。
 nemesis-plugin = { workspace = true, optional = true }
-# 同上（vm-display）：cdylib dlopen（与 nemesis-desktop/nemesis-verify 同 crate 同版本）
+# cdylib dlopen：vm-display 装载臂 + vm 资源释放臂共用（与 nemesis-desktop/
+# nemesis-verify 同 crate 同版本）
 libloading = { workspace = true, optional = true }
 nemesis-sandbox = { workspace = true, optional = true }
 nemesis-injector = { workspace = true, optional = true }

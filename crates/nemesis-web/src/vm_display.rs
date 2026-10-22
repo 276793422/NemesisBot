@@ -25,7 +25,7 @@
 //!
 //! **与插件的线协议**（网关是唯一 WS 演讲者）：网关作为 TCP 客户端连插件
 //! 回环监听（[`VmDisplayEndpoint::listen_port`]，插件 init 时经 vtable 上报
-//! + 本模块 [`set_endpoint`] 落槽）。①握手：一行 JSON meta（`\n` 结尾）：
+//! 并经本模块 [`set_endpoint`] 落槽）。①握手：一行 JSON meta（`\n` 结尾）：
 //! `{"session_id","agent_id","mode"}`；②此后双向均为 4 字节大端长度前缀帧
 //! （网关→插件 = RFB client→server 字节；插件→网关 = RFB server→client
 //! 字节，插件侧从 QEMU VNC 口泵出后重帧）。长度前缀给 meta 定界 + 双向
@@ -198,7 +198,7 @@ pub(crate) async fn handle_vm_display_upgrade(
     let Some(ep) = endpoint().cloned() else {
         return (
             axum::http::StatusCode::NOT_IMPLEMENTED,
-            "显示插件未安装（plugin-vm）：display=vnc 需 plugin-vm 插件在位（宿主 exe 同目录）",
+            "显示插件未安装（plugin-vm）：display=vnc 需 plugin-vm 插件在位（exe 旁 plugins/ 目录）",
         )
             .into_response();
     };
@@ -313,14 +313,9 @@ async fn handle_vm_display_socket(
     // 下行泵任务：插件 TCP → 帧解析 → channel（16 MiB cap 兜失常插件）。
     let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
     let down = tokio::spawn(async move {
-        loop {
-            match read_frame(&mut tcp_read, MAX_DOWNSTREAM_FRAME).await {
-                Ok(frame) => {
-                    if out_tx.send(frame).is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
+        while let Ok(frame) = read_frame(&mut tcp_read, MAX_DOWNSTREAM_FRAME).await {
+            if out_tx.send(frame).is_err() {
+                break;
             }
         }
     });

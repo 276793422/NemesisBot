@@ -391,21 +391,20 @@ pub(crate) fn classify_image_route(
     }
 }
 
-/// plugin-vm 资源目录（部署形态 = exe 同目录的 `plugin_vm/`，与
-/// `plugin_vm.dll` 同级——整个 VM 能力栈的唯一分发依赖就是这份插件包：
-/// dll（显示中继）+ 脚本 + guest 产物，2026-10-22 拍板）。本函数只给
-/// 路径，在场性由调用方对具体文件判断。
-fn plugin_vm_resource_dir() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    Some(exe.parent()?.join("plugin_vm"))
-}
+// VM 资源查找链（2026-10-22 三拍：**没有资源目录**——镜像构建脚本与
+// guest 全部内嵌在 plugin_vm.dll，用时经 `crate::vm_resources` 释放到
+// `<workspace>/tools/vm/released/`）。候选链：① **释放态** = released
+// 根（构建面先 `vm_resources::ensure_released` 触发释放；状态面只
+// exists 探测、不触发写盘）；② 开发形态 = 仓库 plugins/plugin-vm/
+// （相对 cwd，即从仓库根运行网关）。下面两个 `*_with` 是注入版纯函数
+// （单测钉查找顺序）；运行时包装把 released 根与仓库开发路径喂进来。
 
 /// 镜像构建脚本查找（注入版纯函数，单测钉查找顺序）：
-/// ① 部署形态 = exe 相邻 plugin_vm 包；② 开发形态 = 仓库
-/// plugins/plugin-vm/（相对 cwd，即从仓库根运行网关）。
+/// ① 释放态 = released 根内 `build-vm-image.sh`；② 开发形态 = 仓库
+/// plugins/plugin-vm/。
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn vm_image_script_path_with(plugin_dir: Option<&Path>, dev: &Path) -> Option<PathBuf> {
-    if let Some(dir) = plugin_dir {
+pub(crate) fn vm_image_script_path_with(released: Option<&Path>, dev: &Path) -> Option<PathBuf> {
+    if let Some(dir) = released {
         let p = dir.join("build-vm-image.sh");
         if p.is_file() {
             return Some(p);
@@ -414,11 +413,12 @@ pub(crate) fn vm_image_script_path_with(plugin_dir: Option<&Path>, dev: &Path) -
     dev.is_file().then_some(dev.to_path_buf())
 }
 
-/// [`vm_image_script_path_with`] 的运行时包装（取真实 exe 相邻目录 +
-/// 仓库开发形态路径）。
-fn vm_image_script_path() -> Option<PathBuf> {
+/// [`vm_image_script_path_with`] 的运行时包装（released 根 exists 探测 +
+/// 仓库开发形态路径——**不触发释放**，状态面用；构建面的释放触发在
+/// [`image_build_inputs`]）。
+fn vm_image_script_path(workspace: &Path) -> Option<PathBuf> {
     vm_image_script_path_with(
-        plugin_vm_resource_dir().as_deref(),
+        Some(crate::vm_resources::released_root(workspace).as_path()),
         &PathBuf::from("plugins")
             .join("plugin-vm")
             .join("build-vm-image.sh"),
@@ -426,14 +426,14 @@ fn vm_image_script_path() -> Option<PathBuf> {
 }
 
 /// guest 产物候选路径（注入版纯函数，单测钉查找顺序与 arch 映射）：
-/// ① 部署形态 = plugin_vm 包内 `guest/<短arch>/nemesis-guest`（布局与
-/// build-guest.sh 的 `bin/bin_guest/<短arch>/` 一致——打包直拷）；② 开发
-/// 形态 = 仓库 target 交叉编译产物（guest 命名跟 **target** 走不跟宿主走：
+/// ① 释放态 = released 根内 `guest/<短arch>/nemesis-guest`（布局与
+/// build-guest.sh 的 `bin/bin_guest/<短arch>/` 一致）；② 开发形态 = 仓库
+/// target 交叉编译产物（guest 命名跟 **target** 走不跟宿主走：
 /// guest_target 恒为 linux-musl，cargo 产物恒无 .exe——build-guest.sh 的
 /// .exe 只用于宿主冒烟件；B5 全新环境实跑抓出的 P5 遗留错配）。
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn guest_bin_candidates_with(
-    plugin_dir: Option<&Path>,
+    released: Option<&Path>,
     arch: &str,
 ) -> Result<Vec<PathBuf>, String> {
     let target = match arch {
@@ -446,7 +446,7 @@ pub(crate) fn guest_bin_candidates_with(
         }
     };
     let mut v = Vec::new();
-    if let Some(dir) = plugin_dir {
+    if let Some(dir) = released {
         v.push(dir.join("guest").join(arch).join("nemesis-guest"));
     }
     v.push(
@@ -459,14 +459,18 @@ pub(crate) fn guest_bin_candidates_with(
 }
 /// arch → guest 产物路径（WSAPI/CLI 启动裁决与 image_route 展示共用——
 /// 「能不能构建」与「卡上怎么显示」必须同一份事实）。按候选顺序取首个
-/// 在场者；全缺席 = 诚实报错并列举候选 + 双形态指路。
-fn guest_bin_path(arch: &str) -> Result<PathBuf, String> {
-    let candidates = guest_bin_candidates_with(plugin_vm_resource_dir().as_deref(), arch)?;
+/// 在场者；全缺席 = 诚实报错并列举候选 + 双形态指路。**不触发释放**
+/// （released 根 exists 探测；构建面的释放触发在 [`image_build_inputs`]）。
+fn guest_bin_path(workspace: &Path, arch: &str) -> Result<PathBuf, String> {
+    let candidates = guest_bin_candidates_with(
+        Some(crate::vm_resources::released_root(workspace).as_path()),
+        arch,
+    )?;
     if let Some(p) = candidates.iter().find(|p| p.exists()) {
         return Ok(p.clone());
     }
     Err(format!(
-        "guest 代理二进制不在场（候选：{}）——安装 plugin-vm 插件包（plugin_vm/guest/<arch>/），或开发形态先跑 scripts/build-guest.sh 构建 musl guest 工具链产物",
+        "guest 代理二进制不在场（候选：{}）——安装 plugin-vm 插件包（plugins/plugin_vm.dll，guest 双架构 ELF 已内嵌、镜像构建时自动释放），或开发形态先跑 scripts/build-guest.sh 构建 musl guest 工具链产物",
         candidates
             .iter()
             .map(|p| p.display().to_string())
@@ -507,15 +511,58 @@ pub(crate) fn variant_args(desktop: &str) -> Vec<String> {
 
 pub(crate) fn image_build_inputs(
     settings: &nemesis_config::ExecutorVmConfig,
+    workspace: &Path,
 ) -> Result<ImageBuildInputs, String> {
+    // ---- 资源释放触发（2026-10-22 三拍：内嵌资源用时释放——**只有
+    // 这里**写盘；状态面全是 exists 探测）。插件缺席/不可用 = 记下现场，
+    // 回落开发链；开发链也缺席时把释放现场一并报出（不许静默吞）。----
+    let released = crate::vm_resources::ensure_released(workspace);
+    let released_root = released.as_ref().ok().and_then(|o| o.as_deref());
+    let released_err = match &released {
+        Err(e) => Some(e.as_str()),
+        Ok(_) => None,
+    };
+    let released_hint = || -> String {
+        match released_err {
+            Some(e) => format!("（插件资源释放失败：{e}）"),
+            None => String::new(),
+        }
+    };
+
     // 构建脚本 + guest 二进制在场预检（两平台同口径；缺席 = 诚实报错 + 指路。
-    // 查找链：exe 相邻 plugin_vm 包优先（部署形态），仓库 plugins/plugin-vm/
-    // 回落（开发形态））。
-    let script = vm_image_script_path().ok_or_else(|| {
-        "镜像构建脚本不在场——安装 plugin-vm 插件包（plugin_vm/ 资源目录含 build-vm-image.sh），或开发形态从仓库根运行网关".to_string()
+    // 查找链：released 释放态（<workspace>/tools/vm/released/，plugin_vm.dll
+    // 内嵌资源用时释放）优先，仓库 plugins/plugin-vm/ 兜底（开发形态））。
+    let script = vm_image_script_path_with(
+        released_root,
+        &PathBuf::from("plugins")
+            .join("plugin-vm")
+            .join("build-vm-image.sh"),
+    )
+    .ok_or_else(|| {
+        format!(
+            "镜像构建脚本不在场{}——安装 plugin-vm 插件包（plugins/plugin_vm.dll，脚本与 guest 已内嵌、首次构建自动释放），或开发形态从仓库根运行网关",
+            released_hint()
+        )
     })?;
-    // guest_bin_path 只返回在场者（全缺席 = Err 带候选清单），无需再 exists。
-    let guest_bin = guest_bin_path(&settings.arch)?;
+    // released 根候选可能只有部分架构在场（构建时未内嵌的架构诚实缺席）——
+    // 与 dev 候选一起按序找首个在场者。
+    let guest_bin = {
+        let candidates = guest_bin_candidates_with(released_root, &settings.arch)?;
+        match candidates.iter().find(|p| p.exists()) {
+            Some(p) => p.clone(),
+            None => {
+                return Err(format!(
+                    "guest 代理二进制不在场（候选：{}）{}——安装 plugin-vm 插件包（plugins/plugin_vm.dll，guest 双架构 ELF 已内嵌、首次构建自动释放），或开发形态先跑 scripts/build-guest.sh 构建 musl guest 工具链产物",
+                    candidates
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(" | "),
+                    released_hint()
+                ));
+            }
+        }
+    };
 
     #[cfg(windows)]
     {
@@ -858,8 +905,8 @@ impl VmBridge for VmSupervisor {
             "VM 档未开启（executor.vm.enabled=false）：镜像构建不可用".to_string()
         })?;
 
-        // 输入裁决（与 CLI 前台臂共用的单一真相源）。
-        let inputs = image_build_inputs(&settings)?;
+        // 输入裁决（与 CLI 前台臂共用的单一真相源）——内嵌资源释放触发点。
+        let inputs = image_build_inputs(&settings, self.workspace())?;
 
         // 单飞闸 + 任务登记。
         {
@@ -1030,7 +1077,7 @@ impl VmBridge for VmSupervisor {
         // 宿主经 WSL 自动构建的可达面——「能不能点」与「缺什么怎么补」
         // 同一份事实，B2 八态同款每态给可执行下一步）。
         let image_ready = vm_images_root(workspace).join("base.qcow2").exists();
-        let image_route = image_route_json(&arch);
+        let image_route = image_route_json(workspace, &arch);
 
         // 安装任务槽 + 日志尾（同 image_list 形态）。
         let job = BOOTSTRAP_JOB
@@ -1498,9 +1545,11 @@ fn record_json(
 /// → 每态给可执行下一步 + 复制命令）。分类逻辑在
 /// [`classify_image_route`]（纯函数，单测钉六态）；本函数只做「探针取事实 +
 /// 每态 JSON 形态」。Windows 探针走 TTL 缓存（轮询面不重复 spawn）。
-fn image_route_json(arch: &str) -> serde_json::Value {
-    let script_present = vm_image_script_path().is_some();
-    let guest_ready = guest_bin_path(arch).map(|p| p.exists()).unwrap_or(false);
+fn image_route_json(workspace: &Path, arch: &str) -> serde_json::Value {
+    let script_present = vm_image_script_path(workspace).is_some();
+    let guest_ready = guest_bin_path(workspace, arch)
+        .map(|p| p.exists())
+        .unwrap_or(false);
 
     #[cfg(windows)]
     let probe: Option<WslProbe> = Some(wsl_probe_cached());
@@ -1516,7 +1565,7 @@ fn image_route_json(arch: &str) -> serde_json::Value {
             "no_script",
             Vec::<String>::new(),
             String::new(),
-            "构建脚本不在场——安装 plugin-vm 插件包（plugin_vm/ 资源目录含 build-vm-image.sh），或开发形态从仓库根运行网关，或在 Linux 宿主构建后把 base.qcow2 落到镜像目录回传".to_string(),
+            "构建脚本不在场——安装 plugin-vm 插件包（plugins/plugin_vm.dll，镜像脚本与 guest 双架构 ELF 已内嵌、首次构建自动释放），或开发形态从仓库根运行网关，或在 Linux 宿主构建后把 base.qcow2 落到镜像目录回传".to_string(),
         ),
         ImageRouteState::Native => (
             "native",

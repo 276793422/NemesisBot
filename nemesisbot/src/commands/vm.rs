@@ -223,8 +223,8 @@ async fn build_image(
     let settings = sup.vm_settings().ok_or_else(|| {
         anyhow::anyhow!("VM 档未开启（executor.vm.enabled=false）：镜像构建不可用")
     })?;
-    let inputs =
-        crate::agents::vm_bridge::image_build_inputs(&settings).map_err(anyhow::Error::msg)?;
+    let inputs = crate::agents::vm_bridge::image_build_inputs(&settings, workspace)
+        .map_err(anyhow::Error::msg)?;
     println!(
         "[vm] 镜像构建启动（update={update} arch={} 脚本={}）",
         inputs.arch,

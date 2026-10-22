@@ -3,20 +3,20 @@
 //! 无意义）。
 //!
 //! 装载链（任一步失败 = 诚实拒绝 + warn 留痕，绝不静默降级成无插件）：
-//! 1. **在场探测**：宿主 exe 同目录找 `plugin_vm.dll` / `libplugin_vm.so`
-//!    / `libplugin_vm.dylib`；缺席 = 静默 Ok（display=vnc 时 shim 端会
-//!    诚实 501「显示插件未安装」——缺席是常态不是错误，装载失败才是）。
-//! 2. **v4 签名闸**：`verify::verify_bytes` + 编译期锚（verify feature）。
+//! 1. **在场探测 + v4 签名闸**：[`crate::vm_plugin_lib`]（单一真相源，
+//!    与资源释放臂同口径）——exe 旁 `plugins/` 子目录 → exe 同目录找
+//!    `plugin_vm.dll` 等；缺席 = 静默 Ok（display=vnc 时 shim 端会诚实
+//!    501「显示插件未安装」——缺席是常态不是错误，装载失败才是）；
 //!    Tampered/SignatureInvalid/Untrusted/Revoked/Expired = 拒载 + 留痕；
 //!    NoSignature = dev（debug_assertions）warn 放行 / release 拒绝；
-//!    verify feature 关或锚缺席 = 无从验证，同 NoSignature 分支语义
-//!    （dev warn / release 拒——一方插件在 release 形态必须可验证）。
-//! 3. **vtable 构建**：workspace + display_port_query（读 VmSupervisor
+//!    verify feature 关或锚缺席 = 同 NoSignature 分支语义（一方插件在
+//!    release 形态必须可验证）。
+//! 2. **vtable 构建**：workspace + display_port_query（读 VmSupervisor
 //!    registry，只在 VM 运行且 display=vnc 时报端口）。
-//! 4. **init + 双向 ABI 闸**：`plugin_vm_display_init` 返回的
+//! 3. **init + 双向 ABI 闸**：`plugin_vm_display_init` 返回的
 //!    `plugin_abi_version` 必须等于 [`HOST_VM_DISPLAY_ABI_VERSION`]
 //!    （插件侧在 init 内也校验 host 下发的 abi_version——双向）。
-//! 5. **set_endpoint**：端口落 nemesis-web vm_display 槽（first-wins，
+//! 4. **set_endpoint**：端口落 nemesis-web vm_display 槽（first-wins，
 //!    重复装载同端口幂等）。
 //!
 //! estop 断连挂点在 gateway 装配处（[`disconnect_all_for_estop`] 经
@@ -33,10 +33,15 @@ use nemesis_plugin::vm_display::{
     PORT_QUERY_ERR_UNKNOWN, PluginVmInfo,
 };
 
+use crate::vm_plugin_lib::{
+    SignatureVerdict, find_plugin_path, unsigned_dev_allow, verify_signature,
+};
+
 /// 装载结果：Ok(None) = 插件文件缺席（常态）；Ok(Some) = 装载成功；
 /// Err = 在场但装载被拒（签名/ABI/初始化失败——必须留痕）。
 pub enum LoadOutcome {
-    /// 插件未安装（exe 同目录无 plugin-vm 库文件）——常态，静默。
+    /// 插件未安装（exe 旁 plugins/ 及 exe 同目录均无 plugin-vm 库文件）——
+    /// 常态，静默。
     Absent,
     /// 装载成功（端口已 set_endpoint）。
     Loaded { listen_port: u16 },
@@ -51,25 +56,6 @@ pub enum LoadOutcome {
 static SUPERVISOR: std::sync::OnceLock<Arc<crate::agents::vm_runtime::VmSupervisor>> =
     std::sync::OnceLock::new();
 static WORKSPACE_ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-
-/// 在场库文件名（平台分派）。
-fn plugin_filenames() -> &'static [&'static str] {
-    if cfg!(windows) {
-        &["plugin_vm.dll"]
-    } else if cfg!(target_os = "macos") {
-        &["libplugin_vm.dylib"]
-    } else {
-        &["libplugin_vm.so"]
-    }
-}
-
-fn find_plugin_path() -> Option<PathBuf> {
-    let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-    plugin_filenames()
-        .iter()
-        .map(|name| exe_dir.join(name))
-        .find(|p| p.is_file())
-}
 
 // ---------------------------------------------------------------------------
 // vtable 函数实现（extern "C"，读模块级静态）
@@ -156,51 +142,8 @@ fn build_vtable() -> HostVmDisplayVTable {
 }
 
 // ---------------------------------------------------------------------------
-// v4 签名闸
+// v4 签名闸（见 crate::vm_plugin_lib——单一真相源，此处只消费）
 // ---------------------------------------------------------------------------
-
-/// 签名闸裁决（留痕由调用方做——把裁决与原因一次说清）。
-enum SignatureVerdict {
-    Valid,
-    /// 无签名或无从验证（verify feature 关 / 锚缺席）：dev warn 放行 /
-    /// release 拒绝。
-    Unsigned,
-    /// 五类硬拒：签名在但不可信/被改/被吊销/过期。
-    HardReject(String),
-}
-
-#[cfg(feature = "verify")]
-fn verify_signature(path: &Path) -> SignatureVerdict {
-    use nemesis_verify::verify;
-    let run = || -> Result<SignatureVerdict, String> {
-        let Some(anchor_hex) = crate::verify_policy::ROOT_ANCHOR else {
-            return Ok(SignatureVerdict::Unsigned);
-        };
-        let anchor = nemesis_verify::hex_util::hex_decode_32(anchor_hex)
-            .map_err(|e| format!("锚指纹解码失败: {e}"))?;
-        let bytes = std::fs::read(path)
-            .map_err(|e| format!("读取插件库失败（{}）：{e}", path.display()))?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        Ok(match verify::verify_bytes(&bytes, &[anchor], now) {
-            nemesis_verify::verify::VerifyOutcome::Valid { .. } => SignatureVerdict::Valid,
-            nemesis_verify::verify::VerifyOutcome::NoSignature => SignatureVerdict::Unsigned,
-            other => SignatureVerdict::HardReject(format!("{other:?}")),
-        })
-    };
-    match run() {
-        Ok(v) => v,
-        Err(e) => SignatureVerdict::HardReject(e),
-    }
-}
-
-#[cfg(not(feature = "verify"))]
-fn verify_signature(_path: &Path) -> SignatureVerdict {
-    // verify feature 关：无从验证 = 无签名同分支（dev warn / release 拒）。
-    SignatureVerdict::Unsigned
-}
 
 // ---------------------------------------------------------------------------
 // 装载主流程
@@ -223,7 +166,7 @@ pub fn load_plugin_vm(
         SignatureVerdict::Valid => {}
         SignatureVerdict::Unsigned => {
             let msg = "plugin-vm 无 v4 签名（或 verify feature 关/锚缺席，无从验证）";
-            if cfg!(debug_assertions) {
+            if unsigned_dev_allow() {
                 tracing::warn!(
                     "[plugin-vm] {msg}——开发形态 warn 放行（release 拒绝）：{}",
                     path.display()

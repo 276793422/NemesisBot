@@ -1,19 +1,8 @@
-//! [`super`] 单测：签名闸裁决分支 + 端口查询语义。不 dlopen（真插件
-//! cdylib 归 build 脚本/e2e 面）。
+//! [`super`] 单测：端口查询语义 + workspace 写入约定。不 dlopen（真插件
+//! cdylib 归 build 脚本/e2e 面）。签名闸口径与 find_plugin_path 的钉死
+//! 用例在 [`crate::vm_plugin_lib`]（单一真相源搬家，测试跟着搬）。
 
 use super::*;
-
-/// 签名闸：Unsigned 分支的平台分派（dev 放行 / release 拒）语义与
-/// cfg 一致性——直接验 `cfg!(debug_assertions)` 决策表本身（逻辑内联
-/// 在 load_plugin_vm，抽不出纯函数；这里钉决策口径防漂移）。
-#[test]
-fn unsigned_verdict_gate_follows_debug_assertions() {
-    // 与 load_plugin_vm 中 Unsigned 臂同款判定：dev=放行，release=拒。
-    let dev_allow = cfg!(debug_assertions);
-    // 断言的是语义存在且两态互斥——release CI（--release）跑本测试时
-    // dev_allow=false，dev 跑时 true，两种形态都得有明确裁决。
-    assert!(dev_allow || true, "两形态均可达（本断言防误删分支）");
-}
 
 /// 端口查询：supervisor 缺席（未 set 静态槽）= INTERNAL 错误码。
 #[test]
@@ -22,11 +11,11 @@ fn port_query_without_supervisor_is_internal_error() {
     // 本断言改为走有 supervisor 分支也成立（空 registry → 未知 agent）。
     match SUPERVISOR.get() {
         None => {
-            let rc = host_display_port_query(b"agent-x\0".as_ptr() as *const c_char);
+            let rc = host_display_port_query(c"agent-x".as_ptr());
             assert_eq!(rc, PORT_QUERY_ERR_INTERNAL);
         }
         Some(_) => {
-            let rc = host_display_port_query(b"no-such-agent\0".as_ptr() as *const c_char);
+            let rc = host_display_port_query(c"no-such-agent".as_ptr());
             assert_eq!(rc, PORT_QUERY_ERR_UNKNOWN);
         }
     }
@@ -55,13 +44,6 @@ fn write_cstr_semantics() {
         -1
     );
     assert_eq!(write_cstr(std::ptr::null_mut(), 16, "x"), -1);
-}
-
-/// find_plugin_path：正常 cwd 下（无 exe 旁插件）= None，不 panic。
-#[test]
-fn find_plugin_absent_is_none_or_found() {
-    // 只断言「不 panic 且返回 Option」；真装配面由 e2e/构建脚本覆盖。
-    let _ = find_plugin_path();
 }
 
 /// shutdown 幂等：插件缺席时静默 no-op（不 panic）。

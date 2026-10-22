@@ -73,13 +73,14 @@ fn enforce_blocks_unsigned_env_override_host() {
             // 无锚构建恒休眠，enforce 不可达——本测试的前设不成立，诚实跳过。
             return;
         }
-        let _guard = crate::GLOBAL_STATE_LOCK
+        let _guard = crate::WASM_HOST_DLL_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let config = temp_dir("enforce_env");
         let junk = temp_dir("enforce_env_dll").join("unsigned-review-host.dll");
         std::fs::write(&junk, b"not a signed pe").unwrap();
-        // SAFETY: 进程级串行锁（GLOBAL_STATE_LOCK）内的 env 突变。
+        // SAFETY: 进程级串行锁（WASM_HOST_DLL_LOCK，与 plugin_bridge 共享）
+        // 内的 env 突变。
         unsafe {
             std::env::set_var("NEMESIS_WASM_HOST_DLL", &junk);
         }
