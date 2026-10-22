@@ -271,12 +271,20 @@ jobs:
       # debuginfo 三档 / JOBS 4-3-2 / 增量开关 / win25+win22 双镜像 / Cargo.lock
       # 铡锁对照（wasmtime 48.0.5↔48.0.3 同死，R5）。矛头指向车队侧慢性失联
       # （官方口径即重试）。剩余可用杠杆 = 墙钟压缩滑出死亡窗口：
-      #   - JOBS 回默认 4（内存理论已死，压并发只拖慢编译、拉长暴露时间）；
       #   - 保 CARGO_INCREMENTAL=0（CI 惯例）；debuginfo 走根 Cargo.toml 的
       #     line-tables-only；
       #   - bin 构建拆两段（库段 → bin 段）看门狗包装：单步墙钟减半，仍失联时
       #     两段时间线直接点名触发面（库段 vs 最终链接）。
+      # JOBS 收 3（2026-10-22）：失联战役期 JOBS 4-3-2 实验针对的是连接死亡
+      # （无效，当时回默认 4）；shard3 实录第二模式——看门狗实测
+      # free_commit=1958MB 跌破 2048 地板（t=5min 编译期、零测试执行、
+      # Cargo.lock 变更触发依赖层全量重编、-j4 并行 rustc 承诺峰值超限、
+      # 同 commit 换机 att2 即绿 = 对 runner 方差敏感）。收 3 削 ~一个 rustc
+      # 的并行承诺峰值（约 2-4GB），编译 +3-5min 对 115min 预算可忽略；
+      # 进程级归因（谁在吃、吃多少）看 build-with-watchdog.ps1 的
+      # WARN/ABORT top-mem 快照。
       CARGO_INCREMENTAL: 0
+      CARGO_BUILD_JOBS: 3
     steps:
       - name: Checkout code
         uses: actions/checkout@v5

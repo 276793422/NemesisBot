@@ -243,9 +243,13 @@ jobs:
     timeout-minutes: 120
     env:
       # 编译期 runner 失联战役（同 ci.yml rust-test 完整注释，docs 报告 §六~§十）：
-      # 十连死排除法后仅剩墙钟压缩可用——JOBS 回默认 4，保 CARGO_INCREMENTAL=0，
-      # 构建拆两段（库段 → bin 段）看门狗包装。
+      # 十连死排除法后仅剩墙钟压缩可用——保 CARGO_INCREMENTAL=0，构建拆两段
+      # （库段 → bin 段）看门狗包装。JOBS 收 3（2026-10-22，同 ci.yml rust-test
+      # 同步）：CI shard3 实录资源地板模式（free_commit 跌破 2048、-j4 并行
+      # rustc 承诺峰值超限、Cargo.lock 变更期更甚）；编译面同源同收紧，
+      # +3-5min 对 60/30min 步级预算可忽略。
       CARGO_INCREMENTAL: 0
+      CARGO_BUILD_JOBS: 3
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
