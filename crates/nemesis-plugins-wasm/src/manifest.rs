@@ -5,7 +5,7 @@
 //! ```toml
 //! api-version = 1
 //! slug = "translate"
-//! kind = "tool"              # tool | observer（一 manifest 一 kind 不混装）
+//! kind = "tool"              # tool | observer | policy（一 manifest 一 kind 不混装）
 //! name = "Translate"
 //! version = "0.1.0"
 //! description = "..."
@@ -41,6 +41,8 @@ pub enum PluginKind {
     Tool,
     /// 观察者插件（world `plugin-observer`）。
     Observer,
+    /// 循环策略插件（world `plugin-loop-policy`；2026-10-22 样板工程批 4）。
+    Policy,
 }
 
 impl PluginKind {
@@ -50,6 +52,7 @@ impl PluginKind {
         match self {
             Self::Tool => "tool",
             Self::Observer => "observer",
+            Self::Policy => "policy",
         }
     }
 }
@@ -122,8 +125,9 @@ impl<'de> Deserialize<'de> for PluginKindSerde {
         match s.as_str() {
             "tool" => Ok(Self(PluginKind::Tool)),
             "observer" => Ok(Self(PluginKind::Observer)),
+            "policy" => Ok(Self(PluginKind::Policy)),
             other => Err(serde::de::Error::custom(format!(
-                "invalid kind '{other}' (expected tool | observer)"
+                "invalid kind '{other}' (expected tool | observer | policy)"
             ))),
         }
     }
@@ -244,6 +248,27 @@ impl PluginManifest {
                 return Err(PluginError::Manifest(format!(
                     "invalid config-schema key (1-64 chars): {key}"
                 )));
+            }
+        }
+        // policy kind 权限收紧（2026-10-22 批 4）：循环策略组件决策纯计算面
+        // ——无凭据（x-secret）、无直网（egress/allow-private）。数据来源只
+        // 有宿主投影入参 + config-get + workspace-read + llm-complete +
+        // tool-invoke（借道原生工具过安全 8 层全闸）。
+        if *self.kind == PluginKind::Policy {
+            if !self.permissions.egress.is_empty() {
+                return Err(PluginError::Manifest(
+                    "kind=policy forbids permissions.egress (policy components have no direct network access)".into(),
+                ));
+            }
+            if self.permissions.allow_private {
+                return Err(PluginError::Manifest(
+                    "kind=policy forbids permissions.allow-private".into(),
+                ));
+            }
+            if !self.permissions.x_secret.is_empty() {
+                return Err(PluginError::Manifest(
+                    "kind=policy forbids permissions.x-secret (policy components hold no credentials)".into(),
+                ));
             }
         }
         Ok(())

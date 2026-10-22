@@ -765,6 +765,8 @@ pub(crate) async fn run_runtime(
     #[cfg(feature = "plugins-wasm")]
     if let Some(ref pm) = shared_resources.plugin_manager {
         let loop_ref = agent_adapter.loop_ref_handle();
+        // 批 4：策略 hook 用副本（tool hook 的 move 闭包在下方先吞掉本体）。
+        let loop_ref_for_policy = loop_ref.clone();
         let pm_for_hook = pm.clone();
         // 摘旧-插新不是原子序列（tool_names → remove ×N → register），notify
         // 是同步调用、并发 WSAPI 任务可同时进 hook——交错时 register 后的
@@ -834,6 +836,61 @@ pub(crate) async fn run_runtime(
                     nemesis_security::types::declare_tool_operation(&actual, op);
                 }
                 info!("[WasmPlugin] tool hot-registered: {actual}");
+            },
+        ));
+        // 批 4（2026-10-22 样板工程）：循环策略面热同步 hook——WSAPI
+        // install/enable/disable/uninstall 成功后整体对账三策略槽（事件
+        // 只当触发器 + 日志上下文）：每点查 `policy_owner`（enabled ∧
+        // takes 的唯一接管者），有 = 装 PolicyBridge，无 = 回内置哨兵。
+        // 整面对账而非按事件点增删，是刻意选择：三槽固定、owner 裁决在
+        // registry 单一真相源，对账幂等且自愈（升级换形/注销中间态的旧
+        // 接管不留幽灵——与工具面前缀整面摘除同纪律）。槽写入是单次
+        // RwLock 写，无多步交错面，不与工具 hook 共享 hook_serial。
+        let pm_for_policy = pm.clone();
+        nemesis_web::handlers::plugins_wasm::set_policy_sync_hook(Arc::new(
+            move |ev: nemesis_web::handlers::plugins_wasm::PolicySyncEvent| {
+                let Some(loop_arc) = loop_ref_for_policy.read().clone() else {
+                    // 停机窗口：对账丢弃是设计语义（重启路径
+                    // register_policy_bridges 从注册表拉起）。
+                    tracing::warn!(
+                        "[WasmPlugin] policy sync skipped (loop stopped): slug={}",
+                        ev.slug
+                    );
+                    return;
+                };
+                use nemesis_agent::r#loop::policy::{
+                    BuiltinCompactPolicy, BuiltinFinalJudgePolicy, BuiltinValidationPolicy,
+                };
+                use nemesis_plugins_wasm::limits::PolicyPoint;
+                let take = |p: PolicyPoint| pm_for_policy.policy_owner(p).is_some();
+                // compact 点
+                if take(PolicyPoint::Compact) {
+                    loop_arc.set_compact_policy(Arc::new(crate::plugin_bridge::PolicyBridge::new(
+                        pm_for_policy.clone(),
+                    )));
+                } else {
+                    loop_arc.set_compact_policy(Arc::new(BuiltinCompactPolicy));
+                }
+                // judge-final 点
+                if take(PolicyPoint::FinalJudge) {
+                    loop_arc.set_final_judge_policy(Arc::new(
+                        crate::plugin_bridge::PolicyBridge::new(pm_for_policy.clone()),
+                    ));
+                } else {
+                    loop_arc.set_final_judge_policy(Arc::new(BuiltinFinalJudgePolicy));
+                }
+                // validation 点
+                if take(PolicyPoint::Validation) {
+                    loop_arc.set_validation_policy(Arc::new(
+                        crate::plugin_bridge::PolicyBridge::new(pm_for_policy.clone()),
+                    ));
+                } else {
+                    loop_arc.set_validation_policy(Arc::new(BuiltinValidationPolicy));
+                }
+                info!(
+                    "[WasmPlugin] policy face reconciled: slug={} add={} points={:?}",
+                    ev.slug, ev.add, ev.points
+                );
             },
         ));
     }

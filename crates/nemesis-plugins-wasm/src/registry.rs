@@ -18,8 +18,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use parking_lot::{Mutex, RwLock};
 
 use crate::error::PluginError;
-use crate::host_impl::{InstanceConfig, PluginLogBuffer, SecretResolver, plugin_error_text};
-use crate::limits::PluginLimits;
+use crate::host_impl::{
+    InstanceConfig, LlmInvoker, PluginLogBuffer, SecretResolver, plugin_error_text,
+};
+use crate::limits::{PluginLimits, PolicyPoint};
 use crate::manifest::{PluginKind, PluginManifest};
 use crate::runtime::{CallFrame, ExecContext, ExecOutput, PluginRuntime};
 use crate::trust::PluginTrustState;
@@ -46,6 +48,46 @@ pub struct ToolMetaSnapshot {
     pub min_tier: String,
 }
 
+/// 策略接管快照（注册进宿主的唯一事实源；来自安装期 get-policy-metadata
+/// 对账）。runtime 路由按点查这里；`插件名单` → 点集的投影供 WSAPI 行。
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct PolicyMetaSnapshot {
+    /// 接管 compact-check（触发 + 摘要生成）。
+    pub compact: bool,
+    /// 接管 judge-final（终答裁决）。
+    pub final_judge: bool,
+    /// 接管 validate-args（工具参数校验）。
+    pub validation: bool,
+}
+
+impl PolicyMetaSnapshot {
+    /// 接管点清单（≥1 才算合法策略组件）。
+    #[must_use]
+    pub fn points(&self) -> Vec<PolicyPoint> {
+        let mut v = Vec::new();
+        if self.compact {
+            v.push(PolicyPoint::Compact);
+        }
+        if self.final_judge {
+            v.push(PolicyPoint::FinalJudge);
+        }
+        if self.validation {
+            v.push(PolicyPoint::Validation);
+        }
+        v
+    }
+
+    /// 本快照是否接管某点。
+    #[must_use]
+    pub fn takes(&self, point: PolicyPoint) -> bool {
+        match point {
+            PolicyPoint::Compact => self.compact,
+            PolicyPoint::FinalJudge => self.final_judge,
+            PolicyPoint::Validation => self.validation,
+        }
+    }
+}
+
 /// 观察者事件队列发送端（宿主持有于 observers map；drop 即关 worker）。
 type ObserverSender = tokio::sync::mpsc::Sender<String>;
 
@@ -59,6 +101,8 @@ pub struct RegisteredPlugin {
     pub component: u64,
     /// 工具元数据（kind=tool 必有）。
     pub tool_meta: Option<ToolMetaSnapshot>,
+    /// 策略接管快照（kind=policy 必有）。
+    pub policy_meta: Option<PolicyMetaSnapshot>,
     /// 宿主日志环形缓冲。
     pub logs: Arc<PluginLogBuffer>,
     /// 出站策略。
@@ -103,6 +147,8 @@ pub struct PluginManager {
     secrets: Arc<dyn SecretResolver>,
     /// 宿主工具调用面（gateway 装配后注入；None = 恒 unavailable）。
     invoker: Mutex<Option<Arc<dyn crate::host_impl::HostToolInvoker>>>,
+    /// 杂务 LLM 补全面（gateway 装配后注入；policy 帧消费）。
+    llm: Mutex<Option<Arc<dyn LlmInvoker>>>,
     /// 子系统总开关（config `plugins.enabled`；false = 全部拒绝执行/停投）。
     enabled: AtomicBool,
     /// 审计器（gateway 装配后注入；None = 敏感宿主调用静默跳过审计）。
@@ -135,6 +181,7 @@ impl PluginManager {
             observers: Mutex::new(HashMap::new()),
             secrets,
             invoker: Mutex::new(None),
+            llm: Mutex::new(None),
             enabled: AtomicBool::new(true),
             audit: Mutex::new(None),
             config_io: Mutex::new(()),
@@ -164,6 +211,7 @@ impl PluginManager {
             observers: Mutex::new(HashMap::new()),
             secrets,
             invoker: Mutex::new(None),
+            llm: Mutex::new(None),
             enabled: AtomicBool::new(true),
             audit: Mutex::new(None),
             config_io: Mutex::new(()),
@@ -191,6 +239,12 @@ impl PluginManager {
     /// 装配宿主工具调用面（gateway 在 agent loop 就绪后调用）。
     pub fn set_invoker(&self, invoker: Arc<dyn crate::host_impl::HostToolInvoker>) {
         *self.invoker.lock() = Some(invoker);
+    }
+
+    /// 装配杂务 LLM 补全面（gateway 在 agent loop 就绪后调用；policy 帧消费。
+    /// None 保持 = llm-complete 恒 unavailable）。
+    pub fn set_llm(&self, llm: Arc<dyn LlmInvoker>) {
+        *self.llm.lock() = Some(llm);
     }
 
     /// 装配审计器（gateway 在安全插件装配后调用；敏感宿主调用落审计链）。
@@ -288,13 +342,17 @@ impl PluginManager {
 
     /// 注册一个已通过装配漏斗的插件（install 漏斗第⑧步 / 启动装载共用）。
     ///
-    /// kind=observer 会同时拉起事件 worker（有界队列，满丢弃+计数）。
+    /// kind=observer 会同时拉起事件 worker（有界队列，满丢弃+计数）；
+    /// kind=policy 做**唯一接管者对账**——同策略点已有其他注册组件 = 诚实
+    /// 拒绝（运行期每点仅一个激活组件；displaced 的旧组件由调用方先
+    /// uninstall/upgrade 走漏斗）。
     pub fn register(
         self: &Arc<Self>,
         manifest: PluginManifest,
         trust: PluginTrustState,
         component: u64,
         tool_meta: Option<ToolMetaSnapshot>,
+        policy_meta: Option<PolicyMetaSnapshot>,
     ) -> Result<Arc<RegisteredPlugin>, PluginError> {
         let slug = manifest.slug.clone();
         if let Some(m) = tool_meta.as_ref() {
@@ -313,6 +371,41 @@ impl PluginManager {
         } else if *manifest.kind == PluginKind::Tool {
             return Err(PluginError::MetadataMismatch(
                 "tool plugin missing metadata snapshot".into(),
+            ));
+        }
+        if let Some(pm) = policy_meta.as_ref() {
+            if *manifest.kind != PluginKind::Policy {
+                return Err(PluginError::Manifest(
+                    "policy metadata provided for non-policy plugin".into(),
+                ));
+            }
+            let points = pm.points();
+            if points.is_empty() {
+                return Err(PluginError::MetadataMismatch(
+                    "policy component must take over at least one policy point".into(),
+                ));
+            }
+            // 唯一接管者对账：现注册表中任一点已被别的组件接管 = 拒绝。
+            for reg in self.list() {
+                let Some(existing) = reg.policy_meta.as_ref() else {
+                    continue;
+                };
+                let clash: Vec<&str> = points
+                    .iter()
+                    .filter(|p| existing.takes(**p))
+                    .map(|p| p.export_name())
+                    .collect();
+                if !clash.is_empty() {
+                    return Err(PluginError::MetadataMismatch(format!(
+                        "policy point(s) {} already taken by plugin '{}'",
+                        clash.join("/"),
+                        reg.manifest.slug
+                    )));
+                }
+            }
+        } else if *manifest.kind == PluginKind::Policy {
+            return Err(PluginError::MetadataMismatch(
+                "policy plugin missing metadata snapshot".into(),
             ));
         }
         let (limits, ignored) = self.limits.tighten_with(&manifest.limits);
@@ -345,6 +438,7 @@ impl PluginManager {
             trust,
             component,
             tool_meta,
+            policy_meta,
             logs,
             egress,
             limits,
@@ -413,6 +507,7 @@ impl PluginManager {
             workspace_root: self.workspace_root.clone(),
             egress: reg.egress.clone(),
             invoker: self.invoker.lock().clone(),
+            llm: self.llm.lock().clone(),
             data_dir: reg.data_dir.clone(),
             audit: self.audit.lock().clone(),
             session_key: String::new(),
@@ -440,6 +535,41 @@ impl PluginManager {
         let frame = self.build_frame(&reg, false);
         self.runtime
             .execute_tool(reg.component, frame, args_json, exec_ctx)
+            .await
+    }
+
+    /// 找出接管某策略点的启用组件（桥层路由入口；None = 无接管 → 调用方
+    /// 走内置实现）。
+    #[must_use]
+    pub fn policy_owner(&self, point: PolicyPoint) -> Option<Arc<RegisteredPlugin>> {
+        self.list().into_iter().find(|reg| {
+            *reg.manifest.kind == PluginKind::Policy
+                && reg.enabled.load(Ordering::SeqCst)
+                && reg.policy_meta.is_some_and(|pm| pm.takes(point))
+        })
+    }
+
+    /// 调用一次循环策略点（桥层入口；接管者缺席/禁用/子系统总开关关 =
+    /// `NotAvailable`——调用方按「无接管」语义回退内置）。
+    pub async fn call_policy_point(
+        &self,
+        point: PolicyPoint,
+        input_json: String,
+    ) -> Result<String, PluginError> {
+        let Some(reg) = self.policy_owner(point) else {
+            return Err(PluginError::NotAvailable(format!(
+                "no active policy plugin takes {}",
+                point.export_name()
+            )));
+        };
+        if !self.is_enabled() {
+            return Err(PluginError::NotAvailable(
+                "wasm plugin subsystem disabled".into(),
+            ));
+        }
+        let frame = self.build_frame(&reg, false);
+        self.runtime
+            .call_policy(reg.component, frame, point, input_json)
             .await
     }
 

@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 use crate::error::PluginError;
 use crate::host_impl::SecretResolver;
 use crate::manifest::{PluginKind, PluginManifest, valid_slug};
-use crate::registry::{PluginManager, ToolMetaSnapshot};
+use crate::registry::{PluginManager, PolicyMetaSnapshot, ToolMetaSnapshot};
 use crate::trust::{PluginTrustState, VerificationOutcome, trust_state_for, verify_manifest};
 
 /// wasm 载荷字节上限（64MiB；wasm 二进制正常在几百 KB~几 MB）。
@@ -72,7 +72,7 @@ pub struct InstallReview {
     pub name: String,
     /// 版本。
     pub version: String,
-    /// kind（tool/observer）。
+    /// kind（tool/observer/policy）。
     pub kind: String,
     /// 信任四态。
     pub trust_state: String,
@@ -221,9 +221,9 @@ impl PluginInstaller {
             )));
         }
 
-        // ⑥ 编译 + get-metadata 对账
+        // ⑥ 编译 + 元数据对账
         let component = self.manager.runtime().compile_component(&wasm_bytes)?;
-        let tool_meta = self
+        let (tool_meta, policy_meta) = self
             .probe_and_reconcile(&manifest, component, trust_state)
             .await?;
 
@@ -255,9 +255,13 @@ impl PluginInstaller {
             .map_err(|e| PluginError::Io(format!("write wasm: {e}")))?;
 
         // ⑨ 注册（替换旧注册；启用位沿用实例配置文件）
-        let reg = self
-            .manager
-            .register(manifest.clone(), trust_state, component, tool_meta)?;
+        let reg = self.manager.register(
+            manifest.clone(),
+            trust_state,
+            component,
+            tool_meta,
+            policy_meta,
+        )?;
         self.manager.apply_enabled_from_file(&manifest.slug, &reg);
         if let Some(note) = scan_note {
             tracing::info!(slug = %manifest.slug, "[WasmPlugin] {note}");
@@ -293,16 +297,39 @@ impl PluginInstaller {
     }
 
     /// 编译后对账（第⑥步）：tool = probe get-metadata + 字段合法性；
-    /// observer = 只编译验证（probe 由注册后首事件兜底）。
+    /// observer = 只编译验证（probe 由注册后首事件兜底）；
+    /// policy = probe get-policy-metadata + ≥1 接管点校验（2026-10-22 批 4）。
+    #[allow(clippy::type_complexity)]
     async fn probe_and_reconcile(
         &self,
         manifest: &PluginManifest,
         component: u64,
         trust_state: PluginTrustState,
-    ) -> Result<Option<ToolMetaSnapshot>, PluginError> {
+    ) -> Result<(Option<ToolMetaSnapshot>, Option<PolicyMetaSnapshot>), PluginError> {
         let _ = trust_state;
         if *manifest.kind == PluginKind::Observer {
-            return Ok(None);
+            return Ok((None, None));
+        }
+        if *manifest.kind == PluginKind::Policy {
+            let frame = probe_frame(self.manager.as_ref(), manifest);
+            let meta = self
+                .manager
+                .runtime()
+                .probe_policy_metadata(component, frame)
+                .await?;
+            let pm = PolicyMetaSnapshot {
+                compact: meta.compact,
+                final_judge: meta.final_judge,
+                validation: meta.validation,
+            };
+            if pm.points().is_empty() {
+                return Err(PluginError::MetadataMismatch(
+                    "policy component must take over at least one policy point \
+                     (compact | final-judge | validation)"
+                        .into(),
+                ));
+            }
+            return Ok((None, Some(pm)));
         }
         let frame = probe_frame(self.manager.as_ref(), manifest);
         let meta = self
@@ -337,20 +364,23 @@ impl PluginInstaller {
                 meta.operation_type
             )));
         }
-        Ok(Some(ToolMetaSnapshot {
-            name: format!(
-                "{}{}.{}",
-                crate::PLUGIN_TOOL_PREFIX,
-                manifest.slug,
-                meta.name
-            ),
-            base: meta.name.clone(),
-            title: meta.title,
-            description: meta.description,
-            parameters_json: meta.parameters_json,
-            operation_type: meta.operation_type,
-            min_tier: manifest.min_tier.clone(),
-        }))
+        Ok((
+            Some(ToolMetaSnapshot {
+                name: format!(
+                    "{}{}.{}",
+                    crate::PLUGIN_TOOL_PREFIX,
+                    manifest.slug,
+                    meta.name
+                ),
+                base: meta.name.clone(),
+                title: meta.title,
+                description: meta.description,
+                parameters_json: meta.parameters_json,
+                operation_type: meta.operation_type,
+                min_tier: manifest.min_tier.clone(),
+            }),
+            None,
+        ))
     }
 
     fn update_lockfile(
@@ -455,11 +485,11 @@ impl PluginInstaller {
             )));
         }
         let component = self.manager.runtime().compile_component(&wasm_bytes)?;
-        let tool_meta = self
+        let (tool_meta, policy_meta) = self
             .probe_and_reconcile(&manifest, component, trust_state)
             .await?;
         self.manager
-            .register(manifest, trust_state, component, tool_meta)
+            .register(manifest, trust_state, component, tool_meta, policy_meta)
     }
 }
 
@@ -486,6 +516,7 @@ fn probe_frame(manager: &PluginManager, manifest: &PluginManifest) -> crate::run
         workspace_root: manager.workspace_root().to_path_buf(),
         egress: Arc::new(crate::egress::EgressPolicy::default()),
         invoker: None,
+        llm: None,
         data_dir,
         audit: None,
         session_key: String::new(),
