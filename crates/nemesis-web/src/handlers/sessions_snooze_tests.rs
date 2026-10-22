@@ -290,6 +290,40 @@ async fn b11_wake_due_sessions_injects_recovery_line() {
     nemesis_agent::chat_log::delete_chat_log(&key);
 }
 
+/// BUG-HUNT R9：唤醒恢复行必须落进 chat.sync 读侧的桶——chat_event_log
+/// record 键空间契约是完整会话键 `agent:main:session:{sid}`（send_to_session
+/// 「记录键优先会话键（跨连接稳定）」、record_tool「键取 session_key，与
+/// send_to_session 的 record 同域」），chat.sync 按同构变换重建桶查。此前
+/// sweep 唤醒路径传**裸 sid**——恢复行落进无人查询的孤儿桶，断线窗口内
+/// 唤醒的会话重连补拉永远看不到「⏰ 到期自动恢复」行（jsonl 有、补拉无）。
+#[tokio::test]
+async fn b11_wake_recovery_line_lands_in_chat_sync_bucket() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("nb-home");
+    let _g = isolate(&home);
+    let key = seed_session(&home, "b11r9w");
+
+    // 直接写一个已到期的标记（同上测：parse 层拒过去时刻，sweep 消费它）。
+    nemesis_agent::chat_log::write_session_snooze(&key, "2020-01-01T00:00:00+08:00", Some("补拉"));
+
+    let woken = wake_due_sessions();
+    assert_eq!(woken, 1, "到期项应唤醒一次");
+
+    // chat.sync 读侧同款键（sync 臂按 sanitize_session_id 重建完整键查桶；
+    // 本键 sid 段全在白名单内，重建即恒等）。恢复行必须可补拉。
+    let (events, gap) = crate::chat_event_log::replay_after(&key, 0);
+    assert!(!gap);
+    assert!(
+        events
+            .iter()
+            .any(|e| e.role == "system" && e.content.contains("⏰")),
+        "唤醒恢复行必须落进 chat.sync 查询的完整会话键桶（got {} events）",
+        events.len()
+    );
+
+    nemesis_agent::chat_log::delete_chat_log(&key);
+}
+
 #[test]
 fn b11_parse_snooze_until_units() {
     // 相对秒。
