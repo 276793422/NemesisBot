@@ -1050,8 +1050,12 @@ fn plugins_staging_paths(exe: &Path) -> (PathBuf, PathBuf, PathBuf) {
 ///    目录不整迁同理）→ 新文件 copy 就位（copy 非 rename：new_dir 全集
 ///    副本不被消耗）。
 ///
-/// **只同名覆盖不删既有**（用户拍板 ②）——用户自装插件不受伤。
-/// 返回替换文件数；任何一步失败 = Err（journal 已留现场，boot 收口回滚）。
+/// **只同名覆盖不删既有**（用户拍板 ②）——用户自装插件不受伤。同名字段
+/// 有**类型边界**：包内条目是平面文件，既有同名条目若是**目录**，让位舞步
+/// 会把整个目录迁进 backup，而回滚名单只认文件（is_file）、收尾整删
+/// backup = 用户目录内容永久丢失——文件-目录类型冲突不属于「同名覆盖」，
+/// 先于任何落盘诚实拒绝。返回替换文件数；任何一步失败 = Err（journal 已留
+/// 现场，boot 收口回滚）。
 #[cfg(feature = "selfupdate")]
 #[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))] // 消费方=windows/linux apply；macOS/android 桩平台诚实死码
 fn install_plugins_files(
@@ -1060,6 +1064,17 @@ fn install_plugins_files(
     new_dir: &Path,
     files: &std::collections::BTreeMap<String, Vec<u8>>,
 ) -> Result<usize, String> {
+    // 目录冲突预检（先于 new_dir/backup 任何落盘）：拒绝时现场零扰动。
+    for name in files.keys() {
+        let existing = plugins_dir.join(name);
+        if existing.is_dir() {
+            return Err(format!(
+                "既有同名条目是目录（{}）：更新包条目是平面文件，类型冲突不做\
+                 覆盖（保护用户自装内容）；请手工移走该目录后重试",
+                existing.display()
+            ));
+        }
+    }
     std::fs::create_dir_all(new_dir).map_err(|e| format!("plugins staging 目录创建失败：{e}"))?;
     for (name, bytes) in files {
         let target = new_dir.join(name);
@@ -1099,6 +1114,16 @@ fn install_plugins_files(
     Ok(replaced)
 }
 
+/// 旁置名计算（纯函数，单测钉形态）：原文件名**追加** `.failed-{pid}` 后缀。
+/// 不用 `with_extension`（那是**替换**扩展位）——同词干不同扩展名（`a.dll`/
+/// `a.wasm`）会撞同一个 `a.failed-{pid}`：首份映射现场占着旁置名时第二份
+/// rename 撞已存在目标直接失败，boot 回滚卡死循环；追加形态每源文件唯一。
+fn loaded_sidecar_path(target: &Path) -> PathBuf {
+    let mut name = std::ffi::OsString::from(target.file_name().unwrap_or_default());
+    name.push(format!(".failed-{}", std::process::id()));
+    target.with_file_name(name)
+}
+
 /// 被映射文件删除（boot 回滚场景：目标位可能被运行中进程映射——当前
 /// gateway 进程的插件 DLL 常态在内存）。文件不可删时先让位 `.failed-{pid}`
 /// 旁置再删旁置件：未映射场景旁置件删得掉；映射中留下（计划钦定的诊断
@@ -1108,8 +1133,7 @@ fn remove_loaded_file(target: &Path) -> Result<(), String> {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(_) => {
-            let pid = std::process::id();
-            let failed = target.with_extension(format!("failed-{pid}"));
+            let failed = loaded_sidecar_path(target);
             let _ = std::fs::remove_file(&failed);
             std::fs::rename(target, &failed)
                 .map_err(|e| format!("映射文件让位失败（{}）：{e}", target.display()))?;
