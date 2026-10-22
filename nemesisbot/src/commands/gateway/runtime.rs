@@ -819,6 +819,7 @@ pub(crate) async fn run_runtime(
         // 足够；poison 容忍（持锁线程 panic 后锁仍要用，into_inner 放行）。
         let hook_serial = Arc::new(std::sync::Mutex::<()>::new(()));
         let serial_for_hook = hook_serial.clone();
+        let home_for_takeover = home.clone();
         nemesis_web::handlers::plugins_wasm::set_tool_sync_hook(Arc::new(
             move |ev: nemesis_web::handlers::plugins_wasm::ToolSyncEvent| {
                 let _serial = serial_for_hook
@@ -851,6 +852,14 @@ pub(crate) async fn run_runtime(
                             stale
                         );
                     }
+                    // 接管面对账（2026-10-23 工具接管层）：disable/uninstall
+                    // 后声明面接管就地解除回内置（幂等；无声明 = 空转）。
+                    crate::plugin_bridge::reconcile_takeover_event(
+                        &loop_arc,
+                        &pm_for_hook,
+                        &home_for_takeover,
+                        &ev.slug,
+                    );
                     return;
                 }
                 let Some(meta) = pm_for_hook
@@ -864,6 +873,12 @@ pub(crate) async fn run_runtime(
                     tracing::warn!(
                         "[WasmPlugin] tool sync: meta gone for slug={} (uninstalled mid-flight?)",
                         ev.slug
+                    );
+                    crate::plugin_bridge::reconcile_takeover_event(
+                        &loop_arc,
+                        &pm_for_hook,
+                        &home_for_takeover,
+                        &ev.slug,
                     );
                     return;
                 };
@@ -880,6 +895,14 @@ pub(crate) async fn run_runtime(
                     nemesis_security::types::declare_tool_operation(&actual, op);
                 }
                 info!("[WasmPlugin] tool hot-registered: {actual}");
+                // 接管面对账：enable/升级装载后按 manifest 声明 wrap 对应
+                // 内置工具（幂等——已在管则只翻开关位）。
+                crate::plugin_bridge::reconcile_takeover_event(
+                    &loop_arc,
+                    &pm_for_hook,
+                    &home_for_takeover,
+                    &ev.slug,
+                );
             },
         ));
         // 批 4（2026-10-22 样板工程）：循环策略面热同步 hook——WSAPI

@@ -56,15 +56,18 @@ fn ensure_host_dll() {
     unsafe { std::env::set_var("NEMESIS_WASM_HOST_DLL", p) };
 }
 
-/// 独立 workspace 装配（AutoApprove + 无扫描——CLI 同构形态）。
+/// 独立 workspace 装配（AutoApprove + 无扫描——CLI 同构形态）。目录注入
+/// （生产 `new` 解析 exe 旁真实 plugins_wasm/——并行用例共享真实目录 =
+/// 删载荷/摘注册串扰根因），载荷目录落 temp 内。
 fn temp_installer() -> (tempfile::TempDir, Arc<PluginInstaller>) {
     ensure_host_dll();
     let dir = tempfile::tempdir().expect("tempdir");
     let ws = dir.path().join("workspace");
     std::fs::create_dir_all(&ws).expect("workspace");
     let manager = Arc::new(
-        PluginManager::new(
+        PluginManager::new_with_dirs(
             &ws,
+            &dir.path().join("plugins_wasm"),
             nemesis_plugins_wasm::limits::PluginLimits::default(),
             Arc::new(nemesis_plugins_wasm::install::NoSecrets),
         )
@@ -127,11 +130,79 @@ fn config_get_masks_x_secret_values() {
 }
 
 #[test]
-fn missing_config_file_defaults_enabled_true() {
+fn missing_switch_file_defaults_disabled() {
     let (_dir, inst) = temp_installer();
-    let cfg = inst.manager.get_config("any-plugin");
-    assert!(cfg.enabled, "实例配置缺文件 = 缺省启用（回归钉）");
-    assert!(cfg.entries.is_empty());
+    let sw = inst.manager.get_switch("any-plugin");
+    assert!(
+        !sw.enabled,
+        "开关记录缺席 = 不加载（2026-10-22 纪律回归钉：wasm 与 native 的缺省启用相反）"
+    );
+    assert!(sw.config.is_empty());
+}
+
+#[test]
+fn list_reports_switch_and_payload_without_registry() {
+    // 三源合流投影：手工拷入载荷（无 lockfile 记录 → trust=unknown）+
+    // 开关记录 enabled=true + 注册表缺席（loaded=false）——不装真组件
+    // 也能钉住列表语义（发现 ≠ 记录 ≠ 加载三层正交）。
+    let (dir, inst) = temp_installer();
+    // 手工拷入最小载荷目录（只 plugin.toml，无 wasm 文件——list 只读
+    // manifest 不碰载荷字节，64-hex sha 纯过校验闸）。
+    let pdir = dir.path().join("plugins_wasm").join("demo");
+    std::fs::create_dir_all(&pdir).expect("payload dir");
+    std::fs::write(
+        pdir.join("plugin.toml"),
+        "api-version = 1\nslug = \"demo\"\nkind = \"tool\"\nname = \"Demo\"\nversion = \"0.1.0\"\ndescription = \"handler-list fixture\"\nwasm-sha256 = \"1111111111111111111111111111111111111111111111111111111111111111\"\ntakeover = [\"web_fetch\"]\n",
+    )
+    .expect("manifest");
+    // 开关记录 enabled=true（模拟用户此前开过开关、进程刚重启未装载）。
+    nemesis_config::plugin_wasm::set_enabled(
+        &dir.path().join("workspace").join("config"),
+        "demo",
+        true,
+    )
+    .expect("switch");
+    // 直注 list_impl（不走 set_installer 全局槽——OnceLock 首胜 + 并行
+    // 用例 TempDir 先删 = 槽里装着指向已删目录的 installer，读出空列表）。
+    let out = list_impl(&inst).expect("list ok");
+    let rows = out["plugins"].as_array().expect("rows");
+    assert_eq!(rows.len(), 1, "rows: {rows:?}");
+    assert_eq!(rows[0]["slug"], "demo");
+    assert_eq!(rows[0]["trust"], "unknown", "无 lockfile 记录 = 手工拷入");
+    assert_eq!(rows[0]["enabled"], true, "开关记录位照读");
+    assert_eq!(rows[0]["loaded"], false, "注册表缺席 = 未加载");
+    // 接管声明照读（2026-10-23 工具接管层）：前端徽标数据源——声明 =
+    // 安装审批卡 + 列表徽标双留痕的投影半边。
+    assert_eq!(
+        rows[0]["takes_over"],
+        serde_json::json!(["web_fetch"]),
+        "manifest 接管声明进投影"
+    );
+}
+
+#[test]
+fn list_lockfile_only_row_for_missing_payload() {
+    // lockfile 有记录而载荷被手工删掉 = 可见性兜底行（enabled 照读、
+    // loaded=false、error 注记在场）。
+    let (dir, inst) = temp_installer();
+    let lock_path = dir.path().join("plugins_wasm").join("lockfile.json");
+    std::fs::write(
+        &lock_path,
+        r#"{"version":1,"plugins":{"gone":{"version":"0.1.0","wasm_sha256":"ab","trust":"review-required","installed_at_ms":0,"signed_by":""}}}"#,
+    )
+    .expect("lockfile");
+    let out = list_impl(&inst).expect("list ok");
+    let rows = out["plugins"].as_array().expect("rows");
+    assert_eq!(rows.len(), 1, "rows: {rows:?}");
+    assert_eq!(rows[0]["slug"], "gone");
+    assert_eq!(rows[0]["trust"], "review-required");
+    assert_eq!(rows[0]["loaded"], false);
+    assert!(
+        rows[0]["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("载荷")),
+        "载荷缺席注记: {rows:?}"
+    );
 }
 
 #[test]

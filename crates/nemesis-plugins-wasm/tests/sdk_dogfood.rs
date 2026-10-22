@@ -15,7 +15,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use nemesis_plugins_wasm::PluginTrustState;
 use nemesis_plugins_wasm::host_impl::SecretResolver;
 use nemesis_plugins_wasm::install::{AutoApprove, PluginInstaller};
 use nemesis_plugins_wasm::limits::PluginLimits;
@@ -121,16 +120,21 @@ async fn installed_manager()
     };
     common::ensure_host_dll();
     let ws = tempfile::tempdir()?;
-    let mgr = Arc::new(PluginManager::new(
+    let mgr = Arc::new(PluginManager::new_with_dirs(
         ws.path(),
+        &ws.path().join("plugins_wasm"),
         PluginLimits::default(),
         Arc::new(NoSecrets),
     )?);
     let tmp = tempfile::tempdir()?;
     let src = stage_plugin(tmp.path(), TEXTSTAT_TOML.to_string(), &wasm)?;
     let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
-    let reg = installer.install(&src, true).await?;
-    assert_eq!(reg.trust, PluginTrustState::ReviewRequired);
+    installer.install(&src, true).await?;
+    // 测试语义 =「用户已开开关」（安装 ≠ 加载，2026-10-22）。
+    installer
+        .set_enabled("textstat", true)
+        .await?
+        .expect("loaded");
     Ok((ws, mgr))
 }
 

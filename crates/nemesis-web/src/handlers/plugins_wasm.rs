@@ -16,8 +16,13 @@
 //! `wasm.devkit_download`（plugins.rs 自处理分支，不依赖本模块宿主槽）。
 //!
 //! 安全面：install 是九步装配漏斗唯一运行期入口（验签→扫描→审批→编译
-//! →lockfile→落位→注册全走 nemesis-plugins-wasm::install 单一真相源，本
+//! →lockfile→落位全走 nemesis-plugins-wasm::install 单一真相源，本
 //! 模块零旁路）；config.get 按 manifest x-secret 脱敏（值不回传 Dashboard）。
+//!
+//! 加载纪律（2026-10-22）：安装 ≠ 加载——`list` 的 `enabled` =
+//! `config.plugin.wasm.json` 开关（加载意愿，重启保持），`loaded` =
+//! 注册表在场（运行态）。开关走 [`PluginInstaller::set_enabled`]：
+//! enable = 装配注册（新装/升级开关关着时注册表缺席），disable = 真摘除。
 
 use std::path::Path;
 use std::sync::Arc;
@@ -104,8 +109,12 @@ fn require_installer() -> Result<Arc<PluginInstaller>, String> {
 // 命令实现（ctx 无关——测试直接调内部 fn，不经 RequestContext）
 // ---------------------------------------------------------------------------
 
-/// 行投影（已装载）。
-fn row_of(reg: &nemesis_plugins_wasm::registry::RegisteredPlugin) -> serde_json::Value {
+/// 已装载行投影（tool/policy 面快照齐全）。`enabled` 取开关记录——注册表
+/// 在场只说明**已加载**，两字段语义分离（2026-10-22：安装 ≠ 加载）。
+fn row_of(
+    reg: &nemesis_plugins_wasm::registry::RegisteredPlugin,
+    enabled: bool,
+) -> serde_json::Value {
     let m = &reg.manifest;
     serde_json::json!({
         "slug": m.slug,
@@ -113,7 +122,7 @@ fn row_of(reg: &nemesis_plugins_wasm::registry::RegisteredPlugin) -> serde_json:
         "version": m.version,
         "kind": m.kind.as_str(),
         "trust": reg.trust.as_str(),
-        "enabled": reg.enabled.load(std::sync::atomic::Ordering::SeqCst),
+        "enabled": enabled,
         "loaded": true,
         "wasm_sha256": m.wasm_sha256,
         "min_tier": m.min_tier,
@@ -136,37 +145,170 @@ fn row_of(reg: &nemesis_plugins_wasm::registry::RegisteredPlugin) -> serde_json:
     })
 }
 
-/// `wasm.list`：注册表快照 + lockfile 交叉（盘上有但未装载的行
-/// `loaded=false`——启动装载失败/刚被 CLI 装入未重启的可见性兜底）。
+/// 未装载行投影（新装缺省 / 升级开关关 / lockfile 有记录载荷缺席）。
+fn pending_row(
+    slug: &str,
+    name: &str,
+    version: &str,
+    trust: &str,
+    enabled: bool,
+    extra: serde_json::Value,
+) -> serde_json::Value {
+    let mut row = serde_json::json!({
+        "slug": slug,
+        "name": name,
+        "version": version,
+        "kind": serde_json::Value::Null,
+        "trust": trust,
+        "enabled": enabled,
+        "loaded": false,
+    });
+    let obj = row.as_object_mut().expect("row literal is object");
+    if let Some(map) = extra.as_object() {
+        for (k, v) in map {
+            obj.insert(k.clone(), v.clone());
+        }
+    }
+    row
+}
+
+/// 开关记录全量（`config.plugin.wasm.json`；读路径顺带触发旧实例文件惰性迁移）。
+fn switch_map(
+    mgr: &nemesis_plugins_wasm::registry::PluginManager,
+) -> std::collections::BTreeMap<String, nemesis_config::plugin_wasm::WasmSwitch> {
+    nemesis_config::plugin_wasm::load_switches(&mgr.workspace_root().join("config"))
+}
+
+/// `wasm.list`：三源合流——①盘上载荷发现（扫 `plugins_wasm/` 含
+/// `plugin.toml` 的子目录，含手工拷入）②lockfile 记录（载荷被手工删掉的
+/// 可见性兜底）③注册表（loaded 与 tool/policy 面快照）。`enabled` 恒取
+/// 开关记录，`trust` 无 lockfile 记录 = `unknown`（手工拷入，enable 时
+/// 补跑装配漏斗）。
 pub fn cmd_list() -> Result<serde_json::Value, String> {
-    let installer = require_installer()?;
+    list_impl(require_installer()?.as_ref())
+}
+
+/// list 本体（纯函数形态——测试直注 installer，绕全局槽 OnceLock 首胜
+/// 语义：并行用例共享槽 + 首 test 的 TempDir 落盘即删 = 后到者读到空目录）。
+fn list_impl(installer: &PluginInstaller) -> Result<serde_json::Value, String> {
     let mgr = &installer.manager;
-    let mut rows: Vec<serde_json::Value> = mgr.list().iter().map(|r| row_of(r)).collect();
-    let loaded: std::collections::BTreeSet<String> =
-        mgr.list().iter().map(|r| r.manifest.slug.clone()).collect();
-    let lock_path = mgr.plugins_dir().join("lockfile.json");
-    if let Ok(s) = std::fs::read_to_string(&lock_path)
-        && let Ok(lf) = serde_json::from_str::<nemesis_plugins_wasm::install::PluginLockfile>(&s)
-    {
+    let switches = switch_map(mgr);
+    let enabled_of = |slug: &str| switches.get(slug).is_some_and(|sw| sw.enabled);
+    let lockfile = read_lockfile(mgr);
+
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    // ① 发现面（字典序确定性——read_dir 顺序是平台实现细节）。
+    let mut discovered: Vec<std::path::PathBuf> = match std::fs::read_dir(mgr.plugins_dir()) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.join("plugin.toml").is_file())
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    discovered.sort();
+    for pdir in discovered {
+        let slug = pdir
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        seen.insert(slug.clone());
+        let reg = mgr.get(&slug);
+        let trust = lockfile
+            .as_ref()
+            .and_then(|lf| lf.plugins.get(&slug))
+            .map(|e| e.trust.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+        let mut row = match nemesis_plugins_wasm::manifest::PluginManifest::load_from_dir(&pdir) {
+            Ok((m, _)) => serde_json::json!({
+                "slug": slug,
+                "name": m.name,
+                "version": m.version,
+                "kind": m.kind.as_str(),
+                "trust": trust,
+                "enabled": enabled_of(&slug),
+                "loaded": reg.is_some(),
+                "wasm_sha256": m.wasm_sha256,
+                "min_tier": m.min_tier,
+                "takes_over": m.takeover,
+                "egress": m.permissions.egress,
+                "x_secret": m.permissions.x_secret,
+                "data_dir": mgr.plugin_data_dir(&slug).display().to_string(),
+            }),
+            Err(e) => pending_row(
+                &slug,
+                &slug,
+                "",
+                &trust,
+                enabled_of(&slug),
+                serde_json::json!({ "error": format!("manifest 解析失败: {e}") }),
+            ),
+        };
+        if let Some(reg) = reg.as_ref() {
+            let obj = row.as_object_mut().expect("row literal is object");
+            if let Some(t) = reg.tool_meta.as_ref() {
+                obj.insert(
+                    "tool".into(),
+                    serde_json::json!({
+                        "name": t.name,
+                        "base": t.base,
+                        "title": t.title,
+                        "description": t.description,
+                        "operation_type": t.operation_type,
+                        "min_tier": t.min_tier,
+                    }),
+                );
+            }
+            if let Some(pm) = reg.policy_meta.as_ref() {
+                obj.insert(
+                    "policy".into(),
+                    serde_json::json!({
+                        "compact": pm.compact,
+                        "final_judge": pm.final_judge,
+                        "validation": pm.validation,
+                    }),
+                );
+            }
+        }
+        rows.push(row);
+    }
+
+    // ② lockfile 记录但载荷缺席（盘上被手工删了；enabled 位照读——
+    // 用户开关还开着时 enable 路径的诚实报错靠这行可见）。
+    if let Some(lf) = lockfile.as_ref() {
         for (slug, e) in &lf.plugins {
-            if !loaded.contains(slug) {
-                rows.push(serde_json::json!({
-                    "slug": slug,
-                    "version": e.version,
-                    "kind": "unknown",
-                    "trust": e.trust,
-                    "enabled": false,
-                    "loaded": false,
-                    "wasm_sha256": e.wasm_sha256,
-                    "signed_by": e.signed_by,
-                }));
+            if !seen.contains(slug) {
+                rows.push(pending_row(
+                    slug,
+                    slug,
+                    &e.version,
+                    &e.trust,
+                    enabled_of(slug),
+                    serde_json::json!({
+                        "wasm_sha256": e.wasm_sha256,
+                        "signed_by": e.signed_by,
+                        "error": "载荷目录缺失（lockfile 记录仍在；重装或卸载）",
+                    }),
+                ));
             }
         }
     }
     Ok(serde_json::json!({ "plugins": rows }))
 }
 
+/// 读 lockfile（损坏/缺席 = None——列表降级为发现面，不炸）。
+fn read_lockfile(
+    mgr: &nemesis_plugins_wasm::registry::PluginManager,
+) -> Option<nemesis_plugins_wasm::install::PluginLockfile> {
+    let s = std::fs::read_to_string(mgr.plugins_dir().join("lockfile.json")).ok()?;
+    serde_json::from_str(&s).ok()
+}
+
 /// `wasm.install`（运行期装配唯一入口 = install 漏斗；含升级重跑）。
+/// 返回行带 `loaded` 位：新装 = false（默认不加载，用户开开关才装配）；
+/// 升级且开关原本开着 = true（热升级）。
 pub async fn cmd_install(data: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
     let installer = require_installer()?;
     let data = data.ok_or("missing data")?;
@@ -179,37 +321,46 @@ pub async fn cmd_install(data: Option<serde_json::Value>) -> Result<serde_json::
         .get("allow_unsigned")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let reg = installer
+    let outcome = installer
         .install(Path::new(source_dir), allow_unsigned)
         .await
         .map_err(|e| e.to_string())?;
-    // W7：工具面热同步事件**恒发**（方向由 install_sync_event 决策）——
-    // tool 型 + 启用 = 注册；observer 化升级 / 缺 meta / 禁用升级 = 前缀
-    // 摘除，顺带清掉 loop 里可能残留的旧版工具（旧逻辑只在 kind==Tool &&
-    // meta 在场时发事件，tool→observer 升级不发任何事件，旧工具成 LLM
-    // 可见僵尸——2026-09-29 交付审查 1.2 + 2026-09-30 复查 #4）。
-    let enabled = reg.enabled.load(std::sync::atomic::Ordering::SeqCst);
-    notify_tool_sync(install_sync_event(
-        reg.manifest.kind.as_str(),
-        &reg.manifest.slug,
-        reg.tool_meta
-            .as_ref()
-            .map(|m| (m.name.as_str(), m.operation_type.as_str())),
-        enabled,
-    ));
-    // 批 4：策略面热同步事件恒发（方向由 policy_sync_event 决策）——
-    // policy 型 + 启用 = 装桥；升级换形 / 禁用升级 = 摘桥。hook 侧按注册
-    // 表现状整体对账三槽，事件只当触发器（旧接管不留幽灵——升级换形的
-    // 旧点也在对账面内，与工具面前缀整面摘除同纪律）。
-    notify_policy_sync(policy_sync_event(
-        reg.manifest.kind.as_str(),
-        &reg.manifest.slug,
-        reg.policy_meta.as_ref(),
-        enabled,
-    ));
+    // 面同步事件只在「本次已装载」（升级且开关原开）时发：新装/开关关的
+    // 升级注册表缺席，loop 面无此插件可清（此前 disable/卸载路径已摘净）。
+    // 工具事件恒发（方向由 install_sync_event 决策——tool→observer 化升级
+    // 走前缀摘除，2026-09-30 复查 #4 纪律）；策略事件恒发（hook 收到即
+    // 全槽对账，换形旧接管不留幽灵）。
+    if let Some(reg) = outcome.registered.as_ref() {
+        notify_tool_sync(install_sync_event(
+            reg.manifest.kind.as_str(),
+            &outcome.slug,
+            reg.tool_meta
+                .as_ref()
+                .map(|m| (m.name.as_str(), m.operation_type.as_str())),
+            true,
+        ));
+        notify_policy_sync(policy_sync_event(
+            reg.manifest.kind.as_str(),
+            &outcome.slug,
+            reg.policy_meta.as_ref(),
+            true,
+        ));
+    }
+    let row = match outcome.registered.as_ref() {
+        Some(reg) => row_of(reg, true),
+        None => pending_row(
+            &outcome.slug,
+            &outcome.slug,
+            &outcome.version,
+            outcome.trust.as_str(),
+            false,
+            serde_json::json!({ "note": "已安装，默认不加载——在插件页打开加载开关" }),
+        ),
+    };
     Ok(serde_json::json!({
         "installed": true,
-        "plugin": row_of(reg.as_ref()),
+        "loaded": outcome.registered.is_some(),
+        "plugin": row,
     }))
 }
 
@@ -295,19 +446,46 @@ fn require_slug(data: Option<&serde_json::Value>) -> Result<String, String> {
         .ok_or_else(|| "slug (string) is required".to_string())
 }
 
-/// `wasm.enable` / `wasm.disable`（内存 + 实例配置落盘，热生效）。
+/// `wasm.enable` / `wasm.disable`（开关 = 加载闸，热生效；记录落
+/// `config.plugin.wasm.json`，重启保持）。enable = 装配注册（lockfile 有
+/// 记录走原路，手工拷入补跑装配漏斗含审批卡）；disable = 真摘除。
 pub async fn cmd_set_enabled(slug: &str, on: bool) -> Result<serde_json::Value, String> {
     let installer = require_installer()?;
-    installer
-        .manager
-        .set_enabled_plugin(slug, on)
-        .await
-        .map_err(|e| e.to_string())?;
-    // W7：禁用 = 工具面注销（LLM 不再可见），启用 = 重注册（仍在册时）。
-    sync_tool_face(&installer.manager, slug, on);
-    // 批 4：policy 型启停同步（禁用 = 摘桥回内置；启用 = 重装桥）。
-    sync_policy_face(&installer.manager, slug, on);
-    Ok(serde_json::json!({ "slug": slug, "enabled": on }))
+    let loaded = if on {
+        let loaded = installer
+            .set_enabled(slug, true)
+            .await
+            .map_err(|e| e.to_string())?;
+        if loaded.is_some() {
+            // 装配成功：注册表现在在场 → 面投影 add（工具 hook 先按 slug
+            // 前缀整面摘旧再挂新；策略 hook 收到即全槽对账）。
+            sync_tool_face(&installer.manager, slug, true);
+            sync_policy_face(&installer.manager, slug, true);
+        }
+        // loaded=None = 已在册幂等（面已在，无事件）。
+        loaded
+    } else {
+        // 摘除前先抓面事件（注册表摘除后拿不到元数据）；hook 侧语义 =
+        // 工具前缀整面摘 + 策略全槽回内置。
+        let tool_ev = tool_event_of(&installer.manager, slug, false);
+        let policy_ev = policy_event_of(&installer.manager, slug, false);
+        installer
+            .set_enabled(slug, false)
+            .await
+            .map_err(|e| e.to_string())?;
+        if let Some(ev) = tool_ev {
+            notify_tool_sync(ev);
+        }
+        if let Some(ev) = policy_ev {
+            notify_policy_sync(ev);
+        }
+        None
+    };
+    Ok(serde_json::json!({
+        "slug": slug,
+        "enabled": on,
+        "loaded": loaded.is_some(),
+    }))
 }
 
 /// `wasm.uninstall`（注销 + 删载荷 + lockfile 摘除；数据目录保留）。
@@ -385,30 +563,41 @@ fn sync_policy_face(mgr: &nemesis_plugins_wasm::registry::PluginManager, slug: &
 }
 
 /// `wasm.config.get`：实例配置 + 声明面（x-secret 值脱敏不回传）。
+/// 未加载也可读——schema/x-secret 取盘上 manifest，配置取开关记录
+/// （配置与装载解耦：开关开着时装载生效）。
 pub fn cmd_config_get(slug: &str) -> Result<serde_json::Value, String> {
     let installer = require_installer()?;
     let mgr = &installer.manager;
-    let reg = mgr
-        .get(slug)
-        .ok_or_else(|| format!("plugin not registered: {slug}"))?;
-    let cfg = mgr.get_config(slug);
-    let secret_keys = &reg.manifest.permissions.x_secret;
-    let entries: serde_json::Map<String, serde_json::Value> = cfg
-        .entries
+    let manifest = mgr
+        .disk_manifest(slug)
+        .map_err(|e| format!("plugin not available: {slug}: {e}"))?;
+    let sw = mgr.get_config(slug);
+    let secret_keys = &manifest.permissions.x_secret;
+    let entries: serde_json::Map<String, serde_json::Value> = sw
+        .config
         .iter()
         .map(|(k, v)| {
             let masked = secret_keys.iter().any(|s| s == k);
+            let shown = match v {
+                serde_json::Value::String(s) => serde_json::Value::String(s.clone()),
+                other => other.clone(),
+            };
             (
                 k.clone(),
-                serde_json::Value::String(if masked { "******".into() } else { v.clone() }),
+                if masked {
+                    serde_json::Value::String("******".into())
+                } else {
+                    shown
+                },
             )
         })
         .collect();
     Ok(serde_json::json!({
         "slug": slug,
-        "enabled": cfg.enabled,
+        "enabled": sw.enabled,
+        "loaded": mgr.get(slug).is_some(),
         "entries": entries,
-        "schema_keys": reg.manifest.config_schema_keys(),
+        "schema_keys": manifest.config_schema_keys(),
         "secret_keys": secret_keys,
     }))
 }

@@ -188,7 +188,11 @@ pub fn trust_state_for(
         return Err(PluginError::Trust(if outcome.signed {
             outcome.error.clone()
         } else {
-            "unsigned manifest and allow_unsigned=false (strict)".into()
+            // 可行动文案（2026-10-23 开关补漏斗收口）：Dashboard 开关路径
+            // 会经审批卡裁决（LateInstallApprover），走到这里 = 审批面无
+            // 人批卡能力（CLI/headless）——指引显式旗标或签名。
+            "载荷无签名且当前审批面不允许无签名安装（strict）：Dashboard 插件页开关（审批卡裁决）或 CLI `plugin install --allow-unsigned` 显式接受，或 `plugin sign` 签名后重试"
+                .into()
         }));
     }
     Ok(state)

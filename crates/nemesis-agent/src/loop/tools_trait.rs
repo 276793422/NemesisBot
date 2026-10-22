@@ -301,6 +301,14 @@ impl AgentLoop {
         }
     }
 
+    /// 工具接管层（2026-10-23）：按名摘出注册工具（Arc 所有权转移）——
+    /// 接管 wrapper 双态持有内置实例的前提（注册后 `Box` 已 `Arc::from`，
+    /// 唯一取回路径）。摘除后注册表短暂缺席，调用方须紧随 wrapper 注册
+    ///（[`Self::register_plugin_tool`] 同名回插）。非在册名返回 None。
+    pub fn take_tool(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.tools.write().remove(name)
+    }
+
     /// Return the number of registered tools.
     pub fn tool_count(&self) -> usize {
         self.tools.read().len()

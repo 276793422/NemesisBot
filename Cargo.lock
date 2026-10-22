@@ -5023,6 +5023,7 @@ dependencies = [
  "futures",
  "hex",
  "libloading 0.8.9",
+ "nemesis-config",
  "nemesis-security",
  "nemesis-types",
  "nemesis-utils",

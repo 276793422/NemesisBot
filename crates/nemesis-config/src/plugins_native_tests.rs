@@ -71,3 +71,60 @@ fn immediate_effect_only_eval() {
     assert!(!NativePluginId::PluginOnnx.immediate_effect());
     assert!(!NativePluginId::PluginWasm.immediate_effect());
 }
+
+#[test]
+fn legacy_file_migrated_on_first_read() {
+    let dir = temp_config_dir("migrate_read");
+    // 旧文件名在场（用户真实 home 的既有形态）
+    std::fs::write(
+        dir.join("plugins_native.json"),
+        r#"{"plugins":{"plugin_ui":{"enabled":false}}}"#,
+    )
+    .unwrap();
+    // 首读触发迁移：新名读出原内容，旧名消失
+    assert!(!load_enabled(&dir, NativePluginId::PluginUi));
+    assert!(plugins_native_config_path(&dir).exists());
+    assert!(!dir.join("plugins_native.json").exists(), "旧文件应已删除");
+    // 迁移后写入读路径照常
+    set_enabled(&dir, NativePluginId::PluginUi, true).unwrap();
+    assert!(load_enabled(&dir, NativePluginId::PluginUi));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn legacy_migration_on_write_preserves_content() {
+    let dir = temp_config_dir("migrate_write");
+    std::fs::write(
+        dir.join("plugins_native.json"),
+        r#"{"plugins":{"plugin_onnx":{"enabled":false}}}"#,
+    )
+    .unwrap();
+    // 未读过、直接写：迁移先行，写目标键后旧条目保留
+    set_enabled(&dir, NativePluginId::PluginUi, false).unwrap();
+    assert!(!load_enabled(&dir, NativePluginId::PluginUi));
+    assert!(
+        !load_enabled(&dir, NativePluginId::PluginOnnx),
+        "旧内容条目须随迁移保留"
+    );
+    assert!(!dir.join("plugins_native.json").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn legacy_file_discarded_when_new_name_present() {
+    let dir = temp_config_dir("migrate_both");
+    std::fs::write(
+        plugins_native_config_path(&dir),
+        r#"{"plugins":{"plugin_ui":{"enabled":false}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("plugins_native.json"),
+        r#"{"plugins":{"plugin_ui":{"enabled":true}}}"#,
+    )
+    .unwrap();
+    // 新名在场 = 权威；旧文件作废弃副本清掉，内容不被复活
+    assert!(!load_enabled(&dir, NativePluginId::PluginUi));
+    assert!(!dir.join("plugins_native.json").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}

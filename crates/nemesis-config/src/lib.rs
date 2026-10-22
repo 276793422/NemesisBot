@@ -11,6 +11,7 @@ use tracing::{error, info, warn};
 pub mod commands;
 pub mod credentials;
 pub mod hot_reload;
+pub mod plugin_wasm;
 pub mod plugins_native;
 pub mod provider_resolver;
 pub mod store;
@@ -5545,6 +5546,11 @@ mod vm_config_tests;
 // 损坏保守放行 / 即时生效标记。
 #[cfg(test)]
 mod plugins_native_tests;
+
+// wasm 插件开关（plugin_wasm）：缺省不加载 / fail-closed / 旧实例文件
+// 迁移 / RMW 语义。
+#[cfg(test)]
+mod plugin_wasm_tests;
 
 // HotReloader force_reload 语义（写方自刷新，绕过 mtime 检测）测试。
 #[cfg(test)]

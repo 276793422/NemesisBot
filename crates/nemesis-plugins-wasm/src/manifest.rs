@@ -106,6 +106,51 @@ pub struct PluginManifest {
     /// 实例配置声明（键 → 人读描述；x-secret 键不在此——凭据面分离）。
     #[serde(default)]
     pub config_schema: BTreeMap<String, String>,
+    /// 接管声明（内置工具名清单；2026-10-23 工具接管层）。仅 `kind=tool`
+    /// 可声明；deny-list 命中 parse 拒绝。声明 = 安装审批卡 + wasm.list
+    /// 徽标双留痕，激活还要过「目标在 loop 注册表在场」闸（agent_factory 8d）。
+    #[serde(default)]
+    pub takeover: Vec<String>,
+}
+
+/// 接管 deny-list（宿主特权语义工具——沙盒内 guest 无法诚实兑现，接管
+/// 一律拒绝）。与 `nemesis_agent::MOVE_TOOLS`（remote_executor_tool.rs）+
+/// 进程/注册表/系统面同源；两清单相等性由 nemesisbot plugin_bridge tests
+/// 的 drift 断言钉住（本 crate 依赖方向无 nemesis-agent，只能字面复制）。
+pub const TAKEOVER_DENIED_TOOLS: &[&str] = &[
+    // nemesis-agent::MOVE_TOOLS（执行体分离高危族——exec/脚本/文件写面/搜索）
+    "exec",
+    "run_script",
+    "run_checks",
+    "read_file",
+    "write_file",
+    "list_dir",
+    "edit_file",
+    "multiedit",
+    "append_file",
+    "delete_file",
+    "move_file",
+    "copy_file",
+    "create_dir",
+    "delete_dir",
+    "grep",
+    "git",
+    // 进程/注册表/系统面（CRITICAL/宿主特权）
+    "process_spawn",
+    "process_kill",
+    "process_exec",
+    "process_list",
+    "registry_read",
+    "registry_write",
+    "system_shutdown",
+    "system_info",
+    "hardware_i2c",
+];
+
+/// `builtin` 是否在接管 deny-list（宿主特权语义，沙盒内不可诚实兑现）。
+#[must_use]
+pub fn takeover_denied(builtin: &str) -> bool {
+    TAKEOVER_DENIED_TOOLS.contains(&builtin)
 }
 
 /// kind 的 serde 中介（字符串 ↔ 枚举；错误信息可读）。
@@ -269,6 +314,32 @@ impl PluginManifest {
                 return Err(PluginError::Manifest(
                     "kind=policy forbids permissions.x-secret (policy components hold no credentials)".into(),
                 ));
+            }
+        }
+        // 接管声明校验（2026-10-23 工具接管层）：仅 tool kind；目标名形态 +
+        // deny-list（宿主特权语义——沙盒内 guest 无法诚实兑现，接管一律拒）。
+        if !self.takeover.is_empty() {
+            if *self.kind != PluginKind::Tool {
+                return Err(PluginError::Manifest(
+                    "takeover requires kind=tool (only tool components can take over built-in interfaces)".into(),
+                ));
+            }
+            for t in &self.takeover {
+                if t.is_empty() || t.len() > 64 {
+                    return Err(PluginError::Manifest(format!(
+                        "invalid takeover target (1-64 chars): {t:?}"
+                    )));
+                }
+                if t.starts_with(crate::PLUGIN_TOOL_PREFIX) {
+                    return Err(PluginError::Manifest(format!(
+                        "invalid takeover target '{t}': plugin namespace is isolated by design (builtin names only)"
+                    )));
+                }
+                if takeover_denied(t) {
+                    return Err(PluginError::Manifest(format!(
+                        "takeover of '{t}' is denied: host-privileged semantics cannot be honestly honored in-sandbox"
+                    )));
+                }
             }
         }
         Ok(())

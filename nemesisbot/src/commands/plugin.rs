@@ -2,10 +2,12 @@
 //!
 //! CLI 进程是**磁盘 only** 操作者：install/upgrade 走完整九步装配漏斗
 //! （CLI 无审批卡 UI → 必须 `--yes` 显式同意；无病毒扫描引擎 → 第④步
-//! 诚实跳过并注记），产物落盘（plugins/<slug>/ + lockfile）；enable/
-//! disable 直接改写实例配置文件 `config/plugins/<slug>.json`。运行中的
-//! gateway 不感知这些变化——重启后经 load_all / apply_enabled_from_file
-//! 生效；运行期安装/启停走 Dashboard（WSAPI `plugins.wasm.*`）。
+//! 诚实跳过并注记），产物落盘（exe 旁 `plugins_wasm/<slug>/` + lockfile）
+//! 且**默认不加载**（2026-10-22 纪律：安装 ≠ 加载——开关记录写入
+//! `<workspace>/config/config.plugin.wasm.json`，新装一律缺省关）；enable/
+//! disable 改写同一开关文件（CLI 进程不装配——运行中的 gateway 重启后按
+//! 开关装载/摘除生效；运行期启停走 Dashboard WSAPI `wasm.enable|disable`，
+//! 热生效）。
 //!
 //! 签名（Ed25519，与 trust.rs 验签同源）：manifest 剥根级 `signature`
 //! 表后的规范字节做签名；`plugin trust` 把签名者公钥写入 plugin 专用
@@ -174,30 +176,49 @@ fn cli_installer(
     ))
 }
 
-/// enable/disable 的磁盘形态：经 PluginManager.set_enabled_file_only 单一
-/// 真相源（valid_slug 校验 + lockfile 幽灵配置拒绝 + config_io 互斥 + 原子
-/// 写，保留 entries）——CLI 不再裸写实例配置文件（2026-09-29 交付审查 3.2：
-/// 与 WSAPI/gateway 共用同一写路径，半写损坏面收敛到一处）。
-fn set_enabled_on_disk(home: &std::path::Path, slug: &str, on: bool) -> Result<()> {
+/// enable/disable 的磁盘形态：`config.plugin.wasm.json` 单一真相源
+/// （nemesis_config::plugin_wasm 原子写）。CLI 进程不装配——只写加载
+/// 开关；运行中的 gateway 重启后按开关装载。开着不存在的载荷 = 幽灵
+/// 配置，诚实拒绝（2026-09-29 交付审查 3.2 延续：CLI 与 WSAPI/重启装载
+/// 共用同一真相源，不再旁路）。
+fn set_switch_on_disk(home: &std::path::Path, slug: &str, on: bool) -> Result<()> {
+    if !nemesis_plugins_wasm::manifest::valid_slug(slug) {
+        anyhow::bail!("非法 slug: {slug}");
+    }
     let manager = cli_manager(home)?;
-    manager.set_enabled_file_only(slug, on).map_err(err_msg)?;
-    Ok(())
+    if on && !manager.plugin_dir(slug).join("plugin.toml").is_file() {
+        anyhow::bail!(
+            "插件未安装: {slug}（{} 下无载荷；`plugin install <dir>` 或手工拷入后重试）",
+            manager.plugins_dir().display()
+        );
+    }
+    nemesis_config::plugin_wasm::set_enabled(&common::workspace_path(home).join("config"), slug, on)
+        .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
-fn print_install_result(reg: &nemesis_plugins_wasm::RegisteredPlugin) {
-    println!("  版本       : {}", reg.manifest.version);
-    println!("  kind       : {}", reg.manifest.kind.as_str());
-    println!("  信任       : {}", reg.trust.as_str());
-    if let Some(meta) = reg.tool_meta.as_ref() {
+/// 安装/升级结果展示（安装 ≠ 加载：registered 非空 = 升级且开关原开——
+/// CLI 进程注册是一次性管理器，运行中 gateway 重启后装载新版）。
+fn print_install_result(outcome: &nemesis_plugins_wasm::install::InstallOutcome) {
+    println!("  版本       : {}", outcome.version);
+    println!("  信任       : {}", outcome.trust.as_str());
+    if let Some(reg) = outcome.registered.as_ref()
+        && let Some(meta) = reg.tool_meta.as_ref()
+    {
         println!("  工具       : {}", meta.name);
         if !meta.operation_type.is_empty() {
             println!("  操作声明   : {}", meta.operation_type);
         }
     }
-    println!(
-        "  注意       : CLI 安装仅落盘（磁盘 only）；运行中的 gateway 需重启后装载。\
-         运行期安装请走 Dashboard。"
-    );
+    if outcome.registered.is_some() {
+        println!(
+            "  状态       : 开关原开，载荷已更新；运行中 gateway 重启后装载新版（重启前仍跑旧版）"
+        );
+    } else {
+        println!(
+            "  状态       : 已安装，默认不加载——`plugin enable {}` 或 Dashboard 插件页开加载开关",
+            outcome.slug
+        );
+    }
 }
 
 /// 签名：剥根级 signature 表 → 规范字节签名 → 以 toml_edit 回填 signature
@@ -234,12 +255,12 @@ pub async fn run(local: bool, action: PluginAction) -> Result<()> {
             yes,
         } => {
             let installer = cli_installer(&home, yes)?;
-            let reg = installer
+            let outcome = installer
                 .install(std::path::Path::new(&source_dir), allow_unsigned)
                 .await
                 .map_err(err_msg)?;
-            println!("安装完成：{}", reg.manifest.slug);
-            print_install_result(&reg);
+            println!("安装完成：{}", outcome.slug);
+            print_install_result(&outcome);
         }
         PluginAction::Upgrade {
             source_dir,
@@ -247,12 +268,12 @@ pub async fn run(local: bool, action: PluginAction) -> Result<()> {
             yes,
         } => {
             let installer = cli_installer(&home, yes)?;
-            let reg = installer
+            let outcome = installer
                 .install(std::path::Path::new(&source_dir), allow_unsigned)
                 .await
                 .map_err(err_msg)?;
-            println!("升级完成（漏斗重跑，数据目录保留）：{}", reg.manifest.slug);
-            print_install_result(&reg);
+            println!("升级完成（漏斗重跑，数据目录保留）：{}", outcome.slug);
+            print_install_result(&outcome);
         }
         PluginAction::Uninstall { slug } => {
             let installer = cli_installer(&home, true)?;
@@ -267,21 +288,20 @@ pub async fn run(local: bool, action: PluginAction) -> Result<()> {
             }
         }
         PluginAction::Enable { slug } => {
-            set_enabled_on_disk(&home, &slug, true)?;
+            set_switch_on_disk(&home, &slug, true)?;
             println!(
-                "已启用 {slug}（实例配置落盘；运行中 gateway 重启后生效，运行期启停请走 Dashboard）"
+                "已启用 {slug}（config.plugin.wasm.json 落盘；运行中 gateway 重启后装载生效，运行期启停请走 Dashboard）"
             );
         }
         PluginAction::Disable { slug } => {
-            set_enabled_on_disk(&home, &slug, false)?;
+            set_switch_on_disk(&home, &slug, false)?;
             println!(
-                "已禁用 {slug}（实例配置落盘；运行中 gateway 重启后生效，运行期启停请走 Dashboard）"
+                "已禁用 {slug}（config.plugin.wasm.json 落盘；运行中 gateway 重启后摘除生效，运行期启停请走 Dashboard）"
             );
         }
         PluginAction::List => {
-            let path = common::workspace_path(&home)
-                .join("plugins")
-                .join("lockfile.json");
+            let manager = cli_manager(&home)?;
+            let path = manager.plugins_dir().join("lockfile.json");
             let raw = match std::fs::read_to_string(&path) {
                 Ok(s) => s,
                 Err(_) => {
@@ -295,9 +315,13 @@ pub async fn run(local: bool, action: PluginAction) -> Result<()> {
                 println!("lockfile 为空（尚未安装任何插件）");
                 return Ok(());
             }
+            let switches = nemesis_config::plugin_wasm::load_switches(
+                &common::workspace_path(&home).join("config"),
+            );
+            let enabled_of = |slug: &str| switches.get(slug).is_some_and(|sw| sw.enabled);
             let list_head = format!(
-                "{:<24} {:<12} {:<20} {:<16} INSTALLED_AT",
-                "SLUG", "VERSION", "TRUST", "SIGNED_BY"
+                "{:<24} {:<12} {:<20} {:<8} {:<16} INSTALLED_AT",
+                "SLUG", "VERSION", "TRUST", "ENABLED", "SIGNED_BY"
             );
             println!("{list_head}");
             for (slug, e) in &lf.plugins {
@@ -314,10 +338,19 @@ pub async fn run(local: bool, action: PluginAction) -> Result<()> {
                     e.signed_by.clone()
                 };
                 println!(
-                    "{:<24} {:<12} {:<20} {:<16} {}",
-                    slug, e.version, e.trust, signer, ts
+                    "{:<24} {:<12} {:<20} {:<8} {:<16} {}",
+                    slug,
+                    e.version,
+                    e.trust,
+                    if enabled_of(slug) { "on" } else { "off" },
+                    signer,
+                    ts
                 );
             }
+            println!(
+                "载荷目录 : {}（ENABLED=on 重启装载；运行期启停走 Dashboard）",
+                manager.plugins_dir().display()
+            );
         }
         PluginAction::Info { slug } => {
             if !nemesis_plugins_wasm::manifest::valid_slug(&slug) {
@@ -377,10 +410,15 @@ pub async fn run(local: bool, action: PluginAction) -> Result<()> {
                     println!("manifest    : 载荷缺失（lockfile 有条目但盘上 manifest 不可读）")
                 }
             }
-            let cfg = manager.get_config(&slug);
-            println!("enabled     : {}", cfg.enabled);
-            for (k, v) in &cfg.entries {
-                println!("  config {k} = {v}");
+            let sw = manager.get_switch(&slug);
+            println!("loaded      : {}", manager.get(&slug).is_some());
+            println!("enabled     : {}（config.plugin.wasm.json）", sw.enabled);
+            for (k, v) in &sw.config {
+                let shown = match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                println!("  config {k} = {shown}");
             }
         }
         PluginAction::Sign { manifest, key } => {

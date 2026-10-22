@@ -109,16 +109,26 @@ async fn installed_manager()
     };
     common::ensure_host_dll();
     let ws = tempfile::tempdir()?;
-    let mgr = Arc::new(PluginManager::new(
+    let mgr = Arc::new(PluginManager::new_with_dirs(
         ws.path(),
+        &ws.path().join("plugins_wasm"),
         PluginLimits::default(),
         Arc::new(NoSecrets),
     )?);
     let tmp = tempfile::tempdir()?;
     let src = stage_plugin(tmp.path(), POLICY_SAMPLE_TOML.to_string(), &wasm)?;
     let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
-    let reg = installer.install(&src, true).await?;
-    assert_eq!(reg.trust, PluginTrustState::ReviewRequired);
+    let outcome = installer.install(&src, true).await?;
+    assert_eq!(outcome.trust, PluginTrustState::ReviewRequired);
+    assert!(
+        outcome.registered.is_none(),
+        "新装默认不加载（2026-10-22 语义）"
+    );
+    // 测试语义 =「用户已开开关」：装配后策略点才可路由。
+    installer
+        .set_enabled("policy-sample", true)
+        .await?
+        .expect("loaded");
     Ok((ws, mgr))
 }
 
@@ -337,8 +347,10 @@ async fn policy_disable_reenable_fallback_chain() {
         "args": r#"{"cmd":"echo __REJECT__"}"#,
     });
 
-    // 禁用 = 摘接管（NotAvailable → 宿主桥回退内置哨兵）。
-    mgr.set_enabled_plugin("policy-sample", false)
+    // 禁用 = 摘注册摘接管（NotAvailable → 宿主桥回退内置哨兵）。
+    let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
+    installer
+        .set_enabled("policy-sample", false)
         .await
         .expect("disable");
     let err = mgr
@@ -351,10 +363,12 @@ async fn policy_disable_reenable_fallback_chain() {
     );
     assert!(mgr.policy_owner(PolicyPoint::Validation).is_none());
 
-    // 重启用 = 重接管。
-    mgr.set_enabled_plugin("policy-sample", true)
+    // 重启用 = 重装载重接管（lockfile 有记录，load_one 原路）。
+    installer
+        .set_enabled("policy-sample", true)
         .await
-        .expect("enable");
+        .expect("enable")
+        .expect("loaded");
     let out = mgr
         .call_policy_point(PolicyPoint::Validation, input.to_string())
         .await

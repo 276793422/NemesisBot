@@ -168,7 +168,12 @@ fn manager_with(limits: PluginLimits, secrets: Arc<dyn SecretResolver>) -> Arc<P
     let ws = tempfile::tempdir().expect("tempdir");
     let ws_path = ws.path().to_path_buf();
     std::mem::forget(ws); // 用例生命周期 = 进程生命周期；TempDir 泄漏免清理竞态
-    Arc::new(PluginManager::new(&ws_path, limits, secrets).expect("manager"))
+    // 测试形态 = 目录注入（生产 `new` 解析 exe 旁真实 plugins_wasm/，
+    // 并行用例共享真实目录会互相删载荷/摘注册——串扰根因）。
+    Arc::new(
+        PluginManager::new_with_dirs(&ws_path, &ws_path.join("plugins_wasm"), limits, secrets)
+            .expect("manager"),
+    )
 }
 
 async fn install_adversarial(
@@ -178,9 +183,22 @@ async fn install_adversarial(
     let tmp = tempfile::tempdir().expect("stage tmp");
     let src = stage_plugin(tmp.path(), ADVERSARIAL_TOML.to_string(), wasm).expect("stage");
     let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
-    let reg = installer.install(&src, true).await?;
-    drop(tmp); // 安装已把载荷复制进 plugins/<slug>/，staging 目录可弃
-    assert_eq!(reg.trust, PluginTrustState::ReviewRequired, "无签名 = 待审");
+    let outcome = installer.install(&src, true).await?;
+    drop(tmp); // 安装已把载荷复制进 plugins_wasm/<slug>/，staging 目录可弃
+    assert_eq!(
+        outcome.trust,
+        PluginTrustState::ReviewRequired,
+        "无签名 = 待审"
+    );
+    assert!(
+        outcome.registered.is_none(),
+        "新装默认不加载（2026-10-22 语义）"
+    );
+    // 用例语义 =「用户已开开关」。
+    installer
+        .set_enabled("adversarial", true)
+        .await?
+        .expect("loaded");
     Ok(uninstall_guard::Guard {
         mgr: mgr.clone(),
         slug: "adversarial".into(),
@@ -343,6 +361,12 @@ async fn install_observer(mgr: &Arc<PluginManager>, wasm: &Path) {
         .install(&src, true)
         .await
         .expect("install observer");
+    // 测试语义 =「用户已开开关」（2026-10-22：安装 ≠ 加载）。
+    installer
+        .set_enabled("activity-log", true)
+        .await
+        .expect("enable observer")
+        .expect("observer loaded");
     drop(tmp);
 }
 
