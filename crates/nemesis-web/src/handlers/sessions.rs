@@ -789,7 +789,13 @@ pub(crate) fn wake_due_sessions() -> usize {
             None => "⏰ 会话暂停已到期，自动恢复".to_string(),
         };
         nemesis_agent::chat_log::append_chat_log(&session_key, "system", &content);
-        crate::chat_event_log::record(sid, "system", &content, None, None);
+        // BUG-HUNT R9：record 键空间契约是完整会话键（send_to_session
+        // 「记录键优先会话键（跨连接稳定）」、record_tool「与 send_to_session
+        // 同域」），chat.sync 按完整键重建桶查。此前传裸 sid——恢复行落进
+        // 无人查询的孤儿桶，断线窗口内唤醒的会话重连补拉看不到此行
+        // （jsonl 有、补拉无）。publish_activity 内部剥前缀还原裸 sid，
+        // chat.activity 信号形态不变。
+        crate::chat_event_log::record(&session_key, "system", &content, None, None);
         crate::chat_event_log::publish_global_event(
             "session.updated",
             serde_json::json!({
