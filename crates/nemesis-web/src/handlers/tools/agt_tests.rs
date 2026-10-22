@@ -34,6 +34,7 @@ async fn agt_tools_with_session_id_resolves_loop_and_bails_without_one() {
         forge: None,
         agent_loop: std::sync::Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
+        quic_relay: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,

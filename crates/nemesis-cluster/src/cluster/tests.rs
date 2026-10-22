@@ -3547,6 +3547,209 @@ fn test_discovered_node_relay_qualified_overlay_address_pooling() {
     );
 }
 
+// rendezvous 名册合并（QUIC 中继自动发现 2026-10-22）：成员经
+// handle_discovered_node_ex 单一漏斗入册——via-relay 哨兵 tag 追加不替换、
+// `iroh:<hex>@<relay>` 完整地址作 primary（iroh 形态禁拼 :rpc_port）、裸
+// `iroh:<hex>` 身份候选入池；自己按 iroh_id 过滤。身份用真实 iroh keypair
+// （valid_iroh_id 走 25519 公钥校验，任意 hex 会被静默丢弃）。
+#[cfg(feature = "cluster-roaming")]
+#[test]
+fn test_rendezvous_merge_via_relay_tag_self_filter_and_address_forms() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+    let self_hex = crate::roaming::endpoint::RoamingIdentity::generate().node_id_hex();
+    let peer_hex = crate::roaming::endpoint::RoamingIdentity::generate().node_id_hex();
+    let relay_url = "http://relay.example.com:3340";
+    let member = |node_id: &str, iroh: String| crate::roaming::rendezvous::RendezvousMember {
+        node_id: node_id.to_string(),
+        name: format!("名册-{node_id}"),
+        role: "worker".to_string(),
+        category: "development".to_string(),
+        node_type: "agent".to_string(),
+        rpc_port: 50591,
+        tags: vec!["dev".to_string()],
+        professions: vec!["dev:cpp".to_string()],
+        tier: Some("big".to_string()),
+        iroh_id: iroh,
+        build: "aeb1221c".to_string(),
+        relay_url: relay_url.to_string(),
+        features: vec!["cluster".to_string()],
+        last_seen_ms: 100,
+    };
+
+    let members = vec![
+        member("self-node", self_hex.clone()),
+        member("relay-peer", peer_hex.clone()),
+    ];
+    let merged = cluster.merge_rendezvous_members(&members, &self_hex, relay_url);
+    assert_eq!(merged, 1, "自己按 iroh_id 过滤，只有对端入册");
+    assert!(cluster.registry.get("self-node").is_none(), "自己不得入册");
+
+    let node = cluster
+        .registry
+        .get("relay-peer")
+        .expect("via-relay 成员入册");
+    assert!(
+        node.tags.iter().any(|t| t == "via-relay"),
+        "via-relay 哨兵必须在场: {:?}",
+        node.tags
+    );
+    assert!(
+        node.tags.iter().any(|t| t == "dev"),
+        "原有 tags 追加不替换: {:?}",
+        node.tags
+    );
+    let full = format!("iroh:{peer_hex}@{relay_url}");
+    assert_eq!(
+        node.base.address, full,
+        "完整拨号地址作 primary（iroh 形态禁拼 :rpc_port）"
+    );
+    assert!(
+        node.addresses.contains(&format!("iroh:{peer_hex}")),
+        "裸 iroh 身份候选入池（valid_iroh_id 通路）: {:?}",
+        node.addresses
+    );
+}
+
+// 稳态纪律：content_eq 不含 last_seen——名册每 30s 重同步仅 last_seen 增长
+// 时不得反复判变（不刷日志/事件）；首见判变一次，之后恒静默。
+#[cfg(feature = "cluster-roaming")]
+#[test]
+fn test_rendezvous_merge_steady_state_no_churn() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+    let self_hex = crate::roaming::endpoint::RoamingIdentity::generate().node_id_hex();
+    let peer_hex = crate::roaming::endpoint::RoamingIdentity::generate().node_id_hex();
+    let relay_url = "http://relay.example.com:3340";
+    let mk = |seen: u64| crate::roaming::rendezvous::RendezvousMember {
+        node_id: "relay-peer".to_string(),
+        name: "名册-relay-peer".to_string(),
+        role: "worker".to_string(),
+        category: "development".to_string(),
+        node_type: "agent".to_string(),
+        rpc_port: 50591,
+        tags: vec!["dev".to_string()],
+        professions: Vec::new(),
+        tier: None,
+        iroh_id: peer_hex.clone(),
+        build: String::new(),
+        relay_url: relay_url.to_string(),
+        features: vec!["cluster".to_string()],
+        last_seen_ms: seen,
+    };
+
+    let first =
+        cluster.merge_rendezvous_members(std::slice::from_ref(&mk(100)), &self_hex, relay_url);
+    assert_eq!(first, 1, "首见判变一次");
+    let steady =
+        cluster.merge_rendezvous_members(std::slice::from_ref(&mk(200)), &self_hex, relay_url);
+    assert_eq!(steady, 0, "仅 last_seen 增长 = 无变更（稳态不刷）");
+}
+
+// ---------------------------------------------------------------------------
+// 拨号路径观测查询面（打洞直连 / 经中继转发——nodes.list roamingPath 数据源）
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "cluster-roaming")]
+#[test]
+fn roaming_path_of_without_endpoint_is_none() {
+    let cluster = Cluster::new(make_config());
+    // 未装配漫游端点（roaming.enabled 关 / 装配失败）：查询诚实 None。
+    assert_eq!(cluster.roaming_path_of("any-peer"), None);
+}
+
+#[cfg(feature = "cluster-roaming")]
+#[tokio::test]
+async fn roaming_path_of_reads_endpoint_observation_slot() {
+    use crate::roaming::endpoint::{RoamingEndpoint, RoamingIdentity, RoamingProtocolHandler};
+    use iroh::EndpointAddr;
+    let cluster = Cluster::new(make_config());
+    let server_id = RoamingIdentity::generate();
+    let client_id = RoamingIdentity::generate();
+    let peer_hex = server_id.node_id_hex();
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "roam-peer".into(),
+            name: "roam-worker".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: format!("iroh:{peer_hex}@http://42.193.96.45:3340"),
+            category: "development".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status: NodeStatus::Online,
+        capabilities: Vec::new(),
+        tags: vec!["via-relay".into()],
+        addresses: vec![format!("iroh:{peer_hex}")],
+        professions: Vec::new(),
+        tier: None,
+        agents: Vec::new(),
+        runtime_backend: None,
+        node_type: "agent".into(),
+        build: String::new(),
+    });
+
+    // 无端点装配：None（诚实降级）。
+    assert_eq!(cluster.roaming_path_of("roam-peer"), None);
+
+    // 装配 client 端点进 cluster 槽 + 对端 echo server（Minimal 预设真连接
+    // ——观察任务拨号后自动开跑，查询面读的是真实观测非 mock）。
+    let ep = std::sync::Arc::new(
+        RoamingEndpoint::bind_direct(&client_id, false)
+            .await
+            .expect("client bind"),
+    );
+    *cluster.roaming_endpoint.lock() = Some(ep.clone());
+    let server = RoamingEndpoint::bind_direct(&server_id, true)
+        .await
+        .expect("server bind");
+    server
+        .serve(RoamingProtocolHandler::echo())
+        .await
+        .expect("server serve");
+    let port = server
+        .direct_addrs()
+        .iter()
+        .find(|a| a.is_ipv4())
+        .map(|a| a.port())
+        .expect("server 应有 IPv4 绑定");
+    let addr = EndpointAddr::new(server_id.node_id())
+        .with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], port)));
+    let (_send, _recv) = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        ep.connect_stream_addr(addr),
+    )
+    .await
+    .expect("connect 整体超时（测试级）")
+    .expect("connect 应成功");
+
+    // 观察任务首轮快照 ≤2s；loopback Minimal 无中继 → direct。
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut observed = None;
+    while tokio::time::Instant::now() < deadline {
+        if let Some(p) = cluster.roaming_path_of("roam-peer") {
+            observed = Some(p);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        observed.as_deref(),
+        Some("direct"),
+        "查询面应读出观察槽的 direct 观测"
+    );
+
+    // 纯 LAN 节点（无 iroh 地址）：None。
+    let mut lan = cluster.registry.get("roam-peer").expect("已入册");
+    lan.base.id = "lan-peer".into();
+    lan.base.address = "10.0.0.9:9000".into();
+    lan.addresses = Vec::new();
+    cluster.register_node(lan);
+    assert_eq!(cluster.roaming_path_of("lan-peer"), None);
+
+    ep.shutdown().await;
+    server.shutdown().await;
+}
+
 #[test]
 fn test_discovered_node_empty_addresses_unknown_peer_still_registered_bridge_semantics() {
     let cluster = Cluster::new(make_config());

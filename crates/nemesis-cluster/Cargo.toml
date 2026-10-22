@@ -34,15 +34,19 @@ aes-gcm = { workspace = true }
 toml = { workspace = true }
 # A1 iroh 跨网 P2P 叠加层（feature=cluster-roaming）：QUIC 自证端点 + 中继打洞。
 iroh = { workspace = true, optional = true }
-# iroh-relay：server 面专用（roaming-relay feature）。client 面类型
+# iroh-relay：server 面专用（quic-relay feature）。client 面类型
 # （RelayUrl/RelayConfig/RelayMap）全部经 iroh 根 re-export 可命名
 # （lib.rs:282-290），cluster-roaming 单开时零直依赖零编译增量；server 面
-# （rcgen/ACME/tokio-websockets 等编译增量）只随 roaming-relay 进编译。
+# （rcgen/ACME/tokio-websockets 等编译增量）只随 quic-relay 进编译。
 iroh-relay = { workspace = true, optional = true }
 # QUIC 中继服务器证书自签（rcgen）+ rustls ServerConfig 组装——两 crate 已在
 # iroh-relay server 依赖树内，直接声明仅为可命名。
 rcgen = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
+# rendezvous 名册客户端（register/members HTTP 往返；cluster-roaming）。
+reqwest = { workspace = true, optional = true }
+# rendezvous 名册服务端（axum 注册表两端点；quic-relay）。
+axum = { workspace = true, optional = true }
 # roaming 密钥 hex 编解码（node_id/seed 的文本形态）。
 hex = { workspace = true }
 if-addrs = "0.13"
@@ -66,11 +70,13 @@ windows-sys = { version = "0.59", features = [
 [features]
 # A1 iroh 跨网 P2P 叠加层（2026-10-18）：默认关——LAN 用户零新依赖；开启后
 # endpoint/trust/bridge 三模块进编译，peer_chat/探针支持 `iroh:<node_id>` 地址。
-cluster-roaming = ["dep:iroh"]
+# 2026-10-22 rendezvous：+= reqwest（名册客户端 register/members 往返）。
+cluster-roaming = ["dep:iroh", "dep:reqwest"]
 # QUIC 中继服务器（2026-10-21）：自建 iroh 中继回落服务器（内网穿透）。
 # 隐含 cluster-roaming（中继服务于叠加层，主从关系）；server 面编译增量
-# （rcgen/ACME/tokio-websockets 等）只在开 roaming-relay 时进编译。
-roaming-relay = ["cluster-roaming", "iroh-relay/server", "dep:rcgen", "dep:rustls"]
+# （rcgen/ACME/tokio-websockets 等）只在开 quic-relay 时进编译。
+# 2026-10-22 rendezvous：+= axum（成员注册表两端点；传输面不依赖它）。
+quic-relay = ["cluster-roaming", "iroh-relay/server", "dep:rcgen", "dep:rustls", "dep:axum"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

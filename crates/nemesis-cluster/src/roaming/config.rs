@@ -1,17 +1,14 @@
 //! roaming 段配置解析（config.cluster.json 顶层 `roaming` 对象）。
 //!
 //! 单一真相源：[`resolved_roaming`] 纯函数——缺文件 / 坏 JSON / 缺段 /
-//! 字段类型不符一律逐字段落默认值（照 `Cluster::roaming_enabled_in_config`
+//! 字段类型不符一律落默认值（照 `Cluster::roaming_enabled_in_config`
 //! 的严格语义惯例：`enabled` 必须是严格 JSON bool，缺省恒 false）。
-//! 旧配置（2026-10-18 形态，只有 `enabled` 键）兼容：缺新键 = 默认值，
-//! `enabled` 语义字节不变。
 //!
-//! 键语义（完整表见 docs/PLAN/2026-10-21_quic-relay-server.md §3.2）：
-//! - `roaming.enabled`：叠加层总开关；
-//! - `roaming.relay_url`：**客户端**自建中继地址；空 = n0 公共中继（现行为）；
-//! - `roaming.relay_token`：**客户端**中继访问令牌（服务端 SharedToken 配对；
-//!   仅 relay_url 非空时有意义——n0 公共中继不吃本 token）；
-//! - `roaming.relay.*`：**服务端**自建中继设置（enabled/端口/tls 档/token）。
+//! 2026-10-23 与 QUIC 解耦：段内**只剩 `enabled` 一个键**（叠加层总开关）。
+//! 客户端三键（relay_url/relay_token/rendezvous_url）与服务端 `relay` 段
+//! 全部迁 `config.quic.json`（[`super::quic_config`]）——QUIC 的配置不丢在
+//! 集群里，集群只是 QUIC 的一个消费方。旧键残留在 cluster.json 中被本解析
+//! 忽略（首读迁移只拷贝不删除，无害遗留）。
 
 use std::path::Path;
 
@@ -19,8 +16,11 @@ use std::path::Path;
 pub const DEFAULT_RELAY_HTTP_PORT: u16 = 3340;
 /// QUIC relay transport 默认端口（iroh-relay 上游默认）。
 pub const DEFAULT_RELAY_QUIC_PORT: u16 = 7842;
+/// rendezvous 成员注册表默认端口（= http_port + 1 惯例；iroh relay 的 HTTP
+/// server 固定路由挂不了自定义路由，注册表独立监听）。
+pub const DEFAULT_REGISTRY_PORT: u16 = 3341;
 
-/// relay transport TLS 档（`roaming.relay.tls`）。
+/// relay transport TLS 档（config.quic.json `relay.tls`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RelayTls {
     /// 首启自签证书，落 `<workspace>/cluster/relay/`，存在即复用（默认档）。
@@ -44,7 +44,7 @@ impl RelayTls {
     }
 }
 
-/// 自建中继服务端设置（`roaming.relay` 段）。
+/// 自建中继服务端设置（config.quic.json `relay` 段）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelaySettings {
     /// 随 gateway 进程内启动自建中继（独立命令 `quic relay` 不受此闸约束）。
@@ -59,6 +59,9 @@ pub struct RelaySettings {
     pub tls: RelayTls,
     /// 访问令牌（非空 = SharedToken 访问控制；空 = AllowAll）。
     pub token: String,
+    /// rendezvous 成员注册表监听端口（默认 3341；0=关——纯传输形态）。
+    /// 注册表随中继进程拉起（token 非空才生效——无门禁的名册不设防）。
+    pub registry_port: u16,
     /// Manual 档证书路径（用户自备 pem）。
     pub cert_path: String,
     /// Manual 档私钥路径。
@@ -74,29 +77,26 @@ impl Default for RelaySettings {
             external_host: String::new(),
             tls: RelayTls::SelfSigned,
             token: String::new(),
+            registry_port: DEFAULT_REGISTRY_PORT,
             cert_path: String::new(),
             key_path: String::new(),
         }
     }
 }
 
-/// roaming 叠加层配置（config.cluster.json 顶层 `roaming` 段解析产物）。
+/// roaming 叠加层开关（config.cluster.json 顶层 `roaming` 段解析产物）。
+///
+/// 2026-10-23 起只剩 enabled——QUIC 客户端/服务端配置全部迁
+/// `config.quic.json`（[`super::quic_config`]）。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RoamingOverlayConfig {
     /// 叠加层总开关（严格 JSON bool；与 `roaming_enabled_in_config` 同源）。
     pub enabled: bool,
-    /// 客户端自建中继地址（如 `http://vps.example.com:3340`）；空 = n0 公共中继。
-    pub relay_url: String,
-    /// 客户端中继访问令牌（与自建中继服务端 `relay.token` 配对；relay_url
-    /// 空（n0 公共中继）时无意义）。
-    pub relay_token: String,
-    /// 服务端自建中继设置。
-    pub relay: RelaySettings,
 }
 
 /// 解析 config.cluster.json 顶层 `roaming` 段（纯函数，零副作用）。
 ///
-/// 任何解析失败（缺文件 / 坏 JSON / 缺段 / 字段类型不符）逐字段落默认。
+/// 任何解析失败（缺文件 / 坏 JSON / 缺段 / 字段类型不符）落默认。
 pub fn resolved_roaming(config_path: &Path) -> RoamingOverlayConfig {
     let raw = std::fs::read_to_string(config_path).ok();
     let cfg = raw
@@ -112,24 +112,27 @@ pub(crate) fn parse_roaming_value(cfg: Option<&serde_json::Value>) -> RoamingOve
         return out;
     };
     out.enabled = strict_bool(roaming.get("enabled"));
-    out.relay_url = str_field(roaming.get("relay_url"));
-    out.relay_token = str_field(roaming.get("relay_token"));
+    out
+}
 
-    let Some(relay) = roaming.get("relay") else {
-        return out;
-    };
-    out.relay.enabled = strict_bool(relay.get("enabled"));
-    out.relay.http_port = port_field(relay.get("http_port"), DEFAULT_RELAY_HTTP_PORT);
-    out.relay.quic_port = port_field(relay.get("quic_port"), DEFAULT_RELAY_QUIC_PORT);
-    out.relay.external_host = str_field(relay.get("external_host"));
-    out.relay.tls = relay
+/// 从 relay 段 JSON 解析 [`RelaySettings`]——config.rs 与 quic_config.rs 共用
+///（旧 `roaming.relay` 与新 `config.quic.json` 的 `relay` 段字段一一对应，
+/// 解析规则同源单一真相源）。
+pub(crate) fn parse_relay_settings(relay: &serde_json::Value) -> RelaySettings {
+    let mut out = RelaySettings::default();
+    out.enabled = strict_bool(relay.get("enabled"));
+    out.http_port = port_field(relay.get("http_port"), DEFAULT_RELAY_HTTP_PORT);
+    out.quic_port = port_field(relay.get("quic_port"), DEFAULT_RELAY_QUIC_PORT);
+    out.registry_port = port_field(relay.get("registry_port"), DEFAULT_REGISTRY_PORT);
+    out.external_host = str_field(relay.get("external_host"));
+    out.tls = relay
         .get("tls")
         .and_then(|v| v.as_str())
         .map(RelayTls::from_config_str)
         .unwrap_or_default();
-    out.relay.token = str_field(relay.get("token"));
-    out.relay.cert_path = str_field(relay.get("cert_path"));
-    out.relay.key_path = str_field(relay.get("key_path"));
+    out.token = str_field(relay.get("token"));
+    out.cert_path = str_field(relay.get("cert_path"));
+    out.key_path = str_field(relay.get("key_path"));
     out
 }
 
@@ -139,7 +142,7 @@ fn strict_bool(v: Option<&serde_json::Value>) -> bool {
 }
 
 /// 字符串字段（非字符串类型 → 空；首尾空白剥离）。
-fn str_field(v: Option<&serde_json::Value>) -> String {
+pub(crate) fn str_field(v: Option<&serde_json::Value>) -> String {
     v.and_then(|v| v.as_str())
         .map(str::trim)
         .unwrap_or("")

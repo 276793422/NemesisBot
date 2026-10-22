@@ -1,12 +1,12 @@
-//! roaming 段配置解析测试：六态（缺文件 / 坏 JSON / 缺段 / 旧形态兼容 /
-//! 全字段 / 类型不符逐字段降级）+ 与 `roaming_enabled_in_config` 同源一致性。
+//! roaming 段配置解析测试（2026-10-23 收缩后：段内只剩 `enabled` 一个键）：
+//! 缺文件 / 坏 JSON / 缺段 / enabled 六态类型语义 / 残留旧键忽略 / 与
+//! `roaming_enabled_in_config` 同源一致性。QUIC 键（relay_url/relay_token/
+//! rendezvous_url/relay 段）的解析测试在 [`super::super::quic_config::tests`]
+//!（迁移后新家）。
 
 use std::io::Write as _;
 
-use super::{
-    DEFAULT_RELAY_HTTP_PORT, DEFAULT_RELAY_QUIC_PORT, RelaySettings, RelayTls,
-    RoamingOverlayConfig, parse_roaming_value, resolved_roaming,
-};
+use super::{RoamingOverlayConfig, parse_roaming_value, resolved_roaming};
 use crate::cluster::Cluster;
 
 /// 落临时 config.cluster.json 并返回其路径。
@@ -18,7 +18,7 @@ fn write_cfg(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
 }
 
 // ---------------------------------------------------------------------------
-// 六态
+// 缺文件 / 坏 JSON / 缺段
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -42,106 +42,48 @@ fn missing_section_defaults() {
     assert_eq!(cfg, RoamingOverlayConfig::default());
 }
 
+// ---------------------------------------------------------------------------
+// enabled 键类型语义（严格 JSON bool）
+// ---------------------------------------------------------------------------
+
 #[test]
-fn legacy_shape_enabled_only_is_backward_compatible() {
-    // 2026-10-18 交付形态：roaming 段只有 enabled 键——缺新键 = 默认，
-    // enabled 语义字节不变（回归锁）。
-    let cfg = parse_roaming_value(Some(&serde_json::json!({
-        "roaming": { "enabled": true }
-    })));
+fn enabled_shape_honored() {
+    // 收缩后段内唯一键：显式 true / 显式 false / 缺键。
+    let cfg = parse_roaming_value(Some(&serde_json::json!({ "roaming": { "enabled": true } })));
     assert!(cfg.enabled);
-    assert_eq!(cfg.relay_url, "");
-    assert_eq!(cfg.relay_token, "");
-    assert_eq!(cfg.relay, RelaySettings::default());
+    let cfg = parse_roaming_value(Some(
+        &serde_json::json!({ "roaming": { "enabled": false } }),
+    ));
+    assert!(!cfg.enabled);
+    let cfg = parse_roaming_value(Some(&serde_json::json!({ "roaming": {} })));
+    assert!(!cfg.enabled, "缺键 = 默认关");
 }
 
 #[test]
-fn full_shape_all_fields_honored() {
+fn enabled_type_mismatch_falls_to_false() {
+    // 真值形态（"true" 字符串 / 1 数值）不等价于 JSON true。
+    let cfg = parse_roaming_value(Some(
+        &serde_json::json!({ "roaming": { "enabled": "true" } }),
+    ));
+    assert!(!cfg.enabled);
+    let cfg = parse_roaming_value(Some(&serde_json::json!({ "roaming": { "enabled": 1 } })));
+    assert!(!cfg.enabled);
+}
+
+#[test]
+fn legacy_relay_keys_are_ignored_after_decoupling() {
+    // 2026-10-23 解耦回归锁：cluster.json roaming 段残留旧 QUIC 键
+    //（首读迁移只拷贝不删除）= 无害遗留，解析忽略、enabled 语义不变。
     let cfg = parse_roaming_value(Some(&serde_json::json!({
         "roaming": {
             "enabled": true,
             "relay_url": "http://vps.example.com:3340",
-            "relay_token": "client-token",
-            "relay": {
-                "enabled": true,
-                "http_port": 3341,
-                "quic_port": 7843,
-                "external_host": "vps.example.com",
-                "tls": "manual",
-                "token": "s3cret",
-                "cert_path": "/etc/cert.pem",
-                "key_path": "/etc/key.pem"
-            }
+            "relay_token": "client-tok",
+            "rendezvous_url": "http://vps.example.com:3341",
+            "relay": { "enabled": true, "http_port": 3340, "token": "s3cret" }
         }
     })));
     assert!(cfg.enabled);
-    assert_eq!(cfg.relay_url, "http://vps.example.com:3340");
-    assert_eq!(cfg.relay_token, "client-token");
-    assert!(cfg.relay.enabled);
-    assert_eq!(cfg.relay.http_port, 3341);
-    assert_eq!(cfg.relay.quic_port, 7843);
-    assert_eq!(cfg.relay.external_host, "vps.example.com");
-    assert_eq!(cfg.relay.tls, RelayTls::Manual);
-    assert_eq!(cfg.relay.token, "s3cret");
-    assert_eq!(cfg.relay.cert_path, "/etc/cert.pem");
-    assert_eq!(cfg.relay.key_path, "/etc/key.pem");
-}
-
-#[test]
-fn type_mismatches_fall_back_per_field() {
-    let cfg = parse_roaming_value(Some(&serde_json::json!({
-        "roaming": {
-            "enabled": "true",
-            "relay_url": 42,
-            "relay": {
-                "enabled": 1,
-                "http_port": 99999,
-                "quic_port": -1,
-                "external_host": true,
-                "tls": 123,
-                "token": ["x"]
-            }
-        }
-    })));
-    // 逐字段落默认：真值形态（"true" 字符串 / 1 数值）不等价于 JSON true。
-    assert!(!cfg.enabled);
-    assert_eq!(cfg.relay_url, "");
-    assert!(!cfg.relay.enabled);
-    assert_eq!(cfg.relay.http_port, DEFAULT_RELAY_HTTP_PORT);
-    assert_eq!(cfg.relay.quic_port, DEFAULT_RELAY_QUIC_PORT);
-    assert_eq!(cfg.relay.external_host, "");
-    assert_eq!(cfg.relay.tls, RelayTls::SelfSigned);
-    assert_eq!(cfg.relay.token, "");
-}
-
-// ---------------------------------------------------------------------------
-// 值域与档位解析
-// ---------------------------------------------------------------------------
-
-#[test]
-fn tls_case_insensitive_and_unknown_falls_to_default() {
-    let tls = |v: &str| {
-        parse_roaming_value(Some(&serde_json::json!({
-            "roaming": { "relay": { "tls": v } }
-        })))
-        .relay
-        .tls
-    };
-    assert_eq!(tls("self-signed"), RelayTls::SelfSigned);
-    assert_eq!(tls("SELF-SIGNED"), RelayTls::SelfSigned);
-    assert_eq!(tls(" manual "), RelayTls::Manual);
-    assert_eq!(tls("None"), RelayTls::None);
-    assert_eq!(tls("acme"), RelayTls::SelfSigned, "未知档落默认");
-}
-
-#[test]
-fn port_zero_is_honored_not_defaulted() {
-    // 0 是合法显式值（= 不监听该 transport），必须与「缺键」区分。
-    let cfg = parse_roaming_value(Some(&serde_json::json!({
-        "roaming": { "relay": { "http_port": 0, "quic_port": 0 } }
-    })));
-    assert_eq!(cfg.relay.http_port, 0);
-    assert_eq!(cfg.relay.quic_port, 0);
 }
 
 // ---------------------------------------------------------------------------
