@@ -2730,6 +2730,17 @@ pub fn build_cluster_agent_loop(
                 cluster.clone(),
             )),
         );
+        // 集群任务认领（2026-10-22）：board_claim 与 board_discuss 同点
+        // 同族注册——worker 自主浏览/认领待领单（先到先得，master 原子
+        // 裁决后落本节点工作队列）。tier 政策同 board_discuss（白名单不
+        // 收录 = Big/Unresolved 全量可见，mini/normal 不给：跨节点认领
+        // 与跨节点发言同信任级，Q5 拍板）。
+        agent_loop.register_tool(
+            crate::board_claim_tool::TOOL_NAME.to_string(),
+            Box::new(crate::board_claim_tool::BoardClaimTool::new(
+                cluster.clone(),
+            )),
+        );
         // G9 资产拉取/发布执行者：两端都装——worker 拉任务资产，master 的
         // cluster agent 也能拉 worker 交付物（同一工具、同一 bundle 语义）。
         // with_cluster 注入集群句柄：HTTP 直连连接级失败（跨网段）时走
@@ -2741,7 +2752,9 @@ pub fn build_cluster_agent_loop(
                     .with_cluster(cluster.clone()),
             ),
         );
-        info!("[AgentFactory] board_discuss + board_asset tools registered (cluster agent only)");
+        info!(
+            "[AgentFactory] board_discuss + board_claim + board_asset tools registered (cluster agent only)"
+        );
     }
 
     // D3 (2026-08-24 arch review): P3.1 auto memory injection (per-round

@@ -294,9 +294,9 @@ impl Pipeline {
             return ArtifactStatus::Draft;
         }
 
-        // Check quality score
+        // Check quality score (threshold from config.validation.min_quality_score)
         if let Some(ref s3) = validation.stage3_quality {
-            if s3.score >= 60 {
+            if s3.score >= self.config.validation.min_quality_score {
                 return ArtifactStatus::Active;
             }
             return ArtifactStatus::Draft;
@@ -492,8 +492,9 @@ impl Pipeline {
                                     score += r * 20 / 100;
                                 }
 
-                                // Determine pass based on config threshold (default 60)
-                                let min_score = 60u32;
+                                // Determine pass based on config threshold
+                                // (config.validation.min_quality_score, default 60)
+                                let min_score = self.config.validation.min_quality_score;
 
                                 QualityValidationResult {
                                     stage: ValidationStage {

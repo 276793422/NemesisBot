@@ -185,6 +185,9 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 # B9-1（VM 项目工作副本）：宿主打包 / guest 解包的项目树 tar 载体（不压缩
 # ——localhost slirp 通道带宽廉价，CPU 留给 hash）；纯 Rust 零系统依赖。
 tar = "0.4"
+# 自更新 Linux/macOS 主包解包（nightly-*.tar.gz = tar+gzip）；flate2 亦是
+# tar 之外唯一 gzip 消费点（版本随 workspace 集中管理）。
+flate2 = "1"
 
 # Crypto
 # oid feature：cms builder 要求 Digest 的 AssociatedOid（S0-6 坑位 5b）

@@ -6,6 +6,8 @@ import { useAuthStore } from '../stores/auth'
 import { useTheme } from '../composables/useTheme'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useEditorMode } from '../composables/useEditorMode'
+import { useToast } from '../composables/useToast'
+import { on as onSSE, off as offSSE } from '../composables/useSSE'
 import { visibleNavGroups as visibleNavGroupsFiltered } from '../skins/navModel'
 
 const router = useRouter()
@@ -53,6 +55,131 @@ async function toggleEstop() {
     estopBusy.value = false
   }
 }
+
+// L9 自更新三态长条（2026-10-21 按钮流计划 §3.6）：无更新不渲染 →【下载更新】
+// → 进度条（可取消）→【开始更新】→ confirm 框 → apply（受理即回，签名校验+
+// 受控重启在后端编排）。数据源 = selfupdate.status 轮询（进程内快照，10s 挂
+// estop 同款计时器）+ SSE selfupdate-progress 实时进度帧。
+const suState = ref<'hidden' | 'idle' | 'downloading' | 'ready' | 'applying'>('hidden')
+const suVersion = ref('')
+const suPct = ref<number | null>(null)
+const suDownloaded = ref(0)
+const suTotal = ref<number | null>(null)
+const suError = ref('')
+let suCheckedOnce = false // 首次主动 check 只做一次（网络失败静默，等 gateway 30s 自动 check 灌缓存）
+
+function suFmtMb(n: number) {
+  return (n / (1024 * 1024)).toFixed(1) + 'MB'
+}
+function suApplyProgress(downloaded: number, total: unknown) {
+  suDownloaded.value = downloaded
+  const t = typeof total === 'number' ? total : null
+  suTotal.value = t
+  suPct.value = t !== null && t > 0 ? Math.min(100, Math.round((downloaded * 100) / t)) : null
+}
+
+async function refreshSelfupdate() {
+  let resp: any = null
+  try {
+    resp = await request('selfupdate', 'status', {}, 5000)
+  } catch {
+    return // WS 未就绪——保持原状态，下个轮询周期再试
+  }
+  if (!resp || !resp.wired || !resp.platform_supported || resp.journal_phase) {
+    // 未装配 / 非 Windows / 有未收口更新事务（启动收口自动处理，期间不干预）
+    suState.value = 'hidden'
+    return
+  }
+  // apply 受理后的粘滞态：直到 pending 消失（事务收口——成功清包待重启 /
+  // 失败整清）才恢复自动判定
+  if (suState.value === 'applying') {
+    if (resp.pending) return
+    suState.value = 'hidden'
+  }
+  if (resp.pending && resp.pending.release_tag) {
+    suState.value = 'ready'
+    suVersion.value = resp.pending.release_tag
+    return
+  }
+  if (resp.download && resp.download.active) {
+    suState.value = 'downloading'
+    suApplyProgress(resp.download.downloaded_bytes ?? 0, resp.download.total_bytes)
+    return
+  }
+  let cc = resp.cached_check
+  if (!cc && !suCheckedOnce) {
+    try {
+      cc = await request('selfupdate', 'check', {}, 15000)
+      suCheckedOnce = true
+    } catch {
+      return // 网络失败静默——下次轮询若缓存已由 gateway 自动 check 灌入则自动显现
+    }
+  }
+  if (cc && cc.update_available) {
+    suVersion.value = cc.latest_tag || ''
+    suError.value = (resp.download && resp.download.phase === 'error' && resp.download.error) || ''
+    suState.value = 'idle'
+    return
+  }
+  suState.value = 'hidden'
+}
+
+async function suDownload() {
+  try {
+    await request('selfupdate', 'download', {}, 8000)
+    suState.value = 'downloading'
+    suApplyProgress(0, null) // 真实进度由 SSE 帧驱动；幂等受理则下轮 status 校正
+  } catch (e: any) {
+    useToast().error(`下载受理失败：${e?.message ?? e}`)
+  }
+}
+
+async function suCancel() {
+  try {
+    await request('selfupdate', 'cancel_download', {}, 5000)
+  } catch { /* 取消失败不打断——下轮轮询按真实态校正 */ }
+  suState.value = 'idle'
+}
+
+async function suApply() {
+  const target = suVersion.value || '新版本'
+  if (!window.confirm(`确定更新到 ${target}？更新将校验签名、替换程序并自动重启。`)) return
+  try {
+    await request('selfupdate', 'apply', {}, 8000)
+    suState.value = 'applying'
+  } catch (e: any) {
+    useToast().error(`更新受理失败：${e?.message ?? e}`)
+  }
+}
+
+function onSuProgress(d: any) {
+  if (!d || typeof d !== 'object') return
+  if (d.phase === 'ready' || d.phase === 'error') {
+    if (d.phase === 'error') useToast().warn('更新包下载失败，已清理，可重新下载')
+    refreshSelfupdate() // 收口态以 status 快照为准（pending / idle 可重下）
+    return
+  }
+  suState.value = 'downloading'
+  suApplyProgress(d.downloaded_bytes ?? 0, d.total_bytes)
+}
+
+const suProgressLabel = computed(() => {
+  if (suPct.value !== null) {
+    return `${suPct.value}%（${suFmtMb(suDownloaded.value)} / ${suFmtMb(suTotal.value ?? 0)}）`
+  }
+  return suFmtMb(suDownloaded.value)
+})
+const suProgressWidth = computed(() => (suPct.value === null ? '40%' : suPct.value + '%'))
+const suActionLabel = computed(() =>
+  suState.value === 'ready' ? '开始更新' : suError.value ? '下载失败，点此重试' : '下载更新',
+)
+const suActionTitle = computed(() => {
+  if (suState.value === 'ready') {
+    return `更新包已就绪（${suVersion.value}，已通过 SHA-256 复验）：点击开始更新，确认后将校验签名并自动重启`
+  }
+  if (suError.value) return `上次下载失败：${suError.value}；点击重试`
+  return `发现新版本 ${suVersion.value}：点击下载更新包（可随时取消）`
+})
 // 签名验证状态徽标（2026-09-23 接入计划 §4）：只读呈现 gateway 启动自验
 // 快照（进程内不变，取到一次即止）。三色：绿=Valid（锁定版加 🔒）；
 // 红=warn 态 Tampered（二进制被篡改，最危险）；黄=warn 其余失败 + off +
@@ -103,13 +230,17 @@ async function refreshSigVerify() {
 onMounted(() => {
   refreshEstop()
   refreshSigVerify()
+  refreshSelfupdate()
+  onSSE('selfupdate-progress', onSuProgress)
   estopTimer = setInterval(() => {
     refreshEstop()
     refreshSigVerify() // 已加载即 no-op；状态进程内不变，无需独立计时器
+    refreshSelfupdate()
   }, 10000)
 })
 onUnmounted(() => {
   if (estopTimer) clearInterval(estopTimer)
+  offSSE('selfupdate-progress', onSuProgress)
 })
 
 // 导航分组清单 + feature 门控已上收 skins/navModel.ts（P2b 契约层单一
@@ -216,6 +347,31 @@ const visibleNavGroups = computed(visibleNavGroupsFiltered)
         </span>
         <span class="nav-label">{{ theme === 'dark' ? '浅色模式' : '深色模式' }}</span>
       </a>
+      <!-- L9 自更新三态长条（2026-10-21 按钮流计划 §3.6）：无更新不渲染；
+           hidden 之外四态 =【下载更新】/ 进度条+取消 /【开始更新】/ 更新执行中 -->
+      <div v-if="suState !== 'hidden'" class="nav-item selfupdate-item">
+        <div v-if="suState === 'downloading'" class="su-progress" title="正在下载更新包（完成后需点击开始更新）">
+          <div class="su-progress-top">
+            <span class="su-progress-title">正在下载更新…</span>
+            <a class="su-cancel" title="取消下载（已下载内容将清空）" @click="suCancel()">✕</a>
+          </div>
+          <div class="su-progress-track">
+            <div class="su-progress-fill" :class="{ indeterminate: suPct === null }" :style="{ width: suProgressWidth }"></div>
+          </div>
+          <div class="su-progress-text">{{ suProgressLabel }}</div>
+        </div>
+        <a v-else-if="suState === 'applying'" class="su-action applying" title="签名校验与程序替换进行中，成功后自动重启（重启期间连接会短暂中断）">
+          <span class="nav-icon">⏳</span>
+          <span class="nav-label">更新执行中，即将重启…</span>
+        </a>
+        <a v-else class="su-action" :title="suActionTitle" @click="suState === 'ready' ? suApply() : suDownload()">
+          <span class="nav-icon">
+            <svg v-if="suState === 'ready'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          </span>
+          <span class="nav-label">{{ suActionLabel }}</span>
+        </a>
+      </div>
       <a class="nav-item" @click="handleLogout()">
         <span class="nav-icon">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
@@ -261,5 +417,69 @@ const visibleNavGroups = computed(visibleNavGroupsFiltered)
 @keyframes estop-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
+}
+/* L9 自更新三态长条（2026-10-21 按钮流计划 §3.6） */
+.selfupdate-item {
+  display: block;
+  padding: 0;
+}
+.su-action {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  color: #4a9eff;
+  cursor: pointer;
+}
+.su-action:hover {
+  background: rgba(74, 158, 255, 0.12);
+}
+.su-action.applying {
+  color: #e6a23c;
+  cursor: default;
+}
+.su-progress {
+  width: 100%;
+  padding: 8px 14px;
+}
+.su-progress-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+}
+.su-cancel {
+  cursor: pointer;
+  color: #ff6b6b;
+  padding: 0 4px;
+}
+.su-cancel:hover {
+  color: #ff4d4d;
+}
+.su-progress-track {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(128, 128, 128, 0.25);
+  overflow: hidden;
+  margin: 6px 0 4px;
+}
+.su-progress-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: #4a9eff;
+  transition: width 0.2s ease;
+}
+/* 总大小未知（Content-Length 缺位）→ 往复滑块表意「进行中」 */
+.su-progress-fill.indeterminate {
+  animation: su-indeterminate 1.2s ease-in-out infinite;
+}
+@keyframes su-indeterminate {
+  0% { margin-left: -40%; }
+  100% { margin-left: 100%; }
+}
+.su-progress-text {
+  font-size: 11px;
+  opacity: 0.75;
 }
 </style>

@@ -585,7 +585,7 @@ impl GatewayCtx {
             let board_db = home.join("workspace").join("board").join("board.db");
             match nemesis_board::BoardStore::open(&board_db, "NB") {
                 Ok(store) => {
-                    // Swarm M2: 默认频道（#dev/#qa/#general）幂等种子——首启建，
+                    // Swarm M2: 默认频道（#dev/#qa/#general/#team）幂等种子——首启建，
                     // 已有则 no-op。
                     if let Err(e) = store.ensure_default_channels() {
                         warn!("[Gateway] Board default channels seed failed: {}", e);
@@ -912,12 +912,12 @@ impl GatewayCtx {
             forge.init_pipeline(forge_pipeline.clone());
             info!("[Gateway] Forge pipeline initialized");
 
-            // Initialize trace collection (TraceCollector + TraceStore).
+            // Initialize trace collection (TraceStore; JSONL on disk is the
+            // single truth source the learning engine's trace arm reads).
             {
-                let trace_collector = nemesis_forge::trace::TraceCollector::new();
                 let trace_store =
                     nemesis_forge::trace_store::TraceStore::new(forge_dir.join("traces"));
-                forge.init_trace(trace_collector, trace_store);
+                forge.init_trace(trace_store);
                 info!("[Gateway] Forge trace collection initialized");
             }
 

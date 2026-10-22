@@ -693,29 +693,73 @@ pub(crate) async fn run_runtime(
             // in the merged context snapshot's `# Runtime Policy` section.
             agent_loop.set_interactive_approval(true);
             info!("[Gateway] Approval manager wired (dashboard web approval, M7)");
-            // L9 selfupdate：九步 apply 编排器装配（selfupdate implies
-            // security）。审批走同一 adapter（CRITICAL 卡全平台生效，「总是
-            // 允许」对 CRITICAL 恒忽略）；审计链走 security_plugin；estop
-            // 同源。WSAPI selfupdate.* 与 /api/internal selfupdate_apply 都
-            // 从 handlers::selfupdate 的 OnceLock 槽取真身；未装配 = 诚实报。
+            // L9 selfupdate：两段式 apply/download 编排器装配（selfupdate
+            // implies security）。审计链走 security_plugin；estop 同源；
+            // 确认在 Dashboard 侧完成（审批卡已退役——v4 签名验签是安全闸）。
+            // WSAPI selfupdate.* 与 /api/internal selfupdate_apply 都从
+            // handlers::selfupdate 的槽取真身；未装配 = 诚实报。
             #[cfg(feature = "selfupdate")]
             {
+                // 停机约定成对（Ctrl+C / 托盘 / internal shutdown 同款）：
+                // trigger_global_shutdown() 只置 SHUTDOWN_REQUESTED 旗标，
+                // 生产无轮询消费者——真正驱动停机序列的是 svc_mgr.shutdown()。
+                // 2026-10-22 彩排实证：只置旗标 = A 版永不退场 → B 版
+                // WAIT_PID 超时放弃 boot 收口，journal 永远停在 restarting。
+                let svc_mgr_for_selfupdate = Arc::clone(&svc_mgr);
                 let mgr = Arc::new(nemesis_web::selfupdate::SelfUpdateManager {
                     workspace: shared_resources.workspace_dir(),
                     estop: shared_resources.estop.clone(),
-                    approval: adapter.clone(),
                     audit: Some(plugin.clone()),
-                    shutdown: Arc::new(|| {
+                    shutdown: Arc::new(move || {
                         // android 无此导入（cfg not(android)）；该平台 apply
                         // 本身运行期诚实拒绝，闭包退化为空操作即可。
                         #[cfg(not(target_os = "android"))]
-                        trigger_global_shutdown();
+                        {
+                            trigger_global_shutdown();
+                            svc_mgr_for_selfupdate.shutdown();
+                        }
                     }),
                     // R2 进程内单飞闸（与安装目录跨进程锁两层互补）。
                     flight: tokio::sync::Mutex::new(()),
+                    download_flight: tokio::sync::Mutex::new(()),
+                    download_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    download_progress: Arc::new(parking_lot::Mutex::new(
+                        nemesis_web::selfupdate::DownloadProgress::default(),
+                    )),
+                    last_check: Arc::new(parking_lot::Mutex::new(None)),
                 });
-                nemesis_web::handlers::selfupdate::set_manager(mgr);
+                nemesis_web::handlers::selfupdate::set_manager(mgr.clone());
                 info!("[Gateway] selfupdate manager wired (L9)");
+                // 启动自动 check（~30s 错开启动高峰）：有更新 → info 提示
+                // （Dashboard 连上后 status/cached_check 即见，按钮由此点亮）；
+                // 无更新 → debug；失败静默（不重试风暴——用户拍板）。pending
+                // 已就绪的提醒由 Dashboard status 轮询承担（每次启动都提醒）。
+                let auto_mgr = mgr.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    match nemesis_web::selfupdate::check(
+                        crate::common::VERSION_INFO.version,
+                        crate::common::VERSION_INFO.git_commit,
+                    )
+                    .await
+                    {
+                        Ok(c) => {
+                            if c.update_available {
+                                info!(
+                                    "[SelfUpdate] 启动检查发现新版本（{}，commit {}）：\
+                                     Dashboard 侧栏可下载更新",
+                                    c.latest_tag, c.latest_commit
+                                );
+                            } else {
+                                tracing::debug!("[SelfUpdate] 启动检查：已是最新");
+                            }
+                            auto_mgr.store_check(c);
+                        }
+                        Err(e) => {
+                            tracing::debug!("[SelfUpdate] 启动自动 check 失败（静默）：{e}")
+                        }
+                    }
+                });
             }
             // P5: guardian judge attach — `guardian_mode` 闸（2026-09-16
             // 无上下文 LLM 命令审计，用户拍板默认 off：LLM 审计耗时且贵，
@@ -979,8 +1023,8 @@ pub(crate) async fn run_runtime(
                     }
                     nemesis_web::internal::InternalCommand::SelfUpdateApply { allow_downgrade } => {
                         // L9：CLI `nemesisbot selfupdate apply` 经 /api/internal
-                        // 落到这里——受理后 spawn 九步编排（下载 + 审批卡 +
-                        // staging 全程分钟级，不能占住监听）。成功路径 apply
+                        // 落到这里——受理后 spawn 九步编排（pending 下载 +
+                        // v4 验签 + staging 全程分钟级，不能占住监听）。成功路径 apply
                         // 内部已 spawn 新版本并自带优雅停机线程，此处不再动
                         // svc_mgr（避免双重停机竞态）。
                         #[cfg(feature = "selfupdate")]

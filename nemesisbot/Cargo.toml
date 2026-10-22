@@ -105,8 +105,9 @@ skins = ["nemesis-web/skins"]
 codemode = ["nemesis-agent/codemode"]
 
 # L9 版本自切换通道（`nemesisbot selfupdate check/apply/status` CLI + gateway
-# 九步 apply 编排；v4 验签 + zip 解包 + 审批卡随 nemesis-web/selfupdate 进出）。
-# implies security（审批 manager + 审计链是九步的两步）。
+# 两段式 download/apply 编排；v4 验签 + zip/tar.gz 双臂解包 + plugins 整包
+# 替换随 nemesis-web/selfupdate 进出）。
+# implies security（审计链是编排的留痕面）。
 selfupdate = ["security", "nemesis-web/selfupdate"]
 
 # 锁定版旗标（签名验证接入计划 §2.1）：纯编译期 cfg——verify_policy

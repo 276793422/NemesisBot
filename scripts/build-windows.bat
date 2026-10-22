@@ -69,9 +69,10 @@ for /f "tokens=*" %%i in ('git describe --tags --abbrev=0 2^>nul') do set VERSIO
 set GIT_COMMIT=unknown
 for /f "tokens=*" %%i in ('git rev-parse --short HEAD 2^>nul') do set GIT_COMMIT=%%i
 
-REM Compile-time pricing table embed: value changes per build -> bypass target cache to force build.rs rerun
-REM (download latest LiteLLM table for embedding; falls back to repo snapshot on failure, see nemesis-data/build.rs)
-set NEMESIS_PRICES_REFRESH=%GIT_COMMIT%_%RANDOM%%RANDOM%
+REM Compile-time pricing table embed: value set in the pre-download block
+REM below (after clean, before any cargo build) - see nemesis-data\build.rs
+REM (download latest LiteLLM table for embedding; falls back to repo snapshot
+REM on failure)
 
 for /f "tokens=*" %%i in ('rustc --version 2^>nul') do set RUSTC_VERSION=%%i
 
@@ -133,7 +134,7 @@ if exist "web\package.json" (
         popd
         echo   WARN npm install failed, skipping Vue build
         echo.
-        goto step3
+        goto step25
     )
     echo   Cleaning stale Vite assets + env...
     echo   ^(orphaned hashed chunks from prior builds get embedded into the binary via include_dir!, bloating it ~2MB^)
@@ -153,6 +154,55 @@ if exist "web\package.json" (
 ) else (
     echo   SKIP web\package.json not found
 )
+echo.
+
+:step25
+
+REM ============================================
+REM Step 2.5: Pre-download LiteLLM price table (single network touch per build)
+REM ============================================
+REM nemesis-data\build.rs embeds the price table at compile time and this
+REM script runs cargo TWICE (main + vm-display pass). The old random-refresh
+REM env made BOTH passes re-download - on a bad network that meant two
+REM identical failures. Pre-download once here:
+REM   success -> NEMESIS_PRICES_FILE points build.rs at the local file
+REM              (zero network in either pass; refresh = size+mtime
+REM              fingerprint, so a later pass only reruns when the table
+REM              actually changed)
+REM   failure -> warn once, leave both envs unset: every cargo pass stays
+REM              offline on the bundled snapshot (no second download try)
+REM Mirror list mirrors crates\nemesis-data\src\pricing_filter.rs PRICE_MIRROR_URLS.
+set "NEMESIS_PRICES_FILE="
+set "NEMESIS_PRICES_REFRESH="
+set "PRICING_CACHE=%CD%\target\pricing\litellm.json"
+set "CURL_EXE=%SystemRoot%\System32\curl.exe"
+
+echo [Step 2.5/5] Pre-downloading LiteLLM price table...
+if not exist "%CURL_EXE%" (
+    REM No curl: fixed refresh still prevents the second pass from rerunning
+    REM build.rs - the first pass does its own single download inside build.rs.
+    set "NEMESIS_PRICES_REFRESH=%GIT_COMMIT%_legacy"
+    echo   SKIP curl.exe not found - build.rs will fetch once itself
+    goto step3
+)
+if not exist "%CD%\target\pricing" mkdir "%CD%\target\pricing"
+for %%u in ("https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json" "https://fastly.jsdelivr.net/gh/BerriAI/litellm@main/model_prices_and_context_window.json" "https://cdn.jsdelivr.net/gh/BerriAI/litellm@main/model_prices_and_context_window.json") do (
+    if exist "%PRICING_CACHE%" goto pricing_done
+    echo   trying %%~u ...
+    "%CURL_EXE%" -fsSL --connect-timeout 15 --max-time 90 -o "%PRICING_CACHE%" %%~u
+    if errorlevel 1 del /q "%PRICING_CACHE%" 2>nul
+)
+:pricing_done
+if not exist "%PRICING_CACHE%" (
+    echo   WARN price table download failed - this build embeds the bundled snapshot; later passes will NOT retry
+    goto step3
+)
+for %%f in ("%PRICING_CACHE%") do (
+    set "NEMESIS_PRICES_FILE=%PRICING_CACHE%"
+    set "NEMESIS_PRICES_REFRESH=%%~zf_%%~tf"
+    set "PRICING_SIZE=%%~zf"
+)
+echo   OK price table cached - %PRICING_SIZE% bytes ^(both cargo passes read this file, no further downloads^)
 echo.
 
 :step3
@@ -284,12 +334,23 @@ echo.
 REM --- guest binaries (musl cross-compile; MUST precede plugin-vm build ---
 REM     resources-embed discipline: image script + guest ELFs are embedded into
 REM     the DLL at compile time; with NMB_VM_REQUIRE_RESOURCES=1 absent
-REM     resources fail the build, so guests must exist first) ---
-where bash >nul 2>&1
-if not errorlevel 1 if not exist "bin\bin_guest\x86_64\nemesis-guest" (
-    echo   Building guest binaries ^(bash scripts\build-guest.sh^)...
-    bash scripts\build-guest.sh >nul 2>&1
-    if errorlevel 1 echo   WARN guest build failed ^(plugin-vm embed will report honestly^)
+REM     resources fail the build, so guests must exist first. build.rs requires
+REM     BOTH arches, so the guard checks each. Guest build uses the
+REM     Windows-native scripts\build-guest.bat (no bash dependency). Failure
+REM     log is shown, not swallowed - a silent guest miss used to surface only
+REM     as the confusing plugin-vm panic below) ---
+set GUEST_NEED_BUILD=0
+if not exist "bin\bin_guest\x86_64\nemesis-guest" set GUEST_NEED_BUILD=1
+if not exist "bin\bin_guest\aarch64\nemesis-guest" set GUEST_NEED_BUILD=1
+if "%GUEST_NEED_BUILD%"=="1" (
+    if not exist "target" mkdir "target"
+    echo   Building guest binaries ^(scripts\build-guest.bat, log: target\build-guest.log^)...
+    call scripts\build-guest.bat > target\build-guest.log 2>&1
+    if errorlevel 1 (
+        echo   ---- guest build log ----
+        type target\build-guest.log
+        echo   WARN guest build failed - plugin-vm build below will fail fail-closed ^(NMB_VM_REQUIRE_RESOURCES=1^)
+    )
 )
 
 REM --- plugin-vm (VM display relay DLL into plugins\ subdir; single-file deploy:

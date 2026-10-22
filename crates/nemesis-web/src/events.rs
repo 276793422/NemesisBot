@@ -14,6 +14,9 @@ pub const EVENT_CLUSTER_EVENT: &str = "cluster-event";
 pub const EVENT_HEARTBEAT: &str = "heartbeat";
 /// Chat streaming delta — published for each streamed LLM token chunk.
 pub const EVENT_CHAT_STREAM: &str = "chat-stream";
+/// 自更新下载进度（L9 两段式：易逝观测——`publish_ephemeral` 只投在线
+/// 订阅者，不进环形缓冲/不参与断线补拉——回放旧进度值无意义）。
+pub const EVENT_SELFUPDATE_PROGRESS: &str = "selfupdate-progress";
 
 /// L2（devtool-upgrade 阶段 6）：断线补拉环形缓冲容量。1000 条事件窗口
 ///（status 每 5s 一条 ≈ 83 分钟回放窗口）；滑出窗口的 seq 不可补——

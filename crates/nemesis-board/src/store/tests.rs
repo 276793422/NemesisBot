@@ -2075,7 +2075,7 @@ fn test_ensure_default_channels_is_idempotent() {
         .into_iter()
         .map(|c| c.name)
         .collect();
-    assert_eq!(names, vec!["#dev", "#qa", "#general"]);
+    assert_eq!(names, vec!["#dev", "#qa", "#general", "#team"]);
     cleanup(&dir);
 }
 
@@ -4478,5 +4478,202 @@ fn update_issue_untouched_ref_columns_skip_validation() {
         )
         .expect("不改引用列的更新必须放行");
     assert_eq!(updated.title, "改标题不碰引用列");
+    cleanup(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// 认领制（2026-10-22 集群任务认领机制）：claim_issue 原子置位 + claimable_check
+// ---------------------------------------------------------------------------
+
+#[test]
+fn claim_issue_sets_assignee_atomically_and_tails_side_effects() {
+    let (store, dir) = temp_store("claim-happy");
+    let issue = store.create_issue(new_issue("认领我")).unwrap();
+    let actor = Actor::agent("node-b");
+
+    let claimed = store.claim_issue(issue.id, "node-b", &actor).unwrap();
+    assert_eq!(claimed.assignee, Some(AssignmentType::Worker));
+    assert_eq!(claimed.assignee_id.as_deref(), Some("node-b"));
+
+    // 尾装齐：activity（claimed）+ subscriber + notification。
+    let acts = store.list_activity(issue.id).unwrap();
+    assert!(
+        acts.iter().any(|a| a.action == "claimed"),
+        "claimed activity 必须落：{:?}",
+        acts.iter().map(|a| a.action.as_str()).collect::<Vec<_>>()
+    );
+    let subs = store.list_subscribers(issue.id).unwrap();
+    assert!(
+        subs.iter()
+            .any(|s| s.subscriber.kind == "worker" && s.subscriber.id == "node-b"),
+        "认领者必须进订阅表：{subs:?}"
+    );
+    let notes = store
+        .list_notifications("worker", Some("node-b"), false, 50)
+        .unwrap();
+    assert!(
+        notes.iter().any(|n| n.issue_id == Some(issue.id)),
+        "认领者必须有站内通知：{notes:?}"
+    );
+    cleanup(&dir);
+}
+
+#[test]
+fn claim_issue_second_claimant_rejected_with_current_assignee() {
+    let (store, dir) = temp_store("claim-race");
+    let issue = store.create_issue(new_issue("先到先得")).unwrap();
+    store
+        .claim_issue(issue.id, "node-b", &Actor::agent("node-b"))
+        .expect("首领成功");
+
+    let err = store
+        .claim_issue(issue.id, "node-c", &Actor::agent("node-c"))
+        .unwrap_err();
+    assert!(
+        err.contains("已被 node-b 认领"),
+        "诚实拒绝带现任指派：{err}"
+    );
+    // 拒绝零副作用：assignee 仍是 node-b。
+    let cur = store.get_issue(issue.id).unwrap();
+    assert_eq!(cur.assignee_id.as_deref(), Some("node-b"));
+    cleanup(&dir);
+}
+
+#[test]
+fn claim_issue_threads_race_exactly_one_wins() {
+    let (store, dir) = temp_store("claim-threads");
+    let store = std::sync::Arc::new(store);
+    let issue = store.create_issue(new_issue("双线程并发认领")).unwrap();
+
+    let s1 = store.clone();
+    let s2 = store.clone();
+    let id = issue.id;
+    let h1 = std::thread::spawn(move || s1.claim_issue(id, "node-b", &Actor::agent("node-b")));
+    let h2 = std::thread::spawn(move || s2.claim_issue(id, "node-c", &Actor::agent("node-c")));
+    let r1 = h1.join().unwrap();
+    let r2 = h2.join().unwrap();
+    let wins = [r1.is_ok(), r2.is_ok()].iter().filter(|w| **w).count();
+    assert_eq!(wins, 1, "双线程并发认领必须恰好一胜：r1={r1:?} r2={r2:?}");
+    let cur = store.get_issue(id).unwrap();
+    let winner = if r1.is_ok() { "node-b" } else { "node-c" };
+    assert_eq!(cur.assignee_id.as_deref(), Some(winner));
+    cleanup(&dir);
+}
+
+#[test]
+fn claim_issue_rejects_empty_claimer_and_missing_issue() {
+    let (store, dir) = temp_store("claim-invalid");
+    let issue = store.create_issue(new_issue("x")).unwrap();
+    assert!(store.claim_issue(issue.id, "  ", &admin()).is_err());
+    assert!(store.claim_issue(999_999, "node-b", &admin()).is_err());
+    cleanup(&dir);
+}
+
+#[test]
+fn claimable_check_matrix() {
+    let (store, dir) = temp_store("claimable-matrix");
+    let admin = admin();
+
+    // ① 正常待领单：Ok。
+    let free = store.create_issue(new_issue("待领")).unwrap();
+    assert!(store.claimable_check(free.id).is_ok());
+
+    // ② 已被认领：拒（原因带现任）。
+    store
+        .claim_issue(free.id, "node-b", &Actor::agent("node-b"))
+        .unwrap();
+    let err = store.claimable_check(free.id).unwrap_err();
+    assert!(err.contains("已被 node-b 认领"), "{err}");
+
+    // ③ 非待领状态：InProgress / Done / Blocked 全拒（Todo 本身可领，正向钉住）。
+    let todo = store.create_issue(new_issue("状态-todo")).unwrap();
+    store
+        .transition_issue(todo.id, IssueStatus::Todo, &admin)
+        .unwrap();
+    assert!(store.claimable_check(todo.id).is_ok(), "todo 可领");
+    for status in [
+        IssueStatus::InProgress,
+        IssueStatus::Blocked,
+        IssueStatus::InReview,
+    ] {
+        let it = store.create_issue(new_issue("状态投")).unwrap();
+        store
+            .transition_issue(it.id, IssueStatus::InProgress, &admin)
+            .unwrap();
+        if status != IssueStatus::InProgress {
+            store.transition_issue(it.id, status, &admin).unwrap();
+        }
+        let err = store.claimable_check(it.id).unwrap_err();
+        assert!(err.contains("状态"), "{status}: {err}");
+    }
+    let done = store.create_issue(new_issue("终态")).unwrap();
+    store
+        .transition_issue(done.id, IssueStatus::Done, &admin)
+        .unwrap();
+    assert!(store.claimable_check(done.id).is_err());
+
+    // ④ 父单（有子单）：拒。
+    let parent = store
+        .create_issue(crate::models::NewIssue {
+            parent_issue_id: None,
+            ..new_issue("父单")
+        })
+        .unwrap();
+    store
+        .create_issue(crate::models::NewIssue {
+            parent_issue_id: Some(parent.id),
+            ..new_issue("子单")
+        })
+        .unwrap();
+    let err = store.claimable_check(parent.id).unwrap_err();
+    assert!(err.contains("叶子子单"), "{err}");
+    // 子单本身可领。
+    let child = store.list_children(parent.id).unwrap().remove(0);
+    assert!(store.claimable_check(child.id).is_ok());
+
+    // ⑤ 依赖未完成：拒；依赖 Done 后恢复可领。
+    let dep_a = store.create_issue(new_issue("依赖A")).unwrap();
+    let dep_b = store.create_issue(new_issue("依赖B")).unwrap();
+    let dependent = store.create_issue(new_issue("被依赖挡住")).unwrap();
+    store
+        .set_issue_dependencies(dependent.id, &[dep_a.id, dep_b.id])
+        .unwrap();
+    let err = store.claimable_check(dependent.id).unwrap_err();
+    assert!(err.contains("依赖未完成"), "{err}");
+    store
+        .transition_issue(dep_a.id, IssueStatus::Done, &admin)
+        .unwrap();
+    assert!(
+        store.claimable_check(dependent.id).is_err(),
+        "还剩 dep_b 未完成"
+    );
+    store
+        .transition_issue(dep_b.id, IssueStatus::Done, &admin)
+        .unwrap();
+    assert!(store.claimable_check(dependent.id).is_ok());
+
+    // ⑥ 在途派发：拒（直插一行 dispatched）。
+    let busy = store.create_issue(new_issue("在途")).unwrap();
+    {
+        let conn = store.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO issue_dispatch (task_id, issue_id, worker_id, state, dispatched_at)
+             VALUES ('t-busy', ?1, 'node-b', 'dispatched', 0)",
+            rusqlite::params![busy.id],
+        )
+        .unwrap();
+    }
+    let err = store.claimable_check(busy.id).unwrap_err();
+    assert!(err.contains("进行中的派发"), "{err}");
+
+    cleanup(&dir);
+}
+
+#[test]
+fn ensure_default_channels_includes_team() {
+    let (store, dir) = temp_store("team-seed");
+    store.ensure_default_channels().unwrap();
+    let team = store.get_channel_by_name("#team").unwrap();
+    assert!(team.is_some(), "#team 默认频道必须种子化");
     cleanup(&dir);
 }

@@ -204,10 +204,6 @@ fn cmd_status(
     let forge_config_path = runtime_forge_config_path(forge_dir);
     let forge_cfg = nemesis_forge::config::load_forge_config(&forge_config_path);
     println!(
-        "  Collection interval: {}s",
-        forge_cfg.collection.interval_secs
-    );
-    println!(
         "  Reflection interval: {}s",
         forge_cfg.reflection.interval_secs
     );

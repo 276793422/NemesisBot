@@ -30,9 +30,11 @@ use nemesis_types::forge::LearningCycle;
 
 // 2026-10-16 复查（LE3）：`SkillCreator` trait 整体删除——它是 write-only
 // 死接线：`set_skill_creator()` 有注入点（gateway ctx.rs + 测试），但字段
-// 从未被读取，技能创建实际走 `execute_create_skill_action` →
-// `Forge::create_skill` 的直接调用路径（pipeline 臂）或本文件内联注册
-// （no-pipeline 臂）。保留一个「看起来已接线」的死委托只会误导读者以为
+// 从未被读取。技能创建实际路径：run_cycle ⑥ → 私有 `execute_create_skill`
+// （含 pipeline 臂：validate + refine 循环 + determine_status + registry
+// 登记 + workspace/skills 部署；no-pipeline 臂 = 本文件内联注册）。
+// 公开的 `execute_create_skill_action` 是同一逻辑的公开门面（当前仅测试
+// 与外部调用方使用）。保留一个「看起来已接线」的死委托只会误导读者以为
 // 有第三条创建路径。同类先例：A5 restrict_to_workspace 只声名未读取。
 
 /// Detected pattern from experience analysis.
@@ -273,11 +275,47 @@ impl LearningEngine {
         };
 
         // Step 1: Evaluate previous deployment outcomes
-        let previous_outcomes = if let Some(ref monitor) = *self.monitor.lock() {
-            monitor.evaluate_all()
-        } else {
-            Vec::new()
+        // （短作用域取 evaluate_all 结果并放锁；轨迹臂的 await 不得持有
+        // parking_lot guard——首版写法 guard 跨 await 被编译器打回。）
+        let (previous_outcomes, monitor_for_traces) = match self.monitor.lock().as_ref() {
+            Some(monitor) => {
+                let results = monitor.evaluate_all();
+                (results, Some(Arc::clone(monitor)))
+            }
+            None => (Vec::new(), None),
         };
+        if let Some(monitor) = monitor_for_traces {
+            // 审计 P0-F2（2026-10-22）：轨迹臂补全。TraceStore 里工具派发侧
+            // 喂的 tool_call 事件此前零读者——在此读出并转成回话轨迹，走
+            // evaluate_outcomes 的 before/after 实效对比（含 handle_verdict
+            // 降级 + last_efficacy 写回）。与上面 evaluate_all 简模式并存：
+            // 前者按 success_rate 粗判，轨迹臂按真实工具链细判。store 路径
+            // 形态与 gateway 装配点（ctx.rs TraceStore::new(forge_dir/"traces")）
+            // 同源；读失败 = 诚实跳过轨迹臂，不阻塞学习周期。
+            let store = crate::trace_store::TraceStore::new(self.forge_dir.join("traces"));
+            match store.read_all().await {
+                Ok(events) => {
+                    let traces = crate::monitor::build_conversation_traces(&events);
+                    let outcomes = monitor.evaluate_outcomes(&traces);
+                    let active = outcomes
+                        .iter()
+                        .filter(|o| o.verdict != "insufficient_data")
+                        .count();
+                    tracing::debug!(
+                        events = events.len(),
+                        traces = traces.len(),
+                        active_outcomes = active,
+                        "[Forge/LearningEngine] Trace-based outcome evaluation done"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "[Forge/LearningEngine] Failed to read traces — skipping trace arm this cycle"
+                    );
+                }
+            }
+        }
 
         // Step 2: Adjust confidence based on feedback
         self.adjust_confidence_from_outcomes(&previous_outcomes);
@@ -648,7 +686,8 @@ impl LearningEngine {
         };
 
         // Iterative refinement loop with pipeline validation
-        let max_refine = 3u32;
+        // (round budget from config.learning.max_refine_rounds)
+        let max_refine = self.config.learning.max_refine_rounds;
 
         // F-M7: clone the Arc<Pipeline> out of the lock and drop the guard
         // before the LLM round-trips (validate + refine loop). Holding the

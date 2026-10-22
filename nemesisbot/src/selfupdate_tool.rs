@@ -1,18 +1,20 @@
 //! L9 版本自切换通道工具面：`selfupdate_check` / `selfupdate_apply`。
 //!
-//! 职责（设计文档 docs/INFO/2026-10-12_LLM自更新通道设计方案.md §四 工具面）：
+//! 职责（设计文档 docs/INFO/2026-10-12_LLM自更新通道设计方案.md §四 工具面；
+//! 2026-10-21 两段式改版——审批卡退役）：
 //! - `selfupdate_check`：只读查询最新 Release vs 本进程 commit 身份——LLM 可
 //!   自主调用（NetworkRequest 档，与 web_fetch 同源管线，默认无审批摩擦）；
-//! - `selfupdate_apply`：**提案**九步 apply——本工具只触发受理即返回，真正
-//!   的人类闸是编排内部的 CRITICAL 审批卡（「总是允许」对 CRITICAL 恒忽略，
-//!   每次都要人工点头）；LLM 无法绕过审批完成更新，提示注入最多烧一张卡。
+//! - `selfupdate_apply`：触发两段式 apply——本工具受理即返回，安全闸是编排
+//!   内部的 v4 签名验签（Valid-only，编译期根锚）+ sequence 单调闸 + estop +
+//!   单飞锁；Dashboard 确认框 / CLI 受理即主体意志表达。无待装包时编排自动
+//!   先下载。
 //!
 //! 安全形态：
 //! - check 声明 `NetworkRequest`、apply 声明 `SystemInstall`（诚实分类——
 //!   装/切二进制 + 受控重启网关；不声明会走未知名 fail-closed，行为等价但
 //!   每调一次 warn 一次，显式声明去噪 + 分类明示，codemode 同款理由）；
 //! - apply 经 manager 槽（`handlers::selfupdate::manager()`，gateway 装配点
-//!   注入）——None = 未装配诚实报错；estop/journal/保险丝/验签全在编排内
+//!   注入）——None = 未装配诚实报错；estop/journal/验签全在编排内
 //!   重跑，工具层不复制判据（单一真相源）；
 //! - 主 loop 独占：项目 loop（L6++）不该重启整个 gateway 杀掉兄弟项目；
 //!   集群 B 端 worker 是任务执行器，不参与版本治理。
@@ -94,18 +96,19 @@ impl nemesis_agent::r#loop::Tool for SelfupdateCheckTool {
 
 // ---------------------------------------------------------------------------
 
-/// `selfupdate_apply` — 提案九步 apply（CRITICAL 审批卡是人类闸）。
+/// `selfupdate_apply` — 触发两段式 apply（v4 验签是安全闸；受理即执行）。
 pub struct SelfupdateApplyTool;
 
 #[async_trait::async_trait]
 impl nemesis_agent::r#loop::Tool for SelfupdateApplyTool {
     fn description(&self) -> String {
-        "Propose a version self-update: triggers the nine-step update \
-         orchestration (download, v4 signature verification, staging, \
-         controlled restart). Returns immediately after acceptance — a \
-         CRITICAL approval card is raised for the human to decide; without \
-         manual approval nothing happens. Use selfupdate_check first to see \
-         whether an update exists."
+        "Trigger a version self-update: runs the two-phase update \
+         orchestration (download if no pending package, v4 signature \
+         verification, staging, controlled restart). Accepted immediately \
+         and executed in the background — signature verification is the \
+         security gate, no interactive approval happens gateway-side. Use \
+         selfupdate_check first to see whether an update exists; the update \
+         restarts the gateway, which interrupts this session."
             .to_string()
     }
 
@@ -141,8 +144,9 @@ impl nemesis_agent::r#loop::Tool for SelfupdateApplyTool {
         });
         Ok(serde_json::json!({
             "accepted": true,
-            "note": "apply 已受理（后台编排）：审批卡经 SSE 下发（CRITICAL，超时自动拒绝）；\
-                     结果看 gateway 日志与审计链。成功后 gateway 受控重启为新版本——\
+            "note": "apply 已受理（后台编排；无待装包自动先下载）：\
+                     v4 签名验签是安全闸，结果看 gateway 日志与审计链。\
+                     成功后 gateway 受控重启为新版本——\
                      本会话会随重启中断，重启后 journal 启动收口自动确认。"
         })
         .to_string())

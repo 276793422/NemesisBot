@@ -112,10 +112,12 @@ done
 
 # --- R1 签名更新清单（manifest.json；仅主 staging 传 env 时生成）-------------
 # 身份与顺序的单一权威：{commit, sequence(=run_number 单调), exe_sha256(已签名
-# exe 摘要), built_at}。「JSON 字节 + CMS + v4 footer」单文件载体，与 exe 同密
-# 钥体系；客户端 apply 以其 commit/sequence 为降级闸权威，exe_sha256 为安装
-# 硬闸。env 缺席（非主 staging / 无 Secrets 提前退出）= 不生成 → 客户端按顺
-# 序 Unknown 诚实拒绝（fail-closed）。
+# exe 摘要), plugins_sha256(已签名 plugins/ 子树逐文件摘要，sorted 确定性),
+# built_at}。「JSON 字节 + CMS + v4 footer」单文件载体，与 exe 同密钥体系；
+# 客户端 apply 以其 commit/sequence 为降级闸权威，exe_sha256/plugins_sha256
+# 为安装硬闸。plugins/ 缺席或空 = 空表（客户端按「无绑定」诚实降级）。env 缺
+# 席（非主 staging / 无 Secrets 提前退出）= 不生成 → 客户端按顺序 Unknown
+# 诚实拒绝（fail-closed）。
 if [ -n "${NMB_MANIFEST_EXE:-}" ] && [ -n "${NMB_UPDATE_SEQUENCE:-}" ]; then
     echo "==> 生成签名更新清单（manifest.json，sequence=$NMB_UPDATE_SEQUENCE）"
     MANIFEST_EXE=""
@@ -128,16 +130,26 @@ if [ -n "${NMB_MANIFEST_EXE:-}" ] && [ -n "${NMB_UPDATE_SEQUENCE:-}" ]; then
         NMB_UPDATE_COMMIT="$(sed -n 's/^Commit[[:space:]]*:[[:space:]]*\([0-9a-fA-F]\{40\}\)\r\?$/\1/p' "$STAGING/version.txt" | head -1)"
     fi
     [ -n "${NMB_UPDATE_COMMIT:-}" ] || { echo "❌ 更新清单缺 commit（NMB_UPDATE_COMMIT 与 staging/version.txt 均未提供）"; exit 1; }
-    # 紧凑无空白 JSON：字节即签名覆盖面，客户端剥 footer 后原样 serde 解析
+    # 紧凑无空白 JSON：字节即签名覆盖面，客户端剥 footer 后原样 serde 解析。
+    # plugins_sha256 读的是**已签名后**的字节（plugins 在上方 TARGETS 循环
+    # 先签），与客户端 apply 读包字节一致——哈希时序闭环。
     "$PY" - "$MANIFEST_EXE" "$STAGING/manifest.json" \
         "$(printf '%s' "${NMB_UPDATE_COMMIT}" | tr 'A-F' 'a-f')" "$NMB_UPDATE_SEQUENCE" <<'PYEOF'
-import hashlib, json, sys, datetime
+import hashlib, json, sys, os, datetime
 exe_path, out_path, commit, seq = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+plugins_dir = os.path.join(os.path.dirname(out_path), "plugins")
+plugins = {}
+if os.path.isdir(plugins_dir):
+    for name in sorted(os.listdir(plugins_dir)):        # sorted = 字节确定性
+        p = os.path.join(plugins_dir, name)
+        if os.path.isfile(p):
+            plugins[name] = hashlib.sha256(open(p, "rb").read()).hexdigest()
 manifest = {
     "commit": commit,
     "sequence": seq,
     "exe_sha256": hashlib.sha256(open(exe_path, "rb").read()).hexdigest(),
     "built_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+    "plugins_sha256": plugins,
 }
 open(out_path, "wb").write(json.dumps(manifest, separators=(",", ":")).encode())
 PYEOF

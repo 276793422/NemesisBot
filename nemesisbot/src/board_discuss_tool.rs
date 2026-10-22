@@ -90,23 +90,12 @@ pub(crate) fn parse_discuss_args(args: &str) -> Result<DiscussAction, String> {
 }
 
 impl BoardDiscussTool {
-    /// 找在线 coordinator（≠本节点）。master 地址每次现查——节点表鲜活，
-    /// 重选主 / 离线切换不需要重启本工具。
+    /// 找在线 coordinator（≠本节点）。实现抽到 cluster_agent.rs 共享
+    /// （[`crate::cluster_agent::find_online_coordinator`]）——board_claim
+    /// 工具同源，master 地址运行时现查（节点表鲜活，重选主 / 离线切换
+    /// 不需要重启本工具）。
     fn find_coordinator(&self, self_node_id: &str) -> Result<String, String> {
-        self.cluster
-            .list_nodes()
-            .into_iter()
-            .find(|n| {
-                n.base.role == nemesis_types::cluster::NodeRole::Coordinator
-                    && n.base.id != self_node_id
-                    && n.is_online()
-            })
-            .map(|n| n.base.id)
-            .ok_or_else(|| {
-                "no online coordinator known (cluster not started, or master offline \
-                 — the board.sync backfill channel will retry later)"
-                    .to_string()
-            })
+        crate::cluster_agent::find_online_coordinator(&self.cluster, self_node_id)
     }
 }
 

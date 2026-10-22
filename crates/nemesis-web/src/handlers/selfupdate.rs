@@ -1,14 +1,19 @@
-//! L9 selfupdate WSAPI — `selfupdate.check` / `selfupdate.apply` /
-//! `selfupdate.status`。
+//! L9 selfupdate WSAPI — `selfupdate.check` / `selfupdate.download` /
+//! `selfupdate.apply` / `selfupdate.status` / `selfupdate.cancel_download`。
 //!
-//! manager 槽（`set_manager`，gateway run_runtime 审批装配点注入）与启动身份
+//! manager 槽（`set_manager`，gateway run_runtime 装配点注入）与启动身份
 //! 槽（`set_boot_identity`：version + 短 commit + workspace）都是静态槽
 //!（身份槽 OnceLock；manager 槽 RwLock<Option>——测试进程需可清，装配语义
 //! 仍「首个生效」）——handlers 模块无状态、槽未装配时命令诚实报「未装配」
 //!（plugins_wasm
 //! installer 槽同款模式）。check/status/journal 只依赖身份槽（无 feature）；
-//! apply 需要 `selfupdate` feature（manager 类型本体）+ gateway 装配，双闸
-//! 诚实降级。
+//! download/apply/cancel 需要 `selfupdate` feature（manager 类型本体）+
+//! gateway 装配，双闸诚实降级。
+//!
+//! 交互形态（2026-10-21 用户拍板）：download/apply 都是**受理即回**的后台
+//! 任务——进度走 SSE `selfupdate-progress`（易逝事件，不进断线补拉）+
+//! status 轮询快照；确认在 Dashboard 侧完成（MessageBox 式确认框），后端
+//! 无审批卡（v4 签名验签是安全闸）。
 
 use std::sync::OnceLock;
 
@@ -68,6 +73,22 @@ pub fn clear_manager_for_tests() {
     *MANAGER.write().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
+/// 本地待装包状态（无 updates/ 或元数据损坏 = Null——load_pending 内部
+/// 已对坏 meta/坏 zip 做整清，这里只投影）。
+#[cfg(feature = "selfupdate")]
+fn pending_value() -> serde_json::Value {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| crate::selfupdate::load_pending(&exe))
+        .and_then(|p| serde_json::to_value(&p).ok())
+        .unwrap_or(serde_json::Value::Null)
+}
+
+#[cfg(not(feature = "selfupdate"))]
+fn pending_value() -> serde_json::Value {
+    serde_json::Value::Null
+}
+
 pub struct SelfupdateHandler;
 
 #[async_trait::async_trait]
@@ -77,7 +98,7 @@ impl ModuleHandler for SelfupdateHandler {
     }
 
     fn commands(&self) -> &'static [&'static str] {
-        &["check", "apply", "status"]
+        &["check", "download", "apply", "status", "cancel_download"]
     }
 
     async fn handle_cmd(
@@ -88,15 +109,57 @@ impl ModuleHandler for SelfupdateHandler {
     ) -> Result<Option<serde_json::Value>, String> {
         match cmd {
             // 只读检查：Release 最新产物 vs 当前 commit 身份。网络失败诚实报。
+            // 成功结果缓存进 manager（status 面供 Dashboard 免重查）；返回值
+            // 合并本地待装包态（pending 非空 = ready_to_apply）。
             "check" => {
                 let ident = boot_identity()
                     .map(|b| (b.version.clone(), b.commit.clone()))
                     .unwrap_or_default();
                 let c = crate::selfupdate::check(&ident.0, &ident.1).await?;
-                Ok(Some(serde_json::to_value(&c).map_err(|e| e.to_string())?))
+                let mut v = serde_json::to_value(&c).map_err(|e| e.to_string())?;
+                #[cfg(feature = "selfupdate")]
+                if let Some(mgr) = manager() {
+                    mgr.store_check(c.clone());
+                }
+                if let Some(obj) = v.as_object_mut() {
+                    obj.insert("pending".to_string(), pending_value());
+                }
+                Ok(Some(v))
             }
-            // 九步 apply：受理即回（下载 + 审批卡 + staging 全程分钟级，不能
-            // 占住 WSAPI 响应）；进度经审批 SSE / tracing / 审计链可见。
+            // 两段式第一步：只下载 + 落盘 + sha 校验。受理即回（后台任务），
+            // 进度走 SSE `selfupdate-progress` + status 轮询；重复调用幂等
+            // （同目标已在下/已就绪直接返回成功）。
+            "download" => {
+                #[cfg(feature = "selfupdate")]
+                {
+                    let mgr = manager().ok_or_else(|| {
+                        "selfupdate 子系统未装配（gateway 装配未完成）".to_string()
+                    })?;
+                    let commit = boot_identity()
+                        .map(|b| b.commit.clone())
+                        .unwrap_or_default();
+                    tokio::spawn(async move {
+                        match mgr.download(&commit).await {
+                            Ok(msg) => tracing::info!("[SelfUpdate] {msg}"),
+                            Err(e) => tracing::warn!("[SelfUpdate] download 失败：{e}"),
+                        }
+                    });
+                    Ok(Some(serde_json::json!({
+                        "accepted": true,
+                        "note": "下载已受理：进度走 SSE selfupdate-progress 与 selfupdate.status"
+                    })))
+                }
+                #[cfg(not(feature = "selfupdate"))]
+                {
+                    Err("selfupdate 通道未编译（构建未带 selfupdate feature）；\
+                         请手动下载 Release 包替换"
+                        .to_string())
+                }
+            }
+            // 两段式第二步（或一步式直达）：staging + 受控重启。受理即回；
+            // 无待装包自动先下载（CLI 兼容旧一步式调用）；执行进度走 SSE
+            // 与 gateway 日志；成功后自动重启（确认在 Dashboard 侧完成，
+            // 后端无审批卡——v4 验签是安全闸）。
             "apply" => {
                 let allow_downgrade = data
                     .as_ref()
@@ -119,7 +182,8 @@ impl ModuleHandler for SelfupdateHandler {
                     });
                     Ok(Some(serde_json::json!({
                         "accepted": true,
-                        "note": "apply 已受理：审批卡经 SSE 下发；结果看 gateway 日志与审计链（决策流）"
+                        "note": "apply 已受理：无待装包会自动先下载；执行进度走 SSE \
+                                 （selfupdate-progress）与 gateway 日志；成功后自动重启"
                     })))
                 }
                 #[cfg(not(feature = "selfupdate"))]
@@ -130,24 +194,42 @@ impl ModuleHandler for SelfupdateHandler {
                         .to_string())
                 }
             }
-            // 状态查询：启动身份 + journal 相位 + 保险丝用时 + manager 在场。
+            // 状态查询：启动身份 + journal 相位 + 平台支持 + 待装包 + 下载
+            // 进度快照 + check 缓存（Dashboard 启动恢复态一次拉全）。
             "status" => {
                 let ident = boot_identity();
                 let (version, commit) = ident
                     .map(|b| (b.version.clone(), b.commit.clone()))
                     .unwrap_or_default();
-                let (journal_phase, fuse_elapsed_ms) = match ident {
-                    Some(b) => (
-                        crate::selfupdate::load_journal(&b.workspace).map(|j| j.phase),
-                        crate::selfupdate::last_attempt_ms(&b.workspace)
-                            .map(|last| crate::selfupdate::now_ms().saturating_sub(last)),
-                    ),
-                    None => (None, None),
-                };
+                let journal_phase =
+                    ident.map(|b| crate::selfupdate::load_journal(&b.workspace).map(|j| j.phase));
                 #[cfg(feature = "selfupdate")]
-                let wired = manager().is_some();
+                let (wired, download_v, cached_v) = {
+                    let mgr = manager();
+                    let download_v = mgr
+                        .as_ref()
+                        .map(|m| serde_json::to_value(m.progress_snapshot()).unwrap_or_default())
+                        .unwrap_or_else(|| serde_json::json!({"active": false, "phase": "idle"}));
+                    let cached_v = mgr
+                        .as_ref()
+                        .and_then(|m| m.cached_check())
+                        .map(|(c, at)| {
+                            let mut cv =
+                                serde_json::to_value(&c).unwrap_or(serde_json::Value::Null);
+                            if let Some(obj) = cv.as_object_mut() {
+                                obj.insert("checked_at_ms".to_string(), serde_json::json!(at));
+                            }
+                            cv
+                        })
+                        .unwrap_or(serde_json::Value::Null);
+                    (mgr.is_some(), download_v, cached_v)
+                };
                 #[cfg(not(feature = "selfupdate"))]
-                let wired = false;
+                let (wired, download_v, cached_v) = (
+                    false,
+                    serde_json::json!({"active": false, "phase": "idle"}),
+                    serde_json::Value::Null,
+                );
                 Ok(Some(serde_json::json!({
                     "version": version,
                     "commit": commit,
@@ -155,9 +237,30 @@ impl ModuleHandler for SelfupdateHandler {
                     "asset": crate::selfupdate::TARGET_ASSET,
                     "wired": wired,
                     "journal_phase": journal_phase,
-                    "fuse_elapsed_ms": fuse_elapsed_ms,
-                    "fuse_window_ms": crate::selfupdate::APPLY_FUSE_MILLIS,
+                    "platform_supported": crate::selfupdate::apply_supported(),
+                    "pending": pending_value(),
+                    "download": download_v,
+                    "cached_check": cached_v,
                 })))
+            }
+            // 取消在途下载：旗标置位，下载回调下一个数据块即中止并整清
+            // updates/——回 [可下载] 态。
+            "cancel_download" => {
+                #[cfg(feature = "selfupdate")]
+                {
+                    let mgr = manager().ok_or_else(|| {
+                        "selfupdate 子系统未装配（gateway 装配未完成）".to_string()
+                    })?;
+                    mgr.cancel_download();
+                    Ok(Some(serde_json::json!({
+                        "accepted": true,
+                        "note": "取消请求已受理：下载中止后 updates/ 将被清空"
+                    })))
+                }
+                #[cfg(not(feature = "selfupdate"))]
+                {
+                    Err("selfupdate 通道未编译（构建未带 selfupdate feature）".to_string())
+                }
             }
             _ => Err(format!("unknown command: selfupdate.{}", cmd)),
         }

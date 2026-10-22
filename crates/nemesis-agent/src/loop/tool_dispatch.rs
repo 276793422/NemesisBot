@@ -1197,6 +1197,24 @@ impl AgentLoop {
                     let args = serde_json::from_str(&tool_call.arguments)
                         .unwrap_or(serde_json::Value::Null);
                     let _ = forge.collector().record_with_args(exp, &args).await;
+                    // Audit P0-F1（2026-10-22）：TraceStore 原先零生产调用——
+                    // monitor 的实效对比链在这里断头。经 Forge::record_trace_event
+                    // JSONL 直写（写失败只 warn，观测数据不反噬工具链）。
+                    // session_key 与经验台账同格式，monitor 侧按它分组回话轨迹。
+                    forge
+                        .record_trace_event(nemesis_forge::trace::TraceEvent {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            event_type: "tool_call".into(),
+                            session_key: format!("{}:{}", context.channel, context.chat_id),
+                            timestamp: chrono::Local::now().to_rfc3339(),
+                            data: serde_json::json!({
+                                "tool": tool_call.name,
+                                "ok": !result.contains("SECURITY BLOCKED")
+                                    && !result.contains("Tool error:"),
+                                "duration_ms": tool_start.elapsed().as_millis() as u64,
+                            }),
+                        })
+                        .await;
                 }
             }
         }

@@ -3,14 +3,15 @@
 //! 三臂：
 //! - `check`  ：直接查 Release 最新产物 vs 本进程 commit 身份（不需要 gateway
 //!   在跑——版本身份 = git commit，编译期注入）。
-//! - `status` ：本进程身份 + workspace journal/保险丝现场（不需要 gateway）。
-//! - `apply`  ：触发**正在跑的 gateway** 走九步编排（POST /api/internal
-//!   `selfupdate_apply`）——下载/v4 验签/审批卡/staging/受控重启全在 gateway
-//!   侧同源执行（审批卡全平台可见），CLI 只受理；成功后 gateway 自行走优雅
-//!   停机，新版本进程已在等它退场。`--allow-downgrade` 放行回退（默认拒）。
+//! - `status` ：本进程身份 + workspace journal 现场 + 本地待装包（不需要
+//!   gateway）。
+//! - `apply`  ：触发**正在跑的 gateway** 走两段式 apply（POST /api/internal
+//!   `selfupdate_apply`）——待装包就位/v4 验签/staging/受控重启全在 gateway
+//!   侧同源执行（无待装包自动先下载），CLI 只受理；成功后 gateway 自行走
+//!   优雅停机，新版本进程已在等它退场。`--allow-downgrade` 放行回退（默认拒）。
 //!
-//! apply 的本地快检（journal 未收口 / 24h 保险丝窗口）与 gateway 九步同源
-//! 判据（同一组 pub fn），只挡明显打空枪——真闸在 gateway 侧重跑一遍。
+//! apply 的本地快检（journal 未收口）与 gateway 同判据（同一组 pub fn），只
+//! 挡明显打空枪——真闸在 gateway 侧重跑一遍。
 
 use std::path::Path;
 
@@ -23,14 +24,14 @@ use crate::common;
 pub enum SelfupdateCommand {
     /// Check the latest Release asset against the current build's commit.
     Check,
-    /// Apply the update via a RUNNING gateway (nine-step orchestration;
-    /// approval card + v4 signature verification happen gateway-side).
+    /// Apply the update via a RUNNING gateway (downloads if no pending
+    /// package; v4 signature verification happens gateway-side).
     Apply {
         /// Allow switching to an OLDER commit than the current one.
         #[arg(long)]
         allow_downgrade: bool,
     },
-    /// Show current identity + pending journal / frequency-fuse state.
+    /// Show current identity + pending journal / local pending package.
     Status,
 }
 
@@ -105,34 +106,36 @@ fn run_status(workspace: &Path) -> Result<()> {
         }
         None => println!("Update journal: 无未竟事务。"),
     }
-    match fuse_elapsed(workspace) {
-        Some(elapsed) if elapsed < nemesis_web::selfupdate::APPLY_FUSE_MILLIS => {
+    match std::env::current_exe()
+        .ok()
+        .and_then(|exe| nemesis_web::selfupdate::load_pending(&exe))
+    {
+        Some(p) => {
             println!(
-                "Frequency fuse: 已用 {} / 24h（窗口内再 apply 会被拒）。",
-                format_ms(elapsed)
+                "Pending package: {}（commit {}，{}MB，下载于 {}）",
+                p.release_tag,
+                if p.target_commit.is_empty() {
+                    "<unknown>"
+                } else {
+                    &p.target_commit[..p.target_commit.len().min(12)]
+                },
+                p.size_bytes / (1024 * 1024),
+                chrono_fmt_ms(p.downloaded_at_ms),
             );
+            println!("  就绪可装——gateway 侧 apply（或 Dashboard【开始更新】）即执行。");
         }
-        _ => println!("Frequency fuse: 未触发或窗口已过。"),
+        None => println!("Pending package: 无待装包（updates/ 干净）。"),
     }
     Ok(())
 }
 
 async fn run_apply(workspace: &Path, allow_downgrade: bool) -> Result<()> {
-    // 前置快检（与 gateway 九步同判据）：journal 未收口 / 24h 保险丝窗口内，
-    // 本地直接拒——不占用 gateway 的审批面。
+    // 前置快检（与 gateway 同判据）：journal 未收口，本地直接拒——不占用
+    // gateway 的单飞闸。
     if let Some(j) = nemesis_web::selfupdate::load_journal(workspace) {
         bail!(
             "有未收口的更新事务（phase={}）——先重启 gateway 让启动收口跑完（成功确认或回滚），再 apply。",
             j.phase
-        );
-    }
-    if let Some(elapsed) = fuse_elapsed(workspace)
-        && elapsed < nemesis_web::selfupdate::APPLY_FUSE_MILLIS
-    {
-        bail!(
-            "24h 频率保险丝窗口内（距上次尝试 {}）——防坏包重试风暴；确需重试请删除 {}。",
-            format_ms(elapsed),
-            nemesis_web::selfupdate::fuse_path(workspace).display()
         );
     }
 
@@ -155,16 +158,10 @@ async fn run_apply(workspace: &Path, allow_downgrade: bool) -> Result<()> {
         body["allow_downgrade"] = serde_json::json!(true);
     }
     post_internal(&base_url, &auth_token, &body).await?;
-    println!("✓ apply 已受理（gateway 侧九步编排已启动）。");
-    println!("  审批卡会经 Dashboard/SSE 下发（CRITICAL，超时自动拒绝）；");
-    println!("  结果看 gateway 日志与审计链。成功后 gateway 自动优雅重启为新版本。");
+    println!("✓ apply 已受理（gateway 侧两段式编排已启动；无待装包会自动先下载）。");
+    println!("  执行进度看 gateway 日志与审计链；v4 签名验签是安全闸。");
+    println!("  成功后 gateway 自动优雅重启为新版本。");
     Ok(())
-}
-
-/// 保险丝已过去时间（无记账 = None）。单点封装给 status/apply 两臂共用。
-fn fuse_elapsed(workspace: &Path) -> Option<u64> {
-    nemesis_web::selfupdate::last_attempt_ms(workspace)
-        .map(|last| nemesis_web::selfupdate::now_ms().saturating_sub(last))
 }
 
 /// /api/internal 的 X-Auth-Token：读与 gateway 同一 home 的 config.json
@@ -206,11 +203,13 @@ async fn post_internal(base_url: &str, token: &str, body: &serde_json::Value) ->
     Ok(())
 }
 
-fn format_ms(ms: u64) -> String {
-    let mins = ms / 60_000;
-    if mins >= 60 {
-        format!("{}h{}m", mins / 60, mins % 60)
-    } else {
-        format!("{mins}m")
-    }
+/// epoch ms → 本地时间短格式（status 展示用）。
+fn chrono_fmt_ms(ms: u64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms as i64)
+        .map(|t| {
+            t.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|| format!("{ms}ms"))
 }

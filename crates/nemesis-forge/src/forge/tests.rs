@@ -54,7 +54,6 @@ fn test_forge_subsystem_accessors_none() {
     assert!(forge.pipeline().is_none());
     assert!(forge.mcp_installer().is_none());
     assert!(forge.syncer().is_none());
-    assert!(forge.trace_collector().is_none());
     assert!(forge.trace_store().is_none());
     assert!(forge.learning_engine().is_none());
     assert!(forge.deployment_monitor().is_none());
@@ -463,14 +462,11 @@ fn test_forge_set_provider_without_subsystems() {
 fn test_forge_init_trace() {
     let dir = tempfile::tempdir().unwrap();
     let mut forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
-    assert!(forge.trace_collector().is_none());
     assert!(forge.trace_store().is_none());
 
-    let collector = crate::trace::TraceCollector::new();
     let store = crate::trace_store::TraceStore::new(dir.path().join("traces.jsonl"));
-    forge.init_trace(collector, store);
+    forge.init_trace(store);
 
-    assert!(forge.trace_collector().is_some());
     assert!(forge.trace_store().is_some());
 }
 
@@ -948,6 +944,43 @@ async fn test_cleanup_cycle_empty_state() {
     forge.run_cleanup_cycle().await;
 }
 
+#[tokio::test]
+async fn test_cleanup_cycle_removes_old_traces() {
+    // 2026-10-22 验证轮二回归锁：run_cleanup_cycle 必须按
+    // trace.max_trace_age_days 滚动清理 traces JSONL（P0-F1 接线后盘上
+    // 只增不删的缺口）。旧事件（2020）删、新事件（now）留。
+    let dir = tempfile::tempdir().unwrap();
+    let mut forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
+
+    // Wire the trace store exactly like the gateway assembly does.
+    let store = crate::trace_store::TraceStore::new(forge.forge_dir().join("traces"));
+    forge.init_trace(store);
+
+    let store = crate::trace_store::TraceStore::new(forge.forge_dir().join("traces"));
+    let old = crate::trace::TraceEvent {
+        id: "t-old".into(),
+        event_type: "tool_call".into(),
+        session_key: "web:1".into(),
+        timestamp: "2020-01-01T00:00:00Z".into(),
+        data: serde_json::json!({"tool": "file_read", "ok": true}),
+    };
+    let recent = crate::trace::TraceEvent {
+        id: "t-new".into(),
+        event_type: "tool_call".into(),
+        session_key: "web:2".into(),
+        timestamp: chrono::Local::now().to_rfc3339(),
+        data: serde_json::json!({"tool": "file_read", "ok": true}),
+    };
+    store.append(&old).await.unwrap();
+    store.append(&recent).await.unwrap();
+
+    forge.run_cleanup_cycle().await;
+
+    let after = store.read_all().await.unwrap();
+    assert_eq!(after.len(), 1, "old trace event should be removed");
+    assert_eq!(after[0].id, "t-new", "recent trace event should survive");
+}
+
 // =========================================================================
 // Layer 2A: Pattern detection tests
 // =========================================================================
@@ -1293,52 +1326,43 @@ fn test_s8_forge_new_tracing_fields() {
     assert!(!forge.is_running());
 }
 
-/// Background loops (collector/reflector/cleanup) fire once their interval
-/// elapses. Real time with 1s intervals: the collector flush tick must write
-/// aggregates.jsonl (observable proof the loop body ran), the reflection and
-/// cleanup ticks run with no data (early returns).
+/// Background loops (reflector/cleanup) fire once their interval elapses.
+/// Real time with 1s intervals: the reflection tick must write a report
+/// (observable proof the loop body ran); the cleanup tick runs with no data
+/// (early return).（collector_loop 已随聚合线移除，2026-10-22——可观测信号
+/// 从 aggregates.jsonl 换成反思报告。）
 #[tokio::test]
 async fn test_s8_background_loops_fire_intervals() {
+    let _g = crate::test_support::quiet_trace_guard();
     let dir = tempfile::tempdir().unwrap();
     let mut config = ForgeConfig::default();
-    config.collection.flush_interval_secs = 1;
     config.reflection.interval_secs = 1;
     config.storage.cleanup_interval_secs = 1;
-    let forge = Arc::new(Forge::new(config, dir.path().to_path_buf()));
+    let mut forge = Forge::new(config, dir.path().to_path_buf());
+    let reflections_dir = dir.path().join("forge").join("reflections");
+    std::fs::create_dir_all(&reflections_dir).unwrap();
+    forge.init_reflector(Reflector::with_reflections_dir(reflections_dir.clone()));
+    let forge = Arc::new(forge);
 
-    // Seed one experience pattern so the collector flush tick has observable
-    // output (aggregates.jsonl under forge/experiences).
-    forge
-        .collector()
-        .record(nemesis_types::forge::Experience {
-            id: "s8-bg".into(),
-            tool_name: "s8_tool".into(),
-            input_summary: "in".into(),
-            output_summary: "out".into(),
-            success: true,
-            duration_ms: 10,
-            timestamp: chrono::Local::now().to_rfc3339(),
-            session_key: "s8".into(),
-        })
-        .await;
+    // Seed experiences so the reflection tick has observable output (a report
+    // under forge/reflections; s8 系列已证明 3 条经验即可写报告).
+    write_test_experiences(forge.forge_dir(), 5).await;
 
     Arc::clone(&forge).start().await;
     assert!(forge.is_running());
 
-    // Let all three loops tick at least once (interval = 1s).
+    // Let both loops tick at least once (interval = 1s).
     tokio::time::sleep(std::time::Duration::from_millis(1800)).await;
 
     forge.stop().await;
     assert!(!forge.is_running());
 
-    let aggregates = dir
-        .path()
-        .join("forge")
-        .join("experiences")
-        .join("aggregates.jsonl");
+    let reports = std::fs::read_dir(&reflections_dir)
+        .map(|d| d.count())
+        .unwrap_or(0);
     assert!(
-        aggregates.exists(),
-        "collector loop tick should have flushed aggregates.jsonl"
+        reports > 0,
+        "reflection loop tick should have written a report"
     );
 }
 
@@ -1677,44 +1701,44 @@ fn test_store_distilled_draft_skips_when_active_exists() {
 /// Background loops with interval = 2s: the first 1s tick must take the
 /// "elapsed < interval" branch of each loop (the else-arms of the
 /// `elapsed >= interval` checks) before the second tick fires the action.
-/// Observable proof the loops are alive: aggregates.jsonl appears once the
-/// flush interval elapses.
+/// Observable proof the ladder semantics hold: no report before the interval
+/// elapses, a report after.（collector_loop 已随聚合线移除，2026-10-22。）
 #[tokio::test]
 async fn test_s8_background_loops_interval_ladder() {
+    let _g = crate::test_support::quiet_trace_guard();
     let dir = tempfile::tempdir().unwrap();
     let mut config = ForgeConfig::default();
-    config.collection.flush_interval_secs = 2;
     config.reflection.interval_secs = 2;
     config.storage.cleanup_interval_secs = 2;
-    let forge = Arc::new(Forge::new(config, dir.path().to_path_buf()));
+    let mut forge = Forge::new(config, dir.path().to_path_buf());
+    let reflections_dir = dir.path().join("forge").join("reflections");
+    std::fs::create_dir_all(&reflections_dir).unwrap();
+    forge.init_reflector(Reflector::with_reflections_dir(reflections_dir.clone()));
+    let forge = Arc::new(forge);
 
-    forge
-        .collector()
-        .record(nemesis_types::forge::Experience {
-            id: "s8-ladder".into(),
-            tool_name: "s8_ladder_tool".into(),
-            input_summary: "in".into(),
-            output_summary: "out".into(),
-            success: true,
-            duration_ms: 5,
-            timestamp: chrono::Local::now().to_rfc3339(),
-            session_key: "s8".into(),
-        })
-        .await;
+    write_test_experiences(forge.forge_dir(), 5).await;
+
+    let report_count = || -> usize {
+        std::fs::read_dir(&reflections_dir)
+            .map(|d| d.count())
+            .unwrap_or(0)
+    };
 
     Arc::clone(&forge).start().await;
-    // Tick 1 (~1s): all three loops take the not-yet branch.
-    // Tick 2 (~2s): flush/reflection/cleanup fire.
-    tokio::time::sleep(std::time::Duration::from_millis(2800)).await;
+    // Tick 1 (~1s): all loops take the not-yet branch — no report yet.
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    assert_eq!(
+        report_count(),
+        0,
+        "reflection must not fire before its interval"
+    );
+    // Tick 2 (~2s total): the reflection tick fires.
+    tokio::time::sleep(std::time::Duration::from_millis(1600)).await;
     forge.stop().await;
     assert!(!forge.is_running());
     assert!(
-        dir.path()
-            .join("forge")
-            .join("experiences")
-            .join("aggregates.jsonl")
-            .exists(),
-        "collector flush tick should have written aggregates.jsonl"
+        report_count() > 0,
+        "reflection tick should have written a report after its interval"
     );
 }
 
@@ -2062,7 +2086,6 @@ async fn test_start_reflect_interval_zero_disables_reflection_loop() {
     let _g = crate::test_support::quiet_trace_guard();
     let dir = tempfile::tempdir().unwrap();
     let mut config = ForgeConfig::default();
-    config.collection.flush_interval_secs = 3600;
     config.reflection.interval_secs = 0; // 0=关
     config.storage.cleanup_interval_secs = 3600;
     let mut forge = Forge::new(config, dir.path().to_path_buf());

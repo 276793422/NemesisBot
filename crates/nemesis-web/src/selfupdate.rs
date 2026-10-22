@@ -1,54 +1,95 @@
-//! L9 selfupdate 版本自切换通道（2026-10-13，内部专项总计划 T4 战略项）。
+//! L9 selfupdate 版本自切换通道（2026-10-13，内部专项总计划 T4 战略项；
+//! 2026-10-22 两段式改造：审批卡/频率保险丝退役，下载与安装分离）。
 //!
-//! 九步 apply 通道（docs/INFO/2026-10-12_LLM自更新通道设计方案.md §四）：
-//! estop/降级/频率三闸 → CRITICAL 审批卡 → release_fetch 下载 → v4 验签
-//! Valid-only → Windows rename staging → 受控重启（spawn 新进程等旧进程退场）
-//! → 启动自检 → 回滚 → 审计链留痕。nemesis-verify 的第二个生产消费点
-//!（第一个 = 启动自验 verify_policy）。
+//! apply 通道（docs/INFO/2026-10-12_LLM自更新通道设计方案.md §四；两段式
+//! 改造后的步骤序）：
+//! estop 闸 → 单飞锁 + journal 闸 + 安装目录锁 → 待装包就位（本地
+//! `updates/pending.<zip|tar.gz>`，缺席自动先下载）→ 发布源对账（已最新/
+//! 过期作废/断网按 pending 兜底）→ 解包 + 身份闸链（签名清单验签/完整性
+//! 绑定/plugins 绑定/同版/降级）→ v4 验签 Valid-only → plugins 整包替换
+//! staging + rename staging → 受控重启（spawn 新进程等旧进程退场）→ 启动
+//! 自检 → 回滚 → 审计链留痕。nemesis-verify 的第二个生产消费点（第一个 =
+//! 启动自验 verify_policy）。
+//!
+//! 人闸位置（用户拍板 2026-10-21）：CRITICAL 审批卡退役——由前端
+//! MessageBox 确认框替代（点【开始更新】→「确定更新到 vX？」→ 受理执行，
+//! 用户点按钮即主体意志）；真正的安全闸是 v4 签名验签（编译期根锚，
+//! Valid-only，任何路径不豁免）。24h 频率保险丝同步退役——两段式后重试
+//! 成本趋近零（下载完才装、坏包清空重来），风暴前提不存在；并发治理只留
+//! 单飞锁 + 安装目录跨进程锁。
 //!
 //! 职责与门控：
-//! - 本模块住 nemesis-web（release_fetch / 审批 trait 同库可达）；nemesisbot
-//!   侧只做装配（gateway run_runtime 建 manager 注入 WSAPI 槽 + 内部命令臂）
-//!   与 CLI 命令转发。
-//! - `selfupdate` feature（= security + zip + nemesis-verify）门控 apply 编排
-//!   （SelfUpdateManager）——IoT 裁剪构建可整体关掉更新通道；journal / fuse /
-//!   check / boot 收口不门控（纯 fs + serde_json，recover_on_boot 在任何构建
-//!   都要能清残留现场）。
+//! - 本模块住 nemesis-web（release_fetch / 事件 hub 同库可达）；nemesisbot
+//!   侧只做装配（gateway run_runtime 建 manager 注入 WSAPI 槽 + 内部命令臂
+//!   + 启动自动 check）与 CLI 命令转发。
+//! - `selfupdate` feature（= security + zip + tar + flate2 + nemesis-verify）
+//!   门控 apply 编排与下载编排（SelfUpdateManager）——IoT 裁剪构建可整体
+//!   关掉更新通道；journal / check / boot 收口不门控（纯 fs + serde_json，
+//!   recover_on_boot 在任何构建都要能清残留现场）。
 //! - 版本身份 = **签名更新清单（R1）**：包内 `manifest.json` 是「JSON 字节 +
 //!   CMS + v4 footer」单文件签名载体（`{commit, sequence, exe_sha256,
-//!   built_at}`，CI 用与 exe 同一密钥体系签发），客户端 `verify_bytes` 验签
-//!   Valid 后取身份，且 `sha256(exe_bytes)` 必须等于清单 `exe_sha256`（完整性
-//!   硬拒，不豁免）。版本单调性 = `sequence` 数值比较（CI run_number），「当前」
-//!   基准来自 `<exe_dir>/applied_manifest.json`（上次成功更新写入的已验签清单
-//!   副本）。**顺序未知 = 默认拒绝**（清单缺失/验签失败/applied 副本缺失——
-//!   存量安装首次更新即此形态），`allow_downgrade` 显式豁免；v4 验签与审批卡
-//!   永不豁免。外置 version.txt 降级为展示用途（改写它无法伪装版本）；发布
-//!   列表顺序判定整体退役。
+//!   plugins_sha256, built_at}`，CI 用与 exe 同一密钥体系签发），客户端
+//!   `verify_bytes` 验签 Valid 后取身份，且 `sha256(exe_bytes)` 必须等于
+//!   清单 `exe_sha256`（完整性硬拒，不豁免）；清单带 `plugins_sha256`
+//!   （文件名 → 摘要映射）时包内 plugins/ 逐文件 sha256 + **集合双向匹配**
+//!   硬拒（多/少都拒，2026-10-22 用户拍板）；旧清单无此字段 = 诚实降级
+//!   不绑定（审计留痕）。版本单调性 = `sequence` 数值比较（CI
+//!   run_number），「当前」基准来自 `<exe_dir>/applied_manifest.json`（上次
+//!   成功更新写入的已验签清单副本）。**顺序未知 = 默认拒绝**（清单缺失/
+//!   验签失败/applied 副本缺失——存量安装首次更新即此形态），
+//!   `allow_downgrade` 显式豁免；v4 验签永不豁免。外置 version.txt 降级为
+//!   展示用途（改写它无法伪装版本）；发布列表顺序判定整体退役。
 //! - staging rename dance 与 Chrome/VS Code 同款：Windows 允许 rename 运行中
-//!   的 PE、不允许覆盖——exe→.old、.new→exe 两步，窗口毫秒级；journal 先于
-//!   rename 落盘，启动期 [`recover_on_boot`] 按相位收口。
-//! - 非 Windows v1 诚实边界：主包 tar.gz 无解包依赖（tar/flate2 不在依赖树），
-//!   apply 明确报「暂不支持」；check/status/boot 收口全平台可用。
+//!   的 PE、不允许覆盖——exe→.old、.new→exe 两步，窗口毫秒级；POSIX rename
+//!   天然原子覆盖运行中二进制，同一 dance 在 Linux 单步即可（代码同一份，
+//!   Windows 臂多一步让位）。journal 先于任何 rename 落盘，启动期
+//!   [`recover_on_boot`] 按相位收口。
+//! - **plugins 整包替换**（2026-10-22 用户拍板：主包自带 plugins/ 子树，
+//!   整包同版本分发——接口错配根因消失，不需单独打包）：解包产物里
+//!   plugins/ 平面文件先落 `plugins.new-{pid}/` staging；舞步 = 既有同名
+//!   让位 `plugins.old-{pid}/` → 新文件逐个 rename 进 `plugins/`（Windows
+//!   运行中 DLL 可 rename 不可覆盖，与 exe 同语义；目录不整迁——映射中的
+//!   DLL 会让整目录 rename 失败）。**只同名覆盖不删既有**——用户自装插件
+//!   不受伤。回滚与 exe **同进同退**（journal 记 staging 目录，boot 收口
+//!   连带回滚），杜绝「旧 exe + 新插件」错配。
+//! - 两段式持久态（`<exe_dir>/updates/`，自更新私有）：`pending.zip` /
+//!   `pending.tar.gz`（`.part` 中转改名）+ `pending.json` 元数据（**后写**
+//!   ——见 meta 必有包）。每次读取做 sha256 复验，坏包**整个清空重来**
+//!   （不续传不修复，用户拍板）；apply 无 pending 自动先下载；更新收口
+//!   删包；发布源前进 → pending 过期作废（清空重下）。
+//! - 平台支持（2026-10-22 扩面）：windows/linux = apply 全链路（解包按
+//!   包格式 magic 分派 zip/tar.gz，不按平台 cfg 硬分）；macos = TARGET_ASSET
+//!   留位（`nightly-macos.tar.gz`，CI 未产出 → check 诚实 asset_present=
+//!   false）、apply 显式拒绝桩；android = APK 发行形态不走本通道，显式
+//!   拒绝桩。能力位单一真相源 = [`apply_supported`]。
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// 官方发布源主包资产名（daily-release.yml 产物命名，随平台）。
+/// 官方发布源主包资产名（daily-release.yml 产物命名，随平台）。平台表：
+/// windows=zip / linux=tar.gz / macos=留位（CI matrix 尚无 darwin 条目，
+/// check 对资产缺席诚实报 asset_present=false）/ android=空（APK 发行
+/// 形态不走 GitHub 主包通道，apply_supported 同步 false）。
 #[cfg(target_os = "windows")]
 pub const TARGET_ASSET: &str = "nightly-windows.zip";
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 pub const TARGET_ASSET: &str = "nightly-linux.tar.gz";
+#[cfg(target_os = "macos")]
+pub const TARGET_ASSET: &str = "nightly-macos.tar.gz";
+#[cfg(target_os = "android")]
+pub const TARGET_ASSET: &str = "";
+
+/// apply 平台支持位（能力表单一真相源，取代旧 `cfg!(windows)` 单点）：
+/// windows/linux = 全链路可用；macos = 机制就绪但 CI 无产物且未实测，
+/// 诚实 false（留位，打开即真）；android = APK 通道，false。
+pub fn apply_supported() -> bool {
+    cfg!(any(target_os = "windows", target_os = "linux"))
+}
 
 /// 更新包读取上限：300MB（全量构建 zip 百 MB 级，裁剪包更小；上限只防
 /// 异常巨包，不按最坏包体抠）。
 pub const MAX_UPDATE_ASSET_BYTES: usize = 300 * 1024 * 1024;
-
-/// 频率保险丝窗口：24h 一次（防 update loop；审批通过后的失败尝试同样计数）。
-pub const APPLY_FUSE_MILLIS: u64 = 24 * 60 * 60 * 1000;
-
-/// 审批卡等待时长（与插件安装卡同口径 300s）。
-pub const APPLY_APPROVAL_TIMEOUT_SECS: u64 = 300;
 
 /// 等旧进程退场超时（受控重启：新进程 spawn 后旧进程优雅停机窗口）。
 pub const WAIT_OLD_PID_TIMEOUT_MILLIS: u64 = 120 * 1000;
@@ -75,16 +116,20 @@ pub struct UpdateJournal {
     /// 不写 applied 副本）。
     #[serde(default)]
     pub target_manifest: String,
+    /// plugins 整包替换 staging 的绝对路径（2026-10-22 扩面）。`plugins_new`
+    /// = 新插件落位目录（`plugins.new-{pid}`）；`plugins_backup` = 既有同名
+    /// 插件让位目录（`plugins.old-{pid}`）。**双空 = 本次更新无 plugins 舞步**
+    /// （旧包无 plugins/ 子树）；boot 回滚按 journal 幂等收口——exe 回滚变
+    /// noop 后 plugins 回滚仍可重试。`#[serde(default)]` 兼容旧 journal。
+    #[serde(default)]
+    pub plugins_backup_dir: String,
+    #[serde(default)]
+    pub plugins_new_dir: String,
 }
 
 /// journal 现场路径（CLI status / 人工排障用同一路径）。
 pub fn journal_path(workspace: &Path) -> PathBuf {
     workspace.join("state").join("selfupdate.json")
-}
-
-/// 频率保险丝记账路径。
-pub fn fuse_path(workspace: &Path) -> PathBuf {
-    workspace.join("state").join("selfupdate_last_attempt.txt")
 }
 
 pub fn now_ms() -> u64 {
@@ -124,27 +169,30 @@ pub fn clear_journal(workspace: &Path) -> bool {
 /// 带日志的清除（boot 收口等无审计插件的路径用）。
 fn clear_journal_logged(workspace: &Path) {
     if !clear_journal(workspace) {
-        tracing::warn!("[SelfUpdate] journal 清理失败（残留仍在；boot 收口幂等，下次启动可再收）");
+        boot_log_warn("[SelfUpdate] journal 清理失败（残留仍在；boot 收口幂等，下次启动可再收）");
     }
 }
 
-/// 频率保险丝记账（上次 apply 尝试时刻）。独立于 journal——journal 成功路径
-/// 会清，fuse 不可忘。**fail-closed**：记账失败返回 Err，调用方（apply 审批
-/// 通过后）必须拒绝继续——state 目录写失败意味着磁盘/权限异常，此刻继续
-/// staging 的风险远大于中断更新。
-pub fn stamp_fuse(workspace: &Path) -> Result<(), String> {
-    let path = fuse_path(workspace);
-    nemesis_utils::write_file_atomic(
-        &path.to_string_lossy(),
-        now_ms().to_string().as_bytes(),
-        0o644,
-    )
+/// boot 收口日志三件套。**必须 eprintln + tracing 双写**：boot 收口早于日志
+/// 初始化（`init_logger_from_config` 在 `gateway/ctx.rs` 的 assemble 内部，
+/// `gateway::run` 在 [`recover_on_boot`] 之后才 assemble）——此处的 tracing
+/// 事件无 subscriber 接收，静默丢弃（2026-10-22 彩排实证：update_success
+/// 全链跑通但 stdout / 文件双 sink 零痕迹，收口成败完全不可观测）。自更新
+/// 最安全关键的一步不允许零痕迹：gateway 是控制台进程，stderr 恒在（与
+/// verify_policy 启动自检的 eprintln 同理由）。
+fn boot_log_info(msg: &str) {
+    eprintln!("{msg}");
+    tracing::info!("{msg}");
 }
 
-pub fn last_attempt_ms(workspace: &Path) -> Option<u64> {
-    std::fs::read_to_string(fuse_path(workspace))
-        .ok()
-        .and_then(|s| s.trim().parse::<u64>().ok())
+fn boot_log_warn(msg: &str) {
+    eprintln!("{msg}");
+    tracing::warn!("{msg}");
+}
+
+fn boot_log_error(msg: &str) {
+    eprintln!("{msg}");
+    tracing::error!("{msg}");
 }
 
 // ---------------------------------------------------------------------------
@@ -196,13 +244,179 @@ pub fn extract_commit_from_release_body(body: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// 两段式待装包持久态（`<exe_dir>/updates/`；selfupdate feature 门控——
+// 唯一写入方是 SelfUpdateManager，IoT 裁剪构建不引入任何读取/清扫开销）
+// ---------------------------------------------------------------------------
+
+/// 待装包目录（exe 同目录 `updates/`——portable 发行目录随包走，多实例各自
+/// 独立；只读安装目录（Program Files 场景）写失败 = 诚实报错，发行形态以
+/// portable 为主，接受此边界）。
+#[cfg(feature = "selfupdate")]
+pub(crate) fn updates_dir(exe: &Path) -> PathBuf {
+    exe.parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("updates")
+}
+
+/// 待装包文件名（按资产名推导：`nightly-windows.zip` → `pending.zip`；
+/// `nightly-linux.tar.gz` → `pending.tar.gz`）。同一 updates/ 只存一份待装包
+/// ——资产名互斥（每平台只认自己的 TARGET_ASSET），不同资产共存即异常，
+/// 由 load_pending 的 sha256/资产对账兜底整清。
+#[cfg(feature = "selfupdate")]
+fn pending_package_name(asset: &str) -> String {
+    format!(
+        "pending.{}",
+        asset.strip_prefix("nightly-").unwrap_or(asset)
+    )
+}
+
+#[cfg(feature = "selfupdate")]
+pub(crate) fn pending_package_path(exe: &Path, asset: &str) -> PathBuf {
+    updates_dir(exe).join(pending_package_name(asset))
+}
+
+/// 下载中转名：完成后 rename 成 [`pending_package_path`]——读侧永远只见
+/// 完整文件。
+#[cfg(feature = "selfupdate")]
+pub(crate) fn pending_package_part_path(exe: &Path, asset: &str) -> PathBuf {
+    updates_dir(exe).join(format!("{}.part", pending_package_name(asset)))
+}
+
+/// 待装包元数据。**后写**（包就位并 sha256 后才落）——`load_pending` 见到
+/// meta 即必有完整包，半截下载不产生可装形态。
+#[cfg(feature = "selfupdate")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingUpdate {
+    /// 主包资产名（下载对象 + 待装包文件名推导源，对账用）。
+    pub asset: String,
+    /// Release tag（人读展示）。
+    pub release_tag: String,
+    /// 目标 commit（全量 sha；发布 body 缺失 = 空，身份权威归包内签名清单）。
+    pub target_commit: String,
+    /// 包体 SHA-256（读取时复验——坏包整清，不给坏包安装机会；zip/tar.gz
+    /// 通义，字段名沿 zip 首形态）。
+    pub zip_sha256: String,
+    pub size_bytes: u64,
+    pub downloaded_at_ms: u64,
+}
+
+#[cfg(feature = "selfupdate")]
+pub(crate) fn pending_meta_path(exe: &Path) -> PathBuf {
+    updates_dir(exe).join("pending.json")
+}
+
+/// 流式 sha256（300MB 包不整读进内存；复用无条件依赖 sha2）。
+#[cfg(feature = "selfupdate")]
+pub(crate) fn sha256_file(path: &Path) -> Result<String, String> {
+    use sha2::Digest as _;
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| format!("待装包打开失败（{}）：{e}", path.display()))?;
+    let mut hasher = sha2::Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = std::io::Read::read(&mut file, &mut buf)
+            .map_err(|e| format!("待装包读取失败（{}）：{e}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(64);
+    for b in digest {
+        out.push_str(&format!("{b:02x}"));
+    }
+    Ok(out)
+}
+
+/// 读待装包（含完整性复验）。meta 缺失 = None（无事）；meta 坏 / 包缺 /
+/// sha 不匹配 = **整个 updates/ 清空** + None（用户拍板：坏包宁可重下，不给
+/// 安装机会）。
+#[cfg(feature = "selfupdate")]
+pub fn load_pending(exe: &Path) -> Option<PendingUpdate> {
+    let meta_bytes = std::fs::read(pending_meta_path(exe)).ok()?;
+    let pending: PendingUpdate = match serde_json::from_slice(&meta_bytes) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("[SelfUpdate] 待装包元数据损坏（{e}），清空 updates/ 重来");
+            clear_updates_dir(exe);
+            return None;
+        }
+    };
+    let package = pending_package_path(exe, &pending.asset);
+    if !package.exists() {
+        // meta 在包不在 = 异常现场（正常顺序见不到），整清。
+        tracing::warn!(
+            "[SelfUpdate] 待装包元数据在场但 {} 缺失，清空 updates/ 重来",
+            package.display()
+        );
+        clear_updates_dir(exe);
+        return None;
+    }
+    match sha256_file(&package) {
+        Ok(sha) if sha.eq_ignore_ascii_case(&pending.zip_sha256) => Some(pending),
+        Ok(sha) => {
+            tracing::warn!(
+                "[SelfUpdate] 待装包 sha256 复验不匹配（meta {} vs 实际 {sha}），清空 updates/ 重来",
+                &pending.zip_sha256[..pending.zip_sha256.len().min(12)]
+            );
+            clear_updates_dir(exe);
+            None
+        }
+        Err(e) => {
+            tracing::warn!("[SelfUpdate] 待装包 sha256 复验失败（{e}），清空 updates/ 重来");
+            clear_updates_dir(exe);
+            None
+        }
+    }
+}
+
+/// updates/ 全清（下载异常/中断/取消/过期作废/更新收口共用）。韧性删除
+///（Windows AV/索引器瞬时句柄是常态）；目录本就不存在 = 成功。
+#[cfg(feature = "selfupdate")]
+pub(crate) fn clear_updates_dir(exe: &Path) {
+    let dir = updates_dir(exe);
+    if dir.exists() {
+        crate::handlers::release_fetch::remove_dir_all_resilient(&dir);
+    }
+}
+
+/// 待装包落盘（meta 原子写——唯一写入点，zip 已就位后才调用）。
+#[cfg(feature = "selfupdate")]
+pub(crate) fn save_pending(exe: &Path, pending: &PendingUpdate) -> Result<(), String> {
+    let path = pending_meta_path(exe);
+    let bytes =
+        serde_json::to_vec_pretty(pending).map_err(|e| format!("待装包元数据序列化失败：{e}"))?;
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), &bytes, 0o644)
+        .map_err(|e| format!("待装包元数据落盘失败（{}）：{e}", path.display()))
+}
+
+/// SSE 下载进度帧（ephemeral：seq=0 不进环形缓冲——断线补拉重放旧进度
+/// 无意义；在线订阅者直收，`useSSE` 需把事件名加进 [`EVENT_TYPES`]）。
+#[cfg(feature = "selfupdate")]
+pub(crate) fn publish_progress(phase: &str, downloaded: u64, total: Option<u64>) {
+    let pct = total
+        .and_then(|t| (downloaded * 100).checked_div(t))
+        .map(|v| v.min(100));
+    crate::chat_event_log::publish_global_ephemeral(
+        crate::events::EVENT_SELFUPDATE_PROGRESS,
+        serde_json::json!({
+            "phase": phase,
+            "downloaded_bytes": downloaded,
+            "total_bytes": total,
+            "pct": pct,
+        }),
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 降级判定（R1：单调基准 = 签名清单 sequence 数值；发布列表位次版整体退役）
 // ---------------------------------------------------------------------------
 
 /// 降级判定结论。版本单调性以 CI 清单 `sequence`（run_number）数值比较为
 /// 基准；「当前」基准 = `<exe_dir>/applied_manifest.json` 的已验签 sequence。
 #[cfg(feature = "selfupdate")]
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))] // 生产消费方=Windows-only apply；测试跨平台
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))] // 生产消费方=windows/linux apply；macOS/android 桩平台诚实死码
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DowngradeVerdict {
     /// 目标 sequence 比当前已安装的大。
@@ -219,7 +433,7 @@ pub(crate) enum DowngradeVerdict {
 /// 纯函数：sequence 数值判序。当前基准缺失（`None`，applied 副本不在场或
 /// 不可信）= Unknown，不猜。
 #[cfg(feature = "selfupdate")]
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))]
 pub(crate) fn sequence_verdict(current: Option<u64>, target: u64) -> DowngradeVerdict {
     match current {
         None => DowngradeVerdict::Unknown,
@@ -233,10 +447,10 @@ pub(crate) fn sequence_verdict(current: Option<u64>, target: u64) -> DowngradeVe
 
 /// 结论 → 拒绝文案（None = 放行）。R1 语义反转：**Unknown 也默认拒绝**——
 /// 顺序证据缺失（清单缺失/验签失败/applied 副本缺失）不能默认当成升级；
-/// `allow_downgrade` 是「顺序未知」显式豁免。v4 验签与审批卡在任何路径都
-/// 不豁免（不变）。
+/// `allow_downgrade` 是「顺序未知」显式豁免。v4 验签在任何路径都不豁免
+///（不变）。
 #[cfg(feature = "selfupdate")]
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))]
 pub(crate) fn downgrade_gate_error(v: DowngradeVerdict, allow_downgrade: bool) -> Option<String> {
     match v {
         DowngradeVerdict::Upgrade => None,
@@ -251,7 +465,7 @@ pub(crate) fn downgrade_gate_error(v: DowngradeVerdict, allow_downgrade: bool) -
         DowngradeVerdict::Unknown if !allow_downgrade => Some(
             "无法证明这次更新不是降级（签名更新清单缺失/验签失败，或本机无已安装\
              版本的清单基准——存量安装首次更新属此形态）。确认要继续请带 \
-             --allow-downgrade 重试（该豁免仅放开顺序判定，签名验真与审批照常）。"
+             --allow-downgrade 重试（该豁免仅放开顺序判定，签名验真照常）。"
                 .to_string(),
         ),
         // 显式豁免下的 Downgrade/Unknown 放行（调用方审计留痕）。
@@ -266,7 +480,6 @@ pub(crate) fn downgrade_gate_error(v: DowngradeVerdict, allow_downgrade: bool) -
 /// 更新清单（`manifest.json` 载体剥 footer 后的明文 JSON 结构）。CI 签发
 /// （与 exe 同一密钥体系）；客户端验签 Valid 后才采信任何字段。
 #[cfg(feature = "selfupdate")]
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct UpdateManifest {
     /// 全量 git commit（40 hex；boot 自检与同版闸身份）。
@@ -276,13 +489,20 @@ pub(crate) struct UpdateManifest {
     /// **已签名 exe** 的 SHA-256（CI 在 exe 签名之后生成清单——客户端下载
     /// 解包的字节即此摘要的绑定对象；不匹配 = 完整性问题，无条件拒）。
     pub exe_sha256: String,
+    /// **已签名 plugins** 逐文件 SHA-256 绑定（2026-10-22 用户拍板 ①）：
+    /// 文件名（`plugins/` 下平面名）→ 摘要。CI 在插件签名之后生成清单——
+    /// 哈希覆盖的是已签名字节，闭环成立。非空时 apply 对包内 plugins/
+    /// 逐文件校验 + **集合双向匹配**（包内多文件 / 清单缺条目都拒）；空/缺
+    /// = 无绑定诚实降级（旧清单兼容），审计留痕。`#[serde(default)]`。
+    #[serde(default)]
+    pub plugins_sha256: std::collections::BTreeMap<String, String>,
     /// 构建时刻（RFC3339 人读留痕，不参与判定）。
     pub built_at: String,
 }
 
 /// 小写 hex SHA-256（skins 同型样板；本模块唯一消费点在 selfupdate feature 内）。
 #[cfg(feature = "selfupdate")]
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))]
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::Digest as _;
     let digest = sha2::Sha256::digest(bytes);
@@ -296,7 +516,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// 清单载体验签 + 剥 footer + 解析 + 字段校验（单一入口）。任何一步失败都
 /// 是诚实 Err（调用方按 Unknown 类语义处理：默认拒，allow_downgrade 豁免）。
 #[cfg(feature = "selfupdate")]
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))]
 fn verify_and_parse_manifest(
     carrier: &[u8],
     anchors: &[[u8; 32]],
@@ -332,13 +552,74 @@ fn verify_and_parse_manifest(
             manifest.exe_sha256.len()
         ));
     }
+    for (name, sha) in &manifest.plugins_sha256 {
+        if name.is_empty()
+            || name.starts_with('/')
+            || name.contains('\\')
+            || name.contains("..")
+            || name.contains('/')
+        {
+            return Err(format!("清单 plugins_sha256 文件名非法（{name:?}）"));
+        }
+        if sha.len() != 64 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(format!("清单 plugins_sha256[{name:?}] 非法（需 64 hex）"));
+        }
+    }
     Ok(manifest)
+}
+
+/// plugins 绑定校验纯函数（内存字节面，任何 staging 之前调用——2026-10-22
+/// 用户拍板 ①：清单声明 `plugins_sha256` 时逐文件 sha256 + **集合双向匹配**
+/// 硬拒：清单有条目包内缺文件 = 拒，包内多出文件 = 拒，摘要不匹配 = 拒；
+/// 均大小写不敏感）。清单无绑定（空 map）= Ok（诚实降级，调用方审计留痕
+/// ——旧清单无此字段是合法历史形态）。
+#[cfg(feature = "selfupdate")]
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))] // 消费方=windows/linux apply；macOS/android 桩平台诚实死码（测试消费不受影响）
+fn verify_plugins_binding_map(
+    manifest: &UpdateManifest,
+    plugins: &std::collections::BTreeMap<String, Vec<u8>>,
+) -> Result<(), String> {
+    if manifest.plugins_sha256.is_empty() {
+        return Ok(());
+    }
+    if manifest.plugins_sha256.len() != plugins.len() {
+        let missing: Vec<&String> = manifest
+            .plugins_sha256
+            .keys()
+            .filter(|k| !plugins.keys().any(|p| p.eq_ignore_ascii_case(k)))
+            .collect();
+        let extra: Vec<&String> = plugins
+            .keys()
+            .filter(|k| {
+                !manifest
+                    .plugins_sha256
+                    .keys()
+                    .any(|m| m.eq_ignore_ascii_case(k))
+            })
+            .collect();
+        return Err(format!(
+            "更新包 plugins/ 集合与清单绑定不一致（清单 {} 项 / 包内 {} 项；缺失 {:?}；多出 {:?}）",
+            manifest.plugins_sha256.len(),
+            plugins.len(),
+            missing,
+            extra
+        ));
+    }
+    for (name, sha) in &manifest.plugins_sha256 {
+        let Some(bytes) = plugins.iter().find(|(p, _)| p.eq_ignore_ascii_case(name)) else {
+            return Err(format!("更新包缺清单绑定的插件文件：{name}"));
+        };
+        if !sha.eq_ignore_ascii_case(&sha256_hex(bytes.1)) {
+            return Err(format!("插件文件摘要不匹配清单绑定：{name}（完整性问题）"));
+        }
+    }
+    Ok(())
 }
 
 /// 完整性绑定纯函数：exe 字节摘要与清单绑定值一致（清单验签 Valid 后调用；
 /// 不匹配 = 包被中途调包，无条件拒，allow_downgrade 不豁免）。
 #[cfg(feature = "selfupdate")]
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))]
 fn manifest_exe_digest_matches(manifest: &UpdateManifest, exe_bytes: &[u8]) -> bool {
     manifest
         .exe_sha256
@@ -348,7 +629,7 @@ fn manifest_exe_digest_matches(manifest: &UpdateManifest, exe_bytes: &[u8]) -> b
 /// `applied_manifest.json` 路径（exe 同目录——上次成功更新写入的已验签清单
 /// 载体副本，下次 apply 的顺序基准）。
 #[cfg(feature = "selfupdate")]
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))]
 fn applied_manifest_path(exe: &Path) -> PathBuf {
     exe.parent()
         .unwrap_or_else(|| Path::new("."))
@@ -359,7 +640,7 @@ fn applied_manifest_path(exe: &Path) -> PathBuf {
 /// 可能已隔多次重启——不可信输入不落信任锚旁）；验签失败 = Err 不写（下次
 /// apply 走 Unknown 拒绝，诚实 fail-closed）。
 #[cfg(feature = "selfupdate")]
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))]
 fn save_applied_manifest(
     exe: &Path,
     carrier: &[u8],
@@ -377,7 +658,7 @@ fn save_applied_manifest(
 /// 失败一律 None（= Unknown，调用方默认拒）——不区分「从未更新过」与「副本
 /// 被篡改」，两者对顺序判定都是证据缺失。
 #[cfg(feature = "selfupdate")]
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))]
 fn load_applied_sequence(exe: &Path, anchors: &[[u8; 32]], now: u64) -> Option<u64> {
     let bytes = std::fs::read(applied_manifest_path(exe)).ok()?;
     match verify_and_parse_manifest(&bytes, anchors, now) {
@@ -393,7 +674,7 @@ fn load_applied_sequence(exe: &Path, anchors: &[[u8; 32]], now: u64) -> Option<u
 /// 闭环的最后一步）。carrier 为空（旧 journal）= 无事返回 Ok；锚集空 = 诚实
 /// 跳过（下次 apply 走 Unknown 拒绝，不假装有基准）。
 #[cfg(feature = "selfupdate")]
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))]
 fn write_applied_manifest_from_journal(
     exe: &Path,
     journal: &UpdateJournal,
@@ -441,6 +722,10 @@ pub struct UpdateCheck {
 }
 
 pub async fn check(current_version: &str, current_commit: &str) -> Result<UpdateCheck, String> {
+    // Android 走 APK 发行形态，主包通道整体不适用（诚实拒绝而非假装查询）。
+    if TARGET_ASSET.is_empty() {
+        return Err("当前平台（Android）走 APK 发行形态，不走主包自更新通道。".to_string());
+    }
     // 同源解析：与 apply 的下载对象一致（首个含主包资产的 release），消除旧
     // 实现「check 读列表第一条 / apply 下载首个含资产的」双路径分裂——最新
     // 条目尚未产出资产时，展示与安装可能跨版本错位。
@@ -544,16 +829,15 @@ fn recover_on_boot_in(workspace: &Path, current_commit: &str, exe: &Path) -> Boo
     {
         let t0 = std::time::Instant::now();
         if wait_for_pid_exit(pid, WAIT_OLD_PID_TIMEOUT_MILLIS) {
-            tracing::info!(
+            boot_log_info(&format!(
                 "[SelfUpdate] 旧进程已退场（等待 {}ms），接管启动",
                 t0.elapsed().as_millis()
-            );
+            ));
         } else {
-            tracing::warn!(
-                pid,
-                "[SelfUpdate] 等旧进程退场超时（{}s），继续启动（端口若被占由 bind 路径诚实报错）",
+            boot_log_warn(&format!(
+                "[SelfUpdate] 等旧进程 {pid} 退场超时（{}s），继续启动（端口若被占由 bind 路径诚实报错）",
                 WAIT_OLD_PID_TIMEOUT_MILLIS / 1000
-            );
+            ));
             return BootRecovery {
                 action: "wait_timeout".to_string(),
                 detail: format!("pid {pid} alive after {WAIT_OLD_PID_TIMEOUT_MILLIS}ms"),
@@ -582,45 +866,47 @@ fn recover_on_boot_in(workspace: &Path, current_commit: &str, exe: &Path) -> Boo
                     &journal,
                     &nemesis_verify::builtin_root_anchors(),
                 ) {
-                    tracing::warn!("[SelfUpdate] applied 清单副本写入失败（收口继续）：{e}");
+                    boot_log_warn(&format!(
+                        "[SelfUpdate] applied 清单副本写入失败（收口继续）：{e}"
+                    ));
                 }
                 clear_journal_logged(workspace);
-                tracing::info!(
+                boot_log_info(&format!(
                     "[SelfUpdate] 启动自检通过：当前 commit 命中目标 {}，更新收口",
                     &journal.target_commit[..journal.target_commit.len().min(12)]
-                );
+                ));
                 BootRecovery {
                     action: "update_success".to_string(),
                     detail: format!("target {}", journal.target_commit),
                 }
             } else {
-                match rollback_old_exe_to(&journal.old_path, exe) {
-                    Ok(detail) => {
+                match rollback_update(&journal, exe) {
+                    Ok((detail, noop)) => {
                         clear_journal_logged(workspace);
-                        // 缺 `.old` = 无可恢复现场的 noop，不是回滚成功——action
-                        // 如实分臂，日志表述跟随。
-                        let noop = detail.starts_with(ROLLBACK_NOOP_PREFIX);
+                        // exe 与 plugins 双双无可恢复现场 = noop，不是回滚成功
+                        // ——action 如实分臂，日志表述跟随。
                         let action = if noop { "rollback_noop" } else { "rolled_back" };
                         let verb = if noop {
-                            "无可恢复现场（.old 缺失），journal 已清"
+                            "无可恢复现场（.old 与 plugins staging 双缺席），journal 已清"
                         } else {
                             "已回滚"
                         };
-                        tracing::warn!(
+                        boot_log_warn(&format!(
                             "[SelfUpdate] 启动自检失败：当前 commit 未命中目标，{verb}（{detail}）"
-                        );
+                        ));
                         BootRecovery {
                             action: action.to_string(),
                             detail,
                         }
                     }
-                    // R2：回滚失败不清 journal——现场（journal + .old）保留，
-                    // 下次启动重试；旧实现无条件清 journal = 失败即丢现场。
+                    // R2：回滚失败不清 journal——现场（journal + .old + plugins
+                    // staging）保留，下次启动重试；旧实现无条件清 journal =
+                    // 失败即丢现场。
                     Err(fail) => {
-                        tracing::error!(
-                            "[SelfUpdate] 启动自检失败且回滚执行失败：journal 与 .old \
-                             保留，下次启动将重试回滚（{fail}）"
-                        );
+                        boot_log_error(&format!(
+                            "[SelfUpdate] 启动自检失败且回滚执行失败：journal 与 staging \
+                             现场保留，下次启动将重试回滚（{fail}）"
+                        ));
                         BootRecovery {
                             action: "recovery_failed".to_string(),
                             detail: fail,
@@ -629,21 +915,20 @@ fn recover_on_boot_in(workspace: &Path, current_commit: &str, exe: &Path) -> Boo
                 }
             }
         }
-        "staging" => match rollback_old_exe_to(&journal.old_path, exe) {
-            Ok(detail) => {
+        "staging" => match rollback_update(&journal, exe) {
+            Ok((detail, noop)) => {
                 clear_journal_logged(workspace);
-                let noop = detail.starts_with(ROLLBACK_NOOP_PREFIX);
                 let action = if noop { "rollback_noop" } else { "rolled_back" };
-                tracing::warn!("[SelfUpdate] staging 中断现场收口（{detail}）");
+                boot_log_warn(&format!("[SelfUpdate] staging 中断现场收口（{detail}）"));
                 BootRecovery {
                     action: action.to_string(),
                     detail,
                 }
             }
             Err(fail) => {
-                tracing::error!(
+                boot_log_error(&format!(
                     "[SelfUpdate] staging 中断现场回滚失败：journal 保留，下次启动重试（{fail}）"
-                );
+                ));
                 BootRecovery {
                     action: "recovery_failed".to_string(),
                     detail: fail,
@@ -652,7 +937,9 @@ fn recover_on_boot_in(workspace: &Path, current_commit: &str, exe: &Path) -> Boo
         },
         other => {
             clear_journal_logged(workspace);
-            tracing::warn!("[SelfUpdate] 未知 journal phase {other:?}，已清除");
+            boot_log_warn(&format!(
+                "[SelfUpdate] 未知 journal phase {other:?}，已清除"
+            ));
             BootRecovery {
                 action: "rolled_back".to_string(),
                 detail: format!("unknown phase {other:?}"),
@@ -730,6 +1017,226 @@ fn rollback_old_exe_to(old: &str, target: &Path) -> Result<String, String> {
 }
 
 // ---------------------------------------------------------------------------
+// plugins 整包替换（2026-10-22 扩面；主包自带 plugins/ 子树同版本分发——
+// 接口错配根因消失，不需单独打包。机制 = 逐文件 rename dance，与 exe 同
+// 语义：Windows 运行中 PE/DLL 可 rename 不可覆盖。boot 收口与 exe 同进同退
+// ——journal 记 staging 双目录，杜绝「旧 exe + 新插件」错配）
+// ---------------------------------------------------------------------------
+
+/// plugins 回滚 noop 判定前缀（与 exe [`ROLLBACK_NOOP_PREFIX`] 同语义；独立
+/// 常量防串判——boot 调用方对两者分别分臂，双 noop 才算 rollback_noop）。
+const ROLLBACK_PLUGINS_NOOP_PREFIX: &str = "rollback_plugins_noop";
+
+/// plugins 整包替换 staging 三路径：现有目录 / 既有文件让位目录 / 新文件
+/// staging 目录（PID 后缀去固定化，与 exe staging 同语义）。**只识别带
+/// `plugins.` 前缀的目录，不匹配裸 `plugins`**——真实插件目录永不被清扫。
+#[cfg(feature = "selfupdate")]
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))] // 消费方=windows/linux apply；macOS/android 桩平台诚实死码
+fn plugins_staging_paths(exe: &Path) -> (PathBuf, PathBuf, PathBuf) {
+    let dir = exe.parent().unwrap_or_else(|| Path::new("."));
+    let pid = std::process::id();
+    (
+        dir.join("plugins"),
+        dir.join(format!("plugins.old-{pid}")),
+        dir.join(format!("plugins.new-{pid}")),
+    )
+}
+
+/// plugins 整包替换舞步（journal 先行落盘后的执行体）：
+/// 1. 新文件全集先落 `new_dir/`（fsync 逐件——磁盘满等写错误在任何 rename
+///    之前暴露；new_dir 保留全集副本供回滚识别 new-only 文件）；
+/// 2. 逐文件（名字排序，确定性）：既有同名让位 `plugins/X` → `backup/X`
+///    （映射中的 DLL 让位成功——Windows 运行中 PE 可 rename 不可覆盖；
+///    目录不整迁同理）→ 新文件 copy 就位（copy 非 rename：new_dir 全集
+///    副本不被消耗）。
+///
+/// **只同名覆盖不删既有**（用户拍板 ②）——用户自装插件不受伤。
+/// 返回替换文件数；任何一步失败 = Err（journal 已留现场，boot 收口回滚）。
+#[cfg(feature = "selfupdate")]
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))] // 消费方=windows/linux apply；macOS/android 桩平台诚实死码
+fn install_plugins_files(
+    plugins_dir: &Path,
+    backup_dir: &Path,
+    new_dir: &Path,
+    files: &std::collections::BTreeMap<String, Vec<u8>>,
+) -> Result<usize, String> {
+    std::fs::create_dir_all(new_dir).map_err(|e| format!("plugins staging 目录创建失败：{e}"))?;
+    for (name, bytes) in files {
+        let target = new_dir.join(name);
+        let mut f = std::fs::File::create(&target)
+            .map_err(|e| format!("插件新文件落盘失败（{}）：{e}", target.display()))?;
+        std::io::Write::write_all(&mut f, bytes)
+            .map_err(|e| format!("插件新文件写入失败（{}）：{e}", target.display()))?;
+        f.sync_all()
+            .map_err(|e| format!("插件新文件同步失败（{}）：{e}", target.display()))?;
+    }
+    std::fs::create_dir_all(backup_dir).map_err(|e| format!("plugins 备份目录创建失败：{e}"))?;
+    std::fs::create_dir_all(plugins_dir).map_err(|e| format!("plugins 目录创建失败：{e}"))?;
+    let mut replaced = 0usize;
+    for name in files.keys() {
+        let existing = plugins_dir.join(name);
+        if existing.exists() {
+            let backup = backup_dir.join(name);
+            std::fs::rename(&existing, &backup).map_err(|e| {
+                format!(
+                    "既有插件让位失败（{} → {}）：{e}",
+                    existing.display(),
+                    backup.display()
+                )
+            })?;
+        }
+        let src = new_dir.join(name);
+        let dst = plugins_dir.join(name);
+        std::fs::copy(&src, &dst).map_err(|e| {
+            format!(
+                "新插件就位失败（{} → {}）：{e}",
+                src.display(),
+                dst.display()
+            )
+        })?;
+        replaced += 1;
+    }
+    Ok(replaced)
+}
+
+/// 被映射文件删除（boot 回滚场景：目标位可能被运行中进程映射——当前
+/// gateway 进程的插件 DLL 常态在内存）。文件不可删时先让位 `.failed-{pid}`
+/// 旁置再删旁置件：未映射场景旁置件删得掉；映射中留下（计划钦定的诊断
+/// 现场，boot 收口不追逐）。
+fn remove_loaded_file(target: &Path) -> Result<(), String> {
+    match std::fs::remove_file(target) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => {
+            let pid = std::process::id();
+            let failed = target.with_extension(format!("failed-{pid}"));
+            let _ = std::fs::remove_file(&failed);
+            std::fs::rename(target, &failed)
+                .map_err(|e| format!("映射文件让位失败（{}）：{e}", target.display()))?;
+            let _ = std::fs::remove_file(&failed);
+            Ok(())
+        }
+    }
+}
+
+/// plugins 回滚本体（backup → plugins 逐文件归位 + new-only 清理 + staging
+/// 目录收尾）。幂等 + 诚实化：Ok = 回滚完成（detail 区分 noop）/ Err = 失败
+/// 原因（调用方保 journal，下次 boot 重试）。
+///
+/// 归位让位舞步：`plugins/X` 被运行中进程映射（boot 收口的常态）时直接
+/// rename(backup→plugins) 会撞占用——先把目标 [`remove_loaded_file`] 让位。
+/// new-only 文件（backup 名单之外、new_dir 全集之内）= 本次更新新装且无旧
+/// 版可回——删除归零。收尾双目录韧性删除（失败留清扫，不影响回滚结论——
+/// 下次重试目录缺席即 noop 分支）。
+fn rollback_plugins_to(
+    backup_dir: &str,
+    new_dir: &str,
+    plugins_dir: &Path,
+) -> Result<String, String> {
+    if backup_dir.is_empty() && new_dir.is_empty() {
+        return Ok(format!(
+            "{ROLLBACK_PLUGINS_NOOP_PREFIX}: 无 plugins 舞步记录（旧 journal/无插件包）"
+        ));
+    }
+    let backup = PathBuf::from(backup_dir);
+    let new = PathBuf::from(new_dir);
+    // backup 名单（存在才读；读失败 = 现场异常，诚实报错保 journal）。
+    let mut backup_names: Vec<String> = Vec::new();
+    if backup.exists() {
+        let entries = std::fs::read_dir(&backup)
+            .map_err(|e| format!("plugins 备份目录读取失败（{}）：{e}", backup.display()))?;
+        for entry in entries.flatten() {
+            if entry.path().is_file() {
+                backup_names.push(entry.file_name().to_string_lossy().to_string());
+            }
+        }
+    }
+    backup_names.sort();
+    // 归位：backup → plugins（有备份者旧版覆盖新版）。
+    for name in &backup_names {
+        let dst = plugins_dir.join(name);
+        if dst.exists() {
+            remove_loaded_file(&dst)?;
+        }
+        let src = backup.join(name);
+        std::fs::rename(&src, &dst)
+            .map_err(|e| format!("插件归位失败（{} → {}）：{e}", src.display(), dst.display()))?;
+    }
+    // new-only 清理：new_dir 全集里 backup 名单之外的 = 新装无旧版，删。
+    if new.exists() {
+        let entries = std::fs::read_dir(&new)
+            .map_err(|e| format!("plugins staging 目录读取失败（{}）：{e}", new.display()))?;
+        let mut new_names: Vec<String> = Vec::new();
+        for entry in entries.flatten() {
+            if entry.path().is_file() {
+                new_names.push(entry.file_name().to_string_lossy().to_string());
+            }
+        }
+        new_names.sort();
+        for name in &new_names {
+            if !backup_names.iter().any(|b| b == name) {
+                let dst = plugins_dir.join(name);
+                if dst.exists() {
+                    remove_loaded_file(&dst)?;
+                }
+            }
+        }
+    }
+    // 收尾：双 staging 目录韧性删除（内容已耗尽/清空；删除失败 = Windows
+    // 瞬时句柄常态，留清扫不阻塞回滚结论）。
+    if backup.exists() {
+        crate::handlers::release_fetch::remove_dir_all_resilient(&backup);
+    }
+    if new.exists() {
+        crate::handlers::release_fetch::remove_dir_all_resilient(&new);
+    }
+    if backup_names.is_empty() && !new.exists() {
+        // 双目录本就缺席（舞步从未开始或已被上轮收口清光）= noop。
+        return Ok(format!(
+            "{ROLLBACK_PLUGINS_NOOP_PREFIX}: staging 目录双缺席（无可恢复现场）"
+        ));
+    }
+    Ok(format!(
+        "plugins 已回滚（归位 {} 个 + 清理 new-only，plugins/ = {}）",
+        backup_names.len(),
+        plugins_dir.display()
+    ))
+}
+
+/// journal → plugins 回滚（boot 收口 / apply 内联双回滚共用入口）。双字段
+/// 空 = noop（无舞步记录）。
+fn rollback_plugins_from_journal(journal: &UpdateJournal, exe: &Path) -> Result<String, String> {
+    let plugins_dir = exe
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("plugins");
+    rollback_plugins_to(
+        &journal.plugins_backup_dir,
+        &journal.plugins_new_dir,
+        &plugins_dir,
+    )
+}
+
+/// boot/apply 失败路径的双回滚统一收口（exe + plugins 同进同退）。
+/// Ok((detail, all_noop))：两者皆成功；all_noop = exe `.old` 与 plugins
+/// staging 双双缺席（无可恢复现场）。Err：任一回滚失败（journal 保留，
+/// 下次 boot 幂等重试——届时已成功的一侧自动 noop 收敛）。
+fn rollback_update(journal: &UpdateJournal, exe: &Path) -> Result<(String, bool), String> {
+    let exe_res = rollback_old_exe_to(&journal.old_path, exe);
+    let plug_res = rollback_plugins_from_journal(journal, exe);
+    match (exe_res, plug_res) {
+        (Ok(d1), Ok(d2)) => {
+            let noop = d1.starts_with(ROLLBACK_NOOP_PREFIX)
+                && d2.starts_with(ROLLBACK_PLUGINS_NOOP_PREFIX);
+            Ok((format!("{d1}；{d2}"), noop))
+        }
+        (Err(e1), Err(e2)) => Err(format!("{e1}；{e2}")),
+        (Err(e), _) => Err(e),
+        (_, Err(e)) => Err(e),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // apply 互斥原语（R2：单飞 + 跨进程锁 + staging 名去固定化）
 // ---------------------------------------------------------------------------
 
@@ -737,7 +1244,7 @@ fn rollback_old_exe_to(old: &str, target: &Path) -> Result<String, String> {
 /// 并发 apply 不再互踩同一文件名（boot 收口只认 journal.old_path 记录的
 /// 全路径，无固定名依赖）。
 #[cfg(feature = "selfupdate")]
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))] // 消费方=Windows-only apply；测试跨平台
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))] // 消费方=windows/linux apply；macOS/android 桩平台诚实死码
 fn staging_paths(exe: &Path) -> (PathBuf, PathBuf) {
     let pid = std::process::id();
     (
@@ -750,7 +1257,7 @@ fn staging_paths(exe: &Path) -> (PathBuf, PathBuf) {
 /// （`File::try_lock`，进程死 OS 自动释放——无陈锁清理问题）。Ok=锁文件句柄
 /// （**必须保活到 apply 结束**，drop 即释放）；Err=另一进程正在自更新。
 #[cfg(feature = "selfupdate")]
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))] // 消费方=Windows-only apply；测试跨平台
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))] // 消费方=windows/linux apply；macOS/android 桩平台诚实死码
 fn acquire_install_lock(exe_dir: &Path) -> Result<std::fs::File, String> {
     let path = exe_dir.join("selfupdate.lock");
     let file = std::fs::OpenOptions::new()
@@ -778,9 +1285,11 @@ fn acquire_install_lock(exe_dir: &Path) -> Result<std::fs::File, String> {
 /// 语义：持安装目录锁期间同目录不可能有并发 apply，任何非本进程的
 /// `.old-{pid}`/`.new-{pid}` 都是死进程/崩溃遗留，尽力删除（仍被在跑旧
 /// 进程镜像锁住的 PE 删除失败属预期，留给下次 apply 再清，best-effort）。
-/// `.failed` 是计划钦定的诊断现场，不清。返回删除数（审计观测用）。
+/// `.failed` 是计划钦定的诊断现场，不清。**plugins 侧同批清扫**：
+/// `plugins.old-{pid}`/`plugins.new-{pid}` 整目录韧性删除（2026-10-22 扩面
+/// ——裸 `plugins` 真实插件目录永不在清扫面）。返回删除数（审计观测用）。
 #[cfg(feature = "selfupdate")]
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))] // 消费方=Windows-only apply；测试跨平台
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))] // 消费方=windows/linux apply；macOS/android 桩平台诚实死码
 fn sweep_stale_staging(exe: &Path) -> usize {
     let Some(dir) = exe.parent() else {
         return 0;
@@ -790,6 +1299,8 @@ fn sweep_stale_staging(exe: &Path) -> usize {
     };
     let old_prefix = format!("{stem}.old-");
     let new_prefix = format!("{stem}.new-");
+    let plugins_old_prefix = "plugins.old-";
+    let plugins_new_prefix = "plugins.new-";
     let mut removed = 0;
     // 删除与遍历顺序无关（集合操作），无需排序。
     if let Ok(entries) = std::fs::read_dir(dir) {
@@ -799,7 +1310,21 @@ fn sweep_stale_staging(exe: &Path) -> usize {
                 continue;
             };
             let is_staging = name.starts_with(&old_prefix) || name.starts_with(&new_prefix);
-            if is_staging && std::fs::remove_file(entry.path()).is_ok() {
+            if is_staging {
+                if std::fs::remove_file(entry.path()).is_ok() {
+                    removed += 1;
+                }
+                continue;
+            }
+            // plugins staging 目录（前缀匹配，后缀须还有 PID 段——裸 `plugins`
+            // 与真实插件目录不沾边）。
+            let is_plugins_staging = (name.starts_with(plugins_old_prefix)
+                || name.starts_with(plugins_new_prefix))
+                && name != "plugins.old-"
+                && name != "plugins.new-";
+            if is_plugins_staging
+                && crate::handlers::release_fetch::remove_dir_all_resilient(&entry.path())
+            {
                 removed += 1;
             }
         }
@@ -811,20 +1336,58 @@ fn sweep_stale_staging(exe: &Path) -> usize {
 // SelfUpdateManager（apply 编排；selfupdate feature 门控）
 // ---------------------------------------------------------------------------
 
-/// apply 编排器。gateway run_runtime 审批装配点构建（审批 manager / 审计链 /
-/// estop 三件同源），注入 WSAPI 槽 + 内部命令臂。`shutdown` 闭包 = 既有优雅
+/// 下载进度快照（WSAPI status 轮询兜底 + SSE 之外的第二观测面）。
+#[cfg(feature = "selfupdate")]
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DownloadProgress {
+    /// 是否有下载任务在跑（受理即置 true，成功/失败收口置 false）。
+    pub active: bool,
+    /// `idle` | `downloading` | `ready` | `error`。
+    pub phase: String,
+    pub downloaded_bytes: u64,
+    pub total_bytes: Option<u64>,
+    /// 最近一次失败文案（phase=error 时非空）。
+    pub error: Option<String>,
+}
+
+#[cfg(feature = "selfupdate")]
+impl Default for DownloadProgress {
+    fn default() -> Self {
+        Self {
+            active: false,
+            phase: "idle".to_string(),
+            downloaded_bytes: 0,
+            total_bytes: None,
+            error: None,
+        }
+    }
+}
+
+/// apply / 下载编排器。gateway run_runtime 装配点构建（审计链 / estop 同源），
+/// 注入 WSAPI 槽 + 内部命令臂 + 启动自动 check。`shutdown` 闭包 = 既有优雅
 /// 停机路径，注入避免本模块反向依赖 bin 类型。
 #[cfg(feature = "selfupdate")]
 pub struct SelfUpdateManager {
     pub workspace: PathBuf,
     pub estop: std::sync::Arc<nemesis_agent::estop::EstopState>,
-    pub approval: std::sync::Arc<dyn nemesis_security::auditor::ApprovalManager>,
     pub audit: Option<std::sync::Arc<nemesis_security::pipeline::SecurityPlugin>>,
     pub shutdown: std::sync::Arc<dyn Fn() + Send + Sync>,
     /// R2 进程内单飞闸：同一 manager 上并发 apply 恰一进入（try_lock 失败 =
     /// 「已有自更新在进行」，诚实拒绝）。与 [`acquire_install_lock`]（安装
     /// 目录跨进程锁）两层互补。
     pub flight: tokio::sync::Mutex<()>,
+    /// 下载单飞闸（与 apply 的 [`SelfUpdateManager::flight`] 分立：apply 会
+    /// `.lock().await` 这把锁等在途下载收口后再读 pending，反向则不会——
+    /// 下载方永不等待 apply）。下载任务自身 try_lock，占用中 = 幂等受理。
+    pub download_flight: tokio::sync::Mutex<()>,
+    /// 下载取消旗标（WSAPI cancel_download 置位；进度回调逐 chunk 轮询，
+    /// 返 false = 中止并整清 updates/）。
+    pub download_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// 进度快照槽（SSE 之外的轮询观测面）。
+    pub download_progress: std::sync::Arc<parking_lot::Mutex<DownloadProgress>>,
+    /// 最近一次 check 结果缓存（gateway 启动 30s 自动 check 写入；WSAPI
+    /// status 直接读，前端免再等一次网络往返）。
+    pub last_check: std::sync::Arc<parking_lot::Mutex<Option<(UpdateCheck, u64)>>>,
 }
 
 #[cfg(feature = "selfupdate")]
@@ -843,10 +1406,225 @@ impl SelfUpdateManager {
         }
     }
 
-    /// 九步 apply（**v1 仅 Windows**；非 Windows 变体见下方 cfg 分体）。
-    /// Ok = staging 完成且新进程已拉起、本进程将优雅退出；Err = 人读失败
-    /// 原因（每步失败都带现场 + 审计留痕）。
-    #[cfg(target_os = "windows")]
+    /// 下载待装包（WSAPI `selfupdate.download` 的执行体；调用方负责放进
+    /// tokio 任务——受理即回）。幂等语义：pending 已就绪直接返回；在途下载
+    /// 中重复调用幂等受理。estop 生效 = 拒绝（下载段同受急停冻结）。
+    pub async fn download(&self, current_commit: &str) -> Result<String, String> {
+        let exe_path = std::env::current_exe().map_err(|e| format!("取 current_exe 失败：{e}"))?;
+        if let Some(p) = load_pending(&exe_path) {
+            return Ok(format!(
+                "待装包已就绪（{}，commit {}，{}MB）：直接【开始更新】即可。",
+                p.release_tag,
+                &p.target_commit[..p.target_commit.len().min(12)],
+                p.size_bytes / (1024 * 1024)
+            ));
+        }
+        if self.estop.is_engaged() {
+            self.audit_event("selfupdate", "denied", "download: estop engaged");
+            return Err("急停（estop）生效中：更新下载被冻结。释放急停后重试。".to_string());
+        }
+        match self.download_flight.try_lock() {
+            Ok(_g) => self.download_to_pending(&exe_path, current_commit).await,
+            Err(_) => {
+                if self.progress_snapshot().active {
+                    // 幂等受理：同一目标已在下，调用方无需等待。
+                    self.audit_event("selfupdate", "allowed", "download idempotent: in-flight");
+                    return Ok(
+                        "下载已在进行中（本次调用幂等受理）；进度看 SSE selfupdate-progress。"
+                            .to_string(),
+                    );
+                }
+                Err("下载通道被占用（锁在但无活跃进度，异常态）：稍后重试。".to_string())
+            }
+        }
+    }
+
+    /// 取消在途下载（WSAPI `selfupdate.cancel_download`）。旗标置位，下载
+    /// 回调下一个数据块即中止并整清 updates/——回 [可下载] 态。
+    pub fn cancel_download(&self) {
+        self.download_cancel
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.audit_event("selfupdate", "allowed", "download cancel requested");
+    }
+
+    /// 进度快照（WSAPI status 轮询面）。
+    pub fn progress_snapshot(&self) -> DownloadProgress {
+        self.download_progress.lock().clone()
+    }
+
+    /// check 结果缓存写入（gateway 启动自动 check / WSAPI check 成功后调）。
+    pub fn store_check(&self, c: UpdateCheck) {
+        *self.last_check.lock() = Some((c, now_ms()));
+    }
+
+    /// check 结果缓存读取（WSAPI status 用；带写入时刻供 age 展示）。
+    pub fn cached_check(&self) -> Option<(UpdateCheck, u64)> {
+        self.last_check.lock().clone()
+    }
+
+    /// 下载编排：同源解析 → 干净起步 → 流式落 .part → rename 就位 →
+    /// sha256 → meta 后写。任一步失败 = 整清 updates/ + error 进度帧 +
+    /// 审计（调用方拿 Err）。进度经 SSE（100ms 节流）+ 进度槽双面可见。
+    async fn download_to_pending(
+        &self,
+        exe_path: &Path,
+        current_commit: &str,
+    ) -> Result<String, String> {
+        *self.download_progress.lock() = DownloadProgress {
+            active: true,
+            phase: "downloading".to_string(),
+            ..Default::default()
+        };
+        self.download_cancel
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let result = self
+            .download_to_pending_inner(exe_path, current_commit)
+            .await;
+        match result {
+            Ok(msg) => {
+                let (done, total) = {
+                    let mut p = self.download_progress.lock();
+                    p.active = false;
+                    p.phase = "ready".to_string();
+                    (p.downloaded_bytes, p.total_bytes)
+                };
+                publish_progress("ready", done, total);
+                self.audit_event("selfupdate", "allowed", &msg);
+                Ok(msg)
+            }
+            Err(e) => {
+                clear_updates_dir(exe_path);
+                let mut p = self.download_progress.lock();
+                p.active = false;
+                p.phase = "error".to_string();
+                p.error = Some(e.clone());
+                drop(p);
+                publish_progress("error", 0, None);
+                self.audit_event("selfupdate", "denied", &format!("download: {e}"));
+                Err(e)
+            }
+        }
+    }
+
+    async fn download_to_pending_inner(
+        &self,
+        exe_path: &Path,
+        current_commit: &str,
+    ) -> Result<String, String> {
+        // Android 走 APK 发行形态，主包通道整体不适用。
+        if TARGET_ASSET.is_empty() {
+            return Err("当前平台（Android）走 APK 发行形态，不走主包自更新通道。".to_string());
+        }
+        // 同源解析（check / 早闸 / 下载同一对象）。
+        let meta = crate::handlers::release_fetch::fetch_release_for_asset(TARGET_ASSET).await?;
+        if !meta.has_asset(TARGET_ASSET) {
+            return Err(format!(
+                "最新 Release（{}）尚未产出 {TARGET_ASSET} 附件（CI 尚未产出该包）",
+                meta.tag_name
+            ));
+        }
+        if let Some(latest) = meta.body_commit()
+            && commit_matches(current_commit, &latest)
+        {
+            return Err(format!(
+                "当前已是最新版本（commit {}），无需下载。",
+                &latest[..latest.len().min(12)]
+            ));
+        }
+        let url = meta
+            .asset_url(TARGET_ASSET)
+            .ok_or_else(|| format!("Release {} 缺少 {TARGET_ASSET} 下载地址", meta.tag_name))?
+            .to_string();
+        let release_tag = meta.tag_name.clone();
+        let target_commit = meta.body_commit().unwrap_or_default();
+        // total 优先源 = GitHub API asset size（S3 预签 URL 也稳定给数）>
+        // Content-Length > 未知（进度条显示已下载字节数）。先种子进度槽，
+        // 回调只在其缺位时才采信 Content-Length（优先级不倒挂）。
+        let hint_total = meta.asset_size(TARGET_ASSET);
+        {
+            let mut p = self.download_progress.lock();
+            p.total_bytes = hint_total;
+        }
+        // 干净起步（用户拍板：异常/中断不恢复不续传，整清重来；.part 残留同清）。
+        clear_updates_dir(exe_path);
+        let part = pending_package_part_path(exe_path, TARGET_ASSET);
+        // 进度回调（Fn 闭包——可变状态全部走 Arc 槽；SSE 100ms 节流用
+        // AtomicU64 存上次发射时刻，compare_exchange 防并发抖动）。
+        let cancel = self.download_cancel.clone();
+        let estop = self.estop.clone();
+        let progress_slot = self.download_progress.clone();
+        let last_emit = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let last_emit_cb = last_emit.clone();
+        let downloaded = crate::handlers::release_fetch::download_to_file(
+            &url,
+            &part,
+            MAX_UPDATE_ASSET_BYTES,
+            move |done, total| {
+                if cancel.load(std::sync::atomic::Ordering::SeqCst) || estop.is_engaged() {
+                    return false; // 中止：下载已取消 / 急停冻结
+                }
+                let effective_total = hint_total.or(total);
+                {
+                    let mut p = progress_slot.lock();
+                    p.downloaded_bytes = done;
+                    if p.total_bytes.is_none() {
+                        p.total_bytes = total;
+                    }
+                }
+                let now = now_ms();
+                let last = last_emit_cb.load(std::sync::atomic::Ordering::SeqCst);
+                if now.saturating_sub(last) >= 100
+                    && last_emit_cb
+                        .compare_exchange(
+                            last,
+                            now,
+                            std::sync::atomic::Ordering::SeqCst,
+                            std::sync::atomic::Ordering::SeqCst,
+                        )
+                        .is_ok()
+                {
+                    publish_progress("downloading", done, effective_total);
+                }
+                true
+            },
+        )
+        .await
+        .map_err(|e| format!("下载 {TARGET_ASSET} 失败：{e}"))?;
+        // .part → pending 包正式名（读侧只见完整文件）。
+        let final_pkg = pending_package_path(exe_path, TARGET_ASSET);
+        std::fs::rename(&part, &final_pkg).map_err(|e| {
+            format!(
+                "待装包就位失败（{} → {}）：{e}",
+                part.display(),
+                final_pkg.display()
+            )
+        })?;
+        let pkg_sha256 = sha256_file(&final_pkg)?;
+        let pending = PendingUpdate {
+            asset: TARGET_ASSET.to_string(),
+            release_tag,
+            target_commit,
+            zip_sha256: pkg_sha256,
+            size_bytes: downloaded,
+            downloaded_at_ms: now_ms(),
+        };
+        // meta 后写：见 meta 必有完整 zip。
+        save_pending(exe_path, &pending)?;
+        let desc = format!(
+            "待装包已就绪（{}，commit {}，{}MB）",
+            pending.release_tag,
+            &pending.target_commit[..pending.target_commit.len().min(12)],
+            pending.size_bytes / (1024 * 1024)
+        );
+        tracing::info!("[SelfUpdate] {desc}");
+        Ok(desc)
+    }
+
+    /// apply（**Windows / Linux** 全链路；macOS 留位未接 CI 产物、Android 走
+    /// APK 形态，两者由 stub 变体诚实拒绝——见下方 cfg 分体）。Ok = staging
+    /// 完成且新进程已拉起、本进程将优雅退出；Err = 人读失败原因（每步失败都
+    /// 带现场 + 审计留痕）。
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     pub async fn apply(
         &self,
         current_version: &str,
@@ -880,45 +1658,10 @@ impl SelfUpdateManager {
                 self.workspace.display()
             ));
         }
-        // ── 步骤 1c：频率保险丝（24h）──
-        if let Some(last) = last_attempt_ms(&self.workspace) {
-            let elapsed = now_ms().saturating_sub(last);
-            if elapsed < APPLY_FUSE_MILLIS {
-                let remain_h = (APPLY_FUSE_MILLIS - elapsed) / 3_600_000;
-                self.audit_event("selfupdate", "denied", "frequency fuse");
-                return Err(format!(
-                    "频率保险丝：24h 内已尝试过自更新（约 {remain_h}h 后可再试）。"
-                ));
-            }
-        }
-        // ── 步骤 1d（早闸）：发布列表同源解析——含主包资产的 release 的 body
-        //    commit 已命中 → 免下 300MB 主包（**优化闸**：只做拒绝性短路，身
-        //    份权威在签名清单；body 缺 sha/格式变 = 跳过早闸，下载后按清单判
-        //    定；列表拉取失败不早停——下载路径回落独立解析给真实错误）。
-        //    列表留在此作用域供下载步定位同一对象的资产 URL（一次拉取两用）。
-        let resolved_list = crate::handlers::release_fetch::fetch_release_list()
-            .await
-            .ok();
-        if !current_commit.is_empty()
-            && let Some(list) = resolved_list.as_deref()
-        {
-            let early =
-                crate::handlers::release_fetch::resolve_release_for_asset(list, TARGET_ASSET)
-                    .and_then(|meta| meta.body_commit());
-            if let Some(latest) = early
-                && commit_matches(current_commit, &latest)
-            {
-                self.audit_event("selfupdate", "denied", "already at target commit");
-                return Err(format!(
-                    "当前已是最新版本（commit {}），无需更新。",
-                    &latest[..latest.len().min(12)]
-                ));
-            }
-        }
         // ── 步骤 1d-2：安装目录跨进程锁（R2）——从下载到 staging 全程持有，
-        //    双 gateway 进程共享安装目录时只允许一个自更新执行。闸在三个快闸
-        //    之后（estop/journal/fuse 拒绝路径不碰锁文件），下载之前（300MB
-        //    下载期就占锁，串行化整个 apply）。
+        //    双 gateway 进程共享安装目录时只允许一个自更新执行。闸在快闸
+        //    之后（estop/journal 拒绝路径不碰锁文件），pending 就位之前
+        //    （自动下载期就占锁，串行化整个 apply）。
         let exe_path = std::env::current_exe().map_err(|e| format!("取 current_exe 失败：{e}"))?;
         let _install_lock = {
             let exe_dir = std::env::current_exe()
@@ -944,43 +1687,86 @@ impl SelfUpdateManager {
                 &format!("swept {swept} stale staging file(s)"),
             );
         }
-        // ── R1 单候选下载链：1d 已同源解析的 release 对象直接定位资产 URL
-        //    （check / 早闸 / 下载三处同一对象——旧实现「下载函数内部重抓一次
-        //    列表」的双路径漂移就此消除）；列表拉取失败才回落独立解析（真实
-        //    错误路径兜底）。解包取新 exe / version.txt / 签名清单。
-        let zip_bytes = {
-            let download = if let Some(list) = resolved_list.as_deref() {
-                match crate::handlers::release_fetch::resolve_release_for_asset(list, TARGET_ASSET)
-                    .and_then(|meta| meta.asset_url(TARGET_ASSET).map(str::to_string))
+        // ── 步骤 1e：pending 就位（两段式 apply 起点 = 本地待装包）。无
+        //    pending 自动先下载（CLI 兼容：旧入口一步式调用无需先行
+        //    download）；持 download_flight 串行——与在途后台下载互斥，收口
+        //    后再读盘（两把锁独立：apply 持 flight 时再取 download_flight
+        //    不构成死锁环）。
+        let pending = {
+            let _df = self.download_flight.lock().await;
+            let mut pending = load_pending(&exe_path);
+            if pending.is_none() {
+                self.audit_event("selfupdate", "allowed", "no pending: auto-download");
+                self.download_to_pending(&exe_path, current_commit).await?;
+                pending = load_pending(&exe_path);
+            }
+            pending
+        }
+        .ok_or_else(|| "下载完成但待装包元数据读取失败（updates/ 已清空）：请重试。".to_string())?;
+        // ── 步骤 1e-2：发布源对账（轻量元信息拉取）。发布源比 pending 新 →
+        //    作废重下；已最新 → 清空拒绝。列表拉取失败 → 诚实 warn 按 pending
+        //    继续不给断网用户装不了已下载更新的死锁——身份权威始终是包内
+        //    签名清单，此处只是新鲜度对账。
+        match crate::handlers::release_fetch::fetch_release_list().await {
+            Ok(list) => {
+                let latest =
+                    crate::handlers::release_fetch::resolve_release_for_asset(&list, TARGET_ASSET)
+                        .and_then(|meta| meta.body_commit())
+                        .unwrap_or_default();
+                if !latest.is_empty() && commit_matches(current_commit, &latest) {
+                    clear_updates_dir(&exe_path);
+                    self.audit_event("selfupdate", "denied", "reconcile: already at latest");
+                    return Err(format!(
+                        "当前已是最新版本（commit {}），待装包已清空。",
+                        &latest[..latest.len().min(12)]
+                    ));
+                }
+                if !latest.is_empty()
+                    && !pending.target_commit.is_empty()
+                    && !commit_matches(&pending.target_commit, &latest)
                 {
-                    Some(url) => {
-                        crate::handlers::release_fetch::fetch_bytes(&url, MAX_UPDATE_ASSET_BYTES)
-                            .await
-                    }
-                    None => Err(format!(
-                        "近期 Release 均未找到 {TARGET_ASSET} 附件（CI 尚未产出该包）"
-                    )),
+                    clear_updates_dir(&exe_path);
+                    self.audit_event(
+                        "selfupdate",
+                        "denied",
+                        "reconcile: pending stale vs release source",
+                    );
+                    return Err(format!(
+                        "本地待装包（{}）已过期（发布源已有更新版本 {}）：已清空，\
+                         请重新下载。",
+                        pending.release_tag,
+                        &latest[..latest.len().min(12)]
+                    ));
                 }
-            } else {
-                match crate::handlers::release_fetch::fetch_release_for_asset(TARGET_ASSET).await {
-                    Ok(meta) => match meta.asset_url(TARGET_ASSET) {
-                        Some(url) => {
-                            crate::handlers::release_fetch::fetch_bytes(url, MAX_UPDATE_ASSET_BYTES)
-                                .await
-                        }
-                        None => Err(format!(
-                            "近期 Release 均未找到 {TARGET_ASSET} 附件（CI 尚未产出该包）"
-                        )),
-                    },
-                    Err(e) => Err(e),
-                }
-            };
-            download.map_err(|e| {
-                self.audit_event("selfupdate", "denied", &format!("download: {e}"));
-                format!("下载 {TARGET_ASSET} 失败：{e}")
-            })?
-        };
-        let extracted = extract_update_bundle(&zip_bytes)?;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "[SelfUpdate] 发布源对账拉取失败：按本地待装包继续（身份权威=包内签名清单）"
+                );
+                self.audit_event(
+                    "selfupdate",
+                    "allowed",
+                    "reconcile: list fetch failed, proceed with pending",
+                );
+            }
+        }
+        // ── R1 单候选链退役：包字节从本地待装包读入（下载段已前移至
+        //    download_to_pending）。字节入内存后，后续任何清 updates/ 的路径
+        //    都不再影响本次 apply。解包取新 exe / version.txt / 签名清单 /
+        //    plugins/ 子树（zip=Windows 主包，tar.gz=Linux/macOS 主包，按
+        //    魔数分派不按平台）。
+        let pkg_path = pending_package_path(&exe_path, &pending.asset);
+        let pkg_bytes = std::fs::read(&pkg_path).map_err(|e| {
+            clear_updates_dir(&exe_path);
+            let msg = format!(
+                "读取待装包失败（{}）：{e}（updates/ 已清空）",
+                pkg_path.display()
+            );
+            self.audit_event("selfupdate", "denied", &msg);
+            msg
+        })?;
+        let extracted = extract_update_bundle(&pkg_bytes)?;
 
         // ── 步骤 1e：身份与顺序闸（R1：签名更新清单为唯一权威）──
         // 锚与时间在闸前构造（清单验签在此需要；步骤 4 的 exe 本体验签复用
@@ -1013,7 +1799,7 @@ impl SelfUpdateManager {
                     return Err(format!(
                         "{e}：无法证明版本顺序，更新已拒绝。确认要继续请带 \
                          --allow-downgrade 重试（该豁免仅放开顺序判定，签名验真\
-                         与审批照常执行）。"
+                         照常执行）。"
                     ));
                 }
                 self.audit_event(
@@ -1048,6 +1834,30 @@ impl SelfUpdateManager {
                     .to_string(),
             );
         }
+        // ②-b plugins 绑定硬拒（2026-10-22 扩面，用户拍板 ①）：清单在场且带
+        //    非空 plugins_sha256 表时，包内 plugins/ 子树逐文件 sha256 + 集合
+        //    双向匹配，任一失配 = 包被调包/下载损坏，无条件拒（不受
+        //    allow_downgrade 豁免）。空表/缺失 = 无绑定诚实降级（旧清单兼容，
+        //    审计留痕）——绑定面与主包 sha256 同批生成于 CI 签名脚本。
+        if let Some(m) = &manifest {
+            match verify_plugins_binding_map(m, &extracted.plugins) {
+                Ok(()) => {
+                    if !m.plugins_sha256.is_empty() {
+                        self.audit_event(
+                            "manifest",
+                            "allowed",
+                            &format!("plugins 绑定校验通过（{} 文件）", m.plugins_sha256.len()),
+                        );
+                    }
+                }
+                Err(e) => {
+                    self.audit_event("manifest", "denied", &format!("plugins binding: {e}"));
+                    return Err(format!(
+                        "更新包内 plugins/ 子树与签名清单绑定值不一致（{e}），已无条件拒收。"
+                    ));
+                }
+            }
+        }
         // ③ 身份权威：清单 commit 优先；清单缺失且已豁免时回落 version.txt。
         let target_commit = manifest
             .as_ref()
@@ -1063,11 +1873,13 @@ impl SelfUpdateManager {
                     .to_string(),
             );
         }
-        // ④ 同版闸（保留：拒绝性优化闸——命中即免走审批与 staging）。
+        // ④ 同版闸（保留：拒绝性优化闸——命中即免走 staging；待装包同时
+        //    作废清空，回干净态）。
         if commit_matches(current_commit, &target_commit) {
+            clear_updates_dir(&exe_path);
             self.audit_event("selfupdate", "denied", "already at target commit");
             return Err(format!(
-                "当前已是目标版本（commit {}），无需更新。",
+                "当前已是目标版本（commit {}），待装包已清空。",
                 &target_commit[..target_commit.len().min(12)]
             ));
         }
@@ -1075,7 +1887,7 @@ impl SelfUpdateManager {
         //    （上次成功更新收口写入的已验签清单副本）。applied 缺失（存量安装
         //    首次更新）/副本验签失败/清单本侧缺失（豁免放行）= Unknown——默认
         //    拒绝（R1 语义反转），allow_downgrade 显式豁免 + 审计留痕。v4 验签
-        //    与审批卡对任何路径都不豁免。
+        //    对任何路径都不豁免。
         if let Some(m) = &manifest {
             let current_seq = load_applied_sequence(&exe_path, &anchors, now);
             let verdict = sequence_verdict(current_seq, m.sequence);
@@ -1095,41 +1907,9 @@ impl SelfUpdateManager {
                 );
             }
         }
-        // ── 步骤 2：CRITICAL 审批卡（版本切换永不免审——respond 侧 always-allow
-        //    对 CRITICAL 恒忽略，见 web_approval rule_permitted_for）──
-        let req_id = format!("selfupdate-{}", now_ms());
+        // 审批卡已退役（用户拍板：Dashboard 确认框即主体意志表达；真正的
+        // 安全闸 = v4 签名验签 + sequence 单调闸 + estop + 单飞锁）。
         let target_desc = format!("commit {}", &target_commit[..target_commit.len().min(12)]);
-        let verdict = self.approval.request_approval_sync(
-            &req_id,
-            "selfupdate_apply",
-            &format!("{current_version} → {target_desc}"),
-            "CRITICAL",
-            &format!(
-                "自更新：{current_version} → {target_desc}（{TARGET_ASSET}，{}MB）。\
-                 批准后已校验签名的新版本将替换当前二进制并重启 gateway；失败自动回滚。",
-                zip_bytes.len() / (1024 * 1024)
-            ),
-            APPLY_APPROVAL_TIMEOUT_SECS,
-        );
-        let approved = match verdict {
-            Ok(v) => v.approved,
-            Err(e) => {
-                self.audit_event("approval", "denied", &e);
-                return Err(format!("审批通道故障：{e}"));
-            }
-        };
-        if !approved {
-            self.audit_event("approval", "denied", "user denied or timeout");
-            return Err("自更新审批未通过（拒绝或超时）。".to_string());
-        }
-        // 审批即承诺：此后所有失败计入 24h 保险丝（防坏包重试风暴）。
-        self.audit_event("approval", "allowed", &target_desc);
-        if let Err(e) = stamp_fuse(&self.workspace) {
-            self.audit_event("selfupdate", "denied", &format!("fuse stamp: {e}"));
-            return Err(format!(
-                "频率保险丝记账失败（{e}）：state 目录不可写，拒绝继续自更新（fail-closed）。"
-            ));
-        }
 
         // ── 步骤 4：v4 验签（Valid-only；锚 = 编译期固化，不依赖包内证书；
         //    锚/时钟已在步骤 1e 构造，此处复用同一份）──
@@ -1141,15 +1921,27 @@ impl SelfUpdateManager {
         }
         self.audit_event("verify", "allowed", &target_desc);
 
-        // ── 步骤 5：staging（journal 先行 → rename dance；exe_path 已在 1e 取）──
+        // ── 步骤 5：staging（journal 先行 → plugins 舞步 → exe rename dance；
+        //    exe_path 已在 1e 取）──
         let (old_path, new_path) = staging_paths(&exe_path);
+        let (plugins_dir, plugins_backup, plugins_new) = plugins_staging_paths(&exe_path);
         // 残留清场（同名 PID 复用的罕见遗留会让 rename 撞已存在目标；PID 后缀
         // 名下通常本来就不存在）。
         let _ = std::fs::remove_file(&old_path);
         let _ = std::fs::remove_file(&new_path);
+        // plugins staging 同名 PID 残留清场（整目录韧性删除；清扫面只认
+        // `plugins.old-{pid}`/`plugins.new-{pid}` 前缀，裸 `plugins` 真实插件
+        // 目录永不被碰）。
+        if plugins_backup.exists() {
+            crate::handlers::release_fetch::remove_dir_all_resilient(&plugins_backup);
+        }
+        if plugins_new.exists() {
+            crate::handlers::release_fetch::remove_dir_all_resilient(&plugins_new);
+        }
         // .new 先落盘再 fsync（sync_all 之后才轮到 journal 与 rename dance）：
         // 崩溃窗口不再留下「新二进制内容空/半截」的现场；磁盘满等写错误也在
-        // staging 之前暴露。
+        // staging 之前暴露。unix 带上包内 exe 权限位（tar 条目 mode；无位/
+        // 无执行位回落 0755——Linux 无执行位新进程拉不起来）。
         let mut new_file = std::fs::File::create(&new_path)
             .map_err(|e| format!("新二进制创建失败（{}）：{e}", new_path.display()))?;
         std::io::Write::write_all(&mut new_file, &extracted.exe_bytes)
@@ -1158,6 +1950,16 @@ impl SelfUpdateManager {
             .sync_all()
             .map_err(|e| format!("新二进制落盘同步失败（{}）：{e}", new_path.display()))?;
         drop(new_file);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = extracted
+                .exe_unix_mode
+                .filter(|m| m & 0o111 != 0)
+                .unwrap_or(0o755);
+            std::fs::set_permissions(&new_path, std::fs::Permissions::from_mode(mode))
+                .map_err(|e| format!("新二进制权限位设置失败（{}）：{e}", new_path.display()))?;
+        }
         let journal = UpdateJournal {
             phase: "staging".to_string(),
             target_commit: target_commit.clone(),
@@ -1174,26 +1976,80 @@ impl SelfUpdateManager {
                 }
                 _ => String::new(),
             },
+            // plugins 舞步双目录（同进同退的回滚现场；包不带插件 = 双空 = boot
+            // 回滚 noop 分支）。
+            plugins_backup_dir: if extracted.plugins.is_empty() {
+                String::new()
+            } else {
+                plugins_backup.display().to_string()
+            },
+            plugins_new_dir: if extracted.plugins.is_empty() {
+                String::new()
+            } else {
+                plugins_new.display().to_string()
+            },
         };
         save_journal(&self.workspace, &journal)?;
-        // dance：exe→.old，.new→exe（rename 运行中 PE 合法；窗口毫秒级）。
+
+        // plugins 舞步先于 exe 舞步：失败时 exe 未触碰——内联回滚 plugins，
+        // 归零成功才清 journal 拒绝（回滚失败则 journal 留现场，boot 收口重试）。
+        if !extracted.plugins.is_empty() {
+            if let Err(e) = install_plugins_files(
+                &plugins_dir,
+                &plugins_backup,
+                &plugins_new,
+                &extracted.plugins,
+            ) {
+                match rollback_plugins_from_journal(&journal, &exe_path) {
+                    Ok(detail) => {
+                        if !clear_journal(&self.workspace) {
+                            self.audit_event("staging", "denied", "journal 清理失败，残留仍在");
+                        }
+                        let reason = format!("plugins 替换失败：{e}（已回滚：{detail}）");
+                        self.audit_event("staging", "denied", &reason);
+                        return Err(reason);
+                    }
+                    Err(fail) => {
+                        let reason = format!(
+                            "plugins 替换失败：{e}；且回滚失败：{fail}\
+                             （journal 已留现场，重启本进程即自动回滚）"
+                        );
+                        self.audit_event("staging", "denied", &reason);
+                        return Err(reason);
+                    }
+                }
+            }
+            self.audit_event(
+                "staging",
+                "allowed",
+                &format!(
+                    "plugins 整包替换完成（{} 个文件，只同名覆盖不删既有）",
+                    extracted.plugins.len()
+                ),
+            );
+        }
+
+        // exe dance：exe→.old，.new→exe（rename 运行中 PE 合法；窗口毫秒级；
+        // POSIX rename 天然原子覆盖）。失败回手 = exe + plugins 双回滚
+        // （plugins 可能已换新，只归位 exe 会留下「旧 exe + 新插件」错配）。
         std::fs::rename(&exe_path, &old_path)
             .map_err(|e| format!("exe→.old rename 失败：{e}（staging 中断，journal 已留现场）"))?;
         if let Err(e) = std::fs::rename(&new_path, &exe_path) {
-            // 回手走与 boot 收口同一回滚本体（R2 诚实化）：归位成功才清
-            // journal；归位失败保留 staging 现场，下次启动 boot 收口重试。
-            match rollback_old_exe_to(&old_path.display().to_string(), &exe_path) {
-                Ok(detail) => {
+            // 双回滚走与 boot 收口同一回滚本体（幂等诚实化）：两者皆成功才清
+            // journal；任一失败保留 staging 现场，下次启动 boot 收口重试
+            // （届时已成功的一侧自动 noop 收敛）。
+            match rollback_update(&journal, &exe_path) {
+                Ok((detail, _noop)) => {
                     if !clear_journal(&self.workspace) {
                         self.audit_event("staging", "denied", "journal 清理失败，残留仍在");
                     }
-                    let reason = format!(".new→exe rename 失败：{e}（已回滚：{detail}）");
+                    let reason = format!(".new→exe rename 失败：{e}（已双回滚：{detail}）");
                     self.audit_event("staging", "denied", &reason);
                     return Err(reason);
                 }
                 Err(fail) => {
                     let reason = format!(
-                        ".new→exe rename 失败：{e}；且回手归位失败：{fail}\
+                        ".new→exe rename 失败：{e}；且回手双回滚失败：{fail}\
                          （journal 已留 staging 现场，重启本进程即自动回滚）"
                     );
                     self.audit_event("staging", "denied", &reason);
@@ -1217,6 +2073,9 @@ impl SelfUpdateManager {
             return Err(format!("{e}（staging 现场已留，重启本进程即自动回滚）"));
         }
         self.audit_event("restart", "allowed", &target_desc);
+        // 更新一次性完成 → 删包收口（用户拍板：更新完删除；journal/安装收口
+        // 照旧由新进程 boot 承担）。
+        clear_updates_dir(&exe_path);
 
         // ── 步骤 6b：旧进程优雅停机（新进程在等本进程退场）──
         let shutdown = self.shutdown.clone();
@@ -1229,17 +2088,16 @@ impl SelfUpdateManager {
             .map_err(|e| format!("shutdown 线程启动失败：{e}"))?;
 
         Ok(format!(
-            "自更新 staging 完成（{target_desc}），新进程已拉起，本进程将优雅退出；\
-             启动自检与回滚由新进程 boot 收口执行。"
+            "自更新 staging 完成（{current_version} → {target_desc}），新进程已拉起，\
+             本进程将优雅退出；启动自检与回滚由新进程 boot 收口执行。"
         ))
     }
 
-    /// 非 Windows 变体：诚实拒绝。v1 边界必须有显式闸兑现——否则会先下完
-    /// 300MB 主包再撞「不是合法 zip」（tar.gz 解包依赖不在树）。整个九步
-    /// 主体不参与非 Windows 编译（避免 unreachable 段），Linux 侧 rename
-    /// 语义其实可行，v2 移植时以真实现替换此变体即可；check/status/boot
-    /// 收口全平台可用。
-    #[cfg(not(target_os = "windows"))]
+    /// 桩平台变体（macOS 留位 / Android APK 形态）：诚实拒绝。apply 全链路
+    /// 主体不参与桩平台编译（避免 unreachable 段）；check/status/boot 收口
+    /// 全平台可用。macOS CI 产物（nightly-macos.tar.gz）就位后，把
+    /// `apply_supported()` 与本 cfg 门一起放开即接通。
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     pub async fn apply(
         &self,
         current_version: &str,
@@ -1247,18 +2105,24 @@ impl SelfUpdateManager {
         allow_downgrade: bool,
     ) -> Result<String, String> {
         let _ = (current_version, current_commit, allow_downgrade);
-        self.audit_event("selfupdate", "denied", "non-windows v1 boundary");
-        Err("自更新 apply 暂不支持当前平台（v1 仅 Windows）：\
+        self.audit_event("selfupdate", "denied", "stub platform boundary");
+        Err(if TARGET_ASSET.is_empty() {
+            "当前平台（Android）走 APK 发行形态，不走主包自更新通道：\
+             请通过 APK 侧更新。"
+                .to_string()
+        } else {
+            "自更新 apply 暂不支持当前平台（macOS 留位未接通）：\
              请手动下载 Release 包替换。"
-            .to_string())
+                .to_string()
+        })
     }
 }
 
 /// VerifyOutcome 无 Display——人读短文按变体出（skins classify 同口径）。
-/// 唯一非测试消费方 = Windows-only apply 主体；非 Windows 生产编译诚实
-/// 允许死码（跨平台测试仍消费，cfg 掉会连九态钉测试一起裁出 Linux）。
+/// 唯一非测试消费方 = windows/linux apply 主体；桩平台生产编译诚实允许死码
+/// （跨平台测试仍消费，cfg 掉会连九态钉测试一起裁出）。
 #[cfg(feature = "selfupdate")]
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))]
 fn outcome_kind(o: &nemesis_verify::verify::VerifyOutcome) -> &'static str {
     match o {
         nemesis_verify::verify::VerifyOutcome::Valid { .. } => "Valid",
@@ -1277,7 +2141,7 @@ fn outcome_kind(o: &nemesis_verify::verify::VerifyOutcome) -> &'static str {
 /// manifest.json 以**原样字节**外带——验签必须针对线上签名时的字节，任何
 /// serde 往返都可能破坏签名覆盖面）。
 #[cfg(feature = "selfupdate")]
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))] // 消费方=Windows-only apply；测试跨平台
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))] // 消费方=windows/linux apply；macOS/android 桩平台诚实死码
 #[derive(Debug)]
 struct ExtractedBundle {
     exe_bytes: Vec<u8>,
@@ -1285,55 +2149,124 @@ struct ExtractedBundle {
     /// R1：包内签名更新清单的原始载体字节（JSON + CMS + v4 footer）。缺失 =
     /// None（旧 CI 包 / 用户自打包）——apply 侧按 Unknown 类处理。
     manifest_bytes: Option<Vec<u8>>,
+    /// unix 包内 exe 权限位（tar 条目 mode；zip 臂恒 None——zip 无通用执行位
+    /// 语义，unix 下 .new 落盘走 0755 回落）。读点在 apply 的 `#[cfg(unix)]`
+    /// chmod 臂——windows 构建诚实死字段。
+    #[cfg_attr(not(unix), allow(dead_code))]
+    exe_unix_mode: Option<u32>,
+    /// plugins/ 子树文件（平面名 → 字节；子目录嵌套条目诚实拒收）。zip/tar
+    /// 双臂共同捕获；空 = 包不带插件（journal 双字段空，回滚 noop 分支）。
+    plugins: std::collections::BTreeMap<String, Vec<u8>>,
 }
 
 #[cfg(feature = "selfupdate")]
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))]
 impl ExtractedBundle {
     fn version_txt_commit_desc(&self) -> String {
         self.commit.clone().unwrap_or_else(|| "unknown".to_string())
     }
 }
 
-/// zip 包解包：取 `nemesisbot.exe`（扁平结构：包内 nemesisbot.exe / plugins/ /
-/// version.txt / manifest.json，见 daily-release Package (Windows) 段）。
+/// 更新包解包：按魔数分派（不按平台 cfg——测试跨平台可测双格式；macOS
+/// 未来 tar.gz 直接复用同一臂）。`PK\x03\x04` = zip（Windows 主包形态）、
+/// `\x1f\x8b` = tar+gzip（Linux/macOS 主包形态）；其余诚实拒收。
 #[cfg(feature = "selfupdate")]
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))] // 消费方=Windows-only apply；测试跨平台
-fn extract_update_bundle(zip_bytes: &[u8]) -> Result<ExtractedBundle, String> {
-    let reader = std::io::Cursor::new(zip_bytes);
-    let mut archive =
-        zip::ZipArchive::new(reader).map_err(|e| format!("更新包不是合法 zip：{e}"))?;
-    let mut exe_bytes: Option<Vec<u8>> = None;
-    let mut version_txt: Option<String> = None;
-    let mut manifest_bytes: Option<Vec<u8>> = None;
-    for i in 0..archive.len() {
-        let mut entry = archive
-            .by_index(i)
-            .map_err(|e| format!("更新包条目 {i} 不可读：{e}"))?;
-        // zip 9：条目名解码可失败——诚实报错拒绝（更新包条目名必须可判读）。
-        let name = entry
-            .name()
-            .map_err(|e| format!("更新包条目 {i} 名字不可解码：{e}"))?
-            .to_string();
-        if name == "nemesisbot.exe" || name.ends_with("/nemesisbot.exe") {
-            let mut buf = Vec::with_capacity(entry.size() as usize);
-            std::io::Read::read_to_end(&mut entry, &mut buf)
-                .map_err(|e| format!("读取包内 nemesisbot.exe 失败：{e}"))?;
-            exe_bytes = Some(buf);
-        } else if name == "version.txt" || name.ends_with("/version.txt") {
-            let mut buf = String::new();
-            std::io::Read::read_to_string(&mut entry, &mut buf)
-                .map_err(|e| format!("读取包内 version.txt 失败：{e}"))?;
-            version_txt = Some(buf);
-        } else if name == "manifest.json" || name.ends_with("/manifest.json") {
-            let mut buf = Vec::with_capacity(entry.size() as usize);
-            std::io::Read::read_to_end(&mut entry, &mut buf)
-                .map_err(|e| format!("读取包内 manifest.json 失败：{e}"))?;
-            manifest_bytes = Some(buf);
-        }
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))] // 消费方=windows/linux apply；macOS/android 桩平台诚实死码
+fn extract_update_bundle(pkg_bytes: &[u8]) -> Result<ExtractedBundle, String> {
+    if pkg_bytes.starts_with(b"PK\x03\x04") {
+        extract_zip_bundle(pkg_bytes)
+    } else if pkg_bytes.starts_with(b"\x1f\x8b") {
+        extract_tar_gz_bundle(pkg_bytes)
+    } else {
+        let m0 = pkg_bytes.first().copied().unwrap_or(0);
+        let m1 = pkg_bytes.get(1).copied().unwrap_or(0);
+        let m2 = pkg_bytes.get(2).copied().unwrap_or(0);
+        let m3 = pkg_bytes.get(3).copied().unwrap_or(0);
+        Err(format!(
+            "更新包格式不可识别（魔数 {m0:02x} {m1:02x} {m2:02x} {m3:02x}，\
+             支持 zip / tar.gz）：已拒收"
+        ))
     }
+}
+
+/// 包内条目名归一：`\` → `/`、循环剥 `./` 前缀；绝对路径与 `..` 段诚实拒收
+/// （解包产物只进内存映射不落盘，但名字要进 `install_plugins_files` 的
+/// join，路径逃逸在入口收口，零容忍）。
+#[cfg(feature = "selfupdate")]
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))] // 消费方=windows/linux apply；macOS/android 桩平台诚实死码
+fn normalize_entry_name(raw: &str) -> Result<String, String> {
+    if raw.is_empty() {
+        return Err("包内存在空条目名：已拒收".to_string());
+    }
+    let mut name = raw.replace('\\', "/");
+    while let Some(stripped) = name.strip_prefix("./") {
+        name = stripped.to_string();
+    }
+    if name.starts_with('/') {
+        return Err(format!("包内存在绝对路径条目（{raw}）：已拒收"));
+    }
+    if name.split('/').any(|seg| seg == "..") {
+        return Err(format!("包内存在 `..` 逃逸条目（{raw}）：已拒收"));
+    }
+    Ok(name)
+}
+
+/// 包内条目分类（平面名匹配；`plugins/` 前缀 = 插件文件，要求单层平面名）。
+#[cfg(feature = "selfupdate")]
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))] // 消费方=windows/linux apply；macOS/android 桩平台诚实死码
+enum BundleEntry {
+    Exe,
+    VersionTxt,
+    Manifest,
+    Plugin(String),
+    Ignored,
+}
+
+#[cfg(feature = "selfupdate")]
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))] // 消费方=windows/linux apply；macOS/android 桩平台诚实死码
+fn classify_entry(name: &str) -> Result<BundleEntry, String> {
+    // 主程序条目：windows 主包 = nemesisbot.exe；linux 主包（macOS 留位同型
+    // ）= 裸名 nemesisbot（daily-release「解压后运行 ./nemesisbot gateway」
+    // 形态）。两个名字都认——解包分派按魔数不按平台，双形态免费共存。
+    if name == "nemesisbot.exe"
+        || name == "nemesisbot"
+        || name.ends_with("/nemesisbot.exe")
+        || name.ends_with("/nemesisbot")
+    {
+        return Ok(BundleEntry::Exe);
+    }
+    if name == "version.txt" || name.ends_with("/version.txt") {
+        return Ok(BundleEntry::VersionTxt);
+    }
+    if name == "manifest.json" || name.ends_with("/manifest.json") {
+        return Ok(BundleEntry::Manifest);
+    }
+    if let Some(rest) = name.strip_prefix("plugins/") {
+        if rest.is_empty() {
+            return Ok(BundleEntry::Ignored); // `plugins/` 目录条目本身
+        }
+        if rest.contains('/') {
+            return Err(format!(
+                "包内 plugins 子目录嵌套条目（{name}）不支持（插件平面名清单）：已拒收"
+            ));
+        }
+        return Ok(BundleEntry::Plugin(rest.to_string()));
+    }
+    Ok(BundleEntry::Ignored)
+}
+
+/// 解包产物收口（exe 必在；commit 从 version.txt 解析）。
+#[cfg(feature = "selfupdate")]
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))] // 消费方=windows/linux apply；macOS/android 桩平台诚实死码
+fn finish_bundle(
+    exe_bytes: Option<Vec<u8>>,
+    version_txt: Option<String>,
+    manifest_bytes: Option<Vec<u8>>,
+    exe_unix_mode: Option<u32>,
+    plugins: std::collections::BTreeMap<String, Vec<u8>>,
+) -> Result<ExtractedBundle, String> {
     let exe_bytes = exe_bytes
-        .ok_or_else(|| "更新包内未找到 nemesisbot.exe（包结构异常），已拒收".to_string())?;
+        .ok_or_else(|| "更新包内未找到主程序 nemesisbot(.exe)（包结构异常），已拒收".to_string())?;
     let commit = version_txt
         .as_deref()
         .and_then(extract_commit_from_version_txt);
@@ -1341,12 +2274,141 @@ fn extract_update_bundle(zip_bytes: &[u8]) -> Result<ExtractedBundle, String> {
         exe_bytes,
         commit,
         manifest_bytes,
+        exe_unix_mode,
+        plugins,
     })
+}
+
+/// zip 臂（Windows 主包）：扁平结构 nemesisbot.exe / plugins/ / version.txt /
+/// manifest.json（见 daily-release Package (Windows) 段）。
+#[cfg(feature = "selfupdate")]
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))] // 消费方=windows/linux apply；macOS/android 桩平台诚实死码
+fn extract_zip_bundle(zip_bytes: &[u8]) -> Result<ExtractedBundle, String> {
+    let reader = std::io::Cursor::new(zip_bytes);
+    let mut archive =
+        zip::ZipArchive::new(reader).map_err(|e| format!("更新包不是合法 zip：{e}"))?;
+    let mut exe_bytes: Option<Vec<u8>> = None;
+    let mut version_txt: Option<String> = None;
+    let mut manifest_bytes: Option<Vec<u8>> = None;
+    let mut plugins = std::collections::BTreeMap::new();
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| format!("更新包条目 {i} 不可读：{e}"))?;
+        // zip 9：条目名解码可失败——诚实报错拒绝（更新包条目名必须可判读）。
+        let raw = entry
+            .name()
+            .map_err(|e| format!("更新包条目 {i} 名字不可解码：{e}"))?
+            .to_string();
+        let name = normalize_entry_name(&raw)?;
+        match classify_entry(&name)? {
+            BundleEntry::Exe => {
+                let mut buf = Vec::with_capacity(entry.size() as usize);
+                std::io::Read::read_to_end(&mut entry, &mut buf)
+                    .map_err(|e| format!("读取包内 nemesisbot.exe 失败：{e}"))?;
+                exe_bytes = Some(buf);
+            }
+            BundleEntry::VersionTxt => {
+                let mut buf = String::new();
+                std::io::Read::read_to_string(&mut entry, &mut buf)
+                    .map_err(|e| format!("读取包内 version.txt 失败：{e}"))?;
+                version_txt = Some(buf);
+            }
+            BundleEntry::Manifest => {
+                let mut buf = Vec::with_capacity(entry.size() as usize);
+                std::io::Read::read_to_end(&mut entry, &mut buf)
+                    .map_err(|e| format!("读取包内 manifest.json 失败：{e}"))?;
+                manifest_bytes = Some(buf);
+            }
+            BundleEntry::Plugin(pname) => {
+                let mut buf = Vec::with_capacity(entry.size() as usize);
+                std::io::Read::read_to_end(&mut entry, &mut buf)
+                    .map_err(|e| format!("读取包内插件 {pname} 失败：{e}"))?;
+                plugins.insert(pname, buf);
+            }
+            BundleEntry::Ignored => {}
+        }
+    }
+    finish_bundle(exe_bytes, version_txt, manifest_bytes, None, plugins)
+}
+
+/// tar.gz 臂（Linux/macOS 主包）：CI `tar -czf - -C staging .` 产出 `./`
+/// 前缀条目——normalize 剥前缀。Directory 条目跳过、Regular 处理、其他
+/// （symlink/hardlink）诚实拒收（解包不跟随链接——链接逃逸是 tar 投毒
+/// 常态面）；exe 权限位随条目 mode 进 [`ExtractedBundle::exe_unix_mode`]。
+#[cfg(feature = "selfupdate")]
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))] // 消费方=windows/linux apply；macOS/android 桩平台诚实死码
+fn extract_tar_gz_bundle(pkg_bytes: &[u8]) -> Result<ExtractedBundle, String> {
+    let gz = flate2::read::GzDecoder::new(pkg_bytes);
+    let mut archive = tar::Archive::new(gz);
+    let mut exe_bytes: Option<Vec<u8>> = None;
+    let mut version_txt: Option<String> = None;
+    let mut manifest_bytes: Option<Vec<u8>> = None;
+    let mut exe_unix_mode: Option<u32> = None;
+    let mut plugins = std::collections::BTreeMap::new();
+    let entries = archive
+        .entries()
+        .map_err(|e| format!("更新包不是合法 tar.gz：{e}"))?;
+    for entry in entries {
+        let mut entry = entry.map_err(|e| format!("更新包条目不可读：{e}"))?;
+        let raw = entry
+            .path()
+            .map_err(|e| format!("更新包条目名不可解码：{e}"))?
+            .to_string_lossy()
+            .to_string();
+        let name = normalize_entry_name(&raw)?;
+        use tar::EntryType;
+        match entry.header().entry_type() {
+            EntryType::Directory => continue,
+            EntryType::Regular => {}
+            other => {
+                return Err(format!(
+                    "包内存在非常规条目（{raw}，类型 {other:?}；symlink/hardlink 不收）：已拒收"
+                ));
+            }
+        }
+        let mode = entry.header().mode().ok();
+        match classify_entry(&name)? {
+            BundleEntry::Exe => {
+                let mut buf = Vec::new();
+                std::io::Read::read_to_end(&mut entry, &mut buf)
+                    .map_err(|e| format!("读取包内 nemesisbot.exe 失败：{e}"))?;
+                exe_bytes = Some(buf);
+                exe_unix_mode = mode;
+            }
+            BundleEntry::VersionTxt => {
+                let mut buf = String::new();
+                std::io::Read::read_to_string(&mut entry, &mut buf)
+                    .map_err(|e| format!("读取包内 version.txt 失败：{e}"))?;
+                version_txt = Some(buf);
+            }
+            BundleEntry::Manifest => {
+                let mut buf = Vec::new();
+                std::io::Read::read_to_end(&mut entry, &mut buf)
+                    .map_err(|e| format!("读取包内 manifest.json 失败：{e}"))?;
+                manifest_bytes = Some(buf);
+            }
+            BundleEntry::Plugin(pname) => {
+                let mut buf = Vec::new();
+                std::io::Read::read_to_end(&mut entry, &mut buf)
+                    .map_err(|e| format!("读取包内插件 {pname} 失败：{e}"))?;
+                plugins.insert(pname, buf);
+            }
+            BundleEntry::Ignored => {}
+        }
+    }
+    finish_bundle(
+        exe_bytes,
+        version_txt,
+        manifest_bytes,
+        exe_unix_mode,
+        plugins,
+    )
 }
 
 /// 拉起新版本（detached；等旧进程的接力棒经 env 注入）。
 #[cfg(feature = "selfupdate")]
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))] // 消费方=Windows-only apply；测试跨平台
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))] // 消费方=windows/linux apply；macOS/android 桩平台诚实死码
 fn spawn_new_version(new_exe: &Path) -> Result<u32, String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut cmd = std::process::Command::new(new_exe);
@@ -1361,6 +2423,14 @@ fn spawn_new_version(new_exe: &Path) -> Result<u32, String> {
         const DETACHED_PROCESS: u32 = 0x0000_0008;
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
         cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    }
+    #[cfg(unix)]
+    {
+        // 独立进程组：外部按进程树杀旧进程时（kill -pgid 同类语义）不牵连
+        // 新进程——与 Windows 臂 CREATE_NEW_PROCESS_GROUP 同语义；安全 API
+        // 非 unsafe。
+        use std::os::unix::process::CommandExt as _;
+        cmd.process_group(0);
     }
     cmd.spawn()
         .map(|c| c.id())
