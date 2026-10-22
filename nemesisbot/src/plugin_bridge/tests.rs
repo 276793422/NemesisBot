@@ -338,3 +338,287 @@ fn truncate_chars_exact_count_no_ellipsis() {
         "abcd"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 策略桥全链（批 5）：真组件（policy-sample）经漏斗安装 → PolicyBridge
+// trait 方法裁决投影 → register_policy_bridges 装配计数随注册表浮动。
+// fixture 缺席（wasm target 未装等）诚实 SKIP——同 nemesis-plugins-wasm
+// tests/policy_sample 纪律。
+// ---------------------------------------------------------------------------
+
+/// policy-sample wasm 产物路径（缺席按需构建；失败 = None → SKIP）。
+fn policy_fixture_wasm() -> Option<PathBuf> {
+    static OUT: OnceLock<Option<PathBuf>> = OnceLock::new();
+    let path = OUT.get_or_init(|| {
+        let crate_dir =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../plugins/wasm/policy-sample");
+        let out = crate_dir.join("target/wasm32-wasip2/release/policy_sample_plugin.wasm");
+        if out.exists() {
+            return Some(out);
+        }
+        let cargo = std::env::var_os("CARGO")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("cargo"));
+        let ok = std::process::Command::new(cargo)
+            .args(["build", "--target", "wasm32-wasip2", "--release"])
+            .current_dir(&crate_dir)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            out.exists().then_some(out)
+        } else {
+            eprintln!("SKIP：policy-sample fixture 构建失败（rustup target add wasm32-wasip2）");
+            None
+        }
+    });
+    path.clone()
+}
+
+const POLICY_SAMPLE_TOML: &str = r#"api-version = 1
+slug = "policy-sample"
+kind = "policy"
+name = "PolicySample"
+version = "0.1.0"
+description = "bridge e2e fixture"
+"#;
+
+/// 落源目录（plugin.toml + wasm），返回路径供漏斗安装。
+fn stage_policy_plugin(root: &std::path::Path, wasm: &std::path::Path) -> PathBuf {
+    use sha2::Digest as _;
+    let bytes = std::fs::read(wasm).expect("read fixture wasm");
+    let sha = format!("{:x}", sha2::Sha256::digest(&bytes));
+    let dir = root.join("policy-sample-src");
+    std::fs::create_dir_all(&dir).expect("stage dir");
+    std::fs::write(
+        dir.join("plugin.toml"),
+        format!("wasm-sha256 = \"{sha}\"\n{POLICY_SAMPLE_TOML}"),
+    )
+    .expect("write toml");
+    std::fs::write(dir.join("plugin.wasm"), &bytes).expect("write wasm");
+    dir
+}
+
+/// 已装 policy-sample 的 manager（temp home 纪律同现有用例）。锁窗口只护
+/// env 注入 + `PluginManager::new` 的壳 DLL 解析（load-once 进程级缓存，
+/// 此后 env 翻转无影响）——不跨 await（clippy await_holding_lock）。
+async fn manager_with_policy_sample() -> Option<(tempfile::TempDir, Arc<PluginManager>)> {
+    let Some(wasm) = policy_fixture_wasm() else {
+        eprintln!("SKIP：policy-sample fixture 缺席");
+        return None;
+    };
+    let (lock, dir, home) = temp_home();
+    let manager = Arc::new(
+        PluginManager::new(
+            &common::workspace_path(&home),
+            PluginLimits::default(),
+            Arc::new(VaultPluginSecrets::for_home(&home)),
+        )
+        .expect("manager"),
+    );
+    drop(lock);
+    let staged = stage_policy_plugin(dir.path(), &wasm);
+    let installer = nemesis_plugins_wasm::install::PluginInstaller::new(
+        manager.clone(),
+        Arc::new(nemesis_plugins_wasm::install::AutoApprove),
+        None,
+    );
+    installer.install(&staged, true).await.expect("install");
+    Some((dir, manager))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn policy_bridge_routes_guest_verdicts() {
+    let Some((_dir, manager)) = manager_with_policy_sample().await else {
+        return;
+    };
+    use nemesis_agent::r#loop::policy::{
+        CompactExecInput, CompactPolicy as _, CompactTriggerInput, FinalJudgeInput,
+        FinalJudgePolicy as _, ValidationInput, ValidationPolicy as _,
+    };
+    let bridge = Arc::new(super::PolicyBridge::new(manager.clone()));
+
+    // validation：reject / fixed / builtin 三分支（真组件经壳往返）。
+    let v = bridge
+        .validate(&ValidationInput {
+            tool: "exec".into(),
+            schema: None,
+            args_json: r#"{"cmd":"echo __REJECT__"}"#.into(),
+        })
+        .await;
+    assert!(
+        matches!(
+            v,
+            nemesis_agent::r#loop::policy::ValidationVerdict::Reject { .. }
+        ),
+        "got {v:?}"
+    );
+    let v = bridge
+        .validate(&ValidationInput {
+            tool: "write_file".into(),
+            schema: None,
+            args_json: r#"{"path":"notes/__autofix_this__.txt"}"#.into(),
+        })
+        .await;
+    match v {
+        nemesis_agent::r#loop::policy::ValidationVerdict::Fixed(a) => {
+            assert_eq!(a, r#"{"path":"notes/autofixed-by-policy-sample.txt"}"#);
+        }
+        other => panic!("expected Fixed, got {other:?}"),
+    }
+    let v = bridge
+        .validate(&ValidationInput {
+            tool: "read_file".into(),
+            schema: None,
+            args_json: "{}".into(),
+        })
+        .await;
+    assert!(
+        matches!(v, nemesis_agent::r#loop::policy::ValidationVerdict::Builtin),
+        "got {v:?}"
+    );
+
+    // final judge：giveup / retry（无 LLM invoker → 静态 nudge）/ builtin。
+    let v = bridge
+        .judge(&FinalJudgeInput {
+            session_key: "s".into(),
+            content: "x __FORCE_GIVEUP__".into(),
+            turns_used: 2,
+            validation_failures: 0,
+        })
+        .await;
+    assert!(
+        matches!(
+            v,
+            nemesis_agent::r#loop::policy::FinalJudgeVerdict::GiveUp(_)
+        ),
+        "got {v:?}"
+    );
+    let v = bridge
+        .judge(&FinalJudgeInput {
+            session_key: "s".into(),
+            content: "x __FORCE_RETRY__".into(),
+            turns_used: 2,
+            validation_failures: 0,
+        })
+        .await;
+    match v {
+        nemesis_agent::r#loop::policy::FinalJudgeVerdict::RetryWithNudge(n) => {
+            assert!(n.contains("__FORCE_RETRY__"), "nudge: {n}");
+        }
+        other => panic!("expected RetryWithNudge, got {other:?}"),
+    }
+
+    // compact trigger：过软位 skip / 硬位 builtin（soft = 软位 token 位置
+    // usize，镜像 policy.rs 真实字段形态）；exec：确定性摘要。
+    let v = bridge
+        .should_compact(&CompactTriggerInput {
+            session_key: "s".into(),
+            tail_tokens: 1000,
+            provider_signal: 0,
+            signal: 1000,
+            threshold: 2000,
+            soft: 1333,
+            window: 8000,
+            covers_up_to: 0,
+            new_boundary: 500,
+        })
+        .await;
+    assert!(
+        matches!(
+            v,
+            nemesis_agent::r#loop::policy::CompactTriggerVerdict::Skip
+        ),
+        "got {v:?}"
+    );
+    let turns = [
+        nemesis_agent::types::ConversationTurn {
+            role: "user".into(),
+            content: "hi".into(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            timestamp: String::new(),
+            reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
+            image_refs: Vec::new(),
+        },
+        nemesis_agent::types::ConversationTurn {
+            role: "assistant".into(),
+            content: "yo".into(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            timestamp: String::new(),
+            reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
+            image_refs: Vec::new(),
+        },
+    ];
+    let v = bridge
+        .generate_summary(&CompactExecInput {
+            session_key: "s",
+            prefix: &turns,
+            existing_summary: "",
+            window: 100,
+            model: "m1",
+        })
+        .await;
+    match v {
+        nemesis_agent::r#loop::policy::CompactExecVerdict::Summary(s) => {
+            assert_eq!(s, "[policy-sample] 已折叠 2 条历史（window=100，model=m1）");
+        }
+        other => panic!("expected Summary, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn register_policy_bridges_count_follows_registry() {
+    let Some((_dir, manager)) = manager_with_policy_sample().await else {
+        return;
+    };
+    let agent_loop = Arc::new(nemesis_agent::r#loop::AgentLoop::new(
+        Box::new(NoopLlmProvider),
+        nemesis_agent::types::AgentConfig::default(),
+    ));
+    let estop = Arc::new(nemesis_agent::EstopState::new());
+
+    // 三接管点 → 装配计数 3（llm 面注入 + 三槽装桥）。
+    let n = super::register_policy_bridges(&agent_loop, &manager, &estop);
+    assert_eq!(n, 3, "三点全接管 = 计数 3");
+
+    // 禁用 → 再装配 = 0（摘桥回内置哨兵的决策面）。
+    manager
+        .set_enabled_plugin("policy-sample", false)
+        .await
+        .expect("disable");
+    let n = super::register_policy_bridges(&agent_loop, &manager, &estop);
+    assert_eq!(n, 0, "禁用后无接管点");
+}
+
+// —— 空 provider：register_policy_bridges 只需要 loop 形（不走 LLM）——
+
+struct NoopLlmProvider;
+
+#[async_trait::async_trait]
+impl nemesis_agent::r#loop::LlmProvider for NoopLlmProvider {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<nemesis_agent::r#loop::LlmMessage>,
+        _options: Option<nemesis_agent::types::ChatOptions>,
+        _tools: Vec<nemesis_agent::types::ToolDefinition>,
+    ) -> Result<nemesis_agent::r#loop::LlmResponse, String> {
+        Ok(nemesis_agent::r#loop::LlmResponse {
+            content: "ok".to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            finish_reason: None,
+            escalated_to: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+}

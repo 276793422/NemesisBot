@@ -1,0 +1,17 @@
+[package]
+name = "policy-sample-plugin"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# 三方 SDK：export_loop_policy! 一键导出（运行时钩子由 SDK 再导出，无需直接
+# 依赖 wit-bindgen）。工程须有 wit/plugin.wit 合同副本。
+nemesis-plugin-sdk = { path = "../../../crates/nemesis-plugin-sdk" }
+serde = { version = "1", default-features = false, features = ["derive"] }
+serde_json = "1"
+
+[workspace]
