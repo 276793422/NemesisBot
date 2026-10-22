@@ -2036,6 +2036,10 @@ impl ClusterHandler {
             ctx.state.cluster.as_ref().map(|c| c.roaming_active()),
             rendezvous,
         )?;
+        // 闸链快照随定义走（inject_cluster_gate = cfg(cluster-roaming)；
+        // quic-relay 蕴含 cluster-roaming）——desktop 等裁剪组合无叠加层
+        // 时 status 只有降级载荷，无 gate 注入（前端裁剪后面板不存在）。
+        #[cfg(feature = "cluster-roaming")]
         inject_cluster_gate(&mut payload, ctx, &workspace);
         Ok(payload)
     }
