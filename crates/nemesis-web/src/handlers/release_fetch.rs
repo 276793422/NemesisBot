@@ -6,6 +6,10 @@
 //! （拦 = 诚实失败）+ 手动重定向循环（≤[`FETCH_MAX_HOPS`] 跳，相对
 //! Location 走 `Url::join`；重定向降级到非 https 拒绝）+ 流式上限。
 //!
+//! 两种消费形态共享 [`fetch_response`] 骨架：[`fetch_bytes`] 整包读内存
+//! （小元信息/skins 包），[`download_to_file`] 流式落盘（selfupdate 大包，
+//! per-chunk 空闲超时兜底连接停滞，无整体墙钟）。
+//!
 //! 官方 Release 枚举走列表 API 而非 `releases/latest`：nightly-build 是
 //! prerelease，latest 语义不认 prerelease（实测 HTTP 404），列表第一条才是
 //! 真实的最新发布。
@@ -45,20 +49,28 @@ pub fn set_ssrf_guard(guard: Option<nemesis_security::ssrf::Guard>) {
 
 /// 不跟随重定向的下载 client（Policy::none：SSRF 闸只校验发出去的那一跳，
 /// 自动跟跳 = `302 → 内网` 绕闸——image_attach A1 同判例，循环在调用方）。
-fn fetch_client() -> reqwest::Client {
-    reqwest::Client::builder()
+/// `total_timeout` = 整体墙钟上限；None = 不设（大包流式落盘用——300MB 包
+/// × 慢链路会撞固定墙钟假超时，连接停滞由 `download_to_file` 的 per-chunk
+/// 空闲超时兜底）。
+fn fetch_client(total_timeout: Option<std::time::Duration>) -> reqwest::Client {
+    let mut builder = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(FETCH_CONNECT_TIMEOUT)
-        .timeout(FETCH_TOTAL_TIMEOUT)
-        .user_agent(FETCH_UA)
-        .build()
-        .unwrap_or_default()
+        .user_agent(FETCH_UA);
+    if let Some(t) = total_timeout {
+        builder = builder.timeout(t);
+    }
+    builder.build().unwrap_or_default()
 }
 
 /// 按 SSRF 闸验证过的 IP 集钉死 DNS 的下载 client（防 rebinding TOCTOU——
 /// 闸解析过 ≠ reqwest 连接用的 IP；TLS SNI/证书校验仍按原 host）。
 #[cfg(feature = "security")]
-fn pinned_fetch_client(url: &str, ips: &[std::net::IpAddr]) -> Option<reqwest::Client> {
+fn pinned_fetch_client(
+    url: &str,
+    ips: &[std::net::IpAddr],
+    total_timeout: Option<std::time::Duration>,
+) -> Option<reqwest::Client> {
     let parsed = reqwest::Url::parse(url).ok()?;
     let host = parsed.host_str()?.to_string();
     let port = parsed
@@ -67,24 +79,30 @@ fn pinned_fetch_client(url: &str, ips: &[std::net::IpAddr]) -> Option<reqwest::C
     let mut builder = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(FETCH_CONNECT_TIMEOUT)
-        .timeout(FETCH_TOTAL_TIMEOUT)
         .user_agent(FETCH_UA);
+    if let Some(t) = total_timeout {
+        builder = builder.timeout(t);
+    }
     for ip in ips {
         builder = builder.resolve(&host, std::net::SocketAddr::new(*ip, port));
     }
     builder.build().ok()
 }
 
-/// 渠道下载：https-only + 每跳独立过 SSRF 闸（拦 = 诚实失败）+ 手动重定向
-/// 循环（≤[`FETCH_MAX_HOPS`] 跳；重定向降级到非 https 拒绝）+ 流式
-/// `max_bytes` 上限。
-pub(crate) async fn fetch_bytes(url: &str, max_bytes: usize) -> Result<Vec<u8>, String> {
+/// 共享下载骨架：https-only + 每跳独立过 SSRF 闸（拦 = 诚实失败）+ 手动
+/// 重定向循环（≤[`FETCH_MAX_HOPS`] 跳；重定向降级到非 https 拒绝）。
+/// 返回最终成功响应（body 未读）——`fetch_bytes` 整包读内存、
+/// `download_to_file` 流式落盘分别消费。
+async fn fetch_response(
+    url: &str,
+    total_timeout: Option<std::time::Duration>,
+) -> Result<reqwest::Response, String> {
     if !url.starts_with("https://") {
         return Err("仅支持 https:// 地址".to_string());
     }
     #[cfg(feature = "security")]
     let guard = SSRF_GUARD_SLOT.read().clone();
-    let base = fetch_client();
+    let base = fetch_client(total_timeout);
     let mut current = reqwest::Url::parse(url).map_err(|e| format!("URL 解析失败：{e}"))?;
     for _hop in 0..=FETCH_MAX_HOPS {
         #[cfg(feature = "security")]
@@ -92,9 +110,8 @@ pub(crate) async fn fetch_bytes(url: &str, max_bytes: usize) -> Result<Vec<u8>, 
             Some(g) => match g.resolve_and_validate_collect(current.as_str()) {
                 // Ok(空集) = 闸放行但未给出可钉 IP（allowlist 域名等）→ 共享池。
                 Ok(ips) if ips.is_empty() => base.clone(),
-                Ok(ips) => {
-                    pinned_fetch_client(current.as_str(), &ips).unwrap_or_else(|| base.clone())
-                }
+                Ok(ips) => pinned_fetch_client(current.as_str(), &ips, total_timeout)
+                    .unwrap_or_else(|| base.clone()),
                 Err(e) => return Err(format!("SSRF 闸拦截：{e}")),
             },
             None => base.clone(),
@@ -126,9 +143,17 @@ pub(crate) async fn fetch_bytes(url: &str, max_bytes: usize) -> Result<Vec<u8>, 
         if !status.is_success() {
             return Err(format!("下载失败：HTTP {status}"));
         }
-        return read_capped(resp, max_bytes).await;
+        return Ok(resp);
     }
     Err(format!("重定向超过 {FETCH_MAX_HOPS} 跳，已放弃"))
+}
+
+/// 渠道下载：https-only + 每跳独立过 SSRF 闸（拦 = 诚实失败）+ 手动重定向
+/// 循环（≤[`FETCH_MAX_HOPS`] 跳；重定向降级到非 https 拒绝）+ 流式
+/// `max_bytes` 上限。
+pub(crate) async fn fetch_bytes(url: &str, max_bytes: usize) -> Result<Vec<u8>, String> {
+    let resp = fetch_response(url, Some(FETCH_TOTAL_TIMEOUT)).await?;
+    read_capped(resp, max_bytes).await
 }
 
 /// 流式读响应体（Content-Length 预检 + chunk 累计双闸）。
@@ -157,6 +182,76 @@ async fn read_capped(resp: reqwest::Response, max_bytes: usize) -> Result<Vec<u8
     Ok(out)
 }
 
+/// 大包流式落盘下载（selfupdate pending 包专用）：复用 [`fetch_response`]
+/// 骨架，body 逐 chunk 写 `dest`。无整体墙钟（300MB 包 × 慢链路会撞
+/// [`FETCH_TOTAL_TIMEOUT`] 120s 假超时），连接停滞由 per-chunk 空闲超时
+/// （同 120s 无新字节 = 判死）兜底。Content-Length 预检 + 累计上限双闸与
+/// [`read_capped`] 同口径；`on_progress(downloaded, total)` 每 chunk 后
+/// 回调（节流归调用方），返 false = 调用方要求取消。收尾 `sync_all` +
+/// 长度对账后才算成功。
+#[cfg_attr(not(feature = "selfupdate"), allow(dead_code))]
+pub(crate) async fn download_to_file(
+    url: &str,
+    dest: &std::path::Path,
+    max_bytes: usize,
+    on_progress: impl Fn(u64, Option<u64>) -> bool + Send + Sync,
+) -> Result<u64, String> {
+    let resp = fetch_response(url, None).await?;
+    if let Some(len) = resp.content_length()
+        && len as usize > max_bytes
+    {
+        return Err(format!(
+            "包体 {len} 字节超过 {}MB 上限，已拒收",
+            max_bytes / (1024 * 1024)
+        ));
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建下载目录失败：{e}"))?;
+    }
+    let mut file = tokio::fs::File::create(dest)
+        .await
+        .map_err(|e| format!("创建下载目标文件失败：{e}"))?;
+    use futures::StreamExt as _;
+    use tokio::io::AsyncWriteExt as _;
+    let total = resp.content_length();
+    let mut downloaded: u64 = 0;
+    let mut stream = resp.bytes_stream();
+    loop {
+        let next = tokio::time::timeout(FETCH_TOTAL_TIMEOUT, stream.next()).await;
+        let chunk = match next {
+            Err(_) => {
+                return Err(format!(
+                    "下载停滞（{FETCH_TOTAL_TIMEOUT:?} 无新数据），已中止"
+                ));
+            }
+            Ok(None) => break,
+            Ok(Some(chunk)) => chunk.map_err(|e| format!("下载中断：{e}"))?,
+        };
+        if downloaded + chunk.len() as u64 > max_bytes as u64 {
+            return Err(format!(
+                "包体超过 {}MB 上限，下载已中止",
+                max_bytes / (1024 * 1024)
+            ));
+        }
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| format!("写盘失败：{e}"))?;
+        downloaded += chunk.len() as u64;
+        if !on_progress(downloaded, total) {
+            return Err("下载已取消".to_string());
+        }
+    }
+    file.sync_all()
+        .await
+        .map_err(|e| format!("刷盘失败：{e}"))?;
+    if let Some(len) = total
+        && downloaded != len
+    {
+        return Err(format!("下载不完整（{downloaded}/{len} 字节），已中止"));
+    }
+    Ok(downloaded)
+}
+
 /// 官方发布源 Release 的列表 API 址。per_page=100：发布列表同时是自更新
 /// 降级闸的单调序列依据（GitHub created_at 降序），窗口尽量放宽——日更节奏
 /// 100 条 ≈ 3 个月，窗口外条目降级判定诚实 Unknown（selfupdate 侧审计）。
@@ -172,6 +267,9 @@ const RELEASE_LIST_API: &str =
 pub(crate) struct ReleaseAsset {
     pub name: String,
     pub url: String,
+    /// GitHub API 申报字节数（bytes；异常载荷缺省 None）——下载进度条的
+    /// total 优先源（早于 Content-Length，S3 预签 URL 也稳定给数）。
+    pub size: Option<u64>,
 }
 
 /// Release 元信息（L9 check / apply 同源解析：免下主包即可读 tag/名/body
@@ -203,6 +301,15 @@ impl ReleaseMeta {
             .iter()
             .find(|a| a.name == name)
             .map(|a| a.url.as_str())
+    }
+
+    /// 指定附件的申报字节数（无 = None）。
+    #[cfg_attr(not(feature = "selfupdate"), allow(dead_code))]
+    pub fn asset_size(&self, name: &str) -> Option<u64> {
+        self.assets
+            .iter()
+            .find(|a| a.name == name)
+            .and_then(|a| a.size)
     }
 
     /// body 表行 `` | Commit | `<sha>` | `` 里的全量 sha。
@@ -251,6 +358,7 @@ pub(crate) fn parse_release_list(api: &serde_json::Value) -> Result<Vec<ReleaseM
                             Some(ReleaseAsset {
                                 name: name.to_string(),
                                 url: url.to_string(),
+                                size: a.get("size").and_then(|v| v.as_u64()),
                             })
                         })
                         .collect()
@@ -336,9 +444,12 @@ pub(crate) async fn fetch_release_asset(
 /// 带退避重试的目录树删除（nemesis-cluster::fsutil 同款模式——Windows 上
 /// Defender 实时扫描/索引服务会短暂持有句柄，单发 `remove_dir_all` 在
 /// CI runner 上实证不成立；nemesis-web 不依赖 nemesis-cluster，本地同型
-/// 实现。尽力而为语义：返回是否成功，不向上传播错误）。当前唯一消费方
-/// = devkit 覆盖重下的旧目录清除，闸随消费方。
-#[cfg(feature = "plugins-wasm")]
+/// 实现。尽力而为语义：返回是否成功，不向上传播错误）。消费方 = devkit
+/// 覆盖重下的旧目录清除 + selfupdate `updates/` 目录清理（闸随消费方）。
+#[cfg_attr(
+    not(any(feature = "plugins-wasm", feature = "selfupdate")),
+    allow(dead_code)
+)]
 pub(crate) fn remove_dir_all_resilient(dir: &std::path::Path) -> bool {
     let mut last_err = None;
     for attempt in 0..10u32 {

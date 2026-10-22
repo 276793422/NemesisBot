@@ -72,7 +72,11 @@ fn make_ctx() -> RequestContext {
 #[test]
 fn module_and_command_manifest() {
     assert_eq!(SelfupdateHandler.module_name(), "selfupdate");
-    assert_eq!(SelfupdateHandler.commands(), &["check", "apply", "status"]);
+    // 2026-10-21 两段式：新增 download / cancel_download（下载与安装分离）。
+    assert_eq!(
+        SelfupdateHandler.commands(),
+        &["check", "download", "apply", "status", "cancel_download"]
+    );
 }
 
 #[tokio::test]
@@ -96,8 +100,14 @@ async fn status_shape_is_honest_when_unwired() {
         .expect("status 不依赖装配")
         .expect("payload");
     assert_eq!(out["asset"], crate::selfupdate::TARGET_ASSET);
-    // 身份槽未注入 = 诚实空值 + journal 相位空。
+    // 身份槽未注入 = 诚实空值 + journal 相位空；未装配 = wired:false +
+    // download 快照 idle + pending/cached_check 空（两段式：审批卡与频率
+    // 保险丝已退役，status 不再有 fuse 字段）。
     assert_eq!(out["commit_known"], false);
     assert!(out["journal_phase"].is_null());
-    assert_eq!(out["fuse_window_ms"], crate::selfupdate::APPLY_FUSE_MILLIS);
+    assert_eq!(out["wired"], false);
+    assert_eq!(out["platform_supported"], cfg!(target_os = "windows"));
+    assert_eq!(out["download"]["phase"], "idle");
+    assert!(out["pending"].is_null());
+    assert!(out["cached_check"].is_null());
 }
