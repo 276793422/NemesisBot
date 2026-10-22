@@ -69,7 +69,7 @@ jobs:
         with:
           targets: wasm32-wasip2
 
-      # workspaces 收编三个示例插件（嵌套独立 workspace）：fixture 构建产物
+      # workspaces 收编示例插件（嵌套独立 workspace）：fixture 构建产物
       # 落在各自 target/，不收编则每轮冷构建多花 3-6 分钟。
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
@@ -80,6 +80,7 @@ jobs:
             plugins/wasm/translate
             plugins/wasm/activity-log
             plugins/wasm/textstat
+            plugins/wasm/policy-sample
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
