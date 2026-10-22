@@ -170,14 +170,14 @@ rquickjs = "0.14"
 iroh = "1"
 
 # QUIC 中继服务器（2026-10-21 计划）：iroh-relay server 面——自建中继回落
-# （内网穿透服务器）；feature=roaming-relay，只在 nemesis-cluster 可选消费。
+# （内网穿透服务器）；feature=quic-relay，只在 nemesis-cluster 可选消费。
 # default-features=false：metrics/tls-ring 等默认特性不随继承混入——client 面
 # 与 iroh 自身的 iroh-relay 依赖形态对齐（零编译增量），server 面（rcgen/
-# ACME/tokio-websockets 等）由 nemesis-cluster 的 roaming-relay 经
+# ACME/tokio-websockets 等）由 nemesis-cluster 的 quic-relay 经
 # `iroh-relay/server` 显式开启。
 iroh-relay = { version = "1", default-features = false }
 
-# QUIC 中继服务器证书自签 + rustls ServerConfig 组装（roaming-relay）。
+# QUIC 中继服务器证书自签 + rustls ServerConfig 组装（quic-relay）。
 # 两 crate 已在 iroh-relay server 依赖树内——workspace 声明只为集中版本。
 rcgen = "0.14"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }

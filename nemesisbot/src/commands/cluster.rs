@@ -132,7 +132,8 @@ pub enum ClusterAction {
         #[arg(short, long, default_value = "10")]
         broadcast_interval: u64,
     },
-    /// Manage iroh cross-network roaming identity (A1 overlay layer)
+    /// Manage iroh cross-network roaming (A1 overlay layer; identity keygen
+    /// 2026-10-23 起归 `quic keygen`——身份是 QUIC 层资产)
     #[cfg(feature = "cluster-roaming")]
     Roaming {
         #[command(subcommand)]
@@ -140,16 +141,11 @@ pub enum ClusterAction {
     },
 }
 
-/// iroh 漫游身份子命令（A1 叠加层；feature=cluster-roaming）。
+/// iroh 漫游子命令（A1 叠加层；feature=cluster-roaming；keygen 已挪
+/// `quic keygen`——2026-10-23 与集群解耦，身份文件物理路径不变）。
 #[cfg(feature = "cluster-roaming")]
 #[derive(clap::Subcommand)]
 pub enum RoamingAction {
-    /// Generate (or load existing) node roaming identity key (cluster/roaming.key)
-    Keygen {
-        /// Regenerate even if a key exists (rotates node ID — peers must re-trust)
-        #[arg(long)]
-        force: bool,
-    },
     /// Show roaming identity status (key file / node ID / trust book)
     Status,
     /// Enable cross-network roaming (writes config.cluster.json roaming.enabled;
@@ -959,7 +955,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     professions: professions_vec,
                     tier: tier_value,
                     capabilities: capabilities_vec,
-                    // 本节点 iroh 身份真相源是 roaming.key（cluster roaming keygen），
+                    // 本节点 iroh 身份真相源是 roaming.key（`quic keygen`），
                     // init 不写声明（setup_roaming 按派生对账）。
                     iroh_id: None,
                     runtime_backend: runtime_backend_value,
@@ -1197,10 +1193,11 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
     Ok(())
 }
 
-/// iroh 漫游身份管理（A1 叠加层；keygen/status）。
+/// iroh 漫游管理（A1 叠加层；status/enable/disable；keygen 已挪 `quic keygen`
+/// ——2026-10-23 与集群解耦）。
 #[cfg(feature = "cluster-roaming")]
 fn run_roaming(action: RoamingAction, home: &Path) -> Result<()> {
-    use nemesis_cluster::roaming::endpoint::{RoamingIdentity, persist, roaming_key_path};
+    use nemesis_cluster::roaming::endpoint::{RoamingIdentity, roaming_key_path};
     use nemesis_cluster::roaming::trust::TrustBook;
 
     // roaming_* / resolve_*_in_workspace 系列收的是 workspace 根（与 gateway
@@ -1209,31 +1206,6 @@ fn run_roaming(action: RoamingAction, home: &Path) -> Result<()> {
     let workspace = common::workspace_path(home);
 
     match action {
-        RoamingAction::Keygen { force } => {
-            let key_path = roaming_key_path(&workspace);
-            let (id, created) = if force && key_path.exists() {
-                let id = RoamingIdentity::generate();
-                persist(&id, &key_path).map_err(|e| anyhow::anyhow!(e))?;
-                (id, true)
-            } else {
-                RoamingIdentity::load_or_create(&workspace).map_err(|e| anyhow::anyhow!(e))?
-            };
-            println!("Roaming identity key: {}", key_path.display());
-            println!(
-                "  状态: {}",
-                if created {
-                    "新生成"
-                } else {
-                    "已存在（加载）"
-                }
-            );
-            println!("  node_id: {}", id.node_id_hex());
-            println!("  完整地址: iroh:{}", id.node_id_hex());
-            if !created {
-                println!("  （密钥已存在未变更；轮换加 --force——对端须重新信任新 node_id）");
-            }
-            Ok(())
-        }
         RoamingAction::Status => {
             let key_path = roaming_key_path(&workspace);
             println!("Roaming Status");
@@ -1258,7 +1230,7 @@ fn run_roaming(action: RoamingAction, home: &Path) -> Result<()> {
                     }
                 }
             } else {
-                println!("  密钥: 未生成（`nemesisbot cluster roaming keygen` 创建）");
+                println!("  密钥: 未生成（`nemesisbot quic keygen` 创建）");
             }
             match TrustBook::load(&workspace) {
                 Ok(Some(book)) => {
@@ -1291,6 +1263,26 @@ fn run_roaming(action: RoamingAction, home: &Path) -> Result<()> {
                     println!("  已生成漫游身份密钥: {}", key_path.display());
                 }
                 println!("  node_id: {}", id.node_id_hex());
+            }
+            // 集群本体闸链诚实检查（与 gateway cluster_should_start 同源两道闸：
+            // config.json cluster.enabled × config.cluster.json 顶层 enabled）。
+            // 闸未开时叠加层装配整个被跳过——只重启永远不生效，别说「重启后生效」。
+            let main_enabled = std::fs::read_to_string(common::config_path(home))
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .and_then(|v| {
+                    v.get("cluster")
+                        .and_then(|c| c.get("enabled"))
+                        .and_then(|b| b.as_bool())
+                })
+                .unwrap_or(false);
+            let cluster_enabled =
+                nemesis_cluster::config_loader::load_app_config(&workspace).enabled;
+            if enabled && !(main_enabled && cluster_enabled) {
+                println!(
+                    "  ⚠ 集群本体未启用（config.json cluster.enabled={} / config.cluster.json enabled={}）——漫游层随集群装配，仅重启不会生效；先 `nemesisbot cluster enable` 或在 Dashboard 集群页启用集群本体",
+                    main_enabled, cluster_enabled
+                );
             }
             println!("  （重启网关后生效：nemesisbot gateway）");
             Ok(())

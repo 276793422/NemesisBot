@@ -243,23 +243,24 @@ async fn assemble_coverage_arms_capture_off_board_db_failure_and_relay_gate() {
 }
 
 /// Step 5b-2（QUIC 中继统一入口，2026-10-21）：`--quic-relay` 早退臂。
-/// config.cluster.json 缺席 → roaming.relay 解析回落默认（token 空）→ 与
+/// config.quic.json 缺席 → relay 段解析回落默认（token 空）→ 与
 /// `--relay` 同款 fail-closed 拒绝启动（不 bind 任何端口）；feature 关 =
-/// 诚实报 feature 缺失（旗标恒编译）。
+/// 诚实报 feature 缺失（旗标恒编译）。2026-10-23 解耦：断言随错误文案
+/// 迁移（roaming.relay.token → quic.json relay.token）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn assemble_quic_relay_early_exit_fails_closed_on_empty_token() {
     let th = ctx_env();
     write_bare_config(&th.home);
     let Err(err) = GatewayCtx::assemble(false, false, true, &[]).await else {
-        panic!("quic relay 模式在 roaming.relay.token 为空时必须拒绝启动");
+        panic!("quic relay 模式在 relay.token 为空时必须拒绝启动");
     };
-    #[cfg(feature = "roaming-relay")]
+    #[cfg(feature = "quic-relay")]
     {
-        assert!(err.to_string().contains("roaming.relay.token"), "{err}");
+        assert!(err.to_string().contains("relay.token"), "{err}");
     }
-    #[cfg(not(feature = "roaming-relay"))]
+    #[cfg(not(feature = "quic-relay"))]
     {
-        assert!(err.to_string().contains("roaming-relay"), "{err}");
+        assert!(err.to_string().contains("quic-relay"), "{err}");
     }
 }
 

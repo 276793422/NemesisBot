@@ -246,6 +246,11 @@ pub struct WebServer {
     cluster: Option<Arc<nemesis_cluster::cluster::Cluster>>,
     #[cfg(not(feature = "cluster"))]
     cluster: Option<()>,
+    /// QUIC 中继生命周期管理（2026-10-23 与集群解耦）。
+    #[cfg(feature = "quic-relay")]
+    quic_relay: Option<Arc<nemesis_cluster::roaming::relay_manager::QuicRelayManager>>,
+    #[cfg(not(feature = "quic-relay"))]
+    quic_relay: Option<()>,
     /// Cluster lifecycle service for start/stop control.
     cluster_service: Option<Arc<dyn nemesis_services::bot_service::LifecycleService>>,
     /// Cluster log directory for JSONL log reader.
@@ -367,6 +372,7 @@ impl WebServer {
             forge: None,
             agent_loop: None,
             cluster: None,
+            quic_relay: None,
             cluster_service: None,
             cluster_log_dir: None,
             workflow_engine: None,
@@ -499,6 +505,16 @@ impl WebServer {
     #[cfg(feature = "cluster")]
     pub fn set_cluster(&mut self, cluster: Arc<nemesis_cluster::cluster::Cluster>) {
         self.cluster = Some(cluster);
+    }
+
+    /// Set the QUIC relay lifecycle manager（2026-10-23 与集群解耦——宿主
+    /// 直接持有，独立于 cluster 装配）。
+    #[cfg(feature = "quic-relay")]
+    pub fn set_quic_relay(
+        &mut self,
+        mgr: Arc<nemesis_cluster::roaming::relay_manager::QuicRelayManager>,
+    ) {
+        self.quic_relay = Some(mgr);
     }
 
     /// Set the cluster lifecycle service for start/stop control.
@@ -657,6 +673,10 @@ impl WebServer {
         let cluster = self.cluster.clone();
         #[cfg(not(feature = "cluster"))]
         let cluster = self.cluster;
+        #[cfg(feature = "quic-relay")]
+        let quic_relay = self.quic_relay.clone();
+        #[cfg(not(feature = "quic-relay"))]
+        let quic_relay = self.quic_relay;
         #[cfg(feature = "workflow")]
         let workflow_engine = self.workflow_engine.clone();
         #[cfg(not(feature = "workflow"))]
@@ -691,6 +711,7 @@ impl WebServer {
                 .clone()
                 .unwrap_or_else(|| Arc::new(parking_lot::RwLock::new(None))),
             cluster,
+            quic_relay,
             cluster_service: self.cluster_service.clone(),
             cluster_log_dir: self.cluster_log_dir.clone(),
             workflow_engine,

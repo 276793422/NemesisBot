@@ -353,7 +353,11 @@ pub struct TraceConfig {
     #[serde(default = "default_max_trace_age")]
     pub max_trace_age_days: u64,
 
-    /// Minimum number of traces required for analysis.
+    /// Minimum number of traces required for analysis (0 = no floor).
+    ///
+    /// 2026-10-23 验证轮四接线：此前该键零消费者（死键）。窗口内轨迹少
+    /// 于 N 条不做实效分析（样本太少结论即噪声）；0 = 不设下限（护栏
+    /// 默认关）。
     #[serde(default = "default_min_traces")]
     pub min_traces_for_analysis: usize,
 }
@@ -373,7 +377,7 @@ fn default_max_trace_age() -> u64 {
 }
 
 fn default_min_traces() -> usize {
-    5
+    0 // 护栏默认关（0=不限）；2026-10-23 验证轮四接线——此前该键零消费者
 }
 
 /// Learning configuration for Phase 6 closed-loop learning.

@@ -22,7 +22,7 @@ fn test_default_config() {
     assert_eq!(config.validation.timeout_secs, 60);
     assert!(config.trace.enabled);
     assert_eq!(config.trace.max_trace_age_days, 30);
-    assert_eq!(config.trace.min_traces_for_analysis, 5);
+    assert_eq!(config.trace.min_traces_for_analysis, 0);
     assert_eq!(config.learning.min_pattern_frequency, 5);
     assert_eq!(config.learning.high_conf_threshold, 0.8);
     assert_eq!(config.learning.max_auto_creates, 3);
@@ -183,7 +183,8 @@ fn test_trace_config_defaults() {
     let config = ForgeConfig::default();
     assert!(config.trace.enabled);
     assert_eq!(config.trace.max_trace_age_days, 30);
-    assert_eq!(config.trace.min_traces_for_analysis, 5);
+    // 2026-10-23 验证轮四接线：护栏默认关（0=不限）。
+    assert_eq!(config.trace.min_traces_for_analysis, 0);
 }
 
 #[test]

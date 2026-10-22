@@ -127,6 +127,79 @@ async fn ping_wrong_target_times_out() {
 }
 
 // ---------------------------------------------------------------------------
+// 拨号路径观测（打洞直连 vs 经中继转发——Dashboard 节点面可观测）
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn dial_path_of_starts_empty_and_roundtrips() {
+    let id = RoamingIdentity::generate();
+    let ep = RoamingEndpoint::bind_direct(&id, false)
+        .await
+        .expect("bind");
+    let key = id.node_id_hex();
+    assert_eq!(ep.dial_path_of(&key), None, "未观测应为 None");
+    // 观察任务写槽形态（子模块直摸私有槽，模拟观察者写入；键=小写 hex）。
+    *ep.dial_paths.lock().entry(key.clone()).or_default() = "relay".into();
+    assert_eq!(ep.dial_path_of(&key).as_deref(), Some("relay"));
+    ep.shutdown().await;
+}
+
+#[tokio::test]
+async fn path_watcher_reports_direct_on_loopback() {
+    // Minimal 预设（无中继）loopback 直连：观察任务首轮快照即应报
+    // "direct"——观察任务全链（connect 后 spawn → 2s tick → 槽）的真通路
+    // 验证，非 mock。
+    let server_id = RoamingIdentity::generate();
+    let client_id = RoamingIdentity::generate();
+
+    let server = RoamingEndpoint::bind_direct(&server_id, true)
+        .await
+        .expect("server bind");
+    server
+        .serve(RoamingProtocolHandler::echo())
+        .await
+        .expect("server serve");
+    let client = RoamingEndpoint::bind_direct(&client_id, false)
+        .await
+        .expect("client bind");
+
+    let server_port = server
+        .direct_addrs()
+        .iter()
+        .find(|a| a.is_ipv4())
+        .map(|a| a.port())
+        .expect("server 应有 IPv4 绑定");
+    let addr = EndpointAddr::new(server_id.node_id())
+        .with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], server_port)));
+
+    let (_send, _recv) =
+        tokio::time::timeout(Duration::from_secs(15), client.connect_stream_addr(addr))
+            .await
+            .expect("connect 整体超时（测试级）")
+            .expect("connect 应成功");
+
+    // 观察任务首轮快照 ≤2s（tick 周期），10s 富余覆盖 ≥4 轮。
+    let key = server_id.node_id_hex();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut observed = None;
+    while tokio::time::Instant::now() < deadline {
+        if let Some(p) = client.dial_path_of(&key) {
+            observed = Some(p);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        observed.as_deref(),
+        Some("direct"),
+        "loopback 直连（Minimal 无中继）应观测为 direct"
+    );
+
+    client.shutdown().await;
+    server.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
 // TrustBook
 // ---------------------------------------------------------------------------
 

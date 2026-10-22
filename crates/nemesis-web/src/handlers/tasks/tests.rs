@@ -129,6 +129,7 @@ async fn make_ctx_with_cron(dir: &tempfile::TempDir) -> RequestContext {
         forge: None,
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
+        quic_relay: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
