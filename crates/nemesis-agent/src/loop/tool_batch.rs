@@ -804,7 +804,7 @@ impl AgentLoop {
                         );
                         refusal
                     }
-                    None => match self.check_tool_args(tc) {
+                    None => match self.check_tool_args(tc).await {
                         crate::args_validator::Outcome::Valid => {
                             st.validation_failures = 0;
                             self.record_tool_validation_stats(false);

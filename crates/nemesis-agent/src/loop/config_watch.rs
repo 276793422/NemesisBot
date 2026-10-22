@@ -436,6 +436,40 @@ impl AgentLoop {
         *self.extra_hidden_tools.write() = tools;
     }
 
+    /// 循环流程策略槽（WASM 样板工程批 1；`policy` 模块是设计真相源）。
+    /// 全量替换语义，镜像 [`Self::set_extra_hidden_tools`]；传入哨兵
+    /// （`Builtin*Policy`）即回退内置路径。
+    pub fn set_compact_policy(
+        &self,
+        policy: std::sync::Arc<dyn crate::r#loop::policy::CompactPolicy>,
+    ) {
+        *self.compact_policy.write() = policy;
+    }
+
+    /// 终答裁决策略槽注入（见 [`Self::set_compact_policy`]）。
+    pub fn set_final_judge_policy(
+        &self,
+        policy: std::sync::Arc<dyn crate::r#loop::policy::FinalJudgePolicy>,
+    ) {
+        *self.final_judge_policy.write() = policy;
+    }
+
+    /// 参数校验策略槽注入（见 [`Self::set_compact_policy`]）。
+    pub fn set_validation_policy(
+        &self,
+        policy: std::sync::Arc<dyn crate::r#loop::policy::ValidationPolicy>,
+    ) {
+        *self.validation_policy.write() = policy;
+    }
+
+    /// 标题回调槽注入（D5 单点回调形态；`None` = 内置小模型路径）。
+    pub fn set_title_callback(
+        &self,
+        cb: Option<std::sync::Arc<dyn crate::r#loop::policy::TitleCallback>>,
+    ) {
+        *self.title_callback.write() = cb;
+    }
+
     /// B2（2026-10-19 connector 独占接管）：独占隐藏表供给器注入（装配点
     /// nemesisbot agent_factory，loop Arc 定型后调）。闭包每次现扫（连接器
     /// 注册表 + sidecar 例外 + MCP 工具快照）——磁盘真相，无失效通知问题；
