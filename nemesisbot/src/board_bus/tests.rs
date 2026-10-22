@@ -2789,3 +2789,491 @@ async fn test_comment_list_happy_empty_and_validation() {
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&dir2);
 }
+
+// ===========================================================================
+// 集群任务认领（board.claim / board.claimable.list，2026-10-22 计划 §4）
+//
+// unit 边界：Cluster::new 纯内存形态无 rpc client → claim 后派发必在
+// 「RPC client 未就绪」诚实失败 → handler 测试天然覆盖「认领→派发失败
+// →回滚」链；全胜链路（assignee 保持 + 播报 + 出队开跑）归 cluster-uat
+// 双节点真流。播报逻辑 announce_claim 是纯函数可直接单测（含 #team 缺席
+// 补种）。
+// ===========================================================================
+
+/// 注册带职能/档位宣告的节点（认领硬闸的数据源；地址保留端口不依赖网络）。
+fn register_claim_node(cluster: &Cluster, id: &str, professions: &[&str], tier: Option<&str>) {
+    cluster.register_node(ExtendedNodeInfo {
+        base: NodeInfo {
+            id: id.to_string(),
+            name: id.to_string(),
+            role: NodeRole::Worker,
+            address: "127.0.0.1:1".to_string(),
+            category: "development".to_string(),
+            last_seen: String::new(),
+        },
+        status: NodeStatus::Online,
+        capabilities: vec![],
+        tags: vec![],
+        addresses: vec![],
+        professions: professions.iter().map(|s| s.to_string()).collect(),
+        tier: tier.map(|s| s.to_string()),
+        agents: Vec::new(),
+        runtime_backend: None,
+        node_type: "agent".to_string(),
+        build: String::new(),
+    });
+}
+
+/// claim 上行信封（`_rpc.from` 即认领人身份——RPC server 注入位）。
+fn claim_payload(from: &str, issue: &str) -> serde_json::Value {
+    serde_json::json!({
+        "v": 1, "ns": "board", "op": "claim", "corr_id": "cl-1",
+        "_rpc": { "from": from },
+        "body": { "issue": issue }
+    })
+}
+
+/// browse 上行信封。
+fn browse_payload(from: &str) -> serde_json::Value {
+    serde_json::json!({
+        "v": 1, "ns": "board", "op": "claimable.list", "corr_id": "cl-2",
+        "_rpc": { "from": from },
+        "body": {}
+    })
+}
+
+fn new_issue(store: &nemesis_board::BoardStore, title: &str) -> nemesis_board::Issue {
+    store
+        .create_issue(nemesis_board::NewIssue {
+            title: title.into(),
+            ..Default::default()
+        })
+        .unwrap()
+}
+
+#[test]
+fn claim_then_dispatch_failure_rolls_back_assignee() {
+    let (store, dir) = temp_store("claim-rollback");
+    let deps = make_deps(store.clone(), quota(8));
+    let actor = Actor::admin("test");
+    register_claim_node(&deps.cluster, "node-b", &[], Some("big"));
+
+    let issue = new_issue(&store, "认领后派发失败回滚");
+    store
+        .transition_issue(issue.id, nemesis_board::IssueStatus::Todo, &actor)
+        .unwrap();
+
+    let (ok, _, body) = parse_reply(handle_nb_bus(&deps, claim_payload("node-b", &issue.number)));
+    // Cluster::new 无 rpc client → dispatch_issue_core 在「RPC client 未
+    // 就绪」失败 → 诚实失败 + 回滚（不是假成功）。
+    assert!(!ok, "无 rpc client 时 claim 必须诚实失败：{body:?}");
+    let msg = body
+        .pointer("/error/message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert!(msg.contains("回滚"), "失败信息必须说明已回滚：{msg}");
+    let after = store.get_issue(issue.id).unwrap();
+    assert!(after.assignee_id.is_none(), "回滚后 assignee 必须还原为空");
+    // 单子回到待领池：再次资格闸通过（他人仍可领）。
+    assert!(store.claimable_check(issue.id).is_ok());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn claim_rejects_missing_identity_master_self_and_unknown_issue() {
+    let (store, dir) = temp_store("claim-guard");
+    let deps = make_deps(store.clone(), quota(8));
+    let issue = new_issue(&store, "守卫测试单");
+
+    // ① `_rpc.from` 空（伪造面/本地误调）。
+    let (ok, code, _) = parse_reply(handle_nb_bus(&deps, claim_payload("", &issue.number)));
+    assert!(!ok);
+    assert_eq!(code.as_deref(), Some("validation"));
+
+    // ② master 本尊不认领。
+    let (ok, _, body) = parse_reply(handle_nb_bus(
+        &deps,
+        claim_payload(deps.cluster.node_id(), &issue.number),
+    ));
+    assert!(!ok);
+    assert!(
+        body.pointer("/error/message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .contains("master")
+    );
+
+    // ③ 未知单（编号与数字 id 双形态都诚实拒）。
+    for bad in ["NB-99999", "424242"] {
+        let (ok, _, body) = parse_reply(handle_nb_bus(&deps, claim_payload("node-b", bad)));
+        assert!(!ok, "未知单 {bad} 必须拒");
+        assert!(
+            body.pointer("/error/message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .contains("not found")
+                || body
+                    .pointer("/error/message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .contains("未找到"),
+            "拒绝原因必须明示单不存在"
+        );
+    }
+
+    // ④ 缺 issue 字段。
+    let payload = serde_json::json!({
+        "v": 1, "ns": "board", "op": "claim", "corr_id": "c",
+        "_rpc": { "from": "node-b" }, "body": {}
+    });
+    let (ok, _, _) = parse_reply(handle_nb_bus(&deps, payload));
+    assert!(!ok);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn claim_rejects_unclaimable_matrix() {
+    let (store, dir) = temp_store("claim-matrix");
+    let deps = make_deps(store.clone(), quota(8));
+    let actor = Actor::admin("test");
+    register_claim_node(&deps.cluster, "node-b", &[], Some("big"));
+
+    // ① 已被领。
+    let taken = new_issue(&store, "已被领");
+    store
+        .assign_issue(
+            taken.id,
+            Some(nemesis_board::AssignmentType::Worker),
+            Some("node-c".into()),
+            &actor,
+        )
+        .unwrap();
+    let (ok, _, body) = parse_reply(handle_nb_bus(&deps, claim_payload("node-b", &taken.number)));
+    assert!(!ok);
+    assert!(
+        body.pointer("/error/message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .contains("已被 node-c"),
+        "拒绝原因必须点名认领人"
+    );
+
+    // ② 状态不符（in_progress）。
+    let busy = new_issue(&store, "进行中不可领");
+    store
+        .transition_issue(busy.id, nemesis_board::IssueStatus::InProgress, &actor)
+        .unwrap();
+    let (ok, _, body) = parse_reply(handle_nb_bus(&deps, claim_payload("node-b", &busy.number)));
+    assert!(!ok);
+    assert!(
+        body.pointer("/error/message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .contains("状态")
+    );
+
+    // ③ 父单/容器单不可领。
+    let parent = new_issue(&store, "父单");
+    let _child = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "子单".into(),
+            parent_issue_id: Some(parent.id),
+            ..Default::default()
+        })
+        .unwrap();
+    let (ok, _, body) = parse_reply(handle_nb_bus(
+        &deps,
+        claim_payload("node-b", &parent.number),
+    ));
+    assert!(!ok);
+    assert!(
+        body.pointer("/error/message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .contains("父单")
+    );
+
+    // ④ 依赖未完成。
+    let dep = new_issue(&store, "前置依赖");
+    let dependent = new_issue(&store, "被依赖闸挡住");
+    store
+        .set_issue_dependencies(dependent.id, &[dep.id])
+        .unwrap();
+    let (ok, _, body) = parse_reply(handle_nb_bus(
+        &deps,
+        claim_payload("node-b", &dependent.number),
+    ));
+    assert!(!ok);
+    assert!(
+        body.pointer("/error/message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .contains("依赖")
+    );
+
+    // ⑤ 节点不在注册表（自评硬闸无从谈起）。
+    let free = new_issue(&store, "无需求单");
+    let (ok, _, body) = parse_reply(handle_nb_bus(
+        &deps,
+        claim_payload("node-ghost", &free.number),
+    ));
+    assert!(!ok);
+    assert!(
+        body.pointer("/error/message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .contains("注册表")
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn claim_rejects_hard_gate_with_reason() {
+    let (store, dir) = temp_store("claim-gate");
+    let deps = make_deps(store.clone(), quota(8));
+    // 节点宣告 dev:cpp + big——能过 dev:cpp 闸，过不了 ui-design 闸。
+    register_claim_node(&deps.cluster, "node-b", &["dev:cpp"], Some("big"));
+
+    // ① 职能不匹配（ui-design 单给 dev:cpp 节点）。
+    let ui = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "UI 设计单".into(),
+            required_profession: Some("ui-design".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    let (ok, _, body) = parse_reply(handle_nb_bus(&deps, claim_payload("node-b", &ui.number)));
+    assert!(!ok, "职能不匹配必须拒");
+    let msg = body
+        .pointer("/error/message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert!(
+        msg.contains("ui-design") && msg.contains("dev:cpp"),
+        "拒绝原因必须带双方职能：{msg}"
+    );
+
+    // ② tier 闸（architecture min_tier=big，normal 档节点拒）。
+    register_claim_node(&deps.cluster, "node-c", &["architecture"], Some("normal"));
+    let arch = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "架构单".into(),
+            required_profession: Some("architecture".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    let (ok, _, body) = parse_reply(handle_nb_bus(&deps, claim_payload("node-c", &arch.number)));
+    assert!(!ok, "tier 不足必须拒");
+    let msg = body
+        .pointer("/error/message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert!(
+        msg.contains("big") && msg.contains("normal"),
+        "拒绝原因必须带档位：{msg}"
+    );
+
+    // ③ dev:cpp 单给 dev:cpp+big 节点过闸（职能精确匹配 + dev:cpp
+    // min_tier=big 档位达标——进入派发段：无 rpc client 回滚，但失败
+    // 原因必须是派发失败不是硬闸拒）。
+    let cpp = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "C++ 开发单".into(),
+            required_profession: Some("dev:cpp".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    let (ok, _, body) = parse_reply(handle_nb_bus(&deps, claim_payload("node-b", &cpp.number)));
+    assert!(!ok, "无 rpc client 派发必失败");
+    let msg = body
+        .pointer("/error/message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert!(
+        msg.contains("回滚"),
+        "dev:cpp+big 节点应过硬闸、败在派发段：{msg}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn claimable_list_marks_eligibility_and_skips_unclaimable() {
+    let (store, dir) = temp_store("claim-browse");
+    let deps = make_deps(store.clone(), quota(8));
+    let actor = Actor::admin("test");
+    register_claim_node(&deps.cluster, "node-b", &["dev:cpp"], Some("big"));
+
+    let plain = new_issue(&store, "无需求单");
+    let cpp = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "C++ 单".into(),
+            required_profession: Some("dev:cpp".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    let ui = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "UI 单".into(),
+            required_profession: Some("ui-design".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    let busy = new_issue(&store, "进行中不可见");
+    store
+        .transition_issue(busy.id, nemesis_board::IssueStatus::InProgress, &actor)
+        .unwrap();
+    let blocked = new_issue(&store, "依赖未完不可见");
+    store
+        .set_issue_dependencies(blocked.id, &[busy.id])
+        .unwrap();
+
+    let (ok, _, body) = parse_reply(handle_nb_bus(&deps, browse_payload("node-b")));
+    assert!(ok, "browse 必须成功");
+    let items = body
+        .pointer("/body/items")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let numbers: Vec<&str> = items
+        .iter()
+        .filter_map(|i| i.get("number").and_then(|v| v.as_str()))
+        .collect();
+    assert!(!numbers.contains(&busy.number.as_str()), "进行中单不可出现");
+    assert!(
+        !numbers.contains(&blocked.number.as_str()),
+        "依赖未完单不可出现"
+    );
+
+    let find = |n: &str| {
+        items
+            .iter()
+            .find(|i| i.get("number").and_then(|v| v.as_str()) == Some(n))
+            .cloned()
+            .unwrap_or_else(|| panic!("{n} 应在 browse 列表"))
+    };
+    // node-b 宣告 dev:cpp+big：plain 与 cpp 可领，ui 被硬闸标记。
+    assert_eq!(find(&plain.number)["eligible"], serde_json::json!(true));
+    assert_eq!(find(&cpp.number)["eligible"], serde_json::json!(true));
+    let ui_item = find(&ui.number);
+    assert_eq!(ui_item["eligible"], serde_json::json!(false));
+    assert!(
+        ui_item["blocked_reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("ui-design"),
+        "blocked 原因必须明示职能缺口"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn browse_rejects_missing_identity() {
+    let (store, dir) = temp_store("browse-guard");
+    let deps = make_deps(store.clone(), quota(8));
+    let (ok, code, _) = parse_reply(handle_nb_bus(&deps, browse_payload("")));
+    assert!(!ok);
+    assert_eq!(code.as_deref(), Some("validation"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn announce_claim_drops_comment_and_team_message() {
+    // 不预种频道：#team 缺席 → announce 内部补种（INSERT OR IGNORE 幂等）。
+    let wdir = std::env::temp_dir().join(format!("nemesis-board-claim-ann-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&wdir);
+    let store =
+        std::sync::Arc::new(nemesis_board::BoardStore::open(&wdir.join("board.db"), "NB").unwrap());
+    let issue = new_issue(&store, "播报双落单");
+
+    announce_claim(&store, &issue, "node-b");
+
+    // ① issue 系统评论落库。
+    let comments = store.list_comments(issue.id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("已被 node-b 认领")),
+        "issue 必须有认领系统评论"
+    );
+    // ② #team 频道补种 + 播报消息。
+    let ch = store
+        .get_channel_by_name("#team")
+        .unwrap()
+        .expect("#team 缺席必须补种");
+    let msgs = store.list_channel_messages(ch.id, 0, 100).unwrap();
+    assert!(
+        msgs.iter().any(|m| m.content.contains("已被 node-b 认领")),
+        "#team 必须有认领播报"
+    );
+    // ③ 幂等补种不重复（再 announce 一次仍只有一个 #team）。
+    announce_claim(&store, &issue, "node-c");
+    let names = store.list_channels().unwrap();
+    assert_eq!(names.iter().filter(|c| c.name == "#team").count(), 1);
+
+    let _ = std::fs::remove_dir_all(&wdir);
+}
+
+#[test]
+fn claim_gate_reason_collects_all_failures() {
+    let peer = nemesis_board::PeerCandidate {
+        id: "node-x".into(),
+        name: "node-x".into(),
+        role: "worker".into(),
+        tags: vec!["rust".into()],
+        capabilities: vec![],
+        professions: vec!["ui-design".into()],
+        tier: Some("normal".into()),
+        runtime_backend: None,
+    };
+    let issue = nemesis_board::Issue {
+        required_role: Some("coordinator".into()),
+        required_tags: vec!["gpu".into()],
+        required_profession: Some("dev:cpp".into()),
+        required_capabilities: vec!["cuda".into()],
+        required_backend: Some("vm".into()),
+        ..new_issue_shape()
+    };
+    let input = claim_match_input(&issue);
+    let reason = claim_gate_reason(&input, &peer);
+    // Q2「原因明示」：硬闸全不符时逐条可见，不首条即停。
+    assert!(reason.contains("coordinator"), "{reason}");
+    assert!(reason.contains("gpu"), "{reason}");
+    assert!(reason.contains("dev:cpp"), "{reason}");
+    assert!(reason.contains("cuda"), "{reason}");
+    assert!(reason.contains("vm"), "{reason}");
+}
+
+/// claim_gate_reason 测试的 Issue 骨架（只填 required_* 字段）。
+fn new_issue_shape() -> nemesis_board::Issue {
+    nemesis_board::Issue {
+        id: 0,
+        number: "NB-T".into(),
+        title: "t".into(),
+        description: String::new(),
+        status: nemesis_board::IssueStatus::Todo,
+        priority: 0,
+        assignee: None,
+        assignee_id: None,
+        creator: Actor::admin("test"),
+        parent_issue_id: None,
+        project_id: None,
+        due_date: None,
+        position: 0,
+        acceptance_criteria: None,
+        origin: None,
+        required_role: None,
+        required_tags: Vec::new(),
+        required_profession: None,
+        required_capabilities: Vec::new(),
+        required_backend: None,
+        requires_evidence: false,
+        hidden: false,
+        created_at: 0,
+        updated_at: 0,
+    }
+}

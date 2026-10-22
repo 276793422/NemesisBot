@@ -112,6 +112,16 @@ func (m *TestAIBoard) masterProcess(messages []Message) string {
 			if strings.Contains(last.Content, "[取证请求 board_selfcheck:") {
 				return boardSelfcheckEvidence
 			}
+			// 认领制对话机（轮1）：讨论唤醒内容含 <BOARD_CLAIM>NB-n</BOARD_CLAIM>
+			// → 先 browse 看可领清单（轮2 由工具结果推进 claim）。
+			// 主持人裁决提示词（run_moderator）也会内嵌同一线程原文——
+			// master 主 agent 未装 board_claim，跳过让 moderator 落常规
+			// 文本臂（判别词 = 主持人提示词独有签名）。
+			if strings.Contains(input, "<BOARD_CLAIM>") && !strings.Contains(input, "You are the discussion moderator") {
+				return buildSingleToolCall("board_claim", map[string]interface{}{
+					"action": "browse",
+				})
+			}
 			// soak peer_chat 对话机（轮1）：<PEER_CHAT> 标记 → cluster_rpc。
 			if args, ok := extractPeerChatArgs(last.Content); ok {
 				return buildSingleToolCall("cluster_rpc", map[string]interface{}{
@@ -148,6 +158,12 @@ func (m *TestAIBoard) masterProcess(messages []Message) string {
 				})
 			}
 		case last.Role == "tool":
+			// 认领制对话机推进（轮2/轮3）：browse 结果 → claim；
+			// claim 结果 → CLAIM_WIN / CLAIM_LOSE 终局文本（回帖进线程，
+			// UAT 侧以此断言「一胜一败」）。
+			if strings.Contains(input, "<BOARD_CLAIM>") {
+				return boardClaimToolTurn(input, last.Content)
+			}
 			// 职能框架 D2（U9）：定稿单对话机（轮2+）——按工具结果推进
 			// 发帖→sleep→读线程→（空则再等）→裁决定稿汇报。
 			if strings.Contains(input, "<UAT_D2_FINALIZE>") {
@@ -193,6 +209,46 @@ func (m *TestAIBoard) masterProcess(messages []Message) string {
 		return "收到。职能=" + slug + "。" + boardAckText
 	}
 	return boardAckText
+}
+
+// extractBoardClaimIssue 从消息全文抠 <BOARD_CLAIM>NB-n</BOARD_CLAIM> 标记
+// 里的单号（认领制对话机用；browse/claim 两轮都要——标记随历史保留）。
+// 无命中返回空串。
+func extractBoardClaimIssue(input string) string {
+	const open, close = "<BOARD_CLAIM>", "</BOARD_CLAIM>"
+	i := strings.Index(input, open)
+	if i < 0 {
+		return ""
+	}
+	rest := input[i+len(open):]
+	if j := strings.Index(rest, close); j >= 0 {
+		rest = rest[:j]
+	}
+	return strings.TrimSpace(rest)
+}
+
+// boardClaimToolTurn — 认领制对话机的工具结果推进器（轮2/轮3）：
+//   - browse 结果（含 "Claimable issues" 或 "No claimable issues"）→ claim；
+//   - claim 成功（"Claim accepted"）→ CLAIM_WIN <issue>；
+//   - claim 失败（"claim rejected"，含被抢先/硬闸）→ CLAIM_LOSE <issue>。
+//
+// 锚点文本与 nemesisbot/src/board_claim_tool.rs 的产出严格对应。
+// 流程异常落 BOARD_CLAIM_TOOL_UNEXPECTED，由测试侧断言失败暴露。
+func boardClaimToolTurn(input, toolResult string) string {
+	issue := extractBoardClaimIssue(input)
+	switch {
+	case strings.Contains(toolResult, "Claimable issues") || strings.Contains(toolResult, "No claimable issues"):
+		return buildSingleToolCall("board_claim", map[string]interface{}{
+			"action": "claim",
+			"issue":  issue,
+		})
+	case strings.Contains(toolResult, "Claim accepted"):
+		return "CLAIM_WIN " + issue
+	case strings.Contains(toolResult, "claim rejected"):
+		return "CLAIM_LOSE " + issue
+	default:
+		return "BOARD_CLAIM_TOOL_UNEXPECTED"
+	}
 }
 
 // extractProfessionSlug 从提示词全文抠职能后缀标记「执行职能：<label>（<slug>）」

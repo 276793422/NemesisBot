@@ -838,10 +838,6 @@ onUnmounted(() => {
                   <h4 style="font-size: var(--text-sm); color: var(--text-muted); margin-bottom: var(--space-2);">采集</h4>
                   <div style="display: flex; flex-direction: column; gap: var(--space-2);">
                     <div style="display: flex; justify-content: space-between;">
-                      <span style="color: var(--text-secondary);">刷新间隔</span>
-                      <span>{{ formatDuration(configData.collection_flush_secs * 1000) }}</span>
-                    </div>
-                    <div style="display: flex; justify-content: space-between;">
                       <span style="color: var(--text-secondary);">经验保留天数</span>
                       <span>{{ configData.max_experience_age_days }} 天</span>
                     </div>

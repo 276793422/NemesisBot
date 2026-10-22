@@ -22,7 +22,7 @@ use crate::reflector::Reflector;
 use crate::registry::Registry;
 use crate::sanitizer::Sanitizer;
 use crate::syncer::Syncer;
-use crate::trace::TraceCollector;
+use crate::trace::TraceEvent;
 use crate::trace_store::TraceStore;
 use crate::types::{CollectedExperience, CollectorConfig, RegistryConfig};
 
@@ -39,14 +39,13 @@ pub struct Forge {
     pipeline: Option<Arc<Pipeline>>,
     mcp_installer: Option<MCPInstaller>,
     syncer: Option<Syncer>,
-    trace_collector: Option<TraceCollector>,
     trace_store: Option<TraceStore>,
     learning_engine: Option<LearningEngine>,
     deployment_monitor: Option<Arc<DeploymentMonitor>>,
     cycle_store: Option<CycleStore>,
     running: Mutex<bool>,
     bridge: Mutex<Option<Arc<dyn ClusterForgeBridge>>>,
-    /// Background task handles (collector_loop, reflector_loop, cleanup_loop).
+    /// Background task handles (reflector_loop, cleanup_loop).
     bg_tasks: Mutex<Vec<JoinHandle<()>>>,
     /// Shared running flag that background loops observe.
     bg_running: Arc<Mutex<bool>>,
@@ -100,7 +99,6 @@ impl Forge {
             pipeline: None,
             mcp_installer: None,
             syncer: None,
-            trace_collector: None,
             trace_store: None,
             learning_engine: None,
             deployment_monitor: None,
@@ -125,10 +123,13 @@ impl Forge {
 
     /// Start the forge subsystems.
     ///
-    /// Spawns three background tokio tasks:
-    /// - **collector_loop**: periodically flushes the collector buffer.
+    /// Spawns two background tokio tasks:
     /// - **reflector_loop**: periodically runs reflection + learning.
     /// - **cleanup_loop**: periodically removes old data.
+    ///
+    /// The former collector_loop (periodic buffer flush) was removed together
+    /// with the aggregate line (2026-10-22): `record()` writes through to disk
+    /// directly, so there is no buffered channel left to drain.
     pub async fn start(self: Arc<Self>) {
         {
             let mut running = self.running.lock();
@@ -142,7 +143,6 @@ impl Forge {
         *self.bg_running.lock() = true;
         *self.started_at.lock() = Some(chrono::Local::now().to_rfc3339());
 
-        let flush_interval = self.config.collection.flush_interval_secs;
         let reflect_interval = self.config.reflection.interval_secs;
         let cleanup_interval = self.config.storage.cleanup_interval_secs;
 
@@ -156,33 +156,6 @@ impl Forge {
         }
         if cleanup_interval == 0 {
             tracing::warn!("[Forge] storage.cleanup_interval_secs = 0，清理循环已关闭（0=关）");
-        }
-
-        // collector_loop（刻意不受 0=关 约束）：record() 是写穿直落盘，
-        // flush 只排空缓冲通道——0 → 每秒空排是无害 no-op；若照 0=关 禁掉
-        // flush，缓冲通道将永不排空直至 stop()，打满后 record 丢数据。
-        {
-            let forge = Arc::clone(&self);
-            let flag = self.bg_running.clone();
-
-            let handle = tokio::spawn(async move {
-                let check_interval = std::time::Duration::from_secs(1);
-                let mut elapsed = 0u64;
-                loop {
-                    tokio::time::sleep(check_interval).await;
-                    if !*flag.lock() {
-                        break;
-                    }
-                    elapsed += 1;
-                    if elapsed >= flush_interval {
-                        elapsed = 0;
-                        if let Err(e) = forge.collector.flush().await {
-                            tracing::warn!(error = %e, "[Forge] collector flush failed");
-                        }
-                    }
-                }
-            });
-            self.bg_tasks.lock().push(handle);
         }
 
         // reflector_loop（interval=0 = 关闭，不 spawn）
@@ -489,21 +462,28 @@ impl Forge {
         {
             tracing::info!(removed, "[Forge] cleaned up old learning cycles");
         }
+
+        // Trace events (P0-F1 接线的盘上产物)：按 trace.max_trace_age_days
+        // 滚动清理 JSONL（读-滤-重写）。验证轮二接线——此前该配置键零消费者，
+        // traces 目录只增不删。清理 Forge 实际持有的那个 store（未 init 时
+        // 无写入，无需清理）。
+        if let Some(store) = &self.trace_store
+            && let Ok(removed) = store.cleanup(self.config.trace.max_trace_age_days).await
+            && removed > 0
+        {
+            tracing::info!(removed, "[Forge] cleaned up old trace events");
+        }
     }
 
     /// Stop the forge subsystems.
     ///
     /// Sets the running flag to false (which causes background loops to exit
-    /// within 1 second) and performs a final collector flush.
+    /// within 1 second). No final flush is needed: `record()` writes through
+    /// to disk directly (the buffered collector was removed 2026-10-22).
     pub async fn stop(&self) {
         *self.running.lock() = false;
         *self.bg_running.lock() = false; // Signal background loops to exit
         *self.started_at.lock() = None;
-
-        // Perform a final collector flush to persist any buffered data.
-        if let Err(e) = self.collector.flush().await {
-            tracing::warn!(error = %e, "[Forge] Final collector flush failed during stop");
-        }
 
         // Wait for background tasks to finish (they check the flag every 1s).
         let tasks: Vec<_> = {
@@ -650,11 +630,6 @@ impl Forge {
         self.syncer.as_ref()
     }
 
-    /// Get the trace collector (if initialized).
-    pub fn trace_collector(&self) -> Option<&TraceCollector> {
-        self.trace_collector.as_ref()
-    }
-
     /// Get the trace store (if initialized).
     pub fn trace_store(&self) -> Option<&TraceStore> {
         self.trace_store.as_ref()
@@ -673,6 +648,30 @@ impl Forge {
     /// Get the cycle store (if initialized).
     pub fn cycle_store(&self) -> Option<&CycleStore> {
         self.cycle_store.as_ref()
+    }
+
+    // ----- Trace recording -----
+
+    /// Record a trace event: direct JSONL append to the TraceStore.
+    ///
+    /// Tool-dispatch 侧的低频喂入口（审计 P0-F1 修复，2026-10-22：
+    /// TraceStore 原先零生产调用）。trace 是观测数据——写失败只 warn，
+    /// 绝不反过来影响工具执行链。
+    ///
+    /// 2026-10-22 验证轮二：不再同步喂 in-memory `TraceCollector`——该
+    /// collector 全仓零读者（getter 无生产调用方），喂它等于制造无上界
+    /// write-only 内存增长（每笔工具调用永久驻留 Vec）；盘上 TraceStore
+    /// 是学习引擎的唯一输入真相源（learning_engine 轨迹臂读盘）。
+    pub async fn record_trace_event(&self, event: TraceEvent) {
+        if let Some(store) = &self.trace_store
+            && let Err(e) = store.append(&event).await
+        {
+            tracing::warn!(
+                error = %e,
+                event_type = %event.event_type,
+                "[Forge] Failed to append trace event"
+            );
+        }
     }
 
     // ----- Initialization methods -----
@@ -707,9 +706,11 @@ impl Forge {
     }
 
     /// Initialize the trace subsystem.
-    pub fn init_trace(&mut self, collector: TraceCollector, store: TraceStore) {
+    ///
+    /// 2026-10-22 验证轮二：只收 TraceStore。原 collector 参数随 write-only
+    /// 内存面移除（见 `record_trace_event` 注记）。
+    pub fn init_trace(&mut self, store: TraceStore) {
         tracing::info!("[Forge] Trace subsystem initialized");
-        self.trace_collector = Some(collector);
         self.trace_store = Some(store);
     }
 

@@ -71,9 +71,8 @@ if git rev-parse --short HEAD >/dev/null 2>&1; then
     GIT_COMMIT="$(git rev-parse --short HEAD)"
 fi
 
-# 编译期价目表内嵌：值随构建变化 → 绕开 target 缓存强制 build.rs 重跑
-# （下载 LiteLLM 最新表内嵌；失败自动快照兜底，见 nemesis-data/build.rs）
-export NEMESIS_PRICES_REFRESH="${GIT_COMMIT}_$(date +%s)"
+# 编译期价目表内嵌：下载在下方 Step 2.5 预下载块完成（clean 之后、
+# cargo 之前，会话内唯一网络点）；失败自动快照兜底，见 nemesis-data/build.rs
 
 RUSTC_VERSION="$(rustc --version 2>/dev/null || echo "unknown")"
 
@@ -152,6 +151,51 @@ if [ -f "web/package.json" ]; then
     fi
 else
     echo "  SKIP web/package.json not found"
+fi
+echo ""
+
+# ============================================
+# Step 2.5: Pre-download LiteLLM price table (single network touch per build)
+# ============================================
+# nemesis-data/build.rs embeds the price table at compile time and this
+# script runs cargo TWICE (main + vm-display pass). The old timestamp
+# refresh env made BOTH passes re-download — on a bad network that meant
+# two identical failures. Pre-download once here:
+#   success -> NEMESIS_PRICES_FILE points build.rs at the local file
+#              (zero network in either pass; refresh = size+mtime
+#              fingerprint, so a later pass only reruns when the table
+#              actually changed)
+#   failure -> warn once, leave both envs unset: every cargo pass stays
+#              offline on the bundled snapshot (no second download try)
+# Mirror list mirrors crates/nemesis-data/src/pricing_filter.rs PRICE_MIRROR_URLS.
+unset NEMESIS_PRICES_FILE NEMESIS_PRICES_REFRESH
+PRICING_CACHE="${CARGO_TARGET_DIR}/pricing/litellm.json"
+
+echo "[Step 2.5/5] Pre-downloading LiteLLM price table..."
+if ! command -v curl >/dev/null 2>&1; then
+    # No curl: fixed refresh still prevents the second pass from rerunning
+    # build.rs — the first pass does its own single download inside build.rs.
+    export NEMESIS_PRICES_REFRESH="${GIT_COMMIT}_legacy"
+    echo "  SKIP curl not found - build.rs will fetch once itself"
+else
+    mkdir -p "$(dirname "$PRICING_CACHE")"
+    for url in \
+        "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json" \
+        "https://fastly.jsdelivr.net/gh/BerriAI/litellm@main/model_prices_and_context_window.json" \
+        "https://cdn.jsdelivr.net/gh/BerriAI/litellm@main/model_prices_and_context_window.json"; do
+        if [ -f "$PRICING_CACHE" ]; then break; fi
+        echo "  trying $url ..."
+        if ! curl -fsSL --connect-timeout 15 --max-time 90 -o "$PRICING_CACHE" "$url"; then
+            rm -f "$PRICING_CACHE"
+        fi
+    done
+    if [ -s "$PRICING_CACHE" ]; then
+        export NEMESIS_PRICES_FILE="$PRICING_CACHE"
+        export NEMESIS_PRICES_REFRESH="$(stat -c %s "$PRICING_CACHE")_$(stat -c %y "$PRICING_CACHE")"
+        echo "  OK price table cached ($(wc -c < "$PRICING_CACHE") bytes) - both cargo passes read this file, no further downloads"
+    else
+        echo "  WARN price table download failed - this build embeds the bundled snapshot; later passes will NOT retry"
+    fi
 fi
 echo ""
 
@@ -237,12 +281,14 @@ else
 
     # --- guest 产物（musl 交叉编译；必须先于 plugin-vm 构建——资源内嵌纪律：
     #     镜像脚本 + guest ELF 编译期内嵌进插件库，NMB_VM_REQUIRE_RESOURCES=1
-    #     时缺席资源 fail-closed 拒绝出包，guest 必须先在场） ---
-    if [ ! -f "bin/bin_guest/x86_64/nemesis-guest" ]; then
+    #     时缺席资源 fail-closed 拒绝出包，guest 必须先在场。build.rs 要双架构
+    #     都在场，守卫按各架构单查；失败打日志尾部不吞声） ---
+    if [ ! -f "bin/bin_guest/x86_64/nemesis-guest" ] || [ ! -f "bin/bin_guest/aarch64/nemesis-guest" ]; then
         if rustup target list --installed 2>/dev/null | grep -q x86_64-unknown-linux-musl; then
-            echo "  Building guest binaries (scripts/build-guest.sh)..."
-            bash scripts/build-guest.sh >/dev/null 2>&1 \
-                || echo "  WARN guest build failed (plugin-vm embed will report honestly)"
+            echo "  Building guest binaries (scripts/build-guest.sh, log: target/build-guest.log)..."
+            mkdir -p target
+            bash scripts/build-guest.sh > target/build-guest.log 2>&1 \
+                || { echo "  WARN guest build failed (plugin-vm needs both arches, fail-closed) — log tail:"; tail -n 40 target/build-guest.log; }
         else
             echo "  WARN x86_64-unknown-linux-musl target not installed — guest resources absent (plugin-vm embed will fail honestly)"
         fi
