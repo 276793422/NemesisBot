@@ -21,7 +21,9 @@ const eventHandlers: Record<string, EventHandler[]> = {}
 // 实时页 ProviderStreamPanel 消费）。
 // B11（2026-10-18 snooze）：'session.updated' = 会话暂停标记变更
 //（snooze/unsnooze/到期 sweeper 唤醒都会广播）——侧栏据此刷新灰显。
-const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'approval-remote-requested', 'approval-remote-resolved', 'question-asked', 'question-resolved', 'credential-requested', 'credential-resolved', 'board.plan_started', 'board.plan_ready', 'board.plan_failed', 'resync', 'session.created', 'session.updated', 'editor-mode', 'chat.activity', 'canvas.open', 'provider_stream_event']
+// L9（2026-10-21 自更新按钮流）：'selfupdate-progress' = 更新包下载进度
+//（ephemeral：无 id 不参与补拉——回放旧进度值无意义），侧栏三态按钮消费。
+const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'approval-remote-requested', 'approval-remote-resolved', 'question-asked', 'question-resolved', 'credential-requested', 'credential-resolved', 'board.plan_started', 'board.plan_ready', 'board.plan_failed', 'resync', 'session.created', 'session.updated', 'editor-mode', 'chat.activity', 'canvas.open', 'provider_stream_event', 'selfupdate-progress']
 
 function dispatch(eventType: string, data: any) {
   const handlers = eventHandlers[eventType] || []

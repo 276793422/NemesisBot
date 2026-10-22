@@ -85,6 +85,14 @@ pub fn publish_global_event(event_type: &str, data: serde_json::Value) {
     }
 }
 
+/// 易逝事件全局发布口（`publish_ephemeral` 同语义：seq:0 只投在线订阅者，
+/// 不进环形缓冲）。消费方 = selfupdate 下载进度（回放旧进度无意义）。
+pub fn publish_global_ephemeral(event_type: &str, data: serde_json::Value) {
+    if let Some(hub) = EVENT_HUB.get() {
+        hub.publish_ephemeral(event_type, data);
+    }
+}
+
 /// record 成功后广播多端感知信号：`chat.activity {session_id, seq, kind}`
 /// （SSE 全局）。`record_key` 是会话键（`agent:main:session:{sid}`）——信号里
 /// 还原裸 sid 与前端 currentId 同域比对；还原不了（连接级键 `web:...`）原样

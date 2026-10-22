@@ -35,7 +35,7 @@ async fn apply_without_manager_errors_honestly() {
     // arrange 段先清，本测试不再依赖顺序。
     nemesis_web::handlers::selfupdate::clear_manager_for_tests();
     // 测试进程不跑 gateway 装配 → manager 槽必空 → 诚实报「未装配」，
-    // 不 panic、不假成功。真编排路径（受理/闸门/审批卡）归 nemesis-web
+    // 不 panic、不假成功。真编排路径（受理/闸门/v4 验签）归 nemesis-web
     // selfupdate 套件与本文件外的 gateway 集成面。
     let apply = SelfupdateApplyTool;
     for args in ["{}", r#"{"allow_downgrade":true}"#] {

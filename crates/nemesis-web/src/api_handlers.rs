@@ -1056,7 +1056,7 @@ pub async fn handle_api_internal(
                 })?;
         }
         // L9 selfupdate：CLI apply 触发（九步编排全在 gateway 侧；受理即回，
-        // 审批卡与执行进度经审批 SSE / tracing / 审计链可见）。
+        // v4 验签是安全闸，执行进度经 selfupdate-progress SSE / tracing / 审计链可见）。
         "selfupdate_apply" => {
             let allow_downgrade = body
                 .get("allow_downgrade")
