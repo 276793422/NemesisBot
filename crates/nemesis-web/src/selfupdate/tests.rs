@@ -1,9 +1,11 @@
-//! L9 selfupdate 单测：journal/fuse 往返、commit 身份提取、boot 收口相位
-//! 矩阵、PID 存活探测；`selfupdate` feature 下追加 zip 解包、apply 前置闸
-//! （estop/journal/fuse——全部先于网络下载，可离线测）与 **R1 签名更新
-//! 清单**套件（验签解析往返/篡改/字段校验/摘要绑定/applied 副本写入读回/
-//! sequence 顺序闸矩阵）。审批/exe 本体验签的在线路径归集成验证（见
-//! docs/REPORT 交付记录的诚实边界节）。
+//! L9 selfupdate 单测：journal 往返、待装包（updates/ pending）往返与损坏
+//! 整清、commit 身份提取、boot 收口相位矩阵、PID 存活探测；`selfupdate`
+//! feature 下追加 zip/tar.gz 双臂解包（含 `./` 前缀、unix mode、目录跳过、
+//! symlink/嵌套条目拒收、条目名归一）、plugins 绑定校验矩阵、plugins 安装
+//! /回滚舞步、apply/download 前置闸（estop/journal/单飞/平台——全部先于网
+//! 络，可离线测）与 **R1 签名更新清单**套件（验签解析往返/篡改/字段校验/
+//! exe+plugins 摘要绑定/applied 副本写入读回/sequence 顺序闸矩阵）。exe
+//! 本体验签的在线路径归集成验证（见 docs/REPORT 交付记录的诚实边界节）。
 
 use super::*;
 use crate::handlers::release_fetch::{parse_release_list, resolve_release_for_asset};
@@ -30,11 +32,14 @@ fn journal(phase: &str, target: &str, old: &str) -> UpdateJournal {
         old_path: old.to_string(),
         started_ms: now_ms(),
         target_manifest: String::new(),
+        // 默认无 plugins 舞步记录（exe 单侧场景）；plugins 用例单独构造。
+        plugins_backup_dir: String::new(),
+        plugins_new_dir: String::new(),
     }
 }
 
 // ---------------------------------------------------------------------------
-// journal / fuse
+// journal
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -72,29 +77,6 @@ fn journal_corrupt_json_reads_none() {
     assert!(
         load_journal(&ws).is_none(),
         "坏 JSON = None（boot 收口当无事）"
-    );
-    let _ = std::fs::remove_dir_all(&ws);
-}
-
-#[test]
-fn fuse_stamp_and_read() {
-    let ws = tmp_dir("fuse");
-    assert!(last_attempt_ms(&ws).is_none());
-    stamp_fuse(&ws).expect("fuse stamp ok");
-    let last = last_attempt_ms(&ws).expect("stamped");
-    assert!(now_ms() >= last && now_ms() - last < 60_000, "fuse ≈ now");
-    let _ = std::fs::remove_dir_all(&ws);
-}
-
-/// fail-closed 前提：state 目录不可写（存在同名常规文件）时记账必须报错
-/// 而不是吞掉——apply 审批后的 fail-closed 闸依赖这个 Err。
-#[test]
-fn stamp_fuse_fail_closed_when_state_unwritable() {
-    let ws = tmp_dir("fuse-fail");
-    std::fs::write(ws.join("state"), b"x").expect("make state a file");
-    assert!(
-        stamp_fuse(&ws).is_err(),
-        "state 不可写 = Err（fail-closed 前提）"
     );
     let _ = std::fs::remove_dir_all(&ws);
 }
@@ -331,6 +313,124 @@ fn boot_recovery_missing_old_is_noop_not_rolled_back() {
         "journal 照常清理（重试无意义）"
     );
     let _ = std::fs::remove_dir_all(&ws);
+}
+
+// ---------------------------------------------------------------------------
+// plugins 整包替换舞步（rollback 侧不门控 feature——journal 双字段随主
+// 结构进出，boot 收口在任何 feature 组合下都可能读到 plugins 舞步记录）
+// ---------------------------------------------------------------------------
+
+/// 双空字段（旧 journal / 无插件包）= plugins 侧 noop，可识别前缀在场。
+#[test]
+fn rollback_plugins_noop_when_no_journal_fields() {
+    let detail = rollback_plugins_to("", "", std::path::Path::new("unused-plugins"))
+        .expect("无舞步记录 = Ok");
+    assert!(
+        detail.starts_with(ROLLBACK_PLUGINS_NOOP_PREFIX),
+        "noop 分支必须带可识别前缀: {detail}"
+    );
+    assert!(detail.contains("无 plugins 舞步记录"), "{detail}");
+}
+
+/// rollback_update 合成语义：exe .old 缺席 + plugins 双字段空 = 双 noop
+/// （noop=true 的唯一形态——boot 收口据此判 rollback_noop 而非 rolled_back）。
+#[test]
+fn rollback_update_double_noop_when_no_recoverable_state() {
+    let ws = tmp_dir("rollback-double-noop");
+    let exe = ws.join("current.exe");
+    std::fs::write(&exe, b"cur").unwrap();
+    let j = journal(
+        "restarting",
+        "ff00",
+        &ws.join("nope.old").display().to_string(),
+    );
+    let (detail, noop) = rollback_update(&j, &exe).expect("双 noop = Ok");
+    assert!(noop, "exe .old 缺席 + plugins 无记录 = 全 noop: {detail}");
+    assert!(detail.contains(ROLLBACK_NOOP_PREFIX), "{detail}");
+    assert!(detail.contains(ROLLBACK_PLUGINS_NOOP_PREFIX), "{detail}");
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+/// exe 侧真实回滚（.old 在场）+ plugins 侧 noop = 合成非 noop——boot 收口
+/// 必须报 rolled_back 而非 rollback_noop（有一侧真动了）。
+#[test]
+fn rollback_update_exe_side_real_rollback_not_noop() {
+    let ws = tmp_dir("rollback-exe-side");
+    let old = ws.join("nemesisbot.exe.old");
+    std::fs::write(&old, b"old-bytes").unwrap();
+    let exe = ws.join("current.exe");
+    std::fs::write(&exe, b"broken-new").unwrap();
+    let j = journal(
+        "restarting",
+        "ffffffffffffffffffffffffffffffffffffffff",
+        &old.display().to_string(),
+    );
+    let (detail, noop) = rollback_update(&j, &exe).expect("exe 回滚 + plugins noop");
+    assert!(!noop, "exe 侧真实回滚 = 非 noop: {detail}");
+    assert_eq!(std::fs::read(&exe).unwrap(), b"old-bytes", ".old 归位");
+    assert!(
+        detail.contains(ROLLBACK_PLUGINS_NOOP_PREFIX),
+        "plugins noop 段仍在场（双字段空）: {detail}"
+    );
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+/// plugins 回滚全舞步：backup 归位（同名让位先删）→ new-only 清理（用户
+/// 自装件不受伤）→ staging 双目录收尾；二次调用幂等 = noop 前缀。
+#[test]
+fn rollback_plugins_restores_and_clears_new_only_then_noop() {
+    let dir = tmp_dir("rollback-plugins");
+    let plugins = dir.join("plugins");
+    let backup = dir.join("plugins.old-7");
+    let new = dir.join("plugins.new-7");
+    for d in [&plugins, &backup, &new] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    std::fs::write(plugins.join("a.dll"), b"new-a").unwrap();
+    std::fs::write(plugins.join("keep.dll"), b"user-keep").unwrap();
+    std::fs::write(plugins.join("c.dll"), b"new-c").unwrap();
+    std::fs::write(backup.join("a.dll"), b"old-a").unwrap();
+    std::fs::write(new.join("a.dll"), b"new-a").unwrap();
+    std::fs::write(new.join("c.dll"), b"new-c").unwrap();
+
+    let detail = rollback_plugins_to(
+        &backup.display().to_string(),
+        &new.display().to_string(),
+        &plugins,
+    )
+    .expect("rollback");
+    assert!(
+        !detail.starts_with(ROLLBACK_PLUGINS_NOOP_PREFIX),
+        "有真回滚 = 非 noop: {detail}"
+    );
+    assert_eq!(
+        std::fs::read(plugins.join("a.dll")).unwrap(),
+        b"old-a",
+        "旧版归位"
+    );
+    assert_eq!(
+        std::fs::read(plugins.join("keep.dll")).unwrap(),
+        b"user-keep",
+        "用户自装插件不受伤（不在 backup/new 名单 = 不动）"
+    );
+    assert!(
+        !plugins.join("c.dll").exists(),
+        "new-only 文件清理（只同名覆盖不删，回滚侧才删 new-only）"
+    );
+    assert!(!backup.exists() && !new.exists(), "staging 双目录收尾");
+
+    // 幂等：现场已收光，二次回滚 = noop。
+    let again = rollback_plugins_to(
+        &backup.display().to_string(),
+        &new.display().to_string(),
+        &plugins,
+    )
+    .expect("rollback 2");
+    assert!(
+        again.starts_with(ROLLBACK_PLUGINS_NOOP_PREFIX),
+        "二次回滚 = noop: {again}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// R2 复查补口：staging 名去固定化（PID 后缀）移除了旧固定名方案的隐式
@@ -591,7 +691,160 @@ mod gated {
     fn extract_bundle_missing_exe_rejected() {
         let bytes = zip_bytes(vec![("version.txt", b"Commit : 0123456".to_vec())]);
         let err = super::super::extract_update_bundle(&bytes).unwrap_err();
-        assert!(err.contains("nemesisbot.exe"), "诚实报包结构异常: {err}");
+        assert!(
+            err.contains("nemesisbot") && err.contains("包结构异常"),
+            "诚实报包结构异常（双形态名 nemesisbot(.exe)）: {err}"
+        );
+    }
+
+    #[test]
+    fn extract_zip_captures_flat_plugins_and_rejects_nested() {
+        // Windows 主包（zip）形态：plugins/ 平面文件全集捕获，回滚/绑定面可用。
+        let flat = zip_bytes(vec![
+            ("nemesisbot.exe", b"pe".to_vec()),
+            (
+                "version.txt",
+                b"Commit     : 0123456789abcdef0123456789abcdef01234567\n".to_vec(),
+            ),
+            ("plugins/a.dll", b"pa".to_vec()),
+            ("plugins/libui.so", b"pb".to_vec()),
+        ]);
+        let bundle = super::super::extract_update_bundle(&flat).expect("flat plugins");
+        assert_eq!(bundle.plugins.len(), 2);
+        assert_eq!(
+            bundle.plugins.get("a.dll").map(Vec::as_slice),
+            Some(b"pa".as_slice())
+        );
+        // 嵌套子目录 = 拒收（插件平面名清单，listdir 语义装不下子树）。
+        let nested = zip_bytes(vec![
+            ("nemesisbot.exe", b"pe".to_vec()),
+            ("plugins/sub/x.dll", b"px".to_vec()),
+        ]);
+        let err = super::super::extract_update_bundle(&nested).unwrap_err();
+        assert!(err.contains("子目录嵌套"), "{err}");
+    }
+
+    // -----------------------------------------------------------------------
+    // tar.gz 臂（Linux 主包 / macOS 留位同型）：CI `tar -czf … -C staging .`
+    // 条目带 `./` 前缀、目录条目跳过、裸名 nemesisbot、unix mode 记录。
+    // -----------------------------------------------------------------------
+
+    fn tar_gz_bytes(entries: Vec<(tar::EntryType, &str, Option<u32>, Vec<u8>)>) -> Vec<u8> {
+        let enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        let mut b = tar::Builder::new(enc);
+        for (ty, name, mode, data) in entries {
+            let mut h = tar::Header::new_gnu();
+            match ty {
+                tar::EntryType::Regular => {
+                    h.set_size(data.len() as u64);
+                    h.set_mode(mode.unwrap_or(0o644));
+                    h.set_cksum();
+                    b.append_data(&mut h, name, std::io::Cursor::new(data))
+                        .unwrap();
+                }
+                _ => {
+                    h.set_size(0);
+                    h.set_entry_type(ty);
+                    if let Some(m) = mode {
+                        h.set_mode(m);
+                    }
+                    h.set_cksum();
+                    b.append_data(&mut h, name, std::io::empty()).unwrap();
+                }
+            }
+        }
+        b.into_inner().unwrap().finish().unwrap()
+    }
+
+    #[test]
+    fn extract_tar_gz_reads_bare_exe_mode_and_plugins() {
+        let full = "0123456789abcdef0123456789abcdef01234567";
+        let vt = format!("NemesisBot\nCommit     : {full}\n");
+        let bytes = tar_gz_bytes(vec![
+            (
+                tar::EntryType::Regular,
+                "./nemesisbot",
+                Some(0o755),
+                b"elf-bytes".to_vec(),
+            ),
+            (
+                tar::EntryType::Regular,
+                "./version.txt",
+                None,
+                vt.into_bytes(),
+            ),
+            (tar::EntryType::Directory, "./plugins", None, Vec::new()),
+            (
+                tar::EntryType::Regular,
+                "./plugins/libui.so",
+                None,
+                b"so-bytes".to_vec(),
+            ),
+        ]);
+        let bundle = super::super::extract_update_bundle(&bytes).expect("tar.gz extract");
+        assert_eq!(
+            bundle.exe_bytes, b"elf-bytes",
+            "裸名 nemesisbot = 主程序条目"
+        );
+        assert_eq!(bundle.commit.as_deref(), Some(full));
+        assert_eq!(
+            bundle.exe_unix_mode,
+            Some(0o755),
+            "unix mode 记录（重装 chmod 恢复执行位）"
+        );
+        assert_eq!(
+            bundle.plugins.get("libui.so").map(Vec::as_slice),
+            Some(b"so-bytes".as_slice()),
+            "目录条目跳过、平面文件捕获"
+        );
+    }
+
+    #[test]
+    fn extract_tar_gz_rejects_symlink_entry() {
+        let bytes = tar_gz_bytes(vec![
+            (
+                tar::EntryType::Regular,
+                "./nemesisbot",
+                Some(0o755),
+                b"elf".to_vec(),
+            ),
+            (tar::EntryType::Symlink, "./evil", None, Vec::new()),
+        ]);
+        let err = super::super::extract_update_bundle(&bytes).unwrap_err();
+        assert!(err.contains("symlink"), "link 型条目拒收并点名: {err}");
+    }
+
+    #[test]
+    fn extract_rejects_unknown_magic() {
+        let err = super::super::extract_update_bundle(b"MZ\xffbinary").unwrap_err();
+        assert!(err.contains("格式不可识别"), "{err}");
+    }
+
+    #[test]
+    fn normalize_entry_name_matrix() {
+        use super::super::normalize_entry_name;
+        assert_eq!(normalize_entry_name("./nemesisbot").unwrap(), "nemesisbot");
+        assert_eq!(
+            normalize_entry_name("a\\b.dll").unwrap(),
+            "a/b.dll",
+            "Windows 反斜杠归一"
+        );
+        assert_eq!(
+            normalize_entry_name("././plugins/x").unwrap(),
+            "plugins/x",
+            "循环剥 ./ 前缀"
+        );
+        assert!(
+            normalize_entry_name("/abs/x")
+                .unwrap_err()
+                .contains("绝对路径"),
+            "绝对路径条目拒收"
+        );
+        assert!(
+            normalize_entry_name("a/../b").unwrap_err().contains(".."),
+            "逃逸条目拒收"
+        );
+        assert!(normalize_entry_name("").unwrap_err().contains("空"));
     }
 
     // -----------------------------------------------------------------------
@@ -683,7 +936,8 @@ mod gated {
             "commit": "0123456789abcdef0123456789abcdef01234567",
             "sequence": 42,
             "exe_sha256": format!("{:064x}", 0xdead_beefu64),
-            "built_at": "2026-10-16T00:00:00Z"
+            "built_at": "2026-10-16T00:00:00Z",
+            "plugins_sha256": {"plugin-x.dll": sha256_hex(b"plugin-x-bytes")}
         })
     }
 
@@ -695,6 +949,11 @@ mod gated {
         assert_eq!(m.commit, "0123456789abcdef0123456789abcdef01234567");
         assert_eq!(m.sequence, 42);
         assert_eq!(m.exe_sha256, format!("{:064x}", 0xdead_beefu64));
+        assert_eq!(
+            m.plugins_sha256.get("plugin-x.dll").map(String::as_str),
+            Some(sha256_hex(b"plugin-x-bytes").as_str()),
+            "plugins 逐文件绑定表随清单往返"
+        );
     }
 
     #[test]
@@ -776,6 +1035,7 @@ mod gated {
             sequence: 1,
             exe_sha256: sha256_hex(b"pe-bytes"),
             built_at: "t".into(),
+            plugins_sha256: Default::default(),
         };
         assert!(
             manifest_exe_digest_matches(&m, b"pe-bytes"),
@@ -906,6 +1166,10 @@ mod gated {
         });
         let j: UpdateJournal = serde_json::from_value(legacy).expect("旧 journal 兼容");
         assert_eq!(j.target_manifest, "", "缺键 = 空串默认");
+        assert!(
+            j.plugins_backup_dir.is_empty() && j.plugins_new_dir.is_empty(),
+            "plugins 双字段同样缺键默认空（无舞步记录 = 回滚 noop）"
+        );
         // 反向：带清单的 journal 往返不丢字段。
         let full = UpdateJournal {
             target_manifest: "Y2Fycmllcg==".to_string(),
@@ -920,40 +1184,122 @@ mod gated {
         ws: PathBuf,
         estop: std::sync::Arc<nemesis_agent::estop::EstopState>,
     ) -> SelfUpdateManager {
-        struct Allow;
-        impl nemesis_security::auditor::ApprovalManager for Allow {
-            fn is_running(&self) -> bool {
-                true
-            }
-            fn request_approval_sync(
-                &self,
-                _request_id: &str,
-                _operation: &str,
-                _target: &str,
-                _risk_level: &str,
-                _reason: &str,
-                _timeout_secs: u64,
-            ) -> Result<nemesis_security::auditor::ApprovalVerdict, String> {
-                Ok(nemesis_security::auditor::ApprovalVerdict {
-                    approved: true,
-                    note: None,
-                })
-            }
-        }
+        // 2026-10-21 两段式改版：审批卡退役（确认在 Dashboard 侧完成，v4 验签
+        // 是安全闸）——Manager 不再持有 ApprovalManager；新增下载编排三件
+        // （download_flight/download_cancel/download_progress）+ check 缓存。
         SelfUpdateManager {
             workspace: ws,
             estop,
-            approval: std::sync::Arc::new(Allow),
             audit: None,
             shutdown: std::sync::Arc::new(|| {}),
             flight: tokio::sync::Mutex::new(()),
+            download_flight: tokio::sync::Mutex::new(()),
+            download_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            download_progress: std::sync::Arc::new(parking_lot::Mutex::new(
+                DownloadProgress::default(),
+            )),
+            last_check: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         }
     }
 
-    // apply 全链路 v1 仅 Windows（平台闸排第一道，见下方
-    // apply_refused_on_non_windows_before_any_network）——闸序测试
-    // 只在 Windows 编译（漏 gate 实录：Linux coverage 三连红，2026-10-14）。
-    #[cfg(windows)]
+    // -----------------------------------------------------------------------
+    // 两段式 D2：pending 包（updates/）往返与损坏整清
+    // -----------------------------------------------------------------------
+
+    fn sample_pending() -> PendingUpdate {
+        PendingUpdate {
+            asset: TARGET_ASSET.to_string(),
+            release_tag: "v0.0.0-test".to_string(),
+            target_commit: "0123456789abcdef0123456789abcdef01234567".to_string(),
+            zip_sha256: sha256_hex(b"zip-bytes"),
+            size_bytes: 9,
+            downloaded_at_ms: 1_700_000_000_000,
+        }
+    }
+
+    /// updates/ 空（目录已删，或删挂起幻影目录内零条目——Windows
+    /// RemoveDirectory 已成功但名字仍可短暂枚举，断言条目而非目录存在性）。
+    fn updates_dir_is_empty(exe: &std::path::Path) -> bool {
+        match std::fs::read_dir(updates_dir(exe)) {
+            Err(_) => true,
+            Ok(rd) => rd.filter_map(|e| e.ok()).next().is_none(),
+        }
+    }
+
+    /// meta 后写不变量 + 正常往返：zip 先于 meta 在场时 load=None（半截下载
+    /// 不产生可装形态——「见 meta 必有 zip」）；meta 落盘后完整读回。
+    #[test]
+    fn pending_roundtrip_meta_last_invariant() {
+        let dir = tmp_dir("pending-roundtrip");
+        let exe = dir.join("nemesisbot.exe");
+        std::fs::write(&exe, b"pe").unwrap();
+        assert!(load_pending(&exe).is_none(), "无 meta = None");
+        std::fs::create_dir_all(updates_dir(&exe)).unwrap();
+        std::fs::write(pending_package_path(&exe, TARGET_ASSET), b"zip-bytes").unwrap();
+        assert!(load_pending(&exe).is_none(), "只有包无 meta = None");
+        save_pending(&exe, &sample_pending()).expect("save meta");
+        let p = load_pending(&exe).expect("loaded");
+        assert_eq!(p.release_tag, "v0.0.0-test");
+        assert_eq!(p.target_commit, "0123456789abcdef0123456789abcdef01234567");
+        assert_eq!(p.zip_sha256, sha256_hex(b"zip-bytes"));
+        assert_eq!(p.size_bytes, 9);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 坏 meta（用户拍板：坏包宁可重下）→ None + 整清 updates/。
+    #[test]
+    fn pending_bad_meta_clears_updates_dir() {
+        let dir = tmp_dir("pending-bad-meta");
+        let exe = dir.join("nemesisbot.exe");
+        std::fs::create_dir_all(updates_dir(&exe)).unwrap();
+        std::fs::write(pending_package_path(&exe, TARGET_ASSET), b"zip").unwrap();
+        std::fs::write(pending_meta_path(&exe), "{not json").unwrap();
+        assert!(load_pending(&exe).is_none(), "坏 meta = None");
+        assert!(updates_dir_is_empty(&exe), "坏 meta → updates/ 整清重来");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// sha 复验不匹配（下载后字节被改/包损坏）→ None + 整清，不给坏包安装机会。
+    #[test]
+    fn pending_sha_mismatch_clears_updates_dir() {
+        let dir = tmp_dir("pending-sha");
+        let exe = dir.join("nemesisbot.exe");
+        std::fs::create_dir_all(updates_dir(&exe)).unwrap();
+        std::fs::write(pending_package_path(&exe, TARGET_ASSET), b"corrupted").unwrap();
+        save_pending(&exe, &sample_pending()).expect("save meta");
+        assert!(load_pending(&exe).is_none(), "sha 不符 = None");
+        assert!(updates_dir_is_empty(&exe), "sha 不符 → updates/ 整清重来");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// meta 在 zip 不在（正常顺序见不到的异常现场）→ None + 整清。
+    #[test]
+    fn pending_meta_without_zip_clears_updates_dir() {
+        let dir = tmp_dir("pending-no-zip");
+        let exe = dir.join("nemesisbot.exe");
+        std::fs::create_dir_all(updates_dir(&exe)).unwrap();
+        save_pending(&exe, &sample_pending()).expect("save meta");
+        assert!(load_pending(&exe).is_none(), "zip 缺失 = None");
+        assert!(updates_dir_is_empty(&exe), "zip 缺失 → updates/ 整清");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// download 前置闸（离线可达）：estop 生效 = 拒绝（pending 未就绪时
+    /// estop 闸是第一道——测试进程 exe 目录无 updates/，不触网）。
+    #[tokio::test]
+    async fn download_denied_by_estop() {
+        let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
+        estop.trigger();
+        let m = manager_for(tmp_dir("dl-estop"), estop);
+        let err = m.download("0123456").await.unwrap_err();
+        assert!(err.contains("estop"), "estop 闸拒下载: {err}");
+    }
+
+    // apply 全链路主体：Windows + Linux 同一份 cfg 编译体（2026-10-22 Linux
+    // 接入）；macOS/android 是桩（诚实拒，见下方 apply_refused_on_stub_platforms
+    // _before_any_network）。闸序测试与被测函数同 cfg 域（漏 gate 实录：Linux
+    // coverage 三连红，2026-10-14——教训保持）。
+    #[cfg(any(windows, target_os = "linux"))]
     #[tokio::test]
     async fn apply_denied_by_estop() {
         let ws = tmp_dir("gate-estop");
@@ -965,7 +1311,7 @@ mod gated {
         let _ = std::fs::remove_dir_all(&ws);
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     #[tokio::test]
     async fn apply_denied_by_pending_journal() {
         let ws = tmp_dir("gate-journal");
@@ -979,23 +1325,9 @@ mod gated {
         let _ = std::fs::remove_dir_all(&ws);
     }
 
-    #[cfg(windows)]
-    #[tokio::test]
-    async fn apply_denied_by_frequency_fuse() {
-        let ws = tmp_dir("gate-fuse");
-        stamp_fuse(&ws).expect("fuse stamp ok");
-        let m = manager_for(
-            ws.clone(),
-            std::sync::Arc::new(nemesis_agent::estop::EstopState::new()),
-        );
-        let err = m.apply("v1", "0123456", false).await.unwrap_err();
-        assert!(err.contains("保险丝"), "频率闸拒: {err}");
-        let _ = std::fs::remove_dir_all(&ws);
-    }
-
     /// R2 进程内单飞：flight 已被持有时 apply 诚实拒绝（estop 未触发、
-    /// journal/fuse 干净——单飞闸是这一轮唯一的拒绝者）。
-    #[cfg(windows)]
+    /// journal 干净——单飞闸是这一轮唯一的拒绝者）。
+    #[cfg(any(windows, target_os = "linux"))]
     #[tokio::test]
     async fn apply_rejected_when_singleflight_held() {
         let ws = tmp_dir("gate-singleflight");
@@ -1010,12 +1342,14 @@ mod gated {
         let _ = std::fs::remove_dir_all(&ws);
     }
 
-    /// 平台闸（v1 仅 Windows）：非 Windows 必须**先于一切网络/磁盘动作**
-    /// 诚实报「暂不支持」——不能等下完 300MB 主包才撞 zip 解包失败。
-    /// 本测试在 Windows 编译期消失，由 Linux nightly 兜底执行。
-    #[cfg(all(test, not(target_os = "windows")))]
+    /// 平台闸（桩平台：macOS 留位 / Android APK 发行形态）：必须**先于一切
+    /// 网络/磁盘动作**诚实拒绝——Android 文案点名 APK 通道（非「暂不支持」，
+    /// 那是能力缺席不是形态错位）；macOS 文案「暂不支持」+ 手动替换指引。
+    /// 本测试在 Windows/Linux 编译期消失（Linux 2026-10-22 起接入全链路主
+    /// 体），由对应桩平台的本地构建兜底执行。
+    #[cfg(all(test, not(any(target_os = "windows", target_os = "linux"))))]
     #[tokio::test]
-    async fn apply_refused_on_non_windows_before_any_network() {
+    async fn apply_refused_on_stub_platforms_before_any_network() {
         let ws = tmp_dir("gate-platform");
         // 故意放一个未收口 journal：平台闸必须排更前——若平台闸失效，
         // 这里会先撞 journal 错误信息，测试即红。
@@ -1025,12 +1359,14 @@ mod gated {
             std::sync::Arc::new(nemesis_agent::estop::EstopState::new()),
         );
         let err = m.apply("v1", "0123456", false).await.unwrap_err();
-        assert!(
-            err.contains("暂不支持") && err.contains("Windows"),
-            "平台闸诚实拒（先于 journal/estop/网络）: {err}"
-        );
-        // 未触达下载路径 → 保险丝未被盖章（审批即承诺语义没被误触）。
-        assert!(last_attempt_ms(&ws).is_none(), "平台闸不盖保险丝");
+        if TARGET_ASSET.is_empty() {
+            assert!(err.contains("APK"), "Android 桩诚实指认 APK 通道: {err}");
+        } else {
+            assert!(
+                err.contains("暂不支持"),
+                "macOS 留位桩诚实拒（先于 journal/estop/网络）: {err}"
+            );
+        }
         let _ = std::fs::remove_dir_all(&ws);
     }
 
@@ -1076,5 +1412,180 @@ mod gated {
                 "Expired"
             ]
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // plugins 整包替换：绑定校验矩阵 + 安装舞步 + sweep 面
+    // -----------------------------------------------------------------------
+
+    fn manifest_with_plugins(table: &[(&str, &str)]) -> crate::selfupdate::UpdateManifest {
+        crate::selfupdate::UpdateManifest {
+            commit: "0123456789abcdef0123456789abcdef01234567".into(),
+            sequence: 1,
+            exe_sha256: format!("{:064x}", 0),
+            built_at: "t".into(),
+            plugins_sha256: table
+                .iter()
+                .map(|(n, s)| (n.to_string(), s.to_string()))
+                .collect(),
+        }
+    }
+
+    fn plugins_map(pairs: &[(&str, &[u8])]) -> std::collections::BTreeMap<String, Vec<u8>> {
+        pairs
+            .iter()
+            .map(|(n, b)| (n.to_string(), b.to_vec()))
+            .collect()
+    }
+
+    /// ②-b 绑定闸语义矩阵（用户拍板「1. 可以加」）：空表 = 诚实降级 Ok；
+    /// 集合差异（数量不等 / 名单不同）= 拒；摘要失配 = 拒；全链大小写不
+    /// 敏感（CI 侧 sha256sum 小写 / 手写大写清单同命中）。
+    #[test]
+    fn plugins_binding_matrix() {
+        // 空绑定 + 包内有插件 = 降级 Ok（旧 CI 包 / 无插件包形态）。
+        let m = manifest_with_plugins(&[]);
+        assert!(
+            verify_plugins_binding_map(&m, &plugins_map(&[("a.dll", b"x")])).is_ok(),
+            "空表 = 无绑定语义，诚实降级"
+        );
+        // 数量不等（清单 2 / 包 1）= 拒，错误点名缺失与多出。
+        let m =
+            manifest_with_plugins(&[("a.dll", &sha256_hex(b"1")), ("b.dll", &sha256_hex(b"2"))]);
+        let err = verify_plugins_binding_map(&m, &plugins_map(&[("a.dll", b"1")]))
+            .expect_err("集合不一致必拒");
+        assert!(err.contains("集合"), "指认集合不一致: {err}");
+        // 数量相等、名单不同 = 拒（缺清单绑定项）。
+        let m = manifest_with_plugins(&[("b.dll", &sha256_hex(b"2"))]);
+        let err = verify_plugins_binding_map(&m, &plugins_map(&[("a.dll", b"1")]))
+            .expect_err("名单不同必拒");
+        assert!(err.contains("缺清单绑定"), "点名缺失文件: {err}");
+        // 摘要不匹配 = 拒（完整性问题）。
+        let m = manifest_with_plugins(&[("a.dll", &sha256_hex(b"good"))]);
+        let err = verify_plugins_binding_map(&m, &plugins_map(&[("a.dll", b"evil")]))
+            .expect_err("摘要失配必拒");
+        assert!(err.contains("摘要不匹配"), "指认完整性问题: {err}");
+        // 大小写不敏感：大写文件名 + 大写摘要清单 vs 包内小写字节 = Ok。
+        let m = manifest_with_plugins(&[("A.DLL", &sha256_hex(b"payload").to_uppercase())]);
+        assert!(
+            verify_plugins_binding_map(&m, &plugins_map(&[("a.dll", b"payload")])).is_ok(),
+            "hex 与文件名全归一"
+        );
+        // 正例：精确匹配 = Ok。
+        let m = manifest_with_plugins(&[("a.dll", &sha256_hex(b"payload"))]);
+        assert!(verify_plugins_binding_map(&m, &plugins_map(&[("a.dll", b"payload")])).is_ok(),);
+    }
+
+    /// 清单 plugins_sha256 字段级校验（签名后仍拒垃圾）：文件名空/绝对路径/
+    /// 反斜杠/逃逸/嵌套 + 摘要非 64 hex，全部诚实拒绝且点名 plugins_sha256。
+    #[test]
+    fn manifest_plugins_sha256_field_validation() {
+        let kh = nemesis_verify::keygen::generate().unwrap();
+        let anchors = vec![kh.root_anchor_fingerprint()];
+        let good = sha256_hex(b"x");
+        let cases = [
+            ("空文件名", serde_json::json!({"": good})),
+            ("绝对路径名", serde_json::json!({"/abs.dll": good})),
+            ("反斜杠名", serde_json::json!({"a\\b.dll": good})),
+            ("逃逸名", serde_json::json!({"../x.dll": good})),
+            ("嵌套名", serde_json::json!({"sub/x.dll": good})),
+            ("短摘要", serde_json::json!({"a.dll": "abc123"})),
+        ];
+        for (tag, table) in cases {
+            let json = serde_json::json!({
+                "commit": "0123456789abcdef0123456789abcdef01234567",
+                "sequence": 1,
+                "exe_sha256": format!("{:064x}", 0),
+                "built_at": "t",
+                "plugins_sha256": table,
+            });
+            let body = serde_json::to_vec(&json).unwrap();
+            let carrier = nemesis_verify::verify::sign_content_v4(
+                &body,
+                &kh.leaf_sk,
+                now_secs(),
+                &kh.chain(),
+                None,
+            )
+            .unwrap();
+            let err = verify_and_parse_manifest(&carrier, &anchors, now_secs() + 60)
+                .expect_err(&format!("{tag} 必拒"));
+            assert!(
+                err.contains("plugins_sha256"),
+                "{tag}: 错误须点名字段: {err}"
+            );
+        }
+    }
+
+    /// 安装舞步（用户拍板「2. 可以」）：new_dir 全集先写 + 同名让位进
+    /// backup + 只同名覆盖不删（用户自装插件不受伤）。
+    #[test]
+    fn install_plugins_files_replaces_and_preserves_extras() {
+        let dir = tmp_dir("install-plugins");
+        let plugins = dir.join("plugins");
+        let backup = dir.join("plugins.old-1");
+        let new = dir.join("plugins.new-1");
+        std::fs::create_dir_all(&plugins).unwrap();
+        std::fs::write(plugins.join("a.dll"), b"old-a").unwrap();
+        std::fs::write(plugins.join("keep.dll"), b"user-keep").unwrap();
+        let files = std::collections::BTreeMap::from([
+            ("a.dll".to_string(), b"new-a".to_vec()),
+            ("c.dll".to_string(), b"new-c".to_vec()),
+        ]);
+        let replaced =
+            super::super::install_plugins_files(&plugins, &backup, &new, &files).expect("install");
+        assert_eq!(replaced, 2, "replaced = 同名让位数 + 新装数（全集）");
+        assert_eq!(
+            std::fs::read(plugins.join("a.dll")).unwrap(),
+            b"new-a",
+            "同名覆盖"
+        );
+        assert_eq!(
+            std::fs::read(plugins.join("keep.dll")).unwrap(),
+            b"user-keep",
+            "用户自装插件不在包内 = 不动"
+        );
+        assert_eq!(
+            std::fs::read(plugins.join("c.dll")).unwrap(),
+            b"new-c",
+            "新装落位"
+        );
+        assert_eq!(
+            std::fs::read(backup.join("a.dll")).unwrap(),
+            b"old-a",
+            "旧版让位进 backup（回滚原料）"
+        );
+        assert_eq!(
+            std::fs::read(new.join("a.dll")).unwrap(),
+            b"new-a",
+            "new_dir 全集副本（回滚 new-only 清理名单）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// sweep 扩展面：plugins.staging 双前缀目录清除；**裸 plugins 真实目录
+    /// 永不在清扫面**（前缀排除裸名——真插件目录沾清扫面 = 生产事故）。
+    #[test]
+    fn sweep_stale_staging_removes_plugins_dirs_spares_real_plugins() {
+        let ws = tmp_dir("sweep-plugins");
+        let exe = ws.join("nemesisbot.exe");
+        std::fs::write(&exe, b"running").unwrap();
+        let real = ws.join("plugins");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("keep.dll"), b"real").unwrap();
+        let stale_old = ws.join(format!("plugins.old-{}", std::process::id() + 1));
+        let stale_new = ws.join(format!("plugins.new-{}", std::process::id() + 2));
+        for d in [&stale_old, &stale_new] {
+            std::fs::create_dir_all(d).unwrap();
+            std::fs::write(d.join("x.dll"), b"x").unwrap();
+        }
+        let removed = super::super::sweep_stale_staging(&exe);
+        assert_eq!(removed, 2, "两个 plugins staging 目录清除");
+        assert!(!stale_old.exists() && !stale_new.exists());
+        assert!(
+            real.join("keep.dll").exists(),
+            "裸 plugins 真实目录不在清扫面"
+        );
+        let _ = std::fs::remove_dir_all(&ws);
     }
 }

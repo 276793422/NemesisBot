@@ -873,13 +873,13 @@ fn test_forge_config_round_trip_preserves_custom_values() {
     let tmp = tempfile::TempDir::new().unwrap();
     let mut cfg = nemesis_forge::config::ForgeConfig::default();
     cfg.learning.enabled = true;
-    cfg.collection.interval_secs = 600;
+    cfg.collection.max_experiences = 7777;
     let cfg_path = tmp.path().join("config.forge.json");
     nemesis_forge::config::save_forge_config(&cfg_path, &cfg).unwrap();
 
     let loaded = nemesis_forge::config::load_forge_config(&cfg_path);
     assert!(loaded.learning.enabled);
-    assert_eq!(loaded.collection.interval_secs, 600);
+    assert_eq!(loaded.collection.max_experiences, 7777);
 }
 
 // ===========================================================================

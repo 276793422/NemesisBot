@@ -16097,6 +16097,291 @@ async fn main() {
         .await,
     );
 
+    // ==================================================================
+    // T49: 集群任务认领（认领取件制全链，2026-10-22 goal）
+    // 讨论组场景：组长（Dashboard 侧）在 #team 发 @all 认领邀请
+    // （<BOARD_CLAIM> 标记随 wake 链到达 worker LLM）→ B/C 双 worker
+    // 竞争 browse→claim → master 侧原子裁决恰好一胜（败者 "claim
+    // rejected: ... 已被 node-X 认领" 诚实落线程）→ 胜者 dispatch_issue_core
+    // 回派出队 → 工作队列交付 → auto_accept 收口 done → #team 播报
+    // 「已被 node-X 认领」+ issue 系统评论双落。
+    // 自备前置（suite 尾部纪律）：A/B/C 切组合桩 + 重启（U-Prep 纪律）；
+    // B/C 职能宣告清空（讨论轮职能围栏交集不含 board_claim——认领制组员
+    // =普通 worker；无职能要求单硬闸对谁都空转）；board 开关基线。
+    // D 不重启：若其在线被 @all 波及参与竞争属合法噪声，断言只锚
+    // B/C 胜出与一胜一败锚点，不受 D 行为影响。
+    // ==================================================================
+    all_results.push(
+        run_test(
+            "T49: board_claim 认领全链（@all 唤醒 → 双 worker 竞争 → 一胜一败 → 胜者出队收口 → #team 播报）",
+            || async {
+                // 前置 ①：A/B/C 切组合桩 + 重启（U-Prep 纪律：start_gateway_and_wait
+                // 只 spawn 不杀，"kill is the caller's job"）。
+                for (side, gw_name, ws_side, gw, node) in [
+                    ("A", "Gateway-A", &ws_a, &mut gw_a, &NODES[0]),
+                    ("B", "Gateway-B", &ws_b, &mut gw_b, &NODES[1]),
+                    ("C", "Gateway-C", &ws_c, &mut gw_c, &NODES[2]),
+                ] {
+                    let out = ws_side
+                        .run_cli(
+                            &gateway_bin,
+                            &[
+                                "model",
+                                "add",
+                                "--model",
+                                "test/testai-board-1.0",
+                                "--base",
+                                &format!("http://127.0.0.1:{}/v1", ai_server_port()),
+                                "--key",
+                                "test-key",
+                                "--default",
+                            ],
+                        )
+                        .await;
+                    if !out.success() {
+                        return fail("T49", format!("{side} board model add failed: {}", out.stderr));
+                    }
+                    gw.kill().await;
+                    match start_gateway_and_wait(gw_name, &gateway_bin, ws_side.path(), node).await
+                    {
+                        Ok(g) => *gw = g,
+                        Err(e) => return fail("T49", format!("{side} restart failed: {e}")),
+                    }
+                }
+                let Ok(mut ws) = ws_connect_gateway(NODES[0].web_port).await else {
+                    return fail("T49", "WS connect to A failed");
+                };
+                let Ok(mut wsb) = ws_connect_gateway(NODES[1].web_port).await else {
+                    return fail("T49", "WS connect to B failed");
+                };
+                let Ok(mut wsc) = ws_connect_gateway(NODES[2].web_port).await else {
+                    return fail("T49", "WS connect to C failed");
+                };
+                // 前置 ②：B/C 职能宣告清空 + tier 清除（各节点本机热改写，
+                // 下一 announce 拍向 A 传播——认领制组员=普通 worker）。
+                for (side, ws_side) in [("B", &mut wsb), ("C", &mut wsc)] {
+                    if let Err(e) = ws_api_request(
+                        ws_side,
+                        "cluster",
+                        "node.update_identity",
+                        json!({ "professions": [], "tier": null }),
+                        10,
+                    )
+                    .await
+                    {
+                        return fail("T49", format!("{side} 职能清空失败: {e}"));
+                    }
+                }
+                // 前置 ③：board 开关基线（auto_accept 收口链；T 系/U 系残留复位）。
+                if let Err(e) = u_set_board_config(
+                    &mut ws,
+                    &[
+                        ("conflict_auto_resolve", json!(false)),
+                        ("auto_accept", json!(true)),
+                        ("auto_close_parent", json!(true)),
+                        ("plan.auto_confirm", json!(false)),
+                        ("unlimited_mode", json!(false)),
+                        ("dispatch_fallback", json!(false)),
+                        ("budget.max_total_redispatch", json!(0)),
+                    ],
+                )
+                .await
+                {
+                    return fail("T49", format!("config.set failed: {e}"));
+                }
+                // 前置 ④：B/C 在 A 端在线 + 清空身份传播到位（exact 空职能 +
+                // tier 缺席），并取双方运行时 id（claim 身份 = _rpc.from = 此 id）。
+                for name in ["Node-B", "Node-C"] {
+                    if let Err(e) = wait_node_identity(&mut ws, name, &[], None, true, 60, true).await
+                    {
+                        return fail("T49", format!("{e}"));
+                    }
+                }
+                let b_id = match node_runtime_id(&mut ws, "Node-B").await {
+                    Ok(v) => v,
+                    Err(e) => return fail("T49", format!("node_runtime_id B failed: {e}")),
+                };
+                let c_id = match node_runtime_id(&mut ws, "Node-C").await {
+                    Ok(v) => v,
+                    Err(e) => return fail("T49", format!("node_runtime_id C failed: {e}")),
+                };
+                // ---- ① 建普通单：无 required_profession / 无指派 / 叶子 / Backlog
+                // （claimable_check 五条件全开）----
+                let created = match ws_api_request(
+                    &mut ws,
+                    "board",
+                    "issue.create",
+                    json!({
+                        "title": "认领制测试单（T49）",
+                        "description": "认领取件制全链验证：组员自主 browse+claim 接单后执行交付。",
+                    }),
+                    15,
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => return fail("T49", format!("issue.create failed: {e}")),
+                };
+                let issue_id = created
+                    .pointer("/issue/id")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                let number = created
+                    .pointer("/issue/number")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if issue_id == 0 || number.is_empty() {
+                    return fail("T49", format!("issue.create 响应异常: {created}"));
+                }
+                // ---- ② 找 #team 频道（认领播报落点）----
+                let channels = match ws_api_request(&mut ws, "board", "channel.list", json!({}), 10)
+                    .await
+                {
+                    Ok(v) => v,
+                    Err(e) => return fail("T49", format!("channel.list failed: {e}")),
+                };
+                let team_id = channels
+                    .pointer("/channels")
+                    .and_then(|v| v.as_array())
+                    .and_then(|arr| {
+                        arr.iter()
+                            .find(|c| c.get("name").and_then(|n| n.as_str()) == Some("#team"))
+                            .and_then(|c| c.get("id").and_then(|i| i.as_i64()))
+                    });
+                let Some(team_id) = team_id else {
+                    return fail("T49", format!("#team 频道缺席: {channels}"));
+                };
+                // ---- ③ 组长 @all 认领邀请：<BOARD_CLAIM> 标记随 wake 链
+                // （LocalDiscussionIngress → resolve_wake_targets → wake.post →
+                // build_discussion_prompt 原文嵌入）到达 worker LLM ----
+                let invite = format!(
+                    "@all 我有个工作已经建单 {number}，你们谁看合适自己去拿一下。<BOARD_CLAIM>{number}</BOARD_CLAIM>"
+                );
+                if let Err(e) = ws_api_request(
+                    &mut ws,
+                    "board",
+                    "channel.post",
+                    json!({ "channel_id": team_id, "content": invite }),
+                    15,
+                )
+                .await
+                {
+                    return fail("T49", format!("channel.post failed: {e}"));
+                }
+                // ---- ④ 等原子裁决落定：assignee ∈ {B, C}（双 worker 竞争恰好
+                // 一胜；败者收到 claim rejected）----
+                let claim_deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+                let assignee = loop {
+                    if tokio::time::Instant::now() >= claim_deadline {
+                        let st = issue_status_of(&mut ws, issue_id).await.unwrap_or_default();
+                        return fail(
+                            "T49",
+                            format!("90s 内单子 {number} 无人认领成功（status={st}，应 B/C 之一认领）"),
+                        );
+                    }
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    let got = match ws_api_request(
+                        &mut ws,
+                        "board",
+                        "issue.get",
+                        json!({ "id": issue_id }),
+                        10,
+                    )
+                    .await
+                    {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    if let Some(a) = got.pointer("/issue/assignee_id").and_then(|v| v.as_str())
+                        && !a.is_empty()
+                    {
+                        break a.to_string();
+                    }
+                };
+                if assignee != b_id && assignee != c_id {
+                    return fail(
+                        "T49",
+                        format!("认领者应是 B/C 之一（{b_id} | {c_id}），实际 {assignee}"),
+                    );
+                }
+                let loser_name = if assignee == b_id { "Node-C" } else { "Node-B" };
+                // ---- ⑤ 胜者出队执行 + auto_accept 收口 done ----
+                if let Err(e) = wait_issue_done(&mut ws, issue_id, &number, 300).await {
+                    return fail("T49", format!("{e}"));
+                }
+                // ---- ⑥ #team 线程可见性四锚点（播报/系统评论双落 + 一胜一败
+                // 回帖；败者回帖可能略晚于胜者，60s 窗口轮询）----
+                let want_broadcast = format!("已被 {assignee} 认领");
+                let want_announce = format!("🙋 {number} 已被");
+                let vis_deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+                let joined = loop {
+                    let msgs = match ws_api_request(
+                        &mut ws,
+                        "board",
+                        "channel.messages",
+                        json!({ "channel_id": team_id, "limit": 200 }),
+                        10,
+                    )
+                    .await
+                    {
+                        Ok(v) => v,
+                        Err(e) => return fail("T49", format!("channel.messages failed: {e}")),
+                    };
+                    let joined: String = msgs
+                        .pointer("/messages")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        })
+                        .unwrap_or_default();
+                    let have_all = joined.contains(&want_broadcast)
+                        && joined.contains("CLAIM_WIN")
+                        && joined.contains("CLAIM_LOSE")
+                        && joined.matches(&want_announce).count() == 1;
+                    if have_all || tokio::time::Instant::now() >= vis_deadline {
+                        break joined;
+                    }
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                };
+                if !joined.contains(&want_broadcast) {
+                    return fail("T49", format!("#team 缺认领播报「{want_broadcast}」；现场：\n{joined}"));
+                }
+                let announce_count = joined.matches(&want_announce).count();
+                if announce_count != 1 {
+                    return fail(
+                        "T49",
+                        format!("#team 认领播报应恰好 1 条（败者被拒无播报），实际 {announce_count}；现场：\n{joined}"),
+                    );
+                }
+                if !joined.contains("CLAIM_WIN") || !joined.contains("CLAIM_LOSE") {
+                    return fail(
+                        "T49",
+                        format!("#team 缺一胜一败回帖锚点（CLAIM_WIN/CLAIM_LOSE）；现场：\n{joined}"),
+                    );
+                }
+                // ---- ⑦ issue 系统评论双落（决策/活动可追溯面）----
+                let comments = u_comments_text(&mut ws, issue_id).await;
+                if !comments.contains(&want_broadcast) {
+                    return fail(
+                        "T49",
+                        format!("issue {number} 评论缺系统认领记录「{want_broadcast}」；现场：{comments}"),
+                    );
+                }
+                pass(
+                    "T49",
+                    format!(
+                        "认领全链通过：{number} 由 {assignee} 认领（{loser_name} 诚实被拒）→ 出队交付 → done；#team 播报×1 + 系统评论双落 + CLAIM_WIN/CLAIM_LOSE 双锚点"
+                    ),
+                )
+            },
+        )
+        .await,
+    );
+
     gw_d.kill().await;
     gw_c.kill().await;
     gw_b.kill().await;

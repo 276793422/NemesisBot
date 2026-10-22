@@ -1781,6 +1781,30 @@ pub(crate) fn build_comment_list_envelope(
     .to_json()
 }
 
+/// 找在线 coordinator（≠本节点）。master 地址每次现查——节点表鲜活，
+/// 重选主 / 离线切换不需要重启调用方。board_discuss 与 board_claim 两
+/// 工具同源（单一真相源）。
+#[cfg(all(feature = "board", feature = "cluster"))]
+pub(crate) fn find_online_coordinator(
+    cluster: &nemesis_cluster::cluster::Cluster,
+    self_node_id: &str,
+) -> Result<String, String> {
+    cluster
+        .list_nodes()
+        .into_iter()
+        .find(|n| {
+            n.base.role == nemesis_types::cluster::NodeRole::Coordinator
+                && n.base.id != self_node_id
+                && n.is_online()
+        })
+        .map(|n| n.base.id)
+        .ok_or_else(|| {
+            "no online coordinator known (cluster not started, or master offline \
+             — the board.sync backfill channel will retry later)"
+                .to_string()
+        })
+}
+
 /// 回帖 master（单次尝试：RPC 失败 / 被额度拒 → 日志诚实可见，不重试——
 /// 下行幂等游标已推进，重试只会造重复发言）。
 async fn post_discussion_reply(
