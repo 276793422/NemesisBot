@@ -825,6 +825,39 @@ fn test_s8_evaluate_outcomes_all_traces_outside_window_returns_empty() {
 }
 
 #[test]
+fn test_s8_evaluate_outcomes_window_respects_timestamp_offset() {
+    // 2026-10-22 验证轮二回归锁：窗口过滤必须全量偏移感知解析 start_time。
+    // 旧实现 `[..19]` 截断后硬贴 "Z"——把 -05:00 挂钟读成 UTC，时刻被平移
+    // -5h。本例真值 = now-166h（7 天=168h 窗内），旧解析得 now-171h（窗
+    // 外）→ 旧代码空 outcomes；新代码解析回真值 → 产出 1 条 outcome。
+    // 时间锚全部取自绝对时刻，断言与机器本地时区无关。
+    let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
+    let mut artifact = make_artifact("offs1", 10, ArtifactStatus::Active);
+    artifact.tool_signature = vec!["file_read".to_string()];
+    registry.add(artifact);
+
+    let monitor = DeploymentMonitor::new(ForgeConfig::default(), registry);
+
+    let real = chrono::Utc::now() - chrono::Duration::hours(166);
+    let offset = chrono::FixedOffset::west_opt(5 * 3600).unwrap();
+    let trace = ConversationTrace {
+        start_time: real.with_timezone(&offset).to_rfc3339(),
+        total_rounds: 3,
+        duration_ms: 100,
+        tool_steps: vec![ToolStep {
+            tool_name: "file_read".to_string(),
+        }],
+        signals: vec![],
+    };
+
+    let outcomes = monitor.evaluate_outcomes(&[trace]);
+    // 窗内轨迹进入评估（样本数 < min_outcome_samples=5 → insufficient_data，
+    // 但 outcome 本身必须产出——空 outcomes 意味着窗口过滤把轨迹丢了）。
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(outcomes[0].verdict, "insufficient_data");
+}
+
+#[test]
 fn test_s8_evaluate_outcomes_skips_non_active_artifact() {
     let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
     // Observing (not Active) → skipped by the status filter.
@@ -977,4 +1010,158 @@ fn test_s8_try_deprecate_expired_cooldown_degrades() {
             .with_timezone(&chrono::Local);
     let delta = chrono::Local::now() - refreshed;
     assert!(delta.num_minutes() < 1, "delta: {:?}", delta);
+}
+
+// ---- build_conversation_traces（审计 P0-F2，2026-10-22）----
+
+fn make_trace_event(
+    event_type: &str,
+    session_key: &str,
+    timestamp: &str,
+    data: serde_json::Value,
+) -> crate::trace::TraceEvent {
+    crate::trace::TraceEvent {
+        id: uuid::Uuid::new_v4().to_string(),
+        event_type: event_type.into(),
+        session_key: session_key.into(),
+        timestamp: timestamp.into(),
+        data,
+    }
+}
+
+#[test]
+fn test_build_conversation_traces_empty_input() {
+    let traces = build_conversation_traces(&[]);
+    assert!(traces.is_empty());
+}
+
+#[test]
+fn test_build_conversation_traces_single_session_multi_tools() {
+    let events = vec![
+        make_trace_event(
+            "tool_call",
+            "web:1",
+            "2026-10-22T10:00:00+08:00",
+            serde_json::json!({"tool": "file_read", "ok": true}),
+        ),
+        make_trace_event(
+            "tool_call",
+            "web:1",
+            "2026-10-22T10:00:01+08:00",
+            serde_json::json!({"tool": "exec", "ok": true}),
+        ),
+        make_trace_event(
+            "tool_call",
+            "web:1",
+            "2026-10-22T10:00:02+08:00",
+            serde_json::json!({"tool": "write_file", "ok": true}),
+        ),
+    ];
+    let traces = build_conversation_traces(&events);
+    assert_eq!(traces.len(), 1);
+    assert_eq!(traces[0].start_time, "2026-10-22T10:00:00+08:00");
+    assert_eq!(traces[0].total_rounds, 3);
+    assert_eq!(traces[0].duration_ms, 2000);
+    let tools: Vec<&str> = traces[0]
+        .tool_steps
+        .iter()
+        .map(|s| s.tool_name.as_str())
+        .collect();
+    assert_eq!(tools, vec!["file_read", "exec", "write_file"]);
+    assert!(
+        traces[0].signals.is_empty(),
+        "all-ok session has no signals"
+    );
+}
+
+#[test]
+fn test_build_conversation_traces_failure_emits_tool_error_signal() {
+    let events = vec![
+        make_trace_event(
+            "tool_call",
+            "rpc:2",
+            "2026-10-22T10:00:00+08:00",
+            serde_json::json!({"tool": "exec", "ok": true}),
+        ),
+        make_trace_event(
+            "tool_call",
+            "rpc:2",
+            "2026-10-22T10:00:01+08:00",
+            serde_json::json!({"tool": "write_file", "ok": false}),
+        ),
+    ];
+    let traces = build_conversation_traces(&events);
+    assert_eq!(traces.len(), 1);
+    assert_eq!(traces[0].signals, vec!["tool_error".to_string()]);
+    // The failed step is still a tool step.
+    assert_eq!(traces[0].tool_steps.len(), 2);
+}
+
+#[test]
+fn test_build_conversation_traces_groups_by_session_in_order() {
+    let events = vec![
+        make_trace_event(
+            "tool_call",
+            "web:a",
+            "2026-10-22T10:00:00+08:00",
+            serde_json::json!({"tool": "t1", "ok": true}),
+        ),
+        make_trace_event(
+            "tool_call",
+            "web:b",
+            "2026-10-22T10:00:01+08:00",
+            serde_json::json!({"tool": "t2", "ok": true}),
+        ),
+        make_trace_event(
+            "tool_call",
+            "web:a",
+            "2026-10-22T10:00:02+08:00",
+            serde_json::json!({"tool": "t3", "ok": true}),
+        ),
+    ];
+    let traces = build_conversation_traces(&events);
+    assert_eq!(traces.len(), 2);
+    // Insertion order preserved: session "a" (first seen) before "b".
+    assert_eq!(traces[0].start_time, "2026-10-22T10:00:00+08:00");
+    assert_eq!(traces[0].total_rounds, 2);
+    assert_eq!(traces[1].start_time, "2026-10-22T10:00:01+08:00");
+    assert_eq!(traces[1].total_rounds, 1);
+    assert_eq!(traces[1].tool_steps.len(), 1);
+}
+
+#[test]
+fn test_build_conversation_traces_unparseable_timestamps_zero_duration() {
+    let events = vec![
+        make_trace_event(
+            "tool_call",
+            "s",
+            "not-a-ts",
+            serde_json::json!({"tool": "t", "ok": true}),
+        ),
+        make_trace_event(
+            "tool_call",
+            "s",
+            "also-not-a-ts",
+            serde_json::json!({"tool": "t", "ok": true}),
+        ),
+    ];
+    let traces = build_conversation_traces(&events);
+    assert_eq!(traces.len(), 1);
+    assert_eq!(traces[0].duration_ms, 0);
+}
+
+#[test]
+fn test_build_conversation_traces_missing_tool_field_skips_step() {
+    // tool_call event without a "tool" field: no tool step, but the event
+    // still counts as a round.
+    let events = vec![make_trace_event(
+        "tool_call",
+        "s",
+        "2026-10-22T10:00:00+08:00",
+        serde_json::json!({"ok": true}),
+    )];
+    let traces = build_conversation_traces(&events);
+    assert_eq!(traces.len(), 1);
+    assert_eq!(traces[0].total_rounds, 1);
+    assert!(traces[0].tool_steps.is_empty());
 }

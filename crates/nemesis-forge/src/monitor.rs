@@ -177,10 +177,12 @@ impl DeploymentMonitor {
         let recent_traces: Vec<&ConversationTrace> = traces
             .iter()
             .filter(|t| {
-                // Parse start_time and check if within window
-                t.start_time
-                    .get(..19)
-                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(&format!("{}Z", s)).ok())
+                // 全量偏移感知解析（2026-10-22 验证轮二）：旧实现 `[..19]`
+                // 截断后硬贴 "Z"，把本地墙上时间当 UTC——轨迹时刻被平移
+                // ±时区差（+08:00 用户窗口老边界放宽 8h，负时区收窄）。该
+                // 过滤器在轨迹臂接线前零生产调用方，接线后成为真实喂入者，
+                // 改为完整 RFC3339 解析；不可解析仍放行（沿旧语义）。
+                chrono::DateTime::parse_from_rfc3339(&t.start_time)
                     .map(|dt| dt.with_timezone(&chrono::Local) >= since)
                     .unwrap_or(true)
             })
@@ -506,6 +508,76 @@ impl DeploymentMonitor {
 }
 
 // ----- Helper functions (matching Go's helper functions) -----
+
+/// Build conversation traces from raw trace events (audit P0-F2, 2026-10-22).
+///
+/// Groups events by `session_key` (insertion order preserved), maps
+/// `tool_call` events to tool steps, and emits a `tool_error` signal for
+/// failed tool calls (`data.ok == false`). `total_rounds` is approximated by
+/// the event count per session; `duration_ms` is last-minus-first event
+/// timestamp (unparseable timestamps degrade to 0). Pure function — no I/O.
+pub fn build_conversation_traces(events: &[crate::trace::TraceEvent]) -> Vec<ConversationTrace> {
+    use std::collections::HashMap;
+
+    let mut order: Vec<String> = Vec::new();
+    let mut grouped: HashMap<String, ConversationTrace> = HashMap::new();
+
+    for event in events {
+        let trace = grouped.entry(event.session_key.clone()).or_insert_with(|| {
+            order.push(event.session_key.clone());
+            ConversationTrace {
+                start_time: event.timestamp.clone(),
+                total_rounds: 0,
+                duration_ms: 0,
+                tool_steps: Vec::new(),
+                signals: Vec::new(),
+            }
+        });
+        trace.total_rounds += 1;
+        if event.event_type == "tool_call" {
+            let tool = event
+                .data
+                .get("tool")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let ok = event
+                .data
+                .get("ok")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            if !ok {
+                trace.signals.push("tool_error".into());
+            }
+            if !tool.is_empty() {
+                trace.tool_steps.push(ToolStep { tool_name: tool });
+            }
+        }
+    }
+
+    // duration_ms = last - first timestamp per session (0 when unparseable).
+    for (key, trace) in grouped.iter_mut() {
+        let stamps: Vec<&crate::trace::TraceEvent> =
+            events.iter().filter(|e| &e.session_key == key).collect();
+        if stamps.len() >= 2 {
+            let parse = |s: &str| chrono::DateTime::parse_from_rfc3339(s).ok();
+            if let (Some(first), Some(last)) = (
+                parse(&stamps[0].timestamp),
+                parse(&stamps[stamps.len() - 1].timestamp),
+            ) {
+                let delta = (last - first).num_milliseconds();
+                if delta > 0 {
+                    trace.duration_ms = delta;
+                }
+            }
+        }
+    }
+
+    order
+        .into_iter()
+        .filter_map(|key| grouped.remove(&key))
+        .collect()
+}
 
 /// Check if a trace's tool steps contain the given signature as a subsequence.
 ///

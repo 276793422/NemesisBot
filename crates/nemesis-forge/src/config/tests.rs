@@ -5,11 +5,7 @@ fn test_default_config() {
     let config = ForgeConfig::default();
     assert!(!config.enabled);
     assert!(!config.learning.enabled);
-    assert!(config.collection.enabled);
-    assert_eq!(config.collection.buffer_size, 256);
-    assert_eq!(config.collection.flush_interval_secs, 30);
-    assert_eq!(config.collection.max_experiences_per_day, 500);
-    assert_eq!(config.collection.interval_secs, 300);
+    assert_eq!(config.collection.max_experiences, 10_000);
     assert_eq!(config.storage.max_experience_age_days, 90);
     assert_eq!(config.storage.max_report_age_days, 30);
     assert_eq!(config.storage.cleanup_interval_secs, 86400);
@@ -44,8 +40,8 @@ fn test_config_serialization_roundtrip() {
     let json = serde_json::to_string(&config).unwrap();
     let back: ForgeConfig = serde_json::from_str(&json).unwrap();
     assert_eq!(
-        back.collection.interval_secs,
-        config.collection.interval_secs
+        back.collection.max_experiences,
+        config.collection.max_experiences
     );
     assert_eq!(
         back.learning.degrade_threshold,
@@ -67,8 +63,8 @@ fn test_load_save_config() {
 
     let loaded = load_forge_config(&path);
     assert_eq!(
-        loaded.collection.interval_secs,
-        config.collection.interval_secs
+        loaded.collection.max_experiences,
+        config.collection.max_experiences
     );
     assert_eq!(
         loaded.learning.degradation_cooldown_days,
@@ -93,8 +89,7 @@ fn test_load_partial_json_uses_defaults() {
     let config = load_forge_config(&path);
     assert!(config.enabled);
     // Other fields should have defaults
-    assert!(config.collection.enabled);
-    assert_eq!(config.collection.buffer_size, 256);
+    assert_eq!(config.collection.max_experiences, 10_000);
 }
 
 #[test]
@@ -143,11 +138,8 @@ fn test_learning_config_defaults() {
 #[test]
 fn test_collection_config_defaults() {
     let config = ForgeConfig::default();
-    assert!(config.collection.enabled);
-    assert_eq!(config.collection.buffer_size, 256);
-    assert_eq!(config.collection.flush_interval_secs, 30);
-    assert_eq!(config.collection.max_experiences_per_day, 500);
-    assert_eq!(config.collection.interval_secs, 300);
+    assert_eq!(config.collection.max_experiences, 10_000);
+    assert_eq!(config.collection.sanitize_fields.len(), 6);
 }
 
 #[test]
@@ -200,7 +192,7 @@ fn test_config_json_roundtrip_custom_values() {
     config.enabled = true;
     config.learning.enabled = true;
     config.learning.high_conf_threshold = 0.95;
-    config.collection.max_experiences_per_day = 1000;
+    config.collection.max_experiences = 2000;
     config.artifacts.auto_skill = true;
     config.artifacts.max_skills = 200;
 
@@ -209,7 +201,7 @@ fn test_config_json_roundtrip_custom_values() {
     assert!(back.enabled);
     assert!(back.learning.enabled);
     assert!((back.learning.high_conf_threshold - 0.95).abs() < 0.001);
-    assert_eq!(back.collection.max_experiences_per_day, 1000);
+    assert_eq!(back.collection.max_experiences, 2000);
     assert!(back.artifacts.auto_skill);
     assert_eq!(back.artifacts.max_skills, 200);
 }
@@ -271,12 +263,24 @@ fn test_reflection_config_serialization() {
 // --- S8 coverage additions (quality-hardening goal 冲刺 S8) ---
 
 #[test]
-fn test_s8_collection_config_missing_enabled_defaults_true() {
-    // `enabled` uses serde(default = "default_true") — a JSON object without
-    // the field must resolve to true (not the plain `default` false).
+fn test_s8_collection_config_missing_fields_use_defaults() {
+    // Every CollectionConfig field uses serde(default = ...) — a JSON object
+    // without any of them must resolve to the documented defaults.
     let cfg: CollectionConfig = serde_json::from_str("{}").unwrap();
-    assert!(cfg.enabled);
-    assert_eq!(cfg.buffer_size, 256);
+    assert_eq!(cfg.max_experiences, 10_000);
+    assert_eq!(cfg.sanitize_fields.len(), 6);
+}
+
+#[test]
+fn test_s8_collection_config_unknown_keys_are_ignored() {
+    // Retired keys (enabled/buffer_size/flush_interval_secs/
+    // max_experiences_per_day/interval_secs, removed 2026-10-22) in existing
+    // on-disk configs must not break parsing — serde ignores unknown fields.
+    let cfg: CollectionConfig = serde_json::from_str(
+        r#"{"enabled": false, "buffer_size": 1, "flush_interval_secs": 99, "max_experiences_per_day": 7, "interval_secs": 300}"#,
+    )
+    .unwrap();
+    assert_eq!(cfg.max_experiences, 10_000);
 }
 
 #[test]
@@ -287,7 +291,7 @@ fn test_s8_save_forge_config_creates_missing_parent_dirs() {
     assert!(path.exists());
     // Round-trip to prove the written file is parseable.
     let loaded = load_forge_config(&path);
-    assert_eq!(loaded.collection.buffer_size, 256);
+    assert_eq!(loaded.collection.max_experiences, 10_000);
 }
 
 #[test]

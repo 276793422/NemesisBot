@@ -912,12 +912,12 @@ impl GatewayCtx {
             forge.init_pipeline(forge_pipeline.clone());
             info!("[Gateway] Forge pipeline initialized");
 
-            // Initialize trace collection (TraceCollector + TraceStore).
+            // Initialize trace collection (TraceStore; JSONL on disk is the
+            // single truth source the learning engine's trace arm reads).
             {
-                let trace_collector = nemesis_forge::trace::TraceCollector::new();
                 let trace_store =
                     nemesis_forge::trace_store::TraceStore::new(forge_dir.join("traces"));
-                forge.init_trace(trace_collector, trace_store);
+                forge.init_trace(trace_store);
                 info!("[Gateway] Forge trace collection initialized");
             }
 
