@@ -76,6 +76,16 @@
             >
               {{ downloading === p.id ? '下载中...' : '下载' }}
             </button>
+            <button
+              v-if="clusterEnabled"
+              class="btn btn-sm"
+              :class="{ 'btn-primary': p.installed }"
+              :title="p.installed ? '将此人格写入集群人格文件并立即生效' : '请先下载'"
+              :disabled="!p.installed || hiring === p.id"
+              @click.stop="hirePersona(p)"
+            >
+              {{ hiring === p.id ? '聘用中...' : '集群聘用' }}
+            </button>
           </div>
         </div>
       </div>
@@ -155,6 +165,16 @@
             >
               {{ downloading === previewPersona.id ? '下载中...' : '下载' }}
             </button>
+            <button
+              v-if="clusterEnabled"
+              class="btn"
+              :class="{ 'btn-primary': previewPersona.installed }"
+              :title="previewPersona.installed ? '将此人格写入集群人格文件并立即生效' : '请先下载'"
+              :disabled="!previewPersona.installed || hiring === previewPersona.id"
+              @click="hirePersona(previewPersona)"
+            >
+              {{ hiring === previewPersona.id ? '聘用中...' : '集群聘用' }}
+            </button>
           </div>
         </div>
       </div>
@@ -190,6 +210,10 @@ const divisions = ref(['开发', '营销', '安全', '创意', '数据', '产品
 const items = ref<ShopPersona[]>([])
 const loading = ref(false)
 const downloading = ref('')
+const hiring = ref('')
+// 集群聘用依赖 cluster WSAPI（裁剪构建可关；shop.browse/download 不依赖恒在）
+// ——与 router 的 VITE_FEATURE_CLUSTER 视图门控同款（web/.env 由 customize 生成）。
+const clusterEnabled = import.meta.env.VITE_FEATURE_CLUSTER !== 'false'
 const previewPersona = ref<ShopPersona | null>(null)
 const previewLoading = ref(false)
 const selectedConverted = ref(0)
@@ -249,6 +273,21 @@ async function downloadPersona(id: string) {
     toast.error('下载失败: ' + (e.message || e))
   } finally {
     downloading.value = ''
+  }
+}
+
+async function hirePersona(p: ShopPersona) {
+  hiring.value = p.id
+  try {
+    const data = await request('persona', 'shop.hire', { id: p.id })
+    toast.success(`「${p.name}」已聘入集群` + (data?.note || ''))
+    if (previewPersona.value && previewPersona.value.id === p.id) {
+      closePreview()
+    }
+  } catch (e: any) {
+    toast.error('集群聘用失败: ' + (e.message || e))
+  } finally {
+    hiring.value = ''
   }
 }
 
@@ -379,6 +418,7 @@ onMounted(async () => {
 .shop-card .card-footer {
   display: flex;
   justify-content: flex-end;
+  gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
   border-top: 1px solid var(--border);
 }

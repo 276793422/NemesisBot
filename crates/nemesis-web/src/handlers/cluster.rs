@@ -499,7 +499,8 @@ fn peers_path(workspace: &str) -> PathBuf {
 ///（abort 语义）。调用方结构上不可能忘锁（2026-10-13 闭包事务收口）。
 /// 纪律：闭包内不得再调任何 update_* / [`nemesis_config::config_write_lock`]
 ///（Mutex 非重入，嵌套即死锁）。
-fn update_peers_node<T>(
+/// pub(crate)：persona.rs 的 shop.hire（集群聘用）复用同一事务入口。
+pub(crate) fn update_peers_node<T>(
     workspace: &str,
     f: impl FnOnce(&mut nemesis_cluster::cluster_config::NodeInfo) -> Result<T, String>,
 ) -> Result<T, String> {
@@ -2258,7 +2259,12 @@ impl ClusterHandler {
         Ok(nemesis_types::capability::resolve_active_tier(&cfg, &alias))
     }
 
-    fn write_cluster_file(workspace: &str, file: &str, content: &str) -> Result<(), String> {
+    /// pub(crate)：persona.rs 的 shop.hire（集群聘用）复用同一原子写入入口。
+    pub(crate) fn write_cluster_file(
+        workspace: &str,
+        file: &str,
+        content: &str,
+    ) -> Result<(), String> {
         let path = crate::handlers::resolve_path(workspace, &format!("cluster/{}", file))?;
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
