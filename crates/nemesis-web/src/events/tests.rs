@@ -469,3 +469,39 @@ fn l2_replay_events_are_ordered_and_match_live() {
         "replay window must match live order/seqs"
     );
 }
+
+/// BUG-HUNT R8：并发 publish 的 seq 分配必须在缓冲锁内——锁外分配可致
+/// 环形缓冲乱序（T1 得 5、T2 得 6、T2 先入队 → [.., 6, 5]），违反字段
+/// 注释声明的「seq 升序」不变量。8 线程 barrier 对齐后并发发布，回放必须
+/// 严格升序且恰好 1..=N 完整覆盖（总条数 < REPLAY_BUFFER_CAP 免滑窗）。
+#[test]
+fn l2_concurrent_publish_keeps_replay_buffer_in_seq_order() {
+    use std::sync::Barrier;
+    let hub = std::sync::Arc::new(EventHub::new());
+    let threads = 8;
+    let per_thread = 100; // 8×100=800 < REPLAY_BUFFER_CAP，全窗口无滑出
+    let barrier = std::sync::Arc::new(Barrier::new(threads));
+    let mut handles = Vec::new();
+    for t in 0..threads {
+        let hub = hub.clone();
+        let barrier = barrier.clone();
+        handles.push(std::thread::spawn(move || {
+            barrier.wait();
+            for i in 0..per_thread {
+                hub.publish("conc", serde_json::json!({ "t": t, "i": i }));
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+    assert_eq!(hub.latest_seq(), (threads * per_thread) as u64);
+    let (events, gap) = hub.replay_after(0);
+    assert!(!gap);
+    assert_eq!(events.len(), threads * per_thread, "全部事件必须在窗口内");
+    // 严格升序 + 完整覆盖 = seq 序与缓冲序一致（锁外分配的经典违例形态
+    // 是相邻交换对 [.., k+1, k, ..]）。
+    for (idx, e) in events.iter().enumerate() {
+        assert_eq!(e.seq, idx as u64 + 1, "replay 必须严格升序且无洞");
+    }
+}
