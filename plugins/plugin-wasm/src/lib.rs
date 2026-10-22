@@ -14,7 +14,7 @@
 //! | `nvwa_component_new` | 编译（world 识别 + 导出索引解析） |
 //! | `nvwa_component_drop` | 回收编译产物 |
 //! | `nvwa_store_new` | fresh store（fuel/内存/表/墙钟/env 透传） |
-//! | `nvwa_call_export` | 单次导出调用（消耗 store；get-metadata/execute/observe） |
+//! | `nvwa_call_export` | 单次导出调用（消耗 store；get-metadata/execute/observe + policy 四导出） |
 //! | `nvwa_store_drop` | 释放 store（call_export 已消耗时为容忍的 no-op） |
 //! | `nvwa_last_error` / `nvwa_free_string` | 线程局部错误槽 + 字符串所有权归还 |
 
@@ -94,7 +94,11 @@ pub unsafe extern "C" fn nvwa_engine_init(
         unsafe { abi::engine_init_impl(cache_root, cb) }.map_err(|e| (status::INTERNAL, e))
     }) {
         Ok(()) => ENGINE_HANDLE,
-        Err(_) => 0,
+        // 失败原因落错误槽（否则宿主 last_error 读到空串，不可诊断）。
+        Err((_, msg)) => {
+            set_err(&msg);
+            0
+        }
     }
 }
 
@@ -124,7 +128,14 @@ pub unsafe extern "C" fn nvwa_component_new(engine: u64, bytes: *const u8, len: 
         h.components.insert(handle, std::sync::Arc::new(comp));
         Ok(handle)
     });
-    r.unwrap_or(0)
+    // 失败原因落错误槽（同 nvwa_engine_init；call_export 已自带）。
+    match r {
+        Ok(handle) => handle,
+        Err((_, msg)) => {
+            set_err(&msg);
+            0
+        }
+    }
 }
 
 /// # Safety
@@ -187,13 +198,23 @@ pub unsafe extern "C" fn nvwa_store_new(
         h.stores.insert(handle, StoreEntry { store, comp });
         Ok(handle)
     });
-    r.unwrap_or(0)
+    // 失败原因落错误槽（同 nvwa_engine_init；call_export 已自带）。
+    match r {
+        Ok(handle) => handle,
+        Err((_, msg)) => {
+            set_err(&msg);
+            0
+        }
+    }
 }
 
-/// 单次导出调用。`name` ∈ `get-metadata` / `execute` / `observe`；
-/// `args_json`：execute = 完整 tool-input JSON，observe = 事件 JSON，
-/// get-metadata 忽略。status=ok 时 `*out_json` = 结果 JSON（宿主用
-/// `nvwa_free_string` 释放）；其余 status 时错误详情在 `nvwa_last_error`。
+/// 单次导出调用。`name` ∈ `get-metadata` / `execute` / `observe` /
+/// `get-policy-metadata` / `compact-check` / `judge-final` / `validate-args`
+/// （按组件 world 归属校验，误配诚实 BAD_ARGS）；`args_json`：execute =
+/// 完整 tool-input JSON，observe / 三策略点 = 事件/投影 JSON，
+/// get-metadata / get-policy-metadata 忽略。status=ok 时 `*out_json` =
+/// 结果 JSON（宿主用 `nvwa_free_string` 释放）；其余 status 时错误详情在
+/// `nvwa_last_error`。
 ///
 /// store 语义：一次性（fresh-store-per-call）——调用即消耗，无论成败；
 /// 之后的 `nvwa_store_drop` 为容忍的 no-op。
