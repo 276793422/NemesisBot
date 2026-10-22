@@ -71,21 +71,31 @@ impl EventHub {
     /// L2：发布即盖章单调 seq 并进环形缓冲（无订阅者也落——补拉依赖缓冲
     /// 而非 broadcast 通道；broadcast 256 槽只服务在线订阅者）。
     pub fn publish(&self, event_type: &str, data: serde_json::Value) {
-        let seq = self.next_seq.fetch_add(1, Ordering::SeqCst) + 1;
-        let event = Arc::new(Event {
-            seq,
-            event_type: event_type.to_string(),
-            data,
-        });
+        // BUG-HUNT R8：seq 分配/入队/在线投递必须同一把缓冲写锁串行。原实现
+        // fetch_add 在锁外——并发发布可交叠成「T1 得 seq=5、T2 得 seq=6、
+        // T2 先抢锁入队」，环形缓冲变 [.., 6, 5]，违反下方字段注释声明的
+        // 「seq 升序」不变量：replay_after 按乱序回放、front() 的 gap 判定
+        // 失真、SSE id 倒退（浏览器 Last-Event-ID 回退 → 重连重复投递）。
+        // chat_event_log::insert_event 同形态早已表锁内分配，此处对齐。
+        // send 置于锁内保证 live 流序 == seq 序：broadcast send 非阻塞且不
+        // 回调用 EventHub（无重入/锁序风险）；publish 只承载低频事件
+        // （status/board/memory/scanner…），锁竞争可忽略，高频易逝流走
+        // publish_ephemeral 不过此锁。
         {
             let mut buf = self.replay_buf.write();
+            let seq = self.next_seq.fetch_add(1, Ordering::SeqCst) + 1;
+            let event = Arc::new(Event {
+                seq,
+                event_type: event_type.to_string(),
+                data,
+            });
             buf.push_back(Arc::clone(&event));
             while buf.len() > REPLAY_BUFFER_CAP {
                 buf.pop_front();
             }
+            // broadcast::send ignores errors when no receivers
+            let _ = self.sender.send((*event).clone());
         }
-        // broadcast::send ignores errors when no receivers
-        let _ = self.sender.send((*event).clone());
     }
 
     /// L10（2026-10-13 内部专项 T3）：易逝事件——只投递在线订阅者（SSE
