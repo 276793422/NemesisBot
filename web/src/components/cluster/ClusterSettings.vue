@@ -3,6 +3,9 @@ import { ref, computed, onMounted } from 'vue'
 import { useWSAPI } from '../../composables/useWSAPI'
 import { useToast } from '../../composables/useToast'
 import { uuidv4 } from '../../lib/uuid'
+// 跨网漫游卡（2026-10-23 自独立 TAB 收编：roaming 开关 + 名册同步观测；
+// 连接参数在【通道 → QUIC 中继】页——QUIC 是独立层，不寄居集群）
+import ClusterRoaming from './ClusterRoaming.vue'
 
 const { request } = useWSAPI()
 const toast = useToast()
@@ -281,9 +284,12 @@ onMounted(async () => {
         </div>
       </div>
 
-      <!-- Right: Network Diagnostics -->
-      <div class="card">
-        <div class="card-header"><h3>网络诊断</h3></div>
+      <!-- Right: 跨网漫游（顶） + 网络诊断（下移） -->
+      <div class="settings-right-col">
+        <ClusterRoaming />
+
+        <div class="card">
+          <div class="card-header"><h3>网络诊断</h3></div>
         <div class="card-body">
           <div class="form-group">
             <label class="form-label">发现端口 (UDP)</label>
@@ -334,6 +340,7 @@ onMounted(async () => {
             </template>
           </div>
         </div>
+      </div>
       </div>
     </div>
 
@@ -454,6 +461,18 @@ onMounted(async () => {
   .settings-two-col {
     grid-template-columns: 1fr;
   }
+}
+
+/* 右列：跨网漫游卡（顶） + 网络诊断卡（下）纵向堆叠 */
+.settings-right-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+/* 网络诊断卡不再吃 grid 行高——flex 列内自然高度 */
+.settings-right-col > .card {
+  margin: 0;
 }
 
 .auth-token-dirty {

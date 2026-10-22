@@ -154,6 +154,9 @@ onUnmounted(() => {
         </span>
         <span class="badge" :class="node.role === 'manager' ? 'badge-info' : 'badge-neutral'">{{ node.role }}</span>
         <span v-if="node.build" class="node-build" :title="'构建号 ' + node.build">{{ node.build }}</span>
+        <span v-if="node.roamingPath === 'direct'" class="badge badge-success" style="font-size:var(--text-xs)" title="打洞直连：流量在设备间直传，不经中继">打洞直连</span>
+        <span v-else-if="node.roamingPath === 'relay'" class="badge badge-warning" style="font-size:var(--text-xs)" title="经中继转发：打洞尚未成功（或失败），流量暂经 QUIC 中继转发">经中继转发</span>
+        <span v-else-if="node.roamingPath === 'unknown'" class="badge badge-neutral" style="font-size:var(--text-xs)" title="路径协商中：连接已建立，打洞状态待收敛">路径协商中</span>
         <span class="node-caps">{{ (node.capabilities || []).slice(0, 3).join(', ') }}</span>
         <span class="node-seen">{{ node.lastSeen || '--' }}</span>
         <span class="node-expand">{{ expandedId === node.id ? '▲' : '▼' }}</span>

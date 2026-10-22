@@ -39,6 +39,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         forge: None,
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
+        quic_relay: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -283,6 +284,7 @@ async fn cluster_task_detail_perspective_with_real_local_node() {
     ));
     ctx.state = Arc::new(crate::api_handlers::AppState {
         cluster: Some(cluster.clone()),
+        quic_relay: None,
         ..(*ctx.state).clone()
     });
     let local_id = cluster.node_id().to_string();

@@ -218,6 +218,17 @@ pub fn onboard_default(home: &Path, local: bool, mode: OnboardMode) -> anyhow::R
         println!("  Cluster config created");
     }
 
+    // --- Step 4.5: QUIC relay config (embedded) ---
+    // config.quic.json：QUIC 自身全部配置（服务端 relay 段 + 客户端 client
+    // 段；2026-10-23 与集群解耦——QUIC 的配置不丢在集群里）。无 token 注入
+    // 面（relay.token 用户显式配置），write_if_absent 直接落模板。
+    write_if_absent(
+        &common::quic_config_path(home),
+        crate::CONFIG_QUIC_DEFAULT,
+        mode,
+        "QUIC relay config",
+    );
+
     // --- Step 5: Cluster peers.toml (本节点身份) ---
     // peers.toml 只含 [node] 段（本节点身份）+ 可选的 [peers.X] 静态条目。
     // 不再含 [cluster] 段（cluster 元数据已下线）。

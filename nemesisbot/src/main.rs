@@ -259,6 +259,7 @@ pub(crate) const CONFIG_DEFAULT: &str = include_str!("../config/config.default.j
 pub(crate) const CONFIG_MCP_DEFAULT: &str = include_str!("../config/config.mcp.default.json");
 pub(crate) const CONFIG_CLUSTER_DEFAULT: &str =
     include_str!("../config/config.cluster.default.json");
+pub(crate) const CONFIG_QUIC_DEFAULT: &str = include_str!("../config/config.quic.default.json");
 pub(crate) const CONFIG_SKILLS_DEFAULT: &str = include_str!("../config/config.skills.default.json");
 pub(crate) const CONFIG_SCANNER_DEFAULT: &str =
     include_str!("../config/config.scanner.default.json");
@@ -330,7 +331,7 @@ enum Commands {
         /// QUIC 纯中继模式（统一入口；与 `quic relay` 分类管理入口同源同一
         /// 实现）：只跑自建 iroh 中继，不起本地 agent/board/集群/discovery。
         /// 读 config.cluster.json roaming.relay 段；token 空 = 拒绝启动
-        /// （fail-closed）。需要 roaming-relay feature 编译。
+        /// （fail-closed）。需要 quic-relay feature 编译。
         #[arg(long)]
         quic_relay: bool,
         /// A1 运行时硬化批：显式跳过 runtime-manifest 完整性校验（运维
@@ -525,8 +526,9 @@ enum Commands {
         #[command(subcommand)]
         action: commands::sandbox::SandboxCommand,
     },
-    /// QUIC relay server (standalone process / status)
-    #[cfg(feature = "roaming-relay")]
+    /// QUIC management (keygen / status / relay server; 2026-10-23 与集群解耦——
+    /// keygen/status 随 cluster-roaming，relay 子命令随 quic-relay)
+    #[cfg(feature = "cluster-roaming")]
     Quic {
         #[command(subcommand)]
         action: commands::quic::QuicAction,
@@ -1049,7 +1051,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             common::ensure_default_logger();
             commands::sandbox::run(action, cli.local).await?;
         }
-        #[cfg(feature = "roaming-relay")]
+        #[cfg(feature = "cluster-roaming")]
         Commands::Quic { action } => {
             common::ensure_default_logger();
             let home = common::resolve_home(cli.local);

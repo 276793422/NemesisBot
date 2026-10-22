@@ -56,6 +56,7 @@ fn make_ctx(dir: &tempfile::TempDir, with_config: bool) -> RequestContext {
         forge: None,
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
+        quic_relay: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -101,12 +102,13 @@ fn cmds_of<'a>(reg: &'a [(String, Vec<&'static str>)], module: &str) -> &'a [&'s
         .unwrap_or(&[])
 }
 
-/// 无 feature 闸的 26 个模块（register_all 的无条件注册段；L6++ G4 起
+/// 无 feature 闸的 27 个模块（register_all 的无条件注册段；L6++ G4 起
 /// 含 projects，P30（WS14）起含 canvas，2026-09-28 起含 roles——角色目录
-/// WSAPI，2026-10-13 起含 selfupdate——L9 版本自切换通道。board 2026-10-17
-/// 起随 `board` feature 门控——nemesis-board 转 optional，SQLite 随它进出；
-/// connectors/paperbroker 2026-10-17 起随 `connectors` feature 门控——
-/// nemesis-security（被 connectors 无条件依赖）随之进出）。
+/// WSAPI，2026-10-13 起含 selfupdate——L9 版本自切换通道，2026-10-23 起
+/// 含 quic——QUIC 中继 WSAPI（与集群解耦，零 Cluster 类型依赖）。board
+/// 2026-10-17 起随 `board` feature 门控——nemesis-board 转 optional，SQLite
+/// 随它进出；connectors/paperbroker 2026-10-17 起随 `connectors` feature
+/// 门控——nemesis-security（被 connectors 无条件依赖）随之进出）。
 const UNCONDITIONAL_MODULES: &[&str] = &[
     "system",
     "estop",
@@ -134,6 +136,7 @@ const UNCONDITIONAL_MODULES: &[&str] = &[
     "canvas",
     "roles",
     "selfupdate",
+    "quic",
 ];
 
 // ---------------------------------------------------------------------------
@@ -223,10 +226,12 @@ fn registry_anchor_commands_present() {
     }
     if cfg!(feature = "cluster") {
         assert!(cmds_of(&reg, "cluster").contains(&"node.update_identity"));
-        // QUIC 中继管理面（2026-10-21）：命令面恒注册（roaming 先例），锚点在这里红。
-        assert!(cmds_of(&reg, "cluster").contains(&"relay.status"));
-        assert!(cmds_of(&reg, "cluster").contains(&"relay.config"));
     }
+    // QUIC 中继独立 WSAPI（2026-10-23 与集群解耦）：quic.relay.* +
+    // quic.registry.members 恒注册（零 Cluster 类型依赖），锚点在这里红。
+    assert!(cmds_of(&reg, "quic").contains(&"relay.status"));
+    assert!(cmds_of(&reg, "quic").contains(&"relay.config"));
+    assert!(cmds_of(&reg, "quic").contains(&"registry.members"));
     // M5-1（2026-10-10 机制加固）：评审重触发入口（模块内无条件注册，钩子
     // 未安装时诚实报错）。模块本体 2026-10-17 起随 board feature 门控。
     if cfg!(feature = "board") {
@@ -339,21 +344,19 @@ fn docs_generation_writes_wsapi_commands_md() {
         .find(|m| cmds_of(&reg, m).is_empty());
     let lsp_missing = !cmds_of(&reg, "coding").contains(&"lsp_status");
     let wasm_missing = !cmds_of(&reg, "plugins").contains(&"wasm.list");
-    // relay.* 挂在 cluster 模块行内（feature=roaming-relay 门控），模块在位
-    // 检查罩不住——按命令在位检查（否则无 roaming-relay 重生成会静默冲掉
-    // 这两条，2026-10-17 lsp 二犯同族）。
-    let relay_missing = !cmds_of(&reg, "cluster").contains(&"relay.status");
+    // 注：quic.relay.*（2026-10-23 与集群解耦）挂在 quic 模块下且**恒注册**
+    //（无 feature 闸，handler 内诚实降级）——命令表面不随 feature 进出，
+    // 文档无被冲风险，不设前置闸（与上面 feature 门控行的区别是刻意的）。
     if let Some(missing) = missing_module
         .copied()
         .or(lsp_missing.then_some("coding(lsp_status)"))
         .or(wasm_missing.then_some("plugins(wasm.*)"))
-        .or(relay_missing.then_some("cluster(relay.*)"))
     {
         eprintln!(
             "SKIP docs_generation: 编译缺 feature 门控模块 `{missing}`——重写会把 \
              docs/INFO/wsapi-commands.md 冲成残表。带全 feature 重跑：cargo test -p \
              nemesis-web --features \"board,connectors,cluster,workflow,memory,security,scanner,\
-             forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp,vm,roaming-relay\" docs_generation"
+             forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp,vm,quic-relay\" docs_generation"
         );
         return;
     }
@@ -366,7 +369,7 @@ docs_generation_writes_wsapi_commands_md` 从 `ModuleHandler::commands()` \
 静态清单生成——**勿手改**。改任何 handler 的命令臂后**带全 feature** 重跑 \
 `cargo test -p nemesis-web --features \"board,connectors,cluster,workflow,memory,\
 security,scanner,forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp,vm,\
-roaming-relay\" docs_generation` 刷新本文件\
+quic-relay\" docs_generation` 刷新本文件\
 （feature 不全时本测试诚实 SKIP 不写盘，防止把完整文档冲成残表）。\n\n",
     );
     md.push_str(&format!("共 {} 个模块 / {} 条命令。\n\n", reg.len(), total));

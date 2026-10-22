@@ -277,13 +277,13 @@ desc = "iroh 跨网 P2P 叠加层（`cluster roaming` 子命令 + 自证端点/�
 category = "subsystems"
 default = true
 
-# NOTE: `roaming-relay`（QUIC 中继服务器）默认开（2026-10-22，与 cluster-roaming
+# NOTE: `quic-relay`（QUIC 中继服务器）默认开（2026-10-22，与 cluster-roaming
 # 同批翻转）——自建中继回落是「客户端指向中继服务器 + 令牌配对」流程的另一半，
 # 不编译则 dashboard 中继页恒为降级面板。iroh-relay server 面拉入 rcgen/ACME
 # 等编译增量，由全量构建承担。依赖 cluster-roaming（自动带入）。
 # 独立命令 `quic relay` 与随 gateway 启动同 feature 门控。
 [[feature]]
-id = "roaming-relay"
+id = "quic-relay"
 label = "QUIC 中继服务器（内网穿透）"
 desc = "自建 iroh 中继回落服务器（`quic relay` 独立命令 + 随 gateway 启动）。默认开：客户端配对流程的另一半；IoT 最小形态可裁"
 category = "subsystems"

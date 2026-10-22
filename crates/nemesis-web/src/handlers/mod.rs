@@ -32,6 +32,11 @@ pub mod chat;
 pub mod cluster;
 #[cfg(feature = "cluster")]
 pub mod cluster_persona_gen;
+// QUIC 中继 WSAPI（2026-10-23 与集群解耦）：quic.relay.*（服务端启停/配置/
+// 状态）+ quic.registry.members（服务端全量名册）。无 feature 闸——命令面
+// 恒注册（L1 清单稳定，voice-capture/roaming 先例），feature 关 = handler
+// 内诚实降级；**零 Cluster 类型依赖**（集群未编译时本模块照常工作）。
+pub mod quic;
 // B12（2026-10-18）：工具事件触发 workflow 自动化（注册表 CRUD + 进程
 // 缓存 + 事件泵）。随 workflow feature 进出——引擎不在则规则永不触发，
 // 诚实裁剪。
@@ -307,6 +312,8 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     {
         router.register(Arc::new(cluster::ClusterHandler::new()));
     }
+    // QUIC 中继独立 WSAPI（2026-10-23 解耦；零 Cluster 类型依赖，恒注册）。
+    router.register(Arc::new(quic::QuicHandler::new()));
     router.register(Arc::new(logs::LogsHandler));
     router.register(Arc::new(agent::AgentHandler));
     #[cfg(feature = "voice")]

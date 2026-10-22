@@ -1230,6 +1230,15 @@ pub(crate) async fn init_post_agent(
         }
     }
 
+    // QUIC 中继管理器注入 web 面（quic-relay）：WSAPI cluster.relay.status/
+    // toggle 经同一 Arc 消费运行态与实时开关（2026-10-23 解耦——与集群
+    // 注入互不依赖，集群未装配中继面照常可用）。
+    #[cfg(feature = "quic-relay")]
+    if let Some(ref mgr) = ctx.quic_relay_manager {
+        web_server.set_quic_relay(mgr.clone());
+        info!("[Gateway] QuicRelayManager injected into web server");
+    }
+
     // Inject AgentLoop ref into web server for runtime model switching
     web_server.set_agent_loop(agent_loop_ref.clone());
     info!("[Gateway] AgentLoop ref injected into web server for model switching");

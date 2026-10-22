@@ -12,7 +12,6 @@ const tabs = [
   { id: 'nodes', label: '节点' },
   { id: 'tasks', label: '任务' },
   { id: 'topology', label: '拓扑' },
-  { id: 'roaming', label: '跨网' },
   { id: 'identity', label: '身份' },
   { id: 'persona', label: '人格' },
   { id: 'settings', label: '配置' },
