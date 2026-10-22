@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 use crate::error::PluginError;
 use crate::host_impl::SecretResolver;
 use crate::manifest::{PluginKind, PluginManifest, valid_slug};
-use crate::registry::{PluginManager, PolicyMetaSnapshot, ToolMetaSnapshot};
+use crate::registry::{PluginManager, PolicyMetaSnapshot, RegisteredPlugin, ToolMetaSnapshot};
 use crate::trust::{PluginTrustState, VerificationOutcome, trust_state_for, verify_manifest};
 
 /// wasm 载荷字节上限（64MiB；wasm 二进制正常在几百 KB~几 MB）。
@@ -103,6 +103,42 @@ pub trait InstallApprover: Send + Sync {
         &'a self,
         review: &'a InstallReview,
     ) -> futures::future::BoxFuture<'a, Result<bool, String>>;
+
+    /// 是否具备「人批卡豁免无签名」能力（2026-10-23 开关补漏斗收口）：
+    /// true = gateway 审批卡面（无签名载荷转卡裁决，批准 = 人显式接受，
+    /// 与 `install --allow-unsigned` 同一留档语义）；false（缺省）= CLI
+    /// `--yes`/headless——无签名豁免维持显式旗标纪律，开关路径从紧拒绝。
+    fn can_approve_unsigned(&self) -> bool {
+        false
+    }
+}
+
+/// 装配漏斗 ①-⑧ 的产出（已批准、已编译、已落位；未注册——装载由
+/// 开关驱动，见 [`PluginInstaller::set_enabled`]）。
+pub struct ApprovedInstall {
+    /// 已校验 manifest。
+    pub manifest: PluginManifest,
+    /// 信任四态。
+    pub trust_state: PluginTrustState,
+    /// 已编译组件句柄（壳侧）。
+    pub component: u64,
+    /// 工具面快照（kind=tool 时非空）。
+    pub tool_meta: Option<ToolMetaSnapshot>,
+    /// 策略面快照（kind=policy 时非空）。
+    pub policy_meta: Option<PolicyMetaSnapshot>,
+}
+
+/// `install` 的返回（第⑨步结果：装载与否由开关决定，调用方按此展示）。
+#[derive(Clone)]
+pub struct InstallOutcome {
+    /// 插件 slug。
+    pub slug: String,
+    /// manifest 版本。
+    pub version: String,
+    /// 信任四态。
+    pub trust: PluginTrustState,
+    /// 非空 = 本次已装载注册（升级且开关原本开着）。
+    pub registered: Option<Arc<crate::registry::RegisteredPlugin>>,
 }
 
 /// 始终同意（headless / 测试 / 显式 `--yes`）。
@@ -148,17 +184,95 @@ impl PluginInstaller {
         }
     }
 
-    /// 装配漏斗（CLI / WSAPI install 共用）。
+    /// 装配漏斗（CLI / WSAPI install 共用）。新纪律（2026-10-22）：安装≠
+    /// 加载——装配成功只落载荷与 lockfile，开关记录写入
+    /// `config.plugin.wasm.json`（新装一律 `enabled=false` 不注册；升级保留
+    /// 用户既有开关位，开着 → 摘旧重注册=热升级）。装载走显式开关
+    ///（Dashboard 插件页 / `plugin enable`）。
     pub async fn install(
         &self,
         source_dir: &Path,
         allow_unsigned: bool,
-    ) -> Result<Arc<crate::registry::RegisteredPlugin>, PluginError> {
+    ) -> Result<InstallOutcome, PluginError> {
         let _funnel = FUNNEL_LOCK.lock().await;
         let source_dir = source_dir
             .canonicalize()
             .map_err(|e| PluginError::Manifest(format!("source dir: {e}")))?;
+        let approved = self.install_core(&source_dir, allow_unsigned).await?;
+        self.record_switch_and_load(approved).await
+    }
 
+    /// 第⑨步：开关记录 + 按需装载（`install` 收尾段；enable 补跑漏斗的
+    /// 手工拷入路径不走这里——set_enabled 自己写开关，见 [`Self::set_enabled`]）。
+    async fn record_switch_and_load(
+        &self,
+        approved: ApprovedInstall,
+    ) -> Result<InstallOutcome, PluginError> {
+        let config_dir = self.manager.workspace_root().join("config");
+        // 读路径触发旧 per-slug 实例文件惰性迁移（enabled 强制 false）。
+        let prior = nemesis_config::plugin_wasm::load_switches(&config_dir)
+            .remove(approved.manifest.slug.as_str());
+        let slug = approved.manifest.slug.clone();
+        let version = approved.manifest.version.clone();
+        let registered = match prior {
+            None => {
+                // 新装：记录缺省关；不注册。
+                nemesis_config::plugin_wasm::set_enabled(&config_dir, &slug, false)
+                    .map_err(PluginError::Io)?;
+                tracing::info!(
+                    slug = %slug,
+                    "[WasmPlugin] 安装完成（默认不加载——Dashboard 插件页开加载开关或 plugin enable）"
+                );
+                None
+            }
+            Some(sw) if sw.enabled => {
+                // 升级且用户此前开着：摘旧注册（防 policy 接管点自撞）再重装
+                // = 热升级；register 失败 = 插件从注册表摘下但开关仍开（诚实
+                // 可见态，重启装载再试）。
+                self.manager.unregister(&slug);
+                let reg = self
+                    .manager
+                    .register(
+                        approved.manifest,
+                        approved.trust_state,
+                        approved.component,
+                        approved.tool_meta,
+                        approved.policy_meta,
+                    )
+                    .map_err(|e| {
+                        tracing::warn!(
+                            slug = %slug,
+                            error = %e,
+                            "[WasmPlugin] 热升级重注册失败（开关保持开启，重启后重试）"
+                        );
+                        e
+                    })?;
+                Some(reg)
+            }
+            Some(_) => {
+                // 升级但用户此前关着：只换盘上载荷，不装载。
+                tracing::info!(
+                    slug = %slug,
+                    "[WasmPlugin] 升级完成（开关关闭，载荷已更新；打开开关后生效）"
+                );
+                None
+            }
+        };
+        Ok(InstallOutcome {
+            slug,
+            version,
+            trust: approved.trust_state,
+            registered,
+        })
+    }
+
+    /// 装配漏斗 ①-⑧（无第⑨步；`install` 与 `set_enabled` 的手工拷入路径
+    /// 共用）。
+    async fn install_core(
+        &self,
+        source_dir: &Path,
+        allow_unsigned: bool,
+    ) -> Result<ApprovedInstall, PluginError> {
         // ① manifest 结构校验 + ② 验签四态
         let raw = std::fs::read_to_string(source_dir.join("plugin.toml"))
             .map_err(|e| PluginError::Manifest(format!("read plugin.toml: {e}")))?;
@@ -206,19 +320,22 @@ impl PluginInstaller {
             limits_ignored: self.manager.limits().tighten_with(&manifest.limits).1,
             source_dir: source_dir.display().to_string(),
         };
-        let approved = self
-            .approver
-            .approve(&review)
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!(slug = %manifest.slug, error = %e, "[WasmPlugin] 审批通道故障，按拒绝处理");
-                false
-            });
-        if !approved {
-            return Err(PluginError::Rejected(format!(
-                "install rejected: {}",
-                manifest.slug
-            )));
+        let approval = self.approver.approve(&review).await;
+        match approval {
+            Ok(true) => {}
+            outcome @ (Ok(false) | Err(_)) => {
+                // Err(e) = 拒绝附言 / 审批通道故障——透传进错误面（toast/CLI
+                // 都要能看到「为什么」），不做哑拒绝。日志留档同源。
+                let note = match &outcome {
+                    Err(e) if !e.trim().is_empty() => format!("（{e}）"),
+                    _ => String::new(),
+                };
+                tracing::warn!(slug = %manifest.slug, note = %note, "[WasmPlugin] 安装被审批面否决");
+                return Err(PluginError::Rejected(format!(
+                    "install rejected: {}{note}",
+                    manifest.slug
+                )));
+            }
         }
 
         // ⑥ 编译 + 元数据对账
@@ -254,19 +371,16 @@ impl PluginInstaller {
         std::fs::write(target.join(&manifest.wasm), &wasm_bytes)
             .map_err(|e| PluginError::Io(format!("write wasm: {e}")))?;
 
-        // ⑨ 注册（替换旧注册；启用位沿用实例配置文件）
-        let reg = self.manager.register(
-            manifest.clone(),
+        if let Some(note) = scan_note {
+            tracing::info!(slug = %manifest.slug, "[WasmPlugin] {note}");
+        }
+        Ok(ApprovedInstall {
+            manifest,
             trust_state,
             component,
             tool_meta,
             policy_meta,
-        )?;
-        self.manager.apply_enabled_from_file(&manifest.slug, &reg);
-        if let Some(note) = scan_note {
-            tracing::info!(slug = %manifest.slug, "[WasmPlugin] {note}");
-        }
-        Ok(reg)
+        })
     }
 
     /// 病毒扫描（第④步）；Ok(Some(注记))=跳过，Err=拦截。
@@ -418,40 +532,162 @@ impl PluginInstaller {
             .map_err(|e| PluginError::Io(format!("write lockfile: {e}")))
     }
 
-    /// 启动装载（无审批/无扫描——安装期已裁决；信任变化只影响装载）。
+    /// 启动装载（无审批/无扫描——安装期已裁决）。新纪律（2026-10-22）：
+    /// 发现 ≠ 加载——扫全部含 `plugin.toml` 的子目录得发现清单，仅
+    /// `config.plugin.wasm.json` 记录 `enabled=true` 者装载。返回加载数。
     pub async fn load_all(&self) -> usize {
         let dir = self.manager.plugins_dir();
         let mut slugs: Vec<String> = match std::fs::read_dir(dir) {
             Ok(entries) => entries
                 .filter_map(|e| e.ok())
-                .filter(|e| e.path().is_dir())
+                .filter(|e| e.path().join("plugin.toml").is_file())
                 .map(|e| e.file_name().to_string_lossy().to_string())
                 .collect(),
             Err(_) => Vec::new(),
         };
         slugs.sort(); // 确定性装载顺序（read_dir 顺序是平台实现细节）
+        let config_dir = self.manager.workspace_root().join("config");
+        // 读路径触发旧载荷/旧实例文件惰性迁移（enabled 强制 false）。
+        let switches = nemesis_config::plugin_wasm::load_switches(&config_dir);
+        let enabled: Vec<String> = slugs
+            .iter()
+            .filter(|s| switches.get(s.as_str()).is_some_and(|sw| sw.enabled))
+            .cloned()
+            .collect();
         let mut loaded = 0usize;
-        for slug in slugs {
-            let pdir = dir.join(&slug);
-            match self.load_one(&pdir).await {
-                Ok(reg) => {
-                    self.manager.apply_enabled_from_file(&slug, &reg);
-                    loaded += 1;
-                }
+        for slug in &enabled {
+            let pdir = dir.join(slug);
+            match self
+                .load_one(&pdir, self.recorded_allow_unsigned(slug))
+                .await
+            {
+                Ok(_) => loaded += 1,
                 Err(e) => tracing::warn!(
                     slug = %slug,
                     error = %e,
-                    "[WasmPlugin] 启动装载失败（跳过；插件文件保留在盘上）"
+                    "[WasmPlugin] 启动装载失败（开关保持开启——修复后重启重试；插件文件保留在盘上）"
                 ),
             }
         }
+        tracing::info!(
+            dir = %dir.display(),
+            "[WasmPlugin] 启动装载：发现 {} 个插件，加载 {} 个（其余开关关闭）",
+            slugs.len(),
+            loaded
+        );
         loaded
     }
 
-    /// 单插件启动装载（manifest + 验签 + sha + 编译 + 对账 + 注册）。
+    /// 加载开关（Dashboard / CLI enable|disable 共用；漏斗锁内）。
+    ///
+    /// on：已注册 = 幂等（只写开关）；载荷目录在场 → 写开关 true 后
+    /// `load_one` 装配——lockfile 有记录走原路；无记录（手工拷入）先补跑
+    /// 完整漏斗（含审批卡）。无签名载荷的容忍判定见
+    /// [`Self::hand_copied_unsigned_tolerable`]：审批面具备人批卡能力
+    /// （gateway 卡面）且仅「无签名」→ 放宽进漏斗由卡裁决；签名失效/
+    /// 吊销或无卡面（CLI）维持从紧。开关先落盘：load 失败开关保持
+    /// true = 诚实可见态（重启装载再试）。
+    ///
+    /// off：摘除注册 → 写开关 false（顺序防「盘上关了、内存还活着」）。
+    pub async fn set_enabled(
+        &self,
+        slug: &str,
+        on: bool,
+    ) -> Result<Option<Arc<RegisteredPlugin>>, PluginError> {
+        if !crate::manifest::valid_slug(slug) {
+            return Err(PluginError::Manifest(format!("invalid slug: {slug}")));
+        }
+        let _funnel = FUNNEL_LOCK.lock().await;
+        let config_dir = self.manager.workspace_root().join("config");
+        if !on {
+            self.manager.unregister(slug);
+            nemesis_config::plugin_wasm::set_enabled(&config_dir, slug, false)
+                .map_err(PluginError::Io)?;
+            tracing::info!(slug, "[WasmPlugin] 已停用（注册摘除 + 开关关闭）");
+            return Ok(None);
+        }
+        // on：已注册 = 幂等。
+        if let Some(reg) = self.manager.get(slug) {
+            nemesis_config::plugin_wasm::set_enabled(&config_dir, slug, true)
+                .map_err(PluginError::Io)?;
+            return Ok(Some(reg));
+        }
+        let pdir = self.manager.plugin_dir(slug);
+        if !pdir.join("plugin.toml").is_file() {
+            return Err(PluginError::Manifest(format!(
+                "plugin '{slug}' not found in {}（安装或手工拷入后重试）",
+                self.manager.plugins_dir().display()
+            )));
+        }
+        // 开关先落盘（load 失败保持 true = 重启重试的诚实态）。
+        nemesis_config::plugin_wasm::set_enabled(&config_dir, slug, true)
+            .map_err(PluginError::Io)?;
+        // lockfile 无记录 = 手工拷入：补跑完整装配漏斗（含审批卡）。
+        let lockfile_has = self
+            .read_lockfile()
+            .map(|l| l.plugins.contains_key(slug))
+            .unwrap_or(false);
+        if !lockfile_has {
+            tracing::info!(
+                slug,
+                "[WasmPlugin] 载荷无安装记录（手工拷入），补跑装配漏斗"
+            );
+            // 无签名载荷的容忍判定（2026-10-23 开关补漏斗收口）：审批面具备
+            // 人批卡能力（gateway 审批卡）且载荷仅「无签名」→ 放宽进漏斗——
+            // 卡面展示 trust=review-required，批准 = 人显式接受（与
+            // `install --allow-unsigned` 同一留档语义，lockfile 记
+            // review-required，重启装载沿用同一容差）。签名**失效/吊销**
+            // 或无卡面（CLI --yes / headless）维持从紧——卡面救不了失效签名，
+            // CLI 走 `install --allow-unsigned` 显式旗标或 `plugin sign`。
+            let tolerate_unsigned = self.hand_copied_unsigned_tolerable(&pdir);
+            self.install_core(&pdir, tolerate_unsigned).await?;
+        }
+        let reg = self
+            .load_one(&pdir, self.recorded_allow_unsigned(slug))
+            .await?;
+        tracing::info!(slug, "[WasmPlugin] 已启用并装载");
+        Ok(Some(reg))
+    }
+
+    /// 读 lockfile（损坏/缺席 = None——enable 补漏斗判定从紧）。
+    fn read_lockfile(&self) -> Option<PluginLockfile> {
+        let path = self.manager.plugins_dir().join("lockfile.json");
+        let s = std::fs::read_to_string(path).ok()?;
+        serde_json::from_str(&s).ok()
+    }
+
+    /// 手工拷入载荷的「无签名容忍」判定：审批面具备人批卡能力
+    ///（[`InstallApprover::can_approve_unsigned`]）且验签结论为**仅无签名**
+    ///（失效/吊销不在此列——卡面救不了失效签名，`allow_unsigned` 纪律
+    /// 见 crate 文档）→ true。
+    fn hand_copied_unsigned_tolerable(&self, pdir: &Path) -> bool {
+        if !self.approver.can_approve_unsigned() {
+            return false;
+        }
+        let Ok(raw) = std::fs::read_to_string(pdir.join("plugin.toml")) else {
+            return false;
+        };
+        matches!(
+            crate::trust::verify_manifest(&raw, &self.verifier),
+            Ok((_, outcome)) if !outcome.signed
+        )
+    }
+
+    /// 装载容差 = 安装期裁决（lockfile 记录的四态）：装的时候豁免了「无签名」
+    ///（ReviewRequired），enable/重启装载沿用同一容差——开关是用户显式意志，
+    /// 不该被「装载期比安装期更严」卡死。签名**无效/被吊销**照旧拒绝
+    ///（容差只豁免「缺席」，不豁免「失效」）。lockfile 无记录 = 从紧 false。
+    fn recorded_allow_unsigned(&self, slug: &str) -> bool {
+        self.read_lockfile()
+            .and_then(|l| l.plugins.get(slug).map(|e| e.trust.clone()))
+            .is_some_and(|t| t == PluginTrustState::ReviewRequired.as_str())
+    }
+
+    /// 单插件装载（manifest + 验签 + sha + 编译 + 对账 + 注册）。
     async fn load_one(
         &self,
         pdir: &Path,
+        allow_unsigned: bool,
     ) -> Result<Arc<crate::registry::RegisteredPlugin>, PluginError> {
         let raw = std::fs::read_to_string(pdir.join("plugin.toml"))
             .map_err(|e| PluginError::Manifest(format!("read plugin.toml: {e}")))?;
@@ -469,10 +705,8 @@ impl PluginInstaller {
                 manifest.slug
             )));
         }
-        // 启动装载：allow_unsigned=false 之下已装插件若曾以 ReviewRequired
-        // 装入会读不出。语义抉择：装载期按安装期四态执行（无签名插件在
-        // strict 环境重启后不复活——与 skills 行为一致，诚实且从紧）。
-        let trust_state = trust_state_for(&outcome, false)?;
+        // 装载容差由调用方按 lockfile 安装期记录给（recorded_allow_unsigned）。
+        let trust_state = trust_state_for(&outcome, allow_unsigned)?;
         ensure_plain_filename(&manifest.wasm)?;
         let wasm_path = pdir.join(&manifest.wasm);
         let wasm_bytes = std::fs::read(&wasm_path)
@@ -628,6 +862,20 @@ fn uninstall_inner(manager: &PluginManager, slug: &str) -> Result<bool, PluginEr
     let removed = resilient_remove_dir_all(&manager.plugin_dir(slug)).map_err(|e| {
         PluginError::Io(format!("删除载荷目录失败（lockfile 已摘除，可重试）: {e}"))
     })?;
+    // 开关记录一并摘除（幂等；失败不阻塞卸载——孤儿条目无害，重装覆盖）。
+    let config_dir = manager.workspace_root().join("config");
+    let _ = nemesis_config::plugin_wasm::remove(&config_dir, slug);
+    // 卸载留痕（2026-10-23 日志面收口）：此前未装载插件的卸载完全静默
+    //（已装载的至少有工具面 hot-unregistered 日志）——三清点一行说清。
+    if existed || removed || in_lockfile {
+        tracing::info!(
+            slug,
+            registered = existed,
+            payload_removed = removed,
+            lockfile_removed = in_lockfile,
+            "[WasmPlugin] 已卸载（载荷/lockfile/开关记录清点）"
+        );
+    }
     Ok(existed || removed || in_lockfile)
 }
 

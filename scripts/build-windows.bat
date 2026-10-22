@@ -18,6 +18,8 @@ REM       plugin_ui.dll
 REM       eval_monitor_dll.dll
 REM       plugin_wasm.dll
 REM       plugin_vm.dll  (image script + guest ELFs embedded; released on first use)
+REM     plugins_wasm\        (WASM plugin payload dir, preset empty + README;
+REM                           installed plugins land here, NOT loaded by default)
 REM     tests\
 REM       cluster-test.exe
 REM       integration-test.exe
@@ -432,6 +434,23 @@ if exist "target\target_windows\plugins\plugin-wasm\release\plugin_wasm.dll" (
     set /a COPIED+=1
 ) else (
     if "%SKIP_PLUGIN%"=="0" echo   WARN plugin_wasm.dll not found in build output ^(wasm plugin subsystem unavailable^)
+)
+
+REM Preset empty plugins_wasm\ dir next to exe (2026-10-22 discipline: WASM
+REM plugin payloads live in a user-visible sibling of plugins\; install puts
+REM them here; plugins are NOT loaded by default — load switch lives in
+REM workspace config/config.plugin.wasm.json, toggled from Dashboard/CLI).
+if not exist "bin\bin_windows\plugins_wasm" mkdir "bin\bin_windows\plugins_wasm"
+if not exist "bin\bin_windows\plugins_wasm\README.txt" (
+    echo WASM plugin payload directory.> "bin\bin_windows\plugins_wasm\README.txt"
+    echo.>> "bin\bin_windows\plugins_wasm\README.txt"
+    echo Install via the Dashboard Plugins page, or:  nemesisbot plugin install ^<dir^>>> "bin\bin_windows\plugins_wasm\README.txt"
+    echo Hand-copying a payload dir here also works; run "nemesisbot plugin list" to see it.>> "bin\bin_windows\plugins_wasm\README.txt"
+    echo.>> "bin\bin_windows\plugins_wasm\README.txt"
+    echo Plugins here are NOT loaded by default. Open the load switch on the>> "bin\bin_windows\plugins_wasm\README.txt"
+    echo Dashboard Plugins page or run:  nemesisbot plugin enable ^<slug^>>> "bin\bin_windows\plugins_wasm\README.txt"
+    echo Switch state is persisted in workspace config/config.plugin.wasm.json.>> "bin\bin_windows\plugins_wasm\README.txt"
+    set /a COPIED+=1
 )
 
 REM Copy eval-monitor DLL to bin\bin_windows\plugins\

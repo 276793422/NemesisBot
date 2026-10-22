@@ -15,6 +15,8 @@
 #   │   ├── plugin_ui.so
 #   │   ├── plugin_onnx.so
 #   │   └── libplugin_vm.so   (image script + guest ELFs embedded; released on first use)
+#   ├── plugins_wasm/          (WASM plugin payload dir, preset empty + README;
+#   │                           installed plugins land here, NOT loaded by default)
 #   └── tests/
 #       ├── cluster-test
 #       ├── integration-test
@@ -380,6 +382,24 @@ for so_path in "target/target_linux/plugins/plugin-wasm/release/libplugin_wasm.s
 done
 if [ "$WASM_DLL_FOUND" = false ] && [ "$SKIP_PLUGIN" = false ]; then
     echo "  WARN libplugin_wasm.so not found in build output (wasm 插件子系统将不可用)"
+fi
+
+# 预置空 plugins_wasm/ 目录（2026-10-22 纪律：WASM 插件载荷落用户可见的
+# plugins\ 平级目录；安装落此处；默认不加载——开关记录在 workspace
+# config/config.plugin.wasm.json，Dashboard 插件页 / CLI plugin enable 切换）。
+mkdir -p "$BIN_DIR/plugins_wasm"
+if [ ! -f "$BIN_DIR/plugins_wasm/README.txt" ]; then
+    cat > "$BIN_DIR/plugins_wasm/README.txt" <<'EOF'
+WASM plugin payload directory.
+
+Install via the Dashboard Plugins page, or:  nemesisbot plugin install <dir>
+Hand-copying a payload dir here also works; run "nemesisbot plugin list" to see it.
+
+Plugins here are NOT loaded by default. Open the load switch on the
+Dashboard Plugins page or run:  nemesisbot plugin enable <slug>
+Switch state is persisted in workspace config/config.plugin.wasm.json.
+EOF
+    COPIED+=("plugins_wasm/README.txt")
 fi
 
 # plugin-vm 显示中继（plugins/ 子目录查找——loader 语义，exe 同目录仅旧部署回落）。

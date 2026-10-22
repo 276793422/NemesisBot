@@ -1175,6 +1175,23 @@ pub fn build_agent_loop(
         }
     }
 
+    // 8d. 工具接管层（2026-10-23）：接管声明应用（内置名 → wasm 执行体，
+    // wrapper 双态保降级）。在 8c 之后：先有插件工具供给面，再换内置执行
+    // 体。总闸 config `plugins.wasm.takeover`（缺省 true）；热同步由
+    // gateway ToolSync hook 翻侧表开关（注册表对象恒定，零 prompt cache
+    // 抖动）。主 agent 专属——项目 loop 不经此段（同 8c 边界）。
+    #[cfg(feature = "plugins-wasm")]
+    if let Some(ref pm) = shared.plugin_manager {
+        let gate = crate::plugin_bridge::read_runtime_config(&shared.home).takeover;
+        let n = crate::plugin_bridge::apply_takeovers(&agent_loop, pm, gate);
+        if n > 0 {
+            info!(
+                "[AgentFactory] {} builtin tool(s) taken over by wasm plugins",
+                n
+            );
+        }
+    }
+
     // 9. Continuation manager (disk-persisted — new instance).
     {
         let cont_mgr = Arc::new(nemesis_agent::ContinuationManager::with_disk_store(
