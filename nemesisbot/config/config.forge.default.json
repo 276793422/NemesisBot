@@ -31,7 +31,7 @@
   "trace": {
     "enabled": true,
     "max_trace_age_days": 30,
-    "min_traces_for_analysis": 5
+    "min_traces_for_analysis": 0
   },
   "learning": {
     "enabled": false,

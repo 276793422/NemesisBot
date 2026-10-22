@@ -858,6 +858,40 @@ fn test_s8_evaluate_outcomes_window_respects_timestamp_offset() {
 }
 
 #[test]
+fn test_s8_evaluate_outcomes_min_traces_guard() {
+    // 2026-10-23 验证轮四回归锁：`min_traces_for_analysis` 此前零消费者
+    // （死键）。接线语义 = 窗口内轨迹少于 N 条不做实效分析（样本太少，
+    // 结论即噪声），0 = 不设下限（护栏默认关）。双臂对照：min=5 时 2 条
+    // 窗内轨迹被闸掉；min=0 时同样轨迹照常产出 outcome——证明空结果
+    // 来自本护栏而非其他过滤。
+    let make = |min_traces: usize| {
+        let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
+        let mut artifact = make_artifact("guard1", 10, ArtifactStatus::Active);
+        artifact.tool_signature = vec!["file_read".to_string()];
+        registry.add(artifact);
+
+        let mut config = ForgeConfig::default();
+        config.trace.min_traces_for_analysis = min_traces;
+        DeploymentMonitor::new(config, registry)
+    };
+
+    let traces = vec![
+        make_trace(3, 100, &["file_read"], false),
+        make_trace(3, 100, &["file_read"], false),
+    ];
+
+    // min=5：2 条 < 5 → 护栏拦下，空 outcomes。
+    let guarded = make(5);
+    assert!(guarded.evaluate_outcomes(&traces).is_empty());
+
+    // min=0（默认）：不设下限 → 照常评估（verdict 打分另受
+    // min_outcome_samples 约束，但 outcome 本身必须产出）。
+    let open = make(0);
+    let outcomes = open.evaluate_outcomes(&traces);
+    assert_eq!(outcomes.len(), 1);
+}
+
+#[test]
 fn test_s8_evaluate_outcomes_skips_non_active_artifact() {
     let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
     // Observing (not Active) → skipped by the status filter.
