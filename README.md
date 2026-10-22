@@ -42,6 +42,8 @@
 - **业务分类** - design / development / testing / ops / deployment / analysis / general
 - **自定义标签** - 灵活的多维度分类体系
 - **加密 UDP 自动发现** - 局域网内自动发现其他节点（AES-256-GCM 加密广播）
+- **跨网组网（QUIC P2P）** - iroh UDP 打洞 + 自建中继回落，跨网段设备零端口转发互连（默认编译开启，见「跨网组网」）
+- **专业职能（professions）** - 节点声明职能（product / ui-design / architecture / dev / test-whitebox / test-blackbox）与能力档位，看板拆解按职能 + tier 硬条件派发到合适节点
 - **异步 RPC 通信** - 节点间非阻塞远程调用，支持多步骤工具链，令牌认证保护
 - **续行快照模式** - LLM 上下文在异步调用点保存，回调到达后自动续行
 - **运行时身份编辑** - 通过 Dashboard 实时修改节点名称、角色、分类、标签
@@ -156,7 +158,7 @@ bash scripts/customize.sh iot
 cargo build --profile iotsmall -p nemesisbot --no-default-features --features "channels-web,channels-rpc"
 ```
 
-可裁剪：`cluster` / `forge` / `memory` / `workflow` / `security`(含 scanner) / `voice` / `desktop` / `auth` / `migrate` / `devices` / `health` / `heartbeat` / `sandbox` / `usage`(前端使用统计页，带 echarts) 及各通道。**CLI 子命令随 feature 条件编译**（关 `cluster` 则无 `nemesisbot cluster` 子命令）。**Vue 前端也同步裁剪**——customize 按同一份 feature 选择生成 `web/.env`，router/侧栏门控，Vite 把关闭的页面 tree-shake 掉（不进二进制；minimal-iot 前端从 1.7MB 降到 ~0.6MB）。详见 `docs/REPORT/2026-07-01_feature-trimming-and-build-configurator.md` + `docs/REPORT/2026-07-12_frontend-feature-gating.md`。
+可裁剪：`cluster`（含跨网 P2P `cluster-roaming` / QUIC 中继 `roaming-relay`，默认开）/ `forge` / `memory` / `workflow` / `security`(含 scanner) / `voice` / `desktop` / `auth` / `migrate` / `devices` / `health` / `heartbeat` / `sandbox` / `vm`(QEMU 桌面级虚拟机) / `board`(看板) / `connectors`(行动代理连接器) / `terminal` / `skins` / `plugins-wasm`(WASM 组件插件) / `codemode`(code_run 脚本工具) / `selfupdate`(版本自更新) / `usage`(前端使用统计页，带 echarts)，另有体积细粒度八件套（价目表内嵌 / 启动验签 / 前端资源内嵌 / LSP / checkpoint 影子库 / 图片降采样 / FTS 检索 / 用量账本）及各通道。**CLI 子命令随 feature 条件编译**（关 `cluster` 则无 `nemesisbot cluster` 子命令）。**Vue 前端也同步裁剪**——customize 按同一份 feature 选择生成 `web/.env`，router/侧栏门控，Vite 把关闭的页面 tree-shake 掉（不进二进制；minimal-iot 前端从 1.7MB 降到 ~0.6MB）。详见 `docs/REPORT/2026-07-01_feature-trimming-and-build-configurator.md` + `docs/REPORT/2026-07-12_frontend-feature-gating.md`。
 
 ### 运行测试
 
@@ -182,11 +184,11 @@ cargo run -p cluster-test
 #### 质量基准（可复现）
 
 质量证据清单（每项附复现命令）见 **[docs/INFO/2026-09-24_公开基准.md](docs/INFO/2026-09-24_公开基准.md)**。
-摘要：agent 单 crate lib 测试 2359、CLI 集成 589 断言/22 命令、集群 UAT
+摘要：agent 单 crate lib 测试 3386（2026-10-22 复测；基准文档记 2359）、CLI 集成 589 断言/22 命令、集群 UAT
 70+ 场景双节点端到端（T1-T48 主链 + T-XFER/T-MRG/T-CONN/T-MONITOR +
 U 职能系列）、全 workspace 行覆盖 CI 硬门槛 84%（cargo-llvm-cov
-`--fail-under-lines` 防倒退；2026-09 实测 87.85%）、测试/生产代码行数比 164%、
-架构依赖矩阵 7 规则 CI 强制、内联测试纪律门禁 1537 文件 0 违规、模型能力
+`--fail-under-lines` 防倒退；2026-09 实测 87.85%）、测试/生产代码行数比 160%、
+架构依赖矩阵 7 规则 CI 强制、内联测试纪律门禁 2152 文件 0 违规、模型能力
 评估 8 题
 探针 + 12 题 × 3 档 battery、自建任务基准 agent-bench 6 场景 × 15 轮
 100% 通过（真实 gateway 链路 + 确定性模型 oracle，baseline 防倒退门禁）。
@@ -312,7 +314,7 @@ nemesisbot sandbox clear         # 清空盒内容（丢弃待提交）
 nemesisbot sandbox stop          # 停止并卸载引擎（--purge 连文件一起删）
 ```
 
-也可在 Web Dashboard 的「沙盒」页操作（环境检查 / 启动引擎 / 查看待提交文件 / 勾选提交）。沙盒通过 cargo feature `sandbox` 控制（默认开）；裁剪掉后 `nemesisbot sandbox` 命令和 `executor.sandbox` 不可用，但 Layer 1 进程隔离（`executor.enabled`）仍保留。**Linux/macOS/Android 不适用。** 详见 `docs/PLAN/2026-07-09_sandboxie-integration.md`。
+也可在 Web Dashboard 的「沙盒」页操作（环境检查 / 启动引擎 / 查看待提交文件 / 勾选提交）。沙盒通过 cargo feature `sandbox` 控制（默认开）；裁剪掉后 `nemesisbot sandbox` 命令和 `executor.sandbox` 不可用，但 Layer 1 进程隔离（`executor.enabled`）仍保留。**Sandboxie 仅 Windows**；Linux/macOS 有用户态沙盒后端（landlock / bubblewrap / Seatbelt，`executor.strict` 可要求无沙盒即拒绝执行）；另有**桌面级 VM 后端**（`executor.vm`，QEMU 整机隔离 + 独立内核，`nemesisbot vm` 自举安装 QEMU / 构建镜像 / 试玩，guest agent + 项目工作副本同步）——同为执行体隔离 Layer 2。详见 `docs/PLAN/2026-07-09_sandboxie-integration.md`。
 
 ---
 
@@ -392,6 +394,30 @@ nemesisbot cluster peers add \
 nemesisbot cluster enable
 nemesisbot cluster disable
 ```
+
+### 跨网组网（QUIC 中继）
+
+不在同一局域网的设备也能组网：基于 iroh 的 UDP 打洞（QUIC），打不通时回落中继。**默认编译开启**，零端口转发，三种用法：
+
+```bash
+# ① 客户端：指向中继服务器 + 配对令牌，等设备上线
+#    Dashboard「中继通道」页填写，或直接改 config.cluster.json：
+#      roaming.relay_url   = "http://vps.example.com:3340"   （空 = n0 公共中继）
+#      roaming.relay_token = "与服务器一致的预共享令牌"
+
+# ② 服务端（随 gateway 进程内启动自建中继）
+#    config.cluster.json: roaming.relay.enabled = true + roaming.relay.token = "令牌"
+
+# ③ 服务端（独立进程形态：只跑 QUIC 服务器 + 令牌，agent/集群/面板全不启动）
+nemesisbot quic relay        # 令牌未配置 = 拒绝启动（fail-closed，不做无鉴权裸奔）
+nemesisbot quic status       # 配置解析产物 / 证书状态 / 本机 iroh 身份
+```
+
+TLS 默认自签（首启生成于 `<workspace>/cluster/relay/`），也可自带证书（`tls: "manual"`）。访问控制为 SharedToken（客户端令牌需与服务端配对同值）。
+
+### 职能化派发（professions）
+
+节点可在身份中声明**专业职能**（`cluster init --professions "dev:cpp,test-whitebox" --tier big`，或 Dashboard 身份页勾选）：六内置职能 product / ui-design / architecture / dev / test-whitebox / test-blackbox，带能力档位（tier）。看板任务拆解时 planner 按职能 + tier **硬条件**选节点（永不松弛降级到不匹配的节点），执行侧按职能注入对应方法论提示词；也支持在 `<workspace>/cluster/professions/` 放自定义职能契约。
 
 ---
 
@@ -568,6 +594,7 @@ nemesisbot gateway --no-console # 仅记录到文件
 - **飞书** - 飞书应用
 - **QQ** - QQ 机器人
 - **钉钉** - 钉钉应用
+- **MQTT** - IoT 传感器接入（topic 订阅 → 消息，QoS 1，断线自动重连）
 - 其他平台...
 
 ---
@@ -593,13 +620,16 @@ nemesisbot gateway --no-console # 仅记录到文件
 
 ```
 NemesisBot_Rust/
-├── crates/                          # 核心模块（41 个 crate）
+├── crates/                          # 核心模块（48 个 crate）
 │   ├── nemesis-agent/               # Agent 核心引擎（LLM 循环 + 工具执行）
 │   ├── nemesis-tools/               # 工具系统（40+ 工具）
 │   ├── nemesis-security/            # 安全审计系统（8 层安全体系）
 │   ├── nemesis-sandbox/             # Sandboxie 沙盒集成（执行体隔离 Layer 2，Windows）
-│   ├── nemesis-cluster/             # 分布式集群（RPC + 续行快照）
-│   ├── nemesis-channels/            # 通讯渠道（21 种通道）
+│   ├── nemesis-cluster/             # 分布式集群（RPC + 续行快照 + iroh 跨网 P2P）
+│   ├── nemesis-taskstore/           # 统一任务层（tasks.db：审批台账 + agent 实体注册表）
+│   ├── nemesis-connectors/          # 行动代理连接器（registry / 回执 / 纸面账本）
+│   ├── nemesis-guest/               # VM 客户内 agent（QEMU 整机隔离执行后端）
+│   ├── nemesis-channels/            # 通讯渠道（27 种通道）
 │   ├── nemesis-providers/           # LLM 提供商（含 SSE 流式）
 │   ├── nemesis-forge/               # Forge 自学习框架
 │   ├── nemesis-memory/              # 持久化记忆（含 ONNX 嵌入）
@@ -608,13 +638,15 @@ NemesisBot_Rust/
 │   ├── nemesis-skills/              # 技能系统
 │   ├── nemesis-workflow/            # 工作流引擎
 │   ├── nemesis-board/               # 看板（Board）issue/评论数据模型 + SQLite 存储
+│   ├── nemesis-plugins-wasm/        # WASM 组件插件框架（wasmtime 宿主壳独立构建）
+│   ├── nemesis-prompts/             # 系统提示词与职能契约
 │   ├── nemesis-cron/                # 定时任务（croner 解析器）
 │   ├── nemesis-config/              # 配置管理
 │   ├── nemesis-data/                # 数据处理和存储抽象
 │   ├── nemesis-bus/                 # 消息总线
 │   ├── nemesis-routing/             # 路由分发
 │   ├── nemesis-desktop/             # 桌面功能（托盘 + 子进程管理；Linux 通过 plugin-ui.so 运行时加载）
-│   ├── nemesis-web/                 # Web API + WS + SSE（33 个 Handler）
+│   ├── nemesis-web/                 # Web API + WS + SSE（54 个 Handler）
 │   ├── nemesis-auth/                # 认证系统
 │   ├── nemesis-services/            # 服务管理器
 │   ├── nemesis-types/               # 公共类型定义
@@ -633,16 +665,20 @@ NemesisBot_Rust/
 │   ├── nemesis-devices/             # 设备管理
 │   ├── nemesis-eval-proxy/          # eval 沙盒本地 LLM 代理（沙盒内调真实云端模型）
 │   ├── nemesis-injector/            # 挂起启动 + EP 注入（沙盒支撑件）
-│   ├── nemesis-verify/              # 签名验证核心（v4：ECDSA P-256 + X.509 三级证书链 + CMS，Windows Authenticode 格式对齐；独立子系统，待接入主程序）
+│   ├── nemesis-verify/              # 签名验证核心（v4：ECDSA P-256 + X.509 三级证书链 + CMS，Windows Authenticode 格式对齐；已接入主程序：启动自验 + 皮肤/自更新验签）
 │   └── nemesis-ui/                  # UI 组件
 ├── plugins/                         # 插件
 │   ├── plugin-ui/                   # WebView2 窗口 DLL + Linux 系统托盘（GTK + libayatana-appindicator3）
-│   └── plugin-onnx/                 # ONNX 嵌入模型（本地记忆处理）
+│   ├── plugin-onnx/                 # ONNX 嵌入模型（本地记忆处理）
+│   ├── plugin-wasm/                 # wasmtime 宿主壳 DLL（独立构建；缺席 = 插件子系统诚实关闭）
+│   └── plugin-eval-monitor/         # eval 行为评估监控插件
 ├── nemesisbot/                      # 主程序入口
-│   └── src/commands/                # CLI 命令（36 个命令模块 / 36 个 clap 子命令）
+│   └── src/commands/                # CLI 命令（44 个 clap 子命令）
 │       ├── gateway.rs               # 网关（核心启动入口）
 │       ├── run.rs                   # headless 单任务（无端口跑完即退）
 │       ├── acp.rs                   # ACP server（编辑器接入）
+│       ├── quic.rs                  # QUIC 中继服务器（独立进程 / 状态查看）
+│       ├── vm.rs                    # VM 环境自举（QEMU 安装/加速/镜像）
 │       ├── estop.rs                 # 急停开关
 │       ├── agent.rs                 # Agent 管理
 │       ├── cluster.rs               # 集群管理
@@ -655,7 +691,7 @@ NemesisBot_Rust/
 │       ├── workflow.rs              # 工作流
 │       ├── voice.rs                 # 语音管理
 │       └── ...                      # 其他命令
-├── test-tools/                      # 测试工具（26 个项目：17 workspace member + 独立项目）
+├── test-tools/                      # 测试工具（36 个项目：18 workspace member + 独立项目）
 │   ├── TestAIServer/                # AI 服务器模拟器（Go，20 个测试模型 + 别名表 + /slow 端点）
 │   ├── test-harness/                # 共享测试辅助库（进程生命周期/WS/断言）
 │   ├── integration-test/            # CLI 集成测试（22 命令，589 断言；纯 bin runner 用 cargo run）
@@ -690,9 +726,9 @@ NemesisBot_Rust/
 
 ## 技术特点
 
-- **1400+ Rust 源文件** - 清晰的 workspace crate 架构（持续增长）
-- **41 个核心 crate** - 模块化设计，职责清晰
-- **20,000+ 单元测试** - 全部通过（Linux / Windows / 三构建配置矩阵常态跑）
+- **2000+ Rust 源文件** - 清晰的 workspace crate 架构（持续增长）
+- **48 个核心 crate** - 模块化设计，职责清晰
+- **28,000+ 单元测试** - 全部通过（Linux / Windows / 三构建配置矩阵常态跑）
 - **多平台支持** - Windows / Linux / macOS / Android（交叉编译）
 - **纯 Rust TLS** - 使用 rustls 替代 OpenSSL，Android 无需额外 C 库
 - **ABAC 安全引擎** - 8 层安全体系（注入→命令→ABAC→凭据→DLP→SSRF→病毒扫描→审计链）
@@ -701,6 +737,11 @@ NemesisBot_Rust/
 - **Sandboxie 沙盒（安全第 9 层）** - 最终防御红线：子进程套进 Sandboxie 盒（断网+降权+全隔离），前 8 层放行的操作在盒里也动不了真盘，工作区写入手动审阅提交（config: `executor.sandbox`，Windows）
 - **可执行文件签名验证（v4）** - 「借微软的格式，不借微软的信任」：ECDSA P-256 + SHA-256 + X.509 三级证书链 + CMS/PKCS#7，Windows Authenticode 格式对齐（微软工具可解析自产签名）。`nemesis-verify` crate（产物 `nemesis_verify.dll` 导出 C ABI `nv_*`）+ `revoke-server`（云端签发/吊销）+ `exe-sign-tool`/`verify-loader`（签发与验签 CLI）。**已接入主程序**：启动自验（`verify_policy.rs`，锚定编译期根）+ 自更新仅接受 `VerifyOutcome::Valid`（防篡改/防替换，抬高攻击成本；诚实边界：纯软件自检，防绕过有物理上限）
 - **分布式集群** - 多节点协同，异步 RPC + 续行快照 + Dashboard 6-Tab 管理
+- **QUIC 跨网组网** - iroh UDP 打洞 + 自建中继回落（SharedToken 访问控制，令牌空 = 拒绝启动），跨网段设备零端口转发互连；独立进程形态 `quic relay` 只跑中继（默认编译开启）
+- **执行体隔离多后端** - Windows Sandboxie 内核级 / Linux landlock+bwrap / macOS Seatbelt / **QEMU 桌面级 VM**（独立内核 + guest agent + 项目工作副本同步），`executor.strict` 可要求无沙盒即拒绝执行
+- **WASM 组件插件** - wasmtime 运行时剥离进宿主壳 DLL（独立构建，缺席 = 子系统诚实关闭）；fuel/内存/墙钟三重限制 + egress 默认拒绝 + 技能签名信任链
+- **行动代理连接器** - connector_find/invoke 只读数据面 + 独占接管/总开关治理 + 纸面账本回执
+- **统一任务层（tasks.db）** - 审批台账跨重启持久化 + agent 实体注册表 + 通用交付账本
 - **集群请求日志** - 按对端设备 ID + 任务 ID 分目录隔离（`cluster_logs/{device}/{ts}_{task_id}/`），双向视角查看
 - **集群 Session Key 隔离** - 复合键 `{node_id}/{chat_id}` 避免跨节点会话串扰
 - **人格系统（Persona）** - 从 GitHub agency-agents 仓库搜索/安装/激活/切换 AI 人格，运行时热切换
@@ -733,6 +774,15 @@ nemesisbot cluster          # 集群管理（init/status/enable/peers）
 nemesisbot security         # 安全配置（approvals/scanner/audit）
 nemesisbot scanner          # 扫描引擎管理（clamav install/enable/test）
 nemesisbot sandbox          # 沙盒管理（Sandboxie install/start/stop/pending/commit）
+nemesisbot quic             # QUIC 中继服务器（relay/status；独立进程形态）
+nemesisbot vm               # VM 环境自举（QEMU 安装/加速/构建镜像/试玩）
+nemesisbot connector        # 连接器查询（registry/receipts/ledger，只读）
+nemesisbot vault            # 凭据 vault（加密秘密存储，list 不见值）
+nemesisbot plugin           # WASM 插件管理（install/enable/sign/trust）
+nemesisbot selfupdate       # 版本自更新（check/apply/status）
+nemesisbot mcp-serve        # 把 Bot 能力暴露为 stdio MCP server（Claude Code/Cursor 直连）
+nemesisbot dossier          # 任务档案导出（issue 树/项目记录自包含包）
+nemesisbot profile          # 用户习惯画像（自进化）
 nemesisbot skills           # 技能管理（search/install/add-source）
 nemesisbot persona          # 人格管理（list/search/install/activate/remove）
 nemesisbot forge            # 自学习管理（status/enable/reflect）
@@ -809,7 +859,7 @@ NemesisBot 采用 **双授权（dual-license）** 模式：同一份代码，两
 
 ### 其他
 
-- **第三方组件**：见 [THIRDPARTY.md](THIRDPARTY.md)，全树无 GPL/AGPL/LGPL 强 copyleft 依赖（ClamAV 走网络协议，不打包、不传染）。
+- **第三方组件**：见 [THIRDPARTY.md](THIRDPARTY.md)，依赖树无 GPL/AGPL/LGPL 强 copyleft（仅 3 处文件级 MPL）；ClamAV 走网络协议、Sandboxie / QEMU 为运行时按需自装——均不打包、不传染。
 - **贡献者**：外部 PR 须接受 [CLA.md](CLA.md)，以维持双授权能力。
 
 ---
