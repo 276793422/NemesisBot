@@ -2,7 +2,38 @@
 // 关键契约：表格包 .md-table-wrap（宽表横向滚动不压列）、breaks 语义、
 // 非 table 标签不受包装影响、raw HTML 消毒（2026-09-26 挂账高优 Canvas-#2）。
 import { describe, expect, it } from 'vitest'
-import { renderMarkdownHtml } from '../markdown'
+import { escapeHtml, renderMarkdownHtml } from '../markdown'
+
+// ---- escapeHtml：v-html 渲染面异常降级路径的兜底原语（单一真相源）----
+// 契约：&<>"' 全量转义（属性上下文也安全）；空值回空串；活动内容
+// （script/事件属性）经转义后成为惰性纯文本。
+
+describe('escapeHtml', () => {
+  it('五个危险字符全量转义', () => {
+    expect(escapeHtml(`&<>"'`)).toBe('&amp;&lt;&gt;&quot;&#39;')
+  })
+
+  it('script 标签转义后成惰性文本（不再有 <script 开标签）', () => {
+    const out = escapeHtml('<script>alert(1)</script>')
+    expect(out).toBe('&lt;script&gt;alert(1)&lt;/script&gt;')
+    expect(out.toLowerCase()).not.toContain('<script')
+  })
+
+  it('img onerror 向量转义后引号不截断属性上下文', () => {
+    const out = escapeHtml('<img src="x" onerror=\'alert(1)\'>')
+    expect(out).toContain('&lt;img')
+    expect(out).not.toContain('<img')
+    expect(out).toContain('&quot;x&quot;')
+  })
+
+  it('空串/空值回空串', () => {
+    expect(escapeHtml('')).toBe('')
+  })
+
+  it('普通文本直通不受影响', () => {
+    expect(escapeHtml('普通中文与 English 123')).toBe('普通中文与 English 123')
+  })
+})
 
 describe('renderMarkdownHtml', () => {
   it('表格包裹 .md-table-wrap（thead/tbody 结构保持）', () => {

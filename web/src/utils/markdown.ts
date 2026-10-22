@@ -10,6 +10,22 @@ export interface MarkdownRenderOptions {
   breaks?: boolean
 }
 
+/**
+ * HTML 转义（&<>"' 全量）：v-html 渲染面在异常降级路径上的兜底原语。
+ * renderMarkdownHtml 是唯一消毒闸，但它依赖 marked/DOMPurify 正常工作——
+ * 调用方 catch 回落时**不得**把原文直接喂 v-html（等于绕过消毒闸），
+ * 必须先过本函数把活动内容降级为纯文本再进 HTML 上下文。
+ */
+export function escapeHtml(s: string): string {
+  if (!s) return ''
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 export function renderMarkdownHtml(text: string, opts?: MarkdownRenderOptions): string {
   // 代码高亮走事后 DOM 路径（渲染后对 pre code 跑 hljs.highlightElement，
   // 见 ChatPanel renderCodeBlocks）——marked v15 已移除 highlight 选项，
