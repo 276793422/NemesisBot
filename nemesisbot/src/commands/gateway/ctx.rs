@@ -585,7 +585,7 @@ impl GatewayCtx {
             let board_db = home.join("workspace").join("board").join("board.db");
             match nemesis_board::BoardStore::open(&board_db, "NB") {
                 Ok(store) => {
-                    // Swarm M2: 默认频道（#dev/#qa/#general）幂等种子——首启建，
+                    // Swarm M2: 默认频道（#dev/#qa/#general/#team）幂等种子——首启建，
                     // 已有则 no-op。
                     if let Err(e) = store.ensure_default_channels() {
                         warn!("[Gateway] Board default channels seed failed: {}", e);

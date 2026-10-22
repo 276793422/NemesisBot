@@ -127,6 +127,8 @@ fn handle_nb_bus(
         "comment.post" => handle_comment_post(deps, &env),
         "comment.list" => handle_comment_list(deps, &env),
         "sync" => handle_sync(deps, &env),
+        "claimable.list" => handle_claimable_list(deps, &env, rpc_from_node(&payload)),
+        "claim" => handle_claim(deps, &env, rpc_from_node(&payload)),
         other => EnvelopeResponse::failure(
             &env,
             EnvelopeError::new(
@@ -1957,6 +1959,464 @@ fn sync_entry_targets_me(
             &deps.node_category,
         )
 }
+
+// ======================================================================
+// 集群任务认领（board.claimable.list / board.claim，2026-10-22 计划 §3）
+//
+// 讨论组「认领制」的 master 侧：worker 上行浏览待领单 / 认领。原子置位
+// （store.claim_issue）→ 派发单一入口落队（dispatch_issue_core，estop/
+// 冻结/重复派发/父单计划/RPC 全闸与预算保险丝自然继承）→ 播报双落
+// （issue 系统评论 + #team 频道）。硬闸与派发器完全同源（rank_peers
+// 严格档打单个候选）——松弛是派发器兜底的特权，自评认领不松弛（Q2）。
+// ======================================================================
+
+/// `board.claimable.list`：worker 上行浏览待领单（Q3：全量可领单 +
+/// 硬闸满足标记）。资格闸不过的单直接不出现；硬闸不过的单带
+/// `blocked_reason` 照常出现（LLM 自评「谁看合适」的依据）。
+fn handle_claimable_list(
+    deps: &MasterBusDeps,
+    env: &Envelope,
+    from_node: &str,
+) -> EnvelopeResponse {
+    if from_node.is_empty() {
+        return EnvelopeResponse::failure(
+            env,
+            EnvelopeError::new(
+                envelope::error_code::VALIDATION,
+                "missing _rpc.from (caller identity)",
+            ),
+        );
+    }
+    let limit = env
+        .body
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(50)
+        .clamp(1, 200) as usize;
+    let filter = nemesis_board::IssueFilter {
+        status: None,
+        assignee: None,
+        project_id: None,
+        priority: None,
+        query: None,
+        exclude_archived_projects: false,
+        exclude_cancelled: false,
+        exclude_hidden: false,
+    };
+    let all = match deps.store.list_issues(&filter) {
+        Ok(v) => v,
+        Err(e) => {
+            return EnvelopeResponse::failure(
+                env,
+                EnvelopeError::new(envelope::error_code::INTERNAL, format!("读取看板失败: {e}")),
+            );
+        }
+    };
+    // 认领人投影（注册表缺席 = 全部标 ineligible + 原因——浏览不硬拒）。
+    let claimer = deps
+        .cluster
+        .get_peer(from_node)
+        .map(|info| claimer_candidate(&info));
+    let mut items = Vec::new();
+    for issue in all {
+        // 资格闸 Err = 状态/被领/父单/在途派发/依赖未完，browse 一律跳过。
+        if deps.store.claimable_check(issue.id).is_err() {
+            continue;
+        }
+        let (eligible, blocked_reason) = match &claimer {
+            Some(c) => match claim_gate(&issue, c) {
+                Ok(()) => (true, None),
+                Err(reason) => (false, Some(reason)),
+            },
+            None => (
+                false,
+                Some(format!(
+                    "本节点（{from_node}）不在 master 节点注册表，无法认领"
+                )),
+            ),
+        };
+        items.push(serde_json::json!({
+            "issue_id": issue.id,
+            "number": issue.number,
+            "title": issue.title,
+            "priority": issue.priority,
+            "status": issue.status.as_str(),
+            "required_role": issue.required_role,
+            "required_profession": issue.required_profession,
+            "eligible": eligible,
+            "blocked_reason": blocked_reason,
+        }));
+        if items.len() >= limit {
+            break;
+        }
+    }
+    let count = items.len();
+    EnvelopeResponse::success(env, serde_json::json!({ "items": items, "count": count }))
+}
+
+/// `board.claim`：worker 上行认领（§3.4 动作序列）。全程快速同步——
+/// 派发落队走 dispatch_issue_core 内部既有异步链，handler 不等投递。
+fn handle_claim(deps: &MasterBusDeps, env: &Envelope, from_node: &str) -> EnvelopeResponse {
+    // ① 身份：RPC server 注入 `_rpc.from`，空 = 伪造面/本地误调。
+    if from_node.is_empty() {
+        return EnvelopeResponse::failure(
+            env,
+            EnvelopeError::new(
+                envelope::error_code::VALIDATION,
+                "missing _rpc.from (caller identity)",
+            ),
+        );
+    }
+    // ② master 本尊不认领（本尊直写 store，与 board_discuss 不装 master 同理）。
+    if from_node == deps.cluster.node_id() {
+        return EnvelopeResponse::failure(
+            env,
+            EnvelopeError::new(
+                envelope::error_code::VALIDATION,
+                "master 节点不走认领取件（本尊可直接操作看板）",
+            ),
+        );
+    }
+    // ③ 解析 issue 引用（纯数字 = 内部 id，否则按人读编号）。
+    let Some(issue_ref) = env
+        .body
+        .get("issue")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return EnvelopeResponse::failure(
+            env,
+            EnvelopeError::new(envelope::error_code::VALIDATION, "missing issue"),
+        );
+    };
+    let issue = match resolve_issue_ref(&deps.store, issue_ref) {
+        Ok(i) => i,
+        Err(msg) => {
+            return EnvelopeResponse::failure(
+                env,
+                EnvelopeError::new(envelope::error_code::VALIDATION, msg),
+            );
+        }
+    };
+    // ④ 资格闸（browse/claim 同源单一真相源；拒绝原因即 claimable_check 文案）。
+    if let Err(msg) = deps.store.claimable_check(issue.id) {
+        return EnvelopeResponse::failure(
+            env,
+            EnvelopeError::new(envelope::error_code::VALIDATION, msg),
+        );
+    }
+    // ⑤ 认领人必须在节点注册表（在线宣告过身份的节点才谈得上自评硬闸）。
+    let Some(info) = deps.cluster.get_peer(from_node) else {
+        return EnvelopeResponse::failure(
+            env,
+            EnvelopeError::new(
+                envelope::error_code::VALIDATION,
+                format!("节点 {from_node} 不在 master 节点注册表，无法认领"),
+            ),
+        );
+    };
+    let claimer = claimer_candidate(&info);
+    // ⑥ 硬闸（Q2：强制 profession/tier 匹配、严格不松弛、原因明示）。
+    if let Err(reason) = claim_gate(&issue, &claimer) {
+        return EnvelopeResponse::failure(
+            env,
+            EnvelopeError::new(envelope::error_code::VALIDATION, reason),
+        );
+    }
+    // ⑦ 原子认领（先到先得：双 worker 并发 claim 恰好一胜）。
+    let actor = Actor::new("agent", from_node);
+    if let Err(msg) = deps.store.claim_issue(issue.id, from_node, &actor) {
+        return EnvelopeResponse::failure(
+            env,
+            EnvelopeError::new(envelope::error_code::VALIDATION, msg),
+        );
+    }
+    // ⑧ 派发落队（单一入口，全闸继承）。dispatch_issue_core 的全部 Err
+    // 路径都在状态转移之前 → 回滚只需还原 assignee，单子回到待领池。
+    if let Err(e) = nemesis_web::handlers::board::dispatch_issue_core(
+        &deps.store,
+        Some(&deps.cluster),
+        issue.id,
+        from_node,
+        &actor,
+        None,
+    ) {
+        let _ = deps
+            .store
+            .assign_issue(issue.id, None, None, &Actor::system("board"));
+        tracing::warn!(
+            target: "board_bus",
+            node = %from_node,
+            issue = %issue.number,
+            error = %e,
+            "[nb_bus] claim dispatch failed, assignee rolled back"
+        );
+        return EnvelopeResponse::failure(
+            env,
+            EnvelopeError::new(
+                envelope::error_code::UNAVAILABLE,
+                format!("认领后派发失败，已回滚（单子回到待领池）：{e}"),
+            ),
+        );
+    }
+    // ⑨ 播报双落（best-effort：播报缺失不阻断主链——认领已成立）。
+    announce_claim(&deps.store, &issue, from_node);
+    tracing::info!(
+        target: "board_bus",
+        node = %from_node,
+        issue = %issue.number,
+        "[nb_bus] claim accepted"
+    );
+    EnvelopeResponse::success(
+        env,
+        serde_json::json!({
+            "claimed": true,
+            "issue_id": issue.id,
+            "number": issue.number,
+            "title": issue.title,
+        }),
+    )
+}
+
+/// issue 引用解析：纯数字 = 内部 id，否则按人读编号（NB-15）。
+fn resolve_issue_ref(
+    store: &Arc<nemesis_board::BoardStore>,
+    issue_ref: &str,
+) -> Result<nemesis_board::Issue, String> {
+    if let Ok(id) = issue_ref.parse::<i64>() {
+        return store.get_issue(id);
+    }
+    store.get_issue_by_number(issue_ref)
+}
+
+/// 认领人投影：ExtendedNodeInfo → PeerCandidate（与 web 侧
+/// project_dispatch_candidates 同投影：role 词表化、tags ∪ category、
+/// professions/tier/runtime_backend 直传）。
+fn claimer_candidate(
+    info: &nemesis_cluster::types::ExtendedNodeInfo,
+) -> nemesis_board::PeerCandidate {
+    nemesis_board::PeerCandidate {
+        id: info.base.id.clone(),
+        name: info.base.name.clone(),
+        role: match info.base.role {
+            nemesis_types::cluster::NodeRole::Coordinator => "coordinator",
+            nemesis_types::cluster::NodeRole::Worker => "worker",
+        }
+        .to_string(),
+        tags: {
+            let mut t = info.tags.clone();
+            let c = info.base.category.trim();
+            if !c.is_empty() && !t.iter().any(|x| x.eq_ignore_ascii_case(c)) {
+                t.push(c.to_string());
+            }
+            t
+        },
+        capabilities: info.capabilities.clone(),
+        professions: info.professions.clone(),
+        tier: info.tier.clone(),
+        runtime_backend: info.runtime_backend.clone(),
+    }
+}
+
+/// Issue → matcher 入参（与派发匹配面同字段投影）。
+fn claim_match_input(issue: &nemesis_board::Issue) -> nemesis_board::MatchInput<'_> {
+    nemesis_board::MatchInput {
+        required_role: issue.required_role.as_deref(),
+        required_tags: &issue.required_tags,
+        required_profession: issue.required_profession.as_deref(),
+        required_capabilities: &issue.required_capabilities,
+        required_backend: issue.required_backend.as_deref(),
+        description: &issue.description,
+    }
+}
+
+/// 认领硬闸（Q2 拍板：严格不松弛）。判定与派发器完全同源：
+/// [`nemesis_board::rank_peers`] 严格档打单个候选，空 = 硬条件 1-6 至少
+/// 一条不过。Err 文案 = [`claim_gate_reason`] 人读逐条对照。
+fn claim_gate(
+    issue: &nemesis_board::Issue,
+    claimer: &nemesis_board::PeerCandidate,
+) -> Result<(), String> {
+    let input = claim_match_input(issue);
+    let pass = !nemesis_board::rank_peers(&input, std::slice::from_ref(claimer), &HashMap::new())
+        .is_empty();
+    if pass {
+        Ok(())
+    } else {
+        Err(claim_gate_reason(&input, claimer))
+    }
+}
+
+/// 硬闸不符的人读原因（逐条对照 rank_peers 硬条件 1-6；Q2 拍板「拒绝
+/// 原因明示」，如「需职能 dev:cpp，本节点 [ui-design]」）。收集全部不符
+/// 项（一次看清为什么不行，不首条即停）。
+fn claim_gate_reason(
+    input: &nemesis_board::MatchInput<'_>,
+    peer: &nemesis_board::PeerCandidate,
+) -> String {
+    let mut reasons: Vec<String> = Vec::new();
+    // 硬条件 1：角色。
+    if let Some(need) = input.required_role.map(str::trim).filter(|s| !s.is_empty())
+        && !peer.role.eq_ignore_ascii_case(need)
+    {
+        reasons.push(format!("需角色 {need}，本节点 {}", peer.role));
+    }
+    // 硬条件 2：标签交集。
+    if !input.required_tags.is_empty()
+        && !input
+            .required_tags
+            .iter()
+            .any(|t| peer.tags.iter().any(|pt| pt.eq_ignore_ascii_case(t)))
+    {
+        reasons.push(format!(
+            "需标签 [{}]，本节点 [{}]",
+            input.required_tags.join(","),
+            peer.tags.join(",")
+        ));
+    }
+    // 硬条件 3：职能精确 + 硬条件 4：tier 门槛（只挂内置目录职能）。
+    if let Some(need) = input
+        .required_profession
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let need = nemesis_prompts::professions::meta::normalize_slug(need);
+        if !peer
+            .professions
+            .iter()
+            .any(|p| nemesis_prompts::professions::meta::normalize_slug(p) == need)
+        {
+            reasons.push(format!(
+                "需职能 {need}，本节点 [{}]",
+                peer.professions.join(",")
+            ));
+        }
+        if let Some(meta) = nemesis_prompts::professions::meta::find_builtin(&need)
+            && !nemesis_prompts::professions::meta::tier_allows(peer.tier.as_deref(), meta.min_tier)
+        {
+            reasons.push(format!(
+                "职能 {need} 最低档 {}，本节点档 {}",
+                meta.min_tier,
+                peer.tier.as_deref().unwrap_or("未宣告")
+            ));
+        }
+    }
+    // 硬条件 5：能力全量命中（列出缺失项）。
+    if !input.required_capabilities.is_empty() {
+        let missing: Vec<&str> = input
+            .required_capabilities
+            .iter()
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|need| {
+                !need.is_empty()
+                    && !peer
+                        .capabilities
+                        .iter()
+                        .any(|c| c.trim().eq_ignore_ascii_case(need))
+            })
+            .collect();
+        if !missing.is_empty() {
+            reasons.push(format!(
+                "缺能力 [{}]，本节点 [{}]",
+                missing.join(","),
+                peer.capabilities.join(",")
+            ));
+        }
+    }
+    // 硬条件 6：backend 精确（未宣告 = fail-closed，同 rank_peers）。
+    if let Some(need) = input
+        .required_backend
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        && !peer
+            .runtime_backend
+            .as_deref()
+            .is_some_and(|b| b.trim().eq_ignore_ascii_case(need))
+    {
+        reasons.push(format!(
+            "需后端 {need}，本节点 {}",
+            peer.runtime_backend.as_deref().unwrap_or("未宣告")
+        ));
+    }
+    // 理论不可达（rank_peers 空 = 至少一条硬闸不过）；诚实兜底不瞎编。
+    if reasons.is_empty() {
+        return "节点硬条件不满足（详见节点宣告与单子需求）".to_string();
+    }
+    reasons.join("；")
+}
+
+/// 认领播报双落（§3.4-4）：issue 系统评论（权威留痕）+ `#team` 频道系统
+/// 消息（Q4 团队频道）。全 best-effort：认领与派发在播报前已成立，播报
+/// 失败只 WARN 不回滚。
+fn announce_claim(
+    store: &Arc<nemesis_board::BoardStore>,
+    issue: &nemesis_board::Issue,
+    claimer: &str,
+) {
+    let text = format!("🙋 {} 已被 {claimer} 认领", issue.number);
+    // ① issue 系统评论（决策/活动可追溯）。
+    if let Err(e) = store.add_comment(nemesis_board::NewComment {
+        issue_id: issue.id,
+        author: Actor::system("board"),
+        content: text.clone(),
+        parent_id: None,
+        ctype: nemesis_board::CommentType::System,
+    }) {
+        tracing::warn!(
+            target: "board_bus",
+            issue = %issue.number,
+            error = %e,
+            "[nb_bus] claim 系统评论落库失败"
+        );
+    }
+    // ② #team 频道播报；频道缺席补种（INSERT OR IGNORE 幂等，防手工删
+    // 频道的库），仍失败只少一条播报。
+    let channel = match store.get_channel_by_name(CLAIM_ANNOUNCE_CHANNEL) {
+        Ok(Some(ch)) => Some(ch),
+        Ok(None) => match store
+            .ensure_default_channels()
+            .and_then(|_| store.get_channel_by_name(CLAIM_ANNOUNCE_CHANNEL))
+        {
+            Ok(Some(ch)) => Some(ch),
+            _ => {
+                tracing::warn!(
+                    target: "board_bus",
+                    "[nb_bus] #team 频道不可用，认领播报仅落 issue 评论"
+                );
+                None
+            }
+        },
+        Err(e) => {
+            tracing::warn!(
+                target: "board_bus",
+                error = %e,
+                "[nb_bus] 读取 #team 频道失败，认领播报仅落 issue 评论"
+            );
+            None
+        }
+    };
+    if let Some(ch) = channel
+        && let Err(e) = store.append_channel_message(nemesis_board::NewChannelMessage {
+            channel_id: ch.id,
+            sender: Actor::system("board"),
+            content: text,
+            parent_id: None,
+            mtype: nemesis_board::channel_message_type::SYSTEM.to_string(),
+        })
+    {
+        tracing::warn!(
+            target: "board_bus",
+            issue = %issue.number,
+            error = %e,
+            "[nb_bus] claim 频道播报失败"
+        );
+    }
+}
+
+/// 认领播报落点频道（Q4 拍板：#team = 团队）。
+const CLAIM_ANNOUNCE_CHANNEL: &str = "#team";
 
 #[cfg(test)]
 mod tests;
