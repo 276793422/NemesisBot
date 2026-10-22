@@ -1278,11 +1278,18 @@ pub fn build_agent_loop(
     // W5-3：插件 invoker 重挂（每次重建都要——Weak 指旧 loop，重启后
     // upgrade 失败 = guest tool-invoke 全哑）。estop watch 联动在 init_agent
     // spawn 一次（watcher 是 manager 级任务，不随 loop 重建泄）。
+    // 2026-10-22 样板工程批 4：循环策略桥同点装配（三策略槽接管 +
+    // llm-complete 面注入——Weak 同样必须每次重建重指；无 policy 组件 =
+    // 零装桥，槽维持内置哨兵）。
     #[cfg(feature = "plugins-wasm")]
     if let Some(ref pm) = shared.plugin_manager {
         pm.set_invoker(Arc::new(crate::plugin_bridge::GatewayHostInvoker::new(
             &agent_loop,
         )));
+        let np = crate::plugin_bridge::register_policy_bridges(&agent_loop, pm, &shared.estop);
+        if np > 0 {
+            info!("[AgentFactory] {} wasm loop policy point(s) bridged", np);
+        }
     }
     // T2 codemode（内部专项总计划 L1）：code_run 脚本工具。编译闸 `codemode`
     // feature + 运行闸 `agents.codemode.enabled`（默认关）+ min_tier big 双闸

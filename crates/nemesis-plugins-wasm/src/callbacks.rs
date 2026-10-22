@@ -31,6 +31,7 @@ pub(crate) fn callbacks_table() -> HostCallbacks {
         http_send: cb_http_send,
         tool_invoke: cb_tool_invoke,
         struct_size: std::mem::size_of::<HostCallbacks>(),
+        llm_complete: Some(cb_llm_complete),
     }
 }
 
@@ -107,7 +108,7 @@ fn guard(out_detail: *mut *mut c_char, f: impl FnOnce() -> (c_int, Option<String
 }
 
 // ---------------------------------------------------------------------------
-// 8 个 shim
+// 9 个 shim（批 3 增补 llm-complete，2026-10-22 批 4 宿主面接线）
 // ---------------------------------------------------------------------------
 
 /// # Safety
@@ -493,6 +494,64 @@ unsafe extern "C" fn cb_tool_invoke(
             );
         };
         match handle.block_on(invoker.invoke(&tool, &args)) {
+            Ok(text) => {
+                if !out_content.is_null() {
+                    *out_content = string_to_cstr(&text);
+                }
+                (host_err::OK, None)
+            }
+            Err(e) => (
+                host_err::UNAVAILABLE,
+                Some(crate::host_impl::truncate_err(&e, 300)),
+            ),
+        }
+    })
+}
+
+/// `llm-complete(prompt, max-tokens) -> result<string, host-error>`
+/// （2026-10-22 样板工程批 4；cb_tool_invoke 同款骨架）。
+///
+/// 帧纪律：observe 帧恒 unavailable（观察路径不授 LLM 花销能力，同
+/// tool-invoke 收窄）；max_tokens=0 视为未给预算诚实拒绝（护栏在
+/// LlmInvoker 实现内做钳制，这里只挡明显畸形）。
+unsafe extern "C" fn cb_llm_complete(
+    env: *mut c_void,
+    prompt: *const c_char,
+    max_tokens: u32,
+    out_content: *mut *mut c_char,
+    out_detail: *mut *mut c_char,
+) -> c_int {
+    guard(out_detail, || unsafe {
+        let caps = caps_of(env);
+        let prompt_s = cstr_to_string(prompt);
+        if let Err(e) = caps.frame.consume() {
+            return (host_err::BUDGET_EXCEEDED, Some(e));
+        }
+        if caps.observer_frame {
+            return (
+                host_err::UNAVAILABLE,
+                Some("llm-complete is unavailable in observer frames".to_string()),
+            );
+        }
+        if max_tokens == 0 {
+            return (
+                host_err::POLICY_DENIED,
+                Some("llm-complete max-tokens must be > 0".to_string()),
+            );
+        }
+        let Some(llm) = caps.llm.clone() else {
+            return (
+                host_err::UNAVAILABLE,
+                Some("host llm invoker not wired (plugin host standalone)".to_string()),
+            );
+        };
+        let Some(handle) = caps.tokio_handle.clone() else {
+            return (
+                host_err::UNAVAILABLE,
+                Some("no tokio runtime for llm completion".to_string()),
+            );
+        };
+        match handle.block_on(llm.complete(&prompt_s, max_tokens)) {
             Ok(text) => {
                 if !out_content.is_null() {
                     *out_content = string_to_cstr(&text);

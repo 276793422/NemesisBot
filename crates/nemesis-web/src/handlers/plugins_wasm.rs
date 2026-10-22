@@ -61,6 +61,35 @@ pub fn notify_tool_sync(ev: ToolSyncEvent) {
     }
 }
 
+/// 2026-10-22 样板工程批 4：循环策略面同步事件（install/enable/disable/
+/// uninstall 时把策略槽接管变化同步进当前 AgentLoop；启动装载走
+/// agent_factory 的 `register_policy_bridges`，两路同语义——hook 侧按
+/// 注册表现状整体对账三槽，事件只当触发器 + 日志上下文）。
+#[derive(Debug, Clone)]
+pub struct PolicySyncEvent {
+    /// true = 接管装桥，false = 摘桥回内置哨兵。
+    pub add: bool,
+    pub slug: String,
+    /// 事件涉及策略点（kebab 导出名：compact / judge-final /
+    /// validate-args；摘桥方在注册表摘除**前**抓取）。
+    pub points: Vec<String>,
+}
+
+type PolicySyncHook = Arc<dyn Fn(PolicySyncEvent) + Send + Sync>;
+static POLICY_SYNC_HOOK: std::sync::OnceLock<PolicySyncHook> = std::sync::OnceLock::new();
+
+/// gateway init_agent 注入策略面同步回调（幂等失败 = 重复注入，首个胜出）。
+pub fn set_policy_sync_hook(hook: PolicySyncHook) {
+    let _ = POLICY_SYNC_HOOK.set(hook);
+}
+
+/// 触发策略面同步（hook 未注入 = 无 loop 可同步（CLI/测试形态），静默略过）。
+pub fn notify_policy_sync(ev: PolicySyncEvent) {
+    if let Some(hook) = POLICY_SYNC_HOOK.get() {
+        hook(ev);
+    }
+}
+
 fn installer() -> Option<Arc<PluginInstaller>> {
     INSTALLER.get().cloned()
 }
@@ -97,6 +126,11 @@ fn row_of(reg: &nemesis_plugins_wasm::registry::RegisteredPlugin) -> serde_json:
             "description": t.description,
             "operation_type": t.operation_type,
             "min_tier": t.min_tier,
+        })),
+        "policy": reg.policy_meta.as_ref().map(|pm| serde_json::json!({
+            "compact": pm.compact,
+            "final_judge": pm.final_judge,
+            "validation": pm.validation,
         })),
         "data_dir": reg.data_dir.display().to_string(),
     })
@@ -163,6 +197,16 @@ pub async fn cmd_install(data: Option<serde_json::Value>) -> Result<serde_json::
             .map(|m| (m.name.as_str(), m.operation_type.as_str())),
         enabled,
     ));
+    // 批 4：策略面热同步事件恒发（方向由 policy_sync_event 决策）——
+    // policy 型 + 启用 = 装桥；升级换形 / 禁用升级 = 摘桥。hook 侧按注册
+    // 表现状整体对账三槽，事件只当触发器（旧接管不留幽灵——升级换形的
+    // 旧点也在对账面内，与工具面前缀整面摘除同纪律）。
+    notify_policy_sync(policy_sync_event(
+        reg.manifest.kind.as_str(),
+        &reg.manifest.slug,
+        reg.policy_meta.as_ref(),
+        enabled,
+    ));
     Ok(serde_json::json!({
         "installed": true,
         "plugin": row_of(reg.as_ref()),
@@ -213,6 +257,37 @@ fn install_sync_event(
     }
 }
 
+/// 安装完成后的策略面同步事件决策（纯函数，与 [`install_sync_event`] 同构）。
+/// `policy + 有 meta + 启用` → add=true 装桥；其余一律 add=false 摘桥
+/// （升级换形 / 禁用升级都回内置哨兵，旧接管不留幽灵）。
+fn policy_sync_event(
+    kind: &str,
+    slug: &str,
+    policy: Option<&nemesis_plugins_wasm::registry::PolicyMetaSnapshot>,
+    enabled: bool,
+) -> PolicySyncEvent {
+    match (kind, policy, enabled) {
+        ("policy", Some(pm), true) => PolicySyncEvent {
+            add: true,
+            slug: slug.to_string(),
+            points: policy_points_of(pm),
+        },
+        _ => PolicySyncEvent {
+            add: false,
+            slug: slug.to_string(),
+            points: policy.map(policy_points_of).unwrap_or_default(),
+        },
+    }
+}
+
+/// `PolicyMetaSnapshot` → kebab 导出名列表（事件投影用）。
+fn policy_points_of(pm: &nemesis_plugins_wasm::registry::PolicyMetaSnapshot) -> Vec<String> {
+    pm.points()
+        .iter()
+        .map(|p| p.export_name().to_string())
+        .collect()
+}
+
 fn require_slug(data: Option<&serde_json::Value>) -> Result<String, String> {
     data.and_then(|d| d.get("slug"))
         .and_then(|v| v.as_str())
@@ -230,6 +305,8 @@ pub async fn cmd_set_enabled(slug: &str, on: bool) -> Result<serde_json::Value, 
         .map_err(|e| e.to_string())?;
     // W7：禁用 = 工具面注销（LLM 不再可见），启用 = 重注册（仍在册时）。
     sync_tool_face(&installer.manager, slug, on);
+    // 批 4：policy 型启停同步（禁用 = 摘桥回内置；启用 = 重装桥）。
+    sync_policy_face(&installer.manager, slug, on);
     Ok(serde_json::json!({ "slug": slug, "enabled": on }))
 }
 
@@ -238,11 +315,18 @@ pub async fn cmd_uninstall(slug: &str) -> Result<serde_json::Value, String> {
     let installer = require_installer()?;
     // 注销前抓工具面信息（注册表摘除后拿不到 tool_name/op）。
     let sync = tool_event_of(&installer.manager, slug, false);
+    // 同理先抓策略面事件（注册表摘除后拿不到接管点清单）。
+    let policy_ev = policy_event_of(&installer.manager, slug, false);
     let existed = nemesis_plugins_wasm::install::uninstall(installer.manager.as_ref(), slug)
         .await
         .map_err(|e| e.to_string())?;
-    if existed && let Some(ev) = sync {
-        notify_tool_sync(ev);
+    if existed {
+        if let Some(ev) = sync {
+            notify_tool_sync(ev);
+        }
+        if let Some(ev) = policy_ev {
+            notify_policy_sync(ev);
+        }
     }
     Ok(serde_json::json!({ "slug": slug, "existed": existed }))
 }
@@ -271,6 +355,32 @@ fn tool_event_of(
 fn sync_tool_face(mgr: &nemesis_plugins_wasm::registry::PluginManager, slug: &str, on: bool) {
     if let Some(ev) = tool_event_of(mgr, slug, on) {
         notify_tool_sync(ev);
+    }
+}
+
+/// 从注册表投影策略面同步事件（`kind=policy` 且已装载才产生；`add=false`
+/// 用于禁用/注销——须在注册表摘除或禁用落盘前调用）。
+fn policy_event_of(
+    mgr: &nemesis_plugins_wasm::registry::PluginManager,
+    slug: &str,
+    add: bool,
+) -> Option<PolicySyncEvent> {
+    let reg = mgr.get(slug)?;
+    if *reg.manifest.kind != nemesis_plugins_wasm::manifest::PluginKind::Policy {
+        return None;
+    }
+    let pm = reg.policy_meta.as_ref()?;
+    Some(PolicySyncEvent {
+        add,
+        slug: slug.to_string(),
+        points: policy_points_of(pm),
+    })
+}
+
+/// 按当前注册表状态同步策略面（enable/disable 共用；非 policy 型 = 无事件）。
+fn sync_policy_face(mgr: &nemesis_plugins_wasm::registry::PluginManager, slug: &str, on: bool) {
+    if let Some(ev) = policy_event_of(mgr, slug, on) {
+        notify_policy_sync(ev);
     }
 }
 

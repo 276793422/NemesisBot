@@ -294,3 +294,47 @@ async fn estop_watcher_initial_alignment() {
     spawn_estop_watcher(&manager, &estop);
     assert!(!manager.is_enabled(), "启动时已急停 = 子系统初始冻结");
 }
+
+// ---------------------------------------------------------------------------
+// 策略桥投影（批 4）：截断纯函数回归面（字符边界——M2 家族）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn truncate_chars_short_passthrough() {
+    assert_eq!(super::truncate_chars("hello", 10), "hello");
+    assert_eq!(super::truncate_chars("", 4), "");
+}
+
+#[test]
+fn truncate_chars_ascii_cut() {
+    let out = super::truncate_chars("abcdefgh", 4);
+    assert_eq!(out, "abcd…");
+}
+
+#[test]
+fn truncate_chars_multibyte_never_panics_and_respects_boundary() {
+    // 中文 3 字节/字符：max 恰落在序列中间时切点必须回退到字符边界。
+    let s = "一二三四五六七";
+    let out = super::truncate_chars(s, 3);
+    assert_eq!(out, "一二三…");
+    // emoji（4 字节）同理。
+    let e = "a\u{1F600}b\u{1F600}c";
+    let out = super::truncate_chars(e, 2);
+    assert!(out.starts_with("a\u{1F600}"));
+    assert!(out.ends_with('…'));
+    assert!(
+        std::str::from_utf8(out.as_bytes()).is_ok(),
+        "输出必须恒为合法 UTF-8"
+    );
+}
+
+#[test]
+fn truncate_chars_exact_count_no_ellipsis() {
+    // 恰好等于上限 = 不截断不加省略号（幂等）。
+    let s = "abcd";
+    assert_eq!(super::truncate_chars(s, 4), "abcd");
+    assert_eq!(
+        super::truncate_chars(&super::truncate_chars(s, 4), 4),
+        "abcd"
+    );
+}
