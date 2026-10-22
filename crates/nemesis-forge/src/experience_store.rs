@@ -1,41 +1,23 @@
 //! Experience store - JSONL persistence for collected experiences.
 //!
 //! Provides read/write access to the experience JSONL file used by the
-//! reflector for statistical analysis. Supports date-based directory
-//! structure (YYYYMM/YYYYMMDD.jsonl), aggregation, top patterns, and cleanup.
+//! reflector for statistical analysis (flat `experiences.jsonl`, plus
+//! date-based cleanup).
 //!
-//! Matches Go's ExperienceStore with:
-//! - `read_aggregated(since)` / `read_aggregated_by_day(since)` - time-filtered reading
-//! - `get_top_patterns(since, top_n)` - time-filtered top patterns
-//! - `append_aggregated` with optional daily limit
-//! - `cleanup(max_age_days)` - remove expired files
+//! 注：聚合读写面（`AggregatedExperience` / `read_aggregated` /
+//! `get_top_patterns` 家族 / 每日限额）2026-10-22 整体移除——全链零生产
+//! 调用，是 write-only 死数据（审计 P2-a）。经验分析消费 `read_all` /
+//! `read_recent`。
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use tokio::io::AsyncWriteExt;
 
-use crate::types::{AggregatedExperience, CollectedExperience};
-
-/// Configuration for the experience store (mirrors Go's reference to ForgeConfig).
-#[derive(Debug, Clone)]
-pub struct ExperienceStoreConfig {
-    /// Maximum number of aggregated experiences to write per day (0 = unlimited).
-    pub max_experiences_per_day: usize,
-}
-
-impl Default for ExperienceStoreConfig {
-    fn default() -> Self {
-        Self {
-            max_experiences_per_day: 500,
-        }
-    }
-}
+use crate::types::CollectedExperience;
 
 /// An experience store that persists to JSONL with date-based organization.
 pub struct ExperienceStore {
     base_dir: PathBuf,
-    config: ExperienceStoreConfig,
 }
 
 impl ExperienceStore {
@@ -45,15 +27,6 @@ impl ExperienceStore {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self {
             base_dir: path.into(),
-            config: ExperienceStoreConfig::default(),
-        }
-    }
-
-    /// Create a new experience store with custom config.
-    pub fn with_config(path: impl Into<PathBuf>, config: ExperienceStoreConfig) -> Self {
-        Self {
-            base_dir: path.into(),
-            config,
         }
     }
 
@@ -61,55 +34,7 @@ impl ExperienceStore {
     pub fn from_forge_dir(forge_dir: &std::path::Path) -> Self {
         Self {
             base_dir: forge_dir.join("experiences"),
-            config: ExperienceStoreConfig::default(),
         }
-    }
-
-    /// Create an experience store from a forge directory with custom config.
-    pub fn from_forge_dir_with_config(
-        forge_dir: &std::path::Path,
-        config: ExperienceStoreConfig,
-    ) -> Self {
-        Self {
-            base_dir: forge_dir.join("experiences"),
-            config,
-        }
-    }
-
-    /// Append an aggregated experience to today's JSONL file.
-    ///
-    /// If `max_experiences_per_day` is set and the daily limit has been reached,
-    /// the record is silently skipped (matching Go's behavior).
-    pub async fn append_aggregated(&self, record: &AggregatedExperience) -> std::io::Result<()> {
-        let now = chrono::Local::now();
-        let month_dir = self.base_dir.join(now.format("%Y%m").to_string());
-        tokio::fs::create_dir_all(&month_dir).await?;
-
-        let file_path = month_dir.join(format!("{}.jsonl", now.format("%Y%m%d")));
-
-        // Check daily limit (matching Go's behavior)
-        if self.config.max_experiences_per_day > 0 {
-            let count = self.count_lines_in_file(&file_path).await;
-            if count >= self.config.max_experiences_per_day {
-                return Ok(()); // Skip silently
-            }
-        }
-
-        let mut file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&file_path)
-            .await?;
-
-        let mut line = serde_json::to_string(record)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-        line.push('\n');
-        file.write_all(line.as_bytes()).await?;
-        // tokio fs::File 的 write_all 只把字节提交到后台阻塞任务，不保证已写入
-        // 文件；drop 不等待未完成 IO。不显式 flush，read-your-writes 会被打破
-        // （2026-09-03 CI flake 根因：append 返回后立即读到空文件）。
-        file.flush().await?;
-        Ok(())
     }
 
     /// Append a collected experience (simple mode) to the JSONL file.
@@ -132,123 +57,6 @@ impl ExperienceStore {
         file.write_all(line.as_bytes()).await?;
         file.flush().await?;
         Ok(())
-    }
-
-    /// Read all aggregated experiences from JSONL files (all time).
-    pub async fn read_aggregated(&self) -> std::io::Result<Vec<AggregatedExperience>> {
-        self.read_aggregated_since(None).await
-    }
-
-    /// Read aggregated experiences since the given time.
-    ///
-    /// The filtering is done at the file level by checking the filename date
-    /// (YYYYMMDD.jsonl) against the `since` date. Files whose name-date is
-    /// before `since` are skipped entirely.
-    pub async fn read_aggregated_since(
-        &self,
-        since: Option<chrono::DateTime<chrono::Local>>,
-    ) -> std::io::Result<Vec<AggregatedExperience>> {
-        let mut results = Vec::new();
-        self.walk_jsonl_files_since(&mut results, since).await?;
-        Ok(results)
-    }
-
-    /// Read aggregated experiences grouped by day (all time).
-    ///
-    /// Returns a map of date string (YYYY-MM-DD) to a list of aggregated
-    /// experiences for that day.
-    pub async fn read_aggregated_by_day(
-        &self,
-    ) -> std::io::Result<HashMap<String, Vec<AggregatedExperience>>> {
-        self.read_aggregated_by_day_since(None).await
-    }
-
-    /// Read aggregated experiences grouped by day, filtered since the given time.
-    pub async fn read_aggregated_by_day_since(
-        &self,
-        since: Option<chrono::DateTime<chrono::Local>>,
-    ) -> std::io::Result<HashMap<String, Vec<AggregatedExperience>>> {
-        let records = self.read_aggregated_since(since).await?;
-        let mut grouped: HashMap<String, Vec<AggregatedExperience>> = HashMap::new();
-
-        for r in records {
-            // Extract date from last_seen (assume ISO 8601 format)
-            let day = r.last_seen.get(..10).unwrap_or("unknown").to_string();
-            grouped.entry(day).or_default().push(r);
-        }
-
-        Ok(grouped)
-    }
-
-    /// Get the top N patterns by count (all time).
-    ///
-    /// Merges records by pattern_hash, sorts by count descending,
-    /// and returns the top N.
-    pub async fn get_top_patterns(
-        &self,
-        top_n: usize,
-    ) -> std::io::Result<Vec<AggregatedExperience>> {
-        self.get_top_patterns_since(None, top_n).await
-    }
-
-    /// Get the top N patterns by count since the given time.
-    pub async fn get_top_patterns_since(
-        &self,
-        since: Option<chrono::DateTime<chrono::Local>>,
-        top_n: usize,
-    ) -> std::io::Result<Vec<AggregatedExperience>> {
-        let mut records = self.read_aggregated_since(since).await?;
-
-        // P3 确定性（2026-10-16）：合并用的滑动平均不可结合（(a+b)/2 再
-        // (c+d)/2 ≠ 按别的顺序并），而 JSONL 文件枚举顺序是平台实现细节
-        // （NTFS 字典序 vs ext4 哈希序）——不先排序，同盘数据跨平台/跨
-        // 重跑会得到不同的 avg/success_rate。按 (pattern_hash, last_seen)
-        // 排序后，同一 pattern 的记录恒按 last_seen 升序合并，结果唯一。
-        records.sort_by(|a, b| {
-            a.pattern_hash
-                .cmp(&b.pattern_hash)
-                .then_with(|| a.last_seen.cmp(&b.last_seen))
-        });
-
-        // Merge by pattern hash
-        let mut merged: HashMap<String, AggregatedExperience> = HashMap::new();
-        for r in records {
-            let entry = merged.entry(r.pattern_hash.clone()).or_insert_with(|| {
-                // (BUG #23, quality-hardening goal 冲刺 S8) 原实现 or_insert_with(|| r.clone())
-                // 后无条件 entry.count += r.count，导致每个 pattern 的**首个**记录
-                // count 被累计两次（3+5 合并成 11 而非 8）。插入时清零 count，统一走
-                // 下面的 += 累加路径，语义修正为跨记录求和。
-                let mut e = r.clone();
-                e.count = 0;
-                e
-            });
-            entry.count += r.count;
-            entry.avg_duration_ms = (entry.avg_duration_ms + r.avg_duration_ms) / 2;
-            entry.success_rate = (entry.success_rate + r.success_rate) / 2.0;
-            if r.last_seen > entry.last_seen {
-                entry.last_seen = r.last_seen.clone();
-            }
-        }
-
-        // Sort by count descending
-        let mut sorted: Vec<AggregatedExperience> = merged.into_values().collect();
-        sorted.sort_by_key(|a| std::cmp::Reverse(a.count));
-
-        if top_n > 0 && sorted.len() > top_n {
-            sorted.truncate(top_n);
-        }
-
-        Ok(sorted)
-    }
-
-    /// Get summary statistics (all time).
-    ///
-    /// Returns (total_records, unique_patterns).
-    pub async fn get_stats(&self) -> std::io::Result<(usize, usize)> {
-        let records = self.read_aggregated().await?;
-        let total: u64 = records.iter().map(|r| r.count).sum();
-        let unique = records.len();
-        Ok((total as usize, unique))
     }
 
     /// Remove experience files older than the specified number of days.
@@ -286,9 +94,9 @@ impl ExperienceStore {
         // descends YYYYMM/ subdirs (is_dir gate at the top), so the flat file
         // at base_dir — where the live collector actually writes — was never
         // cleaned and grew unbounded. Trim old CollectedExperience entries by
-        // timestamp and atomically rewrite. Legacy AggregatedExperience lines
-        // (pollution from before F-D1) are dropped during the rewrite.
-        // (F-D2)
+        // timestamp and atomically rewrite. Unparseable lines (e.g. legacy
+        // aggregate pollution from before F-D1) are dropped during the
+        // rewrite. (F-D2)
         let flat = self.base_dir.join("experiences.jsonl");
         if flat.exists() {
             let cutoff_dt = chrono::Local::now() - chrono::Duration::days(max_age_days);
@@ -381,82 +189,6 @@ impl ExperienceStore {
             tokio::fs::remove_file(&file_path).await?;
         }
         Ok(())
-    }
-
-    /// Check if a JSONL filename (YYYYMMDD.jsonl) is newer than or equal to
-    /// the given `since` time.
-    fn file_newer_than(filename: &str, since: &chrono::DateTime<chrono::Local>) -> bool {
-        let name = filename.trim_end_matches(".jsonl");
-        let since_str = since.format("%Y%m%d").to_string();
-        // Compare as string dates: YYYYMMDD format sorts lexicographically
-        name >= since_str.as_str()
-    }
-
-    /// Count lines in a file (non-empty lines only).
-    async fn count_lines_in_file(&self, path: &PathBuf) -> usize {
-        if !path.exists() {
-            return 0;
-        }
-        let content = match tokio::fs::read_to_string(path).await {
-            Ok(c) => c,
-            Err(_) => return 0,
-        };
-        content.lines().filter(|l| !l.trim().is_empty()).count()
-    }
-
-    /// Walk all JSONL files in the date-based directory structure, optionally
-    /// filtering by `since` date using the filename.
-    async fn walk_jsonl_files_since(
-        &self,
-        results: &mut Vec<AggregatedExperience>,
-        since: Option<chrono::DateTime<chrono::Local>>,
-    ) -> std::io::Result<()> {
-        if !self.base_dir.exists() {
-            return Ok(());
-        }
-
-        let mut month_entries = tokio::fs::read_dir(&self.base_dir).await?;
-        while let Some(month_entry) = month_entries.next_entry().await? {
-            if !month_entry.file_type().await?.is_dir() {
-                continue;
-            }
-            let mut file_entries = tokio::fs::read_dir(month_entry.path()).await?;
-            while let Some(file_entry) = file_entries.next_entry().await? {
-                let name = file_entry.file_name();
-                let name_str = name.to_string_lossy();
-                if !name_str.ends_with(".jsonl") {
-                    continue;
-                }
-
-                // Apply time filter on filename
-                if let Some(ref since_time) = since
-                    && !Self::file_newer_than(&name_str, since_time)
-                {
-                    continue;
-                }
-
-                let content = tokio::fs::read_to_string(file_entry.path()).await?;
-                for line in content.lines() {
-                    let line = line.trim();
-                    if line.is_empty() {
-                        continue;
-                    }
-                    if let Ok(rec) = serde_json::from_str::<AggregatedExperience>(line) {
-                        results.push(rec);
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Walk all JSONL files (no time filter - kept for backward compat).
-    #[allow(dead_code)]
-    async fn walk_jsonl_files(
-        &self,
-        results: &mut Vec<AggregatedExperience>,
-    ) -> std::io::Result<()> {
-        self.walk_jsonl_files_since(results, None).await
     }
 }
 

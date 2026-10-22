@@ -2982,3 +2982,84 @@ async fn test_execute_create_skill_action_slugifies_traversal_name() {
         entry.tool_signature
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_p0f2_run_cycle_trace_arm_evaluates_outcomes() {
+    // 审计 P0-F2（2026-10-22）：run_cycle Step1 轨迹臂接线。TraceStore
+    // （forge_dir/"traces"，与 gateway 装配点同形态）里有签名匹配的轨迹时，
+    // run_cycle 必须走 evaluate_outcomes 并把 last_efficacy 写回 registry——
+    // 此前轨迹零读者，实效对比链在这里断头。证据面：断言 last_efficacy
+    // 从 None 变 Some 且带 verdict（TraceStore 直读的原始事件是输入，
+    // registry 的实效快照是输出，中间整条链被钉住）。
+    use crate::trace_store::TraceStore;
+    use nemesis_types::forge::{Artifact, ArtifactKind, ArtifactStatus};
+    let dir = tempfile::tempdir().unwrap();
+    let forge_dir = dir.path().join("forge");
+    std::fs::create_dir_all(&forge_dir).unwrap();
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+
+    // Active skill with a tool signature matched by the seeded traces.
+    // created_at 久远 → 轨迹（now）全落 after 桶；6 条 ≥ 默认 min_samples 5。
+    registry.add(Artifact {
+        id: "skill-traced".into(),
+        name: "traced".into(),
+        kind: ArtifactKind::Skill,
+        version: "1.0".into(),
+        status: ArtifactStatus::Active,
+        content: "...".into(),
+        tool_signature: vec!["file_read".into()],
+        created_at: "2026-01-01T00:00:00+08:00".into(),
+        updated_at: "2026-01-01T00:00:00+08:00".into(),
+        usage_count: 10,
+        last_degraded_at: None,
+        success_rate: 0.0,
+        consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
+    });
+
+    let monitor = Arc::new(DeploymentMonitor::new(
+        ForgeConfig::default(),
+        registry.clone(),
+    ));
+    let cycle_store = CycleStore::new(&forge_dir);
+    let engine = LearningEngine::with_forge_dir(
+        ForgeConfig::default(),
+        forge_dir.clone(),
+        registry.clone(),
+        cycle_store,
+    );
+    engine.set_monitor(monitor);
+
+    // Seed the trace store the same way the tool-dispatch side does:
+    // tool_call events keyed by session_key, data {tool, ok}.
+    let store = TraceStore::new(forge_dir.join("traces"));
+    for i in 0..6 {
+        store
+            .append(&crate::trace::TraceEvent {
+                id: uuid::Uuid::new_v4().to_string(),
+                event_type: "tool_call".into(),
+                session_key: format!("web:{i}"),
+                timestamp: chrono::Local::now().to_rfc3339(),
+                data: serde_json::json!({"tool": "file_read", "ok": true}),
+            })
+            .await
+            .unwrap();
+    }
+
+    let cycle = engine.run_cycle(&[]).await;
+    assert_eq!(cycle.status, nemesis_types::forge::CycleStatus::Completed);
+
+    let updated = registry.get("skill-traced").unwrap();
+    let efficacy = updated
+        .last_efficacy
+        .expect("trace arm must evaluate matched traces and write last_efficacy back");
+    assert!(
+        efficacy.verdict == "positive"
+            || efficacy.verdict == "neutral"
+            || efficacy.verdict == "observing",
+        "unexpected verdict from all-success traces: {}",
+        efficacy.verdict
+    );
+    assert_eq!(efficacy.samples_after, 6);
+}
