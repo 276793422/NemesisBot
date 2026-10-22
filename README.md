@@ -184,7 +184,7 @@ cargo run -p cluster-test
 #### 质量基准（可复现）
 
 质量证据清单（每项附复现命令）见 **[docs/INFO/2026-09-24_公开基准.md](docs/INFO/2026-09-24_公开基准.md)**。
-摘要：agent 单 crate lib 测试 2359、CLI 集成 589 断言/22 命令、集群 UAT
+摘要：agent 单 crate lib 测试 3386（2026-10-22 复测；基准文档记 2359）、CLI 集成 589 断言/22 命令、集群 UAT
 70+ 场景双节点端到端（T1-T48 主链 + T-XFER/T-MRG/T-CONN/T-MONITOR +
 U 职能系列）、全 workspace 行覆盖 CI 硬门槛 84%（cargo-llvm-cov
 `--fail-under-lines` 防倒退；2026-09 实测 87.85%）、测试/生产代码行数比 160%、
@@ -859,7 +859,7 @@ NemesisBot 采用 **双授权（dual-license）** 模式：同一份代码，两
 
 ### 其他
 
-- **第三方组件**：见 [THIRDPARTY.md](THIRDPARTY.md)，全树无 GPL/AGPL/LGPL 强 copyleft 依赖（ClamAV 走网络协议，不打包、不传染）。
+- **第三方组件**：见 [THIRDPARTY.md](THIRDPARTY.md)，依赖树无 GPL/AGPL/LGPL 强 copyleft（仅 3 处文件级 MPL）；ClamAV 走网络协议、Sandboxie / QEMU 为运行时按需自装——均不打包、不传染。
 - **贡献者**：外部 PR 须接受 [CLA.md](CLA.md)，以维持双授权能力。
 
 ---

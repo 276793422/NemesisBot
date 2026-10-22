@@ -2,7 +2,7 @@
 
 > **说明**：本协议是简化版 CLA，目的是让 NemesisBot 的版权持有方（"项目方"）在接受外部贡献后，仍能保持 [AGPL-3.0](LICENSE) 公开版 + [商业授权](COMMERCIAL_LICENSE.md) 的双授权模式。本协议不构成法律意见，正式启用前建议项目方咨询律师。
 >
-> **签署方式**：贡献者在首次提交 Pull Request 时，在 PR 描述中包含 "I have read and agree to the NemesisBot CLA (CONTRIBUTING/CLA.md)." 即视为接受。或按项目方要求签署本协议。
+> **签署方式**：贡献者在首次提交 Pull Request 时，在 PR 描述中包含 "I have read and agree to the NemesisBot CLA (CLA.md)." 即视为接受。或按项目方要求签署本协议。
 
 ---
 
