@@ -121,6 +121,12 @@ pub struct WebChannel {
     config: WebChannelConfig,
     server: parking_lot::RwLock<Option<Arc<dyn WebServerOps>>>,
     running: AtomicBool,
+    /// C4（2026-10-24 死会话软失败）：已做过「目标会话不存在」一次性
+    /// WARN 的 session_id 集合。标签页关闭/重连后旧 chat_id 失效是常态
+    /// （ConvRouter latest-wins 设计的预期后果，正文已落 chat_log 可经
+    /// 历史加载恢复），逐轮 ERROR 刷屏无信息量——每目标只 WARN 一次，
+    /// 后续降 debug。
+    dead_targets: parking_lot::Mutex<std::collections::HashSet<String>>,
 }
 
 impl WebChannel {
@@ -131,6 +137,7 @@ impl WebChannel {
             config,
             server: parking_lot::RwLock::new(None),
             running: AtomicBool::new(false),
+            dead_targets: parking_lot::Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -142,6 +149,25 @@ impl WebChannel {
     /// Inject the web server implementation.
     pub fn set_server(&self, ops: Arc<dyn WebServerOps>) {
         *self.server.write() = Some(ops);
+    }
+
+    /// C4（2026-10-24）：死目标会话一次性留痕——同 session_id 首次 WARN
+    /// （带恢复路径说明），之后 debug。跨消息去重靠 `dead_targets` 集合。
+    fn note_dead_target(&self, session_id: &str, chat_id: &str) {
+        let first = self.dead_targets.lock().insert(session_id.to_string());
+        if first {
+            warn!(
+                session_id = %session_id,
+                chat_id = %chat_id,
+                "[WebChannel] outbound target session is gone (tab closed / reconnected?); message kept in chat history only, further reports for this target downgraded to debug"
+            );
+        } else {
+            debug!(
+                session_id = %session_id,
+                chat_id = %chat_id,
+                "[WebChannel] outbound target session still gone; message kept in chat history only"
+            );
+        }
     }
 
     /// Get a reference to the web server implementation, if set.
@@ -329,6 +355,15 @@ impl Channel for WebChannel {
             msg.meta.session_key.as_deref(),
             msg.meta.source_node.as_deref(),
         ) {
+            // C4（2026-10-24 死会话软失败）：目标会话已不在（标签页关闭/
+            // 重连换新 session id，ConvRouter latest-wins 残留旧绑定）——
+            // 不进 manager 错误路径（dispatch loop WARN + 重试箱），一次性
+            // WARN + 后续 debug，返回 Ok。正文已由 agent 落 chat_log，历史
+            // 加载即恢复。字符串是 nemesis-web session.rs 的稳定产物。
+            if e.contains("session not found or no send queue") {
+                self.note_dead_target(session_id, &msg.chat_id);
+                return Ok(());
+            }
             error!(
                 error = %e,
                 session_id = %session_id,

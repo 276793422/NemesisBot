@@ -335,3 +335,75 @@ async fn f2_queue_mode_idle_keeps_marker_literal() {
     assert_eq!(model_saw, "! Queue 模式下保持原样");
     assert_eq!(user_row["content"], "! Queue 模式下保持原样");
 }
+
+// ---------------------------------------------------------------------------
+// C4（2026-10-24 cron 合闸）：busy 闸丢弃同 job 重复 tick
+// ---------------------------------------------------------------------------
+
+fn cron_tick(job: &str, key: &str, content: &str) -> nemesis_types::channel::InboundMessage {
+    let mut m = nemesis_types::channel::InboundMessage {
+        channel: "web".to_string(),
+        sender_id: format!("cron:{job}"),
+        chat_id: "web:x".to_string(),
+        content: content.to_string(),
+        media: vec![],
+        session_key: key.to_string(),
+        correlation_id: String::new(),
+        metadata: Default::default(),
+        voice_playback: None,
+    };
+    m.metadata
+        .insert("cron_job_id".to_string(), job.to_string());
+    m
+}
+
+#[test]
+fn cron_tick_coalesced_when_same_job_already_queued() {
+    let mut al = AgentLoop::new(Box::new(CovQuietProvider), test_config());
+    al.concurrent_mode = ConcurrentMode::Queue;
+    let key = "agent:main:session:croncoalesce";
+
+    // busy：占住会话，后续消息全走入队路径。
+    assert!(al.try_acquire_session(key));
+
+    // tick 1：正常入队（排队回执）。
+    let GateOutcome::Immediate { response, .. } =
+        al.gate_inbound(&cron_tick("job-a", key, "tick1"))
+    else {
+        panic!("expected immediate queue receipt");
+    };
+    assert!(response.contains("已排队"), "response={response}");
+
+    // tick 2 同 job：合闸丢弃（Coalesced，无回执）。
+    let GateOutcome::Coalesced { cron_job_id } = al.gate_inbound(&cron_tick("job-a", key, "tick2"))
+    else {
+        panic!("expected coalesced");
+    };
+    assert_eq!(cron_job_id, "job-a");
+    assert_eq!(al.inbox.pending(key), (1, 0), "队列仍只有 tick1 一条");
+
+    // 不同 job 不受影响：照常入队。
+    let GateOutcome::Immediate { .. } = al.gate_inbound(&cron_tick("job-b", key, "tick3")) else {
+        panic!("expected queued for other job");
+    };
+    assert_eq!(al.inbox.pending(key), (2, 0));
+
+    // 用户消息（无 cron_job_id）永不合闸。
+    let mut user = cron_tick("job-a", key, "普通用户消息");
+    user.metadata.remove("cron_job_id");
+    user.sender_id = String::new();
+    let GateOutcome::Immediate { .. } = al.gate_inbound(&user) else {
+        panic!("expected queued for user message");
+    };
+    assert_eq!(al.inbox.pending(key), (3, 0));
+
+    // 合闸上界：再来的 job-a tick 全部丢弃，队列恒 ≤ 1 条/job。
+    for i in 0..5 {
+        let GateOutcome::Coalesced { .. } =
+            al.gate_inbound(&cron_tick("job-a", key, &format!("burst{i}")))
+        else {
+            panic!("expected coalesced for burst{i}");
+        };
+    }
+    assert_eq!(al.inbox.pending(key), (3, 0), "burst 未改变队列");
+}

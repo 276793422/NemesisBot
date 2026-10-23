@@ -271,6 +271,23 @@ impl Inbox {
     pub fn capacity(&self) -> usize {
         self.capacity
     }
+
+    /// C4（2026-10-24 cron 合闸）：会话队列里是否已有同一 cron job 的待处
+    /// 理消息（next_turn + next_step 都算）。cron 触发间隔小于轮次处理时长
+    /// 时，无合闸的 FIFO 会无限积压（每 tick 一条、每条一轮 LLM 全量上下
+    /// 文重发）；admission 的 busy 闸用本判定丢弃同 job 重复 tick，把积压
+    /// 上界钉在「1 条在途 + 1 条排队」。
+    pub fn has_pending_cron_job(&self, session_key: &str, cron_job_id: &str) -> bool {
+        let all = self.queues.lock();
+        all.get(session_key).is_some_and(|q| {
+            q.next_turn
+                .iter()
+                .any(|m| m.msg.metadata.get("cron_job_id").map(|s| s.as_str()) == Some(cron_job_id))
+                || q.next_step.iter().any(|m| {
+                    m.msg.metadata.get("cron_job_id").map(|s| s.as_str()) == Some(cron_job_id)
+                })
+        })
+    }
 }
 
 pub type SharedInbox = Arc<Inbox>;
