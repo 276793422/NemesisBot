@@ -971,17 +971,11 @@ impl AgentLoop {
             .unwrap_or(active)
     }
 
-    /// Resolve the active model's per-model output token cap (`max_output_tokens`)
-    /// from config.json, used as the chat request's `max_tokens`. Reads config
-    /// fresh each call (like `current_display_model`). `None` when config is
-    /// unavailable (standalone mode) or the field is absent — caller falls back
-    /// to the 8192 default. Lets each model declare its real output ceiling so
-    /// large files write in one shot instead of truncating at a blanket cap.
     /// H4 (U16 half): the active model's reasoning-effort tier from
     /// config.json (`model set-effort`). None when unset/"off"/standalone.
-    /// 两者均带 detached 覆盖参数（BUG 2026-10-08 `board.plan.model`
+    /// 带 detached 覆盖参数（BUG 2026-10-08 `board.plan.model`
     /// dead-key 修复）：`override_model` = Some 时按覆盖模型名查 per-model
-    /// 键（planner 覆盖跑该模型的 effort/max_tokens 口径），None = 主
+    /// 键（planner 覆盖跑该模型的 effort 口径），None = 主
     /// active_model 原路径字节不变。
     pub(crate) fn current_reasoning_effort_override(
         &self,
@@ -998,19 +992,35 @@ impl AgentLoop {
             .and_then(|v| nemesis_types::capability::resolve_reasoning_effort(&v, &active))
     }
 
+    /// Resolve the active model's per-model output token cap (`max_output_tokens`)
+    /// from config.json, used as the chat request's `max_tokens`. Reads config
+    /// fresh each call (like `current_display_model`). Fallback chain
+    /// (2026-10-23 P0): per-model `max_output_tokens` >
+    /// `agents.defaults.max_tokens` > caller-side `unwrap_or(DEFAULT_MAX_TOKENS)`
+    /// (64K, see `nemesis_types::capability::DEFAULT_MAX_TOKENS`). Lets each
+    /// model declare its real output ceiling so large files write in one shot
+    /// instead of truncating at a blanket cap.
+    /// 带 detached 覆盖参数（BUG 2026-10-08 `board.plan.model`
+    /// dead-key 修复）：`override_model` = Some 时按覆盖模型名查 per-model
+    /// 键（planner 覆盖跑该模型的 max_tokens 口径），None = 主
+    /// active_model 原路径字节不变。
     pub(crate) fn current_max_tokens_override(&self, override_model: Option<&str>) -> Option<u32> {
         let active = match override_model {
             Some(m) => m.to_string(),
             None => self.active_model.read().clone(),
         };
         let path = self.config_path.read().clone()?;
-        std::fs::read_to_string(&path)
+        let cfg: serde_json::Value = std::fs::read_to_string(&path)
             .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|v| nemesis_types::capability::resolve_max_output_tokens(&v, &active))
+            .and_then(|s| serde_json::from_str(&s).ok())?;
+        // 回退链（2026-10-23 P0）：条目 max_output_tokens > agents.defaults.
+        // max_tokens > 调用方 unwrap_or(DEFAULT_MAX_TOKENS)。旧实现跳过中间
+        // 级——config 里 agents.defaults.max_tokens 在主轮路径是死键。
+        nemesis_types::capability::resolve_max_output_tokens(&cfg, &active)
+            .or_else(|| nemesis_types::capability::resolve_agents_default_max_tokens(&cfg))
             // u32 值域外（负数 / >u32::MAX）= 配置坏值，按缺席处理（调用方
-            // 回落 8192 默认）。裸 `as` 会把 -1 回绕成 4294967291——请求带
-            // 巨值 max_tokens 打爆 provider 400（2026-10-23）。
+            // 回落 DEFAULT_MAX_TOKENS 默认）。裸 `as` 会把 -1 回绕成
+            // 4294967291——请求带巨值 max_tokens 打爆 provider 400（2026-10-23）。
             .and_then(|n| u32::try_from(n).ok())
     }
 

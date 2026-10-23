@@ -249,11 +249,31 @@ const sendMode = ref<'now' | 'steer' | 'queue'>('now')
  *  消息排队——前端不提供假插队）。 */
 const steerOptionAvailable = computed(() => isDefaultChat.value && steerEnabled.value)
 
+/** BUG-1（2026-10-23）：【立即】按钮忙碌时的**实际路由**展示。后端插队
+ *  通道只在 steer 模式存在（admission.rs 仅 ConcurrentMode::Steer 认 `!`，
+ *  queue 模式一律入队），所以忙碌时「立即」的字面必须跟着降级：
+ *  steer 模式 → 立即→插队（发送侧自动补 `!`）；queue 模式 → 立即→排队。
+ *  空闲恢复「立即」。按钮高亮 = 用户偏好，字面 = 实际通道，两者不再相反。 */
+const nowLabel = computed(() => {
+  if (!streaming.value) return '立即'
+  return steerOptionAvailable.value ? '立即→插队' : '立即→排队'
+})
+const nowTitle = computed(() =>
+  !streaming.value
+    ? '立即发送（默认）：agent 忙碌时自动插队（steer 模式）或排队（queue 模式）'
+    : steerOptionAvailable.value
+      ? '忙碌中：本次发送将插队注入当前轮'
+      : '忙碌中：当前为排队模式（后端未开插队通道），本次发送将排队，本轮结束后自动执行',
+)
+
 /** 按三态归约上行文本：
  *  - steer：确保 `! ` 前缀（已带 `!`/`！` 不重复加）。
  *  - queue：剥掉行首 `!`/`！` 标记——显式选择「排队」压过文本里的
  *    路由标记（否则用户选了排队仍会被后端路由成插队）。
- *  - now：原样。 */
+ *  - now：原样；但忙碌时按字面语义升级为 steer（自动补 `!` 注入当前
+ *    轮）——旧行为被服务端排队、徽章盖「已排队」，按钮高亮【立即】
+ *    行为却是【排队】（BUG 2026-10-23 对话链路三缺陷 BUG-1）。空闲时
+ *    `!` 会被后端剥掉（admission 空闲态剥标记），补前缀无害。 */
 function applySendMode(text: string): string {
   if (sendMode.value === 'steer') {
     return /^[!！]/.test(text.trimStart()) ? text : '! ' + text
@@ -263,6 +283,9 @@ function applySendMode(text: string): string {
     // 「 ！ xx」检测说有前缀、剥除剥不掉，显式排队出列后仍被后端
     // 路由成插队。
     return text.replace(/^\s*[!！]\s*/, '')
+  }
+  if (streaming.value && steerOptionAvailable.value) {
+    return /^[!！]/.test(text.trimStart()) ? text : '! ' + text
   }
   return text
 }
@@ -438,6 +461,26 @@ function scrollToBottom() {
   if (chatMessages.value) {
     chatMessages.value.scrollTop = chatMessages.value.scrollHeight
   }
+}
+
+// --- BUG-3（2026-10-23 对话链路三缺陷）：失败待续状态条 -----------------
+// 错误收尾轮后用户「完全看不到任何可能让任务继续做下去的标记」。会话
+// 最后一条消息为 error 且当前空闲 = 上一轮异常中止；状态条常驻 + 一键
+// 从断点继续。发送新消息视为已接手（dismiss，下一轮失败重新亮出）。
+const failedTurnDismissed = ref(false)
+const lastTurnFailed = computed(() => {
+  if (streaming.value || failedTurnDismissed.value) return false
+  const msgs = chatStore.messages
+  const last = msgs[msgs.length - 1]
+  return !!last && last.role === 'error'
+})
+watch(streaming, (busy) => {
+  if (busy) failedTurnDismissed.value = false
+})
+function continueFailedTurn() {
+  failedTurnDismissed.value = true
+  chatStore.input = '继续：从上一步中断处接着做。先简要说明当前进度与剩余步骤，再继续执行。'
+  sendMessage()
 }
 
 // Track whether user is near the bottom of the chat.
@@ -1917,10 +1960,22 @@ function sendMessage() {
 
   // P4（能力扩展 WS8）：三态路由归约（插队补 `!` 前缀 / 排队剥 `!` 标记）。
   // 归约后可能为空（输入恰好只有 `!` 且选了排队）→ 无内容无图诚实不发。
+  // BUG-1（2026-10-23）：忙碌时「立即」自动升级 steer——发送后 toast 回显
+  // 实际通道，按钮语义与实际路由一致（排队模式 toast「已排队」）。
+  const busySteerUpgrade = streaming.value && sendMode.value === 'now' && steerOptionAvailable.value
   const routed = applySendMode(content)
   if (!routed && media.length === 0) return
 
   sendValidated(routed, media)
+  if (busySteerUpgrade) {
+    toast.info('忙碌中：【立即】已插队注入当前轮（不想打断请选 ⏭排队）')
+  } else if (streaming.value && sendMode.value === 'steer') {
+    toast.info('已发送插队（! 前缀），将注入当前轮的下一步')
+  } else if (streaming.value) {
+    // 显式排队，或 queue 模式下「立即」的降级路由（BUG-1 主场景：
+    // 此前这里静默——按钮高亮【立即】、实际排队，用户零反馈）。
+    toast.info('已排队，当前轮结束后自动执行')
+  }
 }
 
 /** 输入校验通过后的实际发送（sendMessage 的 async 续体；2026-09-26 起
@@ -2928,6 +2983,11 @@ onUnmounted(() => {
       <span v-if="steerCount > 0" class="qb-steer" title="插队（steer）队列条数——下一轮 LLM 调用前注入当前轮">⚡插队 {{ steerCount }}</span>
       <span v-if="followUpCount > 0" class="qb-followup" title="排队（followUp）队列条数——当前轮结束后依次处理">⏭排队 {{ followUpCount }}</span>
     </div>
+    <!-- BUG-3（2026-10-23）：失败待续状态条——错误轮后任务状态可见 + 一键从断点继续 -->
+    <div v-if="lastTurnFailed" class="failed-strip">
+      <span class="failed-text">⚠ 上一轮异常中止，任务未完成（上文正文已保留，可直接继续）</span>
+      <button class="failed-continue-btn" title="发送继续指令，从断点接着做" @click="continueFailedTurn">▶ 从断点继续</button>
+    </div>
     <!-- F1: 计划模式常驻条（工具栏可折叠，安全相关状态需要始终可见） -->
     <div v-if="isDefaultChat && chatStore.agentMode === 'plan'" class="plan-strip">
       📋 计划模式：文件修改类工具已停用（plans/ 目录写入放行）— 点击上方徽标或发送 /build 切回
@@ -3052,9 +3112,9 @@ onUnmounted(() => {
           class="sm-opt"
           :class="{ active: sendMode === 'now' }"
           type="button"
-          title="立即发送（默认）：agent 忙碌时按后端模式排队或插队"
+          :title="nowTitle"
           @click="sendMode = 'now'"
-        >立即</button>
+        >{{ nowLabel }}</button>
         <button
           v-if="steerOptionAvailable"
           class="sm-opt sm-steer"
@@ -3229,6 +3289,37 @@ onUnmounted(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* BUG-3（2026-10-23）：失败待续状态条（plan-strip 同款布局，错误色） */
+.failed-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  font-size: var(--text-xs);
+  color: #f56c6c;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+.failed-strip .failed-text {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.failed-strip .failed-continue-btn {
+  flex-shrink: 0;
+  padding: 2px 10px;
+  font-size: var(--text-xs);
+  color: #f56c6c;
+  background: transparent;
+  border: 1px solid #f56c6c;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.failed-strip .failed-continue-btn:hover {
+  color: #fff;
+  background: #f56c6c;
 }
 /* M5: 会话级 context/cost 常驻条 */
 .usage-strip {

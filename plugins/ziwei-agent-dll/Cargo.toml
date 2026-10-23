@@ -1,0 +1,33 @@
+[package]
+name = "ziwei-agent-dll"
+version = "0.1.0"
+license = "AGPL-3.0-only"
+edition = "2021"
+description = "NemesisBot ziwei payload DLL — injected into target processes to expose read_mem/ping/unload over a named pipe (bot is the pipe server, payload is the client)"
+
+# Standalone project — NOT part of the main workspace (cdylib has separate target).
+[workspace]
+
+[lib]
+name = "ziwei_agent_dll"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+# Intentionally dependency-free: this DLL runs inside third-party processes
+# and must stay tiny and self-contained (static CRT, no allocator churn).
+# All Win32 access is hand-declared; JSON frames are hand-rolled.
+
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = true
+codegen-units = 1
+
+# Build（x64 + x86 双架构，产物拷贝改名到 bin/）：
+#   cd plugins/ziwei-agent-dll
+#   cargo build --release --target x86_64-pc-windows-msvc
+#   cargo build --release --target i686-pc-windows-msvc
+#   cp target/x86_64-pc-windows-msvc/release/ziwei_agent_dll.dll ../ziwei-agent-dll/bin/ziwei_agent_x64.dll
+#   cp target/i686-pc-windows-msvc/release/ziwei_agent_dll.dll    ../ziwei-agent-dll/bin/ziwei_agent_x86.dll
+# 或在仓库根：bash plugins/ziwei-agent-dll/build.sh

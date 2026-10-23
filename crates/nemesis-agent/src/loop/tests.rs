@@ -201,12 +201,15 @@ async fn simple_text_response() {
 }
 
 /// A usage whose completion_tokens sits exactly at the default max_tokens cap
-/// (8192) — the truncation signal the continue-generation path detects.
+/// (DEFAULT_MAX_TOKENS=64K; 8192 before the 2026-10-23 P0 fix) — the truncation
+/// signal the continue-generation path detects. References the constant so a
+/// future default change can't silently stale the fixture.
 fn cap_usage() -> Option<crate::loop_executor::ObserverUsageInfo> {
+    let completion = nemesis_types::capability::DEFAULT_MAX_TOKENS;
     Some(crate::loop_executor::ObserverUsageInfo {
         prompt_tokens: 100,
-        completion_tokens: 8192,
-        total_tokens: 8292,
+        completion_tokens: completion,
+        total_tokens: 100 + completion,
         cached_tokens: None,
         cache_creation_tokens: None,
         cache_read_tokens: None,

@@ -1,6 +1,8 @@
 //! §6.2 翻倍阶梯（length_escalation）行为测试。
 //!
-//! - 烧穿判定：`length` + 空正文 + 无工具调用才翻倍（非空截断 / 工具调用
+//! - 烧穿判定：`length` + 空正文 +（① 无工具调用 = 纯思考烧穿；② 工具
+//!   参数全为空对象/空串/非法 JSON 且 schema 需要参数 = 工具参数截断，
+//!   BUG 2026-10-23 第四形态）才翻倍（非空截断 / 带合法参数的工具调用
 //!   形态不翻倍，既有 continue-generation 接管）；
 //! - 阶梯跳变：8192 起点撞顶直接跳 32K 地板；32768 起点顺 ×2；
 //! - 封顶收口：翻到 ceiling（默认 262144）仍空 = 停止重发、响应带
@@ -177,29 +179,35 @@ async fn non_empty_truncation_does_not_escalate() {
 }
 
 #[tokio::test]
-async fn tool_call_length_does_not_escalate() {
-    // length + 工具调用形态：参数可能被截断，但不是思考烧穿（有产出），
-    // 交给下游截断处理，不翻倍。
-    let (loop_, calls, _script) = scripted_pair(vec![LlmResponse {
-        content: String::new(),
-        tool_calls: vec![ToolCallInfo {
-            id: "tc1".to_string(),
-            name: "exec".to_string(),
-            arguments: "{}".to_string(),
-        }],
-        finished: false,
-        reasoning_content: None,
-        finish_reason: Some("length".to_string()),
-        escalated_to: None,
-        usage: None,
-        raw_request_body: None,
-        raw_response_body: None,
-    }]);
+async fn unknown_tool_schema_empty_args_conservatively_burned() {
+    // BUG 2026-10-23 第四形态改写（原 `tool_call_length_does_not_escalate`
+    // 的「参数可能被截断但交给下游」假设已被事故证伪——multiedit 大参数
+    // 零进度循环到停轮，见 docs/BUG/2026-10-23_max-tokens-8192截断撞顶复
+    // 发.md）：length + 空正文 + 参数 `{}` 且 schema 未知 → 保守按截断烧
+    // 穿翻倍。误升级代价 = 一次更高 cap 重发收敛；漏判代价 = 停轮。
+    let (loop_, calls, _script) = scripted_pair(vec![
+        LlmResponse {
+            content: String::new(),
+            tool_calls: vec![ToolCallInfo {
+                id: "tc1".to_string(),
+                name: "exec".to_string(),
+                arguments: "{}".to_string(),
+            }],
+            finished: false,
+            reasoning_content: None,
+            finish_reason: Some("length".to_string()),
+            escalated_to: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        },
+        ok_response("done"),
+    ]);
     let resp = call_escalating(&loop_, "test-model", opts(8192))
         .await
         .expect("call should succeed");
-    assert_eq!(resp.escalated_to, None);
-    assert_eq!(max_tokens_seq(&calls), vec![Some(8192)]);
+    assert_eq!(resp.content, "done");
+    assert_eq!(max_tokens_seq(&calls), vec![Some(8192), Some(32_768)]);
 }
 
 #[tokio::test]
@@ -316,6 +324,155 @@ async fn options_none_never_escalates() {
         .expect("call should succeed");
     assert_eq!(resp.escalated_to, None);
     assert_eq!(max_tokens_seq(&calls), vec![None]);
+}
+
+// ---------------------------------------------------------------------------
+// BUG 2026-10-23 第四形态专项：工具参数截断（schema 已知形态）
+// ---------------------------------------------------------------------------
+
+/// 工具定义（按 props/required 构造 parameters schema）。
+fn tool_def(name: &str, props: &[&str], required: &[&str]) -> crate::types::ToolDefinition {
+    let properties: serde_json::Map<String, serde_json::Value> = props
+        .iter()
+        .map(|p| (p.to_string(), serde_json::json!({"type": "string"})))
+        .collect();
+    crate::types::ToolDefinition {
+        tool_type: "function".to_string(),
+        function: crate::types::ToolFunctionDef {
+            name: name.to_string(),
+            description: String::new(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": properties,
+                "required": required,
+            }),
+        },
+    }
+}
+
+/// length + 空正文 + 单工具调用（可注入 args）。
+fn args_response(args: &str) -> LlmResponse {
+    LlmResponse {
+        content: String::new(),
+        tool_calls: vec![ToolCallInfo {
+            id: "tc1".to_string(),
+            name: "multiedit".to_string(),
+            arguments: args.to_string(),
+        }],
+        finished: false,
+        reasoning_content: None,
+        finish_reason: Some("length".to_string()),
+        escalated_to: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    }
+}
+
+/// 带 tools 供给的阶梯调用（第四形态判定依赖 schema）。
+async fn call_escalating_with_tools(
+    loop_: &Arc<AgentLoop>,
+    model: &str,
+    options: Option<crate::types::ChatOptions>,
+    tools: Vec<crate::types::ToolDefinition>,
+) -> Result<LlmResponse, String> {
+    let provider = loop_.provider.read().clone();
+    loop_
+        .chat_call_escalating(0, &provider, model, Vec::new(), options, tools)
+        .await
+}
+
+#[tokio::test]
+async fn truncated_empty_object_args_escalate() {
+    // 事故形态重放（anthropic lane）：截断 input 被归一化成 `{}`，schema
+    // 需要参数 → 判截断烧穿，8192 → 32K 地板重发，第二次正常收口。
+    let (loop_, calls, _script) = scripted_pair(vec![args_response("{}"), ok_response("done")]);
+    let resp = call_escalating_with_tools(
+        &loop_,
+        "test-model",
+        opts(8192),
+        vec![tool_def("multiedit", &["path", "edits"], &["path"])],
+    )
+    .await
+    .expect("call should succeed");
+    assert_eq!(resp.content, "done");
+    assert_eq!(max_tokens_seq(&calls), vec![Some(8192), Some(32_768)]);
+}
+
+#[tokio::test]
+async fn invalid_json_args_escalate() {
+    // 事故形态重放（openai 兼容 lane）：截断 args 是非法 JSON 原文
+    // （2026-08-10 报告 EOF 指纹）→ 同样翻倍。
+    let (loop_, calls, _script) = scripted_pair(vec![
+        args_response("{\"edits\":[{\"old_string\""),
+        ok_response("done"),
+    ]);
+    call_escalating_with_tools(
+        &loop_,
+        "test-model",
+        opts(8192),
+        vec![tool_def("multiedit", &["edits"], &["edits"])],
+    )
+    .await
+    .expect("call should succeed");
+    assert_eq!(max_tokens_seq(&calls), vec![Some(8192), Some(32_768)]);
+}
+
+#[tokio::test]
+async fn no_arg_tool_empty_args_not_burned() {
+    // 无参工具（schema 无 properties/required）的 `{}` 是合法调用 → 不翻倍
+    // （交下游：hit_cap 空正文守卫照常兜底）。注意工具名须与 args_response
+    // 的调用名一致（schema 按名查）。
+    let (loop_, calls, _script) = scripted_pair(vec![args_response("{}")]);
+    let resp = call_escalating_with_tools(
+        &loop_,
+        "test-model",
+        opts(8192),
+        vec![tool_def("multiedit", &[], &[])],
+    )
+    .await
+    .expect("call should succeed");
+    assert_eq!(resp.escalated_to, None);
+    assert_eq!(max_tokens_seq(&calls), vec![Some(8192)]);
+}
+
+#[tokio::test]
+async fn valid_args_not_burned_continuation_takes_over() {
+    // 带合法参数的工具调用 = 可执行进度 → 不翻倍（既有 continue-generation
+    // 接管，分工边界保持）。
+    let (loop_, calls, _script) = scripted_pair(vec![args_response(r#"{"edits":[]}"#)]);
+    let resp = call_escalating_with_tools(
+        &loop_,
+        "test-model",
+        opts(8192),
+        vec![tool_def("multiedit", &["edits"], &["edits"])],
+    )
+    .await
+    .expect("call should succeed");
+    assert_eq!(resp.escalated_to, None);
+    assert_eq!(max_tokens_seq(&calls), vec![Some(8192)]);
+    assert_eq!(resp.finish_reason.as_deref(), Some("length"));
+}
+
+#[tokio::test]
+async fn mixed_valid_and_truncated_args_not_burned() {
+    // 一合法一截断混合 → 不判烧穿（存在可执行进度，翻倍重发反而丢弃它）。
+    let mut resp = args_response("{}");
+    resp.tool_calls.push(ToolCallInfo {
+        id: "tc2".to_string(),
+        name: "multiedit".to_string(),
+        arguments: r#"{"edits":[]}"#.to_string(),
+    });
+    let (loop_, calls, _script) = scripted_pair(vec![resp]);
+    call_escalating_with_tools(
+        &loop_,
+        "test-model",
+        opts(8192),
+        vec![tool_def("multiedit", &["edits"], &["edits"])],
+    )
+    .await
+    .expect("call should succeed");
+    assert_eq!(max_tokens_seq(&calls), vec![Some(8192)]);
 }
 
 #[tokio::test]

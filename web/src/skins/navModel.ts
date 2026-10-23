@@ -46,6 +46,8 @@ const ITEM_FEATURE: Record<string, string> = {
   vm: 'VM',
   board: 'BOARD',
   terminal: 'TERMINAL',
+  // 紫微系统（2026-10-22）：三方程序受控接管（VITE_FEATURE_ZIWEI 门控）。
+  ziwei: 'ZIWEI',
 }
 
 export const NAV_GROUPS: NavGroupModel[] = [
@@ -103,6 +105,9 @@ export const NAV_GROUPS: NavGroupModel[] = [
       { id: 'sandbox', label: '沙盒', route: '/sandbox', icon: 'M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2zm0 0V7a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v4 M12 15v3' },
       // P5 第 4 步 ②：桌面级 VM 管理页（VITE_FEATURE_VM 门控，与 sandbox 相邻）。
       { id: 'vm', label: '虚拟化', route: '/vm', icon: 'M2 3h20v14H2zM8 21h8M12 17v4' },
+      // 紫微系统（2026-10-22）：三方程序受控接管【万物皆工具】
+      // （VITE_FEATURE_ZIWEI 门控；config ziwei.enabled 运行闸默认关）。
+      { id: 'ziwei', label: '紫微系统', route: '/ziwei', icon: 'M12 2l2.4 7.2H22l-6 4.4 2.3 7.2-6.3-4.5-6.3 4.5L8 13.6 2 9.2h7.6z' },
       // L8：PTY 内嵌终端（VITE_FEATURE_TERMINAL 门控）。
       { id: 'terminal', label: '终端', route: '/terminal', icon: 'M4 17l6-6-6-6M12 19h8' },
       { id: 'local-models', label: '本地模型', route: '/local-models', icon: 'M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z M3.27 6.96L12 12.01l8.73-5.05 M12 22.08V12' },

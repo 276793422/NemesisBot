@@ -224,12 +224,14 @@ fn tool_call_response(content: &str, calls: Vec<ToolCallInfo>) -> LlmResponse {
     }
 }
 
-/// completion_tokens 顶满默认 max_tokens（8192）——截断信号。
+/// completion_tokens 顶满默认 max_tokens（DEFAULT_MAX_TOKENS=64K，2026-10-23
+/// P0 前 8192）——截断信号。引用常量而非字面量：默认值再变 fixture 不再失真。
 fn cap_usage() -> Option<crate::loop_executor::ObserverUsageInfo> {
+    let completion = nemesis_types::capability::DEFAULT_MAX_TOKENS;
     Some(crate::loop_executor::ObserverUsageInfo {
         prompt_tokens: 100,
-        completion_tokens: 8192,
-        total_tokens: 8292,
+        completion_tokens: completion,
+        total_tokens: 100 + completion,
         cached_tokens: None,
         cache_creation_tokens: None,
         cache_read_tokens: None,

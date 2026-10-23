@@ -1,0 +1,23 @@
+[package]
+name = "nemesis-ziwei-profile"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+description = "紫微系统 profile 数据层：schema 版本化、loud 拒绝校验、锚集与失效判定、目录存储（纯数据，无 IO 之外副作用）"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+tracing = { workspace = true }
+# 删除走韧性包装（Windows AV/索引器瞬时句柄是常态），禁止裸 remove_dir_all
+nemesis-utils = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

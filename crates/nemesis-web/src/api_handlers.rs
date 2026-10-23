@@ -1024,6 +1024,190 @@ pub async fn handle_api_internal(
                 Err(error) => serde_json::json!({ "status": "error", "error": error }),
             }));
         }
+        // Ziwei（紫微系统 M1/M2）：CLI `ziwei attach/detach/status/invoke`
+        // 转发面——会话管理器常驻 gateway 进程（管道 server 生命周期与一次性
+        // CLI 进程解耦），与 estop/vm_sync 同款直连（不经 fire-and-forget
+        // ——attach 是请求-响应形态，注入+握手结果必须带回）。恒 HTTP 200
+        // `{status: ok|error, ...}`，业务失败不是传输错误。
+        #[cfg(feature = "ziwei")]
+        "ziwei_attach" | "ziwei_detach" | "ziwei_status" | "ziwei_invoke" | "ziwei_setup" => {
+            let Some(manager) = nemesis_ziwei::session::global() else {
+                return Ok(Json(serde_json::json!({
+                    "status": "error",
+                    "error": "紫微会话管理器未装配（config ziwei.enabled=false）",
+                })));
+            };
+            // 四命令都在此终结——直接 return 内层 match 的结果（外层 match
+            // 其余臂以 return 收尾，臂值恒 ()）。
+            return match cmd {
+                "ziwei_status" => Ok(Json(serde_json::json!({
+                    "status": "ok",
+                    "sessions": manager.list_sessions(),
+                }))),
+                "ziwei_detach" => {
+                    let id = body
+                        .get("profile_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if id.trim().is_empty() {
+                        return Ok(Json(serde_json::json!({
+                            "status": "error",
+                            "error": "缺少 profile_id",
+                        })));
+                    }
+                    Ok(Json(match manager.detach(id).await {
+                        Ok(msg) => serde_json::json!({ "status": "ok", "message": msg }),
+                        Err(msg) => serde_json::json!({ "status": "error", "error": msg }),
+                    }))
+                }
+                // M2：CLI invoke → 一次性 poll 快照（与 WSAPI ziwei.invoke /
+                // agent 子工具同源语义）。
+                "ziwei_invoke" => {
+                    let id = body
+                        .get("profile_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let tool_name = body.get("tool").and_then(|v| v.as_str()).unwrap_or("");
+                    if id.trim().is_empty() || tool_name.trim().is_empty() {
+                        return Ok(Json(serde_json::json!({
+                            "status": "error",
+                            "error": "缺少 profile_id 或 tool",
+                        })));
+                    }
+                    let workspace = state.workspace.clone().ok_or_else(|| {
+                        (
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            Json(serde_json::json!({"error": "workspace not configured"})),
+                        )
+                    })?;
+                    let store =
+                        nemesis_ziwei::profile::ProfileStore::new(std::path::Path::new(&workspace));
+                    let result =
+                        crate::handlers::ziwei::invoke_poll_tool(&manager, &store, id, tool_name)
+                            .await;
+                    Ok(Json(match result {
+                        Ok(v) => serde_json::json!({ "status": "ok", "result": v }),
+                        Err(e) => serde_json::json!({ "status": "error", "error": e }),
+                    }))
+                }
+                // M3：CLI `ziwei setup <step>` 转发面（SetupManager 全局槽
+                // 惰性自建；向导状态在常驻 gateway 进程里——CLI 进程一次性，
+                // 状态必须放这里）。恒 `{status: ok|error, result|error}`。
+                "ziwei_setup" => {
+                    let workspace = state.workspace.clone().ok_or_else(|| {
+                        (
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            Json(serde_json::json!({"error": "workspace not configured"})),
+                        )
+                    })?;
+                    let ws = std::path::Path::new(&workspace);
+                    let step = body.get("step").and_then(|v| v.as_str()).unwrap_or("");
+                    let data = body.get("data").cloned().unwrap_or(serde_json::Value::Null);
+                    let mgr = nemesis_ziwei::setup::global();
+                    let r = match step {
+                        "select_target" => {
+                            let pid = data.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32);
+                            let exe = data.get("exe").and_then(|v| v.as_str());
+                            mgr.select_target(ws, pid, exe).await
+                        }
+                        "snapshot" => mgr.snapshot(ws).await,
+                        "analyze" => mgr.analyze(ws),
+                        "diff_window" => {
+                            mgr.diff_window(
+                                ws,
+                                data.get("wait_secs").and_then(|v| v.as_u64()),
+                                data.get("hook").and_then(|v| v.as_bool()),
+                            )
+                            .await
+                        }
+                        "candidates" => mgr.candidates(ws),
+                        "annotate" => mgr.annotate(ws, &data),
+                        "define_struct" => mgr.define_struct(ws, &data),
+                        "define_tool" => mgr.define_tool(ws, &data),
+                        "commit" => mgr.commit(ws).map(|mut out| {
+                            if let Some(n) = crate::handlers::ziwei::run_refresh_hook(ws)
+                                && let Some(obj) = out.as_object_mut()
+                            {
+                                obj.insert("tools_registered".into(), serde_json::json!(n));
+                            }
+                            out
+                        }),
+                        "abort" => mgr.abort(ws).await,
+                        "status" => match mgr.status(ws) {
+                            Some(v) => Ok(v),
+                            None => Ok(serde_json::json!({ "draft": null })),
+                        },
+                        other => Err(format!(
+                            "未知 setup step {other:?}（select_target/snapshot/analyze/diff_window/candidates/annotate/define_struct/define_tool/commit/abort/status）"
+                        )),
+                    };
+                    Ok(Json(match r {
+                        Ok(v) => serde_json::json!({ "status": "ok", "result": v }),
+                        Err(e) => serde_json::json!({ "status": "error", "error": e }),
+                    }))
+                }
+                _ => {
+                    let id = body
+                        .get("profile_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let pid = body.get("pid").and_then(|v| v.as_u64());
+                    if id.trim().is_empty() || pid.is_none() {
+                        return Ok(Json(serde_json::json!({
+                            "status": "error",
+                            "error": "缺少 profile_id 或 pid",
+                        })));
+                    }
+                    let workspace = state.workspace.clone().ok_or_else(|| {
+                        (
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            Json(serde_json::json!({"error": "workspace not configured"})),
+                        )
+                    })?;
+                    let store =
+                        nemesis_ziwei::profile::ProfileStore::new(std::path::Path::new(&workspace));
+                    let profile = match store.load(id) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            return Ok(Json(
+                                serde_json::json!({ "status": "error", "error": e.to_string() }),
+                            ));
+                        }
+                    };
+                    // M2：attach + 按需 poll 调度一站式（结构地址显式注入面
+                    // 留给 WSAPI/测试；CLI 附加面 M3 前不带地址 = poll 工具
+                    // 诚实停用，读写面照常）。
+                    let struct_addrs: std::collections::HashMap<String, u64> = body
+                        .get("struct_addrs")
+                        .and_then(|v| v.as_object())
+                        .map(|m| {
+                            m.iter()
+                                .filter_map(|(k, v)| v.as_u64().map(|a| (k.clone(), a)))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    Ok(Json(
+                        match nemesis_ziwei::scheduler::attach_and_schedule(
+                            &manager,
+                            &profile,
+                            pid.unwrap() as u32,
+                            struct_addrs,
+                        )
+                        .await
+                        {
+                            Ok(session) => serde_json::json!({
+                                "status": "ok",
+                                "session": session.snapshot(),
+                            }),
+                            Err(e) => serde_json::json!({
+                                "status": "error",
+                                "error": e.to_string(),
+                            }),
+                        },
+                    ))
+                }
+            };
+        }
         _ => {}
     }
 
