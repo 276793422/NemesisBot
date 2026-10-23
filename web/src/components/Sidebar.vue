@@ -67,6 +67,13 @@ const suDownloaded = ref(0)
 const suTotal = ref<number | null>(null)
 const suError = ref('')
 let suCheckedOnce = false // 首次主动 check 只做一次（网络失败静默，等 gateway 30s 自动 check 灌缓存）
+// apply 失败反馈面（2026-10-23 挂死修复）：受理即回的失败只在 status 的
+// last_apply_error 里（SSE error 帧只达在线订阅者）。suLastError 是 toast
+// 去重哨兵（10s 轮询同一条失败只提示一次，新失败/新发起才重提示）；
+// suBaseline=false = 本机无 applied 清单基准（存量安装首更形态）——顺序闸
+// 默认 Unknown 拒绝，确认框里提前说明并随首更自动带豁免。
+const suLastError = ref('')
+const suBaseline = ref(true)
 
 function suFmtMb(n: number) {
   return (n / (1024 * 1024)).toFixed(1) + 'MB'
@@ -85,16 +92,27 @@ async function refreshSelfupdate() {
   } catch {
     return // WS 未就绪——保持原状态，下个轮询周期再试
   }
-  if (!resp || !resp.wired || !resp.platform_supported || resp.journal_phase) {
+  if (!resp) return
+  // apply 失败反馈（单一裁决点 = status 记录，SSE 帧只做「唤醒一轮刷新」）：
+  // toast 去重 + 顺序闸拒绝的豁免确认都在 suHandleApplyError；包括 journal
+  // 相位未清的 spawn 失败形态（此时长条隐藏，但失败仍要让用户看见）。
+  if (resp.last_apply_error && resp.last_apply_error.message) {
+    suHandleApplyError(resp.last_apply_error)
+  }
+  if (!resp.wired || !resp.platform_supported || resp.journal_phase) {
     // 未装配 / 非 Windows / 有未收口更新事务（启动收口自动处理，期间不干预）
     suState.value = 'hidden'
     return
   }
-  // apply 受理后的粘滞态：直到 pending 消失（事务收口——成功清包待重启 /
-  // 失败整清）才恢复自动判定
+  suBaseline.value = resp.sequence_baseline_present !== false
+  // apply 受理后的粘滞态：last_apply_error 在案 = 本轮编排已失败 → 解挂
+  // （pending 还在 = 可直接重试的 ready 态；否则回自动判定）。无失败且
+  // pending 在场 = 编排进行中，保持粘滞。失败 toast/豁免确认在上方
+  // suHandleApplyError 单点（status 记录驱动，SSE 与轮询殊途同归）。
+  const applyErr = resp.last_apply_error
   if (suState.value === 'applying') {
-    if (resp.pending) return
-    suState.value = 'hidden'
+    if (!applyErr && resp.pending) return
+    suState.value = resp.pending && resp.pending.release_tag ? 'ready' : 'hidden'
   }
   if (resp.pending && resp.pending.release_tag) {
     suState.value = 'ready'
@@ -141,21 +159,64 @@ async function suCancel() {
   suState.value = 'idle'
 }
 
+// apply 失败反馈单点（status 的 last_apply_error 记录驱动；去重哨兵
+// suLastError——同一条失败只提示/确认一次，suApplyRequest 新发起时清空）。
+// downgrade_denied = 顺序闸拒绝（存量安装首更最常见）→ 主动提供显式豁免
+// 重试确认（R1 语义：豁免只放开顺序判定，签名验真照常；确认即主体意志，
+// 后端审计留痕）。
+function suHandleApplyError(rec: { message: string; downgrade_denied?: boolean }) {
+  if (!rec || !rec.message || rec.message === suLastError.value) return
+  suLastError.value = rec.message
+  useToast().error(`更新执行失败：${rec.message}`)
+  if (rec.downgrade_denied) {
+    if (
+      window.confirm(
+        `版本顺序无法证明（${rec.message}）\n\n要跳过版本比对继续更新吗？签名验真照常进行，操作会记入审计链。`,
+      )
+    ) {
+      suRetryApplyWithExemption()
+    }
+  }
+}
+
 async function suApply() {
   const target = suVersion.value || '新版本'
-  if (!window.confirm(`确定更新到 ${target}？更新将校验签名、替换程序并自动重启。`)) return
+  // 首更形态（无 applied 基准）提前告知：顺序闸默认 Unknown 拒绝，这里随
+  // 确认框取到豁免授权一并下发（R1 语义：显式意志 + 审计留痕；签名验真
+  // 与完整性闸照常，不受豁免影响）。
+  const firstUpdate = !suBaseline.value
+  const notice = firstUpdate
+    ? `确定更新到 ${target}？本机没有已安装版本的清单基准（首次更新形态），将跳过版本顺序比对（签名验真照常）。更新将校验签名、替换程序并自动重启。`
+    : `确定更新到 ${target}？更新将校验签名、替换程序并自动重启。`
+  if (!window.confirm(notice)) return
+  await suApplyRequest(firstUpdate ? { allow_downgrade: true } : {})
+}
+
+async function suApplyRequest(data: Record<string, unknown>) {
   try {
-    await request('selfupdate', 'apply', {}, 8000)
+    await request('selfupdate', 'apply', data, 8000)
     suState.value = 'applying'
+    suLastError.value = '' // 新一轮发起：允许下一次失败重新提示
   } catch (e: any) {
     useToast().error(`更新受理失败：${e?.message ?? e}`)
   }
 }
 
+// 顺序闸拒绝后的显式豁免重试（R1 语义反转的 Dashboard 面）：豁免只放开
+// 顺序判定，签名验真照常；确认框文本即主体意志表达，后端审计留痕。
+async function suRetryApplyWithExemption() {
+  await suApplyRequest({ allow_downgrade: true })
+}
+
 function onSuProgress(d: any) {
   if (!d || typeof d !== 'object') return
   if (d.phase === 'ready' || d.phase === 'error') {
-    if (d.phase === 'error') useToast().warn('更新包下载失败，已清理，可重新下载')
+    if (d.phase === 'error' && !d.message) {
+      // 不带 message = 独立下载失败（updates/ 已整清，可重下）。带 message
+      // 的 apply 编排失败不在这里 toast——refreshSelfupdate 会从 status 的
+      // last_apply_error 单点处理（含豁免确认），避免双弹。
+      useToast().warn('更新包下载失败，已清理，可重新下载')
+    }
     refreshSelfupdate() // 收口态以 status 快照为准（pending / idle 可重下）
     return
   }
