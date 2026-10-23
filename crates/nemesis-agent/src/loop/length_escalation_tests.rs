@@ -317,3 +317,19 @@ async fn options_none_never_escalates() {
     assert_eq!(resp.escalated_to, None);
     assert_eq!(max_tokens_seq(&calls), vec![None]);
 }
+
+#[tokio::test]
+async fn learned_floor_above_u32_max_clamps_not_wraps() {
+    // 2026-10-23：learned floor 钳位不回绕——ceiling 被配成超 u32 巨值 +
+    // 阶梯爬过 2^32 时，裸 `as` 会把 floor 回绕成 0，首轮请求反而带
+    // max_tokens=0 打爆 provider。与 write-back 的 `.min(u32::MAX as u64)`
+    // 同一防护：首轮即钳到 u32::MAX。
+    let (loop_, calls, _script) = scripted_pair(vec![ok_response("done")]);
+    loop_.note_escalated_floor("test-model", u32::MAX as u64 + 1);
+    let resp = call_escalating(&loop_, "test-model", opts(8192))
+        .await
+        .expect("call should succeed");
+    assert_eq!(resp.content, "done");
+    // 修复前：floor 回绕 Some(0)；修复后：钳位 Some(u32::MAX)。
+    assert_eq!(max_tokens_seq(&calls), vec![Some(u32::MAX)]);
+}
