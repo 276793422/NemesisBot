@@ -73,16 +73,27 @@ impl ModuleHandler for SessionsHandler {
                 // 会话级全部放行投影（2026-10-24 长任务无人值守计划）：列表
                 // 一眼可见哪个会话在放行（读运行态内存——gateway 启动 hydrate
                 // 先于 WS 服务可用，无「sidecar 真但内存假」窗口）。
-                let allow_keys = crate::handlers::security::session_allow_enabled_keys();
-                for row in web.iter_mut() {
-                    let Some(sid) = row["id"].as_str() else {
-                        continue;
-                    };
-                    let key = format!(
-                        "agent:main:session:{}",
-                        nemesis_agent::session::SessionStore::sanitize_session_id(sid)
-                    );
-                    row["allow_all"] = serde_json::Value::Bool(allow_keys.contains(&key));
+                // security feature 关闭时状态模块不编译，投影恒 false（诚实
+                // 缺省）——引用必须同闸，否则默认 feature 集编译破损。
+                #[cfg(feature = "security")]
+                {
+                    let allow_keys = crate::handlers::security::session_allow_enabled_keys();
+                    for row in web.iter_mut() {
+                        let Some(sid) = row["id"].as_str() else {
+                            continue;
+                        };
+                        let key = format!(
+                            "agent:main:session:{}",
+                            nemesis_agent::session::SessionStore::sanitize_session_id(sid)
+                        );
+                        row["allow_all"] = serde_json::Value::Bool(allow_keys.contains(&key));
+                    }
+                }
+                #[cfg(not(feature = "security"))]
+                {
+                    for row in web.iter_mut() {
+                        row["allow_all"] = serde_json::Value::Bool(false);
+                    }
                 }
                 // B（2026-09-23 多会话并行清账）：回带绑定表（仅存活绑定，
                 // key → 裸 sid）——前端删掉 localStorage 映射，绑定真相源

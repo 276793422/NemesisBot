@@ -158,7 +158,9 @@ pub(crate) fn update_raw_config<T>(
 /// [`update_raw_config`] 的缺失容忍变体：config.json 不存在时从空对象起
 /// （NotFound 以外读/解析失败仍 Err；语义对齐 update_json_file 家族的
 /// 「文件缺失从空对象起」）。消费方：connectors.set_master（B4 总闸——
-/// 新装配态也允许一键落键，不因缺母版拒绝）。
+/// 新装配态也允许一键落键，不因缺母版拒绝）。唯一消费方在 connectors
+/// feature 闸后——helper 同闸，防最小 feature 集下 dead_code 警告。
+#[cfg(feature = "connectors")]
 pub(crate) fn update_raw_config_seeded<T>(
     home: &str,
     f: impl FnOnce(&mut serde_json::Value) -> Result<T, String>,

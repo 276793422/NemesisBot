@@ -125,6 +125,41 @@ pub struct UpdateJournal {
     pub plugins_backup_dir: String,
     #[serde(default)]
     pub plugins_new_dir: String,
+    /// plugins 逐文件清单（2026-10-24 N1 根修）：journal 构造时（任何落盘
+    /// 动作之前）按「包内条目 × plugins/ 现状」计算并随 journal 先行落盘
+    /// ——回滚以它为唯一真相源，不再从「backup 目录名单差集」推断谁是
+    /// 新装（该推断在 backup 缺席、部分归位两个崩溃窗口都会把旧插件误判
+    /// 成 new-only 删掉）。`#[serde(default)]` 兼容旧 journal（空清单 =
+    /// 保守模式：只归位 backup，不删任何文件）。
+    #[serde(default)]
+    pub plugins_files: Vec<PluginsFileEntry>,
+}
+
+/// plugins 清单单行：`new_install=false` = 替换既有文件（旧版让位进
+/// backup）；`new_install=true` = 本次更新新装（plugins/ 原无此文件，回滚
+/// = 从 plugins/ 删除归零）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PluginsFileEntry {
+    pub name: String,
+    pub new_install: bool,
+}
+
+/// 逐文件清单计算（apply 的 journal 构造点专用；纯函数单测钉语义）。
+/// `new_install` 判定 = 包内条目在 plugins/ 是否已有同名条目——此刻在任何
+/// rename 之前，现状即「旧版是否存在」的准确快照（单飞锁下无并发扰动）。
+#[cfg(feature = "selfupdate")]
+#[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))] // 消费方=windows/linux apply；macOS/android 桩平台诚实死码
+fn compute_plugins_manifest(
+    plugins_dir: &Path,
+    files: &std::collections::BTreeMap<String, Vec<u8>>,
+) -> Vec<PluginsFileEntry> {
+    files
+        .keys()
+        .map(|name| PluginsFileEntry {
+            name: name.clone(),
+            new_install: !plugins_dir.join(name).exists(),
+        })
+        .collect()
 }
 
 /// journal 现场路径（CLI status / 人工排障用同一路径）。
@@ -1161,18 +1196,29 @@ fn remove_loaded_file(target: &Path) -> Result<(), String> {
     }
 }
 
-/// plugins 回滚本体（backup → plugins 逐文件归位 + new-only 清理 + staging
-/// 目录收尾）。幂等 + 诚实化：Ok = 回滚完成（detail 区分 noop）/ Err = 失败
-/// 原因（调用方保 journal，下次 boot 重试）。
+/// plugins 回滚本体（清单驱动，2026-10-24 N1 根修）。幂等 + 诚实化：Ok =
+/// 回滚完成（detail 区分 noop）/ Err = 失败原因（调用方保 journal，下次
+/// boot 重试）。
+///
+/// **清单是唯一真相源**（journal 构造时在任何落盘前计算的逐文件意图快照）：
+/// - `new_install=false`（替换）：从 backup 归位。**backup 缺席 = 跳过**——
+///   两种成因（舞步从未让位到该文件 / 上轮回滚已归位）都意味着 plugins/
+///   里已是旧版，无需也不得动作（旧实现按「backup 名单差集」推断 new-only，
+///   在这两个窗口会把旧插件当新装删掉——W0′ 与部分失败重试两个崩溃窗口
+///   的数据丢失根因）。
+/// - `new_install=true`（新装）：plugins/ 有则删（无旧版可回，删除归零）。
+///
+/// 旧 journal（本修复前写入，清单缺键 = 空）走保守路径：只归位 backup，
+/// 不做任何删除（差集推断不可信），new_dir 留待人工核查（detail 带路径）。
 ///
 /// 归位让位舞步：`plugins/X` 被运行中进程映射（boot 收口的常态）时直接
 /// rename(backup→plugins) 会撞占用——先把目标 [`remove_loaded_file`] 让位。
-/// new-only 文件（backup 名单之外、new_dir 全集之内）= 本次更新新装且无旧
-/// 版可回——删除归零。收尾双目录韧性删除（失败留清扫，不影响回滚结论——
-/// 下次重试目录缺席即 noop 分支）。
+/// 收尾双目录韧性删除（失败留清扫，不影响回滚结论——重入时条目均已
+/// 收敛，剩余目录按 noop 收口）。
 fn rollback_plugins_to(
     backup_dir: &str,
     new_dir: &str,
+    manifest: &[PluginsFileEntry],
     plugins_dir: &Path,
 ) -> Result<String, String> {
     if backup_dir.is_empty() && new_dir.is_empty() {
@@ -1182,46 +1228,32 @@ fn rollback_plugins_to(
     }
     let backup = PathBuf::from(backup_dir);
     let new = PathBuf::from(new_dir);
-    // backup 名单（存在才读；读失败 = 现场异常，诚实报错保 journal）。
-    let mut backup_names: Vec<String> = Vec::new();
-    if backup.exists() {
-        let entries = std::fs::read_dir(&backup)
-            .map_err(|e| format!("plugins 备份目录读取失败（{}）：{e}", backup.display()))?;
-        for entry in entries.flatten() {
-            if entry.path().is_file() {
-                backup_names.push(entry.file_name().to_string_lossy().to_string());
-            }
-        }
+    if manifest.is_empty() {
+        return rollback_plugins_legacy(&backup, &new, plugins_dir);
     }
-    backup_names.sort();
-    // 归位：backup → plugins（有备份者旧版覆盖新版）。
-    for name in &backup_names {
-        let dst = plugins_dir.join(name);
+    // 归位：清单 Replaced 条目逐个从 backup 归位（backup 缺席 = 跳过）。
+    let mut restored = 0usize;
+    for entry in manifest.iter().filter(|e| !e.new_install) {
+        let src = backup.join(&entry.name);
+        if !src.exists() {
+            continue;
+        }
+        let dst = plugins_dir.join(&entry.name);
         if dst.exists() {
             remove_loaded_file(&dst)?;
         }
-        let src = backup.join(name);
         std::fs::rename(&src, &dst)
             .map_err(|e| format!("插件归位失败（{} → {}）：{e}", src.display(), dst.display()))?;
+        restored += 1;
     }
-    // new-only 清理：new_dir 全集里 backup 名单之外的 = 新装无旧版，删。
-    if new.exists() {
-        let entries = std::fs::read_dir(&new)
-            .map_err(|e| format!("plugins staging 目录读取失败（{}）：{e}", new.display()))?;
-        let mut new_names: Vec<String> = Vec::new();
-        for entry in entries.flatten() {
-            if entry.path().is_file() {
-                new_names.push(entry.file_name().to_string_lossy().to_string());
-            }
-        }
-        new_names.sort();
-        for name in &new_names {
-            if !backup_names.iter().any(|b| b == name) {
-                let dst = plugins_dir.join(name);
-                if dst.exists() {
-                    remove_loaded_file(&dst)?;
-                }
-            }
+    // 新装清理：清单 NewInstall 条目从 plugins/ 删除（真相源是清单，与
+    // new/backup 目录现场形态无关）。
+    let mut removed = 0usize;
+    for entry in manifest.iter().filter(|e| e.new_install) {
+        let dst = plugins_dir.join(&entry.name);
+        if dst.exists() {
+            remove_loaded_file(&dst)?;
+            removed += 1;
         }
     }
     // 收尾：双 staging 目录韧性删除（内容已耗尽/清空；删除失败 = Windows
@@ -1232,16 +1264,72 @@ fn rollback_plugins_to(
     if new.exists() {
         crate::handlers::release_fetch::remove_dir_all_resilient(&new);
     }
-    if backup_names.is_empty() && !new.exists() {
-        // 双目录本就缺席（舞步从未开始或已被上轮收口清光）= noop。
+    if restored == 0 && removed == 0 {
+        // 无任何文件需要动作（舞步从未开始/已被上轮收口清光/全部条目已
+        // 收敛）= noop。
         return Ok(format!(
-            "{ROLLBACK_PLUGINS_NOOP_PREFIX}: staging 目录双缺席（无可恢复现场）"
+            "{ROLLBACK_PLUGINS_NOOP_PREFIX}: 无需归位/清理（现场已收敛）"
         ));
     }
     Ok(format!(
-        "plugins 已回滚（归位 {} 个 + 清理 new-only，plugins/ = {}）",
-        backup_names.len(),
+        "plugins 已回滚（归位 {restored} 个 + 清理新装 {removed} 个，plugins/ = {}）",
         plugins_dir.display()
+    ))
+}
+
+/// 旧 journal 保守回滚（清单缺键）：只归位 backup 里真实在场的文件，**不做
+/// 任何删除**——「new_dir − backup」差集推断在 backup 缺席/部分归位窗口会
+/// 把旧插件误判成新装（N1 数据丢失根因），清单缺失时宁留毋删；new_dir 残
+/// 留物在 detail 里报路径供人工核查（删错了找不回，留着最多版本错配）。
+fn rollback_plugins_legacy(
+    backup: &Path,
+    new: &Path,
+    plugins_dir: &Path,
+) -> Result<String, String> {
+    let mut restored = 0usize;
+    if backup.exists() {
+        let entries = std::fs::read_dir(backup)
+            .map_err(|e| format!("plugins 备份目录读取失败（{}）：{e}", backup.display()))?;
+        let mut backup_names: Vec<String> = entries
+            .flatten()
+            .filter(|e| e.path().is_file())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        backup_names.sort();
+        for name in &backup_names {
+            let dst = plugins_dir.join(name);
+            if dst.exists() {
+                remove_loaded_file(&dst)?;
+            }
+            let src = backup.join(name);
+            std::fs::rename(&src, &dst).map_err(|e| {
+                format!("插件归位失败（{} → {}）：{e}", src.display(), dst.display())
+            })?;
+            restored += 1;
+        }
+    }
+    if backup.exists() {
+        crate::handlers::release_fetch::remove_dir_all_resilient(backup);
+    }
+    let leftover = if new.exists() {
+        crate::handlers::release_fetch::remove_dir_all_resilient(new);
+        if new.exists() {
+            format!("；new staging 删除失败残留 {}", new.display())
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+    if restored == 0 {
+        return Ok(format!(
+            "{ROLLBACK_PLUGINS_NOOP_PREFIX}: 旧 journal 无清单（保守模式：无可归位文件）\
+             {leftover}"
+        ));
+    }
+    Ok(format!(
+        "plugins 已回滚（旧 journal 无清单，保守模式：归位 {restored} 个，\
+         未做新装清理{leftover}）"
     ))
 }
 
@@ -1255,6 +1343,7 @@ fn rollback_plugins_from_journal(journal: &UpdateJournal, exe: &Path) -> Result<
     rollback_plugins_to(
         &journal.plugins_backup_dir,
         &journal.plugins_new_dir,
+        &journal.plugins_files,
         &plugins_dir,
     )
 }
@@ -2103,6 +2192,10 @@ impl SelfUpdateManager {
             } else {
                 plugins_new.display().to_string()
             },
+            // 逐文件清单（N1）：此刻在任何 rename 之前——「包内条目 × 现状」
+            // 的准确快照随 journal 先行落盘，回滚按它收口（不再从 backup
+            // 名单差集反推）。
+            plugins_files: compute_plugins_manifest(&plugins_dir, &extracted.plugins),
         };
         save_journal(&self.workspace, &journal)?;
 

@@ -134,5 +134,20 @@ tracing-subscriber = { workspace = true }
 nemesis-memory = { workspace = true, features = ["test-fixture"] }
 tempfile = "3"
 
+# U20 history_search 家族测试目标（2026-10-24 N3，外评补口）：裸引用
+# `nemesis_agent::history_search`（#[cfg(feature = "history-search")] 模块）
+# ——自动发现形态下 `cargo test -p nemesis-agent --no-default-features`
+# 编译必炸。显式声明 + required-features = feature 缺席时 cargo 整目标
+# 跳过（隔离 harness 的注释说明两文件不可并回 lib 测试，勿删声明）。
+[[test]]
+name = "history_search_fts"
+path = "tests/history_search_fts.rs"
+required-features = ["history-search"]
+
+[[test]]
+name = "history_search_degraded"
+path = "tests/history_search_degraded.rs"
+required-features = ["history-search"]
+
 [lints]
 workspace = true
