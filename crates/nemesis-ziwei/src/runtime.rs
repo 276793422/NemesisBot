@@ -7,8 +7,8 @@
 //! 订阅 + 拉取解码回流 + `output.dest` 报表渲染（T4.5）；链长超限运行期
 //! 防御再拦（T4.6）。
 
-// invoke_call_fn / invoke_hook_capture / load_fn_def 全部 windows-only
-// （会话活体路径）；平台中立面只有 callfn 参数解析两函数。
+// 以下三项仅 Windows 运行期（call_fn/hook_capture 经会话管道）消费；
+// 非 Windows 存根编译不触及，cfg 门控防 Linux 侧 unused import 撞 -D warnings。
 #[cfg(windows)]
 use std::sync::Arc;
 

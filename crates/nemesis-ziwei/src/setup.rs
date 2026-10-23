@@ -24,7 +24,8 @@ use nemesis_ziwei_profile::{
     Anchor, AnchorSet, AnchorType, Conv, DataStructure, FieldDef, LocateKind, LocateSpec, Machine,
     Profile, ProfileStore,
 };
-// 指纹/版本/attach 判定仅活体路径消费（windows-only；Linux 形态 unused）。
+// 以下仅在 Windows 分析管线（session/管道层）消费；非 Windows 存根编译
+// 不触及，cfg 门控防 Linux 侧 unused import 撞 -D warnings。
 #[cfg(windows)]
 use nemesis_ziwei_profile::{
     AttachInfo, ProfileStatus, SCHEMA_VERSION, TargetFingerprint, Verification, VerifyPolicy,

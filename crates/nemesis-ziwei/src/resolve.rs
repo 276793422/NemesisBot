@@ -11,6 +11,7 @@
 //! `resolve_locates` 依赖主模块枚举 + read_mem（windows-only）。
 
 use std::collections::HashMap;
+// Path 仅 windows-only 的 resolve_locates（主模块枚举 + read_mem）消费。
 #[cfg(windows)]
 use std::path::Path;
 
