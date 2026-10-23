@@ -301,6 +301,14 @@ impl AgentLoop {
         }
     }
 
+    /// 工具接管层（2026-10-23）：按名摘出注册工具（Arc 所有权转移）——
+    /// 接管 wrapper 双态持有内置实例的前提（注册后 `Box` 已 `Arc::from`，
+    /// 唯一取回路径）。摘除后注册表短暂缺席，调用方须紧随 wrapper 注册
+    ///（[`Self::register_plugin_tool`] 同名回插）。非在册名返回 None。
+    pub fn take_tool(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.tools.write().remove(name)
+    }
+
     /// Return the number of registered tools.
     pub fn tool_count(&self) -> usize {
         self.tools.read().len()
@@ -509,18 +517,39 @@ impl AgentLoop {
     /// schema. Returns Valid / Fixed / Invalid. Unknown tools return Valid so
     /// the existing unknown-tool path in `handle_tool_call` reports them
     /// (class C, not a schema failure).
-    pub(crate) fn check_tool_args(
+    ///
+    /// 循环策略槽（WASM 样板工程批 1）：校验裁决先过
+    /// [`crate::r#loop::policy::ValidationPolicy`]——`Builtin` 裁决走下方
+    /// 内置 schema 校验 + autofix；`Valid`/`Fixed`/`Reject` 由宿主映射为
+    /// 同形态 `Outcome`（Reject 按 schema violation 类计，计 failure 预算）。
+    /// 串行（tool_batch）与并行（tool_defs 预计算）两路共用本入口。
+    pub(crate) async fn check_tool_args(
         &self,
         tool_call: &ToolCallInfo,
     ) -> crate::args_validator::Outcome {
+        use crate::r#loop::policy::ValidationVerdict;
         let schema_opt = self
             .tools
             .read()
             .get(&tool_call.name)
             .map(|t| t.parameters());
-        match schema_opt {
-            Some(schema) => crate::args_validator::check(&schema, &tool_call.arguments),
-            None => crate::args_validator::Outcome::Valid,
+        let input = crate::r#loop::policy::ValidationInput {
+            tool: tool_call.name.clone(),
+            schema: schema_opt.clone(),
+            args_json: tool_call.arguments.clone(),
+        };
+        let slot = self.validation_policy.read().clone();
+        match slot.validate(&input).await {
+            ValidationVerdict::Valid => crate::args_validator::Outcome::Valid,
+            ValidationVerdict::Fixed(fixed) => crate::args_validator::Outcome::Fixed(fixed),
+            ValidationVerdict::Reject { message } => crate::args_validator::Outcome::Invalid {
+                message,
+                class: "B",
+            },
+            ValidationVerdict::Builtin => match schema_opt {
+                Some(schema) => crate::args_validator::check(&schema, &tool_call.arguments),
+                None => crate::args_validator::Outcome::Valid,
+            },
         }
     }
 

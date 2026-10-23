@@ -71,21 +71,31 @@ impl EventHub {
     /// L2：发布即盖章单调 seq 并进环形缓冲（无订阅者也落——补拉依赖缓冲
     /// 而非 broadcast 通道；broadcast 256 槽只服务在线订阅者）。
     pub fn publish(&self, event_type: &str, data: serde_json::Value) {
-        let seq = self.next_seq.fetch_add(1, Ordering::SeqCst) + 1;
-        let event = Arc::new(Event {
-            seq,
-            event_type: event_type.to_string(),
-            data,
-        });
+        // BUG-HUNT R8：seq 分配/入队/在线投递必须同一把缓冲写锁串行。原实现
+        // fetch_add 在锁外——并发发布可交叠成「T1 得 seq=5、T2 得 seq=6、
+        // T2 先抢锁入队」，环形缓冲变 [.., 6, 5]，违反下方字段注释声明的
+        // 「seq 升序」不变量：replay_after 按乱序回放、front() 的 gap 判定
+        // 失真、SSE id 倒退（浏览器 Last-Event-ID 回退 → 重连重复投递）。
+        // chat_event_log::insert_event 同形态早已表锁内分配，此处对齐。
+        // send 置于锁内保证 live 流序 == seq 序：broadcast send 非阻塞且不
+        // 回调用 EventHub（无重入/锁序风险）；publish 只承载低频事件
+        // （status/board/memory/scanner…），锁竞争可忽略，高频易逝流走
+        // publish_ephemeral 不过此锁。
         {
             let mut buf = self.replay_buf.write();
+            let seq = self.next_seq.fetch_add(1, Ordering::SeqCst) + 1;
+            let event = Arc::new(Event {
+                seq,
+                event_type: event_type.to_string(),
+                data,
+            });
             buf.push_back(Arc::clone(&event));
             while buf.len() > REPLAY_BUFFER_CAP {
                 buf.pop_front();
             }
+            // broadcast::send ignores errors when no receivers
+            let _ = self.sender.send((*event).clone());
         }
-        // broadcast::send ignores errors when no receivers
-        let _ = self.sender.send((*event).clone());
     }
 
     /// L10（2026-10-13 内部专项 T3）：易逝事件——只投递在线订阅者（SSE
@@ -130,6 +140,34 @@ impl EventHub {
     /// Get the number of active subscribers.
     pub fn subscriber_count(&self) -> usize {
         self.subscriber_count.load(Ordering::SeqCst)
+    }
+
+    /// L2 重连游标决议（2026-10-23 R32）：把「Last-Event-ID → (live 去重
+    /// 游标, 重放集, gap)」收口成纯函数，SSE 端点与测试共用。
+    ///
+    /// **重启签名**：`after` 超前于服务端 `latest_seq`（seq 进程内只增，唯一
+    /// 可能是网关重启后 seq 域重置）→ 旧游标在新域无意义：游标归零、按 0
+    /// 重放环内最近窗口（best-effort 回捞）、强制 gap=true（窗口外旧事件不
+    /// 可补，resync 提示照发）。不归零的话 live 去重分支 `event.seq <=
+    /// last_sent` 会把新域 seq 1.. 全部静默丢弃直到追上旧游标（status 5s/条
+    /// ≈ 数小时 SSE 实时流假死：审批卡/工具事件/看板推送全灭；resync 只触发
+    /// 一次全量刷新，恢复不了实时流——useSSE 无 resync→重连逻辑）。
+    ///
+    /// 滑窗 gap（`after` 落在窗口之前）不受影响：重放非空会推进游标，且活帧
+    /// seq 恒 > latest ≥ after，去重分支无害。
+    pub fn resolve_reconnect(&self, last_id: Option<u64>) -> (u64, Vec<Arc<Event>>, bool) {
+        match last_id {
+            Some(after) => {
+                if after > self.latest_seq() {
+                    let (replay, _) = self.replay_after(0);
+                    (0, replay, true)
+                } else {
+                    let (replay, gap) = self.replay_after(after);
+                    (after, replay, gap)
+                }
+            }
+            None => (0, Vec::new(), false),
+        }
     }
 }
 

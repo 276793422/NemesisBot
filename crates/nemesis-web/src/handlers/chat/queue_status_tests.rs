@@ -64,6 +64,7 @@ fn make_ctx_with_loop(al: Option<Arc<AgentLoop>>) -> RequestContext {
         forge: None,
         agent_loop: Arc::new(parking_lot::RwLock::new(al)),
         cluster: None,
+        quic_relay: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -202,4 +203,58 @@ async fn queue_status_missing_session_id_bails() {
 fn queue_status_registered_in_commands_list() {
     // L1 注册表纪律：清单外命令在 debug 构建会 warn 漂移——契约测试兜底。
     assert!(ChatHandler.commands().contains(&"queue_status"));
+}
+
+// —— BUG-HUNT R6（2026-10-23）：chat.clear / chat.compact 的会话闸 ——
+
+/// busy 诚实拒绝（compact/clear 同闸，拒绝路径零副作用）；释放后 clear
+/// 放行直达 clear_session 尾巴（jsonl 截断）。
+#[tokio::test]
+async fn chat_clear_refuses_busy_session_then_succeeds_after_release() {
+    let _home = crate::test_home::lock_home();
+    let al = Arc::new(AgentLoop::new(
+        Box::new(NoopProvider),
+        AgentConfig::default(),
+    ));
+    let ctx = make_ctx_with_loop(Some(al.clone()));
+    let sid = format!(
+        "p4-gate{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let key = session_key_of(&sid);
+    nemesis_agent::chat_log::append_chat_log(&key, "user", "占用中");
+
+    // 占住会话（模拟 turn 处理中）：clear/compact 都闸拒绝，jsonl 不动。
+    assert!(al.try_acquire_session(&key));
+    for cmd in ["clear", "compact"] {
+        let err = ChatHandler
+            .handle_cmd(cmd, Some(serde_json::json!({ "session_id": sid })), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.contains("正在处理"), "{cmd}: {err}");
+    }
+    let (_, total, _, _) = nemesis_agent::chat_log::read_chat_log(&key, 10, None);
+    assert_eq!(total, 1, "busy 拒绝路径零副作用");
+
+    // 释放后 clear 放行：jsonl 截空，busy 旗标随之释放。
+    al.release_session(&key);
+    let resp = ChatHandler
+        .handle_cmd(
+            "clear",
+            Some(serde_json::json!({ "session_id": sid })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(resp["session_id"], sid);
+    assert_eq!(resp["receipt"], "✓ 已清空会话历史");
+    let (_, total, _, _) = nemesis_agent::chat_log::read_chat_log(&key, 10, None);
+    assert_eq!(total, 0, "clear 截断 jsonl");
+    assert!(!al.is_session_busy(&key), "闸必须随操作完成释放");
+
+    nemesis_agent::chat_log::delete_chat_log(&key);
 }

@@ -7,16 +7,30 @@
 //!
 //! - [`endpoint`]：节点密钥（roaming.key）+ iroh Endpoint 装配 + ping/echo 通路；
 //! - [`config`]：config.cluster.json `roaming` 段解析（单一真相源纯函数）；
+//! - [`quic_config`]：config.quic.json 解析（QUIC 自身全部配置：服务端
+//!   `relay` 段 + 客户端 `client` 段；旧位置首读迁移，2026-10-23 解耦）；
 //! - [`trust`]：TrustBook 本地 allowlist（trust.toml，可选第三层信任）；
 //! - [`bridge`]：iroh bi-stream ↔ 现有帧协议（framing + AEAD）桥接。
-//! - [`relay_server`]：自建 iroh 中继回落服务器（QUIC 内网穿透；roaming-relay）。
+//! - [`relay_server`]：自建 iroh 中继回落服务器（QUIC 内网穿透；quic-relay）。
+//! - [`rendezvous`] / [`rendezvous_server`]：成员名册（中继自动发现，
+//!   2026-10-22）——设备接入中继即报到 + 周期拉名册，零手工配置互见；
+//!   客户端半边随 `cluster-roaming`，axum 服务端随 `quic-relay`。
 //!
-//! feature：`cluster-roaming`（默认关——LAN 用户零新依赖）；`roaming-relay`
-//! （隐含 cluster-roaming，中继服务器面：iroh-relay/server + rcgen + rustls）。
+//! feature：`cluster-roaming`（默认关——LAN 用户零新依赖）；`quic-relay`
+//! （隐含 cluster-roaming，中继服务器面：iroh-relay/server + rcgen + rustls + axum）。
 
 pub mod bridge;
 pub mod config;
 pub mod endpoint;
-#[cfg(feature = "roaming-relay")]
+pub mod quic_config;
+/// 中继生命周期管理（2026-10-23 与集群解耦——宿主直接持有，集群关闭时
+/// 中继照起）。依赖 relay_server/quic_config，随 `quic-relay` 编译。
+#[cfg(feature = "quic-relay")]
+pub mod relay_manager;
+#[cfg(feature = "quic-relay")]
 pub mod relay_server;
+#[cfg(feature = "cluster-roaming")]
+pub mod rendezvous;
+#[cfg(feature = "quic-relay")]
+pub mod rendezvous_server;
 pub mod trust;

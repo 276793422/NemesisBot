@@ -124,3 +124,48 @@ pub fn parse_observe(out_json: &str) -> Result<Result<(), HostErr>, HostErr> {
         Ok(Ok(()))
     }
 }
+
+// ---------------------------------------------------------------------------
+// 循环策略点（2026-10-22 样板工程批 2）：get-policy-metadata 结果 + 三策略
+// 出口（result<json-string, host-error>——ok payload = guest 回的 JSON 字符串）。
+// ---------------------------------------------------------------------------
+
+/// 循环策略元数据（get-policy-metadata 结果；字段名对齐 WIT
+/// policy-metadata record）。
+#[derive(Debug, Clone, Copy)]
+pub struct PolicyMetadata {
+    /// 接管上下文压缩（compact-check）。
+    pub compact: bool,
+    /// 接管终答裁决（judge-final）。
+    pub final_judge: bool,
+    /// 接管工具参数校验（validate-args）。
+    pub validation: bool,
+}
+
+/// get-policy-metadata 结果解析。
+pub fn parse_policy_metadata(out_json: &str) -> Result<PolicyMetadata, HostErr> {
+    let v = parse_result_json(out_json)?;
+    let b = |k: &str| {
+        v.get(k)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    };
+    Ok(PolicyMetadata {
+        compact: b("compact"),
+        final_judge: b("final-judge"),
+        validation: b("validation"),
+    })
+}
+
+/// 循环策略三出口（compact-check / judge-final / validate-args）共用解析：
+/// ok payload 必须是 string（WIT `json-string` = string 的序列化形态），
+/// 原样返回给调用方（PolicyBridge 再解析 verdict 字段）。
+pub fn parse_json_string_result(out_json: &str) -> Result<Result<String, HostErr>, HostErr> {
+    let v = parse_result_json(out_json)?;
+    match v.as_str() {
+        Some(s) => Ok(Ok(s.to_string())),
+        None => Ok(Err(HostErr::Unavailable(format!(
+            "unexpected json-string result shape: {v}"
+        )))),
+    }
+}

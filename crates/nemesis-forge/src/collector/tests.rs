@@ -1,5 +1,11 @@
+// Collector tests (production surface: record/record_with_args/dedup_hash/
+// sanitize_args/persistence/load_from_file/clear).
+//
+// 聚合面（pattern_count/process_record/flush/aggregates.jsonl）、ForgePlugin、
+// SessionPositions、summarize_value/truncate_str、compute_pattern_hash
+// 2026-10-22 随生产代码整体移除（审计 P2-a），对应测试同步删除。
+
 use super::*;
-use nemesis_plugin::Plugin;
 
 fn make_experience(tool: &str, input: &str, success: bool) -> Experience {
     Experience {
@@ -14,31 +20,42 @@ fn make_experience(tool: &str, input: &str, success: bool) -> Experience {
     }
 }
 
+fn distinct_hashes(collector: &Collector) -> HashSet<String> {
+    collector
+        .experiences()
+        .iter()
+        .map(|c| c.dedup_hash.clone())
+        .collect()
+}
+
 #[tokio::test]
-async fn test_record_and_aggregate() {
+async fn test_record_always_stores() {
     let collector = Collector::new(CollectorConfig::default());
 
     let exp1 = make_experience("file_read", "read a.txt", true);
     let exp2 = make_experience("file_read", "read b.txt", true);
-    let exp3 = make_experience("file_read", "read a.txt", false); // same tool+args pattern, should aggregate
+    let exp3 = make_experience("file_read", "read a.txt", false);
 
-    // record() uses synthesized args {input_summary: ...} for backward compat.
-    // Since dedup_hash now only uses key names (not values), all three records
-    // produce the same hash: sha256(file_read:input_summary).
-    // But they still produce 3 stored entries (Go-style always-store behavior).
+    // record() synthesizes args {input_summary: ...}; dedup_hash uses key
+    // names only, so all three share one hash — but all are stored (Go-style
+    // always-store behavior; the aggregate layer was removed 2026-10-22).
     assert!(collector.record(exp1.clone()).await);
     assert!(collector.record(exp2).await);
-    assert!(collector.record(exp3).await); // NOT skipped — aggregated
+    assert!(collector.record(exp3).await);
 
-    assert_eq!(collector.len(), 3); // All three stored (matching Go behavior)
-    assert_eq!(collector.pattern_count(), 1); // One unique pattern hash (key names only)
+    assert_eq!(collector.len(), 3);
+    assert_eq!(
+        distinct_hashes(&collector).len(),
+        1,
+        "same key-shape records share one dedup hash"
+    );
 }
 
 #[tokio::test]
 async fn test_record_with_args_different_patterns() {
     let collector = Collector::new(CollectorConfig::default());
 
-    // Different arg keys produce different pattern hashes
+    // Different arg keys produce different dedup hashes
     let exp1 = make_experience("file_read", "read a.txt", true);
     let exp2 = make_experience("file_read", "read b.txt", true);
 
@@ -49,14 +66,18 @@ async fn test_record_with_args_different_patterns() {
     assert!(collector.record_with_args(exp2, &args2).await);
 
     assert_eq!(collector.len(), 2);
-    assert_eq!(collector.pattern_count(), 2); // Different arg keys => different patterns
+    assert_eq!(
+        distinct_hashes(&collector).len(),
+        2,
+        "different arg keys => different dedup hashes"
+    );
 }
 
 #[tokio::test]
 async fn test_record_with_args_same_keys_different_values() {
     let collector = Collector::new(CollectorConfig::default());
 
-    // Same keys, different values => same pattern hash (Go's ComputePatternHash behavior)
+    // Same keys, different values => same dedup hash (Go's ComputePatternHash behavior)
     let exp1 = make_experience("file_read", "read a.txt", true);
     let exp2 = make_experience("file_read", "read b.txt", false);
 
@@ -67,7 +88,11 @@ async fn test_record_with_args_same_keys_different_values() {
     assert!(collector.record_with_args(exp2, &args2).await);
 
     assert_eq!(collector.len(), 2);
-    assert_eq!(collector.pattern_count(), 1); // Same key names => same pattern
+    assert_eq!(
+        distinct_hashes(&collector).len(),
+        1,
+        "same key names => same dedup hash"
+    );
 }
 
 #[tokio::test]
@@ -134,69 +159,6 @@ async fn test_load_from_file() {
 }
 
 #[test]
-fn test_process_record_and_pattern_count() {
-    let collector = Collector::new(CollectorConfig::default());
-    assert_eq!(collector.pattern_count(), 0);
-
-    collector.process_record("file_read", "hash1", 100, true, "2026-04-29T12:00:00Z");
-    collector.process_record("file_read", "hash1", 150, true, "2026-04-29T12:01:00Z");
-    collector.process_record("file_write", "hash2", 200, false, "2026-04-29T12:02:00Z");
-
-    assert_eq!(collector.pattern_count(), 2);
-}
-
-#[tokio::test]
-async fn test_flush() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("experiences.jsonl");
-    let mut config = CollectorConfig::default();
-    config.persistence_path = path.to_string_lossy().to_string();
-    let collector = Collector::new(config);
-
-    collector.process_record("file_read", "hash1", 100, true, "2026-04-29T12:00:00Z");
-    collector.process_record("file_write", "hash2", 200, false, "2026-04-29T12:01:00Z");
-
-    let count = collector.flush().await.unwrap();
-    assert_eq!(count, 2);
-    assert_eq!(collector.pattern_count(), 0); // Cleared after flush
-
-    // Aggregates go to a sibling aggregates.jsonl (F-D1) — NOT experiences.jsonl,
-    // which holds CollectedExperience and would be polluted by a different schema.
-    let agg_path = dir.path().join("aggregates.jsonl");
-    let content = tokio::fs::read_to_string(&agg_path).await.unwrap();
-    assert!(content.contains("hash1"));
-    assert!(content.contains("hash2"));
-
-    // experiences.jsonl must NOT be polluted with aggregate records.
-    let exp_content = tokio::fs::read_to_string(&path).await.unwrap_or_default();
-    assert!(!exp_content.contains("hash1"));
-    assert!(!exp_content.contains("hash2"));
-}
-
-#[tokio::test]
-async fn test_flush_empty() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("empty.jsonl");
-    let mut config = CollectorConfig::default();
-    config.persistence_path = path.to_string_lossy().to_string();
-    let collector = Collector::new(config);
-
-    let count = collector.flush().await.unwrap();
-    assert_eq!(count, 0);
-}
-
-#[test]
-fn test_compute_pattern_hash() {
-    let h1 = Collector::compute_pattern_hash("tool_a", &["path", "content"]);
-    let h2 = Collector::compute_pattern_hash("tool_a", &["content", "path"]); // Same keys, different order
-    let h3 = Collector::compute_pattern_hash("tool_b", &["path", "content"]); // Different tool
-
-    assert_eq!(h1, h2); // Sorted keys should produce same hash
-    assert_ne!(h1, h3); // Different tool name
-    assert!(h1.starts_with("sha256:"));
-}
-
-#[test]
 fn test_dedup_hash_matches_go_compute_pattern_hash() {
     // Go: ComputePatternHash("read_file", map[string]interface{}{"path": "/tmp/test", "mode": "read"})
     // produces "sha256:" + hex(sha256("read_file:mode,path")[:8])
@@ -254,146 +216,6 @@ fn test_sanitize_args_no_fields() {
     assert_eq!(sanitized["key"], "value");
 }
 
-// --- ForgePlugin tests ---
-
-#[test]
-fn test_forge_plugin_name() {
-    let plugin = ForgePlugin::new(CollectorConfig::default());
-    assert_eq!(plugin.name(), "forge");
-    assert_eq!(plugin.version(), "1.0.0");
-}
-
-#[test]
-fn test_forge_plugin_lifecycle() {
-    let mut plugin = ForgePlugin::new(CollectorConfig::default());
-    assert!(!plugin.is_running());
-    plugin.init(&serde_json::json!({})).unwrap();
-    assert!(plugin.is_running());
-    plugin.stop();
-    assert!(!plugin.is_running());
-}
-
-#[test]
-fn test_session_positions() {
-    let mut positions = SessionPositions::new();
-    assert_eq!(positions.next("session-1"), 0);
-    assert_eq!(positions.next("session-1"), 1);
-    assert_eq!(positions.next("session-2"), 0);
-    assert_eq!(positions.get("session-1"), 2);
-    positions.reset("session-1");
-    assert_eq!(positions.get("session-1"), 0);
-}
-
-#[tokio::test]
-async fn test_forge_plugin_on_tool_call() {
-    let plugin = ForgePlugin::new(CollectorConfig::default());
-    plugin.on_tool_call(
-        "sess-1",
-        "file_read",
-        &serde_json::json!({"path": "/tmp/file.txt", "api_key": "secret"}),
-        Some(&serde_json::json!({"content": "hello"})),
-        None,
-        42,
-    );
-    // on_tool_call 同步聚合一次（process_record），并把经验排进 input channel。
-    // 旧版零断言，两条腿都没被验证。
-    assert_eq!(plugin.collector().pattern_count(), 1);
-    let processed = plugin.process_pending().await;
-    assert_eq!(processed, 1, "input channel must hold the experience");
-    assert_eq!(plugin.collector().len(), 1);
-}
-
-#[test]
-fn test_forge_plugin_input_channel() {
-    let plugin = ForgePlugin::new(CollectorConfig::default());
-    let tx = plugin.input_channel();
-    assert!(tx.capacity() > 0);
-}
-
-/// Edge case: ForgePlugin.on_tool_call() when the input channel is full
-/// (matches Go's TestCollector_Record_ChannelFull)
-#[test]
-fn test_forge_plugin_on_tool_call_channel_full() {
-    // Create a plugin with default config (channel capacity 256).
-    // Fill the channel by sending 256+ items, then verify the next
-    // on_tool_call still doesn't panic (graceful degradation).
-    let plugin = ForgePlugin::new(CollectorConfig::default());
-
-    // Fill the channel to capacity
-    for i in 0..300 {
-        plugin.on_tool_call(
-            "sess-1",
-            &format!("tool_{}", i),
-            &serde_json::json!({"key": format!("val_{}", i)}),
-            Some(&serde_json::json!("ok")),
-            None,
-            10,
-        );
-    }
-
-    // This call should not panic even though channel is full.
-    // The experience is still processed in-memory via collector.process_record.
-    plugin.on_tool_call(
-        "sess-1",
-        "overflow_tool",
-        &serde_json::json!({"key": "overflow"}),
-        Some(&serde_json::json!("overflow")),
-        None,
-        20,
-    );
-    // Key assertion: no panic. The in-memory pattern counts should still
-    // reflect all calls (including the overflow one).
-    // （on_tool_call 对每次调用都同步 process_record——channel 满只影响
-    // 异步持久化队列，不影响聚合。旧版注释声称此断言但从未写下。）
-    assert_eq!(
-        plugin.collector().pattern_count(),
-        301,
-        "all 301 calls (300 fill + 1 overflow) must be aggregated in-memory"
-    );
-}
-
-#[test]
-fn test_forge_plugin_plugin_trait() {
-    let mut mgr = nemesis_plugin::PluginManager::new();
-    let plugin = ForgePlugin::new(CollectorConfig::default());
-    mgr.register(Box::new(plugin)).unwrap();
-    assert!(mgr.is_enabled("forge"));
-}
-
-#[test]
-fn test_forge_plugin_execute() {
-    let plugin = ForgePlugin::new(CollectorConfig::default());
-    let mut invocation = nemesis_plugin::ToolInvocation::new(
-        "file_read",
-        serde_json::json!({"path": "/tmp/file.txt"})
-            .as_object()
-            .unwrap()
-            .clone(),
-    );
-    invocation.result = Some(serde_json::json!({"ok": true}));
-    invocation.source = "test-session".to_string();
-    let (allowed, err, modified) = plugin.execute(&mut invocation);
-    assert!(allowed);
-    assert!(err.is_none());
-    assert!(!modified);
-}
-
-#[test]
-fn test_summarize_value() {
-    assert_eq!(summarize_value(&serde_json::json!("hello"), 100), "hello");
-    assert!(summarize_value(&serde_json::json!({"a": 1, "b": 2}), 100).contains("a"));
-    assert!(summarize_value(&serde_json::json!([1, 2, 3]), 100).contains("3 items"));
-}
-
-#[test]
-fn test_truncate_str() {
-    assert_eq!(truncate_str("hello", 10), "hello");
-    let long = "a".repeat(200);
-    let truncated = truncate_str(&long, 100);
-    assert_eq!(truncated.len(), 100); // 97 chars + "..." = 100
-    assert!(truncated.ends_with("..."));
-}
-
 // --- Additional collector tests ---
 
 #[tokio::test]
@@ -424,51 +246,6 @@ async fn test_experiences_returns_snapshot() {
     let exp2 = make_experience("tool2", "input2", false);
     collector.record(exp2).await;
     assert_eq!(snapshot.len(), 1); // snapshot unchanged
-}
-
-#[tokio::test]
-async fn test_pattern_count_multiple_tools() {
-    let collector = Collector::new(CollectorConfig::default());
-    collector.process_record("read", "h1", 100, true, "2026-01-01T00:00:00Z");
-    collector.process_record("write", "h2", 200, true, "2026-01-01T00:00:00Z");
-    collector.process_record("exec", "h3", 300, false, "2026-01-01T00:00:00Z");
-    assert_eq!(collector.pattern_count(), 3);
-}
-
-#[tokio::test]
-async fn test_pattern_count_same_hash_dedup() {
-    let collector = Collector::new(CollectorConfig::default());
-    collector.process_record("read", "same_hash", 100, true, "2026-01-01T00:00:00Z");
-    collector.process_record("read", "same_hash", 200, true, "2026-01-01T00:00:00Z");
-    collector.process_record("read", "same_hash", 300, false, "2026-01-01T00:00:00Z");
-    assert_eq!(collector.pattern_count(), 1);
-}
-
-#[tokio::test]
-async fn test_flush_clears_patterns() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("test_flush.jsonl");
-    let mut config = CollectorConfig::default();
-    config.persistence_path = path.to_string_lossy().to_string();
-    let collector = Collector::new(config);
-
-    collector.process_record("tool_a", "h1", 100, true, "2026-01-01T00:00:00Z");
-    collector.process_record("tool_b", "h2", 200, true, "2026-01-01T00:00:00Z");
-    assert_eq!(collector.pattern_count(), 2);
-
-    let count = collector.flush().await.unwrap();
-    assert_eq!(count, 2);
-    assert_eq!(collector.pattern_count(), 0);
-}
-
-#[tokio::test]
-async fn test_flush_no_persistence_path() {
-    let config = CollectorConfig::default();
-    let collector = Collector::new(config);
-    collector.process_record("tool", "h1", 100, true, "2026-01-01T00:00:00Z");
-    // flush without path should return an error
-    let result = collector.flush().await;
-    assert!(result.is_err());
 }
 
 #[tokio::test]
@@ -519,19 +296,6 @@ async fn test_record_with_args_stores_experience() {
     let args = serde_json::json!({"key": "value"});
     assert!(collector.record_with_args(exp, &args).await);
     assert_eq!(collector.len(), 1);
-}
-
-#[test]
-fn test_compute_pattern_hash_empty_keys() {
-    let h = Collector::compute_pattern_hash("tool", &[]);
-    assert!(h.starts_with("sha256:"));
-}
-
-#[test]
-fn test_compute_pattern_hash_order_independent() {
-    let h1 = Collector::compute_pattern_hash("tool", &["b", "a", "c"]);
-    let h2 = Collector::compute_pattern_hash("tool", &["c", "a", "b"]);
-    assert_eq!(h1, h2);
 }
 
 #[test]
@@ -602,160 +366,6 @@ fn test_max_size_large_holds_all_records() {
     assert_eq!(collector.len(), 50);
 }
 
-#[test]
-fn test_forge_plugin_cleanup() {
-    let mut plugin = ForgePlugin::new(CollectorConfig::default());
-    plugin.init(&serde_json::json!({})).unwrap();
-    assert!(plugin.is_running());
-    plugin.cleanup().unwrap();
-    assert!(!plugin.is_running());
-}
-
-#[test]
-fn test_forge_plugin_take_input_receiver() {
-    let plugin = ForgePlugin::new(CollectorConfig::default());
-    let rx1 = plugin.take_input_receiver();
-    assert!(rx1.is_some());
-    let rx2 = plugin.take_input_receiver();
-    assert!(rx2.is_none()); // Already taken
-}
-
-#[test]
-fn test_forge_plugin_execute_no_result() {
-    let plugin = ForgePlugin::new(CollectorConfig::default());
-    let mut invocation = nemesis_plugin::ToolInvocation::new(
-        "file_read",
-        serde_json::json!({"path": "/tmp/file.txt"})
-            .as_object()
-            .unwrap()
-            .clone(),
-    );
-    // No result set - should still pass through
-    let (allowed, err, modified) = plugin.execute(&mut invocation);
-    assert!(allowed);
-    assert!(err.is_none());
-    assert!(!modified);
-}
-
-#[tokio::test]
-async fn test_process_pending_empty() {
-    let plugin = ForgePlugin::new(CollectorConfig::default());
-    let count = plugin.process_pending().await;
-    assert_eq!(count, 0);
-}
-
-#[tokio::test]
-async fn test_process_pending_with_items() {
-    let plugin = ForgePlugin::new(CollectorConfig::default());
-    let exp = make_experience("tool", "input", true);
-    plugin.input_channel().send(exp).await.unwrap();
-    let count = plugin.process_pending().await;
-    assert_eq!(count, 1);
-}
-
-/// P4 回归钉（2026-10-16）：on_tool_call 已按原始 args hash 聚合一次，
-/// process_pending 只落库不再聚合——同一次调用在 pattern_counts 里必须
-/// 恰好一条（旧路径经 record() 按合成 input_summary hash 再记一笔 =
-/// 计数膨胀 + 错误 hash 重复条目）。
-#[tokio::test]
-async fn test_process_pending_no_double_aggregation() {
-    let plugin = ForgePlugin::new(CollectorConfig::default());
-    plugin.on_tool_call(
-        "sess-dup",
-        "file_read",
-        &serde_json::json!({"path": "/tmp/a.txt"}),
-        Some(&serde_json::json!({"ok": true})),
-        None,
-        7,
-    );
-    let processed = plugin.process_pending().await;
-    assert_eq!(processed, 1);
-    assert_eq!(
-        plugin.collector().pattern_count(),
-        1,
-        "同一次调用只允许一条聚合（双重聚合路径会出 2）"
-    );
-    // 内存入库照常（experiences 面不受拆分影响）
-    assert_eq!(plugin.collector().len(), 1);
-}
-
-#[test]
-fn test_forge_plugin_with_collector() {
-    let collector = Collector::new(CollectorConfig::default());
-    let plugin = ForgePlugin::with_collector(collector);
-    assert_eq!(plugin.name(), "forge");
-    assert!(plugin.collector().is_empty());
-}
-
-#[test]
-fn test_summarize_value_number() {
-    assert_eq!(summarize_value(&serde_json::json!(42), 100), "42");
-}
-
-#[test]
-fn test_summarize_value_bool() {
-    assert_eq!(summarize_value(&serde_json::json!(true), 100), "true");
-}
-
-#[test]
-fn test_summarize_value_null() {
-    assert_eq!(summarize_value(&serde_json::Value::Null, 100), "null");
-}
-
-#[test]
-fn test_summarize_value_truncation() {
-    let long_val = serde_json::json!("a".repeat(200));
-    let result = summarize_value(&long_val, 50);
-    assert!(result.len() <= 53); // 50 + "..."
-    assert!(result.ends_with("..."));
-}
-
-#[test]
-fn test_truncate_str_exact_length() {
-    assert_eq!(truncate_str("hello", 5), "hello");
-}
-
-#[test]
-fn test_truncate_str_zero_length() {
-    assert_eq!(truncate_str("hello", 0), "...");
-}
-
-#[test]
-fn test_session_positions_multiple_sessions() {
-    let mut positions = SessionPositions::new();
-    assert_eq!(positions.next("s1"), 0);
-    assert_eq!(positions.next("s2"), 0);
-    assert_eq!(positions.next("s1"), 1);
-    assert_eq!(positions.next("s2"), 1);
-    assert_eq!(positions.next("s3"), 0);
-    assert_eq!(positions.get("s1"), 2);
-    assert_eq!(positions.get("s2"), 2);
-    assert_eq!(positions.get("s3"), 1);
-}
-
-#[test]
-fn test_session_positions_reset_nonexistent() {
-    let mut positions = SessionPositions::new();
-    positions.reset("nonexistent"); // Should not panic
-    assert_eq!(positions.get("nonexistent"), 0);
-}
-
-#[test]
-fn test_session_positions_get_nonexistent() {
-    let positions = SessionPositions::new();
-    assert_eq!(positions.get("never-existed"), 0);
-}
-
-#[tokio::test]
-async fn test_record_mixed_success_failure() {
-    let collector = Collector::new(CollectorConfig::default());
-    for i in 0..10 {
-        let exp = make_experience("tool", &format!("input-{}", i), i % 2 == 0);
-        collector.record(exp).await;
-    }
-    assert_eq!(collector.len(), 10);
-}
-
 #[tokio::test]
 async fn test_load_append_preserves_existing() {
     let dir = tempfile::tempdir().unwrap();
@@ -816,16 +426,11 @@ async fn test_clear_resets_all_state() {
     let collector = Collector::new(CollectorConfig::default());
     let exp = make_experience("tool_c", "input", true);
     collector.record(exp).await;
-    // record_with_args 内部就会调 process_record（doc: "Always aggregate into
-    // pattern_counts"），这里显式再记一条不同 hash 的 pattern → 共 2 个。
-    collector.process_record("tool_c", "h_c", 100, true, "2026-01-01T00:00:00Z");
     assert_eq!(collector.len(), 1);
-    assert_eq!(collector.pattern_count(), 2);
 
     collector.clear();
     assert_eq!(collector.len(), 0);
     assert!(collector.is_empty());
-    assert_eq!(collector.pattern_count(), 0);
     assert!(collector.experiences().is_empty());
 }
 
@@ -840,80 +445,6 @@ fn test_sanitize_args_non_object_passthrough() {
 
     let arr = serde_json::json!([1, 2, 3]);
     assert_eq!(Collector::sanitize_args(&arr, &["password"]), arr);
-}
-
-#[tokio::test]
-async fn test_forge_plugin_start_sets_running() {
-    let plugin = ForgePlugin::new(CollectorConfig::default());
-    assert!(!plugin.is_running());
-    plugin.start().await;
-    assert!(plugin.is_running());
-    plugin.stop();
-    assert!(!plugin.is_running());
-}
-
-#[tokio::test]
-async fn test_on_tool_call_error_arm() {
-    let plugin = ForgePlugin::new(CollectorConfig::default());
-    plugin.on_tool_call(
-        "sess-err",
-        "file_read",
-        &serde_json::json!({"path": "/tmp/a.txt"}),
-        None,
-        Some("boom something went wrong badly"),
-        10,
-    );
-
-    let processed = plugin.process_pending().await;
-    assert!(processed >= 1);
-    let exps = plugin.collector().experiences();
-    let last = exps.last().unwrap();
-    assert!(!last.experience.success);
-    assert!(
-        last.experience.output_summary.starts_with("Error: "),
-        "output_summary should start with 'Error: ', got: {}",
-        last.experience.output_summary
-    );
-    assert!(last.experience.output_summary.contains("boom"));
-}
-
-#[tokio::test]
-async fn test_on_tool_call_no_output_arm() {
-    let plugin = ForgePlugin::new(CollectorConfig::default());
-    plugin.on_tool_call(
-        "sess-none",
-        "sleep",
-        &serde_json::json!({"ms": 100}),
-        None,
-        None,
-        5,
-    );
-
-    let processed = plugin.process_pending().await;
-    assert!(processed >= 1);
-    let exps = plugin.collector().experiences();
-    let last = exps.last().unwrap();
-    assert!(last.experience.success);
-    assert_eq!(last.experience.output_summary, "no output");
-}
-
-#[tokio::test]
-async fn test_process_pending_after_receiver_taken() {
-    let plugin = ForgePlugin::new(CollectorConfig::default());
-    let rx = plugin.take_input_receiver();
-    assert!(rx.is_some());
-    drop(rx);
-
-    // With the receiver taken out, process_pending returns 0 without panicking.
-    let count = plugin.process_pending().await;
-    assert_eq!(count, 0);
-}
-
-#[test]
-fn test_plugin_as_any_downcast() {
-    let plugin = ForgePlugin::new(CollectorConfig::default());
-    let any = nemesis_plugin::Plugin::as_any(&plugin);
-    assert!(any.downcast_ref::<ForgePlugin>().is_some());
 }
 
 // --- S8 coverage additions (quality-hardening goal 冲刺 S8) ---
@@ -944,28 +475,4 @@ async fn test_s8_record_persistence_failure_still_succeeds_in_memory() {
         .await;
     assert!(inserted);
     assert_eq!(collector.experiences().len(), 1);
-}
-
-#[tokio::test]
-async fn test_s8_flush_write_failure_logs_warning_and_skips_count() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut config = CollectorConfig::default();
-    config.persistence_path = dir
-        .path()
-        .join("experiences.jsonl")
-        .to_string_lossy()
-        .to_string();
-    let collector = Collector::new(config);
-
-    collector
-        .record(make_experience("tool_a", "input", true))
-        .await;
-
-    // Make the aggregates target un-openable: a DIRECTORY where the file
-    // should be (flush writes to sibling aggregates.jsonl).
-    std::fs::create_dir_all(dir.path().join("aggregates.jsonl")).unwrap();
-
-    let count = collector.flush().await.unwrap();
-    // The single aggregated pattern failed to append → not counted.
-    assert_eq!(count, 0);
 }

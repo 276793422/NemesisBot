@@ -146,6 +146,36 @@ impl AgentSlot {
             s.shutdown(grace).await;
         }
     }
+
+    /// 非 Eof 调用失败（Timeout/Io/Protocol）后的判死收尾：杀 child +
+    /// 收尸，返回拼好诊断的 ToolFailed。慢工具超时后子进程仍活着，迟到
+    /// 响应滞留管道——会话若继续复用（is_alive=true 不触发重建），下次
+    /// 调用读到上一次的迟到行，call_id 永久错位一格（BUG-HUNT R18 实录：
+    /// 超时一次该执行体对后续所有调用报废）。杀掉后由既有「死进程先重
+    /// 建」路径在下次调用接手（journal 两相账兜在途副作用语义）；协议级
+    /// 串话同理更不该在同一会话上继续。
+    async fn fail_poisoned(
+        &mut self,
+        agent_id: &str,
+        tool: &str,
+        call_id: &str,
+        e: TransportError,
+    ) -> SupervisorError {
+        let stderr = self.session().stderr_snapshot();
+        let child = &mut self.session().child;
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+        tracing::warn!(
+            agent_id,
+            tool,
+            call_id,
+            error = %e,
+            "persistent executor call failed without EOF; session killed so \
+             the next call rebuilds (a late response would desync the \
+             request/response stream by one)"
+        );
+        SupervisorError::ToolFailed(format!("{e}; stderr: {stderr}"))
+    }
 }
 
 /// supervisor 执行结果错误（分型见模块文档）。
@@ -452,18 +482,15 @@ impl AgentRuntimeSupervisor {
                         guard.last_used = Instant::now();
                         Self::map_response(resp)
                     }
-                    Err(e) => Err(SupervisorError::ToolFailed(format!(
-                        "{e}; stderr: {}",
-                        guard.session().stderr_snapshot()
-                    ))),
+                    // 重建后的新会话同样可能撞超时（重发的就是那个慢工具）
+                    // ——同样判死，不带毒进槽。
+                    Err(e) => Err(guard.fail_poisoned(agent_id, tool, &call_id, e).await),
                 }
             }
             // 活着但没回话（Timeout）/ 线损坏（Io/Protocol）：报错不重试
-            // （重试 = 副作用重复；协议级串话更不该在同一会话上继续）。
-            Err(e) => Err(SupervisorError::ToolFailed(format!(
-                "{e}; stderr: {}",
-                guard.session().stderr_snapshot()
-            ))),
+            // （重试 = 副作用重复），且判死会话（fail_poisoned——迟到响应
+            // 会错位整条流，会话不可复用）由下次调用的死进程重建接手。
+            Err(e) => Err(guard.fail_poisoned(agent_id, tool, &call_id, e).await),
         }
     }
 

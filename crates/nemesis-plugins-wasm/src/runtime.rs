@@ -16,9 +16,10 @@ use std::time::Duration;
 use crate::bindings::{self, ToolMetadata};
 use crate::error::PluginError;
 use crate::host_impl::{
-    CallCaps, FrameBudget, HostToolInvoker, InstanceConfig, PluginLogBuffer, SecretResolver,
+    CallCaps, FrameBudget, HostToolInvoker, InstanceConfig, LlmInvoker, PluginLogBuffer,
+    SecretResolver,
 };
-use crate::limits::{InstanceGate, PluginLimits};
+use crate::limits::{InstanceGate, PluginLimits, PolicyPoint};
 use crate::loader::HostDll;
 use crate::manifest::PluginKind;
 
@@ -36,6 +37,8 @@ pub(crate) struct CallFrame {
     pub(crate) workspace_root: std::path::PathBuf,
     pub(crate) egress: Arc<crate::egress::EgressPolicy>,
     pub(crate) invoker: Option<Arc<dyn HostToolInvoker>>,
+    /// 杂务 LLM 补全面（policy 帧授权；None = 未装配恒 unavailable）。
+    pub(crate) llm: Option<Arc<dyn LlmInvoker>>,
     pub(crate) data_dir: std::path::PathBuf,
     pub(crate) audit: Option<crate::host_impl::SharedAuditLogger>,
     pub(crate) session_key: String,
@@ -80,6 +83,7 @@ impl CallSession {
             workspace_root: frame.workspace_root.clone(),
             egress: frame.egress.clone(),
             invoker: frame.invoker.clone(),
+            llm: frame.llm.clone(),
             tokio_handle: tokio::runtime::Handle::try_current().ok(),
             audit: frame.audit.clone(),
             session_key: frame.session_key.clone(),
@@ -157,13 +161,20 @@ impl PluginRuntime {
     }
 
     /// 一次壳调用的公共骨架（gate 许可 + env 会话 + 外层墙钟兜底）。
-    async fn run_call<T, F>(&self, comp: u64, frame: CallFrame, f: F) -> Result<T, PluginError>
+    /// `timeout_ms` = 本次调用墙钟（工具路径取 `limits.timeout_ms`；policy
+    /// 路径按点推导——见 `PluginLimits::policy_call_timeout_ms`）。
+    async fn run_call<T, F>(
+        &self,
+        comp: u64,
+        frame: CallFrame,
+        timeout_ms: u64,
+        f: F,
+    ) -> Result<T, PluginError>
     where
         F: FnOnce(&CallSession) -> Result<T, PluginError> + Send + 'static,
         T: Send + 'static,
     {
         let permit = self.gate.try_acquire()?;
-        let timeout_ms = frame.limits.timeout_ms;
         let host = self.host.clone();
         let handle = tokio::task::spawn_blocking(move || {
             let _permit = permit;
@@ -192,7 +203,7 @@ impl PluginRuntime {
         frame.kind = PluginKind::Tool;
         frame.invoker = None;
         let timeout_ms = frame.limits.timeout_ms;
-        self.run_call(comp, frame, move |session| {
+        self.run_call(comp, frame, timeout_ms, move |session| {
             let out = session.call("get-metadata", "{}", timeout_ms)?;
             bindings::parse_get_metadata(&out).map_err(|he| {
                 PluginError::MetadataMismatch(format!("get-metadata host-error: {he:?}"))
@@ -212,7 +223,7 @@ impl PluginRuntime {
         frame.session_key = exec_ctx.session_key.clone();
         let timeout_ms = frame.limits.timeout_ms;
         let workspace_root = frame.workspace_root.to_string_lossy().to_string();
-        self.run_call(comp, frame, move |session| {
+        self.run_call(comp, frame, timeout_ms, move |session| {
             let input = serde_json::json!({
                 "args-json": args_json,
                 "context": {
@@ -249,7 +260,7 @@ impl PluginRuntime {
         frame.kind = PluginKind::Observer;
         frame.invoker = None;
         let timeout_ms = frame.limits.timeout_ms;
-        self.run_call(comp, frame, move |session| {
+        self.run_call(comp, frame, timeout_ms, move |session| {
             let out = session.call("observe", &event_json, timeout_ms)?;
             bindings::parse_observe(&out)
                 .map_err(|he| PluginError::Trap(format!("observe decode: {he}")))?
@@ -257,4 +268,64 @@ impl PluginRuntime {
         })
         .await
     }
+
+    /// 安装期对账：探针 get-policy-metadata（policy 组件；fresh-store）。
+    pub(crate) async fn probe_policy_metadata(
+        &self,
+        comp: u64,
+        mut frame: CallFrame,
+    ) -> Result<crate::bindings::PolicyMetadata, PluginError> {
+        frame.observer_frame = false;
+        frame.kind = PluginKind::Policy;
+        frame.invoker = None;
+        frame.llm = None;
+        // 探针与 validation 同口径紧超时（纯自报元数据，不该耗时长）。
+        let timeout_ms = frame.limits.policy_call_timeout_ms(PolicyPoint::Validation);
+        self.run_call(comp, frame, timeout_ms, move |session| {
+            let out = session.call("get-policy-metadata", "{}", timeout_ms)?;
+            bindings::parse_policy_metadata(&out).map_err(|he| {
+                PluginError::MetadataMismatch(format!("get-policy-metadata host-error: {he:?}"))
+            })
+        })
+        .await
+    }
+
+    /// 调用一次循环策略点（JSON 进出；墙钟按点推导）。
+    pub(crate) async fn call_policy(
+        &self,
+        comp: u64,
+        mut frame: CallFrame,
+        point: PolicyPoint,
+        input_json: String,
+    ) -> Result<String, PluginError> {
+        frame.observer_frame = false;
+        frame.kind = PluginKind::Policy;
+        frame.session_key = extract_session_key(&input_json);
+        let timeout_ms = frame.limits.policy_call_timeout_ms(point);
+        let name = point.export_name();
+        self.run_call(comp, frame, timeout_ms, move |session| {
+            let out = session.call(name, &input_json, timeout_ms)?;
+            // 三策略点同形 result<json-string, host-error>；ok payload 必须
+            // 是字符串（guest 回的裁决 JSON 串）。
+            match bindings::parse_json_string_result(&out)
+                .map_err(|he| PluginError::Trap(format!("{name} decode: {he}")))?
+            {
+                Ok(verdict_json) => Ok(verdict_json),
+                Err(he) => Err(PluginError::Trap(format!("{name} host-error: {he}"))),
+            }
+        })
+        .await
+    }
+}
+
+/// 从策略投影 JSON 抽 session_key（审计 user 字段；无键 = 空串）。
+fn extract_session_key(input_json: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(input_json)
+        .ok()
+        .and_then(|v| {
+            v.get("session_key")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_default()
 }

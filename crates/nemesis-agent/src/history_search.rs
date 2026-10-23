@@ -428,17 +428,18 @@ fn search_linear(query: &str, limit: usize) -> Vec<HistoryHit> {
     if ql.is_empty() {
         return hits;
     }
-    for ent in rd.flatten() {
-        let path = ent.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-            continue;
-        }
+    // 确定性迭代序（2026-10-23）：limit 截断让返回的命中子集依赖遍历序，
+    // 而 read_dir 顺序是平台实现细节（NTFS 字典序 vs ext4 哈希序）。先按
+    // mtime 降序 + 文件名升序 tiebreak 排序（最新会话优先），同一数据
+    // 跨平台同一结果。
+    let files = jsonl_files_latest_first(rd);
+    for path in &files {
         let stem = path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_string();
-        let Ok(file) = std::fs::File::open(&path) else {
+        let Ok(file) = std::fs::File::open(path) else {
             continue;
         };
         for (seq, line) in std::io::BufReader::new(file)
@@ -473,6 +474,28 @@ fn search_linear(query: &str, limit: usize) -> Vec<HistoryHit> {
         }
     }
     hits
+}
+
+/// session_logs 目录的 JSONL 清单，最新 mtime 优先（文件名升序 tiebreak）。
+/// 只收常规文件（`*.jsonl` 目录不进清单）；非常规 mtime 的条目跳过
+/// （后续 File::open 也会失败，语义一致）。
+fn jsonl_files_latest_first(rd: std::fs::ReadDir) -> Vec<PathBuf> {
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = rd
+        .flatten()
+        .filter(|e| e.path().is_file())
+        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("jsonl"))
+        .filter_map(|e| {
+            let mtime = e.metadata().and_then(|m| m.modified()).ok()?;
+            Some((mtime, e.path()))
+        })
+        .collect();
+    order_session_files_latest_first(&mut files);
+    files.into_iter().map(|(_, p)| p).collect()
+}
+
+/// 排序纯函数（mtime 降序 + 路径升序 tiebreak），独立出来便于单测钉死。
+fn order_session_files_latest_first(files: &mut [(std::time::SystemTime, PathBuf)]) {
+    files.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
 }
 
 /// Render hits for the LLM (the `history_search` tool result body).

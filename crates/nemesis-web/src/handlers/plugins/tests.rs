@@ -39,6 +39,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         forge: None,
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
+        quic_relay: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -75,8 +76,8 @@ fn plugins_list_reports_full_native_catalog_without_error() {
     let r = PluginsHandler::new().plugins_list(&ws(&dir)).unwrap();
 
     let arr = r["plugins"].as_array().unwrap();
-    // 目录 = nemesis-config NativePluginId::ALL 四成员（2026-10-21 起不再
-    // 只列 onnx+ui——用户指出的「四个插件只见两个」根修）。
+    // 目录 = nemesis-config NativePluginId::ALL 五成员（2026-10-23 补登记
+    // plugin_vm——此前 VM 显示通道被误列「未识别的库」的花名册缺口根修）。
     let ids: Vec<&str> = arr.iter().filter_map(|p| p["id"].as_str()).collect();
     assert_eq!(
         ids,
@@ -84,7 +85,8 @@ fn plugins_list_reports_full_native_catalog_without_error() {
             "plugin_onnx",
             "plugin_ui",
             "eval_monitor_dll",
-            "plugin_wasm"
+            "plugin_wasm",
+            "plugin_vm"
         ]
     );
 
@@ -207,7 +209,7 @@ async fn dispatch_list_via_bare_cmd_name() {
 
     // 裸名 "list"（不是 "plugins.list"）——commands.list 事故的 dispatch 级钉。
     let r = h.handle_cmd("list", None, &ctx).await.unwrap().unwrap();
-    assert!(r["plugins"].as_array().unwrap().len() == 4);
+    assert!(r["plugins"].as_array().unwrap().len() == 5);
 
     // 未知子命令 → loud 错误。
     let err = h.handle_cmd("bogus", None, &ctx).await.unwrap_err();

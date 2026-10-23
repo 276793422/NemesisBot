@@ -17,7 +17,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use nemesis_plugins_wasm::host_impl::SecretResolver;
-use nemesis_plugins_wasm::install::{AutoApprove, PluginInstaller, WASM_MAX_BYTES};
+use nemesis_plugins_wasm::install::{
+    AutoApprove, InstallApprover, InstallReview, PluginInstaller, WASM_MAX_BYTES,
+};
 use nemesis_plugins_wasm::limits::PluginLimits;
 use nemesis_plugins_wasm::registry::PluginManager;
 use nemesis_plugins_wasm::runtime::ExecContext;
@@ -122,6 +124,27 @@ version = "0.1.0"
 description = "e2e fixture observer"
 "#;
 
+/// 接管变体（2026-10-23 工具接管层）：根级 `takeover` 声明（必须在任何
+/// table 段之前——TOML 根键纪律与 wasm-sha256 同款）。
+const TRANSLATE_TAKEOVER_TOML: &str = r#"api-version = 1
+slug = "translate"
+kind = "tool"
+name = "Translate"
+version = "0.1.0"
+description = "e2e fixture tool (takeover variant)"
+takeover = ["web_fetch"]
+
+[permissions]
+x-secret = ["api_key"]
+
+[limits]
+fuel = 20_000_000
+timeout-ms = 10_000
+
+[config-schema]
+greeting = "问候语"
+"#;
+
 fn ctx() -> ExecContext {
     ExecContext {
         session_key: "sess-e2e".into(),
@@ -134,8 +157,11 @@ async fn fresh_manager_secrets(
 ) -> Result<(tempfile::TempDir, Arc<PluginManager>), PluginError> {
     common::ensure_host_dll();
     let ws = tempfile::tempdir().map_err(|e| PluginError::Io(e.to_string()))?;
-    let mgr = Arc::new(PluginManager::new(
+    // 测试形态 = 目录注入（生产 `new` 指向 exe 旁真实 plugins_wasm/，
+    // 并行用例共享会互相串扰）。
+    let mgr = Arc::new(PluginManager::new_with_dirs(
         ws.path(),
+        &ws.path().join("plugins_wasm"),
         PluginLimits::default(),
         secrets,
     )?);
@@ -156,8 +182,19 @@ async fn tool_install_roundtrip_and_host_calls() {
     let tmp = tempfile::tempdir().expect("stage tmp");
     let src = stage_plugin(tmp.path(), TRANSLATE_TOML.to_string(), &wasm).expect("stage");
     let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
-    let reg = installer.install(&src, true).await.expect("install");
-    assert_eq!(reg.trust, PluginTrustState::ReviewRequired);
+    let outcome = installer.install(&src, true).await.expect("install");
+    assert_eq!(outcome.trust, PluginTrustState::ReviewRequired);
+    assert!(
+        outcome.registered.is_none(),
+        "新装默认不加载（2026-10-22 语义）"
+    );
+
+    // 用户开开关 → 装配注册。
+    let reg = installer
+        .set_enabled("translate", true)
+        .await
+        .expect("enable")
+        .expect("loaded");
 
     // 注册面：工具全名与元数据对账。
     let found = mgr
@@ -225,6 +262,10 @@ async fn egress_denied_by_default() {
     let src = stage_plugin(tmp.path(), TRANSLATE_TOML.to_string(), &wasm).expect("stage");
     let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
     installer.install(&src, true).await.expect("install");
+    installer
+        .set_enabled("translate", true)
+        .await
+        .expect("enable");
 
     let out = mgr
         .execute_tool(
@@ -243,6 +284,45 @@ async fn egress_denied_by_default() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn takeover_declaration_survives_install_funnel() {
+    // 工具接管层 e2e（2026-10-23）：正例 = 带接管声明的插件走完装配漏斗，
+    // 声明原样落盘、装配注册后 owner 裁决命中（桥 wrap/翻开关位由
+    // nemesisbot plugin_bridge tests 用桩内置工具钉过——这里钉宿主面全链
+    // ：漏斗不吞声明、注册面消费声明）。反例 = deny-list 命中（exec）在
+    // 漏斗第①步（manifest 解析）诚实拒绝——安装即拦截，不等到注册面。
+    let Some(wasm) = fixture_wasm("translate", "translate_plugin") else {
+        eprintln!("{}", skip_reason("translate"));
+        return;
+    };
+    let (_ws, mgr) = fresh_manager().await.expect("manager");
+    let tmp = tempfile::tempdir().expect("stage tmp");
+    let src = stage_plugin(tmp.path(), TRANSLATE_TAKEOVER_TOML.to_string(), &wasm).expect("stage");
+    let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
+    installer.install(&src, true).await.expect("install");
+    installer
+        .set_enabled("translate", true)
+        .await
+        .expect("enable")
+        .expect("loaded");
+    let owner = mgr.takeover_owner("web_fetch").expect("takeover owner");
+    assert_eq!(owner.manifest.slug, "translate");
+    assert_eq!(owner.manifest.takeover, vec!["web_fetch".to_string()]);
+
+    let deny_toml =
+        TRANSLATE_TAKEOVER_TOML.replacen("takeover = [\"web_fetch\"]", "takeover = [\"exec\"]", 1);
+    let (_ws2, mgr2) = fresh_manager().await.expect("manager2");
+    let tmp2 = tempfile::tempdir().expect("stage tmp2");
+    let src2 = stage_plugin(tmp2.path(), deny_toml, &wasm).expect("stage2");
+    let installer2 = PluginInstaller::new(mgr2.clone(), Arc::new(AutoApprove), None);
+    // InstallOutcome 无 Debug——expect_err 用不了，match 拿错误面。
+    let err = match installer2.install(&src2, true).await {
+        Ok(_) => panic!("deny-list takeover must be rejected at install"),
+        Err(e) => e,
+    };
+    assert!(err.to_string().contains("takeover"), "拒绝带原因: {err}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn fuel_bomb_times_out() {
     let Some(wasm) = fixture_wasm("translate", "translate_plugin") else {
         eprintln!("{}", skip_reason("translate"));
@@ -253,6 +333,10 @@ async fn fuel_bomb_times_out() {
     let src = stage_plugin(tmp.path(), TRANSLATE_TOML.to_string(), &wasm).expect("stage");
     let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
     installer.install(&src, true).await.expect("install");
+    installer
+        .set_enabled("translate", true)
+        .await
+        .expect("enable");
 
     let started = Instant::now();
     let err = mgr
@@ -282,6 +366,10 @@ async fn trap_classified() {
     let src = stage_plugin(tmp.path(), TRANSLATE_TOML.to_string(), &wasm).expect("stage");
     let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
     installer.install(&src, true).await.expect("install");
+    installer
+        .set_enabled("translate", true)
+        .await
+        .expect("enable");
 
     let err = mgr
         .execute_tool(
@@ -309,7 +397,20 @@ async fn disable_blocks_then_reenable_restores() {
     let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
     installer.install(&src, true).await.expect("install");
 
-    mgr.set_enabled_plugin("translate", false)
+    // 新语义：装完默认不加载——未开开关时调用必须诚实拒绝。
+    let err = mgr
+        .execute_tool(
+            "plugin.translate.translate",
+            r#"{"mode":"echo","text":"x"}"#.into(),
+            ctx(),
+        )
+        .await
+        .expect_err("not-yet-enabled must fail");
+    assert!(matches!(err, PluginError::NotAvailable(_)), "got: {err:?}");
+
+    // 关开关（幂等摘除）也不装载。
+    installer
+        .set_enabled("translate", false)
         .await
         .expect("disable");
     let err = mgr
@@ -322,7 +423,9 @@ async fn disable_blocks_then_reenable_restores() {
         .expect_err("disabled must fail");
     assert!(matches!(err, PluginError::NotAvailable(_)), "got: {err:?}");
 
-    mgr.set_enabled_plugin("translate", true)
+    // 开开关 → 真装配 → 可调用。
+    installer
+        .set_enabled("translate", true)
         .await
         .expect("enable");
     mgr.execute_tool(
@@ -344,7 +447,12 @@ async fn observer_pipeline_receives_events() {
     let tmp = tempfile::tempdir().expect("stage tmp");
     let src = stage_plugin(tmp.path(), ACTIVITY_TOML.to_string(), &wasm).expect("stage");
     let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
-    let reg = installer.install(&src, true).await.expect("install");
+    installer.install(&src, true).await.expect("install");
+    let reg = installer
+        .set_enabled("activity-log", true)
+        .await
+        .expect("enable")
+        .expect("loaded");
 
     mgr.enqueue_observer_event(r#"{"type":"tool_start","tool":"exec"}"#.into());
     mgr.enqueue_observer_event(r#"{"type":"tool_end","tool":"exec"}"#.into());
@@ -408,6 +516,11 @@ async fn audit_events_recorded() {
     let src = stage_plugin(tmp.path(), TRANSLATE_TOML.to_string(), &wasm).expect("stage");
     let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
     installer.install(&src, true).await.expect("install");
+    installer
+        .set_enabled("translate", true)
+        .await
+        .expect("enable")
+        .expect("loaded");
 
     // ① secret allowed（声明内 + vault 命中）
     let out = mgr
@@ -530,4 +643,108 @@ async fn uninstall_removes_payload_keeps_data() {
         .await
         .expect_err("uninstalled must fail");
     assert!(matches!(err, PluginError::NotAvailable(_)));
+}
+
+// ---------------------------------------------------------------------------
+// 2026-10-23 开关补漏斗收口：手工拷入无签名载荷 + 卡面救援全链
+//（set_enabled 补漏斗；从紧面（无卡 CLI）归 install_registry::test_ unsigned_without_card_stays_strict）
+// ---------------------------------------------------------------------------
+
+/// 审批卡替身（can_approve_unsigned=true，裁决可编程）——gateway
+/// LateInstallApprover 的测试投影：具备人批卡能力、结果由用例钉死。
+struct CardApprover {
+    approve: bool,
+}
+
+impl InstallApprover for CardApprover {
+    fn can_approve_unsigned(&self) -> bool {
+        true
+    }
+
+    fn approve<'a>(
+        &'a self,
+        _review: &'a InstallReview,
+    ) -> futures::future::BoxFuture<'a, Result<bool, String>> {
+        Box::pin(async move {
+            if self.approve {
+                Ok(true)
+            } else {
+                Err("测试拒绝".into())
+            }
+        })
+    }
+}
+
+/// 写手工拷入形态载荷（直落 plugins_wasm/<slug>/，无 lockfile 记录、无签名）。
+fn stage_hand_copied(mgr: &PluginManager, slug: &str, wasm_src: &Path) -> std::path::PathBuf {
+    let wasm = std::fs::read(wasm_src).expect("read fixture wasm");
+    let sha = {
+        use sha2::{Digest, Sha256};
+        hex::encode(Sha256::digest(&wasm))
+    };
+    let pdir = mgr.plugin_dir(slug);
+    std::fs::create_dir_all(&pdir).expect("payload dir");
+    // sha 放文件头（TOML 根键必须在任何 table 段之前）；wasm 缺省名 plugin.wasm。
+    let manifest = format!("wasm-sha256 = \"{sha}\"\n{TRANSLATE_TOML}");
+    std::fs::write(pdir.join("plugin.toml"), manifest).expect("write manifest");
+    std::fs::write(pdir.join("plugin.wasm"), wasm).expect("write wasm");
+    pdir
+}
+
+/// 卡面批准：手拷无签名载荷开关 → 补漏斗放行（trust=review-required 进卡）
+/// → 批准 = 装载注册 + lockfile 留档（重启装载沿用同一容差）。
+#[tokio::test(flavor = "multi_thread")]
+async fn hand_copied_unsigned_rescued_by_card_approval() {
+    let Some(wasm) = fixture_wasm("translate", "translate_plugin") else {
+        eprintln!("{}", skip_reason("translate"));
+        return;
+    };
+    let (_ws, mgr) = fresh_manager().await.expect("manager");
+    stage_hand_copied(&mgr, "translate", &wasm);
+
+    let installer =
+        PluginInstaller::new(mgr.clone(), Arc::new(CardApprover { approve: true }), None);
+    // Ok 侧类型无 Debug——match 拆。
+    match installer.set_enabled("translate", true).await {
+        Ok(reg) => assert!(reg.is_some(), "批准后应装载注册"),
+        Err(e) => panic!("card rescue failed: {e:?}"),
+    }
+    assert!(mgr.get("translate").is_some(), "注册表在场");
+
+    // lockfile 留档 = review-required（人批卡与 --allow-unsigned 同一留档语义，
+    // recorded_allow_unsigned 由此放行重启装载）。
+    let lf_raw =
+        std::fs::read_to_string(mgr.plugins_dir().join("lockfile.json")).expect("lockfile written");
+    assert!(
+        lf_raw.contains("review-required"),
+        "lockfile 应记 review-required: {lf_raw}"
+    );
+}
+
+/// 卡面拒绝：漏斗走到审批步被否 → 带注记失败、注册表不收、开关保持 true
+///（诚实重试态——用户换载荷后再开）。
+#[tokio::test(flavor = "multi_thread")]
+async fn hand_copied_unsigned_denied_by_card_stays_out() {
+    let Some(wasm) = fixture_wasm("translate", "translate_plugin") else {
+        eprintln!("{}", skip_reason("translate"));
+        return;
+    };
+    let (_ws, mgr) = fresh_manager().await.expect("manager");
+    stage_hand_copied(&mgr, "translate", &wasm);
+
+    let installer =
+        PluginInstaller::new(mgr.clone(), Arc::new(CardApprover { approve: false }), None);
+    let err = match installer.set_enabled("translate", true).await {
+        Ok(_) => panic!("denied install must fail"),
+        Err(e) => e,
+    };
+    assert!(
+        err.to_string().contains("测试拒绝"),
+        "拒绝注记透传: {err:?}"
+    );
+    assert!(mgr.get("translate").is_none(), "被拒插件不进注册表");
+    assert!(
+        mgr.get_config("translate").enabled,
+        "开关先落盘（失败保持 true = 重试态）"
+    );
 }

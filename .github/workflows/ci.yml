@@ -325,6 +325,7 @@ jobs:
             plugins/wasm/translate
             plugins/wasm/activity-log
             plugins/wasm/textstat
+            plugins/wasm/policy-sample
 
       # Defender 实时扫描排除 target 目录（2026-09-29 提速 P4）：编译期海量
       # 临时文件逐个过扫描典型拖慢 5-15%；runner 是一次性机器，无安全顾虑

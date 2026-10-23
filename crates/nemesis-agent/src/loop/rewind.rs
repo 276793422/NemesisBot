@@ -83,6 +83,17 @@ impl AgentLoop {
     /// 指纹/当前指纹，前端可展示）；`force == true` 强过，回执与日志留痕
     /// （`forced: true`）。
     ///
+    /// R31（2026-10-23 会话回退波及面收窄）：回退是会话级 API，但 turn 序
+    /// 号与 checkpoint 索引是 loop 全局的——scoped 预检把回退区间内**其他
+    /// 会话**声明过变更的路径单列进 `other_session_paths`（同为默认拒绝，
+    /// `force` 显式强过）；文件恢复与截断也只作用于本会话的 checkpoint 条
+    /// 目，并发会话的回退历史与文件在 force 强过后依然完整（其文件若在恢
+    /// 复树内仍会被碾——这正是 other_session_paths 要拦的事，强过即用户
+    /// 意志）。
+    ///
+    /// 会话闸：经 [`Self::under_history_gate`] 真互斥（BUG-HUNT R6——旧
+    /// peek 存在「检查后、截断前」窗口，在飞回合的行会被陈旧快照截丢）。
+    ///
     /// 返回回执 JSON（kept/removed 计数 + 恢复文件清单 + redoable；被拒时
     /// 为 blocked 结构）。
     pub async fn rewind_to_message(
@@ -91,9 +102,18 @@ impl AgentLoop {
         message_index: usize,
         force: bool,
     ) -> Result<serde_json::Value, String> {
-        if self.is_session_busy(session_key) {
-            return Err("会话正在处理消息，请等当前回合完成后再回退".to_string());
-        }
+        self.under_history_gate(session_key, "回退", || {
+            self.rewind_to_message_inner(session_key, message_index, force)
+        })
+        .await
+    }
+
+    async fn rewind_to_message_inner(
+        &self,
+        session_key: &str,
+        message_index: usize,
+        force: bool,
+    ) -> Result<serde_json::Value, String> {
         // 全量读（回退是一次性管理操作，非热路径——fork 同款）。
         let (rows, _total, _, _) = crate::chat_log::read_chat_log(session_key, usize::MAX, None);
         if rows.is_empty() {
@@ -128,7 +148,7 @@ impl AgentLoop {
     ///
     /// busy 检查省略：唯一调用方是会话维护尾巴（gate 已获取会话 = 串行保
     /// 证，会话正忙根本进不到这里）；WSAPI 面的同语义入口走
-    /// [`Self::undo_last_turn`]（busy 闸 + 委托本方法）。
+    /// [`Self::undo_last_turn`]（会话闸 + 委托本方法）。
     pub(crate) async fn rewind_last_turn(
         &self,
         session_key: &str,
@@ -145,16 +165,15 @@ impl AgentLoop {
             .await
     }
 
-    /// 行动代理 E3（收官批 2026-10-15）WSAPI 撤销入口：busy 闸 +
+    /// 行动代理 E3（收官批 2026-10-15）WSAPI 撤销入口：会话闸
+    /// （[`Self::under_history_gate`] 真互斥）+ 委托
     /// [`Self::rewind_last_turn`]。会话正在处理消息时零副作用诚实拒绝
     /// （对话与文件都不动）——`connectors.undo` 的域 B（write 无 undo 声
     /// 明）走此入口回退最后一轮。维护尾巴调用方不经此入口（gate 已持会
     /// 话），直接走内部方法。
     pub async fn undo_last_turn(&self, session_key: &str) -> Result<serde_json::Value, String> {
-        if self.is_session_busy(session_key) {
-            return Err("会话正在处理消息，请等当前回合完成后再撤销".to_string());
-        }
-        self.rewind_last_turn(session_key).await
+        self.under_history_gate(session_key, "撤销", || self.rewind_last_turn(session_key))
+            .await
     }
 
     /// 重新生成支撑（2026-10-20，docs/BUG/2026-10-20_chat-regenerate-rewind-buttons-mismatch.md）：
@@ -170,7 +189,7 @@ impl AgentLoop {
     /// find_map 天然命中本轮——文件回滚到提问前，正是重新生成要的语义。
     ///
     /// 契约：`message_index` 必须指向 user 行——assistant 行落点会产生
-    /// 「删提问留回复」的破碎轮，loud 拒绝。busy 闸与边界检查同
+    /// 「删提问留回复」的破碎轮，loud 拒绝。会话闸与边界检查同
     /// [`Self::rewind_to_message`]；共享 [`Self::rewind_from_cut`] 机体
     /// （P20 冲突预检 / undo 栈 / F8 审计全量复用）。
     pub async fn rewind_before_message(
@@ -179,9 +198,18 @@ impl AgentLoop {
         message_index: usize,
         force: bool,
     ) -> Result<serde_json::Value, String> {
-        if self.is_session_busy(session_key) {
-            return Err("会话正在处理消息，请等当前回合完成后再回退".to_string());
-        }
+        self.under_history_gate(session_key, "回退", || {
+            self.rewind_before_message_inner(session_key, message_index, force)
+        })
+        .await
+    }
+
+    async fn rewind_before_message_inner(
+        &self,
+        session_key: &str,
+        message_index: usize,
+        force: bool,
+    ) -> Result<serde_json::Value, String> {
         let (rows, _total, _, _) = crate::chat_log::read_chat_log(session_key, usize::MAX, None);
         if rows.is_empty() {
             return Err("会话没有可回退的消息".to_string());
@@ -228,15 +256,21 @@ impl AgentLoop {
         // P20（2026-09-25 能力扩展）：冲突预检——restore 锚之后各 turn 封印
         // 的「变更后指纹」vs 现盘内容。只读不突变（零副作用），冲突且未
         // force = 拒绝并列结构化清单；force = 强过（审计留痕）。
+        // R31（2026-10-23 会话回退波及面收窄）：scoped 预检——回退区间内
+        // 其他会话声明过变更的路径进 `other_session_paths` 同样默认拒绝
+        // （restore 的全树恢复会碾掉它们，但它们不属于本会话的回退意图）。
+        // 其他会话的 checkpoint 条目不会被 scoped 截断摧毁，其 rewind/redo
+        // 能力在 force 强过后依然完整。
         let mut report = crate::checkpoint::CheckpointConflictReport::default();
         if let Some(t) = restore_turn
             && let Some(cp) = self.attached_checkpoint()
         {
-            report = cp.conflict_scan(t);
-            if !report.conflicts.is_empty() && !force {
+            report = cp.conflict_scan_scoped(t, Some(session_key));
+            if (!report.conflicts.is_empty() || !report.other_session_paths.is_empty()) && !force {
                 warn!(
-                    "[AgentLoop] rewind 冲突预检拒绝：session={session_key} turn>={t} 检出 {} 个文件在 checkpoint 后被外部修改（force 可强过）",
-                    report.conflicts.len()
+                    "[AgentLoop] rewind 冲突预检拒绝：session={session_key} turn>={t} 检出 {} 个外部修改冲突 + {} 个波及其他会话的路径（force 可强过）",
+                    report.conflicts.len(),
+                    report.other_session_paths.len()
                 );
                 return Ok(serde_json::json!({
                     "blocked": true,
@@ -246,14 +280,17 @@ impl AgentLoop {
                     "restore_turn": t,
                     "conflicts": report.conflicts,
                     "unchecked_paths": report.unchecked_paths,
+                    "other_session_paths": report.other_session_paths,
                 }));
             }
         }
-        let forced = force && !report.conflicts.is_empty();
+        let forced =
+            force && (!report.conflicts.is_empty() || !report.other_session_paths.is_empty());
         if forced {
             warn!(
-                "[AgentLoop] rewind 冲突被 force 强过（审计留痕）：session={session_key} restore_turn={restore_turn:?} 覆盖 {} 个外部修改冲突",
-                report.conflicts.len()
+                "[AgentLoop] rewind 冲突被 force 强过（审计留痕）：session={session_key} restore_turn={restore_turn:?} 覆盖 {} 个外部修改冲突 + {} 个其他会话波及路径",
+                report.conflicts.len(),
+                report.other_session_paths.len()
             );
         }
 
@@ -291,7 +328,9 @@ impl AgentLoop {
             let (w, d) = cp.restore_code(t).await;
             written = w;
             deleted = d;
-            cp.truncate_from(t);
+            // R31：scoped 截断——其他会话的 checkpoint 条目（含落盘 JSON）
+            // 原样保留，其回退历史不被本会话的回退摧毁。
+            cp.truncate_from_scoped(t, Some(session_key));
             file_restore = "applied";
         } else if restore_turn.is_some() {
             file_note = Some("checkpoint store 未挂载，文件未回滚".to_string());
@@ -326,8 +365,9 @@ impl AgentLoop {
                     &format!("{session_key}#idx={report_index}"),
                     "forced",
                     &format!(
-                        "rewind force 覆盖 {} 个外部修改冲突（restore_turn={restore_turn:?}）",
-                        report.conflicts.len()
+                        "rewind force 覆盖 {} 个外部修改冲突 + {} 个其他会话波及路径（restore_turn={restore_turn:?}）",
+                        report.conflicts.len(),
+                        report.other_session_paths.len()
                     ),
                 );
                 if recorded.is_none() {
@@ -402,10 +442,15 @@ impl AgentLoop {
     ///
     /// 诚实边界：redo 不重建 checkpoint 索引（undo 时 turn-*.json 已清），
     /// redo 过的区间无法再次 rewind；文件只恢复工作区内（tree 覆盖范围）。
+    /// 会话闸：经 [`Self::under_history_gate`] 真互斥（同 rewind 家族）。
     pub async fn redo_rewind(&self, session_key: &str) -> Result<serde_json::Value, String> {
-        if self.is_session_busy(session_key) {
-            return Err("会话正在处理消息，请等当前回合完成后再重做".to_string());
-        }
+        self.under_history_gate(session_key, "重做", || {
+            self.redo_rewind_inner(session_key)
+        })
+        .await
+    }
+
+    async fn redo_rewind_inner(&self, session_key: &str) -> Result<serde_json::Value, String> {
         let entry = {
             let mut stacks = self.rewind_undo_stacks.lock();
             stacks.get_mut(session_key).and_then(|s| s.pop_back())

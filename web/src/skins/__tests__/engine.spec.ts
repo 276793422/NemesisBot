@@ -425,4 +425,30 @@ describe('SkinStructureEngine：v3 内容区原语', () => {
     expect(rows()[1].classList.contains('row--user')).toBe(false)
     expect(rows()[2].classList.contains('row--error')).toBe(true)
   })
+
+  it('data-nb-html：绑定原始文本字段也强制消毒（皮肤把 content 直喂 innerHTML 的绕过面）', async () => {
+    // 威胁模型 = sanitize.ts「不信任包作者」：投影里 contentHtml（消毒后）
+    // 与 content（原始模型输出）并存，恶意皮肤把 data-nb-html 指到原始
+    // 字段即绕过结构清洗器。引擎侧 innerHTML 前一律过 sanitizeHtmlFragment
+    // （与内置 v-html 路径同一消毒闸）。
+    const { engine, container, p } = mountWith(
+      `<template data-nb-slot="sidebar" data-nb-engine="1">` +
+        `<div data-nb-for="m in messages"><span data-nb-html="m.content"></span></div>` +
+        `</template>`
+    )
+    engine.mount('sidebar', container)
+    p.messages = [
+      {
+        id: 1, role: 'assistant', isUser: false, isError: false,
+        content: '<img src=x onerror="window.__nbxss=1"><script>window.__nbxss=1</script><b>保留</b>',
+        contentHtml: '', time: '', model: '', sourceNode: '', imageCount: 0,
+      },
+    ]
+    await nextTick()
+    const span = container.querySelector('span')!
+    expect(span.querySelector('script')).toBeNull()
+    expect(span.querySelector('img')?.hasAttribute('onerror')).toBe(false)
+    // 合法内联标记存活（消毒 ≠ 清空）。
+    expect(span.innerHTML).toContain('<b>保留</b>')
+  })
 })

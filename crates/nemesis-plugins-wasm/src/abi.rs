@@ -48,9 +48,12 @@ pub mod host_err {
 /// 引擎句柄（进程单例；`nvwa_engine_init` 成功恒返回此值）。
 pub const ENGINE_HANDLE: u64 = 1;
 
-/// 宿主回调表镜像（`#[repr(C)]`，布局以壳为权威；末位 `struct_size`
-/// 哨兵字段由壳在握手期校验）。字段语义详见壳侧 `plugins/plugin-wasm/src
-/// /abi.rs`——两处必须逐字段同步修改。
+/// 宿主回调表镜像（`#[repr(C)]`，布局以壳为权威；`struct_size` 哨兵字段
+/// 由壳在握手期校验）。字段语义详见壳侧 `plugins/plugin-wasm/src/abi.rs`
+/// ——两处必须逐字段同步修改。
+///
+/// 布局演进纪律（哨兵位固定，与壳侧同款）：`struct_size` 恒在 8 函数之后
+/// 的固定 offset，新增槽一律追加在哨兵之后——壳按哨兵值判布局再读其余槽。
 #[repr(C)]
 pub struct HostCallbacks {
     /// 释放宿主分配的字符串（`CString::into_raw` 的归还端）。
@@ -104,5 +107,19 @@ pub struct HostCallbacks {
         out_detail: *mut *mut c_char,
     ) -> c_int,
     /// 布局哨兵：`std::mem::size_of::<HostCallbacks>()`，壳握手校验。
+    /// **位固定**——新增槽一律追加在本字段之后（批 3 实证教训：哨兵漂移 =
+    /// 旧布局上越界读栈垃圾，判定随机翻转）。
     pub struct_size: usize,
+    /// `llm-complete(prompt, max-tokens) -> result<string, host-error>`
+    /// （2026-10-22 批 3 壳侧增补槽的宿主镜像；**追加在哨兵之后**）。
+    /// 宿主镜像恒填 `Some(cb_llm_complete)`（见 `callbacks.rs`）。
+    pub llm_complete: Option<
+        unsafe extern "C" fn(
+            env: *mut c_void,
+            prompt: *const c_char,
+            max_tokens: u32,
+            out_content: *mut *mut c_char,
+            out_detail: *mut *mut c_char,
+        ) -> c_int,
+    >,
 }

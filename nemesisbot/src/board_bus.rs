@@ -2134,6 +2134,9 @@ fn handle_claim(deps: &MasterBusDeps, env: &Envelope, from_node: &str) -> Envelo
     }
     // ⑧ 派发落队（单一入口，全闸继承）。dispatch_issue_core 的全部 Err
     // 路径都在状态转移之前 → 回滚只需还原 assignee，单子回到待领池。
+    // 守卫式回滚（rollback_claim）：仅当 assignee 仍是本认领者时清空——
+    // claim→dispatch 窗口内并发派发赢家（手动派发/补派抢先占用并回填
+    // assignee）的指派不得被无条件清空踩掉（字段与事实脱节回归）。
     if let Err(e) = nemesis_web::handlers::board::dispatch_issue_core(
         &deps.store,
         Some(&deps.cluster),
@@ -2142,9 +2145,23 @@ fn handle_claim(deps: &MasterBusDeps, env: &Envelope, from_node: &str) -> Envelo
         &actor,
         None,
     ) {
-        let _ = deps
+        match deps
             .store
-            .assign_issue(issue.id, None, None, &Actor::system("board"));
+            .rollback_claim(issue.id, from_node, &Actor::system("board"))
+        {
+            Ok(true) => {}
+            Ok(false) => tracing::info!(
+                target: "board_bus",
+                issue = %issue.number,
+                "[nb_bus] claim dispatch failed but assignee already moved on, rollback skipped (issue belongs to the concurrent dispatch winner)"
+            ),
+            Err(re) => tracing::warn!(
+                target: "board_bus",
+                issue = %issue.number,
+                error = %re,
+                "[nb_bus] claim rollback failed"
+            ),
+        }
         tracing::warn!(
             target: "board_bus",
             node = %from_node,

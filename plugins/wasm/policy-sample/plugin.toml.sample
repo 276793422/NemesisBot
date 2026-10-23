@@ -1,0 +1,16 @@
+# policy-sample 安装清单模板——用 devkit 打包工具自动生成（手工流程见三方
+# 开发指南）：wasm-sha256 行由打包工具整行替换为真实哈希；根键必须位于任何
+# table 段之前（TOML 语义）。
+wasm-sha256 = "<sha256(plugin.wasm)>"
+api-version = 1
+slug = "policy-sample"
+kind = "policy"
+name = "PolicySample"
+version = "0.1.0"
+description = "示例循环策略插件：三策略点标记驱动的最小可观测差异与 builtin 回退演示"
+
+[permissions]
+# kind=policy 三禁令（manifest 校验强制）：本段必须为空——policy 组件
+# 无出站（egress）、无私网（allow-private）、无凭据（x-secret）。需要
+# 外部效果走宿主 tool-invoke（过安全 8 层），需要 LLM 走宿主
+# llm-complete（small_model 杂务槽 + 护栏同源）。

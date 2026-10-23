@@ -39,6 +39,9 @@ max-threads = 1
 [test-groups.ra-serialize]
 max-threads = 1
 
+[test-groups.background-registry]
+max-threads = 1
+
 [[profile.default.overrides]]
 # 模块真名：commands::gateway::{r9_live_tests,scenario_tests}（nemesisbot/src/
 # commands/gateway.rs:122/129，Windows-only cfg(test)）。用子串谓词（0.9.146
@@ -69,3 +72,13 @@ slow-timeout = { period = '60s', terminate-after = 2 }
 # 子串谓词：三用例名共享 with_rust_analyzer 尾段且 crate 内唯一。
 filter = 'package(nemesis-agent) and test(with_rust_analyzer)'
 test-group = 'ra-serialize'
+
+[[profile.default.overrides]]
+# background-registry（2026-10-23 CI shard2 实录 drop_kills_residual_process
+# 假红，家族第 4 例）：模块 18 个真实子进程用例（spawn/树杀/taskkill）靠
+# 进程内 TEST_LOCK 串行——nextest 每 test 一进程锁失效，Windows runner 并
+# 发树杀时 taskkill 单发秒级（慢机实录），错过断言前 2.8s 时序预算 →
+# 「pid should be dead after drop」假红。组内串行收口；本地 cargo test 的
+# 进程内锁照旧（两态并存同 legacy-chat-log 先例）。
+filter = 'package(nemesis-agent) and test(background_registry::tests::)'
+test-group = 'background-registry'

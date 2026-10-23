@@ -93,7 +93,10 @@ impl AgentLoop {
         let learned = self.escalated_floor_for_model(model);
         let options = options.map(|mut o| {
             if learned > 0 && o.max_tokens.is_none_or(|t| (t as u64) < learned) {
-                o.max_tokens = Some(learned as u32);
+                // 与下方 write-back 的 `.min(u32::MAX as u64)` 同一防护：
+                // ceiling 被配成超 u32 巨值时 learned 可超 u32::MAX，裸 `as`
+                // 回绕成 0/小值反而砍上限（2026-10-23）。
+                o.max_tokens = Some(learned.min(u32::MAX as u64) as u32);
             }
             o
         });

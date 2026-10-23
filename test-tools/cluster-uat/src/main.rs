@@ -16100,27 +16100,32 @@ async fn main() {
     // ==================================================================
     // T49: 集群任务认领（认领取件制全链，2026-10-22 goal）
     // 讨论组场景：组长（Dashboard 侧）在 #team 发 @all 认领邀请
-    // （<BOARD_CLAIM> 标记随 wake 链到达 worker LLM）→ B/C 双 worker
+    // （<BOARD_CLAIM> 标记随 wake 链到达 worker LLM）→ B/C/D 多 worker
     // 竞争 browse→claim → master 侧原子裁决恰好一胜（败者 "claim
     // rejected: ... 已被 node-X 认领" 诚实落线程）→ 胜者 dispatch_issue_core
     // 回派出队 → 工作队列交付 → auto_accept 收口 done → #team 播报
     // 「已被 node-X 认领」+ issue 系统评论双落。
-    // 自备前置（suite 尾部纪律）：A/B/C 切组合桩 + 重启（U-Prep 纪律）；
-    // B/C 职能宣告清空（讨论轮职能围栏交集不含 board_claim——认领制组员
+    // 自备前置（suite 尾部纪律）：A/B/C/D 切组合桩 + 重启（U-Prep 纪律）；
+    // B/C/D 职能宣告清空（讨论轮职能围栏交集不含 board_claim——认领制组员
     // =普通 worker；无职能要求单硬闸对谁都空转）；board 开关基线。
-    // D 不重启：若其在线被 @all 波及参与竞争属合法噪声，断言只锚
-    // B/C 胜出与一胜一败锚点，不受 D 行为影响。
+    // D 同待遇（2026-10-23 CI 假红根修）：全量下 D 带着早前测试遗留的
+    // board 组合桩在线，@all wake 必然波及 D 参与竞争且可能胜出——原版
+    // 「D 不重启 + 断言只锚 B/C 胜出」与该现实自相矛盾（CI 实证 D 抢先
+    // 认领致假红）。修法 = D 升格为第三名合法玩家（切桩+重启+清职能与
+    // B/C 对称），断言改胜出者无关：B/C/D 任一胜出，一胜多败锚点全成立
+    // （CLAIM_WIN×1 + CLAIM_LOSE≥1，contains 判定天然容忍多败者）。
     // ==================================================================
     all_results.push(
         run_test(
-            "T49: board_claim 认领全链（@all 唤醒 → 双 worker 竞争 → 一胜一败 → 胜者出队收口 → #team 播报）",
+            "T49: board_claim 认领全链（@all 唤醒 → 多 worker 竞争 → 一胜多败 → 胜者出队收口 → #team 播报）",
             || async {
-                // 前置 ①：A/B/C 切组合桩 + 重启（U-Prep 纪律：start_gateway_and_wait
+                // 前置 ①：A/B/C/D 切组合桩 + 重启（U-Prep 纪律：start_gateway_and_wait
                 // 只 spawn 不杀，"kill is the caller's job"）。
                 for (side, gw_name, ws_side, gw, node) in [
                     ("A", "Gateway-A", &ws_a, &mut gw_a, &NODES[0]),
                     ("B", "Gateway-B", &ws_b, &mut gw_b, &NODES[1]),
                     ("C", "Gateway-C", &ws_c, &mut gw_c, &NODES[2]),
+                    ("D", "Gateway-D", &ws_d, &mut gw_d, &NODES[3]),
                 ] {
                     let out = ws_side
                         .run_cli(
@@ -16157,9 +16162,12 @@ async fn main() {
                 let Ok(mut wsc) = ws_connect_gateway(NODES[2].web_port).await else {
                     return fail("T49", "WS connect to C failed");
                 };
-                // 前置 ②：B/C 职能宣告清空 + tier 清除（各节点本机热改写，
+                let Ok(mut wsd) = ws_connect_gateway(NODES[3].web_port).await else {
+                    return fail("T49", "WS connect to D failed");
+                };
+                // 前置 ②：B/C/D 职能宣告清空 + tier 清除（各节点本机热改写，
                 // 下一 announce 拍向 A 传播——认领制组员=普通 worker）。
-                for (side, ws_side) in [("B", &mut wsb), ("C", &mut wsc)] {
+                for (side, ws_side) in [("B", &mut wsb), ("C", &mut wsc), ("D", &mut wsd)] {
                     if let Err(e) = ws_api_request(
                         ws_side,
                         "cluster",
@@ -16189,9 +16197,9 @@ async fn main() {
                 {
                     return fail("T49", format!("config.set failed: {e}"));
                 }
-                // 前置 ④：B/C 在 A 端在线 + 清空身份传播到位（exact 空职能 +
-                // tier 缺席），并取双方运行时 id（claim 身份 = _rpc.from = 此 id）。
-                for name in ["Node-B", "Node-C"] {
+                // 前置 ④：B/C/D 在 A 端在线 + 清空身份传播到位（exact 空职能 +
+                // tier 缺席），并取各方运行时 id（claim 身份 = _rpc.from = 此 id）。
+                for name in ["Node-B", "Node-C", "Node-D"] {
                     if let Err(e) = wait_node_identity(&mut ws, name, &[], None, true, 60, true).await
                     {
                         return fail("T49", format!("{e}"));
@@ -16204,6 +16212,10 @@ async fn main() {
                 let c_id = match node_runtime_id(&mut ws, "Node-C").await {
                     Ok(v) => v,
                     Err(e) => return fail("T49", format!("node_runtime_id C failed: {e}")),
+                };
+                let d_id = match node_runtime_id(&mut ws, "Node-D").await {
+                    Ok(v) => v,
+                    Err(e) => return fail("T49", format!("node_runtime_id D failed: {e}")),
                 };
                 // ---- ① 建普通单：无 required_profession / 无指派 / 叶子 / Backlog
                 // （claimable_check 五条件全开）----
@@ -16269,7 +16281,7 @@ async fn main() {
                 {
                     return fail("T49", format!("channel.post failed: {e}"));
                 }
-                // ---- ④ 等原子裁决落定：assignee ∈ {B, C}（双 worker 竞争恰好
+                // ---- ④ 等原子裁决落定：assignee ∈ {B, C, D}（多 worker 竞争恰好
                 // 一胜；败者收到 claim rejected）----
                 let claim_deadline = tokio::time::Instant::now() + Duration::from_secs(90);
                 let assignee = loop {
@@ -16277,7 +16289,7 @@ async fn main() {
                         let st = issue_status_of(&mut ws, issue_id).await.unwrap_or_default();
                         return fail(
                             "T49",
-                            format!("90s 内单子 {number} 无人认领成功（status={st}，应 B/C 之一认领）"),
+                            format!("90s 内单子 {number} 无人认领成功（status={st}，应 B/C/D 之一认领）"),
                         );
                     }
                     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -16299,18 +16311,24 @@ async fn main() {
                         break a.to_string();
                     }
                 };
-                if assignee != b_id && assignee != c_id {
+                if assignee != b_id && assignee != c_id && assignee != d_id {
                     return fail(
                         "T49",
-                        format!("认领者应是 B/C 之一（{b_id} | {c_id}），实际 {assignee}"),
+                        format!("认领者应是 B/C/D 之一（{b_id} | {c_id} | {d_id}），实际 {assignee}"),
                     );
                 }
-                let loser_name = if assignee == b_id { "Node-C" } else { "Node-B" };
+                let loser_name = if assignee == b_id {
+                    "Node-C"
+                } else if assignee == c_id {
+                    "Node-B"
+                } else {
+                    "Node-B/Node-C"
+                };
                 // ---- ⑤ 胜者出队执行 + auto_accept 收口 done ----
                 if let Err(e) = wait_issue_done(&mut ws, issue_id, &number, 300).await {
                     return fail("T49", format!("{e}"));
                 }
-                // ---- ⑥ #team 线程可见性四锚点（播报/系统评论双落 + 一胜一败
+                // ---- ⑥ #team 线程可见性四锚点（播报/系统评论双落 + 一胜多败
                 // 回帖；败者回帖可能略晚于胜者，60s 窗口轮询）----
                 let want_broadcast = format!("已被 {assignee} 认领");
                 let want_announce = format!("🙋 {number} 已被");
@@ -16360,7 +16378,7 @@ async fn main() {
                 if !joined.contains("CLAIM_WIN") || !joined.contains("CLAIM_LOSE") {
                     return fail(
                         "T49",
-                        format!("#team 缺一胜一败回帖锚点（CLAIM_WIN/CLAIM_LOSE）；现场：\n{joined}"),
+                        format!("#team 缺一胜多败回帖锚点（CLAIM_WIN/CLAIM_LOSE）；现场：\n{joined}"),
                     );
                 }
                 // ---- ⑦ issue 系统评论双落（决策/活动可追溯面）----

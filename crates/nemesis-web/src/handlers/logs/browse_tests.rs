@@ -39,6 +39,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         forge: None,
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
+        quic_relay: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -283,6 +284,7 @@ async fn cluster_task_detail_perspective_with_real_local_node() {
     ));
     ctx.state = Arc::new(crate::api_handlers::AppState {
         cluster: Some(cluster.clone()),
+        quic_relay: None,
         ..(*ctx.state).clone()
     });
     let local_id = cluster.node_id().to_string();
@@ -468,4 +470,95 @@ async fn security_list_empty_when_dir_missing() {
     assert_eq!(out["total"], 0);
     assert_eq!(out["entries"].as_array().unwrap().len(), 0);
     drop(ctx);
+}
+
+// -----------------------------------------------------------------------
+// BUG-HUNT R7（2026-10-23）：session_detail / request_detail 路径消毒闸
+// -----------------------------------------------------------------------
+
+/// 客户端 `session` 串直进 join 的容器逃逸（同 fs.rs tree_in 的 F7 类）：
+/// `..` 穿越与绝对路径顶替都必须读不到 session_logs 之外的文件；合法
+/// stem 行为不变（消毒对白名单内输入逐字节恒等）。
+#[tokio::test]
+async fn session_detail_sanitizes_traversal_and_absolute_session_params() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    let ws = dir.path().to_string_lossy().to_string();
+
+    // session_logs 旁边的「秘密」jsonl（穿越目标）+ 正主。
+    let secret_dir = dir.path().join("logs");
+    std::fs::create_dir_all(&secret_dir).unwrap();
+    let secret = secret_dir.join("secret.jsonl");
+    std::fs::write(&secret, r#"{"role":"user","content":"TOPSECRET"}"#).unwrap();
+    let d = dir.path().join("logs/session_logs");
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(
+        d.join("ok_1.jsonl"),
+        concat!(r#"{"role":"user","content":"hello","timestamp":"t"}"#, "\n"),
+    )
+    .unwrap();
+
+    // `..` 穿越：消毒塌成 session_logs 下的扁平安全段 → 读不到秘密。
+    let out = handler()
+        .session_detail(&ctx, &ws, "../secret")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !serde_json::to_string(&out).unwrap().contains("TOPSECRET"),
+        "traversal session param must not read outside session_logs: {out}"
+    );
+    assert!(out["messages"].as_array().unwrap().is_empty());
+
+    // 绝对路径顶替（PathBuf::join 语义，老代码会整段替换 base 直读秘密）。
+    let abs = secret
+        .to_string_lossy()
+        .trim_end_matches(".jsonl")
+        .to_string();
+    let out = handler()
+        .session_detail(&ctx, &ws, &abs)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !serde_json::to_string(&out).unwrap().contains("TOPSECRET"),
+        "absolute session param must not escape: {out}"
+    );
+
+    // 正主不受影响：合法 stem 照常读出（消毒恒等）。
+    let out = handler()
+        .session_detail(&ctx, &ws, "ok_1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(out["messages"][0]["content"], "hello");
+}
+
+/// request_detail 的 `id` 同闸：`..` 穿越到 request_logs 外的目录必须
+/// not found（消毒后扁平段不存在）；合法 `{ts}_{rand}` 名不受影响。
+#[test]
+fn request_detail_sanitizes_traversal_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    // 放在 request_logs 旁（老代码 `join("../outside/{合法形态名}")` 恰好可达）。
+    let outside = ws.join("logs/outside/2026-08-25_07-00-00_evil");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("00.request.md"), "# EVIL").unwrap();
+    make_request_dir(ws, "2026-08-25_07-00-00_ok", "model-ok", 1);
+
+    let err = handler()
+        .request_detail(
+            ws.to_string_lossy().as_ref(),
+            "../outside/2026-08-25_07-00-00_evil",
+        )
+        .unwrap_err();
+    assert!(err.contains("not found"), "{err}");
+
+    // 合法 id 照常出 detail。
+    let out = handler()
+        .request_detail(ws.to_string_lossy().as_ref(), "2026-08-25_07-00-00_ok")
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["model"], "model-ok");
 }

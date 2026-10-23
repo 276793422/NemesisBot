@@ -19,7 +19,7 @@ default = [
     "channels-web", "channels-webhook", "channels-rpc",
     "channels-websocket", "channels-external", "channels-maixcam", "channels-line",
     "migrate", "devices", "desktop", "health", "heartbeat", "auth", "voice", "voice-capture", "cluster",
-    "cluster-roaming", "roaming-relay",
+    "cluster-roaming", "quic-relay",
     "forge", "memory", "workflow", "security", "scanner", "sandbox", "vm", "eval", "usage", "board",
     "connectors", "ziwei",
     "terminal", "skins", "plugins-wasm", "codemode", "selfupdate",
@@ -46,10 +46,10 @@ cluster = ["dep:nemesis-cluster", "nemesis-web/cluster"]
 # 经 customize 预设显式裁掉（minimal-iot/minimal-agent 恒关）。
 cluster-roaming = ["cluster", "nemesis-cluster/cluster-roaming", "nemesis-web/cluster-roaming"]
 # QUIC 中继服务器：自建中继（`quic` CLI 子命令 + 随 gateway 进程内启动）。
-# 隐含 cluster-roaming；nemesis-web/roaming-relay = relay.* WSAPI 管理面。
+# 隐含 cluster-roaming；nemesis-web/quic-relay = relay.* WSAPI 管理面。
 # 默认开（2026-10-22，同上）——自建中继回落是客户端配对流程的另一半；
 # rcgen/ACME 编译增量由全量构建承担，IoT 形态不受影响。
-roaming-relay = ["cluster-roaming", "nemesis-cluster/roaming-relay", "nemesis-web/roaming-relay"]
+quic-relay = ["cluster-roaming", "nemesis-cluster/quic-relay", "nemesis-web/quic-relay"]
 forge = ["dep:nemesis-forge", "nemesis-agent/forge", "nemesis-web/forge"]
 memory = ["dep:nemesis-memory", "nemesis-agent/memory", "nemesis-web/memory"]
 workflow = ["dep:nemesis-workflow", "nemesis-agent/workflow", "nemesis-web/workflow"]

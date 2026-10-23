@@ -98,7 +98,11 @@ pub struct AnthropicProvider {
 }
 
 impl AnthropicProvider {
-    pub fn new(config: AnthropicConfig) -> Self {
+    pub fn new(mut config: AnthropicConfig) -> Self {
+        // base_url 构造期归一（2026-10-23）：本 lane chat() 自拼 `/v1/messages`，
+        // 而 preset 推断默认（anthropic/claude 前缀）带 `/v1` 尾缀，factory 原样
+        // 传入 → `/v1/v1/messages` 每次 404。归一收在构造边界，任何构造方自动安全。
+        config.base_url = normalize_base_url(&config.base_url);
         let client = build_client(config.timeout_secs, config.proxy.as_deref());
         Self {
             config,
@@ -109,9 +113,10 @@ impl AnthropicProvider {
 
     /// Create with a token source for OAuth-style token refresh.
     pub fn with_token_source(
-        config: AnthropicConfig,
+        mut config: AnthropicConfig,
         token_source: Box<dyn Fn() -> Result<String, String> + Send + Sync>,
     ) -> Self {
+        config.base_url = normalize_base_url(&config.base_url);
         let client = build_client(config.timeout_secs, config.proxy.as_deref());
         Self {
             config,

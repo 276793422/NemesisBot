@@ -95,9 +95,10 @@ fn test_roaming_config_write_and_gate_roundtrip() {
 #[test]
 fn test_roaming_status_payload_default_disabled() {
     let dir = tempfile::tempdir().unwrap();
-    let payload = roaming_status_payload(dir.path().to_str().unwrap(), None)
-        .unwrap()
-        .unwrap();
+    let payload =
+        roaming_status_payload(dir.path().to_str().unwrap(), None, serde_json::Value::Null)
+            .unwrap()
+            .unwrap();
     assert_eq!(payload["available"], serde_json::json!(true));
     assert_eq!(payload["enabled"], serde_json::json!(false));
     assert_eq!(payload["active"], serde_json::json!(false));
@@ -114,12 +115,99 @@ fn test_roaming_status_payload_requires_restart_consistency() {
     let ws = dir.path().to_str().unwrap();
     update_cluster_config_roaming(ws, true).unwrap();
     // config 开了但运行态未知（None→false）：requires_restart=true
-    let p = roaming_status_payload(ws, None).unwrap().unwrap();
+    let p = roaming_status_payload(ws, None, serde_json::Value::Null)
+        .unwrap()
+        .unwrap();
     assert_eq!(p["requires_restart"], serde_json::json!(true));
     // 运行态跟上（active=true）：requires_restart=false
-    let p = roaming_status_payload(ws, Some(true)).unwrap().unwrap();
+    let p = roaming_status_payload(ws, Some(true), serde_json::Value::Null)
+        .unwrap()
+        .unwrap();
     assert_eq!(p["requires_restart"], serde_json::json!(false));
     assert_eq!(p["active"], serde_json::json!(true));
+}
+
+#[cfg(feature = "cluster-roaming")]
+#[test]
+fn test_roaming_status_payload_carries_rendezvous_state() {
+    // rendezvous 段透传：同步状态原样进 payload；Null = 循环未挂（N0 形态）。
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().to_str().unwrap();
+    let state = nemesis_cluster::roaming::rendezvous::RendezvousClientState {
+        registry_url: "http://vps.example.com:3341".into(),
+        last_sync_ok: true,
+        last_sync_ms: 1_760_000_000_000,
+        member_count: 4,
+        last_error: String::new(),
+    };
+    let rv = serde_json::to_value(&state).unwrap();
+    let p = roaming_status_payload(ws, Some(true), rv).unwrap().unwrap();
+    assert_eq!(
+        p["rendezvous"]["registry_url"],
+        serde_json::json!("http://vps.example.com:3341")
+    );
+    assert_eq!(p["rendezvous"]["last_sync_ok"], serde_json::json!(true));
+    assert_eq!(p["rendezvous"]["member_count"], serde_json::json!(4));
+    let p = roaming_status_payload(ws, Some(true), serde_json::Value::Null)
+        .unwrap()
+        .unwrap();
+    assert!(
+        p["rendezvous"].is_null(),
+        "循环未挂 = null（前端据此显示未启用）"
+    );
+}
+
+#[cfg(any(feature = "cluster-roaming", feature = "quic-relay"))]
+#[test]
+fn test_cluster_gate_payload_reads_both_config_layers() {
+    // 集群闸链快照：与 gateway cluster_should_start 同源两道闸的读面回归。
+    // 用户实录（2026-10-22）：只开叠加层（roaming.enabled）而本体闸未开时
+    // 重启永远不生效——payload 必须把闸链原值带出来，前端才能区分
+    // 「待重启」与「集群未启用」。
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let ws = dir.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+    let home_s = home.to_str().unwrap();
+    let ws_s = ws.to_str().unwrap();
+
+    // 双闸全关（两配置文件都缺）：open=false、原值 false、token_broken 透传
+    let g = cluster_gate_payload(Some(home_s), ws_s, false);
+    assert_eq!(g["main_enabled"], serde_json::json!(false));
+    assert_eq!(g["cluster_enabled"], serde_json::json!(false));
+    assert_eq!(g["open"], serde_json::json!(false));
+    assert_eq!(g["token_broken"], serde_json::json!(false));
+
+    // 只开子系统闸（config.cluster.json enabled=true，用户实录形态）：
+    // 闸链仍关——重启不生效的根因形态
+    let cfg_path = cluster_config_path(ws_s);
+    std::fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &cfg_path,
+        serde_json::json!({"enabled": true, "roaming": {"enabled": true}}).to_string(),
+    )
+    .unwrap();
+    let g = cluster_gate_payload(Some(home_s), ws_s, false);
+    assert_eq!(g["cluster_enabled"], serde_json::json!(true));
+    assert_eq!(g["main_enabled"], serde_json::json!(false));
+    assert_eq!(g["open"], serde_json::json!(false));
+
+    // 补开主开关（config.json cluster.enabled）：闸链全开
+    std::fs::write(
+        home.join("config.json"),
+        serde_json::json!({"cluster": {"enabled": true}}).to_string(),
+    )
+    .unwrap();
+    let g = cluster_gate_payload(Some(home_s), ws_s, true);
+    assert_eq!(g["main_enabled"], serde_json::json!(true));
+    assert_eq!(g["open"], serde_json::json!(true));
+    assert_eq!(g["token_broken"], serde_json::json!(true));
+
+    // home 缺席（None）= 主闸诚实 false，不 panic、不臆测
+    let g = cluster_gate_payload(None, ws_s, false);
+    assert_eq!(g["main_enabled"], serde_json::json!(false));
+    assert_eq!(g["open"], serde_json::json!(false));
 }
 
 #[cfg(feature = "cluster-roaming")]
@@ -160,21 +248,24 @@ fn test_roaming_set_enabled_creates_key_once() {
 #[test]
 fn test_roaming_status_payload_feature_off_degrades() {
     let dir = tempfile::tempdir().unwrap();
-    let payload = roaming_status_payload(dir.path().to_str().unwrap(), None)
-        .unwrap()
-        .unwrap();
+    let payload =
+        roaming_status_payload(dir.path().to_str().unwrap(), None, serde_json::Value::Null)
+            .unwrap()
+            .unwrap();
     assert_eq!(payload["available"], serde_json::json!(false));
     assert_eq!(payload["enabled"], serde_json::json!(false));
     assert!(payload["reason"].as_str().unwrap().contains("feature"));
 }
 
-// --- QUIC 自建中继管理面（feature=roaming-relay） ---
+// --- QUIC 自建中继管理面（feature=quic-relay） ---
 
 #[cfg(feature = "cluster-roaming")]
 #[test]
 fn test_roaming_enabled_write_preserves_relay_siblings() {
-    // 回归锁：roaming.enabled 单键写曾整段替换 roaming 对象，把
-    // relay_url/relay_token/relay 静默抹掉（2026-10-21 relay WSAPI 面上线前修复）。
+    // 回归锁：roaming.enabled 单键写曾整段替换 roaming 对象，把段内兄弟键
+    // 静默抹掉（2026-10-21 relay WSAPI 面上线前修复）。2026-10-23 解耦后
+    // QUIC 键真相源迁 config.quic.json，cluster.json 段内残留 = 无害遗留
+    //（首读迁移只拷贝不删除）——单键写依旧不碰它们。
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path().to_str().unwrap();
     let cfg_path = cluster_config_path(ws);
@@ -209,163 +300,4 @@ fn test_roaming_enabled_write_preserves_relay_siblings() {
     assert_eq!(v["roaming"]["relay"]["enabled"], serde_json::json!(true));
     assert_eq!(v["enabled"], serde_json::json!(true));
     assert_eq!(v["token"], serde_json::json!("cluster-tok"));
-}
-
-#[cfg(feature = "roaming-relay")]
-#[test]
-fn test_relay_config_save_merge_and_clear_semantics() {
-    let dir = tempfile::tempdir().unwrap();
-    let ws = dir.path().to_str().unwrap();
-    let cfg_path = cluster_config_path(ws);
-    std::fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
-    std::fs::write(
-        &cfg_path,
-        r#"{
-  "enabled": true,
-  "token": "cluster-tok",
-  "roaming": { "enabled": true, "relay_url": "http://vps.example.com:3340" }
-}"#,
-    )
-    .unwrap();
-
-    // 1. 合并写：relay 段缺席 → 创建；roaming/顶层兄弟键保留；token trim
-    let p = relay_config_save_impl(
-        ws,
-        &serde_json::json!({ "http_port": 4000, "tls": "manual", "token": "  s3cret  " }),
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(p["saved"], serde_json::json!(true));
-    assert_eq!(p["requires_restart"], serde_json::json!(true));
-    let v: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
-    assert_eq!(v["roaming"]["relay"]["http_port"], serde_json::json!(4000));
-    assert_eq!(v["roaming"]["relay"]["tls"], serde_json::json!("manual"));
-    assert_eq!(v["roaming"]["relay"]["token"], serde_json::json!("s3cret"));
-    assert_eq!(
-        v["roaming"]["relay_url"],
-        serde_json::json!("http://vps.example.com:3340")
-    );
-    assert_eq!(v["roaming"]["enabled"], serde_json::json!(true));
-    assert_eq!(v["token"], serde_json::json!("cluster-tok"));
-    // 回显载荷 token 永不出现（token_set bool only）
-    let echo = serde_json::to_string(&p).unwrap();
-    assert!(!echo.contains("s3cret"));
-    assert_eq!(p["relay"]["token_set"], serde_json::json!(true));
-
-    // 2. 空串 = 清除该键（其余键保留）
-    relay_config_save_impl(ws, &serde_json::json!({ "token": "" })).unwrap();
-    let v: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
-    assert!(v["roaming"]["relay"].get("token").is_none());
-    assert_eq!(v["roaming"]["relay"]["tls"], serde_json::json!("manual"));
-
-    // 3. 非法值 loud 拒（写面是当次意志，不静默纠偏）
-    assert!(relay_config_save_impl(ws, &serde_json::json!({ "http_port": 0 })).is_err());
-    assert!(relay_config_save_impl(ws, &serde_json::json!({ "quic_port": 70000 })).is_err());
-    assert!(relay_config_save_impl(ws, &serde_json::json!({ "tls": "bogus" })).is_err());
-    assert!(relay_config_save_impl(ws, &serde_json::json!({ "unknown_key": 1 })).is_err());
-    assert!(relay_config_save_impl(ws, &serde_json::json!({ "token": 42 })).is_err());
-    // 拒绝后配置未被半写（仍是步骤 2 形态）
-    let v: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
-    assert_eq!(v["roaming"]["relay"]["http_port"], serde_json::json!(4000));
-    assert!(v["roaming"]["relay"].get("token").is_none());
-}
-
-#[cfg(feature = "roaming-relay")]
-#[test]
-fn test_relay_status_payload_shape() {
-    let dir = tempfile::tempdir().unwrap();
-    let ws = dir.path().to_str().unwrap();
-    let p = relay_status_payload(ws, false, None, None)
-        .unwrap()
-        .unwrap();
-    assert_eq!(p["available"], serde_json::json!(true));
-    assert_eq!(p["enabled"], serde_json::json!(false));
-    assert_eq!(p["active"], serde_json::json!(false));
-    assert_eq!(p["requires_restart"], serde_json::json!(false));
-    // 默认档：self-signed + 默认端口 + 证书待生成
-    assert_eq!(p["relay"]["http_port"], serde_json::json!(3340));
-    assert_eq!(p["relay"]["quic_port"], serde_json::json!(7842));
-    assert_eq!(p["relay"]["tls"], serde_json::json!("self-signed"));
-    assert_eq!(p["relay"]["token_set"], serde_json::json!(false));
-    assert_eq!(p["relay"]["cert_state"], serde_json::json!("pending"));
-    assert_eq!(p["client"]["relay_url"], serde_json::json!(""));
-    assert_eq!(p["client"]["relay_token_set"], serde_json::json!(false));
-    assert!(p["http_addr"].is_null());
-    assert!(p["quic_addr"].is_null());
-
-    // config 闸开而未跑 → requires_restart
-    relay_config_save_impl(ws, &serde_json::json!({ "enabled": true })).unwrap();
-    let p = relay_status_payload(ws, false, None, None)
-        .unwrap()
-        .unwrap();
-    assert_eq!(p["enabled"], serde_json::json!(true));
-    assert_eq!(p["requires_restart"], serde_json::json!(true));
-
-    // 运行态跟上 → requires_restart=false + 地址面回显
-    let p = relay_status_payload(
-        ws,
-        true,
-        Some("127.0.0.1:3340".parse().unwrap()),
-        Some("127.0.0.1:7842".parse().unwrap()),
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(p["requires_restart"], serde_json::json!(false));
-    assert_eq!(p["http_addr"], serde_json::json!("127.0.0.1:3340"));
-    assert_eq!(p["quic_addr"], serde_json::json!("127.0.0.1:7842"));
-}
-
-#[cfg(feature = "roaming-relay")]
-#[test]
-fn test_relay_config_save_client_face() {
-    let dir = tempfile::tempdir().unwrap();
-    let ws = dir.path().to_str().unwrap();
-    let cfg_path = cluster_config_path(ws);
-    // 无文件起步：客户端两键写进 roaming 段直挂（非 relay 子段）
-    let p = relay_config_save_impl(
-        ws,
-        &serde_json::json!({
-            "relay_url": " http://vps.example.com:3340 ",
-            "relay_token": " c-tok "
-        }),
-    )
-    .unwrap()
-    .unwrap();
-    let v: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
-    assert_eq!(
-        v["roaming"]["relay_url"],
-        serde_json::json!("http://vps.example.com:3340")
-    );
-    assert_eq!(v["roaming"]["relay_token"], serde_json::json!("c-tok"));
-    // 回显面：relay_url 原样、relay_token 只有 bool
-    assert_eq!(
-        p["client"]["relay_url"],
-        serde_json::json!("http://vps.example.com:3340")
-    );
-    assert_eq!(p["client"]["relay_token_set"], serde_json::json!(true));
-    assert!(!serde_json::to_string(&p).unwrap().contains("c-tok"));
-
-    // 空串清除：relay_url 键移除（回落 n0 公共中继），relay_token 不动
-    relay_config_save_impl(ws, &serde_json::json!({ "relay_url": "" })).unwrap();
-    let v: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
-    assert!(v["roaming"].get("relay_url").is_none());
-    assert_eq!(v["roaming"]["relay_token"], serde_json::json!("c-tok"));
-    // 服务端子段与客户端键互不侵扰：同一次保存两边都可写
-    relay_config_save_impl(
-        ws,
-        &serde_json::json!({ "http_port": 4000, "relay_url": "http://r2.example.com:3340" }),
-    )
-    .unwrap();
-    let v: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
-    assert_eq!(v["roaming"]["relay"]["http_port"], serde_json::json!(4000));
-    assert_eq!(
-        v["roaming"]["relay_url"],
-        serde_json::json!("http://r2.example.com:3340")
-    );
 }

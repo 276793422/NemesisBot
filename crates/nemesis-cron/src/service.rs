@@ -334,9 +334,19 @@ impl CronService {
 
                             // Compute next run time
                             if job.schedule.kind == "at" {
-                                if job.delete_after_run {
-                                    // Will be removed below
+                                if job.delete_after_run
+                                    && job.state.last_status.as_deref() == Some("ok")
+                                {
+                                    // 成功单发：下方 retain 删除，无需收尾。
                                 } else {
+                                    // 非删除单发（成败皆然）/ 失败的删除单发：
+                                    // 停摆保留。失败的 delete_after_run 任务被
+                                    // retain 留作证据，但必须一并 disable——
+                                    // 留着 enabled=true + 过期 at_ms 的僵尸会在
+                                    // 下次启动被 recompute_next_runs 的 H1 子句
+                                    // 复活成 stale due time，每次网关重启都
+                                    // 重放一次已失败的单发（副作用重复：建单/
+                                    // LLM turn）。（BUG-HUNT R34）
                                     job.enabled = false;
                                     job.state.next_run_at_ms = None;
                                 }
@@ -887,8 +897,15 @@ impl CronService {
                 // "at" job whose time passed during downtime must fire once
                 // when the service arms (compute_next_run drops it because
                 // at_ms <= now; that drop is correct only for a fully
-                // restarted schedule, not a gated one).
-                if disarmed && job.state.next_run_at_ms.is_none() && job.schedule.kind == "at" {
+                // restarted schedule, not a gated one). BUG-HUNT R34: 只限
+                // 「从未执行过」的单发（last_run=None）——已执行失败的僵尸
+                // （error 被 retain 留证）不得每次重启重放；last_run=Some =
+                // 单发语义已消耗，重试走用户显式 update_job 换新 at_ms。
+                if disarmed
+                    && job.state.next_run_at_ms.is_none()
+                    && job.schedule.kind == "at"
+                    && job.state.last_run_at_ms.is_none()
+                {
                     job.state.next_run_at_ms = job.schedule.at_ms;
                 }
             }

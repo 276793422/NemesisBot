@@ -94,6 +94,12 @@ pub(crate) struct GatewayCtx {
     pub conv_router: nemesis_web::SharedConvRouter,
     /// estop 单例（C8：集群装配前创建，四方共享同一 Arc）。
     pub estop: Arc<nemesis_agent::estop::EstopState>,
+    /// QUIC 中继管理器（quic-relay，2026-10-23 与集群解耦）：独立生命周期
+    /// 单例——闸（config.quic.json relay.enabled）/装配/停机/状态全在
+    /// manager。init_cluster 独立闸拉起、post_agent 注入 web 面、runtime
+    /// teardown 停机；WSAPI cluster.relay.* 经 AppState 同一 Arc 消费。
+    #[cfg(feature = "quic-relay")]
+    pub quic_relay_manager: Option<Arc<nemesis_cluster::roaming::relay_manager::QuicRelayManager>>,
     pub data_store: Option<Arc<nemesis_data::DataStore>>,
     /// Step 8 出站桥的 agent 端 mpsc 发送半（PB-4 装入 SharedResources）。
     pub agent_outbound_tx: tokio::sync::mpsc::Sender<nemesis_types::channel::OutboundMessage>,
@@ -260,8 +266,8 @@ impl GatewayCtx {
         // Step 5b-2（QUIC 中继统一入口，2026-10-21 拍板与 `quic relay` 分类
         // 管理入口并存）：`--quic-relay` 早退——只跑自建 iroh 中继（与
         // `quic relay` 同源同一 `run_relay_server`），不装配 agent/board/
-        // 集群/discovery。读 config.cluster.json roaming.relay 段；token 空
-        // = 拒绝启动（fail-closed，与 `--relay` 同款纪律）。
+        // 集群/discovery。读 config.quic.json relay 段（2026-10-23 解耦后
+        // 真相源）；token 空 = 拒绝启动（fail-closed，与 `--relay` 同款纪律）。
         if quic_relay {
             run_quic_relay(&home).await?;
             return Ok(None);
@@ -1019,12 +1025,12 @@ impl GatewayCtx {
             forge.init_pipeline(forge_pipeline.clone());
             info!("[Gateway] Forge pipeline initialized");
 
-            // Initialize trace collection (TraceCollector + TraceStore).
+            // Initialize trace collection (TraceStore; JSONL on disk is the
+            // single truth source the learning engine's trace arm reads).
             {
-                let trace_collector = nemesis_forge::trace::TraceCollector::new();
                 let trace_store =
                     nemesis_forge::trace_store::TraceStore::new(forge_dir.join("traces"));
-                forge.init_trace(trace_collector, trace_store);
+                forge.init_trace(trace_store);
                 info!("[Gateway] Forge trace collection initialized");
             }
 
@@ -1254,6 +1260,29 @@ impl GatewayCtx {
             }
         };
 
+        // 旧位置首读迁移（**cluster-roaming 闸，不只 quic-relay**）：客户端
+        // 消费面 Cluster::setup_roaming 在 cluster-roaming 下读 config.quic.json
+        // client 段——迁移若只挂 quic-relay 闸，「cluster-roaming 开 +
+        // quic-relay 裁掉」组合里老配置用户（cluster.json roaming 段三键）
+        // 会被静默回落 n0 公共中继（quic.json 缺席 → resolved_quic 全默认，
+        // 自建中继 + SharedToken 配对全丢）。ensure_quic_config 幂等（quic.json
+        // 已在 = no-op）；只拷贝不删除。
+        #[cfg(feature = "cluster-roaming")]
+        if nemesis_cluster::roaming::quic_config::ensure_quic_config(
+            &common::cluster_config_path(&home),
+            &common::quic_config_path(&home),
+        ) {
+            info!("[Gateway] config.quic.json created（旧位置 QUIC 键已迁移，原键保留不删）");
+        }
+
+        // QUIC 中继管理器（quic-relay）：assemble 期构造单例（estop 同款
+        // 时机）。闸开没开由 init_cluster 的独立闸判（setup() 自读
+        // config.quic.json）。
+        #[cfg(feature = "quic-relay")]
+        let quic_relay_manager = Some(std::sync::Arc::new(
+            nemesis_cluster::roaming::relay_manager::QuicRelayManager::new(home.join("workspace")),
+        ));
+
         Ok(Some(GatewayCtx {
             // 身份与配置
             home,
@@ -1267,6 +1296,8 @@ impl GatewayCtx {
             cron_service,
             conv_router,
             estop,
+            #[cfg(feature = "quic-relay")]
+            quic_relay_manager,
             data_store,
             agent_outbound_tx,
             bridge_outbound_handle,
@@ -1309,18 +1340,18 @@ impl GatewayCtx {
 /// 分类管理入口的同一实现（单一真相源，两入口行为必然一致）；feature 关 =
 /// 诚实报错（旗标恒编译——IoT 裁剪版不带中继也该有明确拒绝文案而非
 /// 「未知参数」）。
-#[cfg(feature = "roaming-relay")]
+#[cfg(feature = "quic-relay")]
 async fn run_quic_relay(home: &std::path::Path) -> Result<()> {
     crate::commands::quic::run_relay_server(home)
         .await
         .map_err(anyhow::Error::msg)
 }
 
-#[cfg(not(feature = "roaming-relay"))]
+#[cfg(not(feature = "quic-relay"))]
 async fn run_quic_relay(_home: &std::path::Path) -> Result<()> {
     anyhow::bail!(
-        "--quic-relay 需要 roaming-relay feature 编译（当前二进制未含）；\
-         自建：cargo build --release -p nemesisbot --features roaming-relay"
+        "--quic-relay 需要 quic-relay feature 编译（当前二进制未含）；\
+         自建：cargo build --release -p nemesisbot --features quic-relay"
     )
 }
 

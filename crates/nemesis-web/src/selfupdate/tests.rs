@@ -433,6 +433,43 @@ fn rollback_plugins_restores_and_clears_new_only_then_noop() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// 旁置名形态钉死（追加非替换）：同词干不同扩展名（a.dll/a.wasm）的旁置名
+/// 必须互不相撞——with_extension 是替换扩展位，两文件撞同一个 `a.failed-P`
+/// 时第二份让位在 Windows 上撞已存在目标直接失败，boot 回滚卡死循环。
+#[test]
+fn loaded_sidecar_name_appends_not_replaces_extension() {
+    let dir = tmp_dir("sidecar-name");
+    let pid = std::process::id();
+    let a = loaded_sidecar_path(&dir.join("a.dll"));
+    let b = loaded_sidecar_path(&dir.join("a.wasm"));
+    assert_ne!(a, b, "同词干不同扩展名旁置名互不相撞");
+    assert_eq!(a, dir.join(format!("a.dll.failed-{pid}")));
+    assert_eq!(b, dir.join(format!("a.wasm.failed-{pid}")));
+    // 无扩展名文件同样成立（追加语义天然覆盖）。
+    let c = loaded_sidecar_path(&dir.join("plain"));
+    assert_eq!(c, dir.join(format!("plain.failed-{pid}")));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// remove_loaded_file 常规双路径：可删文件直接删干净（无旁置残留）；缺席
+/// = 幂等 Ok。
+#[test]
+fn remove_loaded_file_removes_and_ignores_missing() {
+    let dir = tmp_dir("remove-loaded");
+    let f = dir.join("x.dll");
+    std::fs::write(&f, b"x").unwrap();
+    super::remove_loaded_file(&f).expect("可删文件直接删");
+    assert!(!f.exists(), "已删干净");
+    let leftovers: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(leftovers.is_empty(), "无旁置残留: {leftovers:?}");
+    super::remove_loaded_file(&f).expect("缺席 = Ok（幂等）");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// R2 复查补口：staging 名去固定化（PID 后缀）移除了旧固定名方案的隐式
 /// 回收，apply 持锁窗口的显式清扫必须删掉历史 `.old-{pid}`/`.new-{pid}`
 /// 残留；`.failed` 是钦定诊断现场，不清。
@@ -1560,6 +1597,31 @@ mod gated {
             b"new-a",
             "new_dir 全集副本（回滚 new-only 清理名单）"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 同名**目录**冲突预检（拍板 ② 目录面）：包内平面文件撞既有目录 =
+    /// 诚实拒绝，用户目录原地不动、backup 不创建（预检先于任何落盘）。
+    /// 不拒的后果：目录被让位进 backup，回滚名单只认文件、收尾整删 backup
+    /// = 用户自装内容永久丢失。
+    #[test]
+    fn install_plugins_files_rejects_directory_collision() {
+        let dir = tmp_dir("install-plugins-dircoll");
+        let plugins = dir.join("plugins");
+        let backup = dir.join("plugins.old-1");
+        let new = dir.join("plugins.new-1");
+        let user_dir = plugins.join("a.dll");
+        std::fs::create_dir_all(&user_dir).unwrap();
+        std::fs::write(user_dir.join("user-data.txt"), b"keep").unwrap();
+        let files = std::collections::BTreeMap::from([("a.dll".to_string(), b"new-a".to_vec())]);
+        let err = super::super::install_plugins_files(&plugins, &backup, &new, &files)
+            .expect_err("目录冲突必须拒");
+        assert!(err.contains("目录"), "错误须点名目录冲突: {err}");
+        assert!(
+            user_dir.join("user-data.txt").exists(),
+            "用户目录原地不动（未被让位）"
+        );
+        assert!(!backup.exists(), "预检失败 = backup 不创建（先于任何落盘）");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

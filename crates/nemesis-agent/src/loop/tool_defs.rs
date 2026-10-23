@@ -139,7 +139,7 @@ impl AgentLoop {
                         duration_ms: start.elapsed().as_millis() as u64,
                     };
                 }
-                let (result, validation_failed) = match self.check_tool_args(&tc) {
+                let (result, validation_failed) = match self.check_tool_args(&tc).await {
                     crate::args_validator::Outcome::Valid => (
                         self.handle_tool_call_at_depth(&tc, context, depth).await,
                         false,

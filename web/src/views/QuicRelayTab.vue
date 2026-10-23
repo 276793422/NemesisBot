@@ -1,17 +1,21 @@
 <script setup lang="ts">
-// 中继通道（QUIC，2026-10-21）：通道页第 5 个 tab——iroh QUIC 中继管理面。
+// QUIC 中继页（2026-10-23 与集群解耦改版）：通道页 tab——iroh QUIC 中继管理面。
 //
-// 三卡布局（docs/PLAN/2026-10-21_quic-relay-server.md §3.8）：
-// ① QUIC 总开关——roaming.enabled（复用 cluster.roaming.enable/disable，
-//    与集群【跨网】TAB 双入口同源不漂移）+ 运行态徽标 + 本机 iroh:<node_id>；
-// ② 中继服务器网关——relay.enabled / 端口 / external_host / tls 档 / token
-//    （真实值永不上前端：status 只给 token_set bool，输入留空 = 不改动，
-//    显式「清除」才发空串）+ 对外 relay URL 展示；保存 cluster.relay.config，
-//    重启生效（requires_restart 徽标诚实呈现 config 闸与运行态差异）；
-// ③ 客户端中继地址——roaming.relay_url / relay_token（relay_url 空 = n0
-//    公共中继；relay_token 与自建中继服务端 token 配对）。
+// 两卡 + 名册表布局：
+// ① 中继服务器网关——头部「中继服务」滑动开关 = quic.relay.enable/disable
+//    实时开关（config 闸 + 进程内拉起/停掉一体，免重启网关）；端口 /
+//    external_host / tls 档 / token（真实值永不上前端：status 只给 token_set
+//    bool，输入留空 = 不改动，显式「清除」才发空串）+ 对外 relay URL 展示；
+//    参数走 quic.relay.config 保存——中继在启动时读 config，重新开关即以
+//    新配置生效；requires_restart 徽标 = config 闸与运行态差异（手改配置
+//    文件/拉起失败的诚实呈现）；
+// ② 客户端中继地址——client.relay_url / relay_token（relay_url 空 = n0
+//    公共中继；relay_token 与自建中继服务端 token 配对）；
+// ③ 中结名册——服务端全量名册（quic.registry.members，中继机视角）：接入
+//    即报到、周期心跳的设备全在这里。跨网开关（集群是否消费中继组网）在
+//    【集群 → 配置】跨网漫游卡——集群是 QUIC 的消费方，不是宿主。
 //
-// 降级：roaming-relay feature 未编译 = relay.status available:false → 整页
+// 降级：quic-relay feature 未编译 = quic.relay.status available:false → 整页
 // 诚实提示不可操作（命令面恒注册，payload 带原因）。
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
@@ -20,14 +24,6 @@ import { useToast } from '../composables/useToast'
 const { request } = useWSAPI()
 const toast = useToast()
 
-interface RoamingStatus {
-  available: boolean
-  enabled: boolean
-  active: boolean
-  requires_restart: boolean
-  key_present: boolean
-  node_id: string | null
-}
 interface RelaySettings {
   enabled: boolean
   http_port: number
@@ -53,17 +49,12 @@ interface RelayStatus {
   reason?: string
 }
 
-const roamingStatus = ref<RoamingStatus | null>(null)
 const relayStatus = ref<RelayStatus | null>(null)
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
 async function loadStatus() {
   try {
-    const [r, s] = await Promise.all([
-      request('cluster', 'roaming.status'),
-      request('cluster', 'relay.status'),
-    ])
-    roamingStatus.value = (r || null) as RoamingStatus | null
+    const s = await request('quic', 'relay.status')
     relayStatus.value = (s || null) as RelayStatus | null
     // 表单只播种一次（首轮成功载荷）——轮询不重置表单，防打断用户编辑；
     // 运行态徽标照常跟随 live 轮询。
@@ -76,29 +67,6 @@ async function loadStatus() {
   }
 }
 
-// ---- 卡① QUIC 总开关 ----
-const roamingBadge = computed(() => {
-  const s = roamingStatus.value
-  if (!s?.available) return { text: '不可用', cls: 'badge-neutral' }
-  if (s.active) return { text: '运行中', cls: 'badge-success' }
-  if (s.enabled) return { text: '待重启', cls: 'badge-warning' }
-  return { text: '未启用', cls: 'badge-neutral' }
-})
-const togglingRoaming = ref(false)
-
-async function toggleRoaming(on: boolean) {
-  togglingRoaming.value = true
-  try {
-    await request('cluster', on ? 'roaming.enable' : 'roaming.disable')
-    toast.success(on ? '跨网漫游已启用（重启网关生效）' : '跨网漫游已关闭（重启网关生效）')
-    await loadStatus()
-  } catch (e: any) {
-    toast.error('开关失败: ' + e)
-  } finally {
-    togglingRoaming.value = false
-  }
-}
-
 async function copyText(text: string, label: string) {
   try {
     await navigator.clipboard.writeText(text)
@@ -108,13 +76,13 @@ async function copyText(text: string, label: string) {
   }
 }
 
-// ---- 卡② 中继服务器网关 ----
+// ---- 卡① 中继服务器网关 ----
 // 端口以输入框原值承载（type=number 的 v-model 会把非空输入转 number、
 // 空值留 ''）——对比时 String() 归一，保存时 Number 化。表单只播种一次：
-// 轮询不重置表单（防打断编辑），运行态徽标独立跟随 live 轮询。
+// 轮询不重置表单（防打断编辑），运行态徽标与「中继服务」开关独立跟随 live
+// 轮询。开关是实时面（relay.enable/disable），表单是参数面（relay.config）。
 const formSeeded = ref(false)
 interface ServerForm {
-  enabled: boolean
   // 端口以输入框原值承载（type=number 的 v-model 会把非空输入转 number、
   // 空值留 ''）——对比时 String() 归一，保存时 Number 化。
   http_port: number | string
@@ -126,7 +94,6 @@ interface ServerForm {
   token: string
 }
 const serverForm = ref<ServerForm>({
-  enabled: false,
   http_port: '3340',
   quic_port: '7842',
   external_host: '',
@@ -141,7 +108,6 @@ const savingServer = ref(false)
 function seedForms() {
   const s = relayStatus.value!
   serverForm.value = {
-    enabled: s.relay.enabled,
     http_port: String(s.relay.http_port),
     quic_port: String(s.relay.quic_port),
     external_host: s.relay.external_host,
@@ -162,7 +128,6 @@ function buildServerPatch(): Record<string, unknown> | null {
   const f = serverForm.value
   const l = serverLoaded.value
   const patch: Record<string, unknown> = {}
-  if (f.enabled !== l.enabled) patch.enabled = f.enabled
   if (String(f.http_port) !== String(l.http_port)) {
     const n = Number(f.http_port)
     if (!Number.isInteger(n) || n < 1 || n > 65535) {
@@ -196,8 +161,8 @@ async function saveServer() {
       toast.info('无变更')
       return
     }
-    await request('cluster', 'relay.config', patch)
-    toast.success('已保存（重启网关后生效）')
+    await request('quic', 'relay.config', patch)
+    toast.success('已保存——中继在启动时读配置，重新开关「中继服务」即以新配置生效')
     await loadStatus()
   } catch (e: any) {
     toast.error('保存失败: ' + e)
@@ -206,11 +171,29 @@ async function saveServer() {
   }
 }
 
+// ---- 卡①头部「中继服务」实时开关 ----
+// quic.relay.enable/disable：config 闸落盘 + 进程内拉起/停掉一体，免重启网关。
+// 失败也回读真实状态——开关 UI 以服务端回执为准（复选框自动回弹）。
+const togglingRelay = ref(false)
+
+async function toggleRelay(on: boolean) {
+  togglingRelay.value = true
+  try {
+    await request('quic', on ? 'relay.enable' : 'relay.disable')
+    toast.success(on ? '中继已启动（实时生效）' : '中继已停止（实时生效）')
+  } catch (e: any) {
+    toast.error('开关失败: ' + e)
+  } finally {
+    togglingRelay.value = false
+    await loadStatus()
+  }
+}
+
 async function clearServerToken() {
   savingServer.value = true
   try {
-    await request('cluster', 'relay.config', { token: '' })
-    toast.success('访问令牌已清除——重启网关后中继将拒绝启动（无鉴权跳板不允许，fail-closed）')
+    await request('quic', 'relay.config', { token: '' })
+    toast.success('访问令牌已清除——下次开启「中继服务」开关将拒绝启动（无鉴权跳板不允许，fail-closed）')
     serverForm.value.token = ''
     await loadStatus()
   } catch (e: any) {
@@ -224,11 +207,23 @@ const serverLiveBadge = computed(() => {
   const s = relayStatus.value
   if (!s?.available) return null
   if (s.active) return { text: '中继运行中', cls: 'badge-success' }
-  if (s.enabled) return { text: '待重启', cls: 'badge-warning' }
+  // 实时开关接线后 enabled≠active 只剩两种来路：手改配置文件未跟上 / 开关
+  // 拉起失败（token 空 fail-closed 等）——不是「待重启」，是「待启动」。
+  if (s.enabled) return { text: '待启动', cls: 'badge-warning' }
   return { text: '未启用', cls: 'badge-neutral' }
 })
+// 卡①提示行：中继令牌缺失（fail-closed 拒绝启动）——「待启动」的修复动作
+// = 设置令牌后开一次「中继服务」开关（免重启）。
+const relayHint = computed(() => {
+  const s = relayStatus.value
+  if (!s?.available || s.active || !s.enabled) return ''
+  if (!s.relay.token_set) {
+    return '中继已启用但未设访问令牌——开启「中继服务」开关时将拒绝启动（无鉴权跳板不允许，fail-closed）。请设置「访问令牌」后再开开关。'
+  }
+  return ''
+})
 
-// ---- 卡③ 客户端中继地址 ----
+// ---- 卡② 客户端中继地址 ----
 interface ClientForm {
   relay_url: string
   relay_token: string
@@ -254,7 +249,7 @@ async function saveClient() {
       toast.info('无变更')
       return
     }
-    await request('cluster', 'relay.config', patch)
+    await request('quic', 'relay.config', patch)
     toast.success('已保存（重启网关后生效）')
     await loadStatus()
   } catch (e: any) {
@@ -267,7 +262,7 @@ async function saveClient() {
 async function clearClientToken() {
   savingClient.value = true
   try {
-    await request('cluster', 'relay.config', { relay_token: '' })
+    await request('quic', 'relay.config', { relay_token: '' })
     toast.success('客户端中继令牌已清除')
     clientForm.value.relay_token = ''
     await loadStatus()
@@ -278,6 +273,38 @@ async function clearClientToken() {
   }
 }
 
+// ---- 卡③ 中结名册（服务端全量名册；中继机视角） ----
+interface RegistryMember {
+  node_id: string
+  name: string
+  role: string
+  iroh_id: string
+  build: string
+  features: string[]
+  last_seen_ms: number
+}
+const registry = ref<{ count: number; members: RegistryMember[] } | null>(null)
+
+async function loadRegistry() {
+  try {
+    const r = await request('quic', 'registry.members')
+    if (r) registry.value = { count: r.count ?? 0, members: r.members ?? [] }
+  } catch {
+    // feature 未编译 / 未装配 = 保持上次值（降级面板已覆盖 feature 缺席）
+  }
+}
+
+function shortIroh(hex: string): string {
+  return hex.length > 12 ? hex.slice(0, 12) + '…' : hex
+}
+
+function fmtSeen(ms: number): string {
+  if (!ms) return '--'
+  const d = new Date(ms)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
 // ---- 降级 ----
 const featureOn = computed(() => relayStatus.value?.available === true)
 const degradeReason = computed(
@@ -286,7 +313,11 @@ const degradeReason = computed(
 
 onMounted(async () => {
   await loadStatus()
-  pollTimer = setInterval(loadStatus, 5000)
+  await loadRegistry()
+  pollTimer = setInterval(() => {
+    loadStatus()
+    loadRegistry()
+  }, 5000)
 })
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
@@ -296,7 +327,7 @@ onUnmounted(() => {
 <template>
   <div style="display: flex; flex-direction: column; gap: var(--space-4);">
 
-    <!-- ===== 降级面板（roaming-relay feature 未编译） ===== -->
+    <!-- ===== 降级面板（quic-relay feature 未编译） ===== -->
     <div v-if="!featureOn" class="card">
       <div class="card-header"><h3 style="margin: 0;">QUIC 中继（内网穿透）</h3></div>
       <div class="card-body">
@@ -308,58 +339,52 @@ onUnmounted(() => {
             {{ degradeReason }}
           </p>
           <p style="margin: var(--space-2) 0 0; font-size: var(--text-xs); color: var(--text-secondary);">
-            需以 <span style="font-family: var(--font-mono);">roaming-relay</span> feature 重新编译（构建配置器「QUIC 中继服务器」勾选项）。
+            需以 <span style="font-family: var(--font-mono);">quic-relay</span> feature 重新编译（构建配置器「QUIC 中继服务器」勾选项）。
           </p>
         </div>
       </div>
     </div>
 
     <template v-else>
-      <!-- ===== 卡① QUIC 总开关 ===== -->
+      <!-- ===== 卡① 中继服务器网关 ===== -->
       <div class="card">
-        <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
-          <h3 style="margin: 0;">QUIC 中继（内网穿透）· 总开关</h3>
-          <span class="badge" :class="roamingBadge.cls">{{ roamingBadge.text }}</span>
-        </div>
-        <div class="card-body">
-          <label style="display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); cursor: pointer;">
-            <input type="checkbox" :checked="roamingStatus?.enabled === true" :disabled="togglingRoaming"
-              @change="toggleRoaming(($event.target as HTMLInputElement).checked)" />
-            启用跨网漫游（iroh QUIC 叠加层）
-          </label>
-          <p style="margin: var(--space-2) 0 0; font-size: var(--text-xs); color: var(--text-secondary);">
-            启用后本机节点获得
-            <span style="font-family: var(--font-mono);">iroh:&lt;node_id&gt;</span>
-            地址，跨网段节点可直连或经中继互通。与【集群 → 跨网】TAB 读同一配置。
-          </p>
-          <div v-if="roamingStatus?.node_id"
-            style="margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--border); display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-xs);">
-            <span style="color: var(--text-secondary);">本机节点地址：</span>
-            <span style="font-family: var(--font-mono); word-break: break-all;">iroh:{{ roamingStatus.node_id }}</span>
-            <button class="btn btn-sm" type="button" @click="copyText('iroh:' + roamingStatus.node_id, '节点地址')">复制</button>
+        <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; gap: var(--space-2);">
+          <h3 style="margin: 0;">中继服务器网关（自建内网穿透服务）</h3>
+          <div style="display: flex; align-items: center; gap: var(--space-2); flex-shrink: 0;">
+            <span v-if="serverLiveBadge" class="badge" :class="serverLiveBadge.cls">{{ serverLiveBadge.text }}</span>
+            <label class="toggle-switch"
+              :title="relayStatus?.relay.enabled ? '关闭即实时停止中继（免重启网关）' : '开启即实时拉起中继（免重启网关）'">
+              <input type="checkbox" :checked="relayStatus?.relay.enabled === true"
+                :disabled="togglingRelay"
+                @change="toggleRelay(($event.target as HTMLInputElement).checked)" />
+              <span class="toggle-slider"></span>
+              <span class="toggle-label">中继服务</span>
+            </label>
           </div>
         </div>
-      </div>
-
-      <!-- ===== 卡② 中继服务器网关 ===== -->
-      <div class="card">
-        <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
-          <h3 style="margin: 0;">中继服务器网关（自建内网穿透服务）</h3>
-          <span v-if="serverLiveBadge" class="badge" :class="serverLiveBadge.cls">{{ serverLiveBadge.text }}</span>
-        </div>
         <div class="card-body">
+          <p v-if="relayHint"
+            style="margin: 0 0 var(--space-3); padding: var(--space-2) var(--space-3); background: var(--warning-bg, rgba(255, 193, 7, 0.12)); border: 1px solid var(--warning-border, rgba(255, 193, 7, 0.45)); border-radius: var(--radius-md); font-size: var(--text-xs); color: var(--text);">
+            ⚠ {{ relayHint }}
+          </p>
           <div class="settings-grid" style="grid-template-columns: 140px 1fr;">
-            <span class="settings-key">随网关启动</span>
-            <label style="display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); cursor: pointer;">
-              <input type="checkbox" v-model="serverForm.enabled" />
-              gateway 进程内启动自建中继
-            </label>
-
             <span class="settings-key">HTTP 端口</span>
-            <input class="form-input" type="number" min="1" max="65535" v-model="serverForm.http_port" placeholder="3340" style="max-width: 160px;" />
+            <div>
+              <input class="form-input" type="number" min="1" max="65535" v-model="serverForm.http_port" placeholder="3340" style="max-width: 160px;" />
+              <div class="port-hint">中继 HTTP 通道（客户端「中继地址」指向它；防火墙放行 <span style="font-family: var(--font-mono);">TCP</span>）</div>
+            </div>
 
             <span class="settings-key">QUIC 端口</span>
-            <input class="form-input" type="number" min="1" max="65535" v-model="serverForm.quic_port" placeholder="7842" style="max-width: 160px;" />
+            <div>
+              <input class="form-input" type="number" min="1" max="65535" v-model="serverForm.quic_port" placeholder="7842" style="max-width: 160px;" />
+              <div class="port-hint">QUIC 传输通道（打洞数据面；防火墙放行 <span style="font-family: var(--font-mono);">UDP</span>）</div>
+            </div>
+
+            <span class="settings-key">成员名册</span>
+            <div class="port-hint" style="align-self: center;">
+              自动发现面（rendezvous）随中继自动拉起，默认 <span style="font-family: var(--font-mono);">3341/TCP</span>——设备接入即报到、
+              周期拉名册，同令牌设备自动互见，无需手工写 peers.toml（防火墙放行 <span style="font-family: var(--font-mono);">TCP 3341</span>）。
+            </div>
 
             <span class="settings-key">对外主机</span>
             <input class="form-input" v-model="serverForm.external_host" placeholder="vps.example.com（空 = 自动探测本机 IP）" spellcheck="false" />
@@ -403,14 +428,15 @@ onUnmounted(() => {
               · QUIC <span style="font-family: var(--font-mono);">{{ relayStatus.quic_addr || '-' }}</span>
             </div>
             <div style="margin-top: var(--space-1);">
-              保存写入 config.cluster.json（roaming.relay 段），重启网关后生效；也可用独立命令
+              保存写入 config.quic.json（relay 段）。「中继服务」开关实时生效（免重启网关）；
+              端口/地址等参数在启动时读取——重新开关即以新配置生效。也可用独立命令
               <span style="font-family: var(--font-mono);">nemesisbot quic relay</span> 单独跑中继进程。
             </div>
           </div>
         </div>
       </div>
 
-      <!-- ===== 卡③ 客户端中继地址 ===== -->
+      <!-- ===== 卡② 客户端中继地址 ===== -->
       <div class="card">
         <div class="card-header">
           <h3 style="margin: 0;">客户端中继地址（本机出连中继）</h3>
@@ -436,8 +462,62 @@ onUnmounted(() => {
           </div>
 
           <div style="margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--border); font-size: var(--text-xs); color: var(--text-secondary);">
-            中继地址留空时走 n0 公共中继（默认）；填自建中继 URL 后，本机叠加层经该中继与对端打洞互通。
+            中继地址留空时走 n0 公共中继（默认）；填自建中继 URL 后，本机叠加层经该中继与对端打洞互通，
+            并自动接入该中继的成员名册（30s 周期同步，同令牌设备互相可见）。
             连通状态见【集群 → 拓扑/节点】——节点经中继握手后呈现在线。
+            跨网漫游开关（是否以 QUIC 组网）在【集群 → 配置】跨网漫游卡。
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== 卡③ 中结名册（服务端全量名册；中继机视角） ===== -->
+      <div class="card">
+        <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+          <h3 style="margin: 0;">中结名册（接入设备）</h3>
+          <span class="badge badge-neutral" style="font-size: var(--text-xs);">{{ registry?.count ?? 0 }} 个成员</span>
+        </div>
+        <div class="card-body">
+          <div class="port-hint" style="margin-bottom: var(--space-2);">
+            服务端全量名册（token 命名空间内全部报到成员，含本机）。设备接入即报到、30s 周期续期；
+            同令牌设备经名册自动互见（集群视图按 features 过滤，见【集群 → 配置】名册同步）。
+          </div>
+          <div v-if="!registry || !registry.members.length" class="empty-state" style="padding: var(--space-4);">
+            <p style="margin: 0; font-size: var(--text-sm); color: var(--text-secondary);">
+              暂无成员——中继未运行，或尚无设备接入（接入后 30s 内出现在此）。
+            </p>
+          </div>
+          <div v-else class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>节点 ID</th>
+                  <th>名称</th>
+                  <th>角色</th>
+                  <th>iroh 身份</th>
+                  <th>构建</th>
+                  <th>features</th>
+                  <th>最近报到</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="m in registry.members" :key="m.node_id + m.iroh_id">
+                  <td style="font-family: var(--font-mono); font-size: var(--text-xs);">{{ m.node_id }}</td>
+                  <td>{{ m.name || '--' }}</td>
+                  <td>{{ m.role || '--' }}</td>
+                  <td style="font-family: var(--font-mono); font-size: var(--text-xs);"
+                    :title="'iroh:' + m.iroh_id">
+                    <span style="display: inline-flex; align-items: center; gap: var(--space-1);">
+                      {{ shortIroh(m.iroh_id) }}
+                      <button class="btn btn-sm" type="button" style="padding: 0 6px;"
+                        title="复制完整 iroh 地址" @click="copyText('iroh:' + m.iroh_id, 'iroh 地址')">⧉</button>
+                    </span>
+                  </td>
+                  <td style="font-family: var(--font-mono); font-size: var(--text-xs);">{{ m.build || '--' }}</td>
+                  <td>{{ (m.features || []).join(', ') || '--' }}</td>
+                  <td style="font-family: var(--font-mono); font-size: var(--text-xs);">{{ fmtSeen(m.last_seen_ms) }}</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </div>
       </div>
@@ -445,3 +525,67 @@ onUnmounted(() => {
 
   </div>
 </template>
+
+<style scoped>
+/* 滑动开关（与 VoiceTab/CodingView 等同款） */
+.toggle-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+  position: relative;
+}
+.toggle-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.toggle-slider {
+  width: 36px;
+  height: 20px;
+  background: var(--border, #d1d5db);
+  border-radius: 10px;
+  position: relative;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+.toggle-slider::after {
+  content: '';
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  background: white;
+  border-radius: 50%;
+  top: 2px;
+  left: 2px;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+}
+.toggle-switch input:checked + .toggle-slider {
+  background: var(--accent, #3b82f6);
+}
+.toggle-switch input:checked + .toggle-slider::after {
+  transform: translateX(16px);
+}
+.toggle-label {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  user-select: none;
+}
+.toggle-switch input:disabled + .toggle-slider {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.toggle-switch input:disabled ~ .toggle-label {
+  opacity: 0.5;
+}
+
+/* 端口/名册说明行 */
+.port-hint {
+  margin-top: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+</style>

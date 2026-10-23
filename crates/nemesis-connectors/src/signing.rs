@@ -86,20 +86,36 @@ pub fn assess_connector_signature(
             public_key: String::new(),
         });
     }
-    assess_signature_bytes(
-        &sig_path,
-        &dir.join(crate::registry::MANIFEST_FILE),
-        trust_store,
-    )
+    let manifest_text =
+        std::fs::read_to_string(dir.join(crate::registry::MANIFEST_FILE)).map_err(|e| {
+            format!(
+                "读取 {} 失败: {e}",
+                dir.join(crate::registry::MANIFEST_FILE).display()
+            )
+        })?;
+    assess_signature_text(&sig_path, &manifest_text, trust_store)
 }
 
 /// 非 security 构建的诚实退化：sig 在场也不验（安全面未编译）。
 #[cfg(not(feature = "security"))]
 pub fn assess_connector_signature(dir: &Path) -> Result<SignatureAssessment, String> {
-    if dir.join(SIG_FILE).exists() {
+    assess_signature_text(&dir.join(SIG_FILE), "")
+}
+
+/// 非 security 构建的文本直验退化：与 security 版同签名（调用方 cfg 无关
+/// 地单读），sig 在场也不验（安全面未编译）。
+#[cfg(not(feature = "security"))]
+pub fn assess_signature_text(
+    sig_path: &Path,
+    _manifest_text: &str,
+) -> Result<SignatureAssessment, String> {
+    if sig_path.exists() {
         tracing::warn!(
             "[connector.sign] security feature 未编译，{} 的签名不验（按未签名放行）",
-            dir.display()
+            sig_path
+                .parent()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
         );
     }
     Ok(SignatureAssessment {
@@ -108,11 +124,30 @@ pub fn assess_connector_signature(dir: &Path) -> Result<SignatureAssessment, Str
     })
 }
 
-/// 验签核心：读 sig 信封 + toml 字节 → 密码学验签 → 信任库归约。
+/// 清单文本直验（scan/find 单读路径）：registry 持有的解析用清单字节**原样**
+/// 传入验签——解析与验签必须同一份文本，双读窗口里把清单换回去会让
+/// 「验签通过的字节」与「实际解析执行的字节」错位（require_signed 可被
+/// 双读绕过：恶意清单被解析、原清单被验证）。
 #[cfg(feature = "security")]
-fn assess_signature_bytes(
+pub fn assess_signature_text(
     sig_path: &Path,
-    manifest_path: &Path,
+    manifest_text: &str,
+    trust_store: &nemesis_security::signature::TrustStore,
+) -> Result<SignatureAssessment, String> {
+    if !sig_path.exists() {
+        return Ok(SignatureAssessment {
+            trust: ConnectorTrust::Unsigned,
+            public_key: String::new(),
+        });
+    }
+    assess_signed_text(sig_path, manifest_text, trust_store)
+}
+
+/// 验签核心：sig 信封 + 调用方持有的清单文本 → 密码学验签 → 信任库归约。
+#[cfg(feature = "security")]
+fn assess_signed_text(
+    sig_path: &Path,
+    manifest_text: &str,
     trust_store: &nemesis_security::signature::TrustStore,
 ) -> Result<SignatureAssessment, String> {
     let sig_text = std::fs::read_to_string(sig_path)
@@ -126,8 +161,6 @@ fn assess_signature_bytes(
             envelope.algorithm
         ));
     }
-    let manifest_text = std::fs::read_to_string(manifest_path)
-        .map_err(|e| format!("读取 {} 失败: {e}", manifest_path.display()))?;
     if !nemesis_security::signature::verify_signature_ed25519(
         manifest_text.as_bytes(),
         &envelope.signature,

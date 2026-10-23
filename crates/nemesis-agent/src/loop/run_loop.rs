@@ -503,7 +503,31 @@ impl AgentLoop {
                 let formatted = context.format_rpc_message(&content);
                 return Some(TurnFlow::Stop(AgentEvent::Done(formatted)));
             }
-            match st.turn_guard.check_final_answer(&content) {
+            // 循环策略槽（WASM 样板工程批 1）：终答裁决开放。Builtin =
+            // 内置 TurnGuard 判定；显式裁决由宿主执行与内置完全相同的
+            // 分支代码（canvas/hooks/steer/Done 骨架副作用不外泄，见
+            // policy.rs 模块文档）。
+            use crate::r#loop::policy::FinalJudgeVerdict;
+            let verdict = {
+                let input = crate::r#loop::policy::FinalJudgeInput {
+                    session_key: context.session_key.clone(),
+                    content: content.clone(),
+                    turns_used: st.turns_used,
+                    validation_failures: st.validation_failures,
+                };
+                let slot = self.final_judge_policy.read().clone();
+                match slot.judge(&input).await {
+                    FinalJudgeVerdict::Accept => crate::turn_guard::FinalAnswerVerdict::Accept,
+                    FinalJudgeVerdict::RetryWithNudge(nudge) => {
+                        crate::turn_guard::FinalAnswerVerdict::RetryWithNudge(nudge)
+                    }
+                    FinalJudgeVerdict::GiveUp(notice) => {
+                        crate::turn_guard::FinalAnswerVerdict::GiveUp(notice)
+                    }
+                    FinalJudgeVerdict::Builtin => st.turn_guard.check_final_answer(&content),
+                }
+            };
+            match verdict {
                 crate::turn_guard::FinalAnswerVerdict::Accept => {
                     instance.add_assistant_message(
                         &content,

@@ -94,8 +94,12 @@ fn write_zip(out_path: &Path, files: &[(String, PathBuf)]) {
         w.write_all(&buf)
             .unwrap_or_else(|e| panic!("zip write {entry_name}: {e}"));
     }
+    // finish 返回的 BufWriter 靠 drop 收尾会把最后 ≤8KiB 的 flush 错误静默
+    // 吞掉——构建产物 zip 可能截断而不报错。显式落盘，失败即 panic。
     w.finish()
-        .unwrap_or_else(|e| panic!("finalize {}: {e}", out_path.display()));
+        .unwrap_or_else(|e| panic!("finalize {}: {e}", out_path.display()))
+        .into_inner()
+        .unwrap_or_else(|e| panic!("flush {}: {}", out_path.display(), e.into_error()));
 }
 
 fn main() {

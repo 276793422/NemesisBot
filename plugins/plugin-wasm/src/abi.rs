@@ -48,7 +48,13 @@ pub mod host_err {
 /// 引擎句柄（进程单例；`engine_init` 成功恒返回此值）。
 pub const ENGINE_HANDLE: u64 = 1;
 
-/// 宿主回调表（字符串释放器 + 8 个宿主函数；`#[repr(C)]`，布局由本壳权威）。
+/// 宿主回调表（字符串释放器 + 8 个宿主函数 + struct_size 哨兵 + 增补槽；
+/// `#[repr(C)]`，布局由本壳权威）。
+///
+/// 布局演进纪律（批 3 实证）：**哨兵位固定**——`struct_size` 恒在 8 函数
+/// 之后的固定 offset，新增槽一律追加在哨兵之后；宿主在哨兵处填整表字节
+/// 数，壳先读哨兵判布局再读其余槽（哨兵若随增补漂移，旧布局内存上读它
+/// = 越界读栈垃圾，判定随机翻转）。
 ///
 /// - 全部策略语义在宿主实现里（egress/vault/审计/帧纪律），壳只分发不解释；
 /// - 每个回调首参 `env` = `store_new` 传入的宿主 per-call 上下文指针，
@@ -113,8 +119,84 @@ pub struct HostCallbacks {
         out_content: *mut *mut c_char,
         out_detail: *mut *mut c_char,
     ) -> c_int,
-    /// 布局哨兵：宿主镜像声明必须在末尾填 `std::mem::size_of::<HostCallbacks>()`，
-    /// 壳在 `engine_init` 校验——布局漂移诚实失败而非内存腐坏。
+    /// 布局哨兵：**位固定**——紧跟 8 函数之后，offset 不随后续增补槽漂移
+    /// （宿主镜像在**此处**填 `std::mem::size_of::<宿主镜像>()` = 整表字节
+    /// 数；壳必须先读本字段判定布局，才谈得上读其余槽）。壳接受两种布局：
+    /// 本结构（含 llm-complete 增补槽）或 [`HostCallbacksLegacy`]（批 3 前
+    /// 8 函数布局，两种布局中本字段同位同读）；其余值诚实失败而非内存腐坏。
+    pub struct_size: usize,
+    /// `llm-complete(prompt, max-tokens) -> result<string, host-error>`
+    /// （2026-10-22 批 3 增补槽；**追加在哨兵之后**——哨兵位固定纪律：
+    /// 未来新槽同 pattern 追加，永不插到哨兵之前）。`Option<fn>` 经空指针
+    /// 优化与裸 fn 指针逐位相同——None = 空 = 槽缺失。宿主按
+    /// [`HostCallbacksLegacy`] 旧布局注册时本槽不在表内，壳按 None 处置：
+    /// guest 调 llm-complete 恒返 host-error unavailable。
+    pub llm_complete: Option<
+        unsafe extern "C" fn(
+            env: *mut c_void,
+            prompt: *const c_char,
+            max_tokens: u32,
+            out_content: *mut *mut c_char,
+            out_detail: *mut *mut c_char,
+        ) -> c_int,
+    >,
+}
+
+/// 批 3 前回调表布局（free_str + 8 fn 指针 + struct_size；与升级前
+/// [`HostCallbacks`] 逐字段相同）。仅用于 `engine_init` 识别旧宿主传入的
+/// legacy 尺寸并换算成新结构（llm-complete = None），不参与其他路径。
+#[repr(C)]
+pub struct HostCallbacksLegacy {
+    /// 同 [`HostCallbacks::free_str`]。
+    pub free_str: unsafe extern "C" fn(s: *mut c_char),
+    /// 同 [`HostCallbacks::log`]。
+    pub log: unsafe extern "C" fn(env: *mut c_void, level: c_int, message: *const c_char),
+    /// 同 [`HostCallbacks::now_millis`]。
+    pub now_millis: unsafe extern "C" fn(env: *mut c_void, out_ms: *mut u64) -> c_int,
+    /// 同 [`HostCallbacks::config_get`]。
+    pub config_get: unsafe extern "C" fn(
+        env: *mut c_void,
+        key: *const c_char,
+        out_found: *mut c_int,
+        out_value: *mut *mut c_char,
+        out_detail: *mut *mut c_char,
+    ) -> c_int,
+    /// 同 [`HostCallbacks::secret_get`]。
+    pub secret_get: unsafe extern "C" fn(
+        env: *mut c_void,
+        name: *const c_char,
+        out_value: *mut *mut c_char,
+        out_detail: *mut *mut c_char,
+    ) -> c_int,
+    /// 同 [`HostCallbacks::workspace_read`]。
+    pub workspace_read: unsafe extern "C" fn(
+        env: *mut c_void,
+        rel_path: *const c_char,
+        out_b64: *mut *mut c_char,
+        out_detail: *mut *mut c_char,
+    ) -> c_int,
+    /// 同 [`HostCallbacks::data_dir_path`]。
+    pub data_dir_path: unsafe extern "C" fn(
+        env: *mut c_void,
+        out_path: *mut *mut c_char,
+        out_detail: *mut *mut c_char,
+    ) -> c_int,
+    /// 同 [`HostCallbacks::http_send`]。
+    pub http_send: unsafe extern "C" fn(
+        env: *mut c_void,
+        request_json: *const c_char,
+        out_response_json: *mut *mut c_char,
+        out_detail: *mut *mut c_char,
+    ) -> c_int,
+    /// 同 [`HostCallbacks::tool_invoke`]。
+    pub tool_invoke: unsafe extern "C" fn(
+        env: *mut c_void,
+        tool: *const c_char,
+        args_json: *const c_char,
+        out_content: *mut *mut c_char,
+        out_detail: *mut *mut c_char,
+    ) -> c_int,
+    /// 同 [`HostCallbacks::struct_size`]（legacy 尺寸）。
     pub struct_size: usize,
 }
 
@@ -149,10 +231,15 @@ pub(crate) fn callbacks() -> Option<&'static HostCallbacks> {
 
 /// 初始化引擎单例 + 注册回调表（幂等；首个成功者定缓存配置与回调表）。
 ///
+/// 回调表布局按 `struct_size` 哨兵识别：新布局（含 llm-complete 槽）或
+/// [`HostCallbacksLegacy`]（批 3 前布局，llm-complete = None）均可；其余
+/// 尺寸诚实失败。
+///
 /// # Safety
 ///
-/// `cache_root` 可为空（无缓存）；`cb` 必须指向有效的 [`HostCallbacks`]，
-/// 且其 `struct_size` 与壳布局一致，指向的内存在进程存活期有效。
+/// `cache_root` 可为空（无缓存）；`cb` 必须指向有效的 [`HostCallbacks`]
+/// 或 [`HostCallbacksLegacy`] 布局内存（按其 `struct_size` 判定），指向的
+/// 内存在进程存活期有效。
 pub(crate) unsafe fn engine_init_impl(
     cache_root: *const c_char,
     cb: *const HostCallbacks,
@@ -161,14 +248,36 @@ pub(crate) unsafe fn engine_init_impl(
         return Err("callbacks pointer is null".into());
     }
     let cb = &*cb;
-    if cb.struct_size != std::mem::size_of::<HostCallbacks>() {
+    let shell_size = std::mem::size_of::<HostCallbacks>();
+    // 布局哨兵（位固定，两种布局同位可安全首读）：只接受已知尺寸，杜绝
+    // 按错误布局整读越界（llm-complete 槽在 legacy 布局中不存在，必须整
+    // 表换算而非直接整读）。
+    let stored = if cb.struct_size == shell_size {
+        unsafe { std::ptr::read(cb) }
+    } else if cb.struct_size == std::mem::size_of::<HostCallbacksLegacy>() {
+        let old: HostCallbacksLegacy = unsafe { std::ptr::read(std::ptr::from_ref(cb).cast()) };
+        HostCallbacks {
+            free_str: old.free_str,
+            log: old.log,
+            now_millis: old.now_millis,
+            config_get: old.config_get,
+            secret_get: old.secret_get,
+            workspace_read: old.workspace_read,
+            data_dir_path: old.data_dir_path,
+            http_send: old.http_send,
+            tool_invoke: old.tool_invoke,
+            struct_size: old.struct_size,
+            llm_complete: None,
+        }
+    } else {
         return Err(format!(
-            "callbacks struct size mismatch: host {} != shell {}",
+            "callbacks struct size mismatch: host {} != shell {} or legacy {}",
             cb.struct_size,
-            std::mem::size_of::<HostCallbacks>()
+            shell_size,
+            std::mem::size_of::<HostCallbacksLegacy>()
         ));
-    }
-    let _ = CALLBACKS.set(std::ptr::read(cb));
+    };
+    let _ = CALLBACKS.set(stored);
 
     if ENGINE.get().is_some() {
         return Ok(());

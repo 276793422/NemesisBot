@@ -102,6 +102,20 @@ pub trait HostToolInvoker: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>;
 }
 
+/// 杂务 LLM 补全面（gateway 注入；2026-10-22 样板工程批 4）。实现 =
+/// Weak<AgentLoop> 委托 `chore_completion`（bypass_llm 护栏同源 + estop
+/// fail-closed + small_model 杂务槽）。policy 帧纪律：只有策略帧可用
+///（observer 帧恒 unavailable——同 tool-invoke 收窄理由：观察路径不授
+/// LLM 花销能力）。
+pub trait LlmInvoker: Send + Sync {
+    /// 杂务补全一次（max_tokens 已由调用方钳上限；Err = 失败文本）。
+    fn complete(
+        &self,
+        prompt: &str,
+        max_tokens: u32,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>;
+}
+
 /// 实例配置（manifest config-schema 声明 + 操作员 entries；x-secret 键名集）。
 #[derive(Debug, Clone, Default)]
 pub struct InstanceConfig {
@@ -187,6 +201,8 @@ pub struct CallCaps {
     pub egress: Arc<crate::egress::EgressPolicy>,
     /// 宿主工具调用面（None = 未装配，恒 unavailable）。
     pub invoker: Option<Arc<dyn HostToolInvoker>>,
+    /// 杂务 LLM 补全面（None = 未装配，恒 unavailable；2026-10-22 批 4）。
+    pub llm: Option<Arc<dyn LlmInvoker>>,
     /// tokio runtime 句柄（同步 host 函数里 block_on 异步下游用）。
     pub tokio_handle: Option<tokio::runtime::Handle>,
     /// 审计器（None = 未装配，静默跳过）。

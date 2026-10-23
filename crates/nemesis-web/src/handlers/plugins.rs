@@ -4,7 +4,7 @@
 //! Dashboard「插件」页（PluginsView）的数据源：`plugins.list` 枚举原生插件
 //! 全目录（nemesis-config `plugins_native::NativePluginId` 四成员——目录
 //! 真相源）+ 管线插件；每个原生条目带文件探测 / 用户开关（`<workspace>/
-//! config/plugins_native.json`，缺省启用）/ 签名状态（gateway 装配期经
+//! config/config.plugin.native.json`，缺省启用）/ 签名状态（gateway 装配期经
 //! [`set_native_status_probe`] 注入——验签执行体在 nemesisbot 侧，本 crate
 //! 不依赖 nemesis-verify；槽空 = dormant 诚实降级）/ 未知库清单（只列出，
 //! 不装载）。`wasm.*` 系列代理到 handlers/plugins_wasm.rs（宿主运行时管理
@@ -231,6 +231,19 @@ impl PluginsHandler {
         );
         wasm_shell["capabilities"] = serde_json::json!(["wasmtime 组件运行时（独立壳 DLL）"]);
 
+        // VM 显示通道：sandbox VM 画面中继（gateway 装配期 v4 签名闸装载）。
+        let mut vm_display = self.native_entry(
+            "plugin_vm",
+            "VM 显示通道",
+            "sandbox VM 画面中继到 Dashboard（v4 签名闸装载；重启后生效）",
+            &config_dir,
+            sig_of("plugin_vm"),
+        );
+        vm_display["capabilities"] = serde_json::json!([
+            "VM 显示端口中继（VNC 反向换算）",
+            "guest 工具链内嵌释放（build-vm-image）"
+        ]);
+
         // 管线插件（T2 三段化的进程内插件；启停经 set_metrics_enabled）。
         let metrics = nemesis_agent::hooks::metrics_plugin_slot();
         let pipeline_plugins = serde_json::json!([{
@@ -241,7 +254,7 @@ impl PluginsHandler {
         }]);
 
         Ok(serde_json::json!({
-            "plugins": [onnx, ui, eval_monitor, wasm_shell],
+            "plugins": [onnx, ui, eval_monitor, wasm_shell, vm_display],
             "pipeline_plugins": pipeline_plugins,
             "unrecognized_libraries": unrecognized,
         }))

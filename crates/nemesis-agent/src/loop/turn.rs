@@ -124,20 +124,37 @@ impl AgentLoop {
     /// 见 `chat_log::write_session_meta_auto_title`）。未配置
     /// `agents.small_model` / 无资格 / 首条消息缺失 → 不 spawn（返回 None）。
     /// 返回 JoinHandle 供测试 await；生产调用点丢弃句柄。
+    ///
+    /// 循环策略槽（WASM 样板工程批 1，D5 单点回调形态对照）：标题回调在槽
+    /// 则整段接管生成（small_model 前置不再必需——回调自带生成来源）；
+    /// 无回调走内置小模型路径。两者皆缺 = 不 spawn（原行为）。
     pub(crate) fn spawn_session_title_job(
         &self,
         session_key: &str,
     ) -> Option<tokio::task::JoinHandle<()>> {
-        let (provider, model) = self.small_model_slot()?;
         if !crate::chat_log::auto_title_eligible(session_key) {
             return None;
         }
         let first = crate::chat_log::first_user_message(session_key, E7_TITLE_INPUT_MAX_CHARS)?;
+        let callback = self.title_callback.read().clone();
+        let builtin = self.small_model_slot();
+        if callback.is_none() && builtin.is_none() {
+            return None;
+        }
         let key = session_key.to_string();
         Some(tokio::spawn(async move {
-            if let Some(title) =
+            let title = if let Some(cb) = callback {
+                cb.generate_title(&crate::r#loop::policy::TitleInput {
+                    session_key: key.clone(),
+                    first_user_message: first,
+                })
+                .await
+            } else if let Some((provider, model)) = builtin {
                 generate_title_from_first_message(provider.as_ref(), &model, &first).await
-            {
+            } else {
+                None
+            };
+            if let Some(title) = title {
                 crate::chat_log::write_session_meta_auto_title(&key, &title);
             }
         }))

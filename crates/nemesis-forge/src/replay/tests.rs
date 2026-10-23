@@ -142,6 +142,40 @@ fn corrupt_zone_files_error_instead_of_silent_empty() {
 }
 
 #[test]
+fn to_test_case_long_shared_prefix_session_keys_get_distinct_names() {
+    // 裸截断身份回归锁：cluster 会话键 `{node_id}/{chat}` 的节点 id 12+
+    // 字符，前 24 字符全是公共前缀——本地旧实现 take(24)+非字母数字转 _
+    // 让同节点两个不同失败生成同名用例，ingest 按 name 幂等去重时第二条
+    // 被静默丢弃。修复 = 会话段走 sanitize_path_segment 单一真相源（全键
+    // 参与映射，超 80 才带哈希后缀），不同键必得不同名。
+    let mk = |session: &str| FailureRecord {
+        session_key: session.to_string(),
+        tool: "exec".to_string(),
+        user: "修复登录 bug".to_string(),
+        state: "error".to_string(),
+        ts_ms: 1,
+    };
+    let a = to_test_case(&mk("cluster_rpc:node-laptop-a1b2c3d4/chat-1"));
+    let b = to_test_case(&mk("cluster_rpc:node-laptop-a1b2c3d4/chat-2"));
+    assert_ne!(a.name, b.name, "同前缀不同 chat 的键必须得到不同用例名");
+    assert_eq!(
+        a.name,
+        "replay-cluster_rpc_node-laptop-a1b2c3d4_chat-1-exec"
+    );
+    assert_eq!(
+        b.name,
+        "replay-cluster_rpc_node-laptop-a1b2c3d4_chat-2-exec"
+    );
+    // 超 80 键走 sanitize_path_segment 的哈希后缀臂：head60 相同（区分位
+    // 在截断点之后），靠 FNV 全键哈希保区分度。
+    let long_a = mk("cluster_rpc:node-laptop-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8/chat-1000000001");
+    let long_b = mk("cluster_rpc:node-laptop-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8/chat-1000000002");
+    let la = to_test_case(&long_a);
+    let lb = to_test_case(&long_b);
+    assert_ne!(la.name, lb.name, "超 80 键的哈希后缀必须保区分度");
+}
+
+#[test]
 fn to_test_case_uses_user_text_and_normalizes_name() {
     let rec = FailureRecord {
         session_key: "主会话/长度超限的会话键示例".to_string(),

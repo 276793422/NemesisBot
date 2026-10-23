@@ -30,7 +30,7 @@
 //! （保存动作必更新 mtime——按「通常够大」的风险已收敛为平台普遍行为）。
 
 use std::collections::{BTreeMap, HashMap};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -813,9 +813,13 @@ fn pack_tar_blocking(
         hashes.insert(fs_entry.rel.clone(), tee.finish_hex());
         payload_bytes += meta.len();
     }
-    builder
-        .finish()
+    // finish 只写 tar 尾块；BufWriter 靠 drop 收尾会把最后 ≤8KiB 的 flush
+    // 错误静默吞掉——声明成功但同步包可能截断。into_inner 内含 finish 并
+    // 交还 writer，显式 flush 报错后才算打包成功。
+    let mut f = builder
+        .into_inner()
         .map_err(|e| format!("收尾 tar 失败: {e}"))?;
+    f.flush().map_err(|e| format!("tar 落盘失败: {e}"))?;
     Ok((hashes, payload_bytes))
 }
 

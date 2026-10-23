@@ -59,22 +59,11 @@ pub struct RegistryConfig {
     pub index_path: String,
 }
 
-/// Aggregated experience record (deduplicated pattern).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AggregatedExperience {
-    /// Pattern hash for deduplication.
-    pub pattern_hash: String,
-    /// Tool name.
-    pub tool_name: String,
-    /// Number of occurrences.
-    pub count: u64,
-    /// Average duration in milliseconds.
-    pub avg_duration_ms: i64,
-    /// Success rate (0.0 - 1.0).
-    pub success_rate: f64,
-    /// Last seen timestamp (ISO 8601).
-    pub last_seen: String,
-}
+// `AggregatedExperience`（聚合记录）2026-10-22 整体移除：聚合写入线
+// （Collector::flush → aggregates.jsonl）与其读者面（ExperienceStore 的
+// read_aggregated/get_top_patterns 家族）全仓零生产调用，是 write-only
+// 死数据（审计 P2-a）。经验分析消费 `CollectedExperience`（read_all/
+// read_recent）。
 
 #[cfg(test)]
 mod tests;
