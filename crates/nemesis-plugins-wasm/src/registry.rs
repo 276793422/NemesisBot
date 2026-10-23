@@ -867,7 +867,17 @@ impl PluginManager {
 
     /// 盘上载荷目录的 manifest（未加载也可读——config-schema 校验与
     /// 列表投影都靠它，不要求注册表在场）。
+    ///
+    /// slug 在拼路径**前**过 `valid_slug`（BUG-HUNT R37 读写对称性补齐）：
+    /// 本 crate 纪律是 WSAPI 可达 slug 先校验再碰路径（set_enabled /
+    /// set_config_key / unset_config_key 均有），漏了本读路径——
+    /// `plugins.wasm.config.get` 传 `../../x` / `C:x` 时 join 越界且
+    /// `load_from_dir` 错误信息回显解析后绝对路径（文件存在性 oracle +
+    /// 路径泄露）。合法 slug 不受影响（已装插件 slug 恒过 valid_slug）。
     pub fn disk_manifest(&self, slug: &str) -> Result<PluginManifest, PluginError> {
+        if !crate::manifest::valid_slug(slug) {
+            return Err(PluginError::Manifest(format!("invalid slug: {slug}")));
+        }
         let (m, _) = PluginManifest::load_from_dir(&self.plugin_dir(slug))?;
         Ok(m)
     }

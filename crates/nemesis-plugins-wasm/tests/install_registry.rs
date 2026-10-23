@@ -260,6 +260,39 @@ async fn corrupt_switch_file_fails_closed() {
     assert!(!mgr.get_config("fresh").enabled);
 }
 
+#[test]
+fn disk_manifest_rejects_traversal_slug_before_path_use() {
+    // BUG-HUNT R37：读写对称性——set_enabled / set_config_key /
+    // unset_config_key 都先 valid_slug 再碰路径，disk_manifest
+    // （wasm.config.get 读路径）曾漏。闸必须在拼路径**前**生效：错误是
+    // slug 拒绝而非文件系统读取错（后者回显解析后绝对路径 = 存在性
+    // oracle）；`C:evil` 盘符形态同样拒绝（join 遇带 prefix 成分整体截断，
+    // 读任意盘相对目录）。
+    let (_ws, mgr) = fresh_manager();
+
+    for slug in ["../escape", "a/b", "..\\escape", "C:evil"] {
+        let err = match mgr.disk_manifest(slug) {
+            Ok(_) => panic!("traversal slug '{slug}' must be rejected"),
+            Err(e) => e,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("invalid slug"), "slug '{slug}': {msg}");
+        assert!(
+            !msg.contains("read "),
+            "闸必须先于路径使用（错误不得含文件系统读取回显）: {msg}"
+        );
+    }
+
+    // 合法 slug 不受影响：已装插件照常读盘（控制组）。
+    seed_payload_dir(&mgr, "demo");
+    let m = mgr.disk_manifest("demo").expect("valid installed slug");
+    assert_eq!(m.slug, "demo");
+
+    // 合法但未装：错误回落为文件系统读取错（到达路径层，非 slug 拒绝）。
+    let err = mgr.disk_manifest("not-installed").expect_err("absent");
+    assert!(err.to_string().contains("read "), "got: {err}");
+}
+
 // ---------------------------------------------------------------------------
 // L1：install 漏斗 wasm 载荷文件名穿越拒绝
 // ---------------------------------------------------------------------------
