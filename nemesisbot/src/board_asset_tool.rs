@@ -326,8 +326,13 @@ impl BoardAssetTool {
         // D10-1：HTTP 腿有界下载（Content-Length 预检 + 流式硬上限）——
         // 曾 resp.bytes() 无界缓冲，恶意/失控远端可把任意大响应灌进内存。
         // RPC 兜底腿自带 MAX_RPC_FETCH_BYTES 闸，两腿都有界。
+        // BUG-HUNT R36：走 strict（不跟随重定向）——上方 SSRF 闸只查本条
+        // 显式 URL，reqwest 默认策略自动跟随 ≤10 跳会把恶意 peer 的
+        // `302 → metadata/内网端点` 变成第二跳请求，整条绕闸（J2a 同类）。
+        // 资产 URL 是 peer 直连地址，重定向无合法用途；对端不可达走下方
+        // 连接级错误 → RPC 兜底，语义不受影响。
         match pool
-            .download_file_capped(&url, &dest.to_string_lossy(), max_bytes)
+            .download_file_capped_strict(&url, &dest.to_string_lossy(), max_bytes)
             .await
         {
             Ok(()) => {
