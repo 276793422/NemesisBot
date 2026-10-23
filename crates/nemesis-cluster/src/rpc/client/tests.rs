@@ -405,6 +405,21 @@ fn test_extract_ip_from_addr_invalid() {
 }
 
 #[test]
+fn test_extract_ip_from_addr_malformed_bracket_no_panic() {
+    // R52：`rfind("]:")` 不验 `[` 前缀——裸 "]:" 落成 &addr[1..0]
+    // （start>end panic），首字符多字节时切非边界。加 starts_with('[')
+    // 守卫后畸形输入全部落 IPv4/裸地址回退，返回 None 不 panic；
+    // 合法 IPv6 括号形态不受影响。
+    assert_eq!(extract_ip_from_addr("]:"), None);
+    assert_eq!(extract_ip_from_addr("中]:"), None);
+    assert_eq!(extract_ip_from_addr("x]:bad"), None);
+    assert_eq!(
+        extract_ip_from_addr("[fe80::1]:8080"),
+        Some("fe80::1".parse().unwrap())
+    );
+}
+
+#[test]
 fn test_select_best_address_all_loopback() {
     let client = RpcClient::new();
     let addrs = vec!["127.0.0.1:9000".into(), "127.0.0.1:9001".into()];

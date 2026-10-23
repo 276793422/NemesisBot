@@ -2761,3 +2761,22 @@ fn test_agent_paths_layout() {
     assert!(resolve_agent_home_in_workspace(&ws, "x").starts_with(&ws));
     assert!(resolve_agent_memory_dir_in_workspace(&ws, "x").starts_with(&ws));
 }
+
+#[test]
+fn test_expand_home_multibyte_after_tilde_no_panic() {
+    // R52：旧守卫 `starts_with('~') && len>1` 配 `&path[2..]`，输入
+    // `~<多字节字符>`（如 `~中`，经 NEMESISBOT_HOME 环境变量可达）时
+    // 字节 2 落在续字节上直接 panic。新守卫只认 `~/` 前缀与裸 `~`，
+    // `~x`（无斜杠）按字面量处理——与 config::expand_tilde/migrate
+    // 同口径。多字节紧随 `~` 不再 panic。
+    let _ = expand_home("~中");
+    let _ = expand_home("~é");
+    // 语义回归：裸 `~` 与 `~/...` 仍展开（home_dir 可用时），
+    // 无斜杠 `~x` 与普通路径保持字面量。
+    if let Some(home) = dirs::home_dir() {
+        assert_eq!(expand_home("~"), home);
+        assert_eq!(expand_home("~/sub"), home.join("sub"));
+    }
+    assert_eq!(expand_home("~x"), PathBuf::from("~x"));
+    assert_eq!(expand_home("plain"), PathBuf::from("plain"));
+}

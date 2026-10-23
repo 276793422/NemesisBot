@@ -248,15 +248,18 @@ pub fn resolve_home_dir() -> Result<PathBuf, String> {
     Ok(home.join(DEFAULT_HOME_DIR))
 }
 
-/// Expand ~ to home directory.
+/// Expand ~ to home directory. 只认 `~/...` 前缀与裸 `~`；`~x`（无斜杠）
+/// 按字面量处理——与 `config::expand_tilde`/`migrate` 同口径。旧守卫
+/// `starts_with('~') && len>1` 配 `&path[2..]` 在 `~<多字节字符>`（如
+/// `~中`，NEMESISBOT_HOME 环境变量可达）时字节 2 落续字节上直接 panic。
 pub fn expand_home(path: &str) -> PathBuf {
-    if path.starts_with('~')
+    if (path.starts_with("~/") || path == "~")
         && let Some(home) = dirs::home_dir()
     {
-        if path.len() > 1 {
-            return home.join(&path[2..]);
+        if path == "~" {
+            return home;
         }
-        return home;
+        return home.join(&path[2..]);
     }
     PathBuf::from(path)
 }
