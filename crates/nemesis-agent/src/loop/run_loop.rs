@@ -128,13 +128,16 @@ impl AgentLoop {
             chat_opts: crate::types::ChatOptions {
                 // max_tokens: per-model `max_output_tokens` from config if
                 // declared (each model's real output ceiling, not a blanket
-                // 8192 — large files write in one shot instead of
-                // truncating); else 8192. temperature 0.7.
+                // cap — large files write in one shot instead of
+                // truncating); else agents.defaults.max_tokens; else 64K
+                // (DEFAULT_MAX_TOKENS, 2026-10-23 P0 — 旧值 8192 是小模型
+                // 时代遗产，思考型模型 + 大参数工具调用必然撞顶).
+                // temperature 0.7.
                 // detached 模型覆盖回合（BUG 2026-10-08 dead-key 修复）按
                 // 覆盖模型名查 per-model 键。
                 max_tokens: Some(
                     self.current_max_tokens_override(instance.detached_model_name().as_deref())
-                        .unwrap_or(8192),
+                        .unwrap_or(nemesis_types::capability::DEFAULT_MAX_TOKENS as u32),
                 ),
                 temperature: Some(0.7),
                 // H4 (U16 half): per-model reasoning effort from config.json.
@@ -361,16 +364,17 @@ impl AgentLoop {
         // partial content, append a "continue" prompt, re-loop. Bounded so
         // a genuinely too-large file surfaces a clear error, not a loop.
         // NOTE: detection assumes chat_opts.max_tokens is Some — the agent
-        // always sets Some(8192) when building chat_opts. If that ever
-        // becomes None (provider's own default cap), gate on is_some():
-        // the 8192 fallback could false-positive against a higher cap.
+        // always sets Some(>0) when building chat_opts (per-model >
+        // agents.defaults > DEFAULT_MAX_TOKENS). If that ever becomes None
+        // (provider's own default cap), gate on is_some(): the fallback
+        // could false-positive against a higher cap.
         // §6.2：翻倍阶梯发生过时优先用 escalated_to（事实值）——否则
         // config 8192 + learned floor 32768 时，完整响应 usage 10000 ≥ 8192
         // 会对未截断响应误触发 continue-generation。
         let token_cap = response
             .escalated_to
             .or(st.chat_opts.max_tokens.map(|t| t as u64))
-            .unwrap_or(8192);
+            .unwrap_or(nemesis_types::capability::DEFAULT_MAX_TOKENS as u64);
         let hit_cap = match response.usage.as_ref() {
             // 有 usage：数值判定（精确）。§6.2：escalated_to 优先——config
             // 8192 + learned floor 32768 时，完整响应 usage 10000 ≥ 8192
@@ -409,7 +413,9 @@ impl AgentLoop {
                         ),
                         None => format!(
                             "模型连续 {} 轮空输出且撞 max_tokens 上限（{}），已提前停止续写\
-                             以节省预算。请检查模型健康度或调整参数。",
+                             以节省预算。请为该模型条目配置 max_output_tokens（真实输出上限），\
+                             或调大 agents.defaults.max_tokens；若为思考型模型，思考 token \
+                             也计入该上限。也可检查模型健康度。",
                             st.empty_length_continuations, token_cap
                         ),
                     };

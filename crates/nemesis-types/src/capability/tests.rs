@@ -161,6 +161,38 @@ fn resolve_max_output_tokens_from_config() {
 }
 
 #[test]
+fn resolve_agents_default_max_tokens_and_const() {
+    // 2026-10-23 P0：主轮回退链第二级（条目 max_output_tokens > 本键 >
+    // DEFAULT_MAX_TOKENS）。
+    let cfg = serde_json::json!({"agents": {"defaults": {"max_tokens": 32768}}});
+    assert_eq!(resolve_agents_default_max_tokens(&cfg), Some(32768));
+    // 缺席 → None。
+    assert_eq!(
+        resolve_agents_default_max_tokens(&serde_json::json!({})),
+        None
+    );
+    assert_eq!(
+        resolve_agents_default_max_tokens(&serde_json::json!({"agents": {"defaults": {}}})),
+        None
+    );
+    // 0 / 负数 = 未声明（None），由调用方继续回退。
+    assert_eq!(
+        resolve_agents_default_max_tokens(
+            &serde_json::json!({"agents": {"defaults": {"max_tokens": 0}}})
+        ),
+        None
+    );
+    assert_eq!(
+        resolve_agents_default_max_tokens(
+            &serde_json::json!({"agents": {"defaults": {"max_tokens": -5}}})
+        ),
+        None
+    );
+    // 最终回退常量：8192 → 64K（docs/BUG/2026-10-23_max-tokens-8192截断撞顶复发.md）。
+    assert_eq!(DEFAULT_MAX_TOKENS, 65_536);
+}
+
+#[test]
 fn resolve_display_model_basic() {
     let cfg = serde_json::json!({
         "model_list": [

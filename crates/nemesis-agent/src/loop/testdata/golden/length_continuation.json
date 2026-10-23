@@ -23,7 +23,7 @@
   ],
   "calls": [
     {
-      "max_tokens": 8192,
+      "max_tokens": 65536,
       "messages": [
         {
           "content": "You are a test assistant.",
@@ -50,7 +50,7 @@
       "tools": []
     },
     {
-      "max_tokens": 8192,
+      "max_tokens": 65536,
       "messages": [
         {
           "content": "You are a test assistant.",
@@ -177,9 +177,9 @@
           "cache_creation_tokens": null,
           "cache_read_tokens": null,
           "cached_tokens": null,
-          "completion_tokens": 8192,
+          "completion_tokens": 65536,
           "prompt_tokens": 100,
-          "total_tokens": 8292
+          "total_tokens": 65636
         }
       },
       "event": "llm_response"

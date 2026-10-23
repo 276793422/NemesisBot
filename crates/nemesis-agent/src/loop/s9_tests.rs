@@ -1128,8 +1128,9 @@ async fn bus_flow_hit_cap_continue_generation() {
                 reasoning_content: None,
                 usage: Some(crate::loop_executor::ObserverUsageInfo {
                     prompt_tokens: 5,
-                    completion_tokens: 8192,
-                    total_tokens: 8197,
+                    // 顶满默认 cap（DEFAULT_MAX_TOKENS=64K）——截断信号。
+                    completion_tokens: nemesis_types::capability::DEFAULT_MAX_TOKENS,
+                    total_tokens: 5 + nemesis_types::capability::DEFAULT_MAX_TOKENS,
                     cached_tokens: None,
                     cache_creation_tokens: None,
                     cache_read_tokens: None,
