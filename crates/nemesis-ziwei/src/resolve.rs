@@ -11,11 +11,15 @@
 //! `resolve_locates` 依赖主模块枚举 + read_mem（windows-only）。
 
 use std::collections::HashMap;
+// Path 仅 windows-only 的 resolve_locates（主模块枚举 + read_mem）消费。
+#[cfg(windows)]
 use std::path::Path;
 
 #[cfg(windows)]
+use nemesis_ziwei_profile::LocateKind;
+#[cfg(windows)]
 use nemesis_ziwei_profile::parse_byte_pattern;
-use nemesis_ziwei_profile::{Conv, LocateKind, LocateSpec};
+use nemesis_ziwei_profile::{Conv, LocateSpec};
 
 /// 单节扫描上限（v1 诚实边界；超大 .text 目标转人工分析流程）。
 #[cfg(windows)]
