@@ -1008,8 +1008,10 @@ impl AgentLoop {
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .and_then(|v| nemesis_types::capability::resolve_max_output_tokens(&v, &active))
-            .map(|n| n as u32)
-        // ↑ i64 (from JSON) → u32; max_output_tokens is a non-negative count
+            // u32 值域外（负数 / >u32::MAX）= 配置坏值，按缺席处理（调用方
+            // 回落 8192 默认）。裸 `as` 会把 -1 回绕成 4294967291——请求带
+            // 巨值 max_tokens 打爆 provider 400（2026-10-23）。
+            .and_then(|n| u32::try_from(n).ok())
     }
 
     /// 本回合生效模型名：detached 覆盖优先，否则 loop 主 active_model。

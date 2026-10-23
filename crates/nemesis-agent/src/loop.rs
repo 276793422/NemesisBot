@@ -1289,6 +1289,10 @@ mod llm_types_cov_tests;
 // 学习缓存。
 #[cfg(test)]
 mod length_escalation_tests;
+// config_watch 值域防护测试：per-model max_output_tokens 解析的 u32 值域
+// 外坏值按缺席处理（不回绕/不截断）。
+#[cfg(test)]
+mod config_watch_tests;
 // tool_dispatch.rs 安全管线后续层覆盖（limits 审批直通车三分支 /
 // guardian 升级与故障姿态矩阵）。
 #[cfg(test)]
