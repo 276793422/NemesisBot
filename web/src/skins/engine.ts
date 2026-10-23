@@ -20,6 +20,7 @@
  */
 
 import { effectScope, nextTick, reactive, watchEffect, type EffectScope } from 'vue'
+import { sanitizeHtmlFragment } from '../utils/markdown'
 import type { SkinProjection, SkinActionHandler, SkinFieldSink } from './types'
 
 /** 作用域链项：for 行变量（值快照——行响应性由整块重建承担）。 */
@@ -337,13 +338,17 @@ export class SkinStructureEngine {
       })
     }
 
-    // v3 data-nb-html：投影 HTML 渲染（信任等级 = 内置 v-html 路径——值
-    // 来自宿主投影而非包作者；包作者 HTML 仍被 sanitize 拦在挂载前）。
+    // v3 data-nb-html：投影 HTML 渲染。**强制消毒**（2026-10-23）：投影里
+    // contentHtml（消毒后）与 content（原始模型输出）并存，包作者把绑定
+    // 指到原始字段即可绕过结构清洗器直喂 innerHTML——「值来自宿主投影」
+    // 不是信任凭据，进 innerHTML 前一律过 sanitizeHtmlFragment（与内置
+    // v-html 路径同一消毒闸；对已消毒 contentHtml 幂等）。
     const html = el.getAttribute('data-nb-html')
     if (html) {
       watchEffect(() => {
         const v = resolveExpr(html, this.local, env, this.projection)
-        ;(el as HTMLElement).innerHTML = v == null ? '' : String(v)
+        ;(el as HTMLElement).innerHTML =
+          v == null ? '' : sanitizeHtmlFragment(String(v))
       })
     }
 
