@@ -135,6 +135,44 @@ fn lifo_order_preserved() {
 }
 
 #[test]
+fn remove_takes_own_frame_wherever_it_sits() {
+    // 并发生命周期回归锁：完成的顺序不必是栈序，identity 移除必须拿走
+    // 自己的帧，别个在跑的帧原样保留（pop 按栈顶语义在乱序完成下会偷走
+    // 别人的帧、把自己的帧留在栈上变幽灵帧）。
+    let stack = WorkflowCallStack::new();
+    for id in ["e1", "e2", "e3"] {
+        stack
+            .push(CallFrame {
+                execution_id: id.to_string(),
+                workflow_name: "wf".to_string(),
+                parent_execution_id: None,
+                trigger_source: Some(TriggerSource::Cli),
+                recursion_depth: 0,
+            })
+            .unwrap();
+    }
+
+    // 先完成的是栈底 e1——并发下完全合法的完成顺序。
+    let removed = stack.remove("e1").expect("own frame must be removed");
+    assert_eq!(removed.execution_id, "e1");
+    let snap = stack.snapshot();
+    let ids: Vec<&str> = snap.iter().map(|f| f.execution_id.as_str()).collect();
+    assert_eq!(ids, vec!["e2", "e3"], "unrelated in-flight frames stay");
+
+    // 再乱序完成栈顶 e3。
+    assert_eq!(stack.remove("e3").unwrap().execution_id, "e3");
+    assert_eq!(stack.snapshot()[0].execution_id, "e2");
+
+    // 未知 id：None 且不动栈。
+    assert!(stack.remove("nope").is_none());
+    assert_eq!(stack.depth(), 1, "unknown id must not mutate the stack");
+
+    // 收尾：移除最后一帧后栈空。
+    assert_eq!(stack.remove("e2").unwrap().execution_id, "e2");
+    assert!(stack.is_empty());
+}
+
+#[test]
 fn w4a_default_matches_new() {
     // Default impl (coverage): same empty-stack semantics as new()
     let stack = WorkflowCallStack::default();
