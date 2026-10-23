@@ -541,6 +541,8 @@ impl AnthropicProvider {
             let mut stream = resp.bytes_stream();
             use futures::StreamExt;
             let mut buffer = String::new();
+            // 增量 UTF-8 解码残尾（chunk 边界劈开的多字节字符，BUG-HUNT R38）。
+            let mut utf8_pending: Vec<u8> = Vec::new();
             // index -> (tool_use id, name, 累积 partial_json)
             let mut pending_tools: HashMap<usize, (String, String, String)> = HashMap::new();
             // content_block 出现顺序（终态按序 flush；HashMap 无序）
@@ -604,7 +606,9 @@ impl AnthropicProvider {
                         return;
                     }
                 };
-                buffer.push_str(&String::from_utf8_lossy(&bytes));
+                // 增量解码（R38）：劈在 chunk 边界上的多字节字符先 holdback，
+                // 不逐 chunk 独立 lossy（那会把半个字符换成 U+FFFD）。
+                crate::stream_util::push_chunk_incremental(&mut buffer, &mut utf8_pending, &bytes);
 
                 while let Some(pos) = buffer.find("\n\n") {
                     let block = buffer[..pos].to_string();

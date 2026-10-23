@@ -804,7 +804,7 @@ async fn start_redirect_pair() -> (
 
 #[tokio::test]
 async fn test_download_strict_does_not_follow_redirect_compat_does() {
-    let (url_a, hits_a, url_b, hits_b, (_ha, _hb)) = start_redirect_pair().await;
+    let (url_a, hits_a, _url_b, hits_b, (_ha, _hb)) = start_redirect_pair().await;
 
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("out.bin");

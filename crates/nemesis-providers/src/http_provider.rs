@@ -487,6 +487,8 @@ impl HttpProvider {
                 )
             };
             let mut buffer = String::new();
+            // 增量 UTF-8 解码残尾（chunk 边界劈开的多字节字符，BUG-HUNT R38）。
+            let mut utf8_pending: Vec<u8> = Vec::new();
             // Accumulated tool calls across chunks (index -> partial ToolCall).
             let mut pending_tool_calls: std::collections::HashMap<usize, (String, String, String)> =
                 std::collections::HashMap::new();
@@ -548,7 +550,9 @@ impl HttpProvider {
                     }
                 };
 
-                buffer.push_str(&String::from_utf8_lossy(&bytes));
+                // 增量解码（R38）：劈在 chunk 边界上的多字节字符先 holdback，
+                // 不逐 chunk 独立 lossy（那会把半个字符换成 U+FFFD）。
+                crate::stream_util::push_chunk_incremental(&mut buffer, &mut utf8_pending, &bytes);
 
                 // Process complete SSE lines.
                 while let Some(pos) = buffer.find("\n\n") {
