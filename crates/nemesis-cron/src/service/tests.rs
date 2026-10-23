@@ -2816,6 +2816,61 @@ async fn test_cron_arm_idempotent_and_latches() {
     assert!(!svc.is_disarmed());
 }
 
+/// BUG-HUNT R34：已执行失败的僵尸单发不得被 H1 重启复活。旧代码留下的磁盘
+/// 形态（enabled=true + 过期 at_ms + last_run=Some + last_status=error，
+/// fire loop 失败臂忘 disable）在新进程 recompute_next_runs 里曾被无条件
+/// 塞回 stale due time → 每次网关重启重放一次已失败的单发（建单/LLM turn
+/// 副作用重复）。last_run=Some = 单发语义已消耗；只有 last_run=None（停机
+/// 期间从未执行）才享有 stale-due-once（`test_cron_startup_disarmed_until_arm`
+/// 钉住的 H1 原案不受影响）。
+#[test]
+fn test_recompute_does_not_resurrect_failed_one_shot() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let job = svc
+        .add_job(
+            "zombie_one_shot",
+            CronSchedule {
+                kind: "at".to_string(),
+                at_ms: Some(chrono::Local::now().timestamp_millis() - 60_000),
+                every_ms: None,
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+    // 模拟旧代码失败臂留下的磁盘僵尸形态（fire loop 内 store 修改后由
+    // save_store 持久化；这里直接改内存态再落盘等价）。
+    {
+        let mut s = svc.store.lock();
+        let j = s.jobs.iter_mut().find(|j| j.id == job.id).unwrap();
+        j.state.last_run_at_ms = Some(chrono::Local::now().timestamp_millis() - 59_000);
+        j.state.last_status = Some("error".to_string());
+        j.state.last_error = Some("boom".to_string());
+        super::save_store_to_path(&path, &s).unwrap();
+    }
+
+    // 新进程（disarmed）加载 → start() 内同步 recompute → 不得复活。
+    let svc2 = CronService::new(&path);
+    assert!(svc2.is_disarmed(), "fresh process starts disarmed");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        svc2.start().await.unwrap();
+    });
+    svc2.stop();
+
+    let after = svc2.get_job(&job.id).unwrap();
+    assert_eq!(
+        after.state.next_run_at_ms, None,
+        "failed one-shot zombie must NOT be resurrected to stale due time"
+    );
+}
+
 #[test]
 fn s12b_describe_schedule_weekday_arm() {
     // S12b batch（quality-hardening goal 冲刺）：weekday 非通配的描述分支此前
