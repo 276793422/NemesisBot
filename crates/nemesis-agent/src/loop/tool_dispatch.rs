@@ -406,6 +406,12 @@ impl AgentLoop {
         // 白名单工具排除在此外——它们的 plans/ 放行例外由第一臂承载）。
         #[cfg(feature = "security")]
         let declared_write = !Self::PLAN_MODE_WRITE_TOOLS.contains(&tool_call.name.as_str())
+            // BUG-HUNT R13：todowrite 被静态表归 FileWrite，但其目标是工具
+            // 内部钉死的 sessions/todo_*.json（无路径自由度）——计划草稿
+            // 语义与 plans/ 例外同哲学；且 no-security 构建 declared_write
+            // 恒 false 本就放行，豁免让两形态行为对齐，供给闸（含
+            // todowrite）不再与分发闸失配。
+            && tool_call.name != "todowrite"
             && (matches!(
                 nemesis_security::types::tool_to_operation(&tool_call.name),
                 Some(
