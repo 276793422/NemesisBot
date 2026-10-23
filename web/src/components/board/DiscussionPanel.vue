@@ -96,16 +96,49 @@ const MENTION_FIXED = [
   { token: '@role:worker', desc: '唤醒全部在线 worker' },
 ]
 
+const mentionCandidates = computed(() => [
+  ...roster.value
+    .filter((n) => n.online)
+    .map((n) => ({ token: `@${n.name}`, desc: `${n.role}/${n.category}` })),
+  ...MENTION_FIXED,
+])
+
 const mentionItems = computed(() => {
   if (!mention.value) return []
   const q = mention.value.query.toLowerCase()
-  const nodeItems = roster.value
-    .filter((n) => n.online)
-    .map((n) => ({ token: `@${n.name}`, desc: `${n.role}/${n.category}` }))
-  const all = [...nodeItems, ...MENTION_FIXED]
-  if (!q) return all
-  return all.filter((x) => x.token.toLowerCase().includes(q))
+  if (!q) return mentionCandidates.value
+  return mentionCandidates.value.filter((x) => x.token.toLowerCase().includes(q))
 })
+
+// F6 提及提取（与后端裁决器同语义，2026-10-23）：名册感知最长前缀匹配
+// （大小写不敏感 + 词边界保护——"@Developer" 不咬 "Dev"），未命中回落非
+// 空白 token（@all / @role: / 单词名），字母后的 @ 视为邮箱排除。
+function extractMentionTokens(content: string): string[] {
+  const names = [...roster.value.map((n) => n.name), ...roster.value.map((n) => n.id)].sort(
+    (a, b) => b.length - a.length,
+  )
+  const isWordChar = (c: string) => /[A-Za-z0-9_]/.test(c)
+  const out: string[] = []
+  for (let i = 0; i < content.length; i++) {
+    if (content[i] !== '@') continue
+    if (i > 0 && isWordChar(content[i - 1])) continue
+    const rest = content.slice(i + 1)
+    const lower = rest.toLowerCase()
+    const hit = names.find((n) => {
+      const nb = n.toLowerCase()
+      if (!lower.startsWith(nb)) return false
+      const tail = rest.slice(n.length)
+      return tail.length === 0 || !isWordChar(tail[0])
+    })
+    if (hit) {
+      out.push(hit)
+      continue
+    }
+    const m = rest.match(/^[^\s，。、]+/)
+    if (m) out.push(m[0])
+  }
+  return out
+}
 
 function onDraftInput() {
   const el = draftEl.value
@@ -115,7 +148,13 @@ function onDraftInput() {
   const at = before.lastIndexOf('@')
   if (at >= 0) {
     const token = before.slice(at + 1)
-    if (!/\s/.test(token)) {
+    // 含空白的 token 不立即关死补全：只要仍是某候选 token 的子串就保持
+    // （含空格节点名 "@Product Manager" 全程可补全，后端 extract_mentions
+    // 同族支持）；@all 后接普通文本无候选命中，自然退出补全态。
+    const alive =
+      !/\s/.test(token) ||
+      mentionCandidates.value.some((c) => c.token.toLowerCase().includes(token.toLowerCase()))
+    if (alive) {
       mention.value = { start: at, query: token }
       return
     }
@@ -187,10 +226,10 @@ async function send() {
   if (!content || activeChannelId.value === null || sending.value) return
 
   // F6（goal P1）：@ 了不认识的设备 → 诚实提示（仍可发送——后端裁决器
-  // 会如实记 not_found），附可用候选。
-  const tokens = (content.match(/(^|[\s（(])@([^\s，。、]+)/g) || [])
-    .map((s) => s.trim().slice(1))
-    .filter(Boolean)
+  // 会如实记 not_found），附可用候选。提取与后端裁决器同语义（2026-10-23
+  // 名册感知：含空格节点名整体最长前缀匹配 + 词边界保护；@all/@role:/
+  // 单词名走非空白 token 回落；字母后 @ 视为邮箱排除）。
+  const tokens = extractMentionTokens(content)
   if (tokens.length) {
     const known = new Set([
       'all',

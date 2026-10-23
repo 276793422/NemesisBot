@@ -243,10 +243,17 @@ pub(crate) fn format_comment_list(
     );
     for m in &messages {
         let id = m.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-        let sender = m
-            .pointer("/sender/id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("?");
+        // 身份透传（2026-10-23 同族横扫）：master 返回 sender {type,id}，
+        // 渲染带身份标注（admin=human user / agent=agent node）——读线程的
+        // agent 与被动唤醒轮同样需要知道说话的是人还是节点。
+        let sender = crate::board_bus::actor_label(
+            m.pointer("/sender/type")
+                .and_then(|v| v.as_str())
+                .unwrap_or(""),
+            m.pointer("/sender/id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?"),
+        );
         let content = m.get("content").and_then(|v| v.as_str()).unwrap_or("");
         out.push_str(&format!("- [#{id}] {sender}: {content}\n"));
     }

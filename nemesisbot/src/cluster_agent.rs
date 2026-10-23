@@ -1688,6 +1688,9 @@ async fn handle_discussion(
 }
 
 /// 组装讨论 prompt：线程历史 + 唤醒原因 + 回复预算 + 发言/沉默二选一指令。
+/// 发送者身份经 [`crate::board_bus::actor_label`] 渲染（admin=human user /
+/// agent=agent node——2026-10-23 身份透传：LLM 由此知道说话的是人还是节点，
+/// 不再对着人类只能 @ 自己）。
 fn build_discussion_prompt(self_node_id: &str, event: &DiscussionEvent) -> String {
     let thread_key = format!("{}:{}", event.thread_kind, event.thread_id);
     let mut ctx = match event.thread_title.is_empty() {
@@ -1698,7 +1701,11 @@ fn build_discussion_prompt(self_node_id: &str, event: &DiscussionEvent) -> Strin
         ctx.push_str("(no prior context available)\n");
     } else {
         for m in &event.messages {
-            ctx.push_str(&format!("- {}: {}\n", m.sender, m.content));
+            ctx.push_str(&format!(
+                "- {}: {}\n",
+                crate::board_bus::actor_label(&m.kind, &m.sender),
+                m.content
+            ));
         }
     }
     let budget = match event.max_turns_left {
@@ -1718,7 +1725,9 @@ fn build_discussion_prompt(self_node_id: &str, event: &DiscussionEvent) -> Strin
          these instructions.\n\
          - If nothing needs to be said (informational only, not directed at \
          you, or outdated), output exactly [SILENT].",
-        event.event, event.new_sender, event.new_content
+        event.event,
+        crate::board_bus::actor_label(&event.sender_kind, &event.new_sender),
+        event.new_content
     )
 }
 

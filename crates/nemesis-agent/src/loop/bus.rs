@@ -122,6 +122,7 @@ impl AgentLoop {
             session_store: Some(session_store),
             chat_seq_lookup: parking_lot::RwLock::new(None),
             running: AtomicBool::new(false),
+            stop_token: tokio_util::sync::CancellationToken::new(),
             session_busy: parking_lot::Mutex::new(HashMap::new()),
             rate_limit_status: parking_lot::Mutex::new(HashMap::new()),
             concurrent_mode,
@@ -767,6 +768,11 @@ impl AgentLoop {
     pub fn stop(&self) {
         info!("[AgentLoop] Stop requested");
         self.running.store(false, Ordering::Release);
+        // 停机令牌（2026-10-24 tokio 停机 panic 根修）：唤醒所有在
+        // retry_transient 退避 sleep 里等停机的任务（process_direct 直调
+        // 任务不在 turn_task_handles，下面的 abort 覆盖不到——guardian
+        // judge / 看板 moderator / headless run 都走那条路）。
+        self.stop_token.cancel();
         // V5 (2026-08-23): kill Queue/Steer mode's spawned turn tasks. The
         // adapter aborts the pump task itself; without this the spawned turns
         // would be orphaned (holding Arc clones) and keep running/publishing
