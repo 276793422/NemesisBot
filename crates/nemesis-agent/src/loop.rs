@@ -1102,7 +1102,9 @@ mod cache_warmer_tests;
 #[cfg(test)]
 mod context_window_tests;
 // P0 vault（C1/C2，2026-09-22 计划 §3）：凭据别名最后一刻注入机制。
-mod credential_injection;
+// pub（BUG-HUNT R17）：接管 wrapper（bot 层）需在 execute 入口自调注入——
+// dispatch 层读槽位与 execute 之间的翻位竞态要求「注入+路径决策」同点原子。
+pub mod credential_injection;
 // P0 vault（D2，2026-09-22 计划 §4）：声明式量化风险限制（滑动窗口 + 超限升级）。
 pub mod limits;
 // P0 vault（C3）：注入机制测试（纯函数 + loop 级四表面防泄漏）。
