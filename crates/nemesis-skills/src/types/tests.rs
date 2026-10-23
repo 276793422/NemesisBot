@@ -63,6 +63,16 @@ fn test_validate_skill_identifier_path_traversal() {
 }
 
 #[test]
+fn test_validate_skill_identifier_rejects_colon() {
+    // BUG-HUNT R35：`C:evil` 是盘符相对路径，PathBuf::join 遇带 prefix 成分
+    // 会整体截断（路径逃出 workspace）；裸冒号还是 NTFS ADS 分隔符。
+    assert!(validate_skill_identifier("C:evil").is_err());
+    assert!(validate_skill_identifier("a:b").is_err());
+    // 无冒号的合法 slug 不受影响。
+    assert!(validate_skill_identifier("my-skill_1.0").is_ok());
+}
+
+#[test]
 fn test_validate_skill_identifier_too_long() {
     let long_slug = "a".repeat(65);
     assert!(validate_skill_identifier(&long_slug).is_err());

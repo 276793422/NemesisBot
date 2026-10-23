@@ -510,3 +510,49 @@ async fn force_reinstall_replaces_locked_skill() {
         .unwrap();
     assert_eq!(r["clean"], true, "report: {r}");
 }
+
+// -----------------------------------------------------------------------
+// BUG-HUNT R35：skills.install 入口拒绝穿越 slug（早于 exists join / force
+// uninstall / installer staging 删除），错误可读、哨兵目录存活。
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn install_rejects_traversal_slug_at_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    // 哨兵目录：installer staging 拼接 `.skill-staging/../../victim` 恰落到
+    // dir 根——修复前该目录会在 registry 侧校验拒绝前被 staging 清理删掉。
+    let victim = dir.path().join("victim");
+    std::fs::create_dir_all(victim.join("keep")).unwrap();
+    std::fs::write(victim.join("keep").join("data.txt"), "keep").unwrap();
+
+    let ctx = make_ctx(&dir);
+    let handler = skills::SkillsHandler::new();
+
+    let err = handler
+        .handle_cmd(
+            "install",
+            Some(serde_json::json!({ "registry": "clawhub", "slug": "../../victim" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        err.contains("invalid slug"),
+        "honest entry rejection, got: {err}"
+    );
+    assert!(
+        victim.join("keep").join("data.txt").exists(),
+        "sentinel dir must survive"
+    );
+
+    // 盘符相对路径（Windows prefix 截断）同样入口拒绝。
+    let err = handler
+        .handle_cmd(
+            "install",
+            Some(serde_json::json!({ "registry": "clawhub", "slug": "C:evil" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("invalid slug"), "got: {err}");
+}
