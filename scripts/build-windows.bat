@@ -282,6 +282,21 @@ REM Step 3: Build main workspace (release)
 REM ============================================
 echo [Step 3/5] Building release...
 
+REM --- selfupdate trust anchor (compile-time; same source as CI daily-release:
+REM     SHA-256 of certs\root_cert.der. Absent file = no anchor = self-update
+REM     apply refuses to execute (fail-closed), build itself unaffected) ---
+set "NEMESIS_BUILD_ROOT_ANCHOR="
+if exist "certs\root_cert.der" (
+    for /f "delims=" %%h in ('powershell -NoProfile -Command "$h=Get-FileHash -Algorithm SHA256 'certs\root_cert.der';$h.Hash.ToLower()"') do set "NEMESIS_BUILD_ROOT_ANCHOR=%%h"
+    if defined NEMESIS_BUILD_ROOT_ANCHOR (
+        echo   OK selfupdate anchor injected: !NEMESIS_BUILD_ROOT_ANCHOR!
+    ) else (
+        echo   WARN anchor hash failed - no compile-time anchor, self-update refuses ^(fail-closed^)
+    )
+) else (
+    echo   WARN certs\root_cert.der not found - no compile-time anchor, self-update refuses ^(fail-closed^)
+)
+
 cargo build --release
 if errorlevel 1 (
     echo.
