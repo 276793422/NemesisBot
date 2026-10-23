@@ -1533,12 +1533,14 @@ mod swarm_g4 {
             thread_title: "登录 bug".to_string(),
             messages: vec![nemesis_types::cluster::DiscussionCtxMessage {
                 sender: "node-master".to_string(),
+                kind: "agent".to_string(),
                 content: "先复现".to_string(),
                 at: 1,
             }],
             event: "mention".to_string(),
             from_node: "node-master".to_string(),
             new_sender: "node-master".to_string(),
+            sender_kind: "agent".to_string(),
             new_content: content.to_string(),
             new_at: 2,
             reply_to: Some(seq),
@@ -1558,7 +1560,7 @@ mod swarm_g4 {
             prompt.contains("# Thread (issue:42): 登录 bug"),
             "prompt={prompt}"
         );
-        assert!(prompt.contains("- node-master: 先复现"));
+        assert!(prompt.contains("- node-master (agent node): 先复现"));
         assert!(prompt.contains("Wake reason: mention"));
         assert!(prompt.contains("You are node node-a"));
         assert!(prompt.contains("[SILENT]"));
@@ -1573,6 +1575,27 @@ mod swarm_g4 {
         let mut inf = make_event(11, "hi");
         inf.max_turns_left = u32::MAX;
         assert!(build_discussion_prompt("node-a", &inf).contains("unlimited"));
+    }
+
+    /// 身份透传（2026-10-23）：human 发言在 prompt 里可见是「human user」，
+    /// agent 节点标「agent node」；空 kind（旧 master 包）退化裸 id。
+    #[test]
+    fn g4_prompt_renders_sender_identity_kinds() {
+        let mut event = make_event(12, "@all 有人在么");
+        event.new_sender = "dashboard".to_string();
+        event.sender_kind = "admin".to_string();
+        let prompt = build_discussion_prompt("node-a", &event);
+        assert!(
+            prompt.contains("New message from dashboard (human user)"),
+            "prompt={prompt}"
+        );
+        // 空 kind（旧 master wake 包兼容）→ 裸 id（历史行 kind="agent" 照常标注）。
+        let mut legacy = make_event(13, "hi");
+        legacy.new_sender = "node-master".to_string();
+        legacy.sender_kind = String::new();
+        let p2 = build_discussion_prompt("node-a", &legacy);
+        assert!(p2.contains("New message from node-master:"), "p2={p2}");
+        assert!(p2.contains("- node-master (agent node): 先复现"), "p2={p2}");
     }
 
     // -- build_comment_post_envelope（纯函数） ------------------------------
@@ -2150,6 +2173,7 @@ mod wave_d {
             event: "mention".to_string(),
             from_node: "node-master".to_string(),
             new_sender: "node-master".to_string(),
+            sender_kind: "agent".to_string(),
             new_content: "@node-a ping".to_string(),
             new_at: 2,
             reply_to: Some(seq),

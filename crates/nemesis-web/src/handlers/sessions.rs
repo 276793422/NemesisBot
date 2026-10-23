@@ -74,7 +74,7 @@ impl ModuleHandler for SessionsHandler {
                 // 一眼可见哪个会话在放行（读运行态内存——gateway 启动 hydrate
                 // 先于 WS 服务可用，无「sidecar 真但内存假」窗口）。
                 // security feature 关闭时状态模块不编译，投影恒 false（诚实
-                // 缺省）——引用必须同闸，否则默认 feature 集编译破损。
+                // 缺省）——引用必须同闸，否则裁剪 feature 集编译破损。
                 #[cfg(feature = "security")]
                 {
                     let allow_keys = crate::handlers::security::session_allow_enabled_keys();

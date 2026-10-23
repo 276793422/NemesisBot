@@ -330,10 +330,11 @@ async fn status_falls_back_to_disk_after_restart() {
         .unwrap();
     assert_eq!(out["annotated"], "fn_after_restart");
 
-    // 快照类步骤诚实拒绝（基址不可信）
+    // 快照类步骤诚实拒绝（基址不可信；Linux 形态诚实报「仅 Windows」——
+    // 同 select_target 用例的平台双臂断言先例）
     let err = mgr.snapshot(&ws).await.unwrap_err();
     assert!(
-        err.contains("ASLR") || err.contains("重新 select_target"),
+        err.contains("ASLR") || err.contains("重新 select_target") || err.contains("仅 Windows"),
         "实际：{err}"
     );
     cleanup(&ws);

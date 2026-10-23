@@ -48,7 +48,7 @@ use sha2::Digest;
 /// 分析引擎信息转发（保持 `setup::engine_info` 旧路径稳定）。
 pub use nemesis_ziwei_rev::engine::{EngineInfo, engine_info};
 
-// ── 常量 ────────────────────────────────────────────────────────────────
+// ── 常量（PE 分析/活体读消费——windows-only；Linux 形态诚实缺席）────────
 
 /// 头页读取量（PE 头 + 节表足够）。
 #[cfg(windows)]

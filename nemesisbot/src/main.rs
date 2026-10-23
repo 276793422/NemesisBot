@@ -617,8 +617,28 @@ enum Commands {
 }
 
 #[cfg(not(target_os = "macos"))]
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // 停机窗口 panic / 退出拖挂根修（2026-10-24）：`#[tokio::main]` 的
+    // runtime drop 是「立即 shutdown + 无限等」——gateway 停机后残余的
+    // 孤儿任务（llm_bridge 在飞 LLM 调用、heartbeat interval 循环、直调
+    // 回合等）一旦被唤醒去注册新 timer，就撞 "A Tokio 1.x context was
+    // found, but it is being shutdown" panic；若有任务卡死，drop 的无限
+    // 等待则直接拖住进程退出（r9 gateway boot 测试实录：7 个停机 panic +
+    // r10 子进程 90s 不退出）。手工 runtime + shutdown_timeout：服务自身
+    // 的优雅停机链（BotService/AgentLoop stop）不变，main 返回后给残余
+    // 任务最多 5s 自然收尾（窗口内 runtime 正常运行，timer 注册合法），
+    // 超时硬砍——任务是 drop 的不是再 poll 的，两种症状都消失。短命命令
+    // （model add 等）无残余任务，shutdown_timeout 立即返回零开销。
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let result = rt.block_on(async_main());
+    rt.shutdown_timeout(std::time::Duration::from_secs(5));
+    result
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn async_main() -> Result<()> {
     // Executor role short-circuit: if spawned as a tool-executor child (env
     // NEMESISBOT_ROLE=executor, set by the gateway's ExecutorChannel when it
     // spawns a child per tool call), run the executor entrypoint instead of CLI

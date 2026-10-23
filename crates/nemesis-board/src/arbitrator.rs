@@ -66,8 +66,30 @@ pub struct WakePlan {
 }
 
 /// 提取消息中的 @ 点名 token（`@xxx` / `@role:yyy`）。
-/// 识别边界：@ 后取连续的非空白字符；中文后紧跟的 @ 同样生效。
+/// 识别边界：@ 后取连续的非空白字符；前一字符是字母/数字/下划线（Unicode
+/// 语义，中文也算）时按邮箱形态排除——「中文@名字」**不**算点名（发送时
+/// 空格分隔是正常用法，见邮箱守卫行内注释）。
 fn extract_mentions(content: &str) -> Vec<String> {
+    extract_mentions_with_roster(content, &[])
+}
+
+/// 同 [`extract_mentions`]，但先对 `names`（节点 id/name 名册）做**最长前缀
+/// 匹配**——名字含空格（如 "Product Manager"）也能被 `@Product Manager`
+/// 整体点名。现行非空白 token 解析作为回落（@all / @role:qa / 单词名零变化）。
+///
+/// 匹配纪律：
+/// - 大小写不敏感；名册按长度降序尝试（"Product Manager" 优先于 "Product"）；
+/// - 名字后必须是词边界（串尾 / 空白 / 标点，非字母数字下划线）——防
+///   "Manager" 咬住 "@Managerial" 的部分词误配；
+/// - 命中即把**名册原 名**作为 token（canonical，大小写归调用方比较）。
+///
+/// 已知边界：`mentions_node`（worker sync 兜底过滤）只传本节点 id/name，
+/// 若另有一节点名恰为本节点名的词边界前缀（"Product" vs "Product
+/// Manager"），兜底过滤可能多唤醒一个——master 权威裁决（全名册最长匹配）
+/// 不受影响，多醒的一方只是多一轮讨论判断。
+pub(crate) fn extract_mentions_with_roster(content: &str, names: &[&str]) -> Vec<String> {
+    let mut roster: Vec<&str> = names.iter().copied().filter(|n| !n.is_empty()).collect();
+    roster.sort_by_key(|n| std::cmp::Reverse(n.chars().count()));
     let mut out = Vec::new();
     for (i, _) in content.match_indices('@') {
         // 排除邮箱形态（前一字符是字母/数字时不当作点名——如 a@b.com）。
@@ -78,6 +100,25 @@ fn extract_mentions(content: &str) -> Vec<String> {
             }
         }
         let rest = &content[i + 1..];
+        // 名册最长匹配：字节级 ASCII 大小写不敏感前缀比较（非 ASCII 名按
+        // 字节恒等），名字吃到词边界才算命中。
+        let hit = roster.iter().find(|n| {
+            let nb = n.as_bytes();
+            let rb = rest.as_bytes();
+            rb.len() >= nb.len()
+                && rb[..nb.len()].eq_ignore_ascii_case(nb)
+                && match rest.get(nb.len()..) {
+                    None => true, // 名字吃到串尾
+                    Some(tail) => match tail.chars().next() {
+                        None => true,
+                        Some(c) => !(c.is_alphanumeric() || c == '_'),
+                    },
+                }
+        });
+        if let Some(name) = hit {
+            out.push((*name).to_string());
+            continue;
+        }
         let token: String = rest
             .chars()
             .take_while(|c| !(c.is_whitespace() || *c == '，' || *c == '。' || *c == '、'))
@@ -104,19 +145,25 @@ pub fn mentions_node(
     node_role: &str,
     node_category: &str,
 ) -> bool {
-    extract_mentions(content).iter().any(|t| {
-        if let Some(role) = t.strip_prefix("role:") {
-            let role_lc = role.to_lowercase();
-            !role_lc.is_empty()
-                && (node_role.to_lowercase() == role_lc || node_category.to_lowercase() == role_lc)
-        } else {
-            let t_lc = t.to_lowercase();
-            if t_lc == "all" {
-                return true; // @all：群发语义，任意节点命中。
+    // 名册 = 本节点 id/name（含空格名可被 @整体点名 整体命中，见
+    // extract_mentions_with_roster 的已知边界注）。
+    let roster = [node_id, node_name];
+    extract_mentions_with_roster(content, &roster)
+        .iter()
+        .any(|t| {
+            if let Some(role) = t.strip_prefix("role:") {
+                let role_lc = role.to_lowercase();
+                !role_lc.is_empty()
+                    && (node_role.to_lowercase() == role_lc
+                        || node_category.to_lowercase() == role_lc)
+            } else {
+                let t_lc = t.to_lowercase();
+                if t_lc == "all" {
+                    return true; // @all：群发语义，任意节点命中。
+                }
+                t_lc == node_id.to_lowercase() || t_lc == node_name.to_lowercase()
             }
-            t_lc == node_id.to_lowercase() || t_lc == node_name.to_lowercase()
-        }
-    })
+        })
 }
 
 /// 消息里有没有任何 @ 点名（master 侧决定 wake 事件标签用：
@@ -127,7 +174,12 @@ pub fn has_mentions(content: &str) -> bool {
 
 /// 裁决入口：解析 @ 并按四规则产出唤醒计划。
 pub fn resolve_wake_targets(input: &WakeInput<'_>, nodes: &[NodeCandidate]) -> WakePlan {
-    let mentions = extract_mentions(input.content);
+    // 名册 = 全部节点 id+name（含空格名可被 @整体点名 整体命中）。
+    let roster: Vec<&str> = nodes
+        .iter()
+        .flat_map(|n| [n.id.as_str(), n.name.as_str()])
+        .collect();
+    let mentions = extract_mentions_with_roster(input.content, &roster);
     let mut plan = WakePlan::default();
 
     if mentions.is_empty() {

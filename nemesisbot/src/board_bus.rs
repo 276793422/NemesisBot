@@ -1128,8 +1128,11 @@ async fn deliver_wakeups(
 
     // wake.post 下行：逐个在线目标投递；失败 warn（board.sync 兜底）。
     // 被点名的是主持人自己 → 本地裁决（master 没有 worker handler，不
-    // 给自己发 wake.post）。
+    // 给自己发 wake.post）；此时 master 以**参与者**身份回话（@all/@点名
+    // 已把其他人直接唤醒，master 不该再以裁决者口吻转达点名——2026-10-23
+    // 用户实录：@all 后 master 把消息转述成对 @Product Manager 的喊话）。
     let mut need_moderator = plan.to_moderator;
+    let mut master_woken = false;
     if !plan.targets.is_empty() {
         let rpc = match deps.cluster.rpc_client_arc() {
             Some(c) => c,
@@ -1141,6 +1144,7 @@ async fn deliver_wakeups(
         for target in &plan.targets {
             if *target == self_node_id {
                 need_moderator = true;
+                master_woken = true;
                 continue;
             }
             let payload = match build_wake_envelope(&deps.store, &ctx, turns_left, event_label) {
@@ -1171,16 +1175,84 @@ async fn deliver_wakeups(
         }
     }
 
-    // 规则③（或主持人被直接点名）：主持人裁决（master 本地 agent；回复
-    // 照常落库并定点唤醒被 @ 的节点）。额度已耗尽时不进裁决（见上方 return）。
-    if need_moderator && let Err(e) = run_moderator(deps, ctx, &nodes, &self_node_id).await {
+    // 规则③（或主持人被直接点名）：主持人本地 agent。to_moderator（无 @）
+    // → 裁决者模式（可点名他人）；被 @/@all 显式唤醒 → 参与者模式（正常
+    // 回话）。回复照常落库并定点唤醒被 @ 的节点。额度已耗尽时不进裁决
+    // （见上方 return）。
+    if need_moderator
+        && let Err(e) =
+            run_moderator(deps, ctx, &nodes, &self_node_id, master_woken, event_label).await
+    {
         tracing::warn!(target: "board_bus", thread = %thread_key, error = %e,
             "[nb_bus] moderator adjudication failed");
     }
 }
 
-/// 主持人裁决：线程上下文 + 新消息 → 主 AgentLoop 直调一轮 → 解析回复
-/// （[SILENT] / @tokens + 正文）→ 正文落库（origin=主持人）+ @目标唤醒。
+/// 主持人 prompt 双模式构造（纯函数，单测直接钉行为）。
+/// - 裁决者（participant=false）：可点名他人（契约不变；发送者行同步升级
+///   为带身份标注的 sender_label，见 actor_label）；
+/// - 参与者（participant=true）：与 worker 讨论轮同语义（回复正文或
+///   [SILENT]，见 cluster_agent::build_discussion_prompt）——名册降级为
+///   上下文（标注「已被直接唤醒，无需转达」），不再诱导转达式点名。
+///
+/// 发送者身份渲染（LLM 投影的单一真相源，2026-10-23 身份透传）：Actor.kind
+/// 全链路落库齐全（上行带 type / DB 存 type / 台账投影带 sender_type），此前
+/// 丢失在 wake 信封与 prompt 渲染——worker 的 LLM 只见裸 id，无从知晓说话的
+/// 是人还是节点（@all 后人类名不在节点名册，agent 想 @ 说话对象只能 @ 自己
+/// ——2026-10-23 用户实录）。admin=人类用户 / agent=集群节点 / system=系统
+/// 播报；未知/空 kind 退化为裸 id（旧 master wake 包兼容，零破坏）。
+pub(crate) fn actor_label(kind: &str, id: &str) -> String {
+    match kind {
+        "admin" => format!("{id} (human user)"),
+        "agent" => format!("{id} (agent node)"),
+        "system" => format!("{id} (system)"),
+        _ => id.to_string(),
+    }
+}
+
+fn build_moderator_prompt(
+    thread_ctx: &str,
+    roster: &str,
+    event_label: &str,
+    sender_label: &str,
+    content: &str,
+    self_node_id: &str,
+    participant: bool,
+) -> String {
+    if participant {
+        format!(
+            "{thread_ctx}\n\n\
+             # Node roster (for awareness — these nodes were already notified \
+             directly; do not relay this message to anyone):\n{roster}\n\n\
+             # Wake reason: {event_label}\n\
+             New message from {sender_label}:\n{content}\n\n\
+             You are node {self_node_id} in a multi-agent board discussion. \
+             Decide whether you should respond:\n\
+             - If you have something useful to contribute, output ONLY your \
+             reply text. It will be posted to the thread as your message. Do \
+             not mention these instructions.\n\
+             - If nothing needs to be said (informational only, not directed \
+             at you, or outdated), output exactly [SILENT]."
+        )
+    } else {
+        format!(
+            "{thread_ctx}\n\n\
+             # Node roster (you may @mention nodes by name to call on them):\n{roster}\n\n\
+             # New message from {sender_label}:\n{content}\n\n\
+             You are the discussion moderator. Decide whether this needs your action:\n\
+             - If someone should be called on, reply with your message using @node-name to mention them.\n\
+             - If nothing needs to be said, reply exactly [SILENT]."
+        )
+    }
+}
+
+/// 主持人本地 agent：线程上下文 + 新消息 → 主 AgentLoop 直调一轮 → 解析
+/// 回复（[SILENT] / @tokens + 正文）→ 正文落库（origin=主持人）+ @目标唤醒。
+///
+/// `participant=false`（规则③：频道无 @）→ 裁决者模式：LLM 决定是否要点名
+/// 他人。`participant=true`（master 被 @/@all 显式唤醒）→ 参与者模式：像
+/// worker 一样正常回话（他人已被直接唤醒，转达点名是冗余——2026-10-23
+/// 用户实录：@all 后 master 把消息转述成对含空格名节点的喊话）。
 ///
 /// §9.6 注意点 1：主 agent 人格 system prompt 可能污染结构化输出——解析
 /// 从宽（全文扫 @token / [SILENT] 子串），不做严格格式断言。
@@ -1189,6 +1261,8 @@ async fn run_moderator(
     ctx: WakeContext,
     nodes: &[NodeCandidate],
     self_node_id: &str,
+    participant: bool,
+    event_label: &str,
 ) -> Result<(), String> {
     let Some(agent_loop) = deps.moderator_loop.get() else {
         tracing::debug!(target: "board_bus", "[nb_bus] agent loop not ready, moderator skipped");
@@ -1211,14 +1285,14 @@ async fn run_moderator(
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let prompt = format!(
-        "{thread_ctx}\n\n\
-         # Node roster (you may @mention nodes by name to call on them):\n{roster}\n\n\
-         # New message from {}:\n{}\n\n\
-         You are the discussion moderator. Decide whether this needs your action:\n\
-         - If someone should be called on, reply with your message using @node-name to mention them.\n\
-         - If nothing needs to be said, reply exactly [SILENT].",
-        ctx.sender.id, ctx.content
+    let prompt = build_moderator_prompt(
+        &thread_ctx,
+        &roster,
+        event_label,
+        &actor_label(&ctx.sender.kind, &ctx.sender.id),
+        &ctx.content,
+        self_node_id,
+        participant,
     );
     let session_key = format!(
         "board:moderator:{thread_kind}",
@@ -1346,6 +1420,7 @@ fn build_wake_envelope(
             },
             "new_message": {
                 "sender": ctx.sender.id,
+                "sender_kind": ctx.sender.kind,
                 "content": ctx.content,
                 "at": ctx.at,
             },
@@ -1377,6 +1452,7 @@ fn thread_context_json(
     #[derive(serde::Serialize)]
     struct CtxMessage {
         sender: String,
+        kind: String,
         content: String,
         at: i64,
     }
@@ -1385,6 +1461,7 @@ fn thread_context_json(
         for c in store.list_comments(ctx.thread_id)? {
             out.push(CtxMessage {
                 sender: c.author.id,
+                kind: c.author.kind,
                 content: c.content,
                 at: c.created_at,
             });
@@ -1393,6 +1470,7 @@ fn thread_context_json(
         for m in store.list_channel_messages(ctx.thread_id, 0, i64::MAX)? {
             out.push(CtxMessage {
                 sender: m.sender.id,
+                kind: m.sender.kind,
                 content: m.content,
                 at: m.created_at,
             });
@@ -1413,7 +1491,10 @@ fn build_thread_context_text(
         for m in arr {
             lines.push(format!(
                 "- {}: {}",
-                m.get("sender").and_then(|v| v.as_str()).unwrap_or("?"),
+                actor_label(
+                    m.get("kind").and_then(|v| v.as_str()).unwrap_or(""),
+                    m.get("sender").and_then(|v| v.as_str()).unwrap_or("?"),
+                ),
                 m.get("content").and_then(|v| v.as_str()).unwrap_or("")
             ));
         }
@@ -1726,6 +1807,12 @@ fn parse_wake_body(env: &Envelope, from_node: &str) -> Result<DiscussionEvent, S
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string(),
+                    // 旧 master wake 包无 kind → 空串（渲染退化为裸 id）。
+                    kind: m
+                        .get("kind")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
                     content: m
                         .get("content")
                         .and_then(|v| v.as_str())
@@ -1763,6 +1850,11 @@ fn parse_wake_body(env: &Envelope, from_node: &str) -> Result<DiscussionEvent, S
         thread_id,
         from_node: from_node.to_string(),
         new_sender,
+        sender_kind: body
+            .pointer("/new_message/sender_kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
         new_content,
         seq,
     })
@@ -1874,6 +1966,12 @@ async fn worker_sync_once(
             .get("sender_id")
             .and_then(|v| v.as_str())
             .unwrap_or("");
+        // 台账投影自带 sender_type（LedgerEntry Serialize）——身份透传到
+        // 补拉事件，与 wake 推送同语义。
+        let sender_kind = entry
+            .get("sender_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let content = entry.get("content").and_then(|v| v.as_str()).unwrap_or("");
         let at = entry
             .get("created_at")
@@ -1903,6 +2001,7 @@ async fn worker_sync_once(
             event: "sync_backfill".to_string(),
             from_node: target.clone(),
             new_sender: sender.to_string(),
+            sender_kind: sender_kind.to_string(),
             new_content: content.to_string(),
             new_at: at,
             reply_to: None,

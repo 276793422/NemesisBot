@@ -28,6 +28,14 @@ pub fn ensure_host_dll() {
     unsafe { std::env::set_var("NEMESIS_WASM_HOST_DLL", p) };
 }
 
+/// DLL 路径（缺席/按需构建失败 = `None`），不 panic、不注入 env。
+///
+/// [`ensure_host_dll`] 的非致命版，供新鲜度探针类测试诚实 SKIP——缺席时
+/// 由其他测试的 ensure 路径负责 loud 报告环境问题，这里不重复报警。
+pub fn host_dll_optional() -> Option<PathBuf> {
+    HOST_DLL.get_or_init(build_host_dll).clone()
+}
+
 fn dll_file_name() -> &'static str {
     if cfg!(target_os = "windows") {
         "plugin_wasm.dll"
