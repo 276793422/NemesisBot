@@ -5595,3 +5595,62 @@ async fn test_sessions_delete_no_cron_service_still_deletes() {
         "empty paused list, not null/missing"
     );
 }
+
+#[tokio::test]
+async fn test_sessions_list_projects_allow_all_by_same_key_family() {
+    // 2026-10-25：投影块曾裸引 handlers::security，无 security 裁剪形态
+    // E0433（CI 三 shard 实证）。门控修复后钉行为：开着会话行带
+    // allow_all:true、未开会话行 false——键族与 security handler 的
+    // derive_session_key 同源（该公式另有专项测试）。
+    let _serial = crate::handlers::security::SESSION_ALLOW_ALL_TEST_LOCK.lock();
+    let state =
+        std::sync::Arc::new(nemesis_security::session_allow_all::SessionAllowAllState::new());
+    crate::handlers::security::install_session_allow_all(state.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let session_dir = dir.path().join("logs/session_logs");
+    std::fs::create_dir_all(&session_dir).unwrap();
+    let line = "{\"role\":\"user\",\"content\":\"ok\",\"timestamp\":\"t\"}\n";
+    std::fs::write(
+        session_dir.join("agent_main_session_allow-proj-on.jsonl"),
+        line,
+    )
+    .unwrap();
+    std::fs::write(
+        session_dir.join("agent_main_session_allow-proj-off.jsonl"),
+        line,
+    )
+    .unwrap();
+
+    let key_on = format!(
+        "agent:main:session:{}",
+        nemesis_agent::session::SessionStore::sanitize_session_id("allow-proj-on")
+    );
+    state.set(&key_on, true);
+
+    let ctx = make_ctx(&dir);
+    let handler = sessions::SessionsHandler;
+    let res = handler
+        .handle_cmd("list", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    let rows = res["sessions"].as_array().unwrap();
+    let find = |sid: &str| {
+        rows.iter()
+            .find(|r| r["id"].as_str() == Some(sid))
+            .unwrap_or_else(|| panic!("session {sid} 应在列表"))
+    };
+    assert_eq!(
+        find("allow-proj-on")["allow_all"],
+        serde_json::Value::Bool(true),
+        "开着会话行投影 true"
+    );
+    assert_eq!(
+        find("allow-proj-off")["allow_all"],
+        serde_json::Value::Bool(false),
+        "未开会话行投影 false（同键族推导，非缺省漏投影）"
+    );
+
+    // 槽位复位（进程级共享态纪律：不把装配态漏给并行/后续测试）。
+    crate::handlers::security::set_session_allow_all_for_test(None);
+}
