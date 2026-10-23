@@ -7,9 +7,14 @@
 //! 订阅 + 拉取解码回流 + `output.dest` 报表渲染（T4.5）；链长超限运行期
 //! 防御再拦（T4.6）。
 
+// invoke_call_fn / invoke_hook_capture / load_fn_def 全部 windows-only
+// （会话活体路径）；平台中立面只有 callfn 参数解析两函数。
+#[cfg(windows)]
 use std::sync::Arc;
 
+#[cfg(windows)]
 use crate::profile::{CHAIN_CAP, FunctionDef, Profile, ProfileStore};
+#[cfg(windows)]
 use crate::session::SessionManager;
 
 /// 整数参数组解析核心（`serde_json::Value` 切片形态；WSAPI 直用）。
@@ -41,6 +46,7 @@ pub fn parse_callfn_args(raw: &str) -> Result<[u64; 4], String> {
 }
 
 /// 加载 profile 并取函数定义（call_fn / hook_capture 公共前置）。
+#[cfg(windows)]
 fn load_fn_def(
     workspace: &std::path::Path,
     profile_id: &str,

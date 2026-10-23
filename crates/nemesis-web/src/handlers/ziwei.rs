@@ -404,10 +404,10 @@ impl ModuleHandler for ZiweiHandler {
                     .and_then(|v| v.as_str())
                     .ok_or("缺 profile_id")?
                     .to_string();
-                let manager = nemesis_ziwei::session::global()
-                    .ok_or("紫微会话管理器未装配（gateway 未启用或非 Windows 平台）")?;
                 #[cfg(windows)]
                 {
+                    let manager = nemesis_ziwei::session::global()
+                        .ok_or("紫微会话管理器未装配（gateway 未启用）")?;
                     Ok(Some(manager.resolve_functions(&id).await?))
                 }
                 #[cfg(not(windows))]
