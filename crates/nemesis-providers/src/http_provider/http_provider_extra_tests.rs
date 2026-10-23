@@ -12,7 +12,7 @@
 
 use super::*;
 use std::collections::HashMap;
-use wiremock::matchers::{header, method, path};
+use wiremock::matchers::{body_string_contains, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 // ---------------------------------------------------------------------------
@@ -1727,4 +1727,101 @@ async fn test_chat_stream_read_error_classified_as_timeout() {
         );
     }
     // recv() 返回 None = 所有发送端已 drop 且无二次 chunk = 契约成立。
+}
+
+// ---------------------------------------------------------------------------
+// include_usage（2026-10-23 R30 根修）
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_chat_stream_trailing_usage_chunk_forwarded() {
+    // OpenAI include_usage 形态：usage 在终态 finish chunk **之后**的
+    // choices:[] 专用 chunk。旧实现既不请求该 flag（body 断言为闸）也把
+    // 该 chunk 当噪音丢弃 → stream=yes 模型账本恒按 0 记。修后端到端
+    // （stream=yes 走 chat() → collect_stream_response）必须收下 usage。
+    let server = MockServer::start().await;
+
+    let sse_body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"答案\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n",
+        "data: [DONE]\n\n"
+    );
+
+    // body 断言 = 请求必须带 include_usage（不带则 mock 404 → 诚实报错）。
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(body_string_contains("include_usage"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(sse_body),
+        )
+        .mount(&server)
+        .await;
+
+    let mut cfg = basic_config(server.uri());
+    cfg.stream_mode = "yes".to_string();
+    let provider = HttpProvider::new(cfg);
+
+    let resp = provider
+        .chat(&[user_message("hi")], &[], "gpt-4", &ChatOptions::default())
+        .await
+        .unwrap();
+
+    assert_eq!(resp.content, "答案");
+    assert_eq!(resp.finish_reason, "stop");
+    let usage = resp.usage.expect("trailing usage chunk must be captured");
+    assert_eq!(usage.prompt_tokens, 10);
+    assert_eq!(usage.completion_tokens, 5);
+    assert_eq!(usage.total_tokens, 15);
+}
+
+#[tokio::test]
+async fn test_chat_stream_trailing_usage_after_tool_calls() {
+    // 工具调用轮 + 终态后 usage chunk：finish_reason 必须保持
+    // "tool_calls"（usage chunk 不回写 finish），tool_calls 与 usage 双收。
+    let server = MockServer::start().await;
+
+    let sse_body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"function\":{\"name\":\"exec\",\"arguments\":\"{\\\"cmd\\\"\"}}]}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\":\\\"ls\\\"}\"}}]}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":9,\"total_tokens\":16}}\n\n",
+        "data: [DONE]\n\n"
+    );
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(sse_body),
+        )
+        .mount(&server)
+        .await;
+
+    let mut cfg = basic_config(server.uri());
+    cfg.stream_mode = "yes".to_string();
+    let provider = HttpProvider::new(cfg);
+
+    let resp = provider
+        .chat(&[user_message("hi")], &[], "gpt-4", &ChatOptions::default())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.finish_reason, "tool_calls",
+        "usage chunk 不回写 finish"
+    );
+    assert_eq!(resp.tool_calls.len(), 1);
+    let tc = &resp.tool_calls[0];
+    assert_eq!(tc.id, "call-1");
+    assert_eq!(
+        tc.function.as_ref().unwrap().arguments,
+        "{\"cmd\":\"ls\"}",
+        "参数片段跨 chunk 拼接不受 usage chunk 影响"
+    );
+    let usage = resp.usage.expect("usage captured after tool_calls finish");
+    assert_eq!(usage.total_tokens, 16);
 }
