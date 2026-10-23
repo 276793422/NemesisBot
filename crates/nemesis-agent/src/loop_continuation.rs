@@ -293,8 +293,15 @@ impl ContinuationStore {
         self.ensure_dir()?;
         let path = self.snapshot_path(&snapshot.task_id);
         let json = serde_json::to_string_pretty(snapshot).map_err(std::io::Error::other)?;
-        std::fs::write(&path, json)?;
-        Ok(())
+        // BUG-HUNT R14（对齐 REL-002）：改原子写。此前裸 std::fs::write 直写
+        // 目标——崩溃/断电落在写中 → 半截 JSON 快照，重启后 load 解析失败
+        // 被 warn 跳过，该任务续行与 G5 pending 重建静默丢失。同目录的
+        // nemesis-cluster 侧 twin store（REL-002：「快照损坏会导致续行失败，
+        // 原子性值得这点开销」）与 task_result_store 均已原子写，唯本 store
+        // 漏改。write_file_atomic 的临时名 `.tmp-*` 无 .json 扩展名，
+        // list_pending / recover_to_manager 不会把崩溃残留误当 pending 任务。
+        nemesis_utils::write_file_atomic(&path.to_string_lossy(), json.as_bytes(), 0o600)
+            .map_err(std::io::Error::other)
     }
 
     /// Load a continuation snapshot from disk.
@@ -1604,3 +1611,8 @@ mod s9_tests;
 // else 臂 / list_bg_spawn_pending_sync 三分支 / 单飞闸认领失败早退。
 #[cfg(test)]
 mod cov2_tests;
+
+// BUG-HUNT R14：save 原子写回归锁（往返/覆盖取最新/零 tmp 残留/崩溃残留
+// 不进 pending）。
+#[cfg(test)]
+mod r14_atomic_save_tests;
