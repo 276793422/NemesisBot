@@ -3,6 +3,23 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+/// C4（2026-10-24 告警降噪）：已 WARN 过的缺失配置路径。读取点挂在每轮/
+/// 心跳路径上时（实测 24 次/进程），同一路径的「文件缺失用默认」逐轮刷屏
+/// 无信息量——每路径只 WARN 一次，后续降 debug。
+fn warned_missing_paths() -> &'static std::sync::Mutex<std::collections::HashSet<PathBuf>> {
+    static WARNED: OnceLock<std::sync::Mutex<std::collections::HashSet<PathBuf>>> = OnceLock::new();
+    WARNED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// 首次见到该路径的失败 → true（调用方 WARN）；重复失败 → false（调用方 debug）。
+fn should_warn_missing(path: &Path) -> bool {
+    warned_missing_paths()
+        .lock()
+        .unwrap()
+        .insert(path.to_path_buf())
+}
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct AppConfig {
@@ -219,7 +236,13 @@ impl AppConfig {
     pub fn load_or_default(path: &Path) -> Self {
         let base_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
         Self::load(path).unwrap_or_else(|e| {
-            tracing::warn!("Warning: {}. Using defaults.", e);
+            // 每路径只 WARN 一次（读取点在每轮/心跳路径上，逐轮刷屏无信
+            // 息量）；重复失败降 debug。
+            if should_warn_missing(path) {
+                tracing::warn!("Warning: {}. Using defaults.", e);
+            } else {
+                tracing::debug!("Warning: {}. Using defaults.", e);
+            }
             let mut cfg = Self::default();
             cfg.base_dir = base_dir;
             cfg

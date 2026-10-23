@@ -251,9 +251,17 @@ impl HostDll {
             )
         };
         if h != ENGINE_HANDLE {
+            // C4（2026-10-24）：host 未设 last_error 时给诚实占位——空串
+            // 错误消息（实测「init failed: 」）对排障零信息量。
+            let detail = self.take_last_error();
+            let detail = if detail.is_empty() {
+                "host did not report an error detail".to_string()
+            } else {
+                detail
+            };
             return Err(PluginError::NotAvailable(format!(
                 "wasm host engine init failed: {}",
-                self.take_last_error()
+                detail
             )));
         }
         Ok(())
