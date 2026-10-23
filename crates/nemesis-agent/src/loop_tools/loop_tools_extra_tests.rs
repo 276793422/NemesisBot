@@ -909,6 +909,7 @@ async fn test_find_skills_tool_with_limit_above_max_clamped() {
 // Memory tools: invalid JSON handling
 // ===========================================================================
 
+#[cfg(feature = "memory")]
 #[tokio::test]
 async fn test_memory_search_tool_invalid_json_no_executor() {
     let tool = MemorySearchTool::new(None);
@@ -918,6 +919,7 @@ async fn test_memory_search_tool_invalid_json_no_executor() {
     assert!(r.unwrap_err().contains("not available"));
 }
 
+#[cfg(feature = "memory")]
 #[tokio::test]
 async fn test_memory_store_tool_invalid_json_no_executor() {
     let tool = MemoryStoreTool::new(None);
@@ -927,6 +929,7 @@ async fn test_memory_store_tool_invalid_json_no_executor() {
     assert!(r.unwrap_err().contains("not available"));
 }
 
+#[cfg(feature = "memory")]
 #[tokio::test]
 async fn test_memory_forget_tool_invalid_json_no_executor() {
     let tool = MemoryForgetTool::new(None);
@@ -935,6 +938,7 @@ async fn test_memory_forget_tool_invalid_json_no_executor() {
     assert!(r.is_err());
 }
 
+#[cfg(feature = "memory")]
 #[tokio::test]
 async fn test_memory_list_tool_invalid_json_no_executor() {
     let tool = MemoryListTool::new(None);
@@ -943,6 +947,7 @@ async fn test_memory_list_tool_invalid_json_no_executor() {
     assert!(r.is_err());
 }
 
+#[cfg(feature = "memory")]
 #[test]
 fn test_memory_search_tool_description_and_params() {
     let tool = MemorySearchTool::new(None);
@@ -954,6 +959,7 @@ fn test_memory_search_tool_description_and_params() {
     assert!(p["properties"]["memory_type"].is_object());
 }
 
+#[cfg(feature = "memory")]
 #[test]
 fn test_memory_store_tool_description_and_params() {
     let tool = MemoryStoreTool::new(None);
@@ -964,6 +970,7 @@ fn test_memory_store_tool_description_and_params() {
     assert!(p["properties"]["tags"].is_object());
 }
 
+#[cfg(feature = "memory")]
 #[test]
 fn test_memory_forget_tool_description_and_params() {
     let tool = MemoryForgetTool::new(None);
@@ -972,6 +979,7 @@ fn test_memory_forget_tool_description_and_params() {
     assert!(p["properties"]["action"].is_object());
 }
 
+#[cfg(feature = "memory")]
 #[test]
 fn test_memory_list_tool_description_and_params() {
     let tool = MemoryListTool::new(None);

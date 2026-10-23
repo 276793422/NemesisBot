@@ -4021,6 +4021,7 @@ fn test_cluster_rpc_params_required_fields() {
 /// Builds a workflow engine wired with a stub LLM provider that ignores
 /// prompts and returns a fixed string. Used to exercise WorkflowRunTool
 /// end-to-end without standing up the full gateway.
+#[cfg(feature = "workflow")]
 async fn build_test_engine_with_workflow(
     workflow_name: &str,
 ) -> (
@@ -4090,6 +4091,7 @@ async fn build_test_engine_with_workflow(
     (engine, workflow)
 }
 
+#[cfg(feature = "workflow")]
 #[tokio::test]
 async fn test_workflow_run_executes_named_workflow() {
     let (engine, _) = build_test_engine_with_workflow("hello").await;
@@ -4106,6 +4108,7 @@ async fn test_workflow_run_executes_named_workflow() {
     assert!(v["execution_id"].is_string());
 }
 
+#[cfg(feature = "workflow")]
 #[tokio::test]
 async fn test_workflow_run_records_agent_tool_trigger() {
     use nemesis_workflow::types::TriggerSource;
@@ -4137,6 +4140,7 @@ async fn test_workflow_run_records_agent_tool_trigger() {
     }
 }
 
+#[cfg(feature = "workflow")]
 #[tokio::test]
 async fn test_workflow_run_rejects_missing_workflow_param() {
     let (engine, _) = build_test_engine_with_workflow("wf").await;
@@ -4154,6 +4158,7 @@ async fn test_workflow_run_rejects_missing_workflow_param() {
     );
 }
 
+#[cfg(feature = "workflow")]
 #[tokio::test]
 async fn test_workflow_run_rejects_recursion_depth_exceeded() {
     let (engine, _) = build_test_engine_with_workflow("wf").await;
@@ -4172,6 +4177,7 @@ async fn test_workflow_run_rejects_recursion_depth_exceeded() {
     );
 }
 
+#[cfg(feature = "workflow")]
 #[tokio::test]
 async fn test_workflow_run_returns_schema_with_input_property() {
     let (engine, _) = build_test_engine_with_workflow("wf").await;
@@ -4196,21 +4202,28 @@ async fn test_workflow_run_returns_schema_with_input_property() {
 //   - the inner execution's CallFrame had parent_execution_id == outer.id
 //     (verified by inspecting the live call stack during the inner run)
 
+#[cfg(feature = "workflow")]
 use std::sync::Mutex;
 
+#[cfg(feature = "workflow")]
 use async_trait::async_trait;
+#[cfg(feature = "workflow")]
 use nemesis_workflow::call_stack::CallFrame;
+#[cfg(feature = "workflow")]
 use nemesis_workflow::nodes::{AgentRunResult, AgentRunner, NodeExecutor};
+#[cfg(feature = "workflow")]
 use nemesis_workflow::types::{Edge, ExecutionState, NodeDef, NodeResult, TriggerSource, Workflow};
 
 /// NodeExecutor that records the live call-stack state when invoked, then
 /// completes. Used inside the inner workflow so the test can verify the
 /// inner CallFrame's `parent_execution_id` after the fact.
+#[cfg(feature = "workflow")]
 struct CaptureStackExecutor {
     engine: Arc<nemesis_workflow::engine::WorkflowEngine>,
     captured: Arc<Mutex<Option<Vec<CallFrame>>>>,
 }
 
+#[cfg(feature = "workflow")]
 #[async_trait]
 impl NodeExecutor for CaptureStackExecutor {
     async fn execute(
@@ -4238,6 +4251,7 @@ impl NodeExecutor for CaptureStackExecutor {
 /// on the inner workflow. Records the call-stack state at entry so we can
 /// confirm the outer frame was on top before WorkflowRunTool pushed the
 /// inner frame.
+#[cfg(feature = "workflow")]
 struct StubAgentRunner {
     engine: Arc<nemesis_workflow::engine::WorkflowEngine>,
     inner_workflow: String,
@@ -4245,6 +4259,7 @@ struct StubAgentRunner {
     inner_exec_id: Arc<Mutex<Option<String>>>,
 }
 
+#[cfg(feature = "workflow")]
 #[async_trait]
 impl AgentRunner for StubAgentRunner {
     async fn run_direct(
@@ -4283,6 +4298,7 @@ impl AgentRunner for StubAgentRunner {
     }
 }
 
+#[cfg(feature = "workflow")]
 fn gap3_node(id: &str, node_type: &str, depends_on: &[&str]) -> NodeDef {
     NodeDef {
         id: id.to_string(),
@@ -4295,6 +4311,7 @@ fn gap3_node(id: &str, node_type: &str, depends_on: &[&str]) -> NodeDef {
     }
 }
 
+#[cfg(feature = "workflow")]
 fn gap3_agent_node(id: &str, prompt: &str) -> NodeDef {
     let mut n = gap3_node(id, "agent", &[]);
     n.config
@@ -4302,6 +4319,7 @@ fn gap3_agent_node(id: &str, prompt: &str) -> NodeDef {
     n
 }
 
+#[cfg(feature = "workflow")]
 fn gap3_wf(name: &str, nodes: Vec<NodeDef>) -> Workflow {
     let edges: Vec<Edge> = nodes
         .iter()
@@ -4325,6 +4343,7 @@ fn gap3_wf(name: &str, nodes: Vec<NodeDef>) -> Workflow {
     }
 }
 
+#[cfg(feature = "workflow")]
 #[tokio::test]
 async fn gap3_agent_node_to_workflow_run_tool_full_chain() {
     use nemesis_providers::failover::FailoverError;
@@ -4921,6 +4940,7 @@ async fn git_tool_log_with_extra_args_and_branch() {
 
 // --- WorkflowRunTool input typing -------------------------------------------
 
+#[cfg(feature = "workflow")]
 #[tokio::test]
 async fn workflow_run_input_type_arms() {
     let (engine, _) = build_test_engine_with_workflow("wf-input").await;

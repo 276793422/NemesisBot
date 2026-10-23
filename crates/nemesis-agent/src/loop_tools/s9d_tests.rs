@@ -562,6 +562,7 @@ async fn git_tool_invalid_json() {
 
 // ---------- WorkflowRunTool 5131-5133/5155/5167/5196 ----------
 
+#[cfg(feature = "workflow")]
 #[tokio::test]
 async fn workflow_run_tool_metadata_and_input_arms() {
     let engine = std::sync::Arc::new(nemesis_workflow::engine::WorkflowEngine::new());

@@ -53,6 +53,8 @@ fn media_ref(url: &str) -> MediaAttachment {
     }
 }
 
+// 唯一消费方在 security 闸下（审计链 hash 断言）——helper 同闸。
+#[cfg(feature = "security")]
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();

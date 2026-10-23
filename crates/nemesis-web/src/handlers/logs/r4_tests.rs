@@ -76,6 +76,9 @@ fn make_ctx_with_memory(dir: &tempfile::TempDir) -> RequestContext {
     }
 }
 
+// 全部消费方都在 memory 闸下（episodic 富集三则）——helper 同闸防
+// 最小 feature 集下 dead_code 噪声。
+#[cfg(feature = "memory")]
 fn make_session_log(ws: &std::path::Path, id: &str, lines: &[(&str, &str)]) {
     let dir = ws.join("logs/session_logs");
     std::fs::create_dir_all(&dir).unwrap();
