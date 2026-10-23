@@ -114,7 +114,10 @@ describe('ChatPanel U7 可见性', () => {
     await sendBtn!.trigger('click')
     await flushPromises()
     expect(vi.mocked(send)).toHaveBeenCalledTimes(1)
-    expect(vi.mocked(send).mock.calls[0][0]).toBe('插队消息')
+    // busy 时【立即】按字面语义升级 steer——发送侧自动补 `! ` 标记
+    // （后端 admission 只认带标记的插队；空闲发送后端剥标记，补前缀
+    // 无害）。旧断言停在补标记前的裸文本契约。
+    expect(vi.mocked(send).mock.calls[0][0]).toBe('! 插队消息')
     wrapper.unmount()
   })
 
