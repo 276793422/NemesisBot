@@ -945,6 +945,57 @@ mod sup_real_child {
         assert!(out.contains("after-unknown"), "{out}");
     }
 
+    /// R18 回归锁：慢工具撞调用超时后，带毒会话不得复用。旧 BUG：超时只
+    /// 报错不销毁会话，child 仍活着、迟到响应滞留管道——下次调用读到上一
+    /// 次的迟到行，call_id 永久错位一格（超时一次执行体对后续所有调用
+    /// 报废）。修复语义：非 Eof 失败即判死会话（fail_poisoned），下一次
+    /// 调用走既有死进程重建路径拿干净会话。
+    #[tokio::test]
+    async fn sup_timeout_kills_poisoned_session_next_call_rebuilds() {
+        let _env = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let (sup, exec_root, _cfg) = supervisor(
+            &tmp,
+            r#"{"executor":{"persistent":{"enabled":true,"max_slots":2,"idle_shutdown_secs":0,"call_timeout_secs":1}}}"#,
+        );
+
+        // 预热建槽拿 pid
+        let out = exec_cmd(&sup, &exec_root, "echo warmup")
+            .await
+            .expect("warmup");
+        assert!(out.contains("warmup"));
+        let pid = sup.slot_pid("agent-a").await.expect("pid");
+
+        // 慢工具（ping -n 4 ≈ 3s）撞 1s 调用超时 → ToolFailed；超时≠死亡，
+        // child 此刻还活着（这正是带毒的根源）。
+        match exec_cmd(&sup, &exec_root, "ping -n 4 127.0.0.1 > nul").await {
+            Err(m) => assert!(
+                m.contains("timed out"),
+                "超时错误信息应可辨识（executor transport timed out）: {m}"
+            ),
+            Ok(out) => panic!("≈3s 的 ping 应撞 1s 调用超时，却成功了: {out}"),
+        }
+
+        // 判死是同步收尾（start_kill+wait 在错误返回前完成）：下一次调用
+        // 必须成功——旧 BUG 在此读到迟到响应 → Protocol/call_id 错位失败，
+        // 且此后每次调用都读上一次的响应，永久报废。
+        let out = exec_cmd(&sup, &exec_root, "echo after-timeout")
+            .await
+            .expect("超时判死后下一次调用应走重建拿干净会话");
+        assert!(out.contains("after-timeout"), "{out}");
+
+        // 复用必须经过**重建**：新 pid 证明拿的是新会话，不是毒槽续命。
+        let pid2 = sup.slot_pid("agent-a").await.expect("pid after rebuild");
+        assert_ne!(pid, pid2, "超时判死后应重建出全新进程");
+
+        // 重建后的会话健康：再来一次快调用确认链路稳定。
+        let out = exec_cmd(&sup, &exec_root, "echo stable-after-rebuild")
+            .await
+            .expect("重建会话应持续可用");
+        assert!(out.contains("stable-after-rebuild"), "{out}");
+        sup.sleep_agent("agent-a").await;
+    }
+
     /// sleep/wake 生命周期 + slot_states 观测面：sleep 杀进程清槽（幂等），
     /// wake 产生新进程；T8 宣告消费的快照形态正确。
     #[tokio::test]
