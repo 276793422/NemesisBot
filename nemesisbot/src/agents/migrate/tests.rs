@@ -303,6 +303,191 @@ fn sweep_migrating_converges_both_ways() {
 }
 
 // ---------------------------------------------------------------------------
+// A 端编排失败分轨（2026-10-24 N2 根修回归锁）：post-ACK 失败保持
+// migrating 等墓碑收敛；pre-commit 失败照旧回滚 active。transport 用本地
+// 假实现——push_dir 走 copy_dir_recursive、call 直调真 commit handler，
+// 除网络层外全链路真实（B 端落位/改写/落库都是真代码）。
+// ---------------------------------------------------------------------------
+
+/// 本地 transport：call = 直调 B 端 [`handle_migrate_commit`]（真链路），
+/// push_dir = 拷贝 staging 到 B 端 landing（真实落位前置态）；`fail_push`
+/// 注入 pre-commit 失败。
+struct LocalTransport {
+    target: MigrateCommitDeps,
+    fail_push: bool,
+}
+
+#[async_trait::async_trait]
+impl super::MigrateTransport for LocalTransport {
+    fn self_node_id(&self) -> String {
+        "node-a".into()
+    }
+    fn canonical_peer(&self, name: &str) -> Option<String> {
+        Some(name.into())
+    }
+    fn is_peer_online(&self, _: &str) -> bool {
+        true
+    }
+    async fn push_dir(
+        &self,
+        _: &str,
+        _: &str,
+        dir: &std::path::Path,
+    ) -> Result<nemesis_cluster::outbox::PushDirOutcome, String> {
+        if self.fail_push {
+            return Err("push 注入失败（pre-commit）".to_string());
+        }
+        nemesis_cluster::transfer::copy_dir_recursive(
+            dir,
+            &landing_files_dir(&self.target.workspace, AGENT_ID),
+        )?;
+        Ok(nemesis_cluster::outbox::PushDirOutcome::Delivered)
+    }
+    async fn call(
+        &self,
+        _: &str,
+        _: &str,
+        payload: serde_json::Value,
+        _: std::time::Duration,
+    ) -> Result<serde_json::Value, String> {
+        handle_migrate_commit(&self.target, payload)
+    }
+}
+
+/// N2 回归锁（外评 2026-10-23 探针反演）：commit ACK 已达（B 端真活）后
+/// 本地 store.remove 失败（SQLite trigger 注入 RAISE(ABORT)）——修复前外
+/// 层一视同仁回滚 active = 同 uuid 双活且 sweep 失明（ACTIVE 不在收敛射
+/// 程）；修复后错误带 post-ACK 标记、源端**保持 migrating** + 墓碑在场，
+/// 解除注入后 sweep 按迁移成功收敛删记录，双活窗口收敛为无。
+#[tokio::test]
+async fn migrate_post_ack_delete_failure_stays_migrating_and_sweep_converges() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let target_dir = tempfile::tempdir().unwrap();
+    let (source_ws, source_store) = setup_ws(source_dir.path());
+    let (target_ws, target_store) = setup_ws(target_dir.path());
+    let source_db = TaskDb::open(&nemesis_path::resolve_tasks_db_path_in_workspace(
+        &source_ws,
+    ))
+    .unwrap();
+    let mgr = super::super::AgentManager::from_db(source_ws.clone(), source_db);
+    let mut record = selfbuilt_record(AGENT_ID, "node-a");
+    record.credential_refs = serde_json::json!([]);
+    source_store.upsert(&record).unwrap();
+    let source_home = nemesis_path::resolve_agent_home_in_workspace(&source_ws, AGENT_ID);
+    std::fs::create_dir_all(&source_home).unwrap();
+    std::fs::write(source_home.join("data.txt"), "original source content").unwrap();
+    std::fs::create_dir_all(nemesis_path::resolve_agent_memory_dir_in_workspace(
+        &source_ws, AGENT_ID,
+    ))
+    .unwrap();
+    mgr.set_migrate_transport(std::sync::Arc::new(LocalTransport {
+        target: MigrateCommitDeps {
+            workspace: target_ws.clone(),
+            self_node_id: "node-b".into(),
+        },
+        fail_push: false,
+    }));
+    // 失败注入：源库 agents 表 DELETE 全拒（复用真 store，无 mock）。
+    let conn =
+        rusqlite::Connection::open(nemesis_path::resolve_tasks_db_path_in_workspace(&source_ws))
+            .unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER review_oct23_fail_delete BEFORE DELETE ON agents \
+         BEGIN SELECT RAISE(ABORT, 'review source delete failure'); END;",
+    )
+    .unwrap();
+
+    let error = super::migrate_agent(&mgr, AGENT_ID, "node-b")
+        .await
+        .unwrap_err();
+
+    // 修复后语义：B 端已激活，源端保持 migrating + 墓碑在场（绝不回滚）。
+    assert!(
+        error.contains("review source delete failure"),
+        "根因错误保留在链上: {error}"
+    );
+    assert!(
+        error.contains("保持 migrating"),
+        "post-ACK 失败必须显式声明不回滚语义: {error}"
+    );
+    let source_status = source_store.get(AGENT_ID).unwrap().unwrap().status;
+    let target_status = target_store.get(AGENT_ID).unwrap().unwrap().status;
+    assert_eq!(
+        source_status,
+        agent_status::MIGRATING,
+        "post-ACK 删除失败绝不回滚 active（回滚 = 永久双活）"
+    );
+    assert_eq!(target_status, agent_status::ACTIVE, "B 端已激活");
+    assert!(
+        tombstone_exists(&source_ws, AGENT_ID),
+        "墓碑在场 = sweep 收敛锚"
+    );
+
+    // 解除注入 → sweep 按墓碑收敛：记录删 + 墓碑清，双活窗口归零。
+    conn.execute_batch("DROP TRIGGER review_oct23_fail_delete;")
+        .unwrap();
+    let report = mgr.sweep().unwrap();
+    assert!(
+        report.migrated_removed.contains(&AGENT_ID.to_string()),
+        "sweep 按迁移成功收敛: {:?}",
+        report
+    );
+    assert!(source_store.get(AGENT_ID).unwrap().is_none(), "记录已删");
+    assert!(!tombstone_exists(&source_ws, AGENT_ID), "墓碑已清");
+}
+
+/// pre-commit 失败（push_dir 报错）照旧回滚 active——N2 分轨只作用于
+/// post-ACK，此钉子防「分轨扩大化」把可安全回滚的失败也卡在 migrating。
+#[tokio::test]
+async fn migrate_pre_commit_failure_rolls_back_active() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let target_dir = tempfile::tempdir().unwrap();
+    let (source_ws, source_store) = setup_ws(source_dir.path());
+    let (target_ws, _target_store) = setup_ws(target_dir.path());
+    let source_db = TaskDb::open(&nemesis_path::resolve_tasks_db_path_in_workspace(
+        &source_ws,
+    ))
+    .unwrap();
+    let mgr = super::super::AgentManager::from_db(source_ws.clone(), source_db);
+    let mut record = selfbuilt_record(AGENT_ID, "node-a");
+    record.credential_refs = serde_json::json!([]);
+    source_store.upsert(&record).unwrap();
+    std::fs::create_dir_all(nemesis_path::resolve_agent_home_in_workspace(
+        &source_ws, AGENT_ID,
+    ))
+    .unwrap();
+    std::fs::create_dir_all(nemesis_path::resolve_agent_memory_dir_in_workspace(
+        &source_ws, AGENT_ID,
+    ))
+    .unwrap();
+    mgr.set_migrate_transport(std::sync::Arc::new(LocalTransport {
+        target: MigrateCommitDeps {
+            workspace: target_ws,
+            self_node_id: "node-b".into(),
+        },
+        fail_push: true,
+    }));
+
+    let error = super::migrate_agent(&mgr, AGENT_ID, "node-b")
+        .await
+        .unwrap_err();
+    assert!(error.contains("push 注入失败"), "{error}");
+    assert!(
+        error.contains("已回滚 active"),
+        "pre-commit 失败照旧回滚: {error}"
+    );
+    assert_eq!(
+        source_store.get(AGENT_ID).unwrap().unwrap().status,
+        agent_status::ACTIVE,
+        "pre-commit 失败回滚 active（B 端从未激活，回滚安全）"
+    );
+    assert!(
+        !tombstone_exists(&source_ws, AGENT_ID),
+        "pre-commit 路径无墓碑"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // credential_alias_list（经 handle_migrate_commit 的 vault 臂间接覆盖在
 // 集成层；此处钉裸别名映射纯函数）
 // ---------------------------------------------------------------------------

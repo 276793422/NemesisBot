@@ -35,6 +35,9 @@ fn journal(phase: &str, target: &str, old: &str) -> UpdateJournal {
         // 默认无 plugins 舞步记录（exe 单侧场景）；plugins 用例单独构造。
         plugins_backup_dir: String::new(),
         plugins_new_dir: String::new(),
+        // 默认无逐文件清单；plugins 用例按舞步现场单独构造（空清单 + 双目录
+        // 在场 = 旧 journal 保守回滚路径）。
+        plugins_files: Vec::new(),
     }
 }
 
@@ -384,7 +387,7 @@ fn boot_recovery_missing_old_is_noop_not_rolled_back() {
 /// 双空字段（旧 journal / 无插件包）= plugins 侧 noop，可识别前缀在场。
 #[test]
 fn rollback_plugins_noop_when_no_journal_fields() {
-    let detail = rollback_plugins_to("", "", std::path::Path::new("unused-plugins"))
+    let detail = rollback_plugins_to("", "", &[], std::path::Path::new("unused-plugins"))
         .expect("无舞步记录 = Ok");
     assert!(
         detail.starts_with(ROLLBACK_PLUGINS_NOOP_PREFIX),
@@ -436,8 +439,9 @@ fn rollback_update_exe_side_real_rollback_not_noop() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// plugins 回滚全舞步：backup 归位（同名让位先删）→ new-only 清理（用户
-/// 自装件不受伤）→ staging 双目录收尾；二次调用幂等 = noop 前缀。
+/// plugins 回滚全舞步（清单驱动，N1 修复后语义）：backup 归位（同名让位先
+/// 删）→ 清单 new_install 条目清理（用户自装件不受伤——不在清单 = 不动）→
+/// staging 双目录收尾；二次调用幂等 = noop 前缀。
 #[test]
 fn rollback_plugins_restores_and_clears_new_only_then_noop() {
     let dir = tmp_dir("rollback-plugins");
@@ -453,10 +457,23 @@ fn rollback_plugins_restores_and_clears_new_only_then_noop() {
     std::fs::write(backup.join("a.dll"), b"old-a").unwrap();
     std::fs::write(new.join("a.dll"), b"new-a").unwrap();
     std::fs::write(new.join("c.dll"), b"new-c").unwrap();
+    // 清单 = journal 构造时快照：a.dll 替换既有（旧版让位 backup）、c.dll
+    // 新装（plugins/ 原无）；keep.dll 是用户自装件，不在包内 = 不在清单。
+    let manifest = vec![
+        PluginsFileEntry {
+            name: "a.dll".to_string(),
+            new_install: false,
+        },
+        PluginsFileEntry {
+            name: "c.dll".to_string(),
+            new_install: true,
+        },
+    ];
 
     let detail = rollback_plugins_to(
         &backup.display().to_string(),
         &new.display().to_string(),
+        &manifest,
         &plugins,
     )
     .expect("rollback");
@@ -472,11 +489,11 @@ fn rollback_plugins_restores_and_clears_new_only_then_noop() {
     assert_eq!(
         std::fs::read(plugins.join("keep.dll")).unwrap(),
         b"user-keep",
-        "用户自装插件不受伤（不在 backup/new 名单 = 不动）"
+        "用户自装插件不受伤（不在清单 = 不动）"
     );
     assert!(
         !plugins.join("c.dll").exists(),
-        "new-only 文件清理（只同名覆盖不删，回滚侧才删 new-only）"
+        "清单 new_install 条目清理（只同名覆盖不删，回滚侧按清单删新装）"
     );
     assert!(!backup.exists() && !new.exists(), "staging 双目录收尾");
 
@@ -484,6 +501,7 @@ fn rollback_plugins_restores_and_clears_new_only_then_noop() {
     let again = rollback_plugins_to(
         &backup.display().to_string(),
         &new.display().to_string(),
+        &manifest,
         &plugins,
     )
     .expect("rollback 2");
@@ -491,6 +509,209 @@ fn rollback_plugins_restores_and_clears_new_only_then_noop() {
         again.starts_with(ROLLBACK_PLUGINS_NOOP_PREFIX),
         "二次回滚 = noop: {again}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// N1 回归锁（外评 2026-10-23 W0′ 崩溃窗口反演）：journal 已写 + 新文件已
+/// stage 进 new_dir、backup 尚未让位任何文件——清单 Replaced 条目在 backup
+/// 缺席时**跳过**（plugins/ 里就是旧版），绝不当 new-only 删掉。修复前的
+/// 差集推断在这窗口会把用户旧插件删光还谎报 rollback_noop。
+#[test]
+fn rollback_w0_prime_staged_without_backup_keeps_original() {
+    let ws = tmp_dir("w0-prime");
+    let root = ws.join("install");
+    let plugins = root.join("plugins");
+    let backup = root.join("plugins.old-9");
+    let new = root.join("plugins.new-9");
+    std::fs::create_dir_all(&plugins).unwrap();
+    std::fs::create_dir_all(&new).unwrap();
+    std::fs::write(plugins.join("a.dll"), b"original-a").unwrap();
+    // 崩溃现场：舞步第 1 步（new_dir 全集副本）完成、第 2 步（让位）未开始。
+    std::fs::write(new.join("a.dll"), b"new-a").unwrap();
+    let exe = root.join("nemesisbot.exe");
+    std::fs::write(&exe, b"old exe placeholder").unwrap();
+    let mut state = journal(
+        "staging",
+        "new-commit",
+        &root.join("absent.old").display().to_string(),
+    );
+    state.plugins_backup_dir = backup.display().to_string();
+    state.plugins_new_dir = new.display().to_string();
+    // 修复后 journal 必带清单：plugins/a.dll 在 journal 时刻已存在 = Replaced。
+    state.plugins_files = vec![PluginsFileEntry {
+        name: "a.dll".to_string(),
+        new_install: false,
+    }];
+    save_journal(&ws, &state).unwrap();
+
+    let recovered = recover_on_boot_in(&ws, "old-commit", &exe);
+    assert!(
+        plugins.join("a.dll").exists(),
+        "旧插件原样保留（清单 Replaced + backup 缺席 = 跳过，不删）"
+    );
+    assert_eq!(
+        std::fs::read(plugins.join("a.dll")).unwrap(),
+        b"original-a",
+        "内容为原版（未被 new 版覆盖）"
+    );
+    assert_eq!(
+        recovered.action, "rollback_noop",
+        "无任何文件需要回滚 + exe .old 缺席 = 双 noop（诚实）：{:?}",
+        recovered.detail
+    );
+    assert!(
+        load_journal(&ws).is_none(),
+        "staging 收口成功 = journal 清除"
+    );
+    assert!(!new.exists(), "new staging 残留已清");
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+/// N1 回归锁（外评 2026-10-23 部分失败重试窗口反演）：首轮回滚在 z.dll 上
+/// 失败（运行中映射），a.dll 已归位；重试轮 a.dll 的 backup 已不在——清单
+/// Replaced 条目 backup 缺席 = 已归位，跳过。修复前差集推断会把已归位的
+/// a.dll 当 new-only 删掉。
+#[cfg(windows)]
+#[test]
+fn rollback_retry_after_partial_failure_keeps_restored_file() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let dir = tmp_dir("rollback-retry");
+    let plugins = dir.join("plugins");
+    let backup = dir.join("plugins.old-7");
+    let new = dir.join("plugins.new-7");
+    for d in [&plugins, &backup, &new] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    for name in ["a.dll", "z.dll"] {
+        std::fs::write(plugins.join(name), b"new-version").unwrap();
+        std::fs::write(backup.join(name), b"original-version").unwrap();
+        std::fs::write(new.join(name), b"new-version").unwrap();
+    }
+    let manifest = vec![
+        PluginsFileEntry {
+            name: "a.dll".to_string(),
+            new_install: false,
+        },
+        PluginsFileEntry {
+            name: "z.dll".to_string(),
+            new_install: false,
+        },
+    ];
+    // 锁住 plugins/z.dll（share 读+写、不共享删除）→ remove_loaded_file 的
+    // 删除与旁置 rename 双双失败 → 首轮回滚在 z.dll 上 Err（a.dll 已归位）。
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(3)
+        .open(plugins.join("z.dll"))
+        .unwrap();
+    let first = rollback_plugins_to(
+        &backup.display().to_string(),
+        &new.display().to_string(),
+        &manifest,
+        &plugins,
+    );
+    assert!(first.is_err(), "锁定文件上的回滚必须诚实 Err");
+    assert_eq!(
+        std::fs::read(plugins.join("a.dll")).unwrap(),
+        b"original-version",
+        "首轮已归位 a.dll"
+    );
+    drop(lock);
+
+    let second = rollback_plugins_to(
+        &backup.display().to_string(),
+        &new.display().to_string(),
+        &manifest,
+        &plugins,
+    )
+    .expect("重试轮成功");
+    assert_eq!(
+        std::fs::read(plugins.join("a.dll")).unwrap(),
+        b"original-version",
+        "已归位的 a.dll 在重试轮保持原版（backup 缺席 = 跳过，绝不当 new-only 删）"
+    );
+    assert_eq!(
+        std::fs::read(plugins.join("z.dll")).unwrap(),
+        b"original-version",
+        "重试轮完成 z.dll 归位"
+    );
+    assert!(
+        !second.starts_with(ROLLBACK_PLUGINS_NOOP_PREFIX),
+        "重试轮有真归位 = 非 noop: {second}"
+    );
+    assert!(!backup.exists() && !new.exists(), "重试轮收尾 staging 双清");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 旧 journal（清单缺键 = 空）保守路径：只归位 backup 在场文件，**不做任何
+/// 删除**（差集推断不可信，宁留毋删）；new staging 残留路径在 detail 里报
+/// 出供人工核查。
+#[test]
+fn legacy_journal_without_manifest_restores_only_and_keeps_new_files() {
+    let dir = tmp_dir("rollback-legacy");
+    let plugins = dir.join("plugins");
+    let backup = dir.join("plugins.old-7");
+    let new = dir.join("plugins.new-7");
+    for d in [&plugins, &backup, &new] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    // 崩溃现场（修复前 journal，无清单）：a.dll 已让位+新拷就位；c.dll 新装
+    // 已拷；keep.dll 用户自装。
+    std::fs::write(plugins.join("a.dll"), b"new-a").unwrap();
+    std::fs::write(plugins.join("c.dll"), b"new-c").unwrap();
+    std::fs::write(plugins.join("keep.dll"), b"user-keep").unwrap();
+    std::fs::write(backup.join("a.dll"), b"old-a").unwrap();
+    std::fs::write(new.join("a.dll"), b"new-a").unwrap();
+    std::fs::write(new.join("c.dll"), b"new-c").unwrap();
+
+    let detail = rollback_plugins_to(
+        &backup.display().to_string(),
+        &new.display().to_string(),
+        &[], // 旧 journal：清单缺键
+        &plugins,
+    )
+    .expect("legacy rollback");
+    assert_eq!(
+        std::fs::read(plugins.join("a.dll")).unwrap(),
+        b"old-a",
+        "backup 在场文件照常归位（这部分推断无风险）"
+    );
+    assert!(
+        plugins.join("c.dll").exists(),
+        "保守模式不做新装清理（差集推断会误删，宁留毋删——残留最多版本错配，删错找不回）"
+    );
+    assert_eq!(
+        std::fs::read(plugins.join("keep.dll")).unwrap(),
+        b"user-keep"
+    );
+    assert!(
+        detail.contains("保守模式"),
+        "detail 必须如实标注保守模式: {detail}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 清单计算纯函数：包内条目在 plugins/ 已有同名 = Replaced（false），缺席 =
+/// NewInstall（true）；用户自装件不在包内 = 天然不在清单。
+#[cfg(all(
+    feature = "selfupdate",
+    any(target_os = "windows", target_os = "linux")
+))]
+#[test]
+fn compute_plugins_manifest_marks_existing_vs_new() {
+    let dir = tmp_dir("manifest-compute");
+    let plugins = dir.join("plugins");
+    std::fs::create_dir_all(&plugins).unwrap();
+    std::fs::write(plugins.join("a.dll"), b"old-a").unwrap();
+    let mut files = std::collections::BTreeMap::new();
+    files.insert("a.dll".to_string(), b"new-a".to_vec());
+    files.insert("c.dll".to_string(), b"new-c".to_vec());
+    let m = compute_plugins_manifest(&plugins, &files);
+    assert_eq!(m.len(), 2, "清单覆盖包内全部条目");
+    assert_eq!(m[0].name, "a.dll", "BTreeMap 序 = 名字序");
+    assert!(!m[0].new_install, "既有同名 = 替换");
+    assert_eq!(m[1].name, "c.dll");
+    assert!(m[1].new_install, "无同名 = 新装");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1268,14 +1489,25 @@ mod gated {
             j.plugins_backup_dir.is_empty() && j.plugins_new_dir.is_empty(),
             "plugins 双字段同样缺键默认空（无舞步记录 = 回滚 noop）"
         );
+        assert!(
+            j.plugins_files.is_empty(),
+            "逐文件清单缺键默认空（旧 journal = 保守回滚路径）"
+        );
         // 反向：带清单的 journal 往返不丢字段。
         let full = UpdateJournal {
             target_manifest: "Y2Fycmllcg==".to_string(),
+            plugins_files: vec![PluginsFileEntry {
+                name: "a.dll".to_string(),
+                new_install: false,
+            }],
             ..journal("staging", "abc", "old")
         };
         let round: UpdateJournal =
             serde_json::from_value(serde_json::to_value(&full).unwrap()).unwrap();
         assert_eq!(round.target_manifest, "Y2Fycmllcg==");
+        assert_eq!(round.plugins_files.len(), 1, "逐文件清单往返不丢");
+        assert_eq!(round.plugins_files[0].name, "a.dll");
+        assert!(!round.plugins_files[0].new_install);
     }
 
     fn manager_for(

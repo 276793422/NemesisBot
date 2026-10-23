@@ -3,12 +3,18 @@
 //! （文本 + media 两来源）/ media 闸拒绝与不可读注记。
 
 use super::*;
+// 以下四个 import 只剩 security 闸下的 spawn_raw_http/http_200 消费——同闸。
+#[cfg(feature = "security")]
 use std::io::{Read as _, Write as _};
+#[cfg(feature = "security")]
 use std::net::TcpListener;
+#[cfg(feature = "security")]
 use std::sync::Arc;
+#[cfg(feature = "security")]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// 本地 raw HTTP mock：按序吐预组响应（复用 cov_tests 同款形态）。
+#[cfg(feature = "security")]
 fn spawn_raw_http(responses: Vec<Vec<u8>>, max_hits: usize) -> (String, Arc<AtomicUsize>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().unwrap();
@@ -29,6 +35,7 @@ fn spawn_raw_http(responses: Vec<Vec<u8>>, max_hits: usize) -> (String, Arc<Atom
     (format!("http://{}", addr), counter)
 }
 
+#[cfg(feature = "security")]
 fn http_200(content_type: &str, body: &[u8]) -> Vec<u8> {
     let mut v = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -41,12 +48,14 @@ fn http_200(content_type: &str, body: &[u8]) -> Vec<u8> {
 }
 
 /// 最小合法 PNG（magic 8 字节 + 尾量），过 sniff_magic 验真。
+#[cfg(feature = "security")]
 fn png_bytes() -> Vec<u8> {
     let mut v = b"\x89PNG\r\n\x1a\n".to_vec();
     v.extend_from_slice(&[0u8; 16]);
     v
 }
 
+#[cfg(feature = "security")]
 fn media_ref(url: &str) -> nemesis_types::channel::MediaAttachment {
     nemesis_types::channel::MediaAttachment {
         media_type: "image".to_string(),

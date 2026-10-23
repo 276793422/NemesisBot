@@ -9,10 +9,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use super::{
-    attach_turn_images, build_pinned_no_redirect_client, fetch_url_media, hydrate_image_refs,
-    pick_url_ext,
-};
+use super::{attach_turn_images, fetch_url_media, hydrate_image_refs, pick_url_ext};
+// build_pinned_no_redirect_client 在 security 闸后（SSRF 钉死 client）——
+// import 同闸（2026-10-24 N3，最小 feature 集编译破损补口）。
+#[cfg(feature = "security")]
+use super::build_pinned_no_redirect_client;
 use nemesis_types::channel::MediaAttachment;
 
 fn media_ref(url: &str) -> MediaAttachment {
