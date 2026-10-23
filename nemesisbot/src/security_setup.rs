@@ -283,6 +283,22 @@ pub(crate) async fn build_security_plugin(
         info!("[Security] approvals.auto_approve: true (unattended mode)");
     }
 
+    // 会话级全部放行（2026-10-24 长任务无人值守计划）：持久真相源 = 会话
+    // sidecar `{safe_key}.meta.json` 的 `allow_all` 字段（无 TTL 无自动关闭
+    // ——纯手动开关，重启后从 sidecar 回载，与免打扰的 config 真相源形态
+    // 不同）。运行期投影同一 Arc 双注入：auditor（RequireApproval 臂按
+    // ctx.session_key 命中自动放行 + 计数）+ web security handler（WSAPI
+    // 读写）。启动 hydrate 扫 `logs/session_logs/*.meta.json`（会话数量级，
+    // 一次性成本；此后 auditor 判定零磁盘 IO）。headless `run` 共用本函数：
+    // 槽安装无端口也无害。
+    let session_allow_all_state =
+        std::sync::Arc::new(nemesis_security::session_allow_all::SessionAllowAllState::new());
+    session_allow_all_state.hydrate(nemesis_agent::chat_log::allow_all_sessions());
+    plugin
+        .auditor()
+        .set_session_allow_all(session_allow_all_state.clone());
+    nemesis_web::handlers::security::install_session_allow_all(session_allow_all_state);
+
     // Initialize audit log file (CFG-06：`audit_log_file_enabled` 此前被
     // 无视——注释声称生效但代码无条件初始化。现诚实接线：false = 跳过
     // JSONL 初始化；缺键 = true（默认开，旧行为）。审计链（Merkle）不受

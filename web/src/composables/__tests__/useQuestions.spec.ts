@@ -37,7 +37,7 @@ vi.mock('../useToast', () => ({
   }),
 }))
 
-import { useQuestions, _resetQuestionsForTest } from '../useQuestions'
+import { useQuestions, _resetQuestionsForTest, isTerminalQuestion } from '../useQuestions'
 
 function fireQuestion(data: Record<string, unknown>) {
   sseHandlers.get('question-asked')!(data)
@@ -247,5 +247,31 @@ describe('useQuestions', () => {
     await respondForm('q-fretry', {})
     expect(pendingQuestions).toHaveLength(1)
     expect(toasts.some(t => t.type === 'error')).toBe(true)
+  })
+
+  // -------------------------------------------------------------------------
+  // 终级卡（2026-10-24 循环干预阶梯）：timeout_secs=0 = 永不超时
+  // -------------------------------------------------------------------------
+
+  it('终级卡 timeout_secs=0：expiresAt=∞，倒计时推进永不本地摘卡，仅 resolved 能摘', () => {
+    const { pendingQuestions, initQuestions } = useQuestions()
+    initQuestions()
+    fireQuestion(makePayload('q-terminal', { timeout_secs: 0 }))
+    expect(pendingQuestions).toHaveLength(1)
+    expect(isTerminalQuestion(pendingQuestions[0])).toBe(true)
+    expect(pendingQuestions[0].expiresAt).toBe(Number.POSITIVE_INFINITY)
+
+    // 任意长的时钟推进都不摘（普通卡 2s 就被 pruneExpired 收走）。
+    vi.advanceTimersByTime(60 * 60 * 1000)
+    expect(pendingQuestions).toHaveLength(1)
+
+    // 唯一出口 = question-resolved 广播（服务端收到作答/急停 cancel）。
+    sseHandlers.get('question-resolved')!({ question_id: 'q-terminal', decision: 'answered' })
+    expect(pendingQuestions).toHaveLength(0)
+  })
+
+  it('isTerminalQuestion：timeout_secs=0 = true，有超时 = false', () => {
+    expect(isTerminalQuestion({ timeout_secs: 0 })).toBe(true)
+    expect(isTerminalQuestion({ timeout_secs: 120 })).toBe(false)
   })
 })

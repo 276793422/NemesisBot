@@ -51,6 +51,63 @@ fn approval_auto() -> Option<Arc<nemesis_security::approval_auto::ApprovalAutoAp
     approval_auto_state()
 }
 
+/// 会话级全部放行运行时态槽（2026-10-24 长任务无人值守计划，approval_auto
+/// 同款双注入：gateway 装配处 `install_session_allow_all` 注入，本 handler
+/// `session_allow`/`session_allow_status` 读写——单一真相源 Arc；持久真相源
+/// = 会话 sidecar `allow_all` 字段，set 时双写内存 + sidecar）。
+static SESSION_ALLOW_ALL: std::sync::RwLock<
+    Option<Arc<nemesis_security::session_allow_all::SessionAllowAllState>>,
+> = std::sync::RwLock::new(None);
+
+/// gateway 装配处（security_setup.rs）调用；未注入 = headless/降级形态，
+/// `session_allow*` 返回 `injected: false`（前端展示「未装配」不误判）。
+pub fn install_session_allow_all(
+    state: Arc<nemesis_security::session_allow_all::SessionAllowAllState>,
+) {
+    *SESSION_ALLOW_ALL
+        .write()
+        .expect("session allow-all state lock poisoned") = Some(state);
+}
+
+/// 槽置换口（仅测试，set_approval_auto_for_test 同款）。
+#[cfg(test)]
+pub(crate) fn set_session_allow_all_for_test(
+    state: Option<Arc<nemesis_security::session_allow_all::SessionAllowAllState>>,
+) {
+    *SESSION_ALLOW_ALL
+        .write()
+        .expect("session allow-all state lock poisoned") = state;
+}
+
+/// 槽触碰类测试的共享串行锁（APPROVAL_AUTO_TEST_LOCK 同款纪律）。
+#[cfg(test)]
+pub(crate) static SESSION_ALLOW_ALL_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+fn session_allow_all_state()
+-> Option<Arc<nemesis_security::session_allow_all::SessionAllowAllState>> {
+    SESSION_ALLOW_ALL
+        .read()
+        .expect("session allow-all state lock poisoned")
+        .clone()
+}
+
+/// 当前全部启用中的会话键（sessions.list 投影用；未注入 = 空集）。
+pub(crate) fn session_allow_enabled_keys() -> std::collections::HashSet<String> {
+    session_allow_all_state()
+        .map(|s| s.enabled_keys().into_iter().collect())
+        .unwrap_or_default()
+}
+
+/// 会话键推导（chat.rs:61-63 `chat.sync` 同一公式——**字节一致是硬契约**：
+/// 两处口径不一致 = 开关静默不命中）。入参是前端持有的 session_id
+///（sessions.list 行 `id` 字段）。
+fn derive_session_key(session_id: &str) -> String {
+    format!(
+        "agent:main:session:{}",
+        nemesis_agent::session::SessionStore::sanitize_session_id(session_id)
+    )
+}
+
 pub struct SecurityHandler {
     _priv: (),
 }
@@ -82,6 +139,8 @@ impl ModuleHandler for SecurityHandler {
             "approvals.list",
             "approvals.clear",
             "approvals.status",
+            "session_allow",
+            "session_allow_status",
             "signature_verify_status",
         ]
     }
@@ -121,6 +180,28 @@ impl ModuleHandler for SecurityHandler {
             // §2: 免打扰开关状态（运行期投影透传；config.get 的 approvals
             // 段是持久真相源，enabled 可能已被 config.save 热翻）。
             "approvals.status" => Ok(Some(Self::approvals_status())),
+            // 会话级全部放行（2026-10-24 长任务无人值守计划）：set 双写
+            // （内存即时生效 + sidecar 重启恢复）；status 供前端刷新。
+            "session_allow" => {
+                let data = data.ok_or("missing data")?;
+                let session_id = data
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing session_id")?;
+                let enabled = data
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .ok_or("missing enabled")?;
+                self.session_allow(session_id, enabled)
+            }
+            "session_allow_status" => {
+                let data = data.unwrap_or(serde_json::Value::Null);
+                let session_id = data
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing session_id")?;
+                Ok(Some(Self::session_allow_status(session_id)))
+            }
             // 签名验证状态（只读；无 set 命令——开关只走 config 且只读于
             // 启动，不开运行时写入口，少一个可篡改面）。
             "signature_verify_status" => Ok(Some(self.signature_verify_status(ctx))),
@@ -260,6 +341,61 @@ impl SecurityHandler {
                 "enabled": state.enabled(),
                 "auto_approved_count": state.count(),
             }),
+            None => serde_json::json!({ "injected": false }),
+        }
+    }
+
+    /// 会话级全部放行 set：双写（内存态即时生效 + sidecar 持久位重启恢复）。
+    /// 返回 set 后快照 `(enabled, since, count)` 供前端即时渲染。
+    fn session_allow(
+        &self,
+        session_id: &str,
+        enabled: bool,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let Some(state) = session_allow_all_state() else {
+            return Ok(Some(serde_json::json!({ "injected": false })));
+        };
+        let session_key = derive_session_key(session_id);
+        let (since, count) = state.set(&session_key, enabled);
+        // sidecar 持久半边（nemesis-web 直调 chat_log 有先例——handlers/
+        // sessions.rs clear_undelivered_replies）。since 传内存态返回值——
+        // 单一真相，两半边不各打各的时间戳。写失败不回滚内存态：运行期裁决
+        // 已生效，重启后回默认关（诚实降级）+ warn 可查。
+        nemesis_agent::chat_log::write_session_allow_all(&session_key, enabled, &since);
+        Ok(Some(serde_json::json!({
+            "injected": true,
+            "session_id": session_id,
+            "session_key": session_key,
+            "enabled": enabled,
+            "since": since,
+            "count": count,
+        })))
+    }
+
+    /// 会话级全部放行状态（前端刷新用；未注入 = `injected: false`）。
+    fn session_allow_status(session_id: &str) -> serde_json::Value {
+        match session_allow_all_state() {
+            Some(state) => {
+                let session_key = derive_session_key(session_id);
+                match state.status(&session_key) {
+                    Some((enabled, since, count)) => serde_json::json!({
+                        "injected": true,
+                        "session_id": session_id,
+                        "session_key": session_key,
+                        "enabled": enabled,
+                        "since": since,
+                        "count": count,
+                    }),
+                    None => serde_json::json!({
+                        "injected": true,
+                        "session_id": session_id,
+                        "session_key": session_key,
+                        "enabled": false,
+                        "since": "",
+                        "count": 0,
+                    }),
+                }
+            }
             None => serde_json::json!({ "injected": false }),
         }
     }
@@ -412,3 +548,8 @@ mod agt_tests;
 // config.save 热翻投影。
 #[cfg(test)]
 mod approval_auto_tests;
+
+// 会话级全部放行（2026-10-24 长任务无人值守计划）：session_allow 双写 /
+// status 双臂 / 会话键推导与 chat.sync 字节一致。
+#[cfg(test)]
+mod session_allow_tests;

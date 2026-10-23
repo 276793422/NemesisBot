@@ -547,18 +547,18 @@ impl AgentLoop {
 
     /// 器官 8e-1：escalation 终局判定——(tool, error) 签名越 hard-stop
     /// ⑥ Escalation: same (tool, error) failed past the hard-stop
-    /// threshold → nudges are being ignored. Latch a stop event and
-    /// break the tool batch; the outer-scope check after this for-loop
-    /// ends the turn (a bare `break` here only exits the batch, not
+    /// threshold (24) — every level of the intervention ladder
+    /// （L0 通用 → L1 换方法 → L2 换路径/分解 → L3 绕过+记录缺口，
+    /// `turn_guard::alternating_nudge` 计次分级）has been ignored. Latch a
+    /// stop event and break the tool batch; the outer-scope check after this
+    /// for-loop ends the turn (a bare `break` here only exits the batch, not
     /// the LLM loop).
     ///
-    /// J5 (devtool-upgrade 阶段 6)：`agents.doom_loop_approval` 开且
-    /// question asker 已装配时，先发提问卡问用户「继续吗？」——
-    /// approve = 清签名计数继续；deny / 超时 / 通路缺失 / 开关关 =
-    /// 现行为（停轮）。turn_guard 现行为是安全底座，开关默认关。
-    /// §2（无人值守计划 Part 2）：免打扰开关开 = 跳过发卡直接视为批准
-    /// （清签名继续）——无人值守下循环守卫不停车等人；asker 缺失也放行
-    /// （开关开 = 用户显式接受全自动）。
+    /// 循环干预阶梯终级（2026-10-24，取代 J5 审批化消费）：发**无超时严重
+    /// 卡**问用户（`ask_doom_loop_terminal`：timeout_secs=0 + 免打扰直批
+    /// 分支绕过——任何自动化开关都压不掉终级卡，烟雾报警器必须响）。
+    /// 批准 = 清签名计数继续；用户选停止 / 急停 cancelled / asker 缺席 /
+    /// 通路异常 = 一律停轮（fail-closed）。
     /// `Some(Done(升级停轮文案))`；批准继续 = `None`。
     pub(crate) async fn check_escalation(
         &self,
@@ -566,26 +566,15 @@ impl AgentLoop {
         context: &RequestContext,
     ) -> Option<AgentEvent> {
         if let Some((sig, count)) = turn_guard.escalating_signature() {
-            #[cfg(not(feature = "security"))]
-            let auto_approved = false;
-            #[cfg(feature = "security")]
-            let auto_approved = self.approval_auto_enabled();
-            let approved = self.current_doom_loop_approval()
-                && (auto_approved
-                    || self
-                        .ask_doom_loop_approval(&sig, count, context)
-                        .await
-                        .unwrap_or(false));
+            let approved = self
+                .ask_doom_loop_terminal(&sig, count, context)
+                .await
+                .unwrap_or(false);
             if approved {
                 warn!(
-                    "[AgentLoop] loop guard escalation on '{}' (x{}) — {}clearing signature count and continuing",
+                    "[AgentLoop] loop guard escalation on '{}' (x{}) — user approved continuing, clearing signature count",
                     sig.split('\x00').next().unwrap_or("tool"),
                     count,
-                    if auto_approved {
-                        "auto-approve (unattended), "
-                    } else {
-                        "user approved, "
-                    }
                 );
                 turn_guard.clear_signature(&sig);
             } else {
@@ -594,6 +583,8 @@ impl AgentLoop {
                 );
                 // P1（2026-09-11 真机日志分析）：升级停轮也是失败终止——
                 // 记终端原因，turn_end 边界标记不再谎报 "done"。
+                // ESCALATION_MARKER 前缀逐字节保留（cluster_agent 跨 crate
+                // 识别依赖，2026-10-24 阶梯化不改编排文案）。
                 return Some(AgentEvent::Done(context.format_rpc_message(
                     &crate::turn_guard::TurnGuard::escalation_message(&sig, count),
                 )));

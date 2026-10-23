@@ -3196,3 +3196,214 @@ fn tracked_auto_by_rule_returns_none() {
         "auto_by_rule allow must not fabricate an approval_ref"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 会话级全部放行（2026-10-24 长任务无人值守计划）：RequireApproval 自动放行
+// 臂（F3 → session → §2 → 人工卡；含 force 卡与 CRITICAL，deny 不可达）。
+// ---------------------------------------------------------------------------
+
+use crate::session_allow_all::SessionAllowAllState;
+
+/// 注入会话级全部放行运行时态的 ask auditor。
+fn session_auditor() -> (SecurityAuditor, Arc<SessionAllowAllState>) {
+    let auditor = ask_auditor();
+    let state = Arc::new(SessionAllowAllState::new());
+    auditor.set_session_allow_all(state.clone());
+    (auditor, state)
+}
+
+fn ctx_with_session(key: &str) -> ApprovalContext {
+    ApprovalContext {
+        channel: "web".to_string(),
+        session_key: key.to_string(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn session_allow_all_off_keeps_manual_ask() {
+    // 开关关（未开启会话）：行为零变化——pending 拒绝。
+    let (auditor, state) = session_auditor();
+    let ctx = ctx_with_session("agent:main:session:s1");
+    let (allowed, err, _) =
+        auditor.request_permission_with_ctx(&exec_request("sa0", "cargo publish"), Some(&ctx));
+    assert!(!allowed);
+    assert!(err.unwrap().contains("approval required"));
+    assert_eq!(state.status("agent:main:session:s1"), None);
+}
+
+#[test]
+fn session_allow_all_on_allows_critical_and_marks_audit() {
+    let dir = tempfile::tempdir().unwrap();
+    let auditor = SecurityAuditor::new(AuditorConfig {
+        enabled: true,
+        default_action: "ask".to_string(),
+        audit_log_file_enabled: true,
+        audit_log_dir: Some(dir.path().to_str().unwrap().to_string()),
+        ..Default::default()
+    });
+    let state = Arc::new(SessionAllowAllState::new());
+    auditor.set_session_allow_all(state.clone());
+    let ctx = ctx_with_session("agent:main:session:s1");
+    state.set("agent:main:session:s1", true);
+
+    // exec_request 本身就是 CRITICAL：放行即覆盖「CRITICAL 也在射程」。
+    let (allowed, err, _) =
+        auditor.request_permission_with_ctx(&exec_request("sa1", "cargo publish"), Some(&ctx));
+    assert!(allowed, "会话开启：CRITICAL require_approval 自动放行");
+    assert!(err.is_none());
+    assert_eq!(
+        state.status("agent:main:session:s1").unwrap().2,
+        1,
+        "放行即计数"
+    );
+
+    // 审计事件标 session_allow_all（可追溯：谁批的？会话开关批的）。
+    let content =
+        std::fs::read_to_string(dir.path().join("audit.jsonl")).expect("audit jsonl written");
+    assert!(
+        content.contains("session_allow_all"),
+        "审计缺 session_allow_all: {content}"
+    );
+    assert!(
+        content.contains("auto approved by session allow-all"),
+        "审计须注明会话放行来源: {content}"
+    );
+}
+
+#[test]
+fn session_allow_all_covers_force_approval_cards() {
+    // ziwei confirm 卡语义：force_approval 走外层升级臂改判 RequireApproval
+    // ——会话开关必须接得住它（裁决第 3 点：force 卡在射程内）。
+    let (auditor, state) = session_auditor();
+    let ctx = ctx_with_session("agent:main:session:s1");
+    let mut req = exec_request("sa2", "call_fill_random_buffer");
+    req.force_approval = Some("紫微系统操作需人工确认".to_string());
+    state.set("agent:main:session:s1", true);
+    let (allowed, err, _) = auditor.request_permission_with_ctx(&req, Some(&ctx));
+    assert!(allowed, "force 卡必须被会话放行覆盖");
+    assert!(err.is_none());
+    assert_eq!(state.status("agent:main:session:s1").unwrap().2, 1);
+}
+
+#[test]
+fn session_allow_all_never_touches_denied() {
+    // 硬边界：deny 判定根本到不了 RequireApproval，会话开关碰不到它。
+    let auditor = SecurityAuditor::new(AuditorConfig {
+        enabled: true,
+        default_action: "deny".to_string(),
+        ..Default::default()
+    });
+    let state = Arc::new(SessionAllowAllState::new());
+    auditor.set_session_allow_all(state);
+    let ctx = ctx_with_session("agent:main:session:s1");
+    let (allowed, err, _) =
+        auditor.request_permission_with_ctx(&exec_request("sa3", "x"), Some(&ctx));
+    assert!(!allowed, "deny 不得被会话放行翻案");
+    assert!(err.unwrap().contains("Security policy denied"));
+}
+
+#[test]
+fn session_allow_all_is_session_scoped() {
+    // 会话隔离（裁决第 1 点）：s1 开启不影响 s2——s2 照旧弹卡。
+    let (auditor, state) = session_auditor();
+    state.set("agent:main:session:s1", true);
+
+    let ctx1 = ctx_with_session("agent:main:session:s1");
+    let (allowed1, _, _) =
+        auditor.request_permission_with_ctx(&exec_request("sa4a", "t1"), Some(&ctx1));
+    assert!(allowed1, "开启会话放行");
+
+    let ctx2 = ctx_with_session("agent:main:session:s2");
+    let (allowed2, err2, _) =
+        auditor.request_permission_with_ctx(&exec_request("sa4b", "t2"), Some(&ctx2));
+    assert!(!allowed2, "未开启会话照旧审批");
+    assert!(err2.unwrap().contains("approval required"));
+    assert_eq!(state.status("agent:main:session:s2"), None, "s2 不得被计数");
+}
+
+#[test]
+fn session_allow_all_needs_session_context() {
+    // ctx 缺席 / 会话键空（cron 等无主体来源）：无会话可挂，跳过本块
+    // （fail-safe 走人工卡）。
+    let (auditor, state) = session_auditor();
+    state.set("agent:main:session:s1", true);
+
+    let (allowed_none, err_none, _) = auditor.request_permission(&exec_request("sa5a", "t"));
+    assert!(!allowed_none, "无 ctx 不得放行");
+    assert!(err_none.unwrap().contains("approval required"));
+
+    let ctx_empty = ApprovalContext {
+        channel: "web".to_string(),
+        session_key: String::new(),
+        ..Default::default()
+    };
+    let (allowed_empty, err_empty, _) =
+        auditor.request_permission_with_ctx(&exec_request("sa5b", "t"), Some(&ctx_empty));
+    assert!(!allowed_empty, "空会话键不得放行");
+    assert!(err_empty.unwrap().contains("approval required"));
+}
+
+#[test]
+fn session_allow_all_cluster_ask_matches_by_session_key() {
+    // 集群来源：session_key 是 B 端集群会话键——只有当那个键开启才放行；
+    // 不匹配照旧弹卡（不做通道特判，纯键匹配）。
+    let (auditor, state) = session_auditor();
+    state.set("cluster:worker:session:w1", true);
+
+    let ctx_hit = ApprovalContext {
+        channel: "cluster".to_string(),
+        session_key: "cluster:worker:session:w1".to_string(),
+        ..Default::default()
+    };
+    let (allowed_hit, _, _) =
+        auditor.request_permission_with_ctx(&exec_request("sa6a", "t"), Some(&ctx_hit));
+    assert!(allowed_hit, "集群会话键命中 = 放行");
+
+    let ctx_miss = ApprovalContext {
+        channel: "cluster".to_string(),
+        session_key: "cluster:worker:session:w2".to_string(),
+        ..Default::default()
+    };
+    let (allowed_miss, err_miss, _) =
+        auditor.request_permission_with_ctx(&exec_request("sa6b", "t"), Some(&ctx_miss));
+    assert!(!allowed_miss, "集群会话键不匹配照旧审批");
+    assert!(err_miss.unwrap().contains("approval required"));
+}
+
+#[test]
+fn session_allow_all_beats_auto_config_in_audit_attribution() {
+    // 优先级钉死：session 块先于 §2 免打扰——两者都开时审计归因必须是
+    // session_allow_all（更具体的意图先落标记）。
+    let dir = tempfile::tempdir().unwrap();
+    let auditor = SecurityAuditor::new(AuditorConfig {
+        enabled: true,
+        default_action: "ask".to_string(),
+        audit_log_file_enabled: true,
+        audit_log_dir: Some(dir.path().to_str().unwrap().to_string()),
+        ..Default::default()
+    });
+    let sa = Arc::new(SessionAllowAllState::new());
+    auditor.set_session_allow_all(sa.clone());
+    let auto = Arc::new(ApprovalAutoApproveState::new(true));
+    auditor.set_approval_auto_approve(auto.clone());
+    let ctx = ctx_with_session("agent:main:session:s1");
+    sa.set("agent:main:session:s1", true);
+
+    let (allowed, _, _) =
+        auditor.request_permission_with_ctx(&exec_request("sa7", "t"), Some(&ctx));
+    assert!(allowed);
+    // session 计数涨、免打扰计数不涨 = session 块先命中。
+    assert_eq!(sa.status("agent:main:session:s1").unwrap().2, 1);
+    assert_eq!(auto.count(), 0, "session 块先命中，免打扰轮不到");
+    let content =
+        std::fs::read_to_string(dir.path().join("audit.jsonl")).expect("audit jsonl written");
+    assert!(
+        content.contains("session_allow_all"),
+        "归因必须是 session: {content}"
+    );
+    assert!(
+        !content.contains("auto_by_config"),
+        "不得归因到免打扰: {content}"
+    );
+}

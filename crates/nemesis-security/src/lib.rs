@@ -62,6 +62,8 @@ pub mod resolver;
 #[cfg(feature = "scanner")]
 pub mod scanner;
 #[cfg(feature = "security")]
+pub mod session_allow_all;
+#[cfg(feature = "security")]
 pub mod shell_bleed;
 pub mod signature;
 #[cfg(feature = "security")]
@@ -108,6 +110,8 @@ pub use scanner::{
     ScannerFullConfig, SharedScanChain, StubScanner, VirusScanner, available_engines,
     create_engine, shared_scan_chain,
 };
+#[cfg(feature = "security")]
+pub use session_allow_all::SessionAllowAllState;
 pub use signature::{
     Config as SignatureConfig, KeyPair, SignatureVerifier, TrustLevel, TrustStore, TrustedKey,
     VerificationResult, Verifier, compute_fingerprint, compute_hash_signature, export_public_key,

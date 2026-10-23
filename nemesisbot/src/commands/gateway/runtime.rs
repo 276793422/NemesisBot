@@ -981,7 +981,30 @@ pub(crate) async fn run_runtime(
         ));
         *shared_resources.question_slot.write() = Some(broker.clone());
         agent_loop.set_question_responder(broker.clone());
-        agent_loop.set_question_asker(broker);
+        agent_loop.set_question_asker(broker.clone());
+        // 循环干预阶梯（2026-10-24）：急停挂钩——无超时终级卡（escalation
+        // 停车问询，timeout_secs=0）会停在等答态跨普通停机窗口存续，estop
+        // 触发时必须强制了结：等待的 loop 醒来（Cancelled→诚实收尾）、前端
+        // 卡摘除（resolved cancelled 广播）、下一次 dispatch 被 estop 冻结
+        // 拒绝。释放不动作（提问已被了结，不会复活——重新发卡要模型重新
+        // 走到 escalation，语义上就是重新裁决）。初始已急停也补一次（对齐
+        // plugin_bridge watcher 的 AtomicBool 初值纪律：watch 零订阅者的
+        // 历史触发只有 AtomicBool 承载）。
+        {
+            let broker_for_estop = broker;
+            let estop = Arc::clone(&shared_resources.estop);
+            if estop.is_engaged() {
+                broker_for_estop.cancel_pending_all("estop already engaged at wiring time");
+            }
+            tokio::spawn(async move {
+                let mut rx = estop.subscribe();
+                while rx.changed().await.is_ok() {
+                    if *rx.borrow_and_update() {
+                        broker_for_estop.cancel_pending_all("estop engaged");
+                    }
+                }
+            });
+        }
         info!(
             "[Gateway] Question broker wired (dashboard question card, F7 + doom-loop approval, J5)"
         );

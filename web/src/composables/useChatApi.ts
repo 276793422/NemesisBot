@@ -63,6 +63,9 @@ export interface SessionEntry {
   snoozedUntil?: string
   /** B11：暂停备注（用户可选说明）。 */
   snoozeNote?: string
+  /** 会话级全部放行（2026-10-24 长任务无人值守计划：sidecar `allow_all`
+   *  投影）。缺省 = 关。侧栏 🔓 徽标的依据。 */
+  allow_all?: boolean
 }
 
 /** L6++（2026-09-08）：项目分组条目（镜像 handlers/projects.rs 的

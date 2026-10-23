@@ -301,4 +301,40 @@ describe('QuestionCard', () => {
     expect(w.findAll('input[type="radio"]')).toHaveLength(6)
     w.unmount()
   })
+
+  // -------------------------------------------------------------------------
+  // 终级卡（2026-10-24 循环干预阶梯）：timeout_secs=0 = 永不超时
+  // -------------------------------------------------------------------------
+
+  it('终级卡：红色必答徽标 + 无倒计时提示，长时钟推进不摘卡', async () => {
+    const w = await mounted()
+    fireQuestion(makePayload('q-term', { timeout_secs: 0, question: '循环无法打破：exec 已 24 次报相同错误，是否继续？' }))
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(w.text()).toContain('必答·无超时')
+    expect(w.text()).toContain('agent 循环已暂停')
+    // 普通卡的「N s 后超时」倒计时形态不得出现。
+    expect(w.find('.approval-countdown').text()).not.toContain('后超时')
+    expect(w.find('.question-terminal').exists()).toBe(true)
+
+    // 一小时的时钟推进也不摘（普通卡早就被 pruneExpired 收走）。
+    vi.advanceTimersByTime(60 * 60 * 1000)
+    await w.vm.$nextTick()
+    expect(w.find('.question-backdrop').exists()).toBe(true)
+    w.unmount()
+  })
+
+  it('终级卡置顶：与普通卡并发时渲染在前面', async () => {
+    const w = await mounted()
+    fireQuestion(makePayload('q-normal-1', { timeout_secs: 60 }))
+    fireQuestion(makePayload('q-normal-2', { timeout_secs: 60 }))
+    fireQuestion(makePayload('q-term-top', { timeout_secs: 0 }))
+    await vi.advanceTimersByTimeAsync(0)
+
+    const headers = w.findAll('.question-card .approval-header h3')
+    expect(headers).toHaveLength(3)
+    expect(headers[0].text()).toContain('需要你决定')
+    expect(headers[1].text()).toContain('Agent 提问')
+    w.unmount()
+  })
 })

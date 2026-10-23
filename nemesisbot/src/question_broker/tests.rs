@@ -9,6 +9,11 @@
 //! B8（提问两形态）：表单作答送达（AnsweredForm）+ 表单校验（未知键/必填
 //! 空缺/select 非候选——留卡可重试）+ 两形态互斥守卫（选项卡收表单作答
 //! 或反之诚实报错）+ trim 规约与可选空值剔除 + 广播/pending 携带 fields。
+//!
+//! 循环干预阶梯（2026-10-24）：bypass_auto_approve 绕过免打扰直批（终级
+//! 卡任何自动化开关压不掉）+ timeout_secs=0 无限等（不是 recv_timeout(0)
+//! 的立即返回）+ cancel_pending_all 急停强制了结（Cancelled + resolved
+//! 广播 + pending 清空 + 幂等空扫）。
 
 use super::WebQuestionBroker;
 use nemesis_types::agent::{
@@ -28,6 +33,7 @@ fn make_req(id: &str, multi: bool) -> QuestionRequest {
         chat_id: "chat-1".to_string(),
         session_key: "web:chat-1".to_string(),
         timeout_secs: 10,
+        bypass_auto_approve: false,
     }
 }
 
@@ -64,6 +70,7 @@ fn make_form_req(id: &str) -> QuestionRequest {
         chat_id: "chat-1".to_string(),
         session_key: "web:chat-1".to_string(),
         timeout_secs: 10,
+        bypass_auto_approve: false,
     }
 }
 
@@ -412,6 +419,113 @@ fn auto_approve_on_short_circuits_ask_to_timeout_without_pending() {
     assert!(brx.try_recv().is_err(), "短路路径不得广播 QuestionAsked");
     // 迟到 respond 诚实报 unknown（请求从未登记）。
     assert!(broker.respond("q-auto", vec!["pnpm".into()]).is_err());
+}
+
+/// 循环干预阶梯（2026-10-24）：`bypass_auto_approve=true` 绕过免打扰直批
+/// 分支——终级卡（escalation 停车问询）任何自动化开关都压不掉（用户裁决
+/// 第 5 点：烟雾报警器必须响）。免打扰开 + bypass → 照常广播、照常进
+/// pending、照常等作答。
+#[test]
+fn bypass_auto_approve_skips_auto_short_circuit() {
+    let (btx, mut brx) = tokio::sync::broadcast::channel::<AgentEvent>(16);
+    let broker = std::sync::Arc::new(WebQuestionBroker::new(Some(btx)));
+
+    let mut req = make_req("q-bypass", false);
+    req.bypass_auto_approve = true;
+    let (tx, rx) = mpsc::channel();
+    let b = broker.clone();
+    std::thread::spawn(move || {
+        // 置换窗口整体在锁内（auto_approve_on 同款纪律）：enabled 态只在
+        // 本 ask 的存续期存在，并行 ask 路径测试在锁外永远看不到 enabled。
+        let _serial = slot_lock();
+        let _swapped = AutoApproveSwapGuard::install();
+        let _ = tx.send(b.ask(req));
+    });
+    wait_pending(&broker, 1);
+    // bypass 请求进入 pending（免打扰开也没短路）= 广播已发。
+    assert!(
+        brx.try_recv().is_ok(),
+        "bypass card must broadcast QuestionAsked even with auto-approve on"
+    );
+    assert!(broker.respond("q-bypass", vec!["pnpm".into()]).unwrap());
+    match rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap() {
+        QuestionOutcome::Answered(sel) => assert_eq!(sel, vec!["pnpm".to_string()]),
+        other => panic!("bypass card must answer normally, got {:?}", other),
+    }
+    assert!(broker.pending().is_empty());
+}
+
+/// 循环干预阶梯（2026-10-24）：`timeout_secs == 0` = 永不超时——
+/// `rx.recv()` 无限等（不是 `recv_timeout(0)` 的立即返回）。唯一了结路径
+/// = 作答 / 急停 cancelled。测试：ask 后等一段（足以让错误的
+/// recv_timeout(0) 落 Timeout），迟到作答仍送达 Answered。
+#[test]
+fn timeout_zero_waits_indefinitely_until_answer() {
+    let broker = std::sync::Arc::new(WebQuestionBroker::new(None));
+    let (tx, rx) = mpsc::channel();
+    let b = broker.clone();
+    let mut req = make_req("q-forever", false);
+    req.timeout_secs = 0;
+    std::thread::spawn(move || {
+        let _serial = slot_lock();
+        let _ = tx.send(b.ask(req));
+    });
+    wait_pending(&broker, 1);
+    // 停留超过任何「立即返回」的病态实现会落 Timeout 的窗口。
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(broker.respond("q-forever", vec!["pnpm".into()]).unwrap());
+    match rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap() {
+        QuestionOutcome::Answered(sel) => assert_eq!(sel, vec!["pnpm".to_string()]),
+        other => panic!(
+            "timeout_secs=0 must wait for the answer, got {:?} (did recv_timeout(0) leak in?)",
+            other
+        ),
+    }
+    assert!(broker.pending().is_empty());
+}
+
+/// 循环干预阶梯（2026-10-24）：`cancel_pending_all`（estop watcher 入口）
+/// 把全部 pending 提问以 Cancelled 强制了结——等待方醒来拿
+/// `QuestionOutcome::Cancelled`、前端收 resolved("cancelled") 广播摘卡、
+/// pending 清空。返回值 = 了结条数。
+#[test]
+fn cancel_pending_all_wakes_waiter_with_cancelled_and_broadcasts() {
+    let (btx, mut brx) = tokio::sync::broadcast::channel::<AgentEvent>(16);
+    let broker = std::sync::Arc::new(WebQuestionBroker::new(Some(btx)));
+    let (tx, rx) = mpsc::channel();
+    let b = broker.clone();
+    let mut req = make_req("q-estop", false);
+    req.timeout_secs = 0;
+    std::thread::spawn(move || {
+        let _serial = slot_lock();
+        let _ = tx.send(b.ask(req));
+    });
+    wait_pending(&broker, 1);
+    // 第一条广播 = QuestionAsked（消费掉再验 resolved）。
+    assert!(brx.try_recv().is_ok(), "setup: QuestionAsked broadcast");
+
+    assert_eq!(
+        broker.cancel_pending_all("estop engaged"),
+        1,
+        "one pending entry was cancelled"
+    );
+    match rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap() {
+        QuestionOutcome::Cancelled => {}
+        other => panic!(
+            "estop must resolve pending ask as Cancelled, got {:?}",
+            other
+        ),
+    }
+    // resolved 广播（前端摘卡数据源）。
+    match brx.try_recv() {
+        Ok(AgentEvent::QuestionResolved { decision, .. }) => {
+            assert_eq!(decision, "cancelled");
+        }
+        other => panic!("expected QuestionResolved(cancelled), got {:?}", other),
+    }
+    assert!(broker.pending().is_empty());
+    // 空表再扫 = 0（幂等，无 pending 良性）。
+    assert_eq!(broker.cancel_pending_all("estop engaged again"), 0);
 }
 
 // ---------------------------------------------------------------------------

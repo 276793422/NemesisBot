@@ -480,18 +480,28 @@ pub struct QuestionRequest {
     pub chat_id: String,
     pub session_key: String,
     /// 等待窗口（秒）；超时返回 [`QuestionOutcome::Timeout`]。
+    /// **0 = 永不超时**（循环干预阶梯终级卡专用语义，2026-10-24）：broker
+    /// 无限等作答，重启/超时补裁永不自动拒绝；普通提问恒传正常窗口。
     pub timeout_secs: u64,
+    /// 循环干预阶梯终级卡（2026-10-24）：`true` = 绕过 broker 的 §2 免打扰
+    /// 直批分支——任何自动化开关都压不掉终级卡（烟雾报警器必须响）。普通
+    /// 提问恒 `false`（走既有免打扰语义）。
+    pub bypass_auto_approve: bool,
 }
 
 /// F7：提问结局。`Answered` 携带用户选中项（单选恰一项，均为工具给过的
 /// 选项原文）；`AnsweredForm`（B8）携带表单作答（键=字段 key，值=文本或
 /// 选中项原文；可选空值字段已剔除）；`Timeout` = 窗口内无人作答（工具侧
-/// 回灌「按最佳判断继续」，不是错误）。
+/// 回灌「按最佳判断继续」，不是错误）；`Cancelled`（循环干预阶梯，
+/// 2026-10-24）= 急停触发时 broker 对全部 pending 提问的强制了结
+/// （`cancel_pending_all`）——不是超时也不是用户作答，消费方按「停止」
+/// 语义处理（终级卡停车 / question 工具告知模型急停不要再继续）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuestionOutcome {
     Answered(Vec<String>),
     AnsweredForm(std::collections::BTreeMap<String, String>),
     Timeout,
+    Cancelled,
 }
 
 /// 结构化提问发起端 trait（F7，question 工具 → broker 方向）。

@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted, defineAsyncComponent } from 'vue'
+import { ref, onMounted, watch, defineAsyncComponent } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 import { useEditorMode } from '../composables/useEditorMode'
+import { useSessionAllowAll } from '../composables/useSessionAllowAll'
+import { useSessionStore } from '../stores/session'
 
 // 皮肤管理面板（skins feature / VITE_FEATURE_SKINS 门控）：`!== 'false'`
 // = 默认开（与 router 门控同一约定）；env 为 'false' 时 Vite 把死分支
@@ -55,6 +57,46 @@ async function toggleEditorFull() {
 async function toggleEditorExt() {
   if (!fullAccess.value) return // UI 联动：依赖 Full Access
   await setEditorAccess(true, !externalWrite.value)
+}
+
+// --- 会话级全部放行（2026-10-24 长任务无人值守计划 Feature A）---
+// 与聊天框旁按钮同一状态（useSessionAllowAll 模块级单例）。作用域是
+// 当前会话（持久 sidecar，无 TTL、重启自动恢复）；设置页只操作当前会话。
+const sessionStore = useSessionStore()
+const { allowAllBySession, sessionAllowAvailable, refreshSessionAllow, setSessionAllow } =
+  useSessionAllowAll()
+
+const currentSessionAllow = ref(false)
+const currentSessionSince = ref<string | null>(null)
+const currentSessionAllowCount = ref(0)
+
+watch(
+  () => sessionStore.currentId,
+  async (sid) => {
+    if (!sid) return
+    await refreshSessionAllow(sid)
+    syncAllowDisplay()
+  },
+  { immediate: true }
+)
+
+/** 单例分桶 → 本页展示字段投影。 */
+function syncAllowDisplay() {
+  const sid = sessionStore.currentId
+  const st = sid ? allowAllBySession.value[sid] : undefined
+  currentSessionAllow.value = !!st?.enabled
+  currentSessionSince.value = st?.since ?? null
+  currentSessionAllowCount.value = st?.count ?? 0
+}
+
+async function toggleSessionAllow() {
+  const sid = sessionStore.currentId
+  if (!sid) {
+    toast.error('当前没有活动会话')
+    return
+  }
+  await setSessionAllow(sid, !currentSessionAllow.value)
+  syncAllowDisplay()
 }
 
 async function loadConfig() {
@@ -354,8 +396,23 @@ onMounted(async () => {
             <div class="form-hint">
               依赖 Full Access：项目目录外的写入 / 删除也放行。两个开关全开 = 真·全放（沙盒仍兜底）。
             </div>
+            <!-- 会话级全部放行（2026-10-24 长任务无人值守计划）：作用域是
+                 当前会话（持久 sidecar，重启自动恢复），与上面两个运行时
+                 开关的「重启失效」刻意相反 -->
+            <div class="form-group" style="display: flex; align-items: center; gap: var(--space-3); margin-top: var(--space-4);">
+              <label class="form-label" style="margin: 0;">会话全部放行</label>
+              <div
+                class="toggle"
+                :class="{ active: currentSessionAllow }"
+                :style="!sessionAllowAvailable ? 'opacity: 0.4; pointer-events: none;' : ''"
+                @click="toggleSessionAllow()"
+              ></div>
+            </div>
+            <div class="form-hint">
+              作用于<strong>当前会话</strong>{{ sessionStore.currentId ? `（${sessionStore.currentId}）` : '' }}：本会话所有安全审批自动放行（含 CRITICAL 与紫微 force）；硬拒绝与急停不受影响。无到期时间、Agent 重启后自动恢复——长任务跑完请手动关闭。<template v-if="currentSessionAllow">已开启{{ currentSessionSince ? `（${currentSessionSince} 起）` : '' }}，累计自动批准 {{ currentSessionAllowCount }} 条。</template>
+            </div>
             <div style="padding: var(--space-3); margin-top: var(--space-4); background: var(--bg-secondary); border: 1px solid var(--border-light); border-radius: var(--radius-md); font-size: var(--text-sm); color: var(--text-secondary); line-height: 1.8;">
-              <strong>注意</strong>：两个开关都是<strong>运行时态</strong>——Agent 进程重启后一律回到关闭，必须手动重新打开（每次重启重新授权）。开启后配置里的 deny / ask 规则与审批弹窗将被放行越过（审计照常记录，policy_rule=<code>editor_access:*</code> 可过滤）；guardian 二审（LLM 命令审计）不受影响仍可弹卡。
+              <strong>注意</strong>：两个开关都是<strong>运行时态</strong>——Agent 进程重启后一律回到关闭，必须手动重新打开（每次重启重新授权）。开启后配置里的 deny / ask 规则与审批弹窗将被放行越过（审计照常记录，policy_rule=<code>editor_access:*</code> 可过滤）；guardian 二审（LLM 命令审计）不受影响仍可弹卡。<strong>「会话全部放行」例外</strong>：它随会话持久化，重启自动恢复。
             </div>
           </div>
         </div>
