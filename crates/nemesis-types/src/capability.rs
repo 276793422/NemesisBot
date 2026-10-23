@@ -248,6 +248,25 @@ pub fn resolve_max_output_ceiling(cfg: &serde_json::Value) -> u64 {
         .unwrap_or(MAX_OUTPUT_CEILING_DEFAULT)
 }
 
+/// 主轮 max_tokens 最终回退值（条目 `max_output_tokens` 与
+/// `agents.defaults.max_tokens` 均未声明时）。2026-10-23 P0：旧值 8192 是
+/// 小模型时代遗产——思考型模型思考 token 计入 max_tokens + agent 大参数
+/// 工具调用必然撞顶（docs/BUG/2026-10-23_max-tokens-8192截断撞顶复发.md，
+/// 同根因 2026-08-10 已爆发过一次并预言复发）。64K 起步，条目仍可按
+/// per-model `max_output_tokens` 覆盖。
+pub const DEFAULT_MAX_TOKENS: i64 = 65_536;
+
+/// `agents.defaults.max_tokens` 解析（主轮回退链第二级：条目
+/// `max_output_tokens` > 本键 > [`DEFAULT_MAX_TOKENS`]）。缺席 / 0 / 负数
+/// = 未声明（None），由调用方继续回退。
+pub fn resolve_agents_default_max_tokens(cfg: &serde_json::Value) -> Option<i64> {
+    cfg.get("agents")
+        .and_then(|v| v.get("defaults"))
+        .and_then(|v| v.get("max_tokens"))
+        .and_then(|v| v.as_i64())
+        .filter(|n| *n > 0)
+}
+
 /// E5（2026-10-15 收尾保障）：`agents.defaults.pre_pause_probe.timeout_secs`
 /// 缺席 / 0 / 非法时的默认墙钟（240s——热缓存 cargo check 数秒级，冷启动
 /// 大仓留足余量；不设上限内「不限」形态，探针必须中止有界）。
