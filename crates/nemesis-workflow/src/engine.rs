@@ -1628,11 +1628,24 @@ impl WorkflowEngine {
         // agent_node that re-invoked workflow_run), link this new frame to
         // the current top of the stack as its parent. Top-level invocations
         // (stack empty) have no parent.
+        //
+        // Known limitation (heuristic, not fixed here): under concurrent
+        // unrelated runs the "top of stack" may be a stranger's frame —
+        // node executors cannot see their own execution id, so threading
+        // the real parent would require execution-context plumbing through
+        // the NodeExecutor trait. The heuristic is exact for serial
+        // nesting; concurrent top-level runs may record a bogus parent
+        // (diagnostic metadata only).
         let parent_execution_id = self
             .call_stack
             .snapshot()
             .last()
             .map(|f| f.execution_id.clone());
+        // Own-frame parent, captured once at push time. The shared stack is
+        // concurrent — re-reading snapshot().last() later may hit another
+        // run's frame, so the checkpoint below must reuse this captured
+        // value instead of guessing from the stack again.
+        let own_parent_execution_id = parent_execution_id.clone();
         let frame = crate::call_stack::CallFrame {
             execution_id: execution.id.clone(),
             workflow_name: execution.workflow_name.clone(),
@@ -1785,11 +1798,10 @@ impl WorkflowEngine {
         } else {
             None
         };
-        let parent_for_checkpoint = self
-            .call_stack
-            .snapshot()
-            .last()
-            .and_then(|f| f.parent_execution_id.clone());
+        // Own frame's parent, captured at push time (our frame is still on
+        // the stack here, but under concurrency snapshot().last() may be a
+        // stranger's frame — never re-derive from the shared stack).
+        let parent_for_checkpoint = own_parent_execution_id;
         if let Err(e) = self
             .save_checkpoint(
                 &execution.id,
@@ -1891,8 +1903,12 @@ impl WorkflowEngine {
             _ => {}
         }
 
-        // Pop our call-stack frame now that the execution has settled.
-        self.call_stack.pop();
+        // Tear down our call-stack frame now that the execution has
+        // settled. Identity-based removal: concurrent runs interleave on
+        // the shared stack, so popping the top would take out another
+        // execution's frame and strand ours (phantom frames corrupt
+        // snapshot()-based introspection and parent derivation).
+        self.call_stack.remove(&execution.id);
 
         Ok(execution)
     }

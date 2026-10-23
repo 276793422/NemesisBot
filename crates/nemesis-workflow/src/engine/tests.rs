@@ -4376,3 +4376,81 @@ async fn s12b_restore_latest_err_on_iterated_id_continues() {
     engine.set_checkpoint_store(Arc::new(store));
     assert_eq!(engine.restore_incomplete_executions().await.unwrap(), 0);
 }
+
+// ---------------------------------------------------------------------------
+// Call-stack teardown under concurrency（R29：共享栈身份移除回归锁）
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn concurrent_settlers_remove_own_frame_not_stack_top() {
+    // 两个并发无关执行共享引擎级一个栈：A 先推栈且先完成（delay 0.6s），
+    // B 后推栈但仍在跑（delay 10000s）。A 收尾时必须按 execution_id 摘掉
+    // 自己的帧——旧实现 pop() 按栈顶语义会偷走 B 的帧、把已完成的 A 留在
+    // 栈上变幽灵帧（污染 snapshot 内省与后续父帧推导）。
+    use std::time::{Duration, Instant};
+
+    let engine = Arc::new(WorkflowEngine::new());
+    let mut slow = make_node("n1", "delay", vec![]);
+    slow.config
+        .insert("seconds".to_string(), serde_json::json!(0.6));
+    engine
+        .register_workflow(make_workflow("slow_a", vec![slow]))
+        .unwrap();
+    let mut long = make_node("n1", "delay", vec![]);
+    long.config
+        .insert("seconds".to_string(), serde_json::json!(10_000));
+    engine
+        .register_workflow(make_workflow("long_b", vec![long]))
+        .unwrap();
+
+    let id_a = engine
+        .clone()
+        .start_async("slow_a", HashMap::new(), None)
+        .await
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !engine
+        .call_stack()
+        .snapshot()
+        .iter()
+        .any(|f| f.execution_id == id_a)
+    {
+        assert!(Instant::now() < deadline, "frame A never reached the stack");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let id_b = engine
+        .clone()
+        .start_async("long_b", HashMap::new(), None)
+        .await
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while engine.call_stack().depth() < 2 {
+        assert!(Instant::now() < deadline, "frame B never reached the stack");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // A 在 0.6s 后完成收尾；等栈深回落到 1（A 的 run_async 已 teardown）。
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while engine.call_stack().depth() > 1 {
+        assert!(Instant::now() < deadline, "A's teardown never happened");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // 幸存帧必须是仍在跑的 B，不能是已完成 A 的幽灵帧。
+    let snap = engine.call_stack().snapshot();
+    assert_eq!(snap.len(), 1, "exactly one frame survives A's settle");
+    assert_eq!(
+        snap[0].execution_id, id_b,
+        "survivor must be the still-running execution, not a phantom of the finished one"
+    );
+
+    // 收尾清理：cancel B，其帧随后被身份移除，栈归空。
+    engine.cancel_execution(&id_b).await.unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !engine.call_stack().is_empty() {
+        assert!(Instant::now() < deadline, "B's teardown never happened");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(engine.call_stack().is_empty());
+}

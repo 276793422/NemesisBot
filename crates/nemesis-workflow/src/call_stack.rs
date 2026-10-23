@@ -94,8 +94,26 @@ impl WorkflowCallStack {
     /// Pop the top frame. Returns `None` if the stack is empty (this
     /// indicates a push/pop imbalance and should be investigated, but we
     /// treat it as a soft failure rather than panicking).
+    ///
+    /// Only correct for strictly nested (LIFO) lifecycles. Concurrent
+    /// unrelated executions interleave on the shared stack, so an execution
+    /// settling out of push order must use [`remove`](Self::remove) instead.
     pub fn pop(&self) -> Option<CallFrame> {
         self.frames.lock().pop()
+    }
+
+    /// Remove the frame belonging to `execution_id`, wherever it sits on
+    /// the stack. Returns the removed frame, or `None` if no frame carries
+    /// that id.
+    ///
+    /// Identity-based teardown: a finishing execution takes out exactly its
+    /// own frame, so out-of-order completion under concurrent runs never
+    /// strands phantom frames or steals another run's frame (which `pop`
+    /// would do).
+    pub fn remove(&self, execution_id: &str) -> Option<CallFrame> {
+        let mut frames = self.frames.lock();
+        let pos = frames.iter().position(|f| f.execution_id == execution_id)?;
+        Some(frames.remove(pos))
     }
 
     /// Current stack depth (number of frames).
