@@ -1835,3 +1835,54 @@ fn b13_cache_breakpoints_on_without_tools_marks_system_only() {
     let system = body["system"].as_array().unwrap();
     assert_eq!(system.last().unwrap()["cache_control"]["type"], "ephemeral");
 }
+
+// ===========================================================================
+// base_url 构造期归一回归（2026-10-23）：preset 推断默认（anthropic/claude
+// 前缀，provider_resolver PROVIDER_PRESETS）带 `/v1` 尾缀，factory 原样传
+// AnthropicProvider::new，chat() 再自拼 `/v1/messages` → `/v1/v1/messages`
+// 每次 404。归一收在构造边界（new / with_token_source）。
+// ===========================================================================
+
+#[test]
+fn test_new_normalizes_v1_suffix_base() {
+    let provider = AnthropicProvider::new(anth_config("https://api.anthropic.com/v1"));
+    assert_eq!(provider.base_url(), "https://api.anthropic.com");
+    let provider = AnthropicProvider::new(anth_config("https://proxy.example.com/v1/"));
+    assert_eq!(provider.base_url(), "https://proxy.example.com");
+}
+
+#[test]
+fn test_with_token_source_normalizes_v1_suffix_base() {
+    let ts: Box<dyn Fn() -> Result<String, String> + Send + Sync> =
+        Box::new(|| Ok("t".to_string()));
+    let provider =
+        AnthropicProvider::with_token_source(anth_config("https://custom.api.com/v1"), ts);
+    assert_eq!(provider.base_url(), "https://custom.api.com");
+}
+
+#[tokio::test]
+async fn test_v1_suffixed_base_hits_v1_messages_not_v1_v1() {
+    let server = MockServer::start().await;
+    // 只挂 /v1/messages：归一前请求会打到 /v1/v1/messages（无 mock → 404 → Err）。
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })))
+        .mount(&server)
+        .await;
+
+    let provider = AnthropicProvider::new(anth_config(&format!("{}/v1", server.uri())));
+    let resp = provider
+        .chat(
+            &anth_messages(),
+            &[],
+            "claude-default",
+            &ChatOptions::default(),
+        )
+        .await
+        .expect("带 /v1 尾缀的 base 必须归一后命中 /v1/messages，而非 /v1/v1/messages");
+    assert_eq!(resp.content, "ok");
+}
