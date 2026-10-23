@@ -132,6 +132,24 @@ impl ZiweiHandler {
     }
 }
 
+/// 急停活性闸（同族先例：board 的 `refuse_dispatch_when_estopped`，EST-01/02
+/// 横扫加固）：estop 生效中拒绝紫微活性面（attach 注入 / invoke 远程调用 /
+/// resolve 活体扫描）。estop 卸载（nemesis-ziwei estop_hook）只在触发上升沿
+/// 执行一次——闸住 estop 期间新建会话 = 堵「estop 中 attach 的会话永不被
+/// 卸载」的洞。
+fn refuse_active_when_estopped(ctx: &RequestContext) -> Result<(), String> {
+    if ctx
+        .state
+        .estop
+        .as_ref()
+        .map(|e| e.is_engaged())
+        .unwrap_or(false)
+    {
+        return Err("⛔ 急停（E-STOP）生效中：紫微注入/调用面被拒绝（先释放急停）".to_string());
+    }
+    Ok(())
+}
+
 #[async_trait::async_trait]
 impl ModuleHandler for ZiweiHandler {
     fn module_name(&self) -> &str {
@@ -181,6 +199,18 @@ impl ModuleHandler for ZiweiHandler {
         let zcfg = cfg.ziwei.clone().unwrap_or_default();
         if !zcfg.enabled {
             return Err(GATE_CLOSED_MSG.to_string());
+        }
+        // 急停活性闸：estop 生效中拒绝触及目标进程的命令（attach 注入 /
+        // invoke 远程调用 / resolve 活体扫描）。紫微的 estop 卸载只在触发
+        // 上升沿跑一次（nemesis-ziwei estop_hook）——不闸 attach 的话，
+        // estop 期间新建的会话在下降沿前永不被卸载；estop 期间向目标进程
+        // 注入 payload 也直接违背急停冻结语义。同族先例：board 的
+        // refuse_dispatch_when_estopped（EST-01/02 横扫加固）。
+        // 放行面：detach（降险动作，与 estop 卸载同向）、list/show/status/
+        // remove/verify/recover*/setup.*（离线本地件）、refresh（agent 侧
+        // 工具注册元数据——estop 已冻结 dispatch，注册的工具调不动）。
+        if matches!(cmd, "attach" | "invoke" | "resolve") {
+            refuse_active_when_estopped(ctx)?;
         }
 
         match cmd {
@@ -374,10 +404,10 @@ impl ModuleHandler for ZiweiHandler {
                     .and_then(|v| v.as_str())
                     .ok_or("缺 profile_id")?
                     .to_string();
-                let manager = nemesis_ziwei::session::global()
-                    .ok_or("紫微会话管理器未装配（gateway 未启用或非 Windows 平台）")?;
                 #[cfg(windows)]
                 {
+                    let manager = nemesis_ziwei::session::global()
+                        .ok_or("紫微会话管理器未装配（gateway 未启用）")?;
                     Ok(Some(manager.resolve_functions(&id).await?))
                 }
                 #[cfg(not(windows))]

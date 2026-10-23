@@ -111,11 +111,27 @@ fn test_format_comment_list() {
     }));
     let out = format_comment_list("issue", 7, &body);
     assert!(out.contains("Thread issue:7 (2 messages)"), "{out}");
+    // 身份透传（2026-10-23）：agent 节点渲染带 (agent node) 标注。
     assert!(
-        out.contains("[#1] node-c: 变体 A 可实现性风险：依赖 X"),
+        out.contains("[#1] node-c (agent node): 变体 A 可实现性风险：依赖 X"),
         "{out}"
     );
-    assert!(out.contains("[#2] node-d: 变体 B 可测性更好"), "{out}");
+    assert!(
+        out.contains("[#2] node-d (agent node): 变体 B 可测性更好"),
+        "{out}"
+    );
+
+    // human 发言（admin）渲染 (human user)；缺 type 退化裸 id。
+    let mixed = envelope(serde_json::json!({
+        "thread": {"kind": "channel", "id": 3},
+        "messages": [
+            {"id": 5, "sender": {"type": "admin", "id": "dashboard"}, "content": "在么"},
+            {"id": 6, "sender": {"id": "legacy"}, "content": "旧包"},
+        ],
+    }));
+    let out2 = format_comment_list("channel", 3, &mixed);
+    assert!(out2.contains("[#5] dashboard (human user): 在么"), "{out2}");
+    assert!(out2.contains("[#6] legacy: 旧包"), "{out2}");
 
     // body.messages 缺键 → 按空处理（不 panic）。
     let missing = format_comment_list("issue", 7, &envelope(serde_json::json!({})));

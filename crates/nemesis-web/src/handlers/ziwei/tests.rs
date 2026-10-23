@@ -279,3 +279,41 @@ fn sample_profile_for_test() -> nemesis_ziwei::profile::Profile {
         },
     }
 }
+
+/// 急停活性闸（同族先例：board EST-01/02 派发族 estop 闸）：estop 生效中
+/// attach/invoke/resolve（注入/远程调用/活体扫描）一律拒绝；本地面（list）
+/// 照常；释放后恢复（闸只认 engaged 实态，不做一次性锁）。背景：紫微的
+/// estop 卸载只在触发上升沿跑一次——不闸 attach 的话，estop 期间新建的
+/// 会话永不被卸载。
+#[tokio::test]
+async fn estop_engaged_blocks_active_face() {
+    let (ctx, dir) = make_ctx();
+    write_config(&dir, true);
+    let estop = Arc::new(nemesis_agent::estop::EstopState::new());
+    estop.trigger();
+    let mut estopped = (*ctx.state).clone();
+    estopped.estop = Some(estop.clone());
+    let ctx_e = RequestContext {
+        session_id: ctx.session_id.clone(),
+        chat_id: ctx.chat_id.clone(),
+        workspace: ctx.workspace.clone(),
+        home: ctx.home.clone(),
+        state: Arc::new(estopped),
+        auth_method: ctx.auth_method.clone(),
+    };
+    // 活性三命令：无 data 也必须先撞闸（闸在参数解析前）。
+    for cmd in ["attach", "invoke", "resolve"] {
+        let err = call(cmd, &ctx_e, None).await.unwrap_err();
+        assert!(err.contains("急停"), "命令 {cmd} 应被急停闸拒绝: {err}");
+    }
+    // 本地面照常（estop 不冻结只读）。
+    let out = call("list", &ctx_e, None).await.unwrap().unwrap();
+    assert_eq!(out["profiles"].as_array().unwrap().len(), 0);
+    // 释放后恢复：attach 走过闸、落到正常参数校验（缺 profile_id）。
+    estop.release();
+    let err = call("attach", &ctx_e, None).await.unwrap_err();
+    assert!(
+        !err.contains("急停"),
+        "释放后 attach 不应再被急停闸拦截: {err}"
+    );
+}

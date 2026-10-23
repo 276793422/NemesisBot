@@ -37,7 +37,7 @@ impl Drop for RestorePermsGuard {
 }
 
 #[cfg(any(unix, windows))]
-fn block_atomic_replace(dest: &std::path::Path) -> RestorePermsGuard {
+fn block_atomic_replace(dest: &std::path::Path) -> Option<RestorePermsGuard> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -45,16 +45,24 @@ fn block_atomic_replace(dest: &std::path::Path) -> RestorePermsGuard {
         let mut perm = std::fs::metadata(&parent).unwrap().permissions();
         perm.set_mode(0o555);
         std::fs::set_permissions(&parent, perm).unwrap();
-        RestorePermsGuard { parent }
+        // 环境探针（trivial probe）：root 语境（CAP_DAC_OVERRIDE）不受 0o555
+        // 限制，写失败注入无法生效——诚实跳过而非假红；权限就地恢复。
+        let probe = parent.join(".tmp-perm-probe");
+        if std::fs::write(&probe, b"").is_ok() {
+            let _ = std::fs::remove_file(&probe);
+            let _ = std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755));
+            return None;
+        }
+        Some(RestorePermsGuard { parent })
     }
     #[cfg(windows)]
     {
         let mut perm = std::fs::metadata(dest).unwrap().permissions();
         perm.set_readonly(true);
         std::fs::set_permissions(dest, perm).unwrap();
-        RestorePermsGuard {
+        Some(RestorePermsGuard {
             dest: dest.to_path_buf(),
-        }
+        })
     }
 }
 
@@ -6628,7 +6636,10 @@ fn test_upgrade_peer_in_peers_toml_write_error_after_removal() {
     .unwrap();
     // REL-002：旧注入（预建 peers.toml.tmp 目录阻塞固定临时名）随唯一临时名
     // 升级失效——改用平台确定的写失败注入（见 block_atomic_replace）。
-    let _guard = block_atomic_replace(&cluster_dir.join("peers.toml"));
+    // root 语境注入失效（探针 None）→ 诚实跳过。
+    let Some(_guard) = block_atomic_replace(&cluster_dir.join("peers.toml")) else {
+        return;
+    };
 
     let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
     cluster.upgrade_peer_in_peers_toml(

@@ -322,3 +322,115 @@ fn test_mentions_node_at_all_matches_any_node() {
         "general"
     ));
 }
+
+// ---------------------------------------------------------------------------
+// 名册感知 @ 解析：含空格节点名可被 @整体点名（2026-10-23 用户实录：
+// "@Product Manager" 旧解析截成 token "Product" → not_found 无法点名）。
+// ---------------------------------------------------------------------------
+
+/// @含空格名：resolve 直击（大小写不敏感）；发送者排除照旧。
+#[test]
+fn test_mention_with_spaces_in_name() {
+    let nodes = vec![
+        node("master", "Zoo", "manager", true),
+        node("node-pm", "Product Manager", "worker", true),
+        node("node-dev", "Dev", "worker", true),
+    ];
+    let plan = resolve_wake_targets(
+        &input("channel", "@Product Manager 你看一下", "master"),
+        &nodes,
+    );
+    assert_eq!(plan.targets, vec!["node-pm"]);
+    assert!(plan.skipped.is_empty());
+
+    // 大小写不敏感 + 中文紧跟边界。
+    let plan = resolve_wake_targets(
+        &input("channel", "@product manager，在吗", "master"),
+        &nodes,
+    );
+    assert_eq!(plan.targets, vec!["node-pm"]);
+
+    // @id 形态（id 无空格）照旧。
+    let plan = resolve_wake_targets(&input("channel", "@node-pm 看下", "master"), &nodes);
+    assert_eq!(plan.targets, vec!["node-pm"]);
+}
+
+/// 最长匹配优先："Product" 与 "Product Manager" 并存时 @Product Manager
+/// 命中后者；@Product 命中前者。
+#[test]
+fn test_mention_longest_match_wins() {
+    let nodes = vec![
+        node("n1", "Product", "worker", true),
+        node("n2", "Product Manager", "worker", true),
+    ];
+    let plan = resolve_wake_targets(
+        &input("channel", "@Product Manager 请回应", "admin"),
+        &nodes,
+    );
+    assert_eq!(plan.targets, vec!["n2"]);
+    let plan = resolve_wake_targets(&input("channel", "@Product 请回应", "admin"), &nodes);
+    assert_eq!(plan.targets, vec!["n1"]);
+    // 词边界优雅降级："@Product Managers" 的长名匹配被词边界拒绝（后跟
+    // 字母），回落到词边界命中的短名 "Product"——与旧 token 行为一致。
+    let plan = resolve_wake_targets(&input("channel", "@Product Managers 来", "admin"), &nodes);
+    assert_eq!(plan.targets, vec!["n1"]);
+}
+
+/// 词边界保护：名字后紧跟字母/数字 = 嵌在更长词里，不当作点名
+/// （"@Developer" 咬不住 "Dev"、"@Managerial" 咬不住 "Manager"）。
+#[test]
+fn test_mention_word_boundary_no_partial_bite() {
+    let nodes = vec![
+        node("n1", "Dev", "worker", true),
+        node("n2", "Manager", "worker", true),
+    ];
+    let plan = resolve_wake_targets(&input("channel", "@Developer 请回应", "admin"), &nodes);
+    assert!(plan.targets.is_empty());
+    assert_eq!(plan.skipped[0].reason, "not_found");
+    let plan = resolve_wake_targets(&input("channel", "@Managerial 汇报", "admin"), &nodes);
+    assert!(plan.targets.is_empty());
+}
+
+/// mentions_node（worker sync 兜底）同源：本节点名含空格可整体命中。
+#[test]
+fn test_mentions_node_multi_word_name() {
+    // 本节点是 Product Manager：@全名命中。
+    assert!(mentions_node(
+        "@Product Manager 请回应",
+        "node-pm",
+        "Product Manager",
+        "worker",
+        "general"
+    ));
+    // 他人的 @ 不命中本节点。
+    assert!(!mentions_node(
+        "@Product Manager 请回应",
+        "node-dev",
+        "Dev",
+        "worker",
+        "general"
+    ));
+    // 单词名/role:/all 回落路径不回归。
+    assert!(mentions_node(
+        "@Dev 在吗",
+        "node-dev",
+        "Dev",
+        "worker",
+        "general"
+    ));
+    assert!(mentions_node(
+        "@role:worker 集合",
+        "node-dev",
+        "Dev",
+        "worker",
+        "general"
+    ));
+    // 邮箱形态排除不回归（a@b.com 不是点名）。
+    assert!(!mentions_node(
+        "发到 a@Product Manager.com",
+        "node-pm",
+        "Product Manager",
+        "worker",
+        "general"
+    ));
+}

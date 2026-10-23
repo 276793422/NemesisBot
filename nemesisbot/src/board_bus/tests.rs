@@ -337,7 +337,7 @@ fn wake_payload(
             "event": "mention",
             "thread": {"kind": thread_kind, "id": thread_id, "title": "标题",
                 "messages": [{"sender": "node-master", "content": "早", "at": 1}]},
-            "new_message": {"sender": "node-master", "content": content, "at": 2},
+            "new_message": {"sender": "node-master", "sender_kind": "agent", "content": content, "at": 2},
             "reply_hint": {"reply_to": seq, "max_turns_left": 5},
         }
     })
@@ -382,6 +382,7 @@ async fn test_worker_wake_post_happy_duplicate_and_routing() {
     assert_eq!(event.event, "mention");
     assert_eq!(event.from_node, "node-master");
     assert_eq!(event.new_content, "@node-b 看这个");
+    assert_eq!(event.sender_kind, "agent");
     assert_eq!(event.max_turns_left, 5);
     assert_eq!(event.reply_to, Some(4));
     assert_eq!(event.messages.len(), 1);
@@ -1452,6 +1453,11 @@ fn sweep_build_wake_envelope_issue_and_channel_branches() {
         env["body"]["new_message"]["sender"],
         serde_json::json!("node-x")
     );
+    // 身份透传（2026-10-23）：wake 信封带 sender_kind。
+    assert_eq!(
+        env["body"]["new_message"]["sender_kind"],
+        serde_json::json!("agent")
+    );
     assert_eq!(
         env["body"]["reply_hint"]["max_turns_left"],
         serde_json::json!(5)
@@ -1470,10 +1476,10 @@ fn sweep_build_wake_envelope_issue_and_channel_branches() {
     assert_eq!(env["body"]["thread"]["title"], serde_json::json!(want));
     assert_eq!(env["body"]["thread"]["prd_summary"], serde_json::json!(""));
 
-    // 线程上下文：主持人纯文本形态（标题行 + 消息行）。
+    // 线程上下文：主持人纯文本形态（标题行 + 消息行带身份标注）。
     let text = build_thread_context_text(&store, &ctx_issue).unwrap();
     assert!(text.starts_with("# Thread (issue "), "got: {text}");
-    assert!(text.contains("- node-x: 你好"));
+    assert!(text.contains("- node-x (agent node): 你好"), "got: {text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2111,7 +2117,7 @@ async fn sweep_run_moderator_not_ready_quota_zero_and_no_rpc() {
     };
     let mut c = ctx();
     c.thread_id = ch0;
-    let r = run_moderator(d, c, &nodes, "node-master").await;
+    let r = run_moderator(d, c, &nodes, "node-master", false, "mention").await;
     assert!(r.is_ok(), "loop 未就绪必须静默 Ok：{r:?}");
     assert_eq!(
         store.list_channel_messages(ch0, 0, i64::MAX).unwrap().len(),
@@ -2133,7 +2139,7 @@ async fn sweep_run_moderator_not_ready_quota_zero_and_no_rpc() {
     };
     let mut c = ctx();
     c.thread_id = ch0;
-    let r = run_moderator(d, c, &nodes, "node-master").await;
+    let r = run_moderator(d, c, &nodes, "node-master", false, "mention").await;
     assert!(r.is_ok(), "额度归零必须静默 Ok：{r:?}");
     let msgs = store.list_channel_messages(ch0, 0, i64::MAX).unwrap();
     assert_eq!(msgs.len(), 1, "主持人回复已落库");
@@ -2154,7 +2160,7 @@ async fn sweep_run_moderator_not_ready_quota_zero_and_no_rpc() {
     };
     let mut c = ctx();
     c.thread_id = ch0;
-    let r = run_moderator(d, c, &nodes, "node-master").await;
+    let r = run_moderator(d, c, &nodes, "node-master", false, "mention").await;
     assert!(r.is_ok(), "rpc 缺席必须静默 Ok：{r:?}");
     assert_eq!(
         store.list_channel_messages(ch0, 0, i64::MAX).unwrap().len(),
@@ -3276,4 +3282,71 @@ fn new_issue_shape() -> nemesis_board::Issue {
         created_at: 0,
         updated_at: 0,
     }
+}
+
+// ===========================================================================
+// build_moderator_prompt 双模式（2026-10-23）：@all/@点名 显式唤醒 master
+// → 参与者模式（正常回话，不转达点名）；规则③无 @ → 裁决者模式（现行）。
+// ===========================================================================
+
+#[test]
+fn sweep_moderator_prompt_dual_mode() {
+    let thread_ctx = "# Thread (channel 1) #dev\n- admin (human user): @all 有人在么";
+    let roster = "- Product Manager (role: worker, category: qa, online)";
+    let adjudicator = super::build_moderator_prompt(
+        thread_ctx,
+        roster,
+        "mention",
+        &super::actor_label("admin", "admin"),
+        "@all 有人在么",
+        "node-master",
+        false,
+    );
+    // 裁决者：点名指令在（现行契约），不含参与者措辞。
+    assert!(adjudicator.contains("You are the discussion moderator"));
+    assert!(adjudicator.contains("@node-name to mention them"));
+    assert!(!adjudicator.contains("already notified"));
+
+    let participant = super::build_moderator_prompt(
+        thread_ctx,
+        roster,
+        "mention",
+        &super::actor_label("admin", "admin"),
+        "@all 有人在么",
+        "node-master",
+        true,
+    );
+    // 参与者：与 worker 讨论轮同语义（正文或 [SILENT]），名册标注已直唤醒、
+    // 不诱导转达；发送者身份透传（human user）——行为引导靠数据不靠
+    // 「别 @ 自己」类补丁措辞（2026-10-23 用户裁定）。
+    assert!(participant.contains("You are node node-master in a multi-agent board discussion"));
+    assert!(participant.contains("output ONLY your"));
+    assert!(participant.contains("output exactly [SILENT]"));
+    assert!(participant.contains("already notified"));
+    assert!(participant.contains("New message from admin (human user)"));
+    assert!(!participant.contains("never @mention yourself"));
+    assert!(!participant.contains("mention them"));
+    // 两种模式都带线程上下文 + 名册 + 新消息。
+    for p in [&adjudicator, &participant] {
+        assert!(p.contains("# Thread (channel 1)"));
+        assert!(p.contains("Product Manager"));
+        assert!(p.contains("@all 有人在么"));
+    }
+}
+
+/// 发送者身份渲染单一真相源（actor_label）：admin/agent/system 三态标注，
+/// 未知/空 kind 退化为裸 id（旧 master wake 包兼容）。
+#[test]
+fn sweep_actor_label_kinds() {
+    assert_eq!(
+        super::actor_label("admin", "dashboard"),
+        "dashboard (human user)"
+    );
+    assert_eq!(
+        super::actor_label("agent", "Product Manager"),
+        "Product Manager (agent node)"
+    );
+    assert_eq!(super::actor_label("system", "board"), "board (system)");
+    assert_eq!(super::actor_label("", "node-x"), "node-x");
+    assert_eq!(super::actor_label("weird", "node-x"), "node-x");
 }

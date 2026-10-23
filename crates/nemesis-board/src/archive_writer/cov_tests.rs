@@ -75,6 +75,19 @@ fn timeline_write_failure_leaves_audit_activity() {
     perms.set_readonly(true);
     std::fs::set_permissions(&timeline, perms).unwrap();
 
+    // 环境探针（trivial probe）：root/管理员语境下 POSIX 权限不拦截写入
+    //（CAP_DAC_OVERRIDE），readonly 注入失效——此时「失败留痕」无法确定性
+    // 触发，诚实跳过而非假红。探测写成功 = 权限不被强制。
+    if std::fs::OpenOptions::new()
+        .append(true)
+        .open(&timeline)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, b""))
+        .is_ok()
+    {
+        let _ = std::fs::remove_dir_all(&root);
+        return;
+    }
+
     write_plan_milestone(&store, &issue, &[]);
     assert!(
         has_archive_failure_activity(&store, issue.id),

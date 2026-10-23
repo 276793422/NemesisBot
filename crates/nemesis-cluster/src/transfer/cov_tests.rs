@@ -221,6 +221,15 @@ fn begin_cleanup_failure_is_honest_error() {
         let mut p = std::fs::metadata(&st).unwrap().permissions();
         p.set_mode(0o555);
         std::fs::set_permissions(&st, p).unwrap();
+        // root 语境（CAP_DAC_OVERRIDE）不受限——探针写入成功即注入失效，
+        // 诚实跳过；权限就地恢复。
+        if std::fs::write(st.join(".perm-probe"), b"").is_ok() {
+            let _ = std::fs::remove_file(st.join(".perm-probe"));
+            let mut p = std::fs::metadata(&st).unwrap().permissions();
+            p.set_mode(0o755);
+            std::fs::set_permissions(&st, p).unwrap();
+            return;
+        }
     }
 
     let reply = sink.begin(&begin);
@@ -352,11 +361,19 @@ fn end_landed_replace_failure_is_honest_error() {
     let b2 = land_first("tid-l2", "task-landed", b'2');
     #[cfg(unix)]
     {
-        // unix：把旧 landed 目录变只读 → 删子项失败。
+        // unix：把旧 landed 目录变只读 → 删子项失败。root 语境（
+        // CAP_DAC_OVERRIDE）不受限——探针写入成功即注入失效，诚实跳过。
         use std::os::unix::fs::PermissionsExt;
         let mut p = std::fs::metadata(&landed).unwrap().permissions();
         p.set_mode(0o555);
         std::fs::set_permissions(&landed, p).unwrap();
+        if std::fs::write(landed.join(".perm-probe"), b"").is_ok() {
+            let _ = std::fs::remove_file(landed.join(".perm-probe"));
+            let mut p = std::fs::metadata(&landed).unwrap().permissions();
+            p.set_mode(0o755);
+            std::fs::set_permissions(&landed, p).unwrap();
+            return;
+        }
     }
 
     let err = sink.end(&b2.transfer_id).unwrap_err();

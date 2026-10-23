@@ -114,6 +114,14 @@ pub struct HeartbeatService {
     last_beat: Arc<Mutex<chrono::DateTime<Local>>>,
     beat_count: Arc<AtomicU64>,
     handle: Mutex<Option<JoinHandle<()>>>,
+    /// 停机令牌（2026-10-24 tokio 停机 panic 根修）：`stop()` 时 cancel，
+    /// tick 循环与首拍 sleep 经 `select!` 立即退出——不依赖 abort 的取消
+    /// 时序。仅靠 abort 的实测问题：gateway 停机流程完成后 runtime
+    /// shutdown 会唤醒存活任务做最后 poll，poll 里注册新 timer 撞
+    /// "A Tokio 1.x context was found, but it is being shutdown" panic
+    /// （r9 gateway boot 测试实录）。Mutex 包装：start/stop 周期需要在
+    /// stop 时重置为新 token（cancelled 的 token 无法复用）。
+    stop_token: Mutex<tokio_util::sync::CancellationToken>,
     handler: Mutex<Option<SharedHeartbeatHandler>>,
     skip_file: Arc<Mutex<Option<String>>>,
     message_bus: Mutex<Option<Arc<dyn MessageBus>>>,
@@ -135,6 +143,7 @@ impl HeartbeatService {
             last_beat: Arc::new(Mutex::new(Local::now())),
             beat_count: Arc::new(AtomicU64::new(0)),
             handle: Mutex::new(None),
+            stop_token: Mutex::new(tokio_util::sync::CancellationToken::new()),
             handler: Mutex::new(None),
             skip_file: Arc::new(Mutex::new(None)),
             message_bus: Mutex::new(None),
@@ -200,55 +209,84 @@ impl HeartbeatService {
         let message_bus = self.message_bus.lock().clone();
         let state_manager = self.state_manager.lock().clone();
 
-        let handle = tokio::spawn(async move {
-            // First heartbeat after 1 second delay.
-            // Mirrors Go's `time.AfterFunc(time.Second, func() { hs.executeHeartbeat() })`.
-            tokio::time::sleep(Duration::from_secs(1)).await;
+        let handle = {
+            // 本轮启停周期的停机令牌：stop() cancel → 任务在 select 点立即
+            // 退出（abort 保留兜底但不再是唯一停机通路）。
+            let token = tokio_util::sync::CancellationToken::new();
+            *self.stop_token.lock() = token.clone();
 
-            if running.load(Ordering::SeqCst) {
-                execute_heartbeat_tick(
-                    &handler,
-                    &workspace,
-                    &message_bus,
-                    &state_manager,
-                    &skip_file,
-                    &last_beat,
-                    &beat_count,
-                );
-            }
-
-            // Regular interval loop.
-            let mut ticker = tokio::time::interval(interval);
-            loop {
-                ticker.tick().await;
-                if !running.load(Ordering::SeqCst) {
-                    break;
+            tokio::spawn(async move {
+                // First heartbeat after 1 second delay.
+                // Mirrors Go's `time.AfterFunc(time.Second, func() { hs.executeHeartbeat() })`.
+                // 臂序铁律同下：cancelled 第一。
+                tokio::select! {
+                    _ = token.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {}
                 }
 
-                // Check skip file (BOOTSTRAP.md exists → skip).
-                let skip = {
-                    let sf = skip_file.lock();
-                    if let Some(ref path) = *sf {
-                        std::path::Path::new(path).exists()
-                    } else {
-                        false
+                if running.load(Ordering::SeqCst) {
+                    execute_heartbeat_tick(
+                        &handler,
+                        &workspace,
+                        &message_bus,
+                        &state_manager,
+                        &skip_file,
+                        &last_beat,
+                        &beat_count,
+                    );
+                }
+
+                // Regular interval loop.
+                // interval_at 而非 interval：tokio interval 的首个 tick
+                // 立即完成，不消费的话「1s 首拍」后会紧跟一记 0 间隔的第二
+                // 拍——首拍缺文件时惰性创建模板（内容含非注释行=非空），
+                // 第二拍立刻拿到真 prompt 触发 handler → 嵌套
+                // block_in_place+block_on 的 LLM 调用（全程 debug 级日志，
+                // INFO 面零痕迹）；测试/快速重启场景下这记在飞调用撞进
+                // runtime 停机窗口，阻塞池线程上的嵌套 poll 逃不过
+                // cancel/abort，TimerEntry 注册 timer = 停机 panic（实录
+                // 2026-10-24 r9 家族 4 场景各 1 panic）。Go 原版
+                // AfterFunc(1s)+ticker 即「首拍 1s，此后每 interval 一拍」，
+                // interval_at 恢复同一节奏。
+                let mut ticker =
+                    tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
+                loop {
+                    // 臂序铁律：cancelled 第一。select! 按书写顺序 poll——
+                    // tick 在前的话，停机后被唤醒的任务会先 poll tick（注册
+                    // timer 撞 shutdown panic），根本轮不到 cancelled 臂。
+                    tokio::select! {
+                        _ = token.cancelled() => break,
+                        _ = ticker.tick() => {}
                     }
-                };
-                if skip {
-                    continue;
-                }
+                    if !running.load(Ordering::SeqCst) {
+                        break;
+                    }
 
-                execute_heartbeat_tick(
-                    &handler,
-                    &workspace,
-                    &message_bus,
-                    &state_manager,
-                    &skip_file,
-                    &last_beat,
-                    &beat_count,
-                );
-            }
-        });
+                    // Check skip file (BOOTSTRAP.md exists → skip).
+                    let skip = {
+                        let sf = skip_file.lock();
+                        if let Some(ref path) = *sf {
+                            std::path::Path::new(path).exists()
+                        } else {
+                            false
+                        }
+                    };
+                    if skip {
+                        continue;
+                    }
+
+                    execute_heartbeat_tick(
+                        &handler,
+                        &workspace,
+                        &message_bus,
+                        &state_manager,
+                        &skip_file,
+                        &last_beat,
+                        &beat_count,
+                    );
+                }
+            })
+        };
 
         *self.handle.lock() = Some(handle);
         Ok(())
@@ -257,6 +295,10 @@ impl HeartbeatService {
     /// Stop the heartbeat service.
     pub fn stop(&self) {
         self.running.store(false, Ordering::SeqCst);
+        // 停机令牌优先（2026-10-24 根修）：先 cancel 让任务在 select 点
+        // 自然退出，再 abort 兜底——纯 abort 与 runtime shutdown 竞态时
+        // 任务仍可能被 shutdown 唤醒 poll 一次，注册 timer 即 panic。
+        self.stop_token.lock().cancel();
         if let Some(h) = self.handle.lock().take() {
             h.abort();
         }

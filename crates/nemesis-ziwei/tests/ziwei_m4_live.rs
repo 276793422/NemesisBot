@@ -714,8 +714,25 @@ async fn m4_runtime_live_on_dummy_draw() {
 
     // ── ⑤ 退订即停：hook_stop(push_record) 后无新事件 ──
     sess.hook_stop(id, "push_record").await.expect("hook_stop");
-    tokio::time::sleep(std::time::Duration::from_millis(400)).await; // 竞态事件落环
-    sess.poll_captures(id).await.expect("drain"); // 清环（丢弃）
+    // 退订前在途积压的排空：三个 hook 累计的 pre-stop 事件经管道批量回流，
+    // 慢机上固定窗+单次 poll 清不尽深环（实测间歇假红：满环 1024 条在
+    // 600ms 固定窗后仍在上屏，快跑 12s 形态绿、慢跑 22s 形态红）。改循环
+    // poll 至安静（5s 预算）再断言——「退订即停」语义不变，积压排净从
+    // 祈祷式固定等待改成有界实证；真退订失效时 hook 持续产事件，循环
+    // 永不见安静，断言照常红。
+    let mut quiet = false;
+    for _ in 0..50 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let batch = sess.poll_captures(id).await.expect("drain");
+        if batch["events"].as_array().map(|a| a.len()).unwrap_or(0) == 0 {
+            quiet = true;
+            break;
+        }
+    }
+    assert!(
+        quiet,
+        "退订后在途积压 5s 内未排净（疑似退订未生效，hook 仍在产事件）"
+    );
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     let after = sess.poll_captures(id).await.expect("post-stop poll");
     let n_after = after["events"].as_array().map(|a| a.len()).unwrap_or(0);
