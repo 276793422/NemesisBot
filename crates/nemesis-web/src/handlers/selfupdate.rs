@@ -230,6 +230,26 @@ impl ModuleHandler for SelfupdateHandler {
                     serde_json::json!({"active": false, "phase": "idle"}),
                     serde_json::Value::Null,
                 );
+                // apply 失败反馈面（2026-10-23 挂死修复）：粘滞态解挂依据
+                // （last_apply_error）+ 首更形态提前告知依据
+                // （sequence_baseline_present=false = 无 applied 基准，顺序
+                // 闸默认 Unknown 拒绝）。基准只看文件在场性，权威判定在闸里。
+                #[cfg(feature = "selfupdate")]
+                let (apply_err_v, baseline_v) = {
+                    let mgr = manager();
+                    let apply_err_v = mgr
+                        .as_ref()
+                        .and_then(|m| m.last_apply_error_snapshot())
+                        .map(|r| serde_json::to_value(&r).unwrap_or(serde_json::Value::Null))
+                        .unwrap_or(serde_json::Value::Null);
+                    let baseline_v = std::env::current_exe()
+                        .ok()
+                        .map(|exe| crate::selfupdate::sequence_baseline_present(&exe))
+                        .unwrap_or(false);
+                    (apply_err_v, baseline_v)
+                };
+                #[cfg(not(feature = "selfupdate"))]
+                let (apply_err_v, baseline_v) = (serde_json::Value::Null, false);
                 Ok(Some(serde_json::json!({
                     "version": version,
                     "commit": commit,
@@ -241,6 +261,8 @@ impl ModuleHandler for SelfupdateHandler {
                     "pending": pending_value(),
                     "download": download_v,
                     "cached_check": cached_v,
+                    "last_apply_error": apply_err_v,
+                    "sequence_baseline_present": baseline_v,
                 })))
             }
             // 取消在途下载：旗标置位，下载回调下一个数据块即中止并整清

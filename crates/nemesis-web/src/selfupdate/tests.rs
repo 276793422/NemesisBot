@@ -1236,6 +1236,8 @@ mod gated {
                 DownloadProgress::default(),
             )),
             last_check: std::sync::Arc::new(parking_lot::Mutex::new(None)),
+            last_apply_error: std::sync::Arc::new(parking_lot::Mutex::new(None)),
+            downgrade_denied: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -1360,6 +1362,51 @@ mod gated {
         let err = m.apply("v1", "0123456", false).await.unwrap_err();
         assert!(err.contains("未收口"), "journal 闸拒: {err}");
         let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    /// apply 失败反馈面（2026-10-23 挂死修复）：Err 必须入案
+    /// last_apply_error（status 投影面 + downgrade_denied 旗标）；第二次尝试
+    /// 发起时先清旧错、失败再落新错——编排进行中 status 不残留上一轮失败
+    /// （前端粘滞态解挂依据）。estop/journal 两闸离线可达，恰好覆盖记录流转。
+    #[cfg(any(windows, target_os = "linux"))]
+    #[tokio::test]
+    async fn apply_failure_recorded_and_replaced_by_next_attempt() {
+        let ws = tmp_dir("gate-apply-error");
+        let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
+        estop.trigger();
+        let m = manager_for(ws.clone(), estop.clone());
+        let err = m.apply("v1", "0123456", false).await.unwrap_err();
+        assert!(err.contains("estop"), "estop 闸拒: {err}");
+        let rec = m.last_apply_error_snapshot().expect("失败必须入案");
+        assert!(rec.message.contains("estop"), "{rec:?}");
+        assert!(!rec.downgrade_denied, "estop 拒绝不是顺序判定类: {rec:?}");
+        assert!(rec.at_ms > 0, "{rec:?}");
+
+        // 第二次尝试（换 journal 闸）：发起清旧错 → 新失败改写记录。
+        estop.release();
+        save_journal(&ws, &journal("staging", "x", "y")).unwrap();
+        let err2 = m.apply("v1", "0123456", false).await.unwrap_err();
+        assert!(err2.contains("未收口"), "journal 闸拒: {err2}");
+        let rec2 = m.last_apply_error_snapshot().expect("第二次失败也要入案");
+        assert!(rec2.message.contains("未收口"), "{rec2:?}");
+        assert!(!rec2.downgrade_denied, "{rec2:?}");
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    /// sequence_baseline_present：applied 副本在场性探测（首更形态=false 是
+    /// 前端提前告知豁免语义的依据；只看存在性，权威判定在顺序闸）。
+    #[test]
+    fn sequence_baseline_present_tracks_applied_manifest_file() {
+        let dir = tmp_dir("baseline-present");
+        let exe = dir.join("nemesisbot.exe");
+        std::fs::write(&exe, b"pe").unwrap();
+        assert!(
+            !sequence_baseline_present(&exe),
+            "无 applied 副本 = false（存量安装首更形态）"
+        );
+        std::fs::write(applied_manifest_path(&exe), b"carrier").unwrap();
+        assert!(sequence_baseline_present(&exe), "副本在场 = true");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// R2 进程内单飞：flight 已被持有时 apply 诚实拒绝（estop 未触发、

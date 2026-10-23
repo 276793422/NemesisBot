@@ -727,6 +727,10 @@ pub(crate) async fn run_runtime(
                         nemesis_web::selfupdate::DownloadProgress::default(),
                     )),
                     last_check: Arc::new(parking_lot::Mutex::new(None)),
+                    // apply 失败反馈面（2026-10-23 挂死修复）：Err 记录 +
+                    // SSE error 帧，Dashboard 粘滞态据此解挂。
+                    last_apply_error: Arc::new(parking_lot::Mutex::new(None)),
+                    downgrade_denied: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 });
                 nemesis_web::handlers::selfupdate::set_manager(mgr.clone());
                 info!("[Gateway] selfupdate manager wired (L9)");
