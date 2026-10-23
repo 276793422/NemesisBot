@@ -1726,14 +1726,10 @@ pub async fn handle_events_stream(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok());
 
-    let mut last_sent: u64 = 0;
-    let (replay, gap) = match last_id {
-        Some(after) => state.event_hub.replay_after(after),
-        None => (Vec::new(), false),
-    };
-    if let Some(after) = last_id {
-        last_sent = after;
-    }
+    // L2（R32）：重连游标决议收口到 EventHub::resolve_reconnect——重启签名
+    // （Last-Event-ID 超前于服务端 latest = 网关重启 seq 域重置）归零游标并
+    // 按 0 重放，不再盲目 last_sent = after 让 live 去重闸吞掉整个新域。
+    let (mut last_sent, replay, gap) = state.event_hub.resolve_reconnect(last_id);
     let gap_hint = gap.then(|| {
         serde_json::json!({
             "reason": "events_outside_replay_window",
