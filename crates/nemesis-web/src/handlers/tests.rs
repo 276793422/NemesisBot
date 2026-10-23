@@ -673,9 +673,11 @@ async fn test_channels_get_nonexistent() {
 }
 
 // -----------------------------------------------------------------------
-// Scanner handler tests
+// Scanner handler tests（feature 闸：mod tests 只闸 workflow+security，
+// scanner 关闭时本组测试整体不编译——N3，2026-10-24 外评）
 // -----------------------------------------------------------------------
 
+#[cfg(feature = "scanner")]
 #[tokio::test]
 async fn test_scanner_config_get_save_roundtrip() {
     let handler = scanner::ScannerHandler::new();
@@ -1119,9 +1121,10 @@ async fn test_forge_artifacts_with_data() {
 }
 
 // -----------------------------------------------------------------------
-// Memory handler tests
+// Memory handler tests（memory feature 独立可选——引用同闸，2026-10-24 N3）
 // -----------------------------------------------------------------------
 
+#[cfg(feature = "memory")]
 #[tokio::test]
 async fn test_memory_status_empty() {
     let handler = memory::MemoryHandler;
@@ -1141,6 +1144,7 @@ async fn test_memory_status_empty() {
     assert_eq!(result["document_memory"]["document_count"], 0);
 }
 
+#[cfg(feature = "memory")]
 #[tokio::test]
 async fn test_memory_documents_and_get_save() {
     let handler = memory::MemoryHandler;
@@ -1525,15 +1529,18 @@ async fn test_no_workspace_returns_error() {
         Box::new(config::ConfigHandler::new()),
         Box::new(identity::IdentityHandler),
         Box::new(tools::ToolsHandler),
-        Box::new(scanner::ScannerHandler::new()),
+        #[cfg(feature = "memory")]
         Box::new(memory::MemoryHandler),
         Box::new(skills::SkillsHandler::new()),
         Box::new(mcp::McpHandler::new()),
         Box::new(security::SecurityHandler::new()),
+        #[cfg(feature = "forge")]
         Box::new(forge::ForgeHandler::new()),
         Box::new(tasks::TasksHandler),
         Box::new(logs::LogsHandler),
     ];
+    #[cfg(feature = "scanner")]
+    handlers.push(Box::new(scanner::ScannerHandler::new()));
     #[cfg(feature = "cluster")]
     handlers.push(Box::new(cluster::ClusterHandler::new()));
 
@@ -1581,16 +1588,19 @@ async fn test_all_handlers_reject_unknown_cmd() {
         Box::new(channels::ChannelsHandler::new()),
         Box::new(identity::IdentityHandler),
         Box::new(tools::ToolsHandler),
-        Box::new(scanner::ScannerHandler::new()),
+        #[cfg(feature = "memory")]
         Box::new(memory::MemoryHandler),
         Box::new(skills::SkillsHandler::new()),
         Box::new(mcp::McpHandler::new()),
         Box::new(security::SecurityHandler::new()),
+        #[cfg(feature = "forge")]
         Box::new(forge::ForgeHandler::new()),
         Box::new(tasks::TasksHandler),
         Box::new(logs::LogsHandler),
         Box::new(agent::AgentHandler),
     ];
+    #[cfg(feature = "scanner")]
+    handlers.push(Box::new(scanner::ScannerHandler::new()));
     #[cfg(feature = "cluster")]
     handlers.push(Box::new(cluster::ClusterHandler::new()));
 
@@ -2376,6 +2386,7 @@ async fn test_forge_reflect_stub() {
 }
 
 // --- Memory: vector.status ---
+#[cfg(feature = "memory")]
 #[tokio::test]
 async fn test_memory_vector_status_no_config() {
     let handler = memory::MemoryHandler;
@@ -2389,6 +2400,7 @@ async fn test_memory_vector_status_no_config() {
     assert_eq!(result["enabled"], false);
 }
 
+#[cfg(feature = "memory")]
 #[tokio::test]
 async fn test_memory_vector_status_with_config() {
     let handler = memory::MemoryHandler;
@@ -2409,6 +2421,7 @@ async fn test_memory_vector_status_with_config() {
 }
 
 // --- Memory: vector.search (stub) ---
+#[cfg(feature = "memory")]
 #[tokio::test]
 async fn test_memory_vector_search_stub() {
     let handler = memory::MemoryHandler;
@@ -2751,6 +2764,7 @@ async fn test_forge_config_save_non_boolean_enabled() {
 }
 
 // --- Memory: path traversal in document.save ---
+#[cfg(feature = "memory")]
 #[tokio::test]
 async fn test_memory_document_path_traversal() {
     let handler = memory::MemoryHandler;
@@ -2775,6 +2789,7 @@ async fn test_identity_save_path_traversal() {
 }
 
 // --- Memory: subdirectory files ---
+#[cfg(feature = "memory")]
 #[tokio::test]
 async fn test_memory_documents_subdirectory() {
     let handler = memory::MemoryHandler;
@@ -3289,7 +3304,8 @@ async fn hicon_30_parallel_mixed_handlers() {
             ("identity", r)
         }));
     }
-    // 5 forge.status
+    // 5 forge.status（forge feature 可选——feature 关时本批退出混合并发）
+    #[cfg(feature = "forge")]
     for _ in 0..5 {
         let ctx = ctx.clone();
         handles.push(tokio::spawn(async move {
@@ -3299,7 +3315,8 @@ async fn hicon_30_parallel_mixed_handlers() {
             ("forge", r)
         }));
     }
-    // 5 memory.documents
+    // 5 memory.documents（memory feature 同上）
+    #[cfg(feature = "memory")]
     for _ in 0..5 {
         let ctx = ctx.clone();
         handles.push(tokio::spawn(async move {
@@ -4082,6 +4099,7 @@ async fn test_cluster_config_get_nonexistent() {
 }
 
 // --- Memory: status with enhanced_memory enabled ---
+#[cfg(feature = "memory")]
 #[tokio::test]
 async fn test_memory_status_with_vector_enabled() {
     let handler = memory::MemoryHandler;
@@ -4549,7 +4567,9 @@ async fn stress_50_concurrent_write_with_verification() {
         }));
     }
 
-    // 25 concurrent forge.config.save toggles
+    // 25 concurrent forge.config.save toggles（forge feature 可选——关时本批
+    // 退出，尾部总数断言按 handles.len() 动态算，两形态都对）
+    #[cfg(feature = "forge")]
     for i in 0..25 {
         let ctx = ctx.clone();
         handles.push(tokio::spawn(async move {
@@ -4565,6 +4585,7 @@ async fn stress_50_concurrent_write_with_verification() {
         }));
     }
 
+    let expected_total = handles.len();
     let mut successes = 0;
     let mut failures = 0;
     for handle in handles {
@@ -4583,7 +4604,7 @@ async fn stress_50_concurrent_write_with_verification() {
     );
 
     // Total should account for all handles completing
-    assert_eq!(successes + failures, 50);
+    assert_eq!(successes + failures, expected_total);
 }
 
 #[tokio::test]

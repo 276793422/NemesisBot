@@ -3835,6 +3835,7 @@ async fn test_handle_tool_call_tool_error() {
     assert!(result.contains("execution error"));
 }
 
+#[cfg(feature = "security")]
 #[tokio::test]
 async fn test_handle_tool_call_with_security_block() {
     use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
@@ -3944,6 +3945,7 @@ async fn test_checkpoint_e2e_write_then_rewind_restores() {
     );
 }
 
+#[cfg(feature = "security")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_guardian_e2e_critical_op_denied_by_judge() {
     // P5 AgentLoop-level e2e: a CRITICAL op that passes the rule layers is
@@ -4004,6 +4006,7 @@ async fn test_guardian_e2e_critical_op_denied_by_judge() {
     );
 }
 
+#[cfg(feature = "security")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_guardian_default_mode_off_skips_judge_entirely() {
     // 2026-09-16 无上下文审计默认 off：judge 即使被（误）装配，缺省 mode
@@ -4068,6 +4071,7 @@ async fn test_guardian_default_mode_off_skips_judge_entirely() {
     );
 }
 
+#[cfg(feature = "security")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_guardian_e2e_allows_when_judge_approves() {
     // P5 e2e counterpart: when the judge allows, the CRITICAL op proceeds.
@@ -9036,6 +9040,7 @@ fn test_x2_runtime_policy_state_reflected_and_deterministic() {
     assert_ne!(s1, s3, "flag flip must be visible in the section");
 }
 
+#[cfg(feature = "security")]
 #[test]
 fn test_x2_runtime_policy_guardian_on_reflects_live_judge() {
     use nemesis_security::guardian::{JudgeRequest, JudgeVerdict, LlmJudge};
@@ -9135,6 +9140,8 @@ fn y1_probe_loop() -> AgentLoop {
     agent_loop
 }
 
+// y1_find_def 唯一消费方在 memory 闸下（Y1 folding 两则）——helper 同闸。
+#[cfg(feature = "memory")]
 fn y1_find_def<'a>(
     defs: &'a [crate::types::ToolDefinition],
     name: &str,

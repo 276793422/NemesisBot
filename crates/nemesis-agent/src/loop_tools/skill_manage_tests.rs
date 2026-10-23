@@ -1,8 +1,10 @@
 //! Tests for the `skill_manage` tool (agent-authored skills / procedural memory).
 
 use super::*;
-use std::sync::Mutex;
 use tempfile::TempDir;
+// Mutex 只剩 security 闸下的 MockApproval 消费——import 同闸。
+#[cfg(feature = "security")]
+use std::sync::Mutex;
 
 /// A benign sample SKILL.md that passes the security check (lint score high).
 const SAMPLE_SKILL: &str = "---\n\
@@ -31,11 +33,13 @@ fn json_args(value: serde_json::Value) -> String {
 }
 
 /// A mock approval manager that records calls and returns a fixed verdict.
+#[cfg(feature = "security")]
 struct MockApproval {
     approve: bool,
     calls: Mutex<Vec<String>>,
 }
 
+#[cfg(feature = "security")]
 impl nemesis_security::auditor::ApprovalManager for MockApproval {
     fn is_running(&self) -> bool {
         true
@@ -61,6 +65,7 @@ impl nemesis_security::auditor::ApprovalManager for MockApproval {
     }
 }
 
+#[cfg(feature = "security")]
 fn slot_with(approve: bool) -> (ApprovalManagerSlot, Arc<MockApproval>) {
     let mock = Arc::new(MockApproval {
         approve,
@@ -290,6 +295,7 @@ async fn test_skill_manage_missing_fields() {
     assert!(err.contains("name"), "{}", err);
 }
 
+#[cfg(feature = "security")]
 #[tokio::test]
 async fn test_skill_manage_approval_approved_writes() {
     let tmp = TempDir::new().unwrap();
@@ -314,6 +320,7 @@ async fn test_skill_manage_approval_approved_writes() {
     );
 }
 
+#[cfg(feature = "security")]
 #[tokio::test]
 async fn test_skill_manage_approval_denied_blocks_write() {
     let tmp = TempDir::new().unwrap();

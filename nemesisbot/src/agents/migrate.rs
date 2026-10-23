@@ -22,6 +22,11 @@
 //! - **诚实窗口**（v1 接受，文档留痕）：commit ACK 后本地删除前崩溃 =
 //!   短暂双活（B 真活，A 残记录由 sweep 经墓碑收敛）；B 激活后 ACK
 //!   丢失 = A 回滚 active 与 B 同 uuid 双活（B 份更新），人工二选一。
+//!   N2 根修（2026-10-24）：ACK 后本地收敛失败（store.remove 报错等）
+//!   与崩溃同族处置——错误带 [`POST_ACK_ERR_MARK`] 前缀，外层 ⑫ **不
+//!   回滚**、保持 migrating 等墓碑收敛（旧行为一视同仁回滚 active =
+//!   ACK 后删除失败即永久双活且 sweep 失明）；墓碑写入重试 ×3，全败
+//!   且记录删除也失败时 sweep 按无墓碑回滚 = 上述第二类诚实窗口。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -40,6 +45,14 @@ const COMMIT_RPC_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// 迁移 staging 载荷格式版本（migration.json `format` 字段）。
 const MIGRATION_FORMAT: u32 = 1;
+
+/// post-ACK 错误标记（2026-10-24 N2 根修）：⑩ commit ACK 已达（B 端已
+/// 激活）之后的本地收敛失败，错误串以本前缀起头——外层 ⑫ 回滚臂据此
+/// **跳过回滚**（B 活 + A 回滚 active = 同 uuid 双活，且 ACTIVE 状态让
+/// sweep 永久失明，双活从短暂窗口变永久态）；保持 migrating 让墓碑收敛。
+/// 前缀匹配是刻意选择：错误串经多层 format! 包裹（外层还要附保持语义
+/// 说明），结构化 enum 会强改全部消费面签名，标记前缀零涟漪。
+const POST_ACK_ERR_MARK: &str = "commit 已确认（B 端已激活）";
 
 // ---------------------------------------------------------------------------
 // 传输抽象（trait 化以便测试注入假 transport；生产实现包 `Arc<Cluster>`）
@@ -343,6 +356,18 @@ pub async fn migrate_agent(
     match migrate_inner(mgr, transport.as_ref(), &record, &target, &self_id).await {
         Ok(v) => Ok(v),
         Err(e) => {
+            // **post-ACK 失败绝不回滚**（N2）：commit ACK 已达 = B 端已激活，
+            // 回滚 active 会造成同 uuid 双活，且 ACTIVE 状态让 sweep 永久
+            // 失明（sweep 只收敛 migrating）。保持 migrating：墓碑在场时
+            // sweep 按迁移成功收敛删记录；墓碑也缺席（写墓碑重试后仍失败）
+            // 时 sweep 会回滚 active——那是与「ACK 丢失」同族的双活诚实窗口
+            // （模块头留痕，人工二选一），finalize 侧已 WARN 提示。
+            if e.starts_with(POST_ACK_ERR_MARK) {
+                return Err(format!(
+                    "{e}；本端保持 migrating（B 端已激活，绝不回滚 active），\
+                     重启 sweep 按墓碑收敛"
+                ));
+            }
             // ⑫ 回滚 migrating→active（回滚失败不吞——诚实并入错误信息；
             // 残留 migrating 由启动 sweep 收敛回 active）。
             match mgr.store.transition_status(
@@ -484,7 +509,11 @@ async fn migrate_inner(
 
     // ⑪ 本地收敛（顺序契约：墓碑先写、记录后删——崩溃窗口留给 sweep：
     // migrating+墓碑 = 迁移成功终局，删记录；反之回滚 active 照常服务）。
-    migrate_agent_local_finalize(mgr, agent_id, target)?;
+    // 失败必须带 post-ACK 标记上抛：此刻 B 端已激活，外层 ⑫ 不得回滚
+    // （N2：旧实现一视同仁回滚 active = ACK 后删除失败即永久双活）。
+    if let Err(e) = migrate_agent_local_finalize(mgr, agent_id, target) {
+        return Err(format!("{POST_ACK_ERR_MARK}；本地收敛失败：{e}"));
+    }
 
     tracing::info!(
         agent_id = %agent_id,
@@ -501,17 +530,39 @@ async fn migrate_inner(
 
 /// ⑪ 本地收敛：墓碑 → store.remove → staging 清理（尽力而为）。
 /// 崩溃窗口收敛语义见模块头 + `status::MIGRATING` 注。
+///
+/// 墓碑是 post-ACK 崩溃窗口的收敛锚（migrating+墓碑 = sweep 删记录），
+/// 写失败必须重试争取（Windows 瞬时句柄/索引器是常态失败源）——三试全
+/// 败仍继续删记录（记录删掉 = 已收敛，墓碑本就冗余）；若记录删除也失败，
+/// 外层保持 migrating 而墓碑缺席，sweep 会按「commit 未达」回滚 active
+/// ——那是与 ACK 丢失同族的双活诚实窗口，此处 loud WARN 提示人工核查。
 fn migrate_agent_local_finalize(
     mgr: &super::AgentManager,
     agent_id: &str,
     target: &str,
 ) -> Result<(), String> {
-    // 墓碑写失败不阻断（warn + 继续）：记录删掉后 sweep 不再需要墓碑；
-    // 反之记录删失败时若墓碑已在场，sweep 会按「迁移成功」收敛删记录
-    // ——墓碑在场的假阳性只在「store.remove 失败」时出现，而那种失败
-    // 场景下本地记录已不可服务，收敛删掉是正确方向。
-    if let Err(e) = write_tombstone(&mgr.workspace, agent_id, target) {
-        tracing::warn!("[agents] 迁移墓碑写入失败（继续删除记录）: {e}");
+    // 墓碑重试 ×3（200ms 线性退避）：单发失败常是瞬时句柄，重试消除；
+    // 全败不再阻断删除（理由见 fn 注），但 WARN 升级留痕。
+    let mut tomb_ok = false;
+    for attempt in 1..=3u32 {
+        match write_tombstone(&mgr.workspace, agent_id, target) {
+            Ok(_) => {
+                tomb_ok = true;
+                break;
+            }
+            Err(e) => {
+                tracing::warn!("[agents] 迁移墓碑写入失败（第 {attempt}/3 次）: {e}");
+                if attempt < 3 {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+            }
+        }
+    }
+    if !tomb_ok {
+        tracing::warn!(
+            "[agents] 迁移墓碑三试全败（agent {agent_id}）：若记录删除也失败，重启 sweep \
+             将按「commit 未达」回滚 active——B 端已激活，届时同 uuid 双活需人工二选一"
+        );
     }
     mgr.store.remove(agent_id)?;
     // staging 残留清理（尽力而为——失败只留磁盘占用，不影响语义）。
