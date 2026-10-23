@@ -834,31 +834,41 @@ mod imp {
         SESSION_MANAGER.get().cloned()
     }
 
-    /// estop 卸载钩子注册（gateway 装配时调；幂等）。
+    /// estop 卸载钩子注册（gateway 装配时调；重复注册覆盖，见 estop_hook）。
     pub fn register_estop_hook() {
         crate::estop_hook::set_unload_hook(Box::new(|| {
-            // estop 触发点在 tokio runtime 内（gateway/托盘）——取 Handle 驱动；
-            // 无 Handle（测试同步上下文）现场起临时 runtime。
             match global() {
                 None => vec!["ziwei: 会话管理器未装配，无会话可卸".to_string()],
                 Some(mgr) => {
-                    let owned;
-                    let handle = match tokio::runtime::Handle::try_current() {
-                        Ok(h) => h,
-                        Err(_) => {
-                            let rt = tokio::runtime::Builder::new_current_thread()
+                    // 钩子调用方上下文不可假设：gateway estop watcher 是
+                    // tokio 任务——async 上下文里 Handle::block_on 必炸
+                    //（「Cannot start a runtime from within a runtime」：
+                    // tokio enter_runtime 对已进入 runtime 的线程 panic），
+                    // block_in_place 在 current_thread runtime 上也炸。
+                    // 对齐 LLM 建议钩子的桥接惯法：专用线程 + 独立
+                    // current_thread runtime + mpsc 收报告，任何调用方都安全。
+                    // 卸载内部自带 30s 总预算 + 单会话超时，recv 有界。
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    match std::thread::Builder::new()
+                        .name("ziwei-estop-unload".to_string())
+                        .spawn(move || {
+                            let report = match tokio::runtime::Builder::new_current_thread()
                                 .enable_all()
                                 .build()
-                                .expect("ziwei estop: 临时 runtime 创建失败");
-                            owned = rt;
-                            owned.handle().clone()
-                        }
-                    };
-                    handle
-                        .block_on(async { mgr.estop_unload_all().await })
-                        .into_iter()
-                        .map(|r| format!("ziwei: {r}"))
-                        .collect()
+                            {
+                                Ok(rt) => rt.block_on(mgr.estop_unload_all()),
+                                Err(e) => vec![format!("临时 runtime 创建失败: {e}")],
+                            };
+                            let _ = tx.send(report);
+                        }) {
+                        Ok(_) => match rx.recv() {
+                            Ok(report) => {
+                                report.into_iter().map(|r| format!("ziwei: {r}")).collect()
+                            }
+                            Err(_) => vec!["ziwei: 卸载线程提前退出（无报告）".to_string()],
+                        },
+                        Err(e) => vec![format!("ziwei: 卸载线程创建失败: {e}")],
+                    }
                 }
             }
         }));

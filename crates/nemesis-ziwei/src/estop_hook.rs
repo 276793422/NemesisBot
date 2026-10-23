@@ -8,29 +8,32 @@
 //! 卸载是**降险动作**，不受审批矩阵约束（§9.2）；每次触发必须产出审计
 //! 报告行（返回值由调用方写审计）。
 
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex};
 
 /// 卸载回调形态：返回逐会话卸载报告行（会话名 + 结果）。
 pub type UnloadFn = dyn Fn() -> Vec<String> + Send + Sync;
 
-static UNLOAD_HOOK: OnceLock<Box<UnloadFn>> = OnceLock::new();
+static UNLOAD_HOOK: Mutex<Option<Arc<UnloadFn>>> = Mutex::new(None);
 
 /// 注册卸载回调（会话管理器装配时调用；重复注册覆盖——gateway 只装配一次，
 /// 覆盖语义留给测试）。
 pub fn set_unload_hook(f: Box<UnloadFn>) {
-    let _ = UNLOAD_HOOK.set(f);
+    *UNLOAD_HOOK.lock().unwrap() = Some(Arc::from(f));
 }
 
 /// 槽是否已装配（诊断/测试用）。
 pub fn has_unload_hook() -> bool {
-    UNLOAD_HOOK.get().is_some()
+    UNLOAD_HOOK.lock().unwrap().is_some()
 }
 
 /// 急停触发：执行全部会话卸载序列，返回审计报告行。
 ///
 /// 槽为空 = 紫微未装配 → 返回空报告（no-op，诚实语义）。
 pub fn run_estop_unload() -> Vec<String> {
-    match UNLOAD_HOOK.get() {
+    // clone Arc 后立即放锁再调——闭包内再入本函数不死锁，并发覆盖
+    // 不影响已在执行的闭包。
+    let hook = UNLOAD_HOOK.lock().unwrap().clone();
+    match hook {
         Some(f) => {
             let report = f();
             tracing::warn!("[ziwei] estop 卸载序列完成：{} 条会话报告", report.len());
